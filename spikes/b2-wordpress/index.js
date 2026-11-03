@@ -1,11 +1,17 @@
 // Spike B2: WordPress in a Worker, database on D1.
-import wasmModule from './node_modules/@php-wasm/web-8-3/jspi/8_3_36/php_8_3.wasm';
+import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
-import { loadPHPRuntime, PHP, PHPRequestHandler } from '@php-wasm/universal';
+import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
 import { unzipSync } from 'fflate';
 import siteZip from './build/site.zip';
 
 const DOCROOT = '/wordpress';
+// php-wasm's defaults keep OPcache on with a file cache in PHP's in-memory
+// filesystem. That saves recompiling about 500 scripts per request (CPU), at
+// the cost of JS memory. Override through PHP_INI.
+const INI_DEFAULTS = {};
+// WebAssembly memory never shrinks. Past this, boot a fresh runtime for the next request.
+const RECYCLE_WASM_BYTES = 80 * 1024 * 1024;
 let ENV;
 // Counters only grow. A request reports the difference, so a nested request
 // (WordPress calling its own URL) cannot reset an outer one.
@@ -19,6 +25,8 @@ function newStats() {
 async function boot(origin) {
 	const t0 = Date.now();
 	const id = await loadPHPRuntime(loader, {
+		// PHP_ENV (JSON) sets process environment for PHP, e.g. USE_ZEND_ALLOC.
+		ENV: JSON.parse(ENV.PHP_ENV || '{"USE_ZEND_ALLOC":"0"}'),
 		instantiateWasm(imports, done) {
 			const inst = new WebAssembly.Instance(wasmModule, imports);
 			done(inst, wasmModule);
@@ -26,21 +34,48 @@ async function boot(origin) {
 		},
 	});
 	const php = new PHP(id);
+	// php.ini overrides. PHP_INI (a JSON object) lets a deploy or a test change them.
+	await setPhpIniEntries(php, { ...INI_DEFAULTS, ...JSON.parse(ENV.PHP_INI || '{}') });
 	const tWasm = Date.now() - t0;
+	const mem = () => php[__private__dont__use].HEAPU8.length;
+	const memAt = { start: mem() };
 
-	const files = unzipSync(new Uint8Array(siteZip));
+	// Unzip in batches, so the whole tree never sits in JS memory twice.
+	const zip = new Uint8Array(siteZip);
+	const names = [];
+	unzipSync(zip, { filter: (f) => (names.push(f.name), false) });
 	let count = 0;
-	for (const [path, data] of Object.entries(files)) {
-		const full = '/' + path;
-		if (path.endsWith('/')) {
-			php.mkdir(full);
-			continue;
+	let fileBytes = 0;
+	const BATCH = 200;
+	for (let b = 0; b < names.length; b += BATCH) {
+		const want = new Set(names.slice(b, b + BATCH));
+		const files = unzipSync(zip, { filter: (f) => want.has(f.name) });
+		for (const [path, data] of Object.entries(files)) {
+			const full = '/' + path;
+			if (path.endsWith('/')) {
+				php.mkdir(full);
+				continue;
+			}
+			php.mkdir(full.slice(0, full.lastIndexOf('/')));
+			php.writeFile(full, data);
+			count++;
+			fileBytes += data.length;
 		}
-		php.mkdir(full.slice(0, full.lastIndexOf('/')));
-		php.writeFile(full, data);
-		count++;
 	}
 	const tFiles = Date.now() - t0 - tWasm;
+	memAt.afterFiles = mem();
+
+	// Keys from the WP_SALT secret, so a deployed site never uses the local ones.
+	const lines = ['<?php'];
+	if (ENV.WP_SALT) {
+		for (const k of ['AUTH_KEY', 'SECURE_AUTH_KEY', 'LOGGED_IN_KEY', 'NONCE_KEY', 'AUTH_SALT', 'SECURE_AUTH_SALT', 'LOGGED_IN_SALT', 'NONCE_SALT']) {
+			const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ENV.WP_SALT + ':' + k));
+			const hex = [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, '0')).join('');
+			lines.push(`define('${k}', '${hex}');`);
+		}
+	}
+	lines.push(`define('WP_HOME', ${JSON.stringify(origin)});`);
+	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
 
 	php.onMessage(async (raw) => {
 		const m = JSON.parse(raw);
@@ -81,7 +116,7 @@ async function boot(origin) {
 		cookieStore: false,
 		getFileNotFoundAction: () => ({ type: 'internal-redirect', uri: '/index.php' }),
 	});
-	return { php, handler, bootMs: { wasm: tWasm, files: tFiles, fileCount: count } };
+	return { php, handler, bootMs: { wasm: tWasm, files: tFiles, fileCount: count, fileBytes, memAt } };
 }
 
 const INSTALL = `<?php
@@ -89,7 +124,10 @@ define( 'WP_INSTALLING', true );
 require '/wordpress/wp-load.php';
 require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 if ( is_blog_installed() ) { echo json_encode( array( 'installed' => 'already' ) ); exit; }
-$r = wp_install( 'WordPress on D1', 'admin', 'admin@example.com', true, '', 'local-spike-password' );
+$pw = trim( (string) @file_get_contents( '/tmp/admin-password' ) );
+@unlink( '/tmp/admin-password' );
+if ( strlen( $pw ) < 12 ) { echo json_encode( array( 'installed' => false, 'error' => 'admin password missing or shorter than 12' ) ); exit; }
+$r = wp_install( 'WordPress on D1', 'admin', 'admin@example.com', false, '', $pw );
 echo json_encode( array( 'installed' => true, 'user_id' => $r['user_id'] ) );
 `;
 
@@ -98,7 +136,26 @@ export default {
 		ENV = env;
 		const url = new URL(req.url);
 		if (url.pathname === '/_ping') return new Response('ok');
+		// Spike endpoints need the SPIKE_TOKEN secret when it is set (always on a deploy).
+		const spikeOk = !env.SPIKE_TOKEN || req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
+		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		if (url.pathname === '/_last') return Response.json(globalThis.__lastRequest || {});
+		if (url.pathname === '/_peak') {
+			bootPromise ??= boot(url.origin);
+			const { php } = await bootPromise;
+			const r = await php.run({ code: `<?php
+				$a = memory_get_peak_usage(false); $b = memory_get_peak_usage(true);
+				register_shutdown_function(function () use ($a, $b) { while (ob_get_level()) ob_end_clean(); echo 'PEAK' . json_encode(array('before' => array($a, $b), 'peak' => memory_get_peak_usage(false), 'peak_real' => memory_get_peak_usage(true), 'limit' => ini_get('memory_limit'), 'files' => count(get_included_files()))); });
+				define('WP_USE_THEMES', true);
+				ob_start(); require '/wordpress/wp-blog-header.php';` });
+			return new Response(r.text.slice(r.text.indexOf('PEAK')));
+		}
+		if (url.pathname === '/_mem') {
+			if (!bootPromise) return Response.json({ booted: false });
+			const { php, bootMs } = await bootPromise;
+			const r = await php.run({ code: '<?php echo json_encode(array("opcache" => ini_get("opcache.enable"), "mc" => ini_get("opcache.memory_consumption"), "fco" => ini_get("opcache.file_cache_only")));' });
+			return Response.json({ wasmMemoryBytes: php[__private__dont__use].HEAPU8.length, fileBytes: bootMs.fileBytes, fileCount: bootMs.fileCount, memAt: bootMs.memAt, ini: JSON.parse(r.text || '{}') });
+		}
 		try {
 			bootPromise ??= boot(url.origin);
 			const { php, handler, bootMs } = await bootPromise;
@@ -106,6 +163,7 @@ export default {
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
 			if (url.pathname === '/_install') {
+				php.writeFile('/tmp/admin-password', req.headers.get('x-admin-password') || (env.SPIKE_TOKEN ? '' : 'local-spike-password'));
 				let out, errors;
 				try {
 					const r = await php.run({ code: INSTALL });
@@ -132,8 +190,17 @@ export default {
 			out.set('x-d1-failures', String(d.failures.length));
 			out.set('x-php-ms', String(Date.now() - t0));
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
+			const wasmBytes = php[__private__dont__use].HEAPU8.length;
+			out.set('x-wasm-mib', String(Math.round(wasmBytes / 1048576)));
+			// php-wasm answers a crashed runtime with a bare 500. Never reuse it.
+			const crashed = r.httpStatusCode === 500 && r.text === 'Internal Server Error';
+			if (crashed || wasmBytes > RECYCLE_WASM_BYTES) {
+				bootPromise = null;
+				out.set('x-runtime-recycled', crashed ? 'crashed' : 'memory');
+			}
 			return new Response(r.bytes, { status: r.httpStatusCode, headers: out });
 		} catch (e) {
+			bootPromise = null; // a failed runtime is not reused
 			return new Response(String((e && e.stack) || e), { status: 500 });
 		}
 	},

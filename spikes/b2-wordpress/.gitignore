@@ -4,3 +4,5 @@ build/
 .wrangler/
 out.json
 dev.log
+deploy.log
+tail.log
