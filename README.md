@@ -28,7 +28,7 @@ Nothing in this repository is **measured** yet. Every cell below is from documen
 | Id | Workers Free | Workers Paid ($5 a month) | Main limit |
 | --- | --- | --- | --- |
 | A | **claimed** for cached pages (HostlessWP) | **claimed** (HostlessWP) | Free CPU time is 10 ms per request. A full WordPress page render uses more, so on Free only cached pages are safe. |
-| B | **unbuilt** | **unbuilt** | WordPress has no D1 or Durable Object SQLite driver. See `sqlite-database-integration#288`. |
+| B | **unbuilt** | **unbuilt** | WordPress has no D1 or Durable Object SQLite driver. See [docs/approach-b.md](docs/approach-b.md). |
 | C | **no** | **docs** | Containers are not on the Free plan. Container disk is ephemeral. A snapshot keeps files for 30 days from creation or last restore. |
 | D | **docs** for the storefront Worker | **docs** | The back office needs one of A, B, C, or a normal host. |
 
