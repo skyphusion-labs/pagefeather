@@ -1,0 +1,6 @@
+node_modules/
+vendor/
+build/
+.wrangler/
+out.json
+dev.log
