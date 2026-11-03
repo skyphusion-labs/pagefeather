@@ -44,6 +44,11 @@ async function boot(origin) {
 
 	php.onMessage(async (raw) => {
 		const m = JSON.parse(raw);
+		if (m.report) {
+			stats.failures.push({ sql: m.sql.slice(0, 400), error: m.error });
+			stats.log.push('ERR ' + m.sql.slice(0, 160).replace(/\s+/g, ' ') + ' => ' + m.error.slice(0, 120));
+			return '{}';
+		}
 		const t = Date.now();
 		stats.calls++;
 		try {
@@ -110,6 +115,8 @@ export default {
 					out = String((e && e.message) || e);
 					errors = 'PHP exited non-zero';
 				}
+				// The runtime is not usable for requests after this script exits. Boot a fresh one next time.
+				bootPromise = null;
 				const tail = out.length > 6000 ? out.slice(-6000) : out;
 				return Response.json({ bootMs, ms: Date.now() - t0, out: tail, errors: String(errors).slice(0, 4000), d1: delta() });
 			}

@@ -17,6 +17,7 @@ $skyphusion_sqlite = WP_CONTENT_DIR . '/plugins/sqlite-database-integration';
 require_once $skyphusion_sqlite . '/wp-includes/database/load.php';
 require_once $skyphusion_sqlite . '/wp-includes/sqlite/class-wp-sqlite-db.php';
 require_once $skyphusion_sqlite . '/wp-includes/sqlite/install-functions.php';
+require_once __DIR__ . '/d1-dialect.php';
 require_once __DIR__ . '/d1-pdo.php';
 
 class D1_WPDB extends WP_SQLite_DB {

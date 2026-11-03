@@ -10,6 +10,8 @@ npm ci
 ./build.sh            # WordPress tree: build/site.zip and build/public/
 ./run.sh _install     # installs WordPress into local D1
 ./run.sh              # then open http://localhost:8797/
+./e2e.sh              # pages, login, admin, editor, REST write
+php tests/dialect-test.php
 ```
 
 Admin login for the local spike: `admin` / `local-spike-password`. These and the keys in `php/wp-config.php` are for local use only.
@@ -34,4 +36,4 @@ Each response has `x-d1-calls`, `x-d1-ms`, `x-d1-failures` and `x-php-ms`. `GET 
 | Refuses access to its own `_cf_*` tables | Hides them from schema reads, answers their pragmas with nothing. |
 | Refuses unknown pragmas | Answers the driver's empty-result pragma locally. |
 | Has no SQL transactions | Accepts BEGIN, COMMIT, SAVEPOINT, RELEASE without sending them. A ROLLBACK undoes nothing. |
-| Cannot run PHP functions | Not handled yet. `YEAR()` and `REGEXP` fail. See `../../docs/approach-b.md`. |
+| Cannot run PHP functions | `php/d1-dialect.php` rewrites them to plain SQLite, or computes them in PHP when the arguments are constant. |

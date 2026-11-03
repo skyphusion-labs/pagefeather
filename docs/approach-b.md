@@ -58,6 +58,12 @@ Fix: a D1 dialect in the translator. Each function becomes plain SQLite where it
 
 The same work is needed for a Durable Object's SQLite, so it is not wasted if we add that backend.
 
+### 4a. The D1 dialect works. Measured locally.
+
+`php/d1-dialect.php` rewrites each driver function before the statement goes to D1. `tests/dialect-test.php` passes 10 of 10. After a clean install, `e2e.sh` passes 17 of 17 requests with 0 D1 failures, including the editor (`YEAR()`) and the date archive.
+
+Known gaps: `RAND(seed)` ignores the seed; `WEEK()` uses `%W`, not ISO weeks; `THROW` loses its message; `MD5`, `REVERSE`, base64, `INET_*` and `FROM_UNIXTIME(x, format)` work only with constant arguments; `REGEXP` works only on one table with a constant pattern, and reads the whole column.
+
 ### 5. Every query is a round trip. Not yet measured.
 
 Each MySQL query from WordPress becomes one or more SQLite statements. Each statement is one call to D1. An uncached page can make 30 to 100 calls.

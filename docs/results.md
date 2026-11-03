@@ -14,3 +14,5 @@ A row with plan `local` ran in local workerd through `wrangler dev`. It is not a
 | B | local | 2026-11-03 | 4.157.0 | `curl` login, `GET /wp-admin/` | Login 302, 18 calls. Dashboard 200, 116 calls, 1,033 ms. |
 | B | local | 2026-11-03 | 4.157.0 | `curl` `GET /wp-admin/post-new.php` | 200, 123 calls, 1 failure: `YEAR()` in the media month list. |
 | B | local | 2026-11-03 | 4.157.0 | REST `POST /wp/v2/posts` | 201, post published, 82 calls, 0 failures. The front page then shows it. |
+| B | local | 2026-11-03 | 4.157.0 | `spikes/b2-wordpress/tests/dialect-test.php` | 10 of 10 pass: YEAR, MONTH, FIELD, nested calls, md5 of a parameter, REGEXP as a rowid filter, NOT REGEXP, refusals. |
+| B | local | 2026-11-03 | 4.157.0 | `spikes/b2-wordpress/e2e.sh` after a clean `_install` | 17 of 17 requests pass, 0 D1 failures. Pages 11 to 45 D1 calls; dashboard 116; editor 123; REST create 82. PHP 455 to 1,549 ms. |
