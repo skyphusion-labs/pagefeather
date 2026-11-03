@@ -1,0 +1,9 @@
+name = "b1-boot"
+main = "index.js"
+compatibility_date = "2026-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "b1-local"
+database_id = "00000000-0000-0000-0000-000000000000"
