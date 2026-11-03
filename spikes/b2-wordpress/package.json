@@ -1,0 +1,18 @@
+{
+  "name": "b2-wordpress",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@php-wasm/universal": "^3.1.62",
+    "@php-wasm/web-8-3": "^3.1.62",
+    "fflate": "^0.8.2"
+  }
+}

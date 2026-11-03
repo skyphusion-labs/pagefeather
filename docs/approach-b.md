@@ -2,7 +2,7 @@
 
 WordPress runs as PHP compiled to WebAssembly in a Worker. Its database is D1. There is no MySQL and no server.
 
-Status: design. Nothing is deployed. Findings below are from 2026-11-03.
+Status: WordPress installs and runs on D1 in local workerd (spike B2). Nothing is deployed. Findings below are from 2026-11-03.
 
 ## The parts
 
@@ -65,12 +65,26 @@ Each MySQL query from WordPress becomes one or more SQLite statements. Each stat
 - Run the Worker next to the database (placement hint or Smart Placement). Measure the cost of one call.
 - Send read-only statements in a `batch()` where the driver allows it.
 
-### 6. The Free plan will serve cached pages only.
+### 6. The Free plan's limit is CPU, not D1 queries. Measured locally.
 
-- D1 allows 50 queries per Worker invocation on Free and 1,000 on Paid ([D1 limits](https://developers.cloudflare.com/d1/platform/limits/)). An uncached WordPress page, after the driver adds its own statements, is likely to exceed 50.
-- Worker CPU time is 10 ms per request on Free ([Workers limits](https://developers.cloudflare.com/workers/platform/limits/)).
+Local results (spike B2, `docs/results.md`):
 
-So on Free, logged-out pages must come from a page cache. Admin and post saves need Paid. We will measure this, not assume it.
+- Logged-out pages make 11 to 37 D1 calls. The Free limit is 50 per invocation ([D1 limits](https://developers.cloudflare.com/d1/platform/limits/)), so these pages fit.
+- The admin dashboard makes 116 calls and the editor 123. These need Paid (1,000).
+- PHP takes 444 to 1,033 ms per page. D1 is 18 to 94 ms of that. The Free CPU limit is 10 ms per request ([Workers limits](https://developers.cloudflare.com/workers/platform/limits/)).
+
+So on Free, logged-out pages must come from a page cache. Admin and post saves need Paid. Local time is wall time, not billed CPU time. A deploy must measure CPU time.
+
+### 7. What D1 refuses, found by running WordPress
+
+| D1 refuses | Spike B2 answer |
+| --- | --- |
+| `sqlite_version()` | Fixed answer `3.45.0`. |
+| Pragmas on its own `_cf_*` tables | Hidden from schema reads. |
+| Unknown pragmas (the driver's empty-result trick) | Answered locally. |
+| `BEGIN`, `SAVEPOINT` and friends | Not sent. No rollback. |
+
+The plugin's installer also opens its own database connection. The build patches it to use the D1 one.
 
 ## Prior work
 
