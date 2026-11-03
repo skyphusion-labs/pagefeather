@@ -18,6 +18,20 @@ Admin login for the local spike: `admin` / `local-spike-password`. These and the
 
 Each response has `x-d1-calls`, `x-d1-ms`, `x-d1-failures` and `x-php-ms`. `GET /_last` returns the statements of the last request.
 
+## Deploy
+
+```sh
+export CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=...
+wrangler d1 create wp-on-d1-spike          # put its id in wrangler.toml [env.paid]
+wrangler deploy --env paid
+wrangler secret put WP_SALT --env paid     # random, 32+ bytes
+wrangler secret put SPIKE_TOKEN --env paid # gates /_install, /_last, /_mem, /_peak
+```
+
+On Workers Free the install exceeds the CPU limit. Load the database from a local install instead: `wrangler d1 export b2-local --local --output dump.sql`, then `wrangler d1 execute <db> --remote --env paid --file dump.sql`, then set the admin password.
+
+`SPIKE_TOKEN=... ADMIN_PASSWORD=... ./e2e.sh https://<worker>.workers.dev` runs the same checks against a deploy.
+
 ## How it fits together
 
 | File | Job |

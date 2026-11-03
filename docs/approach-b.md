@@ -2,7 +2,7 @@
 
 WordPress runs as PHP compiled to WebAssembly in a Worker. Its database is D1. There is no MySQL and no server.
 
-Status: WordPress installs and runs on D1 in local workerd (spike B2). Nothing is deployed. Findings below are from 2026-11-03.
+Status: WordPress runs on D1 in local workerd (spike B2), and is deployed on Workers Free, where CPU time decides if a page renders. Findings below are from 2026-11-03.
 
 ## The parts
 
@@ -91,6 +91,31 @@ So on Free, logged-out pages must come from a page cache. Admin and post saves n
 | `BEGIN`, `SAVEPOINT` and friends | Not sent. No rollback. |
 
 The plugin's installer also opens its own database connection. The build patches it to use the D1 one.
+
+### 8. Deployed on Workers Free: CPU decides. Measured.
+
+The deploy account turned out to be on Workers Free. Results:
+
+- WordPress pages need 1,434 to 1,934 ms of CPU each (Workers analytics, p50 to p99 of successful renders).
+- Free stops a request at about 2,010 ms of CPU (`exceededResources`, error 1102). The documented Free limit is 10 ms; the observed hard stop is about 2 s.
+- So some pages render and most do not. The install never fits; the database was loaded from a local install.
+- Wall times inside the Worker are not useful: Workers freeze the clock during CPU work.
+
+### 9. Memory: what it took to fit in 128 MB
+
+| Change | Effect, measured locally |
+| --- | --- |
+| Start the PHP module at 24 MiB, not 64 MiB (patched memory section) | Lower base. Grows on demand. |
+| `USE_ZEND_ALLOC=0` (plain malloc, not PHP's 2 MB-aligned chunks) | WebAssembly memory after a page: 103 to 59 MiB. After `e2e.sh`: 124 to 71 MiB. |
+| Unzip WordPress in batches of 200 files | No second copy of the tree in JS memory. |
+| Drop unminified CSS, text and Markdown from PHP's files | 31 to 25 MiB. Minified CSS stays: WordPress reads some by runtime paths. |
+| Recycle the runtime after a crash or past 80 MiB | A broken runtime is never reused. |
+
+### 10. Next
+
+- Paid plan: a deploy with `cpu_ms = 30000` (needs Workers Paid on the test account).
+- CPU: precompile OPcache at build time (HostlessWP does this), so a request does not compile about 500 scripts.
+- Page cache for logged-out pages, which makes Free usable for readers.
 
 ## Prior work
 
