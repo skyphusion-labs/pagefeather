@@ -109,6 +109,11 @@ class D1_PDO extends PDO {
 		return null;
 	}
 
+	/** Tell the Worker about a statement that never reached D1. */
+	public function report_failure( $sql, $error ) {
+		post_message_to_js( json_encode( array( 'report' => true, 'sql' => $sql, 'error' => $error ) ) );
+	}
+
 	public function prepare( string $query, array $options = array() ): PDOStatement|false {
 		return new D1_PDOStatement( $this, $query, $this->attributes[ PDO::ATTR_DEFAULT_FETCH_MODE ] );
 	}
@@ -289,7 +294,21 @@ class D1_PDOStatement extends PDOStatement {
 		$local = $this->pdo->local_reply( $this->sql );
 		if ( null === $local ) {
 			list( $sql, $list ) = $this->positional( null !== $params ? $params : $this->bound );
-			$local              = $this->pdo->d1( $sql, $list );
+			$pdo                = $this->pdo;
+			try {
+				list( $sql, $list ) = D1_Dialect::rewrite(
+					$sql,
+					$list,
+					function ( $q, $p ) use ( $pdo ) {
+						return $pdo->d1( $q, $p );
+					}
+				);
+			} catch ( D1_Dialect_Unsupported $e ) {
+				D1_PDO::$failures[] = array( 'sql' => $sql, 'error' => 'dialect: ' . $e->getMessage() );
+				$pdo->report_failure( $sql, 'dialect: ' . $e->getMessage() );
+				throw new PDOException( 'D1 dialect: ' . $e->getMessage() );
+			}
+			$local = $this->pdo->d1( $sql, $list );
 		}
 		$this->columns = $local['columns'];
 		$this->rows    = $local['rows'];
