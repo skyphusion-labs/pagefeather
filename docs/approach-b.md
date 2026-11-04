@@ -111,6 +111,22 @@ Same build, same code, on an account on Workers Paid, with `cpu_ms = 30000`. Res
 - On Free, successful renders had a p50 of 1,434 ms. A possible cause of the difference: on Free most requests end in error 1102, and the next request boots a new PHP runtime. Not measured.
 - The installer reported one failed statement: a read of the driver table `_wp_sqlite_global_variables`. The install completed.
 
+### 8b. Break test on Workers Paid. Measured 2026-11-04.
+
+`spikes/b2-wordpress/tests/break.py` tries to make the deploy fail. First run, then the fix, then the result on the same deploy:
+
+| Attack | Before | Fix | After |
+| --- | --- | --- | --- |
+| 30 parallel requests | 2 or 3 of 30 return 500 (runtime crashed, 0 D1 calls). Locally, on one isolate, half crash. | Requests that use PHP run one at a time per isolate. PHP is not re-entrant. | 90 of 90 return 200, in 3.5 to 4.0 s per batch of 30. |
+| A post of 100 KB or more | D1 refuses: `statement too long: SQLITE_TOOBIG`. The driver writes values into the SQL. D1 refuses a statement over 100 KB. | Over 90 KB, the dialect moves string literals of 1 KB or more into bound parameters. | 100 KB, 500 KB and 1.9 MB posts save and read back. A row still has the D1 limit of 2 MB. |
+| A 4 MB request body | 500: the isolate runs out of memory (`RangeError: Invalid array buffer length`). The response shows the JS stack. | Bodies over 2 MB get 413. A 500 shows the stack only to a spike-token holder. | 413. |
+| A search term over about 48 bytes | The count query fails: `LIKE or GLOB pattern too complex`. D1 refuses a LIKE pattern over 50 bytes. | `col LIKE '%term%'` with a long term becomes `instr(lower(col), lower('term')) > 0`. | 0 D1 failures for 200 bytes and 50 emoji. |
+| `GET /wp-content/db.php` | PHP fatal error with file paths, shown to the visitor. Database errors also showed SQL and a backtrace. | A deploy sets `WP_DEBUG` false and `display_errors=0`. | 500 with an empty body. |
+| `system.multicall` on `xmlrpc.php` | 50 password tries in one request, 0.7 s. | `xmlrpc.php` returns 403 unless `XMLRPC=on`. | 403. |
+| Media upload | 201, then the file is served by one isolate only (1 of 5 fetches). | Open: issue #12, store uploads in R2. | Not fixed. |
+
+Also tried, no failure: SQL injection strings in search, NUL bytes, `wp-config.php` and path traversal (403 or 400), 12 parallel post creates (12 unique ids), an anonymous comment. Stock WordPress behavior, not changed: `/?rest_route=/wp/v2/users` lists user names. Each failed login costs CPU on Paid; a workers.dev address has no rate limiting rule, so a zone is needed for that.
+
 ### 9. Memory: what it took to fit in 128 MB
 
 | Change | Effect, measured locally |

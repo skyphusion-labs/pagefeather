@@ -29,8 +29,11 @@ if ( ! defined( 'WP_HOME' ) ) {
 if ( ! defined( 'WP_SITEURL' ) ) {
 	define( 'WP_SITEURL', WP_HOME );
 }
-define( 'WP_DEBUG', true );
-define( 'WP_DEBUG_DISPLAY', true );
+// wp-runtime.php sets WP_DEBUG to false on a deploy. Locally, errors show.
+if ( ! defined( 'WP_DEBUG' ) ) {
+	define( 'WP_DEBUG', true );
+}
+define( 'WP_DEBUG_DISPLAY', WP_DEBUG );
 define( 'DISABLE_WP_CRON', true );
 define( 'AUTOMATIC_UPDATER_DISABLED', true );
 define( 'WP_HTTP_BLOCK_EXTERNAL', true );

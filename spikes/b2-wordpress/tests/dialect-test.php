@@ -48,5 +48,22 @@ try {
 list( $s ) = D1_Dialect::rewrite( "SELECT 'year(x)' AS a", array(), $none );
 check( 'text inside a string is not rewritten', $s, "SELECT 'year(x)' AS a" );
 
+$long = str_repeat( 'a', 60 );
+list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM `wp_posts` WHERE ( `wp_posts`.`post_title` LIKE '%$long%' ESCAPE '\\' ) AND `wp_posts`.`post_content` NOT LIKE '%$long%' ESCAPE '\\'", array(), $none );
+check( 'a long LIKE becomes instr', $s, "SELECT 1 FROM `wp_posts` WHERE ( instr(lower(`wp_posts`.`post_title`), lower('$long')) > 0 ) AND instr(lower(`wp_posts`.`post_content`), lower('$long')) = 0" );
+
+list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE '%a\\%b$long%' ESCAPE '\\'", array(), $none );
+check( 'an escaped % in a long LIKE is a literal', $s, "SELECT 1 FROM t WHERE instr(lower(c), lower('a%b$long')) > 0" );
+
+list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE '%a_b$long%'", array(), $none );
+check( 'a long LIKE with a wildcard inside is left alone', $s, "SELECT 1 FROM t WHERE c LIKE '%a_b$long%'" );
+
+list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE '%short%'", array(), $none );
+check( 'a short LIKE is left alone', $s, "SELECT 1 FROM t WHERE c LIKE '%short%'" );
+
+$body = str_repeat( "it''s ", 20000 );
+list( $s, $p ) = D1_Dialect::rewrite( "INSERT INTO `wp_posts` (`post_content`, `post_title`) VALUES ('$body', 'small')", array(), $none );
+check( 'a statement over 90 KB binds its long strings', array( $s, strlen( $p[0] ), substr( $p[0], 0, 6 ) ), array( "INSERT INTO `wp_posts` (`post_content`, `post_title`) VALUES (?, 'small')", 100000, "it's i" ) );
+
 echo $fail ? "$fail failed\n" : "all passed\n";
 exit( $fail ? 1 : 0 );

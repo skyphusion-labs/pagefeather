@@ -17,6 +17,18 @@ let ENV;
 // (WordPress calling its own URL) cannot reset an outer one.
 const stats = newStats();
 let bootPromise;
+// One PHP runtime per isolate, and PHP is not re-entrant. Measured 2026-11-04:
+// with 30 parallel requests on one isolate, about half crashed. So requests
+// that use PHP run one at a time, in arrival order.
+let phpQueue = Promise.resolve();
+function withPhp(fn) {
+	const run = phpQueue.then(fn, fn);
+	phpQueue = run.catch(() => {});
+	return run;
+}
+// D1 keeps a row up to 2 MB. A larger body cannot be stored, and a 4 MB body
+// ran the isolate out of memory (measured 2026-11-04). Override with MAX_BODY_BYTES.
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 function newStats() {
 	return { calls: 0, ms: 0, failures: [], log: [] };
@@ -35,7 +47,10 @@ async function boot(origin) {
 	});
 	const php = new PHP(id);
 	// php.ini overrides. PHP_INI (a JSON object) lets a deploy or a test change them.
-	await setPhpIniEntries(php, { ...INI_DEFAULTS, ...JSON.parse(ENV.PHP_INI || '{}') });
+	// A deploy (WP_SALT is set) never prints PHP errors, even for a script that
+	// does not load wp-config.php (measured 2026-11-04: /wp-content/db.php did).
+	const deployIni = ENV.WP_SALT ? { display_errors: '0', display_startup_errors: '0' } : {};
+	await setPhpIniEntries(php, { ...INI_DEFAULTS, ...deployIni, ...JSON.parse(ENV.PHP_INI || '{}') });
 	const tWasm = Date.now() - t0;
 	const mem = () => php[__private__dont__use].HEAPU8.length;
 	const memAt = { start: mem() };
@@ -75,6 +90,8 @@ async function boot(origin) {
 		}
 	}
 	lines.push(`define('WP_HOME', ${JSON.stringify(origin)});`);
+	// A deploy (WP_SALT is set) shows no PHP errors or database errors to visitors.
+	if (ENV.WP_SALT) lines.push(`define('WP_DEBUG', false);`);
 	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
 
 	php.onMessage(async (raw) => {
@@ -139,6 +156,16 @@ export default {
 		// Spike endpoints need the SPIKE_TOKEN secret when it is set (always on a deploy).
 		const spikeOk = !env.SPIKE_TOKEN || req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
+		// XML-RPC lets one request try many passwords (system.multicall). Off unless XMLRPC=on.
+		if (url.pathname === '/xmlrpc.php' && env.XMLRPC !== 'on') return new Response('XML-RPC is off', { status: 403 });
+		const maxBody = Number(env.MAX_BODY_BYTES || MAX_BODY_BYTES);
+		if (Number(req.headers.get('content-length') || 0) > maxBody) return new Response('request body too large', { status: 413 });
+		return withPhp(() => handle(req, env, url, spikeOk, maxBody));
+	},
+};
+
+async function handle(req, env, url, spikeOk, maxBody) {
+	{
 		if (url.pathname === '/_last') return Response.json(globalThis.__lastRequest || {});
 		if (url.pathname === '/_peak') {
 			bootPromise ??= boot(url.origin);
@@ -179,6 +206,7 @@ export default {
 				return Response.json({ bootMs, ms: Date.now() - t0, out: tail, errors: String(errors).slice(0, 4000), d1: delta() });
 			}
 			const body = ['GET', 'HEAD'].includes(req.method) ? undefined : new Uint8Array(await req.arrayBuffer());
+			if (body && body.length > maxBody) return new Response('request body too large', { status: 413 });
 			const headers = {};
 			req.headers.forEach((v, k) => (headers[k] = v));
 			const r = await handler.request({ url: url.pathname + url.search, method: req.method, headers, body });
@@ -201,7 +229,8 @@ export default {
 			return new Response(r.bytes, { status: r.httpStatusCode, headers: out });
 		} catch (e) {
 			bootPromise = null; // a failed runtime is not reused
-			return new Response(String((e && e.stack) || e), { status: 500 });
+			// The stack names internal paths. Only a spike-token holder sees it.
+			return new Response(spikeOk ? String((e && e.stack) || e) : 'internal error', { status: 500 });
 		}
-	},
-};
+	}
+}

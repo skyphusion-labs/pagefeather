@@ -25,9 +25,9 @@ jobs:
       - name: PHP syntax
         run: for f in spikes/b2-wordpress/php/*.php spikes/b2-wordpress/tests/*.php; do php -l "$f"; done
       - name: JS syntax
+        # The Workers are ES modules but package.json says commonjs, so check them as .mjs.
         run: |
-          node --check spikes/b1-boot/index.js
-          node --check spikes/b2-wordpress/index.js
+          for f in spikes/b1-boot/index.js spikes/b2-wordpress/index.js; do cp "$f" "$RUNNER_TEMP/check.mjs" && node --check "$RUNNER_TEMP/check.mjs"; done
       - name: Shell syntax
         run: for f in $(git ls-files '*.sh'); do bash -n "$f"; done
       - name: Dialect tests
