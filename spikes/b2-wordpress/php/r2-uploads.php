@@ -402,9 +402,14 @@ add_filter(
 		$base = ( $ext && substr( $filename, -strlen( $ext ) ) === $ext ) ? substr( $filename, 0, -strlen( $ext ) ) : $filename;
 		$name = $filename;
 		for ( $i = 1; $i < 1000; $i++ ) {
-			$r = R2_Uploads_Stream::call( array( 'op' => 'reserve', 'key' => R2_Uploads_Stream::key( $dir . '/' . $name ) ) );
+			$key = R2_Uploads_Stream::key( $dir . '/' . $name );
+			$r   = R2_Uploads_Stream::call( array( 'op' => 'reserve', 'key' => $key ) );
 			if ( ! $r ) {
-				return $filename; // Reservation is not available. Keep what core chose.
+				// No reservation in the Worker (approach C1: one container with a
+				// local database). add_option() is one INSERT on a unique key, so
+				// only one request gets the name. The file must not exist in R2.
+				$h = R2_Uploads_Stream::call( array( 'op' => 'head', 'key' => $key ) );
+				$r = array( 'reserved' => ( ! $h || empty( $h['found'] ) ) && add_option( '_r2_reserved_' . md5( $key ), time(), '', false ) );
 			}
 			if ( $r['reserved'] ) {
 				return $name;

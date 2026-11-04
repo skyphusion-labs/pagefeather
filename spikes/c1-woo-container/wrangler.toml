@@ -14,6 +14,10 @@ enabled = true
 PUBLIC_HOST = "wp-woo-c1.skyphusion.workers.dev"
 REPLICA_BUCKET = "wp-woo-c1-db"
 REPLICA_PATH = "store"
+# PHP worker processes in the container (scale with the instance type).
+PHP_WORKERS = "2"
+# The container stops itself after this many seconds with no request.
+IDLE_SECONDS = "900"
 R2_ENDPOINT = "https://fabcb25d9c7eb087110ec474a03e50d2.r2.cloudflarestorage.com"
 # Secrets: WP_SALT, ADMIN_PASSWORD, SPIKE_TOKEN, LITESTREAM_ACCESS_KEY_ID, LITESTREAM_SECRET_ACCESS_KEY
 

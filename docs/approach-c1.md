@@ -43,6 +43,55 @@ Compared with approach B and the B+C split:
 | B+C, checkout in a Container, D1 over the network | 42 s | 6 to 10 s (in the Worker) |
 | **C1, WooCommerce and SQLite in the Container** | **1.3 to 1.7 s** | **0.6 to 1.0 s** |
 
+## More tests (2026-11-04)
+
+**`tests/break.py`: 27 of 27.** Two real defects found and fixed first:
+- 8 parallel uploads of one file name made 4 files. Approach B reserves names in D1; here the R2 Uploads plugin falls back to `add_option()` in the local database, one INSERT on a unique key. Now 8 of 8.
+- An upload over 20 MB was accepted (the Images binding input limit is 20 MB). The Worker now returns 413 over 20 MB.
+
+**`e2e.sh`: all pass** (front-end pages 0.5 to 0.8 s; category and date archives about 2 s; REST posts 3.4 s; dashboard 2.5 s; editor 4.4 s; publish a post and read it back).
+
+**Durability: 6 of 6 orders kept.** A guest checkout, then the container stopped, then a check on the next container (a new boot id proves a new container):
+
+| Stop | After the checkout | Order on the new container | New container after |
+| --- | --- | --- | --- |
+| SIGTERM (Litestream does a final sync) | 3 s | present | 11 s |
+| SIGTERM | 0 s | present | 11 s |
+| SIGKILL to Litestream (no final sync, the container exits: a crash) | 5 s | present | 11 s |
+| SIGKILL | 2 s | present | 11 s |
+| SIGKILL | 1 s | present | 12 s |
+| SIGKILL | 0 s | present | 12 s |
+
+"0 s" means the kill request arrived a few hundred milliseconds after the checkout response. Litestream syncs every 1 s, so a crash can lose at most about the last second of writes; none was lost in these tests.
+
+How the stops were made: Linux ignores SIGKILL sent to PID 1 from inside the container, so the entrypoint shell is PID 1 and runs Litestream as a child (it forwards SIGTERM). The spike-only `/_kill.php` sends SIGTERM to PID 1 or SIGKILL to Litestream.
+
+**A Container class finding: `sleepAfter` never stopped the container.** `stop()` from the Worker returned while the container kept running. The Durable Object reported `ctx.container.running = false` for a container that was serving requests, and `stop()` (and `onActivityExpired()`, which `sleepAfter` uses) does nothing when that flag is false. Measured: the same container answered after 17 idle minutes with `sleepAfter = "15m"`. A container that never sleeps bills all month (see Cost).
+
+**Fix: the container stops itself.** The router marks the time of every request, except health checks (`/ping`) and the test boot id: the platform's health checks hit `/ping` and kept the container awake in the first try. A loop in the entrypoint checks every minute; after `IDLE_SECONDS` (900) with no request it sends SIGTERM to Litestream, which finishes its sync, and the container exits. The next request starts a new container, which restores the database from R2. Measured live with `IDLE_SECONDS=180`: after 5 idle minutes, the next request got a new container in 4 s, and an earlier order was present.
+
+**Scaling** (same load test; PHP workers set by `PHP_WORKERS`):
+
+| 5 at a time unless noted | `basic` (1/4 vCPU, 1 GiB, 2 workers) | `standard-1` (1/2 vCPU, 4 GiB, 4 workers) | `standard-2` (1 vCPU, 6 GiB, 8 workers) |
+| --- | --- | --- | --- |
+| Uncached product page | 2.9 s, 1.4 req/s | 1.55 s, 3.3 req/s | 0.92 s, 4.9 req/s |
+| Store API products | 1.1 s, 4.3 req/s | 0.59 s, 7.7 req/s | 0.42 s, 10.7 req/s |
+| Add to cart | 1.1 s, 2.3 req/s | 0.58 s, 4.3 req/s | 0.46 s, 5.4 req/s |
+| Checkout, 5 shoppers | 3.8 s, 0.6/s | 3.06 s, 1.2/s | 1.39 s, 2.1/s |
+| Checkout, 10 shoppers | | | 2.62 s, 2.4/s |
+
+Medians. No errors on `standard-1` or `standard-2`. Each instance type change rolled out in 36 to 66 s, and the new container restored the database from R2.
+
+**Cost of an awake container** ([Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/), read 2026-11-04): memory and disk are billed for the provisioned size while the container runs; CPU only while busy ($0.000020 per vCPU-second, about $0.072 per vCPU-hour at full load).
+
+| Instance | Idle but awake, per hour | Awake all month |
+| --- | --- | --- |
+| `basic` | about $0.010 | about $7 |
+| `standard-1` | about $0.038 | about $27 |
+| `standard-2` | about $0.057 | about $41 |
+
+Workers Paid includes 25 GiB-hours of memory and 200 GB-hours of disk a month.
+
 ## Under load (Paid, `basic`: 1/4 vCPU, 2 PHP workers)
 
 | Scenario | Median | p90 | Throughput |

@@ -10,13 +10,13 @@ T=$(mktemp -d); J=$T/jar; H=$T/h; bad=0
 val() { grep -i "^$1:" "$H" | head -1 | cut -d: -f2- | tr -d ' \r'; }
 row() {
   local code; code=$(head -1 "$H" | cut -d' ' -f2)
-  printf "%-30s %s calls=%-4s d1ms=%-5s phpms=%-5s fail=%s\n" "$1" "$code" "$(val x-d1-calls)" "$(val x-d1-ms)" "$(val x-php-ms)" "$(val x-d1-failures)"
+  printf "%-30s %s calls=%-4s d1ms=%-5s phpms=%-5s fail=%-2s %ss\n" "$1" "$code" "$(val x-d1-calls)" "$(val x-d1-ms)" "$(val x-php-ms)" "$(val x-d1-failures)" "$(cat "$T/t" 2>/dev/null)"; : > "$T/t"
   case "$code" in 2*|3*) ;; *) bad=1 ;; esac
-  [ "$(val x-d1-failures)" = "0" ] || { bad=1; curl -s "${ST[@]}" "$B/_last" | python3 -c "
+  f=$(val x-d1-failures); [ -z "$f" ] || [ "$f" = "0" ] || { bad=1; curl -s "${ST[@]}" "$B/_last" | python3 -c "
 import json,sys
 for f in json.load(sys.stdin).get('failures',[])[:3]: print('   ', f['error'][:140], '|', f['sql'][:160])"; }
 }
-get() { curl -s -c "$J" -b "$J" -o "$T/body" -D "$H" "$B$2"; row "$1"; }
+get() { curl -s -c "$J" -b "$J" -o "$T/body" -D "$H" -w '%{time_total}' "$B$2" > "$T/t"; row "$1"; }
 get 'GET /' /
 get 'GET / (warm)' /
 get 'GET /?p=1' '/?p=1'

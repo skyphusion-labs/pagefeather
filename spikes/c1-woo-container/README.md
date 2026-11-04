@@ -29,3 +29,4 @@ Set `PUBLIC_HOST` and `R2_ENDPOINT` in `wrangler.toml`. The first request starts
 | `php/wp-config.php` | SQLite file at `/data`, keys from `WP_SALT`, WooCommerce logs on local disk. |
 | `php/install.php` | First install, run by the entrypoint. |
 | `php/00-worker-call.php` | The transport to `worker.internal` for the shared mu-plugins. |
+| `container/kill.php` | Spike only, spike token: stop the container from inside (SIGTERM, or SIGKILL to Litestream like a crash) for durability tests. |

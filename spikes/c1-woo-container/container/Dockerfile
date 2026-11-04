@@ -11,10 +11,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
       echo 'opcache.enable_cli=1'; echo 'opcache.memory_consumption=128'; echo 'opcache.validate_timestamps=0'; \
       echo 'expose_php=Off'; echo 'display_errors=Off'; echo 'log_errors=On'; } > /usr/local/etc/php/conf.d/wordpress.ini
 COPY build/wordpress/ /var/www/html/
+COPY container/kill.php /var/www/html/_kill.php
 COPY container/litestream.yml /etc/litestream.yml
 COPY container/entrypoint.sh /usr/local/bin/entrypoint.sh
 WORKDIR /var/www/html
-# 2 workers: at 256 MB each, 4 could pass the 1 GiB of a basic instance.
+# PHP worker count comes from the Worker (PHP_WORKERS); 2 by default. At 256 MB
+# each, 4 could pass the 1 GiB of a basic instance.
 ENV PHP_CLI_SERVER_WORKERS=2
 EXPOSE 80
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
