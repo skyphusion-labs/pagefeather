@@ -24,6 +24,15 @@ class D1_Dialect {
 	/** All function names the driver registers. */
 	const DRIVER_FUNCTIONS = array( 'throw', 'month', 'monthnum', 'year', 'day', 'hour', 'minute', 'second', 'week', 'weekday', 'dayofweek', 'dayofmonth', 'unix_timestamp', 'now', 'md5', 'curdate', 'rand', 'from_unixtime', 'localtime', 'localtimestamp', 'isnull', 'regexp', 'field', 'log', 'least', 'greatest', 'get_lock', 'release_lock', 'ucase', 'lcase', 'unhex', 'from_base64', 'to_base64', 'inet_ntoa', 'inet_aton', 'datediff', 'locate', 'utc_date', 'utc_time', 'utc_timestamp', 'version', 'reverse', '_helper_like_to_glob_pattern' );
 
+	/** D1 refuses a statement over 100 KB. Bind long strings above this. */
+	const MAX_STATEMENT_BYTES = 90000;
+
+	/** String literals at least this long move to a parameter. */
+	const BIND_STRING_BYTES = 1024;
+
+	/** D1 refuses a LIKE or GLOB pattern over 50 bytes. */
+	const MAX_LIKE_BYTES = 50;
+
 	/** @var array<string,int> Rewrites done, by name. Read by tests and stats. */
 	public static $counts = array();
 
@@ -34,7 +43,10 @@ class D1_Dialect {
 	 * @return array{0:string,1:array}
 	 */
 	public static function rewrite( $sql, array $params, callable $run ) {
-		if ( ! preg_match( '/\b(' . implode( '|', self::DRIVER_FUNCTIONS ) . ')\b/i', $sql ) ) {
+		$has_calls = (bool) preg_match( '/\b(' . implode( '|', self::DRIVER_FUNCTIONS ) . ')\b/i', $sql );
+		$too_big   = strlen( $sql ) > self::MAX_STATEMENT_BYTES;
+		$long_like = (bool) preg_match( "/\\bLIKE\\s*'(?:[^']|''){" . ( self::MAX_LIKE_BYTES + 1 ) . ',}/i', $sql );
+		if ( ! $has_calls && ! $too_big && ! $long_like ) {
 			return array( $sql, $params );
 		}
 		$tokens = self::tokenize( $sql );
@@ -46,9 +58,136 @@ class D1_Dialect {
 				++$p;
 			}
 		}
-		$tokens = self::rewrite_regexp( $tokens, $run );
-		$tokens = self::rewrite_calls( $tokens );
+		if ( $has_calls ) {
+			$tokens = self::rewrite_regexp( $tokens, $run );
+			$tokens = self::rewrite_calls( $tokens );
+		}
+		if ( $long_like ) {
+			$tokens = self::rewrite_long_like( $tokens );
+		}
+		if ( $too_big ) {
+			$tokens = self::bind_long_strings( $tokens );
+		}
 		return self::render( $tokens );
+	}
+
+	/**
+	 * D1 refuses a statement longer than 100 KB (SQLITE_TOOBIG). The driver
+	 * writes values into the SQL as literals, so a large post is a large
+	 * statement. Move each long string literal into a bound parameter.
+	 * A row still has the D1 limit of 2 MB.
+	 */
+	private static function bind_long_strings( array $tokens ) {
+		foreach ( $tokens as $i => $t ) {
+			if ( 'string' !== $t['type'] || strlen( $t['text'] ) < self::BIND_STRING_BYTES ) {
+				continue;
+			}
+			// X'..' is a blob literal. Leave it.
+			$prev = $tokens[ $i - 1 ] ?? null;
+			if ( $prev && 'word' === $prev['type'] && 'x' === strtolower( $prev['text'] ) ) {
+				continue;
+			}
+			$tokens[ $i ] = array( 'type' => 'param', 'text' => '?', 'value' => str_replace( "''", "'", substr( $t['text'], 1, -1 ) ) );
+		}
+		return $tokens;
+	}
+
+	/**
+	 * D1 refuses a LIKE pattern longer than 50 bytes. A WordPress search for a
+	 * long phrase writes `col LIKE '%phrase%' ESCAPE '\'`. When the pattern is
+	 * one literal between two %, and the left side is a column name, write
+	 * `instr(lower(col), lower('phrase')) > 0` instead. SQLite LIKE and lower()
+	 * both fold ASCII case only, so the result is the same. Other patterns are
+	 * left alone, and D1 refuses them as before.
+	 */
+	private static function rewrite_long_like( array $tokens ) {
+		for ( $i = count( $tokens ) - 1; $i >= 0; $i-- ) {
+			$t = $tokens[ $i ];
+			if ( 'word' !== $t['type'] || 'like' !== strtolower( $t['text'] ) ) {
+				continue;
+			}
+			$pi = self::next_index( $tokens, $i );
+			if ( null === $pi || 'string' !== $tokens[ $pi ]['type'] ) {
+				continue;
+			}
+			$pattern = str_replace( "''", "'", substr( $tokens[ $pi ]['text'], 1, -1 ) );
+			if ( strlen( $pattern ) <= self::MAX_LIKE_BYTES ) {
+				continue;
+			}
+			$end    = $pi;
+			$escape = null;
+			$ei     = self::next_index( $tokens, $pi );
+			if ( null !== $ei && 'word' === $tokens[ $ei ]['type'] && 'escape' === strtolower( $tokens[ $ei ]['text'] ) ) {
+				$ci = self::next_index( $tokens, $ei );
+				if ( null === $ci || 'string' !== $tokens[ $ci ]['type'] ) {
+					continue;
+				}
+				$escape = str_replace( "''", "'", substr( $tokens[ $ci ]['text'], 1, -1 ) );
+				$end    = $ci;
+			}
+			$needle = self::like_substring( $pattern, $escape );
+			if ( null === $needle ) {
+				continue;
+			}
+			// Left side: a column reference such as `t`.`c` or t.c.
+			$start = $i;
+			$not   = false;
+			$k     = self::prev_index( $tokens, $i );
+			if ( null !== $k && 'word' === $tokens[ $k ]['type'] && 'not' === strtolower( $tokens[ $k ]['text'] ) ) {
+				$not   = true;
+				$start = $k;
+				$k     = self::prev_index( $tokens, $k );
+			}
+			$col_end = $k;
+			while ( null !== $k && ( 'ident' === $tokens[ $k ]['type'] || 'word' === $tokens[ $k ]['type'] ) ) {
+				$col_start = $k;
+				$dot       = $k - 1;
+				if ( $dot >= 0 && 'op' === $tokens[ $dot ]['type'] && '.' === $tokens[ $dot ]['text'] ) {
+					$k = $dot - 1;
+					continue;
+				}
+				break;
+			}
+			if ( ! isset( $col_start ) || null === $col_end ) {
+				continue;
+			}
+			$col  = array_slice( $tokens, $col_start, $col_end - $col_start + 1 );
+			$repl = array_merge(
+				array( array( 'type' => 'word', 'text' => 'instr(lower(' ) ),
+				$col,
+				array( array( 'type' => 'word', 'text' => '), lower(' ) ),
+				array( self::literal( $needle ) ),
+				array( array( 'type' => 'word', 'text' => ')) ' . ( $not ? '=' : '>' ) . ' 0' ) )
+			);
+			array_splice( $tokens, $col_start, $end - $col_start + 1, $repl );
+			unset( $col_start );
+			self::count_rewrite( 'long_like' );
+		}
+		return $tokens;
+	}
+
+	/** The literal inside '%literal%', or null if the pattern has other wildcards. */
+	private static function like_substring( $pattern, $escape ) {
+		$n = strlen( $pattern );
+		if ( $n < 2 || '%' !== $pattern[0] || '%' !== $pattern[ $n - 1 ] ) {
+			return null;
+		}
+		$out = '';
+		for ( $j = 1; $j < $n - 1; $j++ ) {
+			$c = $pattern[ $j ];
+			if ( null !== $escape && '' !== $escape && $c === $escape ) {
+				if ( $j + 1 >= $n - 1 ) {
+					return null;
+				}
+				$out .= $pattern[ ++$j ];
+				continue;
+			}
+			if ( '%' === $c || '_' === $c ) {
+				return null;
+			}
+			$out .= $c;
+		}
+		return '' === $out ? null : $out;
 	}
 
 	/** @return array<array{type:string,text:string}> */
