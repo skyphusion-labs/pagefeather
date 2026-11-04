@@ -36,6 +36,12 @@ Repository: [humanmade/S3-Uploads](https://github.com/humanmade/S3-Uploads). GPL
 
 Our R2 media library in approach B (`spikes/b2-wordpress/php/r2-uploads.php`) uses the same design: a stream wrapper, the `upload_dir` filter, and deletion in `delete_attachment`. We could not use S3 Uploads as it is: it calls S3 over HTTPS with the AWS SDK, and PHP in a Worker has no network. Our wrapper sends each file operation to the Worker, which uses its R2 binding. Thank you, Human Made.
 
+## Litestream
+
+Repository: [benbjohnson/litestream](https://github.com/benbjohnson/litestream). Apache-2.0. Version 0.5.18 is pinned by SHA-256 in `spikes/c1-woo-container/container/Dockerfile`.
+
+- It streams the changes of a SQLite database to S3-compatible storage and restores it from there. Approach C1 uses it to keep the WordPress database of a Container in R2, so a container that sleeps (and loses its disk) restores the store on start.
+
 ## WordPress Playground
 
 Repository: [WordPress/wordpress-playground](https://github.com/WordPress/wordpress-playground). It runs WordPress in WebAssembly with SQLite through the `sqlite-database-integration` plugin.

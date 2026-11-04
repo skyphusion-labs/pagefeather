@@ -1,0 +1,41 @@
+# Spike C1: WordPress + WooCommerce in a Container (Workers Paid only).
+name = "wp-woo-c1"
+main = "worker.js"
+compatibility_date = "2026-07-01"
+workers_dev = true
+
+[assets]
+directory = "build/public"
+
+[cache]
+enabled = true
+
+[vars]
+PUBLIC_HOST = "wp-woo-c1.skyphusion.workers.dev"
+REPLICA_BUCKET = "wp-woo-c1-db"
+REPLICA_PATH = "store"
+R2_ENDPOINT = "https://fabcb25d9c7eb087110ec474a03e50d2.r2.cloudflarestorage.com"
+# Secrets: WP_SALT, ADMIN_PASSWORD, SPIKE_TOKEN, LITESTREAM_ACCESS_KEY_ID, LITESTREAM_SECRET_ACCESS_KEY
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "wp-woo-c1-media"
+
+[images]
+binding = "IMAGES"
+
+[[containers]]
+class_name = "Store"
+image = "./container/Dockerfile"
+image_build_context = "."
+instance_type = "basic"
+max_instances = 1
+rollout_step_percentage = 100
+
+[[durable_objects.bindings]]
+name = "STORE"
+class_name = "Store"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Store"]
