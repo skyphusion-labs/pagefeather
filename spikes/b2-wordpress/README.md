@@ -25,6 +25,7 @@ export CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=...
 ENV=paid                                    # or free; see wrangler.toml
 wrangler d1 create wp-on-d1-$ENV            # put its id in wrangler.toml [env.$ENV]
 wrangler r2 bucket create wp-on-d1-$ENV-media  # the media library
+wrangler r2 bucket lifecycle add wp-on-d1-$ENV-media staging-expiry staging/ --expire-days 1  # refused large uploads
 wrangler deploy --env $ENV
 wrangler secret put WP_SALT --env $ENV      # random, 32+ bytes
 wrangler secret put SPIKE_TOKEN --env $ENV  # gates /_install, /_last, /_mem, /_peak
@@ -44,6 +45,8 @@ The design is from Human Made's [S3 Uploads](https://github.com/humanmade/S3-Upl
 Without the `MEDIA` binding the plugin is off, and uploads stay in one isolate's memory.
 
 Image sizes come from the Cloudflare Images binding (`IMAGES`), not GD. `php/cf-images-editor.php` is a WordPress image editor whose resize, crop, rotate and flip calls become Images transforms. The Worker reads the source from R2, runs the transforms, and writes the result to R2, so image bytes never enter PHP. GD in a 128 MB isolate cannot decode a normal phone photo.
+
+A media upload over 1 MB (up to 20 MB) goes from the Worker straight to R2 under `staging/`. PHP gets a small marker, and the file is copied to its final name inside R2. So a phone photo never comes into PHP's memory.
 
 Two uploads with the same name on two isolates would overwrite each other. The plugin reserves each file name with one atomic D1 insert, in the table `_r2_reserved`.
 

@@ -23,6 +23,24 @@ class CF_Images_Editor extends WP_Image_Editor {
 	/** @var array Transforms for the Images binding, applied in order. */
 	private $ops = array();
 
+	/**
+	 * Sub-sizes waiting to be made. WordPress makes them one at a time; each
+	 * Images call takes about 1 s, so 7 sizes took 8 to 10 s (measured
+	 * 2026-11-04). They are queued and made in parallel in one Worker call.
+	 */
+	private static $queue = array();
+
+	/** Make every queued sub-size now, in parallel. */
+	public static function flush() {
+		if ( ! self::$queue ) {
+			return true;
+		}
+		$jobs        = self::$queue;
+		self::$queue = array();
+		$r           = R2_Uploads_Stream::call( array( 'op' => 'images', 'jobs' => $jobs ) );
+		return $r && empty( $r['failed'] );
+	}
+
 	public static function test( $args = array() ) {
 		if ( ! defined( 'CF_IMAGES' ) || ! CF_IMAGES ) {
 			return false;
@@ -117,6 +135,19 @@ class CF_Images_Editor extends WP_Image_Editor {
 		return true;
 	}
 
+	private function job( $dest_key, $mime ) {
+		$job = array(
+			'src'    => $this->key,
+			'ops'    => $this->ops,
+			'format' => $mime,
+			'dest'   => $dest_key,
+		);
+		if ( in_array( $mime, array( 'image/jpeg', 'image/webp', 'image/avif' ), true ) ) {
+			$job['quality'] = $this->get_quality();
+		}
+		return $job;
+	}
+
 	private function render( $dest_key, $mime, $return_body ) {
 		$op = array(
 			'op'     => 'image',
@@ -165,10 +196,16 @@ class CF_Images_Editor extends WP_Image_Editor {
 		$size = $this->size;
 		$r    = $this->resize( $size_data['width'] ?? 0, $size_data['height'] ?? 0, $size_data['crop'] ?? false );
 		if ( ! is_wp_error( $r ) ) {
-			$r = $this->save();
-			if ( ! is_wp_error( $r ) ) {
-				unset( $r['path'] );
-			}
+			list( $filename, $extension, $mime_type ) = $this->get_output_format( null, null );
+			$filename = $this->generate_filename( null, null, $extension );
+			self::$queue[] = $this->job( R2_Uploads_Stream::key( $filename ), $mime_type );
+			$r = array(
+				/** This filter is documented in wp-includes/class-wp-image-editor-gd.php */
+				'file'      => wp_basename( apply_filters( 'image_make_intermediate_size', $filename ) ),
+				'width'     => $this->size['width'],
+				'height'    => $this->size['height'],
+				'mime-type' => $mime_type,
+			);
 		}
 		$this->ops  = $ops;
 		$this->size = $size;
@@ -197,3 +234,15 @@ class CF_Images_Editor extends WP_Image_Editor {
 		return true;
 	}
 }
+
+// Queued sub-sizes are made before WordPress returns the attachment metadata,
+// and at the end of the request in any case.
+add_filter(
+	'wp_generate_attachment_metadata',
+	function ( $metadata ) {
+		CF_Images_Editor::flush();
+		return $metadata;
+	},
+	1
+);
+add_action( 'shutdown', array( 'CF_Images_Editor', 'flush' ), 0 );

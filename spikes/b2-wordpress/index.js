@@ -29,9 +29,65 @@ function withPhp(fn) {
 // D1 keeps a row up to 2 MB. A larger body cannot be stored, and a 4 MB body
 // ran the isolate out of memory (measured 2026-11-04). Override with MAX_BODY_BYTES.
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+// A media upload can be larger: the Worker stores it in R2 first, and PHP gets
+// a small marker (php/r2-uploads.php). 20 MB is the Images binding input limit.
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+const STAGE_MIN_BYTES = 1024 * 1024;
+
+function isMediaUpload(req, url) {
+	if (req.method !== 'POST') return false;
+	if (url.pathname === '/wp-admin/async-upload.php' || url.pathname === '/wp-admin/media-new.php') return true;
+	const route = url.searchParams.get('rest_route') || (url.pathname.startsWith('/wp-json/') ? url.pathname.slice(8) : '');
+	return /^\/wp\/v2\/media\/?$/.test(route);
+}
+
+// The type of a file from its first bytes, and whether it looks like markup or code.
+function sniff(b) {
+	const at = (o, str) => [...str].every((c, i) => b[o + i] === c.charCodeAt(0));
+	let type = 'application/octet-stream';
+	if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) type = 'image/jpeg';
+	else if (at(0, '\x89PNG')) type = 'image/png';
+	else if (at(0, 'GIF8')) type = 'image/gif';
+	else if (at(0, 'RIFF') && at(8, 'WEBP')) type = 'image/webp';
+	else if (at(4, 'ftyp')) {
+		const brand = String.fromCharCode(...b.slice(8, 12));
+		type = /avif|avis/.test(brand) ? 'image/avif' : /heic|heix|mif1|msf1/.test(brand) ? 'image/heic' : 'video/mp4';
+	} else if (at(0, '%PDF')) type = 'application/pdf';
+	const head = new TextDecoder().decode(b.slice(0, 1024)).toLowerCase();
+	return { type, dangerous: /<\?php|<script|<html|<!doctype html|<svg/.test(head) };
+}
+
+async function stageFile(env, bytes, contentType) {
+	const key = 'staging/' + crypto.randomUUID();
+	await env.MEDIA.put(key, bytes, { httpMetadata: { contentType: contentType || 'application/octet-stream' } });
+	const s = sniff(bytes);
+	return new TextEncoder().encode('R2STAGED\n' + JSON.stringify({ key, size: bytes.length, sniffed: s.type, dangerous: s.dangerous }));
+}
+
+// Store the file part(s) of a large media upload in R2. Returns the body and
+// content type PHP gets instead.
+async function stageUpload(req, env) {
+	const ct = req.headers.get('content-type') || '';
+	if (/^multipart\/form-data/i.test(ct)) {
+		const form = await req.formData();
+		const out = new FormData();
+		for (const [k, v] of form) {
+			if (typeof v !== 'string' && v.size > 0) {
+				const marker = await stageFile(env, new Uint8Array(await v.arrayBuffer()), v.type);
+				out.append(k, new File([marker], v.name, { type: v.type }));
+			} else {
+				out.append(k, v);
+			}
+		}
+		const res = new Response(out);
+		return { body: new Uint8Array(await res.arrayBuffer()), contentType: res.headers.get('content-type') };
+	}
+	const marker = await stageFile(env, new Uint8Array(await req.arrayBuffer()), ct);
+	return { body: marker, contentType: ct };
+}
 
 function newStats() {
-	return { calls: 0, ms: 0, failures: [], log: [] };
+	return { calls: 0, ms: 0, failures: [], log: [], r2: {} };
 }
 
 async function boot(origin) {
@@ -146,17 +202,32 @@ async function boot(origin) {
 }
 
 let reserveTableReady = false;
+
+// Source from R2, transforms by the Images binding, result to R2 (if dest).
+async function imageJob(B, job) {
+	const o = await B.get(job.src);
+	if (!o) throw new Error('source not found: ' + job.src);
+	let h = ENV.IMAGES.input(o.body);
+	for (const t of job.ops || []) h = h.transform(t);
+	const out = await h.output({ format: job.format, ...(job.quality ? { quality: job.quality } : {}) });
+	const bytes = new Uint8Array(await out.response().arrayBuffer());
+	if (job.dest) await B.put(job.dest, bytes, { httpMetadata: { contentType: job.format } });
+	return bytes;
+}
 // Set by the Edge Cache mu-plugin when content changes. Read after the request.
 let purgeRequested = false;
-// Upload paths deleted in this request. The page cache may hold them; purge them too.
-let deletedUploads = [];
+// Workers Cache purges always have Free-tier limits: 5 a minute, bursts of 25,
+// per account. Purge at most once per PURGE_GAP_MS per isolate; the short TTL
+// with stale-while-revalidate limits staleness when a purge is refused.
+const PURGE_GAP_MS = 15000;
+let lastPurge = 0;
 
 // Page cache (Workers Cache). A response is cacheable only for a logged-out
 // GET of a public page. Cookie is not in the Workers Cache key, so Vary: Cookie
 // keeps a logged-in visitor from getting a logged-out page.
 const WP_COOKIE = /(^|;\s*)(wordpress_logged_in_|wordpress_sec_|wp-postpass_|comment_author_|wp-settings-|woocommerce_|wp_woocommerce_session_)/;
 function pageCacheHeaders(req, url, r, out, env) {
-	const ttl = Number(env.PAGE_CACHE_TTL || 600);
+	const ttl = Number(env.PAGE_CACHE_TTL || 120);
 	const wpCc = String([].concat(r.headers['cache-control'] || []).join(','));
 	const cacheable =
 		ttl > 0 &&
@@ -169,7 +240,7 @@ function pageCacheHeaders(req, url, r, out, env) {
 		!url.searchParams.has('preview') &&
 		!url.searchParams.has('nocache');
 	if (cacheable) {
-		out.set('cache-control', `public, max-age=${ttl}, stale-while-revalidate=60`);
+		out.set('cache-control', `public, max-age=${ttl}, stale-while-revalidate=600`);
 		out.set('cache-tag', 'wp-pages');
 		out.append('vary', 'Cookie');
 	} else if (!wpCc) {
@@ -180,10 +251,23 @@ function pageCacheHeaders(req, url, r, out, env) {
 // One R2 operation for the R2 Uploads mu-plugin (php/r2-uploads.php).
 // Bodies cross the PHP to JS bridge as base64.
 async function r2op(op) {
+	const t0 = Date.now();
+	try {
+		return await r2opInner(op);
+	} finally {
+		// Wall time advances during I/O, so these numbers are real.
+		const ms = Date.now() - t0;
+		stats.r2[op.op] = stats.r2[op.op] || { n: 0, ms: 0 };
+		stats.r2[op.op].n++;
+		stats.r2[op.op].ms += ms;
+	}
+}
+
+async function r2opInner(op) {
 	try {
 		const B = ENV.MEDIA;
 		if (op.op === 'get') {
-			const o = await B.get(op.key);
+			const o = await B.get(op.key, op.length ? { range: { offset: op.offset || 0, length: op.length } } : undefined);
 			if (!o) return { ok: true, found: false };
 			const bytes = new Uint8Array(await o.arrayBuffer());
 			return { ok: true, found: true, body: b64encode(bytes), size: o.size, mtime: Math.floor(o.uploaded.getTime() / 1000) };
@@ -196,9 +280,16 @@ async function r2op(op) {
 			await B.put(op.key, b64decode(op.body), { httpMetadata: { contentType: op.type || 'application/octet-stream' } });
 			return { ok: true };
 		}
+		if (op.op === 'copy') {
+			// Copy inside R2 (rename, staged uploads). The bytes never go to PHP.
+			const o = await B.get(op.from);
+			if (!o) return { ok: true, found: false };
+			await B.put(op.to, o.body, { httpMetadata: { contentType: op.type || o.httpMetadata?.contentType || 'application/octet-stream' } });
+			if (op.move) await B.delete(op.from);
+			return { ok: true, found: true };
+		}
 		if (op.op === 'delete') {
 			await B.delete(op.key);
-			deletedUploads.push('/wp-content/' + op.key);
 			return { ok: true };
 		}
 		if (op.op === 'info') {
@@ -208,15 +299,14 @@ async function r2op(op) {
 			return { ok: true, found: true, format: i.format, width: i.width, height: i.height, size: i.fileSize };
 		}
 		if (op.op === 'image') {
-			// Source from R2, transforms by the Images binding, result to R2.
-			const o = await B.get(op.src);
-			if (!o) return { ok: false, error: 'source not found' };
-			let h = ENV.IMAGES.input(o.body);
-			for (const t of op.ops || []) h = h.transform(t);
-			const out = await h.output({ format: op.format, ...(op.quality ? { quality: op.quality } : {}) });
-			const bytes = new Uint8Array(await out.response().arrayBuffer());
-			if (op.dest) await B.put(op.dest, bytes, { httpMetadata: { contentType: op.format } });
+			const bytes = await imageJob(B, op);
 			return { ok: true, size: bytes.length, ...(op.body ? { body: b64encode(bytes) } : {}) };
+		}
+		if (op.op === 'images') {
+			// Several Images jobs in parallel (sub-sizes of one upload).
+			const results = await Promise.allSettled((op.jobs || []).map((j) => imageJob(B, j)));
+			const failed = results.filter((x) => x.status === 'rejected').map((x) => String(x.reason));
+			return { ok: true, failed };
 		}
 		if (op.op === 'reserve') {
 			// One atomic insert decides who gets a file name.
@@ -272,7 +362,9 @@ async function serveUpload(req, env, url) {
 	const h = new Headers();
 	o.writeHttpMetadata(h);
 	h.set('etag', o.httpEtag);
-	h.set('cache-control', 'public, max-age=86400');
+	// private: browsers keep it a day, the edge cache does not. A deleted upload
+	// is then gone at once, with no purge. Purges are rate limited (5 a minute).
+	h.set('cache-control', 'private, max-age=86400');
 	h.set('accept-ranges', 'bytes');
 	h.set('x-content-type-options', 'nosniff');
 	if (!('body' in o) || !o.body) return new Response(null, { status: 304, headers: h });
@@ -311,7 +403,7 @@ export default {
 		if (env.MEDIA && (req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/wp-content/uploads/')) return serveUpload(req, env, url);
 		// XML-RPC lets one request try many passwords (system.multicall). Off unless XMLRPC=on.
 		if (url.pathname === '/xmlrpc.php' && env.XMLRPC !== 'on') return new Response('XML-RPC is off', { status: 403 });
-		const maxBody = Number(env.MAX_BODY_BYTES || MAX_BODY_BYTES);
+		const maxBody = env.MEDIA && isMediaUpload(req, url) ? Number(env.MAX_UPLOAD_BYTES || MAX_UPLOAD_BYTES) : Number(env.MAX_BODY_BYTES || MAX_BODY_BYTES);
 		if (Number(req.headers.get('content-length') || 0) > maxBody) return new Response('request body too large', { status: 413 });
 		return withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx));
 	},
@@ -358,23 +450,40 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 				const tail = out.length > 6000 ? out.slice(-6000) : out;
 				return Response.json({ bootMs, ms: Date.now() - t0, out: tail, errors: String(errors).slice(0, 4000), d1: delta() });
 			}
-			const body = ['GET', 'HEAD'].includes(req.method) ? undefined : new Uint8Array(await req.arrayBuffer());
-			if (body && body.length > maxBody) return new Response('request body too large', { status: 413 });
 			const headers = {};
 			req.headers.forEach((v, k) => (headers[k] = v));
+			let body;
+			if (env.MEDIA && isMediaUpload(req, url) && Number(req.headers.get('content-length') || 0) > STAGE_MIN_BYTES) {
+				const staged = await stageUpload(req, env);
+				body = staged.body;
+				headers['content-type'] = staged.contentType;
+				headers['content-length'] = String(body.length);
+			} else {
+				body = ['GET', 'HEAD'].includes(req.method) ? undefined : new Uint8Array(await req.arrayBuffer());
+			}
+			if (body && body.length > maxBody) return new Response('request body too large', { status: 413 });
 			purgeRequested = false;
-			deletedUploads = [];
+			const r2before = JSON.stringify(stats.r2);
+			const r2start = JSON.parse(r2before);
 			const r = await handler.request({ url: url.pathname + url.search, method: req.method, headers, body });
-			if (ctx && ctx.cache && (purgeRequested || deletedUploads.length)) {
-				const what = {};
-				if (purgeRequested) what.tags = ['wp-pages'];
-				if (deletedUploads.length) what.pathPrefixes = deletedUploads.slice(0, 30);
-				ctx.waitUntil(ctx.cache.purge(what).catch((e) => console.log('cache purge failed', String(e))));
+			if (ctx && ctx.cache && purgeRequested) {
+				// A purge already scheduled for later covers this change too.
+				const wait = Math.max(0, lastPurge + PURGE_GAP_MS - Date.now());
+				if (lastPurge <= Date.now()) {
+					lastPurge = Date.now() + wait;
+					ctx.waitUntil(
+						new Promise((ok) => setTimeout(ok, wait))
+							.then(() => ctx.cache.purge({ tags: ['wp-pages'] }))
+							.catch((e) => console.log('cache purge failed', String(e))),
+					);
+				}
 			}
 			const out = new Headers();
 			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
 			const d = delta();
 			pageCacheHeaders(req, url, r, out, env);
+			const r2now = JSON.stringify(stats.r2);
+			if (r2now !== r2before) out.set('x-r2-ops', Object.entries(stats.r2).map(([k, v]) => `${k}:${v.n - (r2start[k]?.n || 0)}/${v.ms - (r2start[k]?.ms || 0)}ms`).filter((s) => !s.includes(':0/')).join(' '));
 			out.set('x-d1-calls', String(d.calls));
 			out.set('x-d1-ms', String(d.ms));
 			out.set('x-d1-failures', String(d.failures.length));

@@ -123,5 +123,23 @@ if r["code"] == 201:
         if req(opener(), u)["code"] == 404:
             gone = True; break
     check("a deleted upload is purged from the edge cache", gone)
+# Large uploads: staged in R2 by the Worker, never whole in PHP
+def noise_png(w, h):
+    def ch(t, d): return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+    raw = b"".join(b"\x00" + os.urandom(w * 3) for _ in range(h))
+    return b"\x89PNG\r\n\x1a\n" + ch(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + ch(b"IDAT", zlib.compress(raw, 0)) + ch(b"IEND", b"")
+big = noise_png(1600, 1400)
+r = upload(big, f"break-large-{T}.png")
+md = json.loads(r["body"]).get("media_details", {}) if r["code"] == 201 else {}
+check(f"a {len(big) // 1048576} MB upload (over the 2 MB body cap) is stored and gets its sizes", r["code"] == 201 and "thumbnail" in md.get("sizes", {}), short(r))
+if r["code"] == 201:
+    src = json.loads(r["body"])["source_url"].split("workers.dev", 1)[-1]
+    orig = src.rsplit("/", 1)[0] + "/" + (md.get("original_image") or md["file"].split("/")[-1])
+    check("the stored original is byte-identical", req(opener(), orig)["body"] == big)
+fake = b"<html><script>alert(1)</script>" + b"A" * (1500 * 1024)
+r = rest(o, "/wp/v2/media", raw=fake, headers={"Content-Type": "image/jpeg", "Content-Disposition": f"attachment; filename=break-fake-{T}.jpg"})
+check("a large HTML file named .jpg is refused", r["code"] >= 400, short(r))
+r = rest(o, "/wp/v2/media", raw=b"\xff\xd8\xff" + b"\x00" * (21 * 1024 * 1024), headers={"Content-Type": "image/jpeg", "Content-Disposition": f"attachment; filename=break-huge-{T}.jpg"})
+check("an upload over 20 MB gets 413", r["code"] == 413, short(r))
 print(f"{results.count(True)} pass, {results.count(False)} fail")
 sys.exit(0 if all(results) else 1)

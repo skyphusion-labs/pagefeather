@@ -144,7 +144,7 @@ Also tried, no failure (round 3): SQL injection strings in search, NUL bytes, `w
 
 `[cache] enabled = true` puts Cloudflare's cache in front of the Worker. On a hit, no Worker code runs, so a cached page uses no CPU. The cache is tiered and collapses simultaneous misses into one render.
 
-- The Worker marks a response cacheable (`public, max-age=600, stale-while-revalidate=60`, `Cache-Tag: wp-pages`) only for a logged-out `GET` or `HEAD` with status 200, 301 or 404, no `Set-Cookie`, no WordPress cookie on the request, and not admin, login, preview or spike paths.
+- The Worker marks a response cacheable (`public, max-age=120, stale-while-revalidate=600` (see 8d), `Cache-Tag: wp-pages`) only for a logged-out `GET` or `HEAD` with status 200, 301 or 404, no `Set-Cookie`, no WordPress cookie on the request, and not admin, login, preview or spike paths.
 - The cache key has no cookies. `Vary: Cookie` keeps a logged-in visitor on their own (uncached) variant.
 - The Edge Cache mu-plugin (`php/edge-cache.php`) asks the Worker to purge the `wp-pages` tag when content changes (posts, comments, terms, menus, theme, site options). A deleted upload is purged by path.
 - Each deploy starts with a cold cache, because the Worker version is in the cache key.
@@ -159,6 +159,26 @@ Results:
 | Free | then 50 reader requests over the 5 pages | 50 of 50: 200, cache HIT. |
 
 On Free, this makes approach B usable for readers. Writers and admin still need Paid.
+
+### 8d. Phone-size uploads. Measured 2026-11-04.
+
+The 2 MB body cap (8b) blocked a normal phone photo (3 to 14 MB). Now a media upload of more than 1 MB, up to 20 MB (the Images binding input limit), does not go through PHP:
+
+- The Worker stores the file in R2 under `staging/` before PHP runs. It reads the type from the first bytes and flags HTML, script or PHP content. PHP gets a small marker file instead.
+- The mu-plugin uses the sniffed type in `wp_check_filetype_and_ext` (an image must match its extension). After WordPress picks the final name, the Worker copies the staged object there, inside R2.
+- An R2 lifecycle rule deletes `staging/` objects after 1 day, so a refused upload leaves nothing behind.
+- The stream wrapper reads byte ranges (64 KB first, then 1 MB) instead of whole objects, and caches HEAD results per request.
+- `wp_get_image_alttext()` reads the whole file to find XMP, twice per upload. It gets the first 1 MB only: in a JPEG, XMP is in an APP1 segment before the image data.
+- Sub-sizes are queued and made in parallel in one Worker call, not one Images call after another.
+
+| Test (Paid) | Result |
+| --- | --- |
+| 13.7 MB, 12 megapixel JPEG: REST raw, REST multipart (block editor), `async-upload.php` | 201 / 201 / 200. All 7 sizes pixel-exact; the original is byte-identical; `-scaled` copy made. WebAssembly memory 60 to 72 MiB. |
+| Time on Cloudflare for the 13.7 MB upload (sum of R2 and Images calls, `x-r2-ops`) | 116 range reads and 7 serial Images calls: about 30 s. After the fixes: about 13 s; a 9.4 MB photo about 9 s. Client time adds the upload itself. |
+| HTML named `.jpg`, 1.5 MB | Refused. |
+| 21 MB | 413. |
+
+Purge limits: Workers Cache purges always have the Free-tier limits, 5 a minute with bursts of 25, per account. A busy site runs out. So pages use `max-age=120, stale-while-revalidate=600`, purges are best effort (at most one per 15 s per isolate), and uploads are `private, max-age=86400` (browsers cache them, the edge does not, so a deleted upload is gone at once). `tests/break.py` passed 27 of 27 twice in a row after this change.
 
 ### 9. Memory: what it took to fit in 128 MB
 
