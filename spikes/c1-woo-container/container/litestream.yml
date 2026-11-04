@@ -1,0 +1,13 @@
+# Litestream: replicate the WordPress SQLite file to R2 (S3 API).
+# Credentials come from LITESTREAM_ACCESS_KEY_ID / LITESTREAM_SECRET_ACCESS_KEY,
+# a key scoped to this one bucket. R2_ENDPOINT is the account's S3 endpoint.
+dbs:
+  - path: /data/wordpress.sqlite
+    replicas:
+      - type: s3
+        bucket: ${R2_BUCKET}
+        path: ${REPLICA_PATH}
+        endpoint: ${R2_ENDPOINT}
+        region: auto
+        force-path-style: true
+        sync-interval: 1s

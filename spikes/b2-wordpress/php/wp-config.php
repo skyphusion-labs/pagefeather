@@ -40,6 +40,11 @@ foreach ( array( 'AUTH_KEY', 'SECURE_AUTH_KEY', 'LOGGED_IN_KEY', 'NONCE_KEY', 'A
 
 $table_prefix = 'wp_';
 
+// WooCommerce writes log files under uploads/wc-logs. Uploads live in R2, so
+// every log line was an R2 read and write: about 30 calls and 15 s of each
+// checkout (measured 2026-11-04). Logs go to local disk instead.
+define( 'WC_LOG_DIR', '/tmp/wc-logs/' );
+
 if ( ! defined( 'WP_HOME' ) ) {
 	define( 'WP_HOME', 'http://localhost:8797' );
 }
