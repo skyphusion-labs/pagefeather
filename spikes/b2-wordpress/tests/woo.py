@@ -26,7 +26,7 @@ check("admin: create a product", pid, r)
 plink = json.loads(r["body"]).get("permalink", "") if pid else ""
 
 g = opener()  # a guest
-shop = req(g, "/?post_type=product&nocache=1")
+shop = req(g, "/?post_type=product&orderby=date&nocache=1")  # newest first: earlier runs made many products
 check("guest: shop page lists the product", shop["code"] == 200 and f"Edge Mug {T}".encode() in shop["body"], shop)
 pp = req(g, "/?p=%s&nocache=1" % pid) if pid else {"code": 0, "body": b""}
 if pp["code"] in (301, 302) and pp["h"].get("location"):

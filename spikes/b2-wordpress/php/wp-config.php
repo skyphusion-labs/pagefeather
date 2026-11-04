@@ -15,6 +15,23 @@ define( 'DB_COLLATE', '' );
 if ( file_exists( __DIR__ . '/wp-runtime.php' ) ) {
 	require __DIR__ . '/wp-runtime.php';
 }
+// In the checkout Container there is no wp-runtime.php. The Worker passes
+// WP_SALT and the switches as environment variables; the keys are derived the
+// same way as in index.js (SHA-256 of WP_SALT:NAME), so cookies, nonces and
+// cart sessions are valid on both sides.
+if ( getenv( 'WP_SALT' ) ) {
+	foreach ( array( 'AUTH_KEY', 'SECURE_AUTH_KEY', 'LOGGED_IN_KEY', 'NONCE_KEY', 'AUTH_SALT', 'SECURE_AUTH_SALT', 'LOGGED_IN_SALT', 'NONCE_SALT' ) as $skyphusion_key ) {
+		defined( $skyphusion_key ) || define( $skyphusion_key, hash( 'sha256', getenv( 'WP_SALT' ) . ':' . $skyphusion_key ) );
+	}
+	defined( 'WP_DEBUG' ) || define( 'WP_DEBUG', false );
+	getenv( 'R2_UPLOADS' ) && ! defined( 'R2_UPLOADS' ) && define( 'R2_UPLOADS', true );
+	getenv( 'CF_IMAGES' ) && ! defined( 'CF_IMAGES' ) && define( 'CF_IMAGES', true );
+	if ( ! defined( 'WP_HOME' ) && ! empty( $_SERVER['HTTP_HOST'] ) ) {
+		define( 'WP_HOME', 'https://' . $_SERVER['HTTP_HOST'] );
+	}
+	// Requests come through the Worker over HTTPS.
+	$_SERVER['HTTPS'] = 'on';
+}
 foreach ( array( 'AUTH_KEY', 'SECURE_AUTH_KEY', 'LOGGED_IN_KEY', 'NONCE_KEY', 'AUTH_SALT', 'SECURE_AUTH_SALT', 'LOGGED_IN_SALT', 'NONCE_SALT' ) as $skyphusion_key ) {
 	if ( ! defined( $skyphusion_key ) ) {
 		define( $skyphusion_key, 'local-spike-only-' . $skyphusion_key );

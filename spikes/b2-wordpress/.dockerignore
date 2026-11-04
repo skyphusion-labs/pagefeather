@@ -1,0 +1,9 @@
+node_modules
+vendor
+.wrangler
+build/cache
+build/public
+build/*.zip
+build/opcache.headers
+tests
+*.log

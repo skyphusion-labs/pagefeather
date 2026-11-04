@@ -3,6 +3,7 @@ import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
 import { inflateSync } from 'fflate';
+import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import siteZip from './build/site.zip';
 // Compiled PHP (OPcache file cache) made by opcache.sh with this same PHP build.
 import opcacheZip from './build/opcache.zip';
@@ -114,6 +115,12 @@ function newStats() {
 	return { calls: 0, ms: 0, failures: [], log: [], r2: {} };
 }
 
+// The log and failure lists live as long as the isolate. Keep the newest only.
+function trimStats() {
+	if (stats.log.length > 2000) stats.log.splice(0, stats.log.length - 1000);
+	if (stats.failures.length > 500) stats.failures.splice(0, stats.failures.length - 250);
+}
+
 // Entries of a zip, from its central directory. data() returns the file
 // bytes: a view for a stored entry, an inflated copy for a deflated one.
 function zipEntries(zip) {
@@ -211,6 +218,46 @@ function lazyFile(FS, path, entry) {
 	});
 }
 
+// One message from PHP: a D1 statement, an R2 or Images operation, a cache
+// purge, or a failure report. In the Worker it comes through php.onMessage; in
+// the checkout Container, through the outbound handler for worker.internal.
+async function handleMessage(raw) {
+	const m = JSON.parse(raw);
+	if (m.r2) return JSON.stringify(await r2op(m.r2));
+	if (m.cache === 'purge') {
+		purgeRequested = true;
+		return '{}';
+	}
+	if (m.report) {
+		stats.failures.push({ sql: m.sql.slice(0, 400), error: m.error });
+		stats.log.push('ERR ' + m.sql.slice(0, 160).replace(/\s+/g, ' ') + ' => ' + m.error.slice(0, 120));
+		return '{}';
+	}
+	const t = Date.now();
+	stats.calls++;
+	try {
+		const stmt = ENV.DB.prepare(m.sql).bind(...(m.params || []));
+		const returnsRows = /^\s*(SELECT|PRAGMA|WITH|VALUES|EXPLAIN)\b/i.test(m.sql) || /\bRETURNING\b/i.test(m.sql);
+		let reply;
+		if (returnsRows) {
+			const [columns, ...rows] = await stmt.raw({ columnNames: true });
+			reply = { ok: true, columns: columns || [], rows, changes: 0, last_row_id: 0 };
+		} else {
+			const r = await stmt.run();
+			reply = { ok: true, columns: [], rows: [], changes: r.meta.changes || 0, last_row_id: r.meta.last_row_id || 0 };
+		}
+		stats.ms += Date.now() - t;
+		stats.log.push('ok  ' + m.sql.slice(0, 160).replace(/\s+/g, ' '));
+		return JSON.stringify(reply);
+	} catch (e) {
+		stats.ms += Date.now() - t;
+		const error = String((e && e.message) || e);
+		stats.failures.push({ sql: m.sql.slice(0, 400), error });
+		stats.log.push('ERR ' + m.sql.slice(0, 160).replace(/\s+/g, ' ') + ' => ' + error.slice(0, 120));
+		return JSON.stringify({ ok: false, error });
+	}
+}
+
 async function boot(origin) {
 	const t0 = Date.now();
 	const id = await loadPHPRuntime(loader, {
@@ -304,42 +351,7 @@ async function boot(origin) {
 	if (ENV.WP_SALT) lines.push(`define('WP_DEBUG', false);`);
 	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
 
-	php.onMessage(async (raw) => {
-		const m = JSON.parse(raw);
-		if (m.r2) return JSON.stringify(await r2op(m.r2));
-		if (m.cache === 'purge') {
-			purgeRequested = true;
-			return '{}';
-		}
-		if (m.report) {
-			stats.failures.push({ sql: m.sql.slice(0, 400), error: m.error });
-			stats.log.push('ERR ' + m.sql.slice(0, 160).replace(/\s+/g, ' ') + ' => ' + m.error.slice(0, 120));
-			return '{}';
-		}
-		const t = Date.now();
-		stats.calls++;
-		try {
-			const stmt = ENV.DB.prepare(m.sql).bind(...(m.params || []));
-			const returnsRows = /^\s*(SELECT|PRAGMA|WITH|VALUES|EXPLAIN)\b/i.test(m.sql) || /\bRETURNING\b/i.test(m.sql);
-			let reply;
-			if (returnsRows) {
-				const [columns, ...rows] = await stmt.raw({ columnNames: true });
-				reply = { ok: true, columns: columns || [], rows, changes: 0, last_row_id: 0 };
-			} else {
-				const r = await stmt.run();
-				reply = { ok: true, columns: [], rows: [], changes: r.meta.changes || 0, last_row_id: r.meta.last_row_id || 0 };
-			}
-			stats.ms += Date.now() - t;
-			stats.log.push('ok  ' + m.sql.slice(0, 160).replace(/\s+/g, ' '));
-			return JSON.stringify(reply);
-		} catch (e) {
-			stats.ms += Date.now() - t;
-			const error = String((e && e.message) || e);
-			stats.failures.push({ sql: m.sql.slice(0, 400), error });
-			stats.log.push('ERR ' + m.sql.slice(0, 160).replace(/\s+/g, ' ') + ' => ' + error.slice(0, 120));
-			return JSON.stringify({ ok: false, error });
-		}
-	});
+	php.onMessage(handleMessage);
 
 	const handler = new PHPRequestHandler({
 		php,
@@ -530,6 +542,54 @@ async function serveUpload(req, env, url) {
 	return new Response(req.method === 'HEAD' ? null : o.body, { status, headers: h });
 }
 
+// Checkout Container (issue #20). WooCommerce needs 256 MB of PHP memory; an
+// isolate has 128 MB for everything, and checkout passed it on Paid. The store
+// and the cart stay in the Worker. The first item in the cart starts this
+// container, so it is warm by the time the shopper checks out. It sleeps when
+// idle. Its PHP reaches D1, R2 and Images through worker.internal, below.
+export { ContainerProxy };
+export class WooCheckout extends Container {
+	defaultPort = 80;
+	sleepAfter = '5m';
+	enableInternet = false;
+	// The health check. The default ("ping") requested "/", so every check was a
+	// full WordPress page render with D1 calls; the checks filled the PHP workers
+	// and the container never passed its start check (measured 2026-11-04: 524).
+	// /ping is a static file.
+	pingEndpoint = 'localhost/ping';
+	constructor(ctx, env) {
+		super(ctx, env);
+		this.envVars = {
+			WP_SALT: env.WP_SALT || '',
+			R2_UPLOADS: env.MEDIA ? '1' : '',
+			CF_IMAGES: env.MEDIA && env.IMAGES ? '1' : '',
+		};
+	}
+}
+WooCheckout.outboundByHost = {
+	'worker.internal': async (request, env) => {
+		ENV = env;
+		const raw = await request.text();
+		if (env.CONTAINER_TRACE) console.log('c>', raw.slice(0, 140));
+		const reply = await handleMessage(raw);
+		return new Response(reply, { headers: { 'content-type': 'application/json' } });
+	},
+};
+
+const CHECKOUT_ROUTE = /^\/wc\/store(\/v1)?\/checkout\/?$/;
+const ADD_TO_CART_ROUTE = /^\/wc\/store(\/v1)?\/cart\/add-item\/?$/;
+function restRoute(url) {
+	return url.searchParams.get('rest_route') || (url.pathname.startsWith('/wp-json/') ? url.pathname.slice(8) : '');
+}
+function isCheckout(url) {
+	return CHECKOUT_ROUTE.test(restRoute(url)) || /^\/checkout\/?$/.test(url.pathname) || url.searchParams.get('pagename') === 'checkout';
+}
+// The instance name. Change CHECKOUT_INSTANCE to start a new instance on the
+// current image (a running instance keeps its image).
+function checkoutContainer(env) {
+	return getContainer(env.WOO_CHECKOUT, env.CHECKOUT_INSTANCE || 'checkout');
+}
+
 const INSTALL = `<?php
 define( 'WP_INSTALLING', true );
 require '/wordpress/wp-load.php';
@@ -555,6 +615,40 @@ export default {
 		if (url.pathname === '/xmlrpc.php' && env.XMLRPC !== 'on') return new Response('XML-RPC is off', { status: 403 });
 		const maxBody = env.MEDIA && isMediaUpload(req, url) ? Number(env.MAX_UPLOAD_BYTES || MAX_UPLOAD_BYTES) : Number(env.MAX_BODY_BYTES || MAX_BODY_BYTES);
 		if (Number(req.headers.get('content-length') || 0) > maxBody) return new Response('request body too large', { status: 413 });
+		// Spike: time N sequential D1 statements from where this Worker runs.
+		if (url.pathname === '/_d1ping') {
+			const n = Math.min(50, Number(url.searchParams.get('n') || 20));
+			const ms = [];
+			for (let i = 0; i < n; i++) {
+				const t = Date.now();
+				await env.DB.prepare('SELECT option_value FROM wp_options WHERE option_name = ?').bind('siteurl').first();
+				ms.push(Date.now() - t);
+			}
+			ms.sort((a, b) => a - b);
+			return Response.json({ n, min: ms[0], median: ms[n >> 1], max: ms[n - 1], colo: req.cf && req.cf.colo });
+		}
+		// Spike: stop the checkout Container, so the next request starts the current image.
+		if (env.WOO_CHECKOUT && url.pathname === '/_container-stop') {
+			const name = url.searchParams.get('name');
+			await (name ? getContainer(env.WOO_CHECKOUT, name) : checkoutContainer(env)).stop();
+			return new Response('stopped ' + (name || 'current'));
+		}
+		// Spike: reach the checkout Container on any path, e.g. /_container/_diag.php
+		if (env.WOO_CHECKOUT && url.pathname.startsWith('/_container/')) {
+			const inner = new URL(url.pathname.slice('/_container'.length) + url.search, url.origin);
+			const r = await checkoutContainer(env).fetch(new Request(inner, req));
+			const out = new Response(r.body, r);
+			out.headers.set('cache-control', 'private, no-store');
+			return out;
+		}
+		if (env.WOO_CHECKOUT && isCheckout(url)) {
+			const r = await checkoutContainer(env).fetch(req);
+			const out = new Response(r.body, r);
+			out.headers.set('x-served-by', 'checkout-container');
+			// Checkout is per shopper: never let the edge cache keep it.
+			if (!out.headers.has('cache-control')) out.headers.set('cache-control', 'private, no-store');
+			return out;
+		}
 		return withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx));
 	},
 };
@@ -675,6 +769,12 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
 			const d = delta();
 			pageCacheHeaders(req, url, r, out, env);
+			// A filled cart means a checkout may follow: start the container now.
+			if (env.WOO_CHECKOUT && r.httpStatusCode === 201 && ADD_TO_CART_ROUTE.test(restRoute(url))) {
+				ctx.waitUntil(checkoutContainer(env).startAndWaitForPorts().catch((e) => console.log('checkout warm-up failed', String(e))));
+				out.set('x-checkout-warmup', '1');
+			}
+			trimStats();
 			const r2now = JSON.stringify(stats.r2);
 			if (r2now !== r2before) out.set('x-r2-ops', Object.entries(stats.r2).map(([k, v]) => `${k}:${v.n - (r2start[k]?.n || 0)}/${v.ms - (r2start[k]?.ms || 0)}ms`).filter((s) => !s.includes(':0/')).join(' '));
 			out.set('x-d1-calls', String(d.calls));
