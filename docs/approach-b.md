@@ -210,6 +210,27 @@ WebAssembly memory after a page is 69 MiB with OPcache (the runtime recycle limi
 
 **Free:** a cold render now mostly fits under the CPU limit of about 2 s. 12 requests for `wp-login.php` (10 of them on a new isolate): 11 were 200, 1 was "Worker exceeded CPU time limit". `e2e.sh` on Free (logged in, admin, editor, publish), 3 runs after the fixes: 17 of 17, 12 of 17, 9 of 17. Every failure was the CPU limit; the admin pages are the heaviest. Before the fix below, some runs also had 524: a request that Free stops for CPU could leave the isolate with the PHP lock held, so later requests waited until 524. A waiter now gives up after 60 s and uses a new runtime. No 524 since.
 
+### 8f. WooCommerce. Measured 2026-11-04.
+
+WooCommerce 11.2.1 (pinned by SHA-256 in `build.sh`), tested by `tests/woo.py`: admin setup, a product, then a guest buys 2 with cash on delivery through the Store API.
+
+**Locally (wrangler dev):** 12 of 12 pass. The order is `processing`, total 25.00, stock 20 to 18, and it shows on the orders screen. Checkout makes about 800 D1 queries.
+
+Fixes this needed:
+- Plugin `.js` and `.svg` files stay on the PHP side: WooCommerce registers a block only if its script file exists, and reads card icons (SVG) at runtime.
+- The D1 dialect removes parentheses around `UNION` parts (`( SELECT ... ) UNION ( SELECT ... )`), which SQLite refuses. A part with its own `ORDER BY` or `LIMIT` becomes a subquery.
+- A new store is in "coming soon" mode; `woo.py` turns it off.
+- Order emails are deferred (`php/woo-edge.php`). PHP in a Worker cannot send mail.
+- The WooCommerce installer is the heaviest request WordPress makes. It ran out of memory on Paid, so the database was loaded from a local install. Two `wrangler d1 execute --file` traps: serialized PHP objects contain NUL bytes, and the SQL splitter stops at the first one with only "Warning: leftover buffer", exit 0, and the rest of the file not run. Rewrite each NUL as `'||char(0)||'`. And a failed import was not rolled back.
+
+**Paid:** 8 of 9 pass. The shop, product page, Store API cart and the cart session in D1 work. Each WooCommerce request uses 2 to 5 s of CPU (`wrangler tail`) and 4 to 10 s wall. **Checkout fails every time: `exceededMemory`** (4 to 7 s CPU, about 35 to 39 s wall). WebAssembly memory is 99 MiB after a WooCommerce page.
+
+Tried, no change for checkout: OPcache shared memory 16 MB; deferred emails; a cap of 8 MB on inflated files in a request. Worse: no shipped OPcache files (simple Store API calls also ran out of memory, because compiling takes more memory than loading), and PHP's own allocator (`USE_ZEND_ALLOC=1`: 155 MiB).
+
+**Free:** with WooCommerce active, every request failed with "Worker exceeded CPU time limit", the home page too. Login failed. WooCommerce is off again on the Free deploy.
+
+**Why:** WooCommerce asks for a WordPress memory limit of 256 MB or more ([WooCommerce server recommendations](https://woocommerce.com/document/server-requirements/)). A Worker isolate has 128 MB for JavaScript, the bundled code and the PHP heap together. Checkout is the request that passes it. The next design (issue #20) keeps the store in the Worker and moves checkout to a Container, started when the cart fills.
+
 ### 9. Memory: what it took to fit in 128 MB
 
 | Change | Effect, measured locally |

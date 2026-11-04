@@ -42,3 +42,7 @@ A row with plan `local` ran in local workerd through `wrangler dev`. It is not a
 | B | Paid | 2026-11-04 | 4.107.0 | deploy with both zips stored | Refused: "exceeded size limits" at 72 MB uncompressed (20 MB gzip). |
 | B | Paid | 2026-11-04 | 4.107.0 | `tests/break.py`, `e2e.sh` with OPcache and the boot with no copies | 27 pass, 0 fail; 17 of 17. |
 | B | Free | 2026-11-04 | 4.107.0 | 12 x `GET /wp-login.php`; `e2e.sh` 3 runs, with OPcache | 11 of 12 200 (1 CPU limit). e2e: 17, 12 and 9 of 17; every failure was "Worker exceeded CPU time limit", no 524. |
+| B | local | 2026-11-04 | 4.107.0 | `tests/woo.py` (WooCommerce 11.2.1) | 12 of 12: setup, product, shop, product page, Store API cart, checkout (order processing, 25.00, stock 20 to 18), orders screen. Checkout about 800 D1 queries. |
+| B | Paid | 2026-11-04 | 4.107.0 | `/_activate` WooCommerce, then the first page (installer) | Installer: "Worker exceeded memory limit". Database loaded from the local install instead (NUL bytes rewritten for `d1 execute --file`). |
+| B | Paid | 2026-11-04 | 4.107.0 | `tests/woo.py` | 8 of 9. Checkout: 503, `wrangler tail` outcome `exceededMemory`, 4 to 7 s CPU. Other WooCommerce requests 2 to 5 s CPU. |
+| B | Free | 2026-11-04 | 4.107.0 | WooCommerce active: `/`, shop, `wp-login.php` | All 500 "Worker exceeded CPU time limit"; login 503. |

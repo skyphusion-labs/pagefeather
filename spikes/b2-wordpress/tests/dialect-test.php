@@ -65,5 +65,11 @@ $body = str_repeat( "it''s ", 20000 );
 list( $s, $p ) = D1_Dialect::rewrite( "INSERT INTO `wp_posts` (`post_content`, `post_title`) VALUES ('$body', 'small')", array(), $none );
 check( 'a statement over 90 KB binds its long strings', array( $s, strlen( $p[0] ), substr( $p[0], 0, 6 ) ), array( "INSERT INTO `wp_posts` (`post_content`, `post_title`) VALUES (?, 'small')", 100000, "it's i" ) );
 
+list( $s ) = D1_Dialect::rewrite( "SELECT MIN ( `d` ) AS `m` FROM ( ( SELECT `d` FROM `a` WHERE `x` = 1 ) UNION ALL ( SELECT `d` FROM `b` ) ) AS `t`", array(), $none );
+check( 'parentheses around UNION parts are removed', preg_replace( '/\s+/', ' ', $s ), "SELECT MIN ( `d` ) AS `m` FROM ( SELECT `d` FROM `a` WHERE `x` = 1 UNION ALL SELECT `d` FROM `b` ) AS `t`" );
+
+list( $s ) = D1_Dialect::rewrite( "SELECT * FROM ( ( SELECT `d` FROM `a` ORDER BY `d` LIMIT 1 ) UNION ( SELECT `d` FROM `b` ) ) AS `t`", array(), $none );
+check( 'a UNION part with LIMIT becomes a subquery', preg_replace( '/\s+/', ' ', $s ), "SELECT * FROM ( SELECT * FROM ( SELECT `d` FROM `a` ORDER BY `d` LIMIT 1 ) UNION SELECT `d` FROM `b` ) AS `t`" );
+
 echo $fail ? "$fail failed\n" : "all passed\n";
 exit( $fail ? 1 : 0 );

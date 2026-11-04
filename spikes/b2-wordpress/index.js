@@ -152,19 +152,52 @@ function zipEntries(zip) {
 
 // A MEMFS file whose contents are made on first read. Its size is known at
 // once, so stat() does not inflate it. A write replaces the lazy contents.
+// Lazy files whose contents are inflated now. evictLazy() drops them after a
+// request: OPcache holds the compiled code, and a file can be inflated again.
+// Measured 2026-11-04: with WooCommerce, keeping them hit "Worker exceeded
+// memory limit".
+// Within a request too: the inflated copies are capped at LAZY_CACHE_BYTES,
+// oldest dropped first. A WooCommerce checkout reads about 1,500 compiled files.
+const LAZY_CACHE_BYTES = 8 * 1024 * 1024;
+const inflated = new Map(); // drop function -> bytes
+let inflatedBytes = 0;
+function evictLazy() {
+	for (const drop of inflated.keys()) drop();
+	inflated.clear();
+	inflatedBytes = 0;
+}
+function noteInflated(drop, bytes) {
+	inflated.set(drop, bytes);
+	inflatedBytes += bytes;
+	for (const [old, n] of inflated) {
+		if (inflatedBytes <= LAZY_CACHE_BYTES || old === drop) break;
+		old();
+		inflated.delete(old);
+		inflatedBytes -= n;
+	}
+}
+
 function lazyFile(FS, path, entry) {
 	FS.writeFile(path, new Uint8Array(0));
 	const node = FS.lookupPath(path).node;
 	let contents = null;
+	let written = false;
 	let used = entry.size;
+	const drop = () => {
+		if (!written) contents = null;
+	};
 	Object.defineProperty(node, 'contents', {
 		configurable: true,
 		get() {
-			if (contents === null) contents = entry.data();
+			if (contents === null) {
+				contents = entry.data();
+				noteInflated(drop, contents.length);
+			}
 			return contents;
 		},
 		set(v) {
 			contents = v;
+			written = true; // PHP wrote this file. Keep it.
 		},
 	});
 	Object.defineProperty(node, 'usedBytes', {
@@ -219,7 +252,7 @@ async function boot(origin) {
 	// about 300 ms of a cold start locally, more on Cloudflare).
 	// - site.zip (deflated): each PHP file is inflated on its first read only.
 	//   A page reads about a quarter of them.
-	// - opcache.zip (stored): each file is a view of the bundled bytes. No copy.
+	// - opcache.zip: the same, or a view of the bundled bytes if stored.
 	const FS = php[__private__dont__use].FS;
 	const made = new Set();
 	const mkdirp = (dir) => {
@@ -539,6 +572,29 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 				ob_start(); require '/wordpress/wp-blog-header.php';` });
 			return new Response(r.text.slice(r.text.indexOf('PEAK')));
 		}
+		if (url.pathname === '/_activate') {
+			// Activate a plugin, e.g. ?plugin=woocommerce/woocommerce.php. Spike only.
+			bootPromise ??= boot(url.origin);
+			const { php } = await bootPromise;
+			const plugin = url.searchParams.get('plugin') || '';
+			if (!/^[a-z0-9-]+\/[a-z0-9-]+\.php$/.test(plugin)) return new Response('bad plugin', { status: 400 });
+			const start = stats.calls;
+			let r;
+			try {
+				r = await php.run({ code: `<?php
+					define( 'WP_ADMIN', true );
+					require '/wordpress/wp-load.php';
+					require_once ABSPATH . 'wp-admin/includes/plugin.php';
+					wp_set_current_user( 1 );
+					$r = activate_plugin( '${plugin}' );
+					echo json_encode( array( 'active' => is_plugin_active( '${plugin}' ), 'error' => is_wp_error( $r ) ? $r->get_error_message() : null ) );` });
+			} catch (e) {
+				bootPromise = null;
+				return new Response('activate failed: ' + String((e && e.message) || e), { status: 500 });
+			}
+			bootPromise = null; // a fresh runtime loads the plugin cleanly
+			return new Response(JSON.stringify({ out: r.text.slice(-2000), errors: String(r.errors).slice(0, 2000), d1: stats.calls - start }), { headers: { 'content-type': 'application/json' } });
+		}
 		if (url.pathname === '/_opcache-dump') {
 			// Zip of the OPcache file cache, for opcache.sh. Run it after the e2e
 			// requests, so it holds the scripts real pages use.
@@ -554,8 +610,9 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			};
 			walk(OPCACHE_DIR);
 			const { zipSync } = await import('fflate');
-			// Stored: the Worker uses each file as a view of the bundle, with no copy.
-			return new Response(zipSync(files, { level: 0 }), { headers: { 'content-type': 'application/zip', 'x-files': String(Object.keys(files).length) } });
+			// Deflated: with WooCommerce, a stored zip passes the 64 MiB Worker size
+			// limit. The Worker inflates each file on its first read only.
+			return new Response(zipSync(files, { level: 6 }), { headers: { 'content-type': 'application/zip', 'x-files': String(Object.keys(files).length) } });
 		}
 		if (url.pathname === '/_mem') {
 			if (!bootPromise) return Response.json({ booted: false });
@@ -623,10 +680,12 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			out.set('x-d1-calls', String(d.calls));
 			out.set('x-d1-ms', String(d.ms));
 			out.set('x-d1-failures', String(d.failures.length));
+			if (d.failures.length && spikeOk && env.SPIKE_TOKEN) out.set('x-d1-first-failure', (d.failures[0].error + ' | ' + d.failures[0].sql).replace(/[^\x20-\x7e]/g, ' ').slice(0, 600));
 			out.set('x-php-ms', String(Date.now() - t0));
 			out.set('x-boot', booted ? '1' : '0');
 			console.log(JSON.stringify({ m: 'req', path: url.pathname + url.search, boot: booted, d1: d.calls }));
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
+			evictLazy();
 			const wasmBytes = php[__private__dont__use].HEAPU8.length;
 			out.set('x-wasm-mib', String(Math.round(wasmBytes / 1048576)));
 			// php-wasm answers a crashed runtime with a bare 500. Never reuse it.
