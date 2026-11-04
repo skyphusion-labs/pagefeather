@@ -8,6 +8,10 @@ rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
 [assets]
 directory = "build/public"
 
+# Page cache in front of the Worker (Workers Cache). index.js decides what is cacheable.
+[cache]
+enabled = true
+
 [[d1_databases]]
 binding = "DB"
 database_name = "b2-local"
@@ -42,6 +46,9 @@ directory = "build/public"
 [env.free.images]
 binding = "IMAGES"
 
+[env.free.cache]
+enabled = true
+
 [env.free.placement]
 mode = "smart"
 
@@ -71,6 +78,9 @@ directory = "build/public"
 # Paid allows up to 5 minutes of CPU per request; 30 s is its default. Set here so it is visible.
 [env.paid.limits]
 cpu_ms = 30000
+
+[env.paid.cache]
+enabled = true
 
 [env.paid.placement]
 mode = "smart"
