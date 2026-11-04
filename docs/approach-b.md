@@ -180,6 +180,36 @@ The 2 MB body cap (8b) blocked a normal phone photo (3 to 14 MB). Now a media up
 
 Purge limits: Workers Cache purges always have the Free-tier limits, 5 a minute with bursts of 25, per account. A busy site runs out. So pages use `max-age=120, stale-while-revalidate=600`, purges are best effort (at most one per 15 s per isolate), and uploads are `private, max-age=86400` (browsers cache them, the edge does not, so a deleted upload is gone at once). `tests/break.py` passed 27 of 27 twice in a row after this change.
 
+### 8e. CPU: OPcache, and a boot with no copies. Measured 2026-11-04.
+
+**OPcache was off the whole time.** PHP turns OPcache on only for the SAPIs in its own list (Apache, FPM, FastCGI, FrankenPHP, LiteSpeed, uWSGI). The php-wasm SAPI is `wasm`. `opcache_compile_file()` returned false, and every request compiled about 540 scripts. Two fixes made it work:
+
+- `prepare.sh` patches the list in the WebAssembly binary: the entry `frankenphp` becomes `wasm`. Only the first 5 bytes change (`wasm\0enphp`), because the string table shares tails ("php").
+- `opcache.file_update_protection=0`. OPcache does not cache a file changed in the last 2 seconds. The files are written at boot and the Worker clock barely moves, so every file looked new and nothing was cached.
+
+Settings: shared memory 32 MB (the full `e2e.sh` uses 28.6 MB), `validate_timestamps=0`, and the file cache as a second level. `opcache.sh` runs `e2e.sh` against `wrangler dev`, then saves the compiled files (about 600) to `build/opcache.zip`, which ships with the Worker. The same PHP build runs locally and on Cloudflare, so the files match.
+
+**The boot copied 54 MB.** Unzipping the PHP files (26 MB) and the compiled files (28 MB) cost more CPU than compiling saved. Now nothing is copied at boot:
+
+- The Worker reads each zip's central directory once and makes empty file nodes with the right size.
+- A PHP file (`site.zip`, deflated) is inflated on its first read only. A page reads about a quarter of them.
+- A compiled file (`opcache.zip`, stored) is a view of the bundled bytes (MEMFS `canOwn`), with no copy.
+- Two stored zips are too big: a 72 MB Worker was refused. The limit is 64 MiB uncompressed, not the gzip size.
+
+Boot file setup locally went from 228 to 286 ms to 45 to 58 ms.
+
+CPU per request on Paid, median, from `wrangler tail` (each request logs whether it booted PHP). At low traffic, most requests land on a new isolate.
+
+| Configuration | Cold (boots PHP) | Warm |
+| --- | --- | --- |
+| OPcache off (before) | 2,684 ms (n=32) | 957 ms (n=4) |
+| OPcache on, compiled files shipped | 2,151 and 2,238 ms | 428 and 837 ms |
+| plus the boot with no copies | **1,136 and 1,281 ms** | **660 and 398 ms** |
+
+WebAssembly memory after a page is 69 MiB with OPcache (the runtime recycle limit is now 100 MiB; at 80 MiB, every request booted a new runtime).
+
+**Free:** a cold render now mostly fits under the CPU limit of about 2 s. 12 requests for `wp-login.php` (10 of them on a new isolate): 11 were 200, 1 was "Worker exceeded CPU time limit". `e2e.sh` on Free (logged in, admin, editor, publish), 3 runs after the fixes: 17 of 17, 12 of 17, 9 of 17. Every failure was the CPU limit; the admin pages are the heaviest. Before the fix below, some runs also had 524: a request that Free stops for CPU could leave the isolate with the PHP lock held, so later requests waited until 524. A waiter now gives up after 60 s and uses a new runtime. No 524 since.
+
 ### 9. Memory: what it took to fit in 128 MB
 
 | Change | Effect, measured locally |
@@ -192,7 +222,6 @@ Purge limits: Workers Cache purges always have the Free-tier limits, 5 a minute 
 
 ### 10. Next
 
-- CPU: precompile OPcache at build time (HostlessWP does this), so a request does not compile about 500 scripts.
 
 ## Prior work
 

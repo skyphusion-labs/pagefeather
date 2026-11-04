@@ -28,7 +28,7 @@ Cells marked **measured** link to a row in `docs/results.md`. Everything else is
 | Id | Workers Free | Workers Paid ($5 a month) | Main limit |
 | --- | --- | --- | --- |
 | A | **claimed** for cached pages (HostlessWP) | **claimed** (HostlessWP) | Free CPU time is 10 ms per request. A full WordPress page render uses more, so on Free only cached pages are safe. |
-| B | **measured**: with the page cache, logged-out readers get cached pages (50 of 50 cache hits). A page that is not cached yet needs one render under the CPU limit (5 pages: 1 or 2 tries). Logged-in and admin pages often stop at the CPU limit. The installer does not fit. R2 must be turned on in the dashboard before the media library can use it. | **measured**: every page renders, the installer runs in one request, 17 of 17 checks pass. Media library on R2 works; image sizes from the Images binding; phone photos up to 20 MB. | CPU time. A page needs 0.8 to 1.9 s of CPU in a Worker. Free stops a request at about 2 s; Paid allows 30 s by default. See [docs/approach-b.md](docs/approach-b.md) and [docs/results.md](docs/results.md). |
+| B | **measured**: with the page cache, logged-out readers get cached pages (50 of 50 cache hits). With OPcache, most uncached renders fit under the CPU limit (11 of 12 cold `wp-login.php`). Logged-in and admin pages work in some runs (one `e2e.sh` run 17 of 17) and stop at the CPU limit in others. The installer does not fit. R2 must be turned on in the dashboard before the media library can use it. | **measured**: every page renders, the installer runs in one request, 17 of 17 checks pass. Media library on R2 works; image sizes from the Images binding; phone photos up to 20 MB. | CPU time. With OPcache, a page needs about 0.4 s of CPU on a warm isolate and about 1.2 s on a new one (median). Free stops a request at about 2 s; Paid allows 30 s by default. See [docs/approach-b.md](docs/approach-b.md) and [docs/results.md](docs/results.md). |
 | C | **no** | **docs** | Containers are not on the Free plan. Container disk is ephemeral. A snapshot keeps files for 30 days from creation or last restore. |
 | D | **docs** for the storefront Worker | **docs** | The back office needs one of A, B, C, or a normal host. |
 
@@ -41,7 +41,7 @@ Read from the Cloudflare documentation on 2026-11-03. Limits change. Check the s
 | Worker requests | 100,000 a day | No limit | [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) |
 | Worker CPU time per HTTP request | 10 ms | 30 s default, up to 5 min | [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) |
 | Worker memory | 128 MB | 128 MB | [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) |
-| Worker size | 64 MiB | 64 MiB | [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) |
+| Worker size | 64 MiB (uncompressed; measured: 72 MB refused) | 64 MiB | [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) |
 | Subrequests per request | 50 | 10,000 | [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) |
 | Cron Triggers per account | 5 | 250 | [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) |
 | Static asset files per Worker version | 20,000 | 100,000 | [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) |

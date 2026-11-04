@@ -38,3 +38,7 @@ A row with plan `local` ran in local workerd through `wrangler dev`. It is not a
 | B | Free | 2026-11-04 | 4.107.0 | Workers Cache on (`[env.free.cache]`), 5 pages from cold, then 50 reader requests | Cold: 4 pages first try, 1 second try. Readers: 50 of 50 200 with `cf-cache-status: HIT`. |
 | B | Paid | 2026-11-04 | 4.107.0 | 13.7 MB 12 MP JPEG via REST raw, REST multipart, `async-upload.php` | 201, 201, 200. 7 sizes pixel-exact, original byte-identical. Cloudflare-side time about 13 s (was about 30 s before range reads, HEAD cache, alt-text prefix and parallel sizes). |
 | B | Paid | 2026-11-04 | 4.107.0 | `tests/break.py`, twice in a row, after private uploads and coalesced purges | 27 pass, 0 fail; 27 pass, 0 fail. |
+| B | Paid | 2026-11-04 | 4.107.0 | `wrangler tail` CPU per request, 36 uncached requests per configuration, split by a boot flag | Median cold / warm: OPcache off 2,684 / 957 ms; OPcache on with shipped files 2,151-2,238 / 428-837 ms; plus the boot with no copies 1,136-1,281 / 398-660 ms. |
+| B | Paid | 2026-11-04 | 4.107.0 | deploy with both zips stored | Refused: "exceeded size limits" at 72 MB uncompressed (20 MB gzip). |
+| B | Paid | 2026-11-04 | 4.107.0 | `tests/break.py`, `e2e.sh` with OPcache and the boot with no copies | 27 pass, 0 fail; 17 of 17. |
+| B | Free | 2026-11-04 | 4.107.0 | 12 x `GET /wp-login.php`; `e2e.sh` 3 runs, with OPcache | 11 of 12 200 (1 CPU limit). e2e: 17, 12 and 9 of 17; every failure was "Worker exceeded CPU time limit", no 524. |

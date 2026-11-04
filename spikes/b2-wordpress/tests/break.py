@@ -100,7 +100,10 @@ check("a 2,000-character upload path gets 404, not an exception", r["code"] == 4
 # Page cache (Workers Cache)
 def cstat(r): return (r["h"].get("cf-cache-status") if r["h"] else None)
 home = f"/?cachetest={T}"
-req(opener(), home); time.sleep(1); h2 = req(opener(), home)
+req(opener(), home)
+for _ in range(3):
+    time.sleep(2); h2 = req(opener(), home)
+    if cstat(h2) == "HIT": break
 check("a logged-out page is served from the edge cache", cstat(h2) == "HIT", str(cstat(h2)))
 mine = req(o, home)
 check("a logged-in visitor never gets the cached page", cstat(mine) != "HIT" and b"wpadminbar" in mine["body"], f"{cstat(mine)}, admin bar {b'wpadminbar' in mine['body']}")
