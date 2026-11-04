@@ -28,9 +28,27 @@ export class Store extends Container {
 			R2_ENDPOINT: env.R2_ENDPOINT || '',
 			R2_BUCKET: env.REPLICA_BUCKET || '',
 			REPLICA_PATH: env.REPLICA_PATH || 'store',
+			SPIKE_TOKEN: env.SPIKE_TOKEN || '',
+			PHP_WORKERS: env.PHP_WORKERS || '2',
+			IDLE_SECONDS: env.IDLE_SECONDS || '900',
 		};
 	}
 }
+// Spike: stop the container for durability tests. The Container class stop()
+// sends the signal only when this.container.running is true, and it returned
+// with the container still running (measured 2026-11-04). This reports the
+// flag and signals directly; kill=1 uses destroy() (SIGKILL, like a crash).
+Store.prototype.shutdownNow = async function (kill) {
+	const running = this.ctx.container.running;
+	try {
+		if (kill) await this.ctx.container.destroy();
+		else this.ctx.container.signal(15);
+		return { running, kill: !!kill, ok: true };
+	} catch (e) {
+		return { running, kill: !!kill, ok: false, error: String((e && e.message) || e) };
+	}
+};
+
 Store.outboundByHost = {
 	'worker.internal': async (request, env) => {
 		const m = JSON.parse(await request.text());
@@ -57,10 +75,15 @@ export default {
 		const spikeOk = env.SPIKE_TOKEN && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname === '/_store-stop') {
 			if (!spikeOk) return new Response('forbidden', { status: 403 });
-			await store(env).stop();
-			return new Response('stopped');
+			try {
+				return Response.json(await store(env).shutdownNow(url.searchParams.get('kill') === '1'));
+			} catch (e) {
+				return Response.json({ ok: false, rpc_error: String((e && e.message) || e) }, { status: 500 });
+			}
 		}
 		if (url.pathname === '/xmlrpc.php') return new Response('XML-RPC is off', { status: 403 });
+		// 20 MB: the Images binding input limit, and far above any post or form.
+		if (Number(req.headers.get('content-length') || 0) > Number(env.MAX_BODY_BYTES || 20 * 1024 * 1024)) return new Response('request body too large', { status: 413 });
 		if (env.MEDIA && (req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/wp-content/uploads/')) return serveUpload(req, env, url);
 		const r = await store(env).fetch(req);
 		const out = new Response(r.body, r);

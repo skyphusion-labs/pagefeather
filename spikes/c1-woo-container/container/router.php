@@ -1,4 +1,9 @@
 <?php
+// Idle watchdog (entrypoint.sh): every request marks the time, except health
+// checks (/ping) and the test boot id, which would keep the container awake.
+if ( ! in_array( parse_url( $_SERVER['REQUEST_URI'], PHP_URL_PATH ), array( '/ping', '/_boot.txt' ), true ) ) {
+	@touch( '/tmp/last-request' );
+}
 // Router for PHP's built-in server: static files as they are, PHP files run,
 // everything else goes to WordPress (index.php).
 $path = parse_url( $_SERVER['REQUEST_URI'], PHP_URL_PATH );
