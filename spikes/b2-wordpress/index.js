@@ -641,7 +641,7 @@ export default {
 			out.headers.set('cache-control', 'private, no-store');
 			return out;
 		}
-		if (env.WOO_CHECKOUT && isCheckout(url)) {
+		if (env.WOO_CHECKOUT && env.CHECKOUT_CONTAINER === 'on' && isCheckout(url)) {
 			const r = await checkoutContainer(env).fetch(req);
 			const out = new Response(r.body, r);
 			out.headers.set('x-served-by', 'checkout-container');
@@ -770,7 +770,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const d = delta();
 			pageCacheHeaders(req, url, r, out, env);
 			// A filled cart means a checkout may follow: start the container now.
-			if (env.WOO_CHECKOUT && r.httpStatusCode === 201 && ADD_TO_CART_ROUTE.test(restRoute(url))) {
+			if (env.WOO_CHECKOUT && env.CHECKOUT_CONTAINER === 'on' && r.httpStatusCode === 201 && ADD_TO_CART_ROUTE.test(restRoute(url))) {
 				ctx.waitUntil(checkoutContainer(env).startAndWaitForPorts().catch((e) => console.log('checkout warm-up failed', String(e))));
 				out.set('x-checkout-warmup', '1');
 			}

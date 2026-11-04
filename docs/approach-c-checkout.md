@@ -38,7 +38,11 @@ Image: `container/Dockerfile`, `php:8.3-cli` with PHP's built-in server and 4 wo
 
 A general cache for all reads was tried and removed: in the container, which runs requests in parallel, a request that waits for another request's write looped forever.
 
-## Current state (end of 2026-11-04): unstable
+## Superseded (2026-11-04)
+
+Approach C1 (`docs/approach-c1.md`) runs all of WooCommerce and its SQLite database in one Container: checkout 1.3 to 1.7 s. The B+C split is turned off: its container application is deleted, and the Worker routes to a container only with `CHECKOUT_CONTAINER=on`. The notes below stay as the record.
+
+## State before it was turned off: unstable
 
 Checkout through the container worked 6 times (3 runs at 63 to 72 s, then 3 runs at 42 s). After more deploys (an instance type change from `basic` to `standard-2` and back, Worker placement changes), the container stopped starting: requests wait 100 s and end in 524. A trace of the outbound handler shows the container making D1 calls for front-end page renders even with no outside traffic, about 1 statement per second. Deleting and recreating the container application, a static health check (`pingEndpoint = "localhost/ping"`), and Worker placement `smart` did not fix it. The cause is not found yet. Checkout on the Paid deploy is not working at the moment.
 
