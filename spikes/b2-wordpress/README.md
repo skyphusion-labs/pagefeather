@@ -43,6 +43,10 @@ The design is from Human Made's [S3 Uploads](https://github.com/humanmade/S3-Upl
 
 Without the `MEDIA` binding the plugin is off, and uploads stay in one isolate's memory.
 
+Image sizes come from the Cloudflare Images binding (`IMAGES`), not GD. `php/cf-images-editor.php` is a WordPress image editor whose resize, crop, rotate and flip calls become Images transforms. The Worker reads the source from R2, runs the transforms, and writes the result to R2, so image bytes never enter PHP. GD in a 128 MB isolate cannot decode a normal phone photo.
+
+Two uploads with the same name on two isolates would overwrite each other. The plugin reserves each file name with one atomic D1 insert, in the table `_r2_reserved`.
+
 ## How it fits together
 
 | File | Job |

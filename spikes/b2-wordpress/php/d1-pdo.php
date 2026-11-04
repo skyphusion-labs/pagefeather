@@ -318,7 +318,7 @@ class D1_PDOStatement extends PDOStatement {
 					$this->rows,
 					function ( $row ) {
 						foreach ( $row as $v ) {
-							if ( is_string( $v ) && 0 === stripos( $v, '_cf_' ) ) {
+							if ( is_string( $v ) && ( 0 === stripos( $v, '_cf_' ) || 0 === stripos( $v, '_r2_' ) ) ) {
 								return false;
 							}
 						}

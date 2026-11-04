@@ -92,6 +92,8 @@ async function boot(origin) {
 	lines.push(`define('WP_HOME', ${JSON.stringify(origin)});`);
 	// The R2 Uploads mu-plugin turns on when the MEDIA binding exists.
 	if (ENV.MEDIA) lines.push(`define('R2_UPLOADS', true);`);
+	// Image sizes come from the Images binding (php/cf-images-editor.php).
+	if (ENV.MEDIA && ENV.IMAGES) lines.push(`define('CF_IMAGES', true);`);
 	// A deploy (WP_SALT is set) shows no PHP errors or database errors to visitors.
 	if (ENV.WP_SALT) lines.push(`define('WP_DEBUG', false);`);
 	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
@@ -139,6 +141,8 @@ async function boot(origin) {
 	return { php, handler, bootMs: { wasm: tWasm, files: tFiles, fileCount: count, fileBytes, memAt } };
 }
 
+let reserveTableReady = false;
+
 // One R2 operation for the R2 Uploads mu-plugin (php/r2-uploads.php).
 // Bodies cross the PHP to JS bridge as base64.
 async function r2op(op) {
@@ -161,6 +165,33 @@ async function r2op(op) {
 		if (op.op === 'delete') {
 			await B.delete(op.key);
 			return { ok: true };
+		}
+		if (op.op === 'info') {
+			const o = await B.get(op.key);
+			if (!o) return { ok: true, found: false };
+			const i = await ENV.IMAGES.info(o.body); // .info() is not billed
+			return { ok: true, found: true, format: i.format, width: i.width, height: i.height, size: i.fileSize };
+		}
+		if (op.op === 'image') {
+			// Source from R2, transforms by the Images binding, result to R2.
+			const o = await B.get(op.src);
+			if (!o) return { ok: false, error: 'source not found' };
+			let h = ENV.IMAGES.input(o.body);
+			for (const t of op.ops || []) h = h.transform(t);
+			const out = await h.output({ format: op.format, ...(op.quality ? { quality: op.quality } : {}) });
+			const bytes = new Uint8Array(await out.response().arrayBuffer());
+			if (op.dest) await B.put(op.dest, bytes, { httpMetadata: { contentType: op.format } });
+			return { ok: true, size: bytes.length, ...(op.body ? { body: b64encode(bytes) } : {}) };
+		}
+		if (op.op === 'reserve') {
+			// One atomic insert decides who gets a file name.
+			if (!reserveTableReady) {
+				await ENV.DB.prepare('CREATE TABLE IF NOT EXISTS _r2_reserved (key TEXT PRIMARY KEY, at INTEGER NOT NULL)').run();
+				reserveTableReady = true;
+			}
+			if (await B.head(op.key)) return { ok: true, reserved: false };
+			const r = await ENV.DB.prepare('INSERT OR IGNORE INTO _r2_reserved (key, at) VALUES (?, ?)').bind(op.key, Date.now()).run();
+			return { ok: true, reserved: r.meta.changes === 1 };
 		}
 		if (op.op === 'list') {
 			const l = await B.list({ prefix: op.prefix, delimiter: '/', limit: op.limit || 1000 });
@@ -185,7 +216,8 @@ function b64decode(str) {
 	return out;
 }
 
-// GET /wp-content/uploads/<path> comes from R2, not PHP. It needs no PHP lock.
+// GET and HEAD /wp-content/uploads/<path> come from R2, not PHP, with Range
+// support (video seeking needs it). No PHP lock.
 async function serveUpload(req, env, url) {
 	let key;
 	try {
@@ -193,14 +225,32 @@ async function serveUpload(req, env, url) {
 	} catch {
 		return new Response('bad path', { status: 400 });
 	}
-	const o = await env.MEDIA.get(key, { onlyIf: req.headers });
+	// R2 keys are at most 1,024 bytes. A longer path cannot exist.
+	if (new TextEncoder().encode(key).length > 1024) return new Response('not found', { status: 404 });
+	let o;
+	try {
+		o = await env.MEDIA.get(key, { onlyIf: req.headers, range: req.headers });
+	} catch {
+		return new Response('bad range', { status: 416 });
+	}
 	if (o === null) return new Response('not found', { status: 404 });
 	const h = new Headers();
 	o.writeHttpMetadata(h);
 	h.set('etag', o.httpEtag);
 	h.set('cache-control', 'public, max-age=86400');
+	h.set('accept-ranges', 'bytes');
+	h.set('x-content-type-options', 'nosniff');
 	if (!('body' in o) || !o.body) return new Response(null, { status: 304, headers: h });
-	return new Response(req.method === 'HEAD' ? null : o.body, { headers: h });
+	let status = 200;
+	let length = o.size;
+	if (o.range && req.headers.has('range')) {
+		const offset = o.range.offset ?? (o.range.suffix !== undefined ? o.size - o.range.suffix : 0);
+		length = o.range.length ?? (o.range.suffix !== undefined ? o.range.suffix : o.size - offset);
+		h.set('content-range', `bytes ${offset}-${offset + length - 1}/${o.size}`);
+		status = 206;
+	}
+	h.set('content-length', String(length));
+	return new Response(req.method === 'HEAD' ? null : o.body, { status, headers: h });
 }
 
 const INSTALL = `<?php

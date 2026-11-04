@@ -75,5 +75,27 @@ if url:
     d = rest(o, f"/wp/v2/media/{mid}?force=true", method="DELETE")
     gone = req(opener(), url.split("workers.dev", 1)[-1])["code"]
     check("a deleted upload is gone from R2", d["code"] == 200 and gone == 404, f"delete {d['code']}, fetch {gone}")
+import zlib, struct
+def png(w, h):
+    def ch(t, d): return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+    c = zlib.compressobj(9); row = b"\x00" + b"\x00" * (w * 3)
+    data = b"".join(c.compress(row) for _ in range(h)) + c.flush()
+    return b"\x89PNG\r\n\x1a\n" + ch(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + ch(b"IDAT", data) + ch(b"IEND", b"")
+def upload(data, name):
+    return rest(o, "/wp/v2/media", raw=data, headers={"Content-Type": "image/png", "Content-Disposition": f"attachment; filename={name}"})
+T = int(time.time())
+r = upload(png(6000, 6000), f"break-bomb-{T}.png")
+sizes = json.loads(r["body"]).get("media_details", {}).get("sizes", {}) if r["code"] == 201 else {}
+check("a 6000x6000 image uploads and gets its sizes (Images binding)", r["code"] == 201 and "thumbnail" in sizes, short(r))
+check("the site still serves after it", req(opener(), "/?p=1")["code"] == 200)
+rs = par(lambda i: upload(png(20 + i, 20), f"break-same-{T}.png"), range(8), 8)
+srcs = [json.loads(x["body"]).get("source_url") for x in rs if x["code"] == 201]
+check("8 parallel uploads of one name get 8 files", len(srcs) == 8 and len(set(srcs)) == 8, f"{len(set(srcs))} distinct of {len(srcs)}")
+if srcs:
+    u = srcs[0].split("workers.dev", 1)[-1]
+    rr = req(opener(), u, headers={"Range": "bytes=0-9"})
+    check("a Range request gets 206 and 10 bytes", rr["code"] == 206 and len(rr["body"]) == 10, short(rr))
+r = req(opener(), "/wp-content/uploads/" + "a" * 2000)
+check("a 2,000-character upload path gets 404, not an exception", r["code"] == 404, short(r))
 print(f"{results.count(True)} pass, {results.count(False)} fail")
 sys.exit(0 if all(results) else 1)

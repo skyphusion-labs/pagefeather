@@ -27,6 +27,8 @@ cp -RL "$cache/sqlite-database-integration/packages/plugin-sqlite-database-integ
 cp php/db.php php/d1-pdo.php php/d1-dialect.php "$wp/wp-content/"
 mkdir -p "$wp/wp-content/mu-plugins"
 cp php/r2-uploads.php "$wp/wp-content/mu-plugins/"
+mkdir -p "$wp/wp-content/mu-plugins/r2-uploads"
+cp php/cf-images-editor.php "$wp/wp-content/mu-plugins/r2-uploads/"
 # The plugin's installer opens its own connection to DB_PATH. Make it use the
 # D1-backed connection that wp-content/db.php already made.
 python3 - "$wp/wp-content/plugins/sqlite-database-integration/wp-includes/sqlite/install-functions.php" <<'PY'

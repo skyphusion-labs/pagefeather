@@ -125,7 +125,20 @@ Same build, same code, on an account on Workers Paid, with `cpu_ms = 30000`. Res
 | `system.multicall` on `xmlrpc.php` | 50 password tries in one request, 0.7 s. | `xmlrpc.php` returns 403 unless `XMLRPC=on`. | 403. |
 | Media upload | 201, then the file is served by one isolate only (1 of 5 fetches). | The R2 Uploads mu-plugin stores the media library in R2; the Worker serves `/wp-content/uploads/*` from R2. Design from Human Made's S3 Uploads (`docs/prior-art.md`). | Paid: 5 of 5 fetches 200. Thumbnails made by GD are in R2. Admin multipart upload works. Delete removes every size (404). Free: R2 is not on for the account (code 10042), so not fixed there. |
 
-Also tried, no failure: SQL injection strings in search, NUL bytes, `wp-config.php` and path traversal (403 or 400), 12 parallel post creates (12 unique ids), an anonymous comment. Stock WordPress behavior, not changed: `/?rest_route=/wp/v2/users` lists user names. Each failed login costs CPU on Paid; a workers.dev address has no rate limiting rule, so a zone is needed for that.
+Second break test, on the R2 media library (round 4):
+
+| Attack | Before | Fix | After |
+| --- | --- | --- | --- |
+| Large images (a 26 KB PNG of 3000x3000; 6000x6000; 12000x12000) | 3000x3000: 500 after 12 s. 6000x6000 and up: error 1102. GD decodes every pixel in the 128 MB isolate. A normal phone photo is larger than 3000x3000. | `php/cf-images-editor.php`: a WordPress image editor that sends every resize, crop, rotate and flip to the Cloudflare Images binding. Bytes go R2, Images, R2 in the Worker and never enter PHP. `.info()` gives the size and is not billed. | 3000x3000 and 6000x6000: 201 with all 7 sizes, pixel-exact, and the WordPress `-scaled` copy. 12000x12000 (over the Images limit of 100 megapixels): 201, no sizes. The site stays up. A center crop is a crop, not a squeeze (checked by pixel color). Delete removes all sizes. |
+| 8 parallel uploads with one file name | 3 distinct files. 5 attachments show another upload's image. `wp_unique_filename()` checks, then writes; two isolates both pass the check. | The Worker reserves each name with one atomic D1 insert (`_r2_reserved`). A taken name gets the next `-N`. | 8 distinct files, each with its own content. |
+| `Range` request on an upload | 200 with the full file. Video seeking needs 206. | The upload route passes `Range` to R2 and returns 206 with `Content-Range`. HEAD has `Content-Length`. `X-Content-Type-Options: nosniff` on every upload. | 206, 10 bytes. |
+| A 2,000-character upload path | Error 1101 (the Worker threw). R2 keys are at most 1,024 bytes. | Longer keys get 404 before R2. | 404. |
+
+Also tried, no failure: path traversal on the upload route (403), file names with `+ & =`, `..png` and `shell.php.png` (WordPress makes them safe), SVG, HTML and PHAR uploads (WordPress refuses them), a UTF-8 file name sent as RFC 5987 `filename*`.
+
+The Images binding is on both plans. Images Free includes 5,000 unique transformations a month; past that, new transformations fail with error 9422 and nothing is charged. An upload uses one transformation per image size (up to 7). Source: [Images pricing](https://developers.cloudflare.com/images/pricing/), read 2026-11-04.
+
+Also tried, no failure (round 3): SQL injection strings in search, NUL bytes, `wp-config.php` and path traversal (403 or 400), 12 parallel post creates (12 unique ids), an anonymous comment. Stock WordPress behavior, not changed: `/?rest_route=/wp/v2/users` lists user names. Each failed login costs CPU on Paid; a workers.dev address has no rate limiting rule, so a zone is needed for that.
 
 ### 9. Memory: what it took to fit in 128 MB
 
