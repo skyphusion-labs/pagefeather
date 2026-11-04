@@ -26,15 +26,51 @@ class R2_Uploads_Stream {
 	/** Directories made in this request. R2 has no directories, so a new empty one exists only here. */
 	private static $dirs = array();
 
+	/** Read-only opens fetch byte ranges of this size, not the whole object. */
+	const CHUNK = 1048576;
+
+	/** Bytes that wp_get_image_alttext() may read. */
+	const METADATA_PREFIX = 1048576;
+
 	private $key;
 	private $buf;
+	private $lazy = false;
+	private $size = 0;
+	private $pos = 0;
+	private $chunk_at = -1;
+	private $chunk = '';
+	private $mtime = 0;
 	private $dirty = false;
 	private $entries;
 
+	/**
+	 * HEAD results in this request. WordPress calls file_exists() and is_dir()
+	 * many times per upload (measured 2026-11-04: 25 HEAD and 10 LIST calls,
+	 * 3 to 4 s). A write, copy or delete through this class clears the entry.
+	 */
+	private static $heads = array();
+
 	/** Send one operation to the Worker. Returns the reply, or null on error. */
 	public static function call( array $op ) {
+		if ( 'head' === $op['op'] && isset( self::$heads[ $op['key'] ] ) ) {
+			return self::$heads[ $op['key'] ];
+		}
+		foreach ( array( 'key', 'to', 'from', 'dest' ) as $k ) {
+			if ( isset( $op[ $k ] ) && 'head' !== $op['op'] && 'get' !== $op['op'] && 'info' !== $op['op'] ) {
+				unset( self::$heads[ $op[ $k ] ] );
+			}
+		}
+		if ( 'images' === $op['op'] ) {
+			foreach ( $op['jobs'] as $j ) {
+				unset( self::$heads[ $j['dest'] ] );
+			}
+		}
 		$reply = json_decode( post_message_to_js( json_encode( array( 'r2' => $op ) ) ), true );
-		return ( is_array( $reply ) && ! empty( $reply['ok'] ) ) ? $reply : null;
+		$reply = ( is_array( $reply ) && ! empty( $reply['ok'] ) ) ? $reply : null;
+		if ( 'head' === $op['op'] && $reply ) {
+			self::$heads[ $op['key'] ] = $reply;
+		}
+		return $reply;
 	}
 
 	public static function key( $uri ) {
@@ -62,8 +98,32 @@ class R2_Uploads_Stream {
 
 	public function stream_open( $uri, $mode, $options, &$opened_path ) {
 		$this->key = self::key( $uri );
-		$this->buf = fopen( 'php://temp', 'w+b' );
 		$m         = $mode[0];
+		// Read-only: fetch ranges on demand. getimagesize() and EXIF read only the
+		// first bytes, so a large photo never comes into PHP whole.
+		if ( 'r' === $m && false === strpos( $mode, '+' ) ) {
+			$h = self::call( array( 'op' => 'head', 'key' => $this->key ) );
+			if ( ! $h || ! $h['found'] ) {
+				return false;
+			}
+			$this->lazy  = true;
+			$this->size  = (int) $h['size'];
+			$this->mtime = (int) $h['mtime'];
+			// wp_get_image_alttext() reads the whole file to find XMP, twice per
+			// upload (measured 2026-11-04: 116 range reads, 11 s, for a 13.7 MB
+			// photo). In a JPEG, XMP is in an APP1 segment before the image data,
+			// near the start. Give that function the first 1 MB only.
+			if ( $this->size > self::METADATA_PREFIX ) {
+				foreach ( debug_backtrace( DEBUG_BACKTRACE_IGNORE_ARGS, 6 ) as $f ) {
+					if ( 'wp_get_image_alttext' === $f['function'] ) {
+						$this->size = self::METADATA_PREFIX;
+						break;
+					}
+				}
+			}
+			return true;
+		}
+		$this->buf = fopen( 'php://temp', 'w+b' );
 		if ( 'x' === $m ) {
 			$h = self::call( array( 'op' => 'head', 'key' => $this->key ) );
 			if ( ! $h || $h['found'] ) {
@@ -87,24 +147,60 @@ class R2_Uploads_Stream {
 	}
 
 	public function stream_read( $count ) {
-		return fread( $this->buf, $count );
+		if ( ! $this->lazy ) {
+			return fread( $this->buf, $count );
+		}
+		$out = '';
+		while ( $count > 0 && $this->pos < $this->size ) {
+			$in_chunk = $this->chunk_at >= 0 && $this->pos >= $this->chunk_at && $this->pos < $this->chunk_at + strlen( $this->chunk );
+			if ( ! $in_chunk ) {
+				// The first read is small (headers). A read that goes on gets 1 MB at a time.
+				$at  = $this->pos;
+				$len = $this->chunk_at < 0 ? 65536 : self::CHUNK;
+				$r   = self::call( array( 'op' => 'get', 'key' => $this->key, 'offset' => $at, 'length' => min( $len, $this->size - $at ) ) );
+				if ( ! $r || ! $r['found'] ) {
+					return $out;
+				}
+				$this->chunk    = base64_decode( $r['body'] );
+				$this->chunk_at = $at;
+			}
+			$part       = substr( $this->chunk, $this->pos - $this->chunk_at, $count );
+			if ( '' === $part ) {
+				break;
+			}
+			$out       .= $part;
+			$this->pos += strlen( $part );
+			$count     -= strlen( $part );
+		}
+		return $out;
 	}
 
 	public function stream_write( $data ) {
+		if ( $this->lazy ) {
+			return 0;
+		}
 		$this->dirty = true;
 		return fwrite( $this->buf, $data );
 	}
 
 	public function stream_eof() {
-		return feof( $this->buf );
+		return $this->lazy ? $this->pos >= $this->size : feof( $this->buf );
 	}
 
 	public function stream_tell() {
-		return ftell( $this->buf );
+		return $this->lazy ? $this->pos : ftell( $this->buf );
 	}
 
 	public function stream_seek( $offset, $whence = SEEK_SET ) {
-		return 0 === fseek( $this->buf, $offset, $whence );
+		if ( ! $this->lazy ) {
+			return 0 === fseek( $this->buf, $offset, $whence );
+		}
+		$to = SEEK_SET === $whence ? $offset : ( SEEK_CUR === $whence ? $this->pos + $offset : $this->size + $offset );
+		if ( $to < 0 ) {
+			return false;
+		}
+		$this->pos = $to;
+		return true;
 	}
 
 	public function stream_truncate( $size ) {
@@ -113,12 +209,15 @@ class R2_Uploads_Stream {
 	}
 
 	public function stream_stat() {
+		if ( $this->lazy ) {
+			return self::stat_array( false, $this->size, $this->mtime );
+		}
 		$s = fstat( $this->buf );
 		return self::stat_array( false, $s['size'], time() );
 	}
 
 	public function stream_flush() {
-		if ( ! $this->dirty ) {
+		if ( $this->lazy || ! $this->dirty ) {
 			return true;
 		}
 		$pos = ftell( $this->buf );
@@ -131,6 +230,9 @@ class R2_Uploads_Stream {
 	}
 
 	public function stream_close() {
+		if ( $this->lazy ) {
+			return;
+		}
 		$this->stream_flush();
 		fclose( $this->buf );
 	}
@@ -162,6 +264,7 @@ class R2_Uploads_Stream {
 		}
 		$l = self::call( array( 'op' => 'list', 'prefix' => $key . '/', 'limit' => 1 ) );
 		if ( $l && ( $l['keys'] || $l['prefixes'] ) ) {
+			self::$dirs[ $key ] = true;
 			return self::stat_array( true );
 		}
 		if ( ! ( $flags & STREAM_URL_STAT_QUIET ) ) {
@@ -175,16 +278,9 @@ class R2_Uploads_Stream {
 	}
 
 	public function rename( $from, $to ) {
-		$from = self::key( $from );
-		$to   = self::key( $to );
-		$r    = self::call( array( 'op' => 'get', 'key' => $from ) );
-		if ( ! $r || ! $r['found'] ) {
-			return false;
-		}
-		if ( null === self::call( array( 'op' => 'put', 'key' => $to, 'type' => self::content_type( $to ), 'body' => $r['body'] ) ) ) {
-			return false;
-		}
-		return null !== self::call( array( 'op' => 'delete', 'key' => $from ) );
+		// The Worker copies inside R2. The bytes do not pass through PHP.
+		$r = self::call( array( 'op' => 'copy', 'from' => self::key( $from ), 'to' => self::key( $to ), 'type' => self::content_type( $to ), 'move' => true ) );
+		return $r && $r['found'];
 	}
 
 	public function mkdir( $uri, $mode, $options ) {
@@ -319,4 +415,68 @@ add_filter(
 	},
 	10,
 	3
+);
+
+/*
+ * Large uploads. The Worker stores a media upload of more than 1 MB in R2
+ * under staging/ before PHP runs, and gives PHP a small marker file instead:
+ * "R2STAGED" + newline + JSON {key, size, sniffed}. "sniffed" is the type the
+ * Worker read from the file's first bytes. So a phone photo never comes into
+ * PHP's memory. When WordPress has chosen the final name, the Worker copies the
+ * staged object there inside R2.
+ */
+function skyphusion_r2_staged( $path ) {
+	if ( ! is_string( $path ) || '' === $path || ! @is_file( $path ) || @filesize( $path ) > 4096 ) {
+		return null;
+	}
+	$head = (string) @file_get_contents( $path, false, null, 0, 4096 );
+	if ( 0 !== strpos( $head, "R2STAGED\n" ) ) {
+		return null;
+	}
+	$m = json_decode( substr( $head, 9 ), true );
+	return ( is_array( $m ) && ! empty( $m['key'] ) && 0 === strpos( $m['key'], 'staging/' ) ) ? $m : null;
+}
+
+// WordPress checks the real type from the file's bytes. For a staged upload the
+// bytes are in R2, so use the type the Worker sniffed. An image must match its
+// extension exactly, as core requires.
+add_filter(
+	'wp_check_filetype_and_ext',
+	function ( $data, $file, $filename, $mimes ) {
+		$m = skyphusion_r2_staged( $file );
+		if ( ! $m ) {
+			return $data;
+		}
+		$ft   = wp_check_filetype( $filename, $mimes );
+		$deny = array( 'ext' => false, 'type' => false, 'proper_filename' => false );
+		if ( ! $ft['type'] || ! empty( $m['dangerous'] ) ) {
+			return $deny;
+		}
+		if ( 0 === strpos( $ft['type'], 'image/' ) && $m['sniffed'] !== $ft['type'] ) {
+			return $deny;
+		}
+		return array( 'ext' => $ft['ext'], 'type' => $ft['type'], 'proper_filename' => false );
+	},
+	10,
+	4
+);
+
+// After core moved the marker to its final r2:// path, put the real file there.
+add_filter(
+	'wp_handle_upload',
+	function ( $upload ) {
+		if ( empty( $upload['file'] ) || 0 !== strpos( $upload['file'], 'r2://' ) ) {
+			return $upload;
+		}
+		$m = skyphusion_r2_staged( $upload['file'] );
+		if ( ! $m ) {
+			return $upload;
+		}
+		$r = R2_Uploads_Stream::call( array( 'op' => 'copy', 'from' => $m['key'], 'to' => R2_Uploads_Stream::key( $upload['file'] ), 'type' => $upload['type'], 'move' => true ) );
+		if ( ! $r || ! $r['found'] ) {
+			@unlink( $upload['file'] );
+			return array( 'error' => 'The staged upload was not found in R2.' );
+		}
+		return $upload;
+	}
 );
