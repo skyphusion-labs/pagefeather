@@ -14,6 +14,38 @@
  *   statement that calls one fails on D1 and is recorded.
  */
 
+/**
+ * One message to the Worker, one JSON reply.
+ *
+ * In the Worker, PHP calls JavaScript directly (post_message_to_js). In the
+ * checkout Container, PHP posts to http://worker.internal/, which a Container
+ * outbound handler answers with the same message handler, inside the Workers
+ * runtime on the same machine. The bindings (D1, R2, Images) stay in the Worker.
+ */
+if ( ! function_exists( 'skyphusion_worker_call' ) ) {
+	function skyphusion_worker_call( $json ) {
+		if ( function_exists( 'post_message_to_js' ) ) {
+			return post_message_to_js( $json );
+		}
+		static $ch = null;
+		if ( null === $ch ) {
+			$ch = curl_init( 'http://worker.internal/' );
+			curl_setopt_array(
+				$ch,
+				array(
+					CURLOPT_POST           => true,
+					CURLOPT_RETURNTRANSFER => true,
+					CURLOPT_HTTPHEADER     => array( 'Content-Type: application/json' ),
+					CURLOPT_TIMEOUT        => 60,
+				)
+			);
+		}
+		curl_setopt( $ch, CURLOPT_POSTFIELDS, $json );
+		$reply = curl_exec( $ch );
+		return false === $reply ? '' : $reply;
+	}
+}
+
 class D1_PDO extends PDO {
 	/** @var array<string,mixed> */
 	private $attributes = array(
@@ -37,6 +69,9 @@ class D1_PDO extends PDO {
 	/** @var int */
 	public static $calls = 0;
 
+	/** @var int Reads answered from the request cache. */
+	public static $cache_hits = 0;
+
 	/** @var int */
 	public static $rollbacks = 0;
 
@@ -58,10 +93,35 @@ class D1_PDO extends PDO {
 	 * @param array  $params Positional parameters.
 	 * @return array{columns:array<string>,rows:array<array>,changes:int,last_row_id:int}
 	 */
+	/**
+	 * Reads of the driver's schema tables (_wp_sqlite_mysql_information_schema_*),
+	 * cached for the request. Each D1 call is a network round trip (measured
+	 * 2026-11-04: about 48 ms from the checkout Container), and the driver looks
+	 * up the columns of a table before many statements (about 150 of 750 calls in
+	 * a checkout). They change only with the schema: DDL or a write to those
+	 * tables clears the cache.
+	 *
+	 * Ordinary reads are NOT cached. A general read cache made a request that
+	 * waits for another request's write (a lock) loop forever in the Container,
+	 * which runs requests in parallel (measured 2026-11-04).
+	 */
+	private static $schema_cache = array();
+
 	public function d1( $sql, array $params = array() ) {
+		$is_select = 1 === preg_match( '/^\s*SELECT\b/i', $sql );
+		$schema    = false !== stripos( $sql, '_wp_sqlite_mysql_information_schema_' );
+		$cacheable = $is_select && 0 === preg_match( '/random\(|\'now\'|current_(timestamp|date|time)|last_insert_rowid|changes\(/i', $sql );
+		$key       = $sql . "\0" . json_encode( $params );
+		if ( $cacheable && $schema && isset( self::$schema_cache[ $key ] ) ) {
+			++self::$cache_hits;
+			return self::$schema_cache[ $key ];
+		}
+		if ( ! $is_select && ( $schema || preg_match( '/^\s*(CREATE|ALTER|DROP|RENAME)\b/i', $sql ) ) ) {
+			self::$schema_cache = array();
+		}
 		++self::$calls;
 		$reply = json_decode(
-			post_message_to_js( json_encode( array( 'sql' => $sql, 'params' => $params ) ) ),
+			skyphusion_worker_call( json_encode( array( 'sql' => $sql, 'params' => $params ) ) ),
 			true
 		);
 		if ( ! is_array( $reply ) || empty( $reply['ok'] ) ) {
@@ -71,6 +131,9 @@ class D1_PDO extends PDO {
 		}
 		if ( ! empty( $reply['last_row_id'] ) ) {
 			$this->last_insert_id = (string) $reply['last_row_id'];
+		}
+		if ( $cacheable && $schema && count( $reply['rows'] ) <= 500 && count( self::$schema_cache ) < 2000 ) {
+			self::$schema_cache[ $key ] = $reply;
 		}
 		return $reply;
 	}
@@ -83,6 +146,12 @@ class D1_PDO extends PDO {
 	 */
 	public function local_reply( $sql ) {
 		$s = strtoupper( ltrim( $sql ) );
+		// The driver checks for a TEMPORARY table before many statements. D1 has
+		// no temporary tables (each statement may run on another connection), so
+		// the answer is always no. About 145 of 750 calls in a checkout.
+		if ( preg_match( '/^SELECT\s+1\s+FROM\s+SQLITE_TEMP_MASTER\b/', $s ) ) {
+			return array( 'columns' => array( '1' ), 'rows' => array(), 'changes' => 0, 'last_row_id' => 0 );
+		}
 		if ( preg_match( '/^(BEGIN|COMMIT|END|SAVEPOINT|RELEASE)\b/', $s ) ) {
 			$this->in_transaction = 0 === strpos( $s, 'BEGIN' ) || 0 === strpos( $s, 'SAVEPOINT' ) ? true : ( 0 === strpos( $s, 'RELEASE' ) ? $this->in_transaction : false );
 			return array( 'columns' => array(), 'rows' => array(), 'changes' => 0, 'last_row_id' => 0 );
@@ -111,7 +180,7 @@ class D1_PDO extends PDO {
 
 	/** Tell the Worker about a statement that never reached D1. */
 	public function report_failure( $sql, $error ) {
-		post_message_to_js( json_encode( array( 'report' => true, 'sql' => $sql, 'error' => $error ) ) );
+		skyphusion_worker_call( json_encode( array( 'report' => true, 'sql' => $sql, 'error' => $error ) ) );
 	}
 
 	public function prepare( string $query, array $options = array() ): PDOStatement|false {

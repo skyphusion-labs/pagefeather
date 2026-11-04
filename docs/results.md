@@ -46,3 +46,4 @@ A row with plan `local` ran in local workerd through `wrangler dev`. It is not a
 | B | Paid | 2026-11-04 | 4.107.0 | `/_activate` WooCommerce, then the first page (installer) | Installer: "Worker exceeded memory limit". Database loaded from the local install instead (NUL bytes rewritten for `d1 execute --file`). |
 | B | Paid | 2026-11-04 | 4.107.0 | `tests/woo.py` | 8 of 9. Checkout: 503, `wrangler tail` outcome `exceededMemory`, 4 to 7 s CPU. Other WooCommerce requests 2 to 5 s CPU. |
 | B | Free | 2026-11-04 | 4.107.0 | WooCommerce active: `/`, shop, `wp-login.php` | All 500 "Worker exceeded CPU time limit"; login 503. |
+| B+C | Paid | 2026-11-04 | 4.107.0 | checkout Container (`basic`, PHP built-in server), cart warm-up, 3 guest checkouts | 3 of 3 orders, about 42 s each (63 to 72 s before cutting D1 calls 750 to 387). D1 from the container: median 46 to 48 ms. Start after stop 35 to 44 s. |

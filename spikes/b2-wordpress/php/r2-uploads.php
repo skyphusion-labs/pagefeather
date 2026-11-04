@@ -15,7 +15,7 @@
  * Active only when the Worker has an R2 binding (it defines R2_UPLOADS).
  */
 
-if ( ! defined( 'R2_UPLOADS' ) || ! R2_UPLOADS || ! function_exists( 'post_message_to_js' ) ) {
+if ( ! defined( 'R2_UPLOADS' ) || ! R2_UPLOADS || ! function_exists( 'skyphusion_worker_call' ) ) {
 	return;
 }
 
@@ -65,7 +65,7 @@ class R2_Uploads_Stream {
 				unset( self::$heads[ $j['dest'] ] );
 			}
 		}
-		$reply = json_decode( post_message_to_js( json_encode( array( 'r2' => $op ) ) ), true );
+		$reply = json_decode( skyphusion_worker_call( json_encode( array( 'r2' => $op ) ) ), true );
 		$reply = ( is_array( $reply ) && ! empty( $reply['ok'] ) ) ? $reply : null;
 		if ( 'head' === $op['op'] && $reply ) {
 			self::$heads[ $op['key'] ] = $reply;

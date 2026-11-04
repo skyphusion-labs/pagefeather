@@ -231,6 +231,23 @@ Tried, no change for checkout: OPcache shared memory 16 MB; deferred emails; a c
 
 **Why:** WooCommerce asks for a WordPress memory limit of 256 MB or more ([WooCommerce server recommendations](https://woocommerce.com/document/server-requirements/)). A Worker isolate has 128 MB for JavaScript, the bundled code and the PHP heap together. Checkout is the request that passes it. The next design (issue #20) keeps the store in the Worker and moves checkout to a Container, started when the cart fills.
 
+### 8g. Placement next to D1. Measured 2026-11-04.
+
+`/_d1ping` (spike token) times 20 sequential D1 statements from where the Worker runs. D1 reports its primary only as `ENAM`.
+
+| `[placement]` | Worker ran in | Median per D1 statement |
+| --- | --- | --- |
+| `mode = "smart"` | IAD | 39 ms |
+| `region = "aws:us-east-1"` | IAD | 40 ms |
+| `region = "gcp:us-east4"` | (no header) | 37 ms |
+| `region = "aws:ca-central-1"` | YUL | 40 ms |
+| `region = "gcp:us-central1"` | OMA | 35 ms |
+| `region = "gcp:us-east5"` | CMH | 20 ms |
+| `region = "azure:northcentralus"` | ORD | 19 ms |
+| `region = "aws:us-east-2"` | ORD | 14 and 29 ms (two runs) |
+
+The D1 primary is near Chicago. The Paid Worker is pinned to `aws:us-east-2`. A page with 30 to 90 D1 statements saves about 1 to 2 s of wall time. Containers can only be constrained to coarse regions (`ENAM`), so the checkout Container stays at about 46 ms per statement.
+
 ### 9. Memory: what it took to fit in 128 MB
 
 | Change | Effect, measured locally |
