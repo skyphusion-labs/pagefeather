@@ -43,6 +43,18 @@ Compared with approach B and the B+C split:
 | B+C, checkout in a Container, D1 over the network | 42 s | 6 to 10 s (in the Worker) |
 | **C1, WooCommerce and SQLite in the Container** | **1.3 to 1.7 s** | **0.6 to 1.0 s** |
 
+## Under load (Paid, `basic`: 1/4 vCPU, 2 PHP workers)
+
+| Scenario | Median | p90 | Throughput |
+| --- | --- | --- | --- |
+| Cached home page, 20 at a time, 100 requests | 0.35 s | 1.35 s | 35 req/s |
+| Uncached product page, 5 at a time, 40 requests | 2.9 s | 4.9 s | 1.4 req/s |
+| Store API products, 5 at a time, 40 requests | 1.1 s | 1.4 s | 4.3 req/s |
+| Add to cart, 5 at a time, 20 requests | 1.1 s | 1.4 s | 2.3 req/s |
+| Checkout, 5 shoppers at once, 10 checkouts | 3.8 s | 6.7 s | 0.6 req/s |
+
+All checkouts succeeded; 1 of 145 container requests failed (client exception). The limit is the quarter vCPU: requests queue at the 2 PHP workers. A larger instance type (`standard-1`, 1/2 vCPU; `standard-2`, 1 vCPU) is the next measurement.
+
 ## Problems found
 
 - WooCommerce writes log files under `uploads/wc-logs`. With uploads in R2, every log line was an R2 read and write: about 30 calls and about 15 s of each checkout. `WC_LOG_DIR` now points to local disk (also in approach B).

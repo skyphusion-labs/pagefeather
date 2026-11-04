@@ -101,17 +101,10 @@ bucket_name = "wp-on-d1-paid-media"
 [env.paid.images]
 binding = "IMAGES"
 
-# Checkout Container (issue #20). Paid only: Containers are not on the Free plan.
-# Build context is this directory (container/Dockerfile copies build/wordpress).
-[[env.paid.containers]]
-class_name = "WooCheckout"
-image = "./container/Dockerfile"
-image_build_context = "."
-instance_type = "basic"
-max_instances = 4
-# A spike: every instance on the new image at once (default with 2+ instances is [10, 100]).
-rollout_step_percentage = 100
-
+# Checkout Container (issue #20): off. The B+C split is superseded by approach
+# C1 (WooCommerce and SQLite in one Container, docs/approach-c1.md). The class and
+# binding stay (removing a Durable Object class needs a migration); there is no
+# container application, and index.js routes to it only with CHECKOUT_CONTAINER=on.
 [[env.paid.durable_objects.bindings]]
 name = "WOO_CHECKOUT"
 class_name = "WooCheckout"
