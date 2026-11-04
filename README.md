@@ -28,7 +28,7 @@ Cells marked **measured** link to a row in `docs/results.md`. Everything else is
 | Id | Workers Free | Workers Paid ($5 a month) | Main limit |
 | --- | --- | --- | --- |
 | A | **claimed** for cached pages (HostlessWP) | **claimed** (HostlessWP) | Free CPU time is 10 ms per request. A full WordPress page render uses more, so on Free only cached pages are safe. |
-| B | **measured**: some pages render, most stop at the CPU limit | **docs**: not deployed yet | WordPress needs 1.4 to 1.9 s of CPU per page in a Worker. Free stops a request at about 2 s. See [docs/approach-b.md](docs/approach-b.md) and [docs/results.md](docs/results.md). |
+| B | **measured**: some pages render, most stop at the CPU limit. The installer does not fit. | **measured**: every page renders, the installer runs in one request, 17 of 17 checks pass | CPU time. A page needs 0.8 to 1.9 s of CPU in a Worker. Free stops a request at about 2 s; Paid allows 30 s by default. See [docs/approach-b.md](docs/approach-b.md) and [docs/results.md](docs/results.md). |
 | C | **no** | **docs** | Containers are not on the Free plan. Container disk is ephemeral. A snapshot keeps files for 30 days from creation or last restore. |
 | D | **docs** for the storefront Worker | **docs** | The back office needs one of A, B, C, or a normal host. |
 
@@ -66,7 +66,7 @@ See [docs/prior-art.md](docs/prior-art.md).
 ## How a cell becomes measured
 
 1. Put a deploy script and a test for the approach in `tests/<id>/`.
-2. Deploy it to an account on the plan named in the column.
+2. Deploy it to an account on the plan named in the column. Our Free column runs on an account on Workers Free; our Paid column runs on an account on Workers Paid.
 3. Run the test. Record the command, the date, the Wrangler version and the result in the cell's row in `docs/results.md`.
 4. Change the mark to **measured**, and link the result.
 

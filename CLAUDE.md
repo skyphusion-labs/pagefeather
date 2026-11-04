@@ -10,4 +10,5 @@ A record of which ways to run WordPress on Cloudflare work, on which plan. The R
 - Prior art is credited in `docs/prior-art.md` before we build the same thing.
 - No funnel and no upsell. The reader's own Cloudflare account runs everything.
 - Docs a reader reads are Simplified Technical English. No em-dashes or en-dashes.
-- Deploys go to a test account and a `workers.dev` address. Do not route a zone without a CR issue.
+- Deploys go to a `workers.dev` address only. Do not route a zone without a CR issue.
+- The Free column deploys to the test account on Workers Free (`env.free`). The Paid column deploys to the Skyphusion Labs account, which is on Workers Paid (`env.paid`, Conrad 2026-11-04). Each env has its own Worker and its own D1 database.
