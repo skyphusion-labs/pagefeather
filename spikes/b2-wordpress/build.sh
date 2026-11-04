@@ -25,6 +25,8 @@ wp=build/wordpress
 rm -rf "$wp/wp-content/themes/twentytwentythree" "$wp/wp-content/themes/twentytwentyfour" "$wp/wp-content/plugins/akismet" "$wp/wp-config-sample.php"
 cp -RL "$cache/sqlite-database-integration/packages/plugin-sqlite-database-integration" "$wp/wp-content/plugins/sqlite-database-integration"
 cp php/db.php php/d1-pdo.php php/d1-dialect.php "$wp/wp-content/"
+mkdir -p "$wp/wp-content/mu-plugins"
+cp php/r2-uploads.php "$wp/wp-content/mu-plugins/"
 # The plugin's installer opens its own connection to DB_PATH. Make it use the
 # D1-backed connection that wp-content/db.php already made.
 python3 - "$wp/wp-content/plugins/sqlite-database-integration/wp-includes/sqlite/install-functions.php" <<'PY'

@@ -13,6 +13,11 @@ binding = "DB"
 database_name = "b2-local"
 database_id = "00000000-0000-0000-0000-000000000002"
 
+# Media library (php/r2-uploads.php). Without this binding, uploads stay in memory.
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "b2-local-media"
+
 # Workers Free deploy, on workers.dev. Replace database_id with the id from `wrangler d1 create`.
 # Secrets: WP_SALT, SPIKE_TOKEN (wrangler secret put --env free).
 [env.free]
@@ -37,6 +42,10 @@ mode = "smart"
 binding = "DB"
 database_name = "wp-on-d1-spike"
 database_id = "c4b12ebc-b3c7-49ed-9352-061ead0f65bb"
+
+# R2 is not on for the Free test account: bucket create fails with code 10042,
+# "Please enable R2 through the Cloudflare Dashboard" (2026-11-04). After that, add:
+# [[env.free.r2_buckets]] binding = "MEDIA", bucket_name = "wp-on-d1-free-media"
 
 # Workers Paid deploy, on workers.dev. Replace database_id with the id from `wrangler d1 create`.
 # Secrets: WP_SALT, SPIKE_TOKEN (wrangler secret put --env paid).
@@ -63,3 +72,7 @@ mode = "smart"
 binding = "DB"
 database_name = "wp-on-d1-paid"
 database_id = "d6643778-509f-4dc0-871b-a7859d888a00"
+
+[[env.paid.r2_buckets]]
+binding = "MEDIA"
+bucket_name = "wp-on-d1-paid-media"

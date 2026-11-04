@@ -24,6 +24,7 @@ Each response has `x-d1-calls`, `x-d1-ms`, `x-d1-failures` and `x-php-ms`. `GET 
 export CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=...
 ENV=paid                                    # or free; see wrangler.toml
 wrangler d1 create wp-on-d1-$ENV            # put its id in wrangler.toml [env.$ENV]
+wrangler r2 bucket create wp-on-d1-$ENV-media  # the media library
 wrangler deploy --env $ENV
 wrangler secret put WP_SALT --env $ENV      # random, 32+ bytes
 wrangler secret put SPIKE_TOKEN --env $ENV  # gates /_install, /_last, /_mem, /_peak
@@ -33,6 +34,14 @@ curl -X POST -H "x-spike-token: ..." -H "x-admin-password: ..." https://<worker>
 On Workers Paid the install runs in one request (about 32 s). On Workers Free it exceeds the CPU limit. Load the database from a local install instead: `wrangler d1 export b2-local --local --output dump.sql`, then `wrangler d1 execute <db> --remote --env free --file dump.sql`, then set the admin password.
 
 `SPIKE_TOKEN=... ADMIN_PASSWORD=... ./e2e.sh https://<worker>.workers.dev` runs the same checks against a deploy.
+
+## Media library on R2
+
+`php/r2-uploads.php` is an mu-plugin. It stores uploads in the R2 bucket bound as `MEDIA`, and the Worker serves `/wp-content/uploads/*` from that bucket before PHP runs. URLs do not change.
+
+The design is from Human Made's [S3 Uploads](https://github.com/humanmade/S3-Uploads) (GPL-2.0): a stream wrapper plus the `upload_dir` filter. S3 Uploads uses the AWS SDK over HTTPS. A Worker gives PHP no network, so our `r2://` wrapper sends each operation (get, head, put, delete, list) through `post_message_to_js()` to the Worker, and the Worker calls the R2 binding. See `docs/prior-art.md`.
+
+Without the `MEDIA` binding the plugin is off, and uploads stay in one isolate's memory.
 
 ## How it fits together
 

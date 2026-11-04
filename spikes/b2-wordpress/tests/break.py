@@ -69,6 +69,11 @@ for kb in [100, 1900]:
 r = rest(o, "/wp/v2/media", raw=b"\x89PNG\r\n\x1a\n" + b"\x00" * 64, headers={"Content-Type": "image/png", "Content-Disposition": "attachment; filename=break.png"})
 url = json.loads(r["body"]).get("source_url") if r["code"] == 201 else None
 codes = Counter(req(opener(), url.split("workers.dev", 1)[-1])["code"] for _ in range(5)) if url else {}
-check("an uploaded file is served (known open: needs R2)", codes == Counter({200: 5}), f"upload {r['code']}, fetch {dict(codes)}")
+check("an uploaded file is served by every isolate (R2)", codes == Counter({200: 5}), f"upload {r['code']}, fetch {dict(codes)}")
+if url:
+    mid = json.loads(r["body"])["id"]
+    d = rest(o, f"/wp/v2/media/{mid}?force=true", method="DELETE")
+    gone = req(opener(), url.split("workers.dev", 1)[-1])["code"]
+    check("a deleted upload is gone from R2", d["code"] == 200 and gone == 404, f"delete {d['code']}, fetch {gone}")
 print(f"{results.count(True)} pass, {results.count(False)} fail")
 sys.exit(0 if all(results) else 1)
