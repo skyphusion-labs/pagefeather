@@ -45,8 +45,9 @@ class D1_Dialect {
 	public static function rewrite( $sql, array $params, callable $run ) {
 		$has_calls = (bool) preg_match( '/\b(' . implode( '|', self::DRIVER_FUNCTIONS ) . ')\b/i', $sql );
 		$too_big   = strlen( $sql ) > self::MAX_STATEMENT_BYTES;
+		$union_par = (bool) preg_match( '/\)\s*UNION\b/i', $sql );
 		$long_like = (bool) preg_match( "/\\bLIKE\\s*'(?:[^']|''){" . ( self::MAX_LIKE_BYTES + 1 ) . ',}/i', $sql );
-		if ( ! $has_calls && ! $too_big && ! $long_like ) {
+		if ( ! $has_calls && ! $too_big && ! $long_like && ! $union_par ) {
 			return array( $sql, $params );
 		}
 		$tokens = self::tokenize( $sql );
@@ -64,6 +65,9 @@ class D1_Dialect {
 		}
 		if ( $long_like ) {
 			$tokens = self::rewrite_long_like( $tokens );
+		}
+		if ( $union_par ) {
+			$tokens = self::rewrite_union_parens( $tokens );
 		}
 		if ( $too_big ) {
 			$tokens = self::bind_long_strings( $tokens );
@@ -164,6 +168,105 @@ class D1_Dialect {
 			self::count_rewrite( 'long_like' );
 		}
 		return $tokens;
+	}
+
+	/**
+	 * SQLite refuses parentheses around the parts of a compound SELECT:
+	 * `( SELECT a ) UNION ( SELECT b )`. The driver writes that for a MySQL
+	 * query in WooCommerce's order list (measured 2026-11-04). Remove each pair
+	 * that holds one plain SELECT (no ORDER BY or LIMIT inside) next to a UNION.
+	 */
+	private static function rewrite_union_parens( array $tokens ) {
+		$n     = count( $tokens );
+		$match = array();
+		$stack = array();
+		for ( $i = 0; $i < $n; $i++ ) {
+			if ( 'op' !== $tokens[ $i ]['type'] ) {
+				continue;
+			}
+			if ( '(' === $tokens[ $i ]['text'] ) {
+				$stack[] = $i;
+			} elseif ( ')' === $tokens[ $i ]['text'] && $stack ) {
+				$open           = array_pop( $stack );
+				$match[ $open ] = $i;
+				$match[ $i ]    = $open;
+			}
+		}
+		$drop = array();
+		$wrap = array();
+		for ( $i = 0; $i < $n; $i++ ) {
+			$t = $tokens[ $i ];
+			if ( 'word' !== $t['type'] || 'union' !== strtolower( $t['text'] ) ) {
+				continue;
+			}
+			// The part before UNION: ( SELECT ... )
+			$p = self::prev_index( $tokens, $i );
+			if ( null !== $p && ')' === $tokens[ $p ]['text'] && isset( $match[ $p ] ) ) {
+				$kind = self::select_part( $tokens, $match[ $p ], $p );
+				if ( 'plain' === $kind ) {
+					$drop[ $match[ $p ] ] = true;
+					$drop[ $p ]           = true;
+				} elseif ( 'ordered' === $kind ) {
+					$wrap[ $match[ $p ] ] = true;
+				}
+			}
+			// The part after UNION [ALL]: ( SELECT ... )
+			$q = self::next_index( $tokens, $i );
+			if ( null !== $q && 'word' === $tokens[ $q ]['type'] && in_array( strtolower( $tokens[ $q ]['text'] ), array( 'all', 'distinct' ), true ) ) {
+				$q = self::next_index( $tokens, $q );
+			}
+			if ( null !== $q && '(' === $tokens[ $q ]['text'] && isset( $match[ $q ] ) ) {
+				$kind = self::select_part( $tokens, $q, $match[ $q ] );
+				if ( 'plain' === $kind ) {
+					$drop[ $q ]           = true;
+					$drop[ $match[ $q ] ] = true;
+				} elseif ( 'ordered' === $kind ) {
+					$wrap[ $q ] = true;
+				}
+			}
+		}
+		if ( ! $drop && ! $wrap ) {
+			return $tokens;
+		}
+		self::count_rewrite( 'union_parens' );
+		foreach ( array_keys( $drop ) as $i ) {
+			$tokens[ $i ] = array( 'type' => 'ws', 'text' => ' ' );
+		}
+		// A part with its own ORDER BY or LIMIT becomes a subquery.
+		foreach ( array_keys( $wrap ) as $i ) {
+			$tokens[ $i ] = array( 'type' => 'word', 'text' => 'SELECT * FROM (' );
+		}
+		return $tokens;
+	}
+
+	/**
+	 * What is between $open and $close: 'plain' (one SELECT), 'ordered' (one
+	 * SELECT with ORDER BY or LIMIT at its level), or null (anything else).
+	 */
+	private static function select_part( array $tokens, $open, $close ) {
+		$first = self::next_index( $tokens, $open );
+		if ( null === $first || 'word' !== $tokens[ $first ]['type'] || 'select' !== strtolower( $tokens[ $first ]['text'] ) ) {
+			return null;
+		}
+		$kind  = 'plain';
+		$depth = 0;
+		for ( $i = $open + 1; $i < $close; $i++ ) {
+			$t = $tokens[ $i ];
+			if ( 'op' === $t['type'] && '(' === $t['text'] ) {
+				++$depth;
+			} elseif ( 'op' === $t['type'] && ')' === $t['text'] ) {
+				--$depth;
+			} elseif ( 0 === $depth && 'word' === $t['type'] ) {
+				$w = strtolower( $t['text'] );
+				if ( in_array( $w, array( 'union', 'intersect', 'except' ), true ) ) {
+					return null;
+				}
+				if ( 'order' === $w || 'limit' === $w ) {
+					$kind = 'ordered';
+				}
+			}
+		}
+		return $kind;
 	}
 
 	/** The literal inside '%literal%', or null if the pattern has other wildcards. */

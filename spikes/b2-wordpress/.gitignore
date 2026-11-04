@@ -6,3 +6,4 @@ out.json
 dev.log
 deploy.log
 tail.log
+__pycache__/

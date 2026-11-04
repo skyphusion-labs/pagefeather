@@ -55,6 +55,10 @@ Two uploads with the same name on two isolates would overwrite each other. The p
 
 `[cache] enabled = true` turns on Workers Cache in front of the Worker. `index.js` marks logged-out public pages cacheable for 10 minutes (`PAGE_CACHE_TTL`) with `Cache-Tag: wp-pages` and `Vary: Cookie`. The mu-plugin `php/edge-cache.php` purges the tag when content changes. Add `?nocache` to a URL to skip the cache.
 
+## WooCommerce
+
+WooCommerce is in the build (`WOO_VERSION` in `build.sh`). `tests/woo.py` runs a store and a guest checkout. Activate it with `POST /_activate?plugin=woocommerce/woocommerce.php` (spike token). On Paid, checkout exceeds the isolate memory limit; see `docs/approach-b.md` 8f.
+
 ## How it fits together
 
 | File | Job |
