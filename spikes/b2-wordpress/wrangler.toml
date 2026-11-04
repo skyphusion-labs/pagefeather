@@ -13,28 +13,28 @@ binding = "DB"
 database_name = "b2-local"
 database_id = "00000000-0000-0000-0000-000000000002"
 
-# Deploy to the paid test account (Conrad@rockenhaus.net, 32ce15b8...) on workers.dev.
-# Secrets: WP_SALT, SPIKE_TOKEN (wrangler secret put --env paid).
-[env.paid]
+# Deploy to your own account on workers.dev. Replace database_id with the id from `wrangler d1 create`.
+# Secrets: WP_SALT, SPIKE_TOKEN (wrangler secret put --env live).
+[env.live]
 name = "wp-on-d1-spike"
 workers_dev = true
 rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
 
-[env.paid.vars]
+[env.live.vars]
 # PHP's own allocator wastes WebAssembly memory on 2 MB-aligned chunks.
 PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
 
-[env.paid.assets]
+[env.live.assets]
 directory = "build/public"
 
 # Measured 2026-11-03: this account is on Workers Free (a cpu_ms limit is refused
 # with code 100328). Requests stop at about 2 s of CPU (exceededResources).
-# On Paid, add: [env.paid.limits] cpu_ms = 30000
+# On Paid, add: [env.live.limits] cpu_ms = 30000
 
-[env.paid.placement]
+[env.live.placement]
 mode = "smart"
 
-[[env.paid.d1_databases]]
+[[env.live.d1_databases]]
 binding = "DB"
 database_name = "wp-on-d1-spike"
 database_id = "c4b12ebc-b3c7-49ed-9352-061ead0f65bb"
