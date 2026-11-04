@@ -26,6 +26,16 @@ Repository: [scottyzen/woonuxt](https://github.com/scottyzen/woonuxt). GPL-3.0. 
 - Approach D for WooCommerce. A Nuxt 4 storefront reads WooCommerce through WPGraphQL.
 - Its deploy guide covers Netlify and Vercel. It has no Cloudflare guide.
 
+## S3 Uploads, by Human Made
+
+Repository: [humanmade/S3-Uploads](https://github.com/humanmade/S3-Uploads). GPL-2.0. About 2,160 stars, last push 2026-03-09 (read 2026-11-04).
+
+- It keeps the WordPress media library in S3. It is a small drop-in plugin. It registers an `s3://` stream wrapper and points the `upload_dir` filter at it, so WordPress file functions write to the bucket with no other change.
+- It also handles the parts core cannot do on a stream: attachment deletion (core uses `realpath()`), file sizes in metadata, image editors.
+- Human Made released it free and complete, with no paid tier and no funnel. It is a good example of giving back to the WordPress community.
+
+Our R2 media library in approach B (`spikes/b2-wordpress/php/r2-uploads.php`) uses the same design: a stream wrapper, the `upload_dir` filter, and deletion in `delete_attachment`. We could not use S3 Uploads as it is: it calls S3 over HTTPS with the AWS SDK, and PHP in a Worker has no network. Our wrapper sends each file operation to the Worker, which uses its R2 binding. Thank you, Human Made.
+
 ## WordPress Playground
 
 Repository: [WordPress/wordpress-playground](https://github.com/WordPress/wordpress-playground). It runs WordPress in WebAssembly with SQLite through the `sqlite-database-integration` plugin.

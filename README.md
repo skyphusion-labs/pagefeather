@@ -28,7 +28,7 @@ Cells marked **measured** link to a row in `docs/results.md`. Everything else is
 | Id | Workers Free | Workers Paid ($5 a month) | Main limit |
 | --- | --- | --- | --- |
 | A | **claimed** for cached pages (HostlessWP) | **claimed** (HostlessWP) | Free CPU time is 10 ms per request. A full WordPress page render uses more, so on Free only cached pages are safe. |
-| B | **measured**: some pages render, most stop at the CPU limit. The installer does not fit. | **measured**: every page renders, the installer runs in one request, 17 of 17 checks pass | CPU time. A page needs 0.8 to 1.9 s of CPU in a Worker. Free stops a request at about 2 s; Paid allows 30 s by default. See [docs/approach-b.md](docs/approach-b.md) and [docs/results.md](docs/results.md). |
+| B | **measured**: some pages render, most stop at the CPU limit. The installer does not fit. R2 must be turned on in the dashboard before the media library can use it. | **measured**: every page renders, the installer runs in one request, 17 of 17 checks pass. Media library on R2 works. | CPU time. A page needs 0.8 to 1.9 s of CPU in a Worker. Free stops a request at about 2 s; Paid allows 30 s by default. See [docs/approach-b.md](docs/approach-b.md) and [docs/results.md](docs/results.md). |
 | C | **no** | **docs** | Containers are not on the Free plan. Container disk is ephemeral. A snapshot keeps files for 30 days from creation or last restore. |
 | D | **docs** for the storefront Worker | **docs** | The back office needs one of A, B, C, or a normal host. |
 

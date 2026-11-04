@@ -123,7 +123,7 @@ Same build, same code, on an account on Workers Paid, with `cpu_ms = 30000`. Res
 | A search term over about 48 bytes | The count query fails: `LIKE or GLOB pattern too complex`. D1 refuses a LIKE pattern over 50 bytes. | `col LIKE '%term%'` with a long term becomes `instr(lower(col), lower('term')) > 0`. | 0 D1 failures for 200 bytes and 50 emoji. |
 | `GET /wp-content/db.php` | PHP fatal error with file paths, shown to the visitor. Database errors also showed SQL and a backtrace. | A deploy sets `WP_DEBUG` false and `display_errors=0`. | 500 with an empty body. |
 | `system.multicall` on `xmlrpc.php` | 50 password tries in one request, 0.7 s. | `xmlrpc.php` returns 403 unless `XMLRPC=on`. | 403. |
-| Media upload | 201, then the file is served by one isolate only (1 of 5 fetches). | Open: issue #12, store uploads in R2. | Not fixed. |
+| Media upload | 201, then the file is served by one isolate only (1 of 5 fetches). | The R2 Uploads mu-plugin stores the media library in R2; the Worker serves `/wp-content/uploads/*` from R2. Design from Human Made's S3 Uploads (`docs/prior-art.md`). | Paid: 5 of 5 fetches 200. Thumbnails made by GD are in R2. Admin multipart upload works. Delete removes every size (404). Free: R2 is not on for the account (code 10042), so not fixed there. |
 
 Also tried, no failure: SQL injection strings in search, NUL bytes, `wp-config.php` and path traversal (403 or 400), 12 parallel post creates (12 unique ids), an anonymous comment. Stock WordPress behavior, not changed: `/?rest_route=/wp/v2/users` lists user names. Each failed login costs CPU on Paid; a workers.dev address has no rate limiting rule, so a zone is needed for that.
 

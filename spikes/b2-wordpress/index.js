@@ -90,12 +90,15 @@ async function boot(origin) {
 		}
 	}
 	lines.push(`define('WP_HOME', ${JSON.stringify(origin)});`);
+	// The R2 Uploads mu-plugin turns on when the MEDIA binding exists.
+	if (ENV.MEDIA) lines.push(`define('R2_UPLOADS', true);`);
 	// A deploy (WP_SALT is set) shows no PHP errors or database errors to visitors.
 	if (ENV.WP_SALT) lines.push(`define('WP_DEBUG', false);`);
 	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
 
 	php.onMessage(async (raw) => {
 		const m = JSON.parse(raw);
+		if (m.r2) return JSON.stringify(await r2op(m.r2));
 		if (m.report) {
 			stats.failures.push({ sql: m.sql.slice(0, 400), error: m.error });
 			stats.log.push('ERR ' + m.sql.slice(0, 160).replace(/\s+/g, ' ') + ' => ' + m.error.slice(0, 120));
@@ -136,6 +139,70 @@ async function boot(origin) {
 	return { php, handler, bootMs: { wasm: tWasm, files: tFiles, fileCount: count, fileBytes, memAt } };
 }
 
+// One R2 operation for the R2 Uploads mu-plugin (php/r2-uploads.php).
+// Bodies cross the PHP to JS bridge as base64.
+async function r2op(op) {
+	try {
+		const B = ENV.MEDIA;
+		if (op.op === 'get') {
+			const o = await B.get(op.key);
+			if (!o) return { ok: true, found: false };
+			const bytes = new Uint8Array(await o.arrayBuffer());
+			return { ok: true, found: true, body: b64encode(bytes), size: o.size, mtime: Math.floor(o.uploaded.getTime() / 1000) };
+		}
+		if (op.op === 'head') {
+			const o = await B.head(op.key);
+			return o ? { ok: true, found: true, size: o.size, mtime: Math.floor(o.uploaded.getTime() / 1000) } : { ok: true, found: false };
+		}
+		if (op.op === 'put') {
+			await B.put(op.key, b64decode(op.body), { httpMetadata: { contentType: op.type || 'application/octet-stream' } });
+			return { ok: true };
+		}
+		if (op.op === 'delete') {
+			await B.delete(op.key);
+			return { ok: true };
+		}
+		if (op.op === 'list') {
+			const l = await B.list({ prefix: op.prefix, delimiter: '/', limit: op.limit || 1000 });
+			return { ok: true, keys: l.objects.map((o) => o.key), prefixes: l.delimitedPrefixes };
+		}
+		return { ok: false, error: 'unknown r2 op' };
+	} catch (e) {
+		return { ok: false, error: String((e && e.message) || e) };
+	}
+}
+
+function b64encode(bytes) {
+	let s = '';
+	for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+	return btoa(s);
+}
+
+function b64decode(str) {
+	const s = atob(str);
+	const out = new Uint8Array(s.length);
+	for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+	return out;
+}
+
+// GET /wp-content/uploads/<path> comes from R2, not PHP. It needs no PHP lock.
+async function serveUpload(req, env, url) {
+	let key;
+	try {
+		key = 'uploads/' + decodeURIComponent(url.pathname.slice('/wp-content/uploads/'.length));
+	} catch {
+		return new Response('bad path', { status: 400 });
+	}
+	const o = await env.MEDIA.get(key, { onlyIf: req.headers });
+	if (o === null) return new Response('not found', { status: 404 });
+	const h = new Headers();
+	o.writeHttpMetadata(h);
+	h.set('etag', o.httpEtag);
+	h.set('cache-control', 'public, max-age=86400');
+	if (!('body' in o) || !o.body) return new Response(null, { status: 304, headers: h });
+	return new Response(req.method === 'HEAD' ? null : o.body, { headers: h });
+}
+
 const INSTALL = `<?php
 define( 'WP_INSTALLING', true );
 require '/wordpress/wp-load.php';
@@ -156,6 +223,7 @@ export default {
 		// Spike endpoints need the SPIKE_TOKEN secret when it is set (always on a deploy).
 		const spikeOk = !env.SPIKE_TOKEN || req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
+		if (env.MEDIA && (req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/wp-content/uploads/')) return serveUpload(req, env, url);
 		// XML-RPC lets one request try many passwords (system.multicall). Off unless XMLRPC=on.
 		if (url.pathname === '/xmlrpc.php' && env.XMLRPC !== 'on') return new Response('XML-RPC is off', { status: 403 });
 		const maxBody = Number(env.MAX_BODY_BYTES || MAX_BODY_BYTES);
