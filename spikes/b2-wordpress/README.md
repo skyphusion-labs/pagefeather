@@ -47,6 +47,10 @@ Image sizes come from the Cloudflare Images binding (`IMAGES`), not GD. `php/cf-
 
 Two uploads with the same name on two isolates would overwrite each other. The plugin reserves each file name with one atomic D1 insert, in the table `_r2_reserved`.
 
+## Page cache
+
+`[cache] enabled = true` turns on Workers Cache in front of the Worker. `index.js` marks logged-out public pages cacheable for 10 minutes (`PAGE_CACHE_TTL`) with `Cache-Tag: wp-pages` and `Vary: Cookie`. The mu-plugin `php/edge-cache.php` purges the tag when content changes. Add `?nocache` to a URL to skip the cache.
+
 ## How it fits together
 
 | File | Job |

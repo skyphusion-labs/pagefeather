@@ -97,5 +97,31 @@ if srcs:
     check("a Range request gets 206 and 10 bytes", rr["code"] == 206 and len(rr["body"]) == 10, short(rr))
 r = req(opener(), "/wp-content/uploads/" + "a" * 2000)
 check("a 2,000-character upload path gets 404, not an exception", r["code"] == 404, short(r))
+# Page cache (Workers Cache)
+def cstat(r): return (r["h"].get("cf-cache-status") if r["h"] else None)
+home = f"/?cachetest={T}"
+req(opener(), home); time.sleep(1); h2 = req(opener(), home)
+check("a logged-out page is served from the edge cache", cstat(h2) == "HIT", str(cstat(h2)))
+mine = req(o, home)
+check("a logged-in visitor never gets the cached page", cstat(mine) != "HIT" and b"wpadminbar" in mine["body"], f"{cstat(mine)}, admin bar {b'wpadminbar' in mine['body']}")
+title = f"Cache purge check {T}"
+rest(o, "/wp/v2/posts", {"title": title, "content": "<p>x</p>", "status": "publish"})
+seen = False
+for _ in range(10):
+    time.sleep(3)
+    if title.encode() in req(opener(), home)["body"]:
+        seen = True; break
+check("publishing a post purges the cached page", seen)
+r = upload(png(16, 16), f"break-cachedel-{T}.png")
+if r["code"] == 201:
+    m = json.loads(r["body"]); u = m["source_url"].split("workers.dev", 1)[-1]
+    req(opener(), u); req(opener(), u)
+    rest(o, f"/wp/v2/media/{m['id']}?force=true", method="DELETE")
+    gone = False
+    for _ in range(10):
+        time.sleep(3)
+        if req(opener(), u)["code"] == 404:
+            gone = True; break
+    check("a deleted upload is purged from the edge cache", gone)
 print(f"{results.count(True)} pass, {results.count(False)} fail")
 sys.exit(0 if all(results) else 1)

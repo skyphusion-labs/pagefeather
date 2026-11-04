@@ -101,6 +101,10 @@ async function boot(origin) {
 	php.onMessage(async (raw) => {
 		const m = JSON.parse(raw);
 		if (m.r2) return JSON.stringify(await r2op(m.r2));
+		if (m.cache === 'purge') {
+			purgeRequested = true;
+			return '{}';
+		}
 		if (m.report) {
 			stats.failures.push({ sql: m.sql.slice(0, 400), error: m.error });
 			stats.log.push('ERR ' + m.sql.slice(0, 160).replace(/\s+/g, ' ') + ' => ' + m.error.slice(0, 120));
@@ -142,6 +146,36 @@ async function boot(origin) {
 }
 
 let reserveTableReady = false;
+// Set by the Edge Cache mu-plugin when content changes. Read after the request.
+let purgeRequested = false;
+// Upload paths deleted in this request. The page cache may hold them; purge them too.
+let deletedUploads = [];
+
+// Page cache (Workers Cache). A response is cacheable only for a logged-out
+// GET of a public page. Cookie is not in the Workers Cache key, so Vary: Cookie
+// keeps a logged-in visitor from getting a logged-out page.
+const WP_COOKIE = /(^|;\s*)(wordpress_logged_in_|wordpress_sec_|wp-postpass_|comment_author_|wp-settings-|woocommerce_|wp_woocommerce_session_)/;
+function pageCacheHeaders(req, url, r, out, env) {
+	const ttl = Number(env.PAGE_CACHE_TTL || 600);
+	const wpCc = String([].concat(r.headers['cache-control'] || []).join(','));
+	const cacheable =
+		ttl > 0 &&
+		(req.method === 'GET' || req.method === 'HEAD') &&
+		[200, 301, 404].includes(r.httpStatusCode) &&
+		!WP_COOKIE.test(req.headers.get('cookie') || '') &&
+		!r.headers['set-cookie'] &&
+		!/no-cache|no-store|private/i.test(wpCc) &&
+		!/^\/(wp-admin|wp-login\.php|wp-cron\.php|_)/.test(url.pathname) &&
+		!url.searchParams.has('preview') &&
+		!url.searchParams.has('nocache');
+	if (cacheable) {
+		out.set('cache-control', `public, max-age=${ttl}, stale-while-revalidate=60`);
+		out.set('cache-tag', 'wp-pages');
+		out.append('vary', 'Cookie');
+	} else if (!wpCc) {
+		out.set('cache-control', 'private, no-store');
+	}
+}
 
 // One R2 operation for the R2 Uploads mu-plugin (php/r2-uploads.php).
 // Bodies cross the PHP to JS bridge as base64.
@@ -164,6 +198,7 @@ async function r2op(op) {
 		}
 		if (op.op === 'delete') {
 			await B.delete(op.key);
+			deletedUploads.push('/wp-content/' + op.key);
 			return { ok: true };
 		}
 		if (op.op === 'info') {
@@ -266,7 +301,7 @@ echo json_encode( array( 'installed' => true, 'user_id' => $r['user_id'] ) );
 `;
 
 export default {
-	async fetch(req, env) {
+	async fetch(req, env, ctx) {
 		ENV = env;
 		const url = new URL(req.url);
 		if (url.pathname === '/_ping') return new Response('ok');
@@ -278,11 +313,11 @@ export default {
 		if (url.pathname === '/xmlrpc.php' && env.XMLRPC !== 'on') return new Response('XML-RPC is off', { status: 403 });
 		const maxBody = Number(env.MAX_BODY_BYTES || MAX_BODY_BYTES);
 		if (Number(req.headers.get('content-length') || 0) > maxBody) return new Response('request body too large', { status: 413 });
-		return withPhp(() => handle(req, env, url, spikeOk, maxBody));
+		return withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx));
 	},
 };
 
-async function handle(req, env, url, spikeOk, maxBody) {
+async function handle(req, env, url, spikeOk, maxBody, ctx) {
 	{
 		if (url.pathname === '/_last') return Response.json(globalThis.__lastRequest || {});
 		if (url.pathname === '/_peak') {
@@ -327,10 +362,19 @@ async function handle(req, env, url, spikeOk, maxBody) {
 			if (body && body.length > maxBody) return new Response('request body too large', { status: 413 });
 			const headers = {};
 			req.headers.forEach((v, k) => (headers[k] = v));
+			purgeRequested = false;
+			deletedUploads = [];
 			const r = await handler.request({ url: url.pathname + url.search, method: req.method, headers, body });
+			if (ctx && ctx.cache && (purgeRequested || deletedUploads.length)) {
+				const what = {};
+				if (purgeRequested) what.tags = ['wp-pages'];
+				if (deletedUploads.length) what.pathPrefixes = deletedUploads.slice(0, 30);
+				ctx.waitUntil(ctx.cache.purge(what).catch((e) => console.log('cache purge failed', String(e))));
+			}
 			const out = new Headers();
 			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
 			const d = delta();
+			pageCacheHeaders(req, url, r, out, env);
 			out.set('x-d1-calls', String(d.calls));
 			out.set('x-d1-ms', String(d.ms));
 			out.set('x-d1-failures', String(d.failures.length));

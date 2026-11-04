@@ -140,6 +140,26 @@ The Images binding is on both plans. Images Free includes 5,000 unique transform
 
 Also tried, no failure (round 3): SQL injection strings in search, NUL bytes, `wp-config.php` and path traversal (403 or 400), 12 parallel post creates (12 unique ids), an anonymous comment. Stock WordPress behavior, not changed: `/?rest_route=/wp/v2/users` lists user names. Each failed login costs CPU on Paid; a workers.dev address has no rate limiting rule, so a zone is needed for that.
 
+### 8c. Page cache (Workers Cache). Measured 2026-11-04.
+
+`[cache] enabled = true` puts Cloudflare's cache in front of the Worker. On a hit, no Worker code runs, so a cached page uses no CPU. The cache is tiered and collapses simultaneous misses into one render.
+
+- The Worker marks a response cacheable (`public, max-age=600, stale-while-revalidate=60`, `Cache-Tag: wp-pages`) only for a logged-out `GET` or `HEAD` with status 200, 301 or 404, no `Set-Cookie`, no WordPress cookie on the request, and not admin, login, preview or spike paths.
+- The cache key has no cookies. `Vary: Cookie` keeps a logged-in visitor on their own (uncached) variant.
+- The Edge Cache mu-plugin (`php/edge-cache.php`) asks the Worker to purge the `wp-pages` tag when content changes (posts, comments, terms, menus, theme, site options). A deleted upload is purged by path.
+- Each deploy starts with a cold cache, because the Worker version is in the cache key.
+- With the cache on, every request counts as a billed Worker request, static assets too. On Free that counts against 100,000 requests a day.
+
+Results:
+
+| Plan | Test | Result |
+| --- | --- | --- |
+| Paid | `tests/break.py` | 23 pass, 0 fail: a logged-out page is a cache HIT; a logged-in visitor gets BYPASS and the admin bar; a new post is on the cached page within seconds; a deleted upload is 404 in the cache. |
+| Free | cold cache: 5 pages, retry until 200 | 4 pages on the first try, 1 on the second. |
+| Free | then 50 reader requests over the 5 pages | 50 of 50: 200, cache HIT. |
+
+On Free, this makes approach B usable for readers. Writers and admin still need Paid.
+
 ### 9. Memory: what it took to fit in 128 MB
 
 | Change | Effect, measured locally |
@@ -153,7 +173,6 @@ Also tried, no failure (round 3): SQL injection strings in search, NUL bytes, `w
 ### 10. Next
 
 - CPU: precompile OPcache at build time (HostlessWP does this), so a request does not compile about 500 scripts.
-- Page cache for logged-out pages, which makes Free usable for readers.
 
 ## Prior work
 
