@@ -13,6 +13,6 @@
   "dependencies": {
     "@php-wasm/universal": "^3.1.62",
     "@php-wasm/web-8-3": "^3.1.62",
-    "fflate": "^0.8.2"
+    "fflate": "^0.8.3"
   }
 }
