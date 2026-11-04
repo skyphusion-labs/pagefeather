@@ -13,10 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.3'
-          coverage: none
+      # ubuntu-latest ships PHP 8.3. Third-party actions are not on the org allowlist.
+      - run: php -v
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -44,10 +42,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.3'
-          coverage: pcov
+      - name: Install pcov
+        run: sudo apt-get update -q && sudo apt-get install -y -q php-pcov && php -m | grep -i pcov
       - name: Fetch the SQLite driver
         run: |
           git clone -q https://github.com/WordPress/sqlite-database-integration spikes/b2-wordpress/build/cache/sqlite-database-integration
