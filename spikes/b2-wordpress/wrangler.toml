@@ -18,6 +18,10 @@ database_id = "00000000-0000-0000-0000-000000000002"
 binding = "MEDIA"
 bucket_name = "b2-local-media"
 
+# Image sizes (php/cf-images-editor.php). Local dev uses an offline version.
+[images]
+binding = "IMAGES"
+
 # Workers Free deploy, on workers.dev. Replace database_id with the id from `wrangler d1 create`.
 # Secrets: WP_SALT, SPIKE_TOKEN (wrangler secret put --env free).
 [env.free]
@@ -34,6 +38,9 @@ directory = "build/public"
 
 # Measured 2026-11-03: this account is on Workers Free (a cpu_ms limit is refused
 # with code 100328). Requests stop at about 2 s of CPU (exceededResources).
+
+[env.free.images]
+binding = "IMAGES"
 
 [env.free.placement]
 mode = "smart"
@@ -76,3 +83,6 @@ database_id = "d6643778-509f-4dc0-871b-a7859d888a00"
 [[env.paid.r2_buckets]]
 binding = "MEDIA"
 bucket_name = "wp-on-d1-paid-media"
+
+[env.paid.images]
+binding = "IMAGES"

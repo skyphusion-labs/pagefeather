@@ -279,3 +279,44 @@ add_action(
 		}
 	}
 );
+
+// Image sizes come from the Cloudflare Images binding, not GD, when the Worker
+// has one (it defines CF_IMAGES). See cf-images-editor.php.
+add_filter(
+	'wp_image_editors',
+	function ( $editors ) {
+		if ( defined( 'CF_IMAGES' ) && CF_IMAGES ) {
+			require_once __DIR__ . '/r2-uploads/cf-images-editor.php';
+			array_unshift( $editors, 'CF_Images_Editor' );
+		}
+		return $editors;
+	}
+);
+
+// wp_unique_filename() checks, then writes. Two uploads of the same name on two
+// isolates can both pass the check, and the second overwrites the first
+// (measured 2026-11-04: 8 parallel uploads, 3 distinct files). The Worker
+// reserves each name with one atomic D1 insert, so only one upload gets it.
+add_filter(
+	'wp_unique_filename',
+	function ( $filename, $ext, $dir ) {
+		if ( 0 !== strpos( $dir, 'r2://' ) ) {
+			return $filename;
+		}
+		$base = ( $ext && substr( $filename, -strlen( $ext ) ) === $ext ) ? substr( $filename, 0, -strlen( $ext ) ) : $filename;
+		$name = $filename;
+		for ( $i = 1; $i < 1000; $i++ ) {
+			$r = R2_Uploads_Stream::call( array( 'op' => 'reserve', 'key' => R2_Uploads_Stream::key( $dir . '/' . $name ) ) );
+			if ( ! $r ) {
+				return $filename; // Reservation is not available. Keep what core chose.
+			}
+			if ( $r['reserved'] ) {
+				return $name;
+			}
+			$name = $base . '-' . $i . $ext;
+		}
+		return $filename;
+	},
+	10,
+	3
+);
