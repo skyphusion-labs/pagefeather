@@ -48,6 +48,12 @@ mkdir -p build/public
 # only .min.css files (some by a path built at runtime), so those stay and the
 # unminified ones go. A theme's style.css stays: WordPress reads its header.
 (cd "$wp" && find . -type f \( -name '*.js' -o -name '*.map' -o -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' -o -name '*.gif' -o -name '*.svg' -o -name '*.webp' -o -name '*.woff' -o -name '*.woff2' -o -name '*.ttf' -o -name '*.eot' -o -name '*.mo' -o -name '*.po' -o -name '*.zip' -o \( -name '*.css' ! -name '*.min.css' \) -o -name '*.txt' -o -name '*.scss' -o -name '*.md' \) ! -path './wp-content/themes/*/style.css' -delete)
+# Deflated: the Worker inflates each file on its first read only. opcache.zip
+# is stored instead (its files are used as views); two stored zips would pass
+# the 64 MiB Worker size limit.
 (cd build && zip -qr -9 site.zip wordpress)
 echo "site.zip $(wc -c < build/site.zip) bytes, $(cd build && unzip -l site.zip | tail -1)"
+# Precompiled OPcache files come from ./opcache.sh. Until then, an empty zip:
+# the Worker compiles as before.
+[ -f build/opcache.zip ] || python3 -c "import zipfile; zipfile.ZipFile('build/opcache.zip', 'w').close()"
 echo "public/ $(find build/public -type f | wc -l | tr -d ' ') files"

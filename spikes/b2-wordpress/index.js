@@ -2,8 +2,12 @@
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
-import { unzipSync } from 'fflate';
+import { inflateSync } from 'fflate';
 import siteZip from './build/site.zip';
+// Compiled PHP (OPcache file cache) made by opcache.sh with this same PHP build.
+import opcacheZip from './build/opcache.zip';
+
+const OPCACHE_DIR = '/internal/shared/opcache';
 
 const DOCROOT = '/wordpress';
 // php-wasm's defaults keep OPcache on with a file cache in PHP's in-memory
@@ -11,7 +15,9 @@ const DOCROOT = '/wordpress';
 // the cost of JS memory. Override through PHP_INI.
 const INI_DEFAULTS = {};
 // WebAssembly memory never shrinks. Past this, boot a fresh runtime for the next request.
-const RECYCLE_WASM_BYTES = 80 * 1024 * 1024;
+// OPcache shared memory (32 MB) is part of it. Measured 2026-11-04 on Paid:
+// 81 MiB after the first page with OPcache on.
+const RECYCLE_WASM_BYTES = 100 * 1024 * 1024;
 let ENV;
 // Counters only grow. A request reports the difference, so a nested request
 // (WordPress calling its own URL) cannot reset an outer one.
@@ -21,8 +27,26 @@ let bootPromise;
 // with 30 parallel requests on one isolate, about half crashed. So requests
 // that use PHP run one at a time, in arrival order.
 let phpQueue = Promise.resolve();
+// If the request ahead never finishes, a waiter would wait forever. On Free a
+// request stopped for CPU can leave the isolate alive with the lock held
+// (measured 2026-11-04: 524 timeouts). After LOCK_STALE_MS a waiter goes on with
+// a new PHP runtime. 60 s: the installer runs about 32 s on Paid.
+const LOCK_STALE_MS = 60000;
 function withPhp(fn) {
-	const run = phpQueue.then(fn, fn);
+	const prev = phpQueue;
+	const run = (async () => {
+		let timer;
+		const stale = await Promise.race([
+			prev.then(
+				() => false,
+				() => false,
+			),
+			new Promise((ok) => (timer = setTimeout(() => ok(true), LOCK_STALE_MS))),
+		]);
+		clearTimeout(timer);
+		if (stale) bootPromise = null; // the old runtime's state is unknown
+		return fn();
+	})();
 	phpQueue = run.catch(() => {});
 	return run;
 }
@@ -90,6 +114,70 @@ function newStats() {
 	return { calls: 0, ms: 0, failures: [], log: [], r2: {} };
 }
 
+// Entries of a zip, from its central directory. data() returns the file
+// bytes: a view for a stored entry, an inflated copy for a deflated one.
+function zipEntries(zip) {
+	const dv = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+	let eocd = zip.length - 22;
+	while (eocd >= 0 && dv.getUint32(eocd, true) !== 0x06054b50) eocd--;
+	if (eocd < 0) return [];
+	const total = dv.getUint16(eocd + 10, true);
+	let p = dv.getUint32(eocd + 16, true);
+	const dec = new TextDecoder();
+	const out = [];
+	for (let n = 0; n < total; n++) {
+		if (dv.getUint32(p, true) !== 0x02014b50) throw new Error('bad zip central directory');
+		const method = dv.getUint16(p + 10, true);
+		const csize = dv.getUint32(p + 20, true);
+		const size = dv.getUint32(p + 24, true);
+		const nlen = dv.getUint16(p + 28, true);
+		const xlen = dv.getUint16(p + 30, true);
+		const clen = dv.getUint16(p + 32, true);
+		const local = dv.getUint32(p + 42, true);
+		const name = dec.decode(zip.subarray(p + 46, p + 46 + nlen));
+		p += 46 + nlen + xlen + clen;
+		out.push({
+			name,
+			method,
+			size,
+			data() {
+				const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
+				const raw = zip.subarray(start, start + csize);
+				return method === 0 ? raw : inflateSync(raw, { out: new Uint8Array(size) });
+			},
+		});
+	}
+	return out;
+}
+
+// A MEMFS file whose contents are made on first read. Its size is known at
+// once, so stat() does not inflate it. A write replaces the lazy contents.
+function lazyFile(FS, path, entry) {
+	FS.writeFile(path, new Uint8Array(0));
+	const node = FS.lookupPath(path).node;
+	let contents = null;
+	let used = entry.size;
+	Object.defineProperty(node, 'contents', {
+		configurable: true,
+		get() {
+			if (contents === null) contents = entry.data();
+			return contents;
+		},
+		set(v) {
+			contents = v;
+		},
+	});
+	Object.defineProperty(node, 'usedBytes', {
+		configurable: true,
+		get() {
+			return used;
+		},
+		set(v) {
+			used = v;
+		},
+	});
+}
+
 async function boot(origin) {
 	const t0 = Date.now();
 	const id = await loadPHPRuntime(loader, {
@@ -106,32 +194,61 @@ async function boot(origin) {
 	// A deploy (WP_SALT is set) never prints PHP errors, even for a script that
 	// does not load wp-config.php (measured 2026-11-04: /wp-content/db.php did).
 	const deployIni = ENV.WP_SALT ? { display_errors: '0', display_startup_errors: '0' } : {};
-	await setPhpIniEntries(php, { ...INI_DEFAULTS, ...deployIni, ...JSON.parse(ENV.PHP_INI || '{}') });
+	// OPcache. Measured 2026-11-04: it cached nothing until these were set.
+	// - file_update_protection=0: OPcache skips a file changed in the last 2 s.
+	//   Files are written at boot and the Worker clock barely moves, so every
+	//   file looked new.
+	// - validate_timestamps=0: scripts never change within a deploy, and the
+	//   shipped file cache is older than the files unzipped at boot.
+	// - shared memory (24 MB) for warm requests, the file cache (shipped by
+	//   opcache.sh) for a cold isolate. Warm page locally: 220 ms -> 100 ms.
+	const opcacheIni = {
+		'opcache.file_update_protection': '0',
+		'opcache.validate_timestamps': '0',
+		'opcache.file_cache_only': '0',
+		'opcache.memory_consumption': '32',
+		'opcache.interned_strings_buffer': '4',
+		'opcache.max_accelerated_files': '4000',
+	};
+	await setPhpIniEntries(php, { ...INI_DEFAULTS, ...opcacheIni, ...deployIni, ...JSON.parse(ENV.PHP_INI || '{}') });
 	const tWasm = Date.now() - t0;
 	const mem = () => php[__private__dont__use].HEAPU8.length;
 	const memAt = { start: mem() };
 
-	// Unzip in batches, so the whole tree never sits in JS memory twice.
-	const zip = new Uint8Array(siteZip);
-	const names = [];
-	unzipSync(zip, { filter: (f) => (names.push(f.name), false) });
+	// Files, without copying at boot (measured 2026-11-04: unzip and write cost
+	// about 300 ms of a cold start locally, more on Cloudflare).
+	// - site.zip (deflated): each PHP file is inflated on its first read only.
+	//   A page reads about a quarter of them.
+	// - opcache.zip (stored): each file is a view of the bundled bytes. No copy.
+	const FS = php[__private__dont__use].FS;
+	const made = new Set();
+	const mkdirp = (dir) => {
+		if (made.has(dir)) return;
+		php.mkdir(dir);
+		made.add(dir);
+	};
 	let count = 0;
 	let fileBytes = 0;
-	const BATCH = 200;
-	for (let b = 0; b < names.length; b += BATCH) {
-		const want = new Set(names.slice(b, b + BATCH));
-		const files = unzipSync(zip, { filter: (f) => want.has(f.name) });
-		for (const [path, data] of Object.entries(files)) {
-			const full = '/' + path;
-			if (path.endsWith('/')) {
-				php.mkdir(full);
-				continue;
-			}
-			php.mkdir(full.slice(0, full.lastIndexOf('/')));
-			php.writeFile(full, data);
-			count++;
-			fileBytes += data.length;
+	for (const e of zipEntries(new Uint8Array(siteZip))) {
+		const full = '/' + e.name;
+		if (e.name.endsWith('/')) {
+			mkdirp(full.slice(0, -1));
+			continue;
 		}
+		mkdirp(full.slice(0, full.lastIndexOf('/')));
+		lazyFile(FS, full, e);
+		count++;
+		fileBytes += e.size;
+	}
+	const tSite = Date.now() - t0 - tWasm;
+	let opcacheFiles = 0;
+	for (const e of zipEntries(new Uint8Array(opcacheZip))) {
+		if (e.name.endsWith('/')) continue;
+		const full = OPCACHE_DIR + '/' + e.name;
+		mkdirp(full.slice(0, full.lastIndexOf('/')));
+		if (e.method === 0) FS.writeFile(full, e.data(), { canOwn: true });
+		else lazyFile(FS, full, e);
+		opcacheFiles++;
 	}
 	const tFiles = Date.now() - t0 - tWasm;
 	memAt.afterFiles = mem();
@@ -198,7 +315,7 @@ async function boot(origin) {
 		cookieStore: false,
 		getFileNotFoundAction: () => ({ type: 'internal-redirect', uri: '/index.php' }),
 	});
-	return { php, handler, bootMs: { wasm: tWasm, files: tFiles, fileCount: count, fileBytes, memAt } };
+	return { php, handler, bootMs: { wasm: tWasm, site: tSite, files: tFiles, fileCount: count, fileBytes, opcacheFiles, memAt } };
 }
 
 let reserveTableReady = false;
@@ -422,13 +539,32 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 				ob_start(); require '/wordpress/wp-blog-header.php';` });
 			return new Response(r.text.slice(r.text.indexOf('PEAK')));
 		}
+		if (url.pathname === '/_opcache-dump') {
+			// Zip of the OPcache file cache, for opcache.sh. Run it after the e2e
+			// requests, so it holds the scripts real pages use.
+			if (!bootPromise) return new Response('not booted', { status: 409 });
+			const { php } = await bootPromise;
+			const files = {};
+			const walk = (dir) => {
+				for (const name of php.listFiles(dir)) {
+					const p = dir + '/' + name;
+					if (php.isDir(p)) walk(p);
+					else if (!p.endsWith('/wordpress/wp-runtime.php.bin')) files[p.slice(OPCACHE_DIR.length + 1)] = php.readFileAsBuffer(p);
+				}
+			};
+			walk(OPCACHE_DIR);
+			const { zipSync } = await import('fflate');
+			// Stored: the Worker uses each file as a view of the bundle, with no copy.
+			return new Response(zipSync(files, { level: 0 }), { headers: { 'content-type': 'application/zip', 'x-files': String(Object.keys(files).length) } });
+		}
 		if (url.pathname === '/_mem') {
 			if (!bootPromise) return Response.json({ booted: false });
 			const { php, bootMs } = await bootPromise;
-			const r = await php.run({ code: '<?php echo json_encode(array("opcache" => ini_get("opcache.enable"), "mc" => ini_get("opcache.memory_consumption"), "fco" => ini_get("opcache.file_cache_only")));' });
-			return Response.json({ wasmMemoryBytes: php[__private__dont__use].HEAPU8.length, fileBytes: bootMs.fileBytes, fileCount: bootMs.fileCount, memAt: bootMs.memAt, ini: JSON.parse(r.text || '{}') });
+			const r = await php.run({ code: '<?php echo json_encode(array("opcache" => ini_get("opcache.enable"), "mc" => ini_get("opcache.memory_consumption"), "fco" => ini_get("opcache.file_cache_only"), "cached" => function_exists("opcache_get_status") && ($st = opcache_get_status(false)) ? $st["opcache_statistics"]["num_cached_scripts"] : null, "mem" => isset($st["memory_usage"]) ? $st["memory_usage"] : null));' });
+			return Response.json({ bootMs, wasmMemoryBytes: php[__private__dont__use].HEAPU8.length, fileBytes: bootMs.fileBytes, fileCount: bootMs.fileCount, memAt: bootMs.memAt, ini: JSON.parse(r.text || '{}') });
 		}
 		try {
+			const booted = !bootPromise;
 			bootPromise ??= boot(url.origin);
 			const { php, handler, bootMs } = await bootPromise;
 			const start = { calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length };
@@ -488,6 +624,8 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			out.set('x-d1-ms', String(d.ms));
 			out.set('x-d1-failures', String(d.failures.length));
 			out.set('x-php-ms', String(Date.now() - t0));
+			out.set('x-boot', booted ? '1' : '0');
+			console.log(JSON.stringify({ m: 'req', path: url.pathname + url.search, boot: booted, d1: d.calls }));
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
 			const wasmBytes = php[__private__dont__use].HEAPU8.length;
 			out.set('x-wasm-mib', String(Math.round(wasmBytes / 1048576)));

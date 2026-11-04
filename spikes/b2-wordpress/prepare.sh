@@ -34,6 +34,15 @@ while i < len(b):
         done = True
     i = start + size
 assert done, 'memory section not found'
+# OPcache runs only under the SAPIs in its own list (Apache, FPM, FastCGI,
+# FrankenPHP, LiteSpeed, uWSGI). php-wasm's SAPI is "wasm", so OPcache was off
+# (measured 2026-11-04: opcache_compile_file() returned false). Change the
+# list entry "frankenphp" to "wasm". Only the first 5 bytes change, to
+# "wasm\0", so a string that shares the tail ("php", "enphp") is not touched.
+old = b'\x00frankenphp\x00'
+assert b.count(old) == 1, b.count(old)
+i = b.find(old)
+b[i + 1:i + 6] = b'wasm\x00'
 open(dst, 'wb').write(b)
-print('patched initial memory: 1024 -> 384 pages')
+print('patched initial memory: 1024 -> 384 pages; OPcache SAPI list: frankenphp -> wasm')
 PY

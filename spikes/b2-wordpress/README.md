@@ -6,8 +6,9 @@ WordPress 7.1.4 runs in a Worker as PHP 8.3 in WebAssembly. The database is D1. 
 
 ```sh
 npm ci
-./prepare.sh          # loader for workerd
+./prepare.sh          # loader for workerd; patches the binary (memory, OPcache SAPI list)
 ./build.sh            # WordPress tree: build/site.zip and build/public/
+./opcache.sh          # precompiled PHP: build/opcache.zip (runs e2e.sh on wrangler dev)
 ./run.sh _install     # installs WordPress into local D1
 ./run.sh              # then open http://localhost:8797/
 ./e2e.sh              # pages, login, admin, editor, REST write
@@ -62,6 +63,7 @@ Two uploads with the same name on two isolates would overwrite each other. The p
 | `php/d1-pdo.php` | `D1_PDO`: the PDO the SQLite driver uses. Sends each statement to D1. |
 | `php/db.php` | `wp-content/db.php`: loads the SQLite driver and gives it `D1_PDO`. |
 | `php/wp-config.php` | Local config. |
+| `opcache.sh` | Boots the Worker locally with an empty OPcache, runs `e2e.sh`, saves the compiled files to `build/opcache.zip`. Run before a deploy. |
 | `build.sh` | Downloads pinned WordPress and `sqlite-database-integration`, assembles the tree, patches the plugin installer to use the D1 connection. |
 
 ## What D1 does differently, and what D1_PDO does about it
