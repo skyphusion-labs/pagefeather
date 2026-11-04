@@ -22,13 +22,15 @@ Each response has `x-d1-calls`, `x-d1-ms`, `x-d1-failures` and `x-php-ms`. `GET 
 
 ```sh
 export CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=...
-wrangler d1 create wp-on-d1-spike          # put its id in wrangler.toml [env.live]
-wrangler deploy --env live
-wrangler secret put WP_SALT --env live     # random, 32+ bytes
-wrangler secret put SPIKE_TOKEN --env live # gates /_install, /_last, /_mem, /_peak
+ENV=paid                                    # or free; see wrangler.toml
+wrangler d1 create wp-on-d1-$ENV            # put its id in wrangler.toml [env.$ENV]
+wrangler deploy --env $ENV
+wrangler secret put WP_SALT --env $ENV      # random, 32+ bytes
+wrangler secret put SPIKE_TOKEN --env $ENV  # gates /_install, /_last, /_mem, /_peak
+curl -X POST -H "x-spike-token: ..." -H "x-admin-password: ..." https://<worker>.workers.dev/_install
 ```
 
-On Workers Free the install exceeds the CPU limit. Load the database from a local install instead: `wrangler d1 export b2-local --local --output dump.sql`, then `wrangler d1 execute <db> --remote --env live --file dump.sql`, then set the admin password.
+On Workers Paid the install runs in one request (about 32 s). On Workers Free it exceeds the CPU limit. Load the database from a local install instead: `wrangler d1 export b2-local --local --output dump.sql`, then `wrangler d1 execute <db> --remote --env free --file dump.sql`, then set the admin password.
 
 `SPIKE_TOKEN=... ADMIN_PASSWORD=... ./e2e.sh https://<worker>.workers.dev` runs the same checks against a deploy.
 

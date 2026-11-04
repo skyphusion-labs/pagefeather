@@ -101,6 +101,16 @@ The deploy account turned out to be on Workers Free. Results:
 - So some pages render and most do not. The install never fits; the database was loaded from a local install.
 - Wall times inside the Worker are not useful: Workers freeze the clock during CPU work.
 
+### 8a. Deployed on Workers Paid: everything works. Measured.
+
+Same build, same code, on an account on Workers Paid, with `cpu_ms = 30000`. Results on 2026-11-04:
+
+- `/_install` completes in one request: WordPress installed, 1,059 D1 queries, 32 s wall time. The documented limit is 1,000 D1 queries per invocation; this request made 1,059 and was not stopped.
+- `e2e.sh` passes 17 of 17 with 0 D1 failures: pages, feed, search, archives, REST, login, dashboard (116 queries), editor (124), publish a post (79).
+- CPU per request (Workers analytics, 70 requests, 0 errors): p50 845 ms, p90 1,668 ms, max 3,485 ms. The max is the installer or the first request after deploy; analytics does not say which.
+- On Free, successful renders had a p50 of 1,434 ms. A possible cause of the difference: on Free most requests end in error 1102, and the next request boots a new PHP runtime. Not measured.
+- The installer reported one failed statement: a read of the driver table `_wp_sqlite_global_variables`. The install completed.
+
 ### 9. Memory: what it took to fit in 128 MB
 
 | Change | Effect, measured locally |
@@ -113,7 +123,6 @@ The deploy account turned out to be on Workers Free. Results:
 
 ### 10. Next
 
-- Paid plan: a deploy with `cpu_ms = 30000` (needs Workers Paid on the test account).
 - CPU: precompile OPcache at build time (HostlessWP does this), so a request does not compile about 500 scripts.
 - Page cache for logged-out pages, which makes Free usable for readers.
 

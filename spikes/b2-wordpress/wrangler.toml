@@ -13,28 +13,53 @@ binding = "DB"
 database_name = "b2-local"
 database_id = "00000000-0000-0000-0000-000000000002"
 
-# Deploy to your own account on workers.dev. Replace database_id with the id from `wrangler d1 create`.
-# Secrets: WP_SALT, SPIKE_TOKEN (wrangler secret put --env live).
-[env.live]
+# Workers Free deploy, on workers.dev. Replace database_id with the id from `wrangler d1 create`.
+# Secrets: WP_SALT, SPIKE_TOKEN (wrangler secret put --env free).
+[env.free]
 name = "wp-on-d1-spike"
 workers_dev = true
 rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
 
-[env.live.vars]
+[env.free.vars]
 # PHP's own allocator wastes WebAssembly memory on 2 MB-aligned chunks.
 PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
 
-[env.live.assets]
+[env.free.assets]
 directory = "build/public"
 
 # Measured 2026-11-03: this account is on Workers Free (a cpu_ms limit is refused
 # with code 100328). Requests stop at about 2 s of CPU (exceededResources).
-# On Paid, add: [env.live.limits] cpu_ms = 30000
 
-[env.live.placement]
+[env.free.placement]
 mode = "smart"
 
-[[env.live.d1_databases]]
+[[env.free.d1_databases]]
 binding = "DB"
 database_name = "wp-on-d1-spike"
 database_id = "c4b12ebc-b3c7-49ed-9352-061ead0f65bb"
+
+# Workers Paid deploy, on workers.dev. Replace database_id with the id from `wrangler d1 create`.
+# Secrets: WP_SALT, SPIKE_TOKEN (wrangler secret put --env paid).
+[env.paid]
+name = "wp-on-d1-paid"
+workers_dev = true
+rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
+
+[env.paid.vars]
+# PHP's own allocator wastes WebAssembly memory on 2 MB-aligned chunks.
+PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
+
+[env.paid.assets]
+directory = "build/public"
+
+# Paid allows up to 5 minutes of CPU per request; 30 s is its default. Set here so it is visible.
+[env.paid.limits]
+cpu_ms = 30000
+
+[env.paid.placement]
+mode = "smart"
+
+[[env.paid.d1_databases]]
+binding = "DB"
+database_name = "wp-on-d1-paid"
+database_id = "d6643778-509f-4dc0-871b-a7859d888a00"
