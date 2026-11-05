@@ -24,6 +24,26 @@ LS=$!
 echo "$LS" > /run/litestream.pid
 trap 'kill -TERM "$LS"; wait "$LS"; exit $?' TERM INT
 
+# Sampler for the concurrency work (container/stats.php, what=samples), every
+# 2 s: time, the /proc/stat cpu line (user nice system idle iowait irq softirq
+# steal, in ticks), the cgroup cpu.stat if there is one (usage and throttling),
+# the load average, the accept backlog of port 80 (connections that no PHP
+# worker took yet), and the PHP processes by state (R running, S sleeping,
+# D disk wait).
+(
+	while :; do
+		t=$(date +%s.%N | cut -c1-14)
+		cpu=$(head -1 /proc/stat | cut -d" " -f3-)
+		cg=""
+		[ -r /sys/fs/cgroup/cpu.stat ] && cg=$(awk '{printf "%s=%s ", $1, $2}' /sys/fs/cgroup/cpu.stat)
+		load=$(cut -d" " -f1-4 /proc/loadavg)
+		bl=$(cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk 'function hex(x, i, n) { n = 0; x = tolower(x); for (i = 1; i <= length(x); i++) n = n * 16 + index("0123456789abcdef", substr(x, i, 1)) - 1; return n } $4 == "0A" && $2 ~ /:0050$/ { split($5, q, ":"); n += hex(q[2]) } END { print n + 0 }')
+		ps=$(cat /proc/[0-9]*/stat 2>/dev/null | awk '$2 == "(php)" { s[$3]++ } END { for (k in s) printf "%s%d ", k, s[k] }')
+		echo "$t cpu $cpu | cg $cg| load $load | backlog $bl | php $ps" >> /tmp/c1-samples.log
+		sleep 2
+	done
+) &
+
 # Idle shutdown. The Container class sleepAfter never stopped this container:
 # its Durable Object reported running=false and did nothing (measured
 # 2026-11-04: the same container after 17 idle minutes). So the container

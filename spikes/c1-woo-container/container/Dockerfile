@@ -16,6 +16,7 @@ RUN curl -sfL --retry 5 --retry-all-errors -o /tmp/ls.tgz "https://github.com/be
       echo 'expose_php=Off'; echo 'display_errors=Off'; echo 'log_errors=On'; } > /usr/local/etc/php/conf.d/wordpress.ini
 COPY build/wordpress/ /var/www/html/
 COPY container/kill.php /var/www/html/_kill.php
+COPY container/stats.php /var/www/html/_stats.php
 COPY container/litestream.yml /etc/litestream.yml
 COPY container/entrypoint.sh /usr/local/bin/entrypoint.sh
 WORKDIR /var/www/html
