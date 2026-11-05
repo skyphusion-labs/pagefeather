@@ -154,7 +154,11 @@ c1_check() {
     [ "$got" = "$want" ] && { echo "container settings ok on try $try (object cache drop-in: $got)"; return 0; }
     echo "try $try: drop-in $got, want $want (OBJECT_CACHE=$OBJECT_CACHE): the container is older than the object; stop it" >&2
     [ "$try" = 2 ] && break
-    curl -s -m 60 -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_store-stop" > /dev/null || true
+    # The stop answers still_running true when the container did not stop in
+    # 30 s; then the object is not reset (durability), and the check fails.
+    if curl -s -m 60 -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_store-stop" | grep -q '"still_running":true'; then
+      echo "the container did not stop in 30 s; the Store object was not reset" >&2; return 1
+    fi
     START_TIMEOUT=300 c1_up > /dev/null || return 1
   done
   echo "the container does not have this deploy's settings" >&2

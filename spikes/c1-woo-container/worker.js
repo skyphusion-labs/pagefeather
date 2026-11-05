@@ -55,7 +55,7 @@ export class Store extends Container {
 // After the stop, the object resets itself (ctx.abort), so the next request
 // builds a new object from the current deploy, with its environment. It waits
 // for the container to stop first (up to 30 s; SIGTERM lets Litestream finish
-// its sync), so the reset does not cut the final sync.
+// its sync), and resets only when the container is down.
 Store.prototype.info = function () {
 	return { do_version: this.builtVersion, running: this.ctx.container.running, object_cache: this.envVars.OBJECT_CACHE, replica_path: this.envVars.REPLICA_PATH };
 };
@@ -74,6 +74,14 @@ Store.prototype.shutdownNow = async function (kill) {
 	while (this.ctx.container.running && Date.now() - t0 < 30000) await new Promise((r) => setTimeout(r, 250));
 	out.stopped_after_ms = Date.now() - t0;
 	out.still_running = this.ctx.container.running;
+	// Reset only when the container is down: an abort while it still runs can
+	// cut Litestream's final sync. Still running after 30 s: no reset, ok false,
+	// so c1_check fails loudly instead.
+	if (out.still_running) {
+		out.ok = false;
+		out.reset = false;
+		return out;
+	}
 	out.reset = true;
 	// After the reply (200 ms): abort() ends this object at once.
 	setTimeout(() => this.ctx.abort('reset after /_store-stop'), 200);
