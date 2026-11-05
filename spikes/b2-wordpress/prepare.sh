@@ -10,6 +10,23 @@ mkdir -p vendor
 { echo "const dependencyFilename = 'php_8_3.wasm';"; tail -n +3 "$src"; } > vendor/php_8_3.js
 head -1 vendor/php_8_3.js
 
+# A Worker does not advance Date.now() while code runs (the clock moves only at
+# I/O). PHP's uniqid() polls gettimeofday() until the microsecond changes, so
+# a second uniqid() in one request spun until the CPU limit (measured
+# 2026-11-05: wp-admin/plugins.php, themes.php, and every request with Contact
+# Form 7 active used 32 s of CPU, exceededCpu; 0.1 s locally, where the clock
+# moves). gettimeofday() reads emscripten_date_now(). Each read now returns at
+# least 1 microsecond more than the last: still monotonic, and within
+# microseconds of the real time.
+python3 - <<'PY2'
+p = 'vendor/php_8_3.js'; s = open(p).read()
+old = "	var _emscripten_date_now = () => Date.now();"
+new = "	var dateLast = 0;\n	var _emscripten_date_now = () => { var t = Date.now(); if (t <= dateLast) t = dateLast + 0.001; dateLast = t; return t; };"
+assert s.count(old) == 1, 'emscripten_date_now patch did not apply'
+s = s.replace(old, new)
+open(p, 'w').write(s)
+PY2
+
 # The module reserves 64 MiB (1024 pages) at start. A Worker isolate has 128 MB
 # for everything, so start at 24 MiB (384 pages) and let it grow on demand.
 # Its static data ends at 12.4 MiB. Both values are 2-byte LEB128, so the patch

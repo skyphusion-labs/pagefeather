@@ -27,6 +27,8 @@ cp -RL "$cache/sqlite-database-integration/packages/plugin-sqlite-database-integ
 cp "$wp/wp-content/plugins/sqlite-database-integration/db.copy" "$wp/wp-content/db.php"
 sed -i.bak "s#{SQLITE_IMPLEMENTATION_FOLDER_PATH}#/var/www/html/wp-content/plugins/sqlite-database-integration#; s#{SQLITE_PLUGIN}#sqlite-database-integration/load.php#" "$wp/wp-content/db.php" && rm "$wp/wp-content/db.php.bak"
 unzip -q "$cache/woocommerce-$WOO_VERSION.zip" -d "$wp/wp-content/plugins"
+# The plugin suite (tests/plugins/suite.txt), all 18 in the image; none active by default.
+../../tests/plugins/fetch.sh "$wp/wp-content/plugins"
 mkdir -p "$wp/wp-content/mu-plugins/r2-uploads"
 cp php/00-worker-call.php "$wp/wp-content/mu-plugins/"
 cp ../b2-wordpress/php/r2-uploads.php ../b2-wordpress/php/edge-cache.php ../b2-wordpress/php/woo-edge.php "$wp/wp-content/mu-plugins/"

@@ -13,6 +13,15 @@ Repository: [hostlesswp/hostlesswp](https://github.com/hostlesswp/hostlesswp). G
 
 This is the closest project to approach A. Approach B removes the external MySQL, which HostlessWP still needs.
 
+Read again on 2026-11-05 at commit `739e8e7`. HostlessWP had already solved, and documented, things this repo found on that day:
+
+- **The frozen clock.** A Worker does not advance the clock during CPU work, so `uniqid()` spins. HostlessWP makes the clock strictly monotonic. Our fix in `spikes/b2-wordpress/prepare.sh` is the same idea, found on our own when `wp-admin/plugins.php` hit the CPU limit. HostlessWP was first.
+- **Outbound HTTP.** HostlessWP sends `wp_remote_*`, a userland `curl_*` and `http://` streams through the Worker's `fetch()`, and sockets through `connect()`. Our issue #26 proposes the same for approach B.
+- **Workers Free.** HostlessWP runs PHP in a Durable Object on the Free plan (30 s of CPU) and keeps the Worker for the page cache. Approach B and our approach A run PHP in the Worker and stop at Free's CPU limit.
+- **Size.** HostlessWP splits the PHP tree into code bundles and loads files on first read. It deployed 19 plugins (276 MB packaged) as one Worker. Approach B needs groups to stay under 64 MiB.
+
+We measured HostlessWP as it is, with its own CLI: [docs/approach-a.md](approach-a.md).
+
 ## EmDash
 
 Cloudflare released EmDash 0.1 on 2026-04-01. It is a new CMS in TypeScript on Astro that runs on Workers. It is **not WordPress**. It imports WordPress content from a WXR export. It is here because people compare it with WordPress on Cloudflare.

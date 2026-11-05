@@ -120,10 +120,29 @@ class D1_PDO extends PDO {
 			self::$schema_cache = array();
 		}
 		++self::$calls;
+		// A string that is not UTF-8 (binary data for a BLOB column) cannot go
+		// in JSON: json_encode() returns false. Send it as base64; the Worker
+		// binds it as bytes, and sends BLOB results back the same way.
+		foreach ( $params as $i => $v ) {
+			if ( is_string( $v ) && ! preg_match( '//u', $v ) ) {
+				$params[ $i ] = array( '$b' => base64_encode( $v ) );
+			}
+		}
 		$reply = json_decode(
 			skyphusion_worker_call( json_encode( array( 'sql' => $sql, 'params' => $params ) ) ),
 			true
 		);
+		if ( is_array( $reply ) && ! empty( $reply['blob'] ) ) {
+			foreach ( $reply['rows'] as &$row ) {
+				foreach ( $row as &$v ) {
+					if ( is_array( $v ) && isset( $v['$b'] ) ) {
+						$v = base64_decode( $v['$b'] );
+					}
+				}
+				unset( $v );
+			}
+			unset( $row );
+		}
 		if ( ! is_array( $reply ) || empty( $reply['ok'] ) ) {
 			$error            = is_array( $reply ) && isset( $reply['error'] ) ? $reply['error'] : 'no reply from the Worker';
 			self::$failures[] = array( 'sql' => $sql, 'error' => $error );

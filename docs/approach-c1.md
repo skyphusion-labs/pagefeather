@@ -108,6 +108,8 @@ All checkouts succeeded; 1 of 145 container requests failed (client exception). 
 
 - WooCommerce writes log files under `uploads/wc-logs`. With uploads in R2, every log line was an R2 read and write: about 30 calls and about 15 s of each checkout. `WC_LOG_DIR` now points to local disk (also in approach B).
 - With 4 PHP workers at 256 MB each, a `basic` instance (1 GiB) dropped a connection once ("Container suddenly disconnected"). Now 2 workers.
+- PHP's built-in server does not run `index.php` for a directory. `/wp-admin/` went to WordPress and showed the home page. Found 2026-11-05 by the plugin suite; earlier checks passed because they looked only for a 200. `router.php` now runs `<dir>/index.php` and redirects `/wp-admin` to `/wp-admin/`, as Apache and nginx do.
+- The container file system is ephemeral. A plugin installed from wp-admin is lost when the container stops, so plugins go in the image (`build.sh` installs the 18 plugins of the suite, none active). The 18 plugins pass: [docs/plugins.md](plugins.md).
 - The health check is a static file (`pingEndpoint = "localhost/ping"`): the default requested `/`, a full WordPress render.
 
 ## Cost and limits

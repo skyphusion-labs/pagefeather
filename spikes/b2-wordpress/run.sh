@@ -3,7 +3,7 @@
 cd "$(dirname "$0")"
 pkill -f 'wrangler dev --port 8797' 2>/dev/null
 rm -f out.json; : > dev.log
-(wrangler dev --port 8797 --log-level warn > dev.log 2>&1 &)
+(wrangler dev --port 8797 --log-level warn ${DEV_ENV:+--env $DEV_ENV} > dev.log 2>&1 &)
 for i in $(seq 1 60); do
   grep -q 'ERROR' dev.log && { grep -v '^\s*$' dev.log | grep -v '🪵' | head -20 | cut -c1-400; exit 1; }
   curl -s -m 2 -o /dev/null localhost:8797/_ping 2>/dev/null && break

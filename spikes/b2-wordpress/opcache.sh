@@ -15,6 +15,11 @@ curl -sf -X POST localhost:8797/_install > /dev/null   # "already" when installe
 if curl -sf "localhost:8797/?rest_route=/wc/store/v1/cart" > /dev/null; then
   B=http://localhost:8797 ADMIN_PASSWORD=local-spike-password python3 tests/woo.py > /dev/null || { echo "woo.py failed; no OPcache files saved"; pkill -f 'wrangler dev --port 8797'; exit 1; }
 fi
+# Plugins from the suite in this build (PLUGINS, see build.sh): activate and
+# exercise each one so its scripts compile too.
+if [ -n "${PLUGINS:-}" ]; then
+  B=http://localhost:8797 ADMIN_PASSWORD=local-spike-password python3 ../../tests/plugins/plugins.py $PLUGINS > build/opcache-plugins.jsonl || { echo "plugins.py failed; no OPcache files saved"; pkill -f 'wrangler dev --port 8797'; exit 1; }
+fi
 curl -sf -D build/opcache.headers -o build/opcache.zip.new localhost:8797/_opcache-dump
 pkill -f 'wrangler dev --port 8797' || true
 mv build/opcache.zip.new build/opcache.zip

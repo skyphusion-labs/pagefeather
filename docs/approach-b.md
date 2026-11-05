@@ -248,6 +248,22 @@ Tried, no change for checkout: OPcache shared memory 16 MB; deferred emails; a c
 
 The D1 primary is near Chicago. The Paid Worker is pinned to `aws:us-east-2`. A page with 30 to 90 D1 statements saves about 1 to 2 s of wall time. Containers can only be constrained to coarse regions (`ENAM`), so the checkout Container stays at about 46 ms per statement.
 
+### 8h. Plugins. Measured 2026-11-05.
+
+The 18 most popular plugins, tested one at a time by `tests/plugins/plugins.py`. Method and matrix: [docs/plugins.md](plugins.md). The work found three defects in approach B. All three are fixed.
+
+**1. The Worker clock stops while code runs.** `Date.now()` moves only at I/O. PHP's `uniqid()` reads `gettimeofday()` until the microsecond changes, so a second `uniqid()` in one request looped until the CPU limit. wp-admin `plugins.php` and `themes.php` call it for a temporary file name. Contact Form 7 calls it on every request. Before the fix, each of these requests used 32 s of CPU (`exceededCpu`). Locally it took 0.1 s, because the clock moves there. In this build `gettimeofday()` reads `emscripten_date_now()`. `prepare.sh` now patches it so that each read returns at least 1 microsecond more than the last read. After the fix, `plugins.php` took 2.1 s on Paid. Before the fix, the suite passed 3 of 18 on Paid.
+
+**2. A BLOB did not survive the D1 bridge.** PHP and the Worker send queries and rows as JSON. D1 returns a BLOB as an array of numbers, so PHP got an array. In the other direction, `json_encode()` returns false for a string that is not UTF-8. Wordfence keeps its settings in a BLOB column, and its activation stopped with a fatal error: `explode(): Argument #2 ($string) must be of type string, array given`. Binary values now travel as `{"$b": base64}`, both ways (`index.js`, `php/d1-pdo.php`).
+
+**3. The Worker size limit sets how many plugins fit.** The limit is 64 MiB (65,536 KiB). WordPress with Jetpack is a 63,024 KiB upload (Wrangler "Total Upload"). With Elementor alone it is 58,186 KiB. All 18 plugins do not fit in one Worker, so `plugin-suite.sh` builds them in 7 groups. A real site on B can have a few large plugins, not all of them.
+
+Also found:
+- Plugins must be in the build (`PLUGINS=... ./build.sh`). On B, a plugin installed from wp-admin is written to the in-memory file system and is lost when the isolate stops.
+- PHP has no network (issue #26). Update checks and the network parts of Akismet, Site Kit, Jetpack, WP Mail SMTP and Wordfence fail. Each outbound call waits for a timeout: Wordfence activation takes about 10 s.
+- No plugin can send mail. Contact Form 7 accepts the form and returns `mail_failed`.
+- `build.sh` kept an existing `build/opcache.zip`, so a new `site.zip` could run with OPcache files compiled from another tree (an A build ran B's compiled `wp-content/db.php`). Every measured deploy ran `opcache.sh` after `build.sh`, which writes a new zip, so no result was affected. `build.sh` now always starts with an empty zip.
+
 ### 9. Memory: what it took to fit in 128 MB
 
 | Change | Effect, measured locally |
