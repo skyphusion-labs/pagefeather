@@ -341,6 +341,76 @@ Mutation check, local (`~/scratch` script). The object was given `http://<host>:
 
 **Deploy:** `[env.do-free]` in `wrangler.toml` (Worker `wp-do-free`, its own D1 database, migration `v1` for `PhpRuntime`).
 
+### 8j. The database inside the PHP object (issue #2). Measured locally 2026-11-05. Not deployed.
+
+**Why.** With PHP in the object (8i), each statement still goes over the network to D1. Measured on Cloudflare from the object: median 38 ms per statement (8i). A page makes 20 to 70 statements, so that is about 0.8 to 2.7 s of wall time per page. The object has its own SQLite database (`ctx.storage.sql`). The SQLite driver already speaks SQLite. With the database in the object, no statement leaves the object.
+
+**Design.** `DB_IN_DO=on`, only with `PHP_IN_DO=on`.
+
+- PHP does not change. `php/d1-pdo.php` sends each statement through the same bridge. In the object, `handleMessage` runs it on `this.ctx.storage.sql` and not on `env.DB`.
+- The object sets the database for each PHP run, under the PHP lock (`withPhp`). In the Worker it is always unset, so the D1 path does not change.
+- One object holds the site, so `PHP_DO_POOL` does not apply: every request goes to `php-0`.
+- The R2 name reservation (`_r2_reserved`) uses the same database.
+- Responses carry `x-db: object-sqlite` and `x-db-rows: read=N written=N` (the billed units, from the cursor's `rowsRead` and `rowsWritten`).
+- Failures are loud: `DB_IN_DO=on` without `PHP_IN_DO=on` returns 500 in the Worker. It does not fall back to D1.
+
+**Differences from D1, and what the bridge does.** Source: [SQLite storage API](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/) (last updated 2026-09-21) and [limits](https://developers.cloudflare.com/durable-objects/platform/limits/) (last updated 2026-10-29), read 2026-11-05.
+
+| Subject | D1 | Object SQLite | Bridge |
+| --- | --- | --- | --- |
+| Call | `prepare().bind().raw()`, async, a network round trip | `exec(sql, ...bindings)`, synchronous, returns a cursor | `sqlStatement()` in `index.js` |
+| Changed rows, last row id | `meta.changes`, `meta.last_row_id` | Not in the cursor (`rowsWritten` also counts index rows) | `changes()` and `last_insert_rowid()` in the same synchronous turn. `total_changes()` before and after: a statement that changes nothing reports 0. The row id is sent for an INSERT or REPLACE only. |
+| BLOB | Array of numbers | ArrayBuffer | Sent to PHP as `{"$b": base64}`, as for D1 (8h). `{"$b"}` parameters are bound as bytes. |
+| Booleans | Bound | Not stated | Bound as 1 and 0 |
+| BEGIN, COMMIT, SAVEPOINT | Not supported | `exec()` refuses them | `d1-pdo.php` answers them in PHP, as for D1. Nothing changes. |
+| Statement length, bound parameters | 100 KB, 100 | 100 KB, 100 | Same limits |
+| Row, string or BLOB size | 2 MB | 2 MB | Same limit |
+
+**Transactions.** As on D1, a transaction is not real: BEGIN and COMMIT are answered in PHP, and a ROLLBACK undoes nothing (it is counted). Each statement is committed on its own. The object is the only writer and runs one PHP request at a time, so no other request sees a half-done change from another request. A PHP request that stops midway leaves its earlier statements in place, as on D1. A real transaction would need `ctx.storage.transaction()` around the whole PHP request. Whether its async form holds SQL writes across awaits is not stated in the docs. Not tried.
+
+**Size.** Per object: 10 GB on Paid. On Free, the limits table gives 5 GB per account and the FAQ gives 1 GB per object. Past the limit, writes fail with `SQLITE_FULL`; reads and deletes still work. The local test site is 409,600 bytes (`databaseSize`).
+
+**Cost.** Source: [pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/) (last updated 2026-10-18), read 2026-11-05.
+
+| | Free, per day | Paid, per month |
+| --- | --- | --- |
+| Rows read | 5 million | 25 billion included, then $0.001 a million |
+| Rows written | 100,000 | 50 million included, then $1.00 a million |
+| Stored data | 5 GB (total) | 5 GB-month included, then $0.20 a GB-month |
+
+The page says storage billing starts in January 2026 and does not confirm that it is on now. The page does not define a row read. The cursor counts rows scanned.
+
+Measured per request in `e2e.sh` (`x-db-rows`, local): a public page reads 157 to 217 rows and writes 0 (4 on `/?cat=1`). Login writes 4. `/wp-admin/` reads 507 and writes 42. `post-new.php` reads 438 and writes 33. Publishing a post reads 395 and writes 25. **On Free, rows read are the first limit:** 5 million a day is about 25,000 uncached public pages (at 200 rows), fewer than the 100,000 object requests. Rows written allow about 2,400 admin page views a day (at 42). Page cache hits use neither.
+
+**Backups.** Point-in-time recovery: the database can be restored to any time in the last 30 days (`getBookmarkForTime()`, `onNextSessionRestoreBookmark()`, then `ctx.abort()`). It does not work in local development. The docs do not say whether it is on the Free plan. No restore endpoint is built yet. Not measured.
+
+**Install, and moving a site in or out.**
+
+- Install: `/_install` runs inside the object and writes to its own database. No other step.
+- `dbmove.py export <url> <file> [--from-d1]` saves the database as JSON lines (`/_dbexport`): first the tables, then one INSERT with parameters for each row, then indexes, triggers and views, then an end line. `--from-d1` reads the `DB` binding instead, which moves a B site from D1. A dump without the end line is incomplete, and import refuses it.
+- `dbmove.py import <url> <file> [--replace]` loads a dump (`/_dbimport`) in parts of up to 1.5 MB (the Worker refuses a body over 2 MB). Each part is one transaction. Import refuses when tables exist. `--replace` drops all tables first, in the transaction of the first part. Any page view of an empty object makes the SQLite driver create its own tables, so a new site usually needs `--replace`.
+- Both run under the PHP lock and need the spike token.
+- Limit: one row larger than 1.5 MB as JSON cannot be imported this way. Integers above 2^53 lose precision in JavaScript (SQLite storage API page).
+
+**Measured locally** (wrangler 4.107.0, `wrangler dev`, 2026-11-05; the laptop had a load average of about 20, so the wall times are not comparable):
+
+| Run | Command | Result |
+| --- | --- | --- |
+| OPcache files built with the database in the object | `DEV_ENV=dosql-local ./opcache.sh` | Pass, 601 files |
+| e2e, database in the object | `DEV_ENV=dosql-local ./run.sh _ping`, then `./e2e.sh` | **17 of 17**, every response `x-db: object-sqlite` |
+| The deploy env, no D1 binding, new object | `DEV_ENV=dosql-free ./run.sh _ping`, `POST /_install`, then `./e2e.sh` | Installed (919 statements, 14.2 s); **17 of 17** |
+| Install statement failures | `/_install` on a new database | 202 in the object, 198 on a new D1: 196 are "no such table: wp_options" in both, WordPress reading before the installer makes the tables. The object also has 4 on the driver's `_mysql_data_types_cache`. `e2e.sh` has 0 in both. |
+| Per statement, from the object | `/_dbping?db=object&n=2000`, `/_dbping?db=d1&n=200` | Object SQLite 0.004 to 0.009 ms; local D1 0.555 ms. Local D1 is a file on the same laptop; on Cloudflare D1 from the object is 38 ms (8i). |
+| Move from D1 | `dbmove.py export ... --from-d1`, then `import ... --replace` into the object | 470 statements; then `e2e.sh` 17 of 17. A second export matches D1 table for table, except the rows `e2e.sh` wrote. |
+| Import into a database with tables, no `--replace` (control) | `dbmove.py import` | Refused: "10 tables or indexes exist" |
+| Empty object (control) | `./e2e.sh` before import | Fails: "no such table: wp_options" |
+| `DB_IN_DO=on` without `PHP_IN_DO` (control) | `wrangler dev --var DB_IN_DO:on` | 500 on every request |
+| Default env, and PHP in the object with D1 (no change) | `./e2e.sh` | 17 of 17 each, no `x-db` header |
+
+**Not measured yet:** all of this on Cloudflare: CPU per request, the time a page saves (no D1 round trips), cold start of an object with its database, rows billed per page there, the plugin suite, point-in-time recovery, an R2 upload (`_r2_reserved` in the object) and the Images binding inside the object. On Cloudflare the clock does not move during synchronous work, so `/_dbping?db=object` can read 0 ms there: read CPU in `wrangler tail`.
+
+**Deploy:** `[env.dosql-free]` in `wrangler.toml` (Worker `wp-dosql-free`, no D1, migration `v1` for `PhpRuntime`, no location hint: the object is made near its first request).
+
 ### 9. Memory: what it took to fit in 128 MB
 
 | Change | Effect, measured locally |

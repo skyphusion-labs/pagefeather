@@ -253,3 +253,62 @@ class_name = "PhpRuntime"
 [[env.do-free.migrations]]
 tag = "v1"
 new_sqlite_classes = ["PhpRuntime"]
+
+# ---------------------------------------------------------------------------
+# The database inside the PHP object (issue #2, docs/approach-b.md 8j).
+# DB_IN_DO=on (only with PHP_IN_DO=on): WordPress's database is the PhpRuntime
+# object's own SQLite (ctx.storage.sql), not D1. No network per query. One
+# object holds the site, so PHP_DO_POOL does not apply.
+
+[env.dosql-local]
+# Local check: DEV_ENV=dosql-local ./opcache.sh, then DEV_ENV=dosql-local ./run.sh and ./e2e.sh.
+# The D1 binding stays here only to compare (/_dbping?db=d1) and to test a move
+# from D1 (/_dbexport?from=d1).
+rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
+[env.dosql-local.vars]
+PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
+PHP_IN_DO = "on"
+DB_IN_DO = "on"
+[env.dosql-local.assets]
+directory = "build/public"
+[env.dosql-local.cache]
+enabled = true
+[[env.dosql-local.d1_databases]]
+binding = "DB"
+database_name = "b2-local"
+database_id = "00000000-0000-0000-0000-000000000002"
+[[env.dosql-local.r2_buckets]]
+binding = "MEDIA"
+bucket_name = "b2-local-media"
+[env.dosql-local.images]
+binding = "IMAGES"
+[[env.dosql-local.durable_objects.bindings]]
+name = "PHP_RUNTIME"
+class_name = "PhpRuntime"
+[[env.dosql-local.migrations]]
+tag = "v1"
+new_sqlite_classes = ["PhpRuntime"]
+
+# Workers Free deploy, on workers.dev. No D1. Secrets: WP_SALT, SPIKE_TOKEN
+# (--env dosql-free). The object is made near its first request (no location
+# hint: it makes no D1 calls). Free: 1 GB per object, 5 GB per account.
+[env.dosql-free]
+name = "wp-dosql-free"
+workers_dev = true
+rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
+[env.dosql-free.vars]
+PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
+PHP_IN_DO = "on"
+DB_IN_DO = "on"
+[env.dosql-free.assets]
+directory = "build/public"
+[env.dosql-free.images]
+binding = "IMAGES"
+[env.dosql-free.cache]
+enabled = true
+[[env.dosql-free.durable_objects.bindings]]
+name = "PHP_RUNTIME"
+class_name = "PhpRuntime"
+[[env.dosql-free.migrations]]
+tag = "v1"
+new_sqlite_classes = ["PhpRuntime"]
