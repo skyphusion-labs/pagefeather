@@ -312,7 +312,21 @@ Time in PHP (`x-php-ms`, wall, local) is the same in the object and in the Worke
 
 The 72 `ws.removeListener is not a function` errors in the log of the first `opcache.sh` run are not from this mode. The default env shows the same 72 on a new database. They come from PHP's socket code during the install (PHP has no network, issue #26).
 
-**Found on the first deploy** (`wp-do-free`, version `40d14b5f`, measured by the lead 2026-11-05). `/_install` inside the object on Free worked: 901 queries, 56.7 s wall, 200. `/_d1ping` from the object: median 38 ms (34 to 59), so `enam` did not put the object near ORD. Defect: every logged-out page answered 301 to `http://<host>:443/...`, and `e2e.sh` did not fail on those rows. The object took its origin from the URL it got. On Cloudflare that URL did not match the visitor's URL, so `WP_HOME` and `WP_SITEURL` were wrong and `redirect_canonical()` sent every page there. Locally the object gets the visitor's URL (also checked with `--local-protocol https`), so the local runs could not see it. Fix: the Worker sends its own origin in `x-wp-public-origin`. It always replaces a value a visitor sends, and only the Worker can reach the object. The object builds the request URL from that header and answers 500 without it. `/_origin` (spike token) returns the URL the object got and the origin it used. `e2e.sh` now fails on a redirect to another origin, and when `GET /` is not 200.
+**Found on the first deploy** (`wp-do-free`, version `40d14b5f`, measured by the lead 2026-11-05). `/_install` inside the object on Free worked: 901 queries, 56.7 s wall, 200. `/_d1ping` from the object: median 38 ms (34 to 59), so `enam` did not put the object near ORD (B Paid from ORD: 12 to 25 ms). Defect: every logged-out page answered 301 to `http://<host>:443/...`, and `e2e.sh` did not fail on those rows.
+
+The cause on Cloudflare is not confirmed. In that version the object took its origin from the URL it got. An object URL of `http://<host>:443/...` gives exactly this redirect (mutation check below). But after the fix, `/_origin` on Cloudflare returned `objectUrl` `https://wp-do-free.vivijure-coldrun.workers.dev/_origin` (https, no `:443`). So that is not the URL the object gets now. The fix is proven: the old code fails `e2e.sh` with the injected URL, and the new code passes `e2e.sh` on Cloudflare.
+
+Fix: the Worker sends its own origin in `x-wp-public-origin`. It always replaces a value a visitor sends, and only the Worker can reach the object. The object builds the request URL from that header and answers 500 without it. `/_origin` (spike token) returns the URL the object got and the origin it used. `e2e.sh` now fails on a redirect to another origin, and when `GET /` is not 200.
+
+**Second deploy** (version `d40446cb`, code `a380065`, measured by the lead 2026-11-05 with `e2e.sh` and `wrangler tail`):
+
+| Measure | Result |
+| --- | --- |
+| `e2e.sh` | 17 of 17, exit 0, new post present |
+| Worker CPU per request | 1 to 4 ms |
+| Object CPU per request | 64 ms (login) to 670 ms (`post-new.php`) |
+| Outcomes | every one `ok` |
+| `/_install` in the object | 901 queries, 56.7 s wall, 200 |
 
 Mutation check, local (`~/scratch` script). The object was given `http://<host>:443/...`, as on the deploy:
 
@@ -323,7 +337,7 @@ Mutation check, local (`~/scratch` script). The object was given `http://<host>:
 | After the fix, no change to the URL | 17 of 17 |
 | Default env | 17 of 17 |
 
-**Not measured yet:** all of this on Cloudflare. That includes CPU per request in the object on Free, the plugin suite on Free through the object, cold boots and evictions, where `enam` puts the object and its D1 latency, the page cache purge from the object, duration billing while idle, and the Images binding inside the object (R2 is not on for the Free test account, so `MEDIA` is not bound in `env.do-free`). Approach A with the object and the checkout Container with the object were not tried.
+**Not measured yet:** the plugin suite on Free through the object, cold boots and evictions, the page cache purge from the object, duration billing while idle, and the Images binding inside the object (R2 is not on for the Free test account, so `MEDIA` is not bound in `env.do-free`). Approach A with the object and the checkout Container with the object were not tried.
 
 **Deploy:** `[env.do-free]` in `wrangler.toml` (Worker `wp-do-free`, its own D1 database, migration `v1` for `PhpRuntime`).
 
