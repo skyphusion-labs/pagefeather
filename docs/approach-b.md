@@ -328,6 +328,28 @@ Fix: the Worker sends its own origin in `x-wp-public-origin`. It always replaces
 | Outcomes | every one `ok` |
 | `/_install` in the object | 901 queries, 56.7 s wall, 200 |
 
+**Root cause, found 2026-11-05.** The 301 came back on a new site (`wp-ref-free`, code `a380065`): the first PHP request was `POST /_install`, and after it every public page answered 301 to `http://<host>:443/...`. `/_origin`, `home` and `siteurl` were correct, and a restart of the object cleared it. So the wrong value was runtime state, not data.
+
+- During a new install, PHP's socket layer opens WebSocket connections to the site itself (WordPress tests its own URL). Locally the Worker logged two `GET /` requests with `upgrade: websocket` during `/_install`. These are the 72 `ws.removeListener` errors in the log (8i above); they appear only on a new install.
+- Such a request waits behind the install (the PHP lock). `/_install` ends with `bootPromise = null`, so the next request in the queue boots the runtime, and that request is the loopback. `boot()` writes its origin into `wp-runtime.php` as `WP_HOME`, and that runtime then serves every later request. On Cloudflare the loopback URL was `http://<host>:443/` (a WebSocket to port 443, as an http URL).
+- A Worker that runs PHP itself (B, the default) did not show this on Cloudflare. Probably a Worker cannot fetch its own workers.dev URL, so the loopback never arrives. Not measured.
+- Two fixes, only in the object (the default path does not change):
+  1. The Worker answers a request with an `Upgrade` header with 426. WordPress serves no WebSockets.
+  2. A runtime serves only the origin it booted with: a request for another origin boots a new runtime. Responses from the object carry `x-boot-origin`.
+- Test: `e2e.sh` also fails when `GET /` does not link to the site's own origin. The old checks did not see the defect locally: every row was 2xx.
+
+Red and green, locally (wrangler 4.107.0, new database each run, `POST /_install` through `127.0.0.1`, then `e2e.sh` through `localhost`):
+
+| Code | Env | First `GET /` | `e2e.sh` | WebSocket request |
+| --- | --- | --- | --- | --- |
+| Before the fix | `do-local` | `x-boot: 0`, links to `127.0.0.1` 30 times, to `localhost` 0 | Fails: "does not link" | 200 (reached PHP) |
+| After the fix | `do-local` | `x-boot: 1`, `x-boot-origin: http://localhost:18728`, 30 links to `localhost` | 17 of 17 | 426 |
+| Before the fix | `dosql-local` | Same as before the fix on `do-local` | Fails | 200 |
+| After the fix | `dosql-local` | Same as after the fix on `do-local` | 17 of 17 | 426 |
+| (no change) | default | `x-boot: 0`, links to `127.0.0.1` | Fails | 200 |
+
+The default env has the same weakness when an install and later requests use two origins, but the default path is kept as it is so that the B numbers stay valid. With one origin it passes (`e2e.sh` 17 of 17).
+
 Mutation check, local (`~/scratch` script). The object was given `http://<host>:443/...`, as on the deploy:
 
 | Code | `e2e.sh` |
