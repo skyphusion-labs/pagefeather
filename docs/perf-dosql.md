@@ -96,6 +96,41 @@ The C=4 parts are medians of each column, so they do not add up to the object me
 - Under concurrency, one object serializes all PHP. Throughput is about 1 / CPU per request (about 4 public pages a second at 230 ms). Past that, every request queues. With the database in the object, the object cannot be split (`PHP_DO_POOL` does not apply).
 - The edge time (about 270 ms) is from this laptop, with a new TLS connection for each request. A client near the site that keeps its connection pays less. The runner's figures (home p50 0.45 s) come from another vantage, so they are not directly comparable with this page.
 
+## Change 1: object cache across requests (measured 2026-11-05)
+
+**Where the CPU was.** Two local instruments, before the change:
+- **V8 CPU profile** of the worker that holds the object (`wrangler dev`, the inspector of workerd itself, 40 warm home requests, 3,507 ms busy): 78.9% in WebAssembly (the PHP interpreter), 12.4% in all JavaScript together (our bridge, the Emscripten glue, php-wasm and fflate are one bundle), 4.1% program, 1.5% garbage collection.
+- **PHP phase times** (a temporary mu-plugin with `hrtime`, 20 warm home requests, 1 ms resolution): 45 of 67 ms between `template_redirect` and `wp_head`. That is the block template and theme.json. Then `init` to `wp_loaded` 8 ms, `parse_request` to `wp` 5 ms, `wp_head` to `wp_footer` 7 ms.
+
+That work is the same on every request; it is redone because a PHP request keeps nothing.
+
+The re-inflation that this page pointed at first (about 200 KiB of lazy files on each warm request) costs about 1 ms. The files are theme.json, style variations and block CSS. So it was left as it is.
+
+**The change.** `php/object-cache.php` (a loader) and `php/object-cache-js.php`.
+- With `JS_OBJECT_CACHE` (defined only when `PHP_IN_DO` and `DB_IN_DO` are on, and `OBJECT_CACHE` is not `off`), WordPress's object cache keeps values across requests in a JavaScript Map in the object. The Map holds 8 MB; the least recently used value goes first.
+- Within a request, values also stay in a PHP array.
+- One object is the only writer, so WordPress's own deletes keep the cache exact.
+- `theme_json` is kept too. The theme files cannot change within a deploy, and core deletes that group when user styles change.
+- `/_install` and `/_dbimport` clear the cache.
+- Without `JS_OBJECT_CACHE` the loader defines nothing. WordPress then loads its own cache, and `wp_using_ext_object_cache()` stays false. Measured: it reads false with `OBJECT_CACHE=off`, and `e2e.sh` passes 17 of 17 in the default env.
+
+**Measured on Cloudflare.** `wp-perf-dosql`, one build (`2f0ab5d`), deployed with `OBJECT_CACHE=off` (version `ad4ed5b2`) and then without it (`6b4b0589`). After each deploy, 3 warm-up renders per public page. Then `N=30 C=1 python3 tests/load/perf.py` and `N=80 C=8 PAGES=home`, with `wrangler tail`. Object CPU is tail `cpuTime`, in ms.
+
+| Page | Tail joined (off / on) | CPU p50, off to on | CPU p95, off to on | Statements per page |
+| --- | --- | --- | --- | --- |
+| home | 27 / 21 | 213 to 147 (-31%) | 392 to 291 (-26%) | 32 to 4 |
+| post | 24 / 19 | 244 to 173 (-29%) | 436 to 334 (-23%) | 40 to 4 |
+| search | 19 / 18 | 221 to 152 (-31%) | 385 to 321 (-17%) | 37 to 4 |
+| dashboard | 20 / 16 | 234 to 153 (-35%) | 429 to 396 (-8%) | 47 to 6 |
+| post-new | 29 / 30 | 572 to 529 (-8%) | 1,035 to 777 (-25%) | 72 to 42 |
+| edit | 19 / 19 | 270 to 199 (-26%) | 582 to 424 (-27%) | 48 to 8 |
+
+Home at 8 clients: 80 requests in 21.1 s (3.80 a second) to 80 in 15.7 s (5.08 a second, +34%). All 200. No boots.
+
+Locally (`dosql-local`, one build, warm, N=20 per page, PHP ms median, off to on): home 82 to 67, post 89 to 63, search 82 to 57, dashboard 83 to 57, post-new 219 to 213, edit 108 to 81.5.
+
+**Not measured:** the cache after an isolate restart (it starts empty, as after a deploy); memory near the 8 MB cap (the test site used 409 keys, 254 KiB); the runner's load matrix with the change.
+
 ## Not measured
 
 - Worker CPU for each request in this run (Worker tail events have no request id to join on).
