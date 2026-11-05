@@ -1048,6 +1048,15 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 					require_once ABSPATH . 'wp-admin/includes/plugin.php';
 					wp_set_current_user( 1 );
 					$r = activate_plugin( '${plugin}' );
+					// WooCommerce sends the first admin visit to its setup wizard (a 302 on /wp-admin/). A deploy has no use for it.
+					delete_transient( '_wc_activation_redirect' );
+					// WooCommerce makes its order tables (HPOS) on the first admin page view. dbDelta
+					// first runs DESCRIBE on each missing table, which is an error by design. Make them
+					// here, so that one-time step is part of the activation and not of a visitor's page.
+					if ( function_exists( 'wc_get_container' ) && class_exists( 'Automattic\\\\WooCommerce\\\\Internal\\\\DataStores\\\\Orders\\\\DataSynchronizer' ) ) {
+						$sync = wc_get_container()->get( 'Automattic\\\\WooCommerce\\\\Internal\\\\DataStores\\\\Orders\\\\DataSynchronizer' );
+						if ( ! $sync->check_orders_table_exists() ) $sync->create_database_tables();
+					}
 					echo json_encode( array( 'active' => is_plugin_active( '${plugin}' ), 'error' => is_wp_error( $r ) ? $r->get_error_message() : null ) );` });
 			} catch (e) {
 				bootPromise = null;

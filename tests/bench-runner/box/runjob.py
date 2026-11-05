@@ -102,6 +102,37 @@ def run_target(t, n):
     return r
 
 
+def run_load(t, load):
+    r = {"name": t.get("name"), "url": t.get("url"), "variant": t.get("variant")}
+    bad = check(t)
+    if bad:
+        r["error"] = bad
+        return r
+    env = dict(os.environ)
+    for k in ("R2_KEY_ID", "R2_SECRET"):
+        env.pop(k, None)
+    levels = str(load.get("levels", "1,5,10,25,50"))
+    if not re.fullmatch(r"[0-9]{1,3}(,[0-9]{1,3}){0,9}", levels) or max(int(x) for x in levels.split(",")) > 100:
+        r["error"] = "bad load levels"
+        return r
+    secs = max(10, min(int(load.get("seconds", 60)), 300))
+    buyers = max(0.0, min(float(load.get("buyers", 0.2)), 1.0))
+    env.update(B=t["url"], ADMIN_PASSWORD=t["admin_password"], LEVELS=levels, SECONDS=str(secs), BUYERS=str(buyers))
+    t0 = time.time()
+    try:
+        p = subprocess.run([sys.executable, os.path.join(repo, "tests/load/load.py")], env=env, capture_output=True, text=True,
+                           timeout=len(levels.split(",")) * (secs + 120) + 300)
+        last = [l for l in p.stdout.splitlines() if l.startswith("{")]
+        if last:
+            r["load"] = json.loads(last[-1])
+        else:
+            r["error"] = "load.py: " + (p.stderr or p.stdout)[-300:]
+    except subprocess.TimeoutExpired:
+        r["error"] = "load.py did not finish"
+    r["runner_seconds"] = round(time.time() - t0, 1)
+    return r
+
+
 try:
     job = json.load(open(job_path))
     n = int(job.get("n") or 10)
@@ -112,7 +143,9 @@ try:
     else:
         for t in job.get("targets") or []:
             print("job %s: target %s" % (job_id, t.get("name")), flush=True)
-            out["targets"].append(run_target(t, n))
+            out["targets"].append(run_load(t, job["load"]) if job.get("load") else run_target(t, n))
+        if job.get("load"):
+            out["load"] = job["load"]
 except Exception as e:
     out["error"] = "runner: %r" % e
 out["runner"]["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

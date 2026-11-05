@@ -21,6 +21,9 @@
 # before the job; default: the runner's own default), WAIT (seconds to wait for
 # the result, default 3600), DRY_RUN=1 (print the job with the secrets hidden;
 # upload nothing).
+# LOAD=levels:seconds:buyers runs tests/load/load.py on each site instead of the
+# benchmark, e.g. LOAD=1,5,10,25,50:60:0.2 (users per step, seconds per step,
+# fraction of loops that check out). The sites need WooCommerce active.
 #
 # Output: a table, and deploy/results/bench-runner-<job-id>.json.
 set -euo pipefail

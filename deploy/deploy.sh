@@ -42,6 +42,9 @@ case "$VARIANT" in b-do|b-dosql|a|c1) ;; *) echo "VARIANT must be b-do, b-dosql,
 backend() {
   [ "${DEPLOY_STATE:-local}" = r2 ] || return 0
   : "${STATE_BUCKET:?set STATE_BUCKET}" "${STATE_ENDPOINT:?set STATE_ENDPOINT (https://<account>.r2.cloudflarestorage.com)}"
+  # Each site has its own state key, so the workspace the last site selected
+  # is not in this one and init refuses it. Start from default; tf() selects.
+  rm -f "$1/.terraform/environment"
   cat > "$1/backend_override.tf" <<EOF
 terraform {
   backend "s3" {
