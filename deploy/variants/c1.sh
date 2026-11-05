@@ -41,7 +41,8 @@ c1_config() {
   # URL), so it must be known before the deploy: ask the API for the account's
   # workers.dev subdomain.
   if [ -z "${PUBLIC_HOST:-}" ]; then
-    sub=$(curl -sf -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/workers/subdomain" \
+    # The token goes to curl in a config on a pipe, not in the arguments (ps).
+    sub=$(curl -sf -K <(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN") "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/workers/subdomain" \
       | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["subdomain"])')
     PUBLIC_HOST="$NAME.$sub.workers.dev"
   fi
