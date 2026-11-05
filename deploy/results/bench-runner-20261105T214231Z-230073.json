@@ -1,0 +1,1048 @@
+{
+ "job": "20261105T214231Z-230073",
+ "runner": {
+  "region": "ord",
+  "plan": "vc2-2c-4gb",
+  "started_utc": "2026-11-05T21:43:28Z",
+  "branch": "plugin-parity",
+  "git_sha": "28b1637d3c57f3bd482fa55b816f0c73232e872c",
+  "curl": "curl 8.5.0 (x86_64-pc-linux-gnu) libcurl/8.5.0 OpenSSL/3.0.13 zlib/1.3 brotli/1.1.0 zstd/1.5.5 libidn2/2.3.7 libpsl/0.21.2 (+libidn2/2.3.7) libssh/0.10.6/openssl/zlib nghttp2/1.59.0 librtmp/2.3 OpenLDAP/2.6.10",
+  "python": "3.12.3",
+  "finished_utc": "2026-11-05T22:16:19Z"
+ },
+ "targets": [
+  {
+   "name": "wp-ref-dosql",
+   "url": "https://wp-ref-dosql.vivijure-coldrun.workers.dev",
+   "variant": "b-dosql",
+   "load": {
+    "target": "https://wp-ref-dosql.vivijure-coldrun.workers.dev",
+    "woo": false,
+    "levels": [
+     1,
+     5,
+     10,
+     25,
+     50,
+     100
+    ],
+    "seconds_per_level": 60.0,
+    "buyers": 0.0,
+    "steps": [
+     {
+      "users": 1,
+      "seconds": 61.4,
+      "client_load1": 0.79,
+      "client_cpus": 2,
+      "requests": 113,
+      "rps": 1.84,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 113
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 58,
+      "kinds": {
+       "browse": {
+        "n": 113,
+        "ok": 113,
+        "p50": 0.363,
+        "p95": 1.13,
+        "p99": 1.804,
+        "max": 4.551
+       }
+      }
+     },
+     {
+      "users": 5,
+      "seconds": 60.8,
+      "client_load1": 0.72,
+      "client_cpus": 2,
+      "requests": 290,
+      "rps": 4.77,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 290
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 69,
+      "kinds": {
+       "browse": {
+        "n": 290,
+        "ok": 290,
+        "p50": 1.007,
+        "p95": 1.682,
+        "p99": 2.268,
+        "max": 2.906
+       }
+      }
+     },
+     {
+      "users": 10,
+      "seconds": 60.2,
+      "client_load1": 0.26,
+      "client_cpus": 2,
+      "requests": 318,
+      "rps": 5.29,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 318
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 69,
+      "kinds": {
+       "browse": {
+        "n": 318,
+        "ok": 318,
+        "p50": 1.895,
+        "p95": 2.71,
+        "p99": 2.827,
+        "max": 4.129
+       }
+      }
+     },
+     {
+      "users": 25,
+      "seconds": 75.5,
+      "client_load1": 0.34,
+      "client_cpus": 2,
+      "requests": 316,
+      "rps": 4.18,
+      "errors": 16,
+      "e1102": 0,
+      "status": {
+       "200": 300,
+       "EXC": 16
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 69,
+      "kinds": {
+       "browse": {
+        "n": 316,
+        "ok": 300,
+        "p50": 4.841,
+        "p95": 7.948,
+        "p99": 8.027,
+        "max": 15.808
+       }
+      }
+     },
+     {
+      "users": 50,
+      "seconds": 63.5,
+      "client_load1": 0.11,
+      "client_cpus": 2,
+      "requests": 307,
+      "rps": 4.84,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 307
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 69,
+      "kinds": {
+       "browse": {
+        "n": 307,
+        "ok": 307,
+        "p50": 9.111,
+        "p95": 13.958,
+        "p99": 14.201,
+        "max": 14.52
+       }
+      }
+     },
+     {
+      "users": 100,
+      "seconds": 71.5,
+      "client_load1": 0.12,
+      "client_cpus": 2,
+      "requests": 510,
+      "rps": 7.14,
+      "errors": 140,
+      "e1102": 0,
+      "status": {
+       "200": 370,
+       "503": 140
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 69,
+      "kinds": {
+       "browse": {
+        "n": 510,
+        "ok": 370,
+        "p50": 16.714,
+        "p95": 20.008,
+        "p99": 20.51,
+        "max": 21.176
+       }
+      }
+     }
+    ]
+   },
+   "runner_seconds": 393.9
+  },
+  {
+   "name": "wp-ref-do",
+   "url": "https://wp-ref-do.vivijure-coldrun.workers.dev",
+   "variant": "b-do",
+   "load": {
+    "target": "https://wp-ref-do.vivijure-coldrun.workers.dev",
+    "woo": false,
+    "levels": [
+     1,
+     5,
+     10,
+     25,
+     50,
+     100
+    ],
+    "seconds_per_level": 60.0,
+    "buyers": 0.0,
+    "steps": [
+     {
+      "users": 1,
+      "seconds": 61.4,
+      "client_load1": 0.04,
+      "client_cpus": 2,
+      "requests": 39,
+      "rps": 0.64,
+      "errors": 1,
+      "e1102": 0,
+      "status": {
+       "200": 38,
+       "EXC": 1
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 58,
+      "kinds": {
+       "browse": {
+        "n": 39,
+        "ok": 38,
+        "p50": 1.473,
+        "p95": 2.34,
+        "p99": 2.382,
+        "max": 2.382
+       }
+      }
+     },
+     {
+      "users": 5,
+      "seconds": 63.9,
+      "client_load1": 0.01,
+      "client_cpus": 2,
+      "requests": 82,
+      "rps": 1.28,
+      "errors": 1,
+      "e1102": 0,
+      "status": {
+       "200": 81,
+       "EXC": 1
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 58,
+      "kinds": {
+       "browse": {
+        "n": 82,
+        "ok": 81,
+        "p50": 3.867,
+        "p95": 4.663,
+        "p99": 5.086,
+        "max": 5.086
+       }
+      }
+     },
+     {
+      "users": 10,
+      "seconds": 67.0,
+      "client_load1": 0.05,
+      "client_cpus": 2,
+      "requests": 82,
+      "rps": 1.22,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 82
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 58,
+      "kinds": {
+       "browse": {
+        "n": 82,
+        "ok": 82,
+        "p50": 8.042,
+        "p95": 9.27,
+        "p99": 9.903,
+        "max": 9.903
+       }
+      }
+     },
+     {
+      "users": 25,
+      "seconds": 77.5,
+      "client_load1": 0.42,
+      "client_cpus": 2,
+      "requests": 99,
+      "rps": 1.28,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 99
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 58,
+      "kinds": {
+       "browse": {
+        "n": 99,
+        "ok": 99,
+        "p50": 19.468,
+        "p95": 20.828,
+        "p99": 21.687,
+        "max": 21.687
+       }
+      }
+     },
+     {
+      "users": 50,
+      "seconds": 86.7,
+      "client_load1": 0.1,
+      "client_cpus": 2,
+      "requests": 123,
+      "rps": 1.42,
+      "errors": 18,
+      "e1102": 0,
+      "status": {
+       "200": 105,
+       "500": 18
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 58,
+      "kinds": {
+       "browse": {
+        "n": 123,
+        "ok": 105,
+        "p50": 37.449,
+        "p95": 42.287,
+        "p99": 42.574,
+        "max": 42.6
+       }
+      }
+     },
+     {
+      "users": 100,
+      "seconds": 66.4,
+      "client_load1": 0.36,
+      "client_cpus": 2,
+      "requests": 179,
+      "rps": 2.7,
+      "errors": 98,
+      "e1102": 0,
+      "status": {
+       "200": 81,
+       "EXC": 25,
+       "503": 73
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 69,
+      "kinds": {
+       "browse": {
+        "n": 179,
+        "ok": 81,
+        "p50": 36.928,
+        "p95": 60.086,
+        "p99": 60.11,
+        "max": 60.121
+       }
+      }
+     }
+    ]
+   },
+   "runner_seconds": 428.2
+  },
+  {
+   "name": "wp-ref-a",
+   "url": "https://wp-ref-a.skyphusion.workers.dev",
+   "variant": "a",
+   "load": {
+    "target": "https://wp-ref-a.skyphusion.workers.dev",
+    "woo": true,
+    "levels": [
+     1,
+     5,
+     10,
+     25,
+     50,
+     100
+    ],
+    "seconds_per_level": 60.0,
+    "buyers": 0.2,
+    "steps": [
+     {
+      "users": 1,
+      "seconds": 67.9,
+      "client_load1": 0.04,
+      "client_cpus": 2,
+      "requests": 18,
+      "rps": 0.27,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 15,
+       "201": 3
+      },
+      "recycled": {},
+      "boots": 5,
+      "max_wasm_mib": 99,
+      "kinds": {
+       "browse": {
+        "n": 9,
+        "ok": 9,
+        "p50": 2.413,
+        "p95": 9.013,
+        "p99": 9.013,
+        "max": 9.013
+       },
+       "cart": {
+        "n": 3,
+        "ok": 3,
+        "p50": 1.837,
+        "p95": 5.884,
+        "p99": 5.884,
+        "max": 5.884
+       },
+       "add": {
+        "n": 3,
+        "ok": 3,
+        "p50": 1.417,
+        "p95": 4.165,
+        "p99": 4.165,
+        "max": 4.165
+       },
+       "checkout": {
+        "n": 3,
+        "ok": 3,
+        "p50": 7.11,
+        "p95": 9.894,
+        "p99": 9.894,
+        "max": 9.894
+       }
+      }
+     },
+     {
+      "users": 5,
+      "seconds": 69.2,
+      "client_load1": 0.01,
+      "client_cpus": 2,
+      "requests": 68,
+      "rps": 0.98,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 58,
+       "201": 10
+      },
+      "recycled": {},
+      "boots": 19,
+      "max_wasm_mib": 99,
+      "kinds": {
+       "browse": {
+        "n": 38,
+        "ok": 38,
+        "p50": 2.849,
+        "p95": 9.776,
+        "p99": 9.97,
+        "max": 9.97
+       },
+       "cart": {
+        "n": 10,
+        "ok": 10,
+        "p50": 5.676,
+        "p95": 11.509,
+        "p99": 11.509,
+        "max": 11.509
+       },
+       "add": {
+        "n": 10,
+        "ok": 10,
+        "p50": 1.897,
+        "p95": 13.33,
+        "p99": 13.33,
+        "max": 13.33
+       },
+       "checkout": {
+        "n": 10,
+        "ok": 10,
+        "p50": 5.036,
+        "p95": 11.743,
+        "p99": 11.743,
+        "max": 11.743
+       }
+      }
+     },
+     {
+      "users": 10,
+      "seconds": 70.9,
+      "client_load1": 0.0,
+      "client_cpus": 2,
+      "requests": 125,
+      "rps": 1.76,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 105,
+       "201": 20
+      },
+      "recycled": {},
+      "boots": 68,
+      "max_wasm_mib": 99,
+      "kinds": {
+       "browse": {
+        "n": 65,
+        "ok": 65,
+        "p50": 5.431,
+        "p95": 10.417,
+        "p99": 14.124,
+        "max": 14.124
+       },
+       "cart": {
+        "n": 20,
+        "ok": 20,
+        "p50": 2.081,
+        "p95": 8.625,
+        "p99": 8.992,
+        "max": 8.992
+       },
+       "add": {
+        "n": 20,
+        "ok": 20,
+        "p50": 4.25,
+        "p95": 7.028,
+        "p99": 8.095,
+        "max": 8.095
+       },
+       "checkout": {
+        "n": 20,
+        "ok": 20,
+        "p50": 6.314,
+        "p95": 12.414,
+        "p99": 12.488,
+        "max": 12.488
+       }
+      }
+     },
+     {
+      "users": 25,
+      "seconds": 75.7,
+      "client_load1": 0.03,
+      "client_cpus": 2,
+      "requests": 307,
+      "rps": 4.06,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 267,
+       "201": 40
+      },
+      "recycled": {},
+      "boots": 201,
+      "max_wasm_mib": 99,
+      "kinds": {
+       "browse": {
+        "n": 187,
+        "ok": 187,
+        "p50": 5.063,
+        "p95": 9.761,
+        "p99": 16.095,
+        "max": 18.759
+       },
+       "cart": {
+        "n": 40,
+        "ok": 40,
+        "p50": 3.852,
+        "p95": 7.692,
+        "p99": 8.451,
+        "max": 8.451
+       },
+       "add": {
+        "n": 40,
+        "ok": 40,
+        "p50": 4.218,
+        "p95": 6.321,
+        "p99": 9.838,
+        "max": 9.838
+       },
+       "checkout": {
+        "n": 40,
+        "ok": 40,
+        "p50": 6.363,
+        "p95": 11.145,
+        "p99": 12.244,
+        "max": 12.244
+       }
+      }
+     },
+     {
+      "users": 50,
+      "seconds": 72.7,
+      "client_load1": 0.12,
+      "client_cpus": 2,
+      "requests": 639,
+      "rps": 8.79,
+      "errors": 6,
+      "e1102": 0,
+      "status": {
+       "200": 545,
+       "201": 88,
+       "EXC": 6
+      },
+      "recycled": {},
+      "boots": 346,
+      "max_wasm_mib": 99,
+      "kinds": {
+       "browse": {
+        "n": 375,
+        "ok": 369,
+        "p50": 5.166,
+        "p95": 9.445,
+        "p99": 12.04,
+        "max": 14.875
+       },
+       "cart": {
+        "n": 88,
+        "ok": 88,
+        "p50": 1.703,
+        "p95": 7.526,
+        "p99": 14.789,
+        "max": 14.789
+       },
+       "add": {
+        "n": 88,
+        "ok": 88,
+        "p50": 4.291,
+        "p95": 7.705,
+        "p99": 17.37,
+        "max": 17.37
+       },
+       "checkout": {
+        "n": 88,
+        "ok": 88,
+        "p50": 6.256,
+        "p95": 10.77,
+        "p99": 14.411,
+        "max": 14.411
+       }
+      }
+     },
+     {
+      "users": 100,
+      "seconds": 77.1,
+      "client_load1": 0.36,
+      "client_cpus": 2,
+      "requests": 1443,
+      "rps": 18.73,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 1241,
+       "201": 202
+      },
+      "recycled": {},
+      "boots": 537,
+      "max_wasm_mib": 99,
+      "kinds": {
+       "browse": {
+        "n": 837,
+        "ok": 837,
+        "p50": 4.603,
+        "p95": 9.653,
+        "p99": 14.303,
+        "max": 18.275
+       },
+       "cart": {
+        "n": 202,
+        "ok": 202,
+        "p50": 1.186,
+        "p95": 5.184,
+        "p99": 7.012,
+        "max": 12.534
+       },
+       "add": {
+        "n": 202,
+        "ok": 202,
+        "p50": 3.615,
+        "p95": 9.441,
+        "p99": 13.51,
+        "max": 15.113
+       },
+       "checkout": {
+        "n": 202,
+        "ok": 202,
+        "p50": 6.16,
+        "p95": 10.342,
+        "p99": 12.625,
+        "max": 13.026
+       }
+      }
+     }
+    ]
+   },
+   "runner_seconds": 493.2
+  },
+  {
+   "name": "wp-c1",
+   "url": "https://wp-c1.skyphusion.workers.dev",
+   "variant": "c1",
+   "load": {
+    "target": "https://wp-c1.skyphusion.workers.dev",
+    "woo": true,
+    "levels": [
+     1,
+     5,
+     10,
+     25,
+     50,
+     100
+    ],
+    "seconds_per_level": 60.0,
+    "buyers": 0.2,
+    "steps": [
+     {
+      "users": 1,
+      "seconds": 61.4,
+      "client_load1": 0.07,
+      "client_cpus": 2,
+      "requests": 37,
+      "rps": 0.6,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 34,
+       "201": 3
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 28,
+        "ok": 28,
+        "p50": 1.26,
+        "p95": 3.39,
+        "p99": 4.363,
+        "max": 4.363
+       },
+       "cart": {
+        "n": 3,
+        "ok": 3,
+        "p50": 0.803,
+        "p95": 1.047,
+        "p99": 1.047,
+        "max": 1.047
+       },
+       "add": {
+        "n": 3,
+        "ok": 3,
+        "p50": 0.671,
+        "p95": 1.195,
+        "p99": 1.195,
+        "max": 1.195
+       },
+       "checkout": {
+        "n": 3,
+        "ok": 3,
+        "p50": 1.84,
+        "p95": 4.09,
+        "p99": 4.09,
+        "max": 4.09
+       }
+      }
+     },
+     {
+      "users": 5,
+      "seconds": 62.8,
+      "client_load1": 0.02,
+      "client_cpus": 2,
+      "requests": 68,
+      "rps": 1.08,
+      "errors": 1,
+      "e1102": 0,
+      "status": {
+       "200": 57,
+       "201": 10,
+       "EXC": 1
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 38,
+        "ok": 38,
+        "p50": 4.503,
+        "p95": 8.383,
+        "p99": 8.406,
+        "max": 8.406
+       },
+       "cart": {
+        "n": 10,
+        "ok": 10,
+        "p50": 1.551,
+        "p95": 2.058,
+        "p99": 2.058,
+        "max": 2.058
+       },
+       "add": {
+        "n": 10,
+        "ok": 10,
+        "p50": 1.607,
+        "p95": 2.476,
+        "p99": 2.476,
+        "max": 2.476
+       },
+       "checkout": {
+        "n": 10,
+        "ok": 9,
+        "p50": 8.533,
+        "p95": 13.725,
+        "p99": 13.725,
+        "max": 13.725
+       }
+      }
+     },
+     {
+      "users": 10,
+      "seconds": 73.9,
+      "client_load1": 0.04,
+      "client_cpus": 2,
+      "requests": 71,
+      "rps": 0.96,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 57,
+       "201": 14
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 29,
+        "ok": 29,
+        "p50": 9.891,
+        "p95": 20.076,
+        "p99": 22.361,
+        "max": 22.361
+       },
+       "cart": {
+        "n": 14,
+        "ok": 14,
+        "p50": 3.429,
+        "p95": 9.003,
+        "p99": 9.003,
+        "max": 9.003
+       },
+       "add": {
+        "n": 14,
+        "ok": 14,
+        "p50": 5.932,
+        "p95": 13.707,
+        "p99": 13.707,
+        "max": 13.707
+       },
+       "checkout": {
+        "n": 14,
+        "ok": 14,
+        "p50": 14.207,
+        "p95": 21.134,
+        "p99": 21.134,
+        "max": 21.134
+       }
+      }
+     },
+     {
+      "users": 25,
+      "seconds": 100.0,
+      "client_load1": 0.01,
+      "client_cpus": 2,
+      "requests": 81,
+      "rps": 0.81,
+      "errors": 16,
+      "e1102": 0,
+      "status": {
+       "200": 57,
+       "201": 8,
+       "EXC": 14,
+       "401": 2
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 48,
+        "ok": 40,
+        "p50": 29.315,
+        "p95": 40.263,
+        "p99": 42.505,
+        "max": 42.505
+       },
+       "cart": {
+        "n": 11,
+        "ok": 10,
+        "p50": 4.165,
+        "p95": 27.686,
+        "p99": 27.686,
+        "max": 27.686
+       },
+       "add": {
+        "n": 11,
+        "ok": 8,
+        "p50": 27.116,
+        "p95": 34.093,
+        "p99": 34.093,
+        "max": 34.093
+       },
+       "checkout": {
+        "n": 11,
+        "ok": 7,
+        "p50": 32.57,
+        "p95": 42.678,
+        "p99": 42.678,
+        "max": 42.678
+       }
+      }
+     },
+     {
+      "users": 50,
+      "seconds": 139.8,
+      "client_load1": 0.01,
+      "client_cpus": 2,
+      "requests": 115,
+      "rps": 0.82,
+      "errors": 29,
+      "e1102": 0,
+      "status": {
+       "200": 79,
+       "EXC": 27,
+       "201": 7,
+       "401": 2
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 73,
+        "ok": 56,
+        "p50": 47.552,
+        "p95": 60.128,
+        "p99": 69.316,
+        "max": 69.316
+       },
+       "cart": {
+        "n": 14,
+        "ok": 13,
+        "p50": 47.464,
+        "p95": 59.698,
+        "p99": 59.698,
+        "max": 59.698
+       },
+       "add": {
+        "n": 14,
+        "ok": 7,
+        "p50": 43.278,
+        "p95": 60.096,
+        "p99": 60.096,
+        "max": 60.096
+       },
+       "checkout": {
+        "n": 14,
+        "ok": 10,
+        "p50": 24.546,
+        "p95": 55.241,
+        "p99": 55.241,
+        "max": 55.241
+       }
+      }
+     },
+     {
+      "users": 100,
+      "seconds": 187.0,
+      "client_load1": 0.01,
+      "client_cpus": 2,
+      "requests": 199,
+      "rps": 1.06,
+      "errors": 154,
+      "e1102": 0,
+      "status": {
+       "200": 44,
+       "201": 1,
+       "EXC": 140,
+       "401": 14
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 103,
+        "ok": 33,
+        "p50": 60.08,
+        "p95": 60.217,
+        "p99": 60.271,
+        "max": 60.304
+       },
+       "cart": {
+        "n": 32,
+        "ok": 11,
+        "p50": 60.067,
+        "p95": 60.233,
+        "p99": 60.24,
+        "max": 60.24
+       },
+       "add": {
+        "n": 32,
+        "ok": 1,
+        "p50": 60.088,
+        "p95": 60.137,
+        "p99": 60.152,
+        "max": 60.152
+       },
+       "checkout": {
+        "n": 32,
+        "ok": 0,
+        "p50": 60.073,
+        "p95": 60.141,
+        "p99": 62.753,
+        "max": 62.753
+       }
+      }
+     }
+    ]
+   },
+   "runner_seconds": 655.4
+  }
+ ],
+ "n": 10,
+ "load": {
+  "levels": "1,5,10,25,50,100",
+  "seconds": 60,
+  "buyers": 0.2
+ }
+}

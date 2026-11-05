@@ -54,7 +54,7 @@ def one(o, name, path, i):
             "perf": js("x-perf"), "queue": js("x-perf-queue"), "worker": js("x-perf-worker"),
             "recycled": get("x-runtime-recycled"), "timing": get("server-timing"),
             # A failed answer keeps what tells whose it is: the body start and the server headers.
-            **({"err": {"body": (r["body"] or b"")[:300].decode("utf-8", "replace"), "server": get("server"), "cf-ray": get("cf-ray"), "type": get("content-type"), "exc": r.get("err")}} if r["code"] != 200 else {})}
+            **({"err": {"body": (r["body"] or b"")[:300].decode("utf-8", "replace"), "server": get("server"), "cf-ray": get("cf-ray"), "type": get("content-type"), "cache-control": get("cache-control"), "retry-after": get("retry-after"), "exc": r.get("err")}} if r["code"] != 200 else {})}
 
 
 def main():

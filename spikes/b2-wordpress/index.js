@@ -1044,6 +1044,11 @@ function phpObjectName(env, url) {
 	return 'php-' + Math.floor(Math.random() * pool);
 }
 
+// Seconds a client waits after an overload 503. One object serves about 5
+// uncached pages a second (docs/perf-dosql.md), so a full queue drains in
+// seconds, not minutes.
+const OVERLOAD_RETRY_AFTER_S = '5';
+
 async function toPhpObject(req, env, url, ctx) {
 	const name = phpObjectName(env, url);
 	// The hint applies only when the object is made. D1's primary is in the
@@ -1053,7 +1058,24 @@ async function toPhpObject(req, env, url, ctx) {
 	fwd.headers.set(ORIGIN_HEADER, url.origin);
 	const t0 = Date.now();
 	fwd.headers.set(SENT_HEADER, String(t0));
-	const r = await stub.fetch(fwd);
+	let r;
+	try {
+		r = await stub.fetch(fwd);
+	} catch (e) {
+		// The object runs one PHP request at a time. Past its queue limit the
+		// runtime refuses with "Durable Object is overloaded" (measured
+		// 2026-11-05: 27 of 400 at 100 clients, docs/perf-dosql.md). Uncaught,
+		// that was an exception and a bare 503 with no body. Answer it: a 503
+		// the client can act on, never stored by the page cache in front of the
+		// Worker (a cached error would reach readers after the queue drains).
+		// Other errors are thrown as before.
+		if (!(e && (e.overloaded === true || /Durable Object is overloaded/.test(String(e.message))))) throw e;
+		console.log(JSON.stringify({ m: 'overloaded', path: url.pathname, error: String(e.message).slice(0, 200) }));
+		return new Response('The site is busy. Please try again in a few seconds.\n', {
+			status: 503,
+			headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'retry-after': OVERLOAD_RETRY_AFTER_S, 'x-php-object': name, 'x-overloaded': '1' },
+		});
+	}
 	const out = new Response(r.body, r);
 	if (out.headers.has(PURGE_HEADER)) {
 		out.headers.delete(PURGE_HEADER);

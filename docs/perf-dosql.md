@@ -96,6 +96,35 @@ The C=4 parts are medians of each column, so they do not add up to the object me
 - Under concurrency, one object serializes all PHP. Throughput is about 1 / CPU per request (about 4 public pages a second at 230 ms). Past that, every request queues. With the database in the object, the object cannot be split (`PHP_DO_POOL` does not apply).
 - The edge time (about 270 ms) is from this laptop, with a new TLS connection for each request. A client near the site that keeps its connection pays less. The runner's figures (home p50 0.45 s) come from another vantage, so they are not directly comparable with this page.
 
+## Measured non-lever: re-inflating lazy files
+
+A warm home page re-inflates the same lazy files on every request, because `evictLazy()` drops them after each request. They are theme data that WordPress reads every request, not PHP code: `theme.json`, each style variation and typography preset of the theme, and block CSS.
+
+| Method | n | Result |
+| --- | --- | --- |
+| `performance.now()` around each `entry.data()` (a temporary patch, reverted), `wrangler dev`, `dosql-local`, warm home | 20 requests | Median 58 inflations, 199 KiB, 1.0 ms a request (max 3); `phpMs` median 75.5 |
+| The same 55 deflated files inflated in Node with the same fflate (the local clock has 1 ms steps, so the per-file sum can be low) | 200 rounds | 0.64 ms a request |
+
+So keeping these files inflated would save about 1 ms of about 75 ms: about 1%. Not changed. The cost is what PHP does with the files, which the object cache (change 1) addresses.
+
+## Overload answer (measured 2026-11-05)
+
+With about 100 clients, the object's queue overflows. Its stub refuses with `Durable Object is overloaded. Requests queued for too long.` Before this change, that was an uncaught exception in the Worker, and the client got a 503 with no body and no headers.
+
+Now `toPhpObject()` catches it. The client gets a 503 with a short `text/plain` body, `Retry-After: 5` and `Cache-Control: no-store`. A stored error would reach readers through the page cache after the queue drains, so the answer must not be cacheable. Any other error is thrown as before.
+
+`wp-perf-dosql`, one build of `plugin-parity`, `index.js` without the change and then with it. 3 runs of each, alternating. Each run is `N=400 C=100 PAGES=home python3 tests/load/perf.py` with `wrangler tail`.
+
+| Run | Non-200, before | Before: what the client got | Non-200, after | After: what the client got |
+| --- | --- | --- | --- | --- |
+| 1 | 8 of 400 | 503, no body, no headers; tail: 6 exceptions | 137 of 400 | 503 with the body, `no-store`, `Retry-After: 5`; tail: 0 exceptions |
+| 2 | 21 | 503 bare; tail: 16 exceptions | 72 (71 of them 503) | the same answer; 0 exceptions; 1 client connection reset |
+| 3 | 305 | 198 bare 503s, 48 answers of 520, 59 connection resets; tail: 183 exceptions | 161 | the same answer; 0 exceptions |
+
+The answer is now honest in all 369 overload responses after the change: body, `no-store` and `Retry-After`, with 0 exceptions and no 520 in tail.
+
+The count of overloads did not settle. It changed by a factor of 38 between runs of the same code before the change (8 to 305), which is more than any difference between the two codes, so these runs cannot say whether the count went up or down. A fast 503 frees the client at once, and it sends its next request into a queue that is still full. `perf.py` does not wait for `Retry-After`. Not measured further.
+
 ## Change 1: object cache across requests (measured 2026-11-05)
 
 **Where the CPU was.** Two local instruments, before the change:

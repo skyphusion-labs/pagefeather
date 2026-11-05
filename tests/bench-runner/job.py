@@ -5,6 +5,8 @@
                                     (deploy/terraform). Prints one target as JSON.
   job.py job <id> <branch> <n> <targets.jsonl>
                                     Prints the job JSON.
+  job.py latency <id> <branch> <n> <direct-url> <dispatched-url>
+                                    Prints a latency job (tests/wfp/latency.py on the runner).
   job.py redact <job.json>          Prints the job with passwords and tokens hidden.
   job.py table <result.json>        Prints a table of a runner result.
 """
@@ -52,6 +54,18 @@ def job(jid, branch, n, path):
     print(json.dumps(j, indent=1))
 
 
+def latency(jid, branch, n, direct, dispatched):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", jid):
+        die("bad job id")
+    for u in (direct, dispatched):
+        if not re.fullmatch(r"https://[a-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._/-]*)?", u):
+            die("bad url (https only, plain path): %r" % u)
+    j = {"id": jid, "kind": "latency", "n": int(n), "pairs": [{"direct": direct, "dispatched": dispatched}]}
+    if branch:
+        j["branch"] = branch
+    print(json.dumps(j, indent=1))
+
+
 def redact(path):
     j = json.load(open(path))
     for t in j.get("targets", []):
@@ -84,6 +98,16 @@ def table(path):
     print("        %s" % m.get("curl"))
     if r.get("error"):
         print("JOB ERROR:", r["error"])
+    if r.get("kind") == "latency":
+        for p in r.get("latency") or []:
+            if p.get("error"):
+                print("ERROR:", p["error"])
+                continue
+            for k in ("direct", "dispatched"):
+                v = p.get(k) or {}
+                print("%-10s p50 %s ms  p95 %s ms  p99 %s ms  mean %s ms  ok %s  %s" % (k, v.get("p50"), v.get("p95"), v.get("p99"), v.get("mean"), v.get("ok"), v.get("url")))
+            print("added     ", p.get("added_ms"))
+        return
     if r.get("load"):
         print("load: users %s, %s s per step, buyers %s" % (r["load"]["levels"], r["load"]["seconds"], r["load"]["buyers"]))
         return load_table(r)
@@ -121,6 +145,8 @@ if __name__ == "__main__":
         target(a[1], a[2])
     elif a[:1] == ["job"] and len(a) == 5:
         job(*a[1:])
+    elif a[:1] == ["latency"] and len(a) == 6:
+        latency(*a[1:])
     elif a[:1] == ["redact"] and len(a) == 2:
         redact(a[1])
     elif a[:1] == ["table"] and len(a) == 2:
