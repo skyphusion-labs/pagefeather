@@ -10,6 +10,10 @@ For each target: the database ping (/_d1ping, or /_dbping?db=object for
 b-dosql; none for c1, whose SQLite is on the container disk), e2e.sh and
 tests/a/bench.py, then deploy/summarize.py makes one object per target, the
 same shape as deploy/results/. Passwords and tokens are not in the result.
+
+A job with "kind": "latency" has "pairs": [{"direct": url, "dispatched": url}]
+instead of targets: for each pair it runs tests/wfp/latency.py from the branch
+(issue #35, the dispatch hop). N defaults to 100, at most 1000.
 """
 import json, os, re, subprocess, sys, tempfile, time, urllib.request, uuid
 
@@ -102,6 +106,29 @@ def run_target(t, n):
     return r
 
 
+def run_latency(pair, n):
+    """One pair of URLs: tests/wfp/latency.py (direct against dispatched)."""
+    r = {"direct": pair.get("direct"), "dispatched": pair.get("dispatched")}
+    for k in ("direct", "dispatched"):
+        if not re.fullmatch(r"https://[a-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._/-]*)?", str(pair.get(k, ""))):
+            r["error"] = "bad %s url" % k
+            return r
+    env = dict(os.environ)
+    for k in ("R2_KEY_ID", "R2_SECRET"):
+        env.pop(k, None)
+    try:
+        p = subprocess.run([sys.executable, os.path.join(repo, "tests/wfp/latency.py"), pair["direct"], pair["dispatched"], str(n)],
+                           env=env, capture_output=True, text=True, timeout=1800)
+        lines = [l for l in p.stdout.splitlines() if l.startswith("{")]
+        if lines:
+            r.update(json.loads(lines[-1]))
+        else:
+            r["error"] = "latency.py: " + (p.stderr or p.stdout)[-300:]
+    except subprocess.TimeoutExpired:
+        r["error"] = "latency.py did not finish in 1800 s"
+    return r
+
+
 def run_load(t, load):
     r = {"name": t.get("name"), "url": t.get("url"), "variant": t.get("variant")}
     bad = check(t)
@@ -143,6 +170,11 @@ try:
     out["n"] = n
     if error:
         out["error"] = error
+    elif job.get("kind") == "latency":
+        out["kind"] = "latency"
+        n = max(1, min(int(job.get("n") or 100), 1000))
+        out["n"] = n
+        out["latency"] = [run_latency(p, n) for p in job.get("pairs") or []]
     else:
         for t in job.get("targets") or []:
             print("job %s: target %s" % (job_id, t.get("name")), flush=True)

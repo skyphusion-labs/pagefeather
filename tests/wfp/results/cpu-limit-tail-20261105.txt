@@ -1,0 +1,20 @@
+# Custom limit cpuMs (issue #35, item 4). Parsed from wrangler tail of the dispatcher, 2026-11-05 UTC.
+# Columns: user Worker outcome, CPU ms and wall ms from the tail event, the query (ms = asked burn, cpuMs = limit).
+# Round 1 (first):
+exceededCpu  cpu   322 wall   325 ms=2000&cpuMs=1
+exceededCpu  cpu  2001 wall  2122 ms=6000&cpuMs=1
+exceededCpu  cpu  2001 wall  2102 ms=8000&cpuMs=1
+ok           cpu  2598 wall  2839 ms=6000
+# Round 2 (later, the same day):
+ok           cpu   418 wall   420 ms=1500&cpuMs=1
+ok           cpu  1447 wall  1513 ms=1500&cpuMs=1
+ok           cpu   580 wall   598 ms=1500&cpuMs=1
+ok           cpu   580 wall   599 ms=1500&cpuMs=10
+ok           cpu   515 wall   516 ms=1500&cpuMs=10
+ok           cpu   415 wall   416 ms=1500&cpuMs=100
+ok           cpu   430 wall   438 ms=1500&cpuMs=100
+ok           cpu   427 wall   428 ms=1500&cpuMs=500
+ok           cpu   541 wall   542 ms=1500&cpuMs=500
+ok           cpu  3039 wall  3736 ms=10000&cpuMs=3000
+ok           cpu   405 wall   406 ms=1500
+ok           cpu   381 wall   382 ms=1500

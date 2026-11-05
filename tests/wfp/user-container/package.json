@@ -1,0 +1,8 @@
+{
+  "name": "wfp-spike-user-container",
+  "private": true,
+  "license": "GPL-2.0-or-later",
+  "dependencies": {
+    "@cloudflare/containers": "^0.3.7"
+  }
+}
