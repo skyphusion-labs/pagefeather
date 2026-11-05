@@ -12,12 +12,16 @@ row() {
   local code; code=$(head -1 "$H" | cut -d' ' -f2)
   printf "%-30s %s calls=%-4s d1ms=%-5s phpms=%-5s fail=%-2s %ss\n" "$1" "$code" "$(val x-d1-calls)" "$(val x-d1-ms)" "$(val x-php-ms)" "$(val x-d1-failures)" "$(cat "$T/t" 2>/dev/null)"; : > "$T/t"
   case "$code" in 2*|3*) ;; *) bad=1 ;; esac
+  # A redirect must stay on this site. (PHP in a Durable Object once redirected
+  # every logged-out page to http://<host>:443/, docs/approach-b.md 8i.)
+  case "$code" in 3*) loc=$(val location); case "$loc" in "$B"/*|"$B"|/*|'') ;; *) echo "   redirect to another origin: $loc"; bad=1 ;; esac ;; esac
   f=$(val x-d1-failures); [ -z "$f" ] || [ "$f" = "0" ] || { bad=1; curl -s "${ST[@]}" "$B/_last" | python3 -c "
 import json,sys
 for f in json.load(sys.stdin).get('failures',[])[:3]: print('   ', f['error'][:140], '|', f['sql'][:160])"; }
 }
 get() { curl -s -c "$J" -b "$J" -o "$T/body" -D "$H" -w '%{time_total}' "$B$2" > "$T/t"; row "$1"; }
 get 'GET /' /
+[ "$(head -1 "$H" | cut -d' ' -f2)" = 200 ] || { echo "   GET / must answer 200"; bad=1; }
 get 'GET / (warm)' /
 get 'GET /?p=1' '/?p=1'
 get 'GET /?page_id=2' '/?page_id=2'

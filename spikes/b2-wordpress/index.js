@@ -669,16 +669,30 @@ async function d1ping(req, env, url, ctx) {
 // runs the same code as the Worker (handle, withPhp, handleMessage), with its
 // own bindings (DB, MEDIA, IMAGES) from the same wrangler env.
 const PURGE_HEADER = 'x-php-purge';
+// The visitor's origin, from the Worker. On Cloudflare the object got the URL
+// as http://<host>:443/..., so WP_HOME was wrong and every logged-out page
+// answered 301 to that URL (measured 2026-11-05, wp-do-free). The Worker
+// always sets this header (a visitor's value is replaced), and only the
+// Worker can reach the object, so the object can trust it.
+const ORIGIN_HEADER = 'x-wp-public-origin';
 export class PhpRuntime extends DurableObject {
-	async fetch(req) {
+	async fetch(raw) {
 		const env = this.env;
 		ENV = env;
-		const url = new URL(req.url);
+		const objectUrl = new URL(raw.url);
+		const origin = raw.headers.get(ORIGIN_HEADER);
+		// Without it, the object does not guess an origin: a wrong one redirects every page.
+		if (!origin) return new Response('missing ' + ORIGIN_HEADER, { status: 500 });
+		const url = new URL(objectUrl.pathname + objectUrl.search, origin);
+		const req = new Request(raw);
+		req.headers.delete(ORIGIN_HEADER);
 		if (dbHandler) dbHandler.reset();
 		// The Worker checked the spike token already. Checked again: the object
 		// trusts nothing it did not check itself.
 		const spikeOk = !env.SPIKE_TOKEN || req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
+		// Spike: the URL the object got, and the origin it uses.
+		if (url.pathname === '/_origin') return Response.json({ objectUrl: raw.url, publicOrigin: origin, used: url.href });
 		const maxBody = env.MEDIA && isMediaUpload(req, url) ? Number(env.MAX_UPLOAD_BYTES || MAX_UPLOAD_BYTES) : Number(env.MAX_BODY_BYTES || MAX_BODY_BYTES);
 		const ctx = { inObject: true, waitUntil: (p) => this.ctx.waitUntil(p) };
 		if (url.pathname === '/_d1ping') return d1ping(req, env, url, ctx);
@@ -700,8 +714,10 @@ async function toPhpObject(req, env, url, ctx) {
 	// The hint applies only when the object is made. D1's primary is in the
 	// Chicago area; "enam" is Eastern North America.
 	const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(name), env.PHP_LOCATION ? { locationHint: env.PHP_LOCATION } : undefined);
+	const fwd = new Request(req);
+	fwd.headers.set(ORIGIN_HEADER, url.origin);
 	const t0 = Date.now();
-	const r = await stub.fetch(req);
+	const r = await stub.fetch(fwd);
 	const out = new Response(r.body, r);
 	if (out.headers.has(PURGE_HEADER)) {
 		out.headers.delete(PURGE_HEADER);
