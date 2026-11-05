@@ -32,7 +32,7 @@ if extra:
     out.update(json.loads(extra[-1]))
 json.dump(out, open(res, "w"), indent=1)
 if ping:
-    print("D1 per statement, median ms:", [p.get("median") for p in ping])
+    print("Database per statement, median ms:", [p.get("median") for p in ping])
 if "cold_start_s" in out:
     sec = lambda v: "not measured" if v is None else "%s s" % v
     print("container: %s, %s PHP workers; first start %s, cold start %s" % (
