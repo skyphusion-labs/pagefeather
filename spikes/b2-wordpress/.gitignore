@@ -7,3 +7,4 @@ dev.log
 deploy.log
 tail.log
 __pycache__/
+wrangler.deploy.*.toml

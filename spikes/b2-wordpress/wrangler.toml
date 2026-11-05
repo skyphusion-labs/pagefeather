@@ -182,3 +182,134 @@ binding = "MEDIA"
 bucket_name = "wp-a-paid-media"
 [env.a-paid.images]
 binding = "IMAGES"
+
+# ---------------------------------------------------------------------------
+# PHP in a Durable Object (issue #28, docs/approach-b.md 8i). The design is
+# from HostlessWP. PHP_IN_DO=on: the Worker serves static assets, R2 uploads
+# and the page cache, and sends every request that needs PHP to the PhpRuntime
+# object. A Worker request on Free stops at about 2 s of CPU; an object request
+# may use 30 s. The default env and env.free/env.paid do not set PHP_IN_DO, so
+# their behaviour does not change.
+
+[env.do-local]
+# Local check: DEV_ENV=do-local ./opcache.sh, then DEV_ENV=do-local ./run.sh and ./e2e.sh.
+# Same local D1 database as the default env (same database_id).
+rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
+[env.do-local.vars]
+PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
+PHP_IN_DO = "on"
+[env.do-local.assets]
+directory = "build/public"
+[env.do-local.cache]
+enabled = true
+[[env.do-local.d1_databases]]
+binding = "DB"
+database_name = "b2-local"
+database_id = "00000000-0000-0000-0000-000000000002"
+[[env.do-local.r2_buckets]]
+binding = "MEDIA"
+bucket_name = "b2-local-media"
+[env.do-local.images]
+binding = "IMAGES"
+[[env.do-local.durable_objects.bindings]]
+name = "PHP_RUNTIME"
+class_name = "PhpRuntime"
+[[env.do-local.migrations]]
+tag = "v1"
+new_sqlite_classes = ["PhpRuntime"]
+
+# Workers Free deploy, on workers.dev. Replace database_id with the id from
+# `wrangler d1 create wp-do-free`. Secrets: WP_SALT, SPIKE_TOKEN (--env do-free).
+# Free has only SQLite-backed Durable Objects (new_sqlite_classes), 100,000
+# object requests and 13,000 GB-s a day (docs/approach-b.md 8i).
+[env.do-free]
+name = "wp-do-free"
+workers_dev = true
+rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
+[env.do-free.vars]
+PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
+PHP_IN_DO = "on"
+# Where the object is made (only at its first use). D1's primary is in the
+# Chicago area. "enam" is Eastern North America. Measure with /_d1ping.
+PHP_LOCATION = "enam"
+# Objects that run PHP. 1: one warm runtime, requests one at a time.
+PHP_DO_POOL = "1"
+[env.do-free.assets]
+directory = "build/public"
+[env.do-free.images]
+binding = "IMAGES"
+[env.do-free.cache]
+enabled = true
+# No placement: the Worker does no D1 calls in this mode, so it runs near the visitor.
+[[env.do-free.d1_databases]]
+binding = "DB"
+database_name = "wp-do-free-enam"
+# Terraform: tests/do/terraform (primary hint enam, the same as PHP_LOCATION).
+database_id = "75a6da4c-4ef7-413f-abb6-45e81e13ed2c"
+# R2 is not on for the Free test account (code 10042, 2026-11-04). After it is:
+# [[env.do-free.r2_buckets]] binding = "MEDIA", bucket_name = "wp-do-free-media"
+[[env.do-free.durable_objects.bindings]]
+name = "PHP_RUNTIME"
+class_name = "PhpRuntime"
+[[env.do-free.migrations]]
+tag = "v1"
+new_sqlite_classes = ["PhpRuntime"]
+
+# ---------------------------------------------------------------------------
+# The database inside the PHP object (issue #2, docs/approach-b.md 8j).
+# DB_IN_DO=on (only with PHP_IN_DO=on): WordPress's database is the PhpRuntime
+# object's own SQLite (ctx.storage.sql), not D1. No network per query. One
+# object holds the site, so PHP_DO_POOL does not apply.
+
+[env.dosql-local]
+# Local check: DEV_ENV=dosql-local ./opcache.sh, then DEV_ENV=dosql-local ./run.sh and ./e2e.sh.
+# The D1 binding stays here only to compare (/_dbping?db=d1) and to test a move
+# from D1 (/_dbexport?from=d1).
+rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
+[env.dosql-local.vars]
+PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
+PHP_IN_DO = "on"
+DB_IN_DO = "on"
+[env.dosql-local.assets]
+directory = "build/public"
+[env.dosql-local.cache]
+enabled = true
+[[env.dosql-local.d1_databases]]
+binding = "DB"
+database_name = "b2-local"
+database_id = "00000000-0000-0000-0000-000000000002"
+[[env.dosql-local.r2_buckets]]
+binding = "MEDIA"
+bucket_name = "b2-local-media"
+[env.dosql-local.images]
+binding = "IMAGES"
+[[env.dosql-local.durable_objects.bindings]]
+name = "PHP_RUNTIME"
+class_name = "PhpRuntime"
+[[env.dosql-local.migrations]]
+tag = "v1"
+new_sqlite_classes = ["PhpRuntime"]
+
+# Workers Free deploy, on workers.dev. No D1. Secrets: WP_SALT, SPIKE_TOKEN
+# (--env dosql-free). The object is made near its first request (no location
+# hint: it makes no D1 calls). Free: 1 GB per object, 5 GB per account.
+[env.dosql-free]
+name = "wp-dosql-free"
+workers_dev = true
+rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
+[env.dosql-free.vars]
+PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
+PHP_IN_DO = "on"
+DB_IN_DO = "on"
+[env.dosql-free.assets]
+directory = "build/public"
+[env.dosql-free.images]
+binding = "IMAGES"
+[env.dosql-free.cache]
+enabled = true
+[[env.dosql-free.durable_objects.bindings]]
+name = "PHP_RUNTIME"
+class_name = "PhpRuntime"
+[[env.dosql-free.migrations]]
+tag = "v1"
+new_sqlite_classes = ["PhpRuntime"]

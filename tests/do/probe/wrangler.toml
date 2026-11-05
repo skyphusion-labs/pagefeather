@@ -1,0 +1,33 @@
+# Generated from tests/do/terraform outputs. Free test account.
+name = "do-placement-probe"
+main = "index.js"
+compatibility_date = "2026-07-01"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB_enam"
+database_name = "do-probe-enam"
+database_id = "356787c1-6dd2-4564-b873-fd5156a959b6"
+
+[[d1_databases]]
+binding = "DB_enam_replicated"
+database_name = "do-probe-enam-replicated"
+database_id = "a65274ac-09f5-4e9d-944c-d4a0efa10447"
+
+[[d1_databases]]
+binding = "DB_wnam"
+database_name = "do-probe-wnam"
+database_id = "370a3b8d-62cf-431b-9539-f19d9acbb6c6"
+
+[[d1_databases]]
+binding = "DB_nohint"
+database_name = "wp-do-free"
+database_id = "cfffecf3-b6d6-40ca-985f-5a958049b033"
+
+[[durable_objects.bindings]]
+name = "PROBE"
+class_name = "Probe"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Probe"]

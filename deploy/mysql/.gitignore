@@ -1,0 +1,7 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+backend_override.tf
+sites/
+terraform.tfstate.d/

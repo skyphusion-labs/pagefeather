@@ -264,6 +264,175 @@ Also found:
 - No plugin can send mail. Contact Form 7 accepts the form and returns `mail_failed`.
 - `build.sh` kept an existing `build/opcache.zip`, so a new `site.zip` could run with OPcache files compiled from another tree (an A build ran B's compiled `wp-content/db.php`). Every measured deploy ran `opcache.sh` after `build.sh`, which writes a new zip, so no result was affected. `build.sh` now always starts with an empty zip.
 
+### 8i. PHP in a Durable Object (issue #28). Measured locally 2026-11-05. Not deployed.
+
+**Why.** On Workers Free a Worker request stops at about 2 s of CPU (8, 8e). A cold WordPress page needs about 1.2 s and an admin page more, so the plugin suite passed 0 of 18 on Free (8h). A Durable Object request has its own CPU budget. HostlessWP runs PHP in a Durable Object on Free and passed `e2e.sh` 17 of 17 on our Free test account (docs/approach-a.md). This mode uses the same design. Credit: docs/prior-art.md.
+
+**Design.** `PHP_IN_DO=on` turns it on. Without the variable, B does not change: the Worker runs PHP as before.
+
+- The Worker keeps static assets, R2 uploads (`serveUpload`), the body size checks, XML-RPC off, the spike token check and the page cache (Workers Cache in front of the Worker). It sends every other request to the `PhpRuntime` object, with the same URL, so WordPress sees the public origin.
+- The object runs the same code as the Worker did: `boot`, `handle`, `withPhp` and the D1 bridge `handleMessage`. It reads `DB`, `MEDIA` and `IMAGES` from its own `env`. The bindings come from the same wrangler env, because the object is a class in the same Worker script. PHP sees no change.
+- The object cannot purge the page cache (it has no `ctx.cache`). When the Edge Cache mu-plugin asks for a purge, the object sets `x-php-purge: 1`. The Worker removes that header, purges with the same rate limit as before, and sets `x-cache-purge` (`scheduled`, or `no-cache-api` where Workers Cache is off).
+- `PHP_IN_DO=on` without the `PHP_RUNTIME` binding returns 500 on every request. It does not fall back to PHP in the Worker, because that fallback would hide the misconfiguration.
+- Responses from the object carry `x-php-object` (the object name) and `x-object-ms` (Worker to object and back, PHP included).
+- `/_d1ping` is answered by the object, so it measures D1 from where PHP runs.
+
+**Decisions.**
+
+| Question | Decision | Why |
+| --- | --- | --- |
+| How many objects | One by default (`PHP_DO_POOL=1`, object `php-0`). `PHP_DO_POOL=2` picks one at random, as HostlessWP does with 2. Spike endpoints (`/_install`, `/_opcache-dump`, `/_last`, `/_mem`) always go to `php-0`. | One object keeps one warm runtime and one warm OPcache. B already ran one PHP request at a time per isolate. A pool adds parallel PHP but also adds cold starts. Measure before raising it. |
+| Where | Location hint `PHP_LOCATION=enam` (Eastern North America). The Worker has no placement. | D1's primary is near Chicago (8g). A hint applies only when the object is made, and objects do not move after that ([data location](https://developers.cloudflare.com/durable-objects/reference/data-location/), read 2026-11-05). The hint list has no finer region than `enam`, so the object can be in IAD (39 ms per D1 statement in 8g) and not ORD (14 to 29 ms). The Worker makes no D1 calls in this mode, so it can run near the visitor. |
+| PHP lock | `withPhp` stays as it is, inside the object. | PHP is not re-entrant. An object can get a new request while PHP waits for D1, so one object can still run two requests at once without the lock. The lock and the runtime are module globals, so objects in one isolate share both. Locally, workerd ran `php-0` and `php-1` in one isolate: the first request to `php-1` did not boot PHP. |
+| Cold start and keep-warm | No keep-warm. | An idle object is evicted from memory after 70 to 140 s ([lifecycle](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/), read 2026-11-05). A cold boot then costs about 1.2 s of CPU (8e), which is in the object's budget. Logged-out pages come from the page cache and do not wake the object. If the deploy shows many cold boots (`x-boot: 1`), the next step is a Cron Trigger that calls the object (Free allows 5 Cron Triggers per account, [Workers limits](https://developers.cloudflare.com/workers/platform/limits/), read 2026-11-05). |
+| Workers Paid | Not used there. | B in the Worker passes 18 of 18 on Paid (8h). The object adds a hop and a second bill. HostlessWP also runs PHP in the Worker on Paid. |
+
+**Cost.** Source: [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/) and [limits](https://developers.cloudflare.com/durable-objects/platform/limits/), read 2026-11-05.
+
+- Each request that goes to PHP is one Worker request and one Durable Object request. A page cache hit is neither, because Workers Cache answers before the Worker runs.
+- Free: Durable Objects with the SQLite backend only (so the migration uses `new_sqlite_classes`). Per day: 100,000 requests and 13,000 GB-s of duration. Over a limit, "further operations of that type will fail with an error". The limits reset at 00:00 UTC.
+- Paid: 1 million requests and 400,000 GB-s a month are included. Then $0.15 a million requests and $12.50 a million GB-s.
+- Duration is wall time at 128 MB, "while the Durable Object is actively running or is idle in memory but unable to hibernate". An object that can hibernate is not billed while idle. This object has no WebSockets and keeps no timer after a request, so it should not be billed while idle. Not measured.
+- Example: a page that takes 1 s of wall time in the object costs 0.128 GB-s. 13,000 GB-s a day is about 100,000 such pages, so the request limit and the duration limit are close to each other on Free.
+- CPU: the limits page gives "30 seconds (default)" per request for SQLite-backed objects. Its FAQ also says objects "have the same per invocation CPU limits as any Workers do", and the Workers limits page gives Free 10 ms. The two statements do not agree. HostlessWP's 17 of 17 on our Free account shows that an object request there gets more than the Worker's 2 s. Our own number comes from the deploy.
+
+**Measured locally** (wrangler 4.107.0, `wrangler dev`, 2026-11-05):
+
+| Run | Command | Result |
+| --- | --- | --- |
+| OPcache files built through the object | `DEV_ENV=do-local ./opcache.sh` | Pass, 601 compiled files |
+| e2e through the object | `DEV_ENV=do-local ./run.sh _ping`, then `./e2e.sh` | **17 of 17**, exit 0. Every response had `x-php-object: php-0`. |
+| e2e, pool of 2 | `wrangler dev --env do-local --var PHP_DO_POOL:2`, then `./e2e.sh` | 17 of 17, requests on `php-0` and `php-1` |
+| Purge crosses from the object | The REST post create in `e2e.sh` | `x-cache-purge: no-cache-api` (local has no cache API); `x-php-purge` does not reach the client |
+| 12 parallel uncached GETs | `curl` of `/?p=1&nocache=N`, 12 at once | 12 of 12 were 200 |
+| Mode on, binding missing (control) | `wrangler dev --var PHP_IN_DO:on` (default env) | 500 on every request; `e2e.sh` fails |
+| Default env (no change) | `./run.sh _ping`, then `./e2e.sh` | 17 of 17 |
+
+Time in PHP (`x-php-ms`, wall, local) is the same in the object and in the Worker: cold home page 470 to 507 ms in the object and 544 ms in the Worker; warm home page 91 to 109 ms and 105 ms; `post-new.php` 230 to 251 ms and 252 ms. The hop from the Worker to the object added about 1 ms warm (`x-object-ms` 111 against `x-php-ms` 110). `wrangler dev` does not report CPU time, so the local numbers are wall time only.
+
+The 72 `ws.removeListener is not a function` errors in the log of the first `opcache.sh` run are not from this mode. The default env shows the same 72 on a new database. They come from PHP's socket code during the install (PHP has no network, issue #26).
+
+**Found on the first deploy** (`wp-do-free`, version `40d14b5f`, measured by the lead 2026-11-05). `/_install` inside the object on Free worked: 901 queries, 56.7 s wall, 200. `/_d1ping` from the object: median 38 ms (34 to 59), so `enam` did not put the object near ORD (B Paid from ORD: 12 to 25 ms). Defect: every logged-out page answered 301 to `http://<host>:443/...`, and `e2e.sh` did not fail on those rows.
+
+The cause on Cloudflare is not confirmed. In that version the object took its origin from the URL it got. An object URL of `http://<host>:443/...` gives exactly this redirect (mutation check below). But after the fix, `/_origin` on Cloudflare returned `objectUrl` `https://wp-do-free.vivijure-coldrun.workers.dev/_origin` (https, no `:443`). So that is not the URL the object gets now. The fix is proven: the old code fails `e2e.sh` with the injected URL, and the new code passes `e2e.sh` on Cloudflare.
+
+Fix: the Worker sends its own origin in `x-wp-public-origin`. It always replaces a value a visitor sends, and only the Worker can reach the object. The object builds the request URL from that header and answers 500 without it. `/_origin` (spike token) returns the URL the object got and the origin it used. `e2e.sh` now fails on a redirect to another origin, and when `GET /` is not 200.
+
+**Second deploy** (version `d40446cb`, code `a380065`, measured by the lead 2026-11-05 with `e2e.sh` and `wrangler tail`):
+
+| Measure | Result |
+| --- | --- |
+| `e2e.sh` | 17 of 17, exit 0, new post present |
+| Worker CPU per request | 1 to 4 ms |
+| Object CPU per request | 64 ms (login) to 670 ms (`post-new.php`) |
+| Outcomes | every one `ok` |
+| `/_install` in the object | 901 queries, 56.7 s wall, 200 |
+
+**Root cause, found 2026-11-05.** The 301 came back on a new site (`wp-ref-free`, code `a380065`): the first PHP request was `POST /_install`, and after it every public page answered 301 to `http://<host>:443/...`. `/_origin`, `home` and `siteurl` were correct, and a restart of the object cleared it. So the wrong value was runtime state, not data.
+
+- During a new install, PHP's socket layer opens WebSocket connections to the site itself (WordPress tests its own URL). Locally the Worker logged two `GET /` requests with `upgrade: websocket` during `/_install`. These are the 72 `ws.removeListener` errors in the log (8i above); they appear only on a new install.
+- Such a request waits behind the install (the PHP lock). `/_install` ends with `bootPromise = null`, so the next request in the queue boots the runtime, and that request is the loopback. `boot()` writes its origin into `wp-runtime.php` as `WP_HOME`, and that runtime then serves every later request. On Cloudflare the loopback URL was `http://<host>:443/` (a WebSocket to port 443, as an http URL).
+- A Worker that runs PHP itself (B, the default) did not show this on Cloudflare. Probably a Worker cannot fetch its own workers.dev URL, so the loopback never arrives. Not measured.
+- Two fixes, only in the object (the default path does not change):
+  1. The Worker answers a request with an `Upgrade` header with 426. WordPress serves no WebSockets.
+  2. A runtime serves only the origin it booted with: a request for another origin boots a new runtime. Responses from the object carry `x-boot-origin`.
+- Test: `e2e.sh` also fails when `GET /` does not link to the site's own origin. The old checks did not see the defect locally: every row was 2xx.
+
+Red and green, locally (wrangler 4.107.0, new database each run, `POST /_install` through `127.0.0.1`, then `e2e.sh` through `localhost`):
+
+| Code | Env | First `GET /` | `e2e.sh` | WebSocket request |
+| --- | --- | --- | --- | --- |
+| Before the fix | `do-local` | `x-boot: 0`, links to `127.0.0.1` 30 times, to `localhost` 0 | Fails: "does not link" | 200 (reached PHP) |
+| After the fix | `do-local` | `x-boot: 1`, `x-boot-origin: http://localhost:18728`, 30 links to `localhost` | 17 of 17 | 426 |
+| Before the fix | `dosql-local` | Same as before the fix on `do-local` | Fails | 200 |
+| After the fix | `dosql-local` | Same as after the fix on `do-local` | 17 of 17 | 426 |
+| (no change) | default | `x-boot: 0`, links to `127.0.0.1` | Fails | 200 |
+
+The default env has the same weakness when an install and later requests use two origins, but the default path is kept as it is so that the B numbers stay valid. With one origin it passes (`e2e.sh` 17 of 17).
+
+Mutation check, local (`~/scratch` script). The object was given `http://<host>:443/...`, as on the deploy:
+
+| Code | `e2e.sh` |
+| --- | --- |
+| Before the fix, with that URL | Fails: 8 rows 301 to `http://localhost:443/` (the deploy symptom) |
+| After the fix, with that URL | 17 of 17 |
+| After the fix, no change to the URL | 17 of 17 |
+| Default env | 17 of 17 |
+
+**Not measured yet:** the plugin suite on Free through the object, cold boots and evictions, the page cache purge from the object, duration billing while idle, and the Images binding inside the object (R2 is not on for the Free test account, so `MEDIA` is not bound in `env.do-free`). Approach A with the object and the checkout Container with the object were not tried.
+
+**Deploy:** `[env.do-free]` in `wrangler.toml` (Worker `wp-do-free`, its own D1 database, migration `v1` for `PhpRuntime`).
+
+### 8j. The database inside the PHP object (issue #2). Measured locally 2026-11-05. Not deployed.
+
+**Why.** With PHP in the object (8i), each statement still goes over the network to D1. Measured on Cloudflare from the object: median 38 ms per statement (8i). A page makes 20 to 70 statements, so that is about 0.8 to 2.7 s of wall time per page. The object has its own SQLite database (`ctx.storage.sql`). The SQLite driver already speaks SQLite. With the database in the object, no statement leaves the object.
+
+**Design.** `DB_IN_DO=on`, only with `PHP_IN_DO=on`.
+
+- PHP does not change. `php/d1-pdo.php` sends each statement through the same bridge. In the object, `handleMessage` runs it on `this.ctx.storage.sql` and not on `env.DB`.
+- The object sets the database for each PHP run, under the PHP lock (`withPhp`). In the Worker it is always unset, so the D1 path does not change.
+- One object holds the site, so `PHP_DO_POOL` does not apply: every request goes to `php-0`.
+- The R2 name reservation (`_r2_reserved`) uses the same database.
+- Responses carry `x-db: object-sqlite` and `x-db-rows: read=N written=N` (the billed units, from the cursor's `rowsRead` and `rowsWritten`).
+- Failures are loud: `DB_IN_DO=on` without `PHP_IN_DO=on` returns 500 in the Worker. It does not fall back to D1.
+
+**Differences from D1, and what the bridge does.** Source: [SQLite storage API](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/) (last updated 2026-09-21) and [limits](https://developers.cloudflare.com/durable-objects/platform/limits/) (last updated 2026-10-29), read 2026-11-05.
+
+| Subject | D1 | Object SQLite | Bridge |
+| --- | --- | --- | --- |
+| Call | `prepare().bind().raw()`, async, a network round trip | `exec(sql, ...bindings)`, synchronous, returns a cursor | `sqlStatement()` in `index.js` |
+| Changed rows, last row id | `meta.changes`, `meta.last_row_id` | Not in the cursor (`rowsWritten` also counts index rows) | `changes()` and `last_insert_rowid()` in the same synchronous turn. `total_changes()` before and after: a statement that changes nothing reports 0. The row id is sent for an INSERT or REPLACE only. |
+| BLOB | Array of numbers | ArrayBuffer | Sent to PHP as `{"$b": base64}`, as for D1 (8h). `{"$b"}` parameters are bound as bytes. |
+| Booleans | Bound | Not stated | Bound as 1 and 0 |
+| BEGIN, COMMIT, SAVEPOINT | Not supported | `exec()` refuses them | `d1-pdo.php` answers them in PHP, as for D1. Nothing changes. |
+| Statement length, bound parameters | 100 KB, 100 | 100 KB, 100 | Same limits |
+| Row, string or BLOB size | 2 MB | 2 MB | Same limit |
+
+**Transactions.** As on D1, a transaction is not real: BEGIN and COMMIT are answered in PHP, and a ROLLBACK undoes nothing (it is counted). Each statement is committed on its own. The object is the only writer and runs one PHP request at a time, so no other request sees a half-done change from another request. A PHP request that stops midway leaves its earlier statements in place, as on D1. A real transaction would need `ctx.storage.transaction()` around the whole PHP request. Whether its async form holds SQL writes across awaits is not stated in the docs. Not tried.
+
+**Size.** Per object: 10 GB on Paid. On Free, the limits table gives 5 GB per account and the FAQ gives 1 GB per object. Past the limit, writes fail with `SQLITE_FULL`; reads and deletes still work. The local test site is 409,600 bytes (`databaseSize`).
+
+**Cost.** Source: [pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/) (last updated 2026-10-18), read 2026-11-05.
+
+| | Free, per day | Paid, per month |
+| --- | --- | --- |
+| Rows read | 5 million | 25 billion included, then $0.001 a million |
+| Rows written | 100,000 | 50 million included, then $1.00 a million |
+| Stored data | 5 GB (total) | 5 GB-month included, then $0.20 a GB-month |
+
+The page says storage billing starts in January 2026 and does not confirm that it is on now. The page does not define a row read. The cursor counts rows scanned.
+
+Measured per request in `e2e.sh` (`x-db-rows`, local): a public page reads 157 to 217 rows and writes 0 (4 on `/?cat=1`). Login writes 4. `/wp-admin/` reads 507 and writes 42. `post-new.php` reads 438 and writes 33. Publishing a post reads 395 and writes 25. **On Free, rows read are the first limit:** 5 million a day is about 25,000 uncached public pages (at 200 rows), fewer than the 100,000 object requests. Rows written allow about 2,400 admin page views a day (at 42). Page cache hits use neither.
+
+**Backups.** Point-in-time recovery: the database can be restored to any time in the last 30 days (`getBookmarkForTime()`, `onNextSessionRestoreBookmark()`, then `ctx.abort()`). It does not work in local development. The docs do not say whether it is on the Free plan. No restore endpoint is built yet. Not measured.
+
+**Install, and moving a site in or out.**
+
+- Install: `/_install` runs inside the object and writes to its own database. No other step.
+- `dbmove.py export <url> <file> [--from-d1]` saves the database as JSON lines (`/_dbexport`): first the tables, then one INSERT with parameters for each row, then indexes, triggers and views, then an end line. `--from-d1` reads the `DB` binding instead, which moves a B site from D1. A dump without the end line is incomplete, and import refuses it.
+- `dbmove.py import <url> <file> [--replace]` loads a dump (`/_dbimport`) in parts of up to 1.5 MB (the Worker refuses a body over 2 MB). Each part is one transaction. Import refuses when tables exist. `--replace` drops all tables first, in the transaction of the first part. Any page view of an empty object makes the SQLite driver create its own tables, so a new site usually needs `--replace`.
+- Both run under the PHP lock and need the spike token.
+- Limit: one row larger than 1.5 MB as JSON cannot be imported this way. Integers above 2^53 lose precision in JavaScript (SQLite storage API page).
+
+**Measured locally** (wrangler 4.107.0, `wrangler dev`, 2026-11-05; the laptop had a load average of about 20, so the wall times are not comparable):
+
+| Run | Command | Result |
+| --- | --- | --- |
+| OPcache files built with the database in the object | `DEV_ENV=dosql-local ./opcache.sh` | Pass, 601 files |
+| e2e, database in the object | `DEV_ENV=dosql-local ./run.sh _ping`, then `./e2e.sh` | **17 of 17**, every response `x-db: object-sqlite` |
+| The deploy env, no D1 binding, new object | `DEV_ENV=dosql-free ./run.sh _ping`, `POST /_install`, then `./e2e.sh` | Installed (919 statements, 14.2 s); **17 of 17** |
+| Install statement failures | `/_install` on a new database | 202 in the object, 198 on a new D1: 196 are "no such table: wp_options" in both, WordPress reading before the installer makes the tables. The object also has 4 on the driver's `_mysql_data_types_cache`. `e2e.sh` has 0 in both. |
+| Per statement, from the object | `/_dbping?db=object&n=2000`, `/_dbping?db=d1&n=200` | Object SQLite 0.004 to 0.009 ms; local D1 0.555 ms. Local D1 is a file on the same laptop; on Cloudflare D1 from the object is 38 ms (8i). |
+| Move from D1 | `dbmove.py export ... --from-d1`, then `import ... --replace` into the object | 470 statements; then `e2e.sh` 17 of 17. A second export matches D1 table for table, except the rows `e2e.sh` wrote. |
+| Import into a database with tables, no `--replace` (control) | `dbmove.py import` | Refused: "10 tables or indexes exist" |
+| Empty object (control) | `./e2e.sh` before import | Fails: "no such table: wp_options" |
+| `DB_IN_DO=on` without `PHP_IN_DO` (control) | `wrangler dev --var DB_IN_DO:on` | 500 on every request |
+| Default env, and PHP in the object with D1 (no change) | `./e2e.sh` | 17 of 17 each, no `x-db` header |
+
+**Not measured yet:** all of this on Cloudflare: CPU per request, the time a page saves (no D1 round trips), cold start of an object with its database, rows billed per page there, the plugin suite, point-in-time recovery, an R2 upload (`_r2_reserved` in the object) and the Images binding inside the object. On Cloudflare the clock does not move during synchronous work, so `/_dbping?db=object` can read 0 ms there: read CPU in `wrangler tail`.
+
+**Deploy:** `[env.dosql-free]` in `wrangler.toml` (Worker `wp-dosql-free`, no D1, migration `v1` for `PhpRuntime`, no location hint: the object is made near its first request).
+
 ### 9. Memory: what it took to fit in 128 MB
 
 | Change | Effect, measured locally |

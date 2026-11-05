@@ -1,0 +1,16 @@
+#cloud-config
+# MariaDB with SSL (self-signed), listening on all interfaces; the Vultr
+# firewall group lets only Cloudflare reach 3306. User wp@'%' must use SSL.
+package_update: true
+packages: [mariadb-server, openssl]
+runcmd:
+  - mkdir -p /etc/mysql/ssl
+  - openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj /CN=wordpress-mysql -keyout /etc/mysql/ssl/server-key.pem -out /etc/mysql/ssl/server-cert.pem
+  - chown -R mysql:mysql /etc/mysql/ssl
+  - chmod 600 /etc/mysql/ssl/server-key.pem
+  - printf '[mariadb]\nbind-address = 0.0.0.0\nssl_cert = /etc/mysql/ssl/server-cert.pem\nssl_key = /etc/mysql/ssl/server-key.pem\n' > /etc/mysql/mariadb.conf.d/90-wordpress.cnf
+  - systemctl restart mariadb
+  # Vultr's Ubuntu image has ufw on and allows only 22 (measured 2026-11-05:
+  # the Vultr rule was in place and 3306 was still closed).
+  - ufw allow 3306/tcp
+  - mysql -e "CREATE DATABASE IF NOT EXISTS wordpress CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER 'wp'@'%' IDENTIFIED BY '${db_password}' REQUIRE SSL; GRANT ALL ON wordpress.* TO 'wp'@'%'; FLUSH PRIVILEGES;"

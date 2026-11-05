@@ -1,0 +1,91 @@
+{
+ "name": "wp-ref-do",
+ "url": "https://wp-ref-do.vivijure-coldrun.workers.dev",
+ "variant": "b-do",
+ "location": "enam",
+ "d1_ping": [
+  {
+   "n": 20,
+   "first": null,
+   "min": 11,
+   "median": 13,
+   "max": 18,
+   "colo": "BOS"
+  },
+  {
+   "n": 20,
+   "first": null,
+   "min": 8,
+   "median": 10,
+   "max": 22,
+   "colo": "BOS"
+  },
+  {
+   "n": 20,
+   "first": null,
+   "min": 9,
+   "median": 11,
+   "max": 67,
+   "colo": "BOS"
+  }
+ ],
+ "e2e": {
+  "exit": 0,
+  "rows": 17,
+  "ok": 17
+ },
+ "bench": {
+  "target": "https://wp-ref-do.vivijure-coldrun.workers.dev",
+  "n": 10,
+  "pages": {
+   "home": {
+    "ok": 10,
+    "median_s": 1.885,
+    "min_s": 1.07,
+    "max_s": 2.57,
+    "queries": 32.0,
+    "db_ms": 591.5
+   },
+   "post": {
+    "ok": 10,
+    "median_s": 1.705,
+    "min_s": 1.37,
+    "max_s": 11.45,
+    "queries": 40.0,
+    "db_ms": 800.5
+   },
+   "search": {
+    "ok": 10,
+    "median_s": 1.5,
+    "min_s": 1.32,
+    "max_s": 3.43,
+    "queries": 37.0,
+    "db_ms": 750.0
+   },
+   "dashboard": {
+    "ok": 10,
+    "median_s": 1.615,
+    "min_s": 1.46,
+    "max_s": 1.93,
+    "queries": 47.0,
+    "db_ms": 875.0
+   },
+   "post-new": {
+    "ok": 9,
+    "median_s": 3.49,
+    "min_s": 2.5,
+    "max_s": 3.71,
+    "queries": 72,
+    "db_ms": 1503
+   },
+   "edit": {
+    "ok": 10,
+    "median_s": 2.465,
+    "min_s": 1.63,
+    "max_s": 2.93,
+    "queries": 48.0,
+    "db_ms": 803.0
+   }
+  }
+ }
+}
