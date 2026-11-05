@@ -103,6 +103,7 @@ BUCKET=$(out media_bucket)
 # Variant c1 (Container) has its own build, deploy and measure steps.
 if [ "$VARIANT" = c1 ]; then
   . "$ROOT/deploy/variants/c1.sh"
+  c1_main
   exit 0
 fi
 
