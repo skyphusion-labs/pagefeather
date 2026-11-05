@@ -1,0 +1,71 @@
+{
+ "name": "wp-c1",
+ "url": "https://wp-c1.skyphusion.workers.dev",
+ "variant": "c1",
+ "location": "enam",
+ "d1_ping": [],
+ "e2e": {
+  "exit": 0,
+  "rows": 17,
+  "ok": 17
+ },
+ "bench": {
+  "target": "https://wp-c1.skyphusion.workers.dev",
+  "n": 10,
+  "pages": {
+   "home": {
+    "ok": 10,
+    "median_s": 0.84,
+    "min_s": 0.69,
+    "max_s": 0.9,
+    "queries": null,
+    "db_ms": null
+   },
+   "post": {
+    "ok": 10,
+    "median_s": 1.085,
+    "min_s": 0.79,
+    "max_s": 1.32,
+    "queries": null,
+    "db_ms": null
+   },
+   "search": {
+    "ok": 10,
+    "median_s": 0.905,
+    "min_s": 0.7,
+    "max_s": 1.26,
+    "queries": null,
+    "db_ms": null
+   },
+   "dashboard": {
+    "ok": 10,
+    "median_s": 1.07,
+    "min_s": 0.98,
+    "max_s": 1.61,
+    "queries": null,
+    "db_ms": null
+   },
+   "post-new": {
+    "ok": 10,
+    "median_s": 3.17,
+    "min_s": 2.45,
+    "max_s": 4.21,
+    "queries": null,
+    "db_ms": null
+   },
+   "edit": {
+    "ok": 10,
+    "median_s": 1.4049999999999998,
+    "min_s": 1.07,
+    "max_s": 1.81,
+    "queries": null,
+    "db_ms": null
+   }
+  }
+ },
+ "instance_type": "standard-1",
+ "php_workers": 4,
+ "idle_seconds": 900,
+ "first_start_s": 85,
+ "cold_start_s": 22
+}

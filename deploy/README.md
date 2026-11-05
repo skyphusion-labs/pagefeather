@@ -10,6 +10,19 @@ NAME=my-site ./deploy/deploy.sh
 
 At the end the script prints the site address, the D1 time per statement, the `e2e.sh` result and the page times, and writes them to `deploy/results/<name>-<time>.json`. Remove the site with `NAME=my-site ./deploy/destroy.sh`.
 
+## The variants
+
+`VARIANT` picks the design. Measured with this script on 2026-11-05 (one run each, from a laptop; numbers from a fixed Vultr runner will replace them). Uncached median seconds, 10 fresh renders per page.
+
+| `VARIANT` | PHP runs in | Database | Plan | Home | Post | Dashboard | Editor | Database per statement | Result file |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `b-dosql` | a Durable Object | the same object's SQLite | Free | 0.73 | 0.67 | 1.11 | 1.40 | below the clock (no network) | `results/wp-ref-dosql-*.json` |
+| `a` | the Worker | MySQL through Hyperdrive (`deploy/mysql`) | Paid | 0.87 | 0.96 | 1.03 | 1.96 | 8 to 9 ms | `results/wp-ref-a-*.json` |
+| `c1` | a Container | SQLite on the container disk, Litestream to R2 | Paid | 0.84 | 1.09 | 1.07 | 3.17 | (not reported yet) | `results/wp-c1-*.json` |
+| `b-do` | a Durable Object | D1, same location hint | Free | 1.89 | 1.71 | 1.62 | 3.49 | 10 to 13 ms | `results/wp-ref-do-*.json` |
+
+Every variant passed `e2e.sh` 17 of 17 after a fresh install. `c1`: first start 85 s (image and install), cold start 22 s.
+
 ## What it makes (variant `b-do`)
 
 | Part | Made by | Where |
@@ -94,6 +107,20 @@ NAME=my-shop ./deploy/destroy.sh
 
 `destroy.sh` reads the variant from `deploy/terraform/sites/<name>.tfvars` and runs `deploy/variants/c1-destroy.sh`: it deletes the container application `<name>-store`, then the Worker, then empties both buckets (R2 refuses to delete a bucket that has objects), then Terraform deletes the buckets, the Litestream key and the secrets. To empty the media bucket, Terraform first gives the Litestream key that bucket too (`teardown = true`); the Worker and the container are deleted at that point. The database replica and the uploads are deleted. Nothing is kept.
 
+## Variant `b-dosql`: the database in the PHP object
+
+The same Worker and PHP object as `b-do`, with `DB_IN_DO=on`: each statement runs on the object's own SQLite storage (`ctx.storage.sql`), so a query is not a network call. There is no D1. One object holds the site: one writer, data in the object, point-in-time recovery for 30 days ([Durable Objects](https://developers.cloudflare.com/durable-objects/)). Move a site in or out with `spikes/b2-wordpress/dbmove.py` (`/_dbexport`, `/_dbimport`). Details: [docs/approach-b.md](../docs/approach-b.md) section 8j.
+
+On Workers Free the object's SQLite has daily limits: 5 million rows read and 100,000 rows written (a public page reads about 160 to 220 rows; an admin page writes about 30 to 40). A page cache hit costs neither.
+
+## Variant `a`: PHP in the Worker, MySQL through Hyperdrive (Workers Paid)
+
+```sh
+VARIANT=a MYSQL=vultr VULTR_API_KEY=... MYSQL_ZONE_ID=<zone> MYSQL_HOST=mysql-mysite.example.com NAME=my-site ./deploy/deploy.sh
+```
+
+`MYSQL=vultr` makes the database box with `deploy/mysql` (MariaDB with SSL; port 3306 open to Cloudflare's IPv4 ranges only; no SSH; $10 a month). `MYSQL=external` uses your own server: `MYSQL_HOST`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`; it must have SSL. Give Hyperdrive the host **name**: by IP address it measured about 44 ms per query, by name about 7 ms ([docs/approach-a.md](../docs/approach-a.md)). On Workers Free this variant stops at the CPU limit.
+
 ## Why `LOCATION` matters
 
 `LOCATION` is the location hint for both the D1 primary and the PHP object. The same hint puts them in the same region. Measured on 2026-11-05 (`tests/do/probe`): 14 to 20 ms per D1 statement in the same region, 38 to 60 ms in different regions. A page makes 30 to 70 statements. Pick the region of your readers: `enam` (Eastern North America), `wnam`, `weur`, `eeur`, `apac`, `oc`.
@@ -109,7 +136,7 @@ The hint is not a promise. An `enam` object landed in EWR two times in three and
 | `MEDIA` | `0` | `1` makes an R2 bucket for uploads. Without it, uploads do not persist. R2 must be turned on for the account first. |
 | `BENCH` | `1` | `0` skips the measurements |
 | `N` | `10` | Runs per page in the page benchmark |
-| `VARIANT` | `b-do` | `c1`: the Container on Workers Paid (see above) |
+| `VARIANT` | `b-do` | `b-do`, `b-dosql`, `a`, `c1` (see above) |
 | `DEPLOY_STATE` | `local` | `r2` keeps Terraform state in an R2 bucket (`STATE_BUCKET`, `STATE_ENDPOINT`, and an R2 key in `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) |
 
 Each `NAME` has its own Terraform workspace, so two sites never share state.
@@ -132,6 +159,7 @@ cd deploy/terraform && terraform workspace select my-site && terraform output -r
 
 ## Not yet in this directory
 
-- Variants: SQLite inside the PHP object (issue #28 follow-up), approach A (MySQL through Hyperdrive), approach B in a plain Worker on Workers Paid. Each is planned as a value of `variant`, not a copy of the scripts.
+- Variant: approach B in a plain Worker on Workers Paid.
+- Measurements from a fixed vantage (a Vultr runner), with p95 and p99, concurrency and the cold path.
 - Plugins and WooCommerce runs (`tests/plugins/plugins.py`, `tests/woo.py`) as part of `deploy.sh`.
 - A custom domain. The site is on `<name>.<subdomain>.workers.dev`.
