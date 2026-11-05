@@ -69,6 +69,10 @@ bucket_name = "$MEDIA_BUCKET"
 [images]
 binding = "IMAGES"
 
+# The Worker version id: /_store-info compares the Store object's version with it.
+[version_metadata]
+binding = "CF_VERSION_METADATA"
+
 [[containers]]
 name = "$NAME-store"
 class_name = "Store"

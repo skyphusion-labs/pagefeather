@@ -10,8 +10,9 @@
 #               SPIKE_TOKEN, ADMIN_PASSWORD)
 #   c1_wait     wait for the rollout, stop the container once, wait for the
 #               first 200 (sets FIRST_START_S)
-#   c1_check    the running container has this deploy's settings: the object
-#               cache drop-in is there exactly when OBJECT_CACHE=apcu
+#   c1_check    the Store object is from this deploy, and the running container
+#               has its settings (the drop-in is there exactly when
+#               OBJECT_CACHE=apcu); CHECK_WAIT (default 600 s)
 #   c1_measure  e2e.sh, the page benchmark, one cold start -> deploy/results/
 # The steps use ROOT, TF, NAME, ACCOUNT_ID, LOCATION, log and out from deploy.sh,
 # and share the variables they set.
@@ -116,24 +117,42 @@ print("no container was running: nothing to stop" if d.get("skipped") else "stop
   echo "first answer 200 after $FIRST_START_S s"
 }
 
-# A container can run the new image with the environment of the Worker version
-# before the deploy (seen 2026-11-05 on wp-c1-perf: APCu loaded, OBJECT_CACHE
-# missing, so no drop-in, and the query count did not move). _stats.php reports
-# drop_in; it must match OBJECT_CACHE. If not, stop the container once more and
-# check the next one. Still wrong: fail, so no measurement runs on the wrong
-# settings.
-c1_check() {
-  local want got try
-  want=false; [ "$OBJECT_CACHE" = apcu ] && want=true
-  for try in 1 2; do
-    got=$(curl -s -m 60 -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_stats.php?what=info" \
-      | python3 -c 'import json, sys
+# A container can run the new image with the environment of the deploy before
+# (seen twice on 2026-11-05 on wp-c1-perf: the drop-in did not match
+# OBJECT_CACHE). The container gets its environment from the Store Durable
+# Object, and a request on the new Worker can reach an object that still runs
+# the code of the deploy before, "typically for seconds to minutes"
+# (developers.cloudflare.com/durable-objects/platform/known-issues/). Two
+# steps:
+# 1. Wait (up to CHECK_WAIT, default 600 s) until /_store-info says the object
+#    was built by this Worker version.
+# 2. Then _stats.php must show the drop-in that OBJECT_CACHE asks for. If not,
+#    the container is from the old object: stop it (the stop resets the object
+#    too) and check the next one, once.
+# Still wrong: fail, so no measurement runs on the wrong settings.
+c1_info() {
+  curl -s -m 60 -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL$1" | python3 -c 'import json, sys
 try:
-    print(str(json.load(sys.stdin).get("drop_in")).lower())
+    d = json.load(sys.stdin)
 except ValueError:
-    print("unknown")') || got=unknown
-    [ "$got" = "$want" ] && { echo "container settings ok (object cache drop-in: $got)"; return 0; }
-    echo "container has object cache drop-in $got, want $want (OBJECT_CACHE=$OBJECT_CACHE): stop it once more" >&2
+    d = {}
+k = sys.argv[1]
+print(str(d.get(k)).lower() if k in d else "unknown", d.get("do_version") or "-", d.get("worker_version") or "-")' "$2"
+}
+c1_check() {
+  local want cur got t0=$SECONDS try
+  want=false; [ "$OBJECT_CACHE" = apcu ] && want=true
+  while :; do
+    cur=$(c1_info /_store-info current)
+    [ "${cur%% *}" = true ] && break
+    [ $((SECONDS - t0)) -lt "${CHECK_WAIT:-600}" ] || { echo "the Store object is not from this deploy after ${CHECK_WAIT:-600} s (current do worker: $cur)" >&2; return 1; }
+    sleep 15
+  done
+  echo "Store object is from this deploy after $((SECONDS - t0)) s ($cur)"
+  for try in 1 2; do
+    got=$(c1_info "/_stats.php?what=info" drop_in); got=${got%% *}
+    [ "$got" = "$want" ] && { echo "container settings ok on try $try (object cache drop-in: $got)"; return 0; }
+    echo "try $try: drop-in $got, want $want (OBJECT_CACHE=$OBJECT_CACHE): the container is older than the object; stop it" >&2
     [ "$try" = 2 ] && break
     curl -s -m 60 -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_store-stop" > /dev/null || true
     START_TIMEOUT=300 c1_up > /dev/null || return 1
