@@ -5,9 +5,11 @@
 #
 #   CLOUDFLARE_API_TOKEN=... AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... ./tests/wfp/run.sh
 #
-# Options: CONTAINER=1 (also upload tests/wfp/user-container, with the public
-# image CONTAINER_IMAGE, default docker.io/library/httpd:2.4: no local build),
-# LATENCY_N (default 100; 0 skips).
+# Options: CONTAINER=1 (also the container test: tests/wfp/user-container as
+# tenant-c in the namespace, its container application through the API, and
+# the same Worker as a normal Worker, <prefix>-cdirect, as the control),
+# CONTAINER_IMAGE (default docker.io/library/httpd:2.4), BOX_PORT (the port the
+# image listens on, default 80), LATENCY_N (default 100; 0 skips).
 #
 # Every upload is a result: a failed upload is recorded in the result file and
 # the script goes on. Everything is on workers.dev; no zone is routed.
@@ -96,6 +98,8 @@ class_name = "Box"
 tag = "v1"
 new_sqlite_classes = ["Box"]
 TOML
+# The control for item 2: the same container Worker as a normal Worker.
+sed -e "s/^name = \"tenant-c\"/name = \"$PREFIX-cdirect\"\nworkers_dev = true/" "$GEN/user-container.toml" > "$GEN/container-direct.toml"
 cat > "$GEN/dispatcher.toml" <<TOML
 name = "$PREFIX-dispatch"
 main = "../dispatcher/worker.js"
@@ -137,7 +141,12 @@ deploy ns-tenant-a --config user-min.toml --dispatch-namespace "$NS" --name tena
 deploy ns-tenant-b --config user-min.toml --dispatch-namespace "$NS" --name tenant-b --var TENANT:tenant-b
 if [ "${CONTAINER:-0}" = 1 ]; then
   (cd "$H/user-container" && [ -d node_modules ] || npm ci --silent)
-  deploy ns-tenant-c --config user-container.toml --dispatch-namespace "$NS" --containers-rollout immediate
+  # Wrangler cannot make the container application of a namespace script
+  # (code 10007, docs/wfp.md item 2): upload without it, then make it through
+  # the API. The control is a normal Worker, where Wrangler makes it.
+  deploy ns-tenant-c --config user-container.toml --dispatch-namespace "$NS" --containers-rollout none --var "BOX_PORT:${BOX_PORT:-80}"
+  "$H/container-app.sh" tenant-c Box "${CONTAINER_IMAGE:-docker.io/library/httpd:2.4}" lite || echo "container-app.sh failed"
+  deploy container-direct --config container-direct.toml --containers-rollout immediate --var "BOX_PORT:${BOX_PORT:-80}"
 fi
 deploy dispatcher --config dispatcher.toml
 D="https://$PREFIX-dispatch.$SUB.workers.dev"

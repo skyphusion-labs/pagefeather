@@ -40,6 +40,7 @@ if [ "$KIND" = latency ]; then
   N=${N:-100}
   [[ "$N" =~ ^[1-9][0-9]{0,2}$|^1000$ ]] || { echo "N must be 1 to 1000" >&2; exit 2; }
   [ $# -eq 2 ] || { echo "KIND=latency takes DIRECT_URL DISPATCHED_URL" >&2; exit 2; }
+  [ -z "${LOAD:-}" ] || { echo "KIND=latency and LOAD do not go together: give one" >&2; exit 2; }
 else
   N=${N:-10}
   [[ "$N" =~ ^[1-9][0-9]?$|^100$ ]] || { echo "N must be 1 to 100" >&2; exit 2; }

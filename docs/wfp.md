@@ -26,8 +26,9 @@ Each answer names its source: a Cloudflare documentation page (read on 2026-11-0
 - `outbound/`: the outbound Worker. It marks each answer with `x-wfp-outbound`.
 - `run.sh`: Terraform, then the uploads in order (the outbound Worker and the namespace scripts before the dispatcher that names them), then `check.py` and `latency.py`. A failed upload is recorded as a result.
 - `dosql.sh`: builds the real `b-dosql` WordPress (`spikes/b2-wordpress`), uploads it into the namespace, puts a site dispatcher in front, installs WordPress and measures it.
-- `container-app.sh`: makes the container application for a namespace script through the API (see item 2).
-- `destroy.sh`: removes all of it.
+- `container-app.sh`: makes the container application for a namespace script through the API (see item 2). It does nothing if the application exists.
+- `run.sh` with `CONTAINER=1` runs the whole container test: `tenant-c` in the namespace (uploaded without a container rollout), its application through `container-app.sh`, and the same Worker as a normal Worker (`<prefix>-cdirect`) as the control.
+- `destroy.sh`: removes all of it, by exact name: the two container applications (by id from the API, for the names `tenant-c-box` and `<prefix>-cdirect-box` only), the namespace scripts, the workers.dev Workers (with the `dosql.sh` site dispatchers, `SITES`), then the Terraform resources.
 
 ## 1. Durable Objects with SQLite storage in a user Worker
 
@@ -55,7 +56,10 @@ Each answer names its source: a Cloudflare documentation page (read on 2026-11-0
 
 These times are from the laptop, so they do not compare with the Vultr runner numbers in `deploy/results/`.
 
-**Open.** (a) The Durable Object namespace name is `<script>_<class>`: we did not test if a normal Worker and a namespace script with the same name share or collide. (b) WfP turns off `caches.default` in namespace scripts (limits page). The `b-dosql` page cache uses the Workers cache; we did not check if it caches in a namespace script.
+**Open.**
+
+- (a) The Durable Object namespace name is `<script>_<class>`. We did not test if a normal Worker and a namespace script with the same name share or collide.
+- (b) **The page cache.** The limits page says that `caches.default` (the Cache API) is off in namespace scripts. `b-dosql` does not use `caches.default`: its page cache is the **Workers Cache** (`[cache] enabled = true` in its config, `cache-control` and `cache-tag` headers on the response, and `ctx.cache.purge({ tags })` in `spikes/b2-wordpress/index.js`). No WfP page says if the Workers Cache works in a namespace script, and we did not test it. This is open, and it matters: the page cache is half of what makes `b-dosql` fast for logged-out readers. The bench numbers above are fresh renders (`?nocache=`), so they do not depend on it.
 
 ## 2. Containers from a user Worker
 
@@ -68,7 +72,14 @@ These times are from the laptop, so they do not compare with the Vultr runner nu
 3. After that, a call through the dispatcher **starts a container**: the answers change to "The container just exited" (image `httpd:2.4`), then "The container is not listening in the TCP address 10.0.0.1:8080" (image `cloudflare/hello-world:1.0`), which means the container runs.
 4. **Control:** the same Worker and the same images, deployed as a normal Worker with a Wrangler-made container application, gave the same answers. So the failure is the test image (its port), not WfP.
 
-**Not shown yet:** an HTTP answer from a container of a user Worker. The next step is an image with a known port (for example `FROM busybox` with `httpd -f -p 8080`), built with Docker; the spike seat has no Docker access.
+**Not shown yet:** an HTTP answer from a container of a user Worker. The next step is an image with a known port: `tests/wfp/user-container/Dockerfile` (busybox `httpd` on port 8080). It must be built with Docker, which the spike seat does not have:
+
+```sh
+npx wrangler containers build -p -t wfp-spike-box:1 tests/wfp/user-container
+# delete the old application first (container-app.sh does nothing if one exists):
+#   npx wrangler containers delete <id of tenant-c-box>
+CONTAINER=1 LATENCY_N=0 BOX_PORT=8080 CONTAINER_IMAGE=registry.cloudflare.com/<account>/wfp-spike-box:1 ./tests/wfp/run.sh
+```
 
 **For the design:** a platform that offers `c1` must make the container application through the API for each customer script (Terraform or the deploy script), not through Wrangler.
 
@@ -130,13 +141,10 @@ From the limits page: "Gradual Deployments is not supported yet for user Workers
 export CLOUDFLARE_API_TOKEN=...   # Workers Scripts, R2, D1, Containers edit; account settings read
 export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...   # the state bucket key
 ./tests/wfp/run.sh                     # namespace, test Workers, checks, laptop latency
-CONTAINER=1 LATENCY_N=0 ./tests/wfp/run.sh
-./tests/wfp/container-app.sh tenant-c Box docker.io/cloudflare/hello-world:1.0 lite
+CONTAINER=1 LATENCY_N=0 ./tests/wfp/run.sh   # the container test and its control
 ./tests/wfp/dosql.sh                   # the real b-dosql site in the namespace
 ./tests/wfp/destroy.sh                 # everything above
 ```
-
-`destroy.sh` does not delete the container applications that `container-app.sh` made; delete them with `wrangler containers delete <id>`.
 
 ## Pages read (2026-11-05)
 

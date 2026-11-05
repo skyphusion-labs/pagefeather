@@ -25,6 +25,14 @@ ids = [n["id"] for n in json.load(sys.stdin).get("result") or [] if n.get("scrip
 print(ids[0] if len(ids) == 1 else "")' "$SCRIPT" "$CLASS")
 [ -n "$NSID" ] || { echo "no Durable Object namespace for script $SCRIPT class $CLASS" >&2; exit 1; }
 NAME=$(printf '%s-%s' "$SCRIPT" "$CLASS" | tr '[:upper:]' '[:lower:]')
+EXISTING=$(api "$B/containers/applications" | python3 -c '
+import json, sys
+ids = [a.get("id") for a in json.load(sys.stdin).get("result") or [] if a.get("name") == sys.argv[1]]
+print(ids[0] if ids else "")' "$NAME")
+if [ -n "$EXISTING" ]; then
+  echo "application $NAME exists ($EXISTING): nothing to do"
+  exit 0
+fi
 echo "Durable Object namespace $NSID; application $NAME ($IMAGE, $TYPE)"
 BODY=$(python3 -c '
 import json, sys
