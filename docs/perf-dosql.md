@@ -1,0 +1,119 @@
+# b-dosql: where the time goes (issue #37)
+
+Variant `b-dosql`: PHP and its SQLite database in one Durable Object, on Workers Free. This page is the baseline for tuning. It changes nothing.
+
+Measured 2026-11-05 on `wp-perf-dosql` (Free test account; deployed by `deploy/deploy.sh` from branch `perf-dosql`; `e2e.sh` 17 of 17 after the install). Client: a laptop in Michigan. Every render is fresh (`?nocache=` and `Cache-Control: no-cache`), so the page cache does not answer.
+
+## The instrument
+
+The PHP object adds these to each response. The Worker adds `Server-Timing` and `x-perf-worker`.
+
+| Header | What it holds |
+| --- | --- |
+| `x-perf` | `boot`, `bootWaitMs`, `phpMs`, statements (`dbN`, `dbMs`), lazy file inflations (`inflates`, `inflateKiB`), WebAssembly memory before and after (`wasm0MiB`, `wasm1MiB`), response `bytes`, the isolate (`iso`, `isoAgeS`), the runtime (`rt`, `rtAgeS`, `rtServed`: requests since its boot). With `x-perf-opcache: 1` and the spike token: OPcache `opHits`, `opMisses`, `opCached`, `opFull` (two extra `php.run` calls). |
+| `x-perf-queue` | `inboxMs` (the object's clock at the start of `fetch` minus `x-perf-sent`, the Worker's clock when it sent), `ahead` and `waitMs` (the PHP lock), `inMs` (start of `fetch` to the response). |
+| `x-object-ms` | The Worker's wall time for the call to the object. |
+| `Server-Timing` | `object`, `inbox`, `queue`, `in`, `outbox` (= object minus inbox minus in), `boot`, `php`, `db`. |
+| `x-perf-worker` | The Worker's colo and isolate. |
+
+The object also logs `{"m":"perf","id":...}` with the request's `x-perf-id`. `tests/load/perf_tail.py` joins those log lines from `wrangler tail --format json` with the samples of `tests/load/perf.py`. Tail gives Cloudflare's own `cpuTime` and `wallTime` for each object invocation.
+
+**The clock.** In a Worker and in a Durable Object, `Date.now()` moves only at I/O. PHP with its database in the object does no I/O while it runs, so on Cloudflare every millisecond figure measured inside the object reads near 0 (`phpMs`, `dbMs`, `bootWaitMs`, `inMs`). `inboxMs` read about -600 ms, because the two clocks stop at different points, so `inbox` and `outbox` are valid locally only. On Cloudflare, use `x-object-ms` (the Worker's clock moves at the call to the object) and tail CPU. The counts do not depend on the clock.
+
+**Tail drops events.** Of 180 samples at one client, 121 joined with a tail event. Each figure below that comes from tail gives its number of joined samples.
+
+## Results at one client (C=1)
+
+Command: `B=https://wp-perf-dosql.vivijure-coldrun.workers.dev ADMIN_PASSWORD=... SPIKE_TOKEN=... N=30 C=1 python3 tests/load/perf.py`, with `wrangler tail wp-perf-dosql --format json` running. 30 renders per page; all 180 answered 200.
+
+Columns, in ms:
+- **client**: what the client measured.
+- **edge**: client minus `x-object-ms`. It covers network, TLS (a new connection for each request) and the Worker.
+- **hop**: `x-object-ms` minus the object's tail wall time. It covers the Worker to object round trip.
+- **object CPU**: the object's tail `cpuTime`.
+
+| Page | Tail joined | Client p50 / p95 | Edge p50 / p95 | Hop p50 / p95 | Object CPU p50 / p95 |
+| --- | --- | --- | --- | --- | --- |
+| home | 16 of 30 | 530 / 700 | 271 / 348 | 33 / 44 | 211 / 411 |
+| post | 20 of 30 | 560 / 1,190 | 263 / 835 | 33 / 40 | 241 / 416 |
+| search | 17 of 30 | 530 / 820 | 265 / 441 | 36 / 50 | 229 / 428 |
+| dashboard | 19 of 30 | 560 / 950 | 270 / 456 | 35 / 48 | 340 / 487 |
+| post-new | 30 of 30 | 1,010 / 1,480 | 356 / 666 | 35 / 54 | 570 / 1,013 |
+| edit | 19 of 30 | 590 / 1,010 | 275 / 366 | 35 / 46 | 271 / 654 |
+
+At one client, the object's wall time equals its CPU time (wall minus CPU: p50 1 to 23 ms). The object does no waiting; it computes.
+
+**At p50,** a public page is about half edge (network, TLS, Worker: about 270 ms from this laptop) and half object CPU (about 210 to 240 ms). The hop to the object is about 35 ms.
+
+**At p95, the object's CPU is the main part of the tail.** It is about 1.7 to 2.0 times its median on every page. The edge adds less, except for single slow connections (post: edge p95 835 ms).
+
+## What makes the p95
+
+The slow requests did the same work as the fast ones. For home at C=1, the top fifth by CPU (376 to 411 ms) against the rest (203 to 240 ms) had the same values for each of these: inflations (58, 199 KiB), statements (32), response bytes (68,144), WebAssembly memory (69 MiB), runtime and isolate. The CPU is bimodal, with nothing between the two groups, and the slow group is a multiple of the fast one, not a fixed added time (post-new adds about 450 ms, home about 190 ms).
+
+Ruled out at C=1, over all 300 samples of the three passes:
+
+| Cause | Reading |
+| --- | --- |
+| PHP boot | 0 boots. One isolate, one runtime. It served requests 204 to 509 of its life during the passes. |
+| Runtime recycle (memory) | 0 recycles. WebAssembly memory stayed at 69 MiB (the limit for a recycle is 100 MiB). |
+| OPcache | 0 misses. 604 scripts cached, cache not full (home: 543 hits a request; post-new: 589). |
+| Queue in the object | None at C=1. Wall time equals CPU time. |
+| Worker colo | The client reached ORD (115 samples) and YYZ (65). Edge p50: 263 ms and 299 ms. No large difference. |
+
+**Control: the same slow mode without PHP.** `/_dbping?db=object&n=20000` runs a loop of 20,000 SQLite reads in the same object, with no PHP and no WordPress. Of 80 requests, 22 joined with tail. CPU: 17 at 42 to 62 ms and 5 at 76 to 82 ms (23%, about 1.8 times). So the 1.8 times mode is not from WordPress, PHP or OPcache. It is most likely the speed of the host's CPU for that invocation. Garbage collection in the isolate's JavaScript heap is not fully ruled out (the loop also makes JavaScript objects). The instrument cannot measure either one directly.
+
+So with one client, the p95 of an uncached page is about the median CPU times 1.8, plus the edge. **Less CPU per request also lowers the p95, by about the same factor.**
+
+## Results at four clients (C=4)
+
+Command: as above with `C=4 PAGES=home,post-new`. 30 renders per page, all 200.
+
+| Page | Tail joined | Client p50 / p95 | Object (Worker's view) p50 / p95 | Object tail wall p50 / p95 | Object CPU p50 / p95 |
+| --- | --- | --- | --- | --- | --- |
+| home | 9 of 30 | 1,330 / 2,460 | 1,062 / 2,176 | 216 / 433 | 214 / 421 |
+| post-new | 24 of 30 | 3,190 / 3,730 | 2,339 / 3,308 | 1,666 / 2,878 | 572 / 1,066 |
+
+The object's CPU per request does not change with four clients. The rest is waiting.
+- **Before the object's event starts:** the Worker's view minus the tail wall time is 915 ms at p50 for home.
+- **Inside the event, after PHP:** the tail wall minus CPU is 1,110 ms at p50 for post-new.
+
+One object runs one request at a time, because PHP with its database in the object never yields to the event loop. A request waits for the requests ahead of it to finish, and its response waits behind the PHP of the next one.
+
+Locally (`wrangler dev`, where the clock moves), the same split was measured directly with `inbox` and `outbox`. Home, 16 renders:
+
+| Clients | Object | Inbox | In (PHP) | Outbox |
+| --- | --- | --- | --- | --- |
+| C=1 | 67.5 | 0 | 67.5 | 0 |
+| C=4 | 198 | 32.5 | 65.5 | 33 (max 136) |
+
+The C=4 parts are medians of each column, so they do not add up to the object median; each request's own parts do. The PHP lock counter (`ahead`, `waitMs`) read 0 in every case: a second request never gets as far as the lock. A counter inside the object cannot see this queue.
+
+## For tuning (not done here)
+
+- **CPU per request is the lever for both p50 and p95 at one client.** The host's slow mode multiplies whatever CPU there is.
+- A warm public page still inflates about 200 KiB of lazy PHP files on every request (`inflateKiB`). `evictLazy()` drops them after each request. That is CPU spent on every request.
+- Under concurrency, one object serializes all PHP. Throughput is about 1 / CPU per request (about 4 public pages a second at 230 ms). Past that, every request queues. With the database in the object, the object cannot be split (`PHP_DO_POOL` does not apply).
+- The edge time (about 270 ms) is from this laptop, with a new TLS connection for each request. A client near the site that keeps its connection pays less. The runner's figures (home p50 0.45 s) come from another vantage, so they are not directly comparable with this page.
+
+## Not measured
+
+- Worker CPU for each request in this run (Worker tail events have no request id to join on).
+- Garbage collection, directly.
+- The host's CPU speed, directly.
+- The runner's vantage with this instrument.
+- The post page "8 of 10 answered" in an earlier `deploy.sh` result for `wp-ref-dosql`. It did not repeat: 300 instrumented samples and 180 renders by `deploy.sh` on `wp-perf-dosql` all answered 200.
+
+## Reproduce
+
+```sh
+set -a; . <token file>; set +a          # CLOUDFLARE_API_TOKEN, ACCOUNT_ID
+PORT=8801 NAME=wp-perf-dosql VARIANT=b-dosql N=30 ./deploy/deploy.sh
+wrangler tail wp-perf-dosql --format json > tail.jsonl &
+B=https://wp-perf-dosql.<subdomain>.workers.dev ADMIN_PASSWORD=... SPIKE_TOKEN=... N=30 C=1 OUT=c1.jsonl python3 tests/load/perf.py
+B=... N=30 C=4 PAGES=home,post-new OUT=c4.jsonl python3 tests/load/perf.py
+B=... N=30 PAGES=home,post-new OPCACHE=1 OUT=op.jsonl python3 tests/load/perf.py
+python3 tests/load/perf_tail.py c1.jsonl tail.jsonl
+```
+
+The admin password and the spike token come from Terraform: `cd deploy/terraform && terraform workspace select wp-perf-dosql && terraform output -raw admin_password` (and `spike_token`).
