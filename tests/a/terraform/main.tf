@@ -194,9 +194,12 @@ resource "cloudflare_dns_record" "mysql_public" {
 locals {
   origin_public = {
     scheme = "mysql"
-    # The address, not the name: Hyperdrive answered "DNS lookup failed" for the
-    # new record several times while 1.1.1.1 resolved it (measured 2026-11-05).
-    host     = vultr_instance.mysql.main_ip
+    # The name, not the address. Measured 2026-11-05 from the same Worker
+    # (placement ORD) to the same database: origin as the IP, 44 ms median per
+    # query and about 150 ms for the first; origin as this name, 7 ms and 20 ms.
+    # (Right after the record was created, Hyperdrive answered "DNS lookup
+    # failed" a few times; it resolved once the record had propagated.)
+    host     = "mysql-a-public.skyphusion.org"
     port     = 3306
     database = "wordpress"
     user     = "wp"
@@ -210,7 +213,7 @@ resource "cloudflare_hyperdrive_config" "a_paid_public" {
   name       = "wp-a-paid-public"
   origin     = local.origin_public
   caching    = { disabled = true }
-  depends_on = [terraform_data.db_ready, vultr_firewall_rule.mysql_public]
+  depends_on = [terraform_data.db_ready, vultr_firewall_rule.mysql_public, cloudflare_dns_record.mysql_public]
 }
 
 resource "cloudflare_hyperdrive_config" "a_free_public" {
@@ -220,7 +223,7 @@ resource "cloudflare_hyperdrive_config" "a_free_public" {
   name       = "wp-a-free-public"
   origin     = local.origin_public
   caching    = { disabled = true }
-  depends_on = [terraform_data.db_ready, vultr_firewall_rule.mysql_public]
+  depends_on = [terraform_data.db_ready, vultr_firewall_rule.mysql_public, cloudflare_dns_record.mysql_public]
 }
 
 # ---- Media and tokens -------------------------------------------------------

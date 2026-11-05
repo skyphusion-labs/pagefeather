@@ -130,10 +130,7 @@ def fn_check(o, slug):
         return (b"Yoast SEO" in h["body"] and b"<sitemapindex" in s["body"],
                 {"what": "SEO tags in <head>; XML sitemap", "head": b"Yoast SEO" in h["body"], "sitemap": s["code"]})
     if slug == "seo-by-rank-math":
-        # The "skip" button of its setup: Rank Math adds nothing to pages before it.
-        reg = L.req(o, "/wp-admin/admin.php?page=rank-math-registration")
-        m = re.search(rb'"registerNonce":"([0-9a-f]+)"', reg["body"])
-        if m: L.req(o, "/wp-admin/admin-post.php", {"action": "rank_math_skip_wizard", "security": m.group(1).decode()})
+        skip_rank_math(o)
         h = L.req(anon, nc("/"))
         s = L.req(anon, nc("/?sitemap=1"))
         if b"<sitemapindex" not in s["body"]: s = L.req(anon, "/sitemap_index.xml")
@@ -187,11 +184,35 @@ def fn_check(o, slug):
     return None, {"what": "admin page only"}
 
 
+POST = "/?p=1"
+
+
+def find_post(o):
+    """The first published post. Not always id 1: plugins that make content
+    during the install can take the low ids (seen on a HostlessWP source site)."""
+    global POST
+    try:
+        r = L.rest(o, "/wp/v2/posts&per_page=1&orderby=id&order=asc&status=publish")
+        POST = "/?p=%d" % json.loads(r["body"])[0]["id"]
+    except (ValueError, IndexError, KeyError):
+        pass
+
+
+def skip_rank_math(o):
+    """The "skip" button of Rank Math's setup. Before it, Rank Math adds nothing
+    to pages and its admin page is a full-screen wizard without the wp-admin
+    frame, so this runs right after activation (seen 2026-11-05: the admin page
+    check failed on a first activation, then passed)."""
+    reg = L.req(o, "/wp-admin/admin.php?page=rank-math-registration")
+    m = re.search(rb'"registerNonce":"([0-9a-f]+)"', reg["body"])
+    if m: L.req(o, "/wp-admin/admin-post.php", {"action": "rank_math_skip_wizard", "security": m.group(1).decode()})
+
+
 def baseline(o):
     """The same checks with no suite plugin active: what the setup does alone."""
     anon = L.opener(); steps = []
     steps.append(step("home", lambda: (lambda r: (page_ok(r), code_info(r)))(L.req(anon, nc("/")))))
-    steps.append(step("post", lambda: (lambda r: (page_ok(r), code_info(r)))(L.req(anon, nc("/?p=1")))))
+    steps.append(step("post", lambda: (lambda r: (page_ok(r), code_info(r)))(L.req(anon, nc(POST)))))
     steps.append(step("dashboard", lambda: (lambda r: (page_ok(r, True), code_info(r)))(admin_get(o, "/wp-admin/"))))
     steps.append(step("admin_page", lambda: (lambda r: (page_ok(r, True), code_info(r)))(admin_get(o, "/wp-admin/plugins.php"))))
     return {"plugin": "(none)", "steps": dict(steps), "pass": all(v["ok"] for _, v in steps)}
@@ -217,9 +238,10 @@ def run(o, slug):
     steps.append(step("activate", activate))
     if not steps[-1][1]["ok"]:
         res["steps"] = dict(steps); return res
+    if slug == "seo-by-rank-math": skip_rank_math(o)
     anon = L.opener()
     steps.append(step("home", lambda: (lambda r: (page_ok(r), code_info(r)))(L.req(anon, nc("/")))))
-    steps.append(step("post", lambda: (lambda r: (page_ok(r), code_info(r)))(L.req(anon, nc("/?p=1")))))
+    steps.append(step("post", lambda: (lambda r: (page_ok(r), code_info(r)))(L.req(anon, nc(POST)))))
     steps.append(step("dashboard", lambda: (lambda r: (page_ok(r, True), code_info(r)))(admin_get(o, "/wp-admin/"))))
     steps.append(step("admin_page", lambda: (lambda r: (page_ok(r, True), code_info(r)))(plugin_admin(o, slug))))
     steps.append(step("function", lambda: fn_check(o, slug)))
@@ -235,7 +257,7 @@ def main():
     o = None
     for t in range(3):  # Workers Free: the login can stop at the CPU limit
         try:
-            o = L.login(); break
+            o = L.login(); find_post(o); break
         except Exception as e:
             err = repr(e)[:200]
     for s in slugs:

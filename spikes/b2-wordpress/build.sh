@@ -73,6 +73,8 @@ mkdir -p build/public
 (cd build && zip -qr -9 site.zip wordpress)
 echo "site.zip $(wc -c < build/site.zip) bytes, $(cd build && unzip -l site.zip | tail -1)"
 # Precompiled OPcache files come from ./opcache.sh. Until then, an empty zip:
-# the Worker compiles as before.
-[ -f build/opcache.zip ] || python3 -c "import zipfile; zipfile.ZipFile('build/opcache.zip', 'w').close()"
+# the Worker compiles as before. Always a new empty zip: OPcache files from an
+# earlier build are compiled from other sources (measured 2026-11-05: an A build
+# ran B's compiled wp-content/db.php from the zip a B build had left).
+python3 -c "import zipfile; zipfile.ZipFile('build/opcache.zip', 'w').close()"
 echo "public/ $(find build/public -type f | wc -l | tr -d ' ') files"

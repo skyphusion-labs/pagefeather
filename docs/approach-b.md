@@ -262,6 +262,7 @@ Also found:
 - Plugins must be in the build (`PLUGINS=... ./build.sh`). On B, a plugin installed from wp-admin is written to the in-memory file system and is lost when the isolate stops.
 - PHP has no network (issue #26). Update checks and the network parts of Akismet, Site Kit, Jetpack, WP Mail SMTP and Wordfence fail. Each outbound call waits for a timeout: Wordfence activation takes about 10 s.
 - No plugin can send mail. Contact Form 7 accepts the form and returns `mail_failed`.
+- `build.sh` kept an existing `build/opcache.zip`, so a new `site.zip` could run with OPcache files compiled from another tree (an A build ran B's compiled `wp-content/db.php`). Every measured deploy ran `opcache.sh` after `build.sh`, which writes a new zip, so no result was affected. `build.sh` now always starts with an empty zip.
 
 ### 9. Memory: what it took to fit in 128 MB
 

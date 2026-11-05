@@ -53,3 +53,14 @@ A row with plan `local` ran in local workerd through `wrangler dev`. It is not a
 | C1 | Paid | 2026-11-04 | 4.107.0 | durability: checkout, then SIGTERM or SIGKILL 0 to 5 s later, check on the new container | 6 of 6 orders present; new container after 11 to 12 s. |
 | C1 | Paid | 2026-11-04 | 4.107.0 | load test on `standard-1` (4 workers) and `standard-2` (8 workers) | standard-2: product page 0.92 s, checkout 1.39 s (5 at once) and 2.62 s (10 at once, 2.4 checkouts a second). No errors. |
 | C1 | Paid | 2026-11-04 | 4.107.0 | idle 17 min with `sleepAfter = "15m"`; then the self-stop watchdog with `IDLE_SECONDS=180`, idle 5 min | sleepAfter: the same container (it never slept). Watchdog: a new container, first response 4 s, earlier order present. |
+| B | Paid | 2026-11-05 | 4.107.0 | `spikes/b2-wordpress/plugin-suite.sh` run 1 (18 plugins in 7 builds) | 3 of 18. Most failures: 32 s CPU (`exceededCpu`) on `plugins.php`, `themes.php` and every request with Contact Form 7. Cause: the frozen clock and `uniqid()`. |
+| B | Paid | 2026-11-05 | 4.107.0 | plugin suite run 2, with the clock fix in `prepare.sh` | 17 of 18. Wordfence activation: fatal error, a BLOB read as an array. |
+| B | Paid | 2026-11-05 | 4.107.0 | plugin suite run 3, with the BLOB fix | 18 of 18. |
+| B | Free | 2026-11-05 | 4.107.0 | plugin suite runs 2 and 3 | 3 of 18, then 0 of 18. Every failure: the CPU limit. |
+| C1 | Paid | 2026-11-05 | 4.107.0 | `tests/plugins/plugins.py` (all 18 in the image), after the `router.php` directory-index fix | 18 of 18. `tests/woo.py` after: 12 of 12. |
+| A | Paid | 2026-11-05 | 4.107.0 | `/_d1ping`, our A, placement `remote-ORD` | Median per query: public by host name 6 to 11 ms; public by IP 41 to 48 ms; Tunnel and Access 98 to 102 ms. D1 (B): 12 ms. |
+| A | Paid | 2026-11-05 | 4.107.0 | our A: `e2e.sh`, `tests/break.py`, `tests/woo.py`, plugin suite | 17 of 17; 27 of 27; 12 of 12 (checkout 393 queries, 8.4 s); 17 of 18 (All-in-One WP Migration 500). Installer in the Worker: 539 queries, 41 s. |
+| A | Free | 2026-11-05 | 4.107.0 | our A: `/_install`, `e2e.sh`, plugin suite, `tests/woo.py` | Installer refused (1102 after 7.7 s); e2e fails at the CPU limit; plugins 0 of 18; WooCommerce 0 of 9. |
+| A (HostlessWP) | Paid | 2026-11-05 | 4.150.0 (HostlessWP's pin) | HostlessWP `739e8e7`, its own CLI, public MySQL path: `e2e.sh`, plugin suite, `tests/woo.py` | 17 of 17; 18 of 18; 12 of 12. All 18 plugins active at once: login 1102 at 118 MB WebAssembly memory. |
+| A (HostlessWP) | Free | 2026-11-05 | 4.150.0 (HostlessWP's pin) | same, Free test account (PHP in a Durable Object) | 17 of 17; 18 of 18; 12 of 12 (checkout works on Free). |
+| A, HostlessWP | Paid, Free | 2026-11-05 | n/a | `tests/a/bench.py`, 10 fresh renders per page, sequential | Home median: our A Paid 0.92 s, HostlessWP Paid 0.85 s, HostlessWP Free 0.84 s, our A Free 3.21 s (5 of 10 answered). Full table: docs/approach-a.md. |
