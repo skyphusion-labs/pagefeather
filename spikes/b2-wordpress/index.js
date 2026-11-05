@@ -35,6 +35,8 @@ let sqlDb = null;
 // (WordPress calling its own URL) cannot reset an outer one.
 const stats = newStats();
 let bootPromise;
+// The origin the current runtime booted with (WP_HOME in wp-runtime.php).
+let bootOrigin = null;
 // One PHP runtime per isolate, and PHP is not re-entrant. Measured 2026-11-04:
 // with 30 parallel requests on one isolate, about half crashed. So requests
 // that use PHP run one at a time, in arrival order.
@@ -299,6 +301,7 @@ async function handleMessage(raw) {
 }
 
 async function boot(origin) {
+	bootOrigin = origin;
 	const t0 = Date.now();
 	const id = await loadPHPRuntime(loader, {
 		// PHP_ENV (JSON) sets process environment for PHP, e.g. USE_ZEND_ALLOC.
@@ -976,7 +979,13 @@ export default {
 		// DB_IN_DO needs the object; without it the Worker would use D1 silently.
 		if (env.DB_IN_DO === 'on' && env.PHP_IN_DO !== 'on') return new Response('DB_IN_DO=on needs PHP_IN_DO=on', { status: 500 });
 		// Without the binding, fail: a silent fallback would run PHP in the Worker.
-		if (env.PHP_IN_DO === 'on') return env.PHP_RUNTIME ? toPhpObject(req, env, url, ctx) : new Response('PHP_IN_DO=on needs the PHP_RUNTIME Durable Object binding', { status: 500 });
+		if (env.PHP_IN_DO === 'on') {
+			// WordPress serves no WebSockets. PHP's socket layer opens them to the
+			// site itself (during /_install, measured 2026-11-05), and such a
+			// request must never reach PHP: it booted a runtime with a wrong origin.
+			if (req.headers.get('upgrade')) return new Response('WebSocket is not served', { status: 426 });
+			return env.PHP_RUNTIME ? toPhpObject(req, env, url, ctx) : new Response('PHP_IN_DO=on needs the PHP_RUNTIME Durable Object binding', { status: 500 });
+		}
 		// Spike: time N sequential D1 statements from where this Worker runs.
 		if (url.pathname === '/_d1ping') return d1ping(req, env, url, ctx);
 		// Spike: stop the checkout Container, so the next request starts the current image.
@@ -1007,6 +1016,12 @@ export default {
 
 async function handle(req, env, url, spikeOk, maxBody, ctx) {
 	{
+		// In the PHP object, a runtime serves only the origin it booted with (8i).
+		// The first request after /_install used to boot the runtime for every
+		// later one, and that request could be PHP's own socket connection back
+		// to the site, with the URL http://<host>:443/: every page then answered
+		// 301 to that URL. A request for another origin now boots a new runtime.
+		if (ctx && ctx.inObject && bootPromise && bootOrigin !== url.origin) bootPromise = null;
 		if (url.pathname === '/_last') return Response.json(globalThis.__lastRequest || {});
 		if (url.pathname === '/_peak') {
 			bootPromise ??= boot(url.origin);
@@ -1132,6 +1147,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			if (d.failures.length && spikeOk && env.SPIKE_TOKEN) out.set('x-d1-first-failure', (d.failures[0].error + ' | ' + d.failures[0].sql).replace(/[^\x20-\x7e]/g, ' ').slice(0, 600));
 			out.set('x-php-ms', String(Date.now() - t0));
 			out.set('x-boot', booted ? '1' : '0');
+			if (ctx && ctx.inObject) out.set('x-boot-origin', bootOrigin);
 			console.log(JSON.stringify({ m: 'req', path: url.pathname + url.search, boot: booted, d1: d.calls }));
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
 			evictLazy();

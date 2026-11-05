@@ -22,6 +22,9 @@ for f in json.load(sys.stdin).get('failures',[])[:3]: print('   ', f['error'][:1
 get() { curl -s -c "$J" -b "$J" -o "$T/body" -D "$H" -w '%{time_total}' "$B$2" > "$T/t"; row "$1"; }
 get 'GET /' /
 [ "$(head -1 "$H" | cut -d' ' -f2)" = 200 ] || { echo "   GET / must answer 200"; bad=1; }
+# WordPress links its pages from WP_HOME. A runtime booted with another origin
+# links there (docs/approach-b.md 8i).
+grep -q "$B/" "$T/body" || { echo "   GET / does not link to $B"; bad=1; }
 get 'GET / (warm)' /
 get 'GET /?p=1' '/?p=1'
 get 'GET /?page_id=2' '/?page_id=2'
