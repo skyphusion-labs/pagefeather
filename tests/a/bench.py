@@ -40,8 +40,12 @@ for name, path, logged in PAGES:
         elif h.get("x-d1-calls"):
             q.append(int(h["x-d1-calls"])); dbms.append(int(h.get("x-d1-ms") or 0))
     med = lambda v: statistics.median(v) if v else None
-    out["pages"][name] = {"ok": codes.count(200), "median_s": med(s), "min_s": min(s) if s else None,
-                          "max_s": max(s) if s else None, "queries": med([x for x in q if x is not None]),
+    # Nearest-rank percentile: the value below which pct percent of runs fall.
+    # With few runs it is close to the worst run, so use N of 30 or more.
+    pct = lambda v, p: sorted(v)[max(0, -(-p * len(v) // 100) - 1)] if v else None
+    out["pages"][name] = {"ok": codes.count(200), "median_s": med(s), "p90_s": pct(s, 90), "p95_s": pct(s, 95),
+                          "min_s": min(s) if s else None, "max_s": max(s) if s else None,
+                          "queries": med([x for x in q if x is not None]),
                           "db_ms": med([x for x in dbms if x is not None])}
-    print(f"{name:10} ok {codes.count(200)}/{N}  median {out['pages'][name]['median_s']}s  min {out['pages'][name]['min_s']}  max {out['pages'][name]['max_s']}  queries {out['pages'][name]['queries']}  db_ms {out['pages'][name]['db_ms']}", flush=True)
+    print(f"{name:10} ok {codes.count(200)}/{N}  median {out['pages'][name]['median_s']}s  p95 {out['pages'][name]['p95_s']}s  min {out['pages'][name]['min_s']}  max {out['pages'][name]['max_s']}  queries {out['pages'][name]['queries']}  db_ms {out['pages'][name]['db_ms']}", flush=True)
 print(json.dumps(out))
