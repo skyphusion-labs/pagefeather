@@ -243,8 +243,9 @@ enabled = true
 # No placement: the Worker does no D1 calls in this mode, so it runs near the visitor.
 [[env.do-free.d1_databases]]
 binding = "DB"
-database_name = "wp-do-free"
-database_id = "REPLACE-WITH-ID-FROM-wrangler-d1-create"
+database_name = "wp-do-free-enam"
+# Terraform: tests/do/terraform (primary hint enam, the same as PHP_LOCATION).
+database_id = "75a6da4c-4ef7-413f-abb6-45e81e13ed2c"
 # R2 is not on for the Free test account (code 10042, 2026-11-04). After it is:
 # [[env.do-free.r2_buckets]] binding = "MEDIA", bucket_name = "wp-do-free-media"
 [[env.do-free.durable_objects.bindings]]
