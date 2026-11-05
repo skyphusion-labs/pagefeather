@@ -31,8 +31,19 @@ extra = [l for l in lines("extra") if l.startswith("{")]
 if extra:
     out.update(json.loads(extra[-1]))
 json.dump(out, open(res, "w"), indent=1)
+def per_statement(p):
+    # /_d1ping (D1, Hyperdrive) reports a median; /_dbping (the object's own
+    # SQLite) reports total and per statement. The Worker clock does not move
+    # during synchronous SQL, so 0 there means "below the clock", not zero.
+    if "median" in p:
+        return p["median"]
+    if "perStatementMs" in p:
+        return "<clock" if p.get("totalMs") == 0 else round(p["perStatementMs"], 3)
+    return None
+
+
 if ping:
-    print("Database per statement, median ms:", [p.get("median") for p in ping])
+    print("Database per statement, ms:", [per_statement(p) for p in ping])
 if "cold_start_s" in out:
     sec = lambda v: "not measured" if v is None else "%s s" % v
     print("container: %s, %s PHP workers; first start %s, cold start %s" % (
