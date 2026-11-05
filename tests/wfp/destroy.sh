@@ -51,3 +51,6 @@ done
 
 # 4. The namespace, D1, R2 and the secrets.
 (cd "$TF" && terraform destroy -input=false -auto-approve)
+
+# 5. Check from the API that every name is gone (list.sh exits 1 if not).
+PREFIX=$PREFIX NS=$NS SITES=$SITES ACCOUNT_ID=$ACCOUNT_ID "$H/list.sh"

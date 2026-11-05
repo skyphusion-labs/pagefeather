@@ -12,7 +12,7 @@ Each answer names its source: a Cloudflare documentation page (read on 2026-11-0
 | 2 | Containers from a user Worker | **Partly shown.** The platform starts a container for a user Worker's Durable Object class, the same as for a normal Worker. Wrangler cannot make the container application for a namespace script; the API can. An HTTP answer from the container is not shown yet (test image problem, the same in the control). | Test. The docs say "Run containers" and no more. |
 | 3 | D1, R2 and Images bindings; how bindings attach | **Yes, all three.** Bindings go in the upload metadata. `wrangler deploy --dispatch-namespace` writes them from the Wrangler config, with secrets (`--secrets-file`) and static assets. | Test and docs. |
 | 4 | Limits per call; the outbound Worker | `subRequests` is exact. `cpuMs` is enforced but **not exact**: calls ran up to about 2 s of CPU over a 1 ms limit. The outbound Worker sees `fetch()` from the user Worker, **not from its Durable Object**. | Test and docs. |
-| 5 | Added latency of the dispatch hop | **Not settled.** From the laptop: +1.9 ms (p50) in one run, +13.9 ms in another; the laptop's own noise is larger than the effect. The Vultr runner can now run this test (`KIND=latency`); its box must be replaced first. | Test (laptop only). |
+| 5 | Added latency of the dispatch hop | **About +5 ms at p50** (+4.9 ms p50, +3.2 ms p95, +5.6 ms mean; N=300 each), measured from the Vultr runner in Chicago. The first tries from the laptop were too noisy to settle it. | Test (Vultr runner, `ord`). |
 
 ## What ran
 
@@ -28,6 +28,7 @@ Each answer names its source: a Cloudflare documentation page (read on 2026-11-0
 - `dosql.sh`: builds the real `b-dosql` WordPress (`spikes/b2-wordpress`), uploads it into the namespace, puts a site dispatcher in front, installs WordPress and measures it.
 - `container-app.sh`: makes the container application for a namespace script through the API (see item 2). It does nothing if the application exists.
 - `run.sh` with `CONTAINER=1` runs the whole container test: `tenant-c` in the namespace (uploaded without a container rollout), its application through `container-app.sh`, and the same Worker as a normal Worker (`<prefix>-cdirect`) as the control.
+- `list.sh`: lists from the API (read only) which of the spike's names exist; `destroy.sh` runs it at the end.
 - `destroy.sh`: removes all of it, by exact name: the two container applications (by id from the API, for the names `tenant-c-box` and `<prefix>-cdirect-box` only), the namespace scripts, the workers.dev Workers (with the `dosql.sh` site dispatchers, `SITES`), then the Terraform resources.
 
 ## 1. Durable Objects with SQLite storage in a user Worker
@@ -119,9 +120,17 @@ CONTAINER=1 LATENCY_N=0 BOX_PORT=8080 CONTAINER_IMAGE=registry.cloudflare.com/<a
 | `wfp-20261105T214724Z.json` | 100 | 43.2 / 69.1 | 45.2 / 69.5 | +1.9 / +0.4 |
 | `latency-laptop-20261105T222856Z.json` | 300 | 68.6 / 89.6 | 82.5 / 98.7 | +13.9 / +9.2 |
 
-The direct time itself moved by 25 ms between the runs, so the laptop cannot settle a difference of a few ms. This is the reason for the Vultr runner.
+These two laptop runs were the first try. The direct time itself moved by 25 ms between them, so the laptop cannot settle a difference of a few ms. This is the reason for the Vultr runner.
 
-**From the runner.** `tests/bench-runner` now takes a latency job: `KIND=latency ./tests/bench-runner/run.sh <direct-url> <dispatched-url>` (N default 100). The job runner script is part of the box's `user_data`, so this needs a new box (`./tests/bench-runner/tf.sh apply` replaces it). Not run yet.
+**From the runner (the answer).** The same test as a runner job (`KIND=latency N=300 ./tests/bench-runner/run.sh <direct-url> <dispatched-url>`), from the Vultr box in Chicago (region `ord`, plan `vc2-2c-4gb`), on 2026-11-05 at 22:50 UTC, with the repository at `52ce048` (`deploy/results/bench-runner-20261105T224951Z-ff13d4.json`):
+
+| Vantage | N | | p50 | p95 | p99 | mean | min | max |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Vultr `ord` | 300 | direct (ms) | 12.90 | 26.60 | 58.40 | 15.47 | 8.83 | 183.78 |
+| Vultr `ord` | 300 | dispatched (ms) | 17.76 | 29.75 | 73.19 | 21.07 | 11.81 | 232.37 |
+| | | **added (ms)** | **+4.86** | **+3.15** | | **+5.60** | | |
+
+All 600 calls answered 200. The dispatch hop (the dispatch Worker, then `get()` and `fetch()` of the user Worker) adds about 5 ms at p50 and 3 ms at p95 to a trivial Worker. For a WordPress page of 0.5 s or more (item 1) that is about 1%. This is one run from one vantage, at one time of day; it does not include a cold user Worker (the warm-up calls ran first).
 
 ## Pricing and limits (docs)
 
@@ -136,6 +145,8 @@ From the pricing page:
 From the limits page: "Gradual Deployments is not supported yet for user Workers." "For isolation, `caches.default` is disabled for namespaced scripts." Up to eight tags per script. The limits page says "an unlimited number of scripts", and the pricing page includes 1000 and charges for more; the pages do not explain the difference.
 
 ## Reproduce and remove
+
+The spike was removed on 2026-11-05 after the runner measurement: `destroy.sh` ended with `list.sh` showing every name as gone (namespace, five Workers, two container applications, D1, R2), and the Terraform state is empty. The other dispatch namespaces in the account were not changed. To run it again:
 
 ```sh
 export CLOUDFLARE_API_TOKEN=...   # Workers Scripts, R2, D1, Containers edit; account settings read
