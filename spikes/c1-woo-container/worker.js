@@ -56,7 +56,7 @@ export class Store extends Container {
 // builds a new object from the current deploy, with its environment. It waits
 // for the container to stop first (up to 30 s; SIGTERM lets Litestream finish
 // its sync), and resets only when the container is down.
-Store.prototype.info = function () {
+Store.prototype.storeInfo = async function () {
 	return { do_version: this.builtVersion, running: this.ctx.container.running, object_cache: this.envVars.OBJECT_CACHE, replica_path: this.envVars.REPLICA_PATH };
 };
 Store.prototype.shutdownNow = async function (kill) {
@@ -124,10 +124,16 @@ export default {
 			if (!spikeOk) return new Response('forbidden', { status: 403 });
 			const worker_version = (env.CF_VERSION_METADATA && env.CF_VERSION_METADATA.id) || '';
 			try {
-				const i = await store(env).info();
+				const i = await store(env).storeInfo();
 				return Response.json({ worker_version, ...i, current: !!worker_version && worker_version === i.do_version });
 			} catch (e) {
-				// An object from a deploy before this code has no info(): not current.
+				// An object from a deploy before this code has no storeInfo(): not current.
+				// (On Cloudflare a sync method named info answered "The RPC receiver
+				// does not implement the method info" from an object that did run this
+				// code: its shutdownNow answered with this version, 2026-11-05. Local
+				// workerd 4.107.0 accepted it. So this one is async and has another
+				// name, like shutdownNow, which works; which of the two mattered is
+				// not known.)
 				return Response.json({ worker_version, current: false, rpc_error: String((e && e.message) || e) });
 			}
 		}
