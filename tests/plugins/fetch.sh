@@ -12,7 +12,11 @@ while read -r slug ver sha _; do
   case $slug in \#*|'') continue ;; esac
   [ $# -eq 0 ] || [[ $want == *" $slug "* ]] || continue
   z=$cache/$slug-$ver.zip
-  [ -f "$z" ] || curl -sfL "https://downloads.wordpress.org/plugin/$slug.$ver.zip" -o "$z"
+  # Some plugins have no zip for their current version (no tag): duplicate-page
+  # 4.5.9 answered 404 at <slug>.<ver>.zip and is at <slug>.zip (2026-11-05).
+  # The SHA-256 check below refuses the fallback once the plugin moves on.
+  [ -f "$z" ] || curl -sfL "https://downloads.wordpress.org/plugin/$slug.$ver.zip" -o "$z" \
+    || curl -sfL "https://downloads.wordpress.org/plugin/$slug.zip" -o "$z"
   echo "$sha  $z" | shasum -a 256 -c - >/dev/null
   rm -rf "${dest:?}/$slug"
   unzip -q "$z" -d "$dest"

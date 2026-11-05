@@ -9,6 +9,9 @@
 #         MYSQL=vultr (deploy/mysql makes a box; needs VULTR_API_KEY, MYSQL_ZONE_ID,
 #         MYSQL_HOST) or MYSQL=external (MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD,
 #         MYSQL_DATABASE; the server must have SSL)
+#   c1    WordPress and WooCommerce in one Container, SQLite and Litestream to
+#         R2 (Workers Paid). Steps in deploy/variants/c1.sh; options
+#         INSTANCE_TYPE, PHP_WORKERS, IDLE_SECONDS (see README.md)
 # Optional: LOCATION (default enam), MEDIA=1 (R2 media library; R2 must be on),
 # BENCH=0 (skip the measurements), N (runs per page, default 10), PORT (local
 # wrangler dev port for the OPcache step, default 8798), DEPLOY_STATE=r2 (keep
@@ -27,7 +30,7 @@ LOCATION=${LOCATION:-enam}
 MEDIA=${MEDIA:-0}
 export PORT=${PORT:-8798}
 log() { printf '\n== %s\n' "$*"; }
-case "$VARIANT" in b-do|a) ;; *) echo "VARIANT must be b-do or a"; exit 2 ;; esac
+case "$VARIANT" in b-do|a|c1) ;; *) echo "VARIANT must be b-do, a or c1"; exit 2 ;; esac
 
 # Terraform state: local by default; DEPLOY_STATE=r2 writes a backend override
 # for the root in $1 (deploy/terraform or deploy/mysql).
@@ -97,6 +100,12 @@ for try in $(seq 1 20); do
   echo "  database not ready yet (try $try); waiting 30 s"; sleep 30
 done
 BUCKET=$(out media_bucket)
+# Variant c1 (Container) has its own build, deploy and measure steps.
+if [ "$VARIANT" = c1 ]; then
+  . "$ROOT/deploy/variants/c1.sh"
+  c1_main
+  exit 0
+fi
 
 # 2. Build: PHP WebAssembly, WordPress, precompiled OPcache (local wrangler dev).
 log "build"
