@@ -15,9 +15,11 @@
  * WordPress delete or flush keeps the cache exact. Without it, this file
  * defines nothing, so nothing changes (see below).
  *
- * Groups core marks non-persistent stay per request, except theme_json: the
- * theme files cannot change within a deploy, and core deletes that group when
- * user styles change (wp_clean_theme_json_cache()).
+ * Groups core marks non-persistent (counts, plugins, theme_json) stay per
+ * request. theme_json must: core clears it only on a theme switch or preview
+ * (wp_clean_theme_json_cache()), never when global styles are saved, and
+ * plugins change it through filters. Kept across requests, a global styles
+ * change did not show (tests/load/cache_coherence.py, measured 2026-11-05).
  *
  * Values are serialized and base64 encoded: serialize() output may not be
  * UTF-8, and the bridge is JSON.

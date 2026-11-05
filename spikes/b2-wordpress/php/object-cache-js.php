@@ -49,9 +49,7 @@ class JS_Object_Cache {
 
 	public function add_non_persistent_groups( $groups ) {
 		foreach ( (array) $groups as $g ) {
-			if ( 'theme_json' !== $g ) {
-				$this->non_persistent[ $g ] = true;
-			}
+			$this->non_persistent[ $g ] = true;
 		}
 	}
 
