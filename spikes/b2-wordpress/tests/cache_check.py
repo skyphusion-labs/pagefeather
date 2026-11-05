@@ -10,7 +10,7 @@
 # at least once in practice. A check passes only if EVERY read shows the new
 # value and none shows the old one. The "before" reads prove that the page shows
 # the value at all, so a later pass is not a page that never had it.
-import json, os, sys, time
+import json, os, sys, time, urllib.parse
 sys.path.insert(0, os.path.dirname(__file__))
 from break_lib import opener, req, short, login, rest
 
@@ -33,11 +33,19 @@ def reads(path):
     return out
 
 
+# C1 sends x-c1-pid (the PHP worker). Where a site sends it, a pass needs reads
+# from at least 2 workers, or the check proved nothing about a shared cache.
+def pids(rs):
+    return sorted({r["h"].get("x-c1-pid") for r in rs if r["h"] and r["h"].get("x-c1-pid")})
+
+
 def all_have(rs, new, old=None):
     codes = [r["code"] for r in rs]
     hit_new = sum(1 for r in rs if r["code"] == 200 and new in r["body"])
     hit_old = sum(1 for r in rs if old is not None and old in r["body"])
-    return hit_new == len(rs) and hit_old == 0, f"new {hit_new}/{len(rs)} old {hit_old} codes {sorted(set(map(str, codes)))}"
+    p = pids(rs)
+    workers_ok = len(p) >= 2 or not any(r["h"] and r["h"].get("x-c1-pid") for r in rs)
+    return hit_new == len(rs) and hit_old == 0 and workers_ok, f"new {hit_new}/{len(rs)} old {hit_old} codes {sorted(set(map(str, codes)))} workers {len(p)}"
 
 
 o = login()
@@ -48,7 +56,9 @@ pid = json.loads(r["body"]).get("id") if r["code"] == 201 else None
 check("admin: create a product (10.00, stock 7)", pid, str(short(r)))
 if not pid:
     sys.exit(1)
-page = "/?p=%d" % pid
+# The product's own permalink: /?p=<id> answers 301 to it (canonical redirect).
+link = urllib.parse.urlparse(json.loads(r["body"]).get("permalink", ""))
+page = link.path + ("?" + link.query if link.query else "")
 api = "/?rest_route=/wc/store/v1/products/%d" % pid
 
 ok, d = all_have(reads(page), b"10.00")
