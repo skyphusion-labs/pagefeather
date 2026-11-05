@@ -15,7 +15,8 @@
 # and share the variables they set.
 #
 # Options: INSTANCE_TYPE (default standard-1), PHP_WORKERS (default from the
-# instance type), IDLE_SECONDS (default 900), PUBLIC_HOST (default
+# instance type), IDLE_SECONDS (default 900), OBJECT_CACHE (none or apcu,
+# default none), PUBLIC_HOST (default
 # <NAME>.<account subdomain>.workers.dev), ROLLOUT_WAIT (default 60 s),
 # START_TIMEOUT (default 900 s), BENCH, N.
 
@@ -27,6 +28,7 @@ INSTANCE_TYPE=${INSTANCE_TYPE:-standard-1}
 case "$INSTANCE_TYPE" in basic) c1_w=2 ;; standard-1|standard) c1_w=4 ;; standard-2) c1_w=8 ;; *) c1_w=2 ;; esac
 PHP_WORKERS=${PHP_WORKERS:-$c1_w}
 IDLE_SECONDS=${IDLE_SECONDS:-900}
+OBJECT_CACHE=${OBJECT_CACHE:-none}
 
 c1_build() {
   log "build (c1)"
@@ -50,7 +52,7 @@ c1_config() {
   CONF="$C1/wrangler.deploy.$NAME.toml"
   compat=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' "$C1/wrangler.toml" | head -1)
   NAME=$NAME PUBLIC_HOST=$PUBLIC_HOST REPLICA=$replica MEDIA_BUCKET=$media R2_ENDPOINT=$endpoint \
-    COMPAT=$compat INSTANCE_TYPE=$INSTANCE_TYPE PHP_WORKERS=$PHP_WORKERS IDLE_SECONDS=$IDLE_SECONDS \
+    COMPAT=$compat INSTANCE_TYPE=$INSTANCE_TYPE PHP_WORKERS=$PHP_WORKERS IDLE_SECONDS=$IDLE_SECONDS OBJECT_CACHE=$OBJECT_CACHE \
     "$ROOT/deploy/variants/c1-config.sh" > "$CONF"
 }
 
@@ -59,7 +61,7 @@ c1_config() {
 # admin password and no salt.
 c1_deploy() {
   local secrets dep rc=0
-  log "deploy (c1, $INSTANCE_TYPE, $PHP_WORKERS PHP workers)"
+  log "deploy (c1, $INSTANCE_TYPE, $PHP_WORKERS PHP workers, object cache $OBJECT_CACHE)"
   secrets=$(mktemp); chmod 600 "$secrets"
   (cd "$TF" && terraform workspace select "$NAME" >/dev/null && terraform output -json) | python3 -c '
 import json, sys
@@ -133,8 +135,8 @@ c1_measure() {
     fi
     sleep 2
   done
-  printf '{"instance_type": "%s", "php_workers": %s, "idle_seconds": %s, "first_start_s": %s, "cold_start_s": %s}\n' \
-    "$INSTANCE_TYPE" "$PHP_WORKERS" "$IDLE_SECONDS" "${FIRST_START_S:-null}" "$cold" > "$w/extra"
+  printf '{"instance_type": "%s", "php_workers": %s, "object_cache": "%s", "idle_seconds": %s, "first_start_s": %s, "cold_start_s": %s}\n' \
+    "$INSTANCE_TYPE" "$PHP_WORKERS" "$OBJECT_CACHE" "$IDLE_SECONDS" "${FIRST_START_S:-null}" "$cold" > "$w/extra"
   VARIANT=c1 python3 "$ROOT/deploy/summarize.py" "$res" "$NAME" "$URL" "$LOCATION" "$e2e_exit" "$w"
   rm -rf "$w"
 }

@@ -16,6 +16,14 @@ if [ ! -f /data/wordpress.sqlite ]; then
 	php /var/www/html/install.php
 fi
 chown -R www-data:www-data /data 2>/dev/null || true
+# Object cache: OBJECT_CACHE=apcu puts the APCu drop-in in place, anything
+# else runs without one. APCu memory belongs to PHP's server process and its
+# forked workers, so it starts empty with every container.
+if [ "${OBJECT_CACHE:-none}" = apcu ]; then
+	cp /opt/wp/object-cache.php /var/www/html/wp-content/object-cache.php
+else
+	rm -f /var/www/html/wp-content/object-cache.php
+fi
 # Litestream runs as a child, not PID 1: Linux ignores SIGKILL sent to PID 1
 # from inside the container, so a crash could not be tested. This shell
 # forwards SIGTERM, so a normal stop still lets Litestream finish its sync.
