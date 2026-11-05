@@ -156,7 +156,7 @@ enabled = true
 mode = "smart"
 [[env.a-free.hyperdrive]]
 binding = "HYPERDRIVE"
-id = "18ebba479f1145869dfca2f4cf00ff02"
+id = "f66b075f6778493eb02549c3cafa1727"  # wp-a-free-public; tunnel path: 18ebba479f1145869dfca2f4cf00ff02
 
 [env.a-paid]
 name = "wp-a-paid"
@@ -176,7 +176,7 @@ enabled = true
 region = "aws:us-east-2"
 [[env.a-paid.hyperdrive]]
 binding = "HYPERDRIVE"
-id = "5532e5137adc48509ed4d3a49a42d6ee"
+id = "724a0006e4354f728d790cd74cd9d8e5"  # wp-a-paid-public; tunnel path: 5532e5137adc48509ed4d3a49a42d6ee
 [[env.a-paid.r2_buckets]]
 binding = "MEDIA"
 bucket_name = "wp-a-paid-media"

@@ -127,11 +127,15 @@ resource "vultr_instance" "mysql" {
 resource "terraform_data" "db_ready" {
   triggers_replace = [vultr_instance.mysql.id]
   provisioner "local-exec" {
+    # Count only connections opened after this wait started: after a replace,
+    # the old box's connections are still listed for a while (measured
+    # 2026-11-05: the wait passed in 1 s and Hyperdrive got no database).
     command = <<-EOT
+      start=$(date -u +%Y-%m-%dT%H:%M:%S)
       for i in $(seq 1 60); do
         n=$(curl -sf -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
           "https://api.cloudflare.com/client/v4/accounts/${local.account_id}/cfd_tunnel/${cloudflare_zero_trust_tunnel_cloudflared.mysql.id}" \
-          | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["result"].get("connections") or []))')
+          | START=$start python3 -c 'import json,os,sys; c=json.load(sys.stdin)["result"].get("connections") or []; print(sum(1 for x in c if x.get("opened_at","")[:19] > os.environ["START"]))')
         [ "$${n:-0}" -gt 0 ] && exit 0
         sleep 10
       done
@@ -189,8 +193,10 @@ resource "cloudflare_dns_record" "mysql_public" {
 
 locals {
   origin_public = {
-    scheme   = "mysql"
-    host     = "mysql-a-public.skyphusion.org"
+    scheme = "mysql"
+    # The address, not the name: Hyperdrive answered "DNS lookup failed" for the
+    # new record several times while 1.1.1.1 resolved it (measured 2026-11-05).
+    host     = vultr_instance.mysql.main_ip
     port     = 3306
     database = "wordpress"
     user     = "wp"
@@ -204,7 +210,7 @@ resource "cloudflare_hyperdrive_config" "a_paid_public" {
   name       = "wp-a-paid-public"
   origin     = local.origin_public
   caching    = { disabled = true }
-  depends_on = [terraform_data.db_ready, cloudflare_dns_record.mysql_public]
+  depends_on = [terraform_data.db_ready, vultr_firewall_rule.mysql_public]
 }
 
 resource "cloudflare_hyperdrive_config" "a_free_public" {
@@ -214,7 +220,7 @@ resource "cloudflare_hyperdrive_config" "a_free_public" {
   name       = "wp-a-free-public"
   origin     = local.origin_public
   caching    = { disabled = true }
-  depends_on = [terraform_data.db_ready, cloudflare_dns_record.mysql_public]
+  depends_on = [terraform_data.db_ready, vultr_firewall_rule.mysql_public]
 }
 
 # ---- Media and tokens -------------------------------------------------------
