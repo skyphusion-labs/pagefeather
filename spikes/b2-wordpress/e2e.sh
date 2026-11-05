@@ -1,9 +1,9 @@
 #!/bin/bash
 # End-to-end check against a running spike: pages, login, admin, editor, REST write.
-# Usage: ./e2e.sh [base-url]   (default http://localhost:8797)
+# Usage: ./e2e.sh [base-url]   (default http://localhost:$PORT, PORT default 8797)
 # Prints one line per request. Exits 1 if any request fails or reports D1 failures.
 set -u
-B=${1:-http://localhost:8797}
+B=${1:-http://localhost:${PORT:-8797}}
 PW=${ADMIN_PASSWORD:-local-spike-password}
 ST=(-H "x-spike-token: ${SPIKE_TOKEN:-}")
 T=$(mktemp -d); J=$T/jar; H=$T/h; bad=0

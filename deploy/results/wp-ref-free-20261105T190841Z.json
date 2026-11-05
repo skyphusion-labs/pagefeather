@@ -1,0 +1,91 @@
+{
+ "name": "wp-ref-free",
+ "url": "https://wp-ref-free.vivijure-coldrun.workers.dev",
+ "variant": "b-do",
+ "location": "enam",
+ "d1_ping": [
+  {
+   "n": 20,
+   "first": null,
+   "min": 28,
+   "median": 36,
+   "max": 62,
+   "colo": "ATL"
+  },
+  {
+   "n": 20,
+   "first": null,
+   "min": 6,
+   "median": 31,
+   "max": 58,
+   "colo": "YYZ"
+  },
+  {
+   "n": 20,
+   "first": null,
+   "min": 26,
+   "median": 33,
+   "max": 39,
+   "colo": "ATL"
+  }
+ ],
+ "e2e": {
+  "exit": 1,
+  "rows": 17,
+  "ok": 13
+ },
+ "bench": {
+  "target": "https://wp-ref-free.vivijure-coldrun.workers.dev",
+  "n": 10,
+  "pages": {
+   "home": {
+    "ok": 0,
+    "median_s": null,
+    "min_s": null,
+    "max_s": null,
+    "queries": null,
+    "db_ms": null
+   },
+   "post": {
+    "ok": 0,
+    "median_s": null,
+    "min_s": null,
+    "max_s": null,
+    "queries": null,
+    "db_ms": null
+   },
+   "search": {
+    "ok": 10,
+    "median_s": 2.185,
+    "min_s": 1.5,
+    "max_s": 2.56,
+    "queries": 36.0,
+    "db_ms": 1115.5
+   },
+   "dashboard": {
+    "ok": 10,
+    "median_s": 2.04,
+    "min_s": 1.87,
+    "max_s": 2.79,
+    "queries": 47.0,
+    "db_ms": 1589.5
+   },
+   "post-new": {
+    "ok": 10,
+    "median_s": 3.315,
+    "min_s": 2.93,
+    "max_s": 3.69,
+    "queries": 71.0,
+    "db_ms": 2486.5
+   },
+   "edit": {
+    "ok": 10,
+    "median_s": 2.145,
+    "min_s": 2.07,
+    "max_s": 3.1,
+    "queries": 48.0,
+    "db_ms": 1652.5
+   }
+  }
+ }
+}
