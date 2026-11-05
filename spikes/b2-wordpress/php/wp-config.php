@@ -38,7 +38,8 @@ foreach ( array( 'AUTH_KEY', 'SECURE_AUTH_KEY', 'LOGGED_IN_KEY', 'NONCE_KEY', 'A
 	}
 }
 
-$table_prefix = 'wp_';
+// Approach A: Free and Paid share one MySQL database with different prefixes.
+$table_prefix = getenv( 'WP_TABLE_PREFIX' ) ?: 'wp_';
 
 // WooCommerce writes log files under uploads/wc-logs. Uploads live in R2, so
 // every log line was an R2 read and write: about 30 calls and 15 s of each

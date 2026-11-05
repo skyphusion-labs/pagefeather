@@ -20,6 +20,12 @@ const INI_DEFAULTS = {};
 // 81 MiB after the first page with OPcache on.
 const RECYCLE_WASM_BYTES = 100 * 1024 * 1024;
 let ENV;
+// Approach A (index-a.js) registers a MySQL handler here. B leaves it null and
+// every database message goes to D1.
+let dbHandler = null;
+export function setDbHandler(h) {
+	dbHandler = h;
+}
 // Counters only grow. A request reports the difference, so a nested request
 // (WordPress calling its own URL) cannot reset an outer one.
 const stats = newStats();
@@ -228,6 +234,19 @@ async function handleMessage(raw) {
 		purgeRequested = true;
 		return '{}';
 	}
+	if (dbHandler && (m.mysql !== undefined || m.mysql_b64 !== undefined)) {
+		const t = Date.now();
+		stats.calls++;
+		const reply = await dbHandler.query(ENV, m);
+		stats.ms += Date.now() - t;
+		const sql = String(m.mysql !== undefined ? m.mysql : '(binary SQL)');
+		if (reply.ok) stats.log.push('ok  ' + sql.slice(0, 160).replace(/\s+/g, ' '));
+		else {
+			stats.failures.push({ sql: sql.slice(0, 400), error: reply.error });
+			stats.log.push('ERR ' + sql.slice(0, 160).replace(/\s+/g, ' ') + ' => ' + String(reply.error).slice(0, 120));
+		}
+		return JSON.stringify(reply);
+	}
 	if (m.report) {
 		stats.failures.push({ sql: m.sql.slice(0, 400), error: m.error });
 		stats.log.push('ERR ' + m.sql.slice(0, 160).replace(/\s+/g, ' ') + ' => ' + m.error.slice(0, 120));
@@ -236,12 +255,27 @@ async function handleMessage(raw) {
 	const t = Date.now();
 	stats.calls++;
 	try {
-		const stmt = ENV.DB.prepare(m.sql).bind(...(m.params || []));
+		// A BLOB does not survive JSON. PHP sends a string that is not UTF-8 as
+		// {"$b": base64}; bind it as bytes. D1 returns a BLOB as an array of
+		// numbers or an ArrayBuffer; send it back to PHP as {"$b": base64}.
+		// (Found 2026-11-05: Wordfence stores its settings in a BLOB column and
+		// read them back as a PHP array, a fatal error on activation.)
+		const params = (m.params || []).map((v) => (v && typeof v === 'object' && typeof v.$b === 'string' ? b64decode(v.$b).buffer : v));
+		const stmt = ENV.DB.prepare(m.sql).bind(...params);
 		const returnsRows = /^\s*(SELECT|PRAGMA|WITH|VALUES|EXPLAIN)\b/i.test(m.sql) || /\bRETURNING\b/i.test(m.sql);
 		let reply;
 		if (returnsRows) {
 			const [columns, ...rows] = await stmt.raw({ columnNames: true });
-			reply = { ok: true, columns: columns || [], rows, changes: 0, last_row_id: 0 };
+			let blob = false;
+			for (const row of rows)
+				for (let i = 0; i < row.length; i++) {
+					const v = row[i];
+					if (v === null || typeof v !== 'object') continue;
+					const bytes = v instanceof ArrayBuffer ? new Uint8Array(v) : ArrayBuffer.isView(v) ? new Uint8Array(v.buffer, v.byteOffset, v.byteLength) : Uint8Array.from(v);
+					row[i] = { $b: b64encode(bytes) };
+					blob = true;
+				}
+			reply = { ok: true, columns: columns || [], rows, changes: 0, last_row_id: 0, blob };
 		} else {
 			const r = await stmt.run();
 			reply = { ok: true, columns: [], rows: [], changes: r.meta.changes || 0, last_row_id: r.meta.last_row_id || 0 };
@@ -471,6 +505,8 @@ async function r2opInner(op) {
 			return { ok: true, failed };
 		}
 		if (op.op === 'reserve') {
+			// Approach A has no D1: r2-uploads.php falls back to core's unique names.
+			if (!ENV.DB) return { ok: false, error: 'unknown r2 op reserve' };
 			// One atomic insert decides who gets a file name.
 			if (!reserveTableReady) {
 				await ENV.DB.prepare('CREATE TABLE IF NOT EXISTS _r2_reserved (key TEXT PRIMARY KEY, at INTEGER NOT NULL)').run();
@@ -607,6 +643,9 @@ export default {
 		ENV = env;
 		const url = new URL(req.url);
 		if (url.pathname === '/_ping') return new Response('ok');
+		// Approach A: a Worker request cannot use a connection another request opened.
+		// Drop any left over (an /_install run, or a request that failed early).
+		if (dbHandler) dbHandler.reset();
 		// Spike endpoints need the SPIKE_TOKEN secret when it is set (always on a deploy).
 		const spikeOk = !env.SPIKE_TOKEN || req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
@@ -619,13 +658,21 @@ export default {
 		if (url.pathname === '/_d1ping') {
 			const n = Math.min(50, Number(url.searchParams.get('n') || 20));
 			const ms = [];
+			// Approach A: the same 20 reads through Hyperdrive (the first one opens the connection).
+			let connectMs = null;
 			for (let i = 0; i < n; i++) {
 				const t = Date.now();
-				await env.DB.prepare('SELECT option_value FROM wp_options WHERE option_name = ?').bind('siteurl').first();
-				ms.push(Date.now() - t);
+				if (dbHandler) {
+					const r = await dbHandler.query(env, { mysql: "SELECT option_value FROM wp_options WHERE option_name = 'siteurl'" });
+					if (!r.ok) return Response.json({ error: r.error }, { status: 500 });
+				} else await env.DB.prepare('SELECT option_value FROM wp_options WHERE option_name = ?').bind('siteurl').first();
+				if (i === 0 && dbHandler) connectMs = Date.now() - t;
+				else ms.push(Date.now() - t);
 			}
+			if (dbHandler) ctx.waitUntil(dbHandler.end());
+			const n2 = ms.length;
 			ms.sort((a, b) => a - b);
-			return Response.json({ n, min: ms[0], median: ms[n >> 1], max: ms[n - 1], colo: req.cf && req.cf.colo });
+			return Response.json({ n: n2, first: connectMs, min: ms[0], median: ms[n2 >> 1], max: ms[n2 - 1], colo: req.cf && req.cf.colo });
 		}
 		// Spike: stop the checkout Container, so the next request starts the current image.
 		if (env.WOO_CHECKOUT && url.pathname === '/_container-stop') {
@@ -753,6 +800,8 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const r2before = JSON.stringify(stats.r2);
 			const r2start = JSON.parse(r2before);
 			const r = await handler.request({ url: url.pathname + url.search, method: req.method, headers, body });
+			// Approach A: close this request's MySQL connection after the response.
+			if (dbHandler) (ctx ? ctx.waitUntil(dbHandler.end()) : dbHandler.end());
 			if (ctx && ctx.cache && purgeRequested) {
 				// A purge already scheduled for later covers this change too.
 				const wait = Math.max(0, lastPurge + PURGE_GAP_MS - Date.now());

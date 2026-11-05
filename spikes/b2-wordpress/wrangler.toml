@@ -112,3 +112,73 @@ class_name = "WooCheckout"
 [[env.paid.migrations]]
 tag = "v1"
 new_sqlite_classes = ["WooCheckout"]
+
+# ---------------------------------------------------------------------------
+# Approach A: the same Worker on MySQL through Hyperdrive (index-a.js,
+# php/hyperdrive-db.php, ENGINE=a ./build.sh). The database is MariaDB on a
+# Vultr box in Chicago, reached through a Cloudflare Tunnel with an Access
+# service token (tests/a/vps.sh, issue #27). Free and Paid share that one
+# database with different table prefixes (wpf_ and wp_).
+# Secrets per env: WP_SALT, SPIKE_TOKEN.
+
+[env.a-local]
+# opcache.sh with DEV_ENV=a-local. The connection string comes from
+# WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE (a local MariaDB).
+main = "index-a.js"
+rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
+[env.a-local.vars]
+PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
+[env.a-local.assets]
+directory = "build/public"
+[[env.a-local.hyperdrive]]
+binding = "HYPERDRIVE"
+id = "5532e5137adc48509ed4d3a49a42d6ee"
+[[env.a-local.r2_buckets]]
+binding = "MEDIA"
+bucket_name = "b2-local-media"
+[env.a-local.images]
+binding = "IMAGES"
+
+[env.a-free]
+name = "wp-a-free"
+main = "index-a.js"
+workers_dev = true
+rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
+[env.a-free.vars]
+PHP_ENV = '{"USE_ZEND_ALLOC":"0","WP_TABLE_PREFIX":"wpf_"}'
+[env.a-free.assets]
+directory = "build/public"
+[env.a-free.images]
+binding = "IMAGES"
+[env.a-free.cache]
+enabled = true
+[env.a-free.placement]
+mode = "smart"
+[[env.a-free.hyperdrive]]
+binding = "HYPERDRIVE"
+id = "18ebba479f1145869dfca2f4cf00ff02"
+
+[env.a-paid]
+name = "wp-a-paid"
+main = "index-a.js"
+workers_dev = true
+rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
+[env.a-paid.vars]
+PHP_ENV = '{"USE_ZEND_ALLOC":"0","WP_TABLE_PREFIX":"wp_"}'
+[env.a-paid.assets]
+directory = "build/public"
+[env.a-paid.limits]
+cpu_ms = 30000
+[env.a-paid.cache]
+enabled = true
+[env.a-paid.placement]
+# Same as B Paid: Chicago, the metro of the MySQL box.
+region = "aws:us-east-2"
+[[env.a-paid.hyperdrive]]
+binding = "HYPERDRIVE"
+id = "5532e5137adc48509ed4d3a49a42d6ee"
+[[env.a-paid.r2_buckets]]
+binding = "MEDIA"
+bucket_name = "wp-a-paid-media"
+[env.a-paid.images]
+binding = "IMAGES"

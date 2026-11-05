@@ -1,0 +1,20 @@
+#cloud-config
+# MariaDB with SSL on (self-signed) and cloudflared. Two ways in: the tunnel
+# (Hyperdrive with an Access service token, to 127.0.0.1) and, when public is
+# true, port 3306 from the internet for user wp@'%' with REQUIRE SSL. SSL: Hyperdrive through the tunnel
+# does not need it, but HostlessWP's setup refuses a server with have_ssl =
+# DISABLED (measured 2026-11-05), and a production MySQL has it on.
+package_update: true
+packages: [mariadb-server, curl, openssl]
+runcmd:
+  - mkdir -p /etc/mysql/ssl
+  - openssl req -x509 -newkey rsa:2048 -nodes -days 365 -subj /CN=wp-a-mysql -keyout /etc/mysql/ssl/server-key.pem -out /etc/mysql/ssl/server-cert.pem
+  - chown -R mysql:mysql /etc/mysql/ssl
+  - chmod 600 /etc/mysql/ssl/server-key.pem
+  - printf '[mariadb]\nbind-address = ${public ? "0.0.0.0" : "127.0.0.1"}\nssl_cert = /etc/mysql/ssl/server-cert.pem\nssl_key = /etc/mysql/ssl/server-key.pem\n' > /etc/mysql/mariadb.conf.d/90-wp-a.cnf
+  - systemctl restart mariadb
+  - mysql -e "CREATE DATABASE IF NOT EXISTS wordpress CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER 'wp'@'localhost' IDENTIFIED BY '${db_password}'; CREATE USER 'wp'@'127.0.0.1' IDENTIFIED BY '${db_password}'; GRANT ALL ON wordpress.* TO 'wp'@'localhost'; GRANT ALL ON wordpress.* TO 'wp'@'127.0.0.1';%{ if public } CREATE USER 'wp'@'%' IDENTIFIED BY '${db_password}' REQUIRE SSL; GRANT ALL ON wordpress.* TO 'wp'@'%';%{ endif } FLUSH PRIVILEGES;"
+  - curl -sfL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+  - dpkg -i /tmp/cloudflared.deb
+  # Last: a healthy tunnel means the database is ready (terraform_data.db_ready waits for it).
+  - cloudflared service install ${tunnel_token}

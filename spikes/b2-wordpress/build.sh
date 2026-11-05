@@ -31,13 +31,20 @@ rm -rf build/wordpress build/public build/site.zip
 unzip -q "$cache/wordpress-$WP_VERSION.zip" -d build
 wp=build/wordpress
 rm -rf "$wp/wp-content/themes/twentytwentythree" "$wp/wp-content/themes/twentytwentyfour" "$wp/wp-content/plugins/akismet" "$wp/wp-config-sample.php"
-cp -RL "$cache/sqlite-database-integration/packages/plugin-sqlite-database-integration" "$wp/wp-content/plugins/sqlite-database-integration"
-unzip -q "$cache/woocommerce-$WOO_VERSION.zip" -d "$wp/wp-content/plugins"
-cp php/db.php php/d1-pdo.php php/d1-dialect.php "$wp/wp-content/"
+# ENGINE=a: approach A, MySQL through Hyperdrive (php/hyperdrive-db.php). Default: D1.
+[ "${ENGINE:-d1}" = a ] || cp -RL "$cache/sqlite-database-integration/packages/plugin-sqlite-database-integration" "$wp/wp-content/plugins/sqlite-database-integration"
+# WOO=0 leaves WooCommerce out (the plugin suite does: the Worker size limit).
+[ "${WOO:-1}" = 0 ] || unzip -q "$cache/woocommerce-$WOO_VERSION.zip" -d "$wp/wp-content/plugins"
+# PLUGINS="slug ..." adds plugins from tests/plugins/suite.txt (checked by SHA-256).
+[ -z "${PLUGINS:-}" ] || ../../tests/plugins/fetch.sh "$wp/wp-content/plugins" $PLUGINS
 mkdir -p "$wp/wp-content/mu-plugins"
 cp php/r2-uploads.php php/edge-cache.php php/woo-edge.php "$wp/wp-content/mu-plugins/"
 mkdir -p "$wp/wp-content/mu-plugins/r2-uploads"
 cp php/cf-images-editor.php "$wp/wp-content/mu-plugins/r2-uploads/"
+if [ "${ENGINE:-d1}" = a ]; then
+  cp php/hyperdrive-db.php "$wp/wp-content/db.php"
+else
+cp php/db.php php/d1-pdo.php php/d1-dialect.php "$wp/wp-content/"
 # The plugin's installer opens its own connection to DB_PATH. Make it use the
 # D1-backed connection that wp-content/db.php already made.
 python3 - "$wp/wp-content/plugins/sqlite-database-integration/wp-includes/sqlite/install-functions.php" <<'PY'
@@ -47,6 +54,7 @@ s, n = re.subn(r"\$translator = new WP_MySQL_On_SQLite\(.*?\);\s*\$translator->s
 assert n == 1, "install-functions.php patch did not apply"
 open(p, "w").write(s)
 PY
+fi
 cp php/wp-config.php "$wp/"
 
 # Static files: everything except PHP. wp-config.php never reaches public/.

@@ -8,6 +8,17 @@ if ( ! in_array( parse_url( $_SERVER['REQUEST_URI'], PHP_URL_PATH ), array( '/pi
 // everything else goes to WordPress (index.php).
 $path = parse_url( $_SERVER['REQUEST_URI'], PHP_URL_PATH );
 $file = realpath( __DIR__ . $path );
+// A directory with an index.php (/wp-admin/) runs it, as Apache and nginx do.
+// Without this, /wp-admin/ went to WordPress and showed the home page
+// (found 2026-11-05 by tests/plugins/plugins.py).
+if ( $file && 0 === strpos( $file, __DIR__ ) && is_dir( $file ) && is_file( $file . '/index.php' ) ) {
+	if ( '/' !== substr( $path, -1 ) ) {
+		header( 'Location: ' . $path . '/' . ( empty( $_SERVER['QUERY_STRING'] ) ? '' : '?' . $_SERVER['QUERY_STRING'] ), true, 301 );
+		return true;
+	}
+	$path .= 'index.php';
+	$file .= '/index.php';
+}
 if ( $file && 0 === strpos( $file, __DIR__ ) && is_file( $file ) ) {
 	if ( '.php' !== substr( $file, -4 ) ) {
 		return false;
