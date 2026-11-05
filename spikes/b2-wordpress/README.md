@@ -59,6 +59,10 @@ Two uploads with the same name on two isolates would overwrite each other. The p
 
 `PHP_IN_DO=on` runs PHP in the `PhpRuntime` Durable Object (binding `PHP_RUNTIME`), not in the Worker. A Worker request on Free stops at about 2 s of CPU; an object request may use 30 s. The Worker keeps static assets, R2 uploads and the page cache. The design is from HostlessWP. Local check: `DEV_ENV=do-local ./opcache.sh`, then `DEV_ENV=do-local ./run.sh` and `./e2e.sh`. Deploy env: `do-free`. See `docs/approach-b.md` 8i.
 
+## The database in the PHP object
+
+With `PHP_IN_DO=on`, `DB_IN_DO=on` makes the object's own SQLite (`ctx.storage.sql`) the WordPress database, in place of D1. No network per query. `/_install` installs into it. `dbmove.py` exports and imports a site (also from D1). Local check: `DEV_ENV=dosql-local ./opcache.sh`, then `DEV_ENV=dosql-local ./run.sh` and `./e2e.sh`. Deploy env: `dosql-free`. See `docs/approach-b.md` 8j.
+
 ## WooCommerce
 
 WooCommerce is in the build (`WOO_VERSION` in `build.sh`). `tests/woo.py` runs a store and a guest checkout. Activate it with `POST /_activate?plugin=woocommerce/woocommerce.php` (spike token). On Paid, checkout exceeds the isolate memory limit; see `docs/approach-b.md` 8f.

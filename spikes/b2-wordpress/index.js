@@ -27,10 +27,16 @@ let dbHandler = null;
 export function setDbHandler(h) {
 	dbHandler = h;
 }
+// DB_IN_DO=on (issue #2, docs/approach-b.md 8j): the PHP object's own SQLite
+// (ctx.storage.sql). The object sets it for each PHP run, under the PHP lock.
+// In the Worker it is always null and every statement goes to D1.
+let sqlDb = null;
 // Counters only grow. A request reports the difference, so a nested request
 // (WordPress calling its own URL) cannot reset an outer one.
 const stats = newStats();
 let bootPromise;
+// The origin the current runtime booted with (WP_HOME in wp-runtime.php).
+let bootOrigin = null;
 // One PHP runtime per isolate, and PHP is not re-entrant. Measured 2026-11-04:
 // with 30 parallel requests on one isolate, about half crashed. So requests
 // that use PHP run one at a time, in arrival order.
@@ -119,7 +125,7 @@ async function stageUpload(req, env) {
 }
 
 function newStats() {
-	return { calls: 0, ms: 0, failures: [], log: [], r2: {} };
+	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0 };
 }
 
 // The log and failure lists live as long as the isolate. Keep the newest only.
@@ -253,6 +259,7 @@ async function handleMessage(raw) {
 		stats.log.push('ERR ' + m.sql.slice(0, 160).replace(/\s+/g, ' ') + ' => ' + m.error.slice(0, 120));
 		return '{}';
 	}
+	if (sqlDb) return JSON.stringify(sqlStatement(sqlDb, m));
 	const t = Date.now();
 	stats.calls++;
 	try {
@@ -294,6 +301,7 @@ async function handleMessage(raw) {
 }
 
 async function boot(origin) {
+	bootOrigin = origin;
 	const t0 = Date.now();
 	const id = await loadPHPRuntime(loader, {
 		// PHP_ENV (JSON) sets process environment for PHP, e.g. USE_ZEND_ALLOC.
@@ -517,6 +525,11 @@ async function r2opInner(op) {
 			const failed = results.filter((x) => x.status === 'rejected').map((x) => String(x.reason));
 			return { ok: true, failed };
 		}
+		if (op.op === 'reserve' && sqlDb) {
+			sqlDb.exec('CREATE TABLE IF NOT EXISTS _r2_reserved (key TEXT PRIMARY KEY, at INTEGER NOT NULL)');
+			if (await B.head(op.key)) return { ok: true, reserved: false };
+			return { ok: true, reserved: sqlChanges(sqlDb, () => sqlDb.exec('INSERT OR IGNORE INTO _r2_reserved (key, at) VALUES (?, ?)', op.key, Date.now())) === 1 };
+		}
 		if (op.op === 'reserve') {
 			// Approach A has no D1: r2-uploads.php falls back to core's unique names.
 			if (!ENV.DB) return { ok: false, error: 'unknown r2 op reserve' };
@@ -660,6 +673,25 @@ async function d1ping(req, env, url, ctx) {
 	return Response.json({ n: n2, first: connectMs, min: ms[0], median: ms[n2 >> 1], max: ms[n2 - 1], colo: req.cf && req.cf.colo });
 }
 
+// Spike: time N statements on the object's SQLite (db=object) or on D1 (db=d1),
+// from inside the object. A Worker's clock does not move during CPU work, so on
+// Cloudflare the object numbers may read 0: read CPU time in wrangler tail.
+async function dbping(env, url, sql) {
+	const db = url.searchParams.get('db') || (sql ? 'object' : 'd1');
+	const n = Math.min(5000, Number(url.searchParams.get('n') || 20));
+	const q = "SELECT option_value FROM wp_options WHERE option_name = 'siteurl'";
+	const t0 = Date.now();
+	if (db === 'object') {
+		if (!sql) return new Response('DB_IN_DO is off', { status: 409 });
+		for (let i = 0; i < n; i++) sql.exec(q).toArray();
+	} else {
+		if (!env.DB) return new Response('no DB binding', { status: 409 });
+		for (let i = 0; i < n; i++) await env.DB.prepare(q).first();
+	}
+	const ms = Date.now() - t0;
+	return Response.json({ db, n, totalMs: ms, perStatementMs: ms / n, databaseBytes: sql ? sql.databaseSize : null });
+}
+
 // PHP in a Durable Object (issue #28). The design is from HostlessWP
 // (github.com/hostlesswp/hostlesswp, GPL-2.0-or-later, runtime/src/index.js,
 // PhpRuntime and render()). On Workers Free a Worker request stops at about 2 s
@@ -668,6 +700,164 @@ async function d1ping(req, env, url, ctx) {
 // page cache, and sends every request that needs PHP to this object. The object
 // runs the same code as the Worker (handle, withPhp, handleMessage), with its
 // own bindings (DB, MEDIA, IMAGES) from the same wrangler env.
+// One statement on the object's SQLite, in the reply form of the D1 path
+// (handleMessage). exec() is synchronous and returns a cursor. Differences from
+// D1 handled here:
+// - changes and last_row_id: D1 returns them in meta. Here they come from
+//   changes() and last_insert_rowid(), read in the same synchronous turn.
+//   total_changes() before and after tells if this statement changed rows, so
+//   a statement that changes nothing reports 0, as D1 does.
+// - A BLOB comes back as an ArrayBuffer; it goes to PHP as {"$b": base64}, and
+//   {"$b"} parameters are bound as bytes, as on the D1 path.
+// - Booleans are bound as 1 and 0.
+// BEGIN, COMMIT and SAVEPOINT never reach here: d1-pdo.php answers them in PHP,
+// as for D1 (sql.exec() refuses them).
+function sqlChanges(db, run) {
+	const before = db.exec('SELECT total_changes()').raw().next().value[0];
+	run();
+	const after = db.exec('SELECT total_changes()').raw().next().value[0];
+	return after === before ? 0 : db.exec('SELECT changes()').raw().next().value[0];
+}
+function sqlParams(params) {
+	return (params || []).map((v) => (v && typeof v === 'object' && typeof v.$b === 'string' ? b64decode(v.$b).buffer : typeof v === 'boolean' ? (v ? 1 : 0) : v));
+}
+function sqlRow(row) {
+	let blob = false;
+	for (let i = 0; i < row.length; i++) {
+		const v = row[i];
+		if (v instanceof ArrayBuffer || ArrayBuffer.isView(v)) {
+			const bytes = v instanceof ArrayBuffer ? new Uint8Array(v) : new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+			row[i] = { $b: b64encode(bytes) };
+			blob = true;
+		}
+	}
+	return blob;
+}
+function sqlStatement(db, m) {
+	const t = Date.now();
+	stats.calls++;
+	try {
+		const params = sqlParams(m.params);
+		const returnsRows = /^\s*(SELECT|PRAGMA|WITH|VALUES|EXPLAIN)\b/i.test(m.sql) || /\bRETURNING\b/i.test(m.sql);
+		let reply;
+		if (returnsRows) {
+			const cur = db.exec(m.sql, ...params);
+			const rows = [...cur.raw()];
+			// Billed units (Durable Objects pricing): rows read and written.
+			stats.rowsRead += cur.rowsRead;
+			stats.rowsWritten += cur.rowsWritten;
+			let blob = false;
+			for (const row of rows) blob = sqlRow(row) || blob;
+			reply = { ok: true, columns: cur.columnNames || [], rows, changes: 0, last_row_id: 0, blob };
+		} else {
+			let changes = 0;
+			changes = sqlChanges(db, () => {
+				const cur = db.exec(m.sql, ...params);
+				cur.toArray();
+				stats.rowsRead += cur.rowsRead;
+				stats.rowsWritten += cur.rowsWritten;
+			});
+			const insert = changes > 0 && /^\s*(INSERT|REPLACE)\b/i.test(m.sql);
+			reply = { ok: true, columns: [], rows: [], changes, last_row_id: insert ? db.exec('SELECT last_insert_rowid()').raw().next().value[0] : 0 };
+		}
+		stats.ms += Date.now() - t;
+		stats.log.push('ok  ' + m.sql.slice(0, 160).replace(/\s+/g, ' '));
+		return reply;
+	} catch (e) {
+		stats.ms += Date.now() - t;
+		const error = String((e && e.message) || e);
+		stats.failures.push({ sql: m.sql.slice(0, 400), error });
+		stats.log.push('ERR ' + m.sql.slice(0, 160).replace(/\s+/g, ' ') + ' => ' + error.slice(0, 120));
+		return { ok: false, error };
+	}
+}
+
+// Move a site in or out (DB_IN_DO). The dump is JSON lines: {"sql"} for each
+// table, then {"sql","params"} for each row, then {"sql"} for each index,
+// trigger and view, then {"end":true,"rows":N}. A dump without the end line is
+// incomplete. Tables of SQLite and of Cloudflare (sqlite_*, _cf_*) are left out.
+// Source: the object's SQLite, or ?from=d1 for the DB binding (moving a B site
+// from D1). It runs under the PHP lock, so no PHP request writes meanwhile.
+const DUMP_PAGE = 500;
+function quoteId(name) {
+	return '"' + String(name).replace(/"/g, '""') + '"';
+}
+function dumpSource(env, from) {
+	if (from === 'd1') {
+		if (!env.DB) throw new Error('no DB binding');
+		return async (sql, params = []) => {
+			const [columns, ...rows] = await env.DB.prepare(sql).bind(...params).raw({ columnNames: true });
+			for (const row of rows)
+				for (let i = 0; i < row.length; i++) {
+					const v = row[i];
+					if (v !== null && typeof v === 'object') row[i] = v instanceof ArrayBuffer ? v : ArrayBuffer.isView(v) ? v : Uint8Array.from(v).buffer;
+				}
+			return { columns: columns || [], rows };
+		};
+	}
+	return async (sql, params = []) => {
+		const cur = sqlDb.exec(sql, ...params);
+		const rows = [...cur.raw()];
+		return { columns: cur.columnNames, rows };
+	};
+}
+async function dumpTo(writer, env, from) {
+	const enc = new TextEncoder();
+	const line = (o) => writer.write(enc.encode(JSON.stringify(o) + '\n'));
+	try {
+		const q = dumpSource(env, from);
+		const master = await q("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' AND sql IS NOT NULL ORDER BY rowid");
+		const tables = master.rows.filter((r) => r[0] === 'table');
+		for (const [, , sql] of tables) await line({ sql });
+		let total = 0;
+		for (const [, name] of tables) {
+			for (let off = 0; ; off += DUMP_PAGE) {
+				const page = await q(`SELECT * FROM ${quoteId(name)} LIMIT ? OFFSET ?`, [DUMP_PAGE, off]);
+				const insert = `INSERT INTO ${quoteId(name)} (${page.columns.map(quoteId).join(', ')}) VALUES (${page.columns.map(() => '?').join(', ')})`;
+				for (const row of page.rows) {
+					sqlRow(row);
+					await line({ sql: insert, params: row });
+				}
+				total += page.rows.length;
+				if (page.rows.length < DUMP_PAGE) break;
+			}
+		}
+		for (const [, , sql] of master.rows.filter((r) => r[0] !== 'table')) await line({ sql });
+		await line({ end: true, rows: total });
+	} catch (e) {
+		await line({ error: String((e && e.message) || e) }).catch(() => {});
+	}
+	await writer.close().catch(() => {});
+}
+// Import a dump, or part of one, into the object's SQLite: all lines of one
+// request in one transaction. A failing line rolls the request back.
+// The object must hold no tables, unless replace is set: then every table,
+// index, trigger and view (not sqlite_* or _cf_*) is dropped first, in the same
+// transaction. Any PHP request to an empty object makes the SQLite driver
+// create its own _wp_sqlite_* tables, so "empty" rarely stays true.
+const USER_OBJECTS = "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' AND sql IS NOT NULL";
+function importInto(db, storage, text, replace) {
+	let n = 0;
+	let end = null;
+	storage.transactionSync(() => {
+		const existing = [...db.exec(USER_OBJECTS).raw()];
+		if (existing.length && !replace) throw new Error(existing.length + ' tables or indexes exist; import with replace=1 to drop them first');
+		if (replace) for (const [type, name] of existing) if (type === 'table' || type === 'view') db.exec(`DROP ${type.toUpperCase()} IF EXISTS ${quoteId(name)}`);
+		for (const raw of text.split('\n')) {
+			if (!raw.trim()) continue;
+			const o = JSON.parse(raw);
+			if (o.error) throw new Error('the dump has an error line: ' + o.error);
+			if (o.end) {
+				end = o;
+				continue;
+			}
+			db.exec(o.sql, ...sqlParams(o.params)).toArray();
+			n++;
+		}
+	});
+	return { ok: true, statements: n, end };
+}
+
 const PURGE_HEADER = 'x-php-purge';
 // The visitor's origin, from the Worker. On Cloudflare the object got the URL
 // as http://<host>:443/..., so WP_HOME was wrong and every logged-out page
@@ -696,7 +886,31 @@ export class PhpRuntime extends DurableObject {
 		const maxBody = env.MEDIA && isMediaUpload(req, url) ? Number(env.MAX_UPLOAD_BYTES || MAX_UPLOAD_BYTES) : Number(env.MAX_BODY_BYTES || MAX_BODY_BYTES);
 		const ctx = { inObject: true, waitUntil: (p) => this.ctx.waitUntil(p) };
 		if (url.pathname === '/_d1ping') return d1ping(req, env, url, ctx);
-		return withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx));
+		// DB_IN_DO=on: WordPress's database is this object's SQLite (8j).
+		const sql = env.DB_IN_DO === 'on' ? this.ctx.storage.sql : null;
+		if (url.pathname === '/_dbping') return dbping(env, url, sql);
+		if (url.pathname === '/_dbexport' && req.method === 'GET') {
+			const from = url.searchParams.get('from') === 'd1' ? 'd1' : 'object';
+			if (from === 'object' && !sql) return new Response('DB_IN_DO is off', { status: 409 });
+			const { readable, writable } = new TransformStream();
+			this.ctx.waitUntil(withPhp(() => ((sqlDb = sql), dumpTo(writable.getWriter(), env, from))));
+			return new Response(readable, { headers: { 'content-type': 'application/x-ndjson', 'cache-control': 'private, no-store' } });
+		}
+		if (url.pathname === '/_dbimport' && req.method === 'POST') {
+			if (!sql) return new Response('DB_IN_DO is off', { status: 409 });
+			const text = await req.text();
+			return withPhp(() => {
+				try {
+					return Response.json({ ...importInto(sql, this.ctx.storage, text, url.searchParams.get('replace') === '1'), databaseBytes: sql.databaseSize });
+				} catch (e) {
+					return Response.json({ ok: false, error: String((e && e.message) || e) }, { status: 400 });
+				}
+			});
+		}
+		return withPhp(() => {
+			sqlDb = sql;
+			return handle(req, env, url, spikeOk, maxBody, ctx);
+		});
 	}
 }
 
@@ -704,7 +918,8 @@ export class PhpRuntime extends DurableObject {
 // load; each boots its own PHP. Spike endpoints (/_install, /_opcache-dump,
 // /_last, /_mem) always go to php-0, so they see the runtime the tests used.
 function phpObjectName(env, url) {
-	const pool = Math.max(1, Math.floor(Number(env.PHP_DO_POOL || 1)));
+	// DB_IN_DO: the object IS the database, so there is one object.
+	const pool = env.DB_IN_DO === 'on' ? 1 : Math.max(1, Math.floor(Number(env.PHP_DO_POOL || 1)));
 	if (pool === 1 || url.pathname.startsWith('/_')) return 'php-0';
 	return 'php-' + Math.floor(Math.random() * pool);
 }
@@ -761,8 +976,16 @@ export default {
 		if (Number(req.headers.get('content-length') || 0) > maxBody) return new Response('request body too large', { status: 413 });
 		// PHP in a Durable Object (PHP_IN_DO=on, issue #28): every request that
 		// needs PHP goes to the object, including /_d1ping (D1 as PHP sees it).
+		// DB_IN_DO needs the object; without it the Worker would use D1 silently.
+		if (env.DB_IN_DO === 'on' && env.PHP_IN_DO !== 'on') return new Response('DB_IN_DO=on needs PHP_IN_DO=on', { status: 500 });
 		// Without the binding, fail: a silent fallback would run PHP in the Worker.
-		if (env.PHP_IN_DO === 'on') return env.PHP_RUNTIME ? toPhpObject(req, env, url, ctx) : new Response('PHP_IN_DO=on needs the PHP_RUNTIME Durable Object binding', { status: 500 });
+		if (env.PHP_IN_DO === 'on') {
+			// WordPress serves no WebSockets. PHP's socket layer opens them to the
+			// site itself (during /_install, measured 2026-11-05), and such a
+			// request must never reach PHP: it booted a runtime with a wrong origin.
+			if (req.headers.get('upgrade')) return new Response('WebSocket is not served', { status: 426 });
+			return env.PHP_RUNTIME ? toPhpObject(req, env, url, ctx) : new Response('PHP_IN_DO=on needs the PHP_RUNTIME Durable Object binding', { status: 500 });
+		}
 		// Spike: time N sequential D1 statements from where this Worker runs.
 		if (url.pathname === '/_d1ping') return d1ping(req, env, url, ctx);
 		// Spike: stop the checkout Container, so the next request starts the current image.
@@ -793,6 +1016,12 @@ export default {
 
 async function handle(req, env, url, spikeOk, maxBody, ctx) {
 	{
+		// In the PHP object, a runtime serves only the origin it booted with (8i).
+		// The first request after /_install used to boot the runtime for every
+		// later one, and that request could be PHP's own socket connection back
+		// to the site, with the URL http://<host>:443/: every page then answered
+		// 301 to that URL. A request for another origin now boots a new runtime.
+		if (ctx && ctx.inObject && bootPromise && bootOrigin !== url.origin) bootPromise = null;
 		if (url.pathname === '/_last') return Response.json(globalThis.__lastRequest || {});
 		if (url.pathname === '/_peak') {
 			bootPromise ??= boot(url.origin);
@@ -856,7 +1085,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const booted = !bootPromise;
 			bootPromise ??= boot(url.origin);
 			const { php, handler, bootMs } = await bootPromise;
-			const start = { calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length };
+			const start = { calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
 			if (url.pathname === '/_install') {
@@ -908,12 +1137,17 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			trimStats();
 			const r2now = JSON.stringify(stats.r2);
 			if (r2now !== r2before) out.set('x-r2-ops', Object.entries(stats.r2).map(([k, v]) => `${k}:${v.n - (r2start[k]?.n || 0)}/${v.ms - (r2start[k]?.ms || 0)}ms`).filter((s) => !s.includes(':0/')).join(' '));
+			if (sqlDb) {
+				out.set('x-db', 'object-sqlite');
+				out.set('x-db-rows', `read=${stats.rowsRead - start.rowsRead} written=${stats.rowsWritten - start.rowsWritten}`);
+			}
 			out.set('x-d1-calls', String(d.calls));
 			out.set('x-d1-ms', String(d.ms));
 			out.set('x-d1-failures', String(d.failures.length));
 			if (d.failures.length && spikeOk && env.SPIKE_TOKEN) out.set('x-d1-first-failure', (d.failures[0].error + ' | ' + d.failures[0].sql).replace(/[^\x20-\x7e]/g, ' ').slice(0, 600));
 			out.set('x-php-ms', String(Date.now() - t0));
 			out.set('x-boot', booted ? '1' : '0');
+			if (ctx && ctx.inObject) out.set('x-boot-origin', bootOrigin);
 			console.log(JSON.stringify({ m: 'req', path: url.pathname + url.search, boot: booted, d1: d.calls }));
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
 			evictLazy();
