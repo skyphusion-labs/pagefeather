@@ -35,6 +35,15 @@ let sqlDb = null;
 // (WordPress calling its own URL) cannot reset an outer one.
 const stats = newStats();
 let bootPromise;
+// Performance instrument (docs/perf-dosql.md), PHP object only. Counts do not
+// need the clock: in a Worker or a Durable Object, Date.now() moves only at
+// I/O, so a time measured across synchronous PHP and SQLite work can read 0.
+const ISOLATE_ID = Math.random().toString(36).slice(2, 8);
+const isolateStart = Date.now();
+let runtimeSerial = 0; // runtimes booted in this isolate
+let runtimeServed = 0; // requests the current runtime served
+let runtimeBootAt = 0;
+let phpPending = 0; // object requests in the PHP queue or running
 // The origin the current runtime booted with (WP_HOME in wp-runtime.php).
 let bootOrigin = null;
 // One PHP runtime per isolate, and PHP is not re-entrant. Measured 2026-11-04:
@@ -125,7 +134,7 @@ async function stageUpload(req, env) {
 }
 
 function newStats() {
-	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0 };
+	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0 };
 }
 
 // The log and failure lists live as long as the isolate. Keep the newest only.
@@ -187,6 +196,8 @@ function evictLazy() {
 	inflatedBytes = 0;
 }
 function noteInflated(drop, bytes) {
+	stats.inflates++;
+	stats.inflateBytes += bytes;
 	inflated.set(drop, bytes);
 	inflatedBytes += bytes;
 	for (const [old, n] of inflated) {
@@ -302,6 +313,9 @@ async function handleMessage(raw) {
 
 async function boot(origin) {
 	bootOrigin = origin;
+	runtimeSerial++;
+	runtimeServed = 0;
+	runtimeBootAt = Date.now();
 	const t0 = Date.now();
 	const id = await loadPHPRuntime(loader, {
 		// PHP_ENV (JSON) sets process environment for PHP, e.g. USE_ZEND_ALLOC.
@@ -858,7 +872,25 @@ function importInto(db, storage, text, replace) {
 	return { ok: true, statements: n, end };
 }
 
+// OPcache statistics of the runtime (php.run, not a WordPress request).
+// opHits subtracts 1: this script's own compile counts as a hit or a miss.
+async function opcacheStats(php) {
+	try {
+		const r = await php.run({ code: '<?php $s = function_exists("opcache_get_status") ? opcache_get_status(false) : false; echo json_encode($s ? array("hits" => $s["opcache_statistics"]["hits"], "misses" => $s["opcache_statistics"]["misses"], "cached" => $s["opcache_statistics"]["num_cached_scripts"], "full" => $s["cache_full"]) : null);' });
+		return JSON.parse(r.text) || null;
+	} catch {
+		return null;
+	}
+}
+
 const PURGE_HEADER = 'x-php-purge';
+// When the Worker sent the request (Date.now()). The object's inbox wait is its
+// own Date.now() at the start of fetch minus this. With the database in the
+// object, PHP never yields to the event loop (no I/O), so a second request
+// cannot start until the first ends: that wait is before fetch, where no
+// counter in the object can see it. On Cloudflare the two clocks are on two
+// machines (skew of a few ms).
+const SENT_HEADER = 'x-perf-sent';
 // The visitor's origin, from the Worker. On Cloudflare the object got the URL
 // as http://<host>:443/..., so WP_HOME was wrong and every logged-out page
 // answered 301 to that URL (measured 2026-11-05, wp-do-free). The Worker
@@ -874,8 +906,10 @@ export class PhpRuntime extends DurableObject {
 		// Without it, the object does not guess an origin: a wrong one redirects every page.
 		if (!origin) return new Response('missing ' + ORIGIN_HEADER, { status: 500 });
 		const url = new URL(objectUrl.pathname + objectUrl.search, origin);
+		const inboxMs = raw.headers.get(SENT_HEADER) ? Date.now() - Number(raw.headers.get(SENT_HEADER)) : null;
 		const req = new Request(raw);
 		req.headers.delete(ORIGIN_HEADER);
+		req.headers.delete(SENT_HEADER);
 		if (dbHandler) dbHandler.reset();
 		// The Worker checked the spike token already. Checked again: the object
 		// trusts nothing it did not check itself.
@@ -907,9 +941,26 @@ export class PhpRuntime extends DurableObject {
 				}
 			});
 		}
-		return withPhp(() => {
+		// Queue: requests ahead of this one in the PHP lock (a count), and the
+		// wait for the lock (the clock moves at the I/O that ends each request).
+		const tArrive = Date.now();
+		const ahead = phpPending;
+		phpPending++;
+		return withPhp(async () => {
+			const waitMs = Date.now() - tArrive;
 			sqlDb = sql;
-			return handle(req, env, url, spikeOk, maxBody, ctx);
+			try {
+				const res = await handle(req, env, url, spikeOk, maxBody, ctx);
+				try {
+					// inMs: from the start of fetch to the response (object clock). The
+					// Worker's object time minus inbox minus inMs is the wait to send the
+					// response back, which the next request's PHP can block the same way.
+					res.headers.set('x-perf-queue', JSON.stringify({ inboxMs, ahead, waitMs, inMs: Date.now() - tArrive }));
+				} catch {}
+				return res;
+			} finally {
+				phpPending--;
+			}
 		});
 	}
 }
@@ -932,6 +983,7 @@ async function toPhpObject(req, env, url, ctx) {
 	const fwd = new Request(req);
 	fwd.headers.set(ORIGIN_HEADER, url.origin);
 	const t0 = Date.now();
+	fwd.headers.set(SENT_HEADER, String(t0));
 	const r = await stub.fetch(fwd);
 	const out = new Response(r.body, r);
 	if (out.headers.has(PURGE_HEADER)) {
@@ -942,7 +994,22 @@ async function toPhpObject(req, env, url, ctx) {
 	}
 	out.headers.set('x-php-object', name);
 	// Wall time from the Worker to the object and back, PHP time included.
-	out.headers.set('x-object-ms', String(Date.now() - t0));
+	const objectMs = Date.now() - t0;
+	out.headers.set('x-object-ms', String(objectMs));
+	// Server-Timing (docs/perf-dosql.md): object = the Worker's own wall time
+	// for the object (its clock moves at this I/O); the rest is from the object.
+	try {
+		const p = JSON.parse(out.headers.get('x-perf') || '{}');
+		const q = JSON.parse(out.headers.get('x-perf-queue') || '{}');
+		const t = [`object;dur=${objectMs}`];
+		if (q.inboxMs !== undefined && q.inboxMs !== null) t.push(`inbox;dur=${q.inboxMs}`);
+		if (q.waitMs !== undefined) t.push(`queue;dur=${q.waitMs};desc="ahead ${q.ahead}"`);
+		if (q.inMs !== undefined && q.inboxMs !== undefined && q.inboxMs !== null) t.push(`in;dur=${q.inMs}`, `outbox;dur=${objectMs - q.inboxMs - q.inMs}`);
+		if (p.bootWaitMs !== undefined) t.push(`boot;dur=${p.bootWaitMs};desc="boot ${p.boot}"`);
+		if (p.phpMs !== undefined) t.push(`php;dur=${p.phpMs}`, `db;dur=${p.dbMs};desc="${p.dbN} statements"`);
+		out.headers.set('server-timing', t.join(', '));
+		out.headers.set('x-perf-worker', JSON.stringify({ colo: (req.cf && req.cf.colo) || null, iso: ISOLATE_ID }));
+	} catch {}
 	return out;
 }
 
@@ -1048,6 +1115,15 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 					require_once ABSPATH . 'wp-admin/includes/plugin.php';
 					wp_set_current_user( 1 );
 					$r = activate_plugin( '${plugin}' );
+					// WooCommerce sends the first admin visit to its setup wizard (a 302 on /wp-admin/). A deploy has no use for it.
+					delete_transient( '_wc_activation_redirect' );
+					// WooCommerce makes its order tables (HPOS) on the first admin page view. dbDelta
+					// first runs DESCRIBE on each missing table, which is an error by design. Make them
+					// here, so that one-time step is part of the activation and not of a visitor's page.
+					if ( function_exists( 'wc_get_container' ) && class_exists( 'Automattic\\\\WooCommerce\\\\Internal\\\\DataStores\\\\Orders\\\\DataSynchronizer' ) ) {
+						$sync = wc_get_container()->get( 'Automattic\\\\WooCommerce\\\\Internal\\\\DataStores\\\\Orders\\\\DataSynchronizer' );
+						if ( ! $sync->check_orders_table_exists() ) $sync->create_database_tables();
+					}
 					echo json_encode( array( 'active' => is_plugin_active( '${plugin}' ), 'error' => is_wp_error( $r ) ? $r->get_error_message() : null ) );` });
 			} catch (e) {
 				bootPromise = null;
@@ -1082,10 +1158,13 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			return Response.json({ bootMs, wasmMemoryBytes: php[__private__dont__use].HEAPU8.length, fileBytes: bootMs.fileBytes, fileCount: bootMs.fileCount, memAt: bootMs.memAt, ini: JSON.parse(r.text || '{}') });
 		}
 		try {
+			const tBoot = Date.now();
 			const booted = !bootPromise;
 			bootPromise ??= boot(url.origin);
 			const { php, handler, bootMs } = await bootPromise;
-			const start = { calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten };
+			const bootWaitMs = Date.now() - tBoot;
+			const wasm0 = php[__private__dont__use].HEAPU8.length;
+			const start = { calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
 			if (url.pathname === '/_install') {
@@ -1119,7 +1198,13 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			purgeRequested = false;
 			const r2before = JSON.stringify(stats.r2);
 			const r2start = JSON.parse(r2before);
+			// OPcache counters before and after, only when a spike-token holder asks (two extra php.run calls).
+			const wantOpcache = ctx && ctx.inObject && spikeOk && req.headers.get('x-perf-opcache') === '1';
+			const op0 = wantOpcache ? await opcacheStats(php) : null;
+			const tPhp = Date.now();
 			const r = await handler.request({ url: url.pathname + url.search, method: req.method, headers, body });
+			const phpOnlyMs = Date.now() - tPhp;
+			const op1 = wantOpcache ? await opcacheStats(php) : null;
 			// Approach A: close this request's MySQL connection after the response.
 			if (dbHandler) (ctx ? ctx.waitUntil(dbHandler.end()) : dbHandler.end());
 			if (ctx && ctx.cache && purgeRequested) schedulePurge(ctx);
@@ -1158,6 +1243,30 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			if (crashed || wasmBytes > RECYCLE_WASM_BYTES) {
 				bootPromise = null;
 				out.set('x-runtime-recycled', crashed ? 'crashed' : 'memory');
+			}
+			if (ctx && ctx.inObject) {
+				runtimeServed++;
+				const now = Date.now();
+				const perf = {
+					iso: ISOLATE_ID,
+					isoAgeS: Math.round((now - isolateStart) / 1000),
+					rt: runtimeSerial,
+					rtServed: runtimeServed,
+					rtAgeS: Math.round((now - runtimeBootAt) / 1000),
+					boot: booted ? 1 : 0,
+					bootWaitMs,
+					phpMs: phpOnlyMs,
+					dbN: d.calls,
+					dbMs: d.ms,
+					inflates: stats.inflates - start.inflates,
+					inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024),
+					wasm0MiB: Math.round(wasm0 / 1048576),
+					wasm1MiB: Math.round(wasmBytes / 1048576),
+					bytes: r.bytes.length,
+					...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full } : {}),
+				};
+				out.set('x-perf', JSON.stringify(perf));
+				console.log(JSON.stringify({ m: 'perf', id: req.headers.get('x-perf-id'), path: url.pathname, ...perf }));
 			}
 			return new Response(r.bytes, { status: r.httpStatusCode, headers: out });
 		} catch (e) {

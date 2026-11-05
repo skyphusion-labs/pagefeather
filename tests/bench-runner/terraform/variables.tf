@@ -11,9 +11,9 @@ variable "region" {
 }
 
 variable "plan" {
-  description = "Vultr plan. vc2-1c-1gb: 1 vCPU, 1 GB, $5 a month, billed by the hour."
+  description = "Vultr plan. vc2-2c-4gb: 2 vCPU, 4 GB, $20 a month, billed by the hour. At 1 vCPU the load test client was the limit at 50 users (load 1.23 on 1 CPU, 2026-11-05)."
   type        = string
-  default     = "vc2-1c-1gb"
+  default     = "vc2-2c-4gb"
 }
 
 variable "repo" {

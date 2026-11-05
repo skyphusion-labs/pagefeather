@@ -15,6 +15,8 @@
 #         R2 (Workers Paid). Steps in deploy/variants/c1.sh; options
 #         INSTANCE_TYPE, PHP_WORKERS, IDLE_SECONDS (see README.md)
 # Optional: LOCATION (default enam), MEDIA=1 (R2 media library; R2 must be on),
+# WOO_ACTIVE=1 (activate WooCommerce after the install; c1 always has it
+# active, so set it on b-do, b-dosql and a to compare like with like),
 # BENCH=0 (skip the measurements), N (runs per page, default 10), PORT (local
 # wrangler dev port for the OPcache step, default 8798), DEPLOY_STATE=r2 (keep
 # Terraform state in an R2 bucket; see README.md).
@@ -31,6 +33,7 @@ VARIANT=${VARIANT:-b-do}
 LOCATION=${LOCATION:-enam}
 MEDIA=${MEDIA:-0}
 export PORT=${PORT:-8798}
+export WOO_ACTIVE=${WOO_ACTIVE:-0}
 log() { printf '\n== %s\n' "$*"; }
 case "$VARIANT" in b-do|b-dosql|a|c1) ;; *) echo "VARIANT must be b-do, b-dosql, a or c1"; exit 2 ;; esac
 
@@ -39,6 +42,9 @@ case "$VARIANT" in b-do|b-dosql|a|c1) ;; *) echo "VARIANT must be b-do, b-dosql,
 backend() {
   [ "${DEPLOY_STATE:-local}" = r2 ] || return 0
   : "${STATE_BUCKET:?set STATE_BUCKET}" "${STATE_ENDPOINT:?set STATE_ENDPOINT (https://<account>.r2.cloudflarestorage.com)}"
+  # Each site has its own state key, so the workspace the last site selected
+  # is not in this one and init refuses it. Start from default; tf() selects.
+  rm -f "$1/.terraform/environment"
   cat > "$1/backend_override.tf" <<EOF
 terraform {
   backend "s3" {
@@ -197,6 +203,12 @@ try:
     d = json.load(sys.stdin); print(d.get("out", "")[-80:], d.get("ms"), "ms")
 except ValueError:
     print("install did not answer JSON (on Workers Free, variant a stops at the CPU limit)")'
+
+if [ "${WOO_ACTIVE:-0}" = 1 ]; then
+  log "activate WooCommerce"
+  curl -s -m 300 -X POST -H "x-spike-token: $SPIKE_TOKEN" "$URL/_activate?plugin=woocommerce/woocommerce.php" | tee /dev/stderr | grep -q '\\"active\\":true' \
+    || { echo "WooCommerce did not activate (a result: record it)"; exit 1; }
+fi
 
 PW_HINT="(admin; password: cd deploy/terraform && terraform workspace select $NAME && terraform output -raw admin_password)"
 [ "${BENCH:-1}" = 0 ] && { echo "$URL $PW_HINT"; exit 0; }

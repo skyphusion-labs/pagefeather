@@ -10,7 +10,7 @@
   job.py redact <job.json>          Prints the job with passwords and tokens hidden.
   job.py table <result.json>        Prints a table of a runner result.
 """
-import json, re, statistics, sys
+import json, os, re, statistics, sys
 
 VARIANTS = ("b-do", "b-dosql", "a", "c1")
 
@@ -43,6 +43,12 @@ def job(jid, branch, n, path):
     if not targets:
         die("no targets")
     j = {"id": jid, "n": int(n), "targets": targets}
+    load = os.environ.get("LOAD", "")
+    if load:
+        m = re.fullmatch(r"([0-9]{1,3}(?:,[0-9]{1,3}){0,9}):([0-9]{1,3}):(0(?:\.[0-9]+)?|1)", load)
+        if not m or max(int(x) for x in m.group(1).split(",")) > 100 or not 10 <= int(m.group(2)) <= 300:
+            die("LOAD is levels:seconds:buyers, e.g. 1,5,10,25,50:60:0.2 (users 1 to 100, seconds 10 to 300)")
+        j["load"] = {"levels": m.group(1), "seconds": int(m.group(2)), "buyers": float(m.group(3))}
     if branch:
         j["branch"] = branch
     print(json.dumps(j, indent=1))
@@ -69,6 +75,21 @@ def redact(path):
     print(json.dumps(j, indent=1))
 
 
+def load_table(r):
+    print("users  req    rps    errors  1102  boots  recycled        wasm MiB  browse p50/p95/p99    checkout ok/n  p50/p95/p99   client load")
+    for t in r.get("targets", []):
+        print("%s (%s)%s" % (t.get("name"), t.get("variant"), "  ERROR: " + t["error"] if t.get("error") else ""))
+        for s in (t.get("load") or {}).get("steps", []):
+            b, c = s["kinds"].get("browse") or {}, s["kinds"].get("checkout") or {}
+            f = lambda k: "%s/%s/%s" % (k.get("p50"), k.get("p95"), k.get("p99")) if k else "-"
+            print("%-6s %-6s %-6s %-7s %-5s %-6s %-15s %-9s %-21s %-14s %-13s %s/%s" % (
+                s["users"], s["requests"], s["rps"], s["errors"], s["e1102"], s["boots"],
+                ",".join("%s=%s" % kv for kv in s["recycled"].items()) or "0", s["max_wasm_mib"],
+                f(b), "%s/%s" % (c.get("ok", 0), c.get("n", 0)), f(c), s.get("client_load1"), s.get("client_cpus")))
+    print("Seconds. errors: any request not 2xx (a checkout must return an order). 1102: Worker exceeded resource limits.")
+    print("client load: the runner's 1-minute load / its CPUs. At or above 1 per CPU, the client was the limit for that step.")
+
+
 def table(path):
     r = json.load(open(path))
     m = r.get("runner") or {}
@@ -87,6 +108,9 @@ def table(path):
                 print("%-10s p50 %s ms  p95 %s ms  p99 %s ms  mean %s ms  ok %s  %s" % (k, v.get("p50"), v.get("p95"), v.get("p99"), v.get("mean"), v.get("ok"), v.get("url")))
             print("added     ", p.get("added_ms"))
         return
+    if r.get("load"):
+        print("load: users %s, %s s per step, buyers %s" % (r["load"]["levels"], r["load"]["seconds"], r["load"]["buyers"]))
+        return load_table(r)
     pages = []
     for t in r.get("targets", []):
         for p in ((t.get("bench") or {}).get("pages") or {}):
