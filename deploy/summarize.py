@@ -5,7 +5,7 @@ Usage: summarize.py <result.json> <name> <url> <location> <e2e-exit> <work-dir>
 The work dir holds: ping (one /_d1ping JSON per line), e2e (e2e.sh output),
 bench (tests/a/bench.py output; the last line is its JSON).
 """
-import json, os, sys
+import json, os, re, sys
 
 res, name, url, loc, e2e_exit, w = sys.argv[1:7]
 
@@ -22,7 +22,7 @@ out = {
     "name": name, "url": url, "variant": os.environ.get("VARIANT", "b-do"), "location": loc,
     "d1_ping": ping,
     "e2e": {"exit": int(e2e_exit), "rows": len(rows),
-            "ok": sum(1 for l in rows if len(l.split()) > 2 and l.split()[2][:1] in "23")},
+            "ok": sum(1 for l in rows if (lambda c: c and c[0][:1] in "23")([t for t in l.split()[1:] if re.fullmatch(r"\d{3}", t)]))},
     "bench": json.loads(bench[-1]) if bench else None,
 }
 json.dump(out, open(res, "w"), indent=1)

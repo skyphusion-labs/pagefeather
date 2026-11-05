@@ -113,6 +113,8 @@ else
   if docker info >/dev/null 2>&1; then
     LP=$(openssl rand -hex 16); C="deploy-prime-$NAME"
     docker rm -f "$C" >/dev/null 2>&1 || true
+    # Remove the container however this script ends (a failed step exits early).
+    trap 'docker rm -f "$C" >/dev/null 2>&1 || true' EXIT
     docker run -d --name "$C" -p 127.0.0.1:3399:3306 -e MARIADB_ROOT_PASSWORD="$LP" -e MARIADB_DATABASE=wordpress -e MARIADB_USER=wp -e MARIADB_PASSWORD="$LP" mariadb:11.4 >/dev/null
     for i in $(seq 1 30); do docker exec "$C" mariadb -uwp -p"$LP" -e 'select 1' wordpress >/dev/null 2>&1 && break; sleep 2; done
     WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="mysql://wp:$LP@127.0.0.1:3399/wordpress" DEV_ENV=a-local ./opcache.sh | tail -1

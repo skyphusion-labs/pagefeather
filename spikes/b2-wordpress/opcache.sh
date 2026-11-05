@@ -10,7 +10,7 @@ cd "$(dirname "$0")"
 python3 -c "import zipfile; zipfile.ZipFile('build/opcache.zip', 'w').close()"
 ./run.sh _ping > /dev/null
 curl -sf -X POST localhost:${PORT:-8797}/_install > /dev/null   # "already" when installed
-./e2e.sh > /dev/null || { echo "e2e failed; no OPcache files saved"; pkill -f "wrangler dev --port ${PORT:-8797}"; exit 1; }
+./e2e.sh > build/opcache-e2e.log 2>&1 || { echo "e2e failed; no OPcache files saved. Last lines of build/opcache-e2e.log:"; tail -15 build/opcache-e2e.log; pkill -f "wrangler dev --port ${PORT:-8797}"; exit 1; }
 # WooCommerce pages too, when it is active (tests/woo.py buys a product).
 if curl -sf "localhost:${PORT:-8797}/?rest_route=/wc/store/v1/cart" > /dev/null; then
   B=http://localhost:${PORT:-8797} ADMIN_PASSWORD=local-spike-password python3 tests/woo.py > /dev/null || { echo "woo.py failed; no OPcache files saved"; pkill -f "wrangler dev --port ${PORT:-8797}"; exit 1; }
