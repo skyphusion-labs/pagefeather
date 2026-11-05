@@ -4,7 +4,10 @@
 Usage: B=<site url> ADMIN_PASSWORD=... python3 tests/load/load.py
 Options (environment): LEVELS (concurrent users per step, default "1,5,10,25,50,100"),
 SECONDS (per step, default 60), BUYERS (fraction of loops that buy, default 0.2),
-SETUP=0 (skip the admin setup: payment method, store launch, products).
+SETUP=0 (skip the admin setup: payment method, store launch, products),
+WOO=0 or 1 (default: 1 when the site's Store API answers). WOO=0 is plain
+WordPress: browse only, over home, a post, a page, search, a
+category and the feed; no setup and no buyers).
 
 Each user loops until the step ends. A browse loop is one fresh GET (home, shop,
 or a product page). A buy loop is three Store API requests: cart, add item,
@@ -110,7 +113,9 @@ def user(stop, prods, rec):
             rec("checkout", k, ok)
         else:
             p = random.choice(prods)
-            path = random.choice(["/", "/?post_type=product", urllib.parse.urlparse(p["permalink"]).path + ("?" + urllib.parse.urlparse(p["permalink"]).query if urllib.parse.urlparse(p["permalink"]).query else "")])
+            u = urllib.parse.urlparse(p["permalink"])
+            own = u.path + ("?" + u.query if u.query else "")
+            path = own if not WOO else random.choice(["/", "/?post_type=product", own])
             rec("browse", req(o, nc(path)))
 
 
@@ -154,15 +159,30 @@ def step(n, prods):
     return out
 
 
+def has_woo():
+    r = req(opener(), nc("/?rest_route=/wc/store/v1/products&per_page=1"))
+    return r["code"] == 200
+
+
+# WOO=1 or 0 forces the mode; unset, the site decides (its Store API answers or not).
+WOO = {"1": True, "0": False}.get(os.environ.get("WOO", ""), None)
+PLAIN = ["/", "/?p=1", "/?page_id=2", "/?s=hello", "/?cat=1", "/?feed=rss2"]
+
 if __name__ == "__main__":
-    if os.environ.get("SETUP", "1") != "0":
-        setup()
-    prods = products()
-    if not prods:
-        sys.exit("no purchasable products")
+    if WOO is None:
+        WOO = has_woo()
+    if WOO:
+        if os.environ.get("SETUP", "1") != "0":
+            setup()
+        prods = products()
+        if not prods:
+            sys.exit("no purchasable products")
+    else:
+        BUYERS = 0.0
+        prods = [{"permalink": B + p} for p in PLAIN]
     allsteps = []
     for n in LEVELS:
         s = step(n, prods)
         allsteps.append(s)
         print(json.dumps(s), flush=True)
-    print(json.dumps({"target": B, "levels": LEVELS, "seconds_per_level": SECONDS, "buyers": BUYERS, "steps": allsteps}))
+    print(json.dumps({"target": B, "woo": WOO, "levels": LEVELS, "seconds_per_level": SECONDS, "buyers": BUYERS, "steps": allsteps}))

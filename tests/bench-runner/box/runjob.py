@@ -122,11 +122,14 @@ def run_load(t, load):
     try:
         p = subprocess.run([sys.executable, os.path.join(repo, "tests/load/load.py")], env=env, capture_output=True, text=True,
                            timeout=len(levels.split(",")) * (secs + 120) + 300)
-        last = [l for l in p.stdout.splitlines() if l.startswith("{")]
-        if last:
-            r["load"] = json.loads(last[-1])
+        lines = [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
+        final = [l for l in lines if "steps" in l]
+        if final:
+            r["load"] = final[-1]
         else:
-            r["error"] = "load.py: " + (p.stderr or p.stdout)[-300:]
+            # load.py stopped before its summary: keep every step it finished.
+            r["load"] = {"steps": [l for l in lines if "users" in l], "incomplete": True}
+            r["error"] = "load.py exit %s before the summary: %s" % (p.returncode, (p.stderr or "")[-400:])
     except subprocess.TimeoutExpired:
         r["error"] = "load.py did not finish"
     r["runner_seconds"] = round(time.time() - t0, 1)
