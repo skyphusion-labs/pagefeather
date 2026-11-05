@@ -406,10 +406,20 @@ add_filter(
 			$r   = R2_Uploads_Stream::call( array( 'op' => 'reserve', 'key' => $key ) );
 			if ( ! $r ) {
 				// No reservation in the Worker (approach C1: one container with a
-				// local database). add_option() is one INSERT on a unique key, so
-				// only one request gets the name. The file must not exist in R2.
+				// local database). One INSERT IGNORE on the unique option_name:
+				// the database lets exactly one request insert the row. Not
+				// add_option(): it checks get_option() first (with a persistent
+				// object cache, a shared and possibly stale answer), then runs
+				// INSERT ... ON DUPLICATE KEY UPDATE, which reports a change on a
+				// duplicate too. With the APCu cache, 8 parallel uploads of one
+				// name gave 7 files in 2 of 5 runs of tests/break.py (2026-11-05).
+				// The file must also not exist in R2.
+				global $wpdb;
 				$h = R2_Uploads_Stream::call( array( 'op' => 'head', 'key' => $key ) );
-				$r = array( 'reserved' => ( ! $h || empty( $h['found'] ) ) && add_option( '_r2_reserved_' . md5( $key ), time(), '', false ) );
+				$r = array(
+					'reserved' => ( ! $h || empty( $h['found'] ) )
+						&& 1 === $wpdb->query( $wpdb->prepare( "INSERT IGNORE INTO `$wpdb->options` (`option_name`, `option_value`, `autoload`) VALUES (%s, %s, 'off')", '_r2_reserved_' . md5( $key ), (string) time() ) ),
+				);
 			}
 			if ( $r['reserved'] ) {
 				return $name;
