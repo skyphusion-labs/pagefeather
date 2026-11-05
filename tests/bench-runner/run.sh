@@ -17,6 +17,9 @@
 # The job bucket and its key come from tests/bench-runner/terraform outputs
 # (its state is in R2: the same AWS_* key).
 #
+# KIND=latency: the arguments are DIRECT_URL DISPATCHED_URL, and the runner
+# runs tests/wfp/latency.py (issue #35: the dispatch hop; N default 100).
+#
 # Options: N (fresh renders per page, default 10), BRANCH (the runner pulls it
 # before the job; default: the runner's own default), WAIT (seconds to wait for
 # the result, default 3600), DRY_RUN=1 (print the job with the secrets hidden;
@@ -29,8 +32,15 @@ HERE="$ROOT/tests/bench-runner"
 DT="$ROOT/deploy/terraform"
 RT="$HERE/terraform"
 [ $# -ge 1 ] || { sed -n '2,26p' "$0"; exit 2; }
-N=${N:-10}
-[[ "$N" =~ ^[1-9][0-9]?$|^100$ ]] || { echo "N must be 1 to 100" >&2; exit 2; }
+KIND=${KIND:-bench}
+if [ "$KIND" = latency ]; then
+  N=${N:-100}
+  [[ "$N" =~ ^[1-9][0-9]{0,2}$|^1000$ ]] || { echo "N must be 1 to 1000" >&2; exit 2; }
+  [ $# -eq 2 ] || { echo "KIND=latency takes DIRECT_URL DISPATCHED_URL" >&2; exit 2; }
+else
+  N=${N:-10}
+  [[ "$N" =~ ^[1-9][0-9]?$|^100$ ]] || { echo "N must be 1 to 100" >&2; exit 2; }
+fi
 umask 077
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 JOB_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
@@ -78,7 +88,10 @@ subdomain() {
     | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["subdomain"])'
 }
 
-# 1. The job: one target per site.
+# 1. The job: a latency pair, or one target per site.
+if [ "$KIND" = latency ]; then
+  python3 "$HERE/job.py" latency "$JOB_ID" "${BRANCH:-}" "$N" "$1" "$2" > "$W/job.json"
+else
 for arg in "$@"; do
   name=${arg%%=*}; url=""
   [ "$arg" = "$name" ] || url=${arg#*=}
@@ -93,6 +106,7 @@ for arg in "$@"; do
   echo "target $name: $url"
 done
 python3 "$HERE/job.py" job "$JOB_ID" "${BRANCH:-}" "$N" "$W/targets.jsonl" > "$W/job.json"
+fi
 
 if [ "${DRY_RUN:-0}" = 1 ]; then
   echo "DRY_RUN: job $JOB_ID (secrets hidden), not uploaded:"
