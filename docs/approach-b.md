@@ -264,6 +264,58 @@ Also found:
 - No plugin can send mail. Contact Form 7 accepts the form and returns `mail_failed`.
 - `build.sh` kept an existing `build/opcache.zip`, so a new `site.zip` could run with OPcache files compiled from another tree (an A build ran B's compiled `wp-content/db.php`). Every measured deploy ran `opcache.sh` after `build.sh`, which writes a new zip, so no result was affected. `build.sh` now always starts with an empty zip.
 
+### 8i. PHP in a Durable Object (issue #28). Measured locally 2026-11-05. Not deployed.
+
+**Why.** On Workers Free a Worker request stops at about 2 s of CPU (8, 8e). A cold WordPress page needs about 1.2 s and an admin page more, so the plugin suite passed 0 of 18 on Free (8h). A Durable Object request has its own CPU budget. HostlessWP runs PHP in a Durable Object on Free and passed `e2e.sh` 17 of 17 on our Free test account (docs/approach-a.md). This mode uses the same design. Credit: docs/prior-art.md.
+
+**Design.** `PHP_IN_DO=on` turns it on. Without the variable, B does not change: the Worker runs PHP as before.
+
+- The Worker keeps static assets, R2 uploads (`serveUpload`), the body size checks, XML-RPC off, the spike token check and the page cache (Workers Cache in front of the Worker). It sends every other request to the `PhpRuntime` object, with the same URL, so WordPress sees the public origin.
+- The object runs the same code as the Worker did: `boot`, `handle`, `withPhp` and the D1 bridge `handleMessage`. It reads `DB`, `MEDIA` and `IMAGES` from its own `env`. The bindings come from the same wrangler env, because the object is a class in the same Worker script. PHP sees no change.
+- The object cannot purge the page cache (it has no `ctx.cache`). When the Edge Cache mu-plugin asks for a purge, the object sets `x-php-purge: 1`. The Worker removes that header, purges with the same rate limit as before, and sets `x-cache-purge` (`scheduled`, or `no-cache-api` where Workers Cache is off).
+- `PHP_IN_DO=on` without the `PHP_RUNTIME` binding returns 500 on every request. It does not fall back to PHP in the Worker, because that fallback would hide the misconfiguration.
+- Responses from the object carry `x-php-object` (the object name) and `x-object-ms` (Worker to object and back, PHP included).
+- `/_d1ping` is answered by the object, so it measures D1 from where PHP runs.
+
+**Decisions.**
+
+| Question | Decision | Why |
+| --- | --- | --- |
+| How many objects | One by default (`PHP_DO_POOL=1`, object `php-0`). `PHP_DO_POOL=2` picks one at random, as HostlessWP does with 2. Spike endpoints (`/_install`, `/_opcache-dump`, `/_last`, `/_mem`) always go to `php-0`. | One object keeps one warm runtime and one warm OPcache. B already ran one PHP request at a time per isolate. A pool adds parallel PHP but also adds cold starts. Measure before raising it. |
+| Where | Location hint `PHP_LOCATION=enam` (Eastern North America). The Worker has no placement. | D1's primary is near Chicago (8g). A hint applies only when the object is made, and objects do not move after that ([data location](https://developers.cloudflare.com/durable-objects/reference/data-location/), read 2026-11-05). The hint list has no finer region than `enam`, so the object can be in IAD (39 ms per D1 statement in 8g) and not ORD (14 to 29 ms). The Worker makes no D1 calls in this mode, so it can run near the visitor. |
+| PHP lock | `withPhp` stays as it is, inside the object. | PHP is not re-entrant. An object can get a new request while PHP waits for D1, so one object can still run two requests at once without the lock. The lock and the runtime are module globals, so objects in one isolate share both. Locally, workerd ran `php-0` and `php-1` in one isolate: the first request to `php-1` did not boot PHP. |
+| Cold start and keep-warm | No keep-warm. | An idle object is evicted from memory after 70 to 140 s ([lifecycle](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/), read 2026-11-05). A cold boot then costs about 1.2 s of CPU (8e), which is in the object's budget. Logged-out pages come from the page cache and do not wake the object. If the deploy shows many cold boots (`x-boot: 1`), the next step is a Cron Trigger that calls the object (Free allows 5 Cron Triggers per account, [Workers limits](https://developers.cloudflare.com/workers/platform/limits/), read 2026-11-05). |
+| Workers Paid | Not used there. | B in the Worker passes 18 of 18 on Paid (8h). The object adds a hop and a second bill. HostlessWP also runs PHP in the Worker on Paid. |
+
+**Cost.** Source: [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/) and [limits](https://developers.cloudflare.com/durable-objects/platform/limits/), read 2026-11-05.
+
+- Each request that goes to PHP is one Worker request and one Durable Object request. A page cache hit is neither, because Workers Cache answers before the Worker runs.
+- Free: Durable Objects with the SQLite backend only (so the migration uses `new_sqlite_classes`). Per day: 100,000 requests and 13,000 GB-s of duration. Over a limit, "further operations of that type will fail with an error". The limits reset at 00:00 UTC.
+- Paid: 1 million requests and 400,000 GB-s a month are included. Then $0.15 a million requests and $12.50 a million GB-s.
+- Duration is wall time at 128 MB, "while the Durable Object is actively running or is idle in memory but unable to hibernate". An object that can hibernate is not billed while idle. This object has no WebSockets and keeps no timer after a request, so it should not be billed while idle. Not measured.
+- Example: a page that takes 1 s of wall time in the object costs 0.128 GB-s. 13,000 GB-s a day is about 100,000 such pages, so the request limit and the duration limit are close to each other on Free.
+- CPU: the limits page gives "30 seconds (default)" per request for SQLite-backed objects. Its FAQ also says objects "have the same per invocation CPU limits as any Workers do", and the Workers limits page gives Free 10 ms. The two statements do not agree. HostlessWP's 17 of 17 on our Free account shows that an object request there gets more than the Worker's 2 s. Our own number comes from the deploy.
+
+**Measured locally** (wrangler 4.107.0, `wrangler dev`, 2026-11-05):
+
+| Run | Command | Result |
+| --- | --- | --- |
+| OPcache files built through the object | `DEV_ENV=do-local ./opcache.sh` | Pass, 601 compiled files |
+| e2e through the object | `DEV_ENV=do-local ./run.sh _ping`, then `./e2e.sh` | **17 of 17**, exit 0. Every response had `x-php-object: php-0`. |
+| e2e, pool of 2 | `wrangler dev --env do-local --var PHP_DO_POOL:2`, then `./e2e.sh` | 17 of 17, requests on `php-0` and `php-1` |
+| Purge crosses from the object | The REST post create in `e2e.sh` | `x-cache-purge: no-cache-api` (local has no cache API); `x-php-purge` does not reach the client |
+| 12 parallel uncached GETs | `curl` of `/?p=1&nocache=N`, 12 at once | 12 of 12 were 200 |
+| Mode on, binding missing (control) | `wrangler dev --var PHP_IN_DO:on` (default env) | 500 on every request; `e2e.sh` fails |
+| Default env (no change) | `./run.sh _ping`, then `./e2e.sh` | 17 of 17 |
+
+Time in PHP (`x-php-ms`, wall, local) is the same in the object and in the Worker: cold home page 470 to 507 ms in the object and 544 ms in the Worker; warm home page 91 to 109 ms and 105 ms; `post-new.php` 230 to 251 ms and 252 ms. The hop from the Worker to the object added about 1 ms warm (`x-object-ms` 111 against `x-php-ms` 110). `wrangler dev` does not report CPU time, so the local numbers are wall time only.
+
+The 72 `ws.removeListener is not a function` errors in the log of the first `opcache.sh` run are not from this mode. The default env shows the same 72 on a new database. They come from PHP's socket code during the install (PHP has no network, issue #26).
+
+**Not measured yet:** all of this on Cloudflare. That includes CPU per request in the object on Free, the plugin suite on Free through the object, cold boots and evictions, where `enam` puts the object and its D1 latency, the page cache purge from the object, duration billing while idle, and the Images binding inside the object (R2 is not on for the Free test account, so `MEDIA` is not bound in `env.do-free`). Approach A with the object and the checkout Container with the object were not tried.
+
+**Deploy:** `[env.do-free]` in `wrangler.toml` (Worker `wp-do-free`, its own D1 database, migration `v1` for `PhpRuntime`).
+
 ### 9. Memory: what it took to fit in 128 MB
 
 | Change | Effect, measured locally |

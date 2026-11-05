@@ -4,6 +4,7 @@ import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
 import { inflateSync } from 'fflate';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
+import { DurableObject } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
 // Compiled PHP (OPcache file cache) made by opcache.sh with this same PHP build.
 import opcacheZip from './build/opcache.zip';
@@ -417,6 +418,18 @@ let purgeRequested = false;
 // with stale-while-revalidate limits staleness when a purge is refused.
 const PURGE_GAP_MS = 15000;
 let lastPurge = 0;
+function schedulePurge(ctx) {
+	// A purge already scheduled for later covers this change too.
+	const wait = Math.max(0, lastPurge + PURGE_GAP_MS - Date.now());
+	if (lastPurge <= Date.now()) {
+		lastPurge = Date.now() + wait;
+		ctx.waitUntil(
+			new Promise((ok) => setTimeout(ok, wait))
+				.then(() => ctx.cache.purge({ tags: ['wp-pages'] }))
+				.catch((e) => console.log('cache purge failed', String(e))),
+		);
+	}
+}
 
 // Page cache (Workers Cache). A response is cacheable only for a logged-out
 // GET of a public page. Cookie is not in the Workers Cache key, so Vary: Cookie
@@ -626,6 +639,82 @@ function checkoutContainer(env) {
 	return getContainer(env.WOO_CHECKOUT, env.CHECKOUT_INSTANCE || 'checkout');
 }
 
+// Spike: time N sequential D1 statements from where this code runs.
+async function d1ping(req, env, url, ctx) {
+	const n = Math.min(50, Number(url.searchParams.get('n') || 20));
+	const ms = [];
+	// Approach A: the same 20 reads through Hyperdrive (the first one opens the connection).
+	let connectMs = null;
+	for (let i = 0; i < n; i++) {
+		const t = Date.now();
+		if (dbHandler) {
+			const r = await dbHandler.query(env, { mysql: "SELECT option_value FROM wp_options WHERE option_name = 'siteurl'" });
+			if (!r.ok) return Response.json({ error: r.error }, { status: 500 });
+		} else await env.DB.prepare('SELECT option_value FROM wp_options WHERE option_name = ?').bind('siteurl').first();
+		if (i === 0 && dbHandler) connectMs = Date.now() - t;
+		else ms.push(Date.now() - t);
+	}
+	if (dbHandler) ctx.waitUntil(dbHandler.end());
+	const n2 = ms.length;
+	ms.sort((a, b) => a - b);
+	return Response.json({ n: n2, first: connectMs, min: ms[0], median: ms[n2 >> 1], max: ms[n2 - 1], colo: req.cf && req.cf.colo });
+}
+
+// PHP in a Durable Object (issue #28). The design is from HostlessWP
+// (github.com/hostlesswp/hostlesswp, GPL-2.0-or-later, runtime/src/index.js,
+// PhpRuntime and render()). On Workers Free a Worker request stops at about 2 s
+// of CPU, less than a cold WordPress start. A Durable Object request may use
+// 30 s. With PHP_IN_DO=on the Worker keeps static assets, R2 uploads and the
+// page cache, and sends every request that needs PHP to this object. The object
+// runs the same code as the Worker (handle, withPhp, handleMessage), with its
+// own bindings (DB, MEDIA, IMAGES) from the same wrangler env.
+const PURGE_HEADER = 'x-php-purge';
+export class PhpRuntime extends DurableObject {
+	async fetch(req) {
+		const env = this.env;
+		ENV = env;
+		const url = new URL(req.url);
+		if (dbHandler) dbHandler.reset();
+		// The Worker checked the spike token already. Checked again: the object
+		// trusts nothing it did not check itself.
+		const spikeOk = !env.SPIKE_TOKEN || req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
+		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
+		const maxBody = env.MEDIA && isMediaUpload(req, url) ? Number(env.MAX_UPLOAD_BYTES || MAX_UPLOAD_BYTES) : Number(env.MAX_BODY_BYTES || MAX_BODY_BYTES);
+		const ctx = { inObject: true, waitUntil: (p) => this.ctx.waitUntil(p) };
+		if (url.pathname === '/_d1ping') return d1ping(req, env, url, ctx);
+		return withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx));
+	}
+}
+
+// Which object serves a request. PHP_DO_POOL objects (default 1) share the
+// load; each boots its own PHP. Spike endpoints (/_install, /_opcache-dump,
+// /_last, /_mem) always go to php-0, so they see the runtime the tests used.
+function phpObjectName(env, url) {
+	const pool = Math.max(1, Math.floor(Number(env.PHP_DO_POOL || 1)));
+	if (pool === 1 || url.pathname.startsWith('/_')) return 'php-0';
+	return 'php-' + Math.floor(Math.random() * pool);
+}
+
+async function toPhpObject(req, env, url, ctx) {
+	const name = phpObjectName(env, url);
+	// The hint applies only when the object is made. D1's primary is in the
+	// Chicago area; "enam" is Eastern North America.
+	const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(name), env.PHP_LOCATION ? { locationHint: env.PHP_LOCATION } : undefined);
+	const t0 = Date.now();
+	const r = await stub.fetch(req);
+	const out = new Response(r.body, r);
+	if (out.headers.has(PURGE_HEADER)) {
+		out.headers.delete(PURGE_HEADER);
+		if (ctx.cache) schedulePurge(ctx);
+		// So a test can see that the purge request crossed from the object.
+		out.headers.set('x-cache-purge', ctx.cache ? 'scheduled' : 'no-cache-api');
+	}
+	out.headers.set('x-php-object', name);
+	// Wall time from the Worker to the object and back, PHP time included.
+	out.headers.set('x-object-ms', String(Date.now() - t0));
+	return out;
+}
+
 const INSTALL = `<?php
 define( 'WP_INSTALLING', true );
 require '/wordpress/wp-load.php';
@@ -654,26 +743,12 @@ export default {
 		if (url.pathname === '/xmlrpc.php' && env.XMLRPC !== 'on') return new Response('XML-RPC is off', { status: 403 });
 		const maxBody = env.MEDIA && isMediaUpload(req, url) ? Number(env.MAX_UPLOAD_BYTES || MAX_UPLOAD_BYTES) : Number(env.MAX_BODY_BYTES || MAX_BODY_BYTES);
 		if (Number(req.headers.get('content-length') || 0) > maxBody) return new Response('request body too large', { status: 413 });
+		// PHP in a Durable Object (PHP_IN_DO=on, issue #28): every request that
+		// needs PHP goes to the object, including /_d1ping (D1 as PHP sees it).
+		// Without the binding, fail: a silent fallback would run PHP in the Worker.
+		if (env.PHP_IN_DO === 'on') return env.PHP_RUNTIME ? toPhpObject(req, env, url, ctx) : new Response('PHP_IN_DO=on needs the PHP_RUNTIME Durable Object binding', { status: 500 });
 		// Spike: time N sequential D1 statements from where this Worker runs.
-		if (url.pathname === '/_d1ping') {
-			const n = Math.min(50, Number(url.searchParams.get('n') || 20));
-			const ms = [];
-			// Approach A: the same 20 reads through Hyperdrive (the first one opens the connection).
-			let connectMs = null;
-			for (let i = 0; i < n; i++) {
-				const t = Date.now();
-				if (dbHandler) {
-					const r = await dbHandler.query(env, { mysql: "SELECT option_value FROM wp_options WHERE option_name = 'siteurl'" });
-					if (!r.ok) return Response.json({ error: r.error }, { status: 500 });
-				} else await env.DB.prepare('SELECT option_value FROM wp_options WHERE option_name = ?').bind('siteurl').first();
-				if (i === 0 && dbHandler) connectMs = Date.now() - t;
-				else ms.push(Date.now() - t);
-			}
-			if (dbHandler) ctx.waitUntil(dbHandler.end());
-			const n2 = ms.length;
-			ms.sort((a, b) => a - b);
-			return Response.json({ n: n2, first: connectMs, min: ms[0], median: ms[n2 >> 1], max: ms[n2 - 1], colo: req.cf && req.cf.colo });
-		}
+		if (url.pathname === '/_d1ping') return d1ping(req, env, url, ctx);
 		// Spike: stop the checkout Container, so the next request starts the current image.
 		if (env.WOO_CHECKOUT && url.pathname === '/_container-stop') {
 			const name = url.searchParams.get('name');
@@ -802,19 +877,10 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const r = await handler.request({ url: url.pathname + url.search, method: req.method, headers, body });
 			// Approach A: close this request's MySQL connection after the response.
 			if (dbHandler) (ctx ? ctx.waitUntil(dbHandler.end()) : dbHandler.end());
-			if (ctx && ctx.cache && purgeRequested) {
-				// A purge already scheduled for later covers this change too.
-				const wait = Math.max(0, lastPurge + PURGE_GAP_MS - Date.now());
-				if (lastPurge <= Date.now()) {
-					lastPurge = Date.now() + wait;
-					ctx.waitUntil(
-						new Promise((ok) => setTimeout(ok, wait))
-							.then(() => ctx.cache.purge({ tags: ['wp-pages'] }))
-							.catch((e) => console.log('cache purge failed', String(e))),
-					);
-				}
-			}
+			if (ctx && ctx.cache && purgeRequested) schedulePurge(ctx);
 			const out = new Headers();
+			// In the PHP object there is no ctx.cache: the Worker purges (PURGE_HEADER).
+			if (ctx && ctx.inObject && purgeRequested) out.set(PURGE_HEADER, '1');
 			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
 			const d = delta();
 			pageCacheHeaders(req, url, r, out, env);

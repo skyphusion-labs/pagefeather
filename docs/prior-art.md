@@ -22,6 +22,8 @@ Read again on 2026-11-05 at commit `739e8e7`. HostlessWP had already solved, and
 
 We measured HostlessWP as it is, with its own CLI: [docs/approach-a.md](approach-a.md).
 
+Approach B now uses HostlessWP's Workers Free design (issue #28, [approach-b.md](approach-b.md) 8i). With `PHP_IN_DO=on`, PHP runs in a `PhpRuntime` Durable Object with a location hint near the database. The Worker answers static files, uploads and the page cache, and forwards the rest to the object. The class name, the `PHP_IN_DO` switch, the location hint and the small pool of objects come from HostlessWP `runtime/src/index.js` (`PhpRuntime`, `render()`) and `lib/cloudflare.mjs` at `739e8e7`, GPL-2.0-or-later. Our object runs approach B's own runtime and D1 bridge, not HostlessWP's engine. Thank you, HostlessWP.
+
 ## EmDash
 
 Cloudflare released EmDash 0.1 on 2026-04-01. It is a new CMS in TypeScript on Astro that runs on Workers. It is **not WordPress**. It imports WordPress content from a WXR export. It is here because people compare it with WordPress on Cloudflare.

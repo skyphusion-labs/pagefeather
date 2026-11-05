@@ -55,6 +55,10 @@ Two uploads with the same name on two isolates would overwrite each other. The p
 
 `[cache] enabled = true` turns on Workers Cache in front of the Worker. `index.js` marks logged-out public pages cacheable for 10 minutes (`PAGE_CACHE_TTL`) with `Cache-Tag: wp-pages` and `Vary: Cookie`. The mu-plugin `php/edge-cache.php` purges the tag when content changes. Add `?nocache` to a URL to skip the cache.
 
+## PHP in a Durable Object (Workers Free)
+
+`PHP_IN_DO=on` runs PHP in the `PhpRuntime` Durable Object (binding `PHP_RUNTIME`), not in the Worker. A Worker request on Free stops at about 2 s of CPU; an object request may use 30 s. The Worker keeps static assets, R2 uploads and the page cache. The design is from HostlessWP. Local check: `DEV_ENV=do-local ./opcache.sh`, then `DEV_ENV=do-local ./run.sh` and `./e2e.sh`. Deploy env: `do-free`. See `docs/approach-b.md` 8i.
+
 ## WooCommerce
 
 WooCommerce is in the build (`WOO_VERSION` in `build.sh`). `tests/woo.py` runs a store and a guest checkout. Activate it with `POST /_activate?plugin=woocommerce/woocommerce.php` (spike token). On Paid, checkout exceeds the isolate memory limit; see `docs/approach-b.md` 8f.
