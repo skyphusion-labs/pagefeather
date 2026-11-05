@@ -10,6 +10,8 @@
 #               SPIKE_TOKEN, ADMIN_PASSWORD)
 #   c1_wait     wait for the rollout, stop the container once, wait for the
 #               first 200 (sets FIRST_START_S)
+#   c1_check    the running container has this deploy's settings: the object
+#               cache drop-in is there exactly when OBJECT_CACHE=apcu
 #   c1_measure  e2e.sh, the page benchmark, one cold start -> deploy/results/
 # The steps use ROOT, TF, NAME, ACCOUNT_ID, LOCATION, log and out from deploy.sh,
 # and share the variables they set.
@@ -114,6 +116,32 @@ print("no container was running: nothing to stop" if d.get("skipped") else "stop
   echo "first answer 200 after $FIRST_START_S s"
 }
 
+# A container can run the new image with the environment of the Worker version
+# before the deploy (seen 2026-11-05 on wp-c1-perf: APCu loaded, OBJECT_CACHE
+# missing, so no drop-in, and the query count did not move). _stats.php reports
+# drop_in; it must match OBJECT_CACHE. If not, stop the container once more and
+# check the next one. Still wrong: fail, so no measurement runs on the wrong
+# settings.
+c1_check() {
+  local want got try
+  want=false; [ "$OBJECT_CACHE" = apcu ] && want=true
+  for try in 1 2; do
+    got=$(curl -s -m 60 -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_stats.php?what=info" \
+      | python3 -c 'import json, sys
+try:
+    print(str(json.load(sys.stdin).get("drop_in")).lower())
+except ValueError:
+    print("unknown")') || got=unknown
+    [ "$got" = "$want" ] && { echo "container settings ok (object cache drop-in: $got)"; return 0; }
+    echo "container has object cache drop-in $got, want $want (OBJECT_CACHE=$OBJECT_CACHE): stop it once more" >&2
+    [ "$try" = 2 ] && break
+    curl -s -m 60 -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_store-stop" > /dev/null || true
+    START_TIMEOUT=300 c1_up > /dev/null || return 1
+  done
+  echo "the container does not have this deploy's settings" >&2
+  return 1
+}
+
 # e2e.sh, uncached page times, then one cold start: stop the container and time
 # until a new container restored the database and answers. _boot.txt holds an
 # id that each container start writes, so a new id proves a new container.
@@ -147,6 +175,7 @@ c1_main() {
   c1_config
   c1_deploy
   c1_wait
+  c1_check
   [ "${BENCH:-1}" = 0 ] || c1_measure
   echo "$URL  (admin; password: cd deploy/terraform && terraform workspace select $NAME && terraform output -raw admin_password)"
 }
