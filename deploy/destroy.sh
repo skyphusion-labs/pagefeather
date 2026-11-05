@@ -12,6 +12,12 @@ TF="$ROOT/deploy/terraform"
 APP="$ROOT/spikes/b2-wordpress"
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}" "${ACCOUNT_ID:?set ACCOUNT_ID}" "${NAME:?set NAME}"
 export CLOUDFLARE_ACCOUNT_ID=$ACCOUNT_ID
+# Variant c1 (Container) has its own steps: container, Worker, buckets.
+VARIANT=$(sed -n 's/^variant *= *"\(.*\)"$/\1/p' "$TF/sites/$NAME.tfvars" 2>/dev/null || true)
+if [ "$VARIANT" = c1 ]; then
+  . "$ROOT/deploy/variants/c1-destroy.sh"
+  exit 0
+fi
 CONF="$APP/wrangler.deploy.$NAME.toml"
 [ -f "$CONF" ] && (cd "$APP" && npx wrangler delete --config "$CONF" --force) || echo "no Wrangler config for $NAME; Worker not removed"
 [ -f "$TF/sites/$NAME.tfvars" ] || { echo "no sites/$NAME.tfvars: nothing in Terraform for $NAME"; exit 1; }

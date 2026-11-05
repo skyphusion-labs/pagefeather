@@ -22,6 +22,78 @@ At the end the script prints the site address, the D1 time per statement, the `e
 
 The Worker serves static files and the page cache. Every request that needs PHP goes to one Durable Object, which runs WordPress in PHP (WebAssembly) and talks to D1. This runs on Workers Free: the Worker uses 1 to 4 ms of CPU per request (the Free limit is 10 ms), and the object has the CPU for PHP. Measured on 2026-11-05 on a Free account; see [docs/approach-b.md](../docs/approach-b.md) section 8i.
 
+## Variant `c1`: WordPress and WooCommerce in a Container (Workers Paid only)
+
+```sh
+export CLOUDFLARE_API_TOKEN=...   # see "Token for c1" below
+export ACCOUNT_ID=...             # an account on Workers Paid
+VARIANT=c1 NAME=my-shop ./deploy/deploy.sh
+```
+
+Containers are on Workers Paid only. On Workers Free the deploy fails. The code is `spikes/c1-woo-container`; [docs/approach-c1.md](../docs/approach-c1.md) explains it and has the measurements.
+
+| Part | Made by | Where |
+| --- | --- | --- |
+| R2 bucket `<name>-db` (the Litestream replica of the SQLite file) | Terraform | `deploy/terraform/c1.tf`. Location hint `LOCATION`. |
+| R2 bucket `<name>-media` (uploads) | Terraform | `deploy/terraform/main.tf`. Always made for c1. |
+| R2 key for Litestream: object read and write on `<name>-db` only | Terraform (`cloudflare_account_token`) | `deploy/terraform/c1.tf`. The S3 access key id is the token id; the secret is the SHA-256 of the token value. |
+| Secrets (salt, admin password, ops token) | Terraform (`random_password`) | Terraform state. Sent with `wrangler deploy --secrets-file`, in the same version as the code. |
+| Worker, the container application `<name>-store` and its Durable Object | Wrangler | `spikes/c1-woo-container`, config `wrangler.deploy.<name>.toml` (written by `deploy/variants/c1-config.sh`) |
+| WordPress and WooCommerce install | The first container | `php/install.php`, when the replica bucket is empty |
+
+There is no D1 database for c1. WordPress uses SQLite on the container disk, and Litestream copies every change to `<name>-db` (1 s interval). The container has no key for the media bucket: the Worker serves and writes uploads through its R2 binding.
+
+What `deploy.sh` does for c1 (`deploy/variants/c1.sh`):
+
+1. Terraform: the buckets, the Litestream key and the secrets.
+2. Build the image tree (`spikes/c1-woo-container/build.sh`).
+3. Write the Wrangler config from the Terraform outputs. `PUBLIC_HOST` is `<name>.<subdomain>.workers.dev`; the script reads the subdomain from the API before the deploy, because WordPress uses it as its address.
+4. `wrangler deploy --secrets-file ... --containers-rollout immediate`. Wrangler builds the image with Docker, so Docker must run on the machine.
+5. Wait `ROLLOUT_WAIT` (60 s), then stop the container once (`POST /_store-stop`). A container that starts within about a minute of a deploy can run the old image; the next request starts one from the new image. On a new site there is no container yet, and the stop does nothing.
+6. Wait for `GET /` to answer 200 (`first_start_s`). On a new site this includes the install.
+7. `e2e.sh`, `tests/a/bench.py`, then one cold start: stop the container and time until a new container (a new id in `/_boot.txt`) restored the database from R2 and answers `GET /` (`cold_start_s`).
+
+### c1 options
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `INSTANCE_TYPE` | `standard-1` | Container instance type. `standard-1` (1/2 vCPU, 4 GiB) was faster than `basic` under load (docs/approach-c1.md). |
+| `PHP_WORKERS` | 2 on `basic`, 4 on `standard-1`, 8 on `standard-2` | PHP processes, 256 MB each. `basic` (1 GiB) dropped a connection with 4. |
+| `IDLE_SECONDS` | `900` | The container stops itself after this many seconds with no request (see below). |
+| `PUBLIC_HOST` | `<name>.<subdomain>.workers.dev` | The address WordPress uses |
+| `ROLLOUT_WAIT` | `60` | Seconds to wait after the deploy before the one stop |
+| `START_TIMEOUT` | `900` | Seconds to wait for the first 200 |
+
+### How the container sleeps
+
+The container disk is lost when the container stops. The next request starts a new container, which restores the database from `<name>-db` (`litestream restore`), then serves.
+
+The `sleepAfter` of the Container class did not stop the container (measured 2026-11-04, docs/approach-c1.md). So the container stops itself: every request except `/ping` and `/_boot.txt` marks the time, and a loop in `container/entrypoint.sh` checks once a minute. After `IDLE_SECONDS` with no request it sends SIGTERM to Litestream, which finishes its sync, and the container exits. Platform health checks hit `/ping`, so they do not keep it awake.
+
+### What c1 costs
+
+From [Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/), read 2026-11-05. Memory and disk bill for the provisioned size of the instance type while the container runs; CPU bills only while busy.
+
+| | Included in Workers Paid each month | Then |
+| --- | --- | --- |
+| Memory | 25 GiB-hours | $0.0000025 per GiB-second |
+| CPU | 375 vCPU-minutes | $0.000020 per vCPU-second |
+| Disk | 200 GB-hours | $0.00000007 per GB-second |
+
+`standard-1` is 1/2 vCPU, 4 GiB memory, 8 GB disk. The 25 included GiB-hours are about 6 awake hours of `standard-1` a month (about 25 of `basic`, 1 GiB). After that, an awake `standard-1` is about $0.038 an hour for memory and disk ($0.036 + $0.002), about $27 for a month awake all the time, plus CPU while busy. A site that sleeps (`IDLE_SECONDS`) bills only for its awake hours. R2 storage and operations for the two buckets bill as R2.
+
+### Token for c1
+
+The token in `CLOUDFLARE_API_TOKEN` must be able to: deploy Workers (Workers Scripts edit), make Containers and push their image, make R2 buckets (Workers R2 Storage edit), and make an account API token (Account API Tokens edit), because Terraform makes the Litestream key. Without the last one, `terraform apply` fails at `cloudflare_account_token.litestream`.
+
+### Remove a c1 site
+
+```sh
+NAME=my-shop ./deploy/destroy.sh
+```
+
+`destroy.sh` reads the variant from `deploy/terraform/sites/<name>.tfvars` and runs `deploy/variants/c1-destroy.sh`: it deletes the container application `<name>-store`, then the Worker, then empties both buckets (R2 refuses to delete a bucket that has objects), then Terraform deletes the buckets, the Litestream key and the secrets. To empty the media bucket, Terraform first gives the Litestream key that bucket too (`teardown = true`); the Worker and the container are deleted at that point. The database replica and the uploads are deleted. Nothing is kept.
+
 ## Why `LOCATION` matters
 
 `LOCATION` is the location hint for both the D1 primary and the PHP object. The same hint puts them in the same region. Measured on 2026-11-05 (`tests/do/probe`): 14 to 20 ms per D1 statement in the same region, 38 to 60 ms in different regions. A page makes 30 to 70 statements. Pick the region of your readers: `enam` (Eastern North America), `wnam`, `weur`, `eeur`, `apac`, `oc`.
@@ -37,6 +109,7 @@ The hint is not a promise. An `enam` object landed in EWR two times in three and
 | `MEDIA` | `0` | `1` makes an R2 bucket for uploads. Without it, uploads do not persist. R2 must be turned on for the account first. |
 | `BENCH` | `1` | `0` skips the measurements |
 | `N` | `10` | Runs per page in the page benchmark |
+| `VARIANT` | `b-do` | `c1`: the Container on Workers Paid (see above) |
 | `DEPLOY_STATE` | `local` | `r2` keeps Terraform state in an R2 bucket (`STATE_BUCKET`, `STATE_ENDPOINT`, and an R2 key in `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) |
 
 Each `NAME` has its own Terraform workspace, so two sites never share state.
@@ -59,6 +132,6 @@ cd deploy/terraform && terraform workspace select my-site && terraform output -r
 
 ## Not yet in this directory
 
-- Variants: SQLite inside the PHP object (issue #28 follow-up), approach A (MySQL through Hyperdrive), approach B in a plain Worker on Workers Paid, approach C1 (Container). Each is planned as a value of `variant`, not a copy of the scripts.
+- Variants: SQLite inside the PHP object (issue #28 follow-up), approach A (MySQL through Hyperdrive), approach B in a plain Worker on Workers Paid. Each is planned as a value of `variant`, not a copy of the scripts.
 - Plugins and WooCommerce runs (`tests/plugins/plugins.py`, `tests/woo.py`) as part of `deploy.sh`.
 - A custom domain. The site is on `<name>.<subdomain>.workers.dev`.

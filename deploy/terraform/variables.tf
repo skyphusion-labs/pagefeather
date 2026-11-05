@@ -18,12 +18,15 @@ variable "variant" {
             through Hyperdrive (docs/approach-a.md). Workers Paid: on Free the
             Worker stops at the CPU limit. Give mysql_* (deploy/mysql makes a
             box, or use your own MySQL with SSL).
+      c1    WordPress and WooCommerce in one Cloudflare Container, SQLite on the
+            container disk, Litestream to an R2 bucket. Workers Paid only
+            (Containers). See c1.tf and docs/approach-c1.md.
   EOT
   type        = string
   default     = "b-do"
   validation {
-    condition     = contains(["b-do", "a"], var.variant)
-    error_message = "Supported variants: b-do, a."
+    condition     = contains(["b-do", "a", "c1"], var.variant)
+    error_message = "Supported variants: b-do, a, c1."
   }
 }
 
@@ -71,4 +74,10 @@ variable "mysql_password" {
   type      = string
   default   = ""
   sensitive = true
+}
+
+variable "teardown" {
+  description = "destroy.sh only (c1): give the Litestream key the media bucket too, so destroy.sh can empty both buckets before Terraform deletes them."
+  type        = bool
+  default     = false
 }

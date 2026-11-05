@@ -5,7 +5,7 @@ output "location" { value = var.location }
 output "d1_id" { value = one(cloudflare_d1_database.wp[*].id) }
 output "d1_name" { value = one(cloudflare_d1_database.wp[*].name) }
 output "hyperdrive_id" { value = one(cloudflare_hyperdrive_config.wp[*].id) }
-output "media_bucket" { value = var.media ? cloudflare_r2_bucket.media[0].name : "" }
+output "media_bucket" { value = var.media || local.c1 ? cloudflare_r2_bucket.media[0].name : "" }
 
 output "wp_salt" {
   value     = random_password.wp_salt.result

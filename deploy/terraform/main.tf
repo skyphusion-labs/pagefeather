@@ -10,8 +10,9 @@ resource "cloudflare_d1_database" "wp" {
   read_replication      = { mode = "disabled" }
 }
 
+# c1 always has a media bucket: its Worker serves uploads from R2.
 resource "cloudflare_r2_bucket" "media" {
-  count      = var.media ? 1 : 0
+  count      = var.media || local.c1 ? 1 : 0
   account_id = var.account_id
   name       = "${var.name}-media"
 }

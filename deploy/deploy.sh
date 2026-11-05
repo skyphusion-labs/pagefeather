@@ -5,7 +5,8 @@
 #
 # Optional: LOCATION (default enam), MEDIA=1 (R2 media library; R2 must be on),
 # BENCH=0 (skip the measurements), DEPLOY_STATE=r2 (keep Terraform state in an
-# R2 bucket; see README.md).
+# R2 bucket; see README.md), VARIANT (default b-do; c1 is the Container on
+# Workers Paid, see deploy/variants/c1.sh).
 #
 # Steps: Terraform makes the data plane (D1, secrets) -> build -> Wrangler
 # config from the Terraform outputs -> deploy -> secrets -> install ->
@@ -18,10 +19,11 @@ APP="$ROOT/spikes/b2-wordpress"
 export CLOUDFLARE_ACCOUNT_ID=$ACCOUNT_ID
 LOCATION=${LOCATION:-enam}
 MEDIA=${MEDIA:-0}
+VARIANT=${VARIANT:-b-do}
 log() { printf '\n== %s\n' "$*"; }
 
 # 1. Data plane.
-log "terraform: D1 ($LOCATION) and secrets for $NAME"
+log "terraform: data plane ($VARIANT, $LOCATION) and secrets for $NAME"
 if [ "${DEPLOY_STATE:-local}" = r2 ]; then
   : "${STATE_BUCKET:?set STATE_BUCKET}" "${STATE_ENDPOINT:?set STATE_ENDPOINT (https://<account>.r2.cloudflarestorage.com)}"
   cat > "$TF/backend_override.tf" <<EOF
@@ -46,12 +48,18 @@ mkdir -p "$TF/sites"
 cat > "$TF/sites/$NAME.tfvars" <<EOF
 account_id = "$ACCOUNT_ID"
 name       = "$NAME"
+variant    = "$VARIANT"
 location   = "$LOCATION"
 media      = $([ "$MEDIA" = 1 ] && echo true || echo false)
 EOF
 # One workspace (one state) per site: a second NAME never touches the first.
 (cd "$TF" && terraform init -input=false -reconfigure >/dev/null && terraform workspace select -or-create "$NAME" >/dev/null && terraform apply -input=false -auto-approve -var-file="sites/$NAME.tfvars" >/dev/null)
 out() { (cd "$TF" && terraform workspace select "$NAME" >/dev/null && terraform output -raw "$1"); }
+# Variant c1 (Container) has its own build, deploy and measure steps.
+if [ "$VARIANT" = c1 ]; then
+  . "$ROOT/deploy/variants/c1.sh"
+  exit 0
+fi
 D1_ID=$(out d1_id); D1_NAME=$(out d1_name); BUCKET=$(out media_bucket)
 echo "D1 $D1_NAME ($D1_ID)"
 
