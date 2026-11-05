@@ -38,8 +38,14 @@ export class Store extends Container {
 // sends the signal only when this.container.running is true, and it returned
 // with the container still running (measured 2026-11-04). This reports the
 // flag and signals directly; kill=1 uses destroy() (SIGKILL, like a crash).
+// With no container running, a stop has nothing to do: it answers skipped
+// instead of the error from signal() (deploy/variants/c1.sh stops once after
+// each deploy, and on a new site there is no container yet). The same flag
+// once read false for a container that served requests (2026-11-04); then the
+// stop is skipped, as signal() failed before. kill=1 still calls destroy().
 Store.prototype.shutdownNow = async function (kill) {
 	const running = this.ctx.container.running;
+	if (!running && !kill) return { running, kill: false, ok: true, skipped: 'no container running' };
 	try {
 		if (kill) await this.ctx.container.destroy();
 		else this.ctx.container.signal(15);

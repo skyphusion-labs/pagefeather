@@ -97,7 +97,15 @@ c1_up() {
 c1_wait() {
   log "rollout: wait ${ROLLOUT_WAIT:-60} s, then stop the container once"
   sleep "${ROLLOUT_WAIT:-60}"
-  curl -s -m 60 -X POST -H "x-spike-token: $SPIKE_TOKEN" "$URL/_store-stop"; echo
+  # The answer says if a container was running (and was stopped) or not
+  # (skipped). The token goes to curl in a config on a pipe, not in argv.
+  curl -s -m 60 -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_store-stop" \
+    | python3 -c 'import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    d = {}
+print("no container was running: nothing to stop" if d.get("skipped") else "stop: %s" % json.dumps(d))' || true
   log "wait for WordPress"
   FIRST_START_S=$(c1_up)
   echo "first answer 200 after $FIRST_START_S s"
@@ -115,7 +123,7 @@ c1_measure() {
   SPIKE_TOKEN=$SPIKE_TOKEN ADMIN_PASSWORD=$ADMIN_PASSWORD "$ROOT/spikes/b2-wordpress/e2e.sh" "$URL" > "$w/e2e" 2>&1 || e2e_exit=$?
   B=$URL ADMIN_PASSWORD=$ADMIN_PASSWORD N=${N:-10} python3 "$ROOT/tests/a/bench.py" > "$w/bench" 2>&1 || true
   boot0=$(curl -s -m 30 "$URL/_boot.txt" || true)
-  curl -s -m 60 -X POST -H "x-spike-token: $SPIKE_TOKEN" "$URL/_store-stop" > /dev/null || true
+  curl -s -m 60 -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_store-stop" > /dev/null || true
   t0=$SECONDS
   while [ $((SECONDS - t0)) -lt 300 ]; do
     b=$(curl -s -m 120 "$URL/_boot.txt" || true)

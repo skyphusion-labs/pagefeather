@@ -38,7 +38,8 @@ for name, path, logged in PAGES:
         if h.get("x-hostlesswp"):
             j = json.loads(h["x-hostlesswp"]); q.append(j.get("queries")); dbms.append(j.get("dbMs"))
         elif h.get("x-d1-calls"):
-            q.append(int(h["x-d1-calls"])); dbms.append(int(h.get("x-d1-ms") or 0))
+            # C1 sends a query count and no database time: no x-d1-ms is "not measured", not 0 ms.
+            q.append(int(h["x-d1-calls"])); dbms.append(int(h["x-d1-ms"]) if h.get("x-d1-ms") else None)
     med = lambda v: statistics.median(v) if v else None
     out["pages"][name] = {"ok": codes.count(200), "median_s": med(s), "min_s": min(s) if s else None,
                           "max_s": max(s) if s else None, "queries": med([x for x in q if x is not None]),
