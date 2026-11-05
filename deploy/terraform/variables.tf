@@ -12,6 +12,9 @@ variable "variant" {
   description = <<-EOT
     What runs where:
       b-do  WordPress in PHP (WebAssembly) in a Durable Object, database on D1.
+      b-dosql  The same, with the database in the object's own SQLite: no D1,
+            no network per query. Data lives in the object (point-in-time
+            recovery: 30 days); move it with spikes/b2-wordpress/dbmove.py.
             Runs on Workers Free: the Worker stays under the 10 ms CPU limit and
             the object has the CPU for PHP.
       a     WordPress in PHP in the Worker, database on MySQL outside Cloudflare
@@ -25,8 +28,8 @@ variable "variant" {
   type        = string
   default     = "b-do"
   validation {
-    condition     = contains(["b-do", "a", "c1"], var.variant)
-    error_message = "Supported variants: b-do, a, c1."
+    condition     = contains(["b-do", "b-dosql", "a", "c1"], var.variant)
+    error_message = "Supported variants: b-do, b-dosql, a, c1."
   }
 }
 

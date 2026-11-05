@@ -4,7 +4,9 @@
 #   CLOUDFLARE_API_TOKEN=... ACCOUNT_ID=... NAME=my-site ./deploy/deploy.sh
 #
 # VARIANT (default b-do):
-#   b-do  PHP in a Durable Object, database on D1 (Workers Free or Paid)
+#   b-do    PHP in a Durable Object, database on D1 (Workers Free or Paid)
+#   b-dosql PHP in a Durable Object, database in the same object (its SQLite);
+#           no network per query, no D1 (Workers Free or Paid)
 #   a     PHP in the Worker, MySQL through Hyperdrive (Workers Paid). MySQL is
 #         MYSQL=vultr (deploy/mysql makes a box; needs VULTR_API_KEY, MYSQL_ZONE_ID,
 #         MYSQL_HOST) or MYSQL=external (MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD,
@@ -30,7 +32,7 @@ LOCATION=${LOCATION:-enam}
 MEDIA=${MEDIA:-0}
 export PORT=${PORT:-8798}
 log() { printf '\n== %s\n' "$*"; }
-case "$VARIANT" in b-do|a|c1) ;; *) echo "VARIANT must be b-do, a or c1"; exit 2 ;; esac
+case "$VARIANT" in b-do|b-dosql|a|c1) ;; *) echo "VARIANT must be b-do, b-dosql, a or c1"; exit 2 ;; esac
 
 # Terraform state: local by default; DEPLOY_STATE=r2 writes a backend override
 # for the root in $1 (deploy/terraform or deploy/mysql).
@@ -112,9 +114,9 @@ log "build"
 cd "$APP"
 [ -d node_modules ] || npm ci --silent
 [ -f vendor/php_8_3.js ] || ./prepare.sh
-if [ "$VARIANT" = b-do ]; then
+if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
   ./build.sh | tail -1
-  DEV_ENV=do-local ./opcache.sh | tail -1
+  DEV_ENV=$([ "$VARIANT" = b-dosql ] && echo dosql-local || echo do-local) ./opcache.sh | tail -1
 else
   ENGINE=a ./build.sh | tail -1
   # OPcache is primed against a temporary local MariaDB (env a-local); without
@@ -149,15 +151,17 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
   echo '[cache]'; echo 'enabled = true'
   echo '[vars]'
   echo "PHP_ENV = '{\"USE_ZEND_ALLOC\":\"0\"}'"
-  if [ "$VARIANT" = b-do ]; then
+  if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
     echo 'PHP_IN_DO = "on"'
     echo "PHP_LOCATION = \"$LOCATION\""
     echo 'PHP_DO_POOL = "1"'
+    # b-dosql: the object's own SQLite is the database (one object).
+    [ "$VARIANT" != b-dosql ] || echo 'DB_IN_DO = "on"'
   fi
   echo '[images]'; echo 'binding = "IMAGES"'
   if [ -n "$BUCKET" ]; then echo '[[r2_buckets]]'; echo 'binding = "MEDIA"'; echo "bucket_name = \"$BUCKET\""; fi
-  if [ "$VARIANT" = b-do ]; then
-    echo '[[d1_databases]]'; echo 'binding = "DB"'; echo "database_name = \"$(out d1_name)\""; echo "database_id = \"$(out d1_id)\""
+  if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
+    [ "$VARIANT" != b-do ] || { echo '[[d1_databases]]'; echo 'binding = "DB"'; echo "database_name = \"$(out d1_name)\""; echo "database_id = \"$(out d1_id)\""; }
     echo '[[durable_objects.bindings]]'; echo 'name = "PHP_RUNTIME"'; echo 'class_name = "PhpRuntime"'
     echo '[[migrations]]'; echo 'tag = "v1"'; echo 'new_sqlite_classes = ["PhpRuntime"]'
   else
@@ -202,7 +206,10 @@ log "measure"
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 RES="$ROOT/deploy/results/$NAME-$STAMP.json"
 W=$(mktemp -d)
-for i in 1 2 3; do curl -s -H "x-spike-token: $SPIKE_TOKEN" "$URL/_d1ping?nocache=$RANDOM$i"; echo; done > "$W/ping"
+# Database time per statement: D1 or Hyperdrive (/_d1ping), or the object's
+# own SQLite for b-dosql (/_dbping?db=object).
+PING_PATH=$([ "$VARIANT" = b-dosql ] && echo "/_dbping?db=object&n=200&" || echo "/_d1ping?")
+for i in 1 2 3; do curl -s -H "x-spike-token: $SPIKE_TOKEN" "$URL${PING_PATH}nocache=$RANDOM$i"; echo; done > "$W/ping"
 # A failing e2e.sh is a result to record, so it must not stop the script (set -e).
 E2E_EXIT=0
 SPIKE_TOKEN=$SPIKE_TOKEN ADMIN_PASSWORD=$ADMIN_PASSWORD ./e2e.sh "$URL" > "$W/e2e" 2>&1 || E2E_EXIT=$?
