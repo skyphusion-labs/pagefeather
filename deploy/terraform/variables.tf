@@ -84,3 +84,9 @@ variable "teardown" {
   type        = bool
   default     = false
 }
+
+variable "media_import" {
+  description = "import.sh only (issue #31): make a key that can read and write objects in the media bucket, to put an existing site's uploads there. import.sh applies with false again when it is done, which deletes the key."
+  type        = bool
+  default     = false
+}
