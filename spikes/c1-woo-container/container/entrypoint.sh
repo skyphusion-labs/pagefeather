@@ -11,6 +11,9 @@ export PHP_CLI_SERVER_WORKERS="${PHP_WORKERS:-2}"
 cat /proc/sys/kernel/random/uuid > /var/www/html/_boot.txt
 mkdir -p /data
 litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists /data/wordpress.sqlite
+# Import (issue #31): load the seed when there is no replica (seed.sh).
+. /opt/wp/seed.sh
+seed_load
 if [ ! -f /data/wordpress.sqlite ]; then
 	echo "no replica: installing"
 	php /var/www/html/install.php

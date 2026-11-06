@@ -35,6 +35,8 @@ export class Store extends Container {
 			R2_ENDPOINT: env.R2_ENDPOINT || '',
 			R2_BUCKET: env.REPLICA_BUCKET || '',
 			REPLICA_PATH: env.REPLICA_PATH || 'store',
+			// Import (issue #31): the SHA-256 of <REPLICA_PATH>.seed.sqlite (entrypoint.sh).
+			SEED_SHA256: env.SEED_SHA256 || '',
 			SPIKE_TOKEN: env.SPIKE_TOKEN || '',
 			PHP_WORKERS: env.PHP_WORKERS || '2',
 			IDLE_SECONDS: env.IDLE_SECONDS || '900',

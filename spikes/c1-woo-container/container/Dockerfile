@@ -29,6 +29,8 @@ COPY build/wordpress/ /var/www/html/
 COPY build/opt/object-cache.php /opt/wp/object-cache.php
 COPY container/kill.php /var/www/html/_kill.php
 COPY container/stats.php /var/www/html/_stats.php
+COPY container/seed-counts.php /opt/wp/seed-counts.php
+COPY container/seed.sh /opt/wp/seed.sh
 COPY container/litestream.yml /etc/litestream.yml
 COPY container/entrypoint.sh /usr/local/bin/entrypoint.sh
 WORKDIR /var/www/html
