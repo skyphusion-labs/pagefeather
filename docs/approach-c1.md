@@ -526,7 +526,9 @@ The last row is a defect that the first version had. bash starts a background ch
 
 That Cloudflare gives the container a socket as stderr is inferred: it is the one difference that fits a crash at start there and none in Docker. `c1-serve.sh` now puts a pipe (to `cat`) in front of stdout and stderr before it starts the servers. The start lines of `entrypoint.sh` print what fd 2 is and whether it opens, so the next deploy shows it. The generated config now has Workers Logs on (`[observability]`), because c1 had none and there was no stderr to read.
 
-Test: `tests/stderr-socket-test.pl` runs in the image (`docker run --rm -v "$PWD/spikes/c1-woo-container/tests:/t" --entrypoint perl <image> /t/stderr-socket-test.pl`). With stdout and stderr on a socketpair, `c1-serve.sh` must still run after 6 s, answer `/_fpm-ping` and exit 0 on SIGTERM. A copy without the two pipe lines must have exited. The test exits 0 only when both hold.
+The first start-line readouts (f15fc47) were wrong: they read `/proc/self/fd/N` inside `$( )` and in a subshell with a redirect, so they saw the capture pipe and `/dev/null` and always said "pipe" and "ok" (the lead saw "fd2 pipe" on a socket). Since f7817ee they read `/proc/$$/fd/N`, this shell's own descriptors. So arm 2 (image from f15fc47) and arm 3 (image from f7817ee) ran different image shas with the same server code; only the print lines differ. For arm 2 only the step lines count, not the fd2 or open lines.
+
+Test: `tests/stderr-socket-test.pl` runs in the image (`docker run --rm -v "$PWD/spikes/c1-woo-container/tests:/t" --entrypoint perl <image> /t/stderr-socket-test.pl`). With stdout and stderr on a socketpair, `c1-serve.sh` must still run after 6 s, answer `/_fpm-ping` and exit 0 on SIGTERM. A copy without the two pipe lines must have exited. The fd probe of `entrypoint.sh` must say socket and FAILED on a known socket, and pipe and ok on a known pipe, and the f15fc47 probe must fail that socket check. The test exits 0 only when all of these hold.
 
 **On wp-c1-perf:** not measured yet. The plan (issue #99):
 

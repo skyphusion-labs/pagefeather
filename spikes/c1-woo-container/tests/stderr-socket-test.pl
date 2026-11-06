@@ -52,20 +52,34 @@ sub arm {
 	return ($running, $ping, $rc, $log);
 }
 
-# The open probe of entrypoint.sh, on a socket stderr: it must say FAILED.
-{
-	socketpair(my $a, my $b, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die "socketpair: $!";
+# The fd probe of entrypoint.sh, against a known socket and a known pipe:
+# on the socket it must say "fd2 socket:" and "open FAILED", on the pipe
+# "fd2 pipe:" and "open ok". A readout that says the same for both is broken.
+my $PROBE = q{echo "fd2 $(readlink /proc/$$/fd/2)"; if ( : >> /proc/$$/fd/2 ) 2>/dev/null; then echo "open ok"; else echo "open FAILED"; fi};
+sub probe {
+	my ($kind) = @_;
+	my ($a, $b);
+	if ($kind eq "socket") { socketpair($a, $b, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die "socketpair: $!" }
+	else { pipe($b, $a) or die "pipe: $!" }
 	my $pid = fork() // die "fork: $!";
 	if ($pid == 0) {
 		close $b; open(STDOUT, ">&", $a) or die; open(STDERR, ">&", $a) or die;
-		exec "/bin/sh", "-c", q{echo "fd2 $(readlink /proc/$$/fd/2)"; if ( : >> /proc/$$/fd/2 ) 2>/dev/null; then echo "open ok"; else echo "open FAILED"; fi}; exit 127;
+		exec "/bin/sh", "-c", $PROBE; exit 127;
 	}
 	close $a; waitpid($pid, 0); my $o = ""; my $buf;
 	while (defined(sysread($b, $buf, 65536)) && length $buf) { $o .= $buf }
-	my $ok0 = $o =~ /fd2 socket:/ && $o =~ /open FAILED/;
-	printf "%s entrypoint probe on a socket: %s\n", $ok0 ? "PASS" : "FAIL", join(", ", split /\n/, $o);
-	$ENV{C1_PROBE_OK} = $ok0 ? 1 : 0;
+	return join(", ", split /\n/, $o);
 }
+my $ps = probe("socket"); my $pp = probe("pipe");
+my $ok0 = $ps =~ /fd2 socket:/ && $ps =~ /open FAILED/ && $pp =~ /fd2 pipe:/ && $pp =~ /open ok/;
+printf "%s entrypoint fd probe: on a socket: %s | on a pipe: %s\n", $ok0 ? "PASS" : "FAIL", $ps, $pp;
+# Mutant: the f15fc47 readout (/proc/self inside $( ) and a redirected
+# subshell). On a socket it must NOT pass the socket check.
+$PROBE = q{echo "fd2 $(readlink /proc/self/fd/2 2>&1)"; if ( : >> /proc/self/fd/2 ) 2>/dev/null; then echo "open ok"; else echo "open FAILED"; fi};
+my $pm = probe("socket");
+my $okm = !($pm =~ /fd2 socket:/ && $pm =~ /open FAILED/);
+printf "%s mutant fd probe (f15fc47) on a socket: %s\n", $okm ? "PASS" : "FAIL", $pm;
+$ENV{C1_PROBE_OK} = $ok0 && $okm ? 1 : 0;
 my ($r1, $p1, $c1, $l1) = arm($fixed);
 # The start line must report the socket it was given (the diagnostic itself).
 my $seen = $l1 =~ /c1-serve: start, fd2 socket:/ ? "socket" : "not socket";
