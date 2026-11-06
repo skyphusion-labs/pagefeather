@@ -10,7 +10,8 @@
 #   reverted      1, 1      a reverted rollout fails at once
 #   late          0, 4      an older completed rollout (version 6) does not count
 #   bare-list     0, 3      a bare list answer reads the same
-#   api-401       2, 0      the API cannot be read: the caller falls back
+#   api-401       2, 0      the API cannot be read: the caller falls back; the
+#                           error is kept once in C1_API_ERRORS (issue #120)
 #   no-app        2, 0      no application of that name: the caller falls back
 #   live-shape    0, 3      the live API shape (result_info, replaced, version_distribution)
 #   new-app       0, 1      version 1 with no rollout at all: placed, no wait
@@ -32,7 +33,7 @@ C1SH=${1:-$ROOT/deploy/variants/c1.sh}
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 fails=0
 run_case() {
-	local mode=$1 want_rc=$2 want_n=$3 port pid rc out n
+	local mode=$1 want_rc=$2 want_n=$3 want_text=${4:-} port pid rc out n
 	rm -f "$T/port" "$T/count"
 	python3 -I "$HERE/fake-containers-api.py" "$T/port" "$T/count" "$mode" & pid=$!
 	for _ in $(seq 1 50); do [ -s "$T/port" ] && break; sleep 0.1; done
@@ -42,7 +43,9 @@ run_case() {
 		# shellcheck disable=SC1090
 		. "$C1SH"
 		NAME=t ACCOUNT_ID=acc CLOUDFLARE_API_TOKEN=test-token C1_API=http://127.0.0.1:$port ROLLOUT_POLL_S=0.2 ROLLOUT_TIMEOUT=5
-		c1_rollout 2>&1
+		c1_rollout 2>&1; r=$?
+		echo "api errors: ${C1_API_ERRORS:-none}"
+		exit $r
 	); rc=$?
 	kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
 	n=$(cat "$T/count" 2>/dev/null || echo 0)
@@ -52,6 +55,7 @@ run_case() {
 		*+) [ "$n" -ge "${want_n%+}" ] || ok=0 ;;
 		*) [ "$n" = "$want_n" ] || ok=0 ;;
 	esac
+	[ -z "$want_text" ] || printf '%s\n' "$out" | grep -qx -- "$want_text" || ok=0
 	if [ $ok = 1 ]; then echo "PASS $mode: exit $rc, $n rollout reads"; else echo "FAIL $mode: exit $rc, $n rollout reads (want exit $want_rc, $want_n reads)"; fails=$((fails + 1)); fi
 	printf '%s\n' "$out" | sed 's/^/   /'
 }
@@ -87,8 +91,9 @@ run_case never 1 3+
 run_case reverted 1 1
 run_case late 0 4
 run_case bare-list 0 3
-run_case api-401 2 0
+run_case api-401 2 0 "api errors: api-error applications HTTP 401"
 run_case no-app 2 0
+run_case done-after-3 0 3 "api errors: none"
 run_case live-shape 0 3
 run_case new-app 0 1
 run_case v2-empty 0 4
