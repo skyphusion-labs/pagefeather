@@ -23,7 +23,7 @@ jobs:
           git clone -q https://github.com/WordPress/sqlite-database-integration spikes/b2-wordpress/build/cache/sqlite-database-integration
           git -C spikes/b2-wordpress/build/cache/sqlite-database-integration checkout -q "$SQLITE_DI_REF"
       - name: PHP syntax
-        run: for f in spikes/b2-wordpress/php/*.php spikes/b2-wordpress/tests/*.php; do php -l "$f"; done
+        run: for f in spikes/b2-wordpress/php/*.php spikes/b2-wordpress/tests/*.php deploy/import/*.php; do php -l "$f"; done
       - name: JS syntax
         # The Workers are ES modules but package.json says commonjs, so check them as .mjs.
         run: |
@@ -32,6 +32,9 @@ jobs:
         run: for f in $(git ls-files '*.sh'); do bash -n "$f"; done
       - name: Dialect tests
         run: php spikes/b2-wordpress/tests/dialect-test.php
+      - name: Import tests
+        # deploy/import (issue #31): dump to SQLite, prefix, site address, dbmove dump. Offline.
+        run: deploy/import/tests/run.sh
       - name: No em or en dashes
         run: |
           if git grep -nP '\x{2014}|\x{2013}' -- . ':!**/package-lock.json'; then echo 'em or en dash found'; exit 1; fi

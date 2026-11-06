@@ -1054,12 +1054,16 @@ async function dumpTo(writer, env, from) {
 // index, trigger and view (not sqlite_* or _cf_*) is dropped first, in the same
 // transaction. Any PHP request to an empty object makes the SQLite driver
 // create its own _wp_sqlite_* tables, so "empty" rarely stays true.
+// append is for the second and later parts of one dump (dbmove.py): the tables
+// of the first part exist, so the check and the drop are skipped. replace and
+// append together are refused.
 const USER_OBJECTS = "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' AND sql IS NOT NULL";
-function importInto(db, storage, text, replace) {
+function importInto(db, storage, text, replace, append) {
+	if (replace && append) throw new Error('replace=1 and append=1 together: replace is for the first part, append for the others');
 	let n = 0;
 	let end = null;
 	storage.transactionSync(() => {
-		const existing = [...db.exec(USER_OBJECTS).raw()];
+		const existing = append ? [] : [...db.exec(USER_OBJECTS).raw()];
 		if (existing.length && !replace) throw new Error(existing.length + ' tables or indexes exist; import with replace=1 to drop them first');
 		if (replace) for (const [type, name] of existing) if (type === 'table' || type === 'view') db.exec(`DROP ${type.toUpperCase()} IF EXISTS ${quoteId(name)}`);
 		for (const raw of text.split('\n')) {
@@ -1141,7 +1145,9 @@ export class PhpRuntime extends DurableObject {
 			return withPhp(() => {
 				objectCacheClear(); // the database changes outside WordPress's cache
 				try {
-					return Response.json({ ...importInto(sql, this.ctx.storage, text, url.searchParams.get('replace') === '1'), databaseBytes: sql.databaseSize });
+					const done = importInto(sql, this.ctx.storage, text, url.searchParams.get('replace') === '1', url.searchParams.get('append') === '1');
+					// The pages in the page cache show the old database: the Worker purges them (PURGE_HEADER).
+					return Response.json({ ...done, databaseBytes: sql.databaseSize }, { headers: { [PURGE_HEADER]: '1' } });
 				} catch (e) {
 					return Response.json({ ok: false, error: String((e && e.message) || e) }, { status: 400 });
 				}

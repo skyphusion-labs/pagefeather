@@ -79,3 +79,15 @@ Repository: [WordPress/wordpress-playground](https://github.com/WordPress/wordpr
 ## PlanetScale and Hyperdrive
 
 - [Cloudflare and PlanetScale integration](https://developers.cloudflare.com/workers/databases/third-party-integrations/planetscale/): a PlanetScale database made from Cloudflare, reached through Hyperdrive, billed (as announced) through the Cloudflare account. Variant `a2` uses it to make its database ([approach-a2.md](approach-a2.md)). Also [Hyperdrive: PlanetScale](https://developers.cloudflare.com/hyperdrive/planetscale/), the [2025-09 Cloudflare post](https://blog.cloudflare.com/planetscale-postgres-workers), the [2026-04-16 Cloudflare post](https://blog.cloudflare.com/deploy-planetscale-postgres-with-workers) and the [2026-02-19 PlanetScale post](https://planetscale.com/blog/cloudflare-hyperdrive-real-time).
+
+## Moving existing sites
+
+Issue #31 builds `deploy/import.sh`, which moves an existing WordPress site onto a `deploy/` variant. These tools moved WordPress sites first. Read on 2026-11-06.
+
+- [WP Migrate Lite](https://wordpress.org/plugins/wp-migrate-db/) (version 2.7.12). It exports the database as SQL with a find and replace. It replaces strings in serialized data by unserializing, replacing and serializing again, so the string lengths stay correct. We do the same.
+- [All-in-One WP Migration](https://wordpress.org/plugins/all-in-one-wp-migration/) (version 7.113). It puts the database, media, themes and plugins in one `.wpress` file, and its import replaces the site address.
+- [Duplicator](https://wordpress.org/plugins/duplicator/) (version 5.1.1). It packs the files and the database into an archive with an installer, for a new host or domain.
+- WP-CLI [`wp db export`](https://developer.wordpress.org/cli/commands/db/export/) runs `mysqldump` with the credentials of `wp-config.php`. It is the database input of `import.sh`. [`wp search-replace`](https://developer.wordpress.org/cli/commands/search-replace/) changes strings in the database and handles serialized data. It is the model for the address change in `import.sh`.
+- HostlessWP `migrate` (`lib/commands/migrate.mjs`, commit `739e8e7`, see the HostlessWP section above). It keeps the database where it is, reached through Hyperdrive, and moves the media to R2.
+
+These tools move a site from one PHP and MySQL host to another. `import.sh` differs because the target database can be SQLite in a Durable Object or a container, and the uploads go to R2.
