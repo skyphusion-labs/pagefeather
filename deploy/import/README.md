@@ -44,6 +44,33 @@ The import replaces the whole database of the target site. Log in with the users
 
 Options: `DRY_RUN=1` stops before the import and shows what changes. `SKIP_MEDIA=1` does not send the uploads (the script says that the images are missing). `OLD_ORIGIN` sets the old site address (default: the `home` option of the dump). `ALLOW_MISSING=1` imports when the theme or an active plugin is not in the build. `WORK` sets the directory for the work files.
 
+## Read the source over SSH
+
+In place of `DUMP` and `CONTENT`, give the server and the WordPress directory there:
+
+```sh
+SSH=user@old-host SSH_WP=/var/www/html URL=https://my-site.acct.workers.dev NAME=my-site ./deploy/import.sh
+```
+
+`import.sh` sends `deploy/import/remote-export.sh` over `ssh <host> bash -s` twice: once for the database, once for `wp-content`. The two results go into `WORK`, and the import goes on as with files. Nothing is installed on the server.
+
+- **Read only.** The script writes nothing on the server: no file, no temp file. The dump uses `--single-transaction --skip-lock-tables`, so it takes no lock, and InnoDB tables stay writable while it runs. Its only output is stdout.
+- **The database:** with WP-CLI on the server, `wp db export -` (with `--hex-blob`). Without it, `mysqldump` with the `DB_*` constants of `wp-config.php`. The script reads the file as text (`php -r` with a regular expression), so `wp-config.php` does not run. A constant that is not a plain string (for example `getenv(...)`) is an error.
+- **No credential leaves the server, and none is stored.** SSH uses your own SSH setup (agent, `~/.ssh/config`). The database password goes to `mysqldump` in a defaults file on a pipe (process substitution): it is not in the arguments, not on the server's disk, and not sent here. Nothing goes into the repository.
+- **`wp-content`:** a gzip tar, without cache-like folders. `SSH_EXCLUDE` (a space list of paths under `wp-content`) replaces the default `cache upgrade ai1wm-backups updraft backups-dup-lite wflogs`. `SSH_CONTENT=0` skips `wp-content`.
+- **`SSH_CMD`** (default `ssh`) adds options, for example `SSH_CMD="ssh -p 2222 -i ~/.ssh/old-host"`. It is split on spaces.
+- **The server needs** bash, and WP-CLI, or `php` and `mysqldump`.
+
+Tests (`tests/run.sh` section 10): the script runs here through a fake `ssh`, on a fake site whose WordPress tree, `HOME` and `TMPDIR` are read-only. The checks:
+- the dump comes through `mysqldump` (and through WP-CLI when it is there);
+- the password is not in the arguments, and it is decoded as PHP does: `\n` in single quotes stays two characters;
+- the port comes from `DB_HOST`;
+- `cache` is left out;
+- nothing on the server changes;
+- `import.sh SSH=...` reaches its dry run, with a space in the server path.
+
+Six mutations each turn a test red: a temp file on the server, the password in the arguments, no `--skip-lock-tables`, C escapes in single quotes, the exclude list ignored, and the remote command without `%q`. Not run against a real server.
+
 ## Steps
 
 | Step | Tool | What it does |

@@ -25,6 +25,15 @@
 # wp-content/uploads into the site's R2 media bucket (MEDIA=1 site; needs NAME,
 # CLOUDFLARE_API_TOKEN and ACCOUNT_ID for the short-lived R2 key).
 #
+# SSH input: SSH=<user@host> SSH_WP=<WordPress directory on the server> in
+# place of DUMP and CONTENT. The script runs deploy/import/remote-export.sh on
+# the server over SSH; it only reads there (no file, no lock, no temp file),
+# and the database password never leaves the server. The dump and the
+# wp-content archive land in WORK. SSH_CMD (default ssh) can add options, for
+# example "ssh -p 2222 -i ~/.ssh/key". SSH_CONTENT=0 skips wp-content.
+# SSH_EXCLUDE replaces the folders of wp-content that are not copied (default:
+# cache upgrade ai1wm-backups updraft backups-dup-lite wflogs).
+#
 # Options: OLD_ORIGIN (default: the home option of the dump), DRY_RUN=1 (stop
 # before the import; print what would change), SKIP_MEDIA=1 (do not send the
 # uploads; the script says that the images are missing).
@@ -33,8 +42,13 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 APP="$ROOT/spikes/b2-wordpress"
 IMP="$ROOT/deploy/import"
 VARIANT=${VARIANT:-b-dosql}
-: "${DUMP:?set DUMP to the mysqldump file}"
-[ -r "$DUMP" ] || { echo "cannot read DUMP=$DUMP" >&2; exit 2; }
+if [ -n "${SSH:-}" ]; then
+  : "${SSH_WP:?set SSH_WP to the WordPress directory on the server}"
+  [ -z "${DUMP:-}" ] && [ -z "${CONTENT:-}" ] || { echo "SSH replaces DUMP and CONTENT: set one or the other" >&2; exit 2; }
+else
+  : "${DUMP:?set DUMP to the mysqldump file (or SSH and SSH_WP)}"
+  [ -r "$DUMP" ] || { echo "cannot read DUMP=$DUMP" >&2; exit 2; }
+fi
 case "$VARIANT" in b-dosql|c1|a) ;; *) echo "VARIANT=$VARIANT: import supports b-dosql, c1 and a (deploy/import/README.md)" >&2; exit 2 ;; esac
 
 : "${URL:?set URL to the site address that deploy.sh printed}"
@@ -57,6 +71,24 @@ URL=$NEW_ORIGIN
 WORK=${WORK:-${TMPDIR:-/tmp}/wp-import-$(date -u +%Y%m%dT%H%M%SZ)}
 mkdir -p "$WORK"; chmod 700 "$WORK"
 echo "work files: $WORK"
+
+# 0. SSH input: read the source over SSH (deploy/import/remote-export.sh).
+if [ -n "${SSH:-}" ]; then
+  read -r -a ssh_cmd <<< "${SSH_CMD:-ssh}"
+  # ssh joins the remote arguments into one command line: quote each.
+  remote() { "${ssh_cmd[@]}" "$SSH" "bash -s -- $(printf '%q ' "$SSH_WP" "$@")" < "$IMP/remote-export.sh"; }
+  echo "ssh: reading the database of $SSH:$SSH_WP (read-only)"
+  remote db > "$WORK/source.sql"
+  grep -q '^CREATE TABLE ' "$WORK/source.sql" || { echo "ssh: the dump from $SSH has no CREATE TABLE" >&2; exit 1; }
+  DUMP="$WORK/source.sql"
+  echo "ssh: dump $(wc -c < "$DUMP" | tr -d ' ') bytes"
+  if [ "${SSH_CONTENT:-1}" != 0 ]; then
+    echo "ssh: reading wp-content (read-only)"
+    remote content ${SSH_EXCLUDE:+"$SSH_EXCLUDE"} > "$WORK/source-wp-content.tar.gz"
+    CONTENT="$WORK/source-wp-content.tar.gz"
+    echo "ssh: wp-content archive $(wc -c < "$CONTENT" | tr -d ' ') bytes"
+  fi
+fi
 # c1, phase 2: the seed phase made the files in WORK; only the check runs.
 if [ "$VARIANT" = c1 ] && [ -n "${VERIFY:-}" ]; then
   # shellcheck source=SCRIPTDIR/import/c1.sh

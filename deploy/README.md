@@ -194,4 +194,4 @@ cd deploy/terraform && terraform workspace select my-site && terraform output -r
 - Measurements from a fixed vantage (a Vultr runner), with p95 and p99, concurrency and the cold path.
 - Plugins and WooCommerce runs (`tests/plugins/plugins.py`, `tests/woo.py`) as part of `deploy.sh`.
 - A custom domain. The site is on `<name>.<subdomain>.workers.dev`.
-- An import that reads the site over SSH (issue #31). `b-dosql`, `c1`, `a` and `a2` have the import from a dump and a `wp-content` archive.
+- The SSH import (`SSH=`, `deploy/import/README.md`) run against a real server, and `a` on MariaDB with a separate target (issue #31). `b-dosql`, `c1`, `a` and `a2` have the import from a dump and a `wp-content` archive, or from a server over SSH.
