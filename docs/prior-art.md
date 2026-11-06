@@ -16,7 +16,7 @@ This is the closest project to approach A. Approach B removes the external MySQL
 Read again on 2026-11-05 at commit `739e8e7`. HostlessWP had already solved, and documented, things this repo found on that day:
 
 - **The frozen clock.** A Worker does not advance the clock during CPU work, so `uniqid()` spins. HostlessWP makes the clock strictly monotonic. Our fix in `spikes/b2-wordpress/prepare.sh` is the same idea, found on our own when `wp-admin/plugins.php` hit the CPU limit. HostlessWP was first.
-- **Outbound HTTP.** HostlessWP sends `wp_remote_*`, a userland `curl_*` and `http://` streams through the Worker's `fetch()`, and sockets through `connect()`. Our issue #26 proposes the same for approach B.
+- **Outbound HTTP.** HostlessWP sends `wp_remote_*`, a userland `curl_*` and `http://` streams through the Worker's `fetch()`, and sockets through `connect()`. Approach B now does the same for `wp_remote_*` (`php/http-bridge.php`, issue #26, approach-b.md 8k). It does not do `curl_*`, streams or sockets.
 - **Workers Free.** HostlessWP runs PHP in a Durable Object on the Free plan (30 s of CPU) and keeps the Worker for the page cache. Approach B and our approach A run PHP in the Worker and stop at Free's CPU limit.
 - **Size.** HostlessWP splits the PHP tree into code bundles and loads files on first read. It deployed 19 plugins (276 MB packaged) as one Worker. Approach B needs groups to stay under 64 MiB.
 
@@ -66,6 +66,7 @@ Repository: [l3rady/object-cache-apcu](https://github.com/l3rady/object-cache-ap
 Repository: [WordPress/wordpress-playground](https://github.com/WordPress/wordpress-playground). It runs WordPress in WebAssembly with SQLite through the `sqlite-database-integration` plugin.
 
 - [Issue #69: Run on Cloudflare Workers](https://github.com/WordPress/wordpress-playground/issues/69)
+- Playground routes WordPress's HTTP requests through JavaScript's `fetch()`. Issue #26 named it as the model for approach B's bridge (`php/http-bridge.php`: a `pre_http_request` answer sent to `fetch()` in the Worker or the PHP object). Thank you, WordPress Playground.
 
 ## SQLite on D1
 

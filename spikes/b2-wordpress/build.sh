@@ -38,7 +38,7 @@ rm -rf "$wp/wp-content/themes/twentytwentythree" "$wp/wp-content/themes/twentytw
 # PLUGINS="slug ..." adds plugins from tests/plugins/suite.txt (checked by SHA-256).
 [ -z "${PLUGINS:-}" ] || ../../tests/plugins/fetch.sh "$wp/wp-content/plugins" $PLUGINS
 mkdir -p "$wp/wp-content/mu-plugins"
-cp php/r2-uploads.php php/edge-cache.php php/woo-edge.php php/rest-route-cache.php "$wp/wp-content/mu-plugins/"
+cp php/r2-uploads.php php/edge-cache.php php/woo-edge.php php/rest-route-cache.php php/http-bridge.php "$wp/wp-content/mu-plugins/"
 mkdir -p "$wp/wp-content/mu-plugins/r2-uploads"
 cp php/cf-images-editor.php "$wp/wp-content/mu-plugins/r2-uploads/"
 if [ "${ENGINE:-d1}" = a ]; then
