@@ -237,6 +237,15 @@ Purge limits: Workers Cache purges always have the Free-tier limits, 5 a minute 
 
 Settings: shared memory 32 MB (the full `e2e.sh` uses 28.6 MB), `validate_timestamps=0`, and the file cache as a second level. `opcache.sh` runs `e2e.sh` against `wrangler dev`, then saves the compiled files (about 600) to `build/opcache.zip`, which ships with the Worker. The same PHP build runs locally and on Cloudflare, so the files match.
 
+**One runtime must compile everything (issue #84). Measured 2026-11-06.** The compiled files live in the PHP runtime's own file system, and a runtime is dropped after a request whose WebAssembly memory passes 100 MiB. With WooCommerce and All-in-One WP Migration, priming dropped the runtime 3 times, each at 119 MiB: on `post-new.php`, a REST posts request, and `/wp-admin/`.
+- When a later request booted a new runtime, `opcache.zip` held only what compiled after the last drop: 1883 files, against 2227 without drops. Nothing reported it.
+- When the last request dropped it, the dump answered 409 "not booted", and the `wp-ref-a` deploy failed.
+
+What changed:
+- `opcache.sh` runs the dev server with `PHP_RECYCLE:off` (through `run.sh`'s `DEV_VARS`): no recycle for memory while priming. Local workerd has no 128 MB isolate limit, and a crashed runtime is still dropped.
+- `/_opcache-dump` answers with `x-isolate` and `x-runtime-drops` (runtimes dropped without a plan; the restart of `/_activate` is planned and not counted).
+- `opcache.sh` reads the isolate before the pages, and saves nothing unless the dump comes from the same isolate (no reload) with 0 drops. A 409 names its causes and prints the end of `dev.log`.
+
 **The boot copied 54 MB.** Unzipping the PHP files (26 MB) and the compiled files (28 MB) cost more CPU than compiling saved. Now nothing is copied at boot:
 
 - The Worker reads each zip's central directory once and makes empty file nodes with the right size.
