@@ -1,4 +1,5 @@
 // Spike B2: WordPress in a Worker, database on D1.
+import { sqlImport } from './sql-import.js';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -1471,6 +1472,9 @@ export default {
 			console.log(JSON.stringify({ m: 'ws-refused', host: req.headers.get('host'), path: url.pathname }));
 			return new Response('WebSocket is not served', { status: 426 });
 		}
+		// Import a MySQL dump (issue #31): variant a only, where dbHandler is the
+		// MySQL bridge (index-a.js). Every other variant gets the 404 of sql-import.js.
+		if (url.pathname === '/_sqlimport') return sqlImport(req, env, url, env.PHP_IN_DO === 'on' ? null : dbHandler);
 		// PHP in a Durable Object (PHP_IN_DO=on, issue #28): every request that
 		// needs PHP goes to the object, including /_d1ping (D1 as PHP sees it).
 		// DB_IN_DO needs the object; without it the Worker would use D1 silently.

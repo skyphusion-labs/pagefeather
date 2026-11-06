@@ -4,8 +4,9 @@
 #   URL=https://my-site.acct.workers.dev SPIKE_TOKEN=... DUMP=site.sql ./deploy/import.sh
 #   URL=... NAME=my-site DUMP=site.sql ./deploy/import.sh   (SPIKE_TOKEN from Terraform)
 #
-# VARIANT: b-dosql (the database is the PHP object's SQLite) or c1 (SQLite in
-# the container, Litestream to R2; two phases, see deploy/import/c1.sh).
+# VARIANT: b-dosql (the database is the PHP object's SQLite), c1 (SQLite in
+# the container, Litestream to R2; two phases, see deploy/import/c1.sh), or a
+# (MySQL or MariaDB through Hyperdrive, a2 included; see deploy/import/mysql.sh).
 # Other variants stop with an error; see deploy/import/README.md.
 #
 # DUMP is the output of "mysqldump --hex-blob" or "wp db export --hex-blob"
@@ -34,7 +35,7 @@ IMP="$ROOT/deploy/import"
 VARIANT=${VARIANT:-b-dosql}
 : "${DUMP:?set DUMP to the mysqldump file}"
 [ -r "$DUMP" ] || { echo "cannot read DUMP=$DUMP" >&2; exit 2; }
-case "$VARIANT" in b-dosql|c1) ;; *) echo "VARIANT=$VARIANT: import supports b-dosql and c1 (deploy/import/README.md)" >&2; exit 2 ;; esac
+case "$VARIANT" in b-dosql|c1|a) ;; *) echo "VARIANT=$VARIANT: import supports b-dosql, c1 and a (deploy/import/README.md)" >&2; exit 2 ;; esac
 
 : "${URL:?set URL to the site address that deploy.sh printed}"
 if [ -z "${SPIKE_TOKEN:-}" ] && [ -n "${NAME:-}" ]; then
@@ -129,8 +130,19 @@ if missing:
 print("theme and active plugins: all in the build")
 PY
 
+# Variant a: the MySQL statements (deploy/import/mysql.sh). The address changes
+# in them, not in the SQLite copy above, which only gave the prefix and facts.
+if [ "$VARIANT" = a ]; then
+  # shellcheck source=SCRIPTDIR/import/mysql.sh
+  . "$IMP/mysql.sh"
+  a_prepare
+fi
+
 [ -z "${DRY_RUN:-}" ] || { echo "DRY_RUN: stopped before the import"; exit 0; }
 
+if [ "$VARIANT" = a ]; then
+  a_load
+else
 # 5. To a dbmove dump, then into the object. --replace drops the site's tables.
 python3 "$IMP/dbmove-file.py" from-sqlite "$WORK/site.sqlite" "$WORK/site.jsonl"
 python3 "$APP/dbmove.py" import "$URL" "$WORK/site.jsonl" --replace
@@ -143,6 +155,7 @@ if diff "$WORK/counts-in.json" "$WORK/counts-out.json" >/dev/null; then
   echo "rows: every table matches ($(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["end"])' "$WORK/counts-in.json") rows)"
 else
   echo "ROWS DIFFER:" >&2; diff "$WORK/counts-in.json" "$WORK/counts-out.json" >&2 || true; exit 1
+fi
 fi
 
 # 6b. Uploads, with CONTENT: into the media bucket through the S3 API, with a

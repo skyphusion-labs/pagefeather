@@ -98,7 +98,7 @@ CREATE TABLE `wpx_usermeta` (
 ) ENGINE=InnoDB AUTO_INCREMENT=5 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_520_ci;
 
 LOCK TABLES `wpx_usermeta` WRITE;
-INSERT INTO `wpx_usermeta` VALUES (1,1,'nickname','admin'),(2,1,'wpx_capabilities','a:1:{s:13:\"administrator\";b:1;}'),(3,1,'wpx_user_level','10'),(4,1,'not_wpx_key','kept');
+INSERT INTO `wpx_usermeta` VALUES (1,1,'nickname','admin'),(2,1,'wpx_capabilities','a:1:{s:13:\"administrator\";b:1;}'),(3,1,'wpx_user_level','10'),(4,1,'not_wpx_key','kept'),(5,1,'description','see the wpx_options table and wpx_user_roles');
 UNLOCK TABLES;
 
 --
