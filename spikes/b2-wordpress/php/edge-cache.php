@@ -73,10 +73,14 @@ foreach ( array( 'woocommerce_product_set_stock_status', 'woocommerce_variation_
 
 // Site options (title, permalinks, reading settings, widgets) change pages too.
 // Transients and cron are options as well; they change on their own, so skip them.
+// So are WooCommerce batch processing state and locks: wc_pending_batch_processes
+// and wc_batch_* change in checkouts and cron runs, and *.lock / *_lock options are
+// locks, and action_scheduler_* is Action Scheduler state (measured on c1 under
+// load, 2026-11-06: each emptied the page cache).
 add_action(
 	'updated_option',
 	function ( $name ) {
-		if ( ! preg_match( '/^(_transient_|_site_transient_|cron$|rewrite_rules$|recently_activated$|_edit_lock)/', $name ) ) {
+		if ( ! preg_match( '/^(_transient_|_site_transient_|cron$|rewrite_rules$|recently_activated$|_edit_lock|wc_pending_batch_processes$|wc_batch_|action_scheduler_)|[._]lock$/', $name ) ) {
 			skyphusion_edge_cache_purge( $name );
 		}
 	}
