@@ -337,6 +337,7 @@ Fix: the Worker sends its own origin in `x-wp-public-origin`. It always replaces
   1. The Worker answers a request with an `Upgrade` header with 426. WordPress serves no WebSockets.
   2. A runtime serves only the origin it booted with: a request for another origin boots a new runtime. Responses from the object carry `x-boot-origin`.
 - Test: `e2e.sh` also fails when `GET /` does not link to the site's own origin. The old checks did not see the defect locally: every row was 2xx.
+- **Later (2026-11-06, issues #55 and #33):** both fixes now apply to every variant, not only the object. The `Upgrade` guard runs before the variant branch (#55: in variant `a` the loopback booted the runtime with `http://127.0.0.1:<port>`). And the origin no longer comes from a request at all: the runtime takes it from the var `SITE_ORIGIN` (the site's configured address; `deploy/deploy.sh` and `run.sh` set it), so no first request (the loopback, a health probe, a second host name) can pin it (#33). Without `SITE_ORIGIN`, the request's origin is used and the runtime reboots when it changes, in the Worker as in the object. Test: `tests/origin.sh` (install and the first page through `127.0.0.1`, then the page through `localhost`): before the change both pages linked to `127.0.0.1` (default env) or the first did (object); after it both link to the configured origin. `FALLBACK=1` checks the unconfigured case.
 
 Red and green, locally (wrangler 4.107.0, new database each run, `POST /_install` through `127.0.0.1`, then `e2e.sh` through `localhost`):
 

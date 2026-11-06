@@ -143,6 +143,7 @@ The hint is not a promise. An `enam` object landed in EWR two times in three and
 | `BENCH` | `1` | `0` skips the measurements |
 | `N` | `10` | Runs per page in the page benchmark |
 | `VARIANT` | `b-do` | `b-do`, `b-dosql`, `a`, `c1` (see above) |
+| `SITE_ORIGIN` | `https://<name>.<subdomain>.workers.dev` | The site's own address (`scheme://host[:port]`). WordPress's `WP_HOME` and every link come from it, not from the first request (issue #33). Give it for a custom domain. On workers.dev the deploy stops if Wrangler's address differs. `c1` uses `PUBLIC_HOST` instead. |
 | `DEPLOY_STATE` | `local` | `r2` keeps Terraform state in an R2 bucket (`STATE_BUCKET`, `STATE_ENDPOINT`, and an R2 key in `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) |
 
 Each `NAME` has its own Terraform workspace, so two sites never share state.
