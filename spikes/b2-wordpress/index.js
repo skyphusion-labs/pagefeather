@@ -1202,7 +1202,9 @@ async function dumpTo(writer, env, from) {
 	const line = (o) => writer.write(enc.encode(JSON.stringify(o) + '\n'));
 	try {
 		const q = dumpSource(env, from);
-		const master = await q("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' AND sql IS NOT NULL ORDER BY rowid");
+		// The undo log of real transactions (_wp_undo*: its tables and triggers) is not data:
+		// the target makes its own on the first BEGIN (8l), so it is not in the dump.
+		const master = await q("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' AND name NOT LIKE '\\_wp\\_undo%' ESCAPE '\\' AND sql IS NOT NULL ORDER BY rowid");
 		const tables = master.rows.filter((r) => r[0] === 'table');
 		for (const [, , sql] of tables) await line({ sql });
 		let total = 0;

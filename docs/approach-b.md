@@ -531,6 +531,7 @@ Values are tail CPU in ms, p50 / p95 (joined n). On is inside the off range on b
 - **Isolation.** The object runs one PHP request at a time (`withPhp`), and the lock is held across `await fetch()`. So every logged write belongs to the request that holds the transaction. The concurrency check below confirms this.
 - **An isolate that dies mid-transaction.** `active` is stored in the database. Before its first PHP run, a new isolate rolls back what the log holds (`txnRecover()`). Not tested: no gate kills an isolate mid-transaction.
 - **Off switch.** `REAL_TRANSACTIONS=off` restores the behaviour before: `ROLLBACK` undoes nothing.
+- **Dumps.** The undo log (`_wp_undo`, `_wp_undo_state` and the `_wp_undo_*` triggers) is not data, so `dumpTo()` leaves it out of a `dbmove.py` dump. The target makes its own on the first `BEGIN`. An import with `--replace` drops it with the other tables.
 
 **Gate.** `tests/tx/tx_check.py`, with the test-only route `tests/tx/test-tx-route.php` copied into the built tree (it is never shipped). 11 checks:
 - the transaction sees its own insert; rollback; commit;
