@@ -592,6 +592,16 @@ Two stuck starts with no answer at all came on both images (swap20 on FPM, swap2
 - #105: exempt requests to a dead container have no bound and pin the Store object;
 - #106: wait for the container rollout instead of a fixed 60 s.
 
+## Mail through Cloudflare Email Service (issue #104)
+
+The container has no mail transport, so before this change every `wp_mail()` ran `/usr/sbin/sendmail`, which is not there, and the mail was lost. The order mails were among them: Action Scheduler marked them complete. Conrad's decision (2026-11-06): Cloudflare Email Service.
+
+- **PHP:** `php/c1-mail.php`, a mu-plugin on `pre_wp_mail`, maps the `wp_mail()` arguments to one message: to, cc and bcc (from the arguments and the headers), Reply-To, the From that WordPress would use, the subject, the text, and HTML with a text part. Attachments go as base64. It sends the message through the outbound path (`http://worker.internal/`, `{"mail": ...}`). Only an answer of exactly `ok: true` is a success. Anything else, or no answer, returns false from `wp_mail()` and fires `wp_mail_failed` with the code. Each send writes one line to `/tmp/c1-mail.log` (`/_stats.php?what=mail`): the time, the result, the recipient domains, a hash of the subject, and the code. The line holds no address and no body.
+- **Worker:** the outbound handler passes the message to the Store object (`Store.sendMail`), which calls `env.EMAIL.send()`. The binding sends from `MAIL_FROM` only: the deploy writes `allowed_sender_addresses` for it. A From that WordPress asked for becomes the Reply-To. The answer is `{ok: true, messageId}` or `{ok: false, code, error}`. `/_store-info` shows `mail` (`configured`, `from`, `sent`, `failed`, `lastError`, with any address in it masked).
+- **Deploy:** `MAIL_FROM` (and `MAIL_FROM_NAME`, and `MAIL_ALLOWED_TO` for a test) in `deploy/variants/c1-config.sh`. `deploy.sh` checks before the deploy that the domain is onboarded and enabled for sending (`GET /zones`, then `GET /zones/<id>/email/sending/subdomains`, the API of `wrangler email sending list`).
+- **Tests:** `tests/mail-test.php` checks the mapping and the loud failure, with WordPress stubbed (20 checks). `tests/mail-worker-test.mjs` runs the real `sendMail` against a fake binding (13 checks). `deploy/variants/tests/c1-mail-config-test.sh` checks the config and the deploy check against a fake API (12 cases). The mutants: an error reply counted as sent; `wp_mail_failed` not fired; a binding error swallowed as success; no From replacement; no address masking; the enabled flag ignored; and the `c1.sh` of `main`. Each fails one or more checks.
+- **Live proof:** not run yet. It needs a sending subdomain, under change request #113 (`wpmail-test.skyphusion.org`, with every record under the subdomain, and the apex of `skyphusion.org` untouched).
+
 ## Warm start on a product view (issue #73)
 
 With the storefront cache, a shopper can browse cached pages while the container sleeps. Then the first request that needs the container (the cart, add to cart) waits for the cold start: 11 to 22 s, measured as starts after a stop.

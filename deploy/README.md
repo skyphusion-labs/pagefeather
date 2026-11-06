@@ -117,6 +117,27 @@ From [Containers pricing](https://developers.cloudflare.com/containers/platform/
 
 The token in `CLOUDFLARE_API_TOKEN` must be able to: deploy Workers (Workers Scripts edit), make Containers and push their image, make R2 buckets (Workers R2 Storage edit), and make an account API token (Account API Tokens edit), because Terraform makes the Litestream key. Without the last one, `terraform apply` fails at `cloudflare_account_token.litestream`. The deploy also reads the container rollout (`c1_wait`, issue #106); "Workers Containers Write", which making Containers needs, is enough for that (read 2026-11-06: applications and rollouts both 200 with a token that had only that group).
 
+### Mail for c1 (issue #104)
+
+The container has no mail program. `php/c1-mail.php` (a mu-plugin on `pre_wp_mail`) sends each `wp_mail()` to the Worker through the outbound path (`http://worker.internal/`). The Store object then sends it with a [Cloudflare Email Service](https://developers.cloudflare.com/email-service/) `send_email` binding. Without the settings below, the site sends no mail, and every `wp_mail()` returns false with the code `c1_mail_not_configured`. The failure fires `wp_mail_failed` and is counted in `/_store-info` (`mail`) and `/_stats.php?what=mail`. Mail is never lost in silence.
+
+Before you deploy:
+
+1. Your sending domain must use Cloudflare DNS, on the same account. Email Sending is in beta and needs Workers Paid to send to any address: 3,000 messages a month are included, then $0.35 per 1,000 (Email Service pricing, read 2026-11-06).
+2. Onboard the domain or a subdomain for sending. Wrangler 4.107 can do it: `npx wrangler email sending enable mail.example.com`. The dashboard can too: Email Service, Email Sending, Onboard Domain. This adds DNS records: an MX, an SPF TXT and a DKIM TXT on a `cf-bounce` name, and a DMARC TXT on `_dmarc`. Read them with `npx wrangler email sending dns get mail.example.com`. A subdomain keeps the records off your main domain, so mail already set up there is not changed.
+3. Set `MAIL_FROM` to an address on that domain.
+
+`deploy.sh` checks the domain before the deploy, with the same API that `wrangler email sending list` uses. If the domain is not onboarded and enabled, it stops. That check needs a token that can read the zone and its Email Sending settings.
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `MAIL_FROM` | none | The address the site sends from. The binding can send from this address only. When WordPress asks for another From (a plugin, a contact form), that address becomes the Reply-To. |
+| `MAIL_FROM_NAME` | the name WordPress asks for | The sender name |
+| `MAIL_ALLOWED_TO` | none | For a test deploy: comma-separated addresses. The binding can send to these only. |
+| `MAIL_CHECK` | `1` | `0` skips the domain check (for a negative test only) |
+
+Limits (Email Service): 50 recipients a message (to, cc and bcc together), 25 MiB with attachments, and 32 attachments. The mu-plugin refuses a message over a limit before it is sent. The Worker does not retry: a transient send error is a failure that the counter shows.
+
 ### Remove a c1 site
 
 ```sh

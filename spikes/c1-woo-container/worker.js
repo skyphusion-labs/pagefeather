@@ -73,7 +73,50 @@ Store.prototype.storeInfo = async function () {
 		purge: { sent: p.sent, deferred: p.deferred, failed: p.failed, retried: p.retried, pending: p.pending, last_ms_ago: p.last ? Date.now() - p.last : null, last_error: p.lastError },
 		queue: { limit: Number(this.env.QUEUE_LIMIT ?? 16), flowLimit: Number(this.env.FLOW_LIMIT || 2 * Number(this.env.QUEUE_LIMIT ?? 16)), timeoutS: Number(this.env.CONTAINER_TIMEOUT_S ?? 60), exemptTimeoutS: Number(this.env.CONTAINER_EXEMPT_TIMEOUT_S ?? 900), ...(this.queue || { inflight: 0, maxInflight: 0, admitted: 0, shed: 0, flow: 0, flowShed: 0, timedOut: 0, inflightExempt: 0, timedOutExempt: 0 }) },
 		warm: warmInfo(this, this.env),
+		mail: { configured: !!(this.env.EMAIL && this.env.MAIL_FROM), from: this.env.MAIL_FROM || '', ...(this.mail || { sent: 0, failed: 0, lastError: '', lastErrorAt: null }) },
 	};
+};
+// Mail (issue #104): php/c1-mail.php sends wp_mail() here through the outbound
+// path. The binding sends from MAIL_FROM only (a restricted send_email
+// binding, deploy/variants/c1-config.sh); when WordPress asked for another
+// From, that address becomes the Reply-To, so a reply still reaches it. The
+// answer is {ok: true, messageId} or {ok: false, code, error}; PHP turns the
+// second into false from wp_mail(). /_store-info counts both, with no address.
+// No retry here: a transient error (E_RATE_LIMIT_EXCEEDED, E_DELIVERY_FAILED)
+// is a failure the counter shows.
+Store.prototype.sendMail = async function (msg) {
+	const m = (this.mail ||= { sent: 0, failed: 0, lastError: '', lastErrorAt: null });
+	const fail = (code, error) => {
+		m.failed++;
+		// /_store-info shows it: an address in a binding error is masked.
+		m.lastError = (code + ': ' + error).replace(/[^\s@<>"]+@[^\s@<>"]+/g, '<address>');
+		m.lastErrorAt = new Date().toISOString();
+		return { ok: false, code, error };
+	};
+	const from = this.env.MAIL_FROM || '';
+	if (!this.env.EMAIL || !from) return fail('c1_mail_not_configured', 'mail is not set up: MAIL_FROM and the send_email binding (deploy/README.md)');
+	if (!msg || !msg.to || !msg.to.length || !msg.subject) return fail('c1_mail_invalid', 'a message needs to and subject');
+	const asked = msg.from && msg.from.email ? String(msg.from.email) : '';
+	const name = this.env.MAIL_FROM_NAME || (msg.from && msg.from.name) || '';
+	const out = { from: name ? { email: from, name } : from, to: msg.to, subject: msg.subject };
+	for (const k of ['cc', 'bcc', 'text', 'html']) if (msg[k] && msg[k].length) out[k] = msg[k];
+	const rt = msg.replyTo && msg.replyTo.email ? msg.replyTo : asked && asked.toLowerCase() !== from.toLowerCase() ? msg.from : null;
+	if (rt) out.replyTo = rt.name ? { email: rt.email, name: rt.name } : rt.email;
+	if (msg.attachments && msg.attachments.length) {
+		out.attachments = msg.attachments.map((a) => ({
+			filename: a.filename,
+			type: a.type || 'application/octet-stream',
+			disposition: 'attachment',
+			content: Uint8Array.from(atob(a.content || ''), (c) => c.charCodeAt(0)),
+		}));
+	}
+	try {
+		const r = await this.env.EMAIL.send(out);
+		m.sent++;
+		return { ok: true, messageId: (r && r.messageId) || '' };
+	} catch (e) {
+		return fail((e && e.code) || 'E_UNKNOWN', String((e && e.message) || e));
+	}
 };
 // Warm start on a product view (issue #73, warm.js): not through fetch, so the
 // bounded queue does not see it.
@@ -112,10 +155,18 @@ Store.prototype.shutdownNow = async function (kill) {
 Store.outboundByHost = {
 	'worker.internal': async (request, env) => {
 		const m = JSON.parse(await request.text());
-		if (env.TRACE) console.log('op', m.r2 ? m.r2.op + ' ' + (m.r2.key || m.r2.prefix || m.r2.src || '') : JSON.stringify(m).slice(0, 80));
+		// A mail is logged as "mail" only: no address and no subject in the logs.
+		if (env.TRACE) console.log('op', m.r2 ? m.r2.op + ' ' + (m.r2.key || m.r2.prefix || m.r2.src || '') : m.mail ? 'mail' : JSON.stringify(m).slice(0, 80));
 		let reply = { ok: false, error: 'unknown message' };
 		if (m.r2) reply = await r2op(env, m.r2);
-		else if (m.cache === 'purge') {
+		else if (m.mail) {
+			// Through the Store object, which holds the counters (issue #104).
+			try {
+				reply = await store(env).sendMail(m.mail);
+			} catch (e) {
+				reply = { ok: false, code: 'c1_mail_rpc', error: String((e && e.message) || e) };
+			}
+		} else if (m.cache === 'purge') {
 			// The page cache belongs to the Storefront entrypoint, and a purge
 			// reaches only the cache of the entrypoint that calls it. This handler
 			// runs in ContainerProxy, so it asks the Store object, which calls
