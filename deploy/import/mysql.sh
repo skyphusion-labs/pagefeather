@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Sourced by deploy/import.sh for VARIANT=a (MySQL or MariaDB through
 # Hyperdrive; a2 is variant a on PlanetScale), issue #31. Not run on its own.
 #

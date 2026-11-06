@@ -46,31 +46,9 @@ if [ -n "${HYPERDRIVE_SQL_MODE+x}" ]; then
 fi
 
 # Terraform state: local by default; DEPLOY_STATE=r2 writes a backend override
-# for the root in $1 (deploy/terraform or deploy/mysql).
-backend() {
-  [ "${DEPLOY_STATE:-local}" = r2 ] || return 0
-  : "${STATE_BUCKET:?set STATE_BUCKET}" "${STATE_ENDPOINT:?set STATE_ENDPOINT (https://<account>.r2.cloudflarestorage.com)}"
-  # Each site has its own state key, so the workspace the last site selected
-  # is not in this one and init refuses it. Start from default; tf() selects.
-  rm -f "$1/.terraform/environment"
-  cat > "$1/backend_override.tf" <<EOF
-terraform {
-  backend "s3" {
-    bucket                      = "$STATE_BUCKET"
-    key                         = "deploy/$NAME/$(basename "$1").tfstate"
-    region                      = "auto"
-    endpoints                   = { s3 = "$STATE_ENDPOINT" }
-    use_path_style              = true
-    use_lockfile                = true
-    skip_s3_checksum            = true
-    skip_credentials_validation = true
-    skip_metadata_api_check     = true
-    skip_region_validation      = true
-    skip_requesting_account_id  = true
-  }
-}
-EOF
-}
+# for the root in $1 (deploy/terraform or deploy/mysql). backend() is in tf-backend.sh.
+# shellcheck source=SCRIPTDIR/tf-backend.sh
+. "$ROOT/deploy/tf-backend.sh"
 # One workspace (one state) per site: a second NAME never touches the first.
 tf() { local dir=$1; shift; (cd "$dir" && terraform workspace select -or-create "$NAME" >/dev/null && terraform "$@"); }
 out() { tf "$TF" output -raw "$1"; }

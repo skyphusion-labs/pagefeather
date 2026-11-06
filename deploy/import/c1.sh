@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Sourced by deploy/import.sh for VARIANT=c1 (issue #31). Not run on its own.
 #
 # c1 keeps its database in SQLite on the container disk, replicated to R2 by
@@ -11,11 +12,11 @@
 #   phase 1 (default): seed. Needs NAME, CLOUDFLARE_API_TOKEN, ACCOUNT_ID.
 #   phase 2 (VERIFY=1, the same WORK): after the deploy, compare the rows of
 #   each table that the container loaded with the seed, then GET /.
-# Uses: ROOT IMP WORK URL SPIKE_TOKEN NAME from import.sh.
+# Uses: ROOT IMP WORK URL SPIKE_TOKEN NAME tf_ready tfi from import.sh.
 
 C1="$ROOT/spikes/c1-woo-container"
 
-c1_tf() { (cd "$ROOT/deploy/terraform" && terraform workspace select "$NAME" >/dev/null && terraform "$@"); }
+# Terraform: tf_ready and tfi from import.sh (deploy/tf-backend.sh), as deploy.sh keeps the state.
 
 c1_seed() {
   : "${NAME:?set NAME (the Terraform workspace of deploy.sh)}"
@@ -48,14 +49,14 @@ for x in ("-wal", "-shm"):
   sha=$(shasum -a 256 "$WORK/site.sqlite" | cut -d' ' -f1)
   size=$(wc -c < "$WORK/site.sqlite" | tr -d ' ')
   path="import-$(date -u +%Y%m%dt%H%M%Sz)"
-  (cd "$ROOT/deploy/terraform" && terraform init -input=false -reconfigure >/dev/null)
-  bucket=$(c1_tf output -raw replica_bucket)
-  ep=$(c1_tf output -raw r2_endpoint)
+  tf_ready || exit 1
+  bucket=$(tfi output -raw replica_bucket)
+  ep=$(tfi output -raw r2_endpoint)
   [ -n "$bucket" ] || { echo "c1: $NAME has no replica bucket (is it a c1 site?)" >&2; exit 1; }
   # The Litestream key of the site: object read and write on the replica
   # bucket only (deploy/terraform/c1.tf). The container reads the seed with it.
-  R2_KEY_ID=$(c1_tf output -raw litestream_access_key_id)
-  R2_SECRET=$(c1_tf output -raw litestream_secret_access_key)
+  R2_KEY_ID=$(tfi output -raw litestream_access_key_id)
+  R2_SECRET=$(tfi output -raw litestream_secret_access_key)
   s3() { curl -sS -K <(printf 'user = "%s:%s"\n' "$R2_KEY_ID" "$R2_SECRET") --aws-sigv4 "aws:amz:auto:s3" "$@"; }
   code=$(s3 -o /dev/null -w '%{http_code}' -X PUT -H 'content-type: application/vnd.sqlite3' -T "$WORK/site.sqlite" "$ep/$bucket/$path.seed.sqlite")
   [ "$code" = 200 ] || { echo "c1: seed upload failed ($code)" >&2; exit 1; }

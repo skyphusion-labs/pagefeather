@@ -123,6 +123,16 @@ The container stops (it does not start) if the seed download or its SHA-256 chec
 - **The work files hold the site's data** (user e-mail addresses and password hashes). The directory is mode 700. Remove it when you are done.
 - **Numbers.** A dump file from `dbmove-file.py` writes a whole REAL value as `1.0`. The Worker writes it as `1`. The columns are REAL, so SQLite stores both as REAL. That is why step 6 compares row counts, not the text of the rows.
 
+## Terraform state
+
+`import.sh` reads the site's spike token (with `NAME`) and makes the media key from the site's Terraform state. It initialises Terraform as `deploy.sh` does (`deploy/tf-backend.sh`). It never makes a workspace: a site it cannot find is an error that says what to do.
+
+- **Local state (the default)** is only in the clone that ran `deploy.sh` (`deploy/terraform/terraform.tfstate.d/`). Run `import.sh` in that clone.
+- **`DEPLOY_STATE=r2`** (with `STATE_BUCKET`, `STATE_ENDPOINT` and the R2 key) works from any clone. If that clone has no `sites/<name>.tfvars`, the script takes the same values from the state's outputs.
+- The media key applies use `-target=cloudflare_account_token.media_import`, so they cannot change any other resource of the site.
+
+A fresh clone failed before this with `Required plugins are not installed` (2026-11-06): the script read outputs without `terraform init`.
+
 ## Local tests cannot see the edge
 
 A deployed `workers.dev` site has security checks at the edge that `wrangler dev` does not have. The first deployed import (2026-11-06, `wp-import-test`, Workers Paid) stopped at `dbmove.py import`, part 0, with `HTTP 403 error code: 1010`: the edge refused Python urllib's default User-Agent (`Python-urllib/3.x`). Every local test had passed. Nothing reached the object. Now `dbmove.py` sends `User-Agent: wp-on-cf-import/1` (test: `tests/test_user_agent.py`), and so do the `curl` calls of `import.sh` to the site. So a deployed run is part of the gate for this tool, not an extra.
@@ -141,6 +151,23 @@ Slice 2, 2026-11-06, same local Worker: `build.sh` with `IMPORT_CONTENT` from th
 `c1`, 2026-11-06, local (no Docker on this computer, so no container): `tests/run.sh` runs `seed.sh` against the stand-in. It checks a good seed, a wrong SHA-256, a missing object, a restored database (it wins), and no `SEED_SHA256`. Then the `c1` build's own WordPress tree (`spikes/c1-woo-container/build.sh`, WooCommerce in it) ran under `php -S` with `router.php` on the a2 seed (made by `import.sh` steps 1 to 3). `/`, `/?p=1`, `wp-login.php` and the shop page were HTTP 200, with no PHP errors. The real container, Litestream and the deploy are not run yet.
 
 Variant `a`, 2026-11-06, local (no MySQL on this computer): `mysql-prepare.py` on the a2 dump, for MySQL and for MariaDB, made 228 statements with 8583 rows. The address changed in 26 values, as `search-replace.py` does on SQLite. `checkStatement` of the endpoint allowed all 228. Eight `CREATE TABLE` statements of Wordfence were refused before the hex `DEFAULT` rewrite. The import into MySQL is not run yet.
+
+## Measured on a deployed site
+
+2026-11-06, `wp-import-test` (`VARIANT=b-dosql`, `MEDIA=1`, Workers Paid, `workers.dev`), from `plugin-parity` at `508d65d`, run by the lead. Command: `URL=... NAME=wp-import-test DUMP=wp-a2-dump.sql CONTENT=wp-content.tar.gz ./deploy/import.sh`. Source: the a2 dump above and a macOS `tar` of WordPress 7.1.4's `wp-content` with one upload.
+
+| Step | Result |
+| --- | --- |
+| Dump to SQLite | 228 statements, 8583 rows in 98 tables |
+| Site address | 26 values changed |
+| Archive | 445 files, 504 macOS entries skipped |
+| Import | 3 parts (2637, 3799, 3937 statements), 10373 statements |
+| Rows | export 10067 rows: every table matches |
+| Uploads | 1 sent, 0 failed; the check run: 0 sent, 1 already there |
+| Media key | deleted after the step; the account token list has no import key |
+| Site | `GET /` 200 with the source site's title; the upload through the site, from R2: 200 `image/jpeg`, 4 bytes |
+
+The first deployed run stopped at the import with error 1010 (see "Local tests cannot see the edge"). This run is after that fix (#72). R2's S3 endpoint accepted `curl`'s default User-Agent.
 
 ## Tests
 
