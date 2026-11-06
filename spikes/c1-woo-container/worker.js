@@ -5,6 +5,7 @@
 // replicated to R2 by Litestream. PHP in the container reaches R2, Images and
 // the cache purge through worker.internal (an outbound handler); it holds no keys
 // for them.
+import { isProductView, gatewayMayWarm, warmStart, warmInfo } from './warm.js';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { WorkerEntrypoint, cache } from 'cloudflare:workers';
 
@@ -70,7 +71,13 @@ Store.prototype.storeInfo = async function () {
 		replica_path: this.envVars.REPLICA_PATH,
 		purge: { sent: p.sent, deferred: p.deferred, failed: p.failed, retried: p.retried, pending: p.pending, last_ms_ago: p.last ? Date.now() - p.last : null, last_error: p.lastError },
 		queue: { limit: Number(this.env.QUEUE_LIMIT ?? 16), flowLimit: Number(this.env.FLOW_LIMIT || 2 * Number(this.env.QUEUE_LIMIT ?? 16)), ...(this.queue || { inflight: 0, maxInflight: 0, admitted: 0, shed: 0, flow: 0, flowShed: 0 }) },
+		warm: warmInfo(this, this.env),
 	};
+};
+// Warm start on a product view (issue #73, warm.js): not through fetch, so the
+// bounded queue does not see it.
+Store.prototype.warmStart = async function () {
+	return warmStart(this);
 };
 Store.prototype.shutdownNow = async function (kill) {
 	const running = this.ctx.container.running;
@@ -377,6 +384,9 @@ export default {
 		if (Number(req.headers.get('content-length') || 0) > Number(env.MAX_BODY_BYTES || 20 * 1024 * 1024)) return new Response('request body too large', { status: 413 });
 		if (env.MEDIA && (req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/wp-content/uploads/')) return serveUpload(req, env, url);
 		if (storefrontCacheable(req, url)) {
+			// Warm start (#73): the page comes from the edge as before; the start
+			// runs after the response, and at most once per WARM_GAP_S here.
+			if (isProductView(url, env.WARM_PATHS) && gatewayMayWarm(env)) ctx.waitUntil(store(env).warmStart().catch(() => {}));
 			const h = new Headers(req.headers);
 			h.delete('cookie');
 			return ctx.exports.Storefront.fetch(new Request(req, { headers: h }));
