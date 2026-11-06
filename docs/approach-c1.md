@@ -154,7 +154,7 @@ The numbers in this document compare against wp-c1-perf, not wp-c1. Repeat a c1 
 
 Issue #45. With `DISABLE_WP_CRON`, Action Scheduler runs its queue through an async loopback: the site sends a POST to its own `admin-ajax.php`. That request runs one batch, then calls `sleep( 5 )` (filter `action_scheduler_async_request_sleep_seconds`), then sends the next loopback. An admin request starts the chain; storefront requests do not. In the load run, 30 of these requests held one of the PHP processes from 46 s to 312 s: 6 to 14 s wall each, for 0.1 to 0.8 s of CPU. Every checkout adds one email action to the queue.
 
-Under load the chain stops. With wp-c1's database (63 pending actions at the start), the first runner request took 18.6 s and 4.1 CPU s (one batch of emails), 9 more followed about 6 s apart, and then none for the remaining 7 minutes. Pending actions went from 63 to 137: the queue was larger at the end than at the start. So with WP-Cron off, order emails can wait without limit on a busy store. Issue #45 has the fix candidates.
+Under load the chain stops. With wp-c1's database (63 pending actions at the start), the first runner request took 18.6 s and 4.1 CPU s (one batch of emails), 9 more followed about 6 s apart, and then none for the remaining 7 minutes. Pending actions went from 63 to 137: the queue was larger at the end than at the start. So with WP-Cron off, order emails can wait without limit on a busy store. The fix is the local queue runner (section "Queue runner" below).
 
 ## Object cache in APCu (2026-11-05)
 
@@ -245,6 +245,55 @@ From the container log:
 - **The CPU per request does not change with the instance.** So the ceiling is about vCPU / 0.15 s: about 3 requests per second on standard-1 and about 6 on standard-2 (measured), about 12 on standard-3 (2 vCPU) and about 24 on standard-4 (4 vCPU) (predicted, not measured).
 - **The cost.** [Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/) (page updated 2026-10-05, read 2026-11-06): memory $0.0000025 per GiB-second and disk $0.00000007 per GB-second for the provisioned size while the container runs; CPU $0.000020 per vCPU-second while it is busy. Awake and idle: about $0.038 an hour on standard-1 (4 GiB, 8 GB), about $0.057 on standard-2 (6 GiB, 12 GB). At full load, add about $0.036 (standard-1) or $0.072 (standard-2) an hour of CPU. Workers Paid includes 25 GiB-hours, 375 vCPU-minutes and 200 GB-hours a month.
 
+## Queue runner: WP-Cron from inside the container (2026-11-06)
+
+Issue #45. `QUEUE_RUNNER=local` (the default; `loopback` keeps the old path).
+
+### What changed
+
+- `container/entrypoint.sh` requests `http://127.0.0.1/wp-cron.php` every `CRON_SECONDS` (60) while the container is awake. The request runs in PHP's own server, so it uses the same APCu cache as the visitor requests, and it does not go out through the Worker. Action Scheduler's `action_scheduler_run_queue` event (every minute) then processes batches for up to 30 s.
+- `php/c1-queue.php` turns off Action Scheduler's async loopback (`action_scheduler_allow_async_request_runner`). No request holds a PHP process with `sleep( 5 )` any more.
+- `router.php` does not count a `wp-cron.php` request from 127.0.0.1 as activity, so the loop does not keep an idle container awake. The queue waits while the container sleeps and runs again on the next start.
+- Not php-cli: a php-cli process has its own, empty APCu, so it would write past the cache that the server's processes read.
+- The URL has no `?doing_wp_cron=`. With a key that `spawn_cron()` did not set, `wp-cron.php` returns at once and runs nothing (seen locally: 3 runs, 0 actions).
+
+Before this change no WP-Cron event ran on c1 (`DISABLE_WP_CRON`). Now the other events run too: scheduled posts, WooCommerce session clean-up and scheduled sales.
+
+**Updates.** `php/c1-queue.php` also removes WordPress core's update checks (`wp_version_check`, `wp_update_plugins`, `wp_update_themes`, `wp_maybe_auto_update`). They send the site's versions and plugin list to api.wordpress.org, and an update cannot be installed in place: the code is in the image. Updates arrive with a new image: change the pins in `spikes/c1-woo-container/build.sh` (WordPress, WooCommerce, the SQLite driver, the object cache drop-in) and in `tests/plugins/suite.txt`, then run `deploy/deploy.sh`. So "no update check" does not mean "never updated"; it means you update by rebuilding.
+
+### Measured
+
+- Locally (php -S on the c1 build, the image's SQLite driver, 230 Store API checkouts): 467 actions pending after the load; one `wp-cron.php` run took 18.8 s and left 1.
+- Live, before the load run (wp-c1-perf, `swap4`: wp-c1's database with 63 pending actions): the first local run took 11.8 s wall and 5.2 CPU s, and pending went from 63 to 2. The next run, about 72 s later, took 0.05 s. 0 loopback requests.
+
+So the store starts the load run with an empty queue. That is the change working: the backlog is done in the background, not by visitor requests.
+
+### Under load
+
+The same seeded data as the APCu run on `standard-1` (wp-c1's database, replica path `swap4`), APCu, 4 PHP workers. That run (`swap2`) used the loopback. Result: `deploy/results/bench-runner-20261106T010848Z-6f798b.json`. This run started with a warm cache (the container stayed awake from its start) and the APCu run started cold, which helps this run a little.
+
+| | loopback (`swap2`) | local runner (`swap4`) |
+| --- | --- | --- |
+| Pending actions at the start / end of the run | 63 / 193 | 2 / 20 |
+| Checkouts in the run | 190 | 184 |
+| Loopback runner requests | 1 | 0 |
+| Local cron runs in the run | 0 | 6 |
+
+The loopback let the queue grow by 130. The local runner kept up with 184 checkouts and ended with 20, about one minute of orders.
+
+The cost, from the container log: the 6 runs took 2.4 to 28.5 s wall and 0.8 to 2.7 CPU s each, about 80 s apart. Together they held 0.18 of the 5 PHP processes on average, and they used 5.4 % of the CPU (11.9 of 219 CPU s). That is the work of sending the order emails. With the loopback it was not done, so the queue grew.
+
+| Users | loopback: rps | loopback: browse p50 / p95 | loopback: checkout p50 / p95 | local: rps | local: browse p50 / p95 | local: checkout p50 / p95 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 2.39 | 0.39 / 0.88 s | 0.54 / 0.64 s | 2.53 | 0.38 / 0.51 s | 0.52 / 0.61 s |
+| 5 | 3.17 | 1.66 / 2.23 s | 2.70 / 3.08 s | 2.91 | 1.76 / 2.88 s | 2.73 / 3.92 s |
+| 10 | 3.05 | 3.75 / 6.26 s | 4.27 / 6.62 s | 2.76 | 3.79 / 5.38 s | 5.36 / 6.68 s |
+| 25 | 3.01 | 7.91 / 10.3 s | 9.19 / 12.8 s | 2.84 | 7.83 / 10.1 s | 9.60 / 11.5 s |
+| 50 | 2.97 | 15.5 / 17.9 s | 16.6 / 19.6 s | 2.77 | 15.2 / 19.0 s | 17.0 / 19.7 s |
+| 100 | 3.09 | 26.9 / 35.9 s | 29.2 / 36.5 s | 2.87 | 28.5 / 33.4 s | 29.0 / 36.4 s |
+
+0 errors in both. The CPU for each storefront request did not change (0.153 and 0.155 s). The ceiling went from about 3.05 to about 2.85 requests per second: the CPU that now sends the emails.
+
 ## Problems found
 
 - WooCommerce writes log files under `uploads/wc-logs`. With uploads in R2, every log line was an R2 read and write: about 30 calls and about 15 s of each checkout. `WC_LOG_DIR` now points to local disk (also in approach B).
@@ -261,7 +310,6 @@ From the container log:
 
 ## Next
 
-- Action Scheduler with WP-Cron off: a php-cli queue run in the container, so no loopback holds a PHP process and the queue does not grow without limit under load (#45). In the standard-2 run, 8 runner requests ran in the first 45 s and none after; pending actions went from 63 to 348.
 - Limit the queue at the PHP server: at high load a request waits in the accept backlog until the client gives up. An early 503 is better for the tail than a 60 s wait.
 - The rest of the CPU is the start of WordPress and WooCommerce and the rendering (about 0.15 s a page with APCu): profile it before more caching.
 - Start the container before it is needed: on a product page view, or keep it awake in store hours.

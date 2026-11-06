@@ -1,7 +1,10 @@
 <?php
 // Idle watchdog (entrypoint.sh): every request marks the time, except health
-// checks (/ping) and the test boot id, which would keep the container awake.
-if ( ! in_array( parse_url( $_SERVER['REQUEST_URI'], PHP_URL_PATH ), array( '/ping', '/_boot.txt' ), true ) ) {
+// checks (/ping), the test boot id, and the container's own queue runner
+// (wp-cron.php from 127.0.0.1), which would keep the container awake.
+$c1_path = parse_url( $_SERVER['REQUEST_URI'], PHP_URL_PATH );
+$c1_self = '/wp-cron.php' === $c1_path && '127.0.0.1' === ( $_SERVER['REMOTE_ADDR'] ?? '' );
+if ( ! $c1_self && ! in_array( $c1_path, array( '/ping', '/_boot.txt' ), true ) ) {
 	@touch( '/tmp/last-request' );
 }
 // Request log for the concurrency work (container/stats.php, what=req): start
