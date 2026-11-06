@@ -139,6 +139,8 @@ Before you deploy:
 
 The Reply-To: when WordPress or a plugin asks for another From, that address becomes the Reply-To, so a reply reaches it. A Reply-To that cannot receive mail is dropped: the reserved `example.com`, `example.org`, `example.net`, `.invalid`, `.test` and `localhost`, and `workers.dev`. On an EXISTING site (one restored from a replica, so not installed again), the install values stay as they were. Set the admin email (Settings, General) and WooCommerce's From address (WooCommerce, Settings, Emails) to real addresses once. The customer mails otherwise carry the old From, `admin@example.com` from the first install, which the Worker now drops as a Reply-To, and no reply reaches you.
 
+To stop sending from a domain: `npx wrangler email sending disable mail.example.com --force`. Without `--force`, in a shell with no terminal, it prints "Not disabling." and EXITS 0, so a script reads success where nothing changed (Wrangler 4.107, measured 2026-11-06). The disable removed 5 of the 6 records and left the DMARC TXT on `_dmarc`, so delete that record yourself, then check that the domain is gone from `npx wrangler email sending list`.
+
 Limits (Email Service): 50 recipients a message (to, cc and bcc together), 25 MiB with attachments, and 32 attachments. The mu-plugin refuses a message over a limit before it is sent. The Worker does not retry: a transient send error is a failure that the counter shows.
 
 ### Remove a c1 site
