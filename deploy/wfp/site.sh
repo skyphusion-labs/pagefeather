@@ -82,7 +82,12 @@ elif [ "$cmd" = down ]; then
 
   log "site $s: user Worker $U"
   api DELETE "/workers/dispatch/namespaces/$NAMESPACE/scripts/$U?force=true" > /dev/null || true
-  gone "user Worker $U" "/workers/dispatch/namespaces/$NAMESPACE/scripts/$U"
+  # Not by the single GET's status (a deleted script can read 200 there): lib.sh ns_script_state.
+  st=$(ns_script_state "$U")
+  case "$st" in
+    gone) echo "  user Worker $U is gone (not in the namespace list; the single GET is 404 or an empty record)" ;;
+    *) echo "  user Worker $U is NOT known to be gone ($st): stopping" >&2; exit 1 ;;
+  esac
 
   log "site $s: media bucket emptied, then the workspace destroyed"
   # A down never creates: no workspace means no data plane to remove.

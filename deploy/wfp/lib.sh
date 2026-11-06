@@ -18,7 +18,7 @@ GEN="$WFP/gen"
 NAMESPACE=${NAMESPACE:-wp-wfp}
 ACCOUNT_ID=${ACCOUNT_ID:-fabcb25d9c7eb087110ec474a03e50d2} # Skyphusion Labs (Workers Paid, WfP on)
 export CLOUDFLARE_ACCOUNT_ID=$ACCOUNT_ID
-API="https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID"
+API=${WFP_API:-https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID}
 
 # A site name: lower case, digits and hyphens, 1 to 30 characters, no hyphen at
 # either end (wp-wfp-<name>-media must stay a valid bucket name).
@@ -88,6 +88,48 @@ api() { # api <method> <path> [curl args...]: prints the body, then a line with 
   curl -s -m 60 -X "$m" -K <(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN") -w '\n%{http_code}' "$API$p" "$@"
 }
 api_code() { api "$@" | tail -1; }
+# A script in the namespace: present, gone or unknown. The HTTP status of the
+# single GET is NOT enough: after a DELETE it can answer 200 with success true
+# and a record whose script id is null (a ghost, seen live 2026-11-06 on
+# site-one), while the namespace list no longer has it and a second DELETE
+# answers 10007 "This Worker does not exist". So: gone when the list does not
+# have it AND the single GET is 404 or a ghost; present when either has it;
+# unknown when the list cannot be read.
+ns_script_state() { # ns_script_state <script>
+  local t; t=$(mktemp -d)
+  api GET "/workers/dispatch/namespaces/$NAMESPACE/scripts?per_page=1000" > "$t/list"
+  api GET "/workers/dispatch/namespaces/$NAMESPACE/scripts/$1" > "$t/one"
+  python3 - "$1" "$t/list" "$t/one" <<'PY'
+import json, sys
+name = sys.argv[1]
+def read(p):
+    lines = open(p).read().rsplit("\n", 1)
+    body, code = (lines[0], lines[1].strip()) if len(lines) == 2 else ("", lines[0].strip())
+    try:
+        return code, json.loads(body)
+    except ValueError:
+        return code, None
+lc, l = read(sys.argv[2]); oc, o = read(sys.argv[3])
+if lc != "200" or not isinstance(l, dict) or not isinstance(l.get("result"), list):
+    print("unknown"); sys.exit()
+def ids(x):
+    return {x.get("id"), (x.get("script") or {}).get("id")} if isinstance(x, dict) else set()
+in_list = any(name in ids(x) for x in l["result"])
+if oc == "404":
+    one = "absent"
+elif oc == "200" and isinstance(o, dict) and isinstance(o.get("result"), dict):
+    one = "present" if name in ids(o["result"]) else "ghost"
+else:
+    one = "unknown"
+if in_list or one == "present":
+    print("present")
+elif one in ("absent", "ghost"):
+    print("gone")
+else:
+    print("unknown")
+PY
+  rm -rf "$t"
+}
 subdomain() {
   api GET /workers/subdomain | sed '$d' | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["subdomain"])'
 }
