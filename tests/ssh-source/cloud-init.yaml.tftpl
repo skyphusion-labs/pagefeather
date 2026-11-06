@@ -1,0 +1,56 @@
+#cloud-config
+# The SSH test source of #83 (tests/ssh-source/main.tf). No inbound traffic:
+# ufw denies it, and sshd listens on 127.0.0.1 only. cloudflared, an outbound
+# tunnel, is the only way in. The user importer can read the site (group
+# www-data, files 640/750) and cannot write it. No web server: the import
+# reads files and the database only.
+package_update: true
+packages: [mariadb-server, php-cli, php-mysql, php-xml, php-mbstring, php-gd, php-curl, unzip, curl, ufw, gnupg]
+users:
+  - default
+  - name: importer
+    groups: [www-data]
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+write_files:
+  - path: /etc/ssh/sshd_config.d/90-ssh-source.conf
+    content: |
+      ListenAddress 127.0.0.1
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin no
+runcmd:
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw --force enable
+  - systemctl restart ssh
+  # MariaDB: the WordPress database, its user only on localhost.
+  - mysql -e "CREATE DATABASE wordpress CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER 'wp'@'localhost' IDENTIFIED BY '${db_password}'; GRANT ALL ON wordpress.* TO 'wp'@'localhost'; FLUSH PRIVILEGES;"
+  # WP-CLI, checked against its published SHA-512.
+  - curl -sSfL -o /tmp/wp-cli.phar https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+  - curl -sSfL -o /tmp/wp-cli.phar.sha512 https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar.sha512
+  - sh -c 'echo "$(awk "{print \$1}" /tmp/wp-cli.phar.sha512)  /tmp/wp-cli.phar" | sha512sum -c - && install -m 755 /tmp/wp-cli.phar /usr/local/bin/wp'
+  - rm -f /tmp/wp-cli.phar /tmp/wp-cli.phar.sha512
+  # WordPress and a small test site: posts, one upload, one active plugin.
+  - install -d -o www-data -g www-data -m 750 /var/www/wordpress
+  - sudo -u www-data wp core download --path=/var/www/wordpress
+  - sudo -u www-data wp config create --path=/var/www/wordpress --dbname=wordpress --dbuser=wp --dbpass='${db_password}' --dbhost=localhost
+  - sudo -u www-data wp core install --path=/var/www/wordpress --url=https://wp-ssh-source.invalid --title='SSH source test' --admin_user=admin --admin_password='${admin_password}' --admin_email=admin@example.com --skip-email
+  - sudo -u www-data wp post generate --path=/var/www/wordpress --count=5
+  - sudo -u www-data php -r '$i = imagecreatetruecolor(64, 64); imagefill($i, 0, 0, imagecolorallocate($i, 30, 120, 200)); imagepng($i, "/tmp/test.png");'
+  - sudo -u www-data wp media import /tmp/test.png --path=/var/www/wordpress --title='Test image'
+  - rm -f /tmp/test.png
+  - sudo -u www-data wp plugin activate hello --path=/var/www/wordpress
+  # Read for the group, write for www-data only.
+  - chown -R www-data:www-data /var/www/wordpress
+  - find /var/www/wordpress -type d -exec chmod 750 {} +
+  - find /var/www/wordpress -type f -exec chmod 640 {} +
+  # cloudflared from Cloudflare's apt repository, as a service with the tunnel token.
+  - install -d -m 0755 /usr/share/keyrings
+  - curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg
+  - echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared noble main' > /etc/apt/sources.list.d/cloudflared.list
+  - apt-get update -q && apt-get install -y -q cloudflared
+  - cloudflared service install '${tunnel_token}'
+  - date -u +%Y-%m-%dT%H:%M:%SZ > /var/lib/ssh-source-ready
