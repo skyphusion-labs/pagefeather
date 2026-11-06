@@ -90,13 +90,19 @@ if ses.get("error"):
 for k in ("server_session_mode", "server_global_mode", "server_version", "server_connection_id"):
     v = (ses.get("steps") or {}).get(k) or {}
     print("%-22s %s %s" % (k, v.get("shape") or ("ERROR %s" % v.get("errno") if v else "-"), v.get("rows") if v.get("shape") == "rows" else (v.get("error") or {kk: v.get(kk) for kk in ("affected", "info", "fieldCount")})))
-print("server sql_mode:", ses.get("server_mode"))
-print("relaxed mode:   ", ses.get("relaxed_mode"))
-for k in ("S1_kept_all", "S2_kept_in_transaction", "S3_hint_applies", "D1_plain_ddl_ok", "D2_txn_ddl_ok", "table_made"):
-    print("%-24s %s" % (k, ses.get(k)))
-for k in ("D3_insert_plain", "D3_insert_hint", "D4_insert_default_hint", "D5_update_hint", "D6_select_hint", "G1_group_plain", "G2_group_hint", "D7_delete_hint", "D_drop"):
-    v = (ses.get("steps") or {}).get(k)
-    if v:
-        print("%-24s %s %s" % (k, "ok" if v.get("ok") else "ERROR %s" % v.get("errno"), (v.get("error") or "")[:120]))
+print("relaxed mode tried:", ses.get("relaxed_mode"))
+for k, v in (ses.get("verdict") or {}).items():
+    print("%-40s %s" % (k, v))
+def show(k, v):
+    if isinstance(v, list):
+        for i, x in enumerate(v):
+            show("%s[%d]" % (k, i), x)
+        return
+    if isinstance(v, dict) and "sql" in v:
+        print("  %-28s %-6s %s" % (k, "ran" if v.get("ok") else "ERR %s" % v.get("errno"), (v.get("error") or "")[:90]))
+for k, v in (ses.get("steps") or {}).items():
+    if not k.startswith("server_"):
+        show(k, v)
+print("scratch tables left:", ses.get("tables_left"))
 print("result:", res)
 PY
