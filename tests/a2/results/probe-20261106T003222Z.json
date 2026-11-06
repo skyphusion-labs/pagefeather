@@ -1,0 +1,50 @@
+{
+ "placement": "region=aws:us-east-2",
+ "latency": [],
+ "session": {
+  "colo": {
+   "ingress": "ORD",
+   "run": "ORD"
+  },
+  "utc": "2026-11-06T00:32:22.432Z",
+  "steps": {
+   "server_session_mode": {
+    "sql": "SELECT @@SESSION.sql_mode",
+    "ok": true,
+    "shape": "rows",
+    "rows": [],
+    "ms": 40
+   },
+   "server_global_mode": {
+    "sql": "SELECT @@GLOBAL.sql_mode",
+    "ok": true,
+    "shape": "rows",
+    "rows": [],
+    "ms": 20
+   },
+   "server_version": {
+    "sql": "SELECT VERSION()",
+    "ok": true,
+    "shape": "rows",
+    "rows": [
+     [
+      "8.4.11-Vitess"
+     ]
+    ],
+    "ms": 19
+   },
+   "server_connection_id": {
+    "sql": "SELECT CONNECTION_ID()",
+    "ok": true,
+    "shape": "rows",
+    "rows": [
+     [
+      "29"
+     ]
+    ],
+    "ms": 21
+   }
+  },
+  "error": "SELECT @@SESSION.sql_mode returned no row: see steps.server_session_mode"
+ }
+}

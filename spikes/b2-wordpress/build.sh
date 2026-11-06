@@ -43,6 +43,7 @@ mkdir -p "$wp/wp-content/mu-plugins/r2-uploads"
 cp php/cf-images-editor.php "$wp/wp-content/mu-plugins/r2-uploads/"
 if [ "${ENGINE:-d1}" = a ]; then
   cp php/hyperdrive-db.php "$wp/wp-content/db.php"
+  cp php/hyperdrive-sql-mode.php "$wp/wp-content/hyperdrive-sql-mode.php"
 else
 cp php/db.php php/d1-pdo.php php/d1-dialect.php "$wp/wp-content/"
 # The plugin's installer opens its own connection to DB_PATH. Make it use the

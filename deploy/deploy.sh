@@ -17,6 +17,10 @@
 # Optional: LOCATION (default enam), MEDIA=1 (R2 media library; R2 must be on),
 # WOO_ACTIVE=1 (activate WooCommerce after the install; c1 always has it
 # active, so set it on b-do, b-dosql and a to compare like with like),
+# HYPERDRIVE_SQL_MODE (variant a on a strict MySQL such as PlanetScale: the
+# sql_mode each statement carries, e.g.
+# ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION; see
+# spikes/b2-wordpress/php/hyperdrive-sql-mode.php. Unset: no change),
 # BENCH=0 (skip the measurements), N (runs per page, default 10), PORT (local
 # wrangler dev port for the OPcache step, default 8798), DEPLOY_STATE=r2 (keep
 # Terraform state in an R2 bucket; see README.md).
@@ -36,6 +40,10 @@ export PORT=${PORT:-8798}
 export WOO_ACTIVE=${WOO_ACTIVE:-0}
 log() { printf '\n== %s\n' "$*"; }
 case "$VARIANT" in b-do|b-dosql|a|c1) ;; *) echo "VARIANT must be b-do, b-dosql, a or c1"; exit 2 ;; esac
+if [ -n "${HYPERDRIVE_SQL_MODE+x}" ]; then
+  [ "$VARIANT" = a ] || { echo "HYPERDRIVE_SQL_MODE is for variant a only" >&2; exit 2; }
+  [[ "$HYPERDRIVE_SQL_MODE" =~ ^[A-Za-z_,]*$ ]] || { echo "HYPERDRIVE_SQL_MODE: mode names and commas only" >&2; exit 2; }
+fi
 
 # Terraform state: local by default; DEPLOY_STATE=r2 writes a backend override
 # for the root in $1 (deploy/terraform or deploy/mysql).
@@ -157,6 +165,8 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
   echo '[cache]'; echo 'enabled = true'
   echo '[vars]'
   echo "PHP_ENV = '{\"USE_ZEND_ALLOC\":\"0\"}'"
+  # The Worker writes it into wp-runtime.php as a PHP constant.
+  [ -z "${HYPERDRIVE_SQL_MODE+x}" ] || echo "HYPERDRIVE_SQL_MODE = \"$HYPERDRIVE_SQL_MODE\""
   if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
     echo 'PHP_IN_DO = "on"'
     echo "PHP_LOCATION = \"$LOCATION\""

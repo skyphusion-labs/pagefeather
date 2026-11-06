@@ -66,3 +66,7 @@ Repository: [WordPress/wordpress-playground](https://github.com/WordPress/wordpr
 ## Cloudflare templates
 
 - [cloudflare/templates#1173: WordPress on Workers (php-wasm + Hyperdrive + R2)](https://github.com/cloudflare/templates/issues/1173). A template proposal, open since 2026-10-20.
+
+## PlanetScale and Hyperdrive
+
+- [Cloudflare and PlanetScale integration](https://developers.cloudflare.com/workers/databases/third-party-integrations/planetscale/): a PlanetScale database made from Cloudflare, reached through Hyperdrive, billed (as announced) through the Cloudflare account. Variant `a2` uses it to make its database ([approach-a2.md](approach-a2.md)). Also [Hyperdrive: PlanetScale](https://developers.cloudflare.com/hyperdrive/planetscale/), the [2025-09 Cloudflare post](https://blog.cloudflare.com/planetscale-postgres-workers), the [2026-04-16 Cloudflare post](https://blog.cloudflare.com/deploy-planetscale-postgres-with-workers) and the [2026-02-19 PlanetScale post](https://planetscale.com/blog/cloudflare-hyperdrive-real-time).

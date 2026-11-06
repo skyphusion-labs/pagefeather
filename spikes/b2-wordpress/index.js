@@ -406,6 +406,10 @@ async function boot(origin) {
 	if (ENV.MEDIA && ENV.IMAGES) lines.push(`define('CF_IMAGES', true);`);
 	// A deploy (WP_SALT is set) shows no PHP errors or database errors to visitors.
 	if (ENV.WP_SALT) lines.push(`define('WP_DEBUG', false);`);
+	// Variant a on a strict MySQL (PlanetScale): the sql_mode each statement
+	// carries (php/hyperdrive-sql-mode.php). Mode names and commas only.
+	if (typeof ENV.HYPERDRIVE_SQL_MODE === 'string' && /^[A-Za-z_,]*$/.test(ENV.HYPERDRIVE_SQL_MODE))
+		lines.push(`define('HYPERDRIVE_SQL_MODE', ${JSON.stringify(ENV.HYPERDRIVE_SQL_MODE)});`);
 	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
 
 	php.onMessage(handleMessage);
