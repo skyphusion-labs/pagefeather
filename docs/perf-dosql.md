@@ -190,6 +190,66 @@ Locally, two A/B runs of the same code gave home PHP ms 91.5 to 64.5 (new instal
 
 **Not measured:** the cache after an isolate restart (it starts empty, as after a deploy); memory near the 8 MB cap (the test site used 382 keys, 208 KiB); the runner's load matrix with the change.
 
+## Change 2: the editor's theme REST routes across requests (measured 2026-11-05)
+
+**Why.** Logged-in admin pages and the editor are always uncached. `post-new.php` is the heaviest page. Its REST preload takes about 70% of its PHP time locally (#53). Throwaway ceilings on Cloudflare showed the preload's theme routes as the larger half: post-new CPU p50 -20 to -28% for the routes alone, and -10 to -19% for the editor settings alone.
+
+**The change.** `php/rest-route-cache.php` (mu-plugin) keeps the answers of these routes in the object cache across requests:
+- `GET /wp/v2/global-styles/themes/<stylesheet>`
+- `GET /wp/v2/global-styles/themes/<stylesheet>/variations`
+- `GET /wp/v2/templates/lookup`
+
+How it works:
+- It is on only with `JS_OBJECT_CACHE` and `JS_ROUTE_CACHE`. The Worker defines the second for `PHP_IN_DO` plus `DB_IN_DO`, unless `OBJECT_CACHE` or `ROUTE_CACHE` is `off`.
+- It answers in `rest_dispatch_request`. WordPress runs that **after** the route's `permission_callback`.
+- It stores the callback's own answer, so the filters after the callback still run on every answer.
+- The key holds:
+  - the route and its sorted query;
+  - the user;
+  - the WordPress version and `determine_locale()`;
+  - the theme and its parent, with versions;
+  - the active plugins and the registered block types;
+  - for `templates/lookup`, a counter of writes to templates (below).
+- It fails safe. If a callback on a hook that shapes these answers is not defined in `wp-includes` or `wp-admin`, or cannot be identified, the route is not cached. The hooks are the `wp_theme_json_data_*` filters, the block template filters, every `*_template_hierarchy` filter, and `rest_prepare_wp_template`.
+- Each answer of these routes carries `X-Route-Cache: hit`, `miss` or `bypass:<why>`.
+
+The cached routes use theme-origin data only (`get_merged_data( 'theme' )`, `get_style_variations()`). The user's own global styles route stays per request. So the user `wp_global_styles` `post_modified` is not in the key and cannot make these answers stale; that red control does not apply to this change.
+
+**Two findings on the way.**
+1. **A ceiling must stay a throwaway.** The throwaway ceiling answered in `rest_pre_dispatch`. That filter runs **before** the permission check, so a real cache there would have served editor data to a caller the route refuses. The real cache answers only after `permission_callback`. `tests/load/route_cache_check.py` proves it: a logged-out request gets 401 and a subscriber gets 403 on all three routes, after the cache holds them, and those answers carry no `X-Route-Cache` (the cache was not asked).
+2. **The first key was exact, but too broad for post-new.** It held the posts `last_changed` for the lookup. post-new writes its auto-draft before the preload, so `last_changed` moved on every page, and the lookup never hit there. The first Cloudflare A/B showed no gain on post-new (cache on 559 ms, inside the off range 537 to 596). A probe in the preload showed both global-styles routes hitting and the lookup missing every time. The key now holds an option that counts up on save, trash and delete of a `wp_template` or `wp_template_part` post and on a theme switch. It counts up rather than storing a time, because the clock in the object moves only at I/O.
+
+**Gates, cache on**:
+
+| Gate | Where | Result |
+| --- | --- | --- |
+| `tests/load/route_cache_check.py`: hits; 401 and 403 with no `X-Route-Cache`; a template written and deleted through REST shows in the lookup and in post-new's preload; a global styles change and its restore show in post-new's preload | local and `wp-perf-dosql` | 0 fails, both |
+| `e2e.sh` | local | 17 of 17 |
+| `tests/load/cache_coherence.py` | local | 0 fails |
+| red control: the templates counter left out of the key | local | FAIL: the lookup serves the old template, and post-new's preload does not show the new one |
+| red control: the fail-safe rule off, with a test filter on `wp_theme_json_data_theme` | local | FAIL: all three routes answer `hit` |
+| the same test filter, the rule on | local | all three answer `bypass:filter:wp_theme_json_data_theme` |
+| `ROUTE_CACHE=off` | local | only the three hit checks fail |
+
+The test filter and the mutations went into the built tree only, never into a source file.
+
+**Measured on Cloudflare.**
+- One build (`9889f5d`), deployed to `wp-perf-dosql` three times: `ROUTE_CACHE=off` (version `54fe6eb7`), on (`c0c4b28a`), and off again (`f2daf0de`).
+- Each time: 3 warm-ups, then `N=30 C=1 PAGES=post-new,edit,home python3 tests/load/perf.py`, with `wrangler tail`.
+- Every pass had 0 boots and 1 runtime, and every request answered 200.
+
+| Page | Off | On | Off again | On against the off range, p50 |
+| --- | --- | --- | --- | --- |
+| post-new | 507 / 611 (28) | 452 / 575 (30) | 587 / 667 (29) | -11 to -23% (55 to 135 ms) |
+| edit | 193 / 246 (20) | 195 / 258 (21) | 233 / 259 (19) | inside the range |
+| home | 142 / 181 (22) | 160 / 184 (23) | 144 / 190 (23) | not changed by this code (home makes no REST requests) |
+
+The values are tail CPU in ms, p50 / p95, with the joined n. post-new p95: -6 to -14%. The routes-only ceiling was 440 ms.
+
+Locally, inside post-new, all three routes hit, and post-new `phpMs` went from 208 to 160 (n=20, off to on).
+
+**Not measured:** the editor settings half (#53, the next decision); a site with two administrators (the key holds the user, so each one fills their own cache); the cache after an isolate restart.
+
 ## Not measured
 
 - Worker CPU for each request in this run (Worker tail events have no request id to join on).

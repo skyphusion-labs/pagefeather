@@ -474,6 +474,9 @@ async function boot(origin) {
 	// The object cache across requests (php/object-cache.php): only where one
 	// object is the only writer. OBJECT_CACHE=off turns it off (to measure).
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.OBJECT_CACHE !== 'off') lines.push(`define('JS_OBJECT_CACHE', true);`);
+	// The editor's theme REST routes kept across requests (php/rest-route-cache.php, #53).
+	// Needs the object cache. ROUTE_CACHE=off turns it off (to measure).
+	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.OBJECT_CACHE !== 'off' && ENV.ROUTE_CACHE !== 'off') lines.push(`define('JS_ROUTE_CACHE', true);`);
 	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
 
 	php.onMessage(handleMessage);
