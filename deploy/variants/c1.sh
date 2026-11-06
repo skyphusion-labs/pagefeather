@@ -348,9 +348,9 @@ else:
 }
 
 # c1_up with the boot log (issue #103): print the seconds until GET / answers
-# 200, and fail early when the container started after <stop epoch> wrote no
-# boot log (BOOT_LOG_WAIT) or its log stopped growing (STALL_S), not only at
-# START_TIMEOUT. deploy/variants/c1-bootwatch.py does the work. It reads the
+# 200, and fail early when a container runs (/_store-info, issue #120) but
+# wrote no boot log after <stop epoch> (BOOT_LOG_WAIT) or its log stopped
+# growing (STALL_S), not only at START_TIMEOUT. deploy/variants/c1-bootwatch.py does the work. It reads the
 # replica bucket with the Litestream key from the Terraform outputs; the key
 # goes to it in the environment, not in the arguments. With no outputs (out
 # is not defined) it only waits for the 200, as c1_up does.
@@ -359,7 +359,7 @@ c1_up_watch() {
   if declare -F out >/dev/null; then
     ep=$(out r2_endpoint) bucket=$(out replica_bucket) kid=$(out litestream_access_key_id) sec=$(out litestream_secret_access_key) || true
   fi
-  C1_R2_KEY_ID=${C1_R2_KEY_ID:-$kid} C1_R2_SECRET=${C1_R2_SECRET:-$sec} START_TIMEOUT=${START_TIMEOUT:-900} \
+  C1_R2_KEY_ID=${C1_R2_KEY_ID:-$kid} C1_R2_SECRET=${C1_R2_SECRET:-$sec} C1_SPIKE_TOKEN=${SPIKE_TOKEN:-} START_TIMEOUT=${START_TIMEOUT:-900} \
     BOOT_LOG_WAIT=${BOOT_LOG_WAIT:-180} STALL_S=${STALL_S:-300} \
     python3 -I "$ROOT/deploy/variants/c1-bootwatch.py" "$URL" "${C1_R2_EP:-$ep}" "${C1_R2_BUCKET:-$bucket}" "$REPLICA_PATH" "$1"
 }
