@@ -11,6 +11,18 @@ directory = "build/public"
 # Page cache in front of the Worker (Workers Cache). index.js decides what is cacheable.
 [cache]
 enabled = true
+# Only the Pages entrypoint is cached (issue #63). The default entrypoint is
+# the gateway: it sends a page request with no WordPress cookie to Pages
+# without its Cookie header, so other cookies do not split the cache key.
+# exports is inherited by every [env.*]; each [env.*.cache] turns caching on.
+[exports.default]
+type = "worker"
+  [exports.default.cache]
+  enabled = false
+[exports.Pages]
+type = "worker"
+  [exports.Pages.cache]
+  enabled = true
 
 [[d1_databases]]
 binding = "DB"

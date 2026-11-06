@@ -160,6 +160,9 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
   echo 'rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]'
   echo '[assets]'; echo 'directory = "build/public"'
   echo '[cache]'; echo 'enabled = true'
+  # Only the Pages entrypoint is cached; the default one is the gateway (issue #63).
+  echo '[exports.default]'; echo 'type = "worker"'; echo '[exports.default.cache]'; echo 'enabled = false'
+  echo '[exports.Pages]'; echo 'type = "worker"'; echo '[exports.Pages.cache]'; echo 'enabled = true'
   echo '[vars]'
   echo "PHP_ENV = '{\"USE_ZEND_ALLOC\":\"0\"}'"
   echo "SITE_ORIGIN = \"$SITE_ORIGIN\""
