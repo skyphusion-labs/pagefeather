@@ -54,7 +54,7 @@ json.dump({"WP_SALT": o["wp_salt"], "SPIKE_TOKEN": o["spike_token"]}, open(sys.a
 
   log "site $s: dispatcher $D"
   render_dispatcher "$s" "$KV_ID" > "$GEN/$D.toml"
-  (cd "$GEN" && npx wrangler deploy --config "$D.toml") > "$W/disp.log" 2>&1 || { tail -20 "$W/disp.log"; exit 1; }
+  wrangler_deploy "$GEN" "$W/disp.log" --config "$D.toml" || { tail -20 "$W/disp.log"; exit 1; }
   grep -q "$ORIGIN" "$W/disp.log" || { echo "the dispatcher did not deploy to $ORIGIN:" >&2; tail -5 "$W/disp.log" >&2; exit 1; }
 
   log "site $s: wait for $ORIGIN (the site itself, lib.sh wait_site), then install"
