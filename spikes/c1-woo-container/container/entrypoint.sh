@@ -8,10 +8,12 @@
 set -e
 # Start steps go to the container log (issue #99), with the kind of stdout and
 # stderr this runtime gives, and whether the stderr path can be opened (php-fpm
-# and nginx open it).
+# and nginx open it). /proc/$$ is this shell: inside $( ) or a subshell with a
+# redirect, /proc/self/fd/1 and 2 are the capture pipe or /dev/null instead
+# (the first version read those, and always said pipe and ok).
 echo "c1: entrypoint start, uid $(id -u), kernel $(uname -r)"
-echo "c1: fd1 $(readlink /proc/self/fd/1 2>&1), fd2 $(readlink /proc/self/fd/2 2>&1)"
-if ( : >> /proc/self/fd/2 ) 2>/dev/null; then echo "c1: open of /proc/self/fd/2 ok"; else echo "c1: open of /proc/self/fd/2 FAILED"; fi
+echo "c1: fd1 $(readlink /proc/$$/fd/1), fd2 $(readlink /proc/$$/fd/2)"
+if ( : >> /proc/$$/fd/2 ) 2>/dev/null; then echo "c1: open of the stderr path ok"; else echo "c1: open of the stderr path FAILED"; fi
 # php-fpm-c1.conf reads it: pm.max_children.
 export PHP_WORKERS="${PHP_WORKERS:-2}"
 # A new id for each container start: tests use it to prove a restart happened.

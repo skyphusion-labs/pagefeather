@@ -9,7 +9,8 @@
 #   0. Litestream then does its final sync.
 # Needs bash 5 (wait -n): the image has it; macOS /bin/bash 3.2 does not.
 set -u
-echo "c1-serve: start, fd2 $(readlink /proc/self/fd/2 2>&1)"
+# /proc/$$: this shell (inside $( ), /proc/self/fd/2 is the capture pipe).
+echo "c1-serve: start, fd2 $(readlink /proc/$$/fd/2)"
 # Logs through pipes (issue #99). php-fpm (error_log = /proc/self/fd/2, from
 # the base image) and nginx (error_log /dev/stderr) OPEN that path, and opening
 # /proc/self/fd/2 fails (ENXIO) when stderr is a socket. A pipe always opens.
