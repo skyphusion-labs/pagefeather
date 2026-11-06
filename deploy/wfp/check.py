@@ -12,7 +12,10 @@ site, admin_password, spike_token; a file of the run, 0600).
    front page shows its own title and not the other's (two databases)
 3. the stale entry: wp-probe answers 404 with x-wfp-error not-deployed (condition b)
 4. the Workers Cache in a namespace script (docs/wfp.md open (b)): one
-   logged-out page read twice; cf-cache-status of both, recorded either way
+   logged-out b-dosql page read twice, recorded; and (CACHE_PROBE=1) a tiny
+   cached Worker in the namespace against the same Worker as a normal Worker
+   (the control): two reads with the same "made" were cached. The verdict is
+   yes, no, or inconclusive when the control was not cached
 
 Prints one JSON object (no secret in it), writes it to
 deploy/wfp/results/day1-<time>.json, and exits 1 if check 1, 2 or 3 fails.
@@ -63,9 +66,11 @@ bad = []
 
 # 1. One script for every dispatcher copy.
 st, d = api("/workers/scripts")
-etags = {x["id"]: x.get("etag") for x in d.get("result", []) if x["id"] in ["wp-" + s["site"] for s in sites] + ["wp-probe"]}
+probe_on = os.environ.get("CACHE_PROBE", "1") == "1"
+names = ["wp-" + s["site"] for s in sites] + ["wp-probe"] + (["wp-cacheprobe"] if probe_on else [])
+etags = {x["id"]: x.get("etag") for x in d.get("result", []) if x["id"] in names}
 out["dispatcher_etags"] = etags
-if len(etags) != len(sites) + 1 or len(set(etags.values())) != 1 or None in etags.values():
+if len(etags) != len(names) or len(set(etags.values())) != 1 or None in etags.values():
     bad.append("1 the dispatcher copies do not share one script hash: %s" % etags)
 
 # 2. Each site: its user Worker answers; its own title, then each shows its own.
@@ -112,6 +117,28 @@ for i in range(2):
     reads.append({"status": st, "cf-cache-status": h.get("cf-cache-status"), "cache-control": h.get("cache-control"), "age": h.get("age")})
     time.sleep(2)
 out["workers_cache"] = {"url_path": urllib.parse.urlsplit(u).path + "?wfpcache=<n>", "reads": reads}
+
+# 4b. The probe: the same cached Worker in the namespace and as a normal Worker.
+# Two reads of one fresh URL with the same "made" came from the cache.
+def probe_reads(base):
+    u = base + "/?p=%d" % random.randrange(10 ** 9)
+    rs = []
+    for i in range(2):
+        st, h, b = req(u)
+        try:
+            made = json.loads(b).get("made")
+        except ValueError:
+            made = None
+        rs.append({"status": st, "made": made, "cf-cache-status": h.get("cf-cache-status"), "age": h.get("age")})
+        time.sleep(3)
+    return {"reads": rs, "cached": rs[0]["status"] == 200 and rs[0]["made"] is not None and rs[0]["made"] == rs[1]["made"]}
+if probe_on:
+    ctl = probe_reads("https://wp-cacheprobe-direct.%s.workers.dev" % SUB)
+    nsr = probe_reads("https://wp-cacheprobe.%s.workers.dev" % SUB)
+    verdict = ("inconclusive: the control was not cached" if not ctl["cached"]
+               else "yes: the namespace script was served from the cache" if nsr["cached"]
+               else "no: the control was cached and the namespace script was not")
+    out["workers_cache_probe"] = {"control": ctl, "namespace": nsr, "verdict": verdict}
 
 out["failed"] = bad
 os.makedirs(os.path.join(os.path.dirname(os.path.abspath(__file__)), "results"), exist_ok=True)

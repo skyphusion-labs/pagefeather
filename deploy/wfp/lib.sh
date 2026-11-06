@@ -34,6 +34,13 @@ compat_date() { sed -n 's/^compatibility_date = "\(.*\)"/\1/p' "$APP/wrangler.to
 render_dispatcher() { # render_dispatcher <site> <kv namespace id>
   sed -e "s/@SITE@/$1/g" -e "s/@NAMESPACE@/$NAMESPACE/g" -e "s/@KV_ID@/$2/g" -e "s/@COMPAT@/$(compat_date)/g" "$WFP/dispatcher/wrangler.template.toml"
 }
+# The Workers Cache probe (CACHE_PROBE=1): render_cacheprobe <name> <true|false>.
+# workers_dev false is the namespace copy, which has no workers.dev name.
+render_cacheprobe() {
+  local wd=$2
+  sed -e "s/@NAME@/$1/g" -e "s/@WORKERS_DEV@/$wd/g" -e "s/@COMPAT@/$(compat_date)/g" "$WFP/cache-probe/wrangler.template.toml" \
+    | { if [ "$wd" = false ]; then grep -v '^workers_dev'; else cat; fi; }
+}
 render_outbound() {
   sed -e "s/@COMPAT@/$(compat_date)/g" "$WFP/outbound/wrangler.template.toml"
 }

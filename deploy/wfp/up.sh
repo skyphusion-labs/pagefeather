@@ -8,7 +8,8 @@
 #
 # Options: SITES (default "one two"), BUILD=0 (use the b-dosql build that is
 # there), WFP_STATE=r2 (Terraform state in the R2 state bucket; needs
-# AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for it), CHECK=0 (skip check.py).
+# AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for it), CHECK=0 (skip check.py),
+# CACHE_PROBE=0 (skip the Workers Cache probe).
 # The token needs Workers Scripts, Workers KV, Workers for Platforms and R2
 # edit, and API token edit (the teardown key in down.sh).
 #
@@ -57,6 +58,20 @@ c=$(api_code PUT "/storage/kv/namespaces/$KV_ID/values/$PROBE_HOST" -H 'content-
 render_dispatcher probe "$KV_ID" > "$GEN/wp-probe.toml"
 (cd "$GEN" && npx wrangler deploy --config wp-probe.toml) > "$W/probe.log" 2>&1 || { tail -20 "$W/probe.log"; exit 1; }
 
+# The Workers Cache probe (docs/wfp.md open (b)): the same tiny cached Worker in
+# the namespace (behind wp-cacheprobe) and as a normal Worker (the control).
+if [ "${CACHE_PROBE:-1}" = 1 ]; then
+  log "cache probe: site-cacheprobe in $NAMESPACE, behind wp-cacheprobe; control wp-cacheprobe-direct"
+  render_cacheprobe site-cacheprobe false > "$GEN/site-cacheprobe.toml"
+  (cd "$GEN" && npx wrangler deploy --config site-cacheprobe.toml --dispatch-namespace "$NAMESPACE") > "$W/cp1.log" 2>&1 || { tail -20 "$W/cp1.log"; exit 1; }
+  c=$(api_code PUT "/storage/kv/namespaces/$KV_ID/values/wp-cacheprobe.$SUB.workers.dev" -H 'content-type: text/plain' --data '{"script": "site-cacheprobe", "outbound": true}')
+  [ "$c" = 200 ] || { echo "the cache probe entry was not written (HTTP $c)" >&2; exit 1; }
+  render_dispatcher cacheprobe "$KV_ID" > "$GEN/wp-cacheprobe.toml"
+  (cd "$GEN" && npx wrangler deploy --config wp-cacheprobe.toml) > "$W/cp2.log" 2>&1 || { tail -20 "$W/cp2.log"; exit 1; }
+  render_cacheprobe wp-cacheprobe-direct true > "$GEN/wp-cacheprobe-direct.toml"
+  (cd "$GEN" && npx wrangler deploy --config wp-cacheprobe-direct.toml) > "$W/cp3.log" 2>&1 || { tail -20 "$W/cp3.log"; exit 1; }
+fi
+
 if [ "${CHECK:-1}" = 1 ]; then
   log "check.py"
   # The site secrets go to check.py in a file of this run (0600), not in argv.
@@ -65,7 +80,7 @@ if [ "${CHECK:-1}" = 1 ]; then
       | python3 -c 'import json, sys; o = {k: v["value"] for k, v in json.load(sys.stdin).items()}; print(json.dumps({"site": sys.argv[1], "admin_password": o["admin_password"], "spike_token": o["spike_token"]}))' "$s"
   done > "$W/sites.jsonl"
   (cd "$WFP/terraform/site" && terraform workspace select default >/dev/null)
-  SUB=$SUB NAMESPACE=$NAMESPACE KV_ID=$KV_ID SITES_FILE="$W/sites.jsonl" python3 -I "$WFP/check.py"
+  CACHE_PROBE=${CACHE_PROBE:-1} SUB=$SUB NAMESPACE=$NAMESPACE KV_ID=$KV_ID SITES_FILE="$W/sites.jsonl" python3 -I "$WFP/check.py"
 fi
 echo
 echo "up: $(for s in $SITES; do printf 'https://%s.%s.workers.dev ' "$(dispatcher_name "$s")" "$SUB"; done)"

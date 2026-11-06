@@ -6,6 +6,8 @@
 #   TOML and bind the site map, the namespace twice and the outbound Worker.
 # - The user Worker config: its name, origin and bucket; the b-dosql Durable
 #   Object and migration; the Workers Cache on; no workers.dev name.
+# - The Workers Cache probe: one script for both copies, [cache] on, and the
+#   namespace copy without a workers.dev name.
 # - valid_site: the names it takes and refuses.
 # Exits 0 only when every check holds. Needs bash, python3 (tomllib).
 set -u
@@ -49,6 +51,14 @@ good = (c["name"] == "site-one" and "workers_dev" not in c and c["cache"] == {"e
         and c["durable_objects"]["bindings"] == [{"name": "PHP_RUNTIME", "class_name": "PhpRuntime"}]
         and c["migrations"] == [{"tag": "v1", "new_sqlite_classes": ["PhpRuntime"]}] and c["main"] == "index.js")
 print(1 if good else 0)' "$T/user.toml")"
+render_cacheprobe site-cacheprobe false > "$T/cp-ns.toml"
+render_cacheprobe wp-cacheprobe-direct true > "$T/cp-direct.toml"
+ok "the cache probe: one script, [cache] on, the namespace copy without workers.dev" "$("$PY" -c '
+import sys, tomllib
+a = tomllib.load(open(sys.argv[1], "rb")); b = tomllib.load(open(sys.argv[2], "rb"))
+good = (a["name"] == "site-cacheprobe" and "workers_dev" not in a and b["name"] == "wp-cacheprobe-direct" and b["workers_dev"] is True
+        and a["main"] == b["main"] == "../cache-probe/worker.js" and a["cache"] == b["cache"] == {"enabled": True})
+print(1 if good else 0)' "$T/cp-ns.toml" "$T/cp-direct.toml")"
 okn=1
 for n in one two a-b a1 x23456789012345678901234567890; do valid_site "$n" || { okn=0; echo "  valid_site refused $n"; }; done
 for n in "" -a a- A a_b a.b probe x234567890123456789012345678901; do valid_site "$n" && { okn=0; echo "  valid_site took '$n'"; }; done
