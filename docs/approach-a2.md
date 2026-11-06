@@ -84,6 +84,8 @@ Page times from the laptop (n=10, medians; not comparable with the runner): home
 
 **Query cache.** Our Hyperdrive config has caching **off** (`deploy/terraform`, `caching = { disabled = true }`), so `cache_check.py` passing shows the site is correct as deployed. Hyperdrive's default is caching **on**: "Query caching is enabled by default", with `max_age` 60 s ([Query caching](https://developers.cloudflare.com/hyperdrive/concepts/query-caching/), read 2026-11-06), and "Hyperdrive does not purge or invalidate cached read query results when your application writes to your database." The PlanetScale integration's pages do not say which setting its own config uses. So a config made with the default (for example by the integration) would cache WordPress's reads for up to 60 s after a write. We did not deploy wp-a2 with caching on; keep it off for WordPress.
 
+**In short:** Hyperdrive's default query cache (60 s, not invalidated on writes) serves stale WordPress reads; the deploy turns it off; check the integration's auto-created config before using it.
+
 ## Open
 
 - The plugin suite on wp-a2, and the load matrix from the runner against `a` on Vultr.
