@@ -4,6 +4,10 @@ Issue #35 asks for a reference deployment for a Workers for Platforms (WfP) user
 
 Each answer names its source: a Cloudflare documentation page (read on 2026-11-05; the page's own "last updated" date is in the table at the end) or a test in `tests/wfp/` that ran on 2026-11-05 on the Skyphusion Labs account (Workers Paid, WfP already on). The result files are in `tests/wfp/results/`.
 
+## The reference deployment
+
+`deploy/wfp/` (issue #35, slice 2) is the deployment that these findings lead to: one `b-dosql` user Worker per site, a dispatcher per site on `workers.dev` (phase A of the #35 design), a site map in KV and an outbound Worker, every resource as code. Its README has the day-one commands. The open question (b) below, the Workers Cache in a namespace script, is answered by its first live run.
+
 ## Summary
 
 | # | Question | Answer | Evidence |

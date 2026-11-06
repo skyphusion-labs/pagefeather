@@ -1,0 +1,23 @@
+# The ONE dispatcher config of deploy/wfp (issue #35). lib.sh render_dispatcher
+# fills in the site name and the shared namespace, site map id and
+# compatibility date. Only the name line differs between sites:
+# tests/render-test.sh checks it. (No placeholder in this comment: it would be
+# filled in too, and the copies would differ in it.)
+name = "wp-@SITE@"
+main = "../dispatcher/worker.js"
+compatibility_date = "@COMPAT@"
+workers_dev = true
+preview_urls = false
+
+[[kv_namespaces]]
+binding = "SITES"
+id = "@KV_ID@"
+
+[[dispatch_namespaces]]
+binding = "DISPATCHER"
+namespace = "@NAMESPACE@"
+
+[[dispatch_namespaces]]
+binding = "DISPATCHER_OUT"
+namespace = "@NAMESPACE@"
+outbound = { service = "wp-wfp-outbound", parameters = ["SITE"] }

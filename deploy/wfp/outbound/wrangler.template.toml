@@ -1,0 +1,6 @@
+# The outbound Worker of deploy/wfp (issue #35); lib.sh render_outbound fills @COMPAT@.
+name = "wp-wfp-outbound"
+main = "../outbound/worker.js"
+compatibility_date = "@COMPAT@"
+workers_dev = false
+preview_urls = false

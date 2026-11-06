@@ -55,6 +55,11 @@ jobs:
       - name: c1 boot log watch tests
         # deploy/variants/c1.sh c1_up_watch and c1-bootwatch.py (issue #103) against a fake site and bucket: no log, a stalled log, an old log.
         run: deploy/variants/tests/c1-bootwatch-test.sh
+      - name: WfP reference tests
+        # deploy/wfp (issue #35): the dispatcher (site map, stale entry, limits, outbound) and the rendered configs (one dispatcher config).
+        run: |
+          node deploy/wfp/tests/dispatcher-test.mjs
+          deploy/wfp/tests/render-test.sh
       - name: c1 load analysis tests
         # tests/load/c1_arm.py (issue #99): held requests, CPU per order, the split, on a synthetic job.
         run: python3 tests/load/c1_arm_test.py
