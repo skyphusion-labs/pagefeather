@@ -8,8 +8,17 @@
 # Options: CONTAINER=1 (also the container test: tests/wfp/user-container as
 # tenant-c in the namespace, its container application through the API, and
 # the same Worker as a normal Worker, <prefix>-cdirect, as the control),
-# CONTAINER_IMAGE (default docker.io/library/httpd:2.4), BOX_PORT (the port the
-# image listens on, default 80), LATENCY_N (default 100; 0 skips).
+# CONTAINER_IMAGE (default: build tests/wfp/user-container/Dockerfile, see
+# below; or an image reference to use for both), BOX_PORT (the port the image
+# listens on; default 8080 for the built image, else 80), LATENCY_N (default
+# 100; 0 skips).
+#
+# The built image: an image cannot be pushed to the account registry on its
+# own ("push access denied ... insufficient_scope", 2026-11-06, issue #43); a
+# new repository is made when Wrangler deploys a normal Worker with that
+# Dockerfile. So the control <prefix>-cdirect is deployed FIRST (Wrangler builds
+# and pushes <prefix>-cdirect-box:<tag>; this needs Docker), its image is read
+# from its container application, and tenant-c's application uses that image.
 #
 # Every upload is a result: a failed upload is recorded in the result file and
 # the script goes on. Everything is on workers.dev; no zone is routed.
@@ -87,7 +96,7 @@ compatibility_date = "$COMPAT"
 
 [[containers]]
 class_name = "Box"
-image = "${CONTAINER_IMAGE:-docker.io/library/httpd:2.4}"
+image = "${CONTAINER_IMAGE:-../user-container/Dockerfile}"
 max_instances = 1
 
 [[durable_objects.bindings]]
@@ -141,12 +150,35 @@ deploy ns-tenant-a --config user-min.toml --dispatch-namespace "$NS" --name tena
 deploy ns-tenant-b --config user-min.toml --dispatch-namespace "$NS" --name tenant-b --var TENANT:tenant-b
 if [ "${CONTAINER:-0}" = 1 ]; then
   (cd "$H/user-container" && [ -d node_modules ] || npm ci --silent)
-  # Wrangler cannot make the container application of a namespace script
-  # (code 10007, docs/wfp.md item 2): upload without it, then make it through
-  # the API. The control is a normal Worker, where Wrangler makes it.
-  deploy ns-tenant-c --config user-container.toml --dispatch-namespace "$NS" --containers-rollout none --var "BOX_PORT:${BOX_PORT:-80}"
-  "$H/container-app.sh" tenant-c Box "${CONTAINER_IMAGE:-docker.io/library/httpd:2.4}" lite || echo "container-app.sh failed"
-  deploy container-direct --config container-direct.toml --containers-rollout immediate --var "BOX_PORT:${BOX_PORT:-80}"
+  PORT_DEFAULT=$([ -z "${CONTAINER_IMAGE:-}" ] && echo 8080 || echo 80)
+  BOX_PORT=${BOX_PORT:-$PORT_DEFAULT}
+  # 1. The control, a normal Worker: Wrangler makes its container application
+  #    and, for the Dockerfile, builds and pushes the image.
+  deploy container-direct --config container-direct.toml --containers-rollout immediate --var "BOX_PORT:$BOX_PORT"
+  # 2. The image the control's application runs (exact name <prefix>-cdirect-box).
+  IMG=${CONTAINER_IMAGE:-}
+  if [ -z "$IMG" ]; then
+    IMG=$( (cd "$H" && npx wrangler containers list --json 2>/dev/null) | python3 -c '
+import json, sys
+s = sys.stdin.read()
+try:
+    apps = json.loads(s[s.find("["):])
+except ValueError:
+    apps = []
+m = [a.get("image") for a in apps if a.get("name") == sys.argv[1]]
+print(m[0] if len(m) == 1 and m[0] else "")' "$PREFIX-cdirect-box")
+  fi
+  python3 -c 'import json, sys; print(json.dumps({"deploy": "container-image", "exit": 0 if sys.argv[1] else 1, "s": 0, "image": sys.argv[1], "tail": []}))' "$IMG" >> "$W/deploys.jsonl"
+  echo "container image: ${IMG:-NOT FOUND}"
+  # 3. tenant-c in the namespace. Wrangler cannot make the container
+  #    application of a namespace script (code 10007, docs/wfp.md item 2):
+  #    upload without it, then make it through the API with the same image.
+  deploy ns-tenant-c --config user-container.toml --dispatch-namespace "$NS" --containers-rollout none --var "BOX_PORT:$BOX_PORT"
+  if [ -n "$IMG" ]; then
+    "$H/container-app.sh" tenant-c Box "$IMG" lite || echo "container-app.sh failed"
+  else
+    echo "no image for tenant-c: the control did not deploy a container application"
+  fi
 fi
 deploy dispatcher --config dispatcher.toml
 D="https://$PREFIX-dispatch.$SUB.workers.dev"

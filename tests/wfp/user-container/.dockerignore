@@ -1,0 +1,5 @@
+# The image needs none of these (tests/wfp/user-container/Dockerfile copies nothing).
+node_modules
+package.json
+package-lock.json
+worker.js
