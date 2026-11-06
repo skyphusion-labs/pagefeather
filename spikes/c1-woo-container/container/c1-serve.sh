@@ -59,6 +59,17 @@ echo "c1-serve: starting nginx"
 nginx -g "daemon off;" &
 NGX=$!
 echo "c1-serve: php-fpm $FPM, nginx $NGX"
+# The warm-up (issue #92): one request that boots WordPress in PHP-FPM, so the
+# first shopper request after a start finds OPcache and APCu warm. In the
+# background: the servers answer shoppers at once. Its lines go to the boot log.
+if [ "${WARM_WP:-on}" = on ]; then
+	(
+		for i in $(seq 1 60); do curl -s -o /dev/null -m 2 http://127.0.0.1/_fpm-ping && break; sleep 0.5; done
+		echo "c1-serve: warm: start"
+		w=$(curl -s -m 300 http://127.0.0.1:8081/_warm 2>&1) || true
+		echo "c1-serve: warm: done ${w:-no answer}"
+	) &
+fi
 wait -n -p died "$FPM" "$NGX"
 rc=$?
 [ "${died:-}" = "$FPM" ] && who=php-fpm || who=nginx

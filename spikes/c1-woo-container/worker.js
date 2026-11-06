@@ -49,6 +49,8 @@ export class Store extends Container {
 			QUEUE_RUNNER: env.QUEUE_RUNNER || 'local',
 			CRON_SECONDS: env.CRON_SECONDS || '10',
 			AS_TIME_LIMIT: env.AS_TIME_LIMIT || '5',
+			// c1-serve.sh (issue #92): on (default) or off, the warm-up after a start.
+			WARM_WP: env.WARM_WP || 'on',
 		};
 	}
 }

@@ -35,6 +35,7 @@ RUN chown -R www-data:www-data /var/www/html/wp-content
 COPY build/opt/object-cache.php /opt/wp/object-cache.php
 COPY container/kill.php /var/www/html/_kill.php
 COPY container/stats.php /var/www/html/_stats.php
+COPY container/warm.php /opt/wp/warm.php
 COPY container/seed-counts.php /opt/wp/seed-counts.php
 COPY container/seed.sh /opt/wp/seed.sh
 COPY container/litestream.yml /etc/litestream.yml

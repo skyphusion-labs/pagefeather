@@ -53,6 +53,9 @@
 #                  spikes/c1-woo-container/warm.js)
 #   WARM_GAP_S     no new warm start within this many seconds (default 60)
 #   WARM_PATHS     optional: a regular expression for product-view paths
+#   WARM_WP        on (default) or off: after a container start, one request
+#                  from inside the container boots WordPress in PHP-FPM
+#                  (container/warm.php, issue #92)
 #
 # No account id: Wrangler reads CLOUDFLARE_ACCOUNT_ID.
 set -euo pipefail
@@ -68,6 +71,7 @@ CONTAINER_EXEMPT_TIMEOUT_S=${CONTAINER_EXEMPT_TIMEOUT_S:-900}
 QUEUE_RUNNER=${QUEUE_RUNNER:-local}
 CRON_SECONDS=${CRON_SECONDS:-10}
 AS_TIME_LIMIT=${AS_TIME_LIMIT:-5}
+WARM_WP=${WARM_WP:-on}
 for v in NAME PUBLIC_HOST REPLICA MEDIA_BUCKET R2_ENDPOINT COMPAT INSTANCE_TYPE PHP_WORKERS IDLE_SECONDS; do
   [ -n "${!v:-}" ] || { echo "c1-config.sh: $v is empty" >&2; exit 1; }
 done
@@ -86,6 +90,7 @@ chk IDLE_SECONDS "$IDLE_SECONDS" '^[1-9][0-9]*$'
 chk OBJECT_CACHE "$OBJECT_CACHE" '^(none|apcu)$'
 chk REPLICA_PATH "$REPLICA_PATH" '^[a-z0-9][a-z0-9-]{0,62}$'
 chk QUEUE_RUNNER "$QUEUE_RUNNER" '^(local|loopback)$'
+chk WARM_WP "$WARM_WP" '^(on|off)$'
 chk CRON_SECONDS "$CRON_SECONDS" '^[1-9][0-9]{0,3}$'
 chk AS_TIME_LIMIT "$AS_TIME_LIMIT" '^[1-9][0-9]?$'
 chk PAGE_CACHE_TTL "$PAGE_CACHE_TTL" '^[1-9][0-9]{0,4}$'
@@ -180,6 +185,7 @@ SEED_SHA256 = "$SEED_SHA256"
 WARM_START = "$WARM_START"
 WARM_GAP_S = "$WARM_GAP_S"
 WARM_PATHS = "$WARM_PATHS"
+WARM_WP = "$WARM_WP"
 MAIL_FROM = "$MAIL_FROM"
 MAIL_FROM_NAME = "$MAIL_FROM_NAME"
 ADMIN_EMAIL = "$ADMIN_EMAIL"
