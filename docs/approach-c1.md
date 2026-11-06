@@ -444,6 +444,37 @@ Measured with the same overload run (`cached-sbjs`, BUYERS 0.5, 2 vCPU runner) o
 - Before the load, Action Scheduler's minute event ran 7.2 s once against the 5 s limit: it stops when the next action would likely pass the limit, so a run can overshoot by its last actions. Under load no run passed 4.9 s.
 - One process per request (PHP-FPM) would end this kind of tail entirely; it is a separate decision.
 
+## A stuck container (2026-11-06)
+
+Issue #93. A container instance (atl16) answered no request at all, not even a static file (`/_boot.txt`), and it survived a Worker deploy (the image was unchanged, so no new instance rolled out), a stop (`/_store-stop` timed out with `still_running`) and a kill (`kill=1` returned nothing). The Containers API has no instance delete. Its health field read `healthy 0, active 1`, but a working instance reads the same, so that field is not a sign of a stuck instance. The recovery: deploy once with a changed container setting (for example `INSTANCE_TYPE`); that rolls out a new instance.
+
+While it hung, every request waited until the client gave up, held its bounded-queue slot (a client that gives up does not end the request in the Store object), and the deploy waited 900 s for a first answer.
+
+### The change
+
+- **Container fetch timeout.** A shopper request (a page, the cart, the checkout, a payment callback) waits at most `CONTAINER_TIMEOUT_S` (60 s, about 5 times the checkout p99 under overload) for the container's response headers. Then the Store object answers `504` (`c1_timeout`, `no-store`, `x-c1-timeout: 1`) and gives the queue slot back; `/_store-info` counts `queue.timedOut`. A body that already streams is not cut. Exempt, because their requests can be long and legitimate (an import, a large export): `wp-admin`, `wp-login.php`, the operator endpoints (`/_*`), a logged-in user, and REST with an `Authorization` header. `0` turns the timeout off.
+- **A checkout that gets the 504 can still complete in PHP afterwards.** The shopper then sees an error for an order that exists, and a retry can place a second order. At 60 s, far above the p99, that happens only with a container that really does not answer, and an error is the smaller harm than a page that never ends. Payment callbacks are retried by the payment gateways, so a 504 is safe there.
+- **The deploy stops at a stuck container.** `c1_wait` reads the answer of its one stop: `still_running` (the container did not stop in 30 s) fails the deploy at once, with the recovery in the message. `c1_check` also requires a static file (`/_boot.txt`) to answer 200 within 15 s, and prints the result.
+- **A stuck instance for testing:** `/_kill.php?sig=STOPPHP` (spike token) sends SIGSTOP to every PHP process. The port stays open and nothing answers.
+
+### Measured
+
+With the real `Store.prototype.fetch` code and a stub container that never answers (limit 1 s): a hung checkout got 504 after 1.02 s with its slot released; a hung `wp-admin` request was not cut; an answered page passed. Without the timeout, the test never finishes.
+
+On wp-c1-perf (swap16, `CONTAINER_TIMEOUT_S=10` for a short test), after `sig=STOPPHP`:
+
+| Request | Answer | Time |
+| --- | --- | --- |
+| Store API checkout (3) | 504, `x-c1-timeout` | 10.15 to 10.20 s |
+| A page (2) | 504, `x-c1-timeout` | 10.18 to 10.20 s |
+| `/wp-admin/` as admin (exempt) | no answer (the client gave up) | 30.1 s |
+
+`/_store-info` after: `timedOut` 5, one exempt request still in hand.
+
+A deploy of the same configuration onto that stuck container failed after 141 s (60 s of rollout wait, 30 s of stop, the rest the build and upload), with the stop answer `still_running: true, reset: false` and the recovery message. Before, the same case waited 900 s. Note that the new Worker version was already deployed when the stop failed: the site ran the new Worker code against the stuck container until the recovery deploy.
+
+Recovery from the test: a deploy with `INSTANCE_TYPE=standard-2` rolled out a new instance (first answer 200 after 7 s, the static-file probe 200), and a deploy back to `standard-1` with the default `CONTAINER_TIMEOUT_S` came up in 11 s; `/_store-info` then read `timeoutS: 60`.
+
 ## Warm start on a product view (issue #73)
 
 With the storefront cache, a shopper can browse cached pages while the container sleeps. Then the first request that needs the container (the cart, add to cart) waits for the cold start: 11 to 22 s, measured as starts after a stop.
