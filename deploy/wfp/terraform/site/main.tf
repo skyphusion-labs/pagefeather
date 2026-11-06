@@ -19,6 +19,14 @@ variable "name" {
 # The hostname the site answers on (phase A: wp-<name>.<subdomain>.workers.dev).
 variable "hostname" { type = string }
 
+# The build id of the deployed user Worker (issue #35 slice 5): recorded in the
+# site map entry, read by "site update" as the rollback target. site.sh takes
+# it from the built bundle (build/build-id.js).
+variable "build" {
+  type    = string
+  default = "dev"
+}
+
 variable "kv_namespace_id" { type = string }
 
 # Per-call limits, applied by the dispatcher (docs/wfp.md item 4: cpuMs is
@@ -70,7 +78,7 @@ resource "cloudflare_workers_kv" "entry" {
   namespace_id = var.kv_namespace_id
   key_name     = var.hostname
   value = jsonencode(merge(
-    { script = "site-${var.name}", outbound = true },
+    { script = "site-${var.name}", outbound = true, build = var.build },
     var.cpu_ms > 0 ? { cpuMs = var.cpu_ms } : {},
     var.sub_requests > 0 ? { subRequests = var.sub_requests } : {},
   ))

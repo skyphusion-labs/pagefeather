@@ -230,6 +230,43 @@ list_sites() {
   tfr site init -input=false >/dev/null 2>&1 || return 1
   tfr site workspace list | tr -d ' *' | grep -v '^default$' | grep -v '^$' || true
 }
+# Wait for a re-uploaded site to run the new build (issue #35 slice 5). Poll
+# /_build (the OBJECT's running version) until it equals <want>. Measured
+# 2026-11-06: a re-upload flips it in about 1 s. If it has not flipped by
+# BUILD_EVICT_AFTER s, call /_evict once (the fast-path for a busy object;
+# abort() is unproven on our compat date, so this is best-effort), then keep
+# polling to BUILD_WAIT s. Prints the last build seen; 0 when it flips.
+wait_build() { # wait_build <origin> <token> <want>
+  local t0=$SECONDS b evicted=0
+  while :; do
+    b=$(curl -s -m 30 -H "x-spike-token: $2" "$1/_build" 2>/dev/null | python3 -c "import json,sys
+try: print(json.load(sys.stdin).get(\"build\",\"\"))
+except Exception: print(\"\")")
+    [ "$b" = "$3" ] && { echo "  build $b live after $((SECONDS - t0)) s"; return 0; }
+    if [ "$evicted" = 0 ] && [ $((SECONDS - t0)) -ge "${BUILD_EVICT_AFTER:-20}" ]; then
+      echo "  the old build still runs after $((SECONDS - t0)) s; calling /_evict (best-effort)" >&2
+      curl -s -o /dev/null -m 30 -H "x-spike-token: $2" "$1/_evict" || true
+      evicted=1
+    fi
+    [ $((SECONDS - t0)) -lt "${BUILD_WAIT:-60}" ] || { echo "the new build $3 did not go live in ${BUILD_WAIT:-60} s (last: ${b:-none})" >&2; return 1; }
+    sleep "${BUILD_POLL_S:-3}"
+  done
+}
+# Run <updater-fn> over the sites in order, STOP at the first failure: the
+# sites after the failed one are NOT reached, so a bad version never rolls
+# across the estate (issue #35 slice 5). Prints a summary; returns 1 if any
+# failed.
+update_all() { # update_all <updater-fn> <site>...
+  local fn=$1; shift
+  local rc=0 done_list="" failed="" left="" site
+  for site in "$@"; do
+    if [ "$rc" = 0 ]; then
+      if "$fn" "$site"; then done_list="$done_list $site"; else rc=1; failed=" $site"; fi
+    else left="$left $site"; fi
+  done
+  echo "update --all: updated:${done_list:- none}; failed:${failed:- none}; not reached:${left:- none}"
+  return "$rc"
+}
 subdomain() {
   api GET /workers/subdomain | sed '$d' | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["subdomain"])'
 }

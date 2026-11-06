@@ -75,6 +75,26 @@ Options:
 
 Each untouched site must be unchanged: its dispatcher's etag and `modified_on`, its user Worker's hash and `modified_on`, its map entry, its bucket's keys and ETags, and its page title. A part that cannot be read fails the proof; it never counts as unchanged. The script etags are the same across sites (one dispatcher script; one `b-dosql` bundle), so `modified_on` is what tells one site's upload from another's. A re-upload of identical code keeps the etag and changes only `modified_on`, and both are compared. The snapshots read the buckets with S3 credentials derived from the API token, so they create nothing.
 
+## Updating a site
+
+```sh
+./deploy/wfp/site update <name>     # one site, with a way back
+./deploy/wfp/site update --all      # every site, one at a time, stopping at the first failure
+```
+
+Workers for Platforms has no gradual deployments for user Workers, and `b-dosql` keeps its data in the Durable Object and its code in the Worker bundle. So an update re-uploads the SAME script (`site-<name>`): the object and its data persist, the code swaps. `site update`:
+
+1. reads the live build id from the site map entry (the rollback target);
+2. unless `NO_SNAPSHOT=1`, snapshots the object's SQLite to R2 under `_snapshots/` and reads it back to confirm it stored (a prefix the Worker never serves); it aborts if the snapshot cannot be verified, so a rollback always has a way back;
+3. rebuilds from the current tree and re-uploads the script, then records the new build id in the entry;
+4. waits until `/_build` shows the new build (measured 2026-11-06: a re-upload flips it in about 1 s, with the object idle), then checks the site answers 200.
+
+If the verify fails, it rolls back: it restores the data from the snapshot and, when the previous build is a reproducible git sha, re-deploys that commit from a git worktree. **A rollback drops any write made between the snapshot and the rollback**, and the command and this doc both say so. A previous build that is not a reproducible sha (`-dirty` or `unknown`) cannot be re-deployed automatically; the data is still restored and the command says to deploy the old commit by hand.
+
+The only interruption is the cold boot of the next request after the new code loads (about 1 s); the hostname always resolves. `/_evict` (an object reset via `ctx.abort()`) is a best-effort fast-path for a busy object that has not flipped; whether `abort()` resets the object on our compatibility date is unproven (the happy path flipped before it was needed).
+
+`update --all` runs the sites in `site list` order, one at a time, and stops at the first failure: the failed site is rolled back and the sites after it are left on their old version, so a bad version never rolls across the estate.
+
 ## Tests (offline)
 
 ```sh

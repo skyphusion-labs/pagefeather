@@ -43,6 +43,12 @@ jobs:
       - name: b-dosql operator endpoints (issue #35)
         # /_build and /_evict are gated and never cached (spikes/b2-wordpress).
         run: node spikes/b2-wordpress/tests/build-evict-test.mjs
+      - name: WfP slice 5 update tests (issue #35)
+        # snapshot/restore, the build activation wait, and the all-sites ordering.
+        run: |
+          deploy/wfp/tests/dbsnap-test.sh
+          deploy/wfp/tests/wait-build-test.sh
+          deploy/wfp/tests/update-all-test.sh
       - name: c1 warm start tests
         # spikes/c1-woo-container/warm.js (issue #73): product views, rate limits, never through fetch.
         run: node spikes/c1-woo-container/tests/warm-test.mjs

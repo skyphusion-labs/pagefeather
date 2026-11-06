@@ -27,6 +27,9 @@ SUB=$(subdomain)
 D=$(dispatcher_name "$s"); U=$(user_script "$s")
 HOST="$D.$SUB.workers.dev"; ORIGIN="https://$HOST"
 VARS=(-var "name=$s" -var "hostname=$HOST" -var "kv_namespace_id=$KV_ID")
+# The id of the built bundle (build.sh writes build/build-id.js), recorded in
+# the entry so "site update" has a rollback target (issue #35 slice 5).
+BUILD_ID=$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js" 2>/dev/null || true); BUILD_ID=${BUILD_ID:-unknown}
 out() { tfr site output -raw "$1"; }
 ws() { tfr site init -input=false >/dev/null && tfr site workspace select -or-create "$s" >/dev/null; }
 gone() { # gone <what> <API path>: 404 or stop
@@ -38,7 +41,7 @@ if [ "$cmd" = up ]; then
   log "site $s: data plane and site map entry (workspace $s)"
   kv_wait_writable "$KV_ID"
   ws
-  tfr site apply -input=false -auto-approve "${VARS[@]}" >/dev/null
+  tfr site apply -input=false -auto-approve "${VARS[@]}" -var "build=$BUILD_ID" >/dev/null
 
   log "site $s: user Worker $U in $NAMESPACE"
   CONF="$APP/wrangler.deploy.wfp-$s.toml"
