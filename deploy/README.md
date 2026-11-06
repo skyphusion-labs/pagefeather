@@ -174,4 +174,4 @@ cd deploy/terraform && terraform workspace select my-site && terraform output -r
 - Measurements from a fixed vantage (a Vultr runner), with p95 and p99, concurrency and the cold path.
 - Plugins and WooCommerce runs (`tests/plugins/plugins.py`, `tests/woo.py`) as part of `deploy.sh`.
 - A custom domain. The site is on `<name>.<subdomain>.workers.dev`.
-- Import of an existing site into `a`, `a2` and `c1` (issue #31). `b-dosql` has it: database, uploads, theme and plugins.
+- Import of an existing site into `a` and `a2`, and the uploads, theme and plugins for `c1` (issue #31). `b-dosql` has all of it; `c1` has the database.
