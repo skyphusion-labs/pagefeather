@@ -1,0 +1,54 @@
+#!/bin/bash
+# Add or remove one site of the reference deployment (issue #35, slice 3).
+#   CLOUDFLARE_API_TOKEN=... deploy/wfp/site add <name>
+#   CLOUDFLARE_API_TOKEN=... deploy/wfp/site remove <name>
+#   CLOUDFLARE_API_TOKEN=... deploy/wfp/site list
+# The shared pieces must exist (up.sh). add builds nothing: b-dosql must be
+# built (up.sh, or BUILD=1 here). Use the same WFP_STATE as up.sh.
+#
+# add touches only names of its own site: it refuses when ANY part of the
+# site exists already (its workspace, dispatcher, user Worker, map entry or
+# bucket), so it can never overwrite one. Then site.sh up, then every part is
+# checked present. remove refuses a site with no part at all; then site.sh down
+# (each removal checked as it goes), then every part is checked absent and the
+# workspace gone. Neither reads or writes another site's resources:
+# isolation.sh proves it live with snapshots of the other sites.
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+: "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
+cmd=${1:-}; s=${2:-}
+if [ "$cmd" = list ]; then list_sites; exit 0; fi
+case "$cmd" in add|remove) ;; *) echo "usage: site add|remove <name> | site list" >&2; exit 2 ;; esac
+valid_site "$s" || { echo "bad site name '$s': lower case, digits, hyphens; 1 to 30; not probe" >&2; exit 2; }
+tfr shared init -input=false >/dev/null
+KV_ID=$(tfr shared output -raw kv_namespace_id 2>/dev/null) || { echo "no shared pieces (run up.sh first)" >&2; exit 2; }
+[ -n "$KV_ID" ] || { echo "no shared pieces (run up.sh first)" >&2; exit 2; }
+SUB=$(subdomain)
+has_ws() { list_sites | grep -qx "$1"; }
+
+if [ "$cmd" = add ]; then
+  fp=$(site_footprint "$s")
+  if has_ws "$s" || ! footprint_absent "$fp"; then
+    echo "site $s already exists, in part or in full; nothing was changed:" >&2
+    has_ws "$s" && echo "  workspace $s" >&2
+    printf '%s\n' "$fp" | sed 's/^/  /' >&2
+    exit 2
+  fi
+  [ "${BUILD:-0}" = 0 ] || build_dosql
+  [ -f "$APP/build/opcache.log" ] || { echo "b-dosql is not built (run up.sh, or BUILD=1)" >&2; exit 2; }
+  "$WFP/site.sh" up "$s"
+  fp=$(site_footprint "$s")
+  footprint_present "$fp" || { echo "site $s: not every part is there after the add:" >&2; printf '%s\n' "$fp" | sed 's/^/  /' >&2; exit 1; }
+  echo "site add $s: done, https://$(dispatcher_name "$s").$SUB.workers.dev"
+else
+  fp=$(site_footprint "$s")
+  if ! has_ws "$s" && footprint_absent "$fp"; then
+    echo "no site $s: nothing to remove" >&2
+    exit 2
+  fi
+  "$WFP/site.sh" down "$s"
+  fp=$(site_footprint "$s")
+  footprint_absent "$fp" || { echo "site $s: not every part is gone after the remove:" >&2; printf '%s\n' "$fp" | sed 's/^/  /' >&2; exit 1; }
+  has_ws "$s" && { echo "site $s: its workspace is still there" >&2; exit 1; }
+  echo "site remove $s: done, every part is gone"
+fi

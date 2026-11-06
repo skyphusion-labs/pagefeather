@@ -3,11 +3,14 @@
 # probe, the outbound Worker, then the shared pieces. Each removal is checked
 # against the API (404) before the next step, like deploy/destroy.sh.
 #
-#   CLOUDFLARE_API_TOKEN=... ./deploy/wfp/down.sh        # SITES as for up.sh
+#   CLOUDFLARE_API_TOKEN=... ./deploy/wfp/down.sh
+# SITES defaults to every site there is (deploy/wfp/site list: the Terraform
+# workspaces), so the sites that site add and site remove left are removed too.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
-SITES=${SITES:-one two}
+SITES=${SITES-$(list_sites | tr '\n' ' ')}
+echo "sites: ${SITES:-none}"
 for s in $SITES; do valid_site "$s" || { echo "bad site name: $s" >&2; exit 2; }; done
 gone() {
   local c; c=$(api_code GET "$2")

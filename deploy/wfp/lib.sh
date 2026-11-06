@@ -89,6 +89,18 @@ new_sqlite_classes = ["PhpRuntime"]
 TOML
 }
 
+# Build b-dosql (spikes/b2-wordpress), as deploy/deploy.sh does: PHP
+# WebAssembly, WordPress, the precompiled OPcache (local wrangler dev).
+build_dosql() {
+  log "build b-dosql (spikes/b2-wordpress)"
+  ( cd "$APP"
+    [ -d node_modules ] || npm ci --silent
+    [ -f vendor/php_8_3.js ] || ./prepare.sh
+    ./build.sh | tail -1
+    DEV_ENV=dosql-local ./opcache.sh > build/opcache.log 2>&1 || { echo "opcache.sh failed:"; tail -25 build/opcache.log; exit 1; }
+    tail -1 build/opcache.log )
+}
+
 # API calls: the token goes to curl in a config on a pipe, never in argv.
 api() { # api <method> <path> [curl args...]: prints the body, then a line with the HTTP code
   local m=$1 p=$2; shift 2
@@ -191,6 +203,32 @@ wait_site() { # wait_site <origin>
     fi
     sleep "${SITE_WAIT_STEP:-10}"
   done
+}
+# Which parts of a site exist, from the API only (no Terraform): one line
+# each, "<part> <state>": dispatcher yes|no, script present|gone|unknown
+# (ns_script_state), entry yes|no, bucket yes|no; any other HTTP answer is
+# "unknown". Needs KV_ID and SUB. "site add" refuses unless every part is
+# absent; "site remove" checks that every part is absent after.
+site_footprint() { # site_footprint <name>
+  local s=$1 c
+  c=$(api_code GET "/workers/scripts/$(dispatcher_name "$s")")
+  case "$c" in 200) echo "dispatcher yes" ;; 404) echo "dispatcher no" ;; *) echo "dispatcher unknown" ;; esac
+  echo "script $(ns_script_state "$(user_script "$s")")"
+  c=$(api_code GET "/storage/kv/namespaces/$KV_ID/values/$(dispatcher_name "$s").$SUB.workers.dev")
+  case "$c" in 200) echo "entry yes" ;; 404) echo "entry no" ;; *) echo "entry unknown" ;; esac
+  c=$(api_code GET "/r2/buckets/$(media_bucket "$s")")
+  case "$c" in 200) echo "bucket yes" ;; 404) echo "bucket no" ;; *) echo "bucket unknown" ;; esac
+}
+footprint_absent() { # footprint_absent <footprint text>: 0 when every part is absent
+  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher no|script gone|entry no|bucket no)$'
+}
+footprint_present() { # footprint_present <footprint text>: 0 when every part is there
+  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher yes|script present|entry yes|bucket yes)$'
+}
+# The sites: the Terraform workspaces of terraform/site, without "default".
+list_sites() {
+  tfr site init -input=false >/dev/null 2>&1 || return 1
+  tfr site workspace list | tr -d ' *' | grep -v '^default$' | grep -v '^$' || true
 }
 subdomain() {
   api GET /workers/subdomain | sed '$d' | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["subdomain"])'

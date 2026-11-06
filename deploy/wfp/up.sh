@@ -25,16 +25,7 @@ umask 077
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 mkdir -p "$GEN"
 
-if [ "${BUILD:-1}" = 1 ]; then
-  log "build b-dosql (spikes/b2-wordpress)"
-  cd "$APP"
-  [ -d node_modules ] || npm ci --silent
-  [ -f vendor/php_8_3.js ] || ./prepare.sh
-  ./build.sh | tail -1
-  DEV_ENV=dosql-local ./opcache.sh > build/opcache.log 2>&1 || { echo "opcache.sh failed:"; tail -25 build/opcache.log; exit 1; }
-  tail -1 build/opcache.log
-  cd "$WFP"
-fi
+[ "${BUILD:-1}" = 0 ] || build_dosql
 
 log "shared: namespace $NAMESPACE and the site map"
 tfr shared init -input=false >/dev/null

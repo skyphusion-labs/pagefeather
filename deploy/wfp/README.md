@@ -27,7 +27,7 @@ export CLOUDFLARE_API_TOKEN=...   # Workers Scripts, Workers KV, Workers for Pla
 ./deploy/wfp/down.sh              # removes all of it; every step is checked against the API
 ```
 
-`up.sh`:
+`up.sh` (day one; afterwards `site add` and `site remove` change one site at a time):
 1. builds `b-dosql` once (`spikes/b2-wordpress`);
 2. applies `terraform/shared` (the namespace and the site map);
 3. deploys the outbound Worker;
@@ -54,6 +54,27 @@ Options:
 - `CHECK=0`;
 - `SITE_WAIT` (seconds to wait for a new site, default 300).
 
+## Adding and removing a site
+
+```sh
+./deploy/wfp/site add three       # one command; refuses if any part of "three" exists already
+./deploy/wfp/site remove two      # one command; refuses an unknown site; checks every part gone
+./deploy/wfp/site list            # the sites (the Terraform workspaces)
+```
+
+`site add` touches only its own site's names, and it refuses before any change when the site exists in part or in full: its workspace, dispatcher, user Worker, map entry or bucket. Then it runs `site.sh up` and checks every part present.
+
+`site remove` runs `site.sh down`, then checks that every part is gone and that the workspace is deleted.
+
+`down.sh` removes every site that `site list` shows.
+
+**Isolation proof (live):** `isolation.sh`, after `up.sh` with the sites `one` and `two`:
+1. it seeds a known object in both buckets, then snapshots both sites (`snapshot.py`);
+2. it runs `site add three` and snapshots `one` and `two` again;
+3. it runs `site remove two` and snapshots `one` and `three` before and after.
+
+Each untouched site must be unchanged: its dispatcher's etag and `modified_on`, its user Worker's hash and `modified_on`, its map entry, its bucket's keys and ETags, and its page title. A part that cannot be read fails the proof; it never counts as unchanged. The script etags are the same across sites (one dispatcher script; one `b-dosql` bundle), so `modified_on` is what tells one site's upload from another's. A re-upload of identical code keeps the etag and changes only `modified_on`, and both are compared. The snapshots read the buckets with S3 credentials derived from the API token, so they create nothing.
+
 ## Tests (offline)
 
 ```sh
@@ -62,5 +83,7 @@ deploy/wfp/tests/render-test.sh             # the rendered configs and the site 
 deploy/wfp/tests/ns-state-test.sh           # "is this namespace script gone" (the empty-record case)
 deploy/wfp/tests/kv-ready-test.sh           # the wait for a new site map to accept writes
 deploy/wfp/tests/wait-site-test.sh          # the wait for a new site to answer from its own user Worker
+deploy/wfp/tests/snapshot-test.sh           # the isolation snapshots and diff, and site_footprint
+deploy/wfp/tests/site-cmd-test.sh           # site add and remove refuse, with no write, when they must
 deploy/wfp/tests/tf-test.sh                 # terraform validate, fmt, and the teardown key with no dependency (local: needs terraform)
 ```
