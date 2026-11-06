@@ -2,7 +2,7 @@
 
 `deploy/import.sh` moves an existing WordPress site into a site that `deploy/deploy.sh` made: the database, the uploads, and the theme and plugins. The source site is only read. Nothing in the script connects to it: you give it a dump file.
 
-This version supports the variant `b-dosql` (the database is the SQLite of the PHP Durable Object). The design for the other variants is in [issue #31](https://github.com/skyphusion-labs/wordpress-on-cloudflare/issues/31). Prior art: [docs/prior-art.md](../../docs/prior-art.md), "Moving existing sites".
+This version supports the variants `b-dosql` (the database is the SQLite of the PHP Durable Object) and `c1` (the database only; see "Variant c1"). The design for the other variants is in [issue #31](https://github.com/skyphusion-labs/wordpress-on-cloudflare/issues/31). Prior art: [docs/prior-art.md](../../docs/prior-art.md), "Moving existing sites".
 
 ## Use
 
@@ -56,6 +56,16 @@ Options: `DRY_RUN=1` stops before the import and shows what changes. `SKIP_MEDIA
 | 6 | `dbmove.py export`, `dbmove-file.py counts` | Exports the database again and compares the rows of each table. |
 | 6b | `media.sh` | With `CONTENT`: puts `wp-content/uploads` into the media bucket (see "Uploads"). |
 | 7 | `import.sh` | Gets the home page without the page cache. It must be HTTP 200. |
+
+## Variant c1
+
+`c1` keeps its database in SQLite on the container disk, and Litestream replicates it to R2 at `REPLICA_PATH` (default `store`) in the replica bucket. The import does not change that replica. It runs in two phases:
+
+1. **Seed.** `VARIANT=c1 URL=... NAME=my-store DUMP=site.sql ./deploy/import.sh`, with `CLOUDFLARE_API_TOKEN` and `ACCOUNT_ID`. The script makes the database as for `b-dosql` (steps 1 to 3), with no WAL beside it. It puts the file at `<new path>.seed.sqlite` in the replica bucket, with the site's Litestream key (object read and write on the replica bucket only; `deploy/terraform/c1.tf`). The new path is `import-<time>`. Then it prints two lines: the `deploy.sh` line and the check line.
+2. **Deploy** with `REPLICA_PATH=<new path> SEED_SHA256=<sha>`, and with your other `c1` options the same as before. The next container finds no replica at the new path, so it loads the seed (`spikes/c1-woo-container/container/seed.sh`). Then Litestream replicates it, and every later start restores it.
+3. **Check.** `VARIANT=c1 VERIFY=1 WORK=<the same WORK> ... ./deploy/import.sh` reads `/_stats.php?what=seed`: the SHA-256 and the rows of each table that the container loaded before PHP ran. It compares them with the seed, then gets `/`.
+
+The container stops (it does not start) if the seed download or its SHA-256 check fails, so it never installs an empty site over an import. To go back, deploy with the old `REPLICA_PATH`: its replica is unchanged. A `c1` import does not take `CONTENT` yet (uploads, theme and plugins).
 
 ## Theme and plugins (build input)
 
@@ -113,6 +123,8 @@ A deployed `workers.dev` site has security checks at the edge that `wrangler dev
 2026-11-06, `wrangler dev --env dosql-local` (local, no plan), Wrangler 4.107.0 on macOS. Source: a mysqldump 8.4 (no `--single-transaction`) of the test site of variant `a2` on PlanetScale: WordPress 7.1.4, WooCommerce with test orders and products, and the tables of the 18 plugins of the plugin suite (98 tables, 8583 rows in the dump). No customer data. Command: `URL=http://localhost:8831 SPIKE_TOKEN=local DUMP=wp-a2-dump.sql ./deploy/import.sh`. Result: 3 parts imported, every table matched (10067 rows with the driver's tables), `GET /` 200 with the site title of the source. A test on a deployed site is next; it is not **measured** on a plan yet.
 
 Slice 2, 2026-11-06, same local Worker: `build.sh` with `IMPORT_CONTENT` from the `wp-content` of WordPress 7.1.4 (a macOS `tar` archive: 504 `._` entries skipped) built Akismet and `hello.php` into `site.zip` and `public/`. `import.sh` with `CONTENT` and `SKIP_MEDIA=1` imported the a2 dump as before (every table matched, `GET /` 200). The R2 upload (`media.sh` with the Terraform key) needs a deployed site with `MEDIA=1`: not run yet.
+
+`c1`, 2026-11-06, local (no Docker on this computer, so no container): `tests/run.sh` runs `seed.sh` against the stand-in. It checks a good seed, a wrong SHA-256, a missing object, a restored database (it wins), and no `SEED_SHA256`. Then the `c1` build's own WordPress tree (`spikes/c1-woo-container/build.sh`, WooCommerce in it) ran under `php -S` with `router.php` on the a2 seed (made by `import.sh` steps 1 to 3). `/`, `/?p=1`, `wp-login.php` and the shop page were HTTP 200, with no PHP errors. The real container, Litestream and the deploy are not run yet.
 
 ## Measured on a deployed site
 

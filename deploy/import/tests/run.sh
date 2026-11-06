@@ -135,5 +135,38 @@ R2_KEY_ID=test R2_SECRET=test "$IMP/media.sh" "$EP" bucket "$T/src/wp-content" >
 check "media: second run sends nothing" "$(tail -1 "$T/media2.out")" "media: 0 sent, 2 already there, 0 failed"
 check "media: stored key, size and type" "$(python3 -c 'import json,sys; print(sorted((o["key"],o["size"],o["type"]) for o in map(json.loads, open(sys.argv[1]))))' "$T/s3.log")" "[('uploads/2026/01/a b.jpg', 6, 'image/jpeg'), ('uploads/2026/01/doc.pdf', 6, 'application/pdf')]"
 
+# 8. c1: the container's seed step (spikes/c1-woo-container/container/seed.sh)
+# against the same stand-in. PUT a seed, then load it as entrypoint.sh does.
+C1C=$(cd "$IMP/../../spikes/c1-woo-container/container" && pwd)
+mkdir -p "$T/bin" "$T/run"
+command -v sha256sum >/dev/null || { printf '#!/bin/sh\nexec shasum -a 256 "$@"\n' > "$T/bin/sha256sum"; chmod +x "$T/bin/sha256sum"; }
+seed_run() { # data-dir sha [replica-path] -> exit code; output in $T/seed.out
+  mkdir -p "$1"
+  set +e
+  PATH="$T/bin:$PATH" SEED_DATA="$1" SEED_RUN="$T/run" SEED_COUNTS="$C1C/seed-counts.php" SEED_OUT="$1/counts.json" \
+    SEED_SHA256="$2" REPLICA_PATH="${3:-import-x}" R2_ENDPOINT="$EP" R2_BUCKET=replica LITESTREAM_ACCESS_KEY_ID=test LITESTREAM_SECRET_ACCESS_KEY=test \
+    sh -c '. "$1"; seed_load' _ "$C1C/seed.sh" > "$T/seed.out" 2>&1
+  local rc=$?
+  set -e
+  return $rc
+}
+curl -sS -o /dev/null -K <(printf 'user = "test:test"\n') --aws-sigv4 "aws:amz:auto:s3" -T "$T/fx.sqlite" "$EP/replica/import-x.seed.sqlite"
+SHA=$(shasum -a 256 "$T/fx.sqlite" | cut -d' ' -f1)
+seed_run "$T/d1" "$SHA" && rc=0 || rc=$?
+check "c1 seed: loaded" "$rc:$(cmp -s "$T/fx.sqlite" "$T/d1/wordpress.sqlite" && echo same)" "0:same"
+check "c1 seed: counts match the seed" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["rows"] == json.loads(sys.argv[2])["rows"])' "$T/d1/counts.json" "$(php "$C1C/seed-counts.php" "$T/fx.sqlite" "$SHA" import-x)")" "True"
+check "c1 seed: no key file left" "$(find "$T/run" -type f | wc -l | tr -d ' ')" "0"
+seed_run "$T/d2" "0000000000000000000000000000000000000000000000000000000000000000" && rc=0 || rc=$?
+check "c1 seed: wrong SHA-256 stops, no database" "$rc:$(find "$T/d2" -type f | wc -l | tr -d ' ')" "1:0"
+seed_run "$T/d3" "$SHA" import-missing && rc=0 || rc=$?
+check "c1 seed: missing object stops, no database" "$rc:$(find "$T/d3" -type f | wc -l | tr -d ' ')" "1:0"
+check "c1 seed: missing object says download failed" "$(grep -c 'seed: download failed' "$T/seed.out" || true)" "1"
+mkdir -p "$T/d4"; echo existing > "$T/d4/wordpress.sqlite"
+seed_run "$T/d4" "$SHA" && rc=0 || rc=$?
+check "c1 seed: a restored database wins" "$rc:$(cat "$T/d4/wordpress.sqlite")" "0:existing"
+seed_run "$T/d5" "" && rc=0 || rc=$?
+check "c1 seed: no SEED_SHA256, nothing loaded" "$rc:$(find "$T/d5" -type f | wc -l | tr -d ' ')" "0:0"
+
+
 [ "$fails" = 0 ] || { echo "$fails failed"; exit 1; }
 echo "all passed"

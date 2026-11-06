@@ -4,8 +4,9 @@
 #   URL=https://my-site.acct.workers.dev SPIKE_TOKEN=... DUMP=site.sql ./deploy/import.sh
 #   URL=... NAME=my-site DUMP=site.sql ./deploy/import.sh   (SPIKE_TOKEN from Terraform)
 #
-# VARIANT: b-dosql only in this version (the database is the PHP object's
-# SQLite). Other variants stop with an error; see deploy/import/README.md.
+# VARIANT: b-dosql (the database is the PHP object's SQLite) or c1 (SQLite in
+# the container, Litestream to R2; two phases, see deploy/import/c1.sh).
+# Other variants stop with an error; see deploy/import/README.md.
 #
 # DUMP is the output of "mysqldump --hex-blob" or "wp db export --hex-blob"
 # of the source site. The source site is only read; nothing here connects to it.
@@ -33,7 +34,7 @@ IMP="$ROOT/deploy/import"
 VARIANT=${VARIANT:-b-dosql}
 : "${DUMP:?set DUMP to the mysqldump file}"
 [ -r "$DUMP" ] || { echo "cannot read DUMP=$DUMP" >&2; exit 2; }
-[ "$VARIANT" = b-dosql ] || { echo "VARIANT=$VARIANT: import supports b-dosql only (deploy/import/README.md)" >&2; exit 2; }
+case "$VARIANT" in b-dosql|c1) ;; *) echo "VARIANT=$VARIANT: import supports b-dosql and c1 (deploy/import/README.md)" >&2; exit 2 ;; esac
 
 : "${URL:?set URL to the site address that deploy.sh printed}"
 # Terraform state of the site, as deploy.sh keeps it (DEPLOY_STATE; tf-backend.sh).
@@ -55,9 +56,21 @@ URL=$NEW_ORIGIN
 WORK=${WORK:-${TMPDIR:-/tmp}/wp-import-$(date -u +%Y%m%dT%H%M%SZ)}
 mkdir -p "$WORK"; chmod 700 "$WORK"
 echo "work files: $WORK"
+# c1, phase 2: the seed phase made the files in WORK; only the check runs.
+if [ "$VARIANT" = c1 ] && [ -n "${VERIFY:-}" ]; then
+  # shellcheck source=SCRIPTDIR/import/c1.sh
+  . "$IMP/c1.sh"
+  code=$(curl -s -m 120 -A wp-on-cf-import/1 -o /dev/null -w '%{http_code}' "$URL/?nocache=import$RANDOM")
+  echo "GET / -> $code"; [ "$code" = 200 ] || { echo "the home page is not 200" >&2; exit 1; }
+  exit 0
+fi
 
 # 1. The driver at the ref the build uses, so its _wp_sqlite_* tables match.
 REF=$(sed -n 's/^SQLITE_DI_REF=//p' "$APP/build.sh")
+if [ "$VARIANT" = c1 ]; then
+  C1REF=$(sed -n 's/^SQLITE_DI_REF=//p' "$ROOT/spikes/c1-woo-container/build.sh")
+  [ "$C1REF" = "$REF" ] || { echo "c1 pins SQLITE_DI_REF=$C1REF, b2 pins $REF: the seed must be made with c1's ref" >&2; exit 1; }
+fi
 DRV="$APP/build/cache/sqlite-database-integration"
 [ -d "$DRV/.git" ] || git clone -q https://github.com/WordPress/sqlite-database-integration "$DRV"
 [ "$(git -C "$DRV" rev-parse --short=7 HEAD)" = "${REF:0:7}" ] || git -C "$DRV" checkout -q "$REF"
@@ -82,6 +95,10 @@ SITEURL=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["site"
 [ "${SITEURL%/}" = "${OLD_ORIGIN%/}" ] || { echo "siteurl ($SITEURL) is not home ($OLD_ORIGIN): WordPress in a subdirectory is not supported" >&2; exit 1; }
 OLD_ORIGIN=${OLD_ORIGIN%/}
 python3 "$IMP/search-replace.py" "$WORK/site.sqlite" "$OLD_ORIGIN" "$NEW_ORIGIN" ${DRY_RUN:+--dry-run} | tee "$WORK/replace.json"
+
+# c1: the seed phase (deploy/import/c1.sh) exits here.
+# shellcheck source=SCRIPTDIR/import/c1.sh
+[ "$VARIANT" != c1 ] || . "$IMP/c1.sh"
 
 # 4. The theme and plugins must be in the build: the import does not add them.
 # This reads the local build (spikes/b2-wordpress/build), so build what you

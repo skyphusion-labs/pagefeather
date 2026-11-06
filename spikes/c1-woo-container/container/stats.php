@@ -9,6 +9,9 @@
 //                   cgroup cpu.stat, load, accept backlog, PHP processes
 //   ?what=purge     one line per page cache purge request (php/c1-purge-log.php)
 //   ?what=db        row counts and sizes that grow as a store sells (JSON)
+//   ?what=seed      the import seed this container loaded (entrypoint.sh,
+//                   issue #31): its SHA-256 and the rows of each table before
+//                   PHP ran (JSON), or 404 when it loaded none
 //   ?what=apcu      APCu: entries, memory, hits, misses, and the PHP worker
 //                   that answered (call it several times: one shared cache
 //                   gives the same start_time and growing counts in every pid)
@@ -36,6 +39,15 @@ if ( 'req' === $what || 'samples' === $what || 'purge' === $what ) {
 			echo $line;
 		}
 	}
+	exit;
+}
+if ( 'seed' === $what ) {
+	header( 'content-type: application/json' );
+	if ( ! is_file( '/tmp/c1-seed.json' ) ) {
+		http_response_code( 404 );
+		exit( '{"seed":false}' );
+	}
+	readfile( '/tmp/c1-seed.json' );
 	exit;
 }
 if ( 'apcu' === $what ) {
