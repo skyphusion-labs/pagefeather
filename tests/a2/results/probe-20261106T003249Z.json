@@ -1,0 +1,132 @@
+{
+ "placement": "host=aws-us-east-2.connect.psdb.cloud:3306",
+ "latency": [
+  {
+   "colo": {
+    "ingress": "ORD",
+    "run": "ORD"
+   },
+   "utc": "2026-11-06T00:32:38.938Z",
+   "latency": {
+    "global": {
+     "host_binding": "global",
+     "connect_ms": 7,
+     "first_ms": 62,
+     "n": 50,
+     "median_ms": 43,
+     "min_ms": 40,
+     "max_ms": 49
+    },
+    "direct": {
+     "host_binding": "direct",
+     "connect_ms": 4,
+     "first_ms": 19,
+     "n": 50,
+     "median_ms": 16,
+     "min_ms": 14,
+     "max_ms": 19
+    }
+   }
+  },
+  {
+   "colo": {
+    "ingress": "ORD",
+    "run": "ORD"
+   },
+   "utc": "2026-11-06T00:32:42.224Z",
+   "latency": {
+    "global": {
+     "host_binding": "global",
+     "connect_ms": 6,
+     "first_ms": 55,
+     "n": 50,
+     "median_ms": 41,
+     "min_ms": 37,
+     "max_ms": 47
+    },
+    "direct": {
+     "host_binding": "direct",
+     "connect_ms": 3,
+     "first_ms": 41,
+     "n": 50,
+     "median_ms": 20,
+     "min_ms": 17,
+     "max_ms": 23
+    }
+   }
+  },
+  {
+   "colo": {
+    "ingress": "ORD",
+    "run": "ORD"
+   },
+   "utc": "2026-11-06T00:32:45.601Z",
+   "latency": {
+    "global": {
+     "host_binding": "global",
+     "connect_ms": 1,
+     "first_ms": 101,
+     "n": 50,
+     "median_ms": 45,
+     "min_ms": 41,
+     "max_ms": 72
+    },
+    "direct": {
+     "host_binding": "direct",
+     "connect_ms": 3,
+     "first_ms": 34,
+     "n": 50,
+     "median_ms": 15,
+     "min_ms": 13,
+     "max_ms": 86
+    }
+   }
+  }
+ ],
+ "session": {
+  "colo": {
+   "ingress": "ORD",
+   "run": "ORD"
+  },
+  "utc": "2026-11-06T00:32:49.197Z",
+  "steps": {
+   "server_session_mode": {
+    "sql": "SELECT @@SESSION.sql_mode",
+    "ok": true,
+    "shape": "rows",
+    "rows": [],
+    "ms": 30
+   },
+   "server_global_mode": {
+    "sql": "SELECT @@GLOBAL.sql_mode",
+    "ok": true,
+    "shape": "rows",
+    "rows": [],
+    "ms": 21
+   },
+   "server_version": {
+    "sql": "SELECT VERSION()",
+    "ok": true,
+    "shape": "rows",
+    "rows": [
+     [
+      "8.4.11-Vitess"
+     ]
+    ],
+    "ms": 19
+   },
+   "server_connection_id": {
+    "sql": "SELECT CONNECTION_ID()",
+    "ok": true,
+    "shape": "rows",
+    "rows": [
+     [
+      "29"
+     ]
+    ],
+    "ms": 22
+   }
+  },
+  "error": "SELECT @@SESSION.sql_mode returned no row: see steps.server_session_mode"
+ }
+}

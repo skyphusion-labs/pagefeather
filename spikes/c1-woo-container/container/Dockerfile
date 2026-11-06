@@ -14,8 +14,23 @@ RUN curl -sfL --retry 5 --retry-all-errors -o /tmp/ls.tgz "https://github.com/be
  && { echo 'memory_limit=256M'; echo 'upload_max_filesize=20M'; echo 'post_max_size=24M'; \
       echo 'opcache.enable_cli=1'; echo 'opcache.memory_consumption=128'; echo 'opcache.validate_timestamps=0'; \
       echo 'expose_php=Off'; echo 'display_errors=Off'; echo 'log_errors=On'; } > /usr/local/etc/php/conf.d/wordpress.ini
+# APCu (object cache, wp-content/object-cache.php): PECL source, pinned and
+# checked. The build tools are removed again in the same layer.
+ARG APCU_VERSION=5.1.28
+ARG APCU_SHA256=ca9c1820810a168786f8048a4c3f8c9e3fd941407ad1553259fb2e30b5f057bf
+RUN curl -sfL --retry 5 --retry-all-errors -o /tmp/apcu.tgz "https://pecl.php.net/get/apcu-${APCU_VERSION}.tgz" \
+ && echo "${APCU_SHA256}  /tmp/apcu.tgz" | sha256sum -c - \
+ && apt-get update && apt-get install -y --no-install-recommends $PHPIZE_DEPS \
+ && mkdir -p /usr/src/php/ext/apcu && tar -xzf /tmp/apcu.tgz -C /usr/src/php/ext/apcu --strip-components=1 \
+ && docker-php-ext-install apcu \
+ && apt-get purge -y --auto-remove $PHPIZE_DEPS && rm -rf /var/lib/apt/lists/* /tmp/apcu.tgz /usr/src/php \
+ && { echo 'apc.shm_size=64M'; echo 'apc.enable_cli=0'; } > /usr/local/etc/php/conf.d/apcu-wordpress.ini
 COPY build/wordpress/ /var/www/html/
+COPY build/opt/object-cache.php /opt/wp/object-cache.php
 COPY container/kill.php /var/www/html/_kill.php
+COPY container/stats.php /var/www/html/_stats.php
+COPY container/seed-counts.php /opt/wp/seed-counts.php
+COPY container/seed.sh /opt/wp/seed.sh
 COPY container/litestream.yml /etc/litestream.yml
 COPY container/entrypoint.sh /usr/local/bin/entrypoint.sh
 WORKDIR /var/www/html

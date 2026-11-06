@@ -1,0 +1,401 @@
+{
+ "utc": "2026-11-05T21:54:39Z",
+ "namespace": "wp-on-cf-spike",
+ "dispatcher": "https://wp-on-cf-wfp-dispatch.skyphusion.workers.dev",
+ "direct": "https://wp-on-cf-wfp-echo.skyphusion.workers.dev",
+ "deploys": [
+  {
+   "deploy": "outbound",
+   "exit": 0,
+   "s": 5,
+   "tail": [
+    " \u26c5\ufe0f wrangler 4.107.0 (update available 4.158.0)",
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+    "Total Upload: 0.32 KiB / gzip: 0.24 KiB",
+    "Uploaded wp-on-cf-wfp-outbound (2.90 sec)",
+    "Deployed wp-on-cf-wfp-outbound triggers (0.69 sec)",
+    "  https://wp-on-cf-wfp-outbound.skyphusion.workers.dev",
+    "Current Version ID: ba72de3e-736d-4822-bde9-ab461c6f18fb"
+   ]
+  },
+  {
+   "deploy": "echo-direct",
+   "exit": 0,
+   "s": 5,
+   "tail": [
+    " \u26c5\ufe0f wrangler 4.107.0 (update available 4.158.0)",
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+    "Total Upload: 0.21 KiB / gzip: 0.17 KiB",
+    "Uploaded wp-on-cf-wfp-echo (3.15 sec)",
+    "Deployed wp-on-cf-wfp-echo triggers (0.83 sec)",
+    "  https://wp-on-cf-wfp-echo.skyphusion.workers.dev",
+    "Current Version ID: 1a95adb5-e44e-434f-96ae-358ed05c5baf"
+   ]
+  },
+  {
+   "deploy": "ns-echo",
+   "exit": 0,
+   "s": 1,
+   "tail": [
+    " \u26c5\ufe0f wrangler 4.107.0 (update available 4.158.0)",
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+    "Total Upload: 0.21 KiB / gzip: 0.17 KiB",
+    "Uploaded echo (0.62 sec)",
+    "  Dispatch Namespace: wp-on-cf-spike",
+    "Current Version ID: b0d4c024-853a-4ebc-a43a-d4967f51bb1e"
+   ]
+  },
+  {
+   "deploy": "ns-tenant-a",
+   "exit": 0,
+   "s": 3,
+   "tail": [
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+    "Total Upload: 3.41 KiB / gzip: 1.45 KiB",
+    "Your Worker has access to the following bindings:",
+    "Binding                            Resource",
+    "env.COUNTER (Counter)              Durable Object",
+    "env.DB (wp-on-cf-wfp-d1)           D1 Database",
+    "env.BUCKET (wp-on-cf-wfp-r2)       R2 Bucket",
+    "env.IMAGES                         Images",
+    "env.TENANT (\"(hidden)\")            Environment Variable",
+    "Uploaded tenant-a (1.42 sec)",
+    "  Dispatch Namespace: wp-on-cf-spike",
+    "Current Version ID: 8e7bc4c9-36dc-4c74-bb31-6c05f204cbd4"
+   ]
+  },
+  {
+   "deploy": "ns-tenant-b",
+   "exit": 0,
+   "s": 2,
+   "tail": [
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+    "Total Upload: 3.41 KiB / gzip: 1.45 KiB",
+    "Your Worker has access to the following bindings:",
+    "Binding                            Resource",
+    "env.COUNTER (Counter)              Durable Object",
+    "env.DB (wp-on-cf-wfp-d1)           D1 Database",
+    "env.BUCKET (wp-on-cf-wfp-r2)       R2 Bucket",
+    "env.IMAGES                         Images",
+    "env.TENANT (\"(hidden)\")            Environment Variable",
+    "Uploaded tenant-b (1.17 sec)",
+    "  Dispatch Namespace: wp-on-cf-spike",
+    "Current Version ID: b1e38858-afd1-41ac-b2e7-852f72eadb45"
+   ]
+  },
+  {
+   "deploy": "ns-tenant-c",
+   "exit": 1,
+   "s": 2,
+   "tail": [
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+    "Total Upload: 53.88 KiB / gzip: 13.28 KiB",
+    "Your Worker has access to the following bindings:",
+    "Binding            Resource",
+    "env.BOX (Box)      Durable Object",
+    "The following containers are available:",
+    "- tenant-c-box (docker.io/library/httpd:2.4)",
+    "Uploaded tenant-c (0.83 sec)",
+    "\u2718 [ERROR] A request to the Cloudflare API (/accounts/fabcb25d9c7eb087110ec474a03e50d2/workers/scripts/tenant-c/versions/b89daaf0-6319-4643-98b2-23e24d971fc6) failed.",
+    "  This Worker does not exist on your account. [code: 10007]",
+    "  If you think this is a bug, please open an issue at: https://github.com/cloudflare/workers-sdk/issues/new/choose",
+    "\ud83e\udeb5  Logs were written to \"/Users/strummer/Library/Preferences/.wrangler/logs/wrangler-2026-11-05_21-53-16_801.log\""
+   ]
+  },
+  {
+   "deploy": "dispatcher",
+   "exit": 0,
+   "s": 4,
+   "tail": [
+    " \u26c5\ufe0f wrangler 4.107.0 (update available 4.158.0)",
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+    "Total Upload: 1.51 KiB / gzip: 0.71 KiB",
+    "Your Worker has access to the following bindings:",
+    "Binding                                                                      Resource",
+    "env.DISPATCHER (wp-on-cf-spike)                                              Dispatch Namespace",
+    "env.DISPATCHER_OUT (wp-on-cf-spike (outbound -> wp-on-cf-wfp-outbound))      Dispatch Namespace",
+    "Uploaded wp-on-cf-wfp-dispatch (2.23 sec)",
+    "Deployed wp-on-cf-wfp-dispatch triggers (0.56 sec)",
+    "  https://wp-on-cf-wfp-dispatch.skyphusion.workers.dev",
+    "Current Version ID: d2bd8768-ee0b-4bb1-8591-fd77c35cb22c"
+   ]
+  }
+ ],
+ "checks": {
+  "dispatcher": "https://wp-on-cf-wfp-dispatch.skyphusion.workers.dev",
+  "utc": "2026-11-05T21:53:27Z",
+  "checks": {
+   "do_tenant_a_1": {
+    "path": "/tenant-a/do",
+    "status": 200,
+    "s": 0.315,
+    "answer": {
+     "check": "do-sqlite",
+     "ok": true,
+     "ms": 0,
+     "n": 3,
+     "databaseSize": 12288,
+     "tenant": "tenant-a"
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "do_tenant_a_2": {
+    "path": "/tenant-a/do",
+    "status": 200,
+    "s": 0.236,
+    "answer": {
+     "check": "do-sqlite",
+     "ok": true,
+     "ms": 0,
+     "n": 4,
+     "databaseSize": 12288,
+     "tenant": "tenant-a"
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "do_tenant_b_1": {
+    "path": "/tenant-b/do",
+    "status": 200,
+    "s": 0.567,
+    "answer": {
+     "check": "do-sqlite",
+     "ok": true,
+     "ms": 0,
+     "n": 2,
+     "databaseSize": 12288,
+     "tenant": "tenant-b"
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "d1": {
+    "path": "/tenant-a/d1",
+    "status": 200,
+    "s": 0.436,
+    "answer": {
+     "check": "d1",
+     "ok": true,
+     "ms": 0,
+     "row": {
+      "one": 1
+     }
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "r2": {
+    "path": "/tenant-a/r2",
+    "status": 200,
+    "s": 0.718,
+    "answer": {
+     "check": "r2",
+     "ok": true,
+     "ms": 0,
+     "roundtrip": true
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "images": {
+    "path": "/tenant-a/images",
+    "status": 200,
+    "s": 0.193,
+    "answer": {
+     "check": "images",
+     "ok": true,
+     "ms": 0,
+     "format": "image/png",
+     "width": 1,
+     "height": 1
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "cpu_control": {
+    "path": "/tenant-a/burn?ms=5",
+    "status": 200,
+    "s": 0.222,
+    "answer": {
+     "check": "burn",
+     "ok": true,
+     "ms": 0,
+     "ms_asked": 5,
+     "x": true
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "cpu_no_limit_500": {
+    "path": "/tenant-a/burn?ms=500",
+    "status": 200,
+    "s": 1.654,
+    "answer": {
+     "check": "burn",
+     "ok": true,
+     "ms": 0,
+     "ms_asked": 500,
+     "x": true
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "cpu_limit_10ms_500": {
+    "path": "/tenant-a/burn?ms=500&cpuMs=10",
+    "status": 200,
+    "s": 0.424,
+    "answer": {
+     "check": "burn",
+     "ok": true,
+     "ms": 0,
+     "ms_asked": 500,
+     "x": true
+    },
+    "x-dispatch-limits": "{\"cpuMs\":10}"
+   },
+   "sub_control_3": {
+    "path": "/tenant-a/sub?n=3",
+    "status": 200,
+    "s": 0.587,
+    "answer": {
+     "check": "sub",
+     "ok": true,
+     "ms": 0,
+     "n": 3,
+     "results": [
+      {
+       "status": 200,
+       "outbound": null
+      },
+      {
+       "status": 200,
+       "outbound": null
+      },
+      {
+       "status": 200,
+       "outbound": null
+      }
+     ]
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "sub_limit_2_of_6": {
+    "path": "/tenant-a/sub?n=6&subRequests=2",
+    "status": 200,
+    "s": 0.371,
+    "answer": {
+     "check": "sub",
+     "ok": true,
+     "ms": 0,
+     "n": 6,
+     "results": [
+      {
+       "status": 200,
+       "outbound": null
+      },
+      {
+       "status": 200,
+       "outbound": null
+      },
+      {
+       "error": "Too many subrequests by single Worker invocation. To configure this limit, refer to https://developers.cloudflare.com/workers/wrangler/configuration/#limits"
+      },
+      {
+       "error": "Too many subrequests by single Worker invocation. To configure this limit, refer to https://developers.cloudflare.com/workers/wrangler/configuration/#limits"
+      },
+      {
+       "error": "Too many subrequests by single Worker invocation. To configure this limit, refer to https://developers.cloudflare.com/workers/wrangler/configuration/#limits"
+      },
+      {
+       "error": "Too many subrequests by single Worker invocation. To configure this limit, refer to https://developers.cloudflare.com/workers/wrangler/configuration/#limits"
+      }
+     ]
+    },
+    "x-dispatch-limits": "{\"subRequests\":2}"
+   },
+   "outbound_off": {
+    "path": "/tenant-a/sub?n=1",
+    "status": 200,
+    "s": 0.263,
+    "answer": {
+     "check": "sub",
+     "ok": true,
+     "ms": 0,
+     "n": 1,
+     "results": [
+      {
+       "status": 200,
+       "outbound": null
+      }
+     ]
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "outbound_on": {
+    "path": "/tenant-a/sub?n=1&outbound=1",
+    "status": 200,
+    "s": 0.238,
+    "answer": {
+     "check": "sub",
+     "ok": true,
+     "ms": 0,
+     "n": 1,
+     "results": [
+      {
+       "status": 200,
+       "outbound": "tenant-a"
+      }
+     ]
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "outbound_on_from_do": {
+    "path": "/tenant-a/do-sub?outbound=1",
+    "status": 200,
+    "s": 0.41,
+    "answer": {
+     "check": "do-sub",
+     "ok": true,
+     "ms": 0,
+     "status": 200,
+     "outbound": null
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "missing_script": {
+    "path": "/no-such-tenant/ping",
+    "status": 404,
+    "s": 0.303,
+    "answer": {
+     "dispatch_error": "Worker not found.",
+     "name": "Error",
+     "script": "no-such-tenant",
+     "limits": {},
+     "outbound": false,
+     "ms": 102
+    },
+    "x-dispatch-limits": null
+   },
+   "container_1": {
+    "path": "/tenant-c/container",
+    "status": 200,
+    "s": 27.203,
+    "answer": {
+     "check": "container",
+     "ok": false,
+     "status": 500,
+     "body": "Failed to start container: There is no container application assigned to this Durable Object namespace",
+     "ms": 27021
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "container_2": {
+    "path": "/tenant-c/container",
+    "status": 200,
+    "s": 37.675,
+    "answer": {
+     "check": "container",
+     "ok": false,
+     "status": 500,
+     "body": "Failed to start container: There is no container application assigned to this Durable Object namespace",
+     "ms": 37474
+    },
+    "x-dispatch-limits": "{}"
+   }
+  }
+ },
+ "latency_laptop": null
+}

@@ -144,8 +144,8 @@ Also tried, no failure (round 3): SQL injection strings in search, NUL bytes, `w
 
 `[cache] enabled = true` puts Cloudflare's cache in front of the Worker. On a hit, no Worker code runs, so a cached page uses no CPU. The cache is tiered and collapses simultaneous misses into one render.
 
-- The Worker marks a response cacheable (`public, max-age=120, stale-while-revalidate=600` (see 8d), `Cache-Tag: wp-pages`) only for a logged-out `GET` or `HEAD` with status 200, 301 or 404, no `Set-Cookie`, no WordPress cookie on the request, and not admin, login, preview or spike paths.
-- The cache key has no cookies. `Vary: Cookie` keeps a logged-in visitor on their own (uncached) variant.
+- The Worker marks a response cacheable (`Cache-Tag: wp-pages`) only for a logged-out `GET` or `HEAD` with status 200, 301 or 404, no `Set-Cookie`, no WordPress cookie on the request, and not admin, login, preview or spike paths.
+- Cookies: see "Cookies (issue #63)" below. Until #63, `Vary: Cookie` kept a logged-in visitor off the cached page, and it also split the cache by every other cookie.
 - The Edge Cache mu-plugin (`php/edge-cache.php`) asks the Worker to purge the `wp-pages` tag when content changes (posts, comments, terms, menus, theme, site options). A deleted upload is purged by path.
 - Each deploy starts with a cold cache, because the Worker version is in the cache key.
 - With the cache on, every request counts as a billed Worker request, static assets too. On Free that counts against 100,000 requests a day.
@@ -159,6 +159,54 @@ Results:
 | Free | then 50 reader requests over the 5 pages | 50 of 50: 200, cache HIT. |
 
 On Free, this makes approach B usable for readers. Writers and admin still need Paid.
+
+**Cookies (issue #63). Measured 2026-11-06.** The 50 of 50 above came from a client with no cookies. Workers Cache compares a `Vary` header verbatim, so `Vary: Cookie` keyed each cached page on the whole Cookie header. On `wp-perf-dosql`, the same page read 7 times with `curl`:
+
+| Request | Before #63 |
+| --- | --- |
+| no cookie, twice | MISS, then HIT |
+| `_ga=GA1.1.111.222`, twice | MISS, then HIT |
+| another `_ga` value | MISS |
+| `sbjs_current=...` | MISS |
+| no cookie | HIT |
+
+So a reader with any cookie that is not WordPress's missed, and each `_ga` value had its own entry: in practice every first visit missed.
+
+The fix is c1's pattern (#58), as the Workers Cache docs describe it (per-entrypoint caching, cache keys):
+- Only the `Pages` entrypoint is cached (`exports.Pages.cache` in `wrangler.toml`, and in the config `deploy/deploy.sh` makes). The default entrypoint is a gateway with its cache off.
+- The gateway sends `Pages` a `GET` or `HEAD` that has no WordPress cookie (by name: logged in, post password, comment author, WooCommerce) and is not an admin, login, cron, spike, `preview` or `nocache` request, without its Cookie header. So the cache key is the path and the query alone. Every other request runs in the gateway, uncached.
+- A purge reaches only the cache of the entrypoint that calls it, so the purge runs in `Pages.purge()` (through `ctx.exports`).
+- **The browser now gets `Cache-Control: no-cache` on cached HTML.** The edge directive is `cloudflare-cdn-cache-control: max-age=120, stale-while-revalidate=600`, which Cloudflare reads and does not send on. Without `Vary: Cookie`, a browser that kept the logged-out page could show it after a login. With `no-cache`, it asks again.
+- A response that is not cacheable gets `cloudflare-cdn-cache-control: no-store`, so WordPress's own `no-cache` is not stored at the edge as a stale entry.
+
+Gate: `spikes/b2-wordpress/tests/cookie_cache_check.py`. On `wp-perf-dosql`: before #63, 8 fail; after, 14 of 14. The checks are:
+- HIT with no cookie, with `_ga`, with another `_ga` value, and with `sbjs_*`;
+- the gateway (not the cached copy) with a cart cookie, a post password cookie, or logged in (with the admin bar);
+- the browser gets `no-cache`, and there is no `Vary: Cookie`.
+
+Locally, workerd has no Workers Cache, so the gate checks only the route (`x-entrypoint: pages`) and skips the HIT checks. `break.py` (same PASS/FAIL set) and `cache_coherence.py` (0 fails) pass; "publishing a post purges the cached page" passes.
+
+**Purges.** Counted with `wrangler tail` over one `break.py` run. Each purge request and each purge sent is a log line (`{"m":"purge"}`); a refused purge is now logged, before it was dropped.
+- Before the change below: 27 requests, 20 purges sent, 0 refused. One request came from opening the editor (`post-new.php` makes an auto-draft).
+- With it: 26 requests, 20 purges sent in 32 s, 0 refused.
+- The cause of 20 sends is that `PURGE_GAP_MS` (15 s) coalesces per isolate. `break.py` writes in parallel, so many isolates purge. 20 is inside the burst of 25, but above the rate of 5 a minute. Since issue #78 the object coalesces for the whole site (below).
+- `php/edge-cache.php` no longer purges for an auto-draft, which is on no page. c1 uses the same file. A draft still purges: it may be a post that was just unpublished.
+
+**Purges for the whole site (issue #78). Measured 2026-11-06.** With PHP in the object (`b-do`, `b-dosql`, pool of 1), every change of content passes through the one `PhpRuntime` object, so the object coalesces the purges, as c1 does in its Store object:
+- `requestPurge()` stores `{pending, lastSent, lastAsked}` in the object's storage and sets one alarm for `max(now, lastSent + PURGE_GAP_MS)`.
+- `alarm()` sends one purge for everything asked since the last one, through `ctx.exports.Pages.purge()`. The object's own `ctx` has `exports` (probed). A change during a purge asks for the next one. A refused purge is tried once more one interval later. The state is stored, so a purge asked for survives an evicted object.
+- `/_purgestate` (spike token) returns the state and the last 20 sends. `wrangler tail` showed no alarm runs and dropped request events (18 of about 60), so it cannot count purges.
+- Variants with PHP in the Worker (`free`, `paid`, `a`) keep `PURGE_GAP_MS` per isolate. With a pool of more than one object, each object coalesces on its own.
+
+Gate: `spikes/b2-wordpress/tests/purge_coalesce_check.py` (locally through `tests/purge-coalesce.sh`). It makes 20 posts in parallel, 10 more 5 s later, then deletes them, waits two windows, and reads `/_purgestate`.
+
+| Where | Purges sent | Gaps (ms) | Result |
+| --- | --- | --- | --- |
+| local `dosql-local` | 1 | | 6 of 6 |
+| local, mutation: no coalescing (control) | 20 (the last 20 kept) | about 35 each | 2 fail |
+| `wp-perf-dosql` (Free test account) | 3, all accepted | 15000, 15001 | 6 of 6 |
+
+The same deploy: `cookie_cache_check.py` 14 of 14; `break.py` the same PASS/FAIL set, including "publishing a post purges the cached page". Locally the transaction gates and `cache_coherence.py` are unchanged.
 
 ### 8d. Phone-size uploads. Measured 2026-11-04.
 
@@ -188,6 +236,15 @@ Purge limits: Workers Cache purges always have the Free-tier limits, 5 a minute 
 - `opcache.file_update_protection=0`. OPcache does not cache a file changed in the last 2 seconds. The files are written at boot and the Worker clock barely moves, so every file looked new and nothing was cached.
 
 Settings: shared memory 32 MB (the full `e2e.sh` uses 28.6 MB), `validate_timestamps=0`, and the file cache as a second level. `opcache.sh` runs `e2e.sh` against `wrangler dev`, then saves the compiled files (about 600) to `build/opcache.zip`, which ships with the Worker. The same PHP build runs locally and on Cloudflare, so the files match.
+
+**One runtime must compile everything (issue #84). Measured 2026-11-06.** The compiled files live in the PHP runtime's own file system, and a runtime is dropped after a request whose WebAssembly memory passes 100 MiB. With WooCommerce and All-in-One WP Migration, priming dropped the runtime 3 times, each at 119 MiB: on `post-new.php`, a REST posts request, and `/wp-admin/`.
+- When a later request booted a new runtime, `opcache.zip` held only what compiled after the last drop: 1883 files, against 2227 without drops. Nothing reported it.
+- When the last request dropped it, the dump answered 409 "not booted", and the `wp-ref-a` deploy failed.
+
+What changed:
+- `opcache.sh` runs the dev server with `PHP_RECYCLE:off` (through `run.sh`'s `DEV_VARS`): no recycle for memory while priming. Local workerd has no 128 MB isolate limit, and a crashed runtime is still dropped.
+- `/_opcache-dump` answers with `x-isolate` and `x-runtime-drops` (runtimes dropped without a plan; the restart of `/_activate` is planned and not counted).
+- `opcache.sh` reads the isolate before the pages, and saves nothing unless the dump comes from the same isolate (no reload) with 0 drops. A 409 names its causes and prints the end of `dev.log`.
 
 **The boot copied 54 MB.** Unzipping the PHP files (26 MB) and the compiled files (28 MB) cost more CPU than compiling saved. Now nothing is copied at boot:
 
@@ -272,7 +329,7 @@ Also found:
 
 - The Worker keeps static assets, R2 uploads (`serveUpload`), the body size checks, XML-RPC off, the spike token check and the page cache (Workers Cache in front of the Worker). It sends every other request to the `PhpRuntime` object, with the same URL, so WordPress sees the public origin.
 - The object runs the same code as the Worker did: `boot`, `handle`, `withPhp` and the D1 bridge `handleMessage`. It reads `DB`, `MEDIA` and `IMAGES` from its own `env`. The bindings come from the same wrangler env, because the object is a class in the same Worker script. PHP sees no change.
-- The object cannot purge the page cache (it has no `ctx.cache`). When the Edge Cache mu-plugin asks for a purge, the object sets `x-php-purge: 1`. The Worker removes that header, purges with the same rate limit as before, and sets `x-cache-purge` (`scheduled`, or `no-cache-api` where Workers Cache is off).
+- The object purges the page cache itself since issue #78, through `ctx.exports.Pages.purge()`, coalesced for the whole site (8c, "Purges for the whole site"). Its response carries `x-cache-purge` (`scheduled` or `coalesced`). Before #78 the object set `x-php-purge: 1` and the Worker purged, per isolate.
 - `PHP_IN_DO=on` without the `PHP_RUNTIME` binding returns 500 on every request. It does not fall back to PHP in the Worker, because that fallback would hide the misconfiguration.
 - Responses from the object carry `x-php-object` (the object name) and `x-object-ms` (Worker to object and back, PHP included).
 - `/_d1ping` is answered by the object, so it measures D1 from where PHP runs.
@@ -337,6 +394,7 @@ Fix: the Worker sends its own origin in `x-wp-public-origin`. It always replaces
   1. The Worker answers a request with an `Upgrade` header with 426. WordPress serves no WebSockets.
   2. A runtime serves only the origin it booted with: a request for another origin boots a new runtime. Responses from the object carry `x-boot-origin`.
 - Test: `e2e.sh` also fails when `GET /` does not link to the site's own origin. The old checks did not see the defect locally: every row was 2xx.
+- **Later (2026-11-06, issues #55 and #33):** both fixes now apply to every variant, not only the object. The `Upgrade` guard runs before the variant branch (#55: in variant `a` the loopback booted the runtime with `http://127.0.0.1:<port>`). And the origin no longer comes from a request at all: the runtime takes it from the var `SITE_ORIGIN` (the site's configured address; `deploy/deploy.sh` and `run.sh` set it), so no first request (the loopback, a health probe, a second host name) can pin it (#33). Without `SITE_ORIGIN`, the request's origin is used and the runtime reboots when it changes, in the Worker as in the object. Test: `tests/origin.sh` (install and the first page through `127.0.0.1`, then the page through `localhost`): before the change both pages linked to `127.0.0.1` (default env) or the first did (object); after it both link to the configured origin. `FALLBACK=1` checks the unconfigured case.
 
 Red and green, locally (wrangler 4.107.0, new database each run, `POST /_install` through `127.0.0.1`, then `e2e.sh` through `localhost`):
 
@@ -388,7 +446,7 @@ Mutation check, local (`~/scratch` script). The object was given `http://<host>:
 | Statement length, bound parameters | 100 KB, 100 | 100 KB, 100 | Same limits |
 | Row, string or BLOB size | 2 MB | 2 MB | Same limit |
 
-**Transactions.** As on D1, a transaction is not real: BEGIN and COMMIT are answered in PHP, and a ROLLBACK undoes nothing (it is counted). Each statement is committed on its own. The object is the only writer and runs one PHP request at a time, so no other request sees a half-done change from another request. A PHP request that stops midway leaves its earlier statements in place, as on D1. A real transaction would need `ctx.storage.transaction()` around the whole PHP request. Whether its async form holds SQL writes across awaits is not stated in the docs. Not tried.
+**Transactions.** Real since issue #60: an undo log in the object rolls back `ROLLBACK`, `ROLLBACK TO SAVEPOINT` and a request that stops midway. `ctx.storage.transaction()` around the PHP request cannot do it (probes T10 and T11). See 8l. Before #60, as on D1, `ROLLBACK` undid nothing.
 
 **Size.** Per object: 10 GB on Paid. On Free, the limits table gives 5 GB per account and the FAQ gives 1 GB per object. Past the limit, writes fail with `SQLITE_FULL`; reads and deletes still work. The local test site is 409,600 bytes (`databaseSize`).
 
@@ -432,6 +490,144 @@ Measured per request in `e2e.sh` (`x-db-rows`, local): a public page reads 157 t
 **Not measured yet:** all of this on Cloudflare: CPU per request, the time a page saves (no D1 round trips), cold start of an object with its database, rows billed per page there, the plugin suite, point-in-time recovery, an R2 upload (`_r2_reserved` in the object) and the Images binding inside the object. On Cloudflare the clock does not move during synchronous work, so `/_dbping?db=object` can read 0 ms there: read CPU in `wrangler tail`.
 
 **Deploy:** `[env.dosql-free]` in `wrangler.toml` (Worker `wp-dosql-free`, no D1, migration `v1` for `PhpRuntime`, no location hint: the object is made near its first request).
+
+### 8k. Outbound HTTP from PHP (issue #26). Measured 2026-11-05.
+
+**Problem.** PHP in WebAssembly has no sockets in a Worker or a Durable Object. Every `wp_remote_*()` request failed:
+- no update checks;
+- the network parts of Akismet, Site Kit, Jetpack, WP Mail SMTP and Wordfence did not work;
+- Wordfence activation waited about 10 s for timeouts.
+
+**Design.** `php/http-bridge.php` (mu-plugin) answers `pre_http_request`, at the highest priority, so a plugin's own answer (a mock or a cache) still wins.
+- **Checks before sending.** It makes the checks core makes:
+  - `reject_unsafe_urls`, the allowed protocols and a valid URL;
+  - `block_request()`, so `WP_HTTP_BLOCK_EXTERNAL` and `WP_ACCESSIBLE_HOSTS` keep their meaning;
+  - then `skyphusion_http_allowed` (a filter, default true).
+- **The request.** It goes through `post_message_to_js()` to `httpOp()` in `index.js`, which makes it with `fetch()`.
+- **The answer.** It comes back in core's array (`headers`, `body`, `response`, `cookies`, `filename`). `http_api_debug` and the `http_response` filter run on it, and `stream` and `filename` write the body to the file.
+- **In `httpOp()`:**
+  - one timeout for the request and its redirects;
+  - redirects are followed in JavaScript, so each hop is checked again: 0 returns the redirect, and past the count is "Too many redirects", as WordPress's HTTP library does;
+  - the body is read up to `limit_response_size`, and never past `HTTP_MAX_BYTES` (default 8 MB);
+  - `HTTP_ALLOW_HOSTS` (a comma list) restricts the hosts when it is set;
+  - a log line for each request.
+- **Configuration.** `wp-config.php` no longer defines `WP_HTTP_BLOCK_EXTERNAL`. `HTTP_BRIDGE=off` defines it again in `wp-runtime.php` and turns the bridge off: the behaviour before.
+- **Not covered:** `curl_*()`, `fsockopen()` and `http://` streams (`file_get_contents()` of a URL). `sslverify` cannot be turned off, because `fetch()` always checks TLS.
+
+**A request to the site itself is refused.** The PHP object runs one request at a time. A request from inside a page to the site's own host goes out, comes back through the Worker, and waits behind the page that made it. `httpRefusal()` refuses any request to the site's own host at once. WordPress treats it like any failed request (Site Health's loopback check, the plugin editor's fatal-error check).
+
+Measured, locally:
+- with the refusal: the request fails in about 0.3 s, and the site answers right after;
+- with the refusal mutated off (built tree only): the request hung for its whole 10 s timeout.
+
+**Gate.** `tests/http/http_bridge_check.py`, with the test-only route `tests/http/test-http-route.php` copied into the built tree (it is never shipped).
+
+| Where | Echo | Result |
+| --- | --- | --- |
+| local, `dosql-local` (PHP in the object) | `tests/http/echo.py` | 16 of 16, plus `e2e.sh` 17 of 17 |
+| local, default env (PHP in the Worker) | `tests/http/echo.py` | 16 of 16, plus `e2e.sh` 17 of 17 |
+| `wp-perf-dosql` on Cloudflare, a test build with the route and Akismet | `https://httpbin.org` | 17 of 17 |
+
+The checks are:
+- get, a form post, a JSON post;
+- headers both ways, a status;
+- redirects, too many redirects, no redirect;
+- a timeout (1 s against a 4 s delay), the size limit, a stream to a file, a cookie;
+- the loopback refused at once, and the site answering after;
+- `api.wordpress.org` 200, and no update-check warning on plugins.php;
+- with Akismet, `Akismet::verify_key()` answers `invalid` (its API answered; the key is not real), and not `failed` (no network).
+
+Controls:
+- `HTTP_BRIDGE=off`: the network checks fail (12 of 16 locally), and Akismet answers `failed`;
+- the loopback mutation: the loopback check fails.
+
+**No regression on pages without HTTP.** On `wp-perf-dosql`, the same build with `HTTP_BRIDGE` off, on, then off again. Each pass: `N=30 C=1 PAGES=home,post python3 tests/load/perf.py` with `wrangler tail`; 0 boots; `httpCalls` 0 on these pages.
+
+| Page | Off | On | Off again |
+| --- | --- | --- | --- |
+| home | 152 / 177 (27) | 148 / 186 (27) | 147 / 193 (24) |
+| post | 157 / 225 (19) | 156 / 201 (18) | 189 / 221 (19) |
+
+Values are tail CPU in ms, p50 / p95 (joined n). On is inside the off range on both pages.
+
+**The plugin suite does not test this.** Its `function` step has no check for the 10 network-dependent plugins: `fn_check()` returns `None` ("admin page only") for them, so they count as not passing in every run, with the network or without it. The evidence for this change is the gate above. A network check per plugin would be new work in `tests/plugins/plugins.py`.
+
+**Two findings in the test rig, not in the bridge.**
+1. With a local echo server on HTTP/1.0 (Python's default; it closes each connection), a redirect inside the object sometimes failed with "Network connection lost": workerd reused a closed connection. With HTTP/1.1 keep-alive it passed 3 of 3. A real HTTP/1.0 server that closes connections might do the same. Not tested.
+2. In the first Cloudflare run of the test build, the test route and Akismet answered 404 for about 15 s right after the deploy; a second deploy of the same build answered from its first request. Not explained.
+
+### 8l. Real SQL transactions in the PHP object (issue #60). Measured 2026-11-06 (UTC).
+
+**Problem.** On `b-dosql` a `ROLLBACK` undid nothing. The PHP driver answered `BEGIN` and `COMMIT` itself, and each statement committed on its own. A request that stopped midway kept its earlier writes. The red test showed this on `dosql-local` and on `do-local` (D1).
+
+**What the object's SQLite allows.** Probed on Cloudflare and locally, with throwaway builds (never committed):
+- `BEGIN`, `SAVEPOINT` and `PRAGMA schema_version` are refused (`SQLITE_AUTH`).
+- Triggers, `PRAGMA table_info` and `quote()` are allowed.
+- `ctx.storage.transactionSync()` nests as a savepoint.
+- `ctx.storage.transaction(async)` cannot hold a whole PHP request:
+  - **T10.** A nested transaction that is held open does not capture statements made from outside its closure. The inner one rolled back; the row written from outside stayed (rows `o1, i1, i2, i3, o2` = `1, 0, 1, 0, 1`). On Cloudflare and locally.
+  - **T11.** A `fetch()` while the transaction is held deadlocks. On Cloudflare the request answered the overload message after 30 s, and the site answered 200 right after. Locally the object reset after 30 s.
+  - A PHP request awaits `fetch()` (8k), so a transaction around the request cannot hold.
+
+**Design: an undo log** (SQLite's "Automatic Undo/Redo" technique).
+- `php/real-transactions.php` (mu-plugin) watches the `query` filter of `$wpdb`. That filter sees the transaction statements of WordPress and plugins. The SQLite driver's own internal transactions do not pass through it. It sends `START TRANSACTION`, `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVEPOINT`, `ROLLBACK TO`, `RELEASE` and DDL to `txnOp()` in `index.js` through `post_message_to_js()`.
+- On `BEGIN`, `index.js` puts three triggers on each table: AFTER INSERT, UPDATE and DELETE. Each writes the inverse SQL into `_wp_undo`, only when `_wp_undo_state.active` is 1.
+  - Tables that are skipped: `sqlite_*`, `_cf_*`, the undo tables, and `WITHOUT ROWID` tables.
+  - A trigger's name holds a hash of its whole body. A changed body (a new release, a new column) gets a new name, the old trigger is dropped, and the new one is made.
+  - The triggers are checked again only when `sqlite_master` changes (its row count and the total length of its SQL; `PRAGMA schema_version` is refused).
+- **ROLLBACK.** Replays the log newest first, inside one `transactionSync()`, then deletes those log rows.
+- **COMMIT.** Deletes the log and sets `active` to 0.
+- **The object cache.** The keys set or deleted since `BEGIN` are dropped from the object cache on any rollback, so the next request reads the old value from the database.
+- **MySQL semantics kept:**
+  - `START TRANSACTION` inside a transaction commits the first;
+  - DDL (`CREATE`, `ALTER`, `DROP`, `RENAME`, `TRUNCATE`) commits first (MySQL's implicit commit);
+  - a transaction still open at the end of the request is rolled back, as MySQL does when a connection closes;
+  - a `SAVEPOINT` outside a transaction does nothing;
+  - the same savepoint name replaces the old one;
+  - `ROLLBACK TO` an unknown name is an error.
+- **Isolation.** The object runs one PHP request at a time (`withPhp`), and the lock is held across `await fetch()`. So every logged write belongs to the request that holds the transaction. The concurrency check below confirms this.
+- **An isolate that dies mid-transaction.** `active` is stored in the database. Before its first PHP run, a new isolate rolls back what the log holds (`txnRecover()`). Not tested: no gate kills an isolate mid-transaction.
+- **Off switch.** `REAL_TRANSACTIONS=off` restores the behaviour before: `ROLLBACK` undoes nothing.
+- **Dumps.** The undo log (`_wp_undo`, `_wp_undo_state` and the `_wp_undo_*` triggers) is not data, so `dumpTo()` leaves it out of a `dbmove.py` dump. The target makes its own on the first `BEGIN`. An import with `--replace` drops it with the other tables.
+
+**Gate.** `tests/tx/tx_check.py`, with the test-only route `tests/tx/test-tx-route.php` copied into the built tree (it is never shipped). 11 checks:
+- the transaction sees its own insert; rollback; commit;
+- a PHP fatal error with the transaction open (the row is gone);
+- a savepoint (only the part after it is undone);
+- an UPDATE and a DELETE are undone;
+- the cache: `update_option()` inside `BEGIN`, `ROLLBACK`, then `get_option()` in the next request returns the old value;
+- `wp_remote_get()` inside a transaction, then the rollback (no deadlock);
+- concurrency: request 1 opens `BEGIN`, writes, and calls `wp_remote_get()` to a 3 s delay. Request 2 writes 0.7 s later. Request 1 rolls back. Request 2's write survives, and request 2 ends after request 1;
+- a nested `START TRANSACTION`; DDL inside a transaction.
+
+| Where | Result |
+| --- | --- |
+| local, `dosql-local`, real transactions | 11 of 11, plus `e2e.sh` 17 of 17 |
+| local, `dosql-local`, `REAL_TRANSACTIONS=off` | 3 of 11 (8 fail: the control) |
+| local, `do-local` (D1) | 3 of 11 (8 fail) |
+| local, mutation: the triggers never log (`WHEN 0`), built tree only | 3 of 11 (8 fail) |
+| `wp-perf-dosql` (Free test account), a test build with the route, echo `https://httpbin.org` | 11 of 11 |
+
+The mutation ran on the state the "on" run left, so it also proves that a changed trigger body replaces the old trigger. In the first mutation run, trigger names held only the table and its columns, so the old triggers stayed and the mutation passed 11 of 11. That run found the defect; the name now holds the body.
+
+**No regression.**
+- Local, `dosql-local`: `e2e.sh` 17 of 17; `tests/load/cache_coherence.py` 0 fails with the object cache on and off; the plugin suite (7 groups) 0 lines with `pass: false`.
+- `wp-perf-dosql` (Free test account), shipping build: `tests/break.py` 21 pass, 5 fail, the same PASS/FAIL set as before this change (the 5 are uploads; R2 and the Images binding are not on for `wp-perf-dosql`, see [perf-dosql.md](perf-dosql.md)); `cache_coherence.py` 0 fails.
+
+**CPU.** The triggers stay on all tables. Outside a transaction, each write runs the trigger's `WHEN` subquery and logs nothing. On `wp-perf-dosql` (Free test account), the shipping build, `REAL_TRANSACTIONS` off, on, off, on. Each pass: `N=30 C=1 PAGES=post-new,dashboard,home python3 tests/load/perf.py` with `wrangler tail`; 0 boots; `txnOps` and `undoRows` 0 on all these pages.
+
+| Page | Off | On | Off again | On again |
+| --- | --- | --- | --- | --- |
+| post-new (writes; 39 statements) | 552 / 593 (28) | 446 / 558 (27) | 470 / 575 (30) | 435 / 553 (29) |
+| dashboard | 186 / 235 (17) | 162 / 271 (17) | 195 / 321 (19) | 214 / 264 (21) |
+| home | 168 / 184 (27) | 146 / 179 (22) | 807 / 959 (30) | 874 / 1034 (30) |
+
+Values are tail CPU in ms, p50 / p95 (joined n).
+- On post-new, the page that writes, "on" is lower than "off" in both pairs. The cost of the `WHEN` check is below the spread between runs.
+- Home and dashboard move about 10% in both directions between passes. With 4 to 6 statements, mostly reads, they fire almost no triggers.
+- Home is a different page in the last two passes: `break.py` and `cache_coherence.py` ran between the second and third pass and added posts, and the home body went from 67 KB to 2.2 MB. Compare the passes in pairs.
+
+**`b-do` (D1): not built.** D1 has no transaction across calls. An undo log is correct only when one writer runs every request in turn. With PHP in the Worker, many isolates write to D1 at the same time, so a replay would also undo other requests' writes. The `do-local` row above is the D1 result.
 
 ### 9. Memory: what it took to fit in 128 MB
 

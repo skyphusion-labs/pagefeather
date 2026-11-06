@@ -5,10 +5,12 @@
                                     (deploy/terraform). Prints one target as JSON.
   job.py job <id> <branch> <n> <targets.jsonl>
                                     Prints the job JSON.
+  job.py latency <id> <branch> <n> <direct-url> <dispatched-url>
+                                    Prints a latency job (tests/wfp/latency.py on the runner).
   job.py redact <job.json>          Prints the job with passwords and tokens hidden.
   job.py table <result.json>        Prints a table of a runner result.
 """
-import json, re, statistics, sys
+import json, os, re, statistics, sys
 
 VARIANTS = ("b-do", "b-dosql", "a", "c1")
 
@@ -41,6 +43,24 @@ def job(jid, branch, n, path):
     if not targets:
         die("no targets")
     j = {"id": jid, "n": int(n), "targets": targets}
+    load = os.environ.get("LOAD", "")
+    if load:
+        m = re.fullmatch(r"([0-9]{1,3}(?:,[0-9]{1,3}){0,9}):([0-9]{1,3}):(0(?:\.[0-9]+)?|1)(?::(nocache|cached|cached-sbjs))?", load)
+        if not m or max(int(x) for x in m.group(1).split(",")) > 100 or not 10 <= int(m.group(2)) <= 300:
+            die("LOAD is levels:seconds:buyers[:mode], e.g. 1,5,10,25,50:60:0.2 or 1,5,10:60:0.2:cached (users 1 to 100, seconds 10 to 300; mode nocache, cached or cached-sbjs, see tests/load/load.py)")
+        j["load"] = {"levels": m.group(1), "seconds": int(m.group(2)), "buyers": float(m.group(3)), "mode": m.group(4) or "nocache"}
+    if branch:
+        j["branch"] = branch
+    print(json.dumps(j, indent=1))
+
+
+def latency(jid, branch, n, direct, dispatched):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", jid):
+        die("bad job id")
+    for u in (direct, dispatched):
+        if not re.fullmatch(r"https://[a-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._/-]*)?", u):
+            die("bad url (https only, plain path): %r" % u)
+    j = {"id": jid, "kind": "latency", "n": int(n), "pairs": [{"direct": direct, "dispatched": dispatched}]}
     if branch:
         j["branch"] = branch
     print(json.dumps(j, indent=1))
@@ -55,6 +75,22 @@ def redact(path):
     print(json.dumps(j, indent=1))
 
 
+def load_table(r):
+    print("users  req    rps    errors  aborted  1102  boots  recycled        wasm MiB  browse p50/p95/p99    checkout ok/n  p50/p95/p99   client load")
+    for t in r.get("targets", []):
+        print("%s (%s)%s" % (t.get("name"), t.get("variant"), "  ERROR: " + t["error"] if t.get("error") else ""))
+        for s in (t.get("load") or {}).get("steps", []):
+            b, c = s["kinds"].get("browse") or {}, s["kinds"].get("checkout") or {}
+            f = lambda k: "%s/%s/%s" % (k.get("p50"), k.get("p95"), k.get("p99")) if k else "-"
+            print("%-6s %-6s %-6s %-7s %-8s %-5s %-6s %-15s %-9s %-21s %-14s %-13s %s/%s" % (
+                s["users"], s["requests"], s["rps"], s["errors"], s.get("aborted", "-"), s["e1102"], s["boots"],
+                ",".join("%s=%s" % kv for kv in s["recycled"].items()) or "0", s["max_wasm_mib"],
+                f(b), "%s/%s" % (c.get("ok", 0), c.get("n", 0)), f(c), s.get("client_load1"), s.get("client_cpus")))
+    print("Seconds. errors: any request not 2xx (a checkout must return an order). 1102: Worker exceeded resource limits.")
+    print("aborted: buy loops whose cart request failed, so add item and checkout were not sent (#40). \"-\": a run before #40.")
+    print("client load: the runner's 1-minute load / its CPUs. At or above 1 per CPU, the client was the limit for that step.")
+
+
 def table(path):
     r = json.load(open(path))
     m = r.get("runner") or {}
@@ -63,6 +99,19 @@ def table(path):
     print("        %s" % m.get("curl"))
     if r.get("error"):
         print("JOB ERROR:", r["error"])
+    if r.get("kind") == "latency":
+        for p in r.get("latency") or []:
+            if p.get("error"):
+                print("ERROR:", p["error"])
+                continue
+            for k in ("direct", "dispatched"):
+                v = p.get(k) or {}
+                print("%-10s p50 %s ms  p95 %s ms  p99 %s ms  mean %s ms  ok %s  %s" % (k, v.get("p50"), v.get("p95"), v.get("p99"), v.get("mean"), v.get("ok"), v.get("url")))
+            print("added     ", p.get("added_ms"))
+        return
+    if r.get("load"):
+        print("load: users %s, %s s per step, buyers %s, mode %s" % (r["load"]["levels"], r["load"]["seconds"], r["load"]["buyers"], r["load"].get("mode", "nocache")))
+        return load_table(r)
     pages = []
     for t in r.get("targets", []):
         for p in ((t.get("bench") or {}).get("pages") or {}):
@@ -97,6 +146,8 @@ if __name__ == "__main__":
         target(a[1], a[2])
     elif a[:1] == ["job"] and len(a) == 5:
         job(*a[1:])
+    elif a[:1] == ["latency"] and len(a) == 6:
+        latency(*a[1:])
     elif a[:1] == ["redact"] and len(a) == 2:
         redact(a[1])
     elif a[:1] == ["table"] and len(a) == 2:

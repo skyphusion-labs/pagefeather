@@ -1,6 +1,6 @@
 // Approach A: run WordPress's MySQL queries on the Hyperdrive binding.
-// php/hyperdrive-db.php sends {mysql: sql} (or {mysql_b64} for SQL that is not
-// UTF-8) through post_message_to_js. One connection per Worker request: a
+// php/hyperdrive-db.php sends {mysql: sql}, always valid UTF-8 (binary string
+// literals as hex literals, issue #79), through post_message_to_js. One connection per Worker request: a
 // Worker cannot use an I/O object from another request, and Hyperdrive pools
 // the real connections to the database.
 //
@@ -35,7 +35,11 @@ async function connection(env) {
 }
 
 export async function mysqlQuery(env, m) {
-	const sql = m.mysql_b64 !== undefined ? Buffer.from(m.mysql_b64, 'base64').toString('binary') : m.mysql;
+	// SQL comes as JSON text. php/hyperdrive-literals.php sends binary string
+	// literals as hex literals. The old {mysql_b64} form was decoded as latin1
+	// and stored every byte above 0x7F as two (issue #79): refused, not decoded.
+	if (m.mysql_b64 !== undefined) return { ok: false, error: 'mysql_b64 is not supported: send binary string literals as hex literals', errno: 2000 };
+	const sql = m.mysql;
 	try {
 		const c = await connection(env);
 		const [result, fields] = await c.query({ sql, rowsAsArray: true, typeCast: false });

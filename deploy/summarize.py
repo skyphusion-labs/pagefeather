@@ -10,6 +10,8 @@ type and the start times). VARIANT in the environment names the variant.
 import json, os, re, sys
 
 res, name, url, loc, e2e_exit, w = sys.argv[1:7]
+if not os.path.isdir(w):
+    sys.exit("summarize.py: work dir %s does not exist; %s not written" % (w, res))
 
 
 def lines(f):
@@ -50,5 +52,7 @@ if "cold_start_s" in out:
         out.get("instance_type"), out.get("php_workers"), sec(out.get("first_start_s")), sec(out.get("cold_start_s"))))
 print("e2e.sh: exit %d, %d of %d requests 2xx or 3xx" % (out["e2e"]["exit"], out["e2e"]["ok"], out["e2e"]["rows"]))
 for k, v in ((out["bench"] or {}).get("pages") or {}).items():
-    print("%-10s median %ss, %s queries, %s of %s answered" % (k, v["median_s"], v["queries"], v["ok"], out["bench"]["n"]))
+    q = "-" if v.get("queries") is None else "%d" % v["queries"]
+    p95 = "" if v.get("p95_s") is None else ", p95 %.2fs" % v["p95_s"]
+    print("%-10s median %.2fs%s, %s queries, %s of %s answered" % (k, v["median_s"], p95, q, v["ok"], out["bench"]["n"]))
 print("results:", res)

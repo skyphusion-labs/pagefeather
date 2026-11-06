@@ -16,13 +16,15 @@ This is the closest project to approach A. Approach B removes the external MySQL
 Read again on 2026-11-05 at commit `739e8e7`. HostlessWP had already solved, and documented, things this repo found on that day:
 
 - **The frozen clock.** A Worker does not advance the clock during CPU work, so `uniqid()` spins. HostlessWP makes the clock strictly monotonic. Our fix in `spikes/b2-wordpress/prepare.sh` is the same idea, found on our own when `wp-admin/plugins.php` hit the CPU limit. HostlessWP was first.
-- **Outbound HTTP.** HostlessWP sends `wp_remote_*`, a userland `curl_*` and `http://` streams through the Worker's `fetch()`, and sockets through `connect()`. Our issue #26 proposes the same for approach B.
+- **Outbound HTTP.** HostlessWP sends `wp_remote_*`, a userland `curl_*` and `http://` streams through the Worker's `fetch()`, and sockets through `connect()`. Approach B now does the same for `wp_remote_*` (`php/http-bridge.php`, issue #26, approach-b.md 8k). It does not do `curl_*`, streams or sockets.
 - **Workers Free.** HostlessWP runs PHP in a Durable Object on the Free plan (30 s of CPU) and keeps the Worker for the page cache. Approach B and our approach A run PHP in the Worker and stop at Free's CPU limit.
 - **Size.** HostlessWP splits the PHP tree into code bundles and loads files on first read. It deployed 19 plugins (276 MB packaged) as one Worker. Approach B needs groups to stay under 64 MiB.
 
 We measured HostlessWP as it is, with its own CLI: [docs/approach-a.md](approach-a.md).
 
 Approach B now uses HostlessWP's Workers Free design (issue #28, [approach-b.md](approach-b.md) 8i). With `PHP_IN_DO=on`, PHP runs in a `PhpRuntime` Durable Object with a location hint near the database. The Worker answers static files, uploads and the page cache, and forwards the rest to the object. The class name, the `PHP_IN_DO` switch, the location hint and the small pool of objects come from HostlessWP `runtime/src/index.js` (`PhpRuntime`, `render()`) and `lib/cloudflare.mjs` at `739e8e7`, GPL-2.0-or-later. Our object runs approach B's own runtime and D1 bridge, not HostlessWP's engine. Thank you, HostlessWP.
+
+Approach A's userland mysqli (issue #29, `spikes/b2-wordpress/php/hyperdrive-mysqli.php`) follows HostlessWP `runtime/php/hostlesswp-mysqli.php` at `739e8e7`, GPL-2.0-or-later. The design is from it: a `mysqli` and a `mysqli_result` class in PHP for `$wpdb->dbh`, the procedural `mysqli_*` functions as thin wrappers, and every query on the same Worker bridge as `wpdb`. Ours runs on approach A's bridge (`skyphusion_hd_run()`, with the sql_mode handling of a strict server), turns `mysqli_report()` into exceptions as PHP 8.1 does, and leaves out prepared statements. HostlessWP also sends string literals that are not UTF-8 as hex literals; approach A does the same since issue #79 (`php/hyperdrive-literals.php`). Before, it stored such bytes doubled.
 
 ## EmDash
 
@@ -53,11 +55,20 @@ Repository: [benbjohnson/litestream](https://github.com/benbjohnson/litestream).
 
 - It streams the changes of a SQLite database to S3-compatible storage and restores it from there. Approach C1 uses it to keep the WordPress database of a Container in R2, so a container that sleeps (and loses its disk) restores the store on start.
 
+## APCu Object Cache Backend, by Scott Cariss
+
+Repository: [l3rady/object-cache-apcu](https://github.com/l3rady/object-cache-apcu). GPL-2.0-or-later. Read on 2026-11-05. Release 2.0.1 (2026-10-14), commit `f611f5b`. It is a fork of Mark Jaquith's APC object cache.
+
+- It is a WordPress `object-cache.php` drop-in that keeps the object cache in APCu, the shared memory of one PHP server. Approach C1 uses it unmodified (`spikes/c1-woo-container/build.sh` pins the commit and the SHA-256 of the file). It is on by default (`OBJECT_CACHE=apcu`); `OBJECT_CACHE=none` turns it off.
+- We use it because one C1 container has one PHP server: every PHP worker of that server shares the same APCu memory. There is no Redis or Memcached to run.
+- `flush()` changes a version that is part of every key, so old entries become unreachable. `incr()` and `decr()` read and then write, so two workers can race on one counter.
+
 ## WordPress Playground
 
 Repository: [WordPress/wordpress-playground](https://github.com/WordPress/wordpress-playground). It runs WordPress in WebAssembly with SQLite through the `sqlite-database-integration` plugin.
 
 - [Issue #69: Run on Cloudflare Workers](https://github.com/WordPress/wordpress-playground/issues/69)
+- Playground routes WordPress's HTTP requests through JavaScript's `fetch()`. Issue #26 named it as the model for approach B's bridge (`php/http-bridge.php`: a `pre_http_request` answer sent to `fetch()` in the Worker or the PHP object). Thank you, WordPress Playground.
 
 ## SQLite on D1
 
@@ -66,3 +77,19 @@ Repository: [WordPress/wordpress-playground](https://github.com/WordPress/wordpr
 ## Cloudflare templates
 
 - [cloudflare/templates#1173: WordPress on Workers (php-wasm + Hyperdrive + R2)](https://github.com/cloudflare/templates/issues/1173). A template proposal, open since 2026-10-20.
+
+## PlanetScale and Hyperdrive
+
+- [Cloudflare and PlanetScale integration](https://developers.cloudflare.com/workers/databases/third-party-integrations/planetscale/): a PlanetScale database made from Cloudflare, reached through Hyperdrive, billed (as announced) through the Cloudflare account. Variant `a2` uses it to make its database ([approach-a2.md](approach-a2.md)). Also [Hyperdrive: PlanetScale](https://developers.cloudflare.com/hyperdrive/planetscale/), the [2025-09 Cloudflare post](https://blog.cloudflare.com/planetscale-postgres-workers), the [2026-04-16 Cloudflare post](https://blog.cloudflare.com/deploy-planetscale-postgres-with-workers) and the [2026-02-19 PlanetScale post](https://planetscale.com/blog/cloudflare-hyperdrive-real-time).
+
+## Moving existing sites
+
+Issue #31 builds `deploy/import.sh`, which moves an existing WordPress site onto a `deploy/` variant. These tools moved WordPress sites first. Read on 2026-11-06.
+
+- [WP Migrate Lite](https://wordpress.org/plugins/wp-migrate-db/) (version 2.7.12). It exports the database as SQL with a find and replace. It replaces strings in serialized data by unserializing, replacing and serializing again, so the string lengths stay correct. We do the same.
+- [All-in-One WP Migration](https://wordpress.org/plugins/all-in-one-wp-migration/) (version 7.113). It puts the database, media, themes and plugins in one `.wpress` file, and its import replaces the site address.
+- [Duplicator](https://wordpress.org/plugins/duplicator/) (version 5.1.1). It packs the files and the database into an archive with an installer, for a new host or domain.
+- WP-CLI [`wp db export`](https://developer.wordpress.org/cli/commands/db/export/) runs `mysqldump` with the credentials of `wp-config.php`. It is the database input of `import.sh`. [`wp search-replace`](https://developer.wordpress.org/cli/commands/search-replace/) changes strings in the database and handles serialized data. It is the model for the address change in `import.sh`.
+- HostlessWP `migrate` (`lib/commands/migrate.mjs`, commit `739e8e7`, see the HostlessWP section above). It keeps the database where it is, reached through Hyperdrive, and moves the media to R2.
+
+These tools move a site from one PHP and MySQL host to another. `import.sh` differs because the target database can be SQLite in a Durable Object or a container, and the uploads go to R2.

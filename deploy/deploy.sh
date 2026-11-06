@@ -15,6 +15,12 @@
 #         R2 (Workers Paid). Steps in deploy/variants/c1.sh; options
 #         INSTANCE_TYPE, PHP_WORKERS, IDLE_SECONDS (see README.md)
 # Optional: LOCATION (default enam), MEDIA=1 (R2 media library; R2 must be on),
+# WOO_ACTIVE=1 (activate WooCommerce after the install; c1 always has it
+# active, so set it on b-do, b-dosql and a to compare like with like),
+# HYPERDRIVE_SQL_MODE (variant a on a strict MySQL such as PlanetScale: the
+# sql_mode each statement carries, e.g.
+# ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION; see
+# spikes/b2-wordpress/php/hyperdrive-sql-mode.php. Unset: no change),
 # BENCH=0 (skip the measurements), N (runs per page, default 10), PORT (local
 # wrangler dev port for the OPcache step, default 8798), DEPLOY_STATE=r2 (keep
 # Terraform state in an R2 bucket; see README.md).
@@ -31,32 +37,18 @@ VARIANT=${VARIANT:-b-do}
 LOCATION=${LOCATION:-enam}
 MEDIA=${MEDIA:-0}
 export PORT=${PORT:-8798}
+export WOO_ACTIVE=${WOO_ACTIVE:-0}
 log() { printf '\n== %s\n' "$*"; }
 case "$VARIANT" in b-do|b-dosql|a|c1) ;; *) echo "VARIANT must be b-do, b-dosql, a or c1"; exit 2 ;; esac
+if [ -n "${HYPERDRIVE_SQL_MODE+x}" ]; then
+  [ "$VARIANT" = a ] || { echo "HYPERDRIVE_SQL_MODE is for variant a only" >&2; exit 2; }
+  [[ "$HYPERDRIVE_SQL_MODE" =~ ^[A-Za-z_,]*$ ]] || { echo "HYPERDRIVE_SQL_MODE: mode names and commas only" >&2; exit 2; }
+fi
 
 # Terraform state: local by default; DEPLOY_STATE=r2 writes a backend override
-# for the root in $1 (deploy/terraform or deploy/mysql).
-backend() {
-  [ "${DEPLOY_STATE:-local}" = r2 ] || return 0
-  : "${STATE_BUCKET:?set STATE_BUCKET}" "${STATE_ENDPOINT:?set STATE_ENDPOINT (https://<account>.r2.cloudflarestorage.com)}"
-  cat > "$1/backend_override.tf" <<EOF
-terraform {
-  backend "s3" {
-    bucket                      = "$STATE_BUCKET"
-    key                         = "deploy/$NAME/$(basename "$1").tfstate"
-    region                      = "auto"
-    endpoints                   = { s3 = "$STATE_ENDPOINT" }
-    use_path_style              = true
-    use_lockfile                = true
-    skip_s3_checksum            = true
-    skip_credentials_validation = true
-    skip_metadata_api_check     = true
-    skip_region_validation      = true
-    skip_requesting_account_id  = true
-  }
-}
-EOF
-}
+# for the root in $1 (deploy/terraform or deploy/mysql). backend() is in tf-backend.sh.
+# shellcheck source=SCRIPTDIR/tf-backend.sh
+. "$ROOT/deploy/tf-backend.sh"
 # One workspace (one state) per site: a second NAME never touches the first.
 tf() { local dir=$1; shift; (cd "$dir" && terraform workspace select -or-create "$NAME" >/dev/null && terraform "$@"); }
 out() { tf "$TF" output -raw "$1"; }
@@ -110,13 +102,19 @@ if [ "$VARIANT" = c1 ]; then
 fi
 
 # 2. Build: PHP WebAssembly, WordPress, precompiled OPcache (local wrangler dev).
+# opcache.sh's whole output goes to build/opcache.log. On a failure the last
+# lines are printed: "| tail -1" hid an e2e.sh failure behind a passing row (#50).
+opcache() {
+  ./opcache.sh > build/opcache.log 2>&1 || { echo "opcache.sh failed; last lines of build/opcache.log:"; tail -25 build/opcache.log; return 1; }
+  tail -1 build/opcache.log
+}
 log "build"
 cd "$APP"
 [ -d node_modules ] || npm ci --silent
 [ -f vendor/php_8_3.js ] || ./prepare.sh
 if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
   ./build.sh | tail -1
-  DEV_ENV=$([ "$VARIANT" = b-dosql ] && echo dosql-local || echo do-local) ./opcache.sh | tail -1
+  DEV_ENV=$([ "$VARIANT" = b-dosql ] && echo dosql-local || echo do-local) opcache
 else
   ENGINE=a ./build.sh | tail -1
   # OPcache is primed against a temporary local MariaDB (env a-local); without
@@ -128,12 +126,25 @@ else
     trap 'docker rm -f "$C" >/dev/null 2>&1 || true' EXIT
     docker run -d --name "$C" -p 127.0.0.1:3399:3306 -e MARIADB_ROOT_PASSWORD="$LP" -e MARIADB_DATABASE=wordpress -e MARIADB_USER=wp -e MARIADB_PASSWORD="$LP" mariadb:11.4 >/dev/null
     for i in $(seq 1 30); do docker exec "$C" mariadb -uwp -p"$LP" -e 'select 1' wordpress >/dev/null 2>&1 && break; sleep 2; done
-    WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="mysql://wp:$LP@127.0.0.1:3399/wordpress" DEV_ENV=a-local ./opcache.sh | tail -1
+    WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="mysql://wp:$LP@127.0.0.1:3399/wordpress" DEV_ENV=a-local opcache
     docker rm -f "$C" >/dev/null
   else
     echo "  no Docker: OPcache not primed (the site works; cold starts are slower)"
   fi
 fi
+
+# The site's own origin (issue #33): WP_HOME and every link come from it, not
+# from whichever request boots PHP. SITE_ORIGIN (for example a custom domain)
+# or the workers.dev address, from the account's subdomain. The token goes to
+# curl in a config on a pipe, not in the arguments.
+if [ -z "${SITE_ORIGIN:-}" ]; then
+  SUB=$(curl -sf -K <(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN") \
+    "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/workers/subdomain" \
+    | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["subdomain"])')
+  SITE_ORIGIN="https://$NAME.$SUB.workers.dev"
+fi
+[[ "$SITE_ORIGIN" =~ ^https?://[a-z0-9.-]+(:[0-9]{1,5})?$ ]] || { echo "SITE_ORIGIN must be scheme://host[:port], got $SITE_ORIGIN" >&2; exit 2; }
+echo "site origin: $SITE_ORIGIN"
 
 # 3. Wrangler config from the Terraform outputs. Kept next to wrangler.toml so
 # the relative paths (main, assets, zips) are the same.
@@ -149,8 +160,14 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
   echo 'rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]'
   echo '[assets]'; echo 'directory = "build/public"'
   echo '[cache]'; echo 'enabled = true'
+  # Only the Pages entrypoint is cached; the default one is the gateway (issue #63).
+  echo '[exports.default]'; echo 'type = "worker"'; echo '[exports.default.cache]'; echo 'enabled = false'
+  echo '[exports.Pages]'; echo 'type = "worker"'; echo '[exports.Pages.cache]'; echo 'enabled = true'
   echo '[vars]'
   echo "PHP_ENV = '{\"USE_ZEND_ALLOC\":\"0\"}'"
+  echo "SITE_ORIGIN = \"$SITE_ORIGIN\""
+  # The Worker writes it into wp-runtime.php as a PHP constant.
+  [ -z "${HYPERDRIVE_SQL_MODE+x}" ] || echo "HYPERDRIVE_SQL_MODE = \"$HYPERDRIVE_SQL_MODE\""
   if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
     echo 'PHP_IN_DO = "on"'
     echo "PHP_LOCATION = \"$LOCATION\""
@@ -177,6 +194,10 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
 log "deploy"
 DEP=$(npx wrangler deploy --config "$CONF" 2>&1) || { echo "$DEP" | tail -20; exit 1; }
 URL=$(echo "$DEP" | grep -oE 'https://[a-z0-9.-]+\.workers\.dev' | head -1)
+# A workers.dev site must be at its configured origin, or every link points elsewhere.
+case "$SITE_ORIGIN" in
+  *.workers.dev) [ "$URL" = "$SITE_ORIGIN" ] || { echo "deployed to '$URL', but SITE_ORIGIN is $SITE_ORIGIN" >&2; exit 1; } ;;
+esac
 echo "$DEP" | grep -E 'Total Upload|Current Version'
 SECRETS=$(mktemp); chmod 600 "$SECRETS"
 tf "$TF" output -json | python3 -c '
@@ -197,6 +218,12 @@ try:
     d = json.load(sys.stdin); print(d.get("out", "")[-80:], d.get("ms"), "ms")
 except ValueError:
     print("install did not answer JSON (on Workers Free, variant a stops at the CPU limit)")'
+
+if [ "${WOO_ACTIVE:-0}" = 1 ]; then
+  log "activate WooCommerce"
+  curl -s -m 300 -X POST -H "x-spike-token: $SPIKE_TOKEN" "$URL/_activate?plugin=woocommerce/woocommerce.php" | tee /dev/stderr | grep -q '\\"active\\":true' \
+    || { echo "WooCommerce did not activate (a result: record it)"; exit 1; }
+fi
 
 PW_HINT="(admin; password: cd deploy/terraform && terraform workspace select $NAME && terraform output -raw admin_password)"
 [ "${BENCH:-1}" = 0 ] && { echo "$URL $PW_HINT"; exit 0; }

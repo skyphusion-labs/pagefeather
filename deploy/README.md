@@ -72,9 +72,21 @@ The query count per page comes from the mu-plugin `php/query-count.php`: it send
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `INSTANCE_TYPE` | `standard-1` | Container instance type. `standard-1` (1/2 vCPU, 4 GiB) was faster than `basic` under load (docs/approach-c1.md). |
+| `INSTANCE_TYPE` | `standard-1` | Container instance type. c1 is CPU bound: about 3 requests per second on `standard-1` (1/2 vCPU, 4 GiB), about 6 on `standard-2` (1 vCPU, 6 GiB), measured with APCu (docs/approach-c1.md). |
 | `PHP_WORKERS` | 2 on `basic`, 4 on `standard-1`, 8 on `standard-2` | PHP processes, 256 MB each. `basic` (1 GiB) dropped a connection with 4. |
 | `IDLE_SECONDS` | `900` | The container stops itself after this many seconds with no request (see below). |
+| `OBJECT_CACHE` | `apcu` | `apcu`: the APCu object cache drop-in (about 20 % less CPU per page, docs/approach-c1.md). `none`: no object cache. |
+| `REPLICA_PATH` | `store` | Path of the Litestream replica in the replica bucket. Another path restores and writes another database; `store` stays as it was. |
+| `QUEUE_RUNNER` | `local` | `local`: WP-Cron and Action Scheduler run from inside the container every `CRON_SECONDS` (10), and the Action Scheduler async loopback is off (issue #45). `loopback`: the loopback, as before. |
+| `AS_TIME_LIMIT` | `5` | Seconds one queue run may take (Action Scheduler's default is 30). A long run holds one PHP server process, and a shopper whose connection lands there waits for it. |
+| `PAGE_CACHE_TTL` | `120` | Seconds a storefront page stays fresh at the edge (visitors with no cart, session or login; docs/approach-c1.md, Storefront edge cache). A change purges it sooner. |
+| `PAGE_CACHE_SWR` | `600` | Seconds after that during which the edge serves the old copy while it renders a new one |
+| `QUEUE_LIMIT` | `16` | Requests the container may have in hand before a page, cart or add to cart gets 503 with Retry-After (0 = no limit). Checkout, payment callbacks and admin are always let in (docs/approach-c1.md, Bounded queue). |
+| `RETRY_AFTER` | `5` | The Retry-After seconds of that 503 |
+| `FLOW_LIMIT` | 2 x `QUEUE_LIMIT` | The higher cap for a shopper already in a cart flow (a Cart-Token or a WooCommerce session); never below `QUEUE_LIMIT` |
+| `CONTAINER_TIMEOUT_S` | `60` | Seconds a shopper request (pages, cart, checkout, payment callbacks) waits for the container to answer before a 504 and its queue slot back (0 = no limit). wp-admin, wp-login.php, the operator endpoints, logged-in users and REST with an Authorization header are exempt, so a long import or export is not cut (issue #93). |
+| `WARM_START` | `off` | `product`: a product view (`/product/`, `/shop`, a product category or tag) starts the sleeping container in the background, so the first cart after a sleep is warm. At most once per `WARM_GAP_S` (`60`). `WARM_PATHS` (a regular expression) replaces the product paths. Cost: a container that would have slept stays awake up to `IDLE_SECONDS`. Issue #73: the first add to cart after a sleep, median 10.0 s with `off` and 5.1 s with `product` (3 trials each, docs/approach-c1.md). |
+| `CHECK_WAIT` | `600` | Seconds to wait after the deploy until the Store object is from this deploy (c1_check) |
 | `PUBLIC_HOST` | `<name>.<subdomain>.workers.dev` | The address WordPress uses |
 | `ROLLOUT_WAIT` | `60` | Seconds to wait after the deploy before the one stop |
 | `START_TIMEOUT` | `900` | Seconds to wait for the first 200 |
@@ -113,6 +125,8 @@ NAME=my-shop ./deploy/destroy.sh
 
 The same Worker and PHP object as `b-do`, with `DB_IN_DO=on`: each statement runs on the object's own SQLite storage (`ctx.storage.sql`), so a query is not a network call. There is no D1. One object holds the site: one writer, data in the object, point-in-time recovery for 30 days ([Durable Objects](https://developers.cloudflare.com/durable-objects/)). Move a site in or out with `spikes/b2-wordpress/dbmove.py` (`/_dbexport`, `/_dbimport`). Details: [docs/approach-b.md](../docs/approach-b.md) section 8j.
 
+To import an existing WordPress site from a mysqldump, use `deploy/import.sh`: see [deploy/import/README.md](import/README.md).
+
 On Workers Free the object's SQLite has daily limits: 5 million rows read and 100,000 rows written (a public page reads about 160 to 220 rows; an admin page writes about 30 to 40). A page cache hit costs neither.
 
 ## Variant `a`: PHP in the Worker, MySQL through Hyperdrive (Workers Paid)
@@ -139,6 +153,7 @@ The hint is not a promise. An `enam` object landed in EWR two times in three and
 | `BENCH` | `1` | `0` skips the measurements |
 | `N` | `10` | Runs per page in the page benchmark |
 | `VARIANT` | `b-do` | `b-do`, `b-dosql`, `a`, `c1` (see above) |
+| `SITE_ORIGIN` | `https://<name>.<subdomain>.workers.dev` | The site's own address (`scheme://host[:port]`). WordPress's `WP_HOME` and every link come from it, not from the first request (issue #33). Give it for a custom domain. On workers.dev the deploy stops if Wrangler's address differs. `c1` uses `PUBLIC_HOST` instead. |
 | `DEPLOY_STATE` | `local` | `r2` keeps Terraform state in an R2 bucket (`STATE_BUCKET`, `STATE_ENDPOINT`, and an R2 key in `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) |
 
 Each `NAME` has its own Terraform workspace, so two sites never share state.
@@ -165,3 +180,4 @@ cd deploy/terraform && terraform workspace select my-site && terraform output -r
 - Measurements from a fixed vantage (a Vultr runner), with p95 and p99, concurrency and the cold path.
 - Plugins and WooCommerce runs (`tests/plugins/plugins.py`, `tests/woo.py`) as part of `deploy.sh`.
 - A custom domain. The site is on `<name>.<subdomain>.workers.dev`.
+- An import that reads the site over SSH (issue #31). `b-dosql`, `c1`, `a` and `a2` have the import from a dump and a `wp-content` archive.

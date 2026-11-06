@@ -1,0 +1,14 @@
+PASS admin: create a product (10.00, stock 7)  {'code': 201, 's': 8.5, 'calls': '208', 'fail': '0', 'mib': '99'}
+PASS before: every read of the product page shows 10.00  new 8/8 old 0 codes ['200'] workers 0
+PASS admin: price to 13.75  {'code': 200, 's': 4.01, 'calls': '113', 'fail': '0', 'mib': '99'}
+PASS after: every read shows 13.75, none 10.00  new 8/8 old 0 codes ['200'] workers 0
+PASS before: Store API says in stock on every read  new 8/8 old 0 codes ['200'] workers 0
+PASS admin: stock to 0  {'code': 200, 's': 5.3, 'calls': '127', 'fail': '0', 'mib': '99'}
+PASS after: Store API says out of stock on every read  new 8/8 old 0 codes ['200'] workers 0
+PASS admin: read the tagline  {'code': 200, 's': 3.4, 'calls': '63', 'fail': '0', 'mib': '99'}
+PASS admin: tagline changed  {'code': 200, 's': 3.22, 'calls': '65', 'fail': '0', 'mib': '99'}
+PASS after: every read of the feed shows the new tagline  new 8/8 old 0 codes ['200'] workers 0
+PASS admin: tagline set back  {'code': 200, 's': 2.97, 'calls': '65', 'fail': '0', 'mib': '99'}
+PASS admin: delete the product  {'code': 200, 's': 7.58, 'calls': '215', 'fail': '0', 'mib': '99'}
+PASS after: Store API answers 404 for the deleted product on every read  ['404']
+13 of 13 passed

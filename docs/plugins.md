@@ -24,28 +24,28 @@ Plugins must be in the build on every target: a plugin installed from wp-admin d
 
 Runs of 2026-11-05. A and HostlessWP on the public MySQL path ([approach-a.md](approach-a.md)); our A plugin rows are from the tunnel path, and Rank Math on A Paid was rerun on the public path after a harness fix.
 
-| Plugin | A, Free | A, Paid | HostlessWP, Free | HostlessWP, Paid | B, Free | B, Paid | C1, Paid |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| (none) | fail: login failed (503) | pass | pass | pass | pass | pass | pass |
-| elementor | fail: login failed (503) | pass | pass | pass | fail: post, dashboard, function (cpu limit) | pass | pass |
-| wordpress-seo | fail: login failed (503) | pass | pass | pass | fail: dashboard, admin_page, function (cpu limit) | pass | pass |
-| contact-form-7 | fail: dashboard (cpu limit) | pass | pass | pass | fail: home, dashboard (cpu limit) | pass | pass |
-| classic-editor | fail: dashboard (cpu limit) | pass | pass | pass | fail: activate | pass | pass |
-| litespeed-cache | fail: activate (503) | pass | pass | pass | fail: plugin list (cpu limit) | pass | pass |
-| google-site-kit | fail: login failed (503) | pass | pass | pass | fail: post, dashboard, admin_page (cpu limit) | pass | pass |
-| akismet | fail: activate (503) | pass | pass | pass | fail: plugin list (cpu limit) | pass | pass |
-| wpforms-lite | fail: home, post, dashboard, admin_page (cpu limit) | pass (1 retried) | pass (1 retried) | pass | fail: dashboard, admin_page (cpu limit) | pass | pass |
-| all-in-one-wp-migration | fail: post, dashboard, admin_page (500, cpu limit) | fail: dashboard, admin_page (500) | pass | pass | fail: plugin list (cpu limit) | pass | pass |
-| wordfence | fail: login failed (503) | pass (1 retried) | pass | pass | fail: activate (503) | pass | pass |
-| wp-mail-smtp | fail: login failed (503) | pass | pass | pass | fail: dashboard, admin_page (cpu limit) | pass | pass |
-| seo-by-rank-math | fail: login failed (503) | pass | pass | pass | fail: dashboard, admin_page (cpu limit) | pass | pass |
-| updraftplus | fail: login failed (503) | pass | pass | pass | fail: plugin list (cpu limit) | pass | pass |
-| duplicate-post | fail: plugin list (cpu limit) | pass | pass | pass | fail: plugin list (cpu limit) | pass | pass |
-| duplicate-page | fail: plugin list (cpu limit) | pass | pass | pass | fail: plugin list (cpu limit) | pass | pass |
-| jetpack | fail: login failed (200) | pass | pass | pass | fail: login failed (200) | pass | pass |
-| really-simple-ssl | fail: login failed (503) | pass | pass | pass | fail: dashboard (cpu limit) | pass | pass |
-| insert-headers-and-footers | fail: login failed (503) | pass | pass | pass | fail: dashboard, admin_page (cpu limit) | pass | pass |
-| **passed** | 0 of 18 | 17 of 18 | 18 of 18 | 18 of 18 | 0 of 18 | 18 of 18 | 18 of 18 |
+| Plugin | A, Free | A, Paid | HostlessWP, Free | HostlessWP, Paid | B, Free | B, Paid | C1, Paid | A2 (PlanetScale), Paid |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| (none) | fail: login failed (503) | pass | pass | pass | pass | pass | pass | pass |
+| elementor | fail: login failed (503) | pass | pass | pass | fail: post, dashboard, function (cpu limit) | pass | pass | pass |
+| wordpress-seo | fail: login failed (503) | pass | pass | pass | fail: dashboard, admin_page, function (cpu limit) | pass | pass | pass |
+| contact-form-7 | fail: dashboard (cpu limit) | pass | pass | pass | fail: home, dashboard (cpu limit) | pass | pass | pass |
+| classic-editor | fail: dashboard (cpu limit) | pass | pass | pass | fail: activate | pass | pass | pass |
+| litespeed-cache | fail: activate (503) | pass | pass | pass | fail: plugin list (cpu limit) | pass | pass | pass |
+| google-site-kit | fail: login failed (503) | pass | pass | pass | fail: post, dashboard, admin_page (cpu limit) | pass | pass | pass |
+| akismet | fail: activate (503) | pass | pass | pass | fail: plugin list (cpu limit) | pass | pass | pass |
+| wpforms-lite | fail: home, post, dashboard, admin_page (cpu limit) | pass (1 retried) | pass (1 retried) | pass | fail: dashboard, admin_page (cpu limit) | pass | pass | pass (1 retried) |
+| all-in-one-wp-migration | fail: post, dashboard, admin_page (500, cpu limit) | fail: dashboard, admin_page (500); since #29: pass (`wp-ref-a`, 2026-11-06) | pass | pass | fail: plugin list (cpu limit) | pass | pass | fail: dashboard, admin_page (500) |
+| wordfence | fail: login failed (503) | pass (1 retried) | pass | pass | fail: activate (503) | pass | pass | pass |
+| wp-mail-smtp | fail: login failed (503) | pass | pass | pass | fail: dashboard, admin_page (cpu limit) | pass | pass | pass |
+| seo-by-rank-math | fail: login failed (503) | pass | pass | pass | fail: dashboard, admin_page (cpu limit) | pass | pass | pass |
+| updraftplus | fail: login failed (503) | pass | pass | pass | fail: plugin list (cpu limit) | pass | pass | pass |
+| duplicate-post | fail: plugin list (cpu limit) | pass | pass | pass | fail: plugin list (cpu limit) | pass | pass | pass |
+| duplicate-page | fail: plugin list (cpu limit) | pass | pass | pass | fail: plugin list (cpu limit) | pass | pass | pass |
+| jetpack | fail: login failed (200) | pass | pass | pass | fail: login failed (200) | pass | pass | pass |
+| really-simple-ssl | fail: login failed (503) | pass | pass | pass | fail: dashboard (cpu limit) | pass | pass | pass |
+| insert-headers-and-footers | fail: login failed (503) | pass | pass | pass | fail: dashboard, admin_page (cpu limit) | pass | pass | pass |
+| **passed** | 0 of 18 | 17 of 18 | 18 of 18 | 18 of 18 | 0 of 18 | 18 of 18 | 18 of 18 | 17 of 18 |
 
 ## Findings
 
@@ -55,4 +55,5 @@ Runs of 2026-11-05. A and HostlessWP on the public MySQL path ([approach-a.md](a
 - **C1.** PHP's built-in server did not run `index.php` for a directory, so `/wp-admin/` showed the home page. Fixed in `router.php` (18 of 18).
 - **Mail.** No target here has a mail transport configured. Contact Form 7 accepts the form and returns `mail_failed`.
 - **All-in-One WP Migration on our A Paid** answers 500 on every admin page: it calls `mysqli_*` on `$wpdb->dbh`, which our A does not provide as a mysqli link. HostlessWP passes because it ships a userland mysqli. Issue #29.
+  Since issue #29, A has a userland mysqli. Measured locally on MariaDB 11.4: the plugin passes; without the layer, dashboard and admin page answer 500. Re-run on Paid (`wp-ref-a`, 2026-11-06): pass. The other plugins were not re-run on that build ([approach-a.md](approach-a.md)).
 - **Harness fixes during the runs** (each found when a result looked wrong, then confirmed): a post is found by the REST API instead of assuming id 1; Rank Math's setup is skipped right after activation, before its admin page is checked; a failed plugin list from a CPU limit is reported as the platform's failure, not the harness's.

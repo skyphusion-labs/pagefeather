@@ -10,12 +10,17 @@
 #               SPIKE_TOKEN, ADMIN_PASSWORD)
 #   c1_wait     wait for the rollout, stop the container once, wait for the
 #               first 200 (sets FIRST_START_S)
+#   c1_check    the Store object is from this deploy, and the running container
+#               has its settings (the drop-in is there exactly when
+#               OBJECT_CACHE=apcu); CHECK_WAIT (default 600 s)
 #   c1_measure  e2e.sh, the page benchmark, one cold start -> deploy/results/
 # The steps use ROOT, TF, NAME, ACCOUNT_ID, LOCATION, log and out from deploy.sh,
 # and share the variables they set.
 #
 # Options: INSTANCE_TYPE (default standard-1), PHP_WORKERS (default from the
-# instance type), IDLE_SECONDS (default 900), PUBLIC_HOST (default
+# instance type), IDLE_SECONDS (default 900), OBJECT_CACHE (apcu or none,
+# default apcu), REPLICA_PATH (default store), QUEUE_RUNNER (local or
+# loopback, default local), CRON_SECONDS (default 10), AS_TIME_LIMIT (default 5), PUBLIC_HOST (default
 # <NAME>.<account subdomain>.workers.dev), ROLLOUT_WAIT (default 60 s),
 # START_TIMEOUT (default 900 s), BENCH, N.
 
@@ -27,6 +32,11 @@ INSTANCE_TYPE=${INSTANCE_TYPE:-standard-1}
 case "$INSTANCE_TYPE" in basic) c1_w=2 ;; standard-1|standard) c1_w=4 ;; standard-2) c1_w=8 ;; *) c1_w=2 ;; esac
 PHP_WORKERS=${PHP_WORKERS:-$c1_w}
 IDLE_SECONDS=${IDLE_SECONDS:-900}
+OBJECT_CACHE=${OBJECT_CACHE:-apcu}
+REPLICA_PATH=${REPLICA_PATH:-store}
+QUEUE_RUNNER=${QUEUE_RUNNER:-local}
+CRON_SECONDS=${CRON_SECONDS:-10}
+AS_TIME_LIMIT=${AS_TIME_LIMIT:-5}
 
 c1_build() {
   log "build (c1)"
@@ -50,7 +60,7 @@ c1_config() {
   CONF="$C1/wrangler.deploy.$NAME.toml"
   compat=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' "$C1/wrangler.toml" | head -1)
   NAME=$NAME PUBLIC_HOST=$PUBLIC_HOST REPLICA=$replica MEDIA_BUCKET=$media R2_ENDPOINT=$endpoint \
-    COMPAT=$compat INSTANCE_TYPE=$INSTANCE_TYPE PHP_WORKERS=$PHP_WORKERS IDLE_SECONDS=$IDLE_SECONDS \
+    COMPAT=$compat INSTANCE_TYPE=$INSTANCE_TYPE PHP_WORKERS=$PHP_WORKERS IDLE_SECONDS=$IDLE_SECONDS OBJECT_CACHE=$OBJECT_CACHE REPLICA_PATH=$REPLICA_PATH QUEUE_RUNNER=$QUEUE_RUNNER CRON_SECONDS=$CRON_SECONDS AS_TIME_LIMIT=$AS_TIME_LIMIT SEED_SHA256=${SEED_SHA256:-} \
     "$ROOT/deploy/variants/c1-config.sh" > "$CONF"
 }
 
@@ -59,7 +69,7 @@ c1_config() {
 # admin password and no salt.
 c1_deploy() {
   local secrets dep rc=0
-  log "deploy (c1, $INSTANCE_TYPE, $PHP_WORKERS PHP workers)"
+  log "deploy (c1, $INSTANCE_TYPE, $PHP_WORKERS PHP workers, object cache $OBJECT_CACHE, replica path $REPLICA_PATH, queue runner $QUEUE_RUNNER)"
   secrets=$(mktemp); chmod 600 "$secrets"
   (cd "$TF" && terraform workspace select "$NAME" >/dev/null && terraform output -json) | python3 -c '
 import json, sys
@@ -99,16 +109,78 @@ c1_wait() {
   sleep "${ROLLOUT_WAIT:-60}"
   # The answer says if a container was running (and was stopped) or not
   # (skipped). The token goes to curl in a config on a pipe, not in argv.
-  curl -s -m 60 -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_store-stop" \
+  local stop
+  stop=$(curl -s -m 60 -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_store-stop" \
     | python3 -c 'import json, sys
 try:
     d = json.load(sys.stdin)
 except ValueError:
     d = {}
-print("no container was running: nothing to stop" if d.get("skipped") else "stop: %s" % json.dumps(d))' || true
+print("no container was running: nothing to stop" if d.get("skipped") else "stop: %s" % json.dumps(d))') || true
+  echo "$stop"
+  # A container that did not stop in 30 s (still_running) is very likely stuck:
+  # seen 2026-11-06 (issue #93), an instance that answered no request survived a
+  # deploy, a stop and a kill. Waiting 900 s for it helps nobody: stop here.
+  if [[ "$stop" == *'"still_running": true'* ]]; then
+    echo "the container did not stop in 30 s: it is probably stuck (issue #93)." >&2
+    echo "Recover: deploy once with a changed container setting (for example INSTANCE_TYPE), which rolls out a new instance, then deploy again." >&2
+    return 1
+  fi
   log "wait for WordPress"
   FIRST_START_S=$(c1_up)
   echo "first answer 200 after $FIRST_START_S s"
+}
+
+# A container can run the new image with the environment of the deploy before
+# (seen twice on 2026-11-05 on wp-c1-perf: the drop-in did not match
+# OBJECT_CACHE). The container gets its environment from the Store Durable
+# Object, and a request on the new Worker can reach an object that still runs
+# the code of the deploy before, "typically for seconds to minutes"
+# (developers.cloudflare.com/durable-objects/platform/known-issues/). Two
+# steps:
+# 1. Wait (up to CHECK_WAIT, default 600 s) until /_store-info says the object
+#    was built by this Worker version.
+# 2. Then _stats.php must show the drop-in that OBJECT_CACHE asks for. If not,
+#    the container is from the old object: stop it (the stop resets the object
+#    too) and check the next one, once.
+# Still wrong: fail, so no measurement runs on the wrong settings.
+c1_info() {
+  curl -s -m 60 -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL$1" | python3 -c 'import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    d = {}
+k = sys.argv[1]
+print(str(d.get(k)).lower() if k in d else "unknown", d.get("do_version") or "-", d.get("worker_version") or "-")' "$2"
+}
+c1_check() {
+  local want cur got t0=$SECONDS try code
+  # A container that answers a static file (no WordPress) is not stuck (#93).
+  code=$(curl -s -o /dev/null -m 15 -w '%{http_code}' "$URL/_boot.txt" || true)
+  [ "$code" = 200 ] || { echo "the container does not answer a static file (/_boot.txt: $code): probably stuck (issue #93)" >&2; return 1; }
+  echo "container answers a static file (/_boot.txt: 200)"
+  want=false; [ "$OBJECT_CACHE" = apcu ] && want=true
+  while :; do
+    cur=$(c1_info /_store-info current)
+    [ "${cur%% *}" = true ] && break
+    [ $((SECONDS - t0)) -lt "${CHECK_WAIT:-600}" ] || { echo "the Store object is not from this deploy after ${CHECK_WAIT:-600} s (current do worker: $cur)" >&2; return 1; }
+    sleep 15
+  done
+  echo "Store object is from this deploy after $((SECONDS - t0)) s ($cur)"
+  for try in 1 2; do
+    got=$(c1_info "/_stats.php?what=info" drop_in); got=${got%% *}
+    [ "$got" = "$want" ] && { echo "container settings ok on try $try (object cache drop-in: $got)"; return 0; }
+    echo "try $try: drop-in $got, want $want (OBJECT_CACHE=$OBJECT_CACHE): the container is older than the object; stop it" >&2
+    [ "$try" = 2 ] && break
+    # The stop answers still_running true when the container did not stop in
+    # 30 s; then the object is not reset (durability), and the check fails.
+    if curl -s -m 60 -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_store-stop" | grep -q '"still_running":true'; then
+      echo "the container did not stop in 30 s; the Store object was not reset" >&2; return 1
+    fi
+    START_TIMEOUT=300 c1_up > /dev/null || return 1
+  done
+  echo "the container does not have this deploy's settings" >&2
+  return 1
 }
 
 # e2e.sh, uncached page times, then one cold start: stop the container and time
@@ -133,8 +205,8 @@ c1_measure() {
     fi
     sleep 2
   done
-  printf '{"instance_type": "%s", "php_workers": %s, "idle_seconds": %s, "first_start_s": %s, "cold_start_s": %s}\n' \
-    "$INSTANCE_TYPE" "$PHP_WORKERS" "$IDLE_SECONDS" "${FIRST_START_S:-null}" "$cold" > "$w/extra"
+  printf '{"instance_type": "%s", "php_workers": %s, "object_cache": "%s", "replica_path": "%s", "queue_runner": "%s", "idle_seconds": %s, "first_start_s": %s, "cold_start_s": %s}\n' \
+    "$INSTANCE_TYPE" "$PHP_WORKERS" "$OBJECT_CACHE" "$REPLICA_PATH" "$QUEUE_RUNNER" "$IDLE_SECONDS" "${FIRST_START_S:-null}" "$cold" > "$w/extra"
   VARIANT=c1 python3 "$ROOT/deploy/summarize.py" "$res" "$NAME" "$URL" "$LOCATION" "$e2e_exit" "$w"
   rm -rf "$w"
 }
@@ -144,6 +216,7 @@ c1_main() {
   c1_config
   c1_deploy
   c1_wait
+  c1_check
   [ "${BENCH:-1}" = 0 ] || c1_measure
   echo "$URL  (admin; password: cd deploy/terraform && terraform workspace select $NAME && terraform output -raw admin_password)"
 }

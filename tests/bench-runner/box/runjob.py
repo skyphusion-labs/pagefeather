@@ -10,6 +10,10 @@ For each target: the database ping (/_d1ping, or /_dbping?db=object for
 b-dosql; none for c1, whose SQLite is on the container disk), e2e.sh and
 tests/a/bench.py, then deploy/summarize.py makes one object per target, the
 same shape as deploy/results/. Passwords and tokens are not in the result.
+
+A job with "kind": "latency" has "pairs": [{"direct": url, "dispatched": url}]
+instead of targets: for each pair it runs tests/wfp/latency.py from the branch
+(issue #35, the dispatch hop). N defaults to 100, at most 1000.
 """
 import json, os, re, subprocess, sys, tempfile, time, urllib.request, uuid
 
@@ -27,7 +31,11 @@ def sh(cmd, **kw):
 
 runner = {
     "region": os.environ.get("RUNNER_REGION"),
+    # RUNNER_PLAN is written once at first boot (cloud-init); a resize in place
+    # does not change it. cpus and mem_mib are read at job time.
     "plan": os.environ.get("RUNNER_PLAN"),
+    "cpus": os.cpu_count(),
+    "mem_mib": (os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")) // 1048576 if hasattr(os, "sysconf") else None,
     "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "branch": branch,
     "git_sha": sh(["git", "-C", repo, "rev-parse", "HEAD"]),
@@ -102,6 +110,67 @@ def run_target(t, n):
     return r
 
 
+def run_latency(pair, n):
+    """One pair of URLs: tests/wfp/latency.py (direct against dispatched)."""
+    r = {"direct": pair.get("direct"), "dispatched": pair.get("dispatched")}
+    for k in ("direct", "dispatched"):
+        if not re.fullmatch(r"https://[a-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._/-]*)?", str(pair.get(k, ""))):
+            r["error"] = "bad %s url" % k
+            return r
+    env = dict(os.environ)
+    for k in ("R2_KEY_ID", "R2_SECRET"):
+        env.pop(k, None)
+    try:
+        p = subprocess.run([sys.executable, os.path.join(repo, "tests/wfp/latency.py"), pair["direct"], pair["dispatched"], str(n)],
+                           env=env, capture_output=True, text=True, timeout=1800)
+        lines = [l for l in p.stdout.splitlines() if l.startswith("{")]
+        if lines:
+            r.update(json.loads(lines[-1]))
+        else:
+            r["error"] = "latency.py: " + (p.stderr or p.stdout)[-300:]
+    except subprocess.TimeoutExpired:
+        r["error"] = "latency.py did not finish in 1800 s"
+    return r
+
+
+def run_load(t, load):
+    r = {"name": t.get("name"), "url": t.get("url"), "variant": t.get("variant")}
+    bad = check(t)
+    if bad:
+        r["error"] = bad
+        return r
+    env = dict(os.environ)
+    for k in ("R2_KEY_ID", "R2_SECRET"):
+        env.pop(k, None)
+    levels = str(load.get("levels", "1,5,10,25,50"))
+    if not re.fullmatch(r"[0-9]{1,3}(,[0-9]{1,3}){0,9}", levels) or max(int(x) for x in levels.split(",")) > 100:
+        r["error"] = "bad load levels"
+        return r
+    secs = max(10, min(int(load.get("seconds", 60)), 300))
+    buyers = max(0.0, min(float(load.get("buyers", 0.2)), 1.0))
+    mode = str(load.get("mode", "nocache"))
+    if mode not in ("nocache", "cached", "cached-sbjs"):
+        r["error"] = "bad load mode"
+        return r
+    env.update(B=t["url"], ADMIN_PASSWORD=t["admin_password"], LEVELS=levels, SECONDS=str(secs), BUYERS=str(buyers), LOAD_MODE=mode)
+    t0 = time.time()
+    try:
+        p = subprocess.run([sys.executable, os.path.join(repo, "tests/load/load.py")], env=env, capture_output=True, text=True,
+                           timeout=len(levels.split(",")) * (secs + 120) + 300)
+        lines = [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
+        final = [l for l in lines if "steps" in l]
+        if final:
+            r["load"] = final[-1]
+        else:
+            # load.py stopped before its summary: keep every step it finished.
+            r["load"] = {"steps": [l for l in lines if "users" in l], "incomplete": True}
+            r["error"] = "load.py exit %s before the summary: %s" % (p.returncode, (p.stderr or "")[-400:])
+    except subprocess.TimeoutExpired:
+        r["error"] = "load.py did not finish"
+    r["runner_seconds"] = round(time.time() - t0, 1)
+    return r
+
+
 try:
     job = json.load(open(job_path))
     n = int(job.get("n") or 10)
@@ -109,10 +178,17 @@ try:
     out["n"] = n
     if error:
         out["error"] = error
+    elif job.get("kind") == "latency":
+        out["kind"] = "latency"
+        n = max(1, min(int(job.get("n") or 100), 1000))
+        out["n"] = n
+        out["latency"] = [run_latency(p, n) for p in job.get("pairs") or []]
     else:
         for t in job.get("targets") or []:
             print("job %s: target %s" % (job_id, t.get("name")), flush=True)
-            out["targets"].append(run_target(t, n))
+            out["targets"].append(run_load(t, job["load"]) if job.get("load") else run_target(t, n))
+        if job.get("load"):
+            out["load"] = job["load"]
 except Exception as e:
     out["error"] = "runner: %r" % e
 out["runner"]["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

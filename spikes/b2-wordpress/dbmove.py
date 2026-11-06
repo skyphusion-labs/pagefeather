@@ -4,14 +4,21 @@
   dbmove.py export <base-url> <file> [--from-d1]   dump to a JSON lines file
   dbmove.py import <base-url> <file> [--replace]   load a dump into the object
 
-SPIKE_TOKEN in the environment is sent as x-spike-token. The dump format is in
+SPIKE_TOKEN in the environment is sent as x-spike-token. Every request sends
+User-Agent: wp-on-cf-import/1. A deployed workers.dev site refuses urllib's
+default ("Python-urllib/3.x") at the edge with HTTP 403 "error code: 1010"
+(measured 2026-11-06 on wp-import-test). Local wrangler dev has no such
+check, so only a deployed run shows it. The dump format is in
 index.js (dumpTo). Export stops with an error if the dump has no end line.
 Import sends the file in parts of at most PART_BYTES (the Worker refuses a body
 over 2 MB); each part is one transaction in the object. A part that fails is
 rolled back and import stops; parts before it stay.
 The object must hold no tables. --replace drops every table first (in the
 transaction of the first part). Any page view of an empty object creates the
-SQLite driver's own tables, so a new site usually needs --replace.
+SQLite driver's own tables, so a new site usually needs --replace. The second
+and later parts are sent with append=1: the tables of the first part exist.
+(Before 2026-11-06 they were not, and every dump of more than one part stopped
+at part 1 with "tables or indexes exist".)
 """
 import json
 import os
@@ -19,10 +26,11 @@ import sys
 import urllib.request
 
 PART_BYTES = 1_500_000
+USER_AGENT = "wp-on-cf-import/1"
 
 
 def call(method, url, body=None):
-    req = urllib.request.Request(url, data=body, method=method)
+    req = urllib.request.Request(url, data=body, method=method, headers={"User-Agent": USER_AGENT})
     token = os.environ.get("SPIKE_TOKEN")
     if token:
         req.add_header("x-spike-token", token)
@@ -71,7 +79,8 @@ def load(base, path, replace):
     total = 0
     for i, body in enumerate(parts(path)):
         try:
-            with call("POST", url + ("?replace=1" if replace and i == 0 else ""), body) as r:
+            query = ("?replace=1" if replace else "") if i == 0 else "?append=1"
+            with call("POST", url + query, body) as r:
                 reply = json.load(r)
         except urllib.request.HTTPError as e:
             sys.exit(f"part {i} failed: HTTP {e.code} {e.read()[:500]!r}")

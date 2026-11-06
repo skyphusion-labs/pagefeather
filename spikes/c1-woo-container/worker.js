@@ -1,11 +1,13 @@
 // Spike C1: WordPress + WooCommerce in a Container. The Worker in front serves
-// static files (assets), uploads (R2), logged-out pages (Workers Cache), and
-// sends everything else to one store container. The container's SQLite file is
+// static files (assets), uploads (R2), storefront pages for visitors with no
+// state (the Storefront entrypoint, Workers Cache), and sends everything else to
+// one store container. The container's SQLite file is
 // replicated to R2 by Litestream. PHP in the container reaches R2, Images and
 // the cache purge through worker.internal (an outbound handler); it holds no keys
 // for them.
+import { isProductView, gatewayMayWarm, warmStart, warmInfo } from './warm.js';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
-import { cache } from 'cloudflare:workers';
+import { WorkerEntrypoint, cache } from 'cloudflare:workers';
 
 export { ContainerProxy };
 
@@ -17,6 +19,13 @@ export class Store extends Container {
 	pingEndpoint = 'localhost/ping';
 	constructor(ctx, env) {
 		super(ctx, env);
+		// The Worker version this object was built with (version_metadata). The
+		// container gets the environment this object built, so an object from an
+		// older deploy starts containers with the older settings (seen
+		// 2026-11-05: a new image with the OBJECT_CACHE of the deploy before).
+		// /_store-info compares it with the Worker's own version; /_store-stop
+		// resets the object, so the next request builds it again.
+		this.builtVersion = (env.CF_VERSION_METADATA && env.CF_VERSION_METADATA.id) || '';
 		this.envVars = {
 			WP_SALT: env.WP_SALT || '',
 			ADMIN_PASSWORD: env.ADMIN_PASSWORD || '',
@@ -28,9 +37,15 @@ export class Store extends Container {
 			R2_ENDPOINT: env.R2_ENDPOINT || '',
 			R2_BUCKET: env.REPLICA_BUCKET || '',
 			REPLICA_PATH: env.REPLICA_PATH || 'store',
+			// Import (issue #31): the SHA-256 of <REPLICA_PATH>.seed.sqlite (entrypoint.sh).
+			SEED_SHA256: env.SEED_SHA256 || '',
 			SPIKE_TOKEN: env.SPIKE_TOKEN || '',
 			PHP_WORKERS: env.PHP_WORKERS || '2',
 			IDLE_SECONDS: env.IDLE_SECONDS || '900',
+			OBJECT_CACHE: env.OBJECT_CACHE || 'apcu',
+			QUEUE_RUNNER: env.QUEUE_RUNNER || 'local',
+			CRON_SECONDS: env.CRON_SECONDS || '10',
+			AS_TIME_LIMIT: env.AS_TIME_LIMIT || '5',
 		};
 	}
 }
@@ -43,16 +58,55 @@ export class Store extends Container {
 // each deploy, and on a new site there is no container yet). The same flag
 // once read false for a container that served requests (2026-11-04); then the
 // stop is skipped, as signal() failed before. kill=1 still calls destroy().
+//
+// After the stop, the object resets itself (ctx.abort), so the next request
+// builds a new object from the current deploy, with its environment. It waits
+// for the container to stop first (up to 30 s; SIGTERM lets Litestream finish
+// its sync), and resets only when the container is down.
+Store.prototype.storeInfo = async function () {
+	const p = this.purgeRead();
+	return {
+		do_version: this.builtVersion,
+		running: this.ctx.container.running,
+		object_cache: this.envVars.OBJECT_CACHE,
+		replica_path: this.envVars.REPLICA_PATH,
+		purge: { sent: p.sent, deferred: p.deferred, failed: p.failed, retried: p.retried, pending: p.pending, last_ms_ago: p.last ? Date.now() - p.last : null, last_error: p.lastError },
+		queue: { limit: Number(this.env.QUEUE_LIMIT ?? 16), flowLimit: Number(this.env.FLOW_LIMIT || 2 * Number(this.env.QUEUE_LIMIT ?? 16)), timeoutS: Number(this.env.CONTAINER_TIMEOUT_S ?? 60), ...(this.queue || { inflight: 0, maxInflight: 0, admitted: 0, shed: 0, flow: 0, flowShed: 0, timedOut: 0 }) },
+		warm: warmInfo(this, this.env),
+	};
+};
+// Warm start on a product view (issue #73, warm.js): not through fetch, so the
+// bounded queue does not see it.
+Store.prototype.warmStart = async function () {
+	return warmStart(this);
+};
 Store.prototype.shutdownNow = async function (kill) {
 	const running = this.ctx.container.running;
-	if (!running && !kill) return { running, kill: false, ok: true, skipped: 'no container running' };
+	const out = { running, kill: !!kill, ok: true, do_version: this.builtVersion };
 	try {
-		if (kill) await this.ctx.container.destroy();
+		if (!running && !kill) out.skipped = 'no container running';
+		else if (kill) await this.ctx.container.destroy();
 		else this.ctx.container.signal(15);
-		return { running, kill: !!kill, ok: true };
 	} catch (e) {
-		return { running, kill: !!kill, ok: false, error: String((e && e.message) || e) };
+		out.ok = false;
+		out.error = String((e && e.message) || e);
 	}
+	const t0 = Date.now();
+	while (this.ctx.container.running && Date.now() - t0 < 30000) await new Promise((r) => setTimeout(r, 250));
+	out.stopped_after_ms = Date.now() - t0;
+	out.still_running = this.ctx.container.running;
+	// Reset only when the container is down: an abort while it still runs can
+	// cut Litestream's final sync. Still running after 30 s: no reset, ok false,
+	// so c1_check fails loudly instead.
+	if (out.still_running) {
+		out.ok = false;
+		out.reset = false;
+		return out;
+	}
+	out.reset = true;
+	// After the reply (200 ms): abort() ends this object at once.
+	setTimeout(() => this.ctx.abort('reset after /_store-stop'), 200);
+	return out;
 };
 
 Store.outboundByHost = {
@@ -62,11 +116,14 @@ Store.outboundByHost = {
 		let reply = { ok: false, error: 'unknown message' };
 		if (m.r2) reply = await r2op(env, m.r2);
 		else if (m.cache === 'purge') {
+			// The page cache belongs to the Storefront entrypoint, and a purge
+			// reaches only the cache of the entrypoint that calls it. This handler
+			// runs in ContainerProxy, so it asks the Store object, which calls
+			// Storefront.purge() through ctx.exports.
 			try {
-				await cache.purge({ tags: ['wp-pages'] });
-				reply = { ok: true };
+				reply = await store(env).purgeStorefront();
 			} catch (e) {
-				reply = { ok: false, error: String(e) };
+				reply = { ok: false, error: String((e && e.message) || e) };
 			}
 		}
 		return Response.json(reply);
@@ -75,8 +132,265 @@ Store.outboundByHost = {
 
 const store = (env) => getContainer(env.STORE, 'store');
 
+// Bounded queue (issue #39). Every request to the container passes through this
+// object's fetch, so it counts what the container has in hand. Under load the
+// wait was in PHP's accept queue: at 100 shoppers a checkout took 3.1 s in PHP
+// and 26.3 s at the client, with 56 connections queued (p50; measured
+// 2026-11-06, docs/approach-c1.md). Now, when QUEUE_LIMIT requests are in the
+// container already, a request that can wait (a page, a cart, an add to cart,
+// the rest of the Store API) gets 503 with Retry-After at once. Checkout, a
+// payment callback (wc-api), admin, login and the operator endpoints are always
+// let in, and nothing in flight is stopped. QUEUE_LIMIT 0 turns it off.
+// Who passes the bounded queue (issue #39):
+// - 'always': checkout, payment callbacks (wc-api), admin and login, the
+//   operator endpoints, and REST requests from a logged-in user or an API
+//   client with credentials (an Authorization header: application passwords);
+// - 'flow': a shopper already in a cart flow (a Cart-Token header, or a
+//   WooCommerce session cookie), so a cart that got in is not turned away at
+//   the add to cart (the #39 run: 130 carts were, about 0.04 CPU s each);
+// - 'shed': everything else: a page, a new shopper's first cart request,
+//   ?add-to-cart= without a session, and anonymous REST (an anonymous client
+//   could otherwise pass the limit through any non-Store route).
+// A client can send any Cart-Token or cookie, and the Worker cannot verify
+// them (WooCommerce signs the token in PHP). So 'flow' has its own, higher cap,
+// FLOW_LIMIT (default 2 x QUEUE_LIMIT): a forged cookie can push the container
+// to FLOW_LIMIT in hand, not without limit (#39, forgery case). A signed admit
+// cookie from this object would make 'flow' verifiable; it is the follow-up.
+const SESSION_COOKIE = /(^|;\s*)(wp_woocommerce_session_|woocommerce_items_in_cart=[1-9])/;
+const LOGIN_COOKIE = /(^|;\s*)wordpress_logged_in_/;
+function admission(req, url) {
+	const p = url.pathname;
+	if (p.startsWith('/_') || p.startsWith('/wp-admin') || p === '/wp-login.php') return 'always';
+	if (url.searchParams.has('wc-api') || p.startsWith('/wc-api')) return 'always';
+	const cookie = req.headers.get('cookie') || '';
+	const inFlow = req.headers.has('cart-token') || SESSION_COOKIE.test(cookie);
+	const wcAjax = url.searchParams.get('wc-ajax');
+	if (wcAjax) return wcAjax === 'checkout' ? 'always' : inFlow ? 'flow' : 'shed';
+	const route = url.searchParams.get('rest_route') || (p.startsWith('/wp-json') ? p.slice('/wp-json'.length) : null);
+	if (route !== null) {
+		if (!route.startsWith('/wc/store/')) return LOGIN_COOKIE.test(cookie) || req.headers.has('authorization') ? 'always' : 'shed';
+		if (route.includes('/checkout')) return 'always';
+		return inFlow ? 'flow' : 'shed';
+	}
+	if (p.startsWith('/checkout') || url.searchParams.get('pagename') === 'checkout') return 'always';
+	if (LOGIN_COOKIE.test(cookie)) return 'always';
+	return inFlow ? 'flow' : 'shed';
+}
+function busyResponse(req, url, retryAfter) {
+	const h = { 'retry-after': String(retryAfter), 'cache-control': 'no-store', 'cloudflare-cdn-cache-control': 'no-store', 'x-c1-shed': '1' };
+	if (url.searchParams.has('rest_route') || url.pathname.startsWith('/wp-json')) {
+		return Response.json({ code: 'c1_busy', message: 'The store is busy. Please try again in a few seconds.', data: { status: 503 } }, { status: 503, headers: h });
+	}
+	return new Response('<!doctype html><meta charset="utf-8"><title>Busy</title><p>The store is busy. Please try again in a few seconds.</p>', { status: 503, headers: { ...h, 'content-type': 'text/html; charset=utf-8' } });
+}
+// A container that never answers (issue #93: a stuck instance answered no
+// request, not even a static file, and survived a deploy, a stop and a kill)
+// would hold every request until the client gave up, and checkout, which is
+// always let in, would pile up behind it. So a request that is not admin or
+// operator work waits at most CONTAINER_TIMEOUT_S (60 s, far above the checkout
+// p99 of about 11 s under overload) for the container's response headers, then
+// gets 504 and its queue slot back. Exempt, because they can be long and
+// legitimate: wp-admin, wp-login.php, the operator endpoints (/_*), a logged-in
+// user, and REST with an Authorization header (imports, exports). 0 turns it off.
+function timeoutExempt(req, url) {
+	const p = url.pathname;
+	if (p.startsWith('/_') || p.startsWith('/wp-admin') || p === '/wp-login.php') return true;
+	return LOGIN_COOKIE.test(req.headers.get('cookie') || '') || req.headers.has('authorization');
+}
+function timeoutResponse(url) {
+	const h = { 'cache-control': 'no-store', 'cloudflare-cdn-cache-control': 'no-store', 'x-c1-timeout': '1' };
+	if (url.searchParams.has('rest_route') || url.pathname.startsWith('/wp-json')) {
+		return Response.json({ code: 'c1_timeout', message: 'The store did not answer in time. Please try again.', data: { status: 504 } }, { status: 504, headers: h });
+	}
+	return new Response('<!doctype html><meta charset="utf-8"><title>Timeout</title><p>The store did not answer in time. Please try again.</p>', { status: 504, headers: { ...h, 'content-type': 'text/html; charset=utf-8' } });
+}
+// A request counts from the moment it is let in until its response BODY has
+// been read to the end (or it fails), not only until the response headers:
+// for a large streamed response the headers alone would undercount.
+// The decision for one request: let it in, or answer 503 now. Pure, so the
+// caps can be tested without a container (worker.js has no other test seam).
+function shouldShed(cls, inflight, limit, flowLimit) {
+	if (limit <= 0 || cls === 'always') return false;
+	if (cls === 'flow') return inflight >= flowLimit;
+	return inflight >= limit;
+}
+Store.prototype.fetch = async function (request) {
+	const url = new URL(request.url);
+	const limit = Number(this.env.QUEUE_LIMIT ?? 16);
+	// Never below QUEUE_LIMIT: a flow request must not be refused earlier than a new one.
+	const flowLimit = Math.max(limit, Number(this.env.FLOW_LIMIT || 2 * limit));
+	const q = (this.queue ||= { inflight: 0, maxInflight: 0, admitted: 0, shed: 0, flow: 0, flowShed: 0, timedOut: 0 });
+	const cls = admission(request, url);
+	if (shouldShed(cls, q.inflight, limit, flowLimit)) {
+		q.shed++;
+		if (cls === 'flow') q.flowShed++;
+		return busyResponse(request, url, Number(this.env.RETRY_AFTER || 5));
+	}
+	q.inflight++;
+	q.admitted++;
+	if (cls === 'flow' && q.inflight > limit) q.flow++;
+	if (q.inflight > q.maxInflight) q.maxInflight = q.inflight;
+	let done = false;
+	const release = () => {
+		if (!done) {
+			done = true;
+			q.inflight--;
+		}
+	};
+	const timeoutS = timeoutExempt(request, url) ? 0 : Number(this.env.CONTAINER_TIMEOUT_S ?? 60);
+	let r;
+	let timer;
+	try {
+		if (timeoutS > 0) {
+			const ac = new AbortController();
+			const pending = Container.prototype.fetch.call(this, new Request(request, { signal: ac.signal }));
+			pending.catch(() => {}); // after a timeout, its rejection is not ours to handle
+			r = await Promise.race([pending, new Promise((res) => (timer = setTimeout(() => res(null), timeoutS * 1000)))]);
+			if (r === null) {
+				ac.abort();
+				q.timedOut++;
+				release();
+				return timeoutResponse(url);
+			}
+		} else {
+			r = await Container.prototype.fetch.call(this, request);
+		}
+	} catch (e) {
+		release();
+		throw e;
+	} finally {
+		clearTimeout(timer);
+	}
+	if (!r.body || r.webSocket) {
+		release();
+		return r;
+	}
+	const { readable, writable } = new TransformStream();
+	r.body.pipeTo(writable).then(release, release);
+	return new Response(readable, r);
+};
+
+// Purges are coalesced: at most one per PURGE_INTERVAL_MS (15 s) for this site.
+// The purge limit is 5 a minute (25 at once) per account, for all sites, and a
+// burst of admin saves (an import, a bulk edit through the REST API) asked for
+// about 30 a minute (measured 2026-11-06 with the gate scripts: 106 in 7
+// minutes, and the later ones were refused). A purge asked for inside the
+// interval runs once at its end; a refused purge is tried again once after an
+// interval. All purges are of the one tag wp-pages, so coalescing loses nothing.
+// The deferred purge is a Container schedule (a Durable Object alarm, stored
+// in the object's SQLite), so it runs even if the object is evicted or reset
+// first. The page cache TTL is the backstop when a purge still fails.
+const PURGE_KEY = 'c1-purge';
+Store.prototype.purgeRead = function () {
+	return this.ctx.storage.kv.get(PURGE_KEY) || { last: 0, pending: false, sent: 0, deferred: 0, failed: 0, retried: 0, lastError: '' };
+};
+Store.prototype.purgeWrite = function (p) {
+	this.ctx.storage.kv.put(PURGE_KEY, p);
+};
+Store.prototype.purgeStorefront = async function () {
+	const gap = Number(this.env.PURGE_INTERVAL_MS || 15000);
+	const p = this.purgeRead();
+	const wait = p.last + gap - Date.now();
+	if (wait <= 0 && !p.pending) return this.runPurge(false);
+	p.deferred++;
+	if (!p.pending) {
+		p.pending = true;
+		this.purgeWrite(p);
+		await this.schedule(Math.max(1, Math.ceil(wait / 1000)), 'scheduledPurge', { retry: false });
+	} else {
+		this.purgeWrite(p);
+	}
+	return { ok: true, deferred_ms: Math.max(wait, 0) };
+};
+Store.prototype.scheduledPurge = async function (payload) {
+	const p = this.purgeRead();
+	p.pending = false;
+	this.purgeWrite(p);
+	return this.runPurge(!!(payload && payload.retry));
+};
+Store.prototype.runPurge = async function (isRetry) {
+	const gap = Number(this.env.PURGE_INTERVAL_MS || 15000);
+	let p = this.purgeRead();
+	p.last = Date.now();
+	this.purgeWrite(p);
+	let r;
+	try {
+		r = await this.ctx.exports.Storefront.purge(['wp-pages']);
+	} catch (e) {
+		r = { ok: false, errors: [String((e && e.message) || e)] };
+	}
+	p = this.purgeRead();
+	if (r.ok) {
+		p.sent++;
+	} else {
+		p.failed++;
+		p.lastError = JSON.stringify(r.errors || []).slice(0, 300);
+		if (!isRetry && !p.pending) {
+			p.retried++;
+			p.pending = true;
+			this.purgeWrite(p);
+			await this.schedule(Math.max(1, Math.ceil(gap / 1000)), 'scheduledPurge', { retry: true });
+			return r;
+		}
+	}
+	this.purgeWrite(p);
+	return r;
+};
+
+// Storefront pages for visitors with no state, cached at the edge (issue #58).
+// The default entrypoint (the gateway, not cached) decides by the request:
+// GET or HEAD, no cookie that carries state, not a cart, checkout, account,
+// admin or API path. Then it calls this entrypoint WITHOUT the Cookie header,
+// so the cache key is the path and query alone (Workers Caching, cache keys).
+// Before this, the default entrypoint itself was cached with Vary: Cookie, and
+// a cookie that carries no state (WooCommerce order attribution sets sbjs_*
+// cookies in the browser) made every visitor a separate variant: no hits.
+export class Storefront extends WorkerEntrypoint {
+	async fetch(req) {
+		const r = await store(this.env).fetch(req);
+		const out = new Response(r.body, r);
+		const cc = r.headers.get('cache-control') || '';
+		const ok = [200, 301, 404].includes(r.status) && !r.headers.has('set-cookie') && !/no-cache|no-store|private/i.test(cc);
+		if (ok) {
+			// The edge keeps it for PAGE_CACHE_TTL and serves it stale for up to
+			// PAGE_CACHE_SWR while it renders a new copy. The browser does not keep
+			// it (no-cache): the next page view after an add to cart must come
+			// from the gateway again.
+			const ttl = Number(this.env.PAGE_CACHE_TTL || 120);
+			const swr = Number(this.env.PAGE_CACHE_SWR || 600);
+			out.headers.set('cloudflare-cdn-cache-control', `max-age=${ttl}, stale-while-revalidate=${swr}`);
+			out.headers.set('cache-tag', 'wp-pages');
+			out.headers.set('cache-control', 'no-cache');
+		} else {
+			out.headers.set('cloudflare-cdn-cache-control', 'no-store');
+			if (!cc) out.headers.set('cache-control', 'private, no-store');
+		}
+		return out;
+	}
+	// An RPC method: not cached; the purge reaches this entrypoint's cache.
+	async purge(tags) {
+		const r = await (this.ctx.cache || cache).purge({ tags });
+		return { ok: !!(r && r.success !== false), errors: (r && r.errors) || [] };
+	}
+}
+
+// Cookies that mean the visitor has state: logged in, a password post, a
+// comment author, or any WooCommerce cookie (cart, session, recently viewed).
+// Other cookies (order attribution sbjs_*, analytics) do not change the page.
+const STATE_COOKIE = /^(wordpress_logged_in_|wordpress_sec_|wp-postpass_|comment_author_|wp-settings-|woocommerce_|wp_woocommerce_session_)/;
+const NO_CACHE_PATH = /^\/(wp-admin|wp-login\.php|wp-json|wp-cron\.php|wp-comments-post\.php|cart|checkout|my-account|wc-api|_)/;
+const NO_CACHE_PARAM = ['rest_route', 'wc-ajax', 'add-to-cart', 'preview', 'nocache', 'customize_changeset_uuid', 'wc-api'];
+function hasState(req) {
+	const c = req.headers.get('cookie');
+	if (!c) return false;
+	return c.split(';').some((x) => STATE_COOKIE.test(x.trim()));
+}
+function storefrontCacheable(req, url) {
+	return (req.method === 'GET' || req.method === 'HEAD') && !hasState(req) && !NO_CACHE_PATH.test(url.pathname) && !NO_CACHE_PARAM.some((k) => url.searchParams.has(k));
+}
+
 export default {
-	async fetch(req, env) {
+	async fetch(req, env, ctx) {
 		const url = new URL(req.url);
 		const spikeOk = env.SPIKE_TOKEN && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname === '/_store-stop') {
@@ -87,42 +401,42 @@ export default {
 				return Response.json({ ok: false, rpc_error: String((e && e.message) || e) }, { status: 500 });
 			}
 		}
+		if (url.pathname === '/_store-info') {
+			if (!spikeOk) return new Response('forbidden', { status: 403 });
+			const worker_version = (env.CF_VERSION_METADATA && env.CF_VERSION_METADATA.id) || '';
+			try {
+				const i = await store(env).storeInfo();
+				return Response.json({ worker_version, ...i, current: !!worker_version && worker_version === i.do_version });
+			} catch (e) {
+				// An object from a deploy before this code has no storeInfo(): not current.
+				// (On Cloudflare a sync method named info answered "The RPC receiver
+				// does not implement the method info" from an object that did run this
+				// code: its shutdownNow answered with this version, 2026-11-05. Local
+				// workerd 4.107.0 accepted it. So this one is async and has another
+				// name, like shutdownNow, which works; which of the two mattered is
+				// not known.)
+				return Response.json({ worker_version, current: false, rpc_error: String((e && e.message) || e) });
+			}
+		}
 		if (url.pathname === '/xmlrpc.php') return new Response('XML-RPC is off', { status: 403 });
 		// 20 MB: the Images binding input limit, and far above any post or form.
 		if (Number(req.headers.get('content-length') || 0) > Number(env.MAX_BODY_BYTES || 20 * 1024 * 1024)) return new Response('request body too large', { status: 413 });
 		if (env.MEDIA && (req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/wp-content/uploads/')) return serveUpload(req, env, url);
+		if (storefrontCacheable(req, url)) {
+			// Warm start (#73): the page comes from the edge as before; the start
+			// runs after the response, and at most once per WARM_GAP_S here.
+			if (isProductView(url, env.WARM_PATHS) && gatewayMayWarm(env)) ctx.waitUntil(store(env).warmStart().catch(() => {}));
+			const h = new Headers(req.headers);
+			h.delete('cookie');
+			return ctx.exports.Storefront.fetch(new Request(req, { headers: h }));
+		}
 		const r = await store(env).fetch(req);
+		if (r.headers.get('cache-control')) return r;
 		const out = new Response(r.body, r);
-		pageCacheHeaders(req, url, r, out, env);
+		out.headers.set('cache-control', 'private, no-store');
 		return out;
 	},
 };
-
-// Logged-out GET of a public page: cacheable at the edge (Workers Cache). The
-// cookie is not in the cache key, so Vary: Cookie keeps logged-in visitors and
-// shoppers with a cart on their own uncached responses.
-const WP_COOKIE = /(^|;\s*)(wordpress_logged_in_|wordpress_sec_|wp-postpass_|comment_author_|wp-settings-|woocommerce_|wp_woocommerce_session_)/;
-function pageCacheHeaders(req, url, r, out, env) {
-	const ttl = Number(env.PAGE_CACHE_TTL || 120);
-	const cc = r.headers.get('cache-control') || '';
-	const cacheable =
-		(req.method === 'GET' || req.method === 'HEAD') &&
-		[200, 301, 404].includes(r.status) &&
-		!WP_COOKIE.test(req.headers.get('cookie') || '') &&
-		!r.headers.has('set-cookie') &&
-		!/no-cache|no-store|private/i.test(cc) &&
-		!/^\/(wp-admin|wp-login\.php|wp-json|cart|checkout|my-account|_)/.test(url.pathname) &&
-		!url.searchParams.has('rest_route') &&
-		!url.searchParams.has('wc-ajax') &&
-		!url.searchParams.has('preview');
-	if (cacheable) {
-		out.headers.set('cache-control', `public, max-age=${ttl}, stale-while-revalidate=600`);
-		out.headers.set('cache-tag', 'wp-pages');
-		out.headers.append('vary', 'Cookie');
-	} else if (!cc) {
-		out.headers.set('cache-control', 'private, no-store');
-	}
-}
 
 async function serveUpload(req, env, url) {
 	let key;

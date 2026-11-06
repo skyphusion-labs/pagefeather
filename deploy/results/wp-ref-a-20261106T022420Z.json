@@ -1,0 +1,103 @@
+{
+ "name": "wp-ref-a",
+ "url": "https://wp-ref-a.skyphusion.workers.dev",
+ "variant": "a",
+ "location": "enam",
+ "d1_ping": [
+  {
+   "n": 19,
+   "first": 29,
+   "min": 4,
+   "median": 7,
+   "max": 12,
+   "colo": "ORD"
+  },
+  {
+   "n": 19,
+   "first": 12,
+   "min": 4,
+   "median": 6,
+   "max": 26,
+   "colo": "ORD"
+  },
+  {
+   "n": 19,
+   "first": 44,
+   "min": 5,
+   "median": 8,
+   "max": 10,
+   "colo": "ORD"
+  }
+ ],
+ "e2e": {
+  "exit": 0,
+  "rows": 17,
+  "ok": 17
+ },
+ "bench": {
+  "target": "https://wp-ref-a.skyphusion.workers.dev",
+  "n": 10,
+  "pages": {
+   "home": {
+    "ok": 10,
+    "median_s": 2.16,
+    "p90_s": 5.5,
+    "p95_s": 8.58,
+    "min_s": 1.91,
+    "max_s": 8.58,
+    "queries": 78.0,
+    "db_ms": 1032.0
+   },
+   "post": {
+    "ok": 10,
+    "median_s": 2.7249999999999996,
+    "p90_s": 4.93,
+    "p95_s": 6.95,
+    "min_s": 2.14,
+    "max_s": 6.95,
+    "queries": 86.0,
+    "db_ms": 1307.0
+   },
+   "search": {
+    "ok": 10,
+    "median_s": 2.295,
+    "p90_s": 4.85,
+    "p95_s": 5.22,
+    "min_s": 1.87,
+    "max_s": 5.22,
+    "queries": 84.0,
+    "db_ms": 1195.5
+   },
+   "dashboard": {
+    "ok": 10,
+    "median_s": 3.17,
+    "p90_s": 3.42,
+    "p95_s": 5.61,
+    "min_s": 2.45,
+    "max_s": 5.61,
+    "queries": 135.0,
+    "db_ms": 2007.5
+   },
+   "post-new": {
+    "ok": 10,
+    "median_s": 4.965,
+    "p90_s": 7.28,
+    "p95_s": 8.95,
+    "min_s": 4.38,
+    "max_s": 8.95,
+    "queries": 169.0,
+    "db_ms": 3626.0
+   },
+   "edit": {
+    "ok": 10,
+    "median_s": 5.5,
+    "p90_s": 6.48,
+    "p95_s": 6.59,
+    "min_s": 2.83,
+    "max_s": 6.59,
+    "queries": 129.0,
+    "db_ms": 3130.5
+   }
+  }
+ }
+}

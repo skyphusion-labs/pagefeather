@@ -1,0 +1,388 @@
+{
+ "utc": "2026-11-05T21:48:07Z",
+ "namespace": "wp-on-cf-spike",
+ "dispatcher": "https://wp-on-cf-wfp-dispatch.skyphusion.workers.dev",
+ "direct": "https://wp-on-cf-wfp-echo.skyphusion.workers.dev",
+ "deploys": [
+  {
+   "deploy": "outbound",
+   "exit": 0,
+   "s": 3,
+   "tail": [
+    " \u26c5\ufe0f wrangler 4.107.0",
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+    "Cloudflare collects anonymous telemetry about your usage of Wrangler. Learn more at https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md",
+    "Total Upload: 0.32 KiB / gzip: 0.24 KiB",
+    "Uploaded wp-on-cf-wfp-outbound (0.90 sec)",
+    "Deployed wp-on-cf-wfp-outbound triggers (0.60 sec)",
+    "  https://wp-on-cf-wfp-outbound.skyphusion.workers.dev",
+    "Current Version ID: a0feab62-594f-4a49-acc9-56c61738b1fb"
+   ]
+  },
+  {
+   "deploy": "echo-direct",
+   "exit": 0,
+   "s": 4,
+   "tail": [
+    " \u26c5\ufe0f wrangler 4.107.0 (update available 4.158.0)",
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+    "Total Upload: 0.21 KiB / gzip: 0.17 KiB",
+    "Uploaded wp-on-cf-wfp-echo (1.17 sec)",
+    "Deployed wp-on-cf-wfp-echo triggers (0.81 sec)",
+    "  https://wp-on-cf-wfp-echo.skyphusion.workers.dev",
+    "Current Version ID: ef9d0c6d-0564-4212-ab1a-6270681a051e"
+   ]
+  },
+  {
+   "deploy": "ns-echo",
+   "exit": 0,
+   "s": 1,
+   "tail": [
+    " \u26c5\ufe0f wrangler 4.107.0 (update available 4.158.0)",
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+    "Total Upload: 0.21 KiB / gzip: 0.17 KiB",
+    "Uploaded echo (0.58 sec)",
+    "  Dispatch Namespace: wp-on-cf-spike",
+    "Current Version ID: cf07ee25-efa7-44eb-8ef2-4a9c3102ebf3"
+   ]
+  },
+  {
+   "deploy": "ns-tenant-a",
+   "exit": 0,
+   "s": 2,
+   "tail": [
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+    "Total Upload: 3.43 KiB / gzip: 1.46 KiB",
+    "Your Worker has access to the following bindings:",
+    "Binding                            Resource",
+    "env.COUNTER (Counter)              Durable Object",
+    "env.DB (wp-on-cf-wfp-d1)           D1 Database",
+    "env.BUCKET (wp-on-cf-wfp-r2)       R2 Bucket",
+    "env.IMAGES                         Images",
+    "env.TENANT (\"(hidden)\")            Environment Variable",
+    "Uploaded tenant-a (1.41 sec)",
+    "  Dispatch Namespace: wp-on-cf-spike",
+    "Current Version ID: cfca8e70-b612-4702-85bd-b258627a9580"
+   ]
+  },
+  {
+   "deploy": "ns-tenant-b",
+   "exit": 0,
+   "s": 3,
+   "tail": [
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+    "Total Upload: 3.43 KiB / gzip: 1.46 KiB",
+    "Your Worker has access to the following bindings:",
+    "Binding                            Resource",
+    "env.COUNTER (Counter)              Durable Object",
+    "env.DB (wp-on-cf-wfp-d1)           D1 Database",
+    "env.BUCKET (wp-on-cf-wfp-r2)       R2 Bucket",
+    "env.IMAGES                         Images",
+    "env.TENANT (\"(hidden)\")            Environment Variable",
+    "Uploaded tenant-b (1.38 sec)",
+    "  Dispatch Namespace: wp-on-cf-spike",
+    "Current Version ID: b69bb4fb-7f64-4a4e-816d-9b69e76b05b1"
+   ]
+  },
+  {
+   "deploy": "dispatcher",
+   "exit": 0,
+   "s": 3,
+   "tail": [
+    " \u26c5\ufe0f wrangler 4.107.0 (update available 4.158.0)",
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+    "Total Upload: 1.51 KiB / gzip: 0.71 KiB",
+    "Your Worker has access to the following bindings:",
+    "Binding                                                                      Resource",
+    "env.DISPATCHER (wp-on-cf-spike)                                              Dispatch Namespace",
+    "env.DISPATCHER_OUT (wp-on-cf-spike (outbound -> wp-on-cf-wfp-outbound))      Dispatch Namespace",
+    "Uploaded wp-on-cf-wfp-dispatch (1.20 sec)",
+    "Deployed wp-on-cf-wfp-dispatch triggers (0.54 sec)",
+    "  https://wp-on-cf-wfp-dispatch.skyphusion.workers.dev",
+    "Current Version ID: 06c293db-9fc7-49b6-841b-f94350f639e6"
+   ]
+  }
+ ],
+ "checks": {
+  "dispatcher": "https://wp-on-cf-wfp-dispatch.skyphusion.workers.dev",
+  "utc": "2026-11-05T21:47:51Z",
+  "checks": {
+   "do_tenant_a_1": {
+    "path": "/tenant-a/do",
+    "status": 200,
+    "s": 0.432,
+    "answer": {
+     "check": "do-sqlite",
+     "ok": true,
+     "ms": 0,
+     "n": 1,
+     "databaseSize": 12288,
+     "tenant": "tenant-a"
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "do_tenant_a_2": {
+    "path": "/tenant-a/do",
+    "status": 200,
+    "s": 0.314,
+    "answer": {
+     "check": "do-sqlite",
+     "ok": true,
+     "ms": 0,
+     "n": 2,
+     "databaseSize": 12288,
+     "tenant": "tenant-a"
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "do_tenant_b_1": {
+    "path": "/tenant-b/do",
+    "status": 200,
+    "s": 0.621,
+    "answer": {
+     "check": "do-sqlite",
+     "ok": true,
+     "ms": 0,
+     "n": 1,
+     "databaseSize": 12288,
+     "tenant": "tenant-b"
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "d1": {
+    "path": "/tenant-a/d1",
+    "status": 500,
+    "s": 0.488,
+    "answer": {
+     "check": "d1",
+     "ok": false,
+     "ms": 36,
+     "error": "D1_ERROR: not authorized to use function: sqlite_version at offset 17: SQLITE_ERROR"
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "r2": {
+    "path": "/tenant-a/r2",
+    "status": 200,
+    "s": 0.808,
+    "answer": {
+     "check": "r2",
+     "ok": true,
+     "ms": 0,
+     "roundtrip": true
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "images": {
+    "path": "/tenant-a/images",
+    "status": 200,
+    "s": 0.306,
+    "answer": {
+     "check": "images",
+     "ok": true,
+     "ms": 0,
+     "format": "image/png",
+     "width": 1,
+     "height": 1
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "cpu_control": {
+    "path": "/tenant-a/burn?ms=5",
+    "status": 200,
+    "s": 0.27,
+    "answer": {
+     "check": "burn",
+     "ok": true,
+     "ms": 0,
+     "ms_asked": 5,
+     "x": true
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "cpu_no_limit_500": {
+    "path": "/tenant-a/burn?ms=500",
+    "status": 200,
+    "s": 0.359,
+    "answer": {
+     "check": "burn",
+     "ok": true,
+     "ms": 0,
+     "ms_asked": 500,
+     "x": true
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "cpu_limit_10ms_500": {
+    "path": "/tenant-a/burn?ms=500&cpuMs=10",
+    "status": 200,
+    "s": 0.529,
+    "answer": {
+     "check": "burn",
+     "ok": true,
+     "ms": 0,
+     "ms_asked": 500,
+     "x": true
+    },
+    "x-dispatch-limits": "{\"cpuMs\":10}"
+   },
+   "sub_control_3": {
+    "path": "/tenant-a/sub?n=3",
+    "status": 200,
+    "s": 0.392,
+    "answer": {
+     "check": "sub",
+     "ok": true,
+     "ms": 0,
+     "n": 3,
+     "results": [
+      {
+       "status": 200,
+       "outbound": null
+      },
+      {
+       "status": 200,
+       "outbound": null
+      },
+      {
+       "status": 200,
+       "outbound": null
+      }
+     ]
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "sub_limit_2_of_6": {
+    "path": "/tenant-a/sub?n=6&subRequests=2",
+    "status": 200,
+    "s": 0.256,
+    "answer": {
+     "check": "sub",
+     "ok": true,
+     "ms": 0,
+     "n": 6,
+     "results": [
+      {
+       "status": 200,
+       "outbound": null
+      },
+      {
+       "status": 200,
+       "outbound": null
+      },
+      {
+       "error": "Too many subrequests by single Worker invocation. To configure this limit, refer to https://developers.cloudflare.com/workers/wrangler/configuration/#limits"
+      },
+      {
+       "error": "Too many subrequests by single Worker invocation. To configure this limit, refer to https://developers.cloudflare.com/workers/wrangler/configuration/#limits"
+      },
+      {
+       "error": "Too many subrequests by single Worker invocation. To configure this limit, refer to https://developers.cloudflare.com/workers/wrangler/configuration/#limits"
+      },
+      {
+       "error": "Too many subrequests by single Worker invocation. To configure this limit, refer to https://developers.cloudflare.com/workers/wrangler/configuration/#limits"
+      }
+     ]
+    },
+    "x-dispatch-limits": "{\"subRequests\":2}"
+   },
+   "outbound_off": {
+    "path": "/tenant-a/sub?n=1",
+    "status": 200,
+    "s": 0.26,
+    "answer": {
+     "check": "sub",
+     "ok": true,
+     "ms": 0,
+     "n": 1,
+     "results": [
+      {
+       "status": 200,
+       "outbound": null
+      }
+     ]
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "outbound_on": {
+    "path": "/tenant-a/sub?n=1&outbound=1",
+    "status": 200,
+    "s": 0.292,
+    "answer": {
+     "check": "sub",
+     "ok": true,
+     "ms": 0,
+     "n": 1,
+     "results": [
+      {
+       "status": 200,
+       "outbound": "tenant-a"
+      }
+     ]
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "outbound_on_from_do": {
+    "path": "/tenant-a/do-sub?outbound=1",
+    "status": 200,
+    "s": 0.293,
+    "answer": {
+     "check": "do-sub",
+     "ok": true,
+     "ms": 0,
+     "status": 200,
+     "outbound": null
+    },
+    "x-dispatch-limits": "{}"
+   },
+   "missing_script": {
+    "path": "/no-such-tenant/ping",
+    "status": 404,
+    "s": 0.352,
+    "answer": {
+     "dispatch_error": "Worker not found.",
+     "name": "Error",
+     "script": "no-such-tenant",
+     "limits": {},
+     "outbound": false,
+     "ms": 95
+    },
+    "x-dispatch-limits": null
+   }
+  }
+ },
+ "latency_laptop": {
+  "utc": "2026-11-05T21:48:07Z",
+  "n": 100,
+  "client": {
+   "label": "laptop",
+   "python": "3.9.6",
+   "runner_region": null
+  },
+  "direct": {
+   "url": "https://wp-on-cf-wfp-echo.skyphusion.workers.dev/",
+   "ok": 100,
+   "p50": 43.21,
+   "p95": 69.08,
+   "p99": 78.1,
+   "mean": 47.51,
+   "min": 40.35,
+   "max": 115.53
+  },
+  "dispatched": {
+   "url": "https://wp-on-cf-wfp-dispatch.skyphusion.workers.dev/echo/",
+   "ok": 100,
+   "p50": 45.15,
+   "p95": 69.5,
+   "p99": 76.51,
+   "mean": 48.38,
+   "min": 42.07,
+   "max": 86.16
+  },
+  "added_ms": {
+   "p50": 1.94,
+   "p95": 0.42,
+   "mean": 0.87
+  }
+ }
+}
