@@ -55,7 +55,9 @@ for k, v in want.items():
 # A boot log with no restore line (a stuck start): the step is absent, not 0.
 s2 = ws.split(V, C, "1001.500 c1: entrypoint start, uid 0", "", 12)
 s3 = ws.split(V, C, "1004.9 out c1-serve: warm: done no answer", "", 12)
+s4 = ws.split(V, C, "1004.9 err c1-serve: warm: failed (HTTP 502) <html> <head><title>502", "", 12)
 for k, ok in (("warm absent when its answer is not JSON", "warm" not in s3 and "warm_done_s" not in s3),
+              ("warm: failed is reported", s4.get("warm_failed", "").startswith("(HTTP 502)") and "warm" not in s4),
               ("restore_done_s absent", "restore_done_s" not in s2), ("no cart lines: no cart keys", not any(x.startswith("cart") for x in s2))):
     print(("PASS " if ok else "FAIL ") + k); fails += 0 if ok else 1
 extra = set(s) - set(want)

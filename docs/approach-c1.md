@@ -674,7 +674,13 @@ Arms that each failed their check, as they must:
 - a plugin cookie with `header_remove()` taken out (the shipped `warm.php` drops that cookie);
 - a plugin that writes an option.
 
-Without `DISABLE_WP_CRON` the warm-up also wrote nothing on a served site (no cron event was due). The define stays, as a guard for when one is. Not yet measured: the add to cart after a warm start with the warm-up (`tests/load/warm_start.py`, `WARM_WP=on` against `off`).
+Without `DISABLE_WP_CRON` the warm-up also wrote nothing on a served site (no cron event was due). The define stays, as a guard for when one is.
+
+**A live defect the in-image test did not see (2026-11-06, `wp-c1-w92b`, at `6a54411`): the warm-up never ran on Cloudflare.** `c1-serve.sh` waited for an answer from `/_fpm-ping`, and `curl` exits 0 on any HTTP status. nginx answered 502 before PHP-FPM accepted, so the warm-up started at once and got nginx's 502 page, and the boot log said `warm: done <html>`. The in-image test had called the warm-up itself, after the servers were up, so it never exercised that wait. Fixed:
+- The warm-up waits for a 200 from `/_fpm-ping` (60 s at most; then `warm: failed`).
+- Only a 200 with `warm.php`'s JSON is `done`. Anything else is `warm: failed (HTTP <code>)`.
+
+The test now runs `c1-serve.sh`'s own trigger from a cold start, with PHP-FPM started 3 s late by a shim, and requires `warm: done {json}` in the boot log. It also runs the trigger with `warm.php` missing, and requires `warm: failed (HTTP 404)`. The arms that must fail: the old wait (any answer), and a done line that takes any answer. `warm_start.py` reports a `warm: failed` line as `warm_failed`. Through the Worker, `GET /_warm` got a 301 to `/_warm/` with no `x-c1-warm`, as it must. Not yet measured: the add to cart after a warm start with the warm-up (`tests/load/warm_start.py`, `WARM_WP=on` against `off`).
 
 **Why not warm through a Store API request:** under overload, the bounded queue sheds a new visitor's Store API cart request (no `Cart-Token`, no session: class `shed` in `admission()`). A warm start made through such a request would then be refused. `start()` does not go through the queue.
 

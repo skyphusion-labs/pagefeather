@@ -123,6 +123,8 @@ def split(view_at, cart_at, boot, req, cart_id):
     # The warm-up (issue #92, c1-serve.sh): "warm: done {json}" from warm.php,
     # with the OPcache before and after it. Its time and its record.
     for line in boot.splitlines():
+        if "c1-serve: warm: failed" in line:
+            s["warm_failed"] = line.split("c1-serve: warm: failed", 1)[1].strip()[:200]
         m = re.search(r"c1-serve: warm: done (\{.*\})\s*$", line)
         if m:
             try:

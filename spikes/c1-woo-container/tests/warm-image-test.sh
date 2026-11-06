@@ -27,6 +27,12 @@
 #   bound    WARM_MAX_FILES=5: compiled 5, stop "max files"
 #   lowmem   opcache.memory_consumption=40: stop at "opcache free below
 #            16 MiB", and no OPcache restart (oom 0)
+#   trigger  c1-serve.sh's own warm-up (WARM_WP=on, no manual call), with
+#            PHP-FPM started 3 s late: the boot log gets "warm: done {json}"
+#            with compiled > 0 (seen live 2026-11-06: the warm-up got nginx's
+#            502 before FPM accepted, and logged the 502 page as done)
+#   trigfail the same trigger with warm.php missing: "warm: failed (HTTP 404)"
+#            and no "warm: done"
 # Arms that must FAIL a named check, or the check cannot see its defect:
 #   listen 0.0.0.0:8081                      listen, eth0 (the deny line answers 403)
 #   listen 0.0.0.0:8081, no allow and deny   eth0 (and the answer runs warm.php)
@@ -35,6 +41,8 @@
 #   a plugin sets a cookie on init           cookie holds with the shipped warm.php,
 #                                            and fails with header_remove() taken out
 #   a plugin writes an option on init        nowrite
+#   c1-serve.sh waits for any /_fpm-ping answer, not a 200   trigger
+#   c1-serve.sh logs any answer as done      trigfail
 #   warm.php minus DISABLE_WP_CRON           nowrite: reported, not required (it
 #                                            writes only when a cron event is due)
 # Exit 0 only when every shipped check holds and every required arm fails.
@@ -84,7 +92,8 @@ serve() {
 	stop_servers
 	/usr/local/bin/c1-serve.sh > /tmp/warm-serve.log 2>&1 & S=$!
 	local i
-	for i in $(seq 1 60); do curl -s -o /dev/null -m 1 http://127.0.0.1/_fpm-ping && return 0; sleep 0.5; done
+	# A 200, not any answer: nginx answers 502 until PHP-FPM accepts.
+	for i in $(seq 1 120); do [ "$(curl -s -o /dev/null -w '%{http_code}' -m 1 http://127.0.0.1/_fpm-ping)" = 200 ] && return 0; sleep 0.5; done
 	say "FAIL the servers did not answer"; cat /tmp/warm-serve.log; exit 1
 }
 pristine() {
@@ -174,6 +183,46 @@ oom=$(curl -s -H "x-spike-token: t" "http://127.0.0.1/_stats.php?what=info" | ph
 check "lowmem (stop at free below 16 MiB, oom $oom)" "$(php -r '$w = json_decode($argv[1], true); echo is_array($w) && $w["stop"] === "opcache free below 16 MiB" && $argv[2] === "0" ? 1 : 0;' "$w" "$oom")"
 rm -rf /tmp/ini
 
+# trigger_case <label>: c1-serve.sh's own warm-up from a cold start, with
+# PHP-FPM 3 s late (a shim on PATH), and its boot log. Waits for the warm line.
+FPM_BIN=$(command -v php-fpm)
+mkdir -p /tmp/slowbin
+printf '#!/bin/sh\nsleep 3\nexec %s "$@"\n' "$FPM_BIN" > /tmp/slowbin/php-fpm; chmod +x /tmp/slowbin/php-fpm
+trigger_case() {
+	: > /tmp/trig-boot.log
+	WARM_WP=on BOOT_LOG=/tmp/trig-boot.log PATH="/tmp/slowbin:$PATH" serve
+	local i
+	for i in $(seq 1 180); do grep -q 'c1-serve: warm: \(done\|failed\)' /tmp/trig-boot.log && break; sleep 0.5; done
+	say "  $1: $(grep 'c1-serve: warm:' /tmp/trig-boot.log | cut -d' ' -f2- | cut -c1-220 | tr '\n' '|')"
+}
+trig_done() { grep 'c1-serve: warm: done {' /tmp/trig-boot.log | sed 's/.*warm: done //' | php -r '$w = json_decode(stream_get_contents(STDIN), true); echo is_array($w) && $w["compiled"] > 0 ? 1 : 0;'; }
+trig_failed404() { grep -q 'c1-serve: warm: failed (HTTP 404)' /tmp/trig-boot.log && ! grep -q 'c1-serve: warm: done' /tmp/trig-boot.log && echo 1 || echo 0; }
+CS=/usr/local/bin/c1-serve.sh
+cp "$CS" /tmp/c1-serve.shipped.sh
+
+say "== trigger: c1-serve.sh's own warm-up, PHP-FPM 3 s late"
+pristine
+trigger_case shipped
+check "trigger (warm: done with warm.php's JSON, from a cold start)" "$(trig_done)"
+say "== trigfail: the same trigger, warm.php missing"
+sed 's#fastcgi_param SCRIPT_FILENAME /opt/wp/warm.php;#fastcgi_param SCRIPT_FILENAME /opt/wp/missing.php;#' /tmp/nginx.shipped.conf > /etc/nginx/nginx.conf
+trigger_case missing
+check "trigfail (warm: failed (HTTP 404), no done)" "$(trig_failed404)"
+cp /tmp/nginx.shipped.conf /etc/nginx/nginx.conf
+
+say "== arm: c1-serve.sh waits for any /_fpm-ping answer (the 2026-11-06 trigger)"
+perl -pe 's{\[ "\$\(curl -s -o /dev/null -w .%\{http_code\}. -m 2 http://127\.0\.0\.1/_fpm-ping\)" = 200 \] && \{ ready=1; break; \}}{curl -s -o /dev/null -m 2 http://127.0.0.1/_fpm-ping && { ready=1; break; }}' /tmp/c1-serve.shipped.sh > "$CS"
+cmp -s "$CS" /tmp/c1-serve.shipped.sh && { say "  FAIL the wait arm did not apply"; fails=$((fails + 1)); }
+trigger_case "any answer"
+must_fail "wait for any /_fpm-ping answer" trigger "$(trig_done)"
+say "== arm: c1-serve.sh logs any answer as done"
+perl -pe 's{^(\t+)200:\\\{\*\)}{$1*)}' /tmp/c1-serve.shipped.sh > "$CS"
+cmp -s "$CS" /tmp/c1-serve.shipped.sh && { say "  FAIL the done arm did not apply"; fails=$((fails + 1)); }
+sed 's#fastcgi_param SCRIPT_FILENAME /opt/wp/warm.php;#fastcgi_param SCRIPT_FILENAME /opt/wp/missing.php;#' /tmp/nginx.shipped.conf > /etc/nginx/nginx.conf
+trigger_case "any answer is done"
+must_fail "any answer is done" trigfail "$(trig_failed404)"
+cp /tmp/c1-serve.shipped.sh "$CS"; cp /tmp/nginx.shipped.conf /etc/nginx/nginx.conf
+
 say "== arm: listen 0.0.0.0:8081"
 sed 's/listen 127\.0\.0\.1:8081;/listen 0.0.0.0:8081;/' /tmp/nginx.shipped.conf > /etc/nginx/nginx.conf
 serve
@@ -231,6 +280,7 @@ say "  reported: without DISABLE_WP_CRON, after a GET /, the warm-up $([ "$(wrot
 cp /tmp/warm.shipped.php "$W"
 cmp -s "$W" /tmp/warm.shipped.php || { say "FAIL warm.php not restored"; fails=$((fails + 1)); }
 cmp -s /etc/nginx/nginx.conf /tmp/nginx.shipped.conf || { say "FAIL nginx.conf not restored"; fails=$((fails + 1)); }
+cmp -s "$CS" /tmp/c1-serve.shipped.sh || { say "FAIL c1-serve.sh not restored"; fails=$((fails + 1)); }
 
 stop_servers
 say "$fails failing"

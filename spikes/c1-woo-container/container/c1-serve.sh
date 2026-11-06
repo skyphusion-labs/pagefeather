@@ -62,12 +62,26 @@ echo "c1-serve: php-fpm $FPM, nginx $NGX"
 # The warm-up (issue #92): one request that boots WordPress in PHP-FPM, so the
 # first shopper request after a start finds OPcache and APCu warm. In the
 # background: the servers answer shoppers at once. Its lines go to the boot log.
+# It waits for PHP-FPM itself: a 200 from /_fpm-ping, not any answer. nginx
+# answers 502 while FPM does not accept yet, and curl exits 0 on a 502 (seen
+# 2026-11-06 on wp-c1-w92b: the warm-up got nginx's 502 page). Only a 200 with
+# warm.php's JSON is "done"; anything else is "failed", with the HTTP code.
 if [ "${WARM_WP:-on}" = on ]; then
 	(
-		for i in $(seq 1 60); do curl -s -o /dev/null -m 2 http://127.0.0.1/_fpm-ping && break; sleep 0.5; done
+		ready=0
+		for i in $(seq 1 120); do
+			[ "$(curl -s -o /dev/null -w '%{http_code}' -m 2 http://127.0.0.1/_fpm-ping)" = 200 ] && { ready=1; break; }
+			sleep 0.5
+		done
+		[ "$ready" = 1 ] || { echo "c1-serve: warm: failed (no 200 from /_fpm-ping in 60 s)" >&2; exit 0; }
 		echo "c1-serve: warm: start"
-		w=$(curl -s -m 300 http://127.0.0.1:8081/_warm 2>&1) || true
-		echo "c1-serve: warm: done ${w:-no answer}"
+		w=$(curl -s -m 300 -w '\n%{http_code}' http://127.0.0.1:8081/_warm 2>/dev/null) || true
+		code=${w##*$'\n'}
+		body=${w%$'\n'*}
+		case "$code:$body" in
+			200:\{*) echo "c1-serve: warm: done $body" ;;
+			*) echo "c1-serve: warm: failed (HTTP ${code:-none}) $(printf '%s' "$body" | head -c 120 | tr -s '\n\t ' ' ')" >&2 ;;
+		esac
 	) &
 fi
 wait -n -p died "$FPM" "$NGX"
