@@ -36,6 +36,28 @@ Cells marked **measured** link to a row in `docs/results.md`. Everything else is
 | C | **no** | **docs** | Containers are not on the Free plan. Container disk is ephemeral. A snapshot keeps files for 30 days from creation or last restore. |
 | D | **docs** for the storefront Worker | **docs** | The back office needs one of A, B, C, or a normal host. |
 
+## Read this before the speed numbers
+
+Two limits are easy to miss behind the tables.
+
+**Transactions.** Not every variant has real SQL transactions.
+
+| Variant | Database | `ROLLBACK` undoes the writes |
+| --- | --- | --- |
+| `b-do` | D1 | **No.** D1 has no transaction across calls. `BEGIN` and `COMMIT` are answered in PHP; each statement commits on its own. |
+| `b-dosql` | SQLite in the Durable Object | **No, today.** The same PHP driver as `b-do`. The object is the only writer and runs one request at a time, so no request sees another's half-done change, but a request that stops midway keeps its earlier writes. Issue #60 makes it real. |
+| `c1` | SQLite on the container disk (PHP's own driver) | Yes. |
+| `a`, `a2` | MySQL through Hyperdrive | Yes. |
+
+Code that relies on `ROLLBACK` (WooCommerce, some plugins, upgrades) gets no rollback on `b-do` and `b-dosql`. See [docs/approach-b.md](docs/approach-b.md), "Transactions".
+
+**One run is not a number.** The same test on the same code moved a lot between runs:
+- `a` served 18.7 requests per second at 100 users in one load matrix and 8.63 in another ([docs/approach-a2.md](docs/approach-a2.md)).
+- `wp-c1` served about 1 request per second, while `wp-c1-perf` on the same image served about 2.5; the Containers API showed the same 1/2 vCPU and configuration for both. Not the data and not the configuration; the host or the placement, cause unknown ([docs/approach-c1.md](docs/approach-c1.md)).
+- On `b-dosql`, two runs of the same build differed by up to 15 % on one page ([docs/perf-dosql.md](docs/perf-dosql.md)).
+
+So every comparison in this repo is bracketed (the same build with the change off, on, and off again) or repeated on more than one container start, and a single run is never quoted as the number for a variant.
+
 ## Plan limits that decide the table
 
 Read from the Cloudflare documentation on 2026-11-03. Limits change. Check the source before you rely on a number.
