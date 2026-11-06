@@ -1,10 +1,11 @@
 // Spike B2: WordPress in a Worker, database on D1.
+import { sqlImport } from './sql-import.js';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
 import { inflateSync } from 'fflate';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
-import { DurableObject } from 'cloudflare:workers';
+import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
 // Compiled PHP (OPcache file cache) made by opcache.sh with this same PHP build.
 import opcacheZip from './build/opcache.zip';
@@ -31,6 +32,8 @@ export function setDbHandler(h) {
 // (ctx.storage.sql). The object sets it for each PHP run, under the PHP lock.
 // In the Worker it is always null and every statement goes to D1.
 let sqlDb = null;
+// The object's storage, for transactionSync (real transactions, #60). Set with sqlDb.
+let sqlStorage = null;
 
 // Object cache across requests (php/object-cache.php, docs/perf-dosql.md), in
 // the PHP object with DB_IN_DO only: one object is the only writer, so
@@ -69,6 +72,7 @@ function objectCacheOp(op) {
 		return { v };
 	}
 	if (op.op === 'set') {
+		if (txnFrames) txnTouched.add(op.k);
 		objectCacheDrop(op.k);
 		const n = op.k.length + op.v.length;
 		if (n > OBJECT_CACHE_BYTES / 4) return { ok: false };
@@ -81,6 +85,7 @@ function objectCacheOp(op) {
 		return { ok: true };
 	}
 	if (op.op === 'del') {
+		if (txnFrames) for (const k of op.k) txnTouched.add(k);
 		let n = 0;
 		for (const k of op.k) if (objectCacheDrop(k)) n++;
 		return { n };
@@ -215,7 +220,7 @@ async function stageUpload(req, env) {
 }
 
 function newStats() {
-	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, ocCalls: 0, ocHits: 0, httpCalls: 0, httpMs: 0 };
+	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, ocCalls: 0, ocHits: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
 }
 
 // The log and failure lists live as long as the isolate. Keep the newest only.
@@ -329,6 +334,7 @@ function lazyFile(FS, path, entry) {
 async function handleMessage(raw) {
 	const m = JSON.parse(raw);
 	if (m.http) return JSON.stringify(await httpOp(m.http));
+	if (m.txn) return JSON.stringify(sqlDb ? txnOp(sqlDb, sqlStorage, m.txn) : { ok: false, error: 'no database in the object' });
 	if (m.oc) return JSON.stringify(objectCacheOp(m.oc));
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
 	if (m.cache === 'purge') {
@@ -501,6 +507,9 @@ async function boot(origin) {
 	// The object cache across requests (php/object-cache.php): only where one
 	// object is the only writer. OBJECT_CACHE=off turns it off (to measure).
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.OBJECT_CACHE !== 'off') lines.push(`define('JS_OBJECT_CACHE', true);`);
+	// Real SQL transactions (php/real-transactions.php, #60): the database in the
+	// object only. REAL_TRANSACTIONS=off turns them off (to measure).
+	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.REAL_TRANSACTIONS !== 'off') lines.push(`define('JS_REAL_TRANSACTIONS', true);`);
 	// The editor's theme REST routes kept across requests (php/rest-route-cache.php, #53).
 	// Needs the object cache. ROUTE_CACHE=off turns it off (to measure).
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.OBJECT_CACHE !== 'off' && ENV.ROUTE_CACHE !== 'off') lines.push(`define('JS_ROUTE_CACHE', true);`);
@@ -541,20 +550,43 @@ let lastPurge = 0;
 function schedulePurge(ctx) {
 	// A purge already scheduled for later covers this change too.
 	const wait = Math.max(0, lastPurge + PURGE_GAP_MS - Date.now());
-	if (lastPurge <= Date.now()) {
+	const send = lastPurge <= Date.now();
+	// One line per change and one per purge sent, so a run can count both (wrangler tail).
+	console.log(JSON.stringify({ m: 'purge', asked: 1, coalesced: send ? 0 : 1, waitMs: send ? wait : 0 }));
+	if (send) {
 		lastPurge = Date.now() + wait;
 		ctx.waitUntil(
 			new Promise((ok) => setTimeout(ok, wait))
-				.then(() => ctx.cache.purge({ tags: ['wp-pages'] }))
-				.catch((e) => console.log('cache purge failed', String(e))),
+				.then(() => ctx.exports.Pages.purge(['wp-pages']))
+				// A refused purge (Free limits: 5 a minute per account) is reported, not dropped.
+				.then((r) => console.log(JSON.stringify({ m: 'purge', sent: 1, ok: !!(r && r.ok), errors: (r && r.errors) || [] })))
+				.catch((e) => console.log(JSON.stringify({ m: 'purge', sent: 1, ok: false, error: String(e).slice(0, 200) }))),
 		);
 	}
 }
 
-// Page cache (Workers Cache). A response is cacheable only for a logged-out
-// GET of a public page. Cookie is not in the Workers Cache key, so Vary: Cookie
-// keeps a logged-in visitor from getting a logged-out page.
+// Page cache (Workers Cache, issue #63). Only the Pages entrypoint is cached.
+// The default entrypoint (the gateway, not cached) sends it a GET or HEAD that
+// has no WordPress cookie (WP_COOKIE, by name) and is not an admin, login,
+// cron or spike path, WITHOUT the Cookie header. So the cache key is the path
+// and the query alone, and a cookie that is not WordPress's (analytics _ga,
+// WooCommerce order attribution sbjs_*) does not split it. Before #63 the
+// default entrypoint was cached with Vary: Cookie, keyed on the whole Cookie
+// header: every visitor with any such cookie was a separate variant (measured
+// on wp-perf-dosql, docs/approach-b.md 8c).
 const WP_COOKIE = /(^|;\s*)(wordpress_logged_in_|wordpress_sec_|wp-postpass_|comment_author_|wp-settings-|woocommerce_|wp_woocommerce_session_)/;
+const PAGE_CACHE_NO_PATH = /^\/(wp-admin|wp-login\.php|wp-cron\.php|_)/;
+function pageCacheRoute(req, url, env) {
+	return (
+		Number(env.PAGE_CACHE_TTL || 120) > 0 &&
+		(req.method === 'GET' || req.method === 'HEAD') &&
+		!WP_COOKIE.test(req.headers.get('cookie') || '') &&
+		!req.headers.get('upgrade') &&
+		!PAGE_CACHE_NO_PATH.test(url.pathname) &&
+		!url.searchParams.has('preview') &&
+		!url.searchParams.has('nocache')
+	);
+}
 function pageCacheHeaders(req, url, r, out, env) {
 	const ttl = Number(env.PAGE_CACHE_TTL || 120);
 	const wpCc = String([].concat(r.headers['cache-control'] || []).join(','));
@@ -565,15 +597,21 @@ function pageCacheHeaders(req, url, r, out, env) {
 		!WP_COOKIE.test(req.headers.get('cookie') || '') &&
 		!r.headers['set-cookie'] &&
 		!/no-cache|no-store|private/i.test(wpCc) &&
-		!/^\/(wp-admin|wp-login\.php|wp-cron\.php|_)/.test(url.pathname) &&
+		!PAGE_CACHE_NO_PATH.test(url.pathname) &&
 		!url.searchParams.has('preview') &&
 		!url.searchParams.has('nocache');
 	if (cacheable) {
-		out.set('cache-control', `public, max-age=${ttl}, stale-while-revalidate=600`);
+		// The edge keeps it (cloudflare-cdn-cache-control, consumed by Cloudflare and
+		// not sent on). The browser must ask again (no-cache): there is no Vary: Cookie
+		// now, so a browser that kept the page would show the logged-out copy after a login.
+		out.set('cloudflare-cdn-cache-control', `max-age=${ttl}, stale-while-revalidate=600`);
+		out.set('cache-control', 'no-cache');
 		out.set('cache-tag', 'wp-pages');
-		out.append('vary', 'Cookie');
-	} else if (!wpCc) {
-		out.set('cache-control', 'private, no-store');
+	} else {
+		// Not stored at the edge, also when WordPress sent its own no-cache (which the
+		// cache would store as stale).
+		out.set('cloudflare-cdn-cache-control', 'no-store');
+		if (!wpCc) out.set('cache-control', 'private, no-store');
 	}
 }
 
@@ -892,6 +930,175 @@ async function httpOp(op) {
 	}
 }
 
+// Real SQL transactions for PHP with the database in the object (#60,
+// php/real-transactions.php, docs/approach-b.md 8l). The object's SQL API
+// refuses BEGIN and SAVEPOINT, and a storage transaction held open across
+// awaits neither captures statements made outside its callback nor survives an
+// outbound fetch (measured). So this uses SQLite's documented undo technique
+// ("Automatic Undo/Redo Using SQLite"): while PHP has a transaction open,
+// triggers write the inverse SQL of each row change to _wp_undo, and ROLLBACK
+// runs it back, newest first. All writes stay ordinary statements, so awaits,
+// uploads and outbound HTTP during a transaction are no problem.
+// - Triggers exist per table (named by a hash of the table and its columns),
+//   made at the first BEGIN and checked again only when the schema changes
+//   (schemaSig). They do nothing unless _wp_undo_state.active is 1.
+// - Tables WITHOUT ROWID are not covered (none in WordPress or the driver).
+// - A transaction still open at the end of a request is rolled back (MySQL
+//   does this when a connection closes). One left open by an isolate that
+//   died is rolled back at the next request (active is stored).
+// - Object cache keys written during the transaction are dropped on a
+//   rollback, so no cached value outlives the rows it came from.
+const UNDO_TABLES = new Set(['_wp_undo', '_wp_undo_state']);
+// A signature of sqlite_master (entries and the length of their SQL): any DDL
+// changes it. PRAGMA schema_version would be the direct way, but the object's
+// SQLite refuses it (SQLITE_AUTH, measured 2026-11-06).
+let undoSchemaSig = null;
+function schemaSig(db) {
+	const r = db.exec('SELECT COUNT(*) AS n, TOTAL(LENGTH(sql)) AS l FROM sqlite_master').one();
+	return r.n + ':' + r.l;
+}
+let txnFrames = null; // [{ name, seq }]: the transaction (name null) and its savepoints
+const txnTouched = new Set();
+function sqlId(name) {
+	return '"' + String(name).replace(/"/g, '""') + '"';
+}
+function sqlLit(text) {
+	return "'" + String(text).replace(/'/g, "''") + "'";
+}
+function shortHash(text) {
+	let h = 5381;
+	for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
+	return h.toString(16).padStart(8, '0');
+}
+function undoSetup(db) {
+	db.exec('CREATE TABLE IF NOT EXISTS _wp_undo (seq INTEGER PRIMARY KEY AUTOINCREMENT, sql TEXT NOT NULL)');
+	db.exec('CREATE TABLE IF NOT EXISTS _wp_undo_state (id INTEGER PRIMARY KEY CHECK (id = 1), active INTEGER NOT NULL)');
+	db.exec('INSERT OR IGNORE INTO _wp_undo_state (id, active) VALUES (1, 0)');
+}
+function undoTriggers(db) {
+	if (schemaSig(db) === undoSchemaSig) return;
+	const tables = [...db.exec("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\'").raw()].filter(([name, sql]) => !UNDO_TABLES.has(name) && !/WITHOUT\s+ROWID/i.test(sql || ''));
+	const existing = new Set([...db.exec("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE '\\_wp\\_undo\\_%' ESCAPE '\\'").raw()].map((r) => r[0]));
+	const want = new Set();
+	const when = 'WHEN (SELECT active FROM _wp_undo_state WHERE id = 1) = 1';
+	for (const [table] of tables) {
+		const cols = [...db.exec(`PRAGMA table_info(${sqlId(table)})`).raw()].map((r) => r[1]);
+		if (!cols.length) continue;
+		// The name hashes the whole trigger body, so a changed body (a new release, a new column) gets a new
+		// name: the old trigger is dropped below and the new one is created. Never keep a trigger by table name alone.
+		const t = sqlId(table);
+		const bodies = {
+			i: `AFTER INSERT ON ${t} ${when} BEGIN INSERT INTO _wp_undo (sql) VALUES (${sqlLit(`DELETE FROM ${t} WHERE rowid = `)} || new.rowid); END`,
+			u: `AFTER UPDATE ON ${t} ${when} BEGIN INSERT INTO _wp_undo (sql) VALUES (${sqlLit(`UPDATE ${t} SET rowid = `)} || old.rowid || ${cols.map((c) => `${sqlLit(`, ${sqlId(c)} = `)} || quote(old.${sqlId(c)})`).join(' || ')} || ${sqlLit(' WHERE rowid = ')} || new.rowid); END`,
+			d: `AFTER DELETE ON ${t} ${when} BEGIN INSERT INTO _wp_undo (sql) VALUES (${sqlLit(`INSERT INTO ${t} (rowid, ${cols.map(sqlId).join(', ')}) VALUES (`)} || old.rowid || ${cols.map((c) => `${sqlLit(', ')} || quote(old.${sqlId(c)})`).join(' || ')} || ')'); END`,
+		};
+		for (const [kind, body] of Object.entries(bodies)) {
+			const name = `_wp_undo_${shortHash(table + '\u0000' + body)}_${kind}`;
+			want.add(name);
+			if (!existing.has(name)) db.exec(`CREATE TRIGGER ${name} ${body}`);
+		}
+	}
+	for (const name of existing) if (!want.has(name)) db.exec(`DROP TRIGGER IF EXISTS ${sqlId(name)}`);
+	undoSchemaSig = schemaSig(db);
+}
+function undoSeq(db) {
+	return db.exec('SELECT COALESCE(MAX(seq), 0) AS s FROM _wp_undo').one().s;
+}
+function setUndoActive(db, on) {
+	db.exec('UPDATE _wp_undo_state SET active = ? WHERE id = 1', on ? 1 : 0);
+}
+// Undo every change after seq, newest first, in one storage transaction.
+function undoTo(db, storage, seq) {
+	setUndoActive(db, false);
+	const rows = [...db.exec('SELECT sql FROM _wp_undo WHERE seq > ? ORDER BY seq DESC', seq).raw()];
+	storage.transactionSync(() => {
+		for (const [stmt] of rows) db.exec(stmt);
+		db.exec('DELETE FROM _wp_undo WHERE seq > ?', seq);
+	});
+	stats.undoRows += rows.length;
+	for (const k of txnTouched) objectCacheDrop(k);
+	txnTouched.clear();
+	return rows.length;
+}
+function txnClose(db) {
+	setUndoActive(db, false);
+	db.exec('DELETE FROM _wp_undo');
+	txnFrames = null;
+	txnTouched.clear();
+}
+function txnOp(db, storage, op) {
+	stats.txnOps++;
+	try {
+		const kind = op.op;
+		if (kind === 'begin') {
+			if (txnFrames) txnClose(db); // MySQL commits an open transaction first
+			undoSetup(db);
+			undoTriggers(db);
+			txnFrames = [{ name: null, seq: undoSeq(db) }];
+			txnTouched.clear();
+			setUndoActive(db, true);
+			return { ok: true };
+		}
+		if (kind === 'commit' || kind === 'ddl') {
+			if (txnFrames) txnClose(db); // DDL: MySQL's implicit commit
+			return { ok: true };
+		}
+		if (kind === 'rollback') {
+			if (!txnFrames) return { ok: true };
+			const n = undoTo(db, storage, txnFrames[0].seq);
+			txnClose(db);
+			return { ok: true, undone: n };
+		}
+		if (!txnFrames) return { ok: true }; // a savepoint outside a transaction does nothing (MySQL autocommit)
+		const at = txnFrames.findIndex((f, i) => i > 0 && f.name === op.name);
+		if (kind === 'savepoint') {
+			if (at > 0) txnFrames.splice(at, 1); // MySQL: the same name replaces the old savepoint
+			txnFrames.push({ name: op.name, seq: undoSeq(db) });
+			return { ok: true };
+		}
+		if (at < 0) return { ok: false, error: `SAVEPOINT ${op.name} does not exist` };
+		if (kind === 'rollback_to') {
+			const n = undoTo(db, storage, txnFrames[at].seq);
+			txnFrames.length = at + 1; // the savepoint stays, later ones go
+			setUndoActive(db, true);
+			return { ok: true, undone: n };
+		}
+		if (kind === 'release') {
+			txnFrames.length = at; // it and the later ones go; their changes stay in the transaction
+			return { ok: true };
+		}
+		return { ok: false, error: 'unknown transaction op ' + kind };
+	} catch (e) {
+		return { ok: false, error: String((e && e.message) || e) };
+	}
+}
+// Before the first PHP run of an isolate: a transaction left open by an isolate
+// that died is rolled back. Within one isolate, txnEnd() always closes it, so
+// this runs once per isolate.
+let txnRecovered = false;
+function txnRecover(db, storage) {
+	if (txnRecovered || txnFrames) return;
+	txnRecovered = true;
+	let active = 0;
+	try {
+		active = db.exec('SELECT active FROM _wp_undo_state WHERE id = 1').one().active;
+	} catch {
+		return; // no undo tables yet: no transaction was ever opened
+	}
+	if (active) {
+		const n = undoTo(db, storage, 0);
+		txnClose(db);
+		console.log(JSON.stringify({ m: 'txn', recovered: true, undone: n }));
+	}
+}
+// After a PHP run: a transaction still open is rolled back (MySQL on connection close).
+function txnEnd(db, storage) {
+	if (!txnFrames) return;
+	const n = undoTo(db, storage, txnFrames[0].seq);
+	txnClose(db);
+	console.log(JSON.stringify({ m: 'txn', rolledBackAtEnd: true, undone: n }));
+}
+
 // Spike: time N statements on the object's SQLite (db=object) or on D1 (db=d1),
 // from inside the object. A Worker's clock does not move during CPU work, so on
 // Cloudflare the object numbers may read 0: read CPU time in wrangler tail.
@@ -1025,7 +1232,9 @@ async function dumpTo(writer, env, from) {
 	const line = (o) => writer.write(enc.encode(JSON.stringify(o) + '\n'));
 	try {
 		const q = dumpSource(env, from);
-		const master = await q("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' AND sql IS NOT NULL ORDER BY rowid");
+		// The undo log of real transactions (_wp_undo*: its tables and triggers) is not data:
+		// the target makes its own on the first BEGIN (8l), so it is not in the dump.
+		const master = await q("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' AND name NOT LIKE '\\_wp\\_undo%' ESCAPE '\\' AND sql IS NOT NULL ORDER BY rowid");
 		const tables = master.rows.filter((r) => r[0] === 'table');
 		for (const [, , sql] of tables) await line({ sql });
 		let total = 0;
@@ -1161,8 +1370,12 @@ export class PhpRuntime extends DurableObject {
 		return withPhp(async () => {
 			const waitMs = Date.now() - tArrive;
 			sqlDb = sql;
+			sqlStorage = sql ? this.ctx.storage : null;
+			const realTxn = sql && env.REAL_TRANSACTIONS !== 'off';
+			if (realTxn) txnRecover(sql, this.ctx.storage);
 			try {
 				const res = await handle(req, env, url, spikeOk, maxBody, ctx);
+				if (realTxn) txnEnd(sql, this.ctx.storage);
 				try {
 					// inMs: from the start of fetch to the response (object clock). The
 					// Worker's object time minus inbox minus inMs is the wait to send the
@@ -1171,6 +1384,8 @@ export class PhpRuntime extends DurableObject {
 				} catch {}
 				return res;
 			} finally {
+				// A request that threw also ends its transaction (rolled back).
+				if (realTxn && txnFrames) txnEnd(sql, this.ctx.storage);
 				phpPending--;
 			}
 		});
@@ -1222,9 +1437,9 @@ async function toPhpObject(req, env, url, ctx) {
 	const out = new Response(r.body, r);
 	if (out.headers.has(PURGE_HEADER)) {
 		out.headers.delete(PURGE_HEADER);
-		if (ctx.cache) schedulePurge(ctx);
+		if (ctx.exports) schedulePurge(ctx);
 		// So a test can see that the purge request crossed from the object.
-		out.headers.set('x-cache-purge', ctx.cache ? 'scheduled' : 'no-cache-api');
+		out.headers.set('x-cache-purge', ctx.exports ? 'scheduled' : 'no-cache-api');
 	}
 	out.headers.set('x-php-object', name);
 	// Wall time from the Worker to the object and back, PHP time included.
@@ -1259,7 +1474,7 @@ $r = wp_install( 'WordPress on D1', 'admin', 'admin@example.com', false, '', $pw
 echo json_encode( array( 'installed' => true, 'user_id' => $r['user_id'] ) );
 `;
 
-export default {
+const site = {
 	async fetch(req, env, ctx) {
 		ENV = env;
 		const url = new URL(req.url);
@@ -1286,6 +1501,9 @@ export default {
 			console.log(JSON.stringify({ m: 'ws-refused', host: req.headers.get('host'), path: url.pathname }));
 			return new Response('WebSocket is not served', { status: 426 });
 		}
+		// Import a MySQL dump (issue #31): variant a only, where dbHandler is the
+		// MySQL bridge (index-a.js). Every other variant gets the 404 of sql-import.js.
+		if (url.pathname === '/_sqlimport') return sqlImport(req, env, url, env.PHP_IN_DO === 'on' ? null : dbHandler);
 		// PHP in a Durable Object (PHP_IN_DO=on, issue #28): every request that
 		// needs PHP goes to the object, including /_d1ping (D1 as PHP sees it).
 		// DB_IN_DO needs the object; without it the Worker would use D1 silently.
@@ -1319,6 +1537,39 @@ export default {
 			return out;
 		}
 		return withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx));
+	},
+};
+
+// The cached entrypoint (wrangler.toml: exports.Pages.cache). It gets only what
+// pageCacheRoute() lets through, with no Cookie header.
+export class Pages extends WorkerEntrypoint {
+	async fetch(req) {
+		const r = await site.fetch(req, this.env, this.ctx);
+		// So a test can see which entrypoint answered (the gateway sets nothing).
+		const out = new Response(r.body, r);
+		out.headers.set('x-entrypoint', 'pages');
+		return out;
+	}
+	// An RPC method, so not cached. A purge reaches only the cache of the
+	// entrypoint that calls it, so the purge of the page cache runs here.
+	async purge(tags) {
+		if (!this.ctx.cache) return { ok: false, error: 'no cache API' };
+		const r = await this.ctx.cache.purge({ tags });
+		return { ok: !!(r && r.success !== false), errors: (r && r.errors) || [] };
+	}
+}
+
+// The gateway (not cached). A request that pageCacheRoute() accepts goes to
+// Pages without its Cookie header; every other request runs here.
+export default {
+	async fetch(req, env, ctx) {
+		const url = new URL(req.url);
+		if (pageCacheRoute(req, url, env)) {
+			const h = new Headers(req.headers);
+			h.delete('cookie');
+			return ctx.exports.Pages.fetch(new Request(req, { headers: h }));
+		}
+		return site.fetch(req, env, ctx);
 	},
 };
 
@@ -1408,7 +1659,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const { php, handler, bootMs } = await bootPromise;
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
-			const start = { calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls };
+			const start = { calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
 			if (url.pathname === '/_install') {
@@ -1452,9 +1703,9 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const op1 = wantOpcache ? await opcacheStats(php) : null;
 			// Approach A: close this request's MySQL connection after the response.
 			if (dbHandler) (ctx ? ctx.waitUntil(dbHandler.end()) : dbHandler.end());
-			if (ctx && ctx.cache && purgeRequested) schedulePurge(ctx);
+			if (ctx && ctx.exports && purgeRequested) schedulePurge(ctx);
 			const out = new Headers();
-			// In the PHP object there is no ctx.cache: the Worker purges (PURGE_HEADER).
+			// In the PHP object there is no ctx.exports: the Worker purges (PURGE_HEADER).
 			if (ctx && ctx.inObject && purgeRequested) out.set(PURGE_HEADER, '1');
 			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
 			const d = delta();
@@ -1509,6 +1760,8 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 					wasm1MiB: Math.round(wasmBytes / 1048576),
 					bytes: r.bytes.length,
 					httpCalls: stats.httpCalls - start.httpCalls,
+					txnOps: stats.txnOps - start.txnOps,
+					undoRows: stats.undoRows - start.undoRows,
 					ocCalls: stats.ocCalls - start.ocCalls,
 					ocHits: stats.ocHits - start.ocHits,
 					ocKeys: objectCache.size,

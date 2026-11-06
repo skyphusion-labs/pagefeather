@@ -4,8 +4,10 @@
 #   URL=https://my-site.acct.workers.dev SPIKE_TOKEN=... DUMP=site.sql ./deploy/import.sh
 #   URL=... NAME=my-site DUMP=site.sql ./deploy/import.sh   (SPIKE_TOKEN from Terraform)
 #
-# VARIANT: b-dosql only in this version (the database is the PHP object's
-# SQLite). Other variants stop with an error; see deploy/import/README.md.
+# VARIANT: b-dosql (the database is the PHP object's SQLite), c1 (SQLite in
+# the container, Litestream to R2; two phases, see deploy/import/c1.sh), or a
+# (MySQL or MariaDB through Hyperdrive, a2 included; see deploy/import/mysql.sh).
+# Other variants stop with an error; see deploy/import/README.md.
 #
 # DUMP is the output of "mysqldump --hex-blob" or "wp db export --hex-blob"
 # of the source site. The source site is only read; nothing here connects to it.
@@ -33,13 +35,19 @@ IMP="$ROOT/deploy/import"
 VARIANT=${VARIANT:-b-dosql}
 : "${DUMP:?set DUMP to the mysqldump file}"
 [ -r "$DUMP" ] || { echo "cannot read DUMP=$DUMP" >&2; exit 2; }
-[ "$VARIANT" = b-dosql ] || { echo "VARIANT=$VARIANT: import supports b-dosql only (deploy/import/README.md)" >&2; exit 2; }
+case "$VARIANT" in b-dosql|c1|a) ;; *) echo "VARIANT=$VARIANT: import supports b-dosql, c1 and a (deploy/import/README.md)" >&2; exit 2 ;; esac
 
 : "${URL:?set URL to the site address that deploy.sh printed}"
+# Terraform state of the site, as deploy.sh keeps it (DEPLOY_STATE; tf-backend.sh).
+TF="$ROOT/deploy/terraform"
+# shellcheck source=SCRIPTDIR/tf-backend.sh
+. "$ROOT/deploy/tf-backend.sh"
+TF_READY=""
+tf_ready() { [ -n "$TF_READY" ] || { site_state "$TF" && TF_READY=1; }; }
+tfi() { (cd "$TF" && terraform workspace select "$NAME" >/dev/null && terraform "$@"); }
 if [ -z "${SPIKE_TOKEN:-}" ] && [ -n "${NAME:-}" ]; then
-  TF="$ROOT/deploy/terraform"
-  terraform -chdir="$TF" workspace select "$NAME" >/dev/null
-  SPIKE_TOKEN=$(terraform -chdir="$TF" output -raw spike_token)
+  tf_ready || exit 1
+  SPIKE_TOKEN=$(tfi output -raw spike_token)
 fi
 : "${SPIKE_TOKEN:?set SPIKE_TOKEN}"
 export SPIKE_TOKEN
@@ -49,9 +57,21 @@ URL=$NEW_ORIGIN
 WORK=${WORK:-${TMPDIR:-/tmp}/wp-import-$(date -u +%Y%m%dT%H%M%SZ)}
 mkdir -p "$WORK"; chmod 700 "$WORK"
 echo "work files: $WORK"
+# c1, phase 2: the seed phase made the files in WORK; only the check runs.
+if [ "$VARIANT" = c1 ] && [ -n "${VERIFY:-}" ]; then
+  # shellcheck source=SCRIPTDIR/import/c1.sh
+  . "$IMP/c1.sh"
+  code=$(curl -s -m 120 -A wp-on-cf-import/1 -o /dev/null -w '%{http_code}' "$URL/?nocache=import$RANDOM")
+  echo "GET / -> $code"; [ "$code" = 200 ] || { echo "the home page is not 200" >&2; exit 1; }
+  exit 0
+fi
 
 # 1. The driver at the ref the build uses, so its _wp_sqlite_* tables match.
 REF=$(sed -n 's/^SQLITE_DI_REF=//p' "$APP/build.sh")
+if [ "$VARIANT" = c1 ]; then
+  C1REF=$(sed -n 's/^SQLITE_DI_REF=//p' "$ROOT/spikes/c1-woo-container/build.sh")
+  [ "$C1REF" = "$REF" ] || { echo "c1 pins SQLITE_DI_REF=$C1REF, b2 pins $REF: the seed must be made with c1's ref" >&2; exit 1; }
+fi
 DRV="$APP/build/cache/sqlite-database-integration"
 [ -d "$DRV/.git" ] || git clone -q https://github.com/WordPress/sqlite-database-integration "$DRV"
 [ "$(git -C "$DRV" rev-parse --short=7 HEAD)" = "${REF:0:7}" ] || git -C "$DRV" checkout -q "$REF"
@@ -76,6 +96,10 @@ SITEURL=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["site"
 [ "${SITEURL%/}" = "${OLD_ORIGIN%/}" ] || { echo "siteurl ($SITEURL) is not home ($OLD_ORIGIN): WordPress in a subdirectory is not supported" >&2; exit 1; }
 OLD_ORIGIN=${OLD_ORIGIN%/}
 python3 "$IMP/search-replace.py" "$WORK/site.sqlite" "$OLD_ORIGIN" "$NEW_ORIGIN" ${DRY_RUN:+--dry-run} | tee "$WORK/replace.json"
+
+# c1: the seed phase (deploy/import/c1.sh) exits here.
+# shellcheck source=SCRIPTDIR/import/c1.sh
+[ "$VARIANT" != c1 ] || . "$IMP/c1.sh"
 
 # 4. The theme and plugins must be in the build: the import does not add them.
 # This reads the local build (spikes/b2-wordpress/build), so build what you
@@ -112,8 +136,19 @@ if missing:
 print("theme and active plugins: all in the build")
 PY
 
+# Variant a: the MySQL statements (deploy/import/mysql.sh). The address changes
+# in them, not in the SQLite copy above, which only gave the prefix and facts.
+if [ "$VARIANT" = a ]; then
+  # shellcheck source=SCRIPTDIR/import/mysql.sh
+  . "$IMP/mysql.sh"
+  a_prepare
+fi
+
 [ -z "${DRY_RUN:-}" ] || { echo "DRY_RUN: stopped before the import"; exit 0; }
 
+if [ "$VARIANT" = a ]; then
+  a_load
+else
 # 5. To a dbmove dump, then into the object. --replace drops the site's tables.
 python3 "$IMP/dbmove-file.py" from-sqlite "$WORK/site.sqlite" "$WORK/site.jsonl"
 python3 "$APP/dbmove.py" import "$URL" "$WORK/site.jsonl" --replace
@@ -127,6 +162,7 @@ if diff "$WORK/counts-in.json" "$WORK/counts-out.json" >/dev/null; then
 else
   echo "ROWS DIFFER:" >&2; diff "$WORK/counts-in.json" "$WORK/counts-out.json" >&2 || true; exit 1
 fi
+fi
 
 # 6b. Uploads, with CONTENT: into the media bucket through the S3 API, with a
 # key that Terraform makes for this step and deletes after it (media-import.tf).
@@ -136,15 +172,24 @@ elif [ -n "$SRC_CONTENT" ] && [ -d "$SRC_CONTENT/uploads" ]; then
   : "${NAME:?set NAME (the Terraform workspace of deploy.sh) to put the uploads in R2, or SKIP_MEDIA=1}"
   : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}" "${ACCOUNT_ID:?set ACCOUNT_ID}"
   export CLOUDFLARE_ACCOUNT_ID=$ACCOUNT_ID
-  TF="$ROOT/deploy/terraform"
-  [ -f "$TF/sites/$NAME.tfvars" ] || { echo "no deploy/terraform/sites/$NAME.tfvars: deploy the site with deploy.sh first" >&2; exit 1; }
-  tfi() { (cd "$TF" && terraform workspace select "$NAME" >/dev/null && terraform "$@"); }
-  (cd "$TF" && terraform init -input=false -reconfigure >/dev/null)
+  tf_ready || exit 1
   BUCKET=$(tfi output -raw media_bucket)
   [ -n "$BUCKET" ] || { echo "$NAME has no media bucket: deploy it with MEDIA=1" >&2; exit 1; }
-  key_off() { tfi apply -input=false -auto-approve -var-file="sites/$NAME.tfvars" -var media_import=false >/dev/null && echo "media: import key deleted"; }
-  trap 'key_off || echo "media: DELETE THE KEY: cd deploy/terraform && terraform apply -var-file=sites/$NAME.tfvars" >&2' EXIT
-  tfi apply -input=false -auto-approve -var-file="sites/$NAME.tfvars" -var media_import=true >/dev/null
+  # The variables of the site: deploy.sh's file in the clone that deployed it,
+  # or else the same values read from the state's outputs (a clone with
+  # DEPLOY_STATE=r2). The applies target the import key only, so no other
+  # resource of the site can change here.
+  VARS="$TF/sites/$NAME.tfvars"
+  if [ ! -f "$VARS" ]; then
+    VARS="$WORK/site.tfvars"
+    printf 'account_id = "%s"\nname = "%s"\nvariant = "%s"\nlocation = "%s"\nmedia = true\n' \
+      "$(tfi output -raw account_id)" "$(tfi output -raw name)" "$(tfi output -raw variant)" "$(tfi output -raw location)" > "$VARS"
+    echo "media: no sites/$NAME.tfvars in this clone; using the values in the state"
+  fi
+  key_apply() { tfi apply -input=false -auto-approve -var-file="$VARS" -target=cloudflare_account_token.media_import -var "media_import=$1" >/dev/null; }
+  key_off() { key_apply false && echo "media: import key deleted"; }
+  trap 'key_off || echo "media: DELETE THE KEY: cd deploy/terraform && terraform apply -var-file=$VARS -target=cloudflare_account_token.media_import -var media_import=false" >&2' EXIT
+  key_apply true
   R2_KEY_ID=$(tfi output -raw media_import_access_key_id)
   R2_SECRET=$(tfi output -raw media_import_secret_access_key)
   export R2_KEY_ID R2_SECRET
@@ -158,7 +203,7 @@ elif [ -n "$SRC_CONTENT" ] && [ -d "$SRC_CONTENT/uploads" ]; then
 fi
 
 # 7. The home page, uncached: status and title.
-code=$(curl -s -m 120 -o "$WORK/home.html" -w '%{http_code}' "$URL/?nocache=import$RANDOM")
+code=$(curl -s -m 120 -A wp-on-cf-import/1 -o "$WORK/home.html" -w '%{http_code}' "$URL/?nocache=import$RANDOM")
 title=$(python3 -c 'import re,sys,html; m=re.search(r"<title[^>]*>(.*?)</title>", open(sys.argv[1], encoding="utf-8", errors="replace").read(), re.S); print(html.unescape(m.group(1).strip()) if m else "")' "$WORK/home.html")
 echo "GET / -> $code, title: $title"
 [ "$code" = 200 ] || { echo "the home page is not 200" >&2; exit 1; }

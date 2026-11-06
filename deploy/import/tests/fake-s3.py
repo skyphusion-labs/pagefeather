@@ -3,9 +3,9 @@
 
   fake-s3.py <port-file> <log-file>
 
-Answers GET /<bucket>?list-type=2 (200), HEAD /<bucket>/<key> (404, or 200
-with Content-Length), and PUT /<bucket>/<key> (stores the size and the
-content type). It needs an Authorization header that starts with
+Answers GET /<bucket>?list-type=2 (200), GET and HEAD /<bucket>/<key> (404,
+or 200 with the bytes and Content-Length), and PUT /<bucket>/<key> (stores
+the bytes and the content type). It needs an Authorization header that starts with
 "AWS4-HMAC-SHA256" (what curl --aws-sigv4 sends); it does not check the
 signature. It writes the port it listens on to <port-file>, and one JSON line
 per PUT to <log-file>. It tests the loop in media.sh, not R2.
@@ -35,9 +35,22 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.auth():
             return
+        parts = urllib.parse.urlsplit(self.path).path.split("/", 2)
+        if len(parts) < 3 or not parts[2]:
+            self.send_response(200)
+            self.send_header("content-length", "0")
+            self.end_headers()
+            return
+        o = store.get(self.key())
+        if o is None:
+            self.send_response(404)
+            self.send_header("content-length", "0")
+            self.end_headers()
+            return
         self.send_response(200)
-        self.send_header("content-length", "0")
+        self.send_header("content-length", str(o["size"]))
         self.end_headers()
+        self.wfile.write(o["body"])
 
     def do_HEAD(self):
         if not self.auth():
@@ -55,11 +68,11 @@ class H(http.server.BaseHTTPRequestHandler):
         if not self.auth():
             return
         n = int(self.headers.get("content-length", "0"))
-        self.rfile.read(n)
+        body = self.rfile.read(n)
         k = self.key()
-        store[k] = {"size": n, "type": self.headers.get("content-type")}
+        store[k] = {"size": n, "type": self.headers.get("content-type"), "body": body}
         with open(sys.argv[2], "a") as f:
-            f.write(json.dumps({"key": k, **store[k]}) + "\n")
+            f.write(json.dumps({"key": k, "size": n, "type": store[k]["type"]}) + "\n")
         self.send_response(200)
         self.send_header("content-length", "0")
         self.end_headers()

@@ -24,7 +24,7 @@ check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got [$2],
 php "$IMP/dump-to-sqlite.php" "$DRV" "$HERE/fixture.sql" "$T/fx.sqlite" > "$T/report.json"
 r() { python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); [v := v[k] for k in sys.argv[2:]]; print(json.dumps(v, sort_keys=True))' "$T/report.json" "$@"; }
 check "prefix found" "$(r prefix)" '"wpx_"'
-check "rows per table" "$(r rows)" '{"custom_log": 1, "wp_blobs": 4, "wp_options": 12, "wp_posts": 4, "wp_usermeta": 4}'
+check "rows per table" "$(r rows)" '{"custom_log": 1, "wp_blobs": 4, "wp_options": 12, "wp_posts": 4, "wp_usermeta": 5}'
 check "prefixed keys changed" "$(r keys_changed)" '{"options": 1, "usermeta": 2}'
 check "table without prefix kept" "$(r without_prefix)" '["custom_log"]'
 check "active plugins read" "$(r site active_plugins)" '["akismet/akismet.php", "woocommerce/woocommerce.php"]'
@@ -57,6 +57,8 @@ check "home" "$(q "SELECT option_value FROM wp_options WHERE option_name = 'home
 check "guid kept" "$(q 'SELECT guid FROM wp_posts WHERE ID = 1')" "https://old.example.com/?p=1"
 python3 "$HERE/test_search_replace.py" 2> "$T/unit.err" || { cat "$T/unit.err"; fails=$((fails + 1)); }
 check "search-replace unit tests" "$(tail -1 "$T/unit.err")" "OK"
+python3 "$HERE/test_user_agent.py" 2> "$T/ua.err" || { cat "$T/ua.err"; fails=$((fails + 1)); }
+check "dbmove.py sends its own User-Agent" "$(tail -1 "$T/ua.err")" "OK"
 
 # 4. To a dbmove dump and back to counts.
 python3 "$IMP/dbmove-file.py" from-sqlite "$T/fx.sqlite" "$T/fx.jsonl" > /dev/null
@@ -132,6 +134,74 @@ check "media: first run" "$(tail -1 "$T/media1.out")" "media: 2 sent, 0 already 
 R2_KEY_ID=test R2_SECRET=test "$IMP/media.sh" "$EP" bucket "$T/src/wp-content" > "$T/media2.out"
 check "media: second run sends nothing" "$(tail -1 "$T/media2.out")" "media: 0 sent, 2 already there, 0 failed"
 check "media: stored key, size and type" "$(python3 -c 'import json,sys; print(sorted((o["key"],o["size"],o["type"]) for o in map(json.loads, open(sys.argv[1]))))' "$T/s3.log")" "[('uploads/2026/01/a b.jpg', 6, 'image/jpeg'), ('uploads/2026/01/doc.pdf', 6, 'application/pdf')]"
+
+# 9. Variant a: mysql-prepare.py (the statements /_sqlimport runs).
+cp "$IMP/../../spikes/b2-wordpress/sql-import.js" "$T/sql-import.mjs"
+python3 "$IMP/mysql-prepare.py" "$HERE/fixture.sql" "$T/my.jsonl" --prefix wpx_ --flavour mysql --max-statement 1048576 --old https://old.example.com --new https://wp.acct.workers.dev > "$T/my.json"
+j() { python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); [v := v[k] for k in sys.argv[2:]]; print(json.dumps(v, sort_keys=True))' "$T/my.json" "$@"; }
+check "mysql: rows per table" "$(j rows)" '{"wp_blobs": 4, "wp_options": 12, "wp_posts": 4, "wp_usermeta": 5}'
+check "mysql: table without the prefix skipped" "$(j skipped_tables)" '{"custom_log": 3}'
+check "mysql: keys renamed" "$(j changed user_roles):$(j changed usermeta_keys)" "1:2"
+check "mysql: every statement passes the endpoint check" "$(node "$HERE/sqlimport-file.mjs" "$T/sql-import.mjs" "$T/my.jsonl" | tail -1)" "14 statements, 0 refused"
+sq() { python3 -c 'import json,sys; print(sum(1 for l in open(sys.argv[1]) if sys.argv[2] in json.loads(l)["sql"]))' "$T/my.jsonl" "$1"; }
+# shellcheck disable=SC2016 # backticks are SQL here
+check "mysql: table names renamed" "$(sq 'INTO `wpx_'):$(sq 'TABLE `wpx_'):$(sq 'INTO `wp_options`')" "0:0:2"
+check "mysql: prefix in content kept" "$(sq 'see the wpx_options table and wpx_user_roles')" "1"
+check "mysql: user_roles key" "$(sq "'wp_user_roles'"):$(sq "'wpx_user_roles'")" "1:0"
+check "mysql: meta key not starting with the prefix kept" "$(sq "'not_wpx_key'")" "1"
+check "mysql: SET_VAR hint on every INSERT" "$(sq 'INSERT /*+ SET_VAR(sql_mode='"'"'NO_AUTO_VALUE_ON_ZERO'"'"') */ INTO'):$(sq 'INSERT')" "6:6"
+check "mysql: address changed, guid kept" "$(sq 'https://wp.acct.workers.dev/hello/'):$(sq 'https://old.example.com/?p=1')" "1:1"
+check "mysql: row with id 0 kept as 0" "$(sq "(0,0,'0000-00-00 00:00:00','row with id zero'")" "1"
+python3 "$IMP/mysql-prepare.py" "$HERE/fixture.sql" "$T/maria.jsonl" --prefix wpx_ --flavour mariadb --max-statement 1048576 > /dev/null
+check "mariadb: SET STATEMENT on every INSERT" "$(python3 -c 'import json,sys; L=[json.loads(l)["sql"] for l in open(sys.argv[1])]; print(sum(s.startswith("SET STATEMENT sql_mode='"'"'NO_AUTO_VALUE_ON_ZERO'"'"' FOR INSERT INTO") for s in L), sum("INSERT" in s for s in L))' "$T/maria.jsonl")" "6 6"
+check "mariadb: passes the endpoint check" "$(node "$HERE/sqlimport-file.mjs" "$T/sql-import.mjs" "$T/maria.jsonl" | tail -1)" "14 statements, 0 refused"
+NO_HINT=1 python3 "$IMP/mysql-prepare.py" "$HERE/fixture.sql" "$T/nohint.jsonl" --prefix wpx_ --flavour mysql --max-statement 1048576 > /dev/null
+check "mysql: NO_HINT=1 leaves the hint out (red control)" "$(grep -c 'NO_AUTO_VALUE_ON_ZERO' "$T/nohint.jsonl" || true)" "0"
+python3 "$IMP/mysql-prepare.py" "$HERE/fixture.sql" "$T/split.jsonl" --prefix wpx_ --flavour mysql --max-statement 4096 > "$T/split.json"
+check "mysql: INSERTs split at --max-statement" "$(python3 -c 'import json,sys; L=[json.loads(l)["sql"].encode() for l in open(sys.argv[1])]; print(max(len(s) for s in L) <= 4096, sum(s.startswith(b"INSERT") for s in L) > 5, json.load(open(sys.argv[2]))["rows"]["wp_options"])' "$T/split.jsonl" "$T/split.json")" "True True 12"
+# shellcheck disable=SC2016 # backticks are SQL here
+printf '%s\n' 'CREATE TABLE `wp_b` (' '  `id` int NOT NULL,' '  `data` longblob' ');' "INSERT INTO \`wp_b\` VALUES (1,_binary 'ab');" > "$T/binary.sql"
+set +e; python3 "$IMP/mysql-prepare.py" "$T/binary.sql" "$T/b.jsonl" --prefix wp_ --flavour mysql --max-statement 1048576 > /dev/null 2> "$T/b.err"; code=$?; set -e
+check "mysql: _binary refused with --hex-blob advice" "$code:$(grep -c -- '--hex-blob' "$T/b.err" || true)" "1:1"
+node "$HERE/sqlimport-check.mjs" "$T/sql-import.mjs" > "$T/check.out" || true
+check "sql-import.js checkStatement cases" "$(tail -1 "$T/check.out")" "all passed"
+node "$HERE/sqlimport-endpoint.mjs" "$T/sql-import.mjs" > "$T/endpoint.out" || true
+check "sql-import.js endpoint rules" "$(tail -1 "$T/endpoint.out")" "all passed"
+python3 "$HERE/test_sqlimport_client.py" 2> "$T/client.err" || { cat "$T/client.err"; fails=$((fails + 1)); }
+check "sqlimport.py: CREATE preflight before replace" "$(tail -1 "$T/client.err")" "OK"
+
+# 8. c1: the container's seed step (spikes/c1-woo-container/container/seed.sh)
+# against the same stand-in. PUT a seed, then load it as entrypoint.sh does.
+C1C=$(cd "$IMP/../../spikes/c1-woo-container/container" && pwd)
+mkdir -p "$T/bin" "$T/run"
+command -v sha256sum >/dev/null || { printf '#!/bin/sh\nexec shasum -a 256 "$@"\n' > "$T/bin/sha256sum"; chmod +x "$T/bin/sha256sum"; }
+seed_run() { # data-dir sha [replica-path] -> exit code; output in $T/seed.out
+  mkdir -p "$1"
+  set +e
+  PATH="$T/bin:$PATH" SEED_DATA="$1" SEED_RUN="$T/run" SEED_COUNTS="$C1C/seed-counts.php" SEED_OUT="$1/counts.json" \
+    SEED_SHA256="$2" REPLICA_PATH="${3:-import-x}" R2_ENDPOINT="$EP" R2_BUCKET=replica LITESTREAM_ACCESS_KEY_ID=test LITESTREAM_SECRET_ACCESS_KEY=test \
+    sh -c '. "$1"; seed_load' _ "$C1C/seed.sh" > "$T/seed.out" 2>&1
+  local rc=$?
+  set -e
+  return $rc
+}
+curl -sS -o /dev/null -K <(printf 'user = "test:test"\n') --aws-sigv4 "aws:amz:auto:s3" -T "$T/fx.sqlite" "$EP/replica/import-x.seed.sqlite"
+SHA=$(shasum -a 256 "$T/fx.sqlite" | cut -d' ' -f1)
+seed_run "$T/d1" "$SHA" && rc=0 || rc=$?
+check "c1 seed: loaded" "$rc:$(cmp -s "$T/fx.sqlite" "$T/d1/wordpress.sqlite" && echo same)" "0:same"
+check "c1 seed: counts match the seed" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["rows"] == json.loads(sys.argv[2])["rows"])' "$T/d1/counts.json" "$(php "$C1C/seed-counts.php" "$T/fx.sqlite" "$SHA" import-x)")" "True"
+check "c1 seed: no key file left" "$(find "$T/run" -type f | wc -l | tr -d ' ')" "0"
+seed_run "$T/d2" "0000000000000000000000000000000000000000000000000000000000000000" && rc=0 || rc=$?
+check "c1 seed: wrong SHA-256 stops, no database" "$rc:$(find "$T/d2" -type f | wc -l | tr -d ' ')" "1:0"
+seed_run "$T/d3" "$SHA" import-missing && rc=0 || rc=$?
+check "c1 seed: missing object stops, no database" "$rc:$(find "$T/d3" -type f | wc -l | tr -d ' ')" "1:0"
+check "c1 seed: missing object says download failed" "$(grep -c 'seed: download failed' "$T/seed.out" || true)" "1"
+mkdir -p "$T/d4"; echo existing > "$T/d4/wordpress.sqlite"
+seed_run "$T/d4" "$SHA" && rc=0 || rc=$?
+check "c1 seed: a restored database wins" "$rc:$(cat "$T/d4/wordpress.sqlite")" "0:existing"
+seed_run "$T/d5" "" && rc=0 || rc=$?
+check "c1 seed: no SEED_SHA256, nothing loaded" "$rc:$(find "$T/d5" -type f | wc -l | tr -d ' ')" "0:0"
+
 
 [ "$fails" = 0 ] || { echo "$fails failed"; exit 1; }
 echo "all passed"

@@ -9,3 +9,5 @@ import { mysqlQuery, mysqlEnd, mysqlReset } from './mysql-bridge.js';
 setDbHandler({ query: mysqlQuery, end: mysqlEnd, reset: mysqlReset });
 
 export default worker;
+// The cached entrypoint of the page cache (issue #63).
+export { Pages } from './index.js';
