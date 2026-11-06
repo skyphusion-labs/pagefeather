@@ -10,7 +10,7 @@ Measured 2026-11-04 on Workers Paid. Code: `spikes/c1-woo-container`. Conrad's d
 
 ## Design
 
-- **Container:** stock WordPress 7.1.4, WooCommerce 11.2.1 and the official SQLite plugin (`sqlite-database-integration`, its own `db.php`), on a real SQLite file at `/data/wordpress.sqlite`. PHP 8.3 with PHP's built-in server (2 workers), 256 MB for PHP, instance type `basic`.
+- **Container:** stock WordPress 7.1.4, WooCommerce 11.2.1 and the official SQLite plugin (`sqlite-database-integration`, its own `db.php`), on a real SQLite file at `/data/wordpress.sqlite`. PHP 8.3 with PHP's built-in server, 256 MB for PHP. The spike started on `basic` with 2 workers; `deploy/deploy.sh` now uses `standard-1` with 4 workers and the APCu object cache (sections below).
 - **Durability: Litestream to R2.** The container disk is lost when it sleeps. On start, `litestream restore` gets the database from R2 if a replica exists; otherwise the entrypoint installs WordPress and WooCommerce. Then `litestream replicate -exec "php -S ..."` runs PHP and sends every change to the R2 bucket `wp-woo-c1-db` (1 s sync interval). The S3 key can touch only that bucket.
 - **The Worker in front:**
   - Static files come from Workers static assets.
@@ -214,6 +214,37 @@ Two deploys left the container on the settings of the deploy before: the new ima
 
 Proof, the first deploy after the change (OBJECT_CACHE `none` to `apcu`, replica path `swap` to `swap2`): the stop got `reset: true` after 250 ms, the object was from the deploy after 0 s, and the settings were correct on the first try. How long an old object can live with no reset is not measured. A method named `info` on the object failed over RPC on Cloudflare ("does not implement the method") and passed in local workerd; it is now `storeInfo`, async.
 
+## Instance size: standard-2 (2026-11-06)
+
+Issue #39. The same seeded data again (wp-c1's database, replica path `swap3`), a cold start on a new container, `OBJECT_CACHE` and `PHP_WORKERS` at their defaults (APCu on, 8 PHP workers). Two variables changed against the standard-1 run: the vCPU (1/2 to 1) and the PHP workers (4 to 8). The container log tells them apart (below).
+
+The container is a real `standard-2`: 6.04 GiB of memory (standard-1: 4.07 GiB), and under load the cgroup used 0.99 vCPU (p50) with 0 % steal time (standard-1: 0.5 vCPU and 50 % steal).
+
+| Users | standard-1: rps | standard-1: browse p50 / p95 | standard-1: checkout p50 / p95 | standard-2: rps | standard-2: browse p50 / p95 | standard-2: checkout p50 / p95 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 2.39 | 0.39 / 0.88 s | 0.54 / 0.64 s | 2.63 | 0.37 / 0.49 s | 0.49 / 0.53 s |
+| 5 | 3.17 | 1.66 / 2.23 s | 2.70 / 3.08 s | 7.04 | 0.78 / 1.02 s | 1.13 / 1.29 s |
+| 10 | 3.05 | 3.75 / 6.26 s | 4.27 / 6.62 s | 6.30 | 1.69 / 2.52 s | 2.76 / 4.00 s |
+| 25 | 3.01 | 7.91 / 10.3 s | 9.19 / 12.8 s | 6.42 | 3.99 / 5.75 s | 5.11 / 6.86 s |
+| 50 | 2.97 | 15.5 / 17.9 s | 16.6 / 19.6 s | 6.17 | 7.71 / 10.4 s | 8.96 / 11.1 s |
+| 100 | 3.09 | 26.9 / 35.9 s | 29.2 / 36.5 s | 6.25 | 14.2 / 18.7 s | 15.5 / 19.1 s |
+
+Both with APCu, 0 errors. Results: `deploy/results/bench-runner-20261106T002159Z-2ca71a.json` (standard-1), `deploy/results/bench-runner-20261106T004014Z-abe38f.json` (standard-2).
+
+From the container log:
+
+| | standard-1 | standard-2 |
+| --- | --- | --- |
+| vCPU used, p50 | 0.51 | 0.99 |
+| Requests per second served | 2.97 | 5.88 |
+| CPU s per request | 0.153 | 0.148 |
+| In flight, mean / max | 4.2 / 6 | 6.7 / 9 |
+| Accept backlog, max | 90 | 82 |
+
+- **The ceiling is the CPU again, not the PHP workers.** The CPU is at the 1.0 cap, and on average 6.7 of the 9 PHP processes (8 workers and the server process) are in flight; about 3 sleep. With a worker ceiling, the CPU would be under 1.0 and all 9 busy.
+- **The CPU per request does not change with the instance.** So the ceiling is about vCPU / 0.15 s: about 3 requests per second on standard-1 and about 6 on standard-2 (measured), about 12 on standard-3 (2 vCPU) and about 24 on standard-4 (4 vCPU) (predicted, not measured).
+- **The cost.** [Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/) (page updated 2026-10-05, read 2026-11-06): memory $0.0000025 per GiB-second and disk $0.00000007 per GB-second for the provisioned size while the container runs; CPU $0.000020 per vCPU-second while it is busy. Awake and idle: about $0.038 an hour on standard-1 (4 GiB, 8 GB), about $0.057 on standard-2 (6 GiB, 12 GB). At full load, add about $0.036 (standard-1) or $0.072 (standard-2) an hour of CPU. Workers Paid includes 25 GiB-hours, 375 vCPU-minutes and 200 GB-hours a month.
+
 ## Problems found
 
 - WooCommerce writes log files under `uploads/wc-logs`. With uploads in R2, every log line was an R2 read and write: about 30 calls and about 15 s of each checkout. `WC_LOG_DIR` now points to local disk (also in approach B).
@@ -230,6 +261,9 @@ Proof, the first deploy after the change (OBJECT_CACHE `none` to `apcu`, replica
 
 ## Next
 
+- Action Scheduler with WP-Cron off: a php-cli queue run in the container, so no loopback holds a PHP process and the queue does not grow without limit under load (#45). In the standard-2 run, 8 runner requests ran in the first 45 s and none after; pending actions went from 63 to 348.
+- Limit the queue at the PHP server: at high load a request waits in the accept backlog until the client gives up. An early 503 is better for the tail than a 60 s wait.
+- The rest of the CPU is the start of WordPress and WooCommerce and the rendering (about 0.15 s a page with APCu): profile it before more caching.
 - Start the container before it is needed: on a product page view, or keep it awake in store hours.
 - Admin pages and the editor in the container: measure them.
 - Uploads: atomic file names (approach B used D1 for this); one container makes a race unlikely but not impossible.
