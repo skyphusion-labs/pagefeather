@@ -39,6 +39,9 @@ def rest(admin, nonce, route, payload=None, method=None):
     h = {"X-WP-Nonce": nonce, "Content-Type": "application/json"}
     data = json.dumps(payload).encode() if payload is not None else None
     r = L.req(admin, "/?rest_route=" + route, data=data, headers=h, method=method or ("POST" if data else "GET"))
+    if r["code"] not in (200, 201):
+        # Keep what tells whose failure it is (an overload answer, a PHP error, a REST error).
+        print("   REST %s %s -> %s %s" % (method or ("POST" if data else "GET"), route, r["code"], (r["body"] or b"")[:300].decode("utf-8", "replace").replace(chr(10), " ")), flush=True)
     try:
         return r["code"], json.loads(r["body"] or b"null")
     except ValueError:
