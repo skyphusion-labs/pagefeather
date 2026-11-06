@@ -69,7 +69,7 @@ Store.prototype.storeInfo = async function () {
 		object_cache: this.envVars.OBJECT_CACHE,
 		replica_path: this.envVars.REPLICA_PATH,
 		purge: { sent: p.sent, deferred: p.deferred, failed: p.failed, retried: p.retried, pending: p.pending, last_ms_ago: p.last ? Date.now() - p.last : null, last_error: p.lastError },
-		queue: { limit: Number(this.env.QUEUE_LIMIT ?? 16), ...(this.queue || { inflight: 0, maxInflight: 0, admitted: 0, shed: 0, flow: 0 }) },
+		queue: { limit: Number(this.env.QUEUE_LIMIT ?? 16), flowLimit: Number(this.env.FLOW_LIMIT || 2 * Number(this.env.QUEUE_LIMIT ?? 16)), ...(this.queue || { inflight: 0, maxInflight: 0, admitted: 0, shed: 0, flow: 0, flowShed: 0 }) },
 	};
 };
 Store.prototype.shutdownNow = async function (kill) {
@@ -143,8 +143,11 @@ const store = (env) => getContainer(env.STORE, 'store');
 // - 'shed': everything else: a page, a new shopper's first cart request,
 //   ?add-to-cart= without a session, and anonymous REST (an anonymous client
 //   could otherwise pass the limit through any non-Store route).
-// The limit shapes load; it is not an access control. A client can send any
-// Cart-Token or cookie: abuse protection belongs to rate limiting at the edge.
+// A client can send any Cart-Token or cookie, and the Worker cannot verify
+// them (WooCommerce signs the token in PHP). So 'flow' has its own, higher cap,
+// FLOW_LIMIT (default 2 x QUEUE_LIMIT): a forged cookie can push the container
+// to FLOW_LIMIT in hand, not without limit (#39, forgery case). A signed admit
+// cookie from this object would make 'flow' verifiable; it is the follow-up.
 const SESSION_COOKIE = /(^|;\s*)(wp_woocommerce_session_|woocommerce_items_in_cart=[1-9])/;
 const LOGIN_COOKIE = /(^|;\s*)wordpress_logged_in_/;
 function admission(req, url) {
@@ -175,13 +178,23 @@ function busyResponse(req, url, retryAfter) {
 // A request counts from the moment it is let in until its response BODY has
 // been read to the end (or it fails), not only until the response headers:
 // for a large streamed response the headers alone would undercount.
+// The decision for one request: let it in, or answer 503 now. Pure, so the
+// caps can be tested without a container (worker.js has no other test seam).
+function shouldShed(cls, inflight, limit, flowLimit) {
+	if (limit <= 0 || cls === 'always') return false;
+	if (cls === 'flow') return inflight >= flowLimit;
+	return inflight >= limit;
+}
 Store.prototype.fetch = async function (request) {
 	const url = new URL(request.url);
 	const limit = Number(this.env.QUEUE_LIMIT ?? 16);
-	const q = (this.queue ||= { inflight: 0, maxInflight: 0, admitted: 0, shed: 0, flow: 0 });
+	// Never below QUEUE_LIMIT: a flow request must not be refused earlier than a new one.
+	const flowLimit = Math.max(limit, Number(this.env.FLOW_LIMIT || 2 * limit));
+	const q = (this.queue ||= { inflight: 0, maxInflight: 0, admitted: 0, shed: 0, flow: 0, flowShed: 0 });
 	const cls = admission(request, url);
-	if (limit > 0 && q.inflight >= limit && cls === 'shed') {
+	if (shouldShed(cls, q.inflight, limit, flowLimit)) {
 		q.shed++;
+		if (cls === 'flow') q.flowShed++;
 		return busyResponse(request, url, Number(this.env.RETRY_AFTER || 5));
 	}
 	q.inflight++;

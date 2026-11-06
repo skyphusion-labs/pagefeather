@@ -82,6 +82,7 @@ The query count per page comes from the mu-plugin `php/query-count.php`: it send
 | `PAGE_CACHE_SWR` | `600` | Seconds after that during which the edge serves the old copy while it renders a new one |
 | `QUEUE_LIMIT` | `16` | Requests the container may have in hand before a page, cart or add to cart gets 503 with Retry-After (0 = no limit). Checkout, payment callbacks and admin are always let in (docs/approach-c1.md, Bounded queue). |
 | `RETRY_AFTER` | `5` | The Retry-After seconds of that 503 |
+| `FLOW_LIMIT` | 2 x `QUEUE_LIMIT` | The higher cap for a shopper already in a cart flow (a Cart-Token or a WooCommerce session); never below `QUEUE_LIMIT` |
 | `CHECK_WAIT` | `600` | Seconds to wait after the deploy until the Store object is from this deploy (c1_check) |
 | `PUBLIC_HOST` | `<name>.<subdomain>.workers.dev` | The address WordPress uses |
 | `ROLLOUT_WAIT` | `60` | Seconds to wait after the deploy before the one stop |

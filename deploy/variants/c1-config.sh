@@ -23,6 +23,8 @@
 #                  add to cart gets 503 (default 16; 0 = no limit; checkout,
 #                  payment callbacks and admin are always let in; issue #39)
 #   RETRY_AFTER    the Retry-After seconds of that 503 (default 5)
+#   FLOW_LIMIT     the higher cap for a shopper already in a cart flow (a Cart-Token
+#                  or a WooCommerce session; default 2 x QUEUE_LIMIT)
 #   REPLICA_PATH   path of the Litestream replica in the replica bucket (default
 #                  store). Another path restores and writes another database;
 #                  going back to store finds the old one unchanged.
@@ -38,6 +40,7 @@ PAGE_CACHE_TTL=${PAGE_CACHE_TTL:-120}
 PAGE_CACHE_SWR=${PAGE_CACHE_SWR:-600}
 QUEUE_LIMIT=${QUEUE_LIMIT:-16}
 RETRY_AFTER=${RETRY_AFTER:-5}
+FLOW_LIMIT=${FLOW_LIMIT:-}
 QUEUE_RUNNER=${QUEUE_RUNNER:-local}
 CRON_SECONDS=${CRON_SECONDS:-60}
 for v in NAME PUBLIC_HOST REPLICA MEDIA_BUCKET R2_ENDPOINT COMPAT INSTANCE_TYPE PHP_WORKERS IDLE_SECONDS; do
@@ -63,6 +66,10 @@ chk PAGE_CACHE_TTL "$PAGE_CACHE_TTL" '^[1-9][0-9]{0,4}$'
 chk PAGE_CACHE_SWR "$PAGE_CACHE_SWR" '^[0-9]{1,5}$'
 chk QUEUE_LIMIT "$QUEUE_LIMIT" '^[0-9]{1,4}$'
 chk RETRY_AFTER "$RETRY_AFTER" '^[1-9][0-9]{0,3}$'
+# The default needs a checked QUEUE_LIMIT.
+[ -n "$FLOW_LIMIT" ] || FLOW_LIMIT=$((2 * QUEUE_LIMIT))
+chk FLOW_LIMIT "$FLOW_LIMIT" '^[0-9]{1,4}$'
+[ "$FLOW_LIMIT" -ge "$QUEUE_LIMIT" ] || { echo "c1-config.sh: FLOW_LIMIT ($FLOW_LIMIT) is below QUEUE_LIMIT ($QUEUE_LIMIT)" >&2; exit 1; }
 SEED_SHA256=${SEED_SHA256:-}
 [ -z "$SEED_SHA256" ] || chk SEED_SHA256 "$SEED_SHA256" '^[a-f0-9]{64}$'
 cat <<TOML
@@ -103,6 +110,7 @@ PAGE_CACHE_TTL = "$PAGE_CACHE_TTL"
 PAGE_CACHE_SWR = "$PAGE_CACHE_SWR"
 QUEUE_LIMIT = "$QUEUE_LIMIT"
 RETRY_AFTER = "$RETRY_AFTER"
+FLOW_LIMIT = "$FLOW_LIMIT"
 R2_ENDPOINT = "$R2_ENDPOINT"
 SEED_SHA256 = "$SEED_SHA256"
 # Secrets (deploy --secrets-file): WP_SALT, ADMIN_PASSWORD, SPIKE_TOKEN,
