@@ -1,0 +1,19 @@
+# The attacker probe of slice 4 (issue #35); lib.sh render_cross fills the name,
+# the site whose bucket it binds (@BUCKET@) and the compatibility date. It is
+# uploaded as a namespace script with the secrets of that site, so it holds
+# exactly what that site's user Worker holds. No workers.dev name.
+name = "@NAME@"
+main = "../cross-probe/worker.js"
+compatibility_date = "@COMPAT@"
+compatibility_flags = ["nodejs_compat"]
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "@BUCKET@"
+[images]
+binding = "IMAGES"
+[[durable_objects.bindings]]
+name = "PHP_RUNTIME"
+class_name = "PhpRuntime"
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PhpRuntime"]

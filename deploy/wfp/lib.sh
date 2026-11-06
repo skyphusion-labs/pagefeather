@@ -41,6 +41,10 @@ render_cacheprobe() {
   sed -e "s/@NAME@/$1/g" -e "s/@WORKERS_DEV@/$wd/g" -e "s/@COMPAT@/$(compat_date)/g" "$WFP/cache-probe/wrangler.template.toml" \
     | { if [ "$wd" = false ]; then grep -v '^workers_dev'; else cat; fi; }
 }
+# The attacker probe (slice 4): render_cross <name> <bucket>.
+render_cross() {
+  sed -e "s/@NAME@/$1/g" -e "s/@BUCKET@/$2/g" -e "s/@COMPAT@/$(compat_date)/g" "$WFP/cross-probe/wrangler.template.toml"
+}
 render_outbound() {
   sed -e "s/@COMPAT@/$(compat_date)/g" "$WFP/outbound/wrangler.template.toml"
 }
