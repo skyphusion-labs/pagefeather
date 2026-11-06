@@ -71,7 +71,7 @@ Store.prototype.storeInfo = async function () {
 		object_cache: this.envVars.OBJECT_CACHE,
 		replica_path: this.envVars.REPLICA_PATH,
 		purge: { sent: p.sent, deferred: p.deferred, failed: p.failed, retried: p.retried, pending: p.pending, last_ms_ago: p.last ? Date.now() - p.last : null, last_error: p.lastError },
-		queue: { limit: Number(this.env.QUEUE_LIMIT ?? 16), flowLimit: Number(this.env.FLOW_LIMIT || 2 * Number(this.env.QUEUE_LIMIT ?? 16)), timeoutS: Number(this.env.CONTAINER_TIMEOUT_S ?? 60), ...(this.queue || { inflight: 0, maxInflight: 0, admitted: 0, shed: 0, flow: 0, flowShed: 0, timedOut: 0 }) },
+		queue: { limit: Number(this.env.QUEUE_LIMIT ?? 16), flowLimit: Number(this.env.FLOW_LIMIT || 2 * Number(this.env.QUEUE_LIMIT ?? 16)), timeoutS: Number(this.env.CONTAINER_TIMEOUT_S ?? 60), exemptTimeoutS: Number(this.env.CONTAINER_EXEMPT_TIMEOUT_S ?? 900), ...(this.queue || { inflight: 0, maxInflight: 0, admitted: 0, shed: 0, flow: 0, flowShed: 0, timedOut: 0, inflightExempt: 0, timedOutExempt: 0 }) },
 		warm: warmInfo(this, this.env),
 	};
 };
@@ -187,14 +187,22 @@ function busyResponse(req, url, retryAfter) {
 // request, not even a static file, and survived a deploy, a stop and a kill)
 // would hold every request until the client gave up, and checkout, which is
 // always let in, would pile up behind it. So a request that is not admin or
-// operator work waits at most CONTAINER_TIMEOUT_S (60 s, far above the checkout
+// admin work waits at most CONTAINER_TIMEOUT_S (60 s, far above the checkout
 // p99 of about 11 s under overload) for the container's response headers, then
-// gets 504 and its queue slot back. Exempt, because they can be long and
-// legitimate: wp-admin, wp-login.php, the operator endpoints (/_*), a logged-in
-// user, and REST with an Authorization header (imports, exports). 0 turns it off.
+// gets 504 and its queue slot back. Exempt from that, because they can be long
+// and legitimate: wp-admin, wp-login.php, a logged-in user, and REST with an
+// Authorization header (imports, exports). They wait at most
+// CONTAINER_EXEMPT_TIMEOUT_S (900 s; the longest admin request measured so far
+// is about 14 s) instead, never without a bound: against a container that
+// never answers, an unbounded request held its queue slot, and such requests
+// kept the Store object on an old deploy's code (issue #105, measured
+// 2026-11-06). The operator endpoints (/_*) take the shopper bound: they are
+// short, and they are what a deploy check or a measurement sends to a
+// container that may be stuck. 0 turns either bound off.
 function timeoutExempt(req, url) {
 	const p = url.pathname;
-	if (p.startsWith('/_') || p.startsWith('/wp-admin') || p === '/wp-login.php') return true;
+	if (p.startsWith('/_')) return false;
+	if (p.startsWith('/wp-admin') || p === '/wp-login.php') return true;
 	return LOGIN_COOKIE.test(req.headers.get('cookie') || '') || req.headers.has('authorization');
 }
 function timeoutResponse(url) {
@@ -219,7 +227,7 @@ Store.prototype.fetch = async function (request) {
 	const limit = Number(this.env.QUEUE_LIMIT ?? 16);
 	// Never below QUEUE_LIMIT: a flow request must not be refused earlier than a new one.
 	const flowLimit = Math.max(limit, Number(this.env.FLOW_LIMIT || 2 * limit));
-	const q = (this.queue ||= { inflight: 0, maxInflight: 0, admitted: 0, shed: 0, flow: 0, flowShed: 0, timedOut: 0 });
+	const q = (this.queue ||= { inflight: 0, maxInflight: 0, admitted: 0, shed: 0, flow: 0, flowShed: 0, timedOut: 0, inflightExempt: 0, timedOutExempt: 0 });
 	const cls = admission(request, url);
 	if (shouldShed(cls, q.inflight, limit, flowLimit)) {
 		q.shed++;
@@ -235,9 +243,12 @@ Store.prototype.fetch = async function (request) {
 		if (!done) {
 			done = true;
 			q.inflight--;
+			if (exempt) q.inflightExempt--;
 		}
 	};
-	const timeoutS = timeoutExempt(request, url) ? 0 : Number(this.env.CONTAINER_TIMEOUT_S ?? 60);
+	const exempt = timeoutExempt(request, url);
+	const timeoutS = exempt ? Number(this.env.CONTAINER_EXEMPT_TIMEOUT_S ?? 900) : Number(this.env.CONTAINER_TIMEOUT_S ?? 60);
+	if (exempt) q.inflightExempt++;
 	let r;
 	let timer;
 	try {
@@ -249,6 +260,7 @@ Store.prototype.fetch = async function (request) {
 			if (r === null) {
 				ac.abort();
 				q.timedOut++;
+				if (exempt) q.timedOutExempt++;
 				release();
 				return timeoutResponse(url);
 			}
