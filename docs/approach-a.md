@@ -66,6 +66,23 @@ Our A on Paid runs WooCommerce checkout (393 queries, 8.4 s). Approach B on Paid
 
 The one plugin that fails on our A Paid is All-in-One WP Migration: every wp-admin request answers 500 while it is active. The plugin has its own database client and picks it by the `wpdb` class. Approach B's `WP_SQLite_DB` gets a client that goes through `$wpdb`; any other class gets a client that calls `mysqli_real_query()` on `$wpdb->dbh`, on every admin page. In our A, `$wpdb->dbh` is not a mysqli link. HostlessWP ships a userland mysqli for this and passes. Issue #29.
 
+**A userland mysqli (issue #29). Measured locally 2026-11-06. Not yet on Paid.** Our php-wasm has no mysqli extension: in a built tree, `extension_loaded('mysqli')` is false, the classes are absent, and the 18 `mysqli_*` functions checked are absent. So `spikes/b2-wordpress/php/hyperdrive-mysqli.php` declares them in PHP, following HostlessWP ([prior-art.md](prior-art.md)):
+- `mysqli`, `mysqli_result`, `mysqli_sql_exception`, the `MYSQLI_` constants and the procedural `mysqli_*` functions;
+- every query on the same bridge as `wpdb` (`skyphusion_hd_run()`, with the sql_mode handling of a strict server);
+- `db_connect()` gives `$wpdb->dbh` a `mysqli` object and turns reporting off, as `wpdb::db_connect()` does. With reporting on (PHP 8.1's default), a failed query throws `mysqli_sql_exception`.
+- Everything is declared inside one `class_exists('mysqli')` block. A PHP with the real extension (`php -l` on a Mac or in CI) declares nothing, and the real extension stays in use.
+- Not covered: prepared statements and `multi_query` (both return an error), field types and lengths (every field is a string).
+
+| Where | Test | Without the layer | With it |
+| --- | --- | --- | --- |
+| php-wasm, stub bridge | `tests/a/mysqli-surface.sh` (All-in-One WP Migration's calls, core's `flush()` and `bail()` paths, fetch modes, errors in both report modes) | - | 30 of 30; a mutation that never throws fails its check |
+| local `a-local`, MariaDB 11.4.13 | `plugins.py all-in-one-wp-migration` | dashboard and admin page 500 | pass |
+| local `a-local`, MariaDB 11.4.13 | `e2e.sh` | 17 of 17 | 17 of 17 |
+
+The surface test proves the PHP side only: its bridge is a stub. The MariaDB rows are the real bridge. The A Paid row of the plugin table above changes only after a run on Paid.
+
+**Found on the way: binary SQL is stored doubled (issue #79).** SQL that is not valid UTF-8 goes to the Worker as `{mysql_b64}`. `mysql-bridge.js` decodes it as latin1, and mysql2 sends it as utf8mb4. On MariaDB 11.4, `e9 ff 80` was stored as `c3 a9 c3 bf c2 80`. Valid UTF-8 and bytes up to 0x7F are correct. The same result came without the mysqli layer. Not fixed here.
+
 ### HostlessWP on Workers Free
 
 HostlessWP runs PHP in a Durable Object on the Free plan; a Durable Object request may use 30 s of CPU. The Worker answers from a page cache in Workers KV and forwards the rest. That is why every Free column for HostlessWP passes, and every Free column for our A and for approach B stops at the CPU limit. Issue #28 brings that design to approach B.
