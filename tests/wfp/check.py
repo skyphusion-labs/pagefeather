@@ -7,7 +7,7 @@ each check, the path, the HTTP status, the answer and the time. A check that
 is expected to fail (a limit) has a control that is expected to pass, so a
 failure is shown to come from the limit, not from the test.
 """
-import json, sys, time, urllib.error, urllib.request
+import json, os, sys, time, urllib.error, urllib.request
 
 D = sys.argv[1].rstrip("/")
 with_container = len(sys.argv) > 2 and sys.argv[2] == "container"
@@ -53,11 +53,34 @@ checks = {
     # Dispatch of a script that does not exist.
     "missing_script": "/no-such-tenant/ping",
 }
-if with_container:
-    checks["container_1"] = "/tenant-c/container"
-    checks["container_2"] = "/tenant-c/container"
 out = {"dispatcher": D, "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "checks": {}}
 for k, p in checks.items():
     out["checks"][k] = get(p)
     print("%-22s %s %s" % (k, out["checks"][k]["status"], json.dumps(out["checks"][k].get("answer"))[:150]), file=sys.stderr)
+# A new container application needs time before an instance exists: the
+# first calls answer 503 "There is no Container instance available at this
+# time" (about 1.5 to 2 minutes after the application was made, 2026-11-06,
+# #43). After the other checks, container_1 repeats the call every
+# CONTAINER_EVERY seconds (default 20), up to CONTAINER_WAIT seconds (default
+# 240), until the container answers, and records the tries and the wait.
+# container_2 is one more call, with the container warm.
+if with_container:
+    wait = float(os.environ.get("CONTAINER_WAIT", "240"))
+    every = float(os.environ.get("CONTAINER_EVERY", "20"))
+    t0, tries, r = time.time(), 0, None
+    while True:
+        tries += 1
+        r = get("/tenant-c/container")
+        a = r.get("answer")
+        if isinstance(a, dict) and a.get("ok") is True:
+            break
+        if time.time() - t0 + every > wait:
+            break
+        time.sleep(every)
+    r["tries"] = tries
+    r["waited_s"] = round(time.time() - t0, 1)
+    out["checks"]["container_1"] = r
+    print("%-22s %s tries %d, waited %.0f s %s" % ("container_1", r["status"], tries, r["waited_s"], json.dumps(r.get("answer"))[:120]), file=sys.stderr)
+    out["checks"]["container_2"] = get("/tenant-c/container")
+    print("%-22s %s %s" % ("container_2", out["checks"]["container_2"]["status"], json.dumps(out["checks"]["container_2"].get("answer"))[:120]), file=sys.stderr)
 print(json.dumps(out, indent=1))

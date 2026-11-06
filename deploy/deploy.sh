@@ -155,6 +155,19 @@ else
   fi
 fi
 
+# The site's own origin (issue #33): WP_HOME and every link come from it, not
+# from whichever request boots PHP. SITE_ORIGIN (for example a custom domain)
+# or the workers.dev address, from the account's subdomain. The token goes to
+# curl in a config on a pipe, not in the arguments.
+if [ -z "${SITE_ORIGIN:-}" ]; then
+  SUB=$(curl -sf -K <(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN") \
+    "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/workers/subdomain" \
+    | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["subdomain"])')
+  SITE_ORIGIN="https://$NAME.$SUB.workers.dev"
+fi
+[[ "$SITE_ORIGIN" =~ ^https?://[a-z0-9.-]+(:[0-9]{1,5})?$ ]] || { echo "SITE_ORIGIN must be scheme://host[:port], got $SITE_ORIGIN" >&2; exit 2; }
+echo "site origin: $SITE_ORIGIN"
+
 # 3. Wrangler config from the Terraform outputs. Kept next to wrangler.toml so
 # the relative paths (main, assets, zips) are the same.
 CONF="$APP/wrangler.deploy.$NAME.toml"
@@ -171,6 +184,7 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
   echo '[cache]'; echo 'enabled = true'
   echo '[vars]'
   echo "PHP_ENV = '{\"USE_ZEND_ALLOC\":\"0\"}'"
+  echo "SITE_ORIGIN = \"$SITE_ORIGIN\""
   # The Worker writes it into wp-runtime.php as a PHP constant.
   [ -z "${HYPERDRIVE_SQL_MODE+x}" ] || echo "HYPERDRIVE_SQL_MODE = \"$HYPERDRIVE_SQL_MODE\""
   if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
@@ -199,6 +213,10 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
 log "deploy"
 DEP=$(npx wrangler deploy --config "$CONF" 2>&1) || { echo "$DEP" | tail -20; exit 1; }
 URL=$(echo "$DEP" | grep -oE 'https://[a-z0-9.-]+\.workers\.dev' | head -1)
+# A workers.dev site must be at its configured origin, or every link points elsewhere.
+case "$SITE_ORIGIN" in
+  *.workers.dev) [ "$URL" = "$SITE_ORIGIN" ] || { echo "deployed to '$URL', but SITE_ORIGIN is $SITE_ORIGIN" >&2; exit 1; } ;;
+esac
 echo "$DEP" | grep -E 'Total Upload|Current Version'
 SECRETS=$(mktemp); chmod 600 "$SECRETS"
 tf "$TF" output -json | python3 -c '

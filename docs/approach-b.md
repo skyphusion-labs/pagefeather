@@ -337,6 +337,7 @@ Fix: the Worker sends its own origin in `x-wp-public-origin`. It always replaces
   1. The Worker answers a request with an `Upgrade` header with 426. WordPress serves no WebSockets.
   2. A runtime serves only the origin it booted with: a request for another origin boots a new runtime. Responses from the object carry `x-boot-origin`.
 - Test: `e2e.sh` also fails when `GET /` does not link to the site's own origin. The old checks did not see the defect locally: every row was 2xx.
+- **Later (2026-11-06, issues #55 and #33):** both fixes now apply to every variant, not only the object. The `Upgrade` guard runs before the variant branch (#55: in variant `a` the loopback booted the runtime with `http://127.0.0.1:<port>`). And the origin no longer comes from a request at all: the runtime takes it from the var `SITE_ORIGIN` (the site's configured address; `deploy/deploy.sh` and `run.sh` set it), so no first request (the loopback, a health probe, a second host name) can pin it (#33). Without `SITE_ORIGIN`, the request's origin is used and the runtime reboots when it changes, in the Worker as in the object. Test: `tests/origin.sh` (install and the first page through `127.0.0.1`, then the page through `localhost`): before the change both pages linked to `127.0.0.1` (default env) or the first did (object); after it both link to the configured origin. `FALLBACK=1` checks the unconfigured case.
 
 Red and green, locally (wrangler 4.107.0, new database each run, `POST /_install` through `127.0.0.1`, then `e2e.sh` through `localhost`):
 
@@ -432,6 +433,71 @@ Measured per request in `e2e.sh` (`x-db-rows`, local): a public page reads 157 t
 **Not measured yet:** all of this on Cloudflare: CPU per request, the time a page saves (no D1 round trips), cold start of an object with its database, rows billed per page there, the plugin suite, point-in-time recovery, an R2 upload (`_r2_reserved` in the object) and the Images binding inside the object. On Cloudflare the clock does not move during synchronous work, so `/_dbping?db=object` can read 0 ms there: read CPU in `wrangler tail`.
 
 **Deploy:** `[env.dosql-free]` in `wrangler.toml` (Worker `wp-dosql-free`, no D1, migration `v1` for `PhpRuntime`, no location hint: the object is made near its first request).
+
+### 8k. Outbound HTTP from PHP (issue #26). Measured 2026-11-05.
+
+**Problem.** PHP in WebAssembly has no sockets in a Worker or a Durable Object. Every `wp_remote_*()` request failed:
+- no update checks;
+- the network parts of Akismet, Site Kit, Jetpack, WP Mail SMTP and Wordfence did not work;
+- Wordfence activation waited about 10 s for timeouts.
+
+**Design.** `php/http-bridge.php` (mu-plugin) answers `pre_http_request`, at the highest priority, so a plugin's own answer (a mock or a cache) still wins.
+- **Checks before sending.** It makes the checks core makes:
+  - `reject_unsafe_urls`, the allowed protocols and a valid URL;
+  - `block_request()`, so `WP_HTTP_BLOCK_EXTERNAL` and `WP_ACCESSIBLE_HOSTS` keep their meaning;
+  - then `skyphusion_http_allowed` (a filter, default true).
+- **The request.** It goes through `post_message_to_js()` to `httpOp()` in `index.js`, which makes it with `fetch()`.
+- **The answer.** It comes back in core's array (`headers`, `body`, `response`, `cookies`, `filename`). `http_api_debug` and the `http_response` filter run on it, and `stream` and `filename` write the body to the file.
+- **In `httpOp()`:**
+  - one timeout for the request and its redirects;
+  - redirects are followed in JavaScript, so each hop is checked again: 0 returns the redirect, and past the count is "Too many redirects", as WordPress's HTTP library does;
+  - the body is read up to `limit_response_size`, and never past `HTTP_MAX_BYTES` (default 8 MB);
+  - `HTTP_ALLOW_HOSTS` (a comma list) restricts the hosts when it is set;
+  - a log line for each request.
+- **Configuration.** `wp-config.php` no longer defines `WP_HTTP_BLOCK_EXTERNAL`. `HTTP_BRIDGE=off` defines it again in `wp-runtime.php` and turns the bridge off: the behaviour before.
+- **Not covered:** `curl_*()`, `fsockopen()` and `http://` streams (`file_get_contents()` of a URL). `sslverify` cannot be turned off, because `fetch()` always checks TLS.
+
+**A request to the site itself is refused.** The PHP object runs one request at a time. A request from inside a page to the site's own host goes out, comes back through the Worker, and waits behind the page that made it. `httpRefusal()` refuses any request to the site's own host at once. WordPress treats it like any failed request (Site Health's loopback check, the plugin editor's fatal-error check).
+
+Measured, locally:
+- with the refusal: the request fails in about 0.3 s, and the site answers right after;
+- with the refusal mutated off (built tree only): the request hung for its whole 10 s timeout.
+
+**Gate.** `tests/http/http_bridge_check.py`, with the test-only route `tests/http/test-http-route.php` copied into the built tree (it is never shipped).
+
+| Where | Echo | Result |
+| --- | --- | --- |
+| local, `dosql-local` (PHP in the object) | `tests/http/echo.py` | 16 of 16, plus `e2e.sh` 17 of 17 |
+| local, default env (PHP in the Worker) | `tests/http/echo.py` | 16 of 16, plus `e2e.sh` 17 of 17 |
+| `wp-perf-dosql` on Cloudflare, a test build with the route and Akismet | `https://httpbin.org` | 17 of 17 |
+
+The checks are:
+- get, a form post, a JSON post;
+- headers both ways, a status;
+- redirects, too many redirects, no redirect;
+- a timeout (1 s against a 4 s delay), the size limit, a stream to a file, a cookie;
+- the loopback refused at once, and the site answering after;
+- `api.wordpress.org` 200, and no update-check warning on plugins.php;
+- with Akismet, `Akismet::verify_key()` answers `invalid` (its API answered; the key is not real), and not `failed` (no network).
+
+Controls:
+- `HTTP_BRIDGE=off`: the network checks fail (12 of 16 locally), and Akismet answers `failed`;
+- the loopback mutation: the loopback check fails.
+
+**No regression on pages without HTTP.** On `wp-perf-dosql`, the same build with `HTTP_BRIDGE` off, on, then off again. Each pass: `N=30 C=1 PAGES=home,post python3 tests/load/perf.py` with `wrangler tail`; 0 boots; `httpCalls` 0 on these pages.
+
+| Page | Off | On | Off again |
+| --- | --- | --- | --- |
+| home | 152 / 177 (27) | 148 / 186 (27) | 147 / 193 (24) |
+| post | 157 / 225 (19) | 156 / 201 (18) | 189 / 221 (19) |
+
+Values are tail CPU in ms, p50 / p95 (joined n). On is inside the off range on both pages.
+
+**The plugin suite does not test this.** Its `function` step has no check for the 10 network-dependent plugins: `fn_check()` returns `None` ("admin page only") for them, so they count as not passing in every run, with the network or without it. The evidence for this change is the gate above. A network check per plugin would be new work in `tests/plugins/plugins.py`.
+
+**Two findings in the test rig, not in the bridge.**
+1. With a local echo server on HTTP/1.0 (Python's default; it closes each connection), a redirect inside the object sometimes failed with "Network connection lost": workerd reused a closed connection. With HTTP/1.1 keep-alive it passed 3 of 3. A real HTTP/1.0 server that closes connections might do the same. Not tested.
+2. In the first Cloudflare run of the test build, the test route and Akismet answered 404 for about 15 s right after the deploy; a second deploy of the same build answered from its first request. Not explained.
 
 ### 9. Memory: what it took to fit in 128 MB
 

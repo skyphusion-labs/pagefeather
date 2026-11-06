@@ -119,6 +119,8 @@ NAME=my-shop ./deploy/destroy.sh
 
 The same Worker and PHP object as `b-do`, with `DB_IN_DO=on`: each statement runs on the object's own SQLite storage (`ctx.storage.sql`), so a query is not a network call. There is no D1. One object holds the site: one writer, data in the object, point-in-time recovery for 30 days ([Durable Objects](https://developers.cloudflare.com/durable-objects/)). Move a site in or out with `spikes/b2-wordpress/dbmove.py` (`/_dbexport`, `/_dbimport`). Details: [docs/approach-b.md](../docs/approach-b.md) section 8j.
 
+To import an existing WordPress site from a mysqldump, use `deploy/import.sh`: see [deploy/import/README.md](import/README.md).
+
 On Workers Free the object's SQLite has daily limits: 5 million rows read and 100,000 rows written (a public page reads about 160 to 220 rows; an admin page writes about 30 to 40). A page cache hit costs neither.
 
 ## Variant `a`: PHP in the Worker, MySQL through Hyperdrive (Workers Paid)
@@ -145,6 +147,7 @@ The hint is not a promise. An `enam` object landed in EWR two times in three and
 | `BENCH` | `1` | `0` skips the measurements |
 | `N` | `10` | Runs per page in the page benchmark |
 | `VARIANT` | `b-do` | `b-do`, `b-dosql`, `a`, `c1` (see above) |
+| `SITE_ORIGIN` | `https://<name>.<subdomain>.workers.dev` | The site's own address (`scheme://host[:port]`). WordPress's `WP_HOME` and every link come from it, not from the first request (issue #33). Give it for a custom domain. On workers.dev the deploy stops if Wrangler's address differs. `c1` uses `PUBLIC_HOST` instead. |
 | `DEPLOY_STATE` | `local` | `r2` keeps Terraform state in an R2 bucket (`STATE_BUCKET`, `STATE_ENDPOINT`, and an R2 key in `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) |
 
 Each `NAME` has its own Terraform workspace, so two sites never share state.
@@ -171,3 +174,4 @@ cd deploy/terraform && terraform workspace select my-site && terraform output -r
 - Measurements from a fixed vantage (a Vultr runner), with p95 and p99, concurrency and the cold path.
 - Plugins and WooCommerce runs (`tests/plugins/plugins.py`, `tests/woo.py`) as part of `deploy.sh`.
 - A custom domain. The site is on `<name>.<subdomain>.workers.dev`.
+- Import of an existing site into `a`, `a2` and `c1` (issue #31). `b-dosql` has it: database, uploads, theme and plugins.
