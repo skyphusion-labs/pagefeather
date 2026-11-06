@@ -45,11 +45,20 @@ before)
   with_token "${SSHC[@]}" "$H" 'touch ~/.import-marker && date -u +%Y-%m-%dT%H:%M:%SZ'
   ;;
 after)
-  # Nothing newer than the marker in the site, /tmp, /var/tmp or the
+  # No file newer than the marker in the site, /tmp, /var/tmp or the
   # importer home. NOT checked: MariaDB's own files (the user importer cannot
   # read /var/lib/mysql; the dump only reads, with --single-transaction).
-  newer=$(with_token "${SSHC[@]}" "$H" 'find /var/www/wordpress /tmp /var/tmp ~ -newer ~/.import-marker -not -path ~/.import-marker 2>/dev/null || true')
+  # The /tmp, /var/tmp and home DIRECTORIES themselves are not counted (the
+  # files in them are): a probe that makes and removes its own file moves a
+  # home's mtime, and during a
+  # dump another process (most likely the MariaDB server, tmpdir=/tmp) makes
+  # and removes an entry there, so their mtime moves although no file stays
+  # (measured 2026-11-06; strace of the import's own processes: no /tmp
+  # call). It is printed as a note.
+  newer=$(with_token "${SSHC[@]}" "$H" 'find /var/www/wordpress -newer ~/.import-marker 2>/dev/null; find /tmp /var/tmp ~ -mindepth 1 -newer ~/.import-marker -not -path ~/.import-marker 2>/dev/null; true')
+  dirs=$(with_token "${SSHC[@]}" "$H" 'find /tmp /var/tmp ~ -maxdepth 0 -newer ~/.import-marker 2>/dev/null; true')
   echo "newer than the marker:"; printf '%s\n' "$newer" | sed 's/^/  /'
+  [ -z "$dirs" ] || echo "note: directory mtime moved (no file in it): $(printf '%s' "$dirs" | tr '\n' ' ')"
   check "no file in the site, /tmp, /var/tmp or the importer home is newer" "$(printf '%s\n' "$newer" | grep -c . || true)" "0"
   ;;
 *) echo "usage: $0 before|after" >&2; exit 2 ;;
