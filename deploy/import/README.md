@@ -181,7 +181,20 @@ Slice 2, 2026-11-06, same local Worker: `build.sh` with `IMPORT_CONTENT` from th
 
 Variant `a`, 2026-11-06, local (no MySQL on this computer): `mysql-prepare.py` on the a2 dump, for MySQL and for MariaDB, made 228 statements with 8583 rows. The address changed in 26 values, as `search-replace.py` does on SQLite. `checkStatement` of the endpoint allowed all 228. Eight `CREATE TABLE` statements of Wordfence were refused before the hex `DEFAULT` rewrite. The import into MySQL is not run yet.
 
-`c1` with `CONTENT`, 2026-11-06, local: a dump whose only active plugin is `my-shop` (in no build) and an archive with `wp-content/plugins/my-shop`. With `CONTENT`, the seed dry run passed and printed `IMPORT_PLUGINS=my-shop`. Without it (the red control), it stopped: `NOT IN THE BUILD: plugin my-shop/my-shop.php`, exit 1. `spikes/c1-woo-container/build.sh` with `IMPORT_CONTENT` and `IMPORT_PLUGINS=my-shop` put `my-shop` in the tree; the default build did not have it. A mutation that removed the build-or-archive rule made the run with `CONTENT` stop. The upload step and the deploy are not run yet for `c1`.
+`c1` with `CONTENT`, 2026-11-06, local: a dump whose only active plugin is `my-shop` (in no build) and an archive with `wp-content/plugins/my-shop`. With `CONTENT`, the seed dry run passed and printed `IMPORT_PLUGINS=my-shop`. Without it (the red control), it stopped: `NOT IN THE BUILD: plugin my-shop/my-shop.php`, exit 1. `spikes/c1-woo-container/build.sh` with `IMPORT_CONTENT` and `IMPORT_PLUGINS=my-shop` put `my-shop` in the tree; the default build did not have it. A mutation that removed the build-or-archive rule made the run with `CONTENT` stop.
+
+**Deployed, 2026-11-06** (`docs/results.md`): `wp-import-c1`, a fresh c1 site, from `e7241ff`, run by the lead. The source was the a2 dump with `my-shop` active, plus an archive with `my-shop` and one upload.
+
+| Step | Result |
+| --- | --- |
+| Seed | 3874816 bytes at `import-20261106t064157z.seed.sqlite` |
+| Uploads | 1 sent; the check run 0 sent; the import key deleted |
+| Deploy | with the printed line: exit 0, first answer 200 after 15 s |
+| `VERIFY=1` | every table matches (10067 rows in 107 tables), `GET /` 200 |
+| Upload through the site | `x.jpg` 200, 4 bytes, from R2 |
+| Plugin | `my-shop.php` is in the container (200; a missing path gives 301). That it is active is shown only by the seed rows, not by `plugins.php`: there is no admin password for the a2 users. |
+
+The first deploy of `wp-import-c1` failed at the Docker build (`read-only file system`) when the laptop disk filled. That is a result too.
 
 ## Measured on a deployed site
 
