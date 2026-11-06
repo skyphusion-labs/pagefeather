@@ -3,7 +3,8 @@
 // Worker, MySQL (MariaDB, or PlanetScale for a2) through Hyperdrive.
 //
 //   GET  /_sqlimport?info=1    {version, flavour, max_allowed_packet}
-//   GET  /_sqlimport?counts=1  {tables: {name: {rows, min_pk}}} for wp_ tables
+//   GET  /_sqlimport?counts=1  {tables: {name: {rows, min_pk}}} for wp_ tables;
+//                              a count that is not an integer is a 500, not a null
 //   POST /_sqlimport[?replace=1]  JSON lines {"sql": "..."}, in order
 //
 // It needs the SPIKE_TOKEN secret and its x-spike-token header (no token set:
@@ -171,6 +172,22 @@ function matchingParen(s) {
 	return -1;
 }
 
+// A cell as text. mysql-bridge.js returns a column with the binary character
+// set (63) as {"$b": base64}: MariaDB reports COUNT(*) and MIN() of an integer
+// that way (measured 2026-11-06 on wp-ref-a, 10.11.14; VERSION() came as text),
+// so every read here decodes it.
+export function cell(v) {
+	if (v === null || v === undefined) return null;
+	if (typeof v === 'object' && typeof v.$b === 'string') return new TextDecoder().decode(Uint8Array.from(atob(v.$b), (c) => c.charCodeAt(0)));
+	return String(v);
+}
+// An integer cell, or an error: never a NaN that JSON turns into null.
+export function int(v, what) {
+	const t = cell(v);
+	if (t === null || !/^-?[0-9]+$/.test(t)) throw new Error(`${what}: not an integer (${JSON.stringify(v)})`);
+	return Number(t);
+}
+
 async function one(db, env, sql) {
 	const r = await db.query(env, { mysql: sql });
 	if (!r.ok) throw new Error(r.error);
@@ -179,7 +196,7 @@ async function one(db, env, sql) {
 
 async function wpTables(db, env) {
 	const r = await one(db, env, 'SHOW TABLES');
-	return (r.rows || []).map((x) => x[0]).filter((t) => /^wp_[A-Za-z0-9_]{1,60}$/.test(t));
+	return (r.rows || []).map((x) => cell(x[0])).filter((t) => /^wp_[A-Za-z0-9_]{1,60}$/.test(t || ''));
 }
 
 // max_allowed_packet as the server reports it. Through Vitess a SELECT of a
@@ -187,9 +204,9 @@ async function wpTables(db, env) {
 // VARIABLES is tried next. No value: an error, not a guess.
 async function packet(db, env) {
 	const a = await db.query(env, { mysql: 'SELECT @@max_allowed_packet' });
-	if (a.ok && a.rows && a.rows.length && Number(a.rows[0][0]) > 0) return { bytes: Number(a.rows[0][0]), via: 'SELECT @@max_allowed_packet' };
+	if (a.ok && a.rows && a.rows.length && /^[1-9][0-9]*$/.test(cell(a.rows[0][0]) || '')) return { bytes: int(a.rows[0][0], 'max_allowed_packet'), via: 'SELECT @@max_allowed_packet' };
 	const b = await db.query(env, { mysql: "SHOW VARIABLES LIKE 'max_allowed_packet'" });
-	if (b.ok && b.rows && b.rows.length && Number(b.rows[0][1]) > 0) return { bytes: Number(b.rows[0][1]), via: 'SHOW VARIABLES' };
+	if (b.ok && b.rows && b.rows.length && /^[1-9][0-9]*$/.test(cell(b.rows[0][1]) || '')) return { bytes: int(b.rows[0][1], 'max_allowed_packet'), via: 'SHOW VARIABLES' };
 	return { bytes: null, via: null, error: (a.ok ? 'no row' : a.error) + '; ' + (b.ok ? 'no row' : b.error) };
 }
 
@@ -200,7 +217,7 @@ export async function sqlImport(req, env, url, db) {
 	try {
 		if (req.method === 'GET' && url.searchParams.get('info') === '1') {
 			const v = await one(db, env, 'SELECT VERSION()');
-			const version = String(v.rows && v.rows[0] && v.rows[0][0]);
+			const version = String(v.rows && v.rows[0] && cell(v.rows[0][0]));
 			const p = await packet(db, env);
 			return json({ version, flavour: /mariadb/i.test(version) ? 'mariadb' : 'mysql', max_allowed_packet: p.bytes, packet_via: p.via, packet_error: p.error });
 		}
@@ -210,11 +227,13 @@ export async function sqlImport(req, env, url, db) {
 				const n = await one(db, env, `SELECT COUNT(*) FROM \`${t}\``);
 				let min_pk = null;
 				const col = await db.query(env, { mysql: `SHOW COLUMNS FROM \`${t}\` WHERE Extra LIKE '%auto_increment%'` });
-				if (col.ok && col.rows && col.rows.length && /^[A-Za-z0-9_]+$/.test(col.rows[0][0])) {
-					const m = await one(db, env, `SELECT MIN(\`${col.rows[0][0]}\`) FROM \`${t}\``);
-					min_pk = m.rows[0][0] === null ? null : Number(m.rows[0][0]);
+				const pk = col.ok && col.rows && col.rows.length ? cell(col.rows[0][0]) : null;
+				if (pk && /^[A-Za-z0-9_]+$/.test(pk)) {
+					const m = await one(db, env, `SELECT MIN(\`${pk}\`) FROM \`${t}\``);
+					// NULL only for an empty table.
+					min_pk = m.rows[0][0] === null ? null : int(m.rows[0][0], `MIN(${pk}) of ${t}`);
 				}
-				tables[t] = { rows: Number(n.rows[0][0]), min_pk };
+				tables[t] = { rows: int(n.rows[0][0], `COUNT(*) of ${t}`), min_pk };
 			}
 			return json({ tables });
 		}

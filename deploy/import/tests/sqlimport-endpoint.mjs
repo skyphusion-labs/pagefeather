@@ -8,7 +8,8 @@ const check = (name, got, want) => {
 	if (!ok) fails++;
 	console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${ok ? '' : `: got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`}`);
 };
-function fakeDb({ vitess = false, packet = 16777216 } = {}) {
+const b64 = (t) => ({ $b: Buffer.from(t).toString('base64') });
+function fakeDb({ vitess = false, packet = 16777216, binary = false, garbage = false } = {}) {
 	const ran = [];
 	const tables = ['wp_options', 'wp_posts', 'other_plugin_table'];
 	return {
@@ -17,12 +18,13 @@ function fakeDb({ vitess = false, packet = 16777216 } = {}) {
 			const sql = m.mysql;
 			ran.push(sql);
 			if (sql === 'SELECT VERSION()') return { ok: true, rows: [[vitess ? '8.0.34-PlanetScale' : '10.11.6-MariaDB-0+deb12u1']] };
-			if (sql === 'SELECT @@max_allowed_packet') return { ok: true, rows: vitess ? [] : [[String(packet)]] };
+			if (sql === 'SELECT @@max_allowed_packet') return { ok: true, rows: vitess ? [] : [[binary ? b64(String(packet)) : String(packet)]] };
 			if (sql.startsWith('SHOW VARIABLES')) return { ok: true, rows: packet ? [['max_allowed_packet', String(packet)]] : [] };
 			if (sql === 'SHOW TABLES') return { ok: true, rows: tables.map((t) => [t]) };
-			if (sql.startsWith('SELECT COUNT(*)')) return { ok: true, rows: [['3']] };
+			// binary: as mysql-bridge.js returns a binary-charset column (MariaDB COUNT(*)).
+			if (sql.startsWith('SELECT COUNT(*)')) return { ok: true, rows: [[garbage ? { other: 1 } : binary ? b64('3') : '3']] };
 			if (sql.startsWith('SHOW COLUMNS')) return { ok: true, rows: [['ID']] };
-			if (sql.startsWith('SELECT MIN(')) return { ok: true, rows: [['0']] };
+			if (sql.startsWith('SELECT MIN(')) return { ok: true, rows: [[binary ? b64('0') : '0']] };
 			if (sql.includes('FAILME')) return { ok: false, error: 'boom', errno: 1064 };
 			return { ok: true, affected: 1 };
 		},
@@ -66,5 +68,11 @@ check('a failing statement stops: line, ran', [r.status, r.o.line, r.o.ran, db.r
 r = await call(fakeDb(), 'GET', '/_sqlimport?counts=1');
 check('counts: wp_ tables only', Object.keys(r.o.tables), ['wp_options', 'wp_posts']);
 check('counts: rows and min_pk', r.o.tables.wp_options, { rows: 3, min_pk: 0 });
+r = await call(fakeDb({ binary: true }), 'GET', '/_sqlimport?counts=1');
+check('counts: binary cells (MariaDB) decoded', r.o.tables.wp_options, { rows: 3, min_pk: 0 });
+r = await call(fakeDb({ binary: true }), 'GET', '/_sqlimport?info=1');
+check('info: binary packet cell decoded', r.o.max_allowed_packet, 16777216);
+r = await call(fakeDb({ garbage: true }), 'GET', '/_sqlimport?counts=1');
+check('counts: a count that is not an integer is a 500, not a null', [r.status, r.o.ok, /COUNT\(\*\) of wp_options: not an integer/.test(r.o.error)], [500, false, true]);
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);
