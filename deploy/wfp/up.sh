@@ -63,6 +63,10 @@ if [ "${CACHE_PROBE:-1}" = 1 ]; then
   (cd "$GEN" && npx wrangler deploy --config wp-cacheprobe-direct.toml) > "$W/cp3.log" 2>&1 || { tail -20 "$W/cp3.log"; exit 1; }
 fi
 
+# Every script binds only its own resources (bindings.py, #35 slice 4).
+log "bindings: read back from the API"
+NAMESPACE=$NAMESPACE KV_ID=$KV_ID python3 -I "$WFP/bindings.py" $SITES
+
 if [ "${CHECK:-1}" = 1 ]; then
   log "check.py"
   # The site secrets go to check.py in a file of this run (0600), not in argv.

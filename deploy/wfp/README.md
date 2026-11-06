@@ -75,6 +75,14 @@ Options:
 
 Each untouched site must be unchanged: its dispatcher's etag and `modified_on`, its user Worker's hash and `modified_on`, its map entry, its bucket's keys and ETags, and its page title. A part that cannot be read fails the proof; it never counts as unchanged. The script etags are the same across sites (one dispatcher script; one `b-dosql` bundle), so `modified_on` is what tells one site's upload from another's. A re-upload of identical code keeps the etag and changes only `modified_on`, and both are compared. The snapshots read the buckets with S3 credentials derived from the API token, so they create nothing.
 
+## Bindings read back
+
+After every upload, `bindings.py` reads each script's bindings back from the API (`up.sh` for every site, `site add` for its own site). It fails unless each one binds only its own resources:
+- **A user Worker `site-<name>`** may bind its own bucket, its own Durable Object class, Images, its assets, plain vars, and the secrets `WP_SALT` and `SPIKE_TOKEN`.
+- **A dispatcher `wp-<name>`** may bind the site map and the namespace, with its outbound going to `wp-wfp-outbound` only.
+
+Any other binding fails, and so does a script whose bindings cannot be read. The output names the bindings and their types, never a value.
+
 ## Tests (offline)
 
 ```sh
@@ -85,5 +93,6 @@ deploy/wfp/tests/kv-ready-test.sh           # the wait for a new site map to acc
 deploy/wfp/tests/wait-site-test.sh          # the wait for a new site to answer from its own user Worker
 deploy/wfp/tests/snapshot-test.sh           # the isolation snapshots and diff, and site_footprint
 deploy/wfp/tests/site-cmd-test.sh           # site add and remove refuse, with no write, when they must
+python3 deploy/wfp/tests/bindings-test.py   # the bindings read back: each script binds only its own resources
 deploy/wfp/tests/tf-test.sh                 # terraform validate, fmt, and the teardown key with no dependency (local: needs terraform)
 ```
