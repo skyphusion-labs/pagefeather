@@ -91,7 +91,7 @@ Any other binding fails, and so does a script whose bindings cannot be read. The
 - **Secrets:** A's `WP_SALT` is its own, not B's; A sees no foreign secret name.
 - **Limits:** `subRequests` is enforced exactly; `cpuMs` is enforced, inexact below about 2 s (`docs/wfp.md` item 4).
 
-A PASS is a public result. A result where A reaches B against the docs, or any platform isolation gap, goes to the lead only, is written to no artifact, and stops that line (`cross.py` marks it `platform`; `cross.sh` exits 3). A reach through a binding we gave A by mistake is our defect, fixed in the open. The binding readback (above) proves the static half: A's bindings name only A's resources. The method is on issue #35.
+`CROSS_OUTBOUND=0` runs the probes with the outbound flag off (default on). A PASS is a public result. A result where A reaches B against the docs, or any platform isolation gap, goes to the lead only, is written to no artifact, and stops that line (`cross.py` marks it `platform`; `cross.sh` exits 3). A reach through a binding we gave A by mistake is our defect, fixed in the open. The binding readback (above) proves the static half: A's bindings name only A's resources. The method is on issue #35.
 
 ## Tests (offline)
 
@@ -105,5 +105,6 @@ deploy/wfp/tests/snapshot-test.sh           # the isolation snapshots and diff, 
 deploy/wfp/tests/site-cmd-test.sh           # site add and remove refuse, with no write, when they must
 python3 deploy/wfp/tests/bindings-test.py   # the bindings read back: each script binds only its own resources
 python3 deploy/wfp/tests/cross-test.py      # the isolation verdict: a breach is never read as a pass
+deploy/wfp/tests/probe-entry-test.sh        # the probe map entry and the CROSS_OUTBOUND option
 deploy/wfp/tests/tf-test.sh                 # terraform validate, fmt, and the teardown key with no dependency (local: needs terraform)
 ```

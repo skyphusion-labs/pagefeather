@@ -7,6 +7,8 @@
 # attempt to reach B (site two / cross-b) and feeds cross.py.
 #
 #   CLOUDFLARE_API_TOKEN=... ./deploy/wfp/cross.sh
+# Option: CROSS_OUTBOUND=0 writes the probes' map entries with the outbound
+# flag false, to run the probes without the outbound Worker (default 1).
 #
 # SCOPE (slice 4 method on #35): only our own resources in wp-wfp, documented
 # bindings and fetch() only, no isolate or runtime escape, no load past the
@@ -24,7 +26,19 @@ export KV_ID SUB NAMESPACE CLOUDFLARE_ACCOUNT_ID
 have=$(list_sites | tr '\n' ' ')
 [ "$have" = "one two " ] || { echo "cross.sh needs the sites one and two (up.sh); there are: ${have:-none}" >&2; exit 2; }
 umask 077
-W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
+W=$(mktemp -d)
+# The probes make fetch() to any URL while they are up, so they are torn down
+# in the EXIT trap, not only on the happy path: an early exit still removes them.
+cleanup_probes() {
+  local n
+  for n in crossa crossb; do
+    (cd "$ROOT/deploy" && npx wrangler delete --name "wp-$n" --force) >/dev/null 2>&1 || true
+    api DELETE "/workers/dispatch/namespaces/${NAMESPACE}/scripts/site-$n?force=true" >/dev/null 2>&1 || true
+    api DELETE "/storage/kv/namespaces/${KV_ID:-}/values/wp-$n.${SUB:-}.workers.dev" >/dev/null 2>&1 || true
+    rm -f "$GEN/site-$n.toml" "$GEN/wp-$n.toml" 2>/dev/null || true
+  done
+}
+trap 'cleanup_probes; rm -rf "$W"' EXIT
 mkdir -p "$GEN"
 site_out() { (cd "$WFP/terraform/site" && terraform workspace select "$1" >/dev/null && terraform output -raw "$2"); }
 
@@ -41,7 +55,7 @@ deploy_probe() { # deploy_probe <name> <site> <cpuMs> <subRequests>
   rm -f "$W/sec.json"
   local host="wp-$name.$SUB.workers.dev"
   api PUT "/storage/kv/namespaces/$KV_ID/values/$host" -H 'content-type: text/plain' \
-    --data "{\"script\": \"$script\", \"cpuMs\": $cpu, \"subRequests\": $sub, \"outbound\": true}" >/dev/null
+    --data "$(probe_entry "$script" "$cpu" "$sub")" >/dev/null
   render_dispatcher "$name" "$KV_ID" > "$GEN/wp-$name.toml"
   (cd "$GEN" && npx wrangler deploy --config "wp-$name.toml") > "$W/wp-$name.log" 2>&1 || { tail -20 "$W/wp-$name.log"; exit 1; }
   for _ in $(seq 1 30); do [ "$(curl -s -o /dev/null -w '%{http_code}' "https://$host/_probe/secret")" = 200 ] && break; sleep 5; done
@@ -97,14 +111,9 @@ PY
 echo "$V"
 worst=$(printf '%s' "$V" | python3 -c 'import json,sys; print(json.load(sys.stdin)["worst"])')
 
-log "tear down the probes"
-for n in crossa crossb; do
-  (cd "$ROOT/deploy" && npx wrangler delete --name "wp-$n" --force) >/dev/null 2>&1 || true
-  api DELETE "/workers/dispatch/namespaces/$NAMESPACE/scripts/site-$n?force=true" >/dev/null || true
-  api DELETE "/storage/kv/namespaces/$KV_ID/values/wp-$n.$SUB.workers.dev" >/dev/null || true
-  rm -f "$GEN/site-$n.toml" "$GEN/wp-$n.toml"
-  st=$(ns_script_state "site-$n"); [ "$st" = gone ] || echo "  warning: site-$n is $st after teardown" >&2
-done
+log "tear down the probes (also in the EXIT trap)"
+cleanup_probes
+for n in crossa crossb; do st=$(ns_script_state "site-$n"); [ "$st" = gone ] || echo "  warning: site-$n is $st after teardown" >&2; done
 
 case "$worst" in
   pass)

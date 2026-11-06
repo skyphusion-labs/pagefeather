@@ -41,6 +41,14 @@ render_cacheprobe() {
   sed -e "s/@NAME@/$1/g" -e "s/@WORKERS_DEV@/$wd/g" -e "s/@COMPAT@/$(compat_date)/g" "$WFP/cache-probe/wrangler.template.toml" \
     | { if [ "$wd" = false ]; then grep -v '^workers_dev'; else cat; fi; }
 }
+# The site map entry for an attacker probe: script, limits, and the outbound
+# flag. CROSS_OUTBOUND=0 writes it false (an option to run the probes without
+# the outbound Worker); unset or any other value writes true, unchanged.
+probe_entry() { # probe_entry <script> <cpuMs> <subRequests>
+  printf '{"script": "%s", "cpuMs": %s, "subRequests": %s, "outbound": %s}' \
+    "$1" "$2" "$3" "$([ "${CROSS_OUTBOUND:-1}" = 0 ] && echo false || echo true)"
+}
+
 # The attacker probe (slice 4): render_cross <name> <bucket>.
 render_cross() {
   sed -e "s/@NAME@/$1/g" -e "s/@BUCKET@/$2/g" -e "s/@COMPAT@/$(compat_date)/g" "$WFP/cross-probe/wrangler.template.toml"
