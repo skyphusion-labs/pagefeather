@@ -15,12 +15,15 @@ Each trial:
    page must come from the edge (the gateway's Storefront cache), so the
    script primes it first, while the container is awake.
 3. Wait think_s (a shopper reading the page). Read /_store-info: running yet?
+   A view the edge served stale (cf-cache-status UPDATING) also sends a
+   refresh to the container, which starts it in either arm: the median uses
+   HIT views only and lists the others (not_hit_trials).
 4. Add to cart, as the same new visitor: GET /?add-to-cart=<id> (a cookie
    jar, no redirect followed). Its time is the result.
 5. Read /_store-info again: warm (starts, skipped_running, skipped_gap,
    failed), running.
-Trials are spaced by more than WARM_GAP_S, so the rate limit does not block a
-start. The product comes from the Store API (?rest_route=/wc/store/v1/products),
+Each trial waits WARM_GAP_S + 5 s between its prime and its measured view, so
+the gateway's rate limit does not block the measured view's start. The product comes from the Store API (?rest_route=/wc/store/v1/products),
 asked before the first stop, while the container is awake anyway: a SIMPLE,
 in-stock, purchasable product (a variable product would only redirect to its
 page). A trial counts as an add to cart only when WooCommerce set the
@@ -103,7 +106,12 @@ def main():
     out = {"site": B, "arm": arm, "gap_s": gap, "think_s": think, "product": {"id": prod["id"], "path": path, "name": prod.get("name"), "type": prod.get("type")}, "trials": []}
     for n in range(trials):
         # Prime the edge copy of the product page while the container is up.
+        # The prime is a product view too: it sets the gateway isolate's
+        # WARM_GAP_S gate (warm.js). So wait out the gap BEFORE the measured
+        # view, or the view's warm start is skipped when it lands on the same
+        # isolate (measured 2026-11-06: product trial 3, no warm call at all).
         call(path)
+        time.sleep(gap + 5)
         stop = call("/_store-stop", method="POST", token=True)
         stopped_after = wait_stopped()
         view = call(path)
@@ -123,10 +131,12 @@ def main():
             "warm_after": after.get("warm"), "running_after": after.get("running"),
         })
         print(json.dumps(out["trials"][-1]), file=sys.stderr)
-        if n + 1 < trials:
-            time.sleep(gap + 5)
-    times = [t["cart_s"] for t in out["trials"] if t["cart_added"]]
+    # A view the edge served stale (UPDATING) sends a refresh to the container,
+    # which starts it in either arm: that is a different path, so the median
+    # uses HIT views only, and the others are listed.
+    times = [t["cart_s"] for t in out["trials"] if t["cart_added"] and t["view_cache"] == "HIT"]
     out["add_to_cart_median_s"] = round(statistics.median(times), 3) if times else None
+    out["not_hit_trials"] = [t["n"] for t in out["trials"] if t["view_cache"] != "HIT"]
     # The direct evidence: was the container already up when the cart came?
     out["running_before_cart"] = [t["running_before_cart"] for t in out["trials"]]
     out["view_cache"] = [t["view_cache"] for t in out["trials"]]
