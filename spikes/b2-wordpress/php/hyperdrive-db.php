@@ -16,6 +16,8 @@
  */
 
 require_once __DIR__ . '/hyperdrive-sql-mode.php';
+// The escape, and SQL that is not UTF-8 as hex literals for the bridge (issue #79).
+require_once __DIR__ . '/hyperdrive-literals.php';
 // A mysqli for plugins that call mysqli_* on $wpdb->dbh (issue #29).
 require_once __DIR__ . '/hyperdrive-mysqli.php';
 
@@ -31,8 +33,16 @@ if ( ! function_exists( 'skyphusion_worker_call' ) ) {
 
 /** One statement on the Worker bridge: {ok, columns, rows} or {ok, affected, insert_id} or {ok: false, error, errno}. */
 function skyphusion_hd_call( $sql ) {
-	$msg   = preg_match( '//u', $sql ) ? array( 'mysql' => $sql ) : array( 'mysql_b64' => base64_encode( $sql ) );
-	$reply = json_decode( skyphusion_worker_call( json_encode( $msg ) ), true );
+	// The bridge carries JSON text: string literals that are not UTF-8 go as hex literals (issue #79).
+	$text = skyphusion_hd_sql_for_bridge( $sql );
+	if ( null === $text ) {
+		return array(
+			'ok'    => false,
+			'error' => 'SQL has bytes that are not UTF-8 outside a string literal; the Worker bridge cannot carry it',
+			'errno' => 2000,
+		);
+	}
+	$reply = json_decode( skyphusion_worker_call( json_encode( array( 'mysql' => $text ) ) ), true );
 	return is_array( $reply ) ? $reply : array(
 		'ok'    => false,
 		'error' => 'no reply from the Worker',
@@ -67,22 +77,6 @@ function skyphusion_hd_run( $query ) {
 		return skyphusion_hd_ddl( $query, $mode );
 	}
 	return skyphusion_hd_call( skyphusion_hd_hint( $query, $mode ) );
-}
-
-/** The escaping of mysqli_real_escape_string() for utf8mb4. */
-function skyphusion_mysql_escape( $data ) {
-	return strtr(
-		(string) $data,
-		array(
-			'\\'   => '\\\\',
-			"\0"   => '\\0',
-			"\n"   => '\\n',
-			"\r"   => '\\r',
-			"'"    => "\\'",
-			'"'    => '\\"',
-			"\x1a" => '\\Z',
-		)
-	);
 }
 
 class Hyperdrive_WPDB extends wpdb {
