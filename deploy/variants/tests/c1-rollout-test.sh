@@ -20,6 +20,9 @@
 #   stale-list-empty  0, 4  the stale list version 1 with no rollout yet must not count as placed
 #   replaced-then-newer 0, 3  a replaced rollout, then a newer version: waits, then passes
 #   replaced-stuck  1, 6    replaced with no newer version: fails after 6 reads, not at the timeout
+#   moves-at-completion 0, 8  the application stays at the old version until its rollout
+#                           completes (wp-c1-w92b, issue #126): follow "2 -> 3", not the bound
+#   follow-reverted 1, 1    the followed rollout is reverted: fail at once
 # And c1_wait with fake-c1-site.py too: api-401 falls back to the fixed wait
 # and goes on; reverted fails before the stop; done-after-3 goes on; a stop
 # that gets no Store answer (404 HTML) is named and goes on; a stuck stop fails;
@@ -101,6 +104,8 @@ run_case stale-list 0 3
 run_case stale-list-empty 0 4
 run_case replaced-then-newer 0 3
 run_case replaced-stuck 1 6
+run_case moves-at-completion 0 8
+run_case follow-reverted 1 1
 wait_case api-401 0 "waiting a fixed" ""
 wait_case reverted 1 "ended as reverted" "stop:"
 wait_case done-after-3 0 "first answer 200" ""
