@@ -6,7 +6,7 @@
 #
 # PREFIX (default wp-on-cf-wfp), NS (default wp-on-cf-spike), SITES (default
 # wp-dosql). Exit 0 when all are gone, 1 when any exists, 2 when the API
-# could not answer (then nothing is known).
+# (or Wrangler, for the image) could not answer (then nothing is known).
 set -uo pipefail
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
 A=${ACCOUNT_ID:-fabcb25d9c7eb087110ec474a03e50d2}
@@ -20,6 +20,17 @@ for x in "ns $B/workers/dispatch/namespaces" "scripts $B/workers/scripts" "apps 
   code=$(get "$1" "$2") || code=000
   [ "$code" = 200 ] || { echo "API $1: HTTP $code: cannot tell what exists" >&2; exit 2; }
 done
+# The control's image in the account registry (run.sh builds it): from Wrangler,
+# which lists repositories as [{name, tags}] with the account prefix removed.
+(cd "$(dirname "$0")" && CLOUDFLARE_ACCOUNT_ID=$A npx wrangler containers images list --json 2>/dev/null) > "$W/images.raw" \
+  || { echo "wrangler containers images list failed: cannot tell what exists" >&2; exit 2; }
+python3 -c '
+import json, sys
+s = open(sys.argv[1]).read()
+i = s.find("[")
+if i < 0:
+    sys.exit(2)
+json.dump(json.loads(s[i:]), open(sys.argv[2], "w"))' "$W/images.raw" "$W/images.json" || { echo "images list: no JSON: cannot tell what exists" >&2; exit 2; }
 WORKERS="$PREFIX-dispatch $PREFIX-echo $PREFIX-outbound $PREFIX-cdirect"
 for s in $SITES; do WORKERS="$WORKERS $PREFIX-site-$s"; done
 python3 - "$W" "$NS" "$PREFIX" "$WORKERS" <<'PY'
@@ -36,6 +47,8 @@ rows += [("worker", x, x in scripts) for x in workers]
 apps = {a.get("name") for a in res("apps")}
 rows += [("container application", x, x in apps) for x in ("tenant-c-box", prefix + "-cdirect-box")]
 rows.append(("D1 database", prefix + "-d1", any(d.get("name") == prefix + "-d1" for d in res("d1"))))
+images = json.load(open(os.path.join(w, "images.json")))
+rows.append(("container image", prefix + "-cdirect-box", any(i.get("name") == prefix + "-cdirect-box" and i.get("tags") for i in images)))
 rows.append(("R2 bucket", prefix + "-r2", any(b.get("name") == prefix + "-r2" for b in res("r2"))))
 for kind, name, there in rows:
     print("%-22s %-32s %s" % (kind, name, "EXISTS" if there else "gone"))

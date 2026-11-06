@@ -73,13 +73,15 @@ These times are from the laptop, so they do not compare with the Vultr runner nu
 3. After that, a call through the dispatcher **starts a container**: the answers change to "The container just exited" (image `httpd:2.4`), then "The container is not listening in the TCP address 10.0.0.1:8080" (image `cloudflare/hello-world:1.0`), which means the container runs.
 4. **Control:** the same Worker and the same images, deployed as a normal Worker with a Wrangler-made container application, gave the same answers. So the failure is the test image (its port), not WfP.
 
-**Not shown yet:** an HTTP answer from a container of a user Worker. The next step is an image with a known port: `tests/wfp/user-container/Dockerfile` (busybox `httpd` on port 8080). It must be built with Docker, which the spike seat does not have:
+**Not shown yet:** an HTTP answer from a container of a user Worker. The next step (#43) is an image with a known port: `tests/wfp/user-container/Dockerfile` (busybox `httpd` on port 8080).
+
+**Finding (2026-11-06, #43): the image cannot be pushed to the account registry on its own.** `wrangler containers build -p -t wfp-spike-box:1 tests/wfp/user-container` and `wrangler containers push wfp-spike-box:1` (Wrangler 4.107.0) both failed at the push: "push access denied, repository does not exist or may require authorization: insufficient_scope". The token had Workers Containers write, the registry credentials call answered, and a new `docker login` made no difference. Every image in the account registry is named `<worker>-<class>` and was pushed by `wrangler deploy` of a normal Worker with a `[[containers]]` image from a Dockerfile. So, as far as we could see, a new repository is made only by such a deploy; we found no documentation either way. A namespace user Worker cannot make it (Wrangler cannot deploy its container, item 2 above). **So a user Worker reuses an image that a normal Worker deploy pushed.**
+
+`tests/wfp/run.sh` with `CONTAINER=1` does that: it deploys the control `<prefix>-cdirect` (a normal Worker) first, so Wrangler builds the Dockerfile and pushes `<prefix>-cdirect-box:<tag>` (this needs Docker); it reads that image from the control's container application, and gives it to `tenant-c`'s application through `container-app.sh`. `destroy.sh` deletes the applications and then that image (by its exact name and tag), and `list.sh` checks the image is gone:
 
 ```sh
-npx wrangler containers build -p -t wfp-spike-box:1 tests/wfp/user-container
-# delete the old application first (container-app.sh does nothing if one exists):
-#   npx wrangler containers delete <id of tenant-c-box>
-CONTAINER=1 LATENCY_N=0 BOX_PORT=8080 CONTAINER_IMAGE=registry.cloudflare.com/<account>/wfp-spike-box:1 ./tests/wfp/run.sh
+CONTAINER=1 LATENCY_N=0 ./tests/wfp/run.sh   # BOX_PORT defaults to 8080 for the built image
+./tests/wfp/destroy.sh                        # ends with list.sh
 ```
 
 **For the design:** a platform that offers `c1` must make the container application through the API for each customer script (Terraform or the deploy script), not through Wrangler.
