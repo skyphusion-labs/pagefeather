@@ -31,6 +31,70 @@ export function setDbHandler(h) {
 // (ctx.storage.sql). The object sets it for each PHP run, under the PHP lock.
 // In the Worker it is always null and every statement goes to D1.
 let sqlDb = null;
+
+// Object cache across requests (php/object-cache.php, docs/perf-dosql.md), in
+// the PHP object with DB_IN_DO only: one object is the only writer, so
+// WordPress's own deletes keep it exact. Least recently used goes first past
+// OBJECT_CACHE_BYTES (values are base64 strings; their length is counted).
+const OBJECT_CACHE_BYTES = 8 * 1024 * 1024;
+const objectCache = new Map(); // key -> { v, exp, n }
+let objectCacheBytes = 0;
+function objectCacheClear() {
+	objectCache.clear();
+	objectCacheBytes = 0;
+}
+function objectCacheDrop(k) {
+	const e = objectCache.get(k);
+	if (!e) return false;
+	objectCache.delete(k);
+	objectCacheBytes -= e.n;
+	return true;
+}
+function objectCacheOp(op) {
+	stats.ocCalls++;
+	const now = Date.now();
+	if (op.op === 'get') {
+		const v = op.k.map((k) => {
+			const e = objectCache.get(k);
+			if (!e) return null;
+			if (e.exp && e.exp <= now) {
+				objectCacheDrop(k);
+				return null;
+			}
+			objectCache.delete(k); // most recently used goes last
+			objectCache.set(k, e);
+			stats.ocHits++;
+			return e.v;
+		});
+		return { v };
+	}
+	if (op.op === 'set') {
+		objectCacheDrop(op.k);
+		const n = op.k.length + op.v.length;
+		if (n > OBJECT_CACHE_BYTES / 4) return { ok: false };
+		objectCache.set(op.k, { v: op.v, exp: op.ttl > 0 ? now + op.ttl * 1000 : 0, n });
+		objectCacheBytes += n;
+		for (const k of objectCache.keys()) {
+			if (objectCacheBytes <= OBJECT_CACHE_BYTES) break;
+			objectCacheDrop(k);
+		}
+		return { ok: true };
+	}
+	if (op.op === 'del') {
+		let n = 0;
+		for (const k of op.k) if (objectCacheDrop(k)) n++;
+		return { n };
+	}
+	if (op.op === 'flush') {
+		objectCacheClear();
+		return { ok: true };
+	}
+	if (op.op === 'flush_group') {
+		for (const k of [...objectCache.keys()]) if (k.startsWith(op.g)) objectCacheDrop(k);
+		return { ok: true };
+	}
+	return { ok: false };
+}
 // Counters only grow. A request reports the difference, so a nested request
 // (WordPress calling its own URL) cannot reset an outer one.
 const stats = newStats();
@@ -134,7 +198,7 @@ async function stageUpload(req, env) {
 }
 
 function newStats() {
-	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0 };
+	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, ocCalls: 0, ocHits: 0 };
 }
 
 // The log and failure lists live as long as the isolate. Keep the newest only.
@@ -247,6 +311,7 @@ function lazyFile(FS, path, entry) {
 // the checkout Container, through the outbound handler for worker.internal.
 async function handleMessage(raw) {
 	const m = JSON.parse(raw);
+	if (m.oc) return JSON.stringify(objectCacheOp(m.oc));
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
 	if (m.cache === 'purge') {
 		purgeRequested = true;
@@ -406,6 +471,9 @@ async function boot(origin) {
 	if (ENV.MEDIA && ENV.IMAGES) lines.push(`define('CF_IMAGES', true);`);
 	// A deploy (WP_SALT is set) shows no PHP errors or database errors to visitors.
 	if (ENV.WP_SALT) lines.push(`define('WP_DEBUG', false);`);
+	// The object cache across requests (php/object-cache.php): only where one
+	// object is the only writer. OBJECT_CACHE=off turns it off (to measure).
+	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.OBJECT_CACHE !== 'off') lines.push(`define('JS_OBJECT_CACHE', true);`);
 	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
 
 	php.onMessage(handleMessage);
@@ -934,6 +1002,7 @@ export class PhpRuntime extends DurableObject {
 			if (!sql) return new Response('DB_IN_DO is off', { status: 409 });
 			const text = await req.text();
 			return withPhp(() => {
+				objectCacheClear(); // the database changes outside WordPress's cache
 				try {
 					return Response.json({ ...importInto(sql, this.ctx.storage, text, url.searchParams.get('replace') === '1'), databaseBytes: sql.databaseSize });
 				} catch (e) {
@@ -1186,7 +1255,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const { php, handler, bootMs } = await bootPromise;
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
-			const start = { calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes };
+			const start = { calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, ocCalls: stats.ocCalls, ocHits: stats.ocHits };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
 			if (url.pathname === '/_install') {
@@ -1202,6 +1271,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 				}
 				// The runtime is not usable for requests after this script exits. Boot a fresh one next time.
 				bootPromise = null;
+				objectCacheClear(); // the database changed outside WordPress's cache
 				const tail = out.length > 6000 ? out.slice(-6000) : out;
 				return Response.json({ bootMs, ms: Date.now() - t0, out: tail, errors: String(errors).slice(0, 4000), d1: delta() });
 			}
@@ -1285,6 +1355,10 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 					wasm0MiB: Math.round(wasm0 / 1048576),
 					wasm1MiB: Math.round(wasmBytes / 1048576),
 					bytes: r.bytes.length,
+					ocCalls: stats.ocCalls - start.ocCalls,
+					ocHits: stats.ocHits - start.ocHits,
+					ocKeys: objectCache.size,
+					ocKiB: Math.round(objectCacheBytes / 1024),
 					...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full } : {}),
 				};
 				out.set('x-perf', JSON.stringify(perf));
