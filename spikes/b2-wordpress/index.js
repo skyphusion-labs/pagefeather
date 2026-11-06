@@ -9,6 +9,9 @@ import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
 // Compiled PHP (OPcache file cache) made by opcache.sh with this same PHP build.
 import opcacheZip from './build/opcache.zip';
+// The build id baked at build time (build.sh writes build/build-id.js), so the
+// object can report which code version it runs (issue #35 slice 5).
+import BUILD_ID from './build/build-id.js';
 
 const OPCACHE_DIR = '/internal/shared/opcache';
 
@@ -1403,6 +1406,18 @@ export class PhpRuntime extends DurableObject {
 		if (url.pathname === '/_origin') return Response.json({ objectUrl: raw.url, publicOrigin: origin, used: url.href });
 		// The purge state of this object (issue #78): pending, last sent, the last 20 sends, the next alarm.
 		if (url.pathname === '/_purgestate') return Response.json({ ...((await this.ctx.storage.get(PURGE_STATE_KEY)) || {}), alarm: await this.ctx.storage.getAlarm(), now: Date.now() });
+		// The build this OBJECT is running (issue #35 slice 5). After a re-upload a
+		// warm object keeps the old code until it is evicted, so this reports the
+		// object's version, which can lag the Worker's until /_evict or a sleep.
+		if (url.pathname === '/_build') return Response.json({ build: BUILD_ID });
+		// Reset this object so the next request boots the new code (issue #35
+		// slice 5). ctx.abort() may not exist on an older compat date: then 501,
+		// and the caller falls back to waiting for the idle sleep.
+		if (url.pathname === '/_evict') {
+			if (typeof this.ctx.abort !== 'function') return Response.json({ evicted: false, reason: 'ctx.abort is not available on this compatibility date', build: BUILD_ID }, { status: 501 });
+			this.ctx.waitUntil(Promise.resolve().then(() => this.ctx.abort('evict for a new build (issue #35)')));
+			return Response.json({ evicting: true, build: BUILD_ID });
+		}
 		const maxBody = env.MEDIA && isMediaUpload(req, url) ? Number(env.MAX_UPLOAD_BYTES || MAX_UPLOAD_BYTES) : Number(env.MAX_BODY_BYTES || MAX_BODY_BYTES);
 		const ctx = { inObject: true, waitUntil: (p) => this.ctx.waitUntil(p), requestPurge: () => this.requestPurge() };
 		if (url.pathname === '/_d1ping') return d1ping(req, env, url, ctx);

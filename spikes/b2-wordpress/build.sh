@@ -87,3 +87,11 @@ echo "site.zip $(wc -c < build/site.zip) bytes, $(cd build && unzip -l site.zip 
 # ran B's compiled wp-content/db.php from the zip a B build had left).
 python3 -c "import zipfile; zipfile.ZipFile('build/opcache.zip', 'w').close()"
 echo "public/ $(find build/public -type f | wc -l | tr -d ' ') files"
+# The build id (issue #35 slice 5): the git sha this build came from, baked into
+# the bundle so the Worker and its object can report which version they run.
+# "-dirty" when the tree has uncommitted changes, so a hand-built tree is never
+# mistaken for a committed build. "unknown" outside a git tree.
+BUILD_ID=$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+[ -n "$(git status --porcelain 2>/dev/null)" ] && BUILD_ID="$BUILD_ID-dirty"
+printf 'export default %s;\n' "\"$BUILD_ID\"" > build/build-id.js
+echo "build-id $BUILD_ID"
