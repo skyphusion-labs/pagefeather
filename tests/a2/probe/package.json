@@ -1,0 +1,8 @@
+{
+  "name": "wp-a2-probe",
+  "private": true,
+  "license": "GPL-2.0-or-later",
+  "dependencies": {
+    "mysql2": "3.24.6"
+  }
+}
