@@ -9,6 +9,9 @@ if ( ! in_array( parse_url( $_SERVER['REQUEST_URI'], PHP_URL_PATH ), array( '/pi
 // path. Overlap of start and end gives the requests in flight at any time.
 // The stats request itself is not logged.
 if ( '/_stats.php' !== parse_url( $_SERVER['REQUEST_URI'], PHP_URL_PATH ) ) {
+	// The PHP worker that answered: tests/cache_check.py uses it to show that
+	// reads came from more than one worker.
+	header( 'x-c1-pid: ' . getmypid() );
 	$c1_t0  = microtime( true );
 	$c1_ru0 = getrusage();
 	// Registered first, so it runs before WordPress's own shutdown functions.

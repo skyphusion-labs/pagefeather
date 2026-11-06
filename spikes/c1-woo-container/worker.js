@@ -17,6 +17,13 @@ export class Store extends Container {
 	pingEndpoint = 'localhost/ping';
 	constructor(ctx, env) {
 		super(ctx, env);
+		// The Worker version this object was built with (version_metadata). The
+		// container gets the environment this object built, so an object from an
+		// older deploy starts containers with the older settings (seen
+		// 2026-11-05: a new image with the OBJECT_CACHE of the deploy before).
+		// /_store-info compares it with the Worker's own version; /_store-stop
+		// resets the object, so the next request builds it again.
+		this.builtVersion = (env.CF_VERSION_METADATA && env.CF_VERSION_METADATA.id) || '';
 		this.envVars = {
 			WP_SALT: env.WP_SALT || '',
 			ADMIN_PASSWORD: env.ADMIN_PASSWORD || '',
@@ -31,6 +38,7 @@ export class Store extends Container {
 			SPIKE_TOKEN: env.SPIKE_TOKEN || '',
 			PHP_WORKERS: env.PHP_WORKERS || '2',
 			IDLE_SECONDS: env.IDLE_SECONDS || '900',
+			OBJECT_CACHE: env.OBJECT_CACHE || 'apcu',
 		};
 	}
 }
@@ -43,16 +51,41 @@ export class Store extends Container {
 // each deploy, and on a new site there is no container yet). The same flag
 // once read false for a container that served requests (2026-11-04); then the
 // stop is skipped, as signal() failed before. kill=1 still calls destroy().
+//
+// After the stop, the object resets itself (ctx.abort), so the next request
+// builds a new object from the current deploy, with its environment. It waits
+// for the container to stop first (up to 30 s; SIGTERM lets Litestream finish
+// its sync), and resets only when the container is down.
+Store.prototype.storeInfo = async function () {
+	return { do_version: this.builtVersion, running: this.ctx.container.running, object_cache: this.envVars.OBJECT_CACHE, replica_path: this.envVars.REPLICA_PATH };
+};
 Store.prototype.shutdownNow = async function (kill) {
 	const running = this.ctx.container.running;
-	if (!running && !kill) return { running, kill: false, ok: true, skipped: 'no container running' };
+	const out = { running, kill: !!kill, ok: true, do_version: this.builtVersion };
 	try {
-		if (kill) await this.ctx.container.destroy();
+		if (!running && !kill) out.skipped = 'no container running';
+		else if (kill) await this.ctx.container.destroy();
 		else this.ctx.container.signal(15);
-		return { running, kill: !!kill, ok: true };
 	} catch (e) {
-		return { running, kill: !!kill, ok: false, error: String((e && e.message) || e) };
+		out.ok = false;
+		out.error = String((e && e.message) || e);
 	}
+	const t0 = Date.now();
+	while (this.ctx.container.running && Date.now() - t0 < 30000) await new Promise((r) => setTimeout(r, 250));
+	out.stopped_after_ms = Date.now() - t0;
+	out.still_running = this.ctx.container.running;
+	// Reset only when the container is down: an abort while it still runs can
+	// cut Litestream's final sync. Still running after 30 s: no reset, ok false,
+	// so c1_check fails loudly instead.
+	if (out.still_running) {
+		out.ok = false;
+		out.reset = false;
+		return out;
+	}
+	out.reset = true;
+	// After the reply (200 ms): abort() ends this object at once.
+	setTimeout(() => this.ctx.abort('reset after /_store-stop'), 200);
+	return out;
 };
 
 Store.outboundByHost = {
@@ -85,6 +118,23 @@ export default {
 				return Response.json(await store(env).shutdownNow(url.searchParams.get('kill') === '1'));
 			} catch (e) {
 				return Response.json({ ok: false, rpc_error: String((e && e.message) || e) }, { status: 500 });
+			}
+		}
+		if (url.pathname === '/_store-info') {
+			if (!spikeOk) return new Response('forbidden', { status: 403 });
+			const worker_version = (env.CF_VERSION_METADATA && env.CF_VERSION_METADATA.id) || '';
+			try {
+				const i = await store(env).storeInfo();
+				return Response.json({ worker_version, ...i, current: !!worker_version && worker_version === i.do_version });
+			} catch (e) {
+				// An object from a deploy before this code has no storeInfo(): not current.
+				// (On Cloudflare a sync method named info answered "The RPC receiver
+				// does not implement the method info" from an object that did run this
+				// code: its shutdownNow answered with this version, 2026-11-05. Local
+				// workerd 4.107.0 accepted it. So this one is async and has another
+				// name, like shutdownNow, which works; which of the two mattered is
+				// not known.)
+				return Response.json({ worker_version, current: false, rpc_error: String((e && e.message) || e) });
 			}
 		}
 		if (url.pathname === '/xmlrpc.php') return new Response('XML-RPC is off', { status: 403 });
