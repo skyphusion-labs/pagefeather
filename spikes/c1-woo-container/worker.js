@@ -222,7 +222,9 @@ Store.prototype.fetch = async function (request) {
 		release();
 		throw e;
 	}
-	if (!r.body || r.webSocket) {
+	// QUEUE_RELEASE=headers counts only until the response headers (the #82
+	// behavior), for the A/B of the latency tail (#39); the default is body.
+	if (!r.body || r.webSocket || this.env.QUEUE_RELEASE === 'headers') {
 		release();
 		return r;
 	}

@@ -64,16 +64,24 @@ def req(o, path, data=None, headers=None, method=None, timeout=60):
         data = json.dumps(data).encode()
         h.setdefault("Content-Type", "application/json")
     t = time.time()
+    ttfb = None
     try:
         r = o.open(urllib.request.Request(B + path, data=data, headers=h, method=method), timeout=timeout)
+        ttfb = time.time() - t  # open() returns when the status line and headers are in
         code, body, hd = r.status, r.read(), r.headers
     except urllib.error.HTTPError as e:
+        ttfb = time.time() - t
         code, body, hd = e.code, e.read(), e.headers
     except Exception as e:
-        return {"code": "EXC", "body": repr(e).encode(), "h": {}, "s": time.time() - t}
-    return {"code": code, "body": body, "h": hd, "s": time.time() - t}
+        return {"code": "EXC", "body": repr(e).encode(), "h": {}, "s": time.time() - t, "t0": t, "ttfb": ttfb}
+    return {"code": code, "body": body, "h": hd, "s": time.time() - t, "t0": t, "ttfb": ttfb}
 
 
+# Requests slower than SLOW_S seconds (default 10) are listed per step, so a
+# latency tail can be matched to the site's own logs: start time (Unix),
+# kind, status, total and time to the headers (TTFB: total much longer than
+# TTFB means the body stalled), and the cf-ray. At most 50 a step.
+SLOW_S = float(os.environ.get("SLOW_S", "10"))
 LOAD_MODE = os.environ.get("LOAD_MODE", "nocache")
 if LOAD_MODE not in ("nocache", "cached", "cached-sbjs"):
     sys.exit("LOAD_MODE must be nocache, cached or cached-sbjs")
@@ -205,6 +213,9 @@ def step(n, prods):
         row = {"k": kind, "c": r["code"], "s": r["s"], "ok": (r["code"] in (200, 201) if ok is None else ok),
                "e1102": is_1102(r), "mib": h.get("x-wasm-mib"), "rec": h.get("x-runtime-recycled"), "boot": h.get("x-boot"),
                "cf": h.get("cf-cache-status"), "shed": r["code"] == 503 and bool(h.get("x-c1-shed"))}
+        if r["s"] >= SLOW_S:
+            row["slow"] = {"t0": round(r.get("t0") or 0, 3), "k": kind, "c": r["code"], "s": round(r["s"], 3),
+                           "ttfb": round(r["ttfb"], 3) if r.get("ttfb") is not None else None, "ray": h.get("cf-ray")}
         with lock:
             rows.append(row)
 
@@ -227,6 +238,7 @@ def step(n, prods):
            "status": {}, "recycled": {}, "boots": sum(1 for r in rows if r["boot"] == "1"),
            "max_wasm_mib": max([int(r["mib"]) for r in rows if r["mib"]] or [0]), "kinds": {}}
     # 503 answers from the bounded queue (x-c1-shed), per kind (issue #39).
+    out["slow"] = sorted((r["slow"] for r in rows if "slow" in r), key=lambda x: -x["s"])[:50]
     out["shed"] = {}
     for r in rows:
         if r["shed"]:
