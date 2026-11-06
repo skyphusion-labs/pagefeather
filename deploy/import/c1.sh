@@ -9,7 +9,8 @@
 # SHA-256; container/entrypoint.sh), and replicates it. To go back, deploy
 # with the old REPLICA_PATH (default store): its replica is unchanged.
 #
-#   phase 1 (default): seed. Needs NAME, CLOUDFLARE_API_TOKEN, ACCOUNT_ID.
+#   phase 1 (default): seed, and with CONTENT the uploads to the media bucket.
+#   Needs NAME, CLOUDFLARE_API_TOKEN, ACCOUNT_ID.
 #   phase 2 (VERIFY=1, the same WORK): after the deploy, compare the rows of
 #   each table that the container loaded with the seed, then GET /.
 # Uses: ROOT IMP WORK URL SPIKE_TOKEN NAME tf_ready tfi from import.sh.
@@ -21,19 +22,6 @@ C1="$ROOT/spikes/c1-woo-container"
 c1_seed() {
   : "${NAME:?set NAME (the Terraform workspace of deploy.sh)}"
   : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}" "${ACCOUNT_ID:?set ACCOUNT_ID}"
-  [ -z "${CONTENT:-}" ] || { echo "c1: CONTENT (uploads, theme, plugins) is not supported for c1 yet" >&2; exit 2; }
-  # The theme and plugins must be in the c1 build.
-  python3 - "$WORK/report.json" "$C1/build/wordpress/wp-content" <<'PY'
-import json, os, sys
-r = json.load(open(sys.argv[1]))["site"]
-wc = sys.argv[2]
-missing = [f"theme {t}" for t in {r["template"], r["stylesheet"]} if t and not os.path.isdir(os.path.join(wc, "themes", t))]
-missing += [f"plugin {p}" for p in (r["active_plugins"] or []) if not os.path.exists(os.path.join(wc, "plugins", p))]
-if missing:
-    print("NOT IN THE c1 BUILD (spikes/c1-woo-container/build): " + ", ".join(missing))
-    sys.exit(0 if os.environ.get("ALLOW_MISSING") == "1" else 1)
-print("theme and active plugins: all in the c1 build")
-PY
   [ -z "${DRY_RUN:-}" ] || { echo "DRY_RUN: stopped before the seed"; exit 0; }
 
   # One file, no WAL beside it: the seed is the whole database.
@@ -65,8 +53,13 @@ for x in ("-wal", "-shm"):
   unset R2_KEY_ID R2_SECRET
   php "$C1/container/seed-counts.php" "$WORK/site.sqlite" "$sha" "$path" > "$WORK/c1-seed.json"
   echo "c1: seed $bucket/$path.seed.sqlite ($size bytes, SHA-256 $sha)"
+  # With CONTENT: the uploads go to the media bucket now (the site exists), and
+  # the theme and plugins come in with the deploy below (IMPORT_*).
+  media_step
+  local content=""
+  [ ! -s "$WORK/import-line.txt" ] || content="$(cat "$WORK/import-line.txt") "
   echo "Next: deploy with the new replica path (keep your other c1 options the same as before):"
-  echo "  VARIANT=c1 NAME=$NAME REPLICA_PATH=$path SEED_SHA256=$sha ./deploy/deploy.sh"
+  echo "  ${content}VARIANT=c1 NAME=$NAME REPLICA_PATH=$path SEED_SHA256=$sha ./deploy/deploy.sh"
   echo "Then check it:"
   echo "  VARIANT=c1 VERIFY=1 WORK=$WORK URL=$URL NAME=$NAME DUMP=$DUMP ./deploy/import.sh"
   echo "To go back: deploy with your old REPLICA_PATH (default store)."

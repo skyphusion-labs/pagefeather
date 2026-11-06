@@ -346,6 +346,70 @@ So browse p50 is under 0.3 s at every step. Browse p95 is over 0.3 s at 1 user (
 
 **The container now does the checkouts.** In job 2, 64 storefront page views reached PHP in 508 s (the before run: 784); a HIT never reaches it. The container served the shoppers who buy: 526 carts, 526 adds to cart and 526 checkouts in about 8.5 minutes (the before run: 184 each), with the CPU at its cap (0.48 vCPU). Checkout p50 per step: 0.47, 2.53, 4.36, 8.88, 17.6, 26.3 s. That is about one checkout a second on half a vCPU. **Checkout capacity is the instance type**: on `standard-2`, c1 served twice as much (section above). It is a sizing number, not a defect. The order email queue cannot keep up at that order rate either (pending 63 to 290); a real store has far fewer orders a second.
 
+## Bounded queue: a fast answer under overload (2026-11-06)
+
+Issue #39. With the storefront at the edge, the container sees the shoppers who buy: the cart, add to cart, checkout, and the pages the edge does not have.
+
+### Where the wait was (measured first)
+
+In the 100-shopper step of the edge cache run (job 2, `deploy/results/bench-runner-20261106T033126Z-4ee5ce.json`), a checkout took 3.14 s in PHP (p50, router log) and 26.3 s at the client. The accept queue of port 80 (the 2 s sampler) held 56 connections (p50; max 95). 56 at about 2.4 requests per second is about 23 s: all of the difference. So the wait was in PHP's accept queue, which has no limit, not in the Worker to container path.
+
+### The change
+
+Every request to the container passes through the Store object's `fetch`, so the object counts what the container has in hand. When `QUEUE_LIMIT` (16: the 5 PHP processes and about 11 waiting) are in hand, a request that can wait gets `503` at once, with `Retry-After` (`RETRY_AFTER`, 5 s), `x-c1-shed: 1` and `no-store`: a WordPress REST error (`c1_busy`) for the Store API, a short HTML page otherwise. The requests that can wait: a storefront page the edge does not have, `?add-to-cart=`, the cart and account pages, and the Store API except checkout. Always let in: the checkout (Store API and `wc-ajax=checkout`, the checkout page), payment callbacks (`wc-api`), `wp-admin`, `wp-login.php`, other REST (admin and API clients) and the operator endpoints. Nothing in flight is stopped. `QUEUE_LIMIT=0` turns it off. `/_store-info` shows `queue` (limit, inflight, maxInflight, admitted, shed).
+
+### Measured
+
+Each arm on its own copy of wp-c1's database, `standard-1`, APCu, `LOAD_MODE=cached-sbjs`, BUYERS 0.5 (to overload the container), 1 to 100 users. The same image in both arms; only `QUEUE_LIMIT` changes. BEFORE: `QUEUE_LIMIT=0` (`deploy/results/bench-runner-20261106T035439Z-ffe08b.json`, runner 2 vCPU). AFTER: `QUEUE_LIMIT=16`, run from a 4 vCPU runner (`deploy/results/bench-runner-20261106T044138Z-56aa96.json`; the result header still says the old plan, because the box was resized in place: the client CPUs per step say 4).
+
+| Users | BEFORE checkout p50 / p95 | BEFORE orders | AFTER checkout p50 / p95 | AFTER orders | AFTER sheds (cart, add, page) | AFTER client load |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 0.43 / 1.04 s | 61 | 0.41 / 0.53 s | 65 | 0 | 0.00 / 4 |
+| 5 | 2.8 / 4.1 s | 74 | 2.7 / 4.0 s | 74 | 0 | 0.15 / 4 |
+| 10 | 3.8 / 6.4 s | 82 | 3.8 / 6.3 s | 81 | 0 | 0.32 / 4 |
+| 25 | 9.6 / 17.7 s | 85 | 6.1 / 8.6 s | 85 | 99, 10, 2 | 0.46 / 4 |
+| 50 | 17.4 / 25.2 s | 104 | 5.6 / 8.2 s | 76 | 343, 39, 1 | 1.36 / 4 |
+| 100 | 23.6 / 55.9 s | 153 | 4.9 / 8.4 s | 71 | 712, 81, 0 | 8.09 / 4 (client limited) |
+
+0 errors other than the 503s in both arms, and every checkout that started succeeded. In AFTER, a shed cart or add was answered at once (cart p50 0.05 to 0.09 s from 25 users); admitted carts and adds had a p95 of 3.5 to 5.8 s.
+
+From the container log (each arm's measured window):
+
+| | BEFORE | AFTER |
+| --- | --- | --- |
+| Completed orders per minute | 65.0 (559 in 516 s) | 68.7 (452 in 395 s) |
+| CPU s per completed order | 0.43 | 0.40 |
+| Most requests in the container (maxInflight) | 107 | 18 |
+| Accept queue, max / mean | 98 / 23 | 8 / 2.9 |
+| CPU used, p50 | 0.49 vCPU | 0.49 vCPU |
+| Checkout time in PHP, p95 | 3.16 s | 3.02 s |
+| CPU s by class: checkout, cart, add, pages and cron | 154, 23, 25, 36 | 118, 23, 19, 21 |
+
+- **Checkout waits less.** At 25 and 50 users (a clean client), checkout p95 fell from 17.7 to 8.6 s and from 25.2 to 8.2 s. The 100-user step is client limited (a load of 8 on 4 CPUs); its 8.4 s is an upper bound, and it agrees with the clean steps. A checkout cannot be shed, but the shopper must first get a cart and an add to cart in; when checkouts fill the container, new carts and adds are shed, so checkouts arrive only as fast as the container finishes them.
+- **The container finishes as many orders a minute** (68.7 against 65.0, at the same CPU cap). The limit adds no capacity. It decides who waits: BEFORE, every buyer waited (up to 56 s); AFTER, the buyers beyond the limit are told to come back.
+- **The trade: shed shoppers are lost sales unless they come back.** At 50 users 382 buy attempts were shed, and at 100 users 793 (each told to retry in 5 s). BEFORE served all of them, slowly; a real shopper who waits 56 s for a checkout often leaves, so BEFORE's count is an upper bound. 130 shoppers got a cart and then had the add to cart shed: work spent on a shopper who is turned away. Letting a shopper who is already in a cart flow pass the limit would keep that work; it is the next step.
+- **A page the edge does not have can be shed too:** 3 page views of 1,689 got the busy page at 25 and 50 users.
+- **The client.** The first AFTER run (`deploy/results/bench-runner-20261106T040726Z-92de18.json`, kept as a record, not used for the numbers) retried a shed buyer at once, and the runner, not the site, became the limit (a load of 3.4 to 26 on 2 CPUs from 25 users). `load.py` now waits `Retry-After` after a 503, as a shopper told to come back would. With that client, a second AFTER run from the 2 vCPU runner (`deploy/results/bench-runner-20261106T042703Z-bcf56a.json`) gave the same container result (67.0 orders a minute, maxInflight 18, accept queue at most 8) and the same 25-user step (82 orders, checkout p95 8.8 s).
+
+Checkout capacity is still the instance type: about 1.6 checkouts a second fit in half a vCPU. The limit keeps the wait short; a larger instance serves more buyers.
+
+## Warm start on a product view (issue #73, not measured yet)
+
+With the storefront cache, a shopper can browse cached pages while the container sleeps. Then the first request that needs the container (the cart, add to cart) waits for the cold start: 11 to 22 s, measured as starts after a stop.
+
+**The change** (`spikes/c1-woo-container/warm.js`, off by default):
+- With `WARM_START=product`, the gateway sees a product view in its cacheable branch, and the page still comes from the edge. It then calls the Store object's `warmStart()` in `ctx.waitUntil`, after the response.
+- The object starts the container through the Container class `start()` (the process, not a WordPress request), only when it does not run. It never goes through `Store.prototype.fetch`, so the bounded queue does not count or shed it.
+- Two rate limits: the object makes no new start within `WARM_GAP_S`, and the gateway isolate asks the object at most once per `WARM_GAP_S`, so a warm site makes no RPC per page view.
+- The container's own idle watchdog (`IDLE_SECONDS`) stops a container that no shopper follows. That is the cost: up to `IDLE_SECONDS` of awake time per warm start.
+- `/_store-info` reports `warm: {mode, starts, skipped_running, skipped_gap, failed, last_ms_ago}`.
+
+**Tested locally:** `spikes/c1-woo-container/tests/warm-test.mjs` (CI) covers the path rule, the two rate limits, the running check, a failed start, and that neither `Store.prototype.fetch` nor `warm.js` warms through `fetch`. A mutation run turned each of 8 guards red.
+
+**To measure on a fresh c1 site, when Docker is back:** let the container sleep, make one cached product view, then add to cart, with `WARM_START=product` and, as the control, `off`. Read the add-to-cart time, and the awake time from `/_store-info`. Also check whether a cached product view already reaches the container by itself (a Store API or `wc-ajax` request of the theme); then this trigger adds little. What is known (strummer-c1perf, #39, plain HTTP with `load.py` and the probes, which run no JavaScript): an anonymous product page from the edge sets no cookie and sends nothing more by itself. Whether the mini-cart block of twentytwentyfive (or `wc-cart-fragments`, if a theme turns it on) sends a Store API cart request on load is a browser question, not tested. It needs a browser run.
+
+**Why not warm through a Store API request:** under overload, the bounded queue sheds a new visitor's Store API cart request (no `Cart-Token`, no session: class `shed` in `admission()`). A warm start made through such a request would then be refused. `start()` does not go through the queue.
+
 ## Problems found
 
 - WooCommerce writes log files under `uploads/wc-logs`. With uploads in R2, every log line was an R2 read and write: about 30 calls and about 15 s of each checkout. `WC_LOG_DIR` now points to local disk (also in approach B).
@@ -362,9 +426,9 @@ So browse p50 is under 0.3 s at every step. Browse p95 is over 0.3 s at 1 user (
 
 ## Next
 
-- The first write after a sleep: a cached storefront hides the cold start (13 to 30 s) until the first cart request. Start the container on the first product view or add to cart (#20).
+- The first write after a sleep: a cached storefront hides the cold start (13 to 30 s) until the first cart request. Start the container on the first product view or the first Store API request of a visit (#73).
 - Purge by object (a tag per product and per listing) instead of the whole site, when a store has many products and many edits.
-- Limit the queue at the PHP server: at high load a request waits in the accept backlog until the client gives up. An early 503 is better for the tail than a 60 s wait.
+- Let a shopper already in a cart flow (a Cart-Token or a WooCommerce session) pass the bounded queue, so the work for a cart is not lost when the add to cart is shed (section "Bounded queue").
 - The rest of the CPU is the start of WordPress and WooCommerce and the rendering (about 0.15 s a page with APCu): profile it before more caching.
 - Start the container before it is needed: on a product page view, or keep it awake in store hours.
 - Admin pages and the editor in the container: measure them.

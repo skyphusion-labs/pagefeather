@@ -546,6 +546,8 @@ let purgeRequested = false;
 // per account. Purge at most once per PURGE_GAP_MS per isolate; the short TTL
 // with stale-while-revalidate limits staleness when a purge is refused.
 const PURGE_GAP_MS = 15000;
+// The object's purge state (issue #78): {pending, lastSent, retried}, in its storage.
+const PURGE_STATE_KEY = 'skyphusion-purge';
 let lastPurge = 0;
 function schedulePurge(ctx) {
 	// A purge already scheduled for later covers this change too.
@@ -1301,7 +1303,6 @@ async function opcacheStats(php) {
 	}
 }
 
-const PURGE_HEADER = 'x-php-purge';
 // When the Worker sent the request (Date.now()). The object's inbox wait is its
 // own Date.now() at the start of fetch minus this. With the database in the
 // object, PHP never yields to the event loop (no I/O), so a second request
@@ -1316,6 +1317,66 @@ const SENT_HEADER = 'x-perf-sent';
 // Worker can reach the object, so the object can trust it.
 const ORIGIN_HEADER = 'x-wp-public-origin';
 export class PhpRuntime extends DurableObject {
+	// Page cache purges for the whole site (issue #78). PHP runs in this one
+	// object (PHP_DO_POOL=1), so every change of content passes here. The
+	// Worker's PURGE_GAP_MS was per isolate: a burst of parallel writes reached
+	// several isolates and each purged (measured on wp-perf-dosql: 20 purges in
+	// 32 s). Here one alarm sends one purge for everything asked since the last
+	// purge, at most one per PURGE_GAP_MS, as c1 does in its Store object. The
+	// state is stored, so a purge asked for survives an evicted object. A
+	// refused purge is tried once more one interval later. With a pool of more
+	// than one object, each object coalesces on its own.
+	async requestPurge() {
+		const now = Date.now();
+		const st = (await this.ctx.storage.get(PURGE_STATE_KEY)) || { lastSent: 0 };
+		const coalesced = !!st.pending;
+		let waitMs = 0;
+		st.lastAsked = now; // so a test can check the last change is covered by a later purge
+		st.pending = true;
+		await this.ctx.storage.put(PURGE_STATE_KEY, st);
+		if (!coalesced) {
+			const at = Math.max(now, (st.lastSent || 0) + PURGE_GAP_MS);
+			waitMs = at - now;
+			await this.ctx.storage.setAlarm(at);
+		}
+		console.log(JSON.stringify({ m: 'purge', asked: 1, t: now, coalesced: coalesced ? 1 : 0, waitMs, where: 'object' }));
+		return coalesced ? 'coalesced' : 'scheduled';
+	}
+
+	async alarm() {
+		const st = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
+		if (!st.pending) return;
+		// Cleared before the purge: a change during the purge asks for the next one.
+		st.pending = false;
+		st.lastSent = Date.now();
+		await this.ctx.storage.put(PURGE_STATE_KEY, st);
+		let r;
+		try {
+			r = await this.ctx.exports.Pages.purge(['wp-pages']);
+		} catch (e) {
+			r = { ok: false, errors: [String((e && e.message) || e).slice(0, 200)] };
+		}
+		const ok = !!(r && r.ok);
+		const sent = { t: st.lastSent, ok, errors: (r && r.errors) || [], error: (r && r.error) || null };
+		console.log(JSON.stringify({ m: 'purge', sent: 1, ...sent, where: 'object' }));
+		// The last 20 sends, for /_purgestate: wrangler tail does not show alarm runs.
+		const logged = (await this.ctx.storage.get(PURGE_STATE_KEY)) || st;
+		logged.sends = [...(logged.sends || []), sent].slice(-20);
+		await this.ctx.storage.put(PURGE_STATE_KEY, logged);
+		// Locally there is no cache API (r.error): nothing to retry. A refused purge is retried once.
+		if (!ok && !(r && r.error) && !st.retried) {
+			const again = (await this.ctx.storage.get(PURGE_STATE_KEY)) || st;
+			again.retried = true;
+			again.pending = true;
+			await this.ctx.storage.put(PURGE_STATE_KEY, again);
+			await this.ctx.storage.setAlarm(Date.now() + PURGE_GAP_MS);
+		} else if (st.retried) {
+			const done = (await this.ctx.storage.get(PURGE_STATE_KEY)) || st;
+			done.retried = false;
+			await this.ctx.storage.put(PURGE_STATE_KEY, done);
+		}
+	}
+
 	async fetch(raw) {
 		const env = this.env;
 		ENV = env;
@@ -1335,8 +1396,10 @@ export class PhpRuntime extends DurableObject {
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		// Spike: the URL the object got, and the origin it uses.
 		if (url.pathname === '/_origin') return Response.json({ objectUrl: raw.url, publicOrigin: origin, used: url.href });
+		// The purge state of this object (issue #78): pending, last sent, the last 20 sends, the next alarm.
+		if (url.pathname === '/_purgestate') return Response.json({ ...((await this.ctx.storage.get(PURGE_STATE_KEY)) || {}), alarm: await this.ctx.storage.getAlarm(), now: Date.now() });
 		const maxBody = env.MEDIA && isMediaUpload(req, url) ? Number(env.MAX_UPLOAD_BYTES || MAX_UPLOAD_BYTES) : Number(env.MAX_BODY_BYTES || MAX_BODY_BYTES);
-		const ctx = { inObject: true, waitUntil: (p) => this.ctx.waitUntil(p) };
+		const ctx = { inObject: true, waitUntil: (p) => this.ctx.waitUntil(p), requestPurge: () => this.requestPurge() };
 		if (url.pathname === '/_d1ping') return d1ping(req, env, url, ctx);
 		// DB_IN_DO=on: WordPress's database is this object's SQLite (8j).
 		const sql = env.DB_IN_DO === 'on' ? this.ctx.storage.sql : null;
@@ -1351,12 +1414,12 @@ export class PhpRuntime extends DurableObject {
 		if (url.pathname === '/_dbimport' && req.method === 'POST') {
 			if (!sql) return new Response('DB_IN_DO is off', { status: 409 });
 			const text = await req.text();
-			return withPhp(() => {
+			return withPhp(async () => {
 				objectCacheClear(); // the database changes outside WordPress's cache
 				try {
 					const done = importInto(sql, this.ctx.storage, text, url.searchParams.get('replace') === '1', url.searchParams.get('append') === '1');
-					// The pages in the page cache show the old database: the Worker purges them (PURGE_HEADER).
-					return Response.json({ ...done, databaseBytes: sql.databaseSize }, { headers: { [PURGE_HEADER]: '1' } });
+					// The pages in the page cache show the old database: the object purges them (issue #78).
+					return Response.json({ ...done, databaseBytes: sql.databaseSize }, { headers: { 'x-cache-purge': await this.requestPurge() } });
 				} catch (e) {
 					return Response.json({ ok: false, error: String((e && e.message) || e) }, { status: 400 });
 				}
@@ -1435,12 +1498,6 @@ async function toPhpObject(req, env, url, ctx) {
 		});
 	}
 	const out = new Response(r.body, r);
-	if (out.headers.has(PURGE_HEADER)) {
-		out.headers.delete(PURGE_HEADER);
-		if (ctx.exports) schedulePurge(ctx);
-		// So a test can see that the purge request crossed from the object.
-		out.headers.set('x-cache-purge', ctx.exports ? 'scheduled' : 'no-cache-api');
-	}
 	out.headers.set('x-php-object', name);
 	// Wall time from the Worker to the object and back, PHP time included.
 	const objectMs = Date.now() - t0;
@@ -1705,8 +1762,9 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			if (dbHandler) (ctx ? ctx.waitUntil(dbHandler.end()) : dbHandler.end());
 			if (ctx && ctx.exports && purgeRequested) schedulePurge(ctx);
 			const out = new Headers();
-			// In the PHP object there is no ctx.exports: the Worker purges (PURGE_HEADER).
-			if (ctx && ctx.inObject && purgeRequested) out.set(PURGE_HEADER, '1');
+			// In the PHP object, the object itself coalesces the purges of the whole site (issue #78).
+			// x-cache-purge (scheduled or coalesced) is for tests.
+			if (ctx && ctx.requestPurge && purgeRequested) out.set('x-cache-purge', await ctx.requestPurge());
 			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
 			const d = delta();
 			pageCacheHeaders(req, url, r, out, env);
