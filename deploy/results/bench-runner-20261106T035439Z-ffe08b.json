@@ -1,0 +1,387 @@
+{
+ "job": "20261106T035439Z-ffe08b",
+ "runner": {
+  "region": "ord",
+  "plan": "vc2-2c-4gb",
+  "started_utc": "2026-11-06T03:55:12Z",
+  "branch": "c1-queuelimit",
+  "git_sha": "7c94569066c641376e0d19a01e0d43c4e4d01656",
+  "curl": "curl 8.5.0 (x86_64-pc-linux-gnu) libcurl/8.5.0 OpenSSL/3.0.13 zlib/1.3 brotli/1.1.0 zstd/1.5.5 libidn2/2.3.7 libpsl/0.21.2 (+libidn2/2.3.7) libssh/0.10.6/openssl/zlib nghttp2/1.59.0 librtmp/2.3 OpenLDAP/2.6.10",
+  "python": "3.12.3",
+  "finished_utc": "2026-11-06T04:03:25Z"
+ },
+ "targets": [
+  {
+   "name": "wp-c1-perf",
+   "url": "https://wp-c1-perf.skyphusion.workers.dev",
+   "variant": "c1",
+   "load": {
+    "target": "https://wp-c1-perf.skyphusion.workers.dev",
+    "woo": true,
+    "load_mode": "cached-sbjs",
+    "levels": [
+     1,
+     5,
+     10,
+     25,
+     50,
+     100
+    ],
+    "seconds_per_level": 60.0,
+    "buyers": 0.5,
+    "steps": [
+     {
+      "users": 1,
+      "seconds": 60.7,
+      "client_load1": 0.08,
+      "client_cpus": 2,
+      "requests": 230,
+      "rps": 3.79,
+      "errors": 0,
+      "e1102": 0,
+      "aborted": 0,
+      "status": {
+       "200": 169,
+       "201": 61
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 47,
+        "ok": 47,
+        "p50": 0.084,
+        "p95": 0.443,
+        "p99": 0.827,
+        "max": 0.827
+       },
+       "cart": {
+        "n": 61,
+        "ok": 61,
+        "p50": 0.145,
+        "p95": 0.262,
+        "p99": 0.296,
+        "max": 0.296
+       },
+       "add": {
+        "n": 61,
+        "ok": 61,
+        "p50": 0.146,
+        "p95": 0.194,
+        "p99": 0.327,
+        "max": 0.327
+       },
+       "checkout": {
+        "n": 61,
+        "ok": 61,
+        "p50": 0.432,
+        "p95": 1.036,
+        "p99": 1.276,
+        "max": 1.276
+       }
+      },
+      "shed": {},
+      "cache": {
+       "MISS": 16,
+       "HIT": 31
+      }
+     },
+     {
+      "users": 5,
+      "seconds": 63.2,
+      "client_load1": 0.07,
+      "client_cpus": 2,
+      "requests": 289,
+      "rps": 4.57,
+      "errors": 0,
+      "e1102": 0,
+      "aborted": 0,
+      "status": {
+       "200": 215,
+       "201": 74
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 67,
+        "ok": 67,
+        "p50": 0.071,
+        "p95": 1.782,
+        "p99": 2.002,
+        "max": 2.002
+       },
+       "cart": {
+        "n": 74,
+        "ok": 74,
+        "p50": 0.474,
+        "p95": 0.873,
+        "p99": 2.851,
+        "max": 2.851
+       },
+       "add": {
+        "n": 74,
+        "ok": 74,
+        "p50": 0.516,
+        "p95": 0.713,
+        "p99": 2.313,
+        "max": 2.313
+       },
+       "checkout": {
+        "n": 74,
+        "ok": 74,
+        "p50": 2.8,
+        "p95": 4.109,
+        "p99": 5.508,
+        "max": 5.508
+       }
+      },
+      "shed": {},
+      "cache": {
+       "HIT": 62,
+       "MISS": 5
+      }
+     },
+     {
+      "users": 10,
+      "seconds": 66.7,
+      "client_load1": 0.16,
+      "client_cpus": 2,
+      "requests": 340,
+      "rps": 5.1,
+      "errors": 0,
+      "e1102": 0,
+      "aborted": 0,
+      "status": {
+       "200": 258,
+       "201": 82
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 94,
+        "ok": 94,
+        "p50": 0.049,
+        "p95": 0.092,
+        "p99": 0.349,
+        "max": 0.349
+       },
+       "cart": {
+        "n": 82,
+        "ok": 82,
+        "p50": 1.186,
+        "p95": 3.956,
+        "p99": 4.315,
+        "max": 4.315
+       },
+       "add": {
+        "n": 82,
+        "ok": 82,
+        "p50": 1.286,
+        "p95": 3.984,
+        "p99": 4.131,
+        "max": 4.131
+       },
+       "checkout": {
+        "n": 82,
+        "ok": 82,
+        "p50": 3.769,
+        "p95": 6.382,
+        "p99": 6.619,
+        "max": 6.619
+       }
+      },
+      "shed": {},
+      "cache": {
+       "HIT": 87,
+       "UPDATING": 7
+      }
+     },
+     {
+      "users": 25,
+      "seconds": 76.3,
+      "client_load1": 0.04,
+      "client_cpus": 2,
+      "requests": 331,
+      "rps": 4.34,
+      "errors": 0,
+      "e1102": 0,
+      "aborted": 0,
+      "status": {
+       "200": 246,
+       "201": 85
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 76,
+        "ok": 76,
+        "p50": 0.056,
+        "p95": 0.146,
+        "p99": 0.188,
+        "max": 0.188
+       },
+       "cart": {
+        "n": 85,
+        "ok": 85,
+        "p50": 6.492,
+        "p95": 12.751,
+        "p99": 16.358,
+        "max": 16.358
+       },
+       "add": {
+        "n": 85,
+        "ok": 85,
+        "p50": 3.105,
+        "p95": 7.51,
+        "p99": 11.828,
+        "max": 11.828
+       },
+       "checkout": {
+        "n": 85,
+        "ok": 85,
+        "p50": 9.629,
+        "p95": 17.712,
+        "p99": 19.416,
+        "max": 19.416
+       }
+      },
+      "shed": {},
+      "cache": {
+       "HIT": 67,
+       "UPDATING": 9
+      }
+     },
+     {
+      "users": 50,
+      "seconds": 90.9,
+      "client_load1": 0.93,
+      "client_cpus": 2,
+      "requests": 422,
+      "rps": 4.64,
+      "errors": 0,
+      "e1102": 0,
+      "aborted": 0,
+      "status": {
+       "200": 318,
+       "201": 104
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 110,
+        "ok": 110,
+        "p50": 0.08,
+        "p95": 0.295,
+        "p99": 0.368,
+        "max": 0.411
+       },
+       "cart": {
+        "n": 104,
+        "ok": 104,
+        "p50": 6.026,
+        "p95": 23.858,
+        "p99": 25.018,
+        "max": 25.229
+       },
+       "add": {
+        "n": 104,
+        "ok": 104,
+        "p50": 7.809,
+        "p95": 17.663,
+        "p99": 22.106,
+        "max": 39.219
+       },
+       "checkout": {
+        "n": 104,
+        "ok": 104,
+        "p50": 17.358,
+        "p95": 25.221,
+        "p99": 26.989,
+        "max": 27.923
+       }
+      },
+      "shed": {},
+      "cache": {
+       "UPDATING": 19,
+       "HIT": 91
+      }
+     },
+     {
+      "users": 100,
+      "seconds": 129.0,
+      "client_load1": 0.51,
+      "client_cpus": 2,
+      "requests": 607,
+      "rps": 4.71,
+      "errors": 0,
+      "e1102": 0,
+      "aborted": 0,
+      "status": {
+       "200": 454,
+       "201": 153
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 148,
+        "ok": 148,
+        "p50": 0.113,
+        "p95": 0.454,
+        "p99": 0.591,
+        "max": 0.655
+       },
+       "cart": {
+        "n": 153,
+        "ok": 153,
+        "p50": 8.852,
+        "p95": 53.55,
+        "p99": 55.572,
+        "max": 56.862
+       },
+       "add": {
+        "n": 153,
+        "ok": 153,
+        "p50": 12.196,
+        "p95": 18.279,
+        "p99": 54.081,
+        "max": 55.596
+       },
+       "checkout": {
+        "n": 153,
+        "ok": 153,
+        "p50": 23.576,
+        "p95": 55.876,
+        "p99": 59.222,
+        "max": 59.606
+       }
+      },
+      "shed": {},
+      "cache": {
+       "HIT": 101,
+       "UPDATING": 47
+      }
+     }
+    ]
+   },
+   "runner_seconds": 492.6
+  }
+ ],
+ "n": 10,
+ "load": {
+  "levels": "1,5,10,25,50,100",
+  "seconds": 60,
+  "buyers": 0.5,
+  "mode": "cached-sbjs"
+ }
+}
