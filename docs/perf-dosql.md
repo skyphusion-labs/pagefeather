@@ -125,6 +125,71 @@ The answer is now honest in all 369 overload responses after the change: body, `
 
 The count of overloads did not settle. It changed by a factor of 38 between runs of the same code before the change (8 to 305), which is more than any difference between the two codes, so these runs cannot say whether the count went up or down. A fast 503 frees the client at once, and it sends its next request into a queue that is still full. `perf.py` does not wait for `Retry-After`. Not measured further.
 
+## Change 1: object cache across requests (measured 2026-11-05)
+
+**Where the CPU was.** Two local instruments, before the change:
+- **V8 CPU profile** of the worker that holds the object (`wrangler dev`, the inspector of workerd itself, 40 warm home requests, 3,507 ms busy): 78.9% in WebAssembly (the PHP interpreter), 12.4% in all JavaScript together (our bridge, the Emscripten glue, php-wasm and fflate are one bundle), 4.1% program, 1.5% garbage collection.
+- **PHP phase times** (a temporary mu-plugin with `hrtime`, 20 warm home requests, 1 ms resolution): 45 of 67 ms between `template_redirect` and `wp_head`. That is the block template and theme.json. Then `init` to `wp_loaded` 8 ms, `parse_request` to `wp` 5 ms, `wp_head` to `wp_footer` 7 ms.
+
+That work is mostly the same on every request; it is redone because a PHP request keeps nothing.
+
+**The change.** `php/object-cache.php` (a loader) and `php/object-cache-js.php`.
+- With `JS_OBJECT_CACHE`, WordPress's object cache keeps values across requests in a JavaScript Map in the object. The Map holds 8 MB; the least recently used value goes first. The Worker defines `JS_OBJECT_CACHE` in `wp-runtime.php` only when `PHP_IN_DO` and `DB_IN_DO` are on, and `OBJECT_CACHE` is not `off`.
+- Within a request, values also stay in a PHP array.
+- One object is the only writer of the database. Pages, REST, `/_install`, `/_activate`, `/_dbimport` and `/wp-cron.php` all run in it: `DISABLE_WP_CRON` is set, there is no `scheduled`, queue or alarm handler, and `ctx.storage.sql` is used only in the object. So WordPress's own updates and deletes keep the cache exact. `/_install` and `/_dbimport` change the database outside WordPress, so they clear the cache.
+- The groups core marks non-persistent (`counts`, `plugins`, `theme_json`) stay per request.
+- Without `JS_OBJECT_CACHE` the loader defines nothing. WordPress then loads its own cache, and `wp_using_ext_object_cache()` stays false. Measured: it reads false with `OBJECT_CACHE=off`.
+
+**Transients.** With the cache on, WordPress keeps transients in the object cache, not in the database. They are lost when the isolate restarts (after a deploy, an eviction or a crash), or when the 8 MB cap pushes them out. The transient contract allows that: a transient can vanish at any time. Our own mu-plugins do not need a transient to survive:
+- `edge-cache.php` only skips purges for transient options;
+- the R2 upload name reservation is a SQL table in the object (`_r2_reserved`);
+- `woo-edge.php` defers `_transient_*-transient-version` option writes. With the cache on, those transients never become options, so its filter does not run.
+
+**A defect found by the gate, before merge.** The first version kept `theme_json` across requests. Its argument was that theme files cannot change within a deploy.
+- **What broke.** A global style written through REST did not show on the next fresh page, once the cache held the old stylesheet. `tests/load/cache_coherence.py`, "global-styles restore shows": FAIL with the cache on, PASS with it off.
+- **Why.** Core clears `theme_json` only from `wp_clean_theme_json_cache()`, which is hooked only to `switch_theme` and `start_previewing_theme`. Core relies on the group starting empty on every request, so saving a `wp_global_styles` post never invalidates it. Plugins also change theme.json data through the `wp_theme_json_data_*` filters.
+- **Now.** `theme_json` stays per request. What keeping it would need: issue #49.
+- **The speedup did not come from theme.json.** The delta below is the build that ships, and it is about the same as the delta measured with `theme_json` kept: home CPU p50 -31% then, -29% now.
+
+**Measured on Cloudflare, the build that ships.**
+- One build (`7151ed6`) deployed to `wp-perf-dosql` twice: with `OBJECT_CACHE=off` (version `ac3489d7`), then without it (`338e50be`).
+- After each deploy, 3 warm-up renders per public page.
+- Then `N=30 C=1 python3 tests/load/perf.py` and `N=80 C=8 PAGES=home`, with `wrangler tail`.
+- Object CPU is tail `cpuTime`, in ms.
+
+| Page | Tail joined (off / on) | CPU p50, off to on | CPU p95, off to on | Statements per page |
+| --- | --- | --- | --- | --- |
+| home | 27 / 23 | 209 to 148 (-29%) | 388 to 283 (-27%) | 32 to 4 |
+| post | 20 / 21 | 232 to 168 (-28%) | 412 to 294 (-29%) | 40 to 4 |
+| search | 19 / 17 | 218 to 150 (-31%) | 396 to 291 (-27%) | 37 to 4 |
+| dashboard | 22 / 17 | 236 to 169 (-28%) | 439 to 319 (-27%) | 47 to 6 |
+| post-new | 30 / 29 | 562 to 523 (-7%) | 1,050 to 976 (-7%) | 72 to 42 |
+| edit | 21 / 19 | 270 to 219 (-19%) | 500 to 435 (-13%) | 48 to 8 |
+
+Home at 8 clients: 80 requests in 21.1 s (3.79 a second) to 80 in 15.6 s (5.13 a second, +35%). All 200. No boots.
+
+**Correctness gates on the build that ships.**
+
+| Gate | Where | Cache on | Cache off |
+| --- | --- | --- | --- |
+| `e2e.sh` | local, `dosql-local` | 17 of 17 | 17 of 17 |
+| `e2e.sh` | local, default env (no `JS_OBJECT_CACHE`) | 17 of 17 | not applicable |
+| `tests/load/cache_coherence.py` (global styles, site title, post title, `/wp-cron.php` served by the object) | `wp-perf-dosql` | 0 fails | 0 fails |
+| the same, plus WooCommerce on through `/_activate` and off through REST (`ACTIVATE=1`) | local, a build with WooCommerce, 3 runs | 0 fails, 2 runs | 0 fails |
+| red control: a cache that keeps the first stored value of a key | local | 2 fails (site title, activation) | not applicable |
+| `tests/break.py` | `wp-perf-dosql` | 21 pass, 5 fail | 21 pass, 5 fail, the same checks |
+| plugin suite (`tests/plugins/plugins.py`, 18 plugins in the 7 groups of `plugin-suite.sh`) | local, `dosql-local` | 18 of 18 pass (`7151ed6`) | 18 of 18 pass (the tree before the merge of #47, which changed only the Worker's overload answer) |
+
+Notes on the gates:
+- **`break.py`.** The 5 checks that fail in both modes are uploads (R2 delete, Images sizes, a long upload path, the purge of a deleted upload, a 6 MB upload). R2 is not on for the Free test account, so the site has no `MEDIA` binding.
+- **Plugin suite, `ocCalls`.** In the same run, `x-perf` `ocCalls` read 110 to 135 on the first page of each group and 35 to 45 after the plugins ran, so the cache was on.
+- **Plugin suite, `function` step.** The same 10 plugins fail their `function` step in both modes and in the B Paid results (`tests/plugins/results/b-paid.jsonl`). That step needs the network, and PHP here has none (issue #26). It does not fail a plugin.
+- **One 503 on a WooCommerce deactivation, locally, not reproduced in 2 more runs.** On Cloudflare, WooCommerce on b-dosql recycles the runtime on every request (WebAssembly memory above 100 MiB). Requests then wait long enough in the object that even one client got the overload answer, and a deactivation through REST got it too (it worked on the 5th try, 15 s apart). So `ACTIVATE=1` is a local check only; WooCommerce on b-dosql is out of scope.
+
+Locally, two A/B runs of the same code gave home PHP ms 91.5 to 64.5 (new install, low load) and 115 to 177.5 (load average 10 to 14 from other work on the laptop). Local wall times are not used for the delta.
+
+**Not measured:** the cache after an isolate restart (it starts empty, as after a deploy); memory near the 8 MB cap (the test site used 382 keys, 208 KiB); the runner's load matrix with the change.
+
 ## Not measured
 
 - Worker CPU for each request in this run (Worker tail events have no request id to join on).

@@ -17,6 +17,8 @@ foreach ( array( 'AUTH_KEY', 'SECURE_AUTH_KEY', 'LOGGED_IN_KEY', 'NONCE_KEY', 'A
 	define( $skyphusion_key, hash( 'sha256', (string) getenv( 'WP_SALT' ) . ':' . $skyphusion_key ) );
 }
 $table_prefix = 'wp_';
+// Object cache keys (object-cache.php, when OBJECT_CACHE=apcu).
+define( 'WP_CACHE_KEY_SALT', hash( 'sha256', (string) getenv( 'WP_SALT' ) . ':cache' ) );
 
 // Requests come through the Worker over HTTPS; the host is the public one.
 $_SERVER['HTTPS'] = 'on';

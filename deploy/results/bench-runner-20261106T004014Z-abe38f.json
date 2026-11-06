@@ -1,0 +1,349 @@
+{
+ "job": "20261106T004014Z-abe38f",
+ "runner": {
+  "region": "ord",
+  "plan": "vc2-2c-4gb",
+  "started_utc": "2026-11-06T00:40:44Z",
+  "branch": "c1-apcu",
+  "git_sha": "c550efe91ddd771807264eee4ac75040c649d9bf",
+  "curl": "curl 8.5.0 (x86_64-pc-linux-gnu) libcurl/8.5.0 OpenSSL/3.0.13 zlib/1.3 brotli/1.1.0 zstd/1.5.5 libidn2/2.3.7 libpsl/0.21.2 (+libidn2/2.3.7) libssh/0.10.6/openssl/zlib nghttp2/1.59.0 librtmp/2.3 OpenLDAP/2.6.10",
+  "python": "3.12.3",
+  "finished_utc": "2026-11-06T00:47:37Z"
+ },
+ "targets": [
+  {
+   "name": "wp-c1-perf",
+   "url": "https://wp-c1-perf.skyphusion.workers.dev",
+   "variant": "c1",
+   "load": {
+    "target": "https://wp-c1-perf.skyphusion.workers.dev",
+    "woo": true,
+    "levels": [
+     1,
+     5,
+     10,
+     25,
+     50,
+     100
+    ],
+    "seconds_per_level": 60.0,
+    "buyers": 0.2,
+    "steps": [
+     {
+      "users": 1,
+      "seconds": 60.1,
+      "client_load1": 0.19,
+      "client_cpus": 2,
+      "requests": 158,
+      "rps": 2.63,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 138,
+       "201": 20
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 98,
+        "ok": 98,
+        "p50": 0.374,
+        "p95": 0.493,
+        "p99": 0.562,
+        "max": 0.562
+       },
+       "cart": {
+        "n": 20,
+        "ok": 20,
+        "p50": 0.186,
+        "p95": 0.243,
+        "p99": 0.462,
+        "max": 0.462
+       },
+       "add": {
+        "n": 20,
+        "ok": 20,
+        "p50": 0.196,
+        "p95": 0.231,
+        "p99": 0.237,
+        "max": 0.237
+       },
+       "checkout": {
+        "n": 20,
+        "ok": 20,
+        "p50": 0.488,
+        "p95": 0.534,
+        "p99": 0.682,
+        "max": 0.682
+       }
+      }
+     },
+     {
+      "users": 5,
+      "seconds": 60.8,
+      "client_load1": 0.1,
+      "client_cpus": 2,
+      "requests": 428,
+      "rps": 7.04,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 364,
+       "201": 64
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 236,
+        "ok": 236,
+        "p50": 0.777,
+        "p95": 1.016,
+        "p99": 1.085,
+        "max": 1.126
+       },
+       "cart": {
+        "n": 64,
+        "ok": 64,
+        "p50": 0.281,
+        "p95": 0.343,
+        "p99": 0.4,
+        "max": 0.4
+       },
+       "add": {
+        "n": 64,
+        "ok": 64,
+        "p50": 0.283,
+        "p95": 0.37,
+        "p99": 0.514,
+        "max": 0.514
+       },
+       "checkout": {
+        "n": 64,
+        "ok": 64,
+        "p50": 1.127,
+        "p95": 1.29,
+        "p99": 1.392,
+        "max": 1.392
+       }
+      }
+     },
+     {
+      "users": 10,
+      "seconds": 61.5,
+      "client_load1": 0.12,
+      "client_cpus": 2,
+      "requests": 387,
+      "rps": 6.3,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 329,
+       "201": 58
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 213,
+        "ok": 213,
+        "p50": 1.689,
+        "p95": 2.521,
+        "p99": 3.34,
+        "max": 4.33
+       },
+       "cart": {
+        "n": 58,
+        "ok": 58,
+        "p50": 0.492,
+        "p95": 1.509,
+        "p99": 1.912,
+        "max": 1.912
+       },
+       "add": {
+        "n": 58,
+        "ok": 58,
+        "p50": 0.51,
+        "p95": 0.712,
+        "p99": 0.785,
+        "max": 0.785
+       },
+       "checkout": {
+        "n": 58,
+        "ok": 58,
+        "p50": 2.763,
+        "p95": 3.998,
+        "p99": 5.057,
+        "max": 5.057
+       }
+      }
+     },
+     {
+      "users": 25,
+      "seconds": 65.6,
+      "client_load1": 0.04,
+      "client_cpus": 2,
+      "requests": 421,
+      "rps": 6.42,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 350,
+       "201": 71
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 208,
+        "ok": 208,
+        "p50": 3.994,
+        "p95": 5.752,
+        "p99": 6.237,
+        "max": 6.848
+       },
+       "cart": {
+        "n": 71,
+        "ok": 71,
+        "p50": 2.697,
+        "p95": 4.308,
+        "p99": 4.718,
+        "max": 4.718
+       },
+       "add": {
+        "n": 71,
+        "ok": 71,
+        "p50": 2.547,
+        "p95": 4.233,
+        "p99": 4.5,
+        "max": 4.5
+       },
+       "checkout": {
+        "n": 71,
+        "ok": 71,
+        "p50": 5.111,
+        "p95": 6.86,
+        "p99": 6.981,
+        "max": 6.981
+       }
+      }
+     },
+     {
+      "users": 50,
+      "seconds": 71.7,
+      "client_load1": 0.08,
+      "client_cpus": 2,
+      "requests": 442,
+      "rps": 6.17,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 380,
+       "201": 62
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 256,
+        "ok": 256,
+        "p50": 7.712,
+        "p95": 10.386,
+        "p99": 11.153,
+        "max": 11.446
+       },
+       "cart": {
+        "n": 62,
+        "ok": 62,
+        "p50": 6.376,
+        "p95": 8.505,
+        "p99": 9.768,
+        "max": 9.768
+       },
+       "add": {
+        "n": 62,
+        "ok": 62,
+        "p50": 6.526,
+        "p95": 8.75,
+        "p99": 9.748,
+        "max": 9.748
+       },
+       "checkout": {
+        "n": 62,
+        "ok": 62,
+        "p50": 8.964,
+        "p95": 11.128,
+        "p99": 11.554,
+        "max": 11.554
+       }
+      }
+     },
+     {
+      "users": 100,
+      "seconds": 84.5,
+      "client_load1": 0.08,
+      "client_cpus": 2,
+      "requests": 528,
+      "rps": 6.25,
+      "errors": 0,
+      "e1102": 0,
+      "status": {
+       "200": 445,
+       "201": 83
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 279,
+        "ok": 279,
+        "p50": 14.168,
+        "p95": 18.678,
+        "p99": 19.677,
+        "max": 20.162
+       },
+       "cart": {
+        "n": 83,
+        "ok": 83,
+        "p50": 12.629,
+        "p95": 17.01,
+        "p99": 18.571,
+        "max": 18.571
+       },
+       "add": {
+        "n": 83,
+        "ok": 83,
+        "p50": 13.303,
+        "p95": 16.853,
+        "p99": 18.64,
+        "max": 18.64
+       },
+       "checkout": {
+        "n": 83,
+        "ok": 83,
+        "p50": 15.455,
+        "p95": 19.119,
+        "p99": 20.722,
+        "max": 20.722
+       }
+      }
+     }
+    ]
+   },
+   "runner_seconds": 412.3
+  }
+ ],
+ "n": 10,
+ "load": {
+  "levels": "1,5,10,25,50,100",
+  "seconds": 60,
+  "buyers": 0.2
+ }
+}

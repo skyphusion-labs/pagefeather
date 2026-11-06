@@ -46,6 +46,8 @@ if [ "${ENGINE:-d1}" = a ]; then
   cp php/hyperdrive-sql-mode.php "$wp/wp-content/hyperdrive-sql-mode.php"
 else
 cp php/db.php php/d1-pdo.php php/d1-dialect.php "$wp/wp-content/"
+# Object cache across requests; on only with DB_IN_DO (php/object-cache.php).
+cp php/object-cache.php php/object-cache-js.php "$wp/wp-content/"
 # The plugin's installer opens its own connection to DB_PATH. Make it use the
 # D1-backed connection that wp-content/db.php already made.
 python3 - "$wp/wp-content/plugins/sqlite-database-integration/wp-includes/sqlite/install-functions.php" <<'PY'

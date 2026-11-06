@@ -16,6 +16,14 @@ if [ ! -f /data/wordpress.sqlite ]; then
 	php /var/www/html/install.php
 fi
 chown -R www-data:www-data /data 2>/dev/null || true
+# Object cache: OBJECT_CACHE=apcu (the default) puts the APCu drop-in in
+# place; none runs without one. APCu memory belongs to PHP's server process and its
+# forked workers, so it starts empty with every container.
+if [ "${OBJECT_CACHE:-apcu}" != none ]; then
+	cp /opt/wp/object-cache.php /var/www/html/wp-content/object-cache.php
+else
+	rm -f /var/www/html/wp-content/object-cache.php
+fi
 # Litestream runs as a child, not PID 1: Linux ignores SIGKILL sent to PID 1
 # from inside the container, so a crash could not be tested. This shell
 # forwards SIGTERM, so a normal stop still lets Litestream finish its sync.
@@ -23,6 +31,26 @@ litestream replicate -config /etc/litestream.yml -exec "php -S 0.0.0.0:80 -t /va
 LS=$!
 echo "$LS" > /run/litestream.pid
 trap 'kill -TERM "$LS"; wait "$LS"; exit $?' TERM INT
+
+# Sampler for the concurrency work (container/stats.php, what=samples), every
+# 2 s: time, the /proc/stat cpu line (user nice system idle iowait irq softirq
+# steal, in ticks), the cgroup cpu.stat if there is one (usage and throttling),
+# the load average, the accept backlog of port 80 (connections that no PHP
+# worker took yet), and the PHP processes by state (R running, S sleeping,
+# D disk wait).
+(
+	while :; do
+		t=$(date +%s.%N | cut -c1-14)
+		cpu=$(head -1 /proc/stat | cut -d" " -f3-)
+		cg=""
+		[ -r /sys/fs/cgroup/cpu.stat ] && cg=$(awk '{printf "%s=%s ", $1, $2}' /sys/fs/cgroup/cpu.stat)
+		load=$(cut -d" " -f1-4 /proc/loadavg)
+		bl=$(cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk 'function hex(x, i, n) { n = 0; x = tolower(x); for (i = 1; i <= length(x); i++) n = n * 16 + index("0123456789abcdef", substr(x, i, 1)) - 1; return n } $4 == "0A" && $2 ~ /:0050$/ { split($5, q, ":"); n += hex(q[2]) } END { print n + 0 }')
+		ps=$(cat /proc/[0-9]*/stat 2>/dev/null | awk '$2 == "(php)" { s[$3]++ } END { for (k in s) printf "%s%d ", k, s[k] }')
+		echo "$t cpu $cpu | cg $cg| load $load | backlog $bl | php $ps" >> /tmp/c1-samples.log
+		sleep 2
+	done
+) &
 
 # Idle shutdown. The Container class sleepAfter never stopped this container:
 # its Durable Object reported running=false and did nothing (measured
