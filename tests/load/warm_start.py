@@ -21,7 +21,10 @@ Each trial:
    failed), running.
 Trials are spaced by more than WARM_GAP_S, so the rate limit does not block a
 start. The product comes from the Store API (/wp-json/wc/store/v1/products),
-asked before the first stop, while the container is awake anyway.
+asked before the first stop, while the container is awake anyway: a SIMPLE,
+in-stock, purchasable product (a variable product would only redirect to its
+page). A trial counts as an add to cart only when WooCommerce set the
+woocommerce_items_in_cart cookie (cart_added); the median uses those only.
 
 Prints one JSON object: the arm, the product, every trial, and the median
 add-to-cart time. Uses User-Agent wp-on-cf-warm-start (the edge refuses
@@ -87,12 +90,15 @@ def main():
     if not warm:
         sys.exit("/_store-info has no warm key: deploy a Worker with #73 (warm.js) first. Got: %s" % json.dumps(i0)[:300])
     arm, gap = warm["mode"], float(warm["gap_s"])
-    p = call("/wp-json/wc/store/v1/products?per_page=1")
+    p = call("/wp-json/wc/store/v1/products?per_page=100&type=simple&stock_status=instock")
     if p["status"] != 200:
         sys.exit("Store API products: HTTP %s" % p["status"])
-    prod = json.loads(p["body"])[0]
+    ok = [x for x in json.loads(p["body"]) if x.get("type") == "simple" and x.get("is_in_stock") and x.get("is_purchasable")]
+    if not ok:
+        sys.exit("no simple, in-stock, purchasable product in the first 100 of the Store API")
+    prod = ok[0]
     path = "/" + prod["permalink"].split("://", 1)[1].split("/", 1)[1]
-    out = {"site": B, "arm": arm, "gap_s": gap, "think_s": think, "product": {"id": prod["id"], "path": path}, "trials": []}
+    out = {"site": B, "arm": arm, "gap_s": gap, "think_s": think, "product": {"id": prod["id"], "path": path, "name": prod.get("name"), "type": prod.get("type")}, "trials": []}
     for n in range(trials):
         # Prime the edge copy of the product page while the container is up.
         call(path)
@@ -111,16 +117,18 @@ def main():
             "view_status": view["status"], "view_s": view["s"], "view_cache": view_cache,
             "running_before_cart": before.get("running"),
             "cart_status": cart["status"], "cart_s": cart["s"],
+            "cart_added": any(c.name == "woocommerce_items_in_cart" and c.value == "1" for c in jar),
             "warm_after": after.get("warm"), "running_after": after.get("running"),
         })
         print(json.dumps(out["trials"][-1]), file=sys.stderr)
         if n + 1 < trials:
             time.sleep(gap + 5)
-    times = [t["cart_s"] for t in out["trials"] if t["cart_status"] in (200, 302)]
+    times = [t["cart_s"] for t in out["trials"] if t["cart_added"]]
     out["add_to_cart_median_s"] = round(statistics.median(times), 3) if times else None
     # The direct evidence: was the container already up when the cart came?
     out["running_before_cart"] = [t["running_before_cart"] for t in out["trials"]]
     out["view_cache"] = [t["view_cache"] for t in out["trials"]]
+    out["cart_added"] = [t["cart_added"] for t in out["trials"]]
     out["utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     print(json.dumps(out, indent=1))
 
