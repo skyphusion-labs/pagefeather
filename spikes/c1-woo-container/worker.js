@@ -69,7 +69,7 @@ Store.prototype.storeInfo = async function () {
 		object_cache: this.envVars.OBJECT_CACHE,
 		replica_path: this.envVars.REPLICA_PATH,
 		purge: { sent: p.sent, deferred: p.deferred, failed: p.failed, retried: p.retried, pending: p.pending, last_ms_ago: p.last ? Date.now() - p.last : null, last_error: p.lastError },
-		queue: { limit: Number(this.env.QUEUE_LIMIT ?? 16), ...(this.queue || { inflight: 0, maxInflight: 0, admitted: 0, shed: 0 }) },
+		queue: { limit: Number(this.env.QUEUE_LIMIT ?? 16), ...(this.queue || { inflight: 0, maxInflight: 0, admitted: 0, shed: 0, flow: 0 }) },
 	};
 };
 Store.prototype.shutdownNow = async function (kill) {
@@ -133,19 +133,37 @@ const store = (env) => getContainer(env.STORE, 'store');
 // the rest of the Store API) gets 503 with Retry-After at once. Checkout, a
 // payment callback (wc-api), admin, login and the operator endpoints are always
 // let in, and nothing in flight is stopped. QUEUE_LIMIT 0 turns it off.
+// Who passes the bounded queue (issue #39):
+// - 'always': checkout, payment callbacks (wc-api), admin and login, the
+//   operator endpoints, and REST requests from a logged-in user or an API
+//   client with credentials (an Authorization header: application passwords);
+// - 'flow': a shopper already in a cart flow (a Cart-Token header, or a
+//   WooCommerce session cookie), so a cart that got in is not turned away at
+//   the add to cart (the #39 run: 130 carts were, about 0.04 CPU s each);
+// - 'shed': everything else: a page, a new shopper's first cart request,
+//   ?add-to-cart= without a session, and anonymous REST (an anonymous client
+//   could otherwise pass the limit through any non-Store route).
+// The limit shapes load; it is not an access control. A client can send any
+// Cart-Token or cookie: abuse protection belongs to rate limiting at the edge.
+const SESSION_COOKIE = /(^|;\s*)(wp_woocommerce_session_|woocommerce_items_in_cart=[1-9])/;
+const LOGIN_COOKIE = /(^|;\s*)wordpress_logged_in_/;
 function admission(req, url) {
 	const p = url.pathname;
 	if (p.startsWith('/_') || p.startsWith('/wp-admin') || p === '/wp-login.php') return 'always';
 	if (url.searchParams.has('wc-api') || p.startsWith('/wc-api')) return 'always';
+	const cookie = req.headers.get('cookie') || '';
+	const inFlow = req.headers.has('cart-token') || SESSION_COOKIE.test(cookie);
 	const wcAjax = url.searchParams.get('wc-ajax');
-	if (wcAjax) return wcAjax === 'checkout' ? 'always' : 'shed';
+	if (wcAjax) return wcAjax === 'checkout' ? 'always' : inFlow ? 'flow' : 'shed';
 	const route = url.searchParams.get('rest_route') || (p.startsWith('/wp-json') ? p.slice('/wp-json'.length) : null);
 	if (route !== null) {
-		if (!route.startsWith('/wc/store/')) return 'always'; // admin and API clients
-		return route.includes('/checkout') ? 'always' : 'shed';
+		if (!route.startsWith('/wc/store/')) return LOGIN_COOKIE.test(cookie) || req.headers.has('authorization') ? 'always' : 'shed';
+		if (route.includes('/checkout')) return 'always';
+		return inFlow ? 'flow' : 'shed';
 	}
 	if (p.startsWith('/checkout') || url.searchParams.get('pagename') === 'checkout') return 'always';
-	return 'shed';
+	if (LOGIN_COOKIE.test(cookie)) return 'always';
+	return inFlow ? 'flow' : 'shed';
 }
 function busyResponse(req, url, retryAfter) {
 	const h = { 'retry-after': String(retryAfter), 'cache-control': 'no-store', 'cloudflare-cdn-cache-control': 'no-store', 'x-c1-shed': '1' };
@@ -154,22 +172,43 @@ function busyResponse(req, url, retryAfter) {
 	}
 	return new Response('<!doctype html><meta charset="utf-8"><title>Busy</title><p>The store is busy. Please try again in a few seconds.</p>', { status: 503, headers: { ...h, 'content-type': 'text/html; charset=utf-8' } });
 }
+// A request counts from the moment it is let in until its response BODY has
+// been read to the end (or it fails), not only until the response headers:
+// for a large streamed response the headers alone would undercount.
 Store.prototype.fetch = async function (request) {
 	const url = new URL(request.url);
 	const limit = Number(this.env.QUEUE_LIMIT ?? 16);
-	const q = (this.queue ||= { inflight: 0, maxInflight: 0, admitted: 0, shed: 0 });
-	if (limit > 0 && q.inflight >= limit && admission(request, url) === 'shed') {
+	const q = (this.queue ||= { inflight: 0, maxInflight: 0, admitted: 0, shed: 0, flow: 0 });
+	const cls = admission(request, url);
+	if (limit > 0 && q.inflight >= limit && cls === 'shed') {
 		q.shed++;
 		return busyResponse(request, url, Number(this.env.RETRY_AFTER || 5));
 	}
 	q.inflight++;
 	q.admitted++;
+	if (cls === 'flow' && q.inflight > limit) q.flow++;
 	if (q.inflight > q.maxInflight) q.maxInflight = q.inflight;
+	let done = false;
+	const release = () => {
+		if (!done) {
+			done = true;
+			q.inflight--;
+		}
+	};
+	let r;
 	try {
-		return await Container.prototype.fetch.call(this, request);
-	} finally {
-		q.inflight--;
+		r = await Container.prototype.fetch.call(this, request);
+	} catch (e) {
+		release();
+		throw e;
 	}
+	if (!r.body || r.webSocket) {
+		release();
+		return r;
+	}
+	const { readable, writable } = new TransformStream();
+	r.body.pipeTo(writable).then(release, release);
+	return new Response(readable, r);
 };
 
 // Purges are coalesced: at most one per PURGE_INTERVAL_MS (15 s) for this site.
