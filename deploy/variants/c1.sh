@@ -240,12 +240,28 @@ if not all_rs and v == 1:
     h = (app.get("health") or {}).get("instances") or {}
     print("done first version 1, placed with no rollout (a new application); instances healthy %s, starting %s, failed %s (an instance starts on the first request)" % (h.get("healthy"), h.get("starting"), h.get("failed")))
     sys.exit()
-rs = [r for r in all_rs if r.get("target_version") == v]
-if not rs:
-    print("none for version", v); sys.exit()
-r = max(rs, key=lambda r: str(r.get("created_at", "")))
+# The version of the application moves only when a rollout COMPLETES (measured
+# 2026-11-06 on wp-c1-w92b: version 2 for about 6 minutes while "2 -> 3" was
+# progressing, then 3 when it completed). During a rollout the version is the
+# OLD one, and the own rollout of the old version reads "replaced". So a rollout
+# that starts FROM the version (current_version v, target above v) is the
+# one in flight: follow the newest such one (issue #126).
+def ver(x):
+    return x if isinstance(x, int) else -1
+nxt = [r for r in all_rs if r.get("current_version") == v and ver(r.get("target_version")) > v]
+following = bool(nxt)
+if following:
+    r = max(nxt, key=lambda r: str(r.get("created_at", "")))
+else:
+    rs = [r for r in all_rs if r.get("target_version") == v]
+    if not rs:
+        print("none for version", v); sys.exit()
+    r = max(rs, key=lambda r: str(r.get("created_at", "")))
 p = r.get("progress") or {}
 detail = "version %s, step %s of %s, instances %s of %s" % (v, p.get("current_step"), p.get("total_steps"), p.get("updated_instances"), p.get("total_instances"))
+if following:
+    detail = "version %s -> %s (the rollout in flight; the application reads the old version until it completes), step %s of %s, instances %s of %s" % (
+        v, r.get("target_version"), p.get("current_step"), p.get("total_steps"), p.get("updated_instances"), p.get("total_instances"))
 vd = p.get("version_distribution") or {}
 if "target_version_percentage" in vd:
     detail += ", %s %% on the new version" % vd["target_version_percentage"]
@@ -283,7 +299,9 @@ c1_rollout() {
       # "replaced": a newer rollout took over. The version is read again on
       # each poll, so a newer version normally shows next (seen live: version
       # 2 replaced, then version 3 done). A replaced rollout never completes,
-      # so if the version stays, fail after ROLLOUT_REPLACED_POLLS reads (6)
+      # so if the version stays, fail after ROLLOUT_REPLACED_POLLS reads (6).
+      # A rollout FROM the version is followed in c1_rollout_state (issue
+      # #126), so "waiting replaced" means no such rollout exists
       # instead of waiting ROLLOUT_TIMEOUT.
       "waiting replaced"*)
         errs=0; rep=$((rep + 1))

@@ -30,6 +30,12 @@ too early. Each rollouts request is counted in <count-file>. Modes:
                 then the application is at version 3, whose rollout is
                 completed (seen live on wp-c1-live, 2026-11-06)
   replaced-stuck  version 2, and its only rollout reads "replaced" for ever
+  moves-at-completion  the readings of wp-c1-w92b (2026-11-06, issue #126):
+                the application stays at version 2 while "2 -> 3" is
+                progressing (100 % on the new version) for 7 reads and
+                "1 -> 2" reads replaced; on read 8 the application is at 3
+                and "2 -> 3" is completed
+  follow-reverted  the same start, but "2 -> 3" is reverted
   live-shape    the shape read from the live API on 2026-11-06 (#106): the
                 applications answer has result_info, the applications have no
                 active_rollout_id, the rollouts are newest first, older ones
@@ -79,6 +85,10 @@ class H(http.server.BaseHTTPRequestHandler):
                 a["version"] = 2
             if mode == "replaced-then-newer":
                 a["version"] = 2 if n["rollouts"] < 2 else 3
+            if mode == "moves-at-completion":
+                a["version"] = 2 if n["rollouts"] < 7 else 3
+            if mode == "follow-reverted":
+                a["version"] = 2
             return self.send(200, {"errors": [], "messages": [], "result": a, "success": True})
         if path == "/applications":
             return self.send(*self.list_answer())
@@ -149,6 +159,12 @@ class H(http.server.BaseHTTPRequestHandler):
                 r2 = dict(rollout("completed"), target_version=2, current_version=1, id="r2", status="replaced")
                 r3 = dict(rollout("completed"), target_version=3, current_version=2, id="r3", created_at="2026-11-06T14:40:00Z")
                 rs = [r3, r2] if (mode == "replaced-then-newer" and k > 2) else [r2]
+            elif mode in ("moves-at-completion", "follow-reverted"):
+                r2 = dict(rollout("completed"), target_version=2, current_version=1, id="r2", status="replaced", created_at="2026-11-06T19:05:44Z")
+                st = "reverted" if mode == "follow-reverted" else ("progressing" if k < 8 else "completed")
+                r3 = dict(rollout(st), target_version=3, current_version=2, id="r3", created_at="2026-11-06T19:17:39Z")
+                r3["progress"] = dict(r3["progress"], version_distribution={"target_version_percentage": 100})
+                rs = [r3, r2]
             elif mode == "late":
                 rs = [OLD] if k < 3 else [rollout("pending" if k == 3 else "completed"), OLD]
             else:
