@@ -425,6 +425,24 @@ The count of requests in the container now lasts until the response body has bee
 - **The checkout p99 of about 30 s on swap12 was not the flow change.** With at most 21 in hand and an accept queue of at most 11, the container cannot add 30 s. `load.py` now lists every request of 10 s or more with its time to the headers (TTFB) and its cf-ray. On swap14 all 4 such requests had TTFB equal to the total (the headers were late, not the body), and each was matched in the container log: PHP started it only when a local queue-runner cron run (`wp-cron.php`, 15 to 22 s) ended, and then took 0.1 to 0.5 s. During the cron run the accept queue was empty and 4 of the 5 PHP processes were idle. **That is head-of-line blocking in PHP's built-in server:** a `php -S` process accepts connections and serves them one at a time, so a connection that lands on the process running a long cron run waits for it, while other processes wait for work. swap12's cron runs were 27 to 30 s, the size of its tail. The fix belongs to the queue runner (issue #45: shorter Action Scheduler batches), and a server with one process per request (PHP-FPM) would end it for good; that is the first measured reason for FPM, a separate decision.
 - The 100-user steps were client limited (a load of 1.3 to 2.1 on 2 CPUs) and are not used.
 
+### Short queue runs (2026-11-06)
+
+The head-of-line finding (section "Who passes the limit"): a local cron request that ran Action Scheduler for 15 to 30 s held the shoppers whose connection landed on that PHP process. Now `AS_TIME_LIMIT` (5 s) bounds a run, `CRON_SECONDS` is 10, and `php/c1-queue.php` runs one batch in each local cron request in which Action Scheduler's own WP-Cron event (once a minute) is not due, so the queue keeps about the same share of time (5 s of every 15 s, against 30 s of every 90 s).
+
+Measured with the same overload run (`cached-sbjs`, BUYERS 0.5, 2 vCPU runner) on its own copy of wp-c1's database (swap15, `deploy/results/bench-runner-20261106T081530Z-dace4f.json`), the cart-flow code otherwise unchanged:
+
+| | swap14 (30 s runs) | swap15 (5 s runs) |
+| --- | --- | --- |
+| Requests of 10 s or more | 4 | 5 |
+| ... waiting behind a cron run | 4 (15 to 22 s each) | 0 |
+| Cron runs in the load window, longest | 15 to 22 s | 4.87 s (31 runs, 0 over 6 s) |
+| Checkout p99 at 25 / 50 users | 9.1 / 16.7 s | 11.1 / 10.5 s |
+
+- **No request waited behind a cron run.** The 5 slow requests (10.2 to 11.1 s, all checkouts) had TTFB about equal to the total and waited about 7 s with all 5 PHP processes running and 6 to 8 connections in the accept queue: ordinary CPU queueing at the bounded limit (about 16 in hand at about 2.4 requests per second), not head-of-line blocking.
+- **The queue still drains.** Pending actions: 13 at the start, 146 at the end of the load (at about 1 order a second the queue falls behind while the load lasts), then 77, 19 and 13 at 19, 39 and 60 s after the load, and 13 from then on (actions not yet due). There is no run with 30 s queue runs at BUYERS 0.5 to compare this with; the BUYERS 0.2 runs with 30 s runs (section "Queue runner") ended with the queue larger than at the start.
+- Before the load, Action Scheduler's minute event ran 7.2 s once against the 5 s limit: it stops when the next action would likely pass the limit, so a run can overshoot by its last actions. Under load no run passed 4.9 s.
+- One process per request (PHP-FPM) would end this kind of tail entirely; it is a separate decision.
+
 ## Warm start on a product view (issue #73)
 
 With the storefront cache, a shopper can browse cached pages while the container sleeps. Then the first request that needs the container (the cart, add to cart) waits for the cold start: 11 to 22 s, measured as starts after a stop.
