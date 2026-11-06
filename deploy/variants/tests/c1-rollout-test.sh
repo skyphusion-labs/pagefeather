@@ -13,6 +13,8 @@
 #   api-401       2, 0      the API cannot be read: the caller falls back
 #   no-app        2, 0      no application of that name: the caller falls back
 #   live-shape    0, 3      the live API shape (result_info, replaced, version_distribution)
+#   new-app       0, 1      version 1 with no rollout at all: placed, no wait
+#   v2-empty      0, 4      version 2 with an empty list: waits for its rollout
 # And c1_wait with fake-c1-site.py too: api-401 falls back to the fixed wait
 # and goes on; reverted fails before the stop; done-after-3 goes on.
 # Exits 0 only when every case gives what it must. Needs bash, curl, python3.
@@ -81,6 +83,8 @@ run_case bare-list 0 3
 run_case api-401 2 0
 run_case no-app 2 0
 run_case live-shape 0 3
+run_case new-app 0 1
+run_case v2-empty 0 4
 wait_case api-401 0 "waiting a fixed" ""
 wait_case reverted 1 "ended as reverted" "stop:"
 wait_case done-after-3 0 "first answer 200" ""

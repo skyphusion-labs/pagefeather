@@ -103,7 +103,9 @@ c1_up() {
 
 # One read of the container rollout of this deploy (issue #106). Prints one
 # line: "done ...", "failed ...", "waiting ...", "none ..." (no rollout for
-# the application's version yet), "no-app ..." or "api-error ...".
+# the application's version yet), "no-app ..." or "api-error ...". A new
+# application at version 1 with no rollout at all is "done": its first
+# version has no rollout object.
 # The application is <NAME>-store; its version is the one this deploy made,
 # and the rollout to follow is the newest one whose target_version is that
 # version. Fields as in Wrangler 4.107's client models
@@ -146,7 +148,15 @@ if len(apps) != 1:
 v = apps[0].get("version")
 if code_r != "200":
     print("api-error rollouts HTTP", code_r); sys.exit()
-rs = [r for r in load(d + "/rollouts") if r.get("target_version") == v]
+all_rs = load(d + "/rollouts")
+# A new application places its first version with no rollout object at all
+# (measured 2026-11-06 on wp-c1-live: version 1, rollouts []). Only then:
+# at a later version an empty list can mean "not created yet", so it waits.
+if not all_rs and v == 1:
+    h = (apps[0].get("health") or {}).get("instances") or {}
+    print("done first version 1, placed with no rollout (a new application); instances healthy %s, starting %s, failed %s" % (h.get("healthy"), h.get("starting"), h.get("failed")))
+    sys.exit()
+rs = [r for r in all_rs if r.get("target_version") == v]
 if not rs:
     print("none for version", v); sys.exit()
 r = max(rs, key=lambda r: str(r.get("created_at", "")))

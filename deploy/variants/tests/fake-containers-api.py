@@ -16,6 +16,10 @@ too early. Each rollouts request is counted in <count-file>. Modes:
   bare-list     like done-after-3, but the rollouts answer is a bare list
   api-401       every request answers 401
   no-app        no application of that name
+  new-app       a new application: version 1, health 1 healthy, and NO rollout
+                at all (measured on wp-c1-live, 2026-11-06)
+  v2-empty      version 2 with an empty rollout list for 2 reads (its rollout
+                is not created yet), then progressing, then completed
   live-shape    the shape read from the live API on 2026-11-06 (#106): the
                 applications answer has result_info, the applications have no
                 active_rollout_id, the rollouts are newest first, older ones
@@ -56,6 +60,11 @@ class H(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == "/applications":
             apps = [] if mode == "no-app" else [{"id": "app1", "name": "t-store", "version": 7}, {"id": "app2", "name": "other-store", "version": 3}]
+            if mode in ("new-app", "v2-empty"):
+                v = 1 if mode == "new-app" else 2
+                apps = [{"id": "app1", "name": "t-store", "version": v,
+                         "health": {"instances": {"active": 0, "healthy": 1, "failed": 0, "starting": 0, "scheduling": 0}}}]
+                return self.send(200, {"errors": [], "messages": [], "result": apps, "result_info": {"count": 1}, "success": True})
             if mode == "live-shape":
                 keys = {"account_id": "acc", "configuration": {}, "constraints": {}, "created_at": "2026-11-05T19:00:00Z", "durable_objects": {},
                         "health": {}, "instances": 1, "max_instances": 1, "network": {}, "rollout_active_grace_period": 0,
@@ -86,6 +95,11 @@ class H(http.server.BaseHTTPRequestHandler):
                                          "current_version_instances": 0 if done else 1, "target_version_percentage": 100 if done else 0}}}
                 rs = [live(7, "progressing" if k < 3 else "completed", "2026-11-06T13:07:26Z"),
                       live(6, "replaced", "2026-11-06T12:35:41Z"), live(5, "replaced", "2026-11-06T12:31:30Z")]
+            elif mode == "new-app":
+                rs = []
+            elif mode == "v2-empty":
+                r2 = dict(rollout("progressing" if k == 3 else "completed"), target_version=2, current_version=1, id="r2")
+                rs = [] if k < 3 else [r2]
             elif mode == "late":
                 rs = [OLD] if k < 3 else [rollout("pending" if k == 3 else "completed"), OLD]
             else:
