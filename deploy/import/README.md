@@ -89,6 +89,10 @@ Options: `DRY_RUN=1` stops before the import and shows what changes. `SKIP_MEDIA
 - **The work files hold the site's data** (user e-mail addresses and password hashes). The directory is mode 700. Remove it when you are done.
 - **Numbers.** A dump file from `dbmove-file.py` writes a whole REAL value as `1.0`. The Worker writes it as `1`. The columns are REAL, so SQLite stores both as REAL. That is why step 6 compares row counts, not the text of the rows.
 
+## Local tests cannot see the edge
+
+A deployed `workers.dev` site has security checks at the edge that `wrangler dev` does not have. The first deployed import (2026-11-06, `wp-import-test`, Workers Paid) stopped at `dbmove.py import`, part 0, with `HTTP 403 error code: 1010`: the edge refused Python urllib's default User-Agent (`Python-urllib/3.x`). Every local test had passed. Nothing reached the object. Now `dbmove.py` sends `User-Agent: wp-on-cf-import/1` (test: `tests/test_user_agent.py`), and so do the `curl` calls of `import.sh` to the site. So a deployed run is part of the gate for this tool, not an extra.
+
 ## Fixed on the way
 
 - `dbmove.py import` stopped at part 1 for every dump of more than one part (1.5 MB): part 0 made the tables, and `/_dbimport` refused the next part because tables existed. The second and later parts now send `append=1`.
