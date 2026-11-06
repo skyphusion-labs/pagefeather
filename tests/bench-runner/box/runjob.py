@@ -31,7 +31,11 @@ def sh(cmd, **kw):
 
 runner = {
     "region": os.environ.get("RUNNER_REGION"),
+    # RUNNER_PLAN is written once at first boot (cloud-init); a resize in place
+    # does not change it. cpus and mem_mib are read at job time.
     "plan": os.environ.get("RUNNER_PLAN"),
+    "cpus": os.cpu_count(),
+    "mem_mib": (os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")) // 1048576 if hasattr(os, "sysconf") else None,
     "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "branch": branch,
     "git_sha": sh(["git", "-C", repo, "rev-parse", "HEAD"]),
