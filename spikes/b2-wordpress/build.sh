@@ -49,6 +49,7 @@ if [ "${ENGINE:-d1}" = a ]; then
   cp php/hyperdrive-db.php "$wp/wp-content/db.php"
   cp php/hyperdrive-sql-mode.php "$wp/wp-content/hyperdrive-sql-mode.php"
   cp php/hyperdrive-mysqli.php "$wp/wp-content/hyperdrive-mysqli.php"
+  cp php/hyperdrive-literals.php "$wp/wp-content/hyperdrive-literals.php"
 else
 cp php/db.php php/d1-pdo.php php/d1-dialect.php "$wp/wp-content/"
 # Object cache across requests; on only with DB_IN_DO (php/object-cache.php).

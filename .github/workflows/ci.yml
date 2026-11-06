@@ -32,6 +32,8 @@ jobs:
         run: for f in $(git ls-files '*.sh'); do bash -n "$f"; done
       - name: Dialect tests
         run: php spikes/b2-wordpress/tests/dialect-test.php
+      - name: Approach A literal tests (issue #79)
+        run: php tests/a/literals-test.php
       - name: Import tests
         # deploy/import (issue #31): dump to SQLite, prefix, site address, dbmove dump. Offline.
         run: deploy/import/tests/run.sh

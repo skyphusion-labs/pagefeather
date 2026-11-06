@@ -35,7 +35,7 @@ curl -s -o /dev/null "localhost:$P/?nocache=guard"
 before=$(curl -s -o /dev/null -w '%{http_code}' "localhost:$P/_opcache-dump")
 touch build/site.zip; sleep 8
 after=$(curl -s -o "$OUT/dump.bin" -w '%{http_code}' "localhost:$P/_opcache-dump")
-check "3 a reload (build/site.zip touched) after PHP booted: dump 200 then 409" $([ "$before $after" = "200 409" ] && echo 0 || echo 1) "$before then $after"
+check "3 a reload (build/site.zip touched) after PHP booted: dump 200 then 409" "$([ "$before $after" = "200 409" ] && echo 0 || echo 1)" "$before then $after"
 ./run.sh --stop; sleep 1
 [ -z "$(lis)" ]; check "3 run.sh --stop frees the port" $? "listener $(lis)"
 
