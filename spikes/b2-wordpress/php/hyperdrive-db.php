@@ -16,6 +16,8 @@
  */
 
 require_once __DIR__ . '/hyperdrive-sql-mode.php';
+// A mysqli for plugins that call mysqli_* on $wpdb->dbh (issue #29).
+require_once __DIR__ . '/hyperdrive-mysqli.php';
 
 // The R2 Uploads and Edge Cache mu-plugins send their messages through this
 // function. Approach B defines it in d1-pdo.php, which A does not load: without
@@ -27,12 +29,75 @@ if ( ! function_exists( 'skyphusion_worker_call' ) ) {
 	}
 }
 
+/** One statement on the Worker bridge: {ok, columns, rows} or {ok, affected, insert_id} or {ok: false, error, errno}. */
+function skyphusion_hd_call( $sql ) {
+	$msg   = preg_match( '//u', $sql ) ? array( 'mysql' => $sql ) : array( 'mysql_b64' => base64_encode( $sql ) );
+	$reply = json_decode( skyphusion_worker_call( json_encode( $msg ) ), true );
+	return is_array( $reply ) ? $reply : array(
+		'ok'    => false,
+		'error' => 'no reply from the Worker',
+	);
+}
+
+/**
+ * DDL in WordPress's relaxed sql_mode: SET inside a transaction holds for the
+ * DDL (tests/a2/probe E2), where a hint cannot go. Three extra round trips;
+ * DDL is rare (install, plugin activation, upgrades). The DDL's own reply is
+ * returned. COMMIT is sent whenever BEGIN ran.
+ */
+function skyphusion_hd_ddl( $query, $mode ) {
+	$begin = skyphusion_hd_call( 'BEGIN' );
+	if ( ! empty( $begin['ok'] ) ) {
+		skyphusion_hd_call( "SET SESSION sql_mode = '" . $mode . "'" );
+	}
+	$reply = skyphusion_hd_call( $query );
+	if ( ! empty( $begin['ok'] ) ) {
+		skyphusion_hd_call( 'COMMIT' );
+	}
+	return $reply;
+}
+
+/** A statement as wpdb runs it: with WordPress's sql_mode on a strict server (HYPERDRIVE_SQL_MODE). Also used by mysqli. */
+function skyphusion_hd_run( $query ) {
+	$mode = skyphusion_hd_sql_mode();
+	if ( null === $mode ) {
+		return skyphusion_hd_call( $query );
+	}
+	if ( skyphusion_hd_is_ddl( $query ) ) {
+		return skyphusion_hd_ddl( $query, $mode );
+	}
+	return skyphusion_hd_call( skyphusion_hd_hint( $query, $mode ) );
+}
+
+/** The escaping of mysqli_real_escape_string() for utf8mb4. */
+function skyphusion_mysql_escape( $data ) {
+	return strtr(
+		(string) $data,
+		array(
+			'\\'   => '\\\\',
+			"\0"   => '\\0',
+			"\n"   => '\\n',
+			"\r"   => '\\r',
+			"'"    => "\\'",
+			'"'    => '\\"',
+			"\x1a" => '\\Z',
+		)
+	);
+}
+
 class Hyperdrive_WPDB extends wpdb {
 	private $hd_version = null;
 	private $hd_columns = array();
 
 	public function db_connect( $allow_bail = true ) {
-		$this->dbh           = 'hyperdrive';
+		// As wpdb::db_connect() does: failed queries return false, not an exception.
+		// Plugins that call mysqli_* on $wpdb->dbh expect that.
+		if ( function_exists( 'mysqli_report' ) ) {
+			mysqli_report( MYSQLI_REPORT_OFF );
+		}
+		// A mysqli object on the bridge (hyperdrive-mysqli.php), so a plugin can
+		// call mysqli_* on $wpdb->dbh. Without the userland one: a placeholder.
+		$this->dbh           = defined( 'SKYPHUSION_USERLAND_MYSQLI' ) ? new mysqli() : 'hyperdrive';
 		$this->has_connected = true;
 		$this->ready         = true;
 		$this->set_charset( $this->dbh );
@@ -62,54 +127,15 @@ class Hyperdrive_WPDB extends wpdb {
 		if ( ! is_scalar( $data ) ) {
 			return '';
 		}
-		$escaped = strtr(
-			(string) $data,
-			array(
-				'\\'   => '\\\\',
-				"\0"   => '\\0',
-				"\n"   => '\\n',
-				"\r"   => '\\r',
-				"'"    => "\\'",
-				'"'    => '\\"',
-				"\x1a" => '\\Z',
-			)
-		);
-		return $this->add_placeholder_escape( $escaped );
+		return $this->add_placeholder_escape( skyphusion_mysql_escape( $data ) );
 	}
 
 	public function db_server_info() {
 		if ( null === $this->hd_version ) {
-			$reply            = $this->hd_call( 'SELECT VERSION()' );
+			$reply            = skyphusion_hd_call( 'SELECT VERSION()' );
 			$this->hd_version = ( ! empty( $reply['ok'] ) && isset( $reply['rows'][0][0] ) ) ? $reply['rows'][0][0] : '8.0.0';
 		}
 		return $this->hd_version;
-	}
-
-	private function hd_call( $sql ) {
-		$msg   = preg_match( '//u', $sql ) ? array( 'mysql' => $sql ) : array( 'mysql_b64' => base64_encode( $sql ) );
-		$reply = json_decode( skyphusion_worker_call( json_encode( $msg ) ), true );
-		return is_array( $reply ) ? $reply : array(
-			'ok'    => false,
-			'error' => 'no reply from the Worker',
-		);
-	}
-
-	/**
-	 * DDL in WordPress's relaxed sql_mode: SET inside a transaction holds for the
-	 * DDL (tests/a2/probe E2), where a hint cannot go. Three extra round trips;
-	 * DDL is rare (install, plugin activation, upgrades). The DDL's own reply is
-	 * returned. COMMIT is sent whenever BEGIN ran.
-	 */
-	private function hd_ddl( $query, $mode ) {
-		$begin = $this->hd_call( 'BEGIN' );
-		if ( ! empty( $begin['ok'] ) ) {
-			$this->hd_call( "SET SESSION sql_mode = '" . $mode . "'" );
-		}
-		$reply = $this->hd_call( $query );
-		if ( ! empty( $begin['ok'] ) ) {
-			$this->hd_call( 'COMMIT' );
-		}
-		return $reply;
 	}
 
 	public function query( $query ) {
@@ -127,14 +153,7 @@ class Hyperdrive_WPDB extends wpdb {
 		if ( defined( 'SAVEQUERIES' ) && SAVEQUERIES ) {
 			$this->timer_start();
 		}
-		$mode = skyphusion_hd_sql_mode();
-		if ( null === $mode ) {
-			$reply = $this->hd_call( $query );
-		} elseif ( skyphusion_hd_is_ddl( $query ) ) {
-			$reply = $this->hd_ddl( $query, $mode );
-		} else {
-			$reply = $this->hd_call( skyphusion_hd_hint( $query, $mode ) );
-		}
+		$reply = skyphusion_hd_run( $query );
 		++$this->num_queries;
 		if ( defined( 'SAVEQUERIES' ) && SAVEQUERIES ) {
 			$this->log_query( $query, $this->timer_stop(), $this->get_caller(), $this->time_start, array() );
