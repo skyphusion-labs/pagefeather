@@ -530,6 +530,8 @@ The first start-line readouts (f15fc47) were wrong: they read `/proc/self/fd/N` 
 
 Test: `tests/stderr-socket-test.pl` runs in the image (`docker run --rm -v "$PWD/spikes/c1-woo-container/tests:/t" --entrypoint perl <image> /t/stderr-socket-test.pl`). With stdout and stderr on a socketpair, `c1-serve.sh` must still run after 6 s, answer `/_fpm-ping` and exit 0 on SIGTERM. A copy without the two pipe lines must have exited. The fd probe of `entrypoint.sh` must say socket and FAILED on a known socket, and pipe and ok on a known pipe, and the f15fc47 probe must fail that socket check. The test exits 0 only when all of these hold.
 
+**The boot log (2026-11-06).** The second arm 2 deploy did not answer at all: every request, a static file too, waited until the 60 s container timeout. Workers Logs had the Worker's lines and none from the container (observability on, 0 container events), so the container's stdout and stderr cannot be read there. `container/bootlog.sh` writes the start steps, the stderr and stdout lines of PHP-FPM and nginx (relayed by `c1-serve.sh`), and snapshots after 5, 20 and 60 s (processes with state and uid, listening ports, `/ping` and `/_fpm-ping` from inside) to `/tmp/c1-boot.log`, each line with the epoch time. It PUTs the file to the replica bucket as `<REPLICA_PATH>.boot-<start epoch>.log` with the Litestream key: every 10 s for 10 minutes, then every 60 s, and at exit. The object sits beside the replica, not inside its prefix, so Litestream never sees it. The log has no environment dump and no secret.
+
 **On wp-c1-perf:** not measured yet. The plan (issue #99):
 
 1. The head-of-line case on `php -S` and on FPM, both with `AS_TIME_LIMIT=30`.

@@ -11,16 +11,22 @@ set -e
 # and nginx open it). /proc/$$ is this shell: inside $( ) or a subshell with a
 # redirect, /proc/self/fd/1 and 2 are the capture pipe or /dev/null instead
 # (the first version read those, and always said pipe and ok).
-echo "c1: entrypoint start, uid $(id -u), kernel $(uname -r)"
-echo "c1: fd1 $(readlink /proc/$$/fd/1), fd2 $(readlink /proc/$$/fd/2)"
-if ( : >> /proc/$$/fd/2 ) 2>/dev/null; then echo "c1: open of the stderr path ok"; else echo "c1: open of the stderr path FAILED"; fi
+# The same lines go to the boot log in R2 (bootlog.sh): the container's stdout
+# and stderr do not reach Workers Logs.
+. /usr/local/bin/bootlog.sh
+trap 'blog "entrypoint exit"; bput' EXIT
+bloop &
+blog "entrypoint start, uid $(id -u), kernel $(uname -r)"
+blog "status $(grep -E '^(Uid|Gid|CapEff|CapBnd|NoNewPrivs|Seccomp):' /proc/$$/status | tr '\t\n' '  ')"
+blog "fd1 $(readlink /proc/$$/fd/1), fd2 $(readlink /proc/$$/fd/2)"
+if ( : >> /proc/$$/fd/2 ) 2>/dev/null; then blog "open of the stderr path ok"; else blog "open of the stderr path FAILED"; fi
 # php-fpm-c1.conf reads it: pm.max_children.
 export PHP_WORKERS="${PHP_WORKERS:-2}"
 # A new id for each container start: tests use it to prove a restart happened.
 cat /proc/sys/kernel/random/uuid > /var/www/html/_boot.txt
 mkdir -p /data
 litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists /data/wordpress.sqlite
-echo "c1: restore done (database file: $( [ -f /data/wordpress.sqlite ] && echo yes || echo no))"
+blog "restore done (database file: $( [ -f /data/wordpress.sqlite ] && echo yes || echo no))"
 # Import (issue #31): load the seed when there is no replica (seed.sh).
 . /opt/wp/seed.sh
 seed_load
@@ -29,7 +35,7 @@ if [ ! -f /data/wordpress.sqlite ]; then
 	php /var/www/html/install.php
 fi
 chown -R www-data:www-data /data 2>/dev/null || true
-echo "c1: /data owner $(stat -c %U /data)"
+blog "/data owner $(stat -c %U /data)"
 # Object cache: OBJECT_CACHE=apcu (the default) puts the APCu drop-in in
 # place; none runs without one. APCu memory belongs to the PHP-FPM master and
 # its children, so it starts empty with every container.
@@ -41,10 +47,12 @@ fi
 # Litestream runs as a child, not PID 1: Linux ignores SIGKILL sent to PID 1
 # from inside the container, so a crash could not be tested. This shell
 # forwards SIGTERM, so a normal stop still lets Litestream finish its sync.
-echo "c1: starting litestream replicate with c1-serve.sh"
+blog "starting litestream replicate with c1-serve.sh"
 litestream replicate -config /etc/litestream.yml -exec /usr/local/bin/c1-serve.sh &
 LS=$!
 echo "$LS" > /run/litestream.pid
+# Snapshots of processes, ports and inside answers after 5, 20 and 60 s.
+( sleep 5; bsnap 5s; sleep 15; bsnap 20s; sleep 40; bsnap 60s ) &
 # SIGQUIT too: the php-fpm base image used it as its stop signal (issue #99).
 trap 'kill -TERM "$LS"; wait "$LS"; exit $?' TERM INT QUIT
 
@@ -108,5 +116,5 @@ touch /tmp/last-request
 set +e
 wait "$LS"
 rc=$?
-echo "c1: litestream exited (status $rc): the container ends"
+blog "litestream exited (status $rc): the container ends"
 exit $rc

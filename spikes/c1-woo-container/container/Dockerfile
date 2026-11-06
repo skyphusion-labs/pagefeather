@@ -40,6 +40,7 @@ COPY container/seed.sh /opt/wp/seed.sh
 COPY container/litestream.yml /etc/litestream.yml
 COPY container/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY container/c1-serve.sh /usr/local/bin/c1-serve.sh
+COPY container/bootlog.sh /usr/local/bin/bootlog.sh
 COPY container/nginx.conf /etc/nginx/nginx.conf
 COPY container/php-fpm-c1.conf /usr/local/etc/php-fpm.d/zzz-c1.conf
 COPY container/c1-prepend.php /var/www/html/c1-prepend.php

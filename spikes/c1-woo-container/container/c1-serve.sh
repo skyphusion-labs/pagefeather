@@ -16,8 +16,17 @@ echo "c1-serve: start, fd2 $(readlink /proc/$$/fd/2)"
 # /proc/self/fd/2 fails (ENXIO) when stderr is a socket. A pipe always opens.
 # The cat processes write to the real stdout and stderr, which works for any
 # kind of file.
-exec 2> >(exec cat >&2)
-exec 1> >(exec cat)
+# Each line also goes to the boot log (bootlog.sh, BOOT_LOG) with the epoch
+# time, written there first.
+relay() {
+	local tag=$1 fd=$2 l
+	while IFS= read -r l; do
+		[ -z "${BOOT_LOG:-}" ] || printf '%s %s %s\n' "$EPOCHREALTIME" "$tag" "$l" >> "$BOOT_LOG"
+		printf '%s\n' "$l" >&"$fd"
+	done
+}
+exec 2> >(relay err 2)
+exec 1> >(relay out 1)
 FPM=""
 NGX=""
 # Stop: SIGQUIT first (a graceful stop in nginx and PHP-FPM: requests in

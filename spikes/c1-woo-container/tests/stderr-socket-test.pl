@@ -23,9 +23,9 @@ my $mutant = "/tmp/c1-serve-nopipe.sh";
 open(my $in, "<", $fixed) or die "read $fixed: $!";
 open(my $out, ">", $mutant) or die "write $mutant: $!";
 my $cut = 0;
-while (my $l = <$in>) { if ($l =~ /^exec [12]> >\(exec cat/) { $cut++; next } print $out $l }
+while (my $l = <$in>) { if ($l =~ /^exec [12]> >\(/) { $cut++; next } print $out $l }
 close $in; close $out; chmod 0755, $mutant;
-die "the pipe lines were not found in $fixed (cut $cut, want 2)\n" unless $cut == 2;
+die "the pipe lines (exec 1> and 2> >(...)) were not found in $fixed (cut $cut, want 2)\n" unless $cut == 2;
 
 sub arm {
 	my ($script) = @_;
