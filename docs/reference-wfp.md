@@ -38,7 +38,7 @@ Measured as normal Workers, not as user Workers, except where the row says so.
 
 ## Rollout and limits
 
-- `subRequests` set by the dispatcher is exact. `cpuMs` is enforced but loose: it does not bound a tenant below about 2 s (docs/wfp.md item 4). CPU fairness between tenants comes from the runtime choice and the plan, not from `cpuMs` alone.
+- `subRequests` set by the dispatcher was exact where measured, without an outbound Worker (not measured with one). `cpuMs` is enforced but loose: it does not bound a tenant below about 2 s (docs/wfp.md item 4). CPU fairness between tenants comes from the runtime choice and the plan, not from `cpuMs` alone.
 - No gradual deployments for user Workers, and the API allows 1200 calls per 5 minutes per token (docs/wfp.md, pricing and limits). A fleet rollout is batched.
 - Workers for Platforms is a Paid product: the Workers Free limits do not apply under it. Pricing (docs/wfp.md, read 2026-11-05): $25 a month, 20 million requests and 60 million CPU ms included, 1000 scripts included.
 - Cost of two idle sites: about $25 a month, the Workers for Platforms Paid subscription; every per-site resource (Durable Object storage, R2, KV) is inside the included or free tier at rest. The full table, with each rate's page and read date, is in the README ("Workers for Platforms reference deployment: cost of two idle sites"). Open: whether the ordinary Workers (the dispatchers, the outbound Worker) need a separate Workers Paid subscription ($5 a month) on top; not stated on the WfP pricing page. Per-tenant traffic cost (Durable Object duration and rows for `b-dosql`, container awake hours for `c1`) is still per workload, not worked out here.
