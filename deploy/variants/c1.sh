@@ -106,9 +106,10 @@ c1_up() {
 # the application's version yet), "no-app ..." or "api-error ...". A new
 # application at version 1 with no rollout at all is "done": its first
 # version has no rollout object.
-# The application is <NAME>-store; its version is the one this deploy made,
-# and the rollout to follow is the newest one whose target_version is that
-# version. Fields as in Wrangler 4.107's client models
+# The application is <NAME>-store: the list finds its id, and GET
+# /applications/<id> gives its version (the one this deploy made; the list's
+# version is stale). The rollout to follow is the newest one whose
+# target_version is that version. Fields as in Wrangler 4.107's client models
 # (packages/containers-shared: Application.version, ApplicationRollout.status
 # pending|progressing|completed|reverted|replaced, target_version, progress).
 # The live API (read 2026-11-06) is a superset: {result: [...]} with the
@@ -116,7 +117,7 @@ c1_up() {
 # The token needs only "Workers Containers Write", which a deploy needs anyway.
 # C1_API is the containers API base, for the tests.
 c1_rollout_state() {
-  local api=$1 t code_a code_r id
+  local api=$1 t code_a code_g code_r id
   t=$(mktemp -d)
   code_a=$(curl -s -m 30 -o "$t/apps" -w '%{http_code}' -K <(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN") "$api/applications?name=$NAME-store" || true)
   id=$(python3 -c '
@@ -128,11 +129,18 @@ except (OSError, ValueError):
 items = d.get("result", []) if isinstance(d, dict) else d
 apps = [a for a in (items or []) if isinstance(a, dict) and a.get("name") == sys.argv[2]]
 print(apps[0].get("id", "") if len(apps) == 1 else "")' "$t/apps" "$NAME-store" 2>/dev/null)
-  code_r=000
-  [ "$code_a" = 200 ] && [ -n "$id" ] && code_r=$(curl -s -m 30 -o "$t/rollouts" -w '%{http_code}' -K <(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN") "$api/applications/$id/rollouts?limit=10" || true)
+  # The list finds the id only. Its version is stale: on 2026-11-06 the list
+  # said version 1 for 8 minutes and more after the application moved to
+  # version 2, while GET /applications/<id> was current (wp-c1-live). So the
+  # version, and the health, come from the single GET.
+  code_g=000; code_r=000
+  if [ "$code_a" = 200 ] && [ -n "$id" ]; then
+    code_g=$(curl -s -m 30 -o "$t/app" -w '%{http_code}' -K <(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN") "$api/applications/$id" || true)
+    code_r=$(curl -s -m 30 -o "$t/rollouts" -w '%{http_code}' -K <(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN") "$api/applications/$id/rollouts?limit=10" || true)
+  fi
   python3 -c '
 import json, sys
-name, code_a, code_r, d = sys.argv[1:5]
+name, code_a, code_g, code_r, d = sys.argv[1:6]
 def load(f):
     try:
         x = json.load(open(f))
@@ -145,7 +153,17 @@ if code_a != "200":
 apps = [a for a in load(d + "/apps") if a.get("name") == name]
 if len(apps) != 1:
     print("no-app", name, "found", len(apps)); sys.exit()
-v = apps[0].get("version")
+if code_g != "200":
+    print("api-error application HTTP", code_g); sys.exit()
+try:
+    app = json.load(open(d + "/app"))
+except (OSError, ValueError):
+    app = {}
+if isinstance(app, dict) and isinstance(app.get("result"), dict):
+    app = app["result"]
+v = app.get("version") if isinstance(app, dict) else None
+if v is None:
+    print("api-error application has no version"); sys.exit()
 if code_r != "200":
     print("api-error rollouts HTTP", code_r); sys.exit()
 all_rs = load(d + "/rollouts")
@@ -153,7 +171,7 @@ all_rs = load(d + "/rollouts")
 # (measured 2026-11-06 on wp-c1-live: version 1, rollouts []). Only then:
 # at a later version an empty list can mean "not created yet", so it waits.
 if not all_rs and v == 1:
-    h = (apps[0].get("health") or {}).get("instances") or {}
+    h = (app.get("health") or {}).get("instances") or {}
     print("done first version 1, placed with no rollout (a new application); instances healthy %s, starting %s, failed %s" % (h.get("healthy"), h.get("starting"), h.get("failed")))
     sys.exit()
 rs = [r for r in all_rs if r.get("target_version") == v]
@@ -171,7 +189,7 @@ if st == "completed":
 elif st == "reverted":
     print("failed reverted", detail)
 else:
-    print("waiting", st, detail)' "$NAME-store" "$code_a" "$code_r" "$t"
+    print("waiting", st, detail)' "$NAME-store" "$code_a" "$code_g" "$code_r" "$t"
   rm -rf "$t"
 }
 

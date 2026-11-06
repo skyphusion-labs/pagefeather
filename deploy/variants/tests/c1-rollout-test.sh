@@ -15,6 +15,8 @@
 #   live-shape    0, 3      the live API shape (result_info, replaced, version_distribution)
 #   new-app       0, 1      version 1 with no rollout at all: placed, no wait
 #   v2-empty      0, 4      version 2 with an empty list: waits for its rollout
+#   stale-list    0, 3      the version comes from GET /applications/<id>, not the stale list
+#   stale-list-empty  0, 4  the stale list version 1 with no rollout yet must not count as placed
 # And c1_wait with fake-c1-site.py too: api-401 falls back to the fixed wait
 # and goes on; reverted fails before the stop; done-after-3 goes on.
 # Exits 0 only when every case gives what it must. Needs bash, curl, python3.
@@ -34,7 +36,7 @@ run_case() {
 		ROOT=$ROOT; log() { :; }
 		# shellcheck disable=SC1090
 		. "$C1SH"
-		NAME=t ACCOUNT_ID=acc CLOUDFLARE_API_TOKEN=test-token C1_API=http://127.0.0.1:$port ROLLOUT_POLL_S=0.2 ROLLOUT_TIMEOUT=2
+		NAME=t ACCOUNT_ID=acc CLOUDFLARE_API_TOKEN=test-token C1_API=http://127.0.0.1:$port ROLLOUT_POLL_S=0.2 ROLLOUT_TIMEOUT=5
 		c1_rollout 2>&1
 	); rc=$?
 	kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
@@ -62,7 +64,7 @@ wait_case() {
 		ROOT=$ROOT; log() { echo "== $*"; }
 		# shellcheck disable=SC1090
 		. "$C1SH"
-		NAME=t ACCOUNT_ID=acc CLOUDFLARE_API_TOKEN=test-token C1_API=http://127.0.0.1:$p1 ROLLOUT_POLL_S=0.2 ROLLOUT_TIMEOUT=2 ROLLOUT_WAIT=0
+		NAME=t ACCOUNT_ID=acc CLOUDFLARE_API_TOKEN=test-token C1_API=http://127.0.0.1:$p1 ROLLOUT_POLL_S=0.2 ROLLOUT_TIMEOUT=5 ROLLOUT_WAIT=0
 		URL=http://127.0.0.1:$p2 SPIKE_TOKEN=test START_TIMEOUT=5
 		c1_wait 2>&1
 	); rc=$?
@@ -85,6 +87,8 @@ run_case no-app 2 0
 run_case live-shape 0 3
 run_case new-app 0 1
 run_case v2-empty 0 4
+run_case stale-list 0 3
+run_case stale-list-empty 0 4
 wait_case api-401 0 "waiting a fixed" ""
 wait_case reverted 1 "ended as reverted" "stop:"
 wait_case done-after-3 0 "first answer 200" ""
