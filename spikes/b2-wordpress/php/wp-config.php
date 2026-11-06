@@ -59,7 +59,9 @@ if ( ! defined( 'WP_DEBUG' ) ) {
 define( 'WP_DEBUG_DISPLAY', WP_DEBUG );
 define( 'DISABLE_WP_CRON', true );
 define( 'AUTOMATIC_UPDATER_DISABLED', true );
-define( 'WP_HTTP_BLOCK_EXTERNAL', true );
+// Outbound HTTP goes through the Worker (wp-content/mu-plugins/http-bridge.php,
+// issue #26). With HTTP_BRIDGE=off the Worker defines WP_HTTP_BLOCK_EXTERNAL in
+// wp-runtime.php instead, as before: PHP has no sockets, so a request fails fast.
 
 if ( ! defined( 'ABSPATH' ) ) {
 	define( 'ABSPATH', __DIR__ . '/' );

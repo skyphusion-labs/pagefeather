@@ -198,7 +198,7 @@ async function stageUpload(req, env) {
 }
 
 function newStats() {
-	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, ocCalls: 0, ocHits: 0 };
+	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, ocCalls: 0, ocHits: 0, httpCalls: 0, httpMs: 0 };
 }
 
 // The log and failure lists live as long as the isolate. Keep the newest only.
@@ -311,6 +311,7 @@ function lazyFile(FS, path, entry) {
 // the checkout Container, through the outbound handler for worker.internal.
 async function handleMessage(raw) {
 	const m = JSON.parse(raw);
+	if (m.http) return JSON.stringify(await httpOp(m.http));
 	if (m.oc) return JSON.stringify(objectCacheOp(m.oc));
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
 	if (m.cache === 'purge') {
@@ -473,6 +474,9 @@ async function boot(origin) {
 	if (ENV.MEDIA && ENV.IMAGES) lines.push(`define('CF_IMAGES', true);`);
 	// A deploy (WP_SALT is set) shows no PHP errors or database errors to visitors.
 	if (ENV.WP_SALT) lines.push(`define('WP_DEBUG', false);`);
+	// Outbound HTTP through fetch() (php/http-bridge.php, #26). HTTP_BRIDGE=off: no
+	// bridge, and WordPress blocks external requests, as before the bridge.
+	if (ENV.HTTP_BRIDGE === 'off') lines.push(`define('SKYPHUSION_HTTP_BRIDGE_OFF', true);`, `define('WP_HTTP_BLOCK_EXTERNAL', true);`);
 	// Variant a on a strict MySQL (PlanetScale): the sql_mode each statement
 	// carries (php/hyperdrive-sql-mode.php). Mode names and commas only.
 	if (typeof ENV.HYPERDRIVE_SQL_MODE === 'string' && /^[A-Za-z_,]*$/.test(ENV.HYPERDRIVE_SQL_MODE))
@@ -762,6 +766,113 @@ async function d1ping(req, env, url, ctx) {
 	const n2 = ms.length;
 	ms.sort((a, b) => a - b);
 	return Response.json({ n: n2, first: connectMs, min: ms[0], median: ms[n2 >> 1], max: ms[n2 - 1], colo: req.cf && req.cf.colo });
+}
+
+// Outbound HTTP for PHP (php/http-bridge.php, issue #26). WordPress's wp_remote_*()
+// requests come here and go out with fetch(). The design is WordPress
+// Playground's; HostlessWP does the same (runtime/src/http.js).
+// - timeout: one AbortSignal for the whole request, redirects included.
+// - redirection: redirects are followed here, up to WordPress's count, so each
+//   hop is checked like the first (loopback, allowlist). 303, and 301 or 302 on
+//   a POST, become a GET without a body, as browsers do.
+// - limit: the body is read up to WordPress's limit_response_size, and never
+//   past HTTP_MAX_BYTES (default 8 MB): the answer crosses the bridge as base64.
+// - HTTP_ALLOW_HOSTS (comma list; a host or ".suffix"): when set, only those.
+// - A request to the site's own host is refused at once. The PHP object runs one
+//   request at a time, so a request to itself waits behind itself (a timeout, or
+//   "Durable Object is overloaded"). WordPress treats the error like any failed
+//   request (Site Health's loopback check, the plugin editor's fatal check).
+const HTTP_MAX_BYTES = 8 * 1024 * 1024;
+function httpRefusal(url) {
+	if (url.protocol !== 'http:' && url.protocol !== 'https:') return 'only http and https';
+	if (bootOrigin && url.hostname === new URL(bootOrigin).hostname) return 'a request to this site itself is refused: the PHP object runs one request at a time, so it would wait on itself';
+	const allow = String(ENV.HTTP_ALLOW_HOSTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
+	if (allow.length && !allow.some((h) => (h.startsWith('.') ? url.hostname.endsWith(h) || url.hostname === h.slice(1) : url.hostname === h))) return 'host not in HTTP_ALLOW_HOSTS: ' + url.hostname;
+	return null;
+}
+async function httpOp(op) {
+	stats.httpCalls++;
+	const t0 = Date.now();
+	let url;
+	let out;
+	try {
+		url = new URL(op.url);
+		const max = Number(ENV.HTTP_MAX_BYTES || HTTP_MAX_BYTES);
+		const limit = op.limit > 0 ? Math.min(op.limit, max) : max;
+		const timeoutMs = Math.max(1, Number(op.timeout) || 5) * 1000;
+		const signal = AbortSignal.timeout(timeoutMs);
+		let method = op.method || 'GET';
+		let body = op.body ? b64decode(op.body) : undefined;
+		const headers = new Headers(op.headers || {});
+		let redirects = 0;
+		let res;
+		for (;;) {
+			const why = httpRefusal(url);
+			if (why) {
+				out = { error: why };
+				return out;
+			}
+			res = await fetch(url, { method, headers, body, redirect: 'manual', signal });
+			const loc = res.headers.get('location');
+			if ([301, 302, 303, 307, 308].includes(res.status) && loc && (op.redirection || 0) > 0) {
+				// As Requests does: redirection 0 returns the redirect itself; past the count is an error.
+				if (redirects >= op.redirection) {
+					await res.body?.cancel().catch(() => {}); // discarding a body must not fail the request (it threw in the object)
+					out = { error: 'Too many redirects' };
+					return out;
+				}
+				await res.body?.cancel().catch(() => {}); // discarding a body must not fail the request (it threw in the object)
+				url = new URL(loc, url);
+				redirects++;
+				if (res.status === 303 || ((res.status === 301 || res.status === 302) && method === 'POST')) {
+					method = 'GET';
+					body = undefined;
+					headers.delete('content-type');
+					headers.delete('content-length');
+				}
+				continue;
+			}
+			break;
+		}
+		const chunks = [];
+		let size = 0;
+		let truncated = false;
+		if (res.body && method !== 'HEAD') {
+			const reader = res.body.getReader();
+			for (;;) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				const room = limit - size;
+				if (value.length > room) {
+					chunks.push(value.subarray(0, room));
+					size += room;
+					truncated = true;
+					await reader.cancel().catch(() => {});
+					break;
+				}
+				chunks.push(value);
+				size += value.length;
+			}
+		}
+		const bytes = new Uint8Array(size);
+		let at = 0;
+		for (const c of chunks) {
+			bytes.set(c, at);
+			at += c.length;
+		}
+		const hdrs = [];
+		for (const [k, v] of res.headers) if (k !== 'set-cookie') hdrs.push([k, v]);
+		for (const c of res.headers.getSetCookie ? res.headers.getSetCookie() : []) hdrs.push(['set-cookie', c]);
+		out = { status: res.status, statusText: res.statusText, headers: hdrs, body: b64encode(bytes), redirects, url: url.href, truncated };
+		return out;
+	} catch (e) {
+		const name = e && e.name;
+		out = { error: name === 'TimeoutError' || name === 'AbortError' ? `Operation timed out after ${Math.round(Number(op.timeout) * 1000) || 5000} milliseconds` : String((e && e.message) || e) };
+		return out;
+	} finally {
+		stats.httpMs += Date.now() - t0;
+		console.log(JSON.stringify({ m: 'http', host: url ? url.hostname : null, status: out && out.status, error: out && out.error ? String(out.error).slice(0, 120) : undefined, ms: Date.now() - t0 }));
+	}
 }
 
 // Spike: time N statements on the object's SQLite (db=object) or on D1 (db=d1),
@@ -1271,7 +1382,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const { php, handler, bootMs } = await bootPromise;
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
-			const start = { calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, ocCalls: stats.ocCalls, ocHits: stats.ocHits };
+			const start = { calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
 			if (url.pathname === '/_install') {
@@ -1371,6 +1482,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 					wasm0MiB: Math.round(wasm0 / 1048576),
 					wasm1MiB: Math.round(wasmBytes / 1048576),
 					bytes: r.bytes.length,
+					httpCalls: stats.httpCalls - start.httpCalls,
 					ocCalls: stats.ocCalls - start.ocCalls,
 					ocHits: stats.ocHits - start.ocHits,
 					ocKeys: objectCache.size,
