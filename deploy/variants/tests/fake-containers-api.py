@@ -26,6 +26,10 @@ too early. Each rollouts request is counted in <count-file>. Modes:
                 1 -> 2 is progressing for 2 reads, then completed
   stale-list-empty  the same, but no rollout for 2 reads (a new site's second
                 deploy): the list's version 1 must not count as "placed"
+  replaced-then-newer  the version 2 rollout reads "replaced" for 2 reads,
+                then the application is at version 3, whose rollout is
+                completed (seen live on wp-c1-live, 2026-11-06)
+  replaced-stuck  version 2, and its only rollout reads "replaced" for ever
   live-shape    the shape read from the live API on 2026-11-06 (#106): the
                 applications answer has result_info, the applications have no
                 active_rollout_id, the rollouts are newest first, older ones
@@ -71,8 +75,10 @@ class H(http.server.BaseHTTPRequestHandler):
             if not apps:
                 return self.send(404, {"success": False})
             a = dict(apps[0])
-            if mode in ("stale-list", "stale-list-empty"):
+            if mode in ("stale-list", "stale-list-empty", "replaced-stuck"):
                 a["version"] = 2
+            if mode == "replaced-then-newer":
+                a["version"] = 2 if n["rollouts"] < 2 else 3
             return self.send(200, {"errors": [], "messages": [], "result": a, "success": True})
         if path == "/applications":
             return self.send(*self.list_answer())
@@ -139,6 +145,10 @@ class H(http.server.BaseHTTPRequestHandler):
                     rs = [r2("progressing" if k < 3 else "completed")]
                 else:
                     rs = [] if k < 3 else [r2("progressing" if k == 3 else "completed")]
+            elif mode in ("replaced-then-newer", "replaced-stuck"):
+                r2 = dict(rollout("completed"), target_version=2, current_version=1, id="r2", status="replaced")
+                r3 = dict(rollout("completed"), target_version=3, current_version=2, id="r3", created_at="2026-11-06T14:40:00Z")
+                rs = [r3, r2] if (mode == "replaced-then-newer" and k > 2) else [r2]
             elif mode == "late":
                 rs = [OLD] if k < 3 else [rollout("pending" if k == 3 else "completed"), OLD]
             else:

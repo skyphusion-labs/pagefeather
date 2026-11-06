@@ -194,14 +194,15 @@ else:
 }
 
 # Wait for the container rollout of this deploy (issue #106): until it is
-# completed (return 0), reverted or not done in ROLLOUT_TIMEOUT s (600;
+# completed (return 0), reverted, replaced with no newer version for
+# ROLLOUT_REPLACED_POLLS reads (6), or not done in ROLLOUT_TIMEOUT s (600;
 # return 1). If the API cannot be read 3 times in a row, return 2: the caller
 # then falls back to the fixed wait. A fixed 60 s was too short: on
 # 2026-11-06 a rollout took about 90 s, so the deploy check met the previous
 # image (issue #99, arms 3b and 3c).
 c1_rollout() {
   local api=${C1_API:-https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/containers}
-  local t0=$SECONDS st last="" errs=0
+  local t0=$SECONDS st last="" errs=0 rep=0
   while :; do
     st=$(c1_rollout_state "$api")
     [ "$st" = "$last" ] || echo "rollout: $st"
@@ -210,7 +211,15 @@ c1_rollout() {
       done*) echo "container rollout completed after $((SECONDS - t0)) s"; return 0 ;;
       failed*) echo "the container rollout ended as ${st#failed }: the new image is not running" >&2; return 1 ;;
       api-error*|no-app*) errs=$((errs + 1)); [ "$errs" -lt 3 ] || return 2 ;;
-      *) errs=0 ;;
+      # "replaced": a newer rollout took over. The version is read again on
+      # each poll, so a newer version normally shows next (seen live: version
+      # 2 replaced, then version 3 done). A replaced rollout never completes,
+      # so if the version stays, fail after ROLLOUT_REPLACED_POLLS reads (6)
+      # instead of waiting ROLLOUT_TIMEOUT.
+      "waiting replaced"*)
+        errs=0; rep=$((rep + 1))
+        [ "$rep" -lt "${ROLLOUT_REPLACED_POLLS:-6}" ] || { echo "the rollout of this version was replaced and no newer version appeared in $rep reads (last: $st)" >&2; return 1; } ;;
+      *) errs=0; rep=0 ;;
     esac
     [ $((SECONDS - t0)) -lt "${ROLLOUT_TIMEOUT:-600}" ] || { echo "the container rollout did not complete in ${ROLLOUT_TIMEOUT:-600} s (last: $st)" >&2; return 1; }
     sleep "${ROLLOUT_POLL_S:-10}"

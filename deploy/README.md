@@ -62,7 +62,7 @@ What `deploy.sh` does for c1 (`deploy/variants/c1.sh`):
 2. Build the image tree (`spikes/c1-woo-container/build.sh`).
 3. Write the Wrangler config from the Terraform outputs. `PUBLIC_HOST` is `<name>.<subdomain>.workers.dev`; the script reads the subdomain from the API before the deploy, because WordPress uses it as its address.
 4. `wrangler deploy --secrets-file ... --containers-rollout immediate`. Wrangler builds the image with Docker, so Docker must run on the machine.
-5. Wait for the container rollout of the deploy to complete (issue #106): the containers API, application `<NAME>-store`, the newest rollout whose `target_version` is the application's `version`, until its `status` is `completed`. A `reverted` rollout, or none completed in `ROLLOUT_TIMEOUT`, fails the deploy. If the API cannot be read 3 times in a row, it waits a fixed `ROLLOUT_WAIT` instead and says so. Then stop the container once (`POST /_store-stop`). A container that starts before the rollout ends runs the old image; the next request starts one from the new image. On a new site there is no container yet, and the stop does nothing.
+5. Wait for the container rollout of the deploy to complete (issue #106): the containers API, application `<NAME>-store`, the newest rollout whose `target_version` is the application's `version`, until its `status` is `completed`. A `reverted` rollout, a `replaced` one with no newer version for `ROLLOUT_REPLACED_POLLS` reads, or none completed in `ROLLOUT_TIMEOUT`, fails the deploy. The version comes from `GET .../applications/<id>` on each read (the list answer is stale), and a new application at version 1 with no rollout at all counts as placed. If the API cannot be read 3 times in a row, it waits a fixed `ROLLOUT_WAIT` instead and says so. Then stop the container once (`POST /_store-stop`). A container that starts before the rollout ends runs the old image; the next request starts one from the new image. On a new site there is no container yet, and the stop does nothing.
 6. Wait for `GET /` to answer 200 (`first_start_s`). On a new site this includes the install.
 7. `e2e.sh`, `tests/a/bench.py`, then one cold start: stop the container and time until a new container (a new id in `/_boot.txt`) restored the database from R2 and answers `GET /` (`cold_start_s`).
 
@@ -90,6 +90,7 @@ The query count per page comes from the mu-plugin `php/query-count.php`: it send
 | `PUBLIC_HOST` | `<name>.<subdomain>.workers.dev` | The address WordPress uses |
 | `ROLLOUT_TIMEOUT` | `600` | Seconds to wait for the container rollout to complete |
 | `ROLLOUT_POLL_S` | `10` | Seconds between two reads of the rollout |
+| `ROLLOUT_REPLACED_POLLS` | `6` | Reads of a `replaced` rollout with no newer version before the deploy fails |
 | `ROLLOUT_WAIT` | `60` | The fallback: seconds to wait before the one stop when the containers API cannot be read |
 | `START_TIMEOUT` | `900` | Seconds to wait for the first 200 |
 

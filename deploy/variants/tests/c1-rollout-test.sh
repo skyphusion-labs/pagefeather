@@ -17,6 +17,8 @@
 #   v2-empty      0, 4      version 2 with an empty list: waits for its rollout
 #   stale-list    0, 3      the version comes from GET /applications/<id>, not the stale list
 #   stale-list-empty  0, 4  the stale list version 1 with no rollout yet must not count as placed
+#   replaced-then-newer 0, 3  a replaced rollout, then a newer version: waits, then passes
+#   replaced-stuck  1, 6    replaced with no newer version: fails after 6 reads, not at the timeout
 # And c1_wait with fake-c1-site.py too: api-401 falls back to the fixed wait
 # and goes on; reverted fails before the stop; done-after-3 goes on.
 # Exits 0 only when every case gives what it must. Needs bash, curl, python3.
@@ -89,6 +91,8 @@ run_case new-app 0 1
 run_case v2-empty 0 4
 run_case stale-list 0 3
 run_case stale-list-empty 0 4
+run_case replaced-then-newer 0 3
+run_case replaced-stuck 1 6
 wait_case api-401 0 "waiting a fixed" ""
 wait_case reverted 1 "ended as reverted" "stop:"
 wait_case done-after-3 0 "first answer 200" ""
