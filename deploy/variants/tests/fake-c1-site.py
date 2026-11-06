@@ -11,12 +11,15 @@ Modes:
   old-then-new  old until a POST /_store-stop, then new
   old-forever   old, and a stop does not change it
   php-stuck     new, but /_fpm-ping does not answer (504): no free child
+  stop-no-worker  new, but POST /_store-stop gets a 404 HTML page (a new
+                workers.dev name with no Worker answer yet)
+  stop-stuck    new, but the stop answers still_running true
 /_boot.txt and / always answer 200, /_store-info always says current.
 """
 import http.server, json, sys
 
 mode = sys.argv[2]
-state = {"new": mode in ("new", "php-stuck"), "stops": 0}
+state = {"new": mode in ("new", "php-stuck", "stop-no-worker", "stop-stuck"), "stops": 0}
 
 
 class H(http.server.BaseHTTPRequestHandler):
@@ -53,6 +56,10 @@ class H(http.server.BaseHTTPRequestHandler):
             state["stops"] += 1
             if mode == "old-then-new":
                 state["new"] = True
+            if mode == "stop-no-worker":
+                return self.send(404, b"<html>There is nothing here yet</html>", "text/html")
+            if mode == "stop-stuck":
+                return self.send(200, json.dumps({"ok": False, "still_running": True, "reset": False}).encode(), "application/json")
             return self.send(200, json.dumps({"ok": True, "still_running": False, "reset": True}).encode(), "application/json")
         return self.send(404)
 

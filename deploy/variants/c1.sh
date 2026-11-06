@@ -172,7 +172,7 @@ all_rs = load(d + "/rollouts")
 # at a later version an empty list can mean "not created yet", so it waits.
 if not all_rs and v == 1:
     h = (app.get("health") or {}).get("instances") or {}
-    print("done first version 1, placed with no rollout (a new application); instances healthy %s, starting %s, failed %s" % (h.get("healthy"), h.get("starting"), h.get("failed")))
+    print("done first version 1, placed with no rollout (a new application); instances healthy %s, starting %s, failed %s (an instance starts on the first request)" % (h.get("healthy"), h.get("starting"), h.get("failed")))
     sys.exit()
 rs = [r for r in all_rs if r.get("target_version") == v]
 if not rs:
@@ -245,14 +245,26 @@ c1_wait() {
   fi
   # The answer says if a container was running (and was stopped) or not
   # (skipped). The token goes to curl in a config on a pipe, not in argv.
-  local stop
-  stop=$(curl -s -m 60 -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_store-stop" \
-    | python3 -c 'import json, sys
+  local stop sb scode
+  # A body that is not the Store object's JSON is named as such, with its HTTP
+  # status: on a new workers.dev name the first requests can get no Worker
+  # answer yet (seen 2026-11-06 on wp-c1-new: "stop: {}", then the first 200
+  # after 98 s). The deploy check after this still finds an old container.
+  sb=$(mktemp)
+  scode=$(curl -s -m 60 -o "$sb" -w '%{http_code}' -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_store-stop" || true)
+  stop=$(python3 -c 'import json, sys
 try:
-    d = json.load(sys.stdin)
-except ValueError:
-    d = {}
-print("no container was running: nothing to stop" if d.get("skipped") else "stop: %s" % json.dumps(d))') || true
+    d = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    d = None
+if not isinstance(d, dict):
+    body = open(sys.argv[1], "rb").read()[:80].decode("utf-8", "replace").replace("\n", " ")
+    print("stop: no answer from the Store object (HTTP %s, %d bytes: %r): nothing stopped" % (sys.argv[2], len(body), body))
+elif d.get("skipped"):
+    print("no container was running: nothing to stop")
+else:
+    print("stop: %s" % json.dumps(d))' "$sb" "$scode") || true
+  rm -f "$sb"
   echo "$stop"
   # A container that did not stop in 30 s (still_running) is very likely stuck:
   # seen 2026-11-06 (issue #93), an instance that answered no request survived a

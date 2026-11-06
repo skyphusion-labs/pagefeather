@@ -20,7 +20,8 @@
 #   replaced-then-newer 0, 3  a replaced rollout, then a newer version: waits, then passes
 #   replaced-stuck  1, 6    replaced with no newer version: fails after 6 reads, not at the timeout
 # And c1_wait with fake-c1-site.py too: api-401 falls back to the fixed wait
-# and goes on; reverted fails before the stop; done-after-3 goes on.
+# and goes on; reverted fails before the stop; done-after-3 goes on; a stop
+# that gets no Store answer (404 HTML) is named and goes on; a stuck stop fails.
 # Exits 0 only when every case gives what it must. Needs bash, curl, python3.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -59,7 +60,7 @@ wait_case() {
 	local mode=$1 want_rc=$2 want_text=$3 not_text=$4 p1 p2 pid1 pid2 rc out
 	rm -f "$T/port" "$T/count" "$T/sport"
 	python3 -I "$HERE/fake-containers-api.py" "$T/port" "$T/count" "$mode" & pid1=$!
-	python3 -I "$HERE/fake-c1-site.py" "$T/sport" new & pid2=$!
+	python3 -I "$HERE/fake-c1-site.py" "$T/sport" "${SITE_MODE:-new}" & pid2=$!
 	for _ in $(seq 1 50); do [ -s "$T/port" ] && [ -s "$T/sport" ] && break; sleep 0.1; done
 	p1=$(cat "$T/port"); p2=$(cat "$T/sport")
 	out=$(
@@ -75,7 +76,7 @@ wait_case() {
 	[ "$rc" = "$want_rc" ] || ok=0
 	printf '%s' "$out" | grep -q "$want_text" || ok=0
 	[ -z "$not_text" ] || ! printf '%s' "$out" | grep -q "$not_text" || ok=0
-	if [ $ok = 1 ]; then echo "PASS c1_wait $mode: exit $rc"; else echo "FAIL c1_wait $mode: exit $rc (want $want_rc, text \"$want_text\"${not_text:+, not \"$not_text\"})"; fails=$((fails + 1)); fi
+	if [ $ok = 1 ]; then echo "PASS c1_wait $mode (site ${SITE_MODE:-new}): exit $rc"; else echo "FAIL c1_wait $mode (site ${SITE_MODE:-new}): exit $rc (want $want_rc, text \"$want_text\"${not_text:+, not \"$not_text\"})"; fails=$((fails + 1)); fi
 	printf '%s\n' "$out" | sed 's/^/   /'
 }
 run_case done-after-3 0 3
@@ -96,5 +97,7 @@ run_case replaced-stuck 1 6
 wait_case api-401 0 "waiting a fixed" ""
 wait_case reverted 1 "ended as reverted" "stop:"
 wait_case done-after-3 0 "first answer 200" ""
+SITE_MODE=stop-no-worker wait_case done-after-3 0 "no answer from the Store object (HTTP 404" "stop: {}"
+SITE_MODE=stop-stuck wait_case done-after-3 1 "probably stuck" "first answer 200"
 echo "$fails failing case(s)"
 exit $fails
