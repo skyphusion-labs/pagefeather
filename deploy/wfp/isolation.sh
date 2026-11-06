@@ -11,7 +11,7 @@
 # 4. snapshot one, two again; diff: one and two must be UNCHANGED
 #    (dispatcher etag and modified_on, user Worker hash and modified_on, map
 #    entry, bucket keys and ETags, page title)
-# 5. snapshot one, three
+# 5. seed three's bucket; snapshot one, three
 # 6. site remove two (it verifies two's parts gone)
 # 7. snapshot one, three again; diff: one and three must be UNCHANGED
 # The snapshots and a summary go to deploy/wfp/results/isolation-<time>/.
@@ -42,6 +42,9 @@ log "site add three"
 "$WFP/site" add three
 snap s1 one two
 check s0 s1 "site add three changed nothing of one and two"
+# Seed three too, so its bucket comparison has an object in it (the first
+# live run, 2026-11-06, compared three's empty bucket: [] with []).
+python3 -I "$WFP/snapshot.py" seed three
 snap s2 one three
 log "site remove two"
 "$WFP/site" remove two

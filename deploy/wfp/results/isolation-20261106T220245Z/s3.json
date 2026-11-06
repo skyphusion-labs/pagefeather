@@ -1,0 +1,41 @@
+{
+ "utc": "2026-11-06T22:05:46Z",
+ "sites": {
+  "one": {
+   "dispatcher": {
+    "etag": "cd9a7b31fc675140ebe0052934cab1ed95de9cd5cbbe148167a3f1731aaef685",
+    "modified_on": "2026-11-06T21:59:06.963629Z"
+   },
+   "user_script": {
+    "etag": "587053a71f059636b0c5664b2bb4ca540c5e8702436e9a340ed3c062cc03092b",
+    "modified_on": "2026-11-06T21:59:00.23541Z"
+   },
+   "entry": "{\"cpuMs\":30000,\"outbound\":true,\"script\":\"site-one\",\"subRequests\":1000}",
+   "bucket": {
+    "objects": [
+     [
+      "wfp-isolation/seed.txt",
+      "\"b29566645aafdc0de5747620d22b21fd\"",
+      "36"
+     ]
+    ]
+   },
+   "title": "WfP site one"
+  },
+  "three": {
+   "dispatcher": {
+    "etag": "cd9a7b31fc675140ebe0052934cab1ed95de9cd5cbbe148167a3f1731aaef685",
+    "modified_on": "2026-11-06T22:04:41.51154Z"
+   },
+   "user_script": {
+    "etag": "587053a71f059636b0c5664b2bb4ca540c5e8702436e9a340ed3c062cc03092b",
+    "modified_on": "2026-11-06T22:04:36.06695Z"
+   },
+   "entry": "{\"cpuMs\":30000,\"outbound\":true,\"script\":\"site-three\",\"subRequests\":1000}",
+   "bucket": {
+    "objects": []
+   },
+   "title": "WordPress on D1"
+  }
+ }
+}

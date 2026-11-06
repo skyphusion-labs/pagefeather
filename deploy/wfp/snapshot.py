@@ -13,6 +13,12 @@ Per site, `take` records:
 - its media bucket: every key with its ETag and size (R2's S3 API);
 - its front page title (a fresh render, ?nocache=).
 
+The dispatcher etag is the same for every site (one script, by design), and
+the user Worker etag is the same for every b-dosql site (one bundle; seen
+live 2026-11-06). So for scripts, modified_on is what tells one upload from
+another: a re-upload of identical code keeps the etag and changes only
+modified_on. Both are compared.
+
 A part that cannot be read is recorded as an error, and `diff` fails on it:
 an unreadable part is never "unchanged". So is a script with no hash field
 and no modified_on (nothing to compare).
