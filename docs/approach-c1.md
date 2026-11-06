@@ -362,7 +362,7 @@ So browse p50 is under 0.3 s at every step. Browse p95 is over 0.3 s at 1 user (
 
 ## Next
 
-- The first write after a sleep: a cached storefront hides the cold start (13 to 30 s) until the first cart request. Start the container on the first product view or add to cart (#20).
+- The first write after a sleep: a cached storefront hides the cold start (13 to 30 s) until the first cart request. Start the container on the first product view or the first Store API request of a visit (#73).
 - Purge by object (a tag per product and per listing) instead of the whole site, when a store has many products and many edits.
 - Limit the queue at the PHP server: at high load a request waits in the accept backlog until the client gives up. An early 503 is better for the tail than a 60 s wait.
 - The rest of the CPU is the start of WordPress and WooCommerce and the rendering (about 0.15 s a page with APCu): profile it before more caching.
