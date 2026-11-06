@@ -71,9 +71,13 @@ trap 'kill -TERM "$LS"; wait "$LS"; exit $?' TERM INT QUIT
 		[ -r /sys/fs/cgroup/cpu.stat ] && cg=$(awk '{printf "%s=%s ", $1, $2}' /sys/fs/cgroup/cpu.stat)
 		load=$(cut -d" " -f1-4 /proc/loadavg)
 		bl=$(cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk 'function hex(x, i, n) { n = 0; x = tolower(x); for (i = 1; i <= length(x); i++) n = n * 16 + index("0123456789abcdef", substr(x, i, 1)) - 1; return n } $4 == "0A" && $2 ~ /:2328$/ { split($5, q, ":"); n += hex(q[2]) } END { print n + 0 }')
-		master=$(cat /run/php-fpm.pid 2>/dev/null || echo 0)
+		master=0; read -r master < /run/php-fpm.pid 2>/dev/null || master=0
 		ps=$(cat /proc/[0-9]*/stat 2>/dev/null | awk -v m="$master" '$2 == "(php-fpm)" && $1 != m { s[$3]++ } END { for (k in s) printf "%s%d ", k, s[k] }')
-		pss=$(for p in /proc/[0-9]*; do c=$(cat "$p/comm" 2>/dev/null); if [ "$c" = php-fpm ] || [ "$c" = nginx ]; then awk -v c="$c" '/^Pss:/ { print c, $2 }' "$p/smaps_rollup" 2>/dev/null; fi; done | awk '{ k[$1] += $2 } END { printf "fpm=%d nginx=%d", k["php-fpm"], k["nginx"] }')
+		# One awk for all processes, no fork per process: the first version ran
+		# a cat for every process every 2 s, which cost several CPU seconds in a
+		# 400 s run, more than nginx did (issue #99). awk reads each comm, and the
+		# smaps_rollup of php-fpm and nginx only.
+		pss=$(awk 'FNR == 1 && FILENAME ~ /comm$/ { c = $1; d = FILENAME; sub(/comm$/, "smaps_rollup", d); if (c == "php-fpm" || c == "nginx") { while ((getline l < d) > 0) if (l ~ /^Pss:/) { split(l, f); k[c] += f[2] } close(d) } } END { printf "fpm=%d nginx=%d", k["php-fpm"], k["nginx"] }' /proc/[0-9]*/comm 2>/dev/null)
 		echo "$t cpu $cpu | cg $cg| load $load | backlog $bl | php $ps| pss $pss" >> /tmp/c1-samples.log
 		sleep 2
 	done
