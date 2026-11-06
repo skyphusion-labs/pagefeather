@@ -58,6 +58,9 @@ jobs:
           php spikes/c1-woo-container/tests/mail-test.php
           node spikes/c1-woo-container/tests/mail-worker-test.mjs
           deploy/variants/tests/c1-mail-config-test.sh
+      - name: R2 empty tests
+        # deploy/variants/r2-empty.sh (issue #115): a 403 on the list or a delete is retried for a bounded time.
+        run: deploy/variants/tests/r2-empty-test.sh
       - name: No em or en dashes
         run: |
           if git grep -nP '\x{2014}|\x{2013}' -- . ':!**/package-lock.json'; then echo 'em or en dash found'; exit 1; fi
