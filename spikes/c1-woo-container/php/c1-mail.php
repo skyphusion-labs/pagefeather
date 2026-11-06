@@ -200,9 +200,16 @@ function c1_mail_log( $result, $msg, $code ) {
 	foreach ( array_merge( (array) ( $msg['to'] ?? array() ), (array) ( $msg['cc'] ?? array() ), (array) ( $msg['bcc'] ?? array() ) ) as $a ) {
 		$domains[ strtolower( substr( strrchr( (string) $a, '@' ), 1 ) ) ] = true;
 	}
-	@file_put_contents(
+	$ok = @file_put_contents(
 		C1_MAIL_LOG,
 		sprintf( "%.3f %s %s %s %s\n", microtime( true ), $result, implode( ',', array_keys( $domains ) ) ?: '-', substr( md5( (string) ( $msg['subject'] ?? '' ) ), 0, 8 ), $code ? $code : '-' ),
 		FILE_APPEND | LOCK_EX
 	);
+	// A log that cannot be written is said once, not lost in silence (issue
+	// #104: a root-owned log took every line of the PHP-FPM children).
+	static $said = false;
+	if ( false === $ok && ! $said ) {
+		$said = true;
+		error_log( 'c1-mail: cannot write ' . C1_MAIL_LOG . ': the mail log loses its lines (the counters in /_store-info still count)' );
+	}
 }

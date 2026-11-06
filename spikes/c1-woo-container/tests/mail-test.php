@@ -4,7 +4,9 @@
 // skyphusion_worker_call() that records the payload and returns a set reply.
 // Run: php spikes/c1-woo-container/tests/mail-test.php [another c1-mail.php]
 // Exit 0 only when every check passes.
-$log = tempnam( sys_get_temp_dir(), 'c1mail' );
+// The log path: a temporary file, unless one is given (check 9's child gives
+// one that cannot be written).
+$log = getenv( 'C1_MAIL_LOG' ) ? getenv( 'C1_MAIL_LOG' ) : tempnam( sys_get_temp_dir(), 'c1mail' );
 putenv( 'C1_MAIL_LOG=' . $log );
 
 class WP_Error {
@@ -102,12 +104,30 @@ unlink( $f );
 $GLOBALS['sent'] = array();
 check( 'an earlier answer passes through', false === c1_mail_pre_wp_mail( false, array( 'to' => 'ann@example.org' ) ) && 0 === count( $GLOBALS['sent'] ) );
 
+// Check 9's child stops here: its log was never written.
+if ( getenv( 'C1_MAILTEST_CHILD' ) ) {
+	exit( 0 );
+}
+
 // 8. The log: one line a send, no address, no body.
 $lines = file( $log, FILE_IGNORE_NEW_LINES );
 check( 'the log has a line for each send', count( $lines ) >= 9, count( $lines ) . ' lines' );
 check( 'the log holds no address and no body', ! preg_grep( '/@|Hello|order/', $lines ) );
 check( 'the log names the result and the code', (bool) preg_grep( '/ failed example\.org [0-9a-f]{8} E_SENDER_NOT_VERIFIED$/', $lines ) && (bool) preg_grep( '/ sent example\.org [0-9a-f]{8} -$/', $lines ) );
-unlink( $log );
+if ( is_file( $log ) ) {
+	unlink( $log );
+}
+
+// 9. A log that cannot be written is said once (error_log), not lost in
+//    silence, and the send still counts: a child run of this file with the
+//    log path in a directory that does not exist.
+$elog  = tempnam( sys_get_temp_dir(), 'c1err' );
+$cmd   = 'C1_MAILTEST_CHILD=1 C1_MAIL_LOG=/nonexistent-c1/c1-mail.log ' . escapeshellarg( PHP_BINARY ) . ' -d error_log=' . escapeshellarg( $elog ) . ' -d log_errors=1 ' . escapeshellarg( __FILE__ ) . ' ' . escapeshellarg( $argv[1] ?? __DIR__ . '/../php/c1-mail.php' );
+exec( $cmd, $child_out, $child_rc );
+$said = substr_count( (string) file_get_contents( $elog ), 'c1-mail: cannot write /nonexistent-c1/c1-mail.log' );
+check( 'an unwritable log: said once in error_log', 1 === $said && 0 === $child_rc, "said $said times, child rc $child_rc" );
+check( 'an unwritable log: the sends still pass', (bool) preg_grep( '/^PASS plain text: true and one call/', $child_out ) );
+unlink( $elog );
 
 echo $fails ? "$fails failing check(s)\n" : "all PASS\n";
 exit( $fails ? 1 : 0 );
