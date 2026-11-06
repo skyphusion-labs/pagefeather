@@ -21,7 +21,9 @@
 #   replaced-stuck  1, 6    replaced with no newer version: fails after 6 reads, not at the timeout
 # And c1_wait with fake-c1-site.py too: api-401 falls back to the fixed wait
 # and goes on; reverted fails before the stop; done-after-3 goes on; a stop
-# that gets no Store answer (404 HTML) is named and goes on; a stuck stop fails.
+# that gets no Store answer (404 HTML) is named and goes on; a stuck stop fails;
+# the wait for the first 200 goes through c1_up_watch (issue #103), which with
+# no Terraform outputs says so and only waits for the 200.
 # Exits 0 only when every case gives what it must. Needs bash, curl, python3.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -97,6 +99,7 @@ run_case replaced-stuck 1 6
 wait_case api-401 0 "waiting a fixed" ""
 wait_case reverted 1 "ended as reverted" "stop:"
 wait_case done-after-3 0 "first answer 200" ""
+wait_case done-after-3 0 "boot log: no R2 settings" ""
 SITE_MODE=stop-no-worker wait_case done-after-3 0 "no answer from the Store object (HTTP 404" "stop: {}"
 SITE_MODE=stop-stuck wait_case done-after-3 1 "probably stuck" "first answer 200"
 echo "$fails failing case(s)"

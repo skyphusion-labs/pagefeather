@@ -11,6 +11,9 @@
 #   c1_wait     wait for the container rollout to complete (ROLLOUT_TIMEOUT,
 #               default 600 s; a fixed ROLLOUT_WAIT if the API cannot be read),
 #               stop the container once, wait for the first 200 (sets FIRST_START_S)
+#               and watch the boot log: fail when it does not appear
+#               (BOOT_LOG_WAIT, default 180 s) or stops growing (STALL_S,
+#               default 300 s), issue #103
 #   c1_check    the Store object is from this deploy, and the running container
 #               has its settings (the drop-in is there exactly when
 #               OBJECT_CACHE=apcu) and runs PHP-FPM, whose ping answers;
@@ -25,7 +28,7 @@
 # loopback, default local), CRON_SECONDS (default 10), AS_TIME_LIMIT (default 5), PUBLIC_HOST (default
 # <NAME>.<account subdomain>.workers.dev), ROLLOUT_TIMEOUT (default 600 s),
 # ROLLOUT_POLL_S (default 10 s), ROLLOUT_WAIT (the fallback, default 60 s),
-# START_TIMEOUT (default 900 s), BENCH, N; mail: MAIL_FROM, MAIL_FROM_NAME,
+# START_TIMEOUT (default 900 s), BOOT_LOG_WAIT, STALL_S, BENCH, N; mail: MAIL_FROM, MAIL_FROM_NAME,
 # MAIL_ALLOWED_TO, MAIL_CHECK (deploy/README.md, Mail for c1).
 
 C1="$ROOT/spikes/c1-woo-container"
@@ -308,12 +311,13 @@ c1_wait() {
   fi
   # The answer says if a container was running (and was stopped) or not
   # (skipped). The token goes to curl in a config on a pipe, not in argv.
-  local stop sb scode
+  local stop sb scode stop_epoch
   # A body that is not the Store object's JSON is named as such, with its HTTP
   # status: on a new workers.dev name the first requests can get no Worker
   # answer yet (seen 2026-11-06 on wp-c1-new: "stop: {}", then the first 200
   # after 98 s). The deploy check after this still finds an old container.
   sb=$(mktemp)
+  stop_epoch=$(date +%s)
   scode=$(curl -s -m 60 -o "$sb" -w '%{http_code}' -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_store-stop" || true)
   stop=$(python3 -c 'import json, sys
 try:
@@ -339,8 +343,25 @@ else:
     return 1
   fi
   log "wait for WordPress"
-  FIRST_START_S=$(c1_up)
+  FIRST_START_S=$(c1_up_watch "$stop_epoch") || return 1
   echo "first answer 200 after $FIRST_START_S s"
+}
+
+# c1_up with the boot log (issue #103): print the seconds until GET / answers
+# 200, and fail early when the container started after <stop epoch> wrote no
+# boot log (BOOT_LOG_WAIT) or its log stopped growing (STALL_S), not only at
+# START_TIMEOUT. deploy/variants/c1-bootwatch.py does the work. It reads the
+# replica bucket with the Litestream key from the Terraform outputs; the key
+# goes to it in the environment, not in the arguments. With no outputs (out
+# is not defined) it only waits for the 200, as c1_up does.
+c1_up_watch() {
+  local ep="" bucket="" kid="" sec=""
+  if declare -F out >/dev/null; then
+    ep=$(out r2_endpoint) bucket=$(out replica_bucket) kid=$(out litestream_access_key_id) sec=$(out litestream_secret_access_key) || true
+  fi
+  C1_R2_KEY_ID=${C1_R2_KEY_ID:-$kid} C1_R2_SECRET=${C1_R2_SECRET:-$sec} START_TIMEOUT=${START_TIMEOUT:-900} \
+    BOOT_LOG_WAIT=${BOOT_LOG_WAIT:-180} STALL_S=${STALL_S:-300} \
+    python3 -I "$ROOT/deploy/variants/c1-bootwatch.py" "$URL" "${C1_R2_EP:-$ep}" "${C1_R2_BUCKET:-$bucket}" "$REPLICA_PATH" "$1"
 }
 
 # A container can run the new image with the environment of the deploy before
