@@ -2,7 +2,7 @@
 
 `deploy/import.sh` moves an existing WordPress site into a site that `deploy/deploy.sh` made: the database, the uploads, and the theme and plugins. The source site is only read. Nothing in the script connects to it: you give it a dump file.
 
-This version supports the variants `b-dosql` (the database is the SQLite of the PHP Durable Object), `c1` (the database, uploads, theme and plugins; see "Variant c1") and `a`, with `a2` (the database only; see "Variant a and a2"). The design for the other variants is in [issue #31](https://github.com/skyphusion-labs/wordpress-on-cloudflare/issues/31). Prior art: [docs/prior-art.md](../../docs/prior-art.md), "Moving existing sites".
+This version supports the variants `b-dosql` (the database is the SQLite of the PHP Durable Object), `c1` (the database, uploads, theme and plugins; see "Variant c1") and `a`, with `a2` (the database, uploads, theme and plugins; see "Variant a and a2"). The design for the other variants is in [issue #31](https://github.com/skyphusion-labs/wordpress-on-cloudflare/issues/31). Prior art: [docs/prior-art.md](../../docs/prior-art.md), "Moving existing sites".
 
 ## Use
 
@@ -95,6 +95,8 @@ The container stops (it does not start) if the seed download or its SHA-256 chec
 **`/_sqlimport`** (`spikes/b2-wordpress/sql-import.js`):
 - It serves variant `a` only, `a2` included; every other variant gets 404. It needs the `SPIKE_TOKEN` secret and its header; with no secret it refuses, unlike other spike endpoints.
 - Before it runs any statement of a request, it checks all of them. It allows only `DROP TABLE IF EXISTS`, `CREATE TABLE` (column list and table options) and `INSERT ... VALUES` with literals, on a table named `wp_*`. Refused: `GRANT`, `SET` (`SET GLOBAL` included), `LOAD DATA`, `SELECT`, `INTO OUTFILE`, a function in `VALUES` (for example `LOAD_FILE`), `DATA DIRECTORY`, a comment, a second statement. Tests: `tests/sqlimport-check.mjs` and `tests/sqlimport-endpoint.mjs` (both in `run.sh`).
+
+**With `CONTENT`:** the same path as `b-dosql`. Step 4 extracts the archive, prints the `deploy.sh` line and checks the b2 build (`deploy.sh` builds variant `a` with `ENGINE=a` and the `IMPORT_*` variables). Step 6b puts the uploads into the media bucket after the database (a site with `MEDIA=1`). No code is particular to `a` here. Run locally on 2026-11-06 against a stand-in for an `a` site (`/_sqlimport` and `/`) with the a2 dump and the WordPress 7.1.4 archive: line printed, preflight 98, every table matches (8583 rows), upload step reached (`SKIP_MEDIA=1`), `GET /` 200. Not run on a deployed `a` site.
 
 **Query cache:** confirmed OFF, not changed. Terraform makes the Hyperdrive config of variant `a` with `caching = { disabled = true }` (`deploy/terraform/main.tf`, `cloudflare_hyperdrive_config.wp`), and `a2` is variant `a`, so it uses the same resource. The count reads do nothing to avoid a cache.
 
