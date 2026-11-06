@@ -125,6 +125,7 @@ print("no container was running: nothing to stop" if d.get("skipped") else "stop
   if [[ "$stop" == *'"still_running": true'* ]]; then
     echo "the container did not stop in 30 s: it is probably stuck (issue #93)." >&2
     echo "Recover: deploy once with a changed container setting (for example INSTANCE_TYPE), which rolls out a new instance, then deploy again." >&2
+    echo "If that stop also answers still_running: send no traffic to the site for about 15 minutes, so the Store object can move to the new version, then deploy again (seen 2026-11-06, issue #105)." >&2
     return 1
   fi
   log "wait for WordPress"
