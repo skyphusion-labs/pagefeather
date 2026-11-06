@@ -1,0 +1,13 @@
+PASS admin: enable cash on delivery  {'code': 200, 's': 5.89, 'calls': '91', 'fail': '0', 'mib': '99'}
+PASS admin: launch the store (coming soon off)  {'code': 200, 's': 6.11, 'calls': '87', 'fail': '0', 'mib': '83'}
+PASS admin: create a product  {'code': 201, 's': 7.81, 'calls': '219', 'fail': '0', 'mib': '99'}
+PASS guest: shop page lists the product  {'code': 200, 's': 6.85, 'calls': '97', 'fail': '0', 'mib': '99'}
+PASS guest: product page  {'code': 200, 's': 4.22, 'calls': '96', 'fail': '0', 'mib': '99'}
+PASS guest: Store API cart (nonce and cart token)  {'code': 200, 's': 2.61, 'calls': '53', 'fail': '0', 'mib': '99'}
+PASS guest: add 2 to cart  {'code': 201, 's': 2.7, 'calls': '66', 'fail': '0', 'mib': '99'}  total 2500
+PASS guest: cart keeps the items (session in D1)  {'code': 200, 's': 5.77, 'calls': '64', 'fail': '0', 'mib': '83'}
+PASS guest: checkout with cash on delivery  {'code': 200, 's': 8.94, 'calls': '393', 'fail': '0', 'mib': '83'}  order 26 status processing
+PASS admin: the order is in WooCommerce  {'code': 200, 's': 3.21, 'calls': '79', 'fail': '0', 'mib': '99'}  total 25.00 status processing
+PASS admin: stock went down by 2  {'code': 200, 's': 2.91, 'calls': '69', 'fail': '0', 'mib': '99'}
+PASS admin: orders screen  {'code': 200, 's': 8.89, 'calls': '150', 'fail': '0', 'mib': '99'}
+12 pass, 0 fail

@@ -1,0 +1,424 @@
+{
+ "placement": "region=aws:us-east-2",
+ "latency": [],
+ "session": {
+  "colo": {
+   "ingress": "ORD",
+   "run": "ORD"
+  },
+  "utc": "2026-11-06T00:35:30.646Z",
+  "relaxed_mode": "ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION",
+  "steps": {
+   "server_session_mode": {
+    "sql": "SELECT @@SESSION.sql_mode",
+    "ok": true,
+    "shape": "rows",
+    "rows": [],
+    "ms": 26
+   },
+   "server_global_mode": {
+    "sql": "SELECT @@GLOBAL.sql_mode",
+    "ok": true,
+    "shape": "rows",
+    "rows": [],
+    "ms": 15
+   },
+   "server_version": {
+    "sql": "SELECT VERSION()",
+    "ok": true,
+    "shape": "rows",
+    "rows": [
+     [
+      "8.4.11-Vitess"
+     ]
+    ],
+    "ms": 17
+   },
+   "server_connection_id": {
+    "sql": "SELECT CONNECTION_ID()",
+    "ok": true,
+    "shape": "rows",
+    "rows": [
+     [
+      "29"
+     ]
+    ],
+    "ms": 17
+   },
+   "setup_dml_table": {
+    "sql": "CREATE TABLE a2probe_dml_1793925330646 (id int NOT NULL PRIMARY KEY, d datetime NULL, k varchar(10) NOT NULL DEFAULT '', n int NOT NULL)",
+    "ok": true,
+    "shape": "ok-packet",
+    "affected": 0,
+    "info": "\u0000",
+    "serverStatus": 2,
+    "warningStatus": 0,
+    "fieldCount": 0,
+    "raw_type": "object",
+    "ms": 68
+   },
+   "E0_ddl_plain": {
+    "sql": "CREATE TABLE a2probe_e0_1793925330646 (id int NOT NULL PRIMARY KEY, d datetime NOT NULL DEFAULT '0000-00-00 00:00:00', k varchar(10) NOT NULL DEFAULT '')",
+    "ok": false,
+    "errno": 1067,
+    "error": "target: wp-on-cf-a2.-.primary: vttablet: rpc error: code = InvalidArgument desc = Invalid default value for 'd' (errno 1067) (sqlstate 42000) (CallerID: ij8kumassvvzgqkv20i2): Sql: \"create table a2probe_e0_1793925330646 (\\n\\tid int not null primary key,\\n\\td datetime not null default '0000-00-00 00:",
+    "ms": 30
+   },
+   "E0_dml_plain": {
+    "sql": "INSERT INTO a2probe_dml_1793925330646 (id, d, n) VALUES (1, '0000-00-00 00:00:00', 0)",
+    "ok": false,
+    "errno": 1292,
+    "error": "target: wp-on-cf-a2.-.primary: vttablet: rpc error: code = InvalidArgument desc = Incorrect datetime value: '0000-00-00 00:00:00' for column 'd' at row 1 (errno 1292) (sqlstate 22007) (CallerID: ij8kumassvvzgqkv20i2): Sql: \"insert into a2probe_dml_1793925330646(id, d, n) values (:vtg1 /* INT64 */, :",
+    "ms": 31
+   },
+   "E0_group_plain": {
+    "sql": "SELECT id, k FROM a2probe_dml_1793925330646 GROUP BY k",
+    "ok": false,
+    "errno": 1055,
+    "error": "target: wp-on-cf-a2.-.primary: vttablet: rpc error: code = InvalidArgument desc = Expression #1 of SELECT list is not in GROUP BY clause and contains nonaggregated column 'wp-on-cf-a2.a2probe_dml_1793925330646.id' which is not functionally dependent on columns in GROUP BY clause; this is incompatibl",
+    "ms": 28
+   },
+   "E1_set": {
+    "sql": "SET SESSION sql_mode = 'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'",
+    "ok": true,
+    "shape": "ok-packet",
+    "affected": 0,
+    "info": "\u0000",
+    "serverStatus": 2,
+    "warningStatus": 0,
+    "fieldCount": 0,
+    "raw_type": "object",
+    "ms": 83
+   },
+   "E1_ddl": {
+    "sql": "CREATE TABLE a2probe_e1_1793925330646 (id int NOT NULL PRIMARY KEY, d datetime NOT NULL DEFAULT '0000-00-00 00:00:00', k varchar(10) NOT NULL DEFAULT '')",
+    "ok": false,
+    "errno": 1067,
+    "error": "target: wp-on-cf-a2.-.primary: vttablet: rpc error: code = InvalidArgument desc = Invalid default value for 'd' (errno 1067) (sqlstate 42000) (CallerID: ij8kumassvvzgqkv20i2): Sql: \"create table a2probe_e1_1793925330646 (\\n\\tid int not null primary key,\\n\\td datetime not null default '0000-00-00 00:",
+    "ms": 92
+   },
+   "E1_dml": [
+    {
+     "sql": "INSERT INTO a2probe_dml_1793925330646 (id, d, n) VALUES (10, '0000-00-00 00:00:00', 0)",
+     "ok": false,
+     "errno": 1292,
+     "error": "target: wp-on-cf-a2.-.primary: vttablet: rpc error: code = InvalidArgument desc = Incorrect datetime value: '0000-00-00 00:00:00' for column 'd' at row 1 (errno 1292) (sqlstate 22007) (CallerID: ij8kumassvvzgqkv20i2): Sql: \"insert into a2probe_dml_1793925330646(id, d, n) values (:vtg1 /* INT64 */, :",
+     "ms": 40
+    },
+    {
+     "sql": "INSERT INTO a2probe_dml_1793925330646 (id, d, n) VALUES (11, '0000-00-00 00:00:00', 0)",
+     "ok": false,
+     "errno": 1292,
+     "error": "target: wp-on-cf-a2.-.primary: vttablet: rpc error: code = InvalidArgument desc = Incorrect datetime value: '0000-00-00 00:00:00' for column 'd' at row 1 (errno 1292) (sqlstate 22007) (CallerID: ij8kumassvvzgqkv20i2): Sql: \"insert into a2probe_dml_1793925330646(id, d, n) values (:vtg1 /* INT64 */, :",
+     "ms": 38
+    },
+    {
+     "sql": "INSERT INTO a2probe_dml_1793925330646 (id, d, n) VALUES (12, '0000-00-00 00:00:00', 0)",
+     "ok": false,
+     "errno": 1292,
+     "error": "target: wp-on-cf-a2.-.primary: vttablet: rpc error: code = InvalidArgument desc = Incorrect datetime value: '0000-00-00 00:00:00' for column 'd' at row 1 (errno 1292) (sqlstate 22007) (CallerID: ij8kumassvvzgqkv20i2): Sql: \"insert into a2probe_dml_1793925330646(id, d, n) values (:vtg1 /* INT64 */, :",
+     "ms": 35
+    },
+    {
+     "sql": "INSERT INTO a2probe_dml_1793925330646 (id, d, n) VALUES (13, '0000-00-00 00:00:00', 0)",
+     "ok": false,
+     "errno": 1292,
+     "error": "target: wp-on-cf-a2.-.primary: vttablet: rpc error: code = InvalidArgument desc = Incorrect datetime value: '0000-00-00 00:00:00' for column 'd' at row 1 (errno 1292) (sqlstate 22007) (CallerID: ij8kumassvvzgqkv20i2): Sql: \"insert into a2probe_dml_1793925330646(id, d, n) values (:vtg1 /* INT64 */, :",
+     "ms": 35
+    },
+    {
+     "sql": "INSERT INTO a2probe_dml_1793925330646 (id, d, n) VALUES (14, '0000-00-00 00:00:00', 0)",
+     "ok": false,
+     "errno": 1292,
+     "error": "target: wp-on-cf-a2.-.primary: vttablet: rpc error: code = InvalidArgument desc = Incorrect datetime value: '0000-00-00 00:00:00' for column 'd' at row 1 (errno 1292) (sqlstate 22007) (CallerID: ij8kumassvvzgqkv20i2): Sql: \"insert into a2probe_dml_1793925330646(id, d, n) values (:vtg1 /* INT64 */, :",
+     "ms": 36
+    }
+   ],
+   "E1_group": {
+    "sql": "SELECT id, k FROM a2probe_dml_1793925330646 GROUP BY k",
+    "ok": false,
+    "errno": 1055,
+    "error": "target: wp-on-cf-a2.-.primary: vttablet: rpc error: code = InvalidArgument desc = Expression #1 of SELECT list is not in GROUP BY clause and contains nonaggregated column 'wp-on-cf-a2.a2probe_dml_1793925330646.id' which is not functionally dependent on columns in GROUP BY clause; this is incompatibl",
+    "ms": 35
+   },
+   "LEAK_dml_other_client": {
+    "sql": "INSERT INTO a2probe_dml_1793925330646 (id, d, n) VALUES (20, '0000-00-00 00:00:00', 0)",
+    "ok": false,
+    "errno": 1292,
+    "error": "target: wp-on-cf-a2.-.primary: vttablet: rpc error: code = InvalidArgument desc = Incorrect datetime value: '0000-00-00 00:00:00' for column 'd' at row 1 (errno 1292) (sqlstate 22007) (CallerID: ij8kumassvvzgqkv20i2): Sql: \"insert into a2probe_dml_1793925330646(id, d, n) values (:vtg1 /* INT64 */, :",
+    "ms": 39
+   },
+   "E2_begin": {
+    "sql": "BEGIN",
+    "ok": true,
+    "shape": "ok-packet",
+    "affected": 0,
+    "info": "\u0000",
+    "serverStatus": 3,
+    "warningStatus": 0,
+    "fieldCount": 0,
+    "raw_type": "object",
+    "ms": 71
+   },
+   "E2_set": {
+    "sql": "SET SESSION sql_mode = 'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'",
+    "ok": true,
+    "shape": "ok-packet",
+    "affected": 0,
+    "info": "\u0000",
+    "serverStatus": 3,
+    "warningStatus": 0,
+    "fieldCount": 0,
+    "raw_type": "object",
+    "ms": 18
+   },
+   "E2_dml": {
+    "sql": "INSERT INTO a2probe_dml_1793925330646 (id, d, n) VALUES (30, '0000-00-00 00:00:00', 0)",
+    "ok": true,
+    "shape": "ok-packet",
+    "affected": 1,
+    "info": "\u0000",
+    "serverStatus": 3,
+    "warningStatus": 0,
+    "fieldCount": 0,
+    "raw_type": "object",
+    "ms": 17
+   },
+   "E2_commit": {
+    "sql": "COMMIT",
+    "ok": true,
+    "shape": "ok-packet",
+    "affected": 0,
+    "info": "\u0000",
+    "serverStatus": 2,
+    "warningStatus": 0,
+    "fieldCount": 0,
+    "raw_type": "object",
+    "ms": 24
+   },
+   "E2b_begin": {
+    "sql": "BEGIN",
+    "ok": true,
+    "shape": "ok-packet",
+    "affected": 0,
+    "info": "\u0000",
+    "serverStatus": 3,
+    "warningStatus": 0,
+    "fieldCount": 0,
+    "raw_type": "object",
+    "ms": 72
+   },
+   "E2b_set": {
+    "sql": "SET SESSION sql_mode = 'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'",
+    "ok": true,
+    "shape": "ok-packet",
+    "affected": 0,
+    "info": "\u0000",
+    "serverStatus": 3,
+    "warningStatus": 0,
+    "fieldCount": 0,
+    "raw_type": "object",
+    "ms": 21
+   },
+   "E2b_ddl": {
+    "sql": "CREATE TABLE a2probe_e2_1793925330646 (id int NOT NULL PRIMARY KEY, d datetime NOT NULL DEFAULT '0000-00-00 00:00:00', k varchar(10) NOT NULL DEFAULT '')",
+    "ok": true,
+    "shape": "ok-packet",
+    "affected": 0,
+    "info": "\u0000",
+    "serverStatus": 2,
+    "warningStatus": 0,
+    "fieldCount": 0,
+    "raw_type": "object",
+    "ms": 64
+   },
+   "E2b_commit": {
+    "sql": "COMMIT",
+    "ok": true,
+    "shape": "ok-packet",
+    "affected": 0,
+    "info": "\u0000",
+    "serverStatus": 2,
+    "warningStatus": 0,
+    "fieldCount": 0,
+    "raw_type": "object",
+    "ms": 17
+   },
+   "E3_insert_hint": {
+    "sql": "INSERT /*+ SET_VAR(sql_mode='ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION') */ INTO a2probe_dml_1793925330646 (id, d, n) VALUES (40, '0000-00-00 00:00:00', 0)",
+    "ok": true,
+    "shape": "ok-packet",
+    "affected": 1,
+    "info": "\u0000",
+    "serverStatus": 2,
+    "warningStatus": 0,
+    "fieldCount": 0,
+    "raw_type": "object",
+    "ms": 28
+   },
+   "E3_update_hint": {
+    "sql": "UPDATE /*+ SET_VAR(sql_mode='ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION') */ a2probe_dml_1793925330646 SET d = '0000-00-00 00:00:00' WHERE id = 100",
+    "ok": true,
+    "shape": "ok-packet",
+    "affected": 1,
+    "info": "\u0000",
+    "serverStatus": 2,
+    "warningStatus": 0,
+    "fieldCount": 0,
+    "raw_type": "object",
+    "ms": 25
+   },
+   "E3_select_hint": {
+    "sql": "SELECT /*+ SET_VAR(sql_mode='ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION') */ id, k FROM a2probe_dml_1793925330646 GROUP BY k",
+    "ok": true,
+    "shape": "rows",
+    "rows": [
+     [
+      "30",
+      ""
+     ],
+     [
+      "100",
+      "a"
+     ]
+    ],
+    "ms": 25
+   },
+   "E3_delete_hint": {
+    "sql": "DELETE /*+ SET_VAR(sql_mode='ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION') */ FROM a2probe_dml_1793925330646 WHERE d = '0000-00-00 00:00:00' AND id = 40",
+    "ok": true,
+    "shape": "ok-packet",
+    "affected": 1,
+    "info": "\u0000",
+    "serverStatus": 2,
+    "warningStatus": 0,
+    "fieldCount": 0,
+    "raw_type": "object",
+    "ms": 26
+   },
+   "R_ddl_no_default": {
+    "sql": "CREATE TABLE a2probe_rw_1793925330646 (id int NOT NULL PRIMARY KEY, d datetime NOT NULL, k varchar(10) NOT NULL DEFAULT '')",
+    "ok": true,
+    "shape": "ok-packet",
+    "affected": 0,
+    "info": "\u0000",
+    "serverStatus": 2,
+    "warningStatus": 0,
+    "fieldCount": 0,
+    "raw_type": "object",
+    "ms": 45
+   },
+   "R_insert_omit_plain": {
+    "sql": "INSERT INTO a2probe_rw_1793925330646 (id, k) VALUES (1, 'x')",
+    "ok": false,
+    "errno": 1364,
+    "error": "target: wp-on-cf-a2.-.primary: vttablet: rpc error: code = Unknown desc = Field 'd' doesn't have a default value (errno 1364) (sqlstate HY000) (CallerID: ij8kumassvvzgqkv20i2): Sql: \"insert into a2probe_rw_1793925330646(id, k) values (:vtg1 /* INT64 */, :vtg2 /* VARCHAR */)\", BindVars: {REDACTED}",
+    "ms": 21
+   },
+   "R_insert_omit_hint": {
+    "sql": "INSERT /*+ SET_VAR(sql_mode='ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION') */ INTO a2probe_rw_1793925330646 (id, k) VALUES (2, 'x')",
+    "ok": true,
+    "shape": "ok-packet",
+    "affected": 1,
+    "info": "\u0000",
+    "serverStatus": 2,
+    "warningStatus": 0,
+    "fieldCount": 0,
+    "raw_type": "object",
+    "ms": 38
+   },
+   "R_read": {
+    "sql": "SELECT /*+ SET_VAR(sql_mode='ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION') */ id, CAST(d AS CHAR) FROM a2probe_rw_1793925330646 ORDER BY id",
+    "ok": true,
+    "shape": "rows",
+    "rows": [
+     [
+      "2",
+      "0000-00-00 00:00:00"
+     ]
+    ],
+    "ms": 19
+   },
+   "cleanup": [
+    {
+     "sql": "DROP TABLE IF EXISTS a2probe_dml_1793925330646",
+     "ok": true,
+     "shape": "ok-packet",
+     "affected": 0,
+     "info": "\u0000",
+     "serverStatus": 2,
+     "warningStatus": 0,
+     "fieldCount": 0,
+     "raw_type": "object",
+     "ms": 54
+    },
+    {
+     "sql": "DROP TABLE IF EXISTS a2probe_e0_1793925330646",
+     "ok": true,
+     "shape": "ok-packet",
+     "affected": 0,
+     "info": "\u0000",
+     "serverStatus": 2,
+     "warningStatus": 0,
+     "fieldCount": 0,
+     "raw_type": "object",
+     "ms": 36
+    },
+    {
+     "sql": "DROP TABLE IF EXISTS a2probe_e1_1793925330646",
+     "ok": true,
+     "shape": "ok-packet",
+     "affected": 0,
+     "info": "\u0000",
+     "serverStatus": 2,
+     "warningStatus": 0,
+     "fieldCount": 0,
+     "raw_type": "object",
+     "ms": 33
+    },
+    {
+     "sql": "DROP TABLE IF EXISTS a2probe_e2_1793925330646",
+     "ok": true,
+     "shape": "ok-packet",
+     "affected": 0,
+     "info": "\u0000",
+     "serverStatus": 2,
+     "warningStatus": 0,
+     "fieldCount": 0,
+     "raw_type": "object",
+     "ms": 49
+    },
+    {
+     "sql": "DROP TABLE IF EXISTS a2probe_rw_1793925330646",
+     "ok": true,
+     "shape": "ok-packet",
+     "affected": 0,
+     "info": "\u0000",
+     "serverStatus": 2,
+     "warningStatus": 0,
+     "fieldCount": 0,
+     "raw_type": "object",
+     "ms": 42
+    }
+   ]
+  },
+  "verdict": {
+   "strict_refuses_zero_ddl": true,
+   "strict_refuses_zero_dml": true,
+   "strict_refuses_group_by": true,
+   "E1_set_reaches_ddl": false,
+   "E1_set_reaches_dml": "0 of 5",
+   "E1_set_reaches_group_by": false,
+   "LEAK_set_seen_by_other_client": false,
+   "E2_txn_set_reaches_dml": true,
+   "E2_txn_set_reaches_ddl": true,
+   "E3_hint_reaches_insert": true,
+   "E3_hint_reaches_update": true,
+   "E3_hint_reaches_group_by": true,
+   "E3_hint_reaches_delete": true,
+   "R_ddl_without_zero_default_ok": true,
+   "R_omitted_column_gets_zero_with_hint": true
+  },
+  "tables_left": "0"
+ }
+}

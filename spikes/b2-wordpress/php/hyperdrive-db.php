@@ -9,7 +9,13 @@
  * SQLite for D1). Values come back as strings, as mysqli returns them.
  *
  * Prior art: HostlessWP replaces wpdb the same way (docs/prior-art.md).
+ *
+ * A strict server (PlanetScale): with HYPERDRIVE_SQL_MODE set, every statement
+ * carries WordPress's relaxed sql_mode itself (hyperdrive-sql-mode.php), because
+ * Hyperdrive does not keep a SET between statements.
  */
+
+require_once __DIR__ . '/hyperdrive-sql-mode.php';
 
 // The R2 Uploads and Edge Cache mu-plugins send their messages through this
 // function. Approach B defines it in d1-pdo.php, which A does not load: without
@@ -39,9 +45,10 @@ class Hyperdrive_WPDB extends wpdb {
 
 	public function select( $db, $dbh = null ) {}
 
-	// Hyperdrive pools connections. A session setting (SET NAMES, sql_mode)
-	// would apply to one pooled connection only. The database is created
-	// utf8mb4, and the server default sql_mode is kept.
+	// Hyperdrive pools connections and resets the session after each statement
+	// (measured, tests/a2/probe E1), so a session setting (SET NAMES, sql_mode)
+	// does not hold. The database is created utf8mb4. For sql_mode on a strict
+	// server, see HYPERDRIVE_SQL_MODE (query() and hyperdrive-sql-mode.php).
 	public function set_charset( $dbh, $charset = null, $collate = null ) {}
 
 	public function set_sql_mode( $modes = array() ) {}
@@ -87,6 +94,24 @@ class Hyperdrive_WPDB extends wpdb {
 		);
 	}
 
+	/**
+	 * DDL in WordPress's relaxed sql_mode: SET inside a transaction holds for the
+	 * DDL (tests/a2/probe E2), where a hint cannot go. Three extra round trips;
+	 * DDL is rare (install, plugin activation, upgrades). The DDL's own reply is
+	 * returned. COMMIT is sent whenever BEGIN ran.
+	 */
+	private function hd_ddl( $query, $mode ) {
+		$begin = $this->hd_call( 'BEGIN' );
+		if ( ! empty( $begin['ok'] ) ) {
+			$this->hd_call( "SET SESSION sql_mode = '" . $mode . "'" );
+		}
+		$reply = $this->hd_call( $query );
+		if ( ! empty( $begin['ok'] ) ) {
+			$this->hd_call( 'COMMIT' );
+		}
+		return $reply;
+	}
+
 	public function query( $query ) {
 		if ( ! $this->ready ) {
 			return false;
@@ -102,7 +127,14 @@ class Hyperdrive_WPDB extends wpdb {
 		if ( defined( 'SAVEQUERIES' ) && SAVEQUERIES ) {
 			$this->timer_start();
 		}
-		$reply = $this->hd_call( $query );
+		$mode = skyphusion_hd_sql_mode();
+		if ( null === $mode ) {
+			$reply = $this->hd_call( $query );
+		} elseif ( skyphusion_hd_is_ddl( $query ) ) {
+			$reply = $this->hd_ddl( $query, $mode );
+		} else {
+			$reply = $this->hd_call( skyphusion_hd_hint( $query, $mode ) );
+		}
 		++$this->num_queries;
 		if ( defined( 'SAVEQUERIES' ) && SAVEQUERIES ) {
 			$this->log_query( $query, $this->timer_stop(), $this->get_caller(), $this->time_start, array() );

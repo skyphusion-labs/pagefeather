@@ -86,8 +86,12 @@ def setup():
 
 
 def products():
+    # In stock too: the Store API keeps an out-of-stock product purchasable, and
+    # a buy of it fails twice (add-item 400 woocommerce_rest_product_out_of_stock,
+    # then checkout 409 woocommerce_rest_cart_empty). A stock-managed product left
+    # by tests/woo.py ran out during the wp-a2 matrix (2026-11-06, issue #50).
     r = req(opener(), nc("/?rest_route=/wc/store/v1/products&per_page=20"))
-    return [p for p in json.loads(r["body"]) if p.get("is_purchasable")] if r["code"] == 200 else []
+    return [p for p in json.loads(r["body"]) if p.get("is_purchasable") and p.get("is_in_stock")] if r["code"] == 200 else []
 
 
 def is_1102(r):

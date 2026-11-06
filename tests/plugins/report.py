@@ -16,6 +16,7 @@ COLS = [
     ("hwp-free.jsonl", "HostlessWP, Free"), ("hwp-paid.jsonl", "HostlessWP, Paid"),
     ("b-free.jsonl", "B, Free"), ("b-paid.jsonl", "B, Paid"),
     ("c1-paid.jsonl", "C1, Paid"),
+    ("a2-paid.jsonl", "A2 (PlanetScale), Paid"),
 ]
 ORDER = ["(none)"] + [l.split()[0] for l in open(os.path.join(HERE, "suite.txt")) if l.strip() and not l.startswith("#")]
 

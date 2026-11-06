@@ -1,0 +1,93 @@
+{
+ "placement": "aws:us-east-2",
+ "latency": [
+  {
+   "colo": {
+    "ingress": "ORD",
+    "run": "ORD"
+   },
+   "utc": "2026-11-06T00:26:06.220Z",
+   "latency": {
+    "global": {
+     "host_binding": "global",
+     "connect_ms": 3,
+     "first_ms": 108,
+     "n": 50,
+     "median_ms": 43,
+     "min_ms": 40,
+     "max_ms": 50
+    },
+    "direct": {
+     "host_binding": "direct",
+     "connect_ms": 3,
+     "first_ms": 83,
+     "n": 50,
+     "median_ms": 16,
+     "min_ms": 14,
+     "max_ms": 70
+    }
+   }
+  },
+  {
+   "colo": {
+    "ingress": "ORD",
+    "run": "ORD"
+   },
+   "utc": "2026-11-06T00:26:09.840Z",
+   "latency": {
+    "global": {
+     "host_binding": "global",
+     "connect_ms": 2,
+     "first_ms": 92,
+     "n": 50,
+     "median_ms": 45,
+     "min_ms": 43,
+     "max_ms": 51
+    },
+    "direct": {
+     "host_binding": "direct",
+     "connect_ms": 4,
+     "first_ms": 19,
+     "n": 50,
+     "median_ms": 15,
+     "min_ms": 13,
+     "max_ms": 21
+    }
+   }
+  },
+  {
+   "colo": {
+    "ingress": "ORD",
+    "run": "ORD"
+   },
+   "utc": "2026-11-06T00:26:13.250Z",
+   "latency": {
+    "global": {
+     "host_binding": "global",
+     "connect_ms": 4,
+     "first_ms": 43,
+     "n": 50,
+     "median_ms": 42,
+     "min_ms": 39,
+     "max_ms": 45
+    },
+    "direct": {
+     "host_binding": "direct",
+     "connect_ms": 1,
+     "first_ms": 97,
+     "n": 50,
+     "median_ms": 17,
+     "min_ms": 15,
+     "max_ms": 80
+    }
+   }
+  }
+ ],
+ "session": {
+  "colo": {
+   "ingress": "ORD",
+   "run": "ORD"
+  },
+  "error": "Cannot read properties of undefined (reading '0')"
+ }
+}
