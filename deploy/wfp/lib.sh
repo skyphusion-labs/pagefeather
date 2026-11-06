@@ -137,6 +137,29 @@ else:
 PY
   rm -rf "$t"
 }
+# A NEW KV namespace can refuse writes for a while: on 2026-11-06 the entry
+# PUT right after the shared apply answered 404 10013 "namespace not found",
+# while a GET of the namespace already answered (the second day one). So
+# before a site writes its entry: a test write, retried on 404 or 5xx for
+# KV_READY_S (180) s, then the test key deleted. Any other answer fails at once.
+kv_wait_writable() { # kv_wait_writable <namespace id>
+  local t0=$SECONDS c
+  while :; do
+    c=$(api_code PUT "/storage/kv/namespaces/$1/values/wfp-ready-probe" -H 'content-type: text/plain' --data 1) || c=000
+    if [ "$c" = 200 ]; then
+      c=$(api_code DELETE "/storage/kv/namespaces/$1/values/wfp-ready-probe") || c=000
+      [ "$c" = 200 ] || { echo "site map: the test key was written but its DELETE answered HTTP $c" >&2; return 1; }
+      echo "  site map writable after $((SECONDS - t0)) s"
+      return 0
+    fi
+    case "$c" in
+      404|5??|000) ;;
+      *) echo "site map $1: a test write answered HTTP $c" >&2; return 1 ;;
+    esac
+    [ $((SECONDS - t0)) -lt "${KV_READY_S:-180}" ] || { echo "site map $1 still refuses writes after ${KV_READY_S:-180} s (HTTP $c)" >&2; return 1; }
+    sleep "${KV_READY_STEP:-5}"
+  done
+}
 subdomain() {
   api GET /workers/subdomain | sed '$d' | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["subdomain"])'
 }

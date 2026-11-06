@@ -36,6 +36,7 @@ gone() { # gone <what> <API path>: 404 or stop
 
 if [ "$cmd" = up ]; then
   log "site $s: data plane and site map entry (workspace $s)"
+  kv_wait_writable "$KV_ID"
   ws
   tfr site apply -input=false -auto-approve "${VARS[@]}" >/dev/null
 
@@ -93,9 +94,16 @@ elif [ "$cmd" = down ]; then
   # A down never creates: no workspace means no data plane to remove.
   tfr site init -input=false >/dev/null
   if tfr site workspace select "$s" >/dev/null 2>&1; then
-    tfr site apply -input=false -auto-approve "${VARS[@]}" -var teardown=true >/dev/null
-    R2_KEY_ID=$(out teardown_access_key_id) R2_SECRET=$(out teardown_secret_access_key) \
-      "$ROOT/deploy/variants/r2-empty.sh" "$(out r2_endpoint)" "$(out media_bucket)"
+    # Only the teardown key (-target; it does not depend on the bucket or the
+    # entry), and only when the bucket exists: a down creates nothing else.
+    B=$(media_bucket "$s")
+    if [ "$(api_code GET "/r2/buckets/$B")" = 200 ]; then
+      tfr site apply -input=false -auto-approve "${VARS[@]}" -var teardown=true -target=cloudflare_account_token.teardown >/dev/null
+      R2_KEY_ID=$(out teardown_access_key_id) R2_SECRET=$(out teardown_secret_access_key) \
+        "$ROOT/deploy/variants/r2-empty.sh" "$(out r2_endpoint)" "$B"
+    else
+      echo "  bucket $B does not exist: nothing to empty"
+    fi
     tfr site destroy -input=false -auto-approve "${VARS[@]}" -var teardown=true >/dev/null
     tfr site workspace select default >/dev/null && tfr site workspace delete "$s" >/dev/null
   else

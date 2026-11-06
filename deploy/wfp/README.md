@@ -41,7 +41,11 @@ export CLOUDFLARE_API_TOKEN=...   # Workers Scripts, Workers KV, Workers for Pla
 3. the dispatcher, which is its hostname;
 4. a wait, then the install.
 
-`site.sh down` goes the other way: the hostname, the user Worker, then the bucket (emptied with a short-lived key that can reach only that bucket) and the workspace.
+Before the workspace, `site.sh up` waits until the site map accepts a test write. A new KV namespace can refuse writes for a while: on 2026-11-06 it answered 404 code 10013 right after it was made.
+
+`site.sh down` goes the other way: the hostname, the user Worker, then the bucket and the workspace.
+- The user Worker counts as gone when the namespace list no longer has it. A deleted script's single GET can still answer 200, with an empty record.
+- The bucket is emptied with a short-lived key that can reach only that bucket. The key is made with `-target` and depends on nothing, so a down never creates anything.
 
 Options:
 - `SITES`;
@@ -55,6 +59,7 @@ Options:
 ```sh
 node deploy/wfp/tests/dispatcher-test.mjs   # the dispatcher with a stand-in site map and namespace
 deploy/wfp/tests/render-test.sh             # the rendered configs and the site names
+deploy/wfp/tests/ns-state-test.sh           # "is this namespace script gone" (the empty-record case)
+deploy/wfp/tests/kv-ready-test.sh           # the wait for a new site map to accept writes
+deploy/wfp/tests/tf-test.sh                 # terraform validate, fmt, and the teardown key with no dependency (local: needs terraform)
 ```
-
-`terraform validate` passes for `terraform/shared` and `terraform/site` (`terraform init -backend=false` first; it is not in CI).

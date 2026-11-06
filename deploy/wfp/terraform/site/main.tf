@@ -34,6 +34,7 @@ variable "sub_requests" {
 
 # true only while down.sh empties the bucket: a key that can read and delete
 # objects in this site's bucket and nothing else (as deploy/terraform does).
+# down.sh makes it with -target, so nothing else is created then.
 variable "teardown" {
   type    = bool
   default = false
@@ -43,11 +44,12 @@ locals {
   r2_item_read  = "6a018a9f2fc74eb6b293b0c548f38b39" # Workers R2 Storage Bucket Item Read
   r2_item_write = "2efd5506f9c8494dacb1fa10a3e7d5b6" # Workers R2 Storage Bucket Item Write
   r2_resource   = "com.cloudflare.edge.r2.bucket.${var.account_id}_default_"
+  media_bucket  = "wp-wfp-${var.name}-media"
 }
 
 resource "cloudflare_r2_bucket" "media" {
   account_id = var.account_id
-  name       = "wp-wfp-${var.name}-media"
+  name       = local.media_bucket
 }
 
 resource "random_password" "wp_salt" {
@@ -84,7 +86,11 @@ resource "cloudflare_account_token" "teardown" {
       { id = local.r2_item_read },
       { id = local.r2_item_write },
     ]
-    resources = jsonencode({ "${local.r2_resource}${cloudflare_r2_bucket.media.name}" = "*" })
+    # The bucket by its name, NOT by cloudflare_r2_bucket.media: with no
+    # dependency, down.sh can apply -target=cloudflare_account_token.teardown
+    # alone, and a down never creates the bucket or the site map entry (seen
+    # live 2026-11-06: an apply in down re-created the missing entry).
+    resources = jsonencode({ "${local.r2_resource}${local.media_bucket}" = "*" })
   }]
 }
 
