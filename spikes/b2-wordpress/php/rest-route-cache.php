@@ -21,7 +21,11 @@
  * - The key holds everything the answer is built from: the route and its query,
  *   the user, the WordPress version, the locale, the theme and its parent with
  *   their versions, the active plugins, the registered block types, and for
- *   templates/lookup the posts last_changed (any post or template write changes it).
+ *   templates/lookup a counter that changes on every write of a wp_template or
+ *   wp_template_part post and on a theme switch (TEMPLATES_CHANGED). The posts
+ *   last_changed would be exact too, but every post write moves it, and
+ *   post-new writes its auto-draft before the preload: the lookup never hit
+ *   inside post-new (measured 2026-11-05, #53).
  * - It fails safe: if a callback on a hook that changes these answers is not
  *   core's own (its source is not in wp-includes or wp-admin), or cannot be
  *   identified, the route is not cached.
@@ -34,6 +38,8 @@ if ( ! defined( 'JS_OBJECT_CACHE' ) || ! defined( 'JS_ROUTE_CACHE' ) ) {
 
 class Skyphusion_Route_Cache {
 	const GROUP = 'rest_route_cache';
+	/** Option: changes on every write of a template or template part, and on a theme switch. */
+	const TEMPLATES_CHANGED = 'skyphusion_templates_changed';
 
 	/** @var array<string, string> One state per request route seen in this PHP request. */
 	public static $state = array();
@@ -129,11 +135,41 @@ class Skyphusion_Route_Cache {
 			array_keys( WP_Block_Type_Registry::get_instance()->get_all_registered() ),
 		);
 		if ( 'lookup' === $kind ) {
-			$parts[] = wp_cache_get_last_changed( 'posts' );
+			$parts[] = get_option( self::TEMPLATES_CHANGED, '0' );
 		}
 		return 'r:' . md5( serialize( $parts ) );
 	}
 }
+
+// The templates counter. Writes go through WordPress in the one object, so these
+// hooks see every change: save, trash and delete of a template or template part,
+// and a theme switch. It counts up, so it never repeats (a time would not do:
+// the clock in the object moves only at I/O, so two writes in one request would
+// read the same time).
+$skyphusion_templates_changed = function () {
+	update_option( Skyphusion_Route_Cache::TEMPLATES_CHANGED, (string) ( (int) get_option( Skyphusion_Route_Cache::TEMPLATES_CHANGED, '0' ) + 1 ), true );
+};
+foreach ( array( 'save_post_wp_template', 'save_post_wp_template_part', 'switch_theme' ) as $skyphusion_hook ) {
+	add_action( $skyphusion_hook, $skyphusion_templates_changed );
+}
+add_action(
+	'deleted_post',
+	function ( $post_id, $post ) use ( $skyphusion_templates_changed ) {
+		if ( $post && in_array( $post->post_type, array( 'wp_template', 'wp_template_part' ), true ) ) {
+			$skyphusion_templates_changed();
+		}
+	},
+	10,
+	2
+);
+add_action(
+	'trashed_post',
+	function ( $post_id ) use ( $skyphusion_templates_changed ) {
+		if ( in_array( get_post_type( $post_id ), array( 'wp_template', 'wp_template_part' ), true ) ) {
+			$skyphusion_templates_changed();
+		}
+	}
+);
 
 add_filter(
 	'rest_dispatch_request',
