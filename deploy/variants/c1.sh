@@ -109,6 +109,9 @@ c1_up() {
 # version. Fields as in Wrangler 4.107's client models
 # (packages/containers-shared: Application.version, ApplicationRollout.status
 # pending|progressing|completed|reverted|replaced, target_version, progress).
+# The live API (read 2026-11-06) is a superset: {result: [...]} with the
+# rollouts newest first, older ones "replaced", and progress.version_distribution.
+# The token needs only "Workers Containers Write", which a deploy needs anyway.
 # C1_API is the containers API base, for the tests.
 c1_rollout_state() {
   local api=$1 t code_a code_r id
@@ -149,6 +152,9 @@ if not rs:
 r = max(rs, key=lambda r: str(r.get("created_at", "")))
 p = r.get("progress") or {}
 detail = "version %s, step %s of %s, instances %s of %s" % (v, p.get("current_step"), p.get("total_steps"), p.get("updated_instances"), p.get("total_instances"))
+vd = p.get("version_distribution") or {}
+if "target_version_percentage" in vd:
+    detail += ", %s %% on the new version" % vd["target_version_percentage"]
 st = r.get("status")
 if st == "completed":
     print("done", detail)

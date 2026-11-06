@@ -113,7 +113,7 @@ From [Containers pricing](https://developers.cloudflare.com/containers/platform/
 
 ### Token for c1
 
-The token in `CLOUDFLARE_API_TOKEN` must be able to: deploy Workers (Workers Scripts edit), make Containers and push their image, make R2 buckets (Workers R2 Storage edit), and make an account API token (Account API Tokens edit), because Terraform makes the Litestream key. Without the last one, `terraform apply` fails at `cloudflare_account_token.litestream`.
+The token in `CLOUDFLARE_API_TOKEN` must be able to: deploy Workers (Workers Scripts edit), make Containers and push their image, make R2 buckets (Workers R2 Storage edit), and make an account API token (Account API Tokens edit), because Terraform makes the Litestream key. Without the last one, `terraform apply` fails at `cloudflare_account_token.litestream`. The deploy also reads the container rollout (`c1_wait`, issue #106); "Workers Containers Write", which making Containers needs, is enough for that (read 2026-11-06: applications and rollouts both 200 with a token that had only that group).
 
 ### Remove a c1 site
 
