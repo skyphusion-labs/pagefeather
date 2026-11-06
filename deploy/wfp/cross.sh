@@ -25,6 +25,13 @@ SUB=$(subdomain)
 export KV_ID SUB NAMESPACE CLOUDFLARE_ACCOUNT_ID
 have=$(list_sites | tr '\n' ' ')
 [ "$have" = "one two " ] || { echo "cross.sh needs the sites one and two (up.sh); there are: ${have:-none}" >&2; exit 2; }
+# Refuse to run, or emit any verdict, unless the setup is fully green: both
+# sites answer their OWN title through the dispatcher. A half-built setup
+# (up.sh exited non-zero) must never reach a verdict (issue #35).
+for s in one two; do
+  site_title_ok "https://wp-$s.$SUB.workers.dev/?nocache=$RANDOM$RANDOM" "WfP site $s" \
+    || { echo "setup not green: site $s does not answer its own title through the dispatcher; refusing to run (run up.sh and check it exited 0)" >&2; exit 2; }
+done
 umask 077
 W=$(mktemp -d)
 # The probes make fetch() to any URL while they are up, so they are torn down
@@ -84,7 +91,7 @@ def get(u):
     except ValueError: return {"error": out[:120]}
 p = {
  "r2": get(A + "/_probe/r2"),
- "r2_fetch": get(A + "/_probe/r2-fetch?u=" + EP + "/wp-wfp-two-media/wfp-isolation/seed.txt"),
+ "r2_fetch": get(A + "/_probe/r2-fetch?u=" + EP + "/wp-wfp-two-media/_snapshots/seed-two.txt"),
  "do": get(A + "/_probe/do"),
  "secret": get(A + "/_probe/secret"),
  "sub": get(A + "/_probe/sub?n=6&u=https://example.com/"), "sub_limit": 2,
@@ -94,7 +101,9 @@ print(json.dumps(p))
 PY
 )
 echo "$probe" > "$W/probe.json"
-# B's own object key, for the r2 comparison: B seeded wfp-isolation/seed.txt.
+# B's own object key, for the r2 comparison: B's DISTINCT seed key. A's own
+# bucket holds _snapshots/seed-one.txt, a different key, so A listing its own
+# bucket cannot look like seeing B's object.
 V=$(CROSS_PROBE_B_DO="$b_do" CROSS_PROBE_B_SALT="$b_salt" CROSS_PY="$WFP/cross.py" python3 - "$W/probe.json" <<'PY'
 import importlib.util, json, os, sys
 spec = importlib.util.spec_from_file_location("cross", os.environ["CROSS_PY"])
@@ -102,7 +111,7 @@ cross = importlib.util.module_from_spec(spec); spec.loader.exec_module(cross)
 probe = json.load(open(sys.argv[1]))
 # A holds only its OWN bindings (bindings.py proves it from the API), so []:
 # a reach with no B-binding is a platform gap, not our configuration.
-b = {"site": "two", "bucket_key": "wfp-isolation/seed.txt", "do_marker": os.environ["CROSS_PROBE_B_DO"], "wp_salt_hash": os.environ["CROSS_PROBE_B_SALT"]}
+b = {"site": "two", "bucket_key": "_snapshots/seed-two.txt", "do_marker": os.environ["CROSS_PROBE_B_DO"], "wp_salt_hash": os.environ["CROSS_PROBE_B_SALT"]}
 res = cross.verdict(probe, b, [])
 worst, _ = cross.summarize(res)
 print(json.dumps({"worst": worst, "results": res}, indent=1))

@@ -242,6 +242,16 @@ list_sites() {
   tfr site init -input=false >/dev/null 2>&1 || return 1
   tfr site workspace list | tr -d ' *' | grep -v '^default$' | grep -v '^$' || true
 }
+# A site answers its OWN title through its dispatcher: HTTP 200 and the page
+# <title> contains <want>. Used by cross.sh's setup-green gate (issue #35).
+site_title_ok() { # site_title_ok <url> <want>
+  local body code title
+  body=$(curl -s -m 60 -w '\n%{http_code}' "$1" 2>/dev/null) || return 1
+  code=${body##*$'\n'}; body=${body%$'\n'*}
+  [ "$code" = 200 ] || return 1
+  title=$(printf '%s' "$body" | sed -n 's/.*<title>\([^<]*\)<\/title>.*/\1/p' | head -1)
+  case "$title" in *"$2"*) return 0 ;; *) return 1 ;; esac
+}
 subdomain() {
   api GET /workers/subdomain | sed '$d' | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["subdomain"])'
 }

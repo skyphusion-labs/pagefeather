@@ -68,6 +68,7 @@ jobs:
           python3 deploy/wfp/tests/bindings-test.py
           python3 deploy/wfp/tests/cross-test.py
           deploy/wfp/tests/probe-entry-test.sh
+          deploy/wfp/tests/setup-green-test.sh
       - name: c1 load analysis tests
         # tests/load/c1_arm.py (issue #99): held requests, CPU per order, the split, on a synthetic job.
         run: python3 tests/load/c1_arm_test.py
