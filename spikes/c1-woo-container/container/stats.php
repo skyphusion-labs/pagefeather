@@ -7,6 +7,7 @@
 //                   peak MiB, status, method, path
 //   ?what=samples   one line every 2 s (entrypoint.sh): time, /proc/stat cpu,
 //                   cgroup cpu.stat, load, accept backlog, PHP processes
+//   ?what=purge     one line per page cache purge request (php/c1-purge-log.php)
 //   ?what=db        row counts and sizes that grow as a store sells (JSON)
 //   ?what=apcu      APCu: entries, memory, hits, misses, and the PHP worker
 //                   that answered (call it several times: one shared cache
@@ -23,9 +24,9 @@ if ( ! $token || ! hash_equals( $token, (string) ( $_SERVER['HTTP_X_SPIKE_TOKEN'
 header( 'cache-control: private, no-store' );
 $what  = $_GET['what'] ?? 'info';
 $since = (float) ( $_GET['since'] ?? 0 );
-if ( 'req' === $what || 'samples' === $what ) {
+if ( 'req' === $what || 'samples' === $what || 'purge' === $what ) {
 	header( 'content-type: text/plain' );
-	$f = 'req' === $what ? '/tmp/c1-req.log' : '/tmp/c1-samples.log';
+	$f = array( 'req' => '/tmp/c1-req.log', 'samples' => '/tmp/c1-samples.log', 'purge' => '/tmp/c1-purge.log' )[ $what ];
 	$h = @fopen( $f, 'r' );
 	if ( ! $h ) {
 		exit;

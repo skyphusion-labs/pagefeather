@@ -11,7 +11,17 @@ category and the feed; no setup and no buyers).
 
 Each user loops until the step ends. A browse loop is one fresh GET (home, shop,
 or a product page). A buy loop is three Store API requests: cart, add item,
-checkout (cash on delivery, nothing charged). Every page bypasses the cache.
+checkout (cash on delivery, nothing charged).
+
+LOAD_MODE (default "nocache"): what a browse request looks like.
+- nocache: every page has a unique ?nocache= parameter, so it bypasses any page
+  cache: this measures the site's own render.
+- cached: no nocache parameter, so a page cache can answer: this measures what
+  a shopper with no cart gets.
+- cached-sbjs: as cached, and every browse request also sends the cookies that
+  WooCommerce order attribution sets in a real browser (sbjs_*, values unique
+  per loop). A cache that varies on the whole Cookie header misses on them.
+The Store API requests (cart, add item, checkout) are the same in every mode.
 When the cart request fails (not 200, or no Nonce header), the loop sends
 neither add item nor checkout: they would go out with no Nonce and no
 Cart-Token, and the site's 401 would count as a site error when the client
@@ -58,6 +68,29 @@ def req(o, path, data=None, headers=None, method=None, timeout=60):
     except Exception as e:
         return {"code": "EXC", "body": repr(e).encode(), "h": {}, "s": time.time() - t}
     return {"code": code, "body": body, "h": hd, "s": time.time() - t}
+
+
+LOAD_MODE = os.environ.get("LOAD_MODE", "nocache")
+if LOAD_MODE not in ("nocache", "cached", "cached-sbjs"):
+    sys.exit("LOAD_MODE must be nocache, cached or cached-sbjs")
+
+
+def sbjs_cookie():
+    # The shape of WooCommerce order attribution (sourcebuster) cookies; the
+    # values are unique, as they are for every real visitor.
+    t = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+    sid = "%016x" % random.getrandbits(64)
+    return ("sbjs_migrations=1418474375998%3D1; sbjs_current_add=fd%3D" + t + "%7C%7C%7Cep%3Dhttps%3A%2F%2Fexample.com%2F; "
+            "sbjs_first_add=fd%3D" + t + "; sbjs_current=typ%3Dtypein%7C%7C%7Csrc%3D%28direct%29; sbjs_first=typ%3Dtypein; "
+            "sbjs_udata=vst%3D1%7C%7C%7Cuip%3D%28none%29%7C%7C%7Cuag%3Dwp-on-cf-load; sbjs_session=pgs%3D1%7C%7C%7Ccpg%3D" + sid)
+
+
+def browse_req(o, path):
+    if LOAD_MODE == "nocache":
+        return req(o, nc(path))
+    if LOAD_MODE == "cached-sbjs":
+        return req(o, path, headers={"Cookie": sbjs_cookie()})
+    return req(o, path)
 
 
 def nc(path):
@@ -129,7 +162,7 @@ def user(stop, prods, rec, abort):
             u = urllib.parse.urlparse(p["permalink"])
             own = u.path + ("?" + u.query if u.query else "")
             path = own if not WOO else random.choice(["/", "/?post_type=product", own])
-            rec("browse", req(o, nc(path)))
+            rec("browse", browse_req(o, path))
 
 
 def pct(xs, q):
@@ -145,7 +178,8 @@ def step(n, prods):
     def rec(kind, r, ok=None):
         h = r["h"] or {}
         row = {"k": kind, "c": r["code"], "s": r["s"], "ok": (r["code"] in (200, 201) if ok is None else ok),
-               "e1102": is_1102(r), "mib": h.get("x-wasm-mib"), "rec": h.get("x-runtime-recycled"), "boot": h.get("x-boot")}
+               "e1102": is_1102(r), "mib": h.get("x-wasm-mib"), "rec": h.get("x-runtime-recycled"), "boot": h.get("x-boot"),
+               "cf": h.get("cf-cache-status")}
         with lock:
             rows.append(row)
 
@@ -167,6 +201,11 @@ def step(n, prods):
            "aborted": aborted[0],
            "status": {}, "recycled": {}, "boots": sum(1 for r in rows if r["boot"] == "1"),
            "max_wasm_mib": max([int(r["mib"]) for r in rows if r["mib"]] or [0]), "kinds": {}}
+    # cf-cache-status of the browse requests: HIT means the edge answered.
+    out["cache"] = {}
+    for r in rows:
+        if r["k"] == "browse":
+            out["cache"][r["cf"] or "none"] = out["cache"].get(r["cf"] or "none", 0) + 1
     for r in rows:
         out["status"][str(r["c"])] = out["status"].get(str(r["c"]), 0) + 1
         if r["rec"]:
@@ -205,4 +244,4 @@ if __name__ == "__main__":
         s = step(n, prods)
         allsteps.append(s)
         print(json.dumps(s), flush=True)
-    print(json.dumps({"target": B, "woo": WOO, "levels": LEVELS, "seconds_per_level": SECONDS, "buyers": BUYERS, "steps": allsteps}))
+    print(json.dumps({"target": B, "woo": WOO, "load_mode": LOAD_MODE, "levels": LEVELS, "seconds_per_level": SECONDS, "buyers": BUYERS, "steps": allsteps}))
