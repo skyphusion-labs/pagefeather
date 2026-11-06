@@ -35,6 +35,10 @@ sed -i.bak "s#{SQLITE_IMPLEMENTATION_FOLDER_PATH}#/var/www/html/wp-content/plugi
 unzip -q "$cache/woocommerce-$WOO_VERSION.zip" -d "$wp/wp-content/plugins"
 # The plugin suite (tests/plugins/suite.txt), all 18 in the image; none active by default.
 ../../tests/plugins/fetch.sh "$wp/wp-content/plugins"
+# IMPORT_CONTENT=<wp-content of an existing site> (deploy/import.sh prints the
+# line): the themes in IMPORT_THEMES and the plugins in IMPORT_PLUGINS come
+# from that site. Rules in deploy/import/content.sh.
+[ -z "${IMPORT_CONTENT:-}" ] || ../../deploy/import/content.sh "$IMPORT_CONTENT" "$wp/wp-content"
 mkdir -p "$wp/wp-content/mu-plugins/r2-uploads"
 cp php/00-worker-call.php php/query-count.php php/c1-queue.php php/c1-purge-log.php "$wp/wp-content/mu-plugins/"
 cp ../b2-wordpress/php/r2-uploads.php ../b2-wordpress/php/edge-cache.php ../b2-wordpress/php/woo-edge.php "$wp/wp-content/mu-plugins/"
