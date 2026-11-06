@@ -24,6 +24,8 @@ This version supports the variant `b-dosql` (the database is the SQLite of the P
 
    `NAME` reads `SPIKE_TOKEN` from the Terraform workspace of `deploy.sh`. You can set `SPIKE_TOKEN` instead.
 
+   On PlanetScale (Vitess), use MySQL's `mysqldump` without `--single-transaction`: Vitess refuses `ROLLBACK TO SAVEPOINT`, so that flag fails. `mariadb-dump` also fails, because it sends `MAX_STATEMENT_TIME`, which only MariaDB has (measured by the lead on 2026-11-06 with mysqldump 8.4 against the a2 test database).
+
 The import replaces the whole database of the target site. Log in with the users and passwords of the source site.
 
 Options: `DRY_RUN=1` stops before the import and shows what changes. `OLD_ORIGIN` sets the old site address (default: the `home` option of the dump). `ALLOW_MISSING=1` imports when the theme or an active plugin is not in the build. `WORK` sets the directory for the work files.
@@ -56,7 +58,7 @@ Options: `DRY_RUN=1` stops before the import and shows what changes. `OLD_ORIGIN
 
 ## Measured
 
-2026-11-06, `wrangler dev --env dosql-local` (local, no plan), Wrangler 4.107.0 on macOS. Source: a mysqldump 8.4 of the test site of variant `a2` (WooCommerce, 98 tables, 8583 rows in the dump). Command: `URL=http://localhost:8831 SPIKE_TOKEN=local DUMP=wp-a2-dump.sql ./deploy/import.sh`. Result: 3 parts imported, every table matched (10067 rows with the driver's tables), `GET /` 200 with the site title of the source. A test on a deployed site is next; it is not **measured** on a plan yet.
+2026-11-06, `wrangler dev --env dosql-local` (local, no plan), Wrangler 4.107.0 on macOS. Source: a mysqldump 8.4 (no `--single-transaction`) of the test site of variant `a2` on PlanetScale: WordPress 7.1.4, WooCommerce with test orders and products, and the tables of the 18 plugins of the plugin suite (98 tables, 8583 rows in the dump). No customer data. Command: `URL=http://localhost:8831 SPIKE_TOKEN=local DUMP=wp-a2-dump.sql ./deploy/import.sh`. Result: 3 parts imported, every table matched (10067 rows with the driver's tables), `GET /` 200 with the site title of the source. A test on a deployed site is next; it is not **measured** on a plan yet.
 
 ## Tests
 
