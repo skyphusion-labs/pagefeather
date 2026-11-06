@@ -393,6 +393,21 @@ From the container log (each arm's measured window):
 
 Checkout capacity is still the instance type: about 1.6 checkouts a second fit in half a vCPU. The limit keeps the wait short; a larger instance serves more buyers.
 
+## Warm start on a product view (issue #73, not measured yet)
+
+With the storefront cache, a shopper can browse cached pages while the container sleeps. Then the first request that needs the container (the cart, add to cart) waits for the cold start: 11 to 22 s, measured as starts after a stop.
+
+**The change** (`spikes/c1-woo-container/warm.js`, off by default):
+- With `WARM_START=product`, the gateway sees a product view in its cacheable branch, and the page still comes from the edge. It then calls the Store object's `warmStart()` in `ctx.waitUntil`, after the response.
+- The object starts the container through the Container class `start()` (the process, not a WordPress request), only when it does not run. It never goes through `Store.prototype.fetch`, so the bounded queue does not count or shed it.
+- Two rate limits: the object makes no new start within `WARM_GAP_S`, and the gateway isolate asks the object at most once per `WARM_GAP_S`, so a warm site makes no RPC per page view.
+- The container's own idle watchdog (`IDLE_SECONDS`) stops a container that no shopper follows. That is the cost: up to `IDLE_SECONDS` of awake time per warm start.
+- `/_store-info` reports `warm: {mode, starts, skipped_running, skipped_gap, failed, last_ms_ago}`.
+
+**Tested locally:** `spikes/c1-woo-container/tests/warm-test.mjs` (CI) covers the path rule, the two rate limits, the running check, a failed start, and that neither `Store.prototype.fetch` nor `warm.js` warms through `fetch`. A mutation run turned each of 8 guards red.
+
+**To measure on a fresh c1 site, when Docker is back:** let the container sleep, make one cached product view, then add to cart, with `WARM_START=product` and, as the control, `off`. Read the add-to-cart time, and the awake time from `/_store-info`. Also check whether a cached product view already reaches the container by itself (a Store API or `wc-ajax` request of the theme); then this trigger adds little.
+
 ## Problems found
 
 - WooCommerce writes log files under `uploads/wc-logs`. With uploads in R2, every log line was an R2 read and write: about 30 calls and about 15 s of each checkout. `WC_LOG_DIR` now points to local disk (also in approach B).
