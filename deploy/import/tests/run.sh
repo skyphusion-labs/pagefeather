@@ -14,6 +14,8 @@ S3PID=""
 # KEEP=1 keeps the work files to look at them.
 cleanup() {
   if [ -n "$S3PID" ]; then kill "$S3PID" 2>/dev/null || true; wait "$S3PID" 2>/dev/null || true; fi
+  # The SSH test makes read-only trees: give write back first.
+  chmod -R u+w "${T:?}" 2>/dev/null || true
   if [ -n "${KEEP:-}" ]; then echo "work files: $T"; else rm -rf "${T:?}"; fi
 }
 trap cleanup EXIT
@@ -169,6 +171,80 @@ node "$HERE/sqlimport-endpoint.mjs" "$T/sql-import.mjs" > "$T/endpoint.out" || t
 check "sql-import.js endpoint rules" "$(tail -1 "$T/endpoint.out")" "all passed"
 python3 "$HERE/test_sqlimport_client.py" 2> "$T/client.err" || { cat "$T/client.err"; fails=$((fails + 1)); }
 check "sqlimport.py: CREATE preflight before replace" "$(tail -1 "$T/client.err")" "OK"
+
+# 10. SSH input: remote-export.sh on a stand-in server (a fake ssh runs it
+# here), with a read-only WordPress tree, HOME and TMPDIR.
+# A space in the path: the SSH command line must quote it (printf %q).
+R="$T/server x"; mkdir -p "$R/wp/wp-content/uploads/2026/01" "$R/wp/wp-content/cache" "$R/wp/wp-content/plugins/shop" "$R/home" "$R/stub" "$R/log"
+cat > "$R/wp/wp-config.php" <<'PHP'
+<?php
+define( 'DB_NAME', 'site_db' );
+define( 'DB_USER', 'reader' );
+define( 'DB_PASSWORD', 'p"a\'s\\w$rd\n-not-a-newline' );
+define( 'DB_HOST', 'db.local:3307' );
+PHP
+printf 'jpeg' > "$R/wp/wp-content/uploads/2026/01/a.jpg"; printf 'big' > "$R/wp/wp-content/cache/big.bin"; printf '<?php' > "$R/wp/wp-content/plugins/shop/shop.php"
+# mysqldump stand-in: logs its arguments and its defaults file (the log is
+# outside the read-only tree), then prints the fixture dump.
+cat > "$R/stub/mysqldump" <<SH
+#!/bin/bash
+printf '%s\n' "\$@" > "$R/log/argv"
+for a in "\$@"; do case "\$a" in --defaults-extra-file=*) cat "\${a#*=}" > "$R/log/defaults" ;; esac; done
+cat "$HERE/fixture.sql"
+SH
+# SSH_CMD is split on spaces (for ssh options), so the fake ssh has a path with none.
+FSSH="$T/fake-ssh"
+# shellcheck disable=SC2016 # the fake ssh script, not shell to expand here
+printf '#!/bin/bash\nhost=$1; shift\nexec bash -c "$*"\n' > "$FSSH"
+chmod +x "$R/stub/mysqldump" "$FSSH"
+# The server PATH: the stubs, php, and the base system only (this computer
+# may have a real wp in the same directory as php).
+ln -s "$(command -v php)" "$R/stub/php"
+SRVPATH="$R/stub:/usr/bin:/bin"
+chmod -R a-w "$R/wp" "$R/home"
+touch "$R/log/before"; sleep 1
+srv() { HOME="$R/home" TMPDIR="$R/home" PATH="$SRVPATH" "$FSSH" server "bash -s -- $(printf '%q ' "$@")" < "$IMP/remote-export.sh"; }
+srv "$R/wp" db > "$T/ssh.sql"
+check "ssh db: the dump comes through" "$(cmp -s "$T/ssh.sql" "$HERE/fixture.sql" && echo same)" "same"
+# shellcheck disable=SC2016 # a literal $ in the password
+check "ssh db: no password in the arguments" "$(grep -c 'w\$rd' "$R/log/argv" || true)" "0"
+check "ssh db: arguments" "$(tr '\n' ' ' < "$R/log/argv" | sed 's/--defaults-extra-file=[^ ]*/--defaults-extra-file=FD/')" "--defaults-extra-file=FD --hex-blob --single-transaction --skip-lock-tables --no-tablespaces site_db "
+# shellcheck disable=SC2016 # a literal $ in the password
+check "ssh db: password decoded as PHP does (single quotes)" "$(sed -n 's/^password=//p' "$R/log/defaults")" '"p\"a'"'"'s\\w$rd\\n-not-a-newline"'
+check "ssh db: host and port from DB_HOST" "$(grep -E '^(host|port)=' "$R/log/defaults" | tr '\n' ' ')" 'host="db.local" port=3307 '
+srv "$R/wp" content > "$T/ssh.tgz" 2> "$T/ssh-tar.err"
+check "ssh content: uploads and plugins in, cache out" "$(tar -tzf "$T/ssh.tgz" | grep -E 'a.jpg|shop.php|big.bin' | sort | tr '\n' ' ')" "wp-content/plugins/shop/shop.php wp-content/uploads/2026/01/a.jpg "
+check "ssh: nothing on the server changed" "$(find "$R/wp" "$R/home" -newer "$R/log/before" | wc -l | tr -d ' '):$(find "$R/home" -mindepth 1 | wc -l | tr -d ' ')" "0:0"
+# A WP-CLI stand-in: it logs its calls and answers "config get" with the
+# values PHP would decode from that wp-config.php. Only the values come from
+# WP-CLI: its own "db export" would pass --no-tablespaces as --tablespaces=,
+# which mariadb-dump refuses (measured on the #83 test source).
+python3 - "$R" <<'PY'
+import os, sys
+r = sys.argv[1]
+vals = {"DB_NAME": "site_db", "DB_USER": "reader", "DB_PASSWORD": 'p"a\'s\\w$rd\\n-not-a-newline', "DB_HOST": "db.local:3307"}
+lines = ["#!/bin/bash", 'printf "%s\\n" "$*" >> ' + repr(r + "/log/wp-argv"), 'case "$*" in']
+for k, v in vals.items():
+    lines.append("  *'config get %s'*) printf '%%s' %s ;;" % (k, "'" + v.replace("'", "'\\''") + "'"))
+lines += ["  *) echo \"wp stand-in: unexpected call: $*\" >&2; exit 9 ;;", "esac"]
+open(os.path.join(r, "stub", "wp"), "w").write("\n".join(lines) + "\n")
+os.chmod(os.path.join(r, "stub", "wp"), 0o755)
+PY
+cp "$R/log/defaults" "$R/log/defaults-php"
+srv "$R/wp" db > "$T/ssh-wp.sql"
+check "ssh db: WP-CLI path, the dump comes through" "$(cmp -s "$T/ssh-wp.sql" "$HERE/fixture.sql" && echo same)" "same"
+check "ssh db: WP-CLI path, only config get is asked" "$(grep -vc 'config get DB_' "$R/log/wp-argv" || true)" "0"
+check "ssh db: WP-CLI path, the same dump arguments" "$(tr '\n' ' ' < "$R/log/argv" | sed 's/--defaults-extra-file=[^ ]*/--defaults-extra-file=FD/')" "--defaults-extra-file=FD --hex-blob --single-transaction --skip-lock-tables --no-tablespaces site_db "
+check "ssh db: WP-CLI path, the same [client] section as the PHP path" "$(cmp -s "$R/log/defaults" "$R/log/defaults-php" && echo same)" "same"
+rm "$R/stub/wp"
+set +e; srv "$R/home" db > /dev/null 2> "$T/ssh.err"; code=$?; set -e
+check "ssh db: no wp-config.php is an error" "$code:$(grep -c 'no wp-config.php' "$T/ssh.err" || true)" "2:1"
+# The import.sh wiring, as far as DRY_RUN (b-dosql).
+set +e
+HOME="$R/home" PATH="$SRVPATH" SSH=server SSH_WP="$R/wp" SSH_CMD="$FSSH" URL=https://wp.acct.workers.dev SPIKE_TOKEN=x DRY_RUN=1 ALLOW_MISSING=1 WORK="$T/sshwork" "$IMP/../import.sh" > "$T/ssh-import.out" 2>&1; code=$?
+set -e
+check "import.sh SSH=: dump and archive read, dry run reached" "$code:$(grep -c '^ssh: dump\|^ssh: wp-content archive\|^prefix wpx_\|^DRY_RUN' "$T/ssh-import.out")" "0:4"
+chmod -R u+w "$R/wp" "$R/home"
 
 # 8. c1: the container's seed step (spikes/c1-woo-container/container/seed.sh)
 # against the same stand-in. PUT a seed, then load it as entrypoint.sh does.

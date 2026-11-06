@@ -119,7 +119,7 @@ The token in `CLOUDFLARE_API_TOKEN` must be able to: deploy Workers (Workers Scr
 NAME=my-shop ./deploy/destroy.sh
 ```
 
-`destroy.sh` reads the variant from `deploy/terraform/sites/<name>.tfvars` and runs `deploy/variants/c1-destroy.sh`: it deletes the container application `<name>-store`, then the Worker, then empties both buckets (R2 refuses to delete a bucket that has objects), then Terraform deletes the buckets, the Litestream key and the secrets. To empty the media bucket, Terraform first gives the Litestream key that bucket too (`teardown = true`); the Worker and the container are deleted at that point. The database replica and the uploads are deleted. Nothing is kept.
+`destroy.sh` reads the variant from the site's Terraform state and runs `deploy/variants/c1-destroy.sh`: it deletes the container application `<name>-store`, then the Worker, then empties both buckets (R2 refuses to delete a bucket that has objects), then Terraform deletes the buckets, the Litestream key and the secrets. To empty the media bucket, Terraform first gives the Litestream key that bucket too (`teardown = true`); the Worker and the container are deleted at that point. The database replica and the uploads are deleted. Nothing is kept.
 
 ## Variant `b-dosql`: the database in the PHP object
 
@@ -158,6 +158,20 @@ The hint is not a promise. An `enam` object landed in EWR two times in three and
 
 Each `NAME` has its own Terraform workspace, so two sites never share state.
 
+## Remove a site safely
+
+`NAME=my-site ./deploy/destroy.sh` (with `CLOUDFLARE_API_TOKEN` and `ACCOUNT_ID`) finds the state as `deploy.sh` keeps it (`deploy/tf-backend.sh`): local in the clone that deployed the site, or `DEPLOY_STATE=r2` from any clone. It checks all of this before it deletes anything:
+
+- The workspace `NAME` must exist. It is never made here.
+- The state's `name` output must be `NAME`. A backend or workspace that points at another site is refused.
+- A `backend_override.tf` that an earlier `DEPLOY_STATE=r2` run left in this clone is refused when `DEPLOY_STATE` is not `r2`. It holds that run's state key, maybe of another site. `deploy.sh` and `import.sh` refuse it too.
+- Without `sites/<name>.tfvars` in this clone, the variables come from the state's outputs.
+- The Worker is deleted by its name (`NAME`), so the clone's Wrangler config is not needed.
+- For variant `a` with `MYSQL=vultr`, the box's root (`deploy/mysql`) needs its `sites/<name>.tfvars`, or `MYSQL_ZONE_ID` and `MYSQL_HOST` as for `deploy.sh`: its zone is no output. If no box state is found, the script says that a box, if there is one, is NOT removed.
+- For `c1`, the teardown apply targets the Litestream key only.
+
+Tests: `deploy/tests/destroy-test.sh` (offline, local state, an `npx` stub).
+
 ## Terraform state holds secrets
 
 The admin password, the salt and the spike token are in the state. Keep it private: the local state is in `deploy/terraform/terraform.tfstate.d/` (ignored by git). To read the admin password:
@@ -180,4 +194,4 @@ cd deploy/terraform && terraform workspace select my-site && terraform output -r
 - Measurements from a fixed vantage (a Vultr runner), with p95 and p99, concurrency and the cold path.
 - Plugins and WooCommerce runs (`tests/plugins/plugins.py`, `tests/woo.py`) as part of `deploy.sh`.
 - A custom domain. The site is on `<name>.<subdomain>.workers.dev`.
-- An import that reads the site over SSH (issue #31). `b-dosql`, `c1`, `a` and `a2` have the import from a dump and a `wp-content` archive.
+- The SSH import (`SSH=`, `deploy/import/README.md`) run against a real server, and `a` on MariaDB with a separate target (issue #31). `b-dosql`, `c1`, `a` and `a2` have the import from a dump and a `wp-content` archive, or from a server over SSH.
