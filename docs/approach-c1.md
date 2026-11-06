@@ -640,7 +640,21 @@ With the storefront cache, a shopper can browse cached pages while the container
 - **A stale view is a second warm trigger, and it exists already.** Trial 3 in each arm got the page stale (`UPDATING`). The refresh behind it reached the container and started it, so the container was up before the cart even with `off`.
 - **In `product` trial 3 the gateway made no warm call at all:** `starts`, `skipped_running` and `skipped_gap` were all 0. The most likely cause is the script's own priming view, 3 s earlier. It is a product view, so it closed the gateway isolate's 60 s gate. That is a defect of the measurement, not of the site. The script now waits out `WARM_GAP_S` after the prime, and takes its median over HIT views only.
 - **n = 3 per arm is small.** Read the factor of two as a size, not as a precise number.
-- **Running is not ready.** Even warm, the add to cart took 4.4 to 6.8 s, so a started container is not a ready store. The first PHP request after a start still pays several seconds: the Litestream restore, the WordPress boot, a cold OPcache. **Open item, not a fix:** warm WordPress itself after the start, with one request that boots PHP and fills OPcache. It must stay outside the queue's shed class, and that is still to design and measure.
+- **Running is not ready.** Even warm, the add to cart took 4.4 to 6.8 s, so a started container is not a ready store. The first PHP request after a start still pays several seconds: the Litestream restore, the WordPress boot, a cold OPcache. **Open item, not a fix** (measured below: the first PHP request is the cost): warm WordPress itself after the start, with one request that boots PHP and fills OPcache. It must stay outside the queue's shed class, and that is still to design and measure.
+
+**Where the warm 5 s goes (issue #92, step 0), measured 2026-11-06** on `wp-c1-w92` (the same import and product as above, `main` `79ae03b`, `WARM_START=product`), by the lead, with `tests/load/warm_start.py 3 10` and the split from #119 (rows in `docs/results.md`). The times are seconds after the product view. Only trial 2 is the clean case: its view was a HIT, so the warm start alone started the container.
+
+| Trial | View | Container start | Restore done | Servers | Cart PHP starts after the send | First cart: PHP wall / CPU | Second cart: PHP wall / CPU | Add to cart at the client |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | MISS | 3.24 | 6.74 | 6.83 | 0.14 | 0.32 / 0.22 | 0.18 / 0.17 | 0.54 |
+| 2 | HIT | 4.13 | 7.89 | 8.01 | 0.20 | 5.04 / 2.18 | 0.26 / 0.20 | 5.37 |
+| 3 | UPDATING | 3.48 | 6.89 | 7.00 | 0.13 | 0.20 / 0.19 | 0.19 / 0.19 | 0.41 |
+
+- **In the clean case, the container was ready in time and the first PHP request was the cost.** The servers ran 8.0 s after the view, about 2 s before the cart came (the think time is 10 s), and the cart's PHP started 0.2 s after the send. That request then took 5.04 s wall and 2.18 s CPU. The same request from the next new visitor took 0.26 s and 0.20 s: 20 times the wall and 11 times the CPU. About 4.8 s of the 5.4 s is the first PHP request: a cold OPcache, an empty APCu, and the first WordPress boot. Its wall is twice its CPU, so it also waits for something (most likely the first reads of the PHP files and the database from disk).
+- **A MISS or UPDATING view warms PHP already.** Its refresh reaches the container and is the first PHP request, so the shopper's cart finds PHP warm (trials 1 and 3, 0.4 to 0.5 s). This is the design case for warming WordPress in the container itself (#92).
+- **OPcache after the cart:** 1492 to 1549 scripts, 56 to 58 MiB used of 128, no OOM restart. A whole cart path fits with room to spare.
+- **The limit that no PHP warm-up removes:** the restore is done 6.7 to 7.9 s after the view, and the servers 0.1 s later. A shopper who adds to cart sooner than about 8 s after the first view waits for the restore. Only a faster start or a smaller database helps there.
+- n = 1 clean trial. Read it as the split, not as a precise number.
 
 **Why not warm through a Store API request:** under overload, the bounded queue sheds a new visitor's Store API cart request (no `Cart-Token`, no session: class `shed` in `admission()`). A warm start made through such a request would then be refused. `start()` does not go through the queue.
 
