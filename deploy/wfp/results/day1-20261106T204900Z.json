@@ -1,0 +1,53 @@
+{
+ "utc": "2026-11-06T20:48:36Z",
+ "namespace": "wp-wfp",
+ "sites": [
+  "one",
+  "two"
+ ],
+ "dispatcher_etags": {
+  "wp-one": "cd9a7b31fc675140ebe0052934cab1ed95de9cd5cbbe148167a3f1731aaef685",
+  "wp-probe": "cd9a7b31fc675140ebe0052934cab1ed95de9cd5cbbe148167a3f1731aaef685",
+  "wp-two": "cd9a7b31fc675140ebe0052934cab1ed95de9cd5cbbe148167a3f1731aaef685"
+ },
+ "site_checks": {
+  "one": {
+   "front_status": 200,
+   "x_wfp_error": null,
+   "login_status": 302,
+   "set_title_status": 200,
+   "title_after": "WfP site one",
+   "own_content": true
+  },
+  "two": {
+   "front_status": 200,
+   "x_wfp_error": null,
+   "login_status": 302,
+   "set_title_status": 200,
+   "title_after": "WfP site two",
+   "own_content": true
+  }
+ },
+ "probe": {
+  "status": 404,
+  "x_wfp_error": "not-deployed"
+ },
+ "workers_cache": {
+  "url_path": "/?wfpcache=<n>",
+  "reads": [
+   {
+    "status": 200,
+    "cf-cache-status": "MISS",
+    "cache-control": "no-cache",
+    "age": null
+   },
+   {
+    "status": 200,
+    "cf-cache-status": "MISS",
+    "cache-control": "no-cache",
+    "age": null
+   }
+  ]
+ },
+ "failed": []
+}
