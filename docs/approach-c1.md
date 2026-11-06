@@ -459,7 +459,7 @@ While it hung, every request waited until the client gave up, held its bounded-q
 
 ### Measured
 
-With the real `Store.prototype.fetch` code and a stub container that never answers (limit 1 s): a hung checkout got 504 after 1.02 s with its slot released; a hung `wp-admin` request was not cut; an answered page passed. Without the timeout, the test never finishes.
+With the real `Store.prototype.fetch` code and a stub container that never answers (limit 1 s): a hung checkout got 504 after 1.02 s with its slot released; a hung `wp-admin` request was not cut; an answered page passed. The test is `spikes/c1-woo-container/tests/timeout-test.mjs` and runs in CI. It has an outer deadline of 15 s: without the timeout it fails with exit 1 after 15 s, and without the `wp-admin` exemption it fails 2 of 3 checks.
 
 On wp-c1-perf (swap16, `CONTAINER_TIMEOUT_S=10` for a short test), after `sig=STOPPHP`:
 
