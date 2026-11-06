@@ -65,6 +65,7 @@ A site is `NAME` or `NAME=URL`. For `NAME`, the address is `https://NAME.<subdom
 | `WAIT` | `3600` | Seconds to wait for the result |
 | `DEPLOY_STATE` | `local` | `r2`: read the sites' outputs from the R2 state, as `deploy.sh` writes it (`STATE_BUCKET`, `STATE_ENDPOINT`) |
 | `DRY_RUN` | `0` | `1`: print the job with the passwords hidden, and upload nothing |
+| `KIND` | `bench` | `latency`: the arguments are `DIRECT_URL DISPATCHED_URL`, and the box runs `tests/wfp/latency.py` (the dispatch hop, issue #35; `N` default 100, up to 1000). The box runs the new job kind only after `./tf.sh apply` makes a new box. |
 
 The table shows, for each site: the median database time per statement, the `e2e.sh` result (exit code, and requests that answered 2xx or 3xx), and the median seconds of fresh renders for each page of `bench.py`.
 

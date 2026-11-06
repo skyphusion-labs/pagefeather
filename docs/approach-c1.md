@@ -224,7 +224,7 @@ Proof, the first deploy after the change (OBJECT_CACHE `none` to `apcu`, replica
 
 ## Cost and limits
 
-- Workers Paid only (Containers). The container bills while awake; `sleepAfter = "15m"`. Workers Paid includes 25 GiB-hours of container memory a month: about 25 awake hours on `basic`, then metered ([Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/)).
+- Workers Paid only (Containers). The container bills while awake; it stops itself after `IDLE_SECONDS` (900 s) with no request (`sleepAfter` did not stop it, see above). Workers Paid includes 25 GiB-hours of container memory a month: about 25 awake hours on `basic` (1 GiB), about 6 on `standard-1` (4 GiB, the deploy default), about 4 on `standard-2` (6 GiB), then metered ([Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/)).
 - R2 holds the database replica and media (R2 free tier, then metered).
 - One container: one region, one writer. The first visitor after a sleep waits about 11 s for a page that is not cached. A cart or checkout always goes to the container.
 

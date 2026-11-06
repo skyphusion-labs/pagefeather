@@ -52,7 +52,9 @@ def one(o, name, path, i):
     return {"page": name, "i": i, "id": rid, "t": round(t0, 3), "code": r["code"], "s": round(r["s"], 4),
             "objectMs": int(get("x-object-ms")) if get("x-object-ms") else None,
             "perf": js("x-perf"), "queue": js("x-perf-queue"), "worker": js("x-perf-worker"),
-            "recycled": get("x-runtime-recycled"), "timing": get("server-timing")}
+            "recycled": get("x-runtime-recycled"), "timing": get("server-timing"),
+            # A failed answer keeps what tells whose it is: the body start and the server headers.
+            **({"err": {"body": (r["body"] or b"")[:300].decode("utf-8", "replace"), "server": get("server"), "cf-ray": get("cf-ray"), "type": get("content-type"), "cache-control": get("cache-control"), "retry-after": get("retry-after"), "exc": r.get("err")}} if r["code"] != 200 else {})}
 
 
 def main():
