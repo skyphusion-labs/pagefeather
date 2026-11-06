@@ -36,10 +36,16 @@ VARIANT=${VARIANT:-b-dosql}
 [ "$VARIANT" = b-dosql ] || { echo "VARIANT=$VARIANT: import supports b-dosql only (deploy/import/README.md)" >&2; exit 2; }
 
 : "${URL:?set URL to the site address that deploy.sh printed}"
+# Terraform state of the site, as deploy.sh keeps it (DEPLOY_STATE; tf-backend.sh).
+TF="$ROOT/deploy/terraform"
+# shellcheck source=SCRIPTDIR/tf-backend.sh
+. "$ROOT/deploy/tf-backend.sh"
+TF_READY=""
+tf_ready() { [ -n "$TF_READY" ] || { site_state "$TF" && TF_READY=1; }; }
+tfi() { (cd "$TF" && terraform workspace select "$NAME" >/dev/null && terraform "$@"); }
 if [ -z "${SPIKE_TOKEN:-}" ] && [ -n "${NAME:-}" ]; then
-  TF="$ROOT/deploy/terraform"
-  terraform -chdir="$TF" workspace select "$NAME" >/dev/null
-  SPIKE_TOKEN=$(terraform -chdir="$TF" output -raw spike_token)
+  tf_ready || exit 1
+  SPIKE_TOKEN=$(tfi output -raw spike_token)
 fi
 : "${SPIKE_TOKEN:?set SPIKE_TOKEN}"
 export SPIKE_TOKEN
@@ -136,15 +142,24 @@ elif [ -n "$SRC_CONTENT" ] && [ -d "$SRC_CONTENT/uploads" ]; then
   : "${NAME:?set NAME (the Terraform workspace of deploy.sh) to put the uploads in R2, or SKIP_MEDIA=1}"
   : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}" "${ACCOUNT_ID:?set ACCOUNT_ID}"
   export CLOUDFLARE_ACCOUNT_ID=$ACCOUNT_ID
-  TF="$ROOT/deploy/terraform"
-  [ -f "$TF/sites/$NAME.tfvars" ] || { echo "no deploy/terraform/sites/$NAME.tfvars: deploy the site with deploy.sh first" >&2; exit 1; }
-  tfi() { (cd "$TF" && terraform workspace select "$NAME" >/dev/null && terraform "$@"); }
-  (cd "$TF" && terraform init -input=false -reconfigure >/dev/null)
+  tf_ready || exit 1
   BUCKET=$(tfi output -raw media_bucket)
   [ -n "$BUCKET" ] || { echo "$NAME has no media bucket: deploy it with MEDIA=1" >&2; exit 1; }
-  key_off() { tfi apply -input=false -auto-approve -var-file="sites/$NAME.tfvars" -var media_import=false >/dev/null && echo "media: import key deleted"; }
-  trap 'key_off || echo "media: DELETE THE KEY: cd deploy/terraform && terraform apply -var-file=sites/$NAME.tfvars" >&2' EXIT
-  tfi apply -input=false -auto-approve -var-file="sites/$NAME.tfvars" -var media_import=true >/dev/null
+  # The variables of the site: deploy.sh's file in the clone that deployed it,
+  # or else the same values read from the state's outputs (a clone with
+  # DEPLOY_STATE=r2). The applies target the import key only, so no other
+  # resource of the site can change here.
+  VARS="$TF/sites/$NAME.tfvars"
+  if [ ! -f "$VARS" ]; then
+    VARS="$WORK/site.tfvars"
+    printf 'account_id = "%s"\nname = "%s"\nvariant = "%s"\nlocation = "%s"\nmedia = true\n' \
+      "$(tfi output -raw account_id)" "$(tfi output -raw name)" "$(tfi output -raw variant)" "$(tfi output -raw location)" > "$VARS"
+    echo "media: no sites/$NAME.tfvars in this clone; using the values in the state"
+  fi
+  key_apply() { tfi apply -input=false -auto-approve -var-file="$VARS" -target=cloudflare_account_token.media_import -var "media_import=$1" >/dev/null; }
+  key_off() { key_apply false && echo "media: import key deleted"; }
+  trap 'key_off || echo "media: DELETE THE KEY: cd deploy/terraform && terraform apply -var-file=$VARS -target=cloudflare_account_token.media_import -var media_import=false" >&2' EXIT
+  key_apply true
   R2_KEY_ID=$(tfi output -raw media_import_access_key_id)
   R2_SECRET=$(tfi output -raw media_import_secret_access_key)
   export R2_KEY_ID R2_SECRET
