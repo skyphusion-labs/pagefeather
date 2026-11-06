@@ -82,6 +82,7 @@ The query count per page comes from the mu-plugin `php/query-count.php`: it send
 | `PAGE_CACHE_SWR` | `600` | Seconds after that during which the edge serves the old copy while it renders a new one |
 | `QUEUE_LIMIT` | `16` | Requests the container may have in hand before a page, cart or add to cart gets 503 with Retry-After (0 = no limit). Checkout, payment callbacks and admin are always let in (docs/approach-c1.md, Bounded queue). |
 | `RETRY_AFTER` | `5` | The Retry-After seconds of that 503 |
+| `WARM_START` | `off` | `product`: a product view (`/product/`, `/shop`, a product category or tag) starts the sleeping container in the background, so the first cart after a sleep is warm. At most once per `WARM_GAP_S` (`60`). `WARM_PATHS` (a regular expression) replaces the product paths. Cost: a container that would have slept stays awake up to `IDLE_SECONDS`. Issue #73; not measured yet. |
 | `CHECK_WAIT` | `600` | Seconds to wait after the deploy until the Store object is from this deploy (c1_check) |
 | `PUBLIC_HOST` | `<name>.<subdomain>.workers.dev` | The address WordPress uses |
 | `ROLLOUT_WAIT` | `60` | Seconds to wait after the deploy before the one stop |
@@ -176,4 +177,4 @@ cd deploy/terraform && terraform workspace select my-site && terraform output -r
 - Measurements from a fixed vantage (a Vultr runner), with p95 and p99, concurrency and the cold path.
 - Plugins and WooCommerce runs (`tests/plugins/plugins.py`, `tests/woo.py`) as part of `deploy.sh`.
 - A custom domain. The site is on `<name>.<subdomain>.workers.dev`.
-- Import of the uploads, theme and plugins for `c1`, `a` and `a2`, and an import that reads the site over SSH (issue #31). `b-dosql` has all of it; `c1`, `a` and `a2` have the database.
+- An import that reads the site over SSH (issue #31). `b-dosql`, `c1`, `a` and `a2` have the import from a dump and a `wp-content` archive.
