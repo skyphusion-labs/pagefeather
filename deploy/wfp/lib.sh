@@ -160,6 +160,38 @@ kv_wait_writable() { # kv_wait_writable <namespace id>
     sleep "${KV_READY_STEP:-5}"
   done
 }
+# Wait for a new site to answer from its OWN user Worker, not from the
+# platform or the dispatcher (the #92 trap: any answer is not "ready").
+# Seen 2026-11-06 (the third day one): site two's first answer was a 404, and
+# one second later the dispatcher answered "not deployed" (x-wfp-error
+# not-deployed: the entry was read, but the namespace did not have the new
+# script yet). The probe is GET /_dbping with no spike token: b-dosql answers
+# it with its own 403 before and after the install.
+#   ready:    2xx, 3xx, 401 or 403, with no x-wfp-error
+#   retried:  no answer, 404, 5xx, x-wfp-error no-site or not-deployed
+#   fails at once: x-wfp-error bad-entry or dispatch (a configuration fault)
+# Bound SITE_WAIT (300) s, every SITE_WAIT_STEP (10) s; a timeout prints the last answer.
+wait_site() { # wait_site <origin>
+  local t0=$SECONDS t code err body
+  t=$(mktemp -d)
+  while :; do
+    code=$(curl -s -o "$t/b" -D "$t/h" -w '%{http_code}' -m 60 "$1/_dbping?nocache=$RANDOM$RANDOM" 2>/dev/null) || code=000
+    err=$(tr -d '\r' < "$t/h" 2>/dev/null | awk -F': ' 'tolower($1) == "x-wfp-error" { print $2 }')
+    body=$(head -c 80 "$t/b" 2>/dev/null | tr -s '\n\r\t' ' ')
+    case "$err" in
+      bad-entry|dispatch) echo "the dispatcher answered $code $err: a configuration fault, not a delay ($body)" >&2; rm -rf "$t"; return 1 ;;
+    esac
+    if [ -z "$err" ] && [[ "$code" =~ ^(2..|3..|401|403)$ ]]; then
+      echo "  the site answered HTTP $code after $((SECONDS - t0)) s"
+      rm -rf "$t"; return 0
+    fi
+    if [ $((SECONDS - t0)) -ge "${SITE_WAIT:-300}" ]; then
+      echo "the site did not answer in ${SITE_WAIT:-300} s; last: HTTP $code${err:+, x-wfp-error $err}, body: $body" >&2
+      rm -rf "$t"; return 1
+    fi
+    sleep "${SITE_WAIT_STEP:-10}"
+  done
+}
 subdomain() {
   api GET /workers/subdomain | sed '$d' | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["subdomain"])'
 }

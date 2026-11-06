@@ -62,6 +62,7 @@ jobs:
           deploy/wfp/tests/render-test.sh
           deploy/wfp/tests/ns-state-test.sh
           deploy/wfp/tests/kv-ready-test.sh
+          deploy/wfp/tests/wait-site-test.sh
       - name: c1 load analysis tests
         # tests/load/c1_arm.py (issue #99): held requests, CPU per order, the split, on a synthetic job.
         run: python3 tests/load/c1_arm_test.py

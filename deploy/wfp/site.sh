@@ -57,17 +57,8 @@ json.dump({"WP_SALT": o["wp_salt"], "SPIKE_TOKEN": o["spike_token"]}, open(sys.a
   (cd "$GEN" && npx wrangler deploy --config "$D.toml") > "$W/disp.log" 2>&1 || { tail -20 "$W/disp.log"; exit 1; }
   grep -q "$ORIGIN" "$W/disp.log" || { echo "the dispatcher did not deploy to $ORIGIN:" >&2; tail -5 "$W/disp.log" >&2; exit 1; }
 
-  log "site $s: wait for $ORIGIN, then install"
-  # A new workers.dev name can answer 404 for a while (seen 2026-11-06, #106);
-  # the site is there when the answer is not the platform's 404 page.
-  t0=$SECONDS; code=000
-  while [ $((SECONDS - t0)) -lt "${SITE_WAIT:-300}" ]; do
-    code=$(curl -s -o "$W/first" -w '%{http_code}' -D "$W/first.h" -m 60 "$ORIGIN/_dbping?nocache=$RANDOM" || true)
-    grep -qi '^x-wfp-error:' "$W/first.h" && { echo "  the dispatcher answered: $(grep -i '^x-wfp-error:' "$W/first.h" | tr -d '\r')"; }
-    [ "$code" != 000 ] && ! grep -qi 'nothing here yet' "$W/first" && break
-    sleep 10
-  done
-  echo "  first answer HTTP $code after $((SECONDS - t0)) s"
+  log "site $s: wait for $ORIGIN (the site itself, lib.sh wait_site), then install"
+  wait_site "$ORIGIN"
   hdr() { printf 'header = "x-spike-token: %s"\nheader = "x-admin-password: %s"\n' "$(out spike_token)" "$(out admin_password)"; }
   curl -s -m 300 -X POST -K <(hdr) "$ORIGIN/_install" > "$W/install.json" || true
   python3 -c 'import json, sys
