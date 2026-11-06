@@ -4,7 +4,7 @@ import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
 import { inflateSync } from 'fflate';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
-import { DurableObject } from 'cloudflare:workers';
+import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
 // Compiled PHP (OPcache file cache) made by opcache.sh with this same PHP build.
 import opcacheZip from './build/opcache.zip';
@@ -549,20 +549,43 @@ let lastPurge = 0;
 function schedulePurge(ctx) {
 	// A purge already scheduled for later covers this change too.
 	const wait = Math.max(0, lastPurge + PURGE_GAP_MS - Date.now());
-	if (lastPurge <= Date.now()) {
+	const send = lastPurge <= Date.now();
+	// One line per change and one per purge sent, so a run can count both (wrangler tail).
+	console.log(JSON.stringify({ m: 'purge', asked: 1, coalesced: send ? 0 : 1, waitMs: send ? wait : 0 }));
+	if (send) {
 		lastPurge = Date.now() + wait;
 		ctx.waitUntil(
 			new Promise((ok) => setTimeout(ok, wait))
-				.then(() => ctx.cache.purge({ tags: ['wp-pages'] }))
-				.catch((e) => console.log('cache purge failed', String(e))),
+				.then(() => ctx.exports.Pages.purge(['wp-pages']))
+				// A refused purge (Free limits: 5 a minute per account) is reported, not dropped.
+				.then((r) => console.log(JSON.stringify({ m: 'purge', sent: 1, ok: !!(r && r.ok), errors: (r && r.errors) || [] })))
+				.catch((e) => console.log(JSON.stringify({ m: 'purge', sent: 1, ok: false, error: String(e).slice(0, 200) }))),
 		);
 	}
 }
 
-// Page cache (Workers Cache). A response is cacheable only for a logged-out
-// GET of a public page. Cookie is not in the Workers Cache key, so Vary: Cookie
-// keeps a logged-in visitor from getting a logged-out page.
+// Page cache (Workers Cache, issue #63). Only the Pages entrypoint is cached.
+// The default entrypoint (the gateway, not cached) sends it a GET or HEAD that
+// has no WordPress cookie (WP_COOKIE, by name) and is not an admin, login,
+// cron or spike path, WITHOUT the Cookie header. So the cache key is the path
+// and the query alone, and a cookie that is not WordPress's (analytics _ga,
+// WooCommerce order attribution sbjs_*) does not split it. Before #63 the
+// default entrypoint was cached with Vary: Cookie, keyed on the whole Cookie
+// header: every visitor with any such cookie was a separate variant (measured
+// on wp-perf-dosql, docs/approach-b.md 8c).
 const WP_COOKIE = /(^|;\s*)(wordpress_logged_in_|wordpress_sec_|wp-postpass_|comment_author_|wp-settings-|woocommerce_|wp_woocommerce_session_)/;
+const PAGE_CACHE_NO_PATH = /^\/(wp-admin|wp-login\.php|wp-cron\.php|_)/;
+function pageCacheRoute(req, url, env) {
+	return (
+		Number(env.PAGE_CACHE_TTL || 120) > 0 &&
+		(req.method === 'GET' || req.method === 'HEAD') &&
+		!WP_COOKIE.test(req.headers.get('cookie') || '') &&
+		!req.headers.get('upgrade') &&
+		!PAGE_CACHE_NO_PATH.test(url.pathname) &&
+		!url.searchParams.has('preview') &&
+		!url.searchParams.has('nocache')
+	);
+}
 function pageCacheHeaders(req, url, r, out, env) {
 	const ttl = Number(env.PAGE_CACHE_TTL || 120);
 	const wpCc = String([].concat(r.headers['cache-control'] || []).join(','));
@@ -573,15 +596,21 @@ function pageCacheHeaders(req, url, r, out, env) {
 		!WP_COOKIE.test(req.headers.get('cookie') || '') &&
 		!r.headers['set-cookie'] &&
 		!/no-cache|no-store|private/i.test(wpCc) &&
-		!/^\/(wp-admin|wp-login\.php|wp-cron\.php|_)/.test(url.pathname) &&
+		!PAGE_CACHE_NO_PATH.test(url.pathname) &&
 		!url.searchParams.has('preview') &&
 		!url.searchParams.has('nocache');
 	if (cacheable) {
-		out.set('cache-control', `public, max-age=${ttl}, stale-while-revalidate=600`);
+		// The edge keeps it (cloudflare-cdn-cache-control, consumed by Cloudflare and
+		// not sent on). The browser must ask again (no-cache): there is no Vary: Cookie
+		// now, so a browser that kept the page would show the logged-out copy after a login.
+		out.set('cloudflare-cdn-cache-control', `max-age=${ttl}, stale-while-revalidate=600`);
+		out.set('cache-control', 'no-cache');
 		out.set('cache-tag', 'wp-pages');
-		out.append('vary', 'Cookie');
-	} else if (!wpCc) {
-		out.set('cache-control', 'private, no-store');
+	} else {
+		// Not stored at the edge, also when WordPress sent its own no-cache (which the
+		// cache would store as stale).
+		out.set('cloudflare-cdn-cache-control', 'no-store');
+		if (!wpCc) out.set('cache-control', 'private, no-store');
 	}
 }
 
@@ -1407,9 +1436,9 @@ async function toPhpObject(req, env, url, ctx) {
 	const out = new Response(r.body, r);
 	if (out.headers.has(PURGE_HEADER)) {
 		out.headers.delete(PURGE_HEADER);
-		if (ctx.cache) schedulePurge(ctx);
+		if (ctx.exports) schedulePurge(ctx);
 		// So a test can see that the purge request crossed from the object.
-		out.headers.set('x-cache-purge', ctx.cache ? 'scheduled' : 'no-cache-api');
+		out.headers.set('x-cache-purge', ctx.exports ? 'scheduled' : 'no-cache-api');
 	}
 	out.headers.set('x-php-object', name);
 	// Wall time from the Worker to the object and back, PHP time included.
@@ -1444,7 +1473,7 @@ $r = wp_install( 'WordPress on D1', 'admin', 'admin@example.com', false, '', $pw
 echo json_encode( array( 'installed' => true, 'user_id' => $r['user_id'] ) );
 `;
 
-export default {
+const site = {
 	async fetch(req, env, ctx) {
 		ENV = env;
 		const url = new URL(req.url);
@@ -1504,6 +1533,39 @@ export default {
 			return out;
 		}
 		return withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx));
+	},
+};
+
+// The cached entrypoint (wrangler.toml: exports.Pages.cache). It gets only what
+// pageCacheRoute() lets through, with no Cookie header.
+export class Pages extends WorkerEntrypoint {
+	async fetch(req) {
+		const r = await site.fetch(req, this.env, this.ctx);
+		// So a test can see which entrypoint answered (the gateway sets nothing).
+		const out = new Response(r.body, r);
+		out.headers.set('x-entrypoint', 'pages');
+		return out;
+	}
+	// An RPC method, so not cached. A purge reaches only the cache of the
+	// entrypoint that calls it, so the purge of the page cache runs here.
+	async purge(tags) {
+		if (!this.ctx.cache) return { ok: false, error: 'no cache API' };
+		const r = await this.ctx.cache.purge({ tags });
+		return { ok: !!(r && r.success !== false), errors: (r && r.errors) || [] };
+	}
+}
+
+// The gateway (not cached). A request that pageCacheRoute() accepts goes to
+// Pages without its Cookie header; every other request runs here.
+export default {
+	async fetch(req, env, ctx) {
+		const url = new URL(req.url);
+		if (pageCacheRoute(req, url, env)) {
+			const h = new Headers(req.headers);
+			h.delete('cookie');
+			return ctx.exports.Pages.fetch(new Request(req, { headers: h }));
+		}
+		return site.fetch(req, env, ctx);
 	},
 };
 
@@ -1637,9 +1699,9 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const op1 = wantOpcache ? await opcacheStats(php) : null;
 			// Approach A: close this request's MySQL connection after the response.
 			if (dbHandler) (ctx ? ctx.waitUntil(dbHandler.end()) : dbHandler.end());
-			if (ctx && ctx.cache && purgeRequested) schedulePurge(ctx);
+			if (ctx && ctx.exports && purgeRequested) schedulePurge(ctx);
 			const out = new Headers();
-			// In the PHP object there is no ctx.cache: the Worker purges (PURGE_HEADER).
+			// In the PHP object there is no ctx.exports: the Worker purges (PURGE_HEADER).
 			if (ctx && ctx.inObject && purgeRequested) out.set(PURGE_HEADER, '1');
 			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
 			const d = delta();
