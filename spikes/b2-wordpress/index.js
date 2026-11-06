@@ -378,6 +378,8 @@ async function handleMessage(raw) {
 
 async function boot(origin) {
 	bootOrigin = origin;
+	// The origin is WP_HOME for this runtime: log it, so a wrong one is visible.
+	console.log(JSON.stringify({ m: 'boot', origin }));
 	runtimeSerial++;
 	runtimeServed = 0;
 	runtimeBootAt = Date.now();
@@ -1136,16 +1138,23 @@ export default {
 		if (url.pathname === '/xmlrpc.php' && env.XMLRPC !== 'on') return new Response('XML-RPC is off', { status: 403 });
 		const maxBody = env.MEDIA && isMediaUpload(req, url) ? Number(env.MAX_UPLOAD_BYTES || MAX_UPLOAD_BYTES) : Number(env.MAX_BODY_BYTES || MAX_BODY_BYTES);
 		if (Number(req.headers.get('content-length') || 0) > maxBody) return new Response('request body too large', { status: 413 });
+		// WordPress serves no WebSockets. PHP's socket layer opens them to the site
+		// itself (during /_install, measured 2026-11-05), and such a request must
+		// never reach PHP: it booted a runtime with a wrong origin. This holds for
+		// every variant: in variant a (PHP in the Worker) such a request booted the
+		// runtime right after /_install with the origin http://127.0.0.1:<port>,
+		// while the site is http://localhost:<port>, so every page linked to
+		// 127.0.0.1 (2026-11-06, tests/a2/opcache-diag.sh, issue #50).
+		if (req.headers.get('upgrade')) {
+			console.log(JSON.stringify({ m: 'ws-refused', host: req.headers.get('host'), path: url.pathname }));
+			return new Response('WebSocket is not served', { status: 426 });
+		}
 		// PHP in a Durable Object (PHP_IN_DO=on, issue #28): every request that
 		// needs PHP goes to the object, including /_d1ping (D1 as PHP sees it).
 		// DB_IN_DO needs the object; without it the Worker would use D1 silently.
 		if (env.DB_IN_DO === 'on' && env.PHP_IN_DO !== 'on') return new Response('DB_IN_DO=on needs PHP_IN_DO=on', { status: 500 });
 		// Without the binding, fail: a silent fallback would run PHP in the Worker.
 		if (env.PHP_IN_DO === 'on') {
-			// WordPress serves no WebSockets. PHP's socket layer opens them to the
-			// site itself (during /_install, measured 2026-11-05), and such a
-			// request must never reach PHP: it booted a runtime with a wrong origin.
-			if (req.headers.get('upgrade')) return new Response('WebSocket is not served', { status: 426 });
 			return env.PHP_RUNTIME ? toPhpObject(req, env, url, ctx) : new Response('PHP_IN_DO=on needs the PHP_RUNTIME Durable Object binding', { status: 500 });
 		}
 		// Spike: time N sequential D1 statements from where this Worker runs.

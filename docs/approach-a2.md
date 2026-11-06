@@ -104,9 +104,23 @@ Page times from the laptop (n=10, medians; not comparable with the runner): home
 - **The a2 errors at 50 and 100 users are not a database result.** They come in pairs: add to cart answers **400 `woocommerce_rest_product_out_of_stock`**, then checkout answers **409 `woocommerce_rest_cart_empty`** (reproduced with `tests/a2/conflict-repro.py`, 30 users, 2 buys each: 50 buys ok, 10 pairs of 400 then 409, `tests/a2/results/conflict-repro-wp-a2.jsonl`). The product was the stock-managed "Edge Mug" that `tests/woo.py` made (stock 20). `tests/load/load.py` picked every purchasable product, and the Store API keeps an out-of-stock product purchasable, so once the matrix bought its stock out (during the 50-user step), about 1 buy in 6 (1 product of 6) went to it and failed: 8 of 49 at 50 users, 21 of 116 at 100. No Vitess, lock or transaction error was seen. `load.py` now buys only products that are in stock.
 - **`a` is not stable from run to run.** wp-ref-a made 18.7 requests per second at 100 users in an earlier matrix, and 8.63 now. One run is not a measurement, for `a` too. A possible cause, not measured: the one-box MySQL on Vultr now holds hundreds of test orders. Its 15 errors at 100 users (5 answers 500, 10 answers 401) are a different kind and are not explained here.
 
+## A variant a fault found by the plugin suite: a WebSocket request booted PHP
+
+The first run of `tests/a2/plugin-suite.sh` (2026-11-06) refused all 7 groups: the local OPcache step failed. `e2e.sh` passed every request but failed its check that the home page links to its own address: the page linked to `http://127.0.0.1:<port>/` while the site (and `wp_options` `home`) was `http://localhost:<port>` (`tests/a2/opcache-diag.sh`). `deploy.sh` showed only the last line of the step, a passing row, so the failure was hidden; it now keeps the whole output in `build/opcache.log` and prints its last lines on a failure.
+
+The cause: during `/_install`, PHP's socket layer opens a WebSocket to the site by IP address. After the install the Worker drops its PHP runtime, and that queued request booted the next one with its own origin, `http://127.0.0.1:<port>`, which became `WP_HOME` for every later page. The Worker refused such requests (426) only for PHP in a Durable Object (approach B, 8i), not for PHP in the Worker (variant `a`). Measured with `wrangler dev` (4.107.0) and `DEV_ENV=a-local`:
+
+| Request | Before the fix | After the fix |
+| --- | --- | --- |
+| `GET /` with `Upgrade: websocket`, to `127.0.0.1` | 302, and the Worker logged `{"m":"req","path":"/","boot":true,"d1":15}`: the same line as the request that booted PHP in the failed runs | 426, logged `ws-refused`, no boot |
+
+`wrangler dev` does not change `request.url`: it follows the `Host` header (`localhost`, `127.0.0.1` and `[::1]` each came back as sent). So the wrong origin came from the request, not from Wrangler. The guard now runs before the variant branch, for every variant, and every boot logs its origin. On Cloudflare the same request carries the site's own host on port 443 (8i); whether it ever pinned a wrong origin on a deployed variant `a` site is not measured (each isolate boots its own runtime).
+
+Why the build with WooCommerce passed the same check is not proven: `opcache.sh` activates WooCommerce right after the install, and that request may boot the runtime first, from `localhost`.
+
 ## Open
 
-- The plugin suite on wp-a2 (`tests/a2/plugin-suite.sh`).
+- The plugin suite on wp-a2 (`tests/a2/plugin-suite.sh`), again, with the guard.
 - A second matrix run with the `load.py` fix, for a2 and `a` both, to see the run-to-run spread.
 - Billing: which account pays for the database.
 - Whether a Worker placement nearer Ohio than ORD exists for this account.
