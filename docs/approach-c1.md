@@ -393,7 +393,7 @@ From the container log (each arm's measured window):
 
 Checkout capacity is still the instance type: about 1.6 checkouts a second fit in half a vCPU. The limit keeps the wait short; a larger instance serves more buyers.
 
-## Warm start on a product view (issue #73, not measured yet)
+## Warm start on a product view (issue #73)
 
 With the storefront cache, a shopper can browse cached pages while the container sleeps. Then the first request that needs the container (the cart, add to cart) waits for the cold start: 11 to 22 s, measured as starts after a stop.
 
@@ -406,7 +406,20 @@ With the storefront cache, a shopper can browse cached pages while the container
 
 **Tested locally:** `spikes/c1-woo-container/tests/warm-test.mjs` (CI) covers the path rule, the two rate limits, the running check, a failed start, and that neither `Store.prototype.fetch` nor `warm.js` warms through `fetch`. A mutation run turned each of 8 guards red.
 
-**To measure on a fresh c1 site, when Docker is back:** let the container sleep, make one cached product view, then add to cart, with `WARM_START=product` and, as the control, `off`. Read the add-to-cart time, and the awake time from `/_store-info`. Also check whether a cached product view already reaches the container by itself (a Store API or `wc-ajax` request of the theme); then this trigger adds little. What is known (strummer-c1perf, #39, plain HTTP with `load.py` and the probes, which run no JavaScript): an anonymous product page from the edge sets no cookie and sends nothing more by itself. Whether the mini-cart block of twentytwentyfive (or `wc-cart-fragments`, if a theme turns it on) sends a Store API cart request on load is a browser question, not tested. It needs a browser run.
+**To measure** with `tests/load/warm_start.py` (one arm per deploy; `B=<site> SPIKE_TOKEN=... python3 tests/load/warm_start.py [trials] [think_s]`). **On a fresh c1 site, when Docker is back:** let the container sleep, make one cached product view, then add to cart, with `WARM_START=product` and, as the control, `off`. Read the add-to-cart time, and the awake time from `/_store-info`. Also check whether a cached product view already reaches the container by itself (a Store API or `wc-ajax` request of the theme); then this trigger adds little. What is known (strummer-c1perf, #39, plain HTTP with `load.py` and the probes, which run no JavaScript): an anonymous product page from the edge sets no cookie and sends nothing more by itself. Whether the mini-cart block of twentytwentyfive (or `wc-cart-fragments`, if a theme turns it on) sends a Store API cart request on load is a browser question, not tested. It needs a browser run.
+
+**Measured, 2026-11-06,** on `wp-import-c1` (a fresh c1 site, `standard-1`), by the lead, with `tests/load/warm_start.py 3 10` at `97b58c9` (rows in `docs/results.md`). Each trial: stop the container, one cached view of a simple product as a new visitor, 10 s, then add to cart.
+
+| Arm | Add to cart (s) | Median | Running before the cart | View |
+| --- | --- | --- | --- | --- |
+| `off` (control) | 10.02, 11.02, 9.36 | 10.02 | no, no, yes | HIT, HIT, UPDATING |
+| `product` | 4.38, 5.14, 6.78 | 5.14 | yes, yes, yes | HIT, HIT, UPDATING |
+
+- **The warm start about halves the first add to cart after a sleep:** median 10.0 s to 5.1 s, and 10.5 s to 4.8 s over the HIT views only. The direct evidence is the running state: the container was up before the cart in every `product` trial, and in no `off` trial with a HIT view.
+- **A stale view is a second warm trigger, and it exists already.** Trial 3 in each arm got the page stale (`UPDATING`). The refresh behind it reached the container and started it, so the container was up before the cart even with `off`.
+- **In `product` trial 3 the gateway made no warm call at all:** `starts`, `skipped_running` and `skipped_gap` were all 0. The most likely cause is the script's own priming view, 3 s earlier. It is a product view, so it closed the gateway isolate's 60 s gate. That is a defect of the measurement, not of the site. The script now waits out `WARM_GAP_S` after the prime, and takes its median over HIT views only.
+- **n = 3 per arm is small.** Read the factor of two as a size, not as a precise number.
+- **Running is not ready.** Even warm, the add to cart took 4.4 to 6.8 s, so a started container is not a ready store. The first PHP request after a start still pays several seconds: the Litestream restore, the WordPress boot, a cold OPcache. **Open item, not a fix:** warm WordPress itself after the start, with one request that boots PHP and fills OPcache. It must stay outside the queue's shed class, and that is still to design and measure.
 
 **Why not warm through a Store API request:** under overload, the bounded queue sheds a new visitor's Store API cart request (no `Cart-Token`, no session: class `shed` in `admission()`). A warm start made through such a request would then be refused. `start()` does not go through the queue.
 
