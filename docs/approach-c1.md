@@ -393,6 +393,38 @@ From the container log (each arm's measured window):
 
 Checkout capacity is still the instance type: about 1.6 checkouts a second fit in half a vCPU. The limit keeps the wait short; a larger instance serves more buyers.
 
+### Who passes the limit (refined, measured)
+
+The first version shed a shopper's add to cart after letting the cart in (130 carts in the run above), and let every non-Store REST route through. Now `admission()` in `worker.js` has three classes:
+
+- **always**: checkout, payment callbacks (`wc-api`), `wp-admin`, `wp-login.php`, the operator endpoints, a request from a logged-in user (a `wordpress_logged_in_` cookie), and REST with credentials (an `Authorization` header: application passwords).
+- **flow**: a shopper already in a cart flow: a `Cart-Token` header (the Store API), or a WooCommerce session cookie (`wp_woocommerce_session_*`, or `woocommerce_items_in_cart` that is not 0). It passes the limit, so a cart that got in is not turned away at the add to cart. `/_store-info` counts how often (`queue.flow`).
+- **shed**: everything else, including a new shopper's first cart request and anonymous REST (before, an anonymous client could pass the limit through any non-Store route, for example `/wp-json/wp/v2/posts`).
+
+30 unit cases for `admission()` pass. **A forged flow is bounded.** The Worker cannot verify a `Cart-Token` or a WooCommerce cookie (WooCommerce signs the token in PHP), so a client can send `woocommerce_items_in_cart=1` and be treated as in a flow. A flow request therefore has its own, higher cap: `FLOW_LIMIT` (default 2 x `QUEUE_LIMIT`, never below it). Between the two caps an honest shopper's add to cart still gets in; above `FLOW_LIMIT` a flow request is shed too, so a forged cookie can push the container to at most `FLOW_LIMIT` in hand. `/_store-info` counts `queue.flow` (flow requests above `QUEUE_LIMIT`) and `queue.flowShed`. 11 unit cases for the decision (`shouldShed()`) pass, and they fail when the cap is removed. A signed admit cookie from the Store object would make a flow verifiable; it is the follow-up if the cap proves too loose. The limit is still not an access control: protection against abuse belongs to rate limiting at the edge.
+
+The count of requests in the container now lasts until the response body has been read to the end, not only until the response headers (checked in local workerd: 1 in flight while a body streamed, 0 after). For c1 the two were close, because PHP buffers the page (`query-count.php`) and static files do not come from the container, but a large streamed response would have been counted too briefly.
+
+**Measured.** The same overload run (`cached-sbjs`, BUYERS 0.5, 2 vCPU runner), twice, each on its own copy of wp-c1's database: swap12 (the cart-flow code; `deploy/results/bench-runner-20261106T065415Z-e3a0d8.json`) and swap14 (the same code; `deploy/results/bench-runner-20261106T075355Z-b181c4.json`).
+
+| Users | AFTER #82: orders, checkout p95 / p99 | swap12: orders, checkout p95 / p99 | swap14: orders, checkout p95 / p99 |
+| --- | --- | --- | --- |
+| 25 | 82, 8.8 / 11.1 s | 91, 8.7 / 32.2 s | 104, 7.5 / 9.1 s |
+| 50 | 78, 8.5 / 8.8 s | 89, 8.5 / 28.6 s | 97, 7.8 / 16.7 s |
+
+| Container log | AFTER #82 (2 vCPU rerun) | swap12 | swap14 |
+| --- | --- | --- | --- |
+| Carts let in / adds | 601 / 443 | 510 / 510 | 551 / 551 |
+| Completed orders per minute | 67.0 | 61.1 | 74.3 |
+| CPU s per completed order | 0.41 | 0.40 | 0.38 |
+| maxInflight / flow above 16 / flowShed | 18 / - / - | 20 / 112 / 0 | 21 / 119 / 0 |
+| Accept queue max | 8 | 10 | 11 |
+| Checkout in PHP p99 | 3.13 s | 3.06 s | 2.84 s |
+
+- **No cart is turned away at the add any more** (0 against 158), and more orders finish at the clean steps (25 and 50 users). A flow request never came near `FLOW_LIMIT` (at most 21 in hand).
+- **The checkout p99 of about 30 s on swap12 was not the flow change.** With at most 21 in hand and an accept queue of at most 11, the container cannot add 30 s. `load.py` now lists every request of 10 s or more with its time to the headers (TTFB) and its cf-ray. On swap14 all 4 such requests had TTFB equal to the total (the headers were late, not the body), and each was matched in the container log: PHP started it only when a local queue-runner cron run (`wp-cron.php`, 15 to 22 s) ended, and then took 0.1 to 0.5 s. During the cron run the accept queue was empty and 4 of the 5 PHP processes were idle. **That is head-of-line blocking in PHP's built-in server:** a `php -S` process accepts connections and serves them one at a time, so a connection that lands on the process running a long cron run waits for it, while other processes wait for work. swap12's cron runs were 27 to 30 s, the size of its tail. The fix belongs to the queue runner (issue #45: shorter Action Scheduler batches), and a server with one process per request (PHP-FPM) would end it for good; that is the first measured reason for FPM, a separate decision.
+- The 100-user steps were client limited (a load of 1.3 to 2.1 on 2 CPUs) and are not used.
+
 ## Warm start on a product view (issue #73)
 
 With the storefront cache, a shopper can browse cached pages while the container sleeps. Then the first request that needs the container (the cart, add to cart) waits for the cold start: 11 to 22 s, measured as starts after a stop.
