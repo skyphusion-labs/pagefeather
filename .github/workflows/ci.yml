@@ -55,6 +55,9 @@ jobs:
       - name: c1 load analysis tests
         # tests/load/c1_arm.py (issue #99): held requests, CPU per order, the split, on a synthetic job.
         run: python3 tests/load/c1_arm_test.py
+      - name: c1 warm start split tests
+        # tests/load/warm_start.py split() (issue #92): the start steps and the PHP time of the add to cart, from synthetic container logs.
+        run: python3 tests/load/warm_start_test.py
       - name: c1 mail tests
         # php/c1-mail.php, Store.sendMail in worker.js, the mail config and deploy check (issue #104).
         run: |

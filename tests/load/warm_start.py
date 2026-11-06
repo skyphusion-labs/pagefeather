@@ -22,6 +22,15 @@ Each trial:
    jar, no redirect followed). Its time is the result.
 5. Read /_store-info again: warm (starts, skipped_running, skipped_gap,
    failed), running.
+6. The split (issue #92): a second add to cart by another new visitor (the
+   same request on a warm container), then the container's own record:
+   /_stats.php what=boot (the start steps with their epochs), what=req (each
+   PHP request: start, wall s, CPU s) and what=info (OPcache). split() turns
+   them into seconds after the view: the container start, the restore, the
+   Litestream start and the servers; when the cart's PHP started after the
+   cart was sent (a wait for the container); and the PHP wall and CPU time of
+   the first and the second add to cart. These reads come after the
+   measured request, so they do not change it.
 Each trial waits WARM_GAP_S + 5 s between its prime and its measured view, so
 the gateway's rate limit does not block the measured view's start. The product comes from the Store API (?rest_route=/wc/store/v1/products),
 asked before the first stop, while the container is awake anyway: a SIMPLE,
@@ -36,6 +45,7 @@ urllib's default, #72).
 import http.cookiejar
 import json
 import os
+import re
 import statistics
 import sys
 import time
@@ -73,6 +83,49 @@ def info():
         return json.loads(r["body"])
     except ValueError:
         return {"error": r["status"]}
+
+
+def stats(what):
+    r = call("/_stats.php?what=" + what, token=True)
+    return r["body"].decode("utf-8", "replace") if r["status"] == 200 else ""
+
+
+# Boot log markers (container/entrypoint.sh, c1-serve.sh): name, pattern.
+MARKS = [("start", r" c1: entrypoint start"), ("restore_done", r" c1: restore done"),
+         ("litestream", r" c1: starting litestream"), ("servers", r"c1-serve.*php-fpm \d+, nginx \d+")]
+
+
+def req_lines(text):
+    out = []
+    for line in text.splitlines():
+        f = line.split(" ", 6)
+        if len(f) == 7:
+            try:
+                out.append({"t": float(f[0]), "wall": float(f[1]), "cpu": float(f[2]), "status": int(f[4]), "method": f[5], "path": f[6]})
+            except ValueError:
+                pass
+    return out
+
+
+def split(view_at, cart_at, boot, req, cart_id):
+    """The seconds of each start step after the view, and the PHP time of the
+    first two add to cart requests at or after cart_at (less 5 s for the clocks)."""
+    s = {}
+    for name, pat in MARKS:
+        for line in boot.splitlines():
+            if re.search(pat, line):
+                try:
+                    s[name + "_s"] = round(float(line.split(" ", 1)[0]) - view_at, 3)
+                except ValueError:
+                    pass
+                break
+    want = re.compile(r"/\?add-to-cart=%d(&|$)" % cart_id)
+    carts = [r for r in req_lines(req) if want.match(r["path"]) and r["t"] >= cart_at - 5]
+    for k, r in zip(("cart1", "cart2"), carts):
+        s[k + "_php_wall_s"], s[k + "_php_cpu_s"] = round(r["wall"], 3), round(r["cpu"], 3)
+    if carts:
+        s["cart1_php_start_after_send_s"] = round(carts[0]["t"] - cart_at, 3)
+    return s
 
 
 def wait_stopped(limit=120):
@@ -114,13 +167,21 @@ def main():
         time.sleep(gap + 5)
         stop = call("/_store-stop", method="POST", token=True)
         stopped_after = wait_stopped()
+        view_at = time.time()
         view = call(path)
         view_cache = view["headers"].get("cf-cache-status")
         time.sleep(think)
         before = info()
         jar = http.cookiejar.CookieJar()
+        cart_at = time.time()
         cart = call("/?add-to-cart=%d" % prod["id"], jar=jar)
         after = info()
+        cart2 = call("/?add-to-cart=%d" % prod["id"], jar=http.cookiejar.CookieJar())
+        sp = split(view_at, cart_at, stats("boot"), stats("req&since=%d" % (view_at - 60)), prod["id"])
+        try:
+            oc = json.loads(stats("info") or "{}").get("opcache")
+        except ValueError:
+            oc = None
         out["trials"].append({
             "n": n + 1,
             "stop_status": stop["status"], "stopped_after_s": stopped_after,
@@ -129,6 +190,8 @@ def main():
             "cart_status": cart["status"], "cart_s": cart["s"],
             "cart_added": any(c.name == "woocommerce_items_in_cart" and c.value == "1" for c in jar),
             "warm_after": after.get("warm"), "running_after": after.get("running"),
+            "cart2_status": cart2["status"], "cart2_s": cart2["s"],
+            "split": sp, "opcache_after": oc,
         })
         print(json.dumps(out["trials"][-1]), file=sys.stderr)
     # A view the edge served stale (UPDATING) sends a refresh to the container,
