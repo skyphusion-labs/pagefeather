@@ -118,9 +118,16 @@ The cause: during `/_install`, PHP's socket layer opens a WebSocket to the site 
 
 Why the build with WooCommerce passed the same check is not proven: `opcache.sh` activates WooCommerce right after the install, and that request may boot the runtime first, from `localhost`.
 
+## The plugin suite
+
+`tests/a2/plugin-suite.sh` from `439d164` (with the WebSocket guard), 2026-11-06: all 7 groups deployed, and the restore deploy put WooCommerce back. Results: `tests/plugins/results/a2-paid.jsonl` (column "A2 (PlanetScale), Paid" in [plugins.md](plugins.md)).
+
+- **17 of 18 pass**, and all 7 baselines (no suite plugin active) pass.
+- **All-in-One WP Migration fails, the same as `a` on Vultr:** activate, home and post work; the dashboard and the plugin's admin page answer 500 ("WordPress › Error"). The steps match the `a` row step for step, and #29 describes this failure: the plugin calls `mysqli_*` on `$wpdb->dbh`, which the drop-in does not provide. The row does not carry PHP's error text, so this is a match of the failure's shape. It is not a Vitess result.
+- No other plugin failed on PlanetScale's strict mode or on Vitess, with `HYPERDRIVE_SQL_MODE` set.
+
 ## Open
 
-- The plugin suite on wp-a2 (`tests/a2/plugin-suite.sh`), again, with the guard.
-- A second matrix run with the `load.py` fix, for a2 and `a` both, to see the run-to-run spread.
-- Billing: which account pays for the database.
+- A second load matrix with the `load.py` fix, for a2 and `a` both, to see the run-to-run spread (next sprint).
+- The billing account for the database.
 - Whether a Worker placement nearer Ohio than ORD exists for this account.
