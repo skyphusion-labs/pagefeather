@@ -1,0 +1,464 @@
+{
+ "job": "20261106T102000Z-5a8186",
+ "runner": {
+  "region": "ord",
+  "plan": "vc2-2c-4gb",
+  "cpus": 2,
+  "mem_mib": 3910,
+  "started_utc": "2026-11-06T10:20:29Z",
+  "branch": "main",
+  "git_sha": "ea82b097cd18035e8c8cc20166197b41c70320fd",
+  "curl": "curl 8.5.0 (x86_64-pc-linux-gnu) libcurl/8.5.0 OpenSSL/3.0.13 zlib/1.3 brotli/1.1.0 zstd/1.5.5 libidn2/2.3.7 libpsl/0.21.2 (+libidn2/2.3.7) libssh/0.10.6/openssl/zlib nghttp2/1.59.0 librtmp/2.3 OpenLDAP/2.6.10",
+  "python": "3.12.3",
+  "finished_utc": "2026-11-06T10:27:26Z"
+ },
+ "targets": [
+  {
+   "name": "wp-c1-perf",
+   "url": "https://wp-c1-perf.skyphusion.workers.dev",
+   "variant": "c1",
+   "load": {
+    "target": "https://wp-c1-perf.skyphusion.workers.dev",
+    "woo": true,
+    "load_mode": "cached-sbjs",
+    "levels": [
+     1,
+     5,
+     10,
+     25,
+     50,
+     100
+    ],
+    "seconds_per_level": 60.0,
+    "buyers": 0.5,
+    "steps": [
+     {
+      "users": 1,
+      "seconds": 60.5,
+      "client_load1": 0.23,
+      "client_cpus": 2,
+      "requests": 280,
+      "rps": 4.63,
+      "errors": 0,
+      "e1102": 0,
+      "aborted": 0,
+      "status": {
+       "200": 213,
+       "201": 67
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 79,
+        "ok": 79,
+        "p50": 0.059,
+        "p95": 0.405,
+        "p99": 0.735,
+        "max": 0.735
+       },
+       "cart": {
+        "n": 67,
+        "ok": 67,
+        "p50": 0.113,
+        "p95": 0.243,
+        "p99": 0.249,
+        "max": 0.249
+       },
+       "add": {
+        "n": 67,
+        "ok": 67,
+        "p50": 0.11,
+        "p95": 0.21,
+        "p99": 0.232,
+        "max": 0.232
+       },
+       "checkout": {
+        "n": 67,
+        "ok": 67,
+        "p50": 0.356,
+        "p95": 0.872,
+        "p99": 0.986,
+        "max": 0.986
+       }
+      },
+      "slow": [],
+      "shed": {},
+      "cache": {
+       "MISS": 18,
+       "HIT": 61
+      }
+     },
+     {
+      "users": 5,
+      "seconds": 62.3,
+      "client_load1": 0.28,
+      "client_cpus": 2,
+      "requests": 293,
+      "rps": 4.7,
+      "errors": 0,
+      "e1102": 0,
+      "aborted": 0,
+      "status": {
+       "200": 221,
+       "201": 72
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 77,
+        "ok": 77,
+        "p50": 0.054,
+        "p95": 0.099,
+        "p99": 1.702,
+        "max": 1.702
+       },
+       "cart": {
+        "n": 72,
+        "ok": 72,
+        "p50": 0.488,
+        "p95": 1.152,
+        "p99": 1.933,
+        "max": 1.933
+       },
+       "add": {
+        "n": 72,
+        "ok": 72,
+        "p50": 0.531,
+        "p95": 0.91,
+        "p99": 2.101,
+        "max": 2.101
+       },
+       "checkout": {
+        "n": 72,
+        "ok": 72,
+        "p50": 2.713,
+        "p95": 3.63,
+        "p99": 4.88,
+        "max": 4.88
+       }
+      },
+      "slow": [],
+      "shed": {},
+      "cache": {
+       "HIT": 74,
+       "MISS": 3
+      }
+     },
+     {
+      "users": 10,
+      "seconds": 68.8,
+      "client_load1": 0.25,
+      "client_cpus": 2,
+      "requests": 333,
+      "rps": 4.84,
+      "errors": 0,
+      "e1102": 0,
+      "aborted": 0,
+      "status": {
+       "200": 252,
+       "201": 81
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 90,
+        "ok": 90,
+        "p50": 0.038,
+        "p95": 0.077,
+        "p99": 0.086,
+        "max": 0.086
+       },
+       "cart": {
+        "n": 81,
+        "ok": 81,
+        "p50": 0.955,
+        "p95": 4.208,
+        "p99": 29.482,
+        "max": 29.482
+       },
+       "add": {
+        "n": 81,
+        "ok": 81,
+        "p50": 1.115,
+        "p95": 3.433,
+        "p99": 4.992,
+        "max": 4.992
+       },
+       "checkout": {
+        "n": 81,
+        "ok": 81,
+        "p50": 3.587,
+        "p95": 6.015,
+        "p99": 17.732,
+        "max": 17.732
+       }
+      },
+      "slow": [
+       {
+        "t0": 1793960569.519,
+        "k": "cart",
+        "c": 200,
+        "s": 29.482,
+        "ttfb": 29.48,
+        "ray": "a56361179f9eb837-ORD"
+       },
+       {
+        "t0": 1793960608.56,
+        "k": "checkout",
+        "c": 200,
+        "s": 17.732,
+        "ttfb": 17.729,
+        "ray": "a563620b9f72e824-ORD"
+       }
+      ],
+      "shed": {},
+      "cache": {
+       "HIT": 78,
+       "UPDATING": 12
+      }
+     },
+     {
+      "users": 25,
+      "seconds": 71.5,
+      "client_load1": 0.6,
+      "client_cpus": 2,
+      "requests": 558,
+      "rps": 7.81,
+      "errors": 109,
+      "e1102": 0,
+      "aborted": 109,
+      "status": {
+       "200": 363,
+       "503": 109,
+       "201": 86
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 191,
+        "ok": 191,
+        "p50": 0.041,
+        "p95": 0.09,
+        "p99": 0.228,
+        "max": 0.47
+       },
+       "cart": {
+        "n": 195,
+        "ok": 86,
+        "p50": 0.066,
+        "p95": 5.62,
+        "p99": 6.919,
+        "max": 18.211
+       },
+       "add": {
+        "n": 86,
+        "ok": 86,
+        "p50": 2.232,
+        "p95": 5.594,
+        "p99": 30.386,
+        "max": 30.386
+       },
+       "checkout": {
+        "n": 86,
+        "ok": 86,
+        "p50": 5.69,
+        "p95": 8.339,
+        "p99": 9.593,
+        "max": 9.593
+       }
+      },
+      "slow": [
+       {
+        "t0": 1793960637.387,
+        "k": "add",
+        "c": 201,
+        "s": 30.386,
+        "ttfb": 30.306,
+        "ray": "a56362bfdc90a242-ORD"
+       },
+       {
+        "t0": 1793960678.989,
+        "k": "cart",
+        "c": 200,
+        "s": 18.211,
+        "ttfb": 18.211,
+        "ray": "a56363c3ccad13d4-ORD"
+       }
+      ],
+      "shed": {
+       "cart": 109
+      },
+      "cache": {
+       "HIT": 175,
+       "UPDATING": 16
+      }
+     },
+     {
+      "users": 50,
+      "seconds": 75.4,
+      "client_load1": 2.05,
+      "client_cpus": 2,
+      "requests": 1109,
+      "rps": 14.71,
+      "errors": 371,
+      "e1102": 0,
+      "aborted": 371,
+      "status": {
+       "200": 650,
+       "201": 88,
+       "503": 371
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 474,
+        "ok": 474,
+        "p50": 0.044,
+        "p95": 0.15,
+        "p99": 0.237,
+        "max": 0.6
+       },
+       "cart": {
+        "n": 459,
+        "ok": 88,
+        "p50": 0.048,
+        "p95": 3.969,
+        "p99": 6.101,
+        "max": 18.371
+       },
+       "add": {
+        "n": 88,
+        "ok": 88,
+        "p50": 2.513,
+        "p95": 6.072,
+        "p99": 6.676,
+        "max": 6.676
+       },
+       "checkout": {
+        "n": 88,
+        "ok": 88,
+        "p50": 5.542,
+        "p95": 8.426,
+        "p99": 9.406,
+        "max": 9.406
+       }
+      },
+      "slow": [
+       {
+        "t0": 1793960754.228,
+        "k": "cart",
+        "c": 200,
+        "s": 18.371,
+        "ttfb": 18.37,
+        "ray": "a563659a0968bc23-ORD"
+       }
+      ],
+      "shed": {
+       "cart": 371
+      },
+      "cache": {
+       "HIT": 403,
+       "UPDATING": 71
+      }
+     },
+     {
+      "users": 100,
+      "seconds": 73.3,
+      "client_load1": 10.3,
+      "client_cpus": 2,
+      "requests": 1620,
+      "rps": 22.09,
+      "errors": 645,
+      "e1102": 0,
+      "aborted": 645,
+      "status": {
+       "200": 887,
+       "201": 88,
+       "503": 645
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 711,
+        "ok": 711,
+        "p50": 0.148,
+        "p95": 0.55,
+        "p99": 2.458,
+        "max": 2.737
+       },
+       "cart": {
+        "n": 733,
+        "ok": 88,
+        "p50": 0.135,
+        "p95": 3.062,
+        "p99": 5.967,
+        "max": 32.036
+       },
+       "add": {
+        "n": 88,
+        "ok": 88,
+        "p50": 2.679,
+        "p95": 6.298,
+        "p99": 7.709,
+        "max": 7.709
+       },
+       "checkout": {
+        "n": 88,
+        "ok": 88,
+        "p50": 6.098,
+        "p95": 9.013,
+        "p99": 10.398,
+        "max": 10.398
+       }
+      },
+      "slow": [
+       {
+        "t0": 1793960785.536,
+        "k": "cart",
+        "c": 200,
+        "s": 32.036,
+        "ttfb": 31.964,
+        "ray": "a563665e5e93000b-ORD"
+       },
+       {
+        "t0": 1793960795.626,
+        "k": "checkout",
+        "c": 200,
+        "s": 10.398,
+        "ttfb": 10.276,
+        "ray": "a563669e1cf2eb07-ORD"
+       }
+      ],
+      "shed": {
+       "cart": 645
+      },
+      "cache": {
+       "HIT": 624,
+       "UPDATING": 87
+      }
+     }
+    ]
+   },
+   "runner_seconds": 417.2
+  }
+ ],
+ "n": 10,
+ "load": {
+  "levels": "1,5,10,25,50,100",
+  "seconds": 60,
+  "buyers": 0.5,
+  "mode": "cached-sbjs"
+ }
+}

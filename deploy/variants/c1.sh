@@ -12,7 +12,8 @@
 #               first 200 (sets FIRST_START_S)
 #   c1_check    the Store object is from this deploy, and the running container
 #               has its settings (the drop-in is there exactly when
-#               OBJECT_CACHE=apcu); CHECK_WAIT (default 600 s)
+#               OBJECT_CACHE=apcu) and runs PHP-FPM, whose ping answers;
+#               CHECK_WAIT (default 600 s)
 #   c1_measure  e2e.sh, the page benchmark, one cold start -> deploy/results/
 # The steps use ROOT, TF, NAME, ACCOUNT_ID, LOCATION, log and out from deploy.sh,
 # and share the variables they set.
@@ -124,6 +125,7 @@ print("no container was running: nothing to stop" if d.get("skipped") else "stop
   if [[ "$stop" == *'"still_running": true'* ]]; then
     echo "the container did not stop in 30 s: it is probably stuck (issue #93)." >&2
     echo "Recover: deploy once with a changed container setting (for example INSTANCE_TYPE), which rolls out a new instance, then deploy again." >&2
+    echo "If that stop also answers still_running: send no traffic to the site for about 15 minutes, so the Store object can move to the new version, then deploy again (seen 2026-11-06, issue #105)." >&2
     return 1
   fi
   log "wait for WordPress"
@@ -154,7 +156,7 @@ k = sys.argv[1]
 print(str(d.get(k)).lower() if k in d else "unknown", d.get("do_version") or "-", d.get("worker_version") or "-")' "$2"
 }
 c1_check() {
-  local want cur got t0=$SECONDS try code
+  local want cur got sapi t0=$SECONDS try code
   # A container that answers a static file (no WordPress) is not stuck (#93).
   code=$(curl -s -o /dev/null -m 15 -w '%{http_code}' "$URL/_boot.txt" || true)
   [ "$code" = 200 ] || { echo "the container does not answer a static file (/_boot.txt: $code): probably stuck (issue #93)" >&2; return 1; }
@@ -169,8 +171,23 @@ c1_check() {
   echo "Store object is from this deploy after $((SECONDS - t0)) s ($cur)"
   for try in 1 2; do
     got=$(c1_info "/_stats.php?what=info" drop_in); got=${got%% *}
-    [ "$got" = "$want" ] && { echo "container settings ok on try $try (object cache drop-in: $got)"; return 0; }
-    echo "try $try: drop-in $got, want $want (OBJECT_CACHE=$OBJECT_CACHE): the container is older than the object; stop it" >&2
+    # The image: PHP-FPM (fpm-fcgi) since issue #99. A container that answers
+    # cli-server runs an older image (php -S), which can happen right after a
+    # deploy; it is stopped like a container with old settings.
+    sapi=$(c1_info "/_stats.php?what=info" sapi); sapi=${sapi%% *}
+    if [ "$got" = "$want" ] && [ "$sapi" = fpm-fcgi ]; then
+      echo "container settings ok on try $try (object cache drop-in: $got, PHP: $sapi)"
+      # Only now, with this deploy's container: nginx answers static files
+      # while PHP is stuck (issue #99), and the FPM ping needs a free PHP-FPM
+      # child. Probed before this point, it could reach the previous container
+      # (php -S has no ping, so WordPress answered with a 301) and fail a good
+      # deploy (seen 2026-11-06, arm 3b).
+      code=$(curl -s -o /dev/null -m 15 -w '%{http_code}' "$URL/_fpm-ping" || true)
+      [ "$code" = 200 ] || { echo "PHP does not answer (/_fpm-ping: $code): probably stuck (issue #93)" >&2; return 1; }
+      echo "PHP answers (/_fpm-ping: 200)"
+      return 0
+    fi
+    echo "try $try: drop-in $got (want $want, OBJECT_CACHE=$OBJECT_CACHE), PHP $sapi (want fpm-fcgi): the container is older than the object; stop it" >&2
     [ "$try" = 2 ] && break
     # The stop answers still_running true when the container did not stop in
     # 30 s; then the object is not reset (durability), and the check fails.

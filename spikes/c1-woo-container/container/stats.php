@@ -3,10 +3,11 @@
 // (docs/approach-c1.md, "Where c1 saturates"). Needs the x-spike-token header.
 //
 //   ?what=info      instance, PHP, OPcache, SQLite journal mode (JSON)
-//   ?what=req       one line per request (router.php): start, wall s, CPU s,
+//   ?what=req       one line per request (c1-prepend.php): start, wall s, CPU s,
 //                   peak MiB, status, method, path
 //   ?what=samples   one line every 2 s (entrypoint.sh): time, /proc/stat cpu,
-//                   cgroup cpu.stat, load, accept backlog, PHP processes
+//                   cgroup cpu.stat, load, PHP-FPM backlog, PHP-FPM
+//                   children by state, PSS of PHP-FPM and nginx
 //   ?what=purge     one line per page cache purge request (php/c1-purge-log.php)
 //   ?what=db        row counts and sizes that grow as a store sells (JSON)
 //   ?what=seed      the import seed this container loaded (entrypoint.sh,
@@ -15,6 +16,9 @@
 //   ?what=apcu      APCu: entries, memory, hits, misses, and the PHP worker
 //                   that answered (call it several times: one shared cache
 //                   gives the same start_time and growing counts in every pid)
+//   ?what=fpm       PHP-FPM pool status (fpm_get_status(), issue #99): the
+//                   listen queue, active and idle children, max children
+//                   reached, and each child with its request count
 //   &since=<epoch>  only lines from that time
 //
 // The files are read after a load run, not during it: during a run this
@@ -49,6 +53,12 @@ if ( 'seed' === $what ) {
 	}
 	readfile( '/tmp/c1-seed.json' );
 	exit;
+}
+if ( 'fpm' === $what ) {
+	header( 'content-type: application/json' );
+	// From inside this child, with no request to /_fpm-status: that would need
+	// a second free child.
+	exit( json_encode( function_exists( 'fpm_get_status' ) ? fpm_get_status() : array( 'fpm' => false ) ) );
 }
 if ( 'apcu' === $what ) {
 	header( 'content-type: application/json' );
@@ -115,7 +125,7 @@ if ( 'db' === $what ) {
 $info = array(
 	'sapi'        => PHP_SAPI,
 	'php'         => PHP_VERSION,
-	'php_workers' => getenv( 'PHP_CLI_SERVER_WORKERS' ),
+	'php_workers' => getenv( 'PHP_WORKERS' ),
 	'nproc'       => (int) trim( (string) shell_exec( 'nproc' ) ),
 	'cpu_max'     => trim( (string) @file_get_contents( '/sys/fs/cgroup/cpu.max' ) ),
 	'mem_total'   => trim( (string) shell_exec( "awk '/MemTotal/ {print \$2}' /proc/meminfo" ) ),

@@ -73,7 +73,7 @@ The query count per page comes from the mu-plugin `php/query-count.php`: it send
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `INSTANCE_TYPE` | `standard-1` | Container instance type. c1 is CPU bound: about 3 requests per second on `standard-1` (1/2 vCPU, 4 GiB), about 6 on `standard-2` (1 vCPU, 6 GiB), measured with APCu (docs/approach-c1.md). |
-| `PHP_WORKERS` | 2 on `basic`, 4 on `standard-1`, 8 on `standard-2` | PHP processes, 256 MB each. `basic` (1 GiB) dropped a connection with 4. |
+| `PHP_WORKERS` | 2 on `basic`, 4 on `standard-1`, 8 on `standard-2` | PHP-FPM children (issue #99; PHP built-in server processes before), 256 MB each. `basic` (1 GiB) dropped a connection with 4. |
 | `IDLE_SECONDS` | `900` | The container stops itself after this many seconds with no request (see below). |
 | `OBJECT_CACHE` | `apcu` | `apcu`: the APCu object cache drop-in (about 20 % less CPU per page, docs/approach-c1.md). `none`: no object cache. |
 | `REPLICA_PATH` | `store` | Path of the Litestream replica in the replica bucket. Another path restores and writes another database; `store` stays as it was. |

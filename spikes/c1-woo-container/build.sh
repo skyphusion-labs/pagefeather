@@ -44,7 +44,7 @@ cp php/00-worker-call.php php/query-count.php php/c1-queue.php php/c1-purge-log.
 cp ../b2-wordpress/php/r2-uploads.php ../b2-wordpress/php/edge-cache.php ../b2-wordpress/php/woo-edge.php "$wp/wp-content/mu-plugins/"
 cp ../b2-wordpress/php/cf-images-editor.php "$wp/wp-content/mu-plugins/r2-uploads/"
 cp php/wp-config.php "$wp/"
-cp php/install.php container/router.php "$wp/"
+cp php/install.php "$wp/"
 # Not in wp-content: container/entrypoint.sh copies it there when the Worker
 # sets OBJECT_CACHE=apcu, so one image runs with and without the cache.
 mkdir -p build/opt

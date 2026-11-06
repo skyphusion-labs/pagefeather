@@ -10,8 +10,8 @@ Measured 2026-11-04 on Workers Paid. Code: `spikes/c1-woo-container`. Conrad's d
 
 ## Design
 
-- **Container:** stock WordPress 7.1.4, WooCommerce 11.2.1 and the official SQLite plugin (`sqlite-database-integration`, its own `db.php`), on a real SQLite file at `/data/wordpress.sqlite`. PHP 8.3 with PHP's built-in server, 256 MB for PHP. The spike started on `basic` with 2 workers; `deploy/deploy.sh` now uses `standard-1` with 4 workers and the APCu object cache (sections below).
-- **Durability: Litestream to R2.** The container disk is lost when it sleeps. On start, `litestream restore` gets the database from R2 if a replica exists; otherwise the entrypoint installs WordPress and WooCommerce. Then `litestream replicate -exec "php -S ..."` runs PHP and sends every change to the R2 bucket `wp-woo-c1-db` (1 s sync interval). The S3 key can touch only that bucket.
+- **Container:** stock WordPress 7.1.4, WooCommerce 11.2.1 and the official SQLite plugin (`sqlite-database-integration`, its own `db.php`), on a real SQLite file at `/data/wordpress.sqlite`. PHP 8.3, 256 MB for PHP: PHP's built-in server at first, PHP-FPM behind nginx since issue #99 (section below). The spike started on `basic` with 2 workers; `deploy/deploy.sh` now uses `standard-1` with 4 workers and the APCu object cache (sections below).
+- **Durability: Litestream to R2.** The container disk is lost when it sleeps. On start, `litestream restore` gets the database from R2 if a replica exists; otherwise the entrypoint installs WordPress and WooCommerce. Then `litestream replicate -exec` runs the web server (`php -S` at first; `container/c1-serve.sh` with PHP-FPM and nginx since issue #99) and sends every change to the R2 bucket `wp-woo-c1-db` (1 s sync interval). The S3 key can touch only that bucket.
 - **The Worker in front:**
   - Static files come from Workers static assets.
   - Uploads come from R2 (`wp-woo-c1-media`).
@@ -281,7 +281,7 @@ The same seeded data as the APCu run on `standard-1` (wp-c1's database, replica 
 
 The loopback let the queue grow by 130. The local runner kept up with 184 checkouts and ended with 20, about one minute of orders.
 
-The cost, from the container log: the 6 runs took 2.4 to 28.5 s wall and 0.8 to 2.7 CPU s each, about 80 s apart. Together they held 0.18 of the 5 PHP processes on average, and they used 5.4 % of the CPU (11.9 of 219 CPU s). That is the work of sending the order emails. With the loopback it was not done, so the queue grew.
+The cost, from the container log: the 6 runs took 2.4 to 28.5 s wall and 0.8 to 2.7 CPU s each, about 80 s apart. Together they held 0.18 of the 5 PHP processes on average, and they used 5.4 % of the CPU (11.9 of 219 CPU s). That is the work of the order email actions. (The container has no mail transport, so the mails themselves fail: issue #104.) With the loopback it was not done, so the queue grew.
 
 | Users | loopback: rps | loopback: browse p50 / p95 | loopback: checkout p50 / p95 | local: rps | local: browse p50 / p95 | local: checkout p50 / p95 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -474,6 +474,123 @@ On wp-c1-perf (swap16, `CONTAINER_TIMEOUT_S=10` for a short test), after `sig=ST
 A deploy of the same configuration onto that stuck container failed after 141 s (60 s of rollout wait, 30 s of stop, the rest the build and upload), with the stop answer `still_running: true, reset: false` and the recovery message. Before, the same case waited 900 s. Note that the new Worker version was already deployed when the stop failed: the site ran the new Worker code against the stuck container until the recovery deploy.
 
 Recovery from the test: a deploy with `INSTANCE_TYPE=standard-2` rolled out a new instance (first answer 200 after 7 s, the static-file probe 200), and a deploy back to `standard-1` with the default `CONTAINER_TIMEOUT_S` came up in 11 s; `/_store-info` then read `timeoutS: 60`.
+
+## PHP-FPM behind nginx (issue #99)
+
+The head-of-line finding (section "Who passes the limit") was a property of PHP's built-in server: a `php -S` process accepts connections and serves them one at a time, so a shopper whose connection lands on a process that runs a long request waits for it. Short queue runs (#95) bound that wait. PHP-FPM removes it: only a free child accepts a request, so a slow request holds its own child and nothing else.
+
+**What runs in the container** (the image is `php:8.3-fpm-trixie`):
+
+- Litestream is the parent, as before: `litestream replicate -exec /usr/local/bin/c1-serve.sh`.
+- `container/c1-serve.sh` starts PHP-FPM and nginx and supervises them.
+  - If one of them exits, it stops the other and exits 1. Litestream then exits and the container ends.
+  - On SIGTERM (Litestream forwards its own signal to the exec child), it sends SIGQUIT to both, so requests in progress finish. After `STOP_GRACE_S` (10 s) it sends SIGKILL. Then Litestream does its final sync, inside the 30 s that `/_store-stop` waits.
+- `container/php-fpm-c1.conf`, the pool:
+  - `pm = static`, with `PHP_WORKERS` children. It listens on `127.0.0.1:9000`.
+  - `clear_env = no`, because the PHP files read the environment.
+  - No request time limit: the Worker cuts shopper requests at `CONTAINER_TIMEOUT_S`.
+  - The children run as `www-data` (`php -S` ran as root), so `wp-content` belongs to `www-data` in the image.
+- `container/nginx.conf`:
+  - It routes as `router.php` did: a static file as it is, a `.php` file runs, a directory goes to its `index.php` (301 to the trailing slash first), and everything else goes to `/index.php`.
+  - `fastcgi_read_timeout` is 3600 s, so admin imports and exports are not cut.
+  - Its access log is the idle watchdog's mark (`/tmp/last-request`). It skips `/ping`, `/_boot.txt`, the FPM ping and status, and the local `wp-cron.php`.
+- `container/c1-prepend.php` (`auto_prepend_file`) keeps the request log and the `x-c1-pid` header.
+- The sampler counts the PHP-FPM children by state (not the master). It reads the backlog on port 9000 (requests that no free child took yet), and it now records the PSS memory of PHP-FPM and nginx (`c1_stats.py`: `pss_mib`).
+- `/_stats.php?what=fpm` returns the pool status (`fpm_get_status()`, from inside the child, so it needs no second free child).
+
+**Why nginx.** FPM speaks only FastCGI, and the Container must answer HTTP. nginx is a Debian package (signed through apt) with a maintained FastCGI client, and one worker process is enough. Caddy is a Go binary of about 40 MB to pin. A proxy of our own would need a FastCGI client that we would have to write. Most static files never reach the container, because the Worker serves them from static assets.
+
+**APCu.** One APCu segment per FPM master, shared by all children. This is the same shape as `php -S`, whose workers fork from one server process after APCu is set up (measured above: the same start time and counts from 4 process ids). So no change is expected; the check on the real container is below.
+
+**Deploy check.** nginx answers `/_boot.txt` when PHP is stuck, so a static file no longer proves that PHP answers. `c1_check` (`deploy/variants/c1.sh`) also requests `/_fpm-ping`, which needs a free FPM child. `kill.php?sig=STOPPHP` now stops every FPM child (not the root master, which a child cannot signal), and that is enough to stop all PHP answers.
+
+**Measured locally, 2026-11-06** (the real `php-fpm` 8.5 of this computer with the shipped pool file, only the user, the paths and the port changed, through a FastCGI test client; no nginx or Docker here):
+
+| Case | Result |
+|---|---|
+| Children with `PHP_WORKERS=2` | 2 |
+| `/_fpm-ping` | `pong` |
+| `getenv()` in a request (`clear_env = no`) | the value passed |
+| A fast request while one child sleeps 5 s (3 tries) | 0.00 s each, from the free child |
+| Control: a fast request while both children sleep 5 s | 4.69 s: it waits for a free child |
+| SIGTERM to `c1-serve.sh` | exit 0 after 1 s, both stopped |
+| nginx (a stand-in) killed | exit 1 after 1 s, PHP-FPM stopped |
+| The FPM master killed | exit 1 after 1 s, nginx stopped; the 2 children stay (in the container they end with it) |
+| SIGTERM while a child ignores SIGQUIT | exit 0 after `STOP_GRACE_S` (3 s in the test), both stopped |
+
+The last row is a defect that the first version had. bash starts a background child with SIGQUIT ignored, so a SIGQUIT that comes before the child sets its own handler is lost, and the first `c1-serve.sh` then waited for ever. That is a container that answers nothing. The SIGKILL after `STOP_GRACE_S` ends it.
+
+**The stop signal (found in the image smoke test, 2026-11-06).** `docker stop` on the first image took 3 s and the container ended with exit 137 (SIGKILL), with no stop lines from PHP-FPM or nginx. The cause is the `php:8.3-fpm` base image, which sets `STOPSIGNAL SIGQUIT` for an image where php-fpm is PID 1. Here PID 1 is a shell, and bash ignores SIGQUIT. So the signal did nothing, and Docker then sent SIGKILL. In the container that skips Litestream's final sync. The image now sets `STOPSIGNAL SIGTERM`, which is what `php:8.3-cli` had. `entrypoint.sh` and `c1-serve.sh` also trap SIGQUIT. The local test sends SIGTERM and then SIGQUIT to `c1-serve.sh`. Both give exit 0 after 1 s, with the PHP-FPM lines "Finishing ..." and "exiting, bye-bye!" and the nginx stand-in's graceful stop. Without the SIGQUIT trap (a mutant), the SIGQUIT case hangs until the test's 15 s deadline.
+
+**The first deploy crashed at start (arm 2, 2026-11-06).** On Cloudflare the FPM container exited at every start ("Failed to start container: The container just exited"), while the same image ran in local Docker (arm64 with the real entrypoint, replica and key, and amd64). php-fpm (`error_log = /proc/self/fd/2`, from the base image) and nginx (`error_log /dev/stderr`) OPEN their log path. On Linux that open fails with ENXIO when stderr is a socket. With stdout and stderr on a UNIX socketpair in the amd64 image, nginx exited with status 1 ("[emerg] open() "/dev/stderr" failed (6: No such device or address)") and php-fpm with status 78 ("ERROR: failed to open error_log (/proc/self/fd/2): No such device or address (6)", "FPM initialization failed"). Docker gives a pipe, so the smoke test could not see it. `php -S` never opened that path.
+
+That Cloudflare gives the container a socket as stderr is inferred: it is the one difference that fits a crash at start there and none in Docker. `c1-serve.sh` now puts a pipe (to `cat`) in front of stdout and stderr before it starts the servers. The start lines of `entrypoint.sh` print what fd 2 is and whether it opens, so the next deploy shows it. The generated config now has Workers Logs on (`[observability]`), because c1 had none and there was no stderr to read.
+
+The first start-line readouts (f15fc47) were wrong: they read `/proc/self/fd/N` inside `$( )` and in a subshell with a redirect, so they saw the capture pipe and `/dev/null` and always said "pipe" and "ok" (the lead saw "fd2 pipe" on a socket). Since f7817ee they read `/proc/$$/fd/N`, this shell's own descriptors. So arm 2 (image from f15fc47) and arm 3 (image from f7817ee) ran different image shas with the same server code; only the print lines differ. For arm 2 only the step lines count, not the fd2 or open lines.
+
+Test: `tests/stderr-socket-test.pl` runs in the image (`docker run --rm -v "$PWD/spikes/c1-woo-container/tests:/t" --entrypoint perl <image> /t/stderr-socket-test.pl`). With stdout and stderr on a socketpair, `c1-serve.sh` must still run after 6 s, answer `/_fpm-ping` and exit 0 on SIGTERM. A copy without the two pipe lines must have exited. The fd probe of `entrypoint.sh` must say socket and FAILED on a known socket, and pipe and ok on a known pipe, and the f15fc47 probe must fail that socket check. The test exits 0 only when all of these hold.
+
+**The boot log (2026-11-06).** The second arm 2 deploy did not answer at all: every request, a static file too, waited until the 60 s container timeout. Workers Logs had the Worker's lines and none from the container (observability on, 0 container events), so the container's stdout and stderr cannot be read there. `container/bootlog.sh` writes the start steps, the stderr and stdout lines of PHP-FPM and nginx (relayed by `c1-serve.sh`), and snapshots after 5, 20 and 60 s (processes with state and uid, listening ports, `/ping` and `/_fpm-ping` from inside) to `/tmp/c1-boot.log`, each line with the epoch time. It PUTs the file to the replica bucket as `<REPLICA_PATH>.boot-<start epoch>.log` with the Litestream key: every 10 s for 10 minutes, then every 60 s, and at exit. The object sits beside the replica, not inside its prefix, so Litestream never sees it. The log has no environment dump and no secret.
+
+**A second stuck start (swap20, f15fc47, 2026-11-06), cause unknown.** The deploy before the boot log waited the full 900 s for a first 200 and failed. At about 11:08 UTC no request was answered, a static file neither (`/ping` 504 at the 60 s container timeout; `/_boot.txt` and `/_fpm-ping`, which have no timeout, no answer in 70 s), while the Store object reported the container running. The replica prefix `swap20/` held only the 3 objects from seeding (10:46:46 to 10:46:47 UTC) and nothing later. Litestream writes there only once `litestream replicate` runs, which is after the restore and just before `c1-serve.sh` starts the servers. So the entrypoint never got that far: a stall at or before the restore, or a stuck instance like atl16 (section "A stuck container"). Control: `swap21` (13c8e70, the next deploy) had its seed at 10:46:59 UTC and then Litestream writes without a gap during the run. Nothing in the f15fc47 start path that differs from 13c8e70 could block (the wrong readouts only read a link and open `/dev/null`), and the f15fc47 server start ran on Linux with a socket stderr. With no boot log for that run, the cause stays unknown. **It is not specific to the FPM image:** the same stuck start came on `main` (`php -S`, 8164d17) on 2026-11-06 at about 12:20 UTC, replica path `swap24`. The deploy found no container running, waited 900 s for a first 200 and failed (last 504); `/_boot.txt` and `/ping` gave no answer in 30 s; the replica prefix held only the 3 seed objects (12:03:40 to 12:03:42 UTC). The documented recovery (a deploy with `INSTANCE_TYPE` changed, which rolls out a new instance) did NOT work this time. That deploy, and a retry on a fresh seed, failed at the rollout stop (`still_running: true`), and the Store object stayed on the stuck deploy's version. A quiet period did work: with no traffic from 12:41:38 to 12:54:09 UTC the object moved to the new version (#105), and the arm then ran on that seed.
+
+The deploy check did not help here. `c1_check`'s static-file probe (#93) runs only after `c1_wait` has had a first 200, so it never ran: the 900 s went to `c1_up`. A static file cannot shorten that wait either, because nginx starts only after the restore (and, on a new site, after the install, which can take minutes). The boot log can: it shows each step with its time while the start runs. Reading it from the deploy script, and failing when no new step comes for some minutes, is a follow-up, not built.
+
+**REST writes got 405 (found after arm 2, 2026-11-06).** `tests/cache_check.py` on the arm 2 site: 7 of 13. Every admin change by PUT or DELETE (price, stock, delete a product) got 405, while the POST change (the tagline) passed on all 8 reads from 4 FPM children. `tests/break.py`: 25 of 27, the 2 failures also a DELETE with 405. The first `nginx.conf` sent `/` (the path of every `/?rest_route=...` request) through `try_files $uri/` to the index module, and the index and static handlers decline PUT, PATCH and DELETE, so nginx answered 405. `router.php` sent every method to PHP. The first fix (fba402a) was worse and never deployed: `try_files ${uri}index.php /index.php...`. Only the last `try_files` argument is an internal redirect; a file that an earlier argument finds is served by the same location, statically. So `GET /` returned `index.php` as a static file (its PHP source, with no `x-c1-pid`), and every other method, the Store API checkout POST too, got 405. `tests/nginx-route-test.sh` caught it in the image (8 failing cases) before any deploy. Now a path that ends in a slash is rewritten (`rewrite ... last`) to its `index.php` or to `/index.php`, so the PHP location runs it for every method, and no directory goes through the index module. The shopper requests of the load test (GET pages, POST to the Store API) reached PHP before and after, so the arm 2 measurement is not affected. Test: `tests/nginx-route-test.sh` runs in the image with no database: 18 cases (GET, PUT, PATCH, DELETE, POST and OPTIONS to `/?rest_route=...`, the `wp-admin` 301 and its `index.php`, a directory without `index.php`, a permalink, a missing `.php` file, `/index.php`, `/wp-admin/index.php`, `/index.php/`, HEAD on `/`, a static file). No answer may contain PHP source. It runs the cases on the shipped file and on two mutants: the first version and the fba402a version. It passes only when the shipped file passes all of them and both mutants fail some.
+
+**The deploy check probed PHP too early (arm 3b, 2026-11-06).** `c1_check` asked `/_fpm-ping` before it waited for the Store object of this deploy. A deploy from the `php -S` image (arm 4) to the FPM image failed with "PHP does not answer (/_fpm-ping: 301)": the previous container answered, and under `php -S` WordPress takes `/_fpm-ping` and redirects it. Two minutes later the ping answered 200, and the same deploy run again passed. `/_boot.txt` is in both images, so the static probe cannot tell them apart. Now the ping is probed last, after the object is current and the container answers with this deploy's settings and `fpm-fcgi` (a `cli-server` answer stops that container once, like a container with old settings). `deploy/variants/tests/c1-check-test.sh` runs `c1_check` against a fake site (`fake-c1-site.py`), and CI runs it: a new container passes on try 1, an old container that a stop replaces passes on try 2, an old container that stays fails, and a stuck PHP fails. With the earlier order, the second case fails with the same 301.
+
+**Measured on wp-c1-perf, 2026-11-06.** Seven load jobs: each on its own copy of wp-c1's database (127 orders, 13 pending actions after the first drain), `standard-1` (half a vCPU, 4 GiB), 4 PHP processes, APCu, `tests/load/load.py` `cached-sbjs`, BUYERS 0.5, 1 to 100 users, from the Vultr runner (2 vCPU; it is the limit at 100 users, so the clean steps are 1 to 25). The deploys and jobs were run by the lead. The container logs were read after each job (`hol.py`, `cpo.py`, `split.py` in the work notes):
+- "held" is a slow request (10 s or more) whose PHP start came within 1 s after a local cron run of 10 s or more ended;
+- the CPU is the cgroup `usage_usec` over the job;
+- "corrected" adds the queue work left at the end (pending actions above 13, times the cron CPU per completed action of the same run);
+- "outside PHP" is the cgroup CPU over the PHP CPU of all requests (`getrusage` of each request).
+
+Head-of-line, both with `AS_TIME_LIMIT=30` (the long cron runs of the earlier finding):
+
+| | arm 1: `php -S` | arm 2: PHP-FPM |
+|---|---|---|
+| Cron runs of 10 s or more | 11 (up to 29.1 s) | 12 (up to 19.4 s) |
+| Slow requests | 7 | 1 |
+| Held by a cron run | 6 (waited 17 to 32 s, ran 0.1 to 0.6 s) | 0 |
+| Longest request at 10 / 25 / 100 users | 29.5 / 30.4 / 32.0 s | 7.0 / 9.4 / 10.4 s |
+| Orders | 482 | 453 |
+
+Throughput and CPU at the defaults (`AS_TIME_LIMIT` 5):
+
+| | arm 4: `php -S` | arm 4b: `php -S` | arm 3: FPM | arm 3b: FPM | arm 3c: FPM |
+|---|---|---|---|---|---|
+| Orders | 495 | 451 | 474 | 467 | 437 |
+| Held by a cron run | 0 | 0 | 0 | not read | 0 |
+| CPU per order, corrected | 0.405 s | 0.472 s | 0.428 s | not read | 0.462 s |
+| PHP CPU per shopper request | 0.112 s | 0.122 s | 0.110 s | not read | 0.124 s |
+| Cgroup CPU / PHP CPU | 1.043 | 1.087 | 1.095 | not read | 1.074 |
+
+(Arm 3b's container logs were lost: the next deploy replaced the container before they were read. From then on no deploy followed a job before the logs were read. Arms 1 and 2 give 1.054 and 1.091 for the last row.)
+
+What this shows:
+
+- **Head-of-line blocking is gone.** With FPM, a long cron run held no shopper (arm 2: 0 of 1 slow requests, against 6 of 7). At the defaults no arm had a held request: the short runs (#95) already bound it, and FPM removes the mechanism.
+- **No measurable throughput or CPU cost on this instance.** The same `php -S` image gave 495 and 451 orders in two runs, a 9 % spread, and its PHP CPU per request moved by 9 % with the same code (probably the half vCPU giving a different amount of work in each run; not measured). Against that, FPM's mean is 2.9 % fewer orders (459 against 473) and 1.5 % more CPU per order (0.445 against 0.439 s).
+- **The one place a cost shows is outside PHP.** The cgroup CPU is 8.7 % above the PHP CPU with FPM (mean of 3 runs) and 6.1 % with `php -S` (mean of 3), so nginx and FastCGI plausibly cost about 2 to 3 % of the CPU. `php -S` alone spreads from 4.3 to 8.7 %, so this is not separable from the noise with these runs. A sharper answer needs more runs per arm or a quieter instance, not a change to the design.
+- **Memory:** PHP-FPM (master and 4 children) 160 to 190 MiB, nginx 5 to 7 MiB, of 4 GiB.
+- **APCu is shared across the FPM children,** as it was across the `php -S` processes: `/_stats.php?what=apcu` from 4 child pids gave one start time and the same counts; `tests/cache_check.py` 13 of 13, with reads from 4 children; `tests/break.py` 27 of 27.
+- **The FPM queue keeps up better at the defaults in one run** (arm 3c ended with 0 actions left; arms 3, 4 and 4b with 111, 205 and 229). With one run, this is not a finding.
+
+A first reading blamed the CPU outside PHP on the new memory sampler, which forked a process for every process every 2 s. Arm 4b (`php -S`, no such sampler) then showed the same level, so that reading was withdrawn. The sampler was changed anyway (one `awk`, no fork for each process), and arm 3c ran with it.
+
+Found and fixed on the way, before any shopper saw them:
+- the base image's stop signal (exit 137, no final sync);
+- the stderr socket (a crash loop at start);
+- REST writes by PUT and DELETE getting 405;
+- a first fix for that which served `index.php` as PHP source (never deployed);
+- the deploy check probing PHP before this deploy's container answered.
+
+Two stuck starts with no answer at all came on both images (swap20 on FPM, swap24 on `php -S`); their cause is unknown. The follow-ups are filed:
+- #103: fail a stuck start from the boot log;
+- #104: c1 sends no email, because there is no mail transport in the image;
+- #105: exempt requests to a dead container have no bound and pin the Store object;
+- #106: wait for the container rollout instead of a fixed 60 s.
 
 ## Warm start on a product view (issue #73)
 
