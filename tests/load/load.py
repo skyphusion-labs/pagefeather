@@ -153,6 +153,9 @@ def user(stop, prods, rec, abort):
             H = {"Nonce": nonce, "Cart-Token": c["h"].get("Cart-Token") or ""}
             a = req(o, "/?rest_route=/wc/store/v1/cart/add-item", {"id": p["id"], "quantity": 1}, H)
             rec("add", a)
+            if a["code"] != 201:
+                abort()  # a shopper whose add to cart failed does not check out
+                continue
             addr = {"first_name": "Load", "last_name": "Test", "address_1": "1 Edge Way", "city": "Detroit", "state": "MI", "postcode": "48201", "country": "US", "email": "load@example.com", "phone": "5555550100"}
             k = req(o, "/?rest_route=/wc/store/v1/checkout", {"billing_address": addr, "shipping_address": {x: y for x, y in addr.items() if x != "email"}, "payment_method": "cod"}, H)
             ok = k["code"] == 200 and b'"order_id"' in k["body"]
@@ -179,7 +182,7 @@ def step(n, prods):
         h = r["h"] or {}
         row = {"k": kind, "c": r["code"], "s": r["s"], "ok": (r["code"] in (200, 201) if ok is None else ok),
                "e1102": is_1102(r), "mib": h.get("x-wasm-mib"), "rec": h.get("x-runtime-recycled"), "boot": h.get("x-boot"),
-               "cf": h.get("cf-cache-status")}
+               "cf": h.get("cf-cache-status"), "shed": r["code"] == 503 and bool(h.get("x-c1-shed"))}
         with lock:
             rows.append(row)
 
@@ -201,6 +204,11 @@ def step(n, prods):
            "aborted": aborted[0],
            "status": {}, "recycled": {}, "boots": sum(1 for r in rows if r["boot"] == "1"),
            "max_wasm_mib": max([int(r["mib"]) for r in rows if r["mib"]] or [0]), "kinds": {}}
+    # 503 answers from the bounded queue (x-c1-shed), per kind (issue #39).
+    out["shed"] = {}
+    for r in rows:
+        if r["shed"]:
+            out["shed"][r["k"]] = out["shed"].get(r["k"], 0) + 1
     # cf-cache-status of the browse requests: HIT means the edge answered.
     out["cache"] = {}
     for r in rows:
