@@ -86,8 +86,27 @@ Page times from the laptop (n=10, medians; not comparable with the runner): home
 
 **In short:** Hyperdrive's default query cache (60 s, not invalidated on writes) serves stale WordPress reads; the deploy turns it off; check the integration's auto-created config before using it.
 
+## Under load: the matrix from the runner
+
+`deploy/results/bench-runner-20261106T010353Z-155691.json`: the Vultr runner in Chicago (`vc2-2c-4gb`, client load at most 0.9 of 2 CPUs), repository at `4f17d89`, `LOAD=1,5,10,25,50,100:60:0.2` (users per step, 60 s per step, 20% of users buy). wp-a2 ran first, then wp-ref-a (`a` on the Vultr MariaDB box). Times are medians in seconds.
+
+| Users | wp-a2 rps | browse | checkout | checkouts ok | wp-ref-a rps | browse | checkout | checkouts ok |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 0.23 | 3.66 | 8.37 | 3 of 3 | 0.19 | 5.01 | 5.04 | 1 of 1 |
+| 5 | 0.78 | 3.57 | 9.09 | 10 of 10 | 0.97 | 5.12 | 7.53 | 7 of 7 |
+| 10 | 1.36 | 4.89 | 12.31 | 13 of 13 | 1.73 | 4.09 | 8.08 | 21 of 21 |
+| 25 | 2.55 | 6.72 | 11.29 | 38 of 38 | 3.25 | 5.85 | 7.22 | 44 of 44 |
+| 50 | 4.51 | 6.69 | 11.77 | 41 of 49 | 5.39 | 5.59 | 7.47 | 72 of 72 |
+| 100 | 8.79 | 6.63 | 10.21 | 95 of 116 | 8.63 | 5.92 | 7.69 | 115 of 120 |
+
+- **a2 scales like `a`:** about the same requests per second at 100 users (8.79 against 8.63), no Worker resource errors (1102), no isolate recycles.
+- **a2 checkout is slower:** 10 to 12 s against 7 to 8 s. A checkout made 393 queries in `tests/woo.py` on wp-a2; at about 16 ms per query against about 10 ms, that is about 2.4 s more in the database. Browse is about 1 s slower at 25 users and up.
+- **The a2 errors at 50 and 100 users are not a database result.** They come in pairs: add to cart answers **400 `woocommerce_rest_product_out_of_stock`**, then checkout answers **409 `woocommerce_rest_cart_empty`** (reproduced with `tests/a2/conflict-repro.py`, 30 users, 2 buys each: 50 buys ok, 10 pairs of 400 then 409, `tests/a2/results/conflict-repro-wp-a2.jsonl`). The product was the stock-managed "Edge Mug" that `tests/woo.py` made (stock 20). `tests/load/load.py` picked every purchasable product, and the Store API keeps an out-of-stock product purchasable, so once the matrix bought its stock out (during the 50-user step), about 1 buy in 6 (1 product of 6) went to it and failed: 8 of 49 at 50 users, 21 of 116 at 100. No Vitess, lock or transaction error was seen. `load.py` now buys only products that are in stock.
+- **`a` is not stable from run to run.** wp-ref-a made 18.7 requests per second at 100 users in an earlier matrix, and 8.63 now. One run is not a measurement, for `a` too. A possible cause, not measured: the one-box MySQL on Vultr now holds hundreds of test orders. Its 15 errors at 100 users (5 answers 500, 10 answers 401) are a different kind and are not explained here.
+
 ## Open
 
-- The plugin suite on wp-a2, and the load matrix from the runner against `a` on Vultr.
+- The plugin suite on wp-a2 (`tests/a2/plugin-suite.sh`).
+- A second matrix run with the `load.py` fix, for a2 and `a` both, to see the run-to-run spread.
 - Billing: which account pays for the database.
 - Whether a Worker placement nearer Ohio than ORD exists for this account.
