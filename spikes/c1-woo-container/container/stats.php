@@ -22,6 +22,8 @@
 //   ?what=mail      one line per wp_mail() (php/c1-mail.php, issue #104): time,
 //                   sent or failed, recipient domains, a hash of the subject,
 //                   the code; no address and no body
+//   ?what=boot      the boot log of this container (bootlog.sh, issue #92): one
+//                   line per start step, with its epoch; it holds no secret
 //   &since=<epoch>  only lines from that time
 //
 // The files are read after a load run, not during it: during a run this
@@ -34,9 +36,9 @@ if ( ! $token || ! hash_equals( $token, (string) ( $_SERVER['HTTP_X_SPIKE_TOKEN'
 header( 'cache-control: private, no-store' );
 $what  = $_GET['what'] ?? 'info';
 $since = (float) ( $_GET['since'] ?? 0 );
-if ( 'req' === $what || 'samples' === $what || 'purge' === $what || 'mail' === $what ) {
+if ( 'req' === $what || 'samples' === $what || 'purge' === $what || 'mail' === $what || 'boot' === $what ) {
 	header( 'content-type: text/plain' );
-	$f = array( 'req' => '/tmp/c1-req.log', 'samples' => '/tmp/c1-samples.log', 'purge' => '/tmp/c1-purge.log', 'mail' => '/tmp/c1-mail.log' )[ $what ];
+	$f = array( 'req' => '/tmp/c1-req.log', 'samples' => '/tmp/c1-samples.log', 'purge' => '/tmp/c1-purge.log', 'mail' => '/tmp/c1-mail.log', 'boot' => '/tmp/c1-boot.log' )[ $what ];
 	$h = @fopen( $f, 'r' );
 	if ( ! $h ) {
 		exit;
