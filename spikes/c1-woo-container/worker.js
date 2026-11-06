@@ -113,7 +113,9 @@ Store.prototype.sendMail = async function (msg) {
 	// wp-c1-mail: WooCommerce's From was still the install default
 	// admin@example.com, and the reset mail asked for wordpress@<site>.workers.dev).
 	const rt0 = msg.replyTo && msg.replyTo.email ? msg.replyTo : asked && asked.toLowerCase() !== from.toLowerCase() ? msg.from : null;
-	const rt = rt0 && !undeliverable(rt0.email) ? rt0 : null;
+	// And a Reply-To that is MAIL_FROM itself says nothing: WooCommerce sets one
+	// from its own From settings (seen live on wp-c1-mail2, 2026-11-06).
+	const rt = rt0 && !undeliverable(rt0.email) && String(rt0.email).toLowerCase() !== from.toLowerCase() ? rt0 : null;
 	if (rt) out.replyTo = rt.name ? { email: rt.email, name: rt.name } : rt.email;
 	if (msg.attachments && msg.attachments.length) {
 		out.attachments = msg.attachments.map((a) => ({

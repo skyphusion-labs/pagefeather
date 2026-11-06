@@ -62,6 +62,11 @@ await s.sendMail(msg({ replyTo: { email: 'x@shop.invalid', name: '' } }));
 await s.sendMail(msg({ replyTo: { email: 'buyer@mail.example.co', name: 'Buyer' } }));
 check('undeliverable Reply-To dropped: example.com, workers.dev, .invalid', e.calls.slice(0, 3).every((c) => !('replyTo' in c)));
 check('a deliverable explicit Reply-To is kept', e.calls[3] && e.calls[3].replyTo && e.calls[3].replyTo.email === 'buyer@mail.example.co');
+// On a deliverable MAIL_FROM, so the undeliverable rule cannot be what drops it.
+e = binding();
+s = store({ EMAIL: e, MAIL_FROM: 'wp@mail.shop.example.co' });
+await s.sendMail(msg({ from: { email: 'wp@mail.shop.example.co', name: 'Shop' }, replyTo: { email: 'WP@mail.shop.example.co', name: 'Shop' } }));
+check('a Reply-To equal to MAIL_FROM is dropped (WooCommerce sets one)', e.calls[0] && !('replyTo' in e.calls[0]));
 
 // 4. The binding refuses: ok false with its code, counted, no address kept.
 e = binding('E_SENDER_NOT_VERIFIED');
