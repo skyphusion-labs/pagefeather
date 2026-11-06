@@ -7,9 +7,11 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(process.argv[2] || join(here, '..', 'worker.js'), 'utf8');
-const a = src.indexOf('Store.prototype.sendMail = async function');
-const b = a < 0 ? -1 : src.indexOf('\n};\n', a);
-if (a < 0 || b < 0) { console.log('FAIL worker.js: sendMail not found'); process.exit(1); }
+// undeliverable() and sendMail, which follows it.
+const a = src.indexOf('function undeliverable(');
+const m = a < 0 ? -1 : src.indexOf('Store.prototype.sendMail = async function', a);
+const b = m < 0 ? -1 : src.indexOf('\n};\n', m);
+if (a < 0 || m < 0 || b < 0) { console.log('FAIL worker.js: undeliverable or sendMail not found'); process.exit(1); }
 const Store = function () {};
 new Function('Store', src.slice(a, b) + '\n};\n')(Store);
 
@@ -21,7 +23,7 @@ const binding = (throwCode) => {
   return { calls, send: async (m) => { calls.push(m); if (throwCode) { const e = new Error('refused for ann@example.org'); e.code = throwCode; throw e; } return { messageId: '<m1@x>' }; } };
 };
 const store = (env) => { const s = new Store(); s.env = env; return s; };
-const msg = (extra = {}) => ({ to: ['ann@example.org'], subject: 'Order 1', html: '<p>x</p>', text: 'x', from: { email: 'wordpress@shop.workers.dev', name: 'WordPress' }, ...extra });
+const msg = (extra = {}) => ({ to: ['ann@example.org'], subject: 'Order 1', html: '<p>x</p>', text: 'x', from: { email: 'orders@shop.example.co', name: 'WordPress' }, ...extra });
 
 // 1. Not set up: no binding, or no MAIL_FROM.
 let s = store({ MAIL_FROM: 'wp@mail.example.org' });
@@ -38,7 +40,7 @@ r = await s.sendMail(msg());
 let c = e.calls[0] || {};
 check('sent: ok and messageId', r.ok === true && r.messageId === '<m1@x>' && s.mail.sent === 1);
 check('sent: From is MAIL_FROM with MAIL_FROM_NAME', c.from && c.from.email === 'wp@mail.example.org' && c.from.name === 'Test Shop');
-check('sent: the asked From is the Reply-To', c.replyTo && c.replyTo.email === 'wordpress@shop.workers.dev');
+check('sent: the asked From is the Reply-To', c.replyTo && c.replyTo.email === 'orders@shop.example.co');
 check('sent: to, subject, html and text passed', JSON.stringify(c.to) === '["ann@example.org"]' && c.subject === 'Order 1' && c.html === '<p>x</p>' && c.text === 'x');
 
 // 3. The asked From is MAIL_FROM: no Reply-To. An explicit Reply-To is kept.
@@ -46,9 +48,20 @@ e = binding();
 s = store({ EMAIL: e, MAIL_FROM: 'wp@mail.example.org' });
 await s.sendMail(msg({ from: { email: 'WP@mail.example.org', name: '' } }));
 check('same From: no Reply-To', e.calls[0] && !('replyTo' in e.calls[0]));
-await s.sendMail(msg({ replyTo: { email: 'help@example.org', name: 'Help' } }));
-check('an explicit Reply-To is kept', e.calls[1] && e.calls[1].replyTo && e.calls[1].replyTo.email === 'help@example.org');
+await s.sendMail(msg({ replyTo: { email: 'help@shop.example.co', name: 'Help' } }));
+check('an explicit Reply-To is kept', e.calls[1] && e.calls[1].replyTo && e.calls[1].replyTo.email === 'help@shop.example.co');
 check('no MAIL_FROM_NAME: the asked name, or the bare address', e.calls[0].from === 'wp@mail.example.org' && e.calls[1].from.name === 'WordPress');
+
+// 3b. A Reply-To that cannot receive mail is dropped, derived or explicit
+//     (live on wp-c1-mail: admin@example.com and wordpress@<site>.workers.dev).
+e = binding();
+s = store({ EMAIL: e, MAIL_FROM: 'wp@mail.example.org' });
+await s.sendMail(msg({ from: { email: 'admin@example.com', name: 'Shop' } }));
+await s.sendMail(msg({ from: { email: 'wordpress@wp-c1-mail.skyphusion.workers.dev', name: 'WordPress' } }));
+await s.sendMail(msg({ replyTo: { email: 'x@shop.invalid', name: '' } }));
+await s.sendMail(msg({ replyTo: { email: 'buyer@mail.example.co', name: 'Buyer' } }));
+check('undeliverable Reply-To dropped: example.com, workers.dev, .invalid', e.calls.slice(0, 3).every((c) => !('replyTo' in c)));
+check('a deliverable explicit Reply-To is kept', e.calls[3] && e.calls[3].replyTo && e.calls[3].replyTo.email === 'buyer@mail.example.co');
 
 // 4. The binding refuses: ok false with its code, counted, no address kept.
 e = binding('E_SENDER_NOT_VERIFIED');

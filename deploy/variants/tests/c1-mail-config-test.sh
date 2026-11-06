@@ -27,6 +27,12 @@ env $E MAIL_FROM=wp@wpmail-test.skyphusion.org MAIL_ALLOWED_TO=mackaye@skyphusio
   && grep -q '^allowed_destination_addresses = \["mackaye@skyphusion.org", "b@example.org"\]$' "$T/allow.toml" \
   && ok "config: MAIL_ALLOWED_TO gives allowed_destination_addresses" || bad "config: MAIL_ALLOWED_TO gives allowed_destination_addresses"
 # shellcheck disable=SC2086
+env $E MAIL_FROM=wp@wpmail-test.skyphusion.org ADMIN_EMAIL=owner@shop.example.co "$CFG" > "$T/admin.toml" \
+  && grep -q '^ADMIN_EMAIL = "owner@shop.example.co"$' "$T/admin.toml" \
+  && ok "config: ADMIN_EMAIL in the vars" || bad "config: ADMIN_EMAIL in the vars"
+# shellcheck disable=SC2086
+if env $E ADMIN_EMAIL=not-an-address "$CFG" > /dev/null 2>&1; then bad "config: a bad ADMIN_EMAIL is refused"; else ok "config: a bad ADMIN_EMAIL is refused"; fi
+# shellcheck disable=SC2086
 if env $E 'MAIL_FROM=x"y@z.org' "$CFG" > /dev/null 2>&1; then bad "config: a quote in MAIL_FROM is refused"; else ok "config: a quote in MAIL_FROM is refused"; fi
 # shellcheck disable=SC2086
 if env $E MAIL_ALLOWED_TO=a@b.org "$CFG" > /dev/null 2>&1; then bad "config: MAIL_ALLOWED_TO without MAIL_FROM is refused"; else ok "config: MAIL_ALLOWED_TO without MAIL_FROM is refused"; fi

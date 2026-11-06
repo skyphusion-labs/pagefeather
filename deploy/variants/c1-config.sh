@@ -37,6 +37,9 @@
 #                  it, no binding, and every wp_mail() fails loudly.
 #   MAIL_FROM_NAME optional: the sender name (default: the From name WordPress
 #                  asks for)
+#   ADMIN_EMAIL    optional: the admin user's and the site's address, set at the
+#                  install of a new site (default MAIL_FROM, else admin@example.com).
+#                  New-order mails go here, so use a mailbox someone reads.
 #   MAIL_ALLOWED_TO optional, for a test deploy: comma-separated addresses; the
 #                  binding then sends to these only (allowed_destination_addresses)
 #   REPLICA_PATH   path of the Litestream replica in the replica bucket (default
@@ -103,6 +106,7 @@ WARM_PATHS=${WARM_PATHS:-}
 MAIL_FROM=${MAIL_FROM:-}
 MAIL_FROM_NAME=${MAIL_FROM_NAME:-}
 MAIL_ALLOWED_TO=${MAIL_ALLOWED_TO:-}
+ADMIN_EMAIL=${ADMIN_EMAIL:-}
 chk WARM_START "$WARM_START" '^(off|product)$'
 chk WARM_GAP_S "$WARM_GAP_S" '^[0-9]{1,5}$'
 # A regular expression in a TOML string: no quote, no backslash, no space.
@@ -110,6 +114,7 @@ chk WARM_GAP_S "$WARM_GAP_S" '^[0-9]{1,5}$'
 # Mail (issue #104). Values go into TOML strings: no quote, no backslash.
 EMAIL_RE='[A-Za-z0-9._%+-]+@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+'
 [ -z "$MAIL_FROM" ] || chk MAIL_FROM "$MAIL_FROM" "^${EMAIL_RE}\$"
+[ -z "$ADMIN_EMAIL" ] || chk ADMIN_EMAIL "$ADMIN_EMAIL" "^${EMAIL_RE}\$"
 [ -z "$MAIL_FROM_NAME" ] || chk MAIL_FROM_NAME "$MAIL_FROM_NAME" '^[A-Za-z0-9 .,()&-]{1,60}$'
 [ -z "$MAIL_ALLOWED_TO" ] || chk MAIL_ALLOWED_TO "$MAIL_ALLOWED_TO" "^${EMAIL_RE}(,${EMAIL_RE}){0,9}\$"
 [ -z "$MAIL_ALLOWED_TO" ] || [ -n "$MAIL_FROM" ] || { echo "c1-config.sh: MAIL_ALLOWED_TO needs MAIL_FROM" >&2; exit 1; }
@@ -177,6 +182,7 @@ WARM_GAP_S = "$WARM_GAP_S"
 WARM_PATHS = "$WARM_PATHS"
 MAIL_FROM = "$MAIL_FROM"
 MAIL_FROM_NAME = "$MAIL_FROM_NAME"
+ADMIN_EMAIL = "$ADMIN_EMAIL"
 # Secrets (deploy --secrets-file): WP_SALT, ADMIN_PASSWORD, SPIKE_TOKEN,
 # LITESTREAM_ACCESS_KEY_ID, LITESTREAM_SECRET_ACCESS_KEY
 

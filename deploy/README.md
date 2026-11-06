@@ -133,8 +133,11 @@ Before you deploy:
 | --- | --- | --- |
 | `MAIL_FROM` | none | The address the site sends from. The binding can send from this address only. When WordPress asks for another From (a plugin, a contact form), that address becomes the Reply-To. |
 | `MAIL_FROM_NAME` | the name WordPress asks for | The sender name |
+| `ADMIN_EMAIL` | `MAIL_FROM` | The admin user's address and the site's address, set when a NEW site is installed. New-order mails go here, so use a mailbox that someone reads. With `MAIL_FROM` set, the install also sets WooCommerce's From address (Emails settings) to `MAIL_FROM`. |
 | `MAIL_ALLOWED_TO` | none | For a test deploy: comma-separated addresses. The binding can send to these only. |
 | `MAIL_CHECK` | `1` | `0` skips the domain check (for a negative test only) |
+
+The Reply-To: when WordPress or a plugin asks for another From, that address becomes the Reply-To, so a reply reaches it. A Reply-To that cannot receive mail is dropped: the reserved `example.com`, `example.org`, `example.net`, `.invalid`, `.test` and `localhost`, and `workers.dev`. On an EXISTING site (one restored from a replica, so not installed again), the install values stay as they were. Set the admin email (Settings, General) and WooCommerce's From address (WooCommerce, Settings, Emails) to real addresses once. The customer mails otherwise carry the old From, `admin@example.com` from the first install, which the Worker now drops as a Reply-To, and no reply reaches you.
 
 Limits (Email Service): 50 recipients a message (to, cc and bcc together), 25 MiB with attachments, and 32 attachments. The mu-plugin refuses a message over a limit before it is sent. The Worker does not retry: a transient send error is a failure that the counter shows.
 

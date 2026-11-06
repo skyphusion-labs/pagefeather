@@ -29,6 +29,9 @@ export class Store extends Container {
 		this.envVars = {
 			WP_SALT: env.WP_SALT || '',
 			ADMIN_PASSWORD: env.ADMIN_PASSWORD || '',
+			// install.php (issue #104): the admin address, and WooCommerce's From.
+			ADMIN_EMAIL: env.ADMIN_EMAIL || env.MAIL_FROM || '',
+			MAIL_FROM: env.MAIL_FROM || '',
 			PUBLIC_HOST: env.PUBLIC_HOST || '',
 			R2_UPLOADS: env.MEDIA ? '1' : '',
 			CF_IMAGES: env.MEDIA && env.IMAGES ? '1' : '',
@@ -84,6 +87,12 @@ Store.prototype.storeInfo = async function () {
 // second into false from wp_mail(). /_store-info counts both, with no address.
 // No retry here: a transient error (E_RATE_LIMIT_EXCEEDED, E_DELIVERY_FAILED)
 // is a failure the counter shows.
+// Domains that receive no mail: the reserved example and test names (RFC 2606,
+// RFC 6761) and workers.dev, the address of a test deploy.
+function undeliverable(email) {
+	const d = String(email || '').split('@')[1] || '';
+	return !d || /(^|\.)(example\.(com|org|net)|invalid|test|localhost|workers\.dev)$/i.test(d);
+}
 Store.prototype.sendMail = async function (msg) {
 	const m = (this.mail ||= { sent: 0, failed: 0, lastError: '', lastErrorAt: null });
 	const fail = (code, error) => {
@@ -100,7 +109,11 @@ Store.prototype.sendMail = async function (msg) {
 	const name = this.env.MAIL_FROM_NAME || (msg.from && msg.from.name) || '';
 	const out = { from: name ? { email: from, name } : from, to: msg.to, subject: msg.subject };
 	for (const k of ['cc', 'bcc', 'text', 'html']) if (msg[k] && msg[k].length) out[k] = msg[k];
-	const rt = msg.replyTo && msg.replyTo.email ? msg.replyTo : asked && asked.toLowerCase() !== from.toLowerCase() ? msg.from : null;
+	// A Reply-To that cannot receive mail is dropped (issue #104, live on
+	// wp-c1-mail: WooCommerce's From was still the install default
+	// admin@example.com, and the reset mail asked for wordpress@<site>.workers.dev).
+	const rt0 = msg.replyTo && msg.replyTo.email ? msg.replyTo : asked && asked.toLowerCase() !== from.toLowerCase() ? msg.from : null;
+	const rt = rt0 && !undeliverable(rt0.email) ? rt0 : null;
 	if (rt) out.replyTo = rt.name ? { email: rt.email, name: rt.name } : rt.email;
 	if (msg.attachments && msg.attachments.length) {
 		out.attachments = msg.attachments.map((a) => ({
