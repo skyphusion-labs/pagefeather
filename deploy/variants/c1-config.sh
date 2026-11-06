@@ -25,9 +25,12 @@
 #   RETRY_AFTER    the Retry-After seconds of that 503 (default 5)
 #   FLOW_LIMIT     the higher cap for a shopper already in a cart flow (a Cart-Token
 #                  or a WooCommerce session; default 2 x QUEUE_LIMIT)
-#   CONTAINER_TIMEOUT_S  seconds a shopper request waits for the container's
-#                  response headers before a 504 (default 60; 0 = no limit;
-#                  admin, login, operator and authorized REST are exempt; #93)
+#   CONTAINER_TIMEOUT_S  seconds a shopper or operator request waits for the
+#                  container's response headers before a 504 (default 60;
+#                  0 = no limit; #93)
+#   CONTAINER_EXEMPT_TIMEOUT_S  the same for admin, login, logged-in and
+#                  authorized REST requests, which can be long (default 900;
+#                  0 = no limit; #105)
 #   REPLICA_PATH   path of the Litestream replica in the replica bucket (default
 #                  store). Another path restores and writes another database;
 #                  going back to store finds the old one unchanged.
@@ -50,6 +53,7 @@ QUEUE_LIMIT=${QUEUE_LIMIT:-16}
 RETRY_AFTER=${RETRY_AFTER:-5}
 FLOW_LIMIT=${FLOW_LIMIT:-}
 CONTAINER_TIMEOUT_S=${CONTAINER_TIMEOUT_S:-60}
+CONTAINER_EXEMPT_TIMEOUT_S=${CONTAINER_EXEMPT_TIMEOUT_S:-900}
 QUEUE_RUNNER=${QUEUE_RUNNER:-local}
 CRON_SECONDS=${CRON_SECONDS:-10}
 AS_TIME_LIMIT=${AS_TIME_LIMIT:-5}
@@ -81,6 +85,7 @@ chk RETRY_AFTER "$RETRY_AFTER" '^[1-9][0-9]{0,3}$'
 [ -n "$FLOW_LIMIT" ] || FLOW_LIMIT=$((2 * QUEUE_LIMIT))
 chk FLOW_LIMIT "$FLOW_LIMIT" '^[0-9]{1,4}$'
 chk CONTAINER_TIMEOUT_S "$CONTAINER_TIMEOUT_S" '^[0-9]{1,4}$'
+chk CONTAINER_EXEMPT_TIMEOUT_S "$CONTAINER_EXEMPT_TIMEOUT_S" '^[0-9]{1,5}$'
 [ "$FLOW_LIMIT" -ge "$QUEUE_LIMIT" ] || { echo "c1-config.sh: FLOW_LIMIT ($FLOW_LIMIT) is below QUEUE_LIMIT ($QUEUE_LIMIT)" >&2; exit 1; }
 SEED_SHA256=${SEED_SHA256:-}
 [ -z "$SEED_SHA256" ] || chk SEED_SHA256 "$SEED_SHA256" '^[a-f0-9]{64}$'
@@ -140,6 +145,7 @@ QUEUE_LIMIT = "$QUEUE_LIMIT"
 RETRY_AFTER = "$RETRY_AFTER"
 FLOW_LIMIT = "$FLOW_LIMIT"
 CONTAINER_TIMEOUT_S = "$CONTAINER_TIMEOUT_S"
+CONTAINER_EXEMPT_TIMEOUT_S = "$CONTAINER_EXEMPT_TIMEOUT_S"
 R2_ENDPOINT = "$R2_ENDPOINT"
 SEED_SHA256 = "$SEED_SHA256"
 WARM_START = "$WARM_START"
