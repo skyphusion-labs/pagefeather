@@ -80,6 +80,8 @@ The query count per page comes from the mu-plugin `php/query-count.php`: it send
 | `QUEUE_RUNNER` | `local` | `local`: WP-Cron and Action Scheduler run from inside the container every `CRON_SECONDS` (60), and the Action Scheduler async loopback is off (issue #45). `loopback`: the loopback, as before. |
 | `PAGE_CACHE_TTL` | `120` | Seconds a storefront page stays fresh at the edge (visitors with no cart, session or login; docs/approach-c1.md, Storefront edge cache). A change purges it sooner. |
 | `PAGE_CACHE_SWR` | `600` | Seconds after that during which the edge serves the old copy while it renders a new one |
+| `QUEUE_LIMIT` | `16` | Requests the container may have in hand before a page, cart or add to cart gets 503 with Retry-After (0 = no limit). Checkout, payment callbacks and admin are always let in (docs/approach-c1.md, Bounded queue). |
+| `RETRY_AFTER` | `5` | The Retry-After seconds of that 503 |
 | `CHECK_WAIT` | `600` | Seconds to wait after the deploy until the Store object is from this deploy (c1_check) |
 | `PUBLIC_HOST` | `<name>.<subdomain>.workers.dev` | The address WordPress uses |
 | `ROLLOUT_WAIT` | `60` | Seconds to wait after the deploy before the one stop |
@@ -174,4 +176,4 @@ cd deploy/terraform && terraform workspace select my-site && terraform output -r
 - Measurements from a fixed vantage (a Vultr runner), with p95 and p99, concurrency and the cold path.
 - Plugins and WooCommerce runs (`tests/plugins/plugins.py`, `tests/woo.py`) as part of `deploy.sh`.
 - A custom domain. The site is on `<name>.<subdomain>.workers.dev`.
-- Import of an existing site into `a` and `a2`, and the uploads, theme and plugins for `c1` (issue #31). `b-dosql` has all of it; `c1` has the database.
+- Import of the uploads, theme and plugins for `c1`, `a` and `a2`, and an import that reads the site over SSH (issue #31). `b-dosql` has all of it; `c1`, `a` and `a2` have the database.

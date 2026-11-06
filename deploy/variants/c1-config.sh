@@ -19,6 +19,10 @@
 #   PAGE_CACHE_TTL seconds a storefront page stays fresh at the edge (default 120)
 #   PAGE_CACHE_SWR seconds it may then be served stale while a new copy renders
 #                  (default 600)
+#   QUEUE_LIMIT    requests the container may have in hand before a page, cart or
+#                  add to cart gets 503 (default 16; 0 = no limit; checkout,
+#                  payment callbacks and admin are always let in; issue #39)
+#   RETRY_AFTER    the Retry-After seconds of that 503 (default 5)
 #   REPLICA_PATH   path of the Litestream replica in the replica bucket (default
 #                  store). Another path restores and writes another database;
 #                  going back to store finds the old one unchanged.
@@ -32,6 +36,8 @@ OBJECT_CACHE=${OBJECT_CACHE:-apcu}
 REPLICA_PATH=${REPLICA_PATH:-store}
 PAGE_CACHE_TTL=${PAGE_CACHE_TTL:-120}
 PAGE_CACHE_SWR=${PAGE_CACHE_SWR:-600}
+QUEUE_LIMIT=${QUEUE_LIMIT:-16}
+RETRY_AFTER=${RETRY_AFTER:-5}
 QUEUE_RUNNER=${QUEUE_RUNNER:-local}
 CRON_SECONDS=${CRON_SECONDS:-60}
 for v in NAME PUBLIC_HOST REPLICA MEDIA_BUCKET R2_ENDPOINT COMPAT INSTANCE_TYPE PHP_WORKERS IDLE_SECONDS; do
@@ -55,6 +61,8 @@ chk QUEUE_RUNNER "$QUEUE_RUNNER" '^(local|loopback)$'
 chk CRON_SECONDS "$CRON_SECONDS" '^[1-9][0-9]{0,3}$'
 chk PAGE_CACHE_TTL "$PAGE_CACHE_TTL" '^[1-9][0-9]{0,4}$'
 chk PAGE_CACHE_SWR "$PAGE_CACHE_SWR" '^[0-9]{1,5}$'
+chk QUEUE_LIMIT "$QUEUE_LIMIT" '^[0-9]{1,4}$'
+chk RETRY_AFTER "$RETRY_AFTER" '^[1-9][0-9]{0,3}$'
 SEED_SHA256=${SEED_SHA256:-}
 [ -z "$SEED_SHA256" ] || chk SEED_SHA256 "$SEED_SHA256" '^[a-f0-9]{64}$'
 cat <<TOML
@@ -93,6 +101,8 @@ QUEUE_RUNNER = "$QUEUE_RUNNER"
 CRON_SECONDS = "$CRON_SECONDS"
 PAGE_CACHE_TTL = "$PAGE_CACHE_TTL"
 PAGE_CACHE_SWR = "$PAGE_CACHE_SWR"
+QUEUE_LIMIT = "$QUEUE_LIMIT"
+RETRY_AFTER = "$RETRY_AFTER"
 R2_ENDPOINT = "$R2_ENDPOINT"
 SEED_SHA256 = "$SEED_SHA256"
 # Secrets (deploy --secrets-file): WP_SALT, ADMIN_PASSWORD, SPIKE_TOKEN,
