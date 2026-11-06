@@ -29,6 +29,29 @@ export CLOUDFLARE_ACCOUNT_ID=$ACCOUNT_ID
 . "$ROOT/deploy/tf-backend.sh"
 W=$(mktemp -d "${TMPDIR:-/tmp}/wp-destroy.XXXXXX"); trap 'rm -rf "${W:?}"' EXIT
 
+# The Worker: delete it, then ASK the API whether it is gone. wrangler
+# delete can remove the Worker and still exit non-zero (wp-perf-dosql,
+# 2026-11-06: it failed on a KV listing after the delete), and it can also
+# fail with the Worker still there. So its exit status is reported as a fact,
+# and the API decides: 404 is gone (go on), 200 is still there (stop before
+# the data plane), anything else is unknown (stop). CF_API exists for
+# deploy/tests/destroy-test.sh.
+CF_API=${CF_API:-https://api.cloudflare.com/client/v4}
+worker_status() { # -> HTTP status of GET .../workers/scripts/NAME
+  curl -s -o /dev/null -w '%{http_code}' -m 30 -K <(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN") "$CF_API/accounts/$ACCOUNT_ID/workers/scripts/$NAME" || echo 000
+}
+delete_worker() { # delete_worker <command...>
+  local rc=0 code
+  "$@" || rc=$?
+  echo "destroy: wrangler delete for $NAME exited $rc"
+  code=$(worker_status)
+  case "$code" in
+    404) echo "destroy: Worker $NAME is gone (API: 404)" ;;
+    200) echo "destroy: Worker $NAME STILL EXISTS (API: 200). Stopping before the data plane; delete it, then run this again." >&2; exit 1 ;;
+    *) echo "destroy: cannot tell whether Worker $NAME is gone (API: HTTP $code). Stopping before the data plane." >&2; exit 1 ;;
+  esac
+}
+
 # 1. Checks, before anything is deleted.
 site_state "$TF"
 site_name_matches "$TF"
@@ -68,7 +91,8 @@ fi
 
 # 2. The Worker (named NAME by deploy.sh) and its PHP object. Run in deploy/,
 # which has no Wrangler config, so no other config can be used by mistake.
-(cd "$ROOT/deploy" && npx wrangler delete --name "$NAME" --force) || echo "Worker $NAME not deleted (already deleted?)"
+wr_delete() { (cd "$ROOT/deploy" && npx wrangler delete --name "$NAME" --force); }
+delete_worker wr_delete
 
 # 3. The data plane, then the workspace.
 tfs destroy -input=false -auto-approve -var-file="$VARS"

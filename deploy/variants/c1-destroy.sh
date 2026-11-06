@@ -1,6 +1,7 @@
 # shellcheck shell=bash
 # Remove a c1 site. destroy.sh sources this file after its checks (the state,
-# its name output, the variables); it uses ROOT, TF, NAME, VARS and tfs.
+# its name output, the variables); it uses ROOT, TF, NAME, VARS, tfs and
+# delete_worker.
 # Order: the container application (so no new container starts), the Worker,
 # then the buckets are emptied (R2 refuses to delete a bucket with objects),
 # then Terraform deletes the buckets, the Litestream key and the secrets.
@@ -31,7 +32,8 @@ else
 fi
 
 # 2. The Worker and its Durable Object namespace.
-WR delete "$NAME" --force || echo "Worker $NAME not deleted (already deleted?)"
+# delete_worker (destroy.sh) reports the exit status and asks the API.
+delete_worker WR delete "$NAME" --force
 
 # 3. Empty the buckets. teardown=true gives the Litestream key the media
 # bucket too, for this step only; the Worker and the container are gone. The
