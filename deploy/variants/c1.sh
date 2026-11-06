@@ -276,7 +276,10 @@ c1_rollout() {
     case "$st" in
       done*) echo "container rollout completed after $((SECONDS - t0)) s"; return 0 ;;
       failed*) echo "the container rollout ended as ${st#failed }: the new image is not running" >&2; return 1 ;;
-      api-error*|no-app*) errs=$((errs + 1)); [ "$errs" -lt 3 ] || return 2 ;;
+      # Each distinct error is kept for c1_up_watch (issue #120): when no
+      # container is placed, the API answers name the platform as the cause.
+      api-error*|no-app*) errs=$((errs + 1)); [[ "; ${C1_API_ERRORS:-}; " == *"; $st; "* ]] || C1_API_ERRORS=${C1_API_ERRORS:+$C1_API_ERRORS; }$st
+        [ "$errs" -lt 3 ] || return 2 ;;
       # "replaced": a newer rollout took over. The version is read again on
       # each poll, so a newer version normally shows next (seen live: version
       # 2 replaced, then version 3 done). A replaced rollout never completes,
@@ -355,13 +358,26 @@ else:
 # goes to it in the environment, not in the arguments. With no outputs (out
 # is not defined) it only waits for the 200, as c1_up does.
 c1_up_watch() {
-  local ep="" bucket="" kid="" sec=""
+  local ep="" bucket="" kid="" sec="" rc=0
   if declare -F out >/dev/null; then
     ep=$(out r2_endpoint) bucket=$(out replica_bucket) kid=$(out litestream_access_key_id) sec=$(out litestream_secret_access_key) || true
   fi
   C1_R2_KEY_ID=${C1_R2_KEY_ID:-$kid} C1_R2_SECRET=${C1_R2_SECRET:-$sec} C1_SPIKE_TOKEN=${SPIKE_TOKEN:-} START_TIMEOUT=${START_TIMEOUT:-900} \
     BOOT_LOG_WAIT=${BOOT_LOG_WAIT:-180} STALL_S=${STALL_S:-300} \
-    python3 -I "$ROOT/deploy/variants/c1-bootwatch.py" "$URL" "${C1_R2_EP:-$ep}" "${C1_R2_BUCKET:-$bucket}" "$REPLICA_PATH" "$1"
+    python3 -I "$ROOT/deploy/variants/c1-bootwatch.py" "$URL" "${C1_R2_EP:-$ep}" "${C1_R2_BUCKET:-$bucket}" "$REPLICA_PATH" "$1" || rc=$?
+  # No container was placed (exit 3, issue #120): show what the containers API
+  # said during the rollout wait and says now, so the log names the cause. To
+  # stderr: stdout is the seconds for FIRST_START_S.
+  if [ "$rc" = 3 ]; then
+    echo "containers API during the rollout wait: ${C1_API_ERRORS:-no error}" >&2
+    if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+      echo "containers API now: $(c1_rollout_state "${C1_API:-https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/containers}")" >&2
+    else
+      echo "containers API now: not read (no API token)" >&2
+    fi
+    rc=1
+  fi
+  return "$rc"
 }
 
 # A container can run the new image with the environment of the deploy before

@@ -12,7 +12,8 @@ PUTs its boot log (container/bootlog.sh) to the replica bucket as
 - lists the boot logs with a start epoch of <stop epoch> - BOOT_SKEW_S or
   later (an older log is an earlier container), reads the newest one, and
   prints each new line on stderr;
-- fails (exit 1) when a container runs but there is no such boot log
+- fails (exit 1; exit 3 when the platform placed no container, issue #120)
+  when a container runs but there is no such boot log
   BOOT_LOG_WAIT s after it was first seen running, or when the boot log got
   no new line for STALL_S s, or at START_TIMEOUT with no 200.
 
@@ -118,11 +119,11 @@ def probe():
                              "%s/?nocache=%d" % (url, random.randrange(10 ** 9))], stdout=subprocess.PIPE)
 
 
-def fail(msg, p):
+def fail(msg, p, rc=1):
     if p and p.poll() is None:
         p.kill()
     say(msg)
-    sys.exit(1)
+    sys.exit(rc)
 
 
 t0 = time.monotonic()
@@ -185,6 +186,6 @@ while True:
         if watch and key is None and info_ok and run_since is None:
             fail("no 200 from %s/ after %d s (%s), and the platform started no container (/_store-info running false, "
                  "no boot log): a placement or start problem, not a stuck container (issue #120). Deploy again later."
-                 % (url, start_timeout, probes_text()), p)
+                 % (url, start_timeout, probes_text()), p, 3)
         fail("no 200 from %s/ after %d s (last %s; %s)" % (url, start_timeout, last_code or "none", probes_text()), p)
     time.sleep(poll)

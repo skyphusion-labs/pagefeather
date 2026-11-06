@@ -14,7 +14,9 @@
 #   r2-403-stuck     1  "no 200" at START_TIMEOUT
 #   no R2 settings   0  "no R2 settings": only the wait for a 200
 #   late-place       0  no container for 3 s (past BOOT_LOG_WAIT), then a healthy start (issue #120)
-#   never-placed     1  at START_TIMEOUT, "started no container", not the #93 recovery
+#   never-placed     1  at START_TIMEOUT, "started no container", not the #93 recovery;
+#                       with a fake containers API, the API errors seen during the
+#                       rollout wait and the API state now are named
 #   info-500         1  /_store-info cannot be read: "cannot read", then at BOOT_LOG_WAIT as before
 #   no token         1  the same, with no SPIKE_TOKEN (the fake answers 403)
 # In every case a "cannot list" or "no R2 settings" note appears at most once.
@@ -25,8 +27,14 @@ TREE=${1:-$(cd "$HERE/../../.." && pwd)}
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 fails=0
 run_case() {
-	local mode=$1 want_rc=$2 want_text=$3 not_text=$4 max_s=$5 ep=${6-set} port pid rc out t0 stop
-	rm -f "$T/port"
+	local mode=$1 want_rc=$2 want_text=$3 not_text=$4 max_s=$5 ep=${6-set} port pid rc out t0 stop apid="" aport=""
+	rm -f "$T/port" "$T/aport" "$T/acount"
+	# With API_MODE, a fake containers API too (issue #120: the API answers in the message).
+	if [ -n "${API_MODE:-}" ]; then
+		python3 -I "$HERE/fake-containers-api.py" "$T/aport" "$T/acount" "$API_MODE" & apid=$!
+		for _ in $(seq 1 50); do [ -s "$T/aport" ] && break; sleep 0.1; done
+		aport=$(cat "$T/aport")
+	fi
 	stop=$(date +%s)
 	python3 -I "$HERE/fake-boot-site.py" "$T/port" "$mode" "$stop" & pid=$!
 	for _ in $(seq 1 50); do [ -s "$T/port" ] && break; sleep 0.1; done
@@ -39,9 +47,10 @@ run_case() {
 		URL=http://127.0.0.1:$port SPIKE_TOKEN=${CASE_TOKEN-test}
 		[ "$ep" = set ] && C1_R2_EP=$URL C1_R2_BUCKET=b C1_R2_KEY_ID=k C1_R2_SECRET=sekrit-not-shown
 		export C1_R2_EP C1_R2_BUCKET C1_R2_KEY_ID C1_R2_SECRET
+		if [ -n "$aport" ]; then NAME=t ACCOUNT_ID=acc CLOUDFLARE_API_TOKEN=test-token C1_API=http://127.0.0.1:$aport C1_API_ERRORS=${API_ERRORS:-}; fi
 		POLL_S=0.2 PROBE_TIMEOUT=5 START_TIMEOUT=8 BOOT_LOG_WAIT=2 STALL_S=2 c1_up_watch "$stop" 2>&1
 	); rc=$?
-	kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+	kill "$pid" $apid 2>/dev/null; wait "$pid" $apid 2>/dev/null
 	local took=$((SECONDS - t0)) ok=1
 	[ "$rc" = "$want_rc" ] || ok=0
 	printf '%s' "$out" | grep -q -- "$want_text" || ok=0
@@ -66,6 +75,8 @@ run_case r2-403-stuck 1 "no 200 from http://127.0.0.1:[0-9]*/ after 8 s" "no new
 run_case growing 0 "boot log: no R2 settings" "boot: " 6 unset
 run_case late-place 0 "boot: .* c1: step 2 of store.boot-" "BOOT_LOG_WAIT" 8
 run_case never-placed 1 "the platform started no container" "Recover (issue #93)" 11
+API_MODE=already API_ERRORS="api-error applications HTTP 500; api-error applications HTTP 408" run_case never-placed 1 "during the rollout wait: api-error applications HTTP 500; api-error applications HTTP 408" "no API token" 12
+API_MODE=already run_case never-placed 1 "containers API now: done" "" 12
 run_case info-500 1 "cannot read http://127.0.0.1:[0-9]*/_store-info" "after 8 s" 5
 CASE_TOKEN="" run_case none 1 "cannot read http://127.0.0.1:[0-9]*/_store-info" "after 8 s" 5
 echo "$fails failing case(s)"
