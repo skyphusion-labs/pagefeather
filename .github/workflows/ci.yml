@@ -46,6 +46,9 @@ jobs:
       - name: c1 deploy check tests
         # deploy/variants/c1.sh c1_check (issue #99) against a fake site: an old container first, a stuck PHP.
         run: deploy/variants/tests/c1-check-test.sh
+      - name: c1 load analysis tests
+        # tests/load/c1_arm.py (issue #99): held requests, CPU per order, the split, on a synthetic job.
+        run: python3 tests/load/c1_arm_test.py
       - name: No em or en dashes
         run: |
           if git grep -nP '\x{2014}|\x{2013}' -- . ':!**/package-lock.json'; then echo 'em or en dash found'; exit 1; fi
