@@ -23,8 +23,9 @@ B="https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID"
 # The b-dosql sites of dosql.sh (SITE names; default wp-dosql).
 SITES=${SITES:-wp-dosql}
 
-# The image the control pushed (run.sh builds it from the Dockerfile), read
-# before its application goes: registry.cloudflare.com/<account>/<prefix>-cdirect-box:<tag>.
+# The image the control's application runs, for the log. Wrangler gives the
+# application the image by DIGEST (registry.cloudflare.com/<account>/
+# <prefix>-cdirect-box@sha256:...), not by tag (measured 2026-11-06, #43).
 APPS_JSON=$(api "$B/containers/applications")
 IMAGE=$(printf '%s' "$APPS_JSON" | python3 -c '
 import json, sys
@@ -44,13 +45,32 @@ for a in json.load(sys.stdin).get("result") or []:
   echo "container application $name ($id): HTTP $code"
 done
 
-# 1b. The control's image, by its exact name and tag only. An image from
-# another registry (a CONTAINER_IMAGE given to run.sh) is not ours to delete.
-NAMETAG=${IMAGE##*/}
-if [[ "$IMAGE" == registry.cloudflare.com/"$ACCOUNT_ID"/* && "$NAMETAG" =~ ^${PREFIX}-cdirect-box:[A-Za-z0-9._-]+$ ]]; then
-  (cd "$H" && npx wrangler containers images delete "$NAMETAG" -y) || echo "image $NAMETAG not deleted"
+# 1b. The control's image repository, <prefix>-cdirect-box: Wrangler named it
+# after our control Worker when run.sh deployed it, so it is ours. Its tags
+# come from the account's registry listing (exact name only; the listing is
+# for this account only), and each is deleted as <name>:<tag>. The
+# application's own reference is a digest, which "images delete" does not
+# take: the first version of this step skipped the image (#43).
+echo "control image (from its application): ${IMAGE:-none}"
+TAGS=$( (cd "$H" && npx wrangler containers images list --json 2>/dev/null) | python3 -c '
+import json, re, sys
+s = sys.stdin.read()
+i = s.find("[")
+if i < 0:
+    sys.exit(2)
+for r in json.loads(s[i:]):
+    if r.get("name") == sys.argv[1]:
+        for t in r.get("tags") or []:
+            if re.fullmatch(r"[A-Za-z0-9._-]+", t):
+                print(t)' "$PREFIX-cdirect-box") || TAGS="LIST-FAILED"
+if [ "$TAGS" = "LIST-FAILED" ]; then
+  echo "could not list the registry: image $PREFIX-cdirect-box not deleted (list.sh shows it)"
+elif [ -z "$TAGS" ]; then
+  echo "no image $PREFIX-cdirect-box in the registry"
 else
-  echo "no image of ours to delete (control image: ${IMAGE:-none})"
+  for t in $TAGS; do
+    (cd "$H" && npx wrangler containers images delete "$PREFIX-cdirect-box:$t" -y) || echo "image $PREFIX-cdirect-box:$t not deleted"
+  done
 fi
 
 # 2. Namespace scripts: force, because they own Durable Object namespaces.
