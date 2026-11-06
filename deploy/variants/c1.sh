@@ -8,8 +8,9 @@
 #   c1_config   the Wrangler config from the Terraform outputs (sets CONF, PUBLIC_HOST)
 #   c1_deploy   wrangler deploy with the secrets in the same version (sets URL,
 #               SPIKE_TOKEN, ADMIN_PASSWORD)
-#   c1_wait     wait for the rollout, stop the container once, wait for the
-#               first 200 (sets FIRST_START_S)
+#   c1_wait     wait for the container rollout to complete (ROLLOUT_TIMEOUT,
+#               default 600 s; a fixed ROLLOUT_WAIT if the API cannot be read),
+#               stop the container once, wait for the first 200 (sets FIRST_START_S)
 #   c1_check    the Store object is from this deploy, and the running container
 #               has its settings (the drop-in is there exactly when
 #               OBJECT_CACHE=apcu) and runs PHP-FPM, whose ping answers;
@@ -22,7 +23,8 @@
 # instance type), IDLE_SECONDS (default 900), OBJECT_CACHE (apcu or none,
 # default apcu), REPLICA_PATH (default store), QUEUE_RUNNER (local or
 # loopback, default local), CRON_SECONDS (default 10), AS_TIME_LIMIT (default 5), PUBLIC_HOST (default
-# <NAME>.<account subdomain>.workers.dev), ROLLOUT_WAIT (default 60 s),
+# <NAME>.<account subdomain>.workers.dev), ROLLOUT_TIMEOUT (default 600 s),
+# ROLLOUT_POLL_S (default 10 s), ROLLOUT_WAIT (the fallback, default 60 s),
 # START_TIMEOUT (default 900 s), BENCH, N.
 
 C1="$ROOT/spikes/c1-woo-container"
@@ -99,25 +101,170 @@ c1_up() {
   done
 }
 
-# A container that starts within about a minute of a deploy can run the old
-# image (seen on the spike and on ggc). Wait, then stop the container once:
-# the next request starts one from the new image. On a new site there is no
-# container yet and the stop does nothing. The first container of a new site
-# installs WordPress and WooCommerce (php/install.php); later containers
-# restore the database from the replica.
+# One read of the container rollout of this deploy (issue #106). Prints one
+# line: "done ...", "failed ...", "waiting ...", "none ..." (no rollout for
+# the application's version yet), "no-app ..." or "api-error ...". A new
+# application at version 1 with no rollout at all is "done": its first
+# version has no rollout object.
+# The application is <NAME>-store: the list finds its id, and GET
+# /applications/<id> gives its version (the one this deploy made; the list's
+# version is stale). The rollout to follow is the newest one whose
+# target_version is that version. Fields as in Wrangler 4.107's client models
+# (packages/containers-shared: Application.version, ApplicationRollout.status
+# pending|progressing|completed|reverted|replaced, target_version, progress).
+# The live API (read 2026-11-06) is a superset: {result: [...]} with the
+# rollouts newest first, older ones "replaced", and progress.version_distribution.
+# The token needs only "Workers Containers Write", which a deploy needs anyway.
+# C1_API is the containers API base, for the tests.
+c1_rollout_state() {
+  local api=$1 t code_a code_g code_r id
+  t=$(mktemp -d)
+  code_a=$(curl -s -m 30 -o "$t/apps" -w '%{http_code}' -K <(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN") "$api/applications?name=$NAME-store" || true)
+  id=$(python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    d = {}
+items = d.get("result", []) if isinstance(d, dict) else d
+apps = [a for a in (items or []) if isinstance(a, dict) and a.get("name") == sys.argv[2]]
+print(apps[0].get("id", "") if len(apps) == 1 else "")' "$t/apps" "$NAME-store" 2>/dev/null)
+  # The list finds the id only. Its version is stale: on 2026-11-06 the list
+  # said version 1 for 8 minutes and more after the application moved to
+  # version 2, while GET /applications/<id> was current (wp-c1-live). So the
+  # version, and the health, come from the single GET.
+  code_g=000; code_r=000
+  if [ "$code_a" = 200 ] && [ -n "$id" ]; then
+    code_g=$(curl -s -m 30 -o "$t/app" -w '%{http_code}' -K <(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN") "$api/applications/$id" || true)
+    code_r=$(curl -s -m 30 -o "$t/rollouts" -w '%{http_code}' -K <(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN") "$api/applications/$id/rollouts?limit=10" || true)
+  fi
+  python3 -c '
+import json, sys
+name, code_a, code_g, code_r, d = sys.argv[1:6]
+def load(f):
+    try:
+        x = json.load(open(f))
+    except (OSError, ValueError):
+        return []
+    x = x.get("result", []) if isinstance(x, dict) else x
+    return [i for i in (x or []) if isinstance(i, dict)]
+if code_a != "200":
+    print("api-error applications HTTP", code_a); sys.exit()
+apps = [a for a in load(d + "/apps") if a.get("name") == name]
+if len(apps) != 1:
+    print("no-app", name, "found", len(apps)); sys.exit()
+if code_g != "200":
+    print("api-error application HTTP", code_g); sys.exit()
+try:
+    app = json.load(open(d + "/app"))
+except (OSError, ValueError):
+    app = {}
+if isinstance(app, dict) and isinstance(app.get("result"), dict):
+    app = app["result"]
+v = app.get("version") if isinstance(app, dict) else None
+if v is None:
+    print("api-error application has no version"); sys.exit()
+if code_r != "200":
+    print("api-error rollouts HTTP", code_r); sys.exit()
+all_rs = load(d + "/rollouts")
+# A new application places its first version with no rollout object at all
+# (measured 2026-11-06 on wp-c1-live: version 1, rollouts []). Only then:
+# at a later version an empty list can mean "not created yet", so it waits.
+if not all_rs and v == 1:
+    h = (app.get("health") or {}).get("instances") or {}
+    print("done first version 1, placed with no rollout (a new application); instances healthy %s, starting %s, failed %s (an instance starts on the first request)" % (h.get("healthy"), h.get("starting"), h.get("failed")))
+    sys.exit()
+rs = [r for r in all_rs if r.get("target_version") == v]
+if not rs:
+    print("none for version", v); sys.exit()
+r = max(rs, key=lambda r: str(r.get("created_at", "")))
+p = r.get("progress") or {}
+detail = "version %s, step %s of %s, instances %s of %s" % (v, p.get("current_step"), p.get("total_steps"), p.get("updated_instances"), p.get("total_instances"))
+vd = p.get("version_distribution") or {}
+if "target_version_percentage" in vd:
+    detail += ", %s %% on the new version" % vd["target_version_percentage"]
+st = r.get("status")
+if st == "completed":
+    print("done", detail)
+elif st == "reverted":
+    print("failed reverted", detail)
+else:
+    print("waiting", st, detail)' "$NAME-store" "$code_a" "$code_g" "$code_r" "$t"
+  rm -rf "$t"
+}
+
+# Wait for the container rollout of this deploy (issue #106): until it is
+# completed (return 0), reverted, replaced with no newer version for
+# ROLLOUT_REPLACED_POLLS reads (6), or not done in ROLLOUT_TIMEOUT s (600;
+# return 1). If the API cannot be read 3 times in a row, return 2: the caller
+# then falls back to the fixed wait. A fixed 60 s was too short: on
+# 2026-11-06 a rollout took about 90 s, so the deploy check met the previous
+# image (issue #99, arms 3b and 3c).
+c1_rollout() {
+  local api=${C1_API:-https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/containers}
+  local t0=$SECONDS st last="" errs=0 rep=0
+  while :; do
+    st=$(c1_rollout_state "$api")
+    [ "$st" = "$last" ] || echo "rollout: $st"
+    last=$st
+    case "$st" in
+      done*) echo "container rollout completed after $((SECONDS - t0)) s"; return 0 ;;
+      failed*) echo "the container rollout ended as ${st#failed }: the new image is not running" >&2; return 1 ;;
+      api-error*|no-app*) errs=$((errs + 1)); [ "$errs" -lt 3 ] || return 2 ;;
+      # "replaced": a newer rollout took over. The version is read again on
+      # each poll, so a newer version normally shows next (seen live: version
+      # 2 replaced, then version 3 done). A replaced rollout never completes,
+      # so if the version stays, fail after ROLLOUT_REPLACED_POLLS reads (6)
+      # instead of waiting ROLLOUT_TIMEOUT.
+      "waiting replaced"*)
+        errs=0; rep=$((rep + 1))
+        [ "$rep" -lt "${ROLLOUT_REPLACED_POLLS:-6}" ] || { echo "the rollout of this version was replaced and no newer version appeared in $rep reads (last: $st)" >&2; return 1; } ;;
+      *) errs=0; rep=0 ;;
+    esac
+    [ $((SECONDS - t0)) -lt "${ROLLOUT_TIMEOUT:-600}" ] || { echo "the container rollout did not complete in ${ROLLOUT_TIMEOUT:-600} s (last: $st)" >&2; return 1; }
+    sleep "${ROLLOUT_POLL_S:-10}"
+  done
+}
+
+# A container that starts before the rollout of a deploy ends runs the old
+# image (seen on the spike, on ggc, and on wp-c1-perf, issue #99). Wait for the
+# rollout, then stop the container once: the next request starts one from the
+# new image. On a new site there is no container yet and the stop does
+# nothing. The first container of a new site installs WordPress and
+# WooCommerce (php/install.php); later containers restore the database from
+# the replica.
 c1_wait() {
-  log "rollout: wait ${ROLLOUT_WAIT:-60} s, then stop the container once"
-  sleep "${ROLLOUT_WAIT:-60}"
+  local rc=0
+  log "rollout: wait for the container rollout, then stop the container once"
+  c1_rollout || rc=$?
+  if [ "$rc" = 2 ]; then
+    echo "cannot read the container rollout (API): waiting a fixed ${ROLLOUT_WAIT:-60} s instead"
+    sleep "${ROLLOUT_WAIT:-60}"
+  elif [ "$rc" != 0 ]; then
+    return 1
+  fi
   # The answer says if a container was running (and was stopped) or not
   # (skipped). The token goes to curl in a config on a pipe, not in argv.
-  local stop
-  stop=$(curl -s -m 60 -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_store-stop" \
-    | python3 -c 'import json, sys
+  local stop sb scode
+  # A body that is not the Store object's JSON is named as such, with its HTTP
+  # status: on a new workers.dev name the first requests can get no Worker
+  # answer yet (seen 2026-11-06 on wp-c1-new: "stop: {}", then the first 200
+  # after 98 s). The deploy check after this still finds an old container.
+  sb=$(mktemp)
+  scode=$(curl -s -m 60 -o "$sb" -w '%{http_code}' -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_store-stop" || true)
+  stop=$(python3 -c 'import json, sys
 try:
-    d = json.load(sys.stdin)
-except ValueError:
-    d = {}
-print("no container was running: nothing to stop" if d.get("skipped") else "stop: %s" % json.dumps(d))') || true
+    d = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    d = None
+if not isinstance(d, dict):
+    body = open(sys.argv[1], "rb").read()[:80].decode("utf-8", "replace").replace("\n", " ")
+    print("stop: no answer from the Store object (HTTP %s, %d bytes: %r): nothing stopped" % (sys.argv[2], len(body), body))
+elif d.get("skipped"):
+    print("no container was running: nothing to stop")
+else:
+    print("stop: %s" % json.dumps(d))' "$sb" "$scode") || true
+  rm -f "$sb"
   echo "$stop"
   # A container that did not stop in 30 s (still_running) is very likely stuck:
   # seen 2026-11-06 (issue #93), an instance that answered no request survived a
