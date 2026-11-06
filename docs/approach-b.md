@@ -189,8 +189,24 @@ Locally, workerd has no Workers Cache, so the gate checks only the route (`x-ent
 **Purges.** Counted with `wrangler tail` over one `break.py` run. Each purge request and each purge sent is a log line (`{"m":"purge"}`); a refused purge is now logged, before it was dropped.
 - Before the change below: 27 requests, 20 purges sent, 0 refused. One request came from opening the editor (`post-new.php` makes an auto-draft).
 - With it: 26 requests, 20 purges sent in 32 s, 0 refused.
-- The cause of 20 sends is that `PURGE_GAP_MS` (15 s) coalesces per isolate. `break.py` writes in parallel, so many isolates purge. 20 is inside the burst of 25, but above the rate of 5 a minute.
+- The cause of 20 sends is that `PURGE_GAP_MS` (15 s) coalesces per isolate. `break.py` writes in parallel, so many isolates purge. 20 is inside the burst of 25, but above the rate of 5 a minute. Since issue #78 the object coalesces for the whole site (below).
 - `php/edge-cache.php` no longer purges for an auto-draft, which is on no page. c1 uses the same file. A draft still purges: it may be a post that was just unpublished.
+
+**Purges for the whole site (issue #78). Measured 2026-11-06.** With PHP in the object (`b-do`, `b-dosql`, pool of 1), every change of content passes through the one `PhpRuntime` object, so the object coalesces the purges, as c1 does in its Store object:
+- `requestPurge()` stores `{pending, lastSent, lastAsked}` in the object's storage and sets one alarm for `max(now, lastSent + PURGE_GAP_MS)`.
+- `alarm()` sends one purge for everything asked since the last one, through `ctx.exports.Pages.purge()`. The object's own `ctx` has `exports` (probed). A change during a purge asks for the next one. A refused purge is tried once more one interval later. The state is stored, so a purge asked for survives an evicted object.
+- `/_purgestate` (spike token) returns the state and the last 20 sends. `wrangler tail` showed no alarm runs and dropped request events (18 of about 60), so it cannot count purges.
+- Variants with PHP in the Worker (`free`, `paid`, `a`) keep `PURGE_GAP_MS` per isolate. With a pool of more than one object, each object coalesces on its own.
+
+Gate: `spikes/b2-wordpress/tests/purge_coalesce_check.py` (locally through `tests/purge-coalesce.sh`). It makes 20 posts in parallel, 10 more 5 s later, then deletes them, waits two windows, and reads `/_purgestate`.
+
+| Where | Purges sent | Gaps (ms) | Result |
+| --- | --- | --- | --- |
+| local `dosql-local` | 1 | | 6 of 6 |
+| local, mutation: no coalescing (control) | 20 (the last 20 kept) | about 35 each | 2 fail |
+| `wp-perf-dosql` (Free test account) | 3, all accepted | 15000, 15001 | 6 of 6 |
+
+The same deploy: `cookie_cache_check.py` 14 of 14; `break.py` the same PASS/FAIL set, including "publishing a post purges the cached page". Locally the transaction gates and `cache_coherence.py` are unchanged.
 
 ### 8d. Phone-size uploads. Measured 2026-11-04.
 
@@ -304,7 +320,7 @@ Also found:
 
 - The Worker keeps static assets, R2 uploads (`serveUpload`), the body size checks, XML-RPC off, the spike token check and the page cache (Workers Cache in front of the Worker). It sends every other request to the `PhpRuntime` object, with the same URL, so WordPress sees the public origin.
 - The object runs the same code as the Worker did: `boot`, `handle`, `withPhp` and the D1 bridge `handleMessage`. It reads `DB`, `MEDIA` and `IMAGES` from its own `env`. The bindings come from the same wrangler env, because the object is a class in the same Worker script. PHP sees no change.
-- The object cannot purge the page cache (it has no `ctx.cache`). When the Edge Cache mu-plugin asks for a purge, the object sets `x-php-purge: 1`. The Worker removes that header, purges with the same rate limit as before, and sets `x-cache-purge` (`scheduled`, or `no-cache-api` where Workers Cache is off).
+- The object purges the page cache itself since issue #78, through `ctx.exports.Pages.purge()`, coalesced for the whole site (8c, "Purges for the whole site"). Its response carries `x-cache-purge` (`scheduled` or `coalesced`). Before #78 the object set `x-php-purge: 1` and the Worker purged, per isolate.
 - `PHP_IN_DO=on` without the `PHP_RUNTIME` binding returns 500 on every request. It does not fall back to PHP in the Worker, because that fallback would hide the misconfiguration.
 - Responses from the object carry `x-php-object` (the object name) and `x-object-ms` (Worker to object and back, PHP included).
 - `/_d1ping` is answered by the object, so it measures D1 from where PHP runs.
