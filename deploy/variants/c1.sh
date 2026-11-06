@@ -158,6 +158,7 @@ c1_check() {
   # A container that answers a static file (no WordPress) is not stuck (#93).
   code=$(curl -s -o /dev/null -m 15 -w '%{http_code}' "$URL/_boot.txt" || true)
   [ "$code" = 200 ] || { echo "the container does not answer a static file (/_boot.txt: $code): probably stuck (issue #93)" >&2; return 1; }
+  echo "container answers a static file (/_boot.txt: 200)"
   want=false; [ "$OBJECT_CACHE" = apcu ] && want=true
   while :; do
     cur=$(c1_info /_store-info current)
