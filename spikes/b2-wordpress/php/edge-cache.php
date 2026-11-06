@@ -19,7 +19,8 @@ function skyphusion_edge_cache_purge() {
 	do_action( 'skyphusion_edge_cache_purge_request', current_filter(), func_get_args(), $sent );
 	if ( ! $sent ) {
 		$sent = true;
-		post_message_to_js( json_encode( array( 'cache' => 'purge' ) ) );
+		$reply = post_message_to_js( json_encode( array( 'cache' => 'purge' ) ) );
+		do_action( 'skyphusion_edge_cache_purge_reply', $reply );
 	}
 }
 

@@ -60,7 +60,14 @@ export class Store extends Container {
 // for the container to stop first (up to 30 s; SIGTERM lets Litestream finish
 // its sync), and resets only when the container is down.
 Store.prototype.storeInfo = async function () {
-	return { do_version: this.builtVersion, running: this.ctx.container.running, object_cache: this.envVars.OBJECT_CACHE, replica_path: this.envVars.REPLICA_PATH };
+	const p = this.purgeState || {};
+	return {
+		do_version: this.builtVersion,
+		running: this.ctx.container.running,
+		object_cache: this.envVars.OBJECT_CACHE,
+		replica_path: this.envVars.REPLICA_PATH,
+		purge: { sent: p.sent || 0, deferred: p.deferred || 0, failed: p.failed || 0, retried: p.retried || 0, pending: !!p.timer, last_ms_ago: p.last ? Date.now() - p.last : null, last_error: p.lastError || '' },
+	};
 };
 Store.prototype.shutdownNow = async function (kill) {
 	const running = this.ctx.container.running;
@@ -103,7 +110,7 @@ Store.outboundByHost = {
 			// runs in ContainerProxy, so it asks the Store object, which calls
 			// Storefront.purge() through ctx.exports.
 			try {
-				reply = await store(env).purgeStorefront(['wp-pages']);
+				reply = await store(env).purgeStorefront();
 			} catch (e) {
 				reply = { ok: false, error: String((e && e.message) || e) };
 			}
@@ -114,8 +121,46 @@ Store.outboundByHost = {
 
 const store = (env) => getContainer(env.STORE, 'store');
 
-Store.prototype.purgeStorefront = async function (tags) {
-	return this.ctx.exports.Storefront.purge(tags);
+// Purges are coalesced: at most one per PURGE_INTERVAL_MS (15 s) for this site.
+// The purge limit is 5 a minute (25 at once) per account, for all sites, and a
+// burst of admin saves (an import, a bulk edit through the REST API) asked for
+// about 30 a minute (measured 2026-11-06 with the gate scripts: 106 in 7
+// minutes, and the later ones were refused). A purge asked for inside the
+// interval runs at its end, once; a refused purge is tried again once after an
+// interval. All purges are of the one tag wp-pages, so coalescing loses nothing.
+// The page cache TTL is the backstop when a purge still fails, or when the
+// object is reset before a deferred purge runs.
+Store.prototype.purgeStorefront = async function () {
+	const gap = Number(this.env.PURGE_INTERVAL_MS || 15000);
+	const p = (this.purgeState ||= { last: 0, timer: null, sent: 0, deferred: 0, failed: 0, retried: 0, lastError: '' });
+	const wait = p.last + gap - Date.now();
+	if (wait <= 0 && !p.timer) return this.runPurge(false);
+	p.deferred++;
+	if (!p.timer) p.timer = setTimeout(() => this.runPurge(false), Math.max(wait, 0));
+	return { ok: true, deferred_ms: Math.max(wait, 0) };
+};
+Store.prototype.runPurge = async function (isRetry) {
+	const gap = Number(this.env.PURGE_INTERVAL_MS || 15000);
+	const p = this.purgeState;
+	p.timer = null;
+	p.last = Date.now();
+	let r;
+	try {
+		r = await this.ctx.exports.Storefront.purge(['wp-pages']);
+	} catch (e) {
+		r = { ok: false, errors: [String((e && e.message) || e)] };
+	}
+	if (r.ok) {
+		p.sent++;
+	} else {
+		p.failed++;
+		p.lastError = JSON.stringify(r.errors || []).slice(0, 300);
+		if (!isRetry && !p.timer) {
+			p.retried++;
+			p.timer = setTimeout(() => this.runPurge(true), gap);
+		}
+	}
+	return r;
 };
 
 // Storefront pages for visitors with no state, cached at the edge (issue #58).

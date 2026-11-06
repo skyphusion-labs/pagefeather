@@ -28,3 +28,10 @@ add_action(
 	10,
 	3
 );
+// The Worker's answer to the purge that was sent: ok, deferred_ms, or errors.
+add_action(
+	'skyphusion_edge_cache_purge_reply',
+	function ( $reply ) {
+		@file_put_contents( '/tmp/c1-purge.log', sprintf( "%.3f reply %s\n", microtime( true ), substr( preg_replace( '/\s+/', ' ', (string) $reply ), 0, 300 ) ), FILE_APPEND | LOCK_EX );
+	}
+);
