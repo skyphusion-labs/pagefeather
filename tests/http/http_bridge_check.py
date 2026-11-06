@@ -72,7 +72,9 @@ check("headers", sent.get("x-test") == "value-1" and (js2.get("headers") or {}).
 code, js, _ = call(ECHO + "/status/418")
 check("status", js.get("error") is False and js.get("status") == 418, js)
 code, js, _ = call(ECHO + "/redirect/3", redirection=5)
-check("redirects", js.get("status") == 200 and echoed(js).get("path") == "/anything", {"status": js.get("status"), "path": echoed(js).get("path")})
+# The end of the chain: /anything on the local echo, /get on httpbin.
+end = echoed(js)
+check("redirects", js.get("status") == 200 and (end.get("path") == "/anything" or str(end.get("url", "")).endswith("/get")), {"status": js.get("status"), "path": end.get("path"), "url": end.get("url")})
 code, js, _ = call(ECHO + "/redirect/3", redirection=1)
 check("too-many-redirects", js.get("error") is True and "redirect" in (js.get("message") or "").lower(), js)
 code, js, _ = call(ECHO + "/redirect/1", redirection=0)
