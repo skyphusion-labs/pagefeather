@@ -60,13 +60,13 @@ export class Store extends Container {
 // for the container to stop first (up to 30 s; SIGTERM lets Litestream finish
 // its sync), and resets only when the container is down.
 Store.prototype.storeInfo = async function () {
-	const p = this.purgeState || {};
+	const p = this.purgeRead();
 	return {
 		do_version: this.builtVersion,
 		running: this.ctx.container.running,
 		object_cache: this.envVars.OBJECT_CACHE,
 		replica_path: this.envVars.REPLICA_PATH,
-		purge: { sent: p.sent || 0, deferred: p.deferred || 0, failed: p.failed || 0, retried: p.retried || 0, pending: !!p.timer, last_ms_ago: p.last ? Date.now() - p.last : null, last_error: p.lastError || '' },
+		purge: { sent: p.sent, deferred: p.deferred, failed: p.failed, retried: p.retried, pending: p.pending, last_ms_ago: p.last ? Date.now() - p.last : null, last_error: p.lastError },
 	};
 };
 Store.prototype.shutdownNow = async function (kill) {
@@ -126,40 +126,65 @@ const store = (env) => getContainer(env.STORE, 'store');
 // burst of admin saves (an import, a bulk edit through the REST API) asked for
 // about 30 a minute (measured 2026-11-06 with the gate scripts: 106 in 7
 // minutes, and the later ones were refused). A purge asked for inside the
-// interval runs at its end, once; a refused purge is tried again once after an
+// interval runs once at its end; a refused purge is tried again once after an
 // interval. All purges are of the one tag wp-pages, so coalescing loses nothing.
-// The page cache TTL is the backstop when a purge still fails, or when the
-// object is reset before a deferred purge runs.
+// The deferred purge is a Container schedule (a Durable Object alarm, stored
+// in the object's SQLite), so it runs even if the object is evicted or reset
+// first. The page cache TTL is the backstop when a purge still fails.
+const PURGE_KEY = 'c1-purge';
+Store.prototype.purgeRead = function () {
+	return this.ctx.storage.kv.get(PURGE_KEY) || { last: 0, pending: false, sent: 0, deferred: 0, failed: 0, retried: 0, lastError: '' };
+};
+Store.prototype.purgeWrite = function (p) {
+	this.ctx.storage.kv.put(PURGE_KEY, p);
+};
 Store.prototype.purgeStorefront = async function () {
 	const gap = Number(this.env.PURGE_INTERVAL_MS || 15000);
-	const p = (this.purgeState ||= { last: 0, timer: null, sent: 0, deferred: 0, failed: 0, retried: 0, lastError: '' });
+	const p = this.purgeRead();
 	const wait = p.last + gap - Date.now();
-	if (wait <= 0 && !p.timer) return this.runPurge(false);
+	if (wait <= 0 && !p.pending) return this.runPurge(false);
 	p.deferred++;
-	if (!p.timer) p.timer = setTimeout(() => this.runPurge(false), Math.max(wait, 0));
+	if (!p.pending) {
+		p.pending = true;
+		this.purgeWrite(p);
+		await this.schedule(Math.max(1, Math.ceil(wait / 1000)), 'scheduledPurge', { retry: false });
+	} else {
+		this.purgeWrite(p);
+	}
 	return { ok: true, deferred_ms: Math.max(wait, 0) };
+};
+Store.prototype.scheduledPurge = async function (payload) {
+	const p = this.purgeRead();
+	p.pending = false;
+	this.purgeWrite(p);
+	return this.runPurge(!!(payload && payload.retry));
 };
 Store.prototype.runPurge = async function (isRetry) {
 	const gap = Number(this.env.PURGE_INTERVAL_MS || 15000);
-	const p = this.purgeState;
-	p.timer = null;
+	let p = this.purgeRead();
 	p.last = Date.now();
+	this.purgeWrite(p);
 	let r;
 	try {
 		r = await this.ctx.exports.Storefront.purge(['wp-pages']);
 	} catch (e) {
 		r = { ok: false, errors: [String((e && e.message) || e)] };
 	}
+	p = this.purgeRead();
 	if (r.ok) {
 		p.sent++;
 	} else {
 		p.failed++;
 		p.lastError = JSON.stringify(r.errors || []).slice(0, 300);
-		if (!isRetry && !p.timer) {
+		if (!isRetry && !p.pending) {
 			p.retried++;
-			p.timer = setTimeout(() => this.runPurge(true), gap);
+			p.pending = true;
+			this.purgeWrite(p);
+			await this.schedule(Math.max(1, Math.ceil(gap / 1000)), 'scheduledPurge', { retry: true });
+			return r;
 		}
 	}
+	this.purgeWrite(p);
 	return r;
 };
 
