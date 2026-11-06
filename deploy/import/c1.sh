@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Sourced by deploy/import.sh for VARIANT=c1 (issue #31). Not run on its own.
 #
 # c1 keeps its database in SQLite on the container disk, replicated to R2 by

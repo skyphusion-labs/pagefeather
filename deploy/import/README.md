@@ -2,7 +2,7 @@
 
 `deploy/import.sh` moves an existing WordPress site into a site that `deploy/deploy.sh` made: the database, the uploads, and the theme and plugins. The source site is only read. Nothing in the script connects to it: you give it a dump file.
 
-This version supports the variants `b-dosql` (the database is the SQLite of the PHP Durable Object) and `c1` (the database only; see "Variant c1"). The design for the other variants is in [issue #31](https://github.com/skyphusion-labs/wordpress-on-cloudflare/issues/31). Prior art: [docs/prior-art.md](../../docs/prior-art.md), "Moving existing sites".
+This version supports the variants `b-dosql` (the database is the SQLite of the PHP Durable Object), `c1` (the database only; see "Variant c1") and `a`, with `a2` (the database only; see "Variant a and a2"). The design for the other variants is in [issue #31](https://github.com/skyphusion-labs/wordpress-on-cloudflare/issues/31). Prior art: [docs/prior-art.md](../../docs/prior-art.md), "Moving existing sites".
 
 ## Use
 
@@ -67,6 +67,51 @@ Options: `DRY_RUN=1` stops before the import and shows what changes. `SKIP_MEDIA
 
 The container stops (it does not start) if the seed download or its SHA-256 check fails, so it never installs an empty site over an import. To go back, deploy with the old `REPLICA_PATH`: its replica is unchanged. A `c1` import does not take `CONTENT` yet (uploads, theme and plugins).
 
+## Variant a and a2
+
+`a` is PHP in the Worker with MySQL through Hyperdrive: MariaDB on the box of `deploy/mysql` (`MYSQL=vultr`), or PlanetScale (`a2`, `MYSQL=external`). That MySQL accepts only Cloudflare, so the import goes through the site's Worker: `VARIANT=a URL=... NAME=... DUMP=site.sql ./deploy/import.sh`.
+
+1. Steps 1 and 2 as for `b-dosql` (the dump in SQLite gives the prefix and the site facts).
+2. `GET /_sqlimport?info=1`: the server version (MariaDB or MySQL) and its `max_allowed_packet`. The value comes from the server (`SELECT @@max_allowed_packet`, then `SHOW VARIABLES`, because through Vitess a system variable SELECT can return no row). With no value, the import stops: it never guesses a size.
+3. `mysql-prepare.py` makes the statements:
+   - The prefix becomes `wp_` only in table names (`DROP TABLE`, `CREATE TABLE`, `INSERT INTO`), in the option `<prefix>user_roles` and in the user meta keys that start with the prefix. The columns are found by name in the dump's `CREATE TABLE`. Never in other content: a post that names `wpx_options` keeps it.
+   - The site address changes in the string values, safe for serialized data, except in `guid`.
+   - Hyperdrive does not keep session settings between statements, so mysqldump's `NO_AUTO_VALUE_ON_ZERO` line would not reach its INSERTs. Each INSERT carries its own: `SET_VAR(sql_mode='NO_AUTO_VALUE_ON_ZERO')` on MySQL and PlanetScale, and `SET STATEMENT sql_mode='NO_AUTO_VALUE_ON_ZERO' FOR` on MariaDB.
+   - An INSERT is split between rows to fit `max_allowed_packet` (less 1 KiB), and at most 1.4 MB (one part of the request).
+   - A `CREATE TABLE` string with a backslash after `DEFAULT` becomes a hex literal. Wordfence has `binary(16) DEFAULT '\0...'`. With a backslash, the server's `sql_mode` (`NO_BACKSLASH_ESCAPES`) would decide what the string means.
+   - Tables without the prefix, triggers and routines are not imported, and the script lists them.
+4. **Preflight:** every `CREATE TABLE` of the dump runs first under a scratch name (`wp_impchk_<n>`) in the DDL mode (below), and is dropped again. A `CREATE` that the server refuses stops the import here, and the site is not changed.
+5. `POST /_sqlimport?replace=1` (part 0), then the other parts. **`replace=1` drops every `wp_` table first. A run that stops after that, for example on an INSERT the server refuses, leaves the site EMPTY or PARTIAL.** The script prints the part, the line and the error where it stopped. Fix the cause and import again.
+6. `GET /_sqlimport?counts=1`: `COUNT(*)` of every `wp_` table, compared with the rows of the dump, then `GET /`.
+
+**DDL mode.** A `CREATE TABLE` runs as `BEGIN`, `SET SESSION sql_mode='NO_AUTO_VALUE_ON_ZERO'`, the `CREATE`, then `COMMIT` (whenever `BEGIN` ran). A `SET_VAR` hint cannot go on DDL. Through Hyperdrive and Vitess, a `SET` holds for the next statement only inside a transaction (`docs/approach-a2.md`, probe E2; `php/hyperdrive-db.php` does the same). The first deployed round trip into `wp-a2` (2026-11-06, from `ed0dcc8`) had no DDL mode. It stopped at `CREATE TABLE wp_actionscheduler_actions`: `Invalid default value for 'scheduled_date_gmt'` (errno 1067), PlanetScale's strict mode against `DEFAULT '0000-00-00 00:00:00'`. That happened after `replace=1`, so `wp-a2` was left empty. That is why the preflight exists. `id-zero.sh` did not show it, because its table has no date column. MariaDB's default mode may accept zero dates, and then MariaDB hides this defect. `info=1` now reports the server's `sql_mode` (null through Vitess), so a run shows which mode the server has.
+
+**`/_sqlimport`** (`spikes/b2-wordpress/sql-import.js`):
+- It serves variant `a` only, `a2` included; every other variant gets 404. It needs the `SPIKE_TOKEN` secret and its header; with no secret it refuses, unlike other spike endpoints.
+- Before it runs any statement of a request, it checks all of them. It allows only `DROP TABLE IF EXISTS`, `CREATE TABLE` (column list and table options) and `INSERT ... VALUES` with literals, on a table named `wp_*`. Refused: `GRANT`, `SET` (`SET GLOBAL` included), `LOAD DATA`, `SELECT`, `INTO OUTFILE`, a function in `VALUES` (for example `LOAD_FILE`), `DATA DIRECTORY`, a comment, a second statement. Tests: `tests/sqlimport-check.mjs` and `tests/sqlimport-endpoint.mjs` (both in `run.sh`).
+
+**Query cache:** confirmed OFF, not changed. Terraform makes the Hyperdrive config of variant `a` with `caching = { disabled = true }` (`deploy/terraform/main.tf`, `cloudflare_hyperdrive_config.wp`), and `a2` is variant `a`, so it uses the same resource. The count reads do nothing to avoid a cache.
+
+**Id 0:** `tests/a/id-zero.sh` imports rows (0, 5) into `wp_idzero_test` on a deployed site, with the hint and, as the red control, without it (`NO_HINT=1`). It must read the lowest id 0 with the hint and 1 without. It touches only that table. Measured 2026-11-06 by the lead, deployed from `03d8676` (rows in `docs/results.md`):
+
+| Site | Server | With the hint | Without it (red control) |
+| --- | --- | --- | --- |
+| `wp-ref-a` | MariaDB 10.11.14 | 2 rows, lowest id 0 | 2 rows, lowest id 1 |
+| `wp-a2` | PlanetScale 8.4.11-Vitess | 2 rows, lowest id 0 | 2 rows, lowest id 1 |
+
+So the hint keeps id 0 on both servers, and without it both renumber.
+
+**Round trip on PlanetScale, measured 2026-11-06** (`docs/results.md`). The a2 dump went back into `wp-a2`, run by the lead from a worktree that never deployed the site, with `DEPLOY_STATE=r2`:
+
+| Run | Code | Result |
+| --- | --- | --- |
+| 1 (04:31Z) | `ed0dcc8`, no DDL mode | FAIL at `CREATE TABLE wp_actionscheduler_actions`: errno 1067, the zero-date default under PlanetScale's strict mode. It stopped after `replace=1`: `wp-a2` was left empty. |
+| 2 | `3e1e033`, DDL mode and preflight | Pass. Preflight 98 `CREATE TABLE`; 228 statements in 1 part (52 tables dropped first); every table matches, 8583 rows in 98 tables; `GET /` 200. The site came back. |
+
+"address changed in 3 values" on a round trip: three `http://wp-a2...` values became `https://`.
+
+**Not measured yet: MariaDB with the DDL mode.** A round trip into `wp-ref-a` is a separate step. The a2 dump is plain mysqldump output, so it can be the source there too. With it, the address changes from `wp-a2` to `wp-ref-a`. The first run on `wp-ref-a` (from `a2a9c11`) read every count as null: `mysql-bridge.js` returns a binary-charset column as `{"$b": base64}`, and MariaDB reports `COUNT(*)` and `MIN()` that way. `sql-import.js` now decodes every cell, and a count that is not an integer is an error.
+
 ## Theme and plugins (build input)
 
 `spikes/b2-wordpress/build.sh` copies them when `IMPORT_CONTENT` is set (`deploy/import/content.sh`):
@@ -125,6 +170,8 @@ A deployed `workers.dev` site has security checks at the edge that `wrangler dev
 Slice 2, 2026-11-06, same local Worker: `build.sh` with `IMPORT_CONTENT` from the `wp-content` of WordPress 7.1.4 (a macOS `tar` archive: 504 `._` entries skipped) built Akismet and `hello.php` into `site.zip` and `public/`. `import.sh` with `CONTENT` and `SKIP_MEDIA=1` imported the a2 dump as before (every table matched, `GET /` 200). The R2 upload (`media.sh` with the Terraform key) needs a deployed site with `MEDIA=1`: not run yet.
 
 `c1`, 2026-11-06, local (no Docker on this computer, so no container): `tests/run.sh` runs `seed.sh` against the stand-in. It checks a good seed, a wrong SHA-256, a missing object, a restored database (it wins), and no `SEED_SHA256`. Then the `c1` build's own WordPress tree (`spikes/c1-woo-container/build.sh`, WooCommerce in it) ran under `php -S` with `router.php` on the a2 seed (made by `import.sh` steps 1 to 3). `/`, `/?p=1`, `wp-login.php` and the shop page were HTTP 200, with no PHP errors. The real container, Litestream and the deploy are not run yet.
+
+Variant `a`, 2026-11-06, local (no MySQL on this computer): `mysql-prepare.py` on the a2 dump, for MySQL and for MariaDB, made 228 statements with 8583 rows. The address changed in 26 values, as `search-replace.py` does on SQLite. `checkStatement` of the endpoint allowed all 228. Eight `CREATE TABLE` statements of Wordfence were refused before the hex `DEFAULT` rewrite. The import into MySQL is not run yet.
 
 ## Measured on a deployed site
 
