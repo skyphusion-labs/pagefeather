@@ -167,6 +167,8 @@ node "$HERE/sqlimport-check.mjs" "$T/sql-import.mjs" > "$T/check.out" || true
 check "sql-import.js checkStatement cases" "$(tail -1 "$T/check.out")" "all passed"
 node "$HERE/sqlimport-endpoint.mjs" "$T/sql-import.mjs" > "$T/endpoint.out" || true
 check "sql-import.js endpoint rules" "$(tail -1 "$T/endpoint.out")" "all passed"
+python3 "$HERE/test_sqlimport_client.py" 2> "$T/client.err" || { cat "$T/client.err"; fails=$((fails + 1)); }
+check "sqlimport.py: CREATE preflight before replace" "$(tail -1 "$T/client.err")" "OK"
 
 # 8. c1: the container's seed step (spikes/c1-woo-container/container/seed.sh)
 # against the same stand-in. PUT a seed, then load it as entrypoint.sh does.

@@ -12,11 +12,22 @@ const b64 = (t) => ({ $b: Buffer.from(t).toString('base64') });
 function fakeDb({ vitess = false, packet = 16777216, binary = false, garbage = false } = {}) {
 	const ran = [];
 	const tables = ['wp_options', 'wp_posts', 'other_plugin_table'];
+	// Strict like PlanetScale through Hyperdrive: a SET holds only inside a
+	// transaction; a zero-date DEFAULT needs the relaxed mode.
+	let inTx = false;
+	let mode = null;
 	return {
 		ran,
 		async query(env, m) {
 			const sql = m.mysql;
 			ran.push(sql);
+			if (sql === 'BEGIN') return (inTx = true), { ok: true };
+			if (sql === 'COMMIT') return (inTx = false), (mode = null), { ok: true };
+			if (sql.startsWith('SET SESSION sql_mode')) return (mode = inTx ? sql : null), { ok: true };
+			const relaxed = inTx && mode === "SET SESSION sql_mode='NO_AUTO_VALUE_ON_ZERO'";
+			if (!inTx) mode = null;
+			if (sql.startsWith('CREATE TABLE') && sql.includes("'0000-00-00") && !relaxed) return { ok: false, error: "Invalid default value for 'scheduled_date_gmt'", errno: 1067 };
+			if (sql.startsWith('CREATE TABLE') && sql.includes('FAILDDL')) return { ok: false, error: 'refused ddl', errno: 1064 };
 			if (sql === 'SELECT VERSION()') return { ok: true, rows: [[vitess ? '8.0.34-PlanetScale' : '10.11.6-MariaDB-0+deb12u1']] };
 			if (sql === 'SELECT @@max_allowed_packet') return { ok: true, rows: vitess ? [] : [[binary ? b64(String(packet)) : String(packet)]] };
 			if (sql.startsWith('SHOW VARIABLES')) return { ok: true, rows: packet ? [['max_allowed_packet', String(packet)]] : [] };
@@ -74,5 +85,19 @@ r = await call(fakeDb({ binary: true }), 'GET', '/_sqlimport?info=1');
 check('info: binary packet cell decoded', r.o.max_allowed_packet, 16777216);
 r = await call(fakeDb({ garbage: true }), 'GET', '/_sqlimport?counts=1');
 check('counts: a count that is not an integer is a 500, not a null', [r.status, r.o.ok, /COUNT\(\*\) of wp_options: not an integer/.test(r.o.error)], [500, false, true]);
+const zero = "CREATE TABLE `wp_actionscheduler_actions` (`id` bigint NOT NULL, `scheduled_date_gmt` datetime DEFAULT '0000-00-00 00:00:00')";
+db = fakeDb();
+r = await call(db, 'POST', '/_sqlimport', line('DROP TABLE IF EXISTS `wp_actionscheduler_actions`') + line(zero));
+check('zero-date CREATE runs in the DDL mode on a strict server', [r.status, r.o.ok], [200, true]);
+check('the DDL mode: BEGIN, SET SESSION, CREATE, COMMIT', db.ran.slice(1), ['BEGIN', "SET SESSION sql_mode='NO_AUTO_VALUE_ON_ZERO'", zero, 'COMMIT']);
+db = fakeDb();
+r = await call(db, 'POST', '/_sqlimport?preflight=1', line(zero) + line(zero.replace('wp_actionscheduler_actions', 'wp_two')));
+check('preflight: each CREATE under a scratch name, then dropped', [r.status, r.o.preflight, db.ran.filter((x) => /^(DROP|CREATE)/.test(x)).map((x) => x.slice(0, 33))], [200, 2, ['DROP TABLE IF EXISTS `wp_impchk_0', 'CREATE TABLE `wp_impchk_0` (`id` ', 'DROP TABLE IF EXISTS `wp_impchk_0', 'DROP TABLE IF EXISTS `wp_impchk_1', 'CREATE TABLE `wp_impchk_1` (`id` ', 'DROP TABLE IF EXISTS `wp_impchk_1']]);
+check('preflight never touches a real table', db.ran.some((x) => /wp_actionscheduler_actions|wp_two|SHOW TABLES/.test(x)), false);
+db = fakeDb();
+r = await call(db, 'POST', '/_sqlimport?preflight=1', line(zero) + line('CREATE TABLE `wp_bad` (`a` int) COMMENT=\'FAILDDL\''));
+check('preflight: a refused CREATE is a 400 at its line, scratch dropped', [r.status, r.o.line, r.o.preflight, db.ran[db.ran.length - 1]], [400, 2, true, 'DROP TABLE IF EXISTS `wp_impchk_1`']);
+r = await call(fakeDb(), 'POST', '/_sqlimport?preflight=1', line("INSERT INTO `wp_a` VALUES (1)"));
+check('preflight takes CREATE TABLE only', [r.status, r.o.error], [400, 'preflight takes CREATE TABLE only']);
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);

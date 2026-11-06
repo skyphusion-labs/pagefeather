@@ -18,7 +18,7 @@ PACKET=$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])).get("max_al
 # the request (1.5 MB, sqlimport.py; the Worker refuses a body over 2 MB).
 MAXST=$(( PACKET - 1024 ))
 [ "$MAXST" -le 1400000 ] || MAXST=1400000
-echo "a: $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$WORK/server.json") ($FLAVOUR), max_allowed_packet $PACKET, statements up to $MAXST bytes"
+echo "a: $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$WORK/server.json") ($FLAVOUR), max_allowed_packet $PACKET, statements up to $MAXST bytes, server sql_mode $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("sql_mode") or "(not readable)")' "$WORK/server.json")"
 PREFIX=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["prefix"])' "$WORK/report.json")
 python3 "$IMP/mysql-prepare.py" "$DUMP" "$WORK/mysql.jsonl" --prefix "$PREFIX" --flavour "$FLAVOUR" --max-statement "$MAXST" --old "$OLD_ORIGIN" --new "$NEW_ORIGIN" > "$WORK/mysql.json"
 python3 - "$WORK/mysql.json" <<'PY'

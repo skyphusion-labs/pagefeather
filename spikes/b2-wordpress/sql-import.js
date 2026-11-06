@@ -2,10 +2,23 @@
 // deploy/import.sh, deploy/import/mysql-prepare.py). Variant a only: PHP in the
 // Worker, MySQL (MariaDB, or PlanetScale for a2) through Hyperdrive.
 //
-//   GET  /_sqlimport?info=1    {version, flavour, max_allowed_packet}
+//   GET  /_sqlimport?info=1    {version, flavour, max_allowed_packet, sql_mode}
 //   GET  /_sqlimport?counts=1  {tables: {name: {rows, min_pk}}} for wp_ tables;
 //                              a count that is not an integer is a 500, not a null
 //   POST /_sqlimport[?replace=1]  JSON lines {"sql": "..."}, in order
+//   POST /_sqlimport?preflight=1  JSON lines of CREATE TABLE: each one runs
+//        under a scratch name (wp_impchk_<n>) in the DDL mode below, then is
+//        dropped. No other table is touched. deploy/import/sqlimport.py runs
+//        it for every CREATE of a dump before replace=1 empties the site.
+//
+// DDL mode: a CREATE runs as BEGIN; SET SESSION sql_mode='NO_AUTO_VALUE_ON_ZERO';
+// CREATE; COMMIT (COMMIT whenever BEGIN ran). Hyperdrive and Vitess do not keep
+// a SET from one statement to the next outside a transaction, and a SET_VAR
+// hint cannot go on DDL; inside a transaction the SET holds for the DDL
+// (docs/approach-a2.md, probe E2; php/hyperdrive-db.php does the same).
+// Without it PlanetScale's strict default mode refused Action Scheduler's
+// DEFAULT '0000-00-00 00:00:00' (errno 1067, wp-a2, 2026-11-06). Four calls,
+// not one round trip: the bridge runs one statement per call.
 //
 // It needs the SPIKE_TOKEN secret and its x-spike-token header (no token set:
 // refused, unlike other spike endpoints). Every statement must pass
@@ -194,6 +207,23 @@ async function one(db, env, sql) {
 	return r;
 }
 
+// One CREATE TABLE in the DDL mode. Returns the CREATE's reply.
+async function ddl(db, env, sql) {
+	const begin = await db.query(env, { mysql: 'BEGIN' });
+	let r;
+	try {
+		if (begin.ok) {
+			const set = await db.query(env, { mysql: `SET SESSION ${MODE}` });
+			if (!set.ok) return set;
+		}
+		r = await db.query(env, { mysql: sql });
+	} finally {
+		if (begin.ok) await db.query(env, { mysql: 'COMMIT' });
+	}
+	return r;
+}
+const run = (db, env, sql) => (CREATE_RE.test(sql) ? ddl(db, env, sql) : db.query(env, { mysql: sql }));
+
 async function wpTables(db, env) {
 	const r = await one(db, env, 'SHOW TABLES');
 	return (r.rows || []).map((x) => cell(x[0])).filter((t) => /^wp_[A-Za-z0-9_]{1,60}$/.test(t || ''));
@@ -219,7 +249,11 @@ export async function sqlImport(req, env, url, db) {
 			const v = await one(db, env, 'SELECT VERSION()');
 			const version = String(v.rows && v.rows[0] && cell(v.rows[0][0]));
 			const p = await packet(db, env);
-			return json({ version, flavour: /mariadb/i.test(version) ? 'mariadb' : 'mysql', max_allowed_packet: p.bytes, packet_via: p.via, packet_error: p.error });
+			// The server's default sql_mode, to see whether it is strict (Vitess
+			// returns no row for it: null there, #50).
+			const m = await db.query(env, { mysql: 'SELECT @@SESSION.sql_mode' });
+			const sql_mode = m.ok && m.rows && m.rows.length ? cell(m.rows[0][0]) : null;
+			return json({ version, flavour: /mariadb/i.test(version) ? 'mariadb' : 'mysql', max_allowed_packet: p.bytes, packet_via: p.via, packet_error: p.error, sql_mode });
 		}
 		if (req.method === 'GET' && url.searchParams.get('counts') === '1') {
 			const tables = {};
@@ -251,6 +285,18 @@ export async function sqlImport(req, env, url, db) {
 			if (why) return json({ ok: false, line: i + 1, error: 'refused: ' + why, ran: 0 }, 400);
 			sqls.push(o.sql);
 		}
+		if (url.searchParams.get('preflight') === '1') {
+			for (let i = 0; i < sqls.length; i++) {
+				if (!CREATE_RE.test(sqls[i])) return json({ ok: false, line: i + 1, error: 'preflight takes CREATE TABLE only' }, 400);
+				const scratch = `wp_impchk_${i}`;
+				const sql = sqls[i].replace(/^CREATE TABLE `[^`]+`/, `CREATE TABLE \`${scratch}\``);
+				await one(db, env, `DROP TABLE IF EXISTS \`${scratch}\``);
+				const r = await ddl(db, env, sql);
+				await db.query(env, { mysql: `DROP TABLE IF EXISTS \`${scratch}\`` });
+				if (!r.ok) return json({ ok: false, line: i + 1, error: r.error, errno: r.errno, preflight: true }, 400);
+			}
+			return json({ ok: true, preflight: sqls.length });
+		}
 		let dropped = 0;
 		if (url.searchParams.get('replace') === '1') {
 			for (const t of await wpTables(db, env)) {
@@ -259,7 +305,7 @@ export async function sqlImport(req, env, url, db) {
 			}
 		}
 		for (let i = 0; i < sqls.length; i++) {
-			const r = await db.query(env, { mysql: sqls[i] });
+			const r = await run(db, env, sqls[i]);
 			if (!r.ok) return json({ ok: false, line: i + 1, ran: i, dropped, error: r.error, errno: r.errno }, 400);
 		}
 		return json({ ok: true, statements: sqls.length, dropped });
