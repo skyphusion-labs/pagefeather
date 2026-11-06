@@ -9,11 +9,14 @@
 #   TF_VAR_mysql_user=... TF_VAR_mysql_password=... TF_VAR_mysql_database=...   as for wp-a2
 #   ./tests/a2/probe.sh
 #
-# Options: PLACEMENT (default aws:us-east-2, as wp-a2), N (statements per
+# Options: PLACEMENT (default aws:us-east-2, as wp-a2), PLACEMENT_KEY (region,
+# the default, or host: a single-homed host:port the Worker runs near, e.g.
+# PLACEMENT_KEY=host PLACEMENT=aws-us-east-2.connect.psdb.cloud:3306), N (statements per
 # latency run, default 50), RUNS (latency runs, default 3), SESSION_ONLY=1
 # (skip the latency runs).
 # Output: tests/a2/results/probe-<time>.json
 set -euo pipefail
+case "${PLACEMENT_KEY:-region}" in region|host) ;; *) echo "PLACEMENT_KEY must be region or host" >&2; exit 2 ;; esac
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 H="$ROOT/tests/a2"
 TF="$H/terraform"
@@ -36,7 +39,7 @@ compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
 [placement]
-region = "${PLACEMENT:-aws:us-east-2}"
+${PLACEMENT_KEY:-region} = "${PLACEMENT:-aws:us-east-2}"
 
 [[hyperdrive]]
 binding = "HD_GLOBAL"
@@ -63,7 +66,7 @@ fi
 curl -s -m 300 -K <(hdr) "$URL/session" > "$W/session"
 mkdir -p "$H/results"
 RES="$H/results/probe-$(date -u +%Y%m%dT%H%M%SZ).json"
-python3 - "$W" "$RES" "${PLACEMENT:-aws:us-east-2}" <<'PY'
+python3 - "$W" "$RES" "${PLACEMENT_KEY:-region}=${PLACEMENT:-aws:us-east-2}" <<'PY'
 import json, os, sys
 w, res, placement = sys.argv[1:4]
 lat = []
