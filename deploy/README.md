@@ -62,7 +62,7 @@ What `deploy.sh` does for c1 (`deploy/variants/c1.sh`):
 2. Build the image tree (`spikes/c1-woo-container/build.sh`).
 3. Write the Wrangler config from the Terraform outputs. `PUBLIC_HOST` is `<name>.<subdomain>.workers.dev`; the script reads the subdomain from the API before the deploy, because WordPress uses it as its address.
 4. `wrangler deploy --secrets-file ... --containers-rollout immediate`. Wrangler builds the image with Docker, so Docker must run on the machine.
-5. Wait `ROLLOUT_WAIT` (60 s), then stop the container once (`POST /_store-stop`). A container that starts within about a minute of a deploy can run the old image; the next request starts one from the new image. On a new site there is no container yet, and the stop does nothing.
+5. Wait for the container rollout of the deploy to complete (issue #106): the containers API, application `<NAME>-store`, the newest rollout whose `target_version` is the application's `version`, until its `status` is `completed`. A `reverted` rollout, or none completed in `ROLLOUT_TIMEOUT`, fails the deploy. If the API cannot be read 3 times in a row, it waits a fixed `ROLLOUT_WAIT` instead and says so. Then stop the container once (`POST /_store-stop`). A container that starts before the rollout ends runs the old image; the next request starts one from the new image. On a new site there is no container yet, and the stop does nothing.
 6. Wait for `GET /` to answer 200 (`first_start_s`). On a new site this includes the install.
 7. `e2e.sh`, `tests/a/bench.py`, then one cold start: stop the container and time until a new container (a new id in `/_boot.txt`) restored the database from R2 and answers `GET /` (`cold_start_s`).
 
@@ -88,7 +88,9 @@ The query count per page comes from the mu-plugin `php/query-count.php`: it send
 | `WARM_START` | `off` | `product`: a product view (`/product/`, `/shop`, a product category or tag) starts the sleeping container in the background, so the first cart after a sleep is warm. At most once per `WARM_GAP_S` (`60`). `WARM_PATHS` (a regular expression) replaces the product paths. Cost: a container that would have slept stays awake up to `IDLE_SECONDS`. Issue #73: the first add to cart after a sleep, median 10.0 s with `off` and 5.1 s with `product` (3 trials each, docs/approach-c1.md). |
 | `CHECK_WAIT` | `600` | Seconds to wait after the deploy until the Store object is from this deploy (c1_check) |
 | `PUBLIC_HOST` | `<name>.<subdomain>.workers.dev` | The address WordPress uses |
-| `ROLLOUT_WAIT` | `60` | Seconds to wait after the deploy before the one stop |
+| `ROLLOUT_TIMEOUT` | `600` | Seconds to wait for the container rollout to complete |
+| `ROLLOUT_POLL_S` | `10` | Seconds between two reads of the rollout |
+| `ROLLOUT_WAIT` | `60` | The fallback: seconds to wait before the one stop when the containers API cannot be read |
 | `START_TIMEOUT` | `900` | Seconds to wait for the first 200 |
 
 ### How the container sleeps
