@@ -81,7 +81,20 @@ The one plugin that fails on our A Paid is All-in-One WP Migration: every wp-adm
 
 The surface test proves the PHP side only: its bridge is a stub. The MariaDB rows are the real bridge. The A Paid row of the plugin table above changes only after a run on Paid.
 
-**Found on the way: binary SQL is stored doubled (issue #79).** SQL that is not valid UTF-8 goes to the Worker as `{mysql_b64}`. `mysql-bridge.js` decodes it as latin1, and mysql2 sends it as utf8mb4. On MariaDB 11.4, `e9 ff 80` was stored as `c3 a9 c3 bf c2 80`. Valid UTF-8 and bytes up to 0x7F are correct. The same result came without the mysqli layer. Not fixed here.
+**Found on the way: binary SQL is stored doubled (issue #79).** SQL that is not valid UTF-8 goes to the Worker as `{mysql_b64}`. `mysql-bridge.js` decodes it as latin1, and mysql2 sends it as utf8mb4. On MariaDB 11.4, `e9 ff 80` was stored as `c3 a9 c3 bf c2 80`. Valid UTF-8 and bytes up to 0x7F are correct. The same result came without the mysqli layer.
+
+**Fixed (issue #79). Measured 2026-11-06.** `php/hyperdrive-literals.php` rewrites each string literal that is not valid UTF-8 as a hex literal (`X'...'`), so the SQL on the bridge is valid UTF-8 and MySQL reads the same bytes. This is HostlessWP's approach ([prior-art.md](prior-art.md)).
+- Literals are read as MySQL reads them without `NO_BACKSLASH_ESCAPES`, which is how `wpdb` escapes: backslash escapes, doubled quotes, and `\%` and `\_` keeping their backslash.
+- Backticked names and comments are copied as they are. A charset introducer gets a space (`_binary X'...'`).
+- SQL with such bytes outside any literal gets an error reply and is not sent.
+- `mysql-bridge.js` refuses `{mysql_b64}` with an error instead of decoding it as latin1.
+- The escape moved into the same file, so `tests/a/literals-test.php` tests the shipped one. CI runs that test.
+
+| Test | Result |
+| --- | --- |
+| `php tests/a/literals-test.php`: 20 cases, plus 2000 random values escaped as `wpdb` escapes them | 21 of 21. Mutation (the NUL unescape removed): 2 fail, 143 of 2000 values wrong |
+| local `a-local`, MariaDB 11.4.13, the probe: `$wpdb` writes into `VARBINARY`, read back with `HEX()` | `c3a9`, `e9ff80` and `007f80` stored as written; a mysqli write in All-in-One WP Migration's shape (`mysqli_real_query()` on `$wpdb->dbh`, `e9 ff 80 00 27`) stored as written |
+| the same run: `e2e.sh`, `plugins.py all-in-one-wp-migration`, `break.py` | 17 of 17; pass; the same PASS/FAIL set as without the layer |
 
 ### HostlessWP on Workers Free
 
