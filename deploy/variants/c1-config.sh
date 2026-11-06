@@ -14,7 +14,7 @@
 #   IDLE_SECONDS   the container stops after this many seconds with no request
 #   OBJECT_CACHE   apcu (default) or none: the APCu object cache drop-in
 #   QUEUE_RUNNER   local (default): WP-Cron and Action Scheduler run from the
-#                  container every CRON_SECONDS (default 60); loopback: the
+#                  container every CRON_SECONDS (default 10); loopback: the
 #                  Action Scheduler async loopback, as before (issue #45)
 #   PAGE_CACHE_TTL seconds a storefront page stays fresh at the edge (default 120)
 #   PAGE_CACHE_SWR seconds it may then be served stale while a new copy renders
@@ -23,6 +23,11 @@
 #                  add to cart gets 503 (default 16; 0 = no limit; checkout,
 #                  payment callbacks and admin are always let in; issue #39)
 #   RETRY_AFTER    the Retry-After seconds of that 503 (default 5)
+#   FLOW_LIMIT     the higher cap for a shopper already in a cart flow (a Cart-Token
+#                  or a WooCommerce session; default 2 x QUEUE_LIMIT)
+#   CONTAINER_TIMEOUT_S  seconds a shopper request waits for the container's
+#                  response headers before a 504 (default 60; 0 = no limit;
+#                  admin, login, operator and authorized REST are exempt; #93)
 #   REPLICA_PATH   path of the Litestream replica in the replica bucket (default
 #                  store). Another path restores and writes another database;
 #                  going back to store finds the old one unchanged.
@@ -43,8 +48,11 @@ PAGE_CACHE_TTL=${PAGE_CACHE_TTL:-120}
 PAGE_CACHE_SWR=${PAGE_CACHE_SWR:-600}
 QUEUE_LIMIT=${QUEUE_LIMIT:-16}
 RETRY_AFTER=${RETRY_AFTER:-5}
+FLOW_LIMIT=${FLOW_LIMIT:-}
+CONTAINER_TIMEOUT_S=${CONTAINER_TIMEOUT_S:-60}
 QUEUE_RUNNER=${QUEUE_RUNNER:-local}
-CRON_SECONDS=${CRON_SECONDS:-60}
+CRON_SECONDS=${CRON_SECONDS:-10}
+AS_TIME_LIMIT=${AS_TIME_LIMIT:-5}
 for v in NAME PUBLIC_HOST REPLICA MEDIA_BUCKET R2_ENDPOINT COMPAT INSTANCE_TYPE PHP_WORKERS IDLE_SECONDS; do
   [ -n "${!v:-}" ] || { echo "c1-config.sh: $v is empty" >&2; exit 1; }
 done
@@ -64,10 +72,16 @@ chk OBJECT_CACHE "$OBJECT_CACHE" '^(none|apcu)$'
 chk REPLICA_PATH "$REPLICA_PATH" '^[a-z0-9][a-z0-9-]{0,62}$'
 chk QUEUE_RUNNER "$QUEUE_RUNNER" '^(local|loopback)$'
 chk CRON_SECONDS "$CRON_SECONDS" '^[1-9][0-9]{0,3}$'
+chk AS_TIME_LIMIT "$AS_TIME_LIMIT" '^[1-9][0-9]?$'
 chk PAGE_CACHE_TTL "$PAGE_CACHE_TTL" '^[1-9][0-9]{0,4}$'
 chk PAGE_CACHE_SWR "$PAGE_CACHE_SWR" '^[0-9]{1,5}$'
 chk QUEUE_LIMIT "$QUEUE_LIMIT" '^[0-9]{1,4}$'
 chk RETRY_AFTER "$RETRY_AFTER" '^[1-9][0-9]{0,3}$'
+# The default needs a checked QUEUE_LIMIT.
+[ -n "$FLOW_LIMIT" ] || FLOW_LIMIT=$((2 * QUEUE_LIMIT))
+chk FLOW_LIMIT "$FLOW_LIMIT" '^[0-9]{1,4}$'
+chk CONTAINER_TIMEOUT_S "$CONTAINER_TIMEOUT_S" '^[0-9]{1,4}$'
+[ "$FLOW_LIMIT" -ge "$QUEUE_LIMIT" ] || { echo "c1-config.sh: FLOW_LIMIT ($FLOW_LIMIT) is below QUEUE_LIMIT ($QUEUE_LIMIT)" >&2; exit 1; }
 SEED_SHA256=${SEED_SHA256:-}
 [ -z "$SEED_SHA256" ] || chk SEED_SHA256 "$SEED_SHA256" '^[a-f0-9]{64}$'
 WARM_START=${WARM_START:-off}
@@ -111,10 +125,13 @@ IDLE_SECONDS = "$IDLE_SECONDS"
 OBJECT_CACHE = "$OBJECT_CACHE"
 QUEUE_RUNNER = "$QUEUE_RUNNER"
 CRON_SECONDS = "$CRON_SECONDS"
+AS_TIME_LIMIT = "$AS_TIME_LIMIT"
 PAGE_CACHE_TTL = "$PAGE_CACHE_TTL"
 PAGE_CACHE_SWR = "$PAGE_CACHE_SWR"
 QUEUE_LIMIT = "$QUEUE_LIMIT"
 RETRY_AFTER = "$RETRY_AFTER"
+FLOW_LIMIT = "$FLOW_LIMIT"
+CONTAINER_TIMEOUT_S = "$CONTAINER_TIMEOUT_S"
 R2_ENDPOINT = "$R2_ENDPOINT"
 SEED_SHA256 = "$SEED_SHA256"
 WARM_START = "$WARM_START"

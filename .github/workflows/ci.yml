@@ -32,12 +32,17 @@ jobs:
         run: for f in $(git ls-files '*.sh'); do bash -n "$f"; done
       - name: Dialect tests
         run: php spikes/b2-wordpress/tests/dialect-test.php
+      - name: Approach A literal tests (issue #79)
+        run: php tests/a/literals-test.php
       - name: Import tests
         # deploy/import (issue #31): dump to SQLite, prefix, site address, dbmove dump. Offline.
         run: deploy/import/tests/run.sh
       - name: c1 warm start tests
         # spikes/c1-woo-container/warm.js (issue #73): product views, rate limits, never through fetch.
         run: node spikes/c1-woo-container/tests/warm-test.mjs
+      - name: c1 container fetch timeout tests
+        # spikes/c1-woo-container/worker.js (issue #93): a hung container gets 504, admin is exempt.
+        run: node spikes/c1-woo-container/tests/timeout-test.mjs
       - name: No em or en dashes
         run: |
           if git grep -nP '\x{2014}|\x{2013}' -- . ':!**/package-lock.json'; then echo 'em or en dash found'; exit 1; fi

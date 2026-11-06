@@ -251,7 +251,7 @@ Issue #45. `QUEUE_RUNNER=local` (the default; `loopback` keeps the old path).
 
 ### What changed
 
-- `container/entrypoint.sh` requests `http://127.0.0.1/wp-cron.php` every `CRON_SECONDS` (60) while the container is awake. The request runs in PHP's own server, so it uses the same APCu cache as the visitor requests, and it does not go out through the Worker. Action Scheduler's `action_scheduler_run_queue` event (every minute) then processes batches for up to 30 s.
+- `container/entrypoint.sh` requests `http://127.0.0.1/wp-cron.php` every `CRON_SECONDS` while the container is awake (60 at first, 10 since the head-of-line finding below). The request runs in PHP's own server, so it uses the same APCu cache as the visitor requests, and it does not go out through the Worker. Action Scheduler then processes batches for up to `AS_TIME_LIMIT` seconds (30 at first, Action Scheduler's default; 5 since the head-of-line finding): through its WP-Cron event when that is due (once a minute), and otherwise through one run that `php/c1-queue.php` starts in the same request, so the queue keeps about the same share of time with short runs.
 - `php/c1-queue.php` turns off Action Scheduler's async loopback (`action_scheduler_allow_async_request_runner`). No request holds a PHP process with `sleep( 5 )` any more.
 - `router.php` does not count a `wp-cron.php` request from 127.0.0.1 as activity, so the loop does not keep an idle container awake. The queue waits while the container sleeps and runs again on the next start.
 - Not php-cli: a php-cli process has its own, empty APCu, so it would write past the cache that the server's processes read.
@@ -393,7 +393,89 @@ From the container log (each arm's measured window):
 
 Checkout capacity is still the instance type: about 1.6 checkouts a second fit in half a vCPU. The limit keeps the wait short; a larger instance serves more buyers.
 
-## Warm start on a product view (issue #73, not measured yet)
+### Who passes the limit (refined, measured)
+
+The first version shed a shopper's add to cart after letting the cart in (130 carts in the run above), and let every non-Store REST route through. Now `admission()` in `worker.js` has three classes:
+
+- **always**: checkout, payment callbacks (`wc-api`), `wp-admin`, `wp-login.php`, the operator endpoints, a request from a logged-in user (a `wordpress_logged_in_` cookie), and REST with credentials (an `Authorization` header: application passwords).
+- **flow**: a shopper already in a cart flow: a `Cart-Token` header (the Store API), or a WooCommerce session cookie (`wp_woocommerce_session_*`, or `woocommerce_items_in_cart` that is not 0). It passes the limit, so a cart that got in is not turned away at the add to cart. `/_store-info` counts how often (`queue.flow`).
+- **shed**: everything else, including a new shopper's first cart request and anonymous REST (before, an anonymous client could pass the limit through any non-Store route, for example `/wp-json/wp/v2/posts`).
+
+30 unit cases for `admission()` pass. **A forged flow is bounded.** The Worker cannot verify a `Cart-Token` or a WooCommerce cookie (WooCommerce signs the token in PHP), so a client can send `woocommerce_items_in_cart=1` and be treated as in a flow. A flow request therefore has its own, higher cap: `FLOW_LIMIT` (default 2 x `QUEUE_LIMIT`, never below it). Between the two caps an honest shopper's add to cart still gets in; above `FLOW_LIMIT` a flow request is shed too, so a forged cookie can push the container to at most `FLOW_LIMIT` in hand. `/_store-info` counts `queue.flow` (flow requests above `QUEUE_LIMIT`) and `queue.flowShed`. 11 unit cases for the decision (`shouldShed()`) pass, and they fail when the cap is removed. A signed admit cookie from the Store object would make a flow verifiable; it is the follow-up if the cap proves too loose. The limit is still not an access control: protection against abuse belongs to rate limiting at the edge.
+
+The count of requests in the container now lasts until the response body has been read to the end, not only until the response headers (checked in local workerd: 1 in flight while a body streamed, 0 after). For c1 the two were close, because PHP buffers the page (`query-count.php`) and static files do not come from the container, but a large streamed response would have been counted too briefly.
+
+**Measured.** The same overload run (`cached-sbjs`, BUYERS 0.5, 2 vCPU runner), twice, each on its own copy of wp-c1's database: swap12 (the cart-flow code; `deploy/results/bench-runner-20261106T065415Z-e3a0d8.json`) and swap14 (the same code; `deploy/results/bench-runner-20261106T075355Z-b181c4.json`).
+
+| Users | AFTER #82: orders, checkout p95 / p99 | swap12: orders, checkout p95 / p99 | swap14: orders, checkout p95 / p99 |
+| --- | --- | --- | --- |
+| 25 | 82, 8.8 / 11.1 s | 91, 8.7 / 32.2 s | 104, 7.5 / 9.1 s |
+| 50 | 78, 8.5 / 8.8 s | 89, 8.5 / 28.6 s | 97, 7.8 / 16.7 s |
+
+| Container log | AFTER #82 (2 vCPU rerun) | swap12 | swap14 |
+| --- | --- | --- | --- |
+| Carts let in / adds | 601 / 443 | 510 / 510 | 551 / 551 |
+| Completed orders per minute | 67.0 | 61.1 | 74.3 |
+| CPU s per completed order | 0.41 | 0.40 | 0.38 |
+| maxInflight / flow above 16 / flowShed | 18 / - / - | 20 / 112 / 0 | 21 / 119 / 0 |
+| Accept queue max | 8 | 10 | 11 |
+| Checkout in PHP p99 | 3.13 s | 3.06 s | 2.84 s |
+
+- **No cart is turned away at the add any more** (0 against 158), and more orders finish at the clean steps (25 and 50 users). A flow request never came near `FLOW_LIMIT` (at most 21 in hand).
+- **The checkout p99 of about 30 s on swap12 was not the flow change.** With at most 21 in hand and an accept queue of at most 11, the container cannot add 30 s. `load.py` now lists every request of 10 s or more with its time to the headers (TTFB) and its cf-ray. On swap14 all 4 such requests had TTFB equal to the total (the headers were late, not the body), and each was matched in the container log: PHP started it only when a local queue-runner cron run (`wp-cron.php`, 15 to 22 s) ended, and then took 0.1 to 0.5 s. During the cron run the accept queue was empty and 4 of the 5 PHP processes were idle. **That is head-of-line blocking in PHP's built-in server:** a `php -S` process accepts connections and serves them one at a time, so a connection that lands on the process running a long cron run waits for it, while other processes wait for work. swap12's cron runs were 27 to 30 s, the size of its tail. The fix belongs to the queue runner (issue #45: shorter Action Scheduler batches), and a server with one process per request (PHP-FPM) would end it for good; that is the first measured reason for FPM, a separate decision.
+- The 100-user steps were client limited (a load of 1.3 to 2.1 on 2 CPUs) and are not used.
+
+### Short queue runs (2026-11-06)
+
+The head-of-line finding (section "Who passes the limit"): a local cron request that ran Action Scheduler for 15 to 30 s held the shoppers whose connection landed on that PHP process. Now `AS_TIME_LIMIT` (5 s) bounds a run, `CRON_SECONDS` is 10, and `php/c1-queue.php` runs one batch in each local cron request in which Action Scheduler's own WP-Cron event (once a minute) is not due, so the queue keeps about the same share of time (5 s of every 15 s, against 30 s of every 90 s).
+
+Measured with the same overload run (`cached-sbjs`, BUYERS 0.5, 2 vCPU runner) on its own copy of wp-c1's database (swap15, `deploy/results/bench-runner-20261106T081530Z-dace4f.json`), the cart-flow code otherwise unchanged:
+
+| | swap14 (30 s runs) | swap15 (5 s runs) |
+| --- | --- | --- |
+| Requests of 10 s or more | 4 | 5 |
+| ... waiting behind a cron run | 4 (15 to 22 s each) | 0 |
+| Cron runs in the load window, longest | 15 to 22 s | 4.87 s (31 runs, 0 over 6 s) |
+| Checkout p99 at 25 / 50 users | 9.1 / 16.7 s | 11.1 / 10.5 s |
+
+- **No request waited behind a cron run.** The 5 slow requests (10.2 to 11.1 s, all checkouts) had TTFB about equal to the total and waited about 7 s with all 5 PHP processes running and 6 to 8 connections in the accept queue: ordinary CPU queueing at the bounded limit (about 16 in hand at about 2.4 requests per second), not head-of-line blocking.
+- **The queue still drains.** Pending actions: 13 at the start, 146 at the end of the load (at about 1 order a second the queue falls behind while the load lasts), then 77, 19 and 13 at 19, 39 and 60 s after the load, and 13 from then on (actions not yet due). There is no run with 30 s queue runs at BUYERS 0.5 to compare this with; the BUYERS 0.2 runs with 30 s runs (section "Queue runner") ended with the queue larger than at the start.
+- **Open question: a sale that lasts longer than the test.** During the load the queue grew by about 133 actions in 459 s (about 1 order a second, far above a real store), and it caught up in about 60 s after the load stopped. So at that order rate the queue processes less than arrives: a sustained sale longer than the test would carry a growing backlog of order emails, and how long it would take to catch up is not measured. The levers are the queue's share of time (`CRON_SECONDS`, `AS_TIME_LIMIT`) and the instance size.
+- Before the load, Action Scheduler's minute event ran 7.2 s once against the 5 s limit: it stops when the next action would likely pass the limit, so a run can overshoot by its last actions. Under load no run passed 4.9 s.
+- One process per request (PHP-FPM) would end this kind of tail entirely; it is a separate decision.
+
+## A stuck container (2026-11-06)
+
+Issue #93. A container instance (atl16) answered no request at all, not even a static file (`/_boot.txt`), and it survived a Worker deploy (the image was unchanged, so no new instance rolled out), a stop (`/_store-stop` timed out with `still_running`) and a kill (`kill=1` returned nothing). The Containers API has no instance delete. Its health field read `healthy 0, active 1`, but a working instance reads the same, so that field is not a sign of a stuck instance. The recovery: deploy once with a changed container setting (for example `INSTANCE_TYPE`); that rolls out a new instance.
+
+While it hung, every request waited until the client gave up, held its bounded-queue slot (a client that gives up does not end the request in the Store object), and the deploy waited 900 s for a first answer.
+
+### The change
+
+- **Container fetch timeout.** A shopper request (a page, the cart, the checkout, a payment callback) waits at most `CONTAINER_TIMEOUT_S` (60 s, about 5 times the checkout p99 under overload) for the container's response headers. Then the Store object answers `504` (`c1_timeout`, `no-store`, `x-c1-timeout: 1`) and gives the queue slot back; `/_store-info` counts `queue.timedOut`. A body that already streams is not cut. Exempt, because their requests can be long and legitimate (an import, a large export): `wp-admin`, `wp-login.php`, the operator endpoints (`/_*`), a logged-in user, and REST with an `Authorization` header. `0` turns the timeout off.
+- **A checkout that gets the 504 can still complete in PHP afterwards.** The shopper then sees an error for an order that exists, and a retry can place a second order. At 60 s, far above the p99, that happens only with a container that really does not answer, and an error is the smaller harm than a page that never ends. Payment callbacks are retried by the payment gateways, so a 504 is safe there.
+- **The deploy stops at a stuck container.** `c1_wait` reads the answer of its one stop: `still_running` (the container did not stop in 30 s) fails the deploy at once, with the recovery in the message. `c1_check` also requires a static file (`/_boot.txt`) to answer 200 within 15 s, and prints the result.
+- **A stuck instance for testing:** `/_kill.php?sig=STOPPHP` (spike token) sends SIGSTOP to every PHP process. The port stays open and nothing answers.
+
+### Measured
+
+With the real `Store.prototype.fetch` code and a stub container that never answers (limit 1 s): a hung checkout got 504 after 1.02 s with its slot released; a hung `wp-admin` request was not cut; an answered page passed. The test is `spikes/c1-woo-container/tests/timeout-test.mjs` and runs in CI. It has an outer deadline of 15 s: without the timeout it fails with exit 1 after 15 s, and without the `wp-admin` exemption it fails 2 of 3 checks.
+
+On wp-c1-perf (swap16, `CONTAINER_TIMEOUT_S=10` for a short test), after `sig=STOPPHP`:
+
+| Request | Answer | Time |
+| --- | --- | --- |
+| Store API checkout (3) | 504, `x-c1-timeout` | 10.15 to 10.20 s |
+| A page (2) | 504, `x-c1-timeout` | 10.18 to 10.20 s |
+| `/wp-admin/` as admin (exempt) | no answer (the client gave up) | 30.1 s |
+
+`/_store-info` after: `timedOut` 5, one exempt request still in hand.
+
+A deploy of the same configuration onto that stuck container failed after 141 s (60 s of rollout wait, 30 s of stop, the rest the build and upload), with the stop answer `still_running: true, reset: false` and the recovery message. Before, the same case waited 900 s. Note that the new Worker version was already deployed when the stop failed: the site ran the new Worker code against the stuck container until the recovery deploy.
+
+Recovery from the test: a deploy with `INSTANCE_TYPE=standard-2` rolled out a new instance (first answer 200 after 7 s, the static-file probe 200), and a deploy back to `standard-1` with the default `CONTAINER_TIMEOUT_S` came up in 11 s; `/_store-info` then read `timeoutS: 60`.
+
+## Warm start on a product view (issue #73)
 
 With the storefront cache, a shopper can browse cached pages while the container sleeps. Then the first request that needs the container (the cart, add to cart) waits for the cold start: 11 to 22 s, measured as starts after a stop.
 
@@ -406,7 +488,20 @@ With the storefront cache, a shopper can browse cached pages while the container
 
 **Tested locally:** `spikes/c1-woo-container/tests/warm-test.mjs` (CI) covers the path rule, the two rate limits, the running check, a failed start, and that neither `Store.prototype.fetch` nor `warm.js` warms through `fetch`. A mutation run turned each of 8 guards red.
 
-**To measure on a fresh c1 site, when Docker is back:** let the container sleep, make one cached product view, then add to cart, with `WARM_START=product` and, as the control, `off`. Read the add-to-cart time, and the awake time from `/_store-info`. Also check whether a cached product view already reaches the container by itself (a Store API or `wc-ajax` request of the theme); then this trigger adds little. What is known (strummer-c1perf, #39, plain HTTP with `load.py` and the probes, which run no JavaScript): an anonymous product page from the edge sets no cookie and sends nothing more by itself. Whether the mini-cart block of twentytwentyfive (or `wc-cart-fragments`, if a theme turns it on) sends a Store API cart request on load is a browser question, not tested. It needs a browser run.
+**To measure** with `tests/load/warm_start.py` (one arm per deploy; `B=<site> SPIKE_TOKEN=... python3 tests/load/warm_start.py [trials] [think_s]`). **On a fresh c1 site, when Docker is back:** let the container sleep, make one cached product view, then add to cart, with `WARM_START=product` and, as the control, `off`. Read the add-to-cart time, and the awake time from `/_store-info`. Also check whether a cached product view already reaches the container by itself (a Store API or `wc-ajax` request of the theme); then this trigger adds little. What is known (strummer-c1perf, #39, plain HTTP with `load.py` and the probes, which run no JavaScript): an anonymous product page from the edge sets no cookie and sends nothing more by itself. Whether the mini-cart block of twentytwentyfive (or `wc-cart-fragments`, if a theme turns it on) sends a Store API cart request on load is a browser question, not tested. It needs a browser run.
+
+**Measured, 2026-11-06,** on `wp-import-c1` (a fresh c1 site, `standard-1`), by the lead, with `tests/load/warm_start.py 3 10` at `97b58c9` (rows in `docs/results.md`). Each trial: stop the container, one cached view of a simple product as a new visitor, 10 s, then add to cart.
+
+| Arm | Add to cart (s) | Median | Running before the cart | View |
+| --- | --- | --- | --- | --- |
+| `off` (control) | 10.02, 11.02, 9.36 | 10.02 | no, no, yes | HIT, HIT, UPDATING |
+| `product` | 4.38, 5.14, 6.78 | 5.14 | yes, yes, yes | HIT, HIT, UPDATING |
+
+- **The warm start about halves the first add to cart after a sleep:** median 10.0 s to 5.1 s, and 10.5 s to 4.8 s over the HIT views only. The direct evidence is the running state: the container was up before the cart in every `product` trial, and in no `off` trial with a HIT view.
+- **A stale view is a second warm trigger, and it exists already.** Trial 3 in each arm got the page stale (`UPDATING`). The refresh behind it reached the container and started it, so the container was up before the cart even with `off`.
+- **In `product` trial 3 the gateway made no warm call at all:** `starts`, `skipped_running` and `skipped_gap` were all 0. The most likely cause is the script's own priming view, 3 s earlier. It is a product view, so it closed the gateway isolate's 60 s gate. That is a defect of the measurement, not of the site. The script now waits out `WARM_GAP_S` after the prime, and takes its median over HIT views only.
+- **n = 3 per arm is small.** Read the factor of two as a size, not as a precise number.
+- **Running is not ready.** Even warm, the add to cart took 4.4 to 6.8 s, so a started container is not a ready store. The first PHP request after a start still pays several seconds: the Litestream restore, the WordPress boot, a cold OPcache. **Open item, not a fix:** warm WordPress itself after the start, with one request that boots PHP and fills OPcache. It must stay outside the queue's shed class, and that is still to design and measure.
 
 **Why not warm through a Store API request:** under overload, the bounded queue sheds a new visitor's Store API cart request (no `Cart-Token`, no session: class `shed` in `admission()`). A warm start made through such a request would then be refused. `start()` does not go through the queue.
 

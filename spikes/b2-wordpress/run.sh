@@ -38,7 +38,10 @@ fi
 rm -f out.json; : > dev.log
 # SITE_ORIGIN (issue #33): the site's links are localhost:<port>, the address
 # e2e.sh and opcache.sh use, whatever request boots PHP first.
-wrangler dev --port "$PORT" --log-level warn ${DEV_ENV:+--env $DEV_ENV} --var "SITE_ORIGIN:http://localhost:$PORT" > dev.log 2>&1 &
+# DEV_VARS: more vars, "NAME:value" separated by spaces (opcache.sh sets PHP_RECYCLE:off).
+vars=()
+for v in ${DEV_VARS:-}; do vars+=(--var "$v"); done
+wrangler dev --port "$PORT" --log-level warn ${DEV_ENV:+--env $DEV_ENV} --var "SITE_ORIGIN:http://localhost:$PORT" "${vars[@]}" > dev.log 2>&1 &
 started=$!
 up=0
 for _ in $(seq 1 60); do

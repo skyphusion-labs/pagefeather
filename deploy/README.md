@@ -77,12 +77,15 @@ The query count per page comes from the mu-plugin `php/query-count.php`: it send
 | `IDLE_SECONDS` | `900` | The container stops itself after this many seconds with no request (see below). |
 | `OBJECT_CACHE` | `apcu` | `apcu`: the APCu object cache drop-in (about 20 % less CPU per page, docs/approach-c1.md). `none`: no object cache. |
 | `REPLICA_PATH` | `store` | Path of the Litestream replica in the replica bucket. Another path restores and writes another database; `store` stays as it was. |
-| `QUEUE_RUNNER` | `local` | `local`: WP-Cron and Action Scheduler run from inside the container every `CRON_SECONDS` (60), and the Action Scheduler async loopback is off (issue #45). `loopback`: the loopback, as before. |
+| `QUEUE_RUNNER` | `local` | `local`: WP-Cron and Action Scheduler run from inside the container every `CRON_SECONDS` (10), and the Action Scheduler async loopback is off (issue #45). `loopback`: the loopback, as before. |
+| `AS_TIME_LIMIT` | `5` | Seconds one queue run may take (Action Scheduler's default is 30). A long run holds one PHP server process, and a shopper whose connection lands there waits for it. |
 | `PAGE_CACHE_TTL` | `120` | Seconds a storefront page stays fresh at the edge (visitors with no cart, session or login; docs/approach-c1.md, Storefront edge cache). A change purges it sooner. |
 | `PAGE_CACHE_SWR` | `600` | Seconds after that during which the edge serves the old copy while it renders a new one |
 | `QUEUE_LIMIT` | `16` | Requests the container may have in hand before a page, cart or add to cart gets 503 with Retry-After (0 = no limit). Checkout, payment callbacks and admin are always let in (docs/approach-c1.md, Bounded queue). |
 | `RETRY_AFTER` | `5` | The Retry-After seconds of that 503 |
-| `WARM_START` | `off` | `product`: a product view (`/product/`, `/shop`, a product category or tag) starts the sleeping container in the background, so the first cart after a sleep is warm. At most once per `WARM_GAP_S` (`60`). `WARM_PATHS` (a regular expression) replaces the product paths. Cost: a container that would have slept stays awake up to `IDLE_SECONDS`. Issue #73; not measured yet. |
+| `FLOW_LIMIT` | 2 x `QUEUE_LIMIT` | The higher cap for a shopper already in a cart flow (a Cart-Token or a WooCommerce session); never below `QUEUE_LIMIT` |
+| `CONTAINER_TIMEOUT_S` | `60` | Seconds a shopper request (pages, cart, checkout, payment callbacks) waits for the container to answer before a 504 and its queue slot back (0 = no limit). wp-admin, wp-login.php, the operator endpoints, logged-in users and REST with an Authorization header are exempt, so a long import or export is not cut (issue #93). |
+| `WARM_START` | `off` | `product`: a product view (`/product/`, `/shop`, a product category or tag) starts the sleeping container in the background, so the first cart after a sleep is warm. At most once per `WARM_GAP_S` (`60`). `WARM_PATHS` (a regular expression) replaces the product paths. Cost: a container that would have slept stays awake up to `IDLE_SECONDS`. Issue #73: the first add to cart after a sleep, median 10.0 s with `off` and 5.1 s with `product` (3 trials each, docs/approach-c1.md). |
 | `CHECK_WAIT` | `600` | Seconds to wait after the deploy until the Store object is from this deploy (c1_check) |
 | `PUBLIC_HOST` | `<name>.<subdomain>.workers.dev` | The address WordPress uses |
 | `ROLLOUT_WAIT` | `60` | Seconds to wait after the deploy before the one stop |
@@ -116,7 +119,7 @@ The token in `CLOUDFLARE_API_TOKEN` must be able to: deploy Workers (Workers Scr
 NAME=my-shop ./deploy/destroy.sh
 ```
 
-`destroy.sh` reads the variant from `deploy/terraform/sites/<name>.tfvars` and runs `deploy/variants/c1-destroy.sh`: it deletes the container application `<name>-store`, then the Worker, then empties both buckets (R2 refuses to delete a bucket that has objects), then Terraform deletes the buckets, the Litestream key and the secrets. To empty the media bucket, Terraform first gives the Litestream key that bucket too (`teardown = true`); the Worker and the container are deleted at that point. The database replica and the uploads are deleted. Nothing is kept.
+`destroy.sh` reads the variant from the site's Terraform state and runs `deploy/variants/c1-destroy.sh`: it deletes the container application `<name>-store`, then the Worker, then empties both buckets (R2 refuses to delete a bucket that has objects), then Terraform deletes the buckets, the Litestream key and the secrets. To empty the media bucket, Terraform first gives the Litestream key that bucket too (`teardown = true`); the Worker and the container are deleted at that point. The database replica and the uploads are deleted. Nothing is kept.
 
 ## Variant `b-dosql`: the database in the PHP object
 
@@ -154,6 +157,20 @@ The hint is not a promise. An `enam` object landed in EWR two times in three and
 | `DEPLOY_STATE` | `local` | `r2` keeps Terraform state in an R2 bucket (`STATE_BUCKET`, `STATE_ENDPOINT`, and an R2 key in `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) |
 
 Each `NAME` has its own Terraform workspace, so two sites never share state.
+
+## Remove a site safely
+
+`NAME=my-site ./deploy/destroy.sh` (with `CLOUDFLARE_API_TOKEN` and `ACCOUNT_ID`) finds the state as `deploy.sh` keeps it (`deploy/tf-backend.sh`): local in the clone that deployed the site, or `DEPLOY_STATE=r2` from any clone. It checks all of this before it deletes anything:
+
+- The workspace `NAME` must exist. It is never made here.
+- The state's `name` output must be `NAME`. A backend or workspace that points at another site is refused.
+- A `backend_override.tf` that an earlier `DEPLOY_STATE=r2` run left in this clone is refused when `DEPLOY_STATE` is not `r2`. It holds that run's state key, maybe of another site. `deploy.sh` and `import.sh` refuse it too.
+- Without `sites/<name>.tfvars` in this clone, the variables come from the state's outputs.
+- The Worker is deleted by its name (`NAME`), so the clone's Wrangler config is not needed.
+- For variant `a` with `MYSQL=vultr`, the box's root (`deploy/mysql`) needs its `sites/<name>.tfvars`, or `MYSQL_ZONE_ID` and `MYSQL_HOST` as for `deploy.sh`: its zone is no output. If no box state is found, the script says that a box, if there is one, is NOT removed.
+- For `c1`, the teardown apply targets the Litestream key only.
+
+Tests: `deploy/tests/destroy-test.sh` (offline, local state, an `npx` stub).
 
 ## Terraform state holds secrets
 

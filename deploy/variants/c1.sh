@@ -20,7 +20,7 @@
 # Options: INSTANCE_TYPE (default standard-1), PHP_WORKERS (default from the
 # instance type), IDLE_SECONDS (default 900), OBJECT_CACHE (apcu or none,
 # default apcu), REPLICA_PATH (default store), QUEUE_RUNNER (local or
-# loopback, default local), CRON_SECONDS (default 60), PUBLIC_HOST (default
+# loopback, default local), CRON_SECONDS (default 10), AS_TIME_LIMIT (default 5), PUBLIC_HOST (default
 # <NAME>.<account subdomain>.workers.dev), ROLLOUT_WAIT (default 60 s),
 # START_TIMEOUT (default 900 s), BENCH, N.
 
@@ -35,7 +35,8 @@ IDLE_SECONDS=${IDLE_SECONDS:-900}
 OBJECT_CACHE=${OBJECT_CACHE:-apcu}
 REPLICA_PATH=${REPLICA_PATH:-store}
 QUEUE_RUNNER=${QUEUE_RUNNER:-local}
-CRON_SECONDS=${CRON_SECONDS:-60}
+CRON_SECONDS=${CRON_SECONDS:-10}
+AS_TIME_LIMIT=${AS_TIME_LIMIT:-5}
 
 c1_build() {
   log "build (c1)"
@@ -59,7 +60,7 @@ c1_config() {
   CONF="$C1/wrangler.deploy.$NAME.toml"
   compat=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' "$C1/wrangler.toml" | head -1)
   NAME=$NAME PUBLIC_HOST=$PUBLIC_HOST REPLICA=$replica MEDIA_BUCKET=$media R2_ENDPOINT=$endpoint \
-    COMPAT=$compat INSTANCE_TYPE=$INSTANCE_TYPE PHP_WORKERS=$PHP_WORKERS IDLE_SECONDS=$IDLE_SECONDS OBJECT_CACHE=$OBJECT_CACHE REPLICA_PATH=$REPLICA_PATH QUEUE_RUNNER=$QUEUE_RUNNER CRON_SECONDS=$CRON_SECONDS SEED_SHA256=${SEED_SHA256:-} \
+    COMPAT=$compat INSTANCE_TYPE=$INSTANCE_TYPE PHP_WORKERS=$PHP_WORKERS IDLE_SECONDS=$IDLE_SECONDS OBJECT_CACHE=$OBJECT_CACHE REPLICA_PATH=$REPLICA_PATH QUEUE_RUNNER=$QUEUE_RUNNER CRON_SECONDS=$CRON_SECONDS AS_TIME_LIMIT=$AS_TIME_LIMIT SEED_SHA256=${SEED_SHA256:-} \
     "$ROOT/deploy/variants/c1-config.sh" > "$CONF"
 }
 
@@ -108,13 +109,23 @@ c1_wait() {
   sleep "${ROLLOUT_WAIT:-60}"
   # The answer says if a container was running (and was stopped) or not
   # (skipped). The token goes to curl in a config on a pipe, not in argv.
-  curl -s -m 60 -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_store-stop" \
+  local stop
+  stop=$(curl -s -m 60 -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_store-stop" \
     | python3 -c 'import json, sys
 try:
     d = json.load(sys.stdin)
 except ValueError:
     d = {}
-print("no container was running: nothing to stop" if d.get("skipped") else "stop: %s" % json.dumps(d))' || true
+print("no container was running: nothing to stop" if d.get("skipped") else "stop: %s" % json.dumps(d))') || true
+  echo "$stop"
+  # A container that did not stop in 30 s (still_running) is very likely stuck:
+  # seen 2026-11-06 (issue #93), an instance that answered no request survived a
+  # deploy, a stop and a kill. Waiting 900 s for it helps nobody: stop here.
+  if [[ "$stop" == *'"still_running": true'* ]]; then
+    echo "the container did not stop in 30 s: it is probably stuck (issue #93)." >&2
+    echo "Recover: deploy once with a changed container setting (for example INSTANCE_TYPE), which rolls out a new instance, then deploy again." >&2
+    return 1
+  fi
   log "wait for WordPress"
   FIRST_START_S=$(c1_up)
   echo "first answer 200 after $FIRST_START_S s"
@@ -143,7 +154,11 @@ k = sys.argv[1]
 print(str(d.get(k)).lower() if k in d else "unknown", d.get("do_version") or "-", d.get("worker_version") or "-")' "$2"
 }
 c1_check() {
-  local want cur got t0=$SECONDS try
+  local want cur got t0=$SECONDS try code
+  # A container that answers a static file (no WordPress) is not stuck (#93).
+  code=$(curl -s -o /dev/null -m 15 -w '%{http_code}' "$URL/_boot.txt" || true)
+  [ "$code" = 200 ] || { echo "the container does not answer a static file (/_boot.txt: $code): probably stuck (issue #93)" >&2; return 1; }
+  echo "container answers a static file (/_boot.txt: 200)"
   want=false; [ "$OBJECT_CACHE" = apcu ] && want=true
   while :; do
     cur=$(c1_info /_store-info current)
