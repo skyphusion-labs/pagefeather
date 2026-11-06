@@ -12,6 +12,11 @@ category and the feed; no setup and no buyers).
 Each user loops until the step ends. A browse loop is one fresh GET (home, shop,
 or a product page). A buy loop is three Store API requests: cart, add item,
 checkout (cash on delivery, nothing charged). Every page bypasses the cache.
+When the cart request fails (not 200, or no Nonce header), the loop sends
+neither add item nor checkout: they would go out with no Nonce and no
+Cart-Token, and the site's 401 would count as a site error when the client
+sent an incomplete request (issue #40). The step counts such a loop as
+"aborted"; the failed cart request itself is still recorded.
 
 Per request it records the status, the time, and the Worker's own headers:
 x-wasm-mib (WebAssembly memory), x-runtime-recycled, x-boot. A body that names
@@ -101,14 +106,18 @@ def is_1102(r):
 lock = threading.Lock()
 
 
-def user(stop, prods, rec):
+def user(stop, prods, rec, abort):
     while time.time() < stop:
         o = opener()
         if random.random() < BUYERS:
             p = random.choice(prods)
             c = req(o, "/?rest_route=/wc/store/v1/cart")
             rec("cart", c)
-            H = {"Nonce": c["h"].get("Nonce") or "", "Cart-Token": c["h"].get("Cart-Token") or ""} if c["h"] else {}
+            nonce = c["h"].get("Nonce") if c["h"] else None
+            if c["code"] != 200 or not nonce:
+                abort()  # no add item or checkout without the cart's Nonce (#40)
+                continue
+            H = {"Nonce": nonce, "Cart-Token": c["h"].get("Cart-Token") or ""}
             a = req(o, "/?rest_route=/wc/store/v1/cart/add-item", {"id": p["id"], "quantity": 1}, H)
             rec("add", a)
             addr = {"first_name": "Load", "last_name": "Test", "address_1": "1 Edge Way", "city": "Detroit", "state": "MI", "postcode": "48201", "country": "US", "email": "load@example.com", "phone": "5555550100"}
@@ -140,15 +149,22 @@ def step(n, prods):
         with lock:
             rows.append(row)
 
+    aborted = [0]
+
+    def abort():
+        with lock:
+            aborted[0] += 1
+
     t0 = time.time()
     stop = t0 + SECONDS
     with cf.ThreadPoolExecutor(n) as ex:
-        list(ex.map(lambda _: user(stop, prods, rec), range(n)))
+        list(ex.map(lambda _: user(stop, prods, rec, abort), range(n)))
     wall = time.time() - t0
     # The client's own 1-minute load: at or above its CPU count, the client was
     # the limit, not the site.
     out = {"users": n, "seconds": round(wall, 1), "client_load1": round(os.getloadavg()[0], 2), "client_cpus": os.cpu_count(), "requests": len(rows), "rps": round(len(rows) / wall, 2),
            "errors": sum(1 for r in rows if not r["ok"]), "e1102": sum(1 for r in rows if r["e1102"]),
+           "aborted": aborted[0],
            "status": {}, "recycled": {}, "boots": sum(1 for r in rows if r["boot"] == "1"),
            "max_wasm_mib": max([int(r["mib"]) for r in rows if r["mib"]] or [0]), "kinds": {}}
     for r in rows:

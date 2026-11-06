@@ -76,17 +76,18 @@ def redact(path):
 
 
 def load_table(r):
-    print("users  req    rps    errors  1102  boots  recycled        wasm MiB  browse p50/p95/p99    checkout ok/n  p50/p95/p99   client load")
+    print("users  req    rps    errors  aborted  1102  boots  recycled        wasm MiB  browse p50/p95/p99    checkout ok/n  p50/p95/p99   client load")
     for t in r.get("targets", []):
         print("%s (%s)%s" % (t.get("name"), t.get("variant"), "  ERROR: " + t["error"] if t.get("error") else ""))
         for s in (t.get("load") or {}).get("steps", []):
             b, c = s["kinds"].get("browse") or {}, s["kinds"].get("checkout") or {}
             f = lambda k: "%s/%s/%s" % (k.get("p50"), k.get("p95"), k.get("p99")) if k else "-"
-            print("%-6s %-6s %-6s %-7s %-5s %-6s %-15s %-9s %-21s %-14s %-13s %s/%s" % (
-                s["users"], s["requests"], s["rps"], s["errors"], s["e1102"], s["boots"],
+            print("%-6s %-6s %-6s %-7s %-8s %-5s %-6s %-15s %-9s %-21s %-14s %-13s %s/%s" % (
+                s["users"], s["requests"], s["rps"], s["errors"], s.get("aborted", "-"), s["e1102"], s["boots"],
                 ",".join("%s=%s" % kv for kv in s["recycled"].items()) or "0", s["max_wasm_mib"],
                 f(b), "%s/%s" % (c.get("ok", 0), c.get("n", 0)), f(c), s.get("client_load1"), s.get("client_cpus")))
     print("Seconds. errors: any request not 2xx (a checkout must return an order). 1102: Worker exceeded resource limits.")
+    print("aborted: buy loops whose cart request failed, so add item and checkout were not sent (#40). \"-\": a run before #40.")
     print("client load: the runner's 1-minute load / its CPUs. At or above 1 per CPU, the client was the limit for that step.")
 
 
