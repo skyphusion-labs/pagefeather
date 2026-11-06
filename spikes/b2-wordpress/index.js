@@ -110,6 +110,10 @@ let bootPromise;
 const ISOLATE_ID = Math.random().toString(36).slice(2, 8);
 const isolateStart = Date.now();
 let runtimeSerial = 0; // runtimes booted in this isolate
+// Runtimes dropped without a plan (recycled for memory, crashed, a stale lock, a
+// failed request, another origin). /_activate restarts on purpose and is not
+// counted. opcache.sh needs 0, so one runtime compiled what the pages used.
+let runtimeDrops = 0;
 let runtimeServed = 0; // requests the current runtime served
 let runtimeBootAt = 0;
 let phpPending = 0; // object requests in the PHP queue or running
@@ -153,6 +157,7 @@ function withPhp(fn) {
 			new Promise((ok) => (timer = setTimeout(() => ok(true), LOCK_STALE_MS))),
 		]);
 		clearTimeout(timer);
+		if (stale && bootPromise) runtimeDrops++;
 		if (stale) bootPromise = null; // the old runtime's state is unknown
 		return fn();
 	})();
@@ -1640,7 +1645,10 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 		// not change; without SITE_ORIGIN a request for another origin boots a
 		// new runtime, in the Worker as in the object.
 		const origin = siteOrigin(env, url);
-		if (bootPromise && bootOrigin !== origin) bootPromise = null;
+		if (bootPromise && bootOrigin !== origin) {
+			runtimeDrops++;
+			bootPromise = null;
+		}
 		if (url.pathname === '/_last') return Response.json(globalThis.__lastRequest || {});
 		if (url.pathname === '/_peak') {
 			bootPromise ??= boot(origin);
@@ -1687,7 +1695,10 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 		if (url.pathname === '/_opcache-dump') {
 			// Zip of the OPcache file cache, for opcache.sh. Run it after the e2e
 			// requests, so it holds the scripts real pages use.
-			if (!bootPromise) return new Response('not booted', { status: 409 });
+			// x-isolate and x-runtime-drops: opcache.sh needs the isolate it started with
+			// and 0 drops, so one runtime compiled everything the pages used.
+			const dumpHeaders = { 'x-isolate': ISOLATE_ID, 'x-runtime-drops': String(runtimeDrops), 'x-runtimes': String(runtimeSerial) };
+			if (!bootPromise) return new Response('not booted', { status: 409, headers: dumpHeaders });
 			const { php } = await bootPromise;
 			const files = {};
 			const walk = (dir) => {
@@ -1701,7 +1712,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const { zipSync } = await import('fflate');
 			// Deflated: with WooCommerce, a stored zip passes the 64 MiB Worker size
 			// limit. The Worker inflates each file on its first read only.
-			return new Response(zipSync(files, { level: 6 }), { headers: { 'content-type': 'application/zip', 'x-files': String(Object.keys(files).length) } });
+			return new Response(zipSync(files, { level: 6 }), { headers: { 'content-type': 'application/zip', 'x-files': String(Object.keys(files).length), ...dumpHeaders } });
 		}
 		if (url.pathname === '/_mem') {
 			if (!bootPromise) return Response.json({ booted: false });
@@ -1794,7 +1805,13 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			out.set('x-wasm-mib', String(Math.round(wasmBytes / 1048576)));
 			// php-wasm answers a crashed runtime with a bare 500. Never reuse it.
 			const crashed = r.httpStatusCode === 500 && r.text === 'Internal Server Error';
-			if (crashed || wasmBytes > RECYCLE_WASM_BYTES) {
+			// PHP_RECYCLE=off (opcache.sh only): no recycle for memory while OPcache is
+			// primed. A recycle drops the runtime and its file cache, so the dump held
+			// only what compiled after it, or answered 409 when the last request
+			// recycled (measured 2026-11-06: 3 recycles at 119 MiB with WooCommerce and
+			// All-in-One WP Migration). A crashed runtime is still dropped.
+			if (crashed || (wasmBytes > RECYCLE_WASM_BYTES && env.PHP_RECYCLE !== 'off')) {
+				runtimeDrops++;
 				bootPromise = null;
 				out.set('x-runtime-recycled', crashed ? 'crashed' : 'memory');
 			}
@@ -1831,6 +1848,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			}
 			return new Response(r.bytes, { status: r.httpStatusCode, headers: out });
 		} catch (e) {
+			if (bootPromise) runtimeDrops++;
 			bootPromise = null; // a failed runtime is not reused
 			// The stack names internal paths. Only a spike-token holder sees it.
 			return new Response(spikeOk ? String((e && e.stack) || e) : 'internal error', { status: 500 });
