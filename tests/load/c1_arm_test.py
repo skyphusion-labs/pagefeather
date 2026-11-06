@@ -17,7 +17,9 @@ spec = importlib.util.spec_from_file_location("c1_arm", os.path.join(HERE, "c1_a
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 T0 = 1793959200.0  # 2026-11-06T10:00:00Z
-d = tempfile.mkdtemp()
+# Removed at the end (and at exit if a check raises): a run leaves nothing behind.
+_tmp = tempfile.TemporaryDirectory()
+d = _tmp.name
 json.dump({"job": "test", "runner": {"started_utc": "2026-11-06T10:00:00Z", "finished_utc": "2026-11-06T10:06:40Z"},
            "targets": [{"load": {"steps": [{"users": 5, "seconds": 400.0, "requests": 4, "rps": 0.01,
                "kinds": {"checkout": {"n": 2, "ok": 2, "p50": 10.8, "p99": 13.0, "max": 13.1}, "browse": {"n": 1, "ok": 1, "max": 0.1}},
@@ -65,4 +67,5 @@ check("steps", [(x["users"], x["checkout_ok"]) for x in out["steps"]], [(5, 2)])
 m.HOLD_S = -1
 check("no window, none held", m.hol(json.load(open(os.path.join(d, "result.json"))), m.read_req(os.path.join(d, "req.log")))["held"], 0)
 print("%d failing check(s)" % fails)
+_tmp.cleanup()
 sys.exit(1 if fails else 0)
