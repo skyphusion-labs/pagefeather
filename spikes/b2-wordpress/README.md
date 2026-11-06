@@ -53,7 +53,7 @@ Two uploads with the same name on two isolates would overwrite each other. The p
 
 ## Page cache
 
-`[cache] enabled = true` turns on Workers Cache in front of the Worker. `index.js` marks logged-out public pages cacheable for 10 minutes (`PAGE_CACHE_TTL`) with `Cache-Tag: wp-pages` and `Vary: Cookie`. The mu-plugin `php/edge-cache.php` purges the tag when content changes. Add `?nocache` to a URL to skip the cache.
+`[cache] enabled = true` with `exports.Pages.cache` turns on Workers Cache for the `Pages` entrypoint only. The default entrypoint is the gateway (not cached): it sends a page request with no WordPress cookie to `Pages` without its Cookie header, so other cookies do not split the cache key (issue #63). `index.js` marks logged-out public pages cacheable at the edge for `PAGE_CACHE_TTL` seconds (default 120) with `Cache-Tag: wp-pages`; the browser gets `no-cache`. The mu-plugin `php/edge-cache.php` purges the tag when content changes, through `Pages.purge()`. Add `?nocache` to a URL to skip the cache. See `docs/approach-b.md` 8c.
 
 ## PHP in a Durable Object (Workers Free)
 

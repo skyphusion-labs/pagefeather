@@ -144,8 +144,8 @@ Also tried, no failure (round 3): SQL injection strings in search, NUL bytes, `w
 
 `[cache] enabled = true` puts Cloudflare's cache in front of the Worker. On a hit, no Worker code runs, so a cached page uses no CPU. The cache is tiered and collapses simultaneous misses into one render.
 
-- The Worker marks a response cacheable (`public, max-age=120, stale-while-revalidate=600` (see 8d), `Cache-Tag: wp-pages`) only for a logged-out `GET` or `HEAD` with status 200, 301 or 404, no `Set-Cookie`, no WordPress cookie on the request, and not admin, login, preview or spike paths.
-- The cache key has no cookies. `Vary: Cookie` keeps a logged-in visitor on their own (uncached) variant.
+- The Worker marks a response cacheable (`Cache-Tag: wp-pages`) only for a logged-out `GET` or `HEAD` with status 200, 301 or 404, no `Set-Cookie`, no WordPress cookie on the request, and not admin, login, preview or spike paths.
+- Cookies: see "Cookies (issue #63)" below. Until #63, `Vary: Cookie` kept a logged-in visitor off the cached page, and it also split the cache by every other cookie.
 - The Edge Cache mu-plugin (`php/edge-cache.php`) asks the Worker to purge the `wp-pages` tag when content changes (posts, comments, terms, menus, theme, site options). A deleted upload is purged by path.
 - Each deploy starts with a cold cache, because the Worker version is in the cache key.
 - With the cache on, every request counts as a billed Worker request, static assets too. On Free that counts against 100,000 requests a day.
@@ -159,6 +159,38 @@ Results:
 | Free | then 50 reader requests over the 5 pages | 50 of 50: 200, cache HIT. |
 
 On Free, this makes approach B usable for readers. Writers and admin still need Paid.
+
+**Cookies (issue #63). Measured 2026-11-06.** The 50 of 50 above came from a client with no cookies. Workers Cache compares a `Vary` header verbatim, so `Vary: Cookie` keyed each cached page on the whole Cookie header. On `wp-perf-dosql`, the same page read 7 times with `curl`:
+
+| Request | Before #63 |
+| --- | --- |
+| no cookie, twice | MISS, then HIT |
+| `_ga=GA1.1.111.222`, twice | MISS, then HIT |
+| another `_ga` value | MISS |
+| `sbjs_current=...` | MISS |
+| no cookie | HIT |
+
+So a reader with any cookie that is not WordPress's missed, and each `_ga` value had its own entry: in practice every first visit missed.
+
+The fix is c1's pattern (#58), as the Workers Cache docs describe it (per-entrypoint caching, cache keys):
+- Only the `Pages` entrypoint is cached (`exports.Pages.cache` in `wrangler.toml`, and in the config `deploy/deploy.sh` makes). The default entrypoint is a gateway with its cache off.
+- The gateway sends `Pages` a `GET` or `HEAD` that has no WordPress cookie (by name: logged in, post password, comment author, WooCommerce) and is not an admin, login, cron, spike, `preview` or `nocache` request, without its Cookie header. So the cache key is the path and the query alone. Every other request runs in the gateway, uncached.
+- A purge reaches only the cache of the entrypoint that calls it, so the purge runs in `Pages.purge()` (through `ctx.exports`).
+- **The browser now gets `Cache-Control: no-cache` on cached HTML.** The edge directive is `cloudflare-cdn-cache-control: max-age=120, stale-while-revalidate=600`, which Cloudflare reads and does not send on. Without `Vary: Cookie`, a browser that kept the logged-out page could show it after a login. With `no-cache`, it asks again.
+- A response that is not cacheable gets `cloudflare-cdn-cache-control: no-store`, so WordPress's own `no-cache` is not stored at the edge as a stale entry.
+
+Gate: `spikes/b2-wordpress/tests/cookie_cache_check.py`. On `wp-perf-dosql`: before #63, 8 fail; after, 14 of 14. The checks are:
+- HIT with no cookie, with `_ga`, with another `_ga` value, and with `sbjs_*`;
+- the gateway (not the cached copy) with a cart cookie, a post password cookie, or logged in (with the admin bar);
+- the browser gets `no-cache`, and there is no `Vary: Cookie`.
+
+Locally, workerd has no Workers Cache, so the gate checks only the route (`x-entrypoint: pages`) and skips the HIT checks. `break.py` (same PASS/FAIL set) and `cache_coherence.py` (0 fails) pass; "publishing a post purges the cached page" passes.
+
+**Purges.** Counted with `wrangler tail` over one `break.py` run. Each purge request and each purge sent is a log line (`{"m":"purge"}`); a refused purge is now logged, before it was dropped.
+- Before the change below: 27 requests, 20 purges sent, 0 refused. One request came from opening the editor (`post-new.php` makes an auto-draft).
+- With it: 26 requests, 20 purges sent in 32 s, 0 refused.
+- The cause of 20 sends is that `PURGE_GAP_MS` (15 s) coalesces per isolate. `break.py` writes in parallel, so many isolates purge. 20 is inside the burst of 25, but above the rate of 5 a minute.
+- `php/edge-cache.php` no longer purges for an auto-draft, which is on no page. c1 uses the same file. A draft still purges: it may be a post that was just unpublished.
 
 ### 8d. Phone-size uploads. Measured 2026-11-04.
 

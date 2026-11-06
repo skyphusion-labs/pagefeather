@@ -52,6 +52,13 @@ add_action(
 		if ( in_array( $type, array( 'product', 'product_variation' ), true ) && skyphusion_edge_cache_order_request() ) {
 			return;
 		}
+		// Opening the editor (post-new.php) makes an auto-draft, which is on no page:
+		// measured on b (wp-perf-dosql, 2026-11-06), every editor open emptied the
+		// page cache (issue #63). Only auto-draft: a draft may be a post that was
+		// just unpublished, and that must purge.
+		if ( 'auto-draft' === get_post_status( $post_id ) ) {
+			return;
+		}
 		skyphusion_edge_cache_purge( $post_id );
 	}
 );
