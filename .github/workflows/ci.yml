@@ -52,6 +52,12 @@ jobs:
       - name: c1 load analysis tests
         # tests/load/c1_arm.py (issue #99): held requests, CPU per order, the split, on a synthetic job.
         run: python3 tests/load/c1_arm_test.py
+      - name: c1 mail tests
+        # php/c1-mail.php, Store.sendMail in worker.js, the mail config and deploy check (issue #104).
+        run: |
+          php spikes/c1-woo-container/tests/mail-test.php
+          node spikes/c1-woo-container/tests/mail-worker-test.mjs
+          deploy/variants/tests/c1-mail-config-test.sh
       - name: No em or en dashes
         run: |
           if git grep -nP '\x{2014}|\x{2013}' -- . ':!**/package-lock.json'; then echo 'em or en dash found'; exit 1; fi

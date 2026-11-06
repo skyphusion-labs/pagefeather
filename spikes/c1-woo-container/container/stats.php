@@ -19,6 +19,9 @@
 //   ?what=fpm       PHP-FPM pool status (fpm_get_status(), issue #99): the
 //                   listen queue, active and idle children, max children
 //                   reached, and each child with its request count
+//   ?what=mail      one line per wp_mail() (php/c1-mail.php, issue #104): time,
+//                   sent or failed, recipient domains, a hash of the subject,
+//                   the code; no address and no body
 //   &since=<epoch>  only lines from that time
 //
 // The files are read after a load run, not during it: during a run this
@@ -31,9 +34,9 @@ if ( ! $token || ! hash_equals( $token, (string) ( $_SERVER['HTTP_X_SPIKE_TOKEN'
 header( 'cache-control: private, no-store' );
 $what  = $_GET['what'] ?? 'info';
 $since = (float) ( $_GET['since'] ?? 0 );
-if ( 'req' === $what || 'samples' === $what || 'purge' === $what ) {
+if ( 'req' === $what || 'samples' === $what || 'purge' === $what || 'mail' === $what ) {
 	header( 'content-type: text/plain' );
-	$f = array( 'req' => '/tmp/c1-req.log', 'samples' => '/tmp/c1-samples.log', 'purge' => '/tmp/c1-purge.log' )[ $what ];
+	$f = array( 'req' => '/tmp/c1-req.log', 'samples' => '/tmp/c1-samples.log', 'purge' => '/tmp/c1-purge.log', 'mail' => '/tmp/c1-mail.log' )[ $what ];
 	$h = @fopen( $f, 'r' );
 	if ( ! $h ) {
 		exit;

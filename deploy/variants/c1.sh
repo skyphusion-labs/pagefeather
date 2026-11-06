@@ -25,7 +25,8 @@
 # loopback, default local), CRON_SECONDS (default 10), AS_TIME_LIMIT (default 5), PUBLIC_HOST (default
 # <NAME>.<account subdomain>.workers.dev), ROLLOUT_TIMEOUT (default 600 s),
 # ROLLOUT_POLL_S (default 10 s), ROLLOUT_WAIT (the fallback, default 60 s),
-# START_TIMEOUT (default 900 s), BENCH, N.
+# START_TIMEOUT (default 900 s), BENCH, N; mail: MAIL_FROM, MAIL_FROM_NAME,
+# MAIL_ALLOWED_TO, MAIL_CHECK (deploy/README.md, Mail for c1).
 
 C1="$ROOT/spikes/c1-woo-container"
 INSTANCE_TYPE=${INSTANCE_TYPE:-standard-1}
@@ -46,8 +47,70 @@ c1_build() {
   (cd "$C1" && { [ -d node_modules ] || npm ci --silent; } && ./build.sh | tail -1)
 }
 
+# Mail (issue #104): MAIL_FROM must be on a domain that is onboarded and
+# enabled for Cloudflare Email Sending, or every mail would fail at the first
+# order. The same API as `wrangler email sending list` (Wrangler 4.107):
+# GET /zones?name=<the domain or a parent> for the zone, then
+# GET /zones/<id>/email/sending/subdomains, whose result has {name, enabled}.
+# MAIL_CHECK=0 skips it (only for the negative live test). C1_CF_API is the
+# API base, for the tests. Exit 0 (ok, or no MAIL_FROM) or 1.
+c1_mail_check() {
+  if [ -z "${MAIL_FROM:-}" ]; then
+    echo "mail: MAIL_FROM is not set: no send_email binding, and every wp_mail() fails loudly (c1_mail_not_configured, issue #104)"
+    return 0
+  fi
+  if [ "${MAIL_CHECK:-1}" = 0 ]; then
+    echo "mail: MAIL_CHECK=0: the sending domain of $MAIL_FROM is NOT checked" >&2
+    return 0
+  fi
+  C1_CF_API=${C1_CF_API:-https://api.cloudflare.com/client/v4} python3 - "$MAIL_FROM" <<'PY'
+import json, os, sys, urllib.request, urllib.parse
+addr = sys.argv[1]
+domain = addr.split("@", 1)[1].lower()
+api, token, acct = os.environ["C1_CF_API"], os.environ.get("CLOUDFLARE_API_TOKEN", ""), os.environ.get("ACCOUNT_ID", "")
+def get(path):
+    req = urllib.request.Request(api + path, headers={"Authorization": "Bearer " + token})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as e:
+        return e.code, {}
+    except (OSError, ValueError) as e:
+        return 0, {"error": str(e)}
+labels = domain.split(".")
+zone = None
+for i in range(len(labels) - 1):
+    cand = ".".join(labels[i:])
+    q = "/zones?" + urllib.parse.urlencode({"name": cand, **({"account.id": acct} if acct else {})})
+    code, d = get(q)
+    if code != 200:
+        print("mail: cannot read the zones (HTTP %s): the sending domain of %s is not checked; the deploy stops (MAIL_CHECK=0 skips this)" % (code, addr), file=sys.stderr)
+        sys.exit(1)
+    if d.get("result"):
+        zone = d["result"][0]
+        break
+if not zone:
+    print("mail: no zone on this account holds %s: it cannot send mail (Cloudflare DNS is needed)" % domain, file=sys.stderr)
+    sys.exit(1)
+code, d = get("/zones/%s/email/sending/subdomains" % zone["id"])
+if code != 200:
+    print("mail: cannot read the Email Sending domains of zone %s (HTTP %s); the deploy stops (MAIL_CHECK=0 skips this)" % (zone.get("name"), code), file=sys.stderr)
+    sys.exit(1)
+subs = {str(s.get("name", "")).lower(): s for s in (d.get("result") or [])}
+s = subs.get(domain)
+if not s:
+    print("mail: %s is not onboarded for Email Sending in zone %s (onboarded: %s); see deploy/README.md, Mail" % (domain, zone.get("name"), ", ".join(sorted(subs)) or "none"), file=sys.stderr)
+    sys.exit(1)
+if not s.get("enabled"):
+    print("mail: %s is onboarded but not enabled for Email Sending" % domain, file=sys.stderr)
+    sys.exit(1)
+print("mail: %s can send (zone %s, Email Sending enabled)" % (addr, zone.get("name")))
+PY
+}
+
 c1_config() {
   local replica media endpoint compat sub
+  c1_mail_check || return 1
   replica=$(out replica_bucket); media=$(out media_bucket); endpoint=$(out r2_endpoint)
   echo "replica bucket $replica, media bucket $media"
   # The site address goes into the Worker vars (WordPress uses it as its home
@@ -63,7 +126,7 @@ c1_config() {
   CONF="$C1/wrangler.deploy.$NAME.toml"
   compat=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' "$C1/wrangler.toml" | head -1)
   NAME=$NAME PUBLIC_HOST=$PUBLIC_HOST REPLICA=$replica MEDIA_BUCKET=$media R2_ENDPOINT=$endpoint \
-    COMPAT=$compat INSTANCE_TYPE=$INSTANCE_TYPE PHP_WORKERS=$PHP_WORKERS IDLE_SECONDS=$IDLE_SECONDS OBJECT_CACHE=$OBJECT_CACHE REPLICA_PATH=$REPLICA_PATH QUEUE_RUNNER=$QUEUE_RUNNER CRON_SECONDS=$CRON_SECONDS AS_TIME_LIMIT=$AS_TIME_LIMIT SEED_SHA256=${SEED_SHA256:-} \
+    COMPAT=$compat MAIL_FROM=${MAIL_FROM:-} MAIL_FROM_NAME=${MAIL_FROM_NAME:-} MAIL_ALLOWED_TO=${MAIL_ALLOWED_TO:-} ADMIN_EMAIL=${ADMIN_EMAIL:-} INSTANCE_TYPE=$INSTANCE_TYPE PHP_WORKERS=$PHP_WORKERS IDLE_SECONDS=$IDLE_SECONDS OBJECT_CACHE=$OBJECT_CACHE REPLICA_PATH=$REPLICA_PATH QUEUE_RUNNER=$QUEUE_RUNNER CRON_SECONDS=$CRON_SECONDS AS_TIME_LIMIT=$AS_TIME_LIMIT SEED_SHA256=${SEED_SHA256:-} \
     "$ROOT/deploy/variants/c1-config.sh" > "$CONF"
 }
 

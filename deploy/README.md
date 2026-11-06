@@ -117,6 +117,32 @@ From [Containers pricing](https://developers.cloudflare.com/containers/platform/
 
 The token in `CLOUDFLARE_API_TOKEN` must be able to: deploy Workers (Workers Scripts edit), make Containers and push their image, make R2 buckets (Workers R2 Storage edit), and make an account API token (Account API Tokens edit), because Terraform makes the Litestream key. Without the last one, `terraform apply` fails at `cloudflare_account_token.litestream`. The deploy also reads the container rollout (`c1_wait`, issue #106); "Workers Containers Write", which making Containers needs, is enough for that (read 2026-11-06: applications and rollouts both 200 with a token that had only that group).
 
+### Mail for c1 (issue #104)
+
+The container has no mail program. `php/c1-mail.php` (a mu-plugin on `pre_wp_mail`) sends each `wp_mail()` to the Worker through the outbound path (`http://worker.internal/`). The Store object then sends it with a [Cloudflare Email Service](https://developers.cloudflare.com/email-service/) `send_email` binding. Without the settings below, the site sends no mail, and every `wp_mail()` returns false with the code `c1_mail_not_configured`. The failure fires `wp_mail_failed` and is counted in `/_store-info` (`mail`) and `/_stats.php?what=mail`. Mail is never lost in silence.
+
+Before you deploy:
+
+1. Your sending domain must use Cloudflare DNS, on the same account. Email Sending is in beta and needs Workers Paid to send to any address: 3,000 messages a month are included, then $0.35 per 1,000 (Email Service pricing, read 2026-11-06).
+2. Onboard the domain or a subdomain for sending. Wrangler 4.107 can do it: `npx wrangler email sending enable mail.example.com`. The dashboard can too: Email Service, Email Sending, Onboard Domain. This adds DNS records: an MX, an SPF TXT and a DKIM TXT on a `cf-bounce` name, and a DMARC TXT on `_dmarc`. Read them with `npx wrangler email sending dns get mail.example.com`. A subdomain keeps the records off your main domain, so mail already set up there is not changed.
+3. Set `MAIL_FROM` to an address on that domain.
+
+`deploy.sh` checks the domain before the deploy, with the same API that `wrangler email sending list` uses. If the domain is not onboarded and enabled, it stops. That check needs a token with Zone Read and "Email Sending Write". Email Sending Write is an ACCOUNT-scoped permission group, not a zone one (read from the account's permission groups, 2026-11-06). The onboarding itself needs Email Sending Write, Zone Read and DNS Read. Removing records that are left behind needs DNS Write on the zone. Whether a deploy with a `send_email` binding needs Email Sending Write as well is checked on the live proof deploy (#113).
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `MAIL_FROM` | none | The address the site sends from. The binding can send from this address only. When WordPress asks for another From (a plugin, a contact form), that address becomes the Reply-To. |
+| `MAIL_FROM_NAME` | the name WordPress asks for | The sender name |
+| `ADMIN_EMAIL` | `MAIL_FROM` | The admin user's address and the site's address, set when a NEW site is installed. New-order mails go here, so use a mailbox that someone reads. With `MAIL_FROM` set, the install also sets WooCommerce's From address (Emails settings) to `MAIL_FROM`. |
+| `MAIL_ALLOWED_TO` | none | For a test deploy: comma-separated addresses. The binding can send to these only. |
+| `MAIL_CHECK` | `1` | `0` skips the domain check (for a negative test only) |
+
+The Reply-To: when WordPress or a plugin asks for another From, that address becomes the Reply-To, so a reply reaches it. A Reply-To that cannot receive mail is dropped: the reserved `example.com`, `example.org`, `example.net`, `.invalid`, `.test` and `localhost`, and `workers.dev`. On an EXISTING site (one restored from a replica, so not installed again), the install values stay as they were. Set the admin email (Settings, General) and WooCommerce's From address (WooCommerce, Settings, Emails) to real addresses once. The customer mails otherwise carry the old From, `admin@example.com` from the first install, which the Worker now drops as a Reply-To, and no reply reaches you.
+
+To stop sending from a domain: `npx wrangler email sending disable mail.example.com --force`. Without `--force`, in a shell with no terminal, it prints "Not disabling." and EXITS 0, so a script reads success where nothing changed (Wrangler 4.107, measured 2026-11-06). The disable removed 5 of the 6 records and left the DMARC TXT on `_dmarc`, so delete that record yourself, then check that the domain is gone from `npx wrangler email sending list`.
+
+Limits (Email Service): 50 recipients a message (to, cc and bcc together), 25 MiB with attachments, and 32 attachments. The mu-plugin refuses a message over a limit before it is sent. The Worker does not retry: a transient send error is a failure that the counter shows.
+
 ### Remove a c1 site
 
 ```sh

@@ -25,6 +25,17 @@ export PHP_WORKERS="${PHP_WORKERS:-2}"
 # A new id for each container start: tests use it to prove a restart happened.
 cat /proc/sys/kernel/random/uuid > /var/www/html/_boot.txt
 mkdir -p /data
+# The logs that PHP appends to, made now and owned by www-data (issue #104).
+# install.php and the seed step run PHP as root; a mail sent then (the "new
+# site" mail) created /tmp/c1-mail.log owned by root, and the PHP-FPM children
+# (www-data) could not append to it: every later line was lost in silence
+# (measured on wp-c1-mail, 2026-11-06).
+for f in /tmp/c1-mail.log /tmp/c1-req.log /tmp/c1-purge.log; do
+	: >> "$f"
+	chown www-data:www-data "$f"
+	chmod 0644 "$f"
+done
+blog "PHP logs owned by $(stat -c %U /tmp/c1-mail.log)"
 litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists /data/wordpress.sqlite
 blog "restore done (database file: $( [ -f /data/wordpress.sqlite ] && echo yes || echo no))"
 # Import (issue #31): load the seed when there is no replica (seed.sh).
