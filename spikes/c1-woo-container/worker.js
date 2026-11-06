@@ -71,7 +71,7 @@ Store.prototype.storeInfo = async function () {
 		object_cache: this.envVars.OBJECT_CACHE,
 		replica_path: this.envVars.REPLICA_PATH,
 		purge: { sent: p.sent, deferred: p.deferred, failed: p.failed, retried: p.retried, pending: p.pending, last_ms_ago: p.last ? Date.now() - p.last : null, last_error: p.lastError },
-		queue: { limit: Number(this.env.QUEUE_LIMIT ?? 16), flowLimit: Number(this.env.FLOW_LIMIT || 2 * Number(this.env.QUEUE_LIMIT ?? 16)), ...(this.queue || { inflight: 0, maxInflight: 0, admitted: 0, shed: 0, flow: 0, flowShed: 0 }) },
+		queue: { limit: Number(this.env.QUEUE_LIMIT ?? 16), flowLimit: Number(this.env.FLOW_LIMIT || 2 * Number(this.env.QUEUE_LIMIT ?? 16)), timeoutS: Number(this.env.CONTAINER_TIMEOUT_S ?? 60), ...(this.queue || { inflight: 0, maxInflight: 0, admitted: 0, shed: 0, flow: 0, flowShed: 0, timedOut: 0 }) },
 		warm: warmInfo(this, this.env),
 	};
 };
@@ -183,6 +183,27 @@ function busyResponse(req, url, retryAfter) {
 	}
 	return new Response('<!doctype html><meta charset="utf-8"><title>Busy</title><p>The store is busy. Please try again in a few seconds.</p>', { status: 503, headers: { ...h, 'content-type': 'text/html; charset=utf-8' } });
 }
+// A container that never answers (issue #93: a stuck instance answered no
+// request, not even a static file, and survived a deploy, a stop and a kill)
+// would hold every request until the client gave up, and checkout, which is
+// always let in, would pile up behind it. So a request that is not admin or
+// operator work waits at most CONTAINER_TIMEOUT_S (60 s, far above the checkout
+// p99 of about 11 s under overload) for the container's response headers, then
+// gets 504 and its queue slot back. Exempt, because they can be long and
+// legitimate: wp-admin, wp-login.php, the operator endpoints (/_*), a logged-in
+// user, and REST with an Authorization header (imports, exports). 0 turns it off.
+function timeoutExempt(req, url) {
+	const p = url.pathname;
+	if (p.startsWith('/_') || p.startsWith('/wp-admin') || p === '/wp-login.php') return true;
+	return LOGIN_COOKIE.test(req.headers.get('cookie') || '') || req.headers.has('authorization');
+}
+function timeoutResponse(url) {
+	const h = { 'cache-control': 'no-store', 'cloudflare-cdn-cache-control': 'no-store', 'x-c1-timeout': '1' };
+	if (url.searchParams.has('rest_route') || url.pathname.startsWith('/wp-json')) {
+		return Response.json({ code: 'c1_timeout', message: 'The store did not answer in time. Please try again.', data: { status: 504 } }, { status: 504, headers: h });
+	}
+	return new Response('<!doctype html><meta charset="utf-8"><title>Timeout</title><p>The store did not answer in time. Please try again.</p>', { status: 504, headers: { ...h, 'content-type': 'text/html; charset=utf-8' } });
+}
 // A request counts from the moment it is let in until its response BODY has
 // been read to the end (or it fails), not only until the response headers:
 // for a large streamed response the headers alone would undercount.
@@ -198,7 +219,7 @@ Store.prototype.fetch = async function (request) {
 	const limit = Number(this.env.QUEUE_LIMIT ?? 16);
 	// Never below QUEUE_LIMIT: a flow request must not be refused earlier than a new one.
 	const flowLimit = Math.max(limit, Number(this.env.FLOW_LIMIT || 2 * limit));
-	const q = (this.queue ||= { inflight: 0, maxInflight: 0, admitted: 0, shed: 0, flow: 0, flowShed: 0 });
+	const q = (this.queue ||= { inflight: 0, maxInflight: 0, admitted: 0, shed: 0, flow: 0, flowShed: 0, timedOut: 0 });
 	const cls = admission(request, url);
 	if (shouldShed(cls, q.inflight, limit, flowLimit)) {
 		q.shed++;
@@ -216,12 +237,29 @@ Store.prototype.fetch = async function (request) {
 			q.inflight--;
 		}
 	};
+	const timeoutS = timeoutExempt(request, url) ? 0 : Number(this.env.CONTAINER_TIMEOUT_S ?? 60);
 	let r;
+	let timer;
 	try {
-		r = await Container.prototype.fetch.call(this, request);
+		if (timeoutS > 0) {
+			const ac = new AbortController();
+			const pending = Container.prototype.fetch.call(this, new Request(request, { signal: ac.signal }));
+			pending.catch(() => {}); // after a timeout, its rejection is not ours to handle
+			r = await Promise.race([pending, new Promise((res) => (timer = setTimeout(() => res(null), timeoutS * 1000)))]);
+			if (r === null) {
+				ac.abort();
+				q.timedOut++;
+				release();
+				return timeoutResponse(url);
+			}
+		} else {
+			r = await Container.prototype.fetch.call(this, request);
+		}
 	} catch (e) {
 		release();
 		throw e;
+	} finally {
+		clearTimeout(timer);
 	}
 	if (!r.body || r.webSocket) {
 		release();
