@@ -405,7 +405,7 @@ The first version shed a shopper's add to cart after letting the cart in (130 ca
 
 The count of requests in the container now lasts until the response body has been read to the end, not only until the response headers (checked in local workerd: 1 in flight while a body streamed, 0 after). For c1 the two were close, because PHP buffers the page (`query-count.php`) and static files do not come from the container, but a large streamed response would have been counted too briefly.
 
-**Measured.** The same overload run (`cached-sbjs`, BUYERS 0.5, 2 vCPU runner), twice, each on its own copy of wp-c1's database: swap12 (the cart-flow code) and swap14 (the same code; `deploy/results/bench-runner-20261106T075355Z-b181c4.json`).
+**Measured.** The same overload run (`cached-sbjs`, BUYERS 0.5, 2 vCPU runner), twice, each on its own copy of wp-c1's database: swap12 (the cart-flow code; `deploy/results/bench-runner-20261106T065415Z-e3a0d8.json`) and swap14 (the same code; `deploy/results/bench-runner-20261106T075355Z-b181c4.json`).
 
 | Users | AFTER #82: orders, checkout p95 / p99 | swap12: orders, checkout p95 / p99 | swap14: orders, checkout p95 / p99 |
 | --- | --- | --- | --- |
