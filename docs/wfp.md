@@ -4,11 +4,15 @@ Issue #35 asks for a reference deployment for a Workers for Platforms (WfP) user
 
 Each answer names its source: a Cloudflare documentation page (read on 2026-11-05; the page's own "last updated" date is in the table at the end) or a test in `tests/wfp/` that ran on 2026-11-05 on the Skyphusion Labs account (Workers Paid, WfP already on). The result files are in `tests/wfp/results/`.
 
+## The reference deployment
+
+`deploy/wfp/` (issue #35, slice 2) is the deployment that these findings lead to: one `b-dosql` user Worker per site, a dispatcher per site on `workers.dev` (phase A of the #35 design), a site map in KV and an outbound Worker, every resource as code. Its README has the day-one commands. Its live runs answered the open question (b) below: the Workers Cache works in a namespace script.
+
 ## Summary
 
 | # | Question | Answer | Evidence |
 | --- | --- | --- | --- |
-| 1 | Durable Objects with SQLite storage in a user Worker | **Yes.** The real `b-dosql` WordPress runs as a user Worker: install, `e2e.sh` 17 of 17, all bench pages 10 of 10. Two tenants have separate objects and data. | Test. The docs do not say it. |
+| 1 | Durable Objects with SQLite storage in a user Worker | **Yes.** The real `b-dosql` WordPress runs as a user Worker: install, `e2e.sh` 17 of 17, all bench pages 10 of 10. Two tenants have separate objects and data. **The Workers Cache works in a namespace script too** (open (b), answered 2026-11-06). | Test. The docs do not say either. |
 | 2 | Containers from a user Worker | **Yes, with two workarounds.** A container of a namespace user Worker answered HTTP through the dispatcher (#43). Wrangler cannot make the container application of a namespace script, so it is made through the API; and an image cannot be pushed to the registry on its own, so the user Worker reuses an image that a normal Worker deploy pushed. The first answer came about 1.5 to 2 minutes after the application was made. | Test. The docs say "Run containers" and no more. |
 | 3 | D1, R2 and Images bindings; how bindings attach | **Yes, all three.** Bindings go in the upload metadata. `wrangler deploy --dispatch-namespace` writes them from the Wrangler config, with secrets (`--secrets-file`) and static assets. | Test and docs. |
 | 4 | Limits per call; the outbound Worker | `subRequests` is exact. `cpuMs` is enforced but **not exact**: calls ran up to about 2 s of CPU over a 1 ms limit. The outbound Worker sees `fetch()` from the user Worker, **not from its Durable Object**. | Test and docs. |
@@ -61,6 +65,15 @@ These times are from the laptop, so they do not compare with the Vultr runner nu
 
 - (a) The Durable Object namespace name is `<script>_<class>`. We did not test if a normal Worker and a namespace script with the same name share or collide.
 - (b) **The page cache.** The limits page says that `caches.default` (the Cache API) is off in namespace scripts. `b-dosql` does not use `caches.default`: its page cache is the **Workers Cache** (`[cache] enabled = true` in its config, `cache-control` and `cache-tag` headers on the response, and `ctx.cache.purge({ tags })` in `spikes/b2-wordpress/index.js`). No WfP page says if the Workers Cache works in a namespace script, and we did not test it. This is open, and it matters: the page cache is half of what makes `b-dosql` fast for logged-out readers. The bench numbers above are fresh renders (`?nocache=`), so they do not depend on it.
+
+  **Answered: yes, the Workers Cache works in a namespace script** (2026-11-06, `deploy/wfp` at `7655176`, the fourth day one, run by the lead, `deploy/wfp/results/day1-20261106T213116Z.json`).
+  - **The probe** (below): the namespace script `site-cacheprobe`, through its dispatcher, answered `made` 1794000669915 with `MISS`, then the SAME `made` with `HIT` and `Age: 3`. The control `wp-cacheprobe-direct`, a normal Worker, did the same (1794000663471, `MISS`, then `HIT`, `Age: 3`). The verdict was "yes: the namespace script was served from the cache".
+  - **`b-dosql`'s own page cache, in the same run:** a logged-out page of `site-one` (`/?wfpcache=<n>`) was `MISS`, then `HIT` with `Age: 2`.
+  - **The first run's `MISS`, `MISS`** (below) is therefore not "off". The likely reason is the second read's timing against a cold cache, or the two reads reaching different locations. One pair of reads per run cannot tell which, and the probe makes that question moot.
+
+  **First live read, inconclusive (2026-11-06, `deploy/wfp` day one at `b94e9ae`, run by the lead, `deploy/wfp/results/day1-20261106T204900Z.json`).** A logged-out page of the `b-dosql` site `site-one` (`/?wfpcache=<n>`, a fresh key) was read twice through its dispatcher. Both reads answered 200 with `cf-cache-status: MISS`, `cache-control: no-cache` and no `Age`. That does not decide it. `b-dosql` sends `cache-control: no-cache` from BOTH branches: on a page it caches (the edge rule is in `cloudflare-cdn-cache-control`, which Cloudflare consumes and does not pass on), and on a page where WordPress itself said `no-cache`, which it does not cache. So the reads cannot tell "the Workers Cache is off in a namespace script" from "this page was not cacheable".
+
+  **The probe that decides it** (`deploy/wfp/cache-probe/`, `CACHE_PROBE=1` in `up.sh`, read by `check.py`): one tiny Worker with `[cache] enabled`, which answers JSON that says when it was made, with `cloudflare-cdn-cache-control: max-age=120`. It is deployed twice: as the namespace script `site-cacheprobe` behind the dispatcher copy `wp-cacheprobe`, and as the normal Worker `wp-cacheprobe-direct`, the control, where the Workers Cache is known to work (`docs/results.md`, B with the Workers Cache). Two reads of one fresh URL with the same `made` were served from the cache, whatever `cf-cache-status` says. The verdict is "yes", "no", or "inconclusive" when the control itself was not cached.
 
 ## 2. Containers from a user Worker
 

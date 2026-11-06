@@ -1,0 +1,11 @@
+# Terraform (as deploy/terraform): local state, plans, the R2 backend override.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+backend_override.tf
+terraform.tfstate.d/
+# The rendered dispatcher and outbound configs (lib.sh writes them).
+gen/
+# Results of a live run are committed by hand, after review.
+results/*.tmp

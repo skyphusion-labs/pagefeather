@@ -1,0 +1,9 @@
+# The Workers Cache probe (issue #35); lib.sh render_cacheprobe fills the name,
+# workers.dev on or off, and the compatibility date. The same script is the
+# namespace copy (site-cacheprobe) and the control (wp-cacheprobe-direct).
+name = "@NAME@"
+main = "../cache-probe/worker.js"
+compatibility_date = "@COMPAT@"
+workers_dev = @WORKERS_DEV@
+[cache]
+enabled = true
