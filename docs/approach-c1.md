@@ -144,7 +144,7 @@ So a different PHP server (PHP-FPM, FrankenPHP) does not raise the ceiling: it u
 
 `wp-c1` (the first baseline site) ran the same test at about 1 request per second, with 0 of 32 checkouts at 100 users (`deploy/results/bench-runner-20261105T214231Z-230073.json`). `wp-c1-perf` ran at 2.5. The c1 build inputs are the same, except for the measurement.
 
-- **Not the data.** wp-c1's database (127 orders, 63 pending Action Scheduler actions, 287 autoloaded options, 51 KB) was restored into wp-c1-perf (replica path `swap`). With it, wp-c1-perf used 0.189 CPU s per request (0.179 with its own data) and served 2.4 requests per second at the same cap (`deploy/results/bench-runner-20261105T235852Z-24ad9e.json`).
+- **Not the data.** wp-c1's database (127 orders, 63 pending Action Scheduler actions, 287 autoloaded options, 51 KB) was restored into wp-c1-perf (replica path `swap`, with the `REPLICA_PATH` deploy option of the APCu change). With it, wp-c1-perf used 0.189 CPU s per request (0.179 with its own data) and served 2.4 requests per second at the same cap (`deploy/results/bench-runner-20261105T235852Z-24ad9e.json`).
 - **Not the configuration.** The Containers API (read 2026-11-06, about 00:10 UTC) shows the same shape for both applications: 0.5 vCPU, 4 GiB, 8 GB disk, the same scheduling policy and tiers, `max_instances` 1. wp-c1's was last changed at 20:35 UTC, before its load runs.
 - **Not explained.** A container with 1/4 vCPU would give 0.25 / 0.19 = 1.3 requests per second, which fits wp-c1. But the configuration says 1/2 vCPU, and the API keeps no record of the host that ran. So the cause is the host or the placement of that container, and it is not known.
 
