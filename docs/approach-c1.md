@@ -680,7 +680,25 @@ Without `DISABLE_WP_CRON` the warm-up also wrote nothing on a served site (no cr
 - The warm-up waits for a 200 from `/_fpm-ping` (60 s at most; then `warm: failed`).
 - Only a 200 with `warm.php`'s JSON is `done`. Anything else is `warm: failed (HTTP <code>)`.
 
-The test now runs `c1-serve.sh`'s own trigger from a cold start, with PHP-FPM started 3 s late by a shim, and requires `warm: done {json}` in the boot log. It also runs the trigger with `warm.php` missing, and requires `warm: failed (HTTP 404)`. The arms that must fail: the old wait (any answer), and a done line that takes any answer. `warm_start.py` reports a `warm: failed` line as `warm_failed`. Through the Worker, `GET /_warm` got a 301 to `/_warm/` with no `x-c1-warm`, as it must. Not yet measured: the add to cart after a warm start with the warm-up (`tests/load/warm_start.py`, `WARM_WP=on` against `off`).
+The test now runs `c1-serve.sh`'s own trigger from a cold start, with PHP-FPM started 3 s late by a shim, and requires `warm: done {json}` in the boot log. It also runs the trigger with `warm.php` missing, and requires `warm: failed (HTTP 404)`. The arms that must fail: the old wait (any answer), and a done line that takes any answer. `warm_start.py` reports a `warm: failed` line as `warm_failed`. Through the Worker, `GET /_warm` got a 301 to `/_warm/` with no `x-c1-warm`, as it must.
+
+**Measured live, 2026-11-06,** on `wp-c1-w92b` (the same import and product as step 0, `standard-1`, `faaf6a4`), by the lead. Four arms, one deploy each, and `tests/load/warm_start.py 5 10` (rows in `docs/results.md`). The warm-up ran on every start with it on: `warm: done`, 49 files compiled, OPcache from 80 to 1464 scripts in 2.6 s. Through the Worker, `GET /_warm` got a 301, with no `x-c1-warm`. Each arm's views were HIT, UPDATING, HIT, UPDATING, HIT. The table uses the 3 HIT trials (1, 3, 5): the cart at the client, and the first cart's PHP wall time.
+
+| Arm | `WARM_WP` | `WARM_START` | Cart (s) | First cart PHP wall (s) | Warm-up done, s after the view |
+| --- | --- | --- | --- | --- | --- |
+| A | on | product | 1.94, 0.90, 0.89 | 1.54, 0.62, 0.61 | 12.0, 11.1, 10.1 |
+| B | off | product | 2.32, 2.59, 2.49 | 2.00, 2.27, 2.24 | - |
+| C | on | off | 8.32, 11.92, 13.28 | 2.97, 2.55, 3.39 | 18.6, 22.2, 23.4 |
+| D | off | off | 11.08, 12.36, 10.74 | 2.58, 2.31, 2.06 | - |
+
+The second cart (another new visitor) took 0.14 to 0.51 s of PHP in every arm.
+
+- **With a warm start, the warm-up cuts the first add to cart from about 2.5 s to about 0.9 s** (A against B, the median over all 5 trials 0.90 against 2.49 s), and its PHP time from about 2.2 s to about 0.6 s. The gain depends on the warm-up finishing before the cart comes. The servers ran 7.5 to 8.7 s after the view, the warm-up was done 2.6 s later, and the cart came about 10 s after the view. In trial 1 the warm-up was done 12.0 s after the view, so the cart got only part of the gain (1.54 s of PHP).
+- **The first cart is still about 0.45 s of PHP above the second, even after a warm-up.** The warm-up compiles the Store API files, and this cart is the classic `?add-to-cart=`, whose code (WooCommerce's `includes/`, the session, the cart) the boot does not load. That is a follow-up: issue #128.
+- **B's baseline (2.5 s) is half of step 0's (5.4 s on `wp-c1-w92`, the same import), and the cause is not known.** Do not compare A with step 0. Compare A with B, which ran on the same site on the same day.
+- **On the cold path the cart is not slower, but its PHP is** (C against D). The HIT carts took 11.17 s against 11.39 s on the mean, but the first cart's PHP took 2.97 s against 2.32 s on the mean. When the cart itself starts the container, the cart and the warm-up boot WordPress at the same time and share the half vCPU. The container start (15 to 20 s after the view) hides that cost. Skipping the warm-up when a request is already in PHP-FPM would remove it. That is a follow-up: issue #129.
+- **`WARM_WP` stays on by default.** It saves about 1.6 s (65 %) of the first cart after a warm start. On the cold path it costs about 0.65 s of the cart's PHP inside a start of 11 s or more, and the cart total does not show it.
+- n = 3 HIT trials per arm. Read the sizes, not the decimals. Measured live below (arms A to D).
 
 **Why not warm through a Store API request:** under overload, the bounded queue sheds a new visitor's Store API cart request (no `Cart-Token`, no session: class `shed` in `admission()`). A warm start made through such a request would then be refused. `start()` does not go through the queue.
 
