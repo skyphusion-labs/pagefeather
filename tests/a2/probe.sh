@@ -10,7 +10,8 @@
 #   ./tests/a2/probe.sh
 #
 # Options: PLACEMENT (default aws:us-east-2, as wp-a2), N (statements per
-# latency run, default 50), RUNS (latency runs, default 3).
+# latency run, default 50), RUNS (latency runs, default 3), SESSION_ONLY=1
+# (skip the latency runs).
 # Output: tests/a2/results/probe-<time>.json
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -53,9 +54,12 @@ URL=$(echo "$DEP" | grep -oE 'https://[a-z0-9.-]+\.workers\.dev' | head -1)
 echo "probe: $URL"
 sleep 5
 hdr() { printf 'header = "x-probe-token: %s"\n' "$TOKEN"; }
-for _ in $(seq 1 "${RUNS:-3}"); do
-  curl -s -m 120 -K <(hdr) "$URL/latency?n=${N:-50}"; echo
-done > "$W/latency"
+: > "$W/latency"
+if [ "${SESSION_ONLY:-0}" != 1 ]; then
+  for _ in $(seq 1 "${RUNS:-3}"); do
+    curl -s -m 120 -K <(hdr) "$URL/latency?n=${N:-50}"; echo
+  done > "$W/latency"
+fi
 curl -s -m 300 -K <(hdr) "$URL/session" > "$W/session"
 mkdir -p "$H/results"
 RES="$H/results/probe-$(date -u +%Y%m%dT%H%M%SZ).json"
@@ -63,7 +67,7 @@ python3 - "$W" "$RES" "${PLACEMENT:-aws:us-east-2}" <<'PY'
 import json, os, sys
 w, res, placement = sys.argv[1:4]
 lat = []
-for l in open(os.path.join(w, "latency")):
+for l in [l for l in open(os.path.join(w, "latency")) if l.strip()]:
     try:
         lat.append(json.loads(l))
     except ValueError:
@@ -78,6 +82,11 @@ for r in lat:
         print("%-7s colo %s  connect %.1f ms  first %.1f ms  median %.2f ms  min %.2f  max %.2f  n %s %s" % (
             k, r.get("colo"), v.get("connect_ms") or -1, v.get("first_ms") or -1, v.get("median_ms") or -1,
             v.get("min_ms") or -1, v.get("max_ms") or -1, v.get("n"), v.get("error") or ""))
+if ses.get("error"):
+    print("SESSION ERROR:", ses["error"])
+for k in ("server_session_mode", "server_global_mode", "server_version", "server_connection_id"):
+    v = (ses.get("steps") or {}).get(k) or {}
+    print("%-22s %s %s" % (k, v.get("shape") or ("ERROR %s" % v.get("errno") if v else "-"), v.get("rows") if v.get("shape") == "rows" else (v.get("error") or {kk: v.get(kk) for kk in ("affected", "info", "fieldCount")})))
 print("server sql_mode:", ses.get("server_mode"))
 print("relaxed mode:   ", ses.get("relaxed_mode"))
 for k in ("S1_kept_all", "S2_kept_in_transaction", "S3_hint_applies", "D1_plain_ddl_ok", "D2_txn_ddl_ok", "table_made"):

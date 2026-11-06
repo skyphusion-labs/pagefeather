@@ -28,16 +28,35 @@ function connect(hd) {
 }
 
 // One statement. Never throws: a failure is a result.
+// The answer's shape is recorded (rows, or an OK packet with no rows), because
+// the first run threw on a SELECT that came back without rows (2026-11-06).
 async function q(c, sql) {
 	const t0 = performance.now();
 	try {
-		const [rows] = await c.query({ sql, rowsAsArray: true });
+		const res = await c.query({ sql, rowsAsArray: true });
+		const rows = Array.isArray(res) ? res[0] : res;
 		const ms = performance.now() - t0;
-		return Array.isArray(rows) ? { sql, ok: true, rows, ms } : { sql, ok: true, affected: rows.affectedRows, ms };
+		if (Array.isArray(rows)) return { sql, ok: true, shape: 'rows', rows: rows.map((r) => (Array.isArray(r) ? r.map(String) : r)), ms };
+		const o = rows && typeof rows === 'object' ? rows : {};
+		return {
+			sql,
+			ok: true,
+			shape: 'ok-packet',
+			affected: o.affectedRows,
+			info: o.info,
+			serverStatus: o.serverStatus,
+			warningStatus: o.warningStatus,
+			fieldCount: o.fieldCount,
+			raw_type: rows === null ? 'null' : typeof rows,
+			ms,
+		};
 	} catch (e) {
 		return { sql, ok: false, errno: e && e.errno, error: String((e && e.message) || e).slice(0, 300), ms: performance.now() - t0 };
 	}
 }
+
+// One cell of a result, or undefined. Never throws.
+const cell = (r, i = 0, j = 0) => (r && r.ok && Array.isArray(r.rows) && Array.isArray(r.rows[i]) ? r.rows[i][j] : undefined);
 
 // wpdb::set_sql_mode(): the modes WordPress removes from the server's sql_mode.
 const WP_INCOMPATIBLE = ['NO_ZERO_DATE', 'ONLY_FULL_GROUP_BY', 'STRICT_TRANS_TABLES', 'STRICT_ALL_TABLES', 'TRADITIONAL', 'ANSI'];
@@ -94,9 +113,15 @@ async function session(env) {
 	const out = { steps: {} };
 	const s = (k, v) => (out.steps[k] = v);
 	try {
-		const base = await q(c, 'SELECT @@SESSION.sql_mode, @@GLOBAL.sql_mode, VERSION(), CONNECTION_ID()');
-		s('server', base);
-		const serverMode = base.ok ? base.rows[0][0] : '';
+		s('server_session_mode', await q(c, 'SELECT @@SESSION.sql_mode'));
+		s('server_global_mode', await q(c, 'SELECT @@GLOBAL.sql_mode'));
+		s('server_version', await q(c, 'SELECT VERSION()'));
+		s('server_connection_id', await q(c, 'SELECT CONNECTION_ID()'));
+		const serverMode = cell(out.steps.server_session_mode);
+		if (serverMode === undefined) {
+			out.error = 'SELECT @@SESSION.sql_mode returned no row: see steps.server_session_mode';
+			return out;
+		}
 		const relaxed = relax(serverMode);
 		out.server_mode = serverMode;
 		out.relaxed_mode = relaxed;
@@ -106,8 +131,8 @@ async function session(env) {
 		s('S1_set', await q(c, "SET SESSION sql_mode = '" + relaxed + "'"));
 		const reads = [];
 		for (let i = 0; i < 10; i++) reads.push(await q(c, 'SELECT @@SESSION.sql_mode, CONNECTION_ID()'));
-		s('S1_reads', reads.map((r) => (r.ok ? r.rows[0] : r.error)));
-		out.S1_kept_all = reads.every((r) => r.ok && r.rows[0][0] === relaxed);
+		s('S1_reads', reads);
+		out.S1_kept_all = reads.every((r) => cell(r) === relaxed);
 		// Back to the server mode for the tests below.
 		await q(c, "SET SESSION sql_mode = '" + serverMode + "'");
 
@@ -117,13 +142,13 @@ async function session(env) {
 		const s2 = await q(c, 'SELECT @@SESSION.sql_mode');
 		s('S2_read', s2);
 		s('S2_commit', await q(c, 'COMMIT'));
-		out.S2_kept_in_transaction = s2.ok && s2.rows[0][0] === relaxed;
+		out.S2_kept_in_transaction = cell(s2) === relaxed;
 		await q(c, "SET SESSION sql_mode = '" + serverMode + "'");
 
 		// S3: the SET_VAR hint, through Vitess to MySQL.
 		const s3 = await q(c, 'SELECT ' + hint + ' @@SESSION.sql_mode');
 		s('S3_hint', s3);
-		out.S3_hint_applies = s3.ok && s3.rows[0][0] === relaxed;
+		out.S3_hint_applies = cell(s3) === relaxed;
 
 		// D: a scratch table with WordPress's zero-date default.
 		const T = 'a2probe_' + Date.now();
@@ -140,7 +165,7 @@ async function session(env) {
 			await q(c, "SET SESSION sql_mode = '" + serverMode + "'");
 		}
 		const made = await q(c, "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = '" + T + "'");
-		out.table_made = made.ok && String(made.rows[0][0]) === '1';
+		out.table_made = String(cell(made)) === '1';
 		if (out.table_made) {
 			s('D_show', await q(c, 'SHOW CREATE TABLE ' + T));
 			// D3: a zero-date value, plain (strict) and with the hint.
@@ -157,6 +182,8 @@ async function session(env) {
 			s('D_drop', await q(c, 'DROP TABLE ' + T));
 		}
 		out.table = T;
+	} catch (e) {
+		out.error = 'probe: ' + String((e && e.message) || e);
 	} finally {
 		await c.end().catch(() => {});
 	}
