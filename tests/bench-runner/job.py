@@ -45,10 +45,10 @@ def job(jid, branch, n, path):
     j = {"id": jid, "n": int(n), "targets": targets}
     load = os.environ.get("LOAD", "")
     if load:
-        m = re.fullmatch(r"([0-9]{1,3}(?:,[0-9]{1,3}){0,9}):([0-9]{1,3}):(0(?:\.[0-9]+)?|1)", load)
+        m = re.fullmatch(r"([0-9]{1,3}(?:,[0-9]{1,3}){0,9}):([0-9]{1,3}):(0(?:\.[0-9]+)?|1)(?::(nocache|cached|cached-sbjs))?", load)
         if not m or max(int(x) for x in m.group(1).split(",")) > 100 or not 10 <= int(m.group(2)) <= 300:
-            die("LOAD is levels:seconds:buyers, e.g. 1,5,10,25,50:60:0.2 (users 1 to 100, seconds 10 to 300)")
-        j["load"] = {"levels": m.group(1), "seconds": int(m.group(2)), "buyers": float(m.group(3))}
+            die("LOAD is levels:seconds:buyers[:mode], e.g. 1,5,10,25,50:60:0.2 or 1,5,10:60:0.2:cached (users 1 to 100, seconds 10 to 300; mode nocache, cached or cached-sbjs, see tests/load/load.py)")
+        j["load"] = {"levels": m.group(1), "seconds": int(m.group(2)), "buyers": float(m.group(3)), "mode": m.group(4) or "nocache"}
     if branch:
         j["branch"] = branch
     print(json.dumps(j, indent=1))
@@ -110,7 +110,7 @@ def table(path):
             print("added     ", p.get("added_ms"))
         return
     if r.get("load"):
-        print("load: users %s, %s s per step, buyers %s" % (r["load"]["levels"], r["load"]["seconds"], r["load"]["buyers"]))
+        print("load: users %s, %s s per step, buyers %s, mode %s" % (r["load"]["levels"], r["load"]["seconds"], r["load"]["buyers"], r["load"].get("mode", "nocache")))
         return load_table(r)
     pages = []
     for t in r.get("targets", []):

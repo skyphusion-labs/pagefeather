@@ -78,6 +78,8 @@ The query count per page comes from the mu-plugin `php/query-count.php`: it send
 | `OBJECT_CACHE` | `apcu` | `apcu`: the APCu object cache drop-in (about 20 % less CPU per page, docs/approach-c1.md). `none`: no object cache. |
 | `REPLICA_PATH` | `store` | Path of the Litestream replica in the replica bucket. Another path restores and writes another database; `store` stays as it was. |
 | `QUEUE_RUNNER` | `local` | `local`: WP-Cron and Action Scheduler run from inside the container every `CRON_SECONDS` (60), and the Action Scheduler async loopback is off (issue #45). `loopback`: the loopback, as before. |
+| `PAGE_CACHE_TTL` | `120` | Seconds a storefront page stays fresh at the edge (visitors with no cart, session or login; docs/approach-c1.md, Storefront edge cache). A change purges it sooner. |
+| `PAGE_CACHE_SWR` | `600` | Seconds after that during which the edge serves the old copy while it renders a new one |
 | `CHECK_WAIT` | `600` | Seconds to wait after the deploy until the Store object is from this deploy (c1_check) |
 | `PUBLIC_HOST` | `<name>.<subdomain>.workers.dev` | The address WordPress uses |
 | `ROLLOUT_WAIT` | `60` | Seconds to wait after the deploy before the one stop |
@@ -116,6 +118,8 @@ NAME=my-shop ./deploy/destroy.sh
 ## Variant `b-dosql`: the database in the PHP object
 
 The same Worker and PHP object as `b-do`, with `DB_IN_DO=on`: each statement runs on the object's own SQLite storage (`ctx.storage.sql`), so a query is not a network call. There is no D1. One object holds the site: one writer, data in the object, point-in-time recovery for 30 days ([Durable Objects](https://developers.cloudflare.com/durable-objects/)). Move a site in or out with `spikes/b2-wordpress/dbmove.py` (`/_dbexport`, `/_dbimport`). Details: [docs/approach-b.md](../docs/approach-b.md) section 8j.
+
+To import an existing WordPress site from a mysqldump, use `deploy/import.sh`: see [deploy/import/README.md](import/README.md).
 
 On Workers Free the object's SQLite has daily limits: 5 million rows read and 100,000 rows written (a public page reads about 160 to 220 rows; an admin page writes about 30 to 40). A page cache hit costs neither.
 
@@ -170,3 +174,4 @@ cd deploy/terraform && terraform workspace select my-site && terraform output -r
 - Measurements from a fixed vantage (a Vultr runner), with p95 and p99, concurrency and the cold path.
 - Plugins and WooCommerce runs (`tests/plugins/plugins.py`, `tests/woo.py`) as part of `deploy.sh`.
 - A custom domain. The site is on `<name>.<subdomain>.workers.dev`.
+- Import of an existing site into `a`, `a2` and `c1` (issue #31). `b-dosql` has it: database, uploads, theme and plugins.
