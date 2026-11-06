@@ -97,28 +97,75 @@ SITEURL=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["site"
 OLD_ORIGIN=${OLD_ORIGIN%/}
 python3 "$IMP/search-replace.py" "$WORK/site.sqlite" "$OLD_ORIGIN" "$NEW_ORIGIN" ${DRY_RUN:+--dry-run} | tee "$WORK/replace.json"
 
-# c1: the seed phase (deploy/import/c1.sh) exits here.
-# shellcheck source=SCRIPTDIR/import/c1.sh
-[ "$VARIANT" != c1 ] || . "$IMP/c1.sh"
+# Uploads, with CONTENT: into the media bucket through the S3 API, with a
+# key that Terraform makes for this step and deletes after it (media-import.tf).
+# Used by step 6b, and by deploy/import/c1.sh in the c1 seed phase.
+media_step() {
+  if [ -n "$SRC_CONTENT" ] && [ -d "$SRC_CONTENT/uploads" ] && [ -n "${SKIP_MEDIA:-}" ]; then
+    echo "media: SKIP_MEDIA is set: the uploads are NOT in R2, so the site's images are missing"
+  elif [ -n "$SRC_CONTENT" ] && [ -d "$SRC_CONTENT/uploads" ]; then
+    : "${NAME:?set NAME (the Terraform workspace of deploy.sh) to put the uploads in R2, or SKIP_MEDIA=1}"
+    : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}" "${ACCOUNT_ID:?set ACCOUNT_ID}"
+    export CLOUDFLARE_ACCOUNT_ID=$ACCOUNT_ID
+    tf_ready || exit 1
+    BUCKET=$(tfi output -raw media_bucket)
+    [ -n "$BUCKET" ] || { echo "$NAME has no media bucket: deploy it with MEDIA=1" >&2; exit 1; }
+    # The variables of the site: deploy.sh's file in the clone that deployed it,
+    # or else the same values read from the state's outputs (a clone with
+    # DEPLOY_STATE=r2). The applies target the import key only, so no other
+    # resource of the site can change here.
+    VARS="$TF/sites/$NAME.tfvars"
+    if [ ! -f "$VARS" ]; then
+      VARS="$WORK/site.tfvars"
+      printf 'account_id = "%s"\nname = "%s"\nvariant = "%s"\nlocation = "%s"\nmedia = true\n' \
+        "$(tfi output -raw account_id)" "$(tfi output -raw name)" "$(tfi output -raw variant)" "$(tfi output -raw location)" > "$VARS"
+      echo "media: no sites/$NAME.tfvars in this clone; using the values in the state"
+    fi
+    key_apply() { tfi apply -input=false -auto-approve -var-file="$VARS" -target=cloudflare_account_token.media_import -var "media_import=$1" >/dev/null; }
+    key_off() { key_apply false && echo "media: import key deleted"; }
+    trap 'key_off || echo "media: DELETE THE KEY: cd deploy/terraform && terraform apply -var-file=$VARS -target=cloudflare_account_token.media_import -var media_import=false" >&2' EXIT
+    key_apply true
+    R2_KEY_ID=$(tfi output -raw media_import_access_key_id)
+    R2_SECRET=$(tfi output -raw media_import_secret_access_key)
+    export R2_KEY_ID R2_SECRET
+    EP=$(tfi output -raw r2_endpoint)
+    "$IMP/media.sh" "$EP" "$BUCKET" "$SRC_CONTENT"
+    # The second run is the check: every file is there with its size.
+    "$IMP/media.sh" "$EP" "$BUCKET" "$SRC_CONTENT" | tee "$WORK/media-check.txt"
+    grep -q '^media: 0 sent, [0-9]* already there, 0 failed$' "$WORK/media-check.txt" || { echo "media: the check run sent files again" >&2; exit 1; }
+    unset R2_KEY_ID R2_SECRET
+    key_off; trap - EXIT
+  fi
+}
 
 # 4. The theme and plugins must be in the build: the import does not add them.
-# This reads the local build (spikes/b2-wordpress/build), so build what you
-# deployed. With CONTENT (a wp-content archive), the archive is extracted and
-# the deploy.sh line that builds the theme and plugins in is printed.
+# This reads the local build (spikes/b2-wordpress/build, or for c1
+# spikes/c1-woo-container/build), so build what you deployed. With CONTENT (a
+# wp-content archive), the archive is extracted and the deploy.sh line that
+# builds the theme and plugins in is printed (and kept in WORK/import-line.txt).
+# For c1 the deploy comes after the seed, with that line, so a theme or plugin
+# may be in the c1 build or in the archive.
 SRC_CONTENT=""
 if [ -n "${CONTENT:-}" ]; then
   python3 -I "$IMP/untar.py" "$CONTENT" "$WORK/content"
   SRC_CONTENT="$WORK/content/wp-content"
 fi
-python3 - "$WORK/report.json" "$APP/build/wordpress/wp-content" "$SRC_CONTENT" <<'PY'
+BUILD_WC="$APP/build/wordpress/wp-content"
+[ "$VARIANT" != c1 ] || BUILD_WC="$ROOT/spikes/c1-woo-container/build/wordpress/wp-content"
+VARIANT=$VARIANT python3 - "$WORK/report.json" "$BUILD_WC" "$SRC_CONTENT" "$WORK/import-line.txt" <<'PY'
 import json, os, shlex, sys
 r = json.load(open(sys.argv[1]))["site"]
-wc, src = sys.argv[2], sys.argv[3]
+wc, src, line_file = sys.argv[2], sys.argv[3], sys.argv[4]
+c1 = os.environ.get("VARIANT") == "c1"
 themes = sorted({t for t in (r["template"], r["stylesheet"]) if t})
 plugins = r["active_plugins"] or []
 names = sorted({p.split("/", 1)[0] for p in plugins})
-missing = [f"theme {t}" for t in themes if not os.path.isdir(os.path.join(wc, "themes", t))]
-missing += [f"plugin {p}" for p in plugins if not os.path.exists(os.path.join(wc, "plugins", p))]
+def there(kind, name):
+    sub = "themes" if kind == "theme" else "plugins"
+    test = os.path.isdir if kind == "theme" else os.path.exists
+    return test(os.path.join(wc, sub, name)) or (c1 and src and test(os.path.join(src, sub, name)))
+missing = [f"theme {t}" for t in themes if not there("theme", t)]
+missing += [f"plugin {p}" for p in plugins if not there("plugin", p)]
 if src:
     absent = [f"theme {t}" for t in themes if not os.path.isdir(os.path.join(src, "themes", t))]
     absent += [f"plugin {p}" for p in plugins if not os.path.exists(os.path.join(src, "plugins", p))]
@@ -128,13 +175,18 @@ if src:
     t_in = [t for t in themes if os.path.isdir(os.path.join(src, "themes", t))]
     p_in = [n for n in names if n != "sqlite-database-integration" and os.path.exists(os.path.join(src, "plugins", n))]
     line = f"IMPORT_CONTENT={shlex.quote(src)} IMPORT_THEMES={shlex.quote(' '.join(t_in))} IMPORT_PLUGINS={shlex.quote(' '.join(p_in))}"
+    open(line_file, "w").write(line + "\n")
     print("to build the site's theme and plugins in, deploy with: " + line + " ./deploy/deploy.sh")
 if missing:
     print("NOT IN THE BUILD (the site will not look or work the same): " + ", ".join(missing))
     print("Deploy again with the line above (CONTENT=...), or add plugins with PLUGINS=... (tests/plugins/suite.txt), or import anyway with ALLOW_MISSING=1.")
     sys.exit(0 if os.environ.get("ALLOW_MISSING") == "1" else 1)
-print("theme and active plugins: all in the build")
+print("theme and active plugins: all in the build" + (" or the archive (deploy with the line above)" if c1 and src else ""))
 PY
+
+# c1: the seed phase (deploy/import/c1.sh) exits here.
+# shellcheck source=SCRIPTDIR/import/c1.sh
+[ "$VARIANT" != c1 ] || . "$IMP/c1.sh"
 
 # Variant a: the MySQL statements (deploy/import/mysql.sh). The address changes
 # in them, not in the SQLite copy above, which only gave the prefix and facts.
@@ -164,43 +216,8 @@ else
 fi
 fi
 
-# 6b. Uploads, with CONTENT: into the media bucket through the S3 API, with a
-# key that Terraform makes for this step and deletes after it (media-import.tf).
-if [ -n "$SRC_CONTENT" ] && [ -d "$SRC_CONTENT/uploads" ] && [ -n "${SKIP_MEDIA:-}" ]; then
-  echo "media: SKIP_MEDIA is set: the uploads are NOT in R2, so the site's images are missing"
-elif [ -n "$SRC_CONTENT" ] && [ -d "$SRC_CONTENT/uploads" ]; then
-  : "${NAME:?set NAME (the Terraform workspace of deploy.sh) to put the uploads in R2, or SKIP_MEDIA=1}"
-  : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}" "${ACCOUNT_ID:?set ACCOUNT_ID}"
-  export CLOUDFLARE_ACCOUNT_ID=$ACCOUNT_ID
-  tf_ready || exit 1
-  BUCKET=$(tfi output -raw media_bucket)
-  [ -n "$BUCKET" ] || { echo "$NAME has no media bucket: deploy it with MEDIA=1" >&2; exit 1; }
-  # The variables of the site: deploy.sh's file in the clone that deployed it,
-  # or else the same values read from the state's outputs (a clone with
-  # DEPLOY_STATE=r2). The applies target the import key only, so no other
-  # resource of the site can change here.
-  VARS="$TF/sites/$NAME.tfvars"
-  if [ ! -f "$VARS" ]; then
-    VARS="$WORK/site.tfvars"
-    printf 'account_id = "%s"\nname = "%s"\nvariant = "%s"\nlocation = "%s"\nmedia = true\n' \
-      "$(tfi output -raw account_id)" "$(tfi output -raw name)" "$(tfi output -raw variant)" "$(tfi output -raw location)" > "$VARS"
-    echo "media: no sites/$NAME.tfvars in this clone; using the values in the state"
-  fi
-  key_apply() { tfi apply -input=false -auto-approve -var-file="$VARS" -target=cloudflare_account_token.media_import -var "media_import=$1" >/dev/null; }
-  key_off() { key_apply false && echo "media: import key deleted"; }
-  trap 'key_off || echo "media: DELETE THE KEY: cd deploy/terraform && terraform apply -var-file=$VARS -target=cloudflare_account_token.media_import -var media_import=false" >&2' EXIT
-  key_apply true
-  R2_KEY_ID=$(tfi output -raw media_import_access_key_id)
-  R2_SECRET=$(tfi output -raw media_import_secret_access_key)
-  export R2_KEY_ID R2_SECRET
-  EP=$(tfi output -raw r2_endpoint)
-  "$IMP/media.sh" "$EP" "$BUCKET" "$SRC_CONTENT"
-  # The second run is the check: every file is there with its size.
-  "$IMP/media.sh" "$EP" "$BUCKET" "$SRC_CONTENT" | tee "$WORK/media-check.txt"
-  grep -q '^media: 0 sent, [0-9]* already there, 0 failed$' "$WORK/media-check.txt" || { echo "media: the check run sent files again" >&2; exit 1; }
-  unset R2_KEY_ID R2_SECRET
-  key_off; trap - EXIT
-fi
+# 6b. Uploads (media_step, above).
+media_step
 
 # 7. The home page, uncached: status and title.
 code=$(curl -s -m 120 -A wp-on-cf-import/1 -o "$WORK/home.html" -w '%{http_code}' "$URL/?nocache=import$RANDOM")

@@ -2,7 +2,7 @@
 
 `deploy/import.sh` moves an existing WordPress site into a site that `deploy/deploy.sh` made: the database, the uploads, and the theme and plugins. The source site is only read. Nothing in the script connects to it: you give it a dump file.
 
-This version supports the variants `b-dosql` (the database is the SQLite of the PHP Durable Object), `c1` (the database only; see "Variant c1") and `a`, with `a2` (the database only; see "Variant a and a2"). The design for the other variants is in [issue #31](https://github.com/skyphusion-labs/wordpress-on-cloudflare/issues/31). Prior art: [docs/prior-art.md](../../docs/prior-art.md), "Moving existing sites".
+This version supports the variants `b-dosql` (the database is the SQLite of the PHP Durable Object), `c1` (the database, uploads, theme and plugins; see "Variant c1") and `a`, with `a2` (the database, uploads, theme and plugins; see "Variant a and a2"). The design for the other variants is in [issue #31](https://github.com/skyphusion-labs/wordpress-on-cloudflare/issues/31). Prior art: [docs/prior-art.md](../../docs/prior-art.md), "Moving existing sites".
 
 ## Use
 
@@ -65,7 +65,13 @@ Options: `DRY_RUN=1` stops before the import and shows what changes. `SKIP_MEDIA
 2. **Deploy** with `REPLICA_PATH=<new path> SEED_SHA256=<sha>`, and with your other `c1` options the same as before. The next container finds no replica at the new path, so it loads the seed (`spikes/c1-woo-container/container/seed.sh`). Then Litestream replicates it, and every later start restores it.
 3. **Check.** `VARIANT=c1 VERIFY=1 WORK=<the same WORK> ... ./deploy/import.sh` reads `/_stats.php?what=seed`: the SHA-256 and the rows of each table that the container loaded before PHP ran. It compares them with the seed, then gets `/`.
 
-The container stops (it does not start) if the seed download or its SHA-256 check fails, so it never installs an empty site over an import. To go back, deploy with the old `REPLICA_PATH`: its replica is unchanged. A `c1` import does not take `CONTENT` yet (uploads, theme and plugins).
+The container stops (it does not start) if the seed download or its SHA-256 check fails, so it never installs an empty site over an import. To go back, deploy with the old `REPLICA_PATH`: its replica is unchanged.
+
+**With `CONTENT`** (a `wp-content` archive):
+- The seed phase also puts the uploads into the site's media bucket (`media.sh`, the same key that `b-dosql` uses). The c1 Worker serves `/wp-content/uploads/<path>` from the key `uploads/<path>` too.
+- The printed `deploy.sh` line starts with `IMPORT_CONTENT=... IMPORT_THEMES=... IMPORT_PLUGINS=...`. `spikes/c1-woo-container/build.sh` copies them in with `content.sh`, under the same rules as for `b-dosql`.
+- The deploy comes after the seed, so the build check accepts a theme or plugin that is in the c1 build or in the archive. Without the archive, a plugin that only the site had stops the seed phase with `NOT IN THE BUILD`.
+- Run a dry run first (`DRY_RUN=1`, with `NAME`, `CLOUDFLARE_API_TOKEN` and `ACCOUNT_ID` set) to see the line.
 
 ## Variant a and a2
 
@@ -89,6 +95,8 @@ The container stops (it does not start) if the seed download or its SHA-256 chec
 **`/_sqlimport`** (`spikes/b2-wordpress/sql-import.js`):
 - It serves variant `a` only, `a2` included; every other variant gets 404. It needs the `SPIKE_TOKEN` secret and its header; with no secret it refuses, unlike other spike endpoints.
 - Before it runs any statement of a request, it checks all of them. It allows only `DROP TABLE IF EXISTS`, `CREATE TABLE` (column list and table options) and `INSERT ... VALUES` with literals, on a table named `wp_*`. Refused: `GRANT`, `SET` (`SET GLOBAL` included), `LOAD DATA`, `SELECT`, `INTO OUTFILE`, a function in `VALUES` (for example `LOAD_FILE`), `DATA DIRECTORY`, a comment, a second statement. Tests: `tests/sqlimport-check.mjs` and `tests/sqlimport-endpoint.mjs` (both in `run.sh`).
+
+**With `CONTENT`:** the same path as `b-dosql`. Step 4 extracts the archive, prints the `deploy.sh` line and checks the b2 build (`deploy.sh` builds variant `a` with `ENGINE=a` and the `IMPORT_*` variables). Step 6b puts the uploads into the media bucket after the database (a site with `MEDIA=1`). No code is particular to `a` here. Run locally on 2026-11-06 against a stand-in for an `a` site (`/_sqlimport` and `/`) with the a2 dump and the WordPress 7.1.4 archive: line printed, preflight 98, every table matches (8583 rows), upload step reached (`SKIP_MEDIA=1`), `GET /` 200. Not run on a deployed `a` site.
 
 **Query cache:** confirmed OFF, not changed. Terraform makes the Hyperdrive config of variant `a` with `caching = { disabled = true }` (`deploy/terraform/main.tf`, `cloudflare_hyperdrive_config.wp`), and `a2` is variant `a`, so it uses the same resource. The count reads do nothing to avoid a cache.
 
@@ -172,6 +180,21 @@ Slice 2, 2026-11-06, same local Worker: `build.sh` with `IMPORT_CONTENT` from th
 `c1`, 2026-11-06, local (no Docker on this computer, so no container): `tests/run.sh` runs `seed.sh` against the stand-in. It checks a good seed, a wrong SHA-256, a missing object, a restored database (it wins), and no `SEED_SHA256`. Then the `c1` build's own WordPress tree (`spikes/c1-woo-container/build.sh`, WooCommerce in it) ran under `php -S` with `router.php` on the a2 seed (made by `import.sh` steps 1 to 3). `/`, `/?p=1`, `wp-login.php` and the shop page were HTTP 200, with no PHP errors. The real container, Litestream and the deploy are not run yet.
 
 Variant `a`, 2026-11-06, local (no MySQL on this computer): `mysql-prepare.py` on the a2 dump, for MySQL and for MariaDB, made 228 statements with 8583 rows. The address changed in 26 values, as `search-replace.py` does on SQLite. `checkStatement` of the endpoint allowed all 228. Eight `CREATE TABLE` statements of Wordfence were refused before the hex `DEFAULT` rewrite. The import into MySQL is not run yet.
+
+`c1` with `CONTENT`, 2026-11-06, local: a dump whose only active plugin is `my-shop` (in no build) and an archive with `wp-content/plugins/my-shop`. With `CONTENT`, the seed dry run passed and printed `IMPORT_PLUGINS=my-shop`. Without it (the red control), it stopped: `NOT IN THE BUILD: plugin my-shop/my-shop.php`, exit 1. `spikes/c1-woo-container/build.sh` with `IMPORT_CONTENT` and `IMPORT_PLUGINS=my-shop` put `my-shop` in the tree; the default build did not have it. A mutation that removed the build-or-archive rule made the run with `CONTENT` stop.
+
+**Deployed, 2026-11-06** (`docs/results.md`): `wp-import-c1`, a fresh c1 site, from `e7241ff`, run by the lead. The source was the a2 dump with `my-shop` active, plus an archive with `my-shop` and one upload.
+
+| Step | Result |
+| --- | --- |
+| Seed | 3874816 bytes at `import-20261106t064157z.seed.sqlite` |
+| Uploads | 1 sent; the check run 0 sent; the import key deleted |
+| Deploy | with the printed line: exit 0, first answer 200 after 15 s |
+| `VERIFY=1` | every table matches (10067 rows in 107 tables), `GET /` 200 |
+| Upload through the site | `x.jpg` 200, 4 bytes, from R2 |
+| Plugin | `my-shop.php` is in the container (200; a missing path gives 301). That it is active is shown only by the seed rows, not by `plugins.php`: there is no admin password for the a2 users. |
+
+The first deploy of `wp-import-c1` failed at the Docker build (`read-only file system`) when the laptop disk filled. That is a result too.
 
 ## Measured on a deployed site
 
