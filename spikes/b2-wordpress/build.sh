@@ -91,7 +91,13 @@ echo "public/ $(find build/public -type f | wc -l | tr -d ' ') files"
 # the bundle so the Worker and its object can report which version they run.
 # "-dirty" when the tree has uncommitted changes, so a hand-built tree is never
 # mistaken for a committed build. "unknown" outside a git tree.
-BUILD_ID=$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
-[ -n "$(git status --porcelain 2>/dev/null)" ] && BUILD_ID="$BUILD_ID-dirty"
+# BUILD_ID_OVERRIDE forces the id (the activation measurement, issue #35, sets
+# it so two builds differ without editing source); else the git sha.
+if [ -n "${BUILD_ID_OVERRIDE:-}" ]; then
+  BUILD_ID=$BUILD_ID_OVERRIDE
+else
+  BUILD_ID=$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+  [ -n "$(git status --porcelain 2>/dev/null)" ] && BUILD_ID="$BUILD_ID-dirty"
+fi
 printf 'export default %s;\n' "\"$BUILD_ID\"" > build/build-id.js
 echo "build-id $BUILD_ID"
