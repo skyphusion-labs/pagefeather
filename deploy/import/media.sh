@@ -17,6 +17,11 @@
 # JOBS (default 8) requests at a time. The key goes to curl in a config file on
 # a pipe, not in the arguments, so it is not in ps. A new key can take some
 # seconds to work: 401 and 403 are tried again for up to 90 s.
+# Per file (issue #124): only a HEAD of 404 (or 200 with another size) means
+# "send it". A HEAD that is refused or fails (401, 403, a curl error, 5xx) is
+# tried again for R2_RETRY_S (90) s, then the file FAILS with the code: it
+# never counts as missing, or the check run would send files it could not
+# see. A PUT of 401 or 403 is tried again in the same way.
 set -euo pipefail
 # list <dir> [nul]: key, path, type, size. Tab and newline, or NUL after each field.
 list() { python3 -I - "$1" "${2:-}" <<'PY'
@@ -69,14 +74,28 @@ while :; do
   esac
 done
 
-# One file: HEAD, then PUT if it is missing or has another size.
+# One file: HEAD, then PUT if it is missing (404) or has another size.
 one() {
-  local key=$1 path=$2 ctype=$3 size=$4 have code
+  local key=$1 path=$2 ctype=$3 size=$4 have hc code t0=$SECONDS
   s3() { curl -sS -K <(printf 'user = "%s:%s"\n' "$R2_KEY_ID" "$R2_SECRET") --aws-sigv4 "aws:amz:auto:s3" "$@"; }
-  have=$(s3 -I -o /dev/null -w '%{http_code} %header{content-length}' "$EP/$B/$key" || echo "000 -")
-  if [ "$have" = "200 $size" ]; then echo skip; return; fi
-  code=$(s3 -o /dev/null -w '%{http_code}' -X PUT -H "content-type: $ctype" -T "$path" "$EP/$B/$key" || echo 000)
-  case "$code" in 200) echo sent ;; *) echo "fail $code $key" ;; esac
+  while :; do
+    have=$(s3 -I -o /dev/null -w '%{http_code} %header{content-length}' "$EP/$B/$key" 2>/dev/null) || have="000 -"
+    hc=${have%% *}
+    case "$hc" in
+      200) [ "$have" = "200 $size" ] && { echo skip; return; }; break ;;
+      404) break ;;
+      *) [ $((SECONDS - t0)) -lt "${R2_RETRY_S:-90}" ] || { echo "fail head $hc $key"; return; }; sleep "${R2_RETRY_STEP:-3}" ;;
+    esac
+  done
+  t0=$SECONDS
+  while :; do
+    code=$(s3 -o /dev/null -w '%{http_code}' -X PUT -H "content-type: $ctype" -T "$path" "$EP/$B/$key" 2>/dev/null) || code=000
+    case "$code" in
+      200) echo sent; return ;;
+      401|403) [ $((SECONDS - t0)) -lt "${R2_RETRY_S:-90}" ] || { echo "fail put $code $key"; return; }; sleep "${R2_RETRY_STEP:-3}" ;;
+      *) echo "fail put $code $key"; return ;;
+    esac
+  done
 }
 export -f one
 xargs -0 -n 4 -P "${JOBS:-8}" bash -c 'one "$@"' _ < "$W/list" > "$W/out"
