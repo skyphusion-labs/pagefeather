@@ -45,11 +45,11 @@ Two limits are easy to miss behind the tables.
 | Variant | Database | `ROLLBACK` undoes the writes |
 | --- | --- | --- |
 | `b-do` | D1 | **No.** D1 has no transaction across calls. `BEGIN` and `COMMIT` are answered in PHP; each statement commits on its own. |
-| `b-dosql` | SQLite in the Durable Object | **No, today.** The same PHP driver as `b-do`. The object is the only writer and runs one request at a time, so no request sees another's half-done change, but a request that stops midway keeps its earlier writes. Issue #60 makes it real. |
+| `b-dosql` | SQLite in the Durable Object | Yes (issue #60). An undo log in the object: `ROLLBACK`, `ROLLBACK TO SAVEPOINT`, and a request that stops midway are rolled back. `REAL_TRANSACTIONS=off` turns it off. |
 | `c1` | SQLite on the container disk (PHP's own driver) | Yes. |
 | `a`, `a2` | MySQL through Hyperdrive | Yes. |
 
-Code that relies on `ROLLBACK` (WooCommerce, some plugins, upgrades) gets no rollback on `b-do` and `b-dosql`. See [docs/approach-b.md](docs/approach-b.md), "Transactions".
+Code that relies on `ROLLBACK` (WooCommerce, some plugins, upgrades) gets no rollback on `b-do`. See [docs/approach-b.md](docs/approach-b.md), "Transactions" and 8l.
 
 **One run is not a number.** The same test on the same code moved a lot between runs:
 - `a` served 18.7 requests per second at 100 users in one load matrix and 8.63 in another ([docs/approach-a2.md](docs/approach-a2.md)).

@@ -389,7 +389,7 @@ Mutation check, local (`~/scratch` script). The object was given `http://<host>:
 | Statement length, bound parameters | 100 KB, 100 | 100 KB, 100 | Same limits |
 | Row, string or BLOB size | 2 MB | 2 MB | Same limit |
 
-**Transactions.** As on D1, a transaction is not real: BEGIN and COMMIT are answered in PHP, and a ROLLBACK undoes nothing (it is counted). Each statement is committed on its own. The object is the only writer and runs one PHP request at a time, so no other request sees a half-done change from another request. A PHP request that stops midway leaves its earlier statements in place, as on D1. A real transaction would need `ctx.storage.transaction()` around the whole PHP request. Whether its async form holds SQL writes across awaits is not stated in the docs. Not tried.
+**Transactions.** Real since issue #60: an undo log in the object rolls back `ROLLBACK`, `ROLLBACK TO SAVEPOINT` and a request that stops midway. `ctx.storage.transaction()` around the PHP request cannot do it (probes T10 and T11). See 8l. Before #60, as on D1, `ROLLBACK` undid nothing.
 
 **Size.** Per object: 10 GB on Paid. On Free, the limits table gives 5 GB per account and the FAQ gives 1 GB per object. Past the limit, writes fail with `SQLITE_FULL`; reads and deletes still work. The local test site is 409,600 bytes (`databaseSize`).
 
@@ -498,6 +498,79 @@ Values are tail CPU in ms, p50 / p95 (joined n). On is inside the off range on b
 **Two findings in the test rig, not in the bridge.**
 1. With a local echo server on HTTP/1.0 (Python's default; it closes each connection), a redirect inside the object sometimes failed with "Network connection lost": workerd reused a closed connection. With HTTP/1.1 keep-alive it passed 3 of 3. A real HTTP/1.0 server that closes connections might do the same. Not tested.
 2. In the first Cloudflare run of the test build, the test route and Akismet answered 404 for about 15 s right after the deploy; a second deploy of the same build answered from its first request. Not explained.
+
+### 8l. Real SQL transactions in the PHP object (issue #60). Measured 2026-11-06 (UTC).
+
+**Problem.** On `b-dosql` a `ROLLBACK` undid nothing. The PHP driver answered `BEGIN` and `COMMIT` itself, and each statement committed on its own. A request that stopped midway kept its earlier writes. The red test showed this on `dosql-local` and on `do-local` (D1).
+
+**What the object's SQLite allows.** Probed on Cloudflare and locally, with throwaway builds (never committed):
+- `BEGIN`, `SAVEPOINT` and `PRAGMA schema_version` are refused (`SQLITE_AUTH`).
+- Triggers, `PRAGMA table_info` and `quote()` are allowed.
+- `ctx.storage.transactionSync()` nests as a savepoint.
+- `ctx.storage.transaction(async)` cannot hold a whole PHP request:
+  - **T10.** A nested transaction that is held open does not capture statements made from outside its closure. The inner one rolled back; the row written from outside stayed (rows `o1, i1, i2, i3, o2` = `1, 0, 1, 0, 1`). On Cloudflare and locally.
+  - **T11.** A `fetch()` while the transaction is held deadlocks. On Cloudflare the request answered the overload message after 30 s, and the site answered 200 right after. Locally the object reset after 30 s.
+  - A PHP request awaits `fetch()` (8k), so a transaction around the request cannot hold.
+
+**Design: an undo log** (SQLite's "Automatic Undo/Redo" technique).
+- `php/real-transactions.php` (mu-plugin) watches the `query` filter of `$wpdb`. That filter sees the transaction statements of WordPress and plugins. The SQLite driver's own internal transactions do not pass through it. It sends `START TRANSACTION`, `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVEPOINT`, `ROLLBACK TO`, `RELEASE` and DDL to `txnOp()` in `index.js` through `post_message_to_js()`.
+- On `BEGIN`, `index.js` puts three triggers on each table: AFTER INSERT, UPDATE and DELETE. Each writes the inverse SQL into `_wp_undo`, only when `_wp_undo_state.active` is 1.
+  - Tables that are skipped: `sqlite_*`, `_cf_*`, the undo tables, and `WITHOUT ROWID` tables.
+  - A trigger's name holds a hash of its whole body. A changed body (a new release, a new column) gets a new name, the old trigger is dropped, and the new one is made.
+  - The triggers are checked again only when `sqlite_master` changes (its row count and the total length of its SQL; `PRAGMA schema_version` is refused).
+- **ROLLBACK.** Replays the log newest first, inside one `transactionSync()`, then deletes those log rows.
+- **COMMIT.** Deletes the log and sets `active` to 0.
+- **The object cache.** The keys set or deleted since `BEGIN` are dropped from the object cache on any rollback, so the next request reads the old value from the database.
+- **MySQL semantics kept:**
+  - `START TRANSACTION` inside a transaction commits the first;
+  - DDL (`CREATE`, `ALTER`, `DROP`, `RENAME`, `TRUNCATE`) commits first (MySQL's implicit commit);
+  - a transaction still open at the end of the request is rolled back, as MySQL does when a connection closes;
+  - a `SAVEPOINT` outside a transaction does nothing;
+  - the same savepoint name replaces the old one;
+  - `ROLLBACK TO` an unknown name is an error.
+- **Isolation.** The object runs one PHP request at a time (`withPhp`), and the lock is held across `await fetch()`. So every logged write belongs to the request that holds the transaction. The concurrency check below confirms this.
+- **An isolate that dies mid-transaction.** `active` is stored in the database. Before its first PHP run, a new isolate rolls back what the log holds (`txnRecover()`). Not tested: no gate kills an isolate mid-transaction.
+- **Off switch.** `REAL_TRANSACTIONS=off` restores the behaviour before: `ROLLBACK` undoes nothing.
+- **Dumps.** The undo log (`_wp_undo`, `_wp_undo_state` and the `_wp_undo_*` triggers) is not data, so `dumpTo()` leaves it out of a `dbmove.py` dump. The target makes its own on the first `BEGIN`. An import with `--replace` drops it with the other tables.
+
+**Gate.** `tests/tx/tx_check.py`, with the test-only route `tests/tx/test-tx-route.php` copied into the built tree (it is never shipped). 11 checks:
+- the transaction sees its own insert; rollback; commit;
+- a PHP fatal error with the transaction open (the row is gone);
+- a savepoint (only the part after it is undone);
+- an UPDATE and a DELETE are undone;
+- the cache: `update_option()` inside `BEGIN`, `ROLLBACK`, then `get_option()` in the next request returns the old value;
+- `wp_remote_get()` inside a transaction, then the rollback (no deadlock);
+- concurrency: request 1 opens `BEGIN`, writes, and calls `wp_remote_get()` to a 3 s delay. Request 2 writes 0.7 s later. Request 1 rolls back. Request 2's write survives, and request 2 ends after request 1;
+- a nested `START TRANSACTION`; DDL inside a transaction.
+
+| Where | Result |
+| --- | --- |
+| local, `dosql-local`, real transactions | 11 of 11, plus `e2e.sh` 17 of 17 |
+| local, `dosql-local`, `REAL_TRANSACTIONS=off` | 3 of 11 (8 fail: the control) |
+| local, `do-local` (D1) | 3 of 11 (8 fail) |
+| local, mutation: the triggers never log (`WHEN 0`), built tree only | 3 of 11 (8 fail) |
+| `wp-perf-dosql` (Free test account), a test build with the route, echo `https://httpbin.org` | 11 of 11 |
+
+The mutation ran on the state the "on" run left, so it also proves that a changed trigger body replaces the old trigger. In the first mutation run, trigger names held only the table and its columns, so the old triggers stayed and the mutation passed 11 of 11. That run found the defect; the name now holds the body.
+
+**No regression.**
+- Local, `dosql-local`: `e2e.sh` 17 of 17; `tests/load/cache_coherence.py` 0 fails with the object cache on and off; the plugin suite (7 groups) 0 lines with `pass: false`.
+- `wp-perf-dosql` (Free test account), shipping build: `tests/break.py` 21 pass, 5 fail, the same PASS/FAIL set as before this change (the 5 are uploads; R2 and the Images binding are not on for `wp-perf-dosql`, see [perf-dosql.md](perf-dosql.md)); `cache_coherence.py` 0 fails.
+
+**CPU.** The triggers stay on all tables. Outside a transaction, each write runs the trigger's `WHEN` subquery and logs nothing. On `wp-perf-dosql` (Free test account), the shipping build, `REAL_TRANSACTIONS` off, on, off, on. Each pass: `N=30 C=1 PAGES=post-new,dashboard,home python3 tests/load/perf.py` with `wrangler tail`; 0 boots; `txnOps` and `undoRows` 0 on all these pages.
+
+| Page | Off | On | Off again | On again |
+| --- | --- | --- | --- | --- |
+| post-new (writes; 39 statements) | 552 / 593 (28) | 446 / 558 (27) | 470 / 575 (30) | 435 / 553 (29) |
+| dashboard | 186 / 235 (17) | 162 / 271 (17) | 195 / 321 (19) | 214 / 264 (21) |
+| home | 168 / 184 (27) | 146 / 179 (22) | 807 / 959 (30) | 874 / 1034 (30) |
+
+Values are tail CPU in ms, p50 / p95 (joined n).
+- On post-new, the page that writes, "on" is lower than "off" in both pairs. The cost of the `WHEN` check is below the spread between runs.
+- Home and dashboard move about 10% in both directions between passes. With 4 to 6 statements, mostly reads, they fire almost no triggers.
+- Home is a different page in the last two passes: `break.py` and `cache_coherence.py` ran between the second and third pass and added posts, and the home body went from 67 KB to 2.2 MB. Compare the passes in pairs.
+
+**`b-do` (D1): not built.** D1 has no transaction across calls. An undo log is correct only when one writer runs every request in turn. With PHP in the Worker, many isolates write to D1 at the same time, so a replay would also undo other requests' writes. The `do-local` row above is the D1 result.
 
 ### 9. Memory: what it took to fit in 128 MB
 
