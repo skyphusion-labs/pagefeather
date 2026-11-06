@@ -9,6 +9,13 @@
 #   0. Litestream then does its final sync.
 # Needs bash 5 (wait -n): the image has it; macOS /bin/bash 3.2 does not.
 set -u
+# Logs through pipes (issue #99). php-fpm (error_log = /proc/self/fd/2, from
+# the base image) and nginx (error_log /dev/stderr) OPEN that path, and opening
+# /proc/self/fd/2 fails (ENXIO) when stderr is a socket. A pipe always opens.
+# The cat processes write to the real stdout and stderr, which works for any
+# kind of file.
+exec 2> >(exec cat >&2)
+exec 1> >(exec cat)
 FPM=""
 NGX=""
 # Stop: SIGQUIT first (a graceful stop in nginx and PHP-FPM: requests in
@@ -29,7 +36,8 @@ stop() {
 		sleep 1
 	done
 	for p in $FPM $NGX; do kill -KILL "$p" 2>/dev/null; done
-	wait 2>/dev/null
+	# Only the two servers: a bare wait would also wait for the log pipes.
+	wait "$FPM" "$NGX" 2>/dev/null
 }
 # SIGQUIT too, for a stop sent with the php-fpm image's own stop signal.
 trap "stop; exit 0" TERM INT QUIT
