@@ -20,7 +20,7 @@ Each trial:
 5. Read /_store-info again: warm (starts, skipped_running, skipped_gap,
    failed), running.
 Trials are spaced by more than WARM_GAP_S, so the rate limit does not block a
-start. The product comes from the Store API (/wp-json/wc/store/v1/products),
+start. The product comes from the Store API (?rest_route=/wc/store/v1/products),
 asked before the first stop, while the container is awake anyway: a SIMPLE,
 in-stock, purchasable product (a variable product would only redirect to its
 page). A trial counts as an add to cart only when WooCommerce set the
@@ -90,7 +90,9 @@ def main():
     if not warm:
         sys.exit("/_store-info has no warm key: deploy a Worker with #73 (warm.js) first. Got: %s" % json.dumps(i0)[:300])
     arm, gap = warm["mode"], float(warm["gap_s"])
-    p = call("/wp-json/wc/store/v1/products?per_page=100&type=simple&stock_status=instock")
+    # ?rest_route= answers whatever the permalink setting is: on an imported
+    # site (wp-import-c1, 2026-11-06) /wp-json/... answered 301 to a slash form.
+    p = call("/?rest_route=/wc/store/v1/products&per_page=100&type=simple&stock_status=instock")
     if p["status"] != 200:
         sys.exit("Store API products: HTTP %s" % p["status"])
     ok = [x for x in json.loads(p["body"]) if x.get("type") == "simple" and x.get("is_in_stock") and x.get("is_purchasable")]
