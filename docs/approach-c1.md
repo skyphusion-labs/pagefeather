@@ -15,7 +15,7 @@ Measured 2026-11-04 on Workers Paid. Code: `spikes/c1-woo-container`. Conrad's d
 - **The Worker in front:**
   - Static files come from Workers static assets.
   - Uploads come from R2 (`wp-woo-c1-media`).
-  - Logged-out pages come from Workers Cache (`Vary: Cookie`; cart, checkout, account, admin and REST are never cached).
+  - Storefront pages for visitors with no state come from Workers Cache (the Storefront entrypoint; see "Storefront edge cache"). Cart, checkout, account, admin and REST are never cached.
   - Everything else goes to one container named `store` (one writer, as SQLite wants).
 - **Media and images:** the same R2 Uploads and Cloudflare Images mu-plugins as approach B. PHP calls `http://worker.internal/`, a Container outbound handler, which uses the Worker's R2 and Images bindings. The container holds no keys for them.
 - **Cache purge:** the Edge Cache mu-plugin sends a purge through `worker.internal`; the handler calls `cache.purge()` from `cloudflare:workers`.
@@ -294,6 +294,58 @@ The cost, from the container log: the 6 runs took 2.4 to 28.5 s wall and 0.8 to 
 
 0 errors in both. The CPU for each storefront request did not change (0.153 and 0.155 s). The ceiling went from about 3.05 to about 2.85 requests per second: the CPU that now sends the emails.
 
+## Storefront edge cache (2026-11-06)
+
+Issue #58. WordPress and the theme still render every page (not headless). The Worker keeps storefront HTML at the edge for visitors with no state, so plain browsing does not reach the container.
+
+### What was wrong before (measured)
+
+c1 already had an edge cache: the default entrypoint was cached (Workers Caching) with `Vary: Cookie` for logged-out pages. `tests/load/load.py` never used it, because every browse request had a `?nocache=` parameter. Measured on wp-c1-perf with `tests/edge_check.py` (reads with no `nocache`), 11 of 16:
+
+1. **Real shoppers did not hit the cache.** WooCommerce order attribution sets `sbjs_*` cookies with JavaScript in every browser. Workers Caching does not put the Cookie header in the cache key, and with `Vary: Cookie` it compares the whole value ([cache keys](https://developers.cloudflare.com/workers/cache/cache-keys/), [Vary](https://developers.cloudflare.com/workers/cache/configuration/), read 2026-11-06). So every visitor was a separate variant: a visitor with `sbjs_*` cookies got MISS.
+2. **Purges did not reach the cache.** A price change, a sold-out product and a new tagline were still old after 20 s. The purge ran in the outbound handler (the `ContainerProxy` entrypoint), and a purge reaches only the cache of the entrypoint that calls it ([purge](https://developers.cloudflare.com/workers/cache/purge/)). A change showed only after the TTL (120 s, then up to 600 s stale).
+3. **The browser kept the page:** `Cache-Control: public, max-age=120`. After an add to cart, the browser could show the old page.
+4. **Every checkout asked for a purge** (measured locally on the c1 build: 80 checkouts, 80 purges: the order post and the order notes). The purge limit is 5 a minute, 25 at once, per account, for all sites ([purge limits](https://developers.cloudflare.com/cache/how-to/purge-cache/), Free tier, which Workers Caching uses).
+
+Correct before: a cart cookie or a login cookie got BYPASS, and after a classic add to cart (`?add-to-cart=`, which sets `wp_woocommerce_session_*`) the next page was BYPASS.
+
+### The design
+
+- **Gateway:** the default entrypoint is not cached (`[exports.default.cache] enabled = false`). It sends a request to the cache only when it is a GET or HEAD, has no cookie that carries state, and is not an admin, login, cart, checkout, account, `wc-api` or REST request (no `rest_route`, `wc-ajax`, `add-to-cart`, `preview` or `nocache` parameter). The state cookies are found BY NAME: `wordpress_logged_in_`, `wordpress_sec_`, `wp-postpass_`, `comment_author_`, `wp-settings-`, every `woocommerce_` cookie and `wp_woocommerce_session_`. Other cookies (order attribution, analytics) do not change the page.
+- **Storefront:** a second entrypoint, cached (`[exports.Storefront.cache] enabled = true`, Wrangler 4.107.0 or later). The gateway calls it through `ctx.exports` WITHOUT the Cookie header, so the cache key is the path and the query. It keeps a 200, 301 or 404 with no `Set-Cookie` and no `private` or `no-store` from WordPress (WooCommerce sends `no-cache` on the cart and checkout pages). The edge time goes in `cloudflare-cdn-cache-control` (Cloudflare removes it before the browser): `PAGE_CACHE_TTL` (120 s) fresh, then `PAGE_CACHE_SWR` (600 s) stale while a new copy renders. The browser gets `Cache-Control: no-cache`.
+- **Purge:** `edge-cache.php` sends `worker.internal` a purge; the outbound handler asks the Store object, which calls `Storefront.purge()` through `ctx.exports`, so the purge runs in the Storefront entrypoint.
+- **What purges:** content changes as before (posts, pages, products, terms, menus, theme, options), but not orders, refunds, order notes, or a product inside an order request (a checkout or a payment callback). A change of stock status (in stock, out of stock) always purges. The cost: a stock QUANTITY shown on a page can be up to one TTL old after an order; whether a product can be bought is always correct. Measured locally: 69 checkouts, 0 purges (80 before); a price change, a review, the site title, a sell out and a product back in stock each purge; a quantity change in a checkout and an order note do not.
+- **Measurement:** `php/c1-purge-log.php` writes one line per purge request (the hook), `/_stats.php?what=purge` returns it. `tests/load/load.py` `LOAD_MODE`: `nocache` (the default: the site's own render), `cached`, `cached-sbjs` (as a browser with order attribution), with the `cf-cache-status` counts per step.
+
+### Correctness (live, on wp-c1-perf)
+
+- `tests/edge_check.py`, 16 of 16: a visitor with `sbjs_*` cookies gets HIT; a cart cookie and a login cookie do not get the edge copy; the browser gets `no-cache`; after a classic add to cart, the next product page is not the edge copy; a price change, a sold-out product and a tagline change reach visitors through the cache, each then 5 reads with no old value. Alone on a quiet site, a change showed in 1.3 to 1.9 s. When changes come less than 15 s apart (as in the gate), each waits for the next purge interval: 12 to 15 s.
+- `tests/purge_burst.py`, 3 of 3: 20 tagline saves in 7.5 s; the last one showed 9.7 s after the first save; 1 purge sent, 20 deferred, none refused.
+- `tests/cache_check.py` 13 of 13, `tests/woo.py` 12 of 12, `tests/break.py` 3 runs of 3 (27 of 27 each).
+
+**Purge budget.** The gate scripts first sent 106 purges in 7 minutes, and the later ones were refused, so `break.py` failed "publishing a post purges the cached page" in 2 of 3 runs. The Store object now runs at most one purge per `PURGE_INTERVAL_MS` (15 s) per site: a purge asked for inside the interval runs once at its end, and a refused purge is tried once more. The deferred purge is a Container schedule (a Durable Object alarm with its row in SQLite), and its state is in the object's storage, so it runs after an eviction or a reset too. Over the whole gate: 21 sent, 116 deferred, 0 refused. `/_store-info` shows the counts. Limits: 15 s is 4 a minute for one site; several busy sites on one account can still pass 5 a minute, and then the retry and the TTL are the backstop.
+
+**Noise options.** Under load, WooCommerce's own bookkeeping options emptied the cache: `wc_pending_batch_processes` (in checkouts and cron runs), `wc_batch_*` (order log deletion) and `update_comment_type.lock`. `edge-cache.php` skips a named list: `wc_pending_batch_processes`, `wc_batch_*`, `action_scheduler_*`, and names that end in `.lock` or `_lock`. Store options such as `woocommerce_currency`, the site title and the tagline still purge (checked locally, one process for each option, and live with `edge_check` after the load run).
+
+### Measured
+
+The same seeded data each time (wp-c1's database), `standard-1`, APCu, the local queue runner, `tests/load/load.py` 1 to 100 users, 60 s per step, BUYERS 0.2, from the Vultr runner. Before: the queue runner run (`LOAD_MODE` nocache, so every page is rendered: `deploy/results/bench-runner-20261106T010848Z-6f798b.json`). After: `cached-sbjs`, the browser case with order attribution cookies, before the noise filter (job 1, `deploy/results/bench-runner-20261106T031515Z-253443.json`) and with it (job 2, `deploy/results/bench-runner-20261106T033126Z-4ee5ce.json`).
+
+| Users | before: browse p50 / p95 | job 1: browse p50 / p95 | job 2: browse p50 / p95 | before: rps | job 2: rps |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 0.38 / 0.51 s | 0.08 / 0.43 s | 0.08 / 0.42 s | 2.53 | 4.09 |
+| 5 | 1.76 / 2.88 s | 0.06 / 0.11 s | 0.06 / 0.11 s | 2.91 | 8.57 |
+| 10 | 3.79 / 5.38 s | 0.05 / 0.11 s | 0.05 / 0.11 s | 2.76 | 6.18 |
+| 25 | 7.83 / 10.1 s | 0.05 / 0.12 s | 0.05 / 0.16 s | 2.84 | 7.19 |
+| 50 | 15.2 / 19.0 s | 0.07 / 6.51 s | 0.08 / 0.41 s | 2.77 | 7.19 |
+| 100 | 28.5 / 33.4 s | 0.21 / 1.10 s | 0.17 / 0.64 s | 2.87 | 8.05 |
+
+0 errors in all three. Job 2 cache status per step (`cf-cache-status` of the browse requests): 1 user 98 HIT, 23 MISS (a cold cache); 5 users 304 HIT, 1 MISS; then HIT and UPDATING only (UPDATING is a stale copy served while one new copy renders in the background). Job 1's p95 of 6.5 s at 50 users was 26 misses after two noise purges, each waiting behind the checkouts in the container's queue; the filter removed them.
+
+So browse p50 is under 0.3 s at every step. Browse p95 is over 0.3 s at 1 user (the cold cache), at 50 users (0.41 s) and at 100 users (0.64 s). At 100 users the client itself was busy: 100 Python threads on the runner's 2 vCPU, a 1-minute load of 1.49. Those requests were edge answers (0 MISS), so the p95 there is partly the client.
+
+**The container now does the checkouts.** In job 2, 64 storefront page views reached PHP in 508 s (the before run: 784); a HIT never reaches it. The container served the shoppers who buy: 526 carts, 526 adds to cart and 526 checkouts in about 8.5 minutes (the before run: 184 each), with the CPU at its cap (0.48 vCPU). Checkout p50 per step: 0.47, 2.53, 4.36, 8.88, 17.6, 26.3 s. That is about one checkout a second on half a vCPU. **Checkout capacity is the instance type**: on `standard-2`, c1 served twice as much (section above). It is a sizing number, not a defect. The order email queue cannot keep up at that order rate either (pending 63 to 290); a real store has far fewer orders a second.
+
 ## Problems found
 
 - WooCommerce writes log files under `uploads/wc-logs`. With uploads in R2, every log line was an R2 read and write: about 30 calls and about 15 s of each checkout. `WC_LOG_DIR` now points to local disk (also in approach B).
@@ -310,6 +362,8 @@ The cost, from the container log: the 6 runs took 2.4 to 28.5 s wall and 0.8 to 
 
 ## Next
 
+- The first write after a sleep: a cached storefront hides the cold start (13 to 30 s) until the first cart request. Start the container on the first product view or add to cart (#20).
+- Purge by object (a tag per product and per listing) instead of the whole site, when a store has many products and many edits.
 - Limit the queue at the PHP server: at high load a request waits in the accept backlog until the client gives up. An early 503 is better for the tail than a 60 s wait.
 - The rest of the CPU is the start of WordPress and WooCommerce and the rendering (about 0.15 s a page with APCu): profile it before more caching.
 - Start the container before it is needed: on a product page view, or keep it awake in store hours.
