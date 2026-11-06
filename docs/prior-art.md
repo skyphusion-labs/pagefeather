@@ -57,7 +57,7 @@ Repository: [benbjohnson/litestream](https://github.com/benbjohnson/litestream).
 
 Repository: [l3rady/object-cache-apcu](https://github.com/l3rady/object-cache-apcu). GPL-2.0-or-later. Read on 2026-11-05. Release 2.0.1 (2026-10-14), commit `f611f5b`. It is a fork of Mark Jaquith's APC object cache.
 
-- It is a WordPress `object-cache.php` drop-in that keeps the object cache in APCu, the shared memory of one PHP server. Approach C1 uses it unmodified (`spikes/c1-woo-container/build.sh` pins the commit and the SHA-256 of the file). `OBJECT_CACHE=apcu` turns it on.
+- It is a WordPress `object-cache.php` drop-in that keeps the object cache in APCu, the shared memory of one PHP server. Approach C1 uses it unmodified (`spikes/c1-woo-container/build.sh` pins the commit and the SHA-256 of the file). It is on by default (`OBJECT_CACHE=apcu`); `OBJECT_CACHE=none` turns it off.
 - We use it because one C1 container has one PHP server: every PHP worker of that server shares the same APCu memory. There is no Redis or Memcached to run.
 - `flush()` changes a version that is part of every key, so old entries become unreachable. `incr()` and `decr()` read and then write, so two workers can race on one counter.
 

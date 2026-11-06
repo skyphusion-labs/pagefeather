@@ -38,7 +38,7 @@ export class Store extends Container {
 			SPIKE_TOKEN: env.SPIKE_TOKEN || '',
 			PHP_WORKERS: env.PHP_WORKERS || '2',
 			IDLE_SECONDS: env.IDLE_SECONDS || '900',
-			OBJECT_CACHE: env.OBJECT_CACHE || 'none',
+			OBJECT_CACHE: env.OBJECT_CACHE || 'apcu',
 		};
 	}
 }

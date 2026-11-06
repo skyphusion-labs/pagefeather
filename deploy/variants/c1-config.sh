@@ -12,14 +12,14 @@
 #   INSTANCE_TYPE  container instance type
 #   PHP_WORKERS    PHP processes in the container
 #   IDLE_SECONDS   the container stops after this many seconds with no request
-#   OBJECT_CACHE   none (default) or apcu: the APCu object cache drop-in
+#   OBJECT_CACHE   apcu (default) or none: the APCu object cache drop-in
 #   REPLICA_PATH   path of the Litestream replica in the replica bucket (default
 #                  store). Another path restores and writes another database;
 #                  going back to store finds the old one unchanged.
 #
 # No account id: Wrangler reads CLOUDFLARE_ACCOUNT_ID.
 set -euo pipefail
-OBJECT_CACHE=${OBJECT_CACHE:-none}
+OBJECT_CACHE=${OBJECT_CACHE:-apcu}
 REPLICA_PATH=${REPLICA_PATH:-store}
 for v in NAME PUBLIC_HOST REPLICA MEDIA_BUCKET R2_ENDPOINT COMPAT INSTANCE_TYPE PHP_WORKERS IDLE_SECONDS; do
   [ -n "${!v:-}" ] || { echo "c1-config.sh: $v is empty" >&2; exit 1; }

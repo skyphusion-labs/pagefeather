@@ -156,6 +156,64 @@ Issue #45. With `DISABLE_WP_CRON`, Action Scheduler runs its queue through an as
 
 Under load the chain stops. With wp-c1's database (63 pending actions at the start), the first runner request took 18.6 s and 4.1 CPU s (one batch of emails), 9 more followed about 6 s apart, and then none for the remaining 7 minutes. Pending actions went from 63 to 137: the queue was larger at the end than at the start. So with WP-Cron off, order emails can wait without limit on a busy store. Issue #45 has the fix candidates.
 
+## Object cache in APCu (2026-11-05)
+
+Issue #39. `OBJECT_CACHE=apcu` (now the default; `none` turns it off) puts an object cache drop-in in `wp-content`: [l3rady/object-cache-apcu](https://github.com/l3rady/object-cache-apcu) 2.0.1, GPL-2.0-or-later ([prior-art.md](prior-art.md)). APCu 5.1.28 is in the image, 64 MiB. All PHP processes of the server share one APCu: `/_stats.php?what=apcu` from 4 process ids gave the same start time and the same counts.
+
+Home went from 62 queries to 1, the shop page from 71 to 1, Store API products from 40 to 0 (`x-d1-calls`, warm cache).
+
+### The measurement
+
+wp-c1's database, restored twice from one file into wp-c1-perf (replica paths `swap` and `swap2`), so both runs start from identical data. Both start on a new container with a cold cache. `standard-1`, the same test as above.
+
+| Users | none: rps | none: browse p50 / p95 | none: checkout p50 / p95 | apcu: rps | apcu: browse p50 / p95 | apcu: checkout p50 / p95 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1.95 | 0.48 / 0.97 s | 0.61 / 1.06 s | 2.39 | 0.39 / 0.88 s | 0.54 / 0.64 s |
+| 5 | 2.62 | 1.98 / 2.91 s | 3.00 / 4.82 s | 3.17 | 1.66 / 2.23 s | 2.70 / 3.08 s |
+| 10 | 2.50 | 3.96 / 6.06 s | 6.00 / 7.49 s | 3.05 | 3.75 / 6.26 s | 4.27 / 6.62 s |
+| 25 | 2.37 | 10.0 / 13.4 s | 10.9 / 14.1 s | 3.01 | 7.91 / 10.3 s | 9.19 / 12.8 s |
+| 50 | 2.40 | 19.1 / 22.8 s | 20.0 / 24.4 s | 2.97 | 15.5 / 17.9 s | 16.6 / 19.6 s |
+| 100 | 2.52 | 35.5 / 39.8 s | 21.9 / 39.8 s | 3.09 | 26.9 / 35.9 s | 29.2 / 36.5 s |
+
+Errors: none 16 (10 at 25 users, with no failure in the container log), apcu 0. Results: `deploy/results/bench-runner-20261105T235852Z-24ad9e.json` (none), `deploy/results/bench-runner-20261106T002159Z-2ca71a.json` (apcu).
+
+CPU seconds per request, from the container log:
+
+| | none | apcu | change |
+| --- | --- | --- | --- |
+| All requests | 0.189 | 0.153 | -19 % |
+| Home | 0.174 | 0.136 | -22 % |
+| Shop | 0.247 | 0.201 | -19 % |
+| Product page | 0.223 | 0.173 | -22 % |
+| Checkout | 0.322 | 0.299 | -7 % |
+| Cart | 0.062 | 0.044 | -29 % |
+| Add to cart | 0.068 | 0.047 | -31 % |
+
+So the cache takes about 20 % of the CPU of a page, and the ceiling goes from about 2.45 to about 3.05 requests per second (+24 %). The CPU is still at the cap. Checkout gains least: most of its work is writes. The queries were not most of the cost: 62 queries to 1 is 20 %. The rest is the start of WordPress and WooCommerce, and the rendering.
+
+### A first run was wrong: freeze the data before you measure
+
+A first APCu run on wp-c1-perf's own data showed no change. Between that run and the run it was compared with, the correctness tests (`tests/break.py`) had written posts to the site, one of them 1.9 MB, and it was on the home page: home cost 80 % more CPU. The pages without posts already showed the gain. Rule: run the tests that write before the data is frozen for a measurement, never between two runs that you compare. For a before and after, seed both runs from one file.
+
+### Correctness
+
+With a persistent cache, all PHP processes share one cache, so a change must show in every process. Checked on the APCu site before the measurement:
+
+- `tests/cache_check.py` (new): an admin price change, stock change and option change, then a deleted product, each read 8 times, uncached. Every read had the new value, none the old one, and the reads came from 4 or 5 PHP processes (`x-c1-pid`). 13 of 13.
+- `tests/woo.py` 12 of 12. `tests/break.py` 5 runs of 5, 27 of 27 each.
+
+`tests/break.py` found a race first: "8 parallel uploads of one name get 8 files" failed in 2 of 5 runs (7 files). The c1 fallback in `r2-uploads.php` used `add_option()` as a lock. `add_option()` checks `get_option()` first (with the cache: a shared answer that can be old), then runs `INSERT ... ON DUPLICATE KEY UPDATE`, which reports a change on a duplicate too. Now one `INSERT IGNORE`, and the name is reserved only when it inserted 1 row. With the driver of the image, 8 processes and one name, 5 rounds: the old path gave 6 to 8 winners a round, the new one exactly 1. The reservation rows are not deleted (as before): one row per upload name.
+
+### A deploy must reach the container
+
+Two deploys left the container on the settings of the deploy before: the new image, but the old `OBJECT_CACHE`. The container gets its environment from the Store Durable Object, and a request on a new Worker can reach an object that still runs the code of the deploy before ([Durable Objects known issues](https://developers.cloudflare.com/durable-objects/platform/known-issues/)). A container stop does not replace the object. What changed:
+
+- `[version_metadata]`: the Store object keeps the Worker version it was built with. `/_store-info` (spike token) shows both, and the settings the object holds.
+- `/_store-stop` waits until the container stops (up to 30 s, so Litestream finishes its sync), then resets the object. If the container still runs after 30 s, it does not reset (`still_running`).
+- `deploy/variants/c1.sh` `c1_check`: waits until the object is from this deploy, then checks that the drop-in matches `OBJECT_CACHE`. Otherwise the deploy fails.
+
+Proof, the first deploy after the change (OBJECT_CACHE `none` to `apcu`, replica path `swap` to `swap2`): the stop got `reset: true` after 250 ms, the object was from the deploy after 0 s, and the settings were correct on the first try. How long an old object can live with no reset is not measured. A method named `info` on the object failed over RPC on Cloudflare ("does not implement the method") and passed in local workerd; it is now `storeInfo`, async.
+
 ## Problems found
 
 - WooCommerce writes log files under `uploads/wc-logs`. With uploads in R2, every log line was an R2 read and write: about 30 calls and about 15 s of each checkout. `WC_LOG_DIR` now points to local disk (also in approach B).

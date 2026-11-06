@@ -18,8 +18,8 @@
 # and share the variables they set.
 #
 # Options: INSTANCE_TYPE (default standard-1), PHP_WORKERS (default from the
-# instance type), IDLE_SECONDS (default 900), OBJECT_CACHE (none or apcu,
-# default none), REPLICA_PATH (default store), PUBLIC_HOST (default
+# instance type), IDLE_SECONDS (default 900), OBJECT_CACHE (apcu or none,
+# default apcu), REPLICA_PATH (default store), PUBLIC_HOST (default
 # <NAME>.<account subdomain>.workers.dev), ROLLOUT_WAIT (default 60 s),
 # START_TIMEOUT (default 900 s), BENCH, N.
 
@@ -31,7 +31,7 @@ INSTANCE_TYPE=${INSTANCE_TYPE:-standard-1}
 case "$INSTANCE_TYPE" in basic) c1_w=2 ;; standard-1|standard) c1_w=4 ;; standard-2) c1_w=8 ;; *) c1_w=2 ;; esac
 PHP_WORKERS=${PHP_WORKERS:-$c1_w}
 IDLE_SECONDS=${IDLE_SECONDS:-900}
-OBJECT_CACHE=${OBJECT_CACHE:-none}
+OBJECT_CACHE=${OBJECT_CACHE:-apcu}
 REPLICA_PATH=${REPLICA_PATH:-store}
 
 c1_build() {
