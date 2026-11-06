@@ -58,7 +58,11 @@ site_name_matches "$TF"
 VARS=$(site_vars "$TF" "$W/site.tfvars")
 tfs() { (cd "$TF" && terraform workspace select "$NAME" >/dev/null && terraform "$@"); }
 VARIANT=$(tfs output -raw variant)
-echo "destroy: $NAME (variant $VARIANT), variables from $VARS"
+# The account: the Worker delete and the API check use ACCOUNT_ID, so it must
+# be the site's (wp-ref-free is on the Free test account, the others on Paid).
+STATE_ACCOUNT=$(tfs output -raw account_id)
+[ "$STATE_ACCOUNT" = "$ACCOUNT_ID" ] || { echo "destroy: ACCOUNT_ID is not the account of $NAME in its state ($STATE_ACCOUNT): refusing. Use that account's id and token." >&2; exit 1; }
+echo "destroy: $NAME (variant $VARIANT, account $ACCOUNT_ID), variables from $VARS"
 # Variant a with MYSQL=vultr: its box has its own Terraform root. Check it now
 # too, so the run does not stop halfway.
 M="$ROOT/deploy/mysql"
@@ -94,12 +98,24 @@ fi
 wr_delete() { (cd "$ROOT/deploy" && npx wrangler delete --name "$NAME" --force); }
 delete_worker wr_delete
 
-# 3. The data plane, then the workspace.
+# 3. The media bucket (MEDIA=1): R2 refuses to delete a bucket that has
+# objects, so it is emptied first, with the short-lived import key
+# (media-import.tf: object read and write on this bucket only; the destroy
+# below deletes the key with the rest).
+BUCKET=$(tfs output -raw media_bucket)
+if [ -n "$BUCKET" ]; then
+  tfs apply -input=false -auto-approve -var-file="$VARS" -var media_import=true -target=cloudflare_account_token.media_import >/dev/null
+  R2_KEY_ID=$(tfs output -raw media_import_access_key_id) R2_SECRET=$(tfs output -raw media_import_secret_access_key) \
+    "$ROOT/deploy/variants/r2-empty.sh" "$(tfs output -raw r2_endpoint)" "$BUCKET"
+fi
+
+# 4. The data plane (the bucket, D1, Hyperdrive, the secrets, the key), then
+# the workspace.
 tfs destroy -input=false -auto-approve -var-file="$VARS"
 (cd "$TF" && terraform workspace select default >/dev/null && terraform workspace delete "$NAME")
 rm -f "$TF/sites/$NAME.tfvars" "$TF/sites/$NAME.apply.log" "$APP/wrangler.deploy.$NAME.toml"
 
-# 4. The MySQL box (variant a with MYSQL=vultr).
+# 5. The MySQL box (variant a with MYSQL=vultr).
 if [ -n "$MYSQL_BOX" ]; then
   (cd "$M" && terraform workspace select "$NAME" >/dev/null && terraform destroy -input=false -auto-approve -var-file="$MVARS" && terraform workspace select default >/dev/null && terraform workspace delete "$NAME")
   rm -f "$M/sites/$NAME.tfvars"

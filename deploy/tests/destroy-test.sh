@@ -34,7 +34,7 @@ class H(http.server.BaseHTTPRequestHandler):
         f = os.path.join(root, name)
         code = int(open(f).read().strip()) if os.path.exists(f) else 404
         self.send_response(code); self.send_header("content-length", "2"); self.end_headers(); self.wfile.write(b"{}")
-srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
 open(sys.argv[1], "w").write(str(srv.server_address[1])); srv.serve_forever()
 PY
 python3 "$T/fake-api.py" "$T/api.port" "$T/api" & APIPID=$!
@@ -93,6 +93,11 @@ check "good: workspace gone" "$(ws site-x)" "0"
 run site-a
 check "variant a, no MySQL state: destroyed, and said" "$rc:$(grep -c 'is NOT removed by this run' "$T/out")" "0:1"
 
+# 5b. ACCOUNT_ID is not the account in the state (the Free test account case).
+push site-acct site-acct b-do
+: > "$T/npx.log"; set +e; NAME=site-acct ACCOUNT_ID=11111111111111111111111111111111 "$T/deploy/destroy.sh" > "$T/out" 2>&1; rc=$?; set -e
+check "another account: refused, nothing deleted" "$rc:$(grep -c 'is not the account of site-acct' "$T/out"):$(wc -l < "$T/npx.log" | tr -d ' '):$(ws site-acct)" "1:1:0:1"
+
 # 6. wrangler delete fails, but the Worker is gone (as on wp-perf-dosql): go on.
 NPX_RC=1 run site-g1
 check "delete fails, Worker gone: destroyed" "$rc:$(grep -c 'exited 1' "$T/out"):$(grep -c 'is gone (API: 404)' "$T/out"):$(ws site-g1)" "0:1:1:0"
@@ -101,6 +106,7 @@ check "delete fails, Worker gone: destroyed" "$rc:$(grep -c 'exited 1' "$T/out")
 echo 200 > "$T/api/site-g2"
 NPX_RC=1 run site-g2
 check "delete fails, Worker still there: stopped" "$rc:$(grep -c 'STILL EXISTS (API: 200)' "$T/out")" "1:1"
+[ "$(grep -c 'STILL EXISTS (API: 200)' "$T/out")" = 1 ] || { echo "--- out of case 7:"; cat "$T/out"; }
 check "delete fails, Worker still there: data plane kept" "$(ws site-g2)" "1"
 
 # 8. The API gives no clear answer: stop.
