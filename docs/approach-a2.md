@@ -67,8 +67,25 @@ So, through Hyperdrive and Vitess, a `SET` does not hold from one statement to t
 
 Tests: `php tests/a2/sql-mode-test.php off|on|bad|const` (44 checks, with a fake Worker call; no database). Two mutations were run: without the `COMMIT` after a failed DDL, and without the skip of leading comments. Each made the matching checks fail.
 
+## The site: wp-a2 with the fix
+
+Deployed by the lead on 2026-11-06 from `6b1f1b5` on an empty database (all 38 tables of the first, failed install dropped first): `deploy.sh` `VARIANT=a MYSQL=external MYSQL_HOST=aws-us-east-2.connect.psdb.cloud PLACEMENT=aws:us-east-2 WOO_ACTIVE=1 HYPERDRIVE_SQL_MODE=ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION`. Result file: `deploy/results/wp-a2-20261106T004741Z.json`.
+
+| Check | Result |
+| --- | --- |
+| Install | `installed`, user 1, 28.3 s |
+| WooCommerce activation | active. One error during activation: a read of `wp_woocommerce_attribute_taxonomies` before activation made the table. The same error happens on `a` on Vultr. It is harmless: after activation, `GET /wc/v3/products/attributes` answers 200 (`[]`), so the table exists. |
+| `/_d1ping` (per statement, from the Worker) | 20, 19, 16 ms |
+| `e2e.sh` | 17 of 17 |
+| `tests/woo.py` (setup, guest cart, cash on delivery checkout, order, stock) | **12 of 12** (`tests/a2/results/woo-wp-a2.txt`) |
+| `tests/cache_check.py` (a price change, stock to 0 and a tagline change show on every next read) | **13 of 13** (`tests/a2/results/cache-check-wp-a2.txt`) |
+
+Page times from the laptop (n=10, medians; not comparable with the runner): home 3.35 s (76 queries), post 3.15 s, search 2.94 s, dashboard 5.29 s (138), post-new 8.29 s (172), edit 6.55 s. At about 16 to 20 ms per query, a page of 76 to 172 queries spends 1.2 to 3.4 s in the database alone.
+
+**Query cache.** Our Hyperdrive config has caching **off** (`deploy/terraform`, `caching = { disabled = true }`), so `cache_check.py` passing shows the site is correct as deployed. Hyperdrive's default is caching **on**: "Query caching is enabled by default", with `max_age` 60 s ([Query caching](https://developers.cloudflare.com/hyperdrive/concepts/query-caching/), read 2026-11-06), and "Hyperdrive does not purge or invalidate cached read query results when your application writes to your database." The PlanetScale integration's pages do not say which setting its own config uses. So a config made with the default (for example by the integration) would cache WordPress's reads for up to 60 s after a write. We did not deploy wp-a2 with caching on; keep it off for WordPress.
+
 ## Open
 
-- The #50 checks on the real site: `e2e.sh`, `tests/woo.py`, the plugin suite, the Hyperdrive query cache check (caching is off for this config; the check shows whether it may be on), and the load matrix from the runner.
+- The plugin suite on wp-a2, and the load matrix from the runner against `a` on Vultr.
 - Billing: which account pays for the database.
 - Whether a Worker placement nearer Ohio than ORD exists for this account.
