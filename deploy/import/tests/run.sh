@@ -215,9 +215,27 @@ check "ssh db: host and port from DB_HOST" "$(grep -E '^(host|port)=' "$R/log/de
 srv "$R/wp" content > "$T/ssh.tgz" 2> "$T/ssh-tar.err"
 check "ssh content: uploads and plugins in, cache out" "$(tar -tzf "$T/ssh.tgz" | grep -E 'a.jpg|shop.php|big.bin' | sort | tr '\n' ' ')" "wp-content/plugins/shop/shop.php wp-content/uploads/2026/01/a.jpg "
 check "ssh: nothing on the server changed" "$(find "$R/wp" "$R/home" -newer "$R/log/before" | wc -l | tr -d ' '):$(find "$R/home" -mindepth 1 | wc -l | tr -d ' ')" "0:0"
-printf '#!/bin/bash\nprintf "%%s\\n" "$@" > %q/log/wp-argv\ncat %q\n' "$R" "$HERE/fixture.sql" > "$R/stub/wp"; chmod +x "$R/stub/wp"
-srv "$R/wp" db > /dev/null
-check "ssh db: WP-CLI when the server has it" "$(tr '\n' ' ' < "$R/log/wp-argv")" "--path=$R/wp --skip-plugins --skip-themes db export - --hex-blob --single-transaction --skip-lock-tables --no-tablespaces "
+# A WP-CLI stand-in: it logs its calls and answers "config get" with the
+# values PHP would decode from that wp-config.php. Only the values come from
+# WP-CLI: its own "db export" would pass --no-tablespaces as --tablespaces=,
+# which mariadb-dump refuses (measured on the #83 test source).
+python3 - "$R" <<'PY'
+import os, sys
+r = sys.argv[1]
+vals = {"DB_NAME": "site_db", "DB_USER": "reader", "DB_PASSWORD": 'p"a\'s\\w$rd\\n-not-a-newline', "DB_HOST": "db.local:3307"}
+lines = ["#!/bin/bash", 'printf "%s\\n" "$*" >> ' + repr(r + "/log/wp-argv"), 'case "$*" in']
+for k, v in vals.items():
+    lines.append("  *'config get %s'*) printf '%%s' %s ;;" % (k, "'" + v.replace("'", "'\\''") + "'"))
+lines += ["  *) echo \"wp stand-in: unexpected call: $*\" >&2; exit 9 ;;", "esac"]
+open(os.path.join(r, "stub", "wp"), "w").write("\n".join(lines) + "\n")
+os.chmod(os.path.join(r, "stub", "wp"), 0o755)
+PY
+cp "$R/log/defaults" "$R/log/defaults-php"
+srv "$R/wp" db > "$T/ssh-wp.sql"
+check "ssh db: WP-CLI path, the dump comes through" "$(cmp -s "$T/ssh-wp.sql" "$HERE/fixture.sql" && echo same)" "same"
+check "ssh db: WP-CLI path, only config get is asked" "$(grep -vc 'config get DB_' "$R/log/wp-argv" || true)" "0"
+check "ssh db: WP-CLI path, the same dump arguments" "$(tr '\n' ' ' < "$R/log/argv" | sed 's/--defaults-extra-file=[^ ]*/--defaults-extra-file=FD/')" "--defaults-extra-file=FD --hex-blob --single-transaction --skip-lock-tables --no-tablespaces site_db "
+check "ssh db: WP-CLI path, the same [client] section as the PHP path" "$(cmp -s "$R/log/defaults" "$R/log/defaults-php" && echo same)" "same"
 rm "$R/stub/wp"
 set +e; srv "$R/home" db > /dev/null 2> "$T/ssh.err"; code=$?; set -e
 check "ssh db: no wp-config.php is an error" "$code:$(grep -c 'no wp-config.php' "$T/ssh.err" || true)" "2:1"

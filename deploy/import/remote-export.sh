@@ -7,12 +7,19 @@
 # lock (the dump uses --single-transaction --skip-lock-tables, so InnoDB
 # tables stay writable). Its only output is stdout.
 #
-#   db       the database as SQL (mysqldump --hex-blob), through WP-CLI when
-#            the server has it (wp db export -), else mysqldump with the DB_*
-#            constants read from wp-config.php as text (the file is not run).
-#            The password goes to mysqldump in a defaults file on a pipe
-#            (process substitution): it is not in the arguments, not on disk,
-#            and never leaves the server.
+#   db       the database as SQL: mysqldump (or mariadb-dump) --hex-blob
+#            --single-transaction --skip-lock-tables --no-tablespaces. The DB_*
+#            values come from WP-CLI when the server has it (wp config get:
+#            it reads wp-config.php without booting WordPress, and it handles
+#            a constant that is not a plain string), else from wp-config.php
+#            read as text (the file is not run). WP-CLI's own "db export" is
+#            not used: it reads "--no-tablespaces" as a negation and passes
+#            "--tablespaces=" to the dump, which mariadb-dump refuses (measured
+#            2026-11-06 on the #83 test source, WP-CLI 2.12.0, MariaDB 10.11),
+#            and a MySQL 8 dump needs --no-tablespaces without the PROCESS
+#            privilege. The password goes to the dump in a defaults file on a
+#            pipe (process substitution): it is not in the arguments, not on
+#            disk, and never leaves the server.
 #   content  wp-content as a gzip tar, without cache-like folders (cache,
 #            upgrade, backups of backup plugins). An optional third argument
 #            (a space list of paths under wp-content) replaces that list.
@@ -22,11 +29,27 @@ WP=${1:?wordpress dir} MODE=${2:?db or content}
 DUMP_FLAGS=(--hex-blob --single-transaction --skip-lock-tables --no-tablespaces)
 case "$MODE" in
 db)
+  DUMP=$(command -v mysqldump || command -v mariadb-dump || true)
+  [ -n "$DUMP" ] || { echo "remote-export: no mysqldump or mariadb-dump on the server" >&2; exit 2; }
   if command -v wp >/dev/null 2>&1; then
-    exec wp --path="$WP" --skip-plugins --skip-themes db export - "${DUMP_FLAGS[@]}"
+    # The values through WP-CLI; the [client] section is built here.
+    wpv() { wp --path="$WP" --skip-plugins --skip-themes config get "$1"; }
+    q() { printf '"%s"' "$(printf '%s' "$1" | sed 's/[\\"]/\\&/g')"; }
+    client() {
+      local h port="" sock=""
+      h=$(wpv DB_HOST)
+      case "$h" in
+        *:/*) sock=${h#*:}; h=${h%%:*} ;;
+        *:[0-9]*) port=${h##*:}; h=${h%:*} ;;
+      esac
+      printf '[client]\nuser=%s\npassword=%s\nhost=%s\n' "$(q "$(wpv DB_USER)")" "$(q "$(wpv DB_PASSWORD)")" "$(q "${h:-localhost}")"
+      [ -z "$port" ] || printf 'port=%s\n' "$port"
+      [ -z "$sock" ] || printf 'socket=%s\n' "$(q "$sock")"
+    }
+    name=$(wpv DB_NAME)
+    exec "$DUMP" --defaults-extra-file=<(client) "${DUMP_FLAGS[@]}" "$name"
   fi
   command -v php >/dev/null 2>&1 || { echo "remote-export: no wp and no php on the server" >&2; exit 2; }
-  command -v mysqldump >/dev/null 2>&1 || { echo "remote-export: no wp and no mysqldump on the server" >&2; exit 2; }
   # The DB_* constants, read from wp-config.php as text (the file is not run).
   # what=name prints DB_NAME; what=client prints a mysqldump [client] section
   # (user, password, host, and port or socket from DB_HOST).
@@ -51,7 +74,7 @@ if ($sock !== "") echo "socket=", $q($sock), "\n";
 ' "$WP/wp-config.php" "$1"
   }
   name=$(config name)
-  exec mysqldump --defaults-extra-file=<(config client) "${DUMP_FLAGS[@]}" "$name"
+  exec "$DUMP" --defaults-extra-file=<(config client) "${DUMP_FLAGS[@]}" "$name"
   ;;
 content)
   ex=()
