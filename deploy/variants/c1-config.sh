@@ -14,7 +14,7 @@
 #   IDLE_SECONDS   the container stops after this many seconds with no request
 #   OBJECT_CACHE   apcu (default) or none: the APCu object cache drop-in
 #   QUEUE_RUNNER   local (default): WP-Cron and Action Scheduler run from the
-#                  container every CRON_SECONDS (default 60); loopback: the
+#                  container every CRON_SECONDS (default 10); loopback: the
 #                  Action Scheduler async loopback, as before (issue #45)
 #   PAGE_CACHE_TTL seconds a storefront page stays fresh at the edge (default 120)
 #   PAGE_CACHE_SWR seconds it may then be served stale while a new copy renders
@@ -47,7 +47,8 @@ QUEUE_LIMIT=${QUEUE_LIMIT:-16}
 RETRY_AFTER=${RETRY_AFTER:-5}
 FLOW_LIMIT=${FLOW_LIMIT:-}
 QUEUE_RUNNER=${QUEUE_RUNNER:-local}
-CRON_SECONDS=${CRON_SECONDS:-60}
+CRON_SECONDS=${CRON_SECONDS:-10}
+AS_TIME_LIMIT=${AS_TIME_LIMIT:-5}
 for v in NAME PUBLIC_HOST REPLICA MEDIA_BUCKET R2_ENDPOINT COMPAT INSTANCE_TYPE PHP_WORKERS IDLE_SECONDS; do
   [ -n "${!v:-}" ] || { echo "c1-config.sh: $v is empty" >&2; exit 1; }
 done
@@ -67,6 +68,7 @@ chk OBJECT_CACHE "$OBJECT_CACHE" '^(none|apcu)$'
 chk REPLICA_PATH "$REPLICA_PATH" '^[a-z0-9][a-z0-9-]{0,62}$'
 chk QUEUE_RUNNER "$QUEUE_RUNNER" '^(local|loopback)$'
 chk CRON_SECONDS "$CRON_SECONDS" '^[1-9][0-9]{0,3}$'
+chk AS_TIME_LIMIT "$AS_TIME_LIMIT" '^[1-9][0-9]?$'
 chk PAGE_CACHE_TTL "$PAGE_CACHE_TTL" '^[1-9][0-9]{0,4}$'
 chk PAGE_CACHE_SWR "$PAGE_CACHE_SWR" '^[0-9]{1,5}$'
 chk QUEUE_LIMIT "$QUEUE_LIMIT" '^[0-9]{1,4}$'
@@ -118,6 +120,7 @@ IDLE_SECONDS = "$IDLE_SECONDS"
 OBJECT_CACHE = "$OBJECT_CACHE"
 QUEUE_RUNNER = "$QUEUE_RUNNER"
 CRON_SECONDS = "$CRON_SECONDS"
+AS_TIME_LIMIT = "$AS_TIME_LIMIT"
 PAGE_CACHE_TTL = "$PAGE_CACHE_TTL"
 PAGE_CACHE_SWR = "$PAGE_CACHE_SWR"
 QUEUE_LIMIT = "$QUEUE_LIMIT"

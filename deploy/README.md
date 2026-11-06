@@ -77,7 +77,8 @@ The query count per page comes from the mu-plugin `php/query-count.php`: it send
 | `IDLE_SECONDS` | `900` | The container stops itself after this many seconds with no request (see below). |
 | `OBJECT_CACHE` | `apcu` | `apcu`: the APCu object cache drop-in (about 20 % less CPU per page, docs/approach-c1.md). `none`: no object cache. |
 | `REPLICA_PATH` | `store` | Path of the Litestream replica in the replica bucket. Another path restores and writes another database; `store` stays as it was. |
-| `QUEUE_RUNNER` | `local` | `local`: WP-Cron and Action Scheduler run from inside the container every `CRON_SECONDS` (60), and the Action Scheduler async loopback is off (issue #45). `loopback`: the loopback, as before. |
+| `QUEUE_RUNNER` | `local` | `local`: WP-Cron and Action Scheduler run from inside the container every `CRON_SECONDS` (10), and the Action Scheduler async loopback is off (issue #45). `loopback`: the loopback, as before. |
+| `AS_TIME_LIMIT` | `5` | Seconds one queue run may take (Action Scheduler's default is 30). A long run holds one PHP server process, and a shopper whose connection lands there waits for it. |
 | `PAGE_CACHE_TTL` | `120` | Seconds a storefront page stays fresh at the edge (visitors with no cart, session or login; docs/approach-c1.md, Storefront edge cache). A change purges it sooner. |
 | `PAGE_CACHE_SWR` | `600` | Seconds after that during which the edge serves the old copy while it renders a new one |
 | `QUEUE_LIMIT` | `16` | Requests the container may have in hand before a page, cart or add to cart gets 503 with Retry-After (0 = no limit). Checkout, payment callbacks and admin are always let in (docs/approach-c1.md, Bounded queue). |
