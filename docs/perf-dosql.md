@@ -1,6 +1,57 @@
 # b-dosql: where the time goes (issue #37)
 
-Variant `b-dosql`: PHP and its SQLite database in one Durable Object, on Workers Free. This page is the baseline for tuning. It changes nothing.
+## Summary (2026-11-05)
+
+### Levers measured
+
+Tail CPU on `wp-perf-dosql` (Workers Free), measured against a bracket of runs without the change. Each figure gives its section below.
+
+| Lever | Issue / PR | State | Measured delta |
+| --- | --- | --- | --- |
+| Object cache across requests in the PHP object | #37, PR #44 | merged | CPU p50: home -29%, post -28%, search -31%, dashboard -28%, edit -19%, post-new -7%. Home at 8 clients: 3.79 to 5.13 requests a second (+35%). |
+| Editor theme REST routes across requests (global styles, variations, template lookup) | #53, PR #56 | merged | post-new CPU p50 -11 to -23% (55 to 135 ms); p95 -6 to -14%. |
+| theme.json merged data and stylesheet across requests | #49 | parked: measured ceiling only | Public pages -10 to -20% (home about 30 ms); admin pages and the editor 0. Not worth a correctness risk: logged-out public pages mostly come from the page cache. |
+| Editor settings (`get_block_editor_settings()`) across requests | #53 | parked: measured ceiling only | post-new -10 to -19%, on that page only. It depends on the user's global styles: the highest correctness risk. |
+| Overload answer: 503 with `Retry-After: 5` and `Cache-Control: no-store` | PR #47 | merged | The shape is fixed: 369 of 369 overload answers honest, and 0 exceptions in tail. The count did not settle: the same code gave 8 to 305 overloads in 400 requests at 100 clients. |
+| Re-inflating lazy files on each request | PR #47 (doc) | not a lever | About 1 ms of about 75 ms of PHP (n=20; 0.64 ms in a batch in Node). |
+
+### What sets b-dosql's limit
+
+- **One object.** PHP with its database in the object does no I/O, so it never yields. The object runs one request at a time, and throughput is about 1 / CPU per request.
+- **Load matrix.** Runner, before change 1, `deploy/results/bench-runner-20261105T214231Z-230073.json`, target `wp-ref-dosql`:
+
+| Users | Requests a second | Errors |
+| --- | --- | --- |
+| 1 | 1.84 | 0 |
+| 5 | 4.77 | 0 |
+| 10 | 5.29 | 0 |
+| 25 | 4.18 | 16 |
+| 50 | 4.84 | 0 |
+| 100 | 7.14 | 140 |
+
+  The 7.14 at 100 users counts fast overload answers. Past about 5 a second, latency grows with the queue, on both sides of PHP. At about 100 clients the object refuses ("Durable Object is overloaded").
+- **More objects are not an option.** With the database inside the object, one object holds the site, so it cannot be split.
+- **Less CPU is the lever.** Lower CPU per request raises the ceiling and lowers the p95 by about the same factor.
+- **The page cache is in front.** Logged-out public pages are mostly answered by the page cache and never reach the object. Logged-in pages, the admin and the editor always do, which is why the editor's preload was a target.
+- **The host.** About a fifth of requests run about 1.8 times slower for the same work. A loop with no PHP in the same object shows the same slow mode, so it is most likely the host's CPU speed. Less CPU per request lowers it too.
+
+### Rules for measuring this setup
+
+- **The clock.** Inside the object, `Date.now()` moves only at I/O, so a millisecond measured across PHP and SQLite reads about 0 on Cloudflare, and a cross-machine wait read -600 ms. Use the Worker's `x-object-ms`, and tail `cpuTime` joined by `x-perf-id`. Counts do not need the clock.
+- **Tail drops events.** Between 30% and 70% of events were missing. Give the joined n with every tail figure.
+- **Bracket every A/B.** Run current, then the change, then current again. Two runs of the same code differed by up to 15% on a page, so read a change against the range, not against one run. Use one build with a variable toggle where possible (`OBJECT_CACHE`, `ROUTE_CACHE`).
+- **Red controls must be able to go red.** Before trusting a gate, make a mutation that it must catch. A control that cannot fail is decoration:
+  - "a cache set stores nothing" only falls back to the database, so it cannot fail;
+  - "the first stored value stays" made the coherence test fail, so it is a real control;
+  - "ignore the user's styles" cannot fail for routes that never read them.
+- **Prove a cache hit at the start of a request.** A check at shutdown also finds a value set earlier in the same request.
+- **Throwaway ceilings.** A throwaway ceiling gives an upper bound; it is never a design. One answered before the REST permission check (`rest_pre_dispatch`), which a real cache must not do.
+- **Gate a deploy on what it ships.** Deploy only when `opcache.sh` exits 0 with a non-empty `opcache.zip`. A pipe into `tail` tests `tail`, and one deploy went out without precompiled files. Local priming must not use the deployed site's `ADMIN_PASSWORD`.
+- **Local wall times.** They are void when the laptop is loaded. Use local runs for shares and correctness; the totals come from Cloudflare.
+
+## Baseline
+
+Variant `b-dosql`: PHP and its SQLite database in one Durable Object, on Workers Free. This baseline changed nothing; the changes further down are measured against it.
 
 Measured 2026-11-05 on `wp-perf-dosql` (Free test account; deployed by `deploy/deploy.sh` from branch `perf-dosql`; `e2e.sh` 17 of 17 after the install). Client: a laptop in Michigan. Every render is fresh (`?nocache=` and `Cache-Control: no-cache`), so the page cache does not answer.
 
