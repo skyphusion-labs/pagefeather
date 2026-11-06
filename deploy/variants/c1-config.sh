@@ -16,6 +16,9 @@
 #   QUEUE_RUNNER   local (default): WP-Cron and Action Scheduler run from the
 #                  container every CRON_SECONDS (default 60); loopback: the
 #                  Action Scheduler async loopback, as before (issue #45)
+#   PAGE_CACHE_TTL seconds a storefront page stays fresh at the edge (default 120)
+#   PAGE_CACHE_SWR seconds it may then be served stale while a new copy renders
+#                  (default 600)
 #   REPLICA_PATH   path of the Litestream replica in the replica bucket (default
 #                  store). Another path restores and writes another database;
 #                  going back to store finds the old one unchanged.
@@ -27,6 +30,8 @@
 set -euo pipefail
 OBJECT_CACHE=${OBJECT_CACHE:-apcu}
 REPLICA_PATH=${REPLICA_PATH:-store}
+PAGE_CACHE_TTL=${PAGE_CACHE_TTL:-120}
+PAGE_CACHE_SWR=${PAGE_CACHE_SWR:-600}
 QUEUE_RUNNER=${QUEUE_RUNNER:-local}
 CRON_SECONDS=${CRON_SECONDS:-60}
 for v in NAME PUBLIC_HOST REPLICA MEDIA_BUCKET R2_ENDPOINT COMPAT INSTANCE_TYPE PHP_WORKERS IDLE_SECONDS; do
@@ -48,6 +53,8 @@ chk OBJECT_CACHE "$OBJECT_CACHE" '^(none|apcu)$'
 chk REPLICA_PATH "$REPLICA_PATH" '^[a-z0-9][a-z0-9-]{0,62}$'
 chk QUEUE_RUNNER "$QUEUE_RUNNER" '^(local|loopback)$'
 chk CRON_SECONDS "$CRON_SECONDS" '^[1-9][0-9]{0,3}$'
+chk PAGE_CACHE_TTL "$PAGE_CACHE_TTL" '^[1-9][0-9]{0,4}$'
+chk PAGE_CACHE_SWR "$PAGE_CACHE_SWR" '^[0-9]{1,5}$'
 SEED_SHA256=${SEED_SHA256:-}
 [ -z "$SEED_SHA256" ] || chk SEED_SHA256 "$SEED_SHA256" '^[a-f0-9]{64}$'
 cat <<TOML
@@ -60,8 +67,20 @@ workers_dev = true
 [assets]
 directory = "build/public"
 
-[cache]
-enabled = true
+# Workers Caching for the Storefront entrypoint only (worker.js, issue #58).
+# The default entrypoint is the gateway: it decides by cookie name and path,
+# and is not cached. Needs Wrangler 4.107.0 or later.
+[exports.default]
+type = "worker"
+
+  [exports.default.cache]
+  enabled = false
+
+[exports.Storefront]
+type = "worker"
+
+  [exports.Storefront.cache]
+  enabled = true
 
 [vars]
 PUBLIC_HOST = "$PUBLIC_HOST"
@@ -72,6 +91,8 @@ IDLE_SECONDS = "$IDLE_SECONDS"
 OBJECT_CACHE = "$OBJECT_CACHE"
 QUEUE_RUNNER = "$QUEUE_RUNNER"
 CRON_SECONDS = "$CRON_SECONDS"
+PAGE_CACHE_TTL = "$PAGE_CACHE_TTL"
+PAGE_CACHE_SWR = "$PAGE_CACHE_SWR"
 R2_ENDPOINT = "$R2_ENDPOINT"
 SEED_SHA256 = "$SEED_SHA256"
 # Secrets (deploy --secrets-file): WP_SALT, ADMIN_PASSWORD, SPIKE_TOKEN,

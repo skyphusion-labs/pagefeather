@@ -7,8 +7,17 @@ workers_dev = true
 [assets]
 directory = "build/public"
 
-[cache]
-enabled = true
+[exports.default]
+type = "worker"
+
+  [exports.default.cache]
+  enabled = false
+
+[exports.Storefront]
+type = "worker"
+
+  [exports.Storefront.cache]
+  enabled = true
 
 [vars]
 PUBLIC_HOST = "wp-woo-c1.skyphusion.workers.dev"
