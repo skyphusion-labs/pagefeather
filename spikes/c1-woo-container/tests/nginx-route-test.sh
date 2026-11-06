@@ -22,8 +22,11 @@ run_arm() {
 	/usr/local/bin/c1-serve.sh > /tmp/route-$name.log 2>&1 & local S=$!
 	for i in $(seq 1 30); do curl -s -o /dev/null -m 1 http://127.0.0.1/ping && break; sleep 0.3; done
 	# method path want: php (x-c1-pid present), static:<body>, or 301:<location>
+	# Local, and declared BEFORE the loop: "read -r m p want" once overwrote the
+	# caller's m (the mutant 1 count), so the verdict read it empty. Declared
+	# inside the loop, local would blank the values read just before it.
+	local m p want h body code loc pid ok i
 	while read -r m p want; do
-		local h body
 		h=$(curl -s -m 10 -X "$m" -D - -o /tmp/route.body "http://127.0.0.1$p")
 		body=$(head -c 40 /tmp/route.body)
 		code=$(printf '%s' "$h" | head -1 | cut -d" " -f2)
@@ -71,9 +74,9 @@ cmp -s /tmp/nginx.shipped.conf /tmp/nginx.mutant.conf && { echo "FAIL: the mutan
 # index.php as a static file (PHP source) and 405 for other methods.
 perl -0pe 's{(\t\tlocation ~ /\$ \{\n).*?(\n\t\t\}\n)}{$1\t\t\ttry_files \$\{uri\}index.php /index.php\$is_args\$args;$2}s' /tmp/nginx.shipped.conf > /tmp/nginx.mutant2.conf
 cmp -s /tmp/nginx.shipped.conf /tmp/nginx.mutant2.conf && { echo "FAIL: mutant 2 is the same as the shipped file"; exit 1; }
-echo "== shipped"; run_arm shipped /tmp/nginx.shipped.conf; s=$?
-echo "== mutant 1 (first version, try_files \$uri/)"; run_arm mutant1 /tmp/nginx.mutant.conf; m=$?
-echo "== mutant 2 (fba402a, try_files \${uri}index.php)"; run_arm mutant2 /tmp/nginx.mutant2.conf; m2=$?
+echo "== shipped"; run_arm shipped /tmp/nginx.shipped.conf; n_shipped=$?
+echo "== mutant 1 (first version, try_files \$uri/)"; run_arm mutant1 /tmp/nginx.mutant.conf; n_mut1=$?
+echo "== mutant 2 (fba402a, try_files \${uri}index.php)"; run_arm mutant2 /tmp/nginx.mutant2.conf; n_mut2=$?
 cp /tmp/nginx.shipped.conf /etc/nginx/nginx.conf
-if [ $s = 0 ] && [ $m -gt 0 ] && [ $m2 -gt 0 ]; then echo "PASS: shipped 0 failing, mutant 1 $m failing, mutant 2 $m2 failing"; exit 0; fi
-echo "FAIL: shipped $s failing, mutant 1 $m, mutant 2 $m2 (want 0, more than 0, more than 0)"; exit 1
+if [ "$n_shipped" = 0 ] && [ "$n_mut1" -gt 0 ] && [ "$n_mut2" -gt 0 ]; then echo "PASS: shipped 0 failing, mutant 1 $n_mut1 failing, mutant 2 $n_mut2 failing"; exit 0; fi
+echo "FAIL: shipped $n_shipped failing, mutant 1 $n_mut1, mutant 2 $n_mut2 (want 0, more than 0, more than 0)"; exit 1
