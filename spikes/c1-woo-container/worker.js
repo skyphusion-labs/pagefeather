@@ -39,6 +39,8 @@ export class Store extends Container {
 			PHP_WORKERS: env.PHP_WORKERS || '2',
 			IDLE_SECONDS: env.IDLE_SECONDS || '900',
 			OBJECT_CACHE: env.OBJECT_CACHE || 'apcu',
+			QUEUE_RUNNER: env.QUEUE_RUNNER || 'local',
+			CRON_SECONDS: env.CRON_SECONDS || '60',
 		};
 	}
 }

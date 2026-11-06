@@ -19,7 +19,8 @@
 #
 # Options: INSTANCE_TYPE (default standard-1), PHP_WORKERS (default from the
 # instance type), IDLE_SECONDS (default 900), OBJECT_CACHE (apcu or none,
-# default apcu), REPLICA_PATH (default store), PUBLIC_HOST (default
+# default apcu), REPLICA_PATH (default store), QUEUE_RUNNER (local or
+# loopback, default local), CRON_SECONDS (default 60), PUBLIC_HOST (default
 # <NAME>.<account subdomain>.workers.dev), ROLLOUT_WAIT (default 60 s),
 # START_TIMEOUT (default 900 s), BENCH, N.
 
@@ -33,6 +34,8 @@ PHP_WORKERS=${PHP_WORKERS:-$c1_w}
 IDLE_SECONDS=${IDLE_SECONDS:-900}
 OBJECT_CACHE=${OBJECT_CACHE:-apcu}
 REPLICA_PATH=${REPLICA_PATH:-store}
+QUEUE_RUNNER=${QUEUE_RUNNER:-local}
+CRON_SECONDS=${CRON_SECONDS:-60}
 
 c1_build() {
   log "build (c1)"
@@ -56,7 +59,7 @@ c1_config() {
   CONF="$C1/wrangler.deploy.$NAME.toml"
   compat=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' "$C1/wrangler.toml" | head -1)
   NAME=$NAME PUBLIC_HOST=$PUBLIC_HOST REPLICA=$replica MEDIA_BUCKET=$media R2_ENDPOINT=$endpoint \
-    COMPAT=$compat INSTANCE_TYPE=$INSTANCE_TYPE PHP_WORKERS=$PHP_WORKERS IDLE_SECONDS=$IDLE_SECONDS OBJECT_CACHE=$OBJECT_CACHE REPLICA_PATH=$REPLICA_PATH \
+    COMPAT=$compat INSTANCE_TYPE=$INSTANCE_TYPE PHP_WORKERS=$PHP_WORKERS IDLE_SECONDS=$IDLE_SECONDS OBJECT_CACHE=$OBJECT_CACHE REPLICA_PATH=$REPLICA_PATH QUEUE_RUNNER=$QUEUE_RUNNER CRON_SECONDS=$CRON_SECONDS \
     "$ROOT/deploy/variants/c1-config.sh" > "$CONF"
 }
 
@@ -65,7 +68,7 @@ c1_config() {
 # admin password and no salt.
 c1_deploy() {
   local secrets dep rc=0
-  log "deploy (c1, $INSTANCE_TYPE, $PHP_WORKERS PHP workers, object cache $OBJECT_CACHE, replica path $REPLICA_PATH)"
+  log "deploy (c1, $INSTANCE_TYPE, $PHP_WORKERS PHP workers, object cache $OBJECT_CACHE, replica path $REPLICA_PATH, queue runner $QUEUE_RUNNER)"
   secrets=$(mktemp); chmod 600 "$secrets"
   (cd "$TF" && terraform workspace select "$NAME" >/dev/null && terraform output -json) | python3 -c '
 import json, sys
@@ -187,8 +190,8 @@ c1_measure() {
     fi
     sleep 2
   done
-  printf '{"instance_type": "%s", "php_workers": %s, "object_cache": "%s", "replica_path": "%s", "idle_seconds": %s, "first_start_s": %s, "cold_start_s": %s}\n' \
-    "$INSTANCE_TYPE" "$PHP_WORKERS" "$OBJECT_CACHE" "$REPLICA_PATH" "$IDLE_SECONDS" "${FIRST_START_S:-null}" "$cold" > "$w/extra"
+  printf '{"instance_type": "%s", "php_workers": %s, "object_cache": "%s", "replica_path": "%s", "queue_runner": "%s", "idle_seconds": %s, "first_start_s": %s, "cold_start_s": %s}\n' \
+    "$INSTANCE_TYPE" "$PHP_WORKERS" "$OBJECT_CACHE" "$REPLICA_PATH" "$QUEUE_RUNNER" "$IDLE_SECONDS" "${FIRST_START_S:-null}" "$cold" > "$w/extra"
   VARIANT=c1 python3 "$ROOT/deploy/summarize.py" "$res" "$NAME" "$URL" "$LOCATION" "$e2e_exit" "$w"
   rm -rf "$w"
 }

@@ -52,6 +52,22 @@ trap 'kill -TERM "$LS"; wait "$LS"; exit $?' TERM INT
 	done
 ) &
 
+# Queue runner (issue #45): with QUEUE_RUNNER=local (the default), request
+# wp-cron.php from inside the container every CRON_SECONDS (60). It runs in
+# PHP's own server, so it shares the APCu object cache, and it does not go out
+# through the Worker. php/c1-queue.php turns Action Scheduler's async loopback
+# off. router.php does not count these requests as activity, so they do not
+# keep an idle container awake.
+if [ "${QUEUE_RUNNER:-local}" = local ]; then
+	(
+		while sleep "${CRON_SECONDS:-60}"; do
+			# No ?doing_wp_cron=: wp-cron.php then takes its own lock. With a key that
+			# no spawn_cron() set, it returns at once and runs nothing (seen locally).
+			curl -s -o /dev/null -m 120 http://127.0.0.1/wp-cron.php || true
+		done
+	) &
+fi
+
 # Idle shutdown. The Container class sleepAfter never stopped this container:
 # its Durable Object reported running=false and did nothing (measured
 # 2026-11-04: the same container after 17 idle minutes). So the container
