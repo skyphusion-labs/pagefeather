@@ -56,7 +56,7 @@ On Paid the two implementations are equal. HostlessWP claims about 1.2 s for a c
 | --- | --- | --- | --- | --- |
 | `e2e.sh` (17 checks) | fails: CPU limit | 17 of 17 | 17 of 17 | 17 of 17 |
 | `tests/break.py` (27 checks) | not run | 27 of 27 | not run | not run |
-| Plugin suite (18 plugins) | 0 of 18 | 17 of 18 | 18 of 18 | 18 of 18 |
+| Plugin suite (18 plugins) | 0 of 18 | 17 of 18; All-in-One WP Migration passes since #29 (`wp-ref-a`, 2026-11-06), the other 17 not re-run on that build | 18 of 18 | 18 of 18 |
 | `tests/woo.py` (WooCommerce, 12 checks) | 0 of 9 (activation: CPU limit) | 12 of 12 | 12 of 12 | 12 of 12 |
 | Installer in the Worker | refused: 1102 after 7.7 s | 539 queries, 41 s (82 s on the tunnel path) | n/a (installs from the source site) | n/a |
 
@@ -65,6 +65,43 @@ On Paid the two implementations are equal. HostlessWP claims about 1.2 s for a c
 Our A on Paid runs WooCommerce checkout (393 queries, 8.4 s). Approach B on Paid does not: its checkout exceeds the isolate memory limit. Both run the same PHP build, and WebAssembly memory after a WooCommerce page is about the same (99 MiB in B, 83 to 99 MiB in A). B makes about 800 database calls for a checkout, A 393: the SQLite translator in B adds schema reads. Our working explanation is that the extra bridge traffic and translation push total isolate memory (JavaScript and WebAssembly together) over 128 MB. Not yet isolated: neither Worker reports JavaScript heap per request.
 
 The one plugin that fails on our A Paid is All-in-One WP Migration: every wp-admin request answers 500 while it is active. The plugin has its own database client and picks it by the `wpdb` class. Approach B's `WP_SQLite_DB` gets a client that goes through `$wpdb`; any other class gets a client that calls `mysqli_real_query()` on `$wpdb->dbh`, on every admin page. In our A, `$wpdb->dbh` is not a mysqli link. HostlessWP ships a userland mysqli for this and passes. Issue #29.
+
+**A userland mysqli (issue #29). Measured locally and on Paid 2026-11-06.** Our php-wasm has no mysqli extension: in a built tree, `extension_loaded('mysqli')` is false, the classes are absent, and the 18 `mysqli_*` functions checked are absent. So `spikes/b2-wordpress/php/hyperdrive-mysqli.php` declares them in PHP, following HostlessWP ([prior-art.md](prior-art.md)):
+- `mysqli`, `mysqli_result`, `mysqli_sql_exception`, the `MYSQLI_` constants and the procedural `mysqli_*` functions;
+- every query on the same bridge as `wpdb` (`skyphusion_hd_run()`, with the sql_mode handling of a strict server);
+- `db_connect()` gives `$wpdb->dbh` a `mysqli` object and turns reporting off, as `wpdb::db_connect()` does. With reporting on (PHP 8.1's default), a failed query throws `mysqli_sql_exception`.
+- Everything is declared inside one `class_exists('mysqli')` block. A PHP with the real extension (`php -l` on a Mac or in CI) declares nothing, and the real extension stays in use.
+- Not covered: prepared statements and `multi_query` (both return an error), field types and lengths (every field is a string).
+
+| Where | Test | Without the layer | With it |
+| --- | --- | --- | --- |
+| php-wasm, stub bridge | `tests/a/mysqli-surface.sh` (All-in-One WP Migration's calls, core's `flush()` and `bail()` paths, fetch modes, errors in both report modes) | - | 30 of 30; a mutation that never throws fails its check |
+| local `a-local`, MariaDB 11.4.13 | `plugins.py all-in-one-wp-migration` | dashboard and admin page 500 | pass |
+| local `a-local`, MariaDB 11.4.13 | `e2e.sh` | 17 of 17 | 17 of 17 |
+| `wp-ref-a` (Paid, MariaDB 10.11 through Hyperdrive), deployed by `deploy/deploy.sh` with `PLUGINS=all-in-one-wp-migration` | `plugins.py all-in-one-wp-migration` | dashboard and admin page 500 (the plugin suite on A Paid before #29) | pass: activate, home, post, dashboard, admin page, deactivate all 200 |
+
+The surface test proves the PHP side only: its bridge is a stub. The MariaDB rows and the `wp-ref-a` row are the real bridge. On Paid only this plugin was re-run; the other 17 of the suite were not re-run on this build. A2 (PlanetScale) uses the same `hyperdrive-db.php`, so it should pass too, but it was not re-run.
+
+**Found on the way: admin pages with WooCommerce recycle the PHP runtime on A (issue #84). Measured locally 2026-11-06. Not measured on Cloudflare.** After a request whose WebAssembly memory passes `RECYCLE_WASM_BYTES` (100 MiB), the Worker drops the PHP runtime, and the next request boots a new one. Priming OPcache with the `wp-ref-a` settings (`a-local` on MariaDB 11.4.13, WooCommerce active, All-in-One WP Migration in the build) passed it 3 times, each at 119 MiB: on `post-new.php`, a REST posts request, and `/wp-admin/`.
+- So on a live A site with WooCommerce active, each such admin page pays a runtime boot on the next request. The 100 MiB threshold is below the 128 MB isolate limit on purpose.
+- The first two requests come from `e2e.sh`, before `plugins.py` activates All-in-One WP Migration. So WooCommerce alone reaches 119 MiB on those pages; the plugin's own share is not isolated.
+- It is the same PHP build locally and on Cloudflare, so the memory is expected to be the same, but it is not measured there.
+- Priming no longer recycles (`PHP_RECYCLE:off` in `opcache.sh`, approach-b.md 8e). Production keeps the recycle: `PHP_RECYCLE` is set nowhere in `deploy/` or `wrangler.toml`.
+
+**Found on the way: binary SQL is stored doubled (issue #79).** SQL that is not valid UTF-8 goes to the Worker as `{mysql_b64}`. `mysql-bridge.js` decodes it as latin1, and mysql2 sends it as utf8mb4. On MariaDB 11.4, `e9 ff 80` was stored as `c3 a9 c3 bf c2 80`. Valid UTF-8 and bytes up to 0x7F are correct. The same result came without the mysqli layer.
+
+**Fixed (issue #79). Measured 2026-11-06.** `php/hyperdrive-literals.php` rewrites each string literal that is not valid UTF-8 as a hex literal (`X'...'`), so the SQL on the bridge is valid UTF-8 and MySQL reads the same bytes. This is HostlessWP's approach ([prior-art.md](prior-art.md)).
+- Literals are read as MySQL reads them without `NO_BACKSLASH_ESCAPES`, which is how `wpdb` escapes: backslash escapes, doubled quotes, and `\%` and `\_` keeping their backslash.
+- Backticked names and comments are copied as they are. A charset introducer gets a space (`_binary X'...'`).
+- SQL with such bytes outside any literal gets an error reply and is not sent.
+- `mysql-bridge.js` refuses `{mysql_b64}` with an error instead of decoding it as latin1.
+- The escape moved into the same file, so `tests/a/literals-test.php` tests the shipped one. CI runs that test.
+
+| Test | Result |
+| --- | --- |
+| `php tests/a/literals-test.php`: 20 cases, plus 2000 random values escaped as `wpdb` escapes them | 21 of 21. Mutation (the NUL unescape removed): 2 fail, 143 of 2000 values wrong |
+| local `a-local`, MariaDB 11.4.13, the probe: `$wpdb` writes into `VARBINARY`, read back with `HEX()` | `c3a9`, `e9ff80` and `007f80` stored as written; a mysqli write in All-in-One WP Migration's shape (`mysqli_real_query()` on `$wpdb->dbh`, `e9 ff 80 00 27`) stored as written |
+| the same run: `e2e.sh`, `plugins.py all-in-one-wp-migration`, `break.py` | 17 of 17; pass; the same PASS/FAIL set as without the layer |
 
 ### HostlessWP on Workers Free
 
