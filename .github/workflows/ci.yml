@@ -49,6 +49,9 @@ jobs:
       - name: c1 rollout wait tests
         # deploy/variants/c1.sh c1_rollout and c1_wait (issue #106) against a fake containers API.
         run: deploy/variants/tests/c1-rollout-test.sh
+      - name: c1 boot log watch tests
+        # deploy/variants/c1.sh c1_up_watch and c1-bootwatch.py (issue #103) against a fake site and bucket: no log, a stalled log, an old log.
+        run: deploy/variants/tests/c1-bootwatch-test.sh
       - name: c1 load analysis tests
         # tests/load/c1_arm.py (issue #99): held requests, CPU per order, the split, on a synthetic job.
         run: python3 tests/load/c1_arm_test.py

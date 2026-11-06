@@ -94,6 +94,15 @@ The query count per page comes from the mu-plugin `php/query-count.php`: it send
 | `ROLLOUT_REPLACED_POLLS` | `6` | Reads of a `replaced` rollout with no newer version before the deploy fails |
 | `ROLLOUT_WAIT` | `60` | The fallback: seconds to wait before the one stop when the containers API cannot be read |
 | `START_TIMEOUT` | `900` | Seconds to wait for the first 200 |
+| `BOOT_LOG_WAIT` | `180` | Seconds after the rollout stop until the new container's boot log must exist in the replica bucket |
+| `STALL_S` | `300` | Seconds with no new boot log line and no 200 before the deploy fails the start as stuck |
+
+The wait for the first 200 also reads the boot log (issue #103, `deploy/variants/c1-bootwatch.py`). The container PUTs it to the replica bucket as `<REPLICA_PATH>.boot-<start epoch>.log` (`container/bootlog.sh`). The deploy reads the newest log with a start epoch at or after the stop (less 10 s for the clocks), with the Litestream key, and prints each new line as `boot: ...`. It fails before `START_TIMEOUT` in two cases:
+
+- There is no such log `BOOT_LOG_WAIT` s after the stop: the container did not reach `bootlog.sh`.
+- The log got no new line for `STALL_S` s and there is still no 200: the start stopped. The message shows the last line, which is the last step that ran.
+
+Both messages give the recovery for a stuck container (a deploy with a changed `INSTANCE_TYPE`, issue #93). If the bucket cannot be listed (for example a 403), the deploy says so once and waits only for the 200, up to `START_TIMEOUT`, as before. The stall age is measured on the laptop, from when the deploy last saw the log grow, so a container clock that is off does not change it. The log is uploaded every 10 s for 10 minutes and then every 60 s, so `STALL_S` must stay well above 60 s. The longest silent step is the install on a new site, which now has a line before and after it; a whole first start on a new site took 98 s on 2026-11-06 (`docs/results.md`).
 
 ### How the container sleeps
 

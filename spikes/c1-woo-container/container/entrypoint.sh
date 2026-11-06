@@ -40,10 +40,17 @@ litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exi
 blog "restore done (database file: $( [ -f /data/wordpress.sqlite ] && echo yes || echo no))"
 # Import (issue #31): load the seed when there is no replica (seed.sh).
 . /opt/wp/seed.sh
+# A line before and after each long step (issue #103): the deploy fails a
+# start whose boot log gets no new line for STALL_S, so no step may be silent
+# for long. The install is the longest (a whole first start was 98 s on
+# 2026-11-06, docs/results.md).
+blog "seed: start"
 seed_load
+blog "seed: done (database file: $( [ -f /data/wordpress.sqlite ] && echo yes || echo no))"
 if [ ! -f /data/wordpress.sqlite ]; then
-	echo "no replica: installing"
+	blog "install: start (no replica)"
 	php /var/www/html/install.php
+	blog "install: done"
 fi
 chown -R www-data:www-data /data 2>/dev/null || true
 blog "/data owner $(stat -c %U /data)"
