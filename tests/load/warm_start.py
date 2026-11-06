@@ -120,6 +120,19 @@ def split(view_at, cart_at, boot, req, cart_id):
                     pass
                 break
     want = re.compile(r"/\?add-to-cart=%d(&|$)" % cart_id)
+    # The warm-up (issue #92, c1-serve.sh): "warm: done {json}" from warm.php,
+    # with the OPcache before and after it. Its time and its record.
+    for line in boot.splitlines():
+        if "c1-serve: warm: failed" in line:
+            s["warm_failed"] = line.split("c1-serve: warm: failed", 1)[1].strip()[:200]
+        m = re.search(r"c1-serve: warm: done (\{.*\})\s*$", line)
+        if m:
+            try:
+                s["warm_done_s"] = round(float(line.split(" ", 1)[0]) - view_at, 3)
+                s["warm"] = json.loads(m.group(1))
+            except ValueError:
+                pass
+            break
     carts = [r for r in req_lines(req) if want.match(r["path"]) and r["t"] >= cart_at - 5]
     for k, r in zip(("cart1", "cart2"), carts):
         s[k + "_php_wall_s"], s[k + "_php_cpu_s"] = round(r["wall"], 3), round(r["cpu"], 3)
