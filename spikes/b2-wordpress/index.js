@@ -31,6 +31,8 @@ export function setDbHandler(h) {
 // (ctx.storage.sql). The object sets it for each PHP run, under the PHP lock.
 // In the Worker it is always null and every statement goes to D1.
 let sqlDb = null;
+// The object's storage, for transactionSync (real transactions, #60). Set with sqlDb.
+let sqlStorage = null;
 
 // Object cache across requests (php/object-cache.php, docs/perf-dosql.md), in
 // the PHP object with DB_IN_DO only: one object is the only writer, so
@@ -69,6 +71,7 @@ function objectCacheOp(op) {
 		return { v };
 	}
 	if (op.op === 'set') {
+		if (txnFrames) txnTouched.add(op.k);
 		objectCacheDrop(op.k);
 		const n = op.k.length + op.v.length;
 		if (n > OBJECT_CACHE_BYTES / 4) return { ok: false };
@@ -81,6 +84,7 @@ function objectCacheOp(op) {
 		return { ok: true };
 	}
 	if (op.op === 'del') {
+		if (txnFrames) for (const k of op.k) txnTouched.add(k);
 		let n = 0;
 		for (const k of op.k) if (objectCacheDrop(k)) n++;
 		return { n };
@@ -215,7 +219,7 @@ async function stageUpload(req, env) {
 }
 
 function newStats() {
-	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, ocCalls: 0, ocHits: 0, httpCalls: 0, httpMs: 0 };
+	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, ocCalls: 0, ocHits: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
 }
 
 // The log and failure lists live as long as the isolate. Keep the newest only.
@@ -329,6 +333,7 @@ function lazyFile(FS, path, entry) {
 async function handleMessage(raw) {
 	const m = JSON.parse(raw);
 	if (m.http) return JSON.stringify(await httpOp(m.http));
+	if (m.txn) return JSON.stringify(sqlDb ? txnOp(sqlDb, sqlStorage, m.txn) : { ok: false, error: 'no database in the object' });
 	if (m.oc) return JSON.stringify(objectCacheOp(m.oc));
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
 	if (m.cache === 'purge') {
@@ -501,6 +506,9 @@ async function boot(origin) {
 	// The object cache across requests (php/object-cache.php): only where one
 	// object is the only writer. OBJECT_CACHE=off turns it off (to measure).
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.OBJECT_CACHE !== 'off') lines.push(`define('JS_OBJECT_CACHE', true);`);
+	// Real SQL transactions (php/real-transactions.php, #60): the database in the
+	// object only. REAL_TRANSACTIONS=off turns them off (to measure).
+	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.REAL_TRANSACTIONS !== 'off') lines.push(`define('JS_REAL_TRANSACTIONS', true);`);
 	// The editor's theme REST routes kept across requests (php/rest-route-cache.php, #53).
 	// Needs the object cache. ROUTE_CACHE=off turns it off (to measure).
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.OBJECT_CACHE !== 'off' && ENV.ROUTE_CACHE !== 'off') lines.push(`define('JS_ROUTE_CACHE', true);`);
@@ -892,6 +900,175 @@ async function httpOp(op) {
 	}
 }
 
+// Real SQL transactions for PHP with the database in the object (#60,
+// php/real-transactions.php, docs/approach-b.md 8l). The object's SQL API
+// refuses BEGIN and SAVEPOINT, and a storage transaction held open across
+// awaits neither captures statements made outside its callback nor survives an
+// outbound fetch (measured). So this uses SQLite's documented undo technique
+// ("Automatic Undo/Redo Using SQLite"): while PHP has a transaction open,
+// triggers write the inverse SQL of each row change to _wp_undo, and ROLLBACK
+// runs it back, newest first. All writes stay ordinary statements, so awaits,
+// uploads and outbound HTTP during a transaction are no problem.
+// - Triggers exist per table (named by a hash of the table and its columns),
+//   made at the first BEGIN and checked again only when the schema changes
+//   (schemaSig). They do nothing unless _wp_undo_state.active is 1.
+// - Tables WITHOUT ROWID are not covered (none in WordPress or the driver).
+// - A transaction still open at the end of a request is rolled back (MySQL
+//   does this when a connection closes). One left open by an isolate that
+//   died is rolled back at the next request (active is stored).
+// - Object cache keys written during the transaction are dropped on a
+//   rollback, so no cached value outlives the rows it came from.
+const UNDO_TABLES = new Set(['_wp_undo', '_wp_undo_state']);
+// A signature of sqlite_master (entries and the length of their SQL): any DDL
+// changes it. PRAGMA schema_version would be the direct way, but the object's
+// SQLite refuses it (SQLITE_AUTH, measured 2026-11-06).
+let undoSchemaSig = null;
+function schemaSig(db) {
+	const r = db.exec('SELECT COUNT(*) AS n, TOTAL(LENGTH(sql)) AS l FROM sqlite_master').one();
+	return r.n + ':' + r.l;
+}
+let txnFrames = null; // [{ name, seq }]: the transaction (name null) and its savepoints
+const txnTouched = new Set();
+function sqlId(name) {
+	return '"' + String(name).replace(/"/g, '""') + '"';
+}
+function sqlLit(text) {
+	return "'" + String(text).replace(/'/g, "''") + "'";
+}
+function shortHash(text) {
+	let h = 5381;
+	for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
+	return h.toString(16).padStart(8, '0');
+}
+function undoSetup(db) {
+	db.exec('CREATE TABLE IF NOT EXISTS _wp_undo (seq INTEGER PRIMARY KEY AUTOINCREMENT, sql TEXT NOT NULL)');
+	db.exec('CREATE TABLE IF NOT EXISTS _wp_undo_state (id INTEGER PRIMARY KEY CHECK (id = 1), active INTEGER NOT NULL)');
+	db.exec('INSERT OR IGNORE INTO _wp_undo_state (id, active) VALUES (1, 0)');
+}
+function undoTriggers(db) {
+	if (schemaSig(db) === undoSchemaSig) return;
+	const tables = [...db.exec("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\'").raw()].filter(([name, sql]) => !UNDO_TABLES.has(name) && !/WITHOUT\s+ROWID/i.test(sql || ''));
+	const existing = new Set([...db.exec("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE '\\_wp\\_undo\\_%' ESCAPE '\\'").raw()].map((r) => r[0]));
+	const want = new Set();
+	const when = 'WHEN (SELECT active FROM _wp_undo_state WHERE id = 1) = 1';
+	for (const [table] of tables) {
+		const cols = [...db.exec(`PRAGMA table_info(${sqlId(table)})`).raw()].map((r) => r[1]);
+		if (!cols.length) continue;
+		// The name hashes the whole trigger body, so a changed body (a new release, a new column) gets a new
+		// name: the old trigger is dropped below and the new one is created. Never keep a trigger by table name alone.
+		const t = sqlId(table);
+		const bodies = {
+			i: `AFTER INSERT ON ${t} ${when} BEGIN INSERT INTO _wp_undo (sql) VALUES (${sqlLit(`DELETE FROM ${t} WHERE rowid = `)} || new.rowid); END`,
+			u: `AFTER UPDATE ON ${t} ${when} BEGIN INSERT INTO _wp_undo (sql) VALUES (${sqlLit(`UPDATE ${t} SET rowid = `)} || old.rowid || ${cols.map((c) => `${sqlLit(`, ${sqlId(c)} = `)} || quote(old.${sqlId(c)})`).join(' || ')} || ${sqlLit(' WHERE rowid = ')} || new.rowid); END`,
+			d: `AFTER DELETE ON ${t} ${when} BEGIN INSERT INTO _wp_undo (sql) VALUES (${sqlLit(`INSERT INTO ${t} (rowid, ${cols.map(sqlId).join(', ')}) VALUES (`)} || old.rowid || ${cols.map((c) => `${sqlLit(', ')} || quote(old.${sqlId(c)})`).join(' || ')} || ')'); END`,
+		};
+		for (const [kind, body] of Object.entries(bodies)) {
+			const name = `_wp_undo_${shortHash(table + '\u0000' + body)}_${kind}`;
+			want.add(name);
+			if (!existing.has(name)) db.exec(`CREATE TRIGGER ${name} ${body}`);
+		}
+	}
+	for (const name of existing) if (!want.has(name)) db.exec(`DROP TRIGGER IF EXISTS ${sqlId(name)}`);
+	undoSchemaSig = schemaSig(db);
+}
+function undoSeq(db) {
+	return db.exec('SELECT COALESCE(MAX(seq), 0) AS s FROM _wp_undo').one().s;
+}
+function setUndoActive(db, on) {
+	db.exec('UPDATE _wp_undo_state SET active = ? WHERE id = 1', on ? 1 : 0);
+}
+// Undo every change after seq, newest first, in one storage transaction.
+function undoTo(db, storage, seq) {
+	setUndoActive(db, false);
+	const rows = [...db.exec('SELECT sql FROM _wp_undo WHERE seq > ? ORDER BY seq DESC', seq).raw()];
+	storage.transactionSync(() => {
+		for (const [stmt] of rows) db.exec(stmt);
+		db.exec('DELETE FROM _wp_undo WHERE seq > ?', seq);
+	});
+	stats.undoRows += rows.length;
+	for (const k of txnTouched) objectCacheDrop(k);
+	txnTouched.clear();
+	return rows.length;
+}
+function txnClose(db) {
+	setUndoActive(db, false);
+	db.exec('DELETE FROM _wp_undo');
+	txnFrames = null;
+	txnTouched.clear();
+}
+function txnOp(db, storage, op) {
+	stats.txnOps++;
+	try {
+		const kind = op.op;
+		if (kind === 'begin') {
+			if (txnFrames) txnClose(db); // MySQL commits an open transaction first
+			undoSetup(db);
+			undoTriggers(db);
+			txnFrames = [{ name: null, seq: undoSeq(db) }];
+			txnTouched.clear();
+			setUndoActive(db, true);
+			return { ok: true };
+		}
+		if (kind === 'commit' || kind === 'ddl') {
+			if (txnFrames) txnClose(db); // DDL: MySQL's implicit commit
+			return { ok: true };
+		}
+		if (kind === 'rollback') {
+			if (!txnFrames) return { ok: true };
+			const n = undoTo(db, storage, txnFrames[0].seq);
+			txnClose(db);
+			return { ok: true, undone: n };
+		}
+		if (!txnFrames) return { ok: true }; // a savepoint outside a transaction does nothing (MySQL autocommit)
+		const at = txnFrames.findIndex((f, i) => i > 0 && f.name === op.name);
+		if (kind === 'savepoint') {
+			if (at > 0) txnFrames.splice(at, 1); // MySQL: the same name replaces the old savepoint
+			txnFrames.push({ name: op.name, seq: undoSeq(db) });
+			return { ok: true };
+		}
+		if (at < 0) return { ok: false, error: `SAVEPOINT ${op.name} does not exist` };
+		if (kind === 'rollback_to') {
+			const n = undoTo(db, storage, txnFrames[at].seq);
+			txnFrames.length = at + 1; // the savepoint stays, later ones go
+			setUndoActive(db, true);
+			return { ok: true, undone: n };
+		}
+		if (kind === 'release') {
+			txnFrames.length = at; // it and the later ones go; their changes stay in the transaction
+			return { ok: true };
+		}
+		return { ok: false, error: 'unknown transaction op ' + kind };
+	} catch (e) {
+		return { ok: false, error: String((e && e.message) || e) };
+	}
+}
+// Before the first PHP run of an isolate: a transaction left open by an isolate
+// that died is rolled back. Within one isolate, txnEnd() always closes it, so
+// this runs once per isolate.
+let txnRecovered = false;
+function txnRecover(db, storage) {
+	if (txnRecovered || txnFrames) return;
+	txnRecovered = true;
+	let active = 0;
+	try {
+		active = db.exec('SELECT active FROM _wp_undo_state WHERE id = 1').one().active;
+	} catch {
+		return; // no undo tables yet: no transaction was ever opened
+	}
+	if (active) {
+		const n = undoTo(db, storage, 0);
+		txnClose(db);
+		console.log(JSON.stringify({ m: 'txn', recovered: true, undone: n }));
+	}
+}
+// After a PHP run: a transaction still open is rolled back (MySQL on connection close).
+function txnEnd(db, storage) {
+	if (!txnFrames) return;
+	const n = undoTo(db, storage, txnFrames[0].seq);
+	txnClose(db);
+	console.log(JSON.stringify({ m: 'txn', rolledBackAtEnd: true, undone: n }));
+}
+
 // Spike: time N statements on the object's SQLite (db=object) or on D1 (db=d1),
 // from inside the object. A Worker's clock does not move during CPU work, so on
 // Cloudflare the object numbers may read 0: read CPU time in wrangler tail.
@@ -1155,8 +1332,12 @@ export class PhpRuntime extends DurableObject {
 		return withPhp(async () => {
 			const waitMs = Date.now() - tArrive;
 			sqlDb = sql;
+			sqlStorage = sql ? this.ctx.storage : null;
+			const realTxn = sql && env.REAL_TRANSACTIONS !== 'off';
+			if (realTxn) txnRecover(sql, this.ctx.storage);
 			try {
 				const res = await handle(req, env, url, spikeOk, maxBody, ctx);
+				if (realTxn) txnEnd(sql, this.ctx.storage);
 				try {
 					// inMs: from the start of fetch to the response (object clock). The
 					// Worker's object time minus inbox minus inMs is the wait to send the
@@ -1165,6 +1346,8 @@ export class PhpRuntime extends DurableObject {
 				} catch {}
 				return res;
 			} finally {
+				// A request that threw also ends its transaction (rolled back).
+				if (realTxn && txnFrames) txnEnd(sql, this.ctx.storage);
 				phpPending--;
 			}
 		});
@@ -1402,7 +1585,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const { php, handler, bootMs } = await bootPromise;
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
-			const start = { calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls };
+			const start = { calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
 			if (url.pathname === '/_install') {
@@ -1503,6 +1686,8 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 					wasm1MiB: Math.round(wasmBytes / 1048576),
 					bytes: r.bytes.length,
 					httpCalls: stats.httpCalls - start.httpCalls,
+					txnOps: stats.txnOps - start.txnOps,
+					undoRows: stats.undoRows - start.undoRows,
 					ocCalls: stats.ocCalls - start.ocCalls,
 					ocHits: stats.ocHits - start.ocHits,
 					ocKeys: objectCache.size,
