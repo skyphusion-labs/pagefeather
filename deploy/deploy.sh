@@ -124,13 +124,19 @@ if [ "$VARIANT" = c1 ]; then
 fi
 
 # 2. Build: PHP WebAssembly, WordPress, precompiled OPcache (local wrangler dev).
+# opcache.sh's whole output goes to build/opcache.log. On a failure the last
+# lines are printed: "| tail -1" hid an e2e.sh failure behind a passing row (#50).
+opcache() {
+  ./opcache.sh > build/opcache.log 2>&1 || { echo "opcache.sh failed; last lines of build/opcache.log:"; tail -25 build/opcache.log; return 1; }
+  tail -1 build/opcache.log
+}
 log "build"
 cd "$APP"
 [ -d node_modules ] || npm ci --silent
 [ -f vendor/php_8_3.js ] || ./prepare.sh
 if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
   ./build.sh | tail -1
-  DEV_ENV=$([ "$VARIANT" = b-dosql ] && echo dosql-local || echo do-local) ./opcache.sh | tail -1
+  DEV_ENV=$([ "$VARIANT" = b-dosql ] && echo dosql-local || echo do-local) opcache
 else
   ENGINE=a ./build.sh | tail -1
   # OPcache is primed against a temporary local MariaDB (env a-local); without
@@ -142,7 +148,7 @@ else
     trap 'docker rm -f "$C" >/dev/null 2>&1 || true' EXIT
     docker run -d --name "$C" -p 127.0.0.1:3399:3306 -e MARIADB_ROOT_PASSWORD="$LP" -e MARIADB_DATABASE=wordpress -e MARIADB_USER=wp -e MARIADB_PASSWORD="$LP" mariadb:11.4 >/dev/null
     for i in $(seq 1 30); do docker exec "$C" mariadb -uwp -p"$LP" -e 'select 1' wordpress >/dev/null 2>&1 && break; sleep 2; done
-    WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="mysql://wp:$LP@127.0.0.1:3399/wordpress" DEV_ENV=a-local ./opcache.sh | tail -1
+    WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="mysql://wp:$LP@127.0.0.1:3399/wordpress" DEV_ENV=a-local opcache
     docker rm -f "$C" >/dev/null
   else
     echo "  no Docker: OPcache not primed (the site works; cold starts are slower)"

@@ -26,24 +26,31 @@ while IFS= read -r line; do GROUPS_+=("$line"); done < <(sed -n '/^GROUPS_=(/,/^
 [ "${#GROUPS_[@]}" -eq 7 ] || { echo "expected 7 groups in plugin-suite.sh, got ${#GROUPS_[@]}" >&2; exit 1; }
 sel=("$@")
 if [ ${#sel[@]} -eq 0 ]; then for i in $(seq 1 ${#GROUPS_[@]}); do sel+=("$i"); done; fi
-W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
+# The full deploy log of each group is kept here (build/ is gitignored).
+LOGS="$ROOT/spikes/b2-wordpress/build/plugin-suite-a2"
+mkdir -p "$LOGS"
 for g in "${sel[@]}"; do
   P=${GROUPS_[$((g-1))]}
   echo "== group $g: $P"
-  if ! WOO=0 PLUGINS="$P" BENCH=0 WOO_ACTIVE=0 "$ROOT/deploy/deploy.sh" > "$W/deploy.log" 2>&1; then
-    err=$(grep -iE 'error|exceed|limit' "$W/deploy.log" | head -3 | tr '\n' ' ' | cut -c1-300)
+  L="$LOGS/group-$g.log"
+  if ! WOO=0 PLUGINS="$P" BENCH=0 WOO_ACTIVE=0 "$ROOT/deploy/deploy.sh" > "$L" 2>&1; then
+    # The last lines, not a grep: a grep for error|exceed|limit gave an empty
+    # detail when opcache.sh failed in e2e.sh (2026-11-06).
+    err=$(grep -iE 'error|exceed|limit|failed' "$L" | head -3 | tr '\n' ' ' | cut -c1-300)
+    tailtxt=$(tail -15 "$L")
     for s in $P; do
-      python3 -c 'import json, sys; print(json.dumps({"plugin": sys.argv[1], "target": sys.argv[2], "error": "deploy refused", "detail": sys.argv[3]}))' "$s" "$NAME" "$err"
+      python3 -c 'import json, sys; print(json.dumps({"plugin": sys.argv[1], "target": sys.argv[2], "error": "deploy refused", "detail": sys.argv[3], "log_tail": sys.argv[4].splitlines(), "log": sys.argv[5]}))' "$s" "$NAME" "$err" "$tailtxt" "$L"
     done >> "$OUT"
-    echo "group $g: deploy refused: $err"
+    echo "group $g: deploy refused. Last lines of $L:"
+    echo "$tailtxt"
     continue
   fi
-  grep -E 'Total Upload' "$W/deploy.log" | head -1
+  grep -E 'Total Upload' "$L" | head -1
   sleep 10
   # shellcheck disable=SC2086,SC1090 # $P is a list of plugin slugs; SITE_ENV is the caller's file
   (set -a; . "$SITE_ENV"; set +a; python3 "$ROOT/tests/plugins/plugins.py" $P) | grep '^{' >> "$OUT"
 done
 echo "== restore: WooCommerce back in the build and active"
-WOO=1 PLUGINS='' BENCH=0 WOO_ACTIVE=1 "$ROOT/deploy/deploy.sh" > "$W/deploy.log" 2>&1 \
-  && echo "restored" || { echo "RESTORE FAILED: wp-a2 has no WooCommerce now"; tail -20 "$W/deploy.log"; exit 1; }
+WOO=1 PLUGINS='' BENCH=0 WOO_ACTIVE=1 "$ROOT/deploy/deploy.sh" > "$LOGS/restore.log" 2>&1 \
+  && echo "restored" || { echo "RESTORE FAILED: wp-a2 has no WooCommerce now"; tail -20 "$LOGS/restore.log"; exit 1; }
 echo "results: $OUT"
