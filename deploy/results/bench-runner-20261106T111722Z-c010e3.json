@@ -1,0 +1,413 @@
+{
+ "job": "20261106T111722Z-c010e3",
+ "runner": {
+  "region": "ord",
+  "plan": "vc2-2c-4gb",
+  "cpus": 2,
+  "mem_mib": 3910,
+  "started_utc": "2026-11-06T11:17:50Z",
+  "branch": "main",
+  "git_sha": "ea82b097cd18035e8c8cc20166197b41c70320fd",
+  "curl": "curl 8.5.0 (x86_64-pc-linux-gnu) libcurl/8.5.0 OpenSSL/3.0.13 zlib/1.3 brotli/1.1.0 zstd/1.5.5 libidn2/2.3.7 libpsl/0.21.2 (+libidn2/2.3.7) libssh/0.10.6/openssl/zlib nghttp2/1.59.0 librtmp/2.3 OpenLDAP/2.6.10",
+  "python": "3.12.3",
+  "finished_utc": "2026-11-06T11:24:35Z"
+ },
+ "targets": [
+  {
+   "name": "wp-c1-perf",
+   "url": "https://wp-c1-perf.skyphusion.workers.dev",
+   "variant": "c1",
+   "load": {
+    "target": "https://wp-c1-perf.skyphusion.workers.dev",
+    "woo": true,
+    "load_mode": "cached-sbjs",
+    "levels": [
+     1,
+     5,
+     10,
+     25,
+     50,
+     100
+    ],
+    "seconds_per_level": 60.0,
+    "buyers": 0.5,
+    "steps": [
+     {
+      "users": 1,
+      "seconds": 60.5,
+      "client_load1": 0.05,
+      "client_cpus": 2,
+      "requests": 270,
+      "rps": 4.46,
+      "errors": 0,
+      "e1102": 0,
+      "aborted": 0,
+      "status": {
+       "200": 204,
+       "201": 66
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 72,
+        "ok": 72,
+        "p50": 0.065,
+        "p95": 0.432,
+        "p99": 0.516,
+        "max": 0.516
+       },
+       "cart": {
+        "n": 66,
+        "ok": 66,
+        "p50": 0.105,
+        "p95": 0.263,
+        "p99": 0.28,
+        "max": 0.28
+       },
+       "add": {
+        "n": 66,
+        "ok": 66,
+        "p50": 0.111,
+        "p95": 0.209,
+        "p99": 0.304,
+        "max": 0.304
+       },
+       "checkout": {
+        "n": 66,
+        "ok": 66,
+        "p50": 0.341,
+        "p95": 0.915,
+        "p99": 1.121,
+        "max": 1.121
+       }
+      },
+      "slow": [],
+      "shed": {},
+      "cache": {
+       "MISS": 18,
+       "HIT": 54
+      }
+     },
+     {
+      "users": 5,
+      "seconds": 61.6,
+      "client_load1": 0.2,
+      "client_cpus": 2,
+      "requests": 303,
+      "rps": 4.91,
+      "errors": 0,
+      "e1102": 0,
+      "aborted": 0,
+      "status": {
+       "200": 228,
+       "201": 75
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 78,
+        "ok": 78,
+        "p50": 0.053,
+        "p95": 1.266,
+        "p99": 1.768,
+        "max": 1.768
+       },
+       "cart": {
+        "n": 75,
+        "ok": 75,
+        "p50": 0.546,
+        "p95": 1.346,
+        "p99": 1.844,
+        "max": 1.844
+       },
+       "add": {
+        "n": 75,
+        "ok": 75,
+        "p50": 0.691,
+        "p95": 1.719,
+        "p99": 1.898,
+        "max": 1.898
+       },
+       "checkout": {
+        "n": 75,
+        "ok": 75,
+        "p50": 2.308,
+        "p95": 3.1,
+        "p99": 3.398,
+        "max": 3.398
+       }
+      },
+      "slow": [],
+      "shed": {},
+      "cache": {
+       "MISS": 5,
+       "HIT": 73
+      }
+     },
+     {
+      "users": 10,
+      "seconds": 66.6,
+      "client_load1": 0.17,
+      "client_cpus": 2,
+      "requests": 322,
+      "rps": 4.84,
+      "errors": 0,
+      "e1102": 0,
+      "aborted": 0,
+      "status": {
+       "200": 245,
+       "201": 77
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 91,
+        "ok": 91,
+        "p50": 0.042,
+        "p95": 0.084,
+        "p99": 0.233,
+        "max": 0.233
+       },
+       "cart": {
+        "n": 77,
+        "ok": 77,
+        "p50": 2.168,
+        "p95": 4.09,
+        "p99": 4.646,
+        "max": 4.646
+       },
+       "add": {
+        "n": 77,
+        "ok": 77,
+        "p50": 1.707,
+        "p95": 3.401,
+        "p99": 5.203,
+        "max": 5.203
+       },
+       "checkout": {
+        "n": 77,
+        "ok": 77,
+        "p50": 3.998,
+        "p95": 6.327,
+        "p99": 7.034,
+        "max": 7.034
+       }
+      },
+      "slow": [],
+      "shed": {},
+      "cache": {
+       "HIT": 76,
+       "UPDATING": 15
+      }
+     },
+     {
+      "users": 25,
+      "seconds": 68.4,
+      "client_load1": 0.56,
+      "client_cpus": 2,
+      "requests": 540,
+      "rps": 7.9,
+      "errors": 108,
+      "e1102": 0,
+      "aborted": 108,
+      "status": {
+       "200": 356,
+       "503": 108,
+       "201": 76
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 204,
+        "ok": 204,
+        "p50": 0.039,
+        "p95": 0.114,
+        "p99": 0.152,
+        "max": 0.173
+       },
+       "cart": {
+        "n": 184,
+        "ok": 76,
+        "p50": 0.058,
+        "p95": 5.799,
+        "p99": 7.445,
+        "max": 9.134
+       },
+       "add": {
+        "n": 76,
+        "ok": 76,
+        "p50": 2.789,
+        "p95": 5.685,
+        "p99": 7.2,
+        "max": 7.2
+       },
+       "checkout": {
+        "n": 76,
+        "ok": 76,
+        "p50": 6.096,
+        "p95": 8.77,
+        "p99": 9.417,
+        "max": 9.417
+       }
+      },
+      "slow": [],
+      "shed": {
+       "cart": 108
+      },
+      "cache": {
+       "HIT": 186,
+       "UPDATING": 18
+      }
+     },
+     {
+      "users": 50,
+      "seconds": 69.9,
+      "client_load1": 1.88,
+      "client_cpus": 2,
+      "requests": 1030,
+      "rps": 14.73,
+      "errors": 372,
+      "e1102": 0,
+      "aborted": 372,
+      "status": {
+       "200": 579,
+       "201": 79,
+       "503": 372
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 421,
+        "ok": 421,
+        "p50": 0.045,
+        "p95": 0.21,
+        "p99": 0.328,
+        "max": 0.576
+       },
+       "cart": {
+        "n": 451,
+        "ok": 79,
+        "p50": 0.049,
+        "p95": 4.242,
+        "p99": 6.58,
+        "max": 6.995
+       },
+       "add": {
+        "n": 79,
+        "ok": 79,
+        "p50": 3.487,
+        "p95": 7.066,
+        "p99": 8.265,
+        "max": 8.265
+       },
+       "checkout": {
+        "n": 79,
+        "ok": 79,
+        "p50": 5.907,
+        "p95": 8.894,
+        "p99": 9.817,
+        "max": 9.817
+       }
+      },
+      "slow": [],
+      "shed": {
+       "cart": 372
+      },
+      "cache": {
+       "HIT": 364,
+       "UPDATING": 57
+      }
+     },
+     {
+      "users": 100,
+      "seconds": 73.0,
+      "client_load1": 10.87,
+      "client_cpus": 2,
+      "requests": 1636,
+      "rps": 22.41,
+      "errors": 642,
+      "e1102": 0,
+      "aborted": 642,
+      "status": {
+       "200": 914,
+       "503": 642,
+       "201": 80
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 754,
+        "ok": 754,
+        "p50": 0.162,
+        "p95": 0.467,
+        "p99": 2.355,
+        "max": 2.78
+       },
+       "cart": {
+        "n": 722,
+        "ok": 80,
+        "p50": 0.139,
+        "p95": 4.008,
+        "p99": 6.137,
+        "max": 7.08
+       },
+       "add": {
+        "n": 80,
+        "ok": 80,
+        "p50": 3.57,
+        "p95": 7.463,
+        "p99": 8.053,
+        "max": 8.053
+       },
+       "checkout": {
+        "n": 80,
+        "ok": 80,
+        "p50": 6.235,
+        "p95": 8.584,
+        "p99": 10.364,
+        "max": 10.364
+       }
+      },
+      "slow": [
+       {
+        "t0": 1793964207.718,
+        "k": "checkout",
+        "c": 200,
+        "s": 10.364,
+        "ttfb": 10.364,
+        "ray": "a563b9ec4b01c9f2-ORD"
+       }
+      ],
+      "shed": {
+       "cart": 642
+      },
+      "cache": {
+       "HIT": 667,
+       "UPDATING": 87
+      }
+     }
+    ]
+   },
+   "runner_seconds": 404.9
+  }
+ ],
+ "n": 10,
+ "load": {
+  "levels": "1,5,10,25,50,100",
+  "seconds": 60,
+  "buyers": 0.5,
+  "mode": "cached-sbjs"
+ }
+}

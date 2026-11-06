@@ -1,0 +1,454 @@
+{
+ "job": "20261106T121140Z-97d621",
+ "runner": {
+  "region": "ord",
+  "plan": "vc2-2c-4gb",
+  "cpus": 2,
+  "mem_mib": 3910,
+  "started_utc": "2026-11-06T12:11:54Z",
+  "branch": "main",
+  "git_sha": "ea82b097cd18035e8c8cc20166197b41c70320fd",
+  "curl": "curl 8.5.0 (x86_64-pc-linux-gnu) libcurl/8.5.0 OpenSSL/3.0.13 zlib/1.3 brotli/1.1.0 zstd/1.5.5 libidn2/2.3.7 libpsl/0.21.2 (+libidn2/2.3.7) libssh/0.10.6/openssl/zlib nghttp2/1.59.0 librtmp/2.3 OpenLDAP/2.6.10",
+  "python": "3.12.3",
+  "finished_utc": "2026-11-06T12:18:44Z"
+ },
+ "targets": [
+  {
+   "name": "wp-c1-perf",
+   "url": "https://wp-c1-perf.skyphusion.workers.dev",
+   "variant": "c1",
+   "load": {
+    "target": "https://wp-c1-perf.skyphusion.workers.dev",
+    "woo": true,
+    "load_mode": "cached-sbjs",
+    "levels": [
+     1,
+     5,
+     10,
+     25,
+     50,
+     100
+    ],
+    "seconds_per_level": 60.0,
+    "buyers": 0.5,
+    "steps": [
+     {
+      "users": 1,
+      "seconds": 60.4,
+      "client_load1": 0.24,
+      "client_cpus": 2,
+      "requests": 235,
+      "rps": 3.89,
+      "errors": 0,
+      "e1102": 0,
+      "aborted": 0,
+      "status": {
+       "200": 175,
+       "201": 60
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 55,
+        "ok": 55,
+        "p50": 0.063,
+        "p95": 0.692,
+        "p99": 0.864,
+        "max": 0.864
+       },
+       "cart": {
+        "n": 60,
+        "ok": 60,
+        "p50": 0.118,
+        "p95": 0.246,
+        "p99": 0.319,
+        "max": 0.319
+       },
+       "add": {
+        "n": 60,
+        "ok": 60,
+        "p50": 0.118,
+        "p95": 0.257,
+        "p99": 0.329,
+        "max": 0.329
+       },
+       "checkout": {
+        "n": 60,
+        "ok": 60,
+        "p50": 0.394,
+        "p95": 0.996,
+        "p99": 1.224,
+        "max": 1.224
+       }
+      },
+      "slow": [],
+      "shed": {},
+      "cache": {
+       "MISS": 17,
+       "HIT": 38
+      }
+     },
+     {
+      "users": 5,
+      "seconds": 62.8,
+      "client_load1": 0.17,
+      "client_cpus": 2,
+      "requests": 297,
+      "rps": 4.73,
+      "errors": 0,
+      "e1102": 0,
+      "aborted": 0,
+      "status": {
+       "200": 224,
+       "201": 73
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 78,
+        "ok": 78,
+        "p50": 0.047,
+        "p95": 1.774,
+        "p99": 2.215,
+        "max": 2.215
+       },
+       "cart": {
+        "n": 73,
+        "ok": 73,
+        "p50": 0.534,
+        "p95": 1.48,
+        "p99": 2.163,
+        "max": 2.163
+       },
+       "add": {
+        "n": 73,
+        "ok": 73,
+        "p50": 0.606,
+        "p95": 1.731,
+        "p99": 1.997,
+        "max": 1.997
+       },
+       "checkout": {
+        "n": 73,
+        "ok": 73,
+        "p50": 2.504,
+        "p95": 3.597,
+        "p99": 3.708,
+        "max": 3.708
+       }
+      },
+      "slow": [],
+      "shed": {},
+      "cache": {
+       "HIT": 73,
+       "MISS": 5
+      }
+     },
+     {
+      "users": 10,
+      "seconds": 66.2,
+      "client_load1": 0.11,
+      "client_cpus": 2,
+      "requests": 334,
+      "rps": 5.04,
+      "errors": 0,
+      "e1102": 0,
+      "aborted": 0,
+      "status": {
+       "200": 257,
+       "201": 77
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 103,
+        "ok": 103,
+        "p50": 0.043,
+        "p95": 0.092,
+        "p99": 0.182,
+        "max": 0.199
+       },
+       "cart": {
+        "n": 77,
+        "ok": 77,
+        "p50": 1.853,
+        "p95": 3.193,
+        "p99": 4.061,
+        "max": 4.061
+       },
+       "add": {
+        "n": 77,
+        "ok": 77,
+        "p50": 2.014,
+        "p95": 3.498,
+        "p99": 5.019,
+        "max": 5.019
+       },
+       "checkout": {
+        "n": 77,
+        "ok": 77,
+        "p50": 3.955,
+        "p95": 5.695,
+        "p99": 6.3,
+        "max": 6.3
+       }
+      },
+      "slow": [],
+      "shed": {},
+      "cache": {
+       "HIT": 89,
+       "UPDATING": 14
+      }
+     },
+     {
+      "users": 25,
+      "seconds": 70.8,
+      "client_load1": 0.81,
+      "client_cpus": 2,
+      "requests": 536,
+      "rps": 7.57,
+      "errors": 106,
+      "e1102": 0,
+      "aborted": 106,
+      "status": {
+       "200": 347,
+       "201": 83,
+       "503": 106
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 181,
+        "ok": 181,
+        "p50": 0.046,
+        "p95": 0.128,
+        "p99": 0.189,
+        "max": 0.202
+       },
+       "cart": {
+        "n": 189,
+        "ok": 83,
+        "p50": 0.07,
+        "p95": 5.218,
+        "p99": 6.589,
+        "max": 7.093
+       },
+       "add": {
+        "n": 83,
+        "ok": 83,
+        "p50": 3.021,
+        "p95": 5.312,
+        "p99": 6.886,
+        "max": 6.886
+       },
+       "checkout": {
+        "n": 83,
+        "ok": 83,
+        "p50": 5.594,
+        "p95": 8.179,
+        "p99": 9.03,
+        "max": 9.03
+       }
+      },
+      "slow": [],
+      "shed": {
+       "cart": 106
+      },
+      "cache": {
+       "HIT": 165,
+       "UPDATING": 16
+      }
+     },
+     {
+      "users": 50,
+      "seconds": 69.9,
+      "client_load1": 1.73,
+      "client_cpus": 2,
+      "requests": 1093,
+      "rps": 15.63,
+      "errors": 366,
+      "e1102": 0,
+      "aborted": 366,
+      "status": {
+       "200": 641,
+       "201": 86,
+       "503": 366
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 469,
+        "ok": 469,
+        "p50": 0.048,
+        "p95": 0.253,
+        "p99": 0.681,
+        "max": 0.804
+       },
+       "cart": {
+        "n": 452,
+        "ok": 86,
+        "p50": 0.049,
+        "p95": 4.231,
+        "p99": 6.538,
+        "max": 8.432
+       },
+       "add": {
+        "n": 86,
+        "ok": 86,
+        "p50": 2.693,
+        "p95": 6.815,
+        "p99": 7.894,
+        "max": 7.894
+       },
+       "checkout": {
+        "n": 86,
+        "ok": 86,
+        "p50": 6.081,
+        "p95": 10.261,
+        "p99": 10.694,
+        "max": 10.694
+       }
+      },
+      "slow": [
+       {
+        "t0": 1793967388.832,
+        "k": "checkout",
+        "c": 200,
+        "s": 10.694,
+        "ttfb": 10.693,
+        "ray": "a56407945ce42911-ORD"
+       },
+       {
+        "t0": 1793967388.139,
+        "k": "checkout",
+        "c": 200,
+        "s": 10.674,
+        "ttfb": 10.673,
+        "ray": "a564078ffa92c667-ORD"
+       },
+       {
+        "t0": 1793967388.52,
+        "k": "checkout",
+        "c": 200,
+        "s": 10.433,
+        "ttfb": 10.432,
+        "ray": "a56407925e39771e-ORD"
+       },
+       {
+        "t0": 1793967387.809,
+        "k": "checkout",
+        "c": 200,
+        "s": 10.318,
+        "ttfb": 10.317,
+        "ray": "a564078de89052dc-ORD"
+       },
+       {
+        "t0": 1793967401.555,
+        "k": "checkout",
+        "c": 200,
+        "s": 10.261,
+        "ttfb": 10.261,
+        "ray": "a56407e3dc2178e1-ORD"
+       }
+      ],
+      "shed": {
+       "cart": 366
+      },
+      "cache": {
+       "HIT": 426,
+       "UPDATING": 43
+      }
+     },
+     {
+      "users": 100,
+      "seconds": 73.7,
+      "client_load1": 15.78,
+      "client_cpus": 2,
+      "requests": 1601,
+      "rps": 21.72,
+      "errors": 611,
+      "e1102": 0,
+      "aborted": 611,
+      "status": {
+       "200": 902,
+       "503": 611,
+       "201": 88
+      },
+      "recycled": {},
+      "boots": 0,
+      "max_wasm_mib": 0,
+      "kinds": {
+       "browse": {
+        "n": 726,
+        "ok": 726,
+        "p50": 0.185,
+        "p95": 0.537,
+        "p99": 2.536,
+        "max": 3.038
+       },
+       "cart": {
+        "n": 699,
+        "ok": 88,
+        "p50": 0.154,
+        "p95": 4.064,
+        "p99": 5.354,
+        "max": 6.065
+       },
+       "add": {
+        "n": 88,
+        "ok": 88,
+        "p50": 3.797,
+        "p95": 6.518,
+        "p99": 8.832,
+        "max": 8.832
+       },
+       "checkout": {
+        "n": 88,
+        "ok": 88,
+        "p50": 5.977,
+        "p95": 9.071,
+        "p99": 10.014,
+        "max": 10.014
+       }
+      },
+      "slow": [
+       {
+        "t0": 1793967456.134,
+        "k": "checkout",
+        "c": 200,
+        "s": 10.014,
+        "ttfb": 10.006,
+        "ray": "a564093a0cc310cd-ORD"
+       }
+      ],
+      "shed": {
+       "cart": 611
+      },
+      "cache": {
+       "HIT": 605,
+       "UPDATING": 121
+      }
+     }
+    ]
+   },
+   "runner_seconds": 409.7
+  }
+ ],
+ "n": 10,
+ "load": {
+  "levels": "1,5,10,25,50,100",
+  "seconds": 60,
+  "buyers": 0.5,
+  "mode": "cached-sbjs"
+ }
+}

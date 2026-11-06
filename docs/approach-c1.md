@@ -281,7 +281,7 @@ The same seeded data as the APCu run on `standard-1` (wp-c1's database, replica 
 
 The loopback let the queue grow by 130. The local runner kept up with 184 checkouts and ended with 20, about one minute of orders.
 
-The cost, from the container log: the 6 runs took 2.4 to 28.5 s wall and 0.8 to 2.7 CPU s each, about 80 s apart. Together they held 0.18 of the 5 PHP processes on average, and they used 5.4 % of the CPU (11.9 of 219 CPU s). That is the work of sending the order emails. With the loopback it was not done, so the queue grew.
+The cost, from the container log: the 6 runs took 2.4 to 28.5 s wall and 0.8 to 2.7 CPU s each, about 80 s apart. Together they held 0.18 of the 5 PHP processes on average, and they used 5.4 % of the CPU (11.9 of 219 CPU s). That is the work of the order email actions. (The container has no mail transport, so the mails themselves fail: issue #104.) With the loopback it was not done, so the queue grew.
 
 | Users | loopback: rps | loopback: browse p50 / p95 | loopback: checkout p50 / p95 | local: rps | local: browse p50 / p95 | local: checkout p50 / p95 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -540,10 +540,57 @@ The deploy check did not help here. `c1_check`'s static-file probe (#93) runs on
 
 **The deploy check probed PHP too early (arm 3b, 2026-11-06).** `c1_check` asked `/_fpm-ping` before it waited for the Store object of this deploy. A deploy from the `php -S` image (arm 4) to the FPM image failed with "PHP does not answer (/_fpm-ping: 301)": the previous container answered, and under `php -S` WordPress takes `/_fpm-ping` and redirects it. Two minutes later the ping answered 200, and the same deploy run again passed. `/_boot.txt` is in both images, so the static probe cannot tell them apart. Now the ping is probed last, after the object is current and the container answers with this deploy's settings and `fpm-fcgi` (a `cli-server` answer stops that container once, like a container with old settings). `deploy/variants/tests/c1-check-test.sh` runs `c1_check` against a fake site (`fake-c1-site.py`), and CI runs it: a new container passes on try 1, an old container that a stop replaces passes on try 2, an old container that stays fails, and a stuck PHP fails. With the earlier order, the second case fails with the same 301.
 
-**On wp-c1-perf:** not measured yet. The plan (issue #99):
+**Measured on wp-c1-perf, 2026-11-06.** Seven load jobs: each on its own copy of wp-c1's database (127 orders, 13 pending actions after the first drain), `standard-1` (half a vCPU, 4 GiB), 4 PHP processes, APCu, `tests/load/load.py` `cached-sbjs`, BUYERS 0.5, 1 to 100 users, from the Vultr runner (2 vCPU; it is the limit at 100 users, so the clean steps are 1 to 25). The deploys and jobs were run by the lead. The container logs were read after each job (`hol.py`, `cpo.py`, `split.py` in the work notes):
+- "held" is a slow request (10 s or more) whose PHP start came within 1 s after a local cron run of 10 s or more ended;
+- the CPU is the cgroup `usage_usec` over the job;
+- "corrected" adds the queue work left at the end (pending actions above 13, times the cron CPU per completed action of the same run);
+- "outside PHP" is the cgroup CPU over the PHP CPU of all requests (`getrusage` of each request).
 
-1. The head-of-line case on `php -S` and on FPM, both with `AS_TIME_LIMIT=30`.
-2. FPM with the defaults against the short-runs run (swap15), for throughput and CPU per order.
+Head-of-line, both with `AS_TIME_LIMIT=30` (the long cron runs of the earlier finding):
+
+| | arm 1: `php -S` | arm 2: PHP-FPM |
+|---|---|---|
+| Cron runs of 10 s or more | 11 (up to 29.1 s) | 12 (up to 19.4 s) |
+| Slow requests | 7 | 1 |
+| Held by a cron run | 6 (waited 17 to 32 s, ran 0.1 to 0.6 s) | 0 |
+| Longest request at 10 / 25 / 100 users | 29.5 / 30.4 / 32.0 s | 7.0 / 9.4 / 10.4 s |
+| Orders | 482 | 453 |
+
+Throughput and CPU at the defaults (`AS_TIME_LIMIT` 5):
+
+| | arm 4: `php -S` | arm 4b: `php -S` | arm 3: FPM | arm 3b: FPM | arm 3c: FPM |
+|---|---|---|---|---|---|
+| Orders | 495 | 451 | 474 | 467 | 437 |
+| Held by a cron run | 0 | 0 | 0 | not read | 0 |
+| CPU per order, corrected | 0.405 s | 0.472 s | 0.428 s | not read | 0.462 s |
+| PHP CPU per shopper request | 0.112 s | 0.122 s | 0.110 s | not read | 0.124 s |
+| Cgroup CPU / PHP CPU | 1.043 | 1.087 | 1.095 | not read | 1.074 |
+
+(Arm 3b's container logs were lost: the next deploy replaced the container before they were read. From then on no deploy followed a job before the logs were read. Arms 1 and 2 give 1.054 and 1.091 for the last row.)
+
+What this shows:
+
+- **Head-of-line blocking is gone.** With FPM, a long cron run held no shopper (arm 2: 0 of 1 slow requests, against 6 of 7). At the defaults no arm had a held request: the short runs (#95) already bound it, and FPM removes the mechanism.
+- **No measurable throughput or CPU cost on this instance.** The same `php -S` image gave 495 and 451 orders in two runs, a 9 % spread, and its PHP CPU per request moved by 9 % with the same code (probably the half vCPU giving a different amount of work in each run; not measured). Against that, FPM's mean is 2.9 % fewer orders (459 against 473) and 1.5 % more CPU per order (0.445 against 0.439 s).
+- **The one place a cost shows is outside PHP.** The cgroup CPU is 8.7 % above the PHP CPU with FPM (mean of 3 runs) and 6.1 % with `php -S` (mean of 3), so nginx and FastCGI plausibly cost about 2 to 3 % of the CPU. `php -S` alone spreads from 4.3 to 8.7 %, so this is not separable from the noise with these runs. A sharper answer needs more runs per arm or a quieter instance, not a change to the design.
+- **Memory:** PHP-FPM (master and 4 children) 160 to 190 MiB, nginx 5 to 7 MiB, of 4 GiB.
+- **APCu is shared across the FPM children,** as it was across the `php -S` processes: `/_stats.php?what=apcu` from 4 child pids gave one start time and the same counts; `tests/cache_check.py` 13 of 13, with reads from 4 children; `tests/break.py` 27 of 27.
+- **The FPM queue keeps up better at the defaults in one run** (arm 3c ended with 0 actions left; arms 3, 4 and 4b with 111, 205 and 229). With one run, this is not a finding.
+
+A first reading blamed the CPU outside PHP on the new memory sampler, which forked a process for every process every 2 s. Arm 4b (`php -S`, no such sampler) then showed the same level, so that reading was withdrawn. The sampler was changed anyway (one `awk`, no fork for each process), and arm 3c ran with it.
+
+Found and fixed on the way, before any shopper saw them:
+- the base image's stop signal (exit 137, no final sync);
+- the stderr socket (a crash loop at start);
+- REST writes by PUT and DELETE getting 405;
+- a first fix for that which served `index.php` as PHP source (never deployed);
+- the deploy check probing PHP before this deploy's container answered.
+
+Two stuck starts with no answer at all came on both images (swap20 on FPM, swap24 on `php -S`); their cause is unknown. The follow-ups are filed:
+- #103: fail a stuck start from the boot log;
+- #104: c1 sends no email, because there is no mail transport in the image;
+- #105: exempt requests to a dead container have no bound and pin the Store object;
+- #106: wait for the container rollout instead of a fixed 60 s.
 
 ## Warm start on a product view (issue #73)
 
