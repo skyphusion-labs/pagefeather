@@ -127,7 +127,7 @@ Before you deploy:
 2. Onboard the domain or a subdomain for sending. Wrangler 4.107 can do it: `npx wrangler email sending enable mail.example.com`. The dashboard can too: Email Service, Email Sending, Onboard Domain. This adds DNS records: an MX, an SPF TXT and a DKIM TXT on a `cf-bounce` name, and a DMARC TXT on `_dmarc`. Read them with `npx wrangler email sending dns get mail.example.com`. A subdomain keeps the records off your main domain, so mail already set up there is not changed.
 3. Set `MAIL_FROM` to an address on that domain.
 
-`deploy.sh` checks the domain before the deploy, with the same API that `wrangler email sending list` uses. If the domain is not onboarded and enabled, it stops. That check needs a token that can read the zone and its Email Sending settings.
+`deploy.sh` checks the domain before the deploy, with the same API that `wrangler email sending list` uses. If the domain is not onboarded and enabled, it stops. That check needs a token with Zone Read and "Email Sending Write". Email Sending Write is an ACCOUNT-scoped permission group, not a zone one (read from the account's permission groups, 2026-11-06). The onboarding itself needs Email Sending Write, Zone Read and DNS Read. Removing records that are left behind needs DNS Write on the zone. Whether a deploy with a `send_email` binding needs Email Sending Write as well is checked on the live proof deploy (#113).
 
 | Option | Default | Effect |
 | --- | --- | --- |
