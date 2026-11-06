@@ -99,7 +99,18 @@ The container stops (it does not start) if the seed download or its SHA-256 chec
 | `wp-ref-a` | MariaDB 10.11.14 | 2 rows, lowest id 0 | 2 rows, lowest id 1 |
 | `wp-a2` | PlanetScale 8.4.11-Vitess | 2 rows, lowest id 0 | 2 rows, lowest id 1 |
 
-So the hint keeps id 0 on both servers, and without it both renumber. The first run on `wp-ref-a` (from `a2a9c11`) read every count as null: `mysql-bridge.js` returns a binary-charset column as `{"$b": base64}`, and MariaDB reports `COUNT(*)` and `MIN()` that way. `sql-import.js` now decodes every cell, and a count that is not an integer is an error.
+So the hint keeps id 0 on both servers, and without it both renumber.
+
+**Round trip on PlanetScale, measured 2026-11-06** (`docs/results.md`). The a2 dump went back into `wp-a2`, run by the lead from a worktree that never deployed the site, with `DEPLOY_STATE=r2`:
+
+| Run | Code | Result |
+| --- | --- | --- |
+| 1 (04:31Z) | `ed0dcc8`, no DDL mode | FAIL at `CREATE TABLE wp_actionscheduler_actions`: errno 1067, the zero-date default under PlanetScale's strict mode. It stopped after `replace=1`: `wp-a2` was left empty. |
+| 2 | `3e1e033`, DDL mode and preflight | Pass. Preflight 98 `CREATE TABLE`; 228 statements in 1 part (52 tables dropped first); every table matches, 8583 rows in 98 tables; `GET /` 200. The site came back. |
+
+"address changed in 3 values" on a round trip: three `http://wp-a2...` values became `https://`.
+
+**Not measured yet: MariaDB with the DDL mode.** A round trip into `wp-ref-a` is a separate step. The a2 dump is plain mysqldump output, so it can be the source there too. With it, the address changes from `wp-a2` to `wp-ref-a`. The first run on `wp-ref-a` (from `a2a9c11`) read every count as null: `mysql-bridge.js` returns a binary-charset column as `{"$b": base64}`, and MariaDB reports `COUNT(*)` and `MIN()` that way. `sql-import.js` now decodes every cell, and a count that is not an integer is an error.
 
 ## Theme and plugins (build input)
 
