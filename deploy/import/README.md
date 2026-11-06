@@ -164,6 +164,7 @@ So the hint keeps id 0 on both servers, and without it both renumber.
 - It uses R2's S3 API (`curl --aws-sigv4`, as `deploy/variants/r2-empty.sh` does) with a key that exists only for this step: `import.sh` applies Terraform with `media_import = true` (`deploy/terraform/media-import.tf`: object read and write on this site's media bucket only), sends the files, and applies with `false` again, which deletes the key. A trap deletes it when a step fails too.
 - Not sent: PHP files and dot files (for example `.htaccess`), which the Worker never runs or serves, and paths whose key is longer than 1,024 bytes.
 - Resumable: a key that exists with the same size is not sent again. `import.sh` runs `media.sh` twice, and the second run must send nothing. That is the check.
+- Only a HEAD of 404, or a 200 with another size, means "send it" (issue #124). A HEAD that is refused or fails (401, 403, a curl error, a 5xx) is tried again for `R2_RETRY_S` (90) s, and then the file fails with the code (`fail head 403 <key>`). It never counts as missing: on 2026-11-06 (`wp-c1-w92b`) the check run sent a file again right after the first run, which is what a refused HEAD did then. A PUT of 401 or 403 is tried again in the same way. `tests/media-refuse-test.sh` covers it.
 - `JOBS` (default 8) sets the requests at a time.
 
 ## The archive
