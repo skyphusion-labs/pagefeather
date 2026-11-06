@@ -110,6 +110,23 @@ let runtimeBootAt = 0;
 let phpPending = 0; // object requests in the PHP queue or running
 // The origin the current runtime booted with (WP_HOME in wp-runtime.php).
 let bootOrigin = null;
+
+// The site's own origin, for WP_HOME and every link (issue #33): the var
+// SITE_ORIGIN when it is set (deploy/deploy.sh and run.sh set it), so no first
+// request can choose it: not PHP's own WebSocket (#55), not a health probe, not
+// a second host name. Without SITE_ORIGIN (an unconfigured local run), the
+// request's origin, as before; the runtime then reboots when that changes.
+const ORIGIN_RE = /^https?:\/\/[a-z0-9.-]+(:[0-9]{1,5})?$/i;
+let siteOriginWarned = false;
+function siteOrigin(env, url) {
+	const o = env && env.SITE_ORIGIN;
+	if (typeof o === 'string' && ORIGIN_RE.test(o)) return o.toLowerCase();
+	if (o && !siteOriginWarned) {
+		siteOriginWarned = true;
+		console.log(JSON.stringify({ m: 'site-origin-invalid', value: String(o).slice(0, 100) }));
+	}
+	return url.origin;
+}
 // One PHP runtime per isolate, and PHP is not re-entrant. Measured 2026-11-04:
 // with 30 parallel requests on one isolate, about half crashed. So requests
 // that use PHP run one at a time, in arrival order.
@@ -1064,7 +1081,7 @@ async function toPhpObject(req, env, url, ctx) {
 	// Chicago area; "enam" is Eastern North America.
 	const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(name), env.PHP_LOCATION ? { locationHint: env.PHP_LOCATION } : undefined);
 	const fwd = new Request(req);
-	fwd.headers.set(ORIGIN_HEADER, url.origin);
+	fwd.headers.set(ORIGIN_HEADER, siteOrigin(env, url));
 	const t0 = Date.now();
 	fwd.headers.set(SENT_HEADER, String(t0));
 	let r;
@@ -1190,15 +1207,18 @@ export default {
 
 async function handle(req, env, url, spikeOk, maxBody, ctx) {
 	{
-		// In the PHP object, a runtime serves only the origin it booted with (8i).
-		// The first request after /_install used to boot the runtime for every
-		// later one, and that request could be PHP's own socket connection back
-		// to the site, with the URL http://<host>:443/: every page then answered
-		// 301 to that URL. A request for another origin now boots a new runtime.
-		if (ctx && ctx.inObject && bootPromise && bootOrigin !== url.origin) bootPromise = null;
+		// A runtime serves only the origin it booted with (8i). The first request
+		// after /_install used to boot the runtime for every later one, and that
+		// request could be PHP's own socket connection back to the site: every
+		// page then linked to (or answered 301 to) that request's origin. The
+		// origin is now the configured site origin (siteOrigin, #33), so it does
+		// not change; without SITE_ORIGIN a request for another origin boots a
+		// new runtime, in the Worker as in the object.
+		const origin = siteOrigin(env, url);
+		if (bootPromise && bootOrigin !== origin) bootPromise = null;
 		if (url.pathname === '/_last') return Response.json(globalThis.__lastRequest || {});
 		if (url.pathname === '/_peak') {
-			bootPromise ??= boot(url.origin);
+			bootPromise ??= boot(origin);
 			const { php } = await bootPromise;
 			const r = await php.run({ code: `<?php
 				$a = memory_get_peak_usage(false); $b = memory_get_peak_usage(true);
@@ -1209,7 +1229,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 		}
 		if (url.pathname === '/_activate') {
 			// Activate a plugin, e.g. ?plugin=woocommerce/woocommerce.php. Spike only.
-			bootPromise ??= boot(url.origin);
+			bootPromise ??= boot(origin);
 			const { php } = await bootPromise;
 			const plugin = url.searchParams.get('plugin') || '';
 			if (!/^[a-z0-9-]+\/[a-z0-9-]+\.php$/.test(plugin)) return new Response('bad plugin', { status: 400 });
@@ -1267,7 +1287,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 		try {
 			const tBoot = Date.now();
 			const booted = !bootPromise;
-			bootPromise ??= boot(url.origin);
+			bootPromise ??= boot(origin);
 			const { php, handler, bootMs } = await bootPromise;
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
