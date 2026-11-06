@@ -20,7 +20,7 @@
 # Options: INSTANCE_TYPE (default standard-1), PHP_WORKERS (default from the
 # instance type), IDLE_SECONDS (default 900), OBJECT_CACHE (apcu or none,
 # default apcu), REPLICA_PATH (default store), QUEUE_RUNNER (local or
-# loopback, default local), CRON_SECONDS (default 60), PUBLIC_HOST (default
+# loopback, default local), CRON_SECONDS (default 10), AS_TIME_LIMIT (default 5), PUBLIC_HOST (default
 # <NAME>.<account subdomain>.workers.dev), ROLLOUT_WAIT (default 60 s),
 # START_TIMEOUT (default 900 s), BENCH, N.
 
@@ -35,7 +35,8 @@ IDLE_SECONDS=${IDLE_SECONDS:-900}
 OBJECT_CACHE=${OBJECT_CACHE:-apcu}
 REPLICA_PATH=${REPLICA_PATH:-store}
 QUEUE_RUNNER=${QUEUE_RUNNER:-local}
-CRON_SECONDS=${CRON_SECONDS:-60}
+CRON_SECONDS=${CRON_SECONDS:-10}
+AS_TIME_LIMIT=${AS_TIME_LIMIT:-5}
 
 c1_build() {
   log "build (c1)"
@@ -59,7 +60,7 @@ c1_config() {
   CONF="$C1/wrangler.deploy.$NAME.toml"
   compat=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' "$C1/wrangler.toml" | head -1)
   NAME=$NAME PUBLIC_HOST=$PUBLIC_HOST REPLICA=$replica MEDIA_BUCKET=$media R2_ENDPOINT=$endpoint \
-    COMPAT=$compat INSTANCE_TYPE=$INSTANCE_TYPE PHP_WORKERS=$PHP_WORKERS IDLE_SECONDS=$IDLE_SECONDS OBJECT_CACHE=$OBJECT_CACHE REPLICA_PATH=$REPLICA_PATH QUEUE_RUNNER=$QUEUE_RUNNER CRON_SECONDS=$CRON_SECONDS SEED_SHA256=${SEED_SHA256:-} \
+    COMPAT=$compat INSTANCE_TYPE=$INSTANCE_TYPE PHP_WORKERS=$PHP_WORKERS IDLE_SECONDS=$IDLE_SECONDS OBJECT_CACHE=$OBJECT_CACHE REPLICA_PATH=$REPLICA_PATH QUEUE_RUNNER=$QUEUE_RUNNER CRON_SECONDS=$CRON_SECONDS AS_TIME_LIMIT=$AS_TIME_LIMIT SEED_SHA256=${SEED_SHA256:-} \
     "$ROOT/deploy/variants/c1-config.sh" > "$CONF"
 }
 

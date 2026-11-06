@@ -251,7 +251,7 @@ Issue #45. `QUEUE_RUNNER=local` (the default; `loopback` keeps the old path).
 
 ### What changed
 
-- `container/entrypoint.sh` requests `http://127.0.0.1/wp-cron.php` every `CRON_SECONDS` (60) while the container is awake. The request runs in PHP's own server, so it uses the same APCu cache as the visitor requests, and it does not go out through the Worker. Action Scheduler's `action_scheduler_run_queue` event (every minute) then processes batches for up to 30 s.
+- `container/entrypoint.sh` requests `http://127.0.0.1/wp-cron.php` every `CRON_SECONDS` while the container is awake (60 at first, 10 since the head-of-line finding below). The request runs in PHP's own server, so it uses the same APCu cache as the visitor requests, and it does not go out through the Worker. Action Scheduler then processes batches for up to `AS_TIME_LIMIT` seconds (30 at first, Action Scheduler's default; 5 since the head-of-line finding): through its WP-Cron event when that is due (once a minute), and otherwise through one run that `php/c1-queue.php` starts in the same request, so the queue keeps about the same share of time with short runs.
 - `php/c1-queue.php` turns off Action Scheduler's async loopback (`action_scheduler_allow_async_request_runner`). No request holds a PHP process with `sleep( 5 )` any more.
 - `router.php` does not count a `wp-cron.php` request from 127.0.0.1 as activity, so the loop does not keep an idle container awake. The queue waits while the container sleeps and runs again on the next start.
 - Not php-cli: a php-cli process has its own, empty APCu, so it would write past the cache that the server's processes read.
