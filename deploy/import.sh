@@ -54,7 +54,7 @@ echo "work files: $WORK"
 if [ "$VARIANT" = c1 ] && [ -n "${VERIFY:-}" ]; then
   # shellcheck source=SCRIPTDIR/import/c1.sh
   . "$IMP/c1.sh"
-  code=$(curl -s -m 120 -o /dev/null -w '%{http_code}' "$URL/?nocache=import$RANDOM")
+  code=$(curl -s -m 120 -A wp-on-cf-import/1 -o /dev/null -w '%{http_code}' "$URL/?nocache=import$RANDOM")
   echo "GET / -> $code"; [ "$code" = 200 ] || { echo "the home page is not 200" >&2; exit 1; }
   exit 0
 fi

@@ -76,7 +76,7 @@ c1_verify() {
   local code
   # The first request can start the container (and load the seed): wait.
   for _ in $(seq 1 30); do
-    code=$(curl -s -m 120 -o "$WORK/c1-loaded.json" -w '%{http_code}' -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_stats.php?what=seed" || true)
+    code=$(curl -s -m 120 -A wp-on-cf-import/1 -o "$WORK/c1-loaded.json" -w '%{http_code}' -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_stats.php?what=seed" || true)
     [ "$code" = 200 ] && break
     [ "$code" = 404 ] && { echo "c1: the container loaded no seed (a replica exists at its REPLICA_PATH, or SEED_SHA256 is not set)" >&2; exit 1; }
     sleep 10
