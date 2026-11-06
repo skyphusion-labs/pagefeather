@@ -10,8 +10,8 @@ Measured 2026-11-04 on Workers Paid. Code: `spikes/c1-woo-container`. Conrad's d
 
 ## Design
 
-- **Container:** stock WordPress 7.1.4, WooCommerce 11.2.1 and the official SQLite plugin (`sqlite-database-integration`, its own `db.php`), on a real SQLite file at `/data/wordpress.sqlite`. PHP 8.3 with PHP's built-in server, 256 MB for PHP. The spike started on `basic` with 2 workers; `deploy/deploy.sh` now uses `standard-1` with 4 workers and the APCu object cache (sections below).
-- **Durability: Litestream to R2.** The container disk is lost when it sleeps. On start, `litestream restore` gets the database from R2 if a replica exists; otherwise the entrypoint installs WordPress and WooCommerce. Then `litestream replicate -exec "php -S ..."` runs PHP and sends every change to the R2 bucket `wp-woo-c1-db` (1 s sync interval). The S3 key can touch only that bucket.
+- **Container:** stock WordPress 7.1.4, WooCommerce 11.2.1 and the official SQLite plugin (`sqlite-database-integration`, its own `db.php`), on a real SQLite file at `/data/wordpress.sqlite`. PHP 8.3, 256 MB for PHP: PHP's built-in server at first, PHP-FPM behind nginx since issue #99 (section below). The spike started on `basic` with 2 workers; `deploy/deploy.sh` now uses `standard-1` with 4 workers and the APCu object cache (sections below).
+- **Durability: Litestream to R2.** The container disk is lost when it sleeps. On start, `litestream restore` gets the database from R2 if a replica exists; otherwise the entrypoint installs WordPress and WooCommerce. Then `litestream replicate -exec` runs the web server (`php -S` at first; `container/c1-serve.sh` with PHP-FPM and nginx since issue #99) and sends every change to the R2 bucket `wp-woo-c1-db` (1 s sync interval). The S3 key can touch only that bucket.
 - **The Worker in front:**
   - Static files come from Workers static assets.
   - Uploads come from R2 (`wp-woo-c1-media`).
@@ -474,6 +474,56 @@ On wp-c1-perf (swap16, `CONTAINER_TIMEOUT_S=10` for a short test), after `sig=ST
 A deploy of the same configuration onto that stuck container failed after 141 s (60 s of rollout wait, 30 s of stop, the rest the build and upload), with the stop answer `still_running: true, reset: false` and the recovery message. Before, the same case waited 900 s. Note that the new Worker version was already deployed when the stop failed: the site ran the new Worker code against the stuck container until the recovery deploy.
 
 Recovery from the test: a deploy with `INSTANCE_TYPE=standard-2` rolled out a new instance (first answer 200 after 7 s, the static-file probe 200), and a deploy back to `standard-1` with the default `CONTAINER_TIMEOUT_S` came up in 11 s; `/_store-info` then read `timeoutS: 60`.
+
+## PHP-FPM behind nginx (issue #99)
+
+The head-of-line finding (section "Who passes the limit") was a property of PHP's built-in server: a `php -S` process accepts connections and serves them one at a time, so a shopper whose connection lands on a process that runs a long request waits for it. Short queue runs (#95) bound that wait. PHP-FPM removes it: only a free child accepts a request, so a slow request holds its own child and nothing else.
+
+**What runs in the container** (the image is `php:8.3-fpm-trixie`):
+
+- Litestream is the parent, as before: `litestream replicate -exec /usr/local/bin/c1-serve.sh`.
+- `container/c1-serve.sh` starts PHP-FPM and nginx and supervises them.
+  - If one of them exits, it stops the other and exits 1. Litestream then exits and the container ends.
+  - On SIGTERM (Litestream forwards its own signal to the exec child), it sends SIGQUIT to both, so requests in progress finish. After `STOP_GRACE_S` (10 s) it sends SIGKILL. Then Litestream does its final sync, inside the 30 s that `/_store-stop` waits.
+- `container/php-fpm-c1.conf`, the pool:
+  - `pm = static`, with `PHP_WORKERS` children. It listens on `127.0.0.1:9000`.
+  - `clear_env = no`, because the PHP files read the environment.
+  - No request time limit: the Worker cuts shopper requests at `CONTAINER_TIMEOUT_S`.
+  - The children run as `www-data` (`php -S` ran as root), so `wp-content` belongs to `www-data` in the image.
+- `container/nginx.conf`:
+  - It routes as `router.php` did: a static file as it is, a `.php` file runs, a directory goes to its `index.php` (301 to the trailing slash first), and everything else goes to `/index.php`.
+  - `fastcgi_read_timeout` is 3600 s, so admin imports and exports are not cut.
+  - Its access log is the idle watchdog's mark (`/tmp/last-request`). It skips `/ping`, `/_boot.txt`, the FPM ping and status, and the local `wp-cron.php`.
+- `container/c1-prepend.php` (`auto_prepend_file`) keeps the request log and the `x-c1-pid` header.
+- The sampler counts the PHP-FPM children by state (not the master). It reads the backlog on port 9000 (requests that no free child took yet), and it now records the PSS memory of PHP-FPM and nginx (`c1_stats.py`: `pss_mib`).
+- `/_stats.php?what=fpm` returns the pool status (`fpm_get_status()`, from inside the child, so it needs no second free child).
+
+**Why nginx.** FPM speaks only FastCGI, and the Container must answer HTTP. nginx is a Debian package (signed through apt) with a maintained FastCGI client, and one worker process is enough. Caddy is a Go binary of about 40 MB to pin. A proxy of our own would need a FastCGI client that we would have to write. Most static files never reach the container, because the Worker serves them from static assets.
+
+**APCu.** One APCu segment per FPM master, shared by all children. This is the same shape as `php -S`, whose workers fork from one server process after APCu is set up (measured above: the same start time and counts from 4 process ids). So no change is expected; the check on the real container is below.
+
+**Deploy check.** nginx answers `/_boot.txt` when PHP is stuck, so a static file no longer proves that PHP answers. `c1_check` (`deploy/variants/c1.sh`) also requests `/_fpm-ping`, which needs a free FPM child. `kill.php?sig=STOPPHP` now stops every FPM child (not the root master, which a child cannot signal), and that is enough to stop all PHP answers.
+
+**Measured locally, 2026-11-06** (the real `php-fpm` 8.5 of this computer with the shipped pool file, only the user, the paths and the port changed, through a FastCGI test client; no nginx or Docker here):
+
+| Case | Result |
+|---|---|
+| Children with `PHP_WORKERS=2` | 2 |
+| `/_fpm-ping` | `pong` |
+| `getenv()` in a request (`clear_env = no`) | the value passed |
+| A fast request while one child sleeps 5 s (3 tries) | 0.00 s each, from the free child |
+| Control: a fast request while both children sleep 5 s | 4.69 s: it waits for a free child |
+| SIGTERM to `c1-serve.sh` | exit 0 after 1 s, both stopped |
+| nginx (a stand-in) killed | exit 1 after 1 s, PHP-FPM stopped |
+| The FPM master killed | exit 1 after 1 s, nginx stopped; the 2 children stay (in the container they end with it) |
+| SIGTERM while a child ignores SIGQUIT | exit 0 after `STOP_GRACE_S` (3 s in the test), both stopped |
+
+The last row is a defect that the first version had. bash starts a background child with SIGQUIT ignored, so a SIGQUIT that comes before the child sets its own handler is lost, and the first `c1-serve.sh` then waited for ever. That is a container that answers nothing. The SIGKILL after `STOP_GRACE_S` ends it.
+
+**On wp-c1-perf:** not measured yet. The plan (issue #99):
+
+1. The head-of-line case on `php -S` and on FPM, both with `AS_TIME_LIMIT=30`.
+2. FPM with the defaults against the short-runs run (swap15), for throughput and CPU per order.
 
 ## Warm start on a product view (issue #73)
 

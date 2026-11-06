@@ -5,7 +5,7 @@ Usage: B=<site url> SPIKE_TOKEN=... python3 tests/load/c1_stats.py [since] [unti
        python3 tests/load/c1_stats.py --files <req.log> <samples.log> [since] [until]
 
 since and until are Unix times (default: everything). The container writes the
-logs (spikes/c1-woo-container/container/router.php and entrypoint.sh) and
+logs (spikes/c1-woo-container/container/c1-prepend.php and entrypoint.sh) and
 /_stats.php returns them. Read them after the run: during a run the stats
 request waits behind the load in the same PHP workers. The container loses the
 logs when it stops (IDLE_SECONDS after the last request).
@@ -73,7 +73,7 @@ def parse_samples(text, since, until):
         t = float(head[0])
         if not (since <= t <= until):
             continue
-        s = {"t": t, "cpu": [int(x) for x in head[2:]], "cg": {}, "backlog": None, "php": {}}
+        s = {"t": t, "cpu": [int(x) for x in head[2:]], "cg": {}, "backlog": None, "php": {}, "pss": {}}
         for part in parts[1:]:
             w = part.split()
             if not w:
@@ -86,6 +86,9 @@ def parse_samples(text, since, until):
                 s["backlog"] = int(w[1])
             elif w[0] == "php":
                 s["php"] = {x[0]: int(x[1:]) for x in w[1:]}
+            elif w[0] == "pss":
+                # PHP-FPM and nginx memory, kB (issue #99; absent before it).
+                s["pss"] = {k: int(v) for k, v in (x.split("=", 1) for x in w[1:] if "=" in x)}
         out.append(s)
     return out
 
@@ -155,6 +158,10 @@ def main():
         for k, v in s["php"].items():
             states[k] = states.get(k, 0) + v
     res["php_states"] = {k: round(v / len(smp), 2) for k, v in sorted(states.items())} if smp else {}
+    pss = [s["pss"] for s in smp if s["pss"]]
+    if pss:
+        res["pss_mib"] = {k: {"max": round(max(x.get(k, 0) for x in pss) / 1024, 1),
+                              "mean": round(sum(x.get(k, 0) for x in pss) / len(pss) / 1024, 1)} for k in ("fpm", "nginx")}
     print(json.dumps(res, indent=1))
 
 

@@ -7,18 +7,22 @@ if ( ! $token || ! hash_equals( $token, (string) ( $_SERVER['HTTP_X_SPIKE_TOKEN'
 	http_response_code( 403 );
 	exit( 'forbidden' );
 }
-// sig=STOPPHP (issue #93): SIGSTOP to every PHP server process, this one
-// last. The port stays open and nothing answers: a stuck instance, for testing
-// the container fetch timeout. Only a new container ends it.
+// sig=STOPPHP (issue #93): SIGSTOP to every PHP-FPM child, this one last.
+// No child is free, so no PHP request is answered: a stuck PHP, for testing the
+// container fetch timeout. Only a new container ends it. The master runs as
+// root and is not stopped (a child cannot signal it); nginx still answers
+// static files (issue #99), so c1_check probes /_fpm-ping as well.
 if ( ( $_GET['sig'] ?? '' ) === 'STOPPHP' ) {
 	$me   = getmypid();
 	$pids = array();
 	foreach ( glob( '/proc/[0-9]*/comm' ) as $f ) {
-		if ( 'php' === trim( (string) @file_get_contents( $f ) ) ) {
+		if ( 'php-fpm' === trim( (string) @file_get_contents( $f ) ) ) {
 			$pids[] = (int) basename( dirname( $f ) );
 		}
 	}
-	echo 'SIGSTOP to PHP ' . implode( ' ', $pids ) . "\n";
+	$master = (int) @file_get_contents( '/run/php-fpm.pid' );
+	$pids   = array_values( array_diff( $pids, array( $master ) ) );
+	echo 'SIGSTOP to PHP-FPM children ' . implode( ' ', $pids ) . "\n";
 	flush();
 	foreach ( $pids as $p ) {
 		if ( $p !== $me ) {

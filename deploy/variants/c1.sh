@@ -159,6 +159,11 @@ c1_check() {
   code=$(curl -s -o /dev/null -m 15 -w '%{http_code}' "$URL/_boot.txt" || true)
   [ "$code" = 200 ] || { echo "the container does not answer a static file (/_boot.txt: $code): probably stuck (issue #93)" >&2; return 1; }
   echo "container answers a static file (/_boot.txt: 200)"
+  # nginx answers static files while PHP is stuck (issue #99): the FPM ping
+  # needs a free PHP-FPM child.
+  code=$(curl -s -o /dev/null -m 15 -w '%{http_code}' "$URL/_fpm-ping" || true)
+  [ "$code" = 200 ] || { echo "PHP does not answer (/_fpm-ping: $code): probably stuck (issue #93)" >&2; return 1; }
+  echo "PHP answers (/_fpm-ping: 200)"
   want=false; [ "$OBJECT_CACHE" = apcu ] && want=true
   while :; do
     cur=$(c1_info /_store-info current)
