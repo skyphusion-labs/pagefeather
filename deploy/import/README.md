@@ -89,7 +89,14 @@ The container stops (it does not start) if the seed download or its SHA-256 chec
 
 **Query cache:** confirmed OFF, not changed. Terraform makes the Hyperdrive config of variant `a` with `caching = { disabled = true }` (`deploy/terraform/main.tf`, `cloudflare_hyperdrive_config.wp`), and `a2` is variant `a`, so it uses the same resource. The count reads do nothing to avoid a cache.
 
-**Id 0:** `tests/a/id-zero.sh` imports rows (0, 5) into `wp_idzero_test` on a deployed site, with the hint and, as the red control, without it (`NO_HINT=1`). It must read the lowest id 0 with the hint and 1 without. It touches only that table. Not run yet: it needs a deployed `a` site on MariaDB and one on PlanetScale.
+**Id 0:** `tests/a/id-zero.sh` imports rows (0, 5) into `wp_idzero_test` on a deployed site, with the hint and, as the red control, without it (`NO_HINT=1`). It must read the lowest id 0 with the hint and 1 without. It touches only that table. Measured 2026-11-06 by the lead, deployed from `03d8676` (rows in `docs/results.md`):
+
+| Site | Server | With the hint | Without it (red control) |
+| --- | --- | --- | --- |
+| `wp-ref-a` | MariaDB 10.11.14 | 2 rows, lowest id 0 | 2 rows, lowest id 1 |
+| `wp-a2` | PlanetScale 8.4.11-Vitess | 2 rows, lowest id 0 | 2 rows, lowest id 1 |
+
+So the hint keeps id 0 on both servers, and without it both renumber. The first run on `wp-ref-a` (from `a2a9c11`) read every count as null: `mysql-bridge.js` returns a binary-charset column as `{"$b": base64}`, and MariaDB reports `COUNT(*)` and `MIN()` that way. `sql-import.js` now decodes every cell, and a count that is not an integer is an error.
 
 ## Theme and plugins (build input)
 
