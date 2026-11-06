@@ -140,13 +140,21 @@ The instance shows 1 CPU and no cgroup `cpu.max`. The half vCPU of `standard-1` 
 
 So a different PHP server (PHP-FPM, FrankenPHP) does not raise the ceiling: it uses the same CPU for each WordPress request. It can limit the queue (an early 503 instead of a long wait). The levers are less CPU per request, or more CPU.
 
-### wp-c1 and wp-c1-perf
+### wp-c1 and wp-c1-perf: one run is not a measurement
 
-`wp-c1` (the baseline site) ran the same test at about 1 request per second, with 0 of 32 checkouts at 100 users (`deploy/results/bench-runner-20261105T214231Z-230073.json`). `wp-c1-perf` ran at 2.5. The image is the same, with no change to the c1 build inputs except the measurement. The data is small on both (wp-c1: 127 orders, 287 autoloaded options, 51 KB). The cause is open. A test with the wp-c1 database on wp-c1-perf decides between data and host.
+`wp-c1` (the first baseline site) ran the same test at about 1 request per second, with 0 of 32 checkouts at 100 users (`deploy/results/bench-runner-20261105T214231Z-230073.json`). `wp-c1-perf` ran at 2.5. The c1 build inputs are the same, except for the measurement.
+
+- **Not the data.** wp-c1's database (127 orders, 63 pending Action Scheduler actions, 287 autoloaded options, 51 KB) was restored into wp-c1-perf (replica path `swap`). With it, wp-c1-perf used 0.189 CPU s per request (0.179 with its own data) and served 2.4 requests per second at the same cap (`deploy/results/bench-runner-20261105T235852Z-24ad9e.json`).
+- **Not the configuration.** The Containers API (read 2026-11-06, about 00:10 UTC) shows the same shape for both applications: 0.5 vCPU, 4 GiB, 8 GB disk, the same scheduling policy and tiers, `max_instances` 1. wp-c1's was last changed at 20:35 UTC, before its load runs.
+- **Not explained.** A container with 1/4 vCPU would give 0.25 / 0.19 = 1.3 requests per second, which fits wp-c1. But the configuration says 1/2 vCPU, and the API keeps no record of the host that ran. So the cause is the host or the placement of that container, and it is not known.
+
+The numbers in this document compare against wp-c1-perf, not wp-c1. Repeat a c1 measurement on more than one container start before you trust it.
 
 ### WooCommerce's Action Scheduler holds a PHP process
 
 Issue #45. With `DISABLE_WP_CRON`, Action Scheduler runs its queue through an async loopback: the site sends a POST to its own `admin-ajax.php`. That request runs one batch, then calls `sleep( 5 )` (filter `action_scheduler_async_request_sleep_seconds`), then sends the next loopback. An admin request starts the chain; storefront requests do not. In the load run, 30 of these requests held one of the PHP processes from 46 s to 312 s: 6 to 14 s wall each, for 0.1 to 0.8 s of CPU. Every checkout adds one email action to the queue.
+
+Under load the chain stops. With wp-c1's database (63 pending actions at the start), the first runner request took 18.6 s and 4.1 CPU s (one batch of emails), 9 more followed about 6 s apart, and then none for the remaining 7 minutes. Pending actions went from 63 to 137: the queue was larger at the end than at the start. So with WP-Cron off, order emails can wait without limit on a busy store. Issue #45 has the fix candidates.
 
 ## Problems found
 
