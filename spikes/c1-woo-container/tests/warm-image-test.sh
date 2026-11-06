@@ -16,12 +16,14 @@
 #   port80  GET 127.0.0.1/_warm (port 80, where the Worker comes in) has no
 #           x-c1-warm header: warm.php did not run
 #   eth0    a connect to <container address>:8081 is refused
+#   listen  /proc/net/tcp and tcp6 show port 8081 listening on 127.0.0.1 only
 #   bound   with WARM_MAX_FILES=5: compiled 5, stop "max files"
 #   lowmem  with opcache.memory_consumption=40: stop "opcache free below
 #           16 MiB", and no OPcache restart (oom 0)
 # Arms that must FAIL a named check, or the check cannot see its defect:
-#   nginx listen 0.0.0.0:8081        eth0 (the deny line then answers 403: shown)
+#   nginx listen 0.0.0.0:8081        eth0 and listen (the deny line then answers 403: shown)
 #   nginx listen 0.0.0.0:8081, no allow/deny   eth0
+#   nginx listen [::]:8081 too       listen
 #   nginx /_warm on port 80          port80
 #   a plugin sets a cookie on init   cookie must still hold (header_remove);
 #     with warm.php minus header_remove()     cookie
@@ -68,6 +70,11 @@ $out = shell_exec("curl -s -m 300 -D /tmp/warm.h -o /tmp/warm.b " . escapeshella
 $a = $snap();
 echo json_encode(array("before" => $b, "after" => $a, "curl" => (int) trim($out))), "\n";' "$1"
 }
+# The local addresses that listen on port 8081 (1F91), from /proc/net/tcp and
+# tcp6 (state 0A). Prints them, one per line.
+listeners() { awk '$4 == "0A" { split($2, a, ":"); if (a[2] == "1F91") print a[1] }' /proc/net/tcp /proc/net/tcp6 2>/dev/null; }
+# 1 when every listener on 8081 is 127.0.0.1 (0100007F) and there is one at least.
+loopback_only() { local l n=0; for l in $(listeners); do n=$((n + 1)); [ "$l" = 0100007F ] || { echo 0; return; }; done; [ "$n" -gt 0 ] && echo 1 || echo 0; }
 hdr() { tr -d '\r' < /tmp/warm.h | awk -F': ' -v k="$1" 'tolower($1) == k { print substr($0, length($1) + 3) }'; }
 
 # check <name> <0 or 1, 1 = holds>
@@ -94,6 +101,7 @@ check "port80 (no x-c1-warm on port 80)" "$([ -z "$(hdr x-c1-warm)" ] && echo 1 
 ip=$(php -r 'echo gethostbyname(gethostname());')
 curl -s -m 5 -o /dev/null "http://$ip:8081/_warm"; rc=$?
 check "eth0 ($ip:8081 refused, curl exit $rc)" "$([ "$rc" = 7 ] && echo 1 || echo 0)" || fails=$((fails + 1))
+check "listen (8081 on: $(listeners | tr '\n' ' '))" "$(loopback_only)" || fails=$((fails + 1))
 
 say "== bound: WARM_MAX_FILES=5 (a fresh FPM, so OPcache is cold)"
 WARM_MAX_FILES=5 serve
@@ -115,6 +123,7 @@ arm() {
 	serve
 	case "$want" in
 		eth0) curl -s -m 5 -o /dev/null -w '  eth0 answer %{http_code}\n' "http://$ip:8081/_warm"; rc=$?; got=$([ "$rc" = 7 ] && echo holds || echo FAILS) ;;
+		listen) say "  8081 on: $(listeners | tr '\n' ' ')"; got=$([ "$(loopback_only)" = 1 ] && echo holds || echo FAILS) ;;
 		port80) curl -s -m 30 -D /tmp/warm.h -o /dev/null http://127.0.0.1/_warm; got=$([ -z "$(hdr x-c1-warm)" ] && echo holds || echo FAILS) ;;
 		*) bad=$(warm_checks | tail -1); got=$([[ " $bad " == *" $want "* ]] && echo FAILS || echo holds) ;;
 	esac
@@ -125,8 +134,11 @@ need_fail() { local got; got=$(arm "$@" | tee /dev/stderr | tail -1); [ "$got" =
 
 sed 's/listen 127\.0\.0\.1:8081;/listen 0.0.0.0:8081;/' /tmp/nginx.shipped.conf > /etc/nginx/nginx.conf
 need_fail "listen 0.0.0.0:8081" eth0
+need_fail "listen 0.0.0.0:8081" listen
 sed 's/listen 127\.0\.0\.1:8081;/listen 0.0.0.0:8081;/; /allow 127\.0\.0\.1;/d; /deny all;/d' /tmp/nginx.shipped.conf > /etc/nginx/nginx.conf
 need_fail "listen 0.0.0.0:8081, no allow and deny" eth0
+sed 's/listen 127\.0\.0\.1:8081;/listen 127.0.0.1:8081;\n\t\tlisten [::]:8081;/' /tmp/nginx.shipped.conf > /etc/nginx/nginx.conf
+need_fail "listen [::]:8081 too" listen
 perl -0pe 's{(\t\tlocation = /_fpm-ping \{)}{\t\tlocation = /_warm {\n\t\t\tinclude fastcgi.conf;\n\t\t\tfastcgi_param SCRIPT_FILENAME /opt/wp/warm.php;\n\t\t\tfastcgi_pass php;\n\t\t}\n$1}' /tmp/nginx.shipped.conf > /etc/nginx/nginx.conf
 need_fail "/_warm on port 80" port80
 cp /tmp/nginx.shipped.conf /etc/nginx/nginx.conf
