@@ -69,6 +69,7 @@ Store.prototype.storeInfo = async function () {
 		object_cache: this.envVars.OBJECT_CACHE,
 		replica_path: this.envVars.REPLICA_PATH,
 		purge: { sent: p.sent, deferred: p.deferred, failed: p.failed, retried: p.retried, pending: p.pending, last_ms_ago: p.last ? Date.now() - p.last : null, last_error: p.lastError },
+		queue: { limit: Number(this.env.QUEUE_LIMIT ?? 16), ...(this.queue || { inflight: 0, maxInflight: 0, admitted: 0, shed: 0 }) },
 	};
 };
 Store.prototype.shutdownNow = async function (kill) {
@@ -122,6 +123,54 @@ Store.outboundByHost = {
 };
 
 const store = (env) => getContainer(env.STORE, 'store');
+
+// Bounded queue (issue #39). Every request to the container passes through this
+// object's fetch, so it counts what the container has in hand. Under load the
+// wait was in PHP's accept queue: at 100 shoppers a checkout took 3.1 s in PHP
+// and 26.3 s at the client, with 56 connections queued (p50; measured
+// 2026-11-06, docs/approach-c1.md). Now, when QUEUE_LIMIT requests are in the
+// container already, a request that can wait (a page, a cart, an add to cart,
+// the rest of the Store API) gets 503 with Retry-After at once. Checkout, a
+// payment callback (wc-api), admin, login and the operator endpoints are always
+// let in, and nothing in flight is stopped. QUEUE_LIMIT 0 turns it off.
+function admission(req, url) {
+	const p = url.pathname;
+	if (p.startsWith('/_') || p.startsWith('/wp-admin') || p === '/wp-login.php') return 'always';
+	if (url.searchParams.has('wc-api') || p.startsWith('/wc-api')) return 'always';
+	const wcAjax = url.searchParams.get('wc-ajax');
+	if (wcAjax) return wcAjax === 'checkout' ? 'always' : 'shed';
+	const route = url.searchParams.get('rest_route') || (p.startsWith('/wp-json') ? p.slice('/wp-json'.length) : null);
+	if (route !== null) {
+		if (!route.startsWith('/wc/store/')) return 'always'; // admin and API clients
+		return route.includes('/checkout') ? 'always' : 'shed';
+	}
+	if (p.startsWith('/checkout') || url.searchParams.get('pagename') === 'checkout') return 'always';
+	return 'shed';
+}
+function busyResponse(req, url, retryAfter) {
+	const h = { 'retry-after': String(retryAfter), 'cache-control': 'no-store', 'cloudflare-cdn-cache-control': 'no-store', 'x-c1-shed': '1' };
+	if (url.searchParams.has('rest_route') || url.pathname.startsWith('/wp-json')) {
+		return Response.json({ code: 'c1_busy', message: 'The store is busy. Please try again in a few seconds.', data: { status: 503 } }, { status: 503, headers: h });
+	}
+	return new Response('<!doctype html><meta charset="utf-8"><title>Busy</title><p>The store is busy. Please try again in a few seconds.</p>', { status: 503, headers: { ...h, 'content-type': 'text/html; charset=utf-8' } });
+}
+Store.prototype.fetch = async function (request) {
+	const url = new URL(request.url);
+	const limit = Number(this.env.QUEUE_LIMIT ?? 16);
+	const q = (this.queue ||= { inflight: 0, maxInflight: 0, admitted: 0, shed: 0 });
+	if (limit > 0 && q.inflight >= limit && admission(request, url) === 'shed') {
+		q.shed++;
+		return busyResponse(request, url, Number(this.env.RETRY_AFTER || 5));
+	}
+	q.inflight++;
+	q.admitted++;
+	if (q.inflight > q.maxInflight) q.maxInflight = q.inflight;
+	try {
+		return await Container.prototype.fetch.call(this, request);
+	} finally {
+		q.inflight--;
+	}
+};
 
 // Purges are coalesced: at most one per PURGE_INTERVAL_MS (15 s) for this site.
 // The purge limit is 5 a minute (25 at once) per account, for all sites, and a
