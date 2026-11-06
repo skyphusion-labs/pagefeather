@@ -98,6 +98,14 @@ main = "worker.js"
 compatibility_date = "$COMPAT"
 workers_dev = true
 
+# Workers Logs (issue #99): the Worker's logs and the container's stdout and
+# stderr (entrypoint.sh and c1-serve.sh print each start step).
+[observability]
+enabled = true
+
+  [observability.logs]
+  enabled = true
+
 [assets]
 directory = "build/public"
 

@@ -6,12 +6,19 @@
 # 3. Run PHP-FPM and nginx (container/c1-serve.sh, issue #99) under
 #    Litestream, which replicates every change to R2 while PHP runs.
 set -e
+# Start steps go to the container log (issue #99), with the kind of stdout and
+# stderr this runtime gives, and whether the stderr path can be opened (php-fpm
+# and nginx open it).
+echo "c1: entrypoint start, uid $(id -u), kernel $(uname -r)"
+echo "c1: fd1 $(readlink /proc/self/fd/1 2>&1), fd2 $(readlink /proc/self/fd/2 2>&1)"
+if ( : >> /proc/self/fd/2 ) 2>/dev/null; then echo "c1: open of /proc/self/fd/2 ok"; else echo "c1: open of /proc/self/fd/2 FAILED"; fi
 # php-fpm-c1.conf reads it: pm.max_children.
 export PHP_WORKERS="${PHP_WORKERS:-2}"
 # A new id for each container start: tests use it to prove a restart happened.
 cat /proc/sys/kernel/random/uuid > /var/www/html/_boot.txt
 mkdir -p /data
 litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists /data/wordpress.sqlite
+echo "c1: restore done (database file: $( [ -f /data/wordpress.sqlite ] && echo yes || echo no))"
 # Import (issue #31): load the seed when there is no replica (seed.sh).
 . /opt/wp/seed.sh
 seed_load
@@ -20,6 +27,7 @@ if [ ! -f /data/wordpress.sqlite ]; then
 	php /var/www/html/install.php
 fi
 chown -R www-data:www-data /data 2>/dev/null || true
+echo "c1: /data owner $(stat -c %U /data)"
 # Object cache: OBJECT_CACHE=apcu (the default) puts the APCu drop-in in
 # place; none runs without one. APCu memory belongs to the PHP-FPM master and
 # its children, so it starts empty with every container.
@@ -31,6 +39,7 @@ fi
 # Litestream runs as a child, not PID 1: Linux ignores SIGKILL sent to PID 1
 # from inside the container, so a crash could not be tested. This shell
 # forwards SIGTERM, so a normal stop still lets Litestream finish its sync.
+echo "c1: starting litestream replicate with c1-serve.sh"
 litestream replicate -config /etc/litestream.yml -exec /usr/local/bin/c1-serve.sh &
 LS=$!
 echo "$LS" > /run/litestream.pid
@@ -94,4 +103,8 @@ touch /tmp/last-request
 		fi
 	done
 ) &
+set +e
 wait "$LS"
+rc=$?
+echo "c1: litestream exited (status $rc): the container ends"
+exit $rc

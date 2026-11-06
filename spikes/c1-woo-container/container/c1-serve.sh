@@ -9,6 +9,7 @@
 #   0. Litestream then does its final sync.
 # Needs bash 5 (wait -n): the image has it; macOS /bin/bash 3.2 does not.
 set -u
+echo "c1-serve: start, fd2 $(readlink /proc/self/fd/2 2>&1)"
 # Logs through pipes (issue #99). php-fpm (error_log = /proc/self/fd/2, from
 # the base image) and nginx (error_log /dev/stderr) OPEN that path, and opening
 # /proc/self/fd/2 fails (ENXIO) when stderr is a socket. A pipe always opens.
@@ -41,14 +42,18 @@ stop() {
 }
 # SIGQUIT too, for a stop sent with the php-fpm image's own stop signal.
 trap "stop; exit 0" TERM INT QUIT
+echo "c1-serve: starting php-fpm"
 php-fpm -F &
 FPM=$!
+echo "c1-serve: starting nginx"
 nginx -g "daemon off;" &
 NGX=$!
-wait -n "$FPM" "$NGX"
+echo "c1-serve: php-fpm $FPM, nginx $NGX"
+wait -n -p died "$FPM" "$NGX"
 rc=$?
+[ "${died:-}" = "$FPM" ] && who=php-fpm || who=nginx
+echo "c1-serve: $who (pid ${died:-unknown}) exited with status $rc" >&2
 # A signal interrupts wait with a status above 128 and runs the trap, which
 # exits; so here one of the two servers really exited.
-echo "c1-serve: php-fpm or nginx exited (status $rc): stopping the other" >&2
 stop
 exit 1
