@@ -6,15 +6,24 @@
 #   (the import: see README.md)
 #   tests/ssh-source/check.sh after      # nothing on the box newer than the marker
 #
-# Reads hostname, box_ip and the service token from terraform output. The
-# token goes to cloudflared in TUNNEL_SERVICE_TOKEN_ID / _SECRET (its own
-# environment variables), never in an argument. Needs a ~/.ssh/config block
-# (terraform output -raw ssh_config) and the private key for ssh_public_key.
+# Reads hostname, box_ip and the service token from terraform output, or
+# from the environment when another seat holds the state: SSH_SRC_HOST,
+# SSH_SRC_IP, TUNNEL_SERVICE_TOKEN_ID and TUNNEL_SERVICE_TOKEN_SECRET. The
+# token goes to cloudflared in those two variables (its own), never in an
+# argument. Needs a ssh config block (terraform output -raw ssh_config):
+# ~/.ssh/config, or a file in SSH_CONFIG.
 set -euo pipefail
 cd "$(dirname "$0")"
-H=$(terraform output -raw hostname)
-IP=$(terraform output -raw box_ip)
-with_token() { TUNNEL_SERVICE_TOKEN_ID=$(terraform output -raw access_client_id) TUNNEL_SERVICE_TOKEN_SECRET=$(terraform output -raw access_client_secret) "$@"; }
+H=${SSH_SRC_HOST:-$(terraform output -raw hostname)}
+IP=${SSH_SRC_IP:-$(terraform output -raw box_ip)}
+if [ -n "${TUNNEL_SERVICE_TOKEN_ID:-}" ] && [ -n "${TUNNEL_SERVICE_TOKEN_SECRET:-}" ]; then
+  TOK_ID=$TUNNEL_SERVICE_TOKEN_ID; TOK_SECRET=$TUNNEL_SERVICE_TOKEN_SECRET
+else
+  TOK_ID=$(terraform output -raw access_client_id); TOK_SECRET=$(terraform output -raw access_client_secret)
+fi
+unset TUNNEL_SERVICE_TOKEN_ID TUNNEL_SERVICE_TOKEN_SECRET
+with_token() { TUNNEL_SERVICE_TOKEN_ID=$TOK_ID TUNNEL_SERVICE_TOKEN_SECRET=$TOK_SECRET "$@"; }
+SSHC=(ssh ${SSH_CONFIG:+-F "$SSH_CONFIG"} -o BatchMode=yes)
 # limit <seconds> <cmd...>: run it, kill it after that long (macOS has no
 # timeout). Without a token, cloudflared may wait for a browser login.
 limit() { local s=$1; shift; "$@" & local p=$!; (sleep "$s"; kill "$p" 2>/dev/null) & local w=$!; wait "$p"; local rc=$?; kill "$w" 2>/dev/null || true; return "$rc"; }
@@ -27,19 +36,19 @@ before)
   if nc -z -w 5 "$IP" 22 2>/dev/null; then open=yes; else open=no; fi
   check "port 22 on $IP from this laptop is closed" "$open" "no"
   # 2. Through the tunnel: with the token it works, without it it is refused.
-  out=$(with_token limit 60 ssh -o BatchMode=yes "$H" 'cat /var/lib/ssh-source-ready' 2>&1 || true)
+  out=$(with_token limit 60 "${SSHC[@]}" "$H" 'cat /var/lib/ssh-source-ready' 2>&1 || true)
   check "ssh through the tunnel with the token" "$(printf '%s' "$out" | grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' || true)" "1"
-  out=$(env -u TUNNEL_SERVICE_TOKEN_ID -u TUNNEL_SERVICE_TOKEN_SECRET bash -c "$(declare -f limit); limit 30 ssh -o BatchMode=yes $H true" 2>&1 && echo CONNECTED || true)
+  out=$(limit 30 "${SSHC[@]}" "$H" true 2>&1 && echo CONNECTED || true)
   check "ssh through the tunnel without the token is refused" "$(printf '%s' "$out" | grep -c CONNECTED || true)" "0"
   # 3. The marker for the read-only check (written by importer in its own
   # home BEFORE the import; the import itself must write nothing).
-  with_token ssh -o BatchMode=yes "$H" 'touch ~/.import-marker && date -u +%Y-%m-%dT%H:%M:%SZ'
+  with_token "${SSHC[@]}" "$H" 'touch ~/.import-marker && date -u +%Y-%m-%dT%H:%M:%SZ'
   ;;
 after)
   # Nothing newer than the marker in the site, /tmp, /var/tmp or the
   # importer home. NOT checked: MariaDB's own files (the user importer cannot
   # read /var/lib/mysql; the dump only reads, with --single-transaction).
-  newer=$(with_token ssh -o BatchMode=yes "$H" 'find /var/www/wordpress /tmp /var/tmp ~ -newer ~/.import-marker -not -path ~/.import-marker 2>/dev/null || true')
+  newer=$(with_token "${SSHC[@]}" "$H" 'find /var/www/wordpress /tmp /var/tmp ~ -newer ~/.import-marker -not -path ~/.import-marker 2>/dev/null || true')
   echo "newer than the marker:"; printf '%s\n' "$newer" | sed 's/^/  /'
   check "no file in the site, /tmp, /var/tmp or the importer home is newer" "$(printf '%s\n' "$newer" | grep -c . || true)" "0"
   ;;
