@@ -34,7 +34,8 @@ fi
 litestream replicate -config /etc/litestream.yml -exec /usr/local/bin/c1-serve.sh &
 LS=$!
 echo "$LS" > /run/litestream.pid
-trap 'kill -TERM "$LS"; wait "$LS"; exit $?' TERM INT
+# SIGQUIT too: the php-fpm base image used it as its stop signal (issue #99).
+trap 'kill -TERM "$LS"; wait "$LS"; exit $?' TERM INT QUIT
 
 # Sampler for the concurrency work (container/stats.php, what=samples), every
 # 2 s: time, the /proc/stat cpu line (user nice system idle iowait irq softirq

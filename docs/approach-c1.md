@@ -520,6 +520,8 @@ The head-of-line finding (section "Who passes the limit") was a property of PHP'
 
 The last row is a defect that the first version had. bash starts a background child with SIGQUIT ignored, so a SIGQUIT that comes before the child sets its own handler is lost, and the first `c1-serve.sh` then waited for ever. That is a container that answers nothing. The SIGKILL after `STOP_GRACE_S` ends it.
 
+**The stop signal (found in the image smoke test, 2026-11-06).** `docker stop` on the first image took 3 s and the container ended with exit 137 (SIGKILL), with no stop lines from PHP-FPM or nginx. The cause is the `php:8.3-fpm` base image, which sets `STOPSIGNAL SIGQUIT` for an image where php-fpm is PID 1. Here PID 1 is a shell, and bash ignores SIGQUIT. So the signal did nothing, and Docker then sent SIGKILL. In the container that skips Litestream's final sync. The image now sets `STOPSIGNAL SIGTERM`, which is what `php:8.3-cli` had. `entrypoint.sh` and `c1-serve.sh` also trap SIGQUIT. The local test sends SIGTERM and then SIGQUIT to `c1-serve.sh`. Both give exit 0 after 1 s, with the PHP-FPM lines "Finishing ..." and "exiting, bye-bye!" and the nginx stand-in's graceful stop. Without the SIGQUIT trap (a mutant), the SIGQUIT case hangs until the test's 15 s deadline.
+
 **On wp-c1-perf:** not measured yet. The plan (issue #99):
 
 1. The head-of-line case on `php -S` and on FPM, both with `AS_TIME_LIMIT=30`.

@@ -4,7 +4,7 @@
 # both:
 # - If one of them exits, it stops the other and exits 1. Litestream then
 #   exits and the container ends, as it did when php -S died.
-# - On SIGTERM or SIGINT (Litestream forwards its own signal to this process,
+# - On SIGTERM, SIGINT or SIGQUIT (Litestream forwards its own signal to this process,
 #   cmd/litestream/replicate.go v0.5.18, shutdown()), it stops both and exits
 #   0. Litestream then does its final sync.
 # Needs bash 5 (wait -n): the image has it; macOS /bin/bash 3.2 does not.
@@ -31,7 +31,8 @@ stop() {
 	for p in $FPM $NGX; do kill -KILL "$p" 2>/dev/null; done
 	wait 2>/dev/null
 }
-trap "stop; exit 0" TERM INT
+# SIGQUIT too, for a stop sent with the php-fpm image's own stop signal.
+trap "stop; exit 0" TERM INT QUIT
 php-fpm -F &
 FPM=$!
 nginx -g "daemon off;" &

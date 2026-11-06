@@ -49,6 +49,11 @@ WORKDIR /var/www/html
 # each, 4 could pass the 1 GiB of a basic instance.
 ENV PHP_WORKERS=2
 EXPOSE 80
+# The php-fpm image sets STOPSIGNAL SIGQUIT (for php-fpm as PID 1). Here PID 1
+# is entrypoint.sh, which handles SIGTERM: with SIGQUIT, docker stop sent a
+# signal that PID 1 ignored, then SIGKILL (exit 137, no Litestream final sync;
+# found in the smoke test, issue #99). SIGTERM is what php:8.3-cli had.
+STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 # The php-fpm image sets CMD ["php-fpm"]; the entrypoint ignores it.
 CMD []
