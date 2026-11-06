@@ -81,6 +81,12 @@ The one plugin that fails on our A Paid is All-in-One WP Migration: every wp-adm
 
 The surface test proves the PHP side only: its bridge is a stub. The MariaDB rows are the real bridge. The A Paid row of the plugin table above changes only after a run on Paid.
 
+**Found on the way: admin pages with WooCommerce recycle the PHP runtime on A (issue #84). Measured locally 2026-11-06. Not measured on Cloudflare.** After a request whose WebAssembly memory passes `RECYCLE_WASM_BYTES` (100 MiB), the Worker drops the PHP runtime, and the next request boots a new one. Priming OPcache with the `wp-ref-a` settings (`a-local` on MariaDB 11.4.13, WooCommerce active, All-in-One WP Migration in the build) passed it 3 times, each at 119 MiB: on `post-new.php`, a REST posts request, and `/wp-admin/`.
+- So on a live A site with WooCommerce active, each such admin page pays a runtime boot on the next request. The 100 MiB threshold is below the 128 MB isolate limit on purpose.
+- The first two requests come from `e2e.sh`, before `plugins.py` activates All-in-One WP Migration. So WooCommerce alone reaches 119 MiB on those pages; the plugin's own share is not isolated.
+- It is the same PHP build locally and on Cloudflare, so the memory is expected to be the same, but it is not measured there.
+- Priming no longer recycles (`PHP_RECYCLE:off` in `opcache.sh`, approach-b.md 8e). Production keeps the recycle: `PHP_RECYCLE` is set nowhere in `deploy/` or `wrangler.toml`.
+
 **Found on the way: binary SQL is stored doubled (issue #79).** SQL that is not valid UTF-8 goes to the Worker as `{mysql_b64}`. `mysql-bridge.js` decodes it as latin1, and mysql2 sends it as utf8mb4. On MariaDB 11.4, `e9 ff 80` was stored as `c3 a9 c3 bf c2 80`. Valid UTF-8 and bytes up to 0x7F are correct. The same result came without the mysqli layer. Not fixed here.
 
 ### HostlessWP on Workers Free
