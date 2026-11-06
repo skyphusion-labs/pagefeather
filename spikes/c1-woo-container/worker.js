@@ -1,11 +1,12 @@
 // Spike C1: WordPress + WooCommerce in a Container. The Worker in front serves
-// static files (assets), uploads (R2), logged-out pages (Workers Cache), and
-// sends everything else to one store container. The container's SQLite file is
+// static files (assets), uploads (R2), storefront pages for visitors with no
+// state (the Storefront entrypoint, Workers Cache), and sends everything else to
+// one store container. The container's SQLite file is
 // replicated to R2 by Litestream. PHP in the container reaches R2, Images and
 // the cache purge through worker.internal (an outbound handler); it holds no keys
 // for them.
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
-import { cache } from 'cloudflare:workers';
+import { WorkerEntrypoint, cache } from 'cloudflare:workers';
 
 export { ContainerProxy };
 
@@ -97,11 +98,14 @@ Store.outboundByHost = {
 		let reply = { ok: false, error: 'unknown message' };
 		if (m.r2) reply = await r2op(env, m.r2);
 		else if (m.cache === 'purge') {
+			// The page cache belongs to the Storefront entrypoint, and a purge
+			// reaches only the cache of the entrypoint that calls it. This handler
+			// runs in ContainerProxy, so it asks the Store object, which calls
+			// Storefront.purge() through ctx.exports.
 			try {
-				await cache.purge({ tags: ['wp-pages'] });
-				reply = { ok: true };
+				reply = await store(env).purgeStorefront(['wp-pages']);
 			} catch (e) {
-				reply = { ok: false, error: String(e) };
+				reply = { ok: false, error: String((e && e.message) || e) };
 			}
 		}
 		return Response.json(reply);
@@ -110,8 +114,64 @@ Store.outboundByHost = {
 
 const store = (env) => getContainer(env.STORE, 'store');
 
+Store.prototype.purgeStorefront = async function (tags) {
+	return this.ctx.exports.Storefront.purge(tags);
+};
+
+// Storefront pages for visitors with no state, cached at the edge (issue #58).
+// The default entrypoint (the gateway, not cached) decides by the request:
+// GET or HEAD, no cookie that carries state, not a cart, checkout, account,
+// admin or API path. Then it calls this entrypoint WITHOUT the Cookie header,
+// so the cache key is the path and query alone (Workers Caching, cache keys).
+// Before this, the default entrypoint itself was cached with Vary: Cookie, and
+// a cookie that carries no state (WooCommerce order attribution sets sbjs_*
+// cookies in the browser) made every visitor a separate variant: no hits.
+export class Storefront extends WorkerEntrypoint {
+	async fetch(req) {
+		const r = await store(this.env).fetch(req);
+		const out = new Response(r.body, r);
+		const cc = r.headers.get('cache-control') || '';
+		const ok = [200, 301, 404].includes(r.status) && !r.headers.has('set-cookie') && !/no-cache|no-store|private/i.test(cc);
+		if (ok) {
+			// The edge keeps it for PAGE_CACHE_TTL and serves it stale for up to
+			// PAGE_CACHE_SWR while it renders a new copy. The browser does not keep
+			// it (no-cache): the next page view after an add to cart must come
+			// from the gateway again.
+			const ttl = Number(this.env.PAGE_CACHE_TTL || 120);
+			const swr = Number(this.env.PAGE_CACHE_SWR || 600);
+			out.headers.set('cloudflare-cdn-cache-control', `max-age=${ttl}, stale-while-revalidate=${swr}`);
+			out.headers.set('cache-tag', 'wp-pages');
+			out.headers.set('cache-control', 'no-cache');
+		} else {
+			out.headers.set('cloudflare-cdn-cache-control', 'no-store');
+			if (!cc) out.headers.set('cache-control', 'private, no-store');
+		}
+		return out;
+	}
+	// An RPC method: not cached; the purge reaches this entrypoint's cache.
+	async purge(tags) {
+		const r = await (this.ctx.cache || cache).purge({ tags });
+		return { ok: !!(r && r.success !== false), errors: (r && r.errors) || [] };
+	}
+}
+
+// Cookies that mean the visitor has state: logged in, a password post, a
+// comment author, or any WooCommerce cookie (cart, session, recently viewed).
+// Other cookies (order attribution sbjs_*, analytics) do not change the page.
+const STATE_COOKIE = /^(wordpress_logged_in_|wordpress_sec_|wp-postpass_|comment_author_|wp-settings-|woocommerce_|wp_woocommerce_session_)/;
+const NO_CACHE_PATH = /^\/(wp-admin|wp-login\.php|wp-json|wp-cron\.php|wp-comments-post\.php|cart|checkout|my-account|wc-api|_)/;
+const NO_CACHE_PARAM = ['rest_route', 'wc-ajax', 'add-to-cart', 'preview', 'nocache', 'customize_changeset_uuid', 'wc-api'];
+function hasState(req) {
+	const c = req.headers.get('cookie');
+	if (!c) return false;
+	return c.split(';').some((x) => STATE_COOKIE.test(x.trim()));
+}
+function storefrontCacheable(req, url) {
+	return (req.method === 'GET' || req.method === 'HEAD') && !hasState(req) && !NO_CACHE_PATH.test(url.pathname) && !NO_CACHE_PARAM.some((k) => url.searchParams.has(k));
+}
+
 export default {
-	async fetch(req, env) {
+	async fetch(req, env, ctx) {
 		const url = new URL(req.url);
 		const spikeOk = env.SPIKE_TOKEN && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname === '/_store-stop') {
@@ -143,38 +203,18 @@ export default {
 		// 20 MB: the Images binding input limit, and far above any post or form.
 		if (Number(req.headers.get('content-length') || 0) > Number(env.MAX_BODY_BYTES || 20 * 1024 * 1024)) return new Response('request body too large', { status: 413 });
 		if (env.MEDIA && (req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/wp-content/uploads/')) return serveUpload(req, env, url);
+		if (storefrontCacheable(req, url)) {
+			const h = new Headers(req.headers);
+			h.delete('cookie');
+			return ctx.exports.Storefront.fetch(new Request(req, { headers: h }));
+		}
 		const r = await store(env).fetch(req);
+		if (r.headers.get('cache-control')) return r;
 		const out = new Response(r.body, r);
-		pageCacheHeaders(req, url, r, out, env);
+		out.headers.set('cache-control', 'private, no-store');
 		return out;
 	},
 };
-
-// Logged-out GET of a public page: cacheable at the edge (Workers Cache). The
-// cookie is not in the cache key, so Vary: Cookie keeps logged-in visitors and
-// shoppers with a cart on their own uncached responses.
-const WP_COOKIE = /(^|;\s*)(wordpress_logged_in_|wordpress_sec_|wp-postpass_|comment_author_|wp-settings-|woocommerce_|wp_woocommerce_session_)/;
-function pageCacheHeaders(req, url, r, out, env) {
-	const ttl = Number(env.PAGE_CACHE_TTL || 120);
-	const cc = r.headers.get('cache-control') || '';
-	const cacheable =
-		(req.method === 'GET' || req.method === 'HEAD') &&
-		[200, 301, 404].includes(r.status) &&
-		!WP_COOKIE.test(req.headers.get('cookie') || '') &&
-		!r.headers.has('set-cookie') &&
-		!/no-cache|no-store|private/i.test(cc) &&
-		!/^\/(wp-admin|wp-login\.php|wp-json|cart|checkout|my-account|_)/.test(url.pathname) &&
-		!url.searchParams.has('rest_route') &&
-		!url.searchParams.has('wc-ajax') &&
-		!url.searchParams.has('preview');
-	if (cacheable) {
-		out.headers.set('cache-control', `public, max-age=${ttl}, stale-while-revalidate=600`);
-		out.headers.set('cache-tag', 'wp-pages');
-		out.headers.append('vary', 'Cookie');
-	} else if (!cc) {
-		out.headers.set('cache-control', 'private, no-store');
-	}
-}
 
 async function serveUpload(req, env, url) {
 	let key;

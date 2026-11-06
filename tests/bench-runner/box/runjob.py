@@ -144,7 +144,11 @@ def run_load(t, load):
         return r
     secs = max(10, min(int(load.get("seconds", 60)), 300))
     buyers = max(0.0, min(float(load.get("buyers", 0.2)), 1.0))
-    env.update(B=t["url"], ADMIN_PASSWORD=t["admin_password"], LEVELS=levels, SECONDS=str(secs), BUYERS=str(buyers))
+    mode = str(load.get("mode", "nocache"))
+    if mode not in ("nocache", "cached", "cached-sbjs"):
+        r["error"] = "bad load mode"
+        return r
+    env.update(B=t["url"], ADMIN_PASSWORD=t["admin_password"], LEVELS=levels, SECONDS=str(secs), BUYERS=str(buyers), LOAD_MODE=mode)
     t0 = time.time()
     try:
         p = subprocess.run([sys.executable, os.path.join(repo, "tests/load/load.py")], env=env, capture_output=True, text=True,
