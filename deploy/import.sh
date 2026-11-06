@@ -158,7 +158,7 @@ elif [ -n "$SRC_CONTENT" ] && [ -d "$SRC_CONTENT/uploads" ]; then
 fi
 
 # 7. The home page, uncached: status and title.
-code=$(curl -s -m 120 -o "$WORK/home.html" -w '%{http_code}' "$URL/?nocache=import$RANDOM")
+code=$(curl -s -m 120 -A wp-on-cf-import/1 -o "$WORK/home.html" -w '%{http_code}' "$URL/?nocache=import$RANDOM")
 title=$(python3 -c 'import re,sys,html; m=re.search(r"<title[^>]*>(.*?)</title>", open(sys.argv[1], encoding="utf-8", errors="replace").read(), re.S); print(html.unescape(m.group(1).strip()) if m else "")' "$WORK/home.html")
 echo "GET / -> $code, title: $title"
 [ "$code" = 200 ] || { echo "the home page is not 200" >&2; exit 1; }

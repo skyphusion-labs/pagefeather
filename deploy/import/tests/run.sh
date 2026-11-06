@@ -57,6 +57,8 @@ check "home" "$(q "SELECT option_value FROM wp_options WHERE option_name = 'home
 check "guid kept" "$(q 'SELECT guid FROM wp_posts WHERE ID = 1')" "https://old.example.com/?p=1"
 python3 "$HERE/test_search_replace.py" 2> "$T/unit.err" || { cat "$T/unit.err"; fails=$((fails + 1)); }
 check "search-replace unit tests" "$(tail -1 "$T/unit.err")" "OK"
+python3 "$HERE/test_user_agent.py" 2> "$T/ua.err" || { cat "$T/ua.err"; fails=$((fails + 1)); }
+check "dbmove.py sends its own User-Agent" "$(tail -1 "$T/ua.err")" "OK"
 
 # 4. To a dbmove dump and back to counts.
 python3 "$IMP/dbmove-file.py" from-sqlite "$T/fx.sqlite" "$T/fx.jsonl" > /dev/null
