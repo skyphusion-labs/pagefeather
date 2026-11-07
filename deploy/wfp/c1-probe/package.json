@@ -1,0 +1,9 @@
+{
+  "name": "wfp-c1-probe",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Slice 7 feasibility probe (#147): a WfP namespace user Worker with a Container binding.",
+  "dependencies": {
+    "@cloudflare/containers": "0.3.7"
+  }
+}

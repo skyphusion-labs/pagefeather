@@ -1,0 +1,25 @@
+# Slice 7 feasibility probe (#147). Uploaded as a dispatch-namespace user
+# script. The lead builds the image and runs the deploy (one at a time):
+#   npx wrangler deploy --config wrangler.toml --dispatch-namespace wp-wfp
+# If this upload is REJECTED on the container binding, feasibility is answered
+# NO at that gate (record the error on #147 and stop).
+name = "site-c1probe"
+main = "worker.js"
+compatibility_date = "2026-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[containers]]
+class_name = "Probe"
+image = "./container/Dockerfile"
+image_build_context = "."
+instance_type = "basic"
+max_instances = 1
+rollout_step_percentage = 100
+
+[[durable_objects.bindings]]
+name = "PROBE"
+class_name = "Probe"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Probe"]
