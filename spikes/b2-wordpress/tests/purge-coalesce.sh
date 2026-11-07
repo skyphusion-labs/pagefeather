@@ -13,6 +13,6 @@ wrangler dev --port "$P" --log-level warn --env dosql-local --var "SITE_ORIGIN:h
 W=$!
 stop() { L=$(lsof -t -nP -iTCP:$P -sTCP:LISTEN 2>/dev/null | head -1); kill $W $L $( [ -n "$L" ] && ps -o ppid= -p "$L") 2>/dev/null; }
 trap stop EXIT
-for _ in $(seq 1 90); do curl -s -m 2 -o /dev/null "localhost:$P/_ping" && break; sleep 1; done
-curl -s -o /dev/null -X POST "localhost:$P/_install"
+for _ in $(seq 1 90); do curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -m 2 -o /dev/null "localhost:$P/_ping" && break; sleep 1; done
+curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -o /dev/null -X POST -H "x-admin-password: ${ADMIN_PASSWORD:-local-spike-password}" "localhost:$P/_install"
 env -u SPIKE_TOKEN LOCAL=1 B=http://localhost:$P ADMIN_PASSWORD=local-spike-password python3 tests/purge_coalesce_check.py

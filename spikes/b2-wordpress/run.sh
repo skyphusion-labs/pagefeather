@@ -41,18 +41,18 @@ rm -f out.json; : > dev.log
 # DEV_VARS: more vars, "NAME:value" separated by spaces (opcache.sh sets PHP_RECYCLE:off).
 vars=()
 for v in ${DEV_VARS:-}; do vars+=(--var "$v"); done
-wrangler dev --port "$PORT" --log-level warn ${DEV_ENV:+--env $DEV_ENV} --var "SITE_ORIGIN:http://localhost:$PORT" "${vars[@]}" > dev.log 2>&1 &
+wrangler dev --port "$PORT" --log-level warn ${DEV_ENV:+--env $DEV_ENV} --var "SITE_ORIGIN:http://localhost:$PORT" --var "SPIKE_TOKEN:${SPIKE_TOKEN:-local-spike-token}" "${vars[@]}" > dev.log 2>&1 &
 started=$!
 up=0
 for _ in $(seq 1 60); do
 	grep -q 'ERROR' dev.log && { grep -v '^\s*$' dev.log | grep -v '🪵' | head -20 | cut -c1-400; kill "$started" 2>/dev/null; exit 1; }
-	curl -s -m 2 -o /dev/null "localhost:$PORT/_ping" 2>/dev/null && { up=1; break; }
+	curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -m 2 -o /dev/null "localhost:$PORT/_ping" 2>/dev/null && { up=1; break; }
 	sleep 1
 done
 [ "$up" = 1 ] || { echo "wrangler dev did not answer on port $PORT in 60 s" >&2; kill "$started" 2>/dev/null; exit 1; }
 # The port was free before the start, so the listener now is this run's.
 L=$(listener)
 echo "$L $(ps -o ppid= -p "$L" | tr -d ' ') $started" > "$PIDF"
-curl -s -m 120 "localhost:$PORT/${1:-}" -o out.json; echo "http_exit=$?"
+curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -m 120 "localhost:$PORT/${1:-}" -o out.json; echo "http_exit=$?"
 head -c 2000 out.json; echo
 grep -v '^\s*$' dev.log | grep -v '🪵' | tail -8 | cut -c1-400
