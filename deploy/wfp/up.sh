@@ -35,7 +35,7 @@ SUB=$(subdomain)
 
 log "outbound Worker wp-wfp-outbound"
 render_outbound > "$GEN/outbound.toml"
-(cd "$GEN" && npx wrangler deploy --config outbound.toml) > "$W/outbound.log" 2>&1 || { tail -20 "$W/outbound.log"; exit 1; }
+wrangler_deploy "$GEN" "$W/outbound.log" --config outbound.toml || { tail -20 "$W/outbound.log"; exit 1; }
 
 for s in $SITES; do "$WFP/site.sh" up "$s"; done
 
@@ -47,7 +47,7 @@ PROBE_HOST="wp-probe.$SUB.workers.dev"
 c=$(api_code PUT "/storage/kv/namespaces/$KV_ID/values/$PROBE_HOST" -H 'content-type: text/plain' --data '{"script": "site-probe", "outbound": true}')
 [ "$c" = 200 ] || { echo "the probe entry was not written (HTTP $c)" >&2; exit 1; }
 render_dispatcher probe "$KV_ID" > "$GEN/wp-probe.toml"
-(cd "$GEN" && npx wrangler deploy --config wp-probe.toml) > "$W/probe.log" 2>&1 || { tail -20 "$W/probe.log"; exit 1; }
+wrangler_deploy "$GEN" "$W/probe.log" --config wp-probe.toml || { tail -20 "$W/probe.log"; exit 1; }
 
 # The Workers Cache probe (docs/wfp.md open (b)): the same tiny cached Worker in
 # the namespace (behind wp-cacheprobe) and as a normal Worker (the control).
@@ -58,9 +58,9 @@ if [ "${CACHE_PROBE:-1}" = 1 ]; then
   c=$(api_code PUT "/storage/kv/namespaces/$KV_ID/values/wp-cacheprobe.$SUB.workers.dev" -H 'content-type: text/plain' --data '{"script": "site-cacheprobe", "outbound": true}')
   [ "$c" = 200 ] || { echo "the cache probe entry was not written (HTTP $c)" >&2; exit 1; }
   render_dispatcher cacheprobe "$KV_ID" > "$GEN/wp-cacheprobe.toml"
-  (cd "$GEN" && npx wrangler deploy --config wp-cacheprobe.toml) > "$W/cp2.log" 2>&1 || { tail -20 "$W/cp2.log"; exit 1; }
+  wrangler_deploy "$GEN" "$W/cp2.log" --config wp-cacheprobe.toml || { tail -20 "$W/cp2.log"; exit 1; }
   render_cacheprobe wp-cacheprobe-direct true > "$GEN/wp-cacheprobe-direct.toml"
-  (cd "$GEN" && npx wrangler deploy --config wp-cacheprobe-direct.toml) > "$W/cp3.log" 2>&1 || { tail -20 "$W/cp3.log"; exit 1; }
+  wrangler_deploy "$GEN" "$W/cp3.log" --config wp-cacheprobe-direct.toml || { tail -20 "$W/cp3.log"; exit 1; }
 fi
 
 # Every script binds only its own resources (bindings.py, #35 slice 4).

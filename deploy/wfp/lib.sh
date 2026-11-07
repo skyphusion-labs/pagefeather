@@ -53,6 +53,18 @@ probe_entry() { # probe_entry <script> <cpuMs> <subRequests>
 render_cross() {
   sed -e "s/@NAME@/$1/g" -e "s/@BUCKET@/$2/g" -e "s/@COMPAT@/$(compat_date)/g" "$WFP/cross-probe/wrangler.template.toml"
 }
+
+wrangler_deploy() { # wrangler_deploy <dir> <logfile> <wrangler deploy args...>
+  local dir=$1 log=$2; shift 2
+  local i rc=0
+  for i in $(seq 1 "${WRANGLER_RETRIES:-3}"); do
+    if (cd "$dir" && npx wrangler deploy "$@") > "$log" 2>&1; then return 0; else rc=$?; fi
+    [ "$i" -lt "${WRANGLER_RETRIES:-3}" ] || break
+    echo "  wrangler deploy ($*) failed (attempt $i of ${WRANGLER_RETRIES:-3}); retrying in ${WRANGLER_RETRY_S:-5}s (a re-deploy is idempotent)" >&2
+    sleep "${WRANGLER_RETRY_S:-5}"
+  done
+  return "$rc"
+}
 render_outbound() {
   sed -e "s/@COMPAT@/$(compat_date)/g" "$WFP/outbound/wrangler.template.toml"
 }
