@@ -82,7 +82,7 @@ if [ "${CHECK:-1}" = 1 ]; then
       | python3 -c 'import json, sys; o = {k: v["value"] for k, v in json.load(sys.stdin).items()}; print(json.dumps({"site": sys.argv[1], "admin_password": o["admin_password"], "spike_token": o["spike_token"]}))' "$s"
   done > "$W/sites.jsonl"
   (cd "$WFP/terraform/site" && terraform workspace select default >/dev/null)
-  CACHE_PROBE=${CACHE_PROBE:-1} SUB=$SUB NAMESPACE=$NAMESPACE KV_ID=$KV_ID SITES_FILE="$W/sites.jsonl" python3 -I "$WFP/check.py"
+  CACHE_PROBE=${CACHE_PROBE:-1} SUB=$SUB NAMESPACE=$NAMESPACE KV_ID=$KV_ID SITES_FILE="$W/sites.jsonl" WFP_CUSTOM_DOMAIN=${WFP_CUSTOM_DOMAIN:-0} WFP_SUBDOMAIN="$WFP_SUBDOMAIN" python3 -I "$WFP/check.py"
 fi
 echo
 echo "up: $(for s in $SITES; do printf '%s ' "https://$(site_host "$s" "$SUB")"; done)"
