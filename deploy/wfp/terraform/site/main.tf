@@ -1,7 +1,9 @@
 # deploy/wfp, one site (issue #35). One Terraform workspace per site (the
 # workspace name is the site name). Its data plane: the media bucket, the
 # secrets of its user Worker, and its entry in the site map. The user Worker
-# (site-<name>) and its dispatcher (wp-<name>) are uploaded by up.sh.
+# (site-<name>) and its dispatcher are uploaded by up.sh. Phase A deploys a
+# per-site dispatcher (wp-<name>) on workers.dev; phase B (#138) attaches a
+# Workers Custom Domain for this site to the ONE dispatcher instead.
 
 variable "account_id" {
   type    = string
@@ -16,7 +18,10 @@ variable "name" {
   }
 }
 
-# The hostname the site answers on (phase A: wp-<name>.<subdomain>.workers.dev).
+# The hostname the site answers on and the site map key. Phase A:
+# wp-<name>.<subdomain>.workers.dev. Phase B (#138): <name>.wfp-test.skyphusion.org,
+# the same value the Custom Domain below carries, so the key and the routed
+# hostname can never drift. site.sh / site compute it (lib.sh site_host).
 variable "hostname" { type = string }
 
 # The build id of the deployed user Worker (issue #35 slice 5): recorded in the
@@ -46,6 +51,29 @@ variable "sub_requests" {
 variable "teardown" {
   type    = bool
   default = false
+}
+
+# Phase B (#138), CR gated. When true, attach a Workers Custom Domain for this
+# site to the one dispatcher (var.dispatcher). The live attach is a CR #138
+# step (add-and-prove-before-you-remove); nothing here applies until this is
+# true. false is the default, so phase A (workers.dev) stays the only live
+# target.
+variable "custom_domain" {
+  type    = bool
+  default = false
+}
+
+# Phase B: the one dispatcher Worker the Custom Domain attaches to (its service
+# name). The same dispatcher/worker.js as phase A, deployed once as wp-dispatch.
+variable "dispatcher" {
+  type    = string
+  default = "wp-dispatch"
+}
+
+# Phase B: the zone that holds wfp-test.skyphusion.org.
+variable "zone_id" {
+  type    = string
+  default = "3b58b52bd324332fb56b3ab685588c76" # skyphusion.org
 }
 
 locals {
@@ -84,6 +112,21 @@ resource "cloudflare_workers_kv" "entry" {
   ))
 }
 
+# Phase B (#138): the Workers Custom Domain for this site on the one dispatcher.
+# var.hostname is BOTH this domain and the site map key above, so the routed
+# hostname and the key are the same value by construction. Created only when
+# custom_domain = true; phase A leaves it unset. The dispatcher must already be
+# deployed (up.sh) when this applies, because a Custom Domain attaches to an
+# existing service. Cloudflare creates the DNS record and the Advanced
+# Certificate for the hostname (Custom Domains docs, read 2026-11-06).
+resource "cloudflare_workers_custom_domain" "site" {
+  count      = var.custom_domain ? 1 : 0
+  account_id = var.account_id
+  zone_id    = var.zone_id
+  hostname   = var.hostname
+  service    = var.dispatcher
+}
+
 resource "cloudflare_account_token" "teardown" {
   count      = var.teardown ? 1 : 0
   account_id = var.account_id
@@ -104,6 +147,9 @@ resource "cloudflare_account_token" "teardown" {
 
 output "media_bucket" { value = cloudflare_r2_bucket.media.name }
 output "hostname" { value = var.hostname }
+output "custom_domain_hostname" {
+  value = var.custom_domain ? cloudflare_workers_custom_domain.site[0].hostname : ""
+}
 output "r2_endpoint" { value = "https://${var.account_id}.r2.cloudflarestorage.com" }
 output "wp_salt" {
   value     = random_password.wp_salt.result

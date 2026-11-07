@@ -37,6 +37,17 @@ log "outbound Worker wp-wfp-outbound"
 render_outbound > "$GEN/outbound.toml"
 wrangler_deploy "$GEN" "$W/outbound.log" --config outbound.toml || { tail -20 "$W/outbound.log"; exit 1; }
 
+# Phase B (#138): the ONE shared dispatcher wp-dispatch, deployed once before
+# any site, because each site's Custom Domain attaches to it (the service must
+# exist at attach time). Phase A deploys a per-site dispatcher in site.sh
+# instead, so this is skipped. Nothing here routes a zone; the Custom Domains
+# are the CR #138 live-apply step.
+if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ]; then
+  log "shared dispatcher $SHARED_DISPATCHER (phase B)"
+  render_shared_dispatcher "$KV_ID" > "$GEN/$SHARED_DISPATCHER.toml"
+  wrangler_deploy "$GEN" "$W/dispatch.log" --config "$SHARED_DISPATCHER.toml" || { tail -20 "$W/dispatch.log"; exit 1; }
+fi
+
 for s in $SITES; do "$WFP/site.sh" up "$s"; done
 
 # The stale-entry probe (#35 condition b): a dispatcher copy whose entry names
@@ -74,4 +85,4 @@ if [ "${CHECK:-1}" = 1 ]; then
   CACHE_PROBE=${CACHE_PROBE:-1} SUB=$SUB NAMESPACE=$NAMESPACE KV_ID=$KV_ID SITES_FILE="$W/sites.jsonl" python3 -I "$WFP/check.py"
 fi
 echo
-echo "up: $(for s in $SITES; do printf 'https://%s.%s.workers.dev ' "$(dispatcher_name "$s")" "$SUB"; done)"
+echo "up: $(for s in $SITES; do printf '%s ' "https://$(site_host "$s" "$SUB")"; done)"
