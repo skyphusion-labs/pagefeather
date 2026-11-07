@@ -4,6 +4,8 @@ A reference deployment for one operator with a couple of sites on their own Work
 
 The design is on issue #35 (the slice 1 comment): one origin per site, never a path prefix. The capability findings are in `docs/wfp.md`.
 
+New to this? The day-one walkthrough for an operator is [docs/operator.md](../../docs/operator.md).
+
 ## What it makes
 
 | | Per site `<name>` | Shared |
