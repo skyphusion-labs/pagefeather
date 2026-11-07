@@ -79,6 +79,22 @@ variable "mysql_password" {
   sensitive = true
 }
 
+# Variant "a" over a Cloudflare Tunnel behind Access (CR #141). When both are
+# set, Hyperdrive reaches the origin with this Access service token instead of
+# a public port: the origin carries access_client_id and access_client_secret
+# and no port, which is the tests/a/terraform tunnel shape. Left empty, the
+# origin is a public host on mysql_port (the deploy/mysql SSL path), unchanged.
+variable "mysql_access_client_id" {
+  type    = string
+  default = ""
+}
+
+variable "mysql_access_client_secret" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
 variable "teardown" {
   description = "destroy.sh only (c1): give the Litestream key the media bucket too, so destroy.sh can empty both buckets before Terraform deletes them."
   type        = bool

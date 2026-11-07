@@ -10,7 +10,9 @@
 #   a     PHP in the Worker, MySQL through Hyperdrive (Workers Paid). MySQL is
 #         MYSQL=vultr (deploy/mysql makes a box; needs VULTR_API_KEY, MYSQL_ZONE_ID,
 #         MYSQL_HOST) or MYSQL=external (MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD,
-#         MYSQL_DATABASE; the server must have SSL)
+#         MYSQL_DATABASE; a public server must have SSL, or set
+#         MYSQL_ACCESS_CLIENT_ID and MYSQL_ACCESS_CLIENT_SECRET for a
+#         Cloudflare Tunnel origin behind Access, CR #141)
 #   c1    WordPress and WooCommerce in one Container, SQLite and Litestream to
 #         R2 (Workers Paid). Steps in deploy/variants/c1.sh; options
 #         INSTANCE_TYPE, PHP_WORKERS, IDLE_SECONDS (see README.md)
@@ -68,6 +70,13 @@ if [ "$VARIANT" = a ]; then
   : "${MYSQL_HOST:?set MYSQL_HOST}" "${MYSQL_PASSWORD:?set MYSQL_PASSWORD}"
   MYSQL_USER=${MYSQL_USER:-wp}; MYSQL_DATABASE=${MYSQL_DATABASE:-wordpress}
   export TF_VAR_mysql_password=$MYSQL_PASSWORD
+  # Access-tunnel origin (CR #141): Hyperdrive reaches the box through its
+  # Cloudflare Tunnel behind Access, so no inbound port and no SSL is needed.
+  if [ -n "${MYSQL_ACCESS_CLIENT_ID:-}${MYSQL_ACCESS_CLIENT_SECRET:-}" ]; then
+    : "${MYSQL_ACCESS_CLIENT_ID:?set MYSQL_ACCESS_CLIENT_ID}" "${MYSQL_ACCESS_CLIENT_SECRET:?set MYSQL_ACCESS_CLIENT_SECRET}"
+    export TF_VAR_mysql_access_client_id=$MYSQL_ACCESS_CLIENT_ID
+    export TF_VAR_mysql_access_client_secret=$MYSQL_ACCESS_CLIENT_SECRET
+  fi
 fi
 
 # 1b. Data plane.
