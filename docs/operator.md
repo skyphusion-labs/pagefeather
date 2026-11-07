@@ -12,15 +12,18 @@ This is the day-one walkthrough for one operator who runs a couple of WordPress 
 
 Nothing is configured in the dashboard; everything below is a command.
 
-## Day one: an empty account to two sites
+## Day one: an empty account to your sites
+
+One command stands up the shared pieces and your sites. You supply your account and a site list:
 
 ```sh
 export CLOUDFLARE_API_TOKEN=...
+export ACCOUNT_ID=<your Cloudflare account id>
 # optional: export WFP_STATE=r2 AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
-./deploy/wfp/up.sh
+SITES="shop blog" ./deploy/wfp/operator.sh up
 ```
 
-`up.sh` builds `b-dosql` once, then makes the shared pieces (the dispatch namespace, the KV site map, the outbound Worker) and two sites, `one` and `two`. It prints each site's address, `https://wp-<name>.<your-subdomain>.workers.dev`. Each site installs WordPress on first boot; the admin user is `admin` and its password is a Terraform output:
+`operator.sh up` builds `b-dosql` once, makes the shared pieces (the dispatch namespace, the KV site map, the outbound Worker), then each site in the list. `SITES` is a space list: a bare name is a `workers.dev` site (phase A), and a `name:cd` suffix is a custom hostname (phase B; see "Custom hostnames"). To see the exact ordered plan without changing anything, run it with `DRY_RUN=1`. It prints each site's address; a phase A site is at `https://wp-<name>.<your-subdomain>.workers.dev`. Each site installs WordPress on first boot; the admin user is `admin` and its password is a Terraform output:
 
 ```sh
 ( cd deploy/wfp/terraform/site && terraform workspace select one && terraform output -raw admin_password )
@@ -53,12 +56,28 @@ Each site has its own user Worker, its own Durable Object and data, its own R2 m
 
 ## Custom hostnames
 
-The addresses above are on `workers.dev`. A custom hostname per site (`<site>.your-domain`) is phase B, which routes a zone and so needs a change-request first (issue #138); it is designed but not yet built. Until then the sites are on `workers.dev`, which needs no domain and no change-request.
+By default each site is on `workers.dev`, which needs no domain and no change-request. To give a site a custom hostname (`<site>.<your-zone>`), mark it phase B with a `:cd` suffix and set `WFP_SUBDOMAIN` to your routed zone:
+
+```sh
+export WFP_SUBDOMAIN=sites.your-domain.com
+SITES="shop blog:cd" ./deploy/wfp/operator.sh up
+```
+
+`shop` stays on `workers.dev`; `blog` gets the custom hostname `blog.sites.your-domain.com`, routed by the one shared dispatcher. Phase B routes a zone, so that zone needs a change-request first (issue #138), and `operator.sh` refuses a `:cd` site unless you set `WFP_SUBDOMAIN` yourself, so it never routes the project's own zone by mistake. Cloudflare issues each custom hostname its own certificate, which can take a few minutes on the first deploy; `operator.sh` waits for it.
+
+## Validate the deployment
+
+```sh
+SITES="shop blog" ./deploy/wfp/operator.sh validate
+```
+
+`validate` checks the running deployment end to end: every site serves its own page (HTTP 200), no site can read another's resources (`deploy/wfp/isolation.sh` and `bindings.py`), and the first site in the list updates and rolls back on its own without touching the others. It writes a result to `deploy/wfp/results/operator-<timestamp>.json`.
 
 ## Tear it all down
 
 ```sh
-./deploy/wfp/down.sh             # removes every site and the shared pieces, checking each is gone
+SITES="shop blog" ./deploy/wfp/operator.sh down   # removes the sites you listed, then the shared pieces
+./deploy/wfp/down.sh                               # or: remove the full issue #35 reference (every site it finds, plus the probes)
 ```
 
 ## If a command stops
