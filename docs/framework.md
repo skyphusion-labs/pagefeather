@@ -4,6 +4,8 @@ Run many WordPress sites, and transactional WooCommerce stores, on YOUR OWN Clou
 
 The differentiator: the provisioning core is pure Cloudflare API calls (fetch plus Web Crypto), so the SAME code that a CLI runs can run inside a Worker. A Worker can stand up a new site. Design and proofs: issues #35, #154, #152.
 
+New to this from a traditional LAMP WordPress host (a Linux box with Apache or nginx, PHP, and MySQL)? Start with [docs/from-lamp-to-wfp.md](from-lamp-to-wfp.md), which maps your stack one-to-one onto this one, then come back here for the commands and prerequisites.
+
 ## Two kinds of site, and when to use each
 
 | Kind | What it is | Use it for | Not for |
