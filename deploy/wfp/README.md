@@ -91,7 +91,7 @@ Workers for Platforms has no gradual deployments for user Workers, and `b-dosql`
 3. rebuilds from the current tree and re-uploads the script, then records the new build id in the entry;
 4. waits until `/_build` shows the new build (measured 2026-11-06: a re-upload flips it in about 1 s, with the object idle), then checks the site answers 200.
 
-If the verify fails, it rolls back: it restores the data from the snapshot and, when the previous build is a reproducible git sha, re-deploys that commit from a git worktree. **A rollback drops any write made between the snapshot and the rollback**, and the command and this doc both say so. A previous build that is not a reproducible sha (`-dirty` or `unknown`) cannot be re-deployed automatically; the data is still restored and the command says to deploy the old commit by hand.
+If the verify fails, it rolls back: it restores the data from the snapshot and re-deploys the exact code that was live, by re-uploading the build artifact it saved before the rebuild (for any build id, not only a committed sha). **A rollback drops any write made between the snapshot and the rollback**, and the command and this doc both say so. If no saved artifact is on disk (an unusual case: `build/` was absent when the update started), the data is still restored and the command says to deploy the old build by hand.
 
 The only interruption is the cold boot of the next request after the new code loads (about 1 s); the hostname always resolves. `/_evict` (an object reset via `ctx.abort()`) is a best-effort fast-path for a busy object that has not flipped; whether `abort()` resets the object on our compatibility date is unproven (the happy path flipped before it was needed).
 
