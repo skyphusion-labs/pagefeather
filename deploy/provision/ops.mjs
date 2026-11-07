@@ -123,3 +123,73 @@ function buildScriptForm(metadata, modules) {
   }
   return form;
 }
+
+
+// 7. Custom hostname (Cloudflare for SaaS): attach an end-user vanity domain to
+// the SaaS zone's dispatcher. TWO ownership modes, differing ONLY in who places
+// the DNS records. The anti-hostage property is the point: the customer keeps
+// their domain and registrar, CNAMEs to us, and can repoint away at any time;
+// we never hold their domain.
+//   mode 'managed'  : the customer's zone is on an account we control
+//                     (custZoneId). The op places the CNAME + DCV record via the
+//                     API, hands-off. This is the agency-holds-the-domain case.
+//   mode 'delegated': the CUSTOMER holds the domain. The op touches NONE of
+//                     their DNS; it returns the exact records for them to add
+//                     (the CNAME target + the DCV name/value), then polls.
+//   dcvDelegation (delegated): also emit the ONE-TIME _acme-challenge delegation
+//                     CNAME, so certificate RENEWALS auto-validate without the
+//                     customer re-doing DNS each cycle.
+// Returns { id, hostname, mode, dcvDelegation, records, status }. `records` is
+// structured so a CLI prints it and a provisioning Worker hands it to a customer
+// UI. In managed mode the op has already placed them.
+export async function addCustomHostname(ctx, {
+  saasZoneId, hostname, fallbackHostname, mode, dcvDelegation = false,
+  custZoneId, dcvMethod = 'txt', minTls = '1.2', pollMs = 0, intervalMs = 5000,
+}) {
+  if (mode !== 'managed' && mode !== 'delegated') throw new Error(`addCustomHostname: unknown mode ${mode}`);
+  const create = await cfFetch(ctx.token, 'POST', `/zones/${saasZoneId}/custom_hostnames`,
+    { body: { hostname, ssl: { method: dcvMethod, type: 'dv', settings: { min_tls_version: minTls } } }, fetchImpl: ctx.fetchImpl });
+  if (!create.ok || !create.result) throw opError('addCustomHostname', hostname, create);
+  const ch = create.result;
+  const dcv = (ch.ssl && ch.ssl.validation_records && ch.ssl.validation_records[0]) || {};
+  const records = [
+    { kind: 'cname', name: hostname, value: fallbackHostname, note: 'point the domain at the SaaS zone (grey cloud at the customer)' },
+  ];
+  if (dcv.txt_name) records.push({ kind: 'txt', name: dcv.txt_name, value: dcv.txt_value, note: 'DCV: proves control for the certificate' });
+  if (ch.ownership_verification && ch.ownership_verification.name) {
+    records.push({ kind: ch.ownership_verification.type === 'cname' ? 'cname' : 'txt', name: ch.ownership_verification.name, value: ch.ownership_verification.value, note: 'hostname ownership' });
+  }
+  if (dcvDelegation) {
+    const u = await cfFetch(ctx.token, 'GET', `/zones/${saasZoneId}/dcv_delegation/uuid`, { fetchImpl: ctx.fetchImpl });
+    const uuid = u.result && u.result.uuid;
+    if (uuid) records.push({ kind: 'cname', name: `_acme-challenge.${hostname}`, value: `${hostname}.${uuid}.dcv.cloudflare.com`, note: 'one-time DCV delegation: cert RENEWALS auto-validate, no customer action each cycle' });
+  }
+  if (mode === 'managed') {
+    if (!custZoneId) throw new Error('addCustomHostname(managed): custZoneId (the zone we control for the customer domain) is required');
+    for (const r of records) {
+      const resp = await cfFetch(ctx.token, 'POST', `/zones/${custZoneId}/dns_records`, { body: dnsRecordBody(r), fetchImpl: ctx.fetchImpl });
+      if (!resp.ok && !resp.errors.some((e) => e.code === 81053 || e.code === 81057)) throw opError('addCustomHostname placeRecord', r.name, resp);
+    }
+  }
+  // delegated: place NOTHING on the customer DNS (the anti-hostage guarantee).
+  let status = { hostname: ch.status, ssl: ch.ssl && ch.ssl.status, active: ch.status === 'active' && ch.ssl && ch.ssl.status === 'active' };
+  if (pollMs > 0) status = await pollCustomHostname(ctx, { saasZoneId, id: ch.id, pollMs, intervalMs });
+  return { id: ch.id, hostname, mode, dcvDelegation, records, status };
+}
+
+function dnsRecordBody(r) {
+  if (r.kind === 'cname') return { type: 'CNAME', name: r.name, content: r.value, proxied: false };
+  return { type: 'TXT', name: r.name, content: r.value };
+}
+
+async function pollCustomHostname(ctx, { saasZoneId, id, pollMs, intervalMs = 5000 }) {
+  const t0 = Date.now();
+  for (;;) {
+    const r = await cfFetch(ctx.token, 'GET', `/zones/${saasZoneId}/custom_hostnames/${id}`, { fetchImpl: ctx.fetchImpl });
+    const st = { hostname: r.result && r.result.status, ssl: r.result && r.result.ssl && r.result.ssl.status };
+    st.active = st.hostname === 'active' && st.ssl === 'active';
+    if (st.active) return st;
+    if (Date.now() - t0 >= pollMs) return { ...st, timedOut: true };
+    await new Promise((res) => setTimeout(res, intervalMs));
+  }
+}

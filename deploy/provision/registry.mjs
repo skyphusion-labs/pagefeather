@@ -42,3 +42,19 @@ export async function removeSite(ctx, { kvId, hostname }) {
   if (!r.ok && r.status !== 404) throw opError('removeSite', hostname, r);
   return { hostname, removed: true };
 }
+
+
+// Merge fields into an existing site entry (read, merge, write). Used to fold a
+// custom hostname into a site after provisioning: patch =
+//   { domainOwner: 'agency' | 'customer',   // who holds the domain (anti-hostage)
+//     customHostname: '<host>',
+//     customHostnameId: '<ch id>',
+//     customHostnameState: 'pending' | 'active' }
+// A customer-owned (delegated) domain means we never touch their DNS and they
+// can repoint away any time; an agency-owned (managed) domain is one we control.
+export async function updateSite(ctx, { kvId, hostname, patch }) {
+  const cur = (await readSite(ctx, { kvId, hostname })) || {};
+  const entry = { ...cur, ...patch };
+  await writeKVMapEntry(ctx, { kvId, key: hostname, value: entry });
+  return entry;
+}
