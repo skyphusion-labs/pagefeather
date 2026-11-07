@@ -19,6 +19,8 @@ function recorder() {
     calls.push({ url, method: init.method, body: init.body });
     let body = '{"success":true,"result":{}}';
     if (url.endsWith('/tokens')) body = '{"success":true,"result":{"id":"TKID","value":"TKVAL"}}';
+    else if (url.endsWith('/settings')) body = '{"success":true,"result":{"bindings":[{"type":"durable_object_namespace","class_name":"Store","name":"STORE","namespace_id":"NSID"}]}}';
+    else if (url.endsWith('/containers/applications')) body = '{"success":true,"result":[]}';
     return { ok: true, status: 200, text: async () => body };
   };
   return { fetchImpl, calls };
@@ -88,7 +90,10 @@ const metaOf = async (call) => JSON.parse(await call.body.get('metadata').text()
     u.some((x) => /\/storage\/kv\/namespaces\/KV\/values\/c1-store/.test(x)));
   const deploy = rec.calls.find((c) => /\/workers\/scripts\/c1-store$/.test(c.url));
   const meta = await metaOf(deploy);
-  ok('shop: container image is the pushed digest (no build)', meta.containers[0].image === ref);
+  const appCreate = rec.calls.find((c) => c.method === 'POST' && c.url.endsWith('/containers/applications'));
+  ok('shop: the container application is created against the DO namespace', appCreate && JSON.parse(appCreate.body).durable_objects.namespace_id === 'NSID');
+  ok('shop: container image is the pushed digest (no build)', appCreate && JSON.parse(appCreate.body).configuration.image === ref);
+  ok('shop: the workers.dev subdomain is enabled (reachable)', rec.calls.some((c) => c.method === 'POST' && /\/workers\/scripts\/c1-store\/subdomain$/.test(c.url)));
   const litestreamSecret = meta.bindings.find((b) => b.type === 'secret_text' && b.name === 'LITESTREAM_SECRET_ACCESS_KEY');
   ok('shop: LITESTREAM_SECRET_ACCESS_KEY = SHA-256(token value), NO newline',
     litestreamSecret && litestreamSecret.text === createHash('sha256').update('TKVAL').digest('hex'));

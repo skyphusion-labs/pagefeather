@@ -7,7 +7,7 @@
 import {
   createR2Bucket, mintScopedR2Token,
   deployNamespaceScript, deployContainerWorkerFromDigest,
-  ensureProxiedHostname,
+  ensureProxiedHostname, enableWorkersDevSubdomain,
 } from './ops.mjs';
 import { upsertSite } from './registry.mjs';
 
@@ -79,7 +79,7 @@ async function provisionShop(ctx, cfg) {
     LITESTREAM_ACCESS_KEY_ID: tok.accessKeyId,
     LITESTREAM_SECRET_ACCESS_KEY: tok.secretAccessKey,
   };
-  await deployContainerWorkerFromDigest(ctx, {
+  const dep = await deployContainerWorkerFromDigest(ctx, {
     name: script,
     mainModule: cfg.mainModule || 'worker.js',
     modules: cfg.modules,
@@ -90,7 +90,10 @@ async function provisionShop(ctx, cfg) {
     imageRef: cfg.imageRef,
     instanceType: cfg.instanceType || 'basic',
   });
-  steps.push({ deployed: script, imageRef: cfg.imageRef });
+  steps.push({ deployed: script, imageRef: cfg.imageRef, application: dep.application });
+  // A standalone shop is reached on its own workers.dev hostname; the raw
+  // script PUT does not enable that route, so enable it (#158).
+  steps.push(await enableWorkersDevSubdomain(ctx, script));
   // A shop is a standalone Worker with its own hostname; the registry entry
   // records it and its resources (the dispatcher does NOT route shops). The
   // token VALUE is never stored, only its id, for later revocation.
