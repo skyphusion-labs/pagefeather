@@ -521,6 +521,9 @@ async function boot(origin) {
 	// The editor's theme REST routes kept across requests (php/rest-route-cache.php, #53).
 	// Needs the object cache. ROUTE_CACHE=off turns it off (to measure).
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.OBJECT_CACHE !== 'off' && ENV.ROUTE_CACHE !== 'off') lines.push(`define('JS_ROUTE_CACHE', true);`);
+	// Bootstrap trim mu-plugin (perf): skip pure-background wc-admin features (remote-inbox,
+	// marketing) that re-init every request. b-dosql only; BOOTSTRAP_TRIM=off turns it off.
+	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.BOOTSTRAP_TRIM !== 'off') lines.push(`define('SKYPHUSION_BOOTSTRAP_TRIM', true);`);
 	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
 
 	php.onMessage(handleMessage);
