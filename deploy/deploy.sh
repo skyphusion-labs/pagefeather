@@ -230,8 +230,12 @@ except ValueError:
 
 if [ "${WOO_ACTIVE:-0}" = 1 ]; then
   log "activate WooCommerce"
-  curl -s -m 300 -X POST -H "x-spike-token: $SPIKE_TOKEN" "$URL/_activate?plugin=woocommerce/woocommerce.php" | tee /dev/stderr | grep -q '\\"active\\":true' \
-    || { echo "WooCommerce did not activate (a result: record it)"; exit 1; }
+  # Require "persisted":true (a top-level field /_activate now returns after it re-reads
+  # active_plugins from the Durable Object SQLite and commits): a write that did not survive the
+  # runtime teardown (the b-dosql live bug, active_plugins read back as a:0:{}) fails here
+  # instead of reporting a store that cannot take orders.
+  curl -s -m 300 -X POST -H "x-spike-token: $SPIKE_TOKEN" "$URL/_activate?plugin=woocommerce/woocommerce.php" | tee /dev/stderr | grep -q '"persisted":true' \
+    || { echo "WooCommerce did not activate and persist (a result: record it)"; exit 1; }
 fi
 
 PW_HINT="(admin; password: cd deploy/terraform && terraform workspace select $NAME && terraform output -raw admin_password)"

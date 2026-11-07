@@ -1699,13 +1699,29 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 						$sync = wc_get_container()->get( 'Automattic\\\\WooCommerce\\\\Internal\\\\DataStores\\\\Orders\\\\DataSynchronizer' );
 						if ( ! $sync->check_orders_table_exists() ) $sync->create_database_tables();
 					}
-					echo json_encode( array( 'active' => is_plugin_active( '${plugin}' ), 'error' => is_wp_error( $r ) ? $r->get_error_message() : null ) );` });
+					// WooCommerce's activation hook runs WC_Install::install (the wc_* tables); make sure it ran.
+					if ( '${plugin}' === 'woocommerce/woocommerce.php' && class_exists( 'WC_Install' ) ) { WC_Install::install(); }
+					// DURABILITY (issue #35, b-dosql activation): real-transactions.php rolls back any transaction
+					// still OPEN at the end of the request, and this raw run skips WordPress shutdown, so an
+					// activation/install transaction left open was discarded on the live Durable Object
+					// (active_plugins read back as a:0:{} after a deploy, while miniflare persisted it locally).
+					// Commit so the write is durable before the runtime is torn down.
+					global $wpdb; $wpdb->query( 'COMMIT' );
+					// Prove it persisted: re-read active_plugins from the database, not the object cache.
+					wp_cache_delete( 'alloptions', 'options' );
+					$skyphusion_active = (array) get_option( 'active_plugins', array() );
+					echo json_encode( array( 'active' => is_plugin_active( '${plugin}' ), 'persisted' => in_array( '${plugin}', $skyphusion_active, true ), 'error' => is_wp_error( $r ) ? $r->get_error_message() : null ) );` });
 			} catch (e) {
 				bootPromise = null;
 				return new Response('activate failed: ' + String((e && e.message) || e), { status: 500 });
 			}
 			bootPromise = null; // a fresh runtime loads the plugin cleanly
-			return new Response(JSON.stringify({ out: r.text.slice(-2000), errors: String(r.errors).slice(0, 2000), d1: stats.calls - start }), { headers: { 'content-type': 'application/json' } });
+			const persistedMatch = r.text.match(/"persisted":(true|false)/);
+			const persisted = persistedMatch ? persistedMatch[1] === 'true' : null;
+			// A plugin that did not persist to the Durable Object fails LOUDLY (issue #35): a deploy must
+			// not pass on a lost activation write (active:true alone did, before this).
+			const activateStatus = (plugin && persisted === false) ? 500 : 200;
+			return new Response(JSON.stringify({ out: r.text.slice(-2000), errors: String(r.errors).slice(0, 2000), d1: stats.calls - start, persisted }), { status: activateStatus, headers: { 'content-type': 'application/json' } });
 		}
 		if (url.pathname === '/_opcache-dump') {
 			// Zip of the OPcache file cache, for opcache.sh. Run it after the e2e
