@@ -43,4 +43,22 @@ You give up, or must plan around (stated plainly, because they are real):
 - Transactional WooCommerce checkout needs a `shop` (the container), not a `wp` site: a Durable Object isolate hits its 128 MiB memory limit at checkout, so `wp` serves cached store BROWSING but cannot take an order.
 - You update by rebuilding and redeploying the artifact, not by editing files on a live box. That removes drift, and it is a change of habit.
 
+## What a normal host does for you, and how this does it
+
+A LAMP box gives WordPress a filesystem, a MySQL socket, a mail transport, image libraries, a cron daemon and an object cache, all for free. The edge gives none of those directly, so this stack rebuilds each one as a small drop-in. The list is worth knowing, because it tells you where a plugin that reaches around the drop-in will break.
+
+| A normal host gives you | How this stack provides it | A plugin can break here if it |
+| --- | --- | --- |
+| MySQL | the database is SQLite (in the `wp` site's Durable Object) or D1, reached through a `db.php` driver, a PDO stand-in and a SQL-dialect rewriter | runs raw MySQL-only SQL (stored procedures, some built-in functions, full-text search) that the rewriter does not cover |
+| Outbound HTTP from PHP | `wp_remote_*` is handed to the Worker, which makes the request with `fetch()` | opens a raw socket (`fsockopen`, a direct cURL handle) instead of the WordPress HTTP API |
+| A writable uploads directory | the media library is stored in R2 through the Worker | writes files straight to `wp-content/uploads` on disk instead of through the media API |
+| GD or Imagick | resize, crop and rotate go to Cloudflare Images | does its own pixel work in PHP |
+| Redis, Memcached or APCu | a drop-in object cache backed by the Worker runtime | assumes one specific cache backend is present |
+| A sendmail or SMTP socket | `wp_mail()` goes through the Worker and Cloudflare Email Service | talks to an SMTP server over a socket itself |
+| A cron daemon | WP-Cron and Action Scheduler are run on a schedule, not by visitor traffic | depends on real system cron timing |
+| Installing or editing plugins and themes from wp-admin | plugins and themes are pinned by content hash in the build and shipped as an artifact | expects to install, update or edit itself from the dashboard on a live site |
+| Real SQL transactions | restored by a drop-in on the `wp` site, whose embedded SQLite API does not expose them natively | (this one works; it is listed so you know it had to be restored) |
+
+None of these is a dead end: each is handled. The point is that the handling is explicit, so a plugin that assumes a traditional host instead of using the WordPress APIs is the thing to test before you rely on it. `docs/plugins.md` is how a standard plugin set is checked against each setup.
+
 Every number here is measured; the sources are in the framework quickstart's architecture section (`docs/framework.md`) and `docs/approach-c1.md`. Next: the quickstart, for the commands and the prerequisites.
