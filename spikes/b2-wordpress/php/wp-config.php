@@ -10,6 +10,16 @@ define( 'DB_HOST', '' );
 define( 'DB_CHARSET', 'utf8mb4' );
 define( 'DB_COLLATE', '' );
 
+// AST translation cache (issue #173): on by default. Turn it off per request
+// with the x-ast-cache-off header (same-binary A/B, no redeploy), or
+// permanently with the BOOTSTRAP_AST_CACHE=off environment variable. Defined
+// before wp-settings.php loads wp-content/db.php, so the driver sees it.
+if ( ! defined( 'BOOTSTRAP_AST_CACHE' ) ) {
+	if ( ! empty( $_SERVER['HTTP_X_AST_CACHE_OFF'] ) || 'off' === getenv( 'BOOTSTRAP_AST_CACHE' ) ) {
+		define( 'BOOTSTRAP_AST_CACHE', 'off' );
+	}
+}
+
 // The Worker writes wp-runtime.php at boot: keys derived from its WP_SALT secret,
 // and WP_HOME from the request origin. Without it (local only) fixed keys apply.
 if ( file_exists( __DIR__ . '/wp-runtime.php' ) ) {

@@ -42,7 +42,7 @@ rm -rf "$wp/wp-content/themes/twentytwentythree" "$wp/wp-content/themes/twentytw
 # from that site. Rules in deploy/import/content.sh.
 [ -z "${IMPORT_CONTENT:-}" ] || ../../deploy/import/content.sh "$IMPORT_CONTENT" "$wp/wp-content"
 mkdir -p "$wp/wp-content/mu-plugins"
-cp php/r2-uploads.php php/edge-cache.php php/woo-edge.php php/rest-route-cache.php php/http-bridge.php php/real-transactions.php "$wp/wp-content/mu-plugins/"
+cp php/r2-uploads.php php/edge-cache.php php/woo-edge.php php/rest-route-cache.php php/http-bridge.php php/real-transactions.php php/ast-cache-stats.php "$wp/wp-content/mu-plugins/"
 mkdir -p "$wp/wp-content/mu-plugins/r2-uploads"
 cp php/cf-images-editor.php "$wp/wp-content/mu-plugins/r2-uploads/"
 if [ "${ENGINE:-d1}" = a ]; then
@@ -63,6 +63,12 @@ s, n = re.subn(r"\$translator = new WP_MySQL_On_SQLite\(.*?\);\s*\$translator->s
 assert n == 1, "install-functions.php patch did not apply"
 open(p, "w").write(s)
 PY
+# AST translation cache (issue #173): patch the fetched engine so repeated
+# identical queries within a request skip lex+parse (the ~46%-of-checkout-PHP
+# cost). translate and result assembly stay on the normal path; the AST is
+# read-only after parse, so it is reused without cloning. x-ast-cache header
+# via php/ast-cache-stats.php; off per request with x-ast-cache-off (wp-config).
+python3 php/patch-ast-cache.py "$wp/wp-content/plugins/sqlite-database-integration/wp-includes/database/sqlite/class-wp-mysql-on-sqlite.php"
 fi
 cp php/wp-config.php "$wp/"
 
