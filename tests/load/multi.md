@@ -19,10 +19,10 @@ curl -fsSLO https://raw.githubusercontent.com/skyphusion-labs/wordpress-on-cloud
 Set the four site base URLs (a site is `name:type:url`; type is `woo` or `reg`):
 
 ```sh
-export SITES="shop:woo:https://wp-shop.<sub>.workers.dev \
-              store:woo:https://wp-store.<sub>.workers.dev \
-              blog:reg:https://wp-blog.<sub>.workers.dev \
-              news:reg:https://wp-news.<sub>.workers.dev"
+export SITES="shop:woo:https://wp-shop.skyphusion.workers.dev \
+              store:woo:https://wp-store.skyphusion.workers.dev \
+              blog:reg:https://wp-blog.skyphusion.workers.dev \
+              news:reg:https://wp-news.skyphusion.workers.dev"
 ```
 
 Two ramp runs, one that misses the Workers Cache (reaches the Durable Object) and one that hits it:
@@ -56,8 +56,8 @@ Per site, per step: p50/p95/p99 latency (ms), requests per second, the status cl
 
 ## Paths hit
 
-- `woo` sites: `/`, `/shop/`, `/?post_type=product` (home, storefront, product archive). Override with `WOO_PATHS` (comma list).
-- `reg` sites: `/`, `/?p=1` (home, first post). Override with `REG_PATHS`.
+- `woo` sites: `/`, `/shop/` (home and the storefront/product-archive query). Override with `WOO_PATHS` (comma list). The stores have no seeded products, so no individual product URL is hit; `/shop/` exercises the archive query.
+- `reg` sites: `/`, `/?page_id=2` (home and the default Sample Page). Override with `REG_PATHS`. A 404 on the second path shows in the status counts rather than being hidden.
 - Checkout is never in the sustained load; use `CHECKOUT_PROBE=1` for the one-shot boundary check above.
 
 ## Offline self-check

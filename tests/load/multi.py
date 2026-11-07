@@ -23,8 +23,11 @@ Environment:
               misses the Workers Cache and reaches the Durable Object.
               hit: no nocache, so the edge cache can answer. Run both for the
               cache-hit vs cache-miss comparison (two invocations).
-  WOO_PATHS   comma paths for woo sites (default "/,/shop/,/?post_type=product").
-  REG_PATHS   comma paths for reg sites (default "/,/?p=1").
+  WOO_PATHS   comma paths for woo sites (default "/,/shop/"). /shop/ is the
+              product-archive query; the stores have no seeded products, so no
+              individual product URL is hit.
+  REG_PATHS   comma paths for reg sites (default "/,/?page_id=2": home and the
+              default Sample Page). A 404 here shows in the status counts.
   CHECKOUT_PROBE=1  one GET /checkout/ per woo site before the ramp, recorded on
               its own (NOT sustained): confirms the isolate memory limit (error
               1102) without stressing it. Not loaded in the ramp.
@@ -49,8 +52,8 @@ if CACHE not in ("miss", "hit"):
 SECONDS = float(os.environ.get("SECONDS", "30"))
 LEVELS = [int(x) for x in os.environ.get("LEVELS", "10,50,100,250").split(",") if x.strip()]
 PER_SITE = os.environ.get("PER_SITE", "0") == "1"
-WOO_PATHS = [p for p in os.environ.get("WOO_PATHS", "/,/shop/,/?post_type=product").split(",") if p]
-REG_PATHS = [p for p in os.environ.get("REG_PATHS", "/,/?p=1").split(",") if p]
+WOO_PATHS = [p for p in os.environ.get("WOO_PATHS", "/,/shop/").split(",") if p]
+REG_PATHS = [p for p in os.environ.get("REG_PATHS", "/,/?page_id=2").split(",") if p]
 MODE = os.environ.get("MODE", "ramp")
 ISO_HEAVY = int(os.environ.get("ISO_HEAVY", "200"))
 ISO_LIGHT = int(os.environ.get("ISO_LIGHT", "10"))
