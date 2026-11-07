@@ -1701,6 +1701,14 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 					require '/wordpress/wp-load.php';
 					require_once ABSPATH . 'wp-admin/includes/plugin.php';
 					wp_set_current_user( 1 );
+					// Deploy-time activation race (#35): seed WooCommerce's own attribute-taxonomies transient so
+					// its admin init (wc_get_attribute_taxonomies) does not read wp_woocommerce_attribute_taxonomies
+					// before the activation creates it. A cold just-deployed isolate hits this read-before-create
+					// window and logs "no such table"; a warm activate does not, because the table already exists.
+					// wc_get_attribute_taxonomies() checks this transient before the DB, and there are no attributes
+					// at activation, so an empty seed is correct; WC_Install then creates the table and normal cache
+					// invalidation takes over.
+					if ( '${plugin}' === 'woocommerce/woocommerce.php' ) { set_transient( 'wc_attribute_taxonomies', array() ); }
 					$r = activate_plugin( '${plugin}' );
 					// WooCommerce sends the first admin visit to its setup wizard (a 302 on /wp-admin/). A deploy has no use for it.
 					delete_transient( '_wc_activation_redirect' );
