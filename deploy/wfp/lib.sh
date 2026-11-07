@@ -27,6 +27,11 @@ user_script() { echo "site-$1"; }
 dispatcher_name() { echo "wp-$1"; }
 media_bucket() { echo "wp-wfp-$1-media"; }
 
+# The "build" field of a site's map entry (issue #35 slice 5): the rollback
+# target for "site update". Uses kv_build.py, not an inline literal in a pipe.
+entry_build() { # entry_build <site>
+  api GET "/storage/kv/namespaces/$KV_ID/values/$(dispatcher_name "$1").$SUB.workers.dev" | python3 "$WFP/kv_build.py"
+}
 compat_date() { sed -n 's/^compatibility_date = "\(.*\)"/\1/p' "$APP/wrangler.toml" | head -1; }
 
 # The dispatcher config for one site, from the ONE template: only @SITE@

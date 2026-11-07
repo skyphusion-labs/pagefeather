@@ -49,6 +49,7 @@ jobs:
           deploy/wfp/tests/dbsnap-test.sh
           deploy/wfp/tests/wait-build-test.sh
           deploy/wfp/tests/update-all-test.sh
+          deploy/wfp/tests/kv-build-test.sh
       - name: c1 warm start tests
         # spikes/c1-woo-container/warm.js (issue #73): product views, rate limits, never through fetch.
         run: node spikes/c1-woo-container/tests/warm-test.mjs
