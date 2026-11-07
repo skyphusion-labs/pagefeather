@@ -70,6 +70,7 @@ jobs:
         run: |
           node deploy/wfp/tests/dispatcher-test.mjs
           deploy/wfp/tests/render-test.sh
+          deploy/wfp/tests/deploy-retry-test.sh
           deploy/wfp/tests/ns-state-test.sh
           deploy/wfp/tests/kv-ready-test.sh
           deploy/wfp/tests/wait-site-test.sh
