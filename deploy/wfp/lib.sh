@@ -27,6 +27,26 @@ user_script() { echo "site-$1"; }
 dispatcher_name() { echo "wp-$1"; }
 media_bucket() { echo "wp-wfp-$1-media"; }
 
+# Phase B (#138, CR gated): the one shared dispatcher, and a site's hostname
+# when it has a Custom Domain. WFP_SUBDOMAIN is the test subdomain CR #138
+# routes; WFP_CUSTOM_DOMAIN=1 selects phase B. The default is phase A
+# (workers.dev), so these change nothing until the flag is set.
+SHARED_DISPATCHER=${SHARED_DISPATCHER:-wp-dispatch}
+WFP_SUBDOMAIN=${WFP_SUBDOMAIN:-wfp-test.skyphusion.org}
+custom_host() { echo "$1.$WFP_SUBDOMAIN"; }
+
+# A site's routed hostname and its site map key, decided in ONE place so the
+# key and the route can never drift. Phase A: the per-site workers.dev
+# dispatcher wp-<name>. Phase B: the site's Custom Domain <name>.<subdomain>.
+site_host() { # site_host <site> <workers.dev subdomain>
+  if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ]; then custom_host "$1"; else echo "$(dispatcher_name "$1").$2.workers.dev"; fi
+}
+
+# The shared dispatcher config (phase B): the same ONE template as phase A,
+# rendered with the fixed name wp-dispatch (it routes by request hostname, so
+# nothing per-site). render_shared_dispatcher <kv namespace id>.
+render_shared_dispatcher() { sed -e "s/@SITE@/dispatch/g" -e "s/@NAMESPACE@/$NAMESPACE/g" -e "s/@KV_ID@/$1/g" -e "s/@COMPAT@/$(compat_date)/g" "$WFP/dispatcher/wrangler.template.toml"; }
+
 # The "build" field of a site's map entry (issue #35 slice 5): the rollback
 # target for "site update". Uses kv_build.py, not an inline literal in a pipe.
 # The number of rows in the object's SQLite (issue #35 slice 5), via
@@ -35,7 +55,7 @@ row_count() { # row_count <origin> <token>
   curl -s -m 120 -H "x-spike-token: $2" "$1/_dbexport" 2>/dev/null | grep -c . || true
 }
 entry_build() { # entry_build <site>
-  api GET "/storage/kv/namespaces/$KV_ID/values/$(dispatcher_name "$1").$SUB.workers.dev" | python3 "$WFP/kv_build.py"
+  api GET "/storage/kv/namespaces/$KV_ID/values/$(site_host "$1" "$SUB")" | python3 "$WFP/kv_build.py"
 }
 compat_date() { sed -n 's/^compatibility_date = "\(.*\)"/\1/p' "$APP/wrangler.toml" | head -1; }
 
@@ -232,19 +252,24 @@ wait_site() { # wait_site <origin>
 # absent; "site remove" checks that every part is absent after.
 site_footprint() { # site_footprint <name>
   local s=$1 c
-  c=$(api_code GET "/workers/scripts/$(dispatcher_name "$s")")
-  case "$c" in 200) echo "dispatcher yes" ;; 404) echo "dispatcher no" ;; *) echo "dispatcher unknown" ;; esac
+  if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ]; then
+    # Phase B: the per-site routing is the Custom Domain, not a per-site Worker.
+    if api GET "/workers/domains" | grep -q "\"$(site_host "$s" "$SUB")\""; then echo "domain yes"; else echo "domain no"; fi
+  else
+    c=$(api_code GET "/workers/scripts/$(dispatcher_name "$s")")
+    case "$c" in 200) echo "dispatcher yes" ;; 404) echo "dispatcher no" ;; *) echo "dispatcher unknown" ;; esac
+  fi
   echo "script $(ns_script_state "$(user_script "$s")")"
-  c=$(api_code GET "/storage/kv/namespaces/$KV_ID/values/$(dispatcher_name "$s").$SUB.workers.dev")
+  c=$(api_code GET "/storage/kv/namespaces/$KV_ID/values/$(site_host "$s" "$SUB")")
   case "$c" in 200) echo "entry yes" ;; 404) echo "entry no" ;; *) echo "entry unknown" ;; esac
   c=$(api_code GET "/r2/buckets/$(media_bucket "$s")")
   case "$c" in 200) echo "bucket yes" ;; 404) echo "bucket no" ;; *) echo "bucket unknown" ;; esac
 }
 footprint_absent() { # footprint_absent <footprint text>: 0 when every part is absent
-  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher no|script gone|entry no|bucket no)$'
+  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher no|domain no|script gone|entry no|bucket no)$'
 }
 footprint_present() { # footprint_present <footprint text>: 0 when every part is there
-  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher yes|script present|entry yes|bucket yes)$'
+  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher yes|domain yes|script present|entry yes|bucket yes)$'
 }
 # The sites: the Terraform workspaces of terraform/site, without "default".
 list_sites() {
