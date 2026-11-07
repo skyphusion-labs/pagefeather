@@ -1,8 +1,9 @@
 # WordPress on Cloudflare
 
-This repository records which ways of running WordPress on Cloudflare work, and on which Cloudflare plan.
+Two things live here: a **framework** for running many WordPress sites and WooCommerce stores on your own Cloudflare Workers for Platforms account, each provisioned by one command or by a Worker; and the **research** that produced it, recorded below as a matrix of which approaches work on which Cloudflare plan.
 
-**Building the multi-tenant framework this research produced** (many WordPress sites and transactional WooCommerce stores on Workers for Platforms, provisionable by one command or by a Worker, on your own account)? Start with the quickstart: [docs/framework.md](docs/framework.md).
+- **To run sites:** start with the framework quickstart, [docs/framework.md](docs/framework.md). Coming from a traditional LAMP WordPress host, read [docs/from-lamp-to-wfp.md](docs/from-lamp-to-wfp.md) first.
+- **To read the research:** the matrix is below, and every document is indexed in [docs/](docs/README.md).
 
 Each claim has a source. A cell is one of these:
 
