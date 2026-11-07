@@ -64,6 +64,32 @@ curl -X POST https://<your-provisioning-worker>/ \
 
 The Worker holds a provisioning token (the scopes above) and the pre-built bundle; it never builds an image or a bundle. This is what makes self-serve or automated provisioning possible: your own control plane, or a customer UI, stands up a site by calling a Worker.
 
+## The SaaS zone (one-time setup)
+
+End-user vanity domains reach the dispatcher through one SaaS zone, wired once. The dispatcher (`wp-dispatch`) routes by the request `Host` through the KV site map, so adding a site is a KV entry plus a custom hostname, never a new route.
+
+1. Enable Cloudflare for SaaS on the zone (it needs the SSL-for-SaaS entitlement allocated to the account).
+2. Add an originless fallback origin and set it as the zone's SaaS fallback:
+
+```sh
+# AAAA fallback.<saas-zone> -> 100:: (proxied), then mark it the fallback origin
+curl -X POST "$B/zones/$ZONE/dns_records" -H "$AUTH" \
+  --data '{"type":"AAAA","name":"fallback.<saas-zone>","content":"100::","proxied":true}'
+curl -X PUT "$B/zones/$ZONE/custom_hostnames/fallback_origin" -H "$AUTH" \
+  --data '{"origin":"fallback.<saas-zone>"}'
+```
+
+3. Point a `*/*` Worker route at the dispatcher:
+
+```sh
+curl -X POST "$B/zones/$ZONE/workers/routes" -H "$AUTH" \
+  --data '{"pattern":"*/*","script":"wp-dispatch"}'
+```
+
+`*/*` is the Cloudflare-recommended pattern: it catches every custom hostname entering the zone whatever the customer's DNS proxy mode. It also catches the zone's own subdomains, so use a DEDICATED zone with no other traffic. On a zone that also serves your own sites, either exclude them with more-specific routes that name no Worker, or route each vanity domain by its own hostname (`vanity.customer.com`) instead of `*/*`; a per-hostname route only fires when the customer's record is grey-clouded (DNS-only), which is why `*/*` on a dedicated zone is the robust default.
+
+Live reference: this project's own home is `skyphusionwp.dev`. Fallback `fallback.skyphusionwp.dev` (AAAA `100::`), `*/*` to `wp-dispatch`, proven end to end: an end-user vanity domain on a separate zone, grey-cloud CNAME to the fallback, served WordPress over HTTPS with an active certificate.
+
 ## Bring your own domain (two ownership modes)
 
 End users reach a site on a vanity domain through Cloudflare for SaaS, routed by the dispatcher. The op `addCustomHostname({mode, dcvDelegation?})` supports two ownership modes that differ ONLY in who places the DNS records.
