@@ -77,6 +77,7 @@ jobs:
           deploy/wfp/tests/snapshot-test.sh
           deploy/wfp/tests/site-cmd-test.sh
           deploy/wfp/tests/custom-domain-test.sh
+          python3 deploy/wfp/tests/check-test.py
           python3 deploy/wfp/tests/bindings-test.py
           python3 deploy/wfp/tests/cross-test.py
           deploy/wfp/tests/probe-entry-test.sh
