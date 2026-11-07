@@ -13,6 +13,8 @@
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 SNAP=${1:-$HERE/../snapshot.py}
+# shellcheck disable=SC1090
+. "$HERE/../lib.sh"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 fails=0
 ok() { if [ "$2" = 1 ]; then echo "PASS $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi; }
@@ -34,5 +36,9 @@ ok "dbrestore ok: exit 0 ($r)" "$([ "$rr" = 0 ] && echo 1 || echo 0)"
 pid=$(start import-error); U="http://127.0.0.1:$(cat "$T/port")"; snap "$U" "k1.ndjson" >/dev/null; r=$(restore "$U" "k1.ndjson"); rr=$?
 kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
 ok "dbrestore import-error: exit 1, stage import ($r)" "$([ "$rr" = 1 ] && printf '%s' "$r" | grep -q import && echo 1 || echo 0)"
+# row_count (lib.sh) reads /_dbexport and counts the rows (the fake ok mode has 3).
+pid=$(start ok); U="http://127.0.0.1:$(cat "$T/port")"; rc_rows=$(row_count "$U" t)
+kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+ok "row_count reads /_dbexport (got $rc_rows, want 3)" "$([ "$rc_rows" = 3 ] && echo 1 || echo 0)"
 echo "$fails failing case(s)"
 exit $fails

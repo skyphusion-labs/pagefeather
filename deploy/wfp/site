@@ -40,6 +40,7 @@ update_one() {
   TOK=$(tfr site output -raw spike_token); bucket=$(media_bucket "$s"); EP=$(tfr site output -raw r2_endpoint)
   rollback=$(entry_build "$s")
   echo "site $s: the live build is ${rollback:-unknown}"
+  [ "${COUNT_ROWS:-0}" = 1 ] && echo "site $s: rows before: $(row_count "$ORIGIN" "$TOK")"
   if [ "${NO_SNAPSHOT:-0}" != 1 ]; then
     snap_key="$s/${rollback:-unknown}-$(date -u +%Y%m%dT%H%M%SZ).ndjson"
     echo "site $s: snapshot the data to $bucket/_snapshots/$snap_key"
@@ -61,7 +62,13 @@ update_one() {
   echo "site $s: verify the new build is live"
   wait_build "$ORIGIN" "$TOK" "$new" || ok=0
   [ "$ok" = 1 ] && { [ "$(curl -s -o /dev/null -w '%{http_code}' -m 60 "$ORIGIN/?nocache=$RANDOM")" = 200 ] || { echo "site $s: the site did not answer 200 after the update" >&2; ok=0; }; }
-  if [ "$ok" = 1 ]; then echo "site $s: updated $rollback -> $new"; return 0; fi
+  # A test hook (issue #35 slice 5): force the verify to fail, to exercise the
+  # rollback path against an otherwise-good new build. Off unless FORCE_FAIL=verify.
+  [ "${FORCE_FAIL:-}" = verify ] && { echo "site $s: FORCE_FAIL=verify, forcing a verify failure to exercise the rollback" >&2; ok=0; }
+  if [ "$ok" = 1 ]; then
+    [ "${COUNT_ROWS:-0}" = 1 ] && echo "site $s: rows after (updated): $(row_count "$ORIGIN" "$TOK")"
+    echo "site $s: updated $rollback -> $new"; return 0
+  fi
   echo "site $s: ROLLING BACK to $rollback. NOTE: a rollback drops any write made between the snapshot and now." >&2
   if [ -n "$snap_key" ]; then
     WFP_S3_ENDPOINT="$EP" python3 -I "$WFP/snapshot.py" dbrestore "$ORIGIN" "$TOK" "$bucket" "$snap_key" || echo "site $s: the data restore FAILED; the snapshot is $bucket/_snapshots/$snap_key" >&2
@@ -80,6 +87,7 @@ update_one() {
         fi
         tfr site apply -input=false -auto-approve -var "name=$s" -var "hostname=$(dispatcher_name "$s").$SUB.workers.dev" -var "kv_namespace_id=$KV_ID" -var "build=$rollback" >/dev/null ;;
   esac
+  [ "${COUNT_ROWS:-0}" = 1 ] && echo "site $s: rows after (rolled back): $(row_count "$ORIGIN" "$TOK")"
   return 1
 }
 

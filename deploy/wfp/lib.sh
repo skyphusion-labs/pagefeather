@@ -29,6 +29,11 @@ media_bucket() { echo "wp-wfp-$1-media"; }
 
 # The "build" field of a site's map entry (issue #35 slice 5): the rollback
 # target for "site update". Uses kv_build.py, not an inline literal in a pipe.
+# The number of rows in the object's SQLite (issue #35 slice 5), via
+# /_dbexport: used to show data survived an update or a rollback.
+row_count() { # row_count <origin> <token>
+  curl -s -m 120 -H "x-spike-token: $2" "$1/_dbexport" 2>/dev/null | grep -c . || true
+}
 entry_build() { # entry_build <site>
   api GET "/storage/kv/namespaces/$KV_ID/values/$(dispatcher_name "$1").$SUB.workers.dev" | python3 "$WFP/kv_build.py"
 }
