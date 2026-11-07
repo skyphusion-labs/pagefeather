@@ -78,6 +78,11 @@ jobs:
           deploy/wfp/tests/site-cmd-test.sh
           deploy/wfp/tests/custom-domain-test.sh
           python3 deploy/wfp/tests/check-test.py
+          node deploy/provision/tests/ops-test.mjs
+          node deploy/provision/tests/provision-test.mjs
+          node deploy/provision/tests/cli-test.mjs
+          node deploy/provision/tests/worker-test.mjs
+          node deploy/provision/tests/custom-hostname-test.mjs
           python3 deploy/wfp/tests/bindings-test.py
           python3 deploy/wfp/tests/cross-test.py
           deploy/wfp/tests/probe-entry-test.sh
