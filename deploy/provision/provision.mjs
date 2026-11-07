@@ -7,6 +7,7 @@
 import {
   createR2Bucket, mintScopedR2Token,
   deployNamespaceScript, deployContainerWorkerFromDigest,
+  ensureProxiedHostname,
 } from './ops.mjs';
 import { upsertSite } from './registry.mjs';
 
@@ -35,6 +36,10 @@ async function provisionWp(ctx, cfg) {
   const steps = [];
   const script = `site-${cfg.name}`;
   steps.push(await createR2Bucket(ctx, cfg.buckets.media));
+  // sqliteClasses: the SQLite Durable Object classes the bundle defines (for
+  // b-dosql, ['PhpRuntime']). They MUST be declared in a migration or the DO
+  // binding is rejected (API 10061, measured #158). Default to b-dosql's class.
+  const sqliteClasses = cfg.sqliteClasses || ['PhpRuntime'];
   await deployNamespaceScript(ctx, {
     ns: cfg.namespace,
     name: script,
@@ -43,10 +48,19 @@ async function provisionWp(ctx, cfg) {
     bindings: [...(cfg.resourceBindings || []), ...secretBindings(cfg.secrets)],
     compatibilityDate: cfg.compatibilityDate,
     compatibilityFlags: cfg.compatibilityFlags || [],
+    migrations: { new_tag: cfg.migrationTag || 'v1', new_sqlite_classes: sqliteClasses },
   });
-  steps.push({ deployed: script, ns: cfg.namespace });
+  steps.push({ deployed: script, ns: cfg.namespace, sqliteClasses });
   const entry = { script, kind: 'wp', outbound: true, ...(cfg.limits || {}) };
   await upsertSite(ctx, { kvId: cfg.kvId, hostname: cfg.hostname, entry });
+  // Routing: a namespace site is reached through the SaaS zone's */* dispatcher
+  // (wp-dispatch), which routes by Host through this KV map. For the hostname to
+  // enter the zone it needs a proxied originless record. When saasZoneId is set,
+  // the core places it, so a Worker can provision a reachable site with no
+  // operator step. Idempotent: an existing record is success.
+  if (cfg.saasZoneId) {
+    steps.push(await ensureProxiedHostname(ctx, { zoneId: cfg.saasZoneId, hostname: cfg.hostname }));
+  }
   return { kind: 'wp', name: cfg.name, script, hostname: cfg.hostname, entry, steps };
 }
 

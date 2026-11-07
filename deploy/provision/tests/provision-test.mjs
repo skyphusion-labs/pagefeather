@@ -45,7 +45,25 @@ const metaOf = async (call) => JSON.parse(await call.body.get('metadata').text()
   const secretNames = meta.bindings.filter((b) => b.type === 'secret_text').map((b) => b.name).sort();
   ok('wp: secrets are secret_text bindings in the deploy (atomic)', secretNames.join(',') === 'SPIKE_TOKEN,WP_SALT');
   ok('wp: resource binding carried too', meta.bindings.some((b) => b.type === 'durable_object_namespace' && b.name === 'PHP'));
+  ok('wp: migration declares the SQLite DO class (fixes live 10061)', meta.migrations && meta.migrations.new_sqlite_classes.includes('PhpRuntime'));
   ok('wp: registry entry kind wp', r.entry.kind === 'wp' && r.script === 'site-blog');
+}
+
+// wp with a SaaS zone: the core also places the proxied routing record so the
+// */* dispatcher reaches the site (no operator step; Worker-provisionable).
+{
+  const rec = recorder();
+  await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl }, {
+    kind: 'wp', name: 'shopfront', namespace: 'wp-wfp', kvId: 'KV',
+    hostname: 'shopfront.skyphusionwp.dev', saasZoneId: 'ZONE',
+    compatibilityDate: '2026-07-01', mainModule: 'index.js',
+    modules: [{ name: 'index.js', content: 'export default {}' }],
+    sqliteClasses: ['PhpRuntime'],
+    secrets: { WP_SALT: 's1', SPIKE_TOKEN: 's2' }, buckets: { media: 'wp-wfp-shopfront-media' },
+  });
+  const u = rec.calls.map((c) => `${c.method} ${c.url.split('/client/v4')[1]}`);
+  ok('wp+saas: a proxied routing record is placed on the SaaS zone',
+    u.some((c) => /POST \/zones\/ZONE\/dns_records$/.test(c)));
 }
 
 // shop: two buckets, mint (before deploy), container deploy with digest + the

@@ -104,10 +104,23 @@ const ctxOf = (s) => ({ acct: ACCT, token: 'T', fetchImpl: s.fetchImpl });
     ns: 'wp-wfp', name: 'site-blog', mainModule: 'index.js',
     modules: [{ name: 'index.js', content: 'export default {}' }],
     bindings: [{ type: 'kv_namespace', name: 'SITES', namespace_id: 'KV' }], compatibilityDate: '2026-07-01',
+    migrations: { new_sqlite_classes: ['PhpRuntime'] },
   });
   const meta = JSON.parse(await s.calls[0].body.get('metadata').text());
   ok('wp deploy PUTs the namespace script', s.calls[0].url.endsWith(`/workers/dispatch/namespaces/wp-wfp/scripts/site-blog`));
   ok('wp metadata carries main_module + bindings', meta.main_module === 'index.js' && meta.bindings[0].name === 'SITES');
+  // A SQLite DO binding without a migration is API 10061 (measured #158).
+  ok('wp metadata carries the SQLite migration', meta.migrations && meta.migrations.new_tag === 'v1' && meta.migrations.new_sqlite_classes[0] === 'PhpRuntime');
+}
+// 7b. deployNamespaceScript with no SQLite classes omits migrations entirely.
+{
+  const s = stub();
+  await deployNamespaceScript(ctxOf(s), {
+    ns: 'wp-wfp', name: 'site-plain', mainModule: 'index.js',
+    modules: [{ name: 'index.js', content: 'export default {}' }], compatibilityDate: '2026-07-01',
+  });
+  const meta = JSON.parse(await s.calls[0].body.get('metadata').text());
+  ok('a site with no DO class sends no migrations key', !('migrations' in meta));
 }
 
 // 8. registry: upsert (PUT), list (keys), read (value), remove (DELETE).

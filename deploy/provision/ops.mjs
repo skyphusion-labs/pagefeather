@@ -69,6 +69,7 @@ export async function writeKVMapEntry(ctx, { kvId, key, value }) {
 // replaces the script, so it is idempotent.
 export async function deployNamespaceScript(ctx, {
   ns, name, mainModule, modules, bindings = [], compatibilityDate, compatibilityFlags = [],
+  migrations,
 }) {
   const metadata = {
     main_module: mainModule,
@@ -76,6 +77,14 @@ export async function deployNamespaceScript(ctx, {
     compatibility_flags: compatibilityFlags,
     bindings,
   };
+  // A SQLite Durable Object class binding is REJECTED (API 10061) unless a
+  // migration declares the class. The b-dosql wp site binds PhpRuntime, so the
+  // migration is not optional: without it the deploy throws and no site exists
+  // (measured live, #158). Only set it when classes are given, so a site with
+  // no DO class uploads unchanged.
+  if (migrations && migrations.new_sqlite_classes && migrations.new_sqlite_classes.length) {
+    metadata.migrations = { new_tag: migrations.new_tag || 'v1', new_sqlite_classes: migrations.new_sqlite_classes };
+  }
   const form = buildScriptForm(metadata, modules);
   const r = await cfFetch(ctx.token, 'PUT',
     `/accounts/${ctx.acct}/workers/dispatch/namespaces/${ns}/scripts/${name}`,
@@ -111,6 +120,17 @@ export async function deployContainerWorkerFromDigest(ctx, {
     { body: form, fetchImpl: ctx.fetchImpl });
   if (!r.ok) throw opError('deployContainerWorkerFromDigest', name, r);
   return { name, imageRef };
+}
+
+// Routing: a proxied originless record (AAAA 100::) so a hostname enters the
+// SaaS zone and the */* dispatcher runs on it. Idempotent: an already-present
+// record (81053/81057) is success. The dispatcher routes by Host through KV, so
+// the record carries no origin of its own.
+export async function ensureProxiedHostname(ctx, { zoneId, hostname }) {
+  const r = await cfFetch(ctx.token, 'POST', `/zones/${zoneId}/dns_records`,
+    { body: { type: 'AAAA', name: hostname, content: '100::', proxied: true }, fetchImpl: ctx.fetchImpl });
+  if (!r.ok && !r.errors.some((e) => e.code === 81053 || e.code === 81057)) throw opError('ensureProxiedHostname', hostname, r);
+  return { routed: hostname, zone: zoneId };
 }
 
 // A modules-format script upload body: one JSON metadata part plus each module
