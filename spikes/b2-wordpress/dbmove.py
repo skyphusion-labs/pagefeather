@@ -54,13 +54,39 @@ def export(base, path, from_d1):
     print(f"exported {lines} lines, {end['rows']} rows, to {path}")
 
 
+def last_nonempty_line(path):
+    # The last non-empty line, read by streaming (O(1) memory): the dump can be
+    # tens of MB at volume, and reading the whole file just to check its end
+    # line would load it all into memory on the client.
+    last = None
+    with open(path, "rb") as f:
+        for line in f:
+            if line.strip():
+                last = line
+    return last
+
+
+def describe_oversized(line):
+    # A single row larger than PART_BYTES cannot be sent (the Worker refuses a
+    # body over 2 MB). Name the row's table so the operator knows what to trim,
+    # instead of only the byte count.
+    try:
+        sql = json.loads(line).get("sql", "")
+    except Exception:
+        sql = ""
+    where = (sql[:80] + ("..." if len(sql) > 80 else "")) if sql else "(could not parse the line)"
+    return (f"a single row is {len(line)} bytes, over the {PART_BYTES}-byte part limit "
+            f"(the Worker refuses a body over 2 MB): {where}\n"
+            f"Trim this row at the source or import it by hand.")
+
+
 def parts(path):
     part = []
     size = 0
     with open(path, "rb") as f:
         for line in f:
             if len(line) > PART_BYTES:
-                sys.exit(f"a line is {len(line)} bytes, more than {PART_BYTES}: import it by hand")
+                sys.exit(describe_oversized(line))
             if size + len(line) > PART_BYTES and part:
                 yield b"".join(part)
                 part, size = [], 0
@@ -71,9 +97,8 @@ def parts(path):
 
 
 def load(base, path, replace):
-    with open(path, "rb") as f:
-        lines = f.read().splitlines()
-    if not lines or not json.loads(lines[-1]).get("end"):
+    last = last_nonempty_line(path)
+    if not last or not json.loads(last).get("end"):
         sys.exit("the dump has no end line: it is incomplete")
     url = base.rstrip("/") + "/_dbimport"
     total = 0
