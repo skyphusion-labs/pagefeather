@@ -1764,6 +1764,9 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			}
 			const headers = {};
 			req.headers.forEach((v, k) => (headers[k] = v));
+			// The AST-cache per-request bypass (issue #173) is honored only with a
+			// valid spike token, so a visitor cannot disable the cache in production.
+			if (!spikeOk) delete headers['x-ast-cache-off'];
 			let body;
 			if (env.MEDIA && isMediaUpload(req, url) && Number(req.headers.get('content-length') || 0) > STAGE_MIN_BYTES) {
 				const staged = await stageUpload(req, env);
