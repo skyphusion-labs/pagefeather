@@ -2,6 +2,8 @@
 
 This repository records which ways of running WordPress on Cloudflare work, and on which Cloudflare plan.
 
+**Building the multi-tenant framework this research produced** (many WordPress sites and transactional WooCommerce stores on Workers for Platforms, provisionable by one command or by a Worker, on your own account)? Start with the quickstart: [docs/framework.md](docs/framework.md).
+
 Each claim has a source. A cell is one of these:
 
 | Mark | Meaning |
