@@ -78,7 +78,10 @@ update_one() {
     * ) echo "site $s: re-deploy the previous build $rollback from a git worktree"
         local WT; WT=$(mktemp -d)
         if git worktree add -q --detach "$WT" "$rollback" 2>/dev/null; then
-          ( cd "$WT/spikes/b2-wordpress" && ./build.sh >/dev/null 2>&1 && DEV_ENV=dosql-local ./opcache.sh >/dev/null 2>&1 \
+          # Unset BUILD_ID_OVERRIDE so the worktree build stamps the previous
+          # commit's own sha (issue #137); otherwise the caller's override id
+          # would mis-stamp the rolled-back build and /_build would not show it.
+          ( cd "$WT/spikes/b2-wordpress" && unset BUILD_ID_OVERRIDE && ./build.sh >/dev/null 2>&1 && DEV_ENV=dosql-local ./opcache.sh >/dev/null 2>&1 \
             && npx wrangler deploy --config wrangler.toml --name "$(user_script "$s")" --dispatch-namespace "$NAMESPACE" >/dev/null 2>&1 ) \
             && echo "site $s: re-deployed $rollback" || echo "site $s: the old-build re-deploy failed; deploy $rollback by hand" >&2
           git worktree remove -f "$WT" 2>/dev/null || true
