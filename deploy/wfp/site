@@ -28,8 +28,9 @@ has_ws() { list_sites | grep -qx "$1"; }
 # Update one site: snapshot the data, rebuild from the current tree, re-upload
 # the SAME script (same object, same data), record the new build, and verify
 # the new build is live and the site answers. On failure, roll back: restore
-# the data from the snapshot and, when the previous build is a reproducible git
-# sha, re-deploy it; the rollback drops writes made since the snapshot.
+# the data from the snapshot and re-deploy the exact code that was live (the
+# build artifact saved before the rebuild); the rollback drops writes made
+# since the snapshot.
 update_one() {
   local s=$1
   valid_site "$s" || { echo "bad site name: $s" >&2; return 2; }
