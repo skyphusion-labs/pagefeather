@@ -27,6 +27,36 @@ user_script() { echo "site-$1"; }
 dispatcher_name() { echo "wp-$1"; }
 media_bucket() { echo "wp-wfp-$1-media"; }
 
+# Phase B (#138, CR gated): the one shared dispatcher, and a site's hostname
+# when it has a Custom Domain. WFP_SUBDOMAIN is the test subdomain CR #138
+# routes; WFP_CUSTOM_DOMAIN=1 selects phase B. The default is phase A
+# (workers.dev), so these change nothing until the flag is set.
+SHARED_DISPATCHER=${SHARED_DISPATCHER:-wp-dispatch}
+WFP_SUBDOMAIN=${WFP_SUBDOMAIN:-wfp-test.skyphusion.org}
+custom_host() { echo "$1.$WFP_SUBDOMAIN"; }
+
+# A site's routed hostname and its site map key, decided in ONE place so the
+# key and the route can never drift. Phase A: the per-site workers.dev
+# dispatcher wp-<name>. Phase B: the site's Custom Domain <name>.<subdomain>.
+site_host() { # site_host <site> <workers.dev subdomain>
+  if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ]; then custom_host "$1"; else echo "$(dispatcher_name "$1").$2.workers.dev"; fi
+}
+
+# The shared dispatcher config (phase B): the same ONE template as phase A,
+# rendered with the fixed name wp-dispatch (it routes by request hostname, so
+# nothing per-site). render_shared_dispatcher <kv namespace id>.
+render_shared_dispatcher() { sed -e "s/@SITE@/dispatch/g" -e "s/@NAMESPACE@/$NAMESPACE/g" -e "s/@KV_ID@/$1/g" -e "s/@COMPAT@/$(compat_date)/g" "$WFP/dispatcher/wrangler.template.toml"; }
+
+# The "build" field of a site's map entry (issue #35 slice 5): the rollback
+# target for "site update". Uses kv_build.py, not an inline literal in a pipe.
+# The number of rows in the object's SQLite (issue #35 slice 5), via
+# /_dbexport: used to show data survived an update or a rollback.
+row_count() { # row_count <origin> <token>
+  curl -s -m 120 -H "x-spike-token: $2" "$1/_dbexport" 2>/dev/null | grep -c . || true
+}
+entry_build() { # entry_build <site>
+  api GET "/storage/kv/namespaces/$KV_ID/values/$(site_host "$1" "$SUB")" | python3 "$WFP/kv_build.py"
+}
 compat_date() { sed -n 's/^compatibility_date = "\(.*\)"/\1/p' "$APP/wrangler.toml" | head -1; }
 
 # The dispatcher config for one site, from the ONE template: only @SITE@
@@ -207,8 +237,15 @@ kv_wait_writable() { # kv_wait_writable <namespace id>
 #   retried:  no answer, 404, 5xx, x-wfp-error no-site or not-deployed
 #   fails at once: x-wfp-error bad-entry or dispatch (a configuration fault)
 # Bound SITE_WAIT (300) s, every SITE_WAIT_STEP (10) s; a timeout prints the last answer.
+# The time wait_site waits for a new site to answer. Phase B's FIRST deploy
+# must cover the Advanced Certificate issuance for a new Custom Domain, which
+# can exceed 15 min (Cloudflare docs: a new hostname has no certificate until
+# the pack is active, so TLS fails until then). Phase A has no certificate, so
+# it stays short. SITE_WAIT overrides either.
+site_wait_cap() { echo "${SITE_WAIT:-$([ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && echo 1800 || echo 300)}"; }
 wait_site() { # wait_site <origin>
-  local t0=$SECONDS t code err body
+  local t0=$SECONDS t code err body cap said_tls=0
+  cap=$(site_wait_cap)
   t=$(mktemp -d)
   while :; do
     code=$(curl -s -o "$t/b" -D "$t/h" -w '%{http_code}' -m 60 "$1/_dbping?nocache=$RANDOM$RANDOM" 2>/dev/null) || code=000
@@ -221,8 +258,16 @@ wait_site() { # wait_site <origin>
       echo "  the site answered HTTP $code after $((SECONDS - t0)) s"
       rm -rf "$t"; return 0
     fi
-    if [ $((SECONDS - t0)) -ge "${SITE_WAIT:-300}" ]; then
-      echo "the site did not answer in ${SITE_WAIT:-300} s; last: HTTP $code${err:+, x-wfp-error $err}, body: $body" >&2
+    # Phase B first deploy: a new Custom Domain's Advanced Certificate may still
+    # be issuing, so TLS is not ready and curl reads 000 or a 52x edge code.
+    # That is a delay, not a fault: say so once and keep waiting to the cap.
+    if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && [ "$said_tls" = 0 ] && [[ "$code" =~ ^(000|522|523|525|526)$ ]]; then
+      echo "  waiting for TLS on $1 (the Advanced Certificate may still be issuing; up to ${cap}s)"
+      said_tls=1
+    fi
+    if [ $((SECONDS - t0)) -ge "$cap" ]; then
+      echo "the site did not answer in ${cap} s; last: HTTP $code${err:+, x-wfp-error $err}, body: $body" >&2
+      [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && echo "  if the Advanced Certificate for $1 is still issuing, re-run up.sh once it is active: the data plane persists and the install completes on the re-run" >&2
       rm -rf "$t"; return 1
     fi
     sleep "${SITE_WAIT_STEP:-10}"
@@ -235,19 +280,24 @@ wait_site() { # wait_site <origin>
 # absent; "site remove" checks that every part is absent after.
 site_footprint() { # site_footprint <name>
   local s=$1 c
-  c=$(api_code GET "/workers/scripts/$(dispatcher_name "$s")")
-  case "$c" in 200) echo "dispatcher yes" ;; 404) echo "dispatcher no" ;; *) echo "dispatcher unknown" ;; esac
+  if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ]; then
+    # Phase B: the per-site routing is the Custom Domain, not a per-site Worker.
+    if api GET "/workers/domains" | grep -q "\"$(site_host "$s" "$SUB")\""; then echo "domain yes"; else echo "domain no"; fi
+  else
+    c=$(api_code GET "/workers/scripts/$(dispatcher_name "$s")")
+    case "$c" in 200) echo "dispatcher yes" ;; 404) echo "dispatcher no" ;; *) echo "dispatcher unknown" ;; esac
+  fi
   echo "script $(ns_script_state "$(user_script "$s")")"
-  c=$(api_code GET "/storage/kv/namespaces/$KV_ID/values/$(dispatcher_name "$s").$SUB.workers.dev")
+  c=$(api_code GET "/storage/kv/namespaces/$KV_ID/values/$(site_host "$s" "$SUB")")
   case "$c" in 200) echo "entry yes" ;; 404) echo "entry no" ;; *) echo "entry unknown" ;; esac
   c=$(api_code GET "/r2/buckets/$(media_bucket "$s")")
   case "$c" in 200) echo "bucket yes" ;; 404) echo "bucket no" ;; *) echo "bucket unknown" ;; esac
 }
 footprint_absent() { # footprint_absent <footprint text>: 0 when every part is absent
-  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher no|script gone|entry no|bucket no)$'
+  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher no|domain no|script gone|entry no|bucket no)$'
 }
 footprint_present() { # footprint_present <footprint text>: 0 when every part is there
-  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher yes|script present|entry yes|bucket yes)$'
+  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher yes|domain yes|script present|entry yes|bucket yes)$'
 }
 # The sites: the Terraform workspaces of terraform/site, without "default".
 list_sites() {
@@ -263,6 +313,43 @@ site_title_ok() { # site_title_ok <url> <want>
   [ "$code" = 200 ] || return 1
   title=$(printf '%s' "$body" | sed -n 's/.*<title>\([^<]*\)<\/title>.*/\1/p' | head -1)
   case "$title" in *"$2"*) return 0 ;; *) return 1 ;; esac
+}
+# Wait for a re-uploaded site to run the new build (issue #35 slice 5). Poll
+# /_build (the OBJECT's running version) until it equals <want>. Measured
+# 2026-11-06: a re-upload flips it in about 1 s. If it has not flipped by
+# BUILD_EVICT_AFTER s, call /_evict once (the fast-path for a busy object;
+# abort() is unproven on our compat date, so this is best-effort), then keep
+# polling to BUILD_WAIT s. Prints the last build seen; 0 when it flips.
+wait_build() { # wait_build <origin> <token> <want>
+  local t0=$SECONDS b evicted=0
+  while :; do
+    b=$(curl -s -m 30 -H "x-spike-token: $2" "$1/_build" 2>/dev/null | python3 -c "import json,sys
+try: print(json.load(sys.stdin).get(\"build\",\"\"))
+except Exception: print(\"\")")
+    [ "$b" = "$3" ] && { echo "  build $b live after $((SECONDS - t0)) s"; return 0; }
+    if [ "$evicted" = 0 ] && [ $((SECONDS - t0)) -ge "${BUILD_EVICT_AFTER:-20}" ]; then
+      echo "  the old build still runs after $((SECONDS - t0)) s; calling /_evict (best-effort)" >&2
+      curl -s -o /dev/null -m 30 -H "x-spike-token: $2" "$1/_evict" || true
+      evicted=1
+    fi
+    [ $((SECONDS - t0)) -lt "${BUILD_WAIT:-60}" ] || { echo "the new build $3 did not go live in ${BUILD_WAIT:-60} s (last: ${b:-none})" >&2; return 1; }
+    sleep "${BUILD_POLL_S:-3}"
+  done
+}
+# Run <updater-fn> over the sites in order, STOP at the first failure: the
+# sites after the failed one are NOT reached, so a bad version never rolls
+# across the estate (issue #35 slice 5). Prints a summary; returns 1 if any
+# failed.
+update_all() { # update_all <updater-fn> <site>...
+  local fn=$1; shift
+  local rc=0 done_list="" failed="" left="" site
+  for site in "$@"; do
+    if [ "$rc" = 0 ]; then
+      if "$fn" "$site"; then done_list="$done_list $site"; else rc=1; failed=" $site"; fi
+    else left="$left $site"; fi
+  done
+  echo "update --all: updated:${done_list:- none}; failed:${failed:- none}; not reached:${left:- none}"
+  return "$rc"
 }
 subdomain() {
   api GET /workers/subdomain | sed '$d' | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["subdomain"])'

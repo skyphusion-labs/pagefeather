@@ -4,15 +4,17 @@ A reference deployment for one operator with a couple of sites on their own Work
 
 The design is on issue #35 (the slice 1 comment): one origin per site, never a path prefix. The capability findings are in `docs/wfp.md`.
 
+New to this? The day-one walkthrough for an operator is [docs/operator.md](../../docs/operator.md).
+
 ## What it makes
 
 | | Per site `<name>` | Shared |
 | --- | --- | --- |
-| Workers | the user Worker `site-<name>` in the namespace; its dispatcher `wp-<name>` on `workers.dev` (phase A) | the outbound Worker `wp-wfp-outbound` |
+| Workers | the user Worker `site-<name>` in the namespace; its dispatcher `wp-<name>` on `workers.dev` (phase A), or the one dispatcher `wp-dispatch` with a Custom Domain per site (phase B, #138) | the outbound Worker `wp-wfp-outbound` |
 | Data | its Durable Object and SQLite (made with the script); the media bucket `wp-wfp-<name>-media` | the site map, KV `wp-wfp-sites` |
 | Secrets | `WP_SALT`, `SPIKE_TOKEN` (script secrets), `ADMIN_PASSWORD` (Terraform output) | the operator's API token |
 | Limits | `cpuMs` and `subRequests` in its site map entry | |
-| Address | `https://wp-<name>.<subdomain>.workers.dev` | the dispatch namespace `wp-wfp` |
+| Address | `https://wp-<name>.<subdomain>.workers.dev` (phase A), or `https://<name>.wfp-test.skyphusion.org` (phase B) | the dispatch namespace `wp-wfp` |
 
 Every dispatcher copy is the same script and the same config, and only the name differs (`tests/render-test.sh`; `check.py` compares the deployed script hashes). A copy maps the request's own hostname through the site map:
 
@@ -75,6 +77,38 @@ Options:
 
 Each untouched site must be unchanged: its dispatcher's etag and `modified_on`, its user Worker's hash and `modified_on`, its map entry, its bucket's keys and ETags, and its page title. A part that cannot be read fails the proof; it never counts as unchanged. The script etags are the same across sites (one dispatcher script; one `b-dosql` bundle), so `modified_on` is what tells one site's upload from another's. A re-upload of identical code keeps the etag and changes only `modified_on`, and both are compared. The snapshots read the buckets with S3 credentials derived from the API token, so they create nothing.
 
+## Updating a site
+
+```sh
+./deploy/wfp/site update <name>     # one site, with a way back
+./deploy/wfp/site update --all      # every site, one at a time, stopping at the first failure
+```
+
+Workers for Platforms has no gradual deployments for user Workers, and `b-dosql` keeps its data in the Durable Object and its code in the Worker bundle. So an update re-uploads the SAME script (`site-<name>`): the object and its data persist, the code swaps. `site update`:
+
+1. reads the live build id from the site map entry (the rollback target);
+2. unless `NO_SNAPSHOT=1`, snapshots the object's SQLite to R2 under `_snapshots/` and reads it back to confirm it stored (a prefix the Worker never serves); it aborts if the snapshot cannot be verified, so a rollback always has a way back;
+3. rebuilds from the current tree and re-uploads the script, then records the new build id in the entry;
+4. waits until `/_build` shows the new build (measured 2026-11-06: a re-upload flips it in about 1 s, with the object idle), then checks the site answers 200.
+
+If the verify fails, it rolls back: it restores the data from the snapshot and re-deploys the exact code that was live, by re-uploading the build artifact it saved before the rebuild (for any build id, not only a committed sha). **A rollback drops any write made between the snapshot and the rollback**, and the command and this doc both say so. If no saved artifact is on disk (an unusual case: `build/` was absent when the update started), the data is still restored and the command says to deploy the old build by hand.
+
+The only interruption is the cold boot of the next request after the new code loads (about 1 s); the hostname always resolves. `/_evict` (an object reset via `ctx.abort()`) is a best-effort fast-path for a busy object that has not flipped; whether `abort()` resets the object on our compatibility date is unproven (the happy path flipped before it was needed).
+
+`update --all` runs the sites in `site list` order, one at a time, and stops at the first failure: the failed site is rolled back and the sites after it are left on their old version, so a bad version never rolls across the estate.
+
+## Phase B: a custom domain per site (#138)
+
+Phase A gives each site its own origin by deploying the one dispatcher script once per site as `wp-<name>` on `workers.dev`. Phase B instead deploys the dispatcher once as `wp-dispatch` and gives each site a Workers Custom Domain `<name>.wfp-test.skyphusion.org`. The dispatcher code does not change: it already routes by the request's own hostname through the site map, so the site map key becomes the custom hostname.
+
+It is off by default. `WFP_CUSTOM_DOMAIN=1` selects it; without the flag, `workers.dev` stays the only live target. `WFP_SUBDOMAIN` sets the test subdomain (default `wfp-test.skyphusion.org`).
+
+- `up.sh` deploys `wp-dispatch` once, before any site, because a Custom Domain attaches to a service that must already exist.
+- A new Custom Domain has no certificate until Cloudflare's Advanced Certificate pack is active, which can exceed 15 min, so the first phase B deploy waits longer: `site_wait_cap` is 1800 s in phase B (300 s in phase A), and `SITE_WAIT` overrides it. If the first deploy still times out while the certificate issues, re-run `up.sh` once it is active: the data plane persists and the install completes on the re-run.
+- `site add` (through `site.sh up`) attaches the Custom Domain with Terraform (`cloudflare_workers_custom_domain`, in `terraform/site`), which creates the DNS record and the certificate. `var.hostname` is both this domain and the site map key, so the routed hostname and the key cannot drift.
+- `site remove` detaches the Custom Domain before it deletes the map entry (the CR #138 remove order), then removes the rest.
+
+**The live attach routes a zone, so it is governed by CR #138** (the CR #113 pattern: a zone-record snapshot before the first attach, one exact hostname per site, the reversal compared against the snapshot, never a wildcard). The attach is run by the lead as the CR #138 apply step, serialized against the other live work on `skyphusion.org`. This directory ships the code and the offline tests; nothing here routes a zone, and the matrix does not claim custom domains as measured until phase B is proven live.
 ## Bindings read back
 
 After every upload, `bindings.py` reads each script's bindings back from the API (`up.sh` for every site, `site add` for its own site). It fails unless each one binds only its own resources:
@@ -89,7 +123,7 @@ Any other binding fails, and so does a script whose bindings cannot be read. The
 - **R2:** A's `MEDIA` list has only A's keys; a `fetch()` to B's bucket returns no bytes.
 - **Durable Object:** A's object is its own, not B's.
 - **Secrets:** A's `WP_SALT` is its own, not B's; A sees no foreign secret name.
-- **Limits:** `subRequests` is enforced exactly; `cpuMs` is enforced, inexact below about 2 s (`docs/wfp.md` item 4).
+- **Limits:** `subRequests` was exact where measured, without an outbound Worker (not measured with one); `cpuMs` is enforced, inexact below about 2 s (`docs/wfp.md` item 4).
 
 `CROSS_OUTBOUND=0` runs the probes with the outbound flag off (default on). A PASS is a public result. A result where A reaches B against the docs, or any platform isolation gap, goes to the lead only, is written to no artifact, and stops that line (`cross.py` marks it `platform`; `cross.sh` exits 3). A reach through a binding we gave A by mistake is our defect, fixed in the open. The binding readback (above) proves the static half: A's bindings name only A's resources. The method is on issue #35.
 
@@ -107,4 +141,5 @@ python3 deploy/wfp/tests/bindings-test.py   # the bindings read back: each scrip
 python3 deploy/wfp/tests/cross-test.py      # the isolation verdict: a breach is never read as a pass
 deploy/wfp/tests/probe-entry-test.sh        # the probe map entry and the CROSS_OUTBOUND option
 deploy/wfp/tests/tf-test.sh                 # terraform validate, fmt, and the teardown key with no dependency (local: needs terraform)
+deploy/wfp/tests/custom-domain-test.sh      # phase B (#138): custom_host, site_host, the shared dispatcher, the Terraform wiring
 ```

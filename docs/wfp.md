@@ -6,7 +6,7 @@ Each answer names its source: a Cloudflare documentation page (read on 2026-11-0
 
 ## The reference deployment
 
-`deploy/wfp/` (issue #35, slice 2) is the deployment that these findings lead to: one `b-dosql` user Worker per site, a dispatcher per site on `workers.dev` (phase A of the #35 design), a site map in KV and an outbound Worker, every resource as code. Its README has the day-one commands. Its live runs answered the open question (b) below: the Workers Cache works in a namespace script.
+`deploy/wfp/` (issue #35, slice 2) is the deployment that these findings lead to: one `b-dosql` user Worker per site, a dispatcher per site on `workers.dev` (phase A of the #35 design), a site map in KV and an outbound Worker, every resource as code. Its README has the day-one commands. Its live runs answered the open question (b) below: the Workers Cache works in a namespace script. Phase B of that design (one dispatcher `wp-dispatch` with a Workers Custom Domain per site under `wfp-test.skyphusion.org`) is in the code behind `WFP_CUSTOM_DOMAIN=1`; its live attach routes a zone and is governed by CR #138, so `workers.dev` stays the default.
 
 ## Summary
 

@@ -25,8 +25,14 @@ mkdir -p "$GEN"
 KV_ID=$(tfr shared output -raw kv_namespace_id)
 SUB=$(subdomain)
 D=$(dispatcher_name "$s"); U=$(user_script "$s")
-HOST="$D.$SUB.workers.dev"; ORIGIN="https://$HOST"
-VARS=(-var "name=$s" -var "hostname=$HOST" -var "kv_namespace_id=$KV_ID")
+HOST="$(site_host "$s" "$SUB")"; ORIGIN="https://$HOST" # phase A workers.dev, phase B the Custom Domain (lib.sh)
+# Phase B (#138): true attaches this site's Custom Domain (terraform); false
+# (the default) is phase A, workers.dev only.
+CD=$([ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && echo true || echo false)
+VARS=(-var "name=$s" -var "hostname=$HOST" -var "kv_namespace_id=$KV_ID" -var "custom_domain=$CD")
+# The id of the built bundle (build.sh writes build/build-id.js), recorded in
+# the entry so "site update" has a rollback target (issue #35 slice 5).
+BUILD_ID=$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js" 2>/dev/null || true); BUILD_ID=${BUILD_ID:-unknown}
 out() { tfr site output -raw "$1"; }
 ws() { tfr site init -input=false >/dev/null && tfr site workspace select -or-create "$s" >/dev/null; }
 gone() { # gone <what> <API path>: 404 or stop
@@ -38,7 +44,7 @@ if [ "$cmd" = up ]; then
   log "site $s: data plane and site map entry (workspace $s)"
   kv_wait_writable "$KV_ID"
   ws
-  tfr site apply -input=false -auto-approve "${VARS[@]}" >/dev/null
+  tfr site apply -input=false -auto-approve "${VARS[@]}" -var "build=$BUILD_ID" >/dev/null
 
   log "site $s: user Worker $U in $NAMESPACE"
   CONF="$APP/wrangler.deploy.wfp-$s.toml"
@@ -52,10 +58,14 @@ json.dump({"WP_SALT": o["wp_salt"], "SPIKE_TOKEN": o["spike_token"]}, open(sys.a
   rm -f "$W/secrets.json"
   grep -E 'Total Upload|Current Version' "$W/user.log" || true
 
-  log "site $s: dispatcher $D"
-  render_dispatcher "$s" "$KV_ID" > "$GEN/$D.toml"
-  wrangler_deploy "$GEN" "$W/disp.log" --config "$D.toml" || { tail -20 "$W/disp.log"; exit 1; }
-  grep -q "$ORIGIN" "$W/disp.log" || { echo "the dispatcher did not deploy to $ORIGIN:" >&2; tail -5 "$W/disp.log" >&2; exit 1; }
+  if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ]; then
+    log "site $s: phase B, routed by the shared $SHARED_DISPATCHER and this site's Custom Domain $HOST (attached by the workspace apply above)"
+  else
+    log "site $s: dispatcher $D"
+    render_dispatcher "$s" "$KV_ID" > "$GEN/$D.toml"
+    wrangler_deploy "$GEN" "$W/disp.log" --config "$D.toml" || { tail -20 "$W/disp.log"; exit 1; }
+    grep -q "$ORIGIN" "$W/disp.log" || { echo "the dispatcher did not deploy to $ORIGIN:" >&2; tail -5 "$W/disp.log" >&2; exit 1; }
+  fi
 
   log "site $s: wait for $ORIGIN (the site itself, lib.sh wait_site), then install"
   wait_site "$ORIGIN"
@@ -68,9 +78,17 @@ except ValueError:
     print("  install did not answer JSON:", open(sys.argv[1]).read()[:200]); sys.exit(1)' "$W/install.json"
   echo "site $s: up at $ORIGIN"
 elif [ "$cmd" = down ]; then
-  log "site $s: dispatcher $D (the hostname first)"
-  (cd "$ROOT/deploy" && npx wrangler delete --name "$D" --force) > "$W/del.log" 2>&1 || tail -5 "$W/del.log"
-  gone "dispatcher $D" "/workers/scripts/$D"
+  if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ]; then
+    log "site $s: phase B, detach the Custom Domain $HOST first (CR #138 remove order: the hostname before the entry)"
+    tfr site init -input=false >/dev/null
+    if tfr site workspace select "$s" >/dev/null 2>&1; then
+      tfr site destroy -input=false -auto-approve "${VARS[@]}" -var teardown=true -target=cloudflare_workers_custom_domain.site >/dev/null || true
+    fi
+  else
+    log "site $s: dispatcher $D (the hostname first)"
+    (cd "$ROOT/deploy" && npx wrangler delete --name "$D" --force) > "$W/del.log" 2>&1 || tail -5 "$W/del.log"
+    gone "dispatcher $D" "/workers/scripts/$D"
+  fi
 
   log "site $s: user Worker $U"
   api DELETE "/workers/dispatch/namespaces/$NAMESPACE/scripts/$U?force=true" > /dev/null || true

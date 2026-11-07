@@ -40,6 +40,16 @@ jobs:
       - name: Import media refusal tests
         # deploy/import/media.sh (issue #124): a refused or failed HEAD is retried, then fails; it never counts as missing.
         run: deploy/import/tests/media-refuse-test.sh
+      - name: b-dosql operator endpoints (issue #35)
+        # /_build and /_evict are gated and never cached (spikes/b2-wordpress).
+        run: node spikes/b2-wordpress/tests/build-evict-test.mjs
+      - name: WfP slice 5 update tests (issue #35)
+        # snapshot/restore, the build activation wait, and the all-sites ordering.
+        run: |
+          deploy/wfp/tests/dbsnap-test.sh
+          deploy/wfp/tests/wait-build-test.sh
+          deploy/wfp/tests/update-all-test.sh
+          deploy/wfp/tests/kv-build-test.sh
       - name: c1 warm start tests
         # spikes/c1-woo-container/warm.js (issue #73): product views, rate limits, never through fetch.
         run: node spikes/c1-woo-container/tests/warm-test.mjs
@@ -66,6 +76,7 @@ jobs:
           deploy/wfp/tests/wait-site-test.sh
           deploy/wfp/tests/snapshot-test.sh
           deploy/wfp/tests/site-cmd-test.sh
+          deploy/wfp/tests/custom-domain-test.sh
           python3 deploy/wfp/tests/bindings-test.py
           python3 deploy/wfp/tests/cross-test.py
           deploy/wfp/tests/probe-entry-test.sh

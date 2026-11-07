@@ -37,17 +37,30 @@ resource "random_password" "admin_password" {
 # Variant "a": Hyperdrive to the MySQL server. Caching off: WordPress reads its
 # own writes. Hyperdrive checks the connection when it makes the config, so the
 # database must answer first (deploy.sh retries while a new box starts).
+#
+# Two origin shapes, chosen by whether an Access service token is given:
+#   public (mysql_access_client_id empty): host on mysql_port, SSL required.
+#     The deploy/mysql path, unchanged.
+#   tunnel (CR #141): host with access_client_id and access_client_secret and
+#     NO port. Hyperdrive reaches the box through its Cloudflare Tunnel behind
+#     Access, so no inbound port is open. This is the tests/a/terraform shape.
+locals {
+  mysql_use_access = var.variant == "a" && var.mysql_access_client_id != ""
+}
+
 resource "cloudflare_hyperdrive_config" "wp" {
   count      = var.variant == "a" ? 1 : 0
   account_id = var.account_id
   name       = var.name
   origin = {
-    scheme   = "mysql"
-    host     = var.mysql_host
-    port     = var.mysql_port
-    database = var.mysql_database
-    user     = var.mysql_user
-    password = var.mysql_password
+    scheme               = "mysql"
+    host                 = var.mysql_host
+    port                 = local.mysql_use_access ? null : var.mysql_port
+    database             = var.mysql_database
+    user                 = var.mysql_user
+    password             = var.mysql_password
+    access_client_id     = local.mysql_use_access ? var.mysql_access_client_id : null
+    access_client_secret = local.mysql_use_access ? var.mysql_access_client_secret : null
   }
   caching = { disabled = true }
 }

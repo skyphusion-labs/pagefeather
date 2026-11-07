@@ -2,6 +2,7 @@
 # Add or remove one site of the reference deployment (issue #35, slice 3).
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site add <name>
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site remove <name>
+#   CLOUDFLARE_API_TOKEN=... deploy/wfp/site update <name>    (or: update --all)
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site list
 # The shared pieces must exist (up.sh). add builds nothing: b-dosql must be
 # built (up.sh, or BUILD=1 here). Use the same WFP_STATE as up.sh.
@@ -18,13 +19,106 @@ set -euo pipefail
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
 cmd=${1:-}; s=${2:-}
 if [ "$cmd" = list ]; then list_sites; exit 0; fi
-case "$cmd" in add|remove) ;; *) echo "usage: site add|remove <name> | site list" >&2; exit 2 ;; esac
-valid_site "$s" || { echo "bad site name '$s': lower case, digits, hyphens; 1 to 30; not probe" >&2; exit 2; }
+case "$cmd" in add|remove|update) ;; *) echo "usage: site add|remove|update <name> | site update --all | site list" >&2; exit 2 ;; esac
 tfr shared init -input=false >/dev/null
 KV_ID=$(tfr shared output -raw kv_namespace_id 2>/dev/null) || { echo "no shared pieces (run up.sh first)" >&2; exit 2; }
 [ -n "$KV_ID" ] || { echo "no shared pieces (run up.sh first)" >&2; exit 2; }
 SUB=$(subdomain)
 has_ws() { list_sites | grep -qx "$1"; }
+# Update one site: snapshot the data, rebuild from the current tree, re-upload
+# the SAME script (same object, same data), record the new build, and verify
+# the new build is live and the site answers. On failure, roll back: restore
+# the data from the snapshot and re-deploy the exact code that was live (the
+# build artifact saved before the rebuild); the rollback drops writes made
+# since the snapshot.
+update_one() {
+  local s=$1
+  # Phase B (#138): keep the Custom Domain across an update apply; false (the
+  # default) is phase A. Without this the apply would destroy the domain.
+  local CD; CD=$([ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && echo true || echo false)
+  valid_site "$s" || { echo "bad site name: $s" >&2; return 2; }
+  has_ws "$s" || { echo "no site $s (run site add first)" >&2; return 2; }
+  local ORIGIN="https://$(site_host "$s" "$SUB")"
+  tfr site init -input=false >/dev/null; tfr site workspace select "$s" >/dev/null
+  local TOK bucket EP rollback new ok=1 snap_key=""
+  TOK=$(tfr site output -raw spike_token); bucket=$(media_bucket "$s"); EP=$(tfr site output -raw r2_endpoint)
+  rollback=$(entry_build "$s")
+  echo "site $s: the live build is ${rollback:-unknown}"
+  [ "${COUNT_ROWS:-0}" = 1 ] && echo "site $s: rows before: $(row_count "$ORIGIN" "$TOK")"
+  if [ "${NO_SNAPSHOT:-0}" != 1 ]; then
+    snap_key="$s/${rollback:-unknown}-$(date -u +%Y%m%dT%H%M%SZ).ndjson"
+    echo "site $s: snapshot the data to $bucket/_snapshots/$snap_key"
+    WFP_S3_ENDPOINT="$EP" NAMESPACE=$NAMESPACE KV_ID=$KV_ID SUB=$SUB \
+      python3 -I "$WFP/snapshot.py" dbsnapshot "$ORIGIN" "$TOK" "$bucket" "$snap_key" \
+      || { echo "site $s: the snapshot did not store; aborting (a rollback would have no way back)" >&2; return 1; }
+  fi
+  # Save the live build artifact before rebuilding, so a rollback re-uploads
+  # the exact code that was live (issue #137): a git-worktree rebuild of the
+  # old sha is fragile (a fresh worktree has no node_modules or vendor, and it
+  # would carry the dev wrangler.toml, not the wfp user config). The live build
+  # is whatever build/ holds now (up.sh / the last update built it).
+  local SAVED="" live_build=""
+  if [ -d "$APP/build" ] && [ -f "$APP/build/build-id.js" ]; then
+    live_build=$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js")
+    SAVED=$(mktemp -d); cp -a "$APP/build" "$SAVED/build"
+    echo "site $s: saved the live build ${live_build:-unknown} for rollback"
+  fi
+  echo "site $s: rebuild from the current tree"
+  build_dosql
+  new=$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js" 2>/dev/null || true); new=${new:-unknown}
+  if [ "$new" = "$rollback" ]; then echo "site $s: already at build $new; nothing to do"; return 0; fi
+  echo "site $s: upload build $new (was $rollback)"
+  local CONF="$APP/wrangler.deploy.wfp-$s.toml" W; W=$(mktemp -d)
+  render_user "$s" "$ORIGIN" > "$CONF"
+  tfr site output -json | python3 -c 'import json,sys; o={k:v["value"] for k,v in json.load(sys.stdin).items()}; json.dump({"WP_SALT":o["wp_salt"],"SPIKE_TOKEN":o["spike_token"]}, open(sys.argv[1],"w"))' "$W/sec.json"
+  (cd "$APP" && npx wrangler deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/sec.json") > "$W/up.log" 2>&1 || { rm -rf "$W"; echo "site $s: upload failed:" >&2; tail -20 "$W/up.log" >&2; return 1; }
+  rm -rf "$W"
+  tfr site apply -input=false -auto-approve -var "name=$s" -var "hostname=$(site_host "$s" "$SUB")" -var "custom_domain=$CD" -var "kv_namespace_id=$KV_ID" -var "build=$new" >/dev/null
+  echo "site $s: verify the new build is live"
+  wait_build "$ORIGIN" "$TOK" "$new" || ok=0
+  [ "$ok" = 1 ] && { [ "$(curl -s -o /dev/null -w '%{http_code}' -m 60 "$ORIGIN/?nocache=$RANDOM")" = 200 ] || { echo "site $s: the site did not answer 200 after the update" >&2; ok=0; }; }
+  # A test hook (issue #35 slice 5): force the verify to fail, to exercise the
+  # rollback path against an otherwise-good new build. Off unless FORCE_FAIL=verify.
+  [ "${FORCE_FAIL:-}" = verify ] && { echo "site $s: FORCE_FAIL=verify, forcing a verify failure to exercise the rollback" >&2; ok=0; }
+  if [ "$ok" = 1 ]; then
+    [ -n "$SAVED" ] && rm -rf "$SAVED"
+    [ "${COUNT_ROWS:-0}" = 1 ] && echo "site $s: rows after (updated): $(row_count "$ORIGIN" "$TOK")"
+    echo "site $s: updated $rollback -> $new"; return 0
+  fi
+  echo "site $s: ROLLING BACK to $rollback. NOTE: a rollback drops any write made between the snapshot and now." >&2
+  if [ -n "$snap_key" ]; then
+    WFP_S3_ENDPOINT="$EP" python3 -I "$WFP/snapshot.py" dbrestore "$ORIGIN" "$TOK" "$bucket" "$snap_key" || echo "site $s: the data restore FAILED; the snapshot is $bucket/_snapshots/$snap_key" >&2
+  fi
+  if [ -n "$SAVED" ]; then
+    echo "site $s: re-deploy the saved build ${live_build:-unknown}"
+    rm -rf "$APP/build" && mv "$SAVED/build" "$APP/build"
+    local W2; W2=$(mktemp -d)
+    tfr site output -json | python3 -c 'import json,sys; o={k:v["value"] for k,v in json.load(sys.stdin).items()}; json.dump({"WP_SALT":o["wp_salt"],"SPIKE_TOKEN":o["spike_token"]}, open(sys.argv[1],"w"))' "$W2/sec.json"
+    if (cd "$APP" && npx wrangler deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W2/sec.json") > "$W2/rb.log" 2>&1; then
+      echo "site $s: re-deployed ${live_build:-unknown}"
+      tfr site apply -input=false -auto-approve -var "name=$s" -var "hostname=$(site_host "$s" "$SUB")" -var "custom_domain=$CD" -var "kv_namespace_id=$KV_ID" -var "build=${live_build:-$rollback}" >/dev/null
+      wait_build "$ORIGIN" "$TOK" "$live_build" || echo "site $s: /_build did not return to $live_build after the rollback re-deploy" >&2
+    else
+      echo "site $s: the rollback re-deploy FAILED; the old code is NOT live. Deploy ${live_build:-$rollback} by hand. Reason:" >&2
+      tail -20 "$W2/rb.log" >&2
+    fi
+    rm -rf "$W2"
+  else
+    echo "site $s: no saved build artifact (build/ was absent at update start); cannot re-deploy the old code automatically. Deploy $rollback by hand. The data was restored from the snapshot." >&2
+  fi
+  [ -n "$SAVED" ] && rm -rf "$SAVED"
+  [ "${COUNT_ROWS:-0}" = 1 ] && echo "site $s: rows after (rolled back): $(row_count "$ORIGIN" "$TOK")"
+  return 1
+}
+
+if [ "$cmd" = update ]; then
+  if [ "$s" = "--all" ]; then
+    # shellcheck disable=SC2046
+    update_all update_one $(list_sites); exit $?
+  fi
+  update_one "$s"; exit $?
+fi
+valid_site "$s" || { echo "bad site name '$s': lower case, digits, hyphens; 1 to 30; not probe" >&2; exit 2; }
 
 if [ "$cmd" = add ]; then
   fp=$(site_footprint "$s")
@@ -41,7 +135,7 @@ if [ "$cmd" = add ]; then
   footprint_present "$fp" || { echo "site $s: not every part is there after the add:" >&2; printf '%s\n' "$fp" | sed 's/^/  /' >&2; exit 1; }
   # Its scripts bind only its own resources (bindings.py, #35 slice 4).
   NAMESPACE=$NAMESPACE KV_ID=$KV_ID python3 -I "$WFP/bindings.py" "$s"
-  echo "site add $s: done, https://$(dispatcher_name "$s").$SUB.workers.dev"
+  echo "site add $s: done, https://$(site_host "$s" "$SUB")"
 else
   fp=$(site_footprint "$s")
   if ! has_ws "$s" && footprint_absent "$fp"; then
