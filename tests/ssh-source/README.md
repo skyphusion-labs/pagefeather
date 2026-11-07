@@ -53,6 +53,38 @@ terraform destroy -var-file=run.tfvars
 
 It removes the box, the firewall group, the tunnel, the DNS record, the Access app, the policy and the service token. Then `dig +short wp-ssh-src.skyphusion.net` must be empty, and the tunnel and the box must be gone from their lists. Remove the `Host wp-ssh-src.skyphusion.net` block from `~/.ssh/config`.
 
+## The variant-a MariaDB import route (CR #141)
+
+The box runs MariaDB for the #83 import source. CR #141 reuses that MariaDB as the live target for the #31 variant-`a` round trip, reached through **the same tunnel** on a second route. It is off by default (`enable_mysql_import = false`), so an SSH-only apply makes none of it and the SSH route is unchanged.
+
+Set `enable_mysql_import = true` to add, alongside the SSH route:
+
+- a TCP **3306** ingress rule on the tunnel, on hostname `mysql-import-a.skyphusion.org` (`mysql_import_hostname`), reaching `tcp://localhost:3306` on the box. The SSH rule stays first; the 3306 rule goes between it and the 404 catch-all.
+- a proxied CNAME for that hostname to the tunnel, in the `skyphusion.org` zone (`mysql_import_zone_id`).
+- its **own** Access service token (`wp-mysql-import-a`, not the SSH token), a policy that admits only that token (`non_identity`), and an Access application scoped to exactly that hostname.
+
+There is no inbound port and no IP allowlist: this is the proven `tests/a/terraform` pattern (CR #27), never the `deploy/mysql` model (a Vultr firewall opening 3306 to Cloudflare ranges).
+
+### The import run (the lead applies and verifies live)
+
+1. Apply with `enable_mysql_import = true`. Hyperdrive for the variant-`a` site is made by `deploy.sh`, from these outputs:
+
+   ```sh
+   export MYSQL_HOST=$(terraform output -raw mysql_import_hostname)
+   export MYSQL_PASSWORD=$(terraform output -raw db_password)
+   export MYSQL_ACCESS_CLIENT_ID=$(terraform output -raw mysql_import_access_client_id)
+   export MYSQL_ACCESS_CLIENT_SECRET=$(terraform output -raw mysql_import_access_client_secret)
+   # MYSQL_USER defaults to wp and MYSQL_DATABASE to wordpress (the cloud-init grant).
+   ```
+
+2. **Prove the gate before the import** (add and prove before you remove): a TCP connection to `mysql-import-a.skyphusion.org:3306` carrying **no** service token must be refused by Access. Then confirm Hyperdrive, which holds the token, connects. A proof that only used the token has proven nothing about the gate.
+3. `VARIANT=a MYSQL=external NAME=... deploy/deploy.sh`, then `VARIANT=a URL=... deploy/import.sh` for the round trip (the a2 mysqldump is a valid source).
+4. `URL=<the variant-a site> SPIKE_TOKEN=... tests/a/id-zero.sh`: id 0 kept with the hint, renumbered to 1 under `NO_HINT=1` (the red control).
+
+### Teardown (same day)
+
+`terraform destroy` here removes the 3306 route, the import CNAME, the Access application, the policy and the service token along with the box; `deploy/destroy.sh` (or `terraform destroy` in `deploy/terraform` for the site) removes the Hyperdrive config. Then `dig +short mysql-import-a.skyphusion.org` must be empty.
+
 ## Secrets
 
 `run.tfvars` and the state are ignored by git. The state holds the service token, the database and admin passwords, and the tunnel token. The tunnel token and the database password are also in the box's user data (cloud-init). That is acceptable for a box with test data only, which lives for hours.

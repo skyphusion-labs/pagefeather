@@ -24,3 +24,31 @@ output "ssh_config" {
       StrictHostKeyChecking accept-new
   CFG
 }
+
+# ---- CR #141: the import route (empty strings when enable_mysql_import is off) --
+# The lead feeds these to deploy.sh VARIANT=a MYSQL=external:
+#   MYSQL_HOST                = mysql_import_hostname
+#   MYSQL_PASSWORD            = db_password        (the box's wp user)
+#   MYSQL_ACCESS_CLIENT_ID    = mysql_import_access_client_id
+#   MYSQL_ACCESS_CLIENT_SECRET = mysql_import_access_client_secret
+# MYSQL_USER defaults to wp and MYSQL_DATABASE to wordpress (the cloud-init grant).
+
+output "mysql_import_hostname" {
+  value = var.enable_mysql_import ? var.mysql_import_hostname : ""
+}
+
+output "mysql_import_access_client_id" {
+  value = one(cloudflare_zero_trust_access_service_token.mysql_import[*].client_id)
+}
+
+output "mysql_import_access_client_secret" {
+  value     = one(cloudflare_zero_trust_access_service_token.mysql_import[*].client_secret)
+  sensitive = true
+}
+
+# The wp database user's password (random_password.db), for the Hyperdrive
+# origin of the import run. Sensitive: read with terraform output -raw.
+output "db_password" {
+  value     = random_password.db.result
+  sensitive = true
+}
