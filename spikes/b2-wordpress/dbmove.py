@@ -3,6 +3,7 @@
 
   dbmove.py export <base-url> <file> [--from-d1]   dump to a JSON lines file
   dbmove.py import <base-url> <file> [--replace]   load a dump into the object
+  dbmove.py counts <base-url>                      per-table row counts (/_dbcounts)
 
 SPIKE_TOKEN in the environment is sent as x-spike-token. Every request sends
 User-Agent: wp-on-cf-import/1. A deployed workers.dev site refuses urllib's
@@ -116,10 +117,24 @@ def load(base, path, replace):
     print(f"imported {total} statements")
 
 
+def counts(base):
+    # Per-table row counts from the object (/_dbcounts): bounded, so it works at
+    # a size where a full export does not (issue #165). Printed like
+    # dbmove-file.py counts, so count-check.py can compare the two.
+    url = base.rstrip("/") + "/_dbcounts"
+    with call("GET", url) as r:
+        data = json.load(r)
+    print(json.dumps({"rows": data.get("rows", {}), "databaseBytes": data.get("databaseBytes")}))
+
+
 if __name__ == "__main__":
-    if len(sys.argv) < 4 or sys.argv[1] not in ("export", "import"):
-        sys.exit(__doc__)
-    if sys.argv[1] == "export":
-        export(sys.argv[2], sys.argv[3], "--from-d1" in sys.argv[4:])
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd == "counts" and len(sys.argv) == 3:
+        counts(sys.argv[2])
+    elif cmd in ("export", "import") and len(sys.argv) >= 4:
+        if cmd == "export":
+            export(sys.argv[2], sys.argv[3], "--from-d1" in sys.argv[4:])
+        else:
+            load(sys.argv[2], sys.argv[3], "--replace" in sys.argv[4:])
     else:
-        load(sys.argv[2], sys.argv[3], "--replace" in sys.argv[4:])
+        sys.exit(__doc__)

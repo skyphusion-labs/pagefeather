@@ -1431,6 +1431,18 @@ export class PhpRuntime extends DurableObject {
 			this.ctx.waitUntil(withPhp(() => ((sqlDb = sql), dumpTo(writable.getWriter(), env, from))));
 			return new Response(readable, { headers: { 'content-type': 'application/x-ndjson', 'cache-control': 'private, no-store' } });
 		}
+		if (url.pathname === '/_dbcounts' && req.method === 'GET') {
+			// Per-table row counts for the import self-verify (issue #165): bounded
+			// (one COUNT(*) per table), so it completes for a large object where a
+			// full /_dbexport does not. Raw sql.exec (no PHP boot), read before any
+			// page view, so no undo-log tables are made; same data tables as dumpTo.
+			if (!sql) return new Response('DB_IN_DO is off', { status: 409 });
+			const all = [...sql.exec("SELECT name FROM sqlite_master WHERE type = 'table'").raw()].map((r) => r[0]);
+			const names = all.filter((n) => !n.startsWith('sqlite_') && !n.startsWith('_cf_') && !n.startsWith('_wp_undo'));
+			const rows = {};
+			for (const name of names) rows[name] = Number(sql.exec(`SELECT COUNT(*) FROM ${quoteId(name)}`).raw().next().value[0]);
+			return Response.json({ rows, databaseBytes: sql.databaseSize });
+		}
 		if (url.pathname === '/_dbimport' && req.method === 'POST') {
 			if (!sql) return new Response('DB_IN_DO is off', { status: 409 });
 			const text = await req.text();

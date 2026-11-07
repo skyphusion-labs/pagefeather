@@ -240,15 +240,14 @@ else
 python3 "$IMP/dbmove-file.py" from-sqlite "$WORK/site.sqlite" "$WORK/site.jsonl"
 python3 "$APP/dbmove.py" import "$URL" "$WORK/site.jsonl" --replace
 
-# 6. Export again and compare the rows of each table.
-python3 "$APP/dbmove.py" export "$URL" "$WORK/after.jsonl"
+# 6. Verify the rows. A full-DB export does not complete for a large object
+# (issue #165: a 54 MB database truncated the export stream), so compare the
+# counts the import sent (the jsonl) against the object's own per-table
+# COUNT(*) (/_dbcounts), which is bounded. count-check.py exits 1 on a
+# mismatch (naming the tables), so set -e fails the import.
 python3 "$IMP/dbmove-file.py" counts "$WORK/site.jsonl" > "$WORK/counts-in.json"
-python3 "$IMP/dbmove-file.py" counts "$WORK/after.jsonl" > "$WORK/counts-out.json"
-if diff "$WORK/counts-in.json" "$WORK/counts-out.json" >/dev/null; then
-  echo "rows: every table matches ($(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["end"])' "$WORK/counts-in.json") rows)"
-else
-  echo "ROWS DIFFER:" >&2; diff "$WORK/counts-in.json" "$WORK/counts-out.json" >&2 || true; exit 1
-fi
+python3 "$APP/dbmove.py" counts "$URL" > "$WORK/counts-do.json"
+python3 "$IMP/count-check.py" "$WORK/counts-in.json" "$WORK/counts-do.json"
 fi
 
 # 6b. Uploads (media_step, above).
