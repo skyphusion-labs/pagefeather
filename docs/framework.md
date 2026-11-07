@@ -15,6 +15,29 @@ New to this from a traditional LAMP WordPress host (a Linux box with Apache or n
 
 Pick `wp` for a brochure or content site, or a storefront whose shoppers only browse. Pick `shop` when the store takes orders. Both kinds run side by side in one deployment.
 
+## How it fits together
+
+One dispatch Worker routes every site by its hostname. An end user points their own domain at your SaaS zone with a CNAME; the wildcard route hands the request to the dispatcher, which reads the KV site map and runs the right user Worker or container store.
+
+```mermaid
+flowchart LR
+  EU["End-user vanity domain<br/>shop.customer.com"]
+  EU -->|"grey-cloud CNAME"| FB["Fallback origin<br/>fallback.your-saas-zone"]
+  FB -->|"wildcard route"| DISP["wp-dispatch<br/>dispatch Worker"]
+  DISP <-->|"look up the Host"| KV[("KV site map")]
+  DISP -->|"kind = wp"| WP["b-dosql user Worker<br/>PHP + SQLite in a Durable Object"]
+  DISP -->|"kind = shop"| SHOP["c1 standalone Worker<br/>+ Container store"]
+```
+
+Provisioning is one core, two callers (a CLI or a Worker), branching by kind. Every step is an idempotent Cloudflare API call, so no build runs at provision time.
+
+```mermaid
+flowchart TD
+  CALLER["A Worker or the CLI"] --> CORE["provisionSite (the core)"]
+  CORE -->|"kind = wp"| WPSEQ["createR2Bucket<br/>deployNamespaceScript with the SQLite migration<br/>upsertSite into KV<br/>ensureProxiedHostname for SaaS routing"]
+  CORE -->|"kind = shop"| SHOPSEQ["createR2Bucket x2<br/>mintScopedR2Token for Litestream<br/>deployContainerWorkerFromDigest<br/>container-enable the DO, then create the container application<br/>enableWorkersDevSubdomain<br/>upsertSite into KV"]
+```
+
 ## What you need (on your own account)
 
 - A Cloudflare account on the **Workers for Platforms Paid** plan, and your **account id**.
