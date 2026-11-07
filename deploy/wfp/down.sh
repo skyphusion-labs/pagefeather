@@ -22,6 +22,16 @@ SUB=$(subdomain)
 
 for s in $SITES; do "$WFP/site.sh" down "$s"; done
 
+# Phase B (#138): the ONE shared dispatcher wp-dispatch, after every site is
+# down, because each site.sh down has detached its Custom Domain first (the CR
+# #138 remove order: the hostname before the entry, and the dispatcher last).
+# Phase A never deploys it, so this runs only with the flag.
+if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ]; then
+  log "shared dispatcher $SHARED_DISPATCHER (phase B)"
+  (cd "$ROOT/deploy" && npx wrangler delete --name "$SHARED_DISPATCHER" --force) > /dev/null 2>&1 || true
+  gone "shared dispatcher $SHARED_DISPATCHER" "/workers/scripts/$SHARED_DISPATCHER"
+fi
+
 log "probe wp-probe"
 (cd "$ROOT/deploy" && npx wrangler delete --name wp-probe --force) > /dev/null 2>&1 || true
 gone "dispatcher wp-probe" "/workers/scripts/wp-probe"
