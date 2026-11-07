@@ -63,7 +63,7 @@ export WFP_SUBDOMAIN=sites.your-domain.com
 SITES="shop blog:cd" ./deploy/wfp/operator.sh up
 ```
 
-`shop` stays on `workers.dev`; `blog` gets the custom hostname `blog.sites.your-domain.com`, routed by the one shared dispatcher. Phase B routes a zone, so that zone needs a change-request first (issue #138), and `operator.sh` refuses a `:cd` site unless you set `WFP_SUBDOMAIN` yourself, so it never routes the project's own zone by mistake. Cloudflare issues each custom hostname its own certificate, which can take a few minutes on the first deploy; `operator.sh` waits for it.
+`shop` stays on `workers.dev`; `blog` gets the custom hostname `blog.sites.your-domain.com`, routed by the one shared dispatcher. The per-site phase B mechanism is proven separately (issue #138). Because phase B routes a zone, `operator.sh` refuses a `:cd` site unless you set `WFP_SUBDOMAIN` to your own routed zone, so it never routes the project's own zone by mistake. Cloudflare issues each custom hostname its own certificate, which can take a few minutes on the first deploy; `operator.sh` waits for it.
 
 ## Validate the deployment
 
