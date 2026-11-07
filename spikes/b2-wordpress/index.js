@@ -1579,6 +1579,15 @@ const site = {
 		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		if (env.MEDIA && (req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/wp-content/uploads/')) return serveUpload(req, env, url);
+		// Static assets from the Assets binding (edge, no PHP). In WfP dispatch the
+		// automatic assets layer is bypassed (the dispatcher invokes this worker
+		// programmatically), so serve them here. not_found_handling=none makes a miss
+		// a 404, which falls through to PHP: .php, REST and pretty-permalink pages are
+		// not in build/public and so reach PHP unchanged. Uploads already returned above.
+		if (env.ASSETS && (req.method === 'GET' || req.method === 'HEAD') && !url.pathname.startsWith('/_')) {
+			const asset = await env.ASSETS.fetch(req);
+			if (asset.status !== 404) return asset;
+		}
 		// XML-RPC lets one request try many passwords (system.multicall). Off unless XMLRPC=on.
 		if (url.pathname === '/xmlrpc.php' && env.XMLRPC !== 'on') return new Response('XML-RPC is off', { status: 403 });
 		const maxBody = env.MEDIA && isMediaUpload(req, url) ? Number(env.MAX_UPLOAD_BYTES || MAX_UPLOAD_BYTES) : Number(env.MAX_BODY_BYTES || MAX_BODY_BYTES);
