@@ -5,7 +5,7 @@
 set -u
 B=${1:-http://localhost:${PORT:-8797}}
 PW=${ADMIN_PASSWORD:-local-spike-password}
-ST=(-H "x-spike-token: ${SPIKE_TOKEN:-}")
+ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}")
 T=$(mktemp -d); J=$T/jar; H=$T/h; bad=0
 val() { grep -i "^$1:" "$H" | head -1 | cut -d: -f2- | tr -d ' \r'; }
 row() {

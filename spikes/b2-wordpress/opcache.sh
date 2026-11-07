@@ -20,17 +20,17 @@ SERVER=$(cut -d' ' -f1 ".dev-$P.pid")
 # The isolate before any page (the dump answers 409 with its id): the dump at the
 # end must come from the same one. A reload by wrangler dev makes a new isolate.
 hdr() { grep -i "^$1:" "$2" | tr -d '\r' | awk '{print $2}'; }
-curl -s -D build/opcache.headers.start -o /dev/null localhost:$P/_opcache-dump
+curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -D build/opcache.headers.start -o /dev/null localhost:$P/_opcache-dump
 ISO0=$(hdr x-isolate build/opcache.headers.start)
 [ -n "$ISO0" ] || { echo "/_opcache-dump gave no x-isolate before the pages: no OPcache files saved"; exit 1; }
-curl -sf -X POST localhost:${PORT:-8797}/_install > /dev/null   # "already" when installed
+curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -sf -X POST -H "x-admin-password: ${ADMIN_PASSWORD:-local-spike-password}" localhost:${PORT:-8797}/_install > /dev/null   # "already" when installed
 # WOO_ACTIVE=1: activate WooCommerce (its files are in every build, WOO=1).
 if [ "${WOO_ACTIVE:-0}" = 1 ]; then
-  curl -sf -X POST "localhost:${PORT:-8797}/_activate?plugin=woocommerce/woocommerce.php" | grep -q '\\"active\\":true' || { echo "WooCommerce did not activate"; exit 1; }
+  curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -sf -X POST -H "x-admin-password: ${ADMIN_PASSWORD:-local-spike-password}" "localhost:${PORT:-8797}/_activate?plugin=woocommerce/woocommerce.php" | grep -q '\\"active\\":true' || { echo "WooCommerce did not activate"; exit 1; }
 fi
 ./e2e.sh > build/opcache-e2e.log 2>&1 || { echo "e2e failed; no OPcache files saved. Last lines of build/opcache-e2e.log:"; tail -15 build/opcache-e2e.log; exit 1; }
 # WooCommerce pages too, when it is active (tests/woo.py buys a product).
-if curl -sf "localhost:${PORT:-8797}/?rest_route=/wc/store/v1/cart" > /dev/null; then
+if curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -sf "localhost:${PORT:-8797}/?rest_route=/wc/store/v1/cart" > /dev/null; then
   B=http://localhost:${PORT:-8797} ADMIN_PASSWORD=local-spike-password python3 tests/woo.py > /dev/null || { echo "woo.py failed; no OPcache files saved"; exit 1; }
 fi
 # Plugins from the suite in this build (PLUGINS, see build.sh): activate and
@@ -41,7 +41,7 @@ fi
 # The dump must come from the server that ran the pages above.
 now=$(lsof -t -nP -iTCP:"$P" -sTCP:LISTEN 2>/dev/null | sort -u | head -1)
 [ "$now" = "$SERVER" ] || { echo "the server on port $P changed during the run (pid $SERVER, now ${now:-none}): no OPcache files saved"; exit 1; }
-code=$(curl -s -D build/opcache.headers -o build/opcache.zip.new -w '%{http_code}' localhost:$P/_opcache-dump)
+code=$(curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -D build/opcache.headers -o build/opcache.zip.new -w '%{http_code}' localhost:$P/_opcache-dump)
 iso=$(hdr x-isolate build/opcache.headers); drops=$(hdr x-runtime-drops build/opcache.headers)
 [ "$iso" = "$ISO0" ] || { echo "/_opcache-dump came from another isolate ($ISO0 at the start, now ${iso:-none}): wrangler dev reloaded the worker during the run (a file it watches changed). No OPcache files saved."; exit 1; }
 if [ "$code" = 409 ]; then

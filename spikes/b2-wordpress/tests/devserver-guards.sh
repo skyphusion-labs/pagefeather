@@ -30,11 +30,11 @@ check "2 opcache.sh fails (WooCommerce is not in a WOO=0 build)" $(( rc != 0 ? 0
 [ -z "$(lis)" ] && [ ! -f ".dev-$P.pid" ]; check "2 after the failure: no server on the port, no pid file" $? "listener $(lis), $(ls .dev-$P.pid 2>/dev/null)"
 
 ./run.sh _ping > /dev/null 2>&1
-curl -s -o /dev/null -X POST "localhost:$P/_install"
-curl -s -o /dev/null "localhost:$P/?nocache=guard"
-before=$(curl -s -o /dev/null -w '%{http_code}' "localhost:$P/_opcache-dump")
+curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -o /dev/null -X POST -H "x-admin-password: ${ADMIN_PASSWORD:-local-spike-password}" "localhost:$P/_install"
+curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -o /dev/null "localhost:$P/?nocache=guard"
+before=$(curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -o /dev/null -w '%{http_code}' "localhost:$P/_opcache-dump")
 touch build/site.zip; sleep 8
-after=$(curl -s -o "$OUT/dump.bin" -w '%{http_code}' "localhost:$P/_opcache-dump")
+after=$(curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -o "$OUT/dump.bin" -w '%{http_code}' "localhost:$P/_opcache-dump")
 check "3 a reload (build/site.zip touched) after PHP booted: dump 200 then 409" "$([ "$before $after" = "200 409" ] && echo 0 || echo 1)" "$before then $after"
 ./run.sh --stop; sleep 1
 [ -z "$(lis)" ]; check "3 run.sh --stop frees the port" $? "listener $(lis)"

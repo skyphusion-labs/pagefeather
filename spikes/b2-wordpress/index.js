@@ -588,7 +588,8 @@ function schedulePurge(ctx) {
 // header: every visitor with any such cookie was a separate variant (measured
 // on wp-perf-dosql, docs/approach-b.md 8c).
 const WP_COOKIE = /(^|;\s*)(wordpress_logged_in_|wordpress_sec_|wp-postpass_|comment_author_|wp-settings-|woocommerce_|wp_woocommerce_session_)/;
-const PAGE_CACHE_NO_PATH = /^\/(wp-admin|wp-login\.php|wp-cron\.php|_)/;
+const PAGE_CACHE_NO_PATH = /^\/(wp-admin|wp-login\.php|wp-json|wp-cron\.php|wp-comments-post\.php|cart|checkout|my-account|wc-api|_)/;
+const PAGE_CACHE_NO_PARAM = ['rest_route', 'wc-ajax', 'add-to-cart', 'preview', 'nocache', 'customize_changeset_uuid', 'wc-api'];
 function pageCacheRoute(req, url, env) {
 	return (
 		Number(env.PAGE_CACHE_TTL || 120) > 0 &&
@@ -596,8 +597,8 @@ function pageCacheRoute(req, url, env) {
 		!WP_COOKIE.test(req.headers.get('cookie') || '') &&
 		!req.headers.get('upgrade') &&
 		!PAGE_CACHE_NO_PATH.test(url.pathname) &&
-		!url.searchParams.has('preview') &&
-		!url.searchParams.has('nocache')
+		!PAGE_CACHE_NO_PARAM.some((k) => url.searchParams.has(k)) &&
+		!req.headers.has('authorization')
 	);
 }
 function pageCacheHeaders(req, url, r, out, env) {
@@ -611,8 +612,8 @@ function pageCacheHeaders(req, url, r, out, env) {
 		!r.headers['set-cookie'] &&
 		!/no-cache|no-store|private/i.test(wpCc) &&
 		!PAGE_CACHE_NO_PATH.test(url.pathname) &&
-		!url.searchParams.has('preview') &&
-		!url.searchParams.has('nocache');
+		!PAGE_CACHE_NO_PARAM.some((k) => url.searchParams.has(k)) &&
+		!req.headers.has('authorization');
 	if (cacheable) {
 		// The edge keeps it (cloudflare-cdn-cache-control, consumed by Cloudflare and
 		// not sent on). The browser must ask again (no-cache): there is no Vary: Cookie
@@ -1403,7 +1404,7 @@ export class PhpRuntime extends DurableObject {
 		if (dbHandler) dbHandler.reset();
 		// The Worker checked the spike token already. Checked again: the object
 		// trusts nothing it did not check itself.
-		const spikeOk = !env.SPIKE_TOKEN || req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
+		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		// Spike: the URL the object got, and the origin it uses.
 		if (url.pathname === '/_origin') return Response.json({ objectUrl: raw.url, publicOrigin: origin, used: url.href });
@@ -1575,7 +1576,7 @@ const site = {
 		// Drop any left over (an /_install run, or a request that failed early).
 		if (dbHandler) dbHandler.reset();
 		// Spike endpoints need the SPIKE_TOKEN secret when it is set (always on a deploy).
-		const spikeOk = !env.SPIKE_TOKEN || req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
+		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		if (env.MEDIA && (req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/wp-content/uploads/')) return serveUpload(req, env, url);
 		// XML-RPC lets one request try many passwords (system.multicall). Off unless XMLRPC=on.
@@ -1659,6 +1660,7 @@ export default {
 		if (pageCacheRoute(req, url, env)) {
 			const h = new Headers(req.headers);
 			h.delete('cookie');
+			h.delete('authorization');
 			return ctx.exports.Pages.fetch(new Request(req, { headers: h }));
 		}
 		return site.fetch(req, env, ctx);
