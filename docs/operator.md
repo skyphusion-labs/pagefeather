@@ -67,7 +67,13 @@ export WFP_SUBDOMAIN=sites.your-domain.com
 SITES="shop blog" ./deploy/wfp/up.sh
 ```
 
-Every site then gets `<name>.sites.your-domain.com`, routed by one shared dispatcher, each with its own certificate (the first deploy waits while Cloudflare issues it). Phase B is proven end to end (issue #138, closed). A day-two `site add` must carry the same `WFP_CUSTOM_DOMAIN` and `WFP_SUBDOMAIN` to match the deployment.
+Every site then gets `<name>.sites.your-domain.com`, routed by one shared dispatcher, each with its own certificate (the first deploy waits while Cloudflare issues it). Phase B is proven end to end (issue #138, closed).
+
+To add another custom-hostname site to a phase B deployment later, carry the same two variables on `site add`:
+
+```sh
+WFP_CUSTOM_DOMAIN=1 WFP_SUBDOMAIN=sites.your-domain.com ./deploy/wfp/site add news
+```
 
 ## Known limit: one phase for the whole deployment
 
