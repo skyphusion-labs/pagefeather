@@ -2,7 +2,7 @@
 """Snapshots of sites, for the isolation proof of "site add" and "site
 remove" (issue #35, slice 3; isolation.sh runs it).
 
-  snapshot.py seed <site>...                put wfp-isolation/seed.txt into each site's bucket
+  snapshot.py seed <site>...                put a per-site key _snapshots/seed-<site>.txt in each bucket
   snapshot.py take <out.json> <site>...     record each site
   snapshot.py diff <before.json> <after.json>   exit 1 when a site changed
 
@@ -227,7 +227,10 @@ def dbrestore(origin, token, bucket, key):
 
 def seed(sites):
     for s in sites:
-        st, _ = s3("PUT", "/wp-wfp-%s-media/wfp-isolation/seed.txt" % s, ("seed of site %s, %s\n" % (s, time.time())).encode())
+        # A DISTINCT key per site under a prefix the Worker never serves
+        # (_snapshots/, not uploads/): so one site listing its own bucket can
+        # never be mistaken for seeing another site's object (issue #35).
+        st, _ = s3("PUT", "/wp-wfp-%s-media/_snapshots/seed-%s.txt" % (s, s), ("seed of site %s, %s\n" % (s, time.time())).encode())
         print("seed %s: HTTP %s" % (s, st))
         if st != 200:
             raise SystemExit(1)

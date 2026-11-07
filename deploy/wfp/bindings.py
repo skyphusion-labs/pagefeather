@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""Read every script's bindings back from the API, and check that each binds
+only its own site's resources (issue #35, slice 4).
+
+  bindings.py <site>...
+
+For each site <s>:
+- the user Worker site-<s> (GET .../dispatch/namespaces/<ns>/scripts/site-<s>/bindings)
+  may bind only: its own bucket (r2_bucket wp-wfp-<s>-media), its own
+  Durable Object class (durable_object_namespace PhpRuntime, with no
+  script_name or script_name site-<s>), images, assets, plain_text vars, and
+  the secrets WP_SALT and SPIKE_TOKEN (secret_text). Any other binding type
+  (a KV namespace, D1, a service, a dispatch namespace, ...) fails.
+- the dispatcher wp-<s> (GET .../workers/scripts/wp-<s>/settings) may bind
+  only: the site map (kv_namespace SITES, id KV_ID) and the namespace
+  (dispatch_namespace, namespace NAMESPACE, outbound only to
+  wp-wfp-outbound).
+A script whose bindings cannot be read fails: an unread script is not a pass.
+
+Environment: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, NAMESPACE, KV_ID;
+WFP_API overrides the API base (tests). Prints JSON (binding names and
+types only, never a value) and exits 1 on any violation.
+"""
+import json, os, sys, urllib.error, urllib.request
+
+ENV = os.environ
+USER_OK = {"r2_bucket", "durable_object_namespace", "images", "assets", "plain_text", "secret_text"}
+SECRETS_OK = {"WP_SALT", "SPIKE_TOKEN"}
+
+
+def api(path):
+    base = ENV.get("WFP_API") or "https://api.cloudflare.com/client/v4/accounts/" + ENV["CLOUDFLARE_ACCOUNT_ID"]
+    req = urllib.request.Request(base + path, headers={"Authorization": "Bearer " + ENV["CLOUDFLARE_API_TOKEN"], "User-Agent": "wp-on-cf-wfp-bindings"})
+    try:
+        r = urllib.request.urlopen(req, timeout=60)
+        return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, None
+    except (OSError, ValueError):
+        return 0, None
+
+
+def listed(d, key=None):
+    r = (d or {}).get("result")
+    if key and isinstance(r, dict):
+        r = r.get(key)
+    return r if isinstance(r, list) else None
+
+
+def check_user(s, bs):
+    bad = []
+    for b in bs:
+        t, n = b.get("type"), b.get("name")
+        if t not in USER_OK:
+            bad.append("%s binds %s %s: not allowed for a site" % ("site-" + s, t, n))
+        elif t == "r2_bucket" and b.get("bucket_name") != "wp-wfp-%s-media" % s:
+            bad.append("site-%s binds the bucket %s, not its own" % (s, b.get("bucket_name")))
+        elif t == "durable_object_namespace" and (b.get("class_name") != "PhpRuntime" or b.get("script_name") not in (None, "", "site-" + s)):
+            bad.append("site-%s binds the object class %s of script %s, not its own" % (s, b.get("class_name"), b.get("script_name")))
+        elif t == "secret_text" and n not in SECRETS_OK:
+            bad.append("site-%s has an unexpected secret %s" % (s, n))
+    return bad
+
+
+def check_dispatcher(s, bs):
+    bad = []
+    for b in bs:
+        t, n = b.get("type"), b.get("name")
+        if t == "kv_namespace":
+            if n != "SITES" or b.get("namespace_id") != ENV["KV_ID"]:
+                bad.append("wp-%s binds the KV namespace %s as %s, not the site map" % (s, b.get("namespace_id"), n))
+        elif t == "dispatch_namespace":
+            out = (b.get("outbound") or {}).get("worker") or {}
+            if b.get("namespace") != ENV["NAMESPACE"]:
+                bad.append("wp-%s binds the dispatch namespace %s" % (s, b.get("namespace")))
+            elif b.get("outbound") and out.get("service") != "wp-wfp-outbound":
+                bad.append("wp-%s sends its outbound to %s" % (s, out.get("service")))
+        else:
+            bad.append("wp-%s binds %s %s: not allowed for a dispatcher" % (s, t, n))
+    return bad
+
+
+def main(sites):
+    out, bad = {"sites": {}}, []
+    for s in sites:
+        rec = {}
+        st, d = api("/workers/dispatch/namespaces/%s/scripts/site-%s/bindings" % (ENV["NAMESPACE"], s))
+        ub = listed(d)
+        if st != 200 or ub is None:
+            bad.append("site-%s: its bindings cannot be read (HTTP %s)" % (s, st))
+        else:
+            rec["user"] = sorted("%s %s" % (b.get("type"), b.get("name")) for b in ub)
+            bad += check_user(s, ub)
+        st, d = api("/workers/scripts/wp-%s/settings" % s)
+        db = listed(d, "bindings")
+        if st != 200 or db is None:
+            bad.append("wp-%s: its bindings cannot be read (HTTP %s)" % (s, st))
+        else:
+            rec["dispatcher"] = sorted("%s %s" % (b.get("type"), b.get("name")) for b in db)
+            bad += check_dispatcher(s, db)
+        out["sites"][s] = rec
+    out["failed"] = bad
+    print(json.dumps(out, indent=1))
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    sys.exit(main(sys.argv[1:]))

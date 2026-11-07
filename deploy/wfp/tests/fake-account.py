@@ -81,8 +81,11 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.send(200, '<?xml version="1.0"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">%s</ListBucketResult>' % x, "application/xml")
         if p.startswith("/site/"):
             n = p.split("/")[2][3:]
-            t = sites.get(n, {}).get("title")
-            return self.send(200, "<html><title>%s</title></html>" % t, "text/html") if t else self.send(404, "no")
+            site = sites.get(n, {})
+            t = site.get("title")
+            if not t:
+                return self.send(404, "no")
+            return self.send(site.get("page_status", 200), "<html><title>%s</title></html>" % t, "text/html")
         return self.send(404, {"success": False})
 
 

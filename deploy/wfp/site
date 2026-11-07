@@ -133,6 +133,8 @@ if [ "$cmd" = add ]; then
   "$WFP/site.sh" up "$s"
   fp=$(site_footprint "$s")
   footprint_present "$fp" || { echo "site $s: not every part is there after the add:" >&2; printf '%s\n' "$fp" | sed 's/^/  /' >&2; exit 1; }
+  # Its scripts bind only its own resources (bindings.py, #35 slice 4).
+  NAMESPACE=$NAMESPACE KV_ID=$KV_ID python3 -I "$WFP/bindings.py" "$s"
   echo "site add $s: done, https://$(site_host "$s" "$SUB")"
 else
   fp=$(site_footprint "$s")

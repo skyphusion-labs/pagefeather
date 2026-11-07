@@ -109,6 +109,23 @@ It is off by default. `WFP_CUSTOM_DOMAIN=1` selects it; without the flag, `worke
 - `site remove` detaches the Custom Domain before it deletes the map entry (the CR #138 remove order), then removes the rest.
 
 **The live attach routes a zone, so it is governed by CR #138** (the CR #113 pattern: a zone-record snapshot before the first attach, one exact hostname per site, the reversal compared against the snapshot, never a wildcard). The attach is run by the lead as the CR #138 apply step, serialized against the other live work on `skyphusion.org`. This directory ships the code and the offline tests; nothing here routes a zone, and the matrix does not claim custom domains as measured until phase B is proven live.
+## Bindings read back
+
+After every upload, `bindings.py` reads each script's bindings back from the API (`up.sh` for every site, `site add` for its own site). It fails unless each one binds only its own resources:
+- **A user Worker `site-<name>`** may bind its own bucket, its own Durable Object class, Images, its assets, plain vars, and the secrets `WP_SALT` and `SPIKE_TOKEN`.
+- **A dispatcher `wp-<name>`** may bind the site map and the namespace, with its outbound going to `wp-wfp-outbound` only.
+
+Any other binding fails, and so does a script whose bindings cannot be read. The output names the bindings and their types, never a value.
+
+## Isolation, proven from site A's side (live)
+
+`cross.sh`, after `up.sh` with sites `one` and `two`, proves that our own site A cannot reach site B's resources, using only what a customer's user Worker holds (its bindings, its secrets, `fetch()`). It uploads two attacker probes (`cross-probe/worker.js`): `site-crossa` with site one's bindings and secrets, `site-crossb` with site two's, each behind a dispatcher with a small `cpuMs` and `subRequests`. Then A (`crossa`) attempts to reach B (`two`/`crossb`), and `cross.py` decides the verdict:
+- **R2:** A's `MEDIA` list has only A's keys; a `fetch()` to B's bucket returns no bytes.
+- **Durable Object:** A's object is its own, not B's.
+- **Secrets:** A's `WP_SALT` is its own, not B's; A sees no foreign secret name.
+- **Limits:** `subRequests` was exact where measured, without an outbound Worker (not measured with one); `cpuMs` is enforced, inexact below about 2 s (`docs/wfp.md` item 4).
+
+`CROSS_OUTBOUND=0` runs the probes with the outbound flag off (default on). A PASS is a public result. A result where A reaches B against the docs, or any platform isolation gap, goes to the lead only, is written to no artifact, and stops that line (`cross.py` marks it `platform`; `cross.sh` exits 3). A reach through a binding we gave A by mistake is our defect, fixed in the open. The binding readback (above) proves the static half: A's bindings name only A's resources. The method is on issue #35.
 
 ## Tests (offline)
 
@@ -120,6 +137,9 @@ deploy/wfp/tests/kv-ready-test.sh           # the wait for a new site map to acc
 deploy/wfp/tests/wait-site-test.sh          # the wait for a new site to answer from its own user Worker
 deploy/wfp/tests/snapshot-test.sh           # the isolation snapshots and diff, and site_footprint
 deploy/wfp/tests/site-cmd-test.sh           # site add and remove refuse, with no write, when they must
+python3 deploy/wfp/tests/bindings-test.py   # the bindings read back: each script binds only its own resources
+python3 deploy/wfp/tests/cross-test.py      # the isolation verdict: a breach is never read as a pass
+deploy/wfp/tests/probe-entry-test.sh        # the probe map entry and the CROSS_OUTBOUND option
 deploy/wfp/tests/tf-test.sh                 # terraform validate, fmt, and the teardown key with no dependency (local: needs terraform)
 deploy/wfp/tests/custom-domain-test.sh      # phase B (#138): custom_host, site_host, the shared dispatcher, the Terraform wiring
 ```

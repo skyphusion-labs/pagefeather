@@ -71,6 +71,19 @@ render_cacheprobe() {
   sed -e "s/@NAME@/$1/g" -e "s/@WORKERS_DEV@/$wd/g" -e "s/@COMPAT@/$(compat_date)/g" "$WFP/cache-probe/wrangler.template.toml" \
     | { if [ "$wd" = false ]; then grep -v '^workers_dev'; else cat; fi; }
 }
+# The site map entry for an attacker probe: script, limits, and the outbound
+# flag. CROSS_OUTBOUND=0 writes it false (an option to run the probes without
+# the outbound Worker); unset or any other value writes true, unchanged.
+probe_entry() { # probe_entry <script> <cpuMs> <subRequests>
+  printf '{"script": "%s", "cpuMs": %s, "subRequests": %s, "outbound": %s}' \
+    "$1" "$2" "$3" "$([ "${CROSS_OUTBOUND:-1}" = 0 ] && echo false || echo true)"
+}
+
+# The attacker probe (slice 4): render_cross <name> <bucket>.
+render_cross() {
+  sed -e "s/@NAME@/$1/g" -e "s/@BUCKET@/$2/g" -e "s/@COMPAT@/$(compat_date)/g" "$WFP/cross-probe/wrangler.template.toml"
+}
+
 wrangler_deploy() { # wrangler_deploy <dir> <logfile> <wrangler deploy args...>
   local dir=$1 log=$2; shift 2
   local i rc=0
@@ -290,6 +303,16 @@ footprint_present() { # footprint_present <footprint text>: 0 when every part is
 list_sites() {
   tfr site init -input=false >/dev/null 2>&1 || return 1
   tfr site workspace list | tr -d ' *' | grep -v '^default$' | grep -v '^$' || true
+}
+# A site answers its OWN title through its dispatcher: HTTP 200 and the page
+# <title> contains <want>. Used by cross.sh's setup-green gate (issue #35).
+site_title_ok() { # site_title_ok <url> <want>
+  local body code title
+  body=$(curl -s -m 60 -w '\n%{http_code}' "$1" 2>/dev/null) || return 1
+  code=${body##*$'\n'}; body=${body%$'\n'*}
+  [ "$code" = 200 ] || return 1
+  title=$(printf '%s' "$body" | sed -n 's/.*<title>\([^<]*\)<\/title>.*/\1/p' | head -1)
+  case "$title" in *"$2"*) return 0 ;; *) return 1 ;; esac
 }
 # Wait for a re-uploaded site to run the new build (issue #35 slice 5). Poll
 # /_build (the OBJECT's running version) until it equals <want>. Measured
