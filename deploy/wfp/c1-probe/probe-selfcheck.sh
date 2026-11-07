@@ -36,4 +36,23 @@ PY
 )
 ok "wrangler.toml: one Probe container, its DO and migration, name site-c1probe" "$v"
 
+# Regression guard (fc#147): every Dockerfile COPY source must resolve inside
+# the build context wrangler passes, or the image build dies with "not found"
+# before it ever reaches the WfP upload gate (the bug that stalled the first run).
+v=$("$PY" - "$HERE/wrangler.toml" "$HERE/container/Dockerfile" "$HERE" <<'PY'
+import tomllib, sys, os, re
+d = tomllib.load(open(sys.argv[1], "rb"))
+ctxrel = (d.get("containers") or [{}])[0].get("image_build_context", ".")
+ctx = os.path.normpath(os.path.join(sys.argv[3], ctxrel))
+missing = []
+for line in open(sys.argv[2]):
+    m = re.match(r"\s*COPY\s+(\S+)\s+\S+", line)
+    if m and not m.group(1).startswith("--") and not os.path.exists(os.path.join(ctx, m.group(1))):
+        missing.append(m.group(1))
+sys.stderr.write("missing: " + ",".join(missing) + "\n") if missing else None
+print("1" if not missing else "0")
+PY
+)
+ok "every Dockerfile COPY source resolves in the build context" "$v"
+
 [ "$fails" = 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }
