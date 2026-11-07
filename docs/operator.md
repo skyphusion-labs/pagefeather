@@ -5,6 +5,7 @@ This is the day-one walkthrough for one operator who runs a couple of WordPress 
 ## What you need
 
 - A Cloudflare account on the **Workers for Platforms Paid** plan (about $25 a month; the cost of two idle sites is in the README, "Workers for Platforms reference deployment: cost of two idle sites").
+- Your Cloudflare **account id**, exported as `ACCOUNT_ID`. Every command below uses it.
 - Node and Wrangler (4.107.0 or later), and this repository.
 - Terraform (1.5 or later).
 - A Cloudflare **API token** with edit on: Workers Scripts, Workers KV, Workers for Platforms, R2, and API Tokens (the last for the short-lived key `down.sh` uses to empty a bucket). It is exported as `CLOUDFLARE_API_TOKEN`.
@@ -12,18 +13,23 @@ This is the day-one walkthrough for one operator who runs a couple of WordPress 
 
 Nothing is configured in the dashboard; everything below is a command.
 
-## Day one: an empty account to two sites
+## Day one: an empty account to a couple of sites
+
+You supply your account and a site list. The sites stay up; nothing here tears them down.
 
 ```sh
 export CLOUDFLARE_API_TOKEN=...
+export ACCOUNT_ID=<your Cloudflare account id>
+export SITES="shop blog"            # your site names; the default is "one two"
 # optional: export WFP_STATE=r2 AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
+# optional: export CACHE_PROBE=0    # skip the Workers Cache measurement probe
 ./deploy/wfp/up.sh
 ```
 
-`up.sh` builds `b-dosql` once, then makes the shared pieces (the dispatch namespace, the KV site map, the outbound Worker) and two sites, `one` and `two`. It prints each site's address, `https://wp-<name>.<your-subdomain>.workers.dev`. Each site installs WordPress on first boot; the admin user is `admin` and its password is a Terraform output:
+`up.sh` builds `b-dosql` once, then makes the shared pieces (the dispatch namespace, the KV site map, the outbound Worker) and each site in `SITES`. It prints each site's address, `https://wp-<name>.<your-subdomain>.workers.dev`, and leaves them running. Each site installs WordPress on first boot; the admin user is `admin` and its password is a Terraform output:
 
 ```sh
-( cd deploy/wfp/terraform/site && terraform workspace select one && terraform output -raw admin_password )
+( cd deploy/wfp/terraform/site && terraform workspace select shop && terraform output -raw admin_password )
 ```
 
 Open a site's address, log in at `/wp-login.php`, and it is a working WordPress with WooCommerce available.
@@ -31,8 +37,8 @@ Open a site's address, log in at `/wp-login.php`, and it is a working WordPress 
 ## Add or remove a site
 
 ```sh
-./deploy/wfp/site add blog       # one command; refuses if any part of "blog" already exists
-./deploy/wfp/site remove two     # one command; verifies every part is gone
+./deploy/wfp/site add news       # one command; refuses if any part of "news" already exists
+./deploy/wfp/site remove blog    # one command; verifies every part is gone
 ./deploy/wfp/site list           # the sites you have
 ```
 
@@ -41,7 +47,7 @@ Adding or removing a site changes no other site. The removal is verified like a 
 ## Update a site, with a way back
 
 ```sh
-./deploy/wfp/site update blog    # one site
+./deploy/wfp/site update shop    # one site
 ./deploy/wfp/site update --all   # every site, one at a time, stopping at the first failure
 ```
 
@@ -53,9 +59,23 @@ Each site has its own user Worker, its own Durable Object and data, its own R2 m
 
 ## Custom hostnames
 
-The addresses above are on `workers.dev`. A custom hostname per site (`<site>.your-domain`) is phase B, which routes a zone and so needs a change-request first (issue #138); it is designed but not yet built. Until then the sites are on `workers.dev`, which needs no domain and no change-request.
+The addresses above are on `workers.dev`, which needs no domain. To give the sites custom hostnames (`<site>.<your-zone>`) instead, run the deployment in phase B: set `WFP_CUSTOM_DOMAIN=1` and `WFP_SUBDOMAIN` to a zone you have routed on this account, before `up.sh`.
+
+```sh
+export WFP_CUSTOM_DOMAIN=1
+export WFP_SUBDOMAIN=sites.your-domain.com
+SITES="shop blog" ./deploy/wfp/up.sh
+```
+
+Every site then gets `<name>.sites.your-domain.com`, routed by one shared dispatcher, each with its own certificate (the first deploy waits while Cloudflare issues it). Phase B is proven end to end (issue #138, closed). A day-two `site add` must carry the same `WFP_CUSTOM_DOMAIN` and `WFP_SUBDOMAIN` to match the deployment.
+
+## Known limit: one phase for the whole deployment
+
+The phase (A `workers.dev`, or B custom hostnames) is chosen once, at `up.sh`, for every site in the deployment. `up.sh` stands up the one shared dispatcher only in phase B, and a per-site `site add` does not stand it up, so phase A and phase B sites cannot be mixed cleanly in the same deployment: pick one phase for all of a deployment's sites. Two sites on `workers.dev` (phase A) or two on custom hostnames (phase B) both work today; a mixed deployment does not.
 
 ## Tear it all down
+
+Your sites stay up until you remove them. To take the whole deployment down:
 
 ```sh
 ./deploy/wfp/down.sh             # removes every site and the shared pieces, checking each is gone
