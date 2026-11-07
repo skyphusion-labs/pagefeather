@@ -99,12 +99,13 @@ const ctxOf = (s) => ({ acct: ACCT, token: 'T', fetchImpl: s.fetchImpl });
   const meta = JSON.parse(await s.calls[0].body.get('metadata').text());
   ok('shop deploy PUTs a standalone worker', s.calls[0].method === 'PUT' && s.calls[0].url.endsWith(`/accounts/${ACCT}/workers/scripts/c1-shop`));
   ok('migration declares the SQLite DO class', meta.migrations.new_sqlite_classes[0] === 'Store');
+  ok('script metadata CONTAINER-ENABLES the DO class (avoids 1607)', meta.containers && meta.containers[0].class_name === 'Store' && meta.containers[0].image === ref);
   ok('reads the script settings to resolve the DO namespace', s.calls[1].method === 'GET' && s.calls[1].url.endsWith('/workers/scripts/c1-shop/settings'));
   const appCall = s.calls.find((c) => c.method === 'POST' && c.url.endsWith('/containers/applications'));
   ok('CREATES the container application (the step a raw PUT omits, #158)', !!appCall);
   const appBody = JSON.parse(appCall.body);
   ok('app binds the class DO namespace + the pushed DIGEST image', appBody.durable_objects.namespace_id === NSID && appBody.configuration.image === ref);
-  ok('app sets instance resources + tier constraints', appBody.configuration.memory_mib === 1024 && appBody.constraints.tiers.join(',') === '1,2');
+  ok('app sets instance_type + tier constraints + instances 0 (wrangler shape)', appBody.configuration.instance_type === 'basic' && appBody.constraints.tiers.join(',') === '1,2' && appBody.instances === 0);
   ok('deploy returns the application name + namespace', r.application === 'c1-shop-store' && r.namespaceId === NSID);
   let threw = false;
   try { await deployContainerWorkerFromDigest(ctxOf(stub()), { name: 'x', mainModule: 'w.js', modules: [], containerClass: 'Store', imageRef: './container/Dockerfile' }); } catch { threw = true; }

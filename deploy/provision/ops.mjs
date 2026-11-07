@@ -136,13 +136,20 @@ export async function deployContainerWorkerFromDigest(ctx, {
   if (!/^[^:]+(:[^@]+)?@sha256:[0-9a-f]{64}$/.test(imageRef) && !imageRef.startsWith('registry.cloudflare.com/')) {
     throw new Error(`deployContainerWorkerFromDigest(${name}): imageRef must be a pushed registry digest, got ${imageRef}`);
   }
-  const res = INSTANCE_RESOURCES[instanceType] || INSTANCE_RESOURCES.basic;
   const metadata = {
     main_module: mainModule,
     compatibility_date: compatibilityDate,
     compatibility_flags: compatibilityFlags,
     bindings,
     migrations: { new_tag: migrationTag, new_sqlite_classes: [containerClass] },
+    // The `containers` metadata is what CONTAINER-ENABLES the DO class. Without
+    // it the migration makes a plain SQLite DO and the application create fails
+    // with 1607 DURABLE_OBJECT_NOT_CONTAINER_ENABLED (measured live, #158). It
+    // is omitted from the public multipart-metadata allowlist but the API
+    // accepts it, and `wrangler deploy` sends exactly this (captured from a
+    // trace deploy). The application itself is still created below; this only
+    // enables the class.
+    containers: [{ class_name: containerClass, image: imageRef, instance_type: instanceType, max_instances: maxInstances }],
   };
   const form = buildScriptForm(metadata, modules);
   const put = await cfFetch(ctx.token, 'PUT', `/accounts/${ctx.acct}/workers/scripts/${name}`,
@@ -156,13 +163,16 @@ export async function deployContainerWorkerFromDigest(ctx, {
   const namespaceId = doBinding && doBinding.namespace_id;
   if (!namespaceId) throw new Error(`deployContainerWorkerFromDigest(${name}): no DO namespace for class ${containerClass} after deploy (migration did not create it)`);
 
-  // Create or update the container application against that namespace.
+  // Create or update the container application against that namespace. The
+  // body matches what `wrangler deploy` sends (captured from a trace deploy):
+  // instances 0, instance_type in the configuration (the API expands it to
+  // vcpu/memory/disk), and the tier constraints.
   const application = appName || `${name}-store`;
   const body = {
     name: application, scheduling_policy: schedulingPolicy,
-    instances: maxInstances, max_instances: maxInstances,
+    instances: 0, max_instances: maxInstances,
     durable_objects: { namespace_id: namespaceId },
-    configuration: { image: imageRef, vcpu: res.vcpu, memory_mib: res.memory_mib, disk: { size_mb: res.disk_mb } },
+    configuration: { image: imageRef, instance_type: instanceType },
     constraints,
   };
   const list = await cfFetch(ctx.token, 'GET', `/accounts/${ctx.acct}/containers/applications`, { fetchImpl: ctx.fetchImpl });
