@@ -224,8 +224,15 @@ kv_wait_writable() { # kv_wait_writable <namespace id>
 #   retried:  no answer, 404, 5xx, x-wfp-error no-site or not-deployed
 #   fails at once: x-wfp-error bad-entry or dispatch (a configuration fault)
 # Bound SITE_WAIT (300) s, every SITE_WAIT_STEP (10) s; a timeout prints the last answer.
+# The time wait_site waits for a new site to answer. Phase B's FIRST deploy
+# must cover the Advanced Certificate issuance for a new Custom Domain, which
+# can exceed 15 min (Cloudflare docs: a new hostname has no certificate until
+# the pack is active, so TLS fails until then). Phase A has no certificate, so
+# it stays short. SITE_WAIT overrides either.
+site_wait_cap() { echo "${SITE_WAIT:-$([ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && echo 1800 || echo 300)}"; }
 wait_site() { # wait_site <origin>
-  local t0=$SECONDS t code err body
+  local t0=$SECONDS t code err body cap said_tls=0
+  cap=$(site_wait_cap)
   t=$(mktemp -d)
   while :; do
     code=$(curl -s -o "$t/b" -D "$t/h" -w '%{http_code}' -m 60 "$1/_dbping?nocache=$RANDOM$RANDOM" 2>/dev/null) || code=000
@@ -238,8 +245,16 @@ wait_site() { # wait_site <origin>
       echo "  the site answered HTTP $code after $((SECONDS - t0)) s"
       rm -rf "$t"; return 0
     fi
-    if [ $((SECONDS - t0)) -ge "${SITE_WAIT:-300}" ]; then
-      echo "the site did not answer in ${SITE_WAIT:-300} s; last: HTTP $code${err:+, x-wfp-error $err}, body: $body" >&2
+    # Phase B first deploy: a new Custom Domain's Advanced Certificate may still
+    # be issuing, so TLS is not ready and curl reads 000 or a 52x edge code.
+    # That is a delay, not a fault: say so once and keep waiting to the cap.
+    if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && [ "$said_tls" = 0 ] && [[ "$code" =~ ^(000|522|523|525|526)$ ]]; then
+      echo "  waiting for TLS on $1 (the Advanced Certificate may still be issuing; up to ${cap}s)"
+      said_tls=1
+    fi
+    if [ $((SECONDS - t0)) -ge "$cap" ]; then
+      echo "the site did not answer in ${cap} s; last: HTTP $code${err:+, x-wfp-error $err}, body: $body" >&2
+      [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && echo "  if the Advanced Certificate for $1 is still issuing, re-run up.sh once it is active: the data plane persists and the install completes on the re-run" >&2
       rm -rf "$t"; return 1
     fi
     sleep "${SITE_WAIT_STEP:-10}"
