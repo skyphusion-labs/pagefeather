@@ -108,8 +108,11 @@ DRV="$APP/build/cache/sqlite-database-integration"
 [ -d "$DRV/.git" ] || git clone -q https://github.com/WordPress/sqlite-database-integration "$DRV"
 [ "$(git -C "$DRV" rev-parse --short=7 HEAD)" = "${REF:0:7}" ] || git -C "$DRV" checkout -q "$REF"
 
-# 2. Dump to SQLite.
-php "$IMP/dump-to-sqlite.php" "$DRV" "$DUMP" "$WORK/site.sqlite" > "$WORK/report.json"
+# 2. Dump to SQLite. The MySQL-on-SQLite parser builds an AST of the whole
+# dump, so a real store's dump needs more than PHP's default 128 MB CLI limit
+# (measured 2026-11-07: a 300-product, 200-order WooCommerce dump exhausted
+# 128 MB). IMPORT_PHP_MEM overrides; -1 removes the cap.
+php -d memory_limit="${IMPORT_PHP_MEM:-2048M}" "$IMP/dump-to-sqlite.php" "$DRV" "$DUMP" "$WORK/site.sqlite" > "$WORK/report.json"
 python3 - "$WORK/report.json" <<'PY'
 import json, sys
 r = json.load(open(sys.argv[1]))
