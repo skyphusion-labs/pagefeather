@@ -36,6 +36,12 @@ eq "site_host phase A (flag unset)" "$(site_host blog sub123)" "wp-blog.sub123.w
 eq "site_host phase A (flag 0)" "$(WFP_CUSTOM_DOMAIN=0 site_host blog sub123)" "wp-blog.sub123.workers.dev"
 eq "site_host phase B (flag 1)" "$(WFP_CUSTOM_DOMAIN=1 site_host blog sub123)" "blog.wfp-test.skyphusion.org"
 
+# site_wait_cap: phase A is short; a phase B first deploy covers the Advanced
+# Certificate issuance window; SITE_WAIT overrides either (#138 live finding).
+eq "site_wait_cap phase A" "$(site_wait_cap)" "300"
+eq "site_wait_cap phase B first deploy" "$(WFP_CUSTOM_DOMAIN=1 site_wait_cap)" "1800"
+eq "site_wait_cap SITE_WAIT overrides (phase B)" "$(WFP_CUSTOM_DOMAIN=1 SITE_WAIT=42 site_wait_cap)" "42"
+
 # The shared dispatcher is the ONE template, named wp-dispatch, and still binds
 # the site map and the namespace twice. SHARED_DISPATCHER is wp-dispatch.
 eq "SHARED_DISPATCHER name" "$SHARED_DISPATCHER" "wp-dispatch"
