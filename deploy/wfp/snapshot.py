@@ -187,6 +187,44 @@ def diff(a_path, b_path):
     return 1 if bad else 0
 
 
+def _dbexport(origin, token):
+    st, b = http(origin + "/_dbexport", headers={"x-spike-token": token})
+    rows = sum(1 for line in b.splitlines() if line.strip())
+    return st, b, rows
+
+
+def dbsnapshot(origin, token, bucket, key):
+    """GET the object's SQLite export, verify it, PUT it to R2 under
+    _snapshots/, and read it back (size and rows). Prints JSON; nonzero on any
+    failure, so a rollback is never trusted to a snapshot that did not store."""
+    st, body, rows = _dbexport(origin, token)
+    if st != 200 or rows == 0:
+        print(json.dumps({"ok": False, "stage": "export", "status": st, "rows": rows})); return 1
+    full = "_snapshots/" + key
+    pst, _ = s3("PUT", "/%s/%s" % (bucket, full), body)
+    if pst not in (200, 201):
+        print(json.dumps({"ok": False, "stage": "put", "status": pst})); return 1
+    # Read it back: the stored object must have the bytes we sent (condition c).
+    gst, gb = s3("GET", "/%s/%s" % (bucket, full))
+    grows = sum(1 for line in gb.splitlines() if line.strip())
+    if gst != 200 or len(gb) != len(body) or grows != rows:
+        print(json.dumps({"ok": False, "stage": "readback", "status": gst, "want_bytes": len(body), "got_bytes": len(gb), "want_rows": rows, "got_rows": grows})); return 1
+    print(json.dumps({"ok": True, "key": full, "bytes": len(body), "rows": rows}))
+    return 0
+
+
+def dbrestore(origin, token, bucket, key):
+    """GET the snapshot from R2 and POST it to /_dbimport?replace=1."""
+    full = key if key.startswith("_snapshots/") else "_snapshots/" + key
+    gst, body = s3("GET", "/%s/%s" % (bucket, full))
+    if gst != 200 or not body.strip():
+        print(json.dumps({"ok": False, "stage": "get", "status": gst})); return 1
+    st, rb = http(origin + "/_dbimport?replace=1", method="POST", data=body, headers={"x-spike-token": token, "content-type": "application/x-ndjson"})
+    ok = st == 200 and b'"ok": false' not in rb and b'"error"' not in rb
+    print(json.dumps({"ok": bool(ok), "stage": "import", "status": st, "body": rb[:160].decode("utf-8", "replace")}))
+    return 0 if ok else 1
+
+
 def seed(sites):
     for s in sites:
         st, _ = s3("PUT", "/wp-wfp-%s-media/wfp-isolation/seed.txt" % s, ("seed of site %s, %s\n" % (s, time.time())).encode())
@@ -203,5 +241,9 @@ if __name__ == "__main__":
         sys.exit(diff(sys.argv[2], sys.argv[3]))
     elif cmd == "seed":
         seed(sys.argv[2:])
+    elif cmd == "dbsnapshot":
+        sys.exit(dbsnapshot(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]))
+    elif cmd == "dbrestore":
+        sys.exit(dbrestore(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]))
     else:
         sys.exit(__doc__)
