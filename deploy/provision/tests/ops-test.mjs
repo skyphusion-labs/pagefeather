@@ -80,21 +80,53 @@ const ctxOf = (s) => ({ acct: ACCT, token: 'T', fetchImpl: s.fetchImpl });
   ok('KV value is the verbatim JSON string', s.calls[0].body === JSON.stringify({ script: 'site-blog', kind: 'wp' }));
 }
 
-// 6. deployContainerWorkerFromDigest: image is a digest ref (no build); rejects a Dockerfile.
+// 6. deployContainerWorkerFromDigest: PUTs the script with the migration, then
+// CREATES the container application against the class's DO namespace with the
+// digest image. The app-create is the step a raw PUT omits (the #158 500).
 {
-  const s = stub();
+  const NSID = 'ns0123456789abcdef0123456789abcd';
+  const s = stub([
+    { status: 200, body: '{"success":true,"result":{}}' }, // PUT script
+    { status: 200, body: JSON.stringify({ success: true, result: { bindings: [{ type: 'durable_object_namespace', class_name: 'Store', name: 'STORE', namespace_id: NSID }] } }) }, // GET settings
+    { status: 200, body: '{"success":true,"result":[]}' }, // GET apps (none -> create)
+    { status: 200, body: '{"success":true,"result":{"id":"app-123"}}' }, // POST app
+  ]);
   const ref = `registry.cloudflare.com/${ACCT}/wp-woo-c1@sha256:${'8'.repeat(64)}`;
-  await deployContainerWorkerFromDigest(ctxOf(s), {
+  const r = await deployContainerWorkerFromDigest(ctxOf(s), {
     name: 'c1-shop', mainModule: 'worker.js', modules: [{ name: 'worker.js', content: 'export default {}' }],
-    bindings: [], compatibilityDate: '2026-07-01', containerClass: 'Store', imageRef: ref,
+    bindings: [], compatibilityDate: '2026-07-01', containerClass: 'Store', imageRef: ref, instanceType: 'basic',
   });
   const meta = JSON.parse(await s.calls[0].body.get('metadata').text());
-  ok('shop deploy PUTs a standalone worker', s.calls[0].url.endsWith(`/accounts/${ACCT}/workers/scripts/c1-shop`));
-  ok('container image is the pushed DIGEST ref (no Dockerfile, no build)', meta.containers[0].image === ref && meta.containers[0].class_name === 'Store');
+  ok('shop deploy PUTs a standalone worker', s.calls[0].method === 'PUT' && s.calls[0].url.endsWith(`/accounts/${ACCT}/workers/scripts/c1-shop`));
   ok('migration declares the SQLite DO class', meta.migrations.new_sqlite_classes[0] === 'Store');
+  ok('script metadata CONTAINER-ENABLES the DO class (avoids 1607)', meta.containers && meta.containers[0].class_name === 'Store' && meta.containers[0].image === ref);
+  ok('reads the script settings to resolve the DO namespace', s.calls[1].method === 'GET' && s.calls[1].url.endsWith('/workers/scripts/c1-shop/settings'));
+  const appCall = s.calls.find((c) => c.method === 'POST' && c.url.endsWith('/containers/applications'));
+  ok('CREATES the container application (the step a raw PUT omits, #158)', !!appCall);
+  const appBody = JSON.parse(appCall.body);
+  ok('app binds the class DO namespace + the pushed DIGEST image', appBody.durable_objects.namespace_id === NSID && appBody.configuration.image === ref);
+  ok('app sets instance_type + tier constraints + instances 0 (wrangler shape)', appBody.configuration.instance_type === 'basic' && appBody.constraints.tiers.join(',') === '1,2' && appBody.instances === 0);
+  ok('deploy returns the application name + namespace', r.application === 'c1-shop-store' && r.namespaceId === NSID);
   let threw = false;
   try { await deployContainerWorkerFromDigest(ctxOf(stub()), { name: 'x', mainModule: 'w.js', modules: [], containerClass: 'Store', imageRef: './container/Dockerfile' }); } catch { threw = true; }
   ok('shop deploy REJECTS a Dockerfile image (must be a pushed digest)', threw);
+}
+// 6b. an EXISTING application is updated (PATCH), not recreated (idempotent).
+{
+  const NSID = 'ns0123456789abcdef0123456789abcd';
+  const s = stub([
+    { status: 200, body: '{"success":true,"result":{}}' },
+    { status: 200, body: JSON.stringify({ success: true, result: { bindings: [{ type: 'durable_object_namespace', class_name: 'Store', namespace_id: NSID }] } }) },
+    { status: 200, body: '{"success":true,"result":[{"id":"app-existing","name":"c1-shop-store"}]}' }, // app exists
+    { status: 200, body: '{"success":true,"result":{"id":"app-existing"}}' }, // PATCH
+  ]);
+  const ref = `registry.cloudflare.com/${ACCT}/wp-woo-c1@sha256:${'7'.repeat(64)}`;
+  await deployContainerWorkerFromDigest(ctxOf(s), {
+    name: 'c1-shop', mainModule: 'worker.js', modules: [{ name: 'worker.js', content: 'export default {}' }],
+    compatibilityDate: '2026-07-01', containerClass: 'Store', imageRef: ref,
+  });
+  const patch = s.calls.find((c) => c.method === 'PATCH' && /\/containers\/applications\/app-existing$/.test(c.url));
+  ok('an existing application is PATCHed to roll the image, not recreated', !!patch && JSON.parse(patch.body).configuration.image === ref);
 }
 
 // 7. deployNamespaceScript: dispatch-namespace path + metadata main_module.
@@ -104,10 +136,23 @@ const ctxOf = (s) => ({ acct: ACCT, token: 'T', fetchImpl: s.fetchImpl });
     ns: 'wp-wfp', name: 'site-blog', mainModule: 'index.js',
     modules: [{ name: 'index.js', content: 'export default {}' }],
     bindings: [{ type: 'kv_namespace', name: 'SITES', namespace_id: 'KV' }], compatibilityDate: '2026-07-01',
+    migrations: { new_sqlite_classes: ['PhpRuntime'] },
   });
   const meta = JSON.parse(await s.calls[0].body.get('metadata').text());
   ok('wp deploy PUTs the namespace script', s.calls[0].url.endsWith(`/workers/dispatch/namespaces/wp-wfp/scripts/site-blog`));
   ok('wp metadata carries main_module + bindings', meta.main_module === 'index.js' && meta.bindings[0].name === 'SITES');
+  // A SQLite DO binding without a migration is API 10061 (measured #158).
+  ok('wp metadata carries the SQLite migration', meta.migrations && meta.migrations.new_tag === 'v1' && meta.migrations.new_sqlite_classes[0] === 'PhpRuntime');
+}
+// 7b. deployNamespaceScript with no SQLite classes omits migrations entirely.
+{
+  const s = stub();
+  await deployNamespaceScript(ctxOf(s), {
+    ns: 'wp-wfp', name: 'site-plain', mainModule: 'index.js',
+    modules: [{ name: 'index.js', content: 'export default {}' }], compatibilityDate: '2026-07-01',
+  });
+  const meta = JSON.parse(await s.calls[0].body.get('metadata').text());
+  ok('a site with no DO class sends no migrations key', !('migrations' in meta));
 }
 
 // 8. registry: upsert (PUT), list (keys), read (value), remove (DELETE).

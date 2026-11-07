@@ -34,11 +34,23 @@ export function genSecret(bytes = 32) {
   return Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Load a PRE-BUILT bundle dir as module parts (every .js/.mjs file).
+// Load a PRE-BUILT bundle dir as module parts. A real bundle is not only JS:
+// b-dosql ships a PHP .wasm and .zip data blobs, which must upload with their
+// own module type and as BINARY (reading them as utf8 corrupts them). Source
+// maps and READMEs are not modules. (Loading only .js was a CLI gap, #158.)
+function moduleType(f) {
+  if (f.endsWith('.js') || f.endsWith('.mjs')) return 'application/javascript+module';
+  if (f.endsWith('.wasm')) return 'application/wasm';
+  return 'application/octet-stream';
+}
 async function loadModules(dir) {
-  const files = (await readdir(dir)).filter((f) => f.endsWith('.js') || f.endsWith('.mjs'));
+  const files = (await readdir(dir)).filter((f) => !f.endsWith('.map') && f !== 'README.md' && /\.(m?js|wasm|zip|bin|dat|data)$/.test(f));
   const mods = [];
-  for (const f of files) mods.push({ name: f, content: await readFile(join(dir, f), 'utf8') });
+  for (const f of files) {
+    const type = moduleType(f);
+    const text = type === 'application/javascript+module';
+    mods.push({ name: f, content: await readFile(join(dir, f), text ? 'utf8' : undefined), type });
+  }
   if (!mods.length) throw new Error(`no module files in bundle dir ${dir}`);
   return mods;
 }
@@ -56,6 +68,13 @@ async function buildCfg(kind, name, env) {
       hostname: env.WP_HOSTNAME || `wp-${name}.${sub}.workers.dev`,
       modules: await loadModules(env.BDOSQL_BUNDLE_DIR),
       resourceBindings: JSON.parse(env.WP_BINDINGS || '[]'),
+      // The b-dosql bundle defines the PhpRuntime SQLite DO; declaring it in a
+      // migration is mandatory (API 10061 otherwise, #158).
+      sqliteClasses: JSON.parse(env.WP_SQLITE_CLASSES || '["PhpRuntime"]'),
+      // Optional: the SaaS zone whose */* dispatcher serves the site. When set,
+      // the core places the routing record so the site is reachable with no
+      // operator step.
+      saasZoneId: env.WFP_SAAS_ZONE_ID || undefined,
       secrets: { WP_SALT: genSecret(), SPIKE_TOKEN: genSecret(24) },
       buckets: { media: `wp-wfp-${name}-media` },
     };

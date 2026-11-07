@@ -69,6 +69,7 @@ export async function writeKVMapEntry(ctx, { kvId, key, value }) {
 // replaces the script, so it is idempotent.
 export async function deployNamespaceScript(ctx, {
   ns, name, mainModule, modules, bindings = [], compatibilityDate, compatibilityFlags = [],
+  migrations,
 }) {
   const metadata = {
     main_module: mainModule,
@@ -76,6 +77,14 @@ export async function deployNamespaceScript(ctx, {
     compatibility_flags: compatibilityFlags,
     bindings,
   };
+  // A SQLite Durable Object class binding is REJECTED (API 10061) unless a
+  // migration declares the class. The b-dosql wp site binds PhpRuntime, so the
+  // migration is not optional: without it the deploy throws and no site exists
+  // (measured live, #158). Only set it when classes are given, so a site with
+  // no DO class uploads unchanged.
+  if (migrations && migrations.new_sqlite_classes && migrations.new_sqlite_classes.length) {
+    metadata.migrations = { new_tag: migrations.new_tag || 'v1', new_sqlite_classes: migrations.new_sqlite_classes };
+  }
   const form = buildScriptForm(metadata, modules);
   const r = await cfFetch(ctx.token, 'PUT',
     `/accounts/${ctx.acct}/workers/dispatch/namespaces/${ns}/scripts/${name}`,
@@ -84,16 +93,45 @@ export async function deployNamespaceScript(ctx, {
   return { name, ns };
 }
 
+// Instance resources, keyed by the friendly instance type. The live API stores
+// explicit vcpu/memory/disk (instance_type comes back null), so the create
+// sends them explicitly. 'basic' is the measured working shape (#154 c1).
+export const INSTANCE_RESOURCES = {
+  dev: { vcpu: 0.0625, memory_mib: 256, disk_mb: 2000 },
+  basic: { vcpu: 0.25, memory_mib: 1024, disk_mb: 4000 },
+  'standard-1': { vcpu: 0.5, memory_mib: 4096, disk_mb: 8000 },
+  'standard-2': { vcpu: 1, memory_mib: 6144, disk_mb: 12000 },
+  'standard-3': { vcpu: 2, memory_mib: 8192, disk_mb: 16000 },
+  'standard-4': { vcpu: 4, memory_mib: 12288, disk_mb: 20000 },
+};
+
+// Enable the <name>.<subdomain>.workers.dev route for a standalone script. A
+// raw script PUT does NOT enable it (unlike `wrangler deploy`), so a shop is
+// otherwise deployed but unreachable (#158). Idempotent: already-enabled is ok.
+export async function enableWorkersDevSubdomain(ctx, name) {
+  const r = await cfFetch(ctx.token, 'POST', `/accounts/${ctx.acct}/workers/scripts/${name}/subdomain`,
+    { body: { enabled: true }, fetchImpl: ctx.fetchImpl });
+  if (!r.ok) throw opError('enableWorkersDevSubdomain', name, r);
+  return { subdomain: name };
+}
+
 // 6. shop / c1: deploy a standalone container Worker that REFERENCES an
 // already-pushed image by digest. imageRef is a Cloudflare managed-registry
 // digest (registry.cloudflare.com/<acct>/<repo>@sha256:<digest>), so there is
-// NO Docker build at provision time (the #147/#154 hinge, proven live). PUT
-// replaces the script; changing the image rolls the container application.
-// The exact container-metadata shape is confirmed against the live API in
-// validation; the image field carrying a digest ref is the load-bearing part.
+// NO Docker build at provision time (the #147/#154 hinge, proven live).
+//
+// A raw script PUT is NOT enough to run a container: it defines the class but
+// does not create the container APPLICATION, so the Worker returns 500 with no
+// container (measured live, #158). `wrangler deploy` does the extra step. So
+// this op: (1) PUTs the script with the SQLite migration for the container
+// class, (2) reads back the class's Durable Object namespace id, (3) creates or
+// updates the container application against that namespace with the image and
+// instance resources. Idempotent: an existing application is updated (rolling
+// the image) rather than recreated.
 export async function deployContainerWorkerFromDigest(ctx, {
   name, mainModule, modules, bindings = [], compatibilityDate, compatibilityFlags = [],
   containerClass, imageRef, instanceType = 'basic', migrationTag = 'v1',
+  appName, schedulingPolicy = 'default', maxInstances = 1, constraints = { tiers: [1, 2] },
 }) {
   if (!/^[^:]+(:[^@]+)?@sha256:[0-9a-f]{64}$/.test(imageRef) && !imageRef.startsWith('registry.cloudflare.com/')) {
     throw new Error(`deployContainerWorkerFromDigest(${name}): imageRef must be a pushed registry digest, got ${imageRef}`);
@@ -104,13 +142,63 @@ export async function deployContainerWorkerFromDigest(ctx, {
     compatibility_flags: compatibilityFlags,
     bindings,
     migrations: { new_tag: migrationTag, new_sqlite_classes: [containerClass] },
-    containers: [{ class_name: containerClass, image: imageRef, instance_type: instanceType }],
+    // The `containers` metadata is what CONTAINER-ENABLES the DO class. Without
+    // it the migration makes a plain SQLite DO and the application create fails
+    // with 1607 DURABLE_OBJECT_NOT_CONTAINER_ENABLED (measured live, #158). It
+    // is omitted from the public multipart-metadata allowlist but the API
+    // accepts it, and `wrangler deploy` sends exactly this (captured from a
+    // trace deploy). The application itself is still created below; this only
+    // enables the class.
+    containers: [{ class_name: containerClass, image: imageRef, instance_type: instanceType, max_instances: maxInstances }],
   };
   const form = buildScriptForm(metadata, modules);
-  const r = await cfFetch(ctx.token, 'PUT', `/accounts/${ctx.acct}/workers/scripts/${name}`,
+  const put = await cfFetch(ctx.token, 'PUT', `/accounts/${ctx.acct}/workers/scripts/${name}`,
     { body: form, fetchImpl: ctx.fetchImpl });
-  if (!r.ok) throw opError('deployContainerWorkerFromDigest', name, r);
-  return { name, imageRef };
+  if (!put.ok) throw opError('deployContainerWorkerFromDigest', name, put);
+
+  // Resolve the container class's DO namespace id from the deployed script.
+  const settings = await cfFetch(ctx.token, 'GET', `/accounts/${ctx.acct}/workers/scripts/${name}/settings`, { fetchImpl: ctx.fetchImpl });
+  if (!settings.ok) throw opError('deployContainerWorkerFromDigest settings', name, settings);
+  const doBinding = (settings.result.bindings || []).find((b) => b.type === 'durable_object_namespace' && b.class_name === containerClass);
+  const namespaceId = doBinding && doBinding.namespace_id;
+  if (!namespaceId) throw new Error(`deployContainerWorkerFromDigest(${name}): no DO namespace for class ${containerClass} after deploy (migration did not create it)`);
+
+  // Create or update the container application against that namespace. The
+  // body matches what `wrangler deploy` sends (captured from a trace deploy):
+  // instances 0, instance_type in the configuration (the API expands it to
+  // vcpu/memory/disk), and the tier constraints.
+  const application = appName || `${name}-store`;
+  const body = {
+    name: application, scheduling_policy: schedulingPolicy,
+    instances: 0, max_instances: maxInstances,
+    durable_objects: { namespace_id: namespaceId },
+    configuration: { image: imageRef, instance_type: instanceType },
+    constraints,
+  };
+  const list = await cfFetch(ctx.token, 'GET', `/accounts/${ctx.acct}/containers/applications`, { fetchImpl: ctx.fetchImpl });
+  const existing = list.ok && (list.result || []).find((a) => a.name === application);
+  let appResp;
+  if (existing) {
+    appResp = await cfFetch(ctx.token, 'PATCH', `/accounts/${ctx.acct}/containers/applications/${existing.id}`,
+      { body: { max_instances: maxInstances, configuration: body.configuration, constraints }, fetchImpl: ctx.fetchImpl });
+  } else {
+    appResp = await cfFetch(ctx.token, 'POST', `/accounts/${ctx.acct}/containers/applications`,
+      { body, fetchImpl: ctx.fetchImpl });
+  }
+  if (!appResp.ok) throw opError('deployContainerWorkerFromDigest application', application, appResp);
+
+  return { name, imageRef, application, namespaceId, applicationId: (appResp.result && appResp.result.id) || (existing && existing.id) };
+}
+
+// Routing: a proxied originless record (AAAA 100::) so a hostname enters the
+// SaaS zone and the */* dispatcher runs on it. Idempotent: an already-present
+// record (81053/81057) is success. The dispatcher routes by Host through KV, so
+// the record carries no origin of its own.
+export async function ensureProxiedHostname(ctx, { zoneId, hostname }) {
+  const r = await cfFetch(ctx.token, 'POST', `/zones/${zoneId}/dns_records`,
+    { body: { type: 'AAAA', name: hostname, content: '100::', proxied: true }, fetchImpl: ctx.fetchImpl });
+  if (!r.ok && !r.errors.some((e) => e.code === 81053 || e.code === 81057)) throw opError('ensureProxiedHostname', hostname, r);
+  return { routed: hostname, zone: zoneId };
 }
 
 // A modules-format script upload body: one JSON metadata part plus each module

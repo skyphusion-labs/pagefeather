@@ -7,6 +7,7 @@
 import {
   createR2Bucket, mintScopedR2Token,
   deployNamespaceScript, deployContainerWorkerFromDigest,
+  ensureProxiedHostname, enableWorkersDevSubdomain,
 } from './ops.mjs';
 import { upsertSite } from './registry.mjs';
 
@@ -35,6 +36,10 @@ async function provisionWp(ctx, cfg) {
   const steps = [];
   const script = `site-${cfg.name}`;
   steps.push(await createR2Bucket(ctx, cfg.buckets.media));
+  // sqliteClasses: the SQLite Durable Object classes the bundle defines (for
+  // b-dosql, ['PhpRuntime']). They MUST be declared in a migration or the DO
+  // binding is rejected (API 10061, measured #158). Default to b-dosql's class.
+  const sqliteClasses = cfg.sqliteClasses || ['PhpRuntime'];
   await deployNamespaceScript(ctx, {
     ns: cfg.namespace,
     name: script,
@@ -43,10 +48,19 @@ async function provisionWp(ctx, cfg) {
     bindings: [...(cfg.resourceBindings || []), ...secretBindings(cfg.secrets)],
     compatibilityDate: cfg.compatibilityDate,
     compatibilityFlags: cfg.compatibilityFlags || [],
+    migrations: { new_tag: cfg.migrationTag || 'v1', new_sqlite_classes: sqliteClasses },
   });
-  steps.push({ deployed: script, ns: cfg.namespace });
+  steps.push({ deployed: script, ns: cfg.namespace, sqliteClasses });
   const entry = { script, kind: 'wp', outbound: true, ...(cfg.limits || {}) };
   await upsertSite(ctx, { kvId: cfg.kvId, hostname: cfg.hostname, entry });
+  // Routing: a namespace site is reached through the SaaS zone's */* dispatcher
+  // (wp-dispatch), which routes by Host through this KV map. For the hostname to
+  // enter the zone it needs a proxied originless record. When saasZoneId is set,
+  // the core places it, so a Worker can provision a reachable site with no
+  // operator step. Idempotent: an existing record is success.
+  if (cfg.saasZoneId) {
+    steps.push(await ensureProxiedHostname(ctx, { zoneId: cfg.saasZoneId, hostname: cfg.hostname }));
+  }
   return { kind: 'wp', name: cfg.name, script, hostname: cfg.hostname, entry, steps };
 }
 
@@ -65,7 +79,7 @@ async function provisionShop(ctx, cfg) {
     LITESTREAM_ACCESS_KEY_ID: tok.accessKeyId,
     LITESTREAM_SECRET_ACCESS_KEY: tok.secretAccessKey,
   };
-  await deployContainerWorkerFromDigest(ctx, {
+  const dep = await deployContainerWorkerFromDigest(ctx, {
     name: script,
     mainModule: cfg.mainModule || 'worker.js',
     modules: cfg.modules,
@@ -76,7 +90,10 @@ async function provisionShop(ctx, cfg) {
     imageRef: cfg.imageRef,
     instanceType: cfg.instanceType || 'basic',
   });
-  steps.push({ deployed: script, imageRef: cfg.imageRef });
+  steps.push({ deployed: script, imageRef: cfg.imageRef, application: dep.application });
+  // A standalone shop is reached on its own workers.dev hostname; the raw
+  // script PUT does not enable that route, so enable it (#158).
+  steps.push(await enableWorkersDevSubdomain(ctx, script));
   // A shop is a standalone Worker with its own hostname; the registry entry
   // records it and its resources (the dispatcher does NOT route shops). The
   // token VALUE is never stored, only its id, for later revocation.
