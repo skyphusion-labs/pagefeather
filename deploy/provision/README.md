@@ -21,14 +21,22 @@ live). Design: issue #154.
 - `registry.mjs`: the site list as the KV map itself (each site a hostname entry
   carrying `kind` and its resources). The light #154 option; a separate store is
   the alternative.
-- `tests/ops-test.mjs`: offline, stubs `fetchImpl`. 26 checks, including the
-  SHA-256 no-newline guard and the container-image-is-a-digest guard.
+- `tests/`: offline, stub `fetchImpl` (or the global fetch for the Worker). 49
+  checks across ops, orchestration, CLI parsing and the Worker entry, including
+  the SHA-256 no-newline guard and the container-image-is-a-digest guard carried
+  end to end.
 
-## Callers (next stages)
+## Callers (one shared orchestration)
 
-- Stage 2: `site add --kind wp|shop <name>` CLI (node) over the core.
-- Stage 3: a minimal provisioning Worker entry calling the same ops, to prove
-  Worker-executability.
+- `provision.mjs`: `provisionSite(ctx, cfg)` sequences the idempotent ops per
+  kind (wp: bucket, namespace script with secrets as atomic secret_text
+  bindings, registry entry; shop: two buckets, mint the scoped token BEFORE the
+  deploy, container deploy from the digest with the Litestream secret, registry
+  entry with resources). The CLI and the Worker both call it.
+- `cli.mjs`: `site add --kind wp|shop <name>` (node). Parses args, loads the
+  PRE-BUILT bundle dir, generates per-site secrets, calls `provisionSite`.
+- `worker.mjs`: a minimal provisioning Worker (POST a cfg -> `provisionSite`),
+  proving the same core runs inside a Worker (its own fetch + Web Crypto).
 
 ## Not built here
 
