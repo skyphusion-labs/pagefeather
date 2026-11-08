@@ -155,6 +155,9 @@ let phpQueue = Promise.resolve();
 const LOCK_STALE_MS = 60000;
 // The cron alarm holds off this long after a deploy-time spike op finishes (#185).
 const SPIKE_CRON_GRACE_MS = 2000;
+// The alarm waits at most this long for the deferred-email sends, so a stuck or throttled
+// env.EMAIL.send cannot hold the alarm until the DO wall-clock kills it (#194).
+const SEND_TIMEOUT_MS = 5000;
 function withPhp(fn) {
 	const prev = phpQueue;
 	const run = (async () => {
@@ -1432,10 +1435,19 @@ export class PhpRuntime extends DurableObject {
 				// this.ctx.waitUntil: DurableObjectState.waitUntil does not keep work alive past the alarm
 				// returning (CF docs: it exists mainly for API compatibility), so a send handed to it was
 				// abandoned and never delivered on the real DO (box: drained but sent:0). Awaiting makes the
-				// send part of the promise alarm() returns, which the runtime is guaranteed to wait on.
+				// send part of the promise alarm() returns, which the runtime is guaranteed to wait on. The
+				// wait is BOUNDED (SEND_TIMEOUT_MS): a stuck or throttled env.EMAIL.send must not hold the
+				// alarm until the DO wall-clock kills it, which drops the whole cron record (#194); a send
+				// still in flight at the bound finishes during the rest of the alarm, or the DO alarm retry
+				// is the backstop.
 				const drained = pendingEmails.length;
 				const sp = sendPending(this.env);
-				if (sp) await sp;
+				if (sp) {
+					let timer;
+					const timeout = new Promise((resolve) => (timer = setTimeout(resolve, SEND_TIMEOUT_MS)));
+					await Promise.race([sp, timeout]);
+					clearTimeout(timer);
+				}
 				const cst = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
 				// queued = cumulative wp_mail messages enqueued; sent = cumulative actually delivered (now
 				// current, since the alarm awaits the sends); drained = handed off this tick. The old single
