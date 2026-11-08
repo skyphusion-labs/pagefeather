@@ -76,7 +76,13 @@ export async function scriptExists(ctx, { name, ns }) {
     : `/accounts/${ctx.acct}/workers/scripts/${name}`;
   const r = await cfFetch(ctx.token, 'GET', path, { fetchImpl: ctx.fetchImpl });
   if (r.status === 404) return false;
-  if (r.ok) return true;
+  // A dispatch-namespace GET returns 200 with result.script === null for a
+  // script that does NOT exist (a "ghost", #158). Treat that as absent, or every
+  // fresh name false-positives the anti-clobber and no site can be provisioned.
+  if (r.ok) {
+    if (ns && r.result && r.result.script === null) return false;
+    return true;
+  }
   throw opError('scriptExists', name, r);
 }
 

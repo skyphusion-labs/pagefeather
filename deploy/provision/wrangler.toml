@@ -1,0 +1,26 @@
+# Provisioning Worker (#182, Path A operator). The lead deploys this.
+# Secrets are set with `wrangler secret put`, NEVER written here:
+#   WP_PROVISION_TOKEN  the restricted CF API token (R2/KV/Scripts/DNS; no mint, no containers)
+#   PROVISION_AUTH      the operator bearer (timing-safe compared in authorize())
+# Path B (public demo) is a SEPARATE deploy with its own config (TURNSTILE_SECRET,
+# DEMO_KV, DEMO_BASE, reaper cron) bound with ONLY the WP token.
+name = "wp-provision"
+main = "worker.mjs"
+compatibility_date = "2026-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+CF_ACCOUNT_ID = "fabcb25d9c7eb087110ec474a03e50d2"
+WFP_KV_ID = "6b50a17e88ec4ac281c30b3e654e0854"
+WFP_NAMESPACE = "wp-wfp"
+WFP_BASES = "{\"skyphusionwp.dev\":{\"saasZoneId\":\"a18f75d980042a17bec427edc6b04592\"}}"
+WP_BUNDLE_PREFIX = "bundles/b-dosql/current/"
+
+[[r2_buckets]]
+binding = "BUNDLES"
+bucket_name = "wp-provision-bundles"
+
+[[ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "2001"
+simple = { limit = 60, period = 60 }
