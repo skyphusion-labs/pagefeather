@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { sha256Hex, r2BucketResource } from '../cf.mjs';
 import {
   createR2Bucket, mintScopedR2Token, putSecret, writeKVMapEntry,
-  deployNamespaceScript, deployContainerWorkerFromDigest, scriptExists,
+  deployNamespaceScript, deployContainerWorkerFromDigest, scriptExists, installWordPress,
 } from '../ops.mjs';
 import { upsertSite, readSite, listSites, removeSite } from '../registry.mjs';
 
@@ -201,6 +201,24 @@ const ctxOf = (s) => ({ acct: ACCT, token: 'T', fetchImpl: s.fetchImpl });
   const s5 = stub();
   await removeSite(ctxOf(s5), { kvId: 'KV', hostname: 'shop.example.com' });
   ok('removeSite DELETEs the value', s5.calls[0].method === 'DELETE');
+}
+
+
+// 9. installWordPress (#215): HTTP install against the site, idempotent server-side.
+{
+  let n = 0;
+  const f = async (url, init) => { n++; return { ok: true, status: 200, json: async () => ({ out: '{"installed":true,"user_id":7}' }) }; };
+  const r = await installWordPress({ hostname: 'x.dev', spikeToken: 'tok', adminPassword: 'abcdefghijkl', fetchImpl: f });
+  ok('installWordPress: success parses installed:true + user id, one call', r.installed === true && r.userId === 7 && n === 1);
+  const r2 = await installWordPress({ hostname: 'x.dev', spikeToken: 'tok', adminPassword: 'abcdefghijkl', fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ out: '{"installed":"already"}' }) }) });
+  ok('installWordPress: already-installed is idempotent success', r2.installed === true && r2.already === true);
+  let threw = false; try { await installWordPress({ hostname: 'x.dev', adminPassword: 'abcdefghijkl', fetchImpl: async () => ({}) }); } catch { threw = true; }
+  ok('installWordPress: no SPIKE_TOKEN throws (needs the site secret to authorize)', threw);
+  threw = false; try { await installWordPress({ hostname: 'x.dev', spikeToken: 'tok', adminPassword: 'short', fetchImpl: async () => ({}) }); } catch { threw = true; }
+  ok('installWordPress: an admin password under 12 chars throws', threw);
+  let m = 0; const retryF = async () => { m++; if (m < 2) return { ok: false, status: 403, json: async () => ({}) }; return { ok: true, status: 200, json: async () => ({ out: '{"installed":true}' }) }; };
+  const r3 = await installWordPress({ hostname: 'x.dev', spikeToken: 'tok', adminPassword: 'abcdefghijkl', fetchImpl: retryF, retries: 3, intervalMs: 1 });
+  ok('installWordPress: retries a transient failure then succeeds', r3.installed === true && m === 2);
 }
 
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);

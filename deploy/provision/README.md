@@ -49,7 +49,9 @@ live). Design: issue #154. Worker hardening: issue #182 and `HARDENING.md`.
   deploy, container deploy from the digest with the Litestream secret, registry
   entry with resources). It validates the site name and is idempotent (an
   existing hostname is returned, never re-created). The CLI and the Worker both
-  call it.
+  call it. provisionWp also runs the WordPress install (#215) after the site is
+  routable, so a provisioned site is READY (not stuck at install.php), and returns
+  the admin credential once.
 - `cli.mjs`: `site add --kind wp|shop <name>` (node). Parses args, loads the
   PRE-BUILT bundle dir, generates per-site secrets, calls `provisionSite`.
 - `worker.mjs` (hardened, #182): the provisioning Worker, TWO front doors over one

@@ -274,3 +274,30 @@ also needs `TURNSTILE_SECRET`, a `DEMO_KV` namespace, `DEMO_BASE` (an owned base
 `WFP_BASES`), and a cron trigger for the reaper. Path A can go live first; Path B
 goes live only after the caps + reaper are proven on a real account to actually
 tear sites down and actually refuse over the cap.
+
+## Auto-install (#215)
+
+A provisioned site serves but lands at `/wp-admin/install.php` until WordPress is
+installed, so a "good as gold" provision (tenant brings name + domain, gets a
+READY site) must seed the install. `provisionWp` now, AFTER the script is live and
+routable, triggers the install and surfaces the first-login credential.
+
+- **No new token scope.** The install is an HTTP POST to the site itself
+  (`https://<hostname>/_install`), authorized by the site's own `SPIKE_TOKEN`
+  secret (already deployed as a binding), NOT a Cloudflare API call. The restricted
+  WP token is unchanged; the single-token containment holds.
+- **Order.** The site-map (KV) entry is written BEFORE the install so the
+  dispatcher can route the `/_install` request, then the install runs, then the
+  entry is updated with `installed: true` + the admin URL/user. Retries bridge
+  DNS/dispatcher propagation.
+- **Idempotent.** The `/_install` handler is idempotent server-side
+  (`is_blog_installed()` returns `{installed:'already'}`), and a re-provision of a
+  registered site returns the existing site with NO second install.
+- **Credential handling.** A fresh strong admin password (`genSecret(16)`, 32 hex)
+  is generated per provision, used for the install, and returned ONCE in the
+  provision response (`admin: { url, user: 'admin', password }`) for the operator /
+  signup flow to hand to the tenant. The registry stores the admin URL + user but
+  NEVER the password; a re-provision surfaces url + user only.
+- **Path B demos** install the same way; the throwaway admin login is returned in
+  the demo response for the demo session (the reaper tears the whole site down at
+  TTL regardless).

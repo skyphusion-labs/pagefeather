@@ -50,6 +50,7 @@ function withFetch(opts = {}) {
   const calls = [];
   const impl = async (url, init) => {
     calls.push({ url, method: init.method, body: init.body });
+    if (init.method === 'POST' && String(url).endsWith('/_install')) return { ok: true, status: 200, json: async () => ({ out: '{"installed":true,"user_id":1}', ms: 5 }) };
     if (init.method === 'GET' && /\/storage\/kv\/namespaces\/[^/]+\/values\//.test(url)) {
       if (opts.existing) return { ok: true, status: 200, text: async () => JSON.stringify(opts.existing) };
       return { ok: false, status: 404, text: async () => '{"success":false,"errors":[{"code":10009}]}' };
@@ -182,6 +183,8 @@ const metaOf = async (call) => JSON.parse(await call.body.get('metadata').text()
   const r = await run(makeEnv(), req({ kind: 'wp', name: 'blog', domain: 'skyphusionwp.dev' }));
   ok('wp: 200 with server script name site-blog and hostname blog.skyphusionwp.dev',
     r.res.status === 200 && r.json.script === 'site-blog' && r.json.hostname === 'blog.skyphusionwp.dev');
+  ok('wp install (#215): the response includes installed + the admin credential',
+    r.json.installed === true && r.json.admin && r.json.admin.url === 'https://blog.skyphusionwp.dev/wp-admin/' && r.json.admin.user === 'admin' && typeof r.json.admin.password === 'string');
   ok('wp: it drove the namespace deploy + bucket via the SERVER token path',
     r.calls.some((c) => c.url.endsWith('/r2/buckets')) &&
     r.calls.some((c) => /\/dispatch\/namespaces\/wp-wfp\/scripts\/site-blog$/.test(c.url)));

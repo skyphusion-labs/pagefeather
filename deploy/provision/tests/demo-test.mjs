@@ -39,6 +39,7 @@ function withFetch(opts = {}) {
   const impl = async (url, init) => {
     const u = String(url);
     calls.push({ url: u, method: init.method, body: init.body });
+    if (init.method === 'POST' && u.endsWith('/_install')) return { ok: true, status: 200, json: async () => ({ out: '{"installed":true,"user_id":1}', ms: 5 }) };
     if (u.includes('/turnstile/v0/siteverify')) return { ok: true, status: 200, json: async () => ({ success: opts.turnstile !== false }) };
     if (init.method === 'GET' && /\/storage\/kv\/namespaces\/[^/]+\/keys/.test(u)) {
       const hosts = opts.liveDemos || [];
@@ -133,6 +134,8 @@ ok('validatePublicRequest: wp allowed', validatePublicRequest({ kind: 'wp' }).ki
   ok('demo: the name is WORKER-ASSIGNED (demo-<rand>), not the caller value', /^demo-[0-9a-f]{16}$/.test(r.json.name) && r.json.name !== 'attacker-chosen');
   ok('demo: the hostname is on the fixed DEMO_BASE, not the injected domain', r.json.hostname === `${r.json.name}.skyphusionwp.dev`);
   ok('demo: an expiry is stamped (TTL from now)', typeof r.json.expiresAt === 'number' && r.json.ttlMs === DEMO_TTL_MS);
+  ok('demo install (#215): the response includes the throwaway admin login for the session',
+    r.json.installed === true && r.json.admin && r.json.admin.user === 'admin' && typeof r.json.admin.password === 'string');
   ok('demo: the public path NEVER mints an account token', !r.calls.some((c) => c.method === 'POST' && c.url.endsWith('/tokens')));
   const kvPut = r.calls.find((c) => c.method === 'PUT' && /\/storage\/kv\/.*\/values\/demo-/.test(c.url));
   const entry = kvPut && JSON.parse(kvPut.body);

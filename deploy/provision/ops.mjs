@@ -375,3 +375,34 @@ export async function deleteProxiedHostname(ctx, { zoneId, hostname }) {
   }
   return { deleted: hostname, count: recs.length };
 }
+
+// ---- WordPress install (#215) ------------------------------------------------
+// Seed the WP install on a site that is deployed and ROUTABLE, so a provisioned
+// site is READY (not stuck at /wp-admin/install.php). This is an HTTP call to the
+// new site itself (NOT a Cloudflare API call), authorized by the site's own
+// SPIKE_TOKEN secret, so it needs NO new token scope. The site's /_install handler
+// (index.js): x-spike-token authorizes, x-admin-password (>= 12 chars) seeds the
+// 'admin' user, and it is idempotent server-side (is_blog_installed() returns
+// {installed:'already'}). The response envelope is { out, ms, ... } where `out` is
+// the install JSON. Retries bridge DNS/dispatcher propagation after the deploy.
+export async function installWordPress({ hostname, spikeToken, adminPassword, retries = 6, intervalMs = 2000, fetchImpl = fetch }) {
+  if (!spikeToken) throw new Error(`installWordPress(${hostname}): no SPIKE_TOKEN to authorize the install`);
+  if (!adminPassword || adminPassword.length < 12) throw new Error(`installWordPress(${hostname}): admin password must be at least 12 chars`);
+  const url = `https://${hostname}/_install`;
+  let last = 'no attempt';
+  for (let i = 0; i < retries; i++) {
+    try {
+      const res = await fetchImpl(url, { method: 'POST', headers: { 'x-spike-token': spikeToken, 'x-admin-password': adminPassword } });
+      let body = null;
+      try { body = await res.json(); } catch { body = null; }
+      let inner = null;
+      try { inner = body && typeof body.out === 'string' ? JSON.parse(body.out) : null; } catch { inner = null; }
+      if (inner && (inner.installed === true || inner.installed === 'already')) {
+        return { installed: true, already: inner.installed === 'already', userId: inner.user_id };
+      }
+      last = (inner && inner.error) || (body && body.errors) || `HTTP ${res && res.status}`;
+    } catch (e) { last = (e && e.message) || String(e); }
+    if (i < retries - 1) await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error(`installWordPress(${hostname}) failed after ${retries} tries: ${last}`);
+}

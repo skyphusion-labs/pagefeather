@@ -63,11 +63,12 @@ async function handleOperator(request, env) {
     const target = deriveTarget(env, req);
     const existing = await readSite(ctx, { kvId: target.kvId, hostname: target.hostname });
     if (existing && typeof existing.script === 'string') {
-      return json({ ok: true, provisioned: existing.kind, name: req.name, script: existing.script, hostname: target.hostname, existing: true }, 200);
+      const admin = existing.adminUrl ? { url: existing.adminUrl, user: existing.adminUser || 'admin' } : undefined;
+      return json({ ok: true, provisioned: existing.kind, name: req.name, script: existing.script, hostname: target.hostname, existing: true, installed: !!existing.installed, admin }, 200);
     }
     const cfg = await buildServerCfg(env, req);
     const r = await provisionSite(ctx, cfg);
-    return json({ ok: true, provisioned: r.kind, name: r.name, script: r.script, hostname: r.hostname, existing: !!r.existing }, 200);
+    return json({ ok: true, provisioned: r.kind, name: r.name, script: r.script, hostname: r.hostname, existing: !!r.existing, installed: !!r.installed, admin: r.admin }, 200);
   } catch (e) {
     return json({ ok: false, error: e.message }, e instanceof BadRequest ? 400 : 500);
   }
@@ -109,7 +110,7 @@ async function handleDemo(request, env) {
     const expiresAt = Date.now() + DEMO_TTL_MS;
     const cfg = await buildServerCfg(env, { kind: pub.kind, name, domain: env.DEMO_BASE, demo: true, expiresAt });
     const r = await provisionSite(ctx, cfg);
-    return json({ ok: true, demo: true, name, hostname: r.hostname, expiresAt, ttlMs: DEMO_TTL_MS }, 200);
+    return json({ ok: true, demo: true, name, hostname: r.hostname, expiresAt, ttlMs: DEMO_TTL_MS, installed: !!r.installed, admin: r.admin }, 200);
   } catch (e) {
     return json({ ok: false, error: e.message }, e instanceof BadRequest ? 400 : 500);
   }

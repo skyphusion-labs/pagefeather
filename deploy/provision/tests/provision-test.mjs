@@ -21,6 +21,7 @@ function recorder(opts = {}) {
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, method: init.method, body: init.body });
+    if (init.method === 'POST' && url.endsWith('/_install')) return { ok: true, status: 200, json: async () => ({ out: '{"installed":true,"user_id":1}', ms: 5 }) };
     if (init.method === 'GET' && /\/storage\/kv\/namespaces\/[^/]+\/values\//.test(url)) {
       if (opts.existing) return { ok: true, status: 200, text: async () => JSON.stringify(opts.existing) };
       return { ok: false, status: 404, text: async () => '{"success":false,"errors":[{"code":10009,"message":"key not found"}]}' };
@@ -92,7 +93,7 @@ const mutating = (calls) => calls.filter((c) => c.method !== 'GET');
 // #182: server-side name validation. A bad name is rejected in the CORE.
 {
   const bad = { kind: 'wp', name: 'Bad_Name', namespace: 'wp-wfp', kvId: 'KV', hostname: 'x.sub.workers.dev',
-    compatibilityDate: '2026-07-01', modules: [{ name: 'index.js', content: 'x' }], secrets: {}, buckets: { media: 'm' } };
+    compatibilityDate: '2026-07-01', modules: [{ name: 'index.js', content: 'x' }], secrets: { SPIKE_TOKEN: 'spike-token-value' }, buckets: { media: 'm' } };
   let threw = false;
   try { await provisionSite({ acct: ACCT, token: 'T', fetchImpl: recorder().fetchImpl }, bad); } catch (e) { threw = /invalid site name/.test(e.message); }
   ok('wp: provisionSite rejects a bad name server-side (not only the CLI)', threw);
@@ -139,6 +140,35 @@ const mutating = (calls) => calls.filter((c) => c.method !== 'GET');
   });
   ok('idempotent: an existing site is returned, flagged existing', r.existing === true && r.script === 'site-blog' && r.entry.kind === 'wp');
   ok('idempotent: NO mutating call happened (no second create/deploy/overwrite)', mutating(rec.calls).length === 0);
+}
+
+
+// #215: provisionWp installs WordPress and surfaces the admin credential ONCE.
+{
+  const rec = recorder();
+  const r = await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl }, {
+    kind: 'wp', name: 'readyblog', namespace: 'wp-wfp', kvId: 'KV', hostname: 'readyblog.skyphusionwp.dev', saasZoneId: 'ZONE',
+    compatibilityDate: '2026-07-01', modules: [{ name: 'index.js', content: 'x' }],
+    secrets: { WP_SALT: 's1', SPIKE_TOKEN: 'spk' }, buckets: { media: 'wp-wfp-readyblog-media' },
+  });
+  ok('install: /_install was POSTed against the site after routing', rec.calls.some((c) => c.method === 'POST' && /\/_install$/.test(c.url)));
+  ok('install: provisionWp returns an admin credential (url + user admin + >=12 char password)',
+    r.admin && r.admin.url === 'https://readyblog.skyphusionwp.dev/wp-admin/' && r.admin.user === 'admin' && typeof r.admin.password === 'string' && r.admin.password.length >= 12);
+  ok('install: the registry entry records installed + adminUrl, NOT the password',
+    r.entry.installed === true && r.entry.adminUrl === 'https://readyblog.skyphusionwp.dev/wp-admin/' && r.entry.adminPassword === undefined);
+}
+
+// #215: idempotent re-provision of an INSTALLED site returns existing, no re-install.
+{
+  const rec = recorder({ existing: { script: 'site-readyblog', kind: 'wp', installed: true, adminUrl: 'https://readyblog.skyphusionwp.dev/wp-admin/', adminUser: 'admin' } });
+  const r = await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl }, {
+    kind: 'wp', name: 'readyblog', namespace: 'wp-wfp', kvId: 'KV', hostname: 'readyblog.skyphusionwp.dev',
+    compatibilityDate: '2026-07-01', modules: [{ name: 'index.js', content: 'x' }], secrets: { SPIKE_TOKEN: 'spk' }, buckets: { media: 'm' },
+  });
+  ok('install idempotent: an installed site returns existing with NO /_install call',
+    r.existing === true && !rec.calls.some((c) => /\/_install$/.test(c.url)));
+  ok('install idempotent: the admin url + user are surfaced, never a stored password',
+    r.admin && r.admin.url === 'https://readyblog.skyphusionwp.dev/wp-admin/' && r.admin.user === 'admin' && r.admin.password === undefined);
 }
 
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);

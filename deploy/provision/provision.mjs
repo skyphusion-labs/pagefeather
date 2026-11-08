@@ -5,10 +5,10 @@
 // secret_text bindings in the script upload (matching deploy/variants/c1.sh's
 // --secrets-file), so a site never runs a request without its secrets.
 import {
-  createR2Bucket, deployNamespaceScript, ensureProxiedHostname, scriptExists,
+  createR2Bucket, deployNamespaceScript, ensureProxiedHostname, scriptExists, installWordPress,
 } from './ops.mjs';
 import { upsertSite, readSite } from './registry.mjs';
-import { assertValidName } from './shared.mjs';
+import { assertValidName, genSecret } from './shared.mjs';
 
 // cfg:
 //   kind: 'wp'  (the ONLY kind; the c1 'shop' store path was retired, #214)
@@ -54,7 +54,10 @@ async function provisionWp(ctx, cfg) {
   const steps = [];
   const script = `site-${cfg.name}`;
   const found = await existingSite(ctx, { kvId: cfg.kvId, hostname: cfg.hostname });
-  if (found) return { kind: 'wp', name: cfg.name, script: found.script, hostname: cfg.hostname, entry: found, existing: true, steps };
+  if (found) {
+    const admin = found.adminUrl ? { url: found.adminUrl, user: found.adminUser || 'admin' } : undefined;
+    return { kind: 'wp', name: cfg.name, script: found.script, hostname: cfg.hostname, entry: found, existing: true, installed: !!found.installed, admin, steps };
+  }
   // Anti-clobber (#182, grok residual 2): the hostname is not ours (idempotency
   // returned above if it were), so a script already named site-<name> in the
   // namespace is a foreign or orphaned site. Refuse rather than overwrite it.
@@ -83,14 +86,35 @@ async function provisionWp(ctx, cfg) {
     // site down fully (script, bucket, zone) plus the expiry it reaps on.
     ...(cfg.demo ? { demo: true, expiresAt: cfg.expiresAt, name: cfg.name, mediaBucket: cfg.buckets.media, saasZoneId: cfg.saasZoneId } : {}),
   };
+  // Routing FIRST: write the site-map entry so the dispatcher can route by Host,
+  // including to the /_install request below. (installed is folded in after the
+  // install so a re-provision can tell a ready site from a bare one.)
   await upsertSite(ctx, { kvId: cfg.kvId, hostname: cfg.hostname, entry });
-  // Routing: a namespace site is reached through the SaaS zone's */* dispatcher
-  // (wp-dispatch), which routes by Host through this KV map. For the hostname to
-  // enter the zone it needs a proxied originless record. When saasZoneId is set,
-  // the core places it, so a Worker can provision a reachable site with no
-  // operator step. Idempotent: an existing record is success.
+  // A namespace site is reached through the SaaS zone's */* dispatcher (wp-dispatch).
+  // For the hostname to enter the zone it needs a proxied originless record; when
+  // saasZoneId is set the core places it. Idempotent: an existing record is success.
   if (cfg.saasZoneId) {
     steps.push(await ensureProxiedHostname(ctx, { zoneId: cfg.saasZoneId, hostname: cfg.hostname }));
   }
-  return { kind: 'wp', name: cfg.name, script, hostname: cfg.hostname, entry, steps };
+  // Install (#215): the site serves but lands at /wp-admin/install.php until the
+  // WP install runs. Trigger it over HTTP against the site itself (authorized by
+  // its own SPIKE_TOKEN secret, so NO new token scope), seeding the 'admin' user
+  // with a fresh strong password. Idempotent server-side (already-installed is ok).
+  const adminPassword = genSecret(16);
+  const install = await installWordPress({
+    hostname: cfg.hostname, spikeToken: cfg.secrets && cfg.secrets.SPIKE_TOKEN,
+    adminPassword, fetchImpl: ctx.fetchImpl,
+    retries: cfg.installRetries, intervalMs: cfg.installIntervalMs,
+  });
+  steps.push({ installed: true, already: install.already });
+  const adminUrl = `https://${cfg.hostname}/wp-admin/`;
+  // Record install state + the admin URL/user (NOT the password) so a re-provision
+  // returns a ready site without re-installing. The password is surfaced once below.
+  const finalEntry = { ...entry, installed: true, adminUrl, adminUser: 'admin' };
+  await upsertSite(ctx, { kvId: cfg.kvId, hostname: cfg.hostname, entry: finalEntry });
+  return {
+    kind: 'wp', name: cfg.name, script, hostname: cfg.hostname, entry: finalEntry, steps,
+    installed: true, alreadyInstalled: install.already,
+    admin: { url: adminUrl, user: 'admin', password: adminPassword },
+  };
 }
