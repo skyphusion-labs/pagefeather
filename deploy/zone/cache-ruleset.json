@@ -1,0 +1,33 @@
+{
+  "name": "default",
+  "description": "WordPress-on-Worker zone cache (deploy/zone, CR #18): bypass dynamic/admin/session, cache anonymous HTML at the edge. @HOSTNAME@ is substituted by apply.sh.",
+  "rules": [
+    {
+      "description": "Bypass cache for admin, auth, API, cron, cart/checkout/account, any logged-in or cart cookie, and any non-GET method",
+      "expression": "(starts_with(http.request.uri.path, \"/wp-admin\")) or (starts_with(http.request.uri.path, \"/wp-login\")) or (starts_with(http.request.uri.path, \"/wp-json\")) or (starts_with(http.request.uri.path, \"/wp-cron\")) or (starts_with(http.request.uri.path, \"/cart\")) or (starts_with(http.request.uri.path, \"/checkout\")) or (starts_with(http.request.uri.path, \"/my-account\")) or (http.cookie contains \"wordpress_logged_in\") or (http.cookie contains \"wp-postpass\") or (http.cookie contains \"woocommerce_items_in_cart\") or (http.cookie contains \"woocommerce_cart_hash\") or (http.request.method ne \"GET\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      }
+    },
+    {
+      "description": "Cache anonymous HTML for this host at the edge (origin is the Worker)",
+      "expression": "(http.host eq \"@HOSTNAME@\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": true,
+        "edge_ttl": {
+          "mode": "override_origin",
+          "default": 3600
+        },
+        "browser_ttl": {
+          "mode": "override_origin",
+          "default": 0
+        },
+        "serve_stale": {
+          "disable_stale_while_updating": false
+        }
+      }
+    }
+  ]
+}
