@@ -56,6 +56,14 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/email-queue.test.mjs
       - name: promise-bound unit tests
         run: node --test spikes/b2-wordpress/tests/promise-bound.test.mjs
+      - name: zone cache purge helpers (issue #205)
+        run: node --test spikes/b2-wordpress/tests/purge-zone.test.mjs
+      - name: zone cache purge mu-plugin (issue #205)
+        run: php spikes/b2-wordpress/tests/zone-cache-purge-test.php
+      - name: pdf invoice helpers (issue #227)
+        run: node --test spikes/b2-wordpress/tests/pdf-invoice.test.mjs
+      - name: pdf invoice mu-plugin (issue #227)
+        run: php spikes/b2-wordpress/tests/pdf-invoice-test.php
       - name: b-dosql operator endpoints (issue #35)
         # /_build and /_evict are gated and never cached (spikes/b2-wordpress).
         run: node spikes/b2-wordpress/tests/build-evict-test.mjs

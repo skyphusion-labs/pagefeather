@@ -5,6 +5,7 @@ import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, ha
 import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled } from './purge-zone.mjs';
+import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -621,6 +622,69 @@ async function purgeZoneOp(op) {
 	}
 }
 
+// Render an order to a PDF invoice (issue #227). Build the HTML with renderOpPlan,
+// render it with the Browser Rendering binding, store the PDF in the MEDIA bucket under
+// a private invoices/ prefix, and return a signed, expiring download URL. The signing
+// secret (INVOICE_TOKEN) stays in the Worker; PHP relays the URL and never sees it, as
+// with the AI binding and the purge token. Fail safe: any failure returns
+// { ok: true, degraded } and the order is untouched.
+async function browserRenderOp(op) {
+	const t0 = Date.now();
+	stats.browserRender = stats.browserRender || { n: 0, ms: 0, ok: 0, fail: 0 };
+	stats.browserRender.n++;
+	const done = (r) => {
+		stats.browserRender.ms += Date.now() - t0;
+		if (r && r.url) stats.browserRender.ok++;
+		else stats.browserRender.fail++;
+		return r;
+	};
+	try {
+		if (!ENV.BROWSER || !ENV.MEDIA) return done({ ok: true, degraded: 'no browser binding' });
+		const plan = renderOpPlan(op);
+		if (!plan.ok) return done({ ok: true, degraded: plan.error });
+		const key = invoiceKey(plan.orderId, bytesToHex(crypto.getRandomValues(new Uint8Array(16))));
+		const timeoutMs = Math.max(2000, Math.min(60000, Number(ENV.PDF_INVOICE_TIMEOUT_MS || 20000)));
+		let bytes;
+		try {
+			// Dynamic import so index.js still loads where @cloudflare/puppeteer is not
+			// installed (local dev, the pure-helper tests); the real render needs the Browser
+			// Rendering binding on a Paid deploy.
+			const puppeteer = (await import('@cloudflare/puppeteer')).default;
+			const render = (async () => {
+				const browser = await puppeteer.launch(ENV.BROWSER);
+				try {
+					const page = await browser.newPage();
+					await page.setContent(plan.html, { waitUntil: 'load' });
+					return await page.pdf({ format: 'A4', printBackground: true });
+				} finally {
+					await browser.close();
+				}
+			})();
+			const timeout = new Promise((resolve) => setTimeout(() => resolve({ __timeout: true }), timeoutMs));
+			const r = await Promise.race([render, timeout]);
+			if (r && r.__timeout) return done({ ok: true, degraded: 'render timeout' });
+			bytes = r instanceof Uint8Array ? r : new Uint8Array(r);
+		} catch (e) {
+			return done({ ok: true, degraded: 'render: ' + String(e && e.message ? e.message : e).slice(0, 160) });
+		}
+		await ENV.MEDIA.put(key, bytes, { httpMetadata: { contentType: plan.contentType } });
+		// Signed, expiring download URL. Without INVOICE_TOKEN the PDF is stored but no link
+		// is minted, so PHP surfaces nothing (fail safe).
+		let downloadUrl = null;
+		if (ENV.INVOICE_TOKEN) {
+			const ttl = Math.max(300, Math.min(31536000, Number(ENV.INVOICE_URL_TTL || 604800)));
+			const exp = Math.floor(Date.now() / 1000) + ttl;
+			const sig = await signDownload(ENV.INVOICE_TOKEN, key, exp);
+			downloadUrl = invoiceDownloadPath(key, exp, sig);
+		}
+		console.log(JSON.stringify({ m: 'browser_render', kind: 'invoice', bytes: bytes.length, stored: true, signed: !!downloadUrl }));
+		return done({ ok: true, key, url: downloadUrl, bytes: bytes.length });
+	} catch (e) {
+		return done({ ok: true, degraded: String(e && e.message ? e.message : e).slice(0, 200) });
+	}
+}
+
+
 async function handleMessage(raw) {
 	const m = JSON.parse(raw);
 	if (m.http) return JSON.stringify(await httpOp(m.http));
@@ -631,6 +695,7 @@ async function handleMessage(raw) {
 	if (m.email) return JSON.stringify(emailOp(m.email));
 	if (m.aiAlt) return JSON.stringify(await aiAltOp(m.aiAlt));
 	if (m.purgeZone) return JSON.stringify(await purgeZoneOp(m.purgeZone));
+	if (m.browserRender) return JSON.stringify(await browserRenderOp(m.browserRender));
 	if (m.cache === 'purge') {
 		purgeRequested = true;
 		return '{}';
@@ -860,6 +925,12 @@ async function boot(origin) {
 	// stays in the Worker: PHP sends a purgeZone op and never sees it, as the AI
 	// binding does for alt text.
 	if (cachePurgeEnabled(ENV)) lines.push(`define('SKYPHUSION_CACHE_PURGE', true);`);
+	// Browser Rendering PDF invoices mu-plugin (php/pdf-invoice.php, issue #227):
+	// render a WooCommerce order to a PDF with the Browser Rendering binding, store it
+	// in R2 and hand back a signed download URL. b-dosql + MEDIA + the BROWSER binding
+	// only; PDF_INVOICE=off turns it off. The signing secret stays in the Worker, as the
+	// AI binding does for alt text.
+	if (pdfInvoiceEnabled(ENV)) lines.push(`define('SKYPHUSION_PDF_INVOICE', true);`);
 	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
 
 	php.onMessage(handleMessage);
@@ -927,7 +998,7 @@ function schedulePurge(ctx) {
 // header: every visitor with any such cookie was a separate variant (measured
 // on wp-perf-dosql, docs/approach-b.md 8c).
 const WP_COOKIE = /(^|;\s*)(wordpress_logged_in_|wordpress_sec_|wp-postpass_|comment_author_|wp-settings-|woocommerce_|wp_woocommerce_session_)/;
-const PAGE_CACHE_NO_PATH = /^\/(wp-admin|wp-login\.php|wp-json|wp-cron\.php|wp-comments-post\.php|cart|checkout|my-account|wc-api|_)/;
+const PAGE_CACHE_NO_PATH = /^\/(wp-admin|wp-login\.php|wp-json|wp-cron\.php|wp-comments-post\.php|cart|checkout|my-account|wc-api|skyphusion-invoice|_)/;
 const PAGE_CACHE_NO_PARAM = ['rest_route', 'wc-ajax', 'add-to-cart', 'preview', 'nocache', 'customize_changeset_uuid', 'wc-api'];
 function pageCacheRoute(req, url, env) {
 	return (
@@ -1106,6 +1177,34 @@ async function serveUpload(req, env, url) {
 	h.set('content-length', String(length));
 	return new Response(req.method === 'HEAD' ? null : o.body, { status, headers: h });
 }
+
+// GET/HEAD /skyphusion-invoice?k=&e=&s= : a signed, expiring link to an order's invoice
+// PDF (issue #227). verifyDownload checks the HMAC, the expiry and that the key is a
+// well-formed invoices/ key, so a link cannot be edited to read another object or used
+// after it expires. The secret never leaves the Worker.
+async function serveInvoice(req, env, url) {
+	const { key, exp, sig } = parseDownloadQuery(url.searchParams);
+	const ok = await verifyDownload(env.INVOICE_TOKEN, key, exp, sig, Math.floor(Date.now() / 1000));
+	if (!ok) return new Response('invalid or expired link', { status: 403 });
+	let o;
+	try {
+		o = await env.MEDIA.get(key);
+	} catch {
+		return new Response('not found', { status: 404 });
+	}
+	if (!o) return new Response('not found', { status: 404 });
+	const h = new Headers();
+	o.writeHttpMetadata(h);
+	if (!h.has('content-type')) h.set('content-type', 'application/pdf');
+	h.set('etag', o.httpEtag);
+	h.set('content-length', String(o.size));
+	// An invoice is per customer: never let the edge cache keep it.
+	h.set('cache-control', 'private, no-store');
+	h.set('x-content-type-options', 'nosniff');
+	h.set('content-disposition', 'inline; filename="invoice.pdf"');
+	return new Response(req.method === 'HEAD' ? null : o.body, { status: 200, headers: h });
+}
+
 
 // Checkout Container (issue #20). WooCommerce needs 256 MB of PHP memory; an
 // isolate has 128 MB for everything, and checkout passed it on Paid. The store
@@ -2046,6 +2145,9 @@ const site = {
 		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		if (env.MEDIA && (req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/wp-content/uploads/')) return serveUpload(req, env, url);
+		// Signed invoice PDF download (issue #227). The Worker verifies the HMAC the
+		// browserRender op minted and streams the PDF from R2; PHP never holds the secret.
+		if (env.MEDIA && env.INVOICE_TOKEN && (req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/skyphusion-invoice') return serveInvoice(req, env, url);
 		// Static assets from the Assets binding (edge, no PHP). In WfP dispatch the
 		// automatic assets layer is bypassed (the dispatcher invokes this worker
 		// programmatically), so serve them here. not_found_handling=none makes a miss

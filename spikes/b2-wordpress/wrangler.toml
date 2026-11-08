@@ -45,6 +45,20 @@ binding = "IMAGES"
 [ai]
 binding = "AI"
 
+# Browser Rendering (php/pdf-invoice.php, issue #227): render WooCommerce orders to real
+# PDF invoices at the edge. b-dosql + MEDIA only; the PDF is stored under a private
+# invoices/ prefix in the MEDIA bucket. The signed, expiring download link is minted by
+# the Worker with INVOICE_TOKEN (a secret), so PHP relays the URL and never holds it:
+#   wrangler secret put INVOICE_TOKEN --env <env>   # any long random string; the HMAC key
+#   INVOICE_URL_TTL = "604800"                       # optional [vars]: link lifetime (s), default 7d
+#   PDF_INVOICE = "off"                              # optional off switch
+# With the BROWSER and MEDIA bindings present (and PHP_IN_DO/DB_IN_DO on), index.js
+# injects define('SKYPHUSION_PDF_INVOICE', true); absent, it is a no-op. Browser
+# Rendering is a Paid feature and does not run in local wrangler dev, so add the binding
+# (and INVOICE_TOKEN) to the deploy env you render on, not to local dev.
+[browser]
+binding = "BROWSER"
+
 # Zone cache purge-on-publish (php/zone-cache-purge.php, issue #205). The zone
 # lever (deploy/zone/) caches anonymous HTML at the Cloudflare edge; this purges
 # it when content changes. Set these ONLY on a deploy behind a real zone with the

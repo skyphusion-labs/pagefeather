@@ -15,6 +15,8 @@ npm ci
 php tests/dialect-test.php
 php tests/zone-cache-purge-test.php   # zone cache purge-on-publish (#205)
 node --test tests/purge-zone.test.mjs # zone purge op + gate helpers (#205)
+php tests/pdf-invoice-test.php         # WooCommerce PDF invoices (#227)
+node --test tests/pdf-invoice.test.mjs # PDF invoice op + helpers (#227)
 ```
 
 Admin login for the local spike: `admin` / `local-spike-password`. These and the keys in `php/wp-config.php` are for local use only.
@@ -50,6 +52,12 @@ Without the `MEDIA` binding the plugin is off, and uploads stay in one isolate's
 Image sizes come from the Cloudflare Images binding (`IMAGES`), not GD. `php/cf-images-editor.php` is a WordPress image editor whose resize, crop, rotate and flip calls become Images transforms. The Worker reads the source from R2, runs the transforms, and writes the result to R2, so image bytes never enter PHP. GD in a 128 MB isolate cannot decode a normal phone photo.
 
 A media upload over 1 MB (up to 20 MB) goes from the Worker straight to R2 under `staging/`. PHP gets a small marker, and the file is copied to its final name inside R2. So a phone photo never comes into PHP's memory.
+
+## PDF order invoices (Browser Rendering)
+
+`php/pdf-invoice.php` renders a WooCommerce order to a real PDF invoice with the Browser Rendering binding (`BROWSER`). When an order reaches `processing` or `completed`, PHP sends the order as structured data to the Worker; the Worker builds the invoice HTML, renders it to a PDF with `@cloudflare/puppeteer`, stores it under a private `invoices/` prefix in the `MEDIA` bucket, and returns a signed, expiring download link. The customer sees the link in the order email and on the order page; the admin sees it on the order screen.
+
+The HTML template and the signing secret (`INVOICE_TOKEN`) stay in the Worker, so PHP relays the download link but never holds the secret and cannot forge one. Without the `BROWSER` binding the plugin is a no-op. Browser Rendering is a Paid feature and does not run in local `wrangler dev`. See `docs/pdf-invoice.md`.
 
 Two uploads with the same name on two isolates would overwrite each other. The plugin reserves each file name with one atomic D1 insert, in the table `_r2_reserved`.
 
