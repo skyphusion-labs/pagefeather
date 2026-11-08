@@ -19,6 +19,7 @@ How each way of running WordPress on Cloudflare was built and measured. The top-
 - [approach-b.md](approach-b.md) WordPress as PHP compiled to WebAssembly in a Worker, database in D1. No server.
 - [approach-c-checkout.md](approach-c-checkout.md) and [approach-c1.md](approach-c1.md) WordPress and WooCommerce in a Cloudflare Container. **Retired (#214), kept as a record:** b-dosql now does checkout directly, so a store needs no container.
 - [perf-dosql.md](perf-dosql.md) tuning b-dosql (PHP and SQLite in one Durable Object). This is the variant the framework runs for blogs and stores.
+- [load-152.md](load-152.md) the measured b-dosql ceiling under concurrent multi-site load (issue #152): cached reads scale, the single object limits uncached reads and checkout, and when to move to a VPS or Approach A.
 - [plugins.md](plugins.md) a standard plugin suite run against each setup.
 - [wfp.md](wfp.md) the Workers for Platforms spike: dispatch Worker, one user Worker per site, per-tenant limits.
 
