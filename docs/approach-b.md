@@ -629,6 +629,52 @@ Values are tail CPU in ms, p50 / p95 (joined n).
 
 **`b-do` (D1): not built.** D1 has no transaction across calls. An undo log is correct only when one writer runs every request in turn. With PHP in the Worker, many isolates write to D1 at the same time, so a replay would also undo other requests' writes. The `do-local` row above is the D1 result.
 
+### 8m. Media-upload write ceiling, trimmed (issue #189). Built and verified locally; not yet measured on the box.
+
+On b-dosql (PHP plus SQLite in one Durable Object, 128 MiB isolate cap) an admin media
+upload (POST `/wp-admin/async-upload.php`, action `upload-attachment`) stores the attachment
+on an isolate with WooCommerce not loaded (about x-wasm-mib 58), but fails at the attachment
+DB insert on a WooCommerce-warmed isolate (about x-wasm-mib 99, about 29 MiB headroom):
+`{"success":false,"message":"Could not insert attachment into the database."}`, no isolate
+reset, identically for a 400x300 and a 3000x3000 image. The cost is the WooCommerce
+per-request working set, not the image bytes; pixels never enter PHP (`php/cf-images-editor.php`
+resizes through the Images binding). See `docs/results.md` row 168.
+
+A spike-gated probe, `/_memprobe`, decomposes the warmed admin-upload working set. It
+bootstraps WordPress in the admin-upload context (WooCommerce active, the wp-admin media
+includes), samples the WASM heap at each phase through a JS bridge (`memory_get_usage()`
+reports 0 under `USE_ZEND_ALLOC=0`, so the heap, read from JS, is the memory of record), and
+reports the OPcache breakdown and WooCommerce's share of loaded files, classes and functions.
+Measured locally: the heap grows about 44 MiB (60 to 104 MiB) at `wp-load`, and WooCommerce
+is 665 of 1378 declared classes, 777 user functions and 9.8 MB of source. That per-request
+load is the biggest freeable chunk.
+
+The trim is `php/media-write-trim.php`, a mu-plugin gated to b-dosql plus MEDIA by the
+`SKYPHUSION_MEDIA_WRITE_TRIM` define (index.js writes it from the `MEDIA_TRIM` var;
+`MEDIA_TRIM=off` turns it off). It acts only on the async-upload and `wp/v2/media` POST write
+path, never on the storefront or any other request. The default levers are `wcskip,cacheflush,gc`:
+
+- `wcskip`: drop WooCommerce from `option_active_plugins` for this one request (a filter, so
+  the stored option and its cache are untouched), but re-register the three woocommerce_*
+  image sizes through a faithful port of `wc_get_image_size()` (WooCommerce 11.2.1), so
+  `wp_generate_attachment_metadata` still makes them and `serveUpload` does not 404 them.
+  `php/cf-images-editor.php` (a mu-plugin, always loaded) does the actual resize, so skipping
+  WooCommerce does not change how the sub-sizes are made, only that they stay registered.
+- `cacheflush`: flush the cross-request object cache (the JS Map in index.js) just before the
+  insert, on the `wp_insert_attachment_data` filter, freeing isolate memory the write needs.
+- `gc`: `gc_collect_cycles()` and `gc_mem_caches()` at the same point.
+
+Perf loss on the upload request is acceptable: an admin media upload is a rare, single-admin
+operation (project goal). Verified locally (`DEV_ENV=dosql-local`), WooCommerce active: with
+`wcskip` the upload stores the attachment and generates all three woocommerce_* sizes
+(woocommerce_thumbnail 300x300, woocommerce_single 600x600, woocommerce_gallery_thumbnail
+100x100) plus the core sizes, byte-for-byte the same dimensions as WooCommerce loaded
+(`MEDIA_TRIM=off`), while the request's PHP time halves (84 ms vs 165 ms on the same warm
+isolate), which shows WooCommerce's per-request init is skipped. `tests/woo.py` stays 12/12
+and `e2e.sh` is unchanged (the trim is inert outside the media write path). Local workerd does
+not enforce the 128 MiB isolate cap, so the exit-2-to-exit-0 transition of
+`tests/upload/upload_ceiling.py` is a box measurement.
+
 ### 9. Memory: what it took to fit in 128 MB
 
 | Change | Effect, measured locally |
