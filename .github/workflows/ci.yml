@@ -139,6 +139,135 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install pcov
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q php-pcov
+          which -a php; php -v; php --ini
+          dpkg -L php-pcov | grep -iE 'pcov|ini' || true
+          dpkg -l | grep -E 'php[0-9.]*-(cli|common|pcov)' || true
+          ls -l /etc/alternatives/php /usr/bin/php* || true
+          php -m | grep -i pcov
+      - name: Fetch the SQLite driver
+        run: |
+          git clone -q https://github.com/WordPress/sqlite-database-integration spikes/b2-wordpress/build/cache/sqlite-database-integration
+          git -C spikes/b2-wordpress/build/cache/sqlite-database-integration checkout -q "$SQLITE_DI_REF"
+      - name: PHP syntax
+        run: for f in spikes/b2-wordpress/php/*.php spikes/b2-wordpress/tests/*.php deploy/import/*.php; do php -l "$f"; done
+      - name: JS syntax
+        # The Workers are ES modules but package.json says commonjs, so check them as .mjs.
+        run: |
+          for f in spikes/b1-boot/index.js spikes/b2-wordpress/index.js spikes/b2-wordpress/sql-import.js spikes/c1-woo-container/worker.js spikes/c1-woo-container/warm.js; do cp "$f" "$RUNNER_TEMP/check.mjs" && node --check "$RUNNER_TEMP/check.mjs"; done
+      - name: Shell syntax
+        run: for f in $(git ls-files '*.sh'); do bash -n "$f"; done
+      - name: Dialect tests
+        run: php spikes/b2-wordpress/tests/dialect-test.php
+      - name: Approach A literal tests (issue #79)
+        run: php tests/a/literals-test.php
+      - name: Approach A object cache isolated mode (issue #218)
+        # spikes/b2-wordpress/php/object-cache-js.php: the allowlist + TTL + force-off
+        # posture, with a stubbed bridge (no DB). WooCommerce groups never persist.
+        run: php spikes/b2-wordpress/tests/object-cache-isolated-test.php
+      - name: Approach A object cache source invariants (issue #218)
+        # spikes/b2-wordpress/index.js: the approach-A gate, the x-oc-off bracket, and
+        # the per-table / per-group instrumentation, as shipped-source invariants.
+        run: node spikes/b2-wordpress/tests/oc-isolated-test.mjs
+      - name: Import tests
+        # deploy/import (issue #31): dump to SQLite, prefix, site address, dbmove dump. Offline.
+        run: deploy/import/tests/run.sh
+      - name: Import media refusal tests
+        # deploy/import/media.sh (issue #124): a refused or failed HEAD is retried, then fails; it never counts as missing.
+        run: deploy/import/tests/media-refuse-test.sh
+      - name: b-dosql mail From address
+        run: node --test spikes/b2-wordpress/tests/mail-from.test.mjs
+      - name: b-dosql outbound host allowlist
+        run: node --test spikes/b2-wordpress/tests/http-allow.test.mjs
+      - name: email-queue unit tests
+        run: node --test spikes/b2-wordpress/tests/email-queue.test.mjs
+      - name: promise-bound unit tests
+        run: node --test spikes/b2-wordpress/tests/promise-bound.test.mjs
+      - name: zone cache purge helpers (issue #205)
+        run: node --test spikes/b2-wordpress/tests/purge-zone.test.mjs
+      - name: zone cache purge mu-plugin (issue #205)
+        run: php spikes/b2-wordpress/tests/zone-cache-purge-test.php
+      - name: pdf invoice helpers (issue #227)
+        run: node --test spikes/b2-wordpress/tests/pdf-invoice.test.mjs
+      - name: pdf invoice mu-plugin (issue #227)
+        run: php spikes/b2-wordpress/tests/pdf-invoice-test.php
+      - name: b-dosql operator endpoints (issue #35)
+        # /_build and /_evict are gated and never cached (spikes/b2-wordpress).
+        run: node spikes/b2-wordpress/tests/build-evict-test.mjs
+      - name: WfP slice 5 update tests (issue #35)
+        # snapshot/restore, the build activation wait, and the all-sites ordering.
+        run: |
+          deploy/wfp/tests/dbsnap-test.sh
+          deploy/wfp/tests/wait-build-test.sh
+          deploy/wfp/tests/update-all-test.sh
+          deploy/wfp/tests/kv-build-test.sh
+      - name: c1 warm start tests
+        # spikes/c1-woo-container/warm.js (issue #73): product views, rate limits, never through fetch.
+        run: node spikes/c1-woo-container/tests/warm-test.mjs
+      - name: c1 container fetch timeout tests
+        # spikes/c1-woo-container/worker.js (issue #93): a hung container gets 504, admin is exempt.
+        run: node spikes/c1-woo-container/tests/timeout-test.mjs
+      - name: c1 deploy check tests
+        # deploy/variants/c1.sh c1_check (issue #99) against a fake site: an old container first, a stuck PHP.
+        run: deploy/variants/tests/c1-check-test.sh
+      - name: c1 rollout wait tests
+        # deploy/variants/c1.sh c1_rollout and c1_wait (issue #106) against a fake containers API.
+        run: deploy/variants/tests/c1-rollout-test.sh
+      - name: c1 boot log watch tests
+        # deploy/variants/c1.sh c1_up_watch and c1-bootwatch.py (issue #103) against a fake site and bucket: no log, a stalled log, an old log.
+        run: deploy/variants/tests/c1-bootwatch-test.sh
+      - name: WfP reference tests
+        # deploy/wfp (issue #35): the dispatcher, the rendered configs (one dispatcher config), the namespace-script check, the new site map write wait.
+        run: |
+          node deploy/wfp/tests/dispatcher-test.mjs
+          deploy/wfp/tests/render-test.sh
+          deploy/wfp/tests/deploy-retry-test.sh
+          deploy/wfp/tests/ns-state-test.sh
+          deploy/wfp/tests/kv-ready-test.sh
+          deploy/wfp/tests/wait-site-test.sh
+          deploy/wfp/tests/snapshot-test.sh
+          deploy/wfp/tests/site-cmd-test.sh
+          deploy/wfp/tests/custom-domain-test.sh
+          python3 deploy/wfp/tests/check-test.py
+          node deploy/provision/tests/ops-test.mjs
+          node deploy/provision/tests/provision-test.mjs
+          node deploy/provision/tests/cli-test.mjs
+          node deploy/provision/tests/worker-test.mjs
+          node deploy/provision/tests/server-config-test.mjs
+          node deploy/provision/tests/wp-site-config-test.mjs
+          node deploy/provision/tests/demo-test.mjs
+          node deploy/provision/tests/custom-hostname-test.mjs
+          python3 deploy/wfp/tests/bindings-test.py
+          python3 deploy/wfp/tests/cross-test.py
+          deploy/wfp/tests/probe-entry-test.sh
+          deploy/wfp/tests/setup-green-test.sh
+      - name: c1 load analysis tests
+        # tests/load/c1_arm.py (issue #99): held requests, CPU per order, the split, on a synthetic job.
+        run: python3 tests/load/c1_arm_test.py
+      - name: c1 warm start split tests
+        # tests/load/warm_start.py split() (issue #92): the start steps and the PHP time of the add to cart, from synthetic container logs.
+        run: python3 tests/load/warm_start_test.py
+      - name: c1 mail tests
+        # php/c1-mail.php, Store.sendMail in worker.js, the mail config and deploy check (issue #104).
+        run: |
+          php spikes/c1-woo-container/tests/mail-test.php
+          node spikes/c1-woo-container/tests/mail-worker-test.mjs
+          deploy/variants/tests/c1-mail-config-test.sh
+      - name: R2 empty tests
+        # deploy/variants/r2-empty.sh (issue #115): a 403 on the list or a delete is retried for a bounded time.
+        run: deploy/variants/tests/r2-empty-test.sh
+      - name: No em or en dashes
+        run: |
+          if git grep -nP '\x{2014}|\x{2013}' -- . ':!**/package-lock.json'; then echo 'em or en dash found'; exit 1; fi
+      - name: Secret scan
+        run: |
+          if git grep -nE 'AKIA[0-9A-Z]{16}|cfut_[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|BEGIN [A-Z ]*PRIVATE KEY|xox[bap]-[A-Za-z0-9-]{10,}'; then echo 'possible secret'; exit 1; fi
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - name: Install PHP 8.3 with pcov
         uses: shivammathur/setup-php@2.37.0
         with:
