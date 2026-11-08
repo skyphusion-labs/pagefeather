@@ -120,6 +120,11 @@ let runtimeDrops = 0;
 let runtimeServed = 0; // requests the current runtime served
 let runtimeBootAt = 0;
 let phpPending = 0; // object requests in the PHP queue or running
+// When the last deploy-time spike long-op (/_install, /_activate) finished. The cron alarm
+// skips a run within SPIKE_CRON_GRACE_MS of it, so an externally-armed alarm (a visitor to the
+// public URL) cannot fire runCron in the gap between /_install and /_activate, where /_activate
+// would then reuse the cron runtime and its output (#185).
+let lastSpikeEndAt = 0;
 // The origin the current runtime booted with (WP_HOME in wp-runtime.php).
 let bootOrigin = null;
 
@@ -148,6 +153,8 @@ let phpQueue = Promise.resolve();
 // (measured 2026-11-04: 524 timeouts). After LOCK_STALE_MS a waiter goes on with
 // a new PHP runtime. 60 s: the installer runs about 32 s on Paid.
 const LOCK_STALE_MS = 60000;
+// The cron alarm holds off this long after a deploy-time spike op finishes (#185).
+const SPIKE_CRON_GRACE_MS = 2000;
 function withPhp(fn) {
 	const prev = phpQueue;
 	const run = (async () => {
@@ -1399,7 +1406,7 @@ export class PhpRuntime extends DurableObject {
 			// the persisted origin as a fallback, and gate on the resolved values, not the globals.
 			ENV = this.env;
 			const cronOrigin = lastOrigin || this.env.SITE_ORIGIN || (await this.ctx.storage.get(ORIGIN_KEY));
-			if (phpPending === 0 && cronOrigin && this.env) {
+			if (phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env) {
 				const cr = await runCron(await (bootPromise ??= boot(cronOrigin)));
 				const cst = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
 				// emails is the cumulative count emitted (requests + alarm); with checkout deferring
@@ -1407,7 +1414,14 @@ export class PhpRuntime extends DurableObject {
 				cst.cron = { t: Date.now(), ...cr, lastRan: cr.ran, emails: (stats.email || 0) };
 				await this.ctx.storage.put(PURGE_STATE_KEY, cst);
 			}
-		} catch (e) { console.log(JSON.stringify({ m: 'cron', error: String((e && e.message) || e).slice(0, 200) })); }
+		} catch (e) {
+			// A thrown runCron (a transient boot failure, a runtime recycle, a 1101) leaves bootPromise
+			// pointing at a failed boot; without this reset the next tick's `bootPromise ??=` reuses the
+			// failure and every later tick throws too, so a low-traffic store's deferred order emails
+			// never drain until a request reboots the runtime (#191). Reset so the next tick reboots fresh.
+			bootPromise = null;
+			console.log(JSON.stringify({ m: 'cron', error: String((e && e.message) || e).slice(0, 200) }));
+		}
 		const st = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
 		if (st.pending) {
 		// Cleared before the purge: a change during the purge asks for the next one.
@@ -1530,6 +1544,7 @@ export class PhpRuntime extends DurableObject {
 		// wait for the lock (the clock moves at the I/O that ends each request).
 		const tArrive = Date.now();
 		const ahead = phpPending;
+		const isSpikeLongOp = url.pathname === '/_install' || url.pathname === '/_activate';
 		phpPending++;
 		return withPhp(async () => {
 			const waitMs = Date.now() - tArrive;
@@ -1551,6 +1566,9 @@ export class PhpRuntime extends DurableObject {
 				// A request that threw also ends its transaction (rolled back).
 				if (realTxn && txnFrames) txnEnd(sql, this.ctx.storage);
 				phpPending--;
+				// Hold cron off briefly so an externally-armed alarm cannot run runCron in the
+				// /_install -> /_activate gap, where /_activate would reuse the cron runtime (#185).
+				if (isSpikeLongOp) lastSpikeEndAt = Date.now();
 			}
 		});
 	}
@@ -1779,6 +1797,11 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			runtimeDrops++;
 			bootPromise = null;
 		}
+		// A deploy-time spike long-op boots a FRESH runtime so it never inherits one the cron alarm
+		// just used: runCron and the install/activate share one PHP runtime, and a reused runtime
+		// returns runCron's output (or aborts) in place of the activation (#185). This runs inside
+		// the per-object PHP lock, so any cron run it isolates from has already finished.
+		if (url.pathname === '/_install' || url.pathname === '/_activate') bootPromise = null;
 		if (url.pathname === '/_last') return Response.json(globalThis.__lastRequest || {});
 		if (url.pathname === '/_peak') {
 			bootPromise ??= boot(origin);
