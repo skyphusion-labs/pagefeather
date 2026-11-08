@@ -26,6 +26,9 @@
 # BENCH=0 (skip the measurements), N (runs per page, default 10), PORT (local
 # wrangler dev port for the OPcache step, default 8798), DEPLOY_STATE=r2 (keep
 # Terraform state in an R2 bucket; see README.md).
+# AI=1 (Workers AI auto alt text for uploaded images with no alt text; needs
+# MEDIA=1 and the b-dosql/b-do variant. AI_ALT=off disables it, AI_ALT_MODEL picks
+# the image-to-text model, AI_ALT_INPUT=prompt selects an llava/llama-style model).
 #
 # Steps: Terraform makes the data plane -> build -> Wrangler config from the
 # Terraform outputs -> deploy -> secrets -> install -> measure -> deploy/results/.
@@ -38,6 +41,7 @@ export CLOUDFLARE_ACCOUNT_ID=$ACCOUNT_ID
 VARIANT=${VARIANT:-b-do}
 LOCATION=${LOCATION:-enam}
 MEDIA=${MEDIA:-0}
+AI=${AI:-0}
 export PORT=${PORT:-8798}
 export WOO_ACTIVE=${WOO_ACTIVE:-0}
 log() { printf '\n== %s\n' "$*"; }
@@ -180,6 +184,10 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
   [ -z "${CRON_INTERVAL_MS+x}" ] || echo "CRON_INTERVAL_MS = \"$CRON_INTERVAL_MS\""
   # The Worker writes it into wp-runtime.php as a PHP constant.
   [ -z "${HYPERDRIVE_SQL_MODE+x}" ] || echo "HYPERDRIVE_SQL_MODE = \"$HYPERDRIVE_SQL_MODE\""
+  # AI alt text (spikes/b2-wordpress/php/ai-alt-text.php): off switch, model, input flavor.
+  [ -z "${AI_ALT+x}" ] || echo "AI_ALT = \"$AI_ALT\""
+  [ -z "${AI_ALT_MODEL+x}" ] || echo "AI_ALT_MODEL = \"$AI_ALT_MODEL\""
+  [ -z "${AI_ALT_INPUT+x}" ] || echo "AI_ALT_INPUT = \"$AI_ALT_INPUT\""
   if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
     echo 'PHP_IN_DO = "on"'
     echo "PHP_LOCATION = \"$LOCATION\""
@@ -188,6 +196,8 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
     [ "$VARIANT" != b-dosql ] || echo 'DB_IN_DO = "on"'
   fi
   echo '[images]'; echo 'binding = "IMAGES"'
+  # Workers AI binding for auto alt text (AI=1). Unified Billing (Cloudflare credit).
+  [ "$AI" != 1 ] || { echo '[ai]'; echo 'binding = "AI"'; }
   if [ -n "$BUCKET" ]; then echo '[[r2_buckets]]'; echo 'binding = "MEDIA"'; echo "bucket_name = \"$BUCKET\""; fi
   if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
     [ "$VARIANT" != b-do ] || { echo '[[d1_databases]]'; echo 'binding = "DB"'; echo "database_name = \"$(out d1_name)\""; echo "database_id = \"$(out d1_id)\""; }

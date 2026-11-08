@@ -41,6 +41,10 @@ bucket_name = "b2-local-media"
 [images]
 binding = "IMAGES"
 
+# Workers AI (php/ai-alt-text.php): auto alt text for uploaded images. b-dosql only.
+[ai]
+binding = "AI"
+
 # Workers Free deploy, on workers.dev. Replace database_id with the id from `wrangler d1 create`.
 # Secrets: WP_SALT, SPIKE_TOKEN (wrangler secret put --env free).
 [env.free]
@@ -322,6 +326,8 @@ binding = "MEDIA"
 bucket_name = "b2-local-media"
 [env.dosql-local.images]
 binding = "IMAGES"
+[env.dosql-local.ai]
+binding = "AI"
 [[env.dosql-local.durable_objects.bindings]]
 name = "PHP_RUNTIME"
 class_name = "PhpRuntime"
@@ -347,6 +353,8 @@ binding = "ASSETS"
 not_found_handling = "none"
 [env.dosql-free.images]
 binding = "IMAGES"
+[env.dosql-free.ai]
+binding = "AI"
 [env.dosql-free.cache]
 enabled = true
 [[env.dosql-free.durable_objects.bindings]]
