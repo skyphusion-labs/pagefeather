@@ -301,6 +301,37 @@ Locally, inside post-new, all three routes hit, and post-new `phpMs` went from 2
 
 **Not measured:** the editor settings half (#53, the next decision); a site with two administrators (the key holds the user, so each one fills their own cache); the cache after an isolate restart.
 
+## Change 3: theme.json data across requests (built 2026-11-08, Cloudflare CPU pending)
+
+**Why.** A block theme rebuilds its theme.json derived data on every request: the global stylesheet, the global settings, the SVG filters, the user custom CSS and the theme's template-part metadata. Core keeps these in the `theme_json` cache group and marks that group non-persistent (`wp-includes/load.php`), so they recompute each request. On the b-dosql profile this is about 38% of a home page's PHP time locally (#49). Core's own comment says why it is non-persistent: a plugin can change theme.json through the `wp_theme_json_data_*` filters with dynamic data, and there is no event to invalidate on.
+
+**The change.** `php/theme-json-cache.php` (mu-plugin) keeps that group across requests, safely, by a validity salt.
+
+How it works:
+- It is on only with `JS_OBJECT_CACHE` and `JS_THEME_JSON_CACHE`. The Worker defines the second for `PHP_IN_DO` plus `DB_IN_DO`, unless `OBJECT_CACHE` or `THEME_JSON_CACHE` is `off`.
+- The object cache gained one generic lever: `JS_Object_Cache::set_group_salt( $group, $salt )`. A salted group is persistent across requests, even when core marked it non-persistent, and its persistent key carries the salt. A change of the salt is read as a miss, so an old value is never served (invalidation by key, with no delete).
+- At `wp_loaded`, after all plugins and the theme have registered their filters and before the stylesheet or the editor settings are built, the mu-plugin salts the whole `theme_json` group. Core writes exactly six keys to that group, all theme.json derived (measured against WordPress 7.1.x: `wp_get_global_stylesheet`, `wp_get_global_settings_custom`, `wp_get_global_settings_theme`, `wp_get_global_styles_svg_filters`, `wp_get_global_styles_custom_css`, `wp_get_theme_data_template_parts`), so the whole-group salt is exact.
+- The salt holds every input core itself uses: the active theme and its parent with versions, the WordPress version, `determine_locale()`, the active plugins, and a counter that counts up on every write of a user `wp_global_styles` post, a customizer save, and a theme switch or preview. Saving a global style changes the counter, so the next page computes fresh. The six values are site wide, not per visitor, so the current user is not in the salt.
+- It fails safe. If a callback on one of the four `wp_theme_json_data_*` filters is not defined in `wp-includes` or `wp-admin`, or cannot be identified, no salt is set and the group stays per request, exactly as core marks it. A plugin whose filter output depends on state the salt cannot see is therefore never cached. (The same reflection rule as the route cache, #56.)
+- Front-end pages carry `X-Theme-JSON-Cache: salt:<8hex>`, `bypass:<why>` or `off`.
+
+**Gates, cache on** (local, `wrangler dev`, `dosql-local`, build `acf3dd2`):
+
+| Gate | Where | Result |
+| --- | --- | --- |
+| `tests/load/cache_coherence.py` (the #44 regression: a global style written through REST shows on the next fresh logged-out page, and its restore shows) | local | 0 fails |
+| `X-Theme-JSON-Cache` on a fresh home page | local | `salt:<hex>`, stable across requests (the safe path is engaged) |
+| red control: the global-styles counter left out of the salt | local | FAIL: `global-styles restore shows` serves the old stylesheet (the #44 regression, reproduced on demand) |
+| red control: a test callback on `wp_theme_json_data_theme` that is not core's | local | `X-Theme-JSON-Cache: bypass:filter:wp_theme_json_data_theme`; `cache_coherence.py` still 0 fails (per request is correct) |
+| `tests/load/route_cache_check.py` (#56 unaffected by the salt lever) | local | 0 fails |
+| `e2e.sh` | local | 17 of 17 |
+| `tests/woo.py` | local | 12 of 12 |
+| plugin deactivation (WooCommerce off through REST) | local | the salt changes (active plugins); `cache_coherence.py` and `route_cache_check.py` both 0 fails |
+
+The test filter and the counter mutation went into the built tree only, never a source file.
+
+**Not measured yet (the lead box-measures):** the tail CPU delta on Cloudflare (`wp-perf-dosql`, `THEME_JSON_CACHE=off` against on, three passes, `perf.py` with `wrangler tail`). The #49 ceiling put the public-page win at about 10 to 20% of tail CPU and about 0 on admin and the editor; this build should land near that, since it keeps the same values with a correct key. The editor settings half (#53) is a separate change, not in this build.
+
 ## Not measured
 
 - Worker CPU for each request in this run (Worker tail events have no request id to join on).

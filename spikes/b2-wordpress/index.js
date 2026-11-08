@@ -580,6 +580,9 @@ async function boot(origin) {
 	// The editor's theme REST routes kept across requests (php/rest-route-cache.php, #53).
 	// Needs the object cache. ROUTE_CACHE=off turns it off (to measure).
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.OBJECT_CACHE !== 'off' && ENV.ROUTE_CACHE !== 'off') lines.push(`define('JS_ROUTE_CACHE', true);`);
+	// theme.json data kept across requests (php/theme-json-cache.php, #49). Needs the
+	// object cache. THEME_JSON_CACHE=off turns it off (to measure).
+	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.OBJECT_CACHE !== 'off' && ENV.THEME_JSON_CACHE !== 'off') lines.push(`define('JS_THEME_JSON_CACHE', true);`);
 	// Async email mu-plugin (issue #185): wp_mail hands messages to the Worker. b-dosql only.
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.ASYNC_EMAIL !== 'off') lines.push(`define('SKYPHUSION_ASYNC_EMAIL', true);`);
 	// Bootstrap trim mu-plugin (perf): skip pure-background wc-admin features (remote-inbox,

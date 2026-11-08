@@ -11,6 +11,13 @@ class JS_Object_Cache {
 	private $missing = array();
 	/** @var array<string, bool> */
 	private $non_persistent = array();
+	/**
+	 * @var array<string, string> Per-group salt. A group with a non-empty salt is
+	 * persistent across requests and its persistent key carries the salt, so a change
+	 * of inputs (a new salt) reads as a miss and never serves a stale value.
+	 * @see set_group_salt().
+	 */
+	private $group_salt = array();
 	/** @var array<string, bool> */
 	private $global_groups = array();
 	private $blog_prefix = '';
@@ -29,12 +36,16 @@ class JS_Object_Cache {
 	}
 
 	private function persistent( $group ) {
+		if ( isset( $this->group_salt[ $group ] ) && '' !== $this->group_salt[ $group ] ) {
+			return true;
+		}
 		return empty( $this->non_persistent[ $group ] );
 	}
 
 	private function pkey( $key, $group ) {
 		$prefix = isset( $this->global_groups[ $group ] ) ? '' : $this->blog_prefix;
-		return $group . "\0" . $prefix . $key;
+		$salt   = ( isset( $this->group_salt[ $group ] ) && '' !== $this->group_salt[ $group ] ) ? $this->group_salt[ $group ] . "\0" : '';
+		return $group . "\0" . $salt . $prefix . $key;
 	}
 
 	private static function copy( $value ) {
@@ -51,6 +62,30 @@ class JS_Object_Cache {
 		foreach ( (array) $groups as $g ) {
 			$this->non_persistent[ $g ] = true;
 		}
+	}
+
+	/**
+	 * Make a group persistent across requests under a validity salt, or clear it.
+	 *
+	 * A salted group is persistent even when core marked it non-persistent, and its
+	 * persistent key carries the salt. The salt is a fingerprint of every input the
+	 * group's values are built from: a change of any input is a new salt, so the old
+	 * values are never read again (invalidation by key, with no delete). A caller
+	 * that cannot compute a safe salt passes '' (or null) and the group stays per
+	 * request, exactly as core marked it. Used by the theme.json cache across
+	 * requests (mu-plugins/theme-json-cache.php, issue #49).
+	 *
+	 * @param string      $group The cache group.
+	 * @param string|null $salt  The validity salt, or '' / null to leave the group per request.
+	 */
+	public function set_group_salt( $group, $salt ) {
+		$salt = ( null === $salt ) ? '' : (string) $salt;
+		$old  = isset( $this->group_salt[ $group ] ) ? $this->group_salt[ $group ] : '';
+		if ( $salt !== $old ) {
+			// A different salt means different inputs: drop this request's view of the group so the next read reloads under the new salt.
+			unset( $this->cache[ $group ], $this->missing[ $group ] );
+		}
+		$this->group_salt[ $group ] = $salt;
 	}
 
 	public function switch_to_blog( $blog_id ) {
