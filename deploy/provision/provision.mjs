@@ -9,7 +9,8 @@ import {
   deployNamespaceScript, deployContainerWorkerFromDigest,
   ensureProxiedHostname, enableWorkersDevSubdomain,
 } from './ops.mjs';
-import { upsertSite } from './registry.mjs';
+import { upsertSite, readSite } from './registry.mjs';
+import { assertValidName } from './shared.mjs';
 
 // cfg:
 //   kind: 'wp' | 'shop'
@@ -22,6 +23,13 @@ import { upsertSite } from './registry.mjs';
 //   buckets: { media, db? }
 //   shop only: imageRef (pushed digest), containerClass, instanceType, tokenName, limits?
 // Returns a step log and the registry entry written.
+//
+// SECURITY (#182): both callers reach the account token through this core, so
+// the name is validated HERE, not only in the CLI. name is interpolated into
+// script names, bucket names and a hostname label, all of which become URL
+// paths and resource ids; assertValidName is the one allowlist that bounds
+// them. The trusted Worker (worker.mjs) builds the rest of the cfg itself and
+// never lets a caller supply modules, bindings, a namespace, a kv id or a zone.
 export async function provisionSite(ctx, cfg) {
   if (cfg.kind === 'wp') return provisionWp(ctx, cfg);
   if (cfg.kind === 'shop') return provisionShop(ctx, cfg);
@@ -32,9 +40,22 @@ function secretBindings(secrets = {}) {
   return Object.entries(secrets).map(([name, text]) => ({ type: 'secret_text', name, text }));
 }
 
+// Idempotency (#182): a hostname already in the registry is returned as-is, with
+// no second create and no overwrite. A registry read that returns an entry with
+// a `script` field is a real, previously-provisioned site; anything else (null,
+// or a bare API envelope with no script) means "not provisioned", so we build.
+async function existingSite(ctx, { kvId, hostname }) {
+  if (!kvId || !hostname) return null;
+  const entry = await readSite(ctx, { kvId, hostname });
+  return entry && typeof entry.script === 'string' ? entry : null;
+}
+
 async function provisionWp(ctx, cfg) {
+  assertValidName(cfg.name);
   const steps = [];
   const script = `site-${cfg.name}`;
+  const found = await existingSite(ctx, { kvId: cfg.kvId, hostname: cfg.hostname });
+  if (found) return { kind: 'wp', name: cfg.name, script: found.script, hostname: cfg.hostname, entry: found, existing: true, steps };
   steps.push(await createR2Bucket(ctx, cfg.buckets.media));
   // sqliteClasses: the SQLite Durable Object classes the bundle defines (for
   // b-dosql, ['PhpRuntime']). They MUST be declared in a migration or the DO
@@ -65,8 +86,11 @@ async function provisionWp(ctx, cfg) {
 }
 
 async function provisionShop(ctx, cfg) {
+  assertValidName(cfg.name);
   const steps = [];
   const script = `c1-${cfg.name}`;
+  const found = await existingSite(ctx, { kvId: cfg.kvId, hostname: cfg.hostname });
+  if (found) return { kind: 'shop', name: cfg.name, script: found.script, hostname: cfg.hostname, entry: found, existing: true, steps };
   // Buckets first.
   steps.push(await createR2Bucket(ctx, cfg.buckets.db));
   steps.push(await createR2Bucket(ctx, cfg.buckets.media));

@@ -8,6 +8,11 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { provisionSite } from './provision.mjs';
+import { SITE_NAME_RE, genSecret } from './shared.mjs';
+
+// genSecret lives in shared.mjs (the Worker uses it too); re-export so the CLI
+// surface and cli-test are unchanged.
+export { genSecret };
 
 // Pure, so it is unit-tested without IO.
 export function parseArgs(argv) {
@@ -22,16 +27,9 @@ export function parseArgs(argv) {
   }
   if (cmd === 'add') {
     if (!['wp', 'shop'].includes(kind)) throw new Error('add needs --kind wp|shop');
-    if (!name || !/^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$/.test(name)) throw new Error('add needs a valid <name> (lower case, digits, hyphens, 1 to 30)');
+    if (!name || !SITE_NAME_RE.test(name)) throw new Error('add needs a valid <name> (lower case, digits, hyphens, 1 to 30)');
   }
   return { cmd, kind, name };
-}
-
-// A per-site secret: hex of random bytes (Web Crypto, Worker and node).
-export function genSecret(bytes = 32) {
-  const a = new Uint8Array(bytes);
-  crypto.getRandomValues(a);
-  return Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 // Load a PRE-BUILT bundle dir as module parts. A real bundle is not only JS:

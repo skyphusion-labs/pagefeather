@@ -1,9 +1,9 @@
-// Offline test of the orchestration (#154 stage 2). Stubs fetchImpl, routes by
-// URL, and asserts provisionSite drives the right ops in the right order for
-// each kind, with the two live-proven guards carried end to end: the shop
-// Litestream secret is SHA-256(token value) with no newline, and the shop
-// image is the pushed digest.
-import assert from 'node:assert';
+// Offline test of the orchestration (#154 stage 2, hardened #182). Stubs
+// fetchImpl, routes by URL + method, and asserts provisionSite drives the right
+// ops in the right order for each kind, with the two live-proven guards carried
+// end to end (the shop Litestream secret is SHA-256(token value) with no
+// newline, the shop image is the pushed digest), PLUS the #182 server-side
+// guards: name validation and idempotency live in the core, not only the CLI.
 import { createHash } from 'node:crypto';
 import { provisionSite } from '../provision.mjs';
 
@@ -11,12 +11,18 @@ const ACCT = 'fabcb25d9c7eb087110ec474a03e50d2';
 let pass = 0, fail = 0;
 const ok = (n, c) => { if (c) { pass++; console.log('PASS', n); } else { fail++; console.log('FAIL', n); } };
 
-// A stub that records calls and returns a canned response routed by URL. The
-// /tokens POST returns a token {id,value}; everything else is a bare success.
-function recorder() {
+// A stub that records calls and returns a canned response routed by URL + method.
+// The idempotency read (GET on a KV value) defaults to 404 (not provisioned);
+// opts.existing makes it return a stored site entry instead. The /tokens POST
+// returns a token {id,value}; everything else is a bare success.
+function recorder(opts = {}) {
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, method: init.method, body: init.body });
+    if (init.method === 'GET' && /\/storage\/kv\/namespaces\/[^/]+\/values\//.test(url)) {
+      if (opts.existing) return { ok: true, status: 200, text: async () => JSON.stringify(opts.existing) };
+      return { ok: false, status: 404, text: async () => '{"success":false,"errors":[{"code":10009,"message":"key not found"}]}' };
+    }
     let body = '{"success":true,"result":{}}';
     if (url.endsWith('/tokens')) body = '{"success":true,"result":{"id":"TKID","value":"TKVAL"}}';
     else if (url.endsWith('/settings')) body = '{"success":true,"result":{"bindings":[{"type":"durable_object_namespace","class_name":"Store","name":"STORE","namespace_id":"NSID"}]}}';
@@ -26,6 +32,8 @@ function recorder() {
   return { fetchImpl, calls };
 }
 const metaOf = async (call) => JSON.parse(await call.body.get('metadata').text());
+// Ops that MUTATE the account (everything but the idempotency read).
+const mutating = (calls) => calls.filter((c) => !(c.method === 'GET' && /\/storage\/kv\/.*\/values\//.test(c.url)));
 
 // wp: bucket, deploy namespace script with secret_text bindings, registry entry.
 {
@@ -38,17 +46,19 @@ const metaOf = async (call) => JSON.parse(await call.body.get('metadata').text()
     secrets: { WP_SALT: 's1', SPIKE_TOKEN: 's2' },
     buckets: { media: 'wp-wfp-blog-media' },
   });
-  const u = rec.calls.map((c) => `${c.method} ${c.url.split('/client/v4')[1]}`);
+  const u = mutating(rec.calls).map((c) => `${c.method} ${c.url.split('/client/v4')[1]}`);
   ok('wp: bucket then namespace script then KV entry, in order',
     u[0].startsWith('POST /accounts/') && u[0].endsWith('/r2/buckets') &&
     /PUT .*\/workers\/dispatch\/namespaces\/wp-wfp\/scripts\/site-blog$/.test(u[1]) &&
     /PUT .*\/storage\/kv\/namespaces\/KV\/values\/wp-blog/.test(u[2]));
-  const meta = await metaOf(rec.calls[1]);
+  const deploy = rec.calls.find((c) => /\/scripts\/site-blog$/.test(c.url));
+  const meta = await metaOf(deploy);
   const secretNames = meta.bindings.filter((b) => b.type === 'secret_text').map((b) => b.name).sort();
   ok('wp: secrets are secret_text bindings in the deploy (atomic)', secretNames.join(',') === 'SPIKE_TOKEN,WP_SALT');
   ok('wp: resource binding carried too', meta.bindings.some((b) => b.type === 'durable_object_namespace' && b.name === 'PHP'));
   ok('wp: migration declares the SQLite DO class (fixes live 10061)', meta.migrations && meta.migrations.new_sqlite_classes.includes('PhpRuntime'));
   ok('wp: registry entry kind wp', r.entry.kind === 'wp' && r.script === 'site-blog');
+  ok('wp: an idempotency read happened before any create', rec.calls[0].method === 'GET' && /\/values\/wp-blog/.test(rec.calls[0].url));
 }
 
 // wp with a SaaS zone: the core also places the proxied routing record so the
@@ -82,7 +92,7 @@ const metaOf = async (call) => JSON.parse(await call.body.get('metadata').text()
     buckets: { db: 'wp-woo-store-db', media: 'wp-woo-store-media' },
     imageRef: ref, containerClass: 'Store', instanceType: 'basic',
   });
-  const u = rec.calls.map((c) => `${c.method} ${c.url.split('/client/v4')[1]}`);
+  const u = mutating(rec.calls).map((c) => `${c.method} ${c.url.split('/client/v4')[1]}`);
   ok('shop: two buckets, then /tokens, then the worker deploy, then KV, in order',
     u.filter((x) => x.endsWith('/r2/buckets')).length === 2 &&
     u.findIndex((x) => x.endsWith('/tokens')) < u.findIndex((x) => /\/workers\/scripts\/c1-store$/.test(x)) &&
@@ -102,6 +112,33 @@ const metaOf = async (call) => JSON.parse(await call.body.get('metadata').text()
   ok('shop: LITESTREAM_ACCESS_KEY_ID = the token id', meta.bindings.some((b) => b.name === 'LITESTREAM_ACCESS_KEY_ID' && b.text === 'TKID'));
   ok('shop: registry entry kind shop with resources (token id, not value)',
     r.entry.kind === 'shop' && r.entry.resources.litestreamTokenId === 'TKID' && r.entry.resources.dbBucket === 'wp-woo-store-db');
+}
+
+// #182: server-side name validation. A bad name is rejected in the CORE, so the
+// Worker path (not only the CLI) cannot provision it. Prove the instrument can
+// also PASS by running a good name through the same stub right after.
+{
+  const bad = { kind: 'wp', name: 'Bad_Name', namespace: 'wp-wfp', kvId: 'KV', hostname: 'x.sub.workers.dev',
+    compatibilityDate: '2026-07-01', modules: [{ name: 'index.js', content: 'x' }], secrets: {}, buckets: { media: 'm' } };
+  let threw = false;
+  try { await provisionSite({ acct: ACCT, token: 'T', fetchImpl: recorder().fetchImpl }, bad); } catch (e) { threw = /invalid site name/.test(e.message); }
+  ok('wp: provisionSite rejects a bad name server-side (not only the CLI)', threw);
+  const recOk = recorder();
+  await provisionSite({ acct: ACCT, token: 'T', fetchImpl: recOk.fetchImpl }, { ...bad, name: 'good-name', hostname: 'good.sub.workers.dev' });
+  ok('wp: the same path ACCEPTS a valid name (the check can pass, not always-throw)', recOk.calls.some((c) => c.url.endsWith('/r2/buckets')));
+}
+
+// #182: idempotency. A hostname already in the registry returns the existing
+// site with NO second create, deploy or overwrite.
+{
+  const rec = recorder({ existing: { script: 'site-blog', kind: 'wp', outbound: true } });
+  const r = await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl }, {
+    kind: 'wp', name: 'blog', namespace: 'wp-wfp', kvId: 'KV', hostname: 'wp-blog.sub.workers.dev',
+    compatibilityDate: '2026-07-01', modules: [{ name: 'index.js', content: 'x' }],
+    secrets: { WP_SALT: 's1' }, buckets: { media: 'wp-wfp-blog-media' },
+  });
+  ok('idempotent: an existing site is returned, flagged existing', r.existing === true && r.script === 'site-blog' && r.entry.kind === 'wp');
+  ok('idempotent: NO mutating call happened (no second create/deploy/overwrite)', mutating(rec.calls).length === 0);
 }
 
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
