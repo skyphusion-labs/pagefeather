@@ -120,6 +120,11 @@ let runtimeDrops = 0;
 let runtimeServed = 0; // requests the current runtime served
 let runtimeBootAt = 0;
 let phpPending = 0; // object requests in the PHP queue or running
+// When the last deploy-time spike long-op (/_install, /_activate) finished. The cron alarm
+// skips a run within SPIKE_CRON_GRACE_MS of it, so an externally-armed alarm (a visitor to the
+// public URL) cannot fire runCron in the gap between /_install and /_activate, where /_activate
+// would then reuse the cron runtime and its output (#185).
+let lastSpikeEndAt = 0;
 // The origin the current runtime booted with (WP_HOME in wp-runtime.php).
 let bootOrigin = null;
 
@@ -148,6 +153,11 @@ let phpQueue = Promise.resolve();
 // (measured 2026-11-04: 524 timeouts). After LOCK_STALE_MS a waiter goes on with
 // a new PHP runtime. 60 s: the installer runs about 32 s on Paid.
 const LOCK_STALE_MS = 60000;
+// The cron alarm holds off this long after a deploy-time spike op finishes (#185).
+const SPIKE_CRON_GRACE_MS = 2000;
+// The alarm waits at most this long for the deferred-email sends, so a stuck or throttled
+// env.EMAIL.send cannot hold the alarm until the DO wall-clock kills it (#194).
+const SEND_TIMEOUT_MS = 5000;
 function withPhp(fn) {
 	const prev = phpQueue;
 	const run = (async () => {
@@ -362,7 +372,24 @@ function sendEmail(env, email) {
 	const html = looksHtml ? body : '<pre>' + esc(body) + '</pre>';
 	const text = looksHtml ? body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : body;
 	const subject = String(email.subject || '(no subject)');
-	return recipients.map((to) => env.EMAIL.send({ to, from: EMAIL_FROM, subject, html, text }));
+	return recipients.map((to) => env.EMAIL.send({ to, from: EMAIL_FROM, subject, html, text }).then((r) => ((stats.emailSent = (stats.emailSent || 0) + 1), r)));
+}
+
+// Drain the queued wp_mail messages (emailOp) and send them through the send_email binding.
+// Both the request path and the DO alarm call this, so the deferred WC order emails are actually
+// SENT even when no request follows on a low-traffic store (#185): emailOp only enqueues into the
+// pendingEmails module global, so without a drain the queued mails were lost on the next isolate
+// recycle. Returns a promise resolving to the count sent, or null when nothing is queued; the
+// caller waitUntil's it (request/alarm, non-blocking) or awaits it (a manual /_runcron).
+function sendPending(env) {
+	if (!(pendingEmails.length && env && env.EMAIL)) return null;
+	const toSend = pendingEmails;
+	pendingEmails = [];
+	return Promise.allSettled(toSend.flatMap((e) => sendEmail(env, e))).then((rs) => {
+		const failed = rs.filter((x) => x.status === 'rejected').length;
+		if (failed) console.log('email send: ' + failed + ' of ' + rs.length + ' failed');
+		return rs.length - failed;
+	});
 }
 
 async function handleMessage(raw) {
@@ -590,6 +617,7 @@ let lastOrigin = null;
 const PURGE_GAP_MS = 15000;
 // The object's purge state (issue #78): {pending, lastSent, retried}, in its storage.
 const PURGE_STATE_KEY = 'skyphusion-purge';
+const ORIGIN_KEY = 'skyphusion-origin';
 let lastPurge = 0;
 function schedulePurge(ctx) {
 	// A purge already scheduled for later covers this change too.
@@ -1391,15 +1419,50 @@ export class PhpRuntime extends DurableObject {
 		// path, so deferred WC order emails fire with no traffic. DISABLE_WP_CRON stays on; this
 		// alarm is the only cron driver. One alarm also coalesces purges, below.
 		try {
-			if (lastOrigin && ENV) {
-				const cr = await runCron(await (bootPromise ??= boot(lastOrigin)));
+			// A hibernated DO wakes into a fresh isolate: the request-captured module globals
+			// (lastOrigin, ENV) are gone and only ctx.storage survives, so an idle low-traffic site
+			// would skip cron forever and its deferred WC order emails would never fire (#191). Use
+			// this.env (always present on the DO) and SITE_ORIGIN (deploy.sh always emits it), with
+			// the persisted origin as a fallback, and gate on the resolved values, not the globals.
+			ENV = this.env;
+			const cronOrigin = lastOrigin || this.env.SITE_ORIGIN || (await this.ctx.storage.get(ORIGIN_KEY));
+			if (phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env) {
+				const cr = await runCron(await (bootPromise ??= boot(cronOrigin)));
+				// Send what runCron just enqueued (the deferred WC order mails). The request path drains
+				// pendingEmails at the end of a request; the alarm is the ONLY drain when no request
+				// follows (a low-traffic store), so without this the queued order emails sit in the
+				// module global and are lost on the next isolate recycle (#185). AWAIT the sends, NOT
+				// this.ctx.waitUntil: DurableObjectState.waitUntil does not keep work alive past the alarm
+				// returning (CF docs: it exists mainly for API compatibility), so a send handed to it was
+				// abandoned and never delivered on the real DO (box: drained but sent:0). Awaiting makes the
+				// send part of the promise alarm() returns, which the runtime is guaranteed to wait on. The
+				// wait is BOUNDED (SEND_TIMEOUT_MS): a stuck or throttled env.EMAIL.send must not hold the
+				// alarm until the DO wall-clock kills it, which drops the whole cron record (#194); a send
+				// still in flight at the bound finishes during the rest of the alarm, or the DO alarm retry
+				// is the backstop.
+				const drained = pendingEmails.length;
+				const sp = sendPending(this.env);
+				if (sp) {
+					let timer;
+					const timeout = new Promise((resolve) => (timer = setTimeout(resolve, SEND_TIMEOUT_MS)));
+					await Promise.race([sp, timeout]);
+					clearTimeout(timer);
+				}
 				const cst = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
-				// emails is the cumulative count emitted (requests + alarm); with checkout deferring
-				// and no /_runcron, a nonzero value proves the alarm fired the deferred WC order mails.
-				cst.cron = { t: Date.now(), ...cr, lastRan: cr.ran, emails: (stats.email || 0) };
+				// queued = cumulative wp_mail messages enqueued; sent = cumulative actually delivered (now
+				// current, since the alarm awaits the sends); drained = handed off this tick. The old single
+				// 'emails' field counted ENQUEUES and read as delivery, which it was not (#185).
+				cst.cron = { t: Date.now(), ...cr, lastRan: cr.ran, drained, queued: (stats.email || 0), sent: (stats.emailSent || 0) };
 				await this.ctx.storage.put(PURGE_STATE_KEY, cst);
 			}
-		} catch (e) { console.log(JSON.stringify({ m: 'cron', error: String((e && e.message) || e).slice(0, 200) })); }
+		} catch (e) {
+			// A thrown runCron (a transient boot failure, a runtime recycle, a 1101) leaves bootPromise
+			// pointing at a failed boot; without this reset the next tick's `bootPromise ??=` reuses the
+			// failure and every later tick throws too, so a low-traffic store's deferred order emails
+			// never drain until a request reboots the runtime (#191). Reset so the next tick reboots fresh.
+			bootPromise = null;
+			console.log(JSON.stringify({ m: 'cron', error: String((e && e.message) || e).slice(0, 200) }));
+		}
 		const st = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
 		if (st.pending) {
 		// Cleared before the purge: a change during the purge asks for the next one.
@@ -1444,10 +1507,16 @@ export class PhpRuntime extends DurableObject {
 		// Without it, the object does not guess an origin: a wrong one redirects every page.
 		if (!origin) return new Response('missing ' + ORIGIN_HEADER, { status: 500 });
 		const url = new URL(objectUrl.pathname + objectUrl.search, origin);
-		lastOrigin = origin;
-		// Phase 2 (#185): keep a cron alarm scheduled so Action Scheduler (deferred WC order
-		// emails) and WP-Cron run with no traffic. One DO alarm serves both cron and purge.
-		if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
+		// Only a real request arms/feeds the cron alarm. The deploy-time spike endpoints
+		// (/_install, /_activate) run a long direct php.run that bypasses withPhp; arming the
+		// alarm there let it fire runCron mid-activation and its php.run output replaced the
+		// activation's (WooCommerce did not activate, #185). A real visitor (a page, an order)
+		// arms it instead, which is when the deferred work actually needs to run.
+		if (!url.pathname.startsWith('/_')) {
+			lastOrigin = origin;
+			await this.ctx.storage.put(ORIGIN_KEY, origin);
+			if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
+		}
 		const inboxMs = raw.headers.get(SENT_HEADER) ? Date.now() - Number(raw.headers.get(SENT_HEADER)) : null;
 		const req = new Request(raw);
 		req.headers.delete(ORIGIN_HEADER);
@@ -1516,6 +1585,7 @@ export class PhpRuntime extends DurableObject {
 		// wait for the lock (the clock moves at the I/O that ends each request).
 		const tArrive = Date.now();
 		const ahead = phpPending;
+		const isSpikeLongOp = url.pathname === '/_install' || url.pathname === '/_activate';
 		phpPending++;
 		return withPhp(async () => {
 			const waitMs = Date.now() - tArrive;
@@ -1537,6 +1607,9 @@ export class PhpRuntime extends DurableObject {
 				// A request that threw also ends its transaction (rolled back).
 				if (realTxn && txnFrames) txnEnd(sql, this.ctx.storage);
 				phpPending--;
+				// Hold cron off briefly so an externally-armed alarm cannot run runCron in the
+				// /_install -> /_activate gap, where /_activate would reuse the cron runtime (#185).
+				if (isSpikeLongOp) lastSpikeEndAt = Date.now();
 			}
 		});
 	}
@@ -1559,10 +1632,23 @@ const OVERLOAD_RETRY_AFTER_S = '5';
 
 async function runCron(booted) {
 		const { php } = booted;
+		return withPhp(async () => {
 		const r = await php.run({ code: `<?php
 			require '/wordpress/wp-load.php';
-			$ran = array();
+			$ran = array(); $released = 0;
 			if ( class_exists( 'ActionScheduler' ) || function_exists( 'as_next_scheduled_action' ) ) {
+				// Stale-claim recovery (the DO memory-recycle class). This alarm is the only Action
+				// Scheduler runner and runs serialized (withPhp + the phpPending gate), so any claim on
+				// a PENDING action at the start of a run is an orphan: the run that staked it recycled
+				// mid-batch (the 128 MB isolate recycle) after claiming a batch and running only part,
+				// leaving the rest claimed-but-unrun so no later claim re-picks them (a lost order
+				// email on a quiet store). A never-started pending action is safe to unclaim (attempts
+				// 0, it never ran, no duplicate send); native reset only recovers after a 300s timeout.
+				global $wpdb;
+				$as_t = $wpdb->prefix . 'actionscheduler_actions';
+				$as_c = $wpdb->prefix . 'actionscheduler_claims';
+				$released = (int) $wpdb->query( "UPDATE {$as_t} SET claim_id = 0 WHERE claim_id != 0 AND status = 'pending'" );
+				$wpdb->query( "DELETE FROM {$as_c} WHERE claim_id NOT IN ( SELECT DISTINCT claim_id FROM {$as_t} WHERE claim_id != 0 )" );
 				do_action( 'action_scheduler_run_queue', 'Skyphusion DO alarm' );
 				$ran[] = 'action_scheduler';
 			}
@@ -1573,10 +1659,11 @@ async function runCron(booted) {
 					wp_unschedule_event( $ts, $hook, $ev['args'] );
 					do_action_ref_array( $hook, $ev['args'] ); if ( ++$events >= 50 ) { break 3; }
 				} } } }
-			echo json_encode( array( 'ran' => $ran, 'wp_cron_events' => $events ) );` });
+			echo json_encode( array( 'ran' => $ran, 'wp_cron_events' => $events, 'released' => $released ) );` });
 		let out = {};
 		try { out = JSON.parse(String(r.text).slice(String(r.text).lastIndexOf('{'))); } catch (e) { out = { parse: String(r.text).slice(-200) }; }
 		return out;
+		});
 	}
 
 async function toPhpObject(req, env, url, ctx) {
@@ -1763,6 +1850,11 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			runtimeDrops++;
 			bootPromise = null;
 		}
+		// A deploy-time spike long-op boots a FRESH runtime so it never inherits one the cron alarm
+		// just used: runCron and the install/activate share one PHP runtime, and a reused runtime
+		// returns runCron's output (or aborts) in place of the activation (#185). This runs inside
+		// the per-object PHP lock, so any cron run it isolates from has already finished.
+		if (url.pathname === '/_install' || url.pathname === '/_activate') bootPromise = null;
 		if (url.pathname === '/_last') return Response.json(globalThis.__lastRequest || {});
 		if (url.pathname === '/_peak') {
 			bootPromise ??= boot(origin);
@@ -1780,9 +1872,13 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// same runCron() on a cadence. Runs the Action Scheduler queue (the deferred WC
 			// order emails) and due WP-Cron events. Spike/manual trigger and the test seam.
 			bootPromise ??= boot(origin);
-			const before = stats.email || 0;
 			const r = await runCron(await bootPromise);
-			return new Response(JSON.stringify({ ...r, emailsSent: (stats.email || 0) - before }), { headers: { 'content-type': 'application/json' } });
+			// Drain + SEND here too (a manual run), awaiting delivery so the response reports actual
+			// sends, not enqueues (#185). The alarm uses waitUntil; a manual trigger awaits the signal.
+			const drained = pendingEmails.length;
+			const sp = sendPending(env);
+			const sent = sp ? await sp : 0;
+			return new Response(JSON.stringify({ ...r, drained, sent }), { headers: { 'content-type': 'application/json' } });
 		}
 		if (url.pathname === '/_activate') {
 			// Activate a plugin, e.g. ?plugin=woocommerce/woocommerce.php. Spike only.
