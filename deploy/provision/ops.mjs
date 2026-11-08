@@ -377,32 +377,59 @@ export async function deleteProxiedHostname(ctx, { zoneId, hostname }) {
 }
 
 // ---- WordPress install (#215) ------------------------------------------------
-// Seed the WP install on a site that is deployed and ROUTABLE, so a provisioned
-// site is READY (not stuck at /wp-admin/install.php). This is an HTTP call to the
-// new site itself (NOT a Cloudflare API call), authorized by the site's own
-// SPIKE_TOKEN secret, so it needs NO new token scope. The site's /_install handler
-// (index.js): x-spike-token authorizes, x-admin-password (>= 12 chars) seeds the
-// 'admin' user, and it is idempotent server-side (is_blog_installed() returns
-// {installed:'already'}). The response envelope is { out, ms, ... } where `out` is
-// the install JSON. Retries bridge DNS/dispatcher propagation after the deploy.
-export async function installWordPress({ hostname, spikeToken, adminPassword, retries = 6, intervalMs = 2000, fetchImpl = fetch }) {
-  if (!spikeToken) throw new Error(`installWordPress(${hostname}): no SPIKE_TOKEN to authorize the install`);
-  if (!adminPassword || adminPassword.length < 12) throw new Error(`installWordPress(${hostname}): admin password must be at least 12 chars`);
-  const url = `https://${hostname}/_install`;
+// Seed the WP install so a provisioned site is READY (not stuck at
+// /wp-admin/install.php). This is a request to the site itself, NOT a Cloudflare
+// API call, authorized by the site's own SPIKE_TOKEN secret, so it needs NO new
+// token scope.
+//
+// PRIMARY path: the dispatch-namespace BINDING (env.DISPATCHER.get(scriptName)).
+// It routes DIRECTLY to the namespace script the instant it is deployed, bypassing
+// public DNS + the KV->dispatcher propagation window (which 530s for ~30-60s right
+// after a deploy, the #215 deploy-gate bug). FALLBACK: a public HTTP POST to the
+// hostname, for the node CLI (which has no dispatch binding); its retries bridge
+// the propagation window.
+//
+// AUTH: the site's /_install handler checks the `x-spike-token` header against its
+// SPIKE_TOKEN secret (spikes/b2-wordpress/index.js), so that is the header sent
+// (NOT an Authorization: Bearer, which the handler does not read). The admin
+// password (>= 12 chars) seeds the 'admin' user. Idempotent server-side
+// (is_blog_installed() -> {installed:'already'}). Response envelope { out, ms }
+// where `out` is the install JSON.
+async function parseInstallResponse(res) {
+  let body = null;
+  try { body = await res.json(); } catch { body = null; }
+  let inner = null;
+  try { inner = body && typeof body.out === 'string' ? JSON.parse(body.out) : null; } catch { inner = null; }
+  if (inner && (inner.installed === true || inner.installed === 'already')) {
+    return { ok: true, result: { installed: true, already: inner.installed === 'already', userId: inner.user_id } };
+  }
+  return { ok: false, error: (inner && inner.error) || (body && body.errors) || `HTTP ${res && res.status}` };
+}
+
+export async function installWordPress({
+  dispatcher, scriptName, hostname, spikeToken, adminPassword,
+  retries = 6, intervalMs = 2000, fetchImpl = fetch,
+}) {
+  if (!spikeToken) throw new Error(`installWordPress(${scriptName || hostname}): no SPIKE_TOKEN to authorize the install`);
+  if (!adminPassword || adminPassword.length < 12) throw new Error(`installWordPress(${scriptName || hostname}): admin password must be at least 12 chars`);
+  const viaDispatch = Boolean(dispatcher && scriptName && typeof dispatcher.get === 'function');
+  if (!viaDispatch && !hostname) throw new Error('installWordPress: need a dispatcher binding (+ scriptName) or a hostname');
+  const headers = { 'x-spike-token': spikeToken, 'x-admin-password': adminPassword };
   let last = 'no attempt';
   for (let i = 0; i < retries; i++) {
     try {
-      const res = await fetchImpl(url, { method: 'POST', headers: { 'x-spike-token': spikeToken, 'x-admin-password': adminPassword } });
-      let body = null;
-      try { body = await res.json(); } catch { body = null; }
-      let inner = null;
-      try { inner = body && typeof body.out === 'string' ? JSON.parse(body.out) : null; } catch { inner = null; }
-      if (inner && (inner.installed === true || inner.installed === 'already')) {
-        return { installed: true, already: inner.installed === 'already', userId: inner.user_id };
+      let res;
+      if (viaDispatch) {
+        // The dispatch binding routes to site-<name> directly (no DNS/KV race).
+        res = await dispatcher.get(scriptName).fetch(new Request('https://internal/_install', { method: 'POST', headers }));
+      } else {
+        res = await fetchImpl(`https://${hostname}/_install`, { method: 'POST', headers });
       }
-      last = (inner && inner.error) || (body && body.errors) || `HTTP ${res && res.status}`;
+      const parsed = await parseInstallResponse(res);
+      if (parsed.ok) return { ...parsed.result, via: viaDispatch ? 'dispatch' : 'http' };
+      last = parsed.error;
     } catch (e) { last = (e && e.message) || String(e); }
     if (i < retries - 1) await new Promise((r) => setTimeout(r, intervalMs));
   }
-  throw new Error(`installWordPress(${hostname}) failed after ${retries} tries: ${last}`);
+  throw new Error(`installWordPress(${scriptName || hostname}) failed after ${retries} tries (${viaDispatch ? 'dispatch' : 'http'}): ${last}`);
 }

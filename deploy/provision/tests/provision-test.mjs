@@ -171,5 +171,36 @@ const mutating = (calls) => calls.filter((c) => c.method !== 'GET');
     r.admin && r.admin.url === 'https://readyblog.skyphusionwp.dev/wp-admin/' && r.admin.user === 'admin' && r.admin.password === undefined);
 }
 
+
+// #215: provisionWp installs via the DISPATCH BINDING when ctx.dispatcher is set
+// (the worker path), routing to site-<name> with no public HTTP (no 530 race).
+{
+  const rec = recorder();
+  let routed = null;
+  const dispatcher = { get: (name) => { routed = name; return { fetch: async () => ({ ok: true, status: 200, json: async () => ({ out: '{"installed":true,"user_id":3}' }) }) }; } };
+  const r = await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl, dispatcher }, {
+    kind: 'wp', name: 'dblog', namespace: 'wp-wfp', kvId: 'KV', hostname: 'dblog.skyphusionwp.dev',
+    compatibilityDate: '2026-07-01', modules: [{ name: 'index.js', content: 'x' }], secrets: { SPIKE_TOKEN: 'spk' }, buckets: { media: 'm' },
+  });
+  ok('install via dispatch: routed to the namespace script site-dblog', routed === 'site-dblog');
+  ok('install via dispatch: NO public /_install HTTP call was made', !rec.calls.some((c) => /\/_install$/.test(c.url)));
+  ok('install via dispatch: installed + admin credential returned', r.installed === true && r.admin && typeof r.admin.password === 'string');
+}
+
+// #215: install is BEST-EFFORT. If the install fails, the provision still succeeds
+// with installed:false + a note (a deployed-but-uninstalled site beats a hard fail).
+{
+  const rec = recorder();
+  const dispatcher = { get: () => ({ fetch: async () => { throw new Error('dispatch 530'); } }) };
+  const r = await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl, dispatcher }, {
+    kind: 'wp', name: 'beblog', namespace: 'wp-wfp', kvId: 'KV', hostname: 'beblog.skyphusionwp.dev',
+    compatibilityDate: '2026-07-01', modules: [{ name: 'index.js', content: 'x' }], secrets: { SPIKE_TOKEN: 'spk' }, buckets: { media: 'm' },
+    installRetries: 1,
+  });
+  ok('install best-effort: a failed install does NOT fail the provision (installed:false)', r.installed === false && r.entry.installed === false);
+  ok('install best-effort: a note is surfaced and NO password (install did not run)', typeof r.installNote === 'string' && r.admin && r.admin.password === undefined);
+  ok('install best-effort: the site is still deployed + registered', rec.calls.some((c) => c.method === 'PUT' && /\/scripts\/site-beblog$/.test(c.url)) && rec.calls.some((c) => /\/values\/beblog/.test(c.url)));
+}
+
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

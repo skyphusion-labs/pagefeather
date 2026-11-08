@@ -282,14 +282,23 @@ installed, so a "good as gold" provision (tenant brings name + domain, gets a
 READY site) must seed the install. `provisionWp` now, AFTER the script is live and
 routable, triggers the install and surfaces the first-login credential.
 
-- **No new token scope.** The install is an HTTP POST to the site itself
-  (`https://<hostname>/_install`), authorized by the site's own `SPIKE_TOKEN`
-  secret (already deployed as a binding), NOT a Cloudflare API call. The restricted
-  WP token is unchanged; the single-token containment holds.
-- **Order.** The site-map (KV) entry is written BEFORE the install so the
-  dispatcher can route the `/_install` request, then the install runs, then the
-  entry is updated with `installed: true` + the admin URL/user. Retries bridge
-  DNS/dispatcher propagation.
+- **No new token scope.** The install is a request to the site itself, authorized
+  by the site's own `SPIKE_TOKEN` secret (the `x-spike-token` header the site
+  checks), NOT a Cloudflare API call. The restricted WP token is unchanged; the
+  single-token containment holds.
+- **Via the dispatch-namespace binding, not public DNS.** The Worker installs
+  through `env.DISPATCHER.get("site-<name>").fetch(...)`, which routes DIRECTLY to
+  the namespace script the instant it is deployed. This avoids the
+  KV->dispatcher propagation window, during which a public
+  `https://<host>/_install` 530s for ~30-60s (the #215 deploy-gate bug). The node
+  CLI, which has no binding, falls back to public HTTP with retries.
+- **Best-effort.** A failed install does NOT fail the provision: it returns
+  `installed:false` + an `installNote` (and no password, since none was set), so a
+  deployed-but-uninstalled site beats a hard failure. With the dispatch binding it
+  should just install on the first try.
+- **Order.** The site-map (KV) entry is written before the install (so the site is
+  routable either way), then the install runs via the binding, then the entry is
+  updated with `installed` + the admin URL/user.
 - **Idempotent.** The `/_install` handler is idempotent server-side
   (`is_blog_installed()` returns `{installed:'already'}`), and a re-provision of a
   registered site returns the existing site with NO second install.

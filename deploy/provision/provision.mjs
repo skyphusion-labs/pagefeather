@@ -101,20 +101,33 @@ async function provisionWp(ctx, cfg) {
   // its own SPIKE_TOKEN secret, so NO new token scope), seeding the 'admin' user
   // with a fresh strong password. Idempotent server-side (already-installed is ok).
   const adminPassword = genSecret(16);
-  const install = await installWordPress({
-    hostname: cfg.hostname, spikeToken: cfg.secrets && cfg.secrets.SPIKE_TOKEN,
-    adminPassword, fetchImpl: ctx.fetchImpl,
-    retries: cfg.installRetries, intervalMs: cfg.installIntervalMs,
-  });
-  steps.push({ installed: true, already: install.already });
   const adminUrl = `https://${cfg.hostname}/wp-admin/`;
-  // Record install state + the admin URL/user (NOT the password) so a re-provision
-  // returns a ready site without re-installing. The password is surfaced once below.
-  const finalEntry = { ...entry, installed: true, adminUrl, adminUser: 'admin' };
+  // PRIMARY: install via the dispatch-namespace binding (ctx.dispatcher), which
+  // routes straight to site-<name> and avoids the KV->dispatcher propagation 530
+  // right after a deploy (#215 deploy-gate). The node CLI has no binding, so it
+  // falls back to public HTTP with retries. BEST-EFFORT: a failed install does NOT
+  // fail the provision; a deployed-but-uninstalled site beats a hard failure.
+  let install = null, installError = null;
+  try {
+    install = await installWordPress({
+      dispatcher: ctx.dispatcher, scriptName: script,
+      hostname: cfg.hostname, spikeToken: cfg.secrets && cfg.secrets.SPIKE_TOKEN,
+      adminPassword, fetchImpl: ctx.fetchImpl,
+      retries: cfg.installRetries, intervalMs: cfg.installIntervalMs,
+    });
+  } catch (e) { installError = (e && e.message) || String(e); }
+  const installed = Boolean(install && install.installed);
+  steps.push(installed ? { installed: true, already: install.already, via: install.via } : { installed: false, error: installError });
+  // Record install state + the admin URL/user (NEVER the password) so a re-provision
+  // returns the site without re-installing.
+  const finalEntry = { ...entry, installed, adminUrl, adminUser: 'admin' };
   await upsertSite(ctx, { kvId: cfg.kvId, hostname: cfg.hostname, entry: finalEntry });
   return {
     kind: 'wp', name: cfg.name, script, hostname: cfg.hostname, entry: finalEntry, steps,
-    installed: true, alreadyInstalled: install.already,
-    admin: { url: adminUrl, user: 'admin', password: adminPassword },
+    installed, alreadyInstalled: Boolean(install && install.already),
+    // The admin password is surfaced ONLY when the install actually ran (so it is
+    // valid); a deferred install returns the url + user and a note.
+    admin: installed ? { url: adminUrl, user: 'admin', password: adminPassword } : { url: adminUrl, user: 'admin' },
+    ...(installError ? { installNote: `install deferred (finish via /_install): ${installError}` } : {}),
   };
 }

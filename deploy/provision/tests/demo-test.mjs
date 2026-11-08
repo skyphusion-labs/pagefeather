@@ -29,6 +29,7 @@ function makeEnv(over = {}) {
     CF_ACCOUNT_ID: 'ACCT', WP_PROVISION_TOKEN: 'wp-tok', WFP_KV_ID: 'SERVERKV', WFP_NAMESPACE: 'wp-wfp',
     WFP_BASES: JSON.stringify({ 'skyphusionwp.dev': { saasZoneId: 'SERVERZONE', workersSubdomain: 'skyphusionwp' } }),
     BUNDLES: bundleStub(), TURNSTILE_SECRET: 'ts-secret', DEMO_KV: kvStub(), DEMO_BASE: 'skyphusionwp.dev',
+    DISPATCHER: { get: () => ({ fetch: async () => ({ ok: true, status: 200, json: async () => ({ out: '{"installed":true,"user_id":1}' }) }) }) },
     ...over,
   };
 }

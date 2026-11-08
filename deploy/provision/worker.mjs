@@ -59,7 +59,7 @@ async function handleOperator(request, env) {
   try { req = validateRequest(body); } catch (e) { return json({ ok: false, error: e.message }, 400); }
 
   try {
-    const ctx = { acct: env.CF_ACCOUNT_ID, token: selectToken(env, req.kind) };
+    const ctx = { acct: env.CF_ACCOUNT_ID, token: selectToken(env, req.kind), dispatcher: env.DISPATCHER };
     const target = deriveTarget(env, req);
     const existing = await readSite(ctx, { kvId: target.kvId, hostname: target.hostname });
     if (existing && typeof existing.script === 'string') {
@@ -99,7 +99,7 @@ async function handleDemo(request, env) {
   if (!rate.ok) return json({ ok: false, error: `rate limited (${rate.scope})` }, 429);
 
   // 4. Concurrency cap (the primary spend bound).
-  const ctx = { acct: env.CF_ACCOUNT_ID, token: env.WP_PROVISION_TOKEN };
+  const ctx = { acct: env.CF_ACCOUNT_ID, token: env.WP_PROVISION_TOKEN, dispatcher: env.DISPATCHER };
   const live = await demoConcurrency(ctx, { kvId: env.WFP_KV_ID });
   if (live >= DEMO_MAX_CONCURRENT) return json({ ok: false, error: 'demo capacity full' }, 503);
 

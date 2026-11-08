@@ -39,7 +39,7 @@ function makeEnv(overrides = {}) {
     WFP_BASES: JSON.stringify({ 'skyphusionwp.dev': { saasZoneId: 'SERVERZONE', workersSubdomain: 'skyphusionwp' } }),
     C1_IMAGE_REF: IMG,
     RATE_LIMITER: { limit: async () => ({ success: true }) },
-    BUNDLES: bundleStub(),
+    BUNDLES: bundleStub(), DISPATCHER: { get: () => ({ fetch: async () => ({ ok: true, status: 200, json: async () => ({ out: '{"installed":true,"user_id":1}' }) }) }) },
     ...overrides,
   };
 }

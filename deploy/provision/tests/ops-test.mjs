@@ -219,6 +219,11 @@ const ctxOf = (s) => ({ acct: ACCT, token: 'T', fetchImpl: s.fetchImpl });
   let m = 0; const retryF = async () => { m++; if (m < 2) return { ok: false, status: 403, json: async () => ({}) }; return { ok: true, status: 200, json: async () => ({ out: '{"installed":true}' }) }; };
   const r3 = await installWordPress({ hostname: 'x.dev', spikeToken: 'tok', adminPassword: 'abcdefghijkl', fetchImpl: retryF, retries: 3, intervalMs: 1 });
   ok('installWordPress: retries a transient failure then succeeds', r3.installed === true && m === 2);
+  // the dispatch-binding path routes via env.DISPATCHER.get(scriptName).fetch(), no public HTTP
+  let got = null;
+  const dispatcher = { get: (name) => { got = name; return { fetch: async (req) => { const h = req.headers.get('x-spike-token'); return { ok: true, status: 200, json: async () => ({ out: h === 'tok' ? '{"installed":true,"user_id":9}' : '{"installed":false,"error":"forbidden"}' }) }; } }; } };
+  const rd = await installWordPress({ dispatcher, scriptName: 'site-blog', spikeToken: 'tok', adminPassword: 'abcdefghijkl' });
+  ok('installWordPress: dispatch binding routes to site-<name> with x-spike-token (no public HTTP)', rd.installed === true && rd.userId === 9 && rd.via === 'dispatch' && got === 'site-blog');
 }
 
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
