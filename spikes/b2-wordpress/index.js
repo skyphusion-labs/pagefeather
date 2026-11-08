@@ -61,25 +61,36 @@ function objectCacheDrop(k) {
 	objectCacheBytes -= e.n;
 	return true;
 }
+const OC_SEP = String.fromCharCode(0); // the NUL that object-cache-js.php puts after the group in a pkey
+function ocGroupOf(k) { const i = k.indexOf(OC_SEP); return i < 0 ? k : k.slice(0, i); }
+function ocCount(k, field) { const g = ocGroupOf(k) + "." + field; stats.ocGroups[g] = (stats.ocGroups[g] || 0) + 1; }
+function dbTableOf(sql) { const m = /\b(?:FROM|INTO|UPDATE|JOIN)\s+`?([A-Za-z0-9_]+)`?/i.exec(sql); if (m) return m[1].toLowerCase(); const w = /^\s*([A-Za-z]+)/.exec(sql); return w ? w[1].toLowerCase() : "?"; }
+function countTable(sql) { const t = dbTableOf(sql); stats.dbTables[t] = (stats.dbTables[t] || 0) + 1; }
+function diffCounts(now, was) { const o = {}; for (const k in now) { const dv = now[k] - (was[k] || 0); if (dv) o[k] = dv; } return o; }
+
 function objectCacheOp(op) {
 	stats.ocCalls++;
 	const now = Date.now();
 	if (op.op === 'get') {
 		const v = op.k.map((k) => {
+			ocCount(k, "get");
 			const e = objectCache.get(k);
-			if (!e) return null;
+			if (!e) { ocCount(k, "miss"); return null; }
 			if (e.exp && e.exp <= now) {
+				ocCount(k, "miss");
 				objectCacheDrop(k);
 				return null;
 			}
 			objectCache.delete(k); // most recently used goes last
 			objectCache.set(k, e);
 			stats.ocHits++;
+			ocCount(k, "hit");
 			return e.v;
 		});
 		return { v };
 	}
 	if (op.op === 'set') {
+		ocCount(op.k, "set");
 		if (txnFrames) txnTouched.add(op.k);
 		objectCacheDrop(op.k);
 		const n = op.k.length + op.v.length;
@@ -95,7 +106,7 @@ function objectCacheOp(op) {
 	if (op.op === 'del') {
 		if (txnFrames) for (const k of op.k) txnTouched.add(k);
 		let n = 0;
-		for (const k of op.k) if (objectCacheDrop(k)) n++;
+		for (const k of op.k) { ocCount(k, "del"); if (objectCacheDrop(k)) n++; }
 		return { n };
 	}
 	if (op.op === 'flush') {
@@ -246,7 +257,7 @@ async function stageUpload(req, env) {
 }
 
 function newStats() {
-	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, ocCalls: 0, ocHits: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
+	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, dbTables: {}, ocGroups: {}, ocCalls: 0, ocHits: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
 }
 
 // The log and failure lists live as long as the isolate. Keep the newest only.
@@ -627,6 +638,7 @@ async function handleMessage(raw) {
 	if (dbHandler && (m.mysql !== undefined || m.mysql_b64 !== undefined)) {
 		const t = Date.now();
 		stats.calls++;
+		if (m.mysql !== undefined) countTable(String(m.mysql));
 		const reply = await dbHandler.query(ENV, m);
 		stats.ms += Date.now() - t;
 		const sql = String(m.mysql !== undefined ? m.mysql : '(binary SQL)');
@@ -799,6 +811,21 @@ async function boot(origin) {
 	// The object cache across requests (php/object-cache.php): only where one
 	// object is the only writer. OBJECT_CACHE=off turns it off (to measure).
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.OBJECT_CACHE !== 'off') lines.push(`define('JS_OBJECT_CACHE', true);`);
+	// Approach A (external MySQL through Hyperdrive; dbHandler is set): the object
+	// cache across requests lives in the Worker ISOLATE Map, and there are many
+	// isolates each writing the shared MySQL, so a write in one isolate never purges
+	// another isolate Map. OFF by default (OBJECT_CACHE=on turns it on, to measure),
+	// and only an allowlist of cross-isolate-safe groups persists; everything else,
+	// above all the WooCommerce correctness groups, stays per request. See issue #218
+	// and docs/approach-a-objectcache.md.
+	if (dbHandler && ENV.DB_IN_DO !== 'on' && ENV.OBJECT_CACHE === 'on') {
+		lines.push("define('JS_OBJECT_CACHE', true);");
+		const ocPersist = (typeof ENV.OBJECT_CACHE_GROUPS === 'string' && ENV.OBJECT_CACHE_GROUPS) ? ENV.OBJECT_CACHE_GROUPS.replace(/[^A-Za-z0-9_,-]/g, '') : 'options,terms,theme_json';
+		lines.push("define('JS_OBJECT_CACHE_PERSIST_GROUPS', " + JSON.stringify(ocPersist) + ");");
+		const ocTtl = Math.max(0, Math.min(3600, parseInt(ENV.OBJECT_CACHE_TTL, 10) || 10));
+		lines.push("define('JS_OBJECT_CACHE_TTL', " + ocTtl + ");");
+		if (ENV.THEME_JSON_CACHE !== 'off') lines.push("define('JS_THEME_JSON_CACHE', true);");
+	}
 	// Real SQL transactions (php/real-transactions.php, #60): the database in the
 	// object only. REAL_TRANSACTIONS=off turns them off (to measure).
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.REAL_TRANSACTIONS !== 'off') lines.push(`define('JS_REAL_TRANSACTIONS', true);`);
@@ -2323,7 +2350,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const { php, handler, bootMs } = await bootPromise;
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
-			const start = { calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
+			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
 			if (url.pathname === '/_install') {
@@ -2349,6 +2376,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// The AST-cache per-request bypass (issue #173) is honored only with a
 			// valid spike token, so a visitor cannot disable the cache in production.
 			if (!spikeOk) delete headers['x-ast-cache-off'];
+			if (!spikeOk) delete headers['x-oc-off'];
 			let body;
 			if (env.MEDIA && isMediaUpload(req, url) && Number(req.headers.get('content-length') || 0) > STAGE_MIN_BYTES) {
 				const staged = await stageUpload(req, env);
@@ -2386,6 +2414,8 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			}
 			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
 			const d = delta();
+			const ocTables = diffCounts(stats.dbTables, start.dbTables);
+			const ocGroupStats = diffCounts(stats.ocGroups, start.ocGroups);
 			pageCacheHeaders(req, url, r, out, env);
 			// A filled cart means a checkout may follow: start the container now.
 			if (env.WOO_CHECKOUT && env.CHECKOUT_CONTAINER === 'on' && r.httpStatusCode === 201 && ADD_TO_CART_ROUTE.test(restRoute(url))) {
@@ -2399,6 +2429,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 				out.set('x-db', 'object-sqlite');
 				out.set('x-db-rows', `read=${stats.rowsRead - start.rowsRead} written=${stats.rowsWritten - start.rowsWritten}`);
 			}
+			if (Object.keys(ocTables).length || Object.keys(ocGroupStats).length) out.set('x-oc-stats', JSON.stringify({ dbN: d.calls, dbMs: d.ms, tables: ocTables, groups: ocGroupStats, ocKeys: objectCache.size, ocKiB: Math.round(objectCacheBytes / 1024) }));
 			out.set('x-d1-calls', String(d.calls));
 			out.set('x-d1-ms', String(d.ms));
 			out.set('x-d1-failures', String(d.failures.length));
@@ -2449,6 +2480,8 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 					ocHits: stats.ocHits - start.ocHits,
 					ocKeys: objectCache.size,
 					ocKiB: Math.round(objectCacheBytes / 1024),
+					dbTables: ocTables,
+					ocGroups: ocGroupStats,
 					...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full } : {}),
 				};
 				out.set('x-perf', JSON.stringify(perf));
