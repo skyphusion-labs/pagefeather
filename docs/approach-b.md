@@ -4,6 +4,8 @@ WordPress runs as PHP compiled to WebAssembly in a Worker. Its database is D1. T
 
 Status: WordPress runs on D1 in local workerd (spike B2), and is deployed on Workers Free, where CPU time decides if a page renders. Findings below are from 2026-11-03.
 
+**Read this first:** this page is about B with D1. The variant the framework runs for sites and WooCommerce stores is **b-dosql** (section 8j and [perf-dosql.md](perf-dosql.md)). It keeps SQLite inside the Durable Object, and checkout works on it. See the README matrix. The checkout failure in 8f below is a D1 result.
+
 ## The parts
 
 | Part | Choice | Why |
@@ -286,7 +288,7 @@ Tried, no change for checkout: OPcache shared memory 16 MB; deferred emails; a c
 
 **Free:** with WooCommerce active, every request failed with "Worker exceeded CPU time limit", the home page too. Login failed. WooCommerce is off again on the Free deploy.
 
-**Why:** WooCommerce asks for a WordPress memory limit of 256 MB or more ([WooCommerce server recommendations](https://woocommerce.com/document/server-requirements/)). A Worker isolate has 128 MB for JavaScript, the bundled code and the PHP heap together. Checkout is the request that passes it. The next design (issue #20) keeps the store in the Worker and moves checkout to a Container, started when the cart fills.
+**Why:** WooCommerce asks for a WordPress memory limit of 256 MB or more ([WooCommerce server recommendations](https://woocommerce.com/document/server-requirements/)). A Worker isolate has 128 MB for JavaScript, the bundled code and the PHP heap together. Checkout is the request that passes it. This was the D1 result at the time. Issue #20 then tried moving checkout to a Container; that path was retired (#214). Later, b-dosql (section 8j) ran checkout inside the Worker, and the README matrix records that result.
 
 ### 8g. Placement next to D1. Measured 2026-11-04.
 
@@ -684,9 +686,6 @@ not enforce the 128 MiB isolate cap, so the exit-2-to-exit-0 transition of
 | Unzip WordPress in batches of 200 files | No second copy of the tree in JS memory. |
 | Drop unminified CSS, text and Markdown from PHP's files | 31 to 25 MiB. Minified CSS stays: WordPress reads some by runtime paths. |
 | Recycle the runtime after a crash or past 80 MiB | A broken runtime is never reused. |
-
-### 10. Next
-
 
 ## Prior work
 

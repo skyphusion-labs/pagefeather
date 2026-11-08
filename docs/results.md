@@ -4,6 +4,8 @@ Each row is one deploy and one test run.
 
 A row with plan `local` ran in local workerd through `wrangler dev`. It is not a plan result and does not change a README cell.
 
+Rows for `C1` and `B+C` are a record of the container store path, which was retired in #214 (b-dosql now runs WooCommerce checkout directly). They stay because a failed or retired cell is still a result.
+
 | Id | Plan | Date (UTC) | Wrangler | Command | Result |
 | --- | --- | --- | --- | --- | --- |
 | B | local | 2026-11-03 | 4.157.0 | `spikes/b1-boot/run.sh` | PHP 8.3.36 boots in 319 ms on the first request, a script runs in 11 ms. `pdo_sqlite` and `post_message_to_js` are loaded. |
