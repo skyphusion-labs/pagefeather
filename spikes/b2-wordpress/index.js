@@ -1399,7 +1399,7 @@ export class PhpRuntime extends DurableObject {
 			// the persisted origin as a fallback, and gate on the resolved values, not the globals.
 			ENV = this.env;
 			const cronOrigin = lastOrigin || this.env.SITE_ORIGIN || (await this.ctx.storage.get(ORIGIN_KEY));
-			if (cronOrigin && this.env) {
+			if (phpPending === 0 && cronOrigin && this.env) {
 				const cr = await runCron(await (bootPromise ??= boot(cronOrigin)));
 				const cst = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
 				// emails is the cumulative count emitted (requests + alarm); with checkout deferring
@@ -1568,6 +1568,7 @@ const OVERLOAD_RETRY_AFTER_S = '5';
 
 async function runCron(booted) {
 		const { php } = booted;
+		return withPhp(async () => {
 		const r = await php.run({ code: `<?php
 			require '/wordpress/wp-load.php';
 			$ran = array();
@@ -1586,6 +1587,7 @@ async function runCron(booted) {
 		let out = {};
 		try { out = JSON.parse(String(r.text).slice(String(r.text).lastIndexOf('{'))); } catch (e) { out = { parse: String(r.text).slice(-200) }; }
 		return out;
+		});
 	}
 
 async function toPhpObject(req, env, url, ctx) {

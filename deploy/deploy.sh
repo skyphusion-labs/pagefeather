@@ -176,6 +176,8 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
   echo '[vars]'
   echo "PHP_ENV = '{\"USE_ZEND_ALLOC\":\"0\"}'"
   echo "SITE_ORIGIN = \"$SITE_ORIGIN\""
+  # CRON_INTERVAL_MS (issue #185): the DO alarm cadence in ms; tune per deploy. index.js defaults to 60000.
+  [ -z "${CRON_INTERVAL_MS+x}" ] || echo "CRON_INTERVAL_MS = \"$CRON_INTERVAL_MS\""
   # The Worker writes it into wp-runtime.php as a PHP constant.
   [ -z "${HYPERDRIVE_SQL_MODE+x}" ] || echo "HYPERDRIVE_SQL_MODE = \"$HYPERDRIVE_SQL_MODE\""
   if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
