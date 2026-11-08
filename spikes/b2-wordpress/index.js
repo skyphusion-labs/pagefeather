@@ -395,6 +395,99 @@ function sendPending(env) {
 	});
 }
 
+// Caption an uploaded image for alt text (php/ai-alt-text.php). PHP sends the
+// public URL and the R2 key of a rendition that has no alt text; the Worker asks
+// the AI binding for a one-line description and returns it. Fail safe: any error
+// or timeout returns ok:true with a degraded reason and no alt, so the upload is
+// never blocked.
+// Model: box-tested 2026-11-08 on a live b-dosql deploy. @cf/llava-hf/llava-1.5-7b-hf
+// with the bytes+prompt input returns { description }; @cf/moondream/moondream3.1-9B-A2B
+// returned {} for every input shape tried (URL, base64 caption, base64 prompt) and
+// @cf/unum/uform-gen2-qwen-500m is 410-deprecated, so llava-hf is the only working
+// image-to-text model on the account. NOTE: its model page shows a planned deprecation
+// of 2026-11-20; when Cloudflare retires it, repoint AI_ALT_MODEL (the feature degrades
+// safely to empty alt until then, never blocking an upload).
+// Memory (issue #189): the op fires AFTER the attachment is stored (off the insert
+// critical path) and reads only the small RENDITION the plugin chose, not the original,
+// so the byte array is a few hundred KB on an isolate at ~mib 58 (media-write-trim
+// wcskips WooCommerce on the upload request). Ample headroom.
+// Billing: Workers AI runs on Unified Billing (the Cloudflare credit balance). An
+// AI Gateway wrapper (caching, rate limits, analytics) could sit in front later;
+// this uses the direct env.AI binding to start.
+const AI_ALT_DEFAULT_MODEL = '@cf/llava-hf/llava-1.5-7b-hf';
+function captionLength() {
+	return ENV.AI_ALT_LENGTH === 'normal' || ENV.AI_ALT_LENGTH === 'long' ? ENV.AI_ALT_LENGTH : 'short';
+}
+// Tidy a model caption into alt text: one line, no wrapping quotes, no boilerplate
+// opener ("This image shows ...", "A photo of ..."), capped at a sane length on a
+// word boundary. WordPress sanitizes it again before it is stored.
+function cleanAlt(text, cap) {
+	let s = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+	s = s.replace(/^["'“”]+|["'“”]+$/g, '').trim();
+	s = s.replace(/^(the|this|an?)\s+(image|picture|photo|photograph)\s+(of|showing|shows|depicting|depicts|is of|is|featuring|features|containing|contains|portraying|portrays)\s+/i, '');
+	s = s.replace(/^(image|picture|photo|photograph)\s+of\s+/i, '');
+	s = s.replace(/^in\s+(this|the)\s+(image|picture|photo|photograph)\s*,?\s+/i, '');
+	if (!s) return s;
+	s = s.charAt(0).toUpperCase() + s.slice(1);
+	if (s.length > cap) {
+		s = s.slice(0, cap);
+		const sp = s.lastIndexOf(' ');
+		if (sp > cap * 0.6) s = s.slice(0, sp);
+		s = s.replace(/[\s,;:.\-]+$/, '');
+	}
+	return s;
+}
+async function aiAltOp(op) {
+	const t0 = Date.now();
+	stats.ai = stats.ai || { n: 0, ms: 0, ok: 0, fail: 0 };
+	stats.ai.n++;
+	const done = (r) => {
+		stats.ai.ms += Date.now() - t0;
+		if (r && r.alt) stats.ai.ok++;
+		else stats.ai.fail++;
+		return r;
+	};
+	try {
+		if (!ENV.AI) return done({ ok: true, degraded: 'no AI binding' });
+		const model = typeof ENV.AI_ALT_MODEL === 'string' && ENV.AI_ALT_MODEL ? ENV.AI_ALT_MODEL : AI_ALT_DEFAULT_MODEL;
+		const flavor = ENV.AI_ALT_INPUT === 'caption' ? 'caption' : 'prompt';
+		const cap = Math.max(16, Math.min(300, Number(ENV.AI_ALT_MAX_CHARS || 160)));
+		const timeoutMs = Math.max(1000, Math.min(60000, Number(ENV.AI_ALT_TIMEOUT_MS || 12000)));
+
+		// Build the model input. prompt flavor (default; llava/llama): image is an array
+		// of bytes from the rendition with a text prompt, returning { description } or
+		// { response }. caption flavor (opt-in AI_ALT_INPUT=caption, for a caption model
+		// that supports it): image is a public URL or base64 data URI with task "caption",
+		// returning { caption }; the URL path reads no bytes into the isolate.
+		let input;
+		if (flavor === 'caption' && op.url) {
+			input = { image: op.url, task: 'caption', caption_length: captionLength() };
+		} else {
+			if (!op.key || !ENV.MEDIA) return done({ ok: true, degraded: 'no image source' });
+			const o = await ENV.MEDIA.get(op.key);
+			if (!o) return done({ ok: true, degraded: 'image not found' });
+			const bytes = new Uint8Array(await o.arrayBuffer());
+			if (flavor === 'caption') {
+				const mime = op.mime || (o.httpMetadata && o.httpMetadata.contentType) || 'image/jpeg';
+				input = { image: 'data:' + mime + ';base64,' + b64encode(bytes), task: 'caption', caption_length: captionLength() };
+			} else {
+				const prompt = typeof ENV.AI_ALT_PROMPT === 'string' && ENV.AI_ALT_PROMPT ? ENV.AI_ALT_PROMPT : 'Describe this image in one short, factual sentence for use as alt text. Do not begin with "an image of" or "a picture of".';
+				input = { image: [...bytes], prompt, max_tokens: 128 };
+			}
+		}
+
+		const timeout = new Promise((resolve) => setTimeout(() => resolve({ __timeout: true }), timeoutMs));
+		const r = await Promise.race([ENV.AI.run(model, input), timeout]);
+		if (r && r.__timeout) return done({ ok: true, degraded: 'ai timeout' });
+		const raw = r && (r.caption != null ? r.caption : r.description != null ? r.description : r.response != null ? r.response : r.text != null ? r.text : typeof r === 'string' ? r : '');
+		const alt = cleanAlt(raw, cap);
+		if (!alt) return done({ ok: true, degraded: 'empty caption' });
+		return done({ ok: true, alt });
+	} catch (e) {
+		return done({ ok: true, degraded: String(e && e.message ? e.message : e).slice(0, 200) });
+	}
+}
+
 async function handleMessage(raw) {
 	const m = JSON.parse(raw);
 	if (m.http) return JSON.stringify(await httpOp(m.http));
@@ -403,6 +496,7 @@ async function handleMessage(raw) {
 	if (m.probeMem) return JSON.stringify({ wasm: lastBootedPhp ? lastBootedPhp[__private__dont__use].HEAPU8.length : null });
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
 	if (m.email) return JSON.stringify(emailOp(m.email));
+	if (m.aiAlt) return JSON.stringify(await aiAltOp(m.aiAlt));
 	if (m.cache === 'purge') {
 		purgeRequested = true;
 		return '{}';
@@ -597,6 +691,10 @@ async function boot(origin) {
 		const mediaTrimModes = (typeof ENV.MEDIA_TRIM === 'string' && ENV.MEDIA_TRIM ? ENV.MEDIA_TRIM : 'wcskip,cacheflush,gc').replace(/[^a-z,]/g, '');
 		if (mediaTrimModes) lines.push(`define('SKYPHUSION_MEDIA_WRITE_TRIM', ${JSON.stringify(mediaTrimModes)});`);
 	}
+	// AI alt text mu-plugin (php/ai-alt-text.php): caption an uploaded image that
+	// has no alt text with the Workers AI binding. b-dosql + MEDIA + the AI binding
+	// only; AI_ALT=off turns it off. The model is AI_ALT_MODEL (default llava-hf).
+	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.MEDIA && ENV.AI && ENV.AI_ALT !== 'off') lines.push(`define('SKYPHUSION_AI_ALT', true);`);
 	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
 
 	php.onMessage(handleMessage);
