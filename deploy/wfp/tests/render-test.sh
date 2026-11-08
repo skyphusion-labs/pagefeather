@@ -11,6 +11,7 @@
 # - valid_site: the names it takes and refuses.
 # Exits 0 only when every check holds. Needs bash, python3 (tomllib).
 set -u
+unset HTTP_ALLOW_HOSTS
 HERE=$(cd "$(dirname "$0")" && pwd)
 LIB=${1:-$HERE/../lib.sh}
 # shellcheck disable=SC1090
@@ -47,6 +48,7 @@ v = c["vars"]
 good = (c["name"] == "site-one" and "workers_dev" not in c and c["cache"] == {"enabled": True}
         and c["exports"]["Pages"]["cache"] == {"enabled": True} and c["exports"]["default"]["cache"] == {"enabled": False}
         and v["SITE_ORIGIN"] == "https://wp-one.sub.workers.dev" and v["PHP_IN_DO"] == "on" and v["DB_IN_DO"] == "on"
+        and v["HTTP_ALLOW_HOSTS"] == ".wordpress.org,.woocommerce.com,.gravatar.com"
         and c["r2_buckets"] == [{"binding": "MEDIA", "bucket_name": "wp-wfp-one-media"}]
         and c["durable_objects"]["bindings"] == [{"name": "PHP_RUNTIME", "class_name": "PhpRuntime"}]
         and c["migrations"] == [{"tag": "v1", "new_sqlite_classes": ["PhpRuntime"]}] and c["main"] == "index.js")
