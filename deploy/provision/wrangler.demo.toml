@@ -1,0 +1,32 @@
+# Provisioning Worker (#182, Path B public demo). SEPARATE deploy from Path A.
+# Bound with ONLY the restricted WP token (no PROVISION_AUTH, no RATE_LIMITER),
+# so the binding set itself enforces that this worker can never do operator
+# provisioning -- a POST / here fails auth. It serves POST /demo (Turnstile-gated)
+# and runs the reaper on its cron trigger.
+# Secrets set via `wrangler secret put`, NEVER here:
+#   WP_PROVISION_TOKEN  the restricted CF API token (same as Path A)
+#   TURNSTILE_SECRET    the demo widget secret
+name = "wp-provision-demo"
+main = "worker.mjs"
+compatibility_date = "2026-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+CF_ACCOUNT_ID = "fabcb25d9c7eb087110ec474a03e50d2"
+WFP_KV_ID = "6b50a17e88ec4ac281c30b3e654e0854"
+WFP_NAMESPACE = "wp-wfp"
+WFP_BASES = "{\"skyphusionwp.dev\":{\"saasZoneId\":\"a18f75d980042a17bec427edc6b04592\"}}"
+WP_BUNDLE_PREFIX = "bundles/b-dosql/current/"
+DEMO_BASE = "skyphusionwp.dev"
+
+[[r2_buckets]]
+binding = "BUNDLES"
+bucket_name = "wp-provision-bundles"
+
+[[kv_namespaces]]
+binding = "DEMO_KV"
+id = "c62a18b711c44c3682718f8ad16832d6"
+
+# The reaper: tears down every expired demo (TTL 3h). Every 15 min.
+[triggers]
+crons = ["*/15 * * * *"]
