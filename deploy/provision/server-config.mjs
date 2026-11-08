@@ -8,7 +8,7 @@
 // kvId, hostname, saasZoneId, secrets) is built HERE from env + the vetted
 // bundle in the Worker's own R2 bucket. The caller chooses a type and a name,
 // and picks an OWNED base domain from an allowlist; it configures nothing.
-import { SITE_NAME_RE, assertValidName, isReservedName, genSecret } from './shared.mjs';
+import { SITE_NAME_RE, assertValidName, isCallerReservedName, genSecret } from './shared.mjs';
 import { bDosqlBindings, mediaBucketName } from './wp-site-config.mjs';
 
 // ---- 1. Caller auth (operator baseline) --------------------------------------
@@ -59,7 +59,7 @@ export function validateRequest(body) {
   const { kind, name, domain } = body;
   if (kind !== 'wp' && kind !== 'shop') throw new BadRequest('kind must be "wp" or "shop"');
   if (typeof name !== 'string' || !SITE_NAME_RE.test(name)) throw new BadRequest('name must be lower case, digits, hyphens, 1 to 30, no leading or trailing hyphen');
-  if (isReservedName(name)) throw new BadRequest('name is reserved (an infrastructure or service label); pick another');
+  if (isCallerReservedName(name)) throw new BadRequest('name is reserved (an infrastructure, service, or demo-lane label); pick another');
   if (typeof domain !== 'string' || !domain) throw new BadRequest('domain is required');
   return { kind, name, domain };
 }

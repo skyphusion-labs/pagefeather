@@ -130,6 +130,9 @@ const metaOf = async (call) => JSON.parse(await call.body.get('metadata').text()
   const resv = await run(makeEnv(), req({ kind: 'wp', name: 'www', domain: 'skyphusionwp.dev' }));
   ok('a reserved name (www) is 400 (no calls)', resv.res.status === 400 && /reserved/.test(resv.json.error) && resv.calls.length === 0);
 
+  const demoName = await run(makeEnv(), req({ kind: 'wp', name: 'demo-abc123def45678', domain: 'skyphusionwp.dev' }));
+  ok('Path A: a caller-chosen demo-lane name is 400 (keeps the demo lane clean)', demoName.res.status === 400 && /reserved/.test(demoName.json.error) && demoName.calls.length === 0);
+
   const proto = await run(makeEnv(), req({ kind: 'wp', name: 'blog', domain: '__proto__' }));
   ok('a prototype key as domain is 400, not treated as a base (Object.hasOwn)', proto.res.status === 400 && proto.calls.length === 0);
 

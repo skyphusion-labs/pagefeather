@@ -30,6 +30,7 @@ ok('authorize: a non-string PROVISION_AUTH (a bound KV/R2/Secrets object) fails 
   ok('validateRequest: rejects a bad kind', await throwsWith(() => validateRequest({ kind: 'x', name: 'blog', domain: 'skyphusionwp.dev' }), /kind must be/));
   ok('validateRequest: rejects a missing domain', await throwsWith(() => validateRequest({ kind: 'wp', name: 'blog' }), /domain is required/));
   ok('validateRequest: rejects a reserved name (www)', await throwsWith(() => validateRequest({ kind: 'wp', name: 'www', domain: 'skyphusionwp.dev' }), /reserved/));
+  ok('validateRequest: rejects a demo-lane name (caller cannot pick the demo lane)', await throwsWith(() => validateRequest({ kind: 'wp', name: 'demo-abc123def45678', domain: 'skyphusionwp.dev' }), /reserved/));
   let isBadRequest = false;
   try { validateRequest({}); } catch (e) { isBadRequest = e instanceof BadRequest; }
   ok('validateRequest: errors are BadRequest (map to 400)', isBadRequest);

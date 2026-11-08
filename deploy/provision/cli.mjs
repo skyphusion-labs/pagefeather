@@ -8,7 +8,7 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { provisionSite } from './provision.mjs';
-import { SITE_NAME_RE, genSecret } from './shared.mjs';
+import { SITE_NAME_RE, isCallerReservedName, genSecret } from './shared.mjs';
 import { bDosqlBindings, mediaBucketName } from './wp-site-config.mjs';
 
 // genSecret lives in shared.mjs (the Worker uses it too); re-export so the CLI
@@ -29,6 +29,7 @@ export function parseArgs(argv) {
   if (cmd === 'add') {
     if (!['wp', 'shop'].includes(kind)) throw new Error('add needs --kind wp|shop');
     if (!name || !SITE_NAME_RE.test(name)) throw new Error('add needs a valid <name> (lower case, digits, hyphens, 1 to 30)');
+    if (isCallerReservedName(name)) throw new Error('<name> is reserved (an infrastructure, service, or demo-lane label); pick another');
   }
   return { cmd, kind, name };
 }

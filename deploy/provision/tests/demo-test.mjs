@@ -7,7 +7,7 @@
 import worker from '../worker.mjs';
 import { reapExpiredDemos, teardownDemoSite, checkDemoRate, demoConcurrency } from '../demo.mjs';
 import { verifyTurnstile, validatePublicRequest } from '../server-config.mjs';
-import { assignDemoName, DEMO_MAX_PER_IP_PER_HOUR, DEMO_MAX_CONCURRENT, DEMO_TTL_MS } from '../shared.mjs';
+import { assignDemoName, isCallerReservedName, assertValidName, DEMO_MAX_PER_IP_PER_HOUR, DEMO_MAX_CONCURRENT, DEMO_TTL_MS } from '../shared.mjs';
 
 let pass = 0, fail = 0;
 const ok = (n, c) => { if (c) { pass++; console.log('PASS', n); } else { fail++; console.log('FAIL', n); } };
@@ -85,6 +85,11 @@ async function runDemo(env, bodyObj, opts) {
 
 // ---- unit: validatePublicRequest kind cap ----
 ok('validatePublicRequest: defaults to wp', validatePublicRequest({}).kind === 'wp');
+{
+  const dn = assignDemoName();
+  ok('demo lane: the core backstop assertValidName ALLOWS a worker-assigned demo name', (() => { try { assertValidName(dn); return true; } catch { return false; } })());
+  ok('demo lane: isCallerReservedName REJECTS the same name (callers cannot pick the lane)', isCallerReservedName(dn) === true);
+}
 ok('validatePublicRequest: wp allowed', validatePublicRequest({ kind: 'wp' }).kind === 'wp');
 {
   let threw = false; try { validatePublicRequest({ kind: 'shop' }); } catch { threw = true; }

@@ -86,3 +86,13 @@ export function assignDemoName() {
 export function isDemoName(name) {
   return typeof name === 'string' && name.startsWith(DEMO_NAME_PREFIX);
 }
+
+// Caller-facing reservation (#182 review): a PUBLIC or operator caller may not
+// CHOOSE a name in the demo lane. The concurrency count keys on the demo prefix,
+// so a caller-created demo-* site on Path A would inflate it. This is SEPARATE
+// from assertValidName / isReservedName, which must still ALLOW demo-<rand>,
+// because the demo path assigns exactly those names itself. So the demo prefix is
+// reserved for callers (validateRequest, the CLI) but not for the core backstop.
+export function isCallerReservedName(name) {
+  return isReservedName(name) || isDemoName(name);
+}
