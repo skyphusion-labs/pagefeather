@@ -345,10 +345,24 @@ function lazyFile(FS, path, entry) {
 // queue-binding decision and a verified sender domain) lands next; a consumer then
 // delivers via Cloudflare Email Service.
 function emailOp(email) {
-	const to = Array.isArray(email.to) ? email.to.join(', ') : String(email.to || '');
+	pendingEmails.push(email);
 	stats.email = (stats.email || 0) + 1;
-	console.log(JSON.stringify({ m: 'email-queued', to, subject: String(email.subject || '').slice(0, 120) }));
 	return { ok: true, queued: true };
+}
+
+// Send a wp_mail message through the send_email binding (issue #185). Transactional
+// only (WooCommerce order mails); both html and text. The from domain (skyphusionwp.dev)
+// is onboarded for Cloudflare Email Sending (CR #186).
+const EMAIL_FROM = { email: 'wordpress@skyphusionwp.dev', name: 'WooCommerce' };
+function sendEmail(env, email) {
+	const recipients = (Array.isArray(email.to) ? email.to : [email.to]).map((x) => String(x || '').trim()).filter(Boolean);
+	const body = String(email.message || '');
+	const looksHtml = /<[a-z!\/]/i.test(body) || /text\/html/i.test(String(email.headers || ''));
+	const esc = (t) => t.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+	const html = looksHtml ? body : '<pre>' + esc(body) + '</pre>';
+	const text = looksHtml ? body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : body;
+	const subject = String(email.subject || '(no subject)');
+	return recipients.map((to) => env.EMAIL.send({ to, from: EMAIL_FROM, subject, html, text }));
 }
 
 async function handleMessage(raw) {
@@ -568,6 +582,7 @@ async function imageJob(B, job) {
 }
 // Set by the Edge Cache mu-plugin when content changes. Read after the request.
 let purgeRequested = false;
+let pendingEmails = [];
 // Workers Cache purges always have Free-tier limits: 5 a minute, bursts of 25,
 // per account. Purge at most once per PURGE_GAP_MS per isolate; the short TTL
 // with stale-while-revalidate limits staleness when a purge is refused.
@@ -1827,6 +1842,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			}
 			if (body && body.length > maxBody) return new Response('request body too large', { status: 413 });
 			purgeRequested = false;
+			pendingEmails = [];
 			const r2before = JSON.stringify(stats.r2);
 			const r2start = JSON.parse(r2before);
 			// OPcache counters before and after, only when a spike-token holder asks (two extra php.run calls).
@@ -1843,6 +1859,17 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// In the PHP object, the object itself coalesces the purges of the whole site (issue #78).
 			// x-cache-purge (scheduled or coalesced) is for tests.
 			if (ctx && ctx.requestPurge && purgeRequested) out.set('x-cache-purge', await ctx.requestPurge());
+			// Async email (issue #185): hand the collected messages to the send_email binding
+			// off the request path, so checkout never waits on delivery. No binding or no ctx
+			// (older deploy): the messages are dropped here, as mail() did, until both exist.
+			if (pendingEmails.length && env.EMAIL && ctx && ctx.waitUntil) {
+				const toSend = pendingEmails;
+				pendingEmails = [];
+				ctx.waitUntil(Promise.allSettled(toSend.flatMap((e) => sendEmail(env, e))).then((rs) => {
+					const failed = rs.filter((x) => x.status === 'rejected').length;
+					if (failed) console.log('email send: ' + failed + ' of ' + rs.length + ' failed');
+				}));
+			}
 			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
 			const d = delta();
 			pageCacheHeaders(req, url, r, out, env);
