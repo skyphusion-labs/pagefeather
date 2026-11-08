@@ -167,6 +167,7 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
   echo 'compatibility_flags = ["nodejs_compat"]'
   echo 'workers_dev = true'
   echo 'rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]'
+  echo 'send_email = [{ name = "EMAIL" }]'
   echo '[assets]'; echo 'directory = "build/public"'; echo 'binding = "ASSETS"'; echo 'not_found_handling = "none"'
   echo '[cache]'; echo 'enabled = true'
   # Only the Pages entrypoint is cached; the default one is the gateway (issue #63).

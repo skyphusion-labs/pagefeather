@@ -24,7 +24,7 @@ types only, never a value) and exits 1 on any violation.
 import json, os, sys, urllib.error, urllib.request
 
 ENV = os.environ
-USER_OK = {"r2_bucket", "durable_object_namespace", "images", "assets", "plain_text", "secret_text"}
+USER_OK = {"r2_bucket", "durable_object_namespace", "images", "assets", "send_email", "plain_text", "secret_text"}
 SECRETS_OK = {"WP_SALT", "SPIKE_TOKEN"}
 
 

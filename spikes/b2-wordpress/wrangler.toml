@@ -5,6 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
 
+send_email = [{ name = "EMAIL" }]
 [assets]
 directory = "build/public"
 binding = "ASSETS"
@@ -43,6 +44,7 @@ binding = "IMAGES"
 # Workers Free deploy, on workers.dev. Replace database_id with the id from `wrangler d1 create`.
 # Secrets: WP_SALT, SPIKE_TOKEN (wrangler secret put --env free).
 [env.free]
+send_email = [{ name = "EMAIL" }]
 name = "wp-on-d1-spike"
 workers_dev = true
 rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
@@ -80,6 +82,7 @@ database_id = "c4b12ebc-b3c7-49ed-9352-061ead0f65bb"
 # Workers Paid deploy, on workers.dev. Replace database_id with the id from `wrangler d1 create`.
 # Secrets: WP_SALT, SPIKE_TOKEN (wrangler secret put --env paid).
 [env.paid]
+send_email = [{ name = "EMAIL" }]
 name = "wp-on-d1-paid"
 workers_dev = true
 rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
@@ -140,6 +143,7 @@ new_sqlite_classes = ["WooCheckout"]
 # Secrets per env: WP_SALT, SPIKE_TOKEN.
 
 [env.a-local]
+send_email = [{ name = "EMAIL" }]
 # opcache.sh with DEV_ENV=a-local. The connection string comes from
 # WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE (a local MariaDB).
 main = "index-a.js"
@@ -160,6 +164,7 @@ bucket_name = "b2-local-media"
 binding = "IMAGES"
 
 [env.a-free]
+send_email = [{ name = "EMAIL" }]
 name = "wp-a-free"
 main = "index-a.js"
 workers_dev = true
@@ -181,6 +186,7 @@ binding = "HYPERDRIVE"
 id = "f66b075f6778493eb02549c3cafa1727"  # wp-a-free-public; tunnel path: 18ebba479f1145869dfca2f4cf00ff02
 
 [env.a-paid]
+send_email = [{ name = "EMAIL" }]
 name = "wp-a-paid"
 main = "index-a.js"
 workers_dev = true
@@ -216,6 +222,7 @@ binding = "IMAGES"
 # their behaviour does not change.
 
 [env.do-local]
+send_email = [{ name = "EMAIL" }]
 # Local check: DEV_ENV=do-local ./opcache.sh, then DEV_ENV=do-local ./run.sh and ./e2e.sh.
 # Same local D1 database as the default env (same database_id).
 rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
@@ -249,6 +256,7 @@ new_sqlite_classes = ["PhpRuntime"]
 # Free has only SQLite-backed Durable Objects (new_sqlite_classes), 100,000
 # object requests and 13,000 GB-s a day (docs/approach-b.md 8i).
 [env.do-free]
+send_email = [{ name = "EMAIL" }]
 name = "wp-do-free"
 workers_dev = true
 rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
@@ -290,6 +298,7 @@ new_sqlite_classes = ["PhpRuntime"]
 # object holds the site, so PHP_DO_POOL does not apply.
 
 [env.dosql-local]
+send_email = [{ name = "EMAIL" }]
 # Local check: DEV_ENV=dosql-local ./opcache.sh, then DEV_ENV=dosql-local ./run.sh and ./e2e.sh.
 # The D1 binding stays here only to compare (/_dbping?db=d1) and to test a move
 # from D1 (/_dbexport?from=d1).
@@ -324,6 +333,7 @@ new_sqlite_classes = ["PhpRuntime"]
 # (--env dosql-free). The object is made near its first request (no location
 # hint: it makes no D1 calls). Free: 1 GB per object, 5 GB per account.
 [env.dosql-free]
+send_email = [{ name = "EMAIL" }]
 name = "wp-dosql-free"
 workers_dev = true
 rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
