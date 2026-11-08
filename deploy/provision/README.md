@@ -3,21 +3,29 @@
 One provisioning core, two callers. The core is a set of idempotent Cloudflare
 API operations written as pure `fetch` + Web Crypto, so the IDENTICAL module runs
 inside a provisioning Worker and from a node CLI. No Docker and no wrangler build
-at provision time: the c1 container image is a prerequisite built once and pushed,
-and a store is provisioned by REFERENCING its digest (the #147/#154 hinge, proven
-live). Design: issue #154. Worker hardening: issue #182 and `HARDENING.md`.
+at provision time: the vetted b-dosql bundle is built once and reused for every
+site.
+
+There is ONE kind of site: `wp` (b-dosql, WordPress with PHP and SQLite in one
+Durable Object). A WooCommerce store is a `wp` site with WooCommerce enabled
+inside it. The c1 container store (`kind: shop`) was retired in #214 and is gone
+from every provisioning path: `provisionSite`, `selectToken`, `validateRequest`
+and the CLI all reject it. Design: issue #154. Worker hardening: issue #182 and
+`HARDENING.md`.
 
 ## Files
 
 - `cf.mjs`: the Cloudflare API layer. `cfFetch` (one call, injectable `fetchImpl`
-  for tests), `sha256Hex` (the R2 S3 secret: SHA-256 of the token value with NO
-  trailing newline, the #154 fresh-store finding baked in so a caller cannot
-  reintroduce it), the R2 permission-group ids and the bucket resource format.
-- `ops.mjs`: the idempotent ops. `createR2Bucket`, `mintScopedR2Token`
-  (secret derivation included), `putSecret`, `writeKVMapEntry`,
-  `deployNamespaceScript` (wp / b-dosql, namespace script, no build),
-  `deployContainerWorkerFromDigest` (shop / c1, image-ref, NO build; rejects a
-  non-digest image), `addCustomHostname`.
+  for tests), `sha256Hex` (used only by the dormant c1 token op), the R2
+  permission-group ids and the bucket resource format.
+- `ops.mjs`: the idempotent ops. Used by provisioning: `createR2Bucket`,
+  `putSecret`, `writeKVMapEntry`, `deployNamespaceScript` (b-dosql, namespace
+  script, no build), `ensureProxiedHostname`, `installWordPress`,
+  `addCustomHostname`, and the teardown ops. **Dormant, not a live path:**
+  `mintScopedR2Token`, `deployContainerWorkerFromDigest` and
+  `enableWorkersDevSubdomain` are left over from the retired c1 store. Nothing in
+  provisioning calls them, and the Worker's token cannot run them. They stay as
+  unreferenced library code only.
 - `registry.mjs`: the site list as the KV map itself (each site a hostname entry
   carrying `kind` and its resources). The light #154 option; a separate store is
   the alternative.
@@ -37,23 +45,22 @@ live). Design: issue #154. Worker hardening: issue #182 and `HARDENING.md`.
   fully tears down every expired demo (script, bucket, DNS record, KV entry).
 - `tests/`: offline, stub `fetchImpl` (or the global fetch + stub bindings for the
   Worker). Ops, orchestration, CLI parsing, custom hostnames, the hardened Worker
-  entry, and the security unit tests, including the SHA-256 no-newline guard, the
-  container-image-is-a-digest guard, and the #182 injection / auth / idempotency
-  guards.
+  entry, and the security unit tests, including the #182 injection / auth /
+  idempotency guards. The CLI test checks that `--kind shop` is rejected.
 
 ## Callers (one shared orchestration)
 
-- `provision.mjs`: `provisionSite(ctx, cfg)` sequences the idempotent ops per
-  kind (wp: bucket, namespace script with secrets as atomic secret_text
-  bindings, registry entry; shop: two buckets, mint the scoped token BEFORE the
-  deploy, container deploy from the digest with the Litestream secret, registry
-  entry with resources). It validates the site name and is idempotent (an
-  existing hostname is returned, never re-created). The CLI and the Worker both
-  call it. provisionWp also runs the WordPress install (#215) after the site is
-  routable, so a provisioned site is READY (not stuck at install.php), and returns
-  the admin credential once.
-- `cli.mjs`: `site add --kind wp|shop <name>` (node). Parses args, loads the
-  PRE-BUILT bundle dir, generates per-site secrets, calls `provisionSite`.
+- `provision.mjs`: `provisionSite(ctx, cfg)` sequences the idempotent ops for a
+  `wp` site: media bucket, namespace script with secrets as atomic secret_text
+  bindings, registry entry, and the proxied routing record. It validates the site
+  name and is idempotent (an existing hostname is returned, never re-created).
+  The CLI and the Worker both call it. After the site is routable it runs the
+  WordPress install (#215), so a provisioned site is READY (not stuck at
+  install.php), and returns the admin credential once. WooCommerce is NOT
+  installed here; the site owner enables it inside the site.
+- `cli.mjs`: `site add --kind wp <name>` (node). Implements `add` only. Parses
+  args, loads the PRE-BUILT bundle dir, generates per-site secrets, calls
+  `provisionSite`.
 - `worker.mjs` (hardened, #182): the provisioning Worker, TWO front doors over one
   core. `POST /` is Path A (private operator bearer, b-dosql only, caller names it);
   `POST /demo` is Path B (public Turnstile, demo-tier b-dosql only, ephemeral); the
@@ -62,8 +69,9 @@ live). Design: issue #154. Worker hardening: issue #182 and `HARDENING.md`.
   own trusted config (bundle, namespace, kv id, zone, bindings, secrets), so a
   caller can neither upload code nor target another tenant's resources. Auth,
   rate limit, server-side name validation, the owned-base allowlist, the token
-  split and idempotency all live here + in `server-config.mjs`. NOT routed; the
-  lead owns the deploy gate. See `HARDENING.md`.
+  split and idempotency all live here + in `server-config.mjs`. See `HARDENING.md`.
+  The Worker uses ONE restricted token (KV, Workers for Platforms, R2, and DNS for
+  the one SaaS zone). It has no token-minting and no Containers scope.
 
 ## Custom hostnames (end users bring their own domain)
 
@@ -76,10 +84,5 @@ live). Design: issue #154. Worker hardening: issue #182 and `HARDENING.md`.
 
 ## Not built here
 
-The core never builds an image. The c1 image is built once and pushed on the
-Docker lane (`wrangler containers push`), and its digest ref
-(`registry.cloudflare.com/<acct>/<repo>@sha256:<digest>`) is handed to
-`deployContainerWorkerFromDigest`. The vetted Worker bundles are built once and
+The core never builds a bundle. The vetted Worker bundle is built once and
 published to the Worker's trusted R2 bucket (see `HARDENING.md`, bundle source).
-Live validation (a fresh wp and a fresh shop provisioned through the core, both
-serving, the shop checking out 12/12) is the lead's lane.

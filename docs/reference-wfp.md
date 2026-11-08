@@ -28,6 +28,8 @@ Measured as normal Workers, not as user Workers, except where the row says so.
 | WooCommerce store | `b-dosql`, the same runtime as a plain site, with WooCommerce active. It runs checkout directly (README matrix; `tests/woo.py` green on Paid). The `c1` container store was retired in #214. | See the README matrix and docs/results.md for the checkout runs; the object cache and page cache notes are in docs/perf-dosql.md. | The same limit as a plain site: one Durable Object, 128 MiB, one writer, one region. A light-to-moderate store fits. A store with sustained, heavy concurrent load belongs on a VPS. |
 | Very high concurrency on one site | `a`: PHP in Workers, MySQL through Hyperdrive | The only variant that spread across isolates (zero 1102 at 100 users; 128 MB is enough for WooCommerce). | **Not measured as a user Worker**, and see the connect() risk above. Every query crosses the network: browse p50 2.31 to 5.92 s across the steps of the three load runs (deploy/results/bench-runner-20261105T211919Z-cea397.json, bench-runner-20261105T214231Z-230073.json, bench-runner-20261106T010353Z-155691.json), not acceptable for a store (Conrad, 2026-11-06). Its rate at 100 users moved across three runs: 10.3, 18.73 and 8.63 rps. |
 
+**Today:** a store under sustained, heavy concurrent load goes to a VPS. Approach `a` on an external scalable database is the horizontal-scale answer, and its performance work is tracked in #218.
+
 `a2` (PlanetScale through Hyperdrive) works as a normal Worker (#50, #52), at about 16 ms per query from ORD, and adds nothing over `a` for these sites.
 
 ## Per tenant, as code
