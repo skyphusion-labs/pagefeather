@@ -339,12 +339,25 @@ function lazyFile(FS, path, entry) {
 // One message from PHP: a D1 statement, an R2 or Images operation, a cache
 // purge, or a failure report. In the Worker it comes through php.onMessage; in
 // the checkout Container, through the outbound handler for worker.internal.
+// Async email (issue #185): PHP's wp_mail hands the message here (the isolate has no
+// mail transport). Record it fast and return so checkout never waits on the send. The
+// send leg (a Queue producer, or ctx.waitUntil to the Email REST API, pending the WfP
+// queue-binding decision and a verified sender domain) lands next; a consumer then
+// delivers via Cloudflare Email Service.
+function emailOp(email) {
+	const to = Array.isArray(email.to) ? email.to.join(', ') : String(email.to || '');
+	stats.email = (stats.email || 0) + 1;
+	console.log(JSON.stringify({ m: 'email-queued', to, subject: String(email.subject || '').slice(0, 120) }));
+	return { ok: true, queued: true };
+}
+
 async function handleMessage(raw) {
 	const m = JSON.parse(raw);
 	if (m.http) return JSON.stringify(await httpOp(m.http));
 	if (m.txn) return JSON.stringify(sqlDb ? txnOp(sqlDb, sqlStorage, m.txn) : { ok: false, error: 'no database in the object' });
 	if (m.oc) return JSON.stringify(objectCacheOp(m.oc));
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
+	if (m.email) return JSON.stringify(emailOp(m.email));
 	if (m.cache === 'purge') {
 		purgeRequested = true;
 		return '{}';
@@ -521,6 +534,8 @@ async function boot(origin) {
 	// The editor's theme REST routes kept across requests (php/rest-route-cache.php, #53).
 	// Needs the object cache. ROUTE_CACHE=off turns it off (to measure).
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.OBJECT_CACHE !== 'off' && ENV.ROUTE_CACHE !== 'off') lines.push(`define('JS_ROUTE_CACHE', true);`);
+	// Async email mu-plugin (issue #185): wp_mail hands messages to the Worker. b-dosql only.
+	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.ASYNC_EMAIL !== 'off') lines.push(`define('SKYPHUSION_ASYNC_EMAIL', true);`);
 	// Bootstrap trim mu-plugin (perf): skip pure-background wc-admin features (remote-inbox,
 	// marketing) that re-init every request. b-dosql only; BOOTSTRAP_TRIM=off turns it off.
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.BOOTSTRAP_TRIM !== 'off') lines.push(`define('SKYPHUSION_BOOTSTRAP_TRIM', true);`);
