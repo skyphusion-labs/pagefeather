@@ -1428,14 +1428,17 @@ export class PhpRuntime extends DurableObject {
 				// Send what runCron just enqueued (the deferred WC order mails). The request path drains
 				// pendingEmails at the end of a request; the alarm is the ONLY drain when no request
 				// follows (a low-traffic store), so without this the queued order emails sit in the
-				// module global and are lost on the next isolate recycle (#185). waitUntil, so the alarm
-				// is not held on delivery.
+				// module global and are lost on the next isolate recycle (#185). AWAIT the sends, NOT
+				// this.ctx.waitUntil: DurableObjectState.waitUntil does not keep work alive past the alarm
+				// returning (CF docs: it exists mainly for API compatibility), so a send handed to it was
+				// abandoned and never delivered on the real DO (box: drained but sent:0). Awaiting makes the
+				// send part of the promise alarm() returns, which the runtime is guaranteed to wait on.
 				const drained = pendingEmails.length;
 				const sp = sendPending(this.env);
-				if (sp) this.ctx.waitUntil(sp);
+				if (sp) await sp;
 				const cst = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
-				// queued = cumulative wp_mail messages enqueued; sent = cumulative actually delivered (it
-				// lags by the async send); drained = handed to the binding on this tick. The old single
+				// queued = cumulative wp_mail messages enqueued; sent = cumulative actually delivered (now
+				// current, since the alarm awaits the sends); drained = handed off this tick. The old single
 				// 'emails' field counted ENQUEUES and read as delivery, which it was not (#185).
 				cst.cron = { t: Date.now(), ...cr, lastRan: cr.ran, drained, queued: (stats.email || 0), sent: (stats.emailSent || 0) };
 				await this.ctx.storage.put(PURGE_STATE_KEY, cst);
