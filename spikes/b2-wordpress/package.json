@@ -12,6 +12,7 @@
   "type": "commonjs",
   "dependencies": {
     "@cloudflare/containers": "^0.3.7",
+    "@cloudflare/puppeteer": "^1.4.0",
     "@php-wasm/universal": "^3.1.62",
     "@php-wasm/web-8-3": "^3.1.62",
     "fflate": "^0.8.3",
