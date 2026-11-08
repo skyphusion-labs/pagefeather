@@ -141,11 +141,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install pcov
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q php-pcov
-          which -a php; php -v; php --ini
-          dpkg -L php-pcov | grep -iE 'pcov|ini' || true
-          dpkg -l | grep -E 'php[0-9.]*-(cli|common|pcov)' || true
-          ls -l /etc/alternatives/php /usr/bin/php* || true
+          sudo apt-get update -q && sudo apt-get install -y -q php8.3-pcov
+          dpkg -L php8.3-pcov | grep -iE 'pcov|ini' || true
+          ls -l /etc/php/8.3/mods-available/pcov.ini /etc/php/8.3/cli/conf.d/ | grep -i pcov || true
+          sudo phpenmod -v 8.3 -s cli pcov
           php -m | grep -i pcov
       - name: Fetch the SQLite driver
         run: |
