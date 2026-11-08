@@ -1571,7 +1571,7 @@ async function runCron(booted) {
 				foreach ( (array) $hooks as $hook => $evs ) { foreach ( (array) $evs as $ev ) {
 					if ( ! empty( $ev['schedule'] ) ) { wp_reschedule_event( $ts, $ev['schedule'], $hook, $ev['args'], isset($ev['interval']) ? $ev['interval'] : 0 ); }
 					wp_unschedule_event( $ts, $hook, $ev['args'] );
-					do_action_ref_array( $hook, $ev['args'] ); $events++;
+					do_action_ref_array( $hook, $ev['args'] ); if ( ++$events >= 50 ) { break 3; }
 				} } } }
 			echo json_encode( array( 'ran' => $ran, 'wp_cron_events' => $events ) );` });
 		let out = {};
