@@ -583,6 +583,7 @@ async function imageJob(B, job) {
 // Set by the Edge Cache mu-plugin when content changes. Read after the request.
 let purgeRequested = false;
 let pendingEmails = [];
+let lastOrigin = null;
 // Workers Cache purges always have Free-tier limits: 5 a minute, bursts of 25,
 // per account. Purge at most once per PURGE_GAP_MS per isolate; the short TTL
 // with stale-while-revalidate limits staleness when a purge is refused.
@@ -1386,8 +1387,21 @@ export class PhpRuntime extends DurableObject {
 	}
 
 	async alarm() {
+		// Phase 2 (#185): run due background work (Action Scheduler + WP-Cron) off the request
+		// path, so deferred WC order emails fire with no traffic. DISABLE_WP_CRON stays on; this
+		// alarm is the only cron driver. One alarm also coalesces purges, below.
+		try {
+			if (lastOrigin && ENV) {
+				const cr = await runCron(await (bootPromise ??= boot(lastOrigin)));
+				const cst = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
+				// emails is the cumulative count emitted (requests + alarm); with checkout deferring
+				// and no /_runcron, a nonzero value proves the alarm fired the deferred WC order mails.
+				cst.cron = { t: Date.now(), ...cr, lastRan: cr.ran, emails: (stats.email || 0) };
+				await this.ctx.storage.put(PURGE_STATE_KEY, cst);
+			}
+		} catch (e) { console.log(JSON.stringify({ m: 'cron', error: String((e && e.message) || e).slice(0, 200) })); }
 		const st = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
-		if (!st.pending) return;
+		if (st.pending) {
 		// Cleared before the purge: a change during the purge asks for the next one.
 		st.pending = false;
 		st.lastSent = Date.now();
@@ -1417,6 +1431,9 @@ export class PhpRuntime extends DurableObject {
 			done.retried = false;
 			await this.ctx.storage.put(PURGE_STATE_KEY, done);
 		}
+		}
+		// Keep the cron cadence unless the purge logic set a sooner retry alarm.
+		if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
 	}
 
 	async fetch(raw) {
@@ -1427,6 +1444,10 @@ export class PhpRuntime extends DurableObject {
 		// Without it, the object does not guess an origin: a wrong one redirects every page.
 		if (!origin) return new Response('missing ' + ORIGIN_HEADER, { status: 500 });
 		const url = new URL(objectUrl.pathname + objectUrl.search, origin);
+		lastOrigin = origin;
+		// Phase 2 (#185): keep a cron alarm scheduled so Action Scheduler (deferred WC order
+		// emails) and WP-Cron run with no traffic. One DO alarm serves both cron and purge.
+		if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
 		const inboxMs = raw.headers.get(SENT_HEADER) ? Date.now() - Number(raw.headers.get(SENT_HEADER)) : null;
 		const req = new Request(raw);
 		req.headers.delete(ORIGIN_HEADER);
@@ -1535,6 +1556,28 @@ function phpObjectName(env, url) {
 // uncached pages a second (docs/perf-dosql.md), so a full queue drains in
 // seconds, not minutes.
 const OVERLOAD_RETRY_AFTER_S = '5';
+
+async function runCron(booted) {
+		const { php } = booted;
+		const r = await php.run({ code: `<?php
+			require '/wordpress/wp-load.php';
+			$ran = array();
+			if ( class_exists( 'ActionScheduler' ) || function_exists( 'as_next_scheduled_action' ) ) {
+				do_action( 'action_scheduler_run_queue', 'Skyphusion DO alarm' );
+				$ran[] = 'action_scheduler';
+			}
+			$events = 0; $crons = function_exists( '_get_cron_array' ) ? _get_cron_array() : array();
+			if ( is_array( $crons ) ) { $now = time(); foreach ( $crons as $ts => $hooks ) { if ( $ts > $now ) break;
+				foreach ( (array) $hooks as $hook => $evs ) { foreach ( (array) $evs as $ev ) {
+					if ( ! empty( $ev['schedule'] ) ) { wp_reschedule_event( $ts, $ev['schedule'], $hook, $ev['args'], isset($ev['interval']) ? $ev['interval'] : 0 ); }
+					wp_unschedule_event( $ts, $hook, $ev['args'] );
+					do_action_ref_array( $hook, $ev['args'] ); $events++;
+				} } } }
+			echo json_encode( array( 'ran' => $ran, 'wp_cron_events' => $events ) );` });
+		let out = {};
+		try { out = JSON.parse(String(r.text).slice(String(r.text).lastIndexOf('{'))); } catch (e) { out = { parse: String(r.text).slice(-200) }; }
+		return out;
+	}
 
 async function toPhpObject(req, env, url, ctx) {
 	const name = phpObjectName(env, url);
@@ -1730,6 +1773,16 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 				define('WP_USE_THEMES', true);
 				ob_start(); require '/wordpress/wp-blog-header.php';` });
 			return new Response(r.text.slice(r.text.indexOf('PEAK')));
+		}
+		if (url.pathname === '/_runcron') {
+			// Run due background work off the request path (issue #185, Phase 2). WP-Cron is
+			// disabled (DISABLE_WP_CRON), so nothing runs it otherwise; the DO alarm calls the
+			// same runCron() on a cadence. Runs the Action Scheduler queue (the deferred WC
+			// order emails) and due WP-Cron events. Spike/manual trigger and the test seam.
+			bootPromise ??= boot(origin);
+			const before = stats.email || 0;
+			const r = await runCron(await bootPromise);
+			return new Response(JSON.stringify({ ...r, emailsSent: (stats.email || 0) - before }), { headers: { 'content-type': 'application/json' } });
 		}
 		if (url.pathname === '/_activate') {
 			// Activate a plugin, e.g. ?plugin=woocommerce/woocommerce.php. Spike only.
