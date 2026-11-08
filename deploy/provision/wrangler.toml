@@ -24,3 +24,9 @@ bucket_name = "wp-provision-bundles"
 name = "RATE_LIMITER"
 namespace_id = "2001"
 simple = { limit = 60, period = 60 }
+
+# Invoke the newly-deployed site DIRECTLY to run its /_install, bypassing public
+# DNS + KV->dispatcher propagation (which 530s for ~30-60s after create, #215).
+[[dispatch_namespaces]]
+binding = "DISPATCHER"
+namespace = "wp-wfp"

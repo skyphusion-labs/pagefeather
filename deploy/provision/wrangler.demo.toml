@@ -27,6 +27,12 @@ bucket_name = "wp-provision-bundles"
 binding = "DEMO_KV"
 id = "c62a18b711c44c3682718f8ad16832d6"
 
+# Invoke the newly-deployed demo site DIRECTLY to run its /_install, bypassing
+# public DNS + KV->dispatcher propagation (which 530s right after create, #215).
+[[dispatch_namespaces]]
+binding = "DISPATCHER"
+namespace = "wp-wfp"
+
 # The reaper: tears down every expired demo (TTL 3h). Every 15 min.
 [triggers]
 crons = ["*/15 * * * *"]
