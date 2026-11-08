@@ -5,36 +5,65 @@
 // secret_text bindings in the script upload (matching deploy/variants/c1.sh's
 // --secrets-file), so a site never runs a request without its secrets.
 import {
-  createR2Bucket, mintScopedR2Token,
-  deployNamespaceScript, deployContainerWorkerFromDigest,
-  ensureProxiedHostname, enableWorkersDevSubdomain,
+  createR2Bucket, deployNamespaceScript, ensureProxiedHostname, scriptExists, installWordPress,
 } from './ops.mjs';
-import { upsertSite } from './registry.mjs';
+import { upsertSite, readSite } from './registry.mjs';
+import { assertValidName, genSecret } from './shared.mjs';
 
 // cfg:
-//   kind: 'wp' | 'shop'
-//   name: site name (script is site-<name> for wp, c1-<name> for shop)
+//   kind: 'wp'  (the ONLY kind; the c1 'shop' store path was retired, #214)
+//   name: site name (script is site-<name>)
 //   namespace, kvId, hostname
 //   compatibilityDate, compatibilityFlags
-//   modules: [{ name, content }]  (the b-dosql or c1 worker bundle)
+//   modules: [{ name, content }]  (the b-dosql worker bundle)
 //   resourceBindings: [...]       (kv/r2/do/vars, NOT secrets)
 //   secrets: { NAME: value, ... } (becomes secret_text bindings)
-//   buckets: { media, db? }
-//   shop only: imageRef (pushed digest), containerClass, instanceType, tokenName, limits?
+//   buckets: { media }
 // Returns a step log and the registry entry written.
+//
+// SECURITY (#182): both callers reach the account token through this core, so
+// the name is validated HERE, not only in the CLI. name is interpolated into
+// script names, bucket names and a hostname label, all of which become URL
+// paths and resource ids; assertValidName is the one allowlist that bounds
+// them. The trusted Worker (worker.mjs) builds the rest of the cfg itself and
+// never lets a caller supply modules, bindings, a namespace, a kv id or a zone.
 export async function provisionSite(ctx, cfg) {
   if (cfg.kind === 'wp') return provisionWp(ctx, cfg);
-  if (cfg.kind === 'shop') return provisionShop(ctx, cfg);
-  throw new Error(`provisionSite: unknown kind ${cfg.kind}`);
+  // The c1 container store ('shop') was retired (#214): a store is a b-dosql site
+  // with WooCommerce active, not a separate provisioning kind. So this core mints
+  // only b-dosql, and never touches account-token minting or Containers.
+  throw new Error(`provisionSite: only kind 'wp' (b-dosql) is supported; the c1 'shop' store path was retired (#214)`);
 }
 
 function secretBindings(secrets = {}) {
   return Object.entries(secrets).map(([name, text]) => ({ type: 'secret_text', name, text }));
 }
 
+// Idempotency (#182): a hostname already in the registry is returned as-is, with
+// no second create and no overwrite. A registry read that returns an entry with
+// a `script` field is a real, previously-provisioned site; anything else (null,
+// or a bare API envelope with no script) means "not provisioned", so we build.
+async function existingSite(ctx, { kvId, hostname }) {
+  if (!kvId || !hostname) return null;
+  const entry = await readSite(ctx, { kvId, hostname });
+  return entry && typeof entry.script === 'string' ? entry : null;
+}
+
 async function provisionWp(ctx, cfg) {
+  assertValidName(cfg.name);
   const steps = [];
   const script = `site-${cfg.name}`;
+  const found = await existingSite(ctx, { kvId: cfg.kvId, hostname: cfg.hostname });
+  if (found) {
+    const admin = found.adminUrl ? { url: found.adminUrl, user: found.adminUser || 'admin' } : undefined;
+    return { kind: 'wp', name: cfg.name, script: found.script, hostname: cfg.hostname, entry: found, existing: true, installed: !!found.installed, admin, steps };
+  }
+  // Anti-clobber (#182, grok residual 2): the hostname is not ours (idempotency
+  // returned above if it were), so a script already named site-<name> in the
+  // namespace is a foreign or orphaned site. Refuse rather than overwrite it.
+  if (await scriptExists(ctx, { name: script, ns: cfg.namespace })) {
+    throw new Error(`provisionWp: a namespace script named ${script} already exists and is not registered for ${cfg.hostname}; refusing to clobber it`);
+  }
   steps.push(await createR2Bucket(ctx, cfg.buckets.media));
   // sqliteClasses: the SQLite Durable Object classes the bundle defines (for
   // b-dosql, ['PhpRuntime']). They MUST be declared in a migration or the DO
@@ -51,56 +80,54 @@ async function provisionWp(ctx, cfg) {
     migrations: { new_tag: cfg.migrationTag || 'v1', new_sqlite_classes: sqliteClasses },
   });
   steps.push({ deployed: script, ns: cfg.namespace, sqliteClasses });
-  const entry = { script, kind: 'wp', outbound: true, ...(cfg.limits || {}) };
+  const entry = {
+    script, kind: 'wp', outbound: true, ...(cfg.limits || {}),
+    // Demo lane (#182 Path B): stamp everything the reaper needs to tear this
+    // site down fully (script, bucket, zone) plus the expiry it reaps on.
+    ...(cfg.demo ? { demo: true, expiresAt: cfg.expiresAt, name: cfg.name, mediaBucket: cfg.buckets.media, saasZoneId: cfg.saasZoneId } : {}),
+  };
+  // Routing FIRST: write the site-map entry so the dispatcher can route by Host,
+  // including to the /_install request below. (installed is folded in after the
+  // install so a re-provision can tell a ready site from a bare one.)
   await upsertSite(ctx, { kvId: cfg.kvId, hostname: cfg.hostname, entry });
-  // Routing: a namespace site is reached through the SaaS zone's */* dispatcher
-  // (wp-dispatch), which routes by Host through this KV map. For the hostname to
-  // enter the zone it needs a proxied originless record. When saasZoneId is set,
-  // the core places it, so a Worker can provision a reachable site with no
-  // operator step. Idempotent: an existing record is success.
+  // A namespace site is reached through the SaaS zone's */* dispatcher (wp-dispatch).
+  // For the hostname to enter the zone it needs a proxied originless record; when
+  // saasZoneId is set the core places it. Idempotent: an existing record is success.
   if (cfg.saasZoneId) {
     steps.push(await ensureProxiedHostname(ctx, { zoneId: cfg.saasZoneId, hostname: cfg.hostname }));
   }
-  return { kind: 'wp', name: cfg.name, script, hostname: cfg.hostname, entry, steps };
-}
-
-async function provisionShop(ctx, cfg) {
-  const steps = [];
-  const script = `c1-${cfg.name}`;
-  // Buckets first.
-  steps.push(await createR2Bucket(ctx, cfg.buckets.db));
-  steps.push(await createR2Bucket(ctx, cfg.buckets.media));
-  // Token BEFORE the deploy, so the Litestream S3 creds go in atomically. The
-  // secret is SHA-256(token value) with no trailing newline (enforced in the
-  // op); a wrong newline here is exactly the #154 fresh-store boot crash.
-  const tok = await mintScopedR2Token(ctx, { name: cfg.tokenName || `${script}-litestream`, bucket: cfg.buckets.db });
-  const secrets = {
-    ...cfg.secrets,
-    LITESTREAM_ACCESS_KEY_ID: tok.accessKeyId,
-    LITESTREAM_SECRET_ACCESS_KEY: tok.secretAccessKey,
+  // Install (#215): the site serves but lands at /wp-admin/install.php until the
+  // WP install runs. Trigger it over HTTP against the site itself (authorized by
+  // its own SPIKE_TOKEN secret, so NO new token scope), seeding the 'admin' user
+  // with a fresh strong password. Idempotent server-side (already-installed is ok).
+  const adminPassword = genSecret(16);
+  const adminUrl = `https://${cfg.hostname}/wp-admin/`;
+  // PRIMARY: install via the dispatch-namespace binding (ctx.dispatcher), which
+  // routes straight to site-<name> and avoids the KV->dispatcher propagation 530
+  // right after a deploy (#215 deploy-gate). The node CLI has no binding, so it
+  // falls back to public HTTP with retries. BEST-EFFORT: a failed install does NOT
+  // fail the provision; a deployed-but-uninstalled site beats a hard failure.
+  let install = null, installError = null;
+  try {
+    install = await installWordPress({
+      dispatcher: ctx.dispatcher, scriptName: script,
+      hostname: cfg.hostname, spikeToken: cfg.secrets && cfg.secrets.SPIKE_TOKEN,
+      adminPassword, fetchImpl: ctx.fetchImpl,
+      retries: cfg.installRetries, intervalMs: cfg.installIntervalMs,
+    });
+  } catch (e) { installError = (e && e.message) || String(e); }
+  const installed = Boolean(install && install.installed);
+  steps.push(installed ? { installed: true, already: install.already, via: install.via } : { installed: false, error: installError });
+  // Record install state + the admin URL/user (NEVER the password) so a re-provision
+  // returns the site without re-installing.
+  const finalEntry = { ...entry, installed, adminUrl, adminUser: 'admin' };
+  await upsertSite(ctx, { kvId: cfg.kvId, hostname: cfg.hostname, entry: finalEntry });
+  return {
+    kind: 'wp', name: cfg.name, script, hostname: cfg.hostname, entry: finalEntry, steps,
+    installed, alreadyInstalled: Boolean(install && install.already),
+    // The admin password is surfaced ONLY when the install actually ran (so it is
+    // valid); a deferred install returns the url + user and a note.
+    admin: installed ? { url: adminUrl, user: 'admin', password: adminPassword } : { url: adminUrl, user: 'admin' },
+    ...(installError ? { installNote: `install deferred (finish via /_install): ${installError}` } : {}),
   };
-  const dep = await deployContainerWorkerFromDigest(ctx, {
-    name: script,
-    mainModule: cfg.mainModule || 'worker.js',
-    modules: cfg.modules,
-    bindings: [...(cfg.resourceBindings || []), ...secretBindings(secrets)],
-    compatibilityDate: cfg.compatibilityDate,
-    compatibilityFlags: cfg.compatibilityFlags || [],
-    containerClass: cfg.containerClass || 'Store',
-    imageRef: cfg.imageRef,
-    instanceType: cfg.instanceType || 'basic',
-  });
-  steps.push({ deployed: script, imageRef: cfg.imageRef, application: dep.application });
-  // A standalone shop is reached on its own workers.dev hostname; the raw
-  // script PUT does not enable that route, so enable it (#158).
-  steps.push(await enableWorkersDevSubdomain(ctx, script));
-  // A shop is a standalone Worker with its own hostname; the registry entry
-  // records it and its resources (the dispatcher does NOT route shops). The
-  // token VALUE is never stored, only its id, for later revocation.
-  const entry = {
-    script, kind: 'shop', hostname: cfg.hostname,
-    resources: { dbBucket: cfg.buckets.db, mediaBucket: cfg.buckets.media, litestreamTokenId: tok.tokenId },
-  };
-  await upsertSite(ctx, { kvId: cfg.kvId, hostname: cfg.hostname, entry });
-  return { kind: 'shop', name: cfg.name, script, hostname: cfg.hostname, entry, steps };
 }

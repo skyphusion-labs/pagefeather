@@ -23,6 +23,19 @@ export async function createR2Bucket(ctx, name) {
 // #154 finding). Minting is not idempotent (each call makes a new token), so a
 // re-provision reuses the registry's stored id or rotates deliberately.
 export async function mintScopedR2Token(ctx, { name, bucket }) {
+  // Idempotent by NAME (#182 hardening, grok residual 4). A retry after a
+  // created-but-uncommitted mint would otherwise leave a zombie token not in the
+  // registry. If a token with this name already exists, ROLL its value (same id,
+  // no zombie) and reuse it; else create one. The secret value is returned only
+  // by the create or the roll, so a roll is how we recover a usable value.
+  const existingId = await findTokenIdByName(ctx, name);
+  if (existingId) {
+    const roll = await cfFetch(ctx.token, 'PUT', `/accounts/${ctx.acct}/tokens/${existingId}/value`,
+      { fetchImpl: ctx.fetchImpl });
+    const value = roll.result && (typeof roll.result === 'string' ? roll.result : roll.result.value);
+    if (!roll.ok || !value) throw opError('mintScopedR2Token roll', name, roll);
+    return { tokenId: existingId, accessKeyId: existingId, secretAccessKey: await sha256Hex(value) };
+  }
   const body = {
     name,
     policies: [{
@@ -39,6 +52,38 @@ export async function mintScopedR2Token(ctx, { name, bucket }) {
     accessKeyId: r.result.id,
     secretAccessKey: await sha256Hex(r.result.value),
   };
+}
+
+// List account tokens and find one by EXACT name; null if none, or if listing is
+// not permitted (the caller then falls through to create, no worse than before).
+async function findTokenIdByName(ctx, name) {
+  const r = await cfFetch(ctx.token, 'GET', `/accounts/${ctx.acct}/tokens`, { fetchImpl: ctx.fetchImpl });
+  if (!r.ok) return null;
+  const list = Array.isArray(r.result) ? r.result : [];
+  const found = list.find((t) => t && t.name === name);
+  return found ? found.id : null;
+}
+
+// Does a script already exist? (#182 hardening, grok residual 2.) 200 = present,
+// 404 = absent. Used to REFUSE a deploy that would clobber a script NOT in our
+// registry: idempotency protects a hostname already in the KV map, but a name can
+// still collide with a foreign namespace script (site-<name>) or a foreign
+// standalone Worker (/workers/scripts/c1-<name>). Conservative: a 200 is "exists"
+// and any non-404 non-200 throws, so we never clobber on uncertainty.
+export async function scriptExists(ctx, { name, ns }) {
+  const path = ns
+    ? `/accounts/${ctx.acct}/workers/dispatch/namespaces/${ns}/scripts/${name}`
+    : `/accounts/${ctx.acct}/workers/scripts/${name}`;
+  const r = await cfFetch(ctx.token, 'GET', path, { fetchImpl: ctx.fetchImpl });
+  if (r.status === 404) return false;
+  // A dispatch-namespace GET returns 200 with result.script === null for a
+  // script that does NOT exist (a "ghost", #158). Treat that as absent, or every
+  // fresh name false-positives the anti-clobber and no site can be provisioned.
+  if (r.ok) {
+    if (ns && r.result && r.result.script === null) return false;
+    return true;
+  }
+  throw opError('scriptExists', name, r);
 }
 
 // 3. A Worker secret. Namespace script when ns is set, else a standalone Worker.
@@ -280,4 +325,111 @@ async function pollCustomHostname(ctx, { saasZoneId, id, pollMs, intervalMs = 50
     if (Date.now() - t0 >= pollMs) return { ...st, timedOut: true };
     await new Promise((res) => setTimeout(res, intervalMs));
   }
+}
+
+
+// ---- Demo teardown ops (#182 Path B reaper) ---------------------------------
+// Each reverses one resource a demo site created, so the reaper can fully tear a
+// demo down. All are idempotent: a 404 (already gone) is success.
+
+// Delete a dispatch-namespace script (the demo Worker).
+export async function deleteNamespaceScript(ctx, { ns, name }) {
+  const r = await cfFetch(ctx.token, 'DELETE',
+    `/accounts/${ctx.acct}/workers/dispatch/namespaces/${ns}/scripts/${name}`, { fetchImpl: ctx.fetchImpl });
+  if (r.ok || r.status === 404) return { deleted: name };
+  throw opError('deleteNamespaceScript', name, r);
+}
+
+// Empty then delete an R2 bucket (R2 refuses to delete a non-empty bucket). The
+// drain is a bounded loop so a paging or delete hiccup cannot spin forever.
+export async function deleteR2Bucket(ctx, name) {
+  for (let i = 0; i < 20; i++) {
+    const list = await cfFetch(ctx.token, 'GET',
+      `/accounts/${ctx.acct}/r2/buckets/${name}/objects?per_page=1000`, { fetchImpl: ctx.fetchImpl });
+    if (list.status === 404) return { deleted: name, existed: false };
+    if (!list.ok) throw opError('deleteR2Bucket list', name, list);
+    const objs = (list.result && (list.result.objects || (Array.isArray(list.result) ? list.result : []))) || [];
+    if (!objs.length) break;
+    for (const o of objs) {
+      const key = o.key || o.name;
+      const d = await cfFetch(ctx.token, 'DELETE',
+        `/accounts/${ctx.acct}/r2/buckets/${name}/objects/${encodeURIComponent(key)}`, { fetchImpl: ctx.fetchImpl });
+      if (!d.ok && d.status !== 404) throw opError('deleteR2Bucket object', key, d);
+    }
+  }
+  const del = await cfFetch(ctx.token, 'DELETE', `/accounts/${ctx.acct}/r2/buckets/${name}`, { fetchImpl: ctx.fetchImpl });
+  if (del.ok || del.status === 404) return { deleted: name };
+  throw opError('deleteR2Bucket', name, del);
+}
+
+// Delete the proxied originless routing record(s) for a hostname on the SaaS zone.
+export async function deleteProxiedHostname(ctx, { zoneId, hostname }) {
+  const list = await cfFetch(ctx.token, 'GET',
+    `/zones/${zoneId}/dns_records?type=AAAA&name=${encodeURIComponent(hostname)}`, { fetchImpl: ctx.fetchImpl });
+  if (list.status === 404) return { deleted: hostname, count: 0 };
+  if (!list.ok) throw opError('deleteProxiedHostname list', hostname, list);
+  const recs = list.result || [];
+  for (const rec of recs) {
+    const d = await cfFetch(ctx.token, 'DELETE', `/zones/${zoneId}/dns_records/${rec.id}`, { fetchImpl: ctx.fetchImpl });
+    if (!d.ok && d.status !== 404) throw opError('deleteProxiedHostname', hostname, d);
+  }
+  return { deleted: hostname, count: recs.length };
+}
+
+// ---- WordPress install (#215) ------------------------------------------------
+// Seed the WP install so a provisioned site is READY (not stuck at
+// /wp-admin/install.php). This is a request to the site itself, NOT a Cloudflare
+// API call, authorized by the site's own SPIKE_TOKEN secret, so it needs NO new
+// token scope.
+//
+// PRIMARY path: the dispatch-namespace BINDING (env.DISPATCHER.get(scriptName)).
+// It routes DIRECTLY to the namespace script the instant it is deployed, bypassing
+// public DNS + the KV->dispatcher propagation window (which 530s for ~30-60s right
+// after a deploy, the #215 deploy-gate bug). FALLBACK: a public HTTP POST to the
+// hostname, for the node CLI (which has no dispatch binding); its retries bridge
+// the propagation window.
+//
+// AUTH: the site's /_install handler checks the `x-spike-token` header against its
+// SPIKE_TOKEN secret (spikes/b2-wordpress/index.js), so that is the header sent
+// (NOT an Authorization: Bearer, which the handler does not read). The admin
+// password (>= 12 chars) seeds the 'admin' user. Idempotent server-side
+// (is_blog_installed() -> {installed:'already'}). Response envelope { out, ms }
+// where `out` is the install JSON.
+async function parseInstallResponse(res) {
+  let body = null;
+  try { body = await res.json(); } catch { body = null; }
+  let inner = null;
+  try { inner = body && typeof body.out === 'string' ? JSON.parse(body.out) : null; } catch { inner = null; }
+  if (inner && (inner.installed === true || inner.installed === 'already')) {
+    return { ok: true, result: { installed: true, already: inner.installed === 'already', userId: inner.user_id } };
+  }
+  return { ok: false, error: (inner && inner.error) || (body && body.errors) || `HTTP ${res && res.status}` };
+}
+
+export async function installWordPress({
+  dispatcher, scriptName, hostname, spikeToken, adminPassword,
+  retries = 6, intervalMs = 2000, fetchImpl = fetch,
+}) {
+  if (!spikeToken) throw new Error(`installWordPress(${scriptName || hostname}): no SPIKE_TOKEN to authorize the install`);
+  if (!adminPassword || adminPassword.length < 12) throw new Error(`installWordPress(${scriptName || hostname}): admin password must be at least 12 chars`);
+  const viaDispatch = Boolean(dispatcher && scriptName && typeof dispatcher.get === 'function');
+  if (!viaDispatch && !hostname) throw new Error('installWordPress: need a dispatcher binding (+ scriptName) or a hostname');
+  const headers = { 'x-spike-token': spikeToken, 'x-admin-password': adminPassword };
+  let last = 'no attempt';
+  for (let i = 0; i < retries; i++) {
+    try {
+      let res;
+      if (viaDispatch) {
+        // The dispatch binding routes to site-<name> directly (no DNS/KV race).
+        res = await dispatcher.get(scriptName).fetch(new Request('https://internal/_install', { method: 'POST', headers }));
+      } else {
+        res = await fetchImpl(`https://${hostname}/_install`, { method: 'POST', headers });
+      }
+      const parsed = await parseInstallResponse(res);
+      if (parsed.ok) return { ...parsed.result, via: viaDispatch ? 'dispatch' : 'http' };
+      last = parsed.error;
+    } catch (e) { last = (e && e.message) || String(e); }
+    if (i < retries - 1) await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error(`installWordPress(${scriptName || hostname}) failed after ${retries} tries (${viaDispatch ? 'dispatch' : 'http'}): ${last}`);
 }

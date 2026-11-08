@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { sha256Hex, r2BucketResource } from '../cf.mjs';
 import {
   createR2Bucket, mintScopedR2Token, putSecret, writeKVMapEntry,
-  deployNamespaceScript, deployContainerWorkerFromDigest,
+  deployNamespaceScript, deployContainerWorkerFromDigest, scriptExists, installWordPress,
 } from '../ops.mjs';
 import { upsertSite, readSite, listSites, removeSite } from '../registry.mjs';
 
@@ -48,18 +48,48 @@ const ctxOf = (s) => ({ acct: ACCT, token: 'T', fetchImpl: s.fetchImpl });
   ok('createR2Bucket treats an existing bucket as success', r2.existed === true);
 }
 
-// 3. mintScopedR2Token: the two groups + bucket resource; secret = SHA-256(value), no newline.
+// 3. mintScopedR2Token: idempotent by name. With no existing token it LISTS
+// (empty) then CREATES, with the two groups + bucket resource; secret =
+// SHA-256(value), no newline.
 {
-  const s = stub([{ status: 200, body: '{"success":true,"result":{"id":"KID","value":"TOKVAL"}}' }]);
+  const s = stub([
+    { status: 200, body: '{"success":true,"result":[]}' }, // GET /tokens list: none
+    { status: 200, body: '{"success":true,"result":{"id":"KID","value":"TOKVAL"}}' }, // POST create
+  ]);
   const r = await mintScopedR2Token(ctxOf(s), { name: 'wp-woo-c1b-litestream', bucket: 'wp-woo-c1b-db' });
-  const body = JSON.parse(s.calls[0].body);
+  ok('mint LISTS tokens first (idempotency by name)', s.calls[0].method === 'GET' && s.calls[0].url.endsWith(`/accounts/${ACCT}/tokens`));
+  const create = s.calls[1];
+  const body = JSON.parse(create.body);
   const groups = body.policies[0].permission_groups.map((g) => g.id).sort();
-  ok('mintScopedR2Token POSTs /tokens', s.calls[0].url.endsWith(`/accounts/${ACCT}/tokens`));
+  ok('mintScopedR2Token POSTs /tokens to create when none exists', create.method === 'POST' && create.url.endsWith(`/accounts/${ACCT}/tokens`));
   ok('mint uses R2 item read+write groups', groups[0] === '2efd5506f9c8494dacb1fa10a3e7d5b6' && groups[1] === '6a018a9f2fc74eb6b293b0c548f38b39');
   ok('mint scopes to exactly the one bucket', Object.keys(body.policies[0].resources)[0] === r2BucketResource(ACCT, 'wp-woo-c1b-db'));
   ok('secret = SHA-256(value) with NO newline', r.secretAccessKey === createHash('sha256').update('TOKVAL').digest('hex'));
   ok('secret is NOT SHA-256(value + newline)', r.secretAccessKey !== createHash('sha256').update('TOKVAL\n').digest('hex'));
   ok('accessKeyId = token id', r.accessKeyId === 'KID');
+}
+
+// 3b. mint reuse-or-roll (#182 grok residual 4): an existing token with the name
+// is ROLLED (same id) and reused, never a second create (no zombie).
+{
+  const s = stub([
+    { status: 200, body: '{"success":true,"result":[{"id":"OLDID","name":"wp-woo-c1b-litestream"}]}' }, // GET list: exists
+    { status: 200, body: '{"success":true,"result":{"value":"ROLLEDVAL"}}' }, // PUT roll value
+  ]);
+  const r = await mintScopedR2Token(ctxOf(s), { name: 'wp-woo-c1b-litestream', bucket: 'wp-woo-c1b-db' });
+  ok('mint reuse: NO create POST when a token with the name exists', !s.calls.some((c) => c.method === 'POST'));
+  ok('mint reuse: rolls PUT .../OLDID/value and reuses the id',
+    s.calls.some((c) => c.method === 'PUT' && c.url.endsWith('/tokens/OLDID/value')) && r.tokenId === 'OLDID');
+  ok('mint reuse: secret = SHA-256(rolled value)', r.secretAccessKey === createHash('sha256').update('ROLLEDVAL').digest('hex'));
+}
+
+// 3c. scriptExists (#182 grok residual 2): 404 is absent, 200 is present.
+{
+  const s404 = stub([{ status: 404, body: '{"success":false,"errors":[{"code":10090}]}' }]);
+  ok('scriptExists is false on 404 (standalone path)', (await scriptExists(ctxOf(s404), { name: 'c1-none' })) === false && s404.calls[0].url.endsWith('/workers/scripts/c1-none'));
+  const s200 = stub([{ status: 200, body: '{"success":true,"result":{"id":"x"}}' }]);
+  ok('scriptExists is true on 200 (namespace path)',
+    (await scriptExists(ctxOf(s200), { name: 'site-x', ns: 'wp-wfp' })) === true && s200.calls[0].url.includes('/dispatch/namespaces/wp-wfp/scripts/site-x'));
 }
 
 // 4. putSecret: namespace vs standalone path, type secret_text.
@@ -171,6 +201,29 @@ const ctxOf = (s) => ({ acct: ACCT, token: 'T', fetchImpl: s.fetchImpl });
   const s5 = stub();
   await removeSite(ctxOf(s5), { kvId: 'KV', hostname: 'shop.example.com' });
   ok('removeSite DELETEs the value', s5.calls[0].method === 'DELETE');
+}
+
+
+// 9. installWordPress (#215): HTTP install against the site, idempotent server-side.
+{
+  let n = 0;
+  const f = async (url, init) => { n++; return { ok: true, status: 200, json: async () => ({ out: '{"installed":true,"user_id":7}' }) }; };
+  const r = await installWordPress({ hostname: 'x.dev', spikeToken: 'tok', adminPassword: 'abcdefghijkl', fetchImpl: f });
+  ok('installWordPress: success parses installed:true + user id, one call', r.installed === true && r.userId === 7 && n === 1);
+  const r2 = await installWordPress({ hostname: 'x.dev', spikeToken: 'tok', adminPassword: 'abcdefghijkl', fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ out: '{"installed":"already"}' }) }) });
+  ok('installWordPress: already-installed is idempotent success', r2.installed === true && r2.already === true);
+  let threw = false; try { await installWordPress({ hostname: 'x.dev', adminPassword: 'abcdefghijkl', fetchImpl: async () => ({}) }); } catch { threw = true; }
+  ok('installWordPress: no SPIKE_TOKEN throws (needs the site secret to authorize)', threw);
+  threw = false; try { await installWordPress({ hostname: 'x.dev', spikeToken: 'tok', adminPassword: 'short', fetchImpl: async () => ({}) }); } catch { threw = true; }
+  ok('installWordPress: an admin password under 12 chars throws', threw);
+  let m = 0; const retryF = async () => { m++; if (m < 2) return { ok: false, status: 403, json: async () => ({}) }; return { ok: true, status: 200, json: async () => ({ out: '{"installed":true}' }) }; };
+  const r3 = await installWordPress({ hostname: 'x.dev', spikeToken: 'tok', adminPassword: 'abcdefghijkl', fetchImpl: retryF, retries: 3, intervalMs: 1 });
+  ok('installWordPress: retries a transient failure then succeeds', r3.installed === true && m === 2);
+  // the dispatch-binding path routes via env.DISPATCHER.get(scriptName).fetch(), no public HTTP
+  let got = null;
+  const dispatcher = { get: (name) => { got = name; return { fetch: async (req) => { const h = req.headers.get('x-spike-token'); return { ok: true, status: 200, json: async () => ({ out: h === 'tok' ? '{"installed":true,"user_id":9}' : '{"installed":false,"error":"forbidden"}' }) }; } }; } };
+  const rd = await installWordPress({ dispatcher, scriptName: 'site-blog', spikeToken: 'tok', adminPassword: 'abcdefghijkl' });
+  ok('installWordPress: dispatch binding routes to site-<name> with x-spike-token (no public HTTP)', rd.installed === true && rd.userId === 9 && rd.via === 'dispatch' && got === 'site-blog');
 }
 
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);

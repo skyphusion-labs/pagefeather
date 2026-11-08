@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// site CLI over the provisioning core (#154): site add --kind wp|shop <name>.
+// site CLI over the provisioning core (#154): site add --kind wp <name>.
+// The c1 'shop' store path was retired (#214); a store is a b-dosql site.
 // Thin: parse args, assemble config from env + the PRE-BUILT worker bundle on
 // disk, generate per-site secrets, then call provisionSite. The orchestration
 // is in provision.mjs, so the provisioning Worker shares it. The worker bundle
@@ -8,12 +9,18 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { provisionSite } from './provision.mjs';
+import { SITE_NAME_RE, isCallerReservedName, genSecret } from './shared.mjs';
+import { bDosqlBindings, mediaBucketName } from './wp-site-config.mjs';
+
+// genSecret lives in shared.mjs (the Worker uses it too); re-export so the CLI
+// surface and cli-test are unchanged.
+export { genSecret };
 
 // Pure, so it is unit-tested without IO.
 export function parseArgs(argv) {
   const [cmd, ...rest] = argv;
   if (!['add', 'remove', 'list'].includes(cmd)) {
-    throw new Error('usage: site add|remove|list --kind wp|shop <name>');
+    throw new Error('usage: site add|remove|list --kind wp <name>');
   }
   let kind, name;
   for (let i = 0; i < rest.length; i++) {
@@ -21,17 +28,13 @@ export function parseArgs(argv) {
     else if (!rest[i].startsWith('--')) name = rest[i];
   }
   if (cmd === 'add') {
-    if (!['wp', 'shop'].includes(kind)) throw new Error('add needs --kind wp|shop');
-    if (!name || !/^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$/.test(name)) throw new Error('add needs a valid <name> (lower case, digits, hyphens, 1 to 30)');
+    // c1 'shop' store path retired (#214): a store is a b-dosql site, kind wp.
+    if (kind === 'shop' || kind === 'store') throw new Error('the c1 store path was retired (#214); a store is a b-dosql site, use --kind wp');
+    if (kind !== 'wp') throw new Error('add needs --kind wp');
+    if (!name || !SITE_NAME_RE.test(name)) throw new Error('add needs a valid <name> (lower case, digits, hyphens, 1 to 30)');
+    if (isCallerReservedName(name)) throw new Error('<name> is reserved (an infrastructure, service, or demo-lane label); pick another');
   }
   return { cmd, kind, name };
-}
-
-// A per-site secret: hex of random bytes (Web Crypto, Worker and node).
-export function genSecret(bytes = 32) {
-  const a = new Uint8Array(bytes);
-  crypto.getRandomValues(a);
-  return Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 // Load a PRE-BUILT bundle dir as module parts. A real bundle is not only JS:
@@ -63,11 +66,23 @@ async function buildCfg(kind, name, env) {
   if (!kvId) throw new Error('set WFP_KV_ID (the wp-wfp-sites map id)');
   const common = { name, namespace, kvId, compatibilityDate, compatibilityFlags: ['nodejs_compat'] };
   if (kind === 'wp') {
+    const mediaBucket = mediaBucketName(name);
+    const hostname = env.WP_HOSTNAME || `wp-${name}.${sub}.workers.dev`;
     return {
       ...common, kind: 'wp', mainModule: env.WP_MAIN || 'index.js',
-      hostname: env.WP_HOSTNAME || `wp-${name}.${sub}.workers.dev`,
+      hostname,
       modules: await loadModules(env.BDOSQL_BUNDLE_DIR),
-      resourceBindings: JSON.parse(env.WP_BINDINGS || '[]'),
+      // The FULL b-dosql binding + var set from the ONE shared source (the same
+      // the provisioning Worker uses), so the CLI and the Worker cannot drift on
+      // what a b-dosql site needs. WP_BINDINGS is the EXTRA-bindings slot,
+      // appended after the standard set.
+      resourceBindings: bDosqlBindings({
+        mediaBucket,
+        siteOrigin: env.SITE_ORIGIN || `https://${hostname}`,
+        location: env.PHP_LOCATION || 'enam',
+        cronIntervalMs: env.CRON_INTERVAL_MS,
+        extra: JSON.parse(env.WP_BINDINGS || '[]'),
+      }),
       // The b-dosql bundle defines the PhpRuntime SQLite DO; declaring it in a
       // migration is mandatory (API 10061 otherwise, #158).
       sqliteClasses: JSON.parse(env.WP_SQLITE_CLASSES || '["PhpRuntime"]'),
@@ -76,19 +91,10 @@ async function buildCfg(kind, name, env) {
       // operator step.
       saasZoneId: env.WFP_SAAS_ZONE_ID || undefined,
       secrets: { WP_SALT: genSecret(), SPIKE_TOKEN: genSecret(24) },
-      buckets: { media: `wp-wfp-${name}-media` },
+      buckets: { media: mediaBucket },
     };
   }
-  if (!env.C1_IMAGE_REF) throw new Error('set C1_IMAGE_REF (the pushed image digest ref)');
-  return {
-    ...common, kind: 'shop', mainModule: env.C1_MAIN || 'worker.js',
-    hostname: env.SHOP_HOSTNAME || `c1-${name}.${sub}.workers.dev`,
-    modules: await loadModules(env.C1_BUNDLE_DIR),
-    resourceBindings: JSON.parse(env.SHOP_BINDINGS || '[]'),
-    secrets: { WP_SALT: genSecret(), ADMIN_PASSWORD: genSecret(16), SPIKE_TOKEN: genSecret(24) },
-    buckets: { db: `wp-woo-${name}-db`, media: `wp-woo-${name}-media` },
-    imageRef: env.C1_IMAGE_REF, containerClass: 'Store', instanceType: env.C1_INSTANCE || 'basic',
-  };
+  throw new Error(`buildCfg: only kind 'wp' is supported (c1 'shop' store retired #214), got ${kind}`);
 }
 
 async function main() {

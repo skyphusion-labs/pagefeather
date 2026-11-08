@@ -7,9 +7,10 @@ const ok = (n, c) => { if (c) { pass++; console.log('PASS', n); } else { fail++;
 const throws = (fn) => { try { fn(); return false; } catch { return true; } };
 
 ok('add --kind wp <name>', (() => { const a = parseArgs(['add', '--kind', 'wp', 'blog']); return a.cmd === 'add' && a.kind === 'wp' && a.name === 'blog'; })());
-ok('add --kind shop <name> (name before or after --kind)', (() => { const a = parseArgs(['add', 'store', '--kind', 'shop']); return a.kind === 'shop' && a.name === 'store'; })());
+ok('add --kind shop is REJECTED (c1 store path retired #214)', throws(() => parseArgs(['add', 'store', '--kind', 'shop'])));
 ok('add rejects a bad kind', throws(() => parseArgs(['add', '--kind', 'db', 'x'])));
 ok('add rejects a bad name', throws(() => parseArgs(['add', '--kind', 'wp', 'Bad_Name'])));
+ok('add rejects a demo-lane name (caller cannot pick the demo lane)', throws(() => parseArgs(['add', '--kind', 'wp', 'demo-abc123def45678'])));
 ok('add rejects a missing name', throws(() => parseArgs(['add', '--kind', 'wp'])));
 ok('unknown command rejected', throws(() => parseArgs(['frobnicate'])));
 ok('list and remove are recognized commands', parseArgs(['list']).cmd === 'list' && parseArgs(['remove', 'x']).cmd === 'remove');
