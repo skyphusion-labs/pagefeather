@@ -140,7 +140,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install pcov
-        run: sudo apt-get update -q && sudo apt-get install -y -q php-pcov && php -m | grep -i pcov
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q php8.3-pcov
+          sudo phpenmod -v 8.3 -s cli pcov
+          php -m | grep -i pcov
       - name: Fetch the SQLite driver
         run: |
           git clone -q https://github.com/WordPress/sqlite-database-integration spikes/b2-wordpress/build/cache/sqlite-database-integration
