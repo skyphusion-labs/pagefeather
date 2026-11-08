@@ -57,7 +57,10 @@ export function callerKey(request) {
 export function validateRequest(body) {
   if (!body || typeof body !== 'object') throw new BadRequest('body must be a JSON object');
   const { kind, name, domain } = body;
-  if (kind !== 'wp' && kind !== 'shop') throw new BadRequest('kind must be "wp" or "shop"');
+  // The c1 'shop' store path was retired (#214): a store is a b-dosql site with
+  // WooCommerce active, not a separate kind. Reject it with a clear pointer.
+  if (kind === 'shop' || kind === 'store') throw new BadRequest('the c1 store path was retired (#214); a store is a b-dosql site, use kind "wp"');
+  if (kind !== 'wp') throw new BadRequest('kind must be "wp"');
   if (typeof name !== 'string' || !SITE_NAME_RE.test(name)) throw new BadRequest('name must be lower case, digits, hyphens, 1 to 30, no leading or trailing hyphen');
   if (isCallerReservedName(name)) throw new BadRequest('name is reserved (an infrastructure, service, or demo-lane label); pick another');
   if (typeof domain !== 'string' || !domain) throw new BadRequest('domain is required');
@@ -84,13 +87,14 @@ export function resolveBase(env, domain) {
 // /workers/scripts write); shop runs on the elevated token (adds minting and
 // Containers). The wp path NEVER holds the elevated token. Token VALUES are env
 // vars, never in code.
-// An EXPLICIT map, so an unknown kind THROWS rather than falling through to the
-// elevated (minting) token (grok residual 3). The wp path can never be handed
-// the shop token by a kind the caller sneaks past validation.
-const TOKEN_ENV = { wp: 'WP_PROVISION_TOKEN', shop: 'SHOP_PROVISION_TOKEN' };
+// ONE token only (#214): the c1 'shop' store path was retired, so the elevated
+// SHOP_PROVISION_TOKEN (which could mint account tokens and edit Containers) is
+// gone. The provisioning Worker runs entirely on the restricted WP token, which
+// cannot mint a token or write a plain script. An unknown kind THROWS.
+const TOKEN_ENV = { wp: 'WP_PROVISION_TOKEN' };
 export function selectToken(env, kind) {
   const key = Object.hasOwn(TOKEN_ENV, kind) ? TOKEN_ENV[kind] : undefined;
-  if (!key) throw new Error(`selectToken: unknown kind ${JSON.stringify(kind)}`);
+  if (!key) throw new Error(`selectToken: unknown kind ${JSON.stringify(kind)} (only 'wp' is supported; c1 'shop' retired #214)`);
   const token = env[key];
   if (!token) throw new Error(`the Worker is missing ${key}`);
   return token;
@@ -177,16 +181,8 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
       ...(demo ? { demo: true, expiresAt } : {}),
     };
   }
-  const imageRef = env.C1_IMAGE_REF;
-  if (!imageRef) throw new Error('the Worker is missing C1_IMAGE_REF (the pushed c1 image digest)');
-  return {
-    ...common, kind: 'shop', mainModule: env.C1_MAIN || 'worker.js',
-    hostname: target.hostname,
-    resourceBindings: [],
-    secrets: { WP_SALT: genSecret(), ADMIN_PASSWORD: genSecret(16), SPIKE_TOKEN: genSecret(24) },
-    buckets: { db: `wp-woo-${name}-db`, media: `wp-woo-${name}-media` },
-    imageRef, containerClass: 'Store', instanceType: env.C1_INSTANCE || 'basic',
-  };
+  // Only 'wp' (b-dosql) is built; the c1 'shop' store path was retired (#214).
+  throw new Error(`buildServerCfg: only kind 'wp' is supported (c1 'shop' retired #214), got ${JSON.stringify(kind)}`);
 }
 
 

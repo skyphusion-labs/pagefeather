@@ -4,7 +4,7 @@
 // for the Path B controls, and HARDENING.md for the design and token policies.
 // Still NOT routed; the lead owns the deploy gate.
 //
-//   Path A (private): POST /         operator bearer, full kinds, caller names it.
+//   Path A (private): POST /         operator bearer, b-dosql (wp), caller names it.
 //   Path B (public):  POST /demo     Turnstile, demo-tier b-dosql only, ephemeral.
 import { provisionSite } from './provision.mjs';
 import { readSite } from './registry.mjs';
@@ -19,7 +19,9 @@ import {
 import { checkDemoRate, bumpDemoRate, demoConcurrency, reapExpiredDemos } from './demo.mjs';
 
 // Path A env. PROVISION_AUTH is enforced by authorize() (fail closed to 401).
-const PATH_A_ENV = ['CF_ACCOUNT_ID', 'WP_PROVISION_TOKEN', 'SHOP_PROVISION_TOKEN', 'WFP_KV_ID', 'WFP_BASES', 'RATE_LIMITER', 'BUNDLES'];
+// ONE restricted token (#214): the c1 'shop' path and its elevated token are gone,
+// so the Worker holds no token-minting or Containers capability.
+const PATH_A_ENV = ['CF_ACCOUNT_ID', 'WP_PROVISION_TOKEN', 'WFP_KV_ID', 'WFP_BASES', 'RATE_LIMITER', 'BUNDLES'];
 // Path B env. NO operator token, NO SHOP token (the public path is never elevated),
 // NO RATE_LIMITER (it uses the DEMO_KV counter). TURNSTILE_SECRET gates it.
 const PATH_B_ENV = ['CF_ACCOUNT_ID', 'WP_PROVISION_TOKEN', 'WFP_KV_ID', 'WFP_BASES', 'BUNDLES', 'TURNSTILE_SECRET', 'DEMO_KV', 'DEMO_BASE'];

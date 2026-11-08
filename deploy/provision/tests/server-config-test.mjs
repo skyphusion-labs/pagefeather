@@ -28,6 +28,7 @@ ok('authorize: a non-string PROVISION_AUTH (a bound KV/R2/Secrets object) fails 
   ok('validateRequest: returns ONLY kind/name/domain', JSON.stringify(Object.keys(out).sort()) === '["domain","kind","name"]');
   ok('validateRequest: rejects a bad name', await throwsWith(() => validateRequest({ kind: 'wp', name: 'Bad_Name', domain: 'skyphusionwp.dev' }), /name must be/));
   ok('validateRequest: rejects a bad kind', await throwsWith(() => validateRequest({ kind: 'x', name: 'blog', domain: 'skyphusionwp.dev' }), /kind must be/));
+  ok('validateRequest: rejects the retired shop kind (#214)', await throwsWith(() => validateRequest({ kind: 'shop', name: 'blog', domain: 'skyphusionwp.dev' }), /retired/));
   ok('validateRequest: rejects a missing domain', await throwsWith(() => validateRequest({ kind: 'wp', name: 'blog' }), /domain is required/));
   ok('validateRequest: rejects a reserved name (www)', await throwsWith(() => validateRequest({ kind: 'wp', name: 'www', domain: 'skyphusionwp.dev' }), /reserved/));
   ok('validateRequest: rejects a demo-lane name (caller cannot pick the demo lane)', await throwsWith(() => validateRequest({ kind: 'wp', name: 'demo-abc123def45678', domain: 'skyphusionwp.dev' }), /reserved/));
@@ -43,7 +44,7 @@ ok('resolveBase: a prototype key (__proto__) is not a base (Object.hasOwn)', awa
 
 // selectToken: the split. wp never gets the elevated token.
 ok('selectToken: wp -> the restricted token', selectToken({ WP_PROVISION_TOKEN: 'WP', SHOP_PROVISION_TOKEN: 'SHOP' }, 'wp') === 'WP');
-ok('selectToken: shop -> the elevated token', selectToken({ WP_PROVISION_TOKEN: 'WP', SHOP_PROVISION_TOKEN: 'SHOP' }, 'shop') === 'SHOP');
+ok('selectToken: shop THROWS (c1 retired #214, one restricted token only)', await throwsWith(() => selectToken({ WP_PROVISION_TOKEN: 'WP' }, 'shop'), /only .wp. is supported|unknown kind/));
 ok('selectToken: a missing token throws', await throwsWith(() => selectToken({}, 'wp'), /WP_PROVISION_TOKEN/));
 ok('selectToken: an unknown kind THROWS, never falls through to the elevated token', await throwsWith(() => selectToken({ WP_PROVISION_TOKEN: 'WP', SHOP_PROVISION_TOKEN: 'SHOP' }, 'evil'), /unknown kind/));
 

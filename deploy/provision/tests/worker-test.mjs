@@ -34,7 +34,7 @@ function bundleStub() {
 function makeEnv(overrides = {}) {
   return {
     CF_ACCOUNT_ID: 'ACCT', PROVISION_AUTH: SECRET,
-    WP_PROVISION_TOKEN: 'wp-tok', SHOP_PROVISION_TOKEN: 'shop-tok',
+    WP_PROVISION_TOKEN: 'wp-tok',
     WFP_KV_ID: 'SERVERKV', WFP_NAMESPACE: 'wp-wfp',
     WFP_BASES: JSON.stringify({ 'skyphusionwp.dev': { saasZoneId: 'SERVERZONE', workersSubdomain: 'skyphusionwp' } }),
     C1_IMAGE_REF: IMG,
@@ -123,6 +123,11 @@ const metaOf = async (call) => JSON.parse(await call.body.get('metadata').text()
 
   const kind = await run(makeEnv(), req({ kind: 'db', name: 'blog', domain: 'skyphusionwp.dev' }));
   ok('an unknown kind is 400', kind.res.status === 400);
+
+  const shop = await run(makeEnv(), req({ kind: 'shop', name: 'blog', domain: 'skyphusionwp.dev' }));
+  ok('Path A: the retired shop/c1 kind is 400 (#214)', shop.res.status === 400 && /retired/.test(shop.json.error));
+  const noShopTok = await run(makeEnv(), req({ kind: 'wp', name: 'blog', domain: 'skyphusionwp.dev' }));
+  ok('Path A runs with NO SHOP_PROVISION_TOKEN in env (one restricted token)', noShopTok.res.status === 200);
 }
 
 // --- grok residual 2 + 5: reserved names and prototype-key domains are 400 ---
@@ -197,19 +202,6 @@ const metaOf = async (call) => JSON.parse(await call.body.get('metadata').text()
   ok('wp: SITE_ORIGIN is the site own origin, issue #33', v('SITE_ORIGIN') === 'https://blog.skyphusionwp.dev');
   ok('wp: the MEDIA bucket binding matches the created bucket wp-wfp-blog-media',
     wpMeta.bindings.find((b) => b.type === 'r2_bucket' && b.name === 'MEDIA').bucket_name === 'wp-wfp-blog-media');
-}
-
-// --- shop builds the correct server cfg end to end ---
-{
-  const r = await run(makeEnv(), req({ kind: 'shop', name: 'store', domain: 'skyphusionwp.dev' }));
-  ok('shop: 200 with server script c1-store and a workers.dev hostname',
-    r.res.status === 200 && r.json.script === 'c1-store' && r.json.hostname === 'c1-store.skyphusionwp.workers.dev');
-  ok('shop: two R2 buckets created', r.calls.filter((c) => c.url.endsWith('/r2/buckets')).length === 2);
-  ok('shop: the elevated path DOES mint the Litestream token', r.calls.some((c) => c.method === 'POST' && c.url.endsWith('/tokens')));
-  const deploy = r.calls.find((c) => c.method === 'PUT' && /\/workers\/scripts\/c1-store$/.test(c.url));
-  const meta = await metaOf(deploy);
-  ok('shop: the container image is the SERVER C1_IMAGE_REF digest (no caller image)',
-    deploy && meta.containers && meta.containers[0].image === IMG);
 }
 
 // --- idempotency ---

@@ -73,43 +73,41 @@ Implemented as `loadBundle(env, kind)` reading `env.BUNDLES` under
 wired into any `wrangler.toml` (the lead owns deploy): the binding, the bucket,
 and the bake-lane upload step are the lead's to stand up.
 
-## Decision 2: the two token policies (the lead mints; never minted here)
+## Decision 2: ONE token policy (the lead mints; never minted here)
 
-The Worker holds TWO tokens and picks by kind (`selectToken`). The wp path NEVER
-holds the elevated token. Values are env secrets; nothing is in code. The exact
-permission groups below are by NAME; map each to its id with
-`GET /accounts/{acct}/tokens/permission_groups` at mint time (the R2 item
-read/write ids already in `cf.mjs` are a precedent, but these are different
-groups).
+The c1 'shop' container store path was retired (#214): a store is a b-dosql site
+with WooCommerce active, not a separate provisioning kind. So the provisioning
+Worker mints only b-dosql ('wp') and runs on a SINGLE restricted token. The
+elevated `SHOP_PROVISION_TOKEN`, which could mint account tokens and edit
+Containers, is GONE. Values are env secrets; nothing is in code. Map each group
+to its id with `GET /accounts/{acct}/tokens/permission_groups` at mint time.
 
-### `WP_PROVISION_TOKEN` (restricted; the common blog / light path)
+### `WP_PROVISION_TOKEN` (the ONLY token, restricted)
 
 Account-scoped to THIS account only. Permission groups:
-- Workers R2 Storage: Edit  (create the one media bucket)
-- Workers for Platforms: Edit  (deploy the dispatch-namespace script; carries the
-  secret_text bindings atomically, so no separate put-secret call)
-- Workers KV Storage: Edit  (read for idempotency + write the one site-map entry;
-  scope to the `WFP_KV_ID` namespace if the API supports per-namespace scoping,
-  else account KV edit)
-- Zone > DNS: Edit, resources scoped to the ONE SaaS zone only (place the proxied
-  routing record via `ensureProxiedHostname`)
+- Workers R2 Storage: Edit  (create the one media bucket; and, for the demo
+  reaper, empty + delete that bucket)
+- Workers for Platforms: Edit  (deploy AND delete the dispatch-namespace script;
+  the deploy carries the secret_text bindings atomically, so no separate
+  put-secret call; read access, implied by Edit, serves the anti-clobber
+  `scriptExists` check and the reaper)
+- Workers KV Storage: Edit  (read for idempotency + the concurrency count, write
+  the site-map entry, delete it in the reaper; scope to `WFP_KV_ID` if the API
+  supports per-namespace scoping, else account KV edit)
+- Zone > DNS: Edit, scoped to the ONE SaaS zone only (place the proxied routing
+  record via `ensureProxiedHostname`; delete it in the reaper)
 
-Explicitly NOT in this token: API Tokens (account token minting), Workers Scripts
-(plain `/workers/scripts` write), Containers. `worker-test.mjs` proves the wp
-path makes no `/tokens` POST and no plain `/workers/scripts/<name>` write.
-
-### `SHOP_PROVISION_TOKEN` (elevated; the c1 / store path only)
-
-Everything above, plus:
-- User API Tokens: Edit, or account token create (`POST /accounts/{acct}/tokens`)
-  for the scoped Litestream R2 token
-- Workers Scripts: Edit  (the standalone container Worker + enable workers.dev)
-- Cloudflare Containers / Workers Containers: Edit  (create / update the container
-  application)
-
-Isolating minting + Containers to the shop token bounds the blast radius: even if
-the wp caller auth were bypassed, the wp token cannot mint a token or write a
-plain script.
+Explicitly NOT in this token: API Tokens (account-token minting), Workers Scripts
+(plain `/workers/scripts` write), Containers. **So the Worker holds NO
+token-minting or Containers capability (c1 retired, #214): even a full compromise
+of the provisioning Worker cannot mint an account token or write a plain script,
+because its one token lacks those scopes.** This is the strongest form of the
+#182 containment, and it is now enforced by the token scope AND the code
+(`provision.mjs` no longer imports `mintScopedR2Token`; `selectToken` maps only
+`wp`; `validateRequest` rejects a 'shop'/'store' kind). `worker-test.mjs` proves
+the wp path makes no `/tokens` POST and no plain `/workers/scripts/<name>` write,
+and runs with no shop token in the env. The former c1 mint/container ops remain in
+`ops.mjs` as dormant, unreferenced library code (no provisioning path calls them).
 
 ## What is NOT done here (the lead's lane)
 
@@ -214,22 +212,22 @@ PROVISION_AUTH cannot pass). Five residuals were folded in:
   `WP_PROVISION_TOKEN` read on the dispatch namespace script (implied by
   Workers-for-Platforms Edit), `SHOP_PROVISION_TOKEN` read on `/workers/scripts`
   (implied by Workers Scripts Edit).
-- The **mint reuse-or-roll** means `SHOP_PROVISION_TOKEN` also needs token LIST
-  (`GET /accounts/{a}/tokens`) and token ROLL (`PUT .../{id}/value`) in addition to
-  create. If listing is not permitted the code falls through to create (no worse
-  than before), but without roll the zombie-avoidance is lost, so grant both.
+- The **mint reuse-or-roll** token LIST + ROLL requirement is MOOT after #214: the
+  shop/c1 path and its minting token are retired, so the provisioning Worker never
+  mints. The `mintScopedR2Token` op stays in `ops.mjs` as dormant library code.
 
 ## Two provisioning paths (#182, Conrad 2026-11-08)
 
 The Worker exposes the SAME inverted-cfg core behind TWO front doors, routed by
 path. The core (`authorize`, `validateRequest`, `buildServerCfg`, `resolveBase`,
 `selectToken`, reserved-name denylist, `scriptExists` anti-clobber, idempotency,
-the two-token split) is shared and unchanged.
+the single restricted token) is shared and unchanged. (The c1 'shop' path and its
+elevated token were retired, #214, so there is one token, not two.)
 
 ### Path A: private operator provisioning (`POST /`)
 The existing design. A long-lived operator/service bearer token
 (`WP_PROVISION_TOKEN` restricted / `SHOP_PROVISION_TOKEN` elevated), held by the
-trusted internal signup backend. Full kinds; the caller may choose the name
+trusted internal signup backend. b-dosql ('wp') only since #214; the caller may choose the name
 (validated against `SITE_NAME_RE` + the reserved denylist). Modest rate limit.
 
 ### Path B: public demo provisioning (`POST /demo`)

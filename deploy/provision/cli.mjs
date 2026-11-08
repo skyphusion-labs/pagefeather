@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// site CLI over the provisioning core (#154): site add --kind wp|shop <name>.
+// site CLI over the provisioning core (#154): site add --kind wp <name>.
+// The c1 'shop' store path was retired (#214); a store is a b-dosql site.
 // Thin: parse args, assemble config from env + the PRE-BUILT worker bundle on
 // disk, generate per-site secrets, then call provisionSite. The orchestration
 // is in provision.mjs, so the provisioning Worker shares it. The worker bundle
@@ -19,7 +20,7 @@ export { genSecret };
 export function parseArgs(argv) {
   const [cmd, ...rest] = argv;
   if (!['add', 'remove', 'list'].includes(cmd)) {
-    throw new Error('usage: site add|remove|list --kind wp|shop <name>');
+    throw new Error('usage: site add|remove|list --kind wp <name>');
   }
   let kind, name;
   for (let i = 0; i < rest.length; i++) {
@@ -27,7 +28,9 @@ export function parseArgs(argv) {
     else if (!rest[i].startsWith('--')) name = rest[i];
   }
   if (cmd === 'add') {
-    if (!['wp', 'shop'].includes(kind)) throw new Error('add needs --kind wp|shop');
+    // c1 'shop' store path retired (#214): a store is a b-dosql site, kind wp.
+    if (kind === 'shop' || kind === 'store') throw new Error('the c1 store path was retired (#214); a store is a b-dosql site, use --kind wp');
+    if (kind !== 'wp') throw new Error('add needs --kind wp');
     if (!name || !SITE_NAME_RE.test(name)) throw new Error('add needs a valid <name> (lower case, digits, hyphens, 1 to 30)');
     if (isCallerReservedName(name)) throw new Error('<name> is reserved (an infrastructure, service, or demo-lane label); pick another');
   }
@@ -91,16 +94,7 @@ async function buildCfg(kind, name, env) {
       buckets: { media: mediaBucket },
     };
   }
-  if (!env.C1_IMAGE_REF) throw new Error('set C1_IMAGE_REF (the pushed image digest ref)');
-  return {
-    ...common, kind: 'shop', mainModule: env.C1_MAIN || 'worker.js',
-    hostname: env.SHOP_HOSTNAME || `c1-${name}.${sub}.workers.dev`,
-    modules: await loadModules(env.C1_BUNDLE_DIR),
-    resourceBindings: JSON.parse(env.SHOP_BINDINGS || '[]'),
-    secrets: { WP_SALT: genSecret(), ADMIN_PASSWORD: genSecret(16), SPIKE_TOKEN: genSecret(24) },
-    buckets: { db: `wp-woo-${name}-db`, media: `wp-woo-${name}-media` },
-    imageRef: env.C1_IMAGE_REF, containerClass: 'Store', instanceType: env.C1_INSTANCE || 'basic',
-  };
+  throw new Error(`buildCfg: only kind 'wp' is supported (c1 'shop' store retired #214), got ${kind}`);
 }
 
 async function main() {

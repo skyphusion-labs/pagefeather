@@ -89,65 +89,6 @@ const mutating = (calls) => calls.filter((c) => c.method !== 'GET');
     u.some((c) => /POST \/zones\/ZONE\/dns_records$/.test(c)));
 }
 
-// shop: two buckets, mint (before deploy), container deploy with digest + the
-// no-newline Litestream secret, registry entry with resources.
-{
-  const rec = recorder();
-  const ref = `registry.cloudflare.com/${ACCT}/wp-woo-c1@sha256:${'a'.repeat(64)}`;
-  const r = await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl }, {
-    kind: 'shop', name: 'store', namespace: 'wp-wfp', kvId: 'KV', hostname: 'c1-store.sub.workers.dev',
-    compatibilityDate: '2026-07-01', mainModule: 'worker.js',
-    modules: [{ name: 'worker.js', content: 'export default {}' }],
-    resourceBindings: [{ type: 'r2_bucket', name: 'MEDIA', bucket_name: 'wp-woo-store-media' }],
-    secrets: { WP_SALT: 's1', ADMIN_PASSWORD: 's2', SPIKE_TOKEN: 's3' },
-    buckets: { db: 'wp-woo-store-db', media: 'wp-woo-store-media' },
-    imageRef: ref, containerClass: 'Store', instanceType: 'basic',
-  });
-  const u = mutating(rec.calls).map((c) => `${c.method} ${c.url.split('/client/v4')[1]}`);
-  ok('shop: two buckets, then /tokens, then the worker deploy, then KV, in order',
-    u.filter((x) => x.endsWith('/r2/buckets')).length === 2 &&
-    u.findIndex((x) => x.endsWith('/tokens')) < u.findIndex((x) => /\/workers\/scripts\/c1-store$/.test(x)) &&
-    /PUT .*\/workers\/scripts\/c1-store$/.test(u.find((x) => /\/workers\/scripts\/c1-store$/.test(x))) &&
-    u.some((x) => /\/storage\/kv\/namespaces\/KV\/values\/c1-store/.test(x)));
-  const deploy = rec.calls.find((c) => c.method === 'PUT' && /\/workers\/scripts\/c1-store$/.test(c.url));
-  const meta = await metaOf(deploy);
-  const appCreate = rec.calls.find((c) => c.method === 'POST' && c.url.endsWith('/containers/applications'));
-  ok('shop: the container application is created against the DO namespace', appCreate && JSON.parse(appCreate.body).durable_objects.namespace_id === 'NSID');
-  ok('shop: container image is the pushed digest (no build)', appCreate && JSON.parse(appCreate.body).configuration.image === ref);
-  ok('shop: the workers.dev subdomain is enabled (reachable)', rec.calls.some((c) => c.method === 'POST' && /\/workers\/scripts\/c1-store\/subdomain$/.test(c.url)));
-  const litestreamSecret = meta.bindings.find((b) => b.type === 'secret_text' && b.name === 'LITESTREAM_SECRET_ACCESS_KEY');
-  ok('shop: LITESTREAM_SECRET_ACCESS_KEY = SHA-256(token value), NO newline',
-    litestreamSecret && litestreamSecret.text === createHash('sha256').update('TKVAL').digest('hex'));
-  ok('shop: that secret is NOT SHA-256(value + newline)',
-    litestreamSecret.text !== createHash('sha256').update('TKVAL\n').digest('hex'));
-  ok('shop: LITESTREAM_ACCESS_KEY_ID = the token id', meta.bindings.some((b) => b.name === 'LITESTREAM_ACCESS_KEY_ID' && b.text === 'TKID'));
-  ok('shop: registry entry kind shop with resources (token id, not value)',
-    r.entry.kind === 'shop' && r.entry.resources.litestreamTokenId === 'TKID' && r.entry.resources.dbBucket === 'wp-woo-store-db');
-}
-
-// #182 grok residual 4: mint is idempotent by name. An existing token with the
-// site's litestream name is ROLLED (same id) and reused, not re-created.
-{
-  const rec = recorder({ existingToken: true });
-  const ref = `registry.cloudflare.com/${ACCT}/wp-woo-c1@sha256:${'b'.repeat(64)}`;
-  const r = await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl }, {
-    kind: 'shop', name: 'store', namespace: 'wp-wfp', kvId: 'KV', hostname: 'c1-store2.sub.workers.dev',
-    compatibilityDate: '2026-07-01', mainModule: 'worker.js',
-    modules: [{ name: 'worker.js', content: 'export default {}' }],
-    secrets: {}, buckets: { db: 'wp-woo-store-db', media: 'wp-woo-store-media' },
-    imageRef: ref, containerClass: 'Store', tokenName: 'c1-store-litestream',
-  });
-  ok('mint reuse: NO new token is POSTed when one with the name exists',
-    !rec.calls.some((c) => c.method === 'POST' && c.url.endsWith('/tokens')));
-  ok('mint reuse: the existing token is ROLLED (PUT .../OLDID/value) and its id reused',
-    rec.calls.some((c) => c.method === 'PUT' && c.url.endsWith('/tokens/OLDID/value')) &&
-    r.entry.resources.litestreamTokenId === 'OLDID');
-  const deploy = rec.calls.find((c) => c.method === 'PUT' && /\/workers\/scripts\/c1-store$/.test(c.url));
-  const meta = await metaOf(deploy);
-  ok('mint reuse: the rolled value is the Litestream secret',
-    meta.bindings.find((b) => b.name === 'LITESTREAM_SECRET_ACCESS_KEY').text === createHash('sha256').update('ROLLED').digest('hex'));
-}
-
 // #182: server-side name validation. A bad name is rejected in the CORE.
 {
   const bad = { kind: 'wp', name: 'Bad_Name', namespace: 'wp-wfp', kvId: 'KV', hostname: 'x.sub.workers.dev',

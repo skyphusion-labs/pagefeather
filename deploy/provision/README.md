@@ -53,7 +53,7 @@ live). Design: issue #154. Worker hardening: issue #182 and `HARDENING.md`.
 - `cli.mjs`: `site add --kind wp|shop <name>` (node). Parses args, loads the
   PRE-BUILT bundle dir, generates per-site secrets, calls `provisionSite`.
 - `worker.mjs` (hardened, #182): the provisioning Worker, TWO front doors over one
-  core. `POST /` is Path A (private operator bearer, full kinds, caller names it);
+  core. `POST /` is Path A (private operator bearer, b-dosql only, caller names it);
   `POST /demo` is Path B (public Turnstile, demo-tier b-dosql only, ephemeral); the
   `scheduled` handler runs the demo reaper. An authenticated caller
   POSTs ONLY `{ kind, name, domain }`; the Worker builds the whole cfg from its
