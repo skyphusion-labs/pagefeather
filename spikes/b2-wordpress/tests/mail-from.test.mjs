@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { resolveMailFrom, sender, replyTo, sendEmailBinding, mailVarLines, undeliverable } from '../mail-from.mjs';
+import { resolveMailFrom, sender, replyTo, sendEmailBinding, mailVarLines, undeliverable, deliverableRecipients } from '../mail-from.mjs';
 
 test('MAIL_FROM wins over the site host', () => {
 	assert.equal(resolveMailFrom({ MAIL_FROM: 'shop@shop.example.co', SITE_ORIGIN: 'https://other.example.co' }), 'shop@shop.example.co');
@@ -37,4 +37,22 @@ test('the binding is restricted only when there is an address', () => {
 	assert.equal(mailVarLines({ SITE_ORIGIN: 'https://shop.example.co', MAIL_FROM_NAME: 'North' }), 'MAIL_FROM = "wordpress@shop.example.co"\nMAIL_FROM_NAME = "North"');
 	assert.equal(mailVarLines({ SITE_ORIGIN: 'https://wp.workers.dev' }), '');
 	assert.throws(() => sendEmailBinding({ MAIL_FROM: 'a"b@shop.example.co' }));
+});
+
+test('deliverableRecipients drops the seeded test admin and keeps a real address', () => {
+	const r = deliverableRecipients(['admin@example.com', 'buyer@shop.test', 'owner@realstore.com']);
+	assert.deepEqual(r.deliverable, ['owner@realstore.com']);
+	assert.equal(r.dropped, 2);
+});
+
+test('deliverableRecipients accepts a bare string and trims', () => {
+	assert.deepEqual(deliverableRecipients('  owner@realstore.com ').deliverable, ['owner@realstore.com']);
+	assert.equal(deliverableRecipients('admin@example.com').deliverable.length, 0);
+	assert.equal(deliverableRecipients('admin@example.com').dropped, 1);
+});
+
+test('deliverableRecipients drops blanks and all-undeliverable lists cleanly', () => {
+	const r = deliverableRecipients(['', null, 'x@localhost', 'y@workers.dev']);
+	assert.deepEqual(r.deliverable, []);
+	assert.equal(r.dropped, 2);
 });

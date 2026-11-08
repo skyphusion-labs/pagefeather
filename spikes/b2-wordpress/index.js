@@ -1,7 +1,8 @@
 // Spike B2: WordPress in a Worker, database on D1.
 import { sqlImport } from './sql-import.js';
-import { sender, replyTo } from './mail-from.mjs';
+import { sender, replyTo, deliverableRecipients } from './mail-from.mjs';
 import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, handleQueuedEmail } from './email-queue.mjs';
+import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled } from './purge-zone.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
@@ -375,7 +376,12 @@ function emailOp(email) {
 function sendEmail(env, email) {
 	const from = sender(env);
 	if (!from || !env || !env.EMAIL) return [];
-	const recipients = (Array.isArray(email.to) ? email.to : [email.to]).map((x) => String(x || '').trim()).filter(Boolean);
+	const { deliverable, dropped } = deliverableRecipients(email.to);
+	if (dropped) {
+		stats.emailDropped = (stats.emailDropped || 0) + dropped;
+		console.log('email send: ' + dropped + ' undeliverable recipient(s) dropped');
+	}
+	if (!deliverable.length) return [];
 	const body = String(email.message || '');
 	const looksHtml = /<[a-z!\/]/i.test(body) || /text\/html/i.test(String(email.headers || ''));
 	const esc = (t) => t.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
@@ -385,7 +391,7 @@ function sendEmail(env, email) {
 	const msg = { to: null, from, subject, html, text };
 	const rt = replyTo(from.email, email.headers);
 	if (rt) msg.replyTo = rt;
-	return recipients.map((to) => env.EMAIL.send({ ...msg, to }).then((r) => ((stats.emailSent = (stats.emailSent || 0) + 1), r)));
+	return deliverable.map((to) => env.EMAIL.send({ ...msg, to }).then((r) => ((stats.emailSent = (stats.emailSent || 0) + 1), r)));
 }
 
 // Drain the queued wp_mail messages (emailOp) and send them through the send_email binding.
@@ -1715,12 +1721,7 @@ export class PhpRuntime extends DurableObject {
 				// is the backstop.
 				const drained = pendingEmails.length;
 				const sp = sendPending(this.env);
-				if (sp) {
-					let timer;
-					const timeout = new Promise((resolve) => (timer = setTimeout(resolve, SEND_TIMEOUT_MS)));
-					await Promise.race([sp, timeout]);
-					clearTimeout(timer);
-				}
+				if (sp) await boundedWait(sp, SEND_TIMEOUT_MS);
 				const cst = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
 				// queued = cumulative wp_mail messages enqueued; sent = cumulative actually delivered (now
 				// current, since the alarm awaits the sends); drained = handed off this tick. The old single
@@ -1996,7 +1997,13 @@ if ( is_blog_installed() ) { echo json_encode( array( 'installed' => 'already' )
 $pw = trim( (string) @file_get_contents( '/tmp/admin-password' ) );
 @unlink( '/tmp/admin-password' );
 if ( strlen( $pw ) < 12 ) { echo json_encode( array( 'installed' => false, 'error' => 'admin password missing or shorter than 12' ) ); exit; }
-$r = wp_install( 'WordPress on D1', 'admin', 'admin@example.com', false, '', $pw );
+$admin_email = trim( (string) @file_get_contents( '/tmp/admin-email' ) );
+@unlink( '/tmp/admin-email' );
+// A test deploy keeps the placeholder admin@example.com, which the mail layer now
+// drops as undeliverable so its New Order mail never bounces (#198); a real deploy
+// sets ADMIN_EMAIL / x-admin-email to a deliverable address.
+if ( $admin_email === '' || ! is_email( $admin_email ) ) { $admin_email = 'admin@example.com'; }
+$r = wp_install( 'WordPress on D1', 'admin', $admin_email, false, '', $pw );
 echo json_encode( array( 'installed' => true, 'user_id' => $r['user_id'] ) );
 `;
 
@@ -2153,8 +2160,18 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// sends, not enqueues (#185). The alarm uses waitUntil; a manual trigger awaits the signal.
 			const drained = pendingEmails.length;
 			const sp = sendPending(env);
-			const sent = sp ? await sp : 0;
-			return new Response(JSON.stringify({ ...r, drained, sent }), { headers: { 'content-type': 'application/json' } });
+			// Bound the drain the same way the alarm does (#198): a manual /_runcron must
+			// not hang on a send env.EMAIL.send will not promptly answer. sendBounded flags
+			// a send still in flight at the bound; the next alarm tick (and #190's Queue)
+			// re-drives it.
+			let sent = 0;
+			let sendBounded = false;
+			if (sp) {
+				const res = await boundedWait(sp, SEND_TIMEOUT_MS);
+				if (res === TIMED_OUT) sendBounded = true;
+				else sent = res;
+			}
+			return new Response(JSON.stringify({ ...r, drained, sent, ...(sendBounded ? { sendBounded: true } : {}) }), { headers: { 'content-type': 'application/json' } });
 		}
 		if (url.pathname === '/_activate') {
 			// Activate a plugin, e.g. ?plugin=woocommerce/woocommerce.php. Spike only.
@@ -2311,6 +2328,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const t0 = Date.now();
 			if (url.pathname === '/_install') {
 				php.writeFile('/tmp/admin-password', req.headers.get('x-admin-password') || (env.SPIKE_TOKEN ? '' : 'local-spike-password'));
+				php.writeFile('/tmp/admin-email', req.headers.get('x-admin-email') || env.ADMIN_EMAIL || 'admin@example.com');
 				let out, errors;
 				try {
 					const r = await php.run({ code: INSTALL });
