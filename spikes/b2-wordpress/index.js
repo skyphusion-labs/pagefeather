@@ -1452,11 +1452,16 @@ export class PhpRuntime extends DurableObject {
 		// Without it, the object does not guess an origin: a wrong one redirects every page.
 		if (!origin) return new Response('missing ' + ORIGIN_HEADER, { status: 500 });
 		const url = new URL(objectUrl.pathname + objectUrl.search, origin);
-		lastOrigin = origin;
-		await this.ctx.storage.put(ORIGIN_KEY, origin);
-		// Phase 2 (#185): keep a cron alarm scheduled so Action Scheduler (deferred WC order
-		// emails) and WP-Cron run with no traffic. One DO alarm serves both cron and purge.
-		if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
+		// Only a real request arms/feeds the cron alarm. The deploy-time spike endpoints
+		// (/_install, /_activate) run a long direct php.run that bypasses withPhp; arming the
+		// alarm there let it fire runCron mid-activation and its php.run output replaced the
+		// activation's (WooCommerce did not activate, #185). A real visitor (a page, an order)
+		// arms it instead, which is when the deferred work actually needs to run.
+		if (!url.pathname.startsWith('/_')) {
+			lastOrigin = origin;
+			await this.ctx.storage.put(ORIGIN_KEY, origin);
+			if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
+		}
 		const inboxMs = raw.headers.get(SENT_HEADER) ? Date.now() - Number(raw.headers.get(SENT_HEADER)) : null;
 		const req = new Request(raw);
 		req.headers.delete(ORIGIN_HEADER);
