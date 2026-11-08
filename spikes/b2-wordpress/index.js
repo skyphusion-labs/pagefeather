@@ -369,7 +369,24 @@ function sendEmail(env, email) {
 	const html = looksHtml ? body : '<pre>' + esc(body) + '</pre>';
 	const text = looksHtml ? body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : body;
 	const subject = String(email.subject || '(no subject)');
-	return recipients.map((to) => env.EMAIL.send({ to, from: EMAIL_FROM, subject, html, text }));
+	return recipients.map((to) => env.EMAIL.send({ to, from: EMAIL_FROM, subject, html, text }).then((r) => ((stats.emailSent = (stats.emailSent || 0) + 1), r)));
+}
+
+// Drain the queued wp_mail messages (emailOp) and send them through the send_email binding.
+// Both the request path and the DO alarm call this, so the deferred WC order emails are actually
+// SENT even when no request follows on a low-traffic store (#185): emailOp only enqueues into the
+// pendingEmails module global, so without a drain the queued mails were lost on the next isolate
+// recycle. Returns a promise resolving to the count sent, or null when nothing is queued; the
+// caller waitUntil's it (request/alarm, non-blocking) or awaits it (a manual /_runcron).
+function sendPending(env) {
+	if (!(pendingEmails.length && env && env.EMAIL)) return null;
+	const toSend = pendingEmails;
+	pendingEmails = [];
+	return Promise.allSettled(toSend.flatMap((e) => sendEmail(env, e))).then((rs) => {
+		const failed = rs.filter((x) => x.status === 'rejected').length;
+		if (failed) console.log('email send: ' + failed + ' of ' + rs.length + ' failed');
+		return rs.length - failed;
+	});
 }
 
 async function handleMessage(raw) {
@@ -1408,10 +1425,19 @@ export class PhpRuntime extends DurableObject {
 			const cronOrigin = lastOrigin || this.env.SITE_ORIGIN || (await this.ctx.storage.get(ORIGIN_KEY));
 			if (phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env) {
 				const cr = await runCron(await (bootPromise ??= boot(cronOrigin)));
+				// Send what runCron just enqueued (the deferred WC order mails). The request path drains
+				// pendingEmails at the end of a request; the alarm is the ONLY drain when no request
+				// follows (a low-traffic store), so without this the queued order emails sit in the
+				// module global and are lost on the next isolate recycle (#185). waitUntil, so the alarm
+				// is not held on delivery.
+				const drained = pendingEmails.length;
+				const sp = sendPending(this.env);
+				if (sp) this.ctx.waitUntil(sp);
 				const cst = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
-				// emails is the cumulative count emitted (requests + alarm); with checkout deferring
-				// and no /_runcron, a nonzero value proves the alarm fired the deferred WC order mails.
-				cst.cron = { t: Date.now(), ...cr, lastRan: cr.ran, emails: (stats.email || 0) };
+				// queued = cumulative wp_mail messages enqueued; sent = cumulative actually delivered (it
+				// lags by the async send); drained = handed to the binding on this tick. The old single
+				// 'emails' field counted ENQUEUES and read as delivery, which it was not (#185).
+				cst.cron = { t: Date.now(), ...cr, lastRan: cr.ran, drained, queued: (stats.email || 0), sent: (stats.emailSent || 0) };
 				await this.ctx.storage.put(PURGE_STATE_KEY, cst);
 			}
 		} catch (e) {
@@ -1831,9 +1857,13 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// same runCron() on a cadence. Runs the Action Scheduler queue (the deferred WC
 			// order emails) and due WP-Cron events. Spike/manual trigger and the test seam.
 			bootPromise ??= boot(origin);
-			const before = stats.email || 0;
 			const r = await runCron(await bootPromise);
-			return new Response(JSON.stringify({ ...r, emailsSent: (stats.email || 0) - before }), { headers: { 'content-type': 'application/json' } });
+			// Drain + SEND here too (a manual run), awaiting delivery so the response reports actual
+			// sends, not enqueues (#185). The alarm uses waitUntil; a manual trigger awaits the signal.
+			const drained = pendingEmails.length;
+			const sp = sendPending(env);
+			const sent = sp ? await sp : 0;
+			return new Response(JSON.stringify({ ...r, drained, sent }), { headers: { 'content-type': 'application/json' } });
 		}
 		if (url.pathname === '/_activate') {
 			// Activate a plugin, e.g. ?plugin=woocommerce/woocommerce.php. Spike only.
