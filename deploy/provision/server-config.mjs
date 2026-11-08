@@ -8,7 +8,7 @@
 // kvId, hostname, saasZoneId, secrets) is built HERE from env + the vetted
 // bundle in the Worker's own R2 bucket. The caller chooses a type and a name,
 // and picks an OWNED base domain from an allowlist; it configures nothing.
-import { SITE_NAME_RE, assertValidName, genSecret } from './shared.mjs';
+import { SITE_NAME_RE, assertValidName, isReservedName, genSecret } from './shared.mjs';
 import { bDosqlBindings, mediaBucketName } from './wp-site-config.mjs';
 
 // ---- 1. Caller auth (operator baseline) --------------------------------------
@@ -28,7 +28,9 @@ async function timingSafeEqual(a, b) {
 }
 export async function authorize(request, env) {
   const expected = env.PROVISION_AUTH;
-  if (!expected) return false; // no secret configured: fail closed.
+  // Must be a non-empty STRING: a Secrets Store / KV / R2 object bound here must
+  // not pass (grok residual 1). No secret configured: fail closed.
+  if (typeof expected !== 'string' || !expected) return false;
   const m = /^Bearer\s+(.+)$/i.exec(request.headers.get('authorization') || '');
   if (!m) return false;
   return timingSafeEqual(m[1], expected);
@@ -57,6 +59,7 @@ export function validateRequest(body) {
   const { kind, name, domain } = body;
   if (kind !== 'wp' && kind !== 'shop') throw new BadRequest('kind must be "wp" or "shop"');
   if (typeof name !== 'string' || !SITE_NAME_RE.test(name)) throw new BadRequest('name must be lower case, digits, hyphens, 1 to 30, no leading or trailing hyphen');
+  if (isReservedName(name)) throw new BadRequest('name is reserved (an infrastructure or service label); pick another');
   if (typeof domain !== 'string' || !domain) throw new BadRequest('domain is required');
   return { kind, name, domain };
 }
@@ -71,7 +74,7 @@ export class BadRequest extends Error {}
 export function resolveBase(env, domain) {
   let bases;
   try { bases = JSON.parse(env.WFP_BASES || '{}'); } catch { throw new Error('the Worker WFP_BASES config is not valid JSON'); }
-  const base = bases[domain];
+  const base = Object.hasOwn(bases, domain) ? bases[domain] : undefined;
   if (!base) throw new BadRequest(`domain "${domain}" is not an owned base (allowed: ${Object.keys(bases).join(', ') || 'none configured'})`);
   return base;
 }
@@ -81,9 +84,15 @@ export function resolveBase(env, domain) {
 // /workers/scripts write); shop runs on the elevated token (adds minting and
 // Containers). The wp path NEVER holds the elevated token. Token VALUES are env
 // vars, never in code.
+// An EXPLICIT map, so an unknown kind THROWS rather than falling through to the
+// elevated (minting) token (grok residual 3). The wp path can never be handed
+// the shop token by a kind the caller sneaks past validation.
+const TOKEN_ENV = { wp: 'WP_PROVISION_TOKEN', shop: 'SHOP_PROVISION_TOKEN' };
 export function selectToken(env, kind) {
-  const token = kind === 'wp' ? env.WP_PROVISION_TOKEN : env.SHOP_PROVISION_TOKEN;
-  if (!token) throw new Error(`the Worker is missing ${kind === 'wp' ? 'WP_PROVISION_TOKEN' : 'SHOP_PROVISION_TOKEN'}`);
+  const key = Object.hasOwn(TOKEN_ENV, kind) ? TOKEN_ENV[kind] : undefined;
+  if (!key) throw new Error(`selectToken: unknown kind ${JSON.stringify(kind)}`);
+  const token = env[key];
+  if (!token) throw new Error(`the Worker is missing ${key}`);
   return token;
 }
 

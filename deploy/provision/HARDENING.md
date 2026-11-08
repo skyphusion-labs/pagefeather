@@ -172,3 +172,49 @@ resource bindings end to end.
    into the bundle store and `provisionWp` must do the assets-upload step, and the
    cache/exports config must be set. Flagged for the box-gate; out of scope for
    the security + binding fix here.
+
+## Adversarial pass residuals (#182, grok)
+
+grok confirmed the core holds (no parser bypass, no SSRF, CF-Connecting-IP is
+edge-set and not spoofable, wp never gets the shop token, absent/empty
+PROVISION_AUTH cannot pass). Five residuals were folded in:
+
+1. **authorize() requires a STRING** (High). A `PROVISION_AUTH` bound as a Secrets
+   Store / KV / R2 object cannot pass: `typeof expected !== "string"` fails closed.
+   The mint-time half (confirm `SHOP_PROVISION_TOKEN` is NOT account-wide Workers
+   Scripts Edit) is the lead deploy-gate step.
+2. **Reserved-name denylist + anti-clobber** (the most important residual).
+   `shared.mjs` RESERVED_NAMES / RESERVED_PREFIXES reject www, mail, api, admin,
+   and the project's own structural prefixes (site-, c1-, wp-wfp-, wp-woo-), in
+   `validateRequest` (400) and `assertValidName` (core backstop). And
+   `provisionSite` now calls `scriptExists` before any deploy: a script already
+   named `site-<name>` (namespace) or `c1-<name>` (standalone) that is NOT in the
+   registry is a foreign/orphaned site, so the provision refuses rather than
+   overwrite it. Idempotency only protected a hostname already in the KV map; this
+   closes the name-collision clobber a stolen-auth caller could have used.
+3. **selectToken is an explicit map** that THROWS on an unknown kind, so a kind
+   sneaked past validation can never fall through to the elevated (minting) token.
+4. **mint is idempotent by name** (`mintScopedR2Token`): it lists account tokens,
+   and if one with the site's litestream name exists it ROLLS that token (same id,
+   recovering a usable value) instead of creating a second. This removes the
+   retry-after-mint zombie. A true concurrent double-submit of the same NEW name is
+   still bounded only by the rate limit + the reserved/collision checks (a stateless
+   Worker cannot serialize without a Durable Object lock); noted as the residual.
+5. **Minor**: `resolveBase` and `selectToken` use `Object.hasOwn`, so prototype
+   keys (`__proto__`, `constructor`) are never treated as a base or a token kind.
+   NOT done, by design/scope: a PRE-auth IP rate limit (the 401 path does a SHA-256
+   only, no network or Containers cost, so unauthenticated stuffing is cheap; a
+   stolen valid secret from many IPs defeats the per-IP limiter and wants a global
+   or identity-keyed limit, which ties to the self-serve decision), and genericizing
+   the 405 body (an API fingerprint, low value). Both recorded for the lead.
+
+### Token-policy delta from these residuals
+
+- The **anti-clobber** `scriptExists` GET means both tokens need script READ:
+  `WP_PROVISION_TOKEN` read on the dispatch namespace script (implied by
+  Workers-for-Platforms Edit), `SHOP_PROVISION_TOKEN` read on `/workers/scripts`
+  (implied by Workers Scripts Edit).
+- The **mint reuse-or-roll** means `SHOP_PROVISION_TOKEN` also needs token LIST
+  (`GET /accounts/{a}/tokens`) and token ROLL (`PUT .../{id}/value`) in addition to
+  create. If listing is not permitted the code falls through to create (no worse
+  than before), but without roll the zombie-avoidance is lost, so grant both.

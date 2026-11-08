@@ -7,7 +7,7 @@
 import {
   createR2Bucket, mintScopedR2Token,
   deployNamespaceScript, deployContainerWorkerFromDigest,
-  ensureProxiedHostname, enableWorkersDevSubdomain,
+  ensureProxiedHostname, enableWorkersDevSubdomain, scriptExists,
 } from './ops.mjs';
 import { upsertSite, readSite } from './registry.mjs';
 import { assertValidName } from './shared.mjs';
@@ -56,6 +56,12 @@ async function provisionWp(ctx, cfg) {
   const script = `site-${cfg.name}`;
   const found = await existingSite(ctx, { kvId: cfg.kvId, hostname: cfg.hostname });
   if (found) return { kind: 'wp', name: cfg.name, script: found.script, hostname: cfg.hostname, entry: found, existing: true, steps };
+  // Anti-clobber (#182, grok residual 2): the hostname is not ours (idempotency
+  // returned above if it were), so a script already named site-<name> in the
+  // namespace is a foreign or orphaned site. Refuse rather than overwrite it.
+  if (await scriptExists(ctx, { name: script, ns: cfg.namespace })) {
+    throw new Error(`provisionWp: a namespace script named ${script} already exists and is not registered for ${cfg.hostname}; refusing to clobber it`);
+  }
   steps.push(await createR2Bucket(ctx, cfg.buckets.media));
   // sqliteClasses: the SQLite Durable Object classes the bundle defines (for
   // b-dosql, ['PhpRuntime']). They MUST be declared in a migration or the DO
@@ -91,6 +97,12 @@ async function provisionShop(ctx, cfg) {
   const script = `c1-${cfg.name}`;
   const found = await existingSite(ctx, { kvId: cfg.kvId, hostname: cfg.hostname });
   if (found) return { kind: 'shop', name: cfg.name, script: found.script, hostname: cfg.hostname, entry: found, existing: true, steps };
+  // Anti-clobber (#182, grok residual 2): a standalone Worker already named
+  // c1-<name> that is not registered for this hostname is foreign. A plain
+  // /workers/scripts PUT would silently overwrite it, so refuse.
+  if (await scriptExists(ctx, { name: script })) {
+    throw new Error(`provisionShop: a Worker named ${script} already exists and is not registered for ${cfg.hostname}; refusing to clobber it`);
+  }
   // Buckets first.
   steps.push(await createR2Bucket(ctx, cfg.buckets.db));
   steps.push(await createR2Bucket(ctx, cfg.buckets.media));

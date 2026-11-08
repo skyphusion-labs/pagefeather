@@ -23,6 +23,19 @@ export async function createR2Bucket(ctx, name) {
 // #154 finding). Minting is not idempotent (each call makes a new token), so a
 // re-provision reuses the registry's stored id or rotates deliberately.
 export async function mintScopedR2Token(ctx, { name, bucket }) {
+  // Idempotent by NAME (#182 hardening, grok residual 4). A retry after a
+  // created-but-uncommitted mint would otherwise leave a zombie token not in the
+  // registry. If a token with this name already exists, ROLL its value (same id,
+  // no zombie) and reuse it; else create one. The secret value is returned only
+  // by the create or the roll, so a roll is how we recover a usable value.
+  const existingId = await findTokenIdByName(ctx, name);
+  if (existingId) {
+    const roll = await cfFetch(ctx.token, 'PUT', `/accounts/${ctx.acct}/tokens/${existingId}/value`,
+      { fetchImpl: ctx.fetchImpl });
+    const value = roll.result && (typeof roll.result === 'string' ? roll.result : roll.result.value);
+    if (!roll.ok || !value) throw opError('mintScopedR2Token roll', name, roll);
+    return { tokenId: existingId, accessKeyId: existingId, secretAccessKey: await sha256Hex(value) };
+  }
   const body = {
     name,
     policies: [{
@@ -39,6 +52,32 @@ export async function mintScopedR2Token(ctx, { name, bucket }) {
     accessKeyId: r.result.id,
     secretAccessKey: await sha256Hex(r.result.value),
   };
+}
+
+// List account tokens and find one by EXACT name; null if none, or if listing is
+// not permitted (the caller then falls through to create, no worse than before).
+async function findTokenIdByName(ctx, name) {
+  const r = await cfFetch(ctx.token, 'GET', `/accounts/${ctx.acct}/tokens`, { fetchImpl: ctx.fetchImpl });
+  if (!r.ok) return null;
+  const list = Array.isArray(r.result) ? r.result : [];
+  const found = list.find((t) => t && t.name === name);
+  return found ? found.id : null;
+}
+
+// Does a script already exist? (#182 hardening, grok residual 2.) 200 = present,
+// 404 = absent. Used to REFUSE a deploy that would clobber a script NOT in our
+// registry: idempotency protects a hostname already in the KV map, but a name can
+// still collide with a foreign namespace script (site-<name>) or a foreign
+// standalone Worker (/workers/scripts/c1-<name>). Conservative: a 200 is "exists"
+// and any non-404 non-200 throws, so we never clobber on uncertainty.
+export async function scriptExists(ctx, { name, ns }) {
+  const path = ns
+    ? `/accounts/${ctx.acct}/workers/dispatch/namespaces/${ns}/scripts/${name}`
+    : `/accounts/${ctx.acct}/workers/scripts/${name}`;
+  const r = await cfFetch(ctx.token, 'GET', path, { fetchImpl: ctx.fetchImpl });
+  if (r.status === 404) return false;
+  if (r.ok) return true;
+  throw opError('scriptExists', name, r);
 }
 
 // 3. A Worker secret. Namespace script when ns is set, else a standalone Worker.

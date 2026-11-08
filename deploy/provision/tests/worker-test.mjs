@@ -54,8 +54,15 @@ function withFetch(opts = {}) {
       if (opts.existing) return { ok: true, status: 200, text: async () => JSON.stringify(opts.existing) };
       return { ok: false, status: 404, text: async () => '{"success":false,"errors":[{"code":10009}]}' };
     }
+    if (init.method === 'GET' && /\/scripts\/[^/]+$/.test(url)) {
+      if (opts.scriptExists) return { ok: true, status: 200, text: async () => '{"success":true,"result":{"id":"existing"}}' };
+      return { ok: false, status: 404, text: async () => '{"success":false,"errors":[{"code":10090}]}' };
+    }
+    if (init.method === 'GET' && url.endsWith('/tokens')) {
+      return { ok: true, status: 200, text: async () => '{"success":true,"result":[]}' };
+    }
     let body = '{"success":true,"result":{}}';
-    if (url.endsWith('/tokens')) body = '{"success":true,"result":{"id":"TKID","value":"TKVAL"}}';
+    if (init.method === 'POST' && url.endsWith('/tokens')) body = '{"success":true,"result":{"id":"TKID","value":"TKVAL"}}';
     else if (url.endsWith('/settings')) body = '{"success":true,"result":{"bindings":[{"type":"durable_object_namespace","class_name":"Store","name":"STORE","namespace_id":"NSID"}]}}';
     else if (url.endsWith('/containers/applications')) body = '{"success":true,"result":[]}';
     return { ok: true, status: 200, text: async () => body };
@@ -118,6 +125,18 @@ const metaOf = async (call) => JSON.parse(await call.body.get('metadata').text()
   ok('an unknown kind is 400', kind.res.status === 400);
 }
 
+// --- grok residual 2 + 5: reserved names and prototype-key domains are 400 ---
+{
+  const resv = await run(makeEnv(), req({ kind: 'wp', name: 'www', domain: 'skyphusionwp.dev' }));
+  ok('a reserved name (www) is 400 (no calls)', resv.res.status === 400 && /reserved/.test(resv.json.error) && resv.calls.length === 0);
+
+  const proto = await run(makeEnv(), req({ kind: 'wp', name: 'blog', domain: '__proto__' }));
+  ok('a prototype key as domain is 400, not treated as a base (Object.hasOwn)', proto.res.status === 400 && proto.calls.length === 0);
+
+  const ctor = await run(makeEnv(), req({ kind: 'wp', name: 'blog', domain: 'constructor' }));
+  ok('domain=constructor is 400, not a base', ctor.res.status === 400 && ctor.calls.length === 0);
+}
+
 // --- the core security property: injection is IGNORED ---
 {
   const injected = {
@@ -132,7 +151,7 @@ const metaOf = async (call) => JSON.parse(await call.body.get('metadata').text()
   ok('injection: the request still provisions (200)', r.res.status === 200 && r.json.ok === true);
   ok('injection: hostname is server-built name.domain, not the injected one', r.json.hostname === 'inject.skyphusionwp.dev');
 
-  const deploy = r.calls.find((c) => /\/dispatch\/namespaces\/[^/]+\/scripts\//.test(c.url));
+  const deploy = r.calls.find((c) => c.method === 'PUT' && /\/dispatch\/namespaces\/[^/]+\/scripts\//.test(c.url));
   ok('injection: the deploy uses the SERVER namespace wp-wfp, not evil-ns',
     /\/dispatch\/namespaces\/wp-wfp\/scripts\/site-inject$/.test(deploy.url) && !/evil-ns/.test(deploy.url));
   ok('injection: the uploaded modules are the vetted BUNDLE, not evil.js',
@@ -163,7 +182,7 @@ const metaOf = async (call) => JSON.parse(await call.body.get('metadata').text()
   ok('wp: NO plain /workers/scripts write on the wp path',
     !r.calls.some((c) => /\/workers\/scripts\/site-blog$/.test(c.url)));
 
-  const wpDeploy = r.calls.find((c) => /\/dispatch\/namespaces\/wp-wfp\/scripts\/site-blog$/.test(c.url));
+  const wpDeploy = r.calls.find((c) => c.method === 'PUT' && /\/dispatch\/namespaces\/wp-wfp\/scripts\/site-blog$/.test(c.url));
   const wpMeta = await metaOf(wpDeploy);
   const names = (t) => wpMeta.bindings.filter((b) => b.type === t).map((b) => b.name);
   ok('wp: the deploy carries IMAGES, MEDIA, PHP_RUNTIME and EMAIL bindings (a WORKING site)',
@@ -184,7 +203,7 @@ const metaOf = async (call) => JSON.parse(await call.body.get('metadata').text()
     r.res.status === 200 && r.json.script === 'c1-store' && r.json.hostname === 'c1-store.skyphusionwp.workers.dev');
   ok('shop: two R2 buckets created', r.calls.filter((c) => c.url.endsWith('/r2/buckets')).length === 2);
   ok('shop: the elevated path DOES mint the Litestream token', r.calls.some((c) => c.method === 'POST' && c.url.endsWith('/tokens')));
-  const deploy = r.calls.find((c) => /\/workers\/scripts\/c1-store$/.test(c.url));
+  const deploy = r.calls.find((c) => c.method === 'PUT' && /\/workers\/scripts\/c1-store$/.test(c.url));
   const meta = await metaOf(deploy);
   ok('shop: the container image is the SERVER C1_IMAGE_REF digest (no caller image)',
     deploy && meta.containers && meta.containers[0].image === IMG);

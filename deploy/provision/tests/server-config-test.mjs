@@ -20,6 +20,7 @@ ok('authorize: a different-length secret fails (no length leak crash)', (await a
 ok('authorize: no Authorization header fails', (await authorize(reqWith(null), { PROVISION_AUTH: 's3cr3t' })) === false);
 ok('authorize: a non-Bearer scheme fails', (await authorize(reqWith('Basic s3cr3t'), { PROVISION_AUTH: 's3cr3t' })) === false);
 ok('authorize: no configured secret fails CLOSED', (await authorize(reqWith('Bearer anything'), {})) === false);
+ok('authorize: a non-string PROVISION_AUTH (a bound KV/R2/Secrets object) fails closed', (await authorize(reqWith('Bearer x'), { PROVISION_AUTH: { not: 'a string' } })) === false);
 
 // validateRequest: only kind/name/domain survive; extras are dropped.
 {
@@ -28,6 +29,7 @@ ok('authorize: no configured secret fails CLOSED', (await authorize(reqWith('Bea
   ok('validateRequest: rejects a bad name', await throwsWith(() => validateRequest({ kind: 'wp', name: 'Bad_Name', domain: 'skyphusionwp.dev' }), /name must be/));
   ok('validateRequest: rejects a bad kind', await throwsWith(() => validateRequest({ kind: 'x', name: 'blog', domain: 'skyphusionwp.dev' }), /kind must be/));
   ok('validateRequest: rejects a missing domain', await throwsWith(() => validateRequest({ kind: 'wp', name: 'blog' }), /domain is required/));
+  ok('validateRequest: rejects a reserved name (www)', await throwsWith(() => validateRequest({ kind: 'wp', name: 'www', domain: 'skyphusionwp.dev' }), /reserved/));
   let isBadRequest = false;
   try { validateRequest({}); } catch (e) { isBadRequest = e instanceof BadRequest; }
   ok('validateRequest: errors are BadRequest (map to 400)', isBadRequest);
@@ -36,11 +38,13 @@ ok('authorize: no configured secret fails CLOSED', (await authorize(reqWith('Bea
 // resolveBase: an owned base resolves; an unowned one is a BadRequest.
 ok('resolveBase: an owned base resolves to its zone', resolveBase({ WFP_BASES: BASES }, 'skyphusionwp.dev').saasZoneId === 'Z1');
 ok('resolveBase: an unowned base is BadRequest', await throwsWith(() => resolveBase({ WFP_BASES: BASES }, 'evil.com'), /not an owned base/));
+ok('resolveBase: a prototype key (__proto__) is not a base (Object.hasOwn)', await throwsWith(() => resolveBase({ WFP_BASES: BASES }, '__proto__'), /not an owned base/));
 
 // selectToken: the split. wp never gets the elevated token.
 ok('selectToken: wp -> the restricted token', selectToken({ WP_PROVISION_TOKEN: 'WP', SHOP_PROVISION_TOKEN: 'SHOP' }, 'wp') === 'WP');
 ok('selectToken: shop -> the elevated token', selectToken({ WP_PROVISION_TOKEN: 'WP', SHOP_PROVISION_TOKEN: 'SHOP' }, 'shop') === 'SHOP');
 ok('selectToken: a missing token throws', await throwsWith(() => selectToken({}, 'wp'), /WP_PROVISION_TOKEN/));
+ok('selectToken: an unknown kind THROWS, never falls through to the elevated token', await throwsWith(() => selectToken({ WP_PROVISION_TOKEN: 'WP', SHOP_PROVISION_TOKEN: 'SHOP' }, 'evil'), /unknown kind/));
 
 // deriveTarget: server-built routing, no caller input beyond name + base choice.
 {
