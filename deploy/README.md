@@ -194,6 +194,7 @@ The hint is not a promise. An `enam` object landed in EWR two times in three and
 | `N` | `10` | Runs per page in the page benchmark |
 | `VARIANT` | `b-do` | `b-do`, `b-dosql`, `a`, `c1` (see above) |
 | `SITE_ORIGIN` | `https://<name>.<subdomain>.workers.dev` | The site's own address (`scheme://host[:port]`). WordPress's `WP_HOME` and every link come from it, not from the first request (issue #33). Give it for a custom domain. On workers.dev the deploy stops if Wrangler's address differs. `c1` uses `PUBLIC_HOST` instead. |
+| `HTTP_ALLOW_HOSTS` | `.wordpress.org,.woocommerce.com,.gravatar.com` | Hosts `wp_remote_*()` may call. A leading dot is that name and its subdomains. An empty value denies every host. `*` allows every http(s) host. A custom list replaces the default, so keep the WordPress hosts in it. Payment hosts are not included. The site's own host is always refused, so PHP cannot call itself and wait behind itself. |
 | `DEPLOY_STATE` | `local` | `r2` keeps Terraform state in an R2 bucket (`STATE_BUCKET`, `STATE_ENDPOINT`, and an R2 key in `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) |
 
 Each `NAME` has its own Terraform workspace, so two sites never share state.

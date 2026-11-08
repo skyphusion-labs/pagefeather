@@ -180,6 +180,9 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
   echo '[vars]'
   echo "PHP_ENV = '{\"USE_ZEND_ALLOC\":\"0\"}'"
   echo "SITE_ORIGIN = \"$SITE_ORIGIN\""
+  # Hosts PHP may call. Unset writes the default. Empty denies. See http-allow.mjs.
+  HTTP_ALLOW=$(node "$APP/http-allow.mjs")
+  echo "HTTP_ALLOW_HOSTS = \"$HTTP_ALLOW\""
   # CRON_INTERVAL_MS (issue #185): the DO alarm cadence in ms; tune per deploy. index.js defaults to 60000.
   [ -z "${CRON_INTERVAL_MS+x}" ] || echo "CRON_INTERVAL_MS = \"$CRON_INTERVAL_MS\""
   # The Worker writes it into wp-runtime.php as a PHP constant.

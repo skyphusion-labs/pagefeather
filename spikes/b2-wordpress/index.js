@@ -1,5 +1,6 @@
 // Spike B2: WordPress in a Worker, database on D1.
 import { sqlImport } from './sql-import.js';
+import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -1020,7 +1021,9 @@ async function d1ping(req, env, url, ctx) {
 //   a POST, become a GET without a body, as browsers do.
 // - limit: the body is read up to WordPress's limit_response_size, and never
 //   past HTTP_MAX_BYTES (default 8 MB): the answer crosses the bridge as base64.
-// - HTTP_ALLOW_HOSTS (comma list; a host or ".suffix"): when set, only those.
+// - HTTP_ALLOW_HOSTS (comma list; a host or ".suffix"): unset uses the default
+//   (.wordpress.org, .woocommerce.com, .gravatar.com). Empty denies every host.
+//   "*" allows every http(s) host.
 // - A request to the site's own host is refused at once. The PHP object runs one
 //   request at a time, so a request to itself waits behind itself (a timeout, or
 //   "Durable Object is overloaded"). WordPress treats the error like any failed
@@ -1029,8 +1032,8 @@ const HTTP_MAX_BYTES = 8 * 1024 * 1024;
 function httpRefusal(url) {
 	if (url.protocol !== 'http:' && url.protocol !== 'https:') return 'only http and https';
 	if (bootOrigin && url.hostname === new URL(bootOrigin).hostname) return 'a request to this site itself is refused: the PHP object runs one request at a time, so it would wait on itself';
-	const allow = String(ENV.HTTP_ALLOW_HOSTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
-	if (allow.length && !allow.some((h) => (h.startsWith('.') ? url.hostname.endsWith(h) || url.hostname === h.slice(1) : url.hostname === h))) return 'host not in HTTP_ALLOW_HOSTS: ' + url.hostname;
+	const raw = ENV && ENV.HTTP_ALLOW_HOSTS !== undefined ? ENV.HTTP_ALLOW_HOSTS : undefined;
+	if (!httpHostAllowed(url.hostname, resolveHttpAllowHosts(raw))) return 'host not in HTTP_ALLOW_HOSTS: ' + url.hostname;
 	return null;
 }
 async function httpOp(op) {

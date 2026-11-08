@@ -19,7 +19,8 @@
  * - http_api_debug and the http_response filter run on the answer.
  * Added:
  * - skyphusion_http_allowed (filter, default true): a site can refuse a request
- *   before it leaves. The Worker can also restrict hosts (HTTP_ALLOW_HOSTS).
+ *   before it leaves. The Worker allowlists hosts (HTTP_ALLOW_HOSTS): unset uses
+ *   the WordPress, WooCommerce and Gravatar hosts; an empty list denies every host.
  * - A request to the site's own host is refused by index.js: the PHP object runs
  *   one request at a time, so a request to itself would wait on itself.
  * Not covered: curl_*(), fsockopen() and http:// streams (file_get_contents of a
