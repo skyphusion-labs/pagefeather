@@ -399,12 +399,22 @@ function sendPending(env) {
 // public URL and the R2 key of a rendition that has no alt text; the Worker asks
 // the AI binding for a one-line description and returns it. Fail safe: any error
 // or timeout returns ok:true with a degraded reason and no alt, so the upload is
-// never blocked. The default path passes the public URL to the model, so the
-// image bytes never enter this isolate (the 128 MiB upload ceiling, issue #189).
+// never blocked.
+// Model: box-tested 2026-11-08 on a live b-dosql deploy. @cf/llava-hf/llava-1.5-7b-hf
+// with the bytes+prompt input returns { description }; @cf/moondream/moondream3.1-9B-A2B
+// returned {} for every input shape tried (URL, base64 caption, base64 prompt) and
+// @cf/unum/uform-gen2-qwen-500m is 410-deprecated, so llava-hf is the only working
+// image-to-text model on the account. NOTE: its model page shows a planned deprecation
+// of 2026-11-20; when Cloudflare retires it, repoint AI_ALT_MODEL (the feature degrades
+// safely to empty alt until then, never blocking an upload).
+// Memory (issue #189): the op fires AFTER the attachment is stored (off the insert
+// critical path) and reads only the small RENDITION the plugin chose, not the original,
+// so the byte array is a few hundred KB on an isolate at ~mib 58 (media-write-trim
+// wcskips WooCommerce on the upload request). Ample headroom.
 // Billing: Workers AI runs on Unified Billing (the Cloudflare credit balance). An
 // AI Gateway wrapper (caching, rate limits, analytics) could sit in front later;
 // this uses the direct env.AI binding to start.
-const AI_ALT_DEFAULT_MODEL = '@cf/moondream/moondream3.1-9B-A2B';
+const AI_ALT_DEFAULT_MODEL = '@cf/llava-hf/llava-1.5-7b-hf';
 function captionLength() {
 	return ENV.AI_ALT_LENGTH === 'normal' || ENV.AI_ALT_LENGTH === 'long' ? ENV.AI_ALT_LENGTH : 'short';
 }
@@ -416,6 +426,7 @@ function cleanAlt(text, cap) {
 	s = s.replace(/^["'“”]+|["'“”]+$/g, '').trim();
 	s = s.replace(/^(the|this|an?)\s+(image|picture|photo|photograph)\s+(of|showing|shows|depicting|depicts|is of|is|featuring|features|containing|contains|portraying|portrays)\s+/i, '');
 	s = s.replace(/^(image|picture|photo|photograph)\s+of\s+/i, '');
+	s = s.replace(/^in\s+(this|the)\s+(image|picture|photo|photograph)\s*,?\s+/i, '');
 	if (!s) return s;
 	s = s.charAt(0).toUpperCase() + s.slice(1);
 	if (s.length > cap) {
@@ -439,14 +450,15 @@ async function aiAltOp(op) {
 	try {
 		if (!ENV.AI) return done({ ok: true, degraded: 'no AI binding' });
 		const model = typeof ENV.AI_ALT_MODEL === 'string' && ENV.AI_ALT_MODEL ? ENV.AI_ALT_MODEL : AI_ALT_DEFAULT_MODEL;
-		const flavor = ENV.AI_ALT_INPUT === 'prompt' ? 'prompt' : 'caption';
+		const flavor = ENV.AI_ALT_INPUT === 'caption' ? 'caption' : 'prompt';
 		const cap = Math.max(16, Math.min(300, Number(ENV.AI_ALT_MAX_CHARS || 160)));
 		const timeoutMs = Math.max(1000, Math.min(60000, Number(ENV.AI_ALT_TIMEOUT_MS || 12000)));
 
-		// Build the model input. caption flavor (moondream default): image is a URL
-		// or a base64 data URI, task "caption" returns { caption }. prompt flavor
-		// (llava/llama): image is an array of bytes with a prompt, returning
-		// { description } or { response }. The URL path reads no bytes into the isolate.
+		// Build the model input. prompt flavor (default; llava/llama): image is an array
+		// of bytes from the rendition with a text prompt, returning { description } or
+		// { response }. caption flavor (opt-in AI_ALT_INPUT=caption, for a caption model
+		// that supports it): image is a public URL or base64 data URI with task "caption",
+		// returning { caption }; the URL path reads no bytes into the isolate.
 		let input;
 		if (flavor === 'caption' && op.url) {
 			input = { image: op.url, task: 'caption', caption_length: captionLength() };
@@ -460,7 +472,7 @@ async function aiAltOp(op) {
 				input = { image: 'data:' + mime + ';base64,' + b64encode(bytes), task: 'caption', caption_length: captionLength() };
 			} else {
 				const prompt = typeof ENV.AI_ALT_PROMPT === 'string' && ENV.AI_ALT_PROMPT ? ENV.AI_ALT_PROMPT : 'Describe this image in one short, factual sentence for use as alt text. Do not begin with "an image of" or "a picture of".';
-				input = { image: [...bytes], prompt, max_tokens: 256 };
+				input = { image: [...bytes], prompt, max_tokens: 128 };
 			}
 		}
 
@@ -681,7 +693,7 @@ async function boot(origin) {
 	}
 	// AI alt text mu-plugin (php/ai-alt-text.php): caption an uploaded image that
 	// has no alt text with the Workers AI binding. b-dosql + MEDIA + the AI binding
-	// only; AI_ALT=off turns it off. The model is AI_ALT_MODEL (default moondream).
+	// only; AI_ALT=off turns it off. The model is AI_ALT_MODEL (default llava-hf).
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.MEDIA && ENV.AI && ENV.AI_ALT !== 'off') lines.push(`define('SKYPHUSION_AI_ALT', true);`);
 	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
 
