@@ -104,7 +104,7 @@ CONTAINER=1 LATENCY_N=0 ./tests/wfp/run.sh   # BOX_PORT defaults to 8080 for the
 ./tests/wfp/destroy.sh                        # ends with list.sh
 ```
 
-**For the design:** a platform that offers `c1` per customer must (1) make the container application through the API for each customer script (Terraform or the deploy script), not through Wrangler; (2) push each image through a normal Worker deploy (for example one build Worker per image) and give the customer's application that image; (3) expect about 1.5 to 2 minutes after an application is made before its first container answers, and a cold start (about 1.5 s here) after it sleeps.
+**For the design:** (the `c1` store was retired in #214, so this now applies to any per-customer container.) A platform that offers a container per customer must (1) make the container application through the API for each customer script (Terraform or the deploy script), not through Wrangler; (2) push each image through a normal Worker deploy (for example one build Worker per image) and give the customer's application that image; (3) expect about 1.5 to 2 minutes after an application is made before its first container answers, and a cold start (about 1.5 s here) after it sleeps.
 
 ## 3. D1, R2 and Images bindings, and how bindings attach
 

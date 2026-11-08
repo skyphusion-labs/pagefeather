@@ -25,7 +25,7 @@ Measured as normal Workers, not as user Workers, except where the row says so.
 | Site | Runtime | Source | Limit to state |
 | --- | --- | --- | --- |
 | WordPress without WooCommerce | `b-dosql`: PHP and its SQLite in one Durable Object | 0.36 s page at 1 user (load matrix, bench-runner-20261105T214231Z-230073.json); object cache -29 % CPU on home and -7 % on post-new (#44, docs/perf-dosql.md); editor routes cache -11 to -23 % on post-new (#56). Also measured as a user Worker (above). | One object per site: about 5 uncached requests a second (docs/perf-dosql.md). **Transactions do not roll back today (#60).** The page cache is keyed on the whole Cookie header today, so real browsers with analytics cookies miss (#63). Whether the Workers Cache works inside a namespace user Worker is not tested. |
-| WooCommerce store | `c1`: WordPress in a Container, SQLite on disk, Litestream to R2 | 0.37 s page and 0.49 s checkout at 1 user, 0.78 s at 5 shoppers on `standard-2`; throughput about vCPU / 0.15 CPU s (docs/approach-c1.md); APCu default; the queue runner drains order mail under load (#45). | **Not measured as a user Worker** (its outbound handler and Workers Cache use are untested in a namespace). One writer per store. Start after a stop on `standard-1`: 11 to 22 s measured (docs/approach-c1.md; cold_start_s 13, 14, 18 and 22 s in deploy/results/wp-c1-*.json). The container stops itself after 15 idle minutes, so the next visitor waits that long. Sized by instance type. Storefront cache: #58. |
+| WooCommerce store | `b-dosql`, the same runtime as a plain site, with WooCommerce active. It runs checkout directly (README matrix; `tests/woo.py` green on Paid). The `c1` container store was retired in #214. | See the README matrix and docs/results.md for the checkout runs; the object cache and page cache notes are in docs/perf-dosql.md. | The same limit as a plain site: one Durable Object, 128 MiB, one writer, one region. A light-to-moderate store fits. A store with sustained, heavy concurrent load belongs on a VPS. |
 | Very high concurrency on one site | `a`: PHP in Workers, MySQL through Hyperdrive | The only variant that spread across isolates (zero 1102 at 100 users; 128 MB is enough for WooCommerce). | **Not measured as a user Worker**, and see the connect() risk above. Every query crosses the network: browse p50 2.31 to 5.92 s across the steps of the three load runs (deploy/results/bench-runner-20261105T211919Z-cea397.json, bench-runner-20261105T214231Z-230073.json, bench-runner-20261106T010353Z-155691.json), not acceptable for a store (Conrad, 2026-11-06). Its rate at 100 users moved across three runs: 10.3, 18.73 and 8.63 rps. |
 
 `a2` (PlanetScale through Hyperdrive) works as a normal Worker (#50, #52), at about 16 ms per query from ORD, and adds nothing over `a` for these sites.
@@ -33,7 +33,7 @@ Measured as normal Workers, not as user Workers, except where the row says so.
 ## Per tenant, as code
 
 - **Plain site (`b-dosql`)**: no database to provision. The workspace holds the media bucket (optional), the site secrets (salt, spike token, admin password), `SITE_ORIGIN` (the site's address, #33, PR #65), and the script metadata. Moving a site in or out: `/_dbexport`, `/_dbimport`, `dbmove.py` (approach-b.md section 8j); importing an existing site is #31.
-- **Store (`c1`)**: the replica bucket, the media bucket, a scoped Litestream token, the container application (through the API), and the image pushed by one build Worker per image version (docs/wfp.md item 2). The application holds the image by digest, so a teardown resolves the tag by name before it deletes the image.
+- **Store (`b-dosql`)**: the same as a plain site. WooCommerce is a plugin inside the site, so a store needs no extra resource. (The retired `c1` store needed a replica bucket, a Litestream token and a container application; see docs/approach-c1.md.)
 - **Teardown deletes data.** Removing a `b-dosql` tenant's script removes its object and its SQLite (the spike used force). Export first.
 
 ## Rollout and limits
@@ -41,7 +41,7 @@ Measured as normal Workers, not as user Workers, except where the row says so.
 - `subRequests` set by the dispatcher was exact where measured, without an outbound Worker (not measured with one). `cpuMs` is enforced but loose: it does not bound a tenant below about 2 s (docs/wfp.md item 4). CPU fairness between tenants comes from the runtime choice and the plan, not from `cpuMs` alone.
 - No gradual deployments for user Workers, and the API allows 1200 calls per 5 minutes per token (docs/wfp.md, pricing and limits). A fleet rollout is batched.
 - Workers for Platforms is a Paid product: the Workers Free limits do not apply under it. Pricing (docs/wfp.md, read 2026-11-05): $25 a month, 20 million requests and 60 million CPU ms included, 1000 scripts included.
-- Cost of two idle sites: about $25 a month, the Workers for Platforms Paid subscription; every per-site resource (Durable Object storage, R2, KV) is inside the included or free tier at rest. The full table, with each rate's page and read date, is in the README ("Workers for Platforms reference deployment: cost of two idle sites"). Open: whether the ordinary Workers (the dispatchers, the outbound Worker) need a separate Workers Paid subscription ($5 a month) on top; not stated on the WfP pricing page. Per-tenant traffic cost (Durable Object duration and rows for `b-dosql`, container awake hours for `c1`) is still per workload, not worked out here.
+- Cost of two idle sites: about $25 a month, the Workers for Platforms Paid subscription; every per-site resource (Durable Object storage, R2, KV) is inside the included or free tier at rest. The full table, with each rate's page and read date, is in the README ("Workers for Platforms reference deployment: cost of two idle sites"). Open: whether the ordinary Workers (the dispatchers, the outbound Worker) need a separate Workers Paid subscription ($5 a month) on top; not stated on the WfP pricing page. Per-tenant traffic cost (Durable Object duration and rows for `b-dosql`) is still per workload, not worked out here.
 
 ## Correctness the operator must know
 
@@ -54,11 +54,11 @@ Measured as normal Workers, not as user Workers, except where the row says so.
 ## Open items
 
 1. The connect() risk for `a` behind an outbound Worker: test it.
-2. `c1` and `a` as user Workers: not measured.
+2. `a` as a user Worker: not measured. (`c1` was retired in #214.)
 3. Hostname routing in the dispatcher: not tested.
 4. Whether the Workers Cache works inside a namespace user Worker (docs/wfp.md marks it open). `b-dosql`'s page cache depends on it.
 5. The Durable Object namespace name collision (docs/wfp.md open item: namespaces are named `<script>_<class>`).
-6. #58 (c1 storefront cache), #60 (b-dosql transactions), #63 (b cache key), #31 (import).
+6. #58 (the storefront cache, first built for the retired `c1`), #60 (b-dosql transactions), #63 (b cache key), #31 (import).
 7. Cost per tenant under traffic (the idle cost is in the README).
 8. Metering of outbound HTTP from PHP in the object (#26 built the transport and an optional allowlist; the outbound Worker does not see these fetches).
 9. The dispatcher, the per-tenant Terraform and the upload pipeline are not built. This document is the design they follow.

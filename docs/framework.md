@@ -1,23 +1,25 @@
 # A multi-tenant WordPress and WooCommerce framework on Workers for Platforms
 
-Run many WordPress sites, and transactional WooCommerce stores, on YOUR OWN Cloudflare Workers for Platforms account, every site provisioned by one command or by a Worker. This is a framework you run on your account, not a hosting product and not a sign-up flow. It is reproducible from these docs on a clean account.
+Run many WordPress sites, including WooCommerce stores, on YOUR OWN Cloudflare Workers for Platforms account. Every site is made by one command or by a Worker. This is a framework you run on your account. It is not a hosting product and not a sign-up flow. You can build it again from these docs on a clean account.
 
-The differentiator: the provisioning core is pure Cloudflare API calls (fetch plus Web Crypto), so the SAME code that a CLI runs can run inside a Worker. A Worker can stand up a new site. Design and proofs: issues #35, #154, #152.
+The key idea: the provisioning core is only Cloudflare API calls (fetch plus Web Crypto). The SAME code that a CLI runs can run inside a Worker. So a Worker can make a new site. Design and proofs: issues #35, #154, #152, #182.
 
 New to this from a traditional LAMP WordPress host (a Linux box with Apache or nginx, PHP, and MySQL)? Start with [docs/from-lamp-to-wfp.md](from-lamp-to-wfp.md), which maps your stack one-to-one onto this one, then come back here for the commands and prerequisites.
 
-## Two kinds of site, and when to use each
+## One kind of site: `wp` (b-dosql), for blogs and stores
 
-| Kind | What it is | Use it for | Not for |
-| --- | --- | --- | --- |
-| `wp` (b-dosql) | WordPress with PHP and its SQLite in one Durable Object, a user Worker in the dispatch namespace | content sites, and WooCommerce BROWSING served from the edge cache | transactional checkout (the Durable Object isolate hits its 128 MiB limit at checkout) |
-| `shop` (c1) | stock WordPress plus WooCommerce in a Cloudflare Container, SQLite on disk, replicated to R2 by Litestream | a real store: guest cart and checkout to a real order | many tiny sites cheaply (a container per store) |
+Every site is the same kind, `wp` (called b-dosql). It is WordPress with PHP and its SQLite database inside one Durable Object. It runs as a user Worker in the dispatch namespace. A site can be:
 
-Pick `wp` for a brochure or content site, or a storefront whose shoppers only browse. Pick `shop` when the store takes orders. Both kinds run side by side in one deployment.
+- a content site (a blog or a brochure site); or
+- a WooCommerce store. WooCommerce runs on b-dosql **including checkout**. This is measured on Workers Paid: an order places under the 128 MiB isolate limit, and `tests/woo.py` is green (see the README matrix and `docs/results.md`).
+
+There is no container store. The older "c1" store path (WordPress in a Cloudflare Container) was retired in #214, because b-dosql now does checkout directly. Its notes stay as a record in [approach-c1.md](approach-c1.md). The CLI and the provisioning Worker refuse `kind: shop`.
+
+**The limit to know:** a b-dosql site is one Durable Object, so it has 128 MiB of memory, one writer, and one region. A blog or a light-to-moderate store fits well. For a store with sustained, heavy concurrent load, use a VPS (the normal LAMP stack). See [from-lamp-to-wfp.md](from-lamp-to-wfp.md).
 
 ## How it fits together
 
-One dispatch Worker routes every site by its hostname. An end user points their own domain at your SaaS zone with a CNAME; the wildcard route hands the request to the dispatcher, which reads the KV site map and runs the right user Worker or container store.
+One dispatch Worker routes every site by its hostname. An end user points their own domain at your SaaS zone with a CNAME; the wildcard route hands the request to the dispatcher, which reads the KV site map and runs the right user Worker.
 
 ```mermaid
 flowchart LR
@@ -25,27 +27,23 @@ flowchart LR
   EU -->|"grey-cloud CNAME"| FB["Fallback origin<br/>fallback.your-saas-zone"]
   FB -->|"wildcard route"| DISP["wp-dispatch<br/>dispatch Worker"]
   DISP <-->|"look up the Host"| KV[("KV site map")]
-  DISP -->|"kind = wp"| WP["b-dosql user Worker<br/>PHP + SQLite in a Durable Object"]
-  DISP -->|"kind = shop"| SHOP["c1 standalone Worker<br/>+ Container store"]
+  DISP --> WP["b-dosql user Worker<br/>PHP + SQLite in a Durable Object"]
 ```
 
-Provisioning is one core, two callers (a CLI or a Worker), branching by kind. Every step is an idempotent Cloudflare API call, so no build runs at provision time.
+Provisioning is one core with two callers (a CLI or a Worker). Every step is an idempotent Cloudflare API call, so no build runs when you make a site. "Idempotent" means you can run a step again and it does no harm.
 
 ```mermaid
 flowchart TD
   CALLER["A Worker or the CLI"] --> CORE["provisionSite (the core)"]
-  CORE -->|"kind = wp"| WPSEQ["createR2Bucket<br/>deployNamespaceScript with the SQLite migration<br/>upsertSite into KV<br/>ensureProxiedHostname for SaaS routing"]
-  CORE -->|"kind = shop"| SHOPSEQ["createR2Bucket x2<br/>mintScopedR2Token for Litestream<br/>deployContainerWorkerFromDigest<br/>container-enable the DO, then create the container application<br/>enableWorkersDevSubdomain<br/>upsertSite into KV"]
+  CORE --> WPSEQ["createR2Bucket<br/>deployNamespaceScript with the SQLite migration<br/>upsertSite into KV<br/>ensureProxiedHostname for SaaS routing"]
 ```
 
 ## What you need (on your own account)
 
 - A Cloudflare account on the **Workers for Platforms Paid** plan, and your **account id**.
-- An **API token** with edit on: Workers Scripts, Workers KV, Workers for Platforms, R2, and Account Tokens (the last to mint each store's scoped Litestream key). A provisioning Worker uses a token with the same scopes.
+- An **API token** with edit on: Workers KV, Workers for Platforms, R2, and DNS for the one SaaS zone. A provisioning Worker uses one token with only these scopes. It holds no token-minting scope and no Containers scope (see `deploy/provision/HARDENING.md`).
 - **Node and Wrangler** (4.107.0 or later), and this repository.
-- Built-once artifacts (the provisioning core never builds at provision time):
-  - the **b-dosql worker bundle** (for `wp` sites), built with `deploy/wfp` / `spikes/b2-wordpress`;
-  - the **c1 worker bundle AND the c1 container image** (for `shop` sites). Build the image once and push it: `wrangler containers push`, which prints a digest ref `registry.cloudflare.com/<your-account>/<repo>@sha256:<digest>`. Every store references that digest; no Docker runs per store.
+- One built-once artifact (the provisioning core never builds when you make a site): the **b-dosql worker bundle**, built with `deploy/wfp` / `spikes/b2-wordpress`. You build it once; every site uses it.
 - The shared pieces once (the dispatch namespace, the KV site map, the outbound Worker): `deploy/wfp/up.sh` makes them. Note the KV site map id; the core reads and writes it.
 
 Nothing is configured in the dashboard; everything below is a command or an API call.
@@ -61,31 +59,27 @@ export WFP_NAMESPACE=wp-wfp
 export WFP_KV_ID=<the wp-wfp-sites map id>
 export WFP_SUBDOMAIN=<your workers.dev subdomain, or a routed zone>
 
-# a WordPress (content) site
+# a WordPress site (a blog, or a WooCommerce store: same command)
 export BDOSQL_BUNDLE_DIR=<the built b-dosql bundle dir>
 node deploy/provision/cli.mjs add --kind wp blog
-
-# a WooCommerce store (transactional)
-export C1_BUNDLE_DIR=<the built c1 bundle dir>
-export C1_IMAGE_REF=registry.cloudflare.com/<your account>/<repo>@sha256:<digest>
-node deploy/provision/cli.mjs add --kind shop store
 ```
 
-Each `add` is idempotent and does only its own site: for `wp` it creates the media bucket, deploys the namespace script with the site's secrets bundled in atomically, and writes the KV routing entry; for `shop` it creates the two buckets (SQLite replica and media), mints a scoped Litestream key, deploys the container Worker from the digest (no build), and records the store. A `shop`'s first request installs WordPress and WooCommerce and takes about a minute; after that a cold start is about 11 to 12 seconds.
+A store is the same kind of site. You turn on WooCommerce inside the site, as you would on any WordPress host.
 
-Day-two commands follow the same shape (`deploy/wfp/site` for the b-dosql flow today; the core adds `list`/`remove`/`update` over `provisionSite` as it grows): add, remove, list, and update with a snapshot and a way back (see `docs/operator.md`).
+`add` is idempotent and does only its own site. It creates the media bucket, deploys the namespace script with the site's secrets inside the same upload, and writes the KV routing entry. Today `cli.mjs` implements `add` only. To remove, list or update a site, use the `deploy/wfp/site` flow (see `docs/operator.md`), which also shows how to snapshot a site and go back.
 
-## Provision from a Worker (the differentiator)
+## Provision from a Worker
 
-Because the core is pure `fetch` plus Web Crypto, a Worker can stand up a site. `deploy/provision/worker.mjs` is a minimal example: POST a provision config and it calls the same `provisionSite`.
+Because the core is only `fetch` plus Web Crypto, a Worker can make a site. `deploy/provision/worker.mjs` does this. You send it a bearer token and three fields, and it calls the same `provisionSite`.
 
 ```sh
 curl -X POST https://<your-provisioning-worker>/ \
+  -H "authorization: Bearer $PROVISION_AUTH" \
   -H 'content-type: application/json' \
-  --data '{"kind":"wp","name":"blog","namespace":"wp-wfp","kvId":"<KV>","hostname":"blog.example.com","compatibilityDate":"2026-07-01","modules":[...pre-built bundle...],"resourceBindings":[...],"secrets":{...},"buckets":{"media":"wp-wfp-blog-media"}}'
+  --data '{"kind":"wp","name":"blog","domain":"<one of the base domains the Worker owns>"}'
 ```
 
-The Worker holds a provisioning token (the scopes above) and the pre-built bundle; it never builds an image or a bundle. This is what makes self-serve or automated provisioning possible: your own control plane, or a customer UI, stands up a site by calling a Worker.
+The caller sends ONLY `kind` (always `wp`), `name` and `domain`. The Worker keeps the pre-built bundle, the namespace, the KV id and the zone in its own trusted config. A caller cannot upload code or aim at another site's resources. The Worker never builds a bundle. This is how a control plane or a customer UI can make a site: it calls a Worker. The hardening is in `deploy/provision/HARDENING.md`. The Worker also has a public `/demo` door (Turnstile, short-lived demo sites) that cleans up after itself.
 
 ## The SaaS zone (one-time setup)
 
@@ -124,24 +118,22 @@ End users reach a site on a vanity domain through Cloudflare for SaaS, routed by
 
 ## Honest limits
 
-- A `shop` is ONE container per store: one region, one writer, and a cold-start wait (about 11 to 12 seconds) for the first visitor after the store sleeps. It is not multi-tenant inside the namespace (a container cannot be deployed into the dispatch namespace; issue #147). For many tiny stores, the per-store container cost is real.
-- A `wp` site does cached WooCommerce BROWSING well but CANNOT do transactional checkout: the Durable Object isolate hits its 128 MiB memory limit at checkout (that is why `shop` exists).
-- Each store's R2 Litestream secret must be SHA-256 of the token value with NO trailing newline; a wrong newline 403s and crashes the container on boot. The core derives it correctly and enforces it (issue #154); do not hand-derive it with `echo`.
+- A site is ONE Durable Object: 128 MiB of isolate memory, one writer, one region. Throughput is about 1 divided by the CPU time of one request (about 4 public pages a second at 230 ms; see `docs/perf-dosql.md`). A store with sustained, heavy concurrent load belongs on a VPS.
+- There is no container store. The c1 path was retired (#214); see [approach-c1.md](approach-c1.md) for the record.
 - Custom hostnames bill per hostname beyond the Cloudflare for SaaS free allowance.
 - A single deployment picks one routing phase for its b-dosql sites (`workers.dev` or custom hostnames); see `docs/operator.md`, "one phase for the whole deployment".
 
 ## The architecture, each claim measured
 
-- **Worker-provisionable, build the image once.** A second store deploys from the first store's already-pushed image digest with ZERO build (cross-application image reference), within the account's generous container limits (issues #147, #154, proven live). So one image serves N stores, provisioned via the API.
-- **Transactional checkout works.** `tests/woo.py` is 12 of 12 (admin enables cash on delivery, creates a product; a guest adds to cart via the Store API and checks out to a real order, stock decremented), guest checkout 1.3 to 1.7 s (`docs/approach-c1.md`, measured 2026-11-04).
-- **Throughput per store scales with the instance.** CPU per request is about 0.15 s and does not change with the instance type, so the ceiling is about vCPU / 0.15 s: about 3 requests per second on `standard-1`, about 6 on `standard-2` (both measured), about 12 and 24 on `standard-3` and `standard-4` (predicted). See `docs/approach-c1.md`.
+- **A Worker can make a site, with no build.** The core is only API calls (issues #154, #182). See `deploy/provision/README.md`.
+- **Transactional checkout works on b-dosql.** `tests/woo.py` is green on Workers Paid (see the README matrix and `docs/results.md`).
 - **Concurrent multi-site load.** WooCommerce and WordPress sites under concurrent load: issue #152.
-- **Isolation.** Each site has its own user Worker or container, Durable Object or SQLite, R2 bucket, secrets, and per-call limits; one site cannot read another's. `deploy/wfp/bindings.py` checks after every upload that a script binds only its own resources.
+- **Isolation.** Each site has its own user Worker, Durable Object and SQLite, R2 bucket, secrets, and per-call limits; one site cannot read another's. `deploy/wfp/bindings.py` checks after every upload that a script binds only its own resources.
 
 ## Where the detail is
 
 - `docs/operator.md`: the b-dosql day-one walkthrough (scripts, Terraform, update and rollback, custom hostnames, teardown).
 - `deploy/provision/README.md`: the provisioning core (ops, orchestration, CLI, Worker, the custom-hostname op).
 - `deploy/wfp/README.md`: the Workers for Platforms reference deployment.
-- `docs/approach-c1.md`: the c1 container store (design, the measured numbers, the operational notes).
-- Issues #35 (the reference deployment), #154 (the Worker-provisionable core), #152 (load), #147 (why a store is standalone).
+- `docs/approach-c1.md`: the retired c1 container store (kept as a record).
+- Issues #35 (the reference deployment), #154 and #182 (the Worker-provisionable core and its hardening), #152 (load).
