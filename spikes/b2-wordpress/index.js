@@ -520,6 +520,14 @@ async function handleMessage(raw) {
 		return '{}';
 	}
 	if (sqlDb) return JSON.stringify(sqlStatement(sqlDb, m));
+	// DB_IN_DO: the object's own SQLite is the only database; there is no D1 binding on a
+	// b-dosql deploy. If a DB statement arrives with sqlDb unbound (null) we must NOT fall
+	// through to ENV.DB below: ENV.DB is undefined there, so that path throws deep in the
+	// driver and surfaces to the client as "Cannot escape data without an active database
+	// connection" (issue #208). Fail loud and specific instead, so a future unbound path is
+	// visible at once rather than masquerading as a connection fault.
+	if ((m.sql !== undefined || m.mysql !== undefined || m.mysql_b64 !== undefined) && ENV && ENV.DB_IN_DO === 'on')
+		return JSON.stringify({ ok: false, error: 'DB_IN_DO: object SQLite not bound (sqlDb is null) for this PHP execution' });
 	const t = Date.now();
 	stats.calls++;
 	try {
@@ -1540,9 +1548,33 @@ export class PhpRuntime extends DurableObject {
 			// this.env (always present on the DO) and SITE_ORIGIN (deploy.sh always emits it), with
 			// the persisted origin as a fallback, and gate on the resolved values, not the globals.
 			ENV = this.env;
+			// A test seam (CRON_SIMULATE_COLD=1): a real Cloudflare alarm wakes a hibernated DO into a
+			// fresh isolate where the module globals are gone, which no single persistent local isolate
+			// reproduces. Nulling them here makes the local alarm take the same cold path, so the bind
+			// below (issue #208) is exercised by tests/cron-cold.py. Off by default; prod never sets it.
+			if (this.env.CRON_SIMULATE_COLD === '1') { sqlDb = null; sqlStorage = null; bootPromise = null; }
 			const cronOrigin = lastOrigin || this.env.SITE_ORIGIN || (await this.ctx.storage.get(ORIGIN_KEY));
 			if (phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env) {
-				const cr = await runCron(await (bootPromise ??= boot(cronOrigin)));
+				// DB_IN_DO: bind the object's own SQLite as WordPress's database before the cron runtime
+				// loads WP. The fetch path sets this per request (sqlDb = sql); the alarm runs on a woken
+				// isolate where the module globals are gone, so without this sqlDb is null and every cron
+				// DB query misses the object store. A b-dosql deploy has NO D1 binding, so handleMessage
+				// then falls through to an undefined ENV.DB and the driver connect fatals with "Cannot
+				// escape data without an active database connection" (the exact wrangler tail error). The
+				// alarm/fetch race on wake is why it is intermittent, not constant (issue #208).
+				const sql = this.env.DB_IN_DO === 'on' ? this.ctx.storage.sql : null;
+				sqlDb = sql;
+				sqlStorage = sql ? this.ctx.storage : null;
+				const realTxn = sql && this.env.REAL_TRANSACTIONS !== 'off';
+				if (realTxn) txnRecover(sql, this.ctx.storage);
+				let cr;
+				try {
+					cr = await runCron(await (bootPromise ??= boot(cronOrigin)));
+				} finally {
+					// A cron run that left a transaction open is rolled back, as a request is (MySQL rolls
+					// back on connection close); a throw is re-raised to the outer catch after this.
+					if (realTxn && txnFrames) txnEnd(sql, this.ctx.storage);
+				}
 				// Send what runCron just enqueued (the deferred WC order mails). The request path drains
 				// pendingEmails at the end of a request; the alarm is the ONLY drain when no request
 				// follows (a low-traffic store), so without this the queued order emails sit in the
