@@ -590,6 +590,7 @@ let lastOrigin = null;
 const PURGE_GAP_MS = 15000;
 // The object's purge state (issue #78): {pending, lastSent, retried}, in its storage.
 const PURGE_STATE_KEY = 'skyphusion-purge';
+const ORIGIN_KEY = 'skyphusion-origin';
 let lastPurge = 0;
 function schedulePurge(ctx) {
 	// A purge already scheduled for later covers this change too.
@@ -1391,8 +1392,15 @@ export class PhpRuntime extends DurableObject {
 		// path, so deferred WC order emails fire with no traffic. DISABLE_WP_CRON stays on; this
 		// alarm is the only cron driver. One alarm also coalesces purges, below.
 		try {
-			if (lastOrigin && ENV) {
-				const cr = await runCron(await (bootPromise ??= boot(lastOrigin)));
+			// A hibernated DO wakes into a fresh isolate: the request-captured module globals
+			// (lastOrigin, ENV) are gone and only ctx.storage survives, so an idle low-traffic site
+			// would skip cron forever and its deferred WC order emails would never fire (#191). Use
+			// this.env (always present on the DO) and SITE_ORIGIN (deploy.sh always emits it), with
+			// the persisted origin as a fallback, and gate on the resolved values, not the globals.
+			ENV = this.env;
+			const cronOrigin = lastOrigin || this.env.SITE_ORIGIN || (await this.ctx.storage.get(ORIGIN_KEY));
+			if (cronOrigin && this.env) {
+				const cr = await runCron(await (bootPromise ??= boot(cronOrigin)));
 				const cst = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
 				// emails is the cumulative count emitted (requests + alarm); with checkout deferring
 				// and no /_runcron, a nonzero value proves the alarm fired the deferred WC order mails.
@@ -1445,6 +1453,7 @@ export class PhpRuntime extends DurableObject {
 		if (!origin) return new Response('missing ' + ORIGIN_HEADER, { status: 500 });
 		const url = new URL(objectUrl.pathname + objectUrl.search, origin);
 		lastOrigin = origin;
+		await this.ctx.storage.put(ORIGIN_KEY, origin);
 		// Phase 2 (#185): keep a cron alarm scheduled so Action Scheduler (deferred WC order
 		// emails) and WP-Cron run with no traffic. One DO alarm serves both cron and purge.
 		if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
