@@ -1,5 +1,6 @@
 // Spike B2: WordPress in a Worker, database on D1.
 import { sqlImport } from './sql-import.js';
+import { sender, replyTo } from './mail-from.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
@@ -365,10 +366,13 @@ function emailOp(email) {
 }
 
 // Send a wp_mail message through the send_email binding (issue #185). Transactional
-// only (WooCommerce order mails); both html and text. The from domain (skyphusionwp.dev)
-// is onboarded for Cloudflare Email Sending (CR #186).
-const EMAIL_FROM = { email: 'wordpress@skyphusionwp.dev', name: 'WooCommerce' };
+// mail. The From address is this site's MAIL_FROM, or wordpress@<its host> when
+// that host can send (mail-from.mjs). It is not a shared WooCommerce address.
+// A From the message asked for, when it is a different real address, becomes
+// the Reply-To. Returns [] when the site has no sender or no binding.
 function sendEmail(env, email) {
+	const from = sender(env);
+	if (!from || !env || !env.EMAIL) return [];
 	const recipients = (Array.isArray(email.to) ? email.to : [email.to]).map((x) => String(x || '').trim()).filter(Boolean);
 	const body = String(email.message || '');
 	const looksHtml = /<[a-z!\/]/i.test(body) || /text\/html/i.test(String(email.headers || ''));
@@ -376,7 +380,10 @@ function sendEmail(env, email) {
 	const html = looksHtml ? body : '<pre>' + esc(body) + '</pre>';
 	const text = looksHtml ? body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : body;
 	const subject = String(email.subject || '(no subject)');
-	return recipients.map((to) => env.EMAIL.send({ to, from: EMAIL_FROM, subject, html, text }).then((r) => ((stats.emailSent = (stats.emailSent || 0) + 1), r)));
+	const msg = { to: null, from, subject, html, text };
+	const rt = replyTo(from.email, email.headers);
+	if (rt) msg.replyTo = rt;
+	return recipients.map((to) => env.EMAIL.send({ ...msg, to }).then((r) => ((stats.emailSent = (stats.emailSent || 0) + 1), r)));
 }
 
 // Drain the queued wp_mail messages (emailOp) and send them through the send_email binding.
@@ -386,9 +393,13 @@ function sendEmail(env, email) {
 // recycle. Returns a promise resolving to the count sent, or null when nothing is queued; the
 // caller waitUntil's it (request/alarm, non-blocking) or awaits it (a manual /_runcron).
 function sendPending(env) {
-	if (!(pendingEmails.length && env && env.EMAIL)) return null;
+	if (!pendingEmails.length) return null;
 	const toSend = pendingEmails;
 	pendingEmails = [];
+	if (!env || !env.EMAIL || !sender(env)) {
+		console.log('email send: ' + toSend.length + ' dropped, MAIL_FROM or the send_email binding is not set');
+		return Promise.resolve(0);
+	}
 	return Promise.allSettled(toSend.flatMap((e) => sendEmail(env, e))).then((rs) => {
 		const failed = rs.filter((x) => x.status === 'rejected').length;
 		if (failed) console.log('email send: ' + failed + ' of ' + rs.length + ' failed');
@@ -2234,15 +2245,11 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// x-cache-purge (scheduled or coalesced) is for tests.
 			if (ctx && ctx.requestPurge && purgeRequested) out.set('x-cache-purge', await ctx.requestPurge());
 			// Async email (issue #185): hand the collected messages to the send_email binding
-			// off the request path, so checkout never waits on delivery. No binding or no ctx
-			// (older deploy): the messages are dropped here, as mail() did, until both exist.
-			if (pendingEmails.length && env.EMAIL && ctx && ctx.waitUntil) {
-				const toSend = pendingEmails;
-				pendingEmails = [];
-				ctx.waitUntil(Promise.allSettled(toSend.flatMap((e) => sendEmail(env, e))).then((rs) => {
-					const failed = rs.filter((x) => x.status === 'rejected').length;
-					if (failed) console.log('email send: ' + failed + ' of ' + rs.length + ' failed');
-				}));
+			// off the request path, so checkout never waits on delivery. No binding, no
+			// MAIL_FROM, or no ctx: sendPending drops them and says so.
+			if (pendingEmails.length && ctx && ctx.waitUntil) {
+				const sp = sendPending(env);
+				if (sp) ctx.waitUntil(sp);
 			}
 			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
 			const d = delta();

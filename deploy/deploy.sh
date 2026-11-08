@@ -171,7 +171,9 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
   echo 'compatibility_flags = ["nodejs_compat"]'
   echo 'workers_dev = true'
   echo 'rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]'
-  echo 'send_email = [{ name = "EMAIL" }]'
+  # From address: MAIL_FROM, else wordpress@<site host> when that host can send
+  # (spikes/b2-wordpress/mail-from.mjs). A workers.dev host sends nothing.
+  SITE_ORIGIN="$SITE_ORIGIN" MAIL_FROM="${MAIL_FROM:-}" node "$APP/mail-from.mjs" --binding
   echo '[assets]'; echo 'directory = "build/public"'; echo 'binding = "ASSETS"'; echo 'not_found_handling = "none"'
   echo '[cache]'; echo 'enabled = true'
   # Only the Pages entrypoint is cached; the default one is the gateway (issue #63).
@@ -180,6 +182,7 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
   echo '[vars]'
   echo "PHP_ENV = '{\"USE_ZEND_ALLOC\":\"0\"}'"
   echo "SITE_ORIGIN = \"$SITE_ORIGIN\""
+  SITE_ORIGIN="$SITE_ORIGIN" MAIL_FROM="${MAIL_FROM:-}" MAIL_FROM_NAME="${MAIL_FROM_NAME:-}" node "$APP/mail-from.mjs" --vars
   # Hosts PHP may call. Unset writes the default. Empty denies. See http-allow.mjs.
   HTTP_ALLOW=$(node "$APP/http-allow.mjs")
   echo "HTTP_ALLOW_HOSTS = \"$HTTP_ALLOW\""

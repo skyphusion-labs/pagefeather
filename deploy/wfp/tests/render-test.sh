@@ -11,6 +11,7 @@
 # - valid_site: the names it takes and refuses.
 # Exits 0 only when every check holds. Needs bash, python3 (tomllib).
 set -u
+unset MAIL_FROM MAIL_FROM_NAME
 unset HTTP_ALLOW_HOSTS
 HERE=$(cd "$(dirname "$0")" && pwd)
 LIB=${1:-$HERE/../lib.sh}
@@ -51,8 +52,16 @@ good = (c["name"] == "site-one" and "workers_dev" not in c and c["cache"] == {"e
         and v["HTTP_ALLOW_HOSTS"] == ".wordpress.org,.woocommerce.com,.gravatar.com"
         and c["r2_buckets"] == [{"binding": "MEDIA", "bucket_name": "wp-wfp-one-media"}]
         and c["durable_objects"]["bindings"] == [{"name": "PHP_RUNTIME", "class_name": "PhpRuntime"}]
-        and c["migrations"] == [{"tag": "v1", "new_sqlite_classes": ["PhpRuntime"]}] and c["main"] == "index.js")
+        and c["migrations"] == [{"tag": "v1", "new_sqlite_classes": ["PhpRuntime"]}] and c["main"] == "index.js"
+        and "MAIL_FROM" not in v and c["send_email"] == [{"name": "EMAIL"}])
 print(1 if good else 0)' "$T/user.toml")"
+render_user shop https://shop.example.co > "$T/shop.toml"
+ok "a custom host sends as wordpress@host, and the binding allows only that address" "$("$PY" -c '
+import sys, tomllib
+c = tomllib.load(open(sys.argv[1], "rb"))
+good = (c["vars"]["MAIL_FROM"] == "wordpress@shop.example.co"
+        and c["send_email"] == [{"name": "EMAIL", "allowed_sender_addresses": ["wordpress@shop.example.co"]}])
+print(1 if good else 0)' "$T/shop.toml")"
 render_cacheprobe site-cacheprobe false > "$T/cp-ns.toml"
 render_cacheprobe wp-cacheprobe-direct true > "$T/cp-direct.toml"
 ok "the cache probe: one script, [cache] on, the namespace copy without workers.dev" "$("$PY" -c '
