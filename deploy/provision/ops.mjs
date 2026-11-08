@@ -320,3 +320,52 @@ async function pollCustomHostname(ctx, { saasZoneId, id, pollMs, intervalMs = 50
     await new Promise((res) => setTimeout(res, intervalMs));
   }
 }
+
+
+// ---- Demo teardown ops (#182 Path B reaper) ---------------------------------
+// Each reverses one resource a demo site created, so the reaper can fully tear a
+// demo down. All are idempotent: a 404 (already gone) is success.
+
+// Delete a dispatch-namespace script (the demo Worker).
+export async function deleteNamespaceScript(ctx, { ns, name }) {
+  const r = await cfFetch(ctx.token, 'DELETE',
+    `/accounts/${ctx.acct}/workers/dispatch/namespaces/${ns}/scripts/${name}`, { fetchImpl: ctx.fetchImpl });
+  if (r.ok || r.status === 404) return { deleted: name };
+  throw opError('deleteNamespaceScript', name, r);
+}
+
+// Empty then delete an R2 bucket (R2 refuses to delete a non-empty bucket). The
+// drain is a bounded loop so a paging or delete hiccup cannot spin forever.
+export async function deleteR2Bucket(ctx, name) {
+  for (let i = 0; i < 20; i++) {
+    const list = await cfFetch(ctx.token, 'GET',
+      `/accounts/${ctx.acct}/r2/buckets/${name}/objects?per_page=1000`, { fetchImpl: ctx.fetchImpl });
+    if (list.status === 404) return { deleted: name, existed: false };
+    if (!list.ok) throw opError('deleteR2Bucket list', name, list);
+    const objs = (list.result && (list.result.objects || (Array.isArray(list.result) ? list.result : []))) || [];
+    if (!objs.length) break;
+    for (const o of objs) {
+      const key = o.key || o.name;
+      const d = await cfFetch(ctx.token, 'DELETE',
+        `/accounts/${ctx.acct}/r2/buckets/${name}/objects/${encodeURIComponent(key)}`, { fetchImpl: ctx.fetchImpl });
+      if (!d.ok && d.status !== 404) throw opError('deleteR2Bucket object', key, d);
+    }
+  }
+  const del = await cfFetch(ctx.token, 'DELETE', `/accounts/${ctx.acct}/r2/buckets/${name}`, { fetchImpl: ctx.fetchImpl });
+  if (del.ok || del.status === 404) return { deleted: name };
+  throw opError('deleteR2Bucket', name, del);
+}
+
+// Delete the proxied originless routing record(s) for a hostname on the SaaS zone.
+export async function deleteProxiedHostname(ctx, { zoneId, hostname }) {
+  const list = await cfFetch(ctx.token, 'GET',
+    `/zones/${zoneId}/dns_records?type=AAAA&name=${encodeURIComponent(hostname)}`, { fetchImpl: ctx.fetchImpl });
+  if (list.status === 404) return { deleted: hostname, count: 0 };
+  if (!list.ok) throw opError('deleteProxiedHostname list', hostname, list);
+  const recs = list.result || [];
+  for (const rec of recs) {
+    const d = await cfFetch(ctx.token, 'DELETE', `/zones/${zoneId}/dns_records/${rec.id}`, { fetchImpl: ctx.fetchImpl });
+    if (!d.ok && d.status !== 404) throw opError('deleteProxiedHostname', hostname, d);
+  }
+  return { deleted: hostname, count: recs.length };
+}

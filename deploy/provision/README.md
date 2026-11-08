@@ -32,6 +32,9 @@ live). Design: issue #154. Worker hardening: issue #182 and `HARDENING.md`.
   (MEDIA/IMAGES/PHP_RUNTIME/EMAIL and the runtime vars), matching deploy/wfp
   lib.sh render_user. The Worker and the CLI both consume it so they cannot drift;
   a drift test checks it against render_user + bindings.py.
+- `demo.mjs` (#182 Path B): the public demo front door controls, per-IP + global
+  rate limit (KV counter), the live-demo concurrency cap, and the reaper that
+  fully tears down every expired demo (script, bucket, DNS record, KV entry).
 - `tests/`: offline, stub `fetchImpl` (or the global fetch + stub bindings for the
   Worker). Ops, orchestration, CLI parsing, custom hostnames, the hardened Worker
   entry, and the security unit tests, including the SHA-256 no-newline guard, the
@@ -49,7 +52,10 @@ live). Design: issue #154. Worker hardening: issue #182 and `HARDENING.md`.
   call it.
 - `cli.mjs`: `site add --kind wp|shop <name>` (node). Parses args, loads the
   PRE-BUILT bundle dir, generates per-site secrets, calls `provisionSite`.
-- `worker.mjs` (hardened, #182): the provisioning Worker. An authenticated caller
+- `worker.mjs` (hardened, #182): the provisioning Worker, TWO front doors over one
+  core. `POST /` is Path A (private operator bearer, full kinds, caller names it);
+  `POST /demo` is Path B (public Turnstile, demo-tier b-dosql only, ephemeral); the
+  `scheduled` handler runs the demo reaper. An authenticated caller
   POSTs ONLY `{ kind, name, domain }`; the Worker builds the whole cfg from its
   own trusted config (bundle, namespace, kv id, zone, bindings, secrets), so a
   caller can neither upload code nor target another tenant's resources. Auth,

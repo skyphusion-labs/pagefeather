@@ -151,7 +151,7 @@ async function loadBundle(env, kind) {
 // ---- 8. Build the full server-side cfg --------------------------------------
 // Mirrors cli.mjs buildCfg, but every value comes from env + the base + the
 // bundle, never the request. Secrets are generated fresh here.
-export async function buildServerCfg(env, { kind, name, domain }) {
+export async function buildServerCfg(env, { kind, name, domain, demo = false, expiresAt }) {
   const target = deriveTarget(env, { kind, name, domain });
   const compatibilityDate = env.WFP_COMPAT || '2026-07-01';
   const common = {
@@ -172,6 +172,9 @@ export async function buildServerCfg(env, { kind, name, domain }) {
       saasZoneId: target.saasZoneId,
       secrets: { WP_SALT: genSecret(), SPIKE_TOKEN: genSecret(24) },
       buckets: { media: mediaBucket },
+      // Demo lane (#182 Path B): the entry is stamped ephemeral so the reaper can
+      // find and fully tear it down. saasZoneId is carried for the DNS teardown.
+      ...(demo ? { demo: true, expiresAt } : {}),
     };
   }
   const imageRef = env.C1_IMAGE_REF;
@@ -184,4 +187,37 @@ export async function buildServerCfg(env, { kind, name, domain }) {
     buckets: { db: `wp-woo-${name}-db`, media: `wp-woo-${name}-media` },
     imageRef, containerClass: 'Store', instanceType: env.C1_INSTANCE || 'basic',
   };
+}
+
+
+// ---- Path B (public demo) controls ------------------------------------------
+// Turnstile verify, FAIL CLOSED. The public demo form solves a Turnstile
+// challenge; the worker verifies the token via siteverify before any
+// provisioning. No long-lived operator token lives on this path. A missing
+// secret, a missing token, a non-200, or success!==true all deny.
+export async function verifyTurnstile(env, token, remoteip) {
+  if (!env.TURNSTILE_SECRET || !token || typeof token !== 'string') return false;
+  const form = new URLSearchParams();
+  form.set('secret', env.TURNSTILE_SECRET);
+  form.set('response', token);
+  if (remoteip) form.set('remoteip', remoteip);
+  let res;
+  try {
+    res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: form });
+  } catch { return false; }
+  if (!res || !res.ok) return false;
+  let data;
+  try { data = await res.json(); } catch { return false; }
+  return !!(data && data.success === true);
+}
+
+// The PUBLIC caller supplies a Turnstile token and, at most, a kind. The kind is
+// capped to the demo tier: a b-dosql blog ('wp') only, NEVER the elevated c1/VPS
+// store ('shop'). The name is worker-assigned (not read here) and the base is a
+// fixed demo base (env.DEMO_BASE), so a public caller configures nothing.
+export function validatePublicRequest(body) {
+  if (!body || typeof body !== 'object') throw new BadRequest('body must be a JSON object');
+  const kind = body.kind === undefined ? 'wp' : body.kind;
+  if (kind !== 'wp') throw new BadRequest('the public demo mints only a b-dosql blog (kind "wp"); the c1/VPS store is not available on the demo tier');
+  return { kind: 'wp' };
 }

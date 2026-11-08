@@ -78,7 +78,12 @@ async function provisionWp(ctx, cfg) {
     migrations: { new_tag: cfg.migrationTag || 'v1', new_sqlite_classes: sqliteClasses },
   });
   steps.push({ deployed: script, ns: cfg.namespace, sqliteClasses });
-  const entry = { script, kind: 'wp', outbound: true, ...(cfg.limits || {}) };
+  const entry = {
+    script, kind: 'wp', outbound: true, ...(cfg.limits || {}),
+    // Demo lane (#182 Path B): stamp everything the reaper needs to tear this
+    // site down fully (script, bucket, zone) plus the expiry it reaps on.
+    ...(cfg.demo ? { demo: true, expiresAt: cfg.expiresAt, name: cfg.name, mediaBucket: cfg.buckets.media, saasZoneId: cfg.saasZoneId } : {}),
+  };
   await upsertSite(ctx, { kvId: cfg.kvId, hostname: cfg.hostname, entry });
   // Routing: a namespace site is reached through the SaaS zone's */* dispatcher
   // (wp-dispatch), which routes by Host through this KV map. For the hostname to

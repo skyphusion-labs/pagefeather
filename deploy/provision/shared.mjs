@@ -58,3 +58,31 @@ export function genSecret(bytes = 32) {
   crypto.getRandomValues(a);
   return Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('');
 }
+
+
+// ---- Public demo lane (#182 Path B) -----------------------------------------
+// Tunable caps for the public demo front door. The lead sets finals at deploy;
+// these are the sane defaults. A demo is ephemeral (TTL), its name is assigned
+// by the worker (never the caller), and both a per-IP/global rate limit and a
+// hard concurrency ceiling bound abuse and account spend.
+export const DEMO_TTL_MS = 3 * 60 * 60 * 1000;      // 3 hours
+export const DEMO_MAX_PER_IP_PER_HOUR = 3;          // per-IP rate
+export const DEMO_MAX_GLOBAL_PER_HOUR = 60;         // global rate
+export const DEMO_MAX_CONCURRENT = 20;              // live demos ceiling (primary spend bound)
+export const DEMO_NAME_PREFIX = 'demo-';            // the dedicated demo lane
+
+// A worker-assigned demo site name: demo-<16 hex>. The PUBLIC caller never
+// chooses this (kills name-squatting + tenant impersonation at the source). The
+// result passes SITE_NAME_RE and is not reserved (the reserved set has the bare
+// word 'demo', not the 'demo-<rand>' lane). Length is 5 + 16 = 21, within 30.
+export function assignDemoName() {
+  const a = new Uint8Array(8);
+  crypto.getRandomValues(a);
+  const rand = Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${DEMO_NAME_PREFIX}${rand}`;
+}
+
+// Is this a demo-lane name? Used by the reaper and the concurrency count.
+export function isDemoName(name) {
+  return typeof name === 'string' && name.startsWith(DEMO_NAME_PREFIX);
+}

@@ -1,64 +1,114 @@
-// Provisioning Worker, the hardened front door (#182). The old version POSTed a
-// whole caller-supplied cfg to provisionSite with NO auth, holding a token that
-// can mint account tokens: an unauthenticated POST was account takeover. This
-// version is the opposite shape. The authenticated caller sends ONLY
-// { kind, name, domain }; the Worker builds everything else (modules, bindings,
-// namespace, kv id, zone, secrets) from its OWN trusted config, so a caller can
-// neither upload code nor target another tenant's resources. See server-config.mjs
-// for the security boundary and HARDENING.md for the design and the two token
-// policies. Still NOT routed; the lead owns the deploy gate.
+// Provisioning Worker, two hardened front doors over one inverted-cfg core (#182).
+// The caller always sends only { kind, name?, domain? }; the Worker builds every
+// binding and the code. See server-config.mjs for the security boundary, demo.mjs
+// for the Path B controls, and HARDENING.md for the design and token policies.
+// Still NOT routed; the lead owns the deploy gate.
+//
+//   Path A (private): POST /         operator bearer, full kinds, caller names it.
+//   Path B (public):  POST /demo     Turnstile, demo-tier b-dosql only, ephemeral.
 import { provisionSite } from './provision.mjs';
 import { readSite } from './registry.mjs';
 import {
   authorize, enforceRateLimit, callerKey,
   validateRequest, selectToken, deriveTarget, buildServerCfg, BadRequest,
+  verifyTurnstile, validatePublicRequest,
 } from './server-config.mjs';
+import {
+  assignDemoName, DEMO_TTL_MS, DEMO_MAX_PER_IP_PER_HOUR, DEMO_MAX_GLOBAL_PER_HOUR, DEMO_MAX_CONCURRENT,
+} from './shared.mjs';
+import { checkDemoRate, bumpDemoRate, demoConcurrency, reapExpiredDemos } from './demo.mjs';
 
-// Bindings and vars the Worker must have to run. PROVISION_AUTH is enforced by
-// authorize() (a missing secret fails closed to 401), so it is checked there,
-// not here. RATE_LIMITER and BUNDLES are bindings; the token VALUES are secrets.
-const REQUIRED_ENV = ['CF_ACCOUNT_ID', 'WP_PROVISION_TOKEN', 'SHOP_PROVISION_TOKEN', 'WFP_KV_ID', 'WFP_BASES', 'RATE_LIMITER', 'BUNDLES'];
+// Path A env. PROVISION_AUTH is enforced by authorize() (fail closed to 401).
+const PATH_A_ENV = ['CF_ACCOUNT_ID', 'WP_PROVISION_TOKEN', 'SHOP_PROVISION_TOKEN', 'WFP_KV_ID', 'WFP_BASES', 'RATE_LIMITER', 'BUNDLES'];
+// Path B env. NO operator token, NO SHOP token (the public path is never elevated),
+// NO RATE_LIMITER (it uses the DEMO_KV counter). TURNSTILE_SECRET gates it.
+const PATH_B_ENV = ['CF_ACCOUNT_ID', 'WP_PROVISION_TOKEN', 'WFP_KV_ID', 'WFP_BASES', 'BUNDLES', 'TURNSTILE_SECRET', 'DEMO_KV', 'DEMO_BASE'];
+
+const json = (obj, status) => Response.json(obj, { status });
 
 export default {
   async fetch(request, env) {
+    const url = new URL(request.url);
     if (request.method !== 'POST') {
-      return new Response('POST { "kind": "wp"|"shop", "name": "...", "domain": "..." } (JSON)\n', { status: 405 });
+      return new Response('POST / (operator) or POST /demo (public demo), JSON\n', { status: 405 });
     }
-    // Auth first, so a misconfigured Worker never leaks its config state to an
-    // unauthenticated caller. authorize() fails closed when PROVISION_AUTH is absent.
-    if (!(await authorize(request, env))) {
-      return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
-    }
-    const missing = REQUIRED_ENV.filter((k) => !env[k]);
-    if (missing.length) {
-      return Response.json({ ok: false, error: `the Worker is missing: ${missing.join(', ')}` }, { status: 500 });
-    }
-    // Rate limit per caller (binding guaranteed present by the check above).
-    if (!(await enforceRateLimit(env, callerKey(request)))) {
-      return Response.json({ ok: false, error: 'rate limited' }, { status: 429 });
-    }
-    let body;
-    try { body = await request.json(); } catch { return Response.json({ ok: false, error: 'body is not JSON' }, { status: 400 }); }
-    let req;
-    try { req = validateRequest(body); } catch (e) { return Response.json({ ok: false, error: e.message }, { status: 400 }); }
+    if (url.pathname === '/demo') return handleDemo(request, env);
+    return handleOperator(request, env);
+  },
 
-    try {
-      const ctx = { acct: env.CF_ACCOUNT_ID, token: selectToken(env, req.kind) };
-      // Idempotency pre-check: derive the hostname cheaply and return an existing
-      // site WITHOUT loading the bundle or touching the account. provisionSite
-      // guards this again (defense in depth), but the pre-check avoids the bundle
-      // read on a duplicate request.
-      const target = deriveTarget(env, req);
-      const existing = await readSite(ctx, { kvId: target.kvId, hostname: target.hostname });
-      if (existing && typeof existing.script === 'string') {
-        return Response.json({ ok: true, provisioned: existing.kind, name: req.name, script: existing.script, hostname: target.hostname, existing: true });
-      }
-      const cfg = await buildServerCfg(env, req);
-      const r = await provisionSite(ctx, cfg);
-      return Response.json({ ok: true, provisioned: r.kind, name: r.name, script: r.script, hostname: r.hostname, existing: !!r.existing });
-    } catch (e) {
-      const status = e instanceof BadRequest ? 400 : 500;
-      return Response.json({ ok: false, error: e.message }, { status });
-    }
+  // The reaper: a cron/alarm fires this; it tears down every EXPIRED demo fully.
+  async scheduled(event, env, ctx) {
+    const run = reapExpiredDemos(env);
+    if (ctx && ctx.waitUntil) ctx.waitUntil(run);
+    return run;
   },
 };
+
+// ---- Path A: private operator provisioning ----------------------------------
+async function handleOperator(request, env) {
+  if (!(await authorize(request, env))) return json({ ok: false, error: 'unauthorized' }, 401);
+  const missing = PATH_A_ENV.filter((k) => !env[k]);
+  if (missing.length) return json({ ok: false, error: `the Worker is missing: ${missing.join(', ')}` }, 500);
+  if (!(await enforceRateLimit(env, callerKey(request)))) return json({ ok: false, error: 'rate limited' }, 429);
+
+  let body;
+  try { body = await request.json(); } catch { return json({ ok: false, error: 'body is not JSON' }, 400); }
+  let req;
+  try { req = validateRequest(body); } catch (e) { return json({ ok: false, error: e.message }, 400); }
+
+  try {
+    const ctx = { acct: env.CF_ACCOUNT_ID, token: selectToken(env, req.kind) };
+    const target = deriveTarget(env, req);
+    const existing = await readSite(ctx, { kvId: target.kvId, hostname: target.hostname });
+    if (existing && typeof existing.script === 'string') {
+      return json({ ok: true, provisioned: existing.kind, name: req.name, script: existing.script, hostname: target.hostname, existing: true }, 200);
+    }
+    const cfg = await buildServerCfg(env, req);
+    const r = await provisionSite(ctx, cfg);
+    return json({ ok: true, provisioned: r.kind, name: r.name, script: r.script, hostname: r.hostname, existing: !!r.existing }, 200);
+  } catch (e) {
+    return json({ ok: false, error: e.message }, e instanceof BadRequest ? 400 : 500);
+  }
+}
+
+// ---- Path B: public demo provisioning ---------------------------------------
+// Turnstile-gated, demo-tier b-dosql only, worker-assigned name, rate + concurrency
+// capped, ephemeral (TTL + reaper). It uses ONLY the restricted WP token and never
+// the elevated SHOP token, so the public path cannot mint an account token.
+async function handleDemo(request, env) {
+  const missing = PATH_B_ENV.filter((k) => !env[k]);
+  if (missing.length) return json({ ok: false, error: `the demo Worker is missing: ${missing.join(', ')}` }, 500);
+
+  let body;
+  try { body = await request.json(); } catch { return json({ ok: false, error: 'body is not JSON' }, 400); }
+  const ip = callerKey(request);
+
+  // 1. Turnstile, fail closed, BEFORE anything else.
+  const token = (body && typeof body === 'object' && body.turnstileToken) || request.headers.get('cf-turnstile-response');
+  if (!(await verifyTurnstile(env, token, ip))) return json({ ok: false, error: 'turnstile verification failed' }, 403);
+
+  // 2. Kind cap: demo tier is b-dosql blog only.
+  let pub;
+  try { pub = validatePublicRequest(body); } catch (e) { return json({ ok: false, error: e.message }, 400); }
+
+  // 3. Rate limit, per-IP AND global.
+  const rate = await checkDemoRate(env, ip, { perIpPerHour: DEMO_MAX_PER_IP_PER_HOUR, globalPerHour: DEMO_MAX_GLOBAL_PER_HOUR });
+  if (!rate.ok) return json({ ok: false, error: `rate limited (${rate.scope})` }, 429);
+
+  // 4. Concurrency cap (the primary spend bound).
+  const ctx = { acct: env.CF_ACCOUNT_ID, token: env.WP_PROVISION_TOKEN };
+  const live = await demoConcurrency(ctx, { kvId: env.WFP_KV_ID });
+  if (live >= DEMO_MAX_CONCURRENT) return json({ ok: false, error: 'demo capacity full' }, 503);
+
+  // Commit: count this demo against the rate budget, then provision it.
+  try {
+    await bumpDemoRate(env, ip);
+    const name = assignDemoName();            // worker-assigned, never the caller's
+    const expiresAt = Date.now() + DEMO_TTL_MS;
+    const cfg = await buildServerCfg(env, { kind: pub.kind, name, domain: env.DEMO_BASE, demo: true, expiresAt });
+    const r = await provisionSite(ctx, cfg);
+    return json({ ok: true, demo: true, name, hostname: r.hostname, expiresAt, ttlMs: DEMO_TTL_MS }, 200);
+  } catch (e) {
+    return json({ ok: false, error: e.message }, e instanceof BadRequest ? 400 : 500);
+  }
+}

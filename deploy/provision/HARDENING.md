@@ -218,3 +218,61 @@ PROVISION_AUTH cannot pass). Five residuals were folded in:
   (`GET /accounts/{a}/tokens`) and token ROLL (`PUT .../{id}/value`) in addition to
   create. If listing is not permitted the code falls through to create (no worse
   than before), but without roll the zombie-avoidance is lost, so grant both.
+
+## Two provisioning paths (#182, Conrad 2026-11-08)
+
+The Worker exposes the SAME inverted-cfg core behind TWO front doors, routed by
+path. The core (`authorize`, `validateRequest`, `buildServerCfg`, `resolveBase`,
+`selectToken`, reserved-name denylist, `scriptExists` anti-clobber, idempotency,
+the two-token split) is shared and unchanged.
+
+### Path A: private operator provisioning (`POST /`)
+The existing design. A long-lived operator/service bearer token
+(`WP_PROVISION_TOKEN` restricted / `SHOP_PROVISION_TOKEN` elevated), held by the
+trusted internal signup backend. Full kinds; the caller may choose the name
+(validated against `SITE_NAME_RE` + the reserved denylist). Modest rate limit.
+
+### Path B: public demo provisioning (`POST /demo`)
+The public demo front door, anyone can spin a throwaway demo. Every control is
+server-side and DEPLOY-BLOCKING, because this is a larger attack and spend surface
+than Path A. Implemented in `demo.mjs` + `server-config.mjs`, all offline-tested.
+
+1. **Turnstile, fail closed** (`verifyTurnstile`): the public form solves a
+   Turnstile challenge; the Worker verifies the token via siteverify before any
+   provisioning. A missing secret, a missing token, a non-200, a network error, or
+   `success!==true` all deny (403). No long-lived operator token on this path.
+2. **No elevated scope**: Path B uses ONLY `WP_PROVISION_TOKEN` and never
+   `SHOP_PROVISION_TOKEN`, so it can never mint an account token. `PATH_B_ENV`
+   does not even list the shop token or the operator auth.
+3. **Worker-assigned name** (`assignDemoName`): the caller does NOT choose the
+   name; the Worker assigns `demo-<16 hex>` in a dedicated lane, and the base is a
+   fixed `DEMO_BASE`. A public caller configures nothing (name, domain, modules,
+   bindings in the body are all ignored), killing name-squatting and impersonation.
+4. **Kind cap** (`validatePublicRequest`): the demo tier mints a b-dosql blog
+   (`kind: wp`) only. `kind: shop` (the elevated c1/VPS store) is a 400.
+5. **Rate limit, per-IP AND global** (`checkDemoRate`): hour-bucketed KV counters
+   in `DEMO_KV`. Over either cap is a 429. FAIL CLOSED on a KV error. Counters are
+   bumped only after a demo is accepted (post-Turnstile, post-caps).
+6. **Concurrency cap** (`demoConcurrency`): the count of live demo sites in the
+   registry (prefix `demo-`). At `DEMO_MAX_CONCURRENT` the next request is a 503
+   "demo capacity full". This is the primary SPEND bound.
+7. **TTL + reaper** (`reapExpiredDemos`, the Worker `scheduled` handler): every
+   demo entry is stamped `demo:true` + `expiresAt` + the teardown fields (script,
+   bucket, zone). A cron/alarm fires the reaper, which for each EXPIRED demo
+   deletes ALL FOUR resources, in order: the namespace script, the R2 bucket
+   (emptied first), the proxied DNS record, and the KV entry LAST (so a partial
+   failure is retried next run). One site's failure never stops the others. A
+   demo cannot persist.
+
+The caps (`DEMO_TTL_MS` 3h, `DEMO_MAX_PER_IP_PER_HOUR` 3, `DEMO_MAX_GLOBAL_PER_HOUR`
+60, `DEMO_MAX_CONCURRENT` 20) are tunable consts in `shared.mjs`; the lead sets
+finals at deploy.
+
+### Deploy note (the lead's gate)
+The strongest deploy shape is a SEPARATE demo Worker bound with only
+`WP_PROVISION_TOKEN` (never the shop token), so "the public path never holds the
+elevated scope" is enforced by the binding set, not only by the code path. Path B
+also needs `TURNSTILE_SECRET`, a `DEMO_KV` namespace, `DEMO_BASE` (an owned base in
+`WFP_BASES`), and a cron trigger for the reaper. Path A can go live first; Path B
+goes live only after the caps + reaper are proven on a real account to actually
+tear sites down and actually refuse over the cap.
