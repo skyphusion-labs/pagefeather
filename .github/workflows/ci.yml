@@ -139,8 +139,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install pcov
-        run: sudo apt-get update -q && sudo apt-get install -y -q php-pcov && php -m | grep -i pcov
+      - name: Install PHP 8.3 with pcov
+        uses: shivammathur/setup-php@2.37.0
+        with:
+          php-version: "8.3"
+          coverage: pcov
+      - name: Verify pcov is loaded
+        run: php -m | grep -i pcov
       - name: Fetch the SQLite driver
         run: |
           git clone -q https://github.com/WordPress/sqlite-database-integration spikes/b2-wordpress/build/cache/sqlite-database-integration
