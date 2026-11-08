@@ -40,6 +40,8 @@ jobs:
       - name: Import media refusal tests
         # deploy/import/media.sh (issue #124): a refused or failed HEAD is retried, then fails; it never counts as missing.
         run: deploy/import/tests/media-refuse-test.sh
+      - name: b-dosql mail From address
+        run: node --test spikes/b2-wordpress/tests/mail-from.test.mjs
       - name: b-dosql operator endpoints (issue #35)
         # /_build and /_evict are gated and never cached (spikes/b2-wordpress).
         run: node spikes/b2-wordpress/tests/build-evict-test.mjs

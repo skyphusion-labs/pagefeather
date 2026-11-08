@@ -127,6 +127,12 @@ From [Containers pricing](https://developers.cloudflare.com/containers/platform/
 
 The token in `CLOUDFLARE_API_TOKEN` must be able to: deploy Workers (Workers Scripts edit), make Containers and push their image, make R2 buckets (Workers R2 Storage edit), and make an account API token (Account API Tokens edit), because Terraform makes the Litestream key. Without the last one, `terraform apply` fails at `cloudflare_account_token.litestream`. The deploy also reads the container rollout (`c1_wait`, issue #106); "Workers Containers Write", which making Containers needs, is enough for that (read 2026-11-06: applications and rollouts both 200 with a token that had only that group).
 
+### Mail for b-dosql
+
+`b-dosql` has no mail program either. `php/wp-mail-queue.php` hands each `wp_mail()` to the Worker, which sends it with the `send_email` binding after the request. The From address is `MAIL_FROM` when you set it. When you do not, and the site host is a domain that can send (not `workers.dev`), the address is `wordpress@<that host>`. A `workers.dev` site sends nothing until you set `MAIL_FROM`. The display name is `MAIL_FROM_NAME` only. It is not the name WooCommerce, and it is not `wordpress@skyphusionwp.dev`, unless you set that address yourself for a demo.
+
+The binding can send from that one address. A different From on the message becomes the Reply-To, except an address that cannot receive mail (`example.com`, `workers.dev`, and the other reserved names). The domain has to be onboarded for Email Sending or the send fails. The c1 mail section below says how to onboard a domain. `skyphusionwp.dev` is one such domain only when you set `MAIL_FROM` to an address on it.
+
 ### Mail for c1 (issue #104)
 
 The container has no mail program. `php/c1-mail.php` (a mu-plugin on `pre_wp_mail`) sends each `wp_mail()` to the Worker through the outbound path (`http://worker.internal/`). The Store object then sends it with a [Cloudflare Email Service](https://developers.cloudflare.com/email-service/) `send_email` binding. Without the settings below, the site sends no mail, and every `wp_mail()` returns false with the code `c1_mail_not_configured`. The failure fires `wp_mail_failed` and is counted in `/_store-info` (`mail`) and `/_stats.php?what=mail`. Mail is never lost in silence.
