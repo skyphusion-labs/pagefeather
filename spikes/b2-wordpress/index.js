@@ -580,6 +580,11 @@ async function boot(origin) {
 	// Bootstrap trim mu-plugin (perf): skip pure-background wc-admin features (remote-inbox,
 	// marketing) that re-init every request. b-dosql only; BOOTSTRAP_TRIM=off turns it off.
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.BOOTSTRAP_TRIM !== 'off') lines.push(`define('SKYPHUSION_BOOTSTRAP_TRIM', true);`);
+	// CF Images upload trim mu-plugin (issue #189): drop the EXIF read and the
+	// redundant intermediate sizes on the upload path, so a media upload does not
+	// tip a Woo-warmed isolate past 128 MiB. b-dosql + CF Images only (MEDIA and
+	// IMAGES); IMAGES_UPLOAD_TRIM=off turns it off.
+	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.MEDIA && ENV.IMAGES && ENV.IMAGES_UPLOAD_TRIM !== 'off') lines.push(`define('SKYPHUSION_IMAGES_UPLOAD_TRIM', true);`);
 	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
 
 	php.onMessage(handleMessage);
