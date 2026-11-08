@@ -110,6 +110,7 @@ main = "index.js"
 compatibility_date = "$(compat_date)"
 compatibility_flags = ["nodejs_compat"]
 rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
+send_email = [{ name = "EMAIL" }]
 [assets]
 directory = "build/public"
 [cache]
