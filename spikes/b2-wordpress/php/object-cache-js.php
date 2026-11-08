@@ -24,9 +24,30 @@ class JS_Object_Cache {
 	public $cache_hits = 0;
 	public $cache_misses = 0;
 	public $bridge_calls = 0;
+	/** @var array<string,bool>|null Approach-A persist allowlist (#218); null means the default (b-dosql) posture. */
+	private $persist_allow = null;
+	/** @var int Default expire (seconds) for a persistent set in approach-A isolated mode; 0 means none. */
+	private $default_ttl = 0;
+	/** @var bool Force the cache off this request (spike-gated x-oc-off), for a clean same-binary bracket. */
+	private $force_off = false;
 
 	public function __construct() {
 		$this->blog_prefix = is_multisite() ? get_current_blog_id() . ':' : '';
+		// Approach A, many isolates (#218): persist only an allowlist of cross-isolate-safe
+		// groups, cap staleness with a bounded TTL, and honor a spike-gated per-request
+		// x-oc-off so the measurement can bracket the same binary. b-dosql defines none of
+		// these constants, so its posture is unchanged.
+		if ( defined( 'JS_OBJECT_CACHE_PERSIST_GROUPS' ) ) {
+			$this->persist_allow = array();
+			foreach ( explode( ',', (string) JS_OBJECT_CACHE_PERSIST_GROUPS ) as $g ) {
+				$g = trim( $g );
+				if ( '' !== $g ) {
+					$this->persist_allow[ $g ] = true;
+				}
+			}
+		}
+		$this->default_ttl = defined( 'JS_OBJECT_CACHE_TTL' ) ? (int) JS_OBJECT_CACHE_TTL : 0;
+		$this->force_off   = ! empty( $_SERVER['HTTP_X_OC_OFF'] );
 	}
 
 	private function call( array $op ) {
@@ -36,8 +57,18 @@ class JS_Object_Cache {
 	}
 
 	private function persistent( $group ) {
+		if ( $this->force_off ) {
+			return false;
+		}
 		if ( isset( $this->group_salt[ $group ] ) && '' !== $this->group_salt[ $group ] ) {
 			return true;
+		}
+		// Approach A isolated mode: ONLY allowlisted groups (or a salted group) persist
+		// across requests; everything else, above all the WooCommerce correctness groups,
+		// stays per request, so a stale read in one isolate Map after another isolate write
+		// cannot happen. b-dosql leaves persist_allow null and keeps the default posture.
+		if ( null !== $this->persist_allow ) {
+			return isset( $this->persist_allow[ $group ] );
 		}
 		return empty( $this->non_persistent[ $group ] );
 	}
@@ -158,6 +189,9 @@ class JS_Object_Cache {
 		$this->cache[ $group ][ $key ] = self::copy( $data );
 		unset( $this->missing[ $group ][ $key ] );
 		if ( $this->persistent( $group ) ) {
+			if ( 0 === (int) $expire && $this->default_ttl > 0 ) {
+				$expire = $this->default_ttl;
+			}
 			$this->call( array( 'op' => 'set', 'k' => $this->pkey( $key, $group ), 'v' => base64_encode( serialize( $data ) ), 'ttl' => (int) $expire ) );
 		}
 		return true;

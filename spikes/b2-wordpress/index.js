@@ -5,6 +5,7 @@ import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, ha
 import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled } from './purge-zone.mjs';
+import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -61,25 +62,36 @@ function objectCacheDrop(k) {
 	objectCacheBytes -= e.n;
 	return true;
 }
+const OC_SEP = String.fromCharCode(0); // the NUL that object-cache-js.php puts after the group in a pkey
+function ocGroupOf(k) { const i = k.indexOf(OC_SEP); return i < 0 ? k : k.slice(0, i); }
+function ocCount(k, field) { const g = ocGroupOf(k) + "." + field; stats.ocGroups[g] = (stats.ocGroups[g] || 0) + 1; }
+function dbTableOf(sql) { const m = /\b(?:FROM|INTO|UPDATE|JOIN)\s+`?([A-Za-z0-9_]+)`?/i.exec(sql); if (m) return m[1].toLowerCase(); const w = /^\s*([A-Za-z]+)/.exec(sql); return w ? w[1].toLowerCase() : "?"; }
+function countTable(sql) { const t = dbTableOf(sql); stats.dbTables[t] = (stats.dbTables[t] || 0) + 1; }
+function diffCounts(now, was) { const o = {}; for (const k in now) { const dv = now[k] - (was[k] || 0); if (dv) o[k] = dv; } return o; }
+
 function objectCacheOp(op) {
 	stats.ocCalls++;
 	const now = Date.now();
 	if (op.op === 'get') {
 		const v = op.k.map((k) => {
+			ocCount(k, "get");
 			const e = objectCache.get(k);
-			if (!e) return null;
+			if (!e) { ocCount(k, "miss"); return null; }
 			if (e.exp && e.exp <= now) {
+				ocCount(k, "miss");
 				objectCacheDrop(k);
 				return null;
 			}
 			objectCache.delete(k); // most recently used goes last
 			objectCache.set(k, e);
 			stats.ocHits++;
+			ocCount(k, "hit");
 			return e.v;
 		});
 		return { v };
 	}
 	if (op.op === 'set') {
+		ocCount(op.k, "set");
 		if (txnFrames) txnTouched.add(op.k);
 		objectCacheDrop(op.k);
 		const n = op.k.length + op.v.length;
@@ -95,7 +107,7 @@ function objectCacheOp(op) {
 	if (op.op === 'del') {
 		if (txnFrames) for (const k of op.k) txnTouched.add(k);
 		let n = 0;
-		for (const k of op.k) if (objectCacheDrop(k)) n++;
+		for (const k of op.k) { ocCount(k, "del"); if (objectCacheDrop(k)) n++; }
 		return { n };
 	}
 	if (op.op === 'flush') {
@@ -246,7 +258,7 @@ async function stageUpload(req, env) {
 }
 
 function newStats() {
-	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, ocCalls: 0, ocHits: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
+	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, dbTables: {}, ocGroups: {}, ocCalls: 0, ocHits: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
 }
 
 // The log and failure lists live as long as the isolate. Keep the newest only.
@@ -610,6 +622,69 @@ async function purgeZoneOp(op) {
 	}
 }
 
+// Render an order to a PDF invoice (issue #227). Build the HTML with renderOpPlan,
+// render it with the Browser Rendering binding, store the PDF in the MEDIA bucket under
+// a private invoices/ prefix, and return a signed, expiring download URL. The signing
+// secret (INVOICE_TOKEN) stays in the Worker; PHP relays the URL and never sees it, as
+// with the AI binding and the purge token. Fail safe: any failure returns
+// { ok: true, degraded } and the order is untouched.
+async function browserRenderOp(op) {
+	const t0 = Date.now();
+	stats.browserRender = stats.browserRender || { n: 0, ms: 0, ok: 0, fail: 0 };
+	stats.browserRender.n++;
+	const done = (r) => {
+		stats.browserRender.ms += Date.now() - t0;
+		if (r && r.url) stats.browserRender.ok++;
+		else stats.browserRender.fail++;
+		return r;
+	};
+	try {
+		if (!ENV.BROWSER || !ENV.MEDIA) return done({ ok: true, degraded: 'no browser binding' });
+		const plan = renderOpPlan(op);
+		if (!plan.ok) return done({ ok: true, degraded: plan.error });
+		const key = invoiceKey(plan.orderId, bytesToHex(crypto.getRandomValues(new Uint8Array(16))));
+		const timeoutMs = Math.max(2000, Math.min(60000, Number(ENV.PDF_INVOICE_TIMEOUT_MS || 20000)));
+		let bytes;
+		try {
+			// Dynamic import so index.js still loads where @cloudflare/puppeteer is not
+			// installed (local dev, the pure-helper tests); the real render needs the Browser
+			// Rendering binding on a Paid deploy.
+			const puppeteer = (await import('@cloudflare/puppeteer')).default;
+			const render = (async () => {
+				const browser = await puppeteer.launch(ENV.BROWSER);
+				try {
+					const page = await browser.newPage();
+					await page.setContent(plan.html, { waitUntil: 'load' });
+					return await page.pdf({ format: 'A4', printBackground: true });
+				} finally {
+					await browser.close();
+				}
+			})();
+			const timeout = new Promise((resolve) => setTimeout(() => resolve({ __timeout: true }), timeoutMs));
+			const r = await Promise.race([render, timeout]);
+			if (r && r.__timeout) return done({ ok: true, degraded: 'render timeout' });
+			bytes = r instanceof Uint8Array ? r : new Uint8Array(r);
+		} catch (e) {
+			return done({ ok: true, degraded: 'render: ' + String(e && e.message ? e.message : e).slice(0, 160) });
+		}
+		await ENV.MEDIA.put(key, bytes, { httpMetadata: { contentType: plan.contentType } });
+		// Signed, expiring download URL. Without INVOICE_TOKEN the PDF is stored but no link
+		// is minted, so PHP surfaces nothing (fail safe).
+		let downloadUrl = null;
+		if (ENV.INVOICE_TOKEN) {
+			const ttl = Math.max(300, Math.min(31536000, Number(ENV.INVOICE_URL_TTL || 604800)));
+			const exp = Math.floor(Date.now() / 1000) + ttl;
+			const sig = await signDownload(ENV.INVOICE_TOKEN, key, exp);
+			downloadUrl = invoiceDownloadPath(key, exp, sig);
+		}
+		console.log(JSON.stringify({ m: 'browser_render', kind: 'invoice', bytes: bytes.length, stored: true, signed: !!downloadUrl }));
+		return done({ ok: true, key, url: downloadUrl, bytes: bytes.length });
+	} catch (e) {
+		return done({ ok: true, degraded: String(e && e.message ? e.message : e).slice(0, 200) });
+	}
+}
+
+
 async function handleMessage(raw) {
 	const m = JSON.parse(raw);
 	if (m.http) return JSON.stringify(await httpOp(m.http));
@@ -620,6 +695,7 @@ async function handleMessage(raw) {
 	if (m.email) return JSON.stringify(emailOp(m.email));
 	if (m.aiAlt) return JSON.stringify(await aiAltOp(m.aiAlt));
 	if (m.purgeZone) return JSON.stringify(await purgeZoneOp(m.purgeZone));
+	if (m.browserRender) return JSON.stringify(await browserRenderOp(m.browserRender));
 	if (m.cache === 'purge') {
 		purgeRequested = true;
 		return '{}';
@@ -627,6 +703,7 @@ async function handleMessage(raw) {
 	if (dbHandler && (m.mysql !== undefined || m.mysql_b64 !== undefined)) {
 		const t = Date.now();
 		stats.calls++;
+		if (m.mysql !== undefined) countTable(String(m.mysql));
 		const reply = await dbHandler.query(ENV, m);
 		stats.ms += Date.now() - t;
 		const sql = String(m.mysql !== undefined ? m.mysql : '(binary SQL)');
@@ -799,6 +876,21 @@ async function boot(origin) {
 	// The object cache across requests (php/object-cache.php): only where one
 	// object is the only writer. OBJECT_CACHE=off turns it off (to measure).
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.OBJECT_CACHE !== 'off') lines.push(`define('JS_OBJECT_CACHE', true);`);
+	// Approach A (external MySQL through Hyperdrive; dbHandler is set): the object
+	// cache across requests lives in the Worker ISOLATE Map, and there are many
+	// isolates each writing the shared MySQL, so a write in one isolate never purges
+	// another isolate Map. OFF by default (OBJECT_CACHE=on turns it on, to measure),
+	// and only an allowlist of cross-isolate-safe groups persists; everything else,
+	// above all the WooCommerce correctness groups, stays per request. See issue #218
+	// and docs/approach-a-objectcache.md.
+	if (dbHandler && ENV.DB_IN_DO !== 'on' && ENV.OBJECT_CACHE === 'on') {
+		lines.push("define('JS_OBJECT_CACHE', true);");
+		const ocPersist = (typeof ENV.OBJECT_CACHE_GROUPS === 'string' && ENV.OBJECT_CACHE_GROUPS) ? ENV.OBJECT_CACHE_GROUPS.replace(/[^A-Za-z0-9_,-]/g, '') : 'options,terms,theme_json';
+		lines.push("define('JS_OBJECT_CACHE_PERSIST_GROUPS', " + JSON.stringify(ocPersist) + ");");
+		const ocTtl = Math.max(0, Math.min(3600, parseInt(ENV.OBJECT_CACHE_TTL, 10) || 10));
+		lines.push("define('JS_OBJECT_CACHE_TTL', " + ocTtl + ");");
+		if (ENV.THEME_JSON_CACHE !== 'off') lines.push("define('JS_THEME_JSON_CACHE', true);");
+	}
 	// Real SQL transactions (php/real-transactions.php, #60): the database in the
 	// object only. REAL_TRANSACTIONS=off turns them off (to measure).
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.REAL_TRANSACTIONS !== 'off') lines.push(`define('JS_REAL_TRANSACTIONS', true);`);
@@ -833,6 +925,12 @@ async function boot(origin) {
 	// stays in the Worker: PHP sends a purgeZone op and never sees it, as the AI
 	// binding does for alt text.
 	if (cachePurgeEnabled(ENV)) lines.push(`define('SKYPHUSION_CACHE_PURGE', true);`);
+	// Browser Rendering PDF invoices mu-plugin (php/pdf-invoice.php, issue #227):
+	// render a WooCommerce order to a PDF with the Browser Rendering binding, store it
+	// in R2 and hand back a signed download URL. b-dosql + MEDIA + the BROWSER binding
+	// only; PDF_INVOICE=off turns it off. The signing secret stays in the Worker, as the
+	// AI binding does for alt text.
+	if (pdfInvoiceEnabled(ENV)) lines.push(`define('SKYPHUSION_PDF_INVOICE', true);`);
 	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
 
 	php.onMessage(handleMessage);
@@ -900,7 +998,7 @@ function schedulePurge(ctx) {
 // header: every visitor with any such cookie was a separate variant (measured
 // on wp-perf-dosql, docs/approach-b.md 8c).
 const WP_COOKIE = /(^|;\s*)(wordpress_logged_in_|wordpress_sec_|wp-postpass_|comment_author_|wp-settings-|woocommerce_|wp_woocommerce_session_)/;
-const PAGE_CACHE_NO_PATH = /^\/(wp-admin|wp-login\.php|wp-json|wp-cron\.php|wp-comments-post\.php|cart|checkout|my-account|wc-api|_)/;
+const PAGE_CACHE_NO_PATH = /^\/(wp-admin|wp-login\.php|wp-json|wp-cron\.php|wp-comments-post\.php|cart|checkout|my-account|wc-api|skyphusion-invoice|_)/;
 const PAGE_CACHE_NO_PARAM = ['rest_route', 'wc-ajax', 'add-to-cart', 'preview', 'nocache', 'customize_changeset_uuid', 'wc-api'];
 function pageCacheRoute(req, url, env) {
 	return (
@@ -1079,6 +1177,34 @@ async function serveUpload(req, env, url) {
 	h.set('content-length', String(length));
 	return new Response(req.method === 'HEAD' ? null : o.body, { status, headers: h });
 }
+
+// GET/HEAD /skyphusion-invoice?k=&e=&s= : a signed, expiring link to an order's invoice
+// PDF (issue #227). verifyDownload checks the HMAC, the expiry and that the key is a
+// well-formed invoices/ key, so a link cannot be edited to read another object or used
+// after it expires. The secret never leaves the Worker.
+async function serveInvoice(req, env, url) {
+	const { key, exp, sig } = parseDownloadQuery(url.searchParams);
+	const ok = await verifyDownload(env.INVOICE_TOKEN, key, exp, sig, Math.floor(Date.now() / 1000));
+	if (!ok) return new Response('invalid or expired link', { status: 403 });
+	let o;
+	try {
+		o = await env.MEDIA.get(key);
+	} catch {
+		return new Response('not found', { status: 404 });
+	}
+	if (!o) return new Response('not found', { status: 404 });
+	const h = new Headers();
+	o.writeHttpMetadata(h);
+	if (!h.has('content-type')) h.set('content-type', 'application/pdf');
+	h.set('etag', o.httpEtag);
+	h.set('content-length', String(o.size));
+	// An invoice is per customer: never let the edge cache keep it.
+	h.set('cache-control', 'private, no-store');
+	h.set('x-content-type-options', 'nosniff');
+	h.set('content-disposition', 'inline; filename="invoice.pdf"');
+	return new Response(req.method === 'HEAD' ? null : o.body, { status: 200, headers: h });
+}
+
 
 // Checkout Container (issue #20). WooCommerce needs 256 MB of PHP memory; an
 // isolate has 128 MB for everything, and checkout passed it on Paid. The store
@@ -2019,6 +2145,9 @@ const site = {
 		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		if (env.MEDIA && (req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/wp-content/uploads/')) return serveUpload(req, env, url);
+		// Signed invoice PDF download (issue #227). The Worker verifies the HMAC the
+		// browserRender op minted and streams the PDF from R2; PHP never holds the secret.
+		if (env.MEDIA && env.INVOICE_TOKEN && (req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/skyphusion-invoice') return serveInvoice(req, env, url);
 		// Static assets from the Assets binding (edge, no PHP). In WfP dispatch the
 		// automatic assets layer is bypassed (the dispatcher invokes this worker
 		// programmatically), so serve them here. not_found_handling=none makes a miss
@@ -2323,7 +2452,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const { php, handler, bootMs } = await bootPromise;
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
-			const start = { calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
+			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
 			if (url.pathname === '/_install') {
@@ -2349,6 +2478,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// The AST-cache per-request bypass (issue #173) is honored only with a
 			// valid spike token, so a visitor cannot disable the cache in production.
 			if (!spikeOk) delete headers['x-ast-cache-off'];
+			if (!spikeOk) delete headers['x-oc-off'];
 			let body;
 			if (env.MEDIA && isMediaUpload(req, url) && Number(req.headers.get('content-length') || 0) > STAGE_MIN_BYTES) {
 				const staged = await stageUpload(req, env);
@@ -2386,6 +2516,8 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			}
 			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
 			const d = delta();
+			const ocTables = diffCounts(stats.dbTables, start.dbTables);
+			const ocGroupStats = diffCounts(stats.ocGroups, start.ocGroups);
 			pageCacheHeaders(req, url, r, out, env);
 			// A filled cart means a checkout may follow: start the container now.
 			if (env.WOO_CHECKOUT && env.CHECKOUT_CONTAINER === 'on' && r.httpStatusCode === 201 && ADD_TO_CART_ROUTE.test(restRoute(url))) {
@@ -2399,6 +2531,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 				out.set('x-db', 'object-sqlite');
 				out.set('x-db-rows', `read=${stats.rowsRead - start.rowsRead} written=${stats.rowsWritten - start.rowsWritten}`);
 			}
+			if (Object.keys(ocTables).length || Object.keys(ocGroupStats).length) out.set('x-oc-stats', JSON.stringify({ dbN: d.calls, dbMs: d.ms, tables: ocTables, groups: ocGroupStats, ocKeys: objectCache.size, ocKiB: Math.round(objectCacheBytes / 1024) }));
 			out.set('x-d1-calls', String(d.calls));
 			out.set('x-d1-ms', String(d.ms));
 			out.set('x-d1-failures', String(d.failures.length));
@@ -2449,6 +2582,8 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 					ocHits: stats.ocHits - start.ocHits,
 					ocKeys: objectCache.size,
 					ocKiB: Math.round(objectCacheBytes / 1024),
+					dbTables: ocTables,
+					ocGroups: ocGroupStats,
 					...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full } : {}),
 				};
 				out.set('x-perf', JSON.stringify(perf));
