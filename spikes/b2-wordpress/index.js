@@ -2,6 +2,7 @@
 import { sqlImport } from './sql-import.js';
 import { sender, replyTo } from './mail-from.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
+import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled } from './purge-zone.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -500,6 +501,46 @@ async function aiAltOp(op) {
 	}
 }
 
+async function purgeZoneOp(op) {
+	const t0 = Date.now();
+	stats.purgeZone = stats.purgeZone || { n: 0, ms: 0, ok: 0, fail: 0 };
+	stats.purgeZone.n++;
+	const done = (r) => {
+		stats.purgeZone.ms += Date.now() - t0;
+		if (r && r.purged) stats.purgeZone.ok++;
+		else stats.purgeZone.fail++;
+		return r;
+	};
+	try {
+		// The token and zone stay in the Worker (like the AI binding): PHP sends
+		// only the URLs. No binding means the gate should not have injected the
+		// define, so this is belt and braces.
+		if (!ENV.PURGE_TOKEN || !ENV.PURGE_ZONE) return done({ ok: true, degraded: 'no purge binding' });
+		const body = purgeZoneBody(op);
+		if (!body) return done({ ok: true, degraded: 'nothing to purge' });
+		const timeoutMs = Math.max(1000, Math.min(30000, Number(ENV.PURGE_TIMEOUT_MS || 10000)));
+		const timeout = new Promise((resolve) => setTimeout(() => resolve({ __timeout: true }), timeoutMs));
+		const r = await Promise.race([
+			fetch(cfPurgeEndpoint(ENV.PURGE_ZONE), {
+				method: 'POST',
+				headers: { authorization: `Bearer ${ENV.PURGE_TOKEN}`, 'content-type': 'application/json' },
+				body: JSON.stringify(body),
+			}),
+			timeout,
+		]);
+		if (r && r.__timeout) return done({ ok: true, degraded: 'purge timeout' });
+		let j = null;
+		try { j = await r.json(); } catch (_) {}
+		const purged = !!(r && r.ok && j && j.success);
+		// One line per purge sent, so a run can count them (wrangler tail). The
+		// token is never logged.
+		console.log(JSON.stringify({ m: 'purge_zone', sent: 1, everything: !!body.purge_everything, files: body.files ? body.files.length : 0, status: r ? r.status : 0, ok: purged, errors: (j && j.errors) || [] }));
+		return done({ ok: true, purged, status: r ? r.status : 0, errors: (j && j.errors) || [] });
+	} catch (e) {
+		return done({ ok: true, degraded: String(e && e.message ? e.message : e).slice(0, 200) });
+	}
+}
+
 async function handleMessage(raw) {
 	const m = JSON.parse(raw);
 	if (m.http) return JSON.stringify(await httpOp(m.http));
@@ -509,6 +550,7 @@ async function handleMessage(raw) {
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
 	if (m.email) return JSON.stringify(emailOp(m.email));
 	if (m.aiAlt) return JSON.stringify(await aiAltOp(m.aiAlt));
+	if (m.purgeZone) return JSON.stringify(await purgeZoneOp(m.purgeZone));
 	if (m.cache === 'purge') {
 		purgeRequested = true;
 		return '{}';
@@ -715,6 +757,13 @@ async function boot(origin) {
 	// has no alt text with the Workers AI binding. b-dosql + MEDIA + the AI binding
 	// only; AI_ALT=off turns it off. The model is AI_ALT_MODEL (default llava-hf).
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.MEDIA && ENV.AI && ENV.AI_ALT !== 'off') lines.push(`define('SKYPHUSION_AI_ALT', true);`);
+	// Zone cache purge-on-publish mu-plugin (php/zone-cache-purge.php, issue #205):
+	// purge the Cloudflare ZONE edge cache (deploy/zone/) by URL when content
+	// changes, through the scoped PURGE_TOKEN on the PURGE_ZONE zone. On only on the
+	// DO profile with both bindings present; CACHE_PURGE=off turns it off. The token
+	// stays in the Worker: PHP sends a purgeZone op and never sees it, as the AI
+	// binding does for alt text.
+	if (cachePurgeEnabled(ENV)) lines.push(`define('SKYPHUSION_CACHE_PURGE', true);`);
 	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
 
 	php.onMessage(handleMessage);

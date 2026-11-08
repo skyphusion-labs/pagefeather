@@ -83,12 +83,17 @@ into any file in this package.
 
 ### Required follow-up: purge on publish (issue #205, CR #18 stays open)
 
-`edge_ttl` is 3600, so a published change can be stale at the edge for up to one
-hour, because nothing purges the edge when content changes. The lever is NOT
-complete for real editors without purge-on-publish. Issue #205 tracks a gated
-mu-plugin that purges the affected URLs on `save_post`, comment, and theme
-change, by URL (purge-by-URL is available on Free; cache-tag purge is Enterprise
-only), through a scoped Cache Purge token. CR #18 stays open until that lands.
+`edge_ttl` is 3600, so a published change would be stale at the edge for up to
+one hour if nothing purged the edge when content changes. Issue #205 adds that:
+a gated mu-plugin, `spikes/b2-wordpress/php/zone-cache-purge.php`, purges the
+affected URLs on a post publish/unpublish, a comment approval, and a theme or
+menu change, by URL (purge-by-URL is available on Free; cache-tag purge is
+Enterprise only). It calls `POST /zones/{zone}/purge_cache` through a scoped
+Cache Purge token that the Worker holds (`PURGE_TOKEN` + `PURGE_ZONE`); the token
+never enters PHP. Off by default, on only when both bindings are set, so a site
+with no zone cache never calls the API. See
+`spikes/b2-wordpress/docs/zone-cache-purge.md`. CR #18 can close once this is
+deployed and a live purge is verified.
 
 Free purge limits are 5 per second. Workers Cache purges are 5 per minute, so
 the zone path also gives more purge throughput (part of the #18 finding).

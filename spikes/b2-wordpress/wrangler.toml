@@ -45,6 +45,17 @@ binding = "IMAGES"
 [ai]
 binding = "AI"
 
+# Zone cache purge-on-publish (php/zone-cache-purge.php, issue #205). The zone
+# lever (deploy/zone/) caches anonymous HTML at the Cloudflare edge; this purges
+# it when content changes. Set these ONLY on a deploy behind a real zone with the
+# deploy/zone/ cache rule (not a workers.dev deploy, which has no zone):
+#   wrangler secret put PURGE_TOKEN --env <env>   # scoped: Zone > Cache Purge, one zone
+#   PURGE_ZONE  = "<zone id>"                     # a [vars] entry, not a secret
+#   CACHE_PURGE = "off"                           # optional off switch
+# With PURGE_TOKEN and PURGE_ZONE both present (and PHP_IN_DO/DB_IN_DO on), index.js
+# injects define('SKYPHUSION_CACHE_PURGE', true) and the plugin is active; absent, it
+# is a no-op. The token stays in the Worker and never reaches PHP.
+
 # Workers Free deploy, on workers.dev. Replace database_id with the id from `wrangler d1 create`.
 # Secrets: WP_SALT, SPIKE_TOKEN (wrangler secret put --env free).
 [env.free]

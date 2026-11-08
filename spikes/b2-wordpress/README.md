@@ -13,6 +13,8 @@ npm ci
 ./run.sh              # then open http://localhost:8797/
 ./e2e.sh              # pages, login, admin, editor, REST write
 php tests/dialect-test.php
+php tests/zone-cache-purge-test.php   # zone cache purge-on-publish (#205)
+node --test tests/purge-zone.test.mjs # zone purge op + gate helpers (#205)
 ```
 
 Admin login for the local spike: `admin` / `local-spike-password`. These and the keys in `php/wp-config.php` are for local use only.
