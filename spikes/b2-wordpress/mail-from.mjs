@@ -12,6 +12,17 @@ export function undeliverable(email) {
 	return !domain || UNDELIVERABLE.test(domain);
 }
 
+// Split a recipient list into the deliverable addresses and a count of the ones
+// dropped because their domain cannot receive mail (example.com, workers.dev,
+// localhost, .invalid, .test). b-dosql never hands such an address to
+// env.EMAIL.send: it would bounce in the Email Sending log and can hang a manual
+// /_runcron, and the seeded test admin is admin@example.com (#198).
+export function deliverableRecipients(list) {
+	const all = (Array.isArray(list) ? list : [list]).map((x) => String(x || '').trim()).filter(Boolean);
+	const deliverable = all.filter((to) => !undeliverable(to));
+	return { deliverable, dropped: all.length - deliverable.length };
+}
+
 export function resolveMailFrom(env) {
 	const explicit = String((env && env.MAIL_FROM) || '').trim();
 	if (explicit) return explicit;

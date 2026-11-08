@@ -249,8 +249,20 @@ except ValueError:
 
 if [ "${WOO_ACTIVE:-0}" = 1 ]; then
   log "activate WooCommerce"
-  curl -s -m 300 -X POST -H "x-spike-token: $SPIKE_TOKEN" "$URL/_activate?plugin=woocommerce/woocommerce.php" | tee /dev/stderr | grep -q '\\"active\\":true' \
-    || { echo "WooCommerce did not activate (a result: record it)"; exit 1; }
+  # A just-deployed cold b-dosql isolate can hit "isolate exceeded its memory limit
+  # and was reset" on the first activation (#198); a retry lands on a warm isolate and
+  # succeeds. Bounded retry with backoff so activation self-heals deterministically
+  # instead of relying on the first attempt's luck.
+  ACT_TRIES=${ACT_TRIES:-4}
+  act_ok=0
+  for act_n in $(seq 1 "$ACT_TRIES"); do
+    if curl -s -m 300 -X POST -H "x-spike-token: $SPIKE_TOKEN" "$URL/_activate?plugin=woocommerce/woocommerce.php" | tee /dev/stderr | grep -q '\\"active\\":true'; then
+      act_ok=1; break
+    fi
+    echo "WooCommerce activation attempt $act_n/$ACT_TRIES did not report active; retrying" >&2
+    sleep "$((act_n * 3))"
+  done
+  [ "$act_ok" = 1 ] || { echo "WooCommerce did not activate after $ACT_TRIES attempts (a result: record it)"; exit 1; }
 fi
 
 PW_HINT="(admin; password: cd deploy/terraform && terraform workspace select $NAME && terraform output -raw admin_password)"
