@@ -322,6 +322,10 @@ rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
 PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
 PHP_IN_DO = "on"
 DB_IN_DO = "on"
+# Durable email retry via Queues (#190): the EMAIL_QUEUE binding below is wired for
+# local queue development, but off by default so the default local drain is unchanged.
+# Set ASYNC_EMAIL_QUEUE=on (e.g. --var ASYNC_EMAIL_QUEUE:on) to exercise the queue path.
+ASYNC_EMAIL_QUEUE = "off"
 [env.dosql-local.assets]
 directory = "build/public"
 binding = "ASSETS"
@@ -345,6 +349,25 @@ class_name = "PhpRuntime"
 [[env.dosql-local.migrations]]
 tag = "v1"
 new_sqlite_classes = ["PhpRuntime"]
+
+# Durable email retry (#190, Refs #201). Producer: sendPending() enqueues drained
+# wp_mail here. Consumer: the queue() export delivers with retry + backoff, routing
+# to b2-email-dlq after max_retries; the dlq consumer logs/meters the dead letter.
+# A real deploy must provision these queues first (wrangler queues create b2-email;
+# wrangler queues create b2-email-dlq) and add the same bindings to the deploy env.
+[[env.dosql-local.queues.producers]]
+binding = "EMAIL_QUEUE"
+queue = "b2-email"
+[[env.dosql-local.queues.consumers]]
+queue = "b2-email"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5
+dead_letter_queue = "b2-email-dlq"
+[[env.dosql-local.queues.consumers]]
+queue = "b2-email-dlq"
+max_batch_size = 10
+max_retries = 1
 
 # Workers Free deploy, on workers.dev. No D1. Secrets: WP_SALT, SPIKE_TOKEN
 # (--env dosql-free). The object is made near its first request (no location

@@ -1,6 +1,7 @@
 // Spike B2: WordPress in a Worker, database on D1.
 import { sqlImport } from './sql-import.js';
 import { sender, replyTo } from './mail-from.mjs';
+import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, handleQueuedEmail } from './email-queue.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled } from './purge-zone.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
@@ -401,11 +402,73 @@ function sendPending(env) {
 		console.log('email send: ' + toSend.length + ' dropped, MAIL_FROM or the send_email binding is not set');
 		return Promise.resolve(0);
 	}
+	// Durable path (#190): hand the drain to the queue; the consumer delivers with retry.
+	if (emailQueueEnabled(env)) return enqueueEmails(env, toSend);
 	return Promise.allSettled(toSend.flatMap((e) => sendEmail(env, e))).then((rs) => {
 		const failed = rs.filter((x) => x.status === 'rejected').length;
 		if (failed) console.log('email send: ' + failed + ' of ' + rs.length + ' failed');
 		return rs.length - failed;
 	});
+}
+
+// Producer: hand the drained wp_mail messages to the durable queue (#190). The
+// consumer (the queue() export) delivers them with retry + backoff + dead-letter.
+// On a queue outage, fall back to a best-effort direct send so a transient Queues
+// failure does not lose the mail; the fallback is the v1 path.
+async function enqueueEmails(env, emails) {
+	try {
+		for (const chunk of chunkBatch(emails, 100)) {
+			await env.EMAIL_QUEUE.sendBatch(chunk.map((body) => ({ body })));
+		}
+		stats.emailQueued = (stats.emailQueued || 0) + emails.length;
+		return emails.length;
+	} catch (e) {
+		console.log('email queue: enqueue failed (' + String((e && e.message) || e).slice(0, 120) + '), direct send fallback');
+		const rs = await Promise.allSettled(emails.flatMap((em) => sendEmail(env, em)));
+		return rs.filter((x) => x.status === 'fulfilled').length;
+	}
+}
+
+// Consumer: deliver one queued wp_mail message. Ack on success (or when there is
+// nothing deliverable), retry with backoff on a send failure. After the consumer's
+// max_retries the runtime routes the message to the dead-letter queue (#190). The
+// ack/retry/backoff control flow is handleQueuedEmail (email-queue.mjs), unit-tested.
+async function deliverQueuedEmail(msg, env) {
+	return handleQueuedEmail(
+		msg,
+		async (email) => {
+			if (!env || !env.EMAIL || !sender(env)) return { attempted: 0, failed: 0 };
+			const results = sendEmail(env, email);
+			if (!results.length) return { attempted: 0, failed: 0 };
+			const rs = await Promise.allSettled(results);
+			const failed = rs.filter((x) => x.status === 'rejected').length;
+			if (failed) stats.emailQueueFailed = (stats.emailQueueFailed || 0) + 1;
+			else stats.emailQueueSent = (stats.emailQueueSent || 0) + rs.length;
+			return { attempted: rs.length, failed };
+		},
+		{ onRetry: (delaySeconds) => console.log(JSON.stringify({ m: 'email-queue-retry', attempts: msg.attempts, delaySeconds })) }
+	);
+}
+
+// A dead-lettered message has exhausted its retries. Log and meter it for operator
+// visibility, then ack so it does not loop.
+function deadLetterEmail(msg) {
+	stats.emailDead = (stats.emailDead || 0) + 1;
+	const to = msg.body && msg.body.to;
+	console.log(JSON.stringify({ m: 'email-dead-letter', to: Array.isArray(to) ? to : [to], subject: (msg.body && msg.body.subject) || null }));
+	msg.ack();
+}
+
+// The queue() consumer. One handler serves both the email queue and its dead-letter
+// queue (the "-dlq" suffix). b-dosql only; harmless when no consumer is configured,
+// since the runtime never calls it then.
+async function consumeEmailQueue(batch, env) {
+	ENV = env;
+	if (isDeadLetterQueue(batch && batch.queue)) {
+		for (const msg of batch.messages) deadLetterEmail(msg);
+		return;
+	}
+	for (const msg of batch.messages) await deliverQueuedEmail(msg, env);
 }
 
 // Caption an uploaded image for alt text (php/ai-alt-text.php). PHP sends the
@@ -2043,6 +2106,9 @@ export default {
 			return ctx.exports.Pages.fetch(new Request(req, { headers: h }));
 		}
 		return site.fetch(req, env, ctx);
+	},
+	async queue(batch, env, ctx) {
+		return consumeEmailQueue(batch, env);
 	},
 };
 
