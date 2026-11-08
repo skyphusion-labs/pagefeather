@@ -42,6 +42,8 @@ jobs:
         run: deploy/import/tests/media-refuse-test.sh
       - name: b-dosql mail From address
         run: node --test spikes/b2-wordpress/tests/mail-from.test.mjs
+      - name: b-dosql outbound host allowlist
+        run: node --test spikes/b2-wordpress/tests/http-allow.test.mjs
       - name: b-dosql operator endpoints (issue #35)
         # /_build and /_evict are gated and never cached (spikes/b2-wordpress).
         run: node spikes/b2-wordpress/tests/build-evict-test.mjs

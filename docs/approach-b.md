@@ -509,7 +509,7 @@ Measured per request in `e2e.sh` (`x-db-rows`, local): a public page reads 157 t
   - one timeout for the request and its redirects;
   - redirects are followed in JavaScript, so each hop is checked again: 0 returns the redirect, and past the count is "Too many redirects", as WordPress's HTTP library does;
   - the body is read up to `limit_response_size`, and never past `HTTP_MAX_BYTES` (default 8 MB);
-  - `HTTP_ALLOW_HOSTS` (a comma list) restricts the hosts when it is set;
+  - `HTTP_ALLOW_HOSTS` (a comma list) is the hosts it may call. Unset uses `.wordpress.org`, `.woocommerce.com` and `.gravatar.com`. An empty list denies every host. `*` allows every http(s) host. A leading dot matches that name and its subdomains;
   - a log line for each request.
 - **Configuration.** `wp-config.php` no longer defines `WP_HTTP_BLOCK_EXTERNAL`. `HTTP_BRIDGE=off` defines it again in `wp-runtime.php` and turns the bridge off: the behaviour before.
 - **Not covered:** `curl_*()`, `fsockopen()` and `http://` streams (`file_get_contents()` of a URL). `sslverify` cannot be turned off, because `fetch()` always checks TLS.
