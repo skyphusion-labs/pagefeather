@@ -171,7 +171,7 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
       // The FULL b-dosql binding + var set (deploy/wfp lib.sh render_user), from
       // the ONE shared source so the provisioning path and the deploy path cannot
       // drift. The caller supplies no extra bindings.
-      resourceBindings: bDosqlBindings({ mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS }),
+      resourceBindings: bDosqlBindings({ mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS, mailFrom: `wordpress@${domain}`, mailFromName: name }),
       sqliteClasses: ['PhpRuntime'],
       saasZoneId: target.saasZoneId,
       secrets: { WP_SALT: genSecret(), SPIKE_TOKEN: genSecret(24) },

@@ -28,7 +28,7 @@
 // turn on the default-on gates in index.js (object cache, route cache, theme.json
 // cache, async email, bootstrap trim, media-write trim): index.js enables each
 // unless its var is "off", so the site gets them with no gate var set.
-export function bDosqlVars({ siteOrigin, location = 'enam', cronIntervalMs } = {}) {
+export function bDosqlVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName } = {}) {
   if (!siteOrigin) throw new Error('bDosqlVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
   const vars = {
     PHP_ENV: '{"USE_ZEND_ALLOC":"0"}',
@@ -43,6 +43,16 @@ export function bDosqlVars({ siteOrigin, location = 'enam', cronIntervalMs } = {
   if (cronIntervalMs !== undefined && cronIntervalMs !== null && cronIntervalMs !== '') {
     vars.CRON_INTERVAL_MS = String(cronIntervalMs);
   }
+  // MAIL_FROM (#186): a SaaS site at <name>.<base> must send from the onboarded
+  // BASE domain (wordpress@<base>), NOT its own subdomain, which is not onboarded
+  // for Cloudflare Email Sending and would be rejected. The site name is the
+  // display name so each store is distinguishable. Unset -> the site's
+  // mail-from.mjs falls back to its own host (which only sends if that host is
+  // itself onboarded, e.g. a bring-your-own-domain tenant).
+  if (mailFrom) {
+    vars.MAIL_FROM = mailFrom;
+    if (mailFromName) vars.MAIL_FROM_NAME = mailFromName;
+  }
   return Object.entries(vars).map(([name, text]) => ({ type: 'plain_text', name, text }));
 }
 
@@ -55,10 +65,10 @@ export function bDosqlVars({ siteOrigin, location = 'enam', cronIntervalMs } = {
 // extra: caller-supplied EXTRA bindings appended after the standard set (the
 // CLI's WP_BINDINGS slot). The Worker passes none; the standard set is never
 // caller-controlled.
-export function bDosqlBindings({ mediaBucket, siteOrigin, location = 'enam', cronIntervalMs, extra = [] } = {}) {
+export function bDosqlBindings({ mediaBucket, siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, extra = [] } = {}) {
   if (!mediaBucket) throw new Error('bDosqlBindings: mediaBucket is required');
   return [
-    ...bDosqlVars({ siteOrigin, location, cronIntervalMs }),
+    ...bDosqlVars({ siteOrigin, location, cronIntervalMs, mailFrom, mailFromName }),
     { type: 'images', name: 'IMAGES' },
     { type: 'r2_bucket', name: 'MEDIA', bucket_name: mediaBucket },
     { type: 'durable_object_namespace', name: 'PHP_RUNTIME', class_name: 'PhpRuntime' },

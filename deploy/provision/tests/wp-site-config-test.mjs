@@ -53,7 +53,7 @@ ok('PHP_RUNTIME durable object = PhpRuntime matches render_user',
 // (allowed + in deploy.sh), not that render_user has it.
 ok('EMAIL send_email is emitted', byType('send_email').some((x) => x.name === 'EMAIL'));
 ok('send_email is an allowed binding type (USER_OK) and deploy.sh emits it',
-  USER_OK.has('send_email') && deploySh.includes('send_email = [{ name = "EMAIL" }]'));
+  USER_OK.has('send_email') && deploySh.includes('mail-from.mjs') && deploySh.includes('--binding'));
 ok('KNOWN GAP recorded: lib.sh render_user omits send_email (WFP sites lack email today)',
   !lib.includes('send_email'));
 
@@ -69,6 +69,17 @@ ok('bDosqlVars requires siteOrigin', threw);
 // Optional CRON_INTERVAL_MS appears only when provided, matching the optional emit.
 ok('CRON_INTERVAL_MS omitted by default', !bDosqlVars({ siteOrigin: 'https://x' }).some((v) => v.name === 'CRON_INTERVAL_MS'));
 ok('CRON_INTERVAL_MS included when set', bDosqlVars({ siteOrigin: 'https://x', cronIntervalMs: 30000 }).some((v) => v.name === 'CRON_INTERVAL_MS' && v.text === '30000'));
+
+// MAIL_FROM (#186): a SaaS site sends from the onboarded base, not its subdomain.
+ok('MAIL_FROM omitted by default', !bDosqlVars({ siteOrigin: 'https://x' }).some((v) => v.name === 'MAIL_FROM'));
+ok('MAIL_FROM set to the base sender when provided',
+  bDosqlVars({ siteOrigin: 'https://shop.skyphusionwp.dev', mailFrom: 'wordpress@skyphusionwp.dev', mailFromName: 'shop' })
+    .some((v) => v.name === 'MAIL_FROM' && v.text === 'wordpress@skyphusionwp.dev'));
+ok('MAIL_FROM_NAME is the site name when provided',
+  bDosqlVars({ siteOrigin: 'https://shop.skyphusionwp.dev', mailFrom: 'wordpress@skyphusionwp.dev', mailFromName: 'shop' })
+    .some((v) => v.name === 'MAIL_FROM_NAME' && v.text === 'shop'));
+ok('MAIL_FROM_NAME omitted when only mailFrom is set',
+  !bDosqlVars({ siteOrigin: 'https://x', mailFrom: 'wordpress@skyphusionwp.dev' }).some((v) => v.name === 'MAIL_FROM_NAME'));
 
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
