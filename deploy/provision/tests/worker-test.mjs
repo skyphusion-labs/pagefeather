@@ -162,6 +162,19 @@ const metaOf = async (call) => JSON.parse(await call.body.get('metadata').text()
     !r.calls.some((c) => c.method === 'POST' && c.url.endsWith('/tokens')));
   ok('wp: NO plain /workers/scripts write on the wp path',
     !r.calls.some((c) => /\/workers\/scripts\/site-blog$/.test(c.url)));
+
+  const wpDeploy = r.calls.find((c) => /\/dispatch\/namespaces\/wp-wfp\/scripts\/site-blog$/.test(c.url));
+  const wpMeta = await metaOf(wpDeploy);
+  const names = (t) => wpMeta.bindings.filter((b) => b.type === t).map((b) => b.name);
+  ok('wp: the deploy carries IMAGES, MEDIA, PHP_RUNTIME and EMAIL bindings (a WORKING site)',
+    names('images').includes('IMAGES') && names('r2_bucket').includes('MEDIA') &&
+    names('durable_object_namespace').includes('PHP_RUNTIME') && names('send_email').includes('EMAIL'));
+  const v = (n) => (wpMeta.bindings.find((b) => b.type === 'plain_text' && b.name === n) || {}).text;
+  ok('wp: the deploy carries the runtime vars (deployNamespaceScript passes vars)',
+    v('PHP_IN_DO') === 'on' && v('DB_IN_DO') === 'on' && v('PHP_DO_POOL') === '1' && v('PHP_ENV') === '{"USE_ZEND_ALLOC":"0"}');
+  ok('wp: SITE_ORIGIN is the site own origin, issue #33', v('SITE_ORIGIN') === 'https://blog.skyphusionwp.dev');
+  ok('wp: the MEDIA bucket binding matches the created bucket wp-wfp-blog-media',
+    wpMeta.bindings.find((b) => b.type === 'r2_bucket' && b.name === 'MEDIA').bucket_name === 'wp-wfp-blog-media');
 }
 
 // --- shop builds the correct server cfg end to end ---

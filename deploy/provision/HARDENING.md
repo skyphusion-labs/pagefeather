@@ -119,3 +119,56 @@ Deploy, routing, the `wrangler.toml` bindings (`BUNDLES` R2, `RATE_LIMITER`,
 operator-vs-self-serve auth decision (#182 open item; the token-gated baseline is
 built to accept that layer in front of `authorize()`). Live validation against a
 real account is the lead's gate.
+
+## Config completeness (the functional gap, #182 review)
+
+The security rewrite initially deployed `resourceBindings: []` and no vars, so a
+minted b-dosql site would have been missing MEDIA, IMAGES, PHP_RUNTIME, EMAIL and
+every runtime var, and would not have run. Closed here.
+
+`wp-site-config.mjs` is now the ONE source for what a b-dosql site must bind. The
+Worker (`buildServerCfg`) and the CLI (`buildCfg`) both consume it, so the two
+provisioning callers cannot drift from each other. The authoritative generator is
+`deploy/wfp/lib.sh` `render_user` (it deploys the same namespace site), and
+`tests/wp-site-config-test.mjs` reads `render_user` and `deploy/wfp/bindings.py`
+and asserts the shared module matches them, so a change to the generator that is
+not mirrored here fails CI without a deploy.
+
+The set, matching `render_user`:
+- vars (plain_text): `PHP_ENV` (`USE_ZEND_ALLOC` off), `SITE_ORIGIN` (the site own
+  origin, issue #33), `PHP_IN_DO=on`, `PHP_LOCATION`, `PHP_DO_POOL=1`, `DB_IN_DO=on`
+- `images` IMAGES, `r2_bucket` MEDIA (the site own `wp-wfp-<name>-media`),
+  `durable_object_namespace` PHP_RUNTIME (PhpRuntime), `send_email` EMAIL
+- the PhpRuntime v1 migration (declared by `provisionSite` sqliteClasses)
+- secrets WP_SALT, SPIKE_TOKEN (added by `provisionSite` as secret_text)
+
+The `SKYPHUSION_*` feature gates (object cache, route cache, theme.json cache,
+async email, bootstrap trim, media-write trim) are NOT vars: `index.js` enables
+each by default unless its var is `"off"`, gated on `PHP_IN_DO=on` + `DB_IN_DO=on`
++ the MEDIA binding being present. So setting those three preconditions turns the
+gates on with no gate var set; the drift test records this.
+
+`deployNamespaceScript` already carries these: vars ride as `plain_text` entries
+in the same `bindings` array the op passes to the script-upload metadata, and
+`worker-test.mjs` now asserts the deployed metadata contains the vars and the four
+resource bindings end to end.
+
+### Two deltas for the lead (not silently closed)
+
+1. **`render_user` omits `send_email`.** The WFP generator does not emit an EMAIL
+   binding, so a WFP site deployed by `lib.sh` today has NO email, although
+   `index.js` uses `env.EMAIL` and `deploy.sh` (standalone) emits it. Our config
+   ADDS EMAIL (it is in `bindings.py` USER_OK). `lib.sh render_user` should gain
+   it too, or the two paths stay inconsistent. A bare `send_email` may need a
+   sender domain onboarded at deploy time (issue #104); that is a box-gate step.
+
+2. **`[assets]` and the page cache are not bindings.** `render_user` also sets
+   `[assets] directory = build/public` (static files, uploaded via the assets
+   API) and `[cache]` / `[exports.Pages.cache]` (the page-cache feature). These
+   are not script-metadata bindings, so neither this change nor the old worker
+   ships them: the provisioning path uploads code modules only. For a minted site
+   to fully match a `deploy.sh`/`lib.sh` site (static assets served, page cache
+   warmed, the ~99 MiB warmed figure), the bake lane must publish `build/public`
+   into the bundle store and `provisionWp` must do the assets-upload step, and the
+   cache/exports config must be set. Flagged for the box-gate; out of scope for
+   the security + binding fix here.

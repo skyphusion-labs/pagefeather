@@ -28,6 +28,10 @@ live). Design: issue #154. Worker hardening: issue #182 and `HARDENING.md`.
   (constant-time bearer), the minimal-request parser (reads only kind/name/domain),
   the owned-base allowlist, the least-privilege token split, the trusted bundle
   loader, and the server-side cfg builder.
+- `wp-site-config.mjs` (#182): the ONE source for what a b-dosql site must bind
+  (MEDIA/IMAGES/PHP_RUNTIME/EMAIL and the runtime vars), matching deploy/wfp
+  lib.sh render_user. The Worker and the CLI both consume it so they cannot drift;
+  a drift test checks it against render_user + bindings.py.
 - `tests/`: offline, stub `fetchImpl` (or the global fetch + stub bindings for the
   Worker). Ops, orchestration, CLI parsing, custom hostnames, the hardened Worker
   entry, and the security unit tests, including the SHA-256 no-newline guard, the

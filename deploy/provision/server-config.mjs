@@ -9,6 +9,7 @@
 // bundle in the Worker's own R2 bucket. The caller chooses a type and a name,
 // and picks an OWNED base domain from an allowlist; it configures nothing.
 import { SITE_NAME_RE, assertValidName, genSecret } from './shared.mjs';
+import { bDosqlBindings, mediaBucketName } from './wp-site-config.mjs';
 
 // ---- 1. Caller auth (operator baseline) --------------------------------------
 // A shared operator secret in env.PROVISION_AUTH, sent as `Authorization:
@@ -150,14 +151,18 @@ export async function buildServerCfg(env, { kind, name, domain }) {
     modules: await loadBundle(env, kind),
   };
   if (kind === 'wp') {
+    const mediaBucket = mediaBucketName(name);
     return {
       ...common, kind: 'wp', mainModule: env.WP_MAIN || 'index.js',
       hostname: target.hostname,
-      resourceBindings: [],
+      // The FULL b-dosql binding + var set (deploy/wfp lib.sh render_user), from
+      // the ONE shared source so the provisioning path and the deploy path cannot
+      // drift. The caller supplies no extra bindings.
+      resourceBindings: bDosqlBindings({ mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS }),
       sqliteClasses: ['PhpRuntime'],
       saasZoneId: target.saasZoneId,
       secrets: { WP_SALT: genSecret(), SPIKE_TOKEN: genSecret(24) },
-      buckets: { media: `wp-wfp-${name}-media` },
+      buckets: { media: mediaBucket },
     };
   }
   const imageRef = env.C1_IMAGE_REF;

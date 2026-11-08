@@ -9,6 +9,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { provisionSite } from './provision.mjs';
 import { SITE_NAME_RE, genSecret } from './shared.mjs';
+import { bDosqlBindings, mediaBucketName } from './wp-site-config.mjs';
 
 // genSecret lives in shared.mjs (the Worker uses it too); re-export so the CLI
 // surface and cli-test are unchanged.
@@ -61,11 +62,23 @@ async function buildCfg(kind, name, env) {
   if (!kvId) throw new Error('set WFP_KV_ID (the wp-wfp-sites map id)');
   const common = { name, namespace, kvId, compatibilityDate, compatibilityFlags: ['nodejs_compat'] };
   if (kind === 'wp') {
+    const mediaBucket = mediaBucketName(name);
+    const hostname = env.WP_HOSTNAME || `wp-${name}.${sub}.workers.dev`;
     return {
       ...common, kind: 'wp', mainModule: env.WP_MAIN || 'index.js',
-      hostname: env.WP_HOSTNAME || `wp-${name}.${sub}.workers.dev`,
+      hostname,
       modules: await loadModules(env.BDOSQL_BUNDLE_DIR),
-      resourceBindings: JSON.parse(env.WP_BINDINGS || '[]'),
+      // The FULL b-dosql binding + var set from the ONE shared source (the same
+      // the provisioning Worker uses), so the CLI and the Worker cannot drift on
+      // what a b-dosql site needs. WP_BINDINGS is the EXTRA-bindings slot,
+      // appended after the standard set.
+      resourceBindings: bDosqlBindings({
+        mediaBucket,
+        siteOrigin: env.SITE_ORIGIN || `https://${hostname}`,
+        location: env.PHP_LOCATION || 'enam',
+        cronIntervalMs: env.CRON_INTERVAL_MS,
+        extra: JSON.parse(env.WP_BINDINGS || '[]'),
+      }),
       // The b-dosql bundle defines the PhpRuntime SQLite DO; declaring it in a
       // migration is mandatory (API 10061 otherwise, #158).
       sqliteClasses: JSON.parse(env.WP_SQLITE_CLASSES || '["PhpRuntime"]'),
@@ -74,7 +87,7 @@ async function buildCfg(kind, name, env) {
       // operator step.
       saasZoneId: env.WFP_SAAS_ZONE_ID || undefined,
       secrets: { WP_SALT: genSecret(), SPIKE_TOKEN: genSecret(24) },
-      buckets: { media: `wp-wfp-${name}-media` },
+      buckets: { media: mediaBucket },
     };
   }
   if (!env.C1_IMAGE_REF) throw new Error('set C1_IMAGE_REF (the pushed image digest ref)');
