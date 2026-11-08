@@ -107,6 +107,9 @@ function objectCacheOp(op) {
 // (WordPress calling its own URL) cannot reset an outer one.
 const stats = newStats();
 let bootPromise;
+// The most recently booted PHP, so the /_memprobe bridge (handleMessage probeMem) can
+// read the live WASM heap size from JS. memory_get_usage() reports 0 under USE_ZEND_ALLOC=0.
+let lastBootedPhp = null;
 // Performance instrument (docs/perf-dosql.md), PHP object only. Counts do not
 // need the clock: in a Worker or a Durable Object, Date.now() moves only at
 // I/O, so a time measured across synchronous PHP and SQLite work can read 0.
@@ -397,6 +400,7 @@ async function handleMessage(raw) {
 	if (m.http) return JSON.stringify(await httpOp(m.http));
 	if (m.txn) return JSON.stringify(sqlDb ? txnOp(sqlDb, sqlStorage, m.txn) : { ok: false, error: 'no database in the object' });
 	if (m.oc) return JSON.stringify(objectCacheOp(m.oc));
+	if (m.probeMem) return JSON.stringify({ wasm: lastBootedPhp ? lastBootedPhp[__private__dont__use].HEAPU8.length : null });
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
 	if (m.email) return JSON.stringify(emailOp(m.email));
 	if (m.cache === 'purge') {
@@ -480,6 +484,7 @@ async function boot(origin) {
 		},
 	});
 	const php = new PHP(id);
+	lastBootedPhp = php;
 	// php.ini overrides. PHP_INI (a JSON object) lets a deploy or a test change them.
 	// A deploy (WP_SALT is set) never prints PHP errors, even for a script that
 	// does not load wp-config.php (measured 2026-11-04: /wp-content/db.php did).
@@ -580,6 +585,15 @@ async function boot(origin) {
 	// Bootstrap trim mu-plugin (perf): skip pure-background wc-admin features (remote-inbox,
 	// marketing) that re-init every request. b-dosql only; BOOTSTRAP_TRIM=off turns it off.
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.BOOTSTRAP_TRIM !== 'off') lines.push(`define('SKYPHUSION_BOOTSTRAP_TRIM', true);`);
+	// Media write trim mu-plugin (issue #189): free isolate memory on the rare admin
+	// media-upload request so the attachment insert fits under the 128 MiB cap on a
+	// WooCommerce-warmed b-dosql isolate. b-dosql + MEDIA only, and only the async-upload /
+	// media-REST write path (php/media-write-trim.php). MEDIA_TRIM is the lever list;
+	// MEDIA_TRIM=off turns it off. The value is sanitized to [a-z,] before it becomes a define.
+	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.MEDIA && ENV.MEDIA_TRIM !== 'off') {
+		const mediaTrimModes = (typeof ENV.MEDIA_TRIM === 'string' && ENV.MEDIA_TRIM ? ENV.MEDIA_TRIM : 'wcskip,cacheflush,gc').replace(/[^a-z,]/g, '');
+		if (mediaTrimModes) lines.push(`define('SKYPHUSION_MEDIA_WRITE_TRIM', ${JSON.stringify(mediaTrimModes)});`);
+	}
 	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
 
 	php.onMessage(handleMessage);
@@ -1947,6 +1961,81 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const { php, bootMs } = await bootPromise;
 			const r = await php.run({ code: '<?php echo json_encode(array("opcache" => ini_get("opcache.enable"), "mc" => ini_get("opcache.memory_consumption"), "fco" => ini_get("opcache.file_cache_only"), "cached" => function_exists("opcache_get_status") && ($st = opcache_get_status(false)) ? $st["opcache_statistics"]["num_cached_scripts"] : null, "mem" => isset($st["memory_usage"]) ? $st["memory_usage"] : null));' });
 			return Response.json({ bootMs, wasmMemoryBytes: php[__private__dont__use].HEAPU8.length, fileBytes: bootMs.fileBytes, fileCount: bootMs.fileCount, memAt: bootMs.memAt, ini: JSON.parse(r.text || '{}') });
+		}
+		if (url.pathname === '/_memprobe') {
+			// Decompose the Woo-warmed admin-upload working set (issue #189), so the biggest
+			// FREEABLE chunk is visible. Bootstraps WordPress in the admin-upload context
+			// (WooCommerce active, the wp-admin media includes) and reports memory at each
+			// phase, the OPcache breakdown, and WooCommerce's share of loaded files, classes
+			// and functions; the Worker adds the WASM heap size and the cross-request object
+			// cache. Spike-token gated (every /_ path is). A measurement run: it loads
+			// WooCommerce into the runtime, so run it on an isolate you are done measuring.
+			bootPromise ??= boot(origin);
+			const { php } = await bootPromise;
+			const r = await php.run({ code: `<?php
+				$P = array('limit' => ini_get('memory_limit'), 'use_zend_alloc' => getenv('USE_ZEND_ALLOC'));
+				$heap = function () {
+					if (!function_exists('post_message_to_js')) { return null; }
+					$r = json_decode(post_message_to_js(json_encode(array('probeMem' => 1))), true);
+					return (is_array($r) && isset($r['wasm'])) ? $r['wasm'] : null;
+				};
+				register_shutdown_function(function () use (&$P, $heap) {
+					while (ob_get_level()) { ob_end_clean(); }
+					$P['wasm_end'] = $heap();
+					// memory_get_usage reports 0 under USE_ZEND_ALLOC=0 (the Zend allocator is
+					// bypassed), so the wasm_* heap samples above are the memory of record.
+					$P['php_mem_end'] = memory_get_usage(true);
+					$P['php_mem_peak'] = memory_get_peak_usage(true);
+					if (function_exists('opcache_get_status')) {
+						$st = @opcache_get_status(false);
+						if (is_array($st)) {
+							$P['opcache'] = array(
+								'used' => isset($st['memory_usage']['used_memory']) ? $st['memory_usage']['used_memory'] : null,
+								'free' => isset($st['memory_usage']['free_memory']) ? $st['memory_usage']['free_memory'] : null,
+								'wasted' => isset($st['memory_usage']['wasted_memory']) ? $st['memory_usage']['wasted_memory'] : null,
+								'scripts' => isset($st['opcache_statistics']['num_cached_scripts']) ? $st['opcache_statistics']['num_cached_scripts'] : null,
+								'interned_used' => isset($st['interned_strings_usage']['used_memory']) ? $st['interned_strings_usage']['used_memory'] : null,
+							);
+						}
+					}
+					$inc = get_included_files();
+					$tot = 0; $wc_files = 0; $wc_bytes = 0;
+					foreach ($inc as $f) {
+						$sz = @filesize($f);
+						if ($sz !== false) { $tot += $sz; }
+						if (strpos($f, '/plugins/woocommerce/') !== false) { $wc_files++; if ($sz !== false) { $wc_bytes += $sz; } }
+					}
+					$wc_classes = 0;
+					foreach (get_declared_classes() as $c) { if (stripos($c, 'woocommerce') !== false) { $wc_classes++; } }
+					$fns = get_defined_functions();
+					$user_fns = isset($fns['user']) ? $fns['user'] : array();
+					$wc_fns = 0;
+					foreach ($user_fns as $fn) { if (stripos($fn, 'woocommerce') !== false || strpos($fn, 'wc_') === 0) { $wc_fns++; } }
+					$P['included'] = array('count' => count($inc), 'bytes' => $tot);
+					$P['woocommerce'] = array('files' => $wc_files, 'file_bytes' => $wc_bytes, 'classes' => $wc_classes, 'functions' => $wc_fns);
+					$P['classes_total'] = count(get_declared_classes());
+					$P['user_functions'] = count($user_fns);
+					echo 'PROBE' . json_encode($P);
+				});
+				$P['wasm_start'] = $heap();
+				if (!defined('WP_ADMIN')) { define('WP_ADMIN', true); }
+				$_SERVER['REQUEST_URI'] = '/wp-admin/';
+				require '/wordpress/wp-load.php';
+				$P['wasm_after_wp_load'] = $heap();
+				if (function_exists('wp_set_current_user')) { wp_set_current_user(1); }
+				require_once ABSPATH . 'wp-admin/includes/image.php';
+				require_once ABSPATH . 'wp-admin/includes/media.php';
+				require_once ABSPATH . 'wp-admin/includes/admin.php';
+				$P['wasm_after_media_includes'] = $heap();` });
+			let phpSide;
+			const marker = r.text.indexOf('PROBE');
+			try { phpSide = JSON.parse(r.text.slice(marker + 5)); } catch { phpSide = { parse_error: true, raw: r.text.slice(Math.max(0, marker), marker + 500) }; }
+			return Response.json({
+				wasmMemoryBytes: php[__private__dont__use].HEAPU8.length,
+				recycleThresholdBytes: RECYCLE_WASM_BYTES,
+				objectCache: { entries: objectCache.size, bytes: objectCacheBytes, capBytes: OBJECT_CACHE_BYTES },
+				php: phpSide,
+			});
 		}
 		try {
 			const tBoot = Date.now();
