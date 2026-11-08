@@ -1594,8 +1594,20 @@ async function runCron(booted) {
 		return withPhp(async () => {
 		const r = await php.run({ code: `<?php
 			require '/wordpress/wp-load.php';
-			$ran = array();
+			$ran = array(); $released = 0;
 			if ( class_exists( 'ActionScheduler' ) || function_exists( 'as_next_scheduled_action' ) ) {
+				// Stale-claim recovery (the DO memory-recycle class). This alarm is the only Action
+				// Scheduler runner and runs serialized (withPhp + the phpPending gate), so any claim on
+				// a PENDING action at the start of a run is an orphan: the run that staked it recycled
+				// mid-batch (the 128 MB isolate recycle) after claiming a batch and running only part,
+				// leaving the rest claimed-but-unrun so no later claim re-picks them (a lost order
+				// email on a quiet store). A never-started pending action is safe to unclaim (attempts
+				// 0, it never ran, no duplicate send); native reset only recovers after a 300s timeout.
+				global $wpdb;
+				$as_t = $wpdb->prefix . 'actionscheduler_actions';
+				$as_c = $wpdb->prefix . 'actionscheduler_claims';
+				$released = (int) $wpdb->query( "UPDATE {$as_t} SET claim_id = 0 WHERE claim_id != 0 AND status = 'pending'" );
+				$wpdb->query( "DELETE FROM {$as_c} WHERE claim_id NOT IN ( SELECT DISTINCT claim_id FROM {$as_t} WHERE claim_id != 0 )" );
 				do_action( 'action_scheduler_run_queue', 'Skyphusion DO alarm' );
 				$ran[] = 'action_scheduler';
 			}
@@ -1606,7 +1618,7 @@ async function runCron(booted) {
 					wp_unschedule_event( $ts, $hook, $ev['args'] );
 					do_action_ref_array( $hook, $ev['args'] ); if ( ++$events >= 50 ) { break 3; }
 				} } } }
-			echo json_encode( array( 'ran' => $ran, 'wp_cron_events' => $events ) );` });
+			echo json_encode( array( 'ran' => $ran, 'wp_cron_events' => $events, 'released' => $released ) );` });
 		let out = {};
 		try { out = JSON.parse(String(r.text).slice(String(r.text).lastIndexOf('{'))); } catch (e) { out = { parse: String(r.text).slice(-200) }; }
 		return out;
