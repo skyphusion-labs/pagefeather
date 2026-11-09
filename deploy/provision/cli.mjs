@@ -156,6 +156,12 @@ function bDosqlEnabledIntegrations(env) {
   // ASYNC_EMAIL_QUEUE) set and != off.
   const asyncEmail = env.WP_ASYNC_EMAIL_QUEUE || env.ASYNC_EMAIL_QUEUE;
   if (asyncEmail && asyncEmail !== 'off') enable.push('async-email-queue');
+  // Workers AI auto alt-text (#203 / #201 Phase 2): OPT-IN (Workers AI is metered).
+  // Provisioning the AI binding IS the whole switch: index.js defines SKYPHUSION_AI_ALT
+  // when the AI binding is present and AI_ALT != off, the same shape as pdf-invoices'
+  // BROWSER. Opt in with WP_AI_ALT_TEXT (or the runtime gate var AI_ALT) set and != off.
+  const aiAlt = env.WP_AI_ALT_TEXT || env.AI_ALT;
+  if (aiAlt && aiAlt !== 'off') enable.push('ai-alt-text');
   // Privacy-friendly pageview analytics via Analytics Engine (#201 Phase 2): OPT-IN
   // (a privacy implication, and the writes are metered). WP_ANALYTICS set and != off
   // provisions the ANALYTICS dataset binding + WP_ANALYTICS=on, and index.js
