@@ -1,6 +1,6 @@
 # Plan limits and cost
 
-The per-plan Cloudflare limits that decide the matrix in the root [README](../README.md), and the at-rest cost of the reference deployment. Read from the Cloudflare documentation on the dates shown. Limits change; check the source before you rely on a number.
+The per-plan Cloudflare limits that decide the matrix in the root [README](../README.md), and the at-rest cost of the reference deployment. Read from the Cloudflare documentation on 2026-11-03 unless a row names a later date. Limits change; check the source before you rely on a number.
 
 ## Plan limits
 
