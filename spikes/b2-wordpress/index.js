@@ -69,45 +69,67 @@ function dbTableOf(sql) { const m = /\b(?:FROM|INTO|UPDATE|JOIN)\s+`?([A-Za-z0-9
 function countTable(sql) { const t = dbTableOf(sql); stats.dbTables[t] = (stats.dbTables[t] || 0) + 1; }
 function diffCounts(now, was) { const o = {}; for (const k in now) { const dv = now[k] - (was[k] || 0); if (dv) o[k] = dv; } return o; }
 
-function objectCacheOp(op) {
+// L2 (KV) object cache (#218), BEHIND the in-isolate Map: a cold isolate reads a
+// shared KV store instead of MySQL. Only groups PHP already persists reach here (the
+// OBJECT_CACHE_GROUPS allowlist and salted groups; the Woo correctness groups never
+// send a bridge op), so L2 inherits that safety by construction. Off unless the OC_KV
+// binding is present and OBJECT_CACHE_L2=on, so b-dosql and D1 are untouched. Staleness
+// is bounded: a del writes through to KV, and an allowlisted group already tolerates the
+// bounded-TTL class of staleness; KV's min 60 s expiry is the cross-isolate bound.
+let ocCtx = null; // the current request ctx, for L2 write-through via waitUntil
+function ocL2On() { return !!(ENV && ENV.OBJECT_CACHE_L2 === 'on' && ENV.OC_KV); }
+function ocTtlMs() { const t = Math.max(0, Math.min(3600, parseInt(ENV && ENV.OBJECT_CACHE_TTL, 10) || 10)); return t * 1000; }
+function ocKvKey(k) { return 'oc:' + encodeURIComponent(k); } // NUL-safe KV key from the pkey
+function ocStore(k, v, exp) {
+	const n = k.length + v.length;
+	if (n > OBJECT_CACHE_BYTES / 4) return false;
+	objectCacheDrop(k);
+	objectCache.set(k, { v, exp, n });
+	objectCacheBytes += n;
+	for (const kk of objectCache.keys()) { if (objectCacheBytes <= OBJECT_CACHE_BYTES) break; objectCacheDrop(kk); }
+	return true;
+}
+async function objectCacheOp(op) {
 	stats.ocCalls++;
 	const now = Date.now();
+	const l2 = ocL2On();
 	if (op.op === 'get') {
-		const v = op.k.map((k) => {
+		const out = [];
+		for (const k of op.k) {
 			ocCount(k, "get");
 			const e = objectCache.get(k);
-			if (!e) { ocCount(k, "miss"); return null; }
-			if (e.exp && e.exp <= now) {
-				ocCount(k, "miss");
-				objectCacheDrop(k);
-				return null;
+			if (e && !(e.exp && e.exp <= now)) {
+				objectCache.delete(k); objectCache.set(k, e); // most recently used goes last
+				stats.ocHits++; ocCount(k, "hit"); out.push(e.v); continue;
 			}
-			objectCache.delete(k); // most recently used goes last
-			objectCache.set(k, e);
-			stats.ocHits++;
-			ocCount(k, "hit");
-			return e.v;
-		});
-		return { v };
+			if (e) objectCacheDrop(k); // expired
+			ocCount(k, "miss");
+			if (l2) {
+				let kv = null;
+				try { kv = await ENV.OC_KV.get(ocKvKey(k)); } catch { kv = null; }
+				if (kv != null) {
+					ocStore(k, kv, now + ocTtlMs()); // the shared value is now warm in this isolate
+					stats.ocHits++; ocCount(k, "l2hit"); out.push(kv); continue;
+				}
+				ocCount(k, "l2miss");
+			}
+			out.push(null);
+		}
+		return { v: out };
 	}
 	if (op.op === 'set') {
 		ocCount(op.k, "set");
 		if (txnFrames) txnTouched.add(op.k);
-		objectCacheDrop(op.k);
 		const n = op.k.length + op.v.length;
 		if (n > OBJECT_CACHE_BYTES / 4) return { ok: false };
-		objectCache.set(op.k, { v: op.v, exp: op.ttl > 0 ? now + op.ttl * 1000 : 0, n });
-		objectCacheBytes += n;
-		for (const k of objectCache.keys()) {
-			if (objectCacheBytes <= OBJECT_CACHE_BYTES) break;
-			objectCacheDrop(k);
-		}
+		ocStore(op.k, op.v, op.ttl > 0 ? now + op.ttl * 1000 : 0);
+		if (l2 && ocCtx) { const ttl = Math.max(60, op.ttl > 0 ? op.ttl : 60); try { ocCtx.waitUntil(ENV.OC_KV.put(ocKvKey(op.k), op.v, { expirationTtl: ttl })); } catch {} }
 		return { ok: true };
 	}
 	if (op.op === 'del') {
 		if (txnFrames) for (const k of op.k) txnTouched.add(k);
 		let n = 0;
-		for (const k of op.k) { ocCount(k, "del"); if (objectCacheDrop(k)) n++; }
+		for (const k of op.k) { ocCount(k, "del"); if (objectCacheDrop(k)) n++; if (l2 && ocCtx) { try { ocCtx.waitUntil(ENV.OC_KV.delete(ocKvKey(k))); } catch {} } }
 		return { n };
 	}
 	if (op.op === 'flush') {
@@ -689,7 +711,7 @@ async function handleMessage(raw) {
 	const m = JSON.parse(raw);
 	if (m.http) return JSON.stringify(await httpOp(m.http));
 	if (m.txn) return JSON.stringify(sqlDb ? txnOp(sqlDb, sqlStorage, m.txn) : { ok: false, error: 'no database in the object' });
-	if (m.oc) return JSON.stringify(objectCacheOp(m.oc));
+	if (m.oc) return JSON.stringify(await objectCacheOp(m.oc));
 	if (m.probeMem) return JSON.stringify({ wasm: lastBootedPhp ? lastBootedPhp[__private__dont__use].HEAPU8.length : null });
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
 	if (m.email) return JSON.stringify(emailOp(m.email));
@@ -2249,6 +2271,7 @@ export default {
 };
 
 async function handle(req, env, url, spikeOk, maxBody, ctx) {
+	ocCtx = ctx; // for L2 (KV) object-cache write-through this request (#218)
 	{
 		// A runtime serves only the origin it booted with (8i). The first request
 		// after /_install used to boot the runtime for every later one, and that

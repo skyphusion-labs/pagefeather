@@ -228,6 +228,11 @@ PHP_ENV = '{"USE_ZEND_ALLOC":"0","WP_TABLE_PREFIX":"wp_"}'
 OBJECT_CACHE = "on"
 OBJECT_CACHE_GROUPS = "options,terms,theme_json"
 OBJECT_CACHE_TTL = "10"
+# Approach-A object cache L2 (#218): a KV store shared across isolates, behind the
+# in-isolate Map, so a COLD isolate can hit KV instead of MySQL. Only the groups
+# PHP already persists reach it (Woo correctness groups never do). OBJECT_CACHE_L2=on
+# turns it on; the OC_KV binding below is the store. Measured against the Hyperdrive hop.
+OBJECT_CACHE_L2 = "on"
 [env.a-paid.assets]
 directory = "build/public"
 binding = "ASSETS"
@@ -248,6 +253,12 @@ binding = "MEDIA"
 bucket_name = "wp-a-paid-media"
 [env.a-paid.images]
 binding = "IMAGES"
+# Object-cache L2 store (#218): shared across isolates, so a cold isolate reads KV
+# instead of MySQL. Only PHP-persisted groups (the OBJECT_CACHE_GROUPS allowlist and
+# salted groups) ever reach it; Woo correctness groups never do.
+[[env.a-paid.kv_namespaces]]
+binding = "OC_KV"
+id = "40e27ef6167e42b18112b931fa46aded"
 
 # ---------------------------------------------------------------------------
 # PHP in a Durable Object (issue #28, docs/approach-b.md 8i). The design is
