@@ -1,124 +1,51 @@
 # WordPress on Cloudflare
 
-Two things live here: a **framework** for running many WordPress sites and WooCommerce stores on your own Cloudflare Workers for Platforms account, each provisioned by one command or by a Worker; and the **research** that produced it, recorded below as a matrix of which approaches work on which Cloudflare plan.
+A **framework** for running many WordPress sites and WooCommerce stores on your own Cloudflare Workers for Platforms account, each provisioned by one command or by a Worker, and the **research** that produced it: a matrix of which approaches work on which Cloudflare plan, every claim sourced.
 
-- **To run sites:** start with the framework quickstart, [docs/framework.md](docs/framework.md). Coming from a traditional LAMP WordPress host, read [docs/from-lamp-to-wfp.md](docs/from-lamp-to-wfp.md) first.
-- **To read the research:** the matrix is below, and every document is indexed in [docs/](docs/README.md).
+- **Run sites:** start with the quickstart, [docs/framework.md](docs/framework.md). Coming from a LAMP host, read [docs/from-lamp-to-wfp.md](docs/from-lamp-to-wfp.md) first.
+- **Read the research:** the matrix is below; every document is indexed in [docs/](docs/README.md).
 
-Each claim has a source. A cell is one of these:
-
-| Mark | Meaning |
-| --- | --- |
-| **measured** | We deployed it and ran the test in `tests/`. The result names the command and the date. |
-| **docs** | Cloudflare documentation says it is possible. We did not deploy it. |
-| **claimed** | A third party says it works. We did not deploy it. |
-| **no** | A documented limit blocks it. The limit is named. |
-| **unbuilt** | No known implementation exists. |
-
-Cells marked **measured** link to a row in `docs/results.md`. Everything else is from documentation or a third party.
+A cell is **measured** (we deployed it and ran a test in `tests/`, linked to [docs/results.md](docs/results.md)), **docs** (Cloudflare documents it but we did not deploy it), **claimed** (a third party says so), **no** (a named limit blocks it), or **unbuilt**.
 
 ## The approaches
 
 | Id | Approach | WordPress database | PHP runs in |
 | --- | --- | --- | --- |
-| A | PHP in WebAssembly in a Worker, database outside Cloudflare | MySQL through Hyperdrive | Worker |
-| B | PHP in WebAssembly in a Worker, database on Cloudflare | SQLite on D1 or a Durable Object | Worker |
-| C | Stock WordPress image in a Container | SQLite on the container disk, kept with snapshots; or MySQL through Hyperdrive | Container |
-| D | Headless: a Worker serves the store, WordPress is the back office | Any of A, B or C, or a normal host | Worker for visitors, WordPress for admin |
+| A | PHP-WASM in a Worker, database outside Cloudflare | MySQL through Hyperdrive | Worker |
+| B | PHP-WASM in a Worker, database on Cloudflare | SQLite on D1 or a Durable Object | Worker |
+| C | Stock WordPress image in a Container | SQLite on disk (snapshotted), or MySQL through Hyperdrive | Container |
+| D | Headless: a Worker serves the store, WordPress is the back office | Any of A, B, C, or a normal host | Worker + WordPress |
 
 ## What runs on which plan
 
-| Id | Workers Free | Workers Paid ($5 a month) | Main limit |
+Short verdicts here; the linked doc carries the numbers, dates and caveats.
+
+| Id | Workers Free | Workers Paid | Detail |
 | --- | --- | --- | --- |
-| A | **measured**: our A fails at the CPU limit (plugins 0 of 18, the installer is refused). **HostlessWP measured**: it runs PHP in a Durable Object (30 s CPU), so `e2e.sh` 17 of 17, plugins 18 of 18, WooCommerce 12 of 12. | **measured**, ours and HostlessWP alike on the same database: pages 0.8 to 1.7 s uncached, about 9 ms per query, `e2e.sh` 17 of 17, plugins 17 of 18 (ours; All-in-One WP Migration passes since issue #29, re-run alone on `wp-ref-a`) and 18 of 18 (HostlessWP), WooCommerce checkout works (12 of 12). See [docs/approach-a.md](docs/approach-a.md). | Per-query time to the database: give Hyperdrive the host name (7 ms; the IP address measured 44 ms; a Tunnel with Access about 100 ms). On Free, only PHP in a Durable Object fits. |
-| **A2: A on PlanetScale MySQL** (Cloudflare-provisioned, data on PlanetScale, AWS us-east-2) | not tried (A on Free stops at the CPU limit) | **measured** (2026-11-06): install, `e2e.sh` 17 of 17, WooCommerce 12 of 12, query cache check 13 of 13; 16 to 20 ms per query; pages 2.9 to 8.3 s uncached (from the laptop). Load matrix (runner, 100 users): 8.79 requests per second (`a`: 8.63 in the same run), checkout 10 to 12 s (`a`: 7 to 8 s). Plugin suite: 17 of 18 (All-in-One WP Migration fails as on `a`, #29). See [docs/approach-a2.md](docs/approach-a2.md). | Per-query time: about 16 ms from ORD with PlanetScale's direct host (its optimized host adds about 27 ms). PlanetScale is strict: set `HYPERDRIVE_SQL_MODE`. Hyperdrive's default query cache (60 s, not invalidated on writes) serves stale WordPress reads; the deploy turns it off; check the integration's auto-created config before using it. |
-| B | **measured**: with the page cache, logged-out readers get cached pages (50 of 50 cache hits from a client with no cookies). Until issue #63, a reader with any other cookie (analytics `_ga`, WooCommerce `sbjs_*`) missed: measured 2026-11-06 on `wp-perf-dosql` ([docs/results.md](docs/results.md)). Since #63 those readers hit too. With OPcache, most uncached renders fit under the CPU limit (11 of 12 cold `wp-login.php`). Logged-in and admin pages work in some runs (one `e2e.sh` run 17 of 17) and stop at the CPU limit in others. The installer does not fit. R2 must be turned on in the dashboard before the media library can use it. Plugin suite: 0 of 18 (CPU limit); issue #28 moves PHP into a Durable Object. | **measured**: every page renders, the installer runs in one request, 17 of 17 checks pass. Plugin suite: 18 of 18 ([docs/plugins.md](docs/plugins.md)). Media library on R2 works; image sizes from the Images binding; phone photos up to 20 MB. | CPU time. With OPcache, a page needs about 0.4 s of CPU on a warm isolate and about 1.2 s on a new one (median). Free stops a request at about 2 s; Paid allows 30 s by default. See [docs/approach-b.md](docs/approach-b.md) and [docs/results.md](docs/results.md). |
-| B with WooCommerce | **measured: no.** Every request exceeds the CPU limit. | **measured, b-dosql (SQLite in the Durable Object): yes, this is the store path.** WooCommerce runs on b-dosql including checkout, live at x-wasm-mib 99 under the 128 MiB isolate cap with zero `exceededMemory`; `tests/woo.py` is green across five consecutive clean runs after the cron-alarm reliability fix (#208, #209). Admin media upload works (#197). Plain B on D1 is only partial (shop and cart work, but checkout exceeds the 128 MB memory limit), so use b-dosql. See [docs/results.md](docs/results.md). | b-dosql suits light-to-moderate stores and high-traffic blogs. A store under sustained high-concurrency load belongs on a VPS (standard LAMP); the container store path (C1) is retired (#214). |
-| B + C: WooCommerce checkout in a Container | **no** (Containers are Paid only) | **Retired (#214).** Historical: checkout worked in a container (6 orders, 42 to 72 s each) but was never stable (the container stopped starting after later deploys). Superseded: b-dosql does checkout directly, no container. See [docs/approach-c-checkout.md](docs/approach-c-checkout.md). | b-dosql replaced this. A store that outgrows b-dosql goes to a VPS, not a container. |
-| **C1: WooCommerce in a Container, SQLite on disk, Litestream to R2** | **no** (Containers are Paid only) | **Retired (#214).** Historical, and it worked: 12 of 12 store tests, checkout 1.3 to 1.7 s, 18 of 18 plugins. But b-dosql is now proven for WooCommerce including checkout, so the container store path is no longer the recommended or maintained path. See [docs/approach-c1.md](docs/approach-c1.md). | Retired in favour of b-dosql (light-to-moderate stores) plus a VPS for sustained high-concurrency load. No containers. Its own costs were one region, one writer, and an about 11 s cold start. |
-| C | **no** | **docs** | Containers are not on the Free plan. Container disk is ephemeral. A snapshot keeps files for 30 days from creation or last restore. |
-| D | **docs** for the storefront Worker | **docs** | The back office needs one of A, B, C, or a normal host. |
+| **A** (external MySQL) | **no** (the installer is refused at the 10 ms CPU limit) | **measured: yes.** Full WordPress and WooCommerce, 12 of 12 checkout tests, under the 128 MiB cap with no container; scales out horizontally. Cost is per-query database latency (give Hyperdrive the host name, about 7 ms). | [approach-a.md](docs/approach-a.md) |
+| **A2** (A on PlanetScale) | not tried | **measured: yes.** WooCommerce 12 of 12; about 16 ms a query; one Cloudflare bill. Set `HYPERDRIVE_SQL_MODE` and turn the Hyperdrive query cache off. | [approach-a2.md](docs/approach-a2.md) |
+| **B** (D1 or Durable Object) | **partial.** Cached pages hit; most renders fit with OPcache; the installer does not fit. | **measured: yes.** Every page renders, the installer runs, 18 of 18 plugins. | [approach-b.md](docs/approach-b.md) |
+| **B with WooCommerce** | **no** (CPU limit) | **measured: yes, this is the store path.** b-dosql (SQLite in a Durable Object) runs WooCommerce including checkout under the 128 MiB cap. Use it over plain D1, whose checkout exceeds the memory limit. | [results.md](docs/results.md) |
+| **C1** (Container, SQLite, Litestream to R2) | **no** (Containers are Paid only) | **retired (#214).** It worked (12 of 12 store tests, 18 of 18 plugins), but b-dosql replaced the container store path. | [approach-c1.md](docs/approach-c1.md) |
+| **C / D** | **no** / **docs** | **docs** | Containers are Paid-only with ephemeral disk; D needs one of A, B or C behind it. |
 
-## Read this before the speed numbers
+**Which to use for a store:** **b-dosql** (zero outside infrastructure) for light-to-moderate traffic; **approach A** (external MySQL) when it must scale out; a VPS for sustained high-concurrency load. The container store path is retired.
 
-Two limits are easy to miss behind the tables.
+## Before you trust the speed numbers
 
-**Transactions.** Not every variant has real SQL transactions.
+- **Transactions.** `b-do` (D1) has no cross-call `ROLLBACK`; `b-dosql`, `c1`, `a` and `a2` do. Code that relies on `ROLLBACK` (WooCommerce, some plugins, upgrades) must not run on `b-do`. See [approach-b.md](docs/approach-b.md).
+- **One run is not a number.** The same build moved up to 15% between runs, and `a` served 18.7 requests a second in one load matrix and 8.63 in another. So every comparison here is bracketed (the same build with the change off, on, and off again) or repeated across starts; a single run is never quoted as the number for a variant.
 
-| Variant | Database | `ROLLBACK` undoes the writes |
-| --- | --- | --- |
-| `b-do` | D1 | **No.** D1 has no transaction across calls. `BEGIN` and `COMMIT` are answered in PHP; each statement commits on its own. |
-| `b-dosql` | SQLite in the Durable Object | Yes (issue #60). An undo log in the object: `ROLLBACK`, `ROLLBACK TO SAVEPOINT`, and a request that stops midway are rolled back. `REAL_TRANSACTIONS=off` turns it off. |
-| `c1` | SQLite on the container disk (PHP's own driver) | Yes. |
-| `a`, `a2` | MySQL through Hyperdrive | Yes. |
+## Cost
 
-Code that relies on `ROLLBACK` (WooCommerce, some plugins, upgrades) gets no rollback on `b-do`. See [docs/approach-b.md](docs/approach-b.md), "Transactions" and 8l.
+Two idle `b-dosql` sites cost about **$25 a month**, the Workers for Platforms Paid subscription, with every per-site resource (Durable Object storage, R2 media, KV) inside a free or included tier at rest. Traffic is metered on top. One open question: whether the per-site dispatcher and the shared outbound Worker need a separate Workers Paid subscription ($5 a month), which would make it about $30; this is not stated on the WfP pricing page and needs a billing check.
 
-**One run is not a number.** The same test on the same code moved a lot between runs:
-- `a` served 18.7 requests per second at 100 users in one load matrix and 8.63 in another ([docs/approach-a2.md](docs/approach-a2.md)).
-- `wp-c1` served about 1 request per second, while `wp-c1-perf` on the same image served about 2.5; the Containers API showed the same 1/2 vCPU and configuration for both. Not the data and not the configuration; the host or the placement, cause unknown ([docs/approach-c1.md](docs/approach-c1.md)).
-- On `b-dosql`, two runs of the same build differed by up to 15 % on one page ([docs/perf-dosql.md](docs/perf-dosql.md)).
+Full cost line items and the per-plan limit table that decides the matrix above: [docs/plan-limits.md](docs/plan-limits.md).
 
-So every comparison in this repo is bracketed (the same build with the change off, on, and off again) or repeated on more than one container start, and a single run is never quoted as the number for a variant.
+## More
 
-## Plan limits that decide the table
-
-Read from the Cloudflare documentation on 2026-11-03. Limits change. Check the source before you rely on a number.
-
-| Resource | Workers Free | Workers Paid | Source |
-| --- | --- | --- | --- |
-| Worker requests | 100,000 a day | No limit | [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) |
-| Worker CPU time per HTTP request | 10 ms | 30 s default, up to 5 min | [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) |
-| Worker memory | 128 MB | 128 MB | [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) |
-| Worker size | 64 MiB (uncompressed; measured: 72 MB refused) | 64 MiB | [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) |
-| Subrequests per request | 50 | 10,000 | [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) |
-| Cron Triggers per account | 5 | 250 | [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) |
-| Static asset files per Worker version | 20,000 | 100,000 | [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) |
-| D1 database size | 500 MB | 10 GB | [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) |
-| D1 rows read | 5 million a day | 25 billion a month included | [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/) |
-| D1 rows written | 100,000 a day | 50 million a month included | [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/) |
-| D1 queries per Worker invocation | 50 | 1,000 | [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) |
-| Durable Objects | SQLite storage only, 5 GB per account, 100,000 requests a day | 10 GB per object, no account limit | [Durable Objects limits](https://developers.cloudflare.com/durable-objects/platform/limits/), [pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/) |
-| Hyperdrive queries | 100,000 a day | No limit | [Hyperdrive pricing](https://developers.cloudflare.com/hyperdrive/platform/pricing/) |
-| Hyperdrive origin connections | About 20 per configuration | About 100 per configuration | [Hyperdrive limits](https://developers.cloudflare.com/hyperdrive/platform/limits/) |
-| KV writes to different keys | 1,000 a day | No limit | [KV limits](https://developers.cloudflare.com/kv/platform/limits/) |
-| KV reads | 100,000 a day | No limit | [KV limits](https://developers.cloudflare.com/kv/platform/limits/) |
-| R2 (free tier, both plans) | 10 GB-month, 1 million Class A and 10 million Class B operations a month | Same free tier, then metered | [R2 pricing](https://developers.cloudflare.com/r2/pricing/) |
-| Images transformations (binding) | 5,000 unique a month; then new ones fail, no charge | 5,000 unique a month included with Images Paid, then $0.50 per 1,000 | [Images pricing](https://developers.cloudflare.com/images/pricing/) (read 2026-11-04) |
-| Workers Cache (page cache in front of a Worker) | Yes. A cache hit runs no Worker code. Every request is billed as a Worker request, also static assets. Purges: 5 a minute, bursts of 25, per account. | Same (purges always have the Free-tier limits) | [Workers Cache](https://developers.cloudflare.com/workers/cache/) (read 2026-11-04) |
-| Containers | Not available | 25 GiB-hours memory, 375 vCPU-minutes, 200 GB-hours disk a month included | [Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/) |
-| Container instance types | Not available | lite (1/16 vCPU, 256 MiB) to standard-4 (4 vCPU, 12 GiB) | [Containers limits](https://developers.cloudflare.com/containers/platform/limits/) |
-| Container snapshots | Not available | 20 GB maximum, kept 30 days from creation or last restore | [Containers limits](https://developers.cloudflare.com/containers/platform/limits/), [snapshots](https://developers.cloudflare.com/containers/guides/snapshots/) |
-
-## Workers for Platforms reference deployment: cost of two idle sites
-
-The reference deployment (`deploy/wfp/`, issue #35) hosts each site as a `b-dosql` user Worker in one dispatch namespace. The plan it needs is **Workers for Platforms Paid**. The figures below are the published rates, each with the page and the date read; the total is for two sites **at rest** (no visitor traffic), so every metered amount sits inside an included or free allotment.
-
-| Item (two idle sites) | At-rest usage | Rate and allotment | Monthly | Source (read 2026-11-06) |
-| --- | --- | --- | --- | --- |
-| Workers for Platforms Paid subscription | the plan itself | $25 a month, flat | **$25.00** | [WfP pricing](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/reference/pricing/) |
-| Requests | ~0 at rest (one charge across the dispatch chain) | 20 million included, then $0.30 per million | $0.00 | [WfP pricing](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/reference/pricing/) |
-| CPU time | ~0 at rest | 60 million CPU ms included, then $0.02 per million | $0.00 | [WfP pricing](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/reference/pricing/) |
-| Namespace scripts | 2 (one user Worker per site) | 1000 included, then $0.02 each | $0.00 | [WfP pricing](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/reference/pricing/) |
-| Durable Object storage (each site's SQLite) | two small WordPress databases, well under the allotment | 5 GB-month included, then $0.20 per GB-month; rows read/written also have large included tiers | $0.00 | [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/) |
-| R2 (each site's media bucket) | near-empty at rest | 10 GB-month free (Standard), no egress fee, first 100,000 buckets included | $0.00 | [R2 pricing](https://developers.cloudflare.com/r2/pricing/) |
-| KV (the shared site map) | a few small keys | 1 GB stored and 10 million reads a month included, first 1000 namespaces included | $0.00 | [KV pricing](https://developers.cloudflare.com/kv/platform/pricing/) |
-| **Total, two idle sites** | | | **about $25 a month** | |
-
-So two idle sites cost about **$25 a month**, the Workers for Platforms Paid subscription; every per-site resource is inside the included or free tier at rest. Traffic is extra and is metered as above (requests, CPU, Durable Object rows and duration, R2 and KV operations); the included tiers are per account, shared across all sites, not per site.
-
-**Open, not a number this records:** the per-site dispatcher (`wp-<name>`) and the shared outbound Worker are ordinary Workers, not namespace scripts. Whether their usage is covered by the Workers for Platforms Paid subscription, or whether a separate **Workers Paid** subscription ($5 a month, [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), read 2026-11-06) is also required, is not stated on the WfP pricing page. If it is required, the total is about $30 a month. This needs a word from Cloudflare or a billing check before it is stated as a figure.
-
-## Prior art
-
-See [docs/prior-art.md](docs/prior-art.md).
-
-## How a cell becomes measured
-
-1. Put a deploy script and a test for the approach in `tests/<id>/`.
-2. Deploy it to an account on the plan named in the column. Our Free column runs on an account on Workers Free; our Paid column runs on an account on Workers Paid.
-3. Run the test. Record the command, the date, the Wrangler version and the result in the cell's row in `docs/results.md`.
-4. Change the mark to **measured**, and link the result.
+- Prior art: [docs/prior-art.md](docs/prior-art.md).
+- **How a cell becomes measured:** put a deploy script and a test in `tests/<id>/`; deploy to an account on the plan named in the column; run the test and record the command, date, Wrangler version and result in [docs/results.md](docs/results.md); then change the mark and link the result.
 
 ## License
 
