@@ -1,5 +1,7 @@
 # Checkout in a Container (approach B + C)
 
+> **HISTORICAL, not the product.** Kept as a record. The current paths are [approach A](approach-a-overview.md) and b-dosql; see the [docs map](README.md).
+
 > **Retired 2026-11-08 (#214).** This container-checkout path was never stable (the container stopped starting after later deploys) and is superseded: b-dosql does WooCommerce checkout directly, no container. The store path is now b-dosql (light-to-moderate) with a VPS for scale. Kept as a measured record, not a recommendation.
 
 Issue #20. Conrad's design, 2026-11-04. Measured 2026-11-04 on Workers Paid.

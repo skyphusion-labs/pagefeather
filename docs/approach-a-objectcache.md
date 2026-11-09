@@ -1,5 +1,7 @@
 # Approach A: a write-aware object cache to cut SQL round-trips
 
+> **Status: current design for approach A.** The measured results are in [results.md](results.md) (rows `A (approach-A object cache, live)` and `A (approach-A object cache L2/KV)`, 2026-11-08). Product story: [approach-a-overview.md](approach-a-overview.md).
+
 Issue #218. Refs #32 (A, direct MySQL via Hyperdrive) and #50 (A2, PlanetScale).
 
 Approach A runs WordPress in a Worker with the database on external MySQL through Hyperdrive. The page time is set by the number of SQL **network round-trips**: about 7 ms per query on A (Vultr MariaDB, Hyperdrive host name) and 16 to 20 ms on A2 (PlanetScale), and a page fires many queries (home 76, dashboard 138, editor 172, checkout 393, measured in docs/approach-a2.md and docs/results.md). Cut the round-trips and the page time falls almost linearly. This document is the design; the measured numbers are added by the Paid bracket (below).

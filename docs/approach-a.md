@@ -1,5 +1,7 @@
 # Approach A: WordPress in a Worker, MySQL outside Cloudflare through Hyperdrive
 
+> **Status: current evidence for approach A.** This is the first measurement record (Vultr MariaDB, HostlessWP compared). For the product story and the provider choice, read [approach-a-overview.md](approach-a-overview.md) first.
+
 Measured 2026-11-05 on Workers Free and Workers Paid. Two implementations, on the same database:
 
 - **Our A**: the approach B Worker with only the database changed. Same PHP build, same OPcache, same page cache, same R2 media. Code: `spikes/b2-wordpress/index-a.js`, `mysql-bridge.js`, `php/hyperdrive-db.php`, `ENGINE=a ./build.sh`, wrangler envs `a-free` and `a-paid`.
