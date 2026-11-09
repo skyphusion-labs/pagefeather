@@ -17,5 +17,10 @@ ok('list and remove are recognized commands', parseArgs(['list']).cmd === 'list'
 ok('genSecret is hex of the requested length', /^[0-9a-f]{64}$/.test(genSecret(32)) && /^[0-9a-f]{48}$/.test(genSecret(24)));
 ok('two genSecret calls differ', genSecret() !== genSecret());
 
+ok('add --kind a <name> --hyperdrive <id> parses (approach A)', (() => { const a = parseArgs(['add', '--kind', 'a', 'astore', '--hyperdrive', 'abc123']); return a.kind === 'a' && a.name === 'astore' && a.hyperdrive === 'abc123'; })());
+ok('add --kind a REQUIRES --hyperdrive (the onboarding config id)', throws(() => parseArgs(['add', '--kind', 'a', 'astore'])));
+ok('add --kind a accepts and parses --hyperdrive-sql-mode', (() => { const a = parseArgs(['add', '--kind', 'a', 'astore', '--hyperdrive', 'id', '--hyperdrive-sql-mode', 'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION']); return a.hyperdriveSqlMode === 'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'; })());
+ok('add --kind a rejects a bad --hyperdrive-sql-mode (charset guard against injection)', throws(() => parseArgs(['add', '--kind', 'a', 'astore', '--hyperdrive', 'id', '--hyperdrive-sql-mode', 'DROP TABLE x; --'])));
+ok('add rejects an unknown flag (a typo must fail loudly, not drop the value)', throws(() => parseArgs(['add', '--kind', 'wp', 'blog', '--bogus', 'x'])));
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

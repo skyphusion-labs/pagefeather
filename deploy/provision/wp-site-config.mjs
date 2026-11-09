@@ -82,3 +82,101 @@ export function bDosqlBindings({ mediaBucket, siteOrigin, location = 'enam', cro
 export function mediaBucketName(name) {
   return `wp-wfp-${name}-media`;
 }
+
+
+// ---- Approach A (#218): PHP-WASM in the WORKER, MySQL via Hyperdrive ---------
+// The ONE source for what an "approach A" site must bind, mirroring bDosqlVars /
+// bDosqlBindings so the CLI and any Worker caller consume one source and cannot
+// drift. The authoritative generator for approach A is the b2-wordpress spike's
+// wrangler.toml [env.a-paid-lean] (lean MySQL client + object cache L2 + lazy
+// nodes + opcache); a-site-config-test.mjs asserts these emits against it.
+//
+// What makes approach A DIFFERENT from b-dosql, and why the binding set differs:
+//   - PHP runs in the WORKER isolate, NOT a Durable Object. So there is NO
+//     PHP_RUNTIME durable_object_namespace binding and NO SQLite migration
+//     (provisionSite declares none for kind 'a').
+//   - The database is EXTERNAL managed MySQL reached through a HYPERDRIVE
+//     binding (the config id comes from onboarding). DB_IN_DO / PHP_IN_DO are
+//     NOT set (the object's SQLite is not the database here).
+//   - The object cache has an L2 in a per-site OC_KV namespace, so a cold
+//     isolate reads KV instead of crossing the Hyperdrive hop to MySQL.
+// The lean MySQL client (mysql-lean.js) is in the uploaded bundle, set by the
+// index-a-lean.js entry; it is code, not a binding.
+export function aVars({
+  siteOrigin, tablePrefix = 'wp_', hyperdriveSqlMode,
+  objectCacheGroups = 'options,terms,theme_json', objectCacheTtl = '10', lazyCacheMb = '4',
+  mailFrom, mailFromName,
+} = {}) {
+  if (!siteOrigin) throw new Error('aVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
+  const vars = {
+    // PHP_ENV carries BOTH the allocator setting and the WP table prefix (the
+    // approach-A install shares the MySQL schema by prefix, #218).
+    PHP_ENV: JSON.stringify({ USE_ZEND_ALLOC: '0', WP_TABLE_PREFIX: tablePrefix }),
+    SITE_ORIGIN: siteOrigin,
+    OBJECT_CACHE: 'on',
+    OBJECT_CACHE_GROUPS: objectCacheGroups,
+    OBJECT_CACHE_TTL: String(objectCacheTtl),
+    OBJECT_CACHE_L2: 'on',
+    LAZY_NODES: 'on',
+    LAZY_CACHE_MB: String(lazyCacheMb),
+  };
+  // HYPERDRIVE_SQL_MODE (#218): a per-statement sql_mode relax, REQUIRED only for
+  // strict backends (PlanetScale/Vitess, e.g.
+  // ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION). index.js emits it into
+  // wp-config only when it matches /^[A-Za-z_,]*$/, so reject anything else here
+  // rather than ship a value the site will silently drop.
+  if (hyperdriveSqlMode !== undefined && hyperdriveSqlMode !== null && hyperdriveSqlMode !== '') {
+    if (!/^[A-Za-z_,]*$/.test(hyperdriveSqlMode)) {
+      throw new Error(`aVars: HYPERDRIVE_SQL_MODE must match [A-Za-z_,]* (got ${JSON.stringify(hyperdriveSqlMode)})`);
+    }
+    vars.HYPERDRIVE_SQL_MODE = hyperdriveSqlMode;
+  }
+  // MAIL_FROM: same rule as b-dosql (#186); a SaaS site sends from the onboarded
+  // base domain, not its own subdomain. Optional.
+  if (mailFrom) {
+    vars.MAIL_FROM = mailFrom;
+    if (mailFromName) vars.MAIL_FROM_NAME = mailFromName;
+  }
+  return Object.entries(vars).map(([name, text]) => ({ type: 'plain_text', name, text }));
+}
+
+// The full binding set for an approach-A namespace site: the vars above plus
+// IMAGES, the site's own MEDIA bucket, the HYPERDRIVE binding to the given
+// config id, the OC_KV object-cache L2 namespace, and the EMAIL send_email
+// binding. NO PHP_RUNTIME durable object (PHP runs in the Worker), so NO SQLite
+// migration. Secrets (WP_SALT, SPIKE_TOKEN) are added by provisionSite.
+//
+// ocKvNamespaceId: the per-site OC_KV namespace is CREATED at provision time, so
+// its id is not known when the caller builds this set. provisionSite creates the
+// namespace (cfg.kvNamespaces) and INJECTS the id into this binding by name, so
+// the caller may leave it undefined (the default). mediaBucket and hyperdriveId
+// ARE known upfront (the bucket name is derived; the config id comes from
+// onboarding), so they are required.
+export function aBindings({
+  mediaBucket, hyperdriveId, siteOrigin, tablePrefix, hyperdriveSqlMode,
+  objectCacheGroups, objectCacheTtl, lazyCacheMb, ocKvNamespaceId, ocKvBinding = 'OC_KV',
+  mailFrom, mailFromName, extra = [],
+} = {}) {
+  if (!mediaBucket) throw new Error('aBindings: mediaBucket is required');
+  if (!hyperdriveId) throw new Error('aBindings: hyperdriveId is required (the Hyperdrive config id from onboarding)');
+  const ocKv = { type: 'kv_namespace', name: ocKvBinding };
+  // The id is injected by provisionSite after the namespace is created; carry it
+  // only if the caller already knows it (e.g. a re-provision passing the id).
+  if (ocKvNamespaceId) ocKv.namespace_id = ocKvNamespaceId;
+  return [
+    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName }),
+    { type: 'images', name: 'IMAGES' },
+    { type: 'r2_bucket', name: 'MEDIA', bucket_name: mediaBucket },
+    { type: 'hyperdrive', name: 'HYPERDRIVE', id: hyperdriveId },
+    ocKv,
+    { type: 'send_email', name: 'EMAIL' },
+    ...extra,
+  ];
+}
+
+// The OC_KV object-cache L2 namespace title for a site, the one name both the
+// create and the id lookup agree on (wp-wfp-<name>-oc; the wp-wfp- prefix is in
+// RESERVED_PREFIXES so a tenant can never mint a colliding name).
+export function ocKvNamespaceName(name) {
+  return `wp-wfp-${name}-oc`;
+}

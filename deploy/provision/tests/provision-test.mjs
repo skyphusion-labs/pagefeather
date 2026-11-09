@@ -7,6 +7,7 @@
 // core, not only the CLI.
 import { createHash } from 'node:crypto';
 import { provisionSite } from '../provision.mjs';
+import { aBindings, mediaBucketName, ocKvNamespaceName } from '../wp-site-config.mjs';
 
 const ACCT = 'fabcb25d9c7eb087110ec474a03e50d2';
 let pass = 0, fail = 0;
@@ -22,6 +23,7 @@ function recorder(opts = {}) {
   const fetchImpl = async (url, init) => {
     calls.push({ url, method: init.method, body: init.body });
     if (init.method === 'POST' && url.endsWith('/_install')) return { ok: true, status: 200, json: async () => ({ out: '{"installed":true,"user_id":1}', ms: 5 }) };
+    if (init.method === 'POST' && /\/storage\/kv\/namespaces$/.test(url)) return { ok: true, status: 200, text: async () => '{"success":true,"result":{"id":"OCKVID","title":"oc"}}' };
     if (init.method === 'GET' && /\/storage\/kv\/namespaces\/[^/]+\/values\//.test(url)) {
       if (opts.existing) return { ok: true, status: 200, text: async () => JSON.stringify(opts.existing) };
       return { ok: false, status: 404, text: async () => '{"success":false,"errors":[{"code":10009,"message":"key not found"}]}' };
@@ -200,6 +202,72 @@ const mutating = (calls) => calls.filter((c) => c.method !== 'GET');
   ok('install best-effort: a failed install does NOT fail the provision (installed:false)', r.installed === false && r.entry.installed === false);
   ok('install best-effort: a note is surfaced and NO password (install did not run)', typeof r.installNote === 'string' && r.admin && r.admin.password === undefined);
   ok('install best-effort: the site is still deployed + registered', rec.calls.some((c) => c.method === 'PUT' && /\/scripts\/site-beblog$/.test(c.url)) && rec.calls.some((c) => /\/values\/beblog/.test(c.url)));
+}
+
+// #241: approach A (kind 'a'). PHP-WASM in the WORKER + external MySQL via a
+// Hyperdrive binding. The core drives the SAME idempotent sequence as wp, but it
+// CREATES the per-site OC_KV namespace and injects its id, and declares NO SQLite
+// migration (approach A has no Durable Object). Uses the REAL aBindings builder,
+// so this also guards that the shared source emits the approach-A binding set.
+{
+  const rec = recorder();
+  const name = 'alean';
+  const mediaBucket = mediaBucketName(name);
+  const r = await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl }, {
+    kind: 'a', name, namespace: 'wp-wfp', kvId: 'KV', hostname: 'alean.skyphusionwp.dev', saasZoneId: 'ZONE',
+    compatibilityDate: '2026-07-01', mainModule: 'index-a-lean.js',
+    modules: [{ name: 'index-a-lean.js', content: 'export default {}' }],
+    resourceBindings: aBindings({ mediaBucket, hyperdriveId: 'HDID', siteOrigin: 'https://alean.skyphusionwp.dev', hyperdriveSqlMode: 'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION' }),
+    sqliteClasses: [],
+    kvNamespaces: [{ title: ocKvNamespaceName(name), binding: 'OC_KV' }],
+    secrets: { WP_SALT: 's1', SPIKE_TOKEN: 'spk' }, buckets: { media: mediaBucket },
+  });
+  const u = mutating(rec.calls).map((c) => `${c.method} ${c.url.split('/client/v4')[1]}`);
+  ok('a: bucket, then OC_KV namespace create, then the namespace script, in order',
+    u[0].endsWith('/r2/buckets') &&
+    /POST .*\/storage\/kv\/namespaces$/.test(u[1]) &&
+    /PUT .*\/workers\/dispatch\/namespaces\/wp-wfp\/scripts\/site-alean$/.test(u[2]));
+  const deploy = rec.calls.find((c) => c.method === 'PUT' && /\/scripts\/site-alean$/.test(c.url));
+  const meta = await metaOf(deploy);
+  const byType = (t) => meta.bindings.filter((b) => b.type === t);
+  const varOf = (n) => byType('plain_text').find((b) => b.name === n);
+  ok('a: NO SQLite migration (PHP runs in the Worker, not a DO)', !('migrations' in meta));
+  ok('a: binds HYPERDRIVE to the given config id', byType('hyperdrive').some((b) => b.name === 'HYPERDRIVE' && b.id === 'HDID'));
+  ok('a: binds OC_KV with the CREATED namespace id injected', byType('kv_namespace').some((b) => b.name === 'OC_KV' && b.namespace_id === 'OCKVID'));
+  ok('a: binds the site MEDIA bucket + IMAGES + EMAIL',
+    byType('r2_bucket').some((b) => b.name === 'MEDIA' && b.bucket_name === mediaBucket) &&
+    byType('images').some((b) => b.name === 'IMAGES') && byType('send_email').some((b) => b.name === 'EMAIL'));
+  ok('a: NO PHP_RUNTIME durable object (approach A has no DO)', !byType('durable_object_namespace').length);
+  ok('a: PHP_ENV carries the WP table prefix', /"WP_TABLE_PREFIX":"wp_"/.test(varOf('PHP_ENV').text) && /"USE_ZEND_ALLOC":"0"/.test(varOf('PHP_ENV').text));
+  ok('a: the approach-A object cache + lazy-node vars are set',
+    varOf('OBJECT_CACHE').text === 'on' && varOf('OBJECT_CACHE_L2').text === 'on' && varOf('LAZY_NODES').text === 'on');
+  ok('a: HYPERDRIVE_SQL_MODE is carried for a strict backend', varOf('HYPERDRIVE_SQL_MODE').text === 'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION');
+  ok('a: SITE_ORIGIN is set (WP_HOME correctness)', varOf('SITE_ORIGIN').text === 'https://alean.skyphusionwp.dev');
+  ok('a: secrets are secret_text bindings in the deploy (atomic)',
+    meta.bindings.filter((b) => b.type === 'secret_text').map((b) => b.name).sort().join(',') === 'SPIKE_TOKEN,WP_SALT');
+  ok('a: registry entry kind a, script site-alean, installed', r.entry.kind === 'a' && r.script === 'site-alean' && r.installed === true);
+  ok('a: a proxied routing record is placed and /_install ran after routing',
+    rec.calls.some((c) => c.method === 'POST' && /\/zones\/ZONE\/dns_records$/.test(c.url)) &&
+    rec.calls.some((c) => c.method === 'POST' && /\/_install$/.test(c.url)));
+}
+
+// #241: approach A OMITS HYPERDRIVE_SQL_MODE for a non-strict backend (the common
+// case, e.g. Azure MySQL): the var is absent unless the caller sets it.
+{
+  const rec = recorder();
+  await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl }, {
+    kind: 'a', name: 'anostrict', namespace: 'wp-wfp', kvId: 'KV', hostname: 'anostrict.skyphusionwp.dev',
+    compatibilityDate: '2026-07-01', mainModule: 'index-a-lean.js',
+    modules: [{ name: 'index-a-lean.js', content: 'export default {}' }],
+    resourceBindings: aBindings({ mediaBucket: mediaBucketName('anostrict'), hyperdriveId: 'HDID', siteOrigin: 'https://anostrict.skyphusionwp.dev' }),
+    sqliteClasses: [],
+    kvNamespaces: [{ title: ocKvNamespaceName('anostrict'), binding: 'OC_KV' }],
+    secrets: { WP_SALT: 's1', SPIKE_TOKEN: 'spk' }, buckets: { media: mediaBucketName('anostrict') },
+  });
+  const deploy = rec.calls.find((c) => c.method === 'PUT' && /\/scripts\/site-anostrict$/.test(c.url));
+  const meta = await metaOf(deploy);
+  ok('a: HYPERDRIVE_SQL_MODE is absent when the backend is not strict',
+    !meta.bindings.some((b) => b.type === 'plain_text' && b.name === 'HYPERDRIVE_SQL_MODE'));
 }
 
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);

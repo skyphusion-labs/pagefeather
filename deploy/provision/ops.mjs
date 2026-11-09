@@ -433,3 +433,40 @@ export async function installWordPress({
   }
   throw new Error(`installWordPress(${scriptName || hostname}) failed after ${retries} tries (${viaDispatch ? 'dispatch' : 'http'}): ${last}`);
 }
+
+// ---- Approach A (#218): the per-site object-cache L2 KV namespace ------------
+// Approach A binds a per-site OC_KV namespace (the object-cache L2, so a cold
+// isolate reads KV instead of crossing the Hyperdrive hop to MySQL). Unlike the
+// media bucket, a KV namespace id is ASSIGNED by Cloudflare at create time, so it
+// cannot be derived from the site name; provisionSite creates it here, then
+// injects the returned id into the OC_KV binding. Idempotent by TITLE: a retry
+// after a created-but-uncommitted namespace reuses the existing one (found in the
+// list) rather than creating a duplicate.
+export async function ensureKVNamespace(ctx, title) {
+  const r = await cfFetch(ctx.token, 'POST', `/accounts/${ctx.acct}/storage/kv/namespaces`,
+    { body: { title }, fetchImpl: ctx.fetchImpl });
+  if (r.ok && r.result && r.result.id) return { id: r.result.id, title, created: true };
+  // 10014 = a namespace with this title already exists. A 409 is the same case.
+  // Find it by title in the list and reuse it (idempotent, no duplicate).
+  if (r.status === 409 || r.errors.some((e) => e.code === 10014)) {
+    const id = await findKVNamespaceIdByTitle(ctx, title);
+    if (id) return { id, title, created: false, existed: true };
+  }
+  throw opError('ensureKVNamespace', title, r);
+}
+
+// List KV namespaces and find one by EXACT title; null if none or if listing is
+// not permitted. Paginates (100/page) so a title past the first page is still
+// found; bounded so a paging hiccup cannot spin forever.
+async function findKVNamespaceIdByTitle(ctx, title) {
+  for (let page = 1; page <= 50; page++) {
+    const r = await cfFetch(ctx.token, 'GET',
+      `/accounts/${ctx.acct}/storage/kv/namespaces?per_page=100&page=${page}`, { fetchImpl: ctx.fetchImpl });
+    if (!r.ok) return null;
+    const list = Array.isArray(r.result) ? r.result : [];
+    const found = list.find((n) => n && n.title === title);
+    if (found) return found.id;
+    if (list.length < 100) break;
+  }
+  return null;
+}
