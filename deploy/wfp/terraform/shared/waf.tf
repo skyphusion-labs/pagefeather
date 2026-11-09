@@ -147,7 +147,7 @@ resource "cloudflare_ruleset" "waf_ratelimit" {
       description = "Block wp-login.php POST brute force: over 15 login POSTs per IP in 60s, blocked 10 min."
       expression  = "http.request.uri.path eq \"/wp-login.php\" and http.request.method eq \"POST\""
       ratelimit = {
-        characteristics     = ["ip.src"]
+        characteristics     = ["ip.src", "cf.colo.id"]
         period              = 60
         requests_per_period = 15
         mitigation_timeout  = 600
@@ -160,7 +160,7 @@ resource "cloudflare_ruleset" "waf_ratelimit" {
       description = "Challenge wp-login.php POSTs above a human rate: over 5 login POSTs per IP in 60s."
       expression  = "http.request.uri.path eq \"/wp-login.php\" and http.request.method eq \"POST\""
       ratelimit = {
-        characteristics     = ["ip.src"]
+        characteristics     = ["ip.src", "cf.colo.id"]
         period              = 60
         requests_per_period = 5
         mitigation_timeout  = 60
@@ -173,7 +173,7 @@ resource "cloudflare_ruleset" "waf_ratelimit" {
       description = "Block xmlrpc.php POST floods (system.multicall amplification, pingback abuse): over 30 POSTs per IP in 60s, blocked 10 min."
       expression  = "http.request.uri.path eq \"/xmlrpc.php\" and http.request.method eq \"POST\""
       ratelimit = {
-        characteristics     = ["ip.src"]
+        characteristics     = ["ip.src", "cf.colo.id"]
         period              = 60
         requests_per_period = 30
         mitigation_timeout  = 600
@@ -186,7 +186,7 @@ resource "cloudflare_ruleset" "waf_ratelimit" {
       description = "Challenge elevated xmlrpc.php POST rates while leaving Jetpack / mobile-app use headroom: over 10 POSTs per IP in 60s."
       expression  = "http.request.uri.path eq \"/xmlrpc.php\" and http.request.method eq \"POST\""
       ratelimit = {
-        characteristics     = ["ip.src"]
+        characteristics     = ["ip.src", "cf.colo.id"]
         period              = 60
         requests_per_period = 10
         mitigation_timeout  = 60
