@@ -4,6 +4,8 @@ Each row is one deploy and one test run.
 
 A row with plan `local` ran in local workerd through `wrangler dev`. It is not a plan result and does not change a README cell.
 
+Some rows are corrected by a later row. The `A (lean MySQL client, #218)` row (2026-11-09) concludes that approach A cannot run WooCommerce without a container; the `A (lazy MEMFS nodes, #218)` and `A (12/12, the full stack, #218)` rows (2026-11-09) correct that, and approach A runs WooCommerce 12 of 12. The earlier rows stay as the record.
+
 Rows for `C1` and `B+C` are a record of the container store path, which was retired in #214 (b-dosql now runs WooCommerce checkout directly). They stay because a failed or retired cell is still a result.
 
 | Id | Plan | Date (UTC) | Wrangler | Command | Result |
