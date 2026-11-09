@@ -1,6 +1,6 @@
 # Onboarding: from "I want a site" to a running approach-A site
 
-**Status: flow design. The exact commands are pending.** Two pieces are being built in parallel, and this page does not copy their syntax until their pull requests merge. Every place that needs a command is marked `TODO(commands)`.
+**Status: current.** Both pieces have merged: the onboarding step (PR #242) and `site add --kind a` (PR #243). The commands below are the real ones.
 
 This page is for a person who wants to run WordPress or WooCommerce sites on their own Cloudflare account, on the scalable path ([approach A](approach-a-overview.md)). If you want zero outside infrastructure instead, use the b-dosql kind in [framework.md](framework.md); it needs no onboarding step.
 
@@ -48,17 +48,32 @@ The onboarding step reads your provider choice and makes the Hyperdrive configur
 - For PlanetScale it uses the direct host, not the optimized host.
 - It places the Worker in the region of the database.
 
-Output of this step: the name or id of one Hyperdrive configuration. Step 3 takes it as input.
+Output of this step: the id of one Hyperdrive configuration, plus the `SQL_MODE` the provider needs. Step 3 takes both as input.
 
-`TODO(commands)`: the exact command and flags for the provider-to-Hyperdrive step. Pending Strummer's PR. Do not write the syntax here until that PR merges; link the PR and copy the final help text.
+Set your Cloudflare account id and an API token that can edit Hyperdrive, then run the onboarding step for your provider. `<provider>` is one of `azure`, `planetscale`, `vultr`, `external`:
+
+```sh
+export CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=...
+node deploy/onboard/onboard.mjs <provider> --name wpref-db --out onboard.env
+```
+
+It prints a JSON summary and writes `onboard.env` (mode 0600), which holds `HYPERDRIVE_ID` and `SQL_MODE` (the file carries no secret, only the config id and the mode string). `SQL_MODE` is set for the strict providers (PlanetScale, Azure MySQL) and empty otherwise. Add `--dry-run` to print the plan without creating anything. See [deploy/onboard/onboard.mjs](../deploy/onboard/onboard.mjs) (PR #242).
 
 ### Step 3: add a type-a site
 
-A type-a site is a user Worker that runs WordPress and talks to the database through the Hyperdrive configuration from step 2. In the tests, each site used its own table prefix in a shared database; confirm how the final command handles this.
+A type-a site is a user Worker that runs WordPress and talks to the database through the Hyperdrive configuration from step 2. In the tests, each site used its own table prefix in a shared database.
 
-`TODO(commands)`: the exact command for `site add --kind a` and its flags (site name, domain, which Hyperdrive configuration to use). Pending Rollins's PR. Link the PR here when it merges.
+Source the file from step 2 and add the site. Pass the Hyperdrive id, and the SQL mode for a strict provider:
 
-Compare with the b-dosql kind, which is `add --kind wp` in [framework.md](framework.md).
+```sh
+source onboard.env   # HYPERDRIVE_ID, SQL_MODE
+node deploy/provision/cli.mjs site add --kind a myshop \
+  --hyperdrive "$HYPERDRIVE_ID" --hyperdrive-sql-mode "$SQL_MODE"
+```
+
+`--hyperdrive` is required for `--kind a` (it is the config id from onboarding). `--hyperdrive-sql-mode` is only needed for a strict provider; leave it off when `SQL_MODE` is empty. There is no SQLite migration step: the database lives in your provider, not in a Durable Object. See [deploy/provision/cli.mjs](../deploy/provision/cli.mjs) (PR #243).
+
+Compare with the b-dosql kind, which is `site add --kind wp` in [framework.md](framework.md).
 
 ### Step 4: check the site
 
@@ -68,7 +83,7 @@ After a site is added:
 - The install ran: a user exists and the tables are in the database (the check `/_install` reports `installed: true` with `user_id: 1`; on a strict server a bad `sql_mode` shows `user_id: 0`).
 - For a store, turn on WooCommerce in wp-admin, as on any WordPress host, and run a test checkout.
 
-`TODO(commands)`: the exact check command, if the new CLI adds one.
+`site add` reports the deployed Worker URL. Check the site by hand: `curl -sI https://<worker>.workers.dev/` for a 200, and open `/_install` to confirm `installed: true` with `user_id: 1`.
 
 ## What can go wrong
 
@@ -88,4 +103,4 @@ After a site is added:
 
 ## Status of this page
 
-Update this page when the two pull requests merge: replace each `TODO(commands)` with the real command, and link the PRs. Until then, treat the flow as the design and the commands as unknown.
+Current as of the merge of PR #242 (onboarding) and PR #243 (`site add --kind a`). The commands above are the real ones. If a flag changes, update this page from the two files it links.
