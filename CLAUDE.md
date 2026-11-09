@@ -1,6 +1,6 @@
 # wordpress-on-cloudflare
 
-A record of which ways to run WordPress on Cloudflare work, on which plan. The README matrix is the product.
+A framework for running WordPress and WooCommerce on a Cloudflare Workers for Platforms account (`docs/framework.md`, `deploy/deploy.sh`), plus the research record of which approaches work on which plan. The README matrix is that record, not the only product.
 
 ## Rules
 
@@ -11,4 +11,4 @@ A record of which ways to run WordPress on Cloudflare work, on which plan. The R
 - No funnel and no upsell. The reader's own Cloudflare account runs everything.
 - Docs a reader reads are Simplified Technical English. No em-dashes or en-dashes.
 - Deploys go to a `workers.dev` address only. Do not route a zone without a CR issue.
-- The Free column deploys to the test account on Workers Free (`env.free`). The Paid column deploys to the Skyphusion Labs account, which is on Workers Paid (`env.paid`, Conrad 2026-11-04). Each env has its own Worker and its own D1 database.
+- Approach B's D1 spike is `spikes/b2-wordpress/wrangler.toml`. `env.free` is the Workers Free test account (worker `wp-on-d1-spike`, D1 `wp-on-d1-spike`). `env.paid` is the Skyphusion Labs account on Workers Paid (worker `wp-on-d1-paid`, D1 `wp-on-d1-paid`; confirmed 2026-11-04). `deploy/deploy.sh` does not use those two envs. It builds a per-site config. The other spike envs are separate (`env.a-free`, `env.a-paid`, `env.do-free`, `env.dosql-free`; `env.dosql-free` has no D1).
