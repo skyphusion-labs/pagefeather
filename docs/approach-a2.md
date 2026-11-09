@@ -1,5 +1,7 @@
 # Variant a2: approach A on PlanetScale MySQL through Hyperdrive
 
+> **Status: current evidence for approach A on PlanetScale.** The raw probes and the sql_mode design. Later live numbers (single Cloudflare bill, 2026-11-09) are in [results.md](results.md). Product story: [approach-a-overview.md](approach-a-overview.md).
+
 Issue #50. The Worker and the drop-in of variant `a` (`index-a.js`, `mysql-bridge.js`, `php/hyperdrive-db.php`), with the database on PlanetScale (Vitess MySQL) instead of the MariaDB box on Vultr. The question is the time per query: `a` on Vultr measured 7 to 10 ms.
 
 **Label: Cloudflare-provisioned, data on PlanetScale (AWS).** The bytes are not on Cloudflare.

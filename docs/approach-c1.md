@@ -1,5 +1,7 @@
 # Approach C1: WooCommerce in a Container, SQLite on local disk, Litestream to R2
 
+> **HISTORICAL, not the product.** Kept as a record. The current paths are [approach A](approach-a-overview.md) and b-dosql; see the [docs map](README.md).
+
 > **Retired 2026-11-08 (#214).** This approach worked (12 of 12 store tests, checkout 1.3 to 1.7 s, 18 of 18 plugins), but b-dosql is now proven for WooCommerce including checkout (live on Paid, `tests/woo.py` green after the #208/#209 reliability fix), so the container store path is no longer the recommended or maintained path. The opinionated store path is now b-dosql (light-to-moderate stores) with a VPS for sustained high-concurrency load; no containers. This document is kept as a measured record, not a recommendation.
 
 Measured 2026-11-04 on Workers Paid. Code: `spikes/c1-woo-container`. Conrad's direction: WooCommerce entirely in the container, the whole environment on Cloudflare.
