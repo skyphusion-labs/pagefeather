@@ -62,6 +62,8 @@ function withFetch(opts = {}) {
     if (init.method === 'GET' && url.endsWith('/tokens')) {
       return { ok: true, status: 200, text: async () => '{"success":true,"result":[]}' };
     }
+    if (init.method === 'POST' && /\/storage\/kv\/namespaces$/.test(url)) return { ok: true, status: 200, text: async () => '{"success":true,"result":{"id":"OCKVID","title":"oc"}}' };
+    if (init.method === 'POST' && /\/queues$/.test(url)) return { ok: true, status: 200, text: async () => '{"success":true,"result":{"queue_id":"EMAILQID","queue_name":"q"}}' };
     let body = '{"success":true,"result":{}}';
     if (init.method === 'POST' && url.endsWith('/tokens')) body = '{"success":true,"result":{"id":"TKID","value":"TKVAL"}}';
     else if (url.endsWith('/settings')) body = '{"success":true,"result":{"bindings":[{"type":"durable_object_namespace","class_name":"Store","name":"STORE","namespace_id":"NSID"}]}}';

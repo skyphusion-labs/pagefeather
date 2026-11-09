@@ -56,6 +56,8 @@ function withFetch(opts = {}) {
     if (init.method === 'GET' && u.endsWith('/tokens')) return { ok: true, status: 200, text: async () => '{"success":true,"result":[]}' };
     if (init.method === 'GET' && /\/r2\/buckets\/[^/]+\/objects/.test(u)) return { ok: true, status: 200, text: async () => '{"success":true,"result":[]}' };
     if (init.method === 'GET' && /\/dns_records/.test(u)) return { ok: true, status: 200, text: async () => '{"success":true,"result":[{"id":"rec1"}]}' };
+    if (init.method === 'POST' && /\/storage\/kv\/namespaces$/.test(u)) return { ok: true, status: 200, text: async () => '{"success":true,"result":{"id":"OCKVID","title":"oc"}}' };
+    if (init.method === 'POST' && /\/queues$/.test(u)) return { ok: true, status: 200, text: async () => '{"success":true,"result":{"queue_id":"EMAILQID","queue_name":"q"}}' };
     return { ok: true, status: 200, text: async () => '{"success":true,"result":{}}' };
   };
   return { impl, calls };

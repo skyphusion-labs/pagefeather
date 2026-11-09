@@ -7,7 +7,7 @@
 // core, not only the CLI.
 import { createHash } from 'node:crypto';
 import { provisionSite } from '../provision.mjs';
-import { aBindings, mediaBucketName, ocKvNamespaceName } from '../wp-site-config.mjs';
+import { aBindings, mediaBucketName, ocKvNamespaceName, bDosqlBindings, bDosqlResourceCreateOps, bDosqlSecrets, emailQueueName, emailDlqName } from '../wp-site-config.mjs';
 
 const ACCT = 'fabcb25d9c7eb087110ec474a03e50d2';
 let pass = 0, fail = 0;
@@ -24,6 +24,7 @@ function recorder(opts = {}) {
     calls.push({ url, method: init.method, body: init.body });
     if (init.method === 'POST' && url.endsWith('/_install')) return { ok: true, status: 200, json: async () => ({ out: '{"installed":true,"user_id":1}', ms: 5 }) };
     if (init.method === 'POST' && /\/storage\/kv\/namespaces$/.test(url)) return { ok: true, status: 200, text: async () => '{"success":true,"result":{"id":"OCKVID","title":"oc"}}' };
+    if (init.method === 'POST' && /\/queues$/.test(url)) return { ok: true, status: 200, text: async () => '{"success":true,"result":{"queue_id":"EMAILQID","queue_name":"q"}}' };
     if (init.method === 'GET' && /\/storage\/kv\/namespaces\/[^/]+\/values\//.test(url)) {
       if (opts.existing) return { ok: true, status: 200, text: async () => JSON.stringify(opts.existing) };
       return { ok: false, status: 404, text: async () => '{"success":false,"errors":[{"code":10009,"message":"key not found"}]}' };
@@ -295,6 +296,50 @@ const mutating = (calls) => calls.filter((c) => c.method !== 'GET');
     meta.bindings.some((bd) => bd.name === 'EMAIL_QUEUE' && bd.queue_name === 'b2-email'));
   ok('the op step is recorded under its descriptor name',
     r.steps.some((st) => st.resource === 'email-queue' && st.queue === 'b2-email' && st.created === true));
+}
+
+// #201 Phase 1 wave 2: the REAL default-on object-cache-L2 + async-email-queue
+// descriptors, end to end through provisionSite with the actual reducer output. A
+// default wp site now CREATES a per-site OC_KV namespace (id injected into the
+// OC_KV binding) and a per-site durable-email queue PLUS its dead-letter queue
+// (queue_name injected into the EMAIL_QUEUE producer binding), all BEFORE the
+// script deploys. This guards the per-site (not shared) decision end to end.
+{
+  const rec = recorder();
+  const name = 'wave2';
+  const mediaBucket = mediaBucketName(name);
+  const opts = { mediaBucket, siteOrigin: `https://${name}.skyphusionwp.dev`, location: 'enam' };
+  const r = await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl }, {
+    kind: 'wp', name, namespace: 'wp-wfp', kvId: 'KV', hostname: `${name}.skyphusionwp.dev`,
+    compatibilityDate: '2026-07-01', mainModule: 'index.js',
+    modules: [{ name: 'index.js', content: 'export default {}' }],
+    resourceBindings: bDosqlBindings(opts),
+    resourceCreateOps: bDosqlResourceCreateOps(opts),
+    sqliteClasses: ['PhpRuntime'],
+    secrets: { WP_SALT: 's1', SPIKE_TOKEN: 'spk', ...bDosqlSecrets(opts) },
+    buckets: { media: mediaBucket },
+  });
+  const deploy = rec.calls.find((c) => c.method === 'PUT' && /\/scripts\/site-wave2$/.test(c.url));
+  const meta = await metaOf(deploy);
+  const byType = (t) => meta.bindings.filter((bd) => bd.type === t);
+  const varOf = (n) => byType('plain_text').find((bd) => bd.name === n);
+  ok('wave2: OBJECT_CACHE_L2=on and ASYNC_EMAIL_QUEUE=on are default vars in the deploy',
+    varOf('OBJECT_CACHE_L2') && varOf('OBJECT_CACHE_L2').text === 'on' &&
+    varOf('ASYNC_EMAIL_QUEUE') && varOf('ASYNC_EMAIL_QUEUE').text === 'on');
+  ok('wave2: OC_KV binds the CREATED per-site namespace id (injected, not a shared store)',
+    byType('kv_namespace').some((bd) => bd.name === 'OC_KV' && bd.namespace_id === 'OCKVID'));
+  ok('wave2: EMAIL_QUEUE binds the per-site queue_name (injected)',
+    byType('queue').some((bd) => bd.name === 'EMAIL_QUEUE' && bd.queue_name === emailQueueName(name)));
+  const u = mutating(rec.calls).map((c) => `${c.method} ${c.url.split('/client/v4')[1]}`);
+  ok('wave2: the per-site KV namespace is created before deploy',
+    u.some((c) => /POST .*\/storage\/kv\/namespaces$/.test(c)));
+  ok('wave2: BOTH the email queue and its dead-letter queue are created',
+    rec.calls.filter((c) => c.method === 'POST' && /\/queues$/.test(c.url)).length === 2);
+  ok('wave2: the created names carry the reserved wp-wfp- prefix (no tenant collision)',
+    emailQueueName(name) === 'wp-wfp-wave2-email' && emailDlqName(name) === 'wp-wfp-wave2-email-dlq');
+  ok('wave2: both resource-op steps are recorded under their descriptor names',
+    r.steps.some((st) => st.resource === 'object-cache-l2' && st.id === 'OCKVID') &&
+    r.steps.some((st) => st.resource === 'async-email-queue' && st.queue === emailQueueName(name)));
 }
 
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);

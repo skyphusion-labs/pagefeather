@@ -17,6 +17,7 @@
 // concern tracked for the box-gate; see HARDENING.md.
 
 import { genSecret } from './shared.mjs';
+import { createKvNamespace, createQueue } from './ops.mjs';
 
 // ---- b-dosql integration-descriptor table (#201 Phase 1) --------------------
 // The provisioning core builds a b-dosql site's bindings, vars and generated
@@ -98,6 +99,57 @@ export const B_DOSQL_DESCRIPTORS = [
   { name: 'media', default: true, bindings: ({ mediaBucket }) => [{ type: 'r2_bucket', name: 'MEDIA', bucket_name: mediaBucket }] },
   { name: 'php-runtime', default: true, bindings: () => [{ type: 'durable_object_namespace', name: 'PHP_RUNTIME', class_name: 'PhpRuntime' }] },
   { name: 'email', default: true, bindings: () => [{ type: 'send_email', name: 'EMAIL' }] },
+  // Object-cache L2 (#218), DEFAULT-ON: a per-site KV namespace behind the
+  // in-isolate object cache, so a cold b-dosql isolate reads KV instead of
+  // recomputing from SQLite. index.js ocL2On() turns L2 on from OBJECT_CACHE_L2=on
+  // plus the OC_KV binding (the base object cache is already on via PHP_IN_DO +
+  // DB_IN_DO). PER-SITE, not a shared platform namespace: the object-cache key
+  // (object-cache-js.php pkey, and index.js ocKvKey) carries NO tenant id, so one
+  // shared namespace would cross-serve another site's alloptions. This mirrors
+  // approach A's proven per-site OC_KV (wp-wfp-<name>-oc). The resourceCreateOp
+  // creates the namespace (idempotent by title) and injects its assigned id into the
+  // OC_KV binding, exactly as approach A's kvNamespaces injection does.
+  {
+    name: 'object-cache-l2', default: true,
+    vars: () => ({ OBJECT_CACHE_L2: 'on' }),
+    bindings: () => [{ type: 'kv_namespace', name: 'OC_KV' }],
+    resourceCreateOp: async (ctx, { cfg, bindings }) => {
+      const title = ocKvNamespaceName(cfg.name);
+      const ns = await createKvNamespace(ctx, title);
+      const binding = bindings.find((b) => b.type === 'kv_namespace' && b.name === 'OC_KV');
+      if (!binding) throw new Error('object-cache-l2: no OC_KV kv_namespace binding to inject');
+      binding.namespace_id = ns.id;
+      return { kvNamespace: title, id: ns.id, created: ns.created === true };
+    },
+  },
+  // Durable async email (#190), DEFAULT-ON: a per-site Cloudflare Queue so the
+  // order-email drain survives a transient Email Sending failure (producer here; the
+  // queue() consumer in index.js delivers with retry/backoff/dead-letter). index.js
+  // emailQueueEnabled() turns the durable path on from the EMAIL_QUEUE binding plus
+  // ASYNC_EMAIL_QUEUE != off. PER-SITE, not shared: a queue has ONE consumer and the
+  // consumer delivers through that site's own env.EMAIL / MAIL_FROM identity, so a
+  // shared queue cannot route each tenant's mail to the right sender. The
+  // resourceCreateOp ensures the per-site queue AND its dead-letter queue (both
+  // idempotent by name) and injects the producer binding's queue_name.
+  // NOTE (flagged on the PR): the push-CONSUMER subscription (queue -> site-<name>,
+  // max_retries, dead_letter_queue) is a POST-deploy step the descriptor seam
+  // (pre-deploy) does not perform; until it is wired at deploy, enqueued mail is
+  // retained by Queues but not delivered. The lead box-tests and gates that step.
+  {
+    name: 'async-email-queue', default: true,
+    vars: () => ({ ASYNC_EMAIL_QUEUE: 'on' }),
+    bindings: () => [{ type: 'queue', name: 'EMAIL_QUEUE' }],
+    resourceCreateOp: async (ctx, { cfg, bindings }) => {
+      const name = emailQueueName(cfg.name);
+      const q = await createQueue(ctx, name);
+      const dlq = emailDlqName(cfg.name);
+      await createQueue(ctx, dlq); // the dead-letter queue the consumer routes to
+      const binding = bindings.find((b) => b.type === 'queue' && b.name === 'EMAIL_QUEUE');
+      if (!binding) throw new Error('async-email-queue: no EMAIL_QUEUE queue binding to inject');
+      binding.queue_name = name;
+      return { queue: name, dlq, id: q.id, created: q.created === true };
+    },
+  },
   // PDF order invoices (#227/#228), the reference OPT-IN descriptor: the Browser
   // Rendering binding plus the INVOICE_TOKEN download-signing secret. index.js
   // pdfInvoiceEnabled() turns the feature on whenever env.BROWSER is present (and
@@ -296,4 +348,14 @@ export function aBindings({
 // RESERVED_PREFIXES so a tenant can never mint a colliding name).
 export function ocKvNamespaceName(name) {
   return `wp-wfp-${name}-oc`;
+}
+
+// The per-site durable-email queue name (#190) and its dead-letter queue. Both
+// carry the wp-wfp- reserved prefix (RESERVED_PREFIXES) so a tenant can never mint
+// a colliding name, the same guarantee as ocKvNamespaceName / mediaBucketName.
+export function emailQueueName(name) {
+  return `wp-wfp-${name}-email`;
+}
+export function emailDlqName(name) {
+  return `wp-wfp-${name}-email-dlq`;
 }

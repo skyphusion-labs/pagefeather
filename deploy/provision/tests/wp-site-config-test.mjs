@@ -105,5 +105,25 @@ ok('PDF descriptor adds the BROWSER (Browser Rendering) binding',
 ok('PDF descriptor adds an INVOICE_TOKEN generated secret',
   typeof bDosqlSecrets({ mediaBucket: 'm', siteOrigin: 'https://x', enable: ['pdf-invoices'] }).INVOICE_TOKEN === 'string');
 
+// ---- #201 Phase 1 wave 2: object-cache L2 KV + durable email queue (DEFAULT-ON) --
+// These are default-on, so the default set now carries them. Their binding TYPES
+// (kv_namespace, queue) MUST be in USER_OK: test 1 at the top of this file reads
+// USER_OK from bindings.py and fails if any emitted type is not allowed, so that
+// single check couples the USER_OK fix to this wave. Here we assert the var + the
+// binding are present by default; provision-test proves the per-site injection.
+ok('object-cache L2 is ON by default (OBJECT_CACHE_L2 = on)',
+  varOf('OBJECT_CACHE_L2') && varOf('OBJECT_CACHE_L2').text === 'on');
+ok('the OC_KV object-cache L2 namespace binding is in the default set (kv_namespace)',
+  byType('kv_namespace').some((x) => x.name === 'OC_KV'));
+ok('durable async email is ON by default (ASYNC_EMAIL_QUEUE = on)',
+  varOf('ASYNC_EMAIL_QUEUE') && varOf('ASYNC_EMAIL_QUEUE').text === 'on');
+ok('the EMAIL_QUEUE durable-email queue binding is in the default set (queue)',
+  byType('queue').some((x) => x.name === 'EMAIL_QUEUE'));
+// KNOWN GAP (same shape as the EMAIL send_email gap above): lib.sh render_user does
+// NOT emit the L2 KV / email-queue wiring. The provisioning path adds them, and
+// their types are sanctioned by USER_OK, which is what the drift guard enforces.
+ok('KNOWN GAP recorded: lib.sh render_user omits the L2 KV + email-queue wiring',
+  !lib.includes('OBJECT_CACHE_L2') && !lib.includes('ASYNC_EMAIL_QUEUE'));
+
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
