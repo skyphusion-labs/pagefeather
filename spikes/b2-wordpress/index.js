@@ -451,6 +451,10 @@ const isLazyOps = new WeakSet();
 function lazyOpsFor(base, FS, store) {
 	let ops = lazyOpsCache.get(base);
 	if (ops) return ops;
+	// Materialise one child node from the index on first lookup. INVARIANT: the
+	// name is deleted from the index BEFORE base.mknod, so a name is in the index
+	// XOR a real MEMFS child, never both; that is what keeps a later lazy lookup
+	// from shadowing a file PHP has since written (its setter marks it written).
 	const child = (parent, name) => {
 		const idx = parent.lazyIndex;
 		if (!idx) return null;
@@ -971,7 +975,10 @@ async function boot(origin) {
 	};
 	let count = 0;
 	let fileBytes = 0;
-	if (ENV.LAZY_CACHE_MB) LAZY_CACHE_BYTES = Math.max(1, Number(ENV.LAZY_CACHE_MB)) * 1024 * 1024;
+	if (ENV.LAZY_CACHE_MB) {
+		const mb = Number(ENV.LAZY_CACHE_MB);
+		if (Number.isFinite(mb)) LAZY_CACHE_BYTES = Math.max(1, mb) * 1024 * 1024; // a non-numeric value keeps the default, not NaN.
+	}
 	if (ENV.LAZY_NODES === 'on') {
 		// Lazy MEMFS nodes (#218): mount the site tree by index; nodes are created
 		// only when PHP first looks a path up, not ~6800 at boot. b-dosql default

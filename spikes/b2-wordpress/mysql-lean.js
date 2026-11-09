@@ -129,6 +129,11 @@ export class LeanMysql {
 			if (this.inbuf.length >= 4) {
 				const len = this.inbuf[0] | (this.inbuf[1] << 8) | (this.inbuf[2] << 16);
 				const seq = this.inbuf[3];
+				// A payload of exactly 0xffffff is split across continuation packets
+				// (MySQL's 16 MiB framing). WordPress/Woo rows this large are rare, and
+				// this client does not reassemble them, so fail loudly rather than parse
+				// a continuation as the next row (silent stream desync). rollins, PR #233.
+				if (len === 0xffffff) throw new Error('mysql-lean: packets >= 16 MiB (0xffffff continuation) are not supported');
 				if (this.inbuf.length >= 4 + len) {
 					const payload = this.inbuf.subarray(4, 4 + len);
 					// Copy out so the retained buffer can shrink without aliasing.
