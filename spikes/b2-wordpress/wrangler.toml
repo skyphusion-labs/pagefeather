@@ -222,6 +222,17 @@ workers_dev = true
 rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
 [env.a-paid.vars]
 PHP_ENV = '{"USE_ZEND_ALLOC":"0","WP_TABLE_PREFIX":"wp_"}'
+# Approach-A object cache (#218): dbHandler is set and DB_IN_DO is not on, so
+# OBJECT_CACHE=on turns on the cross-isolate-safe allowlist cache. The bracket
+# toggles it per request with x-oc-off + the spike token on the SAME binary.
+OBJECT_CACHE = "on"
+OBJECT_CACHE_GROUPS = "options,terms,theme_json"
+OBJECT_CACHE_TTL = "10"
+# Approach-A object cache L2 (#218): a KV store shared across isolates, behind the
+# in-isolate Map, so a COLD isolate can hit KV instead of MySQL. Only the groups
+# PHP already persists reach it (Woo correctness groups never do). OBJECT_CACHE_L2=on
+# turns it on; the OC_KV binding below is the store. Measured against the Hyperdrive hop.
+OBJECT_CACHE_L2 = "on"
 [env.a-paid.assets]
 directory = "build/public"
 binding = "ASSETS"
@@ -231,16 +242,23 @@ cpu_ms = 30000
 [env.a-paid.cache]
 enabled = true
 [env.a-paid.placement]
-# Same as B Paid: Chicago, the metro of the MySQL box.
-region = "aws:us-east-2"
+# Co-located with the MySQL box: Azure MySQL Flexible Server in West US 2
+# (wpref-mysql, #218/#32), so Hyperdrive pools near the origin.
+region = "aws:us-west-2"
 [[env.a-paid.hyperdrive]]
 binding = "HYPERDRIVE"
-id = "724a0006e4354f728d790cd74cd9d8e5"  # wp-a-paid-public; tunnel path: 5532e5137adc48509ed4d3a49a42d6ee
+id = "84ab72d4ef5d479a99348b436b44f717"  # wpref-mysql-hd -> Azure MySQL wpref-mysql (West US 2)
 [[env.a-paid.r2_buckets]]
 binding = "MEDIA"
 bucket_name = "wp-a-paid-media"
 [env.a-paid.images]
 binding = "IMAGES"
+# Object-cache L2 store (#218): shared across isolates, so a cold isolate reads KV
+# instead of MySQL. Only PHP-persisted groups (the OBJECT_CACHE_GROUPS allowlist and
+# salted groups) ever reach it; Woo correctness groups never do.
+[[env.a-paid.kv_namespaces]]
+binding = "OC_KV"
+id = "40e27ef6167e42b18112b931fa46aded"
 
 # ---------------------------------------------------------------------------
 # PHP in a Durable Object (issue #28, docs/approach-b.md 8i). The design is

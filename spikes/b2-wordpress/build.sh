@@ -45,6 +45,12 @@ mkdir -p "$wp/wp-content/mu-plugins"
 cp php/r2-uploads.php php/edge-cache.php php/woo-edge.php php/rest-route-cache.php php/theme-json-cache.php php/http-bridge.php php/real-transactions.php php/ast-cache-stats.php php/woo-bootstrap-trim.php php/media-write-trim.php php/wp-mail-queue.php php/ai-alt-text.php php/zone-cache-purge.php php/pdf-invoice.php "$wp/wp-content/mu-plugins/"
 mkdir -p "$wp/wp-content/mu-plugins/r2-uploads"
 cp php/cf-images-editor.php "$wp/wp-content/mu-plugins/r2-uploads/"
+# Object cache across requests (php/object-cache.php + object-cache-js.php). The
+# drop-in is engine-agnostic: it stays inert unless index.js defines
+# JS_OBJECT_CACHE, which it does for b-dosql (DB_IN_DO=on) and for approach A
+# (OBJECT_CACHE=on, issue #218). It must ship for BOTH engines, so it is copied
+# here, before the engine split, not only on the D1 path.
+cp php/object-cache.php php/object-cache-js.php "$wp/wp-content/"
 if [ "${ENGINE:-d1}" = a ]; then
   cp php/hyperdrive-db.php "$wp/wp-content/db.php"
   cp php/hyperdrive-sql-mode.php "$wp/wp-content/hyperdrive-sql-mode.php"
@@ -52,8 +58,6 @@ if [ "${ENGINE:-d1}" = a ]; then
   cp php/hyperdrive-literals.php "$wp/wp-content/hyperdrive-literals.php"
 else
 cp php/db.php php/d1-pdo.php php/d1-dialect.php "$wp/wp-content/"
-# Object cache across requests; on only with DB_IN_DO (php/object-cache.php).
-cp php/object-cache.php php/object-cache-js.php "$wp/wp-content/"
 # The plugin's installer opens its own connection to DB_PATH. Make it use the
 # D1-backed connection that wp-content/db.php already made.
 python3 - "$wp/wp-content/plugins/sqlite-database-integration/wp-includes/sqlite/install-functions.php" <<'PY'
