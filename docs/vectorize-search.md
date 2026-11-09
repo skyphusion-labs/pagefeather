@@ -40,7 +40,7 @@ the alt-text feature uses (`aiAlt`). No Cloudflare token is stored in the site.
 
 For that to happen, skyphusion-ai has to PREFER the local bridge when it is present
 instead of the REST-plus-token path. That is a plugin-side change, tracked as
-skyphusion-labs/skyphusion-ai#193 (the repos are not coupled in the WfP PR). Until that change lands, this descriptor provisions the bindings and the index;
+skyphusion-labs/skyphusion-ai#193 (the repos are not coupled in the WfP PR). Until that change lands (see [known-limitations.md](known-limitations.md)), this descriptor provisions the bindings and the index;
 the plugin can already use `env.AI` through the bridge for embeddings, and the
 Vectorize data-plane (query/upsert/delete) is ready for the plugin once it routes those
 through the bridge. Index CREATE stays with WfP's `resourceCreateOp` (a binding cannot
