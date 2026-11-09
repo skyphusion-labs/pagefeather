@@ -1,0 +1,33 @@
+{
+  "name": "default",
+  "description": "Multi-tenant zone cache for the SaaS home zone (e.g. skyphusionwp.dev), where one zone terminates MANY tenant hostnames (CR #18, issue #201 Phase 1). Difference from the dedicated ruleset: the cache rule is NOT keyed to one hostname; it matches a tenant-host expression (@CACHE_EXPR@, substituted by apply.sh MODE=multitenant). Tenant pages are kept apart by Cloudflare's DEFAULT cache key, which already includes the Host (scheme + host + URI). We deliberately set NO custom cache key: the custom host cache-key component is Enterprise-only and would be redundant here. ORDER MATTERS: last match wins for set_cache_settings, so the bypass rule is LAST and overrides the cache rule for any dynamic/session request.",
+  "rules": [
+    {
+      "description": "Cache anonymous HTML for tenant hosts at the edge (origin is the Worker). @CACHE_EXPR@ scopes this to the tenant hostnames and MUST exclude the control-plane / apex host. First rule; the bypass below overrides it for any dynamic/session request (last match wins). Tenants stay isolated via the default Host-inclusive cache key.",
+      "expression": "@CACHE_EXPR@",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": true,
+        "edge_ttl": {
+          "mode": "override_origin",
+          "default": 3600
+        },
+        "browser_ttl": {
+          "mode": "override_origin",
+          "default": 0
+        },
+        "serve_stale": {
+          "disable_stale_while_updating": false
+        }
+      }
+    },
+    {
+      "description": "Bypass cache for admin, auth, API, cron, cart/checkout/account, any logged-in / password / preferences / comment-author / WooCommerce (incl. wp_woocommerce_session) cookie, and any non-GET method. LAST rule: on a request that also matched the cache rule above, this cache:false wins (last match wins). Host-agnostic, so it protects every tenant.",
+      "expression": "(starts_with(http.request.uri.path, \"/wp-admin\")) or (starts_with(http.request.uri.path, \"/wp-login\")) or (starts_with(http.request.uri.path, \"/wp-json\")) or (starts_with(http.request.uri.path, \"/wp-cron\")) or (starts_with(http.request.uri.path, \"/cart\")) or (starts_with(http.request.uri.path, \"/checkout\")) or (starts_with(http.request.uri.path, \"/my-account\")) or (http.cookie contains \"wordpress_logged_in\") or (http.cookie contains \"wp-postpass\") or (http.cookie contains \"wp-settings\") or (http.cookie contains \"comment_author\") or (http.cookie contains \"woocommerce_\") or (http.request.method ne \"GET\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      }
+    }
+  ]
+}
