@@ -13,8 +13,9 @@ For each site <s>:
   opinionated defaults wired through the provisioning descriptor table (#201): the
   Browser Rendering binding (browser), the Workers AI binding (ai), its own
   object-cache L2 namespace (kv_namespace named OC_KV), its own durable-email
-  queue (queue with queue_name wp-wfp-<s>-email), and its own pageview-analytics
-  dataset (analytics_engine with dataset wp-wfp-<s>-analytics). Any other binding type (D1, a service, a dispatch
+  queue (queue with queue_name wp-wfp-<s>-email), its own pageview-analytics
+  dataset (analytics_engine with dataset wp-wfp-<s>-analytics), and its own
+  Vectorize search index (vectorize with index_name wp-wfp-<s>-search). Any other binding type (D1, a service, a dispatch
   namespace, a foreign queue or KV namespace, ...) fails.
 - the dispatcher wp-<s> (GET .../workers/scripts/wp-<s>/settings) may bind
   only: the site map (kv_namespace SITES, id KV_ID) and the namespace
@@ -29,7 +30,7 @@ types only, never a value) and exits 1 on any violation.
 import json, os, sys, urllib.error, urllib.request
 
 ENV = os.environ
-USER_OK = {"r2_bucket", "durable_object_namespace", "images", "assets", "send_email", "plain_text", "secret_text", "browser", "ai", "kv_namespace", "queue", "analytics_engine"}
+USER_OK = {"r2_bucket", "durable_object_namespace", "images", "assets", "send_email", "plain_text", "secret_text", "browser", "ai", "kv_namespace", "queue", "analytics_engine", "vectorize"}
 SECRETS_OK = {"WP_SALT", "SPIKE_TOKEN"}
 
 
@@ -70,6 +71,8 @@ def check_user(s, bs):
             bad.append("site-%s binds a kv_namespace named %s, not its own OC_KV L2" % (s, n))
         elif t == "analytics_engine" and b.get("dataset") != "wp-wfp-%s-analytics" % s:
             bad.append("site-%s binds the analytics dataset %s, not its own" % (s, b.get("dataset")))
+        elif t == "vectorize" and b.get("index_name") != "wp-wfp-%s-search" % s:
+            bad.append("site-%s binds the vectorize index %s, not its own" % (s, b.get("index_name")))
     return bad
 
 

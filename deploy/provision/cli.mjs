@@ -168,6 +168,10 @@ function bDosqlEnabledIntegrations(env) {
   // analyticsEnabled() then records one anonymized pageview per front-end request.
   // Unset leaves the site byte-identical to the default set.
   if (env.WP_ANALYTICS && env.WP_ANALYTICS !== 'off') enable.push('analytics-engine');
+  // Semantic site search (#201 Phase 2): provisions the token-free Workers AI +
+  // per-site Vectorize bindings the skyphusion-ai plugin consumes on a WfP site.
+  // Opt-in (metered). WP_VECTORIZE_SEARCH set and != off turns it on.
+  if (env.WP_VECTORIZE_SEARCH && env.WP_VECTORIZE_SEARCH !== 'off') enable.push('vectorize-search');
   return enable;
 }
 

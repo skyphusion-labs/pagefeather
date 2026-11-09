@@ -43,16 +43,17 @@ ok('default bDosqlBindings matches the frozen baseline (deepStrictEqual)', eq);
 ok('default set JSON string matches the frozen baseline exactly',
   JSON.stringify(bDosqlBindings(DEFAULT_OPTS)) === JSON.stringify(EXPECTED_DEFAULT));
 
-// 2. The table carries the six default-on descriptors plus the five opt-ins, in order.
-ok('descriptor order is runtime, images, media, php-runtime, email, pdf-invoices, zone-purge, object-cache-l2, async-email-queue, ai-alt-text, analytics-engine',
-  B_DOSQL_DESCRIPTORS.map((d) => d.name).join(',') === 'runtime,images,media,php-runtime,email,pdf-invoices,zone-purge,object-cache-l2,async-email-queue,ai-alt-text,analytics-engine');
-ok('the six infra descriptors are default-on; PDF, zone-purge, async-email-queue, ai-alt-text and analytics-engine are opt-in',
+// 2. The table carries the six default-on descriptors plus the six opt-ins, in order.
+ok('descriptor order is runtime, images, media, php-runtime, email, pdf-invoices, zone-purge, object-cache-l2, async-email-queue, ai-alt-text, analytics-engine, vectorize-search',
+  B_DOSQL_DESCRIPTORS.map((d) => d.name).join(',') === 'runtime,images,media,php-runtime,email,pdf-invoices,zone-purge,object-cache-l2,async-email-queue,ai-alt-text,analytics-engine,vectorize-search');
+ok('the six infra descriptors are default-on; PDF, zone-purge, async-email-queue, ai-alt-text, analytics-engine and vectorize-search are opt-in',
   B_DOSQL_DESCRIPTORS.filter((d) => d.default).map((d) => d.name).join(',') === 'runtime,images,media,php-runtime,email,object-cache-l2' &&
   B_DOSQL_DESCRIPTORS.find((d) => d.name === 'pdf-invoices').default === false &&
   B_DOSQL_DESCRIPTORS.find((d) => d.name === 'zone-purge').default === false &&
   B_DOSQL_DESCRIPTORS.find((d) => d.name === 'async-email-queue').default === false &&
   B_DOSQL_DESCRIPTORS.find((d) => d.name === 'ai-alt-text').default === false &&
-  B_DOSQL_DESCRIPTORS.find((d) => d.name === 'analytics-engine').default === false);
+  B_DOSQL_DESCRIPTORS.find((d) => d.name === 'analytics-engine').default === false &&
+  B_DOSQL_DESCRIPTORS.find((d) => d.name === 'vectorize-search').default === false);
 
 // 3. Reducer parts for a default site: no generated secrets, exactly the one
 // default-on resource op (object-cache-l2 KV create), vars before bindings.
@@ -200,6 +201,43 @@ let threw = false; try { bDosqlBindings({ siteOrigin: 'https://x' }); } catch { 
 ok('bDosqlBindings still requires mediaBucket', threw);
 threw = false; try { bDosqlVars({}); } catch { threw = true; }
 ok('bDosqlVars still requires siteOrigin', threw);
+
+// 10. Vectorize semantic search (#201 Phase 2) is OPT-IN (default:false; Workers
+// AI and Vectorize are metered). The default site carries NEITHER an ai nor a
+// vectorize binding. Enabling adds exactly two bindings, the account Workers AI
+// binding and the per-site Vectorize index binding (index_name injected by the
+// resource op, like the queue), no var, no secret, and exactly one resource op
+// (the index create) alongside the default object-cache-l2 one.
+ok('default set carries NO ai and NO vectorize binding (vectorize-search is opt-in)',
+  !bDosqlBindings(DEFAULT_OPTS).some((b) => b.type === 'ai' || b.type === 'vectorize'));
+const vs = bDosqlBindings({ ...DEFAULT_OPTS, enable: ['vectorize-search'] });
+ok('vectorize-search opt-in adds exactly two bindings (ai + vectorize) after the default set',
+  vs.length === EXPECTED_DEFAULT.length + 2 &&
+  vs.filter((b) => b.type === 'ai').length === 1 &&
+  vs.filter((b) => b.type === 'vectorize').length === 1);
+ok('vectorize-search ai binding is {type:ai,name:AI}; vectorize is {type:vectorize,name:SEARCH_INDEX} with no index_name until injected',
+  JSON.stringify(vs.find((b) => b.type === 'ai')) === JSON.stringify({ type: 'ai', name: 'AI' }) &&
+  JSON.stringify(vs.find((b) => b.type === 'vectorize')) === JSON.stringify({ type: 'vectorize', name: 'SEARCH_INDEX' }));
+ok('vectorize-search opt-in adds NO var beyond the default set (binding presence is the switch)',
+  vs.filter((b) => b.type === 'plain_text').length === EXPECTED_DEFAULT.filter((b) => b.type === 'plain_text').length);
+ok('vectorize-search opt-in generates NO secret',
+  Object.keys(bDosqlSecrets({ ...DEFAULT_OPTS, enable: ['vectorize-search'] })).length === 0);
+ok('vectorize-search opt-in adds its per-site index resource op (object-cache-l2 + vectorize-search)',
+  bDosqlResourceCreateOps({ ...DEFAULT_OPTS, enable: ['vectorize-search'] }).map((r) => r.name).join(',') === 'object-cache-l2,vectorize-search');
+
+// 11. AI-binding DEDUP (assembleBDosql). ai-alt-text and vectorize-search both
+// emit the account {type:'ai',name:'AI'} binding; the reducer dedups by
+// (type,name) in enable order, so co-enabling both binds env.AI exactly ONCE
+// (first emitter wins) and a deploy is not rejected for a duplicate binding. The
+// per-site vectorize binding is still present. Reachable now that ai-alt-text is
+// on main as the second AI emitter; without the dedup this count would be 2.
+const both = bDosqlBindings({ ...DEFAULT_OPTS, enable: ['ai-alt-text', 'vectorize-search'] });
+ok('co-enabling ai-alt-text + vectorize-search binds env.AI exactly ONCE (dedup by type,name)',
+  both.filter((b) => b.type === 'ai' && b.name === 'AI').length === 1);
+ok('co-enable still carries the per-site vectorize binding',
+  both.filter((b) => b.type === 'vectorize' && b.name === 'SEARCH_INDEX').length === 1);
+ok('co-enable preserves order: the ai binding precedes the vectorize binding (first emitter wins)',
+  both.findIndex((b) => b.type === 'ai') < both.findIndex((b) => b.type === 'vectorize'));
 
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
