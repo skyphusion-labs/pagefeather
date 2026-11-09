@@ -28,7 +28,7 @@ Measured as normal Workers, not as user Workers, except where the row says so.
 | WooCommerce store | `b-dosql`, the same runtime as a plain site, with WooCommerce active. It runs checkout directly (README matrix; `tests/woo.py` green on Paid). The `c1` container store was retired in #214. | See the README matrix and docs/results.md for the checkout runs; the object cache and page cache notes are in docs/perf-dosql.md. | The same limit as a plain site: one Durable Object, 128 MiB, one writer, one region. A light-to-moderate store fits. A store with sustained, heavy concurrent load belongs on a VPS. |
 | Very high concurrency on one site | `a`: PHP in Workers, MySQL through Hyperdrive | The only variant that spread across isolates (zero 1102 at 100 users; 128 MB is enough for WooCommerce). | **Not measured as a user Worker**, and see the connect() risk above. Every query crosses the network: browse p50 2.31 to 5.92 s across the steps of the three load runs (deploy/results/bench-runner-20261105T211919Z-cea397.json, bench-runner-20261105T214231Z-230073.json, bench-runner-20261106T010353Z-155691.json), not acceptable for a store (Conrad, 2026-11-06). Its rate at 100 users moved across three runs: 10.3, 18.73 and 8.63 rps. |
 
-**Today:** a store under sustained, heavy concurrent load goes to a VPS. Approach `a` on an external scalable database is the horizontal-scale answer, and its performance work is tracked in #218.
+**Today:** a store with real concurrent traffic goes to approach `a` on an external scalable database. It runs full WooCommerce under 128 MiB with no container (#218) and scales sideways; `site add --kind a` provisions it (#241). A store that outgrows b-dosql can also go to a VPS. The row above for `a` records the earlier measurements, taken before the object cache and OPcache work of #218; see [approach-a-overview.md](approach-a-overview.md) for the current numbers.
 
 `a2` (PlanetScale through Hyperdrive) works as a normal Worker (#50, #52), at about 16 ms per query from ORD, and adds nothing over `a` for these sites.
 
@@ -49,14 +49,14 @@ Measured as normal Workers, not as user Workers, except where the row says so.
 
 - **Transactions:** see the README section "Read this before the speed numbers". `b-dosql` gets real transactions in #60.
 - **Page cache keys:** keying the cached page on the whole Cookie header gives about 0 hits for real browsers (measured on `c1` in #58 and on `b` in #63). Decide cacheability by cookie name and cache without the Cookie header.
-- **Purges:** the purge rate limit is per account (5 a minute, 25 at once), shared by every tenant, so order activity must not purge and bursts are coalesced (#58). Measured in the #58 gates (strummer, `tests/edge_check.py`, 2026-11-06, to be recorded in docs/approach-c1.md with the #58 pull request): on the build that purged from the container's outbound path, a price, stock and tagline change were all still stale after 20 s; on the build that purges through the cached entrypoint, the same changes showed in 1.3 to 1.9 s. Until that pull request lands, this item has no file in the repo.
+- **Purges:** the purge rate limit is per account (5 a minute, 25 at once), shared by every tenant, so order activity must not purge and bursts are coalesced (#58). Measured in the #58 gates (strummer, `tests/edge_check.py`, 2026-11-06; the build was the retired `c1` store, and no result file for it is in the repo): on the build that purged from the container's outbound path, a price, stock and tagline change were all still stale after 20 s; on the build that purges through the cached entrypoint, the same changes showed in 1.3 to 1.9 s.
 - **The site's origin:** the runtime takes its origin from configuration (`SITE_ORIGIN`), not from the request that boots it (#33, #55).
 - **Hyperdrive's default query cache** (60 s, not invalidated on writes) serves stale WordPress reads (#50).
 
 ## Open items
 
 1. The connect() risk for `a` behind an outbound Worker: test it.
-2. `a` as a user Worker: not measured. (`c1` was retired in #214.)
+2. `a` as a user Worker: provisioned by `site add --kind a` (#241). Per-tenant limits and metering are a future direction (#247, see [known-limitations.md](known-limitations.md)). (`c1` was retired in #214.)
 3. Hostname routing in the dispatcher: not tested.
 4. Whether the Workers Cache works inside a namespace user Worker (docs/wfp.md marks it open). `b-dosql`'s page cache depends on it.
 5. The Durable Object namespace name collision (docs/wfp.md open item: namespaces are named `<script>_<class>`).
