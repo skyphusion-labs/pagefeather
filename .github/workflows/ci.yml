@@ -64,6 +64,10 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/pdf-invoice.test.mjs
       - name: pdf invoice mu-plugin (issue #227)
         run: php spikes/b2-wordpress/tests/pdf-invoice-test.php
+      - name: turnstile helpers (issue #250)
+        run: node --test spikes/b2-wordpress/tests/turnstile.test.mjs
+      - name: turnstile forms mu-plugin (issue #250)
+        run: php spikes/b2-wordpress/tests/turnstile-forms-test.php
       - name: b-dosql operator endpoints (issue #35)
         # /_build and /_evict are gated and never cached (spikes/b2-wordpress).
         run: node spikes/b2-wordpress/tests/build-evict-test.mjs
