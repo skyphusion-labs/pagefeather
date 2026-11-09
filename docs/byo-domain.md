@@ -63,6 +63,8 @@ The command writes nothing to the customer's DNS. It prints two things:
 It also records `domainOwner`, `customHostname`, `customHostnameId`, and
 `customHostnameState` on the site in the map.
 
+> **Known gap:** the per-site Terraform in `deploy/wfp/terraform/site` pins `zone_id` to the `skyphusion.org` zone by default. A bring-your-own apex needs `TF_VAR_zone_id` set to its own zone. See [known-limitations.md](known-limitations.md).
+
 ## Step 2: give the customer the records
 
 The command prints the exact records. Give that list to the customer. There are

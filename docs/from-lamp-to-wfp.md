@@ -65,7 +65,7 @@ The win over a LAMP box: cached reads are served at the edge with no server roun
 
 WooCommerce runs on `b-dosql`, **including checkout** (measured on Workers Paid: an order places at `x-wasm-mib` 99, under the 128 MiB isolate cap, with zero memory overflow, `tests/woo.py` green). Admin media upload works too. So a light-to-moderate store runs on the edge with no container and no external database.
 
-The one real limit is the Worker isolate: **128 MiB, one writer, one region.** A blog or a light-to-moderate store fits comfortably. A store under sustained, heavy concurrent load should go to a **VPS** (the standard LAMP stack you already know), which is honest about the one thing the edge isolate cannot do. The container store path that used to fill that role was retired (#214) because b-dosql proved capable; see the README matrix.
+The one real limit is the Worker isolate: **128 MiB, one writer, one region.** A blog or a light-to-moderate store fits comfortably. A store with real concurrent traffic should use **approach A** (PHP in a Worker, a managed MySQL through Hyperdrive; see [onboarding.md](onboarding.md)), which scales sideways. A store that outgrows b-dosql can also go to a **VPS** (the standard LAMP stack you already know). The container store path that used to fill that role was retired (#214) because b-dosql proved capable; see the README matrix.
 
 ## One account, many sites (the framework)
 

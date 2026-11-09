@@ -6,16 +6,45 @@ The key idea: the provisioning core is only Cloudflare API calls (fetch plus Web
 
 New to this from a traditional LAMP WordPress host (a Linux box with Apache or nginx, PHP, and MySQL)? Start with [docs/from-lamp-to-wfp.md](from-lamp-to-wfp.md), which maps your stack one-to-one onto this one, then come back here for the commands and prerequisites.
 
-## One kind of site: `wp` (b-dosql), for blogs and stores
+## Two kinds of site: `wp` (b-dosql, the store path) and `a` (the scale-out path)
 
-Every site is the same kind, `wp` (called b-dosql). It is WordPress with PHP and its SQLite database inside one Durable Object. It runs as a user Worker in the dispatch namespace. A site can be:
+This page is about `wp` (called b-dosql), the kind with zero outside infrastructure. For scale-out, the second kind is `a`: PHP-WASM in a Worker with the database on a managed MySQL through Hyperdrive. It has its own flow in [onboarding.md](onboarding.md) (`site add --kind a`). Both kinds go through the same provisioning core.
+
+A `wp` site is WordPress with PHP and its SQLite database inside one Durable Object. It runs as a user Worker in the dispatch namespace. A site can be:
 
 - a content site (a blog or a brochure site); or
 - a WooCommerce store. WooCommerce runs on b-dosql **including checkout**. This is measured on Workers Paid: an order places under the 128 MiB isolate limit, and `tests/woo.py` is green (see the README matrix and `docs/results.md`).
 
 There is no container store. The older "c1" store path (WordPress in a Cloudflare Container) was retired in #214, because b-dosql now does checkout directly. Its notes stay as a record in [approach-c1.md](approach-c1.md). The CLI and the provisioning Worker refuse `kind: shop`.
 
-**The limit to know:** a b-dosql site is one Durable Object, so it has 128 MiB of memory, one writer, and one region. A blog or a light-to-moderate store fits well. For a store with sustained, heavy concurrent load, use a VPS (the normal LAMP stack). See [from-lamp-to-wfp.md](from-lamp-to-wfp.md).
+**The limit to know:** a b-dosql site is one Durable Object, so it has 128 MiB of memory, one writer, and one region. A blog or a light-to-moderate store fits well. For a store with real concurrent traffic, use approach `a` ([onboarding.md](onboarding.md)), which scales sideways. A store that outgrows b-dosql can also go to a VPS (the normal LAMP stack). See [from-lamp-to-wfp.md](from-lamp-to-wfp.md) and [known-limitations.md](known-limitations.md).
+
+## Default integrations
+
+Provisioning is a table of descriptors (`B_DOSQL_DESCRIPTORS` in `deploy/provision/wp-site-config.mjs`). Each one wires a Cloudflare integration for a site, as an opinionated default or as an opt-in.
+
+| Integration | Default |
+| --- | --- |
+| Base object cache, and the L2 KV object cache (per-site `OC_KV`) | On |
+| WP-Cron on a Durable Object alarm | On |
+| Images offload (Cloudflare Images) and R2 media | On |
+| Email Sending (`EMAIL` binding) | On |
+| PDF invoices (Browser Rendering) | Opt-in |
+| Durable email through Queues ([async-email-durable-retry.md](async-email-durable-retry.md)) | Opt-in |
+| AI alt-text (Workers AI) | Opt-in |
+| Pageview analytics (Analytics Engine) | Opt-in |
+| Semantic search (Vectorize, [vectorize-search.md](vectorize-search.md)) | Opt-in |
+| Zone cache purge on publish | Opt-in |
+
+Opt-in items are metered or need a lead-supplied token or a post-deploy step, so no site gets them unless the operator asks.
+
+## Edge security (zone level)
+
+These protect the SaaS home zone, so one rule covers every tenant. All of it is code, and it is proven live on a tenant.
+
+- **WAF** (`deploy/wfp/terraform/shared/waf.tf`): the Cloudflare managed ruleset with the WordPress rules, and rate limits on `wp-login` and `xmlrpc`. A rate-limit rule must count by `cf.colo.id` as well as the client address. A Pro zone allows only 2 rate-limit rules. The rules never match wp-admin pages, the REST API, checkout or wp-cron.
+- **Zone edge cache with purge on publish** (`deploy/zone/`): Cache Rules that bypass what WooCommerce must not cache. The last matching rule wins, so the order of the rules matters. See `deploy/zone/README.md`.
+- **Access on `/wp-admin`** (`deploy/wfp/terraform/shared/access.tf`): an optional Cloudflare Access application that gates the admin by identity. Off unless a site opts in.
 
 ## How it fits together
 
@@ -121,7 +150,8 @@ The operator path is one command per side: `site hostname add <name> --domain <d
 ## Honest limits
 
 - A site is ONE Durable Object: 128 MiB of isolate memory, one writer, one region. Throughput is about 1 divided by the CPU time of one request (about 4 public pages a second at 230 ms; see `docs/perf-dosql.md`). A store with sustained, heavy concurrent load belongs on a VPS.
-- There is no container store. The c1 path was retired (#214); see [approach-c1.md](approach-c1.md) for the record.
+- There is no container store. The c1 path was retired (#214); see [approach-c1.md](approach-c1.md) for the record. A store that outgrows b-dosql uses approach A or a VPS, not a container.
+- Open items are listed in [known-limitations.md](known-limitations.md).
 - Custom hostnames bill per hostname beyond the Cloudflare for SaaS free allowance.
 - A single deployment picks one routing phase for its b-dosql sites (`workers.dev` or custom hostnames); see `docs/operator.md`, "one phase for the whole deployment".
 

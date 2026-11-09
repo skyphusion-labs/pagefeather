@@ -45,10 +45,10 @@ The rule is an **allowlist, not a block list**: on A the drop-in persists a grou
 Tiers:
 - **L0, the per-request PHP array** (already in object-cache-js.php): collapses duplicate reads within one page. Free, and the only tier the correctness-critical groups use.
 - **L1, the in-isolate Map** (index.js module scope): zero network on a hit, survives across the requests one isolate serves. Allowlist plus bounded TTL plus the salted path.
-- **L2, KV** (not built here): cross-isolate shared store that honors core's delete. A measured next lever, only if the KV hop beats the MySQL hop and the group tolerates KV's eventual consistency. The WooCommerce correctness groups probably do not.
+- **L2, KV** (built; measured in the row `A (approach-A object cache L2/KV)`): a cross-isolate shared store that honors core's delete. Provisioning turns it on by default with a per-site `OC_KV` namespace (`OBJECT_CACHE_L2=on`), for approach A and for b-dosql. It only helps a group that tolerates KV's eventual consistency. The WooCommerce correctness groups probably do not.
 
 Off switch and knobs (written into wp-runtime.php as PHP constants):
-- `OBJECT_CACHE=on` turns the A object cache on. **Default off on A** until it is measured. (On b-dosql the same var stays on unless set to `off`; a deploy is one engine, so the var is unambiguous per deploy.)
+- `OBJECT_CACHE=on` turns the A object cache on. **The runtime default on A is off; provisioning (`site add --kind a`) sets it on**, together with `OBJECT_CACHE_L2=on` and `LAZY_NODES=on`. (On b-dosql the same var stays on unless set to `off`; a deploy is one engine, so the var is unambiguous per deploy.)
 - `OBJECT_CACHE_GROUPS` is the persist allowlist, sanitized to `[A-Za-z0-9_,-]`. Default `options,terms,theme_json`.
 - `OBJECT_CACHE_TTL` is the bounded TTL in seconds, clamped to 0 to 3600. Default 10.
 - `THEME_JSON_CACHE` (unless `off`) also enables the salted theme.json cache (php/theme-json-cache.php), the worked example of the salted path.
@@ -75,5 +75,5 @@ A single-isolate `wrangler dev` is the same correctness model as b-dosql (one wr
 The Paid bracket (the lead runs it) on A (#32) and A2 (#50):
 1. Deploy with `OBJECT_CACHE=on`. Bracket each page (home, post, shop, product, cart, checkout) cache off / on / off again on the same binary, using `x-oc-off` with the spike token for the off bracket. Record `x-oc-stats.tables`, `x-oc-stats.groups` and `dbN` into docs/results.md. Target: a large drop in round-trips per page on the cached pages.
 2. **Cross-isolate correctness:** concurrent load (tests/load) where a write lands in one isolate and a read in another, asserting no stale stock, price or cart; and tests/woo.py plus tests/cache_check.py with the cache on.
-3. **The KV question:** whether an L2 KV hop beats the MySQL round-trip, and whether it is worth building for any group.
+3. **The KV question:** answered in the row `A (approach-A object cache L2/KV)`; the L2 tier is now a provisioned default.
 4. Widen `OBJECT_CACHE_GROUPS` (for example add `posts,post_meta`) and re-bracket to weigh the larger win against the correctness cost; cache_check.py must stay green at each width.

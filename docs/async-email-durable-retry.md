@@ -33,6 +33,10 @@ v2 keeps the enqueue trigger unchanged and hardens only the delivery leg.
    queue (`b2-email-dlq`). A second consumer logs and meters the dead message, so a
    permanently failed send is visible to the operator, then acknowledges it.
 
+## Status: opt-in, not a default
+
+Provisioning has an `async-email-queue` descriptor (`deploy/provision/wp-site-config.mjs`). It is **opt-in** (`default: false`). It creates a per-site queue and dead-letter queue and adds the `EMAIL_QUEUE` binding. It does not yet subscribe the queue consumer to the site Worker; that is a step after deploy. Until that step is wired, turning the queue on by default would send order mail to a queue with no consumer, which is worse than the working direct path. See [known-limitations.md](known-limitations.md).
+
 ## The feature gate
 
 The durable path is opt-in. It is on only when both conditions hold:
@@ -80,7 +84,9 @@ recipient and subject.
    on).
 
 Provisioning the queues and wiring the deploy environment is an infrastructure step. The
-code in this repository works with or without the binding.
+code in this repository works with or without the binding. The provisioning descriptor
+makes the queues and the producer binding; the consumer subscription is still a manual
+step (see [known-limitations.md](known-limitations.md)).
 
 ## Local development
 
