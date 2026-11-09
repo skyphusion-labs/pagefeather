@@ -354,12 +354,13 @@ function noteInflated(drop, bytes) {
 	}
 }
 
-function lazyFile(FS, path, entry) {
-	FS.writeFile(path, new Uint8Array(0));
-	const node = FS.lookupPath(path).node;
+// Set the lazy contents getter on an already-created MEMFS file node: inflate on
+// first read, cap+evict the inflated copies (noteInflated). Shared by lazyFile
+// (eager node) and the lazy-node mount (node created on lookup).
+function attachLazyContents(node, size, dataFn) {
 	let contents = null;
 	let written = false;
-	let used = entry.size;
+	let used = size;
 	const drop = () => {
 		if (!written) contents = null;
 	};
@@ -367,7 +368,7 @@ function lazyFile(FS, path, entry) {
 		configurable: true,
 		get() {
 			if (contents === null) {
-				contents = entry.data();
+				contents = dataFn();
 				noteInflated(drop, contents.length);
 			}
 			return contents;
@@ -386,6 +387,128 @@ function lazyFile(FS, path, entry) {
 			used = v;
 		},
 	});
+}
+
+function lazyFile(FS, path, entry) {
+	FS.writeFile(path, new Uint8Array(0));
+	attachLazyContents(FS.lookupPath(path).node, entry.size, () => entry.data());
+}
+
+// Lazy MEMFS NODE creation (issue #218, LAZY_NODES=on). Eager node creation
+// (lazyFile per entry) makes a MEMFS node for every file in the tree at boot.
+// Node contents are already lazy, but each NODE object costs about 1 KiB of the
+// V8 JS heap, which x-wasm-mib (the PHP WASM heap only) does not measure yet
+// counts against the 128 MiB isolate cap. A request touches about a quarter of
+// the ~6800 files, so the other ~5000 nodes are ~5 MiB of V8 heap spent for
+// nothing: the headroom approach A needs for its JS MySQL client. This mounts a
+// directory INDEX onto a MEMFS dir and creates a child node only when the path
+// is first looked up (or the directory is listed), adapted from HostlessWP
+// (runtime/src/lazyfs.js at 739e8e7, GPL-2.0-or-later; docs/prior-art.md).
+// Files inflate and evict through attachLazyContents, exactly as lazyFile.
+function buildZipIndex(zip) {
+	const dv = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+	let eocd = zip.length - 22;
+	while (eocd >= 0 && dv.getUint32(eocd, true) !== 0x06054b50) eocd--;
+	if (eocd < 0) throw new Error('lazy: zip end-of-central-directory not found');
+	const total = dv.getUint16(eocd + 10, true);
+	const dec = new TextDecoder();
+	const root = { files: new Map(), dirs: new Map() };
+	let p = dv.getUint32(eocd + 16, true);
+	for (let n = 0; n < total; n++) {
+		if (dv.getUint32(p, true) !== 0x02014b50) throw new Error('lazy: bad central directory entry');
+		const nlen = dv.getUint16(p + 28, true);
+		const xlen = dv.getUint16(p + 30, true);
+		const clen = dv.getUint16(p + 32, true);
+		const segs = dec.decode(zip.subarray(p + 46, p + 46 + nlen)).split('/');
+		const file = segs.pop();
+		let idx = root;
+		for (const s of segs) {
+			if (!s) continue;
+			let sub = idx.dirs.get(s);
+			if (!sub) idx.dirs.set(s, (sub = { files: new Map(), dirs: new Map() }));
+			idx = sub;
+		}
+		if (file) idx.files.set(file, p); // just the central-directory offset: a number, not a node
+		p += 46 + nlen + xlen + clen;
+	}
+	return { root, zip, dv };
+}
+// The file bytes for one central-directory offset, inflated on demand (same as zipEntries.data()).
+function lazyEntryData(zip, dv, p) {
+	const method = dv.getUint16(p + 10, true);
+	const csize = dv.getUint32(p + 20, true);
+	const size = dv.getUint32(p + 24, true);
+	const local = dv.getUint32(p + 42, true);
+	const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
+	const raw = zip.subarray(start, start + csize);
+	return method === 0 ? raw : inflateSync(raw, { out: new Uint8Array(size) });
+}
+function lazyEntrySize(dv, p) {
+	return dv.getUint32(p + 24, true);
+}
+const lazyOpsCache = new WeakMap();
+const isLazyOps = new WeakSet();
+function lazyOpsFor(base, FS, store) {
+	let ops = lazyOpsCache.get(base);
+	if (ops) return ops;
+	const child = (parent, name) => {
+		const idx = parent.lazyIndex;
+		if (!idx) return null;
+		const sub = idx.dirs.get(name);
+		if (sub) {
+			idx.dirs.delete(name);
+			const node = base.mknod(parent, name, 0o40755, 0);
+			makeLazyDir(FS, node, sub, store);
+			lazyStats.nodes++;
+			return node;
+		}
+		const p = idx.files.get(name);
+		if (p === undefined) return null;
+		idx.files.delete(name);
+		const node = base.mknod(parent, name, 0o100644, 0);
+		attachLazyContents(node, lazyEntrySize(store.dv, p), () => lazyEntryData(store.zip, store.dv, p));
+		lazyStats.nodes++;
+		return node;
+	};
+	const all = (node) => {
+		const idx = node.lazyIndex;
+		if (!idx) return;
+		for (const name of [...idx.dirs.keys(), ...idx.files.keys()]) child(node, name);
+	};
+	ops = {
+		...base,
+		lookup(parent, name) {
+			return child(parent, name) || base.lookup(parent, name);
+		},
+		readdir(node) {
+			all(node);
+			return base.readdir(node);
+		},
+		rmdir(parent, name) {
+			all(FS.lookupNode(parent, name));
+			return base.rmdir(parent, name);
+		},
+		rename(oldNode, newDir, newName) {
+			try {
+				all(FS.lookupNode(newDir, newName));
+			} catch {}
+			return base.rename(oldNode, newDir, newName);
+		},
+	};
+	lazyOpsCache.set(base, ops);
+	isLazyOps.add(ops);
+	return ops;
+}
+const lazyStats = { nodes: 0 };
+function makeLazyDir(FS, node, index, store) {
+	node.lazyIndex = index;
+	if (!isLazyOps.has(node.node_ops)) node.node_ops = lazyOpsFor(node.node_ops, FS, store);
+}
+// Mount a whole zip's tree lazily under a MEMFS directory (default root). The
+// zip's own top-level directory (e.g. "wordpress") materialises on first lookup.
+function mountLazyZip(FS, mountPath, zip) {
+	const store = buildZipIndex(zip);
+	makeLazyDir(FS, FS.lookupPath(mountPath).node, store.root, store);
 }
 
 // One message from PHP: a D1 statement, an R2 or Images operation, a cache
@@ -848,16 +971,23 @@ async function boot(origin) {
 	};
 	let count = 0;
 	let fileBytes = 0;
-	for (const e of zipEntries(new Uint8Array(siteZip))) {
-		const full = '/' + e.name;
-		if (e.name.endsWith('/')) {
-			mkdirp(full.slice(0, -1));
-			continue;
+	if (ENV.LAZY_NODES === 'on') {
+		// Lazy MEMFS nodes (#218): mount the site tree by index; nodes are created
+		// only when PHP first looks a path up, not ~6800 at boot. b-dosql default
+		// off (the eager path below is unchanged) until this is proven for A.
+		mountLazyZip(FS, '/', new Uint8Array(siteZip));
+	} else {
+		for (const e of zipEntries(new Uint8Array(siteZip))) {
+			const full = '/' + e.name;
+			if (e.name.endsWith('/')) {
+				mkdirp(full.slice(0, -1));
+				continue;
+			}
+			mkdirp(full.slice(0, full.lastIndexOf('/')));
+			lazyFile(FS, full, e);
+			count++;
+			fileBytes += e.size;
 		}
-		mkdirp(full.slice(0, full.lastIndexOf('/')));
-		lazyFile(FS, full, e);
-		count++;
-		fileBytes += e.size;
 	}
 	const tSite = Date.now() - t0 - tWasm;
 	let opcacheFiles = 0;
@@ -930,7 +1060,7 @@ async function boot(origin) {
 	// in a Durable Object there (dbHandler set, DB_IN_DO off), it reclaims the WASM-heap that a
 	// Woo-warmed isolate otherwise spends re-initialising each request, headroom approach A needs
 	// because its DB client sits in the same isolate as PHP (#218). BOOTSTRAP_TRIM=off turns it off.
-	if (ENV.PHP_IN_DO === 'on' && (ENV.DB_IN_DO === 'on' || dbHandler) && ENV.BOOTSTRAP_TRIM !== 'off') lines.push(`define('SKYPHUSION_BOOTSTRAP_TRIM', true);`);
+	if (((ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on') || dbHandler) && ENV.BOOTSTRAP_TRIM !== 'off') lines.push(`define('SKYPHUSION_BOOTSTRAP_TRIM', true);`);
 	// Media write trim mu-plugin (issue #189): free isolate memory on the rare admin
 	// media-upload request so the attachment insert fits under the 128 MiB cap on a
 	// WooCommerce-warmed b-dosql isolate. b-dosql + MEDIA only, and only the async-upload /

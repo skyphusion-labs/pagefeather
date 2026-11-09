@@ -279,6 +279,7 @@ OBJECT_CACHE = "on"
 OBJECT_CACHE_GROUPS = "options,terms,theme_json"
 OBJECT_CACHE_TTL = "10"
 OBJECT_CACHE_L2 = "on"
+LAZY_NODES = "on"
 [env.a-paid-lean.assets]
 directory = "build/public"
 binding = "ASSETS"
@@ -319,6 +320,7 @@ rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
 [env.a-paid-do-lean.vars]
 PHP_ENV = '{"USE_ZEND_ALLOC":"0","WP_TABLE_PREFIX":"wp_"}'
 PHP_IN_DO = "on"
+LAZY_NODES = "on"
 OBJECT_CACHE = "on"
 OBJECT_CACHE_GROUPS = "options,terms,theme_json"
 OBJECT_CACHE_TTL = "10"
