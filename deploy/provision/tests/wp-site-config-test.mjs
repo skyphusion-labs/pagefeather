@@ -111,17 +111,23 @@ ok('PDF descriptor adds an INVOICE_TOKEN generated secret',
 // USER_OK from bindings.py and fails if any emitted type is not allowed, so that
 // single check couples the USER_OK fix to this wave. Here we assert the var + the
 // binding are present by default; provision-test proves the per-site injection.
+// object-cache L2 (#218) is DEFAULT-ON and per-site: present in the default set.
 ok('object-cache L2 is ON by default (OBJECT_CACHE_L2 = on)',
   varOf('OBJECT_CACHE_L2') && varOf('OBJECT_CACHE_L2').text === 'on');
 ok('the OC_KV object-cache L2 namespace binding is in the default set (kv_namespace)',
   byType('kv_namespace').some((x) => x.name === 'OC_KV'));
-ok('durable async email is ON by default (ASYNC_EMAIL_QUEUE = on)',
-  varOf('ASYNC_EMAIL_QUEUE') && varOf('ASYNC_EMAIL_QUEUE').text === 'on');
-ok('the EMAIL_QUEUE durable-email queue binding is in the default set (queue)',
-  byType('queue').some((x) => x.name === 'EMAIL_QUEUE'));
-// KNOWN GAP (same shape as the EMAIL send_email gap above): lib.sh render_user does
-// NOT emit the L2 KV / email-queue wiring. The provisioning path adds them, and
-// their types are sanctioned by USER_OK, which is what the drift guard enforces.
+// durable async email (#190) is OPT-IN (default:false): default-on would divert order
+// mail to a queue whose consumer subscription is a Phase-2 post-deploy step. So it is
+// ABSENT by default and appears only when the descriptor is enabled.
+ok('ASYNC_EMAIL_QUEUE / EMAIL_QUEUE are ABSENT from the default set (queue is opt-in)',
+  !b.some((x) => x.name === 'ASYNC_EMAIL_QUEUE' || x.name === 'EMAIL_QUEUE'));
+const bQ = bDosqlBindings({ mediaBucket: mediaBucketName('blog'), siteOrigin: 'https://blog.skyphusionwp.dev', location: 'enam', enable: ['async-email-queue'] });
+ok('async-email-queue opt-in adds ASYNC_EMAIL_QUEUE=on + the EMAIL_QUEUE queue binding',
+  bQ.some((x) => x.type === 'plain_text' && x.name === 'ASYNC_EMAIL_QUEUE' && x.text === 'on') &&
+  bQ.some((x) => x.type === 'queue' && x.name === 'EMAIL_QUEUE'));
+// KNOWN GAP (same shape as the EMAIL send_email gap above): lib.sh render_user emits
+// neither the L2 KV wiring nor the queue wiring; the provisioning path adds them and
+// their binding types are sanctioned by USER_OK, which is what the drift guard enforces.
 ok('KNOWN GAP recorded: lib.sh render_user omits the L2 KV + email-queue wiring',
   !lib.includes('OBJECT_CACHE_L2') && !lib.includes('ASYNC_EMAIL_QUEUE'));
 

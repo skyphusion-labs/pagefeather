@@ -308,7 +308,9 @@ const mutating = (calls) => calls.filter((c) => c.method !== 'GET');
   const rec = recorder();
   const name = 'wave2';
   const mediaBucket = mediaBucketName(name);
-  const opts = { mediaBucket, siteOrigin: `https://${name}.skyphusionwp.dev`, location: 'enam' };
+  // object-cache-l2 is default-on; async-email-queue is OPT-IN, so enable it here to
+  // exercise BOTH per-site resource ops (the KV create and the queue + dlq create).
+  const opts = { mediaBucket, siteOrigin: `https://${name}.skyphusionwp.dev`, location: 'enam', enable: ['async-email-queue'] };
   const r = await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl }, {
     kind: 'wp', name, namespace: 'wp-wfp', kvId: 'KV', hostname: `${name}.skyphusionwp.dev`,
     compatibilityDate: '2026-07-01', mainModule: 'index.js',

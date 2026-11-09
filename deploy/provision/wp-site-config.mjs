@@ -41,6 +41,12 @@ import { createKvNamespace, createQueue } from './ops.mjs';
 //                     reducer collects the generators; the CLI evaluates them
 //                     into the secrets literal, so a new secret appends cleanly
 //                     instead of editing one hand-written object.
+//   secrets(opts)     -> { NAME: value } SUPPLIED (externally minted) secrets, for
+//                        a credential that is NOT random: the shared platform purge
+//                        token (zone-purge). Unlike secretGenerators (per-site
+//                        random), the value comes from opts and the descriptor only
+//                        DECLARES it; the lead mints the token, provisioning wires
+//                        it in. Called only when the descriptor is enabled.
 //   resourceCreateOp(ctx, { cfg, bindings })
 //                     optional async op run at provision time BEFORE the script
 //                     deploys, for an integration that needs a backing resource
@@ -99,6 +105,45 @@ export const B_DOSQL_DESCRIPTORS = [
   { name: 'media', default: true, bindings: ({ mediaBucket }) => [{ type: 'r2_bucket', name: 'MEDIA', bucket_name: mediaBucket }] },
   { name: 'php-runtime', default: true, bindings: () => [{ type: 'durable_object_namespace', name: 'PHP_RUNTIME', class_name: 'PhpRuntime' }] },
   { name: 'email', default: true, bindings: () => [{ type: 'send_email', name: 'EMAIL' }] },
+  // PDF order invoices (#227/#228), the reference OPT-IN descriptor: the Browser
+  // Rendering binding plus the INVOICE_TOKEN download-signing secret. index.js
+  // pdfInvoiceEnabled() turns the feature on whenever env.BROWSER is present (and
+  // PDF_INVOICE != off), so provisioning the binding IS the whole switch: no gate
+  // var and no drop-in change. Opt-in (metered), so default:false keeps every
+  // other site byte-identical. NOTE: the WFP allowlist (deploy/wfp/bindings.py
+  // USER_OK) does not yet list "browser"; the provisioning core deploys with the
+  // account token and is unaffected, but a WFP lib.sh deploy of a PDF site needs
+  // that entry added first (out of this lane's scope; flagged on the PR).
+  {
+    name: 'pdf-invoices', default: false,
+    bindings: () => [{ type: 'browser', name: 'BROWSER' }],
+    secretGenerators: { INVOICE_TOKEN: () => genSecret(24) },
+  },
+  // Zone edge-cache purge-on-publish (#205/#256, the #201 Phase 1 "Edge / zone
+  // cache + purge-on-publish" default). Wires the two bindings the zone purge path
+  // needs on a ZONED site: PURGE_ZONE (a plain_text var, the zone id the site
+  // terminates on) and PURGE_TOKEN (a secret_text, a SHARED platform Cloudflare
+  // token scoped to Zone.Cache Purge on the SaaS zone, minted by the lead and
+  // SUPPLIED from opts, NOT generated per site). index.js cachePurgeEnabled() turns
+  // the feature on when PHP_IN_DO/DB_IN_DO are on and BOTH PURGE_ZONE and
+  // PURGE_TOKEN are present (CACHE_PURGE=off turns it off), so provisioning these
+  // two bindings IS the whole switch: no drop-in change. Default-OFF: only a site
+  // with a zone has a PURGE_ZONE, so the CLI enables this (and supplies
+  // purgeZone/purgeToken) only when a zone and the shared token are configured; a
+  // zoneless workers.dev site never enables it and stays byte-identical. The guards
+  // throw if enabled without either input, so a misconfigured enable fails loudly
+  // instead of wiring PURGE_ZONE=undefined.
+  {
+    name: 'zone-purge', default: false,
+    vars: ({ purgeZone }) => {
+      if (!purgeZone) throw new Error('zone-purge: purgeZone is required when enabled (the zone id the site terminates on)');
+      return { PURGE_ZONE: purgeZone };
+    },
+    secrets: ({ purgeToken }) => {
+      if (!purgeToken) throw new Error('zone-purge: purgeToken is required when enabled (the shared platform Zone.Cache Purge token)');
+      return { PURGE_TOKEN: purgeToken };
+    },
+  },
   // Object-cache L2 (#218), DEFAULT-ON: a per-site KV namespace behind the
   // in-isolate object cache, so a cold b-dosql isolate reads KV instead of
   // recomputing from SQLite. index.js ocL2On() turns L2 on from OBJECT_CACHE_L2=on
@@ -122,21 +167,22 @@ export const B_DOSQL_DESCRIPTORS = [
       return { kvNamespace: title, id: ns.id, created: ns.created === true };
     },
   },
-  // Durable async email (#190), DEFAULT-ON: a per-site Cloudflare Queue so the
-  // order-email drain survives a transient Email Sending failure (producer here; the
-  // queue() consumer in index.js delivers with retry/backoff/dead-letter). index.js
-  // emailQueueEnabled() turns the durable path on from the EMAIL_QUEUE binding plus
-  // ASYNC_EMAIL_QUEUE != off. PER-SITE, not shared: a queue has ONE consumer and the
-  // consumer delivers through that site's own env.EMAIL / MAIL_FROM identity, so a
-  // shared queue cannot route each tenant's mail to the right sender. The
-  // resourceCreateOp ensures the per-site queue AND its dead-letter queue (both
-  // idempotent by name) and injects the producer binding's queue_name.
-  // NOTE (flagged on the PR): the push-CONSUMER subscription (queue -> site-<name>,
-  // max_retries, dead_letter_queue) is a POST-deploy step the descriptor seam
-  // (pre-deploy) does not perform; until it is wired at deploy, enqueued mail is
-  // retained by Queues but not delivered. The lead box-tests and gates that step.
+  // Durable async email (#190), OPT-IN (default:false). The per-site queue + DLQ and
+  // the EMAIL_QUEUE producer binding are fully wired, but turning the durable path on
+  // by default would be a mail-delivery REGRESSION: index.js emailQueueEnabled() routes
+  // mail to the queue whenever EMAIL_QUEUE is bound and ASYNC_EMAIL_QUEUE != off, and the
+  // push-CONSUMER subscription (queue -> site-<name>, max_retries, dead_letter_queue) is a
+  // POST-deploy step this pre-deploy descriptor seam does not perform. So a default-on
+  // queue would divert every store's order mail to a queue with NO consumer (enqueued,
+  // never delivered), worse than the working v1 DO-alarm path. Default-on is a Phase-2
+  // follow-up gated on wiring that consumer (same shape as zone-purge's lead-supplied
+  // token). Opt in with WP_ASYNC_EMAIL_QUEUE / ASYNC_EMAIL_QUEUE (cli bDosqlEnabledIntegrations).
+  // PER-SITE, not shared: a queue has ONE consumer that delivers through the consuming
+  // site's own env.EMAIL / MAIL_FROM identity, so a shared queue cannot route each
+  // tenant's mail to the right sender. The resourceCreateOp ensures the per-site queue
+  // AND its dead-letter queue (both idempotent by name) and injects queue_name.
   {
-    name: 'async-email-queue', default: true,
+    name: 'async-email-queue', default: false,
     vars: () => ({ ASYNC_EMAIL_QUEUE: 'on' }),
     bindings: () => [{ type: 'queue', name: 'EMAIL_QUEUE' }],
     resourceCreateOp: async (ctx, { cfg, bindings }) => {
@@ -149,20 +195,6 @@ export const B_DOSQL_DESCRIPTORS = [
       binding.queue_name = name;
       return { queue: name, dlq, id: q.id, created: q.created === true };
     },
-  },
-  // PDF order invoices (#227/#228), the reference OPT-IN descriptor: the Browser
-  // Rendering binding plus the INVOICE_TOKEN download-signing secret. index.js
-  // pdfInvoiceEnabled() turns the feature on whenever env.BROWSER is present (and
-  // PDF_INVOICE != off), so provisioning the binding IS the whole switch: no gate
-  // var and no drop-in change. Opt-in (metered), so default:false keeps every
-  // other site byte-identical. NOTE: the WFP allowlist (deploy/wfp/bindings.py
-  // USER_OK) does not yet list "browser"; the provisioning core deploys with the
-  // account token and is unaffected, but a WFP lib.sh deploy of a PDF site needs
-  // that entry added first (out of this lane's scope; flagged on the PR).
-  {
-    name: 'pdf-invoices', default: false,
-    bindings: () => [{ type: 'browser', name: 'BROWSER' }],
-    secretGenerators: { INVOICE_TOKEN: () => genSecret(24) },
   },
 ];
 
@@ -183,18 +215,21 @@ export function assembleBDosql(opts = {}) {
   const vars = {};
   const bindings = [];
   const secretGenerators = {};
+  const suppliedSecrets = {};
   const resourceCreateOps = [];
   for (const d of B_DOSQL_DESCRIPTORS) {
     if (!bDosqlDescriptorEnabled(d, enable)) continue;
     if (d.vars) Object.assign(vars, d.vars(opts) || {});
     if (d.bindings) bindings.push(...(d.bindings(opts) || []));
     if (d.secretGenerators) Object.assign(secretGenerators, d.secretGenerators);
+    if (d.secrets) Object.assign(suppliedSecrets, d.secrets(opts) || {});
     if (d.resourceCreateOp) resourceCreateOps.push({ name: d.name, op: d.resourceCreateOp });
   }
   return {
     vars: Object.entries(vars).map(([name, text]) => ({ type: 'plain_text', name, text })),
     bindings,
     secretGenerators,
+    suppliedSecrets,
     resourceCreateOps,
   };
 }
@@ -225,16 +260,22 @@ export function bDosqlBindings(opts = {}) {
   return [...vars, ...bindings, ...extra];
 }
 
-// The generated secrets the enabled descriptors contribute, EVALUATED (each
-// generator called once). The CLI spreads these into the secrets literal next to
-// WP_SALT / SPIKE_TOKEN, so an opt-in integration's secret (PDF's INVOICE_TOKEN,
-// a future PURGE_TOKEN) is added by adding a descriptor, not by editing the
-// literal. No default descriptor generates a secret, so the default site's
+// The secrets the enabled descriptors contribute, as { NAME: value }: the
+// GENERATED ones EVALUATED (each generator called once) plus the SUPPLIED ones
+// (values passed through opts, e.g. zone-purge's shared PURGE_TOKEN). The CLI
+// spreads these into the secrets literal next to WP_SALT / SPIKE_TOKEN, so an
+// opt-in integration's secret (PDF's generated INVOICE_TOKEN, zone-purge's
+// supplied PURGE_TOKEN) is added by adding a descriptor, not by editing the
+// literal. No DEFAULT descriptor contributes a secret, so the default site's
 // secrets are unchanged.
 export function bDosqlSecrets(opts = {}) {
-  const { secretGenerators } = assembleBDosql(opts);
+  const { secretGenerators, suppliedSecrets } = assembleBDosql(opts);
   const out = {};
   for (const [name, gen] of Object.entries(secretGenerators)) out[name] = gen();
+  // SUPPLIED secrets (the shared platform PURGE_TOKEN) are values already, not
+  // generators: a descriptor DECLARES them, the lead mints them, the CLI passes
+  // them in via opts. They overlay after the generated ones (disjoint names).
+  Object.assign(out, suppliedSecrets);
   return out;
 }
 

@@ -140,6 +140,22 @@ async function loadModules(dir) {
 function bDosqlEnabledIntegrations(env) {
   const enable = [];
   if (env.WP_PDF_INVOICE && env.WP_PDF_INVOICE !== 'off') enable.push('pdf-invoices');
+  // Zone edge-cache purge-on-publish (#205/#256): default-OFF, turned ON only when
+  // the site HAS a zone (WFP_SAAS_ZONE_ID, the zone it terminates on) AND the shared
+  // platform purge token (WFP_PURGE_TOKEN) is configured. Both are required because
+  // the runtime gate cachePurgeEnabled() needs BOTH PURGE_ZONE and PURGE_TOKEN; a
+  // zone with no token (or a token with no zone) would wire dead weight. A zoneless
+  // workers.dev site sets no WFP_SAAS_ZONE_ID, so this never enables and the site is
+  // byte-identical. CACHE_PURGE=off is the off switch: it suppresses wiring entirely,
+  // so the token is never placed on a site whose operator turned the feature off.
+  if (env.WFP_SAAS_ZONE_ID && env.WFP_PURGE_TOKEN && env.CACHE_PURGE !== 'off') enable.push('zone-purge');
+  // Durable async email via Queues (#190): OPT-IN. The per-site queue + DLQ + EMAIL_QUEUE
+  // producer binding are wired, but default-on would divert order mail to a queue whose
+  // push-consumer subscription is a Phase-2 post-deploy step; until that lands, enabling by
+  // default would enqueue mail no consumer delivers. Opt in with WP_ASYNC_EMAIL_QUEUE (or
+  // ASYNC_EMAIL_QUEUE) set and != off.
+  const asyncEmail = env.WP_ASYNC_EMAIL_QUEUE || env.ASYNC_EMAIL_QUEUE;
+  if (asyncEmail && asyncEmail !== 'off') enable.push('async-email-queue');
   return enable;
 }
 
@@ -165,6 +181,12 @@ async function buildCfg(parsed, env) {
       location: env.PHP_LOCATION || 'enam',
       cronIntervalMs: env.CRON_INTERVAL_MS,
       extra: JSON.parse(env.WP_BINDINGS || '[]'),
+      // Zone edge-cache purge-on-publish (#205/#256): the zone the site terminates
+      // on and the SHARED platform Zone.Cache Purge token (minted by the lead). Read
+      // only by the zone-purge descriptor, which the enable gate turns on only when
+      // both are present; undefined otherwise, so a zoneless site is untouched.
+      purgeZone: env.WFP_SAAS_ZONE_ID || undefined,
+      purgeToken: env.WFP_PURGE_TOKEN || undefined,
       enable: bDosqlEnabledIntegrations(env),
     };
     return {
