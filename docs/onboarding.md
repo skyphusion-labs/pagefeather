@@ -57,7 +57,7 @@ export CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=...
 node deploy/onboard/onboard.mjs <provider> --name wpref-db --out onboard.env
 ```
 
-It prints a JSON summary and writes `onboard.env` (mode 0600), which holds `HYPERDRIVE_ID` and `SQL_MODE` (the file carries no secret, only the config id and the mode string). `SQL_MODE` is set for the strict providers (PlanetScale, Azure MySQL) and empty otherwise. Add `--dry-run` to print the plan without creating anything. See [deploy/onboard/onboard.mjs](../deploy/onboard/onboard.mjs) (PR #242).
+It prints a JSON summary and writes `onboard.env` (mode 0600), which holds `HYPERDRIVE_ID` and `SQL_MODE` (the file carries no secret, only the config id and the mode string). `SQL_MODE` is set for PlanetScale only, whose Vitess engine is strict. Azure is relaxed at the server during onboarding, so its `SQL_MODE` stays empty, as it does for the other providers. Add `--dry-run` to print the plan without creating anything. See [deploy/onboard/onboard.mjs](../deploy/onboard/onboard.mjs) (PR #242).
 
 ### Step 3: add a type-a site
 
