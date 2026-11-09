@@ -125,14 +125,19 @@ resource "cloudflare_ruleset" "waf_custom" {
   ]
 }
 
-# PHASE 3 of 3 (rate limit). wp-login.php and xmlrpc.php, challenge then block on
-# a burst. For each path the BLOCK rule (higher threshold) is listed BEFORE the
-# CHALLENGE rule (lower threshold) on purpose: rules match top-to-bottom, first
-# match wins, so a large burst trips block while a smaller burst falls through to
-# challenge. Reversing the order would challenge first and block would never be
-# reached. The counter is keyed on client IP (ip.src) only, so one attacking IP
-# is limited across ALL tenant hosts at once; a NAT sharing one public IP is the
-# known trade-off, and the thresholds leave a human admin generous headroom.
+# PHASE 3 of 3 (rate limit).
+# The http_ratelimit phase allows only 2 rules on a Pro zone (the live API
+# rejects a 3rd with error 50001), so this is one rule per attacked path, each
+# chosen for its path: wp-login is CHALLENGED (a human passes a managed
+# challenge, a brute-force bot does not, and no legitimate admin is hard-locked
+# out), while xmlrpc is BLOCKED outright above a flood threshold (xmlrpc must NOT
+# be challenged, because Jetpack and mobile apps call it non-interactively and
+# cannot solve a challenge; blocking only a clear flood leaves their normal rate
+# untouched). The counter is keyed on client IP (ip.src) plus cf.colo.id, which
+# Cloudflare requires because rate-limit counting is per colocation; one
+# attacking IP is limited across ALL tenant hosts at once, a NAT sharing one
+# public IP being the known trade-off. A Business zone could restore the lower
+# challenge tier for both paths (4 rules); on Pro these two are the priority.
 resource "cloudflare_ruleset" "waf_ratelimit" {
   zone_id = var.saas_zone_id
   name    = "WFP SaaS home rate limits"
@@ -141,23 +146,10 @@ resource "cloudflare_ruleset" "waf_ratelimit" {
 
   rules = [
     {
-      ref         = "block_wp_login_burst"
-      action      = "block"
-      enabled     = true
-      description = "Block wp-login.php POST brute force: over 15 login POSTs per IP in 60s, blocked 10 min."
-      expression  = "http.request.uri.path eq \"/wp-login.php\" and http.request.method eq \"POST\""
-      ratelimit = {
-        characteristics     = ["ip.src", "cf.colo.id"]
-        period              = 60
-        requests_per_period = 15
-        mitigation_timeout  = 600
-      }
-    },
-    {
       ref         = "challenge_wp_login"
       action      = "managed_challenge"
       enabled     = true
-      description = "Challenge wp-login.php POSTs above a human rate: over 5 login POSTs per IP in 60s."
+      description = "Challenge wp-login.php POSTs above a human rate: over 5 login POSTs per IP in 60s. Challenge, not block, so a real admin is never hard-locked out."
       expression  = "http.request.uri.path eq \"/wp-login.php\" and http.request.method eq \"POST\""
       ratelimit = {
         characteristics     = ["ip.src", "cf.colo.id"]
@@ -170,26 +162,13 @@ resource "cloudflare_ruleset" "waf_ratelimit" {
       ref         = "block_xmlrpc_burst"
       action      = "block"
       enabled     = true
-      description = "Block xmlrpc.php POST floods (system.multicall amplification, pingback abuse): over 30 POSTs per IP in 60s, blocked 10 min."
+      description = "Block xmlrpc.php POST floods (system.multicall amplification, pingback abuse): over 30 POSTs per IP in 60s, blocked 10 min. Block, not challenge, so Jetpack and mobile xmlrpc keep working below the flood threshold."
       expression  = "http.request.uri.path eq \"/xmlrpc.php\" and http.request.method eq \"POST\""
       ratelimit = {
         characteristics     = ["ip.src", "cf.colo.id"]
         period              = 60
         requests_per_period = 30
         mitigation_timeout  = 600
-      }
-    },
-    {
-      ref         = "challenge_xmlrpc"
-      action      = "managed_challenge"
-      enabled     = true
-      description = "Challenge elevated xmlrpc.php POST rates while leaving Jetpack / mobile-app use headroom: over 10 POSTs per IP in 60s."
-      expression  = "http.request.uri.path eq \"/xmlrpc.php\" and http.request.method eq \"POST\""
-      ratelimit = {
-        characteristics     = ["ip.src", "cf.colo.id"]
-        period              = 60
-        requests_per_period = 10
-        mitigation_timeout  = 60
       }
     }
   ]
