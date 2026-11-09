@@ -196,6 +196,21 @@ export const B_DOSQL_DESCRIPTORS = [
       return { queue: name, dlq, id: q.id, created: q.created === true };
     },
   },
+  // Workers AI auto alt-text (#203 / #201 Phase 2), an OPT-IN metered descriptor:
+  // the Workers AI binding (type 'ai', name 'AI'). The mu-plugin php/ai-alt-text.php
+  // captions a freshly uploaded image that has no alt text by calling env.AI through
+  // the aiAlt op bridge in index.js, which defines SKYPHUSION_AI_ALT whenever the AI
+  // binding is present (with PHP_IN_DO/DB_IN_DO on and the MEDIA bucket) and
+  // AI_ALT != off. So provisioning the AI binding IS the whole switch: no gate var and
+  // no secret, the same shape as pdf-invoices' BROWSER. Opt-in (Workers AI is metered),
+  // so default:false keeps every other site byte-identical. The AI binding is
+  // account-level Workers AI with no per-site resource, so there is no resourceCreateOp.
+  // Box-tested on a live b-dosql deploy in #203 (@cf/llava-hf/llava-1.5-7b-hf). Opt in
+  // with WP_AI_ALT_TEXT (or the runtime gate var AI_ALT) via cli bDosqlEnabledIntegrations.
+  {
+    name: 'ai-alt-text', default: false,
+    bindings: () => [{ type: 'ai', name: 'AI' }],
+  },
 ];
 
 // Is a descriptor included for this site? Always-on (default) ones always; an

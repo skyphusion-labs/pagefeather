@@ -43,14 +43,15 @@ ok('default bDosqlBindings matches the frozen baseline (deepStrictEqual)', eq);
 ok('default set JSON string matches the frozen baseline exactly',
   JSON.stringify(bDosqlBindings(DEFAULT_OPTS)) === JSON.stringify(EXPECTED_DEFAULT));
 
-// 2. The table carries the six default-on descriptors plus the three opt-ins, in order.
-ok('descriptor order is runtime, images, media, php-runtime, email, pdf-invoices, zone-purge, object-cache-l2, async-email-queue',
-  B_DOSQL_DESCRIPTORS.map((d) => d.name).join(',') === 'runtime,images,media,php-runtime,email,pdf-invoices,zone-purge,object-cache-l2,async-email-queue');
-ok('the six infra descriptors are default-on; PDF, zone-purge and async-email-queue are opt-in',
+// 2. The table carries the six default-on descriptors plus the four opt-ins, in order.
+ok('descriptor order is runtime, images, media, php-runtime, email, pdf-invoices, zone-purge, object-cache-l2, async-email-queue, ai-alt-text',
+  B_DOSQL_DESCRIPTORS.map((d) => d.name).join(',') === 'runtime,images,media,php-runtime,email,pdf-invoices,zone-purge,object-cache-l2,async-email-queue,ai-alt-text');
+ok('the six infra descriptors are default-on; PDF, zone-purge, async-email-queue and ai-alt-text are opt-in',
   B_DOSQL_DESCRIPTORS.filter((d) => d.default).map((d) => d.name).join(',') === 'runtime,images,media,php-runtime,email,object-cache-l2' &&
   B_DOSQL_DESCRIPTORS.find((d) => d.name === 'pdf-invoices').default === false &&
   B_DOSQL_DESCRIPTORS.find((d) => d.name === 'zone-purge').default === false &&
-  B_DOSQL_DESCRIPTORS.find((d) => d.name === 'async-email-queue').default === false);
+  B_DOSQL_DESCRIPTORS.find((d) => d.name === 'async-email-queue').default === false &&
+  B_DOSQL_DESCRIPTORS.find((d) => d.name === 'ai-alt-text').default === false);
 
 // 3. Reducer parts for a default site: no generated secrets, exactly the one
 // default-on resource op (object-cache-l2 KV create), vars before bindings.
@@ -117,6 +118,26 @@ ok('async-email-queue opt-in adds the EMAIL_QUEUE queue binding with no queue_na
   aeq.some((b) => b.type === 'queue' && b.name === 'EMAIL_QUEUE' && !('queue_name' in b)));
 ok('async-email-queue opt-in adds its per-site queue resource op (object-cache-l2 + async-email-queue)',
   bDosqlResourceCreateOps({ ...DEFAULT_OPTS, enable: ['async-email-queue'] }).map((r) => r.name).join(',') === 'object-cache-l2,async-email-queue');
+
+// 7d. Workers AI auto alt-text (#203 / #201 Phase 2) is OPT-IN (default:false,
+// Workers AI is metered). The default site carries NO ai binding; enabling adds
+// exactly one { type:'ai', name:'AI' } binding, and nothing else: no var beyond the
+// default set, no generated secret, and no resource op (Workers AI is account-level,
+// no per-site resource). Provisioning the AI binding IS the whole switch (same shape
+// as PDF's BROWSER).
+ok('default set carries NO ai binding (ai-alt-text is opt-in)',
+  !bDosqlBindings(DEFAULT_OPTS).some((b) => b.type === 'ai'));
+const ai = bDosqlBindings({ ...DEFAULT_OPTS, enable: ['ai-alt-text'] });
+ok('ai-alt-text opt-in adds exactly one AI binding after the default set',
+  ai.length === EXPECTED_DEFAULT.length + 1 &&
+  ai.filter((b) => b.type === 'ai').length === 1 &&
+  JSON.stringify(ai.find((b) => b.type === 'ai')) === JSON.stringify({ type: 'ai', name: 'AI' }));
+ok('ai-alt-text opt-in adds NO var beyond the default set (binding presence is the switch)',
+  ai.filter((b) => b.type === 'plain_text').length === EXPECTED_DEFAULT.filter((b) => b.type === 'plain_text').length);
+ok('ai-alt-text opt-in generates NO secret',
+  Object.keys(bDosqlSecrets({ ...DEFAULT_OPTS, enable: ['ai-alt-text'] })).length === 0);
+ok('ai-alt-text opt-in adds no resource op (still exactly [object-cache-l2])',
+  bDosqlResourceCreateOps({ ...DEFAULT_OPTS, enable: ['ai-alt-text'] }).map((r) => r.name).join(',') === 'object-cache-l2');
 
 // 9. ZONE PURGE (#205/#256): default-OFF (zoneless site carries none), and when
 // enabled WITH a zone it adds PURGE_ZONE (var) + PURGE_TOKEN (a SUPPLIED secret, not

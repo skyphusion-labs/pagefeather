@@ -11,9 +11,9 @@ For each site <s>:
   script_name or script_name site-<s>), images, assets, plain_text vars, and
   the secrets WP_SALT and SPIKE_TOKEN (secret_text). It may ALSO bind the
   opinionated defaults wired through the provisioning descriptor table (#201): the
-  Browser Rendering binding (browser), its own object-cache L2 namespace
-  (kv_namespace named OC_KV), and its own durable-email queue (queue with
-  queue_name wp-wfp-<s>-email). Any other binding type (D1, a service, a dispatch
+  Browser Rendering binding (browser), the Workers AI binding (ai), its own
+  object-cache L2 namespace (kv_namespace named OC_KV), and its own durable-email
+  queue (queue with queue_name wp-wfp-<s>-email). Any other binding type (D1, a service, a dispatch
   namespace, a foreign queue or KV namespace, ...) fails.
 - the dispatcher wp-<s> (GET .../workers/scripts/wp-<s>/settings) may bind
   only: the site map (kv_namespace SITES, id KV_ID) and the namespace
@@ -28,7 +28,7 @@ types only, never a value) and exits 1 on any violation.
 import json, os, sys, urllib.error, urllib.request
 
 ENV = os.environ
-USER_OK = {"r2_bucket", "durable_object_namespace", "images", "assets", "send_email", "plain_text", "secret_text", "browser", "kv_namespace", "queue"}
+USER_OK = {"r2_bucket", "durable_object_namespace", "images", "assets", "send_email", "plain_text", "secret_text", "browser", "ai", "kv_namespace", "queue"}
 SECRETS_OK = {"WP_SALT", "SPIKE_TOKEN"}
 
 
