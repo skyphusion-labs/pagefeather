@@ -5,18 +5,25 @@
 // secret_text bindings in the script upload (matching deploy/variants/c1.sh's
 // --secrets-file), so a site never runs a request without its secrets.
 import {
-  createR2Bucket, deployNamespaceScript, ensureProxiedHostname, scriptExists, installWordPress,
+  createR2Bucket, deployNamespaceScript, ensureProxiedHostname, scriptExists,
+  installWordPress, ensureKVNamespace,
 } from './ops.mjs';
 import { upsertSite, readSite } from './registry.mjs';
 import { assertValidName, genSecret } from './shared.mjs';
 
 // cfg:
-//   kind: 'wp'  (the ONLY kind; the c1 'shop' store path was retired, #214)
+//   kind: 'wp' (b-dosql, PHP+SQLite in a Durable Object) or
+//         'a'  (approach A, #218: PHP-WASM in the WORKER, MySQL via Hyperdrive)
 //   name: site name (script is site-<name>)
 //   namespace, kvId, hostname
 //   compatibilityDate, compatibilityFlags
-//   modules: [{ name, content }]  (the b-dosql worker bundle)
-//   resourceBindings: [...]       (kv/r2/do/vars, NOT secrets)
+//   modules: [{ name, content }]  (the pre-built worker bundle for the kind)
+//   resourceBindings: [...]       (kv/r2/do/hyperdrive/vars, NOT secrets)
+//   sqliteClasses: [...]          (the SQLite DO classes to declare in a migration;
+//                                  ['PhpRuntime'] for 'wp', [] for 'a' -> no migration)
+//   kvNamespaces: [{ title, binding }]  (KV namespaces to CREATE then inject the id
+//                                  of into the matching resourceBinding by name; the
+//                                  OC_KV object-cache L2 store for approach A)
 //   secrets: { NAME: value, ... } (becomes secret_text bindings)
 //   buckets: { media }
 // Returns a step log and the registry entry written.
@@ -27,12 +34,21 @@ import { assertValidName, genSecret } from './shared.mjs';
 // paths and resource ids; assertValidName is the one allowlist that bounds
 // them. The trusted Worker (worker.mjs) builds the rest of the cfg itself and
 // never lets a caller supply modules, bindings, a namespace, a kv id or a zone.
+//
+// ONE code path for both kinds (#241): 'wp' and 'a' are the SAME idempotent
+// sequence (bucket, optional KV namespaces, namespace script, registry entry,
+// routing record, WordPress install). The only differences are DATA, not a
+// separate code path: the binding/var set the caller builds (bDosqlBindings vs
+// aBindings), whether a SQLite migration is declared (sqliteClasses), and
+// whether a KV namespace is created (kvNamespaces). The c1 container store
+// ('shop') was retired (#214) and is not a kind.
 export async function provisionSite(ctx, cfg) {
-  if (cfg.kind === 'wp') return provisionWp(ctx, cfg);
+  if (cfg.kind === 'wp' || cfg.kind === 'a') return provisionNamespaceSite(ctx, cfg);
   // The c1 container store ('shop') was retired (#214): a store is a b-dosql site
   // with WooCommerce active, not a separate provisioning kind. So this core mints
-  // only b-dosql, and never touches account-token minting or Containers.
-  throw new Error(`provisionSite: only kind 'wp' (b-dosql) is supported; the c1 'shop' store path was retired (#214)`);
+  // only namespace WordPress sites, and never touches account-token minting or
+  // Containers.
+  throw new Error(`provisionSite: only kind 'wp' (b-dosql) and 'a' (approach A, #218) are supported; the c1 'shop' store path was retired (#214)`);
 }
 
 function secretBindings(secrets = {}) {
@@ -49,39 +65,53 @@ async function existingSite(ctx, { kvId, hostname }) {
   return entry && typeof entry.script === 'string' ? entry : null;
 }
 
-async function provisionWp(ctx, cfg) {
+async function provisionNamespaceSite(ctx, cfg) {
   assertValidName(cfg.name);
   const steps = [];
   const script = `site-${cfg.name}`;
   const found = await existingSite(ctx, { kvId: cfg.kvId, hostname: cfg.hostname });
   if (found) {
     const admin = found.adminUrl ? { url: found.adminUrl, user: found.adminUser || 'admin' } : undefined;
-    return { kind: 'wp', name: cfg.name, script: found.script, hostname: cfg.hostname, entry: found, existing: true, installed: !!found.installed, admin, steps };
+    return { kind: found.kind || cfg.kind, name: cfg.name, script: found.script, hostname: cfg.hostname, entry: found, existing: true, installed: !!found.installed, admin, steps };
   }
   // Anti-clobber (#182, grok residual 2): the hostname is not ours (idempotency
   // returned above if it were), so a script already named site-<name> in the
   // namespace is a foreign or orphaned site. Refuse rather than overwrite it.
   if (await scriptExists(ctx, { name: script, ns: cfg.namespace })) {
-    throw new Error(`provisionWp: a namespace script named ${script} already exists and is not registered for ${cfg.hostname}; refusing to clobber it`);
+    throw new Error(`provisionNamespaceSite: a namespace script named ${script} already exists and is not registered for ${cfg.hostname}; refusing to clobber it`);
   }
   steps.push(await createR2Bucket(ctx, cfg.buckets.media));
-  // sqliteClasses: the SQLite Durable Object classes the bundle defines (for
-  // b-dosql, ['PhpRuntime']). They MUST be declared in a migration or the DO
-  // binding is rejected (API 10061, measured #158). Default to b-dosql's class.
-  const sqliteClasses = cfg.sqliteClasses || ['PhpRuntime'];
+  // KV namespaces (#241): approach A binds a per-site OC_KV (the object-cache L2).
+  // A KV namespace id is assigned at create time, so it cannot be in the binding
+  // the caller built; create each namespace now and INJECT its id into the
+  // matching resourceBinding by name. Clone the bindings so cfg is not mutated.
+  const bindings = [...(cfg.resourceBindings || [])];
+  for (const spec of cfg.kvNamespaces || []) {
+    const ns = await ensureKVNamespace(ctx, spec.title);
+    const binding = bindings.find((b) => b.type === 'kv_namespace' && b.name === spec.binding);
+    if (!binding) throw new Error(`provisionNamespaceSite: kvNamespaces asked to bind ${spec.binding} but no kv_namespace binding named ${spec.binding} is in resourceBindings`);
+    binding.namespace_id = ns.id;
+    steps.push({ kvNamespace: spec.title, binding: spec.binding, id: ns.id, created: ns.created === true });
+  }
+  // sqliteClasses: the SQLite Durable Object classes the bundle defines. For
+  // b-dosql that is ['PhpRuntime'], which MUST be declared in a migration or the
+  // DO binding is rejected (API 10061, measured #158). Approach A runs PHP in the
+  // WORKER (no DO), so it declares NO classes and NO migration. Default by kind
+  // when the caller leaves it unset.
+  const sqliteClasses = cfg.sqliteClasses !== undefined ? cfg.sqliteClasses : (cfg.kind === 'wp' ? ['PhpRuntime'] : []);
   await deployNamespaceScript(ctx, {
     ns: cfg.namespace,
     name: script,
     mainModule: cfg.mainModule || 'index.js',
     modules: cfg.modules,
-    bindings: [...(cfg.resourceBindings || []), ...secretBindings(cfg.secrets)],
+    bindings: [...bindings, ...secretBindings(cfg.secrets)],
     compatibilityDate: cfg.compatibilityDate,
     compatibilityFlags: cfg.compatibilityFlags || [],
     migrations: { new_tag: cfg.migrationTag || 'v1', new_sqlite_classes: sqliteClasses },
   });
   steps.push({ deployed: script, ns: cfg.namespace, sqliteClasses });
   const entry = {
-    script, kind: 'wp', outbound: true, ...(cfg.limits || {}),
+    script, kind: cfg.kind, outbound: true, ...(cfg.limits || {}),
     // Demo lane (#182 Path B): stamp everything the reaper needs to tear this
     // site down fully (script, bucket, zone) plus the expiry it reaps on.
     ...(cfg.demo ? { demo: true, expiresAt: cfg.expiresAt, name: cfg.name, mediaBucket: cfg.buckets.media, saasZoneId: cfg.saasZoneId } : {}),
@@ -100,6 +130,8 @@ async function provisionWp(ctx, cfg) {
   // WP install runs. Trigger it over HTTP against the site itself (authorized by
   // its own SPIKE_TOKEN secret, so NO new token scope), seeding the 'admin' user
   // with a fresh strong password. Idempotent server-side (already-installed is ok).
+  // Approach A installs over the SAME /_install + x-spike-token path (index.js
+  // handles the spike endpoints whether PHP runs in the Worker or a DO).
   const adminPassword = genSecret(16);
   const adminUrl = `https://${cfg.hostname}/wp-admin/`;
   // PRIMARY: install via the dispatch-namespace binding (ctx.dispatcher), which
@@ -123,7 +155,7 @@ async function provisionWp(ctx, cfg) {
   const finalEntry = { ...entry, installed, adminUrl, adminUser: 'admin' };
   await upsertSite(ctx, { kvId: cfg.kvId, hostname: cfg.hostname, entry: finalEntry });
   return {
-    kind: 'wp', name: cfg.name, script, hostname: cfg.hostname, entry: finalEntry, steps,
+    kind: cfg.kind, name: cfg.name, script, hostname: cfg.hostname, entry: finalEntry, steps,
     installed, alreadyInstalled: Boolean(install && install.already),
     // The admin password is surfaced ONLY when the install actually ran (so it is
     // valid); a deferred install returns the url + user and a note.

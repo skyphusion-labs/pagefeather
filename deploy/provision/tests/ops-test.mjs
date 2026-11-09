@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { sha256Hex, r2BucketResource } from '../cf.mjs';
 import {
   createR2Bucket, mintScopedR2Token, putSecret, writeKVMapEntry,
-  deployNamespaceScript, deployContainerWorkerFromDigest, scriptExists, installWordPress,
+  deployNamespaceScript, deployContainerWorkerFromDigest, scriptExists, installWordPress, ensureKVNamespace,
 } from '../ops.mjs';
 import { upsertSite, readSite, listSites, removeSite } from '../registry.mjs';
 
@@ -183,6 +183,25 @@ const ctxOf = (s) => ({ acct: ACCT, token: 'T', fetchImpl: s.fetchImpl });
   });
   const meta = JSON.parse(await s.calls[0].body.get('metadata').text());
   ok('a site with no DO class sends no migrations key', !('migrations' in meta));
+}
+
+// 7c. ensureKVNamespace (#241): approach A binds a per-site OC_KV namespace. The
+// create POSTs {title} and returns the assigned id; an already-existing title is
+// idempotent (found in the list by title, reused, never a duplicate).
+{
+  const s = stub([{ status: 200, body: '{"success":true,"result":{"id":"OCKVID","title":"wp-wfp-blog-oc"}}' }]);
+  const r = await ensureKVNamespace(ctxOf(s), 'wp-wfp-blog-oc');
+  ok('ensureKVNamespace POSTs the namespaces endpoint with {title}',
+    s.calls[0].method === 'POST' && s.calls[0].url.endsWith('/storage/kv/namespaces') && JSON.parse(s.calls[0].body).title === 'wp-wfp-blog-oc');
+  ok('ensureKVNamespace returns the assigned id (created)', r.id === 'OCKVID' && r.created === true);
+  // Idempotent by title: a 10014 "already exists" falls back to the list + reuse.
+  const s2 = stub([
+    { status: 409, body: '{"success":false,"errors":[{"code":10014,"message":"namespace already exists"}]}' },
+    { status: 200, body: '{"success":true,"result":[{"id":"OTHER","title":"wp-wfp-other-oc"},{"id":"OCKVID","title":"wp-wfp-blog-oc"}]}' },
+  ]);
+  const r2 = await ensureKVNamespace(ctxOf(s2), 'wp-wfp-blog-oc');
+  ok('ensureKVNamespace reuses an existing namespace by title (idempotent, no duplicate POST)',
+    r2.id === 'OCKVID' && r2.existed === true && !s2.calls.slice(1).some((c) => c.method === 'POST'));
 }
 
 // 8. registry: upsert (PUT), list (keys), read (value), remove (DELETE).
