@@ -125,8 +125,7 @@ resource "cloudflare_ruleset" "waf_custom" {
   ]
 }
 
-# PHASE 3 of 3 (rate limit). wp-login.php and xmlrpc.php, challenge then block on
-# a burst. For each path the BLOCK rule (higher threshold) is listed BEFORE the
+# PHASE 3 of 3 (rate limit).
 # The http_ratelimit phase allows only 2 rules on a Pro zone (the live API
 # rejects a 3rd with error 50001), so this is one rule per attacked path, each
 # chosen for its path: wp-login is CHALLENGED (a human passes a managed
