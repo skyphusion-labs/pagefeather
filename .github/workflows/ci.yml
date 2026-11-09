@@ -112,6 +112,7 @@ jobs:
           node deploy/provision/tests/worker-test.mjs
           node deploy/provision/tests/server-config-test.mjs
           node deploy/provision/tests/wp-site-config-test.mjs
+          node deploy/provision/tests/descriptor-table-test.mjs
           node deploy/provision/tests/a-site-config-test.mjs
           node deploy/provision/tests/demo-test.mjs
           node deploy/provision/tests/custom-hostname-test.mjs

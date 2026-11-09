@@ -472,6 +472,46 @@ async function findKVNamespaceIdByTitle(ctx, title) {
 }
 
 
+// createKvNamespace: the descriptor-table resourceCreateOp name for a KV
+// namespace create (#201 Phase 1). ensureKVNamespace already implements the
+// idempotent-by-title create (approach A's OC_KV uses it), so this is an ALIAS,
+// not a second implementation: the next wave's b-dosql L2 KV descriptor reaches
+// the op by a stable name and both callers share one source (no drift).
+export const createKvNamespace = ensureKVNamespace;
+
+// createQueue: a Cloudflare Queue for the next wave's durable async-email
+// descriptor (#190). Idempotent by NAME: a create conflict (409, or an
+// "already exists" error) means a prior provision made it, so find it by name and
+// reuse it rather than fail the provision. Pure fetch on cf.mjs, callable from
+// node or a Worker, matching createR2Bucket / ensureKVNamespace.
+export async function createQueue(ctx, name) {
+  const r = await cfFetch(ctx.token, 'POST', `/accounts/${ctx.acct}/queues`,
+    { body: { queue_name: name }, fetchImpl: ctx.fetchImpl });
+  const idOf = (res) => res && (res.queue_id || res.id);
+  if (r.ok && idOf(r.result)) return { id: idOf(r.result), name, created: true };
+  if (r.status === 409 || r.errors.some((e) => e.code === 10019 || /exist/i.test(e.message || ''))) {
+    const id = await findQueueIdByName(ctx, name);
+    if (id) return { id, name, created: false, existed: true };
+  }
+  throw opError('createQueue', name, r);
+}
+
+// List queues and find one by EXACT name; null if none or if listing is not
+// permitted. Paginates (100/page), bounded so a paging hiccup cannot spin forever.
+async function findQueueIdByName(ctx, name) {
+  for (let page = 1; page <= 50; page++) {
+    const r = await cfFetch(ctx.token, 'GET',
+      `/accounts/${ctx.acct}/queues?per_page=100&page=${page}`, { fetchImpl: ctx.fetchImpl });
+    if (!r.ok) return null;
+    const list = Array.isArray(r.result) ? r.result : [];
+    const found = list.find((q) => q && q.queue_name === name);
+    if (found) return found.queue_id || found.id;
+    if (list.length < 100) break;
+  }
+  return null;
+}
+
+
 // Read one custom hostname's live status from the SaaS zone (Cloudflare for
 // SaaS). Returns { hostname, ssl, active }: active is true only when both the
 // hostname and its certificate are active. Used by `site hostname status` to
