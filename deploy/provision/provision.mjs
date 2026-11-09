@@ -93,6 +93,18 @@ async function provisionNamespaceSite(ctx, cfg) {
     binding.namespace_id = ns.id;
     steps.push({ kvNamespace: spec.title, binding: spec.binding, id: ns.id, created: ns.created === true });
   }
+
+  // Descriptor resource-create ops (#201 Phase 1): an integration descriptor may
+  // need a backing resource created BEFORE the script deploys (a KV namespace, a
+  // queue) and may inject the created id into its own binding. Run each here, on
+  // the SAME cloned `bindings` the OC_KV injection above uses, so a descriptor
+  // that adds a resource composes with the rest. No default descriptor (and not
+  // PDF) has one today; this is the seam the L2 KV (#218) and Queue (#190) waves
+  // bind through. A step the op returns is recorded under its descriptor name.
+  for (const spec of cfg.resourceCreateOps || []) {
+    const step = await spec.op(ctx, { cfg, bindings });
+    steps.push({ resource: spec.name, ...(step || {}) });
+  }
   // sqliteClasses: the SQLite Durable Object classes the bundle defines. For
   // b-dosql that is ['PhpRuntime'], which MUST be declared in a migration or the
   // DO binding is rejected (API 10061, measured #158). Approach A runs PHP in the

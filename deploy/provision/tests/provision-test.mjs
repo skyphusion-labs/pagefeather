@@ -270,5 +270,32 @@ const mutating = (calls) => calls.filter((c) => c.method !== 'GET');
     !meta.bindings.some((b) => b.type === 'plain_text' && b.name === 'HYPERDRIVE_SQL_MODE'));
 }
 
+// Descriptor resourceCreateOp loop (#201 Phase 1): a wp site whose cfg carries a
+// resourceCreateOps entry runs the op BEFORE deploy and lets it inject a created
+// id into its own binding, exactly as the OC_KV namespace injection does. This is
+// the seam the L2 KV (#218) and Queue (#190) waves bind through.
+{
+  const rec = recorder();
+  let ran = null;
+  const r = await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl }, {
+    kind: 'wp', name: 'qblog', namespace: 'wp-wfp', kvId: 'KV', hostname: 'qblog.skyphusionwp.dev',
+    compatibilityDate: '2026-07-01', modules: [{ name: 'index.js', content: 'x' }],
+    resourceBindings: [{ type: 'queue', name: 'EMAIL_QUEUE' }],
+    resourceCreateOps: [{ name: 'email-queue', op: async (ctx, { cfg, bindings }) => {
+      ran = { acct: ctx.acct, name: cfg.name };
+      bindings.find((x) => x.name === 'EMAIL_QUEUE').queue_name = 'b2-email';
+      return { queue: 'b2-email', created: true };
+    } }],
+    secrets: { WP_SALT: 's1', SPIKE_TOKEN: 'spk' }, buckets: { media: 'wp-wfp-qblog-media' },
+  });
+  ok('resourceCreateOp runs with ctx + cfg before deploy', ran && ran.acct === ACCT && ran.name === 'qblog');
+  const deploy = rec.calls.find((c) => c.method === 'PUT' && /\/dispatch\/namespaces\/wp-wfp\/scripts\/site-qblog$/.test(c.url));
+  const meta = await metaOf(deploy);
+  ok('the op injected the created id into its binding before the deploy',
+    meta.bindings.some((bd) => bd.name === 'EMAIL_QUEUE' && bd.queue_name === 'b2-email'));
+  ok('the op step is recorded under its descriptor name',
+    r.steps.some((st) => st.resource === 'email-queue' && st.queue === 'b2-email' && st.created === true));
+}
+
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

@@ -9,6 +9,7 @@ import { sha256Hex, r2BucketResource } from '../cf.mjs';
 import {
   createR2Bucket, mintScopedR2Token, putSecret, writeKVMapEntry,
   deployNamespaceScript, deployContainerWorkerFromDigest, scriptExists, installWordPress, ensureKVNamespace,
+  createKvNamespace, createQueue,
 } from '../ops.mjs';
 import { upsertSite, readSite, listSites, removeSite } from '../registry.mjs';
 
@@ -243,6 +244,37 @@ const ctxOf = (s) => ({ acct: ACCT, token: 'T', fetchImpl: s.fetchImpl });
   const dispatcher = { get: (name) => { got = name; return { fetch: async (req) => { const h = req.headers.get('x-spike-token'); return { ok: true, status: 200, json: async () => ({ out: h === 'tok' ? '{"installed":true,"user_id":9}' : '{"installed":false,"error":"forbidden"}' }) }; } }; } };
   const rd = await installWordPress({ dispatcher, scriptName: 'site-blog', spikeToken: 'tok', adminPassword: 'abcdefghijkl' });
   ok('installWordPress: dispatch binding routes to site-<name> with x-spike-token (no public HTTP)', rd.installed === true && rd.userId === 9 && rd.via === 'dispatch' && got === 'site-blog');
+}
+
+// 7d. createKvNamespace (#201 Phase 1): the stable op name the next wave's b-dosql
+// L2 KV descriptor reaches; it is the ensureKVNamespace implementation (one source).
+{
+  ok('createKvNamespace is the ensureKVNamespace op (alias, no second implementation)', createKvNamespace === ensureKVNamespace);
+  const s = stub([{ status: 200, body: '{"success":true,"result":{"id":"L2KVID","title":"wp-wfp-blog-l2"}}' }]);
+  const r = await createKvNamespace(ctxOf(s), 'wp-wfp-blog-l2');
+  ok('createKvNamespace POSTs the namespaces endpoint and returns the id', s.calls[0].method === 'POST' && s.calls[0].url.endsWith(`/accounts/${ACCT}/storage/kv/namespaces`) && r.id === 'L2KVID');
+}
+
+// 7e. createQueue (#201 Phase 1): a Cloudflare Queue for the next wave's durable
+// async-email descriptor (#190). POST, idempotent by name on a create conflict.
+{
+  const s = stub([{ status: 200, body: '{"success":true,"result":{"queue_id":"QID","queue_name":"b2-email"}}' }]);
+  const r = await createQueue(ctxOf(s), 'b2-email');
+  ok('createQueue POSTs /queues with {queue_name}', s.calls[0].method === 'POST' && s.calls[0].url.endsWith(`/accounts/${ACCT}/queues`) && JSON.parse(s.calls[0].body).queue_name === 'b2-email');
+  ok('createQueue returns the created id', r.id === 'QID' && r.created === true);
+  // A create conflict (409) falls back to a name lookup and reuses the queue.
+  const s2 = stub([
+    { status: 409, body: '{"success":false,"errors":[{"code":10019,"message":"queue already exists"}]}' },
+    { status: 200, body: '{"success":true,"result":[{"queue_id":"EXIST","queue_name":"b2-email"}]}' },
+  ]);
+  const r2 = await createQueue(ctxOf(s2), 'b2-email');
+  ok('createQueue treats an existing queue as idempotent success (found by name)', r2.id === 'EXIST' && r2.existed === true && s2.calls[1].method === 'GET');
+  // A hard failure with no matching queue throws (the instrument can fail).
+  const s3 = stub([
+    { status: 403, body: '{"success":false,"errors":[{"code":9109,"message":"forbidden"}]}' },
+  ]);
+  let threw = false; try { await createQueue(ctxOf(s3), 'b2-email'); } catch { threw = true; }
+  ok('createQueue throws on a non-conflict error', threw);
 }
 
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);

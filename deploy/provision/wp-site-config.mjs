@@ -16,8 +16,40 @@
 // [exports.Pages.cache] (the page-cache feature). Those are a separate deploy
 // concern tracked for the box-gate; see HARDENING.md.
 
-// The runtime vars a b-dosql site needs, as API plain_text bindings. Values are
-// kept byte-identical to lib.sh render_user:
+import { genSecret } from './shared.mjs';
+
+// ---- b-dosql integration-descriptor table (#201 Phase 1) --------------------
+// The provisioning core builds a b-dosql site's bindings, vars and generated
+// secrets from a TABLE of integration descriptors, not a hand-edited inline
+// array. The proven Cloudflare integrations (#201) each land as a binding,
+// secret or backing resource added to the SAME b-dosql site, so one inline array
+// is a merge chokepoint: every integration edits the one list. A descriptor
+// isolates each integration to its own table entry and a reducer assembles the
+// final set, so parallel integrations compose without colliding.
+//
+// A descriptor:
+//   name              stable id; also the key used to opt a non-default one in.
+//   default           true  = always on for every b-dosql site.
+//                     false = opt-in; included only when opts.enable names it.
+//   vars(opts)        -> an ORDERED { NAME: text } of plain_text vars (or none).
+//                        Insertion order is preserved into the emitted array, so
+//                        the default site stays byte-identical to the old inline
+//                        order (asserted in descriptor-table-test / wp-site-config-test).
+//   bindings(opts)    -> an array of non-var bindings (images/r2/do/..., or none).
+//   secretGenerators  { NAME: () => value } per-site generated secrets. The
+//                     reducer collects the generators; the CLI evaluates them
+//                     into the secrets literal, so a new secret appends cleanly
+//                     instead of editing one hand-written object.
+//   resourceCreateOp(ctx, { cfg, bindings })
+//                     optional async op run at provision time BEFORE the script
+//                     deploys, for an integration that needs a backing resource
+//                     (a KV namespace, a queue). It may inject the created id into
+//                     its own binding in bindings, exactly as the OC_KV namespace
+//                     injection does. No default descriptor has one; the L2 KV
+//                     (#218) and Queue (#190) waves add theirs here.
+
+// The always-on b-dosql runtime vars, in the EXACT order lib.sh render_user
+// emits them so bDosqlVars stays byte-identical:
 //   PHP_ENV      the PHP allocator setting (USE_ZEND_ALLOC off)
 //   SITE_ORIGIN  the site's own origin (issue #33): WP_HOME and every link
 //   PHP_IN_DO    PHP runs in the Durable Object
@@ -28,7 +60,7 @@
 // turn on the default-on gates in index.js (object cache, route cache, theme.json
 // cache, async email, bootstrap trim, media-write trim): index.js enables each
 // unless its var is "off", so the site gets them with no gate var set.
-export function bDosqlVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName } = {}) {
+function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName } = {}) {
   if (!siteOrigin) throw new Error('bDosqlVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
   const vars = {
     PHP_ENV: '{"USE_ZEND_ALLOC":"0"}',
@@ -53,28 +85,113 @@ export function bDosqlVars({ siteOrigin, location = 'enam', cronIntervalMs, mail
     vars.MAIL_FROM = mailFrom;
     if (mailFromName) vars.MAIL_FROM_NAME = mailFromName;
   }
-  return Object.entries(vars).map(([name, text]) => ({ type: 'plain_text', name, text }));
+  return vars;
 }
 
-// The full binding set for a b-dosql namespace site: the vars above plus the
-// three resource bindings (IMAGES, the site's own MEDIA bucket, the PHP_RUNTIME
-// Durable Object) and the EMAIL send_email binding. The PhpRuntime migration is
-// declared by provisionSite (sqliteClasses), not here. Secrets (WP_SALT,
-// SPIKE_TOKEN) are added by provisionSite as secret_text bindings.
+// The b-dosql descriptor table. The five always-on entries ARE the old inline
+// set (the runtime vars, IMAGES, the site MEDIA bucket, the PHP_RUNTIME DO, and
+// EMAIL), in the order the old bDosqlBindings emitted them, so the default site
+// is byte-identical. PDF invoices is the reference OPT-IN entry.
+export const B_DOSQL_DESCRIPTORS = [
+  { name: 'runtime', default: true, vars: bDosqlRuntimeVars },
+  { name: 'images', default: true, bindings: () => [{ type: 'images', name: 'IMAGES' }] },
+  { name: 'media', default: true, bindings: ({ mediaBucket }) => [{ type: 'r2_bucket', name: 'MEDIA', bucket_name: mediaBucket }] },
+  { name: 'php-runtime', default: true, bindings: () => [{ type: 'durable_object_namespace', name: 'PHP_RUNTIME', class_name: 'PhpRuntime' }] },
+  { name: 'email', default: true, bindings: () => [{ type: 'send_email', name: 'EMAIL' }] },
+  // PDF order invoices (#227/#228), the reference OPT-IN descriptor: the Browser
+  // Rendering binding plus the INVOICE_TOKEN download-signing secret. index.js
+  // pdfInvoiceEnabled() turns the feature on whenever env.BROWSER is present (and
+  // PDF_INVOICE != off), so provisioning the binding IS the whole switch: no gate
+  // var and no drop-in change. Opt-in (metered), so default:false keeps every
+  // other site byte-identical. NOTE: the WFP allowlist (deploy/wfp/bindings.py
+  // USER_OK) does not yet list "browser"; the provisioning core deploys with the
+  // account token and is unaffected, but a WFP lib.sh deploy of a PDF site needs
+  // that entry added first (out of this lane's scope; flagged on the PR).
+  {
+    name: 'pdf-invoices', default: false,
+    bindings: () => [{ type: 'browser', name: 'BROWSER' }],
+    secretGenerators: { INVOICE_TOKEN: () => genSecret(24) },
+  },
+];
+
+// Is a descriptor included for this site? Always-on (default) ones always; an
+// opt-in one only when opts.enable lists its name.
+function bDosqlDescriptorEnabled(d, enable) {
+  return d.default === true || (Array.isArray(enable) && enable.includes(d.name));
+}
+
+// The reducer. Walk the enabled descriptors once and gather the parts: vars
+// first (descriptor order, then each descriptor's insertion order) then bindings
+// (descriptor order), matching the old inline emit; plus the secret generators
+// and the provision-time resource ops the enabled descriptors contribute. This
+// is the ONE place the table becomes a binding/var/secret set, so an integration
+// is added by adding a table entry, never by editing an assembled array.
+export function assembleBDosql(opts = {}) {
+  const enable = opts.enable;
+  const vars = {};
+  const bindings = [];
+  const secretGenerators = {};
+  const resourceCreateOps = [];
+  for (const d of B_DOSQL_DESCRIPTORS) {
+    if (!bDosqlDescriptorEnabled(d, enable)) continue;
+    if (d.vars) Object.assign(vars, d.vars(opts) || {});
+    if (d.bindings) bindings.push(...(d.bindings(opts) || []));
+    if (d.secretGenerators) Object.assign(secretGenerators, d.secretGenerators);
+    if (d.resourceCreateOp) resourceCreateOps.push({ name: d.name, op: d.resourceCreateOp });
+  }
+  return {
+    vars: Object.entries(vars).map(([name, text]) => ({ type: 'plain_text', name, text })),
+    bindings,
+    secretGenerators,
+    resourceCreateOps,
+  };
+}
+
+// The runtime vars a b-dosql site needs, as API plain_text bindings. Values are
+// kept byte-identical to lib.sh render_user (the runtime descriptor is the one
+// source). bDosqlVars is kept as a named export because the drift guard and the
+// CLI consume the var subset on its own.
+export function bDosqlVars(opts = {}) {
+  return Object.entries(bDosqlRuntimeVars(opts)).map(([name, text]) => ({ type: 'plain_text', name, text }));
+}
+
+// The full binding set for a b-dosql namespace site, assembled from the table:
+// the runtime vars plus the enabled descriptors' bindings (IMAGES, the site's own
+// MEDIA bucket, the PHP_RUNTIME Durable Object, EMAIL, and any opted-in
+// integration's bindings). The PhpRuntime migration is declared by provisionSite
+// (sqliteClasses), not here. Secrets (WP_SALT, SPIKE_TOKEN, and any descriptor's
+// generated secret) are added by the CLI / provisionSite as secret_text bindings.
 //
 // extra: caller-supplied EXTRA bindings appended after the standard set (the
 // CLI's WP_BINDINGS slot). The Worker passes none; the standard set is never
-// caller-controlled.
-export function bDosqlBindings({ mediaBucket, siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, extra = [] } = {}) {
-  if (!mediaBucket) throw new Error('bDosqlBindings: mediaBucket is required');
-  return [
-    ...bDosqlVars({ siteOrigin, location, cronIntervalMs, mailFrom, mailFromName }),
-    { type: 'images', name: 'IMAGES' },
-    { type: 'r2_bucket', name: 'MEDIA', bucket_name: mediaBucket },
-    { type: 'durable_object_namespace', name: 'PHP_RUNTIME', class_name: 'PhpRuntime' },
-    { type: 'send_email', name: 'EMAIL' },
-    ...extra,
-  ];
+// caller-controlled. enable: opt-in descriptor names (default none), so the
+// default set is byte-identical to the old hard-coded array.
+export function bDosqlBindings(opts = {}) {
+  if (!opts.mediaBucket) throw new Error('bDosqlBindings: mediaBucket is required');
+  const { extra = [] } = opts;
+  const { vars, bindings } = assembleBDosql(opts);
+  return [...vars, ...bindings, ...extra];
+}
+
+// The generated secrets the enabled descriptors contribute, EVALUATED (each
+// generator called once). The CLI spreads these into the secrets literal next to
+// WP_SALT / SPIKE_TOKEN, so an opt-in integration's secret (PDF's INVOICE_TOKEN,
+// a future PURGE_TOKEN) is added by adding a descriptor, not by editing the
+// literal. No default descriptor generates a secret, so the default site's
+// secrets are unchanged.
+export function bDosqlSecrets(opts = {}) {
+  const { secretGenerators } = assembleBDosql(opts);
+  const out = {};
+  for (const [name, gen] of Object.entries(secretGenerators)) out[name] = gen();
+  return out;
+}
+
+// The provision-time resource-create ops the enabled descriptors contribute, as
+// [{ name, op }]. provisionSite runs each before the script deploys (and lets an
+// op inject a created id into its binding). No default descriptor has one today;
+// this is the seam the L2 KV (#218) and Queue (#190) waves bind through.
+export function bDosqlResourceCreateOps(opts = {}) {
+  return assembleBDosql(opts).resourceCreateOps;
 }
 
 // The media bucket name for a site, the one name both the binding and the

@@ -7,7 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { bDosqlBindings, bDosqlVars, mediaBucketName } from '../wp-site-config.mjs';
+import { bDosqlBindings, bDosqlVars, bDosqlSecrets, mediaBucketName } from '../wp-site-config.mjs';
 
 let pass = 0, fail = 0;
 const ok = (n, c) => { if (c) { pass++; console.log('PASS', n); } else { fail++; console.log('FAIL', n); } };
@@ -80,6 +80,30 @@ ok('MAIL_FROM_NAME is the site name when provided',
     .some((v) => v.name === 'MAIL_FROM_NAME' && v.text === 'shop'));
 ok('MAIL_FROM_NAME omitted when only mailFrom is set',
   !bDosqlVars({ siteOrigin: 'https://x', mailFrom: 'wordpress@skyphusionwp.dev' }).some((v) => v.name === 'MAIL_FROM_NAME'));
+
+// ---- #201 Phase 1 regression: proven integrations stay wired, PDF opt-in -----
+// The descriptor-table refactor must keep the already-default integrations wired.
+// 1) Base object cache: index.js turns JS_OBJECT_CACHE on from PHP_IN_DO=on +
+//    DB_IN_DO=on (no explicit cache var), so those two vars are the object-cache
+//    PRECONDITION and must stay set to 'on'.
+ok('object-cache precondition stays wired (PHP_IN_DO=on and DB_IN_DO=on)',
+  varOf('PHP_IN_DO').text === 'on' && varOf('DB_IN_DO').text === 'on');
+// 2) The DO-alarm cron cadence (#185): CRON_INTERVAL_MS is emitted when set.
+const bCron = bDosqlBindings({ mediaBucket: mediaBucketName('blog'), siteOrigin: 'https://blog.skyphusionwp.dev', cronIntervalMs: 45000 });
+ok('DO-alarm cron CRON_INTERVAL_MS stays wired when set',
+  bCron.some((v) => v.type === 'plain_text' && v.name === 'CRON_INTERVAL_MS' && v.text === '45000'));
+// 3) The IMAGES binding (Cloudflare Images offload) stays in the default set.
+ok('IMAGES binding stays wired in the default set', byType('images').some((x) => x.name === 'IMAGES'));
+
+// PDF invoices (#227) is the reference OPT-IN descriptor: OFF by default, and when
+// enabled it adds the Browser Rendering binding + an INVOICE_TOKEN generated secret.
+ok('PDF invoices is OFF by default (no BROWSER binding in the default set)',
+  !b.some((x) => x.type === 'browser'));
+const bPdf = bDosqlBindings({ mediaBucket: mediaBucketName('shop'), siteOrigin: 'https://shop.skyphusionwp.dev', enable: ['pdf-invoices'] });
+ok('PDF descriptor adds the BROWSER (Browser Rendering) binding',
+  bPdf.some((x) => x.type === 'browser' && x.name === 'BROWSER'));
+ok('PDF descriptor adds an INVOICE_TOKEN generated secret',
+  typeof bDosqlSecrets({ mediaBucket: 'm', siteOrigin: 'https://x', enable: ['pdf-invoices'] }).INVOICE_TOKEN === 'string');
 
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

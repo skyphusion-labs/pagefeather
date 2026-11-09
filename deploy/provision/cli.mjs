@@ -21,7 +21,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { provisionSite } from './provision.mjs';
 import { SITE_NAME_RE, isCallerReservedName, genSecret } from './shared.mjs';
-import { bDosqlBindings, aBindings, mediaBucketName, ocKvNamespaceName } from './wp-site-config.mjs';
+import { bDosqlBindings, bDosqlSecrets, bDosqlResourceCreateOps, aBindings, mediaBucketName, ocKvNamespaceName } from './wp-site-config.mjs';
 import { addCustomHostname, getCustomHostnameStatus } from './ops.mjs';
 import { updateSite, readSite } from './registry.mjs';
 
@@ -131,6 +131,18 @@ async function loadModules(dir) {
   return mods;
 }
 
+// Opt-in b-dosql integrations (#201 Phase 1). Each metered / privacy-cost
+// integration is a descriptor with default:false (see wp-site-config.mjs), turned
+// on by its own env flag at provision time; unset leaves the site byte-identical
+// to the always-on default set. PDF order invoices (#227): WP_PDF_INVOICE set and
+// not 'off' provisions the Browser Rendering binding + the INVOICE_TOKEN secret,
+// and index.js pdfInvoiceEnabled() then enables the feature with no further gate.
+function bDosqlEnabledIntegrations(env) {
+  const enable = [];
+  if (env.WP_PDF_INVOICE && env.WP_PDF_INVOICE !== 'off') enable.push('pdf-invoices');
+  return enable;
+}
+
 async function buildCfg(parsed, env) {
   const { kind, name } = parsed;
   const namespace = env.WFP_NAMESPACE || 'wp-wfp';
@@ -141,21 +153,28 @@ async function buildCfg(parsed, env) {
   if (kind === 'wp') {
     const mediaBucket = mediaBucketName(name);
     const hostname = siteHostname(name, env);
+    // The b-dosql integration-descriptor opts (#201 Phase 1): ONE options object
+    // feeds the descriptor reducer for bindings, generated secrets and the
+    // provision-time resource ops, so an opt-in integration (PDF invoices today;
+    // L2 KV, Queue, zone purge next) is turned on by naming its descriptor in
+    // `enable`, never by editing an assembled array. WP_BINDINGS is the EXTRA-
+    // bindings slot, appended after the standard set.
+    const bdosqlOpts = {
+      mediaBucket,
+      siteOrigin: env.SITE_ORIGIN || `https://${hostname}`,
+      location: env.PHP_LOCATION || 'enam',
+      cronIntervalMs: env.CRON_INTERVAL_MS,
+      extra: JSON.parse(env.WP_BINDINGS || '[]'),
+      enable: bDosqlEnabledIntegrations(env),
+    };
     return {
       ...common, kind: 'wp', mainModule: env.WP_MAIN || 'index.js',
       hostname,
       modules: await loadModules(env.BDOSQL_BUNDLE_DIR),
       // The FULL b-dosql binding + var set from the ONE shared source (the same
       // the provisioning Worker uses), so the CLI and the Worker cannot drift on
-      // what a b-dosql site needs. WP_BINDINGS is the EXTRA-bindings slot,
-      // appended after the standard set.
-      resourceBindings: bDosqlBindings({
-        mediaBucket,
-        siteOrigin: env.SITE_ORIGIN || `https://${hostname}`,
-        location: env.PHP_LOCATION || 'enam',
-        cronIntervalMs: env.CRON_INTERVAL_MS,
-        extra: JSON.parse(env.WP_BINDINGS || '[]'),
-      }),
+      // what a b-dosql site needs.
+      resourceBindings: bDosqlBindings(bdosqlOpts),
       // The b-dosql bundle defines the PhpRuntime SQLite DO; declaring it in a
       // migration is mandatory (API 10061 otherwise, #158).
       sqliteClasses: JSON.parse(env.WP_SQLITE_CLASSES || '["PhpRuntime"]'),
@@ -163,7 +182,13 @@ async function buildCfg(parsed, env) {
       // the core places the routing record so the site is reachable with no
       // operator step.
       saasZoneId: env.WFP_SAAS_ZONE_ID || undefined,
-      secrets: { WP_SALT: genSecret(), SPIKE_TOKEN: genSecret(24) },
+      // WP_SALT + SPIKE_TOKEN are always generated; a descriptor's generated
+      // secret (PDF's INVOICE_TOKEN) is spread in from the table, so a new
+      // integration secret appends here without editing the literal.
+      secrets: { WP_SALT: genSecret(), SPIKE_TOKEN: genSecret(24), ...bDosqlSecrets(bdosqlOpts) },
+      // Provision-time resource ops the enabled descriptors contribute (a KV
+      // namespace or a queue for the next wave); empty for the default + PDF set.
+      resourceCreateOps: bDosqlResourceCreateOps(bdosqlOpts),
       buckets: { media: mediaBucket },
     };
   }
