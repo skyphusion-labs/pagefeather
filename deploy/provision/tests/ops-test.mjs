@@ -9,7 +9,7 @@ import { sha256Hex, r2BucketResource } from '../cf.mjs';
 import {
   createR2Bucket, mintScopedR2Token, putSecret, writeKVMapEntry,
   deployNamespaceScript, deployContainerWorkerFromDigest, scriptExists, installWordPress, ensureKVNamespace,
-  createKvNamespace, createQueue,
+  createKvNamespace, createQueue, createVectorizeIndex,
 } from '../ops.mjs';
 import { upsertSite, readSite, listSites, removeSite } from '../registry.mjs';
 
@@ -275,6 +275,29 @@ const ctxOf = (s) => ({ acct: ACCT, token: 'T', fetchImpl: s.fetchImpl });
   ]);
   let threw = false; try { await createQueue(ctxOf(s3), 'b2-email'); } catch { threw = true; }
   ok('createQueue throws on a non-conflict error', threw);
+}
+
+// 7f. createVectorizeIndex (#201 Phase 2): a per-site Vectorize index for the
+// semantic-search descriptor. POST /vectorize/v2/indexes with the model preset,
+// idempotent by name on a create conflict, throws on any other error.
+{
+  const s = stub([{ status: 200, body: '{"success":true,"result":{"name":"wp-wfp-blog-search"}}' }]);
+  const r = await createVectorizeIndex(ctxOf(s), 'wp-wfp-blog-search', { preset: '@cf/baai/bge-large-en-v1.5' });
+  ok('createVectorizeIndex POSTs /vectorize/v2/indexes with {name, config.preset}',
+    s.calls[0].method === 'POST' && s.calls[0].url.endsWith(`/accounts/${ACCT}/vectorize/v2/indexes`) &&
+    JSON.parse(s.calls[0].body).name === 'wp-wfp-blog-search' &&
+    JSON.parse(s.calls[0].body).config.preset === '@cf/baai/bge-large-en-v1.5');
+  ok('createVectorizeIndex returns created on a fresh index', r.created === true && r.name === 'wp-wfp-blog-search');
+  const s2 = stub([
+    { status: 409, body: '{"success":false,"errors":[{"code":1000,"message":"index already exists"}]}' },
+    { status: 200, body: '{"success":true,"result":[{"name":"wp-wfp-blog-search"}]}' },
+  ]);
+  const r2 = await createVectorizeIndex(ctxOf(s2), 'wp-wfp-blog-search', { preset: '@cf/baai/bge-large-en-v1.5' });
+  ok('createVectorizeIndex treats an existing index as idempotent success (found by name)',
+    r2.created === false && r2.existed === true && s2.calls[1].method === 'GET');
+  const s3 = stub([{ status: 403, body: '{"success":false,"errors":[{"code":9109,"message":"forbidden"}]}' }]);
+  let threw = false; try { await createVectorizeIndex(ctxOf(s3), 'wp-wfp-blog-search', { preset: '@cf/baai/bge-large-en-v1.5' }); } catch { threw = true; }
+  ok('createVectorizeIndex throws on a non-conflict error', threw);
 }
 
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);

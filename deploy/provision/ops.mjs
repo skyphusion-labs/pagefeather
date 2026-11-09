@@ -512,6 +512,37 @@ async function findQueueIdByName(ctx, name) {
 }
 
 
+// createVectorizeIndex: a Cloudflare Vectorize index for the b-dosql semantic-
+// search descriptor (#201 Phase 2). Idempotent by NAME: a create conflict (409,
+// or an "already exists" error) means a prior provision made it, so find it by
+// name and reuse it rather than fail the provision, matching createQueue /
+// ensureKVNamespace. The index carries the embedding model as a Vectorize v2
+// `preset`, which fixes dimensions and metric, so a WfP-provisioned index is a
+// drop-in for the skyphusion-ai plugin that reads and writes it through the
+// binding (the plugin creates the same shape, config.preset = the bge model).
+// Pure fetch on cf.mjs, callable from node or a Worker.
+export async function createVectorizeIndex(ctx, name, { preset }) {
+  const r = await cfFetch(ctx.token, 'POST', `/accounts/${ctx.acct}/vectorize/v2/indexes`,
+    { body: { name, config: { preset } }, fetchImpl: ctx.fetchImpl });
+  if (r.ok && r.result && r.result.name) return { name, created: true };
+  if (r.status === 409 || r.errors.some((e) => /exist/i.test(e.message || ''))) {
+    const found = await findVectorizeIndexByName(ctx, name);
+    if (found) return { name, created: false, existed: true };
+  }
+  throw opError('createVectorizeIndex', name, r);
+}
+
+// List Vectorize indexes and find one by EXACT name; null if none or if listing
+// is not permitted. The v2 index list is small (indexes are capped per account),
+// so a single GET suffices, no pagination.
+async function findVectorizeIndexByName(ctx, name) {
+  const r = await cfFetch(ctx.token, 'GET', `/accounts/${ctx.acct}/vectorize/v2/indexes`, { fetchImpl: ctx.fetchImpl });
+  if (!r.ok) return null;
+  const list = Array.isArray(r.result) ? r.result : [];
+  return list.find((i) => i && i.name === name) || null;
+}
+
+
 // Read one custom hostname's live status from the SaaS zone (Cloudflare for
 // SaaS). Returns { hostname, ssl, active }: active is true only when both the
 // hostname and its certificate are active. Used by `site hostname status` to

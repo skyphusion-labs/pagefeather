@@ -17,7 +17,7 @@
 // concern tracked for the box-gate; see HARDENING.md.
 
 import { genSecret } from './shared.mjs';
-import { createKvNamespace, createQueue } from './ops.mjs';
+import { createKvNamespace, createQueue, createVectorizeIndex } from './ops.mjs';
 
 // ---- b-dosql integration-descriptor table (#201 Phase 1) --------------------
 // The provisioning core builds a b-dosql site's bindings, vars and generated
@@ -232,6 +232,50 @@ export const B_DOSQL_DESCRIPTORS = [
       return [{ type: 'analytics_engine', name: 'ANALYTICS', dataset: analyticsDataset }];
     },
   },
+  // Semantic site search (#201 Phase 2), OPT-IN (default:false; Workers AI and
+  // Vectorize are metered). This descriptor does NOT build search in WfP; it
+  // provisions the token-free Cloudflare BINDINGS the skyphusion-ai plugin
+  // (WP.org, GPL-2.0) consumes on a WfP site: the account-level Workers AI
+  // binding (env.AI) for @cf/baai/bge-large-en-v1.5 embeddings, and a per-site
+  // Vectorize index (env.SEARCH_INDEX) for the vectors. The plugin otherwise
+  // reaches both over the REST API with a stored Cloudflare token; on WfP it
+  // reaches them through the index.js op bridge with NO token in the site (the
+  // aiAlt op precedent). The engine (embeddings-on-save, query, ranking) stays in
+  // skyphusion-ai, so there is no duplicate search implementation here: WfP
+  // supplies the bindings and references the plugin. The plugin-side change that
+  // makes it prefer the bridge when present is tracked as skyphusion-ai#193; the
+  // repos are not coupled here. Opt in with WP_VECTORIZE_SEARCH.
+  //
+  // The AI binding is account-level (no per-site resource); the Vectorize index
+  // is a per-site resource, so the resourceCreateOp creates it idempotently and
+  // injects index_name, exactly as async-email-queue does for its queue. The
+  // index is created with the embedding model as a Vectorize v2 preset (1024
+  // dims, cosine for bge-large), the same shape skyphusion-ai creates, so a
+  // provisioned index is a drop-in. PER-SITE, not shared: a tenant's vectors must
+  // never surface in another tenant's search, and the per-account Vectorize index
+  // count is the scale ceiling to watch (one index per opted-in site;
+  // shared-index-with-namespace is the migration path if that ceiling binds, see
+  // docs/vectorize-search.md).
+  //
+  // SHARED AI BINDING: ai-alt-text above also emits the account {type:'ai',
+  // name:'AI'} binding. assembleBDosql dedups the assembled set by (type,name) in
+  // enable order, so co-enabling both descriptors binds env.AI exactly ONCE (first
+  // emitter wins, order preserved) instead of double-binding and breaking deploy.
+  {
+    name: 'vectorize-search', default: false,
+    bindings: () => [
+      { type: 'ai', name: 'AI' },
+      { type: 'vectorize', name: 'SEARCH_INDEX' },
+    ],
+    resourceCreateOp: async (ctx, { cfg, bindings }) => {
+      const index = searchIndexName(cfg.name);
+      const r = await createVectorizeIndex(ctx, index, { preset: SEARCH_EMBED_PRESET });
+      const binding = bindings.find((b) => b.type === 'vectorize' && b.name === 'SEARCH_INDEX');
+      if (!binding) throw new Error('vectorize-search: no SEARCH_INDEX vectorize binding to inject');
+      binding.index_name = index;
+      return { index, created: r.created === true };
+    },
+  },
 ];
 
 // Is a descriptor included for this site? Always-on (default) ones always; an
@@ -246,6 +290,25 @@ function bDosqlDescriptorEnabled(d, enable) {
 // and the provision-time resource ops the enabled descriptors contribute. This
 // is the ONE place the table becomes a binding/var/secret set, so an integration
 // is added by adding a table entry, never by editing an assembled array.
+// Order-preserving dedup of the assembled binding set by (type, name): when two
+// enabled descriptors emit the SAME account-level binding (e.g. ai-alt-text and
+// vectorize-search both emit {type:'ai',name:'AI'}), it is bound ONCE, first
+// emitter wins. Without this a co-enable double-binds and the deploy is rejected.
+// The default set has no (type,name) collision, so this is a no-op there and the
+// byte-equivalence baseline is unchanged. General by (type,name), so any future
+// shared binding is covered.
+function dedupeBindings(list) {
+  const seen = new Set();
+  const out = [];
+  for (const b of list) {
+    const key = b.type + '\u0000' + b.name;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(b);
+  }
+  return out;
+}
+
 export function assembleBDosql(opts = {}) {
   const enable = opts.enable;
   const vars = {};
@@ -263,7 +326,7 @@ export function assembleBDosql(opts = {}) {
   }
   return {
     vars: Object.entries(vars).map(([name, text]) => ({ type: 'plain_text', name, text })),
-    bindings,
+    bindings: dedupeBindings(bindings),
     secretGenerators,
     suppliedSecrets,
     resourceCreateOps,
@@ -447,3 +510,15 @@ export function emailDlqName(name) {
 export function analyticsDatasetName(name) {
   return `wp-wfp-${name}-analytics`;
 }
+
+// The per-site Vectorize index name (#201 Phase 2) for semantic search. Carries
+// the wp-wfp- reserved prefix (RESERVED_PREFIXES) so a tenant can never mint a
+// colliding name, the same guarantee as ocKvNamespaceName / emailQueueName.
+export function searchIndexName(name) {
+  return `wp-wfp-${name}-search`;
+}
+
+// The embedding model the search index is sized for, passed to Vectorize v2 as a
+// `preset` (fixes dimensions and metric). It matches the skyphusion-ai plugin's
+// default embeddings model, so a WfP-provisioned index is a drop-in for it.
+export const SEARCH_EMBED_PRESET = '@cf/baai/bge-large-en-v1.5';
