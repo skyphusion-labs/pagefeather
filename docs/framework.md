@@ -116,6 +116,8 @@ End users reach a site on a vanity domain through Cloudflare for SaaS, routed by
 
 **Anti-hostage, and it is the point:** in delegated mode the customer keeps their domain and their registrar, CNAMEs to you, and can repoint away at any time. You never hold their domain. If you move on, they change one CNAME. (This is a direct answer to the agency-holds-your-domain-hostage problem.)
 
+The operator path is one command per side: `site hostname add <name> --domain <d> --mode delegated --dcv-delegation` prints the records the customer adds, and `site hostname status <name>` polls until the certificate is active. The full self-service walkthrough is in [byo-domain.md](byo-domain.md).
+
 ## Honest limits
 
 - A site is ONE Durable Object: 128 MiB of isolate memory, one writer, one region. Throughput is about 1 divided by the CPU time of one request (about 4 public pages a second at 230 ms; see `docs/perf-dosql.md`). A store with sustained, heavy concurrent load belongs on a VPS.
@@ -134,6 +136,7 @@ End users reach a site on a vanity domain through Cloudflare for SaaS, routed by
 
 - `docs/operator.md`: the b-dosql day-one walkthrough (scripts, Terraform, update and rollback, custom hostnames, teardown).
 - `deploy/provision/README.md`: the provisioning core (ops, orchestration, CLI, Worker, the custom-hostname op).
+- [byo-domain.md](byo-domain.md): the self-service delegated BYO-domain flow (the records a customer adds, how to check state).
 - `deploy/wfp/README.md`: the Workers for Platforms reference deployment.
 - `docs/approach-c1.md`: the retired c1 container store (kept as a record).
 - Issues #35 (the reference deployment), #154 and #182 (the Worker-provisionable core and its hardening), #152 (load).

@@ -8,21 +8,47 @@
 // orchestration is in provision.mjs, so the provisioning Worker shares it. The
 // worker bundle is a prerequisite artifact built once (ENGINE=<kind> ./build.sh);
 // the core never builds it at provision time.
+//
+// site hostname (#248): expose the already-built addCustomHostname (ops.mjs) to
+// the operator. A tenant brings its own domain through Cloudflare for SaaS in two
+// ownership modes: 'delegated' (the customer holds the domain, we write NOTHING
+// to their DNS and PRINT the records they add, anti-hostage) and 'managed' (we
+// control their zone and place the records). `site hostname status` polls the
+// live custom-hostname state. The SaaS zone id and fallback origin come from env
+// (WFP_SAAS_ZONE_ID, WFP_SAAS_FALLBACK), matching how the SaaS home is
+// configured (zone skyphusionwp.dev, fallback.skyphusionwp.dev).
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { provisionSite } from './provision.mjs';
 import { SITE_NAME_RE, isCallerReservedName, genSecret } from './shared.mjs';
 import { bDosqlBindings, aBindings, mediaBucketName, ocKvNamespaceName } from './wp-site-config.mjs';
+import { addCustomHostname, getCustomHostnameStatus } from './ops.mjs';
+import { updateSite, readSite } from './registry.mjs';
 
 // genSecret lives in shared.mjs (the Worker uses it too); re-export so the CLI
 // surface and cli-test are unchanged.
 export { genSecret };
 
+// A customer vanity domain is an FQDN: labels of letters/digits/hyphens (no
+// leading or trailing hyphen), at least two labels, a letter-only TLD. It reaches
+// the Cloudflare for SaaS create body and the DNS record names, so validate it
+// before any API call (fail early on a typo, keep junk out of the request).
+export const DOMAIN_RE = /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i;
+
+// The site's own hostname: the site-map key the dispatcher routes and the key a
+// custom hostname is folded onto. ONE helper so `site add` and `site hostname`
+// cannot drift on what a site is keyed by. WP_HOSTNAME overrides (the SaaS home
+// sets it to <name>.skyphusionwp.dev); the default is the workers.dev vanity.
+export function siteHostname(name, env) {
+  return env.WP_HOSTNAME || `wp-${name}.${env.WFP_SUBDOMAIN}.workers.dev`;
+}
+
 // Pure, so it is unit-tested without IO.
 export function parseArgs(argv) {
   const [cmd, ...rest] = argv;
+  if (cmd === 'hostname') return parseHostnameArgs(rest);
   if (!['add', 'remove', 'list'].includes(cmd)) {
-    throw new Error('usage: site add|remove|list --kind wp|a <name> [--hyperdrive <id>] [--hyperdrive-sql-mode <mode>]');
+    throw new Error('usage: site add|remove|list --kind wp|a <name> [--hyperdrive <id>] [--hyperdrive-sql-mode <mode>] | site hostname add <name> --domain <d> --mode delegated|managed [--dcv-delegation] [--cust-zone <id>] | site hostname status <name>');
   }
   let kind, name, hyperdrive, hyperdriveSqlMode;
   for (let i = 0; i < rest.length; i++) {
@@ -47,6 +73,39 @@ export function parseArgs(argv) {
     if (hyperdriveSqlMode !== undefined && !/^[A-Za-z_,]*$/.test(hyperdriveSqlMode)) throw new Error('--hyperdrive-sql-mode must match [A-Za-z_,]* (e.g. ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION)');
   }
   return { cmd, kind, name, hyperdrive, hyperdriveSqlMode };
+}
+
+// site hostname add|status (#248). Pure arg parse; the ops call is in
+// hostnameCommand.
+//   add <name> --domain <d> --mode delegated|managed [--dcv-delegation] [--cust-zone <id>]
+//   status <name>
+// managed REQUIRES --cust-zone (the zone we control to place the records on);
+// delegated REJECTS it (delegated touches no customer DNS, so a cust-zone would
+// be a contradiction, fail loudly rather than silently ignore it).
+export function parseHostnameArgs(rest) {
+  const [sub, ...rr] = rest;
+  if (sub !== 'add' && sub !== 'status') {
+    throw new Error('usage: site hostname add <name> --domain <d> --mode delegated|managed [--dcv-delegation] [--cust-zone <id>] | site hostname status <name>');
+  }
+  let name, domain, mode, dcvDelegation = false, custZone;
+  for (let i = 0; i < rr.length; i++) {
+    const a = rr[i];
+    if (a === '--domain') domain = rr[++i];
+    else if (a === '--mode') mode = rr[++i];
+    else if (a === '--dcv-delegation') dcvDelegation = true;
+    else if (a === '--cust-zone') custZone = rr[++i];
+    else if (!a.startsWith('--')) name = a;
+    else throw new Error(`unknown flag ${a}`);
+  }
+  if (!name || !SITE_NAME_RE.test(name)) throw new Error('site hostname needs a valid <name> (the tenant site, lower case, digits, hyphens, 1 to 30)');
+  if (sub === 'add') {
+    if (!domain) throw new Error('site hostname add needs --domain <d> (the customer vanity domain)');
+    if (!DOMAIN_RE.test(domain)) throw new Error(`site hostname add: --domain ${JSON.stringify(domain)} is not a valid FQDN`);
+    if (mode !== 'delegated' && mode !== 'managed') throw new Error('site hostname add needs --mode delegated|managed');
+    if (mode === 'managed' && !custZone) throw new Error('site hostname add --mode managed needs --cust-zone <id> (the zone we control for the customer domain)');
+    if (mode === 'delegated' && custZone) throw new Error('--cust-zone is only valid with --mode managed; delegated touches NO customer DNS (anti-hostage)');
+  }
+  return { cmd: 'hostname', sub, name, domain, mode, dcvDelegation, custZone };
 }
 
 // Load a PRE-BUILT bundle dir as module parts. A real bundle is not only JS:
@@ -76,13 +135,12 @@ async function buildCfg(parsed, env) {
   const { kind, name } = parsed;
   const namespace = env.WFP_NAMESPACE || 'wp-wfp';
   const kvId = env.WFP_KV_ID;
-  const sub = env.WFP_SUBDOMAIN;
   const compatibilityDate = env.WFP_COMPAT || '2026-07-01';
   if (!kvId) throw new Error('set WFP_KV_ID (the wp-wfp-sites map id)');
   const common = { name, namespace, kvId, compatibilityDate, compatibilityFlags: ['nodejs_compat'] };
   if (kind === 'wp') {
     const mediaBucket = mediaBucketName(name);
-    const hostname = env.WP_HOSTNAME || `wp-${name}.${sub}.workers.dev`;
+    const hostname = siteHostname(name, env);
     return {
       ...common, kind: 'wp', mainModule: env.WP_MAIN || 'index.js',
       hostname,
@@ -114,7 +172,7 @@ async function buildCfg(parsed, env) {
     // Hyperdrive binding. The entry is index-a-lean.js (it imports index.js and
     // sets the lean MySQL client); the bundle is built with ENGINE=a WOO=1.
     const mediaBucket = mediaBucketName(name);
-    const hostname = env.WP_HOSTNAME || `wp-${name}.${sub}.workers.dev`;
+    const hostname = siteHostname(name, env);
     return {
       ...common, kind: 'a', mainModule: env.A_MAIN || 'index-a-lean.js',
       hostname,
@@ -147,12 +205,86 @@ async function buildCfg(parsed, env) {
   throw new Error(`buildCfg: only kind 'wp' (b-dosql) and 'a' (approach A) are supported (c1 'shop' store retired #214), got ${kind}`);
 }
 
+// Derive the registry state label from the live SaaS status: active only when
+// both the hostname and its certificate are active, otherwise pending.
+export function stateOf(status) {
+  return status && status.active ? 'active' : 'pending';
+}
+
+// Print the delegated records a customer adds (to stderr, so stdout stays pure
+// JSON for a script). printFn is injectable for tests.
+function printDelegatedRecords(records, name, printFn) {
+  printFn(`\nDelegated: the customer keeps their domain and adds these records (we place NOTHING, anti-hostage):`);
+  for (const rec of records) {
+    printFn(`  ${rec.kind.toUpperCase().padEnd(5)} ${rec.name}  ->  ${rec.value}    (${rec.note})`);
+  }
+  printFn(`\nThen: node cli.mjs hostname status ${name}  (until customHostnameState is active).`);
+}
+
+// site hostname add|status (#248). Attaches a custom hostname via the already-
+// built addCustomHostname, folds the owner + hostname + state into the site's
+// registry entry, and for delegated mode PRINTS the exact DNS records the
+// customer adds. status polls the live state and persists it. The SaaS zone id +
+// fallback origin come from env. Returns the structured result (also logged), so
+// a test asserts on the value, not stdout. out/err are injectable for tests.
+export async function hostnameCommand(ctx, parsed, env, { out = console.log, err = console.error } = {}) {
+  const kvId = env.WFP_KV_ID;
+  const saasZoneId = env.WFP_SAAS_ZONE_ID;
+  if (!kvId) throw new Error('set WFP_KV_ID (the wp-wfp-sites map id)');
+  if (!saasZoneId) throw new Error('set WFP_SAAS_ZONE_ID (the SaaS home zone, e.g. skyphusionwp.dev)');
+  const siteKey = siteHostname(parsed.name, env);
+
+  if (parsed.sub === 'add') {
+    const fallbackHostname = env.WFP_SAAS_FALLBACK;
+    if (!fallbackHostname) throw new Error('set WFP_SAAS_FALLBACK (the SaaS fallback origin, e.g. fallback.skyphusionwp.dev)');
+    const r = await addCustomHostname(ctx, {
+      saasZoneId, hostname: parsed.domain, fallbackHostname,
+      mode: parsed.mode, dcvDelegation: parsed.dcvDelegation, custZoneId: parsed.custZone,
+    });
+    const state = stateOf(r.status);
+    const entry = await updateSite(ctx, { kvId, hostname: siteKey, patch: {
+      domainOwner: parsed.mode === 'delegated' ? 'customer' : 'agency',
+      customHostname: r.hostname,
+      customHostnameId: r.id,
+      customHostnameState: state,
+    } });
+    const result = {
+      site: parsed.name, siteKey, mode: r.mode, domain: r.hostname,
+      customHostnameId: r.id, customHostnameState: state,
+      domainOwner: entry.domainOwner, dcvDelegation: r.dcvDelegation, records: r.records,
+    };
+    out(JSON.stringify(result, null, 2));
+    if (parsed.mode === 'delegated') printDelegatedRecords(r.records, parsed.name, err);
+    else err(`\nManaged: records placed on the zone we control (cust-zone ${parsed.custZone}). Poll: node cli.mjs hostname status ${parsed.name}.`);
+    return result;
+  }
+
+  // status: read the recorded entry, poll the live state, persist and print.
+  const cur = await readSite(ctx, { kvId, hostname: siteKey });
+  if (!cur || !cur.customHostnameId) {
+    throw new Error(`no custom hostname recorded for site ${parsed.name} (${siteKey}); run: site hostname add ${parsed.name} --domain <d> --mode delegated|managed`);
+  }
+  const status = await getCustomHostnameStatus(ctx, { saasZoneId, id: cur.customHostnameId });
+  const state = stateOf(status);
+  if (state !== cur.customHostnameState) {
+    await updateSite(ctx, { kvId, hostname: siteKey, patch: { customHostnameState: state } });
+  }
+  const result = {
+    site: parsed.name, siteKey, domain: cur.customHostname,
+    customHostnameId: cur.customHostnameId, domainOwner: cur.domainOwner,
+    customHostnameState: state, hostnameStatus: status.hostname, sslStatus: status.ssl, active: status.active,
+  };
+  out(JSON.stringify(result, null, 2));
+  return result;
+}
+
 async function main() {
   const parsed = parseArgs(process.argv.slice(2));
-  if (parsed.cmd !== 'add') throw new Error(`${parsed.cmd}: stage 2 implements add only`);
   const env = process.env;
   if (!env.CLOUDFLARE_ACCOUNT_ID || !env.CLOUDFLARE_API_TOKEN) throw new Error('set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN');
   const ctx = { acct: env.CLOUDFLARE_ACCOUNT_ID, token: env.CLOUDFLARE_API_TOKEN };
+  if (parsed.cmd === 'hostname') { await hostnameCommand(ctx, parsed, env); return; }
+  if (parsed.cmd !== 'add') throw new Error(`${parsed.cmd}: stage 2 implements add and hostname only`);
   const cfg = await buildCfg(parsed, env);
   const r = await provisionSite(ctx, cfg);
   console.log(JSON.stringify({ provisioned: r.kind, name: r.name, script: r.script, hostname: r.hostname }, null, 2));

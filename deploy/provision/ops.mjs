@@ -470,3 +470,18 @@ async function findKVNamespaceIdByTitle(ctx, title) {
   }
   return null;
 }
+
+
+// Read one custom hostname's live status from the SaaS zone (Cloudflare for
+// SaaS). Returns { hostname, ssl, active }: active is true only when both the
+// hostname and its certificate are active. Used by `site hostname status` to
+// poll a delegated domain the customer is still wiring up, without placing any
+// DNS (the anti-hostage guarantee). A single GET, no retry; the CLI loops it.
+export async function getCustomHostnameStatus(ctx, { saasZoneId, id }) {
+  const r = await cfFetch(ctx.token, 'GET',
+    `/zones/${saasZoneId}/custom_hostnames/${id}`, { fetchImpl: ctx.fetchImpl });
+  if (!r.ok || !r.result) throw opError('getCustomHostnameStatus', id, r);
+  const hostname = r.result.status;
+  const ssl = r.result.ssl && r.result.ssl.status;
+  return { hostname, ssl, active: hostname === 'active' && ssl === 'active' };
+}
