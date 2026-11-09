@@ -260,6 +260,97 @@ binding = "IMAGES"
 binding = "OC_KV"
 id = "40e27ef6167e42b18112b931fa46aded"
 
+# Approach A, LEAN client (#218): a byte-for-byte clone of env.a-paid that swaps
+# main to index-a-lean.js, so the database runs on the hand-rolled MySQL client
+# (mysql-lean.js) and mysql2 is absent from the bundle and the isolate JS heap.
+# Same Hyperdrive, same Azure MySQL (wp_ prefix), same object cache + L2 KV, same
+# placement. The ONE difference is the MySQL client, so wp-a-lean vs wp-a-paid is
+# the measurement of whether reclaiming mysql2's JS heap lets a Woo write fit
+# under 128 MiB. Shares the wp_ tables, so run it against the same install.
+[env.a-paid-lean]
+send_email = [{ name = "EMAIL" }]
+name = "wp-a-lean"
+main = "index-a-lean.js"
+workers_dev = true
+rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
+[env.a-paid-lean.vars]
+PHP_ENV = '{"USE_ZEND_ALLOC":"0","WP_TABLE_PREFIX":"wp_"}'
+OBJECT_CACHE = "on"
+OBJECT_CACHE_GROUPS = "options,terms,theme_json"
+OBJECT_CACHE_TTL = "10"
+OBJECT_CACHE_L2 = "on"
+[env.a-paid-lean.assets]
+directory = "build/public"
+binding = "ASSETS"
+not_found_handling = "none"
+[env.a-paid-lean.limits]
+cpu_ms = 30000
+[env.a-paid-lean.cache]
+enabled = true
+[env.a-paid-lean.placement]
+region = "aws:us-west-2"
+[[env.a-paid-lean.hyperdrive]]
+binding = "HYPERDRIVE"
+id = "84ab72d4ef5d479a99348b436b44f717"  # wpref-mysql-hd -> Azure MySQL wpref-mysql (West US 2)
+[[env.a-paid-lean.r2_buckets]]
+binding = "MEDIA"
+bucket_name = "wp-a-paid-media"
+[env.a-paid-lean.images]
+binding = "IMAGES"
+[[env.a-paid-lean.kv_namespaces]]
+binding = "OC_KV"
+id = "40e27ef6167e42b18112b931fa46aded"
+
+# Approach A, PHP in a Durable Object + managed MySQL (#218, the overcome-it env).
+# PHP_IN_DO=on runs PHP in the PhpRuntime object, its OWN 128 MiB isolate, while
+# the database stays external MySQL through Hyperdrive (DB_IN_DO is NOT set, so the
+# object's SQLite is not the database; the lean client set by index-a-lean.js runs
+# in the object isolate and dials Hyperdrive). This is the single-isolate memory
+# wall's only non-container escape: a-paid/a-paid-lean 503 (exceededMemory) on a
+# WooCommerce write because PHP's ~99 MiB WASM heap shares one isolate with the JS
+# runtime; here PHP gets a dedicated isolate, as b-dosql proved, but the database is
+# managed MySQL instead of the object's SQLite. Front Worker keeps assets, R2, cache.
+[env.a-paid-do-lean]
+send_email = [{ name = "EMAIL" }]
+name = "wp-a-do-lean"
+main = "index-a-lean.js"
+workers_dev = true
+rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
+[env.a-paid-do-lean.vars]
+PHP_ENV = '{"USE_ZEND_ALLOC":"0","WP_TABLE_PREFIX":"wp_"}'
+PHP_IN_DO = "on"
+OBJECT_CACHE = "on"
+OBJECT_CACHE_GROUPS = "options,terms,theme_json"
+OBJECT_CACHE_TTL = "10"
+OBJECT_CACHE_L2 = "on"
+[env.a-paid-do-lean.assets]
+directory = "build/public"
+binding = "ASSETS"
+not_found_handling = "none"
+[env.a-paid-do-lean.limits]
+cpu_ms = 30000
+[env.a-paid-do-lean.cache]
+enabled = true
+[env.a-paid-do-lean.placement]
+region = "aws:us-west-2"
+[[env.a-paid-do-lean.hyperdrive]]
+binding = "HYPERDRIVE"
+id = "84ab72d4ef5d479a99348b436b44f717"  # wpref-mysql-hd -> Azure MySQL wpref-mysql (West US 2)
+[[env.a-paid-do-lean.r2_buckets]]
+binding = "MEDIA"
+bucket_name = "wp-a-paid-media"
+[env.a-paid-do-lean.images]
+binding = "IMAGES"
+[[env.a-paid-do-lean.kv_namespaces]]
+binding = "OC_KV"
+id = "40e27ef6167e42b18112b931fa46aded"
+[[env.a-paid-do-lean.durable_objects.bindings]]
+name = "PHP_RUNTIME"
+class_name = "PhpRuntime"
+[[env.a-paid-do-lean.migrations]]
+tag = "v1"
+new_sqlite_classes = ["PhpRuntime"]
+
 # ---------------------------------------------------------------------------
 # PHP in a Durable Object (issue #28, docs/approach-b.md 8i). The design is
 # from HostlessWP. PHP_IN_DO=on: the Worker serves static assets, R2 uploads

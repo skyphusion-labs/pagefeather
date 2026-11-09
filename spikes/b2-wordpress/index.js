@@ -925,8 +925,12 @@ async function boot(origin) {
 	// Async email mu-plugin (issue #185): wp_mail hands messages to the Worker. b-dosql only.
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.ASYNC_EMAIL !== 'off') lines.push(`define('SKYPHUSION_ASYNC_EMAIL', true);`);
 	// Bootstrap trim mu-plugin (perf): skip pure-background wc-admin features (remote-inbox,
-	// marketing) that re-init every request. b-dosql only; BOOTSTRAP_TRIM=off turns it off.
-	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.BOOTSTRAP_TRIM !== 'off') lines.push(`define('SKYPHUSION_BOOTSTRAP_TRIM', true);`);
+	// marketing) that re-init every request. The trim is pure-background wc-admin and touches
+	// no database engine specifics, so it is safe for approach A (external MySQL) too: with PHP
+	// in a Durable Object there (dbHandler set, DB_IN_DO off), it reclaims the WASM-heap that a
+	// Woo-warmed isolate otherwise spends re-initialising each request, headroom approach A needs
+	// because its DB client sits in the same isolate as PHP (#218). BOOTSTRAP_TRIM=off turns it off.
+	if (ENV.PHP_IN_DO === 'on' && (ENV.DB_IN_DO === 'on' || dbHandler) && ENV.BOOTSTRAP_TRIM !== 'off') lines.push(`define('SKYPHUSION_BOOTSTRAP_TRIM', true);`);
 	// Media write trim mu-plugin (issue #189): free isolate memory on the rare admin
 	// media-upload request so the attachment insert fits under the 128 MiB cap on a
 	// WooCommerce-warmed b-dosql isolate. b-dosql + MEDIA only, and only the async-upload /
