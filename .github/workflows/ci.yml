@@ -129,6 +129,12 @@ jobs:
       - name: R2 empty tests
         # deploy/variants/r2-empty.sh (issue #115): a 403 on the list or a delete is retried for a bounded time.
         run: deploy/variants/tests/r2-empty-test.sh
+      - name: Onboarding Phase 1 Hyperdrive config tests (issue #240)
+        # deploy/onboard: provider choice to a caching-disabled Hyperdrive config,
+        # the SQL_MODE contract, Azure reuse, the PlanetScale direct-host guard. Offline.
+        run: |
+          node deploy/onboard/tests/hyperdrive-test.mjs
+          node deploy/onboard/tests/onboard-test.mjs
       - name: No em or en dashes
         run: |
           if git grep -nP '\x{2014}|\x{2013}' -- . ':!**/package-lock.json'; then echo 'em or en dash found'; exit 1; fi
