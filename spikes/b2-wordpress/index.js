@@ -6,6 +6,7 @@ import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled } from './purge-zone.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
+import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken } from './turnstile.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -834,6 +835,40 @@ async function browserRenderOp(op) {
 }
 
 
+// Verify a Turnstile token for a gated form (php/turnstile-forms.php, issue #250).
+// PHP reads cf-turnstile-response from the form POST and sends it here; the secret
+// (TURNSTILE_SECRET) stays in the Worker and PHP never sees it, as the AI binding
+// and the purge token do. The browser never calls siteverify. verifyToken is the
+// shared seam (turnstile.mjs), so the box test exercises this exact request.
+//   - success:true  only when Cloudflare returns success:true.
+//   - success:false with error set means the verifier was unreachable (a timeout or
+//     a network failure), which PHP tells apart from a token that genuinely failed:
+//     a missing or bad token is always rejected, an outage is rejected unless the
+//     site opts into fail-open.
+async function turnstileOp(op) {
+	const t0 = Date.now();
+	stats.turnstile = stats.turnstile || { n: 0, ms: 0, ok: 0, fail: 0 };
+	stats.turnstile.n++;
+	const done = (r) => {
+		stats.turnstile.ms += Date.now() - t0;
+		if (r && r.success) stats.turnstile.ok++;
+		else stats.turnstile.fail++;
+		return r;
+	};
+	try {
+		// No secret means the gate should not have injected the define, so this is
+		// belt and braces: fail closed (the form is rejected), never open.
+		if (!ENV.TURNSTILE_SECRET) return done({ ok: true, success: false, error: 'no turnstile secret' });
+		const timeoutMs = Math.max(1000, Math.min(30000, Number(ENV.TURNSTILE_TIMEOUT_MS || 10000)));
+		const res = await verifyToken(ENV.TURNSTILE_SECRET, op && op.token, op && op.remoteip, { timeoutMs });
+		// The token and the secret are never logged; only the outcome and the codes.
+		console.log(JSON.stringify({ m: 'turnstile', success: res.success, codes: res.codes || [], error: res.error, ms: Date.now() - t0 }));
+		return done({ ok: true, success: res.success, codes: res.codes || [], error: res.error });
+	} catch (e) {
+		return done({ ok: true, success: false, error: String(e && e.message ? e.message : e).slice(0, 200) });
+	}
+}
+
 async function handleMessage(raw) {
 	const m = JSON.parse(raw);
 	if (m.http) return JSON.stringify(await httpOp(m.http));
@@ -843,6 +878,7 @@ async function handleMessage(raw) {
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
 	if (m.email) return JSON.stringify(emailOp(m.email));
 	if (m.aiAlt) return JSON.stringify(await aiAltOp(m.aiAlt));
+	if (m.turnstile) return JSON.stringify(await turnstileOp(m.turnstile));
 	if (m.purgeZone) return JSON.stringify(await purgeZoneOp(m.purgeZone));
 	if (m.browserRender) return JSON.stringify(await browserRenderOp(m.browserRender));
 	if (m.cache === 'purge') {
@@ -1095,6 +1131,22 @@ async function boot(origin) {
 	// only; PDF_INVOICE=off turns it off. The signing secret stays in the Worker, as the
 	// AI binding does for alt text.
 	if (pdfInvoiceEnabled(ENV)) lines.push(`define('SKYPHUSION_PDF_INVOICE', true);`);
+	// Turnstile bot challenge on wp-login, comments and WooCommerce checkout
+	// (php/turnstile-forms.php, issue #250). Binding based, so it needs no zone and
+	// works on a workers.dev host. The site key is public (it ships in the page); the
+	// secret (TURNSTILE_SECRET) stays in the Worker and PHP never sees it, as the AI
+	// binding does for alt text. On only when both the secret and a valid public site
+	// key are set; TURNSTILE=off is the master off switch, and TURNSTILE_LOGIN /
+	// TURNSTILE_COMMENTS / TURNSTILE_WOO=off turn a single form off. The site key is
+	// sanitized to a safe charset before it becomes a define.
+	if (turnstileEnabled(ENV)) {
+		const tsForms = turnstileForms(ENV);
+		lines.push(`define('SKYPHUSION_TURNSTILE', true);`);
+		lines.push(`define('SKYPHUSION_TURNSTILE_SITEKEY', ${JSON.stringify(sanitizeSiteKey(ENV.TURNSTILE_SITEKEY))});`);
+		lines.push(`define('SKYPHUSION_TURNSTILE_LOGIN', ${tsForms.login ? 'true' : 'false'});`);
+		lines.push(`define('SKYPHUSION_TURNSTILE_COMMENTS', ${tsForms.comments ? 'true' : 'false'});`);
+		lines.push(`define('SKYPHUSION_TURNSTILE_WOO', ${tsForms.woo ? 'true' : 'false'});`);
+	}
 	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
 
 	php.onMessage(handleMessage);
