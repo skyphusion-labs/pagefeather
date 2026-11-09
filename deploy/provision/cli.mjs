@@ -21,7 +21,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { provisionSite } from './provision.mjs';
 import { SITE_NAME_RE, isCallerReservedName, genSecret } from './shared.mjs';
-import { bDosqlBindings, bDosqlSecrets, bDosqlResourceCreateOps, aBindings, mediaBucketName, ocKvNamespaceName } from './wp-site-config.mjs';
+import { bDosqlBindings, bDosqlSecrets, bDosqlResourceCreateOps, aBindings, mediaBucketName, ocKvNamespaceName, analyticsDatasetName } from './wp-site-config.mjs';
 import { addCustomHostname, getCustomHostnameStatus } from './ops.mjs';
 import { updateSite, readSite } from './registry.mjs';
 
@@ -162,6 +162,12 @@ function bDosqlEnabledIntegrations(env) {
   // BROWSER. Opt in with WP_AI_ALT_TEXT (or the runtime gate var AI_ALT) set and != off.
   const aiAlt = env.WP_AI_ALT_TEXT || env.AI_ALT;
   if (aiAlt && aiAlt !== 'off') enable.push('ai-alt-text');
+  // Privacy-friendly pageview analytics via Analytics Engine (#201 Phase 2): OPT-IN
+  // (a privacy implication, and the writes are metered). WP_ANALYTICS set and != off
+  // provisions the ANALYTICS dataset binding + WP_ANALYTICS=on, and index.js
+  // analyticsEnabled() then records one anonymized pageview per front-end request.
+  // Unset leaves the site byte-identical to the default set.
+  if (env.WP_ANALYTICS && env.WP_ANALYTICS !== 'off') enable.push('analytics-engine');
   return enable;
 }
 
@@ -193,6 +199,12 @@ async function buildCfg(parsed, env) {
       // both are present; undefined otherwise, so a zoneless site is untouched.
       purgeZone: env.WFP_SAAS_ZONE_ID || undefined,
       purgeToken: env.WFP_PURGE_TOKEN || undefined,
+      // Pageview analytics (#201 Phase 2): the PER-SITE Analytics Engine dataset
+      // name. Read only by the analytics-engine descriptor, which the enable gate
+      // turns on only when WP_ANALYTICS is set; a site that never opts in is
+      // untouched. Analytics Engine creates the dataset on first write, so there is
+      // no resource-create step, only this binding field.
+      analyticsDataset: analyticsDatasetName(name),
       enable: bDosqlEnabledIntegrations(env),
     };
     return {

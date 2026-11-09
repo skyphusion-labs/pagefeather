@@ -7,6 +7,7 @@ import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled } from './purge-zone.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken } from './turnstile.mjs';
+import { analyticsEnabled, recordPageview } from './analytics.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -869,6 +870,34 @@ async function turnstileOp(op) {
 	}
 }
 
+// Record one anonymized pageview (php/analytics-pageview.php, issue #201). PHP
+// sends the request facts (host, path, status, country); the Worker holds the
+// Analytics Engine dataset binding and does the writeDataPoint, so PHP never sees
+// the binding, as with the AI binding and the purge token. Fire and forget:
+// writeDataPoint returns void, so the op does not await it. Fail safe: no binding
+// or any error returns { ok: true, degraded } and nothing is recorded; the
+// pageview is never on the render critical path (PHP sends it on shutdown).
+function analyticsOp(op) {
+	const t0 = Date.now();
+	stats.analytics = stats.analytics || { n: 0, ms: 0, ok: 0, fail: 0 };
+	stats.analytics.n++;
+	const done = (r) => {
+		stats.analytics.ms += Date.now() - t0;
+		if (r && r.recorded) stats.analytics.ok++;
+		else stats.analytics.fail++;
+		return r;
+	};
+	try {
+		// No binding means the gate should not have injected the define, so this is
+		// belt and braces: record nothing, never throw.
+		if (!ENV.ANALYTICS) return done({ ok: true, degraded: 'no analytics binding' });
+		recordPageview(ENV.ANALYTICS, op);
+		return done({ ok: true, recorded: true });
+	} catch (e) {
+		return done({ ok: true, degraded: String(e && e.message ? e.message : e).slice(0, 200) });
+	}
+}
+
 async function handleMessage(raw) {
 	const m = JSON.parse(raw);
 	if (m.http) return JSON.stringify(await httpOp(m.http));
@@ -879,6 +908,7 @@ async function handleMessage(raw) {
 	if (m.email) return JSON.stringify(emailOp(m.email));
 	if (m.aiAlt) return JSON.stringify(await aiAltOp(m.aiAlt));
 	if (m.turnstile) return JSON.stringify(await turnstileOp(m.turnstile));
+	if (m.analytics) return JSON.stringify(analyticsOp(m.analytics));
 	if (m.purgeZone) return JSON.stringify(await purgeZoneOp(m.purgeZone));
 	if (m.browserRender) return JSON.stringify(await browserRenderOp(m.browserRender));
 	if (m.cache === 'purge') {
@@ -1147,6 +1177,15 @@ async function boot(origin) {
 		lines.push(`define('SKYPHUSION_TURNSTILE_COMMENTS', ${tsForms.comments ? 'true' : 'false'});`);
 		lines.push(`define('SKYPHUSION_TURNSTILE_WOO', ${tsForms.woo ? 'true' : 'false'});`);
 	}
+	// Privacy-friendly pageview analytics mu-plugin (php/analytics-pageview.php,
+	// issue #201 Phase 2): record one anonymized pageview per front-end request to
+	// the Analytics Engine dataset binding. Binding based, so it needs no zone.
+	// OPT-IN (a privacy implication): on only when PHP_IN_DO and DB_IN_DO are on,
+	// the ANALYTICS binding is present, and WP_ANALYTICS is 'on' (the
+	// analytics-engine descriptor sets it when the operator opts in). The dataset
+	// binding stays in the Worker: PHP sends an analytics op and never sees it, as
+	// the AI binding does for alt text.
+	if (analyticsEnabled(ENV)) lines.push(`define('SKYPHUSION_ANALYTICS', true);`);
 	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
 
 	php.onMessage(handleMessage);
