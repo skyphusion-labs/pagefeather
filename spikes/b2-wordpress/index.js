@@ -333,7 +333,7 @@ function zipEntries(zip) {
 // memory limit".
 // Within a request too: the inflated copies are capped at LAZY_CACHE_BYTES,
 // oldest dropped first. A WooCommerce checkout reads about 1,500 compiled files.
-const LAZY_CACHE_BYTES = 8 * 1024 * 1024;
+let LAZY_CACHE_BYTES = 8 * 1024 * 1024; // LAZY_CACHE_MB overrides (#218: lower the in-request V8 peak).
 const inflated = new Map(); // drop function -> bytes
 let inflatedBytes = 0;
 function evictLazy() {
@@ -971,6 +971,7 @@ async function boot(origin) {
 	};
 	let count = 0;
 	let fileBytes = 0;
+	if (ENV.LAZY_CACHE_MB) LAZY_CACHE_BYTES = Math.max(1, Number(ENV.LAZY_CACHE_MB)) * 1024 * 1024;
 	if (ENV.LAZY_NODES === 'on') {
 		// Lazy MEMFS nodes (#218): mount the site tree by index; nodes are created
 		// only when PHP first looks a path up, not ~6800 at boot. b-dosql default
