@@ -24,12 +24,12 @@ Short verdicts here; the linked doc carries the numbers, dates and caveats.
 | --- | --- | --- | --- |
 | **A** (external MySQL) | **no** (the installer is refused at the 10 ms CPU limit) | **measured: yes.** Full WordPress and WooCommerce, 12 of 12 checkout tests, under the 128 MiB cap with no container; scales out horizontally. Cost is per-query database latency (give Hyperdrive the host name, about 7 ms). | [approach-a.md](docs/approach-a.md) |
 | **A2** (A on PlanetScale) | not tried | **measured: yes.** WooCommerce 12 of 12; about 16 ms a query; one Cloudflare bill. Set `HYPERDRIVE_SQL_MODE` and turn the Hyperdrive query cache off. | [approach-a2.md](docs/approach-a2.md) |
-| **B** (D1 or Durable Object) | **partial.** Cached pages hit; most renders fit with OPcache; the installer does not fit. | **measured: yes.** Every page renders, the installer runs, 18 of 18 plugins. | [approach-b.md](docs/approach-b.md) |
+| **B** (D1 or Durable Object) | **partial.** Cached pages hit; most renders fit with OPcache; the installer does not fit. | **measured: yes.** Every page renders, the installer runs, 18 of 18 plugins. Media library on R2 works (turn R2 on in the dashboard first). | [approach-b.md](docs/approach-b.md) |
 | **B with WooCommerce** | **no** (CPU limit) | **measured: yes, this is the store path.** b-dosql (SQLite in a Durable Object) runs WooCommerce including checkout under the 128 MiB cap. Use it over plain D1, whose checkout exceeds the memory limit. | [results.md](docs/results.md) |
-| **C1** (Container, SQLite, Litestream to R2) | **no** (Containers are Paid only) | **retired (#214).** It worked (12 of 12 store tests, 18 of 18 plugins), but b-dosql replaced the container store path. | [approach-c1.md](docs/approach-c1.md) |
+| **C1** (Container, SQLite, Litestream to R2) | **no** (Containers are Paid only) | **retired (#214).** It worked (12 of 12 store tests, 18 of 18 plugins), but b-dosql replaced the container store path, including the earlier in-container checkout (B+C), [approach-c-checkout.md](docs/approach-c-checkout.md). | [approach-c1.md](docs/approach-c1.md) |
 | **C / D** | **no** / **docs** | **docs** | Containers are Paid-only with ephemeral disk; D needs one of A, B or C behind it. |
 
-**Which to use for a store:** **b-dosql** (zero outside infrastructure) for light-to-moderate traffic; **approach A** (external MySQL) when it must scale out; a VPS for sustained high-concurrency load. The container store path is retired.
+**Which to use for a store:** **b-dosql** (zero outside infrastructure) for light-to-moderate traffic; **approach A** (external MySQL) to scale out to real concurrent traffic. The container store path is retired; a standard-LAMP VPS is the alternative for a store that outgrows b-dosql.
 
 ## Before you trust the speed numbers
 
