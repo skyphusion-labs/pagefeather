@@ -2,8 +2,10 @@
 // the reducer assembles the SAME bytes the old hard-coded bDosqlBindings emitted
 // for the default site (the refactor is behavior-preserving), that an opt-in
 // descriptor (PDF invoices) adds exactly its binding + generated secret and
-// NOTHING for a default site, and that the secret / resource-op seams the next
-// wave uses are empty by default. No network, no deploy.
+// NOTHING for a default site, that the opt-in zone-purge descriptor adds PURGE_ZONE
+// + a SUPPLIED PURGE_TOKEN only when a zone is configured (nothing for a zoneless
+// site), and that the secret / resource-op seams are empty by default. No network,
+// no deploy.
 import { deepStrictEqual } from 'node:assert';
 import {
   B_DOSQL_DESCRIPTORS, assembleBDosql, bDosqlBindings, bDosqlVars,
@@ -37,11 +39,12 @@ ok('default set JSON string matches the old set exactly',
   JSON.stringify(bDosqlBindings(DEFAULT_OPTS)) === JSON.stringify(EXPECTED_DEFAULT));
 
 // 2. The table carries the five always-on descriptors plus PDF, in emit order.
-ok('descriptor order is runtime, images, media, php-runtime, email, pdf-invoices',
-  B_DOSQL_DESCRIPTORS.map((d) => d.name).join(',') === 'runtime,images,media,php-runtime,email,pdf-invoices');
-ok('the five infra descriptors are default-on and PDF is opt-in',
+ok('descriptor order is runtime, images, media, php-runtime, email, pdf-invoices, zone-purge',
+  B_DOSQL_DESCRIPTORS.map((d) => d.name).join(',') === 'runtime,images,media,php-runtime,email,pdf-invoices,zone-purge');
+ok('the five infra descriptors are default-on and PDF + zone-purge are opt-in',
   B_DOSQL_DESCRIPTORS.filter((d) => d.default).map((d) => d.name).join(',') === 'runtime,images,media,php-runtime,email' &&
-  B_DOSQL_DESCRIPTORS.find((d) => d.name === 'pdf-invoices').default === false);
+  B_DOSQL_DESCRIPTORS.find((d) => d.name === 'pdf-invoices').default === false &&
+  B_DOSQL_DESCRIPTORS.find((d) => d.name === 'zone-purge').default === false);
 
 // 3. Reducer parts for a default site: no secrets, no resource ops, vars first.
 const asm = assembleBDosql(DEFAULT_OPTS);
@@ -81,6 +84,42 @@ ok('an unknown opt-in name is ignored (default set unchanged)',
 ok('bDosqlResourceCreateOps is empty for the default set', bDosqlResourceCreateOps(DEFAULT_OPTS).length === 0);
 ok('bDosqlResourceCreateOps is empty for a PDF site (BROWSER needs no provisioned resource)',
   bDosqlResourceCreateOps({ ...DEFAULT_OPTS, enable: ['pdf-invoices'] }).length === 0);
+
+// 9. ZONE PURGE (#205/#256): default-OFF (zoneless site byte-identical), and when
+// enabled WITH a zone it adds PURGE_ZONE (var) + PURGE_TOKEN (a SUPPLIED secret, not
+// a generated one). Mirrors the runtime gate cachePurgeEnabled (both present).
+const ZONE_OPTS = { ...DEFAULT_OPTS, enable: ['zone-purge'], purgeZone: 'ZONEID123', purgeToken: 'shared-platform-purge-token' };
+
+// (a) zoneless DEFAULT site: no PURGE_ZONE var, no PURGE_TOKEN secret (the byte-equal
+// test above is the full proof; these are the explicit absences).
+ok('default (zoneless) set carries NO PURGE_ZONE var',
+  !bDosqlBindings(DEFAULT_OPTS).some((b) => b.name === 'PURGE_ZONE'));
+ok('default (zoneless) secrets carry NO PURGE_TOKEN',
+  bDosqlSecrets(DEFAULT_OPTS).PURGE_TOKEN === undefined);
+ok('a PDF-only site (no zone) still carries NO PURGE_ZONE / PURGE_TOKEN',
+  !bDosqlBindings({ ...DEFAULT_OPTS, enable: ['pdf-invoices'] }).some((b) => b.name === 'PURGE_ZONE') &&
+  bDosqlSecrets({ ...DEFAULT_OPTS, enable: ['pdf-invoices'] }).PURGE_TOKEN === undefined);
+
+// (b) WITH a zone configured: PURGE_ZONE var equals the zone id, PURGE_TOKEN secret
+// equals the SUPPLIED token (not random), and no new non-var binding is added.
+const zbind = bDosqlBindings(ZONE_OPTS);
+const pz = zbind.find((b) => b.name === 'PURGE_ZONE');
+ok('zone-purge adds a PURGE_ZONE plain_text var equal to the configured zone id',
+  !!pz && pz.type === 'plain_text' && pz.text === 'ZONEID123');
+ok('zone-purge adds PURGE_TOKEN as the SUPPLIED value (not generated)',
+  bDosqlSecrets(ZONE_OPTS).PURGE_TOKEN === 'shared-platform-purge-token');
+ok('PURGE_TOKEN is SUPPLIED, not per-site random: two provisions give the SAME value',
+  bDosqlSecrets(ZONE_OPTS).PURGE_TOKEN === bDosqlSecrets(ZONE_OPTS).PURGE_TOKEN);
+ok('zone-purge adds NO non-var binding (PURGE_ZONE is a var, PURGE_TOKEN a secret, no resource)',
+  bDosqlResourceCreateOps(ZONE_OPTS).length === 0 &&
+  zbind.filter((b) => b.type !== 'plain_text').length === EXPECTED_DEFAULT.filter((b) => b.type !== 'plain_text').length);
+
+// (c) enabling zone-purge WITHOUT a zone or token fails loudly (the guard), so a
+// misconfigured enable never wires PURGE_ZONE=undefined.
+let zthrew = false; try { bDosqlBindings({ ...DEFAULT_OPTS, enable: ['zone-purge'] }); } catch { zthrew = true; }
+ok('zone-purge enabled without a purgeZone throws', zthrew);
+zthrew = false; try { bDosqlSecrets({ ...DEFAULT_OPTS, enable: ['zone-purge'], purgeZone: 'Z' }); } catch { zthrew = true; }
+ok('zone-purge enabled without a purgeToken throws', zthrew);
 
 // 8. The required-input guards still fire through the reducer.
 let threw = false; try { bDosqlBindings({ siteOrigin: 'https://x' }); } catch { threw = true; }
