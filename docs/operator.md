@@ -57,6 +57,54 @@ An update re-uploads the site with the current build; the site's data (its SQLit
 
 Each site has its own user Worker, its own Durable Object and data, its own R2 media bucket, its own secrets, and its own per-call CPU and subrequest limits. One site cannot read another's bucket, object or secrets. `deploy/wfp/bindings.py` checks after every upload that each script binds only its own resources.
 
+## Pageview analytics (opt-in)
+
+Each site can record its own pageviews to a Cloudflare Analytics Engine dataset. This is privacy friendly: there is no cookie, no IP address, no user agent and no query string, so there is no need for a cookie banner and no GA plugin. It is server side and operator facing. It is not a public feed and not a billing plane.
+
+It is OFF by default, because the writes are metered and analytics has a privacy cost. Turn it on when you add or update a site by setting `WP_ANALYTICS`:
+
+```sh
+export WP_ANALYTICS=on
+./deploy/wfp/site add news        # or: ./deploy/wfp/site update news
+```
+
+The site then binds an Analytics Engine dataset named `wp-wfp-<name>-analytics` (its own, per site), and records one data point per front-end page view. Each point holds the host, the request path (with the query string removed), the HTTP status (200 or 404), and the coarse Cloudflare country code when the edge provides it. The one field that could identify a reader, the index, is set to the site host, never to a visitor.
+
+### Read your pageviews
+
+Analytics Engine has no dashboard. You read it with the SQL API, from your own machine, with the same account id and a token that can read Analytics Engine. The dataset name has hyphens, so it is double quoted in the `FROM` clause. Replace `news` with your site name.
+
+Top pages in the last 24 hours:
+
+```sh
+curl -s "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/analytics_engine/sql" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+  --data "SELECT blob2 AS path, SUM(double1) AS views
+          FROM \"wp-wfp-news-analytics\"
+          WHERE timestamp >= NOW() - INTERVAL '1' DAY
+          GROUP BY path ORDER BY views DESC LIMIT 20"
+```
+
+Views per day for the last week, and views by country:
+
+```sh
+# per day
+--data "SELECT toStartOfDay(timestamp) AS day, SUM(double1) AS views
+        FROM \"wp-wfp-news-analytics\"
+        WHERE timestamp >= NOW() - INTERVAL '7' DAY
+        GROUP BY day ORDER BY day"
+
+# by country
+--data "SELECT blob4 AS country, SUM(double1) AS views
+        FROM \"wp-wfp-news-analytics\"
+        WHERE timestamp >= NOW() - INTERVAL '7' DAY
+        GROUP BY country ORDER BY views DESC"
+```
+
+The columns are `blob1` host, `blob2` path, `blob3` status, `blob4` country, and `double1` the view count (always 1, so `SUM(double1)` is the number of views and `COUNT(*)` is the number of sampled rows). A write takes a few seconds to be queryable. If the double quoted name is rejected, run `SHOW TABLES` against the same endpoint to confirm the exact dataset name first.
+
+Analytics Engine keeps data for 90 days. The free allowance is 10 million writes and 1 million reads a month, which is far more than a normal site needs. Turn the feature off by setting `WP_ANALYTICS=off` on the next update; the dataset and its stored points are untouched.
+
 ## Custom hostnames
 
 The addresses above are on `workers.dev`, which needs no domain. To give the sites custom hostnames (`<site>.<your-zone>`) instead, run the deployment in phase B: set `WFP_CUSTOM_DOMAIN=1` and `WFP_SUBDOMAIN` to a zone you have routed on this account, before `up.sh`.

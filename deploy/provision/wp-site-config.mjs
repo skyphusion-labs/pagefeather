@@ -196,6 +196,27 @@ export const B_DOSQL_DESCRIPTORS = [
       return { queue: name, dlq, id: q.id, created: q.created === true };
     },
   },
+  // Privacy-friendly pageview analytics (#201 Phase 2), OPT-IN (default:false, a
+  // privacy implication). Binds the Analytics Engine dataset (ANALYTICS) and sets
+  // WP_ANALYTICS=on, the opt-in signal index.js analyticsEnabled() requires.
+  // index.js records one anonymized pageview per front-end request (host, path,
+  // status, country; no cookie, no IP, no PII); the index is the site HOST, never
+  // a visitor. PER-SITE dataset (analyticsDatasetName -> wp-wfp-<name>-analytics,
+  // the wp-wfp- reserved prefix so a tenant can never mint a colliding name), so
+  // one site's pageviews never mix with another's and the operator reads only its
+  // own. Analytics Engine creates the dataset on first write, so there is NO
+  // resourceCreateOp (unlike the L2-KV / Queue waves). The guard throws if enabled
+  // without analyticsDataset, so a misconfigured enable fails loudly instead of
+  // binding dataset=undefined. Metered, so default:false keeps every other site
+  // byte-identical. Opt in with WP_ANALYTICS (cli bDosqlEnabledIntegrations).
+  {
+    name: 'analytics-engine', default: false,
+    vars: () => ({ WP_ANALYTICS: 'on' }),
+    bindings: ({ analyticsDataset }) => {
+      if (!analyticsDataset) throw new Error('analytics-engine: analyticsDataset is required when enabled (the per-site Analytics Engine dataset name)');
+      return [{ type: 'analytics_engine', name: 'ANALYTICS', dataset: analyticsDataset }];
+    },
+  },
 ];
 
 // Is a descriptor included for this site? Always-on (default) ones always; an
@@ -399,4 +420,15 @@ export function emailQueueName(name) {
 }
 export function emailDlqName(name) {
   return `wp-wfp-${name}-email-dlq`;
+}
+
+// The per-site Analytics Engine dataset name (#201 Phase 2). Carries the wp-wfp-
+// reserved prefix (RESERVED_PREFIXES) so a tenant can never mint a colliding name,
+// the same guarantee as mediaBucketName / ocKvNamespaceName / emailQueueName.
+// Analytics Engine creates the dataset on first write, so there is no create step;
+// the name is only the binding's dataset field and the SQL table the operator
+// queries. It is NOT a plain SQL identifier (it has hyphens), so the operator read
+// query double-quotes it (docs/operator.md).
+export function analyticsDatasetName(name) {
+  return `wp-wfp-${name}-analytics`;
 }

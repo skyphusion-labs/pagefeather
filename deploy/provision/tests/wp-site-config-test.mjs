@@ -131,5 +131,14 @@ ok('async-email-queue opt-in adds ASYNC_EMAIL_QUEUE=on + the EMAIL_QUEUE queue b
 ok('KNOWN GAP recorded: lib.sh render_user omits the L2 KV + email-queue wiring',
   !lib.includes('OBJECT_CACHE_L2') && !lib.includes('ASYNC_EMAIL_QUEUE'));
 
+// Pageview analytics (#201 Phase 2) is OPT-IN (default:false, a privacy implication).
+// ABSENT by default; enabling binds the ANALYTICS analytics_engine dataset + WP_ANALYTICS=on.
+ok('WP_ANALYTICS / ANALYTICS are ABSENT from the default set (analytics is opt-in)',
+  !b.some((x) => x.name === 'WP_ANALYTICS' || x.name === 'ANALYTICS'));
+const bA = bDosqlBindings({ mediaBucket: mediaBucketName('blog'), siteOrigin: 'https://blog.skyphusionwp.dev', location: 'enam', enable: ['analytics-engine'], analyticsDataset: 'wp-wfp-blog-analytics' });
+ok('analytics-engine opt-in adds WP_ANALYTICS=on + the ANALYTICS analytics_engine binding with the per-site dataset',
+  bA.some((x) => x.type === 'plain_text' && x.name === 'WP_ANALYTICS' && x.text === 'on') &&
+  bA.some((x) => x.type === 'analytics_engine' && x.name === 'ANALYTICS' && x.dataset === 'wp-wfp-blog-analytics'));
+
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

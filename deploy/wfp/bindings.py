@@ -12,8 +12,9 @@ For each site <s>:
   the secrets WP_SALT and SPIKE_TOKEN (secret_text). It may ALSO bind the
   opinionated defaults wired through the provisioning descriptor table (#201): the
   Browser Rendering binding (browser), its own object-cache L2 namespace
-  (kv_namespace named OC_KV), and its own durable-email queue (queue with
-  queue_name wp-wfp-<s>-email). Any other binding type (D1, a service, a dispatch
+  (kv_namespace named OC_KV), its own durable-email queue (queue with
+  queue_name wp-wfp-<s>-email), and its own pageview-analytics dataset
+  (analytics_engine with dataset wp-wfp-<s>-analytics). Any other binding type (D1, a service, a dispatch
   namespace, a foreign queue or KV namespace, ...) fails.
 - the dispatcher wp-<s> (GET .../workers/scripts/wp-<s>/settings) may bind
   only: the site map (kv_namespace SITES, id KV_ID) and the namespace
@@ -28,7 +29,7 @@ types only, never a value) and exits 1 on any violation.
 import json, os, sys, urllib.error, urllib.request
 
 ENV = os.environ
-USER_OK = {"r2_bucket", "durable_object_namespace", "images", "assets", "send_email", "plain_text", "secret_text", "browser", "kv_namespace", "queue"}
+USER_OK = {"r2_bucket", "durable_object_namespace", "images", "assets", "send_email", "plain_text", "secret_text", "browser", "kv_namespace", "queue", "analytics_engine"}
 SECRETS_OK = {"WP_SALT", "SPIKE_TOKEN"}
 
 
@@ -67,6 +68,8 @@ def check_user(s, bs):
             bad.append("site-%s binds the queue %s, not its own" % (s, b.get("queue_name")))
         elif t == "kv_namespace" and n != "OC_KV":
             bad.append("site-%s binds a kv_namespace named %s, not its own OC_KV L2" % (s, n))
+        elif t == "analytics_engine" and b.get("dataset") != "wp-wfp-%s-analytics" % s:
+            bad.append("site-%s binds the analytics dataset %s, not its own" % (s, b.get("dataset")))
     return bad
 
 

@@ -44,13 +44,14 @@ ok('default set JSON string matches the frozen baseline exactly',
   JSON.stringify(bDosqlBindings(DEFAULT_OPTS)) === JSON.stringify(EXPECTED_DEFAULT));
 
 // 2. The table carries the six default-on descriptors plus the three opt-ins, in order.
-ok('descriptor order is runtime, images, media, php-runtime, email, pdf-invoices, zone-purge, object-cache-l2, async-email-queue',
-  B_DOSQL_DESCRIPTORS.map((d) => d.name).join(',') === 'runtime,images,media,php-runtime,email,pdf-invoices,zone-purge,object-cache-l2,async-email-queue');
+ok('descriptor order is runtime, images, media, php-runtime, email, pdf-invoices, zone-purge, object-cache-l2, async-email-queue, analytics-engine',
+  B_DOSQL_DESCRIPTORS.map((d) => d.name).join(',') === 'runtime,images,media,php-runtime,email,pdf-invoices,zone-purge,object-cache-l2,async-email-queue,analytics-engine');
 ok('the six infra descriptors are default-on; PDF, zone-purge and async-email-queue are opt-in',
   B_DOSQL_DESCRIPTORS.filter((d) => d.default).map((d) => d.name).join(',') === 'runtime,images,media,php-runtime,email,object-cache-l2' &&
   B_DOSQL_DESCRIPTORS.find((d) => d.name === 'pdf-invoices').default === false &&
   B_DOSQL_DESCRIPTORS.find((d) => d.name === 'zone-purge').default === false &&
-  B_DOSQL_DESCRIPTORS.find((d) => d.name === 'async-email-queue').default === false);
+  B_DOSQL_DESCRIPTORS.find((d) => d.name === 'async-email-queue').default === false &&
+  B_DOSQL_DESCRIPTORS.find((d) => d.name === 'analytics-engine').default === false);
 
 // 3. Reducer parts for a default site: no generated secrets, exactly the one
 // default-on resource op (object-cache-l2 KV create), vars before bindings.
@@ -117,6 +118,26 @@ ok('async-email-queue opt-in adds the EMAIL_QUEUE queue binding with no queue_na
   aeq.some((b) => b.type === 'queue' && b.name === 'EMAIL_QUEUE' && !('queue_name' in b)));
 ok('async-email-queue opt-in adds its per-site queue resource op (object-cache-l2 + async-email-queue)',
   bDosqlResourceCreateOps({ ...DEFAULT_OPTS, enable: ['async-email-queue'] }).map((r) => r.name).join(',') === 'object-cache-l2,async-email-queue');
+
+// 7d. Pageview analytics (#201 Phase 2) is OPT-IN (default:false, a privacy
+// implication, and the writes are metered). The default set carries NEITHER the
+// WP_ANALYTICS var NOR the ANALYTICS binding; both appear only when enabled, and
+// enabling adds NO resource op (Analytics Engine creates the dataset on the first
+// write). The dataset is the per-site analyticsDataset passed in opts.
+ok('default set carries NO WP_ANALYTICS var and NO ANALYTICS binding (analytics is opt-in)',
+  !bDosqlBindings(DEFAULT_OPTS).some((b) => b.name === 'WP_ANALYTICS' || b.name === 'ANALYTICS'));
+const an = bDosqlBindings({ ...DEFAULT_OPTS, enable: ['analytics-engine'], analyticsDataset: 'wp-wfp-blog-analytics' });
+ok('analytics-engine opt-in adds the WP_ANALYTICS var = on',
+  an.some((b) => b.type === 'plain_text' && b.name === 'WP_ANALYTICS' && b.text === 'on'));
+ok('analytics-engine opt-in adds exactly one ANALYTICS analytics_engine binding with the per-site dataset',
+  an.filter((b) => b.type === 'analytics_engine').length === 1 &&
+  JSON.stringify(an.find((b) => b.type === 'analytics_engine')) === JSON.stringify({ type: 'analytics_engine', name: 'ANALYTICS', dataset: 'wp-wfp-blog-analytics' }));
+ok('analytics-engine opt-in adds NO resource op (dataset auto-created; only object-cache-l2 remains)',
+  bDosqlResourceCreateOps({ ...DEFAULT_OPTS, enable: ['analytics-engine'], analyticsDataset: 'wp-wfp-blog-analytics' }).map((r) => r.name).join(',') === 'object-cache-l2');
+ok('analytics-engine opt-in contributes no secret (writes need no signing secret)',
+  Object.keys(bDosqlSecrets({ ...DEFAULT_OPTS, enable: ['analytics-engine'], analyticsDataset: 'wp-wfp-blog-analytics' })).length === 0);
+let anthrew = false; try { bDosqlBindings({ ...DEFAULT_OPTS, enable: ['analytics-engine'] }); } catch { anthrew = true; }
+ok('analytics-engine enabled without an analyticsDataset throws', anthrew);
 
 // 9. ZONE PURGE (#205/#256): default-OFF (zoneless site carries none), and when
 // enabled WITH a zone it adds PURGE_ZONE (var) + PURGE_TOKEN (a SUPPLIED secret, not

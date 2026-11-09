@@ -7,7 +7,8 @@ A correct site passes. Each single misbinding fails and is named: another
 site's bucket, another script's object class, a FOREIGN KV namespace or queue
 on a site, an extra secret, the dispatcher's KV namespace, its outbound target,
 an R2 binding on a dispatcher. The opinionated defaults a site MAY bind (its own
-OC_KV, its own wp-wfp-<s>-email queue, the Browser Rendering binding) pass.
+OC_KV, its own wp-wfp-<s>-email queue, the Browser Rendering binding, its own
+wp-wfp-<s>-analytics dataset) pass.
 Bindings that cannot be read fail. No binding value appears in the output.
 Exit 0 when every case gives what it must.
 """
@@ -82,6 +83,8 @@ cases = [
     ("the site binds its OWN durable-email queue (wp-wfp-one-email) is allowed", mod(GOOD_USER, None, type="queue", name="EMAIL_QUEUE", queue_name="wp-wfp-one-email"), GOOD_DISP, 0, None),
     ("the site binds a FOREIGN queue (wp-wfp-two-email)", mod(GOOD_USER, None, type="queue", name="EMAIL_QUEUE", queue_name="wp-wfp-two-email"), GOOD_DISP, 1, "not its own"),
     ("the site binds the Browser Rendering binding (browser) is allowed", mod(GOOD_USER, None, type="browser", name="BROWSER"), GOOD_DISP, 0, None),
+    ("the site binds its OWN analytics dataset (wp-wfp-one-analytics) is allowed", mod(GOOD_USER, None, type="analytics_engine", name="ANALYTICS", dataset="wp-wfp-one-analytics"), GOOD_DISP, 0, None),
+    ("the site binds a FOREIGN analytics dataset (wp-wfp-two-analytics)", mod(GOOD_USER, None, type="analytics_engine", name="ANALYTICS", dataset="wp-wfp-two-analytics"), GOOD_DISP, 1, "not its own"),
     ("the site has an extra secret", mod(GOOD_USER, None, type="secret_text", name="CLOUDFLARE_API_TOKEN"), GOOD_DISP, 1, "unexpected secret"),
     ("the site binds the dispatch namespace", mod(GOOD_USER, None, type="dispatch_namespace", name="NS", namespace="wp-wfp"), GOOD_DISP, 1, "not allowed for a site"),
     ("the dispatcher binds another KV namespace", GOOD_USER, mod(GOOD_DISP, 0, namespace_id="kv9"), 1, "not the site map"),
