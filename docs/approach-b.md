@@ -1,5 +1,7 @@
 # Approach B: WordPress on D1
 
+> **Status:** the D1 variant on this page is historical (checkout exceeds the memory limit on D1). The current variant is b-dosql (section 8j, [perf-dosql.md](perf-dosql.md)). The scalable path is [approach A](approach-a-overview.md). Docs map: [README.md](README.md).
+
 WordPress runs as PHP compiled to WebAssembly in a Worker. Its database is D1. There is no MySQL and no server.
 
 Status: WordPress runs on D1 in local workerd (spike B2), and is deployed on Workers Free, where CPU time decides if a page renders. Findings below are from 2026-11-03.
