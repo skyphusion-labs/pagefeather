@@ -4,10 +4,12 @@
   python3 deploy/wfp/tests/bindings-test.py [another bindings.py]
 
 A correct site passes. Each single misbinding fails and is named: another
-site's bucket, another script's object class, a KV binding on a site, an
-extra secret, the dispatcher's KV namespace, its outbound target, an R2
-binding on a dispatcher. Bindings that cannot be read fail. No binding value
-appears in the output. Exit 0 when every case gives what it must.
+site's bucket, another script's object class, a FOREIGN KV namespace or queue
+on a site, an extra secret, the dispatcher's KV namespace, its outbound target,
+an R2 binding on a dispatcher. The opinionated defaults a site MAY bind (its own
+OC_KV, its own wp-wfp-<s>-email queue, the Browser Rendering binding) pass.
+Bindings that cannot be read fail. No binding value appears in the output.
+Exit 0 when every case gives what it must.
 """
 import copy, http.server, json, os, subprocess, sys, threading
 
@@ -75,7 +77,11 @@ cases = [
     ("a correct site and dispatcher", GOOD_USER, GOOD_DISP, 0, None),
     ("the site binds another site's bucket", mod(GOOD_USER, 0, bucket_name="wp-wfp-two-media"), GOOD_DISP, 1, "not its own"),
     ("the site binds another script's object class", mod(GOOD_USER, 1, script_name="site-two"), GOOD_DISP, 1, "not its own"),
-    ("the site binds a KV namespace", mod(GOOD_USER, None, type="kv_namespace", name="SITES", namespace_id="kv1"), GOOD_DISP, 1, "not allowed for a site"),
+    ("the site binds a FOREIGN KV namespace (SITES, not its own OC_KV)", mod(GOOD_USER, None, type="kv_namespace", name="SITES", namespace_id="kv1"), GOOD_DISP, 1, "not its own OC_KV L2"),
+    ("the site binds its OWN object-cache L2 (kv_namespace OC_KV) is allowed", mod(GOOD_USER, None, type="kv_namespace", name="OC_KV", namespace_id="ockv1"), GOOD_DISP, 0, None),
+    ("the site binds its OWN durable-email queue (wp-wfp-one-email) is allowed", mod(GOOD_USER, None, type="queue", name="EMAIL_QUEUE", queue_name="wp-wfp-one-email"), GOOD_DISP, 0, None),
+    ("the site binds a FOREIGN queue (wp-wfp-two-email)", mod(GOOD_USER, None, type="queue", name="EMAIL_QUEUE", queue_name="wp-wfp-two-email"), GOOD_DISP, 1, "not its own"),
+    ("the site binds the Browser Rendering binding (browser) is allowed", mod(GOOD_USER, None, type="browser", name="BROWSER"), GOOD_DISP, 0, None),
     ("the site has an extra secret", mod(GOOD_USER, None, type="secret_text", name="CLOUDFLARE_API_TOKEN"), GOOD_DISP, 1, "unexpected secret"),
     ("the site binds the dispatch namespace", mod(GOOD_USER, None, type="dispatch_namespace", name="NS", namespace="wp-wfp"), GOOD_DISP, 1, "not allowed for a site"),
     ("the dispatcher binds another KV namespace", GOOD_USER, mod(GOOD_DISP, 0, namespace_id="kv9"), 1, "not the site map"),

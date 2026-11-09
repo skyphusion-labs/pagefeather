@@ -149,6 +149,13 @@ function bDosqlEnabledIntegrations(env) {
   // byte-identical. CACHE_PURGE=off is the off switch: it suppresses wiring entirely,
   // so the token is never placed on a site whose operator turned the feature off.
   if (env.WFP_SAAS_ZONE_ID && env.WFP_PURGE_TOKEN && env.CACHE_PURGE !== 'off') enable.push('zone-purge');
+  // Durable async email via Queues (#190): OPT-IN. The per-site queue + DLQ + EMAIL_QUEUE
+  // producer binding are wired, but default-on would divert order mail to a queue whose
+  // push-consumer subscription is a Phase-2 post-deploy step; until that lands, enabling by
+  // default would enqueue mail no consumer delivers. Opt in with WP_ASYNC_EMAIL_QUEUE (or
+  // ASYNC_EMAIL_QUEUE) set and != off.
+  const asyncEmail = env.WP_ASYNC_EMAIL_QUEUE || env.ASYNC_EMAIL_QUEUE;
+  if (asyncEmail && asyncEmail !== 'off') enable.push('async-email-queue');
   return enable;
 }
 

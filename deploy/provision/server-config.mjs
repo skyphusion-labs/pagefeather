@@ -9,7 +9,7 @@
 // bundle in the Worker's own R2 bucket. The caller chooses a type and a name,
 // and picks an OWNED base domain from an allowlist; it configures nothing.
 import { SITE_NAME_RE, assertValidName, isCallerReservedName, genSecret } from './shared.mjs';
-import { bDosqlBindings, mediaBucketName } from './wp-site-config.mjs';
+import { bDosqlBindings, bDosqlResourceCreateOps, bDosqlSecrets, mediaBucketName } from './wp-site-config.mjs';
 
 // ---- 1. Caller auth (operator baseline) --------------------------------------
 // A shared operator secret in env.PROVISION_AUTH, sent as `Authorization:
@@ -165,16 +165,23 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
   };
   if (kind === 'wp') {
     const mediaBucket = mediaBucketName(name);
+    // ONE opts object feeds the descriptor reducer for bindings, generated secrets
+    // AND the provision-time resource ops, so the default-on object-cache-L2 and
+    // async-email-queue descriptors provision their per-site backing resource on the
+    // HOSTED provisioning path too. Without resourceCreateOps here, the OC_KV /
+    // EMAIL_QUEUE bindings would deploy with no namespace / queue behind them.
+    const bdosqlOpts = { mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS, mailFrom: `wordpress@${domain}`, mailFromName: name };
     return {
       ...common, kind: 'wp', mainModule: env.WP_MAIN || 'index.js',
       hostname: target.hostname,
       // The FULL b-dosql binding + var set (deploy/wfp lib.sh render_user), from
       // the ONE shared source so the provisioning path and the deploy path cannot
       // drift. The caller supplies no extra bindings.
-      resourceBindings: bDosqlBindings({ mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS, mailFrom: `wordpress@${domain}`, mailFromName: name }),
+      resourceBindings: bDosqlBindings(bdosqlOpts),
       sqliteClasses: ['PhpRuntime'],
       saasZoneId: target.saasZoneId,
-      secrets: { WP_SALT: genSecret(), SPIKE_TOKEN: genSecret(24) },
+      secrets: { WP_SALT: genSecret(), SPIKE_TOKEN: genSecret(24), ...bDosqlSecrets(bdosqlOpts) },
+      resourceCreateOps: bDosqlResourceCreateOps(bdosqlOpts),
       buckets: { media: mediaBucket },
       // Demo lane (#182 Path B): the entry is stamped ephemeral so the reaper can
       // find and fully tear it down. saasZoneId is carried for the DNS teardown.

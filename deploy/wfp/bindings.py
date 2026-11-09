@@ -9,8 +9,12 @@ For each site <s>:
   may bind only: its own bucket (r2_bucket wp-wfp-<s>-media), its own
   Durable Object class (durable_object_namespace PhpRuntime, with no
   script_name or script_name site-<s>), images, assets, plain_text vars, and
-  the secrets WP_SALT and SPIKE_TOKEN (secret_text). Any other binding type
-  (a KV namespace, D1, a service, a dispatch namespace, ...) fails.
+  the secrets WP_SALT and SPIKE_TOKEN (secret_text). It may ALSO bind the
+  opinionated defaults wired through the provisioning descriptor table (#201): the
+  Browser Rendering binding (browser), its own object-cache L2 namespace
+  (kv_namespace named OC_KV), and its own durable-email queue (queue with
+  queue_name wp-wfp-<s>-email). Any other binding type (D1, a service, a dispatch
+  namespace, a foreign queue or KV namespace, ...) fails.
 - the dispatcher wp-<s> (GET .../workers/scripts/wp-<s>/settings) may bind
   only: the site map (kv_namespace SITES, id KV_ID) and the namespace
   (dispatch_namespace, namespace NAMESPACE, outbound only to
@@ -24,7 +28,7 @@ types only, never a value) and exits 1 on any violation.
 import json, os, sys, urllib.error, urllib.request
 
 ENV = os.environ
-USER_OK = {"r2_bucket", "durable_object_namespace", "images", "assets", "send_email", "plain_text", "secret_text"}
+USER_OK = {"r2_bucket", "durable_object_namespace", "images", "assets", "send_email", "plain_text", "secret_text", "browser", "kv_namespace", "queue"}
 SECRETS_OK = {"WP_SALT", "SPIKE_TOKEN"}
 
 
@@ -59,6 +63,10 @@ def check_user(s, bs):
             bad.append("site-%s binds the object class %s of script %s, not its own" % (s, b.get("class_name"), b.get("script_name")))
         elif t == "secret_text" and n not in SECRETS_OK:
             bad.append("site-%s has an unexpected secret %s" % (s, n))
+        elif t == "queue" and b.get("queue_name") != "wp-wfp-%s-email" % s:
+            bad.append("site-%s binds the queue %s, not its own" % (s, b.get("queue_name")))
+        elif t == "kv_namespace" and n != "OC_KV":
+            bad.append("site-%s binds a kv_namespace named %s, not its own OC_KV L2" % (s, n))
     return bad
 
 
