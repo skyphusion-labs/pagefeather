@@ -235,6 +235,10 @@ cd deploy/terraform && terraform workspace select my-site && terraform output -r
 | Pages and admin work end to end | `spikes/b2-wordpress/e2e.sh` (17 requests: pages, login, editor, a REST write) |
 | Uncached page times | `tests/a/bench.py`: home, a post, search, dashboard, editor, posts list; 10 fresh renders each; median, queries and database time per page |
 
+## Onboarding Phase 1: provider choice to a Hyperdrive config
+
+For variant `a`, `deploy/onboard/onboard.mjs` turns a database PROVIDER choice (`azure`, `planetscale`, `vultr`, `external`) into a ready Hyperdrive config (caching disabled) pointing at it, and prints its id, so a site can then be spun up against it. The output is `HYPERDRIVE_ID` and `SQL_MODE` (set only for PlanetScale, which is strict). It does not deploy a Worker. See [onboard/README.md](onboard/README.md).
+
 ## Not yet in this directory
 
 - Variant: approach B in a plain Worker on Workers Paid.
