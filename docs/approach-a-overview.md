@@ -49,7 +49,7 @@ Two rules hold for every provider:
 - Turn the Hyperdrive **query cache off** for WordPress. It holds results for 60 seconds and does not clear them on a write, so it serves stale reads. See [approach-a2.md](approach-a2.md).
 - Put the Worker and Hyperdrive **in the same region as the database**. Distance is paid on every query, and a page runs 76 to 400 queries.
 
-TODO (results row pending): the 250-concurrent-checkout run on managed MySQL is reported by the lead but has no row in [results.md](results.md) yet. Link it here when the row lands. Do not quote the figure until then.
+Under heavy concurrent checkout, only approach A on a consistent managed MySQL completes orders at scale. In the 250-concurrent run (buyers all checking out), approach A on Azure finished 261 of 276 attempted checkouts (about 95 percent); b-dosql returned 503 for every request from 50 concurrent up, because the one Durable Object per site serializes writes. See the row `A backends under 250+ concurrent checkout` (2026-11-09) in [results.md](results.md), which also covers PlanetScale and a self-managed VPS under the same load.
 
 ## The pages behind this story
 
