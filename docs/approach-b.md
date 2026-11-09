@@ -679,6 +679,53 @@ and `e2e.sh` is unchanged (the trim is inert outside the media write path). Loca
 not enforce the 128 MiB isolate cap, so the exit-2-to-exit-0 transition of
 `tests/upload/upload_ceiling.py` is a box measurement.
 
+### 8n. Turnstile bot challenge on the abused forms (issue #250). Built and box-tested locally; not yet deployed.
+
+Three WordPress forms get abused: `wp-login.php` (credential stuffing), the comment form
+(spam), and WooCommerce checkout (card testing and fake orders). `php/turnstile-forms.php`, a
+mu-plugin, adds a Cloudflare Turnstile widget to each and verifies the token server side before
+the action proceeds. Turnstile is binding based, so it needs no zone and works on a
+`workers.dev` host today, unlike the WAF and Access tracks (#245, #246).
+
+The widget ships in the page with the PUBLIC site key. The token (`cf-turnstile-response`) is
+verified in the Worker, never in the browser: PHP sends the token through the
+`skyphusion_worker_call` op bridge (the `turnstile` op in `index.js`), the Worker calls
+`https://challenges.cloudflare.com/turnstile/v0/siteverify` with the secret, and PHP reads back
+only `{ success }`. The secret (`TURNSTILE_SECRET`) stays in the Worker and never enters PHP, as
+the AI binding and the purge token do. `turnstile.mjs` holds the one network seam, `verifyToken`,
+so the Worker op and the box test send the exact same request.
+
+Switches, written into `wp-runtime.php` by `index.js` from the bindings:
+
+- `SKYPHUSION_TURNSTILE`: on when the `TURNSTILE_SECRET` secret and a valid public
+  `TURNSTILE_SITEKEY` are both set. `TURNSTILE=off` is the master off switch, which restores
+  every form to its unprotected state.
+- `SKYPHUSION_TURNSTILE_SITEKEY`: the public site key, sanitized to `[A-Za-z0-9_-]` before it
+  becomes a define.
+- `SKYPHUSION_TURNSTILE_LOGIN`, `SKYPHUSION_TURNSTILE_COMMENTS`, `SKYPHUSION_TURNSTILE_WOO`: each
+  form is independently switchable (`TURNSTILE_LOGIN=off` and so on); one off leaves the others on.
+
+The gate is login via the `authenticate` filter (a `WP_Error` stops the sign-in, only on a real
+credential POST so cookie and application-password auth are untouched), comments via
+`preprocess_comment` (a 403 `wp_die`, skipping pingbacks and the admin screens), and checkout via
+`woocommerce_checkout_process` (a `wc_add_notice` error, which fails order placement on the
+classic shortcode checkout). The posture is fail closed: a missing or failed token always rejects
+the action. A verifier that is unreachable (a timeout or a network failure, told apart from a bad
+token by an error field the op sets) is also rejected, unless the site opts in through the
+`skyphusion_turnstile_failopen` filter, so an outage never silently drops the protection.
+
+Box test (no Cloudflare account or widget needed; the documented test SECRET keys fix the
+outcome). `node tests/turnstile-box.mjs` calls the real siteverify endpoint through `verifyToken`:
+with `1x0000000000000000000000000000000AA` (always passes) a good token returns `success:true`;
+with `2x0000000000000000000000000000000AA` (always fails) a token returns `success:false` with
+`invalid-input-response`; a missing token is rejected without a network call. The form gating
+(login block, comment reject, checkout fail, and the off switches) is proven by
+`tests/turnstile-forms-test.php`, which drives the WordPress hooks with a stubbed op bridge across
+three process scenarios (all on, master off, one form off). The helper logic is
+`tests/turnstile.test.mjs`. All three run in CI. Not yet deployed: the real widget is minted and
+the `TURNSTILE_SECRET` secret is set at deploy time (`wrangler secret put TURNSTILE_SECRET`), and
+`TURNSTILE_SITEKEY` is the public site key var.
+
 ### 9. Memory: what it took to fit in 128 MB
 
 | Change | Effect, measured locally |
