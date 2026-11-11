@@ -454,3 +454,28 @@ HCL
   (cd "$WFP/terraform/$r" && terraform "$@")
 }
 log() { printf '\n== %s\n' "$*"; }
+
+# down_empty_bucket <site>: empty the site's media bucket before its workspace is
+# destroyed. Uses the caller's VARS and the workspace already selected.
+# Only the teardown key is applied (-target; it does not depend on the bucket or
+# the entry), and only when the bucket exists: a down creates nothing else. If
+# the empty FAILS, the key is applied away again (teardown=false) before this
+# returns the failure, so a failed `site remove` does not leave a live R2 key in
+# the account and the state. On success the key goes with the destroy that
+# follows. R2_EMPTY overrides the empty script (tests).
+down_empty_bucket() {
+  local s=$1 B rc=0
+  B=$(media_bucket "$s")
+  if [ "$(api_code GET "/r2/buckets/$B")" != 200 ]; then
+    echo "  bucket $B does not exist: nothing to empty"; return 0
+  fi
+  tfr site apply -input=false -auto-approve "${VARS[@]}" -var teardown=true -target=cloudflare_account_token.teardown >/dev/null || return 1
+  R2_KEY_ID=$(tfr site output -raw teardown_access_key_id) R2_SECRET=$(tfr site output -raw teardown_secret_access_key) \
+    "${R2_EMPTY:-$ROOT/deploy/variants/r2-empty.sh}" "$(tfr site output -raw r2_endpoint)" "$B" || rc=$?
+  if [ "$rc" != 0 ]; then
+    echo "  emptying $B failed (exit $rc): removing the teardown key before stopping" >&2
+    tfr site apply -input=false -auto-approve "${VARS[@]}" -var teardown=false -target=cloudflare_account_token.teardown >/dev/null \
+      || echo "site $s: DELETE THE TEARDOWN KEY: cloudflare_account_token.teardown is still in workspace $s" >&2
+    return "$rc"
+  fi
+}

@@ -108,6 +108,7 @@ jobs:
           deploy/wfp/tests/wait-site-test.sh
           deploy/wfp/tests/snapshot-test.sh
           deploy/wfp/tests/site-cmd-test.sh
+          deploy/wfp/tests/down-key-test.sh
           deploy/wfp/tests/custom-domain-test.sh
           python3 deploy/wfp/tests/check-test.py
           node deploy/provision/tests/ops-test.mjs
