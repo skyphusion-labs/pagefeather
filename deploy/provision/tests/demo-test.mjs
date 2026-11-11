@@ -259,5 +259,21 @@ async function runDemoMany(env, n) {
   ok('demo: a worker without DEMO_GATE refuses (500, missing binding)', missing.res.status === 500 && /DEMO_GATE/.test(missing.json.error));
 }
 
+// A demo site is built locked: no send_email binding without a fixed destination,
+// and the DEMO_LOCK runtime var (spikes/b2-wordpress/site-lock.mjs). A site that is
+// not a demo is the control: it keeps its EMAIL binding and has no lock var.
+{
+  const { buildServerCfg } = await import('../server-config.mjs');
+  const env = makeEnv();
+  const demoCfg = await buildServerCfg(env, { kind: 'wp', name: assignDemoName(), domain: 'skyphusionwp.dev', demo: true, expiresAt: 1 });
+  const plainCfg = await buildServerCfg(env, { kind: 'wp', name: 'blog', domain: 'skyphusionwp.dev' });
+  const openMail = (cfg) => cfg.resourceBindings.some((b) => b.type === 'send_email' && !b.destination_address);
+  const lockVar = (cfg) => cfg.resourceBindings.some((b) => b.type === 'plain_text' && b.name === 'DEMO_LOCK' && b.text === 'on');
+  ok('demo lock: a demo site has no send_email binding without a destination', !openMail(demoCfg));
+  ok('demo lock: a demo site carries DEMO_LOCK=on in its runtime vars', lockVar(demoCfg));
+  ok('demo lock: a site that is not a demo keeps its EMAIL binding (control)', openMail(plainCfg));
+  ok('demo lock: a site that is not a demo has no DEMO_LOCK var (control)', !lockVar(plainCfg));
+}
+
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
