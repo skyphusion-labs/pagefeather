@@ -18,9 +18,9 @@ cp -R "$SRC/variants" "$T/deploy/"
 cp "$SRC"/terraform/*.tf "$SRC/terraform/.terraform.lock.hcl" "$T/deploy/terraform/"
 cp "$SRC"/mysql/*.tf "$SRC"/mysql/*.tftpl "$T/deploy/mysql/"
 ln -s "$SRC/terraform/.terraform/providers" "$T/deploy/terraform/.terraform/providers"
-# npx: logs, and exits NPX_RC (default 0), like a wrangler delete that fails.
+# The pinned Wrangler (WR): logs, and exits NPX_RC (default 0), like a wrangler delete that fails.
 # shellcheck disable=SC2016 # the stub script, not shell to expand here
-printf '#!/bin/bash\necho "$*" >> %q\nexit "${NPX_RC:-0}"\n' "$T/npx.log" > "$T/bin/npx"; chmod +x "$T/bin/npx"
+printf '#!/bin/bash\necho "$*" >> %q\nexit "${NPX_RC:-0}"\n' "$T/npx.log" > "$T/bin/wr"; chmod +x "$T/bin/wr"
 # A stand-in for the Cloudflare API: GET .../workers/scripts/<name> answers the
 # code in $T/api/<name> (default 404, gone).
 mkdir -p "$T/api"
@@ -41,7 +41,7 @@ python3 "$T/fake-api.py" "$T/api.port" "$T/api" & APIPID=$!
 for _ in $(seq 1 50); do [ -s "$T/api.port" ] && break; sleep 0.1; done
 CF_API="http://127.0.0.1:$(cat "$T/api.port")"
 export CF_API
-export PATH="$T/bin:$PATH" CLOUDFLARE_API_TOKEN=test ACCOUNT_ID=00000000000000000000000000000000
+export WR="$T/bin/wr" PATH="$T/bin:$PATH" CLOUDFLARE_API_TOKEN=test ACCOUNT_ID=00000000000000000000000000000000
 unset DEPLOY_STATE
 fails=0
 check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got [$2], want [$3]"; fails=$((fails + 1)); fi; }
@@ -86,7 +86,7 @@ check "no workspace: none made" "$(ws nope)" "0"
 run site-x
 check "good: destroyed" "$rc" "0"
 check "good: variables from the state outputs" "$(grep -c 'variables from .*/site.tfvars' "$T/out")" "1"
-check "good: the Worker deleted by name" "$(cat "$T/npx.log")" "wrangler delete --name site-x --force"
+check "good: the Worker deleted by name" "$(cat "$T/npx.log")" "delete --name site-x --force"
 check "good: workspace gone" "$(ws site-x)" "0"
 
 # 5. Variant a with no deploy/mysql state: said, not silent.
