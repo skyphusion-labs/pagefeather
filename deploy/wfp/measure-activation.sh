@@ -19,6 +19,7 @@
 # one twice and never touches site two or any other site.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
+need_account
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
 tfr shared init -input=false >/dev/null
 SUB=$(subdomain); export SUB

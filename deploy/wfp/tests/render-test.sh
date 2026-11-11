@@ -90,5 +90,25 @@ okd=1; nd=0
 for w in $shared; do nd=$((nd + 1)); valid_site "${w#wp-}" && { okd=0; echo "  valid_site takes '${w#wp-}', which makes the shared Worker $w"; }; done
 [ "$nd" -ge 5 ] || { okd=0; echo "  found only $nd shared Worker name(s), want 5 or more; the scan is broken"; }
 ok "every shared wp-<x> Worker in deploy/wfp ($nd found) is refused as a site name" "$okd"
+# No default account (or zone) in the deploy tools: every entry point that sources
+# lib.sh calls need_account, and no Terraform root defaults account_id. Derived, so
+# a new entry script that forgets the check fails here.
+okn=1; ne=0
+for f in "$WFP"/*.sh "$WFP/site"; do
+  [ "$(basename "$f")" = lib.sh ] && continue
+  grep -q '^\. "$(dirname "$0")/lib.sh"$' "$f" || continue
+  ne=$((ne + 1))
+  grep -qx 'need_account' "$f" || { okn=0; echo "  $(basename "$f") sources lib.sh but does not call need_account"; }
+done
+[ "$ne" -ge 5 ] || { okn=0; echo "  found only $ne entry script(s); the scan is broken"; }
+ok "every deploy/wfp entry script ($ne) calls need_account" "$okn"
+okt=1
+for r in site shared; do
+  awk '/^variable "account_id"/,/^}/' "$WFP/terraform/$r/main.tf" | grep -q 'default' && { okt=0; echo "  terraform/$r: account_id has a default"; }
+done
+grep -q 'fabcb25d9c7eb087110ec474a03e50d2' "$WFP/lib.sh" "$WFP/terraform/site/main.tf" "$WFP/terraform/shared/main.tf" && { okt=0; echo "  a deploy default still carries the reference account id"; }
+ok "no account default in lib.sh or the terraform roots (reference ids live in reference.env)" "$okt"
+( ACCOUNT_ID=; need_account ) >/dev/null 2>&1; rc=$?
+ok "need_account with no ACCOUNT_ID exits 2" "$([ "$rc" = 2 ] && echo 1 || echo 0)"
 echo "$fails failing check(s)"
 exit $fails

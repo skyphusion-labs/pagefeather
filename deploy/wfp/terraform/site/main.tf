@@ -5,9 +5,10 @@
 # per-site dispatcher (wp-<name>) on workers.dev; phase B (#138) attaches a
 # Workers Custom Domain for this site to the ONE dispatcher instead.
 
+# No default: lib.sh need_account passes it (TF_VAR_account_id), and a plan with
+# no account fails instead of planning against another account.
 variable "account_id" {
-  type    = string
-  default = "fabcb25d9c7eb087110ec474a03e50d2"
+  type = string
 }
 
 variable "name" {
@@ -80,10 +81,12 @@ variable "dispatcher" {
   default = "wp-dispatch"
 }
 
-# Phase B: the zone that holds wfp-test.skyphusion.org.
+# Phase B: the zone that holds the site's Custom Domain (WFP_ZONE_ID, passed by
+# lib.sh need_account, or recorded by an existing site). No zone default: a
+# Custom Domain with no zone fails at plan (the precondition on the domain).
 variable "zone_id" {
   type    = string
-  default = "3b58b52bd324332fb56b3ab685588c76" # skyphusion.org
+  default = ""
 }
 
 locals {
@@ -135,6 +138,13 @@ resource "cloudflare_workers_custom_domain" "site" {
   zone_id    = var.zone_id
   hostname   = var.hostname
   service    = var.dispatcher
+
+  lifecycle {
+    precondition {
+      condition     = var.zone_id != ""
+      error_message = "zone_id: a Custom Domain needs its zone. Set WFP_ZONE_ID (the reference deploy sources deploy/wfp/reference.env)."
+    }
+  }
 }
 
 resource "cloudflare_account_token" "teardown" {

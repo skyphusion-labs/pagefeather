@@ -8,6 +8,7 @@
 # workspaces), so the sites that site add and site remove left are removed too.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
+need_account
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
 SITES=${SITES-$(list_sites | tr '\n' ' ')}
 echo "sites: ${SITES:-none}"
