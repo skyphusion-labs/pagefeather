@@ -191,5 +191,64 @@ ok('validatePublicRequest: wp allowed', validatePublicRequest({ kind: 'wp' }).ki
   ok('teardownDemoSite: all four resources handled (script, bucket, dns, kv)', done.script && done.bucket && done.dns && done.kv);
 }
 
+// A demo site is built locked: no send_email binding without a fixed destination,
+// and the DEMO_LOCK runtime var (spikes/b2-wordpress/site-lock.mjs). A site that is
+// not a demo is the control: it keeps its EMAIL binding and has no lock var.
+{
+  const { buildServerCfg } = await import('../server-config.mjs');
+  const env = makeEnv();
+  const demoCfg = await buildServerCfg(env, { kind: 'wp', name: assignDemoName(), domain: 'skyphusionwp.dev', demo: true, expiresAt: 1 });
+  const plainCfg = await buildServerCfg(env, { kind: 'wp', name: 'blog', domain: 'skyphusionwp.dev' });
+  const openMail = (cfg) => cfg.resourceBindings.some((b) => b.type === 'send_email' && !b.destination_address);
+  const lockVar = (cfg) => cfg.resourceBindings.some((b) => b.type === 'plain_text' && b.name === 'DEMO_LOCK' && b.text === 'on');
+  ok('demo lock: a demo site has no send_email binding without a destination', !openMail(demoCfg));
+  ok('demo lock: a demo site carries DEMO_LOCK=on in its runtime vars', lockVar(demoCfg));
+  ok('demo lock: a site that is not a demo keeps its EMAIL binding (control)', openMail(plainCfg));
+  ok('demo lock: a site that is not a demo has no DEMO_LOCK var (control)', !lockVar(plainCfg));
+}
+
+// ---- reaper: the per-site KV namespace and both email queues are deleted ----
+{
+  const rec = withFetch({});
+  const calls = [];
+  const impl = async (url, init) => {
+    const u = String(url);
+    if (init.method === 'GET' && /\/storage\/kv\/namespaces\?/.test(u)) { calls.push(`GET kvlist`); return { ok: true, status: 200, text: async () => JSON.stringify({ success: true, result: [{ id: 'OCOLD', title: 'wp-wfp-demo-ddd-oc' }, { id: 'OTHER', title: 'wp-wfp-demo-ddx-oc' }] }) }; }
+    if (init.method === 'GET' && /\/queues\?/.test(u)) { calls.push(`GET qlist`); return { ok: true, status: 200, text: async () => JSON.stringify({ success: true, result: [{ queue_id: 'Q1', queue_name: 'wp-wfp-demo-ddd-email' }, { queue_id: 'Q2', queue_name: 'wp-wfp-demo-ddd-email-dlq' }] }) }; }
+    if (init.method === 'DELETE') calls.push(`DELETE ${u.split('/client/v4')[1]}`);
+    return rec.impl(url, init);
+  };
+  const real = globalThis.fetch; globalThis.fetch = impl;
+  let done;
+  try {
+    done = await teardownDemoSite({ acct: 'ACCT', token: 'wp-tok' }, makeEnv(), 'demo-ddd.skyphusionwp.dev',
+      { name: 'demo-ddd', script: 'site-demo-ddd', mediaBucket: 'wp-wfp-demo-ddd-media', saasZoneId: 'SERVERZONE' });
+  } finally { globalThis.fetch = real; }
+  ok('teardownDemoSite: DELETEs the site KV namespace by its id', calls.includes('DELETE /accounts/ACCT/storage/kv/namespaces/OCOLD'));
+  ok('teardownDemoSite: never touches another site namespace', !calls.some((c) => c.endsWith('/storage/kv/namespaces/OTHER')));
+  ok('teardownDemoSite: DELETEs the email queue and its dead-letter queue', calls.includes('DELETE /accounts/ACCT/queues/Q1') && calls.includes('DELETE /accounts/ACCT/queues/Q2'));
+  ok('teardownDemoSite: reports the namespace and queues handled', done.kvNamespace && done.queues && done.kv);
+  const kvDel = calls.indexOf('DELETE /accounts/ACCT/storage/kv/namespaces/OCOLD');
+  const mapDel = calls.findIndex((c) => /\/storage\/kv\/namespaces\/[^/]+\/values\//.test(c));
+  ok('teardownDemoSite: the map entry goes LAST, after the namespace', mapDel > kvDel && kvDel >= 0);
+}
+
+// ---- reaper: a refused namespace list is NOT read as "already gone" ----
+{
+  const rec = withFetch({});
+  const impl = async (url, init) => {
+    if (init.method === 'GET' && /\/storage\/kv\/namespaces\?/.test(String(url))) return { ok: false, status: 403, text: async () => '{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}' };
+    return rec.impl(url, init);
+  };
+  const real = globalThis.fetch; globalThis.fetch = impl;
+  let threw = false;
+  try {
+    await teardownDemoSite({ acct: 'ACCT', token: 'wp-tok' }, makeEnv(), 'demo-eee.skyphusionwp.dev',
+      { name: 'demo-eee', script: 'site-demo-eee', mediaBucket: 'wp-wfp-demo-eee-media' });
+  } catch { threw = true; } finally { globalThis.fetch = real; }
+  ok('teardownDemoSite: a refused list throws, so the map entry stays for the next run', threw &&
+    !rec.calls.some((c) => c.method === 'DELETE' && /\/values\/demo-eee/.test(c.url)));
+}
+
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
