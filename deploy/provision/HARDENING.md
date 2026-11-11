@@ -254,6 +254,14 @@ than Path A. Implemented in `demo.mjs` + `server-config.mjs`, all offline-tested
 6. **Concurrency cap** (`demoConcurrency`): the count of live demo sites in the
    registry (prefix `demo-`). At `DEMO_MAX_CONCURRENT` the next request is a 503
    "demo capacity full". This is the primary SPEND bound.
+   Steps 5 and 6 read KV, and a KV read can be stale, so parallel requests could
+   each pass them. They are a fast first refusal, not the decision.
+6b. **The gate** (`demo-gate.mjs`, the `DEMO_GATE` Durable Object): one object holds
+   the per-IP and global hourly counts and the live-demo slots, and decides all
+   three caps as one step (calls run one after another). Over a rate cap is a 429,
+   no free slot is a 503, and an unreachable gate is a 503 (FAIL CLOSED). A slot is
+   held until the demo expires, and is released if the provision fails. With 10
+   parallel requests from one IP, at most 3 are accepted (`tests/demo-test.mjs`).
 7. **TTL + reaper** (`reapExpiredDemos`, the Worker `scheduled` handler): every
    demo entry is stamped `demo:true` + `expiresAt` + the teardown fields (script,
    bucket, zone). A cron/alarm fires the reaper, which for each EXPIRED demo
@@ -270,8 +278,9 @@ finals at deploy.
 The strongest deploy shape is a SEPARATE demo Worker bound with only
 `WP_PROVISION_TOKEN` (never the shop token), so "the public path never holds the
 elevated scope" is enforced by the binding set, not only by the code path. Path B
-also needs `TURNSTILE_SECRET`, a `DEMO_KV` namespace, `DEMO_BASE` (an owned base in
-`WFP_BASES`), and a cron trigger for the reaper. Path A can go live first; Path B
+also needs `TURNSTILE_SECRET`, a `DEMO_KV` namespace, the `DEMO_GATE` Durable Object
+(class `DemoGate`, with its migration; both in `wrangler.demo.toml`), `DEMO_BASE` (an
+owned base in `WFP_BASES`), and a cron trigger for the reaper. Path A can go live first; Path B
 goes live only after the caps + reaper are proven on a real account to actually
 tear sites down and actually refuse over the cap.
 
