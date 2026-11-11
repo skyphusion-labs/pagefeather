@@ -50,6 +50,8 @@ jobs:
         run: deploy/import/tests/media-refuse-test.sh
       - name: b-dosql mail From address
         run: node --test spikes/b2-wordpress/tests/mail-from.test.mjs
+      - name: b-dosql demo site lock
+        run: node --test spikes/b2-wordpress/tests/site-lock.test.mjs
       - name: b-dosql outbound host allowlist
         run: node --test spikes/b2-wordpress/tests/http-allow.test.mjs
       - name: email-queue unit tests
@@ -97,6 +99,9 @@ jobs:
       - name: c1 boot log watch tests
         # deploy/variants/c1.sh c1_up_watch and c1-bootwatch.py (issue #103) against a fake site and bucket: no log, a stalled log, an old log.
         run: deploy/variants/tests/c1-bootwatch-test.sh
+      - name: zone cache ruleset tests
+        # deploy/zone: the bypass rule is last and keeps every per-user and operator request out of the edge cache.
+        run: node --test deploy/zone/tests/cache-ruleset.test.mjs
       - name: WfP reference tests
         # deploy/wfp (issue #35): the dispatcher, the rendered configs (one dispatcher config), the namespace-script check, the new site map write wait.
         run: |

@@ -22,7 +22,20 @@ API=${WFP_API:-https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID}
 
 # A site name: lower case, digits and hyphens, 1 to 30 characters, no hyphen at
 # either end (wp-wfp-<name>-media must stay a valid bucket name).
-valid_site() { [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$ ]] && [ "$1" != probe ]; }
+#
+# A site's dispatcher is wp-<name>, so a name must not make the name of a SHARED
+# Worker: wp-probe, wp-dispatch (the phase B dispatcher), wp-cacheprobe,
+# wp-cacheprobe-direct, and wp-wfp-outbound (any wfp- name, which also keeps
+# wp-wfp-<x> free for the project's own scripts and buckets). Without this,
+# `site remove dispatch` would see a dispatcher and delete the shared one.
+# tests/render-test.sh checks every shared Worker name in this tree is refused.
+SHARED_WORKER_SITE_NAMES="probe dispatch cacheprobe cacheprobe-direct"
+valid_site() {
+  [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$ ]] || return 1
+  case "$1" in wfp-*) return 1 ;; esac
+  local n
+  for n in $SHARED_WORKER_SITE_NAMES; do [ "$1" != "$n" ] || return 1; done
+}
 user_script() { echo "site-$1"; }
 dispatcher_name() { echo "wp-$1"; }
 media_bucket() { echo "wp-wfp-$1-media"; }

@@ -4,11 +4,12 @@ import { sender, replyTo, deliverableRecipients } from './mail-from.mjs';
 import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, handleQueuedEmail } from './email-queue.mjs';
 import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
-import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled } from './purge-zone.mjs';
+import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
 import { shouldArmAlarm } from './alarm-arm.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
+import { demoLocked, demoLockDefines } from './site-lock.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -540,6 +541,8 @@ function emailOp(email) {
 // A From the message asked for, when it is a different real address, becomes
 // the Reply-To. Returns [] when the site has no sender or no binding.
 function sendEmail(env, email) {
+	// A demo site sends no mail (site-lock.mjs).
+	if (demoLocked(env)) return [];
 	const from = sender(env);
 	if (!from || !env || !env.EMAIL) return [];
 	const { deliverable, dropped } = deliverableRecipients(email.to);
@@ -751,7 +754,8 @@ async function purgeZoneOp(op) {
 		// only the URLs. No binding means the gate should not have injected the
 		// define, so this is belt and braces.
 		if (!ENV.PURGE_TOKEN || !ENV.PURGE_ZONE) return done({ ok: true, degraded: 'no purge binding' });
-		const body = purgeZoneBody(op);
+		// A purge covers this site's own host only (purge-zone.mjs), never the zone.
+		const body = purgeZoneBody(op, ownPurgeHost(ENV.SITE_ORIGIN));
 		if (!body) return done({ ok: true, degraded: 'nothing to purge' });
 		const timeoutMs = Math.max(1000, Math.min(30000, Number(ENV.PURGE_TIMEOUT_MS || 10000)));
 		const timeout = new Promise((resolve) => setTimeout(() => resolve({ __timeout: true }), timeoutMs));
@@ -769,7 +773,7 @@ async function purgeZoneOp(op) {
 		const purged = !!(r && r.ok && j && j.success);
 		// One line per purge sent, so a run can count them (wrangler tail). The
 		// token is never logged.
-		console.log(JSON.stringify({ m: 'purge_zone', sent: 1, everything: !!body.purge_everything, files: body.files ? body.files.length : 0, status: r ? r.status : 0, ok: purged, errors: (j && j.errors) || [] }));
+		console.log(JSON.stringify({ m: 'purge_zone', sent: 1, host: !!body.hosts, files: body.files ? body.files.length : 0, status: r ? r.status : 0, ok: purged, errors: (j && j.errors) || [] }));
 		return done({ ok: true, purged, status: r ? r.status : 0, errors: (j && j.errors) || [] });
 	} catch (e) {
 		return done({ ok: true, degraded: String(e && e.message ? e.message : e).slice(0, 200) });
@@ -1106,6 +1110,8 @@ async function boot(origin) {
 	if (ENV.MEDIA && ENV.IMAGES) lines.push(`define('CF_IMAGES', true);`);
 	// A deploy (WP_SALT is set) shows no PHP errors or database errors to visitors.
 	if (ENV.WP_SALT) lines.push(`define('WP_DEBUG', false);`);
+	// A demo site cannot install, update or edit plugin or theme code (site-lock.mjs).
+	lines.push(...demoLockDefines(ENV));
 	// Outbound HTTP through fetch() (php/http-bridge.php, #26). HTTP_BRIDGE=off: no
 	// bridge, and WordPress blocks external requests, as before the bridge.
 	if (ENV.HTTP_BRIDGE === 'off') lines.push(`define('SKYPHUSION_HTTP_BRIDGE_OFF', true);`, `define('WP_HTTP_BLOCK_EXTERNAL', true);`);
