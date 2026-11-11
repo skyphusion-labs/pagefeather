@@ -279,5 +279,67 @@ seed_run "$T/d5" "" && rc=0 || rc=$?
 check "c1 seed: no SEED_SHA256, nothing loaded" "$rc:$(find "$T/d5" -type f | wc -l | tr -d ' ')" "0:0"
 
 
+# 11. SQLITE input: a database that is already SQLite made by the driver.
+php "$IMP/dump-to-sqlite.php" "$DRV" "$HERE/fixture.sql" "$T/src.sqlite" > "$T/src-dump-report.json"
+sqlite3 "$T/src.sqlite" 'PRAGMA wal_checkpoint(TRUNCATE);' > /dev/null
+SRC_SHA=$(shasum -a 256 "$T/src.sqlite" | cut -d' ' -f1)
+php "$IMP/sqlite-source.php" "$DRV" "$T/src.sqlite" "$T/sq.sqlite" > "$T/sq-report.json"
+sq() { python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); [v := v[k] for k in sys.argv[2:]]; print(json.dumps(v, sort_keys=True))' "$T/sq-report.json" "$@"; }
+dr() { python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); [v := v[k] for k in sys.argv[2:]]; print(json.dumps(v, sort_keys=True))' "$T/src-dump-report.json" "$@"; }
+check "sqlite: source is sqlite" "$(sq source)" '"sqlite"'
+check "sqlite: driver version read" "$(sq driver_version)" '"3.1.3"'
+check "sqlite: rows equal the dump path" "$(sq rows)" "$(dr rows)"
+check "sqlite: site facts equal the dump path" "$(sq site)" "$(dr site)"
+check "sqlite: table without prefix listed" "$(sq without_prefix)" '["custom_log"]'
+check "sqlite: source file unchanged" "$(shasum -a 256 "$T/src.sqlite" | cut -d' ' -f1)" "$SRC_SHA"
+check "sqlite: copy is ok" "$(sqlite3 "$T/sq.sqlite" 'PRAGMA integrity_check;')" "ok"
+check "sqlite: blob bytes in the copy" "$(sqlite3 "$T/sq.sqlite" 'SELECT hex(data) FROM wp_blobs WHERE id = 1')" "005C27221A"
+set +e
+php "$IMP/sqlite-source.php" "$DRV" "$T/src.sqlite" "$T/sq.sqlite" > /dev/null 2>&1; code=$?
+set -e
+check "sqlite: refuses to write over the output" "$code" "2"
+# Each refusal: exit 1, a message that names the cause, and no output file.
+refuse() { # refuse <label> <file> <grep pattern>
+  rm -f "$T/rf.sqlite"
+  set +e; php "$IMP/sqlite-source.php" "$DRV" "$2" "$T/rf.sqlite" > /dev/null 2> "$T/rf.err"; local c=$?; set -e
+  check "sqlite: $1 refused" "$c:$(grep -c -- "$3" "$T/rf.err" || true):$([ -e "$T/rf.sqlite" ] && echo out || echo none)" "1:1:none"
+}
+cp "$T/src.sqlite" "$T/newer.sqlite"
+sqlite3 "$T/newer.sqlite" "UPDATE _wp_sqlite_global_variables SET value = '9.9.9' WHERE name = '_wp_sqlite_driver_version';"
+refuse "a newer driver" "$T/newer.sqlite" "newer than the pinned driver"
+cp "$T/src.sqlite" "$T/older.sqlite"
+sqlite3 "$T/older.sqlite" "UPDATE _wp_sqlite_global_variables SET value = '2.0.0' WHERE name = '_wp_sqlite_driver_version';"
+rm -f "$T/older-out.sqlite"
+php "$IMP/sqlite-source.php" "$DRV" "$T/older.sqlite" "$T/older-out.sqlite" > /dev/null 2>&1 && code=0 || code=$?
+check "sqlite: an older driver's file is accepted" "$code" "0"
+sqlite3 "$T/plain.sqlite" "CREATE TABLE wp_options(x); CREATE TABLE wp_posts(x); CREATE TABLE wp_usermeta(x);"
+refuse "a file the driver did not make" "$T/plain.sqlite" "not made by the SQLite driver"
+cp "$T/src.sqlite" "$T/prefix.sqlite"
+sqlite3 "$T/prefix.sqlite" "ALTER TABLE wp_options RENAME TO wpx_options; ALTER TABLE wp_posts RENAME TO wpx_posts; ALTER TABLE wp_usermeta RENAME TO wpx_usermeta;"
+refuse "a prefix other than wp_" "$T/prefix.sqlite" "through a MySQL dump"
+cp "$T/src.sqlite" "$T/multi.sqlite"
+sqlite3 "$T/multi.sqlite" "CREATE TABLE wp_blogs(blog_id INTEGER);"
+refuse "a multisite network" "$T/multi.sqlite" "multisite"
+cp "$T/src.sqlite" "$T/wal.sqlite"
+python3 - "$T/wal.sqlite" <<'PY'
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1]); c.execute("PRAGMA journal_mode=WAL"); c.execute("PRAGMA wal_autocheckpoint=0")
+c.execute("INSERT INTO custom_log VALUES (99, 'in the wal only')"); c.commit()
+import os; os._exit(0)  # leave the WAL as it is: no checkpoint on close
+PY
+refuse "a WAL that is not empty" "$T/wal.sqlite" "WAL file that is not empty"
+printf 'not a database' > "$T/junk.sqlite"
+rm -f "$T/rf.sqlite"; set +e; php "$IMP/sqlite-source.php" "$DRV" "$T/junk.sqlite" "$T/rf.sqlite" > /dev/null 2>&1; code=$?; set -e
+check "sqlite: a file that is not a database fails" "$([ "$code" != 0 ] && echo fails):$([ -e "$T/rf.sqlite" ] && echo out || echo none)" "fails:none"
+# import.sh refuses the mixed inputs before anything runs.
+set +e
+SQLITE="$T/src.sqlite" DUMP="$HERE/fixture.sql" URL=x "$IMP/../import.sh" > /dev/null 2> "$T/mix.err"; code=$?
+set -e
+check "import.sh: SQLITE with DUMP refused" "$code:$(grep -c 'SQLITE replaces DUMP' "$T/mix.err" || true)" "2:1"
+set +e
+SQLITE="$T/src.sqlite" VARIANT=c1 URL=x "$IMP/../import.sh" > /dev/null 2> "$T/c1.err"; code=$?
+set -e
+check "import.sh: SQLITE with VARIANT=c1 refused" "$code:$(grep -c 'b-dosql only' "$T/c1.err" || true)" "2:1"
+
 [ "$fails" = 0 ] || { echo "$fails failed"; exit 1; }
 echo "all passed"

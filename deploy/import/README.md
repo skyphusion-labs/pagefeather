@@ -44,6 +44,26 @@ The import replaces the whole database of the target site. Log in with the users
 
 Options: `DRY_RUN=1` stops before the import and shows what changes. `SKIP_MEDIA=1` does not send the uploads (the script says that the images are missing). `OLD_ORIGIN` sets the old site address (default: the `home` option of the dump). `ALLOW_MISSING=1` imports when the theme or an active plugin is not in the build. `WORK` sets the directory for the work files.
 
+## A source that is already SQLite
+
+A site that already keeps its database in SQLite made by the `sqlite-database-integration` driver needs no MySQL dump. A c1 container store is one example, and so is its Litestream replica restored to a file. Give the file as `SQLITE` in place of `DUMP` (variant `b-dosql` only):
+
+```sh
+URL=https://my-site.acct.workers.dev NAME=my-site SQLITE=store.sqlite CONTENT=wp-content.tar.gz ./deploy/import.sh
+```
+
+`deploy/import/sqlite-source.php` takes the place of step 2. It reads the file over a read-only connection and writes a consistent copy (`VACUUM INTO`), so the source is never changed. It then prints the same report as a dump: the rows of each table read back through the driver, and the site facts. Search-replace, the dbmove import and the per-table count check (steps 3 to 7) run unchanged. The report also carries `"source": "sqlite"` and `driver_version`, the driver version recorded in the file (`_wp_sqlite_global_variables`).
+
+It refuses, with exit 1 and before it writes any file, each of these:
+- a file that `PRAGMA integrity_check` does not call `ok`;
+- a WAL beside the file that is not empty, because the copy would miss what is only in the WAL (checkpoint it, or restore to a file first);
+- a file the driver did not make;
+- a file made by a driver newer than the pinned one (`SQLITE_DI_REF`). An older one is fine, because the driver configures an older file for its own version at first use;
+- a table prefix other than `wp_`, because the driver cannot rename a table (import that site through a MySQL dump, which renames as it reads);
+- a multisite network.
+
+Tests: `tests/run.sh` section 11. The rows and site facts match the dump path for the same fixture, and the source file's SHA-256 is unchanged. Each refusal leaves no output file. Two mutations turn a test red: the WAL check off, and the prefix check off.
+
 ## Read the source over SSH
 
 In place of `DUMP` and `CONTENT`, give the server and the WordPress directory there:
