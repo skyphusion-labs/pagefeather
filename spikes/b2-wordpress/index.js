@@ -7,7 +7,7 @@ import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
 import { shouldArmAlarm } from './alarm-arm.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
-import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken } from './turnstile.mjs';
+import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
 import { demoLocked, demoLockDefines } from './site-lock.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
@@ -868,7 +868,9 @@ async function turnstileOp(op) {
 		// belt and braces: fail closed (the form is rejected), never open.
 		if (!ENV.TURNSTILE_SECRET) return done({ ok: true, success: false, error: 'no turnstile secret' });
 		const timeoutMs = Math.max(1000, Math.min(30000, Number(ENV.TURNSTILE_TIMEOUT_MS || 10000)));
-		const res = await verifyToken(ENV.TURNSTILE_SECRET, op && op.token, op && op.remoteip, { timeoutMs });
+		// The token must have been solved on this site, by its own widget.
+		const expect = { hostname: siteHost(ENV.SITE_ORIGIN), action: TURNSTILE_ACTION };
+		const res = await verifyToken(ENV.TURNSTILE_SECRET, op && op.token, op && op.remoteip, { timeoutMs, expect });
 		// The token and the secret are never logged; only the outcome and the codes.
 		console.log(JSON.stringify({ m: 'turnstile', success: res.success, codes: res.codes || [], error: res.error, ms: Date.now() - t0 }));
 		return done({ ok: true, success: res.success, codes: res.codes || [], error: res.error });
