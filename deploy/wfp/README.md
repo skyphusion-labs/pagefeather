@@ -26,6 +26,7 @@ Every dispatcher copy is the same script and the same config, and only the name 
 ```sh
 export CLOUDFLARE_API_TOKEN=...   # Workers Scripts, Workers KV, Workers for Platforms, R2: edit; API Tokens: edit (down.sh)
 export ACCOUNT_ID=...             # your Cloudflare account id. No default: every tool stops with exit 2 without it
+# The Skyphusion reference deploy sets ACCOUNT_ID (and WFP_ZONE_ID, WFP_SUBDOMAIN) with:  . deploy/wfp/reference.env
 ./deploy/wfp/up.sh                # SITES="one two" by default
 ./deploy/wfp/down.sh              # removes all of it; every step is checked against the API
 ```
