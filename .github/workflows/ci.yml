@@ -30,6 +30,9 @@ jobs:
           for f in spikes/b1-boot/index.js spikes/b2-wordpress/index.js spikes/b2-wordpress/sql-import.js spikes/c1-woo-container/worker.js spikes/c1-woo-container/warm.js; do cp "$f" "$RUNNER_TEMP/check.mjs" && node --check "$RUNNER_TEMP/check.mjs"; done
       - name: Shell syntax
         run: for f in $(git ls-files '*.sh'); do bash -n "$f"; done
+      - name: Wrangler is pinned and called through deploy/wr
+        # deploy/tools holds the exact version; a bare `npx wrangler` runs whatever is installed or latest.
+        run: bash deploy/tests/wrangler-pin-test.sh
       - name: Dialect tests
         run: php spikes/b2-wordpress/tests/dialect-test.php
       - name: Approach A literal tests (issue #79)

@@ -28,19 +28,19 @@ for s in $SITES; do "$WFP/site.sh" down "$s"; done
 # Phase A never deploys it, so this runs only with the flag.
 if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ]; then
   log "shared dispatcher $SHARED_DISPATCHER (phase B)"
-  (cd "$ROOT/deploy" && npx wrangler delete --name "$SHARED_DISPATCHER" --force) > /dev/null 2>&1 || true
+  (cd "$ROOT/deploy" && "$ROOT/deploy/wr" delete --name "$SHARED_DISPATCHER" --force) > /dev/null 2>&1 || true
   gone "shared dispatcher $SHARED_DISPATCHER" "/workers/scripts/$SHARED_DISPATCHER"
 fi
 
 log "probe wp-probe"
-(cd "$ROOT/deploy" && npx wrangler delete --name wp-probe --force) > /dev/null 2>&1 || true
+(cd "$ROOT/deploy" && "$ROOT/deploy/wr" delete --name wp-probe --force) > /dev/null 2>&1 || true
 gone "dispatcher wp-probe" "/workers/scripts/wp-probe"
 api DELETE "/storage/kv/namespaces/$KV_ID/values/wp-probe.$SUB.workers.dev" > /dev/null || true
 gone "probe entry" "/storage/kv/namespaces/$KV_ID/values/wp-probe.$SUB.workers.dev"
 
 log "cache probe (if any)"
 for w in wp-cacheprobe wp-cacheprobe-direct; do
-  (cd "$ROOT/deploy" && npx wrangler delete --name "$w" --force) > /dev/null 2>&1 || true
+  (cd "$ROOT/deploy" && "$ROOT/deploy/wr" delete --name "$w" --force) > /dev/null 2>&1 || true
   gone "Worker $w" "/workers/scripts/$w"
 done
 api DELETE "/workers/dispatch/namespaces/$NAMESPACE/scripts/site-cacheprobe?force=true" > /dev/null || true
@@ -51,7 +51,7 @@ api DELETE "/storage/kv/namespaces/$KV_ID/values/wp-cacheprobe.$SUB.workers.dev"
 gone "cache probe entry" "/storage/kv/namespaces/$KV_ID/values/wp-cacheprobe.$SUB.workers.dev"
 
 log "outbound Worker wp-wfp-outbound"
-(cd "$ROOT/deploy" && npx wrangler delete --name wp-wfp-outbound --force) > /dev/null 2>&1 || true
+(cd "$ROOT/deploy" && "$ROOT/deploy/wr" delete --name wp-wfp-outbound --force) > /dev/null 2>&1 || true
 gone "outbound Worker" "/workers/scripts/wp-wfp-outbound"
 
 log "shared: the site map and namespace $NAMESPACE"

@@ -66,7 +66,7 @@ import json, sys
 o = {k: v["value"] for k, v in json.load(sys.stdin).items()}
 json.dump({"WP_SALT": o["wp_salt"], "SPIKE_TOKEN": o["spike_token"]}, open(sys.argv[1], "w"))' "$W/secrets.json"
   bundle_size_check || exit 1
-  (cd "$APP" && npx wrangler deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/secrets.json") > "$W/user.log" 2>&1 \
+  (cd "$APP" && "$ROOT/deploy/wr" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/secrets.json") > "$W/user.log" 2>&1 \
     || { rm -f "$W/secrets.json"; tail -20 "$W/user.log"; exit 1; }
   rm -f "$W/secrets.json"
   grep -E 'Total Upload|Current Version' "$W/user.log" || true
@@ -99,7 +99,7 @@ elif [ "$cmd" = down ]; then
     fi
   else
     log "site $s: dispatcher $D (the hostname first)"
-    (cd "$ROOT/deploy" && npx wrangler delete --name "$D" --force) > "$W/del.log" 2>&1 || tail -5 "$W/del.log"
+    (cd "$ROOT/deploy" && "$ROOT/deploy/wr" delete --name "$D" --force) > "$W/del.log" 2>&1 || tail -5 "$W/del.log"
     gone "dispatcher $D" "/workers/scripts/$D"
   fi
 

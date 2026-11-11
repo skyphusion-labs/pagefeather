@@ -18,7 +18,7 @@
 # the clone's Wrangler config is not needed.
 #
 # The D1 database and all posts in it are deleted. Export first if you need
-# them: npx wrangler d1 export <name> --remote --output backup.sql
+# them: deploy/wr d1 export <name> --remote --output backup.sql
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TF="$ROOT/deploy/terraform"
@@ -95,7 +95,7 @@ fi
 
 # 2. The Worker (named NAME by deploy.sh) and its PHP object. Run in deploy/,
 # which has no Wrangler config, so no other config can be used by mistake.
-wr_delete() { (cd "$ROOT/deploy" && npx wrangler delete --name "$NAME" --force); }
+wr_delete() { (cd "$ROOT/deploy" && "$ROOT/deploy/wr" delete --name "$NAME" --force); }
 delete_worker wr_delete
 
 # 3. The media bucket (MEDIA=1): R2 refuses to delete a bucket that has

@@ -51,7 +51,7 @@ id = "$D"
 TOML
 printf '{"PROBE_TOKEN": "%s"}' "$TOKEN" > "$W/secrets.json"
 (cd "$H/probe" && [ -d node_modules ] || npm ci --silent)
-DEP=$(cd "$H/probe/gen" && npx wrangler deploy --config wrangler.toml --secrets-file "$W/secrets.json" 2>&1) || { echo "$DEP" | tail -20; exit 1; }
+DEP=$(cd "$H/probe/gen" && "$ROOT/deploy/wr" deploy --config wrangler.toml --secrets-file "$W/secrets.json" 2>&1) || { echo "$DEP" | tail -20; exit 1; }
 rm -f "$W/secrets.json"
 URL=$(echo "$DEP" | grep -oE 'https://[a-z0-9.-]+\.workers\.dev' | head -1)
 echo "probe: $URL"
