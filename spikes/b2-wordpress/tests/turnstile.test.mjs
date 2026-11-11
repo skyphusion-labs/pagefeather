@@ -13,6 +13,9 @@ import {
 	siteverifyForm,
 	readSiteverify,
 	verifyToken,
+	isTestSecret,
+	siteHost,
+	TURNSTILE_ACTION,
 } from '../turnstile.mjs';
 
 // The documented Cloudflare test keys (box test).
@@ -113,4 +116,67 @@ test('verifyToken times out and reports it as an infra error', async () => {
 	});
 	assert.equal(r.success, false);
 	assert.equal(r.error, 'timeout');
+});
+
+// The token must have been solved on this site's host, by this site's widget.
+const EXPECT = { hostname: 'shop.example.co', action: TURNSTILE_ACTION };
+const reply = (json) => ({ fetchImpl: async () => ({ ok: true, json: async () => json }), expect: EXPECT });
+
+test('siteHost is the lower-case hostname of the origin', () => {
+	assert.equal(siteHost('https://Shop.Example.co/'), 'shop.example.co');
+	assert.equal(siteHost(''), '');
+	assert.equal(siteHost('not a url'), '');
+});
+
+test('the widget action is the data-action the PHP widget renders', () => {
+	assert.equal(TURNSTILE_ACTION, 'turnstile-spin-v1');
+});
+
+test('a reply for this host and action passes', async () => {
+	const r = await verifyToken('sec', 'tok', null, reply({ success: true, hostname: 'Shop.Example.co', action: TURNSTILE_ACTION }));
+	assert.equal(r.success, true);
+});
+
+test('a reply with a different hostname fails, as a bad token and not an outage', async () => {
+	const r = await verifyToken('sec', 'tok', null, reply({ success: true, hostname: 'other.example.co', action: TURNSTILE_ACTION }));
+	assert.equal(r.success, false);
+	assert.ok(r.codes.includes('hostname-mismatch'));
+	assert.equal(r.error, undefined);
+});
+
+test('a reply with no hostname fails when a hostname is expected', async () => {
+	const r = await verifyToken('sec', 'tok', null, reply({ success: true, action: TURNSTILE_ACTION }));
+	assert.equal(r.success, false);
+	assert.ok(r.codes.includes('hostname-mismatch'));
+});
+
+test('a reply with a different or missing action fails, as a bad token', async () => {
+	const other = await verifyToken('sec', 'tok', null, reply({ success: true, hostname: 'shop.example.co', action: 'login' }));
+	assert.equal(other.success, false);
+	assert.ok(other.codes.includes('action-mismatch'));
+	assert.equal(other.error, undefined);
+	const none = await verifyToken('sec', 'tok', null, reply({ success: true, hostname: 'shop.example.co' }));
+	assert.equal(none.success, false);
+	assert.ok(none.codes.includes('action-mismatch'));
+});
+
+test('readSiteverify with no expect keeps the old behaviour', () => {
+	assert.deepEqual(readSiteverify(true, { success: true, hostname: 'any.example' }), { success: true, codes: [] });
+});
+
+test('a documented test secret skips the hostname and action checks', async () => {
+	assert.equal(isTestSecret('1x0000000000000000000000000000000AA'), true);
+	assert.equal(isTestSecret('2x0000000000000000000000000000000AA'), true);
+	assert.equal(isTestSecret('3x0000000000000000000000000000000AA'), true);
+	assert.equal(isTestSecret('0x4AAAAAAA-real-secret'), false);
+	assert.equal(isTestSecret(undefined), false);
+	// A test secret's reply names example.com and carries no action.
+	const r = await verifyToken('1x0000000000000000000000000000000AA', 'tok', null, reply({ success: true, hostname: 'example.com' }));
+	assert.equal(r.success, true);
+});
+
+test('a non-200 reply that says success:true is still an outage, as before', async () => {
+	const r = await verifyToken('sec', 'tok', null, { fetchImpl: async () => ({ ok: false, json: async () => ({ success: true }) }), expect: EXPECT });
+	assert.equal(r.success, false);
+	assert.equal(r.error, 'verify_unreachable');
 });

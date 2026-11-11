@@ -25,7 +25,7 @@ SUB=$(subdomain); export SUB
 list_sites | grep -qx one || { echo "run up.sh first (site one must exist)" >&2; exit 2; }
 HOST="wp-one.$SUB.workers.dev"; ORIGIN="https://$HOST"
 TOK=$(cd "$WFP/terraform/site" && terraform workspace select one >/dev/null && terraform output -raw spike_token)
-build_now() { curl -s -m 60 -H "x-spike-token: $TOK" "$ORIGIN/_build" | python3 -c 'import json,sys
+build_now() { curl -s -m 60 -K <(printf 'header = "x-spike-token: %s"\n' "$TOK") "$ORIGIN/_build" | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("build",""))
 except ValueError: print("")'; }
 POLL_S=${POLL_S:-10}; WATCH_S=${WATCH_S:-360}
@@ -55,7 +55,7 @@ done
 evict_code=""; flipped_after_evict=""
 if [ -z "$flipped_idle" ]; then
   log "still on the old build after ${WATCH_S}s idle; call /_evict"
-  evict_code=$(curl -s -o /dev/null -w '%{http_code}' -m 30 -H "x-spike-token: $TOK" "$ORIGIN/_evict")
+  evict_code=$(curl -s -o /dev/null -w '%{http_code}' -m 30 -K <(printf 'header = "x-spike-token: %s"\n' "$TOK") "$ORIGIN/_evict")
   echo "  /_evict HTTP $evict_code"
   e0=$(date -u +%s)
   for _ in $(seq 1 20); do
