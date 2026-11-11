@@ -88,6 +88,8 @@ jobs:
       - name: b-dosql bounded cron tick
         # cron-bound.mjs: the cron runs its own claim loop, bounded, and the cleaner cannot starve (#291).
         run: node --test spikes/b2-wordpress/tests/cron-bound.test.mjs
+      - name: b-dosql build id carries the content inputs (issue #285)
+        run: python3 -I spikes/b2-wordpress/tests/content-id-test.py
       - name: b-dosql operator endpoints (issue #35)
         # /_build and /_evict are gated and never cached (spikes/b2-wordpress).
         run: node spikes/b2-wordpress/tests/build-evict-test.mjs
