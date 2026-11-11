@@ -66,7 +66,7 @@ What `deploy.sh` does for c1 (`deploy/variants/c1.sh`):
 6. Wait for `GET /` to answer 200 (`first_start_s`). On a new site this includes the install.
 7. `e2e.sh`, `tests/a/bench.py`, then one cold start: stop the container and time until a new container (a new id in `/_boot.txt`) restored the database from R2 and answers `GET /` (`cold_start_s`).
 
-The query count per page comes from the mu-plugin `php/query-count.php`: it sends `x-d1-calls`, the header the harness reads, with the number of SQLite queries of the request. C1 sends no database time per query (the SQLite driver times queries only with `SAVEQUERIES`), so `db_ms` for C1 is empty, not 0.
+The query count per page comes from the mu-plugin `php/query-count.php`: it sends `x-d1-calls`, the header the harness reads (the Worker sends it only on a request with the valid `x-spike-token`, or on every request when `PERF_HEADERS=on`; the harness sends `SPIKE_TOKEN` when it is set), with the number of SQLite queries of the request. C1 sends no database time per query (the SQLite driver times queries only with `SAVEQUERIES`), so `db_ms` for C1 is empty, not 0.
 
 ### c1 options
 

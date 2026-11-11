@@ -21,7 +21,7 @@ node --test tests/pdf-invoice.test.mjs # PDF invoice op + helpers (#227)
 
 Admin login for the local spike: `admin` / `local-spike-password`. These and the keys in `php/wp-config.php` are for local use only.
 
-Each response has `x-d1-calls`, `x-d1-ms`, `x-d1-failures` and `x-php-ms`. `GET /_last` returns the statements of the last request.
+A response has `x-d1-calls`, `x-d1-ms`, `x-d1-failures` and `x-php-ms` (and the other timing and statistics headers listed in `perf-headers.mjs`) only when the request carries the valid `x-spike-token`, or when the Worker has the var `PERF_HEADERS=on`. `GET /_last` returns the statements of the last request.
 
 ## Deploy
 
