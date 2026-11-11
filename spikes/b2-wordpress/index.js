@@ -9,6 +9,7 @@ import { shouldArmAlarm } from './alarm-arm.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
+import { demoLocked, demoLockDefines } from './site-lock.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -540,6 +541,8 @@ function emailOp(email) {
 // A From the message asked for, when it is a different real address, becomes
 // the Reply-To. Returns [] when the site has no sender or no binding.
 function sendEmail(env, email) {
+	// A demo site sends no mail (site-lock.mjs).
+	if (demoLocked(env)) return [];
 	const from = sender(env);
 	if (!from || !env || !env.EMAIL) return [];
 	const { deliverable, dropped } = deliverableRecipients(email.to);
@@ -1106,6 +1109,8 @@ async function boot(origin) {
 	if (ENV.MEDIA && ENV.IMAGES) lines.push(`define('CF_IMAGES', true);`);
 	// A deploy (WP_SALT is set) shows no PHP errors or database errors to visitors.
 	if (ENV.WP_SALT) lines.push(`define('WP_DEBUG', false);`);
+	// A demo site cannot install, update or edit plugin or theme code (site-lock.mjs).
+	lines.push(...demoLockDefines(ENV));
 	// Outbound HTTP through fetch() (php/http-bridge.php, #26). HTTP_BRIDGE=off: no
 	// bridge, and WordPress blocks external requests, as before the bridge.
 	if (ENV.HTTP_BRIDGE === 'off') lines.push(`define('SKYPHUSION_HTTP_BRIDGE_OFF', true);`, `define('WP_HTTP_BLOCK_EXTERNAL', true);`);

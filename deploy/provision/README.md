@@ -61,6 +61,9 @@ all reject it. Design: issue #154. Worker hardening: issue #182 and `HARDENING.m
 - `demo.mjs` (#182 Path B): the public demo front door controls, per-IP + global
   rate limit (KV counter), the live-demo concurrency cap, and the reaper that
   fully tears down every expired demo (script, bucket, DNS record, KV entry).
+  A demo site is built locked: it has no `send_email` binding and carries
+  `DEMO_LOCK=on`, so it sends no mail and WordPress cannot install, update or edit
+  plugin or theme code (`spikes/b2-wordpress/site-lock.mjs`).
 - `tests/`: offline, stub `fetchImpl` (or the global fetch + stub bindings for the
   Worker). Ops, orchestration, CLI parsing, custom hostnames, the hardened Worker
   entry, the two config drift guards (`wp-site-config-test`, `a-site-config-test`),

@@ -170,7 +170,7 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
     // async-email-queue descriptors provision their per-site backing resource on the
     // HOSTED provisioning path too. Without resourceCreateOps here, the OC_KV /
     // EMAIL_QUEUE bindings would deploy with no namespace / queue behind them.
-    const bdosqlOpts = { mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS, mailFrom: `wordpress@${domain}`, mailFromName: name };
+    const bdosqlOpts = { mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS, mailFrom: `wordpress@${domain}`, mailFromName: name, demo: demo === true };
     return {
       ...common, kind: 'wp', mainModule: env.WP_MAIN || 'index.js',
       hostname: target.hostname,
