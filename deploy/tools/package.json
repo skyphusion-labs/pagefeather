@@ -3,6 +3,6 @@
   "private": true,
   "description": "The one pinned Wrangler every deploy and test script calls through deploy/wr.",
   "devDependencies": {
-    "wrangler": "4.156.0"
+    "wrangler": "4.107.0"
   }
 }
