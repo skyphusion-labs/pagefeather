@@ -109,6 +109,10 @@ It is off by default. `WFP_CUSTOM_DOMAIN=1` selects it; without the flag, `worke
 - `site remove` detaches the Custom Domain before it deletes the map entry (the CR #138 remove order), then removes the rest.
 
 **The live attach routes a zone, so it is governed by CR #138** (the CR #113 pattern: a zone-record snapshot before the first attach, one exact hostname per site, the reversal compared against the snapshot, never a wildcard). The attach is run by the lead as the CR #138 apply step, serialized against the other live work on `skyphusion.org`. This directory ships the code and the offline tests; nothing here routes a zone, and the matrix does not claim custom domains as measured until phase B is proven live.
+## Bundle size gate
+
+The Worker size limit is 64 MiB uncompressed. Nearly all of a b-dosql upload is four files: `build/site.zip`, `build/opcache.zip` and the PHP wasm with its loader. `lib.sh bundle_size_check` stops above `BUNDLE_MAX_MIB` (default 62 MiB) and names each file's size. `build_dosql` runs it after the OPcache build, and `site.sh up` and `site update` run it right before the upload, so an upload never starts without headroom. A missing file is an error. Measured sizes for a heavy store are in `docs/known-limitations.md`. Test: `tests/bundle-size-test.sh`.
+
 ## Bindings read back
 
 After every upload, `bindings.py` reads each script's bindings back from the API (`up.sh` for every site, `site add` for its own site). It fails unless each one binds only its own resources:

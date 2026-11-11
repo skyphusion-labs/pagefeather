@@ -53,6 +53,7 @@ if [ "$cmd" = up ]; then
 import json, sys
 o = {k: v["value"] for k, v in json.load(sys.stdin).items()}
 json.dump({"WP_SALT": o["wp_salt"], "SPIKE_TOKEN": o["spike_token"]}, open(sys.argv[1], "w"))' "$W/secrets.json"
+  bundle_size_check || exit 1
   (cd "$APP" && npx wrangler deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/secrets.json") > "$W/user.log" 2>&1 \
     || { rm -f "$W/secrets.json"; tail -20 "$W/user.log"; exit 1; }
   rm -f "$W/secrets.json"
