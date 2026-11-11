@@ -472,6 +472,63 @@ async function findKVNamespaceIdByTitle(ctx, title) {
 }
 
 
+// Delete a KV namespace by EXACT title. Absent (no such title, or a 404 on the
+// delete) is success: teardown is re-run until it completes, so it must be
+// idempotent. A list that is refused THROWS rather than reading as absent, because
+// "could not look" and "not there" are different answers for a delete.
+export async function deleteKVNamespaceByTitle(ctx, title) {
+  const id = await findKVNamespaceIdByTitleStrict(ctx, title);
+  if (!id) return { kvNamespace: title, deleted: false, existed: false };
+  const r = await cfFetch(ctx.token, 'DELETE', `/accounts/${ctx.acct}/storage/kv/namespaces/${id}`, { fetchImpl: ctx.fetchImpl });
+  if (r.ok || r.status === 404) return { kvNamespace: title, id, deleted: true };
+  throw opError('deleteKVNamespaceByTitle', title, r);
+}
+
+async function findKVNamespaceIdByTitleStrict(ctx, title) {
+  for (let page = 1; page <= 50; page++) {
+    const r = await cfFetch(ctx.token, 'GET',
+      `/accounts/${ctx.acct}/storage/kv/namespaces?per_page=100&page=${page}`, { fetchImpl: ctx.fetchImpl });
+    if (!r.ok) throw opError('list KV namespaces', title, r);
+    const list = Array.isArray(r.result) ? r.result : [];
+    const found = list.find((n) => n && n.title === title);
+    if (found) return found.id;
+    if (list.length < 100) break;
+  }
+  return null;
+}
+
+// A KV namespace for a site that is NOT yet registered, guaranteed EMPTY. Titles
+// are derived from the site name, so a namespace that already exists under this
+// title is left over: either from an earlier attempt at this same provision (it
+// never served, nothing is lost) or from a removed site of the same name (its
+// cached values must not reach the new site). Either way, delete it and create it
+// again. Call this only on the fresh-provision path, never for a registered site.
+export async function freshKVNamespace(ctx, title) {
+  const ns = await ensureKVNamespace(ctx, title);
+  if (ns.created) return ns;
+  await deleteKVNamespaceByTitle(ctx, title);
+  const again = await ensureKVNamespace(ctx, title);
+  if (!again.created) throw new Error(`freshKVNamespace: ${title} still exists after its delete; refusing to reuse it`);
+  return { ...again, replaced: true };
+}
+
+// Delete a queue by EXACT name. Absent is success; a refused list throws.
+export async function deleteQueueByName(ctx, name) {
+  let id = null;
+  for (let page = 1; page <= 50 && !id; page++) {
+    const r = await cfFetch(ctx.token, 'GET', `/accounts/${ctx.acct}/queues?per_page=100&page=${page}`, { fetchImpl: ctx.fetchImpl });
+    if (!r.ok) throw opError('list queues', name, r);
+    const list = Array.isArray(r.result) ? r.result : [];
+    const found = list.find((q) => q && q.queue_name === name);
+    if (found) id = found.queue_id || found.id;
+    if (list.length < 100) break;
+  }
+  if (!id) return { queue: name, deleted: false, existed: false };
+  const d = await cfFetch(ctx.token, 'DELETE', `/accounts/${ctx.acct}/queues/${id}`, { fetchImpl: ctx.fetchImpl });
+  if (d.ok || d.status === 404) return { queue: name, id, deleted: true };
+  throw opError('deleteQueueByName', name, d);
+}
+
 // createKvNamespace: the descriptor-table resourceCreateOp name for a KV
 // namespace create (#201 Phase 1). ensureKVNamespace already implements the
 // idempotent-by-title create (approach A's OC_KV uses it), so this is an ALIAS,
