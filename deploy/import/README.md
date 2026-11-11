@@ -76,6 +76,10 @@ IMPORT_CONTENT=... IMPORT_THEMES=... IMPORT_PLUGINS=... IMPORT_MU_PLUGINS="shop-
 
 Tests: `tests/run.sh` section 6b. A mutation with the name check off lets a site's `edge-cache.php` replace the framework's, and the test turns red.
 
+## Into a Workers for Platforms site
+
+For a site of `deploy/wfp`, use `deploy/wfp/site import <name>` (see `deploy/wfp/README.md`, "Importing an existing site"). It reads the site's origin, `SPIKE_TOKEN` and media bucket from that site's workspace. It makes a key for the bucket and deletes it, and passes the bucket and key to `import.sh` as `MEDIA_BUCKET`, `R2_ENDPOINT`, `R2_KEY_ID` and `R2_SECRET`. With those four set, `import.sh` reads no Terraform state for the uploads.
+
 ## Read the source over SSH
 
 In place of `DUMP` and `CONTENT`, give the server and the WordPress directory there:

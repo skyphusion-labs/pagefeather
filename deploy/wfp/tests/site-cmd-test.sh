@@ -10,6 +10,9 @@
 #   remove nine   nothing of nine exists: refused
 #   add Bad_Name  a bad name: refused before any call
 #   add probe     the reserved name: refused
+#   import one    no SQLITE or DUMP: refused before any call
+#   import nine   nothing of nine exists: refused
+#   import Bad_Name  a bad name: refused before any call
 # Exits 0 only when every case gives what it must. Needs bash, curl, python3.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -52,5 +55,8 @@ run_case "add four" "workspace four"
 run_case "remove nine" "no site nine"
 run_case "add Bad_Name" "bad site name"
 run_case "add probe" "bad site name"
+run_case "import one" "needs SQLITE"
+SQLITE=/dev/null run_case "import nine" "no site nine"
+SQLITE=/dev/null run_case "import Bad_Name" "bad site name"
 echo "$fails failing case(s)"
 exit $fails

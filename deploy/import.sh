@@ -41,6 +41,10 @@
 # the same report as a dump; it refuses a prefix other than wp_, a driver newer
 # than the pinned one, a non-empty WAL beside the file and a multisite network.
 #
+# Media target from the caller: MEDIA_BUCKET, R2_ENDPOINT, R2_KEY_ID and
+# R2_SECRET together, in place of NAME, put the uploads with a key the caller
+# made and deletes (deploy/wfp "site import" does this for a WfP site).
+#
 # Options: OLD_ORIGIN (default: the home option of the dump), DRY_RUN=1 (stop
 # before the import; print what would change), SKIP_MEDIA=1 (do not send the
 # uploads; the script says that the images are missing).
@@ -153,6 +157,14 @@ python3 "$IMP/search-replace.py" "$WORK/site.sqlite" "$OLD_ORIGIN" "$NEW_ORIGIN"
 media_step() {
   if [ -n "$SRC_CONTENT" ] && [ -d "$SRC_CONTENT/uploads" ] && [ -n "${SKIP_MEDIA:-}" ]; then
     echo "media: SKIP_MEDIA is set: the uploads are NOT in R2, so the site's images are missing"
+  elif [ -n "$SRC_CONTENT" ] && [ -d "$SRC_CONTENT/uploads" ] && [ -n "${MEDIA_BUCKET:-}" ]; then
+    # The caller made the key (deploy/wfp "site import", from the site's own
+    # workspace) and deletes it after: this step reads no Terraform state.
+    : "${R2_ENDPOINT:?MEDIA_BUCKET needs R2_ENDPOINT}" "${R2_KEY_ID:?MEDIA_BUCKET needs R2_KEY_ID}" "${R2_SECRET:?MEDIA_BUCKET needs R2_SECRET}"
+    export R2_KEY_ID R2_SECRET
+    "$IMP/media.sh" "$R2_ENDPOINT" "$MEDIA_BUCKET" "$SRC_CONTENT"
+    "$IMP/media.sh" "$R2_ENDPOINT" "$MEDIA_BUCKET" "$SRC_CONTENT" | tee "$WORK/media-check.txt"
+    grep -q '^media: 0 sent, [0-9]* already there, 0 failed$' "$WORK/media-check.txt" || { echo "media: the check run sent files again" >&2; exit 1; }
   elif [ -n "$SRC_CONTENT" ] && [ -d "$SRC_CONTENT/uploads" ]; then
     : "${NAME:?set NAME (the Terraform workspace of deploy.sh) to put the uploads in R2, or SKIP_MEDIA=1}"
     : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}" "${ACCOUNT_ID:?set ACCOUNT_ID}"

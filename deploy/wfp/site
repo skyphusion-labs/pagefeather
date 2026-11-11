@@ -4,6 +4,7 @@
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site remove <name>
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site update <name>    (or: update --all)
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site list
+#   CLOUDFLARE_API_TOKEN=... SQLITE=<file>|DUMP=<file> [CONTENT=<wp-content.tar.gz>] deploy/wfp/site import <name>
 # The shared pieces must exist (up.sh). add builds nothing: b-dosql must be
 # built (up.sh, or BUILD=1 here). Use the same WFP_STATE as up.sh.
 #
@@ -19,7 +20,7 @@ set -euo pipefail
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
 cmd=${1:-}; s=${2:-}
 if [ "$cmd" = list ]; then list_sites; exit 0; fi
-case "$cmd" in add|remove|update) ;; *) echo "usage: site add|remove|update <name> | site update --all | site list" >&2; exit 2 ;; esac
+case "$cmd" in add|remove|update|import) ;; *) echo "usage: site add|remove|update|import <name> | site update --all | site list" >&2; exit 2 ;; esac
 tfr shared init -input=false >/dev/null
 KV_ID=$(tfr shared output -raw kv_namespace_id 2>/dev/null) || { echo "no shared pieces (run up.sh first)" >&2; exit 2; }
 [ -n "$KV_ID" ] || { echo "no shared pieces (run up.sh first)" >&2; exit 2; }
@@ -113,6 +114,51 @@ update_one() {
   [ "${COUNT_ROWS:-0}" = 1 ] && echo "site $s: rows after (rolled back): $(row_count "$ORIGIN" "$TOK")"
   return 1
 }
+
+# Import an existing WordPress site into one site (deploy/import.sh, issue #31,
+# for deploy/wfp). The site must exist (site add). Everything the import needs
+# comes from the site's own workspace: its origin, its SPIKE_TOKEN, its media
+# bucket. With CONTENT, the uploads go into that bucket with a key that can
+# reach only that bucket. The key is made here with -target (it depends on
+# nothing, so nothing else changes), and deleted after the import, also when
+# the import fails. The import replaces the site's whole database.
+import_one() {
+  local s=$1
+  valid_site "$s" || { echo "bad site name '$s': lower case, digits, hyphens; 1 to 30; not probe" >&2; return 2; }
+  [ -n "${SQLITE:-}${DUMP:-}" ] || { echo "site import needs SQLITE=<file> or DUMP=<mysqldump file>" >&2; return 2; }
+  has_ws "$s" || { echo "no site $s (run site add first)" >&2; return 2; }
+  tfr site init -input=false >/dev/null; tfr site workspace select "$s" >/dev/null
+  # The hostname, Custom Domain and zone the workspace records (lib.sh site_vars):
+  # the import's origin is the site's real one, and the key's -target apply
+  # passes the same values, so it can never re-key the entry or move the domain.
+  site_vars "$s" "$SUB" "$KV_ID" || return 1
+  local HOST=$REC_HOST
+  local VARS=("${REC_VARS[@]}" -var "build=$(entry_build "$s")")
+  local TOK; TOK=$(tfr site output -raw spike_token)
+  local need_key=0
+  if [ -n "${CONTENT:-}" ] && [ -z "${DRY_RUN:-}" ] && [ -z "${SKIP_MEDIA:-}" ]; then need_key=1; fi
+  key() { tfr site apply -input=false -auto-approve "${VARS[@]}" -var "media_import=$1" -target=cloudflare_account_token.media_import >/dev/null; }
+  if [ "$need_key" = 1 ]; then
+    trap 'key false || echo "site $s: DELETE THE IMPORT KEY: deploy/wfp/site import left cloudflare_account_token.media_import in workspace $s" >&2' EXIT
+    key true
+  fi
+  local rc=0
+  URL="https://$HOST" SPIKE_TOKEN="$TOK" \
+    MEDIA_BUCKET="$([ "$need_key" = 1 ] && media_bucket "$s")" \
+    R2_ENDPOINT="$([ "$need_key" = 1 ] && tfr site output -raw r2_endpoint)" \
+    R2_KEY_ID="$([ "$need_key" = 1 ] && tfr site output -raw media_import_access_key_id)" \
+    R2_SECRET="$([ "$need_key" = 1 ] && tfr site output -raw media_import_secret_access_key)" \
+    NAME="" "$ROOT/deploy/import.sh" || rc=$?
+  if [ "$need_key" = 1 ]; then
+    key false; trap - EXIT
+    [ -z "$(tfr site output -raw media_import_access_key_id 2>/dev/null)" ] || { echo "site $s: the import key is still in the state" >&2; return 1; }
+    echo "site $s: import key deleted"
+  fi
+  [ "$rc" = 0 ] && echo "site import $s: done, https://$HOST"
+  return "$rc"
+}
+
+if [ "$cmd" = import ]; then import_one "$s"; exit $?; fi
 
 if [ "$cmd" = update ]; then
   if [ "$s" = "--all" ]; then

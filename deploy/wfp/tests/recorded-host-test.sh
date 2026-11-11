@@ -43,9 +43,9 @@ STUB_MODE=nozone; export STUB_MODE
 out=$(site_vars shop sub kv1 2>&1); rc=$?
 check "a Custom Domain with no zone in the state stops" "$rc:$(printf '%s' "$out" | grep -c 'no zone_id')" "1:1"
 # The callers use it: an update and a remove read the recorded values.
-check "site update and remove use site_vars" "$(grep -c 'site_vars "\$s" "\$SUB" "\$KV_ID"' "$HERE/../site")" "2"
+check "site update, remove and import use site_vars" "$(grep -c 'site_vars "\$s" "\$SUB" "\$KV_ID"' "$HERE/../site")" "3"
 check "site.sh down uses site_vars" "$(grep -c 'site_vars "\$s" "\$SUB" "\$KV_ID"' "$HERE/../site.sh")" "1"
-check "site update applies the recorded vars" "$(grep -c 'REC_VARS\[@\]' "$HERE/../site")" "2"
+check "site update and import apply the recorded vars" "$(grep -c 'REC_VARS\[@\]' "$HERE/../site")" "3"
 STUB_MODE=apex; export STUB_MODE SUB=sub; site_vars ggc sub kv1
 check "site_key: the recorded key after site_vars" "$(site_key ggc)" "ggc.sh"
 check "site_key: another site is still computed" "$(site_key blog)" "wp-blog.sub.workers.dev"
