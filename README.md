@@ -28,24 +28,29 @@ what you see on ggc.sh is the uncached path, not the cached one.
 
 ## Quickstart
 
-> **Unverified end to end.** The provision CLI starts and its 11 offline test files pass from a
-> fresh clone. The full run below (a real site on a real account) is being measured now; until
-> it is, follow [docs/framework.md](docs/framework.md).
+> **Not yet run end to end from a fresh clone.** The commands below are the `deploy/wfp` flow in
+> [docs/operator.md](docs/operator.md), the one the isolation proofs use. A measured run of
+> `site add` and `site remove` is next. Do not use `deploy/provision/cli.mjs add` as a quickstart
+> yet: measured 2026-11-11, it makes the site's parts but no dispatcher, so the site answers 404 on
+> `workers.dev`, and the CLI has no `remove` or `list`.
 
-You need a Cloudflare account on the **Workers for Platforms Paid** plan, an API token with the
-scopes in [docs/framework.md](docs/framework.md) ("What you need"), Node and Wrangler 4.107.0 or
-later, and the b-dosql worker bundle, built once. Then:
+You need a Cloudflare account on the **Workers for Platforms Paid** plan, an API token and the tools
+listed in [docs/operator.md](docs/operator.md) ("What you need": Node, Wrangler 4.107.0 or later,
+Terraform 1.5 or later). Then:
 
 ```sh
-deploy/wfp/up.sh                                   # once: the dispatch namespace, KV site map, outbound Worker
-export CLOUDFLARE_ACCOUNT_ID=<your account id>
 export CLOUDFLARE_API_TOKEN=<the token>
-export WFP_NAMESPACE=wp-wfp
-export WFP_KV_ID=<the KV site map id from up.sh>
-export WFP_SUBDOMAIN=<your workers.dev subdomain, or a routed zone>
-export BDOSQL_BUNDLE_DIR=<the built b-dosql bundle dir>
-node deploy/provision/cli.mjs add --kind wp blog   # a blog, or a WooCommerce store: same command
+export ACCOUNT_ID=<your Cloudflare account id>   # set it: the scripts default to an account that is not yours
+export SITES="blog"                              # your site names; a blog or a WooCommerce store
+./deploy/wfp/up.sh                # once: builds b-dosql, the namespace, KV site map, outbound Worker, SITES
+./deploy/wfp/site add shop        # one more site; refuses if any part of "shop" exists already
+./deploy/wfp/site list            # the sites you have
+./deploy/wfp/site remove shop     # checks that every part is gone
 ```
+
+Each site answers at `https://wp-<name>.<your-subdomain>.workers.dev` and installs WordPress on
+first boot. The admin user is `admin`; its password is a Terraform output (docs/operator.md shows
+the command).
 
 Coming from a LAMP host? Read [docs/from-lamp-to-wfp.md](docs/from-lamp-to-wfp.md) first. Every
 document is indexed in [docs/](docs/README.md).
