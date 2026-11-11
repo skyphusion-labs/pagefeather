@@ -127,10 +127,13 @@ import_one() {
   valid_site "$s" || { echo "bad site name '$s': lower case, digits, hyphens; 1 to 30; not probe" >&2; return 2; }
   [ -n "${SQLITE:-}${DUMP:-}" ] || { echo "site import needs SQLITE=<file> or DUMP=<mysqldump file>" >&2; return 2; }
   has_ws "$s" || { echo "no site $s (run site add first)" >&2; return 2; }
-  local CD; CD=$([ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && echo true || echo false)
-  local HOST; HOST=$(site_host "$s" "$SUB")
   tfr site init -input=false >/dev/null; tfr site workspace select "$s" >/dev/null
-  local VARS=(-var "name=$s" -var "hostname=$HOST" -var "kv_namespace_id=$KV_ID" -var "custom_domain=$CD" -var "build=$(entry_build "$s")")
+  # The hostname, Custom Domain and zone the workspace records (lib.sh site_vars):
+  # the import's origin is the site's real one, and the key's -target apply
+  # passes the same values, so it can never re-key the entry or move the domain.
+  site_vars "$s" "$SUB" "$KV_ID" || return 1
+  local HOST=$REC_HOST
+  local VARS=("${REC_VARS[@]}" -var "build=$(entry_build "$s")")
   local TOK; TOK=$(tfr site output -raw spike_token)
   local need_key=0
   if [ -n "${CONTENT:-}" ] && [ -z "${DRY_RUN:-}" ] && [ -z "${SKIP_MEDIA:-}" ]; then need_key=1; fi
