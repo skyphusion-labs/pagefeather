@@ -34,6 +34,13 @@
 # SSH_EXCLUDE replaces the folders of wp-content that are not copied (default:
 # cache upgrade ai1wm-backups updraft backups-dup-lite wflogs).
 #
+# SQLITE input: SQLITE=<file> in place of DUMP, for a source that is already
+# SQLite made by the sqlite-database-integration driver (a c1 container store,
+# or its Litestream replica restored to a file). Variant b-dosql only.
+# deploy/import/sqlite-source.php copies it (the file is only read) and writes
+# the same report as a dump; it refuses a prefix other than wp_, a driver newer
+# than the pinned one, a non-empty WAL beside the file and a multisite network.
+#
 # Options: OLD_ORIGIN (default: the home option of the dump), DRY_RUN=1 (stop
 # before the import; print what would change), SKIP_MEDIA=1 (do not send the
 # uploads; the script says that the images are missing).
@@ -42,11 +49,15 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 APP="$ROOT/spikes/b2-wordpress"
 IMP="$ROOT/deploy/import"
 VARIANT=${VARIANT:-b-dosql}
-if [ -n "${SSH:-}" ]; then
+if [ -n "${SQLITE:-}" ]; then
+  [ -z "${DUMP:-}" ] && [ -z "${SSH:-}" ] || { echo "SQLITE replaces DUMP and SSH: set one of them" >&2; exit 2; }
+  [ -r "$SQLITE" ] || { echo "cannot read SQLITE=$SQLITE" >&2; exit 2; }
+  [ "${VARIANT:-b-dosql}" = b-dosql ] || { echo "SQLITE input supports VARIANT=b-dosql only" >&2; exit 2; }
+elif [ -n "${SSH:-}" ]; then
   : "${SSH_WP:?set SSH_WP to the WordPress directory on the server}"
   [ -z "${DUMP:-}" ] && [ -z "${CONTENT:-}" ] || { echo "SSH replaces DUMP and CONTENT: set one or the other" >&2; exit 2; }
 else
-  : "${DUMP:?set DUMP to the mysqldump file (or SSH and SSH_WP)}"
+  : "${DUMP:?set DUMP to the mysqldump file (or SSH and SSH_WP, or SQLITE)}"
   [ -r "$DUMP" ] || { echo "cannot read DUMP=$DUMP" >&2; exit 2; }
 fi
 case "$VARIANT" in b-dosql|c1|a) ;; *) echo "VARIANT=$VARIANT: import supports b-dosql, c1 and a (deploy/import/README.md)" >&2; exit 2 ;; esac
@@ -112,7 +123,11 @@ DRV="$APP/build/cache/sqlite-database-integration"
 # dump, so a real store's dump needs more than PHP's default 128 MB CLI limit
 # (measured 2026-11-07: a 300-product, 200-order WooCommerce dump exhausted
 # 128 MB). IMPORT_PHP_MEM overrides; -1 removes the cap.
-php -d memory_limit="${IMPORT_PHP_MEM:-2048M}" "$IMP/dump-to-sqlite.php" "$DRV" "$DUMP" "$WORK/site.sqlite" > "$WORK/report.json"
+if [ -n "${SQLITE:-}" ]; then
+  php "$IMP/sqlite-source.php" "$DRV" "$SQLITE" "$WORK/site.sqlite" > "$WORK/report.json"
+else
+  php -d memory_limit="${IMPORT_PHP_MEM:-2048M}" "$IMP/dump-to-sqlite.php" "$DRV" "$DUMP" "$WORK/site.sqlite" > "$WORK/report.json"
+fi
 python3 - "$WORK/report.json" <<'PY'
 import json, sys
 r = json.load(open(sys.argv[1]))
