@@ -257,13 +257,16 @@ closes that:
 - `php/zone-cache-purge.php` (a gated mu-plugin) hooks `transition_post_status`
   (publish/unpublish/trash of a viewable post type), `comment_post` and
   `transition_comment_status` (approved comments), and `switch_theme` /
-  `customize_save_after` / `wp_update_nav_menu` (site-wide -> purge everything).
+  `customize_save_after` / `wp_update_nav_menu` (site-wide -> purge the site's own host).
 - For a post it queues the permalink, the home page, the main feed and the
   post's comments feed. Archive pages are left to `edge_ttl` (the issue's
   trade-off).
 - It batches every URL a request produces into ONE call at `shutdown`, deduped.
-  Over 30 URLs, or a site-wide change, falls back to `purge_everything` (Free
-  allows 30 URLs per purge-by-URL call).
+  Over 30 URLs, or a site-wide change, falls back to a purge of the site's own
+  host, `{ hosts: [<host>] }` (Free allows 30 URLs per purge-by-URL call). A zone
+  can hold many sites, so a site never purges the whole zone: `index.js` drops any
+  URL that is not on the site's own host (`SITE_ORIGIN`), and with no own host it
+  purges nothing.
 - The call goes PHP -> `index.js` (`purgeZone` op, via `post_message_to_js`) ->
   `purge-zone.mjs` helpers -> `POST /zones/{zone}/purge_cache`. The scoped Cache
   Purge token (`PURGE_TOKEN`) and zone id (`PURGE_ZONE`) live in the WORKER; PHP
