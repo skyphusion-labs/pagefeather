@@ -3,7 +3,7 @@
 # (-K <(printf ...)), never as -H on the command line, where every user of the host can read
 # them in the process list while curl runs. This fails on a -H carrying either value in the
 # deploy and test scripts, and proves the -K form delivers the headers without exposing them.
-# spikes/ is local wrangler dev against localhost with a published default token and is out of scope.
+# This file holds the -H form on purpose (a control), so it is not scanned. spikes/ is local wrangler dev against localhost with a published default token and is out of scope.
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
@@ -21,7 +21,7 @@ check "control: -H x-spike-token with a variable is found" "$(scan "$T/a.sh" | w
 check "control: -H x-admin-password with a variable is found" "$(scan "$T/b.sh" | wc -l | tr -d ' ')" "1"
 check "control: the -K form is not flagged" "$(scan "$T/c.sh" | wc -l | tr -d ' ')" "0"
 
-FILES=(); while IFS= read -r f; do FILES+=("$f"); done < <(git ls-files 'deploy/*.sh' 'deploy/**/*.sh' 'tests/*.sh' 'tests/**/*.sh' | sort -u)
+FILES=(); while IFS= read -r f; do FILES+=("$f"); done < <(git ls-files 'deploy/*.sh' 'deploy/**/*.sh' 'tests/*.sh' 'tests/**/*.sh' | grep -v '^deploy/tests/curl-argv-test\.sh$' | sort -u)
 check "the scan read a real population of scripts" "$([ "${#FILES[@]}" -gt 15 ] && echo yes || echo no)" "yes"
 check "no -H carries the spike token or admin password in a deploy or test script" "$(scan "${FILES[@]}" | wc -l | tr -d ' ')" "0"
 scan "${FILES[@]}" | sed 's/^/        /'
