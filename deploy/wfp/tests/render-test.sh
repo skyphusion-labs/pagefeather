@@ -72,7 +72,23 @@ good = (a["name"] == "site-cacheprobe" and "workers_dev" not in a and b["name"] 
 print(1 if good else 0)' "$T/cp-ns.toml" "$T/cp-direct.toml")"
 okn=1
 for n in one two a-b a1 x23456789012345678901234567890; do valid_site "$n" || { okn=0; echo "  valid_site refused $n"; }; done
-for n in "" -a a- A a_b a.b probe x234567890123456789012345678901; do valid_site "$n" && { okn=0; echo "  valid_site took '$n'"; }; done
-ok "valid_site takes 1 to 30 of [a-z0-9-] with no end hyphen, not probe" "$okn"
+for n in "" -a a- A a_b a.b probe dispatch cacheprobe cacheprobe-direct wfp-outbound wfp-x x234567890123456789012345678901; do valid_site "$n" && { okn=0; echo "  valid_site took '$n'"; }; done
+ok "valid_site takes 1 to 30 of [a-z0-9-] with no end hyphen, and no shared Worker name" "$okn"
+
+# Derived, so a NEW shared Worker cannot be missed: every wp-<x> Worker name this tree
+# deploys or deletes by a literal name (wrangler templates, --name, the shared
+# dispatcher default) must be refused as a site name, because wp-<site> is a site's
+# dispatcher and `site remove <x>` would delete the shared one.
+# Two sources: literal deploy names, and the workers.dev hosts the checks probe
+# (https://wp-<x>.<subdomain>), which is where wp-cacheprobe and wp-cacheprobe-direct
+# are named. A templated name (wp-@SITE@, wp-$n, wp-%s) is per site and is not matched.
+# cross.sh is left out of the host scan: its wp-crossa and wp-crossb are the
+# dispatchers of two ordinary test SITES (crossa, crossb) it adds, not shared Workers.
+shared=$( (cd "$WFP" && grep -rhoE '(name = "|--name "?|SHARED_DISPATCHER:-)wp-[a-z0-9-]+' --include='*.toml' --include='*.sh' --include=site . ;
+  cd "$WFP" && grep -rhoE 'https://wp-[a-z0-9-]+\.' --include='*.py' --include='*.sh' --exclude-dir=tests --exclude=cross.sh . ) | sed -E 's/.*(wp-[a-z0-9-]*[a-z0-9]).*$/\1/' | sort -u)
+okd=1; nd=0
+for w in $shared; do nd=$((nd + 1)); valid_site "${w#wp-}" && { okd=0; echo "  valid_site takes '${w#wp-}', which makes the shared Worker $w"; }; done
+[ "$nd" -ge 5 ] || { okd=0; echo "  found only $nd shared Worker name(s), want 5 or more; the scan is broken"; }
+ok "every shared wp-<x> Worker in deploy/wfp ($nd found) is refused as a site name" "$okd"
 echo "$fails failing check(s)"
 exit $fails

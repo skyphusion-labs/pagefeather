@@ -32,8 +32,10 @@ all reject it. Design: issue #154. Worker hardening: issue #182 and `HARDENING.m
   for tests), `sha256Hex` (used only by the dormant c1 token op), the R2
   permission-group ids and the bucket resource format.
 - `ops.mjs`: the idempotent ops. Used by provisioning: `createR2Bucket`,
-  `ensureKVNamespace` (the per-site OC_KV namespace for approach A, idempotent by
-  title), `putSecret`, `writeKVMapEntry`, `deployNamespaceScript` (namespace
+  `ensureKVNamespace` (idempotent by title), `freshKVNamespace` (the per-site OC_KV
+  namespace on a fresh provision: a namespace already under the site's title is
+  deleted and created again empty, so a reused site name never binds an old
+  site's cache), `putSecret`, `writeKVMapEntry`, `deployNamespaceScript` (namespace
   script, no build), `ensureProxiedHostname`, `installWordPress`,
   `addCustomHostname`, and the teardown ops. **Dormant, not a live path:**
   `mintScopedR2Token`, `deployContainerWorkerFromDigest` and
@@ -62,7 +64,10 @@ all reject it. Design: issue #154. Worker hardening: issue #182 and `HARDENING.m
   concurrency caps as one step, so parallel requests cannot all pass a stale count.
 - `demo.mjs` (#182 Path B): the public demo front door controls, per-IP + global
   rate limit (KV counter, a fast first refusal), the live-demo concurrency cap, and the reaper that
-  fully tears down every expired demo (script, bucket, DNS record, KV entry).
+  fully tears down every expired demo (script, bucket, the per-site OC_KV
+  namespace, the email queue and its dead-letter queue, DNS record, KV entry).
+  `deleteKVNamespaceByTitle` and `deleteQueueByName` treat "not there" as done
+  and throw when the list is refused, so the entry stays for the next run.
   A demo site is built locked: it has no `send_email` binding and carries
   `DEMO_LOCK=on`, so it sends no mail and WordPress cannot install, update or edit
   plugin or theme code (`spikes/b2-wordpress/site-lock.mjs`).

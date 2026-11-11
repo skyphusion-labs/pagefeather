@@ -124,7 +124,7 @@ update_one() {
 # the import fails. The import replaces the site's whole database.
 import_one() {
   local s=$1
-  valid_site "$s" || { echo "bad site name '$s': lower case, digits, hyphens; 1 to 30; not probe" >&2; return 2; }
+  valid_site "$s" || { echo "bad site name '$s': lower case, digits, hyphens; 1 to 30; not a shared Worker name (probe, dispatch, cacheprobe, cacheprobe-direct, wfp-*)" >&2; return 2; }
   [ -n "${SQLITE:-}${DUMP:-}" ] || { echo "site import needs SQLITE=<file> or DUMP=<mysqldump file>" >&2; return 2; }
   has_ws "$s" || { echo "no site $s (run site add first)" >&2; return 2; }
   tfr site init -input=false >/dev/null; tfr site workspace select "$s" >/dev/null
@@ -167,7 +167,7 @@ if [ "$cmd" = update ]; then
   fi
   update_one "$s"; exit $?
 fi
-valid_site "$s" || { echo "bad site name '$s': lower case, digits, hyphens; 1 to 30; not probe" >&2; exit 2; }
+valid_site "$s" || { echo "bad site name '$s': lower case, digits, hyphens; 1 to 30; not a shared Worker name (probe, dispatch, cacheprobe, cacheprobe-direct, wfp-*)" >&2; exit 2; }
 
 if [ "$cmd" = add ]; then
   fp=$(site_footprint "$s")
