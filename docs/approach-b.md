@@ -714,6 +714,15 @@ the action. A verifier that is unreachable (a timeout or a network failure, told
 token by an error field the op sets) is also rejected, unless the site opts in through the
 `skyphusion_turnstile_failopen` filter, so an outage never silently drops the protection.
 
+A token passes only if siteverify says it was solved on this site's own host (the hostname of
+`SITE_ORIGIN`) by this site's widget (the action `turnstile-spin-v1`). A token for another host or
+action is a failed token, not an outage. The documented test secret keys always reply
+`example.com` with no action, so these two checks are skipped for them.
+
+**Turnstile protects the classic checkout; the block checkout is not supported yet.** The block
+checkout posts to the Store API (`/wc/store/v1/checkout`), which does not run
+`woocommerce_checkout_process`, and it renders no widget.
+
 Box test (no Cloudflare account or widget needed; the documented test SECRET keys fix the
 outcome). `node tests/turnstile-box.mjs` calls the real siteverify endpoint through `verifyToken`:
 with `1x0000000000000000000000000000000AA` (always passes) a good token returns `success:true`;

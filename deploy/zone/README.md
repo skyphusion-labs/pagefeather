@@ -84,7 +84,15 @@ This is the classic Page-Rules-to-Cache-Rules migration trap; it is fixed here.
 The bypass rule (`cache:false`) fires on any of:
 
 - **Path**: `/wp-admin`, `/wp-login`, `/wp-json`, `/wp-cron`, `/cart`,
-  `/checkout`, `/my-account`.
+  `/checkout`, `/my-account`, `/wp-comments-post`, `/skyphusion-invoice`, and
+  every operator path under `/_` (`/_build`, `/_dbexport`, `/_dbcounts` and the
+  rest). The deploy tools call the operator paths with GET over the public
+  origin, and the cache key is the URL, not the token header, so an operator
+  response must never be stored at the edge.
+- **Query** (`http.request.uri.query contains ...`): `rest_route=` (the REST
+  API alias that does not use `/wp-json`) and `wc-ajax=` (WooCommerce AJAX).
+- **Header**: any request that carries an `Authorization` header (Application
+  Passwords, Basic auth). Those responses are per user.
 - **Cookie** (`http.cookie contains ...`):
   - `wordpress_logged_in` (covers `wordpress_logged_in_<hash>`): any logged-in
     user.
@@ -99,6 +107,11 @@ The bypass rule (`cache:false`) fires on any of:
     and `woocommerce_recently_viewed`. So any shopper with a session or a cart
     bypasses the edge cache.
 - **Method**: any non-GET request (`http.request.method ne "GET"`).
+
+`deploy/zone/tests/cache-ruleset.test.mjs` checks both ruleset files: the bypass
+rule is last, it names every condition above, and, parsed and evaluated against
+sample requests, it bypasses each per-user and operator request and no plain
+anonymous page.
 
 Tradeoff noted: `woocommerce_recently_viewed` is set when an anonymous visitor
 views a product, so a browsing shopper bypasses the edge cache on subsequent
@@ -244,13 +257,16 @@ closes that:
 - `php/zone-cache-purge.php` (a gated mu-plugin) hooks `transition_post_status`
   (publish/unpublish/trash of a viewable post type), `comment_post` and
   `transition_comment_status` (approved comments), and `switch_theme` /
-  `customize_save_after` / `wp_update_nav_menu` (site-wide -> purge everything).
+  `customize_save_after` / `wp_update_nav_menu` (site-wide -> purge the site's own host).
 - For a post it queues the permalink, the home page, the main feed and the
   post's comments feed. Archive pages are left to `edge_ttl` (the issue's
   trade-off).
 - It batches every URL a request produces into ONE call at `shutdown`, deduped.
-  Over 30 URLs, or a site-wide change, falls back to `purge_everything` (Free
-  allows 30 URLs per purge-by-URL call).
+  Over 30 URLs, or a site-wide change, falls back to a purge of the site's own
+  host, `{ hosts: [<host>] }` (Free allows 30 URLs per purge-by-URL call). A zone
+  can hold many sites, so a site never purges the whole zone: `index.js` drops any
+  URL that is not on the site's own host (`SITE_ORIGIN`), and with no own host it
+  purges nothing.
 - The call goes PHP -> `index.js` (`purgeZone` op, via `post_message_to_js`) ->
   `purge-zone.mjs` helpers -> `POST /zones/{zone}/purge_cache`. The scoped Cache
   Purge token (`PURGE_TOKEN`) and zone id (`PURGE_ZONE`) live in the WORKER; PHP
