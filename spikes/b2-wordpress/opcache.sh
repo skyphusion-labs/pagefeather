@@ -55,5 +55,12 @@ fi
 [ "$drops" = 0 ] || { echo "/_opcache-dump: $drops runtime drops during priming (a recycle, a crash or a failed request): the OPcache would hold only what compiled after the last one. No OPcache files saved."; exit 1; }
 files=$(python3 -c "import zipfile, sys; print(len(zipfile.ZipFile(sys.argv[1]).namelist()))" build/opcache.zip.new)
 [ "$files" -gt 0 ] || { echo "/_opcache-dump gave an empty zip: no OPcache files saved"; exit 1; }
+# Never ship the compiled eval file of php.run (#294). It changes on every php.run, and with
+# validate_timestamps=0 a shipped copy made EVERY php.run on a deployed site run the priming
+# run's last script (the install answered nothing). index.js blacklists it; this refuses a
+# dump that still holds it, so a regression fails the build instead of the deploy.
+if python3 -c "import zipfile, sys; sys.exit(0 if any(n.endswith('internal/eval.php.bin') for n in zipfile.ZipFile(sys.argv[1]).namelist()) else 1)" build/opcache.zip.new; then
+  echo "/_opcache-dump holds internal/eval.php.bin (the php.run eval file): no OPcache files saved (#294)"; exit 1
+fi
 mv build/opcache.zip.new build/opcache.zip
 echo "opcache.zip $(wc -c < build/opcache.zip) bytes, $files files, isolate $iso, 0 runtime drops, $(grep -i '^x-files' build/opcache.headers | tr -d '\r')"
