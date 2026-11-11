@@ -8,13 +8,14 @@ GET  /_dbexport                 ndjson rows (by mode), or a non-200
 POST /_dbimport?replace=1       stores the body; 200 {"ok": true, ...} or an error
 PUT  /<bucket>/_snapshots/<k>   stores the bytes (unless truncate: stores short)
 GET  /<bucket>/_snapshots/<k>   the stored bytes (needs an AWS4 header)
-Modes: ok; export-empty; export-500; readback-truncate; put-500; import-error.
+Modes: ok; big (about 4 MB, a real store's size); export-empty; export-500; readback-truncate; put-500; import-error.
 """
 import http.server, sys, urllib.parse
 
 mode = sys.argv[2]
 store = {}
 ROWS = b'{"t":"wp_options","r":1}\n{"t":"wp_options","r":2}\n{"t":"wp_posts","r":1}\n'
+BIG = b"".join(b'{"sql":"INSERT INTO wp_postmeta VALUES (?)","params":["%s"]}\n' % (b"x" * 64 + str(i).encode()) for i in range(40000))
 
 
 class H(http.server.BaseHTTPRequestHandler):
@@ -35,6 +36,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self.send(500, b"err")
             if mode == "export-empty":
                 return self.send(200, b"\n  \n")
+            if mode == "big":
+                return self.send(200, BIG)
             return self.send(200, ROWS)
         if "/_snapshots/" in p:
             if not self.headers.get("authorization", "").startswith("AWS4-HMAC-SHA256"):
