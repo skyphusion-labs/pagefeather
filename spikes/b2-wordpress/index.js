@@ -5,6 +5,7 @@ import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, ha
 import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled } from './purge-zone.mjs';
+import { shouldArmAlarm } from './alarm-arm.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
@@ -2151,7 +2152,7 @@ export class PhpRuntime extends DurableObject {
 		}
 		}
 		// Keep the cron cadence unless the purge logic set a sooner retry alarm.
-		if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
+		if (shouldArmAlarm(await this.ctx.storage.getAlarm(), Date.now())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
 	}
 
 	async fetch(raw) {
@@ -2170,7 +2171,9 @@ export class PhpRuntime extends DurableObject {
 		if (!url.pathname.startsWith('/_')) {
 			lastOrigin = origin;
 			await this.ctx.storage.put(ORIGIN_KEY, origin);
-			if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
+			// A STALE alarm (long past, its run never completed) counts as none (#291): otherwise it
+			// blocks every later arm and the cron stops for good. alarm-arm.mjs.
+			if (shouldArmAlarm(await this.ctx.storage.getAlarm(), Date.now())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
 		}
 		const inboxMs = raw.headers.get(SENT_HEADER) ? Date.now() - Number(raw.headers.get(SENT_HEADER)) : null;
 		const req = new Request(raw);
