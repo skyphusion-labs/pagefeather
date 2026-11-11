@@ -79,7 +79,7 @@ print(1 if m and m.group(1) == "false" else 0)' "$SITE_TF")"
 # up.sh deploys the shared dispatcher in phase B, and down.sh removes it after
 # the sites, so a phase B teardown leaves the account clean (no orphan dispatcher).
 ok "up.sh deploys the shared dispatcher in phase B" "$(grep -q 'render_shared_dispatcher' "$HERE/../up.sh" && echo 1 || echo 0)"
-ok "down.sh removes the shared dispatcher in phase B" "$(grep -qF 'wrangler delete --name "$SHARED_DISPATCHER"' "$HERE/../down.sh" && echo 1 || echo 0)"
+ok "down.sh removes the shared dispatcher in phase B" "$(grep -qF 'deploy/wr" delete --name "$SHARED_DISPATCHER"' "$HERE/../down.sh" && echo 1 || echo 0)"
 
 # terraform validate, where terraform exists (CI runners have none, so skip).
 if command -v terraform >/dev/null 2>&1; then
