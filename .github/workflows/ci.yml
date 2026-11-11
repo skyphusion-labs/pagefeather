@@ -31,7 +31,7 @@ jobs:
       - name: Shell syntax
         run: for f in $(git ls-files '*.sh'); do bash -n "$f"; done
       - name: Wrangler is pinned and called through deploy/wr
-        # deploy/tools holds the exact version; a bare `npx wrangler` runs whatever is installed or latest.
+        # deploy/tools holds the exact version; a bare npx call runs whatever is installed or the latest.
         run: bash deploy/tests/wrangler-pin-test.sh
       - name: Dialect tests
         run: php spikes/b2-wordpress/tests/dialect-test.php
