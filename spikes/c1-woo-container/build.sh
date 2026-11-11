@@ -43,6 +43,8 @@ mkdir -p "$wp/wp-content/mu-plugins/r2-uploads"
 cp php/00-worker-call.php php/query-count.php php/c1-queue.php php/c1-purge-log.php php/c1-mail.php "$wp/wp-content/mu-plugins/"
 cp ../b2-wordpress/php/r2-uploads.php ../b2-wordpress/php/edge-cache.php ../b2-wordpress/php/woo-edge.php "$wp/wp-content/mu-plugins/"
 cp ../b2-wordpress/php/cf-images-editor.php "$wp/wp-content/mu-plugins/r2-uploads/"
+# IMPORT_MU_PLUGINS: the existing site's own mu-plugins, after the build's (content.sh --mu).
+[ -z "${IMPORT_CONTENT:-}" ] || [ -z "${IMPORT_MU_PLUGINS:-}" ] || ../../deploy/import/content.sh --mu "$IMPORT_CONTENT" "$wp/wp-content"
 cp php/wp-config.php "$wp/"
 cp php/install.php "$wp/"
 # Not in wp-content: container/entrypoint.sh copies it there when the Worker

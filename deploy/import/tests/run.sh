@@ -112,7 +112,7 @@ check "content: plugin replaced (no old file)" "$([ -f "$B/plugins/shop/shop.php
 check "content: one-file plugin" "$([ -f "$B/plugins/hello.php" ] && echo yes)" "yes"
 check "content: sqlite-database-integration kept" "$(cat "$B/plugins/sqlite-database-integration/load.php")" "<?php // build copy"
 check "content: drop-in not copied" "$([ ! -e "$B/object-cache.php" ] && grep -c 'drop-ins in the source, NOT copied (the build has its own): object-cache.php' "$T/content.out")" "1"
-check "content: mu-plugins listed, not copied" "$([ ! -e "$B/mu-plugins" ] && grep -c 'mu-plugins in the source, NOT copied.*host.php' "$T/content.out")" "1"
+check "content: mu-plugins listed, not copied" "$([ ! -e "$B/mu-plugins" ] && grep -c 'mu-plugins in the source, NOT copied unless named.*host.php' "$T/content.out")" "1"
 ln -s /etc "$T/src/wp-content/plugins/shop/etc"
 set +e; IMPORT_PLUGINS="shop" "$IMP/content.sh" "$T/src/wp-content" "$B" 2> /dev/null; code=$?; set -e
 check "content: symbolic link refused" "$code" "1"
@@ -123,6 +123,26 @@ for bad in "../x" "shop/sub" ".."; do
   set +e; IMPORT_PLUGINS="$bad" "$IMP/content.sh" "$T/src/wp-content" "$B" 2> /dev/null; code=$?; set -e
   check "content: name '$bad' refused" "$code" "1"
 done
+# 6b. mu-plugins by name, after the build's own (content.sh --mu).
+MB="$T/mubuild/wp-content"; mkdir -p "$MB/mu-plugins"; echo "<?php // framework copy" > "$MB/mu-plugins/edge-cache.php"
+"$IMP/content.sh" --mu "$T/src/wp-content" "$MB" 2> "$T/mu0.out"
+check "mu: none named, none copied" "$(find "$MB/mu-plugins" -type f | sed "s|$MB/mu-plugins/||" | sort | tr '\n' ' ')" "edge-cache.php "
+IMPORT_MU_PLUGINS="host.php" "$IMP/content.sh" --mu "$T/src/wp-content" "$MB" 2> "$T/mu1.out"
+check "mu: named file copied" "$(cmp -s "$T/src/wp-content/mu-plugins/host.php" "$MB/mu-plugins/host.php" && echo same)" "same"
+echo "<?php // the site's" > "$T/src/wp-content/mu-plugins/edge-cache.php"
+set +e; IMPORT_MU_PLUGINS="edge-cache.php" "$IMP/content.sh" --mu "$T/src/wp-content" "$MB" 2> "$T/mu2.err"; code=$?; set -e
+check "mu: a name the build has is refused, the build copy kept" "$code:$(cat "$MB/mu-plugins/edge-cache.php"):$(grep -c 'the build has its own' "$T/mu2.err" || true)" "1:<?php // framework copy:1"
+rm "$T/src/wp-content/mu-plugins/edge-cache.php"
+set +e; IMPORT_MU_PLUGINS="nothere.php" "$IMP/content.sh" --mu "$T/src/wp-content" "$MB" 2> /dev/null; code=$?; set -e
+check "mu: a missing name refused" "$code" "1"
+for bad in "../x" "a/b" ".."; do
+  set +e; IMPORT_MU_PLUGINS="$bad" "$IMP/content.sh" --mu "$T/src/wp-content" "$MB" 2> /dev/null; code=$?; set -e
+  check "mu: name '$bad' refused" "$code" "1"
+done
+mkdir -p "$T/src/wp-content/mu-plugins/linked"; ln -s /etc "$T/src/wp-content/mu-plugins/linked/etc"
+set +e; IMPORT_MU_PLUGINS="linked" "$IMP/content.sh" --mu "$T/src/wp-content" "$MB" 2> /dev/null; code=$?; set -e
+check "mu: symbolic link refused, nothing copied" "$code:$([ -e "$MB/mu-plugins/linked" ] && echo copied || echo none)" "1:none"
+rm "$T/src/wp-content/mu-plugins/linked/etc"; rmdir "$T/src/wp-content/mu-plugins/linked"
 
 # 7. Uploads: the list, then the upload loop against a stand-in for S3.
 "$IMP/media.sh" --list "$T/src/wp-content" > "$T/media.list" 2> "$T/media.skipped"
