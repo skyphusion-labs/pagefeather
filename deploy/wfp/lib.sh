@@ -55,7 +55,12 @@ row_count() { # row_count <origin> <token>
   curl -s -m 120 -H "x-spike-token: $2" "$1/_dbexport" 2>/dev/null | grep -c . || true
 }
 entry_build() { # entry_build <site>
-  api GET "/storage/kv/namespaces/$KV_ID/values/$(site_host "$1" "$SUB")" | python3 "$WFP/kv_build.py"
+  api GET "/storage/kv/namespaces/$KV_ID/values/$(site_key "$1")" | python3 "$WFP/kv_build.py"
+}
+# The site map key (= hostname) of <site>: the recorded one when site_vars has
+# read this site's workspace (REC_SITE), else the computed one.
+site_key() { # site_key <site>
+  if [ "${REC_SITE:-}" = "$1" ] && [ -n "${REC_HOST:-}" ]; then echo "$REC_HOST"; else site_host "$1" "$SUB"; fi
 }
 compat_date() { sed -n 's/^compatibility_date = "\(.*\)"/\1/p' "$APP/wrangler.toml" | head -1; }
 
@@ -311,15 +316,15 @@ wait_site() { # wait_site <origin>
 # absent; "site remove" checks that every part is absent after.
 site_footprint() { # site_footprint <name>
   local s=$1 c
-  if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ]; then
+  if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] || { [ "${REC_SITE:-}" = "$s" ] && [ "${REC_CD:-}" = true ]; }; then
     # Phase B: the per-site routing is the Custom Domain, not a per-site Worker.
-    if api GET "/workers/domains" | grep -q "\"$(site_host "$s" "$SUB")\""; then echo "domain yes"; else echo "domain no"; fi
+    if api GET "/workers/domains" | grep -q "\"$(site_key "$s")\""; then echo "domain yes"; else echo "domain no"; fi
   else
     c=$(api_code GET "/workers/scripts/$(dispatcher_name "$s")")
     case "$c" in 200) echo "dispatcher yes" ;; 404) echo "dispatcher no" ;; *) echo "dispatcher unknown" ;; esac
   fi
   echo "script $(ns_script_state "$(user_script "$s")")"
-  c=$(api_code GET "/storage/kv/namespaces/$KV_ID/values/$(site_host "$s" "$SUB")")
+  c=$(api_code GET "/storage/kv/namespaces/$KV_ID/values/$(site_key "$s")")
   case "$c" in 200) echo "entry yes" ;; 404) echo "entry no" ;; *) echo "entry unknown" ;; esac
   c=$(api_code GET "/r2/buckets/$(media_bucket "$s")")
   case "$c" in 200) echo "bucket yes" ;; 404) echo "bucket no" ;; *) echo "bucket unknown" ;; esac
@@ -329,6 +334,42 @@ footprint_absent() { # footprint_absent <footprint text>: 0 when every part is a
 }
 footprint_present() { # footprint_present <footprint text>: 0 when every part is there
   ! printf '%s\n' "$1" | grep -qvE '^(dispatcher yes|domain yes|script present|entry yes|bucket yes)$'
+}
+# What a site's workspace RECORDS: its hostname, whether it has a Custom
+# Domain, and that domain's zone. Prints "<hostname> <true|false> <zone_id|->",
+# or nothing when the workspace records no hostname (a site that was never
+# applied). Needs the site's workspace selected. For an existing site these
+# win over the computed ones (site_host, WFP_CUSTOM_DOMAIN, the zone_id
+# default): a site can be added with its own apex on its own zone (ggc.sh on
+# the ggc.sh zone), and an update, import or remove that recomputed them
+# would re-key its site map entry and replace its Custom Domain on another
+# zone, which takes the site off its domain.
+site_recorded() {
+  local host cd=false zone=-
+  host=$(tfr site output -raw hostname 2>/dev/null) || host=""
+  case "$host" in *[!A-Za-z0-9.-]*|"") return 0 ;; esac
+  if tfr site state list 2>/dev/null | grep -qxF 'cloudflare_workers_custom_domain.site[0]'; then
+    cd=true
+    zone=$(tfr site state show -no-color 'cloudflare_workers_custom_domain.site[0]' 2>/dev/null | sed -n 's/^ *zone_id *= *"\([0-9a-f]*\)"$/\1/p' | head -1)
+    [ -n "$zone" ] || { echo "site_recorded: the Custom Domain in the state has no zone_id; stopping" >&2; return 1; }
+  fi
+  echo "$host $cd $zone"
+}
+# The -var arguments for an EXISTING site: the recorded values when there are
+# some, else the computed ones (phase A, or WFP_CUSTOM_DOMAIN). Sets the
+# globals REC_HOST, REC_CD and REC_VARS. Needs the site's workspace selected.
+site_vars() { # site_vars <site> <workers.dev subdomain> <kv id>
+  local rec zone
+  rec=$(site_recorded) || return 1
+  if [ -n "$rec" ]; then
+    read -r REC_HOST REC_CD zone <<< "$rec"
+  else
+    REC_HOST=$(site_host "$1" "$2"); zone=-
+    REC_CD=$([ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && echo true || echo false)
+  fi
+  REC_SITE=$1
+  REC_VARS=(-var "name=$1" -var "hostname=$REC_HOST" -var "kv_namespace_id=$3" -var "custom_domain=$REC_CD")
+  [ "$zone" = - ] || REC_VARS+=(-var "zone_id=$zone")
 }
 # The sites: the Terraform workspaces of terraform/site, without "default".
 list_sites() {
