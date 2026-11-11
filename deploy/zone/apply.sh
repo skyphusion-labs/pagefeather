@@ -65,6 +65,12 @@ cf_ok() { # cf_ok <label> <METHOD> <PATH> [curl args...]
   esac
 }
 
+# Before ANY change (#282): refuse to overwrite a cache phase another root owns.
+# shellcheck source=deploy/zone/owner-guard.sh
+. "$SCRIPT_DIR/owner-guard.sh"
+echo "== 0. Owner check of the cache phase (zone $ZONE_ID)"
+guard_cache_phase
+
 case "$MODE" in
   dedicated)
     : "${HOSTNAME:?set HOSTNAME (e.g. wp.example.com) in MODE=dedicated}"
