@@ -30,6 +30,18 @@ HOST="$(site_host "$s" "$SUB")"; ORIGIN="https://$HOST" # phase A workers.dev, p
 # (the default) is phase A, workers.dev only.
 CD=$([ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && echo true || echo false)
 VARS=(-var "name=$s" -var "hostname=$HOST" -var "kv_namespace_id=$KV_ID" -var "custom_domain=$CD")
+# down: an existing site's workspace records its hostname, Custom Domain and
+# zone (lib.sh site_vars); those win, so a remove of a site on its own apex
+# detaches and deletes exactly what it has.
+if [ "$cmd" = down ]; then
+  tfr site init -input=false >/dev/null
+  if tfr site workspace select "$s" >/dev/null 2>&1; then
+    site_vars "$s" "$SUB" "$KV_ID" || exit 1
+    HOST=$REC_HOST; ORIGIN="https://$HOST"; CD=$REC_CD; VARS=("${REC_VARS[@]}")
+    [ "$CD" = true ] && WFP_CUSTOM_DOMAIN=1
+    tfr site workspace select default >/dev/null
+  fi
+fi
 # The id of the built bundle (build.sh writes build/build-id.js), recorded in
 # the entry so "site update" has a rollback target (issue #35 slice 5).
 BUILD_ID=$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js" 2>/dev/null || true); BUILD_ID=${BUILD_ID:-unknown}

@@ -33,13 +33,15 @@ has_ws() { list_sites | grep -qx "$1"; }
 # since the snapshot.
 update_one() {
   local s=$1
-  # Phase B (#138): keep the Custom Domain across an update apply; false (the
-  # default) is phase A. Without this the apply would destroy the domain.
-  local CD; CD=$([ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && echo true || echo false)
   valid_site "$s" || { echo "bad site name: $s" >&2; return 2; }
   has_ws "$s" || { echo "no site $s (run site add first)" >&2; return 2; }
-  local ORIGIN="https://$(site_host "$s" "$SUB")"
   tfr site init -input=false >/dev/null; tfr site workspace select "$s" >/dev/null
+  # The hostname, Custom Domain and zone the workspace records win over the
+  # computed ones (lib.sh site_vars): recomputing them would re-key the entry
+  # or replace the Custom Domain, and take the site off its domain.
+  site_vars "$s" "$SUB" "$KV_ID" || return 1
+  local ORIGIN="https://$REC_HOST"
+  echo "site $s: hostname $REC_HOST, custom domain $REC_CD (recorded or computed by lib.sh site_vars)"
   local TOK bucket EP rollback new ok=1 snap_key=""
   TOK=$(tfr site output -raw spike_token); bucket=$(media_bucket "$s"); EP=$(tfr site output -raw r2_endpoint)
   rollback=$(entry_build "$s")
@@ -73,7 +75,7 @@ update_one() {
   tfr site output -json | python3 -c 'import json,sys; o={k:v["value"] for k,v in json.load(sys.stdin).items()}; json.dump({"WP_SALT":o["wp_salt"],"SPIKE_TOKEN":o["spike_token"]}, open(sys.argv[1],"w"))' "$W/sec.json"
   (cd "$APP" && npx wrangler deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/sec.json") > "$W/up.log" 2>&1 || { rm -rf "$W"; echo "site $s: upload failed:" >&2; tail -20 "$W/up.log" >&2; return 1; }
   rm -rf "$W"
-  tfr site apply -input=false -auto-approve -var "name=$s" -var "hostname=$(site_host "$s" "$SUB")" -var "custom_domain=$CD" -var "kv_namespace_id=$KV_ID" -var "build=$new" >/dev/null
+  tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=$new" >/dev/null
   echo "site $s: verify the new build is live"
   wait_build "$ORIGIN" "$TOK" "$new" || ok=0
   [ "$ok" = 1 ] && { [ "$(curl -s -o /dev/null -w '%{http_code}' -m 60 "$ORIGIN/?nocache=$RANDOM")" = 200 ] || { echo "site $s: the site did not answer 200 after the update" >&2; ok=0; }; }
@@ -96,7 +98,7 @@ update_one() {
     tfr site output -json | python3 -c 'import json,sys; o={k:v["value"] for k,v in json.load(sys.stdin).items()}; json.dump({"WP_SALT":o["wp_salt"],"SPIKE_TOKEN":o["spike_token"]}, open(sys.argv[1],"w"))' "$W2/sec.json"
     if (cd "$APP" && npx wrangler deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W2/sec.json") > "$W2/rb.log" 2>&1; then
       echo "site $s: re-deployed ${live_build:-unknown}"
-      tfr site apply -input=false -auto-approve -var "name=$s" -var "hostname=$(site_host "$s" "$SUB")" -var "custom_domain=$CD" -var "kv_namespace_id=$KV_ID" -var "build=${live_build:-$rollback}" >/dev/null
+      tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=${live_build:-$rollback}" >/dev/null
       wait_build "$ORIGIN" "$TOK" "$live_build" || echo "site $s: /_build did not return to $live_build after the rollback re-deploy" >&2
     else
       echo "site $s: the rollback re-deploy FAILED; the old code is NOT live. Deploy ${live_build:-$rollback} by hand. Reason:" >&2
@@ -137,6 +139,13 @@ if [ "$cmd" = add ]; then
   NAMESPACE=$NAMESPACE KV_ID=$KV_ID python3 -I "$WFP/bindings.py" "$s"
   echo "site add $s: done, https://$(site_host "$s" "$SUB")"
 else
+  # An existing site's recorded hostname and domain decide what its parts are
+  # (lib.sh site_vars), so the footprint checks the right entry and domain.
+  if has_ws "$s"; then
+    tfr site init -input=false >/dev/null; tfr site workspace select "$s" >/dev/null
+    site_vars "$s" "$SUB" "$KV_ID" || exit 1
+    tfr site workspace select default >/dev/null
+  fi
   fp=$(site_footprint "$s")
   if ! has_ws "$s" && footprint_absent "$fp"; then
     echo "no site $s: nothing to remove" >&2
