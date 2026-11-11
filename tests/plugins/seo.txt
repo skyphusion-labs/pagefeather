@@ -1,0 +1,8 @@
+# The SEO comparison set (issue #279): the SEO plugins besides Rank Math and Yoast (both are in
+# suite.txt), each measured alone on a WooCommerce store with tests/wfp/plugin-memory.py.
+# Versions read from api.wordpress.org on 2026-11-11. fetch.sh reads this file with SUITE=seo.txt.
+# slug version sha256-of-zip active-installs main-file
+all-in-one-seo-pack 5.0.5 26fcc2a53bce1b70dea519dd3c4f71d54960ae0e8ea5a65511c6bf8d33900149 2000000 all_in_one_seo_pack.php
+wp-seopress 10.4 8f50bce7ac7c8ea5f88800d4f06c429633d163103094403eed23da2b3e82c98d 300000 seopress.php
+autodescription 5.2.1 9e18a34a4437ddf7ec5a6e1dea6d1e59408db6e59944b8fc672250b80fdbd3fa 200000 autodescription.php
+slim-seo 4.11.5 f1b9cf7defdde4956f51bce1e7950281c506077e93007b1e9bcec60280fbe4c2 70000 slim-seo.php

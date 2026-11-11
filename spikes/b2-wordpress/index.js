@@ -2563,7 +2563,9 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			bootPromise ??= boot(origin);
 			const { php } = await bootPromise;
 			const plugin = url.searchParams.get('plugin') || '';
-			if (!/^[a-z0-9-]+\/[a-z0-9-]+\.php$/.test(plugin)) return new Response('bad plugin', { status: 400 });
+			// Underscores are allowed (#279: All in One SEO is all-in-one-seo-pack/all_in_one_seo_pack.php).
+			// No dot, quote or second slash: the value is interpolated into the PHP below.
+			if (!/^[a-z0-9_-]+\/[a-z0-9_-]+\.php$/.test(plugin)) return new Response('bad plugin', { status: 400 });
 			const start = stats.calls;
 			let r;
 			try {
