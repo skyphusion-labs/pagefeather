@@ -84,7 +84,15 @@ This is the classic Page-Rules-to-Cache-Rules migration trap; it is fixed here.
 The bypass rule (`cache:false`) fires on any of:
 
 - **Path**: `/wp-admin`, `/wp-login`, `/wp-json`, `/wp-cron`, `/cart`,
-  `/checkout`, `/my-account`.
+  `/checkout`, `/my-account`, `/wp-comments-post`, `/skyphusion-invoice`, and
+  every operator path under `/_` (`/_build`, `/_dbexport`, `/_dbcounts` and the
+  rest). The deploy tools call the operator paths with GET over the public
+  origin, and the cache key is the URL, not the token header, so an operator
+  response must never be stored at the edge.
+- **Query** (`http.request.uri.query contains ...`): `rest_route=` (the REST
+  API alias that does not use `/wp-json`) and `wc-ajax=` (WooCommerce AJAX).
+- **Header**: any request that carries an `Authorization` header (Application
+  Passwords, Basic auth). Those responses are per user.
 - **Cookie** (`http.cookie contains ...`):
   - `wordpress_logged_in` (covers `wordpress_logged_in_<hash>`): any logged-in
     user.
@@ -99,6 +107,11 @@ The bypass rule (`cache:false`) fires on any of:
     and `woocommerce_recently_viewed`. So any shopper with a session or a cart
     bypasses the edge cache.
 - **Method**: any non-GET request (`http.request.method ne "GET"`).
+
+`deploy/zone/tests/cache-ruleset.test.mjs` checks both ruleset files: the bypass
+rule is last, it names every condition above, and, parsed and evaluated against
+sample requests, it bypasses each per-user and operator request and no plain
+anonymous page.
 
 Tradeoff noted: `woocommerce_recently_viewed` is set when an anonymous visitor
 views a product, so a browsing shopper bypasses the edge cache on subsequent
