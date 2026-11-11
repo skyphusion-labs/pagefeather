@@ -23,6 +23,8 @@ import opcacheZip from './build/opcache.zip';
 import BUILD_ID from './build/build-id.js';
 
 const OPCACHE_DIR = '/internal/shared/opcache';
+// The scripts OPcache must never cache (#294): the eval file of php.run.
+const OPCACHE_BLACKLIST = '/internal/shared/opcache-blacklist.txt';
 
 const DOCROOT = '/wordpress';
 // php-wasm's defaults keep OPcache on with a file cache in PHP's in-memory
@@ -1015,7 +1017,18 @@ async function boot(origin) {
 	//   shipped file cache is older than the files unzipped at boot.
 	// - shared memory (24 MB) for warm requests, the file cache (shipped by
 	//   opcache.sh) for a cold isolate. Warm page locally: 220 ms -> 100 ms.
+	// - blacklist /internal/eval.php (#294): php.run({ code }) writes its code to that ONE
+	//   path on every call, so it is the one script that DOES change within a deploy. With
+	//   validate_timestamps=0 OPcache kept the first compiled copy, and every later php.run
+	//   ran it instead of its own code. opcache.sh then shipped it in opcache.zip, so on a
+	//   deployed site every php.run (the install, the cron, an activation, /_mem) ran the
+	//   priming run's last script: measured 2026-11-11, /_install answered an empty out and
+	//   the shipped internal/eval.php.bin was runCron's code. This is also the cause of
+	//   #185's "a reused runtime returns runCron's output in place of the activation".
+	php.mkdir('/internal/shared');
+	php.writeFile(OPCACHE_BLACKLIST, '/internal/eval.php\n');
 	const opcacheIni = {
+		'opcache.blacklist_filename': OPCACHE_BLACKLIST,
 		'opcache.file_update_protection': '0',
 		'opcache.validate_timestamps': '0',
 		'opcache.file_cache_only': '0',
