@@ -50,6 +50,8 @@ jobs:
         run: deploy/import/tests/media-refuse-test.sh
       - name: b-dosql mail From address
         run: node --test spikes/b2-wordpress/tests/mail-from.test.mjs
+      - name: b-dosql demo site lock
+        run: node --test spikes/b2-wordpress/tests/site-lock.test.mjs
       - name: b-dosql outbound host allowlist
         run: node --test spikes/b2-wordpress/tests/http-allow.test.mjs
       - name: email-queue unit tests
