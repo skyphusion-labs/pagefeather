@@ -77,6 +77,19 @@ Options:
 
 Each untouched site must be unchanged: its dispatcher's etag and `modified_on`, its user Worker's hash and `modified_on`, its map entry, its bucket's keys and ETags, and its page title. A part that cannot be read fails the proof; it never counts as unchanged. The script etags are the same across sites (one dispatcher script; one `b-dosql` bundle), so `modified_on` is what tells one site's upload from another's. A re-upload of identical code keeps the etag and changes only `modified_on`, and both are compared. The snapshots read the buckets with S3 credentials derived from the API token, so they create nothing.
 
+## Importing an existing site
+
+```sh
+SQLITE=store.sqlite CONTENT=wp-content.tar.gz ./deploy/wfp/site import <name>   # a source that is already driver-made SQLite
+DUMP=site.sql CONTENT=wp-content.tar.gz ./deploy/wfp/site import <name>         # a MySQL dump (--hex-blob)
+```
+
+`site import` runs `deploy/import.sh` against one site that `site add` made. **It replaces the site's whole database.** Everything the import needs comes from the site's own workspace: its origin (`site_host`), its `SPIKE_TOKEN` and its media bucket. Nothing is read from `deploy/terraform`. With `CONTENT`, the uploads go into `wp-wfp-<name>-media` with the `media_import` key, which can read and write objects in that bucket only. The key is made with `-target`; it depends on nothing, so `tests/tf-test.sh` checks that the apply touches nothing else. It is deleted after the import, also when the import fails, and the command checks that it is gone from the state. `DRY_RUN=1` and `SKIP_MEDIA=1` make no key.
+
+The theme and the active plugins must be in the build (the import checks the local `spikes/b2-wordpress/build`), so build with the `IMPORT_*` line the import prints before `site add`, or `site update` afterwards. The import's rules, refusals and steps are in [`deploy/import/README.md`](../import/README.md).
+
+Tests (offline): `site-cmd-test.sh` refuses `site import` with no source, for a site that does not exist and for a bad name, with no write to the account. `tf-test.sh` checks the key's graph. The caller-key path of `import.sh` (MEDIA_BUCKET, R2_ENDPOINT, R2_KEY_ID and R2_SECRET) has no offline test; it runs end to end only against a live site.
+
 ## Updating a site
 
 ```sh

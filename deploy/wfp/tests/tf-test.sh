@@ -24,5 +24,10 @@ ok "site: the teardown key has no dependency (got: ${edges:-none})" "$([ -z "$ed
 # above is a reading of it, not a miss (the mutant with the token referencing
 # cloudflare_r2_bucket.media makes the check above fail).
 ok "site: the graph has the teardown key (the check above can see it)" "$(printf '%s\n' "$g" | grep -q '"cloudflare_account_token.teardown"' && echo 1 || echo 0)"
+# The same for the import key ("site import", deploy/import.sh for deploy/wfp):
+# its -target apply must not create or change anything else.
+edges=$(printf '%s\n' "$g" | grep -E '"cloudflare_account_token\.media_import" -> ' || true)
+ok "site: the media import key has no dependency (got: ${edges:-none})" "$([ -z "$edges" ] && echo 1 || echo 0)"
+ok "site: the graph has the media import key (the check above can see it)" "$(printf '%s\n' "$g" | grep -q '"cloudflare_account_token.media_import"' && echo 1 || echo 0)"
 echo "$fails failing check(s)"
 exit $fails

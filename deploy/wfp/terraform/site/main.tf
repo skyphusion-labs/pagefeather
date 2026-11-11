@@ -53,6 +53,16 @@ variable "teardown" {
   default = false
 }
 
+# true only while "site import" puts an existing site's uploads into the bucket
+# (deploy/import.sh, issue #31 for deploy/wfp): a key that can read and write
+# objects in this site's bucket and nothing else, as deploy/terraform's
+# media_import key is. "site import" makes it with -target and deletes it after
+# the import, also when the import fails.
+variable "media_import" {
+  type    = bool
+  default = false
+}
+
 # Phase B (#138), CR gated. When true, attach a Workers Custom Domain for this
 # site to the one dispatcher (var.dispatcher). The live attach is a CR #138
 # step (add-and-prove-before-you-remove); nothing here applies until this is
@@ -145,6 +155,23 @@ resource "cloudflare_account_token" "teardown" {
   }]
 }
 
+resource "cloudflare_account_token" "media_import" {
+  count      = var.media_import ? 1 : 0
+  account_id = var.account_id
+  name       = "wp-wfp-${var.name}-media-import"
+  policies = [{
+    effect = "allow"
+    permission_groups = [
+      { id = local.r2_item_read },
+      { id = local.r2_item_write },
+    ]
+    # The bucket by its name, as for the teardown key: with no dependency,
+    # "site import" applies -target=cloudflare_account_token.media_import
+    # alone, so an import can never create or change anything else.
+    resources = jsonencode({ "${local.r2_resource}${local.media_bucket}" = "*" })
+  }]
+}
+
 output "media_bucket" { value = cloudflare_r2_bucket.media.name }
 output "hostname" { value = var.hostname }
 output "custom_domain_hostname" {
@@ -164,6 +191,11 @@ output "admin_password" {
   sensitive = true
 }
 # R2's S3 API: the token id is the access key id, the SHA-256 of its value the secret.
+output "media_import_access_key_id" { value = var.media_import ? cloudflare_account_token.media_import[0].id : "" }
+output "media_import_secret_access_key" {
+  value     = var.media_import ? sha256(cloudflare_account_token.media_import[0].value) : ""
+  sensitive = true
+}
 output "teardown_access_key_id" { value = var.teardown ? cloudflare_account_token.teardown[0].id : "" }
 output "teardown_secret_access_key" {
   value     = var.teardown ? sha256(cloudflare_account_token.teardown[0].value) : ""
