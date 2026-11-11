@@ -45,6 +45,9 @@ mkdir -p "$wp/wp-content/mu-plugins"
 cp php/r2-uploads.php php/edge-cache.php php/woo-edge.php php/rest-route-cache.php php/theme-json-cache.php php/http-bridge.php php/real-transactions.php php/ast-cache-stats.php php/woo-bootstrap-trim.php php/media-write-trim.php php/wp-mail-queue.php php/ai-alt-text.php php/zone-cache-purge.php php/pdf-invoice.php php/turnstile-forms.php php/analytics-pageview.php "$wp/wp-content/mu-plugins/"
 mkdir -p "$wp/wp-content/mu-plugins/r2-uploads"
 cp php/cf-images-editor.php "$wp/wp-content/mu-plugins/r2-uploads/"
+# IMPORT_MU_PLUGINS: the existing site's own mu-plugins, by name, after the
+# build's (so a name the build has is refused, never replaced). content.sh --mu.
+[ -z "${IMPORT_CONTENT:-}" ] || [ -z "${IMPORT_MU_PLUGINS:-}" ] || ../../deploy/import/content.sh --mu "$IMPORT_CONTENT" "$wp/wp-content"
 # Object cache across requests (php/object-cache.php + object-cache-js.php). The
 # drop-in is engine-agnostic: it stays inert unless index.js defines
 # JS_OBJECT_CACHE, which it does for b-dosql (DB_IN_DO=on) and for approach A

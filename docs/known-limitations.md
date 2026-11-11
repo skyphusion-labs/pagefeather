@@ -29,3 +29,15 @@ Isolation today is one user Worker, one Durable Object and one R2 bucket per sit
 ### The per-site Terraform pins the zone to skyphusion.org (#157)
 
 `deploy/wfp/terraform/site` sets the variable `zone_id` to the `skyphusion.org` zone by default. A bring-your-own apex (a domain on its own zone) must set `TF_VAR_zone_id` to its own zone id, or the site resources go to the wrong zone. This is a real gap for bring-your-own-domain use. See [byo-domain.md](byo-domain.md).
+
+## A heavy plugin set: memory and bundle size (b-dosql, measured 2026-11-11)
+
+Measured on a real store imported for skyphusion-labs/ggc#101. It runs WooCommerce 11.2.1, Rank Math 1.0.280, skyphusion-ai 0.6.2, MCP Adapter 0.7.1 and twentytwentyfive, on a site in `deploy/wfp`. The test was a guest probe: the home page, the Store API, the shop, a product, the cart and a cheque checkout.
+
+| plugin set | PHP memory per request | result | bundle (the four files the size gate counts) |
+|---|---|---|---|
+| with Rank Math | 119 MiB, the runtime recycled on every request | every other request 503; no checkout completed | 61.46 MiB |
+| without Rank Math | 99 MiB (the shop page alone reaches 119 MiB and recycles, still 200) | 24 of 24 checks pass over 3 runs; checkout works | 58.40 MiB |
+
+So the 128 MiB isolate cap, not the code, decides whether a store this heavy runs on b-dosql. The bundle has a limit too: the Worker limit is 64 MiB uncompressed. `deploy/wfp/lib.sh bundle_size_check` stops an upload above `BUNDLE_MAX_MIB` (default 62), and `build_dosql`, `site.sh up` and `site update` all run it. A store that needs Rank Math, or a plugin set this heavy, is a fit for approach A (MySQL through Hyperdrive) rather than b-dosql.
+

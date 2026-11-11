@@ -164,6 +164,31 @@ build_dosql() {
     ./build.sh | tail -1
     DEV_ENV=dosql-local ./opcache.sh > build/opcache.log 2>&1 || { echo "opcache.sh failed:"; tail -25 build/opcache.log; exit 1; }
     tail -1 build/opcache.log )
+  bundle_size_check
+}
+# The Worker size limit is 64 MiB uncompressed (docs/plan-limits.md; measured:
+# 72 MB refused). Four files make almost all of a b-dosql upload: build/site.zip
+# (WordPress and the site's plugins), build/opcache.zip, and the PHP wasm with
+# its loader. A store with WooCommerce and Rank Math measured 61.46 MiB of
+# them (2026-11-11, skyphusion-labs/ggc#101): about 2.5 MiB from the limit, so
+# one plugin bump could stop its next upload. Stop BEFORE an upload above
+# BUNDLE_MAX_MIB (default 62), and say which file is how big. A missing file is
+# an error, never a small bundle.
+bundle_size_check() { # bundle_size_check [app dir]
+  python3 - "${1:-$APP}" "${BUNDLE_MAX_MIB:-62}" <<'PY'
+import os, sys
+app, cap = sys.argv[1], float(sys.argv[2])
+parts = ["build/site.zip", "build/opcache.zip", "vendor/php_8_3.wasm", "vendor/php_8_3.js"]
+missing = [p for p in parts if not os.path.isfile(os.path.join(app, p))]
+if missing:
+    sys.exit("bundle size: missing " + ", ".join(missing) + " (build first)")
+sizes = {p: os.path.getsize(os.path.join(app, p)) for p in parts}
+mib = sum(sizes.values()) / 1048576
+detail = ", ".join("%s %.2f MiB" % (os.path.basename(p), s / 1048576) for p, s in sizes.items())
+if mib > cap:
+    sys.exit("bundle size: %.2f MiB is over the %.0f MiB gate (Worker limit 64 MiB): %s" % (mib, cap, detail))
+print("bundle size: %.2f MiB of the %.0f MiB gate (%s)" % (mib, cap, detail))
+PY
 }
 
 # API calls: the token goes to curl in a config on a pipe, never in argv.
