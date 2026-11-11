@@ -30,6 +30,9 @@ jobs:
           for f in spikes/b1-boot/index.js spikes/b2-wordpress/index.js spikes/b2-wordpress/sql-import.js spikes/c1-woo-container/worker.js spikes/c1-woo-container/warm.js; do cp "$f" "$RUNNER_TEMP/check.mjs" && node --check "$RUNNER_TEMP/check.mjs"; done
       - name: Shell syntax
         run: for f in $(git ls-files '*.sh'); do bash -n "$f"; done
+      - name: Deploy scripts keep the spike token and admin password out of curl's command line
+        # -K <(printf 'header = ...') instead of -H: the value is not in the process list.
+        run: bash deploy/tests/curl-argv-test.sh
       - name: Dialect tests
         run: php spikes/b2-wordpress/tests/dialect-test.php
       - name: Approach A literal tests (issue #79)
