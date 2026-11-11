@@ -9,7 +9,8 @@
 #   no-site       0  2+    the dispatcher's no-site first: waited
 #   cold-503      0  2+
 #   bad-entry     1  1     a configuration fault: at once, not retried
-#   dispatch      1  1
+#   dispatch      1  2+    a script error that lasts past WFP_DISPATCH_GRACE (1 s here): a fault
+#   cold-dispatch 0  2+    a script error on the first cold boot only: waited (#294)
 #   never         1  5+    not-deployed until the bound; the last answer is printed
 # Exits 0 only when every case gives what it must. Needs bash, curl, python3.
 set -u
@@ -23,8 +24,8 @@ run_case() {
 	python3 -I "$HERE/fake-site.py" "$T/port" "$T/count" "$mode" & pid=$!
 	for _ in $(seq 1 50); do [ -s "$T/port" ] && break; sleep 0.1; done
 	out=$(
-		SITE_WAIT=4 SITE_WAIT_STEP=0.3 CLOUDFLARE_API_TOKEN=test
-		export SITE_WAIT SITE_WAIT_STEP CLOUDFLARE_API_TOKEN
+		SITE_WAIT=4 SITE_WAIT_STEP=0.3 CLOUDFLARE_API_TOKEN=test WFP_DISPATCH_GRACE=${GRACE:-1}
+		export SITE_WAIT SITE_WAIT_STEP CLOUDFLARE_API_TOKEN WFP_DISPATCH_GRACE
 		# shellcheck disable=SC1090
 		. "$LIB"
 		wait_site "http://127.0.0.1:$(cat "$T/port")" 2>&1
@@ -45,7 +46,8 @@ run_case not-deployed 0 2+ "answered HTTP 403"
 run_case no-site 0 2+ "answered HTTP 403"
 run_case cold-503 0 2+
 run_case bad-entry 1 1 "configuration fault"
-run_case dispatch 1 1 "configuration fault"
+run_case dispatch 1 2+ "not a cold boot"
+GRACE=3 run_case cold-dispatch 0 2+ "answered HTTP 403"
 run_case never 1 5+ "x-wfp-error not-deployed"
 echo "$fails failing case(s)"
 exit $fails

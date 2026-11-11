@@ -280,15 +280,24 @@ kv_wait_writable() { # kv_wait_writable <namespace id>
 # it stays short. SITE_WAIT overrides either.
 site_wait_cap() { echo "${SITE_WAIT:-$([ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && echo 1800 || echo 300)}"; }
 wait_site() { # wait_site <origin>
-  local t0=$SECONDS t code err body cap said_tls=0
+  local t0=$SECONDS t code err body cap said_tls=0 said_dispatch=0
   cap=$(site_wait_cap)
   t=$(mktemp -d)
   while :; do
     code=$(curl -s -o "$t/b" -D "$t/h" -w '%{http_code}' -m 60 "$1/_dbping?nocache=$RANDOM$RANDOM" 2>/dev/null) || code=000
     err=$(tr -d '\r' < "$t/h" 2>/dev/null | awk -F': ' 'tolower($1) == "x-wfp-error" { print $2 }')
     body=$(head -c 80 "$t/b" 2>/dev/null | tr -s '\n\r\t' ' ')
+    # bad-entry is a malformed site map entry: a fault at once. dispatch is any error from
+    # the namespace script, and a brand-new site's FIRST cold boot can give one before it
+    # answers (#294: fdprobe1111c answered 502 dispatch once, then served). So a dispatch
+    # error is retried for WFP_DISPATCH_GRACE seconds (default 120) before it is a fault.
     case "$err" in
-      bad-entry|dispatch) echo "the dispatcher answered $code $err: a configuration fault, not a delay ($body)" >&2; rm -rf "$t"; return 1 ;;
+      bad-entry) echo "the dispatcher answered $code $err: a configuration fault, not a delay ($body)" >&2; rm -rf "$t"; return 1 ;;
+      dispatch)
+        if [ $((SECONDS - t0)) -ge "${WFP_DISPATCH_GRACE:-120}" ]; then
+          echo "the dispatcher answered $code $err for ${WFP_DISPATCH_GRACE:-120} s: a fault in the site script, not a cold boot ($body)" >&2; rm -rf "$t"; return 1
+        fi
+        [ "${said_dispatch:-0}" = 1 ] || { echo "  the site script errored ($code $err); retrying for up to ${WFP_DISPATCH_GRACE:-120} s (a first cold boot)"; said_dispatch=1; } ;;
     esac
     if [ -z "$err" ] && [[ "$code" =~ ^(2..|3..|401|403)$ ]]; then
       echo "  the site answered HTTP $code after $((SECONDS - t0)) s"

@@ -13,6 +13,7 @@ own 403 "forbidden" with no spike token):
   site-200       200 from the first request
   bad-entry      500 x-wfp-error bad-entry, always
   dispatch       502 x-wfp-error dispatch, always
+  cold-dispatch  502 x-wfp-error dispatch, then the site (a first cold boot, #294)
   never          404 x-wfp-error not-deployed, always
 """
 import http.server, sys, time
@@ -41,7 +42,7 @@ class H(http.server.BaseHTTPRequestHandler):
         early = time.time() - t0 < 2
         if mode == "bad-entry":
             return self.send(500, "This site is not configured correctly.", "bad-entry")
-        if mode == "dispatch":
+        if mode == "dispatch" or (mode == "cold-dispatch" and early):
             return self.send(502, "This site did not answer.", "dispatch")
         if mode == "never" or (mode == "not-deployed" and early):
             return self.send(404, "This site is not deployed.", "not-deployed")
