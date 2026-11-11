@@ -138,6 +138,20 @@ export async function deployNamespaceScript(ctx, {
   return { name, ns };
 }
 
+// Phase A (#295): an ACCOUNT script (not in the namespace), the per-site
+// dispatcher copy wp-<name> on workers.dev that deploy/wfp makes with wrangler.
+// Without it a phase A site has a KV entry and a namespace script but no door:
+// its workers.dev hostname answered 404 (measured 2026-11-11). PUT replaces, so
+// it is idempotent. The workers.dev route is a separate call
+// (enableWorkersDevSubdomain).
+export async function deployAccountScript(ctx, { name, mainModule, modules, bindings = [], compatibilityDate, compatibilityFlags = [] }) {
+  const metadata = { main_module: mainModule, compatibility_date: compatibilityDate, compatibility_flags: compatibilityFlags, bindings };
+  const form = buildScriptForm(metadata, modules);
+  const r = await cfFetch(ctx.token, 'PUT', `/accounts/${ctx.acct}/workers/scripts/${name}`, { body: form, fetchImpl: ctx.fetchImpl });
+  if (!r.ok) throw opError('deployAccountScript', name, r);
+  return { name };
+}
+
 // Instance resources, keyed by the friendly instance type. The live API stores
 // explicit vcpu/memory/disk (instance_type comes back null), so the create
 // sends them explicitly. 'basic' is the measured working shape (#154 c1).
@@ -398,12 +412,23 @@ export async function deleteProxiedHostname(ctx, { zoneId, hostname }) {
 async function parseInstallResponse(res) {
   let body = null;
   try { body = await res.json(); } catch { body = null; }
+  // `out` is the install script's stdout. PHP can print before the JSON (a notice, a
+  // deprecation), so the install result is the LAST JSON object in it, not the whole
+  // string (#295: a real install answered 200 six times and read as a failure).
+  const out = body && typeof body.out === 'string' ? body.out : '';
   let inner = null;
-  try { inner = body && typeof body.out === 'string' ? JSON.parse(body.out) : null; } catch { inner = null; }
+  try { inner = out ? JSON.parse(out) : null; } catch { inner = null; }
+  if (!inner && out.lastIndexOf('{') >= 0) {
+    try { inner = JSON.parse(out.slice(out.lastIndexOf('{'))); } catch { inner = null; }
+  }
   if (inner && (inner.installed === true || inner.installed === 'already')) {
     return { ok: true, result: { installed: true, already: inner.installed === 'already', userId: inner.user_id } };
   }
-  return { ok: false, error: (inner && inner.error) || (body && body.errors) || `HTTP ${res && res.status}` };
+  // Say what came back: a short tail of `out` and of `errors` (install output, never a
+  // credential), so a failed install can be read without the site's token.
+  const tail = (v) => String(v || '').replace(/\s+/g, ' ').slice(-160);
+  const h = (k) => (res && res.headers && typeof res.headers.get === 'function' ? res.headers.get(k) : null) || '-';
+  return { ok: false, error: (inner && inner.error) || `HTTP ${res && res.status} (${h('content-type')}, location ${h('location')}, x-wfp-error ${h('x-wfp-error')}, keys ${body && typeof body === 'object' ? Object.keys(body).join(',') : typeof body}); out: ${tail(out) || '(none)'}; errors: ${tail(body && body.errors) || '(none)'}` };
 }
 
 export async function installWordPress({
@@ -423,7 +448,9 @@ export async function installWordPress({
         // The dispatch binding routes to site-<name> directly (no DNS/KV race).
         res = await dispatcher.get(scriptName).fetch(new Request('https://internal/_install', { method: 'POST', headers }));
       } else {
-        res = await fetchImpl(`https://${hostname}/_install`, { method: 'POST', headers });
+        // redirect manual (#295): a site that answers /_install as a WordPress page sends a
+        // 302 to install.php, and a followed redirect read as a bare 200 with no install result.
+        res = await fetchImpl(`https://${hostname}/_install`, { method: 'POST', headers, redirect: 'manual' });
       }
       const parsed = await parseInstallResponse(res);
       if (parsed.ok) return { ...parsed.result, via: viaDispatch ? 'dispatch' : 'http' };

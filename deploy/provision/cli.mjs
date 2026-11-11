@@ -25,6 +25,26 @@ import { bDosqlBindings, bDosqlSecrets, bDosqlResourceCreateOps, aBindings, medi
 import { addCustomHostname, getCustomHostnameStatus } from './ops.mjs';
 import { updateSite, readSite } from './registry.mjs';
 
+// Phase A (#295): the per-site dispatcher copy wp-<name> on workers.dev, the same
+// code and bindings deploy/wfp's wrangler template gives it
+// (deploy/wfp/dispatcher/wrangler.template.toml). Only for a workers.dev hostname
+// with no SaaS zone: a SaaS-zone site is reached through the zone's dispatcher.
+export async function phaseADispatcher(name, hostname, env, { namespace, kvId }) {
+  if (env.WFP_SAAS_ZONE_ID || !hostname.endsWith('.workers.dev')) return undefined;
+  const code = await readFile(new URL('../wfp/dispatcher/worker.js', import.meta.url), 'utf8');
+  return {
+    name: `wp-${name}`,
+    mainModule: 'worker.js',
+    modules: [{ name: 'worker.js', content: code, type: 'application/javascript+module' }],
+    bindings: [
+      { type: 'kv_namespace', name: 'SITES', namespace_id: kvId },
+      { type: 'dispatch_namespace', name: 'DISPATCHER', namespace },
+      { type: 'dispatch_namespace', name: 'DISPATCHER_OUT', namespace,
+        outbound: { worker: { service: env.WFP_OUTBOUND || 'wp-wfp-outbound' }, params: [{ name: 'SITE' }] } },
+    ],
+  };
+}
+
 // genSecret lives in shared.mjs (the Worker uses it too); re-export so the CLI
 // surface and cli-test are unchanged.
 export { genSecret };
@@ -234,6 +254,7 @@ async function buildCfg(parsed, env) {
       // namespace or a queue for the next wave); empty for the default + PDF set.
       resourceCreateOps: bDosqlResourceCreateOps(bdosqlOpts),
       buckets: { media: mediaBucket },
+      workersDevDispatcher: await phaseADispatcher(name, hostname, env, { namespace, kvId }),
     };
   }
   if (kind === 'a') {
@@ -356,7 +377,16 @@ async function main() {
   if (parsed.cmd !== 'add') throw new Error(`${parsed.cmd}: stage 2 implements add and hostname only`);
   const cfg = await buildCfg(parsed, env);
   const r = await provisionSite(ctx, cfg);
-  console.log(JSON.stringify({ provisioned: r.kind, name: r.name, script: r.script, hostname: r.hostname }, null, 2));
+  // The admin credential is shown ONCE, here (#295): the core returns the password only
+  // when the install ran, and stores only the url and user. Without it a new site cannot
+  // be logged in to.
+  console.log(JSON.stringify({
+    provisioned: r.kind, name: r.name, script: r.script, hostname: r.hostname,
+    url: `https://${r.hostname}/`, installed: r.installed === true, admin: r.admin,
+    ...(r.installNote ? { installNote: r.installNote } : {}),
+    ...(r.existing ? { existing: true } : {}),
+  }, null, 2));
+  if (r.admin && r.admin.password) console.error('note: the admin password above is shown once and is not stored; keep it now.');
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

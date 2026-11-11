@@ -4,10 +4,7 @@
 // ctx { acct, token, fetchImpl? }. Secrets are deployed atomically as
 // secret_text bindings in the script upload (matching deploy/variants/c1.sh's
 // --secrets-file), so a site never runs a request without its secrets.
-import {
-  createR2Bucket, deployNamespaceScript, ensureProxiedHostname, scriptExists,
-  installWordPress, ensureKVNamespace,
-} from './ops.mjs';
+import { createR2Bucket, deployNamespaceScript, ensureProxiedHostname, scriptExists, installWordPress, ensureKVNamespace, deployAccountScript, enableWorkersDevSubdomain } from './ops.mjs';
 import { upsertSite, readSite } from './registry.mjs';
 import { assertValidName, genSecret } from './shared.mjs';
 
@@ -137,6 +134,15 @@ async function provisionNamespaceSite(ctx, cfg) {
   // saasZoneId is set the core places it. Idempotent: an existing record is success.
   if (cfg.saasZoneId) {
     steps.push(await ensureProxiedHostname(ctx, { zoneId: cfg.saasZoneId, hostname: cfg.hostname }));
+  }
+  // Phase A (#295): with no SaaS zone, the site's door is its own dispatcher copy on
+  // workers.dev (the same deploy/wfp/dispatcher code), placed BEFORE the install so the
+  // install can reach the site. The CLI sets it for a workers.dev hostname; the Worker
+  // front door uses the SaaS zone and never sets it.
+  if (cfg.workersDevDispatcher) {
+    const d = cfg.workersDevDispatcher;
+    steps.push(await deployAccountScript(ctx, { name: d.name, mainModule: d.mainModule, modules: d.modules, bindings: d.bindings, compatibilityDate: cfg.compatibilityDate }));
+    steps.push(await enableWorkersDevSubdomain(ctx, d.name));
   }
   // Install (#215): the site serves but lands at /wp-admin/install.php until the
   // WP install runs. Trigger it over HTTP against the site itself (authorized by
