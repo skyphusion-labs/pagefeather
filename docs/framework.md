@@ -142,7 +142,7 @@ curl -X POST "$B/zones/$ZONE/workers/routes" -H "$AUTH" \
 
 `*/*` is the Cloudflare-recommended pattern: it catches every custom hostname entering the zone whatever the customer's DNS proxy mode. It also catches the zone's own subdomains, so use a DEDICATED zone with no other traffic. On a zone that also serves your own sites, either exclude them with more-specific routes that name no Worker, or route each vanity domain by its own hostname (`vanity.customer.com`) instead of `*/*`; a per-hostname route only fires when the customer's record is grey-clouded (DNS-only), which is why `*/*` on a dedicated zone is the robust default.
 
-Live reference: this project's own home is `skyphusionwp.dev`. Fallback `fallback.skyphusionwp.dev` (AAAA `100::`), `*/*` to `wp-dispatch`, proven end to end: an end-user vanity domain on a separate zone, grey-cloud CNAME to the fallback, served WordPress over HTTPS with an active certificate.
+This setup was proven end to end on the project's own SaaS zone (it is not live now): an end-user vanity domain on a separate zone, a grey-cloud CNAME to the fallback (AAAA `100::`), and `*/*` to `wp-dispatch` served WordPress over HTTPS with an active certificate.
 
 ## Bring your own domain (two ownership modes)
 
