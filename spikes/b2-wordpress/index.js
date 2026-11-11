@@ -5,6 +5,7 @@ import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, ha
 import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled } from './purge-zone.mjs';
+import { shouldArmAlarm } from './alarm-arm.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
@@ -22,6 +23,8 @@ import opcacheZip from './build/opcache.zip';
 import BUILD_ID from './build/build-id.js';
 
 const OPCACHE_DIR = '/internal/shared/opcache';
+// The scripts OPcache must never cache (#294): the eval file of php.run.
+const OPCACHE_BLACKLIST = '/internal/shared/opcache-blacklist.txt';
 
 const DOCROOT = '/wordpress';
 // php-wasm's defaults keep OPcache on with a file cache in PHP's in-memory
@@ -1014,7 +1017,18 @@ async function boot(origin) {
 	//   shipped file cache is older than the files unzipped at boot.
 	// - shared memory (24 MB) for warm requests, the file cache (shipped by
 	//   opcache.sh) for a cold isolate. Warm page locally: 220 ms -> 100 ms.
+	// - blacklist /internal/eval.php (#294): php.run({ code }) writes its code to that ONE
+	//   path on every call, so it is the one script that DOES change within a deploy. With
+	//   validate_timestamps=0 OPcache kept the first compiled copy, and every later php.run
+	//   ran it instead of its own code. opcache.sh then shipped it in opcache.zip, so on a
+	//   deployed site every php.run (the install, the cron, an activation, /_mem) ran the
+	//   priming run's last script: measured 2026-11-11, /_install answered an empty out and
+	//   the shipped internal/eval.php.bin was runCron's code. This is also the cause of
+	//   #185's "a reused runtime returns runCron's output in place of the activation".
+	php.mkdir('/internal/shared');
+	php.writeFile(OPCACHE_BLACKLIST, '/internal/eval.php\n');
 	const opcacheIni = {
+		'opcache.blacklist_filename': OPCACHE_BLACKLIST,
 		'opcache.file_update_protection': '0',
 		'opcache.validate_timestamps': '0',
 		'opcache.file_cache_only': '0',
@@ -2151,7 +2165,7 @@ export class PhpRuntime extends DurableObject {
 		}
 		}
 		// Keep the cron cadence unless the purge logic set a sooner retry alarm.
-		if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
+		if (shouldArmAlarm(await this.ctx.storage.getAlarm(), Date.now())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
 	}
 
 	async fetch(raw) {
@@ -2170,7 +2184,9 @@ export class PhpRuntime extends DurableObject {
 		if (!url.pathname.startsWith('/_')) {
 			lastOrigin = origin;
 			await this.ctx.storage.put(ORIGIN_KEY, origin);
-			if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
+			// A STALE alarm (long past, its run never completed) counts as none (#291): otherwise it
+			// blocks every later arm and the cron stops for good. alarm-arm.mjs.
+			if (shouldArmAlarm(await this.ctx.storage.getAlarm(), Date.now())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
 		}
 		const inboxMs = raw.headers.get(SENT_HEADER) ? Date.now() - Number(raw.headers.get(SENT_HEADER)) : null;
 		const req = new Request(raw);
@@ -2563,7 +2579,9 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			bootPromise ??= boot(origin);
 			const { php } = await bootPromise;
 			const plugin = url.searchParams.get('plugin') || '';
-			if (!/^[a-z0-9-]+\/[a-z0-9-]+\.php$/.test(plugin)) return new Response('bad plugin', { status: 400 });
+			// Underscores are allowed (#279: All in One SEO is all-in-one-seo-pack/all_in_one_seo_pack.php).
+			// No dot, quote or second slash: the value is interpolated into the PHP below.
+			if (!/^[a-z0-9_-]+\/[a-z0-9_-]+\.php$/.test(plugin)) return new Response('bad plugin', { status: 400 });
 			const start = stats.calls;
 			let r;
 			try {

@@ -70,6 +70,8 @@ jobs:
         run: php spikes/b2-wordpress/tests/turnstile-forms-test.php
       - name: pageview analytics helpers (issue #201)
         run: node --test spikes/b2-wordpress/tests/analytics.test.mjs
+      - name: b-dosql a stale alarm is re-armed (issue #291)
+        run: node --test spikes/b2-wordpress/tests/alarm-arm.test.mjs
       - name: b-dosql operator endpoints (issue #35)
         # /_build and /_evict are gated and never cached (spikes/b2-wordpress).
         run: node spikes/b2-wordpress/tests/build-evict-test.mjs
