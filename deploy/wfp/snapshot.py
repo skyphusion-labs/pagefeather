@@ -225,16 +225,51 @@ def dbsnapshot(origin, token, bucket, key):
     return 0
 
 
+# The site refuses a request body over MAX_BODY_BYTES (2 MiB by default) with 413, so a
+# store-sized snapshot (3.4 MB measured, #287) cannot go in one request. Parts stay under this.
+PART_BYTES = int(ENV.get("DBIMPORT_PART_BYTES") or 1536 * 1024)
+
+
+def parts_of(body, limit=PART_BYTES):
+    """Split NDJSON into parts of whole lines, each at most `limit` bytes. Raises ValueError on a
+    single line over the limit: it could never be sent, and a partial restore must not start."""
+    out, cur, size = [], [], 0
+    for line in body.splitlines(keepends=True):
+        if not line.strip():
+            continue
+        if not line.endswith(b"\n"):
+            line += b"\n"
+        if len(line) > limit:
+            raise ValueError("one statement is %d bytes, over the %d byte part limit" % (len(line), limit))
+        if cur and size + len(line) > limit:
+            out.append(b"".join(cur)); cur, size = [], 0
+        cur.append(line); size += len(line)
+    if cur:
+        out.append(b"".join(cur))
+    return out
+
+
 def dbrestore(origin, token, bucket, key):
-    """GET the snapshot from R2 and POST it to /_dbimport?replace=1."""
+    """GET the snapshot from R2 and POST it to /_dbimport in parts: replace=1 for the first,
+    append=1 for the rest (#287), the way deploy/import/sqlimport.py sends a dump. A failed part
+    stops the restore and is named; the database then holds the parts before it, and running the
+    restore again starts over from part 0 (replace=1 drops every table first)."""
     full = key if key.startswith("_snapshots/") else "_snapshots/" + key
     gst, body = s3("GET", "/%s/%s" % (bucket, full))
     if gst != 200 or not body.strip():
         print(json.dumps({"ok": False, "stage": "get", "status": gst})); return 1
-    st, rb = http(origin + "/_dbimport?replace=1", method="POST", data=body, headers={"x-spike-token": token, "content-type": "application/x-ndjson"})
-    ok = st == 200 and b'"ok": false' not in rb and b'"error"' not in rb
-    print(json.dumps({"ok": bool(ok), "stage": "import", "status": st, "body": rb[:160].decode("utf-8", "replace")}))
-    return 0 if ok else 1
+    try:
+        parts = parts_of(body)
+    except ValueError as e:
+        print(json.dumps({"ok": False, "stage": "split", "error": str(e)})); return 1
+    for i, part in enumerate(parts):
+        q = "replace=1" if i == 0 else "append=1"
+        st, rb = http(origin + "/_dbimport?" + q, method="POST", data=part, headers={"x-spike-token": token, "content-type": "application/x-ndjson"})
+        if not (st == 200 and b'"ok": false' not in rb and b'"error"' not in rb):
+            print(json.dumps({"ok": False, "stage": "import", "part": i, "parts": len(parts), "status": st, "body": rb[:160].decode("utf-8", "replace")}))
+            return 1
+    print(json.dumps({"ok": True, "stage": "import", "parts": len(parts), "bytes": len(body)}))
+    return 0
 
 
 def seed(sites):
