@@ -64,6 +64,18 @@ It refuses, with exit 1 and before it writes any file, each of these:
 
 Tests: `tests/run.sh` section 11. The rows and site facts match the dump path for the same fixture, and the source file's SHA-256 is unchanged. Each refusal leaves no output file. Two mutations turn a test red: the WAL check off, and the prefix check off.
 
+## The site's own mu-plugins
+
+A mu-plugin always runs, so the import copies none unless you name it. The build's run of `content.sh` lists the source's mu-plugins: `content: mu-plugins in the source, NOT copied unless named in IMPORT_MU_PLUGINS`. To build some in, add `IMPORT_MU_PLUGINS` (file or directory names under `mu-plugins/`) to the `deploy.sh` line the import printed:
+
+```sh
+IMPORT_CONTENT=... IMPORT_THEMES=... IMPORT_PLUGINS=... IMPORT_MU_PLUGINS="shop-cart.php shop-cart.js" VARIANT=b-dosql MEDIA=1 NAME=my-site ./deploy/deploy.sh
+```
+
+`spikes/b2-wordpress/build.sh` and `spikes/c1-woo-container/build.sh` copy them with `content.sh --mu` AFTER the build's own mu-plugins. A name the build already has (for example `edge-cache.php` or `r2-uploads.php`) is refused, so a site's mu-plugin never replaces one of the framework's. The same rules as for plugins apply: a name with `/` or `..`, a missing name and a symbolic link are refused. A mu-plugin written for the old host (for example one that reads a file only that host had) still needs reading before you name it.
+
+Tests: `tests/run.sh` section 6b. A mutation with the name check off lets a site's `edge-cache.php` replace the framework's, and the test turns red.
+
 ## Read the source over SSH
 
 In place of `DUMP` and `CONTENT`, give the server and the WordPress directory there:
