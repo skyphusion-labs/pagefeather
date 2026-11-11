@@ -55,6 +55,14 @@ document is indexed in [docs/](docs/README.md).
 - **One Durable Object per site:** one writer, one region, and one request at a time for anything
   the cache cannot answer. That is about 5 uncached requests a second; past that the queue grows,
   and at about 100 clients the object refuses ([docs/perf-dosql.md](docs/perf-dosql.md)).
+- **On a WooCommerce store, bundle size is the first wall.** A Worker is limited to 64 MiB
+  uncompressed, and the upload gate stops at 62 MiB. WooCommerce alone takes the bundle to 58.3
+  MiB. Measured with WooCommerce (#279): Yoast SEO (67.9 MiB), All in One SEO (67.5) and Elementor
+  (83.8) do not fit, and SEOPress (63.1) is over the gate. Rank Math fits the bundle but hits the
+  memory wall (next item). The SEO Framework and Slim SEO fit the bundle; their memory is not
+  measured yet, because activation failed on the test store (#289). A way to move plugin and theme
+  source out of the bundle is being designed; it is not a promise that these plugins will fit
+  ([#279](https://github.com/skyphusion-labs/wordpress-on-cloudflare/issues/279)).
 - **128 MiB of memory per request (the isolate).** A heavy plugin set can exceed it. A store with
   Rank Math reaches 119 MiB a request, and every other request answers 503; without it, the same
   store passes checkout ([docs/known-limitations.md](docs/known-limitations.md),
