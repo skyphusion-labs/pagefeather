@@ -29,7 +29,7 @@ WFP_S3_SECRET, and WFP_SITE_URL (a template with {name}). The R2 reads use S3 cr
 token id as the key id, the SHA-256 of its value as the secret, as R2
 documents), so a snapshot makes no key and changes nothing.
 """
-import hashlib, json, os, random, re, subprocess, sys, time, urllib.error, urllib.request
+import hashlib, json, os, random, re, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.request
 import xml.etree.ElementTree as ET
 
 ENV = os.environ
@@ -82,13 +82,25 @@ def s3_creds():
 
 
 def s3(method, path, body=None):
-    """curl --aws-sigv4 with the key in a config on stdin (never in argv). Returns (status, body)."""
+    """curl --aws-sigv4 with the key in a config on stdin (never in argv). Returns (status, body).
+    A body goes through a file in a private temp directory (--data-binary @file), never through argv:
+    a real site's snapshot is megabytes, and as an argument it failed with "Argument list too long"
+    (measured 2026-11-11, a WooCommerce store's export; Linux caps one argument at 128 KiB)."""
     kid, sec = s3_creds()
     ep = ENV.get("WFP_S3_ENDPOINT") or "https://%s.r2.cloudflarestorage.com" % ENV["CLOUDFLARE_ACCOUNT_ID"]
-    args = ["curl", "-s", "-m", "60", "-K", "-", "--aws-sigv4", "aws:amz:auto:s3", "-X", method, "-w", "\n%{http_code}", ep + path]
-    if body is not None:
-        args[-1:-1] = ["--data-binary", body.decode("utf-8")]
-    r = subprocess.run(args, input=('user = "%s:%s"\n' % (kid, sec)).encode(), capture_output=True)
+    args = ["curl", "-s", "-m", "300", "-K", "-", "--aws-sigv4", "aws:amz:auto:s3", "-X", method, "-w", "\n%{http_code}", ep + path]
+    tmp = None
+    try:
+        if body is not None:
+            tmp = tempfile.mkdtemp(prefix="wfp-s3-")
+            f = os.path.join(tmp, "body")
+            with open(os.open(f, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as fh:
+                fh.write(body)
+            args[-1:-1] = ["--data-binary", "@" + f]
+        r = subprocess.run(args, input=('user = "%s:%s"\n' % (kid, sec)).encode(), capture_output=True)
+    finally:
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
     out, _, code = r.stdout.rpartition(b"\n")
     return (int(code) if code.strip().isdigit() else 0), out
 

@@ -4,6 +4,7 @@
 #   deploy/wfp/tests/dbsnap-test.sh [another snapshot.py]
 # Cases (mode: dbsnapshot result):
 #   ok                 exit 0, ok true, rows 3; then dbrestore exit 0
+#   big                exit 0, ok true, rows 40000: a store-sized body (about 4 MB) stores
 #   export-empty       exit 1, stage export (an empty export is never stored)
 #   export-500         exit 1, stage export
 #   readback-truncate  exit 1, stage readback (stored bytes != sent: not trusted)
@@ -22,7 +23,7 @@ start() { rm -f "$T/port"; python3 -I "$HERE/fake-dbsnap.py" "$T/port" "$1" >/de
 snap() { WFP_S3_ENDPOINT="$1" WFP_S3_KEY_ID=k WFP_S3_SECRET=s python3 -I "$SNAP" dbsnapshot "$1" tok b "$2"; }
 restore() { WFP_S3_ENDPOINT="$1" WFP_S3_KEY_ID=k WFP_S3_SECRET=s python3 -I "$SNAP" dbrestore "$1" tok b "$2"; }
 
-for c in ok:0:true export-empty:1:export export-500:1:export readback-truncate:1:readback put-500:1:put; do
+for c in ok:0:true big:0:'"rows": 40000' export-empty:1:export export-500:1:export readback-truncate:1:readback put-500:1:put; do
   mode=${c%%:*}; rest=${c#*:}; rc=${rest%%:*}; want=${rest#*:}
   pid=$(start "$mode"); U="http://127.0.0.1:$(cat "$T/port")"
   out=$(snap "$U" "k1.ndjson"); got=$?
