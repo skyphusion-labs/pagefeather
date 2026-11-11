@@ -344,5 +344,50 @@ const mutating = (calls) => calls.filter((c) => c.method !== 'GET');
     r.steps.some((st) => st.resource === 'async-email-queue' && st.queue === emailQueueName(name)));
 }
 
+// A namespace left under this site's title (an earlier attempt, or a removed site of
+// the same name) is DELETED and created again EMPTY, never bound as found: a reused
+// name must not read the old site's cached values.
+{
+  const rec = recorder();
+  const name = 'aleftover';
+  const title = ocKvNamespaceName(name);
+  let alive = true, posts = 0;
+  const fetchImpl = async (url, init) => {
+    if (init.method === 'POST' && /\/storage\/kv\/namespaces$/.test(url)) {
+      rec.calls.push({ url, method: init.method, body: init.body });
+      posts++;
+      if (alive) return { ok: false, status: 400, text: async () => '{"success":false,"errors":[{"code":10014,"message":"exists"}]}' };
+      return { ok: true, status: 200, text: async () => '{"success":true,"result":{"id":"NEWKV","title":"oc"}}' };
+    }
+    if (init.method === 'GET' && /\/storage\/kv\/namespaces\?/.test(url)) {
+      rec.calls.push({ url, method: init.method });
+      return { ok: true, status: 200, text: async () => JSON.stringify({ success: true, result: alive ? [{ id: 'OLDKV', title }] : [] }) };
+    }
+    if (init.method === 'DELETE' && /\/storage\/kv\/namespaces\/OLDKV$/.test(url)) {
+      rec.calls.push({ url, method: init.method });
+      alive = false;
+      return { ok: true, status: 200, text: async () => '{"success":true,"result":null}' };
+    }
+    return rec.fetchImpl(url, init);
+  };
+  const mediaBucket = mediaBucketName(name);
+  const r = await provisionSite({ acct: ACCT, token: 'T', fetchImpl }, {
+    kind: 'a', name, namespace: 'wp-wfp', kvId: 'KV', hostname: 'aleftover.skyphusionwp.dev',
+    compatibilityDate: '2026-07-01', mainModule: 'index-a-lean.js',
+    modules: [{ name: 'index-a-lean.js', content: 'export default {}' }],
+    resourceBindings: aBindings({ mediaBucket, hyperdriveId: 'HDID', siteOrigin: 'https://aleftover.skyphusionwp.dev', hyperdriveSqlMode: '' }),
+    sqliteClasses: [], kvNamespaces: [{ title, binding: 'OC_KV' }],
+    secrets: { WP_SALT: 's1', SPIKE_TOKEN: 'spk' }, buckets: { media: mediaBucket },
+  });
+  ok('leftover KV: the old namespace is DELETED', rec.calls.some((c) => c.method === 'DELETE' && /\/storage\/kv\/namespaces\/OLDKV$/.test(c.url)));
+  ok('leftover KV: a new namespace is created after the delete', posts === 2 && !alive);
+  const deploy = rec.calls.find((c) => c.method === 'PUT' && /\/scripts\/site-aleftover$/.test(c.url));
+  const meta = await metaOf(deploy);
+  ok('leftover KV: OC_KV binds the NEW id, never the leftover one',
+    meta.bindings.some((b) => b.type === 'kv_namespace' && b.name === 'OC_KV' && b.namespace_id === 'NEWKV') &&
+    !meta.bindings.some((b) => b.namespace_id === 'OLDKV'));
+  ok('leftover KV: the step records the replacement', r.steps.some((st) => st.kvNamespace === title && st.replaced === true));
+}
+
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

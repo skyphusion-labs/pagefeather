@@ -17,7 +17,7 @@
 // concern tracked for the box-gate; see HARDENING.md.
 
 import { genSecret } from './shared.mjs';
-import { createKvNamespace, createQueue, createVectorizeIndex } from './ops.mjs';
+import { freshKVNamespace, createQueue, createVectorizeIndex } from './ops.mjs';
 
 // ---- b-dosql integration-descriptor table (#201 Phase 1) --------------------
 // The provisioning core builds a b-dosql site's bindings, vars and generated
@@ -164,11 +164,12 @@ export const B_DOSQL_DESCRIPTORS = [
     bindings: () => [{ type: 'kv_namespace', name: 'OC_KV' }],
     resourceCreateOp: async (ctx, { cfg, bindings }) => {
       const title = ocKvNamespaceName(cfg.name);
-      const ns = await createKvNamespace(ctx, title);
+      // Fresh, never reused: resourceCreateOps run only on the fresh-provision path.
+      const ns = await freshKVNamespace(ctx, title);
       const binding = bindings.find((b) => b.type === 'kv_namespace' && b.name === 'OC_KV');
       if (!binding) throw new Error('object-cache-l2: no OC_KV kv_namespace binding to inject');
       binding.namespace_id = ns.id;
-      return { kvNamespace: title, id: ns.id, created: ns.created === true };
+      return { kvNamespace: title, id: ns.id, created: ns.created === true, ...(ns.replaced ? { replaced: true } : {}) };
     },
   },
   // Durable async email (#190), OPT-IN (default:false). The per-site queue + DLQ and
