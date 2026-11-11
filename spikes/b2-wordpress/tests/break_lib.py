@@ -9,7 +9,9 @@ def opener(jar=None):
     o = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar), NoRedirect)
     o.jar = jar; return o
 def req(o, path, data=None, headers=None, method=None, timeout=120):
-    h = {"User-Agent": "wp-on-cf-breaktest"}; h.update(headers or {})
+    h = {"User-Agent": "wp-on-cf-breaktest"}
+    if os.environ.get("SPIKE_TOKEN"): h["x-spike-token"] = os.environ["SPIKE_TOKEN"]  # the Worker sends its timing headers only with it
+    h.update(headers or {})
     if isinstance(data, dict): data = urllib.parse.urlencode(data).encode()
     r = urllib.request.Request(B + path, data=data, headers=h, method=method)
     t = time.time()

@@ -10,6 +10,7 @@ import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, 
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
 import { demoLocked, demoLockDefines } from './site-lock.mjs';
+import { perfHeadersAllowed, scrubPerfHeaders } from './perf-headers.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -2410,7 +2411,12 @@ echo json_encode( array( 'installed' => true, 'user_id' => $r['user_id'] ) );
 `;
 
 const site = {
+	// Every answer passes through here, so the performance headers leave only on a request that
+	// may see them (perf-headers.mjs), whichever branch of serve() built the response.
 	async fetch(req, env, ctx) {
+		return scrubPerfHeaders(await this.serve(req, env, ctx), perfHeadersAllowed(req, env));
+	},
+	async serve(req, env, ctx) {
 		ENV = env;
 		const url = new URL(req.url);
 		if (url.pathname === '/_ping') return new Response('ok');
@@ -2495,6 +2501,9 @@ export class Pages extends WorkerEntrypoint {
 		// So a test can see which entrypoint answered (the gateway sets nothing).
 		const out = new Response(r.body, r);
 		out.headers.set('x-entrypoint', 'pages');
+		// An operator request (it carries the token header) may be answered with the performance
+		// headers; never let the edge cache keep that copy for the next visitor.
+		if (req.headers.has('x-spike-token')) out.headers.set('cache-control', 'private, no-store');
 		return out;
 	}
 	// An RPC method, so not cached. A purge reaches only the cache of the
