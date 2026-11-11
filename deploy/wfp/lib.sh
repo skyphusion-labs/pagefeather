@@ -24,7 +24,20 @@ API=${WFP_API:-https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID}
 
 # A site name: lower case, digits and hyphens, 1 to 30 characters, no hyphen at
 # either end (wp-wfp-<name>-media must stay a valid bucket name).
-valid_site() { [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$ ]] && [ "$1" != probe ]; }
+#
+# A site's dispatcher is wp-<name>, so a name must not make the name of a SHARED
+# Worker: wp-probe, wp-dispatch (the phase B dispatcher), wp-cacheprobe,
+# wp-cacheprobe-direct, and wp-wfp-outbound (any wfp- name, which also keeps
+# wp-wfp-<x> free for the project's own scripts and buckets). Without this,
+# `site remove dispatch` would see a dispatcher and delete the shared one.
+# tests/render-test.sh checks every shared Worker name in this tree is refused.
+SHARED_WORKER_SITE_NAMES="probe dispatch cacheprobe cacheprobe-direct"
+valid_site() {
+  [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$ ]] || return 1
+  case "$1" in wfp-*) return 1 ;; esac
+  local n
+  for n in $SHARED_WORKER_SITE_NAMES; do [ "$1" != "$n" ] || return 1; done
+}
 user_script() { echo "site-$1"; }
 dispatcher_name() { echo "wp-$1"; }
 media_bucket() { echo "wp-wfp-$1-media"; }
@@ -54,7 +67,7 @@ render_shared_dispatcher() { sed -e "s/@SITE@/dispatch/g" -e "s/@NAMESPACE@/$NAM
 # The number of rows in the object's SQLite (issue #35 slice 5), via
 # /_dbexport: used to show data survived an update or a rollback.
 row_count() { # row_count <origin> <token>
-  curl -s -m 120 -H "x-spike-token: $2" "$1/_dbexport" 2>/dev/null | grep -c . || true
+  curl -s -m 120 -K <(printf 'header = "x-spike-token: %s"\n' "$2") "$1/_dbexport" 2>/dev/null | grep -c . || true
 }
 entry_build() { # entry_build <site>
   api GET "/storage/kv/namespaces/$KV_ID/values/$(site_key "$1")" | python3 "$WFP/kv_build.py"
@@ -397,13 +410,13 @@ site_title_ok() { # site_title_ok <url> <want>
 wait_build() { # wait_build <origin> <token> <want>
   local t0=$SECONDS b evicted=0
   while :; do
-    b=$(curl -s -m 30 -H "x-spike-token: $2" "$1/_build" 2>/dev/null | python3 -c "import json,sys
+    b=$(curl -s -m 30 -K <(printf 'header = "x-spike-token: %s"\n' "$2") "$1/_build" 2>/dev/null | python3 -c "import json,sys
 try: print(json.load(sys.stdin).get(\"build\",\"\"))
 except Exception: print(\"\")")
     [ "$b" = "$3" ] && { echo "  build $b live after $((SECONDS - t0)) s"; return 0; }
     if [ "$evicted" = 0 ] && [ $((SECONDS - t0)) -ge "${BUILD_EVICT_AFTER:-20}" ]; then
       echo "  the old build still runs after $((SECONDS - t0)) s; calling /_evict (best-effort)" >&2
-      curl -s -o /dev/null -m 30 -H "x-spike-token: $2" "$1/_evict" || true
+      curl -s -o /dev/null -m 30 -K <(printf 'header = "x-spike-token: %s"\n' "$2") "$1/_evict" || true
       evicted=1
     fi
     [ $((SECONDS - t0)) -lt "${BUILD_WAIT:-60}" ] || { echo "the new build $3 did not go live in ${BUILD_WAIT:-60} s (last: ${b:-none})" >&2; return 1; }
@@ -456,3 +469,28 @@ HCL
   (cd "$WFP/terraform/$r" && terraform "$@")
 }
 log() { printf '\n== %s\n' "$*"; }
+
+# down_empty_bucket <site>: empty the site's media bucket before its workspace is
+# destroyed. Uses the caller's VARS and the workspace already selected.
+# Only the teardown key is applied (-target; it does not depend on the bucket or
+# the entry), and only when the bucket exists: a down creates nothing else. If
+# the empty FAILS, the key is applied away again (teardown=false) before this
+# returns the failure, so a failed `site remove` does not leave a live R2 key in
+# the account and the state. On success the key goes with the destroy that
+# follows. R2_EMPTY overrides the empty script (tests).
+down_empty_bucket() {
+  local s=$1 B rc=0
+  B=$(media_bucket "$s")
+  if [ "$(api_code GET "/r2/buckets/$B")" != 200 ]; then
+    echo "  bucket $B does not exist: nothing to empty"; return 0
+  fi
+  tfr site apply -input=false -auto-approve "${VARS[@]}" -var teardown=true -target=cloudflare_account_token.teardown >/dev/null || return 1
+  R2_KEY_ID=$(tfr site output -raw teardown_access_key_id) R2_SECRET=$(tfr site output -raw teardown_secret_access_key) \
+    "${R2_EMPTY:-$ROOT/deploy/variants/r2-empty.sh}" "$(tfr site output -raw r2_endpoint)" "$B" || rc=$?
+  if [ "$rc" != 0 ]; then
+    echo "  emptying $B failed (exit $rc): removing the teardown key before stopping" >&2
+    tfr site apply -input=false -auto-approve "${VARS[@]}" -var teardown=false -target=cloudflare_account_token.teardown >/dev/null \
+      || echo "site $s: DELETE THE TEARDOWN KEY: cloudflare_account_token.teardown is still in workspace $s" >&2
+    return "$rc"
+  fi
+}

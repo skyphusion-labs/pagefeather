@@ -188,6 +188,7 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_COMMENTS' ) || SKYPHUSION_TURNSTILE_COMMEN
 // ---- WooCommerce checkout ----
 if ( ! defined( 'SKYPHUSION_TURNSTILE_WOO' ) || SKYPHUSION_TURNSTILE_WOO ) {
 	// The widget, before the place-order button on the classic (shortcode) checkout.
+	// Turnstile protects the classic checkout; the block checkout is not supported yet.
 	add_action( 'woocommerce_review_order_before_submit', 'skyphusion_turnstile_widget' );
 
 	/**

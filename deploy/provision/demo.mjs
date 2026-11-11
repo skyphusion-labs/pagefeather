@@ -3,7 +3,8 @@
 // the reaper that tears every expired demo down FULLY. All offline-testable with
 // a stubbed KV binding and a stubbed fetchImpl; the lead owns the deploy gate.
 import { listSites, readSite, removeSite } from './registry.mjs';
-import { deleteNamespaceScript, deleteR2Bucket, deleteProxiedHostname } from './ops.mjs';
+import { deleteNamespaceScript, deleteR2Bucket, deleteProxiedHostname, deleteKVNamespaceByTitle, deleteQueueByName } from './ops.mjs';
+import { ocKvNamespaceName, emailQueueName, emailDlqName } from './wp-site-config.mjs';
 import { DEMO_NAME_PREFIX } from './shared.mjs';
 
 // ---- Rate limit: per-IP AND global, hour-bucketed KV counters ----------------
@@ -41,15 +42,23 @@ export async function demoConcurrency(ctx, { kvId }) {
 }
 
 // ---- Reaper: tear down every EXPIRED demo, FULLY ----------------------------
-// Order matters: delete the serving script FIRST, then the bucket, then the DNS
-// record, and remove the KV entry LAST, so a partial failure leaves the entry in
-// place for the next run to retry (idempotent). One site's failure never stops
-// the others.
+// Order matters: delete the serving script FIRST, then the bucket, the per-site KV
+// namespace and queues, then the DNS record, and remove the KV entry LAST, so a
+// partial failure leaves the entry in place for the next run to retry (idempotent).
+// One site's failure never stops the others. The namespace and queue names derive
+// from the site name (wp-site-config.mjs), so the entry does not need to carry ids;
+// each delete treats "not there" as done.
 export async function teardownDemoSite(ctx, env, hostname, entry) {
   const ns = env.WFP_NAMESPACE || 'wp-wfp';
-  const done = { hostname, script: false, bucket: false, dns: false, kv: false };
+  const done = { hostname, script: false, bucket: false, kvNamespace: false, queues: false, dns: false, kv: false };
+  const name = entry.name || (typeof entry.script === 'string' ? entry.script.replace(/^site-/, '') : '');
   if (entry.script) { await deleteNamespaceScript(ctx, { ns, name: entry.script }); done.script = true; }
   if (entry.mediaBucket) { await deleteR2Bucket(ctx, entry.mediaBucket); done.bucket = true; }
+  if (name) {
+    await deleteKVNamespaceByTitle(ctx, ocKvNamespaceName(name)); done.kvNamespace = true;
+    await deleteQueueByName(ctx, emailQueueName(name));
+    await deleteQueueByName(ctx, emailDlqName(name)); done.queues = true;
+  }
   if (entry.saasZoneId) { await deleteProxiedHostname(ctx, { zoneId: entry.saasZoneId, hostname }); done.dns = true; }
   await removeSite(ctx, { kvId: env.WFP_KV_ID, hostname }); done.kv = true;
   return done;
