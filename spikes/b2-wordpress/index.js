@@ -2400,6 +2400,10 @@ async function runCron(booted, cleanDue = false) {
 				add_filter( 'action_scheduler_claim_actions_order_by', $as_newest );
 				try { $claim = $as_store->stake_claim( ${actions}, null, array(), 'woocommerce-emails' ); } catch ( Throwable $as_e ) { $claim = null; }
 				remove_filter( 'action_scheduler_claim_actions_order_by', $as_newest );
+				// stake_claim STORES the group it was given (ActionScheduler_DBStore::claim_actions,
+				// set_claim_filter) and a later claim with no group reuses it: pass 2 then claimed only
+				// emails, so a tick with no email due ran nothing (fdprobe1112j, 19:43:57Z, 2613 due).
+				if ( method_exists( $as_store, 'set_claim_filter' ) ) { $as_store->set_claim_filter( 'group', '' ); }
 				// Pass 2, only when pass 1 claimed nothing: everything else, oldest first, as before.
 				if ( ! $claim || ! count( $claim->get_actions() ) ) {
 					if ( $claim ) { $as_store->release_claim( $claim ); }

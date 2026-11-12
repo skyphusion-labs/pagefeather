@@ -53,7 +53,12 @@ class Stub_Schedule { public $d; function __construct( $d ) { $this->d = $d; } f
 class Stub_Action { public $h; public $d; function __construct( $h, $d = '' ) { $this->h = $h; $this->d = $d; } function get_hook() { return $this->h; } function get_schedule() { return new Stub_Schedule( $this->d ); } }
 class Stub_Claim { public $ids; function __construct( $ids ) { $this->ids = $ids; } function get_actions() { return $this->ids; } }
 class Stub_Store {
+	// ActionScheduler_DBStore::claim_actions STORES a group it is given (set_claim_filter) and reuses
+	// it when a later claim on the same store has no group. The stub does the same.
+	public $claim_filters = array( 'group' => '', 'hooks' => '', 'exclude-groups' => '' );
+	function set_claim_filter( $k, $v ) { if ( isset( $this->claim_filters[ $k ] ) ) { $this->claim_filters[ $k ] = $v; } }
 	function stake_claim( $n = 10, $before = null, $hooks = array(), $group = '' ) {
+		if ( '' !== $group ) { $this->set_claim_filter( 'group', $group ); } else { $group = $this->claim_filters['group']; }
 		$now = gmdate( 'Y-m-d H:i:s' );
 		$all = $GLOBALS['stub_actions'];
 		if ( '' !== $group && ! in_array( $group, array_column( $all, 'group' ), true ) ) { throw new InvalidArgumentException( 'The group "' . $group . '" does not exist.' ); }
@@ -73,7 +78,7 @@ class Stub_Store {
 	function release_claim( $c ) { $GLOBALS['spy']['released']++; }
 }
 class Stub_Runner { function process_action( $id, $ctx ) { $GLOBALS['spy']['processed'][] = $id; } }
-class ActionScheduler { static function store() { return new Stub_Store(); } static function runner() { return new Stub_Runner(); } }
+class ActionScheduler { static $s; static function store() { return self::$s ? self::$s : ( self::$s = new Stub_Store() ); } static function runner() { return new Stub_Runner(); } }
 class ActionScheduler_QueueCleaner { function __construct( $s ) {} function reset_timeouts() {} function mark_failures() {} }
 register_shutdown_function( function () { $GLOBALS['spy']['filters_left'] = count( isset( $GLOBALS['stub_filters']['action_scheduler_claim_actions_order_by'] ) ? $GLOBALS['stub_filters']['action_scheduler_claim_actions_order_by'] : array() ); fwrite( STDERR, json_encode( $GLOBALS['spy'] ) ); } );
 `;
@@ -137,6 +142,7 @@ test('fixed: no email due, so pass 1 is empty, released, and pass 2 claims the o
 	assert.deepEqual(spy.claims[0].ids, []);
 	assert.equal(spy.released, 2, 'the empty pass 1 claim and the pass 2 claim are both released');
 	assert.doesNotMatch(spy.claims[1].order, /DESC/, 'pass 2 uses the default, oldest first');
+	assert.equal(spy.claims[1].group, '', 'pass 2 does not inherit the group pass 1 stored on the store (live: a tick claimed nothing)');
 	assert.equal(spy.filters_left, 0);
 });
 
