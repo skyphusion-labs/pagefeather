@@ -2185,7 +2185,7 @@ export class PhpRuntime extends DurableObject {
 				// One line per completed tick (#335): the backlog it left and the WP-Cron event it ran, so
 				// the drain rate and WP-Cron starvation can be read from Workers Logs (/_purgestate keeps
 				// only the last tick).
-				console.log(JSON.stringify({ m: 'cron', done: 1, as_actions: cr.as_actions, as_hooks: cr.as_hooks, as_pending: cr.as_pending, as_due: cr.as_due, wp_cron_hooks: cr.wp_cron_hooks, wp_cron_skipped: cr.wp_cron_skipped, wp_cron_due: cr.wp_cron_due }));
+				console.log(JSON.stringify({ m: 'cron', done: 1, as_actions: cr.as_actions, as_pass: cr.as_pass, as_dates: cr.as_dates, as_hooks: cr.as_hooks, as_pending: cr.as_pending, as_due: cr.as_due, wp_cron_hooks: cr.wp_cron_hooks, wp_cron_skipped: cr.wp_cron_skipped, wp_cron_due: cr.wp_cron_due }));
 				await this.ctx.storage.put(PURGE_STATE_KEY, cst);
 			}
 		} catch (e) {
@@ -2387,7 +2387,7 @@ async function runCron(booted, cleanDue = false) {
 		return withPhp(async () => {
 		const r = await php.run({ code: `<?php
 			require '/wordpress/wp-load.php';
-			$ran = array(); $released = 0; $as_n = 0; $as_hooks = array(); $cleaned = 0;
+			$ran = array(); $released = 0; $as_n = 0; $as_hooks = array(); $as_dates = array(); $cleaned = 0;
 			if ( class_exists( 'ActionScheduler' ) || function_exists( 'as_next_scheduled_action' ) ) {
 				// Stale-claim recovery (the DO memory-recycle class). This alarm is the only Action
 				// Scheduler runner and runs serialized (withPhp + the phpPending gate), so any claim on
@@ -2402,10 +2402,33 @@ async function runCron(booted, cleanDue = false) {
 				$released = (int) $wpdb->query( "UPDATE {$as_t} SET claim_id = 0 WHERE claim_id != 0 AND status = 'pending'" );
 				$wpdb->query( "DELETE FROM {$as_c} WHERE claim_id NOT IN ( SELECT DISTINCT claim_id FROM {$as_t} WHERE claim_id != 0 )" );
 				$as_store = ActionScheduler::store(); $as_runner = ActionScheduler::runner();
-				$claim = $as_store->stake_claim( ${actions} );
+				// Pass 1 (#357): the woocommerce-emails group (WooCommerce's deferred order emails), NEWEST
+				// first. The claim is oldest first by scheduled date, and a store's backlog (2609 attribute
+				// lookups and 900 old emails on the sample store) put a new order email about 3492 actions
+				// back, about 85 h at the measured 41 actions an hour (fdprobe1112j, 2026-11-12). Newest first
+				// so an imported store's old emails cannot block a new one either. The order filter is for
+				// this one claim only. stake_claim throws when the group does not exist yet (no email ever
+				// queued): that is an empty pass 1.
+				$as_pass = 'emails'; $claim = null;
+				$as_newest = function () { return 'ORDER BY priority ASC, scheduled_date_gmt DESC, action_id DESC'; };
+				add_filter( 'action_scheduler_claim_actions_order_by', $as_newest );
+				try { $claim = $as_store->stake_claim( ${actions}, null, array(), 'woocommerce-emails' ); } catch ( Throwable $as_e ) { $claim = null; }
+				remove_filter( 'action_scheduler_claim_actions_order_by', $as_newest );
+				// stake_claim STORES the group it was given (ActionScheduler_DBStore::claim_actions,
+				// set_claim_filter) and a later claim with no group reuses it: pass 2 then claimed only
+				// emails, so a tick with no email due ran nothing (fdprobe1112j, 19:43:57Z, 2613 due).
+				if ( method_exists( $as_store, 'set_claim_filter' ) ) { $as_store->set_claim_filter( 'group', '' ); }
+				// Pass 2, only when pass 1 claimed nothing: everything else, oldest first, as before.
+				if ( ! $claim || ! count( $claim->get_actions() ) ) {
+					if ( $claim ) { $as_store->release_claim( $claim ); }
+					$as_pass = 'all';
+					$claim = $as_store->stake_claim( ${actions} );
+				}
 				foreach ( $claim->get_actions() as $as_id ) {
 					$as_a = $as_store->fetch_action( $as_id ); $as_h = $as_a ? $as_a->get_hook() : '?';
 					$as_hooks[ $as_h ] = ( isset( $as_hooks[ $as_h ] ) ? $as_hooks[ $as_h ] : 0 ) + 1;
+					// The claimed action's scheduled date (#357), so a tick shows WHICH email it sent: a new one or the backlog.
+					$as_sd = ( $as_a && method_exists( $as_a, 'get_schedule' ) && $as_a->get_schedule() && method_exists( $as_a->get_schedule(), 'get_date' ) ) ? $as_a->get_schedule()->get_date() : null; $as_dates[] = $as_sd ? $as_sd->format( 'Y-m-d H:i:s' ) : '?';
 					$as_runner->process_action( $as_id, 'Skyphusion DO alarm' ); $as_n++;
 					// Drop what the action loaded (orders, meta) from the in-request cache, as the queue
 					// runner did per batch: without it memory grows with every action (#291).
@@ -2446,7 +2469,7 @@ async function runCron(booted, cleanDue = false) {
 				$as_pending = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$as_t} WHERE status = 'pending'" );
 				$as_due = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$as_t} WHERE status = 'pending' AND scheduled_date_gmt <= '" . gmdate( 'Y-m-d H:i:s' ) . "'" );
 			}
-			echo json_encode( array( 'ran' => $ran, 'wp_cron_events' => $events, 'wp_cron_hooks' => implode( ',', $wp_hooks ), 'wp_cron_skipped' => implode( ',', array_keys( $skipped ) ), 'wp_cron_due' => implode( ',', array_keys( $wp_due ) ), 'released' => $released, 'as_actions' => $as_n, 'as_hooks' => implode( ',', $as_list ), 'as_pending' => $as_pending, 'as_due' => $as_due, 'cleaned' => $cleaned ) );` });
+			echo json_encode( array( 'ran' => $ran, 'wp_cron_events' => $events, 'wp_cron_hooks' => implode( ',', $wp_hooks ), 'wp_cron_skipped' => implode( ',', array_keys( $skipped ) ), 'wp_cron_due' => implode( ',', array_keys( $wp_due ) ), 'released' => $released, 'as_actions' => $as_n, 'as_pass' => isset( $as_pass ) ? $as_pass : null, 'as_dates' => implode( ',', $as_dates ), 'as_hooks' => implode( ',', $as_list ), 'as_pending' => $as_pending, 'as_due' => $as_due, 'cleaned' => $cleaned ) );` });
 		let out = {};
 		try { out = JSON.parse(String(r.text).slice(String(r.text).lastIndexOf('{'))); } catch (e) { out = { parse: String(r.text).slice(-200) }; }
 		return out;

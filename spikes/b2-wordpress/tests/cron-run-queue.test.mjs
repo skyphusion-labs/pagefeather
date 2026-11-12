@@ -31,6 +31,9 @@ $GLOBALS['spy'] = array( 'runner' => 0, 'ran' => array(), 'unscheduled' => array
 $GLOBALS['stub_hooks'] = array();
 function add_action( $h, $f ) { $GLOBALS['stub_hooks'][ $h ][] = $f; }
 function remove_all_actions( $h ) { unset( $GLOBALS['stub_hooks'][ $h ] ); }
+// The claim order filter of the #357 email pass; this test does not model the claim order.
+function add_filter( $h, $f ) {}
+function remove_filter( $h, $f ) {}
 function do_action_ref_array( $h, $args ) { $GLOBALS['spy']['ran'][] = $h; foreach ( isset( $GLOBALS['stub_hooks'][ $h ] ) ? $GLOBALS['stub_hooks'][ $h ] : array() as $f ) { call_user_func_array( $f, $args ); } }
 function wp_cache_flush_runtime() {}
 function wp_unschedule_event( $ts, $h, $a ) { $GLOBALS['spy']['unscheduled'][] = $h; }
