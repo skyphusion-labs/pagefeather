@@ -9,7 +9,7 @@
 $scenario = getenv( 'TS_SCENARIO' );
 if ( false === $scenario || '' === $scenario ) {
 	$fail = 0;
-	foreach ( array( 'all', 'master-off', 'login-off' ) as $sc ) {
+	foreach ( array( 'all', 'master-off', 'login-off', 'woo-off', 'route-exception' ) as $sc ) {
 		echo "== scenario: $sc ==\n";
 		$cmd = 'TS_SCENARIO=' . $sc . ' ' . escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __FILE__ );
 		passthru( $cmd, $code );
@@ -66,6 +66,22 @@ function wp_die( $message = '', $title = '', $args = array() ) { throw new WpDie
 $GLOBALS['wc_notices'] = array();
 function wc_add_notice( $text, $type = 'success' ) { $GLOBALS['wc_notices'][] = array( $text, $type ); }
 
+define( 'ARRAY_A', 'ARRAY_A' );
+define( 'WPMU_PLUGIN_URL', 'https://shop.example/wp-content/mu-plugins' );
+function content_url( $p = '' ) { return 'https://shop.example/wp-content/' . $p; }
+
+// A WP_REST_Request with only the two methods the Store API gate reads.
+class Fake_REST_Request {
+	private $method;
+	private $params;
+	public function __construct( $method, $params ) { $this->method = $method; $this->params = $params; }
+	public function get_method() { return $this->method; }
+	public function get_param( $k ) { return $this->params[ $k ] ?? null; }
+}
+
+$GLOBALS['store_api_registered'] = array();
+function woocommerce_store_api_register_endpoint_data( $args ) { $GLOBALS['store_api_registered'][] = $args; }
+
 // ---- The worker-call stub: returns whatever the current test queued. ----
 $GLOBALS['ts_reply']  = '{"ok":true,"success":true}';
 $GLOBALS['ts_calls']  = 0;
@@ -80,6 +96,14 @@ switch ( $scenario ) {
 	case 'login-off':
 		define( 'SKYPHUSION_TURNSTILE', true );
 		define( 'SKYPHUSION_TURNSTILE_LOGIN', false );
+		break;
+	case 'woo-off':
+		define( 'SKYPHUSION_TURNSTILE', true );
+		define( 'SKYPHUSION_TURNSTILE_WOO', false );
+		break;
+	case 'route-exception':
+		define( 'SKYPHUSION_TURNSTILE', true );
+		eval( 'namespace Automattic\WooCommerce\StoreApi\Exceptions; class RouteException extends \Exception { public $error_code; public function __construct( $c, $m, $s = 400 ) { parent::__construct( $m, $s ); $this->error_code = $c; } }' );
 		break;
 	case 'all':
 	default:
@@ -103,6 +127,31 @@ if ( 'login-off' === $scenario ) {
 	check( 'login off: login_form not hooked', has_hook( 'login_form' ), false );
 	check( 'login off: comments still hooked', has_hook( 'preprocess_comment' ), true );
 	check( 'login off: checkout still hooked', has_hook( 'woocommerce_checkout_process' ), true );
+	check( 'login off: block checkout gate still hooked', has_hook( 'woocommerce_store_api_checkout_update_order_from_request' ), true );
+	echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
+	exit( $fail ? 1 : 0 );
+}
+
+if ( 'woo-off' === $scenario ) {
+	check( 'woo off: classic checkout not hooked', has_hook( 'woocommerce_checkout_process' ), false );
+	check( 'woo off: block widget not hooked', has_hook( 'render_block' ), false );
+	check( 'woo off: store api gate not hooked', has_hook( 'woocommerce_store_api_checkout_update_order_from_request' ), false );
+	check( 'woo off: extension data not registered', has_hook( 'woocommerce_blocks_loaded' ), false );
+	check( 'woo off: login still hooked', has_hook( 'authenticate' ), true );
+	echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
+	exit( $fail ? 1 : 0 );
+}
+
+if ( 'route-exception' === $scenario ) {
+	// With the Store API exception class present (WooCommerce 6.4 and later), a failed token is a 400
+	// Store API error with our code, which the block checkout shows as a notice.
+	$req = new Fake_REST_Request( 'POST', array( 'extensions' => array( 'skyphusion-turnstile' => array( 'token' => 'bad' ) ) ) );
+	ts_reply( array( 'ok' => true, 'success' => false ) );
+	$caught = null;
+	try { do_action( 'woocommerce_store_api_checkout_update_order_from_request', null, $req ); } catch ( Exception $e ) { $caught = $e; }
+	check( 'route exception: thrown class', $caught ? get_class( $caught ) : null, 'Automattic\WooCommerce\StoreApi\Exceptions\RouteException' );
+	check( 'route exception: error code', $caught ? $caught->error_code : null, 'skyphusion_turnstile_failed' );
+	check( 'route exception: HTTP 400', $caught ? $caught->getCode() : null, 400 );
 	echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
 	exit( $fail ? 1 : 0 );
 }
@@ -197,6 +246,64 @@ check( 'verifier outage + fail-open filter: allowed', skyphusion_turnstile_verif
 // A genuinely bad token (no infra error) is never let through by fail-open.
 ts_reply( array( 'ok' => true, 'success' => false ) );
 check( 'bad token + fail-open filter: still rejected', skyphusion_turnstile_verify( 'some-token' ), false );
+
+// 6) Block checkout (issue #308). The widget follows the checkout block once; other blocks are untouched.
+check( 'render_block hooked', has_hook( 'render_block' ), true );
+check( 'store api gate hooked', has_hook( 'woocommerce_store_api_checkout_update_order_from_request' ), true );
+$other = apply_filters( 'render_block', '<p>x</p>', array( 'blockName' => 'core/paragraph' ) );
+check( 'render_block: a non-checkout block is unchanged', $other, '<p>x</p>' );
+$html = apply_filters( 'render_block', '<div class="wp-block-woocommerce-checkout"></div>', array( 'blockName' => 'woocommerce/checkout' ) );
+check( 'block widget: keeps the block markup first', 0 === strpos( $html, '<div class="wp-block-woocommerce-checkout"></div>' ), true );
+check( 'block widget: prints the box the script looks for', (bool) strpos( $html, 'id="skyphusion-turnstile-block"' ), true );
+check( 'block widget: config carries the public site key', (bool) strpos( $html, '"sitekey":"1x00000000000000000000AA"' ), true );
+check( 'block widget: config carries the extension namespace', (bool) strpos( $html, '"namespace":"skyphusion-turnstile"' ), true );
+check( 'block widget: config carries the Spin marker', (bool) strpos( $html, '"action":"turnstile-spin-v1"' ), true );
+check( 'block widget: loads the static block script', (bool) strpos( $html, 'src="https://shop.example/wp-content/mu-plugins/turnstile-forms/block-checkout.js?ver=308.1"' ), true );
+check( 'block widget: loads api.js in explicit mode with the onload callback', (bool) strpos( $html, 'api.js?render=explicit&amp;onload=skyphusionTurnstileBlockReady' ), true );
+$p_cfg = strpos( $html, 'window.skyphusionTurnstileBlock =' );
+$p_js  = strpos( $html, 'block-checkout.js' );
+$p_api = strpos( $html, 'api.js?render=explicit' );
+check( 'block widget: config, then block script, then api.js', $p_cfg < $p_js && $p_js < $p_api, true );
+$again = apply_filters( 'render_block', '<div>second</div>', array( 'blockName' => 'woocommerce/checkout' ) );
+check( 'block widget: a second checkout block gets no second widget', $again, '<div>second</div>' );
+
+// The extension namespace is registered on the checkout endpoint once WooCommerce Blocks loads.
+do_action( 'woocommerce_blocks_loaded' );
+$reg = $GLOBALS['store_api_registered'][0] ?? array();
+check( 'store api: registered on the checkout endpoint', $reg['endpoint'] ?? null, 'checkout' );
+check( 'store api: registered under the namespace', $reg['namespace'] ?? null, 'skyphusion-turnstile' );
+check( 'store api: schema has a token field', isset( call_user_func( $reg['schema_callback'] )['token'] ), true );
+
+// The gate. A good token passes, a bad or missing token stops the POST, PUT and PATCH are not gated.
+function ts_store( $method, $ext ) { return new Fake_REST_Request( $method, array( 'extensions' => $ext ) ); }
+function ts_gate( $req ) {
+	try {
+		do_action( 'woocommerce_store_api_checkout_update_order_from_request', null, $req );
+		return 'passed';
+	} catch ( Exception $e ) {
+		return get_class( $e ) . ':' . $e->getMessage();
+	}
+}
+$good = array( 'skyphusion-turnstile' => array( 'token' => 'good-token' ) );
+ts_reply( array( 'ok' => true, 'success' => true ) );
+check( 'store api good token: order passes', ts_gate( ts_store( 'POST', $good ) ), 'passed' );
+check( 'store api good token: verifier was called once', $GLOBALS['ts_calls'], 1 );
+ts_reply( array( 'ok' => true, 'success' => false, 'codes' => array( 'invalid-input-response' ) ) );
+check( 'store api bad token: order stopped (plain exception without RouteException)', ts_gate( ts_store( 'POST', $good ) ), 'Exception:Please complete the challenge to place your order.' );
+ts_reply( array( 'ok' => true, 'success' => true ) ); // would pass, but no token is sent
+check( 'store api no extensions: order stopped', ts_gate( ts_store( 'POST', null ) ), 'Exception:Please complete the challenge to place your order.' );
+check( 'store api no extensions: verifier not called', $GLOBALS['ts_calls'], 0 );
+check( 'store api other namespace only: order stopped', ts_gate( ts_store( 'POST', array( 'other' => array( 'token' => 'good-token' ) ) ) ), 'Exception:Please complete the challenge to place your order.' );
+check( 'store api non-string token: order stopped', ts_gate( ts_store( 'POST', array( 'skyphusion-turnstile' => array( 'token' => array( 'x' ) ) ) ) ), 'Exception:Please complete the challenge to place your order.' );
+check( 'store api empty token: order stopped', ts_gate( ts_store( 'POST', array( 'skyphusion-turnstile' => array( 'token' => '' ) ) ) ), 'Exception:Please complete the challenge to place your order.' );
+ts_reply( array( 'ok' => true, 'success' => false ) );
+check( 'store api PUT draft update: not gated', ts_gate( ts_store( 'PUT', null ) ), 'passed' );
+check( 'store api PATCH draft update: not gated', ts_gate( ts_store( 'PATCH', null ) ), 'passed' );
+check( 'store api PUT: verifier not called', $GLOBALS['ts_calls'], 0 );
+ts_reply( array( 'ok' => true, 'success' => false, 'error' => 'timeout' ) );
+check( 'store api verifier outage + fail-open filter: passes (same path as classic)', ts_gate( ts_store( 'POST', $good ) ), 'passed' );
+unset( $GLOBALS['hooks']['skyphusion_turnstile_failopen'] );
+check( 'store api verifier outage: stopped (fail closed)', ts_gate( ts_store( 'POST', $good ) ), 'Exception:Please complete the challenge to place your order.' );
 
 echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
 exit( $fail ? 1 : 0 );

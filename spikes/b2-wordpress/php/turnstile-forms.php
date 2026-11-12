@@ -187,8 +187,8 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_COMMENTS' ) || SKYPHUSION_TURNSTILE_COMMEN
 
 // ---- WooCommerce checkout ----
 if ( ! defined( 'SKYPHUSION_TURNSTILE_WOO' ) || SKYPHUSION_TURNSTILE_WOO ) {
-	// The widget, before the place-order button on the classic (shortcode) checkout.
-	// Turnstile protects the classic checkout; the block checkout is not supported yet.
+	// The widget, before the place-order button on the classic (shortcode) checkout. The block
+	// checkout has its own widget and gate below.
 	add_action( 'woocommerce_review_order_before_submit', 'skyphusion_turnstile_widget' );
 
 	/**
@@ -208,4 +208,129 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_WOO' ) || SKYPHUSION_TURNSTILE_WOO ) {
 		}
 	}
 	add_action( 'woocommerce_checkout_process', 'skyphusion_turnstile_woo_check' );
+
+	// ---- WooCommerce block checkout (issue #308) ----
+	//
+	// The block checkout is a React app that posts to the Store API (/wc/store/v1/checkout). That
+	// route never runs woocommerce_checkout_process, and a form field never reaches it, so the
+	// classic gate above cannot see a block order. Three parts close that:
+	//   1. The widget box and a script tag for php/turnstile-block-checkout.js are printed AFTER the
+	//      checkout block, outside its React root, so React never removes the box. The script sends the token as
+	//      Store API extension data: extensions["skyphusion-turnstile"].token.
+	//   2. That namespace is registered on the checkout endpoint, so the field is in the schema.
+	//   3. The gate runs inside the checkout route, so no other door (the batch route) skips it.
+
+	if ( ! defined( 'SKYPHUSION_TURNSTILE_BLOCK_NS' ) ) {
+		define( 'SKYPHUSION_TURNSTILE_BLOCK_NS', 'skyphusion-turnstile' );
+	}
+
+	/** The script URL. build.sh ships it as a static file (the PHP side drops every .js). */
+	if ( ! function_exists( 'skyphusion_turnstile_block_script_url' ) ) {
+		function skyphusion_turnstile_block_script_url() {
+			$base = defined( 'WPMU_PLUGIN_URL' ) ? WPMU_PLUGIN_URL : content_url( 'mu-plugins' );
+			return rtrim( (string) $base, '/' ) . '/turnstile-forms/block-checkout.js?ver=308.1';
+		}
+	}
+
+	/**
+	 * The widget box and the scripts, after the first woocommerce/checkout block on the page. Other
+	 * blocks are returned unchanged. The order matters: the config, then block-checkout.js (a
+	 * blocking script, so it has defined the onload callback), then api.js (async).
+	 */
+	if ( ! function_exists( 'skyphusion_turnstile_block_checkout_widget' ) ) {
+		function skyphusion_turnstile_block_checkout_widget( $content, $block ) {
+			if ( ! is_array( $block ) || ! isset( $block['blockName'] ) || 'woocommerce/checkout' !== $block['blockName'] ) {
+				return $content;
+			}
+			$key = skyphusion_turnstile_sitekey();
+			if ( '' === $key ) {
+				return $content;
+			}
+			static $printed = false;
+			if ( $printed ) {
+				return $content;
+			}
+			$printed = true;
+			$cfg     = array(
+				'sitekey'   => $key,
+				'namespace' => SKYPHUSION_TURNSTILE_BLOCK_NS,
+				'action'    => 'turnstile-spin-v1',
+			);
+			return $content
+				. "\n" . '<div id="skyphusion-turnstile-block" class="skyphusion-turnstile-block" style="margin:1em 0"></div>' . "\n"
+				. '<script>window.skyphusionTurnstileBlock = ' . wp_json_encode( $cfg ) . ";</script>\n"
+				. '<script src="' . esc_attr( skyphusion_turnstile_block_script_url() ) . '"></script>' . "\n"
+				. '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&amp;onload=skyphusionTurnstileBlockReady" async defer></script>' . "\n";
+		}
+	}
+	add_filter( 'render_block', 'skyphusion_turnstile_block_checkout_widget', 10, 2 );
+
+	/** The token field in the checkout endpoint's extension schema. */
+	if ( ! function_exists( 'skyphusion_turnstile_block_schema' ) ) {
+		function skyphusion_turnstile_block_schema() {
+			return array(
+				'token' => array(
+					'description' => 'Cloudflare Turnstile token for this checkout.',
+					'type'        => array( 'string', 'null' ),
+					'context'     => array(),
+				),
+			);
+		}
+	}
+	if ( ! function_exists( 'skyphusion_turnstile_block_register' ) ) {
+		function skyphusion_turnstile_block_register() {
+			if ( ! function_exists( 'woocommerce_store_api_register_endpoint_data' ) ) {
+				return;
+			}
+			woocommerce_store_api_register_endpoint_data(
+				array(
+					'endpoint'        => 'checkout',
+					'namespace'       => SKYPHUSION_TURNSTILE_BLOCK_NS,
+					'schema_callback' => 'skyphusion_turnstile_block_schema',
+					'schema_type'     => ARRAY_A,
+				)
+			);
+		}
+	}
+	add_action( 'woocommerce_blocks_loaded', 'skyphusion_turnstile_block_register' );
+
+	/** The token from the Store API request, or '' when absent. */
+	if ( ! function_exists( 'skyphusion_turnstile_block_token' ) ) {
+		function skyphusion_turnstile_block_token( $request ) {
+			$ext = is_object( $request ) && method_exists( $request, 'get_param' ) ? $request->get_param( 'extensions' ) : null;
+			if ( ! is_array( $ext ) || ! isset( $ext[ SKYPHUSION_TURNSTILE_BLOCK_NS ] ) || ! is_array( $ext[ SKYPHUSION_TURNSTILE_BLOCK_NS ] ) ) {
+				return '';
+			}
+			$token = isset( $ext[ SKYPHUSION_TURNSTILE_BLOCK_NS ]['token'] ) ? $ext[ SKYPHUSION_TURNSTILE_BLOCK_NS ]['token'] : '';
+			return is_string( $token ) ? sanitize_text_field( $token ) : '';
+		}
+	}
+
+	/**
+	 * The Store API gate. woocommerce_store_api_checkout_update_order_from_request fires inside the
+	 * checkout route, before stock is held and before payment. It also fires for the PUT and PATCH
+	 * draft updates the checkout sends while the shopper types, which carry no token, so only the
+	 * POST (place order) is gated. A RouteException becomes a 400 Store API error that the block
+	 * shows as a notice; WooCommerce then releases held stock and coupons. If that class is missing
+	 * (an older WooCommerce), a plain exception still stops the order (a 500), so the gate never
+	 * fails open.
+	 */
+	if ( ! function_exists( 'skyphusion_turnstile_store_api_check' ) ) {
+		function skyphusion_turnstile_store_api_check( $order, $request ) {
+			$method = is_object( $request ) && method_exists( $request, 'get_method' ) ? strtoupper( (string) $request->get_method() ) : '';
+			if ( 'POST' !== $method ) {
+				return;
+			}
+			if ( skyphusion_turnstile_verify( skyphusion_turnstile_block_token( $request ) ) ) {
+				return;
+			}
+			$message = __( 'Please complete the challenge to place your order.' );
+			$route   = '\Automattic\WooCommerce\StoreApi\Exceptions\RouteException';
+			if ( class_exists( $route ) ) {
+				throw new $route( 'skyphusion_turnstile_failed', $message, 400 );
+			}
+			throw new Exception( $message );
+		}
+	}
+	add_action( 'woocommerce_store_api_checkout_update_order_from_request', 'skyphusion_turnstile_store_api_check', 10, 2 );
 }

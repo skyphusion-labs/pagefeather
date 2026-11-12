@@ -78,6 +78,11 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/turnstile.test.mjs
       - name: turnstile forms mu-plugin (issue #250)
         run: php spikes/b2-wordpress/tests/turnstile-forms-test.php
+      - name: turnstile block checkout script (issue #308)
+        # A classic browser script, not a module: syntax, then the stubbed store and widget.
+        run: |
+          node --check spikes/b2-wordpress/php/turnstile-block-checkout.js
+          node --test spikes/b2-wordpress/tests/turnstile-block-checkout.test.mjs
       - name: pageview analytics helpers (issue #201)
         run: node --test spikes/b2-wordpress/tests/analytics.test.mjs
       - name: b-dosql a stale alarm is re-armed (issue #291)

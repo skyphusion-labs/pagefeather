@@ -719,9 +719,32 @@ A token passes only if siteverify says it was solved on this site's own host (th
 action is a failed token, not an outage. The documented test secret keys always reply
 `example.com` with no action, so these two checks are skipped for them.
 
-**Turnstile protects the classic checkout; the block checkout is not supported yet.** The block
-checkout posts to the Store API (`/wc/store/v1/checkout`), which does not run
-`woocommerce_checkout_process`, and it renders no widget.
+**The block checkout (issue #308).** The block checkout posts to the Store API
+(`/wc/store/v1/checkout`). That route does not run `woocommerce_checkout_process`, and a form field
+does not reach it, so it has its own widget and its own gate. Both use the same
+`skyphusion_turnstile_verify` path, the same fail closed posture, and the same `TURNSTILE_WOO=off`
+switch as the classic checkout.
+
+- The widget. A `render_block` filter adds a widget box and a script tag after the first
+  `woocommerce/checkout` block on the page. The box is outside the block's React root, so React does
+  not remove it. `php/turnstile-block-checkout.js` (shipped as the static file
+  `mu-plugins/turnstile-forms/block-checkout.js`; the PHP side drops every `.js`) renders the widget
+  in explicit mode. It puts the token in the checkout store with `setExtensionData`, so the place
+  order POST carries it as `extensions["skyphusion-turnstile"].token`. A token is single use, so
+  after a POST that fails the script clears the token and resets the widget. An expired widget
+  clears the token too.
+- The extension data. `woocommerce_store_api_register_endpoint_data` registers the
+  `skyphusion-turnstile` namespace, with one `token` field, on the `checkout` endpoint.
+- The gate. `woocommerce_store_api_checkout_update_order_from_request` runs inside the checkout
+  route, before stock is held and before payment, so the batch route cannot go around it. That hook
+  also fires for the PUT and PATCH draft updates that the checkout sends while the shopper types.
+  Those carry no token, so only the POST is gated. A missing or failed token throws a
+  `RouteException`: a 400 Store API error with the code `skyphusion_turnstile_failed`, which the
+  block shows as a notice. WooCommerce then releases held stock and coupons. Read against
+  WooCommerce 11.2.1 (`WOO_VERSION` in `build.sh`), `src/StoreApi/Routes/V1/Checkout.php` and
+  `src/StoreApi/Utilities/CheckoutTrait.php`, 2026-11-12.
+- An express payment button (for example Apple Pay) that places the order through the same POST
+  also needs a solved widget. Without one, the order is refused.
 
 Box test (no Cloudflare account or widget needed; the documented test SECRET keys fix the
 outcome). `node tests/turnstile-box.mjs` calls the real siteverify endpoint through `verifyToken`:
@@ -730,8 +753,12 @@ with `2x0000000000000000000000000000000AA` (always fails) a token returns `succe
 `invalid-input-response`; a missing token is rejected without a network call. The form gating
 (login block, comment reject, checkout fail, and the off switches) is proven by
 `tests/turnstile-forms-test.php`, which drives the WordPress hooks with a stubbed op bridge across
-three process scenarios (all on, master off, one form off). The helper logic is
-`tests/turnstile.test.mjs`. All three run in CI. Not yet deployed: the real widget is minted and
+five process scenarios (all on, master off, login off, checkout off, and the Store API
+`RouteException` path), including the block checkout gate: a POST with no token, a bad token or a
+token under another namespace is refused, a good token passes, and PUT and PATCH are not gated.
+`tests/turnstile-block-checkout.test.mjs` drives the block script against a stubbed checkout store
+and widget. The helper logic is `tests/turnstile.test.mjs`. All four run in CI. The block
+checkout is not yet proven on a live store: that run waits on a working throwaway store (#294). Not yet deployed: the real widget is minted and
 the `TURNSTILE_SECRET` secret is set at deploy time (`wrangler secret put TURNSTILE_SECRET`), and
 `TURNSTILE_SITEKEY` is the public site key var.
 
