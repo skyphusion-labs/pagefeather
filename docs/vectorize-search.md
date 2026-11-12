@@ -38,13 +38,17 @@ Workers AI and Vectorize work through BINDINGS instead: the PHP runtime asks the
 (`index.js`) to run the call on `env.AI` / `env.SEARCH_INDEX`, the same op-bridge path
 the alt-text feature uses (`aiAlt`). No Cloudflare token is stored in the site.
 
-For that to happen, skyphusion-ai has to PREFER the local bridge when it is present
-instead of the REST-plus-token path. That is a plugin-side change, tracked as
-skyphusion-labs/skyphusion-ai#193 (the repos are not coupled in the WfP PR). Until that change lands (see [known-limitations.md](known-limitations.md)), this descriptor provisions the bindings and the index;
-the plugin can already use `env.AI` through the bridge for embeddings, and the
-Vectorize data-plane (query/upsert/delete) is ready for the plugin once it routes those
-through the bridge. Index CREATE stays with WfP's `resourceCreateOp` (a binding cannot
-create an index), so the plugin skips its own create when the WfP index is present.
+The Worker serves that path. `handleMessage` answers `aiEmbed` on `env.AI`
+(only `@cf/baai/bge-large-en-v1.5`) and `vectorize` on `env.SEARCH_INDEX`
+(`query`, `upsert`, `getByIds`, `deleteByIds`). It does not create, list or
+delete an index. `boot()` writes `SKYPHUSION_AI_CF_BRIDGE` only when both
+bindings are present. skyphusion-ai prefers this bridge when that constant is
+set. That plugin change is skyphusion-labs/skyphusion-ai#193 (the repos are not
+coupled here). Until it lands (see [known-limitations.md](known-limitations.md)),
+this descriptor still provisions the bindings and the index, and a plugin build
+that has not taken the bridge keeps the REST path. Index CREATE stays with
+WfP's `resourceCreateOp` (a binding cannot create an index), so the plugin
+skips its own create when the WfP index is present.
 
 ## Enabling it for a tenant
 

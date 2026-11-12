@@ -85,6 +85,11 @@ jobs:
           node --test spikes/b2-wordpress/tests/turnstile-block-checkout.test.mjs
       - name: pageview analytics helpers (issue #201)
         run: node --test spikes/b2-wordpress/tests/analytics.test.mjs
+      - name: cf bridge ops (issue #330)
+        # spikes/b2-wordpress/cf-bridge.mjs: aiEmbed and vectorize on env.AI and
+        # env.SEARCH_INDEX. No index create, list or delete. topK and the batch
+        # sizes are named constants.
+        run: node --test spikes/b2-wordpress/tests/cf-bridge.test.mjs
       - name: b-dosql a stale alarm is re-armed (issue #291)
         run: node --test spikes/b2-wordpress/tests/alarm-arm.test.mjs
       - name: b-dosql import holds the cron off

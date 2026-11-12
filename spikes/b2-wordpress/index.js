@@ -11,6 +11,7 @@ import { cronBounds, cronCleanDue } from './cron-bound.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
+import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, demoLockDefines } from './site-lock.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders } from './perf-headers.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
@@ -919,6 +920,8 @@ async function handleMessage(raw) {
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
 	if (m.email) return JSON.stringify(emailOp(m.email));
 	if (m.aiAlt) return JSON.stringify(await aiAltOp(m.aiAlt));
+	if (m.aiEmbed) return JSON.stringify(await aiEmbedOp(ENV && ENV.AI, m.aiEmbed));
+	if (m.vectorize) return JSON.stringify(await vectorizeOp(ENV && ENV.SEARCH_INDEX, m.vectorize));
 	if (m.turnstile) return JSON.stringify(await turnstileOp(m.turnstile));
 	if (m.analytics) return JSON.stringify(analyticsOp(m.analytics));
 	if (m.purgeZone) return JSON.stringify(await purgeZoneOp(m.purgeZone));
@@ -1173,6 +1176,10 @@ async function boot(origin) {
 	// has no alt text with the Workers AI binding. b-dosql + MEDIA + the AI binding
 	// only; AI_ALT=off turns it off. The model is AI_ALT_MODEL (default llava-hf).
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.MEDIA && ENV.AI && ENV.AI_ALT !== 'off') lines.push(`define('SKYPHUSION_AI_ALT', true);`);
+	// skyphusion-ai embeddings and Vectorize (issue #330). Both bindings, or
+	// neither. The plugin reads SKYPHUSION_AI_CF_BRIDGE the way it reads
+	// SKYPHUSION_AI_ALT. No gate var and no token: binding presence is the switch.
+	if (cfBridgeEnabled(ENV)) lines.push(`define('SKYPHUSION_AI_CF_BRIDGE', true);`);
 	// Zone cache purge-on-publish mu-plugin (php/zone-cache-purge.php, issue #205):
 	// purge the Cloudflare ZONE edge cache (deploy/zone/) by URL when content
 	// changes, through the scoped PURGE_TOKEN on the PURGE_ZONE zone. On only on the
