@@ -2260,6 +2260,12 @@ export class PhpRuntime extends DurableObject {
 		// and the caller falls back to waiting for the idle sleep.
 		if (url.pathname === '/_evict') {
 			if (typeof this.ctx.abort !== 'function') return Response.json({ evicted: false, reason: 'ctx.abort is not available on this compatibility date', build: BUILD_ID }, { status: 501 });
+			// Drop the PHP runtime too (#279). It lives in module scope (bootPromise), and abort()
+			// resets the object, not the isolate: on fdprobe1112e (2026-11-12) the next request ran on
+			// the same isolate and the same runtime (x-perf rt 1, rtServed counting on), so
+			// plugin-memory.py never read a fresh runtime. Like /_activate, this is a restart on
+			// purpose and is not counted in runtimeDrops.
+			bootPromise = null;
 			this.ctx.waitUntil(Promise.resolve().then(() => this.ctx.abort('evict for a new build (issue #35)')));
 			return Response.json({ evicting: true, build: BUILD_ID });
 		}
