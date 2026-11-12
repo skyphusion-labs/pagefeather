@@ -101,6 +101,7 @@ test('fixed: the runner never runs, and the slot goes to the next due event', ()
 	assert.equal(out.wp_cron_events, 1);
 	assert.equal(out.wp_cron_hooks, 'jetpack_clean_nonces');
 	assert.equal(out.wp_cron_skipped, 'action_scheduler_run_queue');
+	assert.equal(out.wp_cron_due, 'jetpack_clean_nonces', 'the due hooks other than run_queue are reported');
 	assert.ok(!spy.unscheduled.includes('action_scheduler_run_queue'), 'run_queue is not unscheduled');
 	assert.ok(spy.unscheduled.includes('jetpack_clean_nonces') && spy.rescheduled.includes('jetpack_clean_nonces'), 'the event that ran is rescheduled as before');
 });
@@ -119,6 +120,7 @@ test('fixed: with only run_queue due, the tick runs no WP-Cron event and no runn
 	assert.equal(out.wp_cron_events, 0);
 	assert.equal(spy.runner, 0);
 	assert.deepEqual(spy.ran, []);
+	assert.equal(out.wp_cron_due, '', 'nothing else was due, so running none starves nothing');
 });
 
 test('fixed: with CRON_WP_EVENTS 2, both other due events run and run_queue is still skipped', () => {
