@@ -49,7 +49,8 @@ check "site update and import apply the recorded vars" "$(grep -c 'REC_VARS\[@\]
 STUB_MODE=apex; export STUB_MODE SUB=sub; site_vars ggc sub kv1
 check "site_key: the recorded key after site_vars" "$(site_key ggc)" "ggc.sh"
 check "site_key: another site is still computed" "$(site_key blog)" "wp-blog.sub.workers.dev"
-check "entry_build and site_footprint read site_key" "$(grep -c 'site_key "\$1"\|site_key "\$s"' "$HERE/../lib.sh")" "3"
+# entry_build, site_footprint and entry_by_core (#294: who wrote the entry) each read site_key.
+check "entry_build, site_footprint and entry_by_core read site_key" "$(grep -c 'site_key "\$1"\|site_key "\$s"' "$HERE/../lib.sh")" "4"
 check "site remove reads the recorded values before its footprint" "$(grep -c 'so the footprint checks the right entry' "$HERE/../site")" "1"
 echo "$fails failing case(s)"
 exit $fails
