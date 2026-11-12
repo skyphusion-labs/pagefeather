@@ -110,6 +110,9 @@ jobs:
       - name: c1 boot log watch tests
         # deploy/variants/c1.sh c1_up_watch and c1-bootwatch.py (issue #103) against a fake site and bucket: no log, a stalled log, an old log.
         run: deploy/variants/tests/c1-bootwatch-test.sh
+      - name: fixtures terraform root leaves the clone clean
+        # tests/fixtures/terraform: every Terraform artifact is ignored and the lock file is tracked. The init half runs where terraform exists (not on the runner).
+        run: tests/fixtures/tests/tf-clean-test.sh
       - name: zone cache ruleset tests
         # deploy/zone: the bypass rule is last and keeps every per-user and operator request out of the edge cache.
         run: node --test deploy/zone/tests/cache-ruleset.test.mjs

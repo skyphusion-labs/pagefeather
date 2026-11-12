@@ -3,7 +3,7 @@ terraform {
   required_providers {
     cloudflare = {
       source  = "cloudflare/cloudflare"
-      version = "~> 5.28"
+      version = "5.29.0" # exact: the version wp-test-fixtures was applied with (#314 lock); the lock carries darwin_arm64 and linux_amd64
     }
   }
 }
