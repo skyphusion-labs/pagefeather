@@ -1,7 +1,7 @@
 #!/bin/bash
 # Terraform checks of deploy/wfp (issue #35), offline (no credentials; the
-# providers are downloaded on the first init). CI runs it with terraform from
-# hashicorp/setup-terraform (issue #336); run it locally before a live run too.
+# providers are downloaded on the first init). CI runs it with a checksum-verified
+# terraform 1.17.1 (issue #336); run it locally before a live run too.
 #   deploy/wfp/tests/tf-test.sh [a copy of deploy/wfp/terraform]
 # - terraform validate and fmt for terraform/shared and terraform/site;
 # - in terraform/site, the teardown key depends on NOTHING (terraform graph),

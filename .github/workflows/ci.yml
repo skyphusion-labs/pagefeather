@@ -170,11 +170,21 @@ jobs:
           python3 deploy/wfp/tests/cross-test.py
           deploy/wfp/tests/probe-entry-test.sh
           deploy/wfp/tests/setup-green-test.sh
-      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
-        with:
-          terraform_version: 1.17.1
-          # tf-test.sh reads `terraform graph` from stdout; the wrapper is not needed.
-          terraform_wrapper: false
+      - name: Install Terraform 1.17.1 (checksum-verified)
+        # Not hashicorp/setup-terraform: the org allowlist refuses it (run 43196743912), and the
+        # lead ruled against widening the allowlist for one job (#336). Same pattern as ggc ci.yml.
+        # The sha256 is HashiCorp's own SHA256SUMS line for this zip; a mismatch stops the job here.
+        run: |
+          set -euo pipefail
+          ver=1.17.1
+          zip="terraform_${ver}_linux_amd64.zip"
+          curl -fsSL -o "$RUNNER_TEMP/$zip" "https://releases.hashicorp.com/terraform/${ver}/${zip}"
+          if ! echo "4638628058e71a55212b1c563712eac03b902128f40740f3dc8174df12135061  $RUNNER_TEMP/$zip" | sha256sum -c -; then
+            echo "::error::terraform ${ver} zip sha256 mismatch; refusing to install it"
+            exit 1
+          fi
+          sudo unzip -o -q "$RUNNER_TEMP/$zip" -d /usr/local/bin
+          terraform version
       - name: WfP terraform checks (issue #336)
         # deploy/wfp/tests/tf-test.sh: validate and fmt for terraform/shared and site, and the
         # teardown and media import keys depend on nothing in the site graph. init runs with
