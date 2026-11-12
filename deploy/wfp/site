@@ -33,7 +33,14 @@ has_ws() { list_sites | grep -qx "$1"; }
 # the data from the snapshot and re-deploy the exact code that was live (the
 # build artifact saved before the rebuild); the rollback drops writes made
 # since the snapshot.
+# The work dir of one update (the recorded inputs, #379), removed however update_one ends.
 update_one() {
+  local WDIR rc=0; WDIR=$(mktemp -d); chmod 700 "$WDIR"
+  update_one_inner "$@" || rc=$?
+  rm -rf "$WDIR"
+  return "$rc"
+}
+update_one_inner() {
   local s=$1
   valid_site "$s" || { echo "bad site name: $s" >&2; return 2; }
   has_ws "$s" || { echo "no site $s (run site add first)" >&2; return 2; }
@@ -48,6 +55,12 @@ update_one() {
   TOK=$(tfr site output -raw spike_token); bucket=$(media_bucket "$s"); EP=$(tfr site output -raw r2_endpoint)
   rollback=$(entry_build "$s")
   echo "site $s: the live build is ${rollback:-unknown}"
+  # The site's recorded build inputs (#379): reused when this run passes none, compared when it does.
+  # local -x keeps a recorded value inside this one update (update --all runs many).
+  local -x PLUGINS="${PLUGINS:-}" IMPORT_THEMES="${IMPORT_THEMES:-}" IMPORT_PLUGINS="${IMPORT_PLUGINS:-}" IMPORT_MU_PLUGINS="${IMPORT_MU_PLUGINS:-}" WOO_ACTIVE="${WOO_ACTIVE:-}" IMPORT_CONTENT="${IMPORT_CONTENT:-}"
+  local REC_TREE=""
+  echo "site $s: the recorded build inputs"
+  use_recorded_inputs "$bucket" "$WDIR" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
   # Refuse before any change a build the live site cannot run (#377, lib.sh update_inputs_check).
   local woo code; woo=$(woo_active_for_build) || return 2
   code=$(store_api_code "$ORIGIN")
@@ -96,7 +109,9 @@ update_one() {
   if [ "$ok" = 1 ]; then
     [ -n "$SAVED" ] && rm -rf "$SAVED"
     [ "${COUNT_ROWS:-0}" = 1 ] && echo "site $s: rows after (updated): $(row_count "$ORIGIN" "$TOK")"
-    echo "site $s: updated $rollback -> $new"; return 0
+    echo "site $s: updated $rollback -> $new"
+    record_build_inputs "$bucket" "$new" "$WDIR" || { echo "site $s: UPDATED, but its build inputs were NOT recorded (#379): run the update again with the same inputs" >&2; return 1; }
+    return 0
   fi
   echo "site $s: ROLLING BACK to $rollback. NOTE: a rollback drops any write made between the snapshot and now." >&2
   if [ -n "$snap_key" ]; then
@@ -193,6 +208,12 @@ if [ "$cmd" = add ]; then
   footprint_present "$fp" || { echo "site $s: not every part is there after the add:" >&2; printf '%s\n' "$fp" | sed 's/^/  /' >&2; exit 1; }
   # Its scripts bind only its own resources (bindings.py, #35 slice 4).
   NAMESPACE=$NAMESPACE KV_ID=$KV_ID python3 -I "$WFP/bindings.py" "$s"
+  # A build made by this run is recorded (#379); with no BUILD=1 the build came from elsewhere.
+  if [ "${BUILD:-0}" != 0 ]; then
+    W=$(mktemp -d); chmod 700 "$W"
+    record_build_inputs "$(media_bucket "$s")" "$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js")" "$W" || echo "site $s: ADDED, but its build inputs were NOT recorded (#379): the first update must pass them" >&2
+    rm -rf "$W"
+  fi
   echo "site add $s: done, https://$(site_host "$s" "$SUB")"
 else
   # An existing site's recorded hostname and domain decide what its parts are
