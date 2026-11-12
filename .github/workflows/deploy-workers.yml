@@ -96,10 +96,21 @@ jobs:
           set -euo pipefail
           f="deploy/live-sites/$WORKER.env"
           [ -f "$f" ] || { echo "::error::no $f"; exit 1; }
-          if grep -vE '^(#.*)?$' "$f" | grep -vqE '^(VARIANT|LOCATION|MEDIA|MEDIA_BUCKET|SITE_ORIGIN|HTTP_ALLOW_HOSTS)=[A-Za-z0-9:/._,-]*$'; then
+          if grep -vE '^(#.*)?$' "$f" | grep -vqE '^((VARIANT|LOCATION|MEDIA|MEDIA_BUCKET|SITE_ORIGIN|HTTP_ALLOW_HOSTS)=[A-Za-z0-9:/._,-]*|WOO_ACTIVE=[01])$'; then
             echo "::error::$f has a line outside the allowed KEY=value set"; exit 1
           fi
-          grep -E '^(VARIANT|LOCATION|MEDIA|MEDIA_BUCKET|SITE_ORIGIN|HTTP_ALLOW_HOSTS)=' "$f" >> "$GITHUB_OUTPUT"
+          grep -E '^(VARIANT|LOCATION|MEDIA|MEDIA_BUCKET|SITE_ORIGIN|HTTP_ALLOW_HOSTS|WOO_ACTIVE)=' "$f" >> "$GITHUB_OUTPUT"
+          # A live WooCommerce store must be built with WooCommerce primed in its OPcache (#373, #313):
+          # woocap shipped 615 files without it (run 43317524968). Store API 200 = WooCommerce is active.
+          origin="$(sed -n 's/^SITE_ORIGIN=//p' "$f")"
+          woo="$(sed -n 's/^WOO_ACTIVE=//p' "$f")"
+          code="$(curl -s -o /dev/null -m 60 -w '%{http_code}' "$origin/?rest_route=/wc/store/v1" || true)"
+          echo "store api on the live site: $code; WOO_ACTIVE=${woo:-unset}"
+          case "$code" in
+            200) [ "$woo" = 1 ] || { echo "::error::$WORKER has WooCommerce active (Store API 200) but $f does not set WOO_ACTIVE=1: the OPcache would ship without WooCommerce"; exit 1; } ;;
+            404) ;;
+            *) echo "::error::the Store API check on $origin answered $code, neither 200 nor 404: cannot tell whether WooCommerce is active"; exit 1 ;;
+          esac
           F="$f" python3 deploy/live-sites/check_live.py
           d="$(MODE=domains python3 deploy/live-sites/check_live.py)"
           echo "custom domains before: $d"
@@ -137,6 +148,7 @@ jobs:
                 export VARIANT='${{ steps.site.outputs.VARIANT }}' LOCATION='${{ steps.site.outputs.LOCATION }}'
                 export MEDIA='${{ steps.site.outputs.MEDIA }}' MEDIA_BUCKET='${{ steps.site.outputs.MEDIA_BUCKET }}'
                 export SITE_ORIGIN='${{ steps.site.outputs.SITE_ORIGIN }}'
+                export WOO_ACTIVE='${{ steps.site.outputs.WOO_ACTIVE }}'
                 if grep -q '^HTTP_ALLOW_HOSTS=' "deploy/live-sites/$WORKER.env"; then export HTTP_ALLOW_HOSTS='${{ steps.site.outputs.HTTP_ALLOW_HOSTS }}'; fi
                 NAME="$WORKER" CODE_ONLY=1 BENCH=0 bash deploy/deploy.sh
               ) ;;
