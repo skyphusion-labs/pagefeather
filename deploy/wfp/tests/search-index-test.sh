@@ -8,6 +8,11 @@
 #   remove present      0, 1 DELETE                            then it reads 404
 #   remove absent       0, 0                                   nothing to remove
 #   remove sticks       1, 1                                   a delete that does not take stops
+#   remove to 410       0, 1 DELETE   then 410 + 3005 vectorize.index.deleted: gone (#338, live)
+#   remove already 410  0, 0          an index already deleted (410 + 3005): nothing to remove
+#   remove bare 410     1, 0          a 410 with no 3005 is NOT read as gone
+#   remove 403          1, 0          a real error (403) is NOT read as gone
+#   ensure after 410    0, 1 POST     a deleted (410 + 3005) index is made again
 # Exits 0 only when every case gives what it must. Needs bash, curl, python3.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -38,9 +43,14 @@ run_case "ensure absent" ensure_search_index one '{"indexes": []}' 0 1 '"preset"
 run_case "ensure absent (the name)" ensure_search_index one '{"indexes": []}' 0 1 '"name": "wp-wfp-one-search"'
 run_case "ensure present" ensure_search_index one '{"indexes": ["wp-wfp-one-search"]}' 0 0 "exists"
 run_case "ensure refused" ensure_search_index one '{"indexes": [], "create_status": 403}' 1 1 "create answered 403"
-run_case "remove present" remove_search_index one '{"indexes": ["wp-wfp-one-search", "wp-wfp-two-search"]}' 0 1 "is gone (API 404)"
+run_case "remove present" remove_search_index one '{"indexes": ["wp-wfp-one-search", "wp-wfp-two-search"]}' 0 1 "is gone (404, or 410 vectorize.index.deleted)"
 run_case "remove absent" remove_search_index one '{"indexes": ["wp-wfp-two-search"]}' 0 0 "none"
 run_case "remove sticks" remove_search_index one '{"indexes": ["wp-wfp-one-search"], "delete_sticks": true}' 1 1 "NOT gone"
+run_case "remove to 410" remove_search_index one '{"indexes": ["wp-wfp-one-search"], "delete_to_410": true}' 0 1 "is gone (404, or 410 vectorize.index.deleted)"
+run_case "remove already 410" remove_search_index one '{"indexes": [], "deleted": ["wp-wfp-one-search"]}' 0 0 "none"
+run_case "remove bare 410" remove_search_index one '{"indexes": [], "deleted": ["wp-wfp-one-search"], "bare_410": true}' 1 0 "unknown 410"
+run_case "remove 403" remove_search_index one '{"indexes": [], "get_status": {"wp-wfp-one-search": 403}}' 1 0 "unknown 403"
+run_case "ensure after 410" ensure_search_index one '{"indexes": [], "deleted": ["wp-wfp-one-search"]}' 0 1 "made"
 # Another site's index is never touched: after "remove present", two's is still there.
 echo '{"indexes": ["wp-wfp-one-search", "wp-wfp-two-search"]}' > "$T/state.json"
 ( WFP_API="http://127.0.0.1:$(cat "$T/port")" CLOUDFLARE_API_TOKEN=test ACCOUNT_ID=test-account; export WFP_API CLOUDFLARE_API_TOKEN ACCOUNT_ID

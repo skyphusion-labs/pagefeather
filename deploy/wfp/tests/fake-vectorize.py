@@ -3,7 +3,10 @@
 
   fake-vectorize.py <port-file> <state.json>
 
-state.json: {"indexes": ["<name>", ...], "create_status": 200, "delete_sticks": false}.
+state.json: {"indexes": ["<name>", ...], "create_status": 200, "delete_sticks": false,
+"deleted": ["<name>", ...], "delete_to_410": false, "get_status": {"<name>": <code>}, "bare_410": false}.
+A name in "deleted" answers 410 with error 3005 vectorize.index.deleted (how Vectorize v2 answers a
+deleted index), or a bare 410 with no 3005 when bare_410; delete_to_410 moves a deleted index there.
 GET /vectorize/v2/indexes/<n> answers 200 or 404; POST /vectorize/v2/indexes makes the index
 named in the body (or answers create_status when it is not 200); DELETE removes it, unless
 delete_sticks. Every write is appended to <state.json>.writes.
@@ -38,7 +41,16 @@ class H(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         s = load()
-        return self.send(200 if self.name() in s["indexes"] else 404, {"success": True})
+        n = self.name()
+        if n in s.get("get_status", {}):
+            return self.send(s["get_status"][n], {"success": False, "errors": [{"code": 10000, "message": "Authentication error"}]})
+        if n in s["indexes"]:
+            return self.send(200, {"success": True})
+        if n in s.get("deleted", []):
+            if s.get("bare_410"):
+                return self.send(410, {"success": False, "errors": []})
+            return self.send(410, {"success": False, "errors": [{"code": 3005, "message": "vectorize.index.deleted"}]})
+        return self.send(404, {"success": True})
 
     def log_write(self, extra=""):
         with open(state_file + ".writes", "a") as f:
@@ -59,6 +71,8 @@ class H(http.server.BaseHTTPRequestHandler):
         self.log_write()
         if not s.get("delete_sticks"):
             s["indexes"] = [i for i in s["indexes"] if i != self.name()]
+            if s.get("delete_to_410"):
+                s.setdefault("deleted", []).append(self.name())
             save(s)
         return self.send(200, {"success": True})
 
