@@ -45,3 +45,18 @@ export async function rearm(storage, now, intervalMs, staleMs = STALE_MS) {
 	await storage.setAlarm(now + intervalMs);
 	return { armed: true, stale, was: stale ? Number(at) : null };
 }
+
+// An alarm that throws spends the platform's retry budget (1 run + 6 retries), and an object that
+// used it up got NO alarm afterwards, even after deleteAlarm + setAlarm and a new script version
+// (fdprobe1112c, 2026-11-12: 7 scriptThrewException 04:08 to 04:11Z, then none). So alarm() never
+// lets an error out: the next tick is already armed (armBeforeRun), the error is stored here for
+// /_purgestate, and the alarm returns normally. ALARM_FATAL_KEY holds the last one.
+export const ALARM_FATAL_KEY = 'alarm-fatal';
+/** Store the error an alarm run threw (time, message, the top of the stack) and return it. */
+export async function recordAlarmFatal(storage, e, now) {
+	const rec = { t: now, error: String((e && e.message) || e).slice(0, 300), stack: String((e && e.stack) || '').slice(0, 1200) };
+	const prev = (await storage.get(ALARM_FATAL_KEY)) || {};
+	rec.count = (prev.count || 0) + 1;
+	await storage.put(ALARM_FATAL_KEY, rec);
+	return rec;
+}
