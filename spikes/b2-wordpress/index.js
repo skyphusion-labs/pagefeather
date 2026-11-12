@@ -6,6 +6,7 @@ import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
 import { armBeforeRun, rearm } from './alarm-arm.mjs';
+import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
@@ -2094,7 +2095,12 @@ export class PhpRuntime extends DurableObject {
 			// below (issue #208) is exercised by tests/cron-cold.py. Off by default; prod never sets it.
 			if (this.env.CRON_SIMULATE_COLD === '1') { sqlDb = null; sqlStorage = null; bootPromise = null; }
 			const cronOrigin = lastOrigin || this.env.SITE_ORIGIN || (await this.ctx.storage.get(ORIGIN_KEY));
-			if (phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env) {
+			// A database import in progress holds the cron off (import-hold.mjs): a cron run between two
+			// import parts boots WordPress on a half-loaded database, in the same isolate, and the next
+			// part ran out of memory (fdprobe1112a, 2026-11-12).
+			const importHeld = cronHeld(await this.ctx.storage.get(IMPORT_HOLD_KEY), Date.now());
+			if (importHeld) console.log(JSON.stringify({ m: 'cron', held: 'import' }));
+			if (!importHeld && phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env) {
 				// DB_IN_DO: bind the object's own SQLite as WordPress's database before the cron runtime
 				// loads WP. The fetch path sets this per request (sqlDb = sql); the alarm runs on a woken
 				// isolate where the module globals are gone, so without this sqlDb is null and every cron
@@ -2255,6 +2261,8 @@ export class PhpRuntime extends DurableObject {
 		}
 		if (url.pathname === '/_dbimport' && req.method === 'POST') {
 			if (!sql) return new Response('DB_IN_DO is off', { status: 409 });
+			// Hold the cron off for the whole import (each part refreshes it; import-hold.mjs).
+			await this.ctx.storage.put(IMPORT_HOLD_KEY, Date.now() + IMPORT_HOLD_MS);
 			const text = await req.text();
 			return withPhp(async () => {
 				objectCacheClear(); // the database changes outside WordPress's cache
