@@ -301,6 +301,60 @@ tree_clean_check() {
 content_inputs_set() { if [ -n "${PLUGINS:-}${IMPORT_CONTENT:-}" ]; then echo 1; else echo 0; fi; }
 # The HTTP code of the site's Store API index (200: WooCommerce active, 404: not), 000 on no answer.
 store_api_code() { curl -s -o /dev/null -m 60 -w '%{http_code}' "$1/?rest_route=/wc/store/v1" 2>/dev/null || true; }
+# The recorded build inputs of a site (#379, build_inputs.py): _build/inputs.json and the content
+# tree _build/<content id>.tar.gz in the site's own media bucket (private outside uploads/).
+# use_recorded_inputs <bucket> <work dir>, called by update_one, which declares the inputs
+# (PLUGINS, IMPORT_THEMES, IMPORT_PLUGINS, IMPORT_MU_PLUGINS, WOO_ACTIVE, IMPORT_CONTENT) local -x,
+# so a recorded value set here stays inside that one update (update --all runs many).
+#   no record:                    nothing changes; this run's inputs are recorded after the update
+#   a record, a run with no input: the recorded inputs are set and the content tree is fetched
+#   a record, different inputs:    refused (2) unless REPLACE_INPUTS=1; the differences are printed
+# Sets REC_TREE to the recorded tree key when this run uses it, else "".
+use_recorded_inputs() {
+  local b=$1 w=$2 rec="$2/inputs.json" rc=0
+  REC_TREE=""
+  python3 -I "$WFP/build_inputs.py" get "$b" "$rec" || rc=$?
+  case "$rc" in
+    0) ;;
+    3) echo "  no recorded build inputs yet (a site from before #379): this run's inputs are recorded after the update"; return 0 ;;
+    *) echo "cannot read the recorded build inputs of $b; refused" >&2; return 2 ;;
+  esac
+  if [ "$(content_inputs_set)" = 0 ] && [ -z "${WOO_ACTIVE:-}" ]; then
+    local tree; tree=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1])).get("tree", ""))' "$rec")
+    if [ -n "$tree" ]; then
+      [[ "$tree" =~ ^_build/c[0-9a-f]{8}\.tar\.gz$ ]] || { echo "the recorded content tree key is not _build/c<8 hex>.tar.gz: $tree; refused" >&2; return 2; }
+      python3 -I "$WFP/build_inputs.py" tree-get "$b" "$tree" "$w" > /dev/null || { echo "cannot fetch the recorded content tree $b/$tree; refused" >&2; return 2; }
+      REC_TREE=$tree
+    fi
+    eval "$(python3 -I "$WFP/build_inputs.py" exports "$rec" "$w/wp-content")"
+    echo "  using the recorded build inputs: WOO_ACTIVE=${WOO_ACTIVE:-} PLUGINS='${PLUGINS:-}' IMPORT_THEMES='${IMPORT_THEMES:-}' IMPORT_PLUGINS='${IMPORT_PLUGINS:-}' IMPORT_MU_PLUGINS='${IMPORT_MU_PLUGINS:-}' tree ${tree:-none}"
+    return 0
+  fi
+  rc=0; python3 -I "$WFP/build_inputs.py" compare "$rec" > "$w/diff" || rc=$?
+  case "$rc" in
+    0) echo "  this run's inputs equal the recorded ones" ;;
+    4) if [ "${REPLACE_INPUTS:-0}" = 1 ]; then echo "  REPLACE_INPUTS=1: the recorded inputs are replaced:"; cat "$w/diff"
+       else echo "this run's build inputs differ from the recorded ones; refused (REPLACE_INPUTS=1 replaces them on purpose):" >&2; cat "$w/diff" >&2; return 2; fi ;;
+    *) echo "cannot compare with the recorded build inputs; refused" >&2; return 2 ;;
+  esac
+}
+# record_build_inputs <bucket> <build id> <work dir>: after a good upload, record this run's inputs.
+# The content tree is packed from IMPORT_CONTENT and stored under its content id, unless this run
+# used that same recorded tree (REC_TREE).
+record_build_inputs() {
+  local b=$1 id=$2 w=$3 cid key=""
+  cid=$(cd "$APP" && python3 -I content-id.py build/wordpress/wp-content) || return 1
+  if [ -n "${IMPORT_CONTENT:-}" ] && [ -n "$cid" ]; then
+    key="_build/$cid.tar.gz"
+    if [ "${REC_TREE:-}" != "$key" ]; then
+      python3 -I "$WFP/build_inputs.py" pack "$IMPORT_CONTENT" "$w/tree.tar.gz" || return 1
+      python3 -I "$WFP/build_inputs.py" tree-put "$b" "$key" "$w/tree.tar.gz" || return 1
+    fi
+  fi
+  python3 -I "$WFP/build_inputs.py" env-json "$cid" "$key" "$id" > "$w/record.json" || return 1
+  python3 -I "$WFP/build_inputs.py" put "$b" "$w/record.json" || return 1
+  echo "  build inputs recorded in $b/_build/inputs.json (content ${cid:-none}, tree ${key:-none})"
+}
 # Build b-dosql (spikes/b2-wordpress), as deploy/deploy.sh does: PHP
 # WebAssembly, WordPress, the precompiled OPcache (local wrangler dev).
 build_dosql() {
