@@ -27,6 +27,16 @@
 //   state change behind the mail was saved. After a reset in this tick the mail is held, as the
 //   #353 request guard refuses a request with lost writes. Before any reset it is handed off.
 //
+// The dedupe key is ENFORCED at the handoff (#370). Before #370 it was only carried. A message from an
+// Action Scheduler action gets a key from the action id plus a hash of its recipients and subject:
+// one action sends more than one mail (pending_to_processing sends the admin new-order mail AND the
+// customer processing mail, measured on fdprobe1113a), so the action id alone would drop the second
+// one. Before a handoff, the op asks seen(key); a key already marked is not sent again. After a
+// handoff, mark(key) records it in the PHP object's durable storage. A storage error never stops a
+// send (seen fails: send; mark fails: the mail has left): losing an order email is worse than a rare
+// duplicate. This is what makes a retry of an email action safe (#367). A mail with no action id
+// (WP-Cron, plugin code) has no key and is never deduped.
+//
 // These helpers are the pure, unit-tested core; the env and PHP glue lives in index.js.
 
 export const HANDOFF = 'handoff';
@@ -36,6 +46,21 @@ export const HOLD = 'hold';
 export function emailActionId(email) {
 	const n = Math.floor(Number(email && email.as_action) || 0);
 	return n > 0 ? n : 0;
+}
+
+export const DEDUPE_PREFIX = 'mail-sent:';
+
+/**
+ * The dedupe key of a wp_mail message: mail-sent:<action id>:<16 hex of SHA-256 of the sorted
+ * recipients and the subject>, or null when it has no action id. Async (crypto.subtle).
+ */
+export async function emailDedupeKey(email) {
+	const id = emailActionId(email);
+	if (!id) return null;
+	const to = (Array.isArray(email.to) ? email.to : [email.to]).map((t) => String(t || '').trim().toLowerCase()).filter(Boolean).sort();
+	const data = new TextEncoder().encode(to.join(',') + '\n' + String(email.subject || ''));
+	const h = new Uint8Array(await crypto.subtle.digest('SHA-256', data));
+	return DEDUPE_PREFIX + id + ':' + Array.from(h.slice(0, 8), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 /**
@@ -56,11 +81,13 @@ export function tickEmailDecision(email, lostWrites) {
  *                   resolve to the string 'bounded' when the send was still in flight at its bound.
  *   lostWrites()    the reset failures this tick has seen so far.
  *   log(obj)        one structured line per decision.
+ *   seen(key)       optional: resolves true when that key was already handed off (#370).
+ *   mark(key)       optional: records that the key was handed off.
  * op(email) is what the email op returns to PHP while the tick runs. lostWritesSeen() is for the
  * tick record.
  */
-export function createTickMail({ handoff, lostWrites, log = () => {} }) {
-	const counts = { handedOff: 0, held: 0, failed: 0, bounded: 0 };
+export function createTickMail({ handoff, lostWrites, log = () => {}, seen = null, mark = null }) {
+	const counts = { handedOff: 0, held: 0, failed: 0, bounded: 0, deduped: 0 };
 	return {
 		counts,
 		lostWritesSeen: () => Number(lostWrites()) || 0,
@@ -72,10 +99,31 @@ export function createTickMail({ handoff, lostWrites, log = () => {} }) {
 				log({ '@event': 'email-held', m: 'email-held', lostWrites: lost, wp_cron: Number(email && email.wp_cron) || 0, subject: String((email && email.subject) || '').slice(0, 80) });
 				return { ok: true, queued: false, held: true };
 			}
+			const key = seen || mark ? await emailDedupeKey(email) : null;
+			if (key && seen) {
+				let was = false;
+				try {
+					was = !!(await seen(key));
+				} catch (e) {
+					log({ '@event': 'email-dedupe', m: 'email-dedupe', as_action, error: 'seen: ' + String((e && e.message) || e).slice(0, 120), sent: 'anyway' });
+				}
+				if (was) {
+					counts.deduped++;
+					log({ '@event': 'email-deduped', m: 'email-deduped', as_action, key });
+					return { ok: true, queued: false, deduped: true };
+				}
+			}
 			try {
 				const r = await handoff(email);
 				if (r === 'bounded') counts.bounded++;
 				counts.handedOff++;
+				if (key && mark) {
+					try {
+						await mark(key);
+					} catch (e) {
+						log({ '@event': 'email-dedupe', m: 'email-dedupe', as_action, error: 'mark: ' + String((e && e.message) || e).slice(0, 120) });
+					}
+				}
 				log({ '@event': 'email-handoff', m: 'email-handoff', as_action, lostWrites: lost, ...(r === 'bounded' ? { bounded: true } : {}) });
 				return { ok: true, queued: true };
 			} catch (e) {

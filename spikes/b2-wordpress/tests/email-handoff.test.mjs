@@ -22,7 +22,7 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createTickMail, tickEmailDecision, emailActionId, HANDOFF, HOLD } from '../email-handoff.mjs';
+import { createTickMail, tickEmailDecision, emailActionId, emailDedupeKey, DEDUPE_PREFIX, HANDOFF, HOLD } from '../email-handoff.mjs';
 
 const RESET = "Durable Object's isolate exceeded its memory limit and was reset.";
 class Killed extends Error {}
@@ -224,7 +224,7 @@ test('createTickMail counts and logs each decision; a handoff that throws is rep
 	assert.deepEqual(await m.op({ subject: 'b' }), { ok: true, queued: false, held: true });
 	const f = await m.op({ subject: 'boom', as_action: 6 });
 	assert.equal(f.ok, false);
-	assert.deepEqual(m.counts, { handedOff: 2, held: 1, failed: 1, bounded: 1 });
+	assert.deepEqual(m.counts, { handedOff: 2, held: 1, failed: 1, bounded: 1, deduped: 0 });
 	assert.equal(m.lostWritesSeen(), 2);
 	assert.deepEqual(sent.map((e) => e.subject), ['a', 'slow']);
 	assert.deepEqual(lines.map((l) => l['@event']), ['email-handoff', 'email-handoff', 'email-held', 'email-handoff']);
@@ -337,19 +337,81 @@ test('runCron: a recurring event whose reschedule failed runs with wp_cron -1', 
 	assert.deepEqual(runCronLeg({ STUB_UNSCHED_OK: '1', STUB_RESCHED_OK: '1', STUB_SCHEDULE: 'hourly' }), [1, 0]);
 });
 
-// The dedupe key is CARRIED, not ENFORCED (#362 scope). Nothing drops a second handoff of the same
-// action id: not the op, not the queue consumer. The model above shows no path that hands off one
-// action twice, so none is needed today; enforcement is its own issue. If enforcement lands, this
-// test must change with it.
-test('the action id is carried to the durable path, and a second handoff of the same id is NOT dropped (not enforced)', async () => {
-	const sent = [];
-	const m = createTickMail({ handoff: async (e) => { sent.push(e); return 1; }, lostWrites: () => 0 });
-	await m.op({ subject: 'Order 9', as_action: 9 });
-	await m.op({ subject: 'Order 9', as_action: 9 });
-	assert.deepEqual(sent.map((e) => e.as_action), [9, 9], 'carried on each message, and both were handed off');
-	assert.equal(m.counts.handedOff, 2);
+// The dedupe key is ENFORCED at the handoff (#370). A Map stands in for the object's durable storage.
+const store = () => { const m = new Map(); return { m, seen: async (k) => m.has(k), mark: async (k) => { m.set(k, Date.now()); } }; };
+const order = (subject, to = 'c@example.com', as_action = 9) => ({ subject, to: [to], as_action });
+test('THE RETRY CASE: a second handoff of the same action and message is dropped (enforced)', async () => {
+	const st = store(); const sent = [];
+	const m1 = createTickMail({ handoff: async (e) => { sent.push(e); return 1; }, lostWrites: () => 0, seen: st.seen, mark: st.mark });
+	assert.deepEqual(await m1.op(order('Your order')), { ok: true, queued: true });
+	// A later tick (a retry of the same action, as #367 would do) with the same durable storage.
+	const m2 = createTickMail({ handoff: async (e) => { sent.push(e); return 1; }, lostWrites: () => 0, seen: st.seen, mark: st.mark });
+	assert.deepEqual(await m2.op(order('Your order')), { ok: true, queued: false, deduped: true });
+	assert.equal(sent.length, 1);
+	assert.equal(m2.counts.deduped, 1);
 });
-test('the queue consumer does not read as_action (no consume-side dedupe)', () => {
+test('one action sends two mails (admin new-order and customer processing): both go, neither is a duplicate', async () => {
+	const st = store(); const sent = [];
+	const m = createTickMail({ handoff: async (e) => { sent.push(e); return 1; }, lostWrites: () => 0, seen: st.seen, mark: st.mark });
+	await m.op(order('[Store]: New order #3517', 'admin@example.com'));
+	await m.op(order('Your Store order has been received!', 'buyer@example.com'));
+	assert.equal(sent.length, 2);
+	assert.equal(st.m.size, 2);
+});
+test('a mail with no action id is never deduped, and has no key', async () => {
+	const st = store(); const sent = [];
+	const m = createTickMail({ handoff: async (e) => { sent.push(e); return 1; }, lostWrites: () => 0, seen: st.seen, mark: st.mark });
+	await m.op({ subject: 'digest', to: ['a@example.com'], wp_cron: 1 });
+	await m.op({ subject: 'digest', to: ['a@example.com'], wp_cron: 1 });
+	assert.equal(sent.length, 2);
+	assert.equal(await emailDedupeKey({ subject: 'digest', to: ['a@example.com'] }), null);
+});
+test('a storage error never stops a send: seen throws -> sent; mark throws -> still ok', async () => {
+	const sent = []; const lines = [];
+	const m = createTickMail({ handoff: async (e) => { sent.push(e); return 1; }, lostWrites: () => 0, log: (o) => lines.push(o),
+		seen: async () => { throw new Error("Durable Object's isolate exceeded its memory limit and was reset."); }, mark: async () => { throw new Error('reset'); } });
+	assert.deepEqual(await m.op(order('Your order')), { ok: true, queued: true });
+	assert.equal(sent.length, 1);
+	assert.deepEqual(lines.filter((l) => l['@event'] === 'email-dedupe').map((l) => l.error.split(':')[0]), ['seen', 'mark']);
+});
+test('the key: mail-sent:<action id>:<16 hex>, the same for reordered or re-cased recipients, different for another subject', async () => {
+	const k1 = await emailDedupeKey({ as_action: 42, to: ['B@x.com', 'a@x.com'], subject: 's' });
+	const k2 = await emailDedupeKey({ as_action: 42, to: ['a@x.com', 'b@x.com'], subject: 's' });
+	const k3 = await emailDedupeKey({ as_action: 42, to: ['a@x.com', 'b@x.com'], subject: 't' });
+	assert.match(k1, /^mail-sent:42:[0-9a-f]{16}$/);
+	assert.equal(k1, k2);
+	assert.notEqual(k1, k3);
+	assert.ok(k1.startsWith(DEDUPE_PREFIX));
+});
+test('the queue consumer does not dedupe: the handoff does, before the queue (a queue redelivery is not covered)', () => {
 	const consumer = readFileSync(new URL('../email-queue.mjs', import.meta.url), 'utf8') + fnBody('deliverQueuedEmail') + fnBody('consumeEmailQueue');
 	assert.ok(!consumer.includes('as_action'));
+});
+test('index.js: the tick handoff dedupes on the object storage, the alarm and /_runcron pass it, and the markers are pruned', () => {
+	const tm = fnBody('tickMailFor');
+	assert.ok(tm.includes('seen: st ? async (key) => (await st.get(key)) !== undefined : null'));
+	assert.ok(tm.includes('mark: st ? (key) => st.put(key, Date.now()) : null'));
+	assert.ok(src.includes('mail = tickMailFor(this.env, this.ctx.storage);'));
+	assert.ok(src.includes('const mail = tickMailFor(env, sqlStorage);'));
+	assert.ok(src.includes('await pruneDedupe(this.ctx.storage, Date.now(), Number(this.env.DEDUPE_TTL_MS || 14 * 86400000));'));
+});
+test('pruneDedupe (the real function from index.js): deletes expired markers only, at most 128, and never throws', async () => {
+	const body = src.slice(src.indexOf('async function pruneDedupe('), src.indexOf('\n}\n', src.indexOf('async function pruneDedupe(')) + 2);
+	const prune = new Function('DEDUPE_PREFIX', body + '\nreturn pruneDedupe;')(DEDUPE_PREFIX);
+	const now = 10 * 86400000, ttl = 86400000;
+	const m = new Map([['mail-sent:1:a', now - 2 * ttl], ['mail-sent:2:b', now - 1000], ['other', 0]]);
+	const st = { list: async ({ prefix, limit }) => { assert.ok(limit <= 128); return new Map([...m].filter(([k]) => k.startsWith(prefix)).slice(0, limit)); }, delete: async (ks) => { assert.ok(ks.length <= 128); ks.forEach((k) => m.delete(k)); } };
+	assert.equal(await prune(st, now, ttl), 1);
+	assert.deepEqual([...m.keys()], ['mail-sent:2:b', 'other']);
+	assert.equal(await prune({ list: async () => { throw new Error('reset'); } }, now, ttl), 0);
+});
+test('the residual, stated for #367: when a soft reset fails the mark write, a later retry of that action sends again', async () => {
+	// The mail left, but the storage was already dead, so the marker never landed. A retry that #367
+	// adds must therefore also require evidence the mail did NOT leave, not only the missing marker.
+	const st = store(); const sent = [];
+	const dead = createTickMail({ handoff: async (e) => { sent.push(e); return 1; }, lostWrites: () => 3, seen: st.seen, mark: async () => { throw new Error('reset'); } });
+	await dead.op(order('Your order'));
+	const retry = createTickMail({ handoff: async (e) => { sent.push(e); return 1; }, lostWrites: () => 0, seen: st.seen, mark: st.mark });
+	await retry.op(order('Your order'));
+	assert.equal(sent.length, 2, 'the known window: a duplicate, never a loss');
 });
