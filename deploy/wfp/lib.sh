@@ -49,6 +49,12 @@ valid_site() {
 user_script() { echo "site-$1"; }
 dispatcher_name() { echo "wp-$1"; }
 media_bucket() { echo "wp-wfp-$1-media"; }
+# Semantic site search (#330, the vectorize-search descriptor of deploy/provision): the per-site
+# Vectorize index, the same name and preset as wp-site-config.mjs searchIndexName and
+# SEARCH_EMBED_PRESET, so the skyphusion-ai plugin finds the same index on either path.
+search_index() { echo "wp-wfp-$1-search"; }
+SEARCH_EMBED_PRESET="@cf/baai/bge-large-en-v1.5"
+search_on() { [ -n "${WP_VECTORIZE_SEARCH:-}" ] && [ "${WP_VECTORIZE_SEARCH}" != off ]; }
 
 # Phase B (#138, CR gated): the one shared dispatcher, and a site's hostname
 # when it has a Custom Domain. WFP_SUBDOMAIN is the test subdomain CR #138
@@ -179,6 +185,32 @@ TOML
   # terminates (#291: an alarm ended scriptThrewException with no catch firing). wrangler tail
   # cannot follow a namespace script. Turn it on for a throwaway or a diagnosis, not by default.
   if [ "${OBSERVABILITY:-0}" = 1 ]; then printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n'; fi
+  # WP_VECTORIZE_SEARCH (default off, metered): the token-free AI and SEARCH_INDEX bindings the
+  # skyphusion-ai plugin reaches through the index.js op bridge (#330, #332). The index must exist
+  # before the deploy; site.sh up makes it (ensure_search_index).
+  if search_on; then printf '\n[ai]\nbinding = "AI"\n[[vectorize]]\nbinding = "SEARCH_INDEX"\nindex_name = "%s"\n' "$(search_index "$s")"; fi
+}
+# The site's search index (#330): make it when absent (idempotent: an existing one is kept), with
+# the bge-large preset (1024 dimensions, cosine). Exit 1 when it cannot be made or read back.
+ensure_search_index() { # ensure_search_index <site>
+  local n c; n=$(search_index "$1")
+  c=$(api_code GET "/vectorize/v2/indexes/$n")
+  case "$c" in 200) echo "  search index $n exists"; return 0 ;; 404) ;; *) echo "search index $n: GET answered $c; stopping" >&2; return 1 ;; esac
+  c=$(api_code POST "/vectorize/v2/indexes" -H 'content-type: application/json' --data "{\"name\":\"$n\",\"config\":{\"preset\":\"$SEARCH_EMBED_PRESET\"}}")
+  case "$c" in 200|201) ;; *) echo "search index $n: create answered $c; stopping" >&2; return 1 ;; esac
+  c=$(api_code GET "/vectorize/v2/indexes/$n")
+  [ "$c" = 200 ] || { echo "search index $n: not readable after the create ($c)" >&2; return 1; }
+  echo "  search index $n made ($SEARCH_EMBED_PRESET)"
+}
+# Remove the site's search index when it has one, whatever WP_VECTORIZE_SEARCH says now (a site
+# added with it on and removed with it off must not leave its index). Then it must read 404.
+remove_search_index() { # remove_search_index <site>
+  local n c; n=$(search_index "$1")
+  c=$(api_code GET "/vectorize/v2/indexes/$n")
+  case "$c" in 404) echo "  search index $n: none"; return 0 ;; 200) ;; *) echo "search index $n: GET answered $c; stopping" >&2; return 1 ;; esac
+  api DELETE "/vectorize/v2/indexes/$n" > /dev/null || true
+  c=$(api_code GET "/vectorize/v2/indexes/$n")
+  case "$c" in 404) echo "  search index $n is gone (API 404)" ;; *) echo "  search index $n is NOT gone (API $c): stopping" >&2; return 1 ;; esac
 }
 
 # WOO_ACTIVE for the OPcache priming (#313), from the build inputs only: an explicit WOO_ACTIVE
@@ -382,6 +414,9 @@ site_footprint() { # site_footprint <name>
   case "$c" in 200) echo "entry yes" ;; 404) echo "entry no" ;; *) echo "entry unknown" ;; esac
   c=$(api_code GET "/r2/buckets/$(media_bucket "$s")")
   case "$c" in 200) echo "bucket yes" ;; 404) echo "bucket no" ;; *) echo "bucket unknown" ;; esac
+  # The search index (#330): a part when WP_VECTORIZE_SEARCH is on, or whenever one exists.
+  c=$(api_code GET "/vectorize/v2/indexes/$(search_index "$s")")
+  case "$c" in 200) echo "search yes" ;; 404) ! search_on || echo "search no" ;; *) echo "search unknown" ;; esac
 }
 # Who wrote a site's map entry (#294): "core" when it is the provisioning core's (cli.mjs or the
 # provisioning Worker: its entry has a "kind" field, and this package's Terraform entry never
@@ -404,10 +439,10 @@ except ValueError: print("unknown"); sys.exit(0)
 print("core" if isinstance(d, dict) and "kind" in d else "workspace")'
 }
 footprint_absent() { # footprint_absent <footprint text>: 0 when every part is absent
-  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher no|domain no|script gone|entry no|bucket no)$'
+  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher no|domain no|script gone|entry no|bucket no|search no)$'
 }
 footprint_present() { # footprint_present <footprint text>: 0 when every part is there
-  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher yes|domain yes|script present|entry yes|bucket yes)$'
+  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher yes|domain yes|script present|entry yes|bucket yes|search yes)$'
 }
 # What a site's workspace RECORDS: its hostname, whether it has a Custom
 # Domain, and that domain's zone. Prints "<hostname> <true|false> <zone_id|->",

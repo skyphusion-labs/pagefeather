@@ -67,6 +67,9 @@ class H(http.server.BaseHTTPRequestHandler):
             n = p.rsplit("/", 1)[1].split(".", 1)[0][3:]
             e = sites.get(n, {}).get("entry")
             return self.send(200, e, "text/plain") if e is not None else self.send(404, {"success": False})
+        if p.startswith("/vectorize/v2/indexes/"):
+            n = p.rsplit("/", 1)[1][7:-7]
+            return self.send(200 if sites.get(n, {}).get("search") else 404, {"success": True})
         if p.startswith("/r2/buckets/"):
             n = p.rsplit("/", 1)[1][7:-6]
             return self.send(200 if sites.get(n, {}).get("bucket") is not None else 404, {"success": True})

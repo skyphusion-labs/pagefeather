@@ -113,5 +113,9 @@ ok "need_account with no ACCOUNT_ID exits 2" "$([ "$rc" = 2 ] && echo 1 || echo 
 # OBSERVABILITY=1 (#291): Workers Logs for one site only; the default renders none.
 ok "render_user has no [observability] by default" "$(render_user one https://wp-one.sub.workers.dev | grep -c '^\[observability\]' | grep -qx 0 && echo 1 || echo 0)"
 ok "OBSERVABILITY=1 renders [observability] enabled" "$(OBSERVABILITY=1 render_user one https://wp-one.sub.workers.dev | tr '\n' ' ' | grep -q '\[observability\] enabled = true' && echo 1 || echo 0)"
+# WP_VECTORIZE_SEARCH (#330): the AI and SEARCH_INDEX bindings for this site's own index only.
+ok "render_user has no [ai] or [[vectorize]] by default" "$(render_user one https://wp-one.sub.workers.dev | grep -cE '^\[ai\]|^\[\[vectorize\]\]' | grep -qx 0 && echo 1 || echo 0)"
+ok "WP_VECTORIZE_SEARCH=on renders AI and SEARCH_INDEX on wp-wfp-one-search" "$(WP_VECTORIZE_SEARCH=on render_user one https://wp-one.sub.workers.dev | tr '\n' ' ' | grep -q '\[ai\] binding = "AI" \[\[vectorize\]\] binding = "SEARCH_INDEX" index_name = "wp-wfp-one-search"' && echo 1 || echo 0)"
+ok "WP_VECTORIZE_SEARCH=off renders neither" "$(WP_VECTORIZE_SEARCH=off render_user one https://wp-one.sub.workers.dev | grep -cE '^\[ai\]|^\[\[vectorize\]\]' | grep -qx 0 && echo 1 || echo 0)"
 echo "$fails failing check(s)"
 exit $fails
