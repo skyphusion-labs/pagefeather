@@ -11,7 +11,7 @@
 # SQLite, site address to this site, per-table count check) -> replace the admin password with
 # this site's own Terraform admin_password (WordPress's $wp bcrypt form; the password and the
 # token never go in argv) -> read back: a real admin login, the published products through the
-# Store API, the orders and users through /_dbcounts. Exit 1 on any mismatch.
+# Store API (?rest_route=, which works under any permalink structure), the orders and users through /_dbcounts. Exit 1 on any mismatch.
 # The site must be built with WooCommerce primed in its OPcache (WOO_ACTIVE=1, #313), or the
 # store exceeds the isolate memory on every request.
 set -euo pipefail
@@ -32,7 +32,9 @@ tail -c 200 "$WORK/store.sql" | grep -q "Dump completed" || { echo "sample store
 LOGIN=$(python3 -I "$HERE/sample-store-admin.py" "$WORK/store.sql")
 [ -n "$LOGIN" ] || { echo "sample store: no admin (ID 1) row in the dump" >&2; exit 1; }
 
-DUMP="$WORK/store.sql" "$ROOT/deploy/wfp/site" import "$s"
+# import.sh work files (the site data) go inside WORK, so the trap removes them too.
+mkdir -m 700 "$WORK/import"
+DUMP="$WORK/store.sql" WORK="$WORK/import" "$ROOT/deploy/wfp/site" import "$s"
 
 # shellcheck disable=SC1091
 . "$ROOT/deploy/wfp/lib.sh"
@@ -56,7 +58,7 @@ python3 -I -c 'import sys, urllib.parse; print("log=" + urllib.parse.quote(sys.a
 code=$(curl -s -o /dev/null -D "$WORK/login.h" -m 120 -b "wordpress_test_cookie=WP+Cookie+check" --data-binary "@$WORK/login.form" -w '%{http_code}' "$O/wp-login.php")
 want "admin login (302)" "$code" 302
 want "admin login sets a logged-in cookie" "$(grep -ic '^set-cookie: wordpress_logged_in' "$WORK/login.h")" 1
-products=$(curl -s -o /dev/null -D - -m 120 "$O/wp-json/wc/store/v1/products?per_page=1&nocache=$RANDOM" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-wp-total"{print $2}')
+products=$(curl -s -o /dev/null -D - -m 120 "$O/?rest_route=/wc/store/v1/products&per_page=1&nocache=$RANDOM" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-wp-total"{print $2}')
 want "published products (Store API x-wp-total)" "${products:-none}" "$SAMPLE_STORE_PRODUCTS"
 curl -s -m 120 -K <(hdr) "$O/_dbcounts" > "$WORK/counts.json"
 c() { python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["rows"].get(sys.argv[2], "none"))' "$WORK/counts.json" "$1"; }
