@@ -26,6 +26,15 @@ export function classifyObjectError(e) {
 // the reset. Never a full queue: a retry adds load to it. Never a second time.
 export const RETRY_METHODS = new Set(['GET', 'HEAD']);
 
+/**
+ * A method that may have changed state (anything but GET or HEAD). After a memory reset its earlier
+ * writes may be saved (measured on fdprobe1112h, #350), so it is never retried and never told to try
+ * again: it gets write-loss.mjs's 500 "may have been saved" answer.
+ */
+export function mayHaveWritten(method) {
+	return !RETRY_METHODS.has(String(method || '').toUpperCase());
+}
+
 /** Retry this failure? Only a memory reset, only a GET or HEAD, only the first attempt. */
 export function shouldRetryObjectError(kind, method, attempt) {
 	return kind === 'memory' && RETRY_METHODS.has(String(method || '').toUpperCase()) && attempt === 0;
