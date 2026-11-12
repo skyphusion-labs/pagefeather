@@ -20,7 +20,8 @@ checkout page. No order is placed and nothing is written to the site except a gu
 The heap grows in steps, so x-wasm-mib reads in steps too (99 and 119 are the values seen on a
 WooCommerce store, 2026-11-11). 119 still answers, but the next step is past the 128 MiB isolate.
 
-Output: one `@event mem.page {...}` line per page, then `@event mem.summary {...}`. Exit 1 when a
+Output: one `@event mem.page {...}` line per page, then `@event mem.summary {...}`. Exit 2 (could
+not measure) when a page did not get a fresh runtime. Exit 1 when a
 page answers 5xx (or does not answer), or its cold heap reaches FAIL_MIB (default 120, past the
 last step that still answered). WARN_MIB (default 100, the recycle threshold) only warns: every
 such request makes the next one pay a cold boot. /_evict itself answers 502 (it aborts its own
@@ -52,7 +53,10 @@ def opener(jar=None):
 
 
 def req(o, path, method="GET", headers=None):
-    h = {"User-Agent": "wp-on-cf-plugin-memory"}
+    # Every request carries the spike token: since #312 the site sends x-boot (the proof of a fresh
+    # runtime) and the other performance headers only on a request with it. Without it every page
+    # read freshBoot false, and the run still said ok (measured on fdprobe1112e, 2026-11-12).
+    h = {"User-Agent": "wp-on-cf-plugin-memory", "x-spike-token": TOKEN}
     h.update(headers or {})
     r = urllib.request.Request(B + path, method=method, headers=h, data=b"" if method == "POST" else None)
     t = time.time()
@@ -70,7 +74,7 @@ def req(o, path, method="GET", headers=None):
 
 
 def evict():
-    r = req(opener(), "/_evict", method="POST", headers={"x-spike-token": TOKEN})
+    r = req(opener(), "/_evict", method="POST")
     time.sleep(SETTLE_S)
     return r["code"]
 
@@ -127,8 +131,13 @@ def main():
                "maxColdMib": max((r["cold"]["mib"] or 0) for r in rows), "recycledCold": [r["page"] for r in rows if r["cold"]["recycled"]],
                "notFresh": [r["page"] for r in rows if not r["freshBoot"]],
                "errors": bad, "overFail": over, "overWarn": warn, "ok": not bad and not over}
+    # A page whose cold read was NOT a fresh runtime measured an earlier page's high-water, not its
+    # own: the run could not measure, so it never reads as a pass (exit 2).
+    if summary["notFresh"]:
+        summary["ok"] = False
+        summary["couldNotMeasure"] = "no fresh runtime (x-boot 1) for: " + ", ".join(summary["notFresh"])
     print("@event mem.summary " + json.dumps(summary, sort_keys=True), flush=True)
-    sys.exit(0 if summary["ok"] else 1)
+    sys.exit(2 if summary.get("couldNotMeasure") else 0 if summary["ok"] else 1)
 
 
 if __name__ == "__main__":
