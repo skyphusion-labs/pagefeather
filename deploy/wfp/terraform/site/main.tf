@@ -161,7 +161,7 @@ resource "cloudflare_account_token" "teardown" {
     # dependency, down.sh can apply -target=cloudflare_account_token.teardown
     # alone, and a down never creates the bucket or the site map entry (seen
     # live 2026-11-06: an apply in down re-created the missing entry).
-    resources = jsonencode({ "${local.r2_resource}${cloudflare_r2_bucket.media.name}" = "*" })
+    resources = jsonencode({ "${local.r2_resource}${local.media_bucket}" = "*" })
   }]
 }
 
