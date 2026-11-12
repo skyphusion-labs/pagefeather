@@ -373,6 +373,26 @@ site_footprint() { # site_footprint <name>
   c=$(api_code GET "/r2/buckets/$(media_bucket "$s")")
   case "$c" in 200) echo "bucket yes" ;; 404) echo "bucket no" ;; *) echo "bucket unknown" ;; esac
 }
+# Who wrote a site's map entry (#294): "core" when it is the provisioning core's (cli.mjs or the
+# provisioning Worker: its entry has a "kind" field, and this package's Terraform entry never
+# does), "workspace" for any other entry, "none" when there is none, "unknown" when it cannot be
+# read. deploy/wfp/site remove refuses a core site BEFORE any change: it has parts this package
+# does not make or know (a per-site KV namespace, descriptor resources), so a remove here could
+# only ever be half of one.
+entry_by_core() { # entry_by_core <name>; needs KV_ID and SUB
+  local out code
+  out=$(api GET "/storage/kv/namespaces/$KV_ID/values/$(site_key "$1")")
+  code=${out##*$'\n'}
+  case "$code" in
+    404) echo none; return 0 ;;
+    200) ;;
+    *) echo unknown; return 0 ;;
+  esac
+  printf '%s' "${out%$'\n'*}" | python3 -I -c 'import json, sys
+try: d = json.loads(sys.stdin.read())
+except ValueError: print("unknown"); sys.exit(0)
+print("core" if isinstance(d, dict) and "kind" in d else "workspace")'
+}
 footprint_absent() { # footprint_absent <footprint text>: 0 when every part is absent
   ! printf '%s\n' "$1" | grep -qvE '^(dispatcher no|domain no|script gone|entry no|bucket no)$'
 }

@@ -43,6 +43,24 @@ export function siteHostname(name, env) {
   return env.WP_HOSTNAME || `wp-${name}.${env.WFP_SUBDOMAIN}.workers.dev`;
 }
 
+// One operator surface (#294, the lead's ruling): a site with no SaaS zone (the reference
+// deployment: workers.dev in phase A, a Custom Domain in phase B) is made, listed, updated and
+// removed by deploy/wfp/site,
+// which keeps its secrets in a Terraform workspace. This core path makes a different site there
+// (no static assets, no cache layer, no workspace, so no update, import or sample-store load;
+// the parity table is on #294, convergence is #328). Without a SaaS zone this path also places
+// no route: its site answered 404 (#294). So every command refuses that case and names the
+// deploy/wfp command. A SaaS-zone site (WFP_SAAS_ZONE_ID) is the provisioning core's, unchanged.
+// Returns the refusal text, or null when the core may make the site.
+export function operatorSiteRefusal(cmd, name, env) {
+  if (env.WFP_SAAS_ZONE_ID) return null;
+  const host = siteHostname(name || '<name>', env);
+  const verb = cmd;
+  return `site ${verb}: ${host} has no SaaS zone (WFP_SAAS_ZONE_ID unset). `
+    + `On the reference deployment the one operator surface is deploy/wfp/site: run deploy/wfp/site ${verb}${name ? ' ' + name : ''} `
+    + `(docs/operator.md). This CLI makes SaaS-zone sites only (#294, #328). Nothing was changed.`;
+}
+
 // Pure, so it is unit-tested without IO.
 export function parseArgs(argv) {
   const [cmd, ...rest] = argv;
@@ -353,7 +371,10 @@ async function main() {
   if (!env.CLOUDFLARE_ACCOUNT_ID || !env.CLOUDFLARE_API_TOKEN) throw new Error('set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN');
   const ctx = { acct: env.CLOUDFLARE_ACCOUNT_ID, token: env.CLOUDFLARE_API_TOKEN };
   if (parsed.cmd === 'hostname') { await hostnameCommand(ctx, parsed, env); return; }
-  if (parsed.cmd !== 'add') throw new Error(`${parsed.cmd}: stage 2 implements add and hostname only`);
+  // Before any API call: a reference-deployment site belongs to deploy/wfp/site (#294).
+  const refusal = operatorSiteRefusal(parsed.cmd, parsed.name, env);
+  if (refusal) throw new Error(refusal);
+  if (parsed.cmd !== 'add') throw new Error(`${parsed.cmd}: not implemented in this CLI; list, update and remove a site with deploy/wfp/site (docs/operator.md)`);
   const cfg = await buildCfg(parsed, env);
   const r = await provisionSite(ctx, cfg);
   console.log(JSON.stringify({ provisioned: r.kind, name: r.name, script: r.script, hostname: r.hostname }, null, 2));

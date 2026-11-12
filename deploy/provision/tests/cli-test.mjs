@@ -1,6 +1,6 @@
 // Offline test of the CLI arg parsing (#154 stage 2). Pure, no IO.
 import assert from 'node:assert';
-import { parseArgs, genSecret } from '../cli.mjs';
+import { parseArgs, genSecret, operatorSiteRefusal } from '../cli.mjs';
 
 let pass = 0, fail = 0;
 const ok = (n, c) => { if (c) { pass++; console.log('PASS', n); } else { fail++; console.log('FAIL', n); } };
@@ -22,5 +22,12 @@ ok('add --kind a REQUIRES --hyperdrive (the onboarding config id)', throws(() =>
 ok('add --kind a accepts and parses --hyperdrive-sql-mode', (() => { const a = parseArgs(['add', '--kind', 'a', 'astore', '--hyperdrive', 'id', '--hyperdrive-sql-mode', 'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION']); return a.hyperdriveSqlMode === 'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'; })());
 ok('add --kind a rejects a bad --hyperdrive-sql-mode (charset guard against injection)', throws(() => parseArgs(['add', '--kind', 'a', 'astore', '--hyperdrive', 'id', '--hyperdrive-sql-mode', 'DROP TABLE x; --'])));
 ok('add rejects an unknown flag (a typo must fail loudly, not drop the value)', throws(() => parseArgs(['add', '--kind', 'wp', 'blog', '--bogus', 'x'])));
+// One operator surface (#294): a workers.dev site with no SaaS zone is deploy/wfp/site's.
+const ref = operatorSiteRefusal('add', 'blog', { WFP_SUBDOMAIN: 'sub' });
+ok('add of a no-zone site is REFUSED and names deploy/wfp/site add <name>', typeof ref === 'string' && ref.includes('deploy/wfp/site add blog') && ref.includes('Nothing was changed'));
+ok('remove and list with no zone name deploy/wfp/site too', operatorSiteRefusal('remove', 'blog', { WFP_SUBDOMAIN: 'sub' }).includes('deploy/wfp/site remove blog') && operatorSiteRefusal('list', undefined, { WFP_SUBDOMAIN: 'sub' }).includes('deploy/wfp/site list'));
+ok('a SaaS-zone site is the core path (no refusal)', operatorSiteRefusal('add', 'blog', { WFP_SUBDOMAIN: 'sub', WFP_SAAS_ZONE_ID: 'z1' }) === null);
+ok('a custom WP_HOSTNAME with NO SaaS zone is refused too (the core places no route for it)', typeof operatorSiteRefusal('add', 'blog', { WP_HOSTNAME: 'blog.example.com' }) === 'string');
+ok('a custom WP_HOSTNAME WITH a SaaS zone is the core path', operatorSiteRefusal('add', 'blog', { WP_HOSTNAME: 'blog.skyphusionwp.dev', WFP_SAAS_ZONE_ID: 'z1' }) === null);
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

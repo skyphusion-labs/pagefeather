@@ -89,9 +89,12 @@ all reject it. Design: issue #154. Worker hardening: issue #182 and `HARDENING.m
   routable it runs the WordPress install (#215), so a provisioned site is READY
   (not stuck at install.php), and returns the admin credential once. WooCommerce
   is NOT installed here; the site owner enables it inside the site.
-- `cli.mjs`: `site add --kind wp <name>` or
-  `site add --kind a <name> --hyperdrive <HYPERDRIVE_ID> [--hyperdrive-sql-mode <mode>]`
-  (node). Implements `add` only. Parses args, loads the PRE-BUILT bundle dir
+- `cli.mjs`: `add --kind wp <name>` or
+  `add --kind a <name> --hyperdrive <HYPERDRIVE_ID> [--hyperdrive-sql-mode <mode>]`
+  (node). Implements `add` and `hostname`, for a SaaS-zone site only: with no
+  `WFP_SAAS_ZONE_ID` it refuses before any API call and names `deploy/wfp/site`,
+  the one operator surface of the reference deployment (#294; #328 makes the two
+  paths one site definition). Parses args, loads the PRE-BUILT bundle dir
   (`BDOSQL_BUNDLE_DIR` for `wp`, `A_BUNDLE_DIR` for `a`), generates per-site
   secrets, calls `provisionSite`. The Hyperdrive config id (and whether a strict
   backend needs `HYPERDRIVE_SQL_MODE`) comes from the Phase-1 onboarding step.
