@@ -247,6 +247,12 @@ export async function onboard(provider, io) {
 // secret; written 0600 anyway.
 async function finish(io, result) {
   if (io.out) {
+    // The file is sourced by Phase 2, so a value with a newline or a shell
+    // metacharacter would add a line or a command. Both come from an API reply
+    // or a constant; refuse anything that is not a plain token.
+    for (const [k, v] of [['HYPERDRIVE_ID', result.hyperdrive_id], ['SQL_MODE', result.sql_mode]]) {
+      if (!/^[A-Za-z0-9_,-]*$/.test(String(v))) throw new Error(`refusing to write ${io.out}: ${k} is not a plain token`);
+    }
     await writeFile(io.out, `HYPERDRIVE_ID=${result.hyperdrive_id}\nSQL_MODE=${result.sql_mode}\n`, { mode: 0o600 });
     io.log(`wrote ${io.out} (HYPERDRIVE_ID, SQL_MODE)`);
   }

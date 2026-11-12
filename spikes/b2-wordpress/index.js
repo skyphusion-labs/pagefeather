@@ -2974,8 +2974,10 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 		} catch (e) {
 			if (bootPromise) runtimeDrops++;
 			bootPromise = null; // a failed runtime is not reused
-			// The stack names internal paths. Only a spike-token holder sees it.
-			return new Response(spikeOk ? String((e && e.stack) || e) : 'internal error', { status: 500 });
+			// The stack names internal paths. It goes to the tail log for every caller, never to the body,
+			// so a leaked spike token cannot also leak stacks.
+			console.error(String((e && e.stack) || e));
+			return new Response('internal error', { status: 500 });
 		}
 	}
 }
