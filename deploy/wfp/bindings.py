@@ -9,7 +9,8 @@ For each site <s>:
   may bind only: its own bucket (r2_bucket wp-wfp-<s>-media), its own
   Durable Object class (durable_object_namespace PhpRuntime, with no
   script_name or script_name site-<s>), images, assets, plain_text vars, and
-  the secrets WP_SALT and SPIKE_TOKEN (secret_text). It may ALSO bind the
+  the secrets WP_SALT and SPIKE_TOKEN (secret_text), and TURNSTILE_SECRET when Turnstile is
+  wired (#340). It may ALSO bind the
   opinionated defaults wired through the provisioning descriptor table (#201): the
   Browser Rendering binding (browser), the Workers AI binding (ai), its own
   object-cache L2 namespace (kv_namespace named OC_KV), its own durable-email
@@ -31,7 +32,8 @@ import json, os, sys, urllib.error, urllib.request
 
 ENV = os.environ
 USER_OK = {"r2_bucket", "durable_object_namespace", "images", "assets", "send_email", "plain_text", "secret_text", "browser", "ai", "kv_namespace", "queue", "analytics_engine", "vectorize"}
-SECRETS_OK = {"WP_SALT", "SPIKE_TOKEN"}
+# TURNSTILE_SECRET: the site's own Turnstile secret, set only when the run has it (#340).
+SECRETS_OK = {"WP_SALT", "SPIKE_TOKEN", "TURNSTILE_SECRET"}
 
 
 def api(path):

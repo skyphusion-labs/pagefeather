@@ -90,6 +90,7 @@ cases = [
     ("the site binds its OWN Vectorize search index (wp-wfp-one-search) is allowed", mod(GOOD_USER, None, type="vectorize", name="SEARCH_INDEX", index_name="wp-wfp-one-search"), GOOD_DISP, 0, None),
     ("the site binds a FOREIGN Vectorize index (wp-wfp-two-search)", mod(GOOD_USER, None, type="vectorize", name="SEARCH_INDEX", index_name="wp-wfp-two-search"), GOOD_DISP, 1, "not its own"),
     ("the site has an extra secret", mod(GOOD_USER, None, type="secret_text", name="CLOUDFLARE_API_TOKEN"), GOOD_DISP, 1, "unexpected secret"),
+    ("the site's own Turnstile secret (TURNSTILE_SECRET, #340) is allowed", mod(GOOD_USER, None, type="secret_text", name="TURNSTILE_SECRET"), GOOD_DISP, 0, None),
     ("the site binds the dispatch namespace", mod(GOOD_USER, None, type="dispatch_namespace", name="NS", namespace="wp-wfp"), GOOD_DISP, 1, "not allowed for a site"),
     ("the dispatcher binds another KV namespace", GOOD_USER, mod(GOOD_DISP, 0, namespace_id="kv9"), 1, "not the site map"),
     ("the dispatcher's outbound goes elsewhere", GOOD_USER, mod(GOOD_DISP, 2, outbound={"worker": {"service": "other"}}), 1, "outbound to other"),
