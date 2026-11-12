@@ -81,9 +81,10 @@ print(1 if m and m.group(1) == "false" else 0)' "$SITE_TF")"
 ok "up.sh deploys the shared dispatcher in phase B" "$(grep -q 'render_shared_dispatcher' "$HERE/../up.sh" && echo 1 || echo 0)"
 ok "down.sh removes the shared dispatcher in phase B" "$(grep -qF 'deploy/wr" delete --name "$SHARED_DISPATCHER"' "$HERE/../down.sh" && echo 1 || echo 0)"
 
-# terraform validate, where terraform exists (CI runners have none, so skip).
+# terraform validate, where terraform exists (CI installs it, issue #336). validate needs the
+# providers, so init first (-backend=false: no state, no credential; .terraform/ is ignored).
 if command -v terraform >/dev/null 2>&1; then
-	if (cd "$HERE/../terraform/site" && terraform validate) >"$T/tf.log" 2>&1; then
+	if (cd "$HERE/../terraform/site" && terraform init -backend=false -input=false && terraform validate) >"$T/tf.log" 2>&1; then
 		ok "terraform validate (site)" 1
 	else
 		ok "terraform validate (site)" 0; sed 's/^/    /' "$T/tf.log"
