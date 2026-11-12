@@ -177,16 +177,28 @@ new_sqlite_classes = ["PhpRuntime"]
 TOML
 }
 
+# WOO_ACTIVE for the OPcache priming (#313), from the build inputs only: an explicit WOO_ACTIVE
+# (0 or 1) wins; else 1 when woocommerce is in the site plugin set (IMPORT_PLUGINS or PLUGINS),
+# else 0. Never from the local dev state.
+woo_active_for_build() {
+  case "${WOO_ACTIVE:-}" in 0|1) echo "$WOO_ACTIVE"; return 0 ;; "") ;; *) echo "WOO_ACTIVE must be 0 or 1, not $WOO_ACTIVE" >&2; return 2 ;; esac
+  case " ${IMPORT_PLUGINS:-} ${PLUGINS:-} " in *" woocommerce "*) echo 1 ;; *) echo 0 ;; esac
+}
 # Build b-dosql (spikes/b2-wordpress), as deploy/deploy.sh does: PHP
 # WebAssembly, WordPress, the precompiled OPcache (local wrangler dev).
 build_dosql() {
   log "build b-dosql (spikes/b2-wordpress)"
+  local woo; woo=$(woo_active_for_build) || return 2
+  echo "OPcache priming: WOO_ACTIVE=$woo (explicit, or woocommerce in IMPORT_PLUGINS/PLUGINS)"
   ( cd "$APP"
     [ -d node_modules ] || npm ci --silent
     [ -f vendor/php_8_3.js ] || ./prepare.sh
     ./build.sh | tail -1
-    DEV_ENV=dosql-local ./opcache.sh > build/opcache.log 2>&1 || { echo "opcache.sh failed:"; tail -25 build/opcache.log; exit 1; }
-    tail -1 build/opcache.log )
+    WOO_ACTIVE=$woo DEV_ENV=dosql-local ./opcache.sh > build/opcache.log 2>&1 || { echo "opcache.sh failed:"; tail -25 build/opcache.log; exit 1; }
+    tail -1 build/opcache.log ) || return 1
+  # The subshell status is checked (#313): under "site update --all" (if "$fn") set -e is off, and
+  # a failed opcache.sh used to fall through to the size check with the EMPTY opcache.zip that
+  # build.sh starts, and that bundle was uploaded.
   bundle_size_check
 }
 # The Worker size limit is 64 MiB uncompressed (docs/plan-limits.md; measured:

@@ -8,13 +8,20 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 python3 -c "import zipfile; zipfile.ZipFile('build/opcache.zip', 'w').close()"
+# A fresh, empty local state for every run (#313). With the default .wrangler/state, WooCommerce
+# was primed whenever an EARLIER run on this machine had left it active, so the same tree made a
+# 2131-file cache on one laptop and a 620-file one on a fresh clone, and the fresh-clone build
+# exceeded memory on every request of a store. WOO_ACTIVE decides it now, nothing else.
+STATE=$(mktemp -d "${TMPDIR:-/tmp}/opcache-state.XXXXXX")
+export PERSIST_TO=$STATE
+trap 'rm -rf "$STATE"' EXIT
 # No recycle for memory while priming (index.js, PHP_RECYCLE): one runtime must
 # compile everything, or the dump holds only what compiled after a recycle.
 DEV_VARS="PHP_RECYCLE:off${DEV_VARS:+ $DEV_VARS}" ./run.sh _ping > /dev/null
 # Stop the server this run started, however the script ends (run.sh records it).
 # Before this, a failed step exited under set -e before the kill, and the server
 # stayed on the port for the next run.
-trap './run.sh --stop' EXIT
+trap './run.sh --stop; rm -rf "$STATE"' EXIT
 P=${PORT:-8797}
 SERVER=$(cut -d' ' -f1 ".dev-$P.pid")
 # The isolate before any page (the dump answers 409 with its id): the dump at the
@@ -32,6 +39,8 @@ fi
 # WooCommerce pages too, when it is active (tests/woo.py buys a product).
 if curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -sf "localhost:${PORT:-8797}/?rest_route=/wc/store/v1/cart" > /dev/null; then
   B=http://localhost:${PORT:-8797} ADMIN_PASSWORD=local-spike-password python3 tests/woo.py > /dev/null || { echo "woo.py failed; no OPcache files saved"; exit 1; }
+elif [ "${WOO_ACTIVE:-0}" = 1 ]; then
+  echo "WOO_ACTIVE=1 but the WooCommerce Store API did not answer: the store pages were not primed. No OPcache files saved (#313)"; exit 1
 fi
 # Plugins from the suite in this build (PLUGINS, see build.sh): activate and
 # exercise each one so its scripts compile too.
@@ -62,5 +71,8 @@ files=$(python3 -c "import zipfile, sys; print(len(zipfile.ZipFile(sys.argv[1]).
 if python3 -c "import zipfile, sys; sys.exit(0 if any(n.endswith('internal/eval.php.bin') for n in zipfile.ZipFile(sys.argv[1]).namelist()) else 1)" build/opcache.zip.new; then
   echo "/_opcache-dump holds internal/eval.php.bin (the php.run eval file): no OPcache files saved (#294)"; exit 1
 fi
+# The floor (#313): a WooCommerce build must hold the WooCommerce scripts, or the store compiles
+# them inside the 128 MiB isolate on every request.
+python3 opcache-check.py build/opcache.zip.new "${WOO_ACTIVE:-0}" || { echo "No OPcache files saved"; exit 1; }
 mv build/opcache.zip.new build/opcache.zip
 echo "opcache.zip $(wc -c < build/opcache.zip) bytes, $files files, isolate $iso, 0 runtime drops, $(grep -i '^x-files' build/opcache.headers | tr -d '\r')"
