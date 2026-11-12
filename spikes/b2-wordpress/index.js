@@ -12,6 +12,7 @@ import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, 
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
 import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
+import * as cacheVersions from './cache-versions.mjs';
 import { demoLocked, demoLockDefines } from './site-lock.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders } from './perf-headers.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
@@ -44,6 +45,11 @@ let ENV;
 // Approach A (index-a.js) registers a MySQL handler here. B leaves it null and
 // every database message goes to D1.
 let dbHandler = null;
+// The WordPress table prefix of this site (php/wp-config.php reads WP_TABLE_PREFIX from PHP_ENV).
+function tablePrefix(env) {
+	try { const p = JSON.parse((env && env.PHP_ENV) || '{}').WP_TABLE_PREFIX; if (typeof p === 'string' && p) return p; } catch {}
+	return 'wp_';
+}
 export function setDbHandler(h) {
 	dbHandler = h;
 }
@@ -1143,6 +1149,10 @@ async function boot(origin) {
 		lines.push("define('JS_OBJECT_CACHE_PERSIST_GROUPS', " + JSON.stringify(ocPersist) + ");");
 		const ocTtl = Math.max(0, Math.min(3600, parseInt(ENV.OBJECT_CACHE_TTL, 10) || 10));
 		lines.push("define('JS_OBJECT_CACHE_TTL', " + ocTtl + ");");
+		// Exact invalidation (#296 slice 1): with OBJECT_CACHE_VERSIONS=on, these groups persist under
+		// their version from <prefix>skyph_cache_versions (one read per request; triggers bump it).
+		// Without the table (not installed, or a provider with no triggers) they keep the posture above.
+		if (ENV.OBJECT_CACHE_VERSIONS === 'on') lines.push("define('JS_OBJECT_CACHE_VERSIONED', 'posts,post_meta,options');");
 		if (ENV.THEME_JSON_CACHE !== 'off') lines.push("define('JS_THEME_JSON_CACHE', true);");
 	}
 	// Real SQL transactions (php/real-transactions.php, #60): the database in the
@@ -2527,6 +2537,19 @@ const site = {
 		// Import a MySQL dump (issue #31): variant a only, where dbHandler is the
 		// MySQL bridge (index-a.js). Every other variant gets the 404 of sql-import.js.
 		if (url.pathname === '/_sqlimport') return sqlImport(req, env, url, env.PHP_IN_DO === 'on' ? null : dbHandler);
+		// The cache versions table and its triggers (#296 slice 1, cache-versions.mjs): approach A
+		// only. op=status (default), install (all or nothing; versioned false when the provider
+		// cannot make triggers) or remove. Spike-gated like every /_ path above.
+		if (url.pathname === '/_ocversions') {
+			if (!dbHandler || env.PHP_IN_DO === 'on') return new Response('approach A only', { status: 404 });
+			const op = url.searchParams.get('op') || 'status';
+			if (!['status', 'install', 'remove'].includes(op)) return new Response('op is status, install or remove', { status: 400 });
+			if (op !== 'status' && req.method !== 'POST') return new Response('install and remove need POST', { status: 405 });
+			const q = (sql) => dbHandler.query(env, { mysql: sql });
+			const out = await cacheVersions[op](q, tablePrefix(env));
+			ctx.waitUntil(dbHandler.end());
+			return Response.json(out, { status: out.ok ? 200 : 500 });
+		}
 		// PHP in a Durable Object (PHP_IN_DO=on, issue #28): every request that
 		// needs PHP goes to the object, including /_d1ping (D1 as PHP sees it).
 		// DB_IN_DO needs the object; without it the Worker would use D1 silently.

@@ -30,6 +30,15 @@ class JS_Object_Cache {
 	private $default_ttl = 0;
 	/** @var bool Force the cache off this request (spike-gated x-oc-off), for a clean same-binary bracket. */
 	private $force_off = false;
+	/**
+	 * @var array<string,bool> Groups under exact invalidation (#296 slice 1): JS_OBJECT_CACHE_VERSIONED.
+	 * Each persists under its version from <prefix>skyph_cache_versions as its group salt.
+	 */
+	private $versioned = array();
+	/** @var array<string,int>|null The versions, read once per request on first use; null before. */
+	private $versions = null;
+	/** @var int Version reads this request (0 or 1), for x-oc-stats. */
+	public $version_reads = 0;
 
 	public function __construct() {
 		$this->blog_prefix = is_multisite() ? get_current_blog_id() . ':' : '';
@@ -48,6 +57,43 @@ class JS_Object_Cache {
 		}
 		$this->default_ttl = defined( 'JS_OBJECT_CACHE_TTL' ) ? (int) JS_OBJECT_CACHE_TTL : 0;
 		$this->force_off   = ! empty( $_SERVER['HTTP_X_OC_OFF'] );
+		if ( defined( 'JS_OBJECT_CACHE_VERSIONED' ) ) {
+			foreach ( explode( ',', (string) JS_OBJECT_CACHE_VERSIONED ) as $g ) {
+				$g = trim( $g );
+				if ( '' !== $g ) {
+					$this->versioned[ $g ] = true;
+				}
+			}
+		}
+	}
+
+	/**
+	 * Before the first read or write of a versioned group this request: read every version ONCE
+	 * (a request-start snapshot) and make each versioned group's salt its version. A version bump
+	 * (a trigger, in the same statement as the write) changes every key of the group at once, in
+	 * every isolate's Map and in L2. No table or no row: the group keeps its unversioned posture.
+	 */
+	private function version_gate( $group ) {
+		if ( null !== $this->versions || ! isset( $this->versioned[ $group ] ) || $this->force_off ) {
+			return;
+		}
+		$this->versions = array();
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'get_results' ) ) {
+			return;
+		}
+		$quiet = method_exists( $wpdb, 'suppress_errors' ) ? $wpdb->suppress_errors( true ) : null;
+		$rows  = $wpdb->get_results( 'SELECT grp, v FROM ' . $wpdb->prefix . 'skyph_cache_versions', ARRAY_N );
+		if ( null !== $quiet ) {
+			$wpdb->suppress_errors( $quiet );
+		}
+		++$this->version_reads;
+		foreach ( (array) $rows as $row ) {
+			if ( is_array( $row ) && isset( $row[0], $row[1], $this->versioned[ $row[0] ] ) ) {
+				$this->versions[ $row[0] ] = (int) $row[1];
+				$this->set_group_salt( $row[0], 'v' . (int) $row[1] );
+			}
+		}
 	}
 
 	private function call( array $op ) {
@@ -128,6 +174,7 @@ class JS_Object_Cache {
 	}
 
 	public function get( $key, $group = 'default', $force = false, &$found = null ) {
+		$this->version_gate( $group );
 		if ( $this->has_local( $key, $group ) && ! $force ) {
 			$found = true;
 			++$this->cache_hits;
@@ -150,6 +197,7 @@ class JS_Object_Cache {
 	}
 
 	public function get_multiple( $keys, $group = 'default', $force = false ) {
+		$this->version_gate( $group );
 		$out  = array();
 		$need = array();
 		foreach ( $keys as $key ) {
@@ -186,6 +234,7 @@ class JS_Object_Cache {
 	}
 
 	public function set( $key, $data, $group = 'default', $expire = 0 ) {
+		$this->version_gate( $group );
 		$this->cache[ $group ][ $key ] = self::copy( $data );
 		unset( $this->missing[ $group ][ $key ] );
 		if ( $this->persistent( $group ) ) {
@@ -229,6 +278,7 @@ class JS_Object_Cache {
 	}
 
 	public function delete( $key, $group = 'default' ) {
+		$this->version_gate( $group );
 		$had = $this->has_local( $key, $group );
 		unset( $this->cache[ $group ][ $key ] );
 		$this->missing[ $group ][ $key ] = true;

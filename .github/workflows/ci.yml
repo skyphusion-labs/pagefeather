@@ -98,6 +98,12 @@ jobs:
       - name: b-dosql /_activate reports a plugin that ends the request (issue #289)
         # activate-report.test.mjs runs the real activation script with the php CLI against stubs.
         run: node --test spikes/b2-wordpress/tests/activate-report.test.mjs
+      - name: approach A exact object-cache invalidation (issue #296)
+        # The versioned groups miss after a write (the positive control), one version read per request,
+        # and the versions table and its triggers are all or nothing (cache-versions.mjs).
+        run: |
+          php spikes/b2-wordpress/tests/object-cache-versions-test.php
+          node --test spikes/b2-wordpress/tests/cache-versions.test.mjs
       - name: b-dosql bounded cron tick
         # cron-bound.mjs: the cron runs its own claim loop, bounded, and the cleaner cannot starve (#291).
         run: node --test spikes/b2-wordpress/tests/cron-bound.test.mjs
