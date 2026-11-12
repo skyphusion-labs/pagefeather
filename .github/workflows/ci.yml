@@ -84,6 +84,9 @@ jobs:
       - name: b-dosql a memory reset is not an overload (issue #335)
         # object-error.mjs: an isolate memory reset answers x-isolate-reset, never x-overloaded.
         run: node --test spikes/b2-wordpress/tests/object-error.test.mjs
+      - name: b-dosql a write lost to an isolate reset never answers success (issue #350)
+        # write-loss.mjs: a 500 "may have been saved", no Retry-After, no Set-Cookie, on both reset paths; GET and HEAD keep the #349 retry.
+        run: node --test spikes/b2-wordpress/tests/write-loss.test.mjs
       - name: b-dosql outbound host allowlist
         run: node --test spikes/b2-wordpress/tests/http-allow.test.mjs
       - name: email-queue unit tests

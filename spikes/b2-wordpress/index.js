@@ -6,7 +6,7 @@ import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
 import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-arm.mjs';
-import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry } from './object-error.mjs';
+import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, mayHaveWritten } from './object-error.mjs';
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { cronBounds, cronCleanDue } from './cron-bound.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
@@ -15,6 +15,7 @@ import { analyticsEnabled, recordPageview } from './analytics.mjs';
 import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, demoLockDefines } from './site-lock.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders } from './perf-headers.mjs';
+import { resetFailures, writeLossResponse, wantsJson } from './write-loss.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -2447,6 +2448,14 @@ async function toPhpObject(req, env, url, ctx) {
 		// header, x-isolate-reset: memory, not x-overloaded (#335, object-error.mjs).
 		// Other errors are thrown as before (fetchWithMemoryRetry rethrows them).
 		console.log(JSON.stringify({ m: kind === 'memory' ? 'isolate-reset' : 'overloaded', path: url.pathname, retried, error: String(e.message).slice(0, 200) }));
+		// A method that may have written (anything but GET or HEAD) and died in a memory reset: its
+		// earlier writes may be saved (#350), so no 503 "try again" (write-loss.mjs).
+		if (kind === 'memory' && mayHaveWritten(req.method)) {
+			console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: 'unknown', phase: 'request-killed' }));
+			const wl = writeLossResponse('unknown', wantsJson(url.pathname, url.search, req.headers.get('accept')));
+			wl.headers['x-php-object'] = name;
+			return new Response(wl.body, { status: wl.status, headers: wl.headers });
+		}
 		const headers = objectErrorHeaders(kind, name, OVERLOAD_RETRY_AFTER_S);
 		if (retried) headers['x-isolate-retry'] = '1';
 		return new Response(kind === 'memory' ? 'The site restarted. Please try again in a few seconds.\n' : 'The site is busy. Please try again in a few seconds.\n', {
@@ -2912,8 +2921,18 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 				const sp = sendPending(env);
 				if (sp) ctx.waitUntil(sp);
 			}
-			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
 			const d = delta();
+			// A write lost to an isolate memory reset (#350, write-loss.mjs): PHP's answer is replaced,
+			// whatever its status, before any of its headers (a Set-Cookie for a session that was not
+			// stored) is copied. The statements before the reset may be saved, so no "try again".
+			const lost = resetFailures(d.failures);
+			if (lost) {
+				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, phpStatus: r.httpStatusCode, firstSql: String(d.failures[0].sql || '').slice(0, 80) }));
+				bootPromise = null; // the runtime saw the reset; the next request boots a new one
+				const wl = writeLossResponse(lost, wantsJson(url.pathname, url.search, req.headers.get('accept')));
+				return new Response(wl.body, { status: wl.status, headers: wl.headers });
+			}
+			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
 			const ocTables = diffCounts(stats.dbTables, start.dbTables);
 			const ocGroupStats = diffCounts(stats.ocGroups, start.ocGroups);
 			pageCacheHeaders(req, url, r, out, env);

@@ -39,7 +39,8 @@ test('the headers name the kind: x-isolate-reset for memory, x-overloaded for a 
 
 test('index.js answers through fetchWithMemoryRetry, and never tags a memory reset x-overloaded', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	assert.match(src, /import \{ classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry \} from '\.\/object-error\.mjs';/);
+	// #350 adds mayHaveWritten to this import (the write-loss answer for a method that may have written).
+	assert.match(src, /import \{ classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry(, mayHaveWritten)? \} from '\.\/object-error\.mjs';/);
 	const i = src.indexOf('async function toPhpObject(');
 	const body = src.slice(i, src.indexOf('\n}\n', i));
 	assert.match(body, /const res = await fetchWithMemoryRetry\(/);
