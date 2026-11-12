@@ -361,5 +361,41 @@ SQLITE="$T/src.sqlite" VARIANT=c1 URL=x "$IMP/../import.sh" > /dev/null 2> "$T/c
 set -e
 check "import.sh: SQLITE with VARIANT=c1 refused" "$code:$(grep -c 'b-dosql only' "$T/c1.err" || true)" "2:1"
 
+# Pending order emails (issue #364): cancel-emails.py marks the source's pending
+# woocommerce-emails actions canceled, never deletes, logs each, and keeps them on --keep.
+mkas() { # mkas <file>: Action Scheduler tables with 3 pending emails, 1 sent email, 1 pending lookup
+  rm -f "$1"
+  sqlite3 "$1" "CREATE TABLE wp_actionscheduler_actions (action_id INTEGER PRIMARY KEY, hook TEXT, status TEXT, group_id INTEGER);
+    CREATE TABLE wp_actionscheduler_groups (group_id INTEGER PRIMARY KEY, slug TEXT);
+    CREATE TABLE wp_actionscheduler_logs (log_id INTEGER PRIMARY KEY, action_id INTEGER, message TEXT, log_date_gmt TEXT, log_date_local TEXT);
+    INSERT INTO wp_actionscheduler_groups VALUES (3, 'woocommerce-db-updates'), (6, 'woocommerce-emails');
+    INSERT INTO wp_actionscheduler_actions VALUES
+      (1, 'woocommerce_send_queued_transactional_email', 'pending', 6),
+      (2, 'woocommerce_send_queued_transactional_email', 'pending', 6),
+      (3, 'woocommerce_send_queued_transactional_email', 'complete', 6),
+      (4, 'woocommerce_run_product_attribute_lookup_update_callback', 'pending', 3),
+      (5, 'woocommerce_send_queued_transactional_email', 'pending', 6);"
+}
+asq() { sqlite3 "$1" "$2"; }
+mkas "$T/as.sqlite"
+check "emails: the default cancels the pending emails" "$(python3 "$IMP/cancel-emails.py" "$T/as.sqlite" | tail -1)" "pending emails: 3 canceled"
+check "emails: statuses after" "$(asq "$T/as.sqlite" "SELECT group_concat(action_id || ':' || status, ' ') FROM (SELECT * FROM wp_actionscheduler_actions ORDER BY action_id)")" "1:canceled 2:canceled 3:complete 4:pending 5:canceled"
+check "emails: nothing deleted" "$(asq "$T/as.sqlite" "SELECT COUNT(*) FROM wp_actionscheduler_actions")" "5"
+check "emails: one log row per canceled action" "$(asq "$T/as.sqlite" "SELECT group_concat(action_id, ' ') FROM (SELECT action_id FROM wp_actionscheduler_logs WHERE message LIKE '%#364%' ORDER BY action_id)")" "1 2 5"
+check "emails: a second run finds none" "$(python3 "$IMP/cancel-emails.py" "$T/as.sqlite" | tail -1)" "pending emails: 0 canceled"
+mkas "$T/as.sqlite"
+check "emails: --keep (IMPORT_KEEP_PENDING_EMAILS=1) keeps them" "$(python3 "$IMP/cancel-emails.py" "$T/as.sqlite" --keep | tail -1):$(asq "$T/as.sqlite" "SELECT COUNT(*) FROM wp_actionscheduler_actions WHERE status = 'pending'")" "pending emails: 3 kept (IMPORT_KEEP_PENDING_EMAILS=1):4"
+check "emails: --dry-run changes nothing" "$(python3 "$IMP/cancel-emails.py" "$T/as.sqlite" --dry-run | tail -1):$(asq "$T/as.sqlite" "SELECT COUNT(*) FROM wp_actionscheduler_actions WHERE status = 'pending'"):$(asq "$T/as.sqlite" "SELECT COUNT(*) FROM wp_actionscheduler_logs")" "pending emails: 3 would be canceled:4:0"
+rm -f "$T/noas.sqlite"; sqlite3 "$T/noas.sqlite" "CREATE TABLE wp_options (option_id INTEGER PRIMARY KEY)"
+check "emails: a site with no Action Scheduler" "$(python3 "$IMP/cancel-emails.py" "$T/noas.sqlite" | tail -1)" "pending emails: 0 (no Action Scheduler tables)"
+set +e; python3 "$IMP/cancel-emails.py" "$T/as.sqlite" --bogus > /dev/null 2>&1; code=$?; set -e
+check "emails: an unknown flag is refused" "$code" "2"
+# import.sh runs the step on the local copy after the address change and before the load, and passes the opt-out.
+ia=$(grep -n 'search-replace.py" "$WORK/site.sqlite"' "$IMP/../import.sh" | cut -d: -f1)
+ib=$(grep -n 'cancel-emails.py" "$WORK/site.sqlite"' "$IMP/../import.sh" | cut -d: -f1)
+ic=$(grep -n 'dbmove-file.py" from-sqlite' "$IMP/../import.sh" | cut -d: -f1)
+check "import.sh: the email step is between the address change and the load" "$([ -n "$ib" ] && [ "$ia" -lt "$ib" ] && [ "$ib" -lt "$ic" ] && echo ordered)" "ordered"
+check "import.sh: the opt-out reaches the step" "$(grep -c 'IMPORT_KEEP_PENDING_EMAILS:-0}" = 1 ] && echo --keep' "$IMP/../import.sh")" "1"
+
 [ "$fails" = 0 ] || { echo "$fails failed"; exit 1; }
 echo "all passed"
