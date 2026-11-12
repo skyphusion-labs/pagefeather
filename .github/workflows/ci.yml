@@ -170,6 +170,16 @@ jobs:
           python3 deploy/wfp/tests/cross-test.py
           deploy/wfp/tests/probe-entry-test.sh
           deploy/wfp/tests/setup-green-test.sh
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.1
+          # tf-test.sh reads `terraform graph` from stdout; the wrapper is not needed.
+          terraform_wrapper: false
+      - name: WfP terraform checks (issue #336)
+        # deploy/wfp/tests/tf-test.sh: validate and fmt for terraform/shared and site, and the
+        # teardown and media import keys depend on nothing in the site graph. init runs with
+        # -backend=false, so no state and no credential: the providers come from the registry.
+        run: deploy/wfp/tests/tf-test.sh
       - name: c1 load analysis tests
         # tests/load/c1_arm.py (issue #99): held requests, CPU per order, the split, on a synthetic job.
         run: python3 tests/load/c1_arm_test.py
