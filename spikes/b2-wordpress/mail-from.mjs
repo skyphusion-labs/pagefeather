@@ -5,7 +5,7 @@
 // The name "WooCommerce" is not a default: every store would look like the same
 // sender. Set MAIL_FROM_NAME for a display name.
 
-const UNDELIVERABLE = /(^|\.)(example\.(com|org|net)|invalid|test|localhost|workers\.dev)$/i;
+const UNDELIVERABLE = /(^|\.)(example|example\.(com|org|net)|invalid|test|localhost|workers\.dev)$/i;
 
 export function undeliverable(email) {
 	const domain = String(email || '').split('@')[1] || '';
