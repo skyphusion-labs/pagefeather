@@ -3,9 +3,9 @@
 # are uploaded by up.sh from the templates in deploy/wfp, as deploy/ does.
 # Nothing here routes a zone.
 
+# No default: lib.sh need_account passes it (TF_VAR_account_id).
 variable "account_id" {
-  type    = string
-  default = "fabcb25d9c7eb087110ec474a03e50d2" # Skyphusion Labs (Workers Paid, WfP on)
+  type = string
 }
 
 variable "namespace" {

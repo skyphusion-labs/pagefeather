@@ -16,6 +16,7 @@
 #   3. the bucket emptied, then the workspace destroyed (bucket, secrets, entry)
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
+need_account
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
 cmd=${1:-}; s=${2:-}
 valid_site "$s" || { echo "usage: site.sh up|down <name> (lower case, digits, hyphens; 1 to 30; not probe)" >&2; exit 2; }
@@ -66,7 +67,7 @@ import json, sys
 o = {k: v["value"] for k, v in json.load(sys.stdin).items()}
 json.dump({"WP_SALT": o["wp_salt"], "SPIKE_TOKEN": o["spike_token"]}, open(sys.argv[1], "w"))' "$W/secrets.json"
   bundle_size_check || exit 1
-  (cd "$APP" && npx wrangler deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/secrets.json") > "$W/user.log" 2>&1 \
+  (cd "$APP" && "$ROOT/deploy/wr" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/secrets.json") > "$W/user.log" 2>&1 \
     || { rm -f "$W/secrets.json"; tail -20 "$W/user.log"; exit 1; }
   rm -f "$W/secrets.json"
   grep -E 'Total Upload|Current Version' "$W/user.log" || true
@@ -99,7 +100,7 @@ elif [ "$cmd" = down ]; then
     fi
   else
     log "site $s: dispatcher $D (the hostname first)"
-    (cd "$ROOT/deploy" && npx wrangler delete --name "$D" --force) > "$W/del.log" 2>&1 || tail -5 "$W/del.log"
+    (cd "$ROOT/deploy" && "$ROOT/deploy/wr" delete --name "$D" --force) > "$W/del.log" 2>&1 || tail -5 "$W/del.log"
     gone "dispatcher $D" "/workers/scripts/$D"
   fi
 
@@ -116,16 +117,9 @@ elif [ "$cmd" = down ]; then
   # A down never creates: no workspace means no data plane to remove.
   tfr site init -input=false >/dev/null
   if tfr site workspace select "$s" >/dev/null 2>&1; then
-    # Only the teardown key (-target; it does not depend on the bucket or the
-    # entry), and only when the bucket exists: a down creates nothing else.
-    B=$(media_bucket "$s")
-    if [ "$(api_code GET "/r2/buckets/$B")" = 200 ]; then
-      tfr site apply -input=false -auto-approve "${VARS[@]}" -var teardown=true -target=cloudflare_account_token.teardown >/dev/null
-      R2_KEY_ID=$(out teardown_access_key_id) R2_SECRET=$(out teardown_secret_access_key) \
-        "$ROOT/deploy/variants/r2-empty.sh" "$(out r2_endpoint)" "$B"
-    else
-      echo "  bucket $B does not exist: nothing to empty"
-    fi
+    # Empty the bucket with a key that can reach only that bucket, made for this
+    # step and removed again if the empty fails (lib.sh down_empty_bucket).
+    down_empty_bucket "$s"
     tfr site destroy -input=false -auto-approve "${VARS[@]}" -var teardown=true >/dev/null
     tfr site workspace select default >/dev/null && tfr site workspace delete "$s" >/dev/null
   else

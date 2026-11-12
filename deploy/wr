@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# The one Wrangler every deploy and test script calls. It is pinned to an exact version in
+# deploy/tools/package.json and deploy/tools/package-lock.json, and run from that
+# directory's node_modules/.bin. A bare npx call is not used: it runs whatever is installed
+# globally or fetches the latest, with the Cloudflare token in its environment.
+# To change the version, edit deploy/tools/package.json, run `npm install` there, commit both files.
+set -euo pipefail
+TOOLS=$(cd "$(dirname "${BASH_SOURCE[0]}")/tools" && pwd)
+BIN="$TOOLS/node_modules/.bin/wrangler"
+[ -x "$BIN" ] || (cd "$TOOLS" && npm ci --silent >&2)
+exec "$BIN" "$@"

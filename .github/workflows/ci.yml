@@ -12,10 +12,10 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # ubuntu-latest ships PHP 8.3. Third-party actions are not on the org allowlist.
       - run: php -v
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
       - name: Fetch the SQLite driver
@@ -30,6 +30,12 @@ jobs:
           for f in spikes/b1-boot/index.js spikes/b2-wordpress/index.js spikes/b2-wordpress/sql-import.js spikes/c1-woo-container/worker.js spikes/c1-woo-container/warm.js; do cp "$f" "$RUNNER_TEMP/check.mjs" && node --check "$RUNNER_TEMP/check.mjs"; done
       - name: Shell syntax
         run: for f in $(git ls-files '*.sh'); do bash -n "$f"; done
+      - name: Wrangler is pinned and called through deploy/wr
+        # deploy/tools holds the exact version; a bare npx call runs whatever is installed or the latest.
+        run: bash deploy/tests/wrangler-pin-test.sh
+      - name: Deploy scripts keep the spike token and admin password out of curl's command line
+        # -K <(printf 'header = ...') instead of -H: the value is not in the process list.
+        run: bash deploy/tests/curl-argv-test.sh
       - name: Dialect tests
         run: php spikes/b2-wordpress/tests/dialect-test.php
       - name: Approach A literal tests (issue #79)
@@ -50,6 +56,10 @@ jobs:
         run: deploy/import/tests/media-refuse-test.sh
       - name: b-dosql mail From address
         run: node --test spikes/b2-wordpress/tests/mail-from.test.mjs
+      - name: b-dosql demo site lock
+        run: node --test spikes/b2-wordpress/tests/site-lock.test.mjs
+      - name: b-dosql performance headers need the spike token
+        run: node --test spikes/b2-wordpress/tests/perf-headers.test.mjs
       - name: b-dosql outbound host allowlist
         run: node --test spikes/b2-wordpress/tests/http-allow.test.mjs
       - name: email-queue unit tests
@@ -97,6 +107,9 @@ jobs:
       - name: c1 boot log watch tests
         # deploy/variants/c1.sh c1_up_watch and c1-bootwatch.py (issue #103) against a fake site and bucket: no log, a stalled log, an old log.
         run: deploy/variants/tests/c1-bootwatch-test.sh
+      - name: zone cache ruleset tests
+        # deploy/zone: the bypass rule is last and keeps every per-user and operator request out of the edge cache.
+        run: node --test deploy/zone/tests/cache-ruleset.test.mjs
       - name: WfP reference tests
         # deploy/wfp (issue #35): the dispatcher, the rendered configs (one dispatcher config), the namespace-script check, the new site map write wait.
         run: |
@@ -108,6 +121,7 @@ jobs:
           deploy/wfp/tests/wait-site-test.sh
           deploy/wfp/tests/snapshot-test.sh
           deploy/wfp/tests/site-cmd-test.sh
+          deploy/wfp/tests/down-key-test.sh
           deploy/wfp/tests/custom-domain-test.sh
           python3 deploy/wfp/tests/check-test.py
           node deploy/provision/tests/ops-test.mjs
@@ -155,7 +169,7 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install pcov
         run: |
           # ubuntu-latest moved to 26.04, which has no php8.3-pcov. Install pcov for the

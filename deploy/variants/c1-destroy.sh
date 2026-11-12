@@ -12,7 +12,7 @@ C1="$ROOT/spikes/c1-woo-container"
 CONF="$C1/wrangler.deploy.$NAME.toml"
 # Wrangler commands run in deploy/, which has no Wrangler config, so a
 # command can never act on the spike's own wrangler.toml by mistake.
-WR() { (cd "$ROOT/deploy" && npx wrangler "$@"); }
+WR() { (cd "$ROOT/deploy" && "$ROOT/deploy/wr" "$@"); }
 
 # 1. The container application. deploy.sh names it <NAME>-store.
 # `containers list --json` prints a list of {id, name, ...} (Wrangler 4.107,

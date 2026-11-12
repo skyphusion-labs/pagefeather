@@ -130,7 +130,7 @@ TOML
 deploy() {
   local label=$1; shift
   local rc=0 t0=$SECONDS
-  (cd "$GEN" && npx wrangler deploy "$@") > "$W/$label.log" 2>&1 || rc=$?
+  (cd "$GEN" && "$ROOT/deploy/wr" deploy "$@") > "$W/$label.log" 2>&1 || rc=$?
   python3 - "$label" "$rc" "$((SECONDS - t0))" "$W/$label.log" >> "$W/deploys.jsonl" <<'PY'
 import json, re, sys
 label, rc, s, log = sys.argv[1:5]
@@ -158,7 +158,7 @@ if [ "${CONTAINER:-0}" = 1 ]; then
   # 2. The image the control's application runs (exact name <prefix>-cdirect-box).
   IMG=${CONTAINER_IMAGE:-}
   if [ -z "$IMG" ]; then
-    IMG=$( (cd "$H" && npx wrangler containers list --json 2>/dev/null) | python3 -c '
+    IMG=$( (cd "$H" && "$ROOT/deploy/wr" containers list --json 2>/dev/null) | python3 -c '
 import json, sys
 s = sys.stdin.read()
 try:

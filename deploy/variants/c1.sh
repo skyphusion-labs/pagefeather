@@ -146,7 +146,7 @@ o = {k: v["value"] for k, v in json.load(sys.stdin).items()}
 json.dump({"WP_SALT": o["wp_salt"], "ADMIN_PASSWORD": o["admin_password"], "SPIKE_TOKEN": o["spike_token"],
            "LITESTREAM_ACCESS_KEY_ID": o["litestream_access_key_id"],
            "LITESTREAM_SECRET_ACCESS_KEY": o["litestream_secret_access_key"]}, open(sys.argv[1], "w"))' "$secrets" || rc=$?
-  [ "$rc" = 0 ] && { dep=$(cd "$C1" && npx wrangler deploy --config "$CONF" --secrets-file "$secrets" --containers-rollout immediate 2>&1) || rc=$?; }
+  [ "$rc" = 0 ] && { dep=$(cd "$C1" && "$ROOT/deploy/wr" deploy --config "$CONF" --secrets-file "$secrets" --containers-rollout immediate 2>&1) || rc=$?; }
   rm -f "$secrets"
   [ "$rc" = 0 ] || { echo "${dep:-}" | tail -30; return 1; }
   URL=$(echo "$dep" | grep -oE 'https://[a-z0-9.-]+\.workers\.dev' | head -1)

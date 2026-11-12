@@ -17,7 +17,7 @@
 // concern tracked for the box-gate; see HARDENING.md.
 
 import { genSecret } from './shared.mjs';
-import { createKvNamespace, createQueue, createVectorizeIndex } from './ops.mjs';
+import { freshKVNamespace, createQueue, createVectorizeIndex } from './ops.mjs';
 
 // ---- b-dosql integration-descriptor table (#201 Phase 1) --------------------
 // The provisioning core builds a b-dosql site's bindings, vars and generated
@@ -67,7 +67,7 @@ import { createKvNamespace, createQueue, createVectorizeIndex } from './ops.mjs'
 // turn on the default-on gates in index.js (object cache, route cache, theme.json
 // cache, async email, bootstrap trim, media-write trim): index.js enables each
 // unless its var is "off", so the site gets them with no gate var set.
-function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName } = {}) {
+function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, demo } = {}) {
   if (!siteOrigin) throw new Error('bDosqlVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
   const vars = {
     PHP_ENV: '{"USE_ZEND_ALLOC":"0"}',
@@ -92,6 +92,9 @@ function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mail
     vars.MAIL_FROM = mailFrom;
     if (mailFromName) vars.MAIL_FROM_NAME = mailFromName;
   }
+  // A public demo site (opts.demo) runs locked: no mail, and no plugin or theme
+  // installs or edits (spikes/b2-wordpress/site-lock.mjs). Unset on every other site.
+  if (demo === true) vars.DEMO_LOCK = 'on';
   return vars;
 }
 
@@ -104,7 +107,8 @@ export const B_DOSQL_DESCRIPTORS = [
   { name: 'images', default: true, bindings: () => [{ type: 'images', name: 'IMAGES' }] },
   { name: 'media', default: true, bindings: ({ mediaBucket }) => [{ type: 'r2_bucket', name: 'MEDIA', bucket_name: mediaBucket }] },
   { name: 'php-runtime', default: true, bindings: () => [{ type: 'durable_object_namespace', name: 'PHP_RUNTIME', class_name: 'PhpRuntime' }] },
-  { name: 'email', default: true, bindings: () => [{ type: 'send_email', name: 'EMAIL' }] },
+  // Not on a public demo site: it is built with no send_email binding (omitWhen).
+  { name: 'email', default: true, omitWhen: (opts) => opts.demo === true, bindings: () => [{ type: 'send_email', name: 'EMAIL' }] },
   // PDF order invoices (#227/#228), the reference OPT-IN descriptor: the Browser
   // Rendering binding plus the INVOICE_TOKEN download-signing secret. index.js
   // pdfInvoiceEnabled() turns the feature on whenever env.BROWSER is present (and
@@ -160,11 +164,12 @@ export const B_DOSQL_DESCRIPTORS = [
     bindings: () => [{ type: 'kv_namespace', name: 'OC_KV' }],
     resourceCreateOp: async (ctx, { cfg, bindings }) => {
       const title = ocKvNamespaceName(cfg.name);
-      const ns = await createKvNamespace(ctx, title);
+      // Fresh, never reused: resourceCreateOps run only on the fresh-provision path.
+      const ns = await freshKVNamespace(ctx, title);
       const binding = bindings.find((b) => b.type === 'kv_namespace' && b.name === 'OC_KV');
       if (!binding) throw new Error('object-cache-l2: no OC_KV kv_namespace binding to inject');
       binding.namespace_id = ns.id;
-      return { kvNamespace: title, id: ns.id, created: ns.created === true };
+      return { kvNamespace: title, id: ns.id, created: ns.created === true, ...(ns.replaced ? { replaced: true } : {}) };
     },
   },
   // Durable async email (#190), OPT-IN (default:false). The per-site queue + DLQ and
@@ -279,8 +284,11 @@ export const B_DOSQL_DESCRIPTORS = [
 ];
 
 // Is a descriptor included for this site? Always-on (default) ones always; an
-// opt-in one only when opts.enable lists its name.
-function bDosqlDescriptorEnabled(d, enable) {
+// opt-in one only when opts.enable lists its name. A descriptor with omitWhen is
+// left out when omitWhen(opts) is true (the email binding on a demo site).
+function bDosqlDescriptorEnabled(d, opts) {
+  if (typeof d.omitWhen === 'function' && d.omitWhen(opts) === true) return false;
+  const enable = opts.enable;
   return d.default === true || (Array.isArray(enable) && enable.includes(d.name));
 }
 
@@ -310,14 +318,13 @@ function dedupeBindings(list) {
 }
 
 export function assembleBDosql(opts = {}) {
-  const enable = opts.enable;
   const vars = {};
   const bindings = [];
   const secretGenerators = {};
   const suppliedSecrets = {};
   const resourceCreateOps = [];
   for (const d of B_DOSQL_DESCRIPTORS) {
-    if (!bDosqlDescriptorEnabled(d, enable)) continue;
+    if (!bDosqlDescriptorEnabled(d, opts)) continue;
     if (d.vars) Object.assign(vars, d.vars(opts) || {});
     if (d.bindings) bindings.push(...(d.bindings(opts) || []));
     if (d.secretGenerators) Object.assign(secretGenerators, d.secretGenerators);

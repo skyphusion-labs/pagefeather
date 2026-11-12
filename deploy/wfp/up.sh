@@ -18,6 +18,7 @@
 # check.py. Remove it all with down.sh.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
+need_account
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
 SITES=${SITES:-one two}
 for s in $SITES; do valid_site "$s" || { echo "bad site name: $s" >&2; exit 2; }; done
@@ -65,7 +66,7 @@ wrangler_deploy "$GEN" "$W/probe.log" --config wp-probe.toml || { tail -20 "$W/p
 if [ "${CACHE_PROBE:-1}" = 1 ]; then
   log "cache probe: site-cacheprobe in $NAMESPACE, behind wp-cacheprobe; control wp-cacheprobe-direct"
   render_cacheprobe site-cacheprobe false > "$GEN/site-cacheprobe.toml"
-  (cd "$GEN" && npx wrangler deploy --config site-cacheprobe.toml --dispatch-namespace "$NAMESPACE") > "$W/cp1.log" 2>&1 || { tail -20 "$W/cp1.log"; exit 1; }
+  (cd "$GEN" && "$ROOT/deploy/wr" deploy --config site-cacheprobe.toml --dispatch-namespace "$NAMESPACE") > "$W/cp1.log" 2>&1 || { tail -20 "$W/cp1.log"; exit 1; }
   c=$(api_code PUT "/storage/kv/namespaces/$KV_ID/values/wp-cacheprobe.$SUB.workers.dev" -H 'content-type: text/plain' --data '{"script": "site-cacheprobe", "outbound": true}')
   [ "$c" = 200 ] || { echo "the cache probe entry was not written (HTTP $c)" >&2; exit 1; }
   render_dispatcher cacheprobe "$KV_ID" > "$GEN/wp-cacheprobe.toml"

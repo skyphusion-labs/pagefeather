@@ -72,7 +72,43 @@ good = (a["name"] == "site-cacheprobe" and "workers_dev" not in a and b["name"] 
 print(1 if good else 0)' "$T/cp-ns.toml" "$T/cp-direct.toml")"
 okn=1
 for n in one two a-b a1 x23456789012345678901234567890; do valid_site "$n" || { okn=0; echo "  valid_site refused $n"; }; done
-for n in "" -a a- A a_b a.b probe x234567890123456789012345678901; do valid_site "$n" && { okn=0; echo "  valid_site took '$n'"; }; done
-ok "valid_site takes 1 to 30 of [a-z0-9-] with no end hyphen, not probe" "$okn"
+for n in "" -a a- A a_b a.b probe dispatch cacheprobe cacheprobe-direct wfp-outbound wfp-x x234567890123456789012345678901; do valid_site "$n" && { okn=0; echo "  valid_site took '$n'"; }; done
+ok "valid_site takes 1 to 30 of [a-z0-9-] with no end hyphen, and no shared Worker name" "$okn"
+
+# Derived, so a NEW shared Worker cannot be missed: every wp-<x> Worker name this tree
+# deploys or deletes by a literal name (wrangler templates, --name, the shared
+# dispatcher default) must be refused as a site name, because wp-<site> is a site's
+# dispatcher and `site remove <x>` would delete the shared one.
+# Two sources: literal deploy names, and the workers.dev hosts the checks probe
+# (https://wp-<x>.<subdomain>), which is where wp-cacheprobe and wp-cacheprobe-direct
+# are named. A templated name (wp-@SITE@, wp-$n, wp-%s) is per site and is not matched.
+# cross.sh is left out of the host scan: its wp-crossa and wp-crossb are the
+# dispatchers of two ordinary test SITES (crossa, crossb) it adds, not shared Workers.
+shared=$( (cd "$WFP" && grep -rhoE '(name = "|--name "?|SHARED_DISPATCHER:-)wp-[a-z0-9-]+' --include='*.toml' --include='*.sh' --include=site . ;
+  cd "$WFP" && grep -rhoE 'https://wp-[a-z0-9-]+\.' --include='*.py' --include='*.sh' --exclude-dir=tests --exclude=cross.sh . ) | sed -E 's/.*(wp-[a-z0-9-]*[a-z0-9]).*$/\1/' | sort -u)
+okd=1; nd=0
+for w in $shared; do nd=$((nd + 1)); valid_site "${w#wp-}" && { okd=0; echo "  valid_site takes '${w#wp-}', which makes the shared Worker $w"; }; done
+[ "$nd" -ge 5 ] || { okd=0; echo "  found only $nd shared Worker name(s), want 5 or more; the scan is broken"; }
+ok "every shared wp-<x> Worker in deploy/wfp ($nd found) is refused as a site name" "$okd"
+# No default account (or zone) in the deploy tools: every entry point that sources
+# lib.sh calls need_account, and no Terraform root defaults account_id. Derived, so
+# a new entry script that forgets the check fails here.
+okn=1; ne=0
+for f in "$WFP"/*.sh "$WFP/site"; do
+  [ "$(basename "$f")" = lib.sh ] && continue
+  grep -q '^\. "$(dirname "$0")/lib.sh"$' "$f" || continue
+  ne=$((ne + 1))
+  grep -qx 'need_account' "$f" || { okn=0; echo "  $(basename "$f") sources lib.sh but does not call need_account"; }
+done
+[ "$ne" -ge 5 ] || { okn=0; echo "  found only $ne entry script(s); the scan is broken"; }
+ok "every deploy/wfp entry script ($ne) calls need_account" "$okn"
+okt=1
+for r in site shared; do
+  awk '/^variable "account_id"/,/^}/' "$WFP/terraform/$r/main.tf" | grep -q 'default' && { okt=0; echo "  terraform/$r: account_id has a default"; }
+done
+grep -q 'fabcb25d9c7eb087110ec474a03e50d2' "$WFP/lib.sh" "$WFP/terraform/site/main.tf" "$WFP/terraform/shared/main.tf" && { okt=0; echo "  a deploy default still carries the reference account id"; }
+ok "no account default in lib.sh or the terraform roots (reference ids live in reference.env)" "$okt"
+( ACCOUNT_ID=; need_account ) >/dev/null 2>&1; rc=$?
+ok "need_account with no ACCOUNT_ID exits 2" "$([ "$rc" = 2 ] && echo 1 || echo 0)"
 echo "$fails failing check(s)"
 exit $fails

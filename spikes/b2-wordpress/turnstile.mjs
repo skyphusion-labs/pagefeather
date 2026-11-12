@@ -51,12 +51,46 @@ export function siteverifyForm(secret, token, remoteip) {
 	return form;
 }
 
+// The action the widget carries (php/turnstile-forms.php data-action). A token
+// from this site's widget comes back from siteverify with this action.
+export const TURNSTILE_ACTION = 'turnstile-spin-v1';
+
+// The documented Turnstile test secret keys (1x... passes, 2x... fails, 3x...
+// reports a spent token). Their replies always name example.com as the hostname
+// and carry no action, so the hostname and action checks are skipped for them.
+export function isTestSecret(secret) {
+	return typeof secret === 'string' && /^[123]x0{31}AA$/.test(secret);
+}
+
+// The host a token must have been solved on: the lower-case hostname of the
+// site origin (SITE_ORIGIN). '' when the origin is missing or not a URL.
+export function siteHost(origin) {
+	try {
+		return new URL(String(origin || '')).hostname.toLowerCase();
+	} catch {
+		return '';
+	}
+}
+
 // Normalise a siteverify answer to { success, codes }. success is true only when
 // Cloudflare returns the literal success:true; every other shape is false so a
-// caller fails closed.
-export function readSiteverify(httpOk, json) {
-	const success = !!(httpOk && json && json.success === true);
-	const codes = json && Array.isArray(json['error-codes']) ? json['error-codes'] : [];
+// caller fails closed. With expect, success also needs the reply's hostname to be
+// expect.hostname and its action to be expect.action (each when given); a token
+// solved on another host, or for another action, fails with the code
+// hostname-mismatch or action-mismatch.
+export function readSiteverify(httpOk, json, expect) {
+	let success = !!(httpOk && json && json.success === true);
+	const codes = json && Array.isArray(json['error-codes']) ? json['error-codes'].slice() : [];
+	if (success && expect) {
+		if (expect.hostname && String(json.hostname || '').toLowerCase() !== expect.hostname) {
+			success = false;
+			codes.push('hostname-mismatch');
+		}
+		if (expect.action && json.action !== expect.action) {
+			success = false;
+			codes.push('action-mismatch');
+		}
+	}
 	return { success, codes };
 }
 
@@ -69,6 +103,8 @@ export function readSiteverify(httpOk, json) {
 //     through) from a token that genuinely failed (which it never should).
 // opts.fetchImpl lets a unit test inject a stub; it defaults to the global fetch.
 // opts.timeoutMs bounds the call (default 10s, clamped 1s..30s).
+// opts.expect ({ hostname, action }) is passed to readSiteverify. It is ignored for
+// a test secret key (isTestSecret), whose replies never carry the real values.
 export async function verifyToken(secret, token, remoteip, opts) {
 	const o = opts || {};
 	const doFetch = o.fetchImpl || (typeof fetch === 'function' ? fetch : null);
@@ -89,8 +125,13 @@ export async function verifyToken(secret, token, remoteip, opts) {
 		if (r && r.__timeout) return { success: false, codes: [], error: 'timeout' };
 		let json = null;
 		try { json = await r.json(); } catch (_) {}
-		const out = readSiteverify(r && r.ok, json);
-		if (!out.success && !(json && json.success === false)) out.error = 'verify_unreachable';
+		const out = readSiteverify(r && r.ok, json, isTestSecret(secret) ? null : o.expect);
+		// Unreachable unless siteverify answered: success:false, or an HTTP 200 with
+		// success:true that then failed the hostname or action check. A failed check is
+		// a failed token, never an outage, so a site that fails open on an outage still
+		// rejects it.
+		const answered = !!(json && (json.success === false || (r && r.ok && json.success === true)));
+		if (!out.success && !answered) out.error = 'verify_unreachable';
 		return out;
 	} catch (e) {
 		return { success: false, codes: [], error: String(e && e.message ? e.message : e).slice(0, 160) };

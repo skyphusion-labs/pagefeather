@@ -4,11 +4,13 @@ import { sender, replyTo, deliverableRecipients } from './mail-from.mjs';
 import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, handleQueuedEmail } from './email-queue.mjs';
 import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
-import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled } from './purge-zone.mjs';
+import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
 import { shouldArmAlarm } from './alarm-arm.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
-import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken } from './turnstile.mjs';
+import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
+import { demoLocked, demoLockDefines } from './site-lock.mjs';
+import { perfHeadersAllowed, scrubPerfHeaders } from './perf-headers.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -23,6 +25,8 @@ import opcacheZip from './build/opcache.zip';
 import BUILD_ID from './build/build-id.js';
 
 const OPCACHE_DIR = '/internal/shared/opcache';
+// The scripts OPcache must never cache (#294): the eval file of php.run.
+const OPCACHE_BLACKLIST = '/internal/shared/opcache-blacklist.txt';
 
 const DOCROOT = '/wordpress';
 // php-wasm's defaults keep OPcache on with a file cache in PHP's in-memory
@@ -538,6 +542,8 @@ function emailOp(email) {
 // A From the message asked for, when it is a different real address, becomes
 // the Reply-To. Returns [] when the site has no sender or no binding.
 function sendEmail(env, email) {
+	// A demo site sends no mail (site-lock.mjs).
+	if (demoLocked(env)) return [];
 	const from = sender(env);
 	if (!from || !env || !env.EMAIL) return [];
 	const { deliverable, dropped } = deliverableRecipients(email.to);
@@ -749,7 +755,8 @@ async function purgeZoneOp(op) {
 		// only the URLs. No binding means the gate should not have injected the
 		// define, so this is belt and braces.
 		if (!ENV.PURGE_TOKEN || !ENV.PURGE_ZONE) return done({ ok: true, degraded: 'no purge binding' });
-		const body = purgeZoneBody(op);
+		// A purge covers this site's own host only (purge-zone.mjs), never the zone.
+		const body = purgeZoneBody(op, ownPurgeHost(ENV.SITE_ORIGIN));
 		if (!body) return done({ ok: true, degraded: 'nothing to purge' });
 		const timeoutMs = Math.max(1000, Math.min(30000, Number(ENV.PURGE_TIMEOUT_MS || 10000)));
 		const timeout = new Promise((resolve) => setTimeout(() => resolve({ __timeout: true }), timeoutMs));
@@ -767,7 +774,7 @@ async function purgeZoneOp(op) {
 		const purged = !!(r && r.ok && j && j.success);
 		// One line per purge sent, so a run can count them (wrangler tail). The
 		// token is never logged.
-		console.log(JSON.stringify({ m: 'purge_zone', sent: 1, everything: !!body.purge_everything, files: body.files ? body.files.length : 0, status: r ? r.status : 0, ok: purged, errors: (j && j.errors) || [] }));
+		console.log(JSON.stringify({ m: 'purge_zone', sent: 1, host: !!body.hosts, files: body.files ? body.files.length : 0, status: r ? r.status : 0, ok: purged, errors: (j && j.errors) || [] }));
 		return done({ ok: true, purged, status: r ? r.status : 0, errors: (j && j.errors) || [] });
 	} catch (e) {
 		return done({ ok: true, degraded: String(e && e.message ? e.message : e).slice(0, 200) });
@@ -862,7 +869,9 @@ async function turnstileOp(op) {
 		// belt and braces: fail closed (the form is rejected), never open.
 		if (!ENV.TURNSTILE_SECRET) return done({ ok: true, success: false, error: 'no turnstile secret' });
 		const timeoutMs = Math.max(1000, Math.min(30000, Number(ENV.TURNSTILE_TIMEOUT_MS || 10000)));
-		const res = await verifyToken(ENV.TURNSTILE_SECRET, op && op.token, op && op.remoteip, { timeoutMs });
+		// The token must have been solved on this site, by its own widget.
+		const expect = { hostname: siteHost(ENV.SITE_ORIGIN), action: TURNSTILE_ACTION };
+		const res = await verifyToken(ENV.TURNSTILE_SECRET, op && op.token, op && op.remoteip, { timeoutMs, expect });
 		// The token and the secret are never logged; only the outcome and the codes.
 		console.log(JSON.stringify({ m: 'turnstile', success: res.success, codes: res.codes || [], error: res.error, ms: Date.now() - t0 }));
 		return done({ ok: true, success: res.success, codes: res.codes || [], error: res.error });
@@ -1015,7 +1024,18 @@ async function boot(origin) {
 	//   shipped file cache is older than the files unzipped at boot.
 	// - shared memory (24 MB) for warm requests, the file cache (shipped by
 	//   opcache.sh) for a cold isolate. Warm page locally: 220 ms -> 100 ms.
+	// - blacklist /internal/eval.php (#294): php.run({ code }) writes its code to that ONE
+	//   path on every call, so it is the one script that DOES change within a deploy. With
+	//   validate_timestamps=0 OPcache kept the first compiled copy, and every later php.run
+	//   ran it instead of its own code. opcache.sh then shipped it in opcache.zip, so on a
+	//   deployed site every php.run (the install, the cron, an activation, /_mem) ran the
+	//   priming run's last script: measured 2026-11-11, /_install answered an empty out and
+	//   the shipped internal/eval.php.bin was runCron's code. This is also the cause of
+	//   #185's "a reused runtime returns runCron's output in place of the activation".
+	php.mkdir('/internal/shared');
+	php.writeFile(OPCACHE_BLACKLIST, '/internal/eval.php\n');
 	const opcacheIni = {
+		'opcache.blacklist_filename': OPCACHE_BLACKLIST,
 		'opcache.file_update_protection': '0',
 		'opcache.validate_timestamps': '0',
 		'opcache.file_cache_only': '0',
@@ -1093,6 +1113,8 @@ async function boot(origin) {
 	if (ENV.MEDIA && ENV.IMAGES) lines.push(`define('CF_IMAGES', true);`);
 	// A deploy (WP_SALT is set) shows no PHP errors or database errors to visitors.
 	if (ENV.WP_SALT) lines.push(`define('WP_DEBUG', false);`);
+	// A demo site cannot install, update or edit plugin or theme code (site-lock.mjs).
+	lines.push(...demoLockDefines(ENV));
 	// Outbound HTTP through fetch() (php/http-bridge.php, #26). HTTP_BRIDGE=off: no
 	// bridge, and WordPress blocks external requests, as before the bridge.
 	if (ENV.HTTP_BRIDGE === 'off') lines.push(`define('SKYPHUSION_HTTP_BRIDGE_OFF', true);`, `define('WP_HTTP_BLOCK_EXTERNAL', true);`);
@@ -2392,7 +2414,12 @@ echo json_encode( array( 'installed' => true, 'user_id' => $r['user_id'] ) );
 `;
 
 const site = {
+	// Every answer passes through here, so the performance headers leave only on a request that
+	// may see them (perf-headers.mjs), whichever branch of serve() built the response.
 	async fetch(req, env, ctx) {
+		return scrubPerfHeaders(await this.serve(req, env, ctx), perfHeadersAllowed(req, env));
+	},
+	async serve(req, env, ctx) {
 		ENV = env;
 		const url = new URL(req.url);
 		if (url.pathname === '/_ping') return new Response('ok');
@@ -2477,6 +2504,9 @@ export class Pages extends WorkerEntrypoint {
 		// So a test can see which entrypoint answered (the gateway sets nothing).
 		const out = new Response(r.body, r);
 		out.headers.set('x-entrypoint', 'pages');
+		// An operator request (it carries the token header) may be answered with the performance
+		// headers; never let the edge cache keep that copy for the next visitor.
+		if (req.headers.has('x-spike-token')) out.headers.set('cache-control', 'private, no-store');
 		return out;
 	}
 	// An RPC method, so not cached. A purge reaches only the cache of the

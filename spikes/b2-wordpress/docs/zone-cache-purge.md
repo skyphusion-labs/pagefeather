@@ -41,9 +41,13 @@ purge is Enterprise only, so the URL list is the portable path.
 
 Every URL a request produces is collected and sent in ONE purge call at
 `shutdown`, deduped (the proven `cf-images-editor.php` shutdown-flush pattern).
-A site-wide change sends `purge_everything` and skips the URL list. More than 30
-URLs in one request (a bulk edit; Free allows 30 URLs per call) also falls back
-to `purge_everything`, so a request never needs more than one purge call.
+A site-wide change purges the site's own host (`{ hosts: [<host>] }`) and skips
+the URL list. More than 30 URLs in one request (a bulk edit; Free allows 30 URLs
+per call) also falls back to the host purge, so a request never needs more than
+one purge call. A zone can hold many sites, so a site never purges the whole
+zone: the Worker drops any URL that is not on the site's own host (the hostname of
+`SITE_ORIGIN`), and with no own host it purges nothing. Purge by hostname is
+available on every Cloudflare plan.
 
 ## The token stays in the Worker
 

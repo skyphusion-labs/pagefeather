@@ -22,7 +22,7 @@ for x in "ns $B/workers/dispatch/namespaces" "scripts $B/workers/scripts" "apps 
 done
 # The control's image in the account registry (run.sh builds it): from Wrangler,
 # which lists repositories as [{name, tags}] with the account prefix removed.
-(cd "$(dirname "$0")" && CLOUDFLARE_ACCOUNT_ID=$A npx wrangler containers images list --json 2>/dev/null) > "$W/images.raw" \
+(cd "$(dirname "$0")" && CLOUDFLARE_ACCOUNT_ID=$A ../../deploy/wr containers images list --json 2>/dev/null) > "$W/images.raw" \
   || { echo "wrangler containers images list failed: cannot tell what exists" >&2; exit 2; }
 python3 -c '
 import json, sys

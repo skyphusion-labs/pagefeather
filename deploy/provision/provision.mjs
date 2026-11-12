@@ -6,7 +6,7 @@
 // --secrets-file), so a site never runs a request without its secrets.
 import {
   createR2Bucket, deployNamespaceScript, ensureProxiedHostname, scriptExists,
-  installWordPress, ensureKVNamespace,
+  installWordPress, freshKVNamespace,
 } from './ops.mjs';
 import { upsertSite, readSite } from './registry.mjs';
 import { assertValidName, genSecret } from './shared.mjs';
@@ -87,11 +87,13 @@ async function provisionNamespaceSite(ctx, cfg) {
   // matching resourceBinding by name. Clone the bindings so cfg is not mutated.
   const bindings = [...(cfg.resourceBindings || [])];
   for (const spec of cfg.kvNamespaces || []) {
-    const ns = await ensureKVNamespace(ctx, spec.title);
+    // Fresh, never reused: this path runs only for a site that is not registered,
+    // so a namespace already under this title is a leftover (see freshKVNamespace).
+    const ns = await freshKVNamespace(ctx, spec.title);
     const binding = bindings.find((b) => b.type === 'kv_namespace' && b.name === spec.binding);
     if (!binding) throw new Error(`provisionNamespaceSite: kvNamespaces asked to bind ${spec.binding} but no kv_namespace binding named ${spec.binding} is in resourceBindings`);
     binding.namespace_id = ns.id;
-    steps.push({ kvNamespace: spec.title, binding: spec.binding, id: ns.id, created: ns.created === true });
+    steps.push({ kvNamespace: spec.title, binding: spec.binding, id: ns.id, created: ns.created === true, ...(ns.replaced ? { replaced: true } : {}) });
   }
 
   // Descriptor resource-create ops (#201 Phase 1): an integration descriptor may

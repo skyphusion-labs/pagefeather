@@ -39,7 +39,7 @@ case "$*" in
 esac
 SH
 chmod +x "$T/bin/terraform"
-export PATH="$T/bin:$PATH" WFP_API="http://127.0.0.1:$(cat "$T/port")" CLOUDFLARE_API_TOKEN=test NAMESPACE=wp-wfp
+export PATH="$T/bin:$PATH" WFP_API="http://127.0.0.1:$(cat "$T/port")" CLOUDFLARE_API_TOKEN=test NAMESPACE=wp-wfp ACCOUNT_ID=test-account
 fails=0
 run_case() {
 	local args=$1 want=$2 rc out
@@ -49,12 +49,17 @@ run_case() {
 	if [ "$rc" = 2 ] && [ "$writes" = 0 ] && printf '%s' "$out" | grep -q -- "$want"; then echo "PASS site $args: refused, 0 writes"; else echo "FAIL site $args: exit $rc, $writes write(s) (want exit 2, 0 writes, \"$want\")"; fails=$((fails + 1)); fi
 	printf '%s\n' "$out" | sed 's/^/   /'
 }
+# No account: refused before any call, with the variable named (no default account).
+ACCOUNT_ID= run_case "add one" "set ACCOUNT_ID"
 run_case "add one" "already exists"
 run_case "add three" "bucket yes"
 run_case "add four" "workspace four"
 run_case "remove nine" "no site nine"
 run_case "add Bad_Name" "bad site name"
 run_case "add probe" "bad site name"
+run_case "remove wfp-outbound" "bad site name"
+run_case "remove dispatch" "bad site name"
+run_case "remove cacheprobe" "bad site name"
 run_case "import one" "needs SQLITE"
 SQLITE=/dev/null run_case "import nine" "no site nine"
 SQLITE=/dev/null run_case "import Bad_Name" "bad site name"

@@ -25,6 +25,8 @@ Every dispatcher copy is the same script and the same config, and only the name 
 
 ```sh
 export CLOUDFLARE_API_TOKEN=...   # Workers Scripts, Workers KV, Workers for Platforms, R2: edit; API Tokens: edit (down.sh)
+export ACCOUNT_ID=...             # your Cloudflare account id. No default: every tool stops with exit 2 without it
+# The Skyphusion reference deploy sets ACCOUNT_ID (and WFP_ZONE_ID, WFP_SUBDOMAIN) with:  . deploy/wfp/reference.env
 ./deploy/wfp/up.sh                # SITES="one two" by default
 ./deploy/wfp/down.sh              # removes all of it; every step is checked against the API
 ```
@@ -114,7 +116,7 @@ The only interruption is the cold boot of the next request after the new code lo
 
 Phase A gives each site its own origin by deploying the one dispatcher script once per site as `wp-<name>` on `workers.dev`. Phase B instead deploys the dispatcher once as `wp-dispatch` and gives each site a Workers Custom Domain `<name>.wfp-test.skyphusion.org`. The dispatcher code does not change: it already routes by the request's own hostname through the site map, so the site map key becomes the custom hostname.
 
-It is off by default. `WFP_CUSTOM_DOMAIN=1` selects it; without the flag, `workers.dev` stays the only live target. `WFP_SUBDOMAIN` sets the test subdomain (default `wfp-test.skyphusion.org`).
+It is off by default. `WFP_CUSTOM_DOMAIN=1` selects it; without the flag, `workers.dev` stays the only live target. `WFP_SUBDOMAIN` sets the test subdomain (default `wfp-test.skyphusion.org`), and `WFP_ZONE_ID` names the zone that holds it. There is no zone default: a Custom Domain with no zone fails at plan. The Skyphusion reference deploy sources `deploy/wfp/reference.env`, which sets `ACCOUNT_ID`, `WFP_ZONE_ID` and `WFP_SUBDOMAIN`; a self-hosted deploy sets its own.
 
 - `up.sh` deploys `wp-dispatch` once, before any site, because a Custom Domain attaches to a service that must already exist.
 - A new Custom Domain has no certificate until Cloudflare's Advanced Certificate pack is active, which can exceed 15 min, so the first phase B deploy waits longer: `site_wait_cap` is 1800 s in phase B (300 s in phase A), and `SITE_WAIT` overrides it. If the first deploy still times out while the certificate issues, re-run `up.sh` once it is active: the data plane persists and the install completes on the re-run.

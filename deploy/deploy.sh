@@ -220,7 +220,7 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
 
 # 4. Deploy and set the secrets.
 log "deploy"
-DEP=$(npx wrangler deploy --config "$CONF" 2>&1) || { echo "$DEP" | tail -20; exit 1; }
+DEP=$("$ROOT/deploy/wr" deploy --config "$CONF" 2>&1) || { echo "$DEP" | tail -20; exit 1; }
 URL=$(echo "$DEP" | grep -oE 'https://[a-z0-9.-]+\.workers\.dev' | head -1)
 # A workers.dev site must be at its configured origin, or every link points elsewhere.
 case "$SITE_ORIGIN" in
@@ -232,7 +232,7 @@ tf "$TF" output -json | python3 -c '
 import json, sys
 o = {k: v["value"] for k, v in json.load(sys.stdin).items()}
 json.dump({"WP_SALT": o["wp_salt"], "SPIKE_TOKEN": o["spike_token"]}, open(sys.argv[1], "w"))' "$SECRETS"
-npx wrangler secret bulk "$SECRETS" --config "$CONF" | tail -1
+"$ROOT/deploy/wr" secret bulk "$SECRETS" --config "$CONF" | tail -1
 rm -f "$SECRETS"
 SPIKE_TOKEN=$(out spike_token); ADMIN_PASSWORD=$(out admin_password)
 
@@ -240,7 +240,7 @@ SPIKE_TOKEN=$(out spike_token); ADMIN_PASSWORD=$(out admin_password)
 # 901 D1 queries, 57 s measured). a: in the Worker (Workers Paid).
 log "install"
 sleep 5
-curl -s -m 300 -X POST -H "x-spike-token: $SPIKE_TOKEN" -H "x-admin-password: $ADMIN_PASSWORD" "$URL/_install" \
+curl -s -m 300 -X POST -K <(printf 'header = "x-spike-token: %s"\nheader = "x-admin-password: %s"\n' "$SPIKE_TOKEN" "$ADMIN_PASSWORD") "$URL/_install" \
   | python3 -c 'import json, sys
 try:
     d = json.load(sys.stdin); print(d.get("out", "")[-80:], d.get("ms"), "ms")
@@ -256,7 +256,7 @@ if [ "${WOO_ACTIVE:-0}" = 1 ]; then
   ACT_TRIES=${ACT_TRIES:-4}
   act_ok=0
   for act_n in $(seq 1 "$ACT_TRIES"); do
-    if curl -s -m 300 -X POST -H "x-spike-token: $SPIKE_TOKEN" "$URL/_activate?plugin=woocommerce/woocommerce.php" | tee /dev/stderr | grep -q '\\"active\\":true'; then
+    if curl -s -m 300 -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_activate?plugin=woocommerce/woocommerce.php" | tee /dev/stderr | grep -q '\\"active\\":true'; then
       act_ok=1; break
     fi
     echo "WooCommerce activation attempt $act_n/$ACT_TRIES did not report active; retrying" >&2
@@ -276,7 +276,7 @@ W=$(mktemp -d)
 # Database time per statement: D1 or Hyperdrive (/_d1ping), or the object's
 # own SQLite for b-dosql (/_dbping?db=object).
 PING_PATH=$([ "$VARIANT" = b-dosql ] && echo "/_dbping?db=object&n=200&" || echo "/_d1ping?")
-for i in 1 2 3; do curl -s -H "x-spike-token: $SPIKE_TOKEN" "$URL${PING_PATH}nocache=$RANDOM$i"; echo; done > "$W/ping"
+for i in 1 2 3; do curl -s -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL${PING_PATH}nocache=$RANDOM$i"; echo; done > "$W/ping"
 # A failing e2e.sh is a result to record, so it must not stop the script (set -e).
 E2E_EXIT=0
 SPIKE_TOKEN=$SPIKE_TOKEN ADMIN_PASSWORD=$ADMIN_PASSWORD ./e2e.sh "$URL" > "$W/e2e" 2>&1 || E2E_EXIT=$?
