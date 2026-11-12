@@ -10,7 +10,7 @@ import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, mayHaveW
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { cronBounds, cronCleanDue } from './cron-bound.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
-import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION } from './turnstile.mjs';
+import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, verifyAfterGate, siteHost, TURNSTILE_ACTION } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
 import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, demoLockDefines } from './site-lock.mjs';
@@ -876,9 +876,23 @@ async function turnstileOp(op) {
 		const timeoutMs = Math.max(1000, Math.min(30000, Number(ENV.TURNSTILE_TIMEOUT_MS || 10000)));
 		// The token must have been solved on this site, by its own widget.
 		const expect = { hostname: siteHost(ENV.SITE_ORIGIN), action: TURNSTILE_ACTION };
-		const res = await verifyToken(ENV.TURNSTILE_SECRET, op && op.token, op && op.remoteip, { timeoutMs, expect });
-		// The token and the secret are never logged; only the outcome and the codes.
-		console.log(JSON.stringify({ m: 'turnstile', success: res.success, codes: res.codes || [], error: res.error, ms: Date.now() - t0 }));
+		// The output gate first, then the verify and its timeout (#351, verifyAfterGate): the
+		// writes this request made before the verify must be confirmed before any fetch leaves.
+		// The yield comes first: the PHP run wrote in this same turn, and sync() called in that turn
+		// returned at once while the fetch after it still waited (fdprobe1112j, 2026-11-12). After one
+		// macrotask the writes are queued, and sync() waits for them.
+		const gate = sqlStorage && typeof sqlStorage.sync === 'function'
+			? async () => {
+				await new Promise((r) => setTimeout(r, 0));
+				await sqlStorage.sync();
+			}
+			: null;
+		const { res, gateMs, fetchMs, gateError } = await verifyAfterGate(gate, () =>
+			verifyToken(ENV.TURNSTILE_SECRET, op && op.token, op && op.remoteip, { timeoutMs, expect }),
+		);
+		// The token and the secret are never logged; only the outcome and the codes. ms is from the
+		// op start (it can include PHP time before it, #351); gateMs and fetchMs split the wait.
+		console.log(JSON.stringify({ m: 'turnstile', success: res.success, codes: res.codes || [], error: res.error, ms: Date.now() - t0, gateMs, fetchMs, gateError }));
 		return done({ ok: true, success: res.success, codes: res.codes || [], error: res.error });
 	} catch (e) {
 		return done({ ok: true, success: false, error: String(e && e.message ? e.message : e).slice(0, 200) });

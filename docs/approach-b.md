@@ -719,6 +719,16 @@ A token passes only if siteverify says it was solved on this site's own host (th
 action is a failed token, not an outage. The documented test secret keys always reply
 `example.com` with no action, so these two checks are skipped for them.
 
+**The verify waits for the output gate first (issue #351).** A Durable Object holds each outgoing
+`fetch` until the storage writes made before it are confirmed. A login writes to the database
+before its `authenticate` filter runs, so the siteverify fetch waited for those writes. On a
+runtime that had just booted, the wait was 0.6 to 2.8 s, and the fetch itself took 4 to 117 ms
+(fdprobe1112j, 2026-11-12). The timeout (`TURNSTILE_TIMEOUT_MS`, default 10 s) counted the wait,
+so a long wait refused a valid token. Now the op yields once, waits for `storage.sync()`, and then
+starts the verify and its timeout (`verifyAfterGate` in `turnstile.mjs`). The response waits for
+the same writes, so this adds no time to the request. The `{"m":"turnstile"}` log line has
+`gateMs` (the wait) and `fetchMs` (the verify) for each op.
+
 **The block checkout (issue #308).** The block checkout posts to the Store API
 (`/wc/store/v1/checkout`). That route does not run `woocommerce_checkout_process`, and a form field
 does not reach it, so it has its own widget and its own gate. Both use the same
