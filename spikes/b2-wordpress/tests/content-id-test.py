@@ -38,6 +38,9 @@ with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
     check("the same tree and inputs give the same id", m.content_id(a, env) == ia)
     check("the same content from another directory is the same id", m.content_id(a, {**env, "IMPORT_CONTENT": "/y/wp-content"}) == ia)
     check("the input order does not matter", m.content_id(a, {**env, "IMPORT_PLUGINS": "woocommerce mcp-adapter"}) == ia)
+    with tempfile.TemporaryDirectory() as c:
+        tree(c, {**base, "plugins/woocommerce/woocommerce.php": b"q" * 10})
+        check("a changed file of the SAME size (a same-size plugin update) gives a new id", m.content_id(c, env) != ia)
     check("adding a plugin gives a new id (the ggc-test case)", ib != ia)
     check("a changed input alone gives a new id", m.content_id(a, env_rm) != ia)
     tree(a, {"plugins/woocommerce/woocommerce.php": b"x" * 11})
