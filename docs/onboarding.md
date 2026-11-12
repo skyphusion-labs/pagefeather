@@ -63,11 +63,12 @@ It prints a JSON summary and writes `onboard.env` (mode 0600), which holds `HYPE
 
 A type-a site is a user Worker that runs WordPress and talks to the database through the Hyperdrive configuration from step 2. In the tests, each site used its own table prefix in a shared database.
 
-Source the file from step 2 and add the site. Pass the Hyperdrive id, and the SQL mode for a strict provider:
+Source the file from step 2 and add the site. Pass the Hyperdrive id, and the SQL mode for a strict provider. A type-a site is made by the provisioning core, which needs a SaaS zone: without `WFP_SAAS_ZONE_ID` the CLI refuses the site, because nothing would route to it (#294). `deploy/wfp/site` makes b-dosql sites only.
 
 ```sh
 source onboard.env   # HYPERDRIVE_ID, SQL_MODE
-node deploy/provision/cli.mjs site add --kind a myshop \
+export WFP_SAAS_ZONE_ID=<the SaaS zone id> WP_HOSTNAME=myshop.<your SaaS zone>
+node deploy/provision/cli.mjs add --kind a myshop \
   --hyperdrive "$HYPERDRIVE_ID" --hyperdrive-sql-mode "$SQL_MODE"
 ```
 

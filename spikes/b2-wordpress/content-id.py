@@ -7,8 +7,9 @@ build.sh names a build by its git commit. A build whose only change is its conte
 (PLUGINS, IMPORT_CONTENT with IMPORT_THEMES, IMPORT_PLUGINS, IMPORT_MU_PLUGINS) would get the
 same id as the build before it, and site update would skip it as "already at build". So when
 any content input is set, the id also carries this short hash. It covers the input values and
-every file under wp-content/plugins, themes and mu-plugins (path and size), so the same inputs
-give the same id, and a different plugin set or plugin version gives a new one. With no content
+every file under wp-content/plugins, themes and mu-plugins (its path and the SHA-256 of its
+bytes), so the same inputs give the same id, and a different plugin set or any changed file
+(a plugin update, even one that keeps every file size) gives a new one. With no content
 input set it prints nothing, and a plain build keeps its id.
 """
 import hashlib
@@ -34,7 +35,11 @@ def content_id(wp_content, env):
             for f in sorted(files):
                 p = os.path.join(d, f)
                 rel = os.path.relpath(p, wp_content).replace(os.sep, "/")
-                h.update(f"{rel}\0{os.path.getsize(p)}\n".encode())
+                fh = hashlib.sha256()
+                with open(p, "rb") as fp:
+                    for chunk in iter(lambda: fp.read(1 << 20), b""):
+                        fh.update(chunk)
+                h.update(f"{rel}\0{fh.hexdigest()}\n".encode())
     return "c" + h.hexdigest()[:8]
 
 
