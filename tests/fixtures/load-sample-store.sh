@@ -51,13 +51,11 @@ python3 -I -c 'import json, sys; print(json.dumps({"sql": "UPDATE wp_users SET u
 r=$(curl -s -m 120 -X POST -K <(hdr) -H 'content-type: application/x-ndjson' --data-binary "@$WORK/pw.ndjson" "$O/_dbimport?append=1")
 case "$r" in *'"ok":true'*'"statements":1'*) echo "sample store: admin password replaced (user ID 1, $LOGIN)" ;; *) echo "sample store: the password update failed: ${r:0:200}" >&2; exit 1 ;; esac
 
-fails=0
+fails=0; skipped=0
 want() { if [ "$2" = "$3" ]; then echo "  ok   $1: $2"; else echo "  FAIL $1: got $2, want $3" >&2; fails=$((fails + 1)); fi; }
-# A real login with the new password: wp-login answers 302 with a logged-in cookie.
-python3 -I -c 'import sys, urllib.parse; print("log=" + urllib.parse.quote(sys.argv[1]) + "&pwd=" + urllib.parse.quote(open(sys.argv[2]).read().rstrip("\n")) + "&testcookie=1")' "$LOGIN" "$WORK/pw" > "$WORK/login.form"
-code=$(curl -s -o /dev/null -D "$WORK/login.h" -m 120 -b "wordpress_test_cookie=WP+Cookie+check" --data-binary "@$WORK/login.form" -w '%{http_code}' "$O/wp-login.php")
-want "admin login (302)" "$code" 302
-want "admin login sets a logged-in cookie" "$(grep -ic '^set-cookie: wordpress_logged_in' "$WORK/login.h")" 1
+# shellcheck disable=SC1091
+. "$HERE/sample-store-login.sh"
+admin_login_check "$O" "$LOGIN" "$WORK/pw" "$WORK"
 products=$(curl -s -o /dev/null -D - -m 120 "$O/?rest_route=/wc/store/v1/products&per_page=1&nocache=$RANDOM" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-wp-total"{print $2}')
 want "published products (Store API x-wp-total)" "${products:-none}" "$SAMPLE_STORE_PRODUCTS"
 curl -s -m 120 -K <(hdr) "$O/_dbcounts" > "$WORK/counts.json"
@@ -65,4 +63,5 @@ c() { python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["rows"
 want "orders (wp_wc_orders)" "$(c wp_wc_orders)" "$SAMPLE_STORE_ORDERS"
 want "users (wp_users)" "$(c wp_users)" "$SAMPLE_STORE_USERS"
 [ "$fails" = 0 ] || { echo "sample store: $fails check(s) failed on $s" >&2; exit 1; }
-echo "sample store: loaded into $s ($O), every check passed"
+if [ "$skipped" = 0 ]; then echo "sample store: loaded into $s ($O), every check passed"
+else echo "sample store: loaded into $s ($O), every check that ran passed; $skipped not checked (see skip lines above)"; fi
