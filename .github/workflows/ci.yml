@@ -202,6 +202,11 @@ jobs:
           python3 deploy/wfp/tests/cross-test.py
           deploy/wfp/tests/probe-entry-test.sh
           deploy/wfp/tests/setup-green-test.sh
+      - name: Golden render gate (issue #328)
+        # deploy/tests/render-golden: render_user, the CLI and Worker provisioning uploads, and the
+        # bindings.py decision, for a fixed set of site configs, byte for byte against goldens/.
+        # A render change fails here; one made on purpose regenerates goldens/ with --update.
+        run: deploy/tests/render-golden/render-golden-test.sh
       - name: WfP terraform checks (issue #336)
         # deploy/wfp/tests/tf-test.sh: validate and fmt for terraform/shared and site, and the
         # teardown and media import keys depend on nothing in the site graph. init runs with

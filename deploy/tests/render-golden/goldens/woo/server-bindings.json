@@ -1,0 +1,32 @@
+{
+  "exit": 0,
+  "output": {
+    "failed": [],
+    "sites": {
+      "store": {
+        "dispatcher": [
+          "dispatch_namespace DISPATCHER",
+          "kv_namespace SITES"
+        ],
+        "user": [
+          "durable_object_namespace PHP_RUNTIME",
+          "images IMAGES",
+          "kv_namespace OC_KV",
+          "plain_text DB_IN_DO",
+          "plain_text MAIL_FROM",
+          "plain_text MAIL_FROM_NAME",
+          "plain_text OBJECT_CACHE_L2",
+          "plain_text PHP_DO_POOL",
+          "plain_text PHP_ENV",
+          "plain_text PHP_IN_DO",
+          "plain_text PHP_LOCATION",
+          "plain_text SITE_ORIGIN",
+          "r2_bucket MEDIA",
+          "secret_text SPIKE_TOKEN",
+          "secret_text WP_SALT",
+          "send_email EMAIL"
+        ]
+      }
+    }
+  }
+}
