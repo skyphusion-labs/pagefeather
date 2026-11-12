@@ -16,6 +16,7 @@
 #   3. the bucket emptied, then the workspace destroyed (bucket, secrets, entry)
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
+need_account
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
 cmd=${1:-}; s=${2:-}
 valid_site "$s" || { echo "usage: site.sh up|down <name> (lower case, digits, hyphens; 1 to 30; not probe)" >&2; exit 2; }
