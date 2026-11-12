@@ -1,0 +1,13 @@
+{
+  "_comment": "The golden render matrix (#328 PR 0). Each case is one site config. Every emitter gets the SAME env; an emitter that does not read a variable ignores it, and the golden shows that. All values are test values. TURNSTILE_* are the Cloudflare documented dummy keys (always pass), not a real widget.",
+  "cases": [
+    { "id": "minimal", "site": "one", "origin": "https://wp-one.sub.workers.dev", "env": {} },
+    { "id": "ggc-shape", "site": "ggc", "origin": "https://ggc.sh", "env": {} },
+    { "id": "woo", "site": "store", "origin": "https://store.example.com", "env": { "WOO_ACTIVE": "1", "IMPORT_PLUGINS": "woocommerce" } },
+    { "id": "turnstile", "site": "ts", "origin": "https://ts.example.com", "env": { "TURNSTILE_SITEKEY": "1x00000000000000000000AA", "TURNSTILE_SECRET": "1x0000000000000000000000000000000AA", "TURNSTILE_WOO": "off" } },
+    { "id": "mail", "site": "letters", "origin": "https://letters.example.com", "env": { "MAIL_FROM": "shop@example.com", "MAIL_FROM_NAME": "Test Shop" } },
+    { "id": "search", "site": "find", "origin": "https://find.example.com", "env": { "WP_VECTORIZE_SEARCH": "on" } },
+    { "id": "ops", "site": "ops", "origin": "https://wp-ops.sub.workers.dev", "env": { "OBSERVABILITY": "1", "PHP_LOCATION": "weur", "HTTP_ALLOW_HOSTS": "" } },
+    { "id": "pdf", "site": "pdf", "origin": "https://pdf.example.com", "env": { "WP_PDF_INVOICE": "on" } }
+  ]
+}
