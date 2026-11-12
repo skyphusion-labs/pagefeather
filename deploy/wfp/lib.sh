@@ -73,7 +73,7 @@ render_shared_dispatcher() { sed -e "s/@SITE@/dispatch/g" -e "s/@NAMESPACE@/$NAM
 # The number of rows in the object's SQLite (issue #35 slice 5), via
 # /_dbexport: used to show data survived an update or a rollback.
 row_count() { # row_count <origin> <token>
-  curl -s -m 120 -H "x-spike-token: $2" "$1/_dbexport" 2>/dev/null | grep -c . || true
+  curl -s -m 120 -K <(printf 'header = "x-spike-token: %s"\n' "$2") "$1/_dbexport" 2>/dev/null | grep -c . || true
 }
 entry_build() { # entry_build <site>
   api GET "/storage/kv/namespaces/$KV_ID/values/$(site_key "$1")" | python3 "$WFP/kv_build.py"
@@ -416,13 +416,13 @@ site_title_ok() { # site_title_ok <url> <want>
 wait_build() { # wait_build <origin> <token> <want>
   local t0=$SECONDS b evicted=0
   while :; do
-    b=$(curl -s -m 30 -H "x-spike-token: $2" "$1/_build" 2>/dev/null | python3 -c "import json,sys
+    b=$(curl -s -m 30 -K <(printf 'header = "x-spike-token: %s"\n' "$2") "$1/_build" 2>/dev/null | python3 -c "import json,sys
 try: print(json.load(sys.stdin).get(\"build\",\"\"))
 except Exception: print(\"\")")
     [ "$b" = "$3" ] && { echo "  build $b live after $((SECONDS - t0)) s"; return 0; }
     if [ "$evicted" = 0 ] && [ $((SECONDS - t0)) -ge "${BUILD_EVICT_AFTER:-20}" ]; then
       echo "  the old build still runs after $((SECONDS - t0)) s; calling /_evict (best-effort)" >&2
-      curl -s -o /dev/null -m 30 -H "x-spike-token: $2" "$1/_evict" || true
+      curl -s -o /dev/null -m 30 -K <(printf 'header = "x-spike-token: %s"\n' "$2") "$1/_evict" || true
       evicted=1
     fi
     [ $((SECONDS - t0)) -lt "${BUILD_WAIT:-60}" ] || { echo "the new build $3 did not go live in ${BUILD_WAIT:-60} s (last: ${b:-none})" >&2; return 1; }

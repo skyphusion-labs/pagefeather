@@ -60,8 +60,10 @@ all reject it. Design: issue #154. Worker hardening: issue #182 and `HARDENING.m
   PHP_ENV-with-table-prefix vars, and a conditional HYPERDRIVE_SQL_MODE), matched
   against the b2-wordpress spike `[env.a-paid-lean]`. Drift tests check each set
   against its authoritative generator.
+- `demo-gate.mjs`: the `DEMO_GATE` Durable Object. It decides the demo rate and
+  concurrency caps as one step, so parallel requests cannot all pass a stale count.
 - `demo.mjs` (#182 Path B): the public demo front door controls, per-IP + global
-  rate limit (KV counter), the live-demo concurrency cap, and the reaper that
+  rate limit (KV counter, a fast first refusal), the live-demo concurrency cap, and the reaper that
   fully tears down every expired demo (script, bucket, the per-site OC_KV
   namespace, the email queue and its dead-letter queue, DNS record, KV entry).
   `deleteKVNamespaceByTitle` and `deleteQueueByName` treat "not there" as done
