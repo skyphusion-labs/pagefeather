@@ -66,6 +66,8 @@ if [ "$cmd" = up ]; then
 import json, sys
 o = {k: v["value"] for k, v in json.load(sys.stdin).items()}
 json.dump({"WP_SALT": o["wp_salt"], "SPIKE_TOKEN": o["spike_token"]}, open(sys.argv[1], "w"))' "$W/secrets.json"
+  # WP_VECTORIZE_SEARCH (#330): the binding needs its index to exist at deploy.
+  if search_on; then ensure_search_index "$s" || { rm -f "$W/secrets.json"; exit 1; }; fi
   bundle_size_check || exit 1
   (cd "$APP" && "$ROOT/deploy/wr" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/secrets.json") > "$W/user.log" 2>&1 \
     || { rm -f "$W/secrets.json"; tail -20 "$W/user.log"; exit 1; }
@@ -112,6 +114,9 @@ elif [ "$cmd" = down ]; then
     gone) echo "  user Worker $U is gone (not in the namespace list; the single GET is 404 or an empty record)" ;;
     *) echo "  user Worker $U is NOT known to be gone ($st): stopping" >&2; exit 1 ;;
   esac
+
+  log "site $s: search index (after the user Worker that binds it)"
+  remove_search_index "$s" || exit 1
 
   log "site $s: media bucket emptied, then the workspace destroyed"
   # A down never creates: no workspace means no data plane to remove.

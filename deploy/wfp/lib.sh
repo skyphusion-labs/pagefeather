@@ -49,6 +49,12 @@ valid_site() {
 user_script() { echo "site-$1"; }
 dispatcher_name() { echo "wp-$1"; }
 media_bucket() { echo "wp-wfp-$1-media"; }
+# Semantic site search (#330, the vectorize-search descriptor of deploy/provision): the per-site
+# Vectorize index, the same name and preset as wp-site-config.mjs searchIndexName and
+# SEARCH_EMBED_PRESET, so the skyphusion-ai plugin finds the same index on either path.
+search_index() { echo "wp-wfp-$1-search"; }
+SEARCH_EMBED_PRESET="@cf/baai/bge-large-en-v1.5"
+search_on() { [ -n "${WP_VECTORIZE_SEARCH:-}" ] && [ "${WP_VECTORIZE_SEARCH}" != off ]; }
 
 # Phase B (#138, CR gated): the one shared dispatcher, and a site's hostname
 # when it has a Custom Domain. WFP_SUBDOMAIN is the test subdomain CR #138
@@ -179,6 +185,48 @@ TOML
   # terminates (#291: an alarm ended scriptThrewException with no catch firing). wrangler tail
   # cannot follow a namespace script. Turn it on for a throwaway or a diagnosis, not by default.
   if [ "${OBSERVABILITY:-0}" = 1 ]; then printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n'; fi
+  # WP_VECTORIZE_SEARCH (default off, metered): the token-free AI and SEARCH_INDEX bindings the
+  # skyphusion-ai plugin reaches through the index.js op bridge (#330, #332). The index must exist
+  # before the deploy; site.sh up makes it (ensure_search_index).
+  if search_on; then printf '\n[ai]\nbinding = "AI"\n[[vectorize]]\nbinding = "SEARCH_INDEX"\nindex_name = "%s"\n' "$(search_index "$s")"; fi
+}
+# The site's search index, as Vectorize answers it (#338): present (200); gone (404, or 410 with
+# error 3005 "vectorize.index.deleted", which is how v2 answers a DELETED index, measured on
+# fdprobe1112e 2026-11-12); otherwise "unknown <code>", never read as gone.
+search_index_state() { # search_index_state <site>
+  local out code
+  out=$(api GET "/vectorize/v2/indexes/$(search_index "$1")"); code=${out##*$'\n'}
+  case "$code" in
+    200) echo present ;;
+    404) echo gone ;;
+    410) if printf '%s' "${out%$'\n'*}" | python3 -I -c 'import json, sys
+try: d = json.load(sys.stdin)
+except ValueError: sys.exit(1)
+sys.exit(0 if any(isinstance(e, dict) and e.get("code") == 3005 for e in (d.get("errors") or [])) else 1)'; then echo gone; else echo "unknown 410"; fi ;;
+    *) echo "unknown $code" ;;
+  esac
+}
+# The site's search index (#330): make it when absent (idempotent: an existing one is kept), with
+# the bge-large preset (1024 dimensions, cosine). Exit 1 when it cannot be made or read back.
+ensure_search_index() { # ensure_search_index <site>
+  local n c st; n=$(search_index "$1")
+  st=$(search_index_state "$1")
+  case "$st" in present) echo "  search index $n exists"; return 0 ;; gone) ;; *) echo "search index $n: $st; stopping" >&2; return 1 ;; esac
+  c=$(api_code POST "/vectorize/v2/indexes" -H 'content-type: application/json' --data "{\"name\":\"$n\",\"config\":{\"preset\":\"$SEARCH_EMBED_PRESET\"}}")
+  case "$c" in 200|201) ;; *) echo "search index $n: create answered $c; stopping" >&2; return 1 ;; esac
+  st=$(search_index_state "$1")
+  [ "$st" = present ] || { echo "search index $n: not readable after the create ($st)" >&2; return 1; }
+  echo "  search index $n made ($SEARCH_EMBED_PRESET)"
+}
+# Remove the site's search index when it has one, whatever WP_VECTORIZE_SEARCH says now (a site
+# added with it on and removed with it off must not leave its index). Then it must read 404.
+remove_search_index() { # remove_search_index <site>
+  local n st; n=$(search_index "$1")
+  st=$(search_index_state "$1")
+  case "$st" in gone) echo "  search index $n: none"; return 0 ;; present) ;; *) echo "search index $n: $st; stopping" >&2; return 1 ;; esac
+  api DELETE "/vectorize/v2/indexes/$n" > /dev/null || true
+  st=$(search_index_state "$1")
+  case "$st" in gone) echo "  search index $n is gone (404, or 410 vectorize.index.deleted)" ;; *) echo "  search index $n is NOT gone ($st): stopping" >&2; return 1 ;; esac
 }
 
 # WOO_ACTIVE for the OPcache priming (#313), from the build inputs only: an explicit WOO_ACTIVE
@@ -382,6 +430,8 @@ site_footprint() { # site_footprint <name>
   case "$c" in 200) echo "entry yes" ;; 404) echo "entry no" ;; *) echo "entry unknown" ;; esac
   c=$(api_code GET "/r2/buckets/$(media_bucket "$s")")
   case "$c" in 200) echo "bucket yes" ;; 404) echo "bucket no" ;; *) echo "bucket unknown" ;; esac
+  # The search index (#330): a part when WP_VECTORIZE_SEARCH is on, or whenever one exists.
+  case "$(search_index_state "$s")" in present) echo "search yes" ;; gone) ! search_on || echo "search no" ;; *) echo "search unknown" ;; esac
 }
 # Who wrote a site's map entry (#294): "core" when it is the provisioning core's (cli.mjs or the
 # provisioning Worker: its entry has a "kind" field, and this package's Terraform entry never
@@ -404,10 +454,10 @@ except ValueError: print("unknown"); sys.exit(0)
 print("core" if isinstance(d, dict) and "kind" in d else "workspace")'
 }
 footprint_absent() { # footprint_absent <footprint text>: 0 when every part is absent
-  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher no|domain no|script gone|entry no|bucket no)$'
+  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher no|domain no|script gone|entry no|bucket no|search no)$'
 }
 footprint_present() { # footprint_present <footprint text>: 0 when every part is there
-  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher yes|domain yes|script present|entry yes|bucket yes)$'
+  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher yes|domain yes|script present|entry yes|bucket yes|search yes)$'
 }
 # What a site's workspace RECORDS: its hostname, whether it has a Custom
 # Domain, and that domain's zone. Prints "<hostname> <true|false> <zone_id|->",
@@ -447,7 +497,11 @@ site_vars() { # site_vars <site> <workers.dev subdomain> <kv id>
 }
 # The sites: the Terraform workspaces of terraform/site, without "default".
 list_sites() {
-  tfr site init -input=false >/dev/null 2>&1 || return 1
+  # Loud on failure (#338): a silent exit 1 here hid a missing state credential.
+  tfr site init -input=false >/dev/null 2>&1 || {
+    echo "list_sites: terraform init of deploy/wfp/terraform/site failed (WFP_STATE=${WFP_STATE:-local}; with r2 it needs the R2 state credentials AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY loaded)" >&2
+    return 1
+  }
   tfr site workspace list | tr -d ' *' | grep -v '^default$' | grep -v '^$' || true
 }
 # A site answers its OWN title through its dispatcher: HTTP 200 and the page
