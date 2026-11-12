@@ -1,0 +1,9 @@
+# Terraform (as deploy/wfp): local state, plans, the R2 backend override. .terraform.lock.hcl stays
+# tracked. Without this, a `terraform init` here leaves .terraform/ untracked, and every build from
+# the clone reads -dirty (ggc.sh deployed as a0889bfcf082-dirty with no tracked change).
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+backend_override.tf
+terraform.tfstate.d/
