@@ -16,3 +16,18 @@ export function shouldArmAlarm(at, now, staleMs = STALE_MS) {
 	if (at === null || at === undefined) return true;
 	return Number(at) < now - staleMs;
 }
+
+// Arm the NEXT tick before this one does any work (issue #291, measured 2026-11-12). An alarm
+// whose run is killed (exceededMemory: the isolate is reset) or throws outside alarm()'s own
+// try/catch never reaches the re-arm at its end. Each failure is then a platform retry, and once
+// the retries are used up the object gets no alarm at all: on ggc.sh 7 throws at 19:14 to 19:17Z
+// (1 run + 6 retries), then no alarm invocation for 8 hours; on ggc-test 10 alarm OOMs at
+// 03:10 to 03:16Z. Arming first means a killed run still leaves a future alarm, so the cron never
+// depends on the retry budget. sync() flushes the write, so a reset right after cannot drop it.
+/** Set the next alarm at now + intervalMs and flush it, before the run. Returns the time set. */
+export async function armBeforeRun(storage, now, intervalMs) {
+	const at = now + intervalMs;
+	await storage.setAlarm(at);
+	if (typeof storage.sync === 'function') await storage.sync();
+	return at;
+}

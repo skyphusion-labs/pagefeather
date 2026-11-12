@@ -5,7 +5,7 @@ import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, ha
 import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
-import { shouldArmAlarm } from './alarm-arm.mjs';
+import { shouldArmAlarm, armBeforeRun } from './alarm-arm.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
@@ -2077,6 +2077,10 @@ export class PhpRuntime extends DurableObject {
 		// Phase 2 (#185): run due background work (Action Scheduler + WP-Cron) off the request
 		// path, so deferred WC order emails fire with no traffic. DISABLE_WP_CRON stays on; this
 		// alarm is the only cron driver. One alarm also coalesces purges, below.
+		// The next tick is armed FIRST (#291, alarm-arm.mjs armBeforeRun): a run killed below (an
+		// isolate reset, a throw outside the try) still leaves a future alarm. A purge retry sets a
+		// sooner one below, which replaces it.
+		await armBeforeRun(this.ctx.storage, Date.now(), Number((this.env && this.env.CRON_INTERVAL_MS) || 60000));
 		try {
 			// A hibernated DO wakes into a fresh isolate: the request-captured module globals
 			// (lastOrigin, ENV) are gone and only ctx.storage survives, so an idle low-traffic site
