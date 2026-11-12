@@ -16,6 +16,7 @@ import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, demoLockDefines } from './site-lock.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders } from './perf-headers.mjs';
 import { resetFailures, writeLossResponse, wantsJson } from './write-loss.mjs';
+import { createTickMail } from './email-handoff.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -295,6 +296,15 @@ function newStats() {
 	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, dbTables: {}, ocGroups: {}, ocCalls: 0, ocHits: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
 }
 
+// Every statement failure goes through here. resetFailTotal counts the isolate memory resets among
+// them and only grows, so a cron tick can read how many writes it has lost so far (#362) even when
+// trimStats cuts the list.
+let resetFailTotal = 0;
+function noteFailure(f) {
+	stats.failures.push(f);
+	resetFailTotal += resetFailures([f]);
+}
+
 // The log and failure lists live as long as the isolate. Keep the newest only.
 function trimStats() {
 	if (stats.log.length > 2000) stats.log.splice(0, stats.log.length - 1000);
@@ -535,10 +545,35 @@ function mountLazyZip(FS, mountPath, zip) {
 // send leg (a Queue producer, or ctx.waitUntil to the Email REST API, pending the WfP
 // queue-binding decision and a verified sender domain) lands next; a consumer then
 // delivers via Cloudflare Email Service.
+//
+// In a cron tick (tickMail set, #362, email-handoff.mjs) the op hands the message to the durable path
+// and waits for that before PHP goes on, so an isolate reset later in the tick cannot lose it. A
+// request still collects the messages and sends them after the response.
 function emailOp(email) {
-	pendingEmails.push(email);
 	stats.email = (stats.email || 0) + 1;
+	if (tickMail) return tickMail.op(email);
+	pendingEmails.push(email);
 	return { ok: true, queued: true };
+}
+
+// The mail side of the cron tick that is running PHP now, or null. Set and cleared by runCron
+// inside its withPhp turn, so only that tick's PHP sees it.
+let tickMail = null;
+
+// A tick's handoff: one message to the durable path (sendList), bounded like the alarm drain.
+// Resolves to 'bounded' when the send was still in flight at SEND_TIMEOUT_MS.
+function tickMailFor(env) {
+	const base = resetFailTotal;
+	return createTickMail({
+		handoff: async (email) => {
+			const sp = sendList(env, [email]);
+			if (!sp) return 0;
+			const r = await boundedWait(sp, SEND_TIMEOUT_MS);
+			return r === TIMED_OUT ? 'bounded' : r;
+		},
+		lostWrites: () => resetFailTotal - base,
+		log: (o) => console.log(JSON.stringify(o)),
+	});
 }
 
 // Send a wp_mail message through the send_email binding (issue #185). Transactional
@@ -579,6 +614,13 @@ function sendPending(env) {
 	if (!pendingEmails.length) return null;
 	const toSend = pendingEmails;
 	pendingEmails = [];
+	return sendList(env, toSend);
+}
+
+// Send a list of wp_mail messages: to the durable queue when it is on (#190), else straight
+// through the send_email binding. Returns a promise of the count, or null for an empty list.
+function sendList(env, toSend) {
+	if (!toSend.length) return null;
 	if (!env || !env.EMAIL || !sender(env)) {
 		console.log('email send: ' + toSend.length + ' dropped, MAIL_FROM or the send_email binding is not set');
 		return Promise.resolve(0);
@@ -934,7 +976,7 @@ async function handleMessage(raw) {
 	if (m.oc) return JSON.stringify(await objectCacheOp(m.oc));
 	if (m.probeMem) return JSON.stringify({ wasm: lastBootedPhp ? lastBootedPhp[__private__dont__use].HEAPU8.length : null });
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
-	if (m.email) return JSON.stringify(emailOp(m.email));
+	if (m.email) return JSON.stringify(await emailOp(m.email));
 	if (m.aiAlt) return JSON.stringify(await aiAltOp(m.aiAlt));
 	if (m.aiEmbed) return JSON.stringify(await aiEmbedOp(ENV && ENV.AI, m.aiEmbed));
 	if (m.vectorize) return JSON.stringify(await vectorizeOp(ENV && ENV.SEARCH_INDEX, m.vectorize));
@@ -955,13 +997,13 @@ async function handleMessage(raw) {
 		const sql = String(m.mysql !== undefined ? m.mysql : '(binary SQL)');
 		if (reply.ok) stats.log.push('ok  ' + sql.slice(0, 160).replace(/\s+/g, ' '));
 		else {
-			stats.failures.push({ sql: sql.slice(0, 400), error: reply.error });
+			noteFailure({ sql: sql.slice(0, 400), error: reply.error });
 			stats.log.push('ERR ' + sql.slice(0, 160).replace(/\s+/g, ' ') + ' => ' + String(reply.error).slice(0, 120));
 		}
 		return JSON.stringify(reply);
 	}
 	if (m.report) {
-		stats.failures.push({ sql: m.sql.slice(0, 400), error: m.error });
+		noteFailure({ sql: m.sql.slice(0, 400), error: m.error });
 		stats.log.push('ERR ' + m.sql.slice(0, 160).replace(/\s+/g, ' ') + ' => ' + m.error.slice(0, 120));
 		return '{}';
 	}
@@ -1008,7 +1050,7 @@ async function handleMessage(raw) {
 	} catch (e) {
 		stats.ms += Date.now() - t;
 		const error = String((e && e.message) || e);
-		stats.failures.push({ sql: m.sql.slice(0, 400), error });
+		noteFailure({ sql: m.sql.slice(0, 400), error });
 		stats.log.push('ERR ' + m.sql.slice(0, 160).replace(/\s+/g, ' ') + ' => ' + error.slice(0, 120));
 		return JSON.stringify({ ok: false, error });
 	}
@@ -1951,7 +1993,7 @@ function sqlStatement(db, m) {
 	} catch (e) {
 		stats.ms += Date.now() - t;
 		const error = String((e && e.message) || e);
-		stats.failures.push({ sql: m.sql.slice(0, 400), error });
+		noteFailure({ sql: m.sql.slice(0, 400), error });
 		stats.log.push('ERR ' + m.sql.slice(0, 160).replace(/\s+/g, ' ') + ' => ' + error.slice(0, 120));
 		return { ok: false, error };
 	}
@@ -2153,9 +2195,11 @@ export class PhpRuntime extends DurableObject {
 				const realTxn = sql && this.env.REAL_TRANSACTIONS !== 'off';
 				if (realTxn) txnRecover(sql, this.ctx.storage);
 				let cr;
+				let mail = null;
 				try {
 					const cleanDue = cronCleanDue(await this.ctx.storage.get(CRON_CLEAN_KEY), Date.now());
-					cr = await runCron(await (bootPromise ??= boot(cronOrigin)), cleanDue);
+					mail = tickMailFor(this.env);
+					cr = await runCron(await (bootPromise ??= boot(cronOrigin)), cleanDue, mail);
 					if (cr && cr.cleaned) await this.ctx.storage.put(CRON_CLEAN_KEY, Date.now());
 				} finally {
 					// A cron run that left a transaction open is rolled back, as a request is (MySQL rolls
@@ -2181,11 +2225,14 @@ export class PhpRuntime extends DurableObject {
 				// queued = cumulative wp_mail messages enqueued; sent = cumulative actually delivered (now
 				// current, since the alarm awaits the sends); drained = handed off this tick. The old single
 				// 'emails' field counted ENQUEUES and read as delivery, which it was not (#185).
-				cst.cron = { t: Date.now(), ...cr, lastRan: cr.ran, drained, queued: (stats.email || 0), sent: (stats.emailSent || 0) };
+				// handedOff/held/lostWrites (#362): this tick's mail, handed off from inside the op, and the
+				// writes it lost to a reset. A tick the reset kills writes no record; its email-handoff lines
+				// in Workers Logs are the count.
+				cst.cron = { t: Date.now(), ...cr, lastRan: cr.ran, drained, queued: (stats.email || 0), sent: (stats.emailSent || 0), ...mail.counts, lostWrites: mail.lostWritesSeen() };
 				// One line per completed tick (#335): the backlog it left and the WP-Cron event it ran, so
 				// the drain rate and WP-Cron starvation can be read from Workers Logs (/_purgestate keeps
 				// only the last tick).
-				console.log(JSON.stringify({ m: 'cron', done: 1, as_actions: cr.as_actions, as_pass: cr.as_pass, as_dates: cr.as_dates, as_hooks: cr.as_hooks, as_pending: cr.as_pending, as_due: cr.as_due, wp_cron_hooks: cr.wp_cron_hooks, wp_cron_skipped: cr.wp_cron_skipped, wp_cron_due: cr.wp_cron_due }));
+				console.log(JSON.stringify({ m: 'cron', done: 1, as_actions: cr.as_actions, as_pass: cr.as_pass, as_dates: cr.as_dates, as_hooks: cr.as_hooks, as_pending: cr.as_pending, as_due: cr.as_due, wp_cron_hooks: cr.wp_cron_hooks, wp_cron_skipped: cr.wp_cron_skipped, wp_cron_due: cr.wp_cron_due, mail: mail.counts, lostWrites: mail.lostWritesSeen() }));
 				await this.ctx.storage.put(PURGE_STATE_KEY, cst);
 			}
 		} catch (e) {
@@ -2379,13 +2426,17 @@ function phpObjectName(env, url) {
 // seconds, not minutes.
 const OVERLOAD_RETRY_AFTER_S = '5';
 
-async function runCron(booted, cleanDue = false) {
+async function runCron(booted, cleanDue = false, mail = null) {
 		const { php } = booted;
 		// A bounded tick (cron-bound.mjs, #291): our own claim/process loop, not the queue runner,
 		// which grew the runtime past the 128 MiB isolate on a big store even for one action.
 		const { actions, wpEvents } = cronBounds(ENV);
 		return withPhp(async () => {
-		const r = await php.run({ code: `<?php
+		// The tick's mail handoff (#362) is live only for this PHP run.
+		tickMail = mail;
+		let r;
+		try {
+		r = await php.run({ code: `<?php
 			require '/wordpress/wp-load.php';
 			$ran = array(); $released = 0; $as_n = 0; $as_hooks = array(); $as_dates = array(); $cleaned = 0;
 			if ( class_exists( 'ActionScheduler' ) || function_exists( 'as_next_scheduled_action' ) ) {
@@ -2458,9 +2509,14 @@ async function runCron(booted, cleanDue = false) {
 			$wp_due = array(); if ( is_array( $crons ) ) { foreach ( $crons as $dts => $dhooks ) { if ( $dts > time() ) break; foreach ( (array) $dhooks as $dh => $devs ) { if ( 'action_scheduler_run_queue' !== $dh ) { $wp_due[ $dh ] = 1; } } } }
 			if ( ${wpEvents} > 0 && is_array( $crons ) ) { $now = time(); foreach ( $crons as $ts => $hooks ) { if ( $ts > $now ) break;
 				foreach ( (array) $hooks as $hook => $evs ) { if ( 'action_scheduler_run_queue' === $hook ) { $skipped[ $hook ] = 1; continue; } foreach ( (array) $evs as $ev ) { $wp_hooks[] = $hook;
-					if ( ! empty( $ev['schedule'] ) ) { wp_reschedule_event( $ts, $ev['schedule'], $hook, $ev['args'], isset($ev['interval']) ? $ev['interval'] : 0 ); }
-					wp_unschedule_event( $ts, $hook, $ev['args'] );
-					do_action_ref_array( $hook, $ev['args'] ); if ( function_exists( 'wp_cache_flush_runtime' ) ) { wp_cache_flush_runtime(); } if ( ++$events >= ${wpEvents} ) { break 3; }
+					// Whether this event's unschedule (and reschedule) was SAVED (#362): a mail the event sends
+					// is then its only send, so the Worker hands it off even after a reset (wp_cron 1); when it
+					// was not saved the event runs again and the Worker holds the mail (wp_cron -1).
+					$wp_ok = true;
+					if ( ! empty( $ev['schedule'] ) ) { $wp_r = wp_reschedule_event( $ts, $ev['schedule'], $hook, $ev['args'], isset($ev['interval']) ? $ev['interval'] : 0 ); if ( false === $wp_r || ( function_exists( 'is_wp_error' ) && is_wp_error( $wp_r ) ) ) { $wp_ok = false; } }
+					$wp_r = wp_unschedule_event( $ts, $hook, $ev['args'] ); if ( false === $wp_r || ( function_exists( 'is_wp_error' ) && is_wp_error( $wp_r ) ) ) { $wp_ok = false; }
+					$GLOBALS['skyphusion_mail_wp_cron'] = $wp_ok ? 1 : -1;
+					do_action_ref_array( $hook, $ev['args'] ); $GLOBALS['skyphusion_mail_wp_cron'] = 0; if ( function_exists( 'wp_cache_flush_runtime' ) ) { wp_cache_flush_runtime(); } if ( ++$events >= ${wpEvents} ) { break 3; }
 				} } } }
 			$as_list = array(); foreach ( $as_hooks as $k => $v ) { $as_list[] = $k . ':' . $v; }
 			// The backlog after this tick (#335): what the bounded loop has left to drain.
@@ -2470,6 +2526,9 @@ async function runCron(booted, cleanDue = false) {
 				$as_due = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$as_t} WHERE status = 'pending' AND scheduled_date_gmt <= '" . gmdate( 'Y-m-d H:i:s' ) . "'" );
 			}
 			echo json_encode( array( 'ran' => $ran, 'wp_cron_events' => $events, 'wp_cron_hooks' => implode( ',', $wp_hooks ), 'wp_cron_skipped' => implode( ',', array_keys( $skipped ) ), 'wp_cron_due' => implode( ',', array_keys( $wp_due ) ), 'released' => $released, 'as_actions' => $as_n, 'as_pass' => isset( $as_pass ) ? $as_pass : null, 'as_dates' => implode( ',', $as_dates ), 'as_hooks' => implode( ',', $as_list ), 'as_pending' => $as_pending, 'as_due' => $as_due, 'cleaned' => $cleaned ) );` });
+		} finally {
+			tickMail = null;
+		}
 		let out = {};
 		try { out = JSON.parse(String(r.text).slice(String(r.text).lastIndexOf('{'))); } catch (e) { out = { parse: String(r.text).slice(-200) }; }
 		return out;
@@ -2727,7 +2786,8 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// same runCron() on a cadence. Runs the Action Scheduler queue (the deferred WC
 			// order emails) and due WP-Cron events. Spike/manual trigger and the test seam.
 			bootPromise ??= boot(origin);
-			const r = await runCron(await bootPromise);
+			const mail = tickMailFor(env);
+			const r = await runCron(await bootPromise, false, mail);
 			// Drain + SEND here too (a manual run), awaiting delivery so the response reports actual
 			// sends, not enqueues (#185). The alarm uses waitUntil; a manual trigger awaits the signal.
 			const drained = pendingEmails.length;
@@ -2743,7 +2803,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 				if (res === TIMED_OUT) sendBounded = true;
 				else sent = res;
 			}
-			return new Response(JSON.stringify({ ...r, drained, sent, ...(sendBounded ? { sendBounded: true } : {}) }), { headers: { 'content-type': 'application/json' } });
+			return new Response(JSON.stringify({ ...r, drained, sent, mail: mail.counts, lostWrites: mail.lostWritesSeen(), ...(sendBounded ? { sendBounded: true } : {}) }), { headers: { 'content-type': 'application/json' } });
 		}
 		if (url.pathname === '/_activate') {
 			// Activate a plugin, e.g. ?plugin=woocommerce/woocommerce.php. Spike only.

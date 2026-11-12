@@ -33,6 +33,33 @@ v2 keeps the enqueue trigger unchanged and hardens only the delivery leg.
    queue (`b2-email-dlq`). A second consumer logs and meters the dead message, so a
    permanently failed send is visible to the operator, then acknowledges it.
 
+## A cron tick hands each email off from inside the op (#362)
+
+In a cron tick, `wp_mail` no longer only collects the message for a send after the tick. The email
+op hands it off (to the queue when it is on, else `env.EMAIL.send`, bounded by `SEND_TIMEOUT_MS`)
+and waits for that before PHP goes on (`email-handoff.mjs`). Before this, an isolate memory reset
+that killed the alarm after an email action completed lost the mail: the status write was saved,
+the message in memory was not, and nothing retried it.
+
+A reset can also fail every later statement while PHP keeps running. Then the tick must not send a
+mail whose work will run again, or the rerun sends it twice. Each message carries where it came
+from (`php/wp-mail-queue.php`, runCron):
+
+- `as_action` is the Action Scheduler action that sent it, which is also its dedupe key. Action
+  Scheduler runs an action only after `log_execution` set it in-progress, and `log_execution`
+  throws when that write fails (WooCommerce 11.2.1). So the in-progress write was saved, the action
+  is never picked again, and this is its one send. It is always handed off.
+- `wp_cron` is 1 when the WP-Cron event's unschedule (and reschedule) was saved, and -1 when it was
+  not. A 1 is handed off. A -1 is held, because the event runs again and that run sends it.
+- Other mail is held after a reset in the tick, and handed off before one.
+
+Each decision is one `email-handoff` or `email-held` line in Workers Logs, and the tick record in
+`/_purgestate` has `handedOff`, `held`, `failed`, `bounded` and `lostWrites`.
+
+What is not covered: a reset inside an email action BEFORE its `wp_mail` fails the action (it ends
+`failed`, visibly) and the mail is never sent (#367). A request still sends its mail after the
+response, also when its writes were lost (#368).
+
 ## Status: opt-in, not a default
 
 Provisioning has an `async-email-queue` descriptor (`deploy/provision/wp-site-config.mjs`). It is **opt-in** (`default: false`). It creates a per-site queue and dead-letter queue and adds the `EMAIL_QUEUE` binding. It does not yet subscribe the queue consumer to the site Worker; that is a step after deploy. Until that step is wired, turning the queue on by default would send order mail to a queue with no consumer, which is worse than the working direct path. See [known-limitations.md](known-limitations.md).
