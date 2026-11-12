@@ -26,6 +26,12 @@ page answers 5xx (or does not answer), or its cold heap reaches FAIL_MIB (defaul
 last step that still answered). WARN_MIB (default 100, the recycle threshold) only warns: every
 such request makes the next one pay a cold boot. /_evict itself answers 502 (it aborts its own
 object); the x-boot: 1 on the next request is the proof that the runtime is fresh.
+
+The page cache stores the headers of the request that filled it, x-boot and x-wasm-mib included,
+and a spike token does not bypass it (#344, measured on fdprobe1112g 2026-11-12: a HIT with
+age 41 read x-boot 1 in 0.2 s). So every page read adds a unique nocache parameter, which the
+page cache never stores, and a read that still comes from a cache (an age header, or
+cf-cache-status HIT) is not a fresh runtime: the run says it could not measure (exit 2).
 Run it after a site update that adds a plugin, before the site goes live.
 """
 import json
@@ -52,6 +58,11 @@ def opener(jar=None):
     return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar or CookieJar()), NoRedirect)
 
 
+def bust(path):
+    # nocache is in PAGE_CACHE_NO_PARAM (spikes/b2-wordpress/index.js): the page cache skips it.
+    return path + ("&" if "?" in path else "?") + "nocache=%d" % time.time_ns()
+
+
 def req(o, path, method="GET", headers=None):
     # Every request carries the spike token: since #312 the site sends x-boot (the proof of a fresh
     # runtime) and the other performance headers only on a request with it. Without it every page
@@ -68,9 +79,10 @@ def req(o, path, method="GET", headers=None):
     except Exception as e:  # noqa: BLE001 -- a failed request is data
         return {"code": "EXC", "err": repr(e)[:160], "s": round(time.time() - t, 2), "body": b""}
     mib = hd.get("x-wasm-mib")
+    cached = hd.get("age") is not None or (hd.get("cf-cache-status") or "").upper() == "HIT"
     return {"code": code, "s": round(time.time() - t, 2), "mib": int(mib) if mib and mib.isdigit() else None,
             "recycled": hd.get("x-runtime-recycled"), "boot": hd.get("x-boot"), "phpMs": hd.get("x-php-ms"),
-            "body": body}
+            "cached": cached, "body": body}
 
 
 def evict():
@@ -106,11 +118,12 @@ def measure(name, path, setup):
         # The setup request booted a runtime; evict again so the page itself is the cold one,
         # and keep the cookie, so the cart is still there.
         evict()
-    cold = req(o, path)
-    warm = None if cold.get("recycled") else req(o, path)
-    row = {"page": name, "path": path, "evict": ev, "freshBoot": cold.get("boot") == "1",
-           "cold": {k: cold.get(k) for k in ("code", "s", "mib", "recycled", "boot", "phpMs")},
-           "warm": {k: warm.get(k) for k in ("code", "s", "mib", "recycled", "boot", "phpMs")} if warm else None}
+    cold = req(o, bust(path))
+    warm = None if cold.get("recycled") else req(o, bust(path))
+    keys = ("code", "s", "mib", "recycled", "boot", "phpMs", "cached")
+    row = {"page": name, "path": path, "evict": ev, "freshBoot": cold.get("boot") == "1" and not cold.get("cached"),
+           "cold": {k: cold.get(k) for k in keys},
+           "warm": {k: warm.get(k) for k in keys} if warm else None}
     return row
 
 
@@ -130,12 +143,18 @@ def main():
     summary = {"site": B, "product": (product or {}).get("name"), "failMib": FAIL_MIB, "warnMib": WARN_MIB,
                "maxColdMib": max((r["cold"]["mib"] or 0) for r in rows), "recycledCold": [r["page"] for r in rows if r["cold"]["recycled"]],
                "notFresh": [r["page"] for r in rows if not r["freshBoot"]],
+               "cached": [r["page"] for r in rows if r["cold"].get("cached") or (r["warm"] or {}).get("cached")],
                "errors": bad, "overFail": over, "overWarn": warn, "ok": not bad and not over}
     # A page whose cold read was NOT a fresh runtime measured an earlier page's high-water, not its
     # own: the run could not measure, so it never reads as a pass (exit 2).
-    if summary["notFresh"]:
+    if summary["notFresh"] or summary["cached"]:
         summary["ok"] = False
-        summary["couldNotMeasure"] = "no fresh runtime (x-boot 1) for: " + ", ".join(summary["notFresh"])
+        why = []
+        if summary["notFresh"]:
+            why.append("no fresh runtime (x-boot 1, not from a cache) for: " + ", ".join(summary["notFresh"]))
+        if summary["cached"]:
+            why.append("a cache answered (age or cf-cache-status HIT) for: " + ", ".join(summary["cached"]))
+        summary["couldNotMeasure"] = "; ".join(why)
     print("@event mem.summary " + json.dumps(summary, sort_keys=True), flush=True)
     sys.exit(2 if summary.get("couldNotMeasure") else 0 if summary["ok"] else 1)
 
