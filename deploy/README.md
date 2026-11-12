@@ -246,3 +246,13 @@ For variant `a`, `deploy/onboard/onboard.mjs` turns a database PROVIDER choice (
 - Plugins and WooCommerce runs (`tests/plugins/plugins.py`, `tests/woo.py`) as part of `deploy.sh`.
 - A custom domain. The site is on `<name>.<subdomain>.workers.dev`.
 - The SSH import (`SSH=`, `deploy/import/README.md`) run against a real server, and `a` on MariaDB with a separate target (issue #31). `b-dosql`, `c1`, `a` and `a2` have the import from a dump and a `wp-content` archive, or from a server over SSH.
+
+## Redeploying a live site's code (CODE_ONLY=1)
+
+`CODE_ONLY=1` (fleet-chezmoi#2620) redeploys the code of a b-dosql site that already exists, from any
+clone, with no Terraform state: `MEDIA_BUCKET` and `SITE_ORIGIN` replace the one Terraform output and
+the origin; the secrets persist; the install and the measurements are skipped. `DRY_RUN=1` with it
+builds and renders and deploys nothing. The live sites it serves are pinned in `deploy/live-sites/`, and
+`.github/workflows/deploy-workers.yml` runs it (manual dispatch from main), after checking the live Worker
+matches the site file. `deploy/tests/code-only-test.sh` and `deploy/live-sites/tests/check-live-test.py`
+hold the refusals.
