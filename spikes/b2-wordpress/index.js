@@ -5,7 +5,8 @@ import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, ha
 import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
-import { shouldArmAlarm } from './alarm-arm.mjs';
+import { armBeforeRun, rearm } from './alarm-arm.mjs';
+import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
@@ -2077,6 +2078,10 @@ export class PhpRuntime extends DurableObject {
 		// Phase 2 (#185): run due background work (Action Scheduler + WP-Cron) off the request
 		// path, so deferred WC order emails fire with no traffic. DISABLE_WP_CRON stays on; this
 		// alarm is the only cron driver. One alarm also coalesces purges, below.
+		// The next tick is armed FIRST (#291, alarm-arm.mjs armBeforeRun): a run killed below (an
+		// isolate reset, a throw outside the try) still leaves a future alarm. A purge retry sets a
+		// sooner one below, which replaces it.
+		await armBeforeRun(this.ctx.storage, Date.now(), Number((this.env && this.env.CRON_INTERVAL_MS) || 60000));
 		try {
 			// A hibernated DO wakes into a fresh isolate: the request-captured module globals
 			// (lastOrigin, ENV) are gone and only ctx.storage survives, so an idle low-traffic site
@@ -2090,7 +2095,12 @@ export class PhpRuntime extends DurableObject {
 			// below (issue #208) is exercised by tests/cron-cold.py. Off by default; prod never sets it.
 			if (this.env.CRON_SIMULATE_COLD === '1') { sqlDb = null; sqlStorage = null; bootPromise = null; }
 			const cronOrigin = lastOrigin || this.env.SITE_ORIGIN || (await this.ctx.storage.get(ORIGIN_KEY));
-			if (phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env) {
+			// A database import in progress holds the cron off (import-hold.mjs): a cron run between two
+			// import parts boots WordPress on a half-loaded database, in the same isolate, and the next
+			// part ran out of memory (fdprobe1112a, 2026-11-12).
+			const importHeld = cronHeld(await this.ctx.storage.get(IMPORT_HOLD_KEY), Date.now());
+			if (importHeld) console.log(JSON.stringify({ m: 'cron', held: 'import' }));
+			if (!importHeld && phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env) {
 				// DB_IN_DO: bind the object's own SQLite as WordPress's database before the cron runtime
 				// loads WP. The fetch path sets this per request (sqlDb = sql); the alarm runs on a woken
 				// isolate where the module globals are gone, so without this sqlDb is null and every cron
@@ -2174,7 +2184,7 @@ export class PhpRuntime extends DurableObject {
 		}
 		}
 		// Keep the cron cadence unless the purge logic set a sooner retry alarm.
-		if (shouldArmAlarm(await this.ctx.storage.getAlarm(), Date.now())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
+		await rearm(this.ctx.storage, Date.now(), Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
 	}
 
 	async fetch(raw) {
@@ -2195,7 +2205,9 @@ export class PhpRuntime extends DurableObject {
 			await this.ctx.storage.put(ORIGIN_KEY, origin);
 			// A STALE alarm (long past, its run never completed) counts as none (#291): otherwise it
 			// blocks every later arm and the cron stops for good. alarm-arm.mjs.
-			if (shouldArmAlarm(await this.ctx.storage.getAlarm(), Date.now())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
+			// A stale one is deleted, then set (rearm): a re-set alone was not delivered on ggc-test.
+			const ra = await rearm(this.ctx.storage, Date.now(), Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
+			if (ra.stale) console.log(JSON.stringify({ m: 'alarm', unstuck: true, was: ra.was }));
 		}
 		const inboxMs = raw.headers.get(SENT_HEADER) ? Date.now() - Number(raw.headers.get(SENT_HEADER)) : null;
 		const req = new Request(raw);
@@ -2249,6 +2261,8 @@ export class PhpRuntime extends DurableObject {
 		}
 		if (url.pathname === '/_dbimport' && req.method === 'POST') {
 			if (!sql) return new Response('DB_IN_DO is off', { status: 409 });
+			// Hold the cron off for the whole import (each part refreshes it; import-hold.mjs).
+			await this.ctx.storage.put(IMPORT_HOLD_KEY, Date.now() + IMPORT_HOLD_MS);
 			const text = await req.text();
 			return withPhp(async () => {
 				objectCacheClear(); // the database changes outside WordPress's cache
