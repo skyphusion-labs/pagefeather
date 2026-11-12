@@ -1,7 +1,7 @@
 // alarm-arm.mjs (issue #291): a stale alarm no longer blocks the cron for good.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { shouldArmAlarm, STALE_MS, armBeforeRun, rearm } from '../alarm-arm.mjs';
+import { shouldArmAlarm, STALE_MS, armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from '../alarm-arm.mjs';
 import { readFileSync } from 'node:fs';
 
 const now = Date.parse('2026-11-11T21:15:00Z');
@@ -83,4 +83,32 @@ test('index.js: both re-arm sites go through rearm (no bare setAlarm over a stal
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.equal((src.match(/await rearm\(this\.ctx\.storage/g) || []).length, 2);
 	assert.equal(/shouldArmAlarm\(await this\.ctx\.storage\.getAlarm\(\)/.test(src), false);
+});
+
+// alarm() never lets an error out (issue #291, fdprobe1112c 2026-11-12).
+test('recordAlarmFatal stores time, message, stack and a running count', async () => {
+	const m = new Map();
+	const storage = { get: async (k) => m.get(k), put: async (k, v) => m.set(k, v) };
+	const r1 = await recordAlarmFatal(storage, new Error('boom'), now);
+	assert.equal(r1.error, 'boom'); assert.equal(r1.t, now); assert.equal(r1.count, 1); assert.match(r1.stack, /boom/);
+	const r2 = await recordAlarmFatal(storage, 'plain string', now + 1);
+	assert.equal(r2.error, 'plain string'); assert.equal(r2.count, 2);
+	assert.deepEqual(m.get(ALARM_FATAL_KEY), r2);
+});
+test('index.js: alarm() arms first, then runs alarmRun inside a catch that does not rethrow', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const a = src.indexOf('async alarm() {');
+	const r = src.indexOf('async alarmRun() {', a);
+	assert.ok(a >= 0 && r > a, 'alarm() and alarmRun() exist');
+	const wrapper = src.slice(a, r);
+	assert.ok(wrapper.indexOf('await armBeforeRun(') < wrapper.indexOf('await this.alarmRun()'), 'arms before the run');
+	assert.ok(/catch \(e\) \{[\s\S]*recordAlarmFatal\(this\.ctx\.storage, e/.test(wrapper), 'the catch records the error');
+	assert.equal(/\bthrow\b/.test(wrapper.replace(/\/\/.*$/gm, '')), false, 'the wrapper never throws');
+	assert.ok(src.slice(r, src.indexOf('async fetch(raw)', r)).indexOf('armBeforeRun(') < 0, 'alarmRun does not re-arm first again');
+});
+test('index.js: a failed cron run is stored in the cron record, not only logged', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const i = src.indexOf("console.log(JSON.stringify({ m: 'cron', error:");
+	assert.ok(i >= 0);
+	assert.ok(/cst\.cron = \{ t: Date\.now\(\), error:/.test(src.slice(i, i + 600)), 'the catch writes cron.error');
 });

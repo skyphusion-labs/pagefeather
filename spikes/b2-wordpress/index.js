@@ -5,7 +5,7 @@ import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, ha
 import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
-import { armBeforeRun, rearm } from './alarm-arm.mjs';
+import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-arm.mjs';
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION } from './turnstile.mjs';
@@ -1248,6 +1248,7 @@ const PURGE_GAP_MS = 15000;
 // The object's purge state (issue #78): {pending, lastSent, retried}, in its storage.
 const PURGE_STATE_KEY = 'skyphusion-purge';
 const ORIGIN_KEY = 'skyphusion-origin';
+const CRON_SKIP_KEY = 'cron-skip';
 let lastPurge = 0;
 function schedulePurge(ctx) {
 	// A purge already scheduled for later covers this change too.
@@ -2075,13 +2076,23 @@ export class PhpRuntime extends DurableObject {
 	}
 
 	async alarm() {
+		// The next tick is armed FIRST (#291, alarm-arm.mjs armBeforeRun): a run killed below (an
+		// isolate reset) still leaves a future alarm. A purge retry sets a sooner one, which replaces it.
+		await armBeforeRun(this.ctx.storage, Date.now(), Number((this.env && this.env.CRON_INTERVAL_MS) || 60000));
+		// No error leaves alarm() (#291): a throw spends the platform retry budget, and an object that
+		// used it up got no alarm at all afterwards. The error is stored for /_purgestate instead.
+		try {
+			await this.alarmRun();
+		} catch (e) {
+			const rec = await recordAlarmFatal(this.ctx.storage, e, Date.now());
+			console.log(JSON.stringify({ m: 'alarm', fatal: rec.error, count: rec.count }));
+		}
+	}
+
+	async alarmRun() {
 		// Phase 2 (#185): run due background work (Action Scheduler + WP-Cron) off the request
 		// path, so deferred WC order emails fire with no traffic. DISABLE_WP_CRON stays on; this
 		// alarm is the only cron driver. One alarm also coalesces purges, below.
-		// The next tick is armed FIRST (#291, alarm-arm.mjs armBeforeRun): a run killed below (an
-		// isolate reset, a throw outside the try) still leaves a future alarm. A purge retry sets a
-		// sooner one below, which replaces it.
-		await armBeforeRun(this.ctx.storage, Date.now(), Number((this.env && this.env.CRON_INTERVAL_MS) || 60000));
 		try {
 			// A hibernated DO wakes into a fresh isolate: the request-captured module globals
 			// (lastOrigin, ENV) are gone and only ctx.storage survives, so an idle low-traffic site
@@ -2100,7 +2111,10 @@ export class PhpRuntime extends DurableObject {
 			// part ran out of memory (fdprobe1112a, 2026-11-12).
 			const importHeld = cronHeld(await this.ctx.storage.get(IMPORT_HOLD_KEY), Date.now());
 			if (importHeld) console.log(JSON.stringify({ m: 'cron', held: 'import' }));
-			if (!importHeld && phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env) {
+			const cronGo = !importHeld && phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env;
+			// Why a tick skipped the cron, for /_purgestate cronSkip (#291: a skip was invisible).
+			if (!cronGo) await this.ctx.storage.put(CRON_SKIP_KEY, { t: Date.now(), importHeld, phpPending, sinceSpikeMs: Date.now() - lastSpikeEndAt, origin: !!cronOrigin });
+			if (cronGo) {
 				// DB_IN_DO: bind the object's own SQLite as WordPress's database before the cron runtime
 				// loads WP. The fetch path sets this per request (sqlDb = sql); the alarm runs on a woken
 				// isolate where the module globals are gone, so without this sqlDb is null and every cron
@@ -2150,6 +2164,10 @@ export class PhpRuntime extends DurableObject {
 			// never drain until a request reboots the runtime (#191). Reset so the next tick reboots fresh.
 			bootPromise = null;
 			console.log(JSON.stringify({ m: 'cron', error: String((e && e.message) || e).slice(0, 200) }));
+			// Visible in /_purgestate too (#291): wrangler tail shows nothing for a dispatch script's alarm.
+			const cst = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
+			cst.cron = { t: Date.now(), error: String((e && e.message) || e).slice(0, 300), stack: String((e && e.stack) || '').slice(0, 1200) };
+			await this.ctx.storage.put(PURGE_STATE_KEY, cst);
 		}
 		const st = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
 		if (st.pending) {
@@ -2221,7 +2239,7 @@ export class PhpRuntime extends DurableObject {
 		// Spike: the URL the object got, and the origin it uses.
 		if (url.pathname === '/_origin') return Response.json({ objectUrl: raw.url, publicOrigin: origin, used: url.href });
 		// The purge state of this object (issue #78): pending, last sent, the last 20 sends, the next alarm.
-		if (url.pathname === '/_purgestate') return Response.json({ ...((await this.ctx.storage.get(PURGE_STATE_KEY)) || {}), alarm: await this.ctx.storage.getAlarm(), now: Date.now() });
+		if (url.pathname === '/_purgestate') return Response.json({ ...((await this.ctx.storage.get(PURGE_STATE_KEY)) || {}), alarm: await this.ctx.storage.getAlarm(), alarmFatal: (await this.ctx.storage.get(ALARM_FATAL_KEY)) || null, cronSkip: (await this.ctx.storage.get(CRON_SKIP_KEY)) || null, now: Date.now() });
 		// The build this OBJECT is running (issue #35 slice 5). After a re-upload a
 		// warm object keeps the old code until it is evicted, so this reports the
 		// object's version, which can lag the Worker's until /_evict or a sleep.
