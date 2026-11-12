@@ -75,6 +75,8 @@ update_one() {
   local CONF="$APP/wrangler.deploy.wfp-$s.toml" W; W=$(mktemp -d)
   render_user "$s" "$ORIGIN" > "$CONF"
   tfr site output -json | python3 -c 'import json,sys; o={k:v["value"] for k,v in json.load(sys.stdin).items()}; json.dump({"WP_SALT":o["wp_salt"],"SPIKE_TOKEN":o["spike_token"]}, open(sys.argv[1],"w"))' "$W/sec.json"
+  # WP_VECTORIZE_SEARCH (#330): the binding needs its index to exist at deploy (lib.sh).
+  if search_on; then ensure_search_index "$s" || { rm -rf "$W"; return 1; }; fi
   bundle_size_check || { rm -rf "$W"; return 1; }
   (cd "$APP" && "$ROOT/deploy/wr" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/sec.json") > "$W/up.log" 2>&1 || { rm -rf "$W"; echo "site $s: upload failed:" >&2; tail -20 "$W/up.log" >&2; return 1; }
   rm -rf "$W"
