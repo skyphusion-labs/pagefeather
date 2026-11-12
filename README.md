@@ -1,11 +1,87 @@
 # WordPress on Cloudflare
 
-A **framework** for running many WordPress sites and WooCommerce stores on your own Cloudflare Workers for Platforms account, each provisioned by one command or by a Worker, and the **research** that produced it: a matrix of which approaches work on which Cloudflare plan, every claim sourced.
+**WordPress and WooCommerce on Cloudflare's edge: no server, no database box, near zero at rest.**
 
-- **Run sites:** start with the quickstart, [docs/framework.md](docs/framework.md). Coming from a LAMP host, read [docs/from-lamp-to-wfp.md](docs/from-lamp-to-wfp.md) first.
-- **Read the research:** the matrix is below; every document is indexed in [docs/](docs/README.md).
+This is for edge and serverless developers, and for anyone tired of looking after a WordPress VPS.
+It is a framework you run on your own Cloudflare Workers for Platforms account. Each site is
+WordPress with PHP and its SQLite database inside one Durable Object, made by one command or by a
+Worker. It also holds the research behind that design (the matrix below).
 
-A cell is **measured** (we deployed it and ran a test in `tests/`, linked to [docs/results.md](docs/results.md)), **docs** (Cloudflare documents it but we did not deploy it), **claimed** (a third party says so), **no** (a named limit blocks it), or **unbuilt**.
+## What it handles well, and where the ceiling is
+
+- **WordPress sites, including high-traffic ones, served from the edge.** Logged-out pages come from
+  the edge page cache and never reach PHP. Measured: cached reads ran at about 26 to 30 requests a
+  second per site with a p50 near 200 ms, a lower bound set by the test client
+  ([docs/load-152.md](docs/load-152.md), 2026-11-08). That is 20 to 100 times the uncached rate.
+- **WooCommerce for low-to-moderate stores.** Cart, checkout, the admin and logged-in pages are
+  never cached, so every one of them runs PHP in the site's one Durable Object. That path is about
+  5 requests a second per site ([docs/perf-dosql.md](docs/perf-dosql.md), "What sets b-dosql's
+  limit"). For real concurrent store traffic, use approach A (external MySQL through Hyperdrive),
+  below.
+
+## A live example
+
+[ggc.sh](https://ggc.sh) is an example WooCommerce store on this framework. It is slower than a
+cached site on purpose: its `ggc-cache.php` sends `Cache-Control: private, no-store` on every
+storefront page, because those pages carry the live catalog and the order-attribution decision. So
+what you see on ggc.sh is the uncached path, not the cached one.
+
+## Quickstart
+
+> **Not yet run end to end from a fresh clone.** The commands below are the `deploy/wfp` flow in
+> [docs/operator.md](docs/operator.md), the one the isolation proofs use. A measured run of
+> `site add` and `site remove` from a fresh clone is next. `deploy/wfp/site` is the one operator
+> surface of this deployment
+> ([#294](https://github.com/skyphusion-labs/wordpress-on-cloudflare/issues/294)).
+> `deploy/provision/cli.mjs` is for a site on a Cloudflare for SaaS zone only: without
+> `WFP_SAAS_ZONE_ID` it refuses before any API call and names `deploy/wfp/site`.
+
+You need a Cloudflare account on the **Workers for Platforms Paid** plan, an API token and the tools
+listed in [docs/operator.md](docs/operator.md) ("What you need": Node, Wrangler 4.107.0 or later,
+Terraform 1.5 or later). Then:
+
+```sh
+export CLOUDFLARE_API_TOKEN=<the token>
+export ACCOUNT_ID=<your Cloudflare account id>   # set it: the scripts default to an account that is not yours
+export SITES="blog"                              # your site names; a blog or a WooCommerce store
+./deploy/wfp/up.sh                # once: builds b-dosql, the namespace, KV site map, outbound Worker, SITES
+./deploy/wfp/site add shop        # one more site; refuses if any part of "shop" exists already
+./deploy/wfp/site list            # the sites you have
+./deploy/wfp/site remove shop     # checks that every part is gone
+```
+
+Each site answers at `https://wp-<name>.<your-subdomain>.workers.dev` and installs WordPress on
+first boot. The admin user is `admin`; its password is a Terraform output (docs/operator.md shows
+the command).
+
+Coming from a LAMP host? Read [docs/from-lamp-to-wfp.md](docs/from-lamp-to-wfp.md) first. Every
+document is indexed in [docs/](docs/README.md).
+
+## Honest limits
+
+- **One Durable Object per site:** one writer, one region, and one request at a time for anything
+  the cache cannot answer. That is about 5 uncached requests a second; past that the queue grows,
+  and at about 100 clients the object refuses ([docs/perf-dosql.md](docs/perf-dosql.md)).
+- **On a WooCommerce store, bundle size is the first wall.** A Worker is limited to 64 MiB
+  uncompressed, and the upload gate stops at 62 MiB. WooCommerce alone takes the bundle to 58.3
+  MiB. Measured with WooCommerce (#279): Yoast SEO (67.9 MiB), All in One SEO (67.5) and Elementor
+  (83.8) do not fit, and SEOPress (63.1) is over the gate. Rank Math fits the bundle but hits the
+  memory wall (next item). The SEO Framework and Slim SEO fit the bundle; their memory is not
+  measured yet, because activation failed on the test store (#289). A way to move plugin and theme
+  source out of the bundle is being designed; it is not a promise that these plugins will fit
+  ([#279](https://github.com/skyphusion-labs/wordpress-on-cloudflare/issues/279)).
+- **128 MiB of memory per request (the isolate).** A heavy plugin set can exceed it. A store with
+  Rank Math reaches 119 MiB a request, and every other request answers 503; without it, the same
+  store passes checkout ([docs/known-limitations.md](docs/known-limitations.md),
+  [#279](https://github.com/skyphusion-labs/wordpress-on-cloudflare/issues/279)).
+- **Workers Free only partly works.** Cached pages hit and most renders fit, but the installer and
+  WooCommerce do not (the plan table below).
+- **Cost:** two idle sites cost about $25 a month, the Workers for Platforms Paid subscription
+  ([docs/plan-limits.md](docs/plan-limits.md)).
+
+## The research
+
+A cell in the tables below is **measured** (we deployed it and ran a test in `tests/`, linked to [docs/results.md](docs/results.md)), **docs** (Cloudflare documents it but we did not deploy it), **claimed** (a third party says so), **no** (a named limit blocks it), or **unbuilt**.
 
 ## The approaches
 
