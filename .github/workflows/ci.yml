@@ -145,6 +145,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/cron-bound.test.mjs
       - name: b-dosql build id carries the content inputs (issue #285)
         run: python3 -I spikes/b2-wordpress/tests/content-id-test.py
+      - name: b-dosql build id says whether the OPcache is primed (issue #377)
+        run: spikes/b2-wordpress/tests/build-id-test.sh
       - name: b-dosql operator endpoints (issue #35)
         # /_build and /_evict are gated and never cached (spikes/b2-wordpress).
         run: node spikes/b2-wordpress/tests/build-evict-test.mjs
@@ -154,6 +156,7 @@ jobs:
           deploy/wfp/tests/dbsnap-test.sh
           deploy/wfp/tests/wait-build-test.sh
           deploy/wfp/tests/update-all-test.sh
+          deploy/wfp/tests/update-inputs-test.sh
           deploy/wfp/tests/kv-build-test.sh
       - name: deploy/zone owner guard (issue #282)
         # apply.sh and destroy.sh refuse to overwrite a cache phase another root owns.
