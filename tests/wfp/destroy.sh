@@ -52,7 +52,7 @@ done
 # application's own reference is a digest, which "images delete" does not
 # take: the first version of this step skipped the image (#43).
 echo "control image (from its application): ${IMAGE:-none}"
-TAGS=$( (cd "$H" && npx wrangler containers images list --json 2>/dev/null) | python3 -c '
+TAGS=$( (cd "$H" && "$ROOT/deploy/wr" containers images list --json 2>/dev/null) | python3 -c '
 import json, re, sys
 s = sys.stdin.read()
 i = s.find("[")
@@ -69,7 +69,7 @@ elif [ -z "$TAGS" ]; then
   echo "no image $PREFIX-cdirect-box in the registry"
 else
   for t in $TAGS; do
-    (cd "$H" && npx wrangler containers images delete "$PREFIX-cdirect-box:$t" -y) || echo "image $PREFIX-cdirect-box:$t not deleted"
+    (cd "$H" && "$ROOT/deploy/wr" containers images delete "$PREFIX-cdirect-box:$t" -y) || echo "image $PREFIX-cdirect-box:$t not deleted"
   done
 fi
 
@@ -83,7 +83,7 @@ done
 WORKERS=("$PREFIX-dispatch" "$PREFIX-echo" "$PREFIX-outbound" "$PREFIX-cdirect")
 for s in $SITES; do WORKERS+=("$PREFIX-site-$s"); done
 for w in "${WORKERS[@]}"; do
-  (cd "$H" && npx wrangler delete "$w" --force) || echo "Worker $w not deleted (already deleted?)"
+  (cd "$H" && "$ROOT/deploy/wr" delete "$w" --force) || echo "Worker $w not deleted (already deleted?)"
 done
 
 # 4. The namespace, D1, R2 and the secrets.

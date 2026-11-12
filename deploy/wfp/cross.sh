@@ -40,7 +40,7 @@ W=$(mktemp -d)
 cleanup_probes() {
   local n
   for n in crossa crossb; do
-    (cd "$ROOT/deploy" && npx wrangler delete --name "wp-$n" --force) >/dev/null 2>&1 || true
+    (cd "$ROOT/deploy" && "$ROOT/deploy/wr" delete --name "wp-$n" --force) >/dev/null 2>&1 || true
     api DELETE "/workers/dispatch/namespaces/${NAMESPACE}/scripts/site-$n?force=true" >/dev/null 2>&1 || true
     api DELETE "/storage/kv/namespaces/${KV_ID:-}/values/wp-$n.${SUB:-}.workers.dev" >/dev/null 2>&1 || true
     rm -f "$GEN/site-$n.toml" "$GEN/wp-$n.toml" 2>/dev/null || true
@@ -58,14 +58,14 @@ deploy_probe() { # deploy_probe <name> <site> <cpuMs> <subRequests>
   local name=$1 site=$2 cpu=$3 sub=$4 script="site-$1"
   render_cross "$script" "wp-wfp-$site-media" > "$GEN/$script.toml"
   printf '{"WP_SALT": "%s", "SPIKE_TOKEN": "%s"}' "$(site_out "$site" wp_salt)" "$(site_out "$site" spike_token)" > "$W/sec.json"
-  (cd "$GEN" && npx wrangler deploy --config "$script.toml" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/sec.json") > "$W/$name.log" 2>&1 \
+  (cd "$GEN" && "$ROOT/deploy/wr" deploy --config "$script.toml" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/sec.json") > "$W/$name.log" 2>&1 \
     || { rm -f "$W/sec.json"; tail -20 "$W/$name.log"; exit 1; }
   rm -f "$W/sec.json"
   local host="wp-$name.$SUB.workers.dev"
   api PUT "/storage/kv/namespaces/$KV_ID/values/$host" -H 'content-type: text/plain' \
     --data "$(probe_entry "$script" "$cpu" "$sub")" >/dev/null
   render_dispatcher "$name" "$KV_ID" > "$GEN/wp-$name.toml"
-  (cd "$GEN" && npx wrangler deploy --config "wp-$name.toml") > "$W/wp-$name.log" 2>&1 || { tail -20 "$W/wp-$name.log"; exit 1; }
+  (cd "$GEN" && "$ROOT/deploy/wr" deploy --config "wp-$name.toml") > "$W/wp-$name.log" 2>&1 || { tail -20 "$W/wp-$name.log"; exit 1; }
   for _ in $(seq 1 30); do [ "$(curl -s -o /dev/null -w '%{http_code}' "https://$host/_probe/secret")" = 200 ] && break; sleep 5; done
 }
 

@@ -220,7 +220,7 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
 
 # 4. Deploy and set the secrets.
 log "deploy"
-DEP=$(npx wrangler deploy --config "$CONF" 2>&1) || { echo "$DEP" | tail -20; exit 1; }
+DEP=$("$ROOT/deploy/wr" deploy --config "$CONF" 2>&1) || { echo "$DEP" | tail -20; exit 1; }
 URL=$(echo "$DEP" | grep -oE 'https://[a-z0-9.-]+\.workers\.dev' | head -1)
 # A workers.dev site must be at its configured origin, or every link points elsewhere.
 case "$SITE_ORIGIN" in
@@ -232,7 +232,7 @@ tf "$TF" output -json | python3 -c '
 import json, sys
 o = {k: v["value"] for k, v in json.load(sys.stdin).items()}
 json.dump({"WP_SALT": o["wp_salt"], "SPIKE_TOKEN": o["spike_token"]}, open(sys.argv[1], "w"))' "$SECRETS"
-npx wrangler secret bulk "$SECRETS" --config "$CONF" | tail -1
+"$ROOT/deploy/wr" secret bulk "$SECRETS" --config "$CONF" | tail -1
 rm -f "$SECRETS"
 SPIKE_TOKEN=$(out spike_token); ADMIN_PASSWORD=$(out admin_password)
 

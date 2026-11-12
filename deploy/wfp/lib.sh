@@ -13,6 +13,8 @@
 #                                   that does not exist (it must answer 404)
 WFP=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "$WFP/../.." && pwd)
+# The pinned Wrangler. A test points WR at a stub.
+WR=${WR:-$ROOT/deploy/wr}
 APP="$ROOT/spikes/b2-wordpress"
 GEN="$WFP/gen"
 NAMESPACE=${NAMESPACE:-wp-wfp}
@@ -114,7 +116,7 @@ wrangler_deploy() { # wrangler_deploy <dir> <logfile> <wrangler deploy args...>
   local dir=$1 log=$2; shift 2
   local i rc=0
   for i in $(seq 1 "${WRANGLER_RETRIES:-3}"); do
-    if (cd "$dir" && npx wrangler deploy "$@") > "$log" 2>&1; then return 0; else rc=$?; fi
+    if (cd "$dir" && "$WR" deploy "$@") > "$log" 2>&1; then return 0; else rc=$?; fi
     [ "$i" -lt "${WRANGLER_RETRIES:-3}" ] || break
     echo "  wrangler deploy ($*) failed (attempt $i of ${WRANGLER_RETRIES:-3}); retrying in ${WRANGLER_RETRY_S:-5}s (a re-deploy is idempotent)" >&2
     sleep "${WRANGLER_RETRY_S:-5}"

@@ -23,7 +23,7 @@
 # 12/12 with the lean client + LAZY_NODES=on + this cache.
 #
 # Run after nothing in particular; it does its own builds. Then deploy ENGINE=a:
-#   ./opcache-a.sh && npx wrangler deploy --env a-paid-lean
+#   ./opcache-a.sh && deploy/wr deploy --env a-paid-lean
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -59,4 +59,4 @@ print(f"   approach-A opcache.zip: kept {kept} scripts, excluded {excluded} (db.
 PY
 rm -f "$SRC"
 echo "done. The ENGINE=a build/ now carries the precompiled cache. Deploy with:"
-echo "  npx wrangler deploy --env a-paid-lean"
+echo "  deploy/wr deploy --env a-paid-lean"

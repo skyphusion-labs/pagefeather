@@ -76,7 +76,7 @@ update_one() {
   render_user "$s" "$ORIGIN" > "$CONF"
   tfr site output -json | python3 -c 'import json,sys; o={k:v["value"] for k,v in json.load(sys.stdin).items()}; json.dump({"WP_SALT":o["wp_salt"],"SPIKE_TOKEN":o["spike_token"]}, open(sys.argv[1],"w"))' "$W/sec.json"
   bundle_size_check || { rm -rf "$W"; return 1; }
-  (cd "$APP" && npx wrangler deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/sec.json") > "$W/up.log" 2>&1 || { rm -rf "$W"; echo "site $s: upload failed:" >&2; tail -20 "$W/up.log" >&2; return 1; }
+  (cd "$APP" && "$ROOT/deploy/wr" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/sec.json") > "$W/up.log" 2>&1 || { rm -rf "$W"; echo "site $s: upload failed:" >&2; tail -20 "$W/up.log" >&2; return 1; }
   rm -rf "$W"
   tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=$new" >/dev/null
   echo "site $s: verify the new build is live"
@@ -99,7 +99,7 @@ update_one() {
     rm -rf "$APP/build" && mv "$SAVED/build" "$APP/build"
     local W2; W2=$(mktemp -d)
     tfr site output -json | python3 -c 'import json,sys; o={k:v["value"] for k,v in json.load(sys.stdin).items()}; json.dump({"WP_SALT":o["wp_salt"],"SPIKE_TOKEN":o["spike_token"]}, open(sys.argv[1],"w"))' "$W2/sec.json"
-    if (cd "$APP" && npx wrangler deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W2/sec.json") > "$W2/rb.log" 2>&1; then
+    if (cd "$APP" && "$ROOT/deploy/wr" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W2/sec.json") > "$W2/rb.log" 2>&1; then
       echo "site $s: re-deployed ${live_build:-unknown}"
       tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=${live_build:-$rollback}" >/dev/null
       wait_build "$ORIGIN" "$TOK" "$live_build" || echo "site $s: /_build did not return to $live_build after the rollback re-deploy" >&2

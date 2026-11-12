@@ -5,5 +5,5 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
 export CLOUDFLARE_ACCOUNT_ID=${ACCOUNT_ID:-fabcb25d9c7eb087110ec474a03e50d2}
-(cd "$ROOT/tests/a2" && npx wrangler delete wp-a2-probe --force) || echo "Worker wp-a2-probe not deleted (already deleted?)"
+(cd "$ROOT/tests/a2" && "$ROOT/deploy/wr" delete wp-a2-probe --force) || echo "Worker wp-a2-probe not deleted (already deleted?)"
 (cd "$ROOT/tests/a2/terraform" && terraform init -input=false >/dev/null && terraform destroy -input=false -auto-approve)

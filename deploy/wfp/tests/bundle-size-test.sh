@@ -26,7 +26,7 @@ mk "$T/miss" 1 1 1 1; rm "$T/miss/build/opcache.zip"
 out=$(bundle_size_check "$T/miss" 2>&1); rc=$?
 check "a missing part is an error" "$rc:$(printf '%s' "$out" | grep -c 'missing build/opcache.zip')" "1:1"
 check "build_dosql runs the gate" "$(sed -n '/^build_dosql()/,/^}/p' "$HERE/../lib.sh" | grep -c 'bundle_size_check')" "1"
-check "site.sh up checks before its upload" "$(grep -B1 'npx wrangler deploy --config "$CONF" --dispatch-namespace' "$HERE/../site.sh" | grep -c 'bundle_size_check')" "1"
+check "site.sh up checks before its upload" "$(grep -B1 'deploy/wr" deploy --config "$CONF" --dispatch-namespace' "$HERE/../site.sh" | grep -c 'bundle_size_check')" "1"
 check "site update checks before its upload" "$(grep -c 'bundle_size_check ||' "$HERE/../site")" "1"
 echo "$fails failing case(s)"
 exit $fails

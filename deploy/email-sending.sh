@@ -32,16 +32,16 @@ esac
 
 case "$action" in
 	status)
-		npx wrangler email sending list
+		deploy/wr email sending list
 		;;
 	enable)
 		echo "onboarding $domain for Email Sending (this writes DNS in that zone)"
-		npx wrangler email sending enable "$domain"
-		npx wrangler email sending dns get "$domain"
+		deploy/wr email sending enable "$domain"
+		deploy/wr email sending dns get "$domain"
 		;;
 	disable)
 		echo "disabling Email Sending for $domain (this removes the records Wrangler added)"
-		npx wrangler email sending disable "$domain" --force
+		deploy/wr email sending disable "$domain" --force
 		;;
 	*)
 		usage

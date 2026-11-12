@@ -1,0 +1,8 @@
+{
+  "name": "wp-on-cf-deploy-tools",
+  "private": true,
+  "description": "The one pinned Wrangler every deploy and test script calls through deploy/wr.",
+  "devDependencies": {
+    "wrangler": "4.107.0"
+  }
+}

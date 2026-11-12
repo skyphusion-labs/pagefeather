@@ -79,7 +79,7 @@ json.dump({"WP_SALT": o["wp_salt"], "SPIKE_TOKEN": o["spike_token"]}, open(sys.a
 
 log "upload $SITE into $NS"
 t0=$SECONDS
-(cd "$APP" && npx wrangler deploy --config "$CONF" --dispatch-namespace "$NS" --secrets-file "$W/secrets.json") > "$W/upload.log" 2>&1 \
+(cd "$APP" && "$ROOT/deploy/wr" deploy --config "$CONF" --dispatch-namespace "$NS" --secrets-file "$W/secrets.json") > "$W/upload.log" 2>&1 \
   || { tail -20 "$W/upload.log"; exit 1; }
 rm -f "$W/secrets.json"
 UPLOAD_S=$((SECONDS - t0))
@@ -105,7 +105,7 @@ binding = "DISPATCHER_OUT"
 namespace = "$NS"
 outbound = { service = "$PREFIX-outbound", parameters = ["TENANT_FROM_DISPATCH"] }
 TOML
-(cd "$H/gen" && npx wrangler deploy --config "site-$SITE.toml") > "$W/site.log" 2>&1 || { tail -20 "$W/site.log"; exit 1; }
+(cd "$H/gen" && "$ROOT/deploy/wr" deploy --config "site-$SITE.toml") > "$W/site.log" 2>&1 || { tail -20 "$W/site.log"; exit 1; }
 URL="https://$PREFIX-site-$SITE.$SUB.workers.dev"
 echo "$URL"
 SPIKE_TOKEN=$(out spike_token); ADMIN_PASSWORD=$(out admin_password)
