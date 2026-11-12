@@ -110,12 +110,18 @@ echo "public/ $(find build/public -type f | wc -l | tr -d ' ') files"
 # "-dirty" when the tree has uncommitted changes, so a hand-built tree is never
 # mistaken for a committed build. "unknown" outside a git tree.
 # BUILD_ID_OVERRIDE forces the id (the activation measurement, issue #35, sets
-# it so two builds differ without editing source); else the git sha.
+# it so two builds differ without editing source); else the git sha, plus
+# -c<8 hex> of the content inputs when any is set (issue #285).
 if [ -n "${BUILD_ID_OVERRIDE:-}" ]; then
   BUILD_ID=$BUILD_ID_OVERRIDE
 else
   BUILD_ID=$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
   [ -n "$(git status --porcelain 2>/dev/null)" ] && BUILD_ID="$BUILD_ID-dirty"
+  # Issue #285: a build whose only change is its content inputs (PLUGINS, IMPORT_*)
+  # must not share the id of the build before it, or site update skips it as
+  # "already at build". content-id.py prints c<8 hex> when a content input is set.
+  CONTENT_ID=$(python3 -I content-id.py "$wp/wp-content")
+  [ -z "$CONTENT_ID" ] || BUILD_ID="$BUILD_ID-$CONTENT_ID"
 fi
 printf 'export default %s;\n' "\"$BUILD_ID\"" > build/build-id.js
 echo "build-id $BUILD_ID"

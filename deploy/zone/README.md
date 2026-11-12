@@ -159,6 +159,25 @@ still matches only the cache rule.)
 
 Neither mode creates DNS, enables APO, or changes anything else on the zone.
 
+### The owner check, before any change (issue #282)
+
+Writing a phase entrypoint REPLACES every rule in the phase. So `apply.sh` and `destroy.sh` first read
+the zone's `http_request_cache_settings` entrypoint (`owner-guard.sh`). They go on only when the phase is
+empty, or every rule in it is one this package writes, matched by the rule descriptions of the two
+templates. Otherwise they stop with exit 3, name the rules they found, and change nothing: no Custom
+Domain, no ruleset. A phase that cannot be read is also a stop (exit 1), never "no owner". Set `FORCE=1`
+only once this package is meant to own the zone's cache phase. This came from ggc.sh, whose own
+Terraform owns that phase (its storefront HTML is never cached): a run here on 2026-11-09 replaced
+those rules. Test: `tests/owner-guard-test.sh`.
+
+### `edge_ttl` override beats the origin's `no-store`
+
+Rule 1 sets `edge_ttl` with `mode: override_origin`. Cloudflare then ignores the origin's
+`Cache-Control` for the edge, including `private` and `no-store` (Cloudflare cache docs, "Cache
+Responses", BYPASS). So a page cannot opt out of the edge cache from PHP while this rule matches it;
+only the bypass rule (rule 2) does that. A store whose catalog or prices must never be served stale
+(the reason ggc.sh caches no storefront HTML) should not use this package.
+
 ## Use
 
 Dedicated (one site, its own zone):

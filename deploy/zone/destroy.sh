@@ -17,6 +17,7 @@
 set -euo pipefail
 
 API="https://api.cloudflare.com/client/v4"
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 MODE=${MODE:-dedicated}
 
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
@@ -41,6 +42,13 @@ cf_ok() { # cf_ok <label> <METHOD> <PATH> [curl args...]
     *)  echo "  $label: HTTP $code" >&2; echo "$body" | head -5 >&2; exit 1 ;;
   esac
 }
+
+# Before ANY change (#282): clearing the phase is the same PUT, so it would wipe
+# another owner's rules too.
+# shellcheck source=deploy/zone/owner-guard.sh
+. "$SCRIPT_DIR/owner-guard.sh"
+echo "== 0. Owner check of the cache phase (zone $ZONE_ID)"
+guard_cache_phase
 
 if [ "$MODE" = dedicated ]; then
   : "${HOSTNAME:?set HOSTNAME in MODE=dedicated}"

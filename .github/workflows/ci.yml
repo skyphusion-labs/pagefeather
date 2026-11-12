@@ -93,6 +93,8 @@ jobs:
       - name: b-dosql bounded cron tick
         # cron-bound.mjs: the cron runs its own claim loop, bounded, and the cleaner cannot starve (#291).
         run: node --test spikes/b2-wordpress/tests/cron-bound.test.mjs
+      - name: b-dosql build id carries the content inputs (issue #285)
+        run: python3 -I spikes/b2-wordpress/tests/content-id-test.py
       - name: b-dosql operator endpoints (issue #35)
         # /_build and /_evict are gated and never cached (spikes/b2-wordpress).
         run: node spikes/b2-wordpress/tests/build-evict-test.mjs
@@ -103,6 +105,9 @@ jobs:
           deploy/wfp/tests/wait-build-test.sh
           deploy/wfp/tests/update-all-test.sh
           deploy/wfp/tests/kv-build-test.sh
+      - name: deploy/zone owner guard (issue #282)
+        # apply.sh and destroy.sh refuse to overwrite a cache phase another root owns.
+        run: deploy/zone/tests/owner-guard-test.sh
       - name: c1 warm start tests
         # spikes/c1-woo-container/warm.js (issue #73): product views, rate limits, never through fetch.
         run: node spikes/c1-woo-container/tests/warm-test.mjs
