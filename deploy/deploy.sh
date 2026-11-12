@@ -32,6 +32,14 @@
 #
 # Steps: Terraform makes the data plane -> build -> Wrangler config from the
 # Terraform outputs -> deploy -> secrets -> install -> measure -> deploy/results/.
+#
+# CODE_ONLY=1 (fleet-chezmoi#2620): redeploy the code of a site that already exists, from any clone,
+# with no Terraform state. b-dosql only (its config needs one Terraform output, the media bucket,
+# which MEDIA_BUCKET gives instead). SITE_ORIGIN must be set, so links stay on the live origin.
+# Skipped: Terraform, the secrets (WP_SALT and SPIKE_TOKEN persist across deploys), the install
+# (it ran once) and the measurements. DRY_RUN=1 with it builds and renders, then runs
+# `wrangler deploy --dry-run` and deploys nothing. .github/workflows/deploy-workers.yml runs it for
+# the sites in deploy/live-sites/.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TF="$ROOT/deploy/terraform"
@@ -46,6 +54,17 @@ export PORT=${PORT:-8798}
 export WOO_ACTIVE=${WOO_ACTIVE:-0}
 log() { printf '\n== %s\n' "$*"; }
 case "$VARIANT" in b-do|b-dosql|a|c1) ;; *) echo "VARIANT must be b-do, b-dosql, a or c1"; exit 2 ;; esac
+CODE_ONLY=${CODE_ONLY:-0}
+DRY_RUN=${DRY_RUN:-0}
+if [ "$CODE_ONLY" = 1 ]; then
+  [ "$VARIANT" = b-dosql ] || { echo "CODE_ONLY=1 is for VARIANT=b-dosql only (other variants read more Terraform outputs)" >&2; exit 2; }
+  [ -n "${SITE_ORIGIN:-}" ] || { echo "CODE_ONLY=1 needs SITE_ORIGIN, the live site's origin" >&2; exit 2; }
+  if [ "$MEDIA" = 1 ]; then
+    [[ "${MEDIA_BUCKET:-}" =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ ]] || { echo "CODE_ONLY=1 with MEDIA=1 needs MEDIA_BUCKET, the live media bucket" >&2; exit 2; }
+  fi
+elif [ "$DRY_RUN" = 1 ]; then
+  echo "DRY_RUN=1 is for CODE_ONLY=1 only" >&2; exit 2
+fi
 if [ -n "${HYPERDRIVE_SQL_MODE+x}" ]; then
   [ "$VARIANT" = a ] || { echo "HYPERDRIVE_SQL_MODE is for variant a only" >&2; exit 2; }
   [[ "$HYPERDRIVE_SQL_MODE" =~ ^[A-Za-z_,]*$ ]] || { echo "HYPERDRIVE_SQL_MODE: mode names and commas only" >&2; exit 2; }
@@ -59,6 +78,7 @@ fi
 tf() { local dir=$1; shift; (cd "$dir" && terraform workspace select -or-create "$NAME" >/dev/null && terraform "$@"); }
 out() { tf "$TF" output -raw "$1"; }
 
+if [ "$CODE_ONLY" != 1 ]; then
 # 1a. Variant a with MYSQL=vultr: the database box, its own Terraform root.
 if [ "$VARIANT" = a ]; then
   if [ "${MYSQL:-external}" = vultr ]; then
@@ -107,6 +127,10 @@ for try in $(seq 1 20); do
   echo "  database not ready yet (try $try); waiting 30 s"; sleep 30
 done
 BUCKET=$(out media_bucket)
+else
+  log "code only: no Terraform for $NAME; media bucket ${MEDIA_BUCKET:-none}"
+  BUCKET=$([ "$MEDIA" = 1 ] && echo "$MEDIA_BUCKET" || true)
+fi
 # Variant c1 (Container) has its own build, deploy and measure steps.
 if [ "$VARIANT" = c1 ]; then
   . "$ROOT/deploy/variants/c1.sh"
@@ -218,6 +242,12 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
   fi
 } > "$CONF"
 
+if [ "$DRY_RUN" = 1 ]; then
+  log "dry run: $CONF"
+  "$ROOT/deploy/wr" deploy --dry-run --outdir "${DRY_OUT:-$(mktemp -d)}" --config "$CONF" 2>&1 | grep -E 'Total Upload|dry-run|Your Worker has access'
+  exit "${PIPESTATUS[0]}"
+fi
+
 # 4. Deploy and set the secrets.
 log "deploy"
 DEP=$("$ROOT/deploy/wr" deploy --config "$CONF" 2>&1) || { echo "$DEP" | tail -20; exit 1; }
@@ -227,6 +257,11 @@ case "$SITE_ORIGIN" in
   *.workers.dev) [ "$URL" = "$SITE_ORIGIN" ] || { echo "deployed to '$URL', but SITE_ORIGIN is $SITE_ORIGIN" >&2; exit 1; } ;;
 esac
 echo "$DEP" | grep -E 'Total Upload|Current Version'
+if [ "$CODE_ONLY" = 1 ]; then
+  log "code only: secrets, install and measurements skipped (they persist or ran once)"
+  echo "$URL"
+  exit 0
+fi
 SECRETS=$(mktemp); chmod 600 "$SECRETS"
 tf "$TF" output -json | python3 -c '
 import json, sys

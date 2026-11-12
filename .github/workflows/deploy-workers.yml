@@ -16,6 +16,11 @@ name: deploy-workers
 # pinned one (deploy/tests/wrangler-pin-test.sh). The tests for the Worker run first. Secrets are not
 # set here: a wrangler secret persists across deploys.
 #
+#   zarapo, woocap      live b-dosql sites (deploy/live-sites/<name>.env): deploy/deploy.sh with
+#                       CODE_ONLY=1, a code redeploy with no Terraform, no secrets and no install.
+#                       Before it, the live Worker must exist and its MEDIA bucket, SITE_ORIGIN and
+#                       PHP_RUNTIME binding must match the site file, or the run refuses.
+#
 # NOT here, on purpose: the per-site Workers (wp-<site> dispatchers in phase A and the site-<name>
 # scripts in the wp-wfp namespace). deploy/wfp/site is the one operator surface for those (#294).
 # Nor the probes (wp-probe, wp-cacheprobe, wp-cacheprobe-direct), which are test artifacts.
@@ -26,7 +31,7 @@ on:
       worker:
         description: "Which Worker to deploy"
         type: choice
-        options: [wp-provision, wp-provision-demo, wp-wfp-outbound, wp-dispatch]
+        options: [wp-provision, wp-provision-demo, wp-wfp-outbound, wp-dispatch, zarapo, woocap]
 
 permissions:
   contents: read
@@ -71,8 +76,34 @@ jobs:
             wp-wfp-outbound | wp-dispatch)
               node deploy/wfp/tests/dispatcher-test.mjs
               bash deploy/wfp/tests/render-test.sh ;;
+            zarapo | woocap)
+              bash deploy/tests/wrangler-pin-test.sh
+              node --test spikes/b2-wordpress/tests/mail-from.test.mjs ;;
             *) echo "::error::unknown worker $WORKER"; exit 1 ;;
           esac
+
+      # Live sites only: read the site file strictly (allowlisted keys, no secrets), then refuse
+      # unless the LIVE Worker exists and matches it, so a code redeploy can never land a different
+      # site's config on a live store.
+      - name: Site file, and the live Worker matches it
+        if: inputs.worker == 'zarapo' || inputs.worker == 'woocap'
+        id: site
+        env:
+          WORKER: ${{ inputs.worker }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          f="deploy/live-sites/$WORKER.env"
+          [ -f "$f" ] || { echo "::error::no $f"; exit 1; }
+          if grep -vE '^(#.*)?$' "$f" | grep -vqE '^(VARIANT|LOCATION|MEDIA|MEDIA_BUCKET|SITE_ORIGIN|HTTP_ALLOW_HOSTS)=[A-Za-z0-9:/._,-]*$'; then
+            echo "::error::$f has a line outside the allowed KEY=value set"; exit 1
+          fi
+          grep -E '^(VARIANT|LOCATION|MEDIA|MEDIA_BUCKET|SITE_ORIGIN|HTTP_ALLOW_HOSTS)=' "$f" >> "$GITHUB_OUTPUT"
+          F="$f" python3 deploy/live-sites/check_live.py
+          d="$(MODE=domains python3 deploy/live-sites/check_live.py)"
+          echo "custom domains before: $d"
+          echo "domains_before=$d" >> "$GITHUB_OUTPUT"
 
       - name: Deploy ${{ inputs.worker }}
         env:
@@ -101,5 +132,29 @@ jobs:
               render_shared_dispatcher "$kv" > "$GEN/$SHARED_DISPATCHER.toml"
               [ "$SHARED_DISPATCHER" = wp-dispatch ] || { echo "::error::SHARED_DISPATCHER is $SHARED_DISPATCHER, not wp-dispatch"; exit 1; }
               (cd "$GEN" && "$WR" deploy --config "$SHARED_DISPATCHER.toml") ;;
+            zarapo | woocap)
+              (
+                export VARIANT='${{ steps.site.outputs.VARIANT }}' LOCATION='${{ steps.site.outputs.LOCATION }}'
+                export MEDIA='${{ steps.site.outputs.MEDIA }}' MEDIA_BUCKET='${{ steps.site.outputs.MEDIA_BUCKET }}'
+                export SITE_ORIGIN='${{ steps.site.outputs.SITE_ORIGIN }}'
+                if grep -q '^HTTP_ALLOW_HOSTS=' "deploy/live-sites/$WORKER.env"; then export HTTP_ALLOW_HOSTS='${{ steps.site.outputs.HTTP_ALLOW_HOSTS }}'; fi
+                NAME="$WORKER" CODE_ONLY=1 BENCH=0 bash deploy/deploy.sh
+              ) ;;
             *) echo "::error::unknown worker $WORKER"; exit 1 ;;
           esac
+
+
+      # A code redeploy declares no routes, so it must leave the site's Custom Domains (zarapo's
+      # wp.posterntesting.com) exactly as they were. Read them again and fail loudly on any change.
+      - name: Custom Domains unchanged
+        if: inputs.worker == 'zarapo' || inputs.worker == 'woocap'
+        env:
+          WORKER: ${{ inputs.worker }}
+          BEFORE: ${{ steps.site.outputs.domains_before }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          after="$(MODE=domains python3 deploy/live-sites/check_live.py)"
+          [ "$after" = "$BEFORE" ] || { echo "::error::Custom Domains of $WORKER changed: before '$BEFORE', after '$after'"; exit 1; }
+          echo "custom domains unchanged: $after"
