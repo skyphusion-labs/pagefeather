@@ -4,7 +4,14 @@
 // bindings.py) permits. This test reads those two files and checks the shared
 // wp-site-config.mjs against them, so a change to the generator that is not
 // mirrored here fails CI WITHOUT a live deploy.
+//
+// The generator side is read from its RENDERED OUTPUT (render_user run in bash), never from the
+// source text of lib.sh (#345): a grep of the source passes when the text is present but the
+// behaviour is gone (a commented-out line, a dead branch), and fails to see what render_user
+// emits through a helper (mail-from.mjs). bindings.py is still read as text: USER_OK is a data
+// table, not behaviour.
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { bDosqlBindings, bDosqlVars, bDosqlSecrets, mediaBucketName } from '../wp-site-config.mjs';
@@ -13,7 +20,12 @@ let pass = 0, fail = 0;
 const ok = (n, c) => { if (c) { pass++; console.log('PASS', n); } else { fail++; console.log('FAIL', n); } };
 
 const here = dirname(fileURLToPath(import.meta.url));
-const lib = readFileSync(join(here, '../../wfp/lib.sh'), 'utf8');
+const libPath = join(here, '../../wfp/lib.sh');
+// What render_user prints for a site. Same inputs as the provisioning config below (blog).
+const render = (site, origin) => execFileSync('bash', ['-c', '. "$1"; render_user "$2" "$3"', 'x', libPath, site, origin],
+  { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME ?? '' } });
+const rendered = render('blog', 'https://blog.skyphusionwp.dev');
+const has = (re) => re.test(rendered);
 const bindingsPy = readFileSync(join(here, '../../wfp/bindings.py'), 'utf8');
 const deploySh = readFileSync(join(here, '../../deploy.sh'), 'utf8');
 
@@ -30,37 +42,38 @@ ok('every emitted binding type is allowed by bindings.py USER_OK',
 // 2. The static vars match lib.sh render_user byte for byte (values that are not
 // per-site). SITE_ORIGIN and PHP_LOCATION are per-site, so only their NAME is
 // checked against the generator.
-ok('PHP_ENV value matches render_user', varOf('PHP_ENV').text === '{"USE_ZEND_ALLOC":"0"}' && lib.includes(`PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'`));
-ok('PHP_IN_DO = on matches render_user', varOf('PHP_IN_DO').text === 'on' && lib.includes('PHP_IN_DO = "on"'));
-ok('PHP_DO_POOL = 1 matches render_user', varOf('PHP_DO_POOL').text === '1' && lib.includes('PHP_DO_POOL = "1"'));
-ok('DB_IN_DO = on matches render_user (b-dosql)', varOf('DB_IN_DO').text === 'on' && lib.includes('DB_IN_DO = "on"'));
-ok('SITE_ORIGIN is emitted and present in render_user', varOf('SITE_ORIGIN') && lib.includes('SITE_ORIGIN ='));
-ok('PHP_LOCATION is emitted and present in render_user', varOf('PHP_LOCATION') && lib.includes('PHP_LOCATION ='));
+ok('PHP_ENV value matches render_user', varOf('PHP_ENV').text === '{"USE_ZEND_ALLOC":"0"}' && has(/^PHP_ENV = '\{"USE_ZEND_ALLOC":"0"\}'$/m));
+ok('PHP_IN_DO = on matches render_user', varOf('PHP_IN_DO').text === 'on' && has(/^PHP_IN_DO = "on"$/m));
+ok('PHP_DO_POOL = 1 matches render_user', varOf('PHP_DO_POOL').text === '1' && has(/^PHP_DO_POOL = "1"$/m));
+ok('DB_IN_DO = on matches render_user (b-dosql)', varOf('DB_IN_DO').text === 'on' && has(/^DB_IN_DO = "on"$/m));
+ok('SITE_ORIGIN is emitted and present in render_user', varOf('SITE_ORIGIN') && has(/^SITE_ORIGIN = "https:\/\/blog\.skyphusionwp\.dev"$/m));
+ok('PHP_LOCATION is emitted and present in render_user', varOf('PHP_LOCATION') && has(/^PHP_LOCATION = "[a-z]+"$/m));
 
 // 3. The resource bindings match render_user.
 ok('IMAGES binding matches render_user ([images] binding = "IMAGES")',
-  byType('images').some((x) => x.name === 'IMAGES') && /\[images\]\s*\n\s*binding = "IMAGES"/.test(lib));
+  byType('images').some((x) => x.name === 'IMAGES') && has(/^\[images\]\nbinding = "IMAGES"$/m));
 ok('MEDIA r2_bucket is the site own bucket wp-wfp-<name>-media',
-  byType('r2_bucket').some((x) => x.name === 'MEDIA' && x.bucket_name === 'wp-wfp-blog-media') && lib.includes('binding = "MEDIA"'));
+  byType('r2_bucket').some((x) => x.name === 'MEDIA' && x.bucket_name === 'wp-wfp-blog-media') && has(/^\[\[r2_buckets\]\]\nbinding = "MEDIA"\nbucket_name = "wp-wfp-blog-media"$/m));
 ok('PHP_RUNTIME durable object = PhpRuntime matches render_user',
   byType('durable_object_namespace').some((x) => x.name === 'PHP_RUNTIME' && x.class_name === 'PhpRuntime') &&
-  lib.includes('name = "PHP_RUNTIME"') && lib.includes('class_name = "PhpRuntime"'));
+  has(/^\[\[durable_objects\.bindings\]\]\nname = "PHP_RUNTIME"\nclass_name = "PhpRuntime"$/m));
 
-// 4. EMAIL: we ADD send_email (index.js uses env.EMAIL; deploy.sh emits it; it is
-// in USER_OK). NOTE a real discrepancy: lib.sh render_user does NOT emit
-// send_email, so a WFP site deployed by lib.sh today has no email. Our config
-// closes that, and lib.sh should follow. The guard asserts EMAIL is sanctioned
-// (allowed + in deploy.sh), not that render_user has it.
+// 4. EMAIL: the provisioning config emits an EMAIL send_email binding, and so does render_user
+// (through mail-from.mjs, which is why a grep of lib.sh never saw it: #345 found the old "render_user
+// omits send_email" assertion passing while render_user printed it). Both are checked on output.
 ok('EMAIL send_email is emitted', byType('send_email').some((x) => x.name === 'EMAIL'));
 ok('send_email is an allowed binding type (USER_OK) and deploy.sh emits it',
   USER_OK.has('send_email') && deploySh.includes('mail-from.mjs') && deploySh.includes('--binding'));
-ok('KNOWN GAP recorded: lib.sh render_user omits send_email (WFP sites lack email today)',
-  !lib.includes('send_email'));
+ok('render_user EMITS a send_email binding named EMAIL (rendered output, not source text)',
+  has(/^send_email = \[\{ name = "EMAIL", allowed_sender_addresses = \["[^"]+"\] \}\]$/m));
 
 // 5. The instrument can FAIL: a value we do NOT emit, and a name that is not a
 // var, are both absent, so the exact-match checks above are discriminating.
-ok('negative control: render_user does not carry PHP_IN_DO = "off"', !lib.includes('PHP_IN_DO = "off"'));
-ok('negative control: a bogus var name is not in render_user', !lib.includes('NOT_A_REAL_VAR ='));
+ok('negative control: render_user does not carry PHP_IN_DO = "off"', !has(/^PHP_IN_DO = "off"$/m));
+ok('negative control: a bogus var name is not in render_user', !has(/^NOT_A_REAL_VAR =/m));
+// The instrument sees a missing line: the same regex against output with the line removed is false.
+ok('negative control: the DB_IN_DO matcher fails on output that lacks the line',
+  !/^DB_IN_DO = "on"$/m.test(rendered.replace(/^DB_IN_DO = "on"$/m, '')));
 
 // 6. bDosqlVars validates its required input.
 let threw = false;
@@ -125,11 +138,11 @@ const bQ = bDosqlBindings({ mediaBucket: mediaBucketName('blog'), siteOrigin: 'h
 ok('async-email-queue opt-in adds ASYNC_EMAIL_QUEUE=on + the EMAIL_QUEUE queue binding',
   bQ.some((x) => x.type === 'plain_text' && x.name === 'ASYNC_EMAIL_QUEUE' && x.text === 'on') &&
   bQ.some((x) => x.type === 'queue' && x.name === 'EMAIL_QUEUE'));
-// KNOWN GAP (same shape as the EMAIL send_email gap above): lib.sh render_user emits
-// neither the L2 KV wiring nor the queue wiring; the provisioning path adds them and
-// their binding types are sanctioned by USER_OK, which is what the drift guard enforces.
-ok('KNOWN GAP recorded: lib.sh render_user omits the L2 KV + email-queue wiring',
-  !lib.includes('OBJECT_CACHE_L2') && !lib.includes('ASYNC_EMAIL_QUEUE'));
+// KNOWN GAP: render_user emits neither the L2 KV wiring nor the queue wiring; the provisioning
+// path adds them and their binding types are sanctioned by USER_OK, which is what the drift guard
+// enforces. Asserted on the rendered output, so it goes red the day render_user starts emitting them.
+ok('KNOWN GAP recorded: render_user output omits the L2 KV + email-queue wiring',
+  !has(/OBJECT_CACHE_L2/) && !has(/ASYNC_EMAIL_QUEUE/) && !has(/OC_KV/) && !has(/EMAIL_QUEUE/));
 
 // Pageview analytics (#201 Phase 2) is OPT-IN (default:false, a privacy implication).
 // ABSENT by default; enabling binds the ANALYTICS analytics_engine dataset + WP_ANALYTICS=on.
