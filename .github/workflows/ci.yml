@@ -71,16 +71,16 @@ jobs:
       - name: Import media refusal tests
         # deploy/import/media.sh (issue #124): a refused or failed HEAD is retried, then fails; it never counts as missing.
         run: deploy/import/tests/media-refuse-test.sh
+      - name: plugin-memory.py never counts a page-cache copy as a fresh runtime (issue #344)
+        # A fake site on localhost replays cached x-boot 1, as the page cache does. The case that
+        # reproduces the old probe needs git history and skips in a shallow checkout.
+        run: python3 -I tests/wfp/plugin-memory-test.py
       - name: b-dosql mail From address
         run: node --test spikes/b2-wordpress/tests/mail-from.test.mjs
       - name: b-dosql demo site lock
         run: node --test spikes/b2-wordpress/tests/site-lock.test.mjs
       - name: b-dosql performance headers need the spike token
         run: node --test spikes/b2-wordpress/tests/perf-headers.test.mjs
-      - name: plugin-memory.py never counts a page-cache copy as a fresh runtime (issue #344)
-        # A fake site on localhost replays cached x-boot 1, as the page cache does. The case that
-        # reproduces the old probe needs git history and skips in a shallow checkout.
-        run: python3 -I tests/wfp/plugin-memory-test.py
       - name: b-dosql outbound host allowlist
         run: node --test spikes/b2-wordpress/tests/http-allow.test.mjs
       - name: email-queue unit tests
