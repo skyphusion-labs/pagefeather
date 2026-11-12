@@ -39,9 +39,11 @@ rm -f out.json; : > dev.log
 # SITE_ORIGIN (issue #33): the site's links are localhost:<port>, the address
 # e2e.sh and opcache.sh use, whatever request boots PHP first.
 # DEV_VARS: more vars, "NAME:value" separated by spaces (opcache.sh sets PHP_RECYCLE:off).
+# PERSIST_TO: the local state directory (default .wrangler/state). opcache.sh passes a fresh,
+# empty one, so what it primes depends on the build, not on what an earlier run left (#313).
 vars=()
 for v in ${DEV_VARS:-}; do vars+=(--var "$v"); done
-wrangler dev --port "$PORT" --log-level warn ${DEV_ENV:+--env $DEV_ENV} --var "SITE_ORIGIN:http://localhost:$PORT" --var "SPIKE_TOKEN:${SPIKE_TOKEN:-local-spike-token}" "${vars[@]}" > dev.log 2>&1 &
+wrangler dev --port "$PORT" --log-level warn ${DEV_ENV:+--env $DEV_ENV} ${PERSIST_TO:+--persist-to "$PERSIST_TO"} --var "SITE_ORIGIN:http://localhost:$PORT" --var "SPIKE_TOKEN:${SPIKE_TOKEN:-local-spike-token}" "${vars[@]}" > dev.log 2>&1 &
 started=$!
 up=0
 for _ in $(seq 1 60); do
