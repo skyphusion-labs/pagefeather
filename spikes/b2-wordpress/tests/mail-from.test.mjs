@@ -23,7 +23,7 @@ test('the display name is MAIL_FROM_NAME only', () => {
 });
 
 test('a different From becomes Reply-To, and workers.dev does not', () => {
-	assert.deepEqual(replyTo('a@shop.example.co', 'From: Ada <ada@ada.example>\r\n'), { email: 'ada@ada.example', name: 'Ada' });
+	assert.deepEqual(replyTo('a@shop.example.co', 'From: Ada <ada@ada.example.co>\r\n'), { email: 'ada@ada.example.co', name: 'Ada' });
 	assert.equal(replyTo('a@shop.example.co', 'From: wordpress@wp.workers.dev'), null);
 	assert.equal(replyTo('a@shop.example.co', 'From: a@shop.example.co'), null);
 });
@@ -55,4 +55,15 @@ test('deliverableRecipients drops blanks and all-undeliverable lists cleanly', (
 	const r = deliverableRecipients(['', null, 'x@localhost', 'y@workers.dev']);
 	assert.deepEqual(r.deliverable, []);
 	assert.equal(r.dropped, 2);
+});
+
+// The reserved .example TLD (RFC 2606) is undeliverable too: the sample store fixture's admin is
+// admin@wordpress.example, and b-dosql must never hand it to env.EMAIL.send. example.co (a real
+// TLD) stays deliverable.
+test('the .example TLD is undeliverable; example.co is not', () => {
+	assert.equal(undeliverable('admin@wordpress.example'), true);
+	assert.equal(undeliverable('x@example'), true);
+	assert.equal(undeliverable('shop@shop.example.co'), false);
+	assert.equal(sender({ SITE_ORIGIN: 'https://shop.wordpress.example' }), null);
+	assert.deepEqual(deliverableRecipients(['a@wordpress.example', 'b@shop.example.co']), { deliverable: ['b@shop.example.co'], dropped: 1 });
 });
