@@ -30,9 +30,11 @@ what you see on ggc.sh is the uncached path, not the cached one.
 
 > **Not yet run end to end from a fresh clone.** The commands below are the `deploy/wfp` flow in
 > [docs/operator.md](docs/operator.md), the one the isolation proofs use. A measured run of
-> `site add` and `site remove` is next. Do not use `deploy/provision/cli.mjs add` as a quickstart
-> yet: measured 2026-11-11, it makes the site's parts but no dispatcher, so the site answers 404 on
-> `workers.dev`, and the CLI has no `remove` or `list`.
+> `site add` and `site remove` from a fresh clone is next. `deploy/wfp/site` is the one operator
+> surface of this deployment
+> ([#294](https://github.com/skyphusion-labs/wordpress-on-cloudflare/issues/294)).
+> `deploy/provision/cli.mjs` is for a site on a Cloudflare for SaaS zone only: without
+> `WFP_SAAS_ZONE_ID` it refuses before any API call and names `deploy/wfp/site`.
 
 You need a Cloudflare account on the **Workers for Platforms Paid** plan, an API token and the tools
 listed in [docs/operator.md](docs/operator.md) ("What you need": Node, Wrangler 4.107.0 or later,
