@@ -199,6 +199,19 @@ else
     echo "no site $s: nothing to remove" >&2
     exit 2
   fi
+  # A site the provisioning core made (cli.mjs, the provisioning Worker) has no workspace here
+  # and parts this package does not make; refuse it whole, before any change (#294).
+  if ! has_ws "$s"; then
+    by=$(entry_by_core "$s")
+    if [ "$by" = core ] || [ "$by" = unknown ]; then
+      why="the provisioning core wrote its site map entry"; [ "$by" = unknown ] && why="who wrote its site map entry is unknown"
+      echo "site $s was not made by deploy/wfp (no workspace; $why); nothing was changed." >&2
+      echo "  deploy/wfp/site removes only a site it made. The parts found:" >&2
+      printf '%s\n' "$fp" | sed 's/^/    /' >&2
+      echo "  A core site can also have the KV namespace wp-wfp-$s-oc and the resources of its opt-in integrations (deploy/provision/wp-site-config.mjs)." >&2
+      exit 2
+    fi
+  fi
   "$WFP/site.sh" down "$s"
   fp=$(site_footprint "$s")
   footprint_absent "$fp" || { echo "site $s: not every part is gone after the remove:" >&2; printf '%s\n' "$fp" | sed 's/^/  /' >&2; exit 1; }
