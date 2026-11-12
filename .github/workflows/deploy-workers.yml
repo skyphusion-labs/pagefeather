@@ -1,0 +1,105 @@
+name: deploy-workers
+
+# Deploys the reference deployment's shared Workers from Actions (fleet-chezmoi#2620). Conrad,
+# 2026-11-12: every deployed artifact is built and deployed by Actions, not on the laptop. Measured
+# 2026-11-12: all four run code uploaded from the laptop (2026-11-07 and 2026-11-08), with no
+# matching Actions run.
+#
+#   wp-provision        deploy/provision/wrangler.toml
+#   wp-provision-demo   deploy/provision/wrangler.demo.toml
+#   wp-wfp-outbound     deploy/wfp/outbound template, rendered by lib.sh render_outbound (as up.sh does)
+#   wp-dispatch         deploy/wfp/dispatcher template, rendered by lib.sh render_shared_dispatcher
+#                       (as up.sh does in phase B). The dispatchers bind wp-wfp-outbound, so deploy
+#                       the outbound first when both change.
+#
+# Manual dispatch from main only, one Worker per run. Wrangler runs only through deploy/wr, the
+# pinned one (deploy/tests/wrangler-pin-test.sh). The tests for the Worker run first. Secrets are not
+# set here: a wrangler secret persists across deploys.
+#
+# NOT here, on purpose: the per-site Workers (wp-<site> dispatchers in phase A and the site-<name>
+# scripts in the wp-wfp namespace). deploy/wfp/site is the one operator surface for those (#294).
+# Nor the probes (wp-probe, wp-cacheprobe, wp-cacheprobe-direct), which are test artifacts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      worker:
+        description: "Which Worker to deploy"
+        type: choice
+        options: [wp-provision, wp-provision-demo, wp-wfp-outbound, wp-dispatch]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-worker-${{ inputs.worker }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Only main, and only a commit on origin/main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          [ "$REF" = "refs/heads/main" ] || { echo "::error::deploy runs only from main, not $REF"; exit 1; }
+          git fetch --no-tags origin main
+          head="$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$head" origin/main || { echo "::error::$head is not on origin/main"; exit 1; }
+          echo "deploying $head from main"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Tests for this Worker
+        env:
+          WORKER: ${{ inputs.worker }}
+        run: |
+          set -euo pipefail
+          case "$WORKER" in
+            wp-provision | wp-provision-demo)
+              for t in deploy/provision/tests/*-test.mjs; do echo "== $t"; node "$t"; done ;;
+            wp-wfp-outbound | wp-dispatch)
+              node deploy/wfp/tests/dispatcher-test.mjs
+              bash deploy/wfp/tests/render-test.sh ;;
+            *) echo "::error::unknown worker $WORKER"; exit 1 ;;
+          esac
+
+      - name: Deploy ${{ inputs.worker }}
+        env:
+          WORKER: ${{ inputs.worker }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          . deploy/wfp/lib.sh
+          need_account
+          case "$WORKER" in
+            wp-provision)
+              (cd deploy/provision && ../wr deploy --config wrangler.toml) ;;
+            wp-provision-demo)
+              (cd deploy/provision && ../wr deploy --config wrangler.demo.toml) ;;
+            wp-wfp-outbound)
+              mkdir -p "$GEN"
+              render_outbound > "$GEN/outbound.toml"
+              (cd "$GEN" && "$WR" deploy --config outbound.toml) ;;
+            wp-dispatch)
+              # The site map the provisioning Worker writes is the one the dispatcher reads, so its id
+              # comes from the same committed config, not from a second copy.
+              kv="$(sed -n 's/^WFP_KV_ID = "\([0-9a-f]\{32\}\)"$/\1/p' deploy/provision/wrangler.toml)"
+              [ -n "$kv" ] || { echo "::error::no 32-hex WFP_KV_ID in deploy/provision/wrangler.toml"; exit 1; }
+              mkdir -p "$GEN"
+              render_shared_dispatcher "$kv" > "$GEN/$SHARED_DISPATCHER.toml"
+              [ "$SHARED_DISPATCHER" = wp-dispatch ] || { echo "::error::SHARED_DISPATCHER is $SHARED_DISPATCHER, not wp-dispatch"; exit 1; }
+              (cd "$GEN" && "$WR" deploy --config "$SHARED_DISPATCHER.toml") ;;
+            *) echo "::error::unknown worker $WORKER"; exit 1 ;;
+          esac
