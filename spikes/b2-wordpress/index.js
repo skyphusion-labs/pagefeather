@@ -6,7 +6,7 @@ import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
 import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-arm.mjs';
-import { classifyObjectError, objectErrorHeaders } from './object-error.mjs';
+import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry } from './object-error.mjs';
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { cronBounds, cronCleanDue } from './cron-bound.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
@@ -2418,15 +2418,25 @@ async function toPhpObject(req, env, url, ctx) {
 	const name = phpObjectName(env, url);
 	// The hint applies only when the object is made. D1's primary is in the
 	// Chicago area; "enam" is Eastern North America.
-	const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(name), env.PHP_LOCATION ? { locationHint: env.PHP_LOCATION } : undefined);
-	const fwd = new Request(req);
-	fwd.headers.set(ORIGIN_HEADER, siteOrigin(env, url));
-	const t0 = Date.now();
-	fwd.headers.set(SENT_HEADER, String(t0));
-	let r;
-	try {
-		r = await stub.fetch(fwd);
-	} catch (e) {
+	let t0 = Date.now();
+	// A GET or HEAD that dies in an isolate memory reset is sent once more (#335,
+	// object-error.mjs fetchWithMemoryRetry); each attempt makes its own stub and request.
+	const res = await fetchWithMemoryRetry(
+		() => {
+			const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(name), env.PHP_LOCATION ? { locationHint: env.PHP_LOCATION } : undefined);
+			const fwd = new Request(req);
+			fwd.headers.set(ORIGIN_HEADER, siteOrigin(env, url));
+			t0 = Date.now();
+			fwd.headers.set(SENT_HEADER, String(t0));
+			return stub.fetch(fwd);
+		},
+		req.method,
+		(e) => console.log(JSON.stringify({ m: 'isolate-reset-retry', path: url.pathname, error: String(e.message).slice(0, 200) })),
+	);
+	const retried = res.attempts > 1;
+	if (res.error) {
+		const e = res.error;
+		const kind = res.kind;
 		// The object runs one PHP request at a time. Past its queue limit the
 		// runtime refuses with "Durable Object is overloaded" (measured
 		// 2026-11-05: 27 of 400 at 100 clients, docs/perf-dosql.md). Uncaught,
@@ -2435,17 +2445,20 @@ async function toPhpObject(req, env, url, ctx) {
 		// Worker (a cached error would reach readers after the queue drains).
 		// An isolate memory reset also comes with e.overloaded set; it gets its own
 		// header, x-isolate-reset: memory, not x-overloaded (#335, object-error.mjs).
-		// Other errors are thrown as before.
-		const kind = classifyObjectError(e);
-		if (!kind) throw e;
-		console.log(JSON.stringify({ m: kind === 'memory' ? 'isolate-reset' : 'overloaded', path: url.pathname, error: String(e.message).slice(0, 200) }));
+		// Other errors are thrown as before (fetchWithMemoryRetry rethrows them).
+		console.log(JSON.stringify({ m: kind === 'memory' ? 'isolate-reset' : 'overloaded', path: url.pathname, retried, error: String(e.message).slice(0, 200) }));
+		const headers = objectErrorHeaders(kind, name, OVERLOAD_RETRY_AFTER_S);
+		if (retried) headers['x-isolate-retry'] = '1';
 		return new Response(kind === 'memory' ? 'The site restarted. Please try again in a few seconds.\n' : 'The site is busy. Please try again in a few seconds.\n', {
 			status: 503,
-			headers: objectErrorHeaders(kind, name, OVERLOAD_RETRY_AFTER_S),
+			headers,
 		});
 	}
+	const r = res.r;
 	const out = new Response(r.body, r);
 	out.headers.set('x-php-object', name);
+	// The answer came from the retry after a memory reset (#335): the instrument for the A/B.
+	if (retried) out.headers.set('x-isolate-retry', '1');
 	// Wall time from the Worker to the object and back, PHP time included.
 	const objectMs = Date.now() - t0;
 	out.headers.set('x-object-ms', String(objectMs));

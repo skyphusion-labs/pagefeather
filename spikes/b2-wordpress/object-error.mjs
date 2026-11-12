@@ -19,6 +19,40 @@ export function classifyObjectError(e) {
 	return null;
 }
 
+// Retry once (#335, the lead's ruling 2026-11-12). A memory reset kills every request in the
+// isolate, also a page that only queued behind the cron tick; the same page on the next isolate
+// answered 200 after each of the 13 cold 503s measured on fdprobe1112g. So a GET or HEAD is sent
+// once more. Never a POST or any other method: it may have run in part (an order, a login) before
+// the reset. Never a full queue: a retry adds load to it. Never a second time.
+export const RETRY_METHODS = new Set(['GET', 'HEAD']);
+
+/** Retry this failure? Only a memory reset, only a GET or HEAD, only the first attempt. */
+export function shouldRetryObjectError(kind, method, attempt) {
+	return kind === 'memory' && RETRY_METHODS.has(String(method || '').toUpperCase()) && attempt === 0;
+}
+
+/**
+ * Call send(attempt) and retry it once by shouldRetryObjectError. Returns { r, attempts } on an
+ * answer, or { error, kind, attempts } for a classified failure that is not retried (again).
+ * An error classifyObjectError does not know is thrown, as before. send makes its own stub and
+ * request each time: a stub that saw the reset is not reused.
+ */
+export async function fetchWithMemoryRetry(send, method, onRetry) {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return { r: await send(attempt), attempts: attempt + 1 };
+		} catch (e) {
+			const kind = classifyObjectError(e);
+			if (!kind) throw e;
+			if (shouldRetryObjectError(kind, method, attempt)) {
+				if (onRetry) onRetry(e, attempt);
+				continue;
+			}
+			return { error: e, kind, attempts: attempt + 1 };
+		}
+	}
+}
+
 /** The 503 headers for a classified error (never stored by a cache). */
 export function objectErrorHeaders(kind, objectName, retryAfterS) {
 	const h = { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'retry-after': retryAfterS, 'x-php-object': objectName };
