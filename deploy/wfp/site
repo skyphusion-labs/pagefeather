@@ -53,6 +53,7 @@ update_one() {
   code=$(store_api_code "$ORIGIN")
   echo "site $s: the live Store API answers $code; this build primes WooCommerce: $woo; content inputs: $(content_inputs_set)"
   update_inputs_check "${rollback:-}" "$code" "$woo" "$(content_inputs_set)" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
+  tree_clean_check || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
   [ "${COUNT_ROWS:-0}" = 1 ] && echo "site $s: rows before: $(row_count "$ORIGIN" "$TOK")"
   if [ "${NO_SNAPSHOT:-0}" != 1 ]; then
     snap_key="$s/${rollback:-unknown}-$(date -u +%Y%m%dT%H%M%SZ).ndjson"

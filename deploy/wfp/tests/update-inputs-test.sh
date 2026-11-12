@@ -21,6 +21,7 @@ want "a broken live site (503) with no explicit WOO_ACTIVE: refused (cannot tell
 want "no answer (000) and no explicit WOO_ACTIVE: refused" 2 e3b63c8eddbb 000 0 0
 want "a plain site without WooCommerce (404), plain build: allowed" 0 e3b63c8eddbb 404 0 0
 WOO_ACTIVE=0 want "WooCommerce live (200) and an explicit WOO_ACTIVE=0: still refused" 2 abc 200 0 0
+want "a live content build that is also primed (-c...-wooprimed), a plain run: refused" 2 e3b63c8eddbb-c1a2b3c4d-wooprimed 404 1 0
 
 # The inputs, read the way the update reads them.
 check() { if [ "$2" = "$3" ]; then echo "  ok   $1"; else echo "  FAIL $1: got '$2', want '$3'"; fails=$((fails + 1)); fi; }
@@ -29,12 +30,22 @@ check "IMPORT_CONTENT is a content input" "$(IMPORT_CONTENT=/x bash -c ". '$HERE
 check "woocommerce in IMPORT_PLUGINS primes it" "$(IMPORT_PLUGINS='mcp-adapter skyphusion-ai woocommerce' bash -c "unset WOO_ACTIVE; . '$HERE/../lib.sh'; woo_active_for_build")" 1
 check "a store API with no server answers 000" "$(store_api_code http://127.0.0.1:9)" 000
 
+# A dirty tree is refused (tree_clean_check): ggc's live a0889bfcf082-dirty left no record of its inputs.
+G=$(mktemp -d); git -C "$G" init -q; git -C "$G" -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+tree_clean_check "$G" 2>/dev/null; check "a clean tree: allowed" "$?" 0
+echo x > "$G/f"
+tree_clean_check "$G" 2>/dev/null; check "a dirty tree: refused" "$?" 2
+ALLOW_DIRTY=1 tree_clean_check "$G" 2>/dev/null; check "a dirty tree with ALLOW_DIRTY=1: allowed" "$?" 0
+rm -rf "$G"
+
 # The refusal runs in update_one before the snapshot, the build and the upload.
 S="$HERE/../site"
 l_check=$(grep -n 'update_inputs_check "${rollback' "$S" | head -1 | cut -d: -f1)
 l_snap=$(grep -n 'snapshot the data to' "$S" | head -1 | cut -d: -f1)
 l_build=$(grep -n '^  build_dosql$' "$S" | head -1 | cut -d: -f1)
 check "the refusal is in update_one" "$([ -n "$l_check" ] && echo yes || echo no)" yes
+l_tree=$(grep -n '  tree_clean_check ||' "$S" | head -1 | cut -d: -f1)
+check "the dirty-tree refusal comes before the snapshot and the build" "$([ -n "$l_tree" ] && [ "$l_tree" -lt "$l_snap" ] && [ "$l_tree" -lt "$l_build" ] && echo yes || echo no)" yes
 check "the refusal comes before the snapshot and the build" "$([ -n "$l_check" ] && [ "$l_check" -lt "$l_snap" ] && [ "$l_check" -lt "$l_build" ] && echo yes || echo no)" yes
 
 echo "$fails failing case(s)"

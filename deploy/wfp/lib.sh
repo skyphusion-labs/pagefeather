@@ -283,10 +283,19 @@ update_inputs_check() {
     404) ;;
     *) [ -n "${WOO_ACTIVE:-}" ] || { echo "the Store API check answered $code, neither 200 nor 404, so it cannot tell whether WooCommerce is active: set WOO_ACTIVE=0 or 1" >&2; return 2; } ;;
   esac
-  if [[ "$live" =~ -c[0-9a-f]{8}$ ]] && [ "$content" = 0 ] && [ "${ALLOW_PLAIN_BUILD:-0}" != 1 ]; then
+  if [[ "$live" =~ -c[0-9a-f]{8}(-wooprimed)?$ ]] && [ "$content" = 0 ] && [ "${ALLOW_PLAIN_BUILD:-0}" != 1 ]; then
     echo "the live build $live was made with content inputs (PLUGINS or IMPORT_CONTENT), and this run has none: it would ship stock WordPress without the site's theme, plugins and mu-plugins. Pass the same content inputs, or ALLOW_PLAIN_BUILD=1 to drop them on purpose." >&2
     return 2
   fi
+}
+# A site update builds from this tree. A dirty tree makes a -dirty build that nobody can rebuild or
+# read back: ggc's live build a0889bfcf082-dirty (2026-11-12) left no record of what it held, so its
+# content inputs could not be checked before the update replaced it (#377). Refused unless
+# ALLOW_DIRTY=1. tree_clean_check [git dir]
+tree_clean_check() {
+  local d=${1:-$ROOT} st
+  st=$(git -C "$d" status --porcelain 2>/dev/null) || { echo "cannot read the git status of $d" >&2; return 2; }
+  [ -z "$st" ] || [ "${ALLOW_DIRTY:-0}" = 1 ] || { echo "the tree $d has uncommitted changes, so the build would be -dirty (not reproducible). Commit or stash them, or ALLOW_DIRTY=1 on purpose:" >&2; echo "$st" | head -10 >&2; return 2; }
 }
 # 1 when this run has a content input (the rule content-id.py uses), else 0.
 content_inputs_set() { if [ -n "${PLUGINS:-}${IMPORT_CONTENT:-}" ]; then echo 1; else echo 0; fi; }
@@ -301,7 +310,8 @@ build_dosql() {
   ( cd "$APP"
     [ -d node_modules ] || npm ci --silent
     [ -f vendor/php_8_3.js ] || ./prepare.sh
-    ./build.sh | tail -1
+    # WOO_ACTIVE reaches build.sh too, so the build id says whether it is primed (#377).
+    WOO_ACTIVE=$woo ./build.sh | tail -1
     WOO_ACTIVE=$woo DEV_ENV=dosql-local ./opcache.sh > build/opcache.log 2>&1 || { echo "opcache.sh failed:"; tail -25 build/opcache.log; exit 1; }
     tail -1 build/opcache.log ) || return 1
   # The subshell status is checked (#313): under "site update --all" (if "$fn") set -e is off, and
