@@ -84,7 +84,7 @@ ok "valid_site takes 1 to 30 of [a-z0-9-] with no end hyphen, and no shared Work
 # are named. A templated name (wp-@SITE@, wp-$n, wp-%s) is per site and is not matched.
 # cross.sh is left out of the host scan: its wp-crossa and wp-crossb are the
 # dispatchers of two ordinary test SITES (crossa, crossb) it adds, not shared Workers.
-shared=$( (cd "$WFP" && grep -rhoE '(name = "|--name "?|SHARED_DISPATCHER:-)wp-[a-z0-9-]+' --include='*.toml' --include='*.sh' --include=site . ;
+shared=$( (cd "$WFP" && grep -rhoE '(name = "|--name "?|SHARED_DISPATCHER:-)wp-[a-z0-9-]+' --include='*.toml' --include='*.sh' --include=site --exclude-dir=gen . ;
   cd "$WFP" && grep -rhoE 'https://wp-[a-z0-9-]+\.' --include='*.py' --include='*.sh' --exclude-dir=tests --exclude=cross.sh . ) | sed -E 's/.*(wp-[a-z0-9-]*[a-z0-9]).*$/\1/' | sort -u)
 okd=1; nd=0
 for w in $shared; do nd=$((nd + 1)); valid_site "${w#wp-}" && { okd=0; echo "  valid_site takes '${w#wp-}', which makes the shared Worker $w"; }; done
@@ -110,5 +110,8 @@ grep -q 'fabcb25d9c7eb087110ec474a03e50d2' "$WFP/lib.sh" "$WFP/terraform/site/ma
 ok "no account default in lib.sh or the terraform roots (reference ids live in reference.env)" "$okt"
 ( ACCOUNT_ID=; need_account ) >/dev/null 2>&1; rc=$?
 ok "need_account with no ACCOUNT_ID exits 2" "$([ "$rc" = 2 ] && echo 1 || echo 0)"
+# OBSERVABILITY=1 (#291): Workers Logs for one site only; the default renders none.
+ok "render_user has no [observability] by default" "$(render_user one https://wp-one.sub.workers.dev | grep -c '^\[observability\]' | grep -qx 0 && echo 1 || echo 0)"
+ok "OBSERVABILITY=1 renders [observability] enabled" "$(OBSERVABILITY=1 render_user one https://wp-one.sub.workers.dev | tr '\n' ' ' | grep -q '\[observability\] enabled = true' && echo 1 || echo 0)"
 echo "$fails failing check(s)"
 exit $fails

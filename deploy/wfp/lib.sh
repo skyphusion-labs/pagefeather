@@ -175,6 +175,10 @@ class_name = "PhpRuntime"
 tag = "v1"
 new_sqlite_classes = ["PhpRuntime"]
 TOML
+  # OBSERVABILITY=1 (default off): Workers Logs for this one site, to read a run the platform
+  # terminates (#291: an alarm ended scriptThrewException with no catch firing). wrangler tail
+  # cannot follow a namespace script. Turn it on for a throwaway or a diagnosis, not by default.
+  if [ "${OBSERVABILITY:-0}" = 1 ]; then printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n'; fi
 }
 
 # WOO_ACTIVE for the OPcache priming (#313), from the build inputs only: an explicit WOO_ACTIVE
