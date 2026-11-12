@@ -7,6 +7,7 @@ import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
 import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-arm.mjs';
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
+import { cronBounds, cronCleanDue } from './cron-bound.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
@@ -1249,6 +1250,7 @@ const PURGE_GAP_MS = 15000;
 const PURGE_STATE_KEY = 'skyphusion-purge';
 const ORIGIN_KEY = 'skyphusion-origin';
 const CRON_SKIP_KEY = 'cron-skip';
+const CRON_CLEAN_KEY = 'cron-cleaned-at';
 let lastPurge = 0;
 function schedulePurge(ctx) {
 	// A purge already scheduled for later covers this change too.
@@ -2129,7 +2131,9 @@ export class PhpRuntime extends DurableObject {
 				if (realTxn) txnRecover(sql, this.ctx.storage);
 				let cr;
 				try {
-					cr = await runCron(await (bootPromise ??= boot(cronOrigin)));
+					const cleanDue = cronCleanDue(await this.ctx.storage.get(CRON_CLEAN_KEY), Date.now());
+					cr = await runCron(await (bootPromise ??= boot(cronOrigin)), cleanDue);
+					if (cr && cr.cleaned) await this.ctx.storage.put(CRON_CLEAN_KEY, Date.now());
 				} finally {
 					// A cron run that left a transaction open is rolled back, as a request is (MySQL rolls
 					// back on connection close); a throw is re-raised to the outer catch after this.
@@ -2342,12 +2346,15 @@ function phpObjectName(env, url) {
 // seconds, not minutes.
 const OVERLOAD_RETRY_AFTER_S = '5';
 
-async function runCron(booted) {
+async function runCron(booted, cleanDue = false) {
 		const { php } = booted;
+		// A bounded tick (cron-bound.mjs, #291): our own claim/process loop, not the queue runner,
+		// which grew the runtime past the 128 MiB isolate on a big store even for one action.
+		const { actions, wpEvents } = cronBounds(ENV);
 		return withPhp(async () => {
 		const r = await php.run({ code: `<?php
 			require '/wordpress/wp-load.php';
-			$ran = array(); $released = 0;
+			$ran = array(); $released = 0; $as_n = 0; $as_hooks = array(); $cleaned = 0;
 			if ( class_exists( 'ActionScheduler' ) || function_exists( 'as_next_scheduled_action' ) ) {
 				// Stale-claim recovery (the DO memory-recycle class). This alarm is the only Action
 				// Scheduler runner and runs serialized (withPhp + the phpPending gate), so any claim on
@@ -2361,17 +2368,32 @@ async function runCron(booted) {
 				$as_c = $wpdb->prefix . 'actionscheduler_claims';
 				$released = (int) $wpdb->query( "UPDATE {$as_t} SET claim_id = 0 WHERE claim_id != 0 AND status = 'pending'" );
 				$wpdb->query( "DELETE FROM {$as_c} WHERE claim_id NOT IN ( SELECT DISTINCT claim_id FROM {$as_t} WHERE claim_id != 0 )" );
-				do_action( 'action_scheduler_run_queue', 'Skyphusion DO alarm' );
+				$as_store = ActionScheduler::store(); $as_runner = ActionScheduler::runner();
+				$claim = $as_store->stake_claim( ${actions} );
+				foreach ( $claim->get_actions() as $as_id ) {
+					$as_a = $as_store->fetch_action( $as_id ); $as_h = $as_a ? $as_a->get_hook() : '?';
+					$as_hooks[ $as_h ] = ( isset( $as_hooks[ $as_h ] ) ? $as_hooks[ $as_h ] : 0 ) + 1;
+					$as_runner->process_action( $as_id, 'Skyphusion DO alarm' ); $as_n++;
+					// Drop what the action loaded (orders, meta) from the in-request cache, as the queue
+					// runner did per batch: without it memory grows with every action (#291).
+					if ( function_exists( 'wp_cache_flush_runtime' ) ) { wp_cache_flush_runtime(); }
+				}
+				$as_store->release_claim( $claim );
+				// The cleaner (timeouts, failures) on a tick with nothing to do, and at least every
+				// CRON_CLEAN_MS on a busy store (cronCleanDue), so a long backlog cannot starve it.
+				$cleaned = 0;
+				if ( 0 === $as_n || ${cleanDue ? 1 : 0} ) { $as_cleaner = new ActionScheduler_QueueCleaner( $as_store ); $as_cleaner->reset_timeouts(); $as_cleaner->mark_failures(); $cleaned = 1; }
 				$ran[] = 'action_scheduler';
 			}
 			$events = 0; $crons = function_exists( '_get_cron_array' ) ? _get_cron_array() : array();
-			if ( is_array( $crons ) ) { $now = time(); foreach ( $crons as $ts => $hooks ) { if ( $ts > $now ) break;
+			if ( ${wpEvents} > 0 && is_array( $crons ) ) { $now = time(); foreach ( $crons as $ts => $hooks ) { if ( $ts > $now ) break;
 				foreach ( (array) $hooks as $hook => $evs ) { foreach ( (array) $evs as $ev ) {
 					if ( ! empty( $ev['schedule'] ) ) { wp_reschedule_event( $ts, $ev['schedule'], $hook, $ev['args'], isset($ev['interval']) ? $ev['interval'] : 0 ); }
 					wp_unschedule_event( $ts, $hook, $ev['args'] );
-					do_action_ref_array( $hook, $ev['args'] ); if ( ++$events >= 50 ) { break 3; }
+					do_action_ref_array( $hook, $ev['args'] ); if ( function_exists( 'wp_cache_flush_runtime' ) ) { wp_cache_flush_runtime(); } if ( ++$events >= ${wpEvents} ) { break 3; }
 				} } } }
-			echo json_encode( array( 'ran' => $ran, 'wp_cron_events' => $events, 'released' => $released ) );` });
+			$as_list = array(); foreach ( $as_hooks as $k => $v ) { $as_list[] = $k . ':' . $v; }
+			echo json_encode( array( 'ran' => $ran, 'wp_cron_events' => $events, 'released' => $released, 'as_actions' => $as_n, 'as_hooks' => implode( ',', $as_list ), 'cleaned' => $cleaned ) );` });
 		let out = {};
 		try { out = JSON.parse(String(r.text).slice(String(r.text).lastIndexOf('{'))); } catch (e) { out = { parse: String(r.text).slice(-200) }; }
 		return out;

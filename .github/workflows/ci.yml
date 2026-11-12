@@ -85,6 +85,9 @@ jobs:
       - name: b-dosql import holds the cron off
         # import-hold.mjs: no cron run between two /_dbimport parts (fdprobe1112a, 2026-11-12).
         run: node --test spikes/b2-wordpress/tests/import-hold.test.mjs
+      - name: b-dosql bounded cron tick
+        # cron-bound.mjs: the cron runs its own claim loop, bounded, and the cleaner cannot starve (#291).
+        run: node --test spikes/b2-wordpress/tests/cron-bound.test.mjs
       - name: b-dosql operator endpoints (issue #35)
         # /_build and /_evict are gated and never cached (spikes/b2-wordpress).
         run: node spikes/b2-wordpress/tests/build-evict-test.mjs
