@@ -135,6 +135,11 @@ jobs:
       - name: b-dosql the cron tick claims a new order email before the backlog (issue #357)
         # cron-email-first.test.mjs runs the real runCron script with the php CLI against a stub store with the claim rules.
         run: node --test spikes/b2-wordpress/tests/cron-email-first.test.mjs
+      - name: b-dosql a cron tick hands each email off from inside the op (issue #362)
+        # email-handoff.test.mjs: a reset at every statement of a model tick (soft and hard) loses no
+        # completed order email and sends none twice; it also runs the real wp-mail-queue.php and the
+        # real runCron WP-Cron leg with the php CLI against stubs.
+        run: node --test spikes/b2-wordpress/tests/email-handoff.test.mjs
       - name: b-dosql bounded cron tick
         # cron-bound.mjs: the cron runs its own claim loop, bounded, and the cleaner cannot starve (#291).
         run: node --test spikes/b2-wordpress/tests/cron-bound.test.mjs
