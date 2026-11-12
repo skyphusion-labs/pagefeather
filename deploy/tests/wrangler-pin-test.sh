@@ -28,6 +28,21 @@ check "the scan read a real population of files" "$([ "${#FILES[@]}" -gt 50 ] &&
 check "no bare npx wrangler in a tracked script, workflow or Dockerfile" "$(scan_bare "${FILES[@]}" | wc -l | tr -d ' ')" "0"
 scan_bare "${FILES[@]}" | sed 's/^/        /'
 
+# A bare `wrangler <command>` in a shell script runs whatever is on PATH (#371): on the laptop a
+# global Homebrew copy, on a GitHub runner nothing, so run.sh's wrangler dev never started and the
+# zarapo OPcache build timed out. A call is one at command position (line start, after ( ; & | { or
+# $(, or after VAR=value prefixes). Comments, quoted text (echo "...", pkill -f "...") and "$WR"
+# calls are not calls.
+scan_bare_call() { grep -nE '(^|[;&|({]|\$\(|=[^[:space:]]*[[:space:]]+)[[:space:]]*wrangler[[:space:]]+(dev|deploy|tail|secret|r2|kv|d1|versions|whoami)([[:space:])]|$)' -- "$@" 2>/dev/null | grep -vE '^([^:]+:)?[0-9]+:[[:space:]]*#'; }
+printf '%s\n' 'wrangler dev --port 1' '(wrangler dev --port 1 > dev.log 2>&1 &)' 'X=1 Y=2 wrangler deploy --env a' 'd=$(wrangler deploy)' > "$T/call.sh"
+printf '%s\n' '"$WR" dev --port 1' 'pkill -f "wrangler dev --port 1"' 'echo "wrangler dev did not answer"' '# wrangler dev in a comment' 'deploy/wr deploy' > "$T/nocall.sh"
+check "control: 4 bare wrangler calls are found" "$(scan_bare_call "$T/call.sh" | wc -l | tr -d ' ')" "4"
+check "control: \$WR, a pkill pattern, an echo and a comment are not calls" "$(scan_bare_call "$T/nocall.sh" | wc -l | tr -d ' ')" "0"
+SH=(); while IFS= read -r f; do SH+=("$f"); done < <(printf '%s\n' "${FILES[@]}" | grep -E '\.sh$')
+check "the call scan read a real population of shell scripts" "$([ "${#SH[@]}" -gt 30 ] && echo yes || echo no)" "yes"
+check "no bare wrangler call in a tracked shell script" "$(scan_bare_call "${SH[@]}" | wc -l | tr -d ' ')" "0"
+scan_bare_call "${SH[@]}" | sed 's/^/        /'
+
 # The pin: exact version, present in the lockfile, and the wrapper uses node_modules/.bin.
 P=deploy/tools/package.json
 ver=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["devDependencies"]["wrangler"])' "$P" 2>/dev/null)

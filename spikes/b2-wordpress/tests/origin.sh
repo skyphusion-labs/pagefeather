@@ -18,11 +18,13 @@ cd "$(dirname "$0")/.." || exit 1
 PORT=${PORT:-8814}
 CFG="http://localhost:$PORT"
 OTHER="http://127.0.0.1:$PORT"
+# The pinned Wrangler (deploy/wr, #371), never a global one.
+WR=${WR:-$(cd "$(dirname "$0")/../../.." && pwd)/deploy/wr}
 S=$(mktemp -d); trap 'pkill -f "wrangler dev --port $PORT" 2>/dev/null; rm -rf "$S"' EXIT
 pkill -f "wrangler dev --port $PORT" 2>/dev/null
 # An empty array under set -u: "${VARS[@]+...}" below, for macOS /bin/bash 3.2.
 VARS=(--var "SITE_ORIGIN:$CFG"); [ "${FALLBACK:-0}" = 1 ] && VARS=()
-(wrangler dev --port "$PORT" --log-level log ${DEV_ENV:+--env "$DEV_ENV"} --persist-to "$S/state" ${VARS[@]+"${VARS[@]}"} > "$S/dev.log" 2>&1 &)
+("$WR" dev --port "$PORT" --log-level log ${DEV_ENV:+--env "$DEV_ENV"} --persist-to "$S/state" ${VARS[@]+"${VARS[@]}"} > "$S/dev.log" 2>&1 &)
 for _ in $(seq 1 90); do curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -m 2 -o /dev/null "$OTHER/_ping" && break; sleep 1; done
 curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -m 2 -o /dev/null "$OTHER/_ping" || { echo "wrangler dev did not start"; tail -20 "$S/dev.log"; exit 1; }
 inst=$(curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -m 300 -X POST -H "x-admin-password: ${ADMIN_PASSWORD:-local-spike-password}" "$OTHER/_install")

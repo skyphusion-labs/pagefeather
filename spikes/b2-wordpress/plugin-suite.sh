@@ -8,6 +8,8 @@
 # Needs: ~/.cf-testing.token (Free account), ~/.wp-on-d1-paid.env, ~/.wp-on-d1-spike.env.
 set -uo pipefail
 cd "$(dirname "$0")"
+# The pinned Wrangler (deploy/wr, #371), never a global one.
+WR=${WR:-$(cd ../.. && pwd)/deploy/wr}
 GROUPS_=(
   "elementor"
   "jetpack"
@@ -41,11 +43,11 @@ for g in "${sel[@]}"; do
   echo "group $g: site.zip + opcache.zip = $size bytes"
   for env in ${ENVS:-free paid}; do
     if [ $env = free ]; then
-      dep=$(CLOUDFLARE_API_TOKEN=$(cat ~/.cf-testing.token) CLOUDFLARE_ACCOUNT_ID=32ce15b8adb82f5a85b67d6c46b28177 wrangler deploy --env $DEPLOY_FREE 2>&1)
+      dep=$(CLOUDFLARE_API_TOKEN=$(cat ~/.cf-testing.token) CLOUDFLARE_ACCOUNT_ID=32ce15b8adb82f5a85b67d6c46b28177 "$WR" deploy --env $DEPLOY_FREE 2>&1)
       url=$FREE_URL; envf=$ENVF_FREE
     else
       deployenv=~/.wp-on-d1-paid.env; [ "$PREFIX" != a ] || deployenv=/Users/conrad/cloudflare-mcp.env
-      dep=$( (set -a; . $deployenv; set +a; CLOUDFLARE_ACCOUNT_ID=fabcb25d9c7eb087110ec474a03e50d2 wrangler deploy --env $DEPLOY_PAID) 2>&1)
+      dep=$( (set -a; . $deployenv; set +a; CLOUDFLARE_ACCOUNT_ID=fabcb25d9c7eb087110ec474a03e50d2 "$WR" deploy --env $DEPLOY_PAID) 2>&1)
       url=$PAID_URL; envf=$ENVF_PAID
     fi
     if ! grep -q 'Current Version ID' <<<"$dep"; then

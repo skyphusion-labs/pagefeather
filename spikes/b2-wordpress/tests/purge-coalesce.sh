@@ -6,10 +6,12 @@
 # Usage: tests/purge-coalesce.sh [port]   (after ./build.sh and DEV_ENV=dosql-local ./opcache.sh)
 set -u
 cd "$(dirname "$0")/.." || exit 9
+# The pinned Wrangler (deploy/wr, #371), never a global one.
+WR=${WR:-$(cd ../.. && pwd)/deploy/wr}
 P=${1:-8801}
 OUT=$(mktemp -d)
 [ -z "$(lsof -t -nP -iTCP:$P -sTCP:LISTEN 2>/dev/null)" ] || { echo "port $P is busy: pick another port"; exit 1; }
-wrangler dev --port "$P" --log-level warn --env dosql-local --var "SITE_ORIGIN:http://localhost:$P" > "$OUT/dev.log" 2>&1 &
+"$WR" dev --port "$P" --log-level warn --env dosql-local --var "SITE_ORIGIN:http://localhost:$P" > "$OUT/dev.log" 2>&1 &
 W=$!
 stop() { L=$(lsof -t -nP -iTCP:$P -sTCP:LISTEN 2>/dev/null | head -1); kill $W $L $( [ -n "$L" ] && ps -o ppid= -p "$L") 2>/dev/null; }
 trap stop EXIT

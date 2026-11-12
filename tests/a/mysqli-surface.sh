@@ -6,6 +6,8 @@
 # build is restored at the end.
 set -u
 cd "$(dirname "$0")/../../spikes/b2-wordpress" || exit 9
+# The pinned Wrangler (deploy/wr, #371), never a global one.
+WR=${WR:-$(cd ../.. && pwd)/deploy/wr}
 P=${1:-8801}
 OUT=$(mktemp -d)
 pkill -u "$(id -un)" -f "wrangler dev --port $P"; sleep 1
@@ -13,7 +15,7 @@ WOO=0 ./build.sh > "$OUT/build.log" 2>&1 || { echo "build failed: $OUT/build.log
 cp ../../tests/a/mysqli-surface-route.php build/wordpress/wp-content/mu-plugins/zz-mysqli-surface.php
 cp php/hyperdrive-mysqli.php build/wordpress/wp-content/hyperdrive-mysqli.php
 (cd build && zip -qr -9 site.zip wordpress)
-(wrangler dev --port "$P" --log-level warn > "$OUT/dev.log" 2>&1 &)
+("$WR" dev --port "$P" --log-level warn > "$OUT/dev.log" 2>&1 &)
 for i in $(seq 1 90); do curl -s -m 2 -o /dev/null "localhost:$P/_ping" && break; sleep 1; done
 curl -s -o /dev/null -X POST "localhost:$P/_install"
 curl -s -m 120 "localhost:$P/?mysqlisurface=1&nocache=1" > "$OUT/surface.ndjson"

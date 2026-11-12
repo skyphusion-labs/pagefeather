@@ -17,7 +17,9 @@ export PERSIST_TO=$STATE
 trap 'rm -rf "$STATE"' EXIT
 # No recycle for memory while priming (index.js, PHP_RECYCLE): one runtime must
 # compile everything, or the dump holds only what compiled after a recycle.
-DEV_VARS="PHP_RECYCLE:off${DEV_VARS:+ $DEV_VARS}" ./run.sh _ping > /dev/null
+# --local (#371): priming compiles PHP and needs no remote binding. Without it the env's AI binding
+# starts a remote proxy session, which needs a login (none on a runner) and would run on the deploy token.
+DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off${DEV_VARS:+ $DEV_VARS}" ./run.sh _ping > /dev/null
 # Stop the server this run started, however the script ends (run.sh records it).
 # Before this, a failed step exited under set -e before the kill, and the server
 # stayed on the port for the next run.
