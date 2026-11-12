@@ -2168,6 +2168,10 @@ export class PhpRuntime extends DurableObject {
 				// current, since the alarm awaits the sends); drained = handed off this tick. The old single
 				// 'emails' field counted ENQUEUES and read as delivery, which it was not (#185).
 				cst.cron = { t: Date.now(), ...cr, lastRan: cr.ran, drained, queued: (stats.email || 0), sent: (stats.emailSent || 0) };
+				// One line per completed tick (#335): the backlog it left and the WP-Cron event it ran, so
+				// the drain rate and WP-Cron starvation can be read from Workers Logs (/_purgestate keeps
+				// only the last tick).
+				console.log(JSON.stringify({ m: 'cron', done: 1, as_actions: cr.as_actions, as_hooks: cr.as_hooks, as_pending: cr.as_pending, as_due: cr.as_due, wp_cron_hooks: cr.wp_cron_hooks, wp_cron_skipped: cr.wp_cron_skipped, wp_cron_due: cr.wp_cron_due }));
 				await this.ctx.storage.put(PURGE_STATE_KEY, cst);
 			}
 		} catch (e) {
@@ -2400,15 +2404,35 @@ async function runCron(booted, cleanDue = false) {
 				if ( 0 === $as_n || ${cleanDue ? 1 : 0} ) { $as_cleaner = new ActionScheduler_QueueCleaner( $as_store ); $as_cleaner->reset_timeouts(); $as_cleaner->mark_failures(); $cleaned = 1; }
 				$ran[] = 'action_scheduler';
 			}
-			$events = 0; $crons = function_exists( '_get_cron_array' ) ? _get_cron_array() : array();
+			// The WP-Cron leg never runs Action Scheduler's queue runner (#335). Action Scheduler
+			// schedules action_scheduler_run_queue every minute, so it was nearly always the earliest
+			// due event and took the tick's one WP-Cron slot. Its runner is the unbounded one #323
+			// replaced: on the sample store it grew the heap from 99.4 to 119.3 MiB and reset the
+			// isolate in 19 of 19 ticks (fdprobe1112g, 2026-11-12). The bounded loop above is the
+			// only Action Scheduler runner. So the hook is removed (as /_activate does, #289), and a
+			// due run_queue event is skipped when the slot is picked, so the slot goes to the next
+			// due event: with the hook removed alone, run_queue still took the slot in 21 of 21 ticks
+			// and no other WP-Cron event ran. It is not unscheduled: Action Scheduler would only
+			// schedule it again at init.
+			remove_all_actions( 'action_scheduler_run_queue' );
+			$events = 0; $wp_hooks = array(); $skipped = array(); $crons = function_exists( '_get_cron_array' ) ? _get_cron_array() : array();
+			// The due WP-Cron hooks other than run_queue, before the leg runs: a tick that runs none
+			// while this is not empty would be starving them (#335).
+			$wp_due = array(); if ( is_array( $crons ) ) { foreach ( $crons as $dts => $dhooks ) { if ( $dts > time() ) break; foreach ( (array) $dhooks as $dh => $devs ) { if ( 'action_scheduler_run_queue' !== $dh ) { $wp_due[ $dh ] = 1; } } } }
 			if ( ${wpEvents} > 0 && is_array( $crons ) ) { $now = time(); foreach ( $crons as $ts => $hooks ) { if ( $ts > $now ) break;
-				foreach ( (array) $hooks as $hook => $evs ) { foreach ( (array) $evs as $ev ) {
+				foreach ( (array) $hooks as $hook => $evs ) { if ( 'action_scheduler_run_queue' === $hook ) { $skipped[ $hook ] = 1; continue; } foreach ( (array) $evs as $ev ) { $wp_hooks[] = $hook;
 					if ( ! empty( $ev['schedule'] ) ) { wp_reschedule_event( $ts, $ev['schedule'], $hook, $ev['args'], isset($ev['interval']) ? $ev['interval'] : 0 ); }
 					wp_unschedule_event( $ts, $hook, $ev['args'] );
 					do_action_ref_array( $hook, $ev['args'] ); if ( function_exists( 'wp_cache_flush_runtime' ) ) { wp_cache_flush_runtime(); } if ( ++$events >= ${wpEvents} ) { break 3; }
 				} } } }
 			$as_list = array(); foreach ( $as_hooks as $k => $v ) { $as_list[] = $k . ':' . $v; }
-			echo json_encode( array( 'ran' => $ran, 'wp_cron_events' => $events, 'released' => $released, 'as_actions' => $as_n, 'as_hooks' => implode( ',', $as_list ), 'cleaned' => $cleaned ) );` });
+			// The backlog after this tick (#335): what the bounded loop has left to drain.
+			$as_pending = null; $as_due = null;
+			if ( isset( $as_t ) ) {
+				$as_pending = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$as_t} WHERE status = 'pending'" );
+				$as_due = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$as_t} WHERE status = 'pending' AND scheduled_date_gmt <= '" . gmdate( 'Y-m-d H:i:s' ) . "'" );
+			}
+			echo json_encode( array( 'ran' => $ran, 'wp_cron_events' => $events, 'wp_cron_hooks' => implode( ',', $wp_hooks ), 'wp_cron_skipped' => implode( ',', array_keys( $skipped ) ), 'wp_cron_due' => implode( ',', array_keys( $wp_due ) ), 'released' => $released, 'as_actions' => $as_n, 'as_hooks' => implode( ',', $as_list ), 'as_pending' => $as_pending, 'as_due' => $as_due, 'cleaned' => $cleaned ) );` });
 		let out = {};
 		try { out = JSON.parse(String(r.text).slice(String(r.text).lastIndexOf('{'))); } catch (e) { out = { parse: String(r.text).slice(-200) }; }
 		return out;
