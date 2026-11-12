@@ -1,0 +1,49 @@
+name: opcache-build
+
+# The b-dosql OPcache build (build.sh, then opcache.sh) on a GitHub-hosted runner, as
+# deploy-workers.yml runs it for zarapo and woocap (#371). That build boots the Worker with the
+# pinned Wrangler (deploy/wr) in local mode and primes the OPcache. Before #371 it called a bare
+# `wrangler`, which a runner does not have, so the deploy failed before any upload and only a deploy
+# found out. This runs on the pull request that could break it. No secrets: the build deploys
+# nothing and uses no remote binding (opcache.sh runs wrangler dev --local).
+on:
+  pull_request:
+    paths:
+      - 'spikes/b2-wordpress/**'
+      - 'deploy/deploy.sh'
+      - 'deploy/wr'
+      - 'deploy/tools/**'
+      - '.github/workflows/opcache-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  opcache-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: No wrangler on PATH (the build must use deploy/wr)
+        run: |
+          if command -v wrangler; then echo "::error::a global wrangler is on the runner PATH; this job could not see a bare call"; exit 1; fi
+          echo "no global wrangler: ok"
+      - name: Build (b-dosql, WooCommerce primed)
+        working-directory: spikes/b2-wordpress
+        run: |
+          set -euo pipefail
+          npm ci --silent
+          ./prepare.sh | tail -1
+          ./build.sh | tail -1
+          s=$(date +%s)
+          if DEV_ENV=dosql-local WOO_ACTIVE=1 ./opcache.sh > build/opcache.log 2>&1; then
+            tail -1 build/opcache.log
+            echo "opcache.sh took $(( $(date +%s) - s )) s"
+          else
+            echo "::error::opcache.sh failed; last lines of build/opcache.log and dev.log:"
+            tail -40 build/opcache.log; echo '--- dev.log'; tail -40 dev.log 2>/dev/null || true
+            exit 1
+          fi

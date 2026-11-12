@@ -12,6 +12,13 @@
 # was not the run's own).
 cd "$(dirname "$0")" || exit 1
 PORT=${PORT:-8797}
+# The pinned Wrangler (deploy/wr, #371). A bare `wrangler` ran whatever was installed globally: on
+# the laptop a Homebrew copy, on a GitHub runner nothing at all, so wrangler dev never started and
+# this script waited out its whole bound (deploy-workers runs 43311450307, 43311776702).
+WR=${WR:-$(cd ../.. && pwd)/deploy/wr}
+# How long to wait for the first answer. A cold runner downloads the pinned Wrangler and starts
+# workerd with the PHP wasm, so the wait is longer than a warm laptop needs; it ends at the answer.
+DEV_WAIT_S=${DEV_WAIT_S:-180}
 PIDF=".dev-$PORT.pid"
 listener() { lsof -t -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | sort -u | head -1; }
 stop() {
@@ -35,23 +42,31 @@ if [ -n "$held" ]; then
 		exit 1
 	fi
 fi
+# Resolve (and on a fresh clone install) the pinned Wrangler in the foreground, so a missing or
+# broken one fails here, loudly, not as a silent timeout below.
+"$WR" --version > /dev/null || { echo "the pinned wrangler ($WR) does not run" >&2; exit 1; }
 rm -f out.json; : > dev.log
 # SITE_ORIGIN (issue #33): the site's links are localhost:<port>, the address
 # e2e.sh and opcache.sh use, whatever request boots PHP first.
+# DEV_LOCAL=1: --local, no remote bindings (#371). The env's AI binding has no local mode, so
+# without it wrangler dev starts a remote proxy session, which needs a Cloudflare login.
 # DEV_VARS: more vars, "NAME:value" separated by spaces (opcache.sh sets PHP_RECYCLE:off).
 # PERSIST_TO: the local state directory (default .wrangler/state). opcache.sh passes a fresh,
 # empty one, so what it primes depends on the build, not on what an earlier run left (#313).
 vars=()
 for v in ${DEV_VARS:-}; do vars+=(--var "$v"); done
-wrangler dev --port "$PORT" --log-level warn ${DEV_ENV:+--env $DEV_ENV} ${PERSIST_TO:+--persist-to "$PERSIST_TO"} --var "SITE_ORIGIN:http://localhost:$PORT" --var "SPIKE_TOKEN:${SPIKE_TOKEN:-local-spike-token}" "${vars[@]}" > dev.log 2>&1 &
+"$WR" dev --port "$PORT" --log-level warn ${DEV_LOCAL:+--local} ${DEV_ENV:+--env $DEV_ENV} ${PERSIST_TO:+--persist-to "$PERSIST_TO"} --var "SITE_ORIGIN:http://localhost:$PORT" --var "SPIKE_TOKEN:${SPIKE_TOKEN:-local-spike-token}" "${vars[@]}" > dev.log 2>&1 &
 started=$!
 up=0
-for _ in $(seq 1 60); do
-	grep -q 'ERROR' dev.log && { grep -v '^\s*$' dev.log | grep -v '🪵' | head -20 | cut -c1-400; kill "$started" 2>/dev/null; exit 1; }
+devlog() { grep -v '^\s*$' dev.log | grep -v '🪵' | tail -20 | cut -c1-400 >&2; }
+for _ in $(seq 1 "$DEV_WAIT_S"); do
+	grep -q 'ERROR' dev.log && { devlog; kill "$started" 2>/dev/null; exit 1; }
+	# wrangler dev exited (a start failure that prints no ERROR): say so now, with its log.
+	kill -0 "$started" 2>/dev/null || { echo "wrangler dev exited before it answered on port $PORT; last lines of dev.log:" >&2; devlog; exit 1; }
 	curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -m 2 -o /dev/null "localhost:$PORT/_ping" 2>/dev/null && { up=1; break; }
 	sleep 1
 done
-[ "$up" = 1 ] || { echo "wrangler dev did not answer on port $PORT in 60 s" >&2; kill "$started" 2>/dev/null; exit 1; }
+[ "$up" = 1 ] || { echo "wrangler dev did not answer on port $PORT in $DEV_WAIT_S s; last lines of dev.log:" >&2; devlog; kill "$started" 2>/dev/null; exit 1; }
 # The port was free before the start, so the listener now is this run's.
 L=$(listener)
 echo "$L $(ps -o ppid= -p "$L" | tr -d ' ') $started" > "$PIDF"
