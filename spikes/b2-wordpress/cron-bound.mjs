@@ -12,6 +12,12 @@
 // release_claim, flushing the runtime cache after each (as the queue runner did per batch). The
 // cleaner (reset_timeouts, mark_failures) runs on a tick that claimed nothing, and at least every
 // CRON_CLEAN_MS on a busy store, so a long backlog cannot starve it. A backlog drains over ticks.
+// What a tick claims (#357): first the woocommerce-emails group (WooCommerce's deferred order
+// emails), NEWEST first; only when no email is due, everything else, oldest first. Oldest first for
+// all put a new order email behind the whole backlog: about 3492 actions, about 85 h at the measured
+// 41 an hour on the sample store (fdprobe1112j, 2026-11-12). Live on the same site, the first tick
+// on this rule ran an order email that had waited 25 minutes, then the backlog's emails newest first.
+// The batch stays 1: at CRON_AS_ACTIONS 4, 12 of 13 ticks reset the isolate.
 export const DEFAULT_ACTIONS = 1;
 // WP-Cron events per tick (the fixed 50 before). 0 skips WP-Cron in that tick.
 export const DEFAULT_WP_EVENTS = 1;

@@ -128,6 +128,9 @@ jobs:
       - name: b-dosql the cron tick never runs the Action Scheduler queue runner (issue #335)
         # cron-run-queue.test.mjs runs the real runCron script with the php CLI against stubs.
         run: node --test spikes/b2-wordpress/tests/cron-run-queue.test.mjs
+      - name: b-dosql the cron tick claims a new order email before the backlog (issue #357)
+        # cron-email-first.test.mjs runs the real runCron script with the php CLI against a stub store with the claim rules.
+        run: node --test spikes/b2-wordpress/tests/cron-email-first.test.mjs
       - name: b-dosql bounded cron tick
         # cron-bound.mjs: the cron runs its own claim loop, bounded, and the cleaner cannot starve (#291).
         run: node --test spikes/b2-wordpress/tests/cron-bound.test.mjs
