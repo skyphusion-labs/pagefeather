@@ -79,14 +79,22 @@ Nothing is configured in the dashboard; everything below is a command or an API 
 
 ## The one surface: provision a site
 
-The core CLI is `deploy/provision/cli.mjs` (alias it to `site`). It calls `provisionSite`, the same function the provisioning Worker calls.
+**Which command makes a site.** There is ONE operator surface for each kind of deployment (#294):
+
+- **The reference deployment** (sites on `workers.dev`, or on Custom Domains in phase B, with no SaaS zone): `deploy/wfp/site add|list|update|import|remove <name>`. It keeps each site's secrets in a Terraform workspace, so a site can be updated, imported, snapshotted and loaded with the sample store. See [operator.md](operator.md).
+- **A SaaS zone** (Cloudflare for SaaS, `WFP_SAAS_ZONE_ID` set): the provisioning core, from the CLI below or from the provisioning Worker.
+
+`cli.mjs` refuses a site with no SaaS zone, before any API call, and names the `deploy/wfp/site` command. The two paths do not yet deploy the same site definition (the parity table is on #294), and #328 tracks making them one.
+
+The core CLI is `deploy/provision/cli.mjs`. It calls `provisionSite`, the same function the provisioning Worker calls.
 
 ```sh
 export CLOUDFLARE_ACCOUNT_ID=<your account id>
 export CLOUDFLARE_API_TOKEN=<the token above>
 export WFP_NAMESPACE=wp-wfp
 export WFP_KV_ID=<the wp-wfp-sites map id>
-export WFP_SUBDOMAIN=<your workers.dev subdomain, or a routed zone>
+export WFP_SAAS_ZONE_ID=<the SaaS zone id>      # required: without it the CLI refuses
+export WP_HOSTNAME=<name>.<your SaaS zone>
 
 # a WordPress site (a blog, or a WooCommerce store: same command)
 export BDOSQL_BUNDLE_DIR=<the built b-dosql bundle dir>
@@ -95,7 +103,7 @@ node deploy/provision/cli.mjs add --kind wp blog
 
 A store is the same kind of site. You turn on WooCommerce inside the site, as you would on any WordPress host.
 
-`add` is idempotent and does only its own site. It creates the media bucket, deploys the namespace script with the site's secrets inside the same upload, and writes the KV routing entry. Today `cli.mjs` implements `add` only. To remove, list or update a site, use the `deploy/wfp/site` flow (see `docs/operator.md`), which also shows how to snapshot a site and go back.
+`add` is idempotent and does only its own site. It creates the media bucket, deploys the namespace script with the site's secrets inside the same upload, writes the KV routing entry and places the SaaS zone's routing record. `cli.mjs` implements `add` and `hostname` only. The build of `BDOSQL_BUNDLE_DIR` (a flat directory of the bundle's modules) is not documented yet; #328 replaces it.
 
 ## Provision from a Worker
 
