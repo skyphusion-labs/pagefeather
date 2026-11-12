@@ -21,7 +21,7 @@ Approach A on PlanetScale through the Cloudflare integration (A2) gives one Clou
 
 A descriptor table in `deploy/provision` wires Cloudflare integrations for each site, as defaults or as opt-ins. Default on: base object cache, WP-Cron on a Durable Object alarm, Images offload, and the L2 KV object cache. Opt-in: PDF invoices (Browser Rendering), durable email (Queues), AI alt-text (Workers AI), Analytics Engine, Vectorize semantic search, and zone cache purge. The table is in [framework.md](framework.md).
 
-For approach A, onboarding is two commands: `node deploy/onboard/onboard.mjs <provider> --name <cfg> --out onboard.env`, then `node deploy/provision/cli.mjs site add --kind a <name> --hyperdrive $HYPERDRIVE_ID`. See [onboarding.md](onboarding.md).
+For approach A, onboarding is two commands: `node deploy/onboard/onboard.mjs <provider> --name <cfg> --out onboard.env`, then `node deploy/provision/cli.mjs add --kind a <name> --hyperdrive $HYPERDRIVE_ID` on a SaaS zone (`WFP_SAAS_ZONE_ID`). See [onboarding.md](onboarding.md).
 
 Edge security works at the zone level: a WAF with rate limits on login, the zone edge cache with purge on publish, and optional Access on `/wp-admin`. See "Edge security" in [framework.md](framework.md).
 
