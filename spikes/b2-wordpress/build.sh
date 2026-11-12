@@ -43,6 +43,11 @@ rm -rf "$wp/wp-content/themes/twentytwentythree" "$wp/wp-content/themes/twentytw
 [ -z "${IMPORT_CONTENT:-}" ] || ../../deploy/import/content.sh "$IMPORT_CONTENT" "$wp/wp-content"
 mkdir -p "$wp/wp-content/mu-plugins"
 cp php/r2-uploads.php php/edge-cache.php php/woo-edge.php php/rest-route-cache.php php/theme-json-cache.php php/http-bridge.php php/real-transactions.php php/ast-cache-stats.php php/woo-bootstrap-trim.php php/media-write-trim.php php/wp-mail-queue.php php/ai-alt-text.php php/zone-cache-purge.php php/pdf-invoice.php php/turnstile-forms.php php/analytics-pageview.php "$wp/wp-content/mu-plugins/"
+# The block checkout Turnstile script (issue #308). It reaches public/ as a static file and
+# turnstile-forms.php prints a script tag for it. A subdirectory, because WordPress loads every
+# .php file at the top of mu-plugins.
+mkdir -p "$wp/wp-content/mu-plugins/turnstile-forms"
+cp php/turnstile-block-checkout.js "$wp/wp-content/mu-plugins/turnstile-forms/block-checkout.js"
 mkdir -p "$wp/wp-content/mu-plugins/r2-uploads"
 cp php/cf-images-editor.php "$wp/wp-content/mu-plugins/r2-uploads/"
 # IMPORT_MU_PLUGINS: the existing site's own mu-plugins, by name, after the
