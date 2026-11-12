@@ -62,10 +62,7 @@ if [ "$cmd" = up ]; then
   log "site $s: user Worker $U in $NAMESPACE"
   CONF="$APP/wrangler.deploy.wfp-$s.toml"
   render_user "$s" "$ORIGIN" > "$CONF"
-  tfr site output -json | python3 -c '
-import json, sys
-o = {k: v["value"] for k, v in json.load(sys.stdin).items()}
-json.dump({"WP_SALT": o["wp_salt"], "SPIKE_TOKEN": o["spike_token"]}, open(sys.argv[1], "w"))' "$W/secrets.json"
+  tfr site output -json | site_secrets_json "$W/secrets.json"
   # WP_VECTORIZE_SEARCH (#330): the binding needs its index to exist at deploy.
   if search_on; then ensure_search_index "$s" || { rm -f "$W/secrets.json"; exit 1; }; fi
   bundle_size_check || exit 1
