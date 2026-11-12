@@ -314,8 +314,14 @@ kv_wait_writable() { # kv_wait_writable <namespace id>
 # the pack is active, so TLS fails until then). Phase A has no certificate, so
 # it stays short. SITE_WAIT overrides either.
 site_wait_cap() { echo "${SITE_WAIT:-$([ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && echo 1800 || echo 300)}"; }
+# The clock and the sleep of wait_site, as two functions a test can redefine after it sources
+# this file (#319): the test then drives a fake clock by request count, so a loaded box cannot
+# move a case across a bound. The defaults are the real ones: $SECONDS and sleep.
+wait_now() { echo "$SECONDS"; }
+wait_sleep() { sleep "$1"; }
 wait_site() { # wait_site <origin>
-  local t0=$SECONDS t code err body cap said_tls=0 said_dispatch=0
+  local t0 t code err body cap said_tls=0 said_dispatch=0
+  t0=$(wait_now)
   cap=$(site_wait_cap)
   t=$(mktemp -d)
   while :; do
@@ -329,13 +335,13 @@ wait_site() { # wait_site <origin>
     case "$err" in
       bad-entry) echo "the dispatcher answered $code $err: a configuration fault, not a delay ($body)" >&2; rm -rf "$t"; return 1 ;;
       dispatch)
-        if [ $((SECONDS - t0)) -ge "${WFP_DISPATCH_GRACE:-120}" ]; then
+        if [ $(($(wait_now) - t0)) -ge "${WFP_DISPATCH_GRACE:-120}" ]; then
           echo "the dispatcher answered $code $err for ${WFP_DISPATCH_GRACE:-120} s: a fault in the site script, not a cold boot ($body)" >&2; rm -rf "$t"; return 1
         fi
         [ "${said_dispatch:-0}" = 1 ] || { echo "  the site script errored ($code $err); retrying for up to ${WFP_DISPATCH_GRACE:-120} s (a first cold boot)"; said_dispatch=1; } ;;
     esac
     if [ -z "$err" ] && [[ "$code" =~ ^(2..|3..|401|403)$ ]]; then
-      echo "  the site answered HTTP $code after $((SECONDS - t0)) s"
+      echo "  the site answered HTTP $code after $(($(wait_now) - t0)) s"
       rm -rf "$t"; return 0
     fi
     # Phase B first deploy: a new Custom Domain's Advanced Certificate may still
@@ -345,12 +351,12 @@ wait_site() { # wait_site <origin>
       echo "  waiting for TLS on $1 (the Advanced Certificate may still be issuing; up to ${cap}s)"
       said_tls=1
     fi
-    if [ $((SECONDS - t0)) -ge "$cap" ]; then
+    if [ $(($(wait_now) - t0)) -ge "$cap" ]; then
       echo "the site did not answer in ${cap} s; last: HTTP $code${err:+, x-wfp-error $err}, body: $body" >&2
       [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && echo "  if the Advanced Certificate for $1 is still issuing, re-run up.sh once it is active: the data plane persists and the install completes on the re-run" >&2
       rm -rf "$t"; return 1
     fi
-    sleep "${SITE_WAIT_STEP:-10}"
+    wait_sleep "${SITE_WAIT_STEP:-10}"
   done
 }
 # Which parts of a site exist, from the API only (no Terraform): one line
