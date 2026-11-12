@@ -29,7 +29,7 @@ jobs:
           ver=1.17.1
           zip="terraform_${ver}_linux_amd64.zip"
           curl -fsSL -o "$RUNNER_TEMP/$zip" "https://releases.hashicorp.com/terraform/${ver}/${zip}"
-          if ! echo "4638628058e71a55212b1c563712eac03b902128f40740f3dc8174df12135061  $RUNNER_TEMP/$zip" | sha256sum -c -; then
+          if ! echo "4638628058e71a55212b1c563712eac03b902128f40740f3dc8174df12135060  $RUNNER_TEMP/$zip" | sha256sum -c -; then
             echo "::error::terraform ${ver} zip sha256 mismatch; refusing to install it"
             exit 1
           fi
