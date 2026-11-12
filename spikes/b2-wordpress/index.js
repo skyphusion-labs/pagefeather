@@ -6,6 +6,7 @@ import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
 import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-arm.mjs';
+import { classifyObjectError, objectErrorHeaders } from './object-error.mjs';
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { cronBounds, cronCleanDue } from './cron-bound.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
@@ -2432,12 +2433,15 @@ async function toPhpObject(req, env, url, ctx) {
 		// that was an exception and a bare 503 with no body. Answer it: a 503
 		// the client can act on, never stored by the page cache in front of the
 		// Worker (a cached error would reach readers after the queue drains).
+		// An isolate memory reset also comes with e.overloaded set; it gets its own
+		// header, x-isolate-reset: memory, not x-overloaded (#335, object-error.mjs).
 		// Other errors are thrown as before.
-		if (!(e && (e.overloaded === true || /Durable Object is overloaded/.test(String(e.message))))) throw e;
-		console.log(JSON.stringify({ m: 'overloaded', path: url.pathname, error: String(e.message).slice(0, 200) }));
-		return new Response('The site is busy. Please try again in a few seconds.\n', {
+		const kind = classifyObjectError(e);
+		if (!kind) throw e;
+		console.log(JSON.stringify({ m: kind === 'memory' ? 'isolate-reset' : 'overloaded', path: url.pathname, error: String(e.message).slice(0, 200) }));
+		return new Response(kind === 'memory' ? 'The site restarted. Please try again in a few seconds.\n' : 'The site is busy. Please try again in a few seconds.\n', {
 			status: 503,
-			headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'retry-after': OVERLOAD_RETRY_AFTER_S, 'x-php-object': name, 'x-overloaded': '1' },
+			headers: objectErrorHeaders(kind, name, OVERLOAD_RETRY_AFTER_S),
 		});
 	}
 	const out = new Response(r.body, r);
