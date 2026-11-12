@@ -265,6 +265,33 @@ woo_active_for_build() {
   case "${WOO_ACTIVE:-}" in 0|1) echo "$WOO_ACTIVE"; return 0 ;; "") ;; *) echo "WOO_ACTIVE must be 0 or 1, not $WOO_ACTIVE" >&2; return 2 ;; esac
   case " ${IMPORT_PLUGINS:-} ${PLUGINS:-} " in *" woocommerce "*) echo 1 ;; *) echo 0 ;; esac
 }
+# A site update must not ship a build the live site cannot run (#377). On 2026-11-12 a plain
+# `site update ggc-test` (no content inputs, no WOO_ACTIVE) replaced the store's build with stock
+# WordPress and an OPcache without WooCommerce (615 files, not 2131): every request answered 503
+# "The site restarted". Two refusals, before any snapshot, build or upload:
+#   - the live Store API answers 200 (WooCommerce is active) and this build would not prime it;
+#     an answer that is neither 200 nor 404 needs an explicit WOO_ACTIVE (it cannot tell);
+#   - the live build id ends in a content id (-c<8 hex>, build.sh: made with PLUGINS or
+#     IMPORT_CONTENT) and this run has no content input. ALLOW_PLAIN_BUILD=1 replaces them on
+#     purpose. A build id set by hand (BUILD_ID_OVERRIDE) carries no content id; the Store API
+#     refusal still holds there.
+# update_inputs_check <live build id> <Store API code> <woo 0|1> <content inputs 0|1>
+update_inputs_check() {
+  local live=$1 code=$2 woo=$3 content=$4
+  case "$code" in
+    200) [ "$woo" = 1 ] || { echo "WooCommerce is active on the live site (Store API 200), but this build would not prime it (WOO_ACTIVE=$woo): the OPcache would ship without WooCommerce and the store would run out of memory on every request (#313). Pass the site's content inputs (IMPORT_PLUGINS with woocommerce) or WOO_ACTIVE=1." >&2; return 2; } ;;
+    404) ;;
+    *) [ -n "${WOO_ACTIVE:-}" ] || { echo "the Store API check answered $code, neither 200 nor 404, so it cannot tell whether WooCommerce is active: set WOO_ACTIVE=0 or 1" >&2; return 2; } ;;
+  esac
+  if [[ "$live" =~ -c[0-9a-f]{8}$ ]] && [ "$content" = 0 ] && [ "${ALLOW_PLAIN_BUILD:-0}" != 1 ]; then
+    echo "the live build $live was made with content inputs (PLUGINS or IMPORT_CONTENT), and this run has none: it would ship stock WordPress without the site's theme, plugins and mu-plugins. Pass the same content inputs, or ALLOW_PLAIN_BUILD=1 to drop them on purpose." >&2
+    return 2
+  fi
+}
+# 1 when this run has a content input (the rule content-id.py uses), else 0.
+content_inputs_set() { if [ -n "${PLUGINS:-}${IMPORT_CONTENT:-}" ]; then echo 1; else echo 0; fi; }
+# The HTTP code of the site's Store API index (200: WooCommerce active, 404: not), 000 on no answer.
+store_api_code() { curl -s -o /dev/null -m 60 -w '%{http_code}' "$1/?rest_route=/wc/store/v1" 2>/dev/null || true; }
 # Build b-dosql (spikes/b2-wordpress), as deploy/deploy.sh does: PHP
 # WebAssembly, WordPress, the precompiled OPcache (local wrangler dev).
 build_dosql() {

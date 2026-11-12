@@ -48,6 +48,11 @@ update_one() {
   TOK=$(tfr site output -raw spike_token); bucket=$(media_bucket "$s"); EP=$(tfr site output -raw r2_endpoint)
   rollback=$(entry_build "$s")
   echo "site $s: the live build is ${rollback:-unknown}"
+  # Refuse before any change a build the live site cannot run (#377, lib.sh update_inputs_check).
+  local woo code; woo=$(woo_active_for_build) || return 2
+  code=$(store_api_code "$ORIGIN")
+  echo "site $s: the live Store API answers $code; this build primes WooCommerce: $woo; content inputs: $(content_inputs_set)"
+  update_inputs_check "${rollback:-}" "$code" "$woo" "$(content_inputs_set)" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
   [ "${COUNT_ROWS:-0}" = 1 ] && echo "site $s: rows before: $(row_count "$ORIGIN" "$TOK")"
   if [ "${NO_SNAPSHOT:-0}" != 1 ]; then
     snap_key="$s/${rollback:-unknown}-$(date -u +%Y%m%dT%H%M%SZ).ndjson"
