@@ -8,6 +8,7 @@ import worker from '../worker.mjs';
 import { reapExpiredDemos, teardownDemoSite, checkDemoRate, demoConcurrency } from '../demo.mjs';
 import { verifyTurnstile, validatePublicRequest } from '../server-config.mjs';
 import { assignDemoName, isCallerReservedName, assertValidName, DEMO_MAX_PER_IP_PER_HOUR, DEMO_MAX_CONCURRENT, DEMO_TTL_MS } from '../shared.mjs';
+import { DemoGate } from '../demo-gate.mjs';
 
 let pass = 0, fail = 0;
 const ok = (n, c) => { if (c) { pass++; console.log('PASS', n); } else { fail++; console.log('FAIL', n); } };
@@ -20,15 +21,32 @@ function bundleStub() {
     get: async (k) => (k in files ? { text: async () => files[k] || '', arrayBuffer: async () => new ArrayBuffer(4) } : null),
   };
 }
-function kvStub(init = {}) {
+function kvStub(init = {}, latencyMs = 0) {
   const m = new Map(Object.entries(init));
-  return { get: async (k) => (m.has(k) ? m.get(k) : null), put: async (k, v) => { m.set(k, v); }, _m: m };
+  const wait = () => (latencyMs ? new Promise((r) => setTimeout(r, 1 + Math.floor(Math.random() * latencyMs))) : Promise.resolve());
+  return {
+    get: async (k) => { await wait(); return m.has(k) ? m.get(k) : null; },
+    put: async (k, v) => { await wait(); m.set(k, v); },
+    _m: m,
+  };
+}
+// A DEMO_GATE namespace backed by ONE real DemoGate over a fake storage. With
+// latencyMs, every storage get and put waits a random 1..latencyMs ms, so calls
+// would interleave if the gate did not run them one after another.
+function gateNs(latencyMs = 0) {
+  const store = kvStub({}, latencyMs);
+  const gate = new DemoGate({ storage: { get: store.get, put: store.put } }, {});
+  return {
+    idFromName: (n) => n,
+    get: () => ({ fetch: (url, init) => gate.fetch(new Request(url, init)) }),
+    _gate: gate,
+  };
 }
 function makeEnv(over = {}) {
   return {
     CF_ACCOUNT_ID: 'ACCT', WP_PROVISION_TOKEN: 'wp-tok', WFP_KV_ID: 'SERVERKV', WFP_NAMESPACE: 'wp-wfp',
     WFP_BASES: JSON.stringify({ 'skyphusionwp.dev': { saasZoneId: 'SERVERZONE', workersSubdomain: 'skyphusionwp' } }),
-    BUNDLES: bundleStub(), TURNSTILE_SECRET: 'ts-secret', DEMO_KV: kvStub(), DEMO_BASE: 'skyphusionwp.dev',
+    BUNDLES: bundleStub(), TURNSTILE_SECRET: 'ts-secret', DEMO_KV: kvStub(), DEMO_GATE: gateNs(), DEMO_BASE: 'skyphusionwp.dev',
     DISPATCHER: { get: () => ({ fetch: async () => ({ ok: true, status: 200, json: async () => ({ out: '{"installed":true,"user_id":1}' }) }) }) },
     ...over,
   };
@@ -189,6 +207,56 @@ ok('validatePublicRequest: wp allowed', validatePublicRequest({ kind: 'wp' }).ki
     done = await teardownDemoSite(ctx, makeEnv(), 'demo-ccc.skyphusionwp.dev', { script: 'site-demo-ccc', mediaBucket: 'wp-wfp-demo-ccc-media', saasZoneId: 'SERVERZONE' });
   } finally { globalThis.fetch = real; }
   ok('teardownDemoSite: all four resources handled (script, bucket, dns, kv)', done.script && done.bucket && done.dns && done.kv);
+}
+
+// ---- the gate holds under parallel requests (demo-gate.mjs) ----
+// 10 POST /demo at once from ONE IP, with KV and gate storage that both have real
+// latency. The fetch stub is swapped once around all 10, so they share it.
+async function runDemoMany(env, n) {
+  const rec = withFetch();
+  const real = globalThis.fetch;
+  globalThis.fetch = rec.impl;
+  try {
+    const mk = () => new Request('https://p/demo', { method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': IP }, body: JSON.stringify({ turnstileToken: 'x' }) });
+    return await Promise.all(Array.from({ length: n }, () => worker.fetch(mk(), env).then((r) => r.status)));
+  } finally { globalThis.fetch = real; }
+}
+{
+  const statuses = await runDemoMany(makeEnv({ DEMO_KV: kvStub({}, 20), DEMO_GATE: gateNs(20) }), 10);
+  const accepted = statuses.filter((x) => x === 200).length;
+  ok(`gate: 10 parallel demos from one IP accept at most ${DEMO_MAX_PER_IP_PER_HOUR} (got ${accepted})`, accepted <= DEMO_MAX_PER_IP_PER_HOUR);
+  ok('gate: the rest are 429 (rate limited)', statuses.filter((x) => x === 429).length === 10 - accepted);
+  // Control: the same race with a gate that admits everything, so only the KV
+  // counters stand. They are read before they are written, so more than the cap
+  // get through. This proves the harness can see the race the gate closes.
+  const open = { idFromName: (n) => n, get: () => ({ fetch: async () => Response.json({ ok: true, slot: 's' }) }) };
+  const ctl = await runDemoMany(makeEnv({ DEMO_KV: kvStub({}, 20), DEMO_GATE: open }), 10);
+  const ctlAccepted = ctl.filter((x) => x === 200).length;
+  ok(`gate control: with only the KV counters, the race admits more than ${DEMO_MAX_PER_IP_PER_HOUR} (got ${ctlAccepted})`, ctlAccepted > DEMO_MAX_PER_IP_PER_HOUR);
+}
+
+// ---- unit: the gate's caps, release and fail-closed ----
+{
+  const ns = gateNs();
+  const g = ns._gate;
+  const res = [];
+  for (let i = 0; i < DEMO_MAX_PER_IP_PER_HOUR + 1; i++) res.push(await g.reserve({ ip: '198.51.100.1' }));
+  ok('gate: per-IP cap refuses the next one with scope ip', res.slice(0, -1).every((r) => r.ok) && res.at(-1).ok === false && res.at(-1).scope === 'ip');
+  const cap = gateNs()._gate;
+  const slots = [];
+  for (let i = 0; i < DEMO_MAX_CONCURRENT; i++) slots.push(await cap.reserve({ ip: `198.51.100.${i + 10}` }));
+  const full = await cap.reserve({ ip: '198.51.100.250' });
+  ok('gate: every slot taken refuses with scope capacity', slots.every((r) => r.ok) && full.ok === false && full.scope === 'capacity');
+  const rel = await cap.release({ slot: slots[0].slot });
+  const again = await cap.reserve({ ip: '198.51.100.251' });
+  ok('gate: a released slot can be reserved again', rel.released === true && again.ok === true);
+  const broken = new DemoGate({ storage: { get: async () => { throw new Error('storage'); }, put: async () => {} } }, {});
+  const br = await (await broken.fetch(new Request('https://g/reserve', { method: 'POST', body: '{}' }))).json();
+  ok('gate: a storage error fails CLOSED', br.ok === false && br.scope === 'error');
+  const noGate = await runDemo(makeEnv({ DEMO_GATE: { idFromName: () => 'x', get: () => ({ fetch: async () => { throw new Error('down'); } }) } }), { turnstileToken: 'x' });
+  ok('demo: an unreachable gate is 503 and provisions nothing', noGate.res.status === 503 && !noGate.calls.some((c) => c.url.endsWith('/r2/buckets')));
+  const missing = await runDemo(makeEnv({ DEMO_GATE: undefined }), { turnstileToken: 'x' });
+  ok('demo: a worker without DEMO_GATE refuses (500, missing binding)', missing.res.status === 500 && /DEMO_GATE/.test(missing.json.error));
 }
 
 // A demo site is built locked: no send_email binding without a fixed destination,

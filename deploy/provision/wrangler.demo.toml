@@ -27,6 +27,16 @@ bucket_name = "wp-provision-bundles"
 binding = "DEMO_KV"
 id = "c62a18b711c44c3682718f8ad16832d6"
 
+# The demo gate (demo-gate.mjs): one Durable Object that holds the demo rate and
+# concurrency counts, so a check and its increment are one step.
+[[durable_objects.bindings]]
+name = "DEMO_GATE"
+class_name = "DemoGate"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["DemoGate"]
+
 # Invoke the newly-deployed demo site DIRECTLY to run its /_install, bypassing
 # public DNS + KV->dispatcher propagation (which 530s right after create, #215).
 [[dispatch_namespaces]]

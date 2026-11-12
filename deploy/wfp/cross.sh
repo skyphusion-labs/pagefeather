@@ -18,6 +18,7 @@
 # writing it to results.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
+need_account
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
 tfr shared init -input=false >/dev/null
 KV_ID=$(tfr shared output -raw kv_namespace_id)

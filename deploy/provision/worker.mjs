@@ -17,14 +17,19 @@ import {
   assignDemoName, DEMO_TTL_MS, DEMO_MAX_PER_IP_PER_HOUR, DEMO_MAX_GLOBAL_PER_HOUR, DEMO_MAX_CONCURRENT,
 } from './shared.mjs';
 import { checkDemoRate, bumpDemoRate, demoConcurrency, reapExpiredDemos } from './demo.mjs';
+import { callDemoGate } from './demo-gate.mjs';
+
+// The Durable Object class for the DEMO_GATE binding (wrangler.demo.toml).
+export { DemoGate } from './demo-gate.mjs';
 
 // Path A env. PROVISION_AUTH is enforced by authorize() (fail closed to 401).
 // ONE restricted token (#214): the c1 'shop' path and its elevated token are gone,
 // so the Worker holds no token-minting or Containers capability.
 const PATH_A_ENV = ['CF_ACCOUNT_ID', 'WP_PROVISION_TOKEN', 'WFP_KV_ID', 'WFP_BASES', 'RATE_LIMITER', 'BUNDLES'];
 // Path B env. NO operator token, NO SHOP token (the public path is never elevated),
-// NO RATE_LIMITER (it uses the DEMO_KV counter). TURNSTILE_SECRET gates it.
-const PATH_B_ENV = ['CF_ACCOUNT_ID', 'WP_PROVISION_TOKEN', 'WFP_KV_ID', 'WFP_BASES', 'BUNDLES', 'TURNSTILE_SECRET', 'DEMO_KV', 'DEMO_BASE'];
+// NO RATE_LIMITER (it uses the DEMO_KV counter and the DEMO_GATE object).
+// TURNSTILE_SECRET gates it.
+const PATH_B_ENV = ['CF_ACCOUNT_ID', 'WP_PROVISION_TOKEN', 'WFP_KV_ID', 'WFP_BASES', 'BUNDLES', 'TURNSTILE_SECRET', 'DEMO_KV', 'DEMO_GATE', 'DEMO_BASE'];
 
 const json = (obj, status) => Response.json(obj, { status });
 
@@ -103,6 +108,14 @@ async function handleDemo(request, env) {
   const live = await demoConcurrency(ctx, { kvId: env.WFP_KV_ID });
   if (live >= DEMO_MAX_CONCURRENT) return json({ ok: false, error: 'demo capacity full' }, 503);
 
+  // 5. The gate (demo-gate.mjs): the KV reads above can be stale, so the rate and
+  // concurrency caps are decided here, in one Durable Object, as one step.
+  const gate = await callDemoGate(env, '/reserve', { ip, ttlMs: DEMO_TTL_MS });
+  if (!gate.ok) {
+    if (gate.scope === 'ip' || gate.scope === 'global') return json({ ok: false, error: `rate limited (${gate.scope})` }, 429);
+    return json({ ok: false, error: 'demo capacity full' }, 503);
+  }
+
   // Commit: count this demo against the rate budget, then provision it.
   try {
     await bumpDemoRate(env, ip);
@@ -112,6 +125,8 @@ async function handleDemo(request, env) {
     const r = await provisionSite(ctx, cfg);
     return json({ ok: true, demo: true, name, hostname: r.hostname, expiresAt, ttlMs: DEMO_TTL_MS, installed: !!r.installed, admin: r.admin }, 200);
   } catch (e) {
+    // No demo was made, so its slot is free again (the rate count stays).
+    await callDemoGate(env, '/release', { slot: gate.slot });
     return json({ ok: false, error: e.message }, e instanceof BadRequest ? 400 : 500);
   }
 }

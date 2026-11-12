@@ -18,6 +18,7 @@
 # check.py. Remove it all with down.sh.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
+need_account
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
 SITES=${SITES:-one two}
 for s in $SITES; do valid_site "$s" || { echo "bad site name: $s" >&2; exit 2; }; done

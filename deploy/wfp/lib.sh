@@ -18,8 +18,16 @@ WR=${WR:-$ROOT/deploy/wr}
 APP="$ROOT/spikes/b2-wordpress"
 GEN="$WFP/gen"
 NAMESPACE=${NAMESPACE:-wp-wfp}
-ACCOUNT_ID=${ACCOUNT_ID:-fabcb25d9c7eb087110ec474a03e50d2} # Skyphusion Labs (Workers Paid, WfP on)
+# The account has NO default: a deploy that forgot it would otherwise send its
+# API calls and its Terraform plan to someone else's account id. Each entry point
+# calls need_account. The reference deploy sources deploy/wfp/reference.env.
+ACCOUNT_ID=${ACCOUNT_ID:-}
 export CLOUDFLARE_ACCOUNT_ID=$ACCOUNT_ID
+need_account() {
+  [ -n "$ACCOUNT_ID" ] || { echo "set ACCOUNT_ID to the Cloudflare account id to deploy into (the reference deploy sources deploy/wfp/reference.env)" >&2; exit 2; }
+  export TF_VAR_account_id=$ACCOUNT_ID
+  if [ -n "${WFP_ZONE_ID:-}" ]; then export TF_VAR_zone_id=$WFP_ZONE_ID; fi
+}
 API=${WFP_API:-https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID}
 
 # A site name: lower case, digits and hyphens, 1 to 30 characters, no hyphen at
