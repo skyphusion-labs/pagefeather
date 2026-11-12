@@ -30,7 +30,9 @@ ok "no TURNSTILE_SECRET: exactly WP_SALT and SPIKE_TOKEN" "$(python3 -I -c 'impo
 printf '%s' "$tf" | TURNSTILE_SECRET=$SECRET bash -c ". \"$LIB\"; site_secrets_json \"$T/b.json\"" > "$T/b.out"
 ok "TURNSTILE_SECRET set: it is added to the secrets JSON" "$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get("TURNSTILE_SECRET") == sys.argv[2] and d["WP_SALT"] == "salt-1" else 1)' "$T/b.json" "$SECRET" && echo 1 || echo 0)"
 ok "nothing is printed to stdout (no secret in a log)" "$([ ! -s "$T/a.out" ] && [ ! -s "$T/b.out" ] && echo 1 || echo 0)"
-ok "the secrets file is mode 600" "$([ "$(stat -f '%Lp' "$T/b.json" 2>/dev/null || stat -c '%a' "$T/b.json")" = 600 ] && echo 1 || echo 0)"
+# GNU stat first: on ubuntu, BSD "stat -f" means filesystem status and prints no mode (CI, #342).
+mode=$(stat -c '%a' "$T/b.json" 2>/dev/null || stat -f '%Lp' "$T/b.json")
+ok "the secrets file is mode 600 (got $mode)" "$([ "$mode" = 600 ] && echo 1 || echo 0)"
 # The three deploy paths use the one writer (site.sh up, site update, the update rollback).
 ok "site.sh up, site update and its rollback all write secrets through site_secrets_json" "$([ "$(cat "$HERE/../site.sh" "$HERE/../site" | grep -c 'site_secrets_json')" = 3 ] && ! grep -qE '"SPIKE_TOKEN": ?o\["spike_token"\]' "$HERE/../site.sh" "$HERE/../site" && echo 1 || echo 0)"
 echo "$fails failing check(s)"
