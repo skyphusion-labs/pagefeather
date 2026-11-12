@@ -8,6 +8,8 @@
 #   add three     only three's bucket is left: refused, the part named
 #   add four      four's workspace is left, no part: refused
 #   remove nine   nothing of nine exists: refused
+#   remove cli1   a site the provisioning core made (no workspace, an entry with kind): refused whole (#294)
+#   remove bad1   no workspace, an entry that is not JSON: refused (who made it is unknown)
 #   add Bad_Name  a bad name: refused before any call
 #   add probe     the reserved name: refused
 #   import one    no SQLITE or DUMP: refused before any call
@@ -21,7 +23,9 @@ T=$(mktemp -d)
 cat > "$T/state.json" <<'JSON'
 {"sites": {
  "one": {"dispatcher": {"etag": "d1", "modified_on": "t1"}, "script": {"etag": "u1", "modified_on": "m1"}, "entry": "{}", "bucket": [], "title": "one"},
- "three": {"bucket": []}},
+ "three": {"bucket": []},
+ "cli1": {"script": {"etag": "u2", "modified_on": "m2"}, "entry": "{\"script\":\"site-cli1\",\"kind\":\"wp\",\"installed\":true}", "bucket": []},
+ "bad1": {"entry": "not json"}},
  "ns_list_shape": "top"}
 JSON
 python3 -I "$HERE/fake-account.py" "$T/port" "$T/state.json" & pid=$!
@@ -55,6 +59,8 @@ run_case "add one" "already exists"
 run_case "add three" "bucket yes"
 run_case "add four" "workspace four"
 run_case "remove nine" "no site nine"
+run_case "remove cli1" "the provisioning core"
+run_case "remove bad1" "is unknown"
 run_case "add Bad_Name" "bad site name"
 run_case "add probe" "bad site name"
 run_case "remove wfp-outbound" "bad site name"

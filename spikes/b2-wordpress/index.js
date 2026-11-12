@@ -2658,7 +2658,16 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			try {
 				r = await php.run({ code: `<?php
 					define( 'WP_ADMIN', true );
+					// A deploy-time activation never runs the store's queued work (#289). In an admin load,
+					// Action Scheduler starts its async queue runner, and on a store with pending actions
+					// that ran one inside this request; its failure (an uncaught InvalidArgumentException
+					// from mark_failure) ended the request before the activation was saved. The filter is
+					// pre-seeded in $wp_filter (WP_Hook::build_preinitialized_hooks), because Action
+					// Scheduler reads it while wp-load runs, before any add_filter here could. The cron
+					// alarm stays the one runner of that queue.
+					$GLOBALS['wp_filter']['action_scheduler_allow_async_request_runner'][999]['skyphusion_activate_no_queue'] = array( 'function' => '__return_false', 'accepted_args' => 1 );
 					require '/wordpress/wp-load.php';
+					remove_all_actions( 'action_scheduler_run_queue' );
 					require_once ABSPATH . 'wp-admin/includes/plugin.php';
 					wp_set_current_user( 1 );
 					// Deploy-time activation race (#35): seed WooCommerce's own attribute-taxonomies transient so
@@ -2669,7 +2678,19 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 					// at activation, so an empty seed is correct; WC_Install then creates the table and normal cache
 					// invalidation takes over.
 					if ( '${plugin}' === 'woocommerce/woocommerce.php' ) { set_transient( 'wc_attribute_taxonomies', array() ); }
+					// The result is printed from a shutdown function, so it is printed also when a plugin
+					// ends the request itself (#289): Slim SEO's activated_plugin hook redirects to its
+					// settings page and calls die AFTER the activation is saved, and /_activate answered an
+					// empty out for an activation that had worked (sample store, 2026-11-12). exited is true
+					// when the run did not reach the end of this script.
+					$GLOBALS['skyphusion_act'] = array( 'r' => null, 'done' => false );
+					register_shutdown_function( function () {
+						global $wpdb;
+						$a = $GLOBALS['skyphusion_act']; $r = $a['r'];
+						echo json_encode( array( 'active' => is_plugin_active( '${plugin}' ), 'error' => is_wp_error( $r ) ? $r->get_error_message() : null, 'exited' => ! $a['done'], 'db_error' => $wpdb->last_error ? $wpdb->last_error : null, 'queue_runs' => did_action( 'action_scheduler_run_queue' ) ) );
+					} );
 					$r = activate_plugin( '${plugin}' );
+					$GLOBALS['skyphusion_act']['r'] = $r;
 					// WooCommerce sends the first admin visit to its setup wizard (a 302 on /wp-admin/). A deploy has no use for it.
 					delete_transient( '_wc_activation_redirect' );
 					// WooCommerce makes its order tables (HPOS) on the first admin page view. dbDelta
@@ -2679,7 +2700,9 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 						$sync = wc_get_container()->get( 'Automattic\\\\WooCommerce\\\\Internal\\\\DataStores\\\\Orders\\\\DataSynchronizer' );
 						if ( ! $sync->check_orders_table_exists() ) $sync->create_database_tables();
 					}
-					echo json_encode( array( 'active' => is_plugin_active( '${plugin}' ), 'error' => is_wp_error( $r ) ? $r->get_error_message() : null ) );` });
+					// db_error (the last database error of this run) and queue_runs (did Action Scheduler run
+					// its queue in this request) are printed by the shutdown function above (#289).
+					$GLOBALS['skyphusion_act']['done'] = true;` });
 			} catch (e) {
 				bootPromise = null;
 				return new Response('activate failed: ' + String((e && e.message) || e), { status: 500 });

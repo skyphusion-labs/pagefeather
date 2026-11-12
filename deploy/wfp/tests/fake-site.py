@@ -3,8 +3,9 @@
 
   fake-site.py <port-file> <count-file> <mode>
 
-GET /_dbping answers, by mode, for the first 2 s and then as the site (b-dosql's
-own 403 "forbidden" with no spike token):
+GET /_dbping answers, by mode, for the first EARLY requests (default 2) and then as
+the site (b-dosql's own 403 "forbidden" with no spike token). By request count, not
+by time (#319): the test drives a fake clock, so CPU load cannot move a case.
   platform-404   404 with no x-wfp-error (a new workers.dev name), then the site
   not-deployed   404 x-wfp-error not-deployed (the third day one, 2026-11-06), then the site
   no-site        404 x-wfp-error no-site (a site map read that lags), then the site
@@ -16,10 +17,10 @@ own 403 "forbidden" with no spike token):
   cold-dispatch  502 x-wfp-error dispatch, then the site (a first cold boot, #294)
   never          404 x-wfp-error not-deployed, always
 """
-import http.server, sys, time
+import http.server, os, sys
 
 port_file, count_file, mode = sys.argv[1:4]
-t0 = time.time()
+EARLY = int(os.environ.get("EARLY", "2"))
 n = {"c": 0}
 
 
@@ -39,7 +40,7 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         n["c"] += 1
         open(count_file, "w").write(str(n["c"]))
-        early = time.time() - t0 < 2
+        early = n["c"] <= EARLY
         if mode == "bad-entry":
             return self.send(500, "This site is not configured correctly.", "bad-entry")
         if mode == "dispatch" or (mode == "cold-dispatch" and early):
