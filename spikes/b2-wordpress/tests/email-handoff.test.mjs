@@ -336,3 +336,20 @@ test('runCron: a recurring event whose reschedule failed runs with wp_cron -1', 
 	assert.deepEqual(runCronLeg({ STUB_UNSCHED_OK: '1', STUB_RESCHED_OK: '0', STUB_SCHEDULE: 'hourly' }), [-1, 0]);
 	assert.deepEqual(runCronLeg({ STUB_UNSCHED_OK: '1', STUB_RESCHED_OK: '1', STUB_SCHEDULE: 'hourly' }), [1, 0]);
 });
+
+// The dedupe key is CARRIED, not ENFORCED (#362 scope). Nothing drops a second handoff of the same
+// action id: not the op, not the queue consumer. The model above shows no path that hands off one
+// action twice, so none is needed today; enforcement is its own issue. If enforcement lands, this
+// test must change with it.
+test('the action id is carried to the durable path, and a second handoff of the same id is NOT dropped (not enforced)', async () => {
+	const sent = [];
+	const m = createTickMail({ handoff: async (e) => { sent.push(e); return 1; }, lostWrites: () => 0 });
+	await m.op({ subject: 'Order 9', as_action: 9 });
+	await m.op({ subject: 'Order 9', as_action: 9 });
+	assert.deepEqual(sent.map((e) => e.as_action), [9, 9], 'carried on each message, and both were handed off');
+	assert.equal(m.counts.handedOff, 2);
+});
+test('the queue consumer does not read as_action (no consume-side dedupe)', () => {
+	const consumer = readFileSync(new URL('../email-queue.mjs', import.meta.url), 'utf8') + fnBody('deliverQueuedEmail') + fnBody('consumeEmailQueue');
+	assert.ok(!consumer.includes('as_action'));
+});
