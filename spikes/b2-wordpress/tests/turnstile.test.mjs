@@ -16,7 +16,9 @@ import {
 	isTestSecret,
 	siteHost,
 	TURNSTILE_ACTION,
+	verifyAfterGate,
 } from '../turnstile.mjs';
+import { readFileSync } from 'node:fs';
 
 // The documented Cloudflare test keys (box test).
 const PASS_SITEKEY = '1x00000000000000000000AA';
@@ -179,4 +181,82 @@ test('a non-200 reply that says success:true is still an outage, as before', asy
 	const r = await verifyToken('sec', 'tok', null, { fetchImpl: async () => ({ ok: false, json: async () => ({ success: true }) }), expect: EXPECT });
 	assert.equal(r.success, false);
 	assert.equal(r.error, 'verify_unreachable');
+});
+
+// #351: the output gate (storage.sync) is waited for BEFORE the verify starts its timeout.
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const okFetch = (delay) => async () => {
+	await sleep(delay);
+	return { ok: true, json: async () => ({ success: true }) };
+};
+
+test('verifyAfterGate: a gate longer than the timeout does not refuse a valid token', async () => {
+	// The live case: the gate took 2 s, the fetch 5 ms. A 1 s budget (the minimum) must hold.
+	// The stub fetch waits at the gate, as a Durable Object's output gate holds a real fetch.
+	const gateOpen = sleep(1300);
+	const out = await verifyAfterGate(
+		() => gateOpen,
+		() => verifyToken('sec', 'tok', null, { timeoutMs: 1000, fetchImpl: async () => { await gateOpen; return okFetch(5)(); } }),
+	);
+	assert.equal(out.res.success, true);
+	assert.equal(out.res.error, undefined);
+	assert.ok(out.gateMs >= 1250, 'gateMs ' + out.gateMs);
+	assert.ok(out.fetchMs < 1000, 'fetchMs ' + out.fetchMs);
+});
+
+test('verifyAfterGate: the control, a verify that waits inside its own budget, times out', async () => {
+	// The old order: the wait counted against the budget. This is the defect the gate removes.
+	const r = await verifyToken('sec', 'tok', null, {
+		timeoutMs: 1000,
+		fetchImpl: async () => {
+			await sleep(1300);
+			return { ok: true, json: async () => ({ success: true }) };
+		},
+	});
+	assert.equal(r.success, false);
+	assert.equal(r.error, 'timeout');
+});
+
+test('verifyAfterGate: a slow fetch still times out after the gate', async () => {
+	const out = await verifyAfterGate(
+		() => sleep(10),
+		() => verifyToken('sec', 'tok', null, { timeoutMs: 1000, fetchImpl: okFetch(1300) }),
+	);
+	assert.equal(out.res.success, false);
+	assert.equal(out.res.error, 'timeout');
+});
+
+test('verifyAfterGate: the verify starts only after the gate resolves', async () => {
+	const order = [];
+	await verifyAfterGate(
+		async () => { await sleep(20); order.push('gate'); },
+		async () => { order.push('verify'); return { success: true }; },
+	);
+	assert.deepEqual(order, ['gate', 'verify']);
+});
+
+test('verifyAfterGate: a gate that throws still verifies, and says so', async () => {
+	const out = await verifyAfterGate(
+		async () => { throw new Error('storage gone'); },
+		async () => ({ success: true }),
+	);
+	assert.equal(out.res.success, true);
+	assert.equal(out.gateError, 'storage gone');
+});
+
+test('verifyAfterGate: no gate verifies at once', async () => {
+	let t = 100;
+	const out = await verifyAfterGate(null, async () => { t += 7; return { success: false, codes: ['bad'] }; }, () => t);
+	assert.deepEqual(out.res, { success: false, codes: ['bad'] });
+	assert.equal(out.gateMs, 0);
+	assert.equal(out.fetchMs, 7);
+});
+
+test('index.js turnstileOp passes storage.sync as the gate, and verifies inside verifyAfterGate', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const body = src.slice(src.indexOf('async function turnstileOp('), src.indexOf('function analyticsOp('));
+	assert.match(body, /await new Promise\(\(r\) => setTimeout\(r, 0\)\);\s*await sqlStorage\.sync\(\);/);
+	assert.match(body, /verifyAfterGate\(gate, \(\) =>\s*verifyToken\(/);
+	// No verifyToken call outside the gate.
+	assert.equal((body.match(/verifyToken\(/g) || []).length, 1);
 });
