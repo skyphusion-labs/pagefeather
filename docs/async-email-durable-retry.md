@@ -45,7 +45,7 @@ A reset can also fail every later statement while PHP keeps running. Then the ti
 mail whose work will run again, or the rerun sends it twice. Each message carries where it came
 from (`php/wp-mail-queue.php`, runCron):
 
-- `as_action` is the Action Scheduler action that sent it, which is also its dedupe key. Action
+- `as_action` is the Action Scheduler action that sent it, and part of its dedupe key (#370, below). Action
   Scheduler runs an action only after `log_execution` set it in-progress, and `log_execution`
   throws when that write fails (WooCommerce 11.2.1). So the in-progress write was saved, the action
   is never picked again, and this is its one send. It is always handed off.
@@ -53,8 +53,17 @@ from (`php/wp-mail-queue.php`, runCron):
   not. A 1 is handed off. A -1 is held, because the event runs again and that run sends it.
 - Other mail is held after a reset in the tick, and handed off before one.
 
+The dedupe key is enforced at the handoff (#370). A message from an action is keyed by the action id
+and a hash of its recipients and subject (one action can send two mails: the admin new-order mail and
+the customer one). Before a handoff the key is looked up in the PHP object's durable storage, and a key
+already there is not sent again (`email-deduped` in Workers Logs). After the handoff it is written there.
+A storage error never stops a send. The markers expire after `DEDUPE_TTL_MS` (14 days by default),
+at most 128 are pruned a tick. Not covered: a queue redelivery after the handoff (the queue path is
+opt-in), and a soft reset that fails the marker write after the mail left (a later retry would send it
+again: a duplicate, never a loss).
+
 Each decision is one `email-handoff` or `email-held` line in Workers Logs, and the tick record in
-`/_purgestate` has `handedOff`, `held`, `failed`, `bounded` and `lostWrites`.
+`/_purgestate` has `handedOff`, `held`, `failed`, `bounded`, `deduped` and `lostWrites`.
 
 What is not covered: a reset inside an email action BEFORE its `wp_mail` fails the action (it ends
 `failed`, visibly) and the mail is never sent (#367). A request still sends its mail after the

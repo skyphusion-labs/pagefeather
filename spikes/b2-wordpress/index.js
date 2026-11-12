@@ -16,7 +16,7 @@ import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, demoLockDefines } from './site-lock.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders } from './perf-headers.mjs';
 import { resetFailures, writeLossResponse, wantsJson } from './write-loss.mjs';
-import { createTickMail } from './email-handoff.mjs';
+import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -561,10 +561,15 @@ function emailOp(email) {
 let tickMail = null;
 
 // A tick's handoff: one message to the durable path (sendList), bounded like the alarm drain.
-// Resolves to 'bounded' when the send was still in flight at SEND_TIMEOUT_MS.
-function tickMailFor(env) {
+// Resolves to 'bounded' when the send was still in flight at SEND_TIMEOUT_MS. storage is the PHP
+// object's durable storage: the dedupe markers of #370 live there (key -> the time it was sent).
+// No storage, no dedupe (a mail is never held for want of it).
+function tickMailFor(env, storage) {
 	const base = resetFailTotal;
+	const st = storage && typeof storage.get === 'function' ? storage : null;
 	return createTickMail({
+		seen: st ? async (key) => (await st.get(key)) !== undefined : null,
+		mark: st ? (key) => st.put(key, Date.now()) : null,
 		handoff: async (email) => {
 			const sp = sendList(env, [email]);
 			if (!sp) return 0;
@@ -2198,7 +2203,7 @@ export class PhpRuntime extends DurableObject {
 				let mail = null;
 				try {
 					const cleanDue = cronCleanDue(await this.ctx.storage.get(CRON_CLEAN_KEY), Date.now());
-					mail = tickMailFor(this.env);
+					mail = tickMailFor(this.env, this.ctx.storage);
 					cr = await runCron(await (bootPromise ??= boot(cronOrigin)), cleanDue, mail);
 					if (cr && cr.cleaned) await this.ctx.storage.put(CRON_CLEAN_KEY, Date.now());
 				} finally {
@@ -2234,6 +2239,9 @@ export class PhpRuntime extends DurableObject {
 				// only the last tick).
 				console.log(JSON.stringify({ m: 'cron', done: 1, as_actions: cr.as_actions, as_pass: cr.as_pass, as_dates: cr.as_dates, as_hooks: cr.as_hooks, as_pending: cr.as_pending, as_due: cr.as_due, wp_cron_hooks: cr.wp_cron_hooks, wp_cron_skipped: cr.wp_cron_skipped, wp_cron_due: cr.wp_cron_due, mail: mail.counts, lostWrites: mail.lostWritesSeen() }));
 				await this.ctx.storage.put(PURGE_STATE_KEY, cst);
+				// The #370 dedupe markers expire after DEDUPE_TTL_MS (14 days by default: past any Action
+				// Scheduler retry). Bounded: at most 128 a tick (the storage delete limit), so a big backlog cannot hold the alarm.
+				await pruneDedupe(this.ctx.storage, Date.now(), Number(this.env.DEDUPE_TTL_MS || 14 * 86400000));
 			}
 		} catch (e) {
 			// A thrown runCron (a transient boot failure, a runtime recycle, a 1101) leaves bootPromise
@@ -2425,6 +2433,19 @@ function phpObjectName(env, url) {
 // uncached pages a second (docs/perf-dosql.md), so a full queue drains in
 // seconds, not minutes.
 const OVERLOAD_RETRY_AFTER_S = '5';
+
+// Delete expired #370 dedupe markers, at most limit per call. Errors are logged, never thrown.
+async function pruneDedupe(storage, now, ttlMs, limit = 128) {
+	try {
+		const old = [];
+		for (const [k, t] of await storage.list({ prefix: DEDUPE_PREFIX, limit })) if (!(Number(t) > now - ttlMs)) old.push(k);
+		if (old.length) await storage.delete(old);
+		return old.length;
+	} catch (e) {
+		console.log(JSON.stringify({ m: 'email-dedupe', prune: 'failed', error: String((e && e.message) || e).slice(0, 120) }));
+		return 0;
+	}
+}
 
 async function runCron(booted, cleanDue = false, mail = null) {
 		const { php } = booted;
@@ -2786,7 +2807,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// same runCron() on a cadence. Runs the Action Scheduler queue (the deferred WC
 			// order emails) and due WP-Cron events. Spike/manual trigger and the test seam.
 			bootPromise ??= boot(origin);
-			const mail = tickMailFor(env);
+			const mail = tickMailFor(env, sqlStorage);
 			const r = await runCron(await bootPromise, false, mail);
 			// Drain + SEND here too (a manual run), awaiting delivery so the response reports actual
 			// sends, not enqueues (#185). The alarm uses waitUntil; a manual trigger awaits the signal.
