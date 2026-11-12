@@ -66,8 +66,10 @@ Each decision is one `email-handoff` or `email-held` line in Workers Logs, and t
 `/_purgestate` has `handedOff`, `held`, `failed`, `bounded`, `deduped` and `lostWrites`.
 
 What is not covered: a reset inside an email action BEFORE its `wp_mail` fails the action (it ends
-`failed`, visibly) and the mail is never sent (#367). A request still sends its mail after the
-response, also when its writes were lost (#368).
+`failed`, visibly) and the mail is never sent (#367). A request whose writes were lost sends NO mail (#368, the lead's
+ruling: HOLD): each held mail is an `email-held` event with `where: request`, the subject and the
+recipient count. A change that was saved in such a request loses its mail; the client is told to
+check before it tries again.
 
 ## Status: opt-in, not a default
 

@@ -50,3 +50,27 @@ export function writeLossResponse(n, json = false) {
 	const body = json ? JSON.stringify({ code: WRITE_LOSS_CODE, message: WRITE_LOSS_MESSAGE, data: { status: 500 } }) : WRITE_LOSS_BODY;
 	return { status: 500, headers, body };
 }
+
+/**
+ * The mail a request collected, when the request's writes may be partly lost (#368, the lead's
+ * ruling: HOLD). With lostWrites > 0 nothing is sent: the client gets the #353 500 ("check before
+ * you try again"), so a mail must not confirm a change that may not be saved, and a client retry
+ * must not send a second one. The cost, accepted: a change that WAS saved loses its mail. Each held
+ * mail is one structured event (never silent); it names the subject and the recipient count, never
+ * an address (Workers Logs is not a mail log). Returns { send: [...], events: [...] }.
+ */
+export function heldRequestMail(pending, lostWrites, req = {}) {
+	const list = Array.isArray(pending) ? pending : [];
+	if (!(Number(lostWrites) > 0)) return { send: list, events: [] };
+	const events = list.map((e) => ({
+		'@event': 'email-held',
+		m: 'email-held',
+		where: 'request',
+		lostWrites: Number(lostWrites),
+		method: req.method || null,
+		path: req.path || null,
+		subject: String((e && e.subject) || '').slice(0, 80),
+		recipients: (Array.isArray(e && e.to) ? e.to : [e && e.to]).filter(Boolean).length,
+	}));
+	return { send: [], events };
+}
