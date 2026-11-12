@@ -18,6 +18,23 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
+      - name: Install Terraform 1.17.1 (checksum-verified)
+        # Not hashicorp/setup-terraform: the org allowlist refuses it (run 43196743912), and the
+        # lead ruled against widening the allowlist for one job (#336). Same pattern as ggc ci.yml.
+        # The sha256 is HashiCorp's own SHA256SUMS line for this zip; a mismatch stops the job here.
+        # Early on purpose: custom-domain-test.sh and tf-clean-test.sh skip their terraform half
+        # when terraform is not on PATH, so an install after them leaves those halves unrun.
+        run: |
+          set -euo pipefail
+          ver=1.17.1
+          zip="terraform_${ver}_linux_amd64.zip"
+          curl -fsSL -o "$RUNNER_TEMP/$zip" "https://releases.hashicorp.com/terraform/${ver}/${zip}"
+          if ! echo "4638628058e71a55212b1c563712eac03b902128f40740f3dc8174df12135061  $RUNNER_TEMP/$zip" | sha256sum -c -; then
+            echo "::error::terraform ${ver} zip sha256 mismatch; refusing to install it"
+            exit 1
+          fi
+          sudo unzip -o -q "$RUNNER_TEMP/$zip" -d /usr/local/bin
+          terraform version
       - name: Fetch the SQLite driver
         run: |
           git clone -q https://github.com/WordPress/sqlite-database-integration spikes/b2-wordpress/build/cache/sqlite-database-integration
@@ -171,6 +188,11 @@ jobs:
           python3 deploy/wfp/tests/cross-test.py
           deploy/wfp/tests/probe-entry-test.sh
           deploy/wfp/tests/setup-green-test.sh
+      - name: WfP terraform checks (issue #336)
+        # deploy/wfp/tests/tf-test.sh: validate and fmt for terraform/shared and site, and the
+        # teardown and media import keys depend on nothing in the site graph. init runs with
+        # -backend=false, so no state and no credential: the providers come from the registry.
+        run: deploy/wfp/tests/tf-test.sh
       - name: c1 load analysis tests
         # tests/load/c1_arm.py (issue #99): held requests, CPU per order, the split, on a synthetic job.
         run: python3 tests/load/c1_arm_test.py
