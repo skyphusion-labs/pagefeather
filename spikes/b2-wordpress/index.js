@@ -1248,6 +1248,7 @@ const PURGE_GAP_MS = 15000;
 // The object's purge state (issue #78): {pending, lastSent, retried}, in its storage.
 const PURGE_STATE_KEY = 'skyphusion-purge';
 const ORIGIN_KEY = 'skyphusion-origin';
+const CRON_SKIP_KEY = 'cron-skip';
 let lastPurge = 0;
 function schedulePurge(ctx) {
 	// A purge already scheduled for later covers this change too.
@@ -2110,7 +2111,10 @@ export class PhpRuntime extends DurableObject {
 			// part ran out of memory (fdprobe1112a, 2026-11-12).
 			const importHeld = cronHeld(await this.ctx.storage.get(IMPORT_HOLD_KEY), Date.now());
 			if (importHeld) console.log(JSON.stringify({ m: 'cron', held: 'import' }));
-			if (!importHeld && phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env) {
+			const cronGo = !importHeld && phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env;
+			// Why a tick skipped the cron, for /_purgestate cronSkip (#291: a skip was invisible).
+			if (!cronGo) await this.ctx.storage.put(CRON_SKIP_KEY, { t: Date.now(), importHeld, phpPending, sinceSpikeMs: Date.now() - lastSpikeEndAt, origin: !!cronOrigin });
+			if (cronGo) {
 				// DB_IN_DO: bind the object's own SQLite as WordPress's database before the cron runtime
 				// loads WP. The fetch path sets this per request (sqlDb = sql); the alarm runs on a woken
 				// isolate where the module globals are gone, so without this sqlDb is null and every cron
@@ -2235,7 +2239,7 @@ export class PhpRuntime extends DurableObject {
 		// Spike: the URL the object got, and the origin it uses.
 		if (url.pathname === '/_origin') return Response.json({ objectUrl: raw.url, publicOrigin: origin, used: url.href });
 		// The purge state of this object (issue #78): pending, last sent, the last 20 sends, the next alarm.
-		if (url.pathname === '/_purgestate') return Response.json({ ...((await this.ctx.storage.get(PURGE_STATE_KEY)) || {}), alarm: await this.ctx.storage.getAlarm(), alarmFatal: (await this.ctx.storage.get(ALARM_FATAL_KEY)) || null, now: Date.now() });
+		if (url.pathname === '/_purgestate') return Response.json({ ...((await this.ctx.storage.get(PURGE_STATE_KEY)) || {}), alarm: await this.ctx.storage.getAlarm(), alarmFatal: (await this.ctx.storage.get(ALARM_FATAL_KEY)) || null, cronSkip: (await this.ctx.storage.get(CRON_SKIP_KEY)) || null, now: Date.now() });
 		// The build this OBJECT is running (issue #35 slice 5). After a re-upload a
 		// warm object keeps the old code until it is evicted, so this reports the
 		// object's version, which can lag the Worker's until /_evict or a sleep.
