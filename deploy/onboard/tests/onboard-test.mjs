@@ -202,5 +202,17 @@ await ok('--out writes HYPERDRIVE_ID and SQL_MODE for Phase 2', async () => {
   return text.includes(`HYPERDRIVE_ID=${r.hyperdrive_id}`) && text.includes(`SQL_MODE=${WP_SQL_MODE}`);
 });
 
+await ok('--out refuses an id with a newline, and writes no file', async () => {
+  const outPath = join(process.env.TMPDIR || '/tmp', `onboard-evil-${process.pid}.env`);
+  const evil = (m, p, b) => (m === 'POST' && p.endsWith('/hyperdrive/configs')
+    ? { obj: { success: true, result: { id: 'x\nEVIL=1', name: b.name, origin: { scheme: 'mysql', host: b.origin.host, database: b.origin.database, user: b.origin.user }, caching: { disabled: true } }, errors: [] } }
+    : cfHandler(m, p, b));
+  const io = makeIo({ env: { PSCALE_ORG: 'o', PS_DB_NAME: 'd', PS_REGION: 'us-west' }, fetchImpl: fakeFetch(evil), run: psRun(), out: outPath });
+  const threw = await rejects(() => onboard('planetscale', io));
+  const wrote = await readFile(outPath, 'utf8').then(() => true, () => false);
+  await rm(outPath, { force: true });
+  return threw && !wrote;
+});
+
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

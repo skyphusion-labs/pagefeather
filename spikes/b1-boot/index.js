@@ -48,7 +48,9 @@ export default {
       const r = await php.run({ code });
       return new Response(JSON.stringify({ bootMs, runMs: Date.now() - t1, d1Calls, out: r.text, err: r.errors }), { headers: { 'content-type': 'application/json' } });
     } catch (e) {
-      return new Response(String(e && e.stack || e), { status: 500 });
+      // The stack names internal paths; it goes to the tail log, not to the caller.
+      console.error(String(e && e.stack || e));
+      return new Response('internal error', { status: 500 });
     }
   },
 };
