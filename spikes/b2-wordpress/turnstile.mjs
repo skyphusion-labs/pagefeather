@@ -137,3 +137,33 @@ export async function verifyToken(secret, token, remoteip, opts) {
 		return { success: false, codes: [], error: String(e && e.message ? e.message : e).slice(0, 160) };
 	}
 }
+
+// Wait for the Durable Object's output gate, then verify (issue #351).
+// A Durable Object holds every outgoing fetch until the storage writes made before it are
+// confirmed. A login writes to the database before its authenticate filter runs, so the
+// siteverify fetch waited for those writes. On a runtime that had just booted, the wait was
+// 0.6 to 2.8 s (fdprobe1112j, 2026-11-12), and 6 to 10 s on fdprobe1112f. The fetch itself took
+// 4 to 117 ms. verifyToken's timeout counted the wait, and a 10 s wait refused a valid login.
+// So the caller passes the gate (storage.sync(), which resolves when the writes are
+// confirmed). This waits for it FIRST, and only then calls verify, which starts its timeout.
+// The wait costs the request nothing extra: the output gate holds the response for the same
+// writes. A gate that throws does not stop the verify: the fetch then waits at the gate itself.
+// now() is read after an await, so in a Worker it is a fresh clock reading.
+//   gate    a function that returns a promise (or null for no gate)
+//   verify  a function that returns verifyToken's promise
+// Returns { res, gateMs, fetchMs, gateError }.
+export async function verifyAfterGate(gate, verify, now) {
+	const clock = typeof now === 'function' ? now : () => Date.now();
+	const t0 = clock();
+	let gateError;
+	if (typeof gate === 'function') {
+		try {
+			await gate();
+		} catch (e) {
+			gateError = String(e && e.message ? e.message : e).slice(0, 160);
+		}
+	}
+	const t1 = clock();
+	const res = await verify();
+	return { res, gateMs: t1 - t0, fetchMs: clock() - t1, gateError };
+}
