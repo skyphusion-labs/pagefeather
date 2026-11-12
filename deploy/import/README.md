@@ -114,11 +114,22 @@ Six mutations each turn a test red: a temp file on the server, the password in t
 | 1 | `import.sh` | Gets the SQLite driver at `SQLITE_DI_REF` of `spikes/b2-wordpress/build.sh`. The driver writes its own `_wp_sqlite_*` tables, and the runtime reads them, so the version must be the same. |
 | 2 | `dump-to-sqlite.php` | Runs the dump through the driver into a new SQLite file. Changes the table prefix to `wp_`. Prints the rows of each table, the site address, the theme and the active plugins. |
 | 3 | `search-replace.py` | Changes the site address to the new origin. Safe for PHP serialized data. |
+| 3b | `cancel-emails.py` | Marks the source site's pending order emails canceled (issue #364). See "Pending order emails". Not for variant `a`. |
 | 4 | `untar.py`, `import.sh` | With `CONTENT`: extracts the archive safely and prints the `deploy.sh` line for the theme and plugins. Then stops if the theme or an active plugin is not in the local build. |
 | 5 | `dbmove-file.py`, `spikes/b2-wordpress/dbmove.py` | Writes the SQLite file as a `dbmove` dump and imports it into the PHP object. |
 | 6 | `dbmove.py export`, `dbmove-file.py counts` | Exports the database again and compares the rows of each table. |
 | 6b | `media.sh` | With `CONTENT`: puts `wp-content/uploads` into the media bucket (see "Uploads"). |
 | 7 | `import.sh` | Gets the home page without the page cache. It must be HTTP 200. |
+
+## Pending order emails
+
+WooCommerce sends its order emails later, through Action Scheduler: one action for each email, in the group `woocommerce-emails`. A dump carries the source site's PENDING email actions. They belong to the source site. The new site would send them late, or a second time if the source site already sent them.
+
+So the import marks every pending action in that group `canceled` (step 3b). It does not delete them, so the row counts of step 6 do not change. It writes one Action Scheduler log row for each, which the Scheduled Actions screen shows. The output has the count, for example `pending emails: 900 canceled` (the sample store). With `DRY_RUN=1` it prints `would be canceled` and changes nothing.
+
+To keep them pending, set `IMPORT_KEEP_PENDING_EMAILS=1`. The output then says `kept`.
+
+Variant `a` (MySQL) does not have this step yet. It builds its statements from the dump, not from the SQLite copy (#364).
 
 ## Variant c1
 

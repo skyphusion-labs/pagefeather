@@ -45,6 +45,9 @@
 # R2_SECRET together, in place of NAME, put the uploads with a key the caller
 # made and deletes (deploy/wfp "site import" does this for a WfP site).
 #
+# Pending order emails: the source's pending woocommerce-emails actions are marked
+# canceled (step 3b, issue #364); IMPORT_KEEP_PENDING_EMAILS=1 keeps them pending.
+#
 # Options: OLD_ORIGIN (default: the home option of the dump), DRY_RUN=1 (stop
 # before the import; print what would change), SKIP_MEDIA=1 (do not send the
 # uploads; the script says that the images are missing).
@@ -150,6 +153,15 @@ SITEURL=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["site"
 [ "${SITEURL%/}" = "${OLD_ORIGIN%/}" ] || { echo "siteurl ($SITEURL) is not home ($OLD_ORIGIN): WordPress in a subdirectory is not supported" >&2; exit 1; }
 OLD_ORIGIN=${OLD_ORIGIN%/}
 python3 "$IMP/search-replace.py" "$WORK/site.sqlite" "$OLD_ORIGIN" "$NEW_ORIGIN" ${DRY_RUN:+--dry-run} | tee "$WORK/replace.json"
+
+# 3b. The source site's pending order emails (issue #364): WooCommerce's deferred emails in the
+# woocommerce-emails group belong to the source site, so the new site would send them late or a
+# second time. They are marked canceled, never deleted. IMPORT_KEEP_PENDING_EMAILS=1 keeps them.
+# Variant a builds its statements from the dump, not from this copy: not covered yet (#364).
+if [ "$VARIANT" != a ]; then
+  python3 "$IMP/cancel-emails.py" "$WORK/site.sqlite" ${DRY_RUN:+--dry-run} $([ "${IMPORT_KEEP_PENDING_EMAILS:-0}" = 1 ] && echo --keep) | tee "$WORK/emails.txt"
+  [ "${PIPESTATUS[0]}" = 0 ] || { echo "the pending email step failed" >&2; exit 1; }
+fi
 
 # Uploads, with CONTENT: into the media bucket through the S3 API, with a
 # key that Terraform makes for this step and deletes after it (media-import.tf).
