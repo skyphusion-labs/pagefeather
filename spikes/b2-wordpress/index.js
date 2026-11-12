@@ -5,7 +5,7 @@ import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, ha
 import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
-import { shouldArmAlarm, armBeforeRun } from './alarm-arm.mjs';
+import { armBeforeRun, rearm } from './alarm-arm.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
@@ -2178,7 +2178,7 @@ export class PhpRuntime extends DurableObject {
 		}
 		}
 		// Keep the cron cadence unless the purge logic set a sooner retry alarm.
-		if (shouldArmAlarm(await this.ctx.storage.getAlarm(), Date.now())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
+		await rearm(this.ctx.storage, Date.now(), Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
 	}
 
 	async fetch(raw) {
@@ -2199,7 +2199,9 @@ export class PhpRuntime extends DurableObject {
 			await this.ctx.storage.put(ORIGIN_KEY, origin);
 			// A STALE alarm (long past, its run never completed) counts as none (#291): otherwise it
 			// blocks every later arm and the cron stops for good. alarm-arm.mjs.
-			if (shouldArmAlarm(await this.ctx.storage.getAlarm(), Date.now())) await this.ctx.storage.setAlarm(Date.now() + Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
+			// A stale one is deleted, then set (rearm): a re-set alone was not delivered on ggc-test.
+			const ra = await rearm(this.ctx.storage, Date.now(), Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
+			if (ra.stale) console.log(JSON.stringify({ m: 'alarm', unstuck: true, was: ra.was }));
 		}
 		const inboxMs = raw.headers.get(SENT_HEADER) ? Date.now() - Number(raw.headers.get(SENT_HEADER)) : null;
 		const req = new Request(raw);

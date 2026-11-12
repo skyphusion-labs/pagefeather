@@ -1,7 +1,7 @@
 // alarm-arm.mjs (issue #291): a stale alarm no longer blocks the cron for good.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { shouldArmAlarm, STALE_MS, armBeforeRun } from '../alarm-arm.mjs';
+import { shouldArmAlarm, STALE_MS, armBeforeRun, rearm } from '../alarm-arm.mjs';
 import { readFileSync } from 'node:fs';
 
 const now = Date.parse('2026-11-11T21:15:00Z');
@@ -54,4 +54,33 @@ test('alarm() calls armBeforeRun before it boots PHP or runs the cron (index.js 
 	assert.ok(arm < body.indexOf('runCron('), 'armBeforeRun comes before runCron');
 	assert.ok(arm < body.indexOf('boot(cronOrigin)'), 'armBeforeRun comes before the PHP boot');
 	assert.ok(arm < body.indexOf('try {'), 'armBeforeRun is outside (before) the try');
+});
+
+// rearm (issue #291): a stale alarm is deleted, then set; others are left alone.
+const fakeStorage = (at) => {
+	const calls = [];
+	return { calls, getAlarm: async () => at, deleteAlarm: async () => calls.push(['deleteAlarm']), setAlarm: async (t) => calls.push(['setAlarm', t]) };
+};
+test('rearm: no alarm -> set only', async () => {
+	const s = fakeStorage(null);
+	assert.deepEqual(await rearm(s, now, 60_000), { armed: true, stale: false, was: null });
+	assert.deepEqual(s.calls, [['setAlarm', now + 60_000]]);
+});
+test('rearm: THE STUCK CASE, a stale alarm -> deleteAlarm THEN setAlarm', async () => {
+	const was = Date.parse('2026-11-11T19:14:26Z');
+	const s = fakeStorage(was);
+	assert.deepEqual(await rearm(s, now, 60_000), { armed: true, stale: true, was });
+	assert.deepEqual(s.calls, [['deleteAlarm'], ['setAlarm', now + 60_000]]);
+});
+test('rearm: a future or just-due alarm is untouched', async () => {
+	for (const at of [now + 60_000, now - 30_000]) {
+		const s = fakeStorage(at);
+		assert.deepEqual(await rearm(s, now, 60_000), { armed: false });
+		assert.deepEqual(s.calls, []);
+	}
+});
+test('index.js: both re-arm sites go through rearm (no bare setAlarm over a stale alarm)', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.equal((src.match(/await rearm\(this\.ctx\.storage/g) || []).length, 2);
+	assert.equal(/shouldArmAlarm\(await this\.ctx\.storage\.getAlarm\(\)/.test(src), false);
 });

@@ -31,3 +31,17 @@ export async function armBeforeRun(storage, now, intervalMs) {
 	if (typeof storage.sync === 'function') await storage.sync();
 	return at;
 }
+
+// Unstick an object whose alarm is stale (issue #291). On ggc-test a fresh setAlarm over a stale
+// alarm was not delivered (set 03:19:21Z by a fetch, no alarm invocation after it, 2026-11-12).
+// So a stale alarm is DELETED first, then set again: the platform gets a new alarm, not an edit
+// of the one whose retries are used up. No alarm: just set. A future or just-due alarm: untouched.
+/** Arm when shouldArmAlarm says so; a stale alarm is deleted first. Returns what it did. */
+export async function rearm(storage, now, intervalMs, staleMs = STALE_MS) {
+	const at = await storage.getAlarm();
+	if (!shouldArmAlarm(at, now, staleMs)) return { armed: false };
+	const stale = at !== null && at !== undefined;
+	if (stale) await storage.deleteAlarm();
+	await storage.setAlarm(now + intervalMs);
+	return { armed: true, stale, was: stale ? Number(at) : null };
+}
