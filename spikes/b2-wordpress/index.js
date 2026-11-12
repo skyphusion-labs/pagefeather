@@ -2160,6 +2160,10 @@ export class PhpRuntime extends DurableObject {
 			// never drain until a request reboots the runtime (#191). Reset so the next tick reboots fresh.
 			bootPromise = null;
 			console.log(JSON.stringify({ m: 'cron', error: String((e && e.message) || e).slice(0, 200) }));
+			// Visible in /_purgestate too (#291): wrangler tail shows nothing for a dispatch script's alarm.
+			const cst = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
+			cst.cron = { t: Date.now(), error: String((e && e.message) || e).slice(0, 300), stack: String((e && e.stack) || '').slice(0, 1200) };
+			await this.ctx.storage.put(PURGE_STATE_KEY, cst);
 		}
 		const st = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
 		if (st.pending) {

@@ -106,3 +106,9 @@ test('index.js: alarm() arms first, then runs alarmRun inside a catch that does 
 	assert.equal(/\bthrow\b/.test(wrapper.replace(/\/\/.*$/gm, '')), false, 'the wrapper never throws');
 	assert.ok(src.slice(r, src.indexOf('async fetch(raw)', r)).indexOf('armBeforeRun(') < 0, 'alarmRun does not re-arm first again');
 });
+test('index.js: a failed cron run is stored in the cron record, not only logged', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const i = src.indexOf("console.log(JSON.stringify({ m: 'cron', error:");
+	assert.ok(i >= 0);
+	assert.ok(/cst\.cron = \{ t: Date\.now\(\), error:/.test(src.slice(i, i + 600)), 'the catch writes cron.error');
+});
