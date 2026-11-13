@@ -33,6 +33,19 @@ variable "build" {
   default = "dev"
 }
 
+# sha256 of the rendered user config and the sorted secret key names (#421).
+# Empty for a site recorded before that change. site update treats empty as a
+# difference and uploads once. This value is never a secret.
+variable "config_hash" {
+  type    = string
+  default = ""
+
+  validation {
+    condition     = var.config_hash == "" || can(regex("^[0-9a-f]{64}$", var.config_hash))
+    error_message = "config_hash must be empty or 64 lower-case hex characters."
+  }
+}
+
 variable "kv_namespace_id" { type = string }
 
 # Per-call limits, applied by the dispatcher (docs/wfp.md item 4: cpuMs is
@@ -120,6 +133,7 @@ resource "cloudflare_workers_kv" "entry" {
   key_name     = var.hostname
   value = jsonencode(merge(
     { script = "site-${var.name}", outbound = true, build = var.build },
+    var.config_hash != "" ? { config_hash = var.config_hash } : {},
     var.cpu_ms > 0 ? { cpuMs = var.cpu_ms } : {},
     var.sub_requests > 0 ? { subRequests = var.sub_requests } : {},
   ))

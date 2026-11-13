@@ -3,7 +3,7 @@
 #
 # Names (docs/wfp.md and the #35 slice 1 design):
 #   the dispatch namespace          wp-wfp
-#   the site map (KV)               wp-wfp-sites: hostname -> {"script", "cpuMs", "subRequests", "outbound"}
+#   the site map (KV)               wp-wfp-sites: hostname -> {"script", "cpuMs", "subRequests", "outbound", "build", "config_hash"}
 #   the outbound Worker             wp-wfp-outbound
 #   a site's user Worker            site-<name>, in the namespace (b-dosql)
 #   a site's dispatcher (phase A)   wp-<name>, a normal Worker on workers.dev; ONE script and
@@ -15,7 +15,8 @@ WFP=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "$WFP/../.." && pwd)
 # The pinned Wrangler. A test points WR at a stub.
 WR=${WR:-$ROOT/deploy/wr}
-APP="$ROOT/spikes/b2-wordpress"
+# A test sets APP to a stand-in tree. A deploy leaves it unset.
+APP=${APP:-$ROOT/spikes/b2-wordpress}
 GEN="$WFP/gen"
 NAMESPACE=${NAMESPACE:-wp-wfp}
 # The account has NO default: a deploy that forgot it would otherwise send its
@@ -85,6 +86,35 @@ row_count() { # row_count <origin> <token>
 }
 entry_build() { # entry_build <site>
   api GET "/storage/kv/namespaces/$KV_ID/values/$(site_key "$1")" | python3 "$WFP/kv_build.py"
+}
+# The "config_hash" field, recorded next to "build" (#421). Empty when the entry
+# has none (a site recorded before that change). Same read as entry_build.
+entry_config_hash() { # entry_config_hash <site>
+  api GET "/storage/kv/namespaces/$KV_ID/values/$(site_key "$1")" | python3 "$WFP/kv_build.py" config_hash
+}
+# sha256 of the rendered user config and the sorted secret key names (#421).
+# config_hash <rendered file> <secrets json>
+# Prints 64 hex characters. A secret value is not hashed and is not printed.
+config_hash() {
+  PYTHONDONTWRITEBYTECODE=1 python3 -I "$WFP/config_hash.py" "$1" "$2"
+}
+# Why site update uploads (#421). One line, reasons separated by ", ", or empty
+# when there is nothing to do. An empty live hash is "no recorded config hash"
+# (upload once). A different hash is "config changed". A different build is
+# "build changed". FORCE_UPLOAD=1 adds "forced".
+# update_upload_reasons <new build> <live build> <new hash> <live hash>
+update_upload_reasons() {
+  local new=$1 live=$2 nh=$3 lh=$4 out=""
+  if [ "$new" != "$live" ]; then out="build changed"; fi
+  if [ -z "$lh" ]; then
+    out="${out:+$out, }no recorded config hash"
+  elif [ "$nh" != "$lh" ]; then
+    out="${out:+$out, }config changed"
+  fi
+  if [ "${FORCE_UPLOAD:-0}" = 1 ]; then
+    out="${out:+$out, }forced"
+  fi
+  printf '%s\n' "$out"
 }
 # The site map key (= hostname) of <site>: the recorded one when site_vars has
 # read this site's workspace (REC_SITE), else the computed one.

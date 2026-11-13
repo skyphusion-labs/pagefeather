@@ -101,15 +101,32 @@ Tests (offline): `site-cmd-test.sh` refuses `site import` with no source, for a 
 
 Workers for Platforms has no gradual deployments for user Workers, and `b-dosql` keeps its data in the Durable Object and its code in the Worker bundle. So an update re-uploads the SAME script (`site-<name>`): the object and its data persist, the code swaps. `site update`:
 
-1. reads the live build id from the site map entry (the rollback target);
+1. reads the live build id and the config hash from the site map entry (the build id is the rollback target);
 2. reads the site's recorded build inputs (#379, below) and refuses a build the live site cannot run (#377, below);
 3. unless `NO_SNAPSHOT=1`, snapshots the object's SQLite to R2 under `_snapshots/` and reads it back to confirm it stored (a prefix the Worker never serves); it aborts if the snapshot cannot be verified, so a rollback always has a way back;
-4. rebuilds from the current tree and re-uploads the script, then records the new build id in the entry;
+4. rebuilds from the current tree. It uploads the script when the build id differs, when the config hash differs, when the entry has no config hash, or when `FORCE_UPLOAD=1`. It then records the new build id and the config hash in the entry. When the build id and the config hash are both the same, it says `nothing to do` and it does not upload;
 5. waits until `/_build` shows the new build (measured 2026-11-06: a re-upload flips it in about 1 s, with the object idle), then checks the site answers 200.
 
 If the verify fails, it rolls back: it restores the data from the snapshot and re-deploys the exact code that was live, by re-uploading the build artifact it saved before the rebuild (for any build id, not only a committed sha). **A rollback drops any write made between the snapshot and the rollback**, and the command and this doc both say so. If no saved artifact is on disk (an unusual case: `build/` was absent when the update started), the data is still restored and the command says to deploy the old build by hand.
 
 The only interruption is the cold boot of the next request after the new code loads (about 1 s); the hostname always resolves. `/_evict` (an object reset via `ctx.abort()`) is a best-effort fast-path for a busy object that has not flipped; whether `abort()` resets the object on our compatibility date is unproven (the happy path flipped before it was needed).
+
+### When an update uploads (#421)
+
+`site update` records a config hash in the site map entry, next to the build id. The hash is the sha256 of the rendered user config (`render_user` in `lib.sh`) and of the sorted key names in the secrets JSON. A secret value is not part of the hash. The command does not print a secret value.
+
+The command uploads for any of these reasons, and it prints the reason:
+
+- the build id differs (`build changed`);
+- the config hash differs (`config changed`);
+- the entry has no config hash (`no recorded config hash`). A site recorded before this change has no hash. The next update uploads once and records the hash;
+- `FORCE_UPLOAD=1` (`forced`). This is the explicit override.
+
+When the build id and the config hash are the same, and `FORCE_UPLOAD` is not `1`, the command prints `nothing to do` and it does not upload.
+
+A change only to the rendered config uploads on its own. Do not pass `FORCE_UPLOAD=1` for that change. This includes `PHP_INI`, `PHP_RECYCLE`, `OPCACHE_SPLIT`, `CODE_PERSIST`, `CODE_BUDGET_MB`, `TURNSTILE_*`, `OBSERVABILITY` and the mail variables. These values are still read from the environment of the run only. They are not recorded build inputs. An update that does not pass one of them renders the site without it, so the hash changes and the update uploads. Pass the value on every update of that site.
+
+A change to a secret value, with the same key names, does not change the hash, so it does not upload. A new secret key does. `site.sh up` records the hash after it uploads the user Worker, so a site added after this change has a hash. Test: `tests/config-hash-test.sh`.
 
 ### The build inputs of a site (#377, #379)
 
@@ -133,7 +150,7 @@ PHP_INI='{"opcache.memory_consumption":"48"}' deploy/wfp/site update <name>
 ```
 
 - `render_user` (`lib.sh`) writes it to the site's `[vars]` as compact JSON with sorted keys. At each boot, `index.js` passes it to PHP after its own defaults, so it wins.
-- It is read from the environment of the run ONLY, like `TURNSTILE_*`. It is NOT a recorded build input. An update that does not pass it renders the site without it. Pass it on every update of that site.
+- It is read from the environment of the run ONLY, like `TURNSTILE_*`. It is NOT a recorded build input. An update that does not pass it renders the site without it, and the config hash changes, so the update uploads. Pass it on every update of that site. Do not pass `FORCE_UPLOAD=1` for a `PHP_INI` change on its own.
 - The render fails on a value it cannot write safely. That is: not a JSON object, empty, more than 32 entries, a name outside `[A-Za-z0-9_.]` (1 to 64 characters), a value that is not a string or an integer, or a string with a quote, a backslash or a control character, or over 256 characters.
 - The other config emitters (`deploy/provision`, the Worker path) do not read it. The golden case `php-ini` shows that.
 - Tests: `deploy/wfp/tests/render-test.sh` (with it, without it, the refused shapes) and `deploy/tests/render-golden` (case `php-ini`).
@@ -159,7 +176,7 @@ CODE_PERSIST=on CODE_BUDGET_MB=<MB> deploy/wfp/site update <name>
 `PHP_RECYCLE=off deploy/wfp/site update <name>` keeps the PHP runtime after a request whose WebAssembly memory passed 100 MiB. Without it, the next request boots a new runtime (`index.js`, `RECYCLE_WASM_BYTES`). A crashed runtime is still dropped.
 - **What bounds memory then:** nothing in our code. The module's maximum is 2048 MiB, and with `USE_ZEND_ALLOC=0` PHP's `memory_limit` is not enforced by Zend's allocator. The hard stop is the isolate reset, about 188 MiB for WebAssembly alone and 144 MiB with the bundle (#411).
 - **Use:** it is for measuring (experiment E1 on #394), and for a site whose admin pages keep recycling.
-- **Not a recorded input:** read from the run's environment only, like `PHP_INI`. Same-build updates need `FORCE_UPLOAD=1`.
+- **Not a recorded input:** read from the run's environment only, like `PHP_INI`. A same-build update uploads when the rendered value changes. `FORCE_UPLOAD=1` is the explicit override, not a requirement for this change. See "When an update uploads".
 - **Tests:** `deploy/wfp/tests/render-test.sh`, golden case `php-recycle-off`.
 
 ## Phase B: a custom domain per site (#138)

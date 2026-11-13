@@ -44,7 +44,9 @@ if [ "$cmd" = down ]; then
   fi
 fi
 # The id of the built bundle (build.sh writes build/build-id.js), recorded in
-# the entry so "site update" has a rollback target (issue #35 slice 5).
+# the entry so "site update" has a rollback target (issue #35 slice 5). The
+# config hash is recorded after the upload, once the rendered config and the
+# secret key names exist (#421).
 BUILD_ID=$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js" 2>/dev/null || true); BUILD_ID=${BUILD_ID:-unknown}
 out() { tfr site output -raw "$1"; }
 ws() { tfr site init -input=false >/dev/null && tfr site workspace select -or-create "$s" >/dev/null; }
@@ -68,7 +70,12 @@ if [ "$cmd" = up ]; then
   bundle_size_check || exit 1
   (cd "$APP" && "$ROOT/deploy/wr" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/secrets.json") > "$W/user.log" 2>&1 \
     || { rm -f "$W/secrets.json"; tail -20 "$W/user.log"; exit 1; }
+  # The salts exist only after the workspace apply above, so the hash is a second
+  # apply. It records the hash next to the build id. If this apply fails, the
+  # entry has no hash and the next site update uploads once.
+  CH=$(config_hash "$CONF" "$W/secrets.json") || { rm -f "$W/secrets.json"; exit 1; }
   rm -f "$W/secrets.json"
+  tfr site apply -input=false -auto-approve "${VARS[@]}" -var "build=$BUILD_ID" -var "config_hash=$CH" >/dev/null
   grep -E 'Total Upload|Current Version' "$W/user.log" || true
 
   if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ]; then

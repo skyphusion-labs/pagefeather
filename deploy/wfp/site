@@ -28,11 +28,13 @@ KV_ID=$(tfr shared output -raw kv_namespace_id 2>/dev/null) || { echo "no shared
 SUB=$(subdomain)
 has_ws() { list_sites | grep -qx "$1"; }
 # Update one site: snapshot the data, rebuild from the current tree, re-upload
-# the SAME script (same object, same data), record the new build, and verify
-# the new build is live and the site answers. On failure, roll back: restore
-# the data from the snapshot and re-deploy the exact code that was live (the
-# build artifact saved before the rebuild); the rollback drops writes made
-# since the snapshot.
+# the SAME script (same object, same data) when the build id or the config
+# hash differs, record both, and verify the new build is live and the site
+# answers. The config hash is the rendered user config plus the sorted secret
+# key names (#421). A missing hash uploads once. FORCE_UPLOAD=1 uploads even
+# when both match. On failure, roll back: restore the data from the snapshot
+# and re-deploy the exact code that was live (the build artifact saved before
+# the rebuild); the rollback drops writes made since the snapshot.
 # The work dir of one update (the recorded inputs, #379), removed however update_one ends.
 update_one() {
   local WDIR rc=0; WDIR=$(mktemp -d); chmod 700 "$WDIR"
@@ -51,10 +53,12 @@ update_one_inner() {
   site_vars "$s" "$SUB" "$KV_ID" || return 1
   local ORIGIN="https://$REC_HOST"
   echo "site $s: hostname $REC_HOST, custom domain $REC_CD (recorded or computed by lib.sh site_vars)"
-  local TOK bucket EP rollback new ok=1 snap_key=""
+  local TOK bucket EP rollback new ok=1 snap_key="" live_hash=""
   TOK=$(tfr site output -raw spike_token); bucket=$(media_bucket "$s"); EP=$(tfr site output -raw r2_endpoint)
   rollback=$(entry_build "$s")
+  live_hash=$(entry_config_hash "$s")
   echo "site $s: the live build is ${rollback:-unknown}"
+  if [ -n "$live_hash" ]; then echo "site $s: the recorded config hash is $live_hash"; else echo "site $s: no config hash is recorded"; fi
   # The site's recorded build inputs (#379): reused when this run passes none, compared when it does.
   # local -x keeps a recorded value inside this one update (update --all runs many).
   local -x PLUGINS="${PLUGINS:-}" IMPORT_THEMES="${IMPORT_THEMES:-}" IMPORT_PLUGINS="${IMPORT_PLUGINS:-}" IMPORT_MU_PLUGINS="${IMPORT_MU_PLUGINS:-}" WOO_ACTIVE="${WOO_ACTIVE:-}" IMPORT_CONTENT="${IMPORT_CONTENT:-}"
@@ -89,23 +93,26 @@ update_one_inner() {
   echo "site $s: rebuild from the current tree"
   build_dosql
   new=$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js" 2>/dev/null || true); new=${new:-unknown}
-  # FORCE_UPLOAD=1 re-uploads the same build when only the config changed (turning Workers Logs
-  # off, OBSERVABILITY): without it the skip below kept the old config live.
-  if [ "$new" = "$rollback" ] && [ "${FORCE_UPLOAD:-0}" != 1 ]; then echo "site $s: already at build $new; nothing to do"; return 0; fi
-  [ "$new" != "$rollback" ] || echo "site $s: FORCE_UPLOAD=1: re-upload build $new with the current config"
-  echo "site $s: upload build $new (was $rollback)"
-  local CONF="$APP/wrangler.deploy.wfp-$s.toml" W; W=$(mktemp -d)
+  # Render before the decision (#421). The hash is this file plus the sorted
+  # names of the keys in the secrets JSON. Values stay in the file, mode 600,
+  # and are removed on every return from this point.
+  local CONF="$APP/wrangler.deploy.wfp-$s.toml" W new_hash="" reasons=""
+  W=$(mktemp -d); chmod 700 "$W"
   render_user "$s" "$ORIGIN" > "$CONF"
   tfr site output -json | site_secrets_json "$W/sec.json"
+  new_hash=$(config_hash "$CONF" "$W/sec.json") || { rm -rf "$W"; return 1; }
+  reasons=$(update_upload_reasons "$new" "${rollback:-}" "$new_hash" "$live_hash")
+  if [ -z "$reasons" ]; then echo "site $s: already at build $new; nothing to do"; rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 0; fi
+  echo "site $s: upload build $new (was ${rollback:-unknown}); reason: $reasons"
   # WP_VECTORIZE_SEARCH (#330): the binding needs its index to exist at deploy (lib.sh).
   if search_on; then ensure_search_index "$s" || { rm -rf "$W"; return 1; }; fi
   bundle_size_check || { rm -rf "$W"; return 1; }
-  (cd "$APP" && "$ROOT/deploy/wr" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/sec.json") > "$W/up.log" 2>&1 || { rm -rf "$W"; echo "site $s: upload failed:" >&2; tail -20 "$W/up.log" >&2; return 1; }
+  (cd "$APP" && "$WR" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/sec.json") > "$W/up.log" 2>&1 || { rm -rf "$W"; echo "site $s: upload failed:" >&2; tail -20 "$W/up.log" >&2; return 1; }
   rm -rf "$W"
   # OBSERVABILITY=1 logs events only, but each event still carries the URL; a store's query strings
   # hold order keys and logins. wrangler cannot set the redaction, so it is set here, then read back.
-  if [ "${OBSERVABILITY:-0}" = 1 ]; then python3 -I "$WFP/obs_settings.py" redact "$NAMESPACE" "site-$s" || { echo "site $s: UPLOADED, but the query-string redaction did NOT apply: turn the logs off (FORCE_UPLOAD=1, no OBSERVABILITY)" >&2; ok=0; }; fi
-  tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=$new" >/dev/null
+  if [ "${OBSERVABILITY:-0}" = 1 ]; then python3 -I "$WFP/obs_settings.py" redact "$NAMESPACE" "site-$s" || { echo "site $s: UPLOADED, but the query-string redaction did NOT apply: turn the logs off (run the update again with no OBSERVABILITY)" >&2; ok=0; }; fi
+  tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=$new" -var "config_hash=$new_hash" >/dev/null
   echo "site $s: verify the new build is live"
   wait_build "$ORIGIN" "$TOK" "$new" || ok=0
   [ "$ok" = 1 ] && { [ "$(curl -s -o /dev/null -w '%{http_code}' -m 60 "$ORIGIN/?nocache=$RANDOM")" = 200 ] || { echo "site $s: the site did not answer 200 after the update" >&2; ok=0; }; }
@@ -128,9 +135,9 @@ update_one_inner() {
     rm -rf "$APP/build" && mv "$SAVED/build" "$APP/build"
     local W2; W2=$(mktemp -d)
     tfr site output -json | site_secrets_json "$W2/sec.json"
-    if (cd "$APP" && "$ROOT/deploy/wr" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W2/sec.json") > "$W2/rb.log" 2>&1; then
+    if (cd "$APP" && "$WR" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W2/sec.json") > "$W2/rb.log" 2>&1; then
       echo "site $s: re-deployed ${live_build:-unknown}"
-      tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=${live_build:-$rollback}" >/dev/null
+      tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=${live_build:-$rollback}" -var "config_hash=$live_hash" >/dev/null
       wait_build "$ORIGIN" "$TOK" "$live_build" || echo "site $s: /_build did not return to $live_build after the rollback re-deploy" >&2
     else
       echo "site $s: the rollback re-deploy FAILED; the old code is NOT live. Deploy ${live_build:-$rollback} by hand. Reason:" >&2
@@ -163,7 +170,7 @@ import_one() {
   # passes the same values, so it can never re-key the entry or move the domain.
   site_vars "$s" "$SUB" "$KV_ID" || return 1
   local HOST=$REC_HOST
-  local VARS=("${REC_VARS[@]}" -var "build=$(entry_build "$s")")
+  local VARS=("${REC_VARS[@]}" -var "build=$(entry_build "$s")" -var "config_hash=$(entry_config_hash "$s")")
   local TOK; TOK=$(tfr site output -raw spike_token)
   local need_key=0
   if [ -n "${CONTENT:-}" ] && [ -z "${DRY_RUN:-}" ] && [ -z "${SKIP_MEDIA:-}" ]; then need_key=1; fi
