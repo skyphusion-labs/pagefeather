@@ -1,35 +1,35 @@
-// The inbox-wait gate of the PHP object (issue #391).
+// The in-object gate of the PHP object (issue #391).
 //
-// With the database in the object (DB_IN_DO), a PHP render never yields to the event loop, so
-// the object takes no new request while it renders. Requests that arrive meanwhile wait in the
-// platform's queue, BEFORE fetch(), where no counter in the object can see them (phpPending reads
-// 0). Measured on the throwaway shed1113a (2026-11-13): 80 parallel uncached product GETs all
-// answered 503 "overloaded" after about 34 s, and none rendered. A shopper behind such a burst
-// waits the whole queue and then fails.
-//
-// The one signal that sees that queue is the inbox wait: the object's clock at the start of fetch()
-// minus the time the Worker sent the request (SENT_HEADER, set by the Worker only). The queue is
-// first in, first out, so when the head of the queue has waited longer than a bound, the gate
-// answers it at once with a 503 and no PHP. Each shed costs milliseconds, so the queue drains
-// in seconds instead of timing out.
+// Measured on the throwaway shed1113a (2026-11-13, main 8b69800, the sample store):
+// - With the database in the object (DB_IN_DO), a PHP render never yields, and the PHP lock was a
+//   promise chain, so the next render started in the same microtask flush as the last one ended.
+//   The event loop never had a turn to send a finished answer: in a burst every answer left at the
+//   end (N=16: all within 0.3 s at about 17 s), and from N=48 the isolate reset or the platform
+//   refused at about 33 s. withPhp() now yields one turn before each render, so answers leave one by
+//   one (about 0.7 s apart).
+// - With the yield, the waiting requests sit INSIDE the 128 MiB isolate, and a shopper's cart add
+//   behind 16 GETs died in a memory reset (3 of 3 runs). So the object admits a bounded number of
+//   requests and answers the rest at once with a 503 and no PHP. The count of requests in the
+//   object (inObject) is exact: the object is single threaded and this module counts every fetch().
 //
 // Two bounds. A page read (a GET or HEAD that is not cart, checkout, account, admin, login or an
-// AJAX or Store API call) is shed past SHED_WAIT_MS. Everything else (a POST, cart, checkout:
-// a shopper's write) is shed only past SHED_WAIT_HARD_MS, so it still gets in while page reads are
-// shed. A shed request ran no PHP, so a 503 is honest for a write too: nothing was saved.
+// AJAX or Store API call) is shed when SHED_SOFT requests are already in the object. Everything
+// else (a POST, cart, checkout: a shopper's write) is shed only at SHED_HARD, so it still gets in
+// while page reads are shed. A shed request ran no PHP, so a 503 is honest for a write too:
+// nothing was saved.
 
 /** The header the Worker sets to its Date.now() when it sends a request to the object. */
 export const SENT_HEADER = 'x-perf-sent';
 /** The header the Worker sets to the site's public origin. */
 export const ORIGIN_HEADER = 'x-wp-public-origin';
 
-/** Defaults; SHED_WAIT_MS and SHED_WAIT_HARD_MS override them, and "off" turns a bound off. */
-export const SHED_WAIT_MS_DEFAULT = 8000;
-export const SHED_WAIT_HARD_MS_DEFAULT = 20000;
+/** Defaults (set from the shed1113a sweep, see the PR); SHED_SOFT and SHED_HARD override them, "off" turns one off. */
+export const SHED_SOFT_DEFAULT = 4;
+export const SHED_HARD_DEFAULT = 8;
 export const SHED_RETRY_AFTER_S = '5';
 
-// A wait outside this range is clock skew or a bad header, not a queue: it counts as 0 (fail open,
-// the request is served). The two clocks are on two machines.
+// The inbox wait is reported on a shed answer (x-shed-wait-ms, operator only). A wait outside this
+// range is clock skew or a bad header: it counts as 0 (fail open). The two clocks are on two machines.
 export const WAIT_MAX_PLAUSIBLE_MS = 120000;
 export const WAIT_MIN_PLAUSIBLE_MS = -5000;
 
@@ -69,25 +69,43 @@ export function shedClass(method, url) {
 function bound(v, dflt) {
 	if (v === 'off') return Infinity;
 	const n = Number(v);
-	return v !== undefined && v !== null && v !== '' && Number.isFinite(n) && n > 0 ? n : dflt;
+	return v !== undefined && v !== null && v !== '' && Number.isInteger(n) && n > 0 ? n : dflt;
 }
 
-/** The two bounds from the environment. */
+/** The two bounds from the environment: how many requests may be in the object already. */
 export function shedBounds(env) {
 	return {
-		softMs: bound(env && env.SHED_WAIT_MS, SHED_WAIT_MS_DEFAULT),
-		hardMs: bound(env && env.SHED_WAIT_HARD_MS, SHED_WAIT_HARD_MS_DEFAULT),
+		soft: bound(env && env.SHED_SOFT, SHED_SOFT_DEFAULT),
+		hard: bound(env && env.SHED_HARD, SHED_HARD_DEFAULT),
 	};
 }
 
-/** Shed this request? Spike paths (/_...) never are: the deploy tools must reach PHP. */
-export function shouldShed(waitMs, cls, url, bounds) {
+/** Shed this request, with `inObject` requests already in the object? Spike paths (/_...) never are. */
+export function shouldShed(inObject, cls, url, bounds) {
 	if (url.pathname.startsWith('/_')) return false;
-	return waitMs > (cls === 'hard' ? bounds.hardMs : bounds.softMs);
+	return inObject >= (cls === 'hard' ? bounds.hard : bounds.soft);
+}
+
+// The requests in the object now (passed the gate, fetch() not yet ended).
+let inObject = 0;
+/** For the object: run serve() for an admitted request, counted, or answer a shed. */
+export async function gated(raw, env, objectUrl, objectName, serve, now = Date.now()) {
+	const cls = shedClass(raw.method, objectUrl);
+	if (shouldShed(inObject, cls, objectUrl, shedBounds(env))) return shedResponse(inboxWaitMs(raw.headers.get(SENT_HEADER), now), cls, objectName, inObject);
+	inObject++;
+	try {
+		return await serve();
+	} finally {
+		inObject--;
+	}
+}
+/** For tests. */
+export function inObjectCount() {
+	return inObject;
 }
 
 /** The shed answer: a 503 no cache keeps, with a retry hint. */
-export function shedResponse(waitMs, cls, objectName) {
+export function shedResponse(waitMs, cls, objectName, inObjectNow = null) {
 	return new Response('The site is busy. Please try again in a few seconds.\n', {
 		status: 503,
 		headers: {
@@ -98,29 +116,8 @@ export function shedResponse(waitMs, cls, objectName) {
 			'x-shed': cls,
 			'x-shed-wait-ms': String(Math.round(waitMs)),
 			'x-php-object': objectName,
+			...(inObjectNow === null ? {} : { 'x-shed-in-object': String(inObjectNow) }),
 		},
 	});
 }
 
-// The burst count (#391 probe 1): requests that reached fetch() since the event loop last had a
-// free turn. Neither the clock (frozen while PHP runs) nor phpPending (1) sees the queue; this
-// count does if, and only if, a zero-delay timer does NOT run between the deliveries of a burst.
-// Each arrival schedules one timer at most; when it runs, the burst is over and the count is 0.
-let sinceIdle = 0;
-let idleTimer = null;
-/** Count one arrival and return the count, this one included. `schedule` is setTimeout in production. */
-export function noteArrival(schedule = setTimeout) {
-	sinceIdle++;
-	if (idleTimer === null) {
-		idleTimer = schedule(() => {
-			sinceIdle = 0;
-			idleTimer = null;
-		}, 0);
-	}
-	return sinceIdle;
-}
-/** For tests: forget the count. */
-export function resetArrivals() {
-	sinceIdle = 0;
-	idleTimer = null;
-}

@@ -16,7 +16,7 @@ import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, demoLockDefines } from './site-lock.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders } from './perf-headers.mjs';
 import { ORIGIN_KEY, storeOriginIfChanged } from './origin-store.mjs';
-import { SENT_HEADER, ORIGIN_HEADER, stampForObject, noteArrival } from './shed-gate.mjs';
+import { SENT_HEADER, ORIGIN_HEADER, stampForObject, gated } from './shed-gate.mjs';
 import { resetFailures, writeLossResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
@@ -2296,12 +2296,16 @@ export class PhpRuntime extends DurableObject {
 		await rearm(this.ctx.storage, Date.now(), Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
 	}
 
+	// The in-object gate (#391, shed-gate.mjs) runs first, before any storage I/O: past its bound a
+	// request is answered at once with a 503 and no PHP, so it never waits inside the isolate.
 	async fetch(raw) {
+		const objectUrl = new URL(raw.url);
+		return gated(raw, this.env, objectUrl, phpObjectName(this.env, objectUrl), () => this.serveObject(raw, objectUrl));
+	}
+
+	async serveObject(raw, objectUrl) {
 		const env = this.env;
 		ENV = env;
-		const objectUrl = new URL(raw.url);
-		// Probe (#391): arrivals since the event loop last had a free turn. Report only.
-		const burst = noteArrival();
 		const origin = raw.headers.get(ORIGIN_HEADER);
 		// Without it, the object does not guess an origin: a wrong one redirects every page.
 		if (!origin) return new Response('missing ' + ORIGIN_HEADER, { status: 500 });
@@ -2412,7 +2416,7 @@ export class PhpRuntime extends DurableObject {
 					// inMs: from the start of fetch to the response (object clock). The
 					// Worker's object time minus inbox minus inMs is the wait to send the
 					// response back, which the next request's PHP can block the same way.
-					res.headers.set('x-perf-queue', JSON.stringify({ inboxMs, ahead, waitMs, inMs: Date.now() - tArrive, burst }));
+					res.headers.set('x-perf-queue', JSON.stringify({ inboxMs, ahead, waitMs, inMs: Date.now() - tArrive }));
 				} catch {}
 				return res;
 			} finally {

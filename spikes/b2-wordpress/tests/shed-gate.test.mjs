@@ -1,14 +1,15 @@
-// Tests of shed-gate.mjs (issue #391): the inbox-wait gate of the PHP object.
+// Tests of shed-gate.mjs (issue #391): the in-object gate of the PHP object.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-	SENT_HEADER, ORIGIN_HEADER, stampForObject, inboxWaitMs, shedClass, shedBounds, shouldShed, shedResponse,
-	SHED_WAIT_MS_DEFAULT, SHED_WAIT_HARD_MS_DEFAULT,
+	SENT_HEADER, ORIGIN_HEADER, stampForObject, inboxWaitMs, shedClass, shedBounds, shouldShed, shedResponse, gated, inObjectCount,
+	SHED_SOFT_DEFAULT, SHED_HARD_DEFAULT,
 } from '../shed-gate.mjs';
 
 const U = (p) => new URL(p, 'https://shop.example');
-const B = { softMs: 8000, hardMs: 20000 };
+const B = { soft: 4, hard: 8 };
+const req = (path, method = 'GET', headers = {}) => new Request('https://shop.example' + path, { method, headers });
 
 test('a client-sent SENT or ORIGIN header is replaced by the Worker, never kept', () => {
 	const client = new Request('https://shop.example/?product=a', {
@@ -18,26 +19,22 @@ test('a client-sent SENT or ORIGIN header is replaced by the Worker, never kept'
 	assert.equal(fwd.headers.get(SENT_HEADER), '1794555000000');
 	assert.equal(fwd.headers.get(ORIGIN_HEADER), 'https://shop.example');
 	assert.equal(fwd.headers.get('cookie'), 'k=v', 'other headers pass through');
-	// A client that sends an ancient SENT time cannot make its own request look queued.
-	assert.equal(inboxWaitMs(fwd.headers.get(SENT_HEADER), 1794555000010), 10);
 });
 
-test('the inbox wait: now minus sent', () => {
+test('the inbox wait: now minus sent; skew and bad headers count as 0 (fail open)', () => {
 	assert.equal(inboxWaitMs('1000', 9000), 8000);
-	assert.equal(inboxWaitMs(String(5), 5), 0);
-});
-
-test('clock skew and bad headers count as 0 (fail open)', () => {
 	assert.equal(inboxWaitMs(null, 1000), 0, 'missing');
 	assert.equal(inboxWaitMs('', 1000), 0, 'empty');
 	assert.equal(inboxWaitMs('abc', 1000), 0, 'not a number');
-	assert.equal(inboxWaitMs('0', 200000), 0, 'over 120 s is implausible');
-	assert.equal(inboxWaitMs('0', 120001), 0, 'just over 120 s');
+	assert.equal(inboxWaitMs('0', 120001), 0, 'over 120 s is implausible');
 	assert.equal(inboxWaitMs('0', 120000), 120000, 'exactly 120 s is plausible');
 	assert.equal(inboxWaitMs('10000', 4000), 0, 'under -5 s is implausible');
 	assert.equal(inboxWaitMs('1000', 500), 0, 'a small negative skew is 0');
-	const bounds = shedBounds({});
-	assert.equal(shouldShed(inboxWaitMs('0', 10 ** 13), 'soft', U('/'), bounds), false, 'an implausible wait never sheds');
+});
+
+test('the gate never reads the client clock: a forged ancient SENT header does not shed', async () => {
+	const r = await gated(req('/?product=a', 'GET', { [SENT_HEADER]: '1' }), {}, U('/?product=a'), 'php-0', async () => new Response('ok'));
+	assert.equal(r.status, 200);
 });
 
 test('page reads are soft; writes and a shopper’s own pages are hard', () => {
@@ -52,11 +49,12 @@ test('page reads are soft; writes and a shopper’s own pages are hard', () => {
 	assert.equal(shedClass('GET', U('/cartography/')), 'soft', 'a prefix is not a match');
 });
 
-test('soft sheds past softMs, hard only past hardMs', () => {
-	assert.equal(shouldShed(8000, 'soft', U('/'), B), false);
-	assert.equal(shouldShed(8001, 'soft', U('/'), B), true);
-	assert.equal(shouldShed(8001, 'hard', U('/checkout/'), B), false, 'a write still gets in while reads are shed');
-	assert.equal(shouldShed(20001, 'hard', U('/checkout/'), B), true);
+test('soft sheds at soft in the object, hard only at hard', () => {
+	assert.equal(shouldShed(3, 'soft', U('/'), B), false);
+	assert.equal(shouldShed(4, 'soft', U('/'), B), true);
+	assert.equal(shouldShed(4, 'hard', U('/checkout/'), B), false, 'a write still gets in while reads are shed');
+	assert.equal(shouldShed(7, 'hard', U('/checkout/'), B), false);
+	assert.equal(shouldShed(8, 'hard', U('/checkout/'), B), true);
 });
 
 test('spike paths are never shed', () => {
@@ -65,24 +63,67 @@ test('spike paths are never shed', () => {
 });
 
 test('bounds: defaults, overrides, off, and bad values fall back', () => {
-	assert.deepEqual(shedBounds({}), { softMs: SHED_WAIT_MS_DEFAULT, hardMs: SHED_WAIT_HARD_MS_DEFAULT });
-	assert.deepEqual(shedBounds({ SHED_WAIT_MS: '3000', SHED_WAIT_HARD_MS: '15000' }), { softMs: 3000, hardMs: 15000 });
-	assert.equal(shedBounds({ SHED_WAIT_MS: 'off' }).softMs, Infinity);
-	assert.equal(shouldShed(10 ** 5, 'soft', U('/'), shedBounds({ SHED_WAIT_MS: 'off', SHED_WAIT_HARD_MS: 'off' })), false);
-	assert.equal(shedBounds({ SHED_WAIT_MS: '-1' }).softMs, SHED_WAIT_MS_DEFAULT);
-	assert.equal(shedBounds({ SHED_WAIT_MS: 'abc' }).softMs, SHED_WAIT_MS_DEFAULT);
-	assert.ok(SHED_WAIT_MS_DEFAULT < SHED_WAIT_HARD_MS_DEFAULT, 'reads are shed before writes');
+	assert.deepEqual(shedBounds({}), { soft: SHED_SOFT_DEFAULT, hard: SHED_HARD_DEFAULT });
+	assert.deepEqual(shedBounds({ SHED_SOFT: '3', SHED_HARD: '9' }), { soft: 3, hard: 9 });
+	assert.equal(shedBounds({ SHED_SOFT: 'off' }).soft, Infinity);
+	assert.equal(shouldShed(10 ** 5, 'soft', U('/'), shedBounds({ SHED_SOFT: 'off', SHED_HARD: 'off' })), false);
+	for (const bad of ['-1', '0', 'abc', '2.5']) assert.equal(shedBounds({ SHED_SOFT: bad }).soft, SHED_SOFT_DEFAULT, bad);
+	assert.ok(SHED_SOFT_DEFAULT >= 1 && SHED_SOFT_DEFAULT < SHED_HARD_DEFAULT, 'reads are shed before writes');
 });
 
 test('the shed answer: a 503 with a retry hint that no cache keeps', async () => {
-	const r = shedResponse(9123.4, 'soft', 'php-0');
+	const r = shedResponse(9123.4, 'soft', 'php-0', 4);
 	assert.equal(r.status, 503);
 	assert.equal(r.headers.get('retry-after'), '5');
 	assert.equal(r.headers.get('cache-control'), 'no-store');
 	assert.equal(r.headers.get('cloudflare-cdn-cache-control'), 'no-store');
 	assert.equal(r.headers.get('x-shed'), 'soft');
 	assert.equal(r.headers.get('x-shed-wait-ms'), '9123');
+	assert.equal(r.headers.get('x-shed-in-object'), '4');
 	assert.match(await r.text(), /busy/);
+});
+
+test('gated: a burst of reads is cut at soft, a write behind it still gets in, and the count returns to 0', async () => {
+	const env = { SHED_SOFT: '3', SHED_HARD: '5' };
+	const held = [];
+	const serve = () => new Promise((ok) => held.push(() => ok(new Response('rendered'))));
+	const reads = Array.from({ length: 6 }, (_, i) => gated(req('/?product=' + i), env, U('/?product=' + i), 'php-0', serve));
+	await new Promise((ok) => setTimeout(ok, 0));
+	assert.equal(inObjectCount(), 3, 'only soft reads are admitted');
+	const write = gated(req('/?rest_route=/wc/store/v1/cart/add-item', 'POST'), env, U('/?rest_route=/wc/store/v1/cart/add-item'), 'php-0', serve);
+	const write2 = gated(req('/checkout/', 'POST'), env, U('/checkout/'), 'php-0', serve);
+	const write3 = gated(req('/checkout/', 'POST'), env, U('/checkout/'), 'php-0', serve);
+	await new Promise((ok) => setTimeout(ok, 0));
+	assert.equal(inObjectCount(), 5, 'two writes are admitted above soft, up to hard');
+	assert.equal((await write3).status, 503, 'a write is shed at hard');
+	const shedReads = (await Promise.race([Promise.all(reads.slice(3)), new Promise((ok) => setTimeout(() => ok(null), 50))]));
+	assert.ok(shedReads, 'the shed reads answer at once, not after the admitted ones');
+	assert.deepEqual(shedReads.map((r) => r.status), [503, 503, 503]);
+	for (const go of held) go();
+	assert.deepEqual((await Promise.all(reads.slice(0, 3))).map((r) => r.status), [200, 200, 200]);
+	assert.equal((await write).status, 200);
+	assert.equal((await write2).status, 200);
+	assert.equal(inObjectCount(), 0);
+});
+
+test('gated: a serve that throws still frees its slot', async () => {
+	await assert.rejects(gated(req('/'), {}, U('/'), 'php-0', async () => { throw new Error('boom'); }));
+	assert.equal(inObjectCount(), 0);
+});
+
+test('index.js: the gate wraps the whole object fetch, before any storage I/O', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const a = src.indexOf('\tasync fetch(raw) {');
+	const body = src.slice(a, src.indexOf('\tasync serveObject(raw, objectUrl) {'));
+	assert.ok(a > 0 && body.length > 0);
+	assert.match(body, /return gated\(raw, this\.env, objectUrl, /);
+	assert.ok(!/storage\.|await rearm/.test(body), 'no storage call before the gate');
+});
+
+test('index.js: withPhp yields one event-loop turn before each render', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const w = src.slice(src.indexOf('function withPhp(fn) {'), src.indexOf('phpQueue = run.catch'));
+	assert.match(w, /await new Promise\(\(ok\) => setTimeout\(ok, 0\)\);\s*return fn\(\);/);
 });
 
 test('index.js: the Worker stamps the object request through stampForObject only', () => {
