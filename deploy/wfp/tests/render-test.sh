@@ -137,6 +137,12 @@ recyc() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sy
 ok "no PHP_RECYCLE var by default" "$(env -u PHP_RECYCLE bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | recyc | grep -qx 'null' && echo 1 || echo 0)"
 ok "PHP_RECYCLE=off renders it" "$(PHP_RECYCLE=off render_user one https://wp-one.sub.workers.dev | recyc | grep -qx '"off"' && echo 1 || echo 0)"
 for bad in on yes OFF 0; do ok "PHP_RECYCLE=$bad fails the render" "$(PHP_RECYCLE=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
+# MEM_LEDGER (#394): on or off, only when asked.
+mled() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["vars"].get("MEM_LEDGER")))'; }
+ok "no MEM_LEDGER var by default" "$(env -u MEM_LEDGER bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | mled | grep -qx 'null' && echo 1 || echo 0)"
+ok "MEM_LEDGER=on renders it" "$(MEM_LEDGER=on render_user one https://wp-one.sub.workers.dev | mled | grep -qx '"on"' && echo 1 || echo 0)"
+ok "MEM_LEDGER=off renders it" "$(MEM_LEDGER=off render_user one https://wp-one.sub.workers.dev | mled | grep -qx '"off"' && echo 1 || echo 0)"
+for bad in yes ON 1 true; do ok "MEM_LEDGER=$bad fails the render" "$(MEM_LEDGER=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
 # OPCACHE_SPLIT (#394 L1): the ASSETS binding and /_pf/ first only on a split build.
 assets() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["assets"], sort_keys=True))'; }
 ok "unsplit: [assets] is the directory only" "$(env -u OPCACHE_SPLIT bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | assets | grep -qx '{"directory": "build/public"}' && echo 1 || echo 0)"

@@ -17,6 +17,8 @@ import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, lockDefines } from './site-lock.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore } from './perf-headers.mjs';
 import { resetFailures, writeLossResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
+import { MEMORY_RESET } from './object-error.mjs';
+import { createLedger, memfsBytes, createSqlMeter, ledgerOn, LEDGER_MIB } from './mem-ledger.mjs';
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import { routeClass, createTrace } from './file-trace.mjs';
 import { refuseSocketsDecorator, parseMessage } from './runtime-guards.mjs';
@@ -190,6 +192,27 @@ const MEM_ID_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 function memIdOf(req, env) {
 	const id = req.headers.get('x-perf-id');
 	return id && MEM_ID_RE.test(id) && perfHeadersAllowed(req, env) ? { id } : {};
+}
+// The isolate memory ledger (#394, mem-ledger.mjs): off unless MEM_LEDGER=on or an operator request
+// sends x-mem-ledger: 1. ledgerActive is set per request (and per cron leg), ledgerId is its x-perf-id.
+const ledger = createLedger();
+const sqlMeter = createSqlMeter();
+let ledgerActive = false;
+let ledgerId = null;
+let ledgerFailLogged = false;
+function ledgerSnapshot(at) {
+	const php = lastBootedPhp;
+	const heapOf = (p) => p[__private__dont__use].HEAPU8.length;
+	let memfs = null;
+	try {
+		memfs = php ? memfsBytes(php[__private__dont__use].FS) : null;
+	} catch (e) {
+		memfs = { error: String((e && e.message) || e).slice(0, 80) };
+	}
+	return { at, iso: ISOLATE_ID, rt: runtimeSerial, wasmMiB: php ? LEDGER_MIB(heapOf(php)) : null, runtimes: ledger.runtimes(runtimeSerial, heapOf), memfs, inflatedMiB: LEDGER_MIB(inflatedBytes), ocMiB: LEDGER_MIB(objectCacheBytes), sql: sqlMeter.read() };
+}
+function ledgerLog(at, extra) {
+	console.log(JSON.stringify({ m: 'mem-ledger', ...(ledgerId ? { id: ledgerId } : {}), ...ledgerSnapshot(at), ...(extra || {}) }));
 }
 // Performance instrument (docs/perf-dosql.md), PHP object only. Counts do not
 // need the clock: in a Worker or a Durable Object, Date.now() moves only at
@@ -1118,7 +1141,19 @@ async function handleMessage(raw) {
 		stats.log.push('ERR ' + m.sql.slice(0, 160).replace(/\s+/g, ' ') + ' => ' + m.error.slice(0, 120));
 		return '{}';
 	}
-	if (sqlDb) return JSON.stringify(sqlStatement(sqlDb, m));
+	if (sqlDb) {
+		const reply = sqlStatement(sqlDb, m);
+		const out = JSON.stringify(reply);
+		if (ledgerActive) {
+			sqlMeter.add(out.length);
+			// #394: the write that hits the isolate limit. One snapshot per request, before PHP goes on.
+			if (reply && reply.ok === false && MEMORY_RESET.test(String(reply.error || '')) && !ledgerFailLogged) {
+				ledgerFailLogged = true;
+				ledgerLog('sql-memory-fail', { sql1: sqlShape(String(m.sql || '')) });
+			}
+		}
+		return out;
+	}
 	// DB_IN_DO: the object's own SQLite is the only database; there is no D1 binding on a
 	// b-dosql deploy. If a DB statement arrives with sqlDb unbound (null) we must NOT fall
 	// through to ENV.DB below: ENV.DB is undefined there, so that path throws deep in the
@@ -1190,6 +1225,7 @@ async function boot(origin) {
 	});
 	const php = new PHP(id);
 	lastBootedPhp = php;
+	ledger.register(php, runtimeSerial); // #394: retired runtimes stay countable while alive
 	// php.ini overrides. PHP_INI (a JSON object) lets a deploy or a test change them.
 	// A deploy (WP_SALT is set) never prints PHP errors, even for a script that
 	// does not load wp-config.php (measured 2026-11-04: /wp-content/db.php did).
@@ -2341,6 +2377,9 @@ export class PhpRuntime extends DurableObject {
 				if (runStart.died) console.log(JSON.stringify({ m: 'cron', died: runStart.rec.deaths, lastMark: runStart.rec.prevMark, lastFatal: runStart.rec.prevFatal }));
 				await this.ctx.storage.put(CRON_RUN_KEY, runStart.rec);
 				if (typeof this.ctx.storage.sync === 'function') await this.ctx.storage.sync();
+				// #394: the ledger at the start of a cron leg, when MEM_LEDGER=on (a cron leg has no operator header).
+				ledgerActive = this.env.MEM_LEDGER === 'on'; ledgerId = null; ledgerFailLogged = false; sqlMeter.reset();
+				if (ledgerActive) ledgerLog('cron-start');
 				const runStorage = this.ctx.storage;
 				cronRunSink = async (patch) => {
 					const cur = (await runStorage.get(CRON_RUN_KEY)) || {};
@@ -3221,6 +3260,11 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 		}
 		try {
 			if (!isolateStart) isolateStart = Date.now(); // #474: the isolate's first request
+			ledgerActive = ledgerOn(env, req.headers.get('x-mem-ledger'), perfHeadersAllowed(req, env));
+			ledgerId = ledgerActive ? memIdOf(req, env).id || null : null;
+			ledgerFailLogged = false;
+			sqlMeter.reset();
+			if (ledgerActive) ledgerLog('start');
 			const tBoot = Date.now();
 			const booted = !bootPromise;
 			if (tracing()) fileTrace.begin({ cls: routeClass(req.method, url.pathname, url.search), method: req.method, path: url.pathname, boot: booted ? 1 : 0 });
@@ -3305,6 +3349,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 				}
 			}
 			if (lost) {
+				if (ledgerActive) ledgerLog('write-loss', { lost });
 				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, phpStatus: r.httpStatusCode, firstSql: sqlShape(d.failures[0].sql) }));
 				bootPromise = null; // the runtime saw the reset; the next request boots a new one
 				const wl = writeLossResponse(lost, wantsJson(url.pathname, url.search, req.headers.get('accept')));
@@ -3377,6 +3422,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 					wasm0MiB: Math.round(wasm0 / 1048576),
 					wasm1MiB: Math.round(wasmBytes / 1048576),
 					...(booted ? { l1: l1State } : {}), // #394 L1: where this boot's OPcache boot pack came from
+					...(ledgerActive ? { mem: ledgerSnapshot('end') } : {}), // #394: the isolate memory ledger
 					bytes: r.bytes.length,
 					httpCalls: stats.httpCalls - start.httpCalls,
 					txnOps: stats.txnOps - start.txnOps,
