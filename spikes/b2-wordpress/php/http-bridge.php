@@ -35,6 +35,71 @@ if ( ! function_exists( 'post_message_to_js' ) || defined( 'SKYPHUSION_HTTP_BRID
 	return; // Not in the Worker or the PHP object (a Container has real sockets), or HTTP_BRIDGE=off.
 }
 
+/**
+ * wp_http_validate_url() without DNS (#430). Core resolves a host name with gethostbyname() and
+ * refuses the URL when it does not resolve; PHP in WebAssembly has no DNS, so EVERY host failed and
+ * every wp_safe_remote_*() request (download_url(): plugin and theme installs and updates) answered
+ * "A valid URL was not provided". This makes core's other checks unchanged, in core's order:
+ * http or https only, the URL unchanged by wp_kses_bad_protocol, a host, no user or password, no
+ * :#?[] in the host, core's safe ports (http_allowed_safe_ports) unless it is the site's own host
+ * and port. Without DNS it cannot see where a NAME points, so it refuses what it can see instead:
+ * an IPv4 literal in core's private ranges plus link-local 169.254/16 (cloud metadata), and names
+ * that are not public (localhost, *.localhost, *.local, *.internal, and any name with no dot),
+ * each unless http_request_host_is_external says otherwise. The real gate stays the Worker's host
+ * allowlist (HTTP_ALLOW_HOSTS, http-allow.mjs), and a Worker's fetch() never reaches a private network.
+ */
+function skyphusion_http_validate_url( $url ) {
+	if ( ! is_string( $url ) || '' === $url || is_numeric( $url ) ) {
+		return false;
+	}
+	$original_url = $url;
+	$url          = wp_kses_bad_protocol( $url, array( 'http', 'https' ) );
+	if ( ! $url || strtolower( $url ) !== strtolower( $original_url ) ) {
+		return false;
+	}
+	$parsed_url = parse_url( $url );
+	if ( ! $parsed_url || empty( $parsed_url['host'] ) ) {
+		return false;
+	}
+	if ( isset( $parsed_url['user'] ) || isset( $parsed_url['pass'] ) ) {
+		return false;
+	}
+	if ( false !== strpbrk( $parsed_url['host'], ':#?[]' ) ) {
+		return false;
+	}
+	$parsed_home = parse_url( get_option( 'home' ) );
+	$same_host   = isset( $parsed_home['host'] ) && strtolower( $parsed_home['host'] ) === strtolower( $parsed_url['host'] );
+	$host        = strtolower( trim( $parsed_url['host'], '.' ) );
+	if ( ! $same_host ) {
+		$internal = false;
+		if ( preg_match( '#^(([1-9]?\d|1\d\d|25[0-5]|2[0-4]\d)\.){3}([1-9]?\d|1\d\d|25[0-5]|2[0-4]\d)$#', $host ) ) {
+			$parts    = array_map( 'intval', explode( '.', $host ) );
+			$internal = 127 === $parts[0] || 10 === $parts[0] || 0 === $parts[0]
+				|| ( 172 === $parts[0] && 16 <= $parts[1] && 31 >= $parts[1] )
+				|| ( 192 === $parts[0] && 168 === $parts[1] )
+				|| ( 169 === $parts[0] && 254 === $parts[1] );
+		} else {
+			$internal = false === strpos( $host, '.' ) || 'localhost' === $host
+				|| preg_match( '#\.(localhost|local|internal)$#', $host );
+		}
+		if ( $internal && ! apply_filters( 'http_request_host_is_external', false, $host, $url ) ) {
+			return false;
+		}
+	}
+	if ( empty( $parsed_url['port'] ) ) {
+		return $url;
+	}
+	$port          = $parsed_url['port'];
+	$allowed_ports = apply_filters( 'http_allowed_safe_ports', array( 80, 443, 8080 ), $host, $url );
+	if ( is_array( $allowed_ports ) && in_array( $port, $allowed_ports, true ) ) {
+		return $url;
+	}
+	if ( $parsed_home && $same_host && isset( $parsed_home['port'] ) && $parsed_home['port'] === $port ) {
+		return $url;
+	}
+	return false;
+}
+
 add_filter(
 	'pre_http_request',
 	function ( $pre, $args, $url ) {
@@ -48,7 +113,7 @@ add_filter(
 		};
 		// The checks core makes before it sends (class-wp-http.php).
 		if ( ! empty( $args['reject_unsafe_urls'] ) ) {
-			$url = wp_http_validate_url( $url );
+			$url = skyphusion_http_validate_url( $url ); // core's checks without DNS (#430)
 		}
 		if ( $url ) {
 			$url = wp_kses_bad_protocol( $url, array( 'http', 'https', 'ssl' ) );
