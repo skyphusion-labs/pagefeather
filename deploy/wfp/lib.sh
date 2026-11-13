@@ -198,7 +198,11 @@ opcache_split_assets() {
   esac
 }
 render_user() { # render_user <site> <origin>
-  local s=$1 origin=$2 mail_binding mail_vars http_allow ts_vars
+  local s=$1 origin=$2 mail_binding mail_vars http_allow ts_vars php_env
+  # WFP_PHP_ENV (#434): a measurement build may set USE_ZEND_ALLOC=1 so memory_get_usage reads
+  # Zend's own numbers. JSON only, no single quote (it sits in a TOML literal string).
+  php_env=${WFP_PHP_ENV:-'{"USE_ZEND_ALLOC":"0"}'}
+  case $php_env in *"'"*|*$'\n'*) echo "WFP_PHP_ENV must not hold a single quote or a newline" >&2; return 1 ;; esac
   mail_binding=$(SITE_ORIGIN="$origin" MAIL_FROM="${MAIL_FROM:-}" node "$APP/mail-from.mjs" --binding) || return 1
   mail_vars=$(SITE_ORIGIN="$origin" MAIL_FROM="${MAIL_FROM:-}" MAIL_FROM_NAME="${MAIL_FROM_NAME:-}" node "$APP/mail-from.mjs" --vars) || return 1
   http_allow=$(node "$APP/http-allow.mjs") || return 1
@@ -228,7 +232,7 @@ type = "worker"
 [exports.Pages.cache]
 enabled = true
 [vars]
-PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
+PHP_ENV = '$php_env'
 SITE_ORIGIN = "$origin"
 $mail_vars
 HTTP_ALLOW_HOSTS = "$http_allow"
