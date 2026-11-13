@@ -319,3 +319,26 @@ routable, triggers the install and surfaces the first-login credential.
 - **Path B demos** install the same way; the throwaway admin login is returned in
   the demo response for the demo session (the reaper tears the whole site down at
   TTL regardless).
+
+## The one-click site manager key: a named widening (#414, lead ruling on #401, 2026-11-13)
+
+The one-click site manager (`deploy/oneclick/`) is a third caller of this core. It runs in the OWNER's own Cloudflare account, for the owner's own sites, behind Cloudflare Access. Its key (the `PAGEFEATHER_KEY` secret, an account API token the owner makes once) has **one permission more than the operator token of Decision 2: Workers Scripts edit on plain Workers.** This is deliberate.
+
+**Why it is needed.** On `workers.dev` each Worker has one hostname, so one dispatcher cannot answer for many sites. Each site gets its own small front-door Worker, `wp-<name>`, which runs `deploy/wfp/dispatcher/worker.js` (phase A of `deploy/wfp`). Making that Worker is a plain `PUT /accounts/{a}/workers/scripts/wp-<name>` plus turning on its `workers.dev` route. No binding can upload a script: the dispatch namespace binding only runs scripts (`get()`). Cloudflare's own Workers for Platforms starter asks for a token with Workers edit for the same reason (`docs/prior-art.md`).
+
+**What the key can do (the template the owner uses):** Workers Scripts edit, Workers KV Storage edit, Workers R2 Storage edit, Workers for Platforms edit, Account Settings read. No zone or DNS permission, no API Tokens permission (it cannot make a token), no Access permission, no Containers permission.
+
+**What the code does with it, and only this:**
+
+- the core's existing operations (`provisionSite`: the media bucket, the per-site KV, the namespace script, the site map entry, the install);
+- `PUT` and `GET` of `workers/scripts/wp-<name>` and `POST .../wp-<name>/subdomain`, for a name that passed `validateRequest` (the name rule plus the caller-reserved names), so the script name is always `wp-` plus a vetted label;
+- `GET /accounts`, `GET workers/subdomain`, `GET workers/dispatch/namespaces/<ns>`, and the site map KV, to read state.
+
+**What it refuses (tests in `deploy/oneclick/tests/admin-test.mjs`):**
+
+- Any request with no Cloudflare Access identity (`ctx.access`, which only Cloudflare sets), or with a forged Access header and no identity, or from a signed-in person who is not `ADMIN_EMAIL`. No API call runs before this check.
+- A write that does not come from its own page (the `x-pagefeather` header, a same-origin `Origin`, a JSON body).
+- A `wp-<name>` Worker that already exists and is not in its site map. The check runs BEFORE anything is made, so the key never overwrites an owner's own Worker.
+- Any site without the code lock: every site it makes carries `CODE_LOCK=on` (#406).
+
+**What stays the same.** The operator Worker (`wp-provision`) and the demo Worker keep the restricted token of Decision 2. This widening is only for the site manager's own key, in the owner's own account. The request still chooses only a name and the store checkbox; the Worker builds every binding, the code and the hostname itself (`buildServerCfg`), as for the operator path.

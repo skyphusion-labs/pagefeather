@@ -232,6 +232,7 @@ jobs:
           node deploy/provision/tests/demo-test.mjs
           node deploy/provision/tests/custom-hostname-test.mjs
           node deploy/provision/tests/hostname-cli-test.mjs
+          node deploy/oneclick/tests/admin-test.mjs
           python3 deploy/wfp/tests/bindings-test.py
           python3 deploy/wfp/tests/cross-test.py
           deploy/wfp/tests/probe-entry-test.sh
