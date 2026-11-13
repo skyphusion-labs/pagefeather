@@ -253,6 +253,7 @@ def t_request_classes():
         (("POST", "/wp-admin/admin-ajax.php", {"action": "elementor_ajax", "actions": '{"save_builder":{}}'}), "editor-save"),
         (("POST", "/wp-admin/admin-ajax.php", {"action": "elementor_ajax", "actions": '{"get_document_config":{}}'}), "admin-ajax:elementor_ajax"),
         (("POST", "/?rest_route=/wp/v2/pages/12"), "editor-save"),
+        (("DELETE", "/?rest_route=/wp/v2/pages/12"), "rest-write"),
         (("POST", "/?rest_route=/wp/v2/plugins"), "rest-write"),
         (("GET", "/?rest_route=/wp/v2/types"), "rest-read"),
         (("GET", "/wp-json/wp/v2/posts"), "rest-read"),

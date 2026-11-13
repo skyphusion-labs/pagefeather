@@ -88,7 +88,7 @@ def request_class(method, path, data=None):
             return "editor-save"
         return "admin-ajax:%s" % (a or "unknown")
     if route:
-        if m != "GET" and re.match(r"^/wp/v2/(posts|pages)/\d+/?$", urllib.parse.unquote(route)):
+        if m in ("POST", "PUT", "PATCH") and re.match(r"^/wp/v2/(posts|pages)/\d+/?$", urllib.parse.unquote(route)):
             return "editor-save"
         return "rest-read" if m in ("GET", "HEAD") else "rest-write"
     if p.startswith("/wp-admin/"):
