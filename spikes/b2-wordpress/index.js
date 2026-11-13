@@ -168,6 +168,17 @@ let bootPromise;
 // The most recently booted PHP, so the /_memprobe bridge (handleMessage probeMem) can
 // read the live WASM heap size from JS. memory_get_usage() reports 0 under USE_ZEND_ALLOC=0.
 let lastBootedPhp = null;
+// Drop every hold on a runtime that will not be used again (#394 (b)), so its WebAssembly memory can
+// be collected before the next boot grows a new one. exit() deletes php-wasm's Module reference; its
+// errors are ignored, since the runtime is finished either way.
+function releaseRuntime(php) {
+	if (lastBootedPhp === php) lastBootedPhp = null;
+	try {
+		php.exit(0);
+	} catch {
+		// already exited, or exit threw: nothing more to release
+	}
+}
 // The admin memory trace of the request now running (#434, php/mem-trace.php): set by the
 // memTrace message at PHP shutdown, read once into the operator-only x-mem-trace header.
 let lastMemTrace = null;
@@ -3278,9 +3289,11 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// only what compiled after it, or answered 409 when the last request
 			// recycled (measured 2026-11-06: 3 recycles at 119 MiB with WooCommerce and
 			// All-in-One WP Migration). A crashed runtime is still dropped.
+			let recycled = null;
 			if (crashed || (wasmBytes > RECYCLE_WASM_BYTES && env.PHP_RECYCLE !== 'off')) {
 				runtimeDrops++;
 				bootPromise = null;
+				recycled = php;
 				out.set('x-runtime-recycled', crashed ? 'crashed' : 'memory');
 			}
 			if (ctx && ctx.inObject) {
@@ -3317,7 +3330,13 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 				out.set('x-perf', JSON.stringify(perf));
 				console.log(JSON.stringify({ m: 'perf', id: req.headers.get('x-perf-id'), path: url.pathname, ...perf }));
 			}
-			return new Response(r.bytes, { status: r.httpStatusCode, headers: out });
+			const response = new Response(r.bytes, { status: r.httpStatusCode, headers: out });
+			// #394 (b): a recycled runtime is RELEASED, not only forgotten. bootPromise = null alone left
+			// lastBootedPhp holding the old runtime, WASM memory and all, until the next boot had built a
+			// new one: after a post-new.php recycle (115 to 121 MiB) the next request booted with both.
+			// The response above is built first, so its bytes are not touched.
+			if (recycled) releaseRuntime(recycled);
+			return response;
 		} catch (e) {
 			if (bootPromise) runtimeDrops++;
 			bootPromise = null; // a failed runtime is not reused

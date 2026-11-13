@@ -33,7 +33,8 @@ test('index.js: the guard returns the replacement BEFORE PHP headers are copied 
 	const guard = src.indexOf('const lost = resetFailures(d.failures);');
 	const replace = src.indexOf('const wl = writeLossResponse(lost', guard);
 	const copy = src.indexOf('for (const [k, v] of Object.entries(r.headers))', guard - 2000);
-	const answer = src.indexOf('return new Response(r.bytes, { status: r.httpStatusCode, headers: out });');
+	// The construction of PHP's own answer (#394 (b) builds it before releasing a recycled runtime, then returns it).
+	const answer = src.indexOf('new Response(r.bytes, { status: r.httpStatusCode, headers: out })');
 	assert.ok(guard > 0 && replace > guard, 'the guard and its replacement are present');
 	assert.ok(copy > replace, 'PHP headers (Set-Cookie) are copied only after the guard');
 	assert.ok(answer > replace, 'PHP own answer is built only after the guard');
