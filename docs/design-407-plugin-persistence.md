@@ -119,6 +119,35 @@ labeled unmeasured.
   directory. The objects are private (R2, no public route). Same trust as WordPress: an admin who
   can install a plugin can run code.
 
+## 4a. Approach a (Hyperdrive MySQL), added 2026-11-13
+
+Conrad ruled that the Hyperdrive path stays open for WooCommerce stores (it is the only path to high
+concurrency). So the code store must work on approach `a` too, where PHP runs in the Worker and the
+database is MySQL, with no Durable Object SQLite.
+
+- **Shared:** the R2 objects (`_code/<type>/<slug>/<sha256>.zip`), the mu-plugin, the boot mount,
+  the sha check, and the budget. Approach `a` boots through the same `index.js` `boot()`
+  (`index-a.js` only swaps the database handler).
+- **The index is an adapter** (`code-store.mjs`):
+  - `sqliteIndex` on b-dosql;
+  - `mysqlIndex` on `a`: two tables, `pf_code` and `pf_code_state`, in the site's MySQL, through
+    the same bridge WordPress uses (`dbHandler`).
+  The SQL is the subset both engines accept. Writes run in `BEGIN` / `COMMIT`, and every value is
+  validated or an integer before it becomes a literal.
+- **Why MySQL and not an R2 manifest object:** the index then lives with WordPress's own data. A
+  database backup or restore restores the matching plugin set, and a write is one transaction. An R2
+  manifest would need conditional puts and a HEAD per check (Class B per request on a busy store).
+- **Many isolates:** `a` scales out (123 isolates at 50 concurrent, `docs/results.md:182`). Each
+  isolate checks the generation at most every `CODE_CHECK_S` seconds (default 5), so an install
+  shows on the other isolates within that time. b-dosql checks on every request: one object, one
+  SQLite read.
+- **Not yet on `a`:** the daily orphan sweep. It runs from the b-dosql alarm, and `a` has no
+  Durable Object. Orphans are harmless (never loaded). The sweep for `a` comes with its cron path.
+- **Tests:** every store test runs against both adapters on a real SQLite
+  (`tests/code-store.test.mjs`: the crash windows, including a COMMIT that fails after the row was
+  written; the budget boundary; a second isolate; the check interval; no quote or backslash from a
+  value ever reaches a statement). The SQL on a real MySQL is checked on the `a` throwaway in Gate 2.
+
 ## 5. Not in v1
 
 - Core updates (#406).
