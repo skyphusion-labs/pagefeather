@@ -542,7 +542,33 @@ def job(o, item):
 SEO = ("wordpress-seo", "seo-by-rank-math")
 
 
+def active_option(o):
+    """The slugs in the active_plugins OPTION (#422), or None when it cannot be read.
+    The REST plugin list leaves out a plugin whose files are gone (a build without it), but the
+    option keeps it until wp-admin/plugins.php validates the list, and is_plugin_active() reads
+    the option. Measured on pft1a, 2026-11-13: the REST list had no Yoast, the option had
+    wordpress-seo/wp-seo.php beside Rank Math. Read by the b-dosql spike export /_dbexport
+    (SPIKE_TOKEN); any other site gives None and the guard says so."""
+    r = L.req(o, "/_dbexport")
+    if r.get("code") != 200:
+        return None
+    for line in (r.get("body") or b"").splitlines():
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        p = d.get("params") or []
+        if "wp_options" in d.get("sql", "") and "active_plugins" in p:
+            i = p.index("active_plugins")
+            v = p[i + 1] if i + 1 < len(p) else None
+            if isinstance(v, str):
+                return sorted({m.split("/")[0] for m in re.findall(r's:\d+:"([^"]+)"', v)})
+    return None
+
+
 def other_seo_active(o, slug):
+    """The other SEO plugins WordPress counts as active: by the REST list, and by the
+    active_plugins option (a plugin with no files is in the option only)."""
     if slug not in SEO:
         return []
     out = []
@@ -551,6 +577,13 @@ def other_seo_active(o, slug):
             p = plugin_entry(o, other)
             if p and p.get("status") == "active":
                 out.append(other)
+    opt = active_option(o)
+    if opt is None:
+        event("guard", note="active_plugins option not read: the one-SEO guard used the REST list only")
+        return out
+    for other in SEO:
+        if other != slug and other in opt and other not in out:
+            out.append(other + " (in the active_plugins option, not in the REST list)")
     return out
 
 

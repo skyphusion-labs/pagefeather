@@ -18,6 +18,7 @@ import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywher
 import { resetFailures, writeLossResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import { routeClass, createTrace } from './file-trace.mjs';
+import { refuseSocketsDecorator, parseMessage } from './runtime-guards.mjs';
 import { CodeMounter, putCode, deleteCode, sweepOrphans, codeBudget, validSlug, validType, sqliteIndex, mysqlIndex } from './code-store.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
@@ -1195,7 +1196,14 @@ function analyticsOp(op) {
 }
 
 async function handleMessage(raw) {
-	const m = JSON.parse(raw);
+	// #452: a message that is not a JSON object is refused with an error PHP can read, never a throw.
+	// Only its length is logged: the content may be anything PHP sent.
+	const parsed = parseMessage(raw);
+	if (!parsed.ok) {
+		console.log(JSON.stringify({ m: 'message', refused: parsed.error, bytes: typeof raw === 'string' ? raw.length : null }));
+		return JSON.stringify({ ok: false, error: parsed.error });
+	}
+	const m = parsed.m;
 	if (m.http) return JSON.stringify(await httpOp(m.http));
 	if (m.txn) return JSON.stringify(sqlDb ? txnOp(sqlDb, sqlStorage, m.txn) : { ok: false, error: 'no database in the object' });
 	if (m.oc) return JSON.stringify(await objectCacheOp(m.oc));
@@ -1303,6 +1311,10 @@ async function boot(origin) {
 			done(inst, wasmModule);
 			return inst.exports;
 		},
+		// #452: PHP's raw sockets (fsockopen, stream_socket_client) are refused: SOCKFS would turn them
+		// into an outbound WebSocket that php-wasm cannot poll in workerd, and the documented contract
+		// is that outbound traffic goes through the WordPress HTTP API and its host allowlist.
+		websocket: { decorator: refuseSocketsDecorator((info) => console.log(JSON.stringify({ m: 'socket', refused: info }))) },
 	});
 	const php = new PHP(id);
 	lastBootedPhp = php;

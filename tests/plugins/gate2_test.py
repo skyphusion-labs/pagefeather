@@ -80,6 +80,14 @@ class FakeWP:
             if "status=active" in path:
                 ts = [t for t in ts if t["status"] == "active"]
             return js(ts)
+        if path == "/_dbexport":
+            if self.f.get("no_export"):
+                return {"code": 404, "s": 0.01, "body": b"", "h": h}
+            act = [s for s, st in self.plugins.items() if st == "active"] + list(self.f.get("option_extra", ()))
+            ser = "a:%d:{%s}" % (len(act), "".join('i:%d;s:%d:"%s";' % (n, len("%s/%s.php" % (a, a)), "%s/%s.php" % (a, a)) for n, a in enumerate(act)))
+            rows = [{"sql": "CREATE TABLE wp_options (x)"},
+                    {"sql": 'INSERT INTO "wp_options" ("option_id", "option_name", "option_value", "autoload") VALUES (?, ?, ?, ?)', "params": [1, "active_plugins", ser, "yes"]}]
+            return {"code": 200, "s": 0.01, "body": "\n".join(json.dumps(r) for r in rows).encode(), "h": h}
         if path == "/_evict":
             if self.f.get("no_evict"):
                 return {"code": 404, "s": 0.01, "body": b"", "h": h}
@@ -265,6 +273,28 @@ def t_request_classes():
     assert not bad, bad
 
 
+def t_seo_guard_option():
+    # pft1a, 2026-11-13: Yoast left the build, so the REST list had no Yoast, but the option kept it.
+    fake = FakeWP(option_extra=["wordpress-seo"])
+    fake.plugins["seo-by-rank-math"] = "inactive"
+    lines, _ = run_phase(fake, "function", ["seo-by-rank-math"])
+    st = [l for l in lines if l.get("ev") == "step" and l.get("step") == "activate"]
+    assert st and st[0].get("refused", "").startswith("another SEO plugin is active: wordpress-seo (in the active_plugins option"), st
+    assert fake.plugins["seo-by-rank-math"] == "inactive", "Rank Math was activated beside an option-only Yoast"
+    # control: the same site with a clean option runs Rank Math
+    fake2 = FakeWP()
+    fake2.plugins["seo-by-rank-math"] = "inactive"
+    lines2, _ = run_phase(fake2, "function", ["seo-by-rank-math"])
+    st2 = [l for l in lines2 if l.get("ev") == "step" and l.get("step") == "activate"]
+    assert st2 and st2[0].get("ok") is True and not st2[0].get("refused"), st2
+    assert not [l for l in lines2 if l.get("ev") == "guard"], "a readable option must not log a guard note"
+    # no export (not b-dosql): the REST guard alone, and a note says so
+    fake3 = FakeWP(no_export=True, option_extra=["wordpress-seo"])
+    fake3.plugins["seo-by-rank-math"] = "inactive"
+    lines3, _ = run_phase(fake3, "function", ["seo-by-rank-math"])
+    assert [l for l in lines3 if l.get("ev") == "guard" and "REST list only" in l.get("note", "")], "no note when the option was not read"
+
+
 def t_stack_profile():
     try:
         G.STACK = True
@@ -378,6 +408,7 @@ for name, fn in [("the four read-back classes", t_classes), ("control: a clean i
                  ("the WooCommerce control: an order is ok/ok, and a lost order is ok/unchanged", t_woo_control),
                  ("a plugin is activated, run, and deactivated again (solo)", t_function_plugin),
                  ("one SEO plugin per site: refused when the other is active; control runs", t_one_seo_plugin),
+                 ("one-SEO guard reads the active_plugins option: a plugin with no files still counts", t_seo_guard_option),
                  ("an approach-A site with no /_evict: the reset step is not on this path, not a fail", t_approach_a_no_evict),
                  ("the recording is headers only: no body, no cookie, no password, no query", t_headers_only),
                  ("every request is classed for the admin-container classifier", t_request_classes),
