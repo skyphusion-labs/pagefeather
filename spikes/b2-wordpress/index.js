@@ -18,7 +18,7 @@ import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywher
 import { resetFailures, writeLossResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import { routeClass, createTrace } from './file-trace.mjs';
-import { CodeMounter, putCode, deleteCode, sweepOrphans, codeBudget, validSlug, validType, ensureSchema } from './code-store.mjs';
+import { CodeMounter, putCode, deleteCode, sweepOrphans, codeBudget, validSlug, validType, sqliteIndex, mysqlIndex } from './code-store.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -430,8 +430,32 @@ let runtimeCode = null;
 const CODE_MAX_RAW_BYTES = 64 * 1048576; // a directory bigger than this is refused before it is zipped
 const CODE_REFUSED_FILE = '/internal/shared/code-refused.json';
 const CODE_BUILD_SLUGS_FILE = '/internal/shared/code-build-slugs.json';
+// On b-dosql (PHP and the database in the object) the index is the object's SQLite; on approach a
+// (dbHandler: MySQL through Hyperdrive, Conrad 2026-11-13) it is two tables in that MySQL.
 function codePersistOn() {
-	return Boolean(ENV && ENV.CODE_PERSIST === 'on' && ENV.MEDIA && ENV.DB_IN_DO === 'on' && ENV.PHP_IN_DO === 'on');
+	if (!(ENV && ENV.CODE_PERSIST === 'on' && ENV.MEDIA)) return false;
+	return (ENV.DB_IN_DO === 'on' && ENV.PHP_IN_DO === 'on') || Boolean(dbHandler);
+}
+let codeIndexCache = null; // { for: sqlDb or dbHandler, index }
+function codeIndex() {
+	if (sqlDb && sqlStorage) {
+		if (!codeIndexCache || codeIndexCache.for !== sqlDb) codeIndexCache = { for: sqlDb, index: sqliteIndex(sqlDb, (fn) => sqlStorage.transactionSync(fn)) };
+		return codeIndexCache.index;
+	}
+	if (dbHandler) {
+		// The request's own connection. The writes run only from the installer hooks, which WordPress
+		// never runs inside a transaction of its own, so BEGIN here cannot commit one early.
+		if (!codeIndexCache || codeIndexCache.for !== dbHandler) codeIndexCache = { for: dbHandler, index: mysqlIndex((sql) => dbHandler.query(ENV, { mysql: sql })) };
+		return codeIndexCache.index;
+	}
+	return null;
+}
+// Approach a runs many isolates and reads the generation from MySQL, so it checks at most every
+// CODE_CHECK_S seconds (default 5): an install shows on the other isolates within that time.
+function codeCheckMs() {
+	if (!dbHandler || sqlDb) return 0;
+	const s = Number(ENV.CODE_CHECK_S);
+	return Number.isFinite(s) && s >= 0 ? s * 1000 : 5000;
 }
 function codeDir(type, slug) {
 	return `${DOCROOT}/wp-content/${type}s/${slug}`;
@@ -497,10 +521,12 @@ function writeRefused(php, refused) {
 }
 // Bring this runtime's mounts up to the stored generation (one SQLite read when nothing changed).
 async function codeSync(php) {
-	if (!codePersistOn() || !sqlDb) return;
-	runtimeCode ??= new CodeMounter();
+	if (!codePersistOn()) return;
+	const index = codeIndex();
+	if (!index) return;
+	runtimeCode ??= new CodeMounter({ minIntervalMs: codeCheckMs() });
 	const t = Date.now();
-	const r = await runtimeCode.sync({ sql: sqlDb, bucket: ENV.MEDIA, ...codeFsOps(php[__private__dont__use].FS) });
+	const r = await runtimeCode.sync({ index, bucket: ENV.MEDIA, ...codeFsOps(php[__private__dont__use].FS) });
 	if (r.changed) {
 		writeRefused(php, r.refused);
 		// The load cost, from inside the object: every stored zip GET (in parallel) plus the sha check.
@@ -510,14 +536,14 @@ async function codeSync(php) {
 // The op PHP calls through skyphusion_worker_call({code: ...}) (php/code-persist.php).
 async function codeOp(op) {
 	if (!codePersistOn()) return { ok: false, error: 'Installs are not stored on this site (CODE_PERSIST is off).' };
-	if (!sqlDb || !sqlStorage || !lastBootedPhp) return { ok: false, error: 'No database or runtime for this request.' };
+	const index = codeIndex();
+	if (!index || !lastBootedPhp) return { ok: false, error: 'No database or runtime for this request.' };
 	const { type, slug } = op || {};
 	if (!validType(type) || !validSlug(slug)) return { ok: false, error: `"${String(slug)}" is not a ${String(type)} name this site can store.` };
 	const php = lastBootedPhp;
 	const FS = php[__private__dont__use].FS;
-	runtimeCode ??= new CodeMounter();
+	runtimeCode ??= new CodeMounter({ minIntervalMs: codeCheckMs() });
 	const ops = codeFsOps(FS);
-	const txn = (fn) => sqlStorage.transactionSync(fn);
 	if (op.op === 'put') {
 		const base = codeDir(type, slug);
 		if (!fsExists(FS, base)) return { ok: false, error: `${slug} is not in wp-content/${type}s.` };
@@ -529,7 +555,7 @@ async function codeOp(op) {
 		}
 		const { zipSync } = await import('fflate');
 		const zip = zipSync(files, { level: 6 });
-		const r = await putCode({ sql: sqlDb, txn, bucket: ENV.MEDIA, type, slug, version: op.version ? String(op.version).slice(0, 64) : null, zip, files: Object.keys(files).length, budget: codeBudget(ENV), now: Date.now() });
+		const r = await putCode({ index, bucket: ENV.MEDIA, type, slug, version: op.version ? String(op.version).slice(0, 64) : null, zip, files: Object.keys(files).length, budget: codeBudget(ENV), now: Date.now() });
 		console.log(JSON.stringify({ m: 'code', op: 'put', type, slug, ok: r.ok, code: r.code, bytes: zip.length, raw }));
 		// The installer's unpacked copy is replaced by the lazy mount of the stored zip, so this runtime
 		// does not keep a second, inflated copy resident.
@@ -537,7 +563,7 @@ async function codeOp(op) {
 		return r.ok ? { ok: true, bytes: zip.length } : { ok: false, code: r.code, error: r.error };
 	}
 	if (op.op === 'delete') {
-		const r = await deleteCode({ sql: sqlDb, txn, bucket: ENV.MEDIA, type, slug });
+		const r = await deleteCode({ index, bucket: ENV.MEDIA, type, slug });
 		console.log(JSON.stringify({ m: 'code', op: 'delete', type, slug, ok: r.ok }));
 		if (r.ok) runtimeCode.forget({ type, slug, gen: r.gen, ...ops });
 		return r;
@@ -2361,10 +2387,9 @@ export class PhpRuntime extends DurableObject {
 					// #407: once a day, delete stored code objects no row points at (crash leftovers).
 					if (codePersistOn() && sql) {
 						try {
-							ensureSchema(sql);
-							const last = Number(sql.exec('SELECT last_sweep FROM _pf_code_state WHERE id = 1').toArray()[0].last_sweep);
-							if (Date.now() - last > 86400000) {
-								const swept = await sweepOrphans({ sql, bucket: this.env.MEDIA, now: Date.now() });
+							const index = sqliteIndex(sql, (fn) => this.ctx.storage.transactionSync(fn));
+							if (Date.now() - (await index.lastSweep()) > 86400000) {
+								const swept = await sweepOrphans({ index, bucket: this.env.MEDIA, now: Date.now() });
 								console.log(JSON.stringify({ m: 'code', swept: swept.length }));
 							}
 						} catch (e) {
