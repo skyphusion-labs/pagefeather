@@ -189,6 +189,7 @@ jobs:
           deploy/wfp/tests/wait-build-test.sh
           deploy/wfp/tests/update-all-test.sh
           deploy/wfp/tests/update-inputs-test.sh
+          deploy/wfp/tests/rollback-build-test.sh
           deploy/wfp/tests/build-inputs-test.sh
           deploy/wfp/tests/kv-build-test.sh
           deploy/wfp/tests/config-hash-test.sh

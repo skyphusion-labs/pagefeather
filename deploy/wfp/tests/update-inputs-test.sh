@@ -42,7 +42,7 @@ rm -rf "$G"
 S="$HERE/../site"
 l_check=$(grep -n 'update_inputs_check "${rollback' "$S" | head -1 | cut -d: -f1)
 l_snap=$(grep -n 'snapshot the data to' "$S" | head -1 | cut -d: -f1)
-l_build=$(grep -n '^  build_dosql$' "$S" | head -1 | cut -d: -f1)
+l_build=$(grep -n '^  build_dosql || {' "$S" | head -1 | cut -d: -f1)
 check "the refusal is in update_one" "$([ -n "$l_check" ] && echo yes || echo no)" yes
 l_tree=$(grep -n '  tree_clean_check ||' "$S" | head -1 | cut -d: -f1)
 check "the dirty-tree refusal comes before the snapshot and the build" "$([ -n "$l_tree" ] && [ "$l_tree" -lt "$l_snap" ] && [ "$l_tree" -lt "$l_build" ] && echo yes || echo no)" yes
