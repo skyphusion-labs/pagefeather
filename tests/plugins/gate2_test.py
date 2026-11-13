@@ -260,6 +260,10 @@ def t_items():
     assert its[0]["slug"] == "woocommerce" and its[0]["kind"] == "control"
     assert {"elementor", "wordpress-seo", "seo-by-rank-math", "astra", "storefront"} <= {i["slug"] for i in its}
     assert all(re.fullmatch(r"[0-9a-f]{64}", i["sha"]) for i in its[1:])
+    # gate2-build.txt (the track-B build list, suite.txt format for fetch.sh) holds the same pins.
+    build = {l.split()[0]: tuple(l.split()[1:3]) for l in open(os.path.join(HERE, "gate2-build.txt")) if l.strip() and not l.startswith("#")}
+    want = {i["slug"]: (i["version"], i["sha"]) for i in its if i["kind"] == "plugin"}
+    assert build == want, "gate2-build.txt and gate2.txt pins differ"
 
 
 for name, fn in [("the four read-back classes", t_classes), ("control: a clean install is ok/ok and survives the reset", t_clean_install),
