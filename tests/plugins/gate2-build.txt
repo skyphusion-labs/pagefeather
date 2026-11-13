@@ -1,0 +1,12 @@
+# Gate 2 track B (#422, #426): the gate2.txt plugins in suite.txt format, for a build with
+# SUITE=gate2-build.txt PLUGINS="<slugs>" (fetch.sh reads SUITE). Same pins as gate2.txt.
+# slug version sha256-of-zip
+elementor 4.3.6 f9f04c40e559ecc1c737eec6519e7223ff9a1ab04abcc2e004b44c9f6d1247a3
+wordpress-seo 28.8 27cc01cb149db7186ef750552a5cc2ae5028933473886e419918af273b075105
+seo-by-rank-math 1.0.281 d3d464bb2b3b619e46cd93c16a8d21073c473bd411867c1c8d73110debd0ba29
+contact-form-7 6.2.4.1 9b28e8bccfea0b0dcc8fd27ba8745fc7133fdacf594bf2e1faee869a15f71f64
+wpforms-lite 2.0.3.1 38fc776cd23a511a93128ba79377c271547c559c6525ece86d9267c3b02379c7
+advanced-custom-fields 6.8.11 577118d6c5f3add8f8eb8f04e40578259ce02986d301ef53d9665bc7c0a2967d
+litespeed-cache 7.9.3 8ab0373e41a3e9d4329d8fa6f99f3afd096cc21ac2befb0a84dc005d8afb36d7
+wordfence 9.0.2 4124ae2a5d7cff8faadf04c222583fa06f78e8e9c791e50447383e5e12ab5fb6
+updraftplus 1.26.14 c5f3408140760aed8ebb301af197b6266e7c6b565307ca56d3b4e50b665cd6e9

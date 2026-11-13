@@ -69,6 +69,7 @@ Runs of 2026-11-05. A and HostlessWP on the public MySQL path ([approach-a.md](a
 - **Recording:** one JSON line per request, with headers only. Every write is read back and classed `ok/ok`, `fail/fail`, `fail/changed` or `ok/unchanged`. The last two are answer/state disagreements.
 - **write-loss:** counted from `x-write-loss`, and from a Workers Logs export (`report --logs`).
 - **The report:** it prints each item's first failing step next to its prediction.
+- **One SEO plugin per site** (Conrad, 2026-11-13): Yoast and Rank Math are each tested alone. Before the harness activates one, it checks that the other is not active. If the other is active, it records a refusal and runs nothing for that item.
 
 The first use is a one-pass prediction check (the lead's ruling, 2026-11-13). Payments, mail, the stack profile and the 10-round runs are deferred until #293, #407 and the admin memory work (#394, #411) move.
 
