@@ -411,10 +411,32 @@ def job(o, item):
     return None, {"what": "not in this pass"}
 
 
+# One SEO plugin per site (Conrad, 2026-11-13: "a normal developer wouldn't do that"). Each is
+# tested ALONE. The solo profile deactivates every item after its run, but a run that stopped
+# midway can leave one active, so this is checked, never assumed.
+SEO = ("wordpress-seo", "seo-by-rank-math")
+
+
+def other_seo_active(o, slug):
+    if slug not in SEO:
+        return []
+    out = []
+    for other in SEO:
+        if other != slug:
+            p = plugin_entry(o, other)
+            if p and p.get("status") == "active":
+                out.append(other)
+    return out
+
+
 def phase_function(o, item, state):
     slug = item["slug"]
     if item["kind"] != "control" and not present(o, item):
         return event("step", step="function", ok=None, note="not installed: nothing to run")
+    clash = other_seo_active(o, slug)
+    if clash:
+        # Refused, not run: a result on two SEO plugins would not be a result on this one.
+        return event("step", step="activate", ok=None, refused="another SEO plugin is active: %s" % ",".join(clash))
     prev_theme = None
     if item["kind"] == "theme":
         cur = [t for t in (jbody(L.rest(o, "/wp/v2/themes?status=active")) or []) if isinstance(t, dict)]
@@ -483,6 +505,7 @@ def report(files, logs=None):
         out["items"].append({
             "track": key[0], "item": key[1],
             "firstFail": first_fail, "allPassed": first_fail is None and any(s.get("ok") for s in st),
+            "refused": next((s["refused"] for s in st if s.get("refused")), None),
             "predicted": PREDICT.get((key[0], key[1])) or PREDICT.get((key[0], "*")),
             "disagreements": sum(1 for w in ws if w["cls"] in ("fail/changed", "ok/unchanged")),
             "writes": {c: sum(1 for w in ws if w["cls"] == c) for c in ("ok/ok", "fail/fail", "fail/changed", "ok/unchanged")},

@@ -178,6 +178,24 @@ def t_function_plugin():
     assert fake.plugins["advanced-custom-fields"] == "inactive", "left active: the solo profile needs it off"
 
 
+def t_one_seo_plugin():
+    fake = FakeWP()
+    fake.plugins["wordpress-seo"] = "inactive"
+    fake.plugins["seo-by-rank-math"] = "active"
+    lines, _ = run_phase(fake, "function", ["wordpress-seo"])
+    st = [l for l in lines if l["ev"] == "step"]
+    assert st and st[0].get("refused", "").startswith("another SEO plugin is active: seo-by-rank-math"), st
+    assert not any(l["ev"] == "write" for l in lines), "something was written after the refusal"
+    assert fake.plugins["wordpress-seo"] == "inactive", "Yoast was activated beside Rank Math"
+    # Control: with Rank Math inactive, Yoast runs (and is deactivated after).
+    fake2 = FakeWP()
+    fake2.plugins["wordpress-seo"] = "inactive"
+    fake2.plugins["seo-by-rank-math"] = "inactive"
+    lines2, _ = run_phase(fake2, "function", ["wordpress-seo"])
+    ws = {l["what"]: l["cls"] for l in lines2 if l["ev"] == "write"}
+    assert ws.get("activate") == "ok/ok" and fake2.plugins["wordpress-seo"] == "inactive", ws
+
+
 def t_headers_only():
     lines, _ = run_phase(FakeWP(), "install", ["advanced-custom-fields"])
     reqs = [l for l in lines if l["ev"] == "req"]
@@ -223,6 +241,7 @@ for name, fn in [("the four read-back classes", t_classes), ("control: a clean i
                  ("x-write-loss is counted, and not counted on a clean run", t_write_loss_counted),
                  ("the WooCommerce control: an order is ok/ok, and a lost order is ok/unchanged", t_woo_control),
                  ("a plugin is activated, run, and deactivated again (solo)", t_function_plugin),
+                 ("one SEO plugin per site: refused when the other is active; control runs", t_one_seo_plugin),
                  ("the recording is headers only: no body, no cookie, no password, no query", t_headers_only),
                  ("the report shows the prediction and counts the log reset lines", t_report_prediction_and_logs),
                  ("the settings form parser", t_form_fields), ("the item list", t_items)]:
