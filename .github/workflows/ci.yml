@@ -117,6 +117,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/runtime-guards.test.mjs
       - name: b-dosql a recycled PHP runtime is released (issue #394)
         run: node --test spikes/b2-wordpress/tests/release-runtime.test.mjs
+      - name: b-dosql the isolate memory ledger (issue #394)
+        run: node --test spikes/b2-wordpress/tests/mem-ledger.test.mjs
       - name: b-dosql x-perf isoAgeS is the isolate age (issue #474)
         run: node --test spikes/b2-wordpress/tests/iso-age.test.mjs
       - name: b-dosql outbound host allowlist
