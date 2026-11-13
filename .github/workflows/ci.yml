@@ -115,6 +115,8 @@ jobs:
         run: python3 -I spikes/b2-wordpress/tests/opcache-split-test.py
       - name: b-dosql runtime guards, raw sockets and PHP messages (issue #452)
         run: node --test spikes/b2-wordpress/tests/runtime-guards.test.mjs
+      - name: b-dosql a recycled PHP runtime is released (issue #394)
+        run: node --test spikes/b2-wordpress/tests/release-runtime.test.mjs
       - name: b-dosql outbound host allowlist
         run: node --test spikes/b2-wordpress/tests/http-allow.test.mjs
       - name: email-queue unit tests
