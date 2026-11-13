@@ -1,0 +1,6 @@
+# Gate 2 tier 1 (#422): the second run's alternates, each in place of its first pick:
+# Rank Math for Yoast (one SEO plugin only), WPForms Lite for CF7, Hello Elementor for Astra.
+# kind slug version sha256-of-zip
+plugin seo-by-rank-math 1.0.281 d3d464bb2b3b619e46cd93c16a8d21073c473bd411867c1c8d73110debd0ba29
+plugin wpforms-lite 2.0.3.1 38fc776cd23a511a93128ba79377c271547c559c6525ece86d9267c3b02379c7
+theme hello-elementor 3.5.2 f3f8b0f8503c46af264bfe5a1079836ee9d8eb18c34ddef47ed7b053e2b1d4c8
