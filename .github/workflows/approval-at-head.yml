@@ -1,0 +1,52 @@
+name: approval-at-head
+
+# fleet-chezmoi#2386. Thin caller of the ORG-WIDE reusable in the public skyphusion-labs/.github,
+# pinned by full sha. That reusable runs the composite action
+# .github/actions/approval-at-head at a LITERAL sha, with no checkout, so this PR's
+# tree never judges this PR. Re-pin deliberately; a moved pin is a change to the
+# judge and is reviewed as one. Required context:
+#     approval-at-head / gate
+# (caller job id / called job name). Renaming the job id orphans the ruleset entry.
+#
+# TRIGGERS. pull_request opened/reopened/synchronize ONLY. It judges every new
+# head, including the merge commit update-branch creates, and that run also gives
+# the head the workflow run the arrival instrument reads.
+#
+# NOT pull_request_review, and this is measured, not taste (2026-11-12). Each
+# workflow run is its own check suite, and a required context FAILS when any
+# suite's latest run of that name failed, even if a newer run in another suite
+# passed (skyphusion-strummer/check-resolution-test PR 1: BLOCKED, PUT /merge
+# 405). So a review must not produce a second `approval-at-head / gate`. Instead
+# approval-at-head-retrigger.yml re-runs THIS run on a review; the re-run is a new
+# attempt in the same suite and replaces its check (PR 2: CLEAN, merged, rule
+# suite pass).
+#
+# NO concurrency group, on purpose. A cancel-in-progress group leaves a
+# CANCELLED check row on the head, and a queue group cancels the older pending
+# run. Each run reads live state and finishes in seconds.
+#
+# NOT YET REQUIRED. Repo ruleset aviation-grade-repo-approval-at-head will
+# require it; it is declared in the org's ruleset declaration and applied only
+# after this caller is on main. A required check that does not run blocks every
+# PR, so a repo gets this caller BEFORE its ruleset requires it.
+#
+# COMPOSITION with org ruleset 18677665, which already gates this repo: rulesets
+# AGGREGATE. Required contexts are the UNION (ci, coverage, approval-at-head /
+# gate). The org layer's strict up-to-date policy and require_last_push_approval
+# still apply. Strict means a BEHIND PR needs update-branch, and that new head
+# now needs a fresh approval. That cost is the point of the gate.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
+jobs:
+  approval-at-head:
+    uses: skyphusion-labs/.github/.github/workflows/approval-at-head-reusable.yml@a3412f45b3355b72651fe39e45923921609f93b7
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+      head_sha: ${{ github.event.pull_request.head.sha }}
