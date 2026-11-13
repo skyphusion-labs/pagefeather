@@ -187,6 +187,20 @@ for k, v in o.items():
     if isinstance(v, str) and (len(v) > 256 or re.search(r"[\x00-\x1f\x7f\x27\x22\\]", v)): bad("bad value for %s" % k)
 print("PHP_INI = %s" % chr(39) + json.dumps(o, separators=(",", ":"), sort_keys=True) + chr(39))'
 }
+# CODE_PERSIST (#407): plugins and themes installed from wp-admin persist (code-store.mjs). Off
+# unless CODE_PERSIST=on. It needs CODE_BUDGET_MB, the installed-code budget in MB, set from the
+# measured memory headroom of the site (#394): there is no default, so CODE_PERSIST=on without a
+# budget fails the render. Like PHP_INI, both are read from the run's environment only.
+code_persist_vars() {
+  case "${CODE_PERSIST:-}" in
+    "") [ -z "${CODE_BUDGET_MB:-}" ] || { echo "CODE_BUDGET_MB is set but CODE_PERSIST is not on" >&2; return 1; }; return 0 ;;
+    on) ;;
+    *) echo "CODE_PERSIST must be on or unset, not ${CODE_PERSIST}" >&2; return 1 ;;
+  esac
+  [[ "${CODE_BUDGET_MB:-}" =~ ^[0-9]{1,4}(\.[0-9]{1,3})?$ ]] || { echo "CODE_PERSIST=on needs CODE_BUDGET_MB (MB, a number such as 8 or 2.5), set from the site's measured headroom (#394)" >&2; return 1; }
+  echo 'CODE_PERSIST = "on"'
+  echo "CODE_BUDGET_MB = \"$CODE_BUDGET_MB\""
+}
 # PHP_RECYCLE (#394, experiment E1): "off" turns off the runtime recycle for MEMORY, so the PHP
 # runtime is kept after a request whose WebAssembly memory passed RECYCLE_WASM_BYTES (100 MiB,
 # index.js). A crashed runtime is still dropped (index.js: crashed || ...). With it off, nothing in
@@ -225,6 +239,8 @@ render_user() { # render_user <site> <origin>
   local split_assets; split_assets=$(opcache_split_assets) || return 1
   local php_ini; php_ini=$(php_ini_var) || return 1
   [ -z "$php_ini" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$php_ini
+  local code_vars; code_vars=$(code_persist_vars) || return 1
+  [ -z "$code_vars" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$code_vars
   local php_recycle; php_recycle=$(php_recycle_var) || return 1
   [ -z "$php_recycle" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$php_recycle
   cat <<TOML
