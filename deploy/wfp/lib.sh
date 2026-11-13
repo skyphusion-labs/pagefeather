@@ -481,7 +481,14 @@ build_dosql() {
     [ -d node_modules ] || npm ci --silent
     [ -f vendor/php_8_3.js ] || ./prepare.sh
     # WOO_ACTIVE reaches build.sh too, so the build id says whether it is primed (#377).
-    WOO_ACTIVE=$woo ./build.sh | tail -1
+    # WOO follows it (#451): WooCommerce is in the bundle only when the site runs it. A plain site
+    # (no WOO_ACTIVE=1, no woocommerce in PLUGINS or IMPORT_PLUGINS) builds without its 11 MiB of
+    # site.zip, which #411 measured costs isolate memory too. Both come from the recorded inputs,
+    # so -wooprimed in the build id says whether WooCommerce is bundled, and a later update without
+    # new inputs rebuilds the same way. A store keeps it: update_inputs_check refuses a build
+    # without WooCommerce for a site whose Store API answers (#377). Approach a builds through
+    # deploy/deploy.sh, which leaves WOO at build.sh's default (bundled): a Hyperdrive store keeps it.
+    WOO=$woo WOO_ACTIVE=$woo ./build.sh | tail -1
     WOO_ACTIVE=$woo DEV_ENV=dosql-local ./opcache.sh > build/opcache.log 2>&1 || { echo "opcache.sh failed:"; tail -25 build/opcache.log; exit 1; }
     tail -1 build/opcache.log
     # #394 L1 (OPCACHE_SPLIT=1): trace which OPcache files a WARM request reads on the primed build,
