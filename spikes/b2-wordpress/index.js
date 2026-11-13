@@ -9,6 +9,7 @@ import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { cronBounds, cronCleanDue, cronLegDue } from './cron-bound.mjs';
+import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronMarkOf, cronFatalOf } from './cron-health.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION, setResultHeader, takeResultHeader, turnstileRoute, readGatedToken, encodeResult, TurnstileSlot, turnstileTimeoutMs, retryAfterFor } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
@@ -640,6 +641,8 @@ function emailOp(email) {
 // The mail side of the cron tick that is running PHP now, or null. Set and cleared by runCron
 // inside its withPhp turn, so only that tick's PHP sees it.
 let tickMail = null;
+// The running cron leg's record writer (#471, cron-health.mjs), set by the alarm around runCron.
+let cronRunSink = null;
 
 // A tick's handoff: one message to the durable path (sendList), bounded like the alarm drain.
 // Resolves to 'bounded' when the send was still in flight at SEND_TIMEOUT_MS. storage is the PHP
@@ -1065,6 +1068,20 @@ async function handleMessage(raw) {
 	if (m.oc) return JSON.stringify(await objectCacheOp(m.oc));
 	if (m.probeMem) return JSON.stringify({ wasm: lastBootedPhp ? lastBootedPhp[__private__dont__use].HEAPU8.length : null });
 	if (m.memTrace) { lastMemTrace = m.memTrace; return '1'; }
+	// #471: the job a cron leg is about to run (sent BEFORE it runs), and PHP's own fatal error. Logged
+	// at once, so a leg the isolate kills still says what it was doing; also kept in the run record.
+	if (m.cronMark) {
+		const mk = cronMarkOf(m.cronMark);
+		console.log(JSON.stringify({ m: 'cron', mark: 'start', ...mk }));
+		if (cronRunSink) await cronRunSink({ lastMark: { t: Date.now(), ...mk } });
+		return '1';
+	}
+	if (m.cronFatal) {
+		const f = cronFatalOf(m.cronFatal);
+		console.log(JSON.stringify({ m: 'cron', fatal: 'php', ...f }));
+		if (cronRunSink) await cronRunSink({ lastFatal: { t: Date.now(), ...f } });
+		return '1';
+	}
 	// One trace checkpoint as it happens (#434), so a request killed by an isolate reset still
 	// leaves its marks in Workers Logs. Names and numbers only; mem-trace.php runs only for an
 	// operator request.
@@ -2308,13 +2325,27 @@ export class PhpRuntime extends DurableObject {
 			// started at least CRON_INTERVAL_MS ago (#470): the purge still goes out below either way.
 			const lastCron = await this.ctx.storage.get(CRON_LAST_KEY);
 			const legDue = cronLegDue(lastCron, Date.now(), Number(this.env.CRON_INTERVAL_MS || 60000));
-			const cronGo = legDue && !importHeld && phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env;
+			// A leg that keeps dying waits before it tries again (#471, cron-health.mjs): 2, 4, 8 ... min.
+			const prevRun = await this.ctx.storage.get(CRON_RUN_KEY);
+			const bo = cronBackoff(prevRun, Date.now());
+			const cronGo = legDue && !bo.waitMs && !importHeld && phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env;
 			// Why a tick skipped the cron, for /_purgestate cronSkip (#291: a skip was invisible).
-			if (!cronGo) await this.ctx.storage.put(CRON_SKIP_KEY, { t: Date.now(), notDue: !legDue, sinceLastMs: lastCron ? Date.now() - Number(lastCron) : null, importHeld, phpPending, sinceSpikeMs: Date.now() - lastSpikeEndAt, origin: !!cronOrigin });
+			if (!cronGo) await this.ctx.storage.put(CRON_SKIP_KEY, { t: Date.now(), notDue: !legDue, sinceLastMs: lastCron ? Date.now() - Number(lastCron) : null, backoff: bo.waitMs ? { deaths: bo.deaths, waitMs: bo.waitMs } : null, importHeld, phpPending, sinceSpikeMs: Date.now() - lastSpikeEndAt, origin: !!cronOrigin });
 			if (!legDue) console.log(JSON.stringify({ m: 'cron', skipped: 'not-due', sinceLastMs: Date.now() - Number(lastCron) }));
+			else if (bo.waitMs) console.log(JSON.stringify({ m: 'cron', skipped: 'backoff', deaths: bo.deaths, waitMs: bo.waitMs, lastMark: (prevRun && prevRun.lastMark) || null, lastFatal: (prevRun && prevRun.lastFatal) || null }));
 			if (cronGo) {
 				// Stored BEFORE the run (#470): a run an isolate reset kills still counts as the last one.
 				await this.ctx.storage.put(CRON_LAST_KEY, Date.now());
+				// The run record (#471), synced before PHP runs, so a leg the isolate kills is counted.
+				const runStart = cronRunStart(prevRun, Date.now());
+				if (runStart.died) console.log(JSON.stringify({ m: 'cron', died: runStart.rec.deaths, lastMark: runStart.rec.prevMark, lastFatal: runStart.rec.prevFatal }));
+				await this.ctx.storage.put(CRON_RUN_KEY, runStart.rec);
+				if (typeof this.ctx.storage.sync === 'function') await this.ctx.storage.sync();
+				const runStorage = this.ctx.storage;
+				cronRunSink = async (patch) => {
+					const cur = (await runStorage.get(CRON_RUN_KEY)) || {};
+					await runStorage.put(CRON_RUN_KEY, { ...cur, ...patch });
+				};
 				// DB_IN_DO: bind the object's own SQLite as WordPress's database before the cron runtime
 				// loads WP. The fetch path sets this per request (sqlDb = sql); the alarm runs on a woken
 				// isolate where the module globals are gone, so without this sqlDb is null and every cron
@@ -2334,7 +2365,11 @@ export class PhpRuntime extends DurableObject {
 					mail = tickMailFor(this.env, this.ctx.storage);
 					cr = await runCron(await (bootPromise ??= boot(cronOrigin)), cleanDue, mail);
 					if (cr && cr.cleaned) await this.ctx.storage.put(CRON_CLEAN_KEY, Date.now());
+					// Finished (#471): the death count resets. A throw above leaves it unfinished, so it counts.
+					cronRunSink = null;
+					await this.ctx.storage.put(CRON_RUN_KEY, cronRunDone(await this.ctx.storage.get(CRON_RUN_KEY), Date.now()));
 				} finally {
+					cronRunSink = null;
 					// A cron run that left a transaction open is rolled back, as a request is (MySQL rolls
 					// back on connection close); a throw is re-raised to the outer catch after this.
 					if (realTxn && txnFrames) txnEnd(sql, this.ctx.storage);
@@ -2377,6 +2412,7 @@ export class PhpRuntime extends DurableObject {
 			// failure and every later tick throws too, so a low-traffic store's deferred order emails
 			// never drain until a request reboots the runtime (#191). Reset so the next tick reboots fresh.
 			bootPromise = null;
+			cronRunSink = null; // #471: no cron leg is running any more
 			console.log(JSON.stringify({ m: 'cron', error: String((e && e.message) || e).slice(0, 200) }));
 			// Visible in /_purgestate too (#291): wrangler tail shows nothing for a dispatch script's alarm.
 			const cst = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
@@ -2458,7 +2494,7 @@ export class PhpRuntime extends DurableObject {
 		// Spike: the URL the object got, and the origin it uses.
 		if (url.pathname === '/_origin') return Response.json({ objectUrl: raw.url, publicOrigin: origin, used: url.href });
 		// The purge state of this object (issue #78): pending, last sent, the last 20 sends, the next alarm.
-		if (url.pathname === '/_purgestate') return Response.json({ ...((await this.ctx.storage.get(PURGE_STATE_KEY)) || {}), alarm: await this.ctx.storage.getAlarm(), alarmFatal: (await this.ctx.storage.get(ALARM_FATAL_KEY)) || null, cronSkip: (await this.ctx.storage.get(CRON_SKIP_KEY)) || null, now: Date.now() });
+		if (url.pathname === '/_purgestate') return Response.json({ ...((await this.ctx.storage.get(PURGE_STATE_KEY)) || {}), alarm: await this.ctx.storage.getAlarm(), alarmFatal: (await this.ctx.storage.get(ALARM_FATAL_KEY)) || null, cronSkip: (await this.ctx.storage.get(CRON_SKIP_KEY)) || null, cronRun: (await this.ctx.storage.get(CRON_RUN_KEY)) || null, now: Date.now() });
 		// The build this OBJECT is running (issue #35 slice 5). After a re-upload a
 		// warm object keeps the old code until it is evicted, so this reports the
 		// object's version, which can lag the Worker's until /_evict or a sleep.
@@ -2594,6 +2630,17 @@ async function runCron(booted, cleanDue = false, mail = null) {
 		let r;
 		try {
 		r = await php.run({ code: `<?php
+			// #471: PHP's own fatal error, sent from a shutdown function (it runs after a fatal), and a
+			// mark BEFORE each job, so a leg that dies says which job it was running.
+			register_shutdown_function( function () {
+				$e = error_get_last();
+				if ( $e && in_array( $e['type'], array( E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR, E_RECOVERABLE_ERROR ), true ) && function_exists( 'post_message_to_js' ) ) {
+					post_message_to_js( json_encode( array( 'cronFatal' => array( 'type' => (int) $e['type'], 'msg' => substr( (string) $e['message'], 0, 300 ), 'file' => substr( (string) $e['file'], 0, 160 ), 'line' => (int) $e['line'] ) ) ) );
+				}
+			} );
+			$skyphusion_cron_mark = function ( $k, $hook, $id = 0 ) {
+				if ( function_exists( 'post_message_to_js' ) ) { post_message_to_js( json_encode( array( 'cronMark' => array( 'k' => $k, 'hook' => substr( (string) $hook, 0, 120 ), 'id' => (int) $id ) ) ) ); }
+			};
 			require '/wordpress/wp-load.php';
 			$ran = array(); $released = 0; $as_n = 0; $as_hooks = array(); $as_dates = array(); $cleaned = 0;
 			if ( class_exists( 'ActionScheduler' ) || function_exists( 'as_next_scheduled_action' ) ) {
@@ -2637,6 +2684,7 @@ async function runCron(booted, cleanDue = false, mail = null) {
 					$as_hooks[ $as_h ] = ( isset( $as_hooks[ $as_h ] ) ? $as_hooks[ $as_h ] : 0 ) + 1;
 					// The claimed action's scheduled date (#357), so a tick shows WHICH email it sent: a new one or the backlog.
 					$as_sd = ( $as_a && method_exists( $as_a, 'get_schedule' ) && $as_a->get_schedule() && method_exists( $as_a->get_schedule(), 'get_date' ) ) ? $as_a->get_schedule()->get_date() : null; $as_dates[] = $as_sd ? $as_sd->format( 'Y-m-d H:i:s' ) : '?';
+					$skyphusion_cron_mark( 'as', $as_h, $as_id );
 					$as_runner->process_action( $as_id, 'Skyphusion DO alarm' ); $as_n++;
 					// Drop what the action loaded (orders, meta) from the in-request cache, as the queue
 					// runner did per batch: without it memory grows with every action (#291).
@@ -2660,6 +2708,7 @@ async function runCron(booted, cleanDue = false, mail = null) {
 			// and no other WP-Cron event ran. It is not unscheduled: Action Scheduler would only
 			// schedule it again at init.
 			remove_all_actions( 'action_scheduler_run_queue' );
+			${typeof ENV !== 'undefined' && ENV && ENV.CRON_TEST_FATAL === '1' ? "$skyphusion_cron_mark( 'wp', 'skyphusion_test_fatal' ); skyphusion_undefined_function_471();" : '// CRON_TEST_FATAL (#471): a local test seam, off'}
 			$events = 0; $wp_hooks = array(); $skipped = array(); $crons = function_exists( '_get_cron_array' ) ? _get_cron_array() : array();
 			// The due WP-Cron hooks other than run_queue, before the leg runs: a tick that runs none
 			// while this is not empty would be starving them (#335).
@@ -2673,6 +2722,7 @@ async function runCron(booted, cleanDue = false, mail = null) {
 					if ( ! empty( $ev['schedule'] ) ) { $wp_r = wp_reschedule_event( $ts, $ev['schedule'], $hook, $ev['args'], isset($ev['interval']) ? $ev['interval'] : 0 ); if ( false === $wp_r || ( function_exists( 'is_wp_error' ) && is_wp_error( $wp_r ) ) ) { $wp_ok = false; } }
 					$wp_r = wp_unschedule_event( $ts, $hook, $ev['args'] ); if ( false === $wp_r || ( function_exists( 'is_wp_error' ) && is_wp_error( $wp_r ) ) ) { $wp_ok = false; }
 					$GLOBALS['skyphusion_mail_wp_cron'] = $wp_ok ? 1 : -1;
+					$skyphusion_cron_mark( 'wp', $hook );
 					do_action_ref_array( $hook, $ev['args'] ); $GLOBALS['skyphusion_mail_wp_cron'] = 0; if ( function_exists( 'wp_cache_flush_runtime' ) ) { wp_cache_flush_runtime(); } if ( ++$events >= ${wpEvents} ) { break 3; }
 				} } } }
 			$as_list = array(); foreach ( $as_hooks as $k => $v ) { $as_list[] = $k . ':' . $v; }

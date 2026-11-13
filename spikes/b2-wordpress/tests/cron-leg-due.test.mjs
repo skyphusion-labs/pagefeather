@@ -37,7 +37,7 @@ test('index.js: the cron leg is gated on cronLegDue, and its start is stored bef
 	assert.ok(run >= 0);
 	const body = src.slice(run, src.indexOf('\n\tasync fetch(raw) {', run));
 	assert.match(body, /const legDue = cronLegDue\(lastCron, Date\.now\(\), Number\(this\.env\.CRON_INTERVAL_MS \|\| 60000\)\);/);
-	assert.match(body, /const cronGo = legDue && !importHeld/);
+	assert.match(body, /const cronGo = legDue && (!bo\.waitMs && )?!importHeld/); // #471 adds the back-off
 	const go = body.indexOf('if (cronGo) {');
 	const stored = body.indexOf('await this.ctx.storage.put(CRON_LAST_KEY, Date.now());', go);
 	const boots = body.indexOf('cr = await runCron(', go);
