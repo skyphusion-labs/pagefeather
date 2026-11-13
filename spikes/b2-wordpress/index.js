@@ -16,7 +16,7 @@ import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, demoLockDefines } from './site-lock.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders } from './perf-headers.mjs';
 import { ORIGIN_KEY, storeOriginIfChanged } from './origin-store.mjs';
-import { SENT_HEADER, ORIGIN_HEADER, stampForObject } from './shed-gate.mjs';
+import { SENT_HEADER, ORIGIN_HEADER, stampForObject, noteArrival } from './shed-gate.mjs';
 import { resetFailures, writeLossResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
@@ -229,6 +229,11 @@ function withPhp(fn) {
 		clearTimeout(timer);
 		if (stale && bootPromise) runtimeDrops++;
 		if (stale) bootPromise = null; // the old runtime's state is unknown
+		// One free turn of the event loop before this render (#391). The lock is a promise chain, so
+		// without it the next render starts in the same microtask flush as the last one ended, and
+		// the event loop never gets a turn to send the answer that just finished: in a burst every
+		// answer left at the end (shed1113a, N=16: all 16 within 0.3 s at about 17 s).
+		await new Promise((ok) => setTimeout(ok, 0));
 		return fn();
 	})();
 	phpQueue = run.catch(() => {});
@@ -2295,6 +2300,8 @@ export class PhpRuntime extends DurableObject {
 		const env = this.env;
 		ENV = env;
 		const objectUrl = new URL(raw.url);
+		// Probe (#391): arrivals since the event loop last had a free turn. Report only.
+		const burst = noteArrival();
 		const origin = raw.headers.get(ORIGIN_HEADER);
 		// Without it, the object does not guess an origin: a wrong one redirects every page.
 		if (!origin) return new Response('missing ' + ORIGIN_HEADER, { status: 500 });
@@ -2405,7 +2412,7 @@ export class PhpRuntime extends DurableObject {
 					// inMs: from the start of fetch to the response (object clock). The
 					// Worker's object time minus inbox minus inMs is the wait to send the
 					// response back, which the next request's PHP can block the same way.
-					res.headers.set('x-perf-queue', JSON.stringify({ inboxMs, ahead, waitMs, inMs: Date.now() - tArrive }));
+					res.headers.set('x-perf-queue', JSON.stringify({ inboxMs, ahead, waitMs, inMs: Date.now() - tArrive, burst }));
 				} catch {}
 				return res;
 			} finally {

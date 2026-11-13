@@ -101,3 +101,26 @@ export function shedResponse(waitMs, cls, objectName) {
 		},
 	});
 }
+
+// The burst count (#391 probe 1): requests that reached fetch() since the event loop last had a
+// free turn. Neither the clock (frozen while PHP runs) nor phpPending (1) sees the queue; this
+// count does if, and only if, a zero-delay timer does NOT run between the deliveries of a burst.
+// Each arrival schedules one timer at most; when it runs, the burst is over and the count is 0.
+let sinceIdle = 0;
+let idleTimer = null;
+/** Count one arrival and return the count, this one included. `schedule` is setTimeout in production. */
+export function noteArrival(schedule = setTimeout) {
+	sinceIdle++;
+	if (idleTimer === null) {
+		idleTimer = schedule(() => {
+			sinceIdle = 0;
+			idleTimer = null;
+		}, 0);
+	}
+	return sinceIdle;
+}
+/** For tests: forget the count. */
+export function resetArrivals() {
+	sinceIdle = 0;
+	idleTimer = null;
+}
