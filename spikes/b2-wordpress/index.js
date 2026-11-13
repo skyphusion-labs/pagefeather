@@ -18,6 +18,7 @@ import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywher
 import { resetFailures, writeLossResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import { routeClass, createTrace } from './file-trace.mjs';
+import { CodeMounter, putCode, deleteCode, sweepOrphans, codeBudget, validSlug, validType, ensureSchema } from './code-store.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -420,6 +421,134 @@ function attachLazyContents(node, size, dataFn, tag) {
 function lazyFile(FS, path, entry, src) {
 	FS.writeFile(path, new Uint8Array(0));
 	attachLazyContents(FS.lookupPath(path).node, entry.size, () => entry.data(), src ? { src, path } : null);
+}
+
+// Plugins and themes installed from wp-admin persist (#407, code-store.mjs). On only with
+// CODE_PERSIST=on, on a b-dosql site with its own bucket. The runtime's mounts live in runtimeCode,
+// made at each boot (a new runtime has a new file system).
+let runtimeCode = null;
+const CODE_MAX_RAW_BYTES = 64 * 1048576; // a directory bigger than this is refused before it is zipped
+const CODE_REFUSED_FILE = '/internal/shared/code-refused.json';
+const CODE_BUILD_SLUGS_FILE = '/internal/shared/code-build-slugs.json';
+function codePersistOn() {
+	return Boolean(ENV && ENV.CODE_PERSIST === 'on' && ENV.MEDIA && ENV.DB_IN_DO === 'on' && ENV.PHP_IN_DO === 'on');
+}
+function codeDir(type, slug) {
+	return `${DOCROOT}/wp-content/${type}s/${slug}`;
+}
+function fsExists(FS, p) {
+	try {
+		FS.lstat(p);
+		return true;
+	} catch {
+		return false;
+	}
+}
+function fsRmrf(FS, p) {
+	if (!fsExists(FS, p)) return;
+	const st = FS.lstat(p);
+	if (FS.isDir(st.mode)) {
+		for (const n of FS.readdir(p)) if (n !== '.' && n !== '..') fsRmrf(FS, p + '/' + n);
+		FS.rmdir(p);
+	} else FS.unlink(p);
+}
+// Mount a stored zip lazily (entries relative to the slug directory), replacing what is there.
+function mountCode(FS, type, slug, zip) {
+	const base = codeDir(type, slug);
+	fsRmrf(FS, base);
+	FS.mkdirTree(base);
+	for (const e of zipEntries(zip)) {
+		if (e.name.endsWith('/')) {
+			FS.mkdirTree(base + '/' + e.name.slice(0, -1));
+			continue;
+		}
+		const full = base + '/' + e.name;
+		FS.mkdirTree(full.slice(0, full.lastIndexOf('/')));
+		lazyFile(FS, full, e, 'code');
+	}
+}
+// The slug directory, as a map of relative name -> bytes. Refuses a symbolic link and an oversize tree.
+function readCodeDir(FS, base) {
+	const files = {};
+	let raw = 0;
+	const walk = (dir, rel) => {
+		for (const n of FS.readdir(dir)) {
+			if (n === '.' || n === '..') continue;
+			const p = dir + '/' + n;
+			const st = FS.lstat(p);
+			if (FS.isLink(st.mode)) throw new Error('it contains a symbolic link (' + (rel + n) + ')');
+			if (FS.isDir(st.mode)) walk(p, rel + n + '/');
+			else {
+				const b = FS.readFile(p);
+				raw += b.length;
+				if (raw > CODE_MAX_RAW_BYTES) throw new Error('it is larger than ' + CODE_MAX_RAW_BYTES / 1048576 + ' MB unpacked');
+				files[rel + n] = b;
+			}
+		}
+	};
+	walk(base, '');
+	return { files, raw };
+}
+function codeFsOps(FS) {
+	return { mount: (t, s, z) => mountCode(FS, t, s, z), unmount: (t, s) => fsRmrf(FS, codeDir(t, s)) };
+}
+function writeRefused(php, refused) {
+	php.writeFile(CODE_REFUSED_FILE, JSON.stringify(refused || []));
+}
+// Bring this runtime's mounts up to the stored generation (one SQLite read when nothing changed).
+async function codeSync(php) {
+	if (!codePersistOn() || !sqlDb) return;
+	runtimeCode ??= new CodeMounter();
+	const r = await runtimeCode.sync({ sql: sqlDb, bucket: ENV.MEDIA, ...codeFsOps(php[__private__dont__use].FS) });
+	if (r.changed) {
+		writeRefused(php, r.refused);
+		if (r.refused.length) console.log(JSON.stringify({ m: 'code', refused: r.refused }));
+	}
+}
+// The op PHP calls through skyphusion_worker_call({code: ...}) (php/code-persist.php).
+async function codeOp(op) {
+	if (!codePersistOn()) return { ok: false, error: 'Installs are not stored on this site (CODE_PERSIST is off).' };
+	if (!sqlDb || !sqlStorage || !lastBootedPhp) return { ok: false, error: 'No database or runtime for this request.' };
+	const { type, slug } = op || {};
+	if (!validType(type) || !validSlug(slug)) return { ok: false, error: `"${String(slug)}" is not a ${String(type)} name this site can store.` };
+	const php = lastBootedPhp;
+	const FS = php[__private__dont__use].FS;
+	runtimeCode ??= new CodeMounter();
+	const ops = codeFsOps(FS);
+	const txn = (fn) => sqlStorage.transactionSync(fn);
+	if (op.op === 'put') {
+		const base = codeDir(type, slug);
+		if (!fsExists(FS, base)) return { ok: false, error: `${slug} is not in wp-content/${type}s.` };
+		let files, raw;
+		try {
+			({ files, raw } = readCodeDir(FS, base));
+		} catch (e) {
+			return { ok: false, error: `${slug} cannot be stored: ${e.message}.` };
+		}
+		const { zipSync } = await import('fflate');
+		const zip = zipSync(files, { level: 6 });
+		const r = await putCode({ sql: sqlDb, txn, bucket: ENV.MEDIA, type, slug, version: op.version ? String(op.version).slice(0, 64) : null, zip, files: Object.keys(files).length, budget: codeBudget(ENV), now: Date.now() });
+		console.log(JSON.stringify({ m: 'code', op: 'put', type, slug, ok: r.ok, code: r.code, bytes: zip.length, raw }));
+		// The installer's unpacked copy is replaced by the lazy mount of the stored zip, so this runtime
+		// does not keep a second, inflated copy resident.
+		if (r.ok) runtimeCode.adopt({ type, slug, sha256: r.sha256, zip, gen: r.gen, ...ops });
+		return r.ok ? { ok: true, bytes: zip.length } : { ok: false, code: r.code, error: r.error };
+	}
+	if (op.op === 'delete') {
+		const r = await deleteCode({ sql: sqlDb, txn, bucket: ENV.MEDIA, type, slug });
+		console.log(JSON.stringify({ m: 'code', op: 'delete', type, slug, ok: r.ok }));
+		if (r.ok) runtimeCode.forget({ type, slug, gen: r.gen, ...ops });
+		return r;
+	}
+	if (op.op === 'resync') {
+		// After a failed store: drop what the installer unpacked; mount the stored version, if any.
+		ops.unmount(type, slug);
+		runtimeCode.mounted.delete(`${type}/${slug}`);
+		runtimeCode.gen = -1;
+		await codeSync(php);
+		return { ok: true };
+	}
+	return { ok: false, error: 'unknown code op' };
 }
 
 // Lazy MEMFS NODE creation (issue #218, LAZY_NODES=on). Eager node creation
@@ -983,6 +1112,7 @@ async function handleMessage(raw) {
 	if (m.oc) return JSON.stringify(await objectCacheOp(m.oc));
 	if (m.probeMem) return JSON.stringify({ wasm: lastBootedPhp ? lastBootedPhp[__private__dont__use].HEAPU8.length : null });
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
+	if (m.code) return JSON.stringify(await codeOp(m.code));
 	if (m.email) return JSON.stringify(await emailOp(m.email));
 	if (m.aiAlt) return JSON.stringify(await aiAltOp(m.aiAlt));
 	if (m.aiEmbed) return JSON.stringify(await aiEmbedOp(ENV && ENV.AI, m.aiEmbed));
@@ -1166,6 +1296,21 @@ async function boot(origin) {
 	}
 	const tFiles = Date.now() - t0 - tWasm;
 	memAt.afterFiles = mem();
+	// #407: the slugs the build ships stay deploy-only (php/code-persist.php reads this list), and a
+	// new runtime mounts the stored installs before its first request.
+	runtimeCode = null;
+	if (codePersistOn()) {
+		const shipped = { plugin: [], theme: [] };
+		for (const e of zipEntries(new Uint8Array(siteZip))) {
+			const m = /^wordpress\/wp-content\/(plugins|themes)\/([^/]+)\//.exec(e.name);
+			if (m) {
+				const t = m[1] === 'plugins' ? 'plugin' : 'theme';
+				if (!shipped[t].includes(m[2])) shipped[t].push(m[2]);
+			}
+		}
+		php.writeFile(CODE_BUILD_SLUGS_FILE, JSON.stringify(shipped));
+		writeRefused(php, []);
+	}
 
 	// Keys from the WP_SALT secret, so a deployed site never uses the local ones.
 	const lines = ['<?php'];
@@ -1185,6 +1330,8 @@ async function boot(origin) {
 	if (ENV.WP_SALT) lines.push(`define('WP_DEBUG', false);`);
 	// A demo site or a one-click site cannot install, update or edit plugin or theme code (site-lock.mjs).
 	lines.push(...lockDefines(ENV));
+	// #407: installs from wp-admin persist (php/code-persist.php). Off unless CODE_PERSIST=on.
+	if (codePersistOn()) lines.push(`define('SKYPHUSION_CODE_PERSIST', true);`);
 	// Outbound HTTP through fetch() (php/http-bridge.php, #26). HTTP_BRIDGE=off: no
 	// bridge, and WordPress blocks external requests, as before the bridge.
 	if (ENV.HTTP_BRIDGE === 'off') lines.push(`define('SKYPHUSION_HTTP_BRIDGE_OFF', true);`, `define('WP_HTTP_BLOCK_EXTERNAL', true);`);
@@ -2208,7 +2355,27 @@ export class PhpRuntime extends DurableObject {
 				try {
 					const cleanDue = cronCleanDue(await this.ctx.storage.get(CRON_CLEAN_KEY), Date.now());
 					mail = tickMailFor(this.env, this.ctx.storage);
-					cr = await runCron(await (bootPromise ??= boot(cronOrigin)), cleanDue, mail);
+					const rt = await (bootPromise ??= boot(cronOrigin));
+					// #407: scheduled hooks of an installed plugin need its files mounted, as a request does.
+					try {
+						await codeSync(rt.php);
+					} catch (e) {
+						console.log(JSON.stringify({ m: 'code', syncError: String((e && e.message) || e).slice(0, 200) }));
+					}
+					cr = await runCron(rt, cleanDue, mail);
+					// #407: once a day, delete stored code objects no row points at (crash leftovers).
+					if (codePersistOn() && sql) {
+						try {
+							ensureSchema(sql);
+							const last = Number(sql.exec('SELECT last_sweep FROM _pf_code_state WHERE id = 1').toArray()[0].last_sweep);
+							if (Date.now() - last > 86400000) {
+								const swept = await sweepOrphans({ sql, bucket: this.env.MEDIA, now: Date.now() });
+								console.log(JSON.stringify({ m: 'code', swept: swept.length }));
+							}
+						} catch (e) {
+							console.log(JSON.stringify({ m: 'code', sweepError: String((e && e.message) || e).slice(0, 200) }));
+						}
+					}
 					if (cr && cr.cleaned) await this.ctx.storage.put(CRON_CLEAN_KEY, Date.now());
 				} finally {
 					// A cron run that left a transaction open is rolled back, as a request is (MySQL rolls
@@ -3043,6 +3210,12 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			if (tracing()) fileTrace.begin({ cls: routeClass(req.method, url.pathname, url.search), method: req.method, path: url.pathname, boot: booted ? 1 : 0 });
 			bootPromise ??= boot(origin);
 			const { php, handler, bootMs } = await bootPromise;
+			// #407: mount any plugin or theme installed (or removed) since this runtime last looked.
+			try {
+				await codeSync(php);
+			} catch (e) {
+				console.log(JSON.stringify({ m: 'code', syncError: String((e && e.message) || e).slice(0, 200) }));
+			}
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
 			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
