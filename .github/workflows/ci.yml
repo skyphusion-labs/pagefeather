@@ -84,7 +84,9 @@ jobs:
         run: python3 -I tests/wfp/plugin-memory-test.py
       - name: Gate 2 plugin harness, offline (#426)
         # tests/plugins/gate2.py against a fake WordPress: the four read-back classes, write-loss, headers-only recording.
-        run: python3 -I tests/plugins/gate2_test.py
+        run: |
+          python3 -I tests/plugins/gate2_test.py
+          bash tests/fixtures/tests/theme-unit-test.sh
       - name: b-dosql mail From address
         run: node --test spikes/b2-wordpress/tests/mail-from.test.mjs
       - name: b-dosql demo site lock
