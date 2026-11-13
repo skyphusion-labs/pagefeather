@@ -6,7 +6,7 @@ import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
 import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-arm.mjs';
-import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, mayHaveWritten } from './object-error.mjs';
+import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { cronBounds, cronCleanDue } from './cron-bound.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
@@ -2583,8 +2583,8 @@ async function toPhpObject(req, env, url, ctx) {
 	// The hint applies only when the object is made. D1's primary is in the
 	// Chicago area; "enam" is Eastern North America.
 	let t0 = Date.now();
-	// A GET or HEAD that dies in an isolate memory reset is sent once more (#335,
-	// object-error.mjs fetchWithMemoryRetry); each attempt makes its own stub and request.
+	// A GET or HEAD that dies in an object reset (memory #335, or storage #398) is sent once more
+	// (object-error.mjs fetchWithMemoryRetry); each attempt makes its own stub and request.
 	const res = await fetchWithMemoryRetry(
 		() => {
 			const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(name), env.PHP_LOCATION ? { locationHint: env.PHP_LOCATION } : undefined);
@@ -2597,7 +2597,7 @@ async function toPhpObject(req, env, url, ctx) {
 			return stub.fetch(fwd);
 		},
 		req.method,
-		(e) => console.log(JSON.stringify({ m: 'isolate-reset-retry', path: url.pathname, error: String(e.message).slice(0, 200) })),
+		(e) => console.log(JSON.stringify({ m: 'isolate-reset-retry', kind: classifyObjectError(e), path: url.pathname, error: String(e.message).slice(0, 200) })),
 	);
 	const retried = res.attempts > 1;
 	if (res.error) {
@@ -2611,19 +2611,22 @@ async function toPhpObject(req, env, url, ctx) {
 		// Worker (a cached error would reach readers after the queue drains).
 		// An isolate memory reset also comes with e.overloaded set; it gets its own
 		// header, x-isolate-reset: memory, not x-overloaded (#335, object-error.mjs).
-		// Other errors are thrown as before (fetchWithMemoryRetry rethrows them).
-		console.log(JSON.stringify({ m: kind === 'memory' ? 'isolate-reset' : 'overloaded', path: url.pathname, retried, error: String(e.message).slice(0, 200) }));
-		// A method that may have written (anything but GET or HEAD) and died in a memory reset: its
-		// earlier writes may be saved (#350), so no 503 "try again" (write-loss.mjs).
-		if (kind === 'memory' && mayHaveWritten(req.method)) {
-			console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: 'unknown', phase: 'request-killed' }));
-			const wl = writeLossResponse('unknown', wantsJson(url.pathname, url.search, req.headers.get('accept')));
+		// A storage reset (#398) is a reset too: x-isolate-reset: storage, the same retry and the same
+		// write-loss answer. Other errors are thrown as before (fetchWithMemoryRetry rethrows them).
+		const reset = isResetKind(kind);
+		console.log(JSON.stringify({ m: reset ? 'isolate-reset' : 'overloaded', kind, path: url.pathname, retried, error: String(e.message).slice(0, 200) }));
+		// A method that may have written (anything but GET or HEAD) and died in a reset: its earlier
+		// writes may be saved (#350; #398 saw a page create and a delete saved), so no 503 "try
+		// again" and never the dispatcher 502 (write-loss.mjs).
+		if (objectErrorOutcome(kind, req.method) === 'write-loss') {
+			console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', kind, method: req.method, path: url.pathname, failed: 'unknown', phase: 'request-killed' }));
+			const wl = writeLossResponse('unknown', wantsJson(url.pathname, url.search, req.headers.get('accept')), kind);
 			wl.headers['x-php-object'] = name;
 			return new Response(wl.body, { status: wl.status, headers: wl.headers });
 		}
 		const headers = objectErrorHeaders(kind, name, OVERLOAD_RETRY_AFTER_S);
 		if (retried) headers['x-isolate-retry'] = '1';
-		return new Response(kind === 'memory' ? 'The site restarted. Please try again in a few seconds.\n' : 'The site is busy. Please try again in a few seconds.\n', {
+		return new Response(reset ? 'The site restarted. Please try again in a few seconds.\n' : 'The site is busy. Please try again in a few seconds.\n', {
 			status: 503,
 			headers,
 		});

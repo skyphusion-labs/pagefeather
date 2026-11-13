@@ -8,15 +8,32 @@
 // Before #335 both answered 503 with x-overloaded: 1. On fdprobe1112g (2026-11-12) every cold
 // 503 tagged x-overloaded was a memory reset (Workers Logs: outcome exceededMemory), so the
 // header named the wrong phase. Now each kind has its own header.
+//
+// A third kind (#398): "Internal error in Durable Object storage caused object to be reset;
+// reference = <id>". The platform reset the object, with every request in it, as in a memory reset.
+// Seen on tsv1113w (2026-11-13): 4 admin writes and a login died this way, and 2 of the writes WERE
+// saved. Before #398 it was not classified, so it was thrown and the WfP dispatcher answered 502.
+// The match is on the stable text only, never on the reference id.
 export const MEMORY_RESET = /exceeded its memory limit/i;
+export const STORAGE_RESET = /Durable Object storage caused object to be reset/i;
 export const OVERLOADED = /Durable Object is overloaded/i;
 
-/** 'memory' for an isolate memory reset, 'overloaded' for a full queue, null for anything else. */
+/**
+ * 'memory' for an isolate memory reset, 'storage' for a storage reset, 'overloaded' for a full
+ * queue, null for anything else. A reset is checked before the overloaded flag: the platform sets
+ * e.overloaded on a memory reset too.
+ */
 export function classifyObjectError(e) {
 	const msg = String((e && e.message) || e || '');
 	if (MEMORY_RESET.test(msg)) return 'memory';
+	if (STORAGE_RESET.test(msg)) return 'storage';
 	if ((e && e.overloaded === true) || OVERLOADED.test(msg)) return 'overloaded';
 	return null;
+}
+
+/** A kind where the platform reset the object (memory or storage), not a full queue. */
+export function isResetKind(kind) {
+	return kind === 'memory' || kind === 'storage';
 }
 
 // Retry once (#335, the lead's ruling 2026-11-12). A memory reset kills every request in the
@@ -35,9 +52,18 @@ export function mayHaveWritten(method) {
 	return !RETRY_METHODS.has(String(method || '').toUpperCase());
 }
 
-/** Retry this failure? Only a memory reset, only a GET or HEAD, only the first attempt. */
+/**
+ * What the front Worker answers for a classified failure that was not (or no longer) retried:
+ * 'write-loss' (write-loss.mjs, the 500 "may have been saved") for a reset on a method that may
+ * have written, else '503' (objectErrorHeaders). An unclassified error never gets here: it is thrown.
+ */
+export function objectErrorOutcome(kind, method) {
+	return isResetKind(kind) && mayHaveWritten(method) ? 'write-loss' : '503';
+}
+
+/** Retry this failure? Only a reset (memory or storage, #398), only a GET or HEAD, only the first attempt. */
 export function shouldRetryObjectError(kind, method, attempt) {
-	return kind === 'memory' && RETRY_METHODS.has(String(method || '').toUpperCase()) && attempt === 0;
+	return isResetKind(kind) && RETRY_METHODS.has(String(method || '').toUpperCase()) && attempt === 0;
 }
 
 /**
@@ -65,7 +91,7 @@ export async function fetchWithMemoryRetry(send, method, onRetry) {
 /** The 503 headers for a classified error (never stored by a cache). */
 export function objectErrorHeaders(kind, objectName, retryAfterS) {
 	const h = { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'retry-after': retryAfterS, 'x-php-object': objectName };
-	if (kind === 'memory') h['x-isolate-reset'] = 'memory';
+	if (isResetKind(kind)) h['x-isolate-reset'] = kind;
 	else h['x-overloaded'] = '1';
 	return h;
 }
