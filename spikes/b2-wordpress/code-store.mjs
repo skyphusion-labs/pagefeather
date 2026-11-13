@@ -15,6 +15,11 @@
 export const CODE_PREFIX = '_code/';
 const TYPES = new Set(['plugin', 'theme']);
 const MIB = 1048576;
+// A size an admin reads: KB under 1 MB, else MB with one decimal.
+export function humanSize(bytes) {
+	const n = Math.max(0, Number(bytes) || 0);
+	return n < MIB ? `${Math.ceil(n / 1024)} KB` : `${(n / MIB).toFixed(1)} MB`;
+}
 
 /** A plugin or theme directory name WordPress could have made: no path, no dot names. */
 export function validSlug(slug) {
@@ -77,7 +82,7 @@ export async function putCode({ sql, txn, bucket, type, slug, version, zip, file
 		return {
 			ok: false,
 			code: 'budget',
-			error: `${slug} needs ${(zip.length / MIB).toFixed(1)} MB, and this site has ${(Math.max(0, budget - Number(others)) / MIB).toFixed(1)} MB of room left for installed code. It was not installed.`,
+			error: `${slug} needs ${humanSize(zip.length)}, and this site has ${humanSize(budget - Number(others))} of room left for installed code. It was not installed.`,
 		};
 	}
 	const sha = await sha256Hex(zip);

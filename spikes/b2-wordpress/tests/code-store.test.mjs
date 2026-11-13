@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { codeKey, codeBudget, validSlug, sha256Hex, putCode, deleteCode, loadCode, sweepOrphans, CodeMounter, readRows, readGen, ensureSchema } from '../code-store.mjs';
+import { humanSize, codeKey, codeBudget, validSlug, sha256Hex, putCode, deleteCode, loadCode, sweepOrphans, CodeMounter, readRows, readGen, ensureSchema } from '../code-store.mjs';
 
 const MIB = 1048576;
 
@@ -84,6 +84,10 @@ test('names, keys and the budget', () => {
 	assert.equal(codeBudget({ CODE_BUDGET_MB: '-1' }), null);
 	assert.equal(codeBudget({ CODE_BUDGET_MB: '0' }), 0);
 	assert.equal(codeBudget({ CODE_BUDGET_MB: '2.5' }), Math.floor(2.5 * MIB));
+	assert.equal(humanSize(0), '0 KB');
+	assert.equal(humanSize(1500), '2 KB');
+	assert.equal(humanSize(MIB), '1.0 MB');
+	assert.equal(humanSize(-5), '0 KB');
 });
 
 test('put then load: the bytes come back verified, the generation moves', async () => {
@@ -119,7 +123,7 @@ test('the budget at its boundary: exactly full is accepted, one byte over is ref
 	const over = await putCode({ sql, txn, bucket: b, type: 'plugin', slug: 'c', zip: zipOf(1, 3), budget, now: 3 });
 	assert.equal(over.ok, false);
 	assert.equal(over.code, 'budget');
-	assert.match(over.error, /room left/);
+	assert.match(over.error, /c needs 1 KB, and this site has 0 KB of room left/);
 	assert.equal(readRows(sql).length, 2);
 	assert.equal(b.objs.size, 2, 'a refused install writes no object');
 	// An UPDATE of a stored plugin counts only the others: a to 1000 bytes again still fits exactly.

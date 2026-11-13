@@ -98,6 +98,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/request-mail-hold.test.mjs
       - name: b-dosql bundle file trace, route classes (issue #394 M0)
         run: node --test spikes/b2-wordpress/tests/file-trace.test.mjs
+      - name: b-dosql installed code persists, crash windows and budget (issue #407)
+        run: node --test spikes/b2-wordpress/tests/code-store.test.mjs
       - name: b-dosql outbound host allowlist
         run: node --test spikes/b2-wordpress/tests/http-allow.test.mjs
       - name: email-queue unit tests

@@ -2355,14 +2355,7 @@ export class PhpRuntime extends DurableObject {
 				try {
 					const cleanDue = cronCleanDue(await this.ctx.storage.get(CRON_CLEAN_KEY), Date.now());
 					mail = tickMailFor(this.env, this.ctx.storage);
-					const rt = await (bootPromise ??= boot(cronOrigin));
-					// #407: scheduled hooks of an installed plugin need its files mounted, as a request does.
-					try {
-						await codeSync(rt.php);
-					} catch (e) {
-						console.log(JSON.stringify({ m: 'code', syncError: String((e && e.message) || e).slice(0, 200) }));
-					}
-					cr = await runCron(rt, cleanDue, mail);
+					cr = await runCron(await (bootPromise ??= boot(cronOrigin)), cleanDue, mail);
 					// #407: once a day, delete stored code objects no row points at (crash leftovers).
 					if (codePersistOn() && sql) {
 						try {
@@ -2629,6 +2622,13 @@ async function runCron(booted, cleanDue = false, mail = null) {
 		// which grew the runtime past the 128 MiB isolate on a big store even for one action.
 		const { actions, wpEvents } = cronBounds(ENV);
 		return withPhp(async () => {
+		// #407: scheduled hooks of an installed plugin need its files mounted, as a request does.
+		// Inside the PHP turn, so a mount never changes the files of a run that is waiting on I/O.
+		try {
+			await codeSync(php);
+		} catch (e) {
+			console.log(JSON.stringify({ m: 'code', syncError: String((e && e.message) || e).slice(0, 200) }));
+		}
 		// The tick's mail handoff (#362) is live only for this PHP run.
 		tickMail = mail;
 		let r;
