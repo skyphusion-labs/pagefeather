@@ -187,6 +187,7 @@ jobs:
           deploy/wfp/tests/update-inputs-test.sh
           deploy/wfp/tests/build-inputs-test.sh
           deploy/wfp/tests/kv-build-test.sh
+          deploy/wfp/tests/config-hash-test.sh
       - name: deploy/zone owner guard (issue #282)
         # apply.sh and destroy.sh refuse to overwrite a cache phase another root owns.
         run: deploy/zone/tests/owner-guard-test.sh

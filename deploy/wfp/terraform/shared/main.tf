@@ -18,8 +18,8 @@ resource "cloudflare_workers_for_platforms_dispatch_namespace" "wfp" {
   name       = var.namespace
 }
 
-# The site map: hostname -> {"script", "cpuMs", "subRequests", "outbound"}.
-# Each site's own workspace (../site) writes its entry.
+# The site map: hostname -> script, limits, outbound, the build id, and an
+# optional config_hash (#421). Each site's own workspace (../site) writes its entry.
 resource "cloudflare_workers_kv_namespace" "sites" {
   account_id = var.account_id
   title      = "wp-wfp-sites"
