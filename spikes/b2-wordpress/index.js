@@ -378,8 +378,8 @@ let l1State = 'none';
 async function loadBootPacks() {
 	const t = Date.now();
 	const base = 'https://assets.local/_pf/' + OPCACHE_BOOT.id + '/';
-	// OPCACHE_BOOT_SOURCE=module forces the fallback (a test of that path; see tests/l1-e2e.sh).
-	if (ENV && ENV.ASSETS && ENV.OPCACHE_BOOT_SOURCE !== 'module') {
+	// OPCACHE_BOOT_SOURCE=none forces the no-pack path (a test of it; see tests/l1-e2e.sh).
+	if (ENV && ENV.ASSETS && ENV.OPCACHE_BOOT_SOURCE !== 'none') {
 		try {
 			const packs = await Promise.all(
 				OPCACHE_BOOT.chunks.map(async (c) => {
@@ -393,16 +393,18 @@ async function loadBootPacks() {
 			l1State = `assets ${kib}KiB ${Date.now() - t}ms`;
 			return packs;
 		} catch (e) {
-			console.log(JSON.stringify({ m: 'l1', fallback: 'assets failed: ' + String((e && e.message) || e).slice(0, 160) }));
-			l1State = 'fallback:assets-failed';
+			l1State = 'fallback:compile:assets-failed';
+			console.error(JSON.stringify({ m: 'l1', fallback: 'compile', why: 'assets failed: ' + String((e && e.message) || e).slice(0, 160) }));
+			return [];
 		}
-	} else {
-		console.log(JSON.stringify({ m: 'l1', fallback: ENV && ENV.ASSETS ? 'OPCACHE_BOOT_SOURCE=module' : 'no ASSETS binding' }));
-		l1State = ENV && ENV.ASSETS ? 'fallback:forced' : 'fallback:no-assets-binding';
 	}
-	// The fallback the lead asked for: today's in-memory path, from a module imported only here.
-	const mod = await import('./build/opcache-boot.zip');
-	return [new Uint8Array(mod.default)];
+	// No boot pack: this boot compiles the boot-only scripts from source (OPcache's normal path).
+	// There is NO in-memory fallback on purpose: #411 measured that a data module costs isolate memory
+	// even when it is never imported (p411-lazy, 144 MiB, 3 of 3), so a fallback module would cost
+	// exactly the memory L1 saves. Said loudly, every time.
+	l1State = ENV && ENV.ASSETS ? 'fallback:compile:forced' : 'fallback:compile:no-assets-binding';
+	console.error(JSON.stringify({ m: 'l1', fallback: 'compile', why: ENV && ENV.ASSETS ? 'OPCACHE_BOOT_SOURCE=none' : 'no ASSETS binding' }));
+	return [];
 }
 function dropBootPack(FS) {
 	if (!bootPackPaths) return;
