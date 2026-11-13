@@ -15,7 +15,7 @@ import { analyticsEnabled, recordPageview } from './analytics.mjs';
 import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, demoLockDefines } from './site-lock.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders } from './perf-headers.mjs';
-import { resetFailures, writeLossResponse, wantsJson } from './write-loss.mjs';
+import { resetFailures, writeLossResponse, wantsJson, heldRequestMail } from './write-loss.mjs';
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
@@ -3056,18 +3056,24 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// In the PHP object, the object itself coalesces the purges of the whole site (issue #78).
 			// x-cache-purge (scheduled or coalesced) is for tests.
 			if (ctx && ctx.requestPurge && purgeRequested) out.set('x-cache-purge', await ctx.requestPurge());
-			// Async email (issue #185): hand the collected messages to the send_email binding
-			// off the request path, so checkout never waits on delivery. No binding, no
-			// MAIL_FROM, or no ctx: sendPending drops them and says so.
-			if (pendingEmails.length && ctx && ctx.waitUntil) {
-				const sp = sendPending(env);
-				if (sp) ctx.waitUntil(sp);
-			}
 			const d = delta();
 			// A write lost to an isolate memory reset (#350, write-loss.mjs): PHP's answer is replaced,
 			// whatever its status, before any of its headers (a Set-Cookie for a session that was not
 			// stored) is copied. The statements before the reset may be saved, so no "try again".
 			const lost = resetFailures(d.failures);
+			// Async email (issue #185): hand the collected messages to the send_email binding off the
+			// request path, so checkout never waits on delivery. No binding, no MAIL_FROM, or no ctx:
+			// sendPending drops them and says so. Decided only AFTER the lost writes are counted (#368,
+			// HOLD): a request with a loss sends no mail, and each held mail is an email-held event.
+			if (pendingEmails.length) {
+				const plan = heldRequestMail(pendingEmails, lost, { method: req.method, path: url.pathname });
+				for (const e of plan.events) console.log(JSON.stringify(e));
+				if (plan.events.length) pendingEmails = [];
+				else if (ctx && ctx.waitUntil) {
+					const sp = sendPending(env);
+					if (sp) ctx.waitUntil(sp);
+				}
+			}
 			if (lost) {
 				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, phpStatus: r.httpStatusCode, firstSql: String(d.failures[0].sql || '').slice(0, 80) }));
 				bootPromise = null; // the runtime saw the reset; the next request boots a new one

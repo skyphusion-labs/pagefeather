@@ -91,6 +91,8 @@ jobs:
       - name: b-dosql a write lost to an isolate reset never answers success (issue #350)
         # write-loss.mjs: a 500 "may have been saved", no Retry-After, no Set-Cookie, on both reset paths; GET and HEAD keep the #349 retry.
         run: node --test spikes/b2-wordpress/tests/write-loss.test.mjs
+      - name: b-dosql a request with lost writes holds its mail (issue #368)
+        run: node --test spikes/b2-wordpress/tests/request-mail-hold.test.mjs
       - name: b-dosql outbound host allowlist
         run: node --test spikes/b2-wordpress/tests/http-allow.test.mjs
       - name: email-queue unit tests
