@@ -63,6 +63,8 @@ class FakeWP:
                 ts = [t for t in ts if t["status"] == "active"]
             return js(ts)
         if path == "/_evict":
+            if self.f.get("no_evict"):
+                return {"code": 404, "s": 0.01, "body": b"", "h": h}
             if self.f["evict_drops"]:
                 self.plugins = {k: v for k, v in self.plugins.items() if k == "woocommerce"}
             return js({"evicting": True})
@@ -78,6 +80,10 @@ class FakeWP:
             return js({"order_id": 7})
         if route and route.startswith("/wc/v3/orders/"):
             return js({"id": 7}) if 7 in self.orders else js({"code": "nope"}, 404)
+        if path.startswith("/wp-admin/plugin-install.php"):
+            return {"code": 200, "s": 0.01, "body": b'<form><input type="hidden" name="_wpnonce" value="abcdef1234"></form>', "h": h}
+        if path.startswith("/wp-admin/update.php"):
+            return {"code": 200, "s": 0.01, "body": b"<p>The uploaded file exceeds the limit.</p>", "h": h}
         if path.startswith("/wp-admin/options.php") or (post and "wc-settings" in path):
             return {"code": 302, "s": 0.01, "body": b"", "h": h}
         if path.startswith("/wp-admin/"):
@@ -137,10 +143,24 @@ def t_fail_changed():
 
 
 def t_ok_unchanged():
-    lines, _ = run_phase(FakeWP(install_effect=False), "install", ["advanced-custom-fields"])
+    # The fallback is deterministic here: a pinned zip is present (stubbed), the upload is tried
+    # and refused. Without a zip, the run records a note instead (checked below).
+    real = G.zip_bytes
+    G.zip_bytes = lambda item: b"PK\x05\x06" + b"\x00" * 18
+    try:
+        lines, _ = run_phase(FakeWP(install_effect=False), "install", ["advanced-custom-fields"])
+    finally:
+        G.zip_bytes = real
     r = item(report_of(lines), "advanced-custom-fields")
-    assert r["writes"]["ok/unchanged"] == 1 and r["disagreements"] == 1 and r["firstFail"] == "install", r
-    assert any(l.get("step") == "install-upload" for l in lines), "the upload fallback was not tried or noted"
+    vias = [l.get("via") for l in lines if l["ev"] == "write"]
+    assert vias == ["rest /wp/v2/plugins", "upload form"], vias
+    assert r["writes"]["ok/unchanged"] == 1 and r["writes"]["fail/fail"] == 1 and r["disagreements"] == 1 and r["firstFail"] == "install", r
+    G.zip_bytes = lambda item: None
+    try:
+        lines2, _ = run_phase(FakeWP(install_effect=False), "install", ["advanced-custom-fields"])
+    finally:
+        G.zip_bytes = real
+    assert any(l.get("step") == "install-upload" and "no pinned zip" in l.get("note", "") for l in lines2), "no note without a zip"
 
 
 def t_reset_loses():
@@ -176,6 +196,32 @@ def t_function_plugin():
     ws = {l["what"]: l["cls"] for l in lines if l["ev"] == "write"}
     assert ws.get("activate") == "ok/ok" and ws.get("deactivate") == "ok/ok", ws
     assert fake.plugins["advanced-custom-fields"] == "inactive", "left active: the solo profile needs it off"
+
+
+def t_one_seo_plugin():
+    fake = FakeWP()
+    fake.plugins["wordpress-seo"] = "inactive"
+    fake.plugins["seo-by-rank-math"] = "active"
+    lines, _ = run_phase(fake, "function", ["wordpress-seo"])
+    st = [l for l in lines if l["ev"] == "step"]
+    assert st and st[0].get("refused", "").startswith("another SEO plugin is active: seo-by-rank-math"), st
+    assert not any(l["ev"] == "write" for l in lines), "something was written after the refusal"
+    assert fake.plugins["wordpress-seo"] == "inactive", "Yoast was activated beside Rank Math"
+    # Control: with Rank Math inactive, Yoast runs (and is deactivated after).
+    fake2 = FakeWP()
+    fake2.plugins["wordpress-seo"] = "inactive"
+    fake2.plugins["seo-by-rank-math"] = "inactive"
+    lines2, _ = run_phase(fake2, "function", ["wordpress-seo"])
+    ws = {l["what"]: l["cls"] for l in lines2 if l["ev"] == "write"}
+    assert ws.get("activate") == "ok/ok" and fake2.plugins["wordpress-seo"] == "inactive", ws
+
+
+def t_approach_a_no_evict():
+    lines, state = run_phase(FakeWP(no_evict=True), "install", ["advanced-custom-fields"])
+    st = [l for l in lines if l["ev"] == "step" and l["step"] == "reset"]
+    assert st and st[0]["ok"] is None and "not on this path" in st[0]["note"], st
+    r = item(report_of(lines), "advanced-custom-fields")
+    assert r["firstFail"] is None, r
 
 
 def t_headers_only():
@@ -214,6 +260,10 @@ def t_items():
     assert its[0]["slug"] == "woocommerce" and its[0]["kind"] == "control"
     assert {"elementor", "wordpress-seo", "seo-by-rank-math", "astra", "storefront"} <= {i["slug"] for i in its}
     assert all(re.fullmatch(r"[0-9a-f]{64}", i["sha"]) for i in its[1:])
+    # gate2-build.txt (the track-B build list, suite.txt format for fetch.sh) holds the same pins.
+    build = {l.split()[0]: tuple(l.split()[1:3]) for l in open(os.path.join(HERE, "gate2-build.txt")) if l.strip() and not l.startswith("#")}
+    want = {i["slug"]: (i["version"], i["sha"]) for i in its if i["kind"] == "plugin"}
+    assert build == want, "gate2-build.txt and gate2.txt pins differ"
 
 
 for name, fn in [("the four read-back classes", t_classes), ("control: a clean install is ok/ok and survives the reset", t_clean_install),
@@ -223,6 +273,8 @@ for name, fn in [("the four read-back classes", t_classes), ("control: a clean i
                  ("x-write-loss is counted, and not counted on a clean run", t_write_loss_counted),
                  ("the WooCommerce control: an order is ok/ok, and a lost order is ok/unchanged", t_woo_control),
                  ("a plugin is activated, run, and deactivated again (solo)", t_function_plugin),
+                 ("one SEO plugin per site: refused when the other is active; control runs", t_one_seo_plugin),
+                 ("an approach-A site with no /_evict: the reset step is not on this path, not a fail", t_approach_a_no_evict),
                  ("the recording is headers only: no body, no cookie, no password, no query", t_headers_only),
                  ("the report shows the prediction and counts the log reset lines", t_report_prediction_and_logs),
                  ("the settings form parser", t_form_fields), ("the item list", t_items)]:
