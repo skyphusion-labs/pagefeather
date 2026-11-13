@@ -352,16 +352,6 @@ The one-click site manager (`deploy/oneclick/`) is a third caller of this core. 
 
 **What stays the same.** The operator Worker (`wp-provision`) and the demo Worker keep the restricted token of Decision 2. This widening is only for the site manager's own key, in the owner's own account. The request still chooses only a name and the store checkbox; the Worker builds every binding, the code and the hostname itself (`buildServerCfg`), as for the operator path.
 
-## Installed code that persists (#407, `CODE_PERSIST`)
+## Every site is code-locked (#458)
 
-With `CODE_PERSIST=on`, a plugin or theme installed, updated or deleted from wp-admin is kept as one zip in the site's own R2 bucket (`_code/<type>/<slug>/<sha256>.zip`), indexed in the site's own Durable Object SQLite, and mounted again at every runtime boot (`spikes/b2-wordpress/code-store.mjs`, `php/code-persist.php`).
-
-**The trust is ordinary WordPress install trust.** An administrator who can install a plugin can already run any PHP on the site. Persisting that code gives them nothing they did not have. So the store is not a new privilege boundary, and it is not written up as one.
-
-**What the design does hold:**
-
-- **The write path is the site's own only.** A store happens only from inside the site's own PHP object, through its own op (`codeOp`, `index.js`). It only acts on a request that WordPress itself ran as an install, update or delete, and those hooks run only for a user with the install or delete capability. The object writes only to the site's own `MEDIA` bucket (the bindings check, `deploy/wfp/bindings.py`, refuses any other bucket for a site), under `_code/` only. No route outside the object writes there. The only public bucket route, `/wp-content/uploads/`, reads keys under `uploads/` only (`index.js`, `serveUpload`: the key is `'uploads/' +` the path, and R2 does not resolve `..` in a key), so `_code/` is never served.
-- **The path is confined.** The op stores exactly `wp-content/{plugins,themes}/<slug>`, with a slug that matches `[A-Za-z0-9][A-Za-z0-9._-]{0,99}` and has no `..`. A tree with a symbolic link, or bigger than 64 MB unpacked, is refused.
-- **What runs is what was stored.** Each key carries the zip's SHA-256. At boot, an object whose bytes or size do not match its row is REFUSED, not run, and the admin is told in plain words (tests: `tests/code-store.test.mjs`).
-- **Slugs the build ships stay deploy-only.** Installing over WordPress's shipped themes, WooCommerce or an imported plugin is refused, and their update offers are hidden, so a wp-admin action cannot replace code a deploy vouched for.
-- **One-click sites stay locked.** `CODE_LOCK=on` (#406) still sets `DISALLOW_FILE_MODS`, which turns installs off whatever `CODE_PERSIST` says. Lifting the lock on one-click sites waits until `CODE_PERSIST` is on AND Gate 2 of #422 shows that installs work there.
+`CODE_PERSIST` (#407, #433), which kept wp-admin installs in the site's bucket, is REMOVED: Conrad ruled on 2026-11-13 that core, plugin and theme installs and updates are code deploys, and that dashboard updates are a security risk. Every site now gets `DISALLOW_FILE_MODS` and `DISALLOW_FILE_EDIT` by default (`site-lock.mjs`), not only one-click sites. So a stolen or misused admin login cannot add or change PHP code through wp-admin; code reaches a site only through its build and a deploy. `CODE_LOCK=off` exists for a local or throwaway test instance only, and no deploy tool (deploy/wfp, deploy/deploy.sh, deploy/provision) renders it.

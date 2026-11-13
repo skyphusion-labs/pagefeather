@@ -31,7 +31,8 @@ mkdir -p "$FA/node_modules" "$FA/vendor" "$FA/build"
 : > "$FA/vendor/php_8_3.js"; : > "$FA/vendor/php_8_3.wasm"; : > "$FA/build/site.zip"; : > "$FA/build/opcache.zip"
 printf '#!/bin/bash\necho "WOO=${WOO:-unset} WOO_ACTIVE=${WOO_ACTIVE:-unset}" > build/seen-build; echo build-id fake\n' > "$FA/build.sh"
 printf '#!/bin/bash\necho "WOO_ACTIVE=$WOO_ACTIVE" > build/seen; echo priming failed; exit 1\n' > "$FA/opcache.sh"
-chmod +x "$FA/build.sh" "$FA/opcache.sh"
+printf '#!/bin/bash\necho prepared\n' > "$FA/prepare.sh"
+chmod +x "$FA/build.sh" "$FA/opcache.sh" "$FA/prepare.sh"
 r=$( (APP=$FA; unset WOO_ACTIVE; PLUGINS=woocommerce; if build_dosql > /dev/null 2>&1; then echo 0; else echo 1; fi) )
 check "build_dosql fails when opcache.sh fails, with set -e off" "$r" 1
 check "  and opcache.sh got the derived WOO_ACTIVE" "$(cat "$FA/build/seen" 2>/dev/null)" "WOO_ACTIVE=1"
@@ -50,4 +51,9 @@ done
 rm -f "$FA/build/seen-build"
 ( APP=$FA; unset WOO_ACTIVE PLUGINS IMPORT_PLUGINS; export WOO=1; build_dosql > /dev/null 2>&1 )
 check "#451 an outside WOO=1 on a plain site is ignored" "$(cat "$FA/build/seen-build" 2>/dev/null)" "WOO=0 WOO_ACTIVE=0"
+# #446: every build regenerates the loader, and a failed prepare.sh (a patch assert) stops the build.
+check "build_dosql runs prepare.sh on every build, with no pipe" "$(grep -c '^    ./prepare.sh || {' "$ROOT/deploy/wfp/lib.sh")" 1
+printf '#!/bin/bash\necho "heap growth patch did not apply" >&2; exit 1\n' > "$FA/prepare.sh"
+r=$( (APP=$FA; unset WOO_ACTIVE PLUGINS; if build_dosql > /dev/null 2>&1; then echo 0; else echo 1; fi) )
+check "build_dosql stops when prepare.sh fails" "$r" 1
 [ "$fails" = 0 ] && echo "0 failing case(s)" || { echo "$fails failing case(s)"; exit 1; }

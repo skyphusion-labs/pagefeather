@@ -13,9 +13,11 @@ Phases (default: gap admin):
   admin  logged in, ROUNDS rounds (default 10): GET /wp-admin/, GET and POST profile.php, GET
          post-new.php?post_type=page, POST /wp/v2/pages (status draft). Every REST create is checked
          against the database after (does the page exist, whatever the answer said).
-         ADMIN_EXTRA=1 adds per round: GET wc-settings, a WooCommerce settings save of the store
-         city to its SAME value (REST /wc/v3/settings), and a Hello Dolly install and delete
-         from wordpress.org (REST /wp/v2/plugins; never activated).
+         ADMIN_EXTRA=1 adds per round: GET wc-settings and a WooCommerce settings save of the store
+         city to its SAME value (REST /wc/v3/settings). ADMIN_INSTALL=1 (with ADMIN_EXTRA=1) also
+         adds a Hello Dolly install and delete from wordpress.org (REST /wp/v2/plugins; never
+         activated): only on a local or throwaway instance with CODE_LOCK=off, since every site
+         is code-locked (#458).
   crawl  180 s at 1 request a second: product, product, shop, Store API cart.
 Every GET carries a unique nocache= so the edge page cache never answers. One JSON line per request
 (headers only, never a body or a cookie); a summary per label on stderr.
@@ -129,7 +131,10 @@ def admin(o):
                 rec('admin', 'wc-settings-save', 'PUT', '/wc/v3/settings/general', {'code': 'SKIP-no-read'})
             else:
                 rec('admin', 'wc-settings-save', 'PUT', '/wc/v3/settings/general', req(a, '/?rest_route=/wc/v3/settings/general/woocommerce_store_city', json.dumps({'value': val}).encode(), h, 'PUT'))
-            # A plugin install from wordpress.org and its delete (the #430 path): Hello Dolly, never activated.
+        if os.environ.get('ADMIN_EXTRA') == '1' and os.environ.get('ADMIN_INSTALL') == '1':
+            # A plugin install from wordpress.org and its delete (the #430 path): Hello Dolly, never
+            # activated. Off by default: every site is code-locked (#458), so this only runs on a
+            # local or throwaway instance with CODE_LOCK=off.
             ri = req(a, '/?rest_route=/wp/v2/plugins', json.dumps({'slug': 'hello-dolly'}).encode(), h, 'POST')
             rec('admin', 'plugin-install', 'POST', '/wp/v2/plugins', ri)
             rd = req(a, '/?rest_route=/wp/v2/plugins/hello-dolly/hello', None, h, 'DELETE')
