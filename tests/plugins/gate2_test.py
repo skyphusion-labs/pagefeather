@@ -46,6 +46,24 @@ class FakeWP:
             return {"code": 302 if post else 200, "s": 0.01, "body": b"", "h": h}
         if "action=rest-nonce" in path:
             return {"code": 200, "s": 0.01, "body": b"abcdef1234", "h": h}
+        if route == "/wp/v2/pages" and post:
+            self.pages = getattr(self, "pages", {})
+            pid = 900 + len(self.pages)
+            self.pages[pid] = None
+            return js({"id": pid}, 201)
+        if path.startswith("/wp-admin/post.php") and "action=elementor" in path:
+            return {"code": 200, "s": 0.01, "body": b'var elementorCommonConfig = {"ajax":{"url":"https:\\/\\/x\\/wp-admin\\/admin-ajax.php","nonce":"abcdef1234"}};', "h": h}
+        if path == "/wp-admin/admin-ajax.php" and isinstance(data, dict) and data.get("action") == "elementor_ajax":
+            ok = data.get("_nonce") == "abcdef1234"
+            if ok and self.f.get("elementor_saves", True):
+                el = json.loads(data["actions"])["save_builder"]["data"]["elements"]
+                self.pages[int(data["editor_post_id"])] = el[0]["elements"][0]["settings"]["title"]
+            return js({"success": ok, "data": {"responses": {"save_builder": {"success": ok}}}})
+        if path.startswith("/?page_id="):
+            pid = int(path.split("page_id=")[1].split("&")[0])
+            mark = (getattr(self, "pages", {}) or {}).get(pid)
+            body = ('<div class="elementor-widget-heading"><h2>%s</h2></div>' % mark).encode() if mark else b"<p>empty</p>"
+            return {"code": 200, "s": 0.01, "body": body, "h": h}
         if route == "/wp/v2/plugins" and not post:
             return js([{"plugin": "%s/%s.php" % (s, s), "status": st} for s, st in self.plugins.items()])
         if route == "/wp/v2/plugins" and post:
@@ -224,6 +242,92 @@ def t_approach_a_no_evict():
     assert r["firstFail"] is None, r
 
 
+def t_request_classes():
+    C = G.request_class
+    cases = [
+        (("GET", "/wp-admin/edit.php?post_type=page"), "admin-page"),
+        (("POST", "/wp-admin/options.php", {"a": 1}), "admin-write"),
+        (("POST", "/wp-admin/admin-ajax.php", {"action": "heartbeat"}), "admin-ajax:heartbeat"),
+        (("POST", "/wp-admin/admin-ajax.php", b"action=wordfence_scan&x=1"), "admin-ajax:wordfence_scan"),
+        (("GET", "/wp-admin/admin-ajax.php?action=rest-nonce"), "admin-ajax:rest-nonce"),
+        (("POST", "/wp-admin/admin-ajax.php", {"action": "elementor_ajax", "actions": '{"save_builder":{}}'}), "editor-save"),
+        (("POST", "/wp-admin/admin-ajax.php", {"action": "elementor_ajax", "actions": '{"get_document_config":{}}'}), "admin-ajax:elementor_ajax"),
+        (("POST", "/?rest_route=/wp/v2/pages/12"), "editor-save"),
+        (("DELETE", "/?rest_route=/wp/v2/pages/12"), "rest-write"),
+        (("POST", "/?rest_route=/wp/v2/plugins"), "rest-write"),
+        (("GET", "/?rest_route=/wp/v2/types"), "rest-read"),
+        (("GET", "/wp-json/wp/v2/posts"), "rest-read"),
+        (("GET", "/wp-login.php"), "login"),
+        (("POST", "/_evict"), "operator"),
+        (("GET", "/?page_id=3"), "front"),
+    ]
+    bad = [(a, want, C(*a)) for a, want in cases if C(*a) != want]
+    assert not bad, bad
+
+
+def t_stack_profile():
+    try:
+        G.STACK = True
+        fake = FakeWP()
+        fake.plugins["advanced-custom-fields"] = "inactive"
+        lines, _ = run_phase(fake, "function", ["advanced-custom-fields"])
+        assert fake.plugins["advanced-custom-fields"] == "active", "the stack profile deactivated the item"
+        assert not any(l.get("what") == "deactivate" for l in lines), "a deactivate was written"
+    finally:
+        G.STACK = False
+    # stack-activate keeps the one-SEO guard
+    fake = FakeWP()
+    fake.plugins.update({"wordpress-seo": "inactive", "seo-by-rank-math": "active"})
+    buf = io.StringIO(); G.OUT = buf; G.instrument(fake); o = G.login()
+    G.phase_stack_activate(o, {"kind": "plugin", "slug": "wordpress-seo", "version": "", "sha": ""}, {})
+    st = [json.loads(l) for l in buf.getvalue().splitlines() if '"ev": "step"' in l]
+    assert st and st[-1].get("refused", "").startswith("another SEO plugin is active"), st
+    assert fake.plugins["wordpress-seo"] == "inactive"
+
+
+def t_elementor_job():
+    fake = FakeWP()
+    fake.plugins["elementor"] = "active"
+    buf = io.StringIO(); G.OUT = buf; G.instrument(fake); o = G.login()
+    ok, info = G.elementor_job(o)
+    ws = [json.loads(l) for l in buf.getvalue().splitlines() if '"ev": "write"' in l]
+    assert ok is True and ws and ws[-1]["cls"] == "ok/ok", (ok, ws)
+    cls = [json.loads(l)["class"] for l in buf.getvalue().splitlines() if '"ev": "req"' in l]
+    assert "editor-save" in cls, cls
+    # control: the save answers success but the page does not render the heading -> ok/unchanged
+    fake2 = FakeWP(elementor_saves=False)
+    buf = io.StringIO(); G.OUT = buf; G.instrument(fake2); o = G.login()
+    ok, _ = G.elementor_job(o)
+    ws = [json.loads(l) for l in buf.getvalue().splitlines() if '"ev": "write"' in l]
+    assert ok is False and ws[-1]["cls"] == "ok/unchanged", ws
+
+
+def t_report_classes():
+    lines, _ = run_phase(FakeWP(write_loss_path="rest_route=/wp/v2/plugins"), "install", ["advanced-custom-fields"])
+    rep = report_of(lines)
+    c = rep["classes"]
+    assert c["rest-write"]["n"] >= 1 and c["rest-write"]["writeLoss"] >= 1 and c["login"]["n"] == 2, c
+    assert all("failRate" in v and "wasmMedian" in v for v in c.values()), c
+
+
+def t_tier1_lists():
+    t1 = G.items(os.path.join(HERE, "tier1.txt"))
+    assert [i["slug"] for i in t1] == ["elementor", "wordpress-seo", "contact-form-7", "advanced-custom-fields", "wordfence", "updraftplus", "astra"], t1
+    assert not any(i["kind"] == "control" for i in t1), "tier 1 has no WooCommerce control"
+    g2 = {i["slug"]: (i["version"], i["sha"]) for i in G.items()}
+    for path in ("tier1.txt", "tier1-alt.txt"):
+        for i in G.items(os.path.join(HERE, path)):
+            if i["slug"] in g2:
+                assert g2[i["slug"]] == (i["version"], i["sha"]), "%s pins differ from gate2.txt" % i["slug"]
+    # tier1-build.txt (the built-in fallback, suite.txt format) holds the same pins as tier1.txt.
+    t1p = {i["slug"]: (i["version"], i["sha"]) for i in t1}
+    build = {l.split()[0]: tuple(l.split()[1:3]) for l in open(os.path.join(HERE, "tier1-build.txt")) if l.strip() and not l.startswith("#")}
+    assert set(build) == {"elementor", "wordpress-seo", "advanced-custom-fields", "wordfence", "updraftplus"}, sorted(build)
+    assert all(build[s] == t1p[s] for s in build), "tier1-build.txt pins differ from tier1.txt"
+    alt = [i["slug"] for i in G.items(os.path.join(HERE, "tier1-alt.txt"))]
+    assert alt == ["seo-by-rank-math", "wpforms-lite", "hello-elementor"], alt
+
+
 def t_headers_only():
     lines, _ = run_phase(FakeWP(), "install", ["advanced-custom-fields"])
     reqs = [l for l in lines if l["ev"] == "req"]
@@ -276,6 +380,11 @@ for name, fn in [("the four read-back classes", t_classes), ("control: a clean i
                  ("one SEO plugin per site: refused when the other is active; control runs", t_one_seo_plugin),
                  ("an approach-A site with no /_evict: the reset step is not on this path, not a fail", t_approach_a_no_evict),
                  ("the recording is headers only: no body, no cookie, no password, no query", t_headers_only),
+                 ("every request is classed for the admin-container classifier", t_request_classes),
+                 ("tier 1 stack: items stay active, and stack-activate keeps the one-SEO guard", t_stack_profile),
+                 ("Elementor's job: editor, save_builder, render; a save that does not render is ok/unchanged", t_elementor_job),
+                 ("the report has a class table with fail rate, resets, write-loss and memory", t_report_classes),
+                 ("the tier 1 lists: seven items, no WooCommerce, pins equal gate2.txt", t_tier1_lists),
                  ("the report shows the prediction and counts the log reset lines", t_report_prediction_and_logs),
                  ("the settings form parser", t_form_fields), ("the item list", t_items)]:
     ok(name, fn)

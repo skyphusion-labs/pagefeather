@@ -15,10 +15,16 @@ Phases:
   function  for each installed item: activate, its admin screens, a settings save, its visible
             job, then deactivate (solo profile: WooCommerce plus this one item).
   fetch     download the pinned zips into the build cache, checked against gate2.txt.
+  stack-activate  tier 1 (#422): activate every item of the list and leave it active
+            (the one-SEO guard holds).
   report    read JSONL files (and an optional Workers Logs export) and print the matrix, with
             the prediction next to each measurement: gate2.py report run1.jsonl ... [--logs f]
 TRACK labels the run: I (installed from wp-admin) or B (built in with PLUGINS=). The default
-item list is gate2.txt; the WooCommerce control item is always first.
+item list is gate2.txt, with the WooCommerce control item first. GATE2_LIST=tier1.txt (or
+tier1-alt.txt) runs tier 1: plain WordPress, no WooCommerce control. STACK=1 keeps every item
+active together (the function phase never deactivates). Every request row carries a class
+(request_class): operator, login, admin-ajax:<action>, editor-save, admin-page, admin-write,
+rest-read, rest-write or front; the report adds a table of the classes.
 
 Every request is recorded as ONE JSON line on stdout, headers only (never a body or a
 cookie), as tests/.../measure394.py does (#424). Every write is read back and classed:
@@ -27,7 +33,7 @@ cookie), as tests/.../measure394.py does (#424). Every write is read back and cl
   fail/changed  the answer said failure, yet the state changed      (a disagreement, #394)
   ok/unchanged  the answer said success, yet the state did not change (a disagreement, #350)
 write-loss is counted from x-write-loss on any answer, and from the Workers Logs export."""
-import json, os, re, sys, time, uuid
+import json, os, re, sys, time, urllib.parse, uuid
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import plugins as P  # noqa: E402  (the Nov 5 suite helpers: admin_get, page_ok, fn_check, ADMIN, BAD)
@@ -51,6 +57,45 @@ def hget(r, k):
         return None
 
 
+def ajax_action(path, data):
+    """The admin-ajax action, from the query or the form body (never anything else of the body)."""
+    m = re.search(r"[?&]action=([A-Za-z0-9_-]{1,64})", path)
+    if m:
+        return m.group(1)
+    if isinstance(data, dict):
+        a = data.get("action")
+        return a if isinstance(a, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", a) else None
+    if isinstance(data, (bytes, bytearray)):
+        m = re.search(rb"(?:^|&)action=([A-Za-z0-9_-]{1,64})(?:&|$)", bytes(data[:4096]))
+        return m.group(1).decode() if m else None
+    return None
+
+
+def request_class(method, path, data=None):
+    """The request class for the admin-container classifier (#422 tier 1). One of:
+    operator, login, admin-ajax:<action>, editor-save, admin-page, admin-write, rest-read,
+    rest-write, front."""
+    m = (method or ("POST" if data is not None else "GET")).upper()
+    p = path.split("?")[0]
+    route = (re.search(r"rest_route=([^&]+)", path) or [None, None])[1] or (p[len("/wp-json"):] if p.startswith("/wp-json/") else None)
+    if p.startswith("/_"):
+        return "operator"
+    if p == "/wp-login.php":
+        return "login"
+    if p == "/wp-admin/admin-ajax.php":
+        a = ajax_action(path, data)
+        if a == "elementor_ajax" and isinstance(data, (dict, bytes, bytearray)) and b"save_builder" in (data if isinstance(data, (bytes, bytearray)) else json.dumps(data).encode()):
+            return "editor-save"
+        return "admin-ajax:%s" % (a or "unknown")
+    if route:
+        if m in ("POST", "PUT", "PATCH") and re.match(r"^/wp/v2/(posts|pages)/\d+/?$", urllib.parse.unquote(route)):
+            return "editor-save"
+        return "rest-read" if m in ("GET", "HEAD") else "rest-write"
+    if p.startswith("/wp-admin/"):
+        return "admin-page" if m in ("GET", "HEAD") else "admin-write"
+    return "front"
+
+
 def recorded(o, path, data=None, headers=None, method=None, timeout=120):
     r = RAW(o, path, data, headers, method, timeout)
     perf = None
@@ -58,7 +103,7 @@ def recorded(o, path, data=None, headers=None, method=None, timeout=120):
         perf = json.loads(hget(r, "x-perf")) if hget(r, "x-perf") else None
     except ValueError:
         perf = None
-    row = {"t": round(time.time(), 3), "track": TRACK, **CTX,
+    row = {"t": round(time.time(), 3), "track": TRACK, **CTX, "class": request_class(method, path, data),
            "method": method or ("POST" if data is not None else "GET"), "path": path.split("?")[0],
            "route": (re.search(r"rest_route=([^&]+)", path) or [None, None])[1],
            "code": r.get("code"), "s": r.get("s"), "boot": hget(r, "x-boot"), "wasm": hget(r, "x-wasm-mib"),
@@ -113,9 +158,17 @@ def write(what, answer_ok, changed, **info):
 CONTROL = {"kind": "control", "slug": "woocommerce", "version": "", "sha": ""}
 
 
+LIST = os.environ.get("GATE2_LIST")  # tier1.txt, tier1-alt.txt (#422); default gate2.txt
+# STACK=1 (tier 1, #422): every item stays active together. The function phase activates and runs
+# each one but never deactivates it or restores the previous theme; the stack-activate phase
+# activates the whole list first. WooCommerce is the control item of gate2.txt only.
+STACK = os.environ.get("STACK") == "1"
+
+
 def items(path=None, only=None):
-    out = [CONTROL]
-    for line in open(path or os.path.join(HERE, "gate2.txt")):
+    path = path or (os.path.join(HERE, LIST) if LIST else os.path.join(HERE, "gate2.txt"))
+    out = [CONTROL] if os.path.basename(path) == "gate2.txt" else []
+    for line in open(path):
         if not line.strip() or line.startswith("#"):
             continue
         kind, slug, ver, sha = line.split()[:4]
@@ -432,8 +485,42 @@ def woo_checkout(o):
     return answer_ok and exists, {"what": "Store API cart and checkout (cash on delivery), then the order exists"}
 
 
+ELEMENTOR_NONCE_RE = re.compile(rb'"ajax":\{"url":"[^"]*","nonce":"([a-f0-9]{10})"')
+
+
+def elementor_job(o):
+    """Elementor's own path: a new page, its editor, a save through elementor_ajax save_builder
+    (one container with one heading carrying a marker), then the page renders the marker inside
+    Elementor's markup. The write is read back by the render."""
+    marker = "gate2-tier1-" + uuid.uuid4().hex[:10]
+    pg = L.rest(o, "/wp/v2/pages", {"title": "Tier 1 Elementor " + marker[-6:], "status": "publish"}, "POST")
+    pid = (jbody(pg) or {}).get("id")
+    if not pid:
+        return False, {"what": "an Elementor page", "why": "the page create answered %s" % pg["code"]}
+    ed = L.req(o, "/wp-admin/post.php?post=%d&action=elementor" % pid)
+    m = ELEMENTOR_NONCE_RE.search((ed.get("body") or b"").replace(b"\\/", b"/"))
+    event("step", step="screen", ok=bool(ed["code"] == 200 and m), page="/wp-admin/post.php?action=elementor", code=ed["code"])
+    if not m:
+        return False, {"what": "the Elementor editor", "why": "no editor nonce (editor answered %s)" % ed["code"]}
+    elements = [{"id": uuid.uuid4().hex[:7], "elType": "container", "settings": {}, "elements": [
+        {"id": uuid.uuid4().hex[:7], "elType": "widget", "widgetType": "heading", "settings": {"title": marker}, "elements": []}]}]
+    actions = {"save_builder": {"action": "save_builder", "data": {"status": "publish", "elements": elements, "settings": {"post_title": "Tier 1 Elementor"}}}}
+    sv = L.req(o, "/wp-admin/admin-ajax.php", {"action": "elementor_ajax", "_nonce": m.group(1).decode(), "editor_post_id": str(pid),
+                                               "initial_document_id": str(pid), "actions": json.dumps(actions)})
+    b = jbody(sv) or {}
+    resp = ((b.get("data") or {}).get("responses") or {}).get("save_builder") if isinstance(b, dict) else None
+    answer_ok = ok2xx(sv) and b.get("success") is True and isinstance(resp, dict) and resp.get("success") is True
+    fr = L.req(L.opener(), P.nc("/?page_id=%d" % pid))
+    body = fr.get("body") or b""
+    rendered = fr["code"] == 200 and marker.encode() in body and b"elementor-widget-heading" in body
+    write("elementor save", answer_ok, rendered, page=pid, save=sv["code"], render=fr["code"])
+    return answer_ok and rendered, {"what": "Elementor: editor, save_builder, the page renders the saved heading"}
+
+
 def job(o, item):
     slug = item["slug"]
+    if slug == "elementor":
+        return elementor_job(o)
     if slug == "woocommerce":
         return woo_checkout(o)
     if item["kind"] == "theme":
@@ -467,6 +554,27 @@ def other_seo_active(o, slug):
     return out
 
 
+def phase_stack_activate(o, item, state):
+    """Tier 1 (#422): activate one item of the stack, and leave it active. The one-SEO guard holds."""
+    slug = item["slug"]
+    if not present(o, item):
+        return event("step", step="activate", ok=None, note="not installed: nothing to activate")
+    clash = other_seo_active(o, slug)
+    if clash:
+        return event("step", step="activate", ok=None, refused="another SEO plugin is active: %s" % ",".join(clash))
+    if active(o, item):
+        return event("step", step="activate", ok=True, note="already active")
+    if item["kind"] == "theme":
+        ok, info = theme_activate(o, slug)
+    else:
+        p = plugin_entry(o, slug)
+        r = L.rest(o, "/wp/v2/plugins/" + p["plugin"].replace(".php", ""), {"status": "active"}, "POST")
+        ok, info = ok2xx(r), {"code": r["code"]}
+    now = active(o, item)
+    write("activate", ok, now, **info)
+    event("step", step="activate", ok=now)
+
+
 def phase_function(o, item, state):
     slug = item["slug"]
     if item["kind"] != "control" and not present(o, item):
@@ -492,6 +600,8 @@ def phase_function(o, item, state):
     settings_save(o, item)
     ok, info = job(o, item)
     event("step", step="job", ok=ok, **info)
+    if STACK:
+        return  # tier 1: the stack stays active together
     if item["kind"] == "plugin":
         p = plugin_entry(o, slug)
         if p and p.get("status") == "active":
@@ -551,6 +661,25 @@ def report(files, logs=None):
             "resetHeaders": sum(1 for r in rq if r.get("reset")),
             "requests": len(rq),
         })
+    classes = {}
+    for r in reqs:
+        c = r.get("class") or "unknown"
+        e = classes.setdefault(c, {"n": 0, "fail": 0, "resets": 0, "writeLoss": 0, "wasm": []})
+        e["n"] += 1
+        e["fail"] += 1 if (not isinstance(r.get("code"), int) or r["code"] >= 500) else 0
+        e["resets"] += 1 if r.get("reset") else 0
+        e["writeLoss"] += 1 if r.get("writeLoss") else 0
+        if r.get("wasm") not in (None, ""):
+            try:
+                e["wasm"].append(float(r["wasm"]))
+            except ValueError:
+                pass
+    for c, e in classes.items():
+        w = sorted(e.pop("wasm"))
+        e["wasmMedian"] = w[len(w) // 2] if w else None
+        e["wasmMax"] = w[-1] if w else None
+        e["failRate"] = round(e["fail"] / e["n"], 3) if e["n"] else None
+    out["classes"] = classes
     out["totals"] = {
         "requests": len(reqs),
         "writeLossHeaders": sum(1 for r in reqs if r.get("writeLoss")),
@@ -605,7 +734,7 @@ def main(argv):
     state = json.load(open(state_file)) if os.path.isfile(state_file) else {}
     instrument()
     o = login()
-    fn = {"install": phase_install, "check": phase_check, "function": phase_function}[phase]
+    fn = {"install": phase_install, "check": phase_check, "function": phase_function, "stack-activate": phase_stack_activate}[phase]
     for item in items(only=only):
         CTX.clear()
         CTX.update({"phase": phase, "item": item["slug"], "kind": item["kind"]})

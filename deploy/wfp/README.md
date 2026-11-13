@@ -130,6 +130,8 @@ A change to a secret value, with the same key names, does not change the hash, s
 
 ### The build inputs of a site (#377, #379)
 
+**WooCommerce is bundled only when the site runs it (#451).** `build_dosql` passes `WOO` with the same derived value as `WOO_ACTIVE`: 1 when `WOO_ACTIVE=1` or `woocommerce` is in `PLUGINS` or `IMPORT_PLUGINS`, else 0. A plain site's `site.zip` then has no `wp-content/plugins/woocommerce/` (measured 2026-11-13: 6.42 MiB, against 19.32 MiB with it). Both values come from the recorded inputs, so `-wooprimed` in the build id says whether WooCommerce is bundled. An outside `WOO` is ignored. Approach `a` builds through `deploy/deploy.sh`, which keeps WooCommerce bundled. Test: `tests/woo-active-test.sh`.
+
 A site's code is built from inputs: `PLUGINS`, `IMPORT_CONTENT` with `IMPORT_THEMES`, `IMPORT_PLUGINS` and `IMPORT_MU_PLUGINS`, and `WOO_ACTIVE`. On 2026-11-12, an update that did not pass them shipped the live store ggc.sh without its plugins and mu-plugins for about 11 minutes. So:
 
 - **Recorded.** After a good `site update` (and a `site add` with `BUILD=1`), the run's inputs are written to the site's own media bucket, `_build/inputs.json`. The content subset the build copies (the named themes, plugins and mu-plugins) is written as `_build/<content id>.tar.gz`. Both live outside `uploads/`, the only prefix the Worker serves, so they are private like `_snapshots/`. `site remove` empties the bucket, so they go with the site. The record holds values only, never a path on the operator's machine and never a secret.

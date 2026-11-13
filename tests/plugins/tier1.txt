@@ -1,0 +1,10 @@
+# Gate 2 tier 1 (#422): the standard stack on plain WordPress, NO WooCommerce. One of each kind,
+# active together (design, #422, approved 2026-11-13). Same format and pins as gate2.txt.
+# kind slug version sha256-of-zip
+plugin elementor 4.3.6 f9f04c40e559ecc1c737eec6519e7223ff9a1ab04abcc2e004b44c9f6d1247a3
+plugin wordpress-seo 28.8 27cc01cb149db7186ef750552a5cc2ae5028933473886e419918af273b075105
+plugin contact-form-7 6.2.4.1 9b28e8bccfea0b0dcc8fd27ba8745fc7133fdacf594bf2e1faee869a15f71f64
+plugin advanced-custom-fields 6.8.11 577118d6c5f3add8f8eb8f04e40578259ce02986d301ef53d9665bc7c0a2967d
+plugin wordfence 9.0.2 4124ae2a5d7cff8faadf04c222583fa06f78e8e9c791e50447383e5e12ab5fb6
+plugin updraftplus 1.26.14 c5f3408140760aed8ebb301af197b6266e7c6b565307ca56d3b4e50b665cd6e9
+theme astra 4.14.3 a879532011370b04be71fba463fbd856ebb8a000cd90f929368a75a72292d67b
