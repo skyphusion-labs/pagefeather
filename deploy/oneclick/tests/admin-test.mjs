@@ -9,9 +9,9 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import { handle } from '../admin.mjs';
 import { reservedRule, JS, sitesScreen } from '../ui.mjs';
-import { RESERVED_NAMES } from '../../provision/shared.mjs';
-import { deriveTarget } from '../../provision/server-config.mjs';
-import { buildManifest, sha256Hex } from '../../release/bundle-manifest.mjs';
+import { RESERVED_NAMES } from '../vendor/provision/shared.mjs';
+import { deriveTarget } from '../vendor/provision/server-config.mjs';
+import { buildManifest, sha256Hex } from '../vendor/release/bundle-manifest.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..', '..', '..');
@@ -24,7 +24,7 @@ function assert(c, msg) { if (!c) throw new Error(msg); }
 
 const ACCT = 'a'.repeat(32);
 const OWNER = 'owner@example.com';
-const DISPATCHER_SRC = await readFile(join(ROOT, 'deploy/wfp/dispatcher/worker.js'), 'utf8');
+const DISPATCHER_SRC = await readFile(join(HERE, '..', 'vendor/wfp-dispatcher/worker.js'), 'utf8');
 
 // ---- a small in-memory Cloudflare API -----------------------------------------
 function fakeCloudflare({ foreignScripts = [] } = {}) {

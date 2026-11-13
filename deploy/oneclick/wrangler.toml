@@ -3,8 +3,9 @@
 # a secret. Set at deploy, NEVER written here:
 #   PAGEFEATHER_KEY  (secret) the account API token: see deploy/provision/HARDENING.md,
 #                    "The one-click site manager key"
-# Vars the owner sets: ADMIN_EMAIL (required; the manager refuses everyone without it),
-# and optionally CF_ACCOUNT_ID, ACCESS_AUD.
+#   ADMIN_EMAIL      (secret) the owner's email; without it the manager refuses everyone
+# Both are named in .dev.vars.example, so the button's setup page asks for them.
+# Optional vars: CF_ACCOUNT_ID, ACCESS_AUD.
 name = "pagefeather"
 main = "worker.mjs"
 compatibility_date = "2026-07-01"
@@ -14,10 +15,9 @@ preview_urls = false
 
 # The site front door is deploy/wfp/dispatcher/worker.js, uploaded as each site's
 # own Worker; it is read as text, not run here.
-rules = [{ type = "Text", globs = ["**/dispatcher/worker.js"], fallthrough = false }]
+rules = [{ type = "Text", globs = ["**/wfp-dispatcher/worker.js"], fallthrough = false }]
 
 [vars]
-ADMIN_EMAIL = ""
 WFP_NAMESPACE = "pagefeather"
 SITE_MAP_TITLE = "pagefeather-sites"
 WFP_COMPAT = "2026-07-01"

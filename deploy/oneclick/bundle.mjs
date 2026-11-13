@@ -6,9 +6,9 @@
 // module's SHA-256 (verifyBundle). So a changed release asset is refused, and
 // nothing is written to the bucket unless the whole bundle checks out. With no pin
 // set, nothing is downloaded.
-import { verifyBundle, sha256Hex } from '../release/bundle-manifest.mjs';
+import { verifyBundle, sha256Hex } from './vendor/release/bundle-manifest.mjs';
 import { bundlePrefix } from './sites.mjs';
-import { BadRequest } from '../provision/server-config.mjs';
+import { BadRequest } from './vendor/provision/server-config.mjs';
 
 // Every refusal here is text this file wrote (no upstream message), so it is a
 // BadRequest: the Site Health screen shows it as it is (errors.mjs).
