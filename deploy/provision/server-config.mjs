@@ -155,7 +155,7 @@ async function loadBundle(env, kind) {
 // ---- 8. Build the full server-side cfg --------------------------------------
 // Mirrors cli.mjs buildCfg, but every value comes from env + the base + the
 // bundle, never the request. Secrets are generated fresh here.
-export async function buildServerCfg(env, { kind, name, domain, demo = false, expiresAt }) {
+export async function buildServerCfg(env, { kind, name, domain, demo = false, expiresAt, codeLock = false }) {
   const target = deriveTarget(env, { kind, name, domain });
   const compatibilityDate = env.WFP_COMPAT || '2026-07-01';
   const common = {
@@ -170,7 +170,7 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
     // async-email-queue descriptors provision their per-site backing resource on the
     // HOSTED provisioning path too. Without resourceCreateOps here, the OC_KV /
     // EMAIL_QUEUE bindings would deploy with no namespace / queue behind them.
-    const bdosqlOpts = { mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS, mailFrom: `wordpress@${domain}`, mailFromName: name, demo: demo === true };
+    const bdosqlOpts = { mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS, mailFrom: `wordpress@${domain}`, mailFromName: name, demo: demo === true, codeLock: codeLock === true };
     return {
       ...common, kind: 'wp', mainModule: env.WP_MAIN || 'index.js',
       hostname: target.hostname,
