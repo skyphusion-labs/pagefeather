@@ -119,5 +119,22 @@ await ok('the CLI: make, verify (exit 0), then a tampered module (exit 1)', asyn
   } finally { await rm(d, { recursive: true, force: true }); }
 });
 
+await ok('the CLI refuses a directory and a symbolic link inside the bundle dir', async () => {
+  const { symlink } = await import('node:fs/promises');
+  const cli = join(ROOT, 'deploy/release/bundle-cli.mjs');
+  const meta = Object.entries(META).map(([k, v]) => `${k}=${v}`);
+  for (const kind of ['dir', 'link']) {
+    const d = await mkdtemp(join(tmpdir(), 'bundle-cli-'));
+    try {
+      const mods = join(d, 'modules'); await mkdir(mods);
+      for (const f of files()) await writeFile(join(mods, f.name), f.bytes);
+      if (kind === 'dir') await mkdir(join(mods, 'sub.js'));
+      else { await writeFile(join(d, 'outside.js'), 'x'); await symlink(join(d, 'outside.js'), join(mods, 'link.js')); }
+      const r = spawnSync(process.execPath, [cli, 'make', mods, join(d, 'manifest.json'), ...meta], { encoding: 'utf8' });
+      assert(r.status === 1, `${kind}: make exit ${r.status}, wanted 1: ${r.stderr}`);
+    } finally { await rm(d, { recursive: true, force: true }); }
+  }
+});
+
 console.log(`cases_run=${run} failed=${failed}`);
 process.exit(failed ? 1 : 0);

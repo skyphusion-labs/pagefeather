@@ -3,7 +3,8 @@
 //   node bundle-cli.mjs verify <modules dir> <manifest.json>
 // make: reads every file in the dir (the dry-run outdir with README.md and *.map
 // already removed), writes the manifest. verify: exit 0 only when the dir matches.
-import { readdir, readFile, writeFile, stat } from 'node:fs/promises';
+import { readdir, readFile, writeFile, open } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { join } from 'node:path';
 import { buildManifest, verifyBundle } from './bundle-manifest.mjs';
 
@@ -11,8 +12,13 @@ async function readDir(dir) {
   const files = [];
   for (const name of (await readdir(dir)).sort()) {
     const p = join(dir, name);
-    if (!(await stat(p)).isFile()) throw new Error(`${p} is not a file; a bundle is flat`);
-    files.push({ name, bytes: new Uint8Array(await readFile(p)) });
+    // One open handle for the check and the read (no stat-then-read race), and no
+    // symbolic link followed: a bundle is flat regular files only.
+    const fh = await open(p, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      if (!(await fh.stat()).isFile()) throw new Error(`${p} is not a regular file; a bundle is flat`);
+      files.push({ name, bytes: new Uint8Array(await fh.readFile()) });
+    } finally { await fh.close(); }
   }
   return files;
 }
