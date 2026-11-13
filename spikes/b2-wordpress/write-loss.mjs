@@ -38,13 +38,14 @@ export function wantsJson(pathname, search, accept) {
 /**
  * The answer for a request whose writes may be partly saved: status, headers, body. n is the
  * number of statements that failed in the reset, or 'unknown' when the reset killed the whole
- * request (the object answered nothing). No Retry-After, no Set-Cookie, never cached.
+ * request (the object answered nothing). kind is the reset (object-error.mjs): 'memory', or
+ * 'storage' for a storage reset (#398). No Retry-After, no Set-Cookie, never cached.
  */
-export function writeLossResponse(n, json = false) {
+export function writeLossResponse(n, json = false, kind = 'memory') {
 	const headers = {
 		'content-type': json ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8',
 		'cache-control': 'no-store',
-		'x-isolate-reset': 'memory',
+		'x-isolate-reset': kind === 'storage' ? 'storage' : 'memory',
 		'x-write-loss': String(n),
 	};
 	const body = json ? JSON.stringify({ code: WRITE_LOSS_CODE, message: WRITE_LOSS_MESSAGE, data: { status: 500 } }) : WRITE_LOSS_BODY;

@@ -70,7 +70,7 @@ test('mayHaveWritten: every method but GET and HEAD; those keep the #349 retry',
 });
 test('index.js toPhpObject: a writing method killed by a reset gets the 500 before the 503 is built', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	const branch = src.indexOf("if (kind === 'memory' && mayHaveWritten(req.method)) {");
+	const branch = src.indexOf("if (objectErrorOutcome(kind, req.method) === 'write-loss') {");
 	const wl = src.indexOf("writeLossResponse('unknown'", branch);
 	const h503 = src.indexOf('const headers = objectErrorHeaders(kind, name, OVERLOAD_RETRY_AFTER_S);', branch);
 	assert.ok(branch > 0 && wl > branch && h503 > wl, 'the write-loss answer comes before the 503 headers');
@@ -107,4 +107,16 @@ test('index.js: no log line carries a URL query string (order keys and logins li
 	const logs = src.split('\n').filter((l) => /console\.(log|error|warn)\(/.test(l));
 	assert.ok(logs.length > 20, 'the scan read the log lines');
 	assert.deepEqual(logs.filter((l) => /url\.search|url\.href|req\.url/.test(l)), []);
+});
+
+// #398: the write-loss answer names the reset that killed the request.
+test('writeLossResponse: x-isolate-reset names the kind, memory by default', () => {
+	assert.equal(writeLossResponse('unknown').headers['x-isolate-reset'], 'memory');
+	assert.equal(writeLossResponse('unknown', false, 'memory').headers['x-isolate-reset'], 'memory');
+	const s = writeLossResponse('unknown', true, 'storage');
+	assert.equal(s.status, 500);
+	assert.equal(s.headers['x-isolate-reset'], 'storage');
+	assert.equal(s.headers['x-write-loss'], 'unknown');
+	assert.equal(s.headers['retry-after'], undefined);
+	assert.equal(JSON.parse(s.body).message, WRITE_LOSS_MESSAGE);
 });
