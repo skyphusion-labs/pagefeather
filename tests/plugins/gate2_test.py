@@ -80,6 +80,10 @@ class FakeWP:
             return js({"order_id": 7})
         if route and route.startswith("/wc/v3/orders/"):
             return js({"id": 7}) if 7 in self.orders else js({"code": "nope"}, 404)
+        if path.startswith("/wp-admin/plugin-install.php"):
+            return {"code": 200, "s": 0.01, "body": b'<form><input type="hidden" name="_wpnonce" value="abcdef1234"></form>', "h": h}
+        if path.startswith("/wp-admin/update.php"):
+            return {"code": 200, "s": 0.01, "body": b"<p>The uploaded file exceeds the limit.</p>", "h": h}
         if path.startswith("/wp-admin/options.php") or (post and "wc-settings" in path):
             return {"code": 302, "s": 0.01, "body": b"", "h": h}
         if path.startswith("/wp-admin/"):
@@ -139,10 +143,24 @@ def t_fail_changed():
 
 
 def t_ok_unchanged():
-    lines, _ = run_phase(FakeWP(install_effect=False), "install", ["advanced-custom-fields"])
+    # The fallback is deterministic here: a pinned zip is present (stubbed), the upload is tried
+    # and refused. Without a zip, the run records a note instead (checked below).
+    real = G.zip_bytes
+    G.zip_bytes = lambda item: b"PK\x05\x06" + b"\x00" * 18
+    try:
+        lines, _ = run_phase(FakeWP(install_effect=False), "install", ["advanced-custom-fields"])
+    finally:
+        G.zip_bytes = real
     r = item(report_of(lines), "advanced-custom-fields")
-    assert r["writes"]["ok/unchanged"] == 1 and r["disagreements"] == 1 and r["firstFail"] == "install", r
-    assert any(l.get("step") == "install-upload" for l in lines), "the upload fallback was not tried or noted"
+    vias = [l.get("via") for l in lines if l["ev"] == "write"]
+    assert vias == ["rest /wp/v2/plugins", "upload form"], vias
+    assert r["writes"]["ok/unchanged"] == 1 and r["writes"]["fail/fail"] == 1 and r["disagreements"] == 1 and r["firstFail"] == "install", r
+    G.zip_bytes = lambda item: None
+    try:
+        lines2, _ = run_phase(FakeWP(install_effect=False), "install", ["advanced-custom-fields"])
+    finally:
+        G.zip_bytes = real
+    assert any(l.get("step") == "install-upload" and "no pinned zip" in l.get("note", "") for l in lines2), "no note without a zip"
 
 
 def t_reset_loses():

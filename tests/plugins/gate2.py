@@ -66,6 +66,15 @@ def recorded(o, path, data=None, headers=None, method=None, timeout=120):
            "reset": hget(r, "x-isolate-reset"), "perf": {k: perf.get(k) for k in PERF_KEEP} if perf else None}
     if r.get("err"):
         row["err"] = r["err"]
+    # A REST error's own machine code (for example woocommerce_rest_missing_nonce): a short
+    # identifier WordPress returns, never the message or any other part of the body.
+    if isinstance(r.get("code"), int) and r["code"] >= 400 and (r.get("body") or b"")[:1] == b"{":
+        try:
+            c = json.loads(r["body"]).get("code")
+            if isinstance(c, str) and re.fullmatch(r"[a-z0-9_]{1,64}", c):
+                row["errCode"] = c
+        except (ValueError, AttributeError):
+            pass
     ROWS.append(row)
     OUT.write(json.dumps({"ev": "req", **row}) + "\n")
     OUT.flush()
@@ -354,6 +363,9 @@ def settings_save(o, item):
     if not page:
         return event("step", step="settings", ok=None, note="no settings page in this pass")
     r = P.admin_get(o, page)
+    if r.get("code") != 200:
+        # The settings page itself did not open: the save cannot be tried, and that is a fail.
+        return event("step", step="settings", ok=False, note="the settings page answered %s" % r.get("code"), page=page, **P.code_info(r))
     action, f = form_fields(r.get("body") or b"")
     if f is None:
         return event("step", step="settings", ok=None, note="no POST form on %s" % page, code=r["code"])
@@ -379,7 +391,7 @@ def theme_activate(o, slug):
 
 def woo_checkout(o):
     anon = L.opener()
-    pr = L.req(anon, "/?rest_route=/wc/store/v1/products&per_page=1")
+    pr = L.req(anon, "/?rest_route=/wc/store/v1/products&per_page=1&stock_status[]=instock")
     items_ = jbody(pr) or []
     if not items_:
         return False, {"why": "no product from the Store API", "code": pr["code"]}
@@ -391,8 +403,12 @@ def woo_checkout(o):
     add = L.req(anon, "/?rest_route=/wc/store/v1/cart/add-item", json.dumps({"id": items_[0]["id"], "quantity": 1}).encode(), h, "POST")
     addr = {"first_name": "Gate", "last_name": "Two", "address_1": "1 Test St", "city": "Austin", "state": "TX",
             "postcode": "78701", "country": "US", "email": "gate2@example.com", "phone": "5550100"}
-    co = L.req(anon, "/?rest_route=/wc/store/v1/checkout", json.dumps({"billing_address": addr, "shipping_address": addr,
-               "payment_method": "cod"}).encode(), h, "POST")
+    order = {"billing_address": addr, "shipping_address": addr, "payment_method": "cod"}
+    if os.environ.get("TURNSTILE_TEST_TOKEN"):
+        # The block checkout's Turnstile token rides in the Store API extension data
+        # (spikes/b2-wordpress/php/turnstile-forms.php, SKYPHUSION_TURNSTILE_BLOCK_NS).
+        order["extensions"] = {"skyphusion-turnstile": {"token": os.environ["TURNSTILE_TEST_TOKEN"]}}
+    co = L.req(anon, "/?rest_route=/wc/store/v1/checkout", json.dumps(order).encode(), h, "POST")
     oid = (jbody(co) or {}).get("order_id")
     answer_ok = ok2xx(co) and bool(oid)
     exists = False
