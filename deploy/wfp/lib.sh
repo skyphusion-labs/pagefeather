@@ -217,20 +217,6 @@ for k, v in o.items():
     if isinstance(v, str) and (len(v) > 256 or re.search(r"[\x00-\x1f\x7f\x27\x22\\]", v)): bad("bad value for %s" % k)
 print("PHP_INI = %s" % chr(39) + json.dumps(o, separators=(",", ":"), sort_keys=True) + chr(39))'
 }
-# CODE_PERSIST (#407): plugins and themes installed from wp-admin persist (code-store.mjs). Off
-# unless CODE_PERSIST=on. It needs CODE_BUDGET_MB, the installed-code budget in MB, set from the
-# measured memory headroom of the site (#394): there is no default, so CODE_PERSIST=on without a
-# budget fails the render. Like PHP_INI, both are read from the run's environment only.
-code_persist_vars() {
-  case "${CODE_PERSIST:-}" in
-    "") [ -z "${CODE_BUDGET_MB:-}" ] || { echo "CODE_BUDGET_MB is set but CODE_PERSIST is not on" >&2; return 1; }; return 0 ;;
-    on) ;;
-    *) echo "CODE_PERSIST must be on or unset, not ${CODE_PERSIST}" >&2; return 1 ;;
-  esac
-  [[ "${CODE_BUDGET_MB:-}" =~ ^[0-9]{1,4}(\.[0-9]{1,3})?$ ]] || { echo "CODE_PERSIST=on needs CODE_BUDGET_MB (MB, a number such as 8 or 2.5), set from the site's measured headroom (#394)" >&2; return 1; }
-  echo 'CODE_PERSIST = "on"'
-  echo "CODE_BUDGET_MB = \"$CODE_BUDGET_MB\""
-}
 # PHP_RECYCLE (#394, experiment E1): "off" turns off the runtime recycle for MEMORY, so the PHP
 # runtime is kept after a request whose WebAssembly memory passed RECYCLE_WASM_BYTES (100 MiB,
 # index.js). A crashed runtime is still dropped (index.js: crashed || ...). With it off, nothing in
@@ -269,8 +255,6 @@ render_user() { # render_user <site> <origin>
   local split_assets; split_assets=$(opcache_split_assets) || return 1
   local php_ini; php_ini=$(php_ini_var) || return 1
   [ -z "$php_ini" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$php_ini
-  local code_vars; code_vars=$(code_persist_vars) || return 1
-  [ -z "$code_vars" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$code_vars
   local php_recycle; php_recycle=$(php_recycle_var) || return 1
   [ -z "$php_recycle" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$php_recycle
   cat <<TOML
@@ -494,7 +478,11 @@ build_dosql() {
     # new inputs rebuilds the same way. A store keeps it: update_inputs_check refuses a build
     # without WooCommerce for a site whose Store API answers (#377). Approach a builds through
     # deploy/deploy.sh, which leaves WOO at build.sh's default (bundled): a Hyperdrive store keeps it.
-    WOO=$woo WOO_ACTIVE=$woo ./build.sh | tail -1
+    # No pipe (#464): a pipe takes tail's status, so a failed build.sh went on to opcache.sh with a
+    # half-built tree. The log is outside build/, which build.sh rewrites.
+    local blog; blog=$(mktemp)
+    WOO=$woo WOO_ACTIVE=$woo ./build.sh > "$blog" || { echo "build.sh failed:"; tail -25 "$blog"; rm -f "$blog"; exit 1; }
+    tail -1 "$blog"; rm -f "$blog"
     WOO_ACTIVE=$woo DEV_ENV=dosql-local ./opcache.sh > build/opcache.log 2>&1 || { echo "opcache.sh failed:"; tail -25 build/opcache.log; exit 1; }
     tail -1 build/opcache.log
     # #394 L1 (OPCACHE_SPLIT=1): trace which OPcache files a WARM request reads on the primed build,
@@ -508,6 +496,27 @@ build_dosql() {
   # build.sh starts, and that bundle was uploaded.
   bundle_size_check
 }
+# The rollback artifact of one site update (#464). save_live_build <live build id> <dest dir> copies
+# $APP/build to <dest>/build only when build/ IS the live build of the site being updated: its
+# build-id.js equals the build id the site map records for that site. build/ is whatever this clone
+# built LAST, which can be another site (a run that updates several sites from one clone) or an
+# older build. Saving that one made a failed update re-deploy ANOTHER site's code over this site.
+# A -dirty id does not name its content (two dirty trees share it), so it is never trusted.
+# Returns 1 with the reason on stdout when there is no artifact; the update then rolls back the
+# data only and says to deploy the old build by hand.
+save_live_build() {
+  local live=$1 dest=$2 have=""
+  [ -f "$APP/build/build-id.js" ] && have=$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js")
+  if [ -z "$live" ] || [ "$live" = unknown ]; then echo "the site map records no live build"; return 1; fi
+  case "$live" in *-dirty*) echo "the live build $live is from a dirty tree, so its id does not name its code"; return 1 ;; esac
+  if [ "$have" != "$live" ]; then echo "build/ holds ${have:-no build}, not this site's live build $live"; return 1; fi
+  cp -a "$APP/build" "$dest/build" || { echo "the copy of build/ failed"; return 1; }
+  echo "$live"
+}
+# rollback_build_ok <saved build id> <live build id>: 0 only when both are set and equal (#464).
+# Checked again right before the rollback re-deploy, so no path re-deploys a build that is not
+# this site's live one.
+rollback_build_ok() { [ -n "$1" ] && [ "$1" != unknown ] && [ "$1" = "$2" ]; }
 # The Worker size limit is 64 MiB uncompressed (docs/plan-limits.md; measured:
 # 72 MB refused). Four files make almost all of a b-dosql upload: build/site.zip
 # (WordPress and the site's plugins), build/opcache.zip, and the PHP wasm with

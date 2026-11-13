@@ -86,7 +86,7 @@ check "FORCE and a new build: both reasons" "$(FORCE_UPLOAD=1 update_upload_reas
 
 # The real `site update`, with the build, terraform, S3 and the upload stubbed.
 # Nothing here talks to Cloudflare.
-unset PHP_INI PHP_RECYCLE OPCACHE_SPLIT CODE_PERSIST CODE_BUDGET_MB TURNSTILE_SITEKEY TURNSTILE_SECRET \
+unset PHP_INI PHP_RECYCLE OPCACHE_SPLIT TURNSTILE_SITEKEY TURNSTILE_SECRET \
   TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS OBSERVABILITY MAIL_FROM MAIL_FROM_NAME HTTP_ALLOW_HOSTS \
   WFP_PHP_ENV PHP_LOCATION WP_VECTORIZE_SEARCH FORCE_UPLOAD PLUGINS IMPORT_CONTENT IMPORT_THEMES \
   IMPORT_PLUGINS IMPORT_MU_PLUGINS FORCE_FAIL COUNT_ROWS WFP_CUSTOM_DOMAIN REPLACE_INPUTS || true
@@ -109,6 +109,9 @@ printf 'export default "bld-same";\n' > build/build-id.js
 : > vendor/php_8_3.js; : > vendor/php_8_3.wasm
 echo built
 SH
+# prepare.sh runs on every build (#446). Without it every build here failed, and before #464 the
+# update went on after the failed build, so this test passed on a build that never ran.
+printf '#!/bin/bash\necho prepared\n' > "$APP/prepare.sh"; chmod +x "$APP/prepare.sh"
 echo '#!/bin/bash' > "$APP/opcache.sh"
 echo 'echo primed' >> "$APP/opcache.sh"
 printf 'print("c00000001")\n' > "$APP/content-id.py"

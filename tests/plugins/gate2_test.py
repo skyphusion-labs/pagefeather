@@ -23,14 +23,13 @@ def ok(name, fn):
 
 
 class FakeWP:
-    """A small WordPress: plugins and themes, the REST routes gate2 uses, /_evict, one settings
+    """A small WordPress: plugins and themes, the REST routes gate2 uses, /_dbexport, one settings
     form, and the Store API. Faults are switches."""
     def __init__(self, **faults):
         self.plugins = {"woocommerce": "active"}
         self.themes = {"twentytwentyfive": "active"}
         self.orders = set()
-        self.f = {"install_code": 201, "install_effect": True, "evict_drops": False,
-                  "write_loss_path": None, "order_saved": True, **faults}
+        self.f = {"write_loss_path": None, "order_saved": True, **faults}
         self.seen = []
 
     def __call__(self, o, path, data=None, headers=None, method=None, timeout=120):
@@ -66,11 +65,6 @@ class FakeWP:
             return {"code": 200, "s": 0.01, "body": body, "h": h}
         if route == "/wp/v2/plugins" and not post:
             return js([{"plugin": "%s/%s.php" % (s, s), "status": st} for s, st in self.plugins.items()])
-        if route == "/wp/v2/plugins" and post:
-            slug = json.loads(body)["slug"]
-            if self.f["install_effect"]:
-                self.plugins[slug] = "inactive"
-            return js({"plugin": slug}, self.f["install_code"])
         if route and route.startswith("/wp/v2/plugins/"):
             slug = route.split("/")[4]
             self.plugins[slug] = json.loads(body)["status"]
@@ -88,12 +82,6 @@ class FakeWP:
             rows = [{"sql": "CREATE TABLE wp_options (x)"},
                     {"sql": 'INSERT INTO "wp_options" ("option_id", "option_name", "option_value", "autoload") VALUES (?, ?, ?, ?)', "params": [1, "active_plugins", ser, "yes"]}]
             return {"code": 200, "s": 0.01, "body": "\n".join(json.dumps(r) for r in rows).encode(), "h": h}
-        if path == "/_evict":
-            if self.f.get("no_evict"):
-                return {"code": 404, "s": 0.01, "body": b"", "h": h}
-            if self.f["evict_drops"]:
-                self.plugins = {k: v for k, v in self.plugins.items() if k == "woocommerce"}
-            return js({"evicting": True})
         if route == "/wc/store/v1/products":
             return js([{"id": 11}])
         if route == "/wc/store/v1/cart":
@@ -106,10 +94,6 @@ class FakeWP:
             return js({"order_id": 7})
         if route and route.startswith("/wc/v3/orders/"):
             return js({"id": 7}) if 7 in self.orders else js({"code": "nope"}, 404)
-        if path.startswith("/wp-admin/plugin-install.php"):
-            return {"code": 200, "s": 0.01, "body": b'<form><input type="hidden" name="_wpnonce" value="abcdef1234"></form>', "h": h}
-        if path.startswith("/wp-admin/update.php"):
-            return {"code": 200, "s": 0.01, "body": b"<p>The uploaded file exceeds the limit.</p>", "h": h}
         if path.startswith("/wp-admin/options.php") or (post and "wc-settings" in path):
             return {"code": 302, "s": 0.01, "body": b"", "h": h}
         if path.startswith("/wp-admin/"):
@@ -129,7 +113,7 @@ def run_phase(fake, phase, only):
     state = {}
     for item in G.items(only=only):
         G.CTX.clear(); G.CTX.update({"phase": phase, "item": item["slug"], "kind": item["kind"]})
-        {"install": G.phase_install, "function": G.phase_function}[phase](o, item, state)
+        {"function": G.phase_function}[phase](o, item, state)
     lines = [json.loads(l) for l in buf.getvalue().splitlines()]
     return lines, state
 
@@ -152,55 +136,16 @@ def t_classes():
     assert G.classify(False, True) == "fail/changed" and G.classify(True, False) == "ok/unchanged"
 
 
-def t_clean_install():
-    lines, state = run_phase(FakeWP(), "install", ["advanced-custom-fields"])
-    w = [l for l in lines if l["ev"] == "write"]
-    assert [x["cls"] for x in w] == ["ok/ok"], w
-    steps = {l["step"]: l["ok"] for l in lines if l["ev"] == "step"}
-    assert steps == {"install": True, "reset": True}, steps
-    r = item(report_of(lines), "advanced-custom-fields")
-    assert r["disagreements"] == 0 and r["firstFail"] is None and r["allPassed"], r
-
-
-def t_fail_changed():
-    lines, _ = run_phase(FakeWP(install_code=500), "install", ["advanced-custom-fields"])
-    r = item(report_of(lines), "advanced-custom-fields")
-    assert r["writes"]["fail/changed"] == 1 and r["disagreements"] == 1, r
-
-
-def t_ok_unchanged():
-    # The fallback is deterministic here: a pinned zip is present (stubbed), the upload is tried
-    # and refused. Without a zip, the run records a note instead (checked below).
-    real = G.zip_bytes
-    G.zip_bytes = lambda item: b"PK\x05\x06" + b"\x00" * 18
-    try:
-        lines, _ = run_phase(FakeWP(install_effect=False), "install", ["advanced-custom-fields"])
-    finally:
-        G.zip_bytes = real
-    r = item(report_of(lines), "advanced-custom-fields")
-    vias = [l.get("via") for l in lines if l["ev"] == "write"]
-    assert vias == ["rest /wp/v2/plugins", "upload form"], vias
-    assert r["writes"]["ok/unchanged"] == 1 and r["writes"]["fail/fail"] == 1 and r["disagreements"] == 1 and r["firstFail"] == "install", r
-    G.zip_bytes = lambda item: None
-    try:
-        lines2, _ = run_phase(FakeWP(install_effect=False), "install", ["advanced-custom-fields"])
-    finally:
-        G.zip_bytes = real
-    assert any(l.get("step") == "install-upload" and "no pinned zip" in l.get("note", "") for l in lines2), "no note without a zip"
-
-
-def t_reset_loses():
-    lines, state = run_phase(FakeWP(evict_drops=True), "install", ["advanced-custom-fields"])
-    r = item(report_of(lines), "advanced-custom-fields")
-    assert r["firstFail"] == "reset" and state["advanced-custom-fields"]["afterReset"] is False, (r, state)
-    assert ("POST", "/_evict") in [(m, p) for m, p in G.RAW.seen], "no /_evict"
+def plugin_off():
+    f = FakeWP(); f.plugins["advanced-custom-fields"] = "inactive"; return f
 
 
 def t_write_loss_counted():
-    lines, _ = run_phase(FakeWP(write_loss_path="rest_route=/wp/v2/plugins"), "install", ["advanced-custom-fields"])
+    f = plugin_off(); f.f["write_loss_path"] = "rest_route=/wp/v2/plugins/"
+    lines, _ = run_phase(f, "function", ["advanced-custom-fields"])
     r = item(report_of(lines), "advanced-custom-fields")
     assert r["writeLossHeaders"] >= 1, r
-    lines2, _ = run_phase(FakeWP(), "install", ["advanced-custom-fields"])
+    lines2, _ = run_phase(plugin_off(), "function", ["advanced-custom-fields"])
     assert item(report_of(lines2), "advanced-custom-fields")["writeLossHeaders"] == 0, "control counted write-loss"
 
 
@@ -240,14 +185,6 @@ def t_one_seo_plugin():
     lines2, _ = run_phase(fake2, "function", ["wordpress-seo"])
     ws = {l["what"]: l["cls"] for l in lines2 if l["ev"] == "write"}
     assert ws.get("activate") == "ok/ok" and fake2.plugins["wordpress-seo"] == "inactive", ws
-
-
-def t_approach_a_no_evict():
-    lines, state = run_phase(FakeWP(no_evict=True), "install", ["advanced-custom-fields"])
-    st = [l for l in lines if l["ev"] == "step" and l["step"] == "reset"]
-    assert st and st[0]["ok"] is None and "not on this path" in st[0]["note"], st
-    r = item(report_of(lines), "advanced-custom-fields")
-    assert r["firstFail"] is None, r
 
 
 def t_request_classes():
@@ -333,11 +270,14 @@ def t_elementor_job():
 
 
 def t_report_classes():
-    lines, _ = run_phase(FakeWP(write_loss_path="rest_route=/wp/v2/plugins"), "install", ["advanced-custom-fields"])
+    f = plugin_off(); f.f["write_loss_path"] = "rest_route=/wp/v2/plugins/"
+    lines, _ = run_phase(f, "function", ["advanced-custom-fields"])
     rep = report_of(lines)
     c = rep["classes"]
     assert c["rest-write"]["n"] >= 1 and c["rest-write"]["writeLoss"] >= 1 and c["login"]["n"] == 2, c
     assert all("failRate" in v and "wasmMedian" in v for v in c.values()), c
+    it = item(rep, "advanced-custom-fields")
+    assert it["wasmMax"] == 99.0 and isinstance(it["p50s"], float), it
 
 
 def t_tier1_lists():
@@ -359,7 +299,7 @@ def t_tier1_lists():
 
 
 def t_headers_only():
-    lines, _ = run_phase(FakeWP(), "install", ["advanced-custom-fields"])
+    lines, _ = run_phase(plugin_off(), "function", ["advanced-custom-fields"])
     reqs = [l for l in lines if l["ev"] == "req"]
     assert reqs, "no request recorded"
     for r in reqs:
@@ -368,7 +308,7 @@ def t_headers_only():
 
 
 def t_report_prediction_and_logs():
-    lines, _ = run_phase(FakeWP(evict_drops=True), "install", ["advanced-custom-fields"])
+    lines, _ = run_phase(FakeWP(), "function", ["contact-form-7"])
     with tempfile.NamedTemporaryFile("w", delete=False) as f:
         f.write("x Durable Object's isolate exceeded its memory limit and was reset.\nother\nexceeded its memory limit\n")
     try:
@@ -376,7 +316,7 @@ def t_report_prediction_and_logs():
     finally:
         os.remove(f.name)
     assert rep["totals"]["memoryResetLogLines"] == 2, rep["totals"]
-    assert "install or reset fails" in item(rep, "advanced-custom-fields")["predicted"]
+    assert "no mail transport" in item(rep, "contact-form-7")["predicted"]
 
 
 def t_form_fields():
@@ -400,16 +340,12 @@ def t_items():
     assert build == want, "gate2-build.txt and gate2.txt pins differ"
 
 
-for name, fn in [("the four read-back classes", t_classes), ("control: a clean install is ok/ok and survives the reset", t_clean_install),
-                 ("an install that answers 500 but installs is fail/changed (a disagreement)", t_fail_changed),
-                 ("an install that answers 201 but installs nothing is ok/unchanged, and the upload fallback is tried", t_ok_unchanged),
-                 ("an install lost at /_evict fails at the reset step", t_reset_loses),
+for name, fn in [("the four read-back classes", t_classes),
                  ("x-write-loss is counted, and not counted on a clean run", t_write_loss_counted),
                  ("the WooCommerce control: an order is ok/ok, and a lost order is ok/unchanged", t_woo_control),
                  ("a plugin is activated, run, and deactivated again (solo)", t_function_plugin),
                  ("one SEO plugin per site: refused when the other is active; control runs", t_one_seo_plugin),
                  ("one-SEO guard reads the active_plugins option: a plugin with no files still counts", t_seo_guard_option),
-                 ("an approach-A site with no /_evict: the reset step is not on this path, not a fail", t_approach_a_no_evict),
                  ("the recording is headers only: no body, no cookie, no password, no query", t_headers_only),
                  ("every request is classed for the admin-container classifier", t_request_classes),
                  ("tier 1 stack: items stay active, and stack-activate keeps the one-SEO guard", t_stack_profile),

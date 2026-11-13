@@ -1,30 +1,32 @@
 #!/usr/bin/env python3
 """Gate 2 (#422, #426): the plugin compatibility harness. Target-neutral: it uses what any
-WordPress site gives a client (the login form, wp-admin, the REST API), plus the b-dosql
-spike endpoint /_evict for the isolate reset. Use it on a THROWAWAY only: it installs,
-activates and deactivates plugins and themes, saves their settings and places an order.
+WordPress site gives a client (the login form, wp-admin, the REST API). Use it on a THROWAWAY only:
+it activates and deactivates plugins and themes, saves their settings, places an order, and (cms)
+creates and deletes posts, media, menus, widgets, users and comments.
 
     B=https://<throwaway> SPIKE_TOKEN=... ADMIN_USER=... ADMIN_PASSWORD=... \\
-      TURNSTILE_TEST_TOKEN=XXXX.DUMMY.TOKEN.XXXX TRACK=I \\
+      TURNSTILE_TEST_TOKEN=XXXX.DUMMY.TOKEN.XXXX \\
       python3 tests/plugins/gate2.py <phase> [--only a,b] > <label>.jsonl
 
+Plugins and themes are in the build (PLUGINS=, THEMES=; Conrad's ruling 2026-11-13: installs and
+updates are code deploys), so there is no wp-admin install phase.
+
 Phases:
-  install   track I: for each item, install it from wp-admin (wordpress.org; if that fails, the
-            upload form with the pinned zip), read it back, POST /_evict, read it back again.
-  check     after the lead's redeploy (deploy/wfp/site update): is each item still installed?
-  function  for each installed item: activate, its admin screens, a settings save, its visible
-            job, then deactivate (solo profile: WooCommerce plus this one item).
-  fetch     download the pinned zips into the build cache, checked against gate2.txt.
+  function  for each item: activate, its admin screens, a settings save, its visible job, then
+            deactivate (solo profile: WooCommerce plus this one item).
   stack-activate  tier 1 (#422): activate every item of the list and leave it active
             (the one-SEO guard holds).
+  cms       tier 1 (#422): the standard CMS work in wp-admin (tests/plugins/cms.py): editor,
+            media, menus, widgets, site editor or customizer, settings, users, comments.
+            ROUNDS=<n> (default 1). Every round deletes what it made and checks the counts.
   report    read JSONL files (and an optional Workers Logs export) and print the matrix, with
             the prediction next to each measurement: gate2.py report run1.jsonl ... [--logs f]
-TRACK labels the run: I (installed from wp-admin) or B (built in with PLUGINS=). The default
-item list is gate2.txt, with the WooCommerce control item first. GATE2_LIST=tier1.txt (or
-tier1-alt.txt) runs tier 1: plain WordPress, no WooCommerce control. STACK=1 keeps every item
-active together (the function phase never deactivates). Every request row carries a class
-(request_class): operator, login, admin-ajax:<action>, editor-save, admin-page, admin-write,
-rest-read, rest-write or front; the report adds a table of the classes.
+TRACK labels the run (default B: built in). The default item list is gate2.txt, with the
+WooCommerce control item first. GATE2_LIST=tier1.txt (or tier1-alt.txt) runs tier 1: plain
+WordPress, no WooCommerce control. STACK=1 keeps every item active together (the function phase
+never deactivates). Every request row carries a class (request_class): operator, login,
+admin-ajax:<action>, editor-save, admin-page, admin-write, rest-read, rest-write or front; the
+report adds a table of the classes.
 
 Every request is recorded as ONE JSON line on stdout, headers only (never a body or a
 cookie), as tests/.../measure394.py does (#424). Every write is read back and classed:
@@ -43,7 +45,7 @@ OUT = sys.stdout
 ROWS = []
 CTX = {}
 RAW = L.req
-TRACK = os.environ.get("TRACK", "I")
+TRACK = os.environ.get("TRACK", "B")
 
 # ---- recording ---------------------------------------------------------------------------
 PERF_KEEP = ("iso", "rt", "rtServed", "boot", "wasm0MiB", "wasm1MiB", "inflates", "inflateKiB", "phpMs")
@@ -179,10 +181,11 @@ def items(path=None, only=None):
 
 
 # ---- session -------------------------------------------------------------------------------
-def login():
+def login(user=None, pw=None):
+    """Log in (the admin from the environment, or the given user) and get a REST nonce."""
     o = L.opener()
     L.req(o, "/wp-login.php")
-    form = {"log": os.environ.get("ADMIN_USER", "admin"), "pwd": os.environ["ADMIN_PASSWORD"], "wp-submit": "Log In",
+    form = {"log": user or os.environ.get("ADMIN_USER", "admin"), "pwd": pw or os.environ["ADMIN_PASSWORD"], "wp-submit": "Log In",
             "redirect_to": "/wp-admin/", "testcookie": "1"}
     if os.environ.get("TURNSTILE_TEST_TOKEN"):
         form["cf-turnstile-response"] = os.environ["TURNSTILE_TEST_TOKEN"]
@@ -244,127 +247,6 @@ def active(o, item):
     return bool(p) and p.get("status") == "active"
 
 
-# ---- install (track I) ---------------------------------------------------------------------
-def ajax_nonce(o, page):
-    r = L.req(o, page)
-    m = re.search(rb'"ajax_nonce":"([a-f0-9]{10})"', r.get("body") or b"")
-    return m.group(1).decode() if m else None
-
-
-def install_wporg(o, item):
-    """wp-admin's own install from wordpress.org: the REST route the plugin directory uses for a
-    plugin, the admin-ajax install-theme action the theme screen uses for a theme."""
-    if item["kind"] == "theme":
-        nonce = ajax_nonce(o, "/wp-admin/theme-install.php")
-        if not nonce:
-            return False, {"via": "ajax install-theme", "why": "no updates nonce on theme-install.php"}
-        r = L.req(o, "/wp-admin/admin-ajax.php", {"action": "install-theme", "slug": item["slug"], "_ajax_nonce": nonce})
-        b = jbody(r) or {}
-        info = {"via": "ajax install-theme", "code": r["code"]}
-        d = b.get("data") if isinstance(b, dict) else None
-        ec = d.get("errorCode") if isinstance(d, dict) else None
-        if isinstance(ec, str) and re.fullmatch(r"[a-z0-9_]{1,64}", ec):
-            info["errorCode"] = ec  # admin-ajax answers 200 with success false and a machine code
-        em = d.get("errorMessage") if isinstance(d, dict) else None
-        if isinstance(em, str):
-            info["errorMessage"] = re.sub(r"<[^>]+>", "", em)[:120]  # WordPress core's own text, short
-        raw = (r.get("body") or b"").strip()
-        if not isinstance(b, dict) and re.fullmatch(rb"-?[0-9]{1,2}", raw or b"x"):
-            info["ajaxAnswer"] = raw.decode()  # admin-ajax's bare -1 (bad nonce) or 0 (no handler)
-        elif not isinstance(b, dict):
-            info["ajaxAnswer"] = "not json (%d bytes)" % len(raw)
-        return ok2xx(r) and b.get("success") is True, info
-    r = L.rest(o, "/wp/v2/plugins", {"slug": item["slug"]}, "POST")
-    return ok2xx(r), {"via": "rest /wp/v2/plugins", "code": r["code"], "error": (jbody(r) or {}).get("code") if not ok2xx(r) else None}
-
-
-def multipart(fields, file_field, filename, content):
-    boundary = "----gate2" + uuid.uuid4().hex
-    parts = []
-    for k, v in fields.items():
-        parts.append(("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n" % (boundary, k, v)).encode())
-    parts.append(("--%s\r\nContent-Disposition: form-data; name=\"%s\"; filename=\"%s\"\r\nContent-Type: application/zip\r\n\r\n"
-                  % (boundary, file_field, filename)).encode() + content + b"\r\n")
-    parts.append(("--%s--\r\n" % boundary).encode())
-    return b"".join(parts), "multipart/form-data; boundary=" + boundary
-
-
-def zip_bytes(item):
-    """The pinned zip from the fetch.sh cache, checked against its SHA-256 (or None)."""
-    import hashlib
-    sub = "themes" if item["kind"] == "theme" else "plugins"
-    z = os.path.join(HERE, "../../spikes/b2-wordpress/build/cache", sub, "%s-%s.zip" % (item["slug"], item["version"]))
-    if not os.path.isfile(z):
-        return None
-    data = open(z, "rb").read()
-    return data if hashlib.sha256(data).hexdigest() == item["sha"] else None
-
-
-def install_upload(o, item, data):
-    theme = item["kind"] == "theme"
-    page = "/wp-admin/theme-install.php?browse=upload" if theme else "/wp-admin/plugin-install.php?tab=upload"
-    r = L.req(o, page)
-    m = re.search(rb'name="_wpnonce" value="([a-f0-9]{10})"', r.get("body") or b"")
-    if not m:
-        return False, {"via": "upload form", "why": "no _wpnonce on the upload page", "code": r["code"]}
-    body, ctype = multipart({"_wpnonce": m.group(1).decode(), "_wp_http_referer": page},
-                            "themezip" if theme else "pluginzip", "%s.zip" % item["slug"], data)
-    action = "upload-theme" if theme else "upload-plugin"
-    r = L.req(o, "/wp-admin/update.php?action=" + action, body, {"Content-Type": ctype}, "POST", 300)
-    done = b"installed successfully" in (r.get("body") or b"")
-    return ok2xx(r) and done, {"via": "upload form", "code": r["code"], "bytes": len(data)}
-
-
-def evict(o):
-    r = L.req(o, "/_evict", b"", None, "POST")
-    return {"evict": r["code"]}
-
-
-def phase_install(o, item, state):
-    slug = item["slug"]
-    if item["kind"] == "control":
-        return
-    if present(o, item):
-        event("step", step="install", ok=None, note="already installed before the run (built in?)")
-        state[slug] = {"installed": True, "before": True}
-    else:
-        ok, info = install_wporg(o, item)
-        changed = present(o, item)
-        write("install", ok, changed, **info)
-        if not changed:
-            data = zip_bytes(item)
-            if data is None:
-                event("step", step="install-upload", ok=None, note="no pinned zip in the cache (run fetch.sh)")
-            else:
-                ok, info = install_upload(o, item, data)
-                changed = present(o, item)
-                write("install", ok, changed, **info)
-        event("step", step="install", ok=changed)
-        state[slug] = {"installed": changed}
-    if state[slug]["installed"]:
-        info = evict(o)
-        # /_evict is a b-dosql (Durable Object) endpoint. On an approach-A site (PHP in the
-        # Worker, MySQL through Hyperdrive) it does not exist: the step is "not on this path",
-        # never a pass or a fail. A 501 means the object could not abort: "could not measure".
-        if info["evict"] in (404, 405):
-            event("step", step="reset", ok=None, note="not on this path (no /_evict)", **info)
-            return
-        if info["evict"] == 501 or not (isinstance(info["evict"], int) and 200 <= info["evict"] < 300):
-            event("step", step="reset", ok=None, note="could not measure: /_evict answered %s" % info["evict"], **info)
-            return
-        after = present(o, item)
-        event("step", step="reset", ok=after, **info)
-        state[slug]["afterReset"] = after
-
-
-def phase_check(o, item, state):
-    if item["kind"] == "control":
-        return
-    was = (state.get(item["slug"]) or {}).get("installed")
-    now = present(o, item)
-    event("step", step="deploy", ok=now if was else None, installedBefore=was, present=now)
-
-
 # ---- function ------------------------------------------------------------------------------
 SCREENS = {
     "woocommerce": ["/wp-admin/edit.php?post_type=product", "/wp-admin/admin.php?page=wc-orders", "/wp-admin/admin.php?page=wc-settings"],
@@ -421,11 +303,11 @@ def form_fields(html):
     return None, None
 
 
-def settings_save(o, item):
+def settings_save(o, item, page=None):
     """Submit the item's own settings form with its values UNCHANGED. Answer: a redirect or a 200
     page without an error. State: the page reads back the same values. A per-plugin marker value
     is the 10-round matrix's job (deferred)."""
-    page = SETTINGS.get(item["slug"], screens_of(item["slug"])[0] if screens_of(item["slug"]) else None)
+    page = page or SETTINGS.get(item["slug"], screens_of(item["slug"])[0] if screens_of(item["slug"]) else None)
     if not page:
         return event("step", step="settings", ok=None, note="no settings page in this pass")
     r = P.admin_get(o, page)
@@ -649,7 +531,6 @@ def phase_function(o, item, state):
 # What each item is predicted to do today (#422, design comment, 2026-11-13). A prediction,
 # never a result; the report prints the measurement next to it.
 PREDICT = {
-    ("I", "*"): "install or reset fails (#407; 2 MiB upload body; admin memory #394)",
     ("B", "elementor"): "absent: the bundle with it is 83.84 MiB, over 64 (#293)",
     ("B", "wordpress-seo"): "absent: the bundle with it is 67.94 MiB, over the 62 gate (#293)",
     ("B", "seo-by-rank-math"): "screens or settings flaky: the store goes to 119 MiB (#279)",
@@ -659,7 +540,7 @@ PREDICT = {
     ("B", "woocommerce"): "screens flaky (#394: dashboard up to 9 of 10 failed)",
 }
 
-ORDER = ["install", "reset", "deploy", "activate", "screen", "settings", "job"]
+ORDER = ["activate", "screen", "settings", "job"]
 
 
 def report(files, logs=None):
@@ -693,6 +574,8 @@ def report(files, logs=None):
             "writeLossHeaders": sum(1 for r in rq if r.get("writeLoss")),
             "resetHeaders": sum(1 for r in rq if r.get("reset")),
             "requests": len(rq),
+            "p50s": sorted(r["s"] for r in rq if isinstance(r.get("s"), (int, float)))[len(rq) // 2] if any(isinstance(r.get("s"), (int, float)) for r in rq) else None,
+            "wasmMax": max((float(r["wasm"]) for r in rq if r.get("wasm") not in (None, "")), default=None),
         })
     classes = {}
     for r in reqs:
@@ -725,37 +608,12 @@ def report(files, logs=None):
     return out
 
 
-def fetch(its):
-    """Download each pinned zip into the build cache and check its SHA-256 (as fetch.sh does,
-    for themes too). Exit 1 on a mismatch; nothing is kept that does not match."""
-    import hashlib, urllib.request
-    bad = 0
-    for it in its:
-        if it["kind"] == "control":
-            continue
-        sub = "themes" if it["kind"] == "theme" else "plugins"
-        d = os.path.join(HERE, "../../spikes/b2-wordpress/build/cache", sub)
-        os.makedirs(d, exist_ok=True)
-        z = os.path.join(d, "%s-%s.zip" % (it["slug"], it["version"]))
-        if not os.path.isfile(z):
-            url = "https://downloads.wordpress.org/%s/%s.%s.zip" % (sub[:-1], it["slug"], it["version"])
-            urllib.request.urlretrieve(url, z + ".part")
-            os.replace(z + ".part", z)
-        if hashlib.sha256(open(z, "rb").read()).hexdigest() != it["sha"]:
-            os.remove(z)
-            print("fetch: %s does not match its pinned sha256; removed" % it["slug"], file=sys.stderr)
-            bad += 1
-    return 1 if bad else 0
-
-
 # ---- main ----------------------------------------------------------------------------------
 def main(argv):
     if not argv:
         print(__doc__, file=sys.stderr)
         return 2
     phase = argv[0]
-    if phase == "fetch":
-        return fetch(items(only=argv[argv.index("--only") + 1].split(",") if "--only" in argv else None))
     if phase == "report":
         files = [a for a in argv[1:] if not a.startswith("--")]
         logs = argv[argv.index("--logs") + 1] if "--logs" in argv else None
@@ -767,7 +625,14 @@ def main(argv):
     state = json.load(open(state_file)) if os.path.isfile(state_file) else {}
     instrument()
     o = login()
-    fn = {"install": phase_install, "check": phase_check, "function": phase_function, "stack-activate": phase_stack_activate}[phase]
+    if phase == "cms":
+        # cms.py imports gate2. Run as a script, this file is __main__, and a plain import would
+        # load a second copy whose CTX the recorder never sees (request rows lost their item and
+        # round on the first live run, pft1a 2026-11-13). One module under both names.
+        sys.modules.setdefault("gate2", sys.modules[__name__])
+        import cms
+        return cms.run(o)
+    fn = {"function": phase_function, "stack-activate": phase_stack_activate}[phase]
     for item in items(only=only):
         CTX.clear()
         CTX.update({"phase": phase, "item": item["slug"], "kind": item["kind"]})

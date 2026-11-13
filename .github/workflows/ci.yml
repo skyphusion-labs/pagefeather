@@ -86,6 +86,8 @@ jobs:
         # tests/plugins/gate2.py against a fake WordPress: the four read-back classes, write-loss, headers-only recording.
         run: |
           python3 -I tests/plugins/gate2_test.py
+          # the CMS phase (#422): editor, media, menus, widgets, site editor or customizer, settings, users, comments
+          python3 -I tests/plugins/cms_test.py
           bash tests/fixtures/tests/theme-unit-test.sh
           # fetch.sh (#457): THEMES, the unpinned-slug refusal, the SHA, link and parent-theme refusals.
           bash tests/plugins/fetch-test.sh
@@ -109,8 +111,6 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/request-mail-hold.test.mjs
       - name: b-dosql bundle file trace, route classes (issue #394 M0)
         run: node --test spikes/b2-wordpress/tests/file-trace.test.mjs
-      - name: b-dosql installed code persists, crash windows and budget (issue #407)
-        run: node --test spikes/b2-wordpress/tests/code-store.test.mjs
       - name: b-dosql OPcache split into warm and boot (issue #394 L1)
         run: python3 -I spikes/b2-wordpress/tests/opcache-split-test.py
       - name: b-dosql runtime guards, raw sockets and PHP messages (issue #452)
@@ -193,6 +193,7 @@ jobs:
           deploy/wfp/tests/wait-build-test.sh
           deploy/wfp/tests/update-all-test.sh
           deploy/wfp/tests/update-inputs-test.sh
+          deploy/wfp/tests/rollback-build-test.sh
           deploy/wfp/tests/build-inputs-test.sh
           deploy/wfp/tests/kv-build-test.sh
           deploy/wfp/tests/config-hash-test.sh

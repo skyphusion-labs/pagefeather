@@ -18,7 +18,7 @@ The 20 most popular plugins on wordpress.org (`browse=popular`, read 2026-11-05)
 
 A step is tried up to 3 times. "pass (n retried)" means n steps needed a second or third try. `tests/plugins/report.py` makes the matrix below from `tests/plugins/results/*.jsonl`.
 
-Plugins must be in the build on every target: a plugin installed from wp-admin does not persist, except on a b-dosql site with `CODE_PERSIST=on` (#407, `deploy/wfp/README.md`) (approach B and A: the in-memory file system; C1, now retired: the container disk; HostlessWP: the bundle made at deploy). Approach B and our A put the 18 plugins in 7 builds (`spikes/b2-wordpress/plugin-suite.sh`): all 18 do not fit under the 64 MiB Worker limit (with Jetpack alone the upload is 63,024 KiB). HostlessWP bundles them all in one Worker (code bundles loaded on first read, 211 to 348 MB packaged).
+Plugins must be in the build on every target. Every site is code-locked, so a plugin is never installed from wp-admin: adding one is a code deploy (#458). A wp-admin install would not persist anyway (approach B and A: the in-memory file system; C1, now retired: the container disk; HostlessWP: the bundle made at deploy). Approach B and our A put the 18 plugins in 7 builds (`spikes/b2-wordpress/plugin-suite.sh`): all 18 do not fit under the 64 MiB Worker limit (with Jetpack alone the upload is 63,024 KiB). HostlessWP bundles them all in one Worker (code bundles loaded on first read, 211 to 348 MB packaged).
 
 ## Matrix
 
@@ -62,16 +62,31 @@ Runs of 2026-11-05. A and HostlessWP on the public MySQL path ([approach-a.md](a
 
 `tests/plugins/gate2.py` tests the Gate 2 list in `tests/plugins/gate2.txt` on the sample store with WooCommerce active. WooCommerce is the control. The Nov 5 suite above used a near-empty site; this harness does not. It runs on a throwaway site only.
 
-- **Two tracks:**
-  - **I**, installed from wp-admin: the harness installs from wordpress.org, and falls back to the upload form with the pinned zip. Each install must survive `/_evict` and a redeploy.
-  - **B**, built in with `PLUGINS=`.
-- **Phases:** `fetch` (the pinned zips), `install`, `check` (after the redeploy), `function` (activate, admin screens, settings save, visible job, deactivate), and `report`.
+- **Plugins and themes are in the build** (`PLUGINS=`, `THEMES=`). Conrad's ruling (2026-11-13): installs and updates are code deploys, so the harness has no wp-admin install phase. The old `install`, `check` and `fetch` phases were removed.
+- **Phases:** `function` (activate, admin screens, settings save, visible job, deactivate), `stack-activate` (tier 1), `cms` (below), and `report`.
 - **Recording:** one JSON line per request, with headers only. Every write is read back and classed `ok/ok`, `fail/fail`, `fail/changed` or `ok/unchanged`. The last two are answer/state disagreements.
 - **write-loss:** counted from `x-write-loss`, and from a Workers Logs export (`report --logs`).
 - **The report:** it prints each item's first failing step next to its prediction.
 - **One SEO plugin per site** (Conrad, 2026-11-13): Yoast and Rank Math are each tested alone. Before the harness activates one, it checks that the other is not active. If the other is active, it records a refusal and runs nothing for that item.
 
 The first use is a one-pass prediction check (the lead's ruling, 2026-11-13). Payments, mail, the stack profile and the 10-round runs are deferred until #293, #407 and the admin memory work (#394, #411) move.
+
+## Gate 2, tier 1: the CMS phase (#422)
+
+"Feels like WordPress" means the standard CMS work in wp-admin works (Conrad, 2026-11-13). `gate2.py cms` (code in `tests/plugins/cms.py`) measures it on the built-in stack, one step per function:
+
+| Function | What the phase does |
+|---|---|
+| Block editor | loads `post-new.php`; makes a draft with blocks; saves it twice (revisions +2); publishes it; the front page shows the last text; loads the editor for the post |
+| Media | uploads a small PNG; reads the file back from its URL; finds it in the library; loads `upload.php`; deletes it |
+| Menus | block theme: a navigation with two links; classic theme: a menu with two items, put in an empty location if there is one; loads `nav-menus.php` |
+| Widgets | classic theme with a widget area: adds a block widget and reads it back; loads `widgets.php`. Otherwise not applicable. |
+| Site editor or Customizer | block theme: loads `site-editor.php`, changes one global style, reads it back, puts it back; classic theme: loads `customize.php`, saves the tagline through the Customizer, reads it back, puts it back |
+| Settings | changes the tagline by REST and puts it back; saves the General settings form unchanged |
+| Users and roles | makes an author; makes it an editor; logs in as it and makes a draft; deletes it (its posts go to the admin) |
+| Comments | a visitor comment from the front (Turnstile test key); approves it; replies as the admin; the front shows both |
+
+Each write is read back and classed as above. `ROUNDS=<n>` repeats the phase (default 1). Everything a round makes carries the round's run id and is deleted at the end of the round. Then the round compares the counts (posts, pages, media, comments, users, menus, navigation, widgets) with the counts before it. A round that leaves a row fails its `cleanup` step. The cleanup tries a delete again after a 5xx answer (up to 3 times, 10 s apart); that is housekeeping, and the measured steps never retry. `CMS_FUNCTIONS="settings,users"` runs only those functions, in that order. Each function ends with a `function` step that holds its result. Tests: `tests/plugins/cms_test.py` (offline, a fake WordPress).
 
 ## Gate 2, tier 1: the standard stack on plain WordPress (#422)
 

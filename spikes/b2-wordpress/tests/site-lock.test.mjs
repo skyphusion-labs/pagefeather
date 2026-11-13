@@ -15,13 +15,15 @@ test('the demo lock is on only for DEMO_LOCK=on', () => {
 	assert.equal(demoLocked(undefined), false);
 });
 
-test('the code lock is on for DEMO_LOCK=on or CODE_LOCK=on, and only those', () => {
-	assert.equal(codeLocked({ DEMO_LOCK: 'on' }), true);
+test('the code lock is on for every site (#458); only CODE_LOCK=off turns it off, never on a demo', () => {
+	assert.equal(codeLocked({}), true, 'a site with no var is locked');
+	assert.equal(codeLocked(undefined), true);
 	assert.equal(codeLocked({ CODE_LOCK: 'on' }), true);
-	assert.equal(codeLocked({}), false);
-	assert.equal(codeLocked({ CODE_LOCK: 'off' }), false);
-	assert.equal(codeLocked({ CODE_LOCK: 'true' }), false);
-	assert.equal(codeLocked(undefined), false);
+	assert.equal(codeLocked({ CODE_LOCK: 'true' }), true, 'any value other than off keeps the lock');
+	assert.equal(codeLocked({ CODE_LOCK: 'OFF' }), true);
+	assert.equal(codeLocked({ CODE_LOCK: 'off' }), false, 'off is the only way out (a local or throwaway test)');
+	assert.equal(codeLocked({ DEMO_LOCK: 'on' }), true);
+	assert.equal(codeLocked({ DEMO_LOCK: 'on', CODE_LOCK: 'off' }), true, 'a demo site is always locked');
 });
 
 test('CODE_LOCK does not turn on the demo lock, so a one-click site keeps its mail', () => {
@@ -37,9 +39,10 @@ test('a one-click site gets the two defines and the notice constant', () => {
 	assert.deepEqual(lockDefines({ CODE_LOCK: 'on' }), [MODS, EDIT, NOTICE]);
 });
 
-test('an unlocked site gets no extra defines', () => {
-	assert.deepEqual(lockDefines({}), []);
-	assert.deepEqual(lockDefines({ DEMO_LOCK: 'off', CODE_LOCK: 'off' }), []);
+test('the default is locked: only CODE_LOCK=off renders no lock defines (#458)', () => {
+	assert.deepEqual(lockDefines({}), [MODS, EDIT, NOTICE], 'a site with no var renders the lock constants (#458)');
+	assert.deepEqual(lockDefines({ DEMO_LOCK: 'off', CODE_LOCK: 'off' }), [], 'only an explicit CODE_LOCK=off renders nothing');
+	assert.deepEqual(lockDefines({ DEMO_LOCK: 'on', CODE_LOCK: 'off' }), [MODS, EDIT], 'a demo keeps its lock');
 });
 
 // index.js cannot be imported under node (it loads php-wasm), so these read its
