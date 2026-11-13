@@ -171,6 +171,14 @@ let lastBootedPhp = null;
 // The admin memory trace of the request now running (#434, php/mem-trace.php): set by the
 // memTrace message at PHP shutdown, read once into the operator-only x-mem-trace header.
 let lastMemTrace = null;
+// The operator's per-request id (#434): x-perf-id, logged on the memory marks and on the reset
+// lines, so a request killed by an isolate reset can be joined to its marks. Operator requests
+// only (a valid spike token), and only a short safe token, so a visitor cannot write into logs.
+const MEM_ID_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+function memIdOf(req, env) {
+	const id = req.headers.get('x-perf-id');
+	return id && MEM_ID_RE.test(id) && perfHeadersAllowed(req, env) ? { id } : {};
+}
 // Performance instrument (docs/perf-dosql.md), PHP object only. Counts do not
 // need the clock: in a Worker or a Durable Object, Date.now() moves only at
 // I/O, so a time measured across synchronous PHP and SQLite work can read 0.
@@ -1196,7 +1204,7 @@ async function handleMessage(raw) {
 	// One trace checkpoint as it happens (#434), so a request killed by an isolate reset still
 	// leaves its marks in Workers Logs. Names and numbers only; mem-trace.php runs only for an
 	// operator request.
-	if (m.memMark) { console.log(JSON.stringify({ m: 'mem-mark', k: m.memMark })); return '1'; }
+	if (m.memMark) { console.log(JSON.stringify({ m: 'mem-mark', ...(typeof m.id === 'string' && MEM_ID_RE.test(m.id) ? { id: m.id } : {}), k: m.memMark })); return '1'; }
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
 	if (m.code) return JSON.stringify(await codeOp(m.code));
 	if (m.email) return JSON.stringify(await emailOp(m.email));
@@ -2884,7 +2892,7 @@ async function toPhpObject(req, env, url, ctx) {
 			return stub.fetch(fwd);
 		},
 		req.method,
-		(e) => console.log(JSON.stringify({ m: 'isolate-reset-retry', kind: classifyObjectError(e), path: url.pathname, error: String(e.message).slice(0, 200) })),
+		(e) => console.log(JSON.stringify({ m: 'isolate-reset-retry', kind: classifyObjectError(e), path: url.pathname, ...memIdOf(req, env), error: String(e.message).slice(0, 200) })),
 	);
 	const retried = res.attempts > 1;
 	if (res.error) {
@@ -2901,7 +2909,7 @@ async function toPhpObject(req, env, url, ctx) {
 		// A storage reset (#398) is a reset too: x-isolate-reset: storage, the same retry and the same
 		// write-loss answer. Other errors are thrown as before (fetchWithMemoryRetry rethrows them).
 		const reset = isResetKind(kind);
-		console.log(JSON.stringify({ m: reset ? 'isolate-reset' : 'overloaded', kind, path: url.pathname, retried, error: String(e.message).slice(0, 200) }));
+		console.log(JSON.stringify({ m: reset ? 'isolate-reset' : 'overloaded', kind, path: url.pathname, retried, ...memIdOf(req, env), error: String(e.message).slice(0, 200) }));
 		// A method that may have written (anything but GET or HEAD) and died in a reset: its earlier
 		// writes may be saved (#350; #398 saw a page create and a delete saved), so no 503 "try
 		// again" and never the dispatcher 502 (write-loss.mjs).

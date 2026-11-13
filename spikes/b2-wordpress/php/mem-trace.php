@@ -37,12 +37,19 @@ function skyphusion_mem_wasm() {
 	return ( is_array( $r ) && isset( $r['wasm'] ) ) ? (int) $r['wasm'] : null;
 }
 
+// The operator's x-perf-id (#434), so the logged marks of a request killed by a reset can be
+// joined to the Worker's reset line. index.js logs it only if it is a short safe token.
+function skyphusion_mem_id() {
+	$id = isset( $_SERVER['HTTP_X_PERF_ID'] ) ? (string) $_SERVER['HTTP_X_PERF_ID'] : '';
+	return preg_match( '/^[A-Za-z0-9_.-]{1,64}$/', $id ) ? $id : null;
+}
+
 function skyphusion_mem_mark( $name ) {
 	$mark = array( $name, memory_get_usage(), memory_get_peak_usage(), skyphusion_mem_wasm(), count( get_included_files() ) );
 	$GLOBALS['skyphusion_mem']['m'][] = $mark;
 	// Each mark is also logged as it happens (index.js memMark, a Workers Logs line), so a request
 	// that the isolate reset kills still shows how far it got and what the heap was.
-	post_message_to_js( json_encode( array( 'memMark' => $mark ) ) );
+	post_message_to_js( json_encode( array( 'memMark' => $mark, 'id' => skyphusion_mem_id() ) ) );
 }
 
 // Checkpoints. Each pair brackets one stretch of the boot: the growth between two marks is
