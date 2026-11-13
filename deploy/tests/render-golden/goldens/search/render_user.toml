@@ -39,6 +39,9 @@ class_name = "PhpRuntime"
 tag = "v1"
 new_sqlite_classes = ["PhpRuntime"]
 
+[observability]
+enabled = false
+
 [ai]
 binding = "AI"
 [[vectorize]]

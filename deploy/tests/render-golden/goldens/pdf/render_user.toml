@@ -38,3 +38,6 @@ class_name = "PhpRuntime"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["PhpRuntime"]
+
+[observability]
+enabled = false
