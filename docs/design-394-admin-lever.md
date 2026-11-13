@@ -88,6 +88,21 @@ M0 makes L2 much cheaper than the #403 estimate:
 - **Cost:** Assets requests are free per the Cloudflare docs (read 2026-11-13). Whether a binding
   fetch from inside a Durable Object is billed is unmeasured: read it on the bill (M5 of #403).
 
+## 5a. Approach a (Hyperdrive MySQL), added 2026-11-13
+
+The Hyperdrive path stays open (Conrad, 2026-11-13).
+- **The same problem:** `index-a.js` imports `index.js`, so every `a` isolate holds the same about
+  44 MiB bundle as data modules, next to its MySQL client.
+- **L1 carries over:** the `a` envs bind `ASSETS`. But `a` is not on WfP, so its asset router serves
+  `build/public` before the Worker runs. The packs need `run_worker_first = ["/_pf/*"]` in the `a`
+  config, and the stranger test (#412).
+- **L2 carries over for reads.** Its write half does not: the stop-and-rerun after a SQL write uses
+  the #60 `_wp_undo` triggers, which exist only in the object's SQLite. On `a`, the equivalent is a
+  request-level MySQL transaction on the request's Hyperdrive connection. That is unbuilt; until it
+  exists, a post-write miss on `a` answers `missUnsafe`.
+- **The budget question is the same isolate question:** the #411 probe measures the isolate, not
+  the object.
+
 ## 6. Estimate
 
 - L1 with the Assets plumbing, the fallback, tests and a 50-round run: 3 days.
