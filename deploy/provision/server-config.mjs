@@ -111,6 +111,15 @@ export function deriveTarget(env, { kind, name, domain }) {
   const kvId = env.WFP_KV_ID;
   if (!kvId) throw new Error('the Worker is missing WFP_KV_ID');
   if (kind === 'wp') {
+    // A workers.dev base (the one-click admin, #414): each site answers on its own
+    // front-door Worker, wp-<name>.<subdomain>.workers.dev. No zone, no DNS record.
+    // The admin builds this base from the account's own workers.dev subdomain.
+    if (base.workersDev === true) {
+      if (typeof base.subdomain !== 'string' || !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(base.subdomain)) {
+        throw new Error(`base "${domain}" is a workers.dev base with no valid subdomain`);
+      }
+      return { kind, name, script: `site-${name}`, hostname: `wp-${name}.${base.subdomain}.workers.dev`, workersDev: true, namespace, kvId };
+    }
     if (!base.saasZoneId) throw new Error(`base "${domain}" has no saasZoneId`);
     return { kind, name, script: `site-${name}`, hostname: `${name}.${domain}`, saasZoneId: base.saasZoneId, namespace, kvId };
   }
@@ -170,7 +179,7 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
     // async-email-queue descriptors provision their per-site backing resource on the
     // HOSTED provisioning path too. Without resourceCreateOps here, the OC_KV /
     // EMAIL_QUEUE bindings would deploy with no namespace / queue behind them.
-    const bdosqlOpts = { mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS, mailFrom: `wordpress@${domain}`, mailFromName: name, demo: demo === true, codeLock: codeLock === true };
+    const bdosqlOpts = { mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS, mailFrom: target.workersDev ? undefined : `wordpress@${domain}`, mailFromName: name, demo: demo === true, codeLock: codeLock === true };
     return {
       ...common, kind: 'wp', mainModule: env.WP_MAIN || 'index.js',
       hostname: target.hostname,
