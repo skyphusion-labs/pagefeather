@@ -41,7 +41,7 @@ const DOCROOT = '/wordpress';
 // the cost of JS memory. Override through PHP_INI.
 const INI_DEFAULTS = {};
 // WebAssembly memory never shrinks. Past this, boot a fresh runtime for the next request.
-// OPcache shared memory (32 MB) is part of it. Measured 2026-11-04 on Paid:
+// OPcache shared memory (48 MB since #394) is part of it. Measured 2026-11-04 on Paid:
 // 81 MiB after the first page with OPcache on.
 const RECYCLE_WASM_BYTES = 100 * 1024 * 1024;
 let ENV;
@@ -1092,8 +1092,17 @@ async function boot(origin) {
 	//   file looked new.
 	// - validate_timestamps=0: scripts never change within a deploy, and the
 	//   shipped file cache is older than the files unzipped at boot.
-	// - shared memory (24 MB) for warm requests, the file cache (shipped by
-	//   opcache.sh) for a cold isolate. Warm page locally: 220 ms -> 100 ms.
+	// - shared memory for warm requests, the file cache (shipped by opcache.sh)
+	//   for a cold isolate. Warm page locally: 220 ms -> 100 ms.
+	// - memory_consumption 48 (#394), was 32. At 32 the shared memory was FULL on
+	//   a WooCommerce store (2,584 bytes free, 776 scripts), so every warm request
+	//   reloaded about 700 scripts from the file cache (21.3 MiB inflated). On the
+	//   2,609-product sample store (pf394a, 2026-11-13, one run each, same build):
+	//   32: 69 of 75 front GETs booted a new isolate, WASM 99 MiB, p50 about 4.4 s;
+	//   48: 11 of 75, WASM 92 MiB, home and product p50 0.85 to 1.5 s;
+	//   52: 42 of 75, WASM 98 MiB. WASM grows in steps, so the size is not a dial:
+	//   locally 44 and 56 both landed at 104 MiB, over RECYCLE_WASM_BYTES. Change
+	//   it only with measure394.py on the sample store; PHP_INI overrides it per site.
 	// - blacklist /internal/eval.php (#294): php.run({ code }) writes its code to that ONE
 	//   path on every call, so it is the one script that DOES change within a deploy. With
 	//   validate_timestamps=0 OPcache kept the first compiled copy, and every later php.run
@@ -1109,7 +1118,7 @@ async function boot(origin) {
 		'opcache.file_update_protection': '0',
 		'opcache.validate_timestamps': '0',
 		'opcache.file_cache_only': '0',
-		'opcache.memory_consumption': '32',
+		'opcache.memory_consumption': '48',
 		'opcache.interned_strings_buffer': '4',
 		'opcache.max_accelerated_files': '4000',
 	};
