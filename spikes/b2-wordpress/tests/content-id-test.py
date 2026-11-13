@@ -47,6 +47,19 @@ with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
     check("a changed file size (a new plugin version) gives a new id", m.content_id(a, env) != ia)
     check("no content input prints nothing (a plain build keeps its id)", m.content_id(a, {}) == "")
     check("PLUGINS alone is a content input", m.content_id(a, {"PLUGINS": "wordpress-seo"}).startswith("c"))
+    # THEMES, SUITE and THEME_SUITE (#457): hashed only when set, so the ids of existing builds do not move.
+    check("THEMES alone is a content input", m.content_id(a, {"THEMES": "hello-elementor"}).startswith("c"))
+    check("a changed THEMES gives a new id", m.content_id(a, {**env, "THEMES": "astra"}) != m.content_id(a, {**env, "THEMES": "hello-elementor"}))
+    check("a changed SUITE gives a new id", m.content_id(a, {**env, "SUITE": "gate2-build.txt"}) != m.content_id(a, env))
+    check("a changed THEME_SUITE gives a new id", m.content_id(a, {**env, "THEME_SUITE": "x.txt"}) != m.content_id(a, env))
+    check("the new inputs, when empty, leave an existing id as it was", m.content_id(a, {**env, "THEMES": "", "SUITE": "", "THEME_SUITE": " "}) == m.content_id(a, env))
+
+# The ids of builds made before #457 do not move (#457 hashes THEMES, SUITE and THEME_SUITE only when
+# set). c634f45b1 is what content-id.py at main 3aa3847 (before #457) printed for this tree and input.
+with tempfile.TemporaryDirectory() as fixed:
+    tree(fixed, {"plugins/woocommerce/woocommerce.php": b"x" * 10, "themes/twentytwentyfive/style.css": b"z"})
+    check("a build with none of the new inputs keeps its pre-#457 id", m.content_id(fixed, {"PLUGINS": "woocommerce"}) == "c634f45b1")
+    check("  and with them set but empty", m.content_id(fixed, {"PLUGINS": "woocommerce", "THEMES": "", "SUITE": "", "THEME_SUITE": ""}) == "c634f45b1")
 
 # The static files (#385 follow-up): build.sh moves every .js, image, most .css and the .mo/.po of
 # wp-content into build/public (Workers static assets) BEFORE the id is made. An id over the PHP tree

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """The recorded build inputs of a deploy/wfp site (#379).
 
-A site's build inputs (PLUGINS, IMPORT_CONTENT with IMPORT_THEMES, IMPORT_PLUGINS and
-IMPORT_MU_PLUGINS, WOO_ACTIVE) used to live only in the environment of the run that built it.
+A site's build inputs (PLUGINS, THEMES, IMPORT_CONTENT with IMPORT_THEMES, IMPORT_PLUGINS and
+IMPORT_MU_PLUGINS, WOO_ACTIVE, and the pin lists SUITE and THEME_SUITE) used to live only in the
+environment of the run that built it.
 On 2026-11-12 an update without them shipped the live ggc.sh without its plugins and
 mu-plugins. Now a successful `site update` records them in the site's own media bucket, which
 is private outside uploads/ (the Worker serves only /wp-content/uploads/ from R2), like
@@ -40,7 +41,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import snapshot  # noqa: E402
 
 RECORD = "_build/inputs.json"
-LISTS = ("PLUGINS", "IMPORT_THEMES", "IMPORT_PLUGINS", "IMPORT_MU_PLUGINS")
+LISTS = ("PLUGINS", "THEMES", "IMPORT_THEMES", "IMPORT_PLUGINS", "IMPORT_MU_PLUGINS")
+# The pin lists fetch.sh reads (#457). Without them a later update read the default list, and a slug
+# pinned only in another list was skipped. Empty means the default list.
+SCALARS = ("WOO_ACTIVE", "SUITE", "THEME_SUITE")
 KEEP = "sqlite-database-integration"  # deploy/import/content.sh: the build copy stays
 
 
@@ -50,7 +54,8 @@ def norm(v):
 
 def env_inputs(env=os.environ):
     d = {k: norm(env.get(k)) for k in LISTS}
-    d["WOO_ACTIVE"] = str(env.get("WOO_ACTIVE", "") or "")
+    for k in SCALARS:
+        d[k] = str(env.get(k, "") or "")
     return d
 
 
@@ -157,7 +162,7 @@ def main(argv):
         n = safe_extract(body, argv[4]); print("extracted %d entries" % n); return 0
     if cmd == "exports":
         rec = json.load(open(argv[2])); i = rec.get("inputs") or {}
-        lines = ["%s=%s" % (k, shlex.quote(i.get(k, ""))) for k in LISTS + ("WOO_ACTIVE",)]
+        lines = ["%s=%s" % (k, shlex.quote(i.get(k, ""))) for k in LISTS + SCALARS]
         if rec.get("tree"):
             lines.append("IMPORT_CONTENT=%s" % shlex.quote(argv[3]))
         print("\n".join(lines)); return 0
