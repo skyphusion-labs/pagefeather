@@ -28,7 +28,7 @@ A release is a version of this repository, `vX.Y.Z`. The version is in the file 
 4. Publishing starts `.github/workflows/release-bundle.yml` (job `publish`). Check that it is green. It:
    - refuses a tag that is not `vX.Y.Z`, a tag that is not on `main`, and a tag that does not match `VERSION`;
    - refuses a release that already has assets (assets are never replaced, see below);
-   - builds the bundle with `deploy/release/build-bundle.sh`, uploads it, then downloads it again and checks every file.
+   - builds both bundles with `deploy/release/build-bundle.sh` (the b-dosql bundle, then `BUNDLE_ENGINE=a` for the approach-A bundle of the Hyperdrive store, #431), uploads them in one upload, then downloads them again and checks every file of each.
 
 5. Read the Release page. It must list `manifest.json`, `SHA256SUMS`, `wordpress-static.tar.gz` and the modules (`index.js` and the `.wasm` and `.zip` files).
 
