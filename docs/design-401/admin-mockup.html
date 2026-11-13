@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pagefeather site manager (mockup)</title>
+<!--
+  Static mockup for issue #401. Vanilla HTML and CSS, no script, no build.
+  Each screen is a section; the left menu switches screens with :target.
+  The styles are written here to match the wp-admin look. No WordPress file
+  is copied. Nothing on a screen names an edge concept.
+-->
+<style>
+  :root {
+    --bar: #1d2327; --menu: #1d2327; --menu-text: #f0f0f1; --menu-hover: #2c3338;
+    --current: #2271b1; --page: #f0f0f1; --card: #fff; --line: #c3c4c7;
+    --text: #1d2327; --muted: #50575e; --link: #2271b1; --ok: #00a32a;
+    --warn: #dba617; --bad: #d63638;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--page); color: var(--text);
+    font: 13px/1.4em -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+  }
+  a { color: var(--link); }
+  .adminbar { position: fixed; top: 0; left: 0; right: 0; height: 32px; background: var(--bar); color: var(--menu-text); display: flex; align-items: center; padding: 0 12px; gap: 16px; z-index: 2; }
+  .adminbar b { font-weight: 600; }
+  .adminbar .right { margin-left: auto; }
+  .menu { position: fixed; top: 32px; bottom: 0; left: 0; width: 160px; background: var(--menu); padding-top: 12px; }
+  .menu a { display: block; color: var(--menu-text); text-decoration: none; padding: 8px 12px; font-size: 14px; }
+  .menu a:hover { background: var(--menu-hover); color: #72aee6; }
+  .menu a.sub { padding-left: 24px; font-size: 13px; }
+  .wrap { margin-left: 160px; padding: 52px 20px 40px; max-width: 1100px; }
+  h1 { font-size: 23px; font-weight: 400; margin: 0 0 16px; }
+  h1 .page-title-action { margin-left: 8px; font-size: 13px; padding: 4px 8px; border: 1px solid var(--link); border-radius: 3px; text-decoration: none; vertical-align: middle; }
+  .screen { display: none; }
+  .screen:target { display: block; }
+  /* The first screen shows when no other is targeted. */
+  .screen.default { display: block; }
+  .screen:target ~ .screen.default { display: none; }
+  .notice { background: var(--card); border-left: 4px solid var(--current); box-shadow: 0 1px 1px rgba(0,0,0,.04); padding: 8px 12px; margin: 0 0 16px; }
+  .notice-warning { border-left-color: var(--warn); }
+  .notice-success { border-left-color: var(--ok); }
+  .card { background: var(--card); border: 1px solid var(--line); padding: 16px 20px; margin-bottom: 16px; }
+  .button { display: inline-block; padding: 0 10px; min-height: 30px; line-height: 28px; border: 1px solid var(--link); border-radius: 3px; background: #f6f7f7; color: var(--link); text-decoration: none; font-size: 13px; cursor: pointer; }
+  .button-primary { background: var(--current); color: #fff; }
+  .button-hero { min-height: 46px; line-height: 44px; padding: 0 36px; font-size: 14px; }
+  table.form-table { border-collapse: collapse; width: 100%; }
+  .form-table th { text-align: left; vertical-align: top; width: 200px; padding: 20px 10px 20px 0; font-weight: 600; }
+  .form-table td { padding: 15px 10px; }
+  .form-table input[type=text], .form-table input[type=email], .form-table input[type=password] { width: 25em; max-width: 100%; padding: 0 8px; min-height: 30px; border: 1px solid #8c8f94; border-radius: 4px; }
+  .description { color: var(--muted); font-style: normal; margin: 4px 0 0; }
+  .strength { display: inline-block; margin-top: 6px; padding: 3px 8px; background: #c1e1b9; border: 1px solid #83c373; }
+  table.list { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); }
+  .list th, .list td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #f0f0f1; }
+  .list thead th { border-bottom: 1px solid var(--line); font-weight: 400; }
+  .list .row-actions { font-size: 12px; color: var(--muted); padding-top: 2px; }
+  .health { list-style: none; margin: 0; padding: 0; }
+  .health li { background: var(--card); border: 1px solid var(--line); margin-bottom: -1px; padding: 12px 16px; display: flex; gap: 12px; align-items: flex-start; }
+  .badge { flex: none; width: 76px; text-align: center; font-size: 12px; padding: 2px 0; border-radius: 3px; color: #fff; }
+  .badge.ok { background: var(--ok); } .badge.todo { background: var(--bad); }
+  .health p { margin: 4px 0 8px; }
+  .steps { list-style: none; padding: 0; }
+  .steps li { padding: 4px 0; }
+  .steps .done::before { content: "\2713  "; color: var(--ok); }
+  .steps .now::before { content: "\2026  "; color: var(--muted); }
+  .install { max-width: 620px; margin: 0 auto; background: var(--card); border: 1px solid var(--line); padding: 24px 32px; }
+  .install h1 { font-size: 24px; }
+  @media (max-width: 782px) {
+    .menu { position: static; width: auto; display: flex; flex-wrap: wrap; padding: 44px 8px 4px; }
+    .menu a.sub { padding-left: 12px; }
+    .wrap { margin-left: 0; padding: 16px; }
+    .form-table th, .form-table td { display: block; width: auto; padding: 8px 0; }
+    .list .hide-sm { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="adminbar"><b>Pagefeather</b><span>My Sites</span><span class="right">Howdy, owner@example.com</span></div>
+<nav class="menu" aria-label="Main menu">
+  <a href="#sites">Sites</a>
+  <a class="sub" href="#sites">All Sites</a>
+  <a class="sub" href="#add">Add New Site</a>
+  <a href="#import">Import</a>
+  <a href="#health">Site Health</a>
+  <a class="sub" href="#creating">(Creating)</a>
+  <a class="sub" href="#success">(Success)</a>
+</nav>
+<main class="wrap">
+
+<section id="sites" class="screen">
+  <h1>Sites <a class="page-title-action" href="#add">Add New Site</a></h1>
+  <table class="list">
+    <thead><tr><th>Name</th><th>Address</th><th class="hide-sm">Type</th><th class="hide-sm">Created</th></tr></thead>
+    <tbody>
+      <tr><td><b><a href="#sites">shop</a></b><div class="row-actions"><a href="#sites">Log In</a> | <a href="#sites">Visit</a> | <a href="#import">Import content</a></div></td>
+          <td>wp-shop.example.workers.dev</td><td class="hide-sm">Store</td><td class="hide-sm">2026/11/13</td></tr>
+      <tr><td><b><a href="#sites">blog</a></b><div class="row-actions"><a href="#sites">Log In</a> | <a href="#sites">Visit</a> | <a href="#import">Import content</a></div></td>
+          <td>wp-blog.example.workers.dev</td><td class="hide-sm">Site</td><td class="hide-sm">2026/11/12</td></tr>
+    </tbody>
+  </table>
+  <div class="notice notice-warning" style="margin-top:16px"><p>Email from these sites is off until you connect a domain.</p></div>
+</section>
+
+<section id="add" class="screen">
+  <h1>Add New Site</h1>
+  <p>Make a new WordPress site. It is ready in about a minute.</p>
+  <form action="#creating">
+  <table class="form-table" role="presentation">
+    <tr><th><label for="name">Site name</label></th>
+        <td><input id="name" type="text" value="shop"><p class="description">Lower case letters, numbers and hyphens.</p></td></tr>
+    <tr><th>Site address</th>
+        <td><code>https://wp-shop.example.workers.dev</code><p class="description">Use your own domain: coming later.</p></td></tr>
+    <tr><th><label for="title">Site title</label></th>
+        <td><input id="title" type="text" value="My Shop"></td></tr>
+    <tr><th><label for="user">Username</label></th>
+        <td><input id="user" type="text" value="owner"><p class="description">Usernames can have only letters, numbers, spaces, underscores, hyphens, periods and the @ symbol.</p></td></tr>
+    <tr><th><label for="pw">Password</label></th>
+        <td><input id="pw" type="password" value="example-strong-password"><br><span class="strength">Strong</span><p class="description"><b>Important:</b> You will need this password to log in. Keep it in a safe place.</p></td></tr>
+    <tr><th><label for="email">Your email</label></th>
+        <td><input id="email" type="email" value="owner@example.com"><p class="description">Double-check your email address before you continue.</p></td></tr>
+    <tr><th>Store</th>
+        <td><label><input type="checkbox" checked> This site is a store (WooCommerce)</label></td></tr>
+    <tr><th>Search engine visibility</th>
+        <td><label><input type="checkbox"> Discourage search engines from indexing this site</label><p class="description">It is up to search engines to honor this request.</p></td></tr>
+  </table>
+  <p><a class="button button-primary button-hero" href="#creating">Add New Site</a></p>
+  </form>
+</section>
+
+<section id="creating" class="screen">
+  <h1>Creating your site</h1>
+  <div class="card">
+    <p>This can take a minute. Please do not leave this page.</p>
+    <ul class="steps">
+      <li class="done">Making storage</li>
+      <li class="done">Copying WordPress</li>
+      <li class="now">Installing WordPress</li>
+      <li>Turning on WooCommerce</li>
+    </ul>
+  </div>
+</section>
+
+<section id="success" class="screen">
+  <div class="install">
+    <h1>Success!</h1>
+    <p>WordPress has been installed. Thank you, and enjoy!</p>
+    <table class="form-table" role="presentation">
+      <tr><th>Username</th><td>owner</td></tr>
+      <tr><th>Password</th><td><i>Your chosen password.</i></td></tr>
+      <tr><th>Address</th><td>https://wp-shop.example.workers.dev</td></tr>
+    </table>
+    <p><a class="button button-primary button-hero" href="#sites">Log In</a></p>
+  </div>
+</section>
+
+<section id="import" class="screen">
+  <h1>Import</h1>
+  <div class="card">
+    <h2>Move content from another WordPress site</h2>
+    <ol>
+      <li>On your old site, go to <b>Tools &gt; Export</b>. Choose <b>All content</b>. Select <b>Download Export File</b>.</li>
+      <li>Log in to your new site. Go to <b>Tools &gt; Import &gt; WordPress</b>. Select <b>Run Importer</b>.</li>
+      <li>Upload the file. Choose <b>Download and import file attachments</b>. Keep your old site online until the import ends, so the images can be copied.</li>
+    </ol>
+    <p><a class="button button-primary" href="#sites">Log in to shop and import</a></p>
+  </div>
+  <div class="card">
+    <h2>What comes across</h2>
+    <p>Posts, pages, comments, menus, categories, tags and images.</p>
+    <h2>What does not come across</h2>
+    <p>Your theme, your plugins, your settings and your users' passwords. Authors are added, and they set a new password.</p>
+  </div>
+</section>
+
+<section id="health" class="screen default">
+  <h1>Site Health</h1>
+  <div class="notice"><p>Finish these steps once. Then you can add sites.</p></div>
+  <ul class="health">
+    <li><span class="badge ok">Done</span><div><b>Workers for Platforms is on</b><p>Your sites run on this Cloudflare plan. It costs $25 a month, billed by Cloudflare to your own account.</p></div></li>
+    <li><span class="badge todo">To do</span><div><b>Turn on sign-in protection</b>
+      <p>Only you can open your site manager. Cloudflare checks your email before it lets anyone in. Type a team name (your business name is fine). Choose the <b>Free</b> plan. Cloudflare asks for a card, but the Free plan costs nothing.</p>
+      <a class="button button-primary" href="#health">Open Zero Trust in Cloudflare</a></div></li>
+    <li><span class="badge ok">Done</span><div><b>The key works</b><p>The site manager can make sites in your Cloudflare account.</p></div></li>
+    <li><span class="badge todo">To do</span><div><b>WordPress files are ready</b><p>Get the WordPress files for your sites. This is done once, and checked before it is used.</p>
+      <a class="button" href="#health">Get WordPress files</a></div></li>
+  </ul>
+</section>
+
+</main>
+</body>
+</html>

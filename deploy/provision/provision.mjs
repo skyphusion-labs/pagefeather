@@ -125,7 +125,9 @@ async function provisionNamespaceSite(ctx, cfg) {
   });
   steps.push({ deployed: script, ns: cfg.namespace, sqliteClasses });
   const entry = {
-    script, kind: cfg.kind, outbound: true, ...(cfg.limits || {}),
+    // outbound: false (the one-click admin, #414) routes the site without an
+    // outbound Worker, which that deployment does not have. Default: through it.
+    script, kind: cfg.kind, outbound: cfg.outbound !== false, ...(cfg.limits || {}),
     // Demo lane (#182 Path B): stamp everything the reaper needs to tear this
     // site down fully (script, bucket, zone) plus the expiry it reaps on.
     ...(cfg.demo ? { demo: true, expiresAt: cfg.expiresAt, name: cfg.name, mediaBucket: cfg.buckets.media, saasZoneId: cfg.saasZoneId } : {}),

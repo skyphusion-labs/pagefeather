@@ -1,0 +1,121 @@
+name: deploy-oneclick
+
+# Deploys the one-click site manager (deploy/oneclick, #414) to workers.dev on OUR account, and
+# puts Cloudflare Access in front of it through the API (#419). Deploys go only through Actions,
+# as infrastructure as code: no dashboard step. The owner path is the Deploy to Cloudflare button
+# (#416); this workflow is ours only.
+#
+# Manual dispatch from main only. In order:
+#   1. the tests (the site manager and these live steps);
+#   2. the dispatch namespace and the R2 bucket of deploy/oneclick/wrangler.toml exist (made if missing);
+#   3. the deploy, with the pinned Wrangler (deploy/wr). PAGEFEATHER_KEY and ADMIN_EMAIL go in the
+#      SAME upload (--secrets-file), so the Worker never runs without them;
+#   4. the Access application for this Worker exists and allows only ADMIN_EMAIL (made if missing;
+#      a different policy FAILS the run and is never overwritten);
+#   5. the stranger check: unauthenticated requests must be sent to the Access login. The site
+#      manager answers 403 itself with no identity, so only an Access redirect passes.
+# Between a FIRST deploy and step 4 the Worker is up without Access. It refuses every request
+# that has no Access identity (deploy/oneclick/auth.mjs), so that window shows nothing.
+#
+# Secrets (environment production), one per function:
+#   ONECLICK_DEPLOY_TOKEN  deploy token: Workers Scripts edit, Workers R2 Storage edit,
+#                          Access: Apps and Policies edit, Account Settings read. It never
+#                          reaches the Worker. (Dispatch namespaces come under Workers Scripts:
+#                          there is no Workers for Platforms permission group; measured by the
+#                          lead 2026-11-13, see deploy/provision/HARDENING.md.)
+#   PAGEFEATHER_KEY        the site manager key (deploy/provision/HARDENING.md,
+#                          "The one-click site manager key").
+#   ONECLICK_ADMIN_EMAIL   the owner's email. It is a Worker SECRET (ADMIN_EMAIL), as in the
+#                          button layout (deploy/oneclick/.dev.vars.example), and the Access policy's
+#                          one allowed email.
+#   CLOUDFLARE_ACCOUNT_ID  the account.
+# Repo variables: ONECLICK_BUNDLE_VERSION and ONECLICK_BUNDLE_MANIFEST_SHA256 (the WordPress
+# release and its manifest.json sha256; empty = none yet).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-oneclick
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      ADMIN_EMAIL: ${{ secrets.ONECLICK_ADMIN_EMAIL }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Only main, and only a commit on origin/main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          [ "$REF" = "refs/heads/main" ] || { echo "::error::deploy runs only from main, not $REF"; exit 1; }
+          git fetch --no-tags origin main
+          head="$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$head" origin/main || { echo "::error::$head is not on origin/main"; exit 1; }
+          echo "deploying $head from main"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Tests
+        run: |
+          set -euo pipefail
+          node deploy/oneclick/tests/admin-test.mjs
+          node deploy/oneclick/tests/button-test.mjs
+          bash deploy/oneclick/tests/dryrun-test.sh
+          node deploy/oneclick-live/tests/live-test.mjs
+          bash deploy/tests/wrangler-pin-test.sh
+
+      - name: The owner email is set
+        run: |
+          set -euo pipefail
+          [[ "$ADMIN_EMAIL" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] || { echo "::error::the ONECLICK_ADMIN_EMAIL secret is not set to an email address"; exit 1; }
+          echo "owner email: set"
+
+      - name: The dispatch namespace and the R2 bucket exist
+        env:
+          CF_TOKEN: ${{ secrets.ONECLICK_DEPLOY_TOKEN }}
+        run: node deploy/oneclick-live/live.mjs prepare
+
+      - name: Deploy, with the key and the owner email in the same upload
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.ONECLICK_DEPLOY_TOKEN }}
+          PAGEFEATHER_KEY: ${{ secrets.PAGEFEATHER_KEY }}
+          BUNDLE_VERSION: ${{ vars.ONECLICK_BUNDLE_VERSION }}
+          BUNDLE_MANIFEST_SHA256: ${{ vars.ONECLICK_BUNDLE_MANIFEST_SHA256 }}
+        run: |
+          set -euo pipefail
+          [ -n "${PAGEFEATHER_KEY:+SET}" ] || { echo "::error::the PAGEFEATHER_KEY secret is not set"; exit 1; }
+          sf="$RUNNER_TEMP/oneclick-secrets.json"
+          trap 'rm -f "$sf"' EXIT
+          umask 077
+          # Both secrets go from the environment into a mode 600 file, never onto a command line.
+          node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ PAGEFEATHER_KEY: process.env.PAGEFEATHER_KEY, ADMIN_EMAIL: process.env.ADMIN_EMAIL }), { mode: 0o600 })' "$sf"
+          vars=()
+          [ -z "$BUNDLE_VERSION" ] || vars+=(--var "BUNDLE_VERSION:$BUNDLE_VERSION")
+          [ -z "$BUNDLE_MANIFEST_SHA256" ] || vars+=(--var "BUNDLE_MANIFEST_SHA256:$BUNDLE_MANIFEST_SHA256")
+          cd deploy/oneclick
+          ../wr deploy --secrets-file "$sf" ${vars[@]+"${vars[@]}"}
+
+      - name: The Access application allows only the owner
+        env:
+          CF_TOKEN: ${{ secrets.ONECLICK_DEPLOY_TOKEN }}
+        run: node deploy/oneclick-live/live.mjs access
+
+      - name: Stranger check (no sign-in must reach the Worker)
+        env:
+          CF_TOKEN: ${{ secrets.ONECLICK_DEPLOY_TOKEN }}
+        run: node deploy/oneclick-live/live.mjs stranger

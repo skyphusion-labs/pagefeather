@@ -124,5 +124,31 @@ ok "any other OBSERVABILITY value fails the render" "$(OBSERVABILITY=yes render_
 ok "render_user has no [ai] or [[vectorize]] by default" "$(render_user one https://wp-one.sub.workers.dev | grep -cE '^\[ai\]|^\[\[vectorize\]\]' | grep -qx 0 && echo 1 || echo 0)"
 ok "WP_VECTORIZE_SEARCH=on renders AI and SEARCH_INDEX on wp-wfp-one-search" "$(WP_VECTORIZE_SEARCH=on render_user one https://wp-one.sub.workers.dev | tr '\n' ' ' | grep -q '\[ai\] binding = "AI" \[\[vectorize\]\] binding = "SEARCH_INDEX" index_name = "wp-wfp-one-search"' && echo 1 || echo 0)"
 ok "WP_VECTORIZE_SEARCH=off renders neither" "$(WP_VECTORIZE_SEARCH=off render_user one https://wp-one.sub.workers.dev | grep -cE '^\[ai\]|^\[\[vectorize\]\]' | grep -qx 0 && echo 1 || echo 0)"
+# PHP_INI (#394): a site rendered with it gets the var as compact sorted JSON; one without gets none.
+phpini() { "$PY" -c 'import json, sys, tomllib; c = tomllib.loads(sys.stdin.read()); print(json.dumps(c["vars"].get("PHP_INI")))'; }
+ok "no PHP_INI var without PHP_INI" "$(env -u PHP_INI bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | phpini | grep -qx 'null' && echo 1 || echo 0)"
+ok "PHP_INI renders as one var, compact and sorted" "$(PHP_INI='{"opcache.memory_consumption": "48", "memory_limit": 256}' render_user one https://wp-one.sub.workers.dev | "$PY" -c 'import json, sys, tomllib; v = tomllib.loads(sys.stdin.read())["vars"]["PHP_INI"]; print(int(" " not in v and v.index("memory_limit") < v.index("opcache") and json.loads(v) == dict([("memory_limit", 256), ("opcache.memory_consumption", "48")])))')"
+ok "PHP_INI with Turnstile: both render" "$(PHP_INI='{"opcache.memory_consumption":"52"}' TURNSTILE_SITEKEY=1x00000000000000000000AA render_user one https://wp-one.sub.workers.dev | "$PY" -c 'import sys, tomllib; v = tomllib.loads(sys.stdin.read())["vars"]; print(int(v["PHP_INI"] == "{\"opcache.memory_consumption\":\"52\"}" and v["TURNSTILE_SITEKEY"] == "1x00000000000000000000AA"))')"
+for bad in 'not json' '[]' '{}' '"x"' '{"a b":"1"}' '{"opcache.x":true}' '{"opcache.x":1.5}' '{"opcache.x":null}' "{\"x\":\"it's\"}" '{"x":"a\"b"}' '{"x":"a\\b"}' '{"x":"a\nb"}'; do
+  ok "PHP_INI refused: $bad" "$(PHP_INI=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"
+done
+# CODE_PERSIST (#407): on only with a budget; never a default budget.
+codevars() { "$PY" -c 'import json, sys, tomllib; v = tomllib.loads(sys.stdin.read())["vars"]; print(json.dumps([v.get("CODE_PERSIST"), v.get("CODE_BUDGET_MB")]))'; }
+ok "no CODE_PERSIST vars by default" "$(env -u CODE_PERSIST -u CODE_BUDGET_MB bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | codevars | grep -qx '\[null, null\]' && echo 1 || echo 0)"
+ok "CODE_PERSIST=on with a budget renders both" "$(CODE_PERSIST=on CODE_BUDGET_MB=8 render_user one https://wp-one.sub.workers.dev | codevars | grep -qx '\["on", "8"\]' && echo 1 || echo 0)"
+ok "CODE_PERSIST=on without a budget fails the render" "$(env -u CODE_BUDGET_MB CODE_PERSIST=on bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" >/dev/null 2>&1 && echo 0 || echo 1)"
+ok "a budget without CODE_PERSIST fails the render" "$(env -u CODE_PERSIST CODE_BUDGET_MB=8 bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" >/dev/null 2>&1 && echo 0 || echo 1)"
+for bad in yes ON 1; do ok "CODE_PERSIST=$bad fails the render" "$(CODE_PERSIST=$bad CODE_BUDGET_MB=8 render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
+for bad in lots -1 8MB '8 ' 12345; do ok "CODE_BUDGET_MB='$bad' fails the render" "$(CODE_PERSIST=on CODE_BUDGET_MB="$bad" render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
+# PHP_RECYCLE (#394 E1): only "off", only when asked.
+recyc() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["vars"].get("PHP_RECYCLE")))'; }
+ok "no PHP_RECYCLE var by default" "$(env -u PHP_RECYCLE bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | recyc | grep -qx 'null' && echo 1 || echo 0)"
+ok "PHP_RECYCLE=off renders it" "$(PHP_RECYCLE=off render_user one https://wp-one.sub.workers.dev | recyc | grep -qx '"off"' && echo 1 || echo 0)"
+for bad in on yes OFF 0; do ok "PHP_RECYCLE=$bad fails the render" "$(PHP_RECYCLE=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
+# OPCACHE_SPLIT (#394 L1): the ASSETS binding and /_pf/ first only on a split build.
+assets() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["assets"], sort_keys=True))'; }
+ok "unsplit: [assets] is the directory only" "$(env -u OPCACHE_SPLIT bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | assets | grep -qx '{"directory": "build/public"}' && echo 1 || echo 0)"
+ok "OPCACHE_SPLIT=1: the ASSETS binding and run_worker_first /_pf/*" "$(OPCACHE_SPLIT=1 render_user one https://wp-one.sub.workers.dev | assets | grep -qx '{"binding": "ASSETS", "directory": "build/public", "run_worker_first": \["/_pf/\*"\]}' && echo 1 || echo 0)"
+ok "OPCACHE_SPLIT=2 fails the render" "$(OPCACHE_SPLIT=2 render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"
 echo "$fails failing check(s)"
 exit $fails

@@ -8,6 +8,10 @@
     { "id": "mail", "site": "letters", "origin": "https://letters.example.com", "env": { "MAIL_FROM": "shop@example.com", "MAIL_FROM_NAME": "Test Shop" } },
     { "id": "search", "site": "find", "origin": "https://find.example.com", "env": { "WP_VECTORIZE_SEARCH": "on" } },
     { "id": "ops", "site": "ops", "origin": "https://wp-ops.sub.workers.dev", "env": { "OBSERVABILITY": "1", "PHP_LOCATION": "weur", "HTTP_ALLOW_HOSTS": "" } },
-    { "id": "pdf", "site": "pdf", "origin": "https://pdf.example.com", "env": { "WP_PDF_INVOICE": "on" } }
+    { "id": "pdf", "site": "pdf", "origin": "https://pdf.example.com", "env": { "WP_PDF_INVOICE": "on" } },
+    { "id": "php-ini", "site": "ini", "origin": "https://ini.example.com", "env": { "PHP_INI": "{\"opcache.memory_consumption\":\"48\"}" } },
+    { "id": "code-persist", "site": "code", "origin": "https://code.example.com", "env": { "CODE_PERSIST": "on", "CODE_BUDGET_MB": "8" } },
+    { "id": "php-recycle-off", "site": "norecycle", "origin": "https://norecycle.example.com", "env": { "PHP_RECYCLE": "off" } },
+    { "id": "opcache-split", "site": "split", "origin": "https://split.example.com", "env": { "OPCACHE_SPLIT": "1" } }
   ]
 }

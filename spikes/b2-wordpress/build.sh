@@ -42,7 +42,7 @@ rm -rf "$wp/wp-content/themes/twentytwentythree" "$wp/wp-content/themes/twentytw
 # from that site. Rules in deploy/import/content.sh.
 [ -z "${IMPORT_CONTENT:-}" ] || ../../deploy/import/content.sh "$IMPORT_CONTENT" "$wp/wp-content"
 mkdir -p "$wp/wp-content/mu-plugins"
-cp php/r2-uploads.php php/edge-cache.php php/woo-edge.php php/rest-route-cache.php php/theme-json-cache.php php/http-bridge.php php/real-transactions.php php/ast-cache-stats.php php/woo-bootstrap-trim.php php/media-write-trim.php php/wp-mail-queue.php php/ai-alt-text.php php/zone-cache-purge.php php/pdf-invoice.php php/turnstile-forms.php php/analytics-pageview.php php/action-scheduler-alarm-only.php "$wp/wp-content/mu-plugins/"
+cp php/r2-uploads.php php/edge-cache.php php/woo-edge.php php/rest-route-cache.php php/theme-json-cache.php php/http-bridge.php php/real-transactions.php php/ast-cache-stats.php php/woo-bootstrap-trim.php php/media-write-trim.php php/wp-mail-queue.php php/ai-alt-text.php php/zone-cache-purge.php php/pdf-invoice.php php/turnstile-forms.php php/analytics-pageview.php php/action-scheduler-alarm-only.php php/code-lock-notice.php php/mem-trace.php php/code-persist.php "$wp/wp-content/mu-plugins/"
 # The block checkout Turnstile script (issue #308). It reaches public/ as a static file and
 # turnstile-forms.php prints a script tag for it. A subdirectory, because WordPress loads every
 # .php file at the top of mu-plugins.
@@ -106,6 +106,10 @@ echo "site.zip $(wc -c < build/site.zip) bytes, $(cd build && unzip -l site.zip 
 # earlier build are compiled from other sources (measured 2026-11-05: an A build
 # ran B's compiled wp-content/db.php from the zip a B build had left).
 python3 -c "import zipfile; zipfile.ZipFile('build/opcache.zip', 'w').close()"
+# #394 L1: not split until opcache-split.py runs (OPCACHE_SPLIT=1 in the deploy): no boot pack,
+# and an empty fallback module, so index.js imports resolve on every build.
+python3 -c "import zipfile; zipfile.ZipFile('build/opcache-boot.zip', 'w').close()"
+echo 'export default null;' > build/opcache-boot-index.js
 echo "public/ $(find build/public -type f | wc -l | tr -d ' ') files"
 # The build id (build-id.sh): the git sha, -dirty, the content id and -wooprimed (#377).
 BUILD_ID=$(./build-id.sh "$wp/wp-content")

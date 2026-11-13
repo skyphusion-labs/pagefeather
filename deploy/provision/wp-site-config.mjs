@@ -67,7 +67,7 @@ import { freshKVNamespace, createQueue, createVectorizeIndex } from './ops.mjs';
 // turn on the default-on gates in index.js (object cache, route cache, theme.json
 // cache, async email, bootstrap trim, media-write trim): index.js enables each
 // unless its var is "off", so the site gets them with no gate var set.
-function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, demo } = {}) {
+function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, demo, codeLock } = {}) {
   if (!siteOrigin) throw new Error('bDosqlVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
   const vars = {
     PHP_ENV: '{"USE_ZEND_ALLOC":"0"}',
@@ -95,6 +95,9 @@ function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mail
   // A public demo site (opts.demo) runs locked: no mail, and no plugin or theme
   // installs or edits (spikes/b2-wordpress/site-lock.mjs). Unset on every other site.
   if (demo === true) vars.DEMO_LOCK = 'on';
+  // A one-click site (opts.codeLock, #406) locks plugin and theme code but keeps
+  // mail. A demo site already locks code through DEMO_LOCK, so it stays byte-identical.
+  else if (codeLock === true) vars.CODE_LOCK = 'on';
   return vars;
 }
 

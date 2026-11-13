@@ -87,22 +87,29 @@ to its id with `GET /accounts/{acct}/tokens/permission_groups` at mint time.
 Account-scoped to THIS account only. Permission groups:
 - Workers R2 Storage: Edit  (create the one media bucket; and, for the demo
   reaper, empty + delete that bucket)
-- Workers for Platforms: Edit  (deploy AND delete the dispatch-namespace script;
+- Workers Scripts: Edit  (deploy AND delete the dispatch-namespace script;
   the deploy carries the secret_text bindings atomically, so no separate
   put-secret call; read access, implied by Edit, serves the anti-clobber
-  `scriptExists` check and the reaper)
+  `scriptExists` check and the reaper). There is no separate "Workers for
+  Platforms" permission group: dispatch namespaces come under Workers Scripts
+  (measured by the lead 2026-11-13; see "The one-click site manager key").
+  An earlier version of this list named a "Workers for Platforms: Edit" group.
 - Workers KV Storage: Edit  (read for idempotency + the concurrency count, write
   the site-map entry, delete it in the reaper; scope to `WFP_KV_ID` if the API
   supports per-namespace scoping, else account KV edit)
 - Zone > DNS: Edit, scoped to the ONE SaaS zone only (place the proxied routing
   record via `ensureProxiedHostname`; delete it in the reaper)
 
-Explicitly NOT in this token: API Tokens (account-token minting), Workers Scripts
-(plain `/workers/scripts` write), Containers. **So the Worker holds NO
-token-minting or Containers capability (c1 retired, #214): even a full compromise
-of the provisioning Worker cannot mint an account token or write a plain script,
-because its one token lacks those scopes.** This is the strongest form of the
-#182 containment, and it is now enforced by the token scope AND the code
+Explicitly NOT in this token: API Tokens (account-token minting), Containers.
+**So the Worker holds NO token-minting or Containers capability (c1 retired, #214):
+even a full compromise of the provisioning Worker cannot mint an account token,
+because its one token lacks that scope.** A plain `/workers/scripts` write is
+NOT excluded by the token: the Workers Scripts group that uploads a namespace
+script also allows a plain script write, and there is no narrower group
+(measured 2026-11-13). So "no plain script write" is enforced by the code only,
+not by the token scope. (Correction written 2026-11-13; it supersedes the
+earlier claim here that the token lacked the plain-script scope.) The rest of
+the #182 containment is enforced by the token scope AND the code
 (`provision.mjs` no longer imports `mintScopedR2Token`; `selectToken` maps only
 `wp`; `validateRequest` rejects a 'shop'/'store' kind). `worker-test.mjs` proves
 the wp path makes no `/tokens` POST and no plain `/workers/scripts/<name>` write,
@@ -319,3 +326,42 @@ routable, triggers the install and surfaces the first-login credential.
 - **Path B demos** install the same way; the throwaway admin login is returned in
   the demo response for the demo session (the reaper tears the whole site down at
   TTL regardless).
+
+## The one-click site manager key: a named widening (#414, lead ruling on #401, 2026-11-13)
+
+The one-click site manager (`deploy/oneclick/`) is a third caller of this core. It runs in the OWNER's own Cloudflare account, for the owner's own sites, behind Cloudflare Access. Its key (the `PAGEFEATHER_KEY` secret, an account API token the owner makes once) uses the **same Workers Scripts group as the operator token of Decision 2** (no narrower group exists, measured 2026-11-13). What is new, and deliberate, is that the site manager's CODE writes plain Workers: each site's front door.
+
+**Why it is needed.** On `workers.dev` each Worker has one hostname, so one dispatcher cannot answer for many sites. Each site gets its own small front-door Worker, `wp-<name>`, which runs `deploy/wfp/dispatcher/worker.js` (phase A of `deploy/wfp`). Making that Worker is a plain `PUT /accounts/{a}/workers/scripts/wp-<name>` plus turning on its `workers.dev` route. No binding can upload a script: the dispatch namespace binding only runs scripts (`get()`). Cloudflare's own Workers for Platforms starter asks for a token with Workers edit for the same reason (`docs/prior-art.md`).
+
+**What the key can do:** Workers Scripts edit, Workers KV Storage edit, Workers R2 Storage edit, Account Settings read. No zone or DNS permission, no API Tokens permission (it cannot make a token), no Access permission, no Containers permission.
+
+**There is no Workers for Platforms permission group; dispatch namespaces come under Workers Scripts.** Measured by the lead on 2026-11-13: the account's `GET /accounts/{id}/tokens/permission_groups` list has no group named platform, dispatch or namespace, and two new tokens whose only Workers group is Workers Scripts Write each answered 200 on `GET /workers/dispatch/namespaces/wp-wfp`. Our live `PAGEFEATHER_KEY` (`.github/workflows/deploy-oneclick.yml`, #419) is minted with exactly the four permissions above. So the owner's template link in `deploy/oneclick/package.json` is complete as it is. This replaces the earlier text in this section (2026-11-13), which listed a "Workers for Platforms edit" permission and left the link question open.
+
+**What the code does with it, and only this:**
+
+- the core's existing operations (`provisionSite`: the media bucket, the per-site KV, the namespace script, the site map entry, the install);
+- `PUT` and `GET` of `workers/scripts/wp-<name>` and `POST .../wp-<name>/subdomain`, for a name that passed `validateRequest` (the name rule plus the caller-reserved names), so the script name is always `wp-` plus a vetted label;
+- `GET /accounts`, `GET workers/subdomain`, `GET workers/dispatch/namespaces/<ns>`, and the site map KV, to read state.
+
+**What it refuses (tests in `deploy/oneclick/tests/admin-test.mjs`):**
+
+- Any request with no Cloudflare Access identity (`ctx.access`, which only Cloudflare sets), or with a forged Access header and no identity, or from a signed-in person who is not `ADMIN_EMAIL`. No API call runs before this check.
+- A write that does not come from its own page (the `x-pagefeather` header, a same-origin `Origin`, a JSON body).
+- A `wp-<name>` Worker that already exists and is not in its site map. The check runs BEFORE anything is made, so the key never overwrites an owner's own Worker.
+- Any site without the code lock: every site it makes carries `CODE_LOCK=on` (#406).
+
+**What stays the same.** The operator Worker (`wp-provision`) and the demo Worker keep the restricted token of Decision 2. This widening is only for the site manager's own key, in the owner's own account. The request still chooses only a name and the store checkbox; the Worker builds every binding, the code and the hostname itself (`buildServerCfg`), as for the operator path.
+
+## Installed code that persists (#407, `CODE_PERSIST`)
+
+With `CODE_PERSIST=on`, a plugin or theme installed, updated or deleted from wp-admin is kept as one zip in the site's own R2 bucket (`_code/<type>/<slug>/<sha256>.zip`), indexed in the site's own Durable Object SQLite, and mounted again at every runtime boot (`spikes/b2-wordpress/code-store.mjs`, `php/code-persist.php`).
+
+**The trust is ordinary WordPress install trust.** An administrator who can install a plugin can already run any PHP on the site. Persisting that code gives them nothing they did not have. So the store is not a new privilege boundary, and it is not written up as one.
+
+**What the design does hold:**
+
+- **The write path is the site's own only.** A store happens only from inside the site's own PHP object, through its own op (`codeOp`, `index.js`). It only acts on a request that WordPress itself ran as an install, update or delete, and those hooks run only for a user with the install or delete capability. The object writes only to the site's own `MEDIA` bucket (the bindings check, `deploy/wfp/bindings.py`, refuses any other bucket for a site), under `_code/` only. No route outside the object writes there. The only public bucket route, `/wp-content/uploads/`, reads keys under `uploads/` only (`index.js`, `serveUpload`: the key is `'uploads/' +` the path, and R2 does not resolve `..` in a key), so `_code/` is never served.
+- **The path is confined.** The op stores exactly `wp-content/{plugins,themes}/<slug>`, with a slug that matches `[A-Za-z0-9][A-Za-z0-9._-]{0,99}` and has no `..`. A tree with a symbolic link, or bigger than 64 MB unpacked, is refused.
+- **What runs is what was stored.** Each key carries the zip's SHA-256. At boot, an object whose bytes or size do not match its row is REFUSED, not run, and the admin is told in plain words (tests: `tests/code-store.test.mjs`).
+- **Slugs the build ships stay deploy-only.** Installing over WordPress's shipped themes, WooCommerce or an imported plugin is refused, and their update offers are hidden, so a wp-admin action cannot replace code a deploy vouched for.
+- **One-click sites stay locked.** `CODE_LOCK=on` (#406) still sets `DISALLOW_FILE_MODS`, which turns installs off whatever `CODE_PERSIST` says. Lifting the lock on one-click sites waits until `CODE_PERSIST` is on AND Gate 2 of #422 shows that installs work there.

@@ -1,0 +1,37 @@
+# The one-click site manager (#414). Deployed by the owner's Deploy to Cloudflare
+# button (#401, next PR), or by the lead to workers.dev for a test. Nothing here is
+# a secret. Set at deploy, NEVER written here:
+#   PAGEFEATHER_KEY  (secret) the account API token: see deploy/provision/HARDENING.md,
+#                    "The one-click site manager key"
+#   ADMIN_EMAIL      (secret) the owner's email; without it the manager refuses everyone
+# Both are named in .dev.vars.example, so the button's setup page asks for them.
+# Optional vars: CF_ACCOUNT_ID, ACCESS_AUD.
+name = "pagefeather"
+main = "worker.mjs"
+compatibility_date = "2026-07-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+preview_urls = false
+
+# The site front door is deploy/wfp/dispatcher/worker.js, uploaded as each site's
+# own Worker; it is read as text, not run here.
+rules = [{ type = "Text", globs = ["**/wfp-dispatcher/worker.js"], fallthrough = false }]
+
+[vars]
+WFP_NAMESPACE = "pagefeather"
+SITE_MAP_TITLE = "pagefeather-sites"
+WFP_COMPAT = "2026-07-01"
+# The WordPress release to install (#405) and its manifest.json SHA-256. Empty
+# until the first release exists; the manager then downloads nothing.
+BUNDLE_VERSION = ""
+BUNDLE_MANIFEST_SHA256 = ""
+
+[[r2_buckets]]
+binding = "BUNDLES"
+bucket_name = "pagefeather-bundles"
+
+# The sites. Install and WooCommerce go straight to a new site through this binding,
+# with no wait for its public address.
+[[dispatch_namespaces]]
+binding = "DISPATCHER"
+namespace = "pagefeather"

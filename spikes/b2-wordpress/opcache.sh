@@ -8,6 +8,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 python3 -c "import zipfile; zipfile.ZipFile('build/opcache.zip', 'w').close()"
+# #394 L1: priming runs unsplit; a split from an earlier run would point at other files.
+python3 -c "import zipfile; zipfile.ZipFile('build/opcache-boot.zip', 'w').close()"
+echo 'export default null;' > build/opcache-boot-index.js
+rm -rf build/public/_pf
 # A fresh, empty local state for every run (#313). With the default .wrangler/state, WooCommerce
 # was primed whenever an EARLIER run on this machine had left it active, so the same tree made a
 # 2131-file cache on one laptop and a 620-file one on a fresh clone, and the fresh-clone build

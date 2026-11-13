@@ -162,12 +162,87 @@ fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 with os.fdopen(fd, "w") as f:
     json.dump(s, f)' "$1"
 }
+# PHP_INI (#394): optional php.ini overrides for ONE site, a JSON object of name to value, e.g.
+#   PHP_INI='{"opcache.memory_consumption":"48"}' deploy/wfp/site update <name>
+# index.js passes it to PHP at every boot (setPhpIniEntries, after its own defaults, so it wins).
+# It goes into [vars] as compact JSON with sorted keys. Refused (the render fails): not a JSON
+# object, empty, more than 32 entries, a name outside [A-Za-z0-9_.] (1 to 64), a value that is not a
+# string or an integer, or a string with a quote, a backslash or a control character (the TOML is a
+# literal string) or over 256 characters. Like TURNSTILE_*, it is read from the run's environment
+# only: an update that does not pass it renders the site WITHOUT it.
+php_ini_var() {
+  [ -n "${PHP_INI:-}" ] || return 0
+  PHP_INI="$PHP_INI" python3 -I -c 'import json, os, re, sys
+def bad(m):
+    print("PHP_INI: " + m, file=sys.stderr); sys.exit(1)
+try:
+    o = json.loads(os.environ["PHP_INI"])
+except ValueError:
+    bad("not JSON")
+if not isinstance(o, dict) or not o: bad("must be a non-empty JSON object")
+if len(o) > 32: bad("more than 32 entries")
+for k, v in o.items():
+    if not re.fullmatch(r"[A-Za-z0-9_.]{1,64}", k): bad("bad name %r" % k)
+    if isinstance(v, bool) or not isinstance(v, (str, int)): bad("the value of %s must be a string or an integer" % k)
+    if isinstance(v, str) and (len(v) > 256 or re.search(r"[\x00-\x1f\x7f\x27\x22\\]", v)): bad("bad value for %s" % k)
+print("PHP_INI = %s" % chr(39) + json.dumps(o, separators=(",", ":"), sort_keys=True) + chr(39))'
+}
+# CODE_PERSIST (#407): plugins and themes installed from wp-admin persist (code-store.mjs). Off
+# unless CODE_PERSIST=on. It needs CODE_BUDGET_MB, the installed-code budget in MB, set from the
+# measured memory headroom of the site (#394): there is no default, so CODE_PERSIST=on without a
+# budget fails the render. Like PHP_INI, both are read from the run's environment only.
+code_persist_vars() {
+  case "${CODE_PERSIST:-}" in
+    "") [ -z "${CODE_BUDGET_MB:-}" ] || { echo "CODE_BUDGET_MB is set but CODE_PERSIST is not on" >&2; return 1; }; return 0 ;;
+    on) ;;
+    *) echo "CODE_PERSIST must be on or unset, not ${CODE_PERSIST}" >&2; return 1 ;;
+  esac
+  [[ "${CODE_BUDGET_MB:-}" =~ ^[0-9]{1,4}(\.[0-9]{1,3})?$ ]] || { echo "CODE_PERSIST=on needs CODE_BUDGET_MB (MB, a number such as 8 or 2.5), set from the site's measured headroom (#394)" >&2; return 1; }
+  echo 'CODE_PERSIST = "on"'
+  echo "CODE_BUDGET_MB = \"$CODE_BUDGET_MB\""
+}
+# PHP_RECYCLE (#394, experiment E1): "off" turns off the runtime recycle for MEMORY, so the PHP
+# runtime is kept after a request whose WebAssembly memory passed RECYCLE_WASM_BYTES (100 MiB,
+# index.js). A crashed runtime is still dropped (index.js: crashed || ...). With it off, nothing in
+# our code bounds the WASM high-water: the module's own maximum is 2048 MiB, and with
+# USE_ZEND_ALLOC=0 PHP's memory_limit is not enforced by Zend's allocator. The hard stop is the
+# isolate reset, measured at about 188 MiB for WASM alone and 144 MiB with the bundle (#411).
+# Read from the run's environment only, like PHP_INI. Unset keeps the recycle.
+php_recycle_var() {
+  case "${PHP_RECYCLE:-}" in
+    "") ;;
+    off) echo 'PHP_RECYCLE = "off"' ;;
+    *) echo "PHP_RECYCLE must be off or unset, not ${PHP_RECYCLE}" >&2; return 1 ;;
+  esac
+}
+# #394 L1 (OPCACHE_SPLIT=1): the object fetches the OPcache boot packs through an ASSETS binding,
+# and /_pf/ must reach the Worker first (which refuses it), or the asset router would serve the
+# site's compiled PHP to anyone (#412). Nothing is added when the build is not split.
+opcache_split_assets() {
+  case "${OPCACHE_SPLIT:-0}" in
+    0) ;;
+    1) printf '\nbinding = "ASSETS"\nrun_worker_first = ["/_pf/*"]' ;;
+    *) echo "OPCACHE_SPLIT must be 0 or 1, not ${OPCACHE_SPLIT}" >&2; return 1 ;;
+  esac
+}
 render_user() { # render_user <site> <origin>
-  local s=$1 origin=$2 mail_binding mail_vars http_allow ts_vars
+  local s=$1 origin=$2 mail_binding mail_vars http_allow ts_vars php_env
+  # WFP_PHP_ENV (#434): a measurement build may set USE_ZEND_ALLOC=1 so memory_get_usage reads
+  # Zend's own numbers. JSON only, no single quote (it sits in a TOML literal string).
+  php_env=${WFP_PHP_ENV:-'{"USE_ZEND_ALLOC":"0"}'}
+  case $php_env in *"'"*|*$'\n'*) echo "WFP_PHP_ENV must not hold a single quote or a newline" >&2; return 1 ;; esac
   mail_binding=$(SITE_ORIGIN="$origin" MAIL_FROM="${MAIL_FROM:-}" node "$APP/mail-from.mjs" --binding) || return 1
   mail_vars=$(SITE_ORIGIN="$origin" MAIL_FROM="${MAIL_FROM:-}" MAIL_FROM_NAME="${MAIL_FROM_NAME:-}" node "$APP/mail-from.mjs" --vars) || return 1
   http_allow=$(node "$APP/http-allow.mjs") || return 1
   ts_vars=$(turnstile_vars) || return 1
+  # PHP_INI (#394) joins the Turnstile lines, so a site without it renders byte for byte as before.
+  local split_assets; split_assets=$(opcache_split_assets) || return 1
+  local php_ini; php_ini=$(php_ini_var) || return 1
+  [ -z "$php_ini" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$php_ini
+  local code_vars; code_vars=$(code_persist_vars) || return 1
+  [ -z "$code_vars" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$code_vars
+  local php_recycle; php_recycle=$(php_recycle_var) || return 1
+  [ -z "$php_recycle" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$php_recycle
   cat <<TOML
 # Generated by deploy/wfp for site $s (b-dosql in namespace $NAMESPACE). Do not edit.
 name = "$(user_script "$s")"
@@ -177,7 +252,7 @@ compatibility_flags = ["nodejs_compat"]
 rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
 $mail_binding
 [assets]
-directory = "build/public"
+directory = "build/public"$split_assets
 [cache]
 enabled = true
 [exports.default]
@@ -189,7 +264,7 @@ type = "worker"
 [exports.Pages.cache]
 enabled = true
 [vars]
-PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
+PHP_ENV = '$php_env'
 SITE_ORIGIN = "$origin"
 $mail_vars
 HTTP_ALLOW_HOSTS = "$http_allow"
@@ -378,7 +453,13 @@ build_dosql() {
     # WOO_ACTIVE reaches build.sh too, so the build id says whether it is primed (#377).
     WOO_ACTIVE=$woo ./build.sh | tail -1
     WOO_ACTIVE=$woo DEV_ENV=dosql-local ./opcache.sh > build/opcache.log 2>&1 || { echo "opcache.sh failed:"; tail -25 build/opcache.log; exit 1; }
-    tail -1 build/opcache.log ) || return 1
+    tail -1 build/opcache.log
+    # #394 L1 (OPCACHE_SPLIT=1): trace which OPcache files a WARM request reads on the primed build,
+    # then keep only those as the module; the rest become static assets fetched when a runtime boots.
+    if [ "${OPCACHE_SPLIT:-0}" = 1 ]; then
+      WOO_ACTIVE=$woo DEV_ENV=dosql-local ./file-trace.sh > build/file-trace.log 2>&1 || { echo "file-trace.sh failed:"; tail -15 build/file-trace.log; exit 1; }
+      python3 -I opcache-split.py build/opcache.zip build/file-trace.json build/build-id.js || exit 1
+    fi ) || return 1
   # The subshell status is checked (#313): under "site update --all" (if "$fn") set -e is off, and
   # a failed opcache.sh used to fall through to the size check with the EMPTY opcache.zip that
   # build.sh starts, and that bundle was uploaded.
@@ -397,6 +478,10 @@ bundle_size_check() { # bundle_size_check [app dir]
 import os, sys
 app, cap = sys.argv[1], float(sys.argv[2])
 parts = ["build/site.zip", "build/opcache.zip", "vendor/php_8_3.wasm", "vendor/php_8_3.js"]
+# #394 L1: the boot pack's fallback module ships in the bundle too (index.js imports it only when
+# the Assets binding is missing). build.sh always writes it, empty when the build is not split.
+if os.path.isfile(os.path.join(app, "build/opcache-boot.zip")):
+    parts.append("build/opcache-boot.zip")
 missing = [p for p in parts if not os.path.isfile(os.path.join(app, p))]
 if missing:
     sys.exit("bundle size: missing " + ", ".join(missing) + " (build first)")

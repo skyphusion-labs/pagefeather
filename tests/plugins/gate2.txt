@@ -1,0 +1,17 @@
+# Gate 2 (#422, #426): the plugins and themes a WordPress developer will not give up.
+# kind slug version sha256-of-zip
+# The zips are checked as fetch.sh checks them. Versions read 2026-11-13; the eight plugin
+# pins are the same as suite.txt. A wp-admin install from wordpress.org gets the CURRENT
+# version; the run records the version it got. WooCommerce is in every build (the control).
+# Deferred by the lead (2026-11-13): woocommerce-gateway-stripe and woocommerce-paypal-payments.
+plugin elementor 4.3.6 f9f04c40e559ecc1c737eec6519e7223ff9a1ab04abcc2e004b44c9f6d1247a3
+plugin wordpress-seo 28.8 27cc01cb149db7186ef750552a5cc2ae5028933473886e419918af273b075105
+plugin seo-by-rank-math 1.0.281 d3d464bb2b3b619e46cd93c16a8d21073c473bd411867c1c8d73110debd0ba29
+plugin contact-form-7 6.2.4.1 9b28e8bccfea0b0dcc8fd27ba8745fc7133fdacf594bf2e1faee869a15f71f64
+plugin wpforms-lite 2.0.3.1 38fc776cd23a511a93128ba79377c271547c559c6525ece86d9267c3b02379c7
+plugin advanced-custom-fields 6.8.11 577118d6c5f3add8f8eb8f04e40578259ce02986d301ef53d9665bc7c0a2967d
+plugin litespeed-cache 7.9.3 8ab0373e41a3e9d4329d8fa6f99f3afd096cc21ac2befb0a84dc005d8afb36d7
+plugin wordfence 9.0.2 4124ae2a5d7cff8faadf04c222583fa06f78e8e9c791e50447383e5e12ab5fb6
+plugin updraftplus 1.26.14 c5f3408140760aed8ebb301af197b6266e7c6b565307ca56d3b4e50b665cd6e9
+theme astra 4.14.3 a879532011370b04be71fba463fbd856ebb8a000cd90f929368a75a72292d67b
+theme storefront 4.6.2 163b5bf217dad76a823432d8c01598ab3dc3f15cbdd69067b98f5a6ddf05c1c4
