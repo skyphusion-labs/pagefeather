@@ -138,6 +138,30 @@ PHP_INI='{"opcache.memory_consumption":"48"}' deploy/wfp/site update <name>
 - The other config emitters (`deploy/provision`, the Worker path) do not read it. The golden case `php-ini` shows that.
 - Tests: `deploy/wfp/tests/render-test.sh` (with it, without it, the refused shapes) and `deploy/tests/render-golden` (case `php-ini`).
 
+### Plugins installed from wp-admin: CODE_PERSIST (#407)
+
+With `CODE_PERSIST=on`, a plugin or theme installed, updated or deleted from wp-admin stays that way:
+
+```sh
+CODE_PERSIST=on CODE_BUDGET_MB=<MB> deploy/wfp/site update <name>
+```
+
+- **Where it lives:** each install is one zip in the site's own bucket (`_code/<type>/<slug>/<sha256>.zip`), indexed in the site's own database. Every runtime boot mounts it again, and every request picks up a change.
+- **The budget:** `CODE_BUDGET_MB` caps the installed code a site keeps in memory, and it is REQUIRED with `CODE_PERSIST=on`. It has no default on purpose: set it from the site's measured headroom (#394; `spikes/b2-wordpress/tests/measure394.py`). An install over the budget is refused in plain words in wp-admin, and nothing is left behind.
+- **Deploy-only slugs:** plugins and themes the build ships (core themes, WooCommerce, `IMPORT_PLUGINS`) are not installed over or updated from wp-admin. Update them with a deploy.
+- **Not recorded inputs:** like `PHP_INI` and `TURNSTILE_*`, both values are read from the run's environment only. An update that does not pass them turns the feature off. The stored code stays in the bucket and comes back when it is turned on again.
+- **One-click sites stay locked** (`CODE_LOCK=on`) until Gate 2 of #422 shows this works.
+- **Security:** see `deploy/provision/HARDENING.md`.
+- **Tests:** `spikes/b2-wordpress/tests/code-store.test.mjs` (the crash windows, the sha check, the budget boundary, a second isolate), `tests/code-persist-e2e.sh` (local, the real installer), and `deploy/wfp/tests/render-test.sh`.
+
+### Keeping the PHP runtime past 100 MiB: PHP_RECYCLE (#394)
+
+`PHP_RECYCLE=off deploy/wfp/site update <name>` keeps the PHP runtime after a request whose WebAssembly memory passed 100 MiB. Without it, the next request boots a new runtime (`index.js`, `RECYCLE_WASM_BYTES`). A crashed runtime is still dropped.
+- **What bounds memory then:** nothing in our code. The module's maximum is 2048 MiB, and with `USE_ZEND_ALLOC=0` PHP's `memory_limit` is not enforced by Zend's allocator. The hard stop is the isolate reset, about 188 MiB for WebAssembly alone and 144 MiB with the bundle (#411).
+- **Use:** it is for measuring (experiment E1 on #394), and for a site whose admin pages keep recycling.
+- **Not a recorded input:** read from the run's environment only, like `PHP_INI`. Same-build updates need `FORCE_UPLOAD=1`.
+- **Tests:** `deploy/wfp/tests/render-test.sh`, golden case `php-recycle-off`.
+
 ## Phase B: a custom domain per site (#138)
 
 Phase A gives each site its own origin by deploying the one dispatcher script once per site as `wp-<name>` on `workers.dev`. Phase B instead deploys the dispatcher once as `wp-dispatch` and gives each site a Workers Custom Domain `<name>.wfp-test.skyphusion.org`. The dispatcher code does not change: it already routes by the request's own hostname through the site map, so the site map key becomes the custom hostname.

@@ -23,6 +23,7 @@ export const PERF_HEADERS = [
 	'x-r2-ops',
 	'x-boot',
 	'x-boot-origin',
+	'x-mem-trace',
 ];
 
 export function perfHeadersAllowed(req, env) {
