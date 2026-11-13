@@ -2,7 +2,8 @@
 # End-to-end check of #394 L1 (the OPcache boot pack out of module memory) on local wrangler dev,
 # after a SPLIT build (build.sh, opcache.sh, file-trace.sh, opcache-split.py). Three runs:
 #   1. the boot pack from the Assets binding: logged, pages and admin work;
-#   2. the fallback (OPCACHE_BOOT_SOURCE=module): logged as a fallback, pages and admin work;
+#   2. no boot pack (OPCACHE_BOOT_SOURCE=none): the boot compiles, logged as fallback:compile, pages
+#      and admin work (there is no fallback module: #411 measured it would cost the memory L1 saves);
 #   3. the split turned off (OPCACHE_SPLIT=off): no boot pack at all, pages still work (OPcache compiles).
 # In every run, GET /_pf/<id>/<chunk> answers 404, with and without the spike token (#412: the
 # packs hold the site's compiled PHP). Exits 1 on any failure.
@@ -41,6 +42,6 @@ run_case() { # run_case <label> <DEV_VARS> <expected l1 log fragment or "none">
   ok "$label: /_pf/ is never served (stranger $c1, with the spike token $c2)" "$([ "$c1" = 404 ] && [ "$c2" = 404 ] && echo 1 || echo 0)"
 }
 run_case assets "" 'assets'
-run_case fallback "OPCACHE_BOOT_SOURCE:module" 'fallback:forced'
+run_case fallback "OPCACHE_BOOT_SOURCE:none" 'fallback:compile:forced'
 run_case off "OPCACHE_SPLIT:off" 'none:split-off'
 exit $bad
