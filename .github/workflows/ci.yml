@@ -87,6 +87,8 @@ jobs:
         run: |
           python3 -I tests/plugins/gate2_test.py
           bash tests/fixtures/tests/theme-unit-test.sh
+          # fetch.sh (#457): THEMES, the unpinned-slug refusal, the SHA, link and parent-theme refusals.
+          bash tests/plugins/fetch-test.sh
       - name: b-dosql mail From address
         run: node --test spikes/b2-wordpress/tests/mail-from.test.mjs
       - name: b-dosql demo site lock

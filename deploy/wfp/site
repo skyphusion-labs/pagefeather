@@ -61,7 +61,7 @@ update_one_inner() {
   if [ -n "$live_hash" ]; then echo "site $s: the recorded config hash is $live_hash"; else echo "site $s: no config hash is recorded"; fi
   # The site's recorded build inputs (#379): reused when this run passes none, compared when it does.
   # local -x keeps a recorded value inside this one update (update --all runs many).
-  local -x PLUGINS="${PLUGINS:-}" IMPORT_THEMES="${IMPORT_THEMES:-}" IMPORT_PLUGINS="${IMPORT_PLUGINS:-}" IMPORT_MU_PLUGINS="${IMPORT_MU_PLUGINS:-}" WOO_ACTIVE="${WOO_ACTIVE:-}" IMPORT_CONTENT="${IMPORT_CONTENT:-}"
+  local -x PLUGINS="${PLUGINS:-}" THEMES="${THEMES:-}" SUITE="${SUITE:-}" THEME_SUITE="${THEME_SUITE:-}" IMPORT_THEMES="${IMPORT_THEMES:-}" IMPORT_PLUGINS="${IMPORT_PLUGINS:-}" IMPORT_MU_PLUGINS="${IMPORT_MU_PLUGINS:-}" WOO_ACTIVE="${WOO_ACTIVE:-}" IMPORT_CONTENT="${IMPORT_CONTENT:-}"
   local REC_TREE=""
   echo "site $s: the recorded build inputs"
   use_recorded_inputs "$bucket" "$WDIR" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
