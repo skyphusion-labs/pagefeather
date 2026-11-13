@@ -94,7 +94,7 @@ await ok('the setup page values: .dev.vars.example names them, package.json desc
   for (const n of names) assert(!new RegExp(`^${n}\\s*=`, 'm').test(vars), `${n} is also a [vars] entry`);
   const desc = pkg.cloudflare.bindings.PAGEFEATHER_KEY.description;
   assert(desc.includes('dash.cloudflare.com/?to=/:account/api-tokens&permissionGroupKeys='), 'no account token template link');
-  assert(!/[–—]/.test(JSON.stringify(pkg)), 'a dash character');
+  assert(!/[\u2013\u2014]/.test(JSON.stringify(pkg)), 'a dash character');
 });
 
 await ok('the namespace name comes from wrangler.toml', async () => {
