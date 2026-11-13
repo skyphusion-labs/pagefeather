@@ -181,6 +181,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/cron-bound.test.mjs
       - name: b-dosql a purge alarm runs the cron leg only when due (issue #470)
         run: node --test spikes/b2-wordpress/tests/cron-leg-due.test.mjs
+      - name: b-dosql a cron leg that keeps dying backs off and says why (issue #471)
+        run: node --test spikes/b2-wordpress/tests/cron-health.test.mjs
       - name: b-dosql build id carries the content inputs (issue #285)
         run: python3 -I spikes/b2-wordpress/tests/content-id-test.py
       - name: b-dosql build id says whether the OPcache is primed (issue #377)
