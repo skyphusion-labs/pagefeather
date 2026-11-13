@@ -57,3 +57,18 @@ Runs of 2026-11-05. A and HostlessWP on the public MySQL path ([approach-a.md](a
 - **All-in-One WP Migration on our A Paid** answers 500 on every admin page: it calls `mysqli_*` on `$wpdb->dbh`, which our A does not provide as a mysqli link. HostlessWP passes because it ships a userland mysqli. Issue #29.
   Since issue #29, A has a userland mysqli. Measured locally on MariaDB 11.4: the plugin passes; without the layer, dashboard and admin page answer 500. Re-run on Paid (`wp-ref-a`, 2026-11-06): pass. The other plugins were not re-run on that build ([approach-a.md](approach-a.md)).
 - **Harness fixes during the runs** (each found when a result looked wrong, then confirmed): a post is found by the REST API instead of assuming id 1; Rank Math's setup is skipped right after activation, before its admin page is checked; a failed plugin list from a CPU limit is reported as the platform's failure, not the harness's.
+
+## Gate 2: the harness for the plugins a developer keeps (#422, #426)
+
+`tests/plugins/gate2.py` tests the Gate 2 list in `tests/plugins/gate2.txt` on the sample store with WooCommerce active. WooCommerce is the control. The Nov 5 suite above used a near-empty site; this harness does not. It runs on a throwaway site only.
+
+- **Two tracks:**
+  - **I**, installed from wp-admin: the harness installs from wordpress.org, and falls back to the upload form with the pinned zip. Each install must survive `/_evict` and a redeploy.
+  - **B**, built in with `PLUGINS=`.
+- **Phases:** `fetch` (the pinned zips), `install`, `check` (after the redeploy), `function` (activate, admin screens, settings save, visible job, deactivate), and `report`.
+- **Recording:** one JSON line per request, with headers only. Every write is read back and classed `ok/ok`, `fail/fail`, `fail/changed` or `ok/unchanged`. The last two are answer/state disagreements.
+- **write-loss:** counted from `x-write-loss`, and from a Workers Logs export (`report --logs`).
+- **The report:** it prints each item's first failing step next to its prediction.
+
+The first use is a one-pass prediction check (the lead's ruling, 2026-11-13). Payments, mail, the stack profile and the 10-round runs are deferred until #293, #407 and the admin memory work (#394, #411) move.
+
