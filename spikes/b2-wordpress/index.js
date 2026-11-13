@@ -2149,6 +2149,9 @@ export class PhpRuntime extends DurableObject {
 	}
 
 	async alarm() {
+		// PROBE #394 D (one run, throwaway only): keep the object busy with a 1 s tick and do no work.
+		await this.ctx.storage.setAlarm(Date.now() + 1000);
+		if (this.env) return;
 		// The next tick is armed FIRST (#291, alarm-arm.mjs armBeforeRun): a run killed below (an
 		// isolate reset) still leaves a future alarm. A purge retry sets a sooner one, which replaces it.
 		await armBeforeRun(this.ctx.storage, Date.now(), Number((this.env && this.env.CRON_INTERVAL_MS) || 60000));
