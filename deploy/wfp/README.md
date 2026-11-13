@@ -154,6 +154,14 @@ CODE_PERSIST=on CODE_BUDGET_MB=<MB> deploy/wfp/site update <name>
 - **Security:** see `deploy/provision/HARDENING.md`.
 - **Tests:** `spikes/b2-wordpress/tests/code-store.test.mjs` (the crash windows, the sha check, the budget boundary, a second isolate), `tests/code-persist-e2e.sh` (local, the real installer), and `deploy/wfp/tests/render-test.sh`.
 
+### Keeping the PHP runtime past 100 MiB: PHP_RECYCLE (#394)
+
+`PHP_RECYCLE=off deploy/wfp/site update <name>` keeps the PHP runtime after a request whose WebAssembly memory passed 100 MiB. Without it, the next request boots a new runtime (`index.js`, `RECYCLE_WASM_BYTES`). A crashed runtime is still dropped.
+- **What bounds memory then:** nothing in our code. The module's maximum is 2048 MiB, and with `USE_ZEND_ALLOC=0` PHP's `memory_limit` is not enforced by Zend's allocator. The hard stop is the isolate reset, about 188 MiB for WebAssembly alone and 144 MiB with the bundle (#411).
+- **Use:** it is for measuring (experiment E1 on #394), and for a site whose admin pages keep recycling.
+- **Not a recorded input:** read from the run's environment only, like `PHP_INI`. Same-build updates need `FORCE_UPLOAD=1`.
+- **Tests:** `deploy/wfp/tests/render-test.sh`, golden case `php-recycle-off`.
+
 ## Phase B: a custom domain per site (#138)
 
 Phase A gives each site its own origin by deploying the one dispatcher script once per site as `wp-<name>` on `workers.dev`. Phase B instead deploys the dispatcher once as `wp-dispatch` and gives each site a Workers Custom Domain `<name>.wfp-test.skyphusion.org`. The dispatcher code does not change: it already routes by the request's own hostname through the site map, so the site map key becomes the custom hostname.

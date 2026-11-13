@@ -1,0 +1,167 @@
+[
+  {
+    "method": "GET",
+    "path": "/accounts/account-test/storage/kv/namespaces/kv-sites-test-id/values/split.sites.example",
+    "body": null
+  },
+  {
+    "method": "GET",
+    "path": "/accounts/account-test/workers/dispatch/namespaces/wp-wfp/scripts/site-split",
+    "body": null
+  },
+  {
+    "method": "POST",
+    "path": "/accounts/account-test/r2/buckets",
+    "body": {
+      "name": "wp-wfp-split-media"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/accounts/account-test/storage/kv/namespaces",
+    "body": {
+      "title": "wp-wfp-split-oc"
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/accounts/account-test/workers/dispatch/namespaces/wp-wfp/scripts/site-split",
+    "body": {
+      "metadata": {
+        "main_module": "index.js",
+        "compatibility_date": "2026-07-01",
+        "compatibility_flags": [
+          "nodejs_compat"
+        ],
+        "bindings": [
+          {
+            "type": "plain_text",
+            "name": "PHP_ENV",
+            "text": "{\"USE_ZEND_ALLOC\":\"0\"}"
+          },
+          {
+            "type": "plain_text",
+            "name": "SITE_ORIGIN",
+            "text": "https://split.sites.example"
+          },
+          {
+            "type": "plain_text",
+            "name": "PHP_IN_DO",
+            "text": "on"
+          },
+          {
+            "type": "plain_text",
+            "name": "PHP_LOCATION",
+            "text": "enam"
+          },
+          {
+            "type": "plain_text",
+            "name": "PHP_DO_POOL",
+            "text": "1"
+          },
+          {
+            "type": "plain_text",
+            "name": "DB_IN_DO",
+            "text": "on"
+          },
+          {
+            "type": "plain_text",
+            "name": "MAIL_FROM",
+            "text": "wordpress@sites.example"
+          },
+          {
+            "type": "plain_text",
+            "name": "MAIL_FROM_NAME",
+            "text": "split"
+          },
+          {
+            "type": "plain_text",
+            "name": "OBJECT_CACHE_L2",
+            "text": "on"
+          },
+          {
+            "type": "images",
+            "name": "IMAGES"
+          },
+          {
+            "type": "r2_bucket",
+            "name": "MEDIA",
+            "bucket_name": "wp-wfp-split-media"
+          },
+          {
+            "type": "durable_object_namespace",
+            "name": "PHP_RUNTIME",
+            "class_name": "PhpRuntime"
+          },
+          {
+            "type": "send_email",
+            "name": "EMAIL"
+          },
+          {
+            "type": "kv_namespace",
+            "name": "OC_KV",
+            "namespace_id": "kv-namespace-test-id"
+          },
+          {
+            "type": "secret_text",
+            "name": "WP_SALT",
+            "text": "<redacted>"
+          },
+          {
+            "type": "secret_text",
+            "name": "SPIKE_TOKEN",
+            "text": "<redacted>"
+          }
+        ],
+        "migrations": {
+          "new_tag": "v1",
+          "new_sqlite_classes": [
+            "PhpRuntime"
+          ]
+        }
+      },
+      "modules": [
+        {
+          "name": "index.js",
+          "type": "application/javascript+module"
+        }
+      ]
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/accounts/account-test/storage/kv/namespaces/kv-sites-test-id/values/split.sites.example",
+    "body": {
+      "script": "site-split",
+      "kind": "wp",
+      "outbound": true
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/zones/zone-test-id/dns_records",
+    "body": {
+      "type": "AAAA",
+      "name": "split.sites.example",
+      "content": "100::",
+      "proxied": true
+    }
+  },
+  {
+    "method": "POST",
+    "path": "https://internal/_install",
+    "body": null
+  },
+  {
+    "method": "PUT",
+    "path": "/accounts/account-test/storage/kv/namespaces/kv-sites-test-id/values/split.sites.example",
+    "body": {
+      "script": "site-split",
+      "kind": "wp",
+      "outbound": true,
+      "installed": true,
+      "adminUrl": "https://split.sites.example/wp-admin/",
+      "adminUser": "admin"
+    }
+  }
+]

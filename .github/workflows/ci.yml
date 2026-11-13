@@ -89,6 +89,10 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/mail-from.test.mjs
       - name: b-dosql demo site lock
         run: node --test spikes/b2-wordpress/tests/site-lock.test.mjs
+      - name: Admin memory trace is operator-only, and its harness summary (#434)
+        run: |
+          node --test spikes/b2-wordpress/tests/mem-trace.test.mjs
+          python3 -I tests/wfp/admin-mem-test.py
       - name: b-dosql performance headers need the spike token
         run: node --test spikes/b2-wordpress/tests/perf-headers.test.mjs
       - name: b-dosql a memory reset is not an overload (issue #335)
@@ -103,6 +107,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/file-trace.test.mjs
       - name: b-dosql installed code persists, crash windows and budget (issue #407)
         run: node --test spikes/b2-wordpress/tests/code-store.test.mjs
+      - name: b-dosql OPcache split into warm and boot (issue #394 L1)
+        run: python3 -I spikes/b2-wordpress/tests/opcache-split-test.py
       - name: b-dosql outbound host allowlist
         run: node --test spikes/b2-wordpress/tests/http-allow.test.mjs
       - name: email-queue unit tests
