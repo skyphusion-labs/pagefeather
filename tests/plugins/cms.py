@@ -81,6 +81,11 @@ class Round:
     def screen(self, path):
         r = P.admin_get(self.o, path)
         ok = P.page_ok(r, admin=True)
+        if path.startswith("/wp-admin/customize.php") and not ok:
+            # The Customizer is a full-screen app: no #wpbody-content, and its <body> class is
+            # wp-customizer, not wp-admin, so page_ok refused a good 200 (pft1a, 2026-11-13).
+            b = r.get("body") or b""
+            ok = r["code"] == 200 and not any(x in b for x in P.BAD) and bool(re.search(rb'<body[^>]*class="[^"]*\bwp-customizer\b', b))
         G.event("step", step="screen", ok=ok, page=path.split("?")[0], **P.code_info(r))
         return r, ok
 

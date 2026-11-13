@@ -115,7 +115,11 @@ class FakeCMS:
                 self.posts[a] = {"title": "Auto Draft", "content": "", "status": "auto-draft", "author": me, "revisions": 0}
                 extra = b'<input type="hidden" name="post_ID" value="%d">' % a
             if path.startswith("/wp-admin/customize.php"):
-                extra = b'<script>var _wpCustomizeSettings = {"nonce":{"save":"c0ffee1234","preview":"x"},"changeset":{"uuid":"0f0e0d0c-0b0a-4908-8706-050403020100"}};</script>'
+                # As the real one: a full-screen app, body class wp-customizer, no #wpbody-content.
+                cls = b"wp-core-ui wp-customizer js"
+                bad = b"There has been a critical error" if self.f.get("customizer_error") else b""
+                return page(b'<body class="' + cls + b'"><script>var _wpCustomizeSettings = {"nonce":{"save":"c0ffee1234","preview":"x"},'
+                            b'"changeset":{"uuid":"0f0e0d0c-0b0a-4908-8706-050403020100"}};</script>' + bad + b"</body>")
             if path.startswith("/wp-admin/options.php"):
                 return page(b"", 302)
             return page(b'<body class="wp-admin"><div id="wpbody-content"><form method="post" action="options.php">'
@@ -456,6 +460,15 @@ def t_functions_switch():
     assert [l["item"] for l in lines if l["ev"] == "step" and l["step"] == "function"] == ["users", "editor"]
 
 
+def t_customizer_screen():
+    lines = go(FakeCMS(block=False))
+    sc = [l for l in lines if l["ev"] == "step" and l["step"] == "screen" and l.get("page") == "/wp-admin/customize.php"]
+    assert sc and sc[0]["ok"] is True, sc
+    lines2 = go(FakeCMS(block=False, customizer_error=True))
+    sc2 = [l for l in lines2 if l["ev"] == "step" and l["step"] == "screen" and l.get("page") == "/wp-admin/customize.php"]
+    assert sc2 and sc2[0]["ok"] is False, sc2
+
+
 def t_png():
     import struct, zlib
     b = cms.png()
@@ -482,6 +495,7 @@ for name, fn in [("control, block theme: every function passes, every write ok/o
                  ("ROUNDS=2: two rounds, each cleans up; headers only, no password, no query", t_rounds_and_headers_only),
                  ("cleanup tries a delete again after a 500 reset (housekeeping only); without it a row is left", t_cleanup_retries_a_reset),
                  ("CMS_FUNCTIONS picks and orders the functions; an unknown name is refused", t_functions_switch),
+                 ("the Customizer screen (wp-customizer body, no #wpbody-content) passes; a critical error on it fails", t_customizer_screen),
                  ("the test image is a valid PNG", t_png)]:
     ok(name, fn)
 G.OUT = sys.stdout
