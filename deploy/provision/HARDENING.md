@@ -87,22 +87,29 @@ to its id with `GET /accounts/{acct}/tokens/permission_groups` at mint time.
 Account-scoped to THIS account only. Permission groups:
 - Workers R2 Storage: Edit  (create the one media bucket; and, for the demo
   reaper, empty + delete that bucket)
-- Workers for Platforms: Edit  (deploy AND delete the dispatch-namespace script;
+- Workers Scripts: Edit  (deploy AND delete the dispatch-namespace script;
   the deploy carries the secret_text bindings atomically, so no separate
   put-secret call; read access, implied by Edit, serves the anti-clobber
-  `scriptExists` check and the reaper)
+  `scriptExists` check and the reaper). There is no separate "Workers for
+  Platforms" permission group: dispatch namespaces come under Workers Scripts
+  (measured by the lead 2026-11-13; see "The one-click site manager key").
+  An earlier version of this list named a "Workers for Platforms: Edit" group.
 - Workers KV Storage: Edit  (read for idempotency + the concurrency count, write
   the site-map entry, delete it in the reaper; scope to `WFP_KV_ID` if the API
   supports per-namespace scoping, else account KV edit)
 - Zone > DNS: Edit, scoped to the ONE SaaS zone only (place the proxied routing
   record via `ensureProxiedHostname`; delete it in the reaper)
 
-Explicitly NOT in this token: API Tokens (account-token minting), Workers Scripts
-(plain `/workers/scripts` write), Containers. **So the Worker holds NO
-token-minting or Containers capability (c1 retired, #214): even a full compromise
-of the provisioning Worker cannot mint an account token or write a plain script,
-because its one token lacks those scopes.** This is the strongest form of the
-#182 containment, and it is now enforced by the token scope AND the code
+Explicitly NOT in this token: API Tokens (account-token minting), Containers.
+**So the Worker holds NO token-minting or Containers capability (c1 retired, #214):
+even a full compromise of the provisioning Worker cannot mint an account token,
+because its one token lacks that scope.** A plain `/workers/scripts` write is
+NOT excluded by the token: the Workers Scripts group that uploads a namespace
+script also allows a plain script write, and there is no narrower group
+(measured 2026-11-13). So "no plain script write" is enforced by the code only,
+not by the token scope. (Correction written 2026-11-13; it supersedes the
+earlier claim here that the token lacked the plain-script scope.) The rest of
+the #182 containment is enforced by the token scope AND the code
 (`provision.mjs` no longer imports `mintScopedR2Token`; `selectToken` maps only
 `wp`; `validateRequest` rejects a 'shop'/'store' kind). `worker-test.mjs` proves
 the wp path makes no `/tokens` POST and no plain `/workers/scripts/<name>` write,
@@ -322,7 +329,7 @@ routable, triggers the install and surfaces the first-login credential.
 
 ## The one-click site manager key: a named widening (#414, lead ruling on #401, 2026-11-13)
 
-The one-click site manager (`deploy/oneclick/`) is a third caller of this core. It runs in the OWNER's own Cloudflare account, for the owner's own sites, behind Cloudflare Access. Its key (the `PAGEFEATHER_KEY` secret, an account API token the owner makes once) has **one permission more than the operator token of Decision 2: Workers Scripts edit on plain Workers.** This is deliberate.
+The one-click site manager (`deploy/oneclick/`) is a third caller of this core. It runs in the OWNER's own Cloudflare account, for the owner's own sites, behind Cloudflare Access. Its key (the `PAGEFEATHER_KEY` secret, an account API token the owner makes once) uses the **same Workers Scripts group as the operator token of Decision 2** (no narrower group exists, measured 2026-11-13). What is new, and deliberate, is that the site manager's CODE writes plain Workers: each site's front door.
 
 **Why it is needed.** On `workers.dev` each Worker has one hostname, so one dispatcher cannot answer for many sites. Each site gets its own small front-door Worker, `wp-<name>`, which runs `deploy/wfp/dispatcher/worker.js` (phase A of `deploy/wfp`). Making that Worker is a plain `PUT /accounts/{a}/workers/scripts/wp-<name>` plus turning on its `workers.dev` route. No binding can upload a script: the dispatch namespace binding only runs scripts (`get()`). Cloudflare's own Workers for Platforms starter asks for a token with Workers edit for the same reason (`docs/prior-art.md`).
 
