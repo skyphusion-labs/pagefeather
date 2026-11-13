@@ -14,7 +14,8 @@ cd "$(dirname "$0")"
 if [ -n "${BUILD_ID_OVERRIDE:-}" ]; then echo "$BUILD_ID_OVERRIDE"; exit 0; fi
 id=$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 [ -z "$(git status --porcelain 2>/dev/null)" ] || id="$id-dirty"
-c=$(python3 -I content-id.py "${1:?usage: build-id.sh <wp-content dir>}")
+# The static files build.sh moved to build/public count too (a JS-only content change, #385 follow-up).
+c=$(python3 -I content-id.py "${1:?usage: build-id.sh <wp-content dir>}" build/public/wp-content)
 [ -z "$c" ] || id="$id-$c"
 [ "${WOO_ACTIVE:-0}" != 1 ] || id="$id-wooprimed"
 echo "$id"

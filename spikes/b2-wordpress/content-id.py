@@ -20,7 +20,10 @@ INPUTS = ("PLUGINS", "IMPORT_THEMES", "IMPORT_PLUGINS", "IMPORT_MU_PLUGINS", "WO
 TREES = ("plugins", "themes", "mu-plugins")
 
 
-def content_id(wp_content, env):
+def content_id(wp_content, env, public=None):
+    """public: the wp-content of build/public, where build.sh moves the static files (.js, images,
+    most .css, .mo/.po) before the id is made. Hashed after the PHP tree, its paths labelled
+    "public/", so a change to only a static file gives a new id too."""
     if not env.get("PLUGINS") and not env.get("IMPORT_CONTENT"):
         return ""
     h = hashlib.sha256()
@@ -28,22 +31,25 @@ def content_id(wp_content, env):
     # same build.
     for k in INPUTS:
         h.update(f"{k}={' '.join(sorted(str(env.get(k, '')).split()))}\n".encode())
-    for tree in TREES:
-        root = os.path.join(wp_content, tree)
-        for d, dirs, files in os.walk(root):
-            dirs.sort()
-            for f in sorted(files):
-                p = os.path.join(d, f)
-                rel = os.path.relpath(p, wp_content).replace(os.sep, "/")
-                fh = hashlib.sha256()
-                with open(p, "rb") as fp:
-                    for chunk in iter(lambda: fp.read(1 << 20), b""):
-                        fh.update(chunk)
-                h.update(f"{rel}\0{fh.hexdigest()}\n".encode())
+    for label, base in (("", wp_content), ("public/", public)):
+        if not base:
+            continue
+        for tree in TREES:
+            root = os.path.join(base, tree)
+            for d, dirs, files in os.walk(root):
+                dirs.sort()
+                for f in sorted(files):
+                    p = os.path.join(d, f)
+                    rel = label + os.path.relpath(p, base).replace(os.sep, "/")
+                    fh = hashlib.sha256()
+                    with open(p, "rb") as fp:
+                        for chunk in iter(lambda: fp.read(1 << 20), b""):
+                            fh.update(chunk)
+                    h.update(f"{rel}\0{fh.hexdigest()}\n".encode())
     return "c" + h.hexdigest()[:8]
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit("usage: content-id.py <wp-content dir>")
-    print(content_id(sys.argv[1], os.environ))
+    if len(sys.argv) not in (2, 3):
+        sys.exit("usage: content-id.py <wp-content dir> [<public wp-content dir>]")
+    print(content_id(sys.argv[1], os.environ, sys.argv[2] if len(sys.argv) == 3 else None))

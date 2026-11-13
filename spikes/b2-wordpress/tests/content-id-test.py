@@ -48,5 +48,21 @@ with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
     check("no content input prints nothing (a plain build keeps its id)", m.content_id(a, {}) == "")
     check("PLUGINS alone is a content input", m.content_id(a, {"PLUGINS": "wordpress-seo"}).startswith("c"))
 
+# The static files (#385 follow-up): build.sh moves every .js, image, most .css and the .mo/.po of
+# wp-content into build/public (Workers static assets) BEFORE the id is made. An id over the PHP tree
+# alone did not change when only a static file changed: measured with the ggc tree at 5c51fd5, a one-line
+# edit of mu-plugins/ggc-cart.js kept build id 5c51fd5bee44-c30402182-wooprimed, so site update skipped
+# it as "already at build". The public tree is hashed too.
+with tempfile.TemporaryDirectory() as php, tempfile.TemporaryDirectory() as pub, tempfile.TemporaryDirectory() as pub2:
+    tree(php, base)
+    tree(pub, {"mu-plugins/ggc-cart.js": b"cart v1", "themes/twentytwentyfive/assets/a.css": b"c"})
+    tree(pub2, {"mu-plugins/ggc-cart.js": b"cart v2", "themes/twentytwentyfive/assets/a.css": b"c"})
+    env = {"IMPORT_CONTENT": "/x/wp-content", "IMPORT_MU_PLUGINS": "ggc-cart.js"}
+    i1, i2 = m.content_id(php, env, pub), m.content_id(php, env, pub2)
+    check("THE GGC-CART CASE: a change to only a static file (the public tree) gives a new id", i1 != i2)
+    check("the same PHP and public trees give the same id", m.content_id(php, env, pub) == i1)
+    check("a file moving between the trees is not the same id (the trees are labelled)", m.content_id(pub, env, php) != m.content_id(php, env, pub))
+    check("no public tree (a missing dir) still gives an id", m.content_id(php, env, os.path.join(pub, "nope")).startswith("c"))
+
 print(f"{fails} failing case(s)")
 sys.exit(1 if fails else 0)

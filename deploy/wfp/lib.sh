@@ -343,7 +343,8 @@ use_recorded_inputs() {
 # used that same recorded tree (REC_TREE).
 record_build_inputs() {
   local b=$1 id=$2 w=$3 cid key=""
-  cid=$(cd "$APP" && python3 -I content-id.py build/wordpress/wp-content) || return 1
+  # The same two trees build-id.sh hashes, so the recorded content id equals the build id's.
+  cid=$(cd "$APP" && python3 -I content-id.py build/wordpress/wp-content build/public/wp-content) || return 1
   if [ -n "${IMPORT_CONTENT:-}" ] && [ -n "$cid" ]; then
     key="_build/$cid.tar.gz"
     if [ "${REC_TREE:-}" != "$key" ]; then

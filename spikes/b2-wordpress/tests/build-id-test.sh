@@ -19,5 +19,7 @@ check "content inputs and WOO_ACTIVE=1: <sha>-c<8 hex>-wooprimed" "$(echo "$c" |
 check "BUILD_ID_OVERRIDE wins whole" "$(id BUILD_ID_OVERRIDE=x-forced WOO_ACTIVE=1)" x-forced
 check "build.sh takes its id from build-id.sh" "$(grep -c 'BUILD_ID=$(./build-id.sh "$wp/wp-content")' "$HERE/build.sh")" 1
 check "build_dosql passes WOO_ACTIVE to build.sh" "$(grep -c 'WOO_ACTIVE=$woo ./build.sh' "$HERE/../../deploy/wfp/lib.sh")" 1
+check "build-id.sh hashes the public tree too (a JS-only change, #385 follow-up)" "$(grep -c 'content-id.py "${1:?usage: build-id.sh <wp-content dir>}" build/public/wp-content' "$HERE/build-id.sh")" 1
+check "the recorded content id (#379) hashes the same two trees as the build id" "$(grep -c 'content-id.py build/wordpress/wp-content build/public/wp-content' "$HERE/../../deploy/wfp/lib.sh")" 1
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]
