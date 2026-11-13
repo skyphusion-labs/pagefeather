@@ -21,7 +21,7 @@ name: deploy-oneclick
 #   ONECLICK_DEPLOY_TOKEN  deploy token: Workers Scripts edit, Workers R2 Storage edit,
 #                          Workers for Platforms edit, Access: Apps and Policies edit,
 #                          Account Settings read. It never reaches the Worker.
-#   PAGEFEATHER_KEY        the site manager's own key (deploy/provision/HARDENING.md,
+#   PAGEFEATHER_KEY        the site manager key, incl. Workers for Platforms edit (deploy/provision/HARDENING.md,
 #                          "The one-click site manager key").
 #   ONECLICK_ADMIN_EMAIL   the owner's email. It is a Worker SECRET (ADMIN_EMAIL), as in the
 #                          button layout (deploy/oneclick/.dev.vars.example), and the Access policy's
