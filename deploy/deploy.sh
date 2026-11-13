@@ -148,7 +148,9 @@ opcache() {
 log "build"
 cd "$APP"
 [ -d node_modules ] || npm ci --silent
-[ -f vendor/php_8_3.js ] || ./prepare.sh
+# Every build regenerates the loader (#394, #446): a stale vendor/ never picks up a new patch.
+# No pipe: a pipe would hide a failed patch assert and ship the old loader.
+./prepare.sh || { echo "prepare.sh failed: the loader was not rebuilt"; exit 1; }
 if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
   ./build.sh | tail -1
   DEV_ENV=$([ "$VARIANT" = b-dosql ] && echo dosql-local || echo do-local) opcache

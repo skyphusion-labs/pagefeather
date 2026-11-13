@@ -480,7 +480,12 @@ build_dosql() {
   echo "OPcache priming: WOO_ACTIVE=$woo (explicit, or woocommerce in IMPORT_PLUGINS/PLUGINS)"
   ( cd "$APP"
     [ -d node_modules ] || npm ci --silent
-    [ -f vendor/php_8_3.js ] || ./prepare.sh
+    # Every build regenerates the loader (#394, #446): prepare.sh rebuilds vendor/ from the pinned
+    # package and applies every patch. Running it only when vendor/php_8_3.js was missing kept an
+    # old loader in a tree that had built before, so a new loader patch never reached a deploy
+    # (measured on pf394a, 2026-11-13: the heap patch build showed the stock 111 and 133 MiB stairs).
+    # No pipe: a pipe takes tail's status and would hide a failed patch assert, shipping the old loader.
+    ./prepare.sh || { echo "prepare.sh failed: the loader was not rebuilt"; exit 1; }
     # WOO_ACTIVE reaches build.sh too, so the build id says whether it is primed (#377).
     # WOO follows it (#451): WooCommerce is in the bundle only when the site runs it. A plain site
     # (no WOO_ACTIVE=1, no woocommerce in PLUGINS or IMPORT_PLUGINS) builds without its 11 MiB of
