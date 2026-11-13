@@ -31,7 +31,8 @@ test('x-mem-trace is a perf header: a visitor never gets it', () => {
 test('the mu-plugin returns at once without the trace header, and only knows the listed switches', () => {
 	const guard = php.indexOf("if ( empty( $_SERVER['HTTP_X_MEM_TRACE'] ) || ! function_exists( 'post_message_to_js' ) ) {");
 	assert.ok(guard > 0 && guard < php.indexOf('add_action('), 'the guard must come before any hook');
-	assert.ok(php.includes("array( 'woo', 'wcadmin', 'preload', 'updates', 'dashboard', 'notices', 'l10n' )"));
+	assert.ok(php.includes("array( 'woo', 'wcadmin', 'wcfeatures', 'preload', 'updates', 'dashboard', 'notices', 'l10n' )"));
+	assert.ok(src.includes("if (m.memMark) { console.log(JSON.stringify({ m: 'mem-mark', k: m.memMark })); return '1'; }"));
 });
 
 test('build.sh copies the trace mu-plugin', () => {
