@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { createLedger, memfsBytes, createSqlMeter, ledgerOn } from '../mem-ledger.mjs';
 
 const MIB = 1048576;
+const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 // A small Emscripten-shaped FS: directories hold {name: node}; files hold a Uint8Array.
 const DIR = 0o040000, FILE = 0o100000;
 function fakeFs() {
@@ -51,6 +52,33 @@ test('ledger.runtimes: the current runtime apart, every other live one is retire
 	assert.equal(r.finalizer, typeof FinalizationRegistry === 'function');
 });
 
+test('ledger.runtimes: the real WebAssembly.Memory of a retired runtime is sized, even when its wrapper reads 0', () => {
+	const l = createLedger();
+	const wrapperA = {}, wrapperB = {};
+	const memA = new WebAssembly.Memory({ initial: 32 }); // 2 MiB
+	const memB = new WebAssembly.Memory({ initial: 16 }); // 1 MiB
+	l.register(wrapperA, 1, memA);
+	l.register(wrapperB, 2, memB);
+	const r = l.runtimes(2, () => 0); // after php.exit the wrapper's HEAPU8 reads 0
+	assert.equal(r.retiredMiB, 0, 'the wrapper view cannot size it');
+	assert.equal(r.retiredMem, 1);
+	assert.equal(r.retiredMemMiB, 2, 'the Memory view does');
+	assert.equal(r.currentMemMiB, 1);
+	assert.equal(r.memLive, 2);
+	memA.grow(16);
+	assert.equal(l.runtimes(2, () => 0).retiredMemMiB, 3, 'it reads the live byteLength, after a grow too');
+	const nomem = createLedger();
+	nomem.register({}, 1);
+	assert.equal(nomem.runtimes(1, () => 0).memLive, 0, 'no memory passed: counted as wrapper only');
+});
+
+test('index.js: the Memory is taken from the instance export at boot and registered with the runtime', () => {
+	assert.match(src, /bootMemory = inst\.exports\.memory \|\| null;/);
+	assert.match(src, /ledger\.register\(php, runtimeSerial, bootMemory\);/);
+	const reg = src.indexOf('ledger.register(php, runtimeSerial, bootMemory);');
+	assert.ok(src.slice(reg, reg + 200).includes('bootMemory = null;'), 'cleared after use, so a later boot cannot reuse it');
+});
+
 test('sqlMeter and ledgerOn', () => {
 	const s = createSqlMeter();
 	s.add(1024); s.add(3 * MIB);
@@ -64,11 +92,10 @@ test('sqlMeter and ledgerOn', () => {
 	assert.equal(ledgerOn({ MEM_LEDGER: 'yes' }, null, false), false);
 });
 
-const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 
 test('index.js: off by default, per request, and snapshots at the memory-limit SQL write, write-loss and end', () => {
 	assert.match(src, /ledgerActive = ledgerOn\(env, req\.headers\.get\('x-mem-ledger'\), perfHeadersAllowed\(req, env\)\);/);
-	assert.match(src, /ledger\.register\(php, runtimeSerial\);/);
+	assert.match(src, /ledger\.register\(php, runtimeSerial, bootMemory\);/);
 	const sql = src.indexOf('const reply = sqlStatement(sqlDb, m);');
 	const blk = src.slice(sql, src.indexOf('return out;', sql));
 	assert.match(blk, /if \(ledgerActive\) \{/);
