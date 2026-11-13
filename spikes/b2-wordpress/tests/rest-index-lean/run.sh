@@ -19,8 +19,11 @@ WP_VERSION=$(sed -n 's/^WP_VERSION=//p' "$APP/build.sh"); SQLITE_DI_REF=$(sed -n
 WOO_VERSION=$(sed -n 's/^WOO_VERSION=//p' "$APP/build.sh"); WOO_SHA256=$(sed -n 's/^WOO_SHA256=//p' "$APP/build.sh")
 C=${FETCH_CACHE:-$APP/build/cache}; mkdir -p "$C"
 z=$C/wordpress-$WP_VERSION.zip
+# The same cache layout as build.sh (the zip AND its .sha1 beside it): a zip without its .sha1 made
+# build.sh skip its own download and then fail the checksum (#431 part a, 2026-11-13).
 [ -f "$z" ] || curl -sfL "https://wordpress.org/wordpress-$WP_VERSION.zip" -o "$z" || die "WordPress download"
-echo "$(curl -sfL "https://wordpress.org/wordpress-$WP_VERSION.zip.sha1")  $z" | shasum -a 1 -c - >/dev/null || die "WordPress SHA-1"
+[ -f "$z.sha1" ] || curl -sfL "https://wordpress.org/wordpress-$WP_VERSION.zip.sha1" -o "$z.sha1" || die "WordPress SHA-1 download"
+echo "$(cat "$z.sha1")  $z" | shasum -a 1 -c - >/dev/null || die "WordPress SHA-1"
 [ -d "$C/sqlite-database-integration" ] || git clone -q https://github.com/WordPress/sqlite-database-integration "$C/sqlite-database-integration" || die "sqlite clone"
 git -C "$C/sqlite-database-integration" checkout -q "$SQLITE_DI_REF" || die "sqlite ref"
 w=$C/woocommerce-$WOO_VERSION.zip
