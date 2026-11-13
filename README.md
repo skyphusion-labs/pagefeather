@@ -1,6 +1,8 @@
-# WordPress on Cloudflare
+# Pagefeather
 
 **WordPress and WooCommerce on Cloudflare's edge: no server, no database box, near zero at rest.**
+
+Before 2026-11-13, the name of this repository was `wordpress-on-cloudflare`.
 
 This is for edge and serverless developers, and for anyone tired of looking after a WordPress VPS.
 It is a framework you run on your own Cloudflare Workers for Platforms account. Each site is
@@ -32,7 +34,7 @@ what you see on ggc.sh is the uncached path, not the cached one.
 > [docs/operator.md](docs/operator.md), the one the isolation proofs use. A measured run of
 > `site add` and `site remove` from a fresh clone is next. `deploy/wfp/site` is the one operator
 > surface of this deployment
-> ([#294](https://github.com/skyphusion-labs/wordpress-on-cloudflare/issues/294)).
+> ([#294](https://github.com/skyphusion-labs/pagefeather/issues/294)).
 > `deploy/provision/cli.mjs` is for a site on a Cloudflare for SaaS zone only: without
 > `WFP_SAAS_ZONE_ID` it refuses before any API call and names `deploy/wfp/site`.
 
@@ -69,11 +71,11 @@ document is indexed in [docs/](docs/README.md).
   memory wall (next item). The SEO Framework and Slim SEO fit the bundle; their memory is not
   measured yet, because activation failed on the test store (#289). A way to move plugin and theme
   source out of the bundle is being designed; it is not a promise that these plugins will fit
-  ([#279](https://github.com/skyphusion-labs/wordpress-on-cloudflare/issues/279)).
+  ([#279](https://github.com/skyphusion-labs/pagefeather/issues/279)).
 - **128 MiB of memory per request (the isolate).** A heavy plugin set can exceed it. A store with
   Rank Math reaches 119 MiB a request, and every other request answers 503; without it, the same
   store passes checkout ([docs/known-limitations.md](docs/known-limitations.md),
-  [#279](https://github.com/skyphusion-labs/wordpress-on-cloudflare/issues/279)).
+  [#279](https://github.com/skyphusion-labs/pagefeather/issues/279)).
 - **Workers Free only partly works.** Cached pages hit and most renders fit, but the installer and
   WooCommerce do not (the plan table below).
 - **Cost:** two idle sites cost about $25 a month, the Workers for Platforms Paid subscription

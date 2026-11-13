@@ -49,5 +49,5 @@ resource "cloudflare_dns_record" "mysql" {
   content = vultr_instance.mysql.main_ip
   proxied = false
   ttl     = 60
-  comment = "WordPress database for ${var.name} (wordpress-on-cloudflare deploy/mysql)"
+  comment = "WordPress database for ${var.name} (pagefeather deploy/mysql)"
 }

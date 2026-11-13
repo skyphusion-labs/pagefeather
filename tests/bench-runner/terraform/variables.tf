@@ -19,7 +19,7 @@ variable "plan" {
 variable "repo" {
   description = "Git repository the runner clones (bench.py, e2e.sh, summarize.py)."
   type        = string
-  default     = "https://github.com/skyphusion-labs/wordpress-on-cloudflare"
+  default     = "https://github.com/skyphusion-labs/pagefeather"
 }
 
 variable "branch" {

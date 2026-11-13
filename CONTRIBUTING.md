@@ -1,8 +1,8 @@
 # Contributing
 
-This repository records which ways of running WordPress on Cloudflare work, and
-on which plan. The README matrix is the product. Read it before you change a
-cell.
+This repository (Pagefeather) records which ways of running WordPress on
+Cloudflare work, and on which plan. The README matrix is the product. Read it
+before you change a cell.
 
 ## License
 

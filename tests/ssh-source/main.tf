@@ -53,7 +53,7 @@ resource "cloudflare_dns_record" "src" {
   content = "${cloudflare_zero_trust_tunnel_cloudflared.src.id}.cfargotunnel.com"
   proxied = true
   ttl     = 1
-  comment = "wordpress-on-cloudflare #83 SSH test source, temporary (CR #101)"
+  comment = "pagefeather #83 SSH test source, temporary (CR #101)"
 }
 
 # Access: only the service token passes (no identity login).
@@ -97,7 +97,7 @@ resource "cloudflare_dns_record" "mysql_import" {
   content = "${cloudflare_zero_trust_tunnel_cloudflared.src.id}.cfargotunnel.com"
   proxied = true
   ttl     = 1
-  comment = "wordpress-on-cloudflare #31 variant-a live import, TCP 3306, temporary (CR #141)"
+  comment = "pagefeather #31 variant-a live import, TCP 3306, temporary (CR #141)"
 }
 
 resource "cloudflare_zero_trust_access_service_token" "mysql_import" {
