@@ -126,7 +126,7 @@ When the build id and the config hash are the same, and `FORCE_UPLOAD` is not `1
 
 A change only to the rendered config uploads on its own. Do not pass `FORCE_UPLOAD=1` for that change. This includes `PHP_INI`, `PHP_RECYCLE`, `OPCACHE_SPLIT`, `CODE_PERSIST`, `CODE_BUDGET_MB`, `TURNSTILE_*`, `OBSERVABILITY` and the mail variables. These values are still read from the environment of the run only. They are not recorded build inputs. An update that does not pass one of them renders the site without it, so the hash changes and the update uploads. Pass the value on every update of that site.
 
-A change to a secret value, with the same key names, does not change the hash, so it does not upload. A new secret key does. `site.sh up` records the hash after it uploads the user Worker, so a site added after this change has a hash. Test: `tests/config-hash-test.sh`.
+A change to a secret value, with the same key names, does not change the hash, so it does not upload. A new secret key does. To push a rotated secret value, run the update with `FORCE_UPLOAD=1`. `site.sh up` records the hash after it uploads the user Worker, so a site added after this change has a hash. Test: `tests/config-hash-test.sh`.
 
 ### The build inputs of a site (#377, #379)
 
