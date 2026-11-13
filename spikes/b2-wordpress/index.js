@@ -27,6 +27,10 @@ import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
 // Compiled PHP (OPcache file cache) made by opcache.sh with this same PHP build.
 import opcacheZip from './build/opcache.zip';
+// #394 L1 (opcache-split.py): the BOOT part of the OPcache file cache is not a static module. It is
+// fetched from the Assets binding when a runtime boots and dropped after that request. null when
+// the build was not split (build.sh writes the default).
+import OPCACHE_BOOT from './build/opcache-boot-index.js';
 // The build id baked at build time (build.sh writes build/build-id.js), so the
 // object can report which code version it runs (issue #35 slice 5).
 import BUILD_ID from './build/build-id.js';
@@ -163,6 +167,9 @@ let bootPromise;
 // The most recently booted PHP, so the /_memprobe bridge (handleMessage probeMem) can
 // read the live WASM heap size from JS. memory_get_usage() reports 0 under USE_ZEND_ALLOC=0.
 let lastBootedPhp = null;
+// The admin memory trace of the request now running (#434, php/mem-trace.php): set by the
+// memTrace message at PHP shutdown, read once into the operator-only x-mem-trace header.
+let lastMemTrace = null;
 // Performance instrument (docs/perf-dosql.md), PHP object only. Counts do not
 // need the clock: in a Worker or a Durable Object, Date.now() moves only at
 // I/O, so a time measured across synchronous PHP and SQLite work can read 0.
@@ -363,6 +370,50 @@ const inflated = new Map(); // drop function -> bytes
 const fileTrace = createTrace();
 const tracing = () => Boolean(ENV && ENV.FILE_TRACE === 'on');
 let inflatedBytes = 0;
+// #394 L1: the boot pack's file nodes, mounted for one request when a runtime boots.
+let bootPackPaths = null;
+// What the last boot did with the boot pack, for x-perf (l1): 'assets', 'fallback:<why>', or 'none'.
+let l1State = 'none';
+async function loadBootPacks() {
+	const t = Date.now();
+	const base = 'https://assets.local/_pf/' + OPCACHE_BOOT.id + '/';
+	// OPCACHE_BOOT_SOURCE=module forces the fallback (a test of that path; see tests/l1-e2e.sh).
+	if (ENV && ENV.ASSETS && ENV.OPCACHE_BOOT_SOURCE !== 'module') {
+		try {
+			const packs = await Promise.all(
+				OPCACHE_BOOT.chunks.map(async (c) => {
+					const r = await ENV.ASSETS.fetch(new Request(base + c));
+					if (!r.ok) throw new Error(c + ' answered ' + r.status);
+					return new Uint8Array(await r.arrayBuffer());
+				}),
+			);
+			const kib = Math.round(packs.reduce((n, p) => n + p.length, 0) / 1024);
+			console.log(JSON.stringify({ m: 'l1', source: 'assets', chunks: packs.length, kib, ms: Date.now() - t }));
+			l1State = `assets ${kib}KiB ${Date.now() - t}ms`;
+			return packs;
+		} catch (e) {
+			console.log(JSON.stringify({ m: 'l1', fallback: 'assets failed: ' + String((e && e.message) || e).slice(0, 160) }));
+			l1State = 'fallback:assets-failed';
+		}
+	} else {
+		console.log(JSON.stringify({ m: 'l1', fallback: ENV && ENV.ASSETS ? 'OPCACHE_BOOT_SOURCE=module' : 'no ASSETS binding' }));
+		l1State = ENV && ENV.ASSETS ? 'fallback:forced' : 'fallback:no-assets-binding';
+	}
+	// The fallback the lead asked for: today's in-memory path, from a module imported only here.
+	const mod = await import('./build/opcache-boot.zip');
+	return [new Uint8Array(mod.default)];
+}
+function dropBootPack(FS) {
+	if (!bootPackPaths) return;
+	for (const p of bootPackPaths) {
+		try {
+			FS.unlink(p);
+		} catch {
+			// already gone
+		}
+	}
+	bootPackPaths = null;
+}
 function evictLazy() {
 	for (const drop of inflated.keys()) drop();
 	inflated.clear();
@@ -982,6 +1033,7 @@ async function handleMessage(raw) {
 	if (m.txn) return JSON.stringify(sqlDb ? txnOp(sqlDb, sqlStorage, m.txn) : { ok: false, error: 'no database in the object' });
 	if (m.oc) return JSON.stringify(await objectCacheOp(m.oc));
 	if (m.probeMem) return JSON.stringify({ wasm: lastBootedPhp ? lastBootedPhp[__private__dont__use].HEAPU8.length : null });
+	if (m.memTrace) { lastMemTrace = m.memTrace; return '1'; }
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
 	if (m.email) return JSON.stringify(await emailOp(m.email));
 	if (m.aiAlt) return JSON.stringify(await aiAltOp(m.aiAlt));
@@ -1165,6 +1217,21 @@ async function boot(origin) {
 	}
 	const tSite = Date.now() - t0 - tWasm;
 	let opcacheFiles = 0;
+	// #394 L1: the BOOT files of a split build, for this boot request only (dropped after it).
+	bootPackPaths = null;
+	l1State = OPCACHE_BOOT ? (ENV.OPCACHE_SPLIT === 'off' ? 'none:split-off' : 'none') : 'none:unsplit';
+	if (OPCACHE_BOOT && ENV.OPCACHE_SPLIT !== 'off') {
+		bootPackPaths = [];
+		for (const pack of await loadBootPacks()) {
+			for (const e of zipEntries(pack)) {
+				if (e.name.endsWith('/')) continue;
+				const full = OPCACHE_DIR + '/' + e.name;
+				mkdirp(full.slice(0, full.lastIndexOf('/')));
+				lazyFile(FS, full, e, 'opcache');
+				bootPackPaths.push(full);
+			}
+		}
+	}
 	for (const e of zipEntries(new Uint8Array(opcacheZip))) {
 		if (e.name.endsWith('/')) continue;
 		const full = OPCACHE_DIR + '/' + e.name;
@@ -2335,6 +2402,9 @@ export class PhpRuntime extends DurableObject {
 		if (dbHandler) dbHandler.reset();
 		// The Worker checked the spike token already. Checked again: the object
 		// trusts nothing it did not check itself.
+		// #394 L1: the OPcache boot packs live under /_pf/ in the static assets. They hold compiled PHP of
+		// the site's code, so no request may read them; only the object fetches them, through the binding.
+		if (url.pathname.startsWith('/_pf/')) return new Response('Not Found', { status: 404 });
 		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		// Spike: the URL the object got, and the origin it uses.
@@ -2567,6 +2637,8 @@ async function runCron(booted, cleanDue = false, mail = null) {
 			echo json_encode( array( 'ran' => $ran, 'wp_cron_events' => $events, 'wp_cron_hooks' => implode( ',', $wp_hooks ), 'wp_cron_skipped' => implode( ',', array_keys( $skipped ) ), 'wp_cron_due' => implode( ',', array_keys( $wp_due ) ), 'released' => $released, 'as_actions' => $as_n, 'as_pass' => isset( $as_pass ) ? $as_pass : null, 'as_dates' => implode( ',', $as_dates ), 'as_hooks' => implode( ',', $as_list ), 'as_pending' => $as_pending, 'as_due' => $as_due, 'cleaned' => $cleaned ) );` });
 		} finally {
 			tickMail = null;
+			evictLazy();
+			dropBootPack(php[__private__dont__use].FS); // #394 L1: a cron run that booted drops the boot files too
 		}
 		let out = {};
 		try { out = JSON.parse(String(r.text).slice(String(r.text).lastIndexOf('{'))); } catch (e) { out = { parse: String(r.text).slice(-200) }; }
@@ -2708,6 +2780,9 @@ const site = {
 		// Drop any left over (an /_install run, or a request that failed early).
 		if (dbHandler) dbHandler.reset();
 		// Spike endpoints need the SPIKE_TOKEN secret when it is set (always on a deploy).
+		// #394 L1: the OPcache boot packs live under /_pf/ in the static assets. They hold compiled PHP of
+		// the site's code, so no request may read them; only the object fetches them, through the binding.
+		if (url.pathname.startsWith('/_pf/')) return new Response('Not Found', { status: 404 });
 		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		if (env.MEDIA && (req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/wp-content/uploads/')) return serveUpload(req, env, url);
@@ -3081,6 +3156,8 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// valid spike token, so a visitor cannot disable the cache in production.
 			if (!spikeOk) delete headers['x-ast-cache-off'];
 			if (!spikeOk) delete headers['x-oc-off'];
+			// The memory trace and its switches (#434) reach PHP only with a valid spike token.
+			if (!spikeOk) { delete headers['x-mem-trace']; delete headers['x-mem-off']; }
 			let body;
 			if (env.MEDIA && isMediaUpload(req, url) && Number(req.headers.get('content-length') || 0) > STAGE_MIN_BYTES) {
 				const staged = await stageUpload(req, env);
@@ -3099,6 +3176,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const wantOpcache = ctx && ctx.inObject && spikeOk && req.headers.get('x-perf-opcache') === '1';
 			const op0 = wantOpcache ? await opcacheStats(php) : null;
 			const tPhp = Date.now();
+			lastMemTrace = null;
 			const r = await handler.request({ url: url.pathname + url.search, method: req.method, headers, body });
 			const phpOnlyMs = Date.now() - tPhp;
 			const op1 = wantOpcache ? await opcacheStats(php) : null;
@@ -3156,12 +3234,15 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			if (d.failures.length && spikeOk && env.SPIKE_TOKEN) out.set('x-d1-first-failure', (d.failures[0].error + ' | ' + d.failures[0].sql).replace(/[^\x20-\x7e]/g, ' ').slice(0, 600));
 			out.set('x-php-ms', String(Date.now() - t0));
 			out.set('x-boot', booted ? '1' : '0');
+			if (spikeOk && lastMemTrace) out.set('x-mem-trace', JSON.stringify(lastMemTrace).slice(0, 7900));
+			lastMemTrace = null;
 			if (ctx && ctx.inObject) out.set('x-boot-origin', bootOrigin);
 			// The path only, never the query string: a store's URLs carry order keys and logins there.
 			console.log(JSON.stringify({ m: 'req', path: url.pathname, boot: booted, d1: d.calls }));
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
 			if (tracing()) fileTrace.end({ status: r.httpStatusCode });
 			evictLazy();
+			dropBootPack(php[__private__dont__use].FS); // #394 L1: the boot files are no longer needed
 			const wasmBytes = php[__private__dont__use].HEAPU8.length;
 			out.set('x-wasm-mib', String(Math.round(wasmBytes / 1048576)));
 			// php-wasm answers a crashed runtime with a bare 500. Never reuse it.
@@ -3194,6 +3275,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 					inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024),
 					wasm0MiB: Math.round(wasm0 / 1048576),
 					wasm1MiB: Math.round(wasmBytes / 1048576),
+					...(booted ? { l1: l1State } : {}), // #394 L1: where this boot's OPcache boot pack came from
 					bytes: r.bytes.length,
 					httpCalls: stats.httpCalls - start.httpCalls,
 					txnOps: stats.txnOps - start.txnOps,

@@ -137,5 +137,10 @@ recyc() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sy
 ok "no PHP_RECYCLE var by default" "$(env -u PHP_RECYCLE bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | recyc | grep -qx 'null' && echo 1 || echo 0)"
 ok "PHP_RECYCLE=off renders it" "$(PHP_RECYCLE=off render_user one https://wp-one.sub.workers.dev | recyc | grep -qx '"off"' && echo 1 || echo 0)"
 for bad in on yes OFF 0; do ok "PHP_RECYCLE=$bad fails the render" "$(PHP_RECYCLE=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
+# OPCACHE_SPLIT (#394 L1): the ASSETS binding and /_pf/ first only on a split build.
+assets() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["assets"], sort_keys=True))'; }
+ok "unsplit: [assets] is the directory only" "$(env -u OPCACHE_SPLIT bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | assets | grep -qx '{"directory": "build/public"}' && echo 1 || echo 0)"
+ok "OPCACHE_SPLIT=1: the ASSETS binding and run_worker_first /_pf/*" "$(OPCACHE_SPLIT=1 render_user one https://wp-one.sub.workers.dev | assets | grep -qx '{"binding": "ASSETS", "directory": "build/public", "run_worker_first": \["/_pf/\*"\]}' && echo 1 || echo 0)"
+ok "OPCACHE_SPLIT=2 fails the render" "$(OPCACHE_SPLIT=2 render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"
 echo "$fails failing check(s)"
 exit $fails

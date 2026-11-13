@@ -457,6 +457,7 @@ ASYNC_EMAIL_QUEUE = "off"
 directory = "build/public"
 binding = "ASSETS"
 not_found_handling = "none"
+run_worker_first = ["/_pf/*"] # #394 L1: the OPcache boot packs are never served (index.js refuses /_pf/)
 [env.dosql-local.cache]
 enabled = true
 [[env.dosql-local.d1_databases]]

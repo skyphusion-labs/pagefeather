@@ -201,13 +201,28 @@ php_recycle_var() {
     *) echo "PHP_RECYCLE must be off or unset, not ${PHP_RECYCLE}" >&2; return 1 ;;
   esac
 }
+# #394 L1 (OPCACHE_SPLIT=1): the object fetches the OPcache boot packs through an ASSETS binding,
+# and /_pf/ must reach the Worker first (which refuses it), or the asset router would serve the
+# site's compiled PHP to anyone (#412). Nothing is added when the build is not split.
+opcache_split_assets() {
+  case "${OPCACHE_SPLIT:-0}" in
+    0) ;;
+    1) printf '\nbinding = "ASSETS"\nrun_worker_first = ["/_pf/*"]' ;;
+    *) echo "OPCACHE_SPLIT must be 0 or 1, not ${OPCACHE_SPLIT}" >&2; return 1 ;;
+  esac
+}
 render_user() { # render_user <site> <origin>
-  local s=$1 origin=$2 mail_binding mail_vars http_allow ts_vars
+  local s=$1 origin=$2 mail_binding mail_vars http_allow ts_vars php_env
+  # WFP_PHP_ENV (#434): a measurement build may set USE_ZEND_ALLOC=1 so memory_get_usage reads
+  # Zend's own numbers. JSON only, no single quote (it sits in a TOML literal string).
+  php_env=${WFP_PHP_ENV:-'{"USE_ZEND_ALLOC":"0"}'}
+  case $php_env in *"'"*|*$'\n'*) echo "WFP_PHP_ENV must not hold a single quote or a newline" >&2; return 1 ;; esac
   mail_binding=$(SITE_ORIGIN="$origin" MAIL_FROM="${MAIL_FROM:-}" node "$APP/mail-from.mjs" --binding) || return 1
   mail_vars=$(SITE_ORIGIN="$origin" MAIL_FROM="${MAIL_FROM:-}" MAIL_FROM_NAME="${MAIL_FROM_NAME:-}" node "$APP/mail-from.mjs" --vars) || return 1
   http_allow=$(node "$APP/http-allow.mjs") || return 1
   ts_vars=$(turnstile_vars) || return 1
   # PHP_INI (#394) joins the Turnstile lines, so a site without it renders byte for byte as before.
+  local split_assets; split_assets=$(opcache_split_assets) || return 1
   local php_ini; php_ini=$(php_ini_var) || return 1
   [ -z "$php_ini" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$php_ini
   local php_recycle; php_recycle=$(php_recycle_var) || return 1
@@ -221,7 +236,7 @@ compatibility_flags = ["nodejs_compat"]
 rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
 $mail_binding
 [assets]
-directory = "build/public"
+directory = "build/public"$split_assets
 [cache]
 enabled = true
 [exports.default]
@@ -233,7 +248,7 @@ type = "worker"
 [exports.Pages.cache]
 enabled = true
 [vars]
-PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
+PHP_ENV = '$php_env'
 SITE_ORIGIN = "$origin"
 $mail_vars
 HTTP_ALLOW_HOSTS = "$http_allow"
@@ -422,7 +437,13 @@ build_dosql() {
     # WOO_ACTIVE reaches build.sh too, so the build id says whether it is primed (#377).
     WOO_ACTIVE=$woo ./build.sh | tail -1
     WOO_ACTIVE=$woo DEV_ENV=dosql-local ./opcache.sh > build/opcache.log 2>&1 || { echo "opcache.sh failed:"; tail -25 build/opcache.log; exit 1; }
-    tail -1 build/opcache.log ) || return 1
+    tail -1 build/opcache.log
+    # #394 L1 (OPCACHE_SPLIT=1): trace which OPcache files a WARM request reads on the primed build,
+    # then keep only those as the module; the rest become static assets fetched when a runtime boots.
+    if [ "${OPCACHE_SPLIT:-0}" = 1 ]; then
+      WOO_ACTIVE=$woo DEV_ENV=dosql-local ./file-trace.sh > build/file-trace.log 2>&1 || { echo "file-trace.sh failed:"; tail -15 build/file-trace.log; exit 1; }
+      python3 -I opcache-split.py build/opcache.zip build/file-trace.json build/build-id.js || exit 1
+    fi ) || return 1
   # The subshell status is checked (#313): under "site update --all" (if "$fn") set -e is off, and
   # a failed opcache.sh used to fall through to the size check with the EMPTY opcache.zip that
   # build.sh starts, and that bundle was uploaded.
@@ -441,6 +462,10 @@ bundle_size_check() { # bundle_size_check [app dir]
 import os, sys
 app, cap = sys.argv[1], float(sys.argv[2])
 parts = ["build/site.zip", "build/opcache.zip", "vendor/php_8_3.wasm", "vendor/php_8_3.js"]
+# #394 L1: the boot pack's fallback module ships in the bundle too (index.js imports it only when
+# the Assets binding is missing). build.sh always writes it, empty when the build is not split.
+if os.path.isfile(os.path.join(app, "build/opcache-boot.zip")):
+    parts.append("build/opcache-boot.zip")
 missing = [p for p in parts if not os.path.isfile(os.path.join(app, p))]
 if missing:
     sys.exit("bundle size: missing " + ", ".join(missing) + " (build first)")
