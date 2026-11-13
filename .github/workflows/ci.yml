@@ -134,6 +134,9 @@ jobs:
       - name: b-dosql the cron tick never runs the Action Scheduler queue runner (issue #335)
         # cron-run-queue.test.mjs runs the real runCron script with the php CLI against stubs.
         run: node --test spikes/b2-wordpress/tests/cron-run-queue.test.mjs
+      - name: b-dosql Action Scheduler runs only in the alarm, never from a page (issue #358)
+        # as-alarm-only.test.mjs runs the real mu-plugin with the php CLI against a hook stub.
+        run: node --test spikes/b2-wordpress/tests/as-alarm-only.test.mjs
       - name: b-dosql the cron tick claims a new order email before the backlog (issue #357)
         # cron-email-first.test.mjs runs the real runCron script with the php CLI against a stub store with the claim rules.
         run: node --test spikes/b2-wordpress/tests/cron-email-first.test.mjs
