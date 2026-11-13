@@ -84,7 +84,13 @@ add_filter(
 	PHP_INT_MAX,
 	3
 );
-skyphusion_mem_at( 'rest_api_init', 'rest_init', null );
+skyphusion_mem_at( 'rest_api_init', 'rest_init', 'rest_init_end' );
+// The admin page head and body before the footer: pass B (#434) saw 18.4 MiB grow between
+// enqueue_end and footer on the dashboard, profile and product list, with WooCommerce on only.
+skyphusion_mem_at( 'admin_head', 'head_start', 'head_end' );
+skyphusion_mem_at( 'admin_print_scripts', 'head_scripts_start', 'head_scripts_end' );
+skyphusion_mem_at( 'in_admin_header', 'admin_header', null );
+skyphusion_mem_at( 'all_admin_notices', 'notices_start', 'notices_end' );
 
 // The block editor preload: it runs REST requests in-process (block_editor_rest_api_preload).
 // The paths filter runs just before them, block_editor_settings_all just after.

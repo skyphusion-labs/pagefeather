@@ -10,7 +10,6 @@ The whole of build/opcache.zip is a data module today, resident in every isolate
 
 Writes:
   build/opcache.zip                         the WARM files only (still a data module, resident)
-  build/opcache-boot.zip                    the BOOT files (the fallback module, dynamic import only)
   build/public/_pf/<build-id>/boot-<n>.zip  the same BOOT files in chunks under 16 MiB, as static
                                             assets (25 MiB per file limit), fetched at a boot
   build/opcache-boot-index.js               export default { id, chunks, files, bytes }
@@ -84,14 +83,18 @@ def main():
         cur_bytes += len(zipfile.ZipInfo(name).filename) + len(data) // 3  # a rough deflated size; the cap has slack under 25 MiB
     close()
     open(zpath, 'wb').write(warm_buf.getvalue())
-    open(os.path.join(os.path.dirname(zpath), 'opcache-boot.zip'), 'wb').write(boot_buf.getvalue())
+    # No fallback module: #411 measured that a bundled data module costs isolate memory even when it
+    # is never imported, so the boot files must NOT ship in the bundle at all.
+    stale = os.path.join(os.path.dirname(zpath), 'opcache-boot.zip')
+    if os.path.exists(stale):
+        os.remove(stale)
     idx = {'id': build_id, 'chunks': chunks, 'files': len(boot), 'bytes': len(boot_buf.getvalue())}
     open(os.path.join(os.path.dirname(zpath), 'opcache-boot-index.js'), 'w').write('export default %s;\n' % json.dumps(idx))
     for c in chunks:
         if os.path.getsize(os.path.join(out_dir, c)) > 25 * 1048576:
             sys.exit('opcache-split: %s is over the 25 MiB static asset limit' % c)
     M = 1048576
-    print('opcache split: warm %d files %.2f MiB (module), boot %d files %.2f MiB in %d asset chunk(s) under _pf/%s, from %d warm requests' % (
+    print('opcache split: warm %d files %.2f MiB (module), boot %d files %.2f MiB in %d asset chunk(s) under _pf/%s (not in the bundle), from %d warm requests' % (
         len(warm), len(warm_buf.getvalue()) / M, len(boot), len(boot_buf.getvalue()) / M, len(chunks), build_id, nwarm))
 
 
