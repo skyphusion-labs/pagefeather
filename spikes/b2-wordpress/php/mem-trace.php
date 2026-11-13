@@ -15,6 +15,7 @@
  * x-mem-off (comma list) switches ONE component off for this request, so a page's peak can be
  * compared with and without it:
  *   woo       WooCommerce is not loaded (option_active_plugins without it)
+ *   plugin=<slug>  any one plugin is not loaded, by its directory name (tier 1, #422)
  *   wcadmin   woocommerce_admin_disabled (measured: WooCommerce 11 barely honours it)
  *   wcfeatures the wc-admin feature list is emptied (woocommerce_admin_features)
  *   preload   the block editor REST preload paths are emptied (post-new.php, post.php)
@@ -114,14 +115,40 @@ add_filter(
 
 // ---- the switches (x-mem-off) -----------------------------------------------------------------
 $skyphusion_mem_off = array_filter( array_map( 'trim', explode( ',', strtolower( (string) ( isset( $_SERVER['HTTP_X_MEM_OFF'] ) ? $_SERVER['HTTP_X_MEM_OFF'] : '' ) ) ) ) );
+// plugin=<slug> switches one plugin off by its directory name (tier 1, #422): the generic form of
+// woo. Only a plugin directory name WordPress could have made is accepted.
+$skyphusion_mem_plugins = array();
+foreach ( $skyphusion_mem_off as $o ) {
+	if ( preg_match( '/^plugin=([a-z0-9][a-z0-9_-]{0,63})$/', $o, $mm ) ) {
+		$skyphusion_mem_plugins[] = $mm[1];
+	}
+}
 $skyphusion_mem_off = array_values( array_intersect( $skyphusion_mem_off, array( 'woo', 'wcadmin', 'wcfeatures', 'preload', 'updates', 'dashboard', 'notices', 'l10n' ) ) );
+if ( in_array( 'woo', $skyphusion_mem_off, true ) ) {
+	$skyphusion_mem_plugins[] = 'woocommerce';
+}
+foreach ( $skyphusion_mem_plugins as $slug ) {
+	if ( 'woocommerce' !== $slug ) {
+		$skyphusion_mem_off[] = 'plugin=' . $slug;
+	}
+}
 $GLOBALS['skyphusion_mem']['off'] = $skyphusion_mem_off;
 
-if ( in_array( 'woo', $skyphusion_mem_off, true ) ) {
+if ( $skyphusion_mem_plugins ) {
 	add_filter(
 		'option_active_plugins',
-		function ( $p ) {
-			return is_array( $p ) ? array_values( array_diff( $p, array( 'woocommerce/woocommerce.php' ) ) ) : $p;
+		function ( $p ) use ( $skyphusion_mem_plugins ) {
+			if ( ! is_array( $p ) ) {
+				return $p;
+			}
+			return array_values(
+				array_filter(
+					$p,
+					function ( $file ) use ( $skyphusion_mem_plugins ) {
+						return ! in_array( strtok( (string) $file, '/' ), $skyphusion_mem_plugins, true );
+					}
+				)
+			);
 		}
 	);
 }
