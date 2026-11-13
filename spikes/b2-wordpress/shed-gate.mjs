@@ -24,8 +24,8 @@ export const SENT_HEADER = 'x-perf-sent';
 export const ORIGIN_HEADER = 'x-wp-public-origin';
 
 /** Defaults (set from the shed1113a sweep, see the PR); SHED_SOFT and SHED_HARD override them, "off" turns one off. */
-export const SHED_SOFT_DEFAULT = 4;
-export const SHED_HARD_DEFAULT = 8;
+export const SHED_SOFT_DEFAULT = 1000;
+export const SHED_HARD_DEFAULT = 1001;
 export const SHED_RETRY_AFTER_S = '5';
 
 // The inbox wait is reported on a shed answer (x-shed-wait-ms, operator only). A wait outside this

@@ -16,6 +16,7 @@ import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, demoLockDefines } from './site-lock.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders } from './perf-headers.mjs';
 import { ORIGIN_KEY, storeOriginIfChanged } from './origin-store.mjs';
+import { probeDrop, probeCur, snapshot, probeStore, PROBE_KEY } from './probe391.mjs';
 import { SENT_HEADER, ORIGIN_HEADER, stampForObject, gated } from './shed-gate.mjs';
 import { resetFailures, writeLossResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
@@ -2342,6 +2343,7 @@ export class PhpRuntime extends DurableObject {
 		// warm object keeps the old code until it is evicted, so this reports the
 		// object's version, which can lag the Worker's until /_evict or a sleep.
 		if (url.pathname === '/_build') return Response.json({ build: BUILD_ID });
+		if (url.pathname === '/_probe391') return Response.json({ now: snapshot('read', {}, __private__dont__use), recs: (await this.ctx.storage.get(PROBE_KEY)) || [] });
 		// Reset this object so the next request boots the new code (issue #35
 		// slice 5). ctx.abort() may not exist on an older compat date: then 501,
 		// and the caller falls back to waiting for the idle sleep.
@@ -2402,8 +2404,12 @@ export class PhpRuntime extends DurableObject {
 		const tArrive = Date.now();
 		const ahead = phpPending;
 		const isSpikeLongOp = url.pathname === '/_install' || url.pathname === '/_activate';
+		const probeW = !url.pathname.startsWith('/_') && req.method !== 'GET' && req.method !== 'HEAD';
+		const probeId = probeW ? Date.now() + '-' + Math.random().toString(36).slice(2, 6) : null;
+		if (probeW) await probeStore(this.ctx.storage, snapshot('prologue', { id: probeId, method: req.method, path: url.pathname, rest: url.searchParams.get('rest_route'), phpPending, nextBoots: !bootPromise, rt: runtimeSerial }, __private__dont__use));
 		phpPending++;
 		return withPhp(async () => {
+			if (probeW) await probeStore(this.ctx.storage, snapshot('render-start', { id: probeId, phpPending, nextBoots: !bootPromise, rt: runtimeSerial }, __private__dont__use));
 			const waitMs = Date.now() - tArrive;
 			sqlDb = sql;
 			sqlStorage = sql ? this.ctx.storage : null;
@@ -3009,6 +3015,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const booted = !bootPromise;
 			bootPromise ??= boot(origin);
 			const { php, handler, bootMs } = await bootPromise;
+			probeCur(php);
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
 			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
@@ -3128,6 +3135,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// recycled (measured 2026-11-06: 3 recycles at 119 MiB with WooCommerce and
 			// All-in-One WP Migration). A crashed runtime is still dropped.
 			if (crashed || (wasmBytes > RECYCLE_WASM_BYTES && env.PHP_RECYCLE !== 'off')) {
+				probeDrop(php, wasmBytes);
 				runtimeDrops++;
 				bootPromise = null;
 				out.set('x-runtime-recycled', crashed ? 'crashed' : 'memory');
