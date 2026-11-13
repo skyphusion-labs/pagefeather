@@ -160,6 +160,12 @@ if ( 'route-exception' === $scenario ) {
 	try { do_action( 'woocommerce_store_api_checkout_update_order_from_request', null, $req ); } catch ( Exception $e ) { $caught = $e; }
 	check( 'route exception outage: error code', $caught ? $caught->error_code : null, 'skyphusion_turnstile_unavailable' );
 	check( 'route exception outage: HTTP 503', $caught ? $caught->getCode() : null, 503 );
+	// A request with no front answer (a Store API batch, #351) is a failed token: a clean 400.
+	ts_reply( array( 'ok' => true, 'success' => false, 'codes' => array( 'not-preverified' ) ) );
+	$caught = null;
+	try { do_action( 'woocommerce_store_api_checkout_update_order_from_request', null, $req ); } catch ( Exception $e ) { $caught = $e; }
+	check( 'route exception not-preverified: failed code', $caught ? $caught->error_code : null, 'skyphusion_turnstile_failed' );
+	check( 'route exception not-preverified: HTTP 400, not 500 or 503', $caught ? $caught->getCode() : null, 400 );
 	echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
 	exit( $fail ? 1 : 0 );
 }
@@ -271,6 +277,11 @@ check( 'classic checkout outage: try-again notice', $GLOBALS['wc_notices'][0][0]
 // A reply that is not JSON (a broken bridge) is an outage too, never a pass.
 $GLOBALS['ts_reply'] = 'not json';
 check( 'result: a broken bridge reply is unavailable', skyphusion_turnstile_result( 'some-token' ), 'unavailable' );
+// A classic checkout with no front answer (posted without wc-ajax, #351) gets the normal notice.
+ts_reply( array( 'ok' => true, 'success' => false, 'codes' => array( 'not-preverified' ) ) );
+$GLOBALS['wc_notices'] = array();
+do_action( 'woocommerce_checkout_process' );
+check( 'classic checkout not-preverified: the challenge notice, not the outage one', $GLOBALS['wc_notices'][0][0] ?? null, 'Please complete the challenge to place your order.' );
 // A bad token (no infra error) is never let through by fail-open, on any form.
 ts_reply( array( 'ok' => true, 'success' => false ) );
 check( 'result: a bad token is failed', skyphusion_turnstile_result( 'some-token' ), 'failed' );

@@ -393,6 +393,26 @@ for (const route of ['login', 'woo', 'store']) {
 	});
 }
 
+// The two accepted limits (#351): neither gets a front answer, and each is refused as a FAILED
+// token (no error field), so PHP answers its normal refusal (a 400 or a notice), never a 500 and
+// never the outage path.
+for (const [name, method, path] of [
+	['a checkout inside a Store API batch request', 'POST', '/wp-json/wc/store/v1/batch'],
+	['a checkout inside a Store API batch request (rest_route)', 'POST', '/?rest_route=/wc/store/v1/batch'],
+	['a classic checkout posted without wc-ajax (no JavaScript)', 'POST', '/?page_id=7'],
+	['a classic checkout posted to the checkout page path', 'POST', '/checkout/'],
+]) {
+	test(`refused cleanly: ${name}`, async () => {
+		assert.equal(turnstileRoute(ON, method, U(path)), '');
+		const slot = new TurnstileSlot();
+		const out = await frontThenObject({}, turnstileRoute(ON, method, U(path)), 'TOK', async () => { throw new Error('the front Worker must not verify this'); }, slot);
+		assert.equal(out.seenByObject, null);
+		const r = slot.take('TOK');
+		assert.deepEqual(r, { success: false, codes: ['not-preverified'] });
+		assert.equal(r.error, undefined, 'a failed token, not an outage: no 503, no fail-open');
+	});
+}
+
 test('Retry-After only for a Store API outage answered 503', () => {
 	assert.equal(retryAfterFor('store', { error: 'timeout' }, 503), '5');
 	assert.equal(retryAfterFor('store', { error: 'timeout' }, 400), '');

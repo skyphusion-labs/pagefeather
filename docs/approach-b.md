@@ -742,8 +742,14 @@ only with a `content-length`), calls siteverify, and sends the answer to the obj
 name that came from the client. The object takes the header off before PHP sees the request and
 keeps the answer for that one PHP run (`TurnstileSlot`). The turnstile op then answers from it, once,
 and only for the same token, without any fetch or wait. With no answer, a different token or a
-second use, the op answers a failed token, so the gate fails closed. A Store API batch request and a
-classic checkout posted without `wc-ajax=checkout` get no answer, and so are refused.
+second use, the op answers a failed token, so the gate fails closed.
+
+Two requests get no answer from the front Worker, and so are always refused, with the normal
+"Please complete the challenge" answer (a 400 or a notice), never a 500:
+- A checkout inside a Store API batch request (`/wc/store/v1/batch`). The block checkout client
+  sends its checkout to `/wc/store/v1/checkout`, not through the batch route.
+- A classic checkout posted without `wc-ajax=checkout`, which is the form post a browser makes with
+  JavaScript off. Turnstile needs JavaScript to produce a token, so such a post can never pass.
 
 An outage is tried once more inside the one budget (`TURNSTILE_TIMEOUT_MS`, default 10 s, split
 between the two tries), with the same siteverify `idempotency_key`, so Cloudflare answers the
