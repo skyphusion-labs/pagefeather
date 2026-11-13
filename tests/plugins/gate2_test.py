@@ -318,6 +318,11 @@ def t_tier1_lists():
         for i in G.items(os.path.join(HERE, path)):
             if i["slug"] in g2:
                 assert g2[i["slug"]] == (i["version"], i["sha"]), "%s pins differ from gate2.txt" % i["slug"]
+    # tier1-build.txt (the built-in fallback, suite.txt format) holds the same pins as tier1.txt.
+    t1p = {i["slug"]: (i["version"], i["sha"]) for i in t1}
+    build = {l.split()[0]: tuple(l.split()[1:3]) for l in open(os.path.join(HERE, "tier1-build.txt")) if l.strip() and not l.startswith("#")}
+    assert set(build) == {"elementor", "wordpress-seo", "advanced-custom-fields", "wordfence", "updraftplus"}, sorted(build)
+    assert all(build[s] == t1p[s] for s in build), "tier1-build.txt pins differ from tier1.txt"
     alt = [i["slug"] for i in G.items(os.path.join(HERE, "tier1-alt.txt"))]
     assert alt == ["seo-by-rank-math", "wpforms-lite", "hello-elementor"], alt
 

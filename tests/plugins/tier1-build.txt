@@ -1,0 +1,13 @@
+# Gate 2 tier 1, the built-in route (#422, lead ruling 2026-11-13): the tier1.txt plugins that
+# could not be installed from wp-admin on pft1a (P1, #449), in suite.txt format for fetch.sh:
+#   SUITE=tier1-build.txt PLUGINS="<slugs>" deploy/wfp/site update <site>
+# This route is the FALLBACK and is marked so in the report. contact-form-7 is not here: it
+# installed from wp-admin and persists. Themes cannot go through PLUGINS= (astra: #449).
+# elementor is EXPECTED OVER the 62 MiB bundle gate; it is listed to get the measured size.
+# Suggested builds: wordpress-seo advanced-custom-fields wordfence updraftplus; then elementor alone.
+# slug version sha256-of-zip
+elementor 4.3.6 f9f04c40e559ecc1c737eec6519e7223ff9a1ab04abcc2e004b44c9f6d1247a3
+wordpress-seo 28.8 27cc01cb149db7186ef750552a5cc2ae5028933473886e419918af273b075105
+advanced-custom-fields 6.8.11 577118d6c5f3add8f8eb8f04e40578259ce02986d301ef53d9665bc7c0a2967d
+wordfence 9.0.2 4124ae2a5d7cff8faadf04c222583fa06f78e8e9c791e50447383e5e12ab5fb6
+updraftplus 1.26.14 c5f3408140760aed8ebb301af197b6266e7c6b565307ca56d3b4e50b665cd6e9
