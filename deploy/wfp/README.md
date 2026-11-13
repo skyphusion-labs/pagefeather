@@ -124,7 +124,7 @@ The command uploads for any of these reasons, and it prints the reason:
 
 When the build id and the config hash are the same, and `FORCE_UPLOAD` is not `1`, the command prints `nothing to do` and it does not upload.
 
-A change only to the rendered config uploads on its own. Do not pass `FORCE_UPLOAD=1` for that change. This includes `PHP_INI`, `PHP_RECYCLE`, `OPCACHE_SPLIT`, `CODE_PERSIST`, `CODE_BUDGET_MB`, `TURNSTILE_*`, `OBSERVABILITY` and the mail variables. These values are still read from the environment of the run only. They are not recorded build inputs. An update that does not pass one of them renders the site without it, so the hash changes and the update uploads. Pass the value on every update of that site.
+A change only to the rendered config uploads on its own. Do not pass `FORCE_UPLOAD=1` for that change. This includes `PHP_INI`, `PHP_RECYCLE`, `OPCACHE_SPLIT`, `TURNSTILE_*`, `OBSERVABILITY` and the mail variables. These values are still read from the environment of the run only. They are not recorded build inputs. An update that does not pass one of them renders the site without it, so the hash changes and the update uploads. Pass the value on every update of that site.
 
 A change to a secret value, with the same key names, does not change the hash, so it does not upload. A new secret key does. To push a rotated secret value, run the update with `FORCE_UPLOAD=1`. `site.sh up` records the hash after it uploads the user Worker, so a site added after this change has a hash. Test: `tests/config-hash-test.sh`.
 
@@ -157,21 +157,14 @@ PHP_INI='{"opcache.memory_consumption":"48"}' deploy/wfp/site update <name>
 - The other config emitters (`deploy/provision`, the Worker path) do not read it. The golden case `php-ini` shows that.
 - Tests: `deploy/wfp/tests/render-test.sh` (with it, without it, the refused shapes) and `deploy/tests/render-golden` (case `php-ini`).
 
-### Plugins installed from wp-admin: CODE_PERSIST (#407)
+### Plugins and themes come from the build: the code lock (#458)
 
-With `CODE_PERSIST=on`, a plugin or theme installed, updated or deleted from wp-admin stays that way:
+Every site is code-locked: the generated `wp-config.php` sets `DISALLOW_FILE_MODS` and `DISALLOW_FILE_EDIT` (`spikes/b2-wordpress/site-lock.mjs`). wp-admin keeps the standard CMS work; installing, updating or removing core, a plugin or a theme is a code deploy (Conrad, 2026-11-13, on #422). Plugins > Add New, updates and the plugin and theme editors are not offered. Activating and deactivating a plugin, and switching themes, still work. The Plugins and Themes screens say, in one sentence, to add it to the site's build and deploy it (`php/code-lock-notice.php`).
 
-```sh
-CODE_PERSIST=on CODE_BUDGET_MB=<MB> deploy/wfp/site update <name>
-```
-
-- **Where it lives:** each install is one zip in the site's own bucket (`_code/<type>/<slug>/<sha256>.zip`), indexed in the site's own database. Every runtime boot mounts it again, and every request picks up a change.
-- **The budget:** `CODE_BUDGET_MB` caps the installed code a site keeps in memory, and it is REQUIRED with `CODE_PERSIST=on`. It has no default on purpose: set it from the site's measured headroom (#394; `spikes/b2-wordpress/tests/measure394.py`). An install over the budget is refused in plain words in wp-admin, and nothing is left behind.
-- **Deploy-only slugs:** plugins and themes the build ships (core themes, WooCommerce, `IMPORT_PLUGINS`) are not installed over or updated from wp-admin. Update them with a deploy.
-- **Not recorded inputs:** like `PHP_INI` and `TURNSTILE_*`, both values are read from the run's environment only. An update that does not pass them turns the feature off. The stored code stays in the bucket and comes back when it is turned on again.
-- **One-click sites stay locked** (`CODE_LOCK=on`) until Gate 2 of #422 shows this works.
-- **Security:** see `deploy/provision/HARDENING.md`.
-- **Tests:** `spikes/b2-wordpress/tests/code-store.test.mjs` (the crash windows, the sha check, the budget boundary, a second isolate), `tests/code-persist-e2e.sh` (local, the real installer), and `deploy/wfp/tests/render-test.sh`.
+- **Add a plugin or theme:** put it in the build (`PLUGINS`, or `IMPORT_CONTENT` with `IMPORT_PLUGINS` / `IMPORT_THEMES`) and run `deploy/wfp/site update <name>`.
+- **No off switch for a deployed site:** `CODE_LOCK=off` exists only for a local or throwaway test instance (`wrangler dev --var CODE_LOCK:off`). No deploy tool renders it.
+- **Approach `a`** generates its `wp-config.php` in the same `index.js`, so it is locked the same way.
+- **Tests:** `spikes/b2-wordpress/tests/site-lock.test.mjs`, `spikes/b2-wordpress/tests/code-lock-e2e.sh` (local, with a `CODE_LOCK=off` control).
 
 ### Keeping the PHP runtime past 100 MiB: PHP_RECYCLE (#394)
 

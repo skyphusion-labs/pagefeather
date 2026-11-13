@@ -1,12 +1,12 @@
 <?php
 /**
  * Plugin Name: Code lock notice
- * Description: On a one-click site (CODE_LOCK=on, issue #406), the Plugins and Themes screens say why there is no way to add one.
+ * Description: Every site is code-locked (#458): the Plugins and Themes screens say how a plugin or theme is added.
  *
- * site-lock.mjs defines DISALLOW_FILE_MODS, DISALLOW_FILE_EDIT and SKYPHUSION_CODE_LOCK on such a site.
- * WordPress then hides "Add New" without a word. A plugin or theme installed from wp-admin
- * would not persist on this site (docs/plugins.md), so it is not offered. This notice says so.
- * Inert on every other site: it returns before it adds anything.
+ * site-lock.mjs defines DISALLOW_FILE_MODS, DISALLOW_FILE_EDIT and SKYPHUSION_CODE_LOCK on every site
+ * (not a demo site, which has its own notice). WordPress then hides "Add New" without a word. Core,
+ * plugin and theme changes are code deploys (Conrad, 2026-11-13), so the notice says that, in one plain
+ * sentence. It does not judge any plugin. Inert where the constant is not set.
  */
 
 if ( ! defined( 'SKYPHUSION_CODE_LOCK' ) || true !== SKYPHUSION_CODE_LOCK ) {
@@ -15,10 +15,10 @@ if ( ! defined( 'SKYPHUSION_CODE_LOCK' ) || true !== SKYPHUSION_CODE_LOCK ) {
 
 function skyphusion_code_lock_notice_text( $screen_id ) {
 	if ( 'plugins' === $screen_id ) {
-		return 'This site comes with the plugins listed below. You can activate and deactivate them here. You cannot add new plugins to this site yet.';
+		return 'You can activate and deactivate the plugins below here. To add, update or remove a plugin, add it to the site\'s build and deploy it.';
 	}
 	if ( 'themes' === $screen_id ) {
-		return 'This site comes with the themes shown below. You can activate them here. You cannot add new themes to this site yet.';
+		return 'You can activate the themes below here. To add, update or remove a theme, add it to the site\'s build and deploy it.';
 	}
 	return '';
 }

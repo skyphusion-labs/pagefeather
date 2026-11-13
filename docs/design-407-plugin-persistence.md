@@ -1,5 +1,7 @@
 # Design: plugins and themes installed from wp-admin persist (pagefeather#407, alpha gate #422 Gate 2)
 
+> **SUPERSEDED (2026-11-13) by #458.** Conrad ruled that core, plugin and theme installs and updates are code deploys, not wp-admin work. `CODE_PERSIST` was removed, and every site is code-locked. This document stays as the design record of what was built and measured (#433).
+
 Status: DESIGN ONLY, at the lead's gate. Written 2026-11-13 by rollins (seat rollins-sb1114b).
 Builds on #293 (lever B) and the #394 measurements of the same day. A number with no source is
 labeled unmeasured.
