@@ -238,7 +238,16 @@ export async function putCode({ index, bucket, type, slug, version, zip, files, 
 	try {
 		await index.upsert({ type, slug, version: cleanVersion(version), key, sha256: sha, bytes: zip.length, files: files || 0, updated_at: now });
 	} catch (e) {
-		// The object is written and no row points at it: an orphan the sweep removes. Boot never loads it.
+		// The object is written and no row points at it (#449): delete it now, so a failed install leaves
+		// nothing behind. Never when the live row already points at this same content (a reinstall of
+		// the same zip): that object is the live install. A delete that fails here is left to the sweep.
+		if (!old || old.key !== key) {
+			try {
+				await bucket.delete(key);
+			} catch {
+				// an orphan for the sweep; boot never loads it
+			}
+		}
 		return { ok: false, code: 'index', error: `${slug} could not be recorded (${String((e && e.message) || e).slice(0, 120)}). It was not installed.` };
 	}
 	if (old && old.key !== key) {

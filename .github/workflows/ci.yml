@@ -113,6 +113,9 @@ jobs:
         run: python3 -I spikes/b2-wordpress/tests/opcache-split-test.py
       - name: b-dosql runtime guards, raw sockets and PHP messages (issue #452)
         run: node --test spikes/b2-wordpress/tests/runtime-guards.test.mjs
+      - name: b-dosql code store zips one file at a time (issue #449)
+        # code-zip.mjs uses fflate, so this step installs the spike's pinned dependencies first.
+        run: npm ci --silent --prefix spikes/b2-wordpress && node --test spikes/b2-wordpress/tests/code-zip.test.mjs
       - name: b-dosql outbound host allowlist
         run: node --test spikes/b2-wordpress/tests/http-allow.test.mjs
       - name: email-queue unit tests

@@ -19,6 +19,7 @@ import { resetFailures, writeLossResponse, wantsJson, heldRequestMail, sqlShape 
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import { routeClass, createTrace } from './file-trace.mjs';
 import { refuseSocketsDecorator, parseMessage } from './runtime-guards.mjs';
+import { zipStream } from './code-zip.mjs';
 import { CodeMounter, putCode, deleteCode, sweepOrphans, codeBudget, validSlug, validType, sqliteIndex, mysqlIndex } from './code-store.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
@@ -553,27 +554,20 @@ function mountCode(FS, type, slug, zip) {
 		lazyFile(FS, full, e, 'code');
 	}
 }
-// The slug directory, as a map of relative name -> bytes. Refuses a symbolic link and an oversize tree.
-function readCodeDir(FS, base) {
-	const files = {};
-	let raw = 0;
-	const walk = (dir, rel) => {
+// The slug directory as entries for code-zip.mjs: each file is read only when the zip needs it, so
+// the unpacked tree is never all in memory at once (#449). Refuses a symbolic link.
+function* codeDirEntries(FS, base) {
+	function* walk(dir, rel) {
 		for (const n of FS.readdir(dir)) {
 			if (n === '.' || n === '..') continue;
 			const p = dir + '/' + n;
 			const st = FS.lstat(p);
 			if (FS.isLink(st.mode)) throw new Error('it contains a symbolic link (' + (rel + n) + ')');
-			if (FS.isDir(st.mode)) walk(p, rel + n + '/');
-			else {
-				const b = FS.readFile(p);
-				raw += b.length;
-				if (raw > CODE_MAX_RAW_BYTES) throw new Error('it is larger than ' + CODE_MAX_RAW_BYTES / 1048576 + ' MB unpacked');
-				files[rel + n] = b;
-			}
+			if (FS.isDir(st.mode)) yield* walk(p, rel + n + '/');
+			else yield { name: rel + n, read: () => FS.readFile(p) };
 		}
-	};
-	walk(base, '');
-	return { files, raw };
+	}
+	yield* walk(base, '');
 }
 function codeFsOps(FS) {
 	return { mount: (t, s, z) => mountCode(FS, t, s, z), unmount: (t, s) => fsRmrf(FS, codeDir(t, s)) };
@@ -609,15 +603,13 @@ async function codeOp(op) {
 	if (op.op === 'put') {
 		const base = codeDir(type, slug);
 		if (!fsExists(FS, base)) return { ok: false, error: `${slug} is not in wp-content/${type}s.` };
-		let files, raw;
+		let zip, raw, files;
 		try {
-			({ files, raw } = readCodeDir(FS, base));
+			({ zip, raw, files } = zipStream(codeDirEntries(FS, base), { maxRaw: CODE_MAX_RAW_BYTES }));
 		} catch (e) {
 			return { ok: false, error: `${slug} cannot be stored: ${e.message}.` };
 		}
-		const { zipSync } = await import('fflate');
-		const zip = zipSync(files, { level: 6 });
-		const r = await putCode({ index, bucket: ENV.MEDIA, type, slug, version: op.version ? String(op.version).slice(0, 64) : null, zip, files: Object.keys(files).length, budget: codeBudget(ENV), now: Date.now() });
+		const r = await putCode({ index, bucket: ENV.MEDIA, type, slug, version: op.version ? String(op.version).slice(0, 64) : null, zip, files, budget: codeBudget(ENV), now: Date.now() });
 		console.log(JSON.stringify({ m: 'code', op: 'put', type, slug, ok: r.ok, code: r.code, bytes: zip.length, raw }));
 		// The installer's unpacked copy is replaced by the lazy mount of the stored zip, so this runtime
 		// does not keep a second, inflated copy resident.

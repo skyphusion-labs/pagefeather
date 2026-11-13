@@ -170,7 +170,9 @@ for (const kind of KINDS) {
 		const b = bucket();
 		await k.index.gen(); // the tables exist before the fault
 		k.failIndexWrites(true);
+		b.fail.delete = true; // #449 deletes the orphan at once; after a reset that delete can fail too
 		const r = await putCode({ index: k.index, bucket: b, type: 'plugin', slug: 'ghost', zip: zipOf(50), budget: MIB, now: 0 });
+		b.fail.delete = false;
 		k.failIndexWrites(false);
 		assert.equal(r.code, 'index');
 		assert.equal(b.objs.size, 1, 'the orphan object exists');
@@ -181,6 +183,26 @@ for (const kind of KINDS) {
 		assert.equal((await sweepOrphans({ index: k.index, bucket: b, now: 11 * 60_000 })).length, 1);
 		assert.equal(b.objs.size, 0);
 		assert.equal(await k.index.lastSweep(), 11 * 60_000);
+	});
+
+	test(`[${label}] #449: an index failure deletes the zip it just wrote, but never the live install's`, async () => {
+		const k = kind();
+		const b = bucket();
+		await k.index.gen();
+		k.failIndexWrites(true);
+		const r = await putCode({ index: k.index, bucket: b, type: 'plugin', slug: 'big', zip: zipOf(70, 5), budget: MIB, now: 0 });
+		k.failIndexWrites(false);
+		assert.equal(r.code, 'index');
+		assert.equal(b.objs.size, 0, 'no orphan is left behind');
+		// A reinstall of the SAME content whose index write fails: that object is the live one, so it stays.
+		const live = await putCode({ index: k.index, bucket: b, type: 'plugin', slug: 'same', zip: zipOf(40, 6), budget: MIB, now: 1 });
+		assert.equal(live.ok, true);
+		k.failIndexWrites(true);
+		const again = await putCode({ index: k.index, bucket: b, type: 'plugin', slug: 'same', zip: zipOf(40, 6), budget: MIB, now: 2 });
+		k.failIndexWrites(false);
+		assert.equal(again.code, 'index');
+		assert.equal(b.objs.has(live.key), true, 'the live object is not deleted');
+		assert.equal((await loadCode({ index: k.index, bucket: b })).mounted.length, 1, 'and it still loads');
 	});
 
 	test(`[${label}] crash window: the R2 put fails: refused, nothing recorded`, async () => {
