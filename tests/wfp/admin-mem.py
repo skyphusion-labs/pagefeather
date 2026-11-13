@@ -2,7 +2,7 @@
 """Admin page memory by component (#434). THROWAWAY site only: it evicts the site's object before
 every request (so each request boots a fresh runtime) and, for the install page, installs a plugin.
 
-    B=https://<throwaway> SPIKE_TOKEN=... ADMIN_USER=... ADMIN_PASSWORD=... \\
+    B=https://<throwaway> THROWAWAY=<its exact host> SPIKE_TOKEN=... ADMIN_USER=... ADMIN_PASSWORD=... \\
       TURNSTILE_TEST_TOKEN=XXXX.DUMMY.TOKEN.XXXX python3 tests/wfp/admin-mem.py run <label> [N] > <label>.jsonl
     python3 tests/wfp/admin-mem.py summary <label>.jsonl ...
 
@@ -52,8 +52,29 @@ def row_of(label, page, off, i, r):
             "trace": t, **({"err": r["err"]} if r.get("err") else {})}
 
 
+def target_ok(base, allowed):
+    """The run refuses any site but the one named in THROWAWAY (an exact host match)."""
+    from urllib.parse import urlparse
+    host = urlparse(base or "").hostname or ""
+    return bool(allowed) and host == allowed
+
+
+def plugin_path(o, req, nonce, slug):
+    r = req(o, "/?rest_route=/wp/v2/plugins", None, {"X-WP-Nonce": nonce})
+    try:
+        for p in json.loads(r.get("body") or b"[]"):
+            if p.get("plugin", "").split("/")[0] == slug:
+                return p["plugin"]
+    except (ValueError, AttributeError):
+        return None
+    return None
+
+
 def run(label, n):
+    import break_lib
     from break_lib import opener, req
+    if not target_ok(break_lib.B, os.environ.get("THROWAWAY")):
+        sys.exit("admin-mem: B is not the THROWAWAY host; refusing (set THROWAWAY to the throwaway site's exact host)")
     o = opener()
     req(o, "/wp-login.php")
     form = {"log": os.environ.get("ADMIN_USER", "admin"), "pwd": os.environ["ADMIN_PASSWORD"], "wp-submit": "Log In", "redirect_to": "/wp-admin/", "testcookie": "1"}
@@ -72,6 +93,14 @@ def run(label, n):
                 if method == "POST-REST":
                     h.update({"X-WP-Nonce": nonce, "Content-Type": "application/json"})
                     r = req(o, "/?rest_route=" + path, json.dumps({"slug": "contact-form-7"}).encode(), h, "POST")
+                    print(json.dumps(row_of(label, page, off, i, r)), flush=True)
+                    # Leave nothing behind: if the install is still there (it is usually gone with
+                    # its isolate, #422), delete it. Recorded as its own row, headers only.
+                    pp = plugin_path(o, req, nonce, "contact-form-7")
+                    if pp:
+                        d = req(o, "/?rest_route=/wp/v2/plugins/" + pp.replace(".php", ""), None, {"X-WP-Nonce": nonce}, "DELETE")
+                        print(json.dumps(row_of(label, "install-cleanup", off, i, d)), flush=True)
+                    continue
                 else:
                     r = req(o, path + ("&" if "?" in path else "?") + "nocache=%s-%d" % (label, int(time.time() * 1000)), None, h)
                 print(json.dumps(row_of(label, page, off, i, r)), flush=True)

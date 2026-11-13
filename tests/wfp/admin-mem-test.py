@@ -35,5 +35,8 @@ check("the growth between checkpoints is attributed", d["none"]["growthMiB"]["mu
 check("resets, write-loss and fresh runtimes are counted", d["none"]["resets"] == 1 and d["none"]["writeLoss"] == 1 and d["none"]["fresh"] == 3 and d["none"]["ok"] == 3)
 check("the file groups show the switch took effect", d["wcadmin"]["files"]["woo_admin"] == 20 and d["none"]["files"]["woo_admin"] == 300)
 check("a row is headers and trace only (no body key)", "body" not in M.row_of("x", "p", "none", 0, {"code": 200, "s": 1, "body": b"secret", "h": {"x-wasm-mib": "99"}}))
+check("the run refuses any host but THROWAWAY", M.target_ok("https://wp-pf422a.skyphusion.workers.dev", "wp-pf422a.skyphusion.workers.dev")
+      and not M.target_ok("https://ggc.sh", "wp-pf422a.skyphusion.workers.dev") and not M.target_ok("https://wp-pf422a.skyphusion.workers.dev", "")
+      and not M.target_ok("https://wp-pf422a.skyphusion.workers.dev.evil.example", "wp-pf422a.skyphusion.workers.dev"))
 print("cases_failed=%d" % fails)
 sys.exit(1 if fails else 0)
