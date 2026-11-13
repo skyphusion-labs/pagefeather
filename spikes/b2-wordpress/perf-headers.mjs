@@ -11,6 +11,7 @@ export const PERF_HEADERS = [
 	'server-timing',
 	'x-perf-worker',
 	'x-perf-queue',
+	'x-shed-wait-ms',
 	'x-perf',
 	'x-oc-stats',
 	'x-d1-calls',

@@ -15,6 +15,8 @@ import { analyticsEnabled, recordPageview } from './analytics.mjs';
 import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, demoLockDefines } from './site-lock.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders } from './perf-headers.mjs';
+import { ORIGIN_KEY, storeOriginIfChanged } from './origin-store.mjs';
+import { SENT_HEADER, ORIGIN_HEADER, stampForObject } from './shed-gate.mjs';
 import { resetFailures, writeLossResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
@@ -1319,7 +1321,6 @@ let lastOrigin = null;
 const PURGE_GAP_MS = 15000;
 // The object's purge state (issue #78): {pending, lastSent, retried}, in its storage.
 const PURGE_STATE_KEY = 'skyphusion-purge';
-const ORIGIN_KEY = 'skyphusion-origin';
 const CRON_SKIP_KEY = 'cron-skip';
 const CRON_CLEAN_KEY = 'cron-cleaned-at';
 let lastPurge = 0;
@@ -2113,14 +2114,12 @@ async function opcacheStats(php) {
 // object, PHP never yields to the event loop (no I/O), so a second request
 // cannot start until the first ends: that wait is before fetch, where no
 // counter in the object can see it. On Cloudflare the two clocks are on two
-// machines (skew of a few ms).
-const SENT_HEADER = 'x-perf-sent';
+// machines (skew of a few ms). The inbox-wait gate (shed-gate.mjs, #391) reads it.
 // The visitor's origin, from the Worker. On Cloudflare the object got the URL
 // as http://<host>:443/..., so WP_HOME was wrong and every logged-out page
 // answered 301 to that URL (measured 2026-11-05, wp-do-free). The Worker
 // always sets this header (a visitor's value is replaced), and only the
-// Worker can reach the object, so the object can trust it.
-const ORIGIN_HEADER = 'x-wp-public-origin';
+// Worker can reach the object, so the object can trust it. (Both constants: shed-gate.mjs.)
 export class PhpRuntime extends DurableObject {
 	// Page cache purges for the whole site (issue #78). PHP runs in this one
 	// object (PHP_DO_POOL=1), so every change of content passes here. The
@@ -2306,8 +2305,9 @@ export class PhpRuntime extends DurableObject {
 		// activation's (WooCommerce did not activate, #185). A real visitor (a page, an order)
 		// arms it instead, which is when the deferred work actually needs to run.
 		if (!url.pathname.startsWith('/_')) {
+			// Only when it changed (origin-store.mjs, #391): a same-value put held every response of a burst.
+			await storeOriginIfChanged(this.ctx.storage, origin, lastOrigin);
 			lastOrigin = origin;
-			await this.ctx.storage.put(ORIGIN_KEY, origin);
 			// A STALE alarm (long past, its run never completed) counts as none (#291): otherwise it
 			// blocks every later arm and the cron stops for good. alarm-arm.mjs.
 			// A stale one is deleted, then set (rearm): a re-set alone was not delivered on ggc-test.
@@ -2567,11 +2567,9 @@ async function toPhpObject(req, env, url, ctx) {
 	const res = await fetchWithMemoryRetry(
 		() => {
 			const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(name), env.PHP_LOCATION ? { locationHint: env.PHP_LOCATION } : undefined);
-			const fwd = new Request(req);
-			fwd.headers.set(ORIGIN_HEADER, siteOrigin(env, url));
+			// stampForObject REPLACES a client's copy of either header (shed-gate.mjs, #391).
 			t0 = Date.now();
-			fwd.headers.set(SENT_HEADER, String(t0));
-			return stub.fetch(fwd);
+			return stub.fetch(stampForObject(req, siteOrigin(env, url), t0));
 		},
 		req.method,
 		(e) => console.log(JSON.stringify({ m: 'isolate-reset-retry', path: url.pathname, error: String(e.message).slice(0, 200) })),

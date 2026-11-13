@@ -88,6 +88,12 @@ jobs:
       - name: b-dosql a memory reset is not an overload (issue #335)
         # object-error.mjs: an isolate memory reset answers x-isolate-reset, never x-overloaded.
         run: node --test spikes/b2-wordpress/tests/object-error.test.mjs
+      - name: b-dosql the object sheds a request that waited past its bound (issue #391)
+        # shed-gate.mjs: a fast 503 no cache keeps; writes have the longer bound; a client SENT header is replaced; skew fails open.
+        run: node --test spikes/b2-wordpress/tests/shed-gate.test.mjs
+      - name: b-dosql a GET that changes nothing writes nothing (issue #391)
+        # origin-store.mjs: the origin is put only when it changed, so no response waits on the output gate for it.
+        run: node --test spikes/b2-wordpress/tests/origin-store.test.mjs
       - name: b-dosql a write lost to an isolate reset never answers success (issue #350)
         # write-loss.mjs: a 500 "may have been saved", no Retry-After, no Set-Cookie, on both reset paths; GET and HEAD keep the #349 retry.
         run: node --test spikes/b2-wordpress/tests/write-loss.test.mjs
