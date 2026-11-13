@@ -42,3 +42,19 @@ export const CLEAN_MS = 10 * 60 * 1000;
 export function cronCleanDue(last, now, cleanMs = CLEAN_MS) {
 	return !(Number(last) > 0) || now - Number(last) >= cleanMs;
 }
+
+// How often the cron leg runs (#470). The alarm also sends the coalesced page-cache purge, and a
+// purge alarm is set PURGE_GAP_MS (15 s) after the last purge, so under admin writes the alarm ran
+// every 15 s and each run booted WordPress for the cron leg, in the isolate that serves the admin
+// (pft1a, 2026-11-13: cron ticks 15 to 30 s apart, then an alarm memory death). The leg now runs only
+// when the last cron START is at least CRON_INTERVAL_MS ago. The start is stored before the run, so
+// a run killed by an isolate reset still counts and the next purge alarm does not boot it again.
+// CRON_SLACK_MS keeps the regular tick (armed CRON_INTERVAL_MS after the last one) from missing by
+// a few ms of clock jitter.
+export const CRON_SLACK_MS = 2000;
+/** Is the cron leg due? `last` is the stored start of the last cron leg (ms), or undefined. */
+export function cronLegDue(last, now, intervalMs, slackMs = CRON_SLACK_MS) {
+	if (!(Number(last) > 0)) return true;
+	if (Number(last) > now) return true; // a stored time from the future (a clock step): do not starve
+	return now - Number(last) >= Math.max(0, Number(intervalMs) - slackMs);
+}

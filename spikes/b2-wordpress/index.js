@@ -8,7 +8,7 @@ import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from 
 import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-arm.mjs';
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
-import { cronBounds, cronCleanDue } from './cron-bound.mjs';
+import { cronBounds, cronCleanDue, cronLegDue } from './cron-bound.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION, setResultHeader, takeResultHeader, turnstileRoute, readGatedToken, encodeResult, TurnstileSlot, turnstileTimeoutMs, retryAfterFor } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
@@ -1436,6 +1436,8 @@ const PURGE_STATE_KEY = 'skyphusion-purge';
 const ORIGIN_KEY = 'skyphusion-origin';
 const CRON_SKIP_KEY = 'cron-skip';
 const CRON_CLEAN_KEY = 'cron-cleaned-at';
+// The start of the last cron leg (#470, cron-bound.mjs cronLegDue).
+const CRON_LAST_KEY = 'cron-last-start';
 let lastPurge = 0;
 function schedulePurge(ctx) {
 	// A purge already scheduled for later covers this change too.
@@ -2300,10 +2302,17 @@ export class PhpRuntime extends DurableObject {
 			// part ran out of memory (fdprobe1112a, 2026-11-12).
 			const importHeld = cronHeld(await this.ctx.storage.get(IMPORT_HOLD_KEY), Date.now());
 			if (importHeld) console.log(JSON.stringify({ m: 'cron', held: 'import' }));
-			const cronGo = !importHeld && phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env;
+			// A purge alarm (every PURGE_GAP_MS under writes) runs the cron leg only when the last one
+			// started at least CRON_INTERVAL_MS ago (#470): the purge still goes out below either way.
+			const lastCron = await this.ctx.storage.get(CRON_LAST_KEY);
+			const legDue = cronLegDue(lastCron, Date.now(), Number(this.env.CRON_INTERVAL_MS || 60000));
+			const cronGo = legDue && !importHeld && phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env;
 			// Why a tick skipped the cron, for /_purgestate cronSkip (#291: a skip was invisible).
-			if (!cronGo) await this.ctx.storage.put(CRON_SKIP_KEY, { t: Date.now(), importHeld, phpPending, sinceSpikeMs: Date.now() - lastSpikeEndAt, origin: !!cronOrigin });
+			if (!cronGo) await this.ctx.storage.put(CRON_SKIP_KEY, { t: Date.now(), notDue: !legDue, sinceLastMs: lastCron ? Date.now() - Number(lastCron) : null, importHeld, phpPending, sinceSpikeMs: Date.now() - lastSpikeEndAt, origin: !!cronOrigin });
+			if (!legDue) console.log(JSON.stringify({ m: 'cron', skipped: 'not-due', sinceLastMs: Date.now() - Number(lastCron) }));
 			if (cronGo) {
+				// Stored BEFORE the run (#470): a run an isolate reset kills still counts as the last one.
+				await this.ctx.storage.put(CRON_LAST_KEY, Date.now());
 				// DB_IN_DO: bind the object's own SQLite as WordPress's database before the cron runtime
 				// loads WP. The fetch path sets this per request (sqlDb = sql); the alarm runs on a woken
 				// isolate where the module globals are gone, so without this sqlDb is null and every cron
