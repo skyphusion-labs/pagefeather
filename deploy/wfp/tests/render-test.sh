@@ -132,6 +132,13 @@ ok "PHP_INI with Turnstile: both render" "$(PHP_INI='{"opcache.memory_consumptio
 for bad in 'not json' '[]' '{}' '"x"' '{"a b":"1"}' '{"opcache.x":true}' '{"opcache.x":1.5}' '{"opcache.x":null}' "{\"x\":\"it's\"}" '{"x":"a\"b"}' '{"x":"a\\b"}' '{"x":"a\nb"}'; do
   ok "PHP_INI refused: $bad" "$(PHP_INI=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"
 done
+# LAZY_CACHE_MB (#394): an integer from 1 to 64, only when asked.
+lcache() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["vars"].get("LAZY_CACHE_MB")))'; }
+ok "no LAZY_CACHE_MB var by default" "$(env -u LAZY_CACHE_MB bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | lcache | grep -qx 'null' && echo 1 || echo 0)"
+ok "LAZY_CACHE_MB=2 renders it as a string" "$(LAZY_CACHE_MB=2 render_user one https://wp-one.sub.workers.dev | lcache | grep -qx '"2"' && echo 1 || echo 0)"
+ok "LAZY_CACHE_MB=08 renders 8 (no octal surprise)" "$(LAZY_CACHE_MB=08 render_user one https://wp-one.sub.workers.dev | lcache | grep -qx '"8"' && echo 1 || echo 0)"
+ok "LAZY_CACHE_MB=64 renders it" "$(LAZY_CACHE_MB=64 render_user one https://wp-one.sub.workers.dev | lcache | grep -qx '"64"' && echo 1 || echo 0)"
+for bad in 0 65 100 1.5 -2 abc "2 " 0x2; do ok "LAZY_CACHE_MB=$bad fails the render" "$(LAZY_CACHE_MB=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
 # PHP_RECYCLE (#394 E1): only "off", only when asked.
 recyc() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["vars"].get("PHP_RECYCLE")))'; }
 ok "no PHP_RECYCLE var by default" "$(env -u PHP_RECYCLE bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | recyc | grep -qx 'null' && echo 1 || echo 0)"

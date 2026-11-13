@@ -217,6 +217,18 @@ for k, v in o.items():
     if isinstance(v, str) and (len(v) > 256 or re.search(r"[\x00-\x1f\x7f\x27\x22\\]", v)): bad("bad value for %s" % k)
 print("PHP_INI = %s" % chr(39) + json.dumps(o, separators=(",", ":"), sort_keys=True) + chr(39))'
 }
+# LAZY_CACHE_MB (#394, #218): the cap, in MiB, on the inflated copies of bundle files a request keeps
+# (index.js LAZY_CACHE_BYTES, default 8). At the failing post-new INSERT the cache sat at its 8 MiB cap
+# (op48led, 2026-11-13). A smaller cap trades re-inflation (CPU) for isolate memory. An integer from
+# 1 to 64. Read from the run's environment only, like PHP_INI. Unset renders nothing (index.js keeps 8).
+lazy_cache_var() {
+  local v=${LAZY_CACHE_MB:-}
+  [ -n "$v" ] || return 0
+  if ! [[ "$v" =~ ^[0-9]{1,2}$ ]] || [ "$v" -lt 1 ] || [ "$v" -gt 64 ]; then
+    echo "LAZY_CACHE_MB must be an integer from 1 to 64, not ${v}" >&2; return 1
+  fi
+  echo "LAZY_CACHE_MB = \"$((10#$v))\""
+}
 # PHP_RECYCLE (#394, experiment E1): "off" turns off the runtime recycle for MEMORY, so the PHP
 # runtime is kept after a request whose WebAssembly memory passed RECYCLE_WASM_BYTES (100 MiB,
 # index.js). A crashed runtime is still dropped (index.js: crashed || ...). With it off, nothing in
@@ -265,6 +277,8 @@ render_user() { # render_user <site> <origin>
   local split_assets; split_assets=$(opcache_split_assets) || return 1
   local php_ini; php_ini=$(php_ini_var) || return 1
   [ -z "$php_ini" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$php_ini
+  local lazy_cache; lazy_cache=$(lazy_cache_var) || return 1
+  [ -z "$lazy_cache" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$lazy_cache
   local php_recycle; php_recycle=$(php_recycle_var) || return 1
   [ -z "$php_recycle" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$php_recycle
   local mem_ledger; mem_ledger=$(mem_ledger_var) || return 1
