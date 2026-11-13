@@ -3108,7 +3108,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// The path only, never the query string: a store's URLs carry order keys and logins there.
 			console.log(JSON.stringify({ m: 'req', path: url.pathname, boot: booted, d1: d.calls }));
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
-			evictLazy();
+			// PROBE #394 build 1: keep the inflated files across requests (no evictLazy; the 8 MiB cap still applies).
 			const wasmBytes = php[__private__dont__use].HEAPU8.length;
 			out.set('x-wasm-mib', String(Math.round(wasmBytes / 1048576)));
 			// php-wasm answers a crashed runtime with a bare 500. Never reuse it.
