@@ -110,9 +110,16 @@ grep -q 'fabcb25d9c7eb087110ec474a03e50d2' "$WFP/lib.sh" "$WFP/terraform/site/ma
 ok "no account default in lib.sh or the terraform roots (reference ids live in reference.env)" "$okt"
 ( ACCOUNT_ID=; need_account ) >/dev/null 2>&1; rc=$?
 ok "need_account with no ACCOUNT_ID exits 2" "$([ "$rc" = 2 ] && echo 1 || echo 0)"
-# OBSERVABILITY=1 (#291): Workers Logs for one site only; the default renders none.
-ok "render_user has no [observability] by default" "$(render_user one https://wp-one.sub.workers.dev | grep -c '^\[observability\]' | grep -qx 0 && echo 1 || echo 0)"
-ok "OBSERVABILITY=1 renders [observability] enabled" "$(OBSERVABILITY=1 render_user one https://wp-one.sub.workers.dev | tr '\n' ' ' | grep -q '\[observability\] enabled = true' && echo 1 || echo 0)"
+# Workers Logs (#291), privacy first: OBSERVABILITY=1 is EVENTS ONLY (our own structured lines and
+# uncaught exceptions; invocation_logs false, so no client IP, URL or user agent is recorded). "full"
+# keeps the invocation logs, for throwaways only. Off is an EXPLICIT enabled = false, so a re-upload
+# really turns logging off (an absent block left a site as it was).
+obs() { "$PY" -c 'import json, sys, tomllib; c = tomllib.loads(sys.stdin.read()); print(json.dumps(c.get("observability"), sort_keys=True))'; }
+ok "off by default: [observability] enabled = false, explicitly" "$(env -u OBSERVABILITY bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | obs | grep -qx '{"enabled": false}' && echo 1 || echo 0)"
+ok "OBSERVABILITY=0 is the same explicit off" "$(OBSERVABILITY=0 render_user one https://wp-one.sub.workers.dev | obs | grep -qx '{"enabled": false}' && echo 1 || echo 0)"
+ok "OBSERVABILITY=1 is events only: enabled, invocation_logs false" "$(OBSERVABILITY=1 render_user one https://wp-one.sub.workers.dev | obs | grep -qx '{"enabled": true, "head_sampling_rate": 1, "logs": {"enabled": true, "invocation_logs": false}}' && echo 1 || echo 0)"
+ok "OBSERVABILITY=full keeps the invocation logs (throwaways only)" "$(OBSERVABILITY=full render_user one https://wp-one.sub.workers.dev | obs | grep -qx '{"enabled": true, "head_sampling_rate": 1, "logs": {"enabled": true, "invocation_logs": true}}' && echo 1 || echo 0)"
+ok "any other OBSERVABILITY value fails the render" "$(OBSERVABILITY=yes render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"
 # WP_VECTORIZE_SEARCH (#330): the AI and SEARCH_INDEX bindings for this site's own index only.
 ok "render_user has no [ai] or [[vectorize]] by default" "$(render_user one https://wp-one.sub.workers.dev | grep -cE '^\[ai\]|^\[\[vectorize\]\]' | grep -qx 0 && echo 1 || echo 0)"
 ok "WP_VECTORIZE_SEARCH=on renders AI and SEARCH_INDEX on wp-wfp-one-search" "$(WP_VECTORIZE_SEARCH=on render_user one https://wp-one.sub.workers.dev | tr '\n' ' ' | grep -q '\[ai\] binding = "AI" \[\[vectorize\]\] binding = "SEARCH_INDEX" index_name = "wp-wfp-one-search"' && echo 1 || echo 0)"

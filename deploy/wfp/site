@@ -89,7 +89,10 @@ update_one_inner() {
   echo "site $s: rebuild from the current tree"
   build_dosql
   new=$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js" 2>/dev/null || true); new=${new:-unknown}
-  if [ "$new" = "$rollback" ]; then echo "site $s: already at build $new; nothing to do"; return 0; fi
+  # FORCE_UPLOAD=1 re-uploads the same build when only the config changed (turning Workers Logs
+  # off, OBSERVABILITY): without it the skip below kept the old config live.
+  if [ "$new" = "$rollback" ] && [ "${FORCE_UPLOAD:-0}" != 1 ]; then echo "site $s: already at build $new; nothing to do"; return 0; fi
+  [ "$new" != "$rollback" ] || echo "site $s: FORCE_UPLOAD=1: re-upload build $new with the current config"
   echo "site $s: upload build $new (was $rollback)"
   local CONF="$APP/wrangler.deploy.wfp-$s.toml" W; W=$(mktemp -d)
   render_user "$s" "$ORIGIN" > "$CONF"
@@ -99,6 +102,9 @@ update_one_inner() {
   bundle_size_check || { rm -rf "$W"; return 1; }
   (cd "$APP" && "$ROOT/deploy/wr" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/sec.json") > "$W/up.log" 2>&1 || { rm -rf "$W"; echo "site $s: upload failed:" >&2; tail -20 "$W/up.log" >&2; return 1; }
   rm -rf "$W"
+  # OBSERVABILITY=1 logs events only, but each event still carries the URL; a store's query strings
+  # hold order keys and logins. wrangler cannot set the redaction, so it is set here, then read back.
+  if [ "${OBSERVABILITY:-0}" = 1 ]; then python3 -I "$WFP/obs_settings.py" redact "$NAMESPACE" "site-$s" || { echo "site $s: UPLOADED, but the query-string redaction did NOT apply: turn the logs off (FORCE_UPLOAD=1, no OBSERVABILITY)" >&2; ok=0; }; fi
   tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=$new" >/dev/null
   echo "site $s: verify the new build is live"
   wait_build "$ORIGIN" "$TOK" "$new" || ok=0

@@ -15,7 +15,7 @@ import { analyticsEnabled, recordPageview } from './analytics.mjs';
 import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, demoLockDefines } from './site-lock.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders } from './perf-headers.mjs';
-import { resetFailures, writeLossResponse, wantsJson, heldRequestMail } from './write-loss.mjs';
+import { resetFailures, writeLossResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
@@ -683,7 +683,8 @@ async function deliverQueuedEmail(msg, env) {
 function deadLetterEmail(msg) {
 	stats.emailDead = (stats.emailDead || 0) + 1;
 	const to = msg.body && msg.body.to;
-	console.log(JSON.stringify({ m: 'email-dead-letter', to: Array.isArray(to) ? to : [to], subject: (msg.body && msg.body.subject) || null }));
+	// A recipient count, never an address: Workers Logs is not a mail log.
+	console.log(JSON.stringify({ m: 'email-dead-letter', recipients: (Array.isArray(to) ? to : [to]).filter(Boolean).length, subject: String((msg.body && msg.body.subject) || '').slice(0, 80) || null }));
 	msg.ack();
 }
 
@@ -3075,7 +3076,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 				}
 			}
 			if (lost) {
-				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, phpStatus: r.httpStatusCode, firstSql: String(d.failures[0].sql || '').slice(0, 80) }));
+				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, phpStatus: r.httpStatusCode, firstSql: sqlShape(d.failures[0].sql) }));
 				bootPromise = null; // the runtime saw the reset; the next request boots a new one
 				const wl = writeLossResponse(lost, wantsJson(url.pathname, url.search, req.headers.get('accept')));
 				return new Response(wl.body, { status: wl.status, headers: wl.headers });
@@ -3104,7 +3105,8 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			out.set('x-php-ms', String(Date.now() - t0));
 			out.set('x-boot', booted ? '1' : '0');
 			if (ctx && ctx.inObject) out.set('x-boot-origin', bootOrigin);
-			console.log(JSON.stringify({ m: 'req', path: url.pathname + url.search, boot: booted, d1: d.calls }));
+			// The path only, never the query string: a store's URLs carry order keys and logins there.
+			console.log(JSON.stringify({ m: 'req', path: url.pathname, boot: booted, d1: d.calls }));
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
 			evictLazy();
 			const wasmBytes = php[__private__dont__use].HEAPU8.length;

@@ -48,5 +48,10 @@ l_tree=$(grep -n '  tree_clean_check ||' "$S" | head -1 | cut -d: -f1)
 check "the dirty-tree refusal comes before the snapshot and the build" "$([ -n "$l_tree" ] && [ "$l_tree" -lt "$l_snap" ] && [ "$l_tree" -lt "$l_build" ] && echo yes || echo no)" yes
 check "the refusal comes before the snapshot and the build" "$([ -n "$l_check" ] && [ "$l_check" -lt "$l_snap" ] && [ "$l_check" -lt "$l_build" ] && echo yes || echo no)" yes
 
+# FORCE_UPLOAD=1 re-uploads the same build when only the config changed (turning Workers Logs off).
+check "the already-at-build skip yields to FORCE_UPLOAD=1" "$(grep -c 'if \[ "$new" = "$rollback" \] && \[ "${FORCE_UPLOAD:-0}" != 1 \]; then' "$S")" 1
+l_up=$(grep -n 'deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/sec.json") > "$W/up.log"' "$S" | head -1 | cut -d: -f1)
+l_red=$(grep -n 'obs_settings.py" redact "$NAMESPACE" "site-$s"' "$S" | head -1 | cut -d: -f1)
+check "OBSERVABILITY=1: the query-string redaction is set right after the upload" "$([ -n "$l_red" ] && [ -n "$l_up" ] && [ "$l_red" -gt "$l_up" ] && echo yes || echo no)" yes
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]
