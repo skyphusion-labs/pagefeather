@@ -46,6 +46,8 @@ def rec(phase, label, method, path, r, extra=None):
            'code': r.get('code'), 's': r.get('s'), 'boot': g('x-boot'), 'wasm': g('x-wasm-mib'),
            'recycled': g('x-runtime-recycled'), 'writeLoss': g('x-write-loss'), 'reset': g('x-isolate-reset'),
            'perf': {k: perf.get(k) for k in keep} if perf else None}
+    if r.get('err'):
+        row['err'] = r['err']  # a client exception (break_lib.req): the repr, never a body
     row.update(extra or {})
     rows.append(row)
     print(json.dumps(row), flush=True)
