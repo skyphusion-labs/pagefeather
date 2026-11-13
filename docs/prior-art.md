@@ -74,6 +74,21 @@ Repository: [WordPress/wordpress-playground](https://github.com/WordPress/wordpr
 
 - [sqlite-database-integration#288: Cloudflare D1 Support](https://github.com/WordPress/sqlite-database-integration/issues/288). Open since 2025-11-12. Approach B needs this, or a driver like it.
 
+
+## Cloudflare Worker Publisher template (Workers for Platforms starter)
+
+Repository: [cloudflare/templates `worker-publisher-template`](https://github.com/cloudflare/templates/tree/main/worker-publisher-template). Read on 2026-11-13 at commit `47645c9` (last change 2026-09-22). The [Workers for Platforms Get started page](https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/get-started/) links it as a complete setup "with one click".
+
+- It is a Deploy to Cloudflare button for a platform Worker. The deploy page asks the user to paste a Cloudflare API token (`.dev.vars.example` holds `CLOUDFLARE_API_TOKEN=`).
+- Its `deploy` script makes the dispatch namespace through the API first (`scripts/deploy-wfp.ts`), then runs `wrangler deploy`.
+- The platform Worker then uploads user Workers into the namespace through the API.
+
+The one-click design for issue #401 ([design-401-one-click.md](design-401-one-click.md)) has the same shape: a button, one pasted token, and the namespace made before the deploy. Thank you, Cloudflare.
+
+## The WordPress install screen
+
+WordPress's own install screen (`wp-admin/install.php`) asks for the site title, a username, a password with a strength meter, an email and the search engine choice, then says "Success!". The Add New Site screen in the #401 design asks for the same things in the same words, so a WordPress developer sees a screen they know. The mockup's styles are written to match the wp-admin look; no WordPress file is copied.
+
 ## Cloudflare templates
 
 - [cloudflare/templates#1173: WordPress on Workers (php-wasm + Hyperdrive + R2)](https://github.com/cloudflare/templates/issues/1173). A template proposal, open since 2026-10-20.
