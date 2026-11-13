@@ -2708,7 +2708,7 @@ async function runCron(booted, cleanDue = false, mail = null) {
 			// and no other WP-Cron event ran. It is not unscheduled: Action Scheduler would only
 			// schedule it again at init.
 			remove_all_actions( 'action_scheduler_run_queue' );
-			${ENV && ENV.CRON_TEST_FATAL === '1' ? "$skyphusion_cron_mark( 'wp', 'skyphusion_test_fatal' ); skyphusion_undefined_function_471();" : '// CRON_TEST_FATAL (#471): a local test seam, off'}
+			${typeof ENV !== 'undefined' && ENV && ENV.CRON_TEST_FATAL === '1' ? "$skyphusion_cron_mark( 'wp', 'skyphusion_test_fatal' ); skyphusion_undefined_function_471();" : '// CRON_TEST_FATAL (#471): a local test seam, off'}
 			$events = 0; $wp_hooks = array(); $skipped = array(); $crons = function_exists( '_get_cron_array' ) ? _get_cron_array() : array();
 			// The due WP-Cron hooks other than run_queue, before the leg runs: a tick that runs none
 			// while this is not empty would be starving them (#335).
