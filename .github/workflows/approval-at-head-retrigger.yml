@@ -1,0 +1,21 @@
+name: approval-at-head-retrigger
+
+# fleet-chezmoi#2386. Thin caller: a review (submitted or dismissed) re-runs the
+# pull_request run of approval-at-head.yml for the head, so the ONE required
+# context `approval-at-head / gate` is re-judged on live state in its own
+# suite. The reusable lives in skyphusion-labs/.github, pinned by sha; its header
+# says why it re-runs rather than judging here. Pin it to the SAME sha as
+# approval-at-head.yml.
+on:
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  approval-at-head-retrigger:
+    uses: skyphusion-labs/.github/.github/workflows/approval-at-head-retrigger-reusable.yml@a3412f45b3355b72651fe39e45923921609f93b7
+    with:
+      head_sha: ${{ github.event.pull_request.head.sha }}
