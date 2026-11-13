@@ -194,7 +194,9 @@ function memIdOf(req, env) {
 // need the clock: in a Worker or a Durable Object, Date.now() moves only at
 // I/O, so a time measured across synchronous PHP and SQLite work can read 0.
 const ISOLATE_ID = Math.random().toString(36).slice(2, 8);
-const isolateStart = Date.now();
+// Set on the first request this isolate serves (#474). Date.now() reads 0 at module scope in
+// Workers (time does not move outside a request), so a module-scope value made isoAgeS epoch seconds.
+let isolateStart = 0;
 let runtimeSerial = 0; // runtimes booted in this isolate
 // Runtimes dropped without a plan (recycled for memory, crashed, a stale lock, a
 // failed request, another origin). /_activate restarts on purpose and is not
@@ -3168,6 +3170,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			});
 		}
 		try {
+			if (!isolateStart) isolateStart = Date.now(); // #474: the isolate's first request
 			const tBoot = Date.now();
 			const booted = !bootPromise;
 			if (tracing()) fileTrace.begin({ cls: routeClass(req.method, url.pathname, url.search), method: req.method, path: url.pathname, boot: booted ? 1 : 0 });
