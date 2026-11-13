@@ -275,6 +275,28 @@ async function runDemoMany(env, n) {
   ok('demo lock: a site that is not a demo has no DEMO_LOCK var (control)', !lockVar(plainCfg));
 }
 
+// The one-click code lock (#406): codeLock locks plugin and theme code (CODE_LOCK=on)
+// and keeps mail. A demo site already locks code through DEMO_LOCK, so codeLock adds
+// nothing to it. A site with neither is the control.
+{
+  const { buildServerCfg } = await import('../server-config.mjs');
+  const env = makeEnv();
+  const varsOf = (cfg) => cfg.resourceBindings.filter((b) => b.type === 'plain_text').map((b) => `${b.name}=${b.text}`).join('\n');
+  const codeVar = (cfg) => cfg.resourceBindings.some((b) => b.type === 'plain_text' && b.name === 'CODE_LOCK' && b.text === 'on');
+  const demoVar = (cfg) => cfg.resourceBindings.some((b) => b.type === 'plain_text' && b.name === 'DEMO_LOCK');
+  const openMail = (cfg) => cfg.resourceBindings.some((b) => b.type === 'send_email' && !b.destination_address);
+  const oneClick = await buildServerCfg(env, { kind: 'wp', name: 'myblog', domain: 'skyphusionwp.dev', codeLock: true });
+  const plain = await buildServerCfg(env, { kind: 'wp', name: 'myblog', domain: 'skyphusionwp.dev' });
+  const demo = await buildServerCfg(env, { kind: 'wp', name: 'demo-zzz', domain: 'skyphusionwp.dev', demo: true, expiresAt: 1 });
+  const demoAndLock = await buildServerCfg(env, { kind: 'wp', name: 'demo-zzz', domain: 'skyphusionwp.dev', demo: true, expiresAt: 1, codeLock: true });
+  ok('code lock: a one-click site carries CODE_LOCK=on', codeVar(oneClick));
+  ok('code lock: a one-click site keeps its EMAIL binding and has no DEMO_LOCK', openMail(oneClick) && !demoVar(oneClick));
+  ok('code lock: a site with no lock has no CODE_LOCK (control)', !codeVar(plain));
+  const sorted = (cfg, extra = []) => [...varsOf(cfg).split('\n'), ...extra].sort().join('\n');
+  ok('code lock: the one-click vars are the plain vars plus CODE_LOCK only', sorted(oneClick) === sorted(plain, ['CODE_LOCK=on']));
+  ok('code lock: a demo site with codeLock has the same vars as a demo site (byte-identical)', varsOf(demoAndLock) === varsOf(demo) && !codeVar(demoAndLock));
+}
+
 // ---- reaper: the per-site KV namespace and both email queues are deleted ----
 {
   const rec = withFetch({});
