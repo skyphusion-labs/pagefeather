@@ -124,5 +124,13 @@ ok "any other OBSERVABILITY value fails the render" "$(OBSERVABILITY=yes render_
 ok "render_user has no [ai] or [[vectorize]] by default" "$(render_user one https://wp-one.sub.workers.dev | grep -cE '^\[ai\]|^\[\[vectorize\]\]' | grep -qx 0 && echo 1 || echo 0)"
 ok "WP_VECTORIZE_SEARCH=on renders AI and SEARCH_INDEX on wp-wfp-one-search" "$(WP_VECTORIZE_SEARCH=on render_user one https://wp-one.sub.workers.dev | tr '\n' ' ' | grep -q '\[ai\] binding = "AI" \[\[vectorize\]\] binding = "SEARCH_INDEX" index_name = "wp-wfp-one-search"' && echo 1 || echo 0)"
 ok "WP_VECTORIZE_SEARCH=off renders neither" "$(WP_VECTORIZE_SEARCH=off render_user one https://wp-one.sub.workers.dev | grep -cE '^\[ai\]|^\[\[vectorize\]\]' | grep -qx 0 && echo 1 || echo 0)"
+# PHP_INI (#394): a site rendered with it gets the var as compact sorted JSON; one without gets none.
+phpini() { "$PY" -c 'import json, sys, tomllib; c = tomllib.loads(sys.stdin.read()); print(json.dumps(c["vars"].get("PHP_INI")))'; }
+ok "no PHP_INI var without PHP_INI" "$(env -u PHP_INI bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | phpini | grep -qx 'null' && echo 1 || echo 0)"
+ok "PHP_INI renders as one var, compact and sorted" "$(PHP_INI='{"opcache.memory_consumption": "48", "memory_limit": 256}' render_user one https://wp-one.sub.workers.dev | "$PY" -c 'import json, sys, tomllib; v = tomllib.loads(sys.stdin.read())["vars"]["PHP_INI"]; print(int(" " not in v and v.index("memory_limit") < v.index("opcache") and json.loads(v) == dict([("memory_limit", 256), ("opcache.memory_consumption", "48")])))')"
+ok "PHP_INI with Turnstile: both render" "$(PHP_INI='{"opcache.memory_consumption":"52"}' TURNSTILE_SITEKEY=1x00000000000000000000AA render_user one https://wp-one.sub.workers.dev | "$PY" -c 'import sys, tomllib; v = tomllib.loads(sys.stdin.read())["vars"]; print(int(v["PHP_INI"] == "{\"opcache.memory_consumption\":\"52\"}" and v["TURNSTILE_SITEKEY"] == "1x00000000000000000000AA"))')"
+for bad in 'not json' '[]' '{}' '"x"' '{"a b":"1"}' '{"opcache.x":true}' '{"opcache.x":1.5}' '{"opcache.x":null}' "{\"x\":\"it's\"}" '{"x":"a\"b"}' '{"x":"a\\b"}' '{"x":"a\nb"}'; do
+  ok "PHP_INI refused: $bad" "$(PHP_INI=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"
+done
 echo "$fails failing check(s)"
 exit $fails
