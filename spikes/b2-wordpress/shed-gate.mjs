@@ -14,9 +14,11 @@
 //
 // Two bounds. A page read (a GET or HEAD that is not cart, checkout, account, admin, login or an
 // AJAX or Store API call) is shed when SHED_SOFT requests are already in the object. Everything
-// else (a POST, cart, checkout: a shopper's write) is shed only at SHED_HARD, so it still gets in
-// while page reads are shed. A shed request ran no PHP, so a 503 is honest for a write too:
-// nothing was saved.
+// else (a POST, cart, checkout: a shopper's write) waits OUTSIDE: it is shed while SHED_HARD (1)
+// or more requests are in the object, with Retry-After: 1. Probe on shed1113a (2026-11-13): a
+// write that entered while renders were in flight died in a memory reset before its own render
+// began (9 of 10 runs), with no runtime recycle; a write into an empty object never did. A shed
+// request ran no PHP, so a 503 is honest for a write too: nothing was saved.
 
 /** The header the Worker sets to its Date.now() when it sends a request to the object. */
 export const SENT_HEADER = 'x-perf-sent';
@@ -24,9 +26,10 @@ export const SENT_HEADER = 'x-perf-sent';
 export const ORIGIN_HEADER = 'x-wp-public-origin';
 
 /** Defaults (set from the shed1113a sweep, see the PR); SHED_SOFT and SHED_HARD override them, "off" turns one off. */
-export const SHED_SOFT_DEFAULT = 1000;
-export const SHED_HARD_DEFAULT = 1001;
+export const SHED_SOFT_DEFAULT = 8;
+export const SHED_HARD_DEFAULT = 1;
 export const SHED_RETRY_AFTER_S = '5';
+export const SHED_RETRY_AFTER_HARD_S = '1';
 
 // The inbox wait is reported on a shed answer (x-shed-wait-ms, operator only). A wait outside this
 // range is clock skew or a bad header: it counts as 0 (fail open). The two clocks are on two machines.
@@ -112,7 +115,7 @@ export function shedResponse(waitMs, cls, objectName, inObjectNow = null) {
 			'content-type': 'text/plain; charset=utf-8',
 			'cache-control': 'no-store',
 			'cloudflare-cdn-cache-control': 'no-store',
-			'retry-after': SHED_RETRY_AFTER_S,
+			'retry-after': cls === 'hard' ? SHED_RETRY_AFTER_HARD_S : SHED_RETRY_AFTER_S,
 			'x-shed': cls,
 			'x-shed-wait-ms': String(Math.round(waitMs)),
 			'x-php-object': objectName,

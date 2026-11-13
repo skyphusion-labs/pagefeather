@@ -8,7 +8,7 @@ import {
 } from '../shed-gate.mjs';
 
 const U = (p) => new URL(p, 'https://shop.example');
-const B = { soft: 4, hard: 8 };
+const B = { soft: 4, hard: 1 };
 const req = (path, method = 'GET', headers = {}) => new Request('https://shop.example' + path, { method, headers });
 
 test('a client-sent SENT or ORIGIN header is replaced by the Worker, never kept', () => {
@@ -49,12 +49,11 @@ test('page reads are soft; writes and a shopper’s own pages are hard', () => {
 	assert.equal(shedClass('GET', U('/cartography/')), 'soft', 'a prefix is not a match');
 });
 
-test('soft sheds at soft in the object, hard only at hard', () => {
+test('soft sheds at soft in the object; a write waits outside while anything is in it', () => {
 	assert.equal(shouldShed(3, 'soft', U('/'), B), false);
 	assert.equal(shouldShed(4, 'soft', U('/'), B), true);
-	assert.equal(shouldShed(4, 'hard', U('/checkout/'), B), false, 'a write still gets in while reads are shed');
-	assert.equal(shouldShed(7, 'hard', U('/checkout/'), B), false);
-	assert.equal(shouldShed(8, 'hard', U('/checkout/'), B), true);
+	assert.equal(shouldShed(0, 'hard', U('/checkout/'), B), false, 'a write enters an empty object');
+	assert.equal(shouldShed(1, 'hard', U('/checkout/'), B), true, 'a write never enters while a render is in flight');
 });
 
 test('spike paths are never shed', () => {
@@ -68,10 +67,12 @@ test('bounds: defaults, overrides, off, and bad values fall back', () => {
 	assert.equal(shedBounds({ SHED_SOFT: 'off' }).soft, Infinity);
 	assert.equal(shouldShed(10 ** 5, 'soft', U('/'), shedBounds({ SHED_SOFT: 'off', SHED_HARD: 'off' })), false);
 	for (const bad of ['-1', '0', 'abc', '2.5']) assert.equal(shedBounds({ SHED_SOFT: bad }).soft, SHED_SOFT_DEFAULT, bad);
-	assert.ok(SHED_SOFT_DEFAULT >= 1 && SHED_SOFT_DEFAULT < SHED_HARD_DEFAULT, 'reads are shed before writes');
+	assert.equal(SHED_HARD_DEFAULT, 1, 'a write waits for an empty object (the probe result)');
+	assert.ok(SHED_SOFT_DEFAULT >= 1, 'reads are bounded');
 });
 
 test('the shed answer: a 503 with a retry hint that no cache keeps', async () => {
+	assert.equal(shedResponse(0, 'hard', 'php-0', 1).headers.get('retry-after'), '1', 'a write is told to retry soon');
 	const r = shedResponse(9123.4, 'soft', 'php-0', 4);
 	assert.equal(r.status, 503);
 	assert.equal(r.headers.get('retry-after'), '5');
@@ -83,26 +84,27 @@ test('the shed answer: a 503 with a retry hint that no cache keeps', async () =>
 	assert.match(await r.text(), /busy/);
 });
 
-test('gated: a burst of reads is cut at soft, a write behind it still gets in, and the count returns to 0', async () => {
-	const env = { SHED_SOFT: '3', SHED_HARD: '5' };
+test('gated: a burst of reads is cut at soft; a write waits outside until the object is empty', async () => {
+	const env = { SHED_SOFT: '3', SHED_HARD: '1' };
 	const held = [];
 	const serve = () => new Promise((ok) => held.push(() => ok(new Response('rendered'))));
 	const reads = Array.from({ length: 6 }, (_, i) => gated(req('/?product=' + i), env, U('/?product=' + i), 'php-0', serve));
 	await new Promise((ok) => setTimeout(ok, 0));
 	assert.equal(inObjectCount(), 3, 'only soft reads are admitted');
-	const write = gated(req('/?rest_route=/wc/store/v1/cart/add-item', 'POST'), env, U('/?rest_route=/wc/store/v1/cart/add-item'), 'php-0', serve);
-	const write2 = gated(req('/checkout/', 'POST'), env, U('/checkout/'), 'php-0', serve);
-	const write3 = gated(req('/checkout/', 'POST'), env, U('/checkout/'), 'php-0', serve);
-	await new Promise((ok) => setTimeout(ok, 0));
-	assert.equal(inObjectCount(), 5, 'two writes are admitted above soft, up to hard');
-	assert.equal((await write3).status, 503, 'a write is shed at hard');
-	const shedReads = (await Promise.race([Promise.all(reads.slice(3)), new Promise((ok) => setTimeout(() => ok(null), 50))]));
+	const busy = await gated(req('/?rest_route=/wc/store/v1/cart/add-item', 'POST'), env, U('/?rest_route=/wc/store/v1/cart/add-item'), 'php-0', serve);
+	assert.equal(busy.status, 503, 'a write is shed while renders are in flight');
+	assert.equal(busy.headers.get('retry-after'), '1');
+	const shedReads = await Promise.race([Promise.all(reads.slice(3)), new Promise((ok) => setTimeout(() => ok(null), 50))]);
 	assert.ok(shedReads, 'the shed reads answer at once, not after the admitted ones');
 	assert.deepEqual(shedReads.map((r) => r.status), [503, 503, 503]);
-	for (const go of held) go();
+	for (const go of held.splice(0)) go();
 	assert.deepEqual((await Promise.all(reads.slice(0, 3))).map((r) => r.status), [200, 200, 200]);
+	assert.equal(inObjectCount(), 0);
+	const write = gated(req('/?rest_route=/wc/store/v1/cart/add-item', 'POST'), env, U('/?rest_route=/wc/store/v1/cart/add-item'), 'php-0', serve);
+	await new Promise((ok) => setTimeout(ok, 0));
+	assert.equal(inObjectCount(), 1, 'the retried write enters the empty object');
+	for (const go of held.splice(0)) go();
 	assert.equal((await write).status, 200);
-	assert.equal((await write2).status, 200);
 	assert.equal(inObjectCount(), 0);
 });
 
