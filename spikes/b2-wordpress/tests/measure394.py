@@ -10,9 +10,12 @@ marker field, and creates draft pages through REST. Never point it at a live sit
 Phases (default: gap admin):
   gap    10 shop (/?post_type=product), 10 home, 10 product back to back, then product with an idle
          gap of 0, 2 and 10 s (15 each): 75 GETs, the #394 instrument (comment 3).
-  admin  logged in, 10 each: GET /wp-admin/, GET and POST profile.php, GET
+  admin  logged in, ROUNDS rounds (default 10): GET /wp-admin/, GET and POST profile.php, GET
          post-new.php?post_type=page, POST /wp/v2/pages (status draft). Every REST create is checked
          against the database after (does the page exist, whatever the answer said).
+         ADMIN_EXTRA=1 adds per round: GET wc-settings, a WooCommerce settings save of the store
+         city to its SAME value (REST /wc/v3/settings), and a Hello Dolly install and delete
+         from wordpress.org (REST /wp/v2/plugins; never activated).
   crawl  180 s at 1 request a second: product, product, shop, Store API cart.
 Every GET carries a unique nocache= so the edge page cache never answers. One JSON line per request
 (headers only, never a body or a cookie); a summary per label on stderr.
@@ -91,7 +94,7 @@ def login():
 
 def admin(o):
     a = login()
-    for i in range(10):
+    for i in range(int(os.environ.get('ROUNDS', '10'))):
         get(a, 'admin', 'dashboard', '/wp-admin/')
         p = get(a, 'admin', 'profile', '/wp-admin/profile.php')
         body = p.get('body') or b''
@@ -115,6 +118,22 @@ def admin(o):
         s = req(a, '/?rest_route=/wp/v2/pages&status=draft&search=' + title.replace(' ', '+'), None, {'X-WP-Nonce': nonce})
         found = sum(1 for x in (json.loads(s['body']) if s['code'] == 200 else []) if x.get('title', {}).get('raw', x.get('title', {}).get('rendered')) == title)
         rec('admin', 'rest-page', 'POST', '/wp/v2/pages', r, {'stateFound': found, 'stateCode': s['code']})
+        if os.environ.get('ADMIN_EXTRA') == '1':
+            # The WooCommerce settings screen (a heavy admin page), and a settings save through
+            # WooCommerce's settings API with the SAME value (no setting changes).
+            get(a, 'admin', 'wc-settings', '/wp-admin/admin.php?page=wc-settings')
+            h = {'X-WP-Nonce': nonce, 'Content-Type': 'application/json'}
+            cur = req(a, '/?rest_route=/wc/v3/settings/general/woocommerce_store_city', None, h)
+            val = json.loads(cur['body']).get('value', '') if cur.get('code') == 200 else None
+            if val is None:
+                rec('admin', 'wc-settings-save', 'PUT', '/wc/v3/settings/general', {'code': 'SKIP-no-read'})
+            else:
+                rec('admin', 'wc-settings-save', 'PUT', '/wc/v3/settings/general', req(a, '/?rest_route=/wc/v3/settings/general/woocommerce_store_city', json.dumps({'value': val}).encode(), h, 'PUT'))
+            # A plugin install from wordpress.org and its delete (the #430 path): Hello Dolly, never activated.
+            ri = req(a, '/?rest_route=/wp/v2/plugins', json.dumps({'slug': 'hello-dolly'}).encode(), h, 'POST')
+            rec('admin', 'plugin-install', 'POST', '/wp/v2/plugins', ri)
+            rd = req(a, '/?rest_route=/wp/v2/plugins/hello-dolly/hello', None, h, 'DELETE')
+            rec('admin', 'plugin-delete', 'DELETE', '/wp/v2/plugins', rd)
 
 
 def crawl(o):
