@@ -132,5 +132,10 @@ ok "PHP_INI with Turnstile: both render" "$(PHP_INI='{"opcache.memory_consumptio
 for bad in 'not json' '[]' '{}' '"x"' '{"a b":"1"}' '{"opcache.x":true}' '{"opcache.x":1.5}' '{"opcache.x":null}' "{\"x\":\"it's\"}" '{"x":"a\"b"}' '{"x":"a\\b"}' '{"x":"a\nb"}'; do
   ok "PHP_INI refused: $bad" "$(PHP_INI=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"
 done
+# PHP_RECYCLE (#394 E1): only "off", only when asked.
+recyc() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["vars"].get("PHP_RECYCLE")))'; }
+ok "no PHP_RECYCLE var by default" "$(env -u PHP_RECYCLE bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | recyc | grep -qx 'null' && echo 1 || echo 0)"
+ok "PHP_RECYCLE=off renders it" "$(PHP_RECYCLE=off render_user one https://wp-one.sub.workers.dev | recyc | grep -qx '"off"' && echo 1 || echo 0)"
+for bad in on yes OFF 0; do ok "PHP_RECYCLE=$bad fails the render" "$(PHP_RECYCLE=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
 echo "$fails failing check(s)"
 exit $fails
