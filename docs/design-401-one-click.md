@@ -82,6 +82,8 @@ Where the paste goes: into the button's own setup page, as the secret `PAGEFEATH
 
 The permissions the link asks for, from the operations `provisionSite` calls (`deploy/provision/ops.mjs`): Workers Scripts edit, Workers KV Storage edit, Workers R2 Storage edit, Workers for Platforms edit, Account Settings read, Access: Apps and Policies edit (only for the one-time Access rule in 2.3). The exact permission group ids are **unmeasured**: the measurement run reads them from `GET /accounts/{id}/tokens/permission_groups` and fixes the link. No zone permission: the first cut makes no DNS record. No API Tokens edit: the admin never makes a token (this keeps clear of #273).
 
+**Correction (written 2026-11-13; measured by the lead on 2026-11-13; supersedes the permission list in the paragraph above):** there is no Workers for Platforms permission group. Dispatch namespaces come under Workers Scripts. The link asks for Workers Scripts edit, Workers KV Storage edit, Workers R2 Storage edit and Account Settings read, and that set is complete. See `deploy/provision/HARDENING.md`, "The one-click site manager key".
+
 **D. The account id.** The starter asks the user to type it. We do not: an account token reaches one account, so the admin reads it from `GET /accounts` with the pasted key. **Unmeasured.**
 
 **E. The `workers.dev` subdomain.** A new account may not have one yet. [workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/), read 2026-11-13, says how to change it, not whether a new account starts with one. The admin is itself on `workers.dev`, so the deploy either sets it or fails. **Unmeasured**; the measurement run records it.

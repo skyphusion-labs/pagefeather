@@ -82,10 +82,17 @@ jobs:
         # A fake site on localhost replays cached x-boot 1, as the page cache does. The case that
         # reproduces the old probe needs git history and skips in a shallow checkout.
         run: python3 -I tests/wfp/plugin-memory-test.py
+      - name: Gate 2 plugin harness, offline (#426)
+        # tests/plugins/gate2.py against a fake WordPress: the four read-back classes, write-loss, headers-only recording.
+        run: python3 -I tests/plugins/gate2_test.py
       - name: b-dosql mail From address
         run: node --test spikes/b2-wordpress/tests/mail-from.test.mjs
       - name: b-dosql demo site lock
         run: node --test spikes/b2-wordpress/tests/site-lock.test.mjs
+      - name: Admin memory trace is operator-only, and its harness summary (#434)
+        run: |
+          node --test spikes/b2-wordpress/tests/mem-trace.test.mjs
+          python3 -I tests/wfp/admin-mem-test.py
       - name: b-dosql performance headers need the spike token
         run: node --test spikes/b2-wordpress/tests/perf-headers.test.mjs
       - name: b-dosql a memory reset is not an overload (issue #335)
@@ -98,6 +105,10 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/request-mail-hold.test.mjs
       - name: b-dosql bundle file trace, route classes (issue #394 M0)
         run: node --test spikes/b2-wordpress/tests/file-trace.test.mjs
+      - name: b-dosql installed code persists, crash windows and budget (issue #407)
+        run: node --test spikes/b2-wordpress/tests/code-store.test.mjs
+      - name: b-dosql OPcache split into warm and boot (issue #394 L1)
+        run: python3 -I spikes/b2-wordpress/tests/opcache-split-test.py
       - name: b-dosql outbound host allowlist
         run: node --test spikes/b2-wordpress/tests/http-allow.test.mjs
       - name: email-queue unit tests
@@ -116,6 +127,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/turnstile.test.mjs
       - name: turnstile forms mu-plugin (issue #250)
         run: php spikes/b2-wordpress/tests/turnstile-forms-test.php
+      - name: b-dosql safe outbound URLs without DNS (issue #430)
+        run: php spikes/b2-wordpress/tests/http-safe-url-test.php
       - name: turnstile block checkout script (issue #308)
         # A classic browser script, not a module: syntax, then the stubbed store and widget.
         run: |
@@ -235,6 +248,7 @@ jobs:
           node deploy/oneclick/tests/admin-test.mjs
           node deploy/oneclick/tests/button-test.mjs
           deploy/oneclick/tests/dryrun-test.sh
+          node deploy/oneclick-live/tests/live-test.mjs
           python3 deploy/wfp/tests/bindings-test.py
           python3 deploy/wfp/tests/cross-test.py
           deploy/wfp/tests/probe-entry-test.sh

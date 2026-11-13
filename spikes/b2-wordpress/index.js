@@ -18,6 +18,7 @@ import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywher
 import { resetFailures, writeLossResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import { routeClass, createTrace } from './file-trace.mjs';
+import { CodeMounter, putCode, deleteCode, sweepOrphans, codeBudget, validSlug, validType, sqliteIndex, mysqlIndex } from './code-store.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -27,6 +28,10 @@ import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
 // Compiled PHP (OPcache file cache) made by opcache.sh with this same PHP build.
 import opcacheZip from './build/opcache.zip';
+// #394 L1 (opcache-split.py): the BOOT part of the OPcache file cache is not a static module. It is
+// fetched from the Assets binding when a runtime boots and dropped after that request. null when
+// the build was not split (build.sh writes the default).
+import OPCACHE_BOOT from './build/opcache-boot-index.js';
 // The build id baked at build time (build.sh writes build/build-id.js), so the
 // object can report which code version it runs (issue #35 slice 5).
 import BUILD_ID from './build/build-id.js';
@@ -41,7 +46,7 @@ const DOCROOT = '/wordpress';
 // the cost of JS memory. Override through PHP_INI.
 const INI_DEFAULTS = {};
 // WebAssembly memory never shrinks. Past this, boot a fresh runtime for the next request.
-// OPcache shared memory (32 MB) is part of it. Measured 2026-11-04 on Paid:
+// OPcache shared memory (48 MB since #394) is part of it. Measured 2026-11-04 on Paid:
 // 81 MiB after the first page with OPcache on.
 const RECYCLE_WASM_BYTES = 100 * 1024 * 1024;
 let ENV;
@@ -163,6 +168,9 @@ let bootPromise;
 // The most recently booted PHP, so the /_memprobe bridge (handleMessage probeMem) can
 // read the live WASM heap size from JS. memory_get_usage() reports 0 under USE_ZEND_ALLOC=0.
 let lastBootedPhp = null;
+// The admin memory trace of the request now running (#434, php/mem-trace.php): set by the
+// memTrace message at PHP shutdown, read once into the operator-only x-mem-trace header.
+let lastMemTrace = null;
 // Performance instrument (docs/perf-dosql.md), PHP object only. Counts do not
 // need the clock: in a Worker or a Durable Object, Date.now() moves only at
 // I/O, so a time measured across synchronous PHP and SQLite work can read 0.
@@ -363,6 +371,50 @@ const inflated = new Map(); // drop function -> bytes
 const fileTrace = createTrace();
 const tracing = () => Boolean(ENV && ENV.FILE_TRACE === 'on');
 let inflatedBytes = 0;
+// #394 L1: the boot pack's file nodes, mounted for one request when a runtime boots.
+let bootPackPaths = null;
+// What the last boot did with the boot pack, for x-perf (l1): 'assets', 'fallback:<why>', or 'none'.
+let l1State = 'none';
+async function loadBootPacks() {
+	const t = Date.now();
+	const base = 'https://assets.local/_pf/' + OPCACHE_BOOT.id + '/';
+	// OPCACHE_BOOT_SOURCE=module forces the fallback (a test of that path; see tests/l1-e2e.sh).
+	if (ENV && ENV.ASSETS && ENV.OPCACHE_BOOT_SOURCE !== 'module') {
+		try {
+			const packs = await Promise.all(
+				OPCACHE_BOOT.chunks.map(async (c) => {
+					const r = await ENV.ASSETS.fetch(new Request(base + c));
+					if (!r.ok) throw new Error(c + ' answered ' + r.status);
+					return new Uint8Array(await r.arrayBuffer());
+				}),
+			);
+			const kib = Math.round(packs.reduce((n, p) => n + p.length, 0) / 1024);
+			console.log(JSON.stringify({ m: 'l1', source: 'assets', chunks: packs.length, kib, ms: Date.now() - t }));
+			l1State = `assets ${kib}KiB ${Date.now() - t}ms`;
+			return packs;
+		} catch (e) {
+			console.log(JSON.stringify({ m: 'l1', fallback: 'assets failed: ' + String((e && e.message) || e).slice(0, 160) }));
+			l1State = 'fallback:assets-failed';
+		}
+	} else {
+		console.log(JSON.stringify({ m: 'l1', fallback: ENV && ENV.ASSETS ? 'OPCACHE_BOOT_SOURCE=module' : 'no ASSETS binding' }));
+		l1State = ENV && ENV.ASSETS ? 'fallback:forced' : 'fallback:no-assets-binding';
+	}
+	// The fallback the lead asked for: today's in-memory path, from a module imported only here.
+	const mod = await import('./build/opcache-boot.zip');
+	return [new Uint8Array(mod.default)];
+}
+function dropBootPack(FS) {
+	if (!bootPackPaths) return;
+	for (const p of bootPackPaths) {
+		try {
+			FS.unlink(p);
+		} catch {
+			// already gone
+		}
+	}
+	bootPackPaths = null;
+}
 function evictLazy() {
 	for (const drop of inflated.keys()) drop();
 	inflated.clear();
@@ -420,6 +472,162 @@ function attachLazyContents(node, size, dataFn, tag) {
 function lazyFile(FS, path, entry, src) {
 	FS.writeFile(path, new Uint8Array(0));
 	attachLazyContents(FS.lookupPath(path).node, entry.size, () => entry.data(), src ? { src, path } : null);
+}
+
+// Plugins and themes installed from wp-admin persist (#407, code-store.mjs). On only with
+// CODE_PERSIST=on, on a b-dosql site with its own bucket. The runtime's mounts live in runtimeCode,
+// made at each boot (a new runtime has a new file system).
+let runtimeCode = null;
+const CODE_MAX_RAW_BYTES = 64 * 1048576; // a directory bigger than this is refused before it is zipped
+const CODE_REFUSED_FILE = '/internal/shared/code-refused.json';
+const CODE_BUILD_SLUGS_FILE = '/internal/shared/code-build-slugs.json';
+// On b-dosql (PHP and the database in the object) the index is the object's SQLite; on approach a
+// (dbHandler: MySQL through Hyperdrive, Conrad 2026-11-13) it is two tables in that MySQL.
+function codePersistOn() {
+	if (!(ENV && ENV.CODE_PERSIST === 'on' && ENV.MEDIA)) return false;
+	return (ENV.DB_IN_DO === 'on' && ENV.PHP_IN_DO === 'on') || Boolean(dbHandler);
+}
+let codeIndexCache = null; // { for: sqlDb or dbHandler, index }
+function codeIndex() {
+	if (sqlDb && sqlStorage) {
+		if (!codeIndexCache || codeIndexCache.for !== sqlDb) codeIndexCache = { for: sqlDb, index: sqliteIndex(sqlDb, (fn) => sqlStorage.transactionSync(fn)) };
+		return codeIndexCache.index;
+	}
+	if (dbHandler) {
+		// The request's own connection. The writes run only from the installer hooks, which WordPress
+		// never runs inside a transaction of its own, so BEGIN here cannot commit one early.
+		if (!codeIndexCache || codeIndexCache.for !== dbHandler) codeIndexCache = { for: dbHandler, index: mysqlIndex((sql) => dbHandler.query(ENV, { mysql: sql })) };
+		return codeIndexCache.index;
+	}
+	return null;
+}
+// Approach a runs many isolates and reads the generation from MySQL, so it checks at most every
+// CODE_CHECK_S seconds (default 5): an install shows on the other isolates within that time.
+function codeCheckMs() {
+	if (!dbHandler || sqlDb) return 0;
+	const s = Number(ENV.CODE_CHECK_S);
+	return Number.isFinite(s) && s >= 0 ? s * 1000 : 5000;
+}
+function codeDir(type, slug) {
+	return `${DOCROOT}/wp-content/${type}s/${slug}`;
+}
+function fsExists(FS, p) {
+	try {
+		FS.lstat(p);
+		return true;
+	} catch {
+		return false;
+	}
+}
+function fsRmrf(FS, p) {
+	if (!fsExists(FS, p)) return;
+	const st = FS.lstat(p);
+	if (FS.isDir(st.mode)) {
+		for (const n of FS.readdir(p)) if (n !== '.' && n !== '..') fsRmrf(FS, p + '/' + n);
+		FS.rmdir(p);
+	} else FS.unlink(p);
+}
+// Mount a stored zip lazily (entries relative to the slug directory), replacing what is there.
+function mountCode(FS, type, slug, zip) {
+	const base = codeDir(type, slug);
+	fsRmrf(FS, base);
+	FS.mkdirTree(base);
+	for (const e of zipEntries(zip)) {
+		if (e.name.endsWith('/')) {
+			FS.mkdirTree(base + '/' + e.name.slice(0, -1));
+			continue;
+		}
+		const full = base + '/' + e.name;
+		FS.mkdirTree(full.slice(0, full.lastIndexOf('/')));
+		lazyFile(FS, full, e, 'code');
+	}
+}
+// The slug directory, as a map of relative name -> bytes. Refuses a symbolic link and an oversize tree.
+function readCodeDir(FS, base) {
+	const files = {};
+	let raw = 0;
+	const walk = (dir, rel) => {
+		for (const n of FS.readdir(dir)) {
+			if (n === '.' || n === '..') continue;
+			const p = dir + '/' + n;
+			const st = FS.lstat(p);
+			if (FS.isLink(st.mode)) throw new Error('it contains a symbolic link (' + (rel + n) + ')');
+			if (FS.isDir(st.mode)) walk(p, rel + n + '/');
+			else {
+				const b = FS.readFile(p);
+				raw += b.length;
+				if (raw > CODE_MAX_RAW_BYTES) throw new Error('it is larger than ' + CODE_MAX_RAW_BYTES / 1048576 + ' MB unpacked');
+				files[rel + n] = b;
+			}
+		}
+	};
+	walk(base, '');
+	return { files, raw };
+}
+function codeFsOps(FS) {
+	return { mount: (t, s, z) => mountCode(FS, t, s, z), unmount: (t, s) => fsRmrf(FS, codeDir(t, s)) };
+}
+function writeRefused(php, refused) {
+	php.writeFile(CODE_REFUSED_FILE, JSON.stringify(refused || []));
+}
+// Bring this runtime's mounts up to the stored generation (one SQLite read when nothing changed).
+async function codeSync(php) {
+	if (!codePersistOn()) return;
+	const index = codeIndex();
+	if (!index) return;
+	runtimeCode ??= new CodeMounter({ minIntervalMs: codeCheckMs() });
+	const t = Date.now();
+	const r = await runtimeCode.sync({ index, bucket: ENV.MEDIA, ...codeFsOps(php[__private__dont__use].FS) });
+	if (r.changed) {
+		writeRefused(php, r.refused);
+		// The load cost, from inside the object: every stored zip GET (in parallel) plus the sha check.
+		console.log(JSON.stringify({ m: 'code', loaded: runtimeCode.mounted.size, refused: r.refused, ms: Date.now() - t }));
+	}
+}
+// The op PHP calls through skyphusion_worker_call({code: ...}) (php/code-persist.php).
+async function codeOp(op) {
+	if (!codePersistOn()) return { ok: false, error: 'Installs are not stored on this site (CODE_PERSIST is off).' };
+	const index = codeIndex();
+	if (!index || !lastBootedPhp) return { ok: false, error: 'No database or runtime for this request.' };
+	const { type, slug } = op || {};
+	if (!validType(type) || !validSlug(slug)) return { ok: false, error: `"${String(slug)}" is not a ${String(type)} name this site can store.` };
+	const php = lastBootedPhp;
+	const FS = php[__private__dont__use].FS;
+	runtimeCode ??= new CodeMounter({ minIntervalMs: codeCheckMs() });
+	const ops = codeFsOps(FS);
+	if (op.op === 'put') {
+		const base = codeDir(type, slug);
+		if (!fsExists(FS, base)) return { ok: false, error: `${slug} is not in wp-content/${type}s.` };
+		let files, raw;
+		try {
+			({ files, raw } = readCodeDir(FS, base));
+		} catch (e) {
+			return { ok: false, error: `${slug} cannot be stored: ${e.message}.` };
+		}
+		const { zipSync } = await import('fflate');
+		const zip = zipSync(files, { level: 6 });
+		const r = await putCode({ index, bucket: ENV.MEDIA, type, slug, version: op.version ? String(op.version).slice(0, 64) : null, zip, files: Object.keys(files).length, budget: codeBudget(ENV), now: Date.now() });
+		console.log(JSON.stringify({ m: 'code', op: 'put', type, slug, ok: r.ok, code: r.code, bytes: zip.length, raw }));
+		// The installer's unpacked copy is replaced by the lazy mount of the stored zip, so this runtime
+		// does not keep a second, inflated copy resident.
+		if (r.ok) runtimeCode.adopt({ type, slug, sha256: r.sha256, zip, gen: r.gen, ...ops });
+		return r.ok ? { ok: true, bytes: zip.length } : { ok: false, code: r.code, error: r.error };
+	}
+	if (op.op === 'delete') {
+		const r = await deleteCode({ index, bucket: ENV.MEDIA, type, slug });
+		console.log(JSON.stringify({ m: 'code', op: 'delete', type, slug, ok: r.ok }));
+		if (r.ok) runtimeCode.forget({ type, slug, gen: r.gen, ...ops });
+		return r;
+	}
+	if (op.op === 'resync') {
+		// After a failed store: drop what the installer unpacked; mount the stored version, if any.
+		ops.unmount(type, slug);
+		runtimeCode.mounted.delete(`${type}/${slug}`);
+		runtimeCode.gen = -1;
+		await codeSync(php);
+		return { ok: true };
+	}
+	return { ok: false, error: 'unknown code op' };
 }
 
 // Lazy MEMFS NODE creation (issue #218, LAZY_NODES=on). Eager node creation
@@ -982,7 +1190,13 @@ async function handleMessage(raw) {
 	if (m.txn) return JSON.stringify(sqlDb ? txnOp(sqlDb, sqlStorage, m.txn) : { ok: false, error: 'no database in the object' });
 	if (m.oc) return JSON.stringify(await objectCacheOp(m.oc));
 	if (m.probeMem) return JSON.stringify({ wasm: lastBootedPhp ? lastBootedPhp[__private__dont__use].HEAPU8.length : null });
+	if (m.memTrace) { lastMemTrace = m.memTrace; return '1'; }
+	// One trace checkpoint as it happens (#434), so a request killed by an isolate reset still
+	// leaves its marks in Workers Logs. Names and numbers only; mem-trace.php runs only for an
+	// operator request.
+	if (m.memMark) { console.log(JSON.stringify({ m: 'mem-mark', k: m.memMark })); return '1'; }
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
+	if (m.code) return JSON.stringify(await codeOp(m.code));
 	if (m.email) return JSON.stringify(await emailOp(m.email));
 	if (m.aiAlt) return JSON.stringify(await aiAltOp(m.aiAlt));
 	if (m.aiEmbed) return JSON.stringify(await aiEmbedOp(ENV && ENV.AI, m.aiEmbed));
@@ -1092,8 +1306,17 @@ async function boot(origin) {
 	//   file looked new.
 	// - validate_timestamps=0: scripts never change within a deploy, and the
 	//   shipped file cache is older than the files unzipped at boot.
-	// - shared memory (24 MB) for warm requests, the file cache (shipped by
-	//   opcache.sh) for a cold isolate. Warm page locally: 220 ms -> 100 ms.
+	// - shared memory for warm requests, the file cache (shipped by opcache.sh)
+	//   for a cold isolate. Warm page locally: 220 ms -> 100 ms.
+	// - memory_consumption 48 (#394), was 32. At 32 the shared memory was FULL on
+	//   a WooCommerce store (2,584 bytes free, 776 scripts), so every warm request
+	//   reloaded about 700 scripts from the file cache (21.3 MiB inflated). On the
+	//   2,609-product sample store (pf394a, 2026-11-13, one run each, same build):
+	//   32: 69 of 75 front GETs booted a new isolate, WASM 99 MiB, p50 about 4.4 s;
+	//   48: 11 of 75, WASM 92 MiB, home and product p50 0.85 to 1.5 s;
+	//   52: 42 of 75, WASM 98 MiB. WASM grows in steps, so the size is not a dial:
+	//   locally 44 and 56 both landed at 104 MiB, over RECYCLE_WASM_BYTES. Change
+	//   it only with measure394.py on the sample store; PHP_INI overrides it per site.
 	// - blacklist /internal/eval.php (#294): php.run({ code }) writes its code to that ONE
 	//   path on every call, so it is the one script that DOES change within a deploy. With
 	//   validate_timestamps=0 OPcache kept the first compiled copy, and every later php.run
@@ -1109,7 +1332,7 @@ async function boot(origin) {
 		'opcache.file_update_protection': '0',
 		'opcache.validate_timestamps': '0',
 		'opcache.file_cache_only': '0',
-		'opcache.memory_consumption': '32',
+		'opcache.memory_consumption': '48',
 		'opcache.interned_strings_buffer': '4',
 		'opcache.max_accelerated_files': '4000',
 	};
@@ -1156,6 +1379,21 @@ async function boot(origin) {
 	}
 	const tSite = Date.now() - t0 - tWasm;
 	let opcacheFiles = 0;
+	// #394 L1: the BOOT files of a split build, for this boot request only (dropped after it).
+	bootPackPaths = null;
+	l1State = OPCACHE_BOOT ? (ENV.OPCACHE_SPLIT === 'off' ? 'none:split-off' : 'none') : 'none:unsplit';
+	if (OPCACHE_BOOT && ENV.OPCACHE_SPLIT !== 'off') {
+		bootPackPaths = [];
+		for (const pack of await loadBootPacks()) {
+			for (const e of zipEntries(pack)) {
+				if (e.name.endsWith('/')) continue;
+				const full = OPCACHE_DIR + '/' + e.name;
+				mkdirp(full.slice(0, full.lastIndexOf('/')));
+				lazyFile(FS, full, e, 'opcache');
+				bootPackPaths.push(full);
+			}
+		}
+	}
 	for (const e of zipEntries(new Uint8Array(opcacheZip))) {
 		if (e.name.endsWith('/')) continue;
 		const full = OPCACHE_DIR + '/' + e.name;
@@ -1166,6 +1404,21 @@ async function boot(origin) {
 	}
 	const tFiles = Date.now() - t0 - tWasm;
 	memAt.afterFiles = mem();
+	// #407: the slugs the build ships stay deploy-only (php/code-persist.php reads this list), and a
+	// new runtime mounts the stored installs before its first request.
+	runtimeCode = null;
+	if (codePersistOn()) {
+		const shipped = { plugin: [], theme: [] };
+		for (const e of zipEntries(new Uint8Array(siteZip))) {
+			const m = /^wordpress\/wp-content\/(plugins|themes)\/([^/]+)\//.exec(e.name);
+			if (m) {
+				const t = m[1] === 'plugins' ? 'plugin' : 'theme';
+				if (!shipped[t].includes(m[2])) shipped[t].push(m[2]);
+			}
+		}
+		php.writeFile(CODE_BUILD_SLUGS_FILE, JSON.stringify(shipped));
+		writeRefused(php, []);
+	}
 
 	// Keys from the WP_SALT secret, so a deployed site never uses the local ones.
 	const lines = ['<?php'];
@@ -1185,6 +1438,8 @@ async function boot(origin) {
 	if (ENV.WP_SALT) lines.push(`define('WP_DEBUG', false);`);
 	// A demo site or a one-click site cannot install, update or edit plugin or theme code (site-lock.mjs).
 	lines.push(...lockDefines(ENV));
+	// #407: installs from wp-admin persist (php/code-persist.php). Off unless CODE_PERSIST=on.
+	if (codePersistOn()) lines.push(`define('SKYPHUSION_CODE_PERSIST', true);`);
 	// Outbound HTTP through fetch() (php/http-bridge.php, #26). HTTP_BRIDGE=off: no
 	// bridge, and WordPress blocks external requests, as before the bridge.
 	if (ENV.HTTP_BRIDGE === 'off') lines.push(`define('SKYPHUSION_HTTP_BRIDGE_OFF', true);`, `define('WP_HTTP_BLOCK_EXTERNAL', true);`);
@@ -2209,6 +2464,18 @@ export class PhpRuntime extends DurableObject {
 					const cleanDue = cronCleanDue(await this.ctx.storage.get(CRON_CLEAN_KEY), Date.now());
 					mail = tickMailFor(this.env, this.ctx.storage);
 					cr = await runCron(await (bootPromise ??= boot(cronOrigin)), cleanDue, mail);
+					// #407: once a day, delete stored code objects no row points at (crash leftovers).
+					if (codePersistOn() && sql) {
+						try {
+							const index = sqliteIndex(sql, (fn) => this.ctx.storage.transactionSync(fn));
+							if (Date.now() - (await index.lastSweep()) > 86400000) {
+								const swept = await sweepOrphans({ index, bucket: this.env.MEDIA, now: Date.now() });
+								console.log(JSON.stringify({ m: 'code', swept: swept.length }));
+							}
+						} catch (e) {
+							console.log(JSON.stringify({ m: 'code', sweepError: String((e && e.message) || e).slice(0, 200) }));
+						}
+					}
 					if (cr && cr.cleaned) await this.ctx.storage.put(CRON_CLEAN_KEY, Date.now());
 				} finally {
 					// A cron run that left a transaction open is rolled back, as a request is (MySQL rolls
@@ -2326,6 +2593,9 @@ export class PhpRuntime extends DurableObject {
 		if (dbHandler) dbHandler.reset();
 		// The Worker checked the spike token already. Checked again: the object
 		// trusts nothing it did not check itself.
+		// #394 L1: the OPcache boot packs live under /_pf/ in the static assets. They hold compiled PHP of
+		// the site's code, so no request may read them; only the object fetches them, through the binding.
+		if (url.pathname.startsWith('/_pf/')) return new Response('Not Found', { status: 404 });
 		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		// Spike: the URL the object got, and the origin it uses.
@@ -2462,6 +2732,13 @@ async function runCron(booted, cleanDue = false, mail = null) {
 		// which grew the runtime past the 128 MiB isolate on a big store even for one action.
 		const { actions, wpEvents } = cronBounds(ENV);
 		return withPhp(async () => {
+		// #407: scheduled hooks of an installed plugin need its files mounted, as a request does.
+		// Inside the PHP turn, so a mount never changes the files of a run that is waiting on I/O.
+		try {
+			await codeSync(php);
+		} catch (e) {
+			console.log(JSON.stringify({ m: 'code', syncError: String((e && e.message) || e).slice(0, 200) }));
+		}
 		// The tick's mail handoff (#362) is live only for this PHP run.
 		tickMail = mail;
 		let r;
@@ -2558,6 +2835,8 @@ async function runCron(booted, cleanDue = false, mail = null) {
 			echo json_encode( array( 'ran' => $ran, 'wp_cron_events' => $events, 'wp_cron_hooks' => implode( ',', $wp_hooks ), 'wp_cron_skipped' => implode( ',', array_keys( $skipped ) ), 'wp_cron_due' => implode( ',', array_keys( $wp_due ) ), 'released' => $released, 'as_actions' => $as_n, 'as_pass' => isset( $as_pass ) ? $as_pass : null, 'as_dates' => implode( ',', $as_dates ), 'as_hooks' => implode( ',', $as_list ), 'as_pending' => $as_pending, 'as_due' => $as_due, 'cleaned' => $cleaned ) );` });
 		} finally {
 			tickMail = null;
+			evictLazy();
+			dropBootPack(php[__private__dont__use].FS); // #394 L1: a cron run that booted drops the boot files too
 		}
 		let out = {};
 		try { out = JSON.parse(String(r.text).slice(String(r.text).lastIndexOf('{'))); } catch (e) { out = { parse: String(r.text).slice(-200) }; }
@@ -2699,6 +2978,9 @@ const site = {
 		// Drop any left over (an /_install run, or a request that failed early).
 		if (dbHandler) dbHandler.reset();
 		// Spike endpoints need the SPIKE_TOKEN secret when it is set (always on a deploy).
+		// #394 L1: the OPcache boot packs live under /_pf/ in the static assets. They hold compiled PHP of
+		// the site's code, so no request may read them; only the object fetches them, through the binding.
+		if (url.pathname.startsWith('/_pf/')) return new Response('Not Found', { status: 404 });
 		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		if (env.MEDIA && (req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/wp-content/uploads/')) return serveUpload(req, env, url);
@@ -3043,6 +3325,12 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			if (tracing()) fileTrace.begin({ cls: routeClass(req.method, url.pathname, url.search), method: req.method, path: url.pathname, boot: booted ? 1 : 0 });
 			bootPromise ??= boot(origin);
 			const { php, handler, bootMs } = await bootPromise;
+			// #407: mount any plugin or theme installed (or removed) since this runtime last looked.
+			try {
+				await codeSync(php);
+			} catch (e) {
+				console.log(JSON.stringify({ m: 'code', syncError: String((e && e.message) || e).slice(0, 200) }));
+			}
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
 			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
@@ -3072,6 +3360,8 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// valid spike token, so a visitor cannot disable the cache in production.
 			if (!spikeOk) delete headers['x-ast-cache-off'];
 			if (!spikeOk) delete headers['x-oc-off'];
+			// The memory trace and its switches (#434) reach PHP only with a valid spike token.
+			if (!spikeOk) { delete headers['x-mem-trace']; delete headers['x-mem-off']; }
 			let body;
 			if (env.MEDIA && isMediaUpload(req, url) && Number(req.headers.get('content-length') || 0) > STAGE_MIN_BYTES) {
 				const staged = await stageUpload(req, env);
@@ -3090,6 +3380,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const wantOpcache = ctx && ctx.inObject && spikeOk && req.headers.get('x-perf-opcache') === '1';
 			const op0 = wantOpcache ? await opcacheStats(php) : null;
 			const tPhp = Date.now();
+			lastMemTrace = null;
 			const r = await handler.request({ url: url.pathname + url.search, method: req.method, headers, body });
 			const phpOnlyMs = Date.now() - tPhp;
 			const op1 = wantOpcache ? await opcacheStats(php) : null;
@@ -3147,12 +3438,15 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			if (d.failures.length && spikeOk && env.SPIKE_TOKEN) out.set('x-d1-first-failure', (d.failures[0].error + ' | ' + d.failures[0].sql).replace(/[^\x20-\x7e]/g, ' ').slice(0, 600));
 			out.set('x-php-ms', String(Date.now() - t0));
 			out.set('x-boot', booted ? '1' : '0');
+			if (spikeOk && lastMemTrace) out.set('x-mem-trace', JSON.stringify(lastMemTrace).slice(0, 7900));
+			lastMemTrace = null;
 			if (ctx && ctx.inObject) out.set('x-boot-origin', bootOrigin);
 			// The path only, never the query string: a store's URLs carry order keys and logins there.
 			console.log(JSON.stringify({ m: 'req', path: url.pathname, boot: booted, d1: d.calls }));
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
 			if (tracing()) fileTrace.end({ status: r.httpStatusCode });
 			evictLazy();
+			dropBootPack(php[__private__dont__use].FS); // #394 L1: the boot files are no longer needed
 			const wasmBytes = php[__private__dont__use].HEAPU8.length;
 			out.set('x-wasm-mib', String(Math.round(wasmBytes / 1048576)));
 			// php-wasm answers a crashed runtime with a bare 500. Never reuse it.
@@ -3185,6 +3479,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 					inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024),
 					wasm0MiB: Math.round(wasm0 / 1048576),
 					wasm1MiB: Math.round(wasmBytes / 1048576),
+					...(booted ? { l1: l1State } : {}), // #394 L1: where this boot's OPcache boot pack came from
 					bytes: r.bytes.length,
 					httpCalls: stats.httpCalls - start.httpCalls,
 					txnOps: stats.txnOps - start.txnOps,
