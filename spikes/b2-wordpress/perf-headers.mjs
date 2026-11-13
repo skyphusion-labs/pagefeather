@@ -39,3 +39,30 @@ export function scrubPerfHeaders(res, allowed) {
 	for (const h of PERF_HEADERS) out.headers.delete(h);
 	return out;
 }
+
+// An operator request carries the token header (valid or not). Its answer may carry the headers
+// above, so no cache keeps it: not the edge (cloudflare-cdn-cache-control, which the edge obeys
+// over cache-control), not a CDN (cdn-cache-control), not the browser. The page cache tag goes
+// too, so a purge never counts it. Every status, a redirect included: the client that follows a
+// redirect sends the same header again.
+export const OPERATOR_HEADER = 'x-spike-token';
+
+export function isOperatorRequest(req) {
+	return req.headers.has(OPERATOR_HEADER);
+}
+
+export function noStoreAnywhere(headers) {
+	headers.set('cache-control', 'private, no-store');
+	headers.set('cloudflare-cdn-cache-control', 'no-store');
+	headers.delete('cdn-cache-control');
+	headers.delete('cache-tag');
+}
+
+// The answer to an operator request, marked so no cache keeps it. Any other answer, and a
+// WebSocket upgrade, is returned as is.
+export function operatorNoStore(res, req) {
+	if (!isOperatorRequest(req) || res.webSocket) return res;
+	const out = new Response(res.body, res);
+	noStoreAnywhere(out.headers);
+	return out;
+}
