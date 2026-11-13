@@ -27,8 +27,12 @@
  * Fail closed. A missing or failed token rejects the action, which is the whole
  * point of a bot challenge. If the verifier itself is unreachable (a timeout or a
  * network failure, told apart from a bad token by the error field), the action is
- * still rejected unless the site opts in through the skyphusion_turnstile_failopen
- * filter, so an outage never silently drops the protection.
+ * still rejected, with its own message so the user knows to try again. The login and
+ * both checkouts ALWAYS fail closed (#351). Only the comment form may opt into
+ * letting an outage through, with the skyphusion_turnstile_failopen filter.
+ *
+ * On b-dosql the Worker verifies the token in front of the PHP object, before the
+ * request reaches it, and the op only reads that answer (#351, turnstile.mjs).
  */
 
 if ( ! defined( 'SKYPHUSION_TURNSTILE' ) || ! SKYPHUSION_TURNSTILE || ! function_exists( 'skyphusion_worker_call' ) ) {
@@ -88,16 +92,17 @@ if ( ! function_exists( 'skyphusion_turnstile_remoteip' ) ) {
 }
 
 /**
- * Verify a token through the Worker op bridge. Returns true only when Cloudflare
- * returns success:true. A missing or bad token is always rejected. The verifier
- * being unreachable (reply has an error field, which a genuinely bad token never
- * sets) is rejected too unless the site opts into fail-open.
+ * Check a token through the Worker op bridge. Returns one of:
+ *   'ok'           Cloudflare returned success:true for this token.
+ *   'failed'       a missing, bad, spent or unverified token.
+ *   'unavailable'  the verifier was unreachable (the reply has an error field, which a
+ *                  genuinely bad token never sets).
  */
-if ( ! function_exists( 'skyphusion_turnstile_verify' ) ) {
-	function skyphusion_turnstile_verify( $token ) {
+if ( ! function_exists( 'skyphusion_turnstile_result' ) ) {
+	function skyphusion_turnstile_result( $token ) {
 		$token = is_string( $token ) ? trim( $token ) : '';
 		if ( '' === $token ) {
-			return false;
+			return 'failed';
 		}
 		$reply = json_decode(
 			skyphusion_worker_call(
@@ -113,13 +118,38 @@ if ( ! function_exists( 'skyphusion_turnstile_verify' ) ) {
 			true
 		);
 		if ( is_array( $reply ) && isset( $reply['success'] ) && true === $reply['success'] ) {
+			return 'ok';
+		}
+		if ( ! is_array( $reply ) || ! empty( $reply['error'] ) ) {
+			$GLOBALS['skyphusion_turnstile_last_reply'] = $reply;
+			return 'unavailable';
+		}
+		return 'failed';
+	}
+}
+
+/**
+ * True only for a passed token. An outage passes only when $allow_failopen is true AND the
+ * skyphusion_turnstile_failopen filter says so; only the comment form passes true (#351).
+ */
+if ( ! function_exists( 'skyphusion_turnstile_verify' ) ) {
+	function skyphusion_turnstile_verify( $token, $allow_failopen = false ) {
+		$result = skyphusion_turnstile_result( $token );
+		if ( 'ok' === $result ) {
 			return true;
 		}
-		$infra = is_array( $reply ) && ! empty( $reply['error'] );
-		if ( $infra && apply_filters( 'skyphusion_turnstile_failopen', false, $reply ) ) {
-			return true;
+		if ( 'unavailable' === $result && $allow_failopen ) {
+			$reply = isset( $GLOBALS['skyphusion_turnstile_last_reply'] ) ? $GLOBALS['skyphusion_turnstile_last_reply'] : null;
+			return (bool) apply_filters( 'skyphusion_turnstile_failopen', false, $reply );
 		}
 		return false;
+	}
+}
+
+/** The message for a verifier outage: the user did nothing wrong and can try again. */
+if ( ! function_exists( 'skyphusion_turnstile_unavailable_message' ) ) {
+	function skyphusion_turnstile_unavailable_message() {
+		return __( 'We could not check the challenge just now. Please try again in a moment.' );
 	}
 }
 
@@ -140,7 +170,11 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_LOGIN' ) || SKYPHUSION_TURNSTILE_LOGIN ) {
 			if ( 'POST' !== $method || ! isset( $_POST['log'] ) ) {
 				return $user;
 			}
-			if ( ! skyphusion_turnstile_verify( skyphusion_turnstile_token() ) ) {
+			$result = skyphusion_turnstile_result( skyphusion_turnstile_token() );
+			if ( 'unavailable' === $result ) {
+				return new WP_Error( 'turnstile_unavailable', skyphusion_turnstile_unavailable_message() );
+			}
+			if ( 'ok' !== $result ) {
 				return new WP_Error( 'turnstile_failed', __( 'Please complete the challenge to sign in.' ) );
 			}
 			return $user;
@@ -169,7 +203,7 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_COMMENTS' ) || SKYPHUSION_TURNSTILE_COMMEN
 			if ( in_array( $type, array( 'pingback', 'trackback' ), true ) ) {
 				return $commentdata;
 			}
-			if ( ! skyphusion_turnstile_verify( skyphusion_turnstile_token() ) ) {
+			if ( ! skyphusion_turnstile_verify( skyphusion_turnstile_token(), true ) ) {
 				wp_die(
 					esc_html__( 'Your comment could not be verified. Please go back and try again.' ),
 					esc_html__( 'Comment blocked' ),
@@ -202,7 +236,10 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_WOO' ) || SKYPHUSION_TURNSTILE_WOO ) {
 			if ( ! function_exists( 'wc_add_notice' ) ) {
 				return;
 			}
-			if ( ! skyphusion_turnstile_verify( skyphusion_turnstile_token() ) ) {
+			$result = skyphusion_turnstile_result( skyphusion_turnstile_token() );
+			if ( 'unavailable' === $result ) {
+				wc_add_notice( skyphusion_turnstile_unavailable_message(), 'error' );
+			} elseif ( 'ok' !== $result ) {
 				wc_add_notice( __( 'Please complete the challenge to place your order.' ), 'error' );
 			}
 		}
@@ -311,7 +348,8 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_WOO' ) || SKYPHUSION_TURNSTILE_WOO ) {
 	 * checkout route, before stock is held and before payment. It also fires for the PUT and PATCH
 	 * draft updates the checkout sends while the shopper types, which carry no token, so only the
 	 * POST (place order) is gated. A RouteException becomes a 400 Store API error that the block
-	 * shows as a notice; WooCommerce then releases held stock and coupons. If that class is missing
+	 * shows as a notice; WooCommerce then releases held stock and coupons. A verifier outage is a 503
+	 * skyphusion_turnstile_unavailable instead, which the shopper may retry. If that class is missing
 	 * (an older WooCommerce), a plain exception still stops the order (a 500), so the gate never
 	 * fails open.
 	 */
@@ -321,13 +359,17 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_WOO' ) || SKYPHUSION_TURNSTILE_WOO ) {
 			if ( 'POST' !== $method ) {
 				return;
 			}
-			if ( skyphusion_turnstile_verify( skyphusion_turnstile_block_token( $request ) ) ) {
+			$result = skyphusion_turnstile_result( skyphusion_turnstile_block_token( $request ) );
+			if ( 'ok' === $result ) {
 				return;
 			}
-			$message = __( 'Please complete the challenge to place your order.' );
+			// An outage is a 503 the shopper may retry (the Worker adds Retry-After, #351); a failed
+			// token is a 400. Neither places the order.
+			$down    = 'unavailable' === $result;
+			$message = $down ? skyphusion_turnstile_unavailable_message() : __( 'Please complete the challenge to place your order.' );
 			$route   = '\Automattic\WooCommerce\StoreApi\Exceptions\RouteException';
 			if ( class_exists( $route ) ) {
-				throw new $route( 'skyphusion_turnstile_failed', $message, 400 );
+				throw new $route( $down ? 'skyphusion_turnstile_unavailable' : 'skyphusion_turnstile_failed', $message, $down ? 503 : 400 );
 			}
 			throw new Exception( $message );
 		}

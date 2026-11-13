@@ -16,7 +16,18 @@ import {
 	isTestSecret,
 	siteHost,
 	TURNSTILE_ACTION,
-	verifyAfterGate,
+	TURNSTILE_RESULT_HEADER,
+	TURNSTILE_BLOCK_NS,
+	TURNSTILE_MAX_BODY,
+	turnstileRoute,
+	readGatedToken,
+	tokenHash,
+	encodeResult,
+	decodeResult,
+	setResultHeader,
+	takeResultHeader,
+	TurnstileSlot,
+	retryAfterFor,
 } from '../turnstile.mjs';
 import { readFileSync } from 'node:fs';
 
@@ -183,80 +194,248 @@ test('a non-200 reply that says success:true is still an outage, as before', asy
 	assert.equal(r.error, 'verify_unreachable');
 });
 
-// #351: the output gate (storage.sync) is waited for BEFORE the verify starts its timeout.
+// ---- #351: the front Worker verifies, the object only reads the answer. ----
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const okFetch = (delay) => async () => {
-	await sleep(delay);
-	return { ok: true, json: async () => ({ success: true }) };
-};
+const ON = { TURNSTILE_SECRET: 's', TURNSTILE_SITEKEY: PASS_SITEKEY };
+const U = (path) => new URL(path, 'https://shop.example.co');
 
-test('verifyAfterGate: a gate longer than the timeout does not refuse a valid token', async () => {
-	// The live case: the gate took 2 s, the fetch 5 ms. A 1 s budget (the minimum) must hold.
-	// The stub fetch waits at the gate, as a Durable Object's output gate holds a real fetch.
-	const gateOpen = sleep(1300);
-	const out = await verifyAfterGate(
-		() => gateOpen,
-		() => verifyToken('sec', 'tok', null, { timeoutMs: 1000, fetchImpl: async () => { await gateOpen; return okFetch(5)(); } }),
-	);
-	assert.equal(out.res.success, true);
-	assert.equal(out.res.error, undefined);
-	assert.ok(out.gateMs >= 1250, 'gateMs ' + out.gateMs);
-	assert.ok(out.fetchMs < 1000, 'fetchMs ' + out.fetchMs);
+test('siteverifyForm carries the idempotency key when given', () => {
+	assert.equal(siteverifyForm('sec', 'tok', null, 'k-1').get('idempotency_key'), 'k-1');
+	assert.equal(siteverifyForm('sec', 'tok').has('idempotency_key'), false);
 });
 
-test('verifyAfterGate: the control, a verify that waits inside its own budget, times out', async () => {
-	// The old order: the wait counted against the budget. This is the defect the gate removes.
+test('an outage is retried once with the SAME idempotency key, and the retry can pass', async () => {
+	const keys = [];
+	let n = 0;
 	const r = await verifyToken('sec', 'tok', null, {
-		timeoutMs: 1000,
-		fetchImpl: async () => {
-			await sleep(1300);
+		fetchImpl: async (url, init) => {
+			keys.push(new URLSearchParams(init.body).get('idempotency_key'));
+			if (++n === 1) throw new Error('network down');
 			return { ok: true, json: async () => ({ success: true }) };
 		},
 	});
+	assert.equal(r.success, true);
+	assert.equal(r.tries, 2);
+	assert.equal(keys.length, 2);
+	assert.ok(keys[0], 'a key is sent');
+	assert.equal(keys[0], keys[1]);
+});
+
+test('a token siteverify answered is never retried', async () => {
+	let n = 0;
+	const r = await verifyToken('sec', 'bad', null, { fetchImpl: async () => { n++; return { ok: true, json: async () => ({ success: false, 'error-codes': ['invalid-input-response'] }) }; } });
+	assert.equal(r.success, false);
+	assert.equal(r.error, undefined);
+	assert.equal(n, 1);
+	assert.equal(r.tries, 1);
+});
+
+test('two timeouts stay inside the one budget and report an outage', async () => {
+	let n = 0;
+	const t0 = Date.now();
+	const r = await verifyToken('sec', 'tok', null, { timeoutMs: 1000, fetchImpl: () => { n++; return new Promise(() => {}); } });
+	const ms = Date.now() - t0;
 	assert.equal(r.success, false);
 	assert.equal(r.error, 'timeout');
+	assert.equal(n, 2);
+	assert.ok(ms >= 950 && ms < 1500, 'ms ' + ms);
 });
 
-test('verifyAfterGate: a slow fetch still times out after the gate', async () => {
-	const out = await verifyAfterGate(
-		() => sleep(10),
-		() => verifyToken('sec', 'tok', null, { timeoutMs: 1000, fetchImpl: okFetch(1300) }),
-	);
-	assert.equal(out.res.success, false);
-	assert.equal(out.res.error, 'timeout');
+test('tries:1 sends one request', async () => {
+	let n = 0;
+	const r = await verifyToken('sec', 'tok', null, { tries: 1, fetchImpl: async () => { n++; throw new Error('x'); } });
+	assert.equal(n, 1);
+	assert.equal(r.tries, 1);
+	assert.ok(r.error);
 });
 
-test('verifyAfterGate: the verify starts only after the gate resolves', async () => {
-	const order = [];
-	await verifyAfterGate(
-		async () => { await sleep(20); order.push('gate'); },
-		async () => { order.push('verify'); return { success: true }; },
-	);
-	assert.deepEqual(order, ['gate', 'verify']);
+test('turnstileRoute names each gated POST, honours each switch, and nothing else', () => {
+	assert.equal(turnstileRoute(ON, 'POST', U('/wp-login.php')), 'login');
+	assert.equal(turnstileRoute(ON, 'POST', U('/wp-login.php?action=login')), 'login');
+	assert.equal(turnstileRoute(ON, 'POST', U('/wp-comments-post.php')), 'comments');
+	assert.equal(turnstileRoute(ON, 'POST', U('/?wc-ajax=checkout')), 'woo');
+	assert.equal(turnstileRoute(ON, 'POST', U('/checkout/?wc-ajax=checkout')), 'woo');
+	assert.equal(turnstileRoute(ON, 'POST', U('/wp-json/wc/store/v1/checkout')), 'store');
+	assert.equal(turnstileRoute(ON, 'POST', U('/wp-json/wc/store/checkout')), 'store');
+	assert.equal(turnstileRoute(ON, 'POST', U('/?rest_route=/wc/store/v1/checkout')), 'store');
+	assert.equal(turnstileRoute(ON, 'post', U('/wp-login.php')), 'login');
+	// Not gated: other methods, other paths, the draft updates, the batch route.
+	assert.equal(turnstileRoute(ON, 'GET', U('/wp-login.php')), '');
+	assert.equal(turnstileRoute(ON, 'PUT', U('/wp-json/wc/store/v1/checkout')), '');
+	assert.equal(turnstileRoute(ON, 'POST', U('/wp-json/wc/store/v1/batch')), '');
+	assert.equal(turnstileRoute(ON, 'POST', U('/wp-json/wc/store/v1/cart/add-item')), '');
+	assert.equal(turnstileRoute(ON, 'POST', U('/?wc-ajax=update_order_review')), '');
+	assert.equal(turnstileRoute(ON, 'POST', U('/')), '');
+	// Switches.
+	assert.equal(turnstileRoute({ ...ON, TURNSTILE: 'off' }, 'POST', U('/wp-login.php')), '');
+	assert.equal(turnstileRoute({ ...ON, TURNSTILE_SECRET: '' }, 'POST', U('/wp-login.php')), '');
+	assert.equal(turnstileRoute({ ...ON, TURNSTILE_LOGIN: 'off' }, 'POST', U('/wp-login.php')), '');
+	assert.equal(turnstileRoute({ ...ON, TURNSTILE_COMMENTS: 'off' }, 'POST', U('/wp-comments-post.php')), '');
+	assert.equal(turnstileRoute({ ...ON, TURNSTILE_WOO: 'off' }, 'POST', U('/?wc-ajax=checkout')), '');
+	assert.equal(turnstileRoute({ ...ON, TURNSTILE_WOO: 'off' }, 'POST', U('/wp-json/wc/store/v1/checkout')), '');
+	assert.equal(turnstileRoute({ ...ON, TURNSTILE_LOGIN: 'off' }, 'POST', U('/?wc-ajax=checkout')), 'woo');
 });
 
-test('verifyAfterGate: a gate that throws still verifies, and says so', async () => {
-	const out = await verifyAfterGate(
-		async () => { throw new Error('storage gone'); },
-		async () => ({ success: true }),
-	);
-	assert.equal(out.res.success, true);
-	assert.equal(out.gateError, 'storage gone');
+const formReq = (body, ct = 'application/x-www-form-urlencoded') => new Request('https://shop.example.co/wp-login.php', { method: 'POST', headers: { 'content-type': ct, 'content-length': String(new TextEncoder().encode(body).length) }, body });
+
+test('readGatedToken reads the form field, the multipart field and the Store API extension', async () => {
+	assert.equal(await readGatedToken('login', formReq('log=a&pwd=b&cf-turnstile-response=TOK.1')), 'TOK.1');
+	assert.equal(await readGatedToken('login', formReq('log=a&pwd=b')), '');
+	const fd = new FormData();
+	fd.set('cf-turnstile-response', 'TOK.2');
+	const mp = new Request('https://shop.example.co/wp-comments-post.php', { method: 'POST', body: fd });
+	const mpBody = await mp.clone().arrayBuffer();
+	const mp2 = new Request(mp.url, { method: 'POST', headers: { 'content-type': mp.headers.get('content-type'), 'content-length': String(mpBody.byteLength) }, body: mpBody });
+	assert.equal(await readGatedToken('comments', mp2), 'TOK.2');
+	const j = JSON.stringify({ billing_address: {}, extensions: { [TURNSTILE_BLOCK_NS]: { token: ' TOK.3 ' } } });
+	assert.equal(await readGatedToken('store', formReq(j, 'application/json')), 'TOK.3');
+	assert.equal(await readGatedToken('store', formReq(JSON.stringify({ extensions: { other: { token: 'x' } } }), 'application/json')), '');
+	assert.equal(await readGatedToken('store', formReq(JSON.stringify({ extensions: { [TURNSTILE_BLOCK_NS]: { token: ['x'] } } }), 'application/json')), '');
+	assert.equal(await readGatedToken('store', formReq('not json', 'application/json')), '');
+	assert.equal(await readGatedToken('store', formReq('cf-turnstile-response=x')), '', 'a form body on the Store API route');
+	assert.equal(await readGatedToken('login', formReq('cf-turnstile-response=x', 'text/plain')), '');
 });
 
-test('verifyAfterGate: no gate verifies at once', async () => {
-	let t = 100;
-	const out = await verifyAfterGate(null, async () => { t += 7; return { success: false, codes: ['bad'] }; }, () => t);
-	assert.deepEqual(out.res, { success: false, codes: ['bad'] });
-	assert.equal(out.gateMs, 0);
-	assert.equal(out.fetchMs, 7);
+test('readGatedToken reads nothing without a length or past the cap, so the gate fails closed', async () => {
+	const noLen = new Request('https://shop.example.co/wp-login.php', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'cf-turnstile-response=x' });
+	assert.equal(await readGatedToken('login', noLen), '');
+	const big = new Request('https://shop.example.co/wp-login.php', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', 'content-length': String(TURNSTILE_MAX_BODY + 1) }, body: 'cf-turnstile-response=x' });
+	assert.equal(await readGatedToken('login', big), '');
 });
 
-test('index.js turnstileOp passes storage.sync as the gate, and verifies inside verifyAfterGate', () => {
+test('encodeResult and decodeResult round-trip and refuse anything malformed', () => {
+	const v = encodeResult({ success: true, codes: [] }, 'TOK');
+	assert.deepEqual(decodeResult(v), { success: true, codes: [], tokenHash: tokenHash('TOK') });
+	assert.equal(decodeResult(encodeResult({ success: false, codes: [], error: 'timeout' }, 'TOK')).error, 'timeout');
+	assert.equal(tokenHash(' TOK '), tokenHash('TOK'));
+	assert.match(tokenHash('TOK'), /^[0-9a-f]{64}$/);
+	for (const bad of [null, '', 'x', '{}', '{"success":"true","tokenHash":"' + 'a'.repeat(64) + '"}', '{"success":true,"tokenHash":"short"}', '{"success":true}']) {
+		assert.equal(decodeResult(bad), null, String(bad));
+	}
+});
+
+test('the slot answers once, only for the verified token, and fails closed otherwise', () => {
+	const slot = new TurnstileSlot();
+	assert.deepEqual(slot.take('TOK'), { success: false, codes: ['not-preverified'] });
+	slot.set(encodeResult({ success: true, codes: [] }, 'TOK'));
+	assert.deepEqual(slot.take('OTHER'), { success: false, codes: ['token-mismatch'] });
+	assert.deepEqual(slot.take(''), { success: false, codes: ['missing-input-response'] });
+	assert.deepEqual(slot.take('TOK'), { success: true, codes: [] });
+	assert.deepEqual(slot.take('TOK'), { success: false, codes: ['already-used'] });
+	slot.clear();
+	assert.deepEqual(slot.take('TOK'), { success: false, codes: ['not-preverified'] });
+	slot.set('garbage');
+	assert.deepEqual(slot.take('TOK'), { success: false, codes: ['not-preverified'] });
+	// None of these is an outage: no error field, so no fail-open path can let them through.
+	for (const r of [slot.take('TOK')]) assert.equal(r.error, undefined);
+});
+
+// The chain as index.js runs it: the front Worker (setResultHeader on the forwarded request), then
+// the object (takeResultHeader, then the slot for the one PHP run).
+async function frontThenObject(clientHeaders, route, token, fetchImpl, slot) {
+	const fwd = new Headers(clientHeaders);
+	let value = null;
+	if (route && token) value = encodeResult(await verifyToken('sec', token, null, { timeoutMs: 1000, fetchImpl }), token);
+	setResultHeader(fwd, value);
+	const seenByObject = fwd.get(TURNSTILE_RESULT_HEADER);
+	slot.set(takeResultHeader(fwd));
+	return { seenByObject, phpHeaders: fwd };
+}
+
+test('FORGE: a result header sent by the client is never the answer, and PHP never sees the header', async () => {
+	const slot = new TurnstileSlot();
+	const forged = encodeResult({ success: true, codes: [] }, 'TOK');
+	// Not a gated route: the front Worker drops the forged header and sets none.
+	let out = await frontThenObject({ [TURNSTILE_RESULT_HEADER]: forged, cookie: 'c=1' }, '', 'TOK', null, slot);
+	assert.equal(out.seenByObject, null);
+	assert.deepEqual(slot.take('TOK'), { success: false, codes: ['not-preverified'] });
+	assert.equal(out.phpHeaders.has(TURNSTILE_RESULT_HEADER), false);
+	assert.equal(out.phpHeaders.get('cookie'), 'c=1');
+	// A gated route whose real verify fails: the forged success is replaced by the real failure.
+	out = await frontThenObject({ [TURNSTILE_RESULT_HEADER]: forged }, 'login', 'TOK', async () => ({ ok: true, json: async () => ({ success: false, 'error-codes': ['invalid-input-response'] }) }), slot);
+	assert.notEqual(out.seenByObject, forged);
+	assert.deepEqual(slot.take('TOK'), { success: false, codes: ['invalid-input-response'] });
+	assert.equal(out.phpHeaders.has(TURNSTILE_RESULT_HEADER), false);
+});
+
+test('a token reused across two requests fails the second time', async () => {
+	// Cloudflare spends a token on its first siteverify; a second one is timeout-or-duplicate.
+	const spent = new Set();
+	const siteverify = async (url, init) => {
+		const t = new URLSearchParams(init.body).get('response');
+		if (spent.has(t)) return { ok: true, json: async () => ({ success: false, 'error-codes': ['timeout-or-duplicate'] }) };
+		spent.add(t);
+		return { ok: true, json: async () => ({ success: true }) };
+	};
+	const slot = new TurnstileSlot();
+	await frontThenObject({}, 'login', 'TOK', siteverify, slot);
+	assert.equal(slot.take('TOK').success, true);
+	slot.clear(); // the end of the first PHP run
+	await frontThenObject({}, 'login', 'TOK', siteverify, slot);
+	const second = slot.take('TOK');
+	assert.equal(second.success, false);
+	assert.deepEqual(second.codes, ['timeout-or-duplicate']);
+	assert.equal(second.error, undefined, 'a spent token is a failed token, not an outage');
+	// The first run's answer does not carry over: with no front verify, the object has nothing.
+	slot.clear();
+	await frontThenObject({}, '', 'TOK', null, slot);
+	assert.deepEqual(slot.take('TOK'), { success: false, codes: ['not-preverified'] });
+});
+
+for (const route of ['login', 'woo', 'store']) {
+	test(`fail closed on a verifier timeout: ${route}`, async () => {
+		const slot = new TurnstileSlot();
+		await frontThenObject({}, route, 'TOK', () => new Promise(() => {}), slot);
+		const r = slot.take('TOK');
+		assert.equal(r.success, false);
+		assert.equal(r.error, 'timeout', 'an outage, which PHP shows as unavailable and refuses');
+		assert.equal(retryAfterFor(route, r, 503), route === 'store' ? '5' : '');
+	});
+}
+
+// The two accepted limits (#351): neither gets a front answer, and each is refused as a FAILED
+// token (no error field), so PHP answers its normal refusal (a 400 or a notice), never a 500 and
+// never the outage path.
+for (const [name, method, path] of [
+	['a checkout inside a Store API batch request', 'POST', '/wp-json/wc/store/v1/batch'],
+	['a checkout inside a Store API batch request (rest_route)', 'POST', '/?rest_route=/wc/store/v1/batch'],
+	['a classic checkout posted without wc-ajax (no JavaScript)', 'POST', '/?page_id=7'],
+	['a classic checkout posted to the checkout page path', 'POST', '/checkout/'],
+]) {
+	test(`refused cleanly: ${name}`, async () => {
+		assert.equal(turnstileRoute(ON, method, U(path)), '');
+		const slot = new TurnstileSlot();
+		const out = await frontThenObject({}, turnstileRoute(ON, method, U(path)), 'TOK', async () => { throw new Error('the front Worker must not verify this'); }, slot);
+		assert.equal(out.seenByObject, null);
+		const r = slot.take('TOK');
+		assert.deepEqual(r, { success: false, codes: ['not-preverified'] });
+		assert.equal(r.error, undefined, 'a failed token, not an outage: no 503, no fail-open');
+	});
+}
+
+test('Retry-After only for a Store API outage answered 503', () => {
+	assert.equal(retryAfterFor('store', { error: 'timeout' }, 503), '5');
+	assert.equal(retryAfterFor('store', { error: 'timeout' }, 400), '');
+	assert.equal(retryAfterFor('store', { success: false }, 503), '');
+	assert.equal(retryAfterFor('store', null, 503), '');
+	assert.equal(retryAfterFor('login', { error: 'timeout' }, 503), '');
+});
+
+test('index.js: the object never verifies, and the front Worker sets the answer before the object', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	const body = src.slice(src.indexOf('async function turnstileOp('), src.indexOf('function analyticsOp('));
-	assert.match(body, /await new Promise\(\(r\) => setTimeout\(r, 0\)\);\s*await sqlStorage\.sync\(\);/);
-	assert.match(body, /verifyAfterGate\(gate, \(\) =>\s*verifyToken\(/);
-	// No verifyToken call outside the gate.
-	assert.equal((body.match(/verifyToken\(/g) || []).length, 1);
+	const op = src.slice(src.indexOf('async function turnstileOp('), src.indexOf('// Record one anonymized pageview'));
+	const objectBranch = op.slice(op.indexOf("if (ENV.PHP_IN_DO === 'on') {"), op.indexOf('} else {'));
+	assert.match(objectBranch, /res = turnstileSlot\.take\(op && op\.token\);/);
+	assert.doesNotMatch(objectBranch, /verifyToken|fetch\(|sync\(|setTimeout|await/);
+	assert.doesNotMatch(src, /verifyAfterGate|sqlStorage\.sync\(\)/);
+	// The front Worker: verify first, then set the header on every forwarded request.
+	const front = src.slice(src.indexOf('async function toPhpObject('), src.indexOf('const retried = res.attempts > 1;'));
+	assert.ok(front.indexOf('await preverifyTurnstile(req, env, url)') > 0);
+	assert.ok(front.indexOf('await preverifyTurnstile(req, env, url)') < front.indexOf('fetchWithMemoryRetry('));
+	assert.match(front, /const fwd = new Request\(req\);\s*\/\/[^\n]*\n\s*setResultHeader\(fwd\.headers, pre && pre\.value\);/);
+	// The object: take the header off before PHP, set the slot inside the PHP lock, clear it after.
+	assert.match(src, /req\.headers\.delete\(SENT_HEADER\);\s*\/\/[^\n]*\n\s*const turnstileHeader = takeResultHeader\(req\.headers\);/);
+	const run = src.slice(src.indexOf('turnstileSlot.set(turnstileHeader);'), src.indexOf('phpPending--;'));
+	assert.ok(run.indexOf('await handle(req, env, url, spikeOk, maxBody, ctx)') > 0);
+	assert.match(run, /finally \{\s*turnstileSlot\.clear\(\);/);
 });

@@ -152,6 +152,20 @@ if ( 'route-exception' === $scenario ) {
 	check( 'route exception: thrown class', $caught ? get_class( $caught ) : null, 'Automattic\WooCommerce\StoreApi\Exceptions\RouteException' );
 	check( 'route exception: error code', $caught ? $caught->error_code : null, 'skyphusion_turnstile_failed' );
 	check( 'route exception: HTTP 400', $caught ? $caught->getCode() : null, 400 );
+	// An outage is a 503 with its own code (#351); the Worker adds Retry-After.
+	$GLOBALS['hooks']['skyphusion_turnstile_failopen'][] = function ( $v, $reply ) { return true; };
+	ts_reply( array( 'ok' => true, 'success' => false, 'error' => 'timeout' ) );
+	$req = new Fake_REST_Request( 'POST', array( 'extensions' => array( 'skyphusion-turnstile' => array( 'token' => 'good' ) ) ) );
+	$caught = null;
+	try { do_action( 'woocommerce_store_api_checkout_update_order_from_request', null, $req ); } catch ( Exception $e ) { $caught = $e; }
+	check( 'route exception outage: error code', $caught ? $caught->error_code : null, 'skyphusion_turnstile_unavailable' );
+	check( 'route exception outage: HTTP 503', $caught ? $caught->getCode() : null, 503 );
+	// A request with no front answer (a Store API batch, #351) is a failed token: a clean 400.
+	ts_reply( array( 'ok' => true, 'success' => false, 'codes' => array( 'not-preverified' ) ) );
+	$caught = null;
+	try { do_action( 'woocommerce_store_api_checkout_update_order_from_request', null, $req ); } catch ( Exception $e ) { $caught = $e; }
+	check( 'route exception not-preverified: failed code', $caught ? $caught->error_code : null, 'skyphusion_turnstile_failed' );
+	check( 'route exception not-preverified: HTTP 400, not 500 or 503', $caught ? $caught->getCode() : null, 400 );
 	echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
 	exit( $fail ? 1 : 0 );
 }
@@ -237,15 +251,44 @@ do_action( 'woocommerce_checkout_process' );
 check( 'checkout bad token: order failed with an error notice', count( $GLOBALS['wc_notices'] ), 1 );
 check( 'checkout bad token: notice type is error', $GLOBALS['wc_notices'][0][1], 'error' );
 
-// 5) Fail-closed on an outage, with an opt-in fail-open filter for infra errors only.
+// 5) Fail-closed on an outage (#351). The login and both checkouts ALWAYS fail closed, with
+// their own outage message; only the comment form may opt into fail-open, and only for an outage.
 $_POST['cf-turnstile-response'] = 'some-token';
+$_POST['log'] = 'admin';
 ts_reply( array( 'ok' => true, 'success' => false, 'error' => 'timeout' ) );
+check( 'result: an outage is unavailable', skyphusion_turnstile_result( 'some-token' ), 'unavailable' );
 check( 'verifier outage: rejected by default (fail closed)', skyphusion_turnstile_verify( 'some-token' ), false );
+$cd = array( 'comment_content' => 'hi', 'comment_type' => 'comment' );
+$blocked = false;
+try { apply_filters( 'preprocess_comment', $cd ); } catch ( WpDieException $e ) { $blocked = true; }
+check( 'comment outage, no filter: blocked', $blocked, true );
 $GLOBALS['hooks']['skyphusion_turnstile_failopen'][] = function ( $v, $reply ) { return true; };
-check( 'verifier outage + fail-open filter: allowed', skyphusion_turnstile_verify( 'some-token' ), true );
-// A genuinely bad token (no infra error) is never let through by fail-open.
+check( 'verify outage + filter, not allowed by the caller: still rejected', skyphusion_turnstile_verify( 'some-token' ), false );
+check( 'verify outage + filter, allowed by the caller: passes', skyphusion_turnstile_verify( 'some-token', true ), true );
+check( 'comment outage + fail-open filter: passes', apply_filters( 'preprocess_comment', $cd ), $cd );
+$r = apply_filters( 'authenticate', null, 'admin', 'pw' );
+check( 'login outage + fail-open filter: still rejected (fail closed)', $r instanceof WP_Error, true );
+check( 'login outage: its own code', $r instanceof WP_Error ? $r->code : null, 'turnstile_unavailable' );
+check( 'login outage: try-again message', $r instanceof WP_Error ? $r->message : null, 'We could not check the challenge just now. Please try again in a moment.' );
+$GLOBALS['wc_notices'] = array();
+do_action( 'woocommerce_checkout_process' );
+check( 'classic checkout outage + fail-open filter: order failed', count( $GLOBALS['wc_notices'] ), 1 );
+check( 'classic checkout outage: try-again notice', $GLOBALS['wc_notices'][0][0] ?? null, 'We could not check the challenge just now. Please try again in a moment.' );
+// A reply that is not JSON (a broken bridge) is an outage too, never a pass.
+$GLOBALS['ts_reply'] = 'not json';
+check( 'result: a broken bridge reply is unavailable', skyphusion_turnstile_result( 'some-token' ), 'unavailable' );
+// A classic checkout with no front answer (posted without wc-ajax, #351) gets the normal notice.
+ts_reply( array( 'ok' => true, 'success' => false, 'codes' => array( 'not-preverified' ) ) );
+$GLOBALS['wc_notices'] = array();
+do_action( 'woocommerce_checkout_process' );
+check( 'classic checkout not-preverified: the challenge notice, not the outage one', $GLOBALS['wc_notices'][0][0] ?? null, 'Please complete the challenge to place your order.' );
+// A bad token (no infra error) is never let through by fail-open, on any form.
 ts_reply( array( 'ok' => true, 'success' => false ) );
-check( 'bad token + fail-open filter: still rejected', skyphusion_turnstile_verify( 'some-token' ), false );
+check( 'result: a bad token is failed', skyphusion_turnstile_result( 'some-token' ), 'failed' );
+check( 'bad token + fail-open filter: still rejected', skyphusion_turnstile_verify( 'some-token', true ), false );
+$r = apply_filters( 'authenticate', null, 'admin', 'pw' );
+check( 'login bad token: the challenge code, not the outage one', $r instanceof WP_Error ? $r->code : null, 'turnstile_failed' );
+unset( $GLOBALS['hooks']['skyphusion_turnstile_failopen'] );
 
 // 6) Block checkout (issue #308). The widget follows the checkout block once; other blocks are untouched.
 check( 'render_block hooked', has_hook( 'render_block' ), true );
@@ -301,9 +344,10 @@ check( 'store api PUT draft update: not gated', ts_gate( ts_store( 'PUT', null )
 check( 'store api PATCH draft update: not gated', ts_gate( ts_store( 'PATCH', null ) ), 'passed' );
 check( 'store api PUT: verifier not called', $GLOBALS['ts_calls'], 0 );
 ts_reply( array( 'ok' => true, 'success' => false, 'error' => 'timeout' ) );
-check( 'store api verifier outage + fail-open filter: passes (same path as classic)', ts_gate( ts_store( 'POST', $good ) ), 'passed' );
+check( 'store api verifier outage: stopped (fail closed)', ts_gate( ts_store( 'POST', $good ) ), 'Exception:We could not check the challenge just now. Please try again in a moment.' );
+$GLOBALS['hooks']['skyphusion_turnstile_failopen'][] = function ( $v, $reply ) { return true; };
+check( 'store api verifier outage + fail-open filter: still stopped (#351)', ts_gate( ts_store( 'POST', $good ) ), 'Exception:We could not check the challenge just now. Please try again in a moment.' );
 unset( $GLOBALS['hooks']['skyphusion_turnstile_failopen'] );
-check( 'store api verifier outage: stopped (fail closed)', ts_gate( ts_store( 'POST', $good ) ), 'Exception:Please complete the challenge to place your order.' );
 
 echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
 exit( $fail ? 1 : 0 );

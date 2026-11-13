@@ -10,7 +10,7 @@ import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, mayHaveW
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { cronBounds, cronCleanDue } from './cron-bound.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
-import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, verifyAfterGate, siteHost, TURNSTILE_ACTION } from './turnstile.mjs';
+import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION, setResultHeader, takeResultHeader, turnstileRoute, readGatedToken, encodeResult, TurnstileSlot, turnstileTimeoutMs, retryAfterFor } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
 import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, demoLockDefines } from './site-lock.mjs';
@@ -898,15 +898,19 @@ async function browserRenderOp(op) {
 
 
 // Verify a Turnstile token for a gated form (php/turnstile-forms.php, issue #250).
-// PHP reads cf-turnstile-response from the form POST and sends it here; the secret
-// (TURNSTILE_SECRET) stays in the Worker and PHP never sees it, as the AI binding
-// and the purge token do. The browser never calls siteverify. verifyToken is the
-// shared seam (turnstile.mjs), so the box test exercises this exact request.
-//   - success:true  only when Cloudflare returns success:true.
-//   - success:false with error set means the verifier was unreachable (a timeout or
-//     a network failure), which PHP tells apart from a token that genuinely failed:
-//     a missing or bad token is always rejected, an outage is rejected unless the
-//     site opts into fail-open.
+// PHP reads the token from the form POST (or the Store API extension) and sends it here; the
+// secret (TURNSTILE_SECRET) stays in the Worker and PHP never sees it. The browser never calls
+// siteverify.
+//   - success:true  only when Cloudflare returned success:true for this token.
+//   - success:false with error set means the verifier was unreachable (a timeout or a network
+//     failure); PHP shows it as an outage, and a login or a checkout is still refused.
+//   - success:false with no error is a missing, bad, spent or unverified token.
+// In the object (PHP_IN_DO=on), the op never fetches and never waits (#351): the front Worker
+// verified the request before it reached the object (preverifyTurnstile), and the op answers from
+// that result (turnstileSlot), once, for the same token. A verify from inside the object waited
+// at the output gate for the writes the request had made, and an isolate reset in that wait lost
+// them. With PHP in the Worker there is no output gate, so the op verifies itself.
+const turnstileSlot = new TurnstileSlot();
 async function turnstileOp(op) {
 	const t0 = Date.now();
 	stats.turnstile = stats.turnstile || { n: 0, ms: 0, ok: 0, fail: 0 };
@@ -921,26 +925,17 @@ async function turnstileOp(op) {
 		// No secret means the gate should not have injected the define, so this is
 		// belt and braces: fail closed (the form is rejected), never open.
 		if (!ENV.TURNSTILE_SECRET) return done({ ok: true, success: false, error: 'no turnstile secret' });
-		const timeoutMs = Math.max(1000, Math.min(30000, Number(ENV.TURNSTILE_TIMEOUT_MS || 10000)));
-		// The token must have been solved on this site, by its own widget.
-		const expect = { hostname: siteHost(ENV.SITE_ORIGIN), action: TURNSTILE_ACTION };
-		// The output gate first, then the verify and its timeout (#351, verifyAfterGate): the
-		// writes this request made before the verify must be confirmed before any fetch leaves.
-		// The yield comes first: the PHP run wrote in this same turn, and sync() called in that turn
-		// returned at once while the fetch after it still waited (fdprobe1112j, 2026-11-12). After one
-		// macrotask the writes are queued, and sync() waits for them.
-		const gate = sqlStorage && typeof sqlStorage.sync === 'function'
-			? async () => {
-				await new Promise((r) => setTimeout(r, 0));
-				await sqlStorage.sync();
-			}
-			: null;
-		const { res, gateMs, fetchMs, gateError } = await verifyAfterGate(gate, () =>
-			verifyToken(ENV.TURNSTILE_SECRET, op && op.token, op && op.remoteip, { timeoutMs, expect }),
-		);
-		// The token and the secret are never logged; only the outcome and the codes. ms is from the
-		// op start (it can include PHP time before it, #351); gateMs and fetchMs split the wait.
-		console.log(JSON.stringify({ m: 'turnstile', success: res.success, codes: res.codes || [], error: res.error, ms: Date.now() - t0, gateMs, fetchMs, gateError }));
+		let res;
+		if (ENV.PHP_IN_DO === 'on') {
+			res = turnstileSlot.take(op && op.token);
+		} else {
+			res = await verifyToken(ENV.TURNSTILE_SECRET, op && op.token, op && op.remoteip, {
+				timeoutMs: turnstileTimeoutMs(ENV),
+				expect: { hostname: siteHost(ENV.SITE_ORIGIN), action: TURNSTILE_ACTION },
+			});
+		}
+		// The token and the secret are never logged; only the outcome and the codes.
+		console.log(JSON.stringify({ m: 'turnstile', where: ENV.PHP_IN_DO === 'on' ? 'object' : 'worker', success: res.success, codes: res.codes || [], error: res.error, tries: res.tries, ms: Date.now() - t0 }));
 		return done({ ok: true, success: res.success, codes: res.codes || [], error: res.error });
 	} catch (e) {
 		return done({ ok: true, success: false, error: String(e && e.message ? e.message : e).slice(0, 200) });
@@ -2320,6 +2315,8 @@ export class PhpRuntime extends DurableObject {
 		const req = new Request(raw);
 		req.headers.delete(ORIGIN_HEADER);
 		req.headers.delete(SENT_HEADER);
+		// The front Worker's Turnstile answer (#351): kept for this request's PHP run, never shown to PHP.
+		const turnstileHeader = takeResultHeader(req.headers);
 		if (dbHandler) dbHandler.reset();
 		// The Worker checked the spike token already. Checked again: the object
 		// trusts nothing it did not check itself.
@@ -2400,6 +2397,8 @@ export class PhpRuntime extends DurableObject {
 			sqlStorage = sql ? this.ctx.storage : null;
 			const realTxn = sql && env.REAL_TRANSACTIONS !== 'off';
 			if (realTxn) txnRecover(sql, this.ctx.storage);
+			// One PHP run at a time (withPhp), so one slot holds this run's answer.
+			turnstileSlot.set(turnstileHeader);
 			try {
 				const res = await handle(req, env, url, spikeOk, maxBody, ctx);
 				if (realTxn) txnEnd(sql, this.ctx.storage);
@@ -2411,6 +2410,7 @@ export class PhpRuntime extends DurableObject {
 				} catch {}
 				return res;
 			} finally {
+				turnstileSlot.clear();
 				// A request that threw also ends its transaction (rolled back).
 				if (realTxn && txnFrames) txnEnd(sql, this.ctx.storage);
 				phpPending--;
@@ -2559,8 +2559,27 @@ async function runCron(booted, cleanDue = false, mail = null) {
 		});
 	}
 
+// The front Worker verifies a gated POST before it reaches the object (#351, turnstile.mjs). It
+// returns the header value for the object, or null when the request is not a gated form or carries
+// no token (its PHP gate then fails closed on its own). The token and the secret are never logged.
+async function preverifyTurnstile(req, env, url) {
+	const route = turnstileRoute(env, req.method, url);
+	if (!route) return null;
+	const token = await readGatedToken(route, req.clone());
+	if (!token) return { route, value: null, res: null };
+	const t0 = Date.now();
+	const res = await verifyToken(env.TURNSTILE_SECRET, token, req.headers.get('cf-connecting-ip') || '', {
+		timeoutMs: turnstileTimeoutMs(env),
+		expect: { hostname: siteHost(env.SITE_ORIGIN), action: TURNSTILE_ACTION },
+	});
+	console.log(JSON.stringify({ m: 'turnstile', where: 'front', route, success: res.success, codes: res.codes || [], error: res.error, tries: res.tries, ms: Date.now() - t0 }));
+	return { route, value: encodeResult(res, token), res };
+}
+
 async function toPhpObject(req, env, url, ctx) {
 	const name = phpObjectName(env, url);
+	// Turnstile (#351): verified here, before the object, so the object never waits on siteverify.
+	const pre = await preverifyTurnstile(req, env, url);
 	// The hint applies only when the object is made. D1's primary is in the
 	// Chicago area; "enam" is Eastern North America.
 	let t0 = Date.now();
@@ -2570,6 +2589,8 @@ async function toPhpObject(req, env, url, ctx) {
 		() => {
 			const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(name), env.PHP_LOCATION ? { locationHint: env.PHP_LOCATION } : undefined);
 			const fwd = new Request(req);
+			// Only this Worker sets the Turnstile answer: a copy from the client is always dropped.
+			setResultHeader(fwd.headers, pre && pre.value);
 			fwd.headers.set(ORIGIN_HEADER, siteOrigin(env, url));
 			t0 = Date.now();
 			fwd.headers.set(SENT_HEADER, String(t0));
@@ -2610,6 +2631,10 @@ async function toPhpObject(req, env, url, ctx) {
 	const r = res.r;
 	const out = new Response(r.body, r);
 	out.headers.set('x-php-object', name);
+	// A Store API checkout refused because the verifier was unreachable: nothing was written, so
+	// the client may retry (#351).
+	const ra = retryAfterFor(pre && pre.route, pre && pre.res, out.status);
+	if (ra) out.headers.set('retry-after', ra);
 	// The answer came from the retry after a memory reset (#335): the instrument for the A/B.
 	if (retried) out.headers.set('x-isolate-retry', '1');
 	// Wall time from the Worker to the object and back, PHP time included.

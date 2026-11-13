@@ -711,23 +711,52 @@ credential POST so cookie and application-password auth are untouched), comments
 `woocommerce_checkout_process` (a `wc_add_notice` error, which fails order placement on the
 classic shortcode checkout). The posture is fail closed: a missing or failed token always rejects
 the action. A verifier that is unreachable (a timeout or a network failure, told apart from a bad
-token by an error field the op sets) is also rejected, unless the site opts in through the
-`skyphusion_turnstile_failopen` filter, so an outage never silently drops the protection.
+token by an error field the op sets) is also rejected, with its own message: "We could not check
+the challenge just now. Please try again in a moment." (a `WP_Error` `turnstile_unavailable` on
+the login, a `wc_add_notice` error on the classic checkout, a 503 `skyphusion_turnstile_unavailable`
+with `Retry-After: 5` on the Store API checkout). The login and both checkouts ALWAYS fail closed
+(issue #351). Only the comment form may let an outage through, when the site opts in with the
+`skyphusion_turnstile_failopen` filter.
 
 A token passes only if siteverify says it was solved on this site's own host (the hostname of
 `SITE_ORIGIN`) by this site's widget (the action `turnstile-spin-v1`). A token for another host or
 action is a failed token, not an outage. The documented test secret keys always reply
 `example.com` with no action, so these two checks are skipped for them.
 
-**The verify waits for the output gate first (issue #351).** A Durable Object holds each outgoing
-`fetch` until the storage writes made before it are confirmed. A login writes to the database
-before its `authenticate` filter runs, so the siteverify fetch waited for those writes. On a
-runtime that had just booted, the wait was 0.6 to 2.8 s, and the fetch itself took 4 to 117 ms
-(fdprobe1112j, 2026-11-12). The timeout (`TURNSTILE_TIMEOUT_MS`, default 10 s) counted the wait,
-so a long wait refused a valid token. Now the op yields once, waits for `storage.sync()`, and then
-starts the verify and its timeout (`verifyAfterGate` in `turnstile.mjs`). The response waits for
-the same writes, so this adds no time to the request. The `{"m":"turnstile"}` log line has
-`gateMs` (the wait) and `fetchMs` (the verify) for each op.
+**The front Worker verifies, before the object (issue #351).** A Durable Object holds each
+outgoing `fetch` until the storage writes made before it are confirmed. A login and a Store API
+checkout write to the database BEFORE their gate runs, so a verify from inside the object waited
+for those writes in the middle of the PHP run. On a store whose object isolate is at its memory
+limit, an isolate reset landed in that wait and every write after it was lost: on `tsv1113w`
+(2026-11-13), 10 of 10 valid gated logins answered 500 `x-write-loss: 3`. The siteverify fetch
+itself took 2 to 8 ms; the wait took 98 to 1639 ms. The classic checkout gate runs before the order
+is written, and it was not affected. The measurements are on #351.
+
+So the stateless front Worker now verifies a gated POST before it forwards it
+(`preverifyTurnstile` in `index.js`; `turnstileRoute` and `readGatedToken` in `turnstile.mjs`). The
+gated POSTs are `/wp-login.php`, `/wp-comments-post.php`, the classic checkout (`?wc-ajax=checkout`)
+and the Store API checkout (`/wp-json/wc/store[/v1]/checkout` or the `rest_route` form), each
+under its own switch. The front Worker reads the token from a clone of the body (at most 1 MiB, and
+only with a `content-length`), calls siteverify, and sends the answer to the object in the
+`x-pf-turnstile-result` header, bound to the token by its SHA-256. It always drops a header of that
+name that came from the client. The object takes the header off before PHP sees the request and
+keeps the answer for that one PHP run (`TurnstileSlot`). The turnstile op then answers from it, once,
+and only for the same token, without any fetch or wait. With no answer, a different token or a
+second use, the op answers a failed token, so the gate fails closed.
+
+Two requests get no answer from the front Worker, and so are always refused, with the normal
+"Please complete the challenge" answer (a 400 or a notice), never a 500:
+- A checkout inside a Store API batch request (`/wc/store/v1/batch`). The block checkout client
+  sends its checkout to `/wc/store/v1/checkout`, not through the batch route.
+- A classic checkout posted without `wc-ajax=checkout`, which is the form post a browser makes with
+  JavaScript off. Turnstile needs JavaScript to produce a token, so such a post can never pass.
+
+An outage is tried once more inside the one budget (`TURNSTILE_TIMEOUT_MS`, default 10 s, split
+between the two tries), with the same siteverify `idempotency_key`, so Cloudflare answers the
+retry as the first try and does not refuse the token as a duplicate. A token that siteverify
+answered is never retried. Each verify logs `{"m":"turnstile","where":"front",...}` with `route`,
+`tries` and `ms`; the op logs `"where":"object"`. With PHP in the Worker (no object), the op still
+verifies itself, since there is no output gate there.
 
 **The block checkout (issue #308).** The block checkout posts to the Store API
 (`/wc/store/v1/checkout`). That route does not run `woocommerce_checkout_process`, and a form field
