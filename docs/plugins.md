@@ -18,7 +18,7 @@ The 20 most popular plugins on wordpress.org (`browse=popular`, read 2026-11-05)
 
 A step is tried up to 3 times. "pass (n retried)" means n steps needed a second or third try. `tests/plugins/report.py` makes the matrix below from `tests/plugins/results/*.jsonl`.
 
-Plugins must be in the build on every target: a plugin installed from wp-admin does not persist (approach B and A: the in-memory file system; C1, now retired: the container disk; HostlessWP: the bundle made at deploy). Approach B and our A put the 18 plugins in 7 builds (`spikes/b2-wordpress/plugin-suite.sh`): all 18 do not fit under the 64 MiB Worker limit (with Jetpack alone the upload is 63,024 KiB). HostlessWP bundles them all in one Worker (code bundles loaded on first read, 211 to 348 MB packaged).
+Plugins must be in the build on every target: a plugin installed from wp-admin does not persist, except on a b-dosql site with `CODE_PERSIST=on` (#407, `deploy/wfp/README.md`) (approach B and A: the in-memory file system; C1, now retired: the container disk; HostlessWP: the bundle made at deploy). Approach B and our A put the 18 plugins in 7 builds (`spikes/b2-wordpress/plugin-suite.sh`): all 18 do not fit under the 64 MiB Worker limit (with Jetpack alone the upload is 63,024 KiB). HostlessWP bundles them all in one Worker (code bundles loaded on first read, 211 to 348 MB packaged).
 
 ## Matrix
 
@@ -69,6 +69,7 @@ Runs of 2026-11-05. A and HostlessWP on the public MySQL path ([approach-a.md](a
 - **Recording:** one JSON line per request, with headers only. Every write is read back and classed `ok/ok`, `fail/fail`, `fail/changed` or `ok/unchanged`. The last two are answer/state disagreements.
 - **write-loss:** counted from `x-write-loss`, and from a Workers Logs export (`report --logs`).
 - **The report:** it prints each item's first failing step next to its prediction.
+- **One SEO plugin per site** (Conrad, 2026-11-13): Yoast and Rank Math are each tested alone. Before the harness activates one, it checks that the other is not active. If the other is active, it records a refusal and runs nothing for that item.
 
 The first use is a one-pass prediction check (the lead's ruling, 2026-11-13). Payments, mail, the stack profile and the 10-round runs are deferred until #293, #407 and the admin memory work (#394, #411) move.
 
