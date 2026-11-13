@@ -82,6 +82,9 @@ jobs:
         # A fake site on localhost replays cached x-boot 1, as the page cache does. The case that
         # reproduces the old probe needs git history and skips in a shallow checkout.
         run: python3 -I tests/wfp/plugin-memory-test.py
+      - name: Gate 2 plugin harness, offline (#426)
+        # tests/plugins/gate2.py against a fake WordPress: the four read-back classes, write-loss, headers-only recording.
+        run: python3 -I tests/plugins/gate2_test.py
       - name: b-dosql mail From address
         run: node --test spikes/b2-wordpress/tests/mail-from.test.mjs
       - name: b-dosql demo site lock
@@ -118,6 +121,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/turnstile.test.mjs
       - name: turnstile forms mu-plugin (issue #250)
         run: php spikes/b2-wordpress/tests/turnstile-forms-test.php
+      - name: b-dosql safe outbound URLs without DNS (issue #430)
+        run: php spikes/b2-wordpress/tests/http-safe-url-test.php
       - name: turnstile block checkout script (issue #308)
         # A classic browser script, not a module: syntax, then the stubbed store and widget.
         run: |
