@@ -14,7 +14,7 @@ import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHos
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
 import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, demoLockDefines } from './site-lock.mjs';
-import { perfHeadersAllowed, scrubPerfHeaders } from './perf-headers.mjs';
+import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore } from './perf-headers.mjs';
 import { resetFailures, writeLossResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
@@ -1356,7 +1356,9 @@ function pageCacheRoute(req, url, env) {
 		!req.headers.get('upgrade') &&
 		!PAGE_CACHE_NO_PATH.test(url.pathname) &&
 		!PAGE_CACHE_NO_PARAM.some((k) => url.searchParams.has(k)) &&
-		!req.headers.has('authorization')
+		!req.headers.has('authorization') &&
+		// An operator request never goes to the cached entrypoint (perf-headers.mjs).
+		!isOperatorRequest(req)
 	);
 }
 function pageCacheHeaders(req, url, r, out, env) {
@@ -2677,7 +2679,8 @@ const site = {
 	// Every answer passes through here, so the performance headers leave only on a request that
 	// may see them (perf-headers.mjs), whichever branch of serve() built the response.
 	async fetch(req, env, ctx) {
-		return scrubPerfHeaders(await this.serve(req, env, ctx), perfHeadersAllowed(req, env));
+		// Never store operator responses at the edge (perf-headers.mjs operatorNoStore).
+		return operatorNoStore(scrubPerfHeaders(await this.serve(req, env, ctx), perfHeadersAllowed(req, env)), req);
 	},
 	async serve(req, env, ctx) {
 		ENV = env;
@@ -2765,8 +2768,9 @@ export class Pages extends WorkerEntrypoint {
 		const out = new Response(r.body, r);
 		out.headers.set('x-entrypoint', 'pages');
 		// An operator request (it carries the token header) may be answered with the performance
-		// headers; never let the edge cache keep that copy for the next visitor.
-		if (req.headers.has('x-spike-token')) out.headers.set('cache-control', 'private, no-store');
+		// headers; never let the edge cache keep that copy for the next visitor. cache-control alone
+		// was not enough: the edge obeys cloudflare-cdn-cache-control over it (perf-headers.mjs).
+		if (isOperatorRequest(req)) noStoreAnywhere(out.headers);
 		return out;
 	}
 	// An RPC method, so not cached. A purge reaches only the cache of the
