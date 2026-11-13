@@ -4,7 +4,7 @@ plan A: OPcache 32, 48, 52). Read-only on the front pages; on the admin pages it
 dashboard (which writes an auto-draft, as WordPress does), saves the admin profile with an unchanged
 marker field, and creates draft pages through REST. Never point it at a live site.
 
-  B=https://<throwaway> SPIKE_TOKEN=... ADMIN_PASSWORD=... TURNSTILE_TEST_TOKEN=XXXX.DUMMY.TOKEN.XXXX \
+  B=https://<throwaway> SPIKE_TOKEN=... ADMIN_USER=... ADMIN_PASSWORD=... TURNSTILE_TEST_TOKEN=XXXX.DUMMY.TOKEN.XXXX \
     python3 tests/measure394.py <label> [gap] [admin] [crawl] > <label>.jsonl
 
 Phases (default: gap admin):
@@ -79,7 +79,7 @@ def gap(o):
 def login():
     o = opener()
     req(o, '/wp-login.php')
-    form = {'log': 'admin', 'pwd': os.environ['ADMIN_PASSWORD'], 'wp-submit': 'Log In', 'redirect_to': '/wp-admin/', 'testcookie': '1'}
+    form = {'log': os.environ.get('ADMIN_USER', 'admin'), 'pwd': os.environ['ADMIN_PASSWORD'], 'wp-submit': 'Log In', 'redirect_to': '/wp-admin/', 'testcookie': '1'}
     if os.environ.get('TURNSTILE_TEST_TOKEN'):
         form['cf-turnstile-response'] = os.environ['TURNSTILE_TEST_TOKEN']
     r = rec('admin', 'login', 'POST', '/wp-login.php', req(o, '/wp-login.php', form))
