@@ -1,0 +1,99 @@
+name: release-bundle
+
+# Build the b-dosql WordPress bundle and attach it to a GitHub Release (issue #405), so the
+# one-click admin (#401) can download it and check every module against manifest.json.
+#
+# Two jobs, so a pull request never holds a write token:
+#   package  (pull_request, contents: read): build and package only. Nothing is uploaded.
+#   publish  (release published, or a manual run for an existing tag; contents: write): build
+#            the tagged commit, upload the assets, then download them again and verify them.
+# The release procedure (VERSION bump PR, tag on its merge commit, publish) is docs/releasing.md.
+on:
+  pull_request:
+    paths:
+      - 'deploy/release/**'
+      - 'VERSION'
+      - '.github/workflows/release-bundle.yml'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "An existing release tag (vX.Y.Z) with no assets yet"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Manifest tests
+        run: node deploy/release/tests/bundle-manifest-test.mjs
+      - name: Build and package (no upload)
+        # A pull request checks out a merge commit, which build-id.sh reads as clean; the
+        # bundle is thrown away with the runner.
+        run: deploy/release/build-bundle.sh "$RUNNER_TEMP/bundle"
+      - name: The packaged assets verify
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/bundle/release"
+          sha256sum -c SHA256SUMS
+          node "$GITHUB_WORKSPACE/deploy/release/bundle-cli.mjs" verify "$RUNNER_TEMP/bundle/modules" manifest.json
+          ls -l
+
+  publish:
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: The tag is a vX.Y.Z tag on main, and its release has no assets yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag $TAG is not vX.Y.Z"; exit 1; }
+          git fetch -q origin main
+          git merge-base --is-ancestor "$(git rev-parse "$TAG^{commit}")" origin/main || { echo "::error::$TAG is not on main"; exit 1; }
+          n=$(gh release view "$TAG" --json assets -q '.assets | length')
+          # Assets are never replaced: an admin may already pin these hashes, and a rebuild is not byte-identical.
+          [ "$n" = 0 ] || { echo "::error::release $TAG already has $n assets; refusing to replace them"; exit 1; }
+      - name: Manifest tests
+        run: node deploy/release/tests/bundle-manifest-test.mjs
+      - name: Build and package
+        run: VERSION_TAG="$TAG" deploy/release/build-bundle.sh "$RUNNER_TEMP/bundle"
+      - name: Upload the assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "$RUNNER_TEMP"/bundle/release/*
+      - name: Download them again and verify what was published
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/published"; mkdir -p "$d/modules"
+          gh release download "$TAG" --dir "$d"
+          (cd "$d" && sha256sum -c SHA256SUMS)
+          for m in $(node -e 'for (const x of require(process.argv[1]).modules) console.log(x.name)' "$d/manifest.json"); do cp "$d/$m" "$d/modules/"; done
+          node deploy/release/bundle-cli.mjs verify "$d/modules" "$d/manifest.json"
+          echo "published and verified: $TAG"
