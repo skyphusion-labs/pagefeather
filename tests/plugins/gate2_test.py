@@ -63,6 +63,8 @@ class FakeWP:
                 ts = [t for t in ts if t["status"] == "active"]
             return js(ts)
         if path == "/_evict":
+            if self.f.get("no_evict"):
+                return {"code": 404, "s": 0.01, "body": b"", "h": h}
             if self.f["evict_drops"]:
                 self.plugins = {k: v for k, v in self.plugins.items() if k == "woocommerce"}
             return js({"evicting": True})
@@ -196,6 +198,14 @@ def t_one_seo_plugin():
     assert ws.get("activate") == "ok/ok" and fake2.plugins["wordpress-seo"] == "inactive", ws
 
 
+def t_approach_a_no_evict():
+    lines, state = run_phase(FakeWP(no_evict=True), "install", ["advanced-custom-fields"])
+    st = [l for l in lines if l["ev"] == "step" and l["step"] == "reset"]
+    assert st and st[0]["ok"] is None and "not on this path" in st[0]["note"], st
+    r = item(report_of(lines), "advanced-custom-fields")
+    assert r["firstFail"] is None, r
+
+
 def t_headers_only():
     lines, _ = run_phase(FakeWP(), "install", ["advanced-custom-fields"])
     reqs = [l for l in lines if l["ev"] == "req"]
@@ -242,6 +252,7 @@ for name, fn in [("the four read-back classes", t_classes), ("control: a clean i
                  ("the WooCommerce control: an order is ok/ok, and a lost order is ok/unchanged", t_woo_control),
                  ("a plugin is activated, run, and deactivated again (solo)", t_function_plugin),
                  ("one SEO plugin per site: refused when the other is active; control runs", t_one_seo_plugin),
+                 ("an approach-A site with no /_evict: the reset step is not on this path, not a fail", t_approach_a_no_evict),
                  ("the recording is headers only: no body, no cookie, no password, no query", t_headers_only),
                  ("the report shows the prediction and counts the log reset lines", t_report_prediction_and_logs),
                  ("the settings form parser", t_form_fields), ("the item list", t_items)]:

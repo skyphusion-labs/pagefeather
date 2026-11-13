@@ -268,6 +268,15 @@ def phase_install(o, item, state):
         state[slug] = {"installed": changed}
     if state[slug]["installed"]:
         info = evict(o)
+        # /_evict is a b-dosql (Durable Object) endpoint. On an approach-A site (PHP in the
+        # Worker, MySQL through Hyperdrive) it does not exist: the step is "not on this path",
+        # never a pass or a fail. A 501 means the object could not abort: "could not measure".
+        if info["evict"] in (404, 405):
+            event("step", step="reset", ok=None, note="not on this path (no /_evict)", **info)
+            return
+        if info["evict"] == 501 or not (isinstance(info["evict"], int) and 200 <= info["evict"] < 300):
+            event("step", step="reset", ok=None, note="could not measure: /_evict answered %s" % info["evict"], **info)
+            return
         after = present(o, item)
         event("step", step="reset", ok=after, **info)
         state[slug]["afterReset"] = after
