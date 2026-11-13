@@ -27,6 +27,27 @@ s = s.replace(old, new)
 open(p, 'w').write(s)
 PY2
 
+# Heap growth (#394, rank 1 of Joan's admin memory profile, PR #445): Emscripten grows the PHP heap
+# to max(requested, old * 1.2), retrying at 1.1 and 1.05. At 100 MiB that is a 20 MiB step for a
+# request of a few KiB, and the memory grows in big stairs (92, 99, 104, 111, 133 MiB on pf394a).
+# On an isolate near its limit the next 1.2x step is the one that cannot be allocated: in Joan's
+# pass Z window 53 requests died with "RangeError: Invalid array buffer length", with no isolate
+# reset. Grow to what was asked plus 2 MiB of slack (then 1 and 0.5 MiB if that fails), never a
+# fraction of the old size. The same loader runs approach a.
+python3 - <<'PY3'
+p = 'vendor/php_8_3.js'; s = open(p).read()
+old = """			var overGrownHeapSize = oldSize * (1 + 0.2 / cutDown);
+			overGrownHeapSize = Math.min(
+				overGrownHeapSize,
+				requestedSize + 100663296
+			);"""
+new = """			// Pagefeather (#394): the need plus a small slack, not 20 percent of the old size.
+			var overGrownHeapSize = requestedSize + 2097152 / cutDown;"""
+assert s.count(old) == 1, 'heap growth patch did not apply'
+s = s.replace(old, new)
+open(p, 'w').write(s)
+PY3
+
 # The module reserves 64 MiB (1024 pages) at start. A Worker isolate has 128 MB
 # for everything, so start at 24 MiB (384 pages) and let it grow on demand.
 # Its static data ends at 12.4 MiB. Both values are 2-byte LEB128, so the patch

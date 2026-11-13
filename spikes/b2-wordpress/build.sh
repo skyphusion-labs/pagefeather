@@ -35,8 +35,12 @@ rm -rf "$wp/wp-content/themes/twentytwentythree" "$wp/wp-content/themes/twentytw
 [ "${ENGINE:-d1}" = a ] || cp -RL "$cache/sqlite-database-integration/packages/plugin-sqlite-database-integration" "$wp/wp-content/plugins/sqlite-database-integration"
 # WOO=0 leaves WooCommerce out (the plugin suite does: the Worker size limit).
 [ "${WOO:-1}" = 0 ] || unzip -q "$cache/woocommerce-$WOO_VERSION.zip" -d "$wp/wp-content/plugins"
-# PLUGINS="slug ..." adds plugins from tests/plugins/suite.txt (checked by SHA-256).
+# PLUGINS="slug ..." adds plugins from tests/plugins/suite.txt (SUITE=<list> for another list),
+# checked by SHA-256. A slug that is not in the list stops the build (#457).
 [ -z "${PLUGINS:-}" ] || ../../tests/plugins/fetch.sh "$wp/wp-content/plugins" $PLUGINS
+# THEMES="slug ..." adds wordpress.org themes from tests/plugins/themes.txt (THEME_SUITE=<list>),
+# the same way (#457). A child theme needs its parent in THEMES. Activate the theme in wp-admin.
+[ -z "${THEMES:-}" ] || ../../tests/plugins/fetch.sh --themes "$wp/wp-content/themes" $THEMES
 # IMPORT_CONTENT=<wp-content of an existing site> (deploy/import.sh prints the
 # line): the themes in IMPORT_THEMES and the plugins in IMPORT_PLUGINS come
 # from that site. Rules in deploy/import/content.sh.

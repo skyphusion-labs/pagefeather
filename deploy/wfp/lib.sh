@@ -370,7 +370,7 @@ woo_active_for_build() {
 # "The site restarted". Two refusals, before any snapshot, build or upload:
 #   - the live Store API answers 200 (WooCommerce is active) and this build would not prime it;
 #     an answer that is neither 200 nor 404 needs an explicit WOO_ACTIVE (it cannot tell);
-#   - the live build id ends in a content id (-c<8 hex>, build.sh: made with PLUGINS or
+#   - the live build id ends in a content id (-c<8 hex>, build.sh: made with PLUGINS, THEMES or
 #     IMPORT_CONTENT) and this run has no content input. ALLOW_PLAIN_BUILD=1 replaces them on
 #     purpose. A build id set by hand (BUILD_ID_OVERRIDE) carries no content id; the Store API
 #     refusal still holds there.
@@ -383,7 +383,7 @@ update_inputs_check() {
     *) [ -n "${WOO_ACTIVE:-}" ] || { echo "the Store API check answered $code, neither 200 nor 404, so it cannot tell whether WooCommerce is active: set WOO_ACTIVE=0 or 1" >&2; return 2; } ;;
   esac
   if [[ "$live" =~ -c[0-9a-f]{8}(-wooprimed)?$ ]] && [ "$content" = 0 ] && [ "${ALLOW_PLAIN_BUILD:-0}" != 1 ]; then
-    echo "the live build $live was made with content inputs (PLUGINS or IMPORT_CONTENT), and this run has none: it would ship stock WordPress without the site's theme, plugins and mu-plugins. Pass the same content inputs, or ALLOW_PLAIN_BUILD=1 to drop them on purpose." >&2
+    echo "the live build $live was made with content inputs (PLUGINS, THEMES or IMPORT_CONTENT), and this run has none: it would ship stock WordPress without the site's theme, plugins and mu-plugins. Pass the same content inputs, or ALLOW_PLAIN_BUILD=1 to drop them on purpose." >&2
     return 2
   fi
 }
@@ -397,13 +397,14 @@ tree_clean_check() {
   [ -z "$st" ] || [ "${ALLOW_DIRTY:-0}" = 1 ] || { echo "the tree $d has uncommitted changes, so the build would be -dirty (not reproducible). Commit or stash them, or ALLOW_DIRTY=1 on purpose:" >&2; echo "$st" | head -10 >&2; return 2; }
 }
 # 1 when this run has a content input (the rule content-id.py uses), else 0.
-content_inputs_set() { if [ -n "${PLUGINS:-}${IMPORT_CONTENT:-}" ]; then echo 1; else echo 0; fi; }
+content_inputs_set() { if [ -n "${PLUGINS:-}${THEMES:-}${IMPORT_CONTENT:-}" ]; then echo 1; else echo 0; fi; }
 # The HTTP code of the site's Store API index (200: WooCommerce active, 404: not), 000 on no answer.
 store_api_code() { curl -s -o /dev/null -m 60 -w '%{http_code}' "$1/?rest_route=/wc/store/v1" 2>/dev/null || true; }
 # The recorded build inputs of a site (#379, build_inputs.py): _build/inputs.json and the content
 # tree _build/<content id>.tar.gz in the site's own media bucket (private outside uploads/).
 # use_recorded_inputs <bucket> <work dir>, called by update_one, which declares the inputs
-# (PLUGINS, IMPORT_THEMES, IMPORT_PLUGINS, IMPORT_MU_PLUGINS, WOO_ACTIVE, IMPORT_CONTENT) local -x,
+# (PLUGINS, THEMES, IMPORT_THEMES, IMPORT_PLUGINS, IMPORT_MU_PLUGINS, WOO_ACTIVE, IMPORT_CONTENT,
+# SUITE, THEME_SUITE) local -x,
 # so a recorded value set here stays inside that one update (update --all runs many).
 #   no record:                    nothing changes; this run's inputs are recorded after the update
 #   a record, a run with no input: the recorded inputs are set and the content tree is fetched
@@ -426,7 +427,7 @@ use_recorded_inputs() {
       REC_TREE=$tree
     fi
     eval "$(python3 -I "$WFP/build_inputs.py" exports "$rec" "$w/wp-content")"
-    echo "  using the recorded build inputs: WOO_ACTIVE=${WOO_ACTIVE:-} PLUGINS='${PLUGINS:-}' IMPORT_THEMES='${IMPORT_THEMES:-}' IMPORT_PLUGINS='${IMPORT_PLUGINS:-}' IMPORT_MU_PLUGINS='${IMPORT_MU_PLUGINS:-}' tree ${tree:-none}"
+    echo "  using the recorded build inputs: WOO_ACTIVE=${WOO_ACTIVE:-} PLUGINS='${PLUGINS:-}' THEMES='${THEMES:-}' SUITE='${SUITE:-}' THEME_SUITE='${THEME_SUITE:-}' IMPORT_THEMES='${IMPORT_THEMES:-}' IMPORT_PLUGINS='${IMPORT_PLUGINS:-}' IMPORT_MU_PLUGINS='${IMPORT_MU_PLUGINS:-}' tree ${tree:-none}"
     return 0
   fi
   rc=0; python3 -I "$WFP/build_inputs.py" compare "$rec" > "$w/diff" || rc=$?
@@ -463,7 +464,12 @@ build_dosql() {
   echo "OPcache priming: WOO_ACTIVE=$woo (explicit, or woocommerce in IMPORT_PLUGINS/PLUGINS)"
   ( cd "$APP"
     [ -d node_modules ] || npm ci --silent
-    [ -f vendor/php_8_3.js ] || ./prepare.sh
+    # Every build regenerates the loader (#394, #446): prepare.sh rebuilds vendor/ from the pinned
+    # package and applies every patch. Running it only when vendor/php_8_3.js was missing kept an
+    # old loader in a tree that had built before, so a new loader patch never reached a deploy
+    # (measured on pf394a, 2026-11-13: the heap patch build showed the stock 111 and 133 MiB stairs).
+    # No pipe: a pipe takes tail's status and would hide a failed patch assert, shipping the old loader.
+    ./prepare.sh || { echo "prepare.sh failed: the loader was not rebuilt"; exit 1; }
     # WOO_ACTIVE reaches build.sh too, so the build id says whether it is primed (#377).
     # WOO follows it (#451): WooCommerce is in the bundle only when the site runs it. A plain site
     # (no WOO_ACTIVE=1, no woocommerce in PLUGINS or IMPORT_PLUGINS) builds without its 11 MiB of

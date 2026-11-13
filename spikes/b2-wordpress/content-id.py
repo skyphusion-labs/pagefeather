@@ -4,7 +4,7 @@
     python3 content-id.py <wp-content dir>    prints "c<8 hex>", or nothing
 
 build.sh names a build by its git commit. A build whose only change is its content inputs
-(PLUGINS, IMPORT_CONTENT with IMPORT_THEMES, IMPORT_PLUGINS, IMPORT_MU_PLUGINS) would get the
+(PLUGINS, THEMES, IMPORT_CONTENT with IMPORT_THEMES, IMPORT_PLUGINS, IMPORT_MU_PLUGINS) would get the
 same id as the build before it, and site update would skip it as "already at build". So when
 any content input is set, the id also carries this short hash. It covers the input values and
 every file under wp-content/plugins, themes and mu-plugins (its path and the SHA-256 of its
@@ -17,6 +17,8 @@ import os
 import sys
 
 INPUTS = ("PLUGINS", "IMPORT_THEMES", "IMPORT_PLUGINS", "IMPORT_MU_PLUGINS", "WOO")
+# Added by #457. Hashed only when set, so a build with none of them keeps the id it had before.
+INPUTS_IF_SET = ("THEMES", "SUITE", "THEME_SUITE")
 TREES = ("plugins", "themes", "mu-plugins")
 
 
@@ -24,13 +26,16 @@ def content_id(wp_content, env, public=None):
     """public: the wp-content of build/public, where build.sh moves the static files (.js, images,
     most .css, .mo/.po) before the id is made. Hashed after the PHP tree, its paths labelled
     "public/", so a change to only a static file gives a new id too."""
-    if not env.get("PLUGINS") and not env.get("IMPORT_CONTENT"):
+    if not env.get("PLUGINS") and not env.get("IMPORT_CONTENT") and not env.get("THEMES"):
         return ""
     h = hashlib.sha256()
     # The values, not IMPORT_CONTENT's path: the same content from another directory is the
     # same build.
     for k in INPUTS:
         h.update(f"{k}={' '.join(sorted(str(env.get(k, '')).split()))}\n".encode())
+    for k in INPUTS_IF_SET:
+        if str(env.get(k, "") or "").strip():
+            h.update(f"{k}={' '.join(sorted(str(env.get(k, '')).split()))}\n".encode())
     for label, base in (("", wp_content), ("public/", public)):
         if not base:
             continue
