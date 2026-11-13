@@ -1,0 +1,27 @@
+{
+  "name": "pagefeather-site-manager",
+  "description": "Pagefeather: make WordPress sites in your own Cloudflare account, from a page that looks like WordPress admin.",
+  "private": true,
+  "scripts": {
+    "deploy": "node scripts/ensure-namespace.mjs && wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "4.107.0"
+  },
+  "cloudflare": {
+    "label": "Pagefeather",
+    "products": ["Workers", "Workers for Platforms"],
+    "bindings": {
+      "ADMIN_EMAIL": {
+        "description": "Your email address. Only you can open the site manager: Cloudflare checks this email when you sign in."
+      },
+      "PAGEFEATHER_KEY": {
+        "description": "A key that lets the site manager make sites in your account. [Create the key in Cloudflare](https://dash.cloudflare.com/?to=/:account/api-tokens&permissionGroupKeys=%5B%7B%22key%22%3A%22workers_scripts%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22workers_kv_storage%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22workers_r2%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22account_settings%22%2C%22type%22%3A%22read%22%7D%5D&name=Pagefeather%20site%20manager). The page is filled in for you. Select **Continue to summary**, then **Create Token**. Copy the key and paste it here. Cloudflare shows it only once."
+      },
+      "BUNDLES": {
+        "description": "Storage for the WordPress files. Keep the name as it is."
+      }
+    }
+  }
+}

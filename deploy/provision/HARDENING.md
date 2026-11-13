@@ -326,7 +326,7 @@ The one-click site manager (`deploy/oneclick/`) is a third caller of this core. 
 
 **Why it is needed.** On `workers.dev` each Worker has one hostname, so one dispatcher cannot answer for many sites. Each site gets its own small front-door Worker, `wp-<name>`, which runs `deploy/wfp/dispatcher/worker.js` (phase A of `deploy/wfp`). Making that Worker is a plain `PUT /accounts/{a}/workers/scripts/wp-<name>` plus turning on its `workers.dev` route. No binding can upload a script: the dispatch namespace binding only runs scripts (`get()`). Cloudflare's own Workers for Platforms starter asks for a token with Workers edit for the same reason (`docs/prior-art.md`).
 
-**What the key can do (the template the owner uses):** Workers Scripts edit, Workers KV Storage edit, Workers R2 Storage edit, Workers for Platforms edit, Account Settings read. No zone or DNS permission, no API Tokens permission (it cannot make a token), no Access permission, no Containers permission.
+**What the key can do (the template the owner uses, `deploy/oneclick/package.json`):** Workers Scripts edit, Workers KV Storage edit, Workers R2 Storage edit, Account Settings read. The template link uses Cloudflare's short permission keys, and the key table has none for Workers for Platforms. **Unmeasured:** whether Workers Scripts edit covers the dispatch namespace scripts. The first live run answers it. If it does not, the Workers for Platforms permission group id is added to the link. No zone or DNS permission, no API Tokens permission (it cannot make a token), no Access permission, no Containers permission.
 
 **What the code does with it, and only this:**
 

@@ -4,7 +4,7 @@
 // escaped. The CSS and the one small script are served by this Worker from
 // /admin.css and /admin.js, so the page needs no inline script or style
 // (Content-Security-Policy allows 'self' only). No edge word on any screen.
-import { RESERVED_NAMES, RESERVED_PREFIXES, DEMO_NAME_PREFIX, SITE_NAME_RE } from '../provision/shared.mjs';
+import { RESERVED_NAMES, RESERVED_PREFIXES, DEMO_NAME_PREFIX, SITE_NAME_RE } from './vendor/provision/shared.mjs';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 

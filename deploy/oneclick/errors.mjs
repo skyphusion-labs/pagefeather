@@ -4,7 +4,7 @@
 // exception), so the user sees only "Something went wrong" and a short random
 // reference; the reference and the real error go to console.error, which is in
 // Workers Logs. The reference joins the two.
-import { BadRequest } from '../provision/server-config.mjs';
+import { BadRequest } from './vendor/provision/server-config.mjs';
 
 export function newRef() {
   const a = new Uint8Array(6);

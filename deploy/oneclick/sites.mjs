@@ -3,11 +3,11 @@
 // only what a workers.dev deployment needs around it: the account and its
 // workers.dev subdomain, the site map namespace, and each site's front door (a
 // small plain Worker, wp-<name>, that runs deploy/wfp/dispatcher/worker.js).
-import { cfFetch, opError } from '../provision/cf.mjs';
-import { ensureKVNamespace, scriptExists, enableWorkersDevSubdomain } from '../provision/ops.mjs';
-import { provisionSite } from '../provision/provision.mjs';
-import { readSite, listSites } from '../provision/registry.mjs';
-import { validateRequest, buildServerCfg, BadRequest } from '../provision/server-config.mjs';
+import { cfFetch, opError } from './vendor/provision/cf.mjs';
+import { ensureKVNamespace, scriptExists, enableWorkersDevSubdomain } from './vendor/provision/ops.mjs';
+import { provisionSite } from './vendor/provision/provision.mjs';
+import { readSite, listSites } from './vendor/provision/registry.mjs';
+import { validateRequest, buildServerCfg, BadRequest } from './vendor/provision/server-config.mjs';
 import { shown, logged } from './errors.mjs';
 
 export const SITE_MAP_TITLE_DEFAULT = 'pagefeather-sites';
