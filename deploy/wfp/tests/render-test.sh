@@ -137,6 +137,12 @@ recyc() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sy
 ok "no PHP_RECYCLE var by default" "$(env -u PHP_RECYCLE bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | recyc | grep -qx 'null' && echo 1 || echo 0)"
 ok "PHP_RECYCLE=off renders it" "$(PHP_RECYCLE=off render_user one https://wp-one.sub.workers.dev | recyc | grep -qx '"off"' && echo 1 || echo 0)"
 for bad in on yes OFF 0; do ok "PHP_RECYCLE=$bad fails the render" "$(PHP_RECYCLE=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
+# PRE_RECYCLE_MIB (#394 (2)): an integer from 32 to 1024, only when asked.
+prer() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["vars"].get("PRE_RECYCLE_MIB")))'; }
+ok "no PRE_RECYCLE_MIB var by default" "$(env -u PRE_RECYCLE_MIB bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | prer | grep -qx 'null' && echo 1 || echo 0)"
+ok "PRE_RECYCLE_MIB=90 renders it as a string" "$(PRE_RECYCLE_MIB=90 render_user one https://wp-one.sub.workers.dev | prer | grep -qx '"90"' && echo 1 || echo 0)"
+ok "PRE_RECYCLE_MIB with PHP_RECYCLE: both render" "$(PRE_RECYCLE_MIB=90 PHP_RECYCLE=off render_user one https://wp-one.sub.workers.dev | "$PY" -c 'import sys, tomllib; v = tomllib.loads(sys.stdin.read())["vars"]; print(int(v["PRE_RECYCLE_MIB"] == "90" and v["PHP_RECYCLE"] == "off"))')"
+for bad in 31 1025 9 abc 90.5 -90 "90 " 0x5a; do ok "PRE_RECYCLE_MIB=$bad fails the render" "$(PRE_RECYCLE_MIB=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
 # OPCACHE_SPLIT (#394 L1): the ASSETS binding and /_pf/ first only on a split build.
 assets() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["assets"], sort_keys=True))'; }
 ok "unsplit: [assets] is the directory only" "$(env -u OPCACHE_SPLIT bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | assets | grep -qx '{"directory": "build/public"}' && echo 1 || echo 0)"

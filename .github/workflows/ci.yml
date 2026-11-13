@@ -117,6 +117,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/runtime-guards.test.mjs
       - name: b-dosql a recycled PHP runtime is released (issue #394)
         run: node --test spikes/b2-wordpress/tests/release-runtime.test.mjs
+      - name: b-dosql pre-recycle before an admin screen (issue #394 (2))
+        run: node --test spikes/b2-wordpress/tests/pre-recycle.test.mjs
       - name: b-dosql outbound host allowlist
         run: node --test spikes/b2-wordpress/tests/http-allow.test.mjs
       - name: email-queue unit tests

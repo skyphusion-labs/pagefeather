@@ -18,6 +18,7 @@ import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywher
 import { resetFailures, writeLossResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import { routeClass, createTrace } from './file-trace.mjs';
+import { preRecycleMib, shouldPreRecycle } from './pre-recycle.mjs';
 import { refuseSocketsDecorator, parseMessage } from './runtime-guards.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
@@ -3159,6 +3160,23 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			});
 		}
 		try {
+			// #394 (2): PRE_RECYCLE_MIB. An admin screen that would run on a runtime already at or above
+			// the line gets a fresh runtime first, so its own 117 to 121 MiB is not added to a warm heap.
+			// The old runtime is RELEASED (releaseRuntime) before the boot. Whether V8 has collected its
+			// memory by the time the new one grows is what perf.pre measures (same isolate, wasm at boot).
+			let pre = null;
+			const lineMib = preRecycleMib(env);
+			if (lineMib && bootPromise) {
+				const { php: old } = await bootPromise;
+				const oldBytes = old[__private__dont__use].HEAPU8.length;
+				if (shouldPreRecycle({ lineMib, wasmBytes: oldBytes, method: req.method, pathname: url.pathname, search: url.search })) {
+					pre = { fromMiB: Math.round(oldBytes / 1048576), lineMib, oldRt: runtimeSerial, iso: ISOLATE_ID };
+					console.log(JSON.stringify({ m: 'prerecycle', id: req.headers.get('x-perf-id'), path: url.pathname, ...pre }));
+					runtimeDrops++;
+					bootPromise = null;
+					releaseRuntime(old);
+				}
+			}
 			const tBoot = Date.now();
 			const booted = !bootPromise;
 			if (tracing()) fileTrace.begin({ cls: routeClass(req.method, url.pathname, url.search), method: req.method, path: url.pathname, boot: booted ? 1 : 0 });
@@ -3314,7 +3332,11 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 					inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024),
 					wasm0MiB: Math.round(wasm0 / 1048576),
 					wasm1MiB: Math.round(wasmBytes / 1048576),
-					...(booted ? { l1: l1State } : {}), // #394 L1: where this boot's OPcache boot pack came from
+					...(booted ? { l1: l1State, bootMs: { wasm: bootMs.wasm, site: bootMs.site, files: bootMs.files } } : {}), // #394 L1: where this boot's OPcache boot pack came from; (2) the boot's own timings
+					// #394 (2): a pre-recycle. sameIso is true by construction (module state); iso and
+					// bootMiB (wasm right after the fresh boot) let a run compare it with the isolate's
+					// next answers and with a fresh-isolate boot (24 MiB).
+					...(pre ? { pre: { ...pre, sameIso: pre.iso === ISOLATE_ID, bootMiB: Math.round(wasm0 / 1048576) } } : {}),
 					bytes: r.bytes.length,
 					httpCalls: stats.httpCalls - start.httpCalls,
 					txnOps: stats.txnOps - start.txnOps,
@@ -3330,6 +3352,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 				out.set('x-perf', JSON.stringify(perf));
 				console.log(JSON.stringify({ m: 'perf', id: req.headers.get('x-perf-id'), path: url.pathname, ...perf }));
 			}
+			if (pre) out.set('x-runtime-prerecycled', String(pre.fromMiB));
 			const response = new Response(r.bytes, { status: r.httpStatusCode, headers: out });
 			// #394 (b): a recycled runtime is RELEASED, not only forgotten. bootPromise = null alone left
 			// lastBootedPhp holding the old runtime, WASM memory and all, until the next boot had built a
