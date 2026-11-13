@@ -37,12 +37,19 @@ function skyphusion_mem_wasm() {
 	return ( is_array( $r ) && isset( $r['wasm'] ) ) ? (int) $r['wasm'] : null;
 }
 
+// The operator's x-perf-id (#434), so the logged marks of a request killed by a reset can be
+// joined to the Worker's reset line. index.js logs it only if it is a short safe token.
+function skyphusion_mem_id() {
+	$id = isset( $_SERVER['HTTP_X_PERF_ID'] ) ? (string) $_SERVER['HTTP_X_PERF_ID'] : '';
+	return preg_match( '/^[A-Za-z0-9_.-]{1,64}$/', $id ) ? $id : null;
+}
+
 function skyphusion_mem_mark( $name ) {
 	$mark = array( $name, memory_get_usage(), memory_get_peak_usage(), skyphusion_mem_wasm(), count( get_included_files() ) );
 	$GLOBALS['skyphusion_mem']['m'][] = $mark;
 	// Each mark is also logged as it happens (index.js memMark, a Workers Logs line), so a request
 	// that the isolate reset kills still shows how far it got and what the heap was.
-	post_message_to_js( json_encode( array( 'memMark' => $mark ) ) );
+	post_message_to_js( json_encode( array( 'memMark' => $mark, 'id' => skyphusion_mem_id() ) ) );
 }
 
 // Checkpoints. Each pair brackets one stretch of the boot: the growth between two marks is
@@ -77,7 +84,13 @@ add_filter(
 	PHP_INT_MAX,
 	3
 );
-skyphusion_mem_at( 'rest_api_init', 'rest_init', null );
+skyphusion_mem_at( 'rest_api_init', 'rest_init', 'rest_init_end' );
+// The admin page head and body before the footer: pass B (#434) saw 18.4 MiB grow between
+// enqueue_end and footer on the dashboard, profile and product list, with WooCommerce on only.
+skyphusion_mem_at( 'admin_head', 'head_start', 'head_end' );
+skyphusion_mem_at( 'admin_print_scripts', 'head_scripts_start', 'head_scripts_end' );
+skyphusion_mem_at( 'in_admin_header', 'admin_header', null );
+skyphusion_mem_at( 'all_admin_notices', 'notices_start', 'notices_end' );
 
 // The block editor preload: it runs REST requests in-process (block_editor_rest_api_preload).
 // The paths filter runs just before them, block_editor_settings_all just after.

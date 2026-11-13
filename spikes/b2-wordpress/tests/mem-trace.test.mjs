@@ -32,10 +32,16 @@ test('the mu-plugin returns at once without the trace header, and only knows the
 	const guard = php.indexOf("if ( empty( $_SERVER['HTTP_X_MEM_TRACE'] ) || ! function_exists( 'post_message_to_js' ) ) {");
 	assert.ok(guard > 0 && guard < php.indexOf('add_action('), 'the guard must come before any hook');
 	assert.ok(php.includes("array( 'woo', 'wcadmin', 'wcfeatures', 'preload', 'updates', 'dashboard', 'notices', 'l10n' )"));
-	assert.ok(src.includes("if (m.memMark) { console.log(JSON.stringify({ m: 'mem-mark', k: m.memMark })); return '1'; }"));
+	assert.ok(src.includes("if (m.memMark) { console.log(JSON.stringify({ m: 'mem-mark', ...(typeof m.id === 'string' && MEM_ID_RE.test(m.id) ? { id: m.id } : {}), k: m.memMark })); return '1'; }"));
 });
 
 test('build.sh copies the trace mu-plugin', () => {
 	const build = readFileSync(new URL('../build.sh', import.meta.url), 'utf8');
 	assert.match(build, /cp [^\n]*php\/mem-trace\.php[^\n]*"\$wp\/wp-content\/mu-plugins\/"/);
+});
+
+test('the reset lines carry the operator id, and only for an operator request with a safe id', () => {
+	assert.equal((src.match(/\.\.\.memIdOf\(req, env\)/g) || []).length, 2, 'both reset log lines carry memIdOf');
+	assert.ok(src.includes("return id && MEM_ID_RE.test(id) && perfHeadersAllowed(req, env) ? { id } : {};"));
+	assert.ok(src.includes("const MEM_ID_RE = /^[A-Za-z0-9_.-]{1,64}$/;"));
 });

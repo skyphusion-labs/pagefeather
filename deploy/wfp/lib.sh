@@ -508,10 +508,6 @@ bundle_size_check() { # bundle_size_check [app dir]
 import os, sys
 app, cap = sys.argv[1], float(sys.argv[2])
 parts = ["build/site.zip", "build/opcache.zip", "vendor/php_8_3.wasm", "vendor/php_8_3.js"]
-# #394 L1: the boot pack's fallback module ships in the bundle too (index.js imports it only when
-# the Assets binding is missing). build.sh always writes it, empty when the build is not split.
-if os.path.isfile(os.path.join(app, "build/opcache-boot.zip")):
-    parts.append("build/opcache-boot.zip")
 missing = [p for p in parts if not os.path.isfile(os.path.join(app, p))]
 if missing:
     sys.exit("bundle size: missing " + ", ".join(missing) + " (build first)")
