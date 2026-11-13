@@ -37,7 +37,7 @@ def trace_of(r):
         return None
 
 
-def row_of(label, page, off, i, r):
+def row_of(label, page, off, i, r, perf_id=None):
     h = r.get("h") or {}
     g = lambda k: h.get(k) if h else None
     perf = None
@@ -46,7 +46,7 @@ def row_of(label, page, off, i, r):
     except ValueError:
         perf = None
     t = trace_of(r)
-    return {"run": label, "page": page, "off": off, "i": i, "t": round(time.time(), 3), "code": r.get("code"), "s": r.get("s"),
+    return {"run": label, "page": page, "off": off, "i": i, "t": round(time.time(), 3), "code": r.get("code"), "s": r.get("s"), "id": perf_id,
             "wasm": g("x-wasm-mib"), "recycled": g("x-runtime-recycled"), "reset": g("x-isolate-reset"),
             "writeLoss": g("x-write-loss"), "rt": perf.get("rt") if perf else None, "rtServed": perf.get("rtServed") if perf else None,
             "trace": t, **({"err": r["err"]} if r.get("err") else {})}
@@ -87,13 +87,13 @@ def run(label, n):
         for off in ["none"] + offs:
             for i in range(n):
                 req(o, "/_evict", b"", None, "POST")  # a fresh runtime for the next request
-                h = {"x-mem-trace": "1"}
+                h = {"x-mem-trace": "1", "x-perf-id": "%s.%s.%s.%d.%d" % (label, page, off, i, int(time.time()))}
                 if off != "none":
                     h["x-mem-off"] = off
                 if method == "POST-REST":
                     h.update({"X-WP-Nonce": nonce, "Content-Type": "application/json"})
                     r = req(o, "/?rest_route=" + path, json.dumps({"slug": "contact-form-7"}).encode(), h, "POST")
-                    print(json.dumps(row_of(label, page, off, i, r)), flush=True)
+                    print(json.dumps(row_of(label, page, off, i, r, h.get("x-perf-id"))), flush=True)
                     # Leave nothing behind: if the install is still there (it is usually gone with
                     # its isolate, #422), delete it. Recorded as its own row, headers only.
                     pp = plugin_path(o, req, nonce, "contact-form-7")
@@ -103,7 +103,7 @@ def run(label, n):
                     continue
                 else:
                     r = req(o, path + ("&" if "?" in path else "?") + "nocache=%s-%d" % (label, int(time.time() * 1000)), None, h)
-                print(json.dumps(row_of(label, page, off, i, r)), flush=True)
+                print(json.dumps(row_of(label, page, off, i, r, h.get("x-perf-id"))), flush=True)
 
 
 def marks(t):
