@@ -478,7 +478,11 @@ build_dosql() {
     # new inputs rebuilds the same way. A store keeps it: update_inputs_check refuses a build
     # without WooCommerce for a site whose Store API answers (#377). Approach a builds through
     # deploy/deploy.sh, which leaves WOO at build.sh's default (bundled): a Hyperdrive store keeps it.
-    WOO=$woo WOO_ACTIVE=$woo ./build.sh | tail -1
+    # No pipe (#464): a pipe takes tail's status, so a failed build.sh went on to opcache.sh with a
+    # half-built tree. The log is outside build/, which build.sh rewrites.
+    local blog; blog=$(mktemp)
+    WOO=$woo WOO_ACTIVE=$woo ./build.sh > "$blog" || { echo "build.sh failed:"; tail -25 "$blog"; rm -f "$blog"; exit 1; }
+    tail -1 "$blog"; rm -f "$blog"
     WOO_ACTIVE=$woo DEV_ENV=dosql-local ./opcache.sh > build/opcache.log 2>&1 || { echo "opcache.sh failed:"; tail -25 build/opcache.log; exit 1; }
     tail -1 build/opcache.log
     # #394 L1 (OPCACHE_SPLIT=1): trace which OPcache files a WARM request reads on the primed build,
@@ -492,6 +496,27 @@ build_dosql() {
   # build.sh starts, and that bundle was uploaded.
   bundle_size_check
 }
+# The rollback artifact of one site update (#464). save_live_build <live build id> <dest dir> copies
+# $APP/build to <dest>/build only when build/ IS the live build of the site being updated: its
+# build-id.js equals the build id the site map records for that site. build/ is whatever this clone
+# built LAST, which can be another site (a run that updates several sites from one clone) or an
+# older build. Saving that one made a failed update re-deploy ANOTHER site's code over this site.
+# A -dirty id does not name its content (two dirty trees share it), so it is never trusted.
+# Returns 1 with the reason on stdout when there is no artifact; the update then rolls back the
+# data only and says to deploy the old build by hand.
+save_live_build() {
+  local live=$1 dest=$2 have=""
+  [ -f "$APP/build/build-id.js" ] && have=$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js")
+  if [ -z "$live" ] || [ "$live" = unknown ]; then echo "the site map records no live build"; return 1; fi
+  case "$live" in *-dirty*) echo "the live build $live is from a dirty tree, so its id does not name its code"; return 1 ;; esac
+  if [ "$have" != "$live" ]; then echo "build/ holds ${have:-no build}, not this site's live build $live"; return 1; fi
+  cp -a "$APP/build" "$dest/build" || { echo "the copy of build/ failed"; return 1; }
+  echo "$live"
+}
+# rollback_build_ok <saved build id> <live build id>: 0 only when both are set and equal (#464).
+# Checked again right before the rollback re-deploy, so no path re-deploys a build that is not
+# this site's live one.
+rollback_build_ok() { [ -n "$1" ] && [ "$1" != unknown ] && [ "$1" = "$2" ]; }
 # The Worker size limit is 64 MiB uncompressed (docs/plan-limits.md; measured:
 # 72 MB refused). Four files make almost all of a b-dosql upload: build/site.zip
 # (WordPress and the site's plugins), build/opcache.zip, and the PHP wasm with

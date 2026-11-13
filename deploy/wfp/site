@@ -34,7 +34,9 @@ has_ws() { list_sites | grep -qx "$1"; }
 # key names (#421). A missing hash uploads once. FORCE_UPLOAD=1 uploads even
 # when both match. On failure, roll back: restore the data from the snapshot
 # and re-deploy the exact code that was live (the build artifact saved before
-# the rebuild); the rollback drops writes made since the snapshot.
+# the rebuild, only when it IS this site's live build, #464); the rollback drops
+# writes made since the snapshot. Every step that can fail stops the update
+# (this runs where set -e is off: update --all calls it inside an if).
 # The work dir of one update (the recorded inputs, #379), removed however update_one ends.
 update_one() {
   local WDIR rc=0; WDIR=$(mktemp -d); chmod 700 "$WDIR"
@@ -82,37 +84,44 @@ update_one_inner() {
   # Save the live build artifact before rebuilding, so a rollback re-uploads
   # the exact code that was live (issue #137): a git-worktree rebuild of the
   # old sha is fragile (a fresh worktree has no node_modules or vendor, and it
-  # would carry the dev wrangler.toml, not the wfp user config). The live build
-  # is whatever build/ holds now (up.sh / the last update built it).
-  local SAVED="" live_build=""
-  if [ -d "$APP/build" ] && [ -f "$APP/build/build-id.js" ]; then
-    live_build=$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js")
-    SAVED=$(mktemp -d); cp -a "$APP/build" "$SAVED/build"
-    echo "site $s: saved the live build ${live_build:-unknown} for rollback"
+  # would carry the dev wrangler.toml, not the wfp user config). build/ is what
+  # this clone built LAST, which can be another site's build (#464), so it is
+  # saved only when its build id is this site's live one (lib.sh save_live_build).
+  local SAVED="" live_build="" why=""
+  SAVED=$(mktemp -d)
+  if why=$(save_live_build "${rollback:-}" "$SAVED"); then
+    live_build=$why
+    echo "site $s: saved the live build $live_build for rollback"
+  else
+    rm -rf "$SAVED"; SAVED=""
+    echo "site $s: NO code rollback artifact: $why. If this update fails, the data is restored but the code is not." >&2
   fi
   echo "site $s: rebuild from the current tree"
-  build_dosql
-  new=$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js" 2>/dev/null || true); new=${new:-unknown}
+  # Stop on a failed build, before any upload (#464): set -e is off here.
+  build_dosql || { echo "site $s: the build failed; nothing was uploaded" >&2; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }
+  new=$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js" 2>/dev/null || true)
+  [ -n "$new" ] || { echo "site $s: the build left no build id; nothing was uploaded" >&2; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }
   # Render before the decision (#421). The hash is this file plus the sorted
   # names of the keys in the secrets JSON. Values stay in the file, mode 600,
   # and are removed on every return from this point.
   local CONF="$APP/wrangler.deploy.wfp-$s.toml" W new_hash="" reasons=""
   W=$(mktemp -d); chmod 700 "$W"
-  render_user "$s" "$ORIGIN" > "$CONF"
-  tfr site output -json | site_secrets_json "$W/sec.json"
-  new_hash=$(config_hash "$CONF" "$W/sec.json") || { rm -rf "$W"; return 1; }
+  render_user "$s" "$ORIGIN" > "$CONF" || { echo "site $s: the user config did not render; nothing was uploaded" >&2; rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }
+  tfr site output -json | site_secrets_json "$W/sec.json" || { echo "site $s: the site secrets did not read; nothing was uploaded" >&2; rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }
+  new_hash=$(config_hash "$CONF" "$W/sec.json") || { rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }
   reasons=$(update_upload_reasons "$new" "${rollback:-}" "$new_hash" "$live_hash")
   if [ -z "$reasons" ]; then echo "site $s: already at build $new; nothing to do"; rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 0; fi
   echo "site $s: upload build $new (was ${rollback:-unknown}); reason: $reasons"
   # WP_VECTORIZE_SEARCH (#330): the binding needs its index to exist at deploy (lib.sh).
-  if search_on; then ensure_search_index "$s" || { rm -rf "$W"; return 1; }; fi
-  bundle_size_check || { rm -rf "$W"; return 1; }
-  (cd "$APP" && "$WR" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/sec.json") > "$W/up.log" 2>&1 || { rm -rf "$W"; echo "site $s: upload failed:" >&2; tail -20 "$W/up.log" >&2; return 1; }
+  if search_on; then ensure_search_index "$s" || { rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }; fi
+  bundle_size_check || { rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }
+  # A failed upload changed nothing live; the log is read BEFORE the work dir goes.
+  (cd "$APP" && "$WR" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/sec.json") > "$W/up.log" 2>&1 || { echo "site $s: upload failed:" >&2; tail -20 "$W/up.log" >&2; rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }
   rm -rf "$W"
   # OBSERVABILITY=1 logs events only, but each event still carries the URL; a store's query strings
   # hold order keys and logins. wrangler cannot set the redaction, so it is set here, then read back.
   if [ "${OBSERVABILITY:-0}" = 1 ]; then python3 -I "$WFP/obs_settings.py" redact "$NAMESPACE" "site-$s" || { echo "site $s: UPLOADED, but the query-string redaction did NOT apply: turn the logs off (run the update again with no OBSERVABILITY)" >&2; ok=0; }; fi
-  tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=$new" -var "config_hash=$new_hash" >/dev/null
+  tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=$new" -var "config_hash=$new_hash" >/dev/null || { echo "site $s: the site map entry did not record build $new" >&2; ok=0; }
   echo "site $s: verify the new build is live"
   wait_build "$ORIGIN" "$TOK" "$new" || ok=0
   [ "$ok" = 1 ] && { [ "$(curl -s -o /dev/null -w '%{http_code}' -m 60 "$ORIGIN/?nocache=$RANDOM")" = 200 ] || { echo "site $s: the site did not answer 200 after the update" >&2; ok=0; }; }
@@ -130,22 +139,26 @@ update_one_inner() {
   if [ -n "$snap_key" ]; then
     WFP_S3_ENDPOINT="$EP" python3 -I "$WFP/snapshot.py" dbrestore "$ORIGIN" "$TOK" "$bucket" "$snap_key" || echo "site $s: the data restore FAILED; the snapshot is $bucket/_snapshots/$snap_key" >&2
   fi
+  # The saved build must still be this site's live one (#464): never re-deploy another build.
+  if [ -n "$SAVED" ] && ! rollback_build_ok "$live_build" "${rollback:-}"; then
+    echo "site $s: the saved build ${live_build:-unknown} is not this site's live build ${rollback:-unknown}; it is NOT re-deployed." >&2
+    rm -rf "$SAVED"; SAVED=""
+  fi
   if [ -n "$SAVED" ]; then
-    echo "site $s: re-deploy the saved build ${live_build:-unknown}"
+    echo "site $s: re-deploy the saved build $live_build"
     rm -rf "$APP/build" && mv "$SAVED/build" "$APP/build"
     local W2; W2=$(mktemp -d)
-    tfr site output -json | site_secrets_json "$W2/sec.json"
-    if (cd "$APP" && "$WR" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W2/sec.json") > "$W2/rb.log" 2>&1; then
+    if tfr site output -json | site_secrets_json "$W2/sec.json" && (cd "$APP" && "$WR" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W2/sec.json") > "$W2/rb.log" 2>&1; then
       echo "site $s: re-deployed ${live_build:-unknown}"
-      tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=${live_build:-$rollback}" -var "config_hash=$live_hash" >/dev/null
+      tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=$live_build" -var "config_hash=$live_hash" >/dev/null || echo "site $s: the site map entry did not record the rollback build $live_build" >&2
       wait_build "$ORIGIN" "$TOK" "$live_build" || echo "site $s: /_build did not return to $live_build after the rollback re-deploy" >&2
     else
-      echo "site $s: the rollback re-deploy FAILED; the old code is NOT live. Deploy ${live_build:-$rollback} by hand. Reason:" >&2
-      tail -20 "$W2/rb.log" >&2
+      echo "site $s: the rollback re-deploy FAILED; the old code is NOT live. Deploy $live_build by hand. Reason:" >&2
+      tail -20 "$W2/rb.log" 2>/dev/null >&2
     fi
     rm -rf "$W2"
   else
-    echo "site $s: no saved build artifact (build/ was absent at update start); cannot re-deploy the old code automatically. Deploy $rollback by hand. The data was restored from the snapshot." >&2
+    echo "site $s: no saved build artifact of this site's live build; the old code is NOT re-deployed. Deploy ${rollback:-the old build} by hand. The data was restored from the snapshot." >&2
   fi
   [ -n "$SAVED" ] && rm -rf "$SAVED"
   [ "${COUNT_ROWS:-0}" = 1 ] && echo "site $s: rows after (rolled back): $(row_count "$ORIGIN" "$TOK")"

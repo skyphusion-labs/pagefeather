@@ -109,6 +109,9 @@ printf 'export default "bld-same";\n' > build/build-id.js
 : > vendor/php_8_3.js; : > vendor/php_8_3.wasm
 echo built
 SH
+# prepare.sh runs on every build (#446). Without it every build here failed, and before #464 the
+# update went on after the failed build, so this test passed on a build that never ran.
+printf '#!/bin/bash\necho prepared\n' > "$APP/prepare.sh"; chmod +x "$APP/prepare.sh"
 echo '#!/bin/bash' > "$APP/opcache.sh"
 echo 'echo primed' >> "$APP/opcache.sh"
 printf 'print("c00000001")\n' > "$APP/content-id.py"
