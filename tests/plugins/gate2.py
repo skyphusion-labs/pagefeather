@@ -207,7 +207,20 @@ def install_wporg(o, item):
             return False, {"via": "ajax install-theme", "why": "no updates nonce on theme-install.php"}
         r = L.req(o, "/wp-admin/admin-ajax.php", {"action": "install-theme", "slug": item["slug"], "_ajax_nonce": nonce})
         b = jbody(r) or {}
-        return ok2xx(r) and b.get("success") is True, {"via": "ajax install-theme", "code": r["code"]}
+        info = {"via": "ajax install-theme", "code": r["code"]}
+        d = b.get("data") if isinstance(b, dict) else None
+        ec = d.get("errorCode") if isinstance(d, dict) else None
+        if isinstance(ec, str) and re.fullmatch(r"[a-z0-9_]{1,64}", ec):
+            info["errorCode"] = ec  # admin-ajax answers 200 with success false and a machine code
+        em = d.get("errorMessage") if isinstance(d, dict) else None
+        if isinstance(em, str):
+            info["errorMessage"] = re.sub(r"<[^>]+>", "", em)[:120]  # WordPress core's own text, short
+        raw = (r.get("body") or b"").strip()
+        if not isinstance(b, dict) and re.fullmatch(rb"-?[0-9]{1,2}", raw or b"x"):
+            info["ajaxAnswer"] = raw.decode()  # admin-ajax's bare -1 (bad nonce) or 0 (no handler)
+        elif not isinstance(b, dict):
+            info["ajaxAnswer"] = "not json (%d bytes)" % len(raw)
+        return ok2xx(r) and b.get("success") is True, info
     r = L.rest(o, "/wp/v2/plugins", {"slug": item["slug"]}, "POST")
     return ok2xx(r), {"via": "rest /wp/v2/plugins", "code": r["code"], "error": (jbody(r) or {}).get("code") if not ok2xx(r) else None}
 
