@@ -15,7 +15,8 @@
  * x-mem-off (comma list) switches ONE component off for this request, so a page's peak can be
  * compared with and without it:
  *   woo       WooCommerce is not loaded (option_active_plugins without it)
- *   wcadmin   woocommerce_admin_disabled (the wc-admin app, inbox, marketing, analytics)
+ *   wcadmin   woocommerce_admin_disabled (measured: WooCommerce 11 barely honours it)
+ *   wcfeatures the wc-admin feature list is emptied (woocommerce_admin_features)
  *   preload   the block editor REST preload paths are emptied (post-new.php, post.php)
  *   updates   the core, plugin and theme update checks are not hooked on admin_init
  *   dashboard the dashboard widgets are not set up
@@ -37,7 +38,11 @@ function skyphusion_mem_wasm() {
 }
 
 function skyphusion_mem_mark( $name ) {
-	$GLOBALS['skyphusion_mem']['m'][] = array( $name, memory_get_usage(), memory_get_peak_usage(), skyphusion_mem_wasm(), count( get_included_files() ) );
+	$mark = array( $name, memory_get_usage(), memory_get_peak_usage(), skyphusion_mem_wasm(), count( get_included_files() ) );
+	$GLOBALS['skyphusion_mem']['m'][] = $mark;
+	// Each mark is also logged as it happens (index.js memMark, a Workers Logs line), so a request
+	// that the isolate reset kills still shows how far it got and what the heap was.
+	post_message_to_js( json_encode( array( 'memMark' => $mark ) ) );
 }
 
 // Checkpoints. Each pair brackets one stretch of the boot: the growth between two marks is
@@ -58,6 +63,20 @@ skyphusion_mem_at( 'admin_init', 'admin_init_start', 'admin_init_end' );
 skyphusion_mem_at( 'current_screen', 'screen', null );
 skyphusion_mem_at( 'admin_enqueue_scripts', 'enqueue_start', 'enqueue_end' );
 skyphusion_mem_at( 'admin_footer', 'footer', null );
+skyphusion_mem_at( 'admin_print_footer_scripts', 'footer_scripts_start', 'footer_scripts_end' );
+
+// Each REST request the block editor preload runs in-process gets its own mark (route only).
+add_filter(
+	'rest_post_dispatch',
+	function ( $result, $server, $request ) {
+		if ( null !== $GLOBALS['skyphusion_mem']['preload'] && is_object( $request ) && method_exists( $request, 'get_route' ) ) {
+			skyphusion_mem_mark( 'rest:' . substr( preg_replace( '/[^A-Za-z0-9\/_-]/', '', (string) $request->get_route() ), 0, 60 ) );
+		}
+		return $result;
+	},
+	PHP_INT_MAX,
+	3
+);
 skyphusion_mem_at( 'rest_api_init', 'rest_init', null );
 
 // The block editor preload: it runs REST requests in-process (block_editor_rest_api_preload).
@@ -82,7 +101,7 @@ add_filter(
 
 // ---- the switches (x-mem-off) -----------------------------------------------------------------
 $skyphusion_mem_off = array_filter( array_map( 'trim', explode( ',', strtolower( (string) ( isset( $_SERVER['HTTP_X_MEM_OFF'] ) ? $_SERVER['HTTP_X_MEM_OFF'] : '' ) ) ) ) );
-$skyphusion_mem_off = array_values( array_intersect( $skyphusion_mem_off, array( 'woo', 'wcadmin', 'preload', 'updates', 'dashboard', 'notices', 'l10n' ) ) );
+$skyphusion_mem_off = array_values( array_intersect( $skyphusion_mem_off, array( 'woo', 'wcadmin', 'wcfeatures', 'preload', 'updates', 'dashboard', 'notices', 'l10n' ) ) );
 $GLOBALS['skyphusion_mem']['off'] = $skyphusion_mem_off;
 
 if ( in_array( 'woo', $skyphusion_mem_off, true ) ) {
@@ -95,6 +114,11 @@ if ( in_array( 'woo', $skyphusion_mem_off, true ) ) {
 }
 if ( in_array( 'wcadmin', $skyphusion_mem_off, true ) ) {
 	add_filter( 'woocommerce_admin_disabled', '__return_true' );
+}
+// woocommerce_admin_disabled barely changes WooCommerce 11 (pf422a, #434: 149 to 137 wc-admin
+// files), so wcfeatures empties the wc-admin feature list instead (src/Admin/Features/Features.php).
+if ( in_array( 'wcfeatures', $skyphusion_mem_off, true ) ) {
+	add_filter( 'woocommerce_admin_features', '__return_empty_array', PHP_INT_MAX );
 }
 if ( in_array( 'preload', $skyphusion_mem_off, true ) ) {
 	add_filter( 'block_editor_rest_api_preload_paths', '__return_empty_array', PHP_INT_MAX );

@@ -1034,6 +1034,10 @@ async function handleMessage(raw) {
 	if (m.oc) return JSON.stringify(await objectCacheOp(m.oc));
 	if (m.probeMem) return JSON.stringify({ wasm: lastBootedPhp ? lastBootedPhp[__private__dont__use].HEAPU8.length : null });
 	if (m.memTrace) { lastMemTrace = m.memTrace; return '1'; }
+	// One trace checkpoint as it happens (#434), so a request killed by an isolate reset still
+	// leaves its marks in Workers Logs. Names and numbers only; mem-trace.php runs only for an
+	// operator request.
+	if (m.memMark) { console.log(JSON.stringify({ m: 'mem-mark', k: m.memMark })); return '1'; }
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
 	if (m.email) return JSON.stringify(await emailOp(m.email));
 	if (m.aiAlt) return JSON.stringify(await aiAltOp(m.aiAlt));

@@ -17,13 +17,13 @@ import json, os, re, statistics, sys, time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../spikes/b2-wordpress/tests"))
 
 PAGES = [
-    ("dashboard", "GET", "/wp-admin/", ["woo", "wcadmin", "updates", "dashboard", "notices", "l10n"]),
-    ("post-new", "GET", "/wp-admin/post-new.php", ["woo", "wcadmin", "preload", "updates", "notices", "l10n"]),
-    ("profile", "GET", "/wp-admin/profile.php", ["woo", "wcadmin", "updates", "notices", "l10n"]),
-    ("wc-settings", "GET", "/wp-admin/admin.php?page=wc-settings", ["wcadmin", "updates", "notices", "l10n"]),
-    ("products", "GET", "/wp-admin/edit.php?post_type=product", ["wcadmin", "updates", "notices", "l10n"]),
-    ("orders", "GET", "/wp-admin/admin.php?page=wc-orders", ["wcadmin", "updates", "notices", "l10n"]),
-    ("install", "POST-REST", "/wp/v2/plugins", ["woo", "wcadmin", "l10n"]),
+    ("dashboard", "GET", "/wp-admin/", ["woo", "wcadmin", "wcfeatures", "updates", "dashboard", "notices", "l10n"]),
+    ("post-new", "GET", "/wp-admin/post-new.php", ["woo", "wcadmin", "wcfeatures", "preload", "updates", "notices", "l10n"]),
+    ("profile", "GET", "/wp-admin/profile.php", ["woo", "wcadmin", "wcfeatures", "updates", "notices", "l10n"]),
+    ("wc-settings", "GET", "/wp-admin/admin.php?page=wc-settings", ["wcadmin", "wcfeatures", "updates", "notices", "l10n"]),
+    ("products", "GET", "/wp-admin/edit.php?post_type=product", ["wcadmin", "wcfeatures", "updates", "notices", "l10n"]),
+    ("orders", "GET", "/wp-admin/admin.php?page=wc-orders", ["wcadmin", "wcfeatures", "updates", "notices", "l10n"]),
+    ("install", "POST-REST", "/wp/v2/plugins", ["woo", "wcadmin", "wcfeatures", "l10n"]),
 ]
 MIB = 1048576
 
