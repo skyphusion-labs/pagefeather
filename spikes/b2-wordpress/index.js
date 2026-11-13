@@ -3105,7 +3105,8 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			out.set('x-php-ms', String(Date.now() - t0));
 			out.set('x-boot', booted ? '1' : '0');
 			if (ctx && ctx.inObject) out.set('x-boot-origin', bootOrigin);
-			console.log(JSON.stringify({ m: 'req', path: url.pathname + url.search, boot: booted, d1: d.calls }));
+			// The path only, never the query string: a store's URLs carry order keys and logins there.
+			console.log(JSON.stringify({ m: 'req', path: url.pathname, boot: booted, d1: d.calls }));
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
 			evictLazy();
 			const wasmBytes = php[__private__dont__use].HEAPU8.length;

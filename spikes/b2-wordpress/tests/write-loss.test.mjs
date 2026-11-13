@@ -102,3 +102,9 @@ test('index.js: the dead-letter event logs a recipient count, never an address',
 	const line = src.slice(src.lastIndexOf('\n', at), src.indexOf('\n', at));
 	assert.ok(line.includes('recipients:') && !/\bto: Array\.isArray\(to\)/.test(line), line);
 });
+test('index.js: no log line carries a URL query string (order keys and logins live there)', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const logs = src.split('\n').filter((l) => /console\.(log|error|warn)\(/.test(l));
+	assert.ok(logs.length > 20, 'the scan read the log lines');
+	assert.deepEqual(logs.filter((l) => /url\.search|url\.href|req\.url/.test(l)), []);
+});
