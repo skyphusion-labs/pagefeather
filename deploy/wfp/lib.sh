@@ -483,7 +483,8 @@ build_dosql() {
     # package and applies every patch. Running it only when vendor/php_8_3.js was missing kept an
     # old loader in a tree that had built before, so a new loader patch never reached a deploy
     # (measured on pf394a, 2026-11-13: the heap patch build showed the stock 111 and 133 MiB stairs).
-    ./prepare.sh | tail -1
+    # No pipe: a pipe takes tail's status and would hide a failed patch assert, shipping the old loader.
+    ./prepare.sh || { echo "prepare.sh failed: the loader was not rebuilt"; exit 1; }
     # WOO_ACTIVE reaches build.sh too, so the build id says whether it is primed (#377).
     WOO_ACTIVE=$woo ./build.sh | tail -1
     WOO_ACTIVE=$woo DEV_ENV=dosql-local ./opcache.sh > build/opcache.log 2>&1 || { echo "opcache.sh failed:"; tail -25 build/opcache.log; exit 1; }
