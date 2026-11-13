@@ -106,6 +106,10 @@ echo "site.zip $(wc -c < build/site.zip) bytes, $(cd build && unzip -l site.zip 
 # earlier build are compiled from other sources (measured 2026-11-05: an A build
 # ran B's compiled wp-content/db.php from the zip a B build had left).
 python3 -c "import zipfile; zipfile.ZipFile('build/opcache.zip', 'w').close()"
+# #394 L1: not split until opcache-split.py runs (OPCACHE_SPLIT=1 in the deploy): no boot pack,
+# and an empty fallback module, so index.js imports resolve on every build.
+python3 -c "import zipfile; zipfile.ZipFile('build/opcache-boot.zip', 'w').close()"
+echo 'export default null;' > build/opcache-boot-index.js
 echo "public/ $(find build/public -type f | wc -l | tr -d ' ') files"
 # The build id (build-id.sh): the git sha, -dirty, the content id and -wooprimed (#377).
 BUILD_ID=$(./build-id.sh "$wp/wp-content")

@@ -27,6 +27,10 @@ import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
 // Compiled PHP (OPcache file cache) made by opcache.sh with this same PHP build.
 import opcacheZip from './build/opcache.zip';
+// #394 L1 (opcache-split.py): the BOOT part of the OPcache file cache is not a static module. It is
+// fetched from the Assets binding when a runtime boots and dropped after that request. null when
+// the build was not split (build.sh writes the default).
+import OPCACHE_BOOT from './build/opcache-boot-index.js';
 // The build id baked at build time (build.sh writes build/build-id.js), so the
 // object can report which code version it runs (issue #35 slice 5).
 import BUILD_ID from './build/build-id.js';
@@ -363,6 +367,50 @@ const inflated = new Map(); // drop function -> bytes
 const fileTrace = createTrace();
 const tracing = () => Boolean(ENV && ENV.FILE_TRACE === 'on');
 let inflatedBytes = 0;
+// #394 L1: the boot pack's file nodes, mounted for one request when a runtime boots.
+let bootPackPaths = null;
+// What the last boot did with the boot pack, for x-perf (l1): 'assets', 'fallback:<why>', or 'none'.
+let l1State = 'none';
+async function loadBootPacks() {
+	const t = Date.now();
+	const base = 'https://assets.local/_pf/' + OPCACHE_BOOT.id + '/';
+	// OPCACHE_BOOT_SOURCE=module forces the fallback (a test of that path; see tests/l1-e2e.sh).
+	if (ENV && ENV.ASSETS && ENV.OPCACHE_BOOT_SOURCE !== 'module') {
+		try {
+			const packs = await Promise.all(
+				OPCACHE_BOOT.chunks.map(async (c) => {
+					const r = await ENV.ASSETS.fetch(new Request(base + c));
+					if (!r.ok) throw new Error(c + ' answered ' + r.status);
+					return new Uint8Array(await r.arrayBuffer());
+				}),
+			);
+			const kib = Math.round(packs.reduce((n, p) => n + p.length, 0) / 1024);
+			console.log(JSON.stringify({ m: 'l1', source: 'assets', chunks: packs.length, kib, ms: Date.now() - t }));
+			l1State = `assets ${kib}KiB ${Date.now() - t}ms`;
+			return packs;
+		} catch (e) {
+			console.log(JSON.stringify({ m: 'l1', fallback: 'assets failed: ' + String((e && e.message) || e).slice(0, 160) }));
+			l1State = 'fallback:assets-failed';
+		}
+	} else {
+		console.log(JSON.stringify({ m: 'l1', fallback: ENV && ENV.ASSETS ? 'OPCACHE_BOOT_SOURCE=module' : 'no ASSETS binding' }));
+		l1State = ENV && ENV.ASSETS ? 'fallback:forced' : 'fallback:no-assets-binding';
+	}
+	// The fallback the lead asked for: today's in-memory path, from a module imported only here.
+	const mod = await import('./build/opcache-boot.zip');
+	return [new Uint8Array(mod.default)];
+}
+function dropBootPack(FS) {
+	if (!bootPackPaths) return;
+	for (const p of bootPackPaths) {
+		try {
+			FS.unlink(p);
+		} catch {
+			// already gone
+		}
+	}
+	bootPackPaths = null;
+}
 function evictLazy() {
 	for (const drop of inflated.keys()) drop();
 	inflated.clear();
@@ -1165,6 +1213,21 @@ async function boot(origin) {
 	}
 	const tSite = Date.now() - t0 - tWasm;
 	let opcacheFiles = 0;
+	// #394 L1: the BOOT files of a split build, for this boot request only (dropped after it).
+	bootPackPaths = null;
+	l1State = OPCACHE_BOOT ? (ENV.OPCACHE_SPLIT === 'off' ? 'none:split-off' : 'none') : 'none:unsplit';
+	if (OPCACHE_BOOT && ENV.OPCACHE_SPLIT !== 'off') {
+		bootPackPaths = [];
+		for (const pack of await loadBootPacks()) {
+			for (const e of zipEntries(pack)) {
+				if (e.name.endsWith('/')) continue;
+				const full = OPCACHE_DIR + '/' + e.name;
+				mkdirp(full.slice(0, full.lastIndexOf('/')));
+				lazyFile(FS, full, e, 'opcache');
+				bootPackPaths.push(full);
+			}
+		}
+	}
 	for (const e of zipEntries(new Uint8Array(opcacheZip))) {
 		if (e.name.endsWith('/')) continue;
 		const full = OPCACHE_DIR + '/' + e.name;
@@ -2335,6 +2398,9 @@ export class PhpRuntime extends DurableObject {
 		if (dbHandler) dbHandler.reset();
 		// The Worker checked the spike token already. Checked again: the object
 		// trusts nothing it did not check itself.
+		// #394 L1: the OPcache boot packs live under /_pf/ in the static assets. They hold compiled PHP of
+		// the site's code, so no request may read them; only the object fetches them, through the binding.
+		if (url.pathname.startsWith('/_pf/')) return new Response('Not Found', { status: 404 });
 		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		// Spike: the URL the object got, and the origin it uses.
@@ -2567,6 +2633,8 @@ async function runCron(booted, cleanDue = false, mail = null) {
 			echo json_encode( array( 'ran' => $ran, 'wp_cron_events' => $events, 'wp_cron_hooks' => implode( ',', $wp_hooks ), 'wp_cron_skipped' => implode( ',', array_keys( $skipped ) ), 'wp_cron_due' => implode( ',', array_keys( $wp_due ) ), 'released' => $released, 'as_actions' => $as_n, 'as_pass' => isset( $as_pass ) ? $as_pass : null, 'as_dates' => implode( ',', $as_dates ), 'as_hooks' => implode( ',', $as_list ), 'as_pending' => $as_pending, 'as_due' => $as_due, 'cleaned' => $cleaned ) );` });
 		} finally {
 			tickMail = null;
+			evictLazy();
+			dropBootPack(php[__private__dont__use].FS); // #394 L1: a cron run that booted drops the boot files too
 		}
 		let out = {};
 		try { out = JSON.parse(String(r.text).slice(String(r.text).lastIndexOf('{'))); } catch (e) { out = { parse: String(r.text).slice(-200) }; }
@@ -2708,6 +2776,9 @@ const site = {
 		// Drop any left over (an /_install run, or a request that failed early).
 		if (dbHandler) dbHandler.reset();
 		// Spike endpoints need the SPIKE_TOKEN secret when it is set (always on a deploy).
+		// #394 L1: the OPcache boot packs live under /_pf/ in the static assets. They hold compiled PHP of
+		// the site's code, so no request may read them; only the object fetches them, through the binding.
+		if (url.pathname.startsWith('/_pf/')) return new Response('Not Found', { status: 404 });
 		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		if (env.MEDIA && (req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/wp-content/uploads/')) return serveUpload(req, env, url);
@@ -3162,6 +3233,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
 			if (tracing()) fileTrace.end({ status: r.httpStatusCode });
 			evictLazy();
+			dropBootPack(php[__private__dont__use].FS); // #394 L1: the boot files are no longer needed
 			const wasmBytes = php[__private__dont__use].HEAPU8.length;
 			out.set('x-wasm-mib', String(Math.round(wasmBytes / 1048576)));
 			// php-wasm answers a crashed runtime with a bare 500. Never reuse it.
@@ -3194,6 +3266,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 					inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024),
 					wasm0MiB: Math.round(wasm0 / 1048576),
 					wasm1MiB: Math.round(wasmBytes / 1048576),
+					...(booted ? { l1: l1State } : {}), // #394 L1: where this boot's OPcache boot pack came from
 					bytes: r.bytes.length,
 					httpCalls: stats.httpCalls - start.httpCalls,
 					txnOps: stats.txnOps - start.txnOps,
