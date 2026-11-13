@@ -7,7 +7,7 @@
 import { owner, sameOriginWrite } from './auth.mjs';
 import { addSite, siteList, health, context, workersSubdomain } from './sites.mjs';
 import { installBundle } from './bundle.mjs';
-import { BadRequest } from '../provision/server-config.mjs';
+import { shown } from './errors.mjs';
 import { page, refusedPage, sitesScreen, addScreen, importScreen, healthScreen, CSS, JS, esc } from './ui.mjs';
 
 const SECURITY_HEADERS = {
@@ -55,8 +55,8 @@ export async function handle(request, env, ctx, { fetchImpl = fetch, dispatcherS
     if (url.pathname === '/health') return view('Site Health', '/health', healthScreen(await health(env, { fetchImpl })));
     return html(page({ title: 'Not found', current: '', email: who.email, body: '<h1>Not found</h1>' }), 404);
   } catch (e) {
-    const status = e instanceof BadRequest ? 400 : 500;
-    const message = (e && e.message) || String(e);
+    // Only a BadRequest's own text is shown; anything else is a reference (errors.mjs).
+    const { status, message } = shown(e, `${request.method} ${url.pathname}`);
     if (url.pathname.startsWith('/api/')) return json({ ok: false, error: message }, status);
     return html(page({ title: 'Error', current: '', email: who.email, body: `<h1>Something went wrong</h1><div class="notice notice-error"><p>${esc(message)}</p></div><p><a href="/health">Open Site Health</a></p>` }), status);
   }

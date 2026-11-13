@@ -8,6 +8,7 @@ import { ensureKVNamespace, scriptExists, enableWorkersDevSubdomain } from '../p
 import { provisionSite } from '../provision/provision.mjs';
 import { readSite, listSites } from '../provision/registry.mjs';
 import { validateRequest, buildServerCfg, BadRequest } from '../provision/server-config.mjs';
+import { shown, logged } from './errors.mjs';
 
 export const SITE_MAP_TITLE_DEFAULT = 'pagefeather-sites';
 export const NAMESPACE_DEFAULT = 'pagefeather';
@@ -22,7 +23,7 @@ export async function accountId(env, fetchImpl) {
   const r = await cfFetch(env.PAGEFEATHER_KEY, 'GET', '/accounts?per_page=5', { fetchImpl });
   if (!r.ok) throw opError('accountId', 'accounts', r);
   const list = Array.isArray(r.result) ? r.result : [];
-  if (list.length !== 1) throw new Error(`the key reaches ${list.length} accounts; set CF_ACCOUNT_ID to the one to use`);
+  if (list.length !== 1) throw new BadRequest(`the key reaches ${list.length} accounts; set CF_ACCOUNT_ID to the one to use`);
   return list[0].id;
 }
 
@@ -31,14 +32,14 @@ export async function workersSubdomain(ctx) {
   const r = await cfFetch(ctx.token, 'GET', `/accounts/${ctx.acct}/workers/subdomain`, { fetchImpl: ctx.fetchImpl });
   if (!r.ok) throw opError('workersSubdomain', ctx.acct, r);
   const sub = r.result && r.result.subdomain;
-  if (typeof sub !== 'string' || !sub) throw new Error('this account has no workers.dev subdomain yet');
+  if (typeof sub !== 'string' || !sub) throw new BadRequest('this account has no workers.dev subdomain yet');
   return sub;
 }
 
 // Everything a request needs, resolved once per request. The key is a secret on
 // this Worker; it never leaves it and is never written into a response.
 export async function context(env, fetchImpl) {
-  if (typeof env.PAGEFEATHER_KEY !== 'string' || !env.PAGEFEATHER_KEY) throw new Error('the key is not set');
+  if (typeof env.PAGEFEATHER_KEY !== 'string' || !env.PAGEFEATHER_KEY) throw new BadRequest('the key is not set');
   const acct = await accountId(env, fetchImpl);
   const ctx = { acct, token: env.PAGEFEATHER_KEY, dispatcher: env.DISPATCHER, fetchImpl };
   return ctx;
@@ -85,7 +86,7 @@ export async function deployFrontDoor(ctx, { name, kvId, namespace, source, comp
 // Turn on WooCommerce through the site's own /_activate, reached through the
 // dispatch binding (no public DNS race), authorized by the site's SPIKE_TOKEN.
 export async function activateWoo(ctx, { script, spikeToken }) {
-  if (!ctx.dispatcher || typeof ctx.dispatcher.get !== 'function') return { activated: false, error: 'no dispatch binding' };
+  if (!ctx.dispatcher || typeof ctx.dispatcher.get !== 'function') return { activated: false, ref: logged('WooCommerce activation', 'no dispatch binding') };
   try {
     const res = await ctx.dispatcher.get(script).fetch(new Request(`https://internal/_activate?plugin=${encodeURIComponent(WOO_PLUGIN)}`, {
       method: 'POST', headers: { 'x-spike-token': spikeToken },
@@ -95,8 +96,9 @@ export async function activateWoo(ctx, { script, spikeToken }) {
     let out = '';
     try { const body = await res.json(); out = typeof body.out === 'string' ? body.out : ''; } catch { out = ''; }
     const activated = res.ok && /"active":true/.test(out);
-    return activated ? { activated: true } : { activated: false, error: `HTTP ${res.status}` };
-  } catch (e) { return { activated: false, error: (e && e.message) || String(e) }; }
+    if (activated) return { activated: true };
+    return { activated: false, ref: logged('WooCommerce activation', `HTTP ${res.status}: ${out.slice(-500)}`) };
+  } catch (e) { return { activated: false, ref: logged('WooCommerce activation', (e && e.stack) || e) }; }
 }
 
 // Add a site. body: { name, store }. Returns what the success screen shows.
@@ -132,7 +134,9 @@ export async function addSite(env, { body, fetchImpl, dispatcherSource }) {
     ok: true, name: req.name, existing: !!r.existing, installed: !!r.installed,
     url: `https://${hostname}/`, loginUrl: `https://${hostname}/wp-login.php`,
     user: r.admin && r.admin.user, password: r.admin && r.admin.password,
-    store, woo, ...(r.installNote ? { note: r.installNote } : {}),
+    store, woo,
+    // The install note can carry an upstream message, so it is logged, not shown.
+    ...(r.installNote ? { note: `WordPress did not finish installing. Open the site to finish it (reference ${logged('install', r.installNote)}).` } : {}),
   };
 }
 
@@ -156,12 +160,12 @@ export async function health(env, { fetchImpl }) {
   const checks = [];
   const add = (id, ok, detail) => checks.push({ id, ok: ok === true, detail: detail || '' });
   let ctx = null;
-  try { ctx = await context(env, fetchImpl); add('key', true); } catch (e) { add('key', false, e.message); }
+  try { ctx = await context(env, fetchImpl); add('key', true); } catch (e) { add('key', false, shown(e, 'health key').message); }
   if (ctx) {
     const ns = env.WFP_NAMESPACE || NAMESPACE_DEFAULT;
     const r = await cfFetch(ctx.token, 'GET', `/accounts/${ctx.acct}/workers/dispatch/namespaces/${ns}`, { fetchImpl });
     add('platforms', r.ok, r.ok ? '' : `HTTP ${r.status}`);
-    try { add('subdomain', true, await workersSubdomain(ctx)); } catch (e) { add('subdomain', false, e.message); }
+    try { add('subdomain', true, await workersSubdomain(ctx)); } catch (e) { add('subdomain', false, shown(e, 'health subdomain').message); }
   } else {
     add('platforms', false, 'the key is needed first');
     add('subdomain', false, 'the key is needed first');

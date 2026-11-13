@@ -368,6 +368,51 @@ await ok('Get WordPress files: a changed module or a manifest that is not the pi
   assert(!r.ok && /not the pinned/.test(r.error) && b.store.size === 0, `wrong pin: ${JSON.stringify(r)}`);
 });
 
+// ---- what an error may show (CodeQL js/stack-trace-exposure) -------------------
+const SECRET = 'cfat_' + 'Zq9'.repeat(12);
+async function capture(fn) {
+  const orig = console.error; const lines = [];
+  console.error = (...a) => lines.push(a.map((x) => String(x && x.stack ? x.stack : x)).join(' '));
+  try { return { value: await fn(), lines }; } finally { console.error = orig; }
+}
+const leakyFetch = async () => { throw new Error(`upstream said Authorization: Bearer ${SECRET}`); };
+
+await ok('an unexpected error with a secret-looking string never reaches the response; it is logged with a reference', async () => {
+  for (const req of [post('/api/sites', { name: 'blog' }), get('/'), get('/health'), post('/api/bundle', {})]) {
+    const env = makeEnv({ BUNDLE_MANIFEST_SHA256: 'a'.repeat(64) });
+    const { value: res, lines } = await capture(() => handle(req, env, access(), { fetchImpl: leakyFetch, dispatcherSource: DISPATCHER_SRC }));
+    const body = await res.text();
+    const where = `${req.method} ${new URL(req.url).pathname}`;
+    assert(!body.includes(SECRET) && !body.includes('upstream said'), `${where}: the error text is in the body`);
+    const ref = (body.match(/reference ([0-9a-f]{12})/) || [])[1];
+    assert(ref, `${where}: no reference in the body: ${body.slice(0, 200)}`);
+    assert(lines.some((l) => l.includes(ref) && l.includes(SECRET)), `${where}: the log does not carry the reference and the real error`);
+  }
+});
+
+await ok('control: a BadRequest message is shown as it is', async () => {
+  const cf = fakeCloudflare();
+  const r = await (await call(post('/api/sites', { name: 'shop' }), makeEnv(), access(), cf)).json();
+  assert(!r.ok && /name is reserved/.test(r.error), JSON.stringify(r));
+  const b = await (await call(post('/api/bundle', {}), makeEnv({ BUNDLES: bucket() }), access(), cf)).json();
+  assert(/not available yet/.test(b.error), JSON.stringify(b));
+});
+
+await ok('a failed WooCommerce activation and a failed install show a reference, never the upstream text', async () => {
+  const cf = fakeCloudflare();
+  const d = dispatcherStub();
+  d.get = (script) => ({ fetch: async (req) => {
+    const p = new URL(req.url).pathname;
+    if (p === '/_install') return new Response(JSON.stringify({ out: JSON.stringify({ error: `db said ${SECRET}` }) }));
+    throw new Error(`activate blew up ${SECRET}`);
+  } });
+  const { value: res } = await capture(() => call(post('/api/sites', { name: 'myshop', store: true }), makeEnv({ DISPATCHER: d }), access(), cf));
+  const body = await res.text();
+  assert(!body.includes(SECRET), 'the upstream text is in the body');
+  const r = JSON.parse(body);
+  assert(r.ok && /reference [0-9a-f]{12}/.test(r.note || '') && r.woo && r.woo.activated === false && /^[0-9a-f]{12}$/.test(r.woo.ref), JSON.stringify(r));
+});
+
 // ---- the core change: a workers.dev base ---------------------------------------
 await ok('deriveTarget: a workers.dev base gives wp-<name>.<sub>.workers.dev and no zone; a bad subdomain throws', async () => {
   const env = { WFP_KV_ID: 'kv', WFP_BASES: JSON.stringify({ 'workers.dev': { workersDev: true, subdomain: 'acme' } }) };
