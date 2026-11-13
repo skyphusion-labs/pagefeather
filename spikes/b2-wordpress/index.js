@@ -163,6 +163,9 @@ let bootPromise;
 // The most recently booted PHP, so the /_memprobe bridge (handleMessage probeMem) can
 // read the live WASM heap size from JS. memory_get_usage() reports 0 under USE_ZEND_ALLOC=0.
 let lastBootedPhp = null;
+// The admin memory trace of the request now running (#434, php/mem-trace.php): set by the
+// memTrace message at PHP shutdown, read once into the operator-only x-mem-trace header.
+let lastMemTrace = null;
 // Performance instrument (docs/perf-dosql.md), PHP object only. Counts do not
 // need the clock: in a Worker or a Durable Object, Date.now() moves only at
 // I/O, so a time measured across synchronous PHP and SQLite work can read 0.
@@ -982,6 +985,7 @@ async function handleMessage(raw) {
 	if (m.txn) return JSON.stringify(sqlDb ? txnOp(sqlDb, sqlStorage, m.txn) : { ok: false, error: 'no database in the object' });
 	if (m.oc) return JSON.stringify(await objectCacheOp(m.oc));
 	if (m.probeMem) return JSON.stringify({ wasm: lastBootedPhp ? lastBootedPhp[__private__dont__use].HEAPU8.length : null });
+	if (m.memTrace) { lastMemTrace = m.memTrace; return '1'; }
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
 	if (m.email) return JSON.stringify(await emailOp(m.email));
 	if (m.aiAlt) return JSON.stringify(await aiAltOp(m.aiAlt));
@@ -3081,6 +3085,8 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// valid spike token, so a visitor cannot disable the cache in production.
 			if (!spikeOk) delete headers['x-ast-cache-off'];
 			if (!spikeOk) delete headers['x-oc-off'];
+			// The memory trace and its switches (#434) reach PHP only with a valid spike token.
+			if (!spikeOk) { delete headers['x-mem-trace']; delete headers['x-mem-off']; }
 			let body;
 			if (env.MEDIA && isMediaUpload(req, url) && Number(req.headers.get('content-length') || 0) > STAGE_MIN_BYTES) {
 				const staged = await stageUpload(req, env);
@@ -3099,6 +3105,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const wantOpcache = ctx && ctx.inObject && spikeOk && req.headers.get('x-perf-opcache') === '1';
 			const op0 = wantOpcache ? await opcacheStats(php) : null;
 			const tPhp = Date.now();
+			lastMemTrace = null;
 			const r = await handler.request({ url: url.pathname + url.search, method: req.method, headers, body });
 			const phpOnlyMs = Date.now() - tPhp;
 			const op1 = wantOpcache ? await opcacheStats(php) : null;
@@ -3156,6 +3163,8 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			if (d.failures.length && spikeOk && env.SPIKE_TOKEN) out.set('x-d1-first-failure', (d.failures[0].error + ' | ' + d.failures[0].sql).replace(/[^\x20-\x7e]/g, ' ').slice(0, 600));
 			out.set('x-php-ms', String(Date.now() - t0));
 			out.set('x-boot', booted ? '1' : '0');
+			if (spikeOk && lastMemTrace) out.set('x-mem-trace', JSON.stringify(lastMemTrace).slice(0, 7900));
+			lastMemTrace = null;
 			if (ctx && ctx.inObject) out.set('x-boot-origin', bootOrigin);
 			// The path only, never the query string: a store's URLs carry order keys and logins there.
 			console.log(JSON.stringify({ m: 'req', path: url.pathname, boot: booted, d1: d.calls }));
