@@ -499,10 +499,12 @@ function writeRefused(php, refused) {
 async function codeSync(php) {
 	if (!codePersistOn() || !sqlDb) return;
 	runtimeCode ??= new CodeMounter();
+	const t = Date.now();
 	const r = await runtimeCode.sync({ sql: sqlDb, bucket: ENV.MEDIA, ...codeFsOps(php[__private__dont__use].FS) });
 	if (r.changed) {
 		writeRefused(php, r.refused);
-		if (r.refused.length) console.log(JSON.stringify({ m: 'code', refused: r.refused }));
+		// The load cost, from inside the object: every stored zip GET (in parallel) plus the sha check.
+		console.log(JSON.stringify({ m: 'code', loaded: runtimeCode.mounted.size, refused: r.refused, ms: Date.now() - t }));
 	}
 }
 // The op PHP calls through skyphusion_worker_call({code: ...}) (php/code-persist.php).
