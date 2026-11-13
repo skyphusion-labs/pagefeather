@@ -48,6 +48,8 @@ cp php/r2-uploads.php php/edge-cache.php php/woo-edge.php php/rest-route-cache.p
 # .php file at the top of mu-plugins.
 mkdir -p "$wp/wp-content/mu-plugins/turnstile-forms"
 cp php/turnstile-block-checkout.js "$wp/wp-content/mu-plugins/turnstile-forms/block-checkout.js"
+# The classic checkout Turnstile script (issue #400), beside it.
+cp php/turnstile-classic-checkout.js "$wp/wp-content/mu-plugins/turnstile-forms/classic-checkout.js"
 mkdir -p "$wp/wp-content/mu-plugins/r2-uploads"
 cp php/cf-images-editor.php "$wp/wp-content/mu-plugins/r2-uploads/"
 # IMPORT_MU_PLUGINS: the existing site's own mu-plugins, by name, after the

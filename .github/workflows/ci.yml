@@ -116,6 +116,11 @@ jobs:
         run: |
           node --check spikes/b2-wordpress/php/turnstile-block-checkout.js
           node --test spikes/b2-wordpress/tests/turnstile-block-checkout.test.mjs
+      - name: turnstile classic checkout script (issue #400)
+        # A classic browser script, not a module: syntax, then the stubbed page, jQuery and widget.
+        run: |
+          node --check spikes/b2-wordpress/php/turnstile-classic-checkout.js
+          node --test spikes/b2-wordpress/tests/turnstile-classic-checkout.test.mjs
       - name: pageview analytics helpers (issue #201)
         run: node --test spikes/b2-wordpress/tests/analytics.test.mjs
       - name: cf bridge ops (issue #330)
