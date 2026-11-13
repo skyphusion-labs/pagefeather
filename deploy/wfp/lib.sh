@@ -210,10 +210,20 @@ class_name = "PhpRuntime"
 tag = "v1"
 new_sqlite_classes = ["PhpRuntime"]
 TOML
-  # OBSERVABILITY=1 (default off): Workers Logs for this one site, to read a run the platform
-  # terminates (#291: an alarm ended scriptThrewException with no catch firing). wrangler tail
-  # cannot follow a namespace script. Turn it on for a throwaway or a diagnosis, not by default.
-  if [ "${OBSERVABILITY:-0}" = 1 ]; then printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n'; fi
+  # Workers Logs for this one site (#291: wrangler tail cannot follow a namespace script). Privacy
+  # first (the live store, 2026-11-13): the default invocation logs record each request's client IP,
+  # full URL and user agent. So:
+  #   OBSERVABILITY=1     events only: our own structured lines and uncaught exceptions, NO request
+  #                       metadata (invocation_logs = false). For a diagnosis on a live site.
+  #   OBSERVABILITY=full  the invocation logs too. For a throwaway only.
+  #   unset or 0          an EXPLICIT enabled = false: without the block a re-upload left a site's
+  #                       logging as it was, so "off" did not turn it off.
+  case "${OBSERVABILITY:-0}" in
+    0) printf '\n[observability]\nenabled = false\n' ;;
+    1) printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = false\n' ;;
+    full) printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = true\n' ;;
+    *) echo "OBSERVABILITY must be 0, 1 (events only) or full (a throwaway only), not ${OBSERVABILITY}" >&2; return 1 ;;
+  esac
   # WP_VECTORIZE_SEARCH (default off, metered): the token-free AI and SEARCH_INDEX bindings the
   # skyphusion-ai plugin reaches through the index.js op bridge (#330, #332). The index must exist
   # before the deploy; site.sh up makes it (ensure_search_index).

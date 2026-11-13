@@ -89,7 +89,10 @@ update_one_inner() {
   echo "site $s: rebuild from the current tree"
   build_dosql
   new=$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js" 2>/dev/null || true); new=${new:-unknown}
-  if [ "$new" = "$rollback" ]; then echo "site $s: already at build $new; nothing to do"; return 0; fi
+  # FORCE_UPLOAD=1 re-uploads the same build when only the config changed (turning Workers Logs
+  # off, OBSERVABILITY): without it the skip below kept the old config live.
+  if [ "$new" = "$rollback" ] && [ "${FORCE_UPLOAD:-0}" != 1 ]; then echo "site $s: already at build $new; nothing to do"; return 0; fi
+  [ "$new" != "$rollback" ] || echo "site $s: FORCE_UPLOAD=1: re-upload build $new with the current config"
   echo "site $s: upload build $new (was $rollback)"
   local CONF="$APP/wrangler.deploy.wfp-$s.toml" W; W=$(mktemp -d)
   render_user "$s" "$ORIGIN" > "$CONF"

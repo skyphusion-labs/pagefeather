@@ -74,3 +74,29 @@ export function heldRequestMail(pending, lostWrites, req = {}) {
 	}));
 	return { send: [], events };
 }
+
+/**
+ * The verb and the table of a SQL statement, for a log line: never its values. A store's statements
+ * can hold an email or an address, and Workers Logs is not a data store. "OTHER" when it is not one
+ * of the verbs below (the binary form, an empty string).
+ */
+export function sqlShape(sql) {
+	const m = /^\s*(SELECT|INSERT|UPDATE|DELETE|REPLACE)\b[\s\S]*?\b(?:FROM|INTO|UPDATE)?\s*`?([A-Za-z0-9_]+)`?/i.exec(String(sql || ''));
+	if (!m) return 'OTHER';
+	const verb = m[1].toUpperCase();
+	let table = m[2];
+	if (verb === 'SELECT') {
+		const f = /\bFROM\s+`?([A-Za-z0-9_]+)`?/i.exec(String(sql));
+		table = f ? f[1] : '?';
+	} else if (verb === 'INSERT' || verb === 'REPLACE') {
+		const i = /\bINTO\s+`?([A-Za-z0-9_]+)`?/i.exec(String(sql));
+		table = i ? i[1] : table;
+	} else if (verb === 'DELETE') {
+		const f = /\bFROM\s+`?([A-Za-z0-9_]+)`?/i.exec(String(sql));
+		table = f ? f[1] : table;
+	} else if (verb === 'UPDATE') {
+		const u = /^\s*UPDATE\s+`?([A-Za-z0-9_]+)`?/i.exec(String(sql));
+		table = u ? u[1] : table;
+	}
+	return verb + ' ' + table;
+}

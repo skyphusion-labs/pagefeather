@@ -76,3 +76,29 @@ test('index.js toPhpObject: a writing method killed by a reset gets the 500 befo
 	assert.ok(branch > 0 && wl > branch && h503 > wl, 'the write-loss answer comes before the 503 headers');
 	assert.match(src.slice(branch, h503), /'@event': 'write-loss'.*phase: 'request-killed'/s);
 });
+
+// The write-loss event logs the statement's verb and table only, never its values (a store's SQL can
+// hold an email or an address; Workers Logs is not a data store).
+import { sqlShape } from '../write-loss.mjs';
+test('sqlShape keeps the verb and the table only', () => {
+	assert.equal(sqlShape("UPDATE `wp_options` SET `option_value` = COALESCE(CAST('6af65f8cad5a47.45896392|1794"), 'UPDATE wp_options');
+	assert.equal(sqlShape("INSERT INTO `wp_wc_orders` (`billing_email`) VALUES ('buyer@example.com')"), 'INSERT wp_wc_orders');
+	assert.equal(sqlShape('DELETE FROM wp_usermeta WHERE user_id = 7'), 'DELETE wp_usermeta');
+	assert.equal(sqlShape("REPLACE INTO wp_options VALUES ('x')"), 'REPLACE wp_options');
+	assert.equal(sqlShape("SELECT * FROM `wp_users` WHERE user_email = 'a@b.c'"), 'SELECT wp_users');
+	assert.equal(sqlShape('(binary SQL)'), 'OTHER');
+	assert.equal(sqlShape(''), 'OTHER');
+	assert.ok(!sqlShape("INSERT INTO t VALUES ('buyer@example.com')").includes('@'));
+});
+test('index.js: the write-loss event logs sqlShape, never the statement text', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.ok(src.includes('firstSql: sqlShape(d.failures[0].sql)'));
+	assert.ok(!src.includes("firstSql: String(d.failures[0].sql || '').slice(0, 80)"));
+});
+test('index.js: the dead-letter event logs a recipient count, never an address', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const at = src.indexOf("m: 'email-dead-letter'");
+	assert.ok(at > 0);
+	const line = src.slice(src.lastIndexOf('\n', at), src.indexOf('\n', at));
+	assert.ok(line.includes('recipients:') && !/\bto: Array\.isArray\(to\)/.test(line), line);
+});

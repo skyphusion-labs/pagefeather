@@ -48,5 +48,7 @@ l_tree=$(grep -n '  tree_clean_check ||' "$S" | head -1 | cut -d: -f1)
 check "the dirty-tree refusal comes before the snapshot and the build" "$([ -n "$l_tree" ] && [ "$l_tree" -lt "$l_snap" ] && [ "$l_tree" -lt "$l_build" ] && echo yes || echo no)" yes
 check "the refusal comes before the snapshot and the build" "$([ -n "$l_check" ] && [ "$l_check" -lt "$l_snap" ] && [ "$l_check" -lt "$l_build" ] && echo yes || echo no)" yes
 
+# FORCE_UPLOAD=1 re-uploads the same build when only the config changed (turning Workers Logs off).
+check "the already-at-build skip yields to FORCE_UPLOAD=1" "$(grep -c 'if \[ "$new" = "$rollback" \] && \[ "${FORCE_UPLOAD:-0}" != 1 \]; then' "$S")" 1
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]
