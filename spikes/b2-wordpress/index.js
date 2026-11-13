@@ -17,6 +17,7 @@ import { demoLocked, demoLockDefines } from './site-lock.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore } from './perf-headers.mjs';
 import { resetFailures, writeLossResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
+import { routeClass, createTrace } from './file-trace.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -357,6 +358,10 @@ function zipEntries(zip) {
 // oldest dropped first. A WooCommerce checkout reads about 1,500 compiled files.
 let LAZY_CACHE_BYTES = 8 * 1024 * 1024; // LAZY_CACHE_MB overrides (#218: lower the in-request V8 peak).
 const inflated = new Map(); // drop function -> bytes
+// FILE_TRACE=on (#394 M0): record which bundle files each request reads (file-trace.mjs, GET /_trace).
+// Off by default; it changes no behavior, only notes the path of each read.
+const fileTrace = createTrace();
+const tracing = () => Boolean(ENV && ENV.FILE_TRACE === 'on');
 let inflatedBytes = 0;
 function evictLazy() {
 	for (const drop of inflated.keys()) drop();
@@ -379,7 +384,7 @@ function noteInflated(drop, bytes) {
 // Set the lazy contents getter on an already-created MEMFS file node: inflate on
 // first read, cap+evict the inflated copies (noteInflated). Shared by lazyFile
 // (eager node) and the lazy-node mount (node created on lookup).
-function attachLazyContents(node, size, dataFn) {
+function attachLazyContents(node, size, dataFn, tag) {
 	let contents = null;
 	let written = false;
 	let used = size;
@@ -389,6 +394,7 @@ function attachLazyContents(node, size, dataFn) {
 	Object.defineProperty(node, 'contents', {
 		configurable: true,
 		get() {
+			if (tag && tracing()) fileTrace.read(tag.src, tag.path, size);
 			if (contents === null) {
 				contents = dataFn();
 				noteInflated(drop, contents.length);
@@ -411,9 +417,9 @@ function attachLazyContents(node, size, dataFn) {
 	});
 }
 
-function lazyFile(FS, path, entry) {
+function lazyFile(FS, path, entry, src) {
 	FS.writeFile(path, new Uint8Array(0));
-	attachLazyContents(FS.lookupPath(path).node, entry.size, () => entry.data());
+	attachLazyContents(FS.lookupPath(path).node, entry.size, () => entry.data(), src ? { src, path } : null);
 }
 
 // Lazy MEMFS NODE creation (issue #218, LAZY_NODES=on). Eager node creation
@@ -1143,7 +1149,7 @@ async function boot(origin) {
 				continue;
 			}
 			mkdirp(full.slice(0, full.lastIndexOf('/')));
-			lazyFile(FS, full, e);
+			lazyFile(FS, full, e, 'site');
 			count++;
 			fileBytes += e.size;
 		}
@@ -1155,7 +1161,7 @@ async function boot(origin) {
 		const full = OPCACHE_DIR + '/' + e.name;
 		mkdirp(full.slice(0, full.lastIndexOf('/')));
 		if (e.method === 0) FS.writeFile(full, e.data(), { canOwn: true });
-		else lazyFile(FS, full, e);
+		else lazyFile(FS, full, e, 'opcache');
 		opcacheFiles++;
 	}
 	const tFiles = Date.now() - t0 - tWasm;
@@ -2946,6 +2952,10 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// limit. The Worker inflates each file on its first read only.
 			return new Response(zipSync(files, { level: 6 }), { headers: { 'content-type': 'application/zip', 'x-files': String(Object.keys(files).length), ...dumpHeaders } });
 		}
+		if (url.pathname === '/_trace') {
+			// The file reads recorded since the last call (FILE_TRACE=on, #394 M0), then cleared.
+			return Response.json({ on: tracing(), ...fileTrace.drain() });
+		}
 		if (url.pathname === '/_mem') {
 			if (!bootPromise) return Response.json({ booted: false });
 			const { php, bootMs } = await bootPromise;
@@ -3030,6 +3040,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 		try {
 			const tBoot = Date.now();
 			const booted = !bootPromise;
+			if (tracing()) fileTrace.begin({ cls: routeClass(req.method, url.pathname, url.search), method: req.method, path: url.pathname, boot: booted ? 1 : 0 });
 			bootPromise ??= boot(origin);
 			const { php, handler, bootMs } = await bootPromise;
 			const bootWaitMs = Date.now() - tBoot;
@@ -3140,6 +3151,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// The path only, never the query string: a store's URLs carry order keys and logins there.
 			console.log(JSON.stringify({ m: 'req', path: url.pathname, boot: booted, d1: d.calls }));
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
+			if (tracing()) fileTrace.end({ status: r.httpStatusCode });
 			evictLazy();
 			const wasmBytes = php[__private__dont__use].HEAPU8.length;
 			out.set('x-wasm-mib', String(Math.round(wasmBytes / 1048576)));
