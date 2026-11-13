@@ -111,6 +111,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/code-store.test.mjs
       - name: b-dosql OPcache split into warm and boot (issue #394 L1)
         run: python3 -I spikes/b2-wordpress/tests/opcache-split-test.py
+      - name: b-dosql runtime guards, raw sockets and PHP messages (issue #452)
+        run: node --test spikes/b2-wordpress/tests/runtime-guards.test.mjs
       - name: b-dosql outbound host allowlist
         run: node --test spikes/b2-wordpress/tests/http-allow.test.mjs
       - name: email-queue unit tests
