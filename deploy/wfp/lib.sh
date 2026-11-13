@@ -479,7 +479,11 @@ build_dosql() {
   echo "OPcache priming: WOO_ACTIVE=$woo (explicit, or woocommerce in IMPORT_PLUGINS/PLUGINS)"
   ( cd "$APP"
     [ -d node_modules ] || npm ci --silent
-    [ -f vendor/php_8_3.js ] || ./prepare.sh
+    # Every build regenerates the loader (#394, #446): prepare.sh rebuilds vendor/ from the pinned
+    # package and applies every patch. Running it only when vendor/php_8_3.js was missing kept an
+    # old loader in a tree that had built before, so a new loader patch never reached a deploy
+    # (measured on pf394a, 2026-11-13: the heap patch build showed the stock 111 and 133 MiB stairs).
+    ./prepare.sh | tail -1
     # WOO_ACTIVE reaches build.sh too, so the build id says whether it is primed (#377).
     WOO_ACTIVE=$woo ./build.sh | tail -1
     WOO_ACTIVE=$woo DEV_ENV=dosql-local ./opcache.sh > build/opcache.log 2>&1 || { echo "opcache.sh failed:"; tail -25 build/opcache.log; exit 1; }
