@@ -13,10 +13,11 @@ import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, 
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION, setResultHeader, takeResultHeader, turnstileRoute, readGatedToken, encodeResult, TurnstileSlot, turnstileTimeoutMs, retryAfterFor } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
 import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
-import { demoLocked, demoLockDefines } from './site-lock.mjs';
+import { demoLocked, lockDefines } from './site-lock.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore } from './perf-headers.mjs';
 import { resetFailures, writeLossResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
+import { routeClass, createTrace } from './file-trace.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
@@ -40,7 +41,7 @@ const DOCROOT = '/wordpress';
 // the cost of JS memory. Override through PHP_INI.
 const INI_DEFAULTS = {};
 // WebAssembly memory never shrinks. Past this, boot a fresh runtime for the next request.
-// OPcache shared memory (32 MB) is part of it. Measured 2026-11-04 on Paid:
+// OPcache shared memory (48 MB since #394) is part of it. Measured 2026-11-04 on Paid:
 // 81 MiB after the first page with OPcache on.
 const RECYCLE_WASM_BYTES = 100 * 1024 * 1024;
 let ENV;
@@ -357,6 +358,10 @@ function zipEntries(zip) {
 // oldest dropped first. A WooCommerce checkout reads about 1,500 compiled files.
 let LAZY_CACHE_BYTES = 8 * 1024 * 1024; // LAZY_CACHE_MB overrides (#218: lower the in-request V8 peak).
 const inflated = new Map(); // drop function -> bytes
+// FILE_TRACE=on (#394 M0): record which bundle files each request reads (file-trace.mjs, GET /_trace).
+// Off by default; it changes no behavior, only notes the path of each read.
+const fileTrace = createTrace();
+const tracing = () => Boolean(ENV && ENV.FILE_TRACE === 'on');
 let inflatedBytes = 0;
 function evictLazy() {
 	for (const drop of inflated.keys()) drop();
@@ -379,7 +384,7 @@ function noteInflated(drop, bytes) {
 // Set the lazy contents getter on an already-created MEMFS file node: inflate on
 // first read, cap+evict the inflated copies (noteInflated). Shared by lazyFile
 // (eager node) and the lazy-node mount (node created on lookup).
-function attachLazyContents(node, size, dataFn) {
+function attachLazyContents(node, size, dataFn, tag) {
 	let contents = null;
 	let written = false;
 	let used = size;
@@ -389,6 +394,7 @@ function attachLazyContents(node, size, dataFn) {
 	Object.defineProperty(node, 'contents', {
 		configurable: true,
 		get() {
+			if (tag && tracing()) fileTrace.read(tag.src, tag.path, size);
 			if (contents === null) {
 				contents = dataFn();
 				noteInflated(drop, contents.length);
@@ -411,9 +417,9 @@ function attachLazyContents(node, size, dataFn) {
 	});
 }
 
-function lazyFile(FS, path, entry) {
+function lazyFile(FS, path, entry, src) {
 	FS.writeFile(path, new Uint8Array(0));
-	attachLazyContents(FS.lookupPath(path).node, entry.size, () => entry.data());
+	attachLazyContents(FS.lookupPath(path).node, entry.size, () => entry.data(), src ? { src, path } : null);
 }
 
 // Lazy MEMFS NODE creation (issue #218, LAZY_NODES=on). Eager node creation
@@ -1086,8 +1092,17 @@ async function boot(origin) {
 	//   file looked new.
 	// - validate_timestamps=0: scripts never change within a deploy, and the
 	//   shipped file cache is older than the files unzipped at boot.
-	// - shared memory (24 MB) for warm requests, the file cache (shipped by
-	//   opcache.sh) for a cold isolate. Warm page locally: 220 ms -> 100 ms.
+	// - shared memory for warm requests, the file cache (shipped by opcache.sh)
+	//   for a cold isolate. Warm page locally: 220 ms -> 100 ms.
+	// - memory_consumption 48 (#394), was 32. At 32 the shared memory was FULL on
+	//   a WooCommerce store (2,584 bytes free, 776 scripts), so every warm request
+	//   reloaded about 700 scripts from the file cache (21.3 MiB inflated). On the
+	//   2,609-product sample store (pf394a, 2026-11-13, one run each, same build):
+	//   32: 69 of 75 front GETs booted a new isolate, WASM 99 MiB, p50 about 4.4 s;
+	//   48: 11 of 75, WASM 92 MiB, home and product p50 0.85 to 1.5 s;
+	//   52: 42 of 75, WASM 98 MiB. WASM grows in steps, so the size is not a dial:
+	//   locally 44 and 56 both landed at 104 MiB, over RECYCLE_WASM_BYTES. Change
+	//   it only with measure394.py on the sample store; PHP_INI overrides it per site.
 	// - blacklist /internal/eval.php (#294): php.run({ code }) writes its code to that ONE
 	//   path on every call, so it is the one script that DOES change within a deploy. With
 	//   validate_timestamps=0 OPcache kept the first compiled copy, and every later php.run
@@ -1103,7 +1118,7 @@ async function boot(origin) {
 		'opcache.file_update_protection': '0',
 		'opcache.validate_timestamps': '0',
 		'opcache.file_cache_only': '0',
-		'opcache.memory_consumption': '32',
+		'opcache.memory_consumption': '48',
 		'opcache.interned_strings_buffer': '4',
 		'opcache.max_accelerated_files': '4000',
 	};
@@ -1143,7 +1158,7 @@ async function boot(origin) {
 				continue;
 			}
 			mkdirp(full.slice(0, full.lastIndexOf('/')));
-			lazyFile(FS, full, e);
+			lazyFile(FS, full, e, 'site');
 			count++;
 			fileBytes += e.size;
 		}
@@ -1155,7 +1170,7 @@ async function boot(origin) {
 		const full = OPCACHE_DIR + '/' + e.name;
 		mkdirp(full.slice(0, full.lastIndexOf('/')));
 		if (e.method === 0) FS.writeFile(full, e.data(), { canOwn: true });
-		else lazyFile(FS, full, e);
+		else lazyFile(FS, full, e, 'opcache');
 		opcacheFiles++;
 	}
 	const tFiles = Date.now() - t0 - tWasm;
@@ -1177,8 +1192,8 @@ async function boot(origin) {
 	if (ENV.MEDIA && ENV.IMAGES) lines.push(`define('CF_IMAGES', true);`);
 	// A deploy (WP_SALT is set) shows no PHP errors or database errors to visitors.
 	if (ENV.WP_SALT) lines.push(`define('WP_DEBUG', false);`);
-	// A demo site cannot install, update or edit plugin or theme code (site-lock.mjs).
-	lines.push(...demoLockDefines(ENV));
+	// A demo site or a one-click site cannot install, update or edit plugin or theme code (site-lock.mjs).
+	lines.push(...lockDefines(ENV));
 	// Outbound HTTP through fetch() (php/http-bridge.php, #26). HTTP_BRIDGE=off: no
 	// bridge, and WordPress blocks external requests, as before the bridge.
 	if (ENV.HTTP_BRIDGE === 'off') lines.push(`define('SKYPHUSION_HTTP_BRIDGE_OFF', true);`, `define('WP_HTTP_BLOCK_EXTERNAL', true);`);
@@ -2946,6 +2961,10 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// limit. The Worker inflates each file on its first read only.
 			return new Response(zipSync(files, { level: 6 }), { headers: { 'content-type': 'application/zip', 'x-files': String(Object.keys(files).length), ...dumpHeaders } });
 		}
+		if (url.pathname === '/_trace') {
+			// The file reads recorded since the last call (FILE_TRACE=on, #394 M0), then cleared.
+			return Response.json({ on: tracing(), ...fileTrace.drain() });
+		}
 		if (url.pathname === '/_mem') {
 			if (!bootPromise) return Response.json({ booted: false });
 			const { php, bootMs } = await bootPromise;
@@ -3030,6 +3049,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 		try {
 			const tBoot = Date.now();
 			const booted = !bootPromise;
+			if (tracing()) fileTrace.begin({ cls: routeClass(req.method, url.pathname, url.search), method: req.method, path: url.pathname, boot: booted ? 1 : 0 });
 			bootPromise ??= boot(origin);
 			const { php, handler, bootMs } = await bootPromise;
 			const bootWaitMs = Date.now() - tBoot;
@@ -3140,6 +3160,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// The path only, never the query string: a store's URLs carry order keys and logins there.
 			console.log(JSON.stringify({ m: 'req', path: url.pathname, boot: booted, d1: d.calls }));
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
+			if (tracing()) fileTrace.end({ status: r.httpStatusCode });
 			evictLazy();
 			const wasmBytes = php[__private__dont__use].HEAPU8.length;
 			out.set('x-wasm-mib', String(Math.round(wasmBytes / 1048576)));

@@ -124,6 +124,20 @@ The build id carries what was built: the sha, `-dirty`, `-c<8 hex>` (the content
 
 `update --all` runs the sites in `site list` order, one at a time, and stops at the first failure: the failed site is rolled back and the sites after it are left on their old version, so a bad version never rolls across the estate.
 
+### PHP settings for one site: PHP_INI (#394)
+
+`PHP_INI` sets php.ini values for one site. It is a JSON object of name to value:
+
+```sh
+PHP_INI='{"opcache.memory_consumption":"48"}' deploy/wfp/site update <name>
+```
+
+- `render_user` (`lib.sh`) writes it to the site's `[vars]` as compact JSON with sorted keys. At each boot, `index.js` passes it to PHP after its own defaults, so it wins.
+- It is read from the environment of the run ONLY, like `TURNSTILE_*`. It is NOT a recorded build input. An update that does not pass it renders the site without it. Pass it on every update of that site.
+- The render fails on a value it cannot write safely. That is: not a JSON object, empty, more than 32 entries, a name outside `[A-Za-z0-9_.]` (1 to 64 characters), a value that is not a string or an integer, or a string with a quote, a backslash or a control character, or over 256 characters.
+- The other config emitters (`deploy/provision`, the Worker path) do not read it. The golden case `php-ini` shows that.
+- Tests: `deploy/wfp/tests/render-test.sh` (with it, without it, the refused shapes) and `deploy/tests/render-golden` (case `php-ini`).
+
 ## Phase B: a custom domain per site (#138)
 
 Phase A gives each site its own origin by deploying the one dispatcher script once per site as `wp-<name>` on `workers.dev`. Phase B instead deploys the dispatcher once as `wp-dispatch` and gives each site a Workers Custom Domain `<name>.wfp-test.skyphusion.org`. The dispatcher code does not change: it already routes by the request's own hostname through the site map, so the site map key becomes the custom hostname.
