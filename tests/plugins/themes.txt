@@ -1,0 +1,5 @@
+# Pinned wordpress.org themes for THEMES="slug ..." (#457), read by fetch.sh --themes.
+# wordpress.org publishes no checksum for theme zips, so the SHA-256 of a download is pinned here.
+# slug version sha256-of-zip
+hello-elementor 3.5.2 f3f8b0f8503c46af264bfe5a1079836ee9d8eb18c34ddef47ed7b053e2b1d4c8
+astra 4.14.3 a879532011370b04be71fba463fbd856ebb8a000cd90f929368a75a72292d67b

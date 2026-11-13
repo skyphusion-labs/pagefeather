@@ -45,10 +45,10 @@ IN=(IMPORT_CONTENT="$SRC" IMPORT_THEMES=tt5 IMPORT_PLUGINS="shop sqlite-database
 python3 -I "$HERE/../build_inputs.py" get "$B" "$T/none.json"; check "no record: get exits 3" "$?" 3
 run_update() { # run_update <env assignments...> : an update's scope, as update_one_inner declares it
   ( local_test() {
-      local -x PLUGINS="${PLUGINS:-}" IMPORT_THEMES="${IMPORT_THEMES:-}" IMPORT_PLUGINS="${IMPORT_PLUGINS:-}" IMPORT_MU_PLUGINS="${IMPORT_MU_PLUGINS:-}" WOO_ACTIVE="${WOO_ACTIVE:-}" IMPORT_CONTENT="${IMPORT_CONTENT:-}"
+      local -x PLUGINS="${PLUGINS:-}" THEMES="${THEMES:-}" SUITE="${SUITE:-}" THEME_SUITE="${THEME_SUITE:-}" IMPORT_THEMES="${IMPORT_THEMES:-}" IMPORT_PLUGINS="${IMPORT_PLUGINS:-}" IMPORT_MU_PLUGINS="${IMPORT_MU_PLUGINS:-}" WOO_ACTIVE="${WOO_ACTIVE:-}" IMPORT_CONTENT="${IMPORT_CONTENT:-}"
       local REC_TREE="" W; W=$(mktemp -d "$T/w.XXXX")
       use_recorded_inputs "$B" "$W" > "$T/use.out" 2>&1 || return $?
-      printf '%s\n' "PLUGINS=$PLUGINS" "IMPORT_THEMES=$IMPORT_THEMES" "IMPORT_PLUGINS=$IMPORT_PLUGINS" "IMPORT_MU_PLUGINS=$IMPORT_MU_PLUGINS" "WOO_ACTIVE=$WOO_ACTIVE" "REC_TREE=$REC_TREE" > "$T/vars"
+      printf '%s\n' "PLUGINS=$PLUGINS" "THEMES=$THEMES" "SUITE=$SUITE" "THEME_SUITE=$THEME_SUITE" "IMPORT_THEMES=$IMPORT_THEMES" "IMPORT_PLUGINS=$IMPORT_PLUGINS" "IMPORT_MU_PLUGINS=$IMPORT_MU_PLUGINS" "WOO_ACTIVE=$WOO_ACTIVE" "REC_TREE=$REC_TREE" > "$T/vars"
       echo "$IMPORT_CONTENT" > "$T/content.path"
       [ "${1:-}" = record ] && { record_build_inputs "$B" build-1 "$W" > "$T/rec.out" 2>&1 || return 1; }
       return 0
@@ -81,6 +81,21 @@ check "  the difference is named" "$(grep -c 'IMPORT_MU_PLUGINS' "$T/use.out")" 
 run_update norecord REPLACE_INPUTS=1 IMPORT_CONTENT="$SRC" IMPORT_THEMES=tt5 IMPORT_PLUGINS=shop IMPORT_MU_PLUGINS= WOO_ACTIVE=1; check "the same with REPLACE_INPUTS=1: allowed" "$?" 0
 run_update norecord "${IN[@]}"; check "the same inputs as recorded: allowed" "$?" 0
 run_update norecord WOO_ACTIVE=0; check "only WOO_ACTIVE=0 passed, recorded 1: refused" "$?" 2
+
+# 4b. THEMES and the pin lists (#457) are recorded and reused like the other inputs. Without SUITE in
+# the record, a later update read the default suite.txt and skipped a slug pinned only in another list.
+IN2=("${IN[@]}" THEMES=hello-elementor SUITE=gate2-build.txt THEME_SUITE=themes.txt)
+run_update record REPLACE_INPUTS=1 "${IN2[@]}"; check "THEMES, SUITE and THEME_SUITE: a good update records them" "$?" 0
+run_update norecord; check "  an update with no input is allowed" "$?" 0
+check "  THEMES is the recorded value" "$(grep '^THEMES=' "$T/vars")" "THEMES=hello-elementor"
+check "  SUITE is the recorded value" "$(grep '^SUITE=' "$T/vars")" "SUITE=gate2-build.txt"
+check "  THEME_SUITE is the recorded value" "$(grep '^THEME_SUITE=' "$T/vars")" "THEME_SUITE=themes.txt"
+run_update norecord "${IN[@]}" THEMES=astra SUITE=gate2-build.txt THEME_SUITE=themes.txt; check "  a different THEMES is refused" "$?" 2
+check "    the difference is named" "$(grep -c 'THEMES: recorded' "$T/use.out")" 1
+run_update norecord "${IN[@]}" THEMES=hello-elementor THEME_SUITE=themes.txt; check "  a dropped SUITE is refused" "$?" 2
+run_update norecord "${IN2[@]}"; check "  the same inputs: allowed" "$?" 0
+check "  THEMES alone counts as a content input" "$(env -i THEMES=x bash -c "$(declare -f content_inputs_set); content_inputs_set")" 1
+run_update record REPLACE_INPUTS=1 "${IN[@]}"; check "  (the record goes back to the section 3 inputs)" "$?" 0
 
 # 5. Scope: a recorded value set inside one update does not leak into the next (update --all).
 unset PLUGINS IMPORT_PLUGINS; f() { local -x IMPORT_PLUGINS=""; IMPORT_PLUGINS=leaked; }; f
