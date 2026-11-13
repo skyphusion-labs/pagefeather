@@ -45,3 +45,10 @@ test('the reset lines carry the operator id, and only for an operator request wi
 	assert.ok(src.includes("return id && MEM_ID_RE.test(id) && perfHeadersAllowed(req, env) ? { id } : {};"));
 	assert.ok(src.includes("const MEM_ID_RE = /^[A-Za-z0-9_.-]{1,64}$/;"));
 });
+
+test('plugin=<slug> switches any one plugin off, by a safe directory name only', () => {
+	assert.ok(php.includes("preg_match( '/^plugin=([a-z0-9][a-z0-9_-]{0,63})$/', $o, $mm )"));
+	assert.ok(php.includes("return ! in_array( strtok( (string) $file, '/' ), $skyphusion_mem_plugins, true );"));
+	// woo is the same filter, for the woocommerce directory.
+	assert.ok(php.includes("$skyphusion_mem_plugins[] = 'woocommerce';"));
+});
