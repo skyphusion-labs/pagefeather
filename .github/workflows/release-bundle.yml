@@ -1,7 +1,9 @@
 name: release-bundle
 
-# Build the b-dosql WordPress bundle and attach it to a GitHub Release (issue #405), so the
-# one-click admin (#401) can download it and check every module against manifest.json.
+# Build the WordPress bundles and attach them to a GitHub Release (issue #405), so the
+# one-click admin (#401) can download them and check every module against its manifest:
+# the b-dosql bundle (manifest.json, SHA256SUMS, ...) and the approach-A bundle for the
+# Hyperdrive store (#431; the same set, every name prefixed "a.").
 #
 # Two jobs, so a pull request never holds a write token:
 #   package  (pull_request, contents: read): build and package only. Nothing is uploaded.
@@ -14,6 +16,9 @@ on:
       - 'deploy/release/**'
       - 'VERSION'
       - '.github/workflows/release-bundle.yml'
+      # The approach-A bundle's own build steps (#431): a change to either must build the bundle again.
+      - 'spikes/b2-wordpress/opcache-a.sh'
+      - 'spikes/b2-wordpress/build-id.sh'
   release:
     types: [published]
   workflow_dispatch:
@@ -29,7 +34,7 @@ jobs:
   package:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
@@ -39,6 +44,8 @@ jobs:
           node-version: '22'
       - name: Manifest tests
         run: node deploy/release/tests/bundle-manifest-test.mjs
+      - name: build-bundle.sh argument refusals (#431)
+        run: bash deploy/release/tests/build-bundle-args-test.sh
       - name: Build and package (no upload)
         # A pull request checks out a merge commit, which build-id.sh reads as clean; the
         # bundle is thrown away with the runner.
@@ -50,11 +57,23 @@ jobs:
           sha256sum -c SHA256SUMS
           node "$GITHUB_WORKSPACE/deploy/release/bundle-cli.mjs" verify "$RUNNER_TEMP/bundle/modules" manifest.json
           ls -l
+      - name: Build and package the approach-A bundle (no upload, #431)
+        run: BUNDLE_ENGINE=a deploy/release/build-bundle.sh "$RUNNER_TEMP/bundle-a"
+      - name: The packaged approach-A assets verify, and none clashes with a b-dosql asset
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/bundle-a/release"
+          sha256sum -c a.SHA256SUMS
+          node "$GITHUB_WORKSPACE/deploy/release/bundle-cli.mjs" verify "$RUNNER_TEMP/bundle-a/modules" a.manifest.json
+          node -e 'const m=require(process.argv[1]); if (m.mainModule!=="index-a-lean.js") { console.error("main module", m.mainModule); process.exit(1); } if (!/-a(-|$)/.test(m.buildId)) { console.error("build id", m.buildId); process.exit(1); }' "$PWD/a.manifest.json"
+          for f in *; do case "$f" in a.*) ;; *) echo "::error::approach-A asset without the a. prefix: $f"; exit 1 ;; esac; done
+          clash=$(comm -12 <(ls | sort) <(ls "$RUNNER_TEMP/bundle/release" | sort)); [ -z "$clash" ] || { echo "::error::asset names clash: $clash"; exit 1; }
+          ls -l
 
   publish:
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: write
     env:
@@ -82,10 +101,12 @@ jobs:
         run: node deploy/release/tests/bundle-manifest-test.mjs
       - name: Build and package
         run: VERSION_TAG="$TAG" deploy/release/build-bundle.sh "$RUNNER_TEMP/bundle"
-      - name: Upload the assets
+      - name: Build and package the approach-A bundle (#431)
+        run: VERSION_TAG="$TAG" BUNDLE_ENGINE=a deploy/release/build-bundle.sh "$RUNNER_TEMP/bundle-a"
+      - name: Upload the assets (both bundles, one upload)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" "$RUNNER_TEMP"/bundle/release/*
+        run: gh release upload "$TAG" "$RUNNER_TEMP"/bundle/release/* "$RUNNER_TEMP"/bundle-a/release/*
       - name: Download them again and verify what was published
         env:
           GH_TOKEN: ${{ github.token }}
@@ -96,4 +117,9 @@ jobs:
           (cd "$d" && sha256sum -c SHA256SUMS)
           for m in $(node -e 'for (const x of require(process.argv[1]).modules) console.log(x.name)' "$d/manifest.json"); do cp "$d/$m" "$d/modules/"; done
           node deploy/release/bundle-cli.mjs verify "$d/modules" "$d/manifest.json"
-          echo "published and verified: $TAG"
+          # The approach-A bundle: the same check, each module read from its a.-prefixed asset.
+          mkdir -p "$d/modules-a"
+          (cd "$d" && sha256sum -c a.SHA256SUMS)
+          for m in $(node -e 'for (const x of require(process.argv[1]).modules) console.log(x.name)' "$d/a.manifest.json"); do cp "$d/a.$m" "$d/modules-a/$m"; done
+          node deploy/release/bundle-cli.mjs verify "$d/modules-a" "$d/a.manifest.json"
+          echo "published and verified: $TAG (b-dosql and approach-A)"

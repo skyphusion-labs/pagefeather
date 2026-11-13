@@ -39,7 +39,8 @@ cp build/opcache.zip "$SRC"
 echo "   generated $(python3 -c "import zipfile;print(len(zipfile.ZipFile('$SRC').namelist()))" ) compiled scripts"
 
 echo "== 3/4 build approach A (ENGINE=a; this wipes opcache.zip to empty) =="
-ENGINE=a WOO=1 ./build.sh >/dev/null
+# WOO_ACTIVE=1: the cache below is primed with WooCommerce, so the build id says -wooprimed (#431).
+ENGINE=a WOO=1 WOO_ACTIVE=1 ./build.sh >/dev/null
 
 echo "== 4/4 bundle the cache for approach A, minus the colliding wp-content/db.php =="
 python3 - "$SRC" <<'PY'
