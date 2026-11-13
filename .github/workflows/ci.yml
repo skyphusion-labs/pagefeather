@@ -177,6 +177,10 @@ jobs:
       - name: b-dosql bounded cron tick
         # cron-bound.mjs: the cron runs its own claim loop, bounded, and the cleaner cannot starve (#291).
         run: node --test spikes/b2-wordpress/tests/cron-bound.test.mjs
+      - name: b-dosql lean REST index for the editor preload (#394 rank 3)
+        # php/rest-index-lean.php against a real WordPress on SQLite, plain and with WooCommerce and
+        # the tier 1 stack: same body lean and full, every later REST request sees every endpoint.
+        run: bash spikes/b2-wordpress/tests/rest-index-lean/run.sh
       - name: b-dosql build id carries the content inputs (issue #285)
         run: python3 -I spikes/b2-wordpress/tests/content-id-test.py
       - name: b-dosql build id says whether the OPcache is primed (issue #377)

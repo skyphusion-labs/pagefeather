@@ -23,6 +23,7 @@
  *   dashboard the dashboard widgets are not set up
  *   notices   admin_notices callbacks are removed
  *   l10n      translations are not loaded (override_load_textdomain)
+ *   restindex the REST index is built in full (rest-index-lean.php off for this request, #394)
  * At shutdown the trace goes to the Worker (post_message_to_js memTrace), which sets the
  * operator-only x-mem-trace response header. Numbers and component names only.
  */
@@ -123,7 +124,7 @@ foreach ( $skyphusion_mem_off as $o ) {
 		$skyphusion_mem_plugins[] = $mm[1];
 	}
 }
-$skyphusion_mem_off = array_values( array_intersect( $skyphusion_mem_off, array( 'woo', 'wcadmin', 'wcfeatures', 'preload', 'updates', 'dashboard', 'notices', 'l10n' ) ) );
+$skyphusion_mem_off = array_values( array_intersect( $skyphusion_mem_off, array( 'woo', 'wcadmin', 'wcfeatures', 'preload', 'updates', 'dashboard', 'notices', 'l10n', 'restindex' ) ) );
 if ( in_array( 'woo', $skyphusion_mem_off, true ) ) {
 	$skyphusion_mem_plugins[] = 'woocommerce';
 }

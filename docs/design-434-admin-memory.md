@@ -73,6 +73,8 @@ Each item says whether it also works on the Hyperdrive path (approach `a`, PHP i
 | 5 | wc-admin code on wp-login and the front | about 1 MiB | `wcfeatures` switch | half a day | yes | Joan |
 | no | update checks, admin notices, translations, dashboard widgets | 0 to 0.4 MiB | switches | n/a | n/a | not worth it |
 
+**Rank 3, built (2026-11-13, #394):** `spikes/b2-wordpress/php/rest-index-lean.php`. Core's `get_index()` builds the whole route list before the editor's `_fields` drops it; for that request the plugin hands it an empty endpoint list, for that one callback only. Measured on a real WordPress 7.1.4 on SQLite (`spikes/b2-wordpress/tests/rest-index-lean/run.sh`), PHP peak of the one preload call: plain 1,149 KiB to 359 KiB; with WooCommerce and the tier 1 stack 8,787 KiB to 4,571 KiB. The live WASM effect on post-new is measured on pf394a.
+
 **Recommended order:** rank 1 first. It is the cheapest, and it changes every other number: once the heap grows to need, a saving in PHP is a saving in WASM byte for byte, rather than only when it lands under a 20 % line. Then rank 3 (cheap), then rank 2.
 
 ## Open
