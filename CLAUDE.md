@@ -1,4 +1,4 @@
-# wordpress-on-cloudflare
+# Pagefeather
 
 A framework for running WordPress and WooCommerce on a Cloudflare Workers for Platforms account (`docs/framework.md`, `deploy/deploy.sh`), plus the research record of which approaches work on which plan. The README matrix is that record, not the only product.
 

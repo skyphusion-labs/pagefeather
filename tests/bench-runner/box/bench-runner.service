@@ -1,5 +1,5 @@
 [Unit]
-Description=wordpress-on-cloudflare benchmark runner (jobs from R2)
+Description=pagefeather benchmark runner (jobs from R2)
 Wants=network-online.target
 After=network-online.target
 

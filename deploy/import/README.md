@@ -2,7 +2,7 @@
 
 `deploy/import.sh` moves an existing WordPress site into a site that `deploy/deploy.sh` made: the database, the uploads, and the theme and plugins. The source site is only read. Nothing in the script connects to it: you give it a dump file.
 
-This version supports the variants `b-dosql` (the database is the SQLite of the PHP Durable Object), `c1` (the database, uploads, theme and plugins; see "Variant c1") and `a`, with `a2` (the database, uploads, theme and plugins; see "Variant a and a2"). The design for the other variants is in [issue #31](https://github.com/skyphusion-labs/wordpress-on-cloudflare/issues/31). Prior art: [docs/prior-art.md](../../docs/prior-art.md), "Moving existing sites".
+This version supports the variants `b-dosql` (the database is the SQLite of the PHP Durable Object), `c1` (the database, uploads, theme and plugins; see "Variant c1") and `a`, with `a2` (the database, uploads, theme and plugins; see "Variant a and a2"). The design for the other variants is in [issue #31](https://github.com/skyphusion-labs/pagefeather/issues/31). Prior art: [docs/prior-art.md](../../docs/prior-art.md), "Moving existing sites".
 
 ## Use
 

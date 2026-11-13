@@ -47,7 +47,7 @@ resource "cloudflare_dns_record" "mysql" {
   content = "${cloudflare_zero_trust_tunnel_cloudflared.mysql.id}.cfargotunnel.com"
   proxied = true
   ttl     = 1
-  comment = "wordpress-on-cloudflare approach A test origin (tests/a/terraform)"
+  comment = "pagefeather approach A test origin (tests/a/terraform)"
 }
 
 resource "cloudflare_zero_trust_access_service_token" "hyperdrive" {
@@ -188,7 +188,7 @@ resource "cloudflare_dns_record" "mysql_public" {
   content = vultr_instance.mysql.main_ip
   proxied = false
   ttl     = 60
-  comment = "wordpress-on-cloudflare approach A test origin, public MySQL path (tests/a/terraform)"
+  comment = "pagefeather approach A test origin, public MySQL path (tests/a/terraform)"
 }
 
 locals {

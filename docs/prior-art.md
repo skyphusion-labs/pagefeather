@@ -28,7 +28,7 @@ Approach A's userland mysqli (issue #29, `spikes/b2-wordpress/php/hyperdrive-mys
 
 ## EmDash
 
-Cloudflare released EmDash 0.1 on 2026-04-01. It is a new CMS in TypeScript on Astro that runs on Workers. It is **not WordPress**. It imports WordPress content from a WXR export. It is here because people compare it with WordPress on Cloudflare.
+Cloudflare released EmDash 0.1 on 2026-04-01. It is a new CMS in TypeScript on Astro that runs on Workers. It is **not WordPress**. It imports WordPress content from a WXR export. It is here because people compare it with WordPress on Cloudflare, and so with Pagefeather.
 
 - [TechRadar: Cloudflare launches EmDash](https://techradar.com/pro/cloudflare-launches-emdash-the-spiritual-successor-that-wants-to-take-on-wordpress)
 

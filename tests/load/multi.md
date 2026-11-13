@@ -11,7 +11,7 @@ Run it ON the load-generator VPS, not on the box under test, so the generator is
 python3 --version
 
 # fetch just the harness (no clone needed):
-curl -fsSLO https://raw.githubusercontent.com/skyphusion-labs/wordpress-on-cloudflare/main/tests/load/multi.py
+curl -fsSLO https://raw.githubusercontent.com/skyphusion-labs/pagefeather/main/tests/load/multi.py
 ```
 
 ## Run
