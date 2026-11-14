@@ -1,0 +1,6 @@
+platform,iter,step,static_requests,status_200,status_304,status_404,status_other,status_no_answer
+hwp,setup,login,147,147,0,0,0,0
+hwp,setup,editor-check,669,562,107,0,0,0
+pf,setup,login,44,44,0,0,0,0
+pf,setup,login:retry,44,44,0,0,0,0
+pf,setup,editor-check,22,22,0,0,0,0

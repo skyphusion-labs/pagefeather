@@ -1,6 +1,6 @@
 # Block editor in a real browser: HostlessWP against pagefeather b-dosql (2026-11-14)
 
-The raw data of the block editor round on #394. It holds names, numbers, statuses and headers only: no host, no cookie, no nonce, no credential and no response body. The request logs are gzipped CSV (`requests.csv.gz`).
+The raw data of the block editor round on #394. It holds names, numbers, statuses and headers only: no host, no cookie, no nonce, no credential and no response body. Everything is plain text: the repo's dash check reads every tracked file, and a gzip file can match it by chance (it did, on this PR).
 
 ## What ran
 
@@ -46,7 +46,8 @@ Round 4 shows the timings did not move: HostlessWP loads p50 50.7 to 53.2 s, aga
 ## Files
 
 - `steps.csv`: one row per step: ok, ms, verified, fail_reason, the visible editor error, failing_call (the first 5xx or no-answer in the step), retry_ok, php_calls, php_5xx, aborted.
-- `requests.csv.gz`: every same-origin http(s) request. Columns: method, kind (html, rest, ajax, static), path, rest_route (ids as `<id>`), query KEYS only, status or NO-ANSWER plus the failure text, ms, and the headers `x-perf`, `x-hostlesswp`, `x-hostlesswp-cache`, `x-isolate-reset`, `x-isolate-retry`, `x-write-loss`, `x-runtime-recycled`, `x-wasm-mib`, `x-boot`, `cf-ray`. Each header is capped at 300 characters.
+- `requests.csv`: every same-origin http(s) PHP request (kind html, rest or ajax). Columns: method, kind (html, rest, ajax, static), path, rest_route (ids as `<id>`), query KEYS only, status or NO-ANSWER plus the failure text, ms, and the headers `x-perf`, `x-hostlesswp`, `x-hostlesswp-cache`, `x-isolate-reset`, `x-isolate-retry`, `x-write-loss`, `x-runtime-recycled`, `x-wasm-mib`, `x-boot`, `cf-ray`. Each header is capped at 300 characters.
+- `static-summary.csv`: the static-asset requests (theme, plugin and core files), one row per platform, iteration and step: the count, the count by status (200, 304, 404, other, no answer), and the no-answer count by failure (for example `net::ERR_QUIC_PROTOCOL_ERROR`). The per-request static rows (98,283 in all) were dropped to keep the data small. Their counts are kept here.
 - `events.csv` (rounds 1 to 4): browser console errors and warnings and `pageerror`, with the origin and nonces removed.
 - `round3-pf-437599e/cleanup-pf.json`: what the cleanup found before deleting: the tagged items that existed, and our markers inside the existing post and page.
 - `tools/summary.py <round dir>`: the per-step table. p50 and p95 are nearest-rank over first-try passes only.
