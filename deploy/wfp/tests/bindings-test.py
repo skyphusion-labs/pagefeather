@@ -7,7 +7,7 @@ A correct site passes. Each single misbinding fails and is named: another
 site's bucket, another script's object class, a FOREIGN KV namespace or queue
 on a site, an extra secret, the dispatcher's KV namespace, its outbound target,
 an R2 binding on a dispatcher. The opinionated defaults a site MAY bind (its own
-OC_KV, its own wp-wfp-<s>-email queue, the Browser Rendering binding, the
+OC_KV, its own wp-wfp-<s>-email queue, its ASSETS on a split build (#412), the Browser Rendering binding, the
 Workers AI binding, its own wp-wfp-<s>-analytics dataset, its own Vectorize
 search index) pass.
 Bindings that cannot be read fail. No binding value appears in the output.
@@ -21,7 +21,6 @@ GOOD_USER = [
     {"type": "r2_bucket", "name": "MEDIA", "bucket_name": "wp-wfp-one-media"},
     {"type": "durable_object_namespace", "name": "PHP_RUNTIME", "class_name": "PhpRuntime"},
     {"type": "images", "name": "IMAGES"},
-    {"type": "assets", "name": "ASSETS"},
     {"type": "plain_text", "name": "SITE_ORIGIN", "text": "https://wp-one.sub.workers.dev"},
     {"type": "plain_text", "name": "PLANTED", "text": "plain-value-not-to-print"},
     {"type": "secret_text", "name": "WP_SALT"},
@@ -77,6 +76,9 @@ def mod(lst, i, **kw):
 fails = 0
 cases = [
     ("a correct site and dispatcher", GOOD_USER, GOOD_DISP, 0, None),
+    # #412: lib.sh renders no assets binding with OPCACHE_SPLIT off (GOOD_USER), and ASSETS with it on.
+    ("OPCACHE_SPLIT=1: the site binds its ASSETS is allowed", mod(GOOD_USER, None, type="assets", name="ASSETS"), GOOD_DISP, 0, None),
+    ("the site binds assets under another name", mod(GOOD_USER, None, type="assets", name="STATIC"), GOOD_DISP, 1, "not ASSETS"),
     ("the site binds another site's bucket", mod(GOOD_USER, 0, bucket_name="wp-wfp-two-media"), GOOD_DISP, 1, "not its own"),
     ("the site binds another script's object class", mod(GOOD_USER, 1, script_name="site-two"), GOOD_DISP, 1, "not its own"),
     ("the site binds a FOREIGN KV namespace (SITES, not its own OC_KV)", mod(GOOD_USER, None, type="kv_namespace", name="SITES", namespace_id="kv1"), GOOD_DISP, 1, "not its own OC_KV L2"),
