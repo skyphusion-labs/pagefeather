@@ -3,7 +3,7 @@
 // (reject AND accept), so none is a check that only ever fails or only ever
 // passes.
 import {
-  authorize, validateRequest, resolveBase, selectToken, deriveTarget, BadRequest,
+  authorize, validateRequest, resolveBase, selectToken, deriveTarget, buildServerCfg, BadRequest,
 } from '../server-config.mjs';
 
 let pass = 0, fail = 0;
@@ -57,6 +57,41 @@ ok('selectToken: an unknown kind THROWS, never falls through to the elevated tok
   const shop = deriveTarget(env, { kind: 'shop', name: 'store', domain: 'skyphusionwp.dev' });
   ok('deriveTarget shop: workers.dev hostname off the base subdomain',
     shop.script === 'c1-store' && shop.hostname === 'c1-store.skyphusionwp.workers.dev');
+}
+
+// Kind 'a' (#431): only a caller that allows it; the default gate stays 'wp' only.
+{
+  ok('validateRequest: the DEFAULT gate still refuses kind a (the operator Worker is unchanged)', await throwsWith(() => validateRequest({ kind: 'a', name: 'mystore', domain: 'skyphusionwp.dev' }), /kind must be "wp"/));
+  const a = validateRequest({ kind: 'a', name: 'mystore', domain: 'skyphusionwp.dev', hyperdriveId: 'f'.repeat(32) }, { kinds: ['wp', 'a'] });
+  ok('validateRequest: a caller that allows a gets it, and a hyperdriveId in the body is DROPPED', a.kind === 'a' && JSON.stringify(Object.keys(a).sort()) === '["domain","kind","name"]');
+  ok('validateRequest: with kinds wp+a an unknown kind still fails', await throwsWith(() => validateRequest({ kind: 'x', name: 'mystore', domain: 'skyphusionwp.dev' }, { kinds: ['wp', 'a'] }), /kind must be one of "wp", "a"/));
+}
+{
+  const WD = JSON.stringify({ 'workers.dev': { workersDev: true, subdomain: 'acme' } });
+  const files = new Map([['bundles/a/v1/index-a-lean.js', 'export default {}'], ['bundles/a/v1/x-site.zip', 'zip'], ['bundles/b-dosql/v1/index.js', 'export default {}']]);
+  const BUNDLES = {
+    list: async ({ prefix }) => ({ objects: [...files.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key })) }),
+    get: async (key) => (files.has(key) ? { text: async () => files.get(key), arrayBuffer: async () => new TextEncoder().encode(files.get(key)).buffer } : null),
+  };
+  const env = { WFP_BASES: WD, WFP_KV_ID: 'KV', WFP_NAMESPACE: 'pagefeather', BUNDLES, A_BUNDLE_PREFIX: 'bundles/a/v1/', WP_BUNDLE_PREFIX: 'bundles/b-dosql/v1/' };
+  const HD = 'b'.repeat(32);
+  const cfg = await buildServerCfg(env, { kind: 'a', name: 'mystore', domain: 'workers.dev', hyperdriveId: HD, tablePrefix: 'wp_mystore_' });
+  const b = Object.fromEntries(cfg.resourceBindings.map((x) => [x.name, x]));
+  ok('buildServerCfg a: kind a, main index-a-lean.js, the a bundle only', cfg.kind === 'a' && cfg.mainModule === 'index-a-lean.js' && cfg.modules.map((m) => m.name).sort().join(',') === 'index-a-lean.js,x-site.zip');
+  ok('buildServerCfg a: the HYPERDRIVE binding is the given id', b.HYPERDRIVE && b.HYPERDRIVE.type === 'hyperdrive' && b.HYPERDRIVE.id === HD);
+  ok('buildServerCfg a: the table prefix rides PHP_ENV', b.PHP_ENV && JSON.parse(b.PHP_ENV.text).WP_TABLE_PREFIX === 'wp_mystore_');
+  ok('buildServerCfg a: no Durable Object and no SQLite migration', !cfg.resourceBindings.some((x) => x.type === 'durable_object_namespace') && Array.isArray(cfg.sqliteClasses) && cfg.sqliteClasses.length === 0);
+  ok('buildServerCfg a: the OC_KV namespace is created by the core', JSON.stringify(cfg.kvNamespaces) === JSON.stringify([{ title: 'wp-wfp-mystore-oc', binding: 'OC_KV' }]) && b.OC_KV && b.OC_KV.type === 'kv_namespace');
+  ok('buildServerCfg a: the workers.dev hostname and script, as a wp site', cfg.hostname === 'wp-mystore.acme.workers.dev' && b.SITE_ORIGIN.text === 'https://wp-mystore.acme.workers.dev');
+  ok('buildServerCfg a: secrets WP_SALT and SPIKE_TOKEN, generated', typeof cfg.secrets.WP_SALT === 'string' && cfg.secrets.WP_SALT.length > 20 && typeof cfg.secrets.SPIKE_TOKEN === 'string');
+  ok('buildServerCfg a: no HYPERDRIVE_SQL_MODE unless asked', !b.HYPERDRIVE_SQL_MODE);
+  ok('buildServerCfg a: refuses a bad Hyperdrive id', await throwsWith(() => buildServerCfg(env, { kind: 'a', name: 'mystore', domain: 'workers.dev', hyperdriveId: 'not-an-id', tablePrefix: 'wp_mystore_' }), /Hyperdrive config id/));
+  ok('buildServerCfg a: refuses a missing Hyperdrive id', await throwsWith(() => buildServerCfg(env, { kind: 'a', name: 'mystore', domain: 'workers.dev', tablePrefix: 'wp_mystore_' }), /Hyperdrive config id/));
+  ok('buildServerCfg a: refuses a table prefix that does not end in _', await throwsWith(() => buildServerCfg(env, { kind: 'a', name: 'mystore', domain: 'workers.dev', hyperdriveId: HD, tablePrefix: 'wp_mystore' }), /table prefix/));
+  ok('buildServerCfg a: refuses a table prefix with a quote', await throwsWith(() => buildServerCfg(env, { kind: 'a', name: 'mystore', domain: 'workers.dev', hyperdriveId: HD, tablePrefix: "wp_'x_" }), /table prefix/));
+  ok('buildServerCfg a: refuses a demo', await throwsWith(() => buildServerCfg(env, { kind: 'a', name: 'mystore', domain: 'workers.dev', hyperdriveId: HD, tablePrefix: 'wp_mystore_', demo: true }), /demo/));
+  const wp = await buildServerCfg(env, { kind: 'wp', name: 'blog', domain: 'workers.dev' });
+  ok('control: a wp site still builds from the b-dosql bundle with its Durable Object', wp.kind === 'wp' && wp.mainModule === 'index.js' && wp.sqliteClasses.includes('PhpRuntime') && !wp.resourceBindings.some((x) => x.type === 'hyperdrive'));
 }
 
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);

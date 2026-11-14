@@ -9,7 +9,7 @@
 // bundle in the Worker's own R2 bucket. The caller chooses a type and a name,
 // and picks an OWNED base domain from an allowlist; it configures nothing.
 import { SITE_NAME_RE, assertValidName, isCallerReservedName, genSecret } from './shared.mjs';
-import { bDosqlBindings, bDosqlResourceCreateOps, bDosqlSecrets, mediaBucketName } from './wp-site-config.mjs';
+import { bDosqlBindings, bDosqlResourceCreateOps, bDosqlSecrets, mediaBucketName, aBindings, ocKvNamespaceName } from './wp-site-config.mjs';
 
 // ---- 1. Caller auth (operator baseline) --------------------------------------
 // A shared operator secret in env.PROVISION_AUTH, sent as `Authorization:
@@ -54,13 +54,17 @@ export function callerKey(request) {
 // never reaches the cfg, so an injected modules/namespace/kvId/saasZoneId/secrets
 // cannot take effect. Returns the three vetted values or throws a 400-worthy
 // error.
-export function validateRequest(body) {
+// kinds: the kinds THIS caller allows. The default is 'wp' only, so the operator
+// Worker's gate is unchanged. The one-click site manager also allows 'a' (#431): a
+// Hyperdrive store, whose Hyperdrive config id the manager supplies from its own
+// checked list, never from the request.
+export function validateRequest(body, { kinds = ['wp'] } = {}) {
   if (!body || typeof body !== 'object') throw new BadRequest('body must be a JSON object');
   const { kind, name, domain } = body;
   // The c1 'shop' store path was retired (#214): a store is a b-dosql site with
   // WooCommerce active, not a separate kind. Reject it with a clear pointer.
   if (kind === 'shop' || kind === 'store') throw new BadRequest('the c1 store path was retired (#214); a store is a b-dosql site, use kind "wp"');
-  if (kind !== 'wp') throw new BadRequest('kind must be "wp"');
+  if (!kinds.includes(kind)) throw new BadRequest(kinds.length === 1 ? `kind must be "${kinds[0]}"` : `kind must be one of ${kinds.map((k) => `"${k}"`).join(', ')}`);
   if (typeof name !== 'string' || !SITE_NAME_RE.test(name)) throw new BadRequest('name must be lower case, digits, hyphens, 1 to 30, no leading or trailing hyphen');
   if (isCallerReservedName(name)) throw new BadRequest('name is reserved (an infrastructure, service, or demo-lane label); pick another');
   if (typeof domain !== 'string' || !domain) throw new BadRequest('domain is required');
@@ -110,7 +114,7 @@ export function deriveTarget(env, { kind, name, domain }) {
   const namespace = env.WFP_NAMESPACE || 'wp-wfp';
   const kvId = env.WFP_KV_ID;
   if (!kvId) throw new Error('the Worker is missing WFP_KV_ID');
-  if (kind === 'wp') {
+  if (kind === 'wp' || kind === 'a') {
     // A workers.dev base (the one-click admin, #414): each site answers on its own
     // front-door Worker, wp-<name>.<subdomain>.workers.dev. No zone, no DNS record.
     // The admin builds this base from the account's own workers.dev subdomain.
@@ -144,7 +148,9 @@ async function loadBundle(env, kind) {
   if (!env.BUNDLES) throw new Error('the Worker is missing the BUNDLES R2 binding');
   const prefix = kind === 'wp'
     ? (env.WP_BUNDLE_PREFIX || 'bundles/b-dosql/current/')
-    : (env.C1_BUNDLE_PREFIX || 'bundles/c1/current/');
+    : kind === 'a'
+      ? (env.A_BUNDLE_PREFIX || 'bundles/a/current/')
+      : (env.C1_BUNDLE_PREFIX || 'bundles/c1/current/');
   const listed = await env.BUNDLES.list({ prefix });
   const objects = (listed && listed.objects) || [];
   const mods = [];
@@ -164,7 +170,19 @@ async function loadBundle(env, kind) {
 // ---- 8. Build the full server-side cfg --------------------------------------
 // Mirrors cli.mjs buildCfg, but every value comes from env + the base + the
 // bundle, never the request. Secrets are generated fresh here.
-export async function buildServerCfg(env, { kind, name, domain, demo = false, expiresAt, codeLock = false }) {
+// HYPERDRIVE_ID_RE: a Hyperdrive config id is 32 lower-case hex characters.
+export const HYPERDRIVE_ID_RE = /^[0-9a-f]{32}$/;
+// A WordPress table prefix for a Hyperdrive store: letters, digits and underscores,
+// ending in an underscore, at most 40 characters (several stores share a database).
+export const TABLE_PREFIX_RE = /^[A-Za-z0-9_]{1,39}_$/;
+
+export async function buildServerCfg(env, { kind, name, domain, demo = false, expiresAt, codeLock = false, hyperdriveId, tablePrefix, hyperdriveSqlMode }) {
+  // Kind 'a' (#431): checked before any IO, so a bad call loads no bundle.
+  if (kind === 'a') {
+    if (typeof hyperdriveId !== 'string' || !HYPERDRIVE_ID_RE.test(hyperdriveId)) throw new Error('buildServerCfg: kind a needs a Hyperdrive config id (32 lower-case hex)');
+    if (typeof tablePrefix !== 'string' || !TABLE_PREFIX_RE.test(tablePrefix)) throw new Error('buildServerCfg: kind a needs a table prefix (letters, digits, underscores, ending in _, at most 40)');
+    if (demo) throw new Error('buildServerCfg: a demo site is kind wp only');
+  }
   const target = deriveTarget(env, { kind, name, domain });
   const compatibilityDate = env.WFP_COMPAT || '2026-07-01';
   const common = {
@@ -197,8 +215,32 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
       ...(demo ? { demo: true, expiresAt } : {}),
     };
   }
-  // Only 'wp' (b-dosql) is built; the c1 'shop' store path was retired (#214).
-  throw new Error(`buildServerCfg: only kind 'wp' is supported (c1 'shop' retired #214), got ${JSON.stringify(kind)}`);
+  if (kind === 'a') {
+    // Approach A (#431, #218): PHP in the Worker, managed MySQL through Hyperdrive.
+    // The same shape as deploy/provision/cli.mjs kind 'a' (#243): entry
+    // index-a-lean.js, the aBindings set, NO Durable Object (so no SQLite
+    // migration), and the per-site OC_KV namespace the core creates and binds.
+    // The Hyperdrive config id and the table prefix come from the trusted caller
+    // (the site manager's own checked database list), never from a request body.
+    // The code lock is on by default in the runtime (site-lock.mjs, #461).
+    const mediaBucket = mediaBucketName(name);
+    return {
+      ...common, kind: 'a', mainModule: env.A_MAIN || 'index-a-lean.js',
+      hostname: target.hostname,
+      resourceBindings: aBindings({
+        mediaBucket, hyperdriveId, tablePrefix, hyperdriveSqlMode,
+        siteOrigin: `https://${target.hostname}`,
+        mailFrom: target.workersDev ? undefined : `wordpress@${domain}`, mailFromName: name,
+      }),
+      sqliteClasses: [],
+      kvNamespaces: [{ title: ocKvNamespaceName(name), binding: 'OC_KV' }],
+      saasZoneId: target.saasZoneId,
+      secrets: { WP_SALT: genSecret(), SPIKE_TOKEN: genSecret(24) },
+      buckets: { media: mediaBucket },
+    };
+  }
+  // Only 'wp' (b-dosql) and 'a' (approach A) are built; the c1 'shop' store path was retired (#214).
+  throw new Error(`buildServerCfg: only kinds 'wp' and 'a' are supported (c1 'shop' retired #214), got ${JSON.stringify(kind)}`);
 }
 
 

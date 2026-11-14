@@ -25,6 +25,9 @@ WFP_COMPAT = "2026-07-01"
 # until the first release exists; the manager then downloads nothing.
 BUNDLE_VERSION = ""
 BUNDLE_MANIFEST_SHA256 = ""
+# The Hyperdrive store files (#431): a.manifest.json SHA-256 of the same release.
+# Empty: the Hyperdrive store files are not downloaded.
+A_BUNDLE_MANIFEST_SHA256 = ""
 
 [[r2_buckets]]
 binding = "BUNDLES"

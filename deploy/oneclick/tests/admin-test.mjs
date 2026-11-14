@@ -27,12 +27,13 @@ const OWNER = 'owner@example.com';
 const DISPATCHER_SRC = await readFile(join(HERE, '..', 'vendor/wfp-dispatcher/worker.js'), 'utf8');
 
 // ---- a small in-memory Cloudflare API -----------------------------------------
-function fakeCloudflare({ foreignScripts = [] } = {}) {
+function fakeCloudflare({ foreignScripts = [], hyperdrive = {}, hyperdriveStatus = 0, failDispatchPut = false } = {}) {
   const calls = [];
   const kvNs = new Map();            // title -> id
   const kv = new Map();              // `${id}/${key}` -> string
   const plain = new Map(foreignScripts.map((n) => [n, { foreign: true }]));
   const nsScripts = new Map();
+  const buckets = new Set();
   let nextId = 1;
   const ok = (result, status = 200) => new Response(JSON.stringify({ success: true, errors: [], result }), { status });
   const err = (status, code, message) => new Response(JSON.stringify({ success: false, errors: [{ code, message }], result: null }), { status });
@@ -59,17 +60,38 @@ function fakeCloudflare({ foreignScripts = [] } = {}) {
       if (method === 'PUT') { kv.set(k, init.body); return ok(null); }
       if (method === 'GET') return kv.has(k) ? new Response(kv.get(k), { status: 200 }) : err(404, 10009, 'key not found');
     }
-    if ((m = r.match(/^\/storage\/kv\/namespaces\/([^/]+)\/keys$/)) && method === 'GET') {
-      return ok([...kv.keys()].filter((k) => k.startsWith(m[1] + '/')).map((k) => ({ name: k.slice(m[1].length + 1) })));
+    if ((m = r.match(/^\/storage\/kv\/namespaces\/([^/]+)\/values\/(.+)$/)) && method === 'DELETE') {
+      kv.delete(`${m[1]}/${decodeURIComponent(m[2])}`); return ok(null);
     }
-    if (method === 'POST' && r === '/r2/buckets') return ok({ name: JSON.parse(init.body).name });
+    if ((m = r.match(/^\/storage\/kv\/namespaces\/([^/]+)\/keys$/)) && method === 'GET') {
+      const prefix = m[1] + '/' + (u.searchParams.get('prefix') || '');
+      return ok([...kv.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ name: k.slice(m[1].length + 1) })));
+    }
+    if ((m = r.match(/^\/storage\/kv\/namespaces\/([^/]+)$/)) && method === 'DELETE') {
+      for (const [t, id] of kvNs) if (id === m[1]) kvNs.delete(t);
+      return ok(null);
+    }
+    if ((m = r.match(/^\/hyperdrive\/configs\/([^/]+)$/)) && method === 'GET') {
+      if (hyperdriveStatus) return err(hyperdriveStatus, 0, `refused ${SECRET_HD}`);
+      return Object.hasOwn(hyperdrive, m[1]) ? ok(hyperdrive[m[1]]) : err(404, 0, 'not found');
+    }
+    if (r === '/hyperdrive/configs' && method === 'GET') return hyperdriveStatus ? err(hyperdriveStatus, 0, 'refused') : ok(Object.values(hyperdrive).slice(0, 1));
+    if (method === 'POST' && r === '/r2/buckets') { buckets.add(JSON.parse(init.body).name); return ok({ name: JSON.parse(init.body).name }); }
+    if ((m = r.match(/^\/r2\/buckets\/([^/]+)\/objects$/)) && method === 'GET') return buckets.has(m[1]) ? ok([]) : err(404, 10006, 'no bucket');
+    if ((m = r.match(/^\/r2\/buckets\/([^/]+)$/)) && method === 'DELETE') { buckets.delete(m[1]); return ok(null); }
     if ((m = r.match(/^\/workers\/dispatch\/namespaces\/([^/]+)\/scripts\/([^/]+)$/))) {
       if (method === 'GET') return nsScripts.has(m[2]) ? ok({ script: { id: m[2] } }) : err(404, 10007, 'not found');
-      if (method === 'PUT') { call.metadata = JSON.parse(await init.body.get('metadata').text()); nsScripts.set(m[2], call.metadata); return ok({ id: m[2] }); }
+      if (method === 'PUT') {
+        call.metadata = JSON.parse(await init.body.get('metadata').text());
+        if (failDispatchPut) return err(500, 10000, `upload refused ${SECRET_HD}`);
+        nsScripts.set(m[2], call.metadata); return ok({ id: m[2] });
+      }
+      if (method === 'DELETE') { nsScripts.delete(m[2]); return ok(null); }
     }
     if ((m = r.match(/^\/workers\/dispatch\/namespaces\/([^/]+)$/)) && method === 'GET') return ok({ namespace_name: m[1] });
     if ((m = r.match(/^\/workers\/scripts\/([^/]+)$/))) {
       if (method === 'GET') return plain.has(m[1]) ? ok({ id: m[1] }) : err(404, 10007, 'not found');
+      if (method === 'DELETE') { plain.delete(m[1]); return ok(null); }
       if (method === 'PUT') {
         call.metadata = JSON.parse(await init.body.get('metadata').text());
         call.source = await init.body.get('worker.js').text();
@@ -80,8 +102,9 @@ function fakeCloudflare({ foreignScripts = [] } = {}) {
     call.unknown = true;
     return err(599, 0, `stub has no route ${method} ${r}`);
   }
-  return { fetchImpl, calls, kv, plain };
+  return { fetchImpl, calls, kv, plain, nsScripts, kvNs, buckets };
 }
+const SECRET_HD = 'hd-upstream-' + 'Xy7'.repeat(8);
 
 function bucket(files = {}) {
   const store = new Map(Object.entries(files));
@@ -314,7 +337,7 @@ await ok('the Sites screen lists a made site, escaped', async () => {
 await ok('Site Health checks the key, the plan, the address name and the files live', async () => {
   const cf = fakeCloudflare();
   const body = await (await call(get('/health'), makeEnv(), access(), cf)).text();
-  assert((body.match(/badge ok/g) || []).length === 4, 'not all four checks are done');
+  assert((body.match(/badge ok/g) || []).length >= 4 && !body.includes('badge todo'), 'not all four checks are done');
   const empty = await (await call(get('/health'), makeEnv({ BUNDLES: bucket() }), access(), cf)).text();
   assert(empty.includes('Get WordPress files') && (empty.match(/badge todo/g) || []).length === 1, 'missing files not shown as to do');
   const noKey = await (await call(get('/health'), makeEnv({ PAGEFEATHER_KEY: '' }), access(), cf)).text();
@@ -411,6 +434,218 @@ await ok('a failed WooCommerce activation and a failed install show a reference,
   assert(!body.includes(SECRET), 'the upstream text is in the body');
   const r = JSON.parse(body);
   assert(r.ok && /reference [0-9a-f]{12}/.test(r.note || '') && r.woo && r.woo.activated === false && /^[0-9a-f]{12}$/.test(r.woo.ref), JSON.stringify(r));
+});
+
+// ---- the Hyperdrive store (#431) -----------------------------------------------
+const HD = 'f'.repeat(31) + '1';
+const HD2 = 'e'.repeat(31) + '2';
+// What the Cloudflare API returns for a config: never a password (write-only).
+// A planted field stands in for any extra the API might add: it must not be stored.
+const hdConfig = (over = {}) => ({ id: HD, name: 'shopdb', origin: { scheme: 'mysql', host: 'db.example.mysql.database.azure.com', port: 3306, database: 'wp', user: 'wpuser', planted: SECRET_HD }, caching: { disabled: true }, ...over });
+const aBundle = () => ({
+  'bundles/b-dosql/v0.1.0/index.js': 'export default { fetch(){} }',
+  'bundles/a/v0.1.0/index-a-lean.js': 'export default { fetch(){} }',
+  'bundles/a/v0.1.0/php.wasm': new Uint8Array([0, 97, 115, 109]),
+});
+const connect = (env, cf, body) => call(post('/api/databases', body), env, access(), cf);
+
+await ok('connect a database: refused for a bad ID, an unknown ID, a key that cannot read, a non-MySQL origin, caching on, no provider; nothing is stored', async () => {
+  const cases = [
+    [{ hyperdriveId: 'not-an-id', provider: 'azure' }, {}, 0, /not a Hyperdrive configuration ID/],
+    [{ hyperdriveId: HD2, provider: 'azure' }, { [HD]: hdConfig() }, 0, /No Hyperdrive configuration has that ID/],
+    [{ hyperdriveId: HD, provider: 'azure' }, { [HD]: hdConfig() }, 403, /cannot read Hyperdrive/],
+    [{ hyperdriveId: HD, provider: 'azure' }, { [HD]: hdConfig({ origin: { scheme: 'postgres', host: 'h', database: 'd' } }) }, 0, /postgres, not MySQL/],
+    [{ hyperdriveId: HD, provider: 'azure' }, { [HD]: hdConfig({ caching: { disabled: false } }) }, 0, /Caching is on/],
+    [{ hyperdriveId: HD, provider: 'azure' }, { [HD]: hdConfig({ caching: undefined }) }, 0, /Caching is on/],
+    [{ hyperdriveId: HD, provider: 'planetscale' }, { [HD]: hdConfig() }, 0, /Choose where the database runs/],
+  ];
+  for (const [body, hyperdrive, hyperdriveStatus, re] of cases) {
+    const cf = fakeCloudflare({ hyperdrive, hyperdriveStatus });
+    const res = await connect(makeEnv(), cf, body);
+    const t = await res.text();
+    assert(res.status === 400 && re.test(t), `${JSON.stringify(body)} answered ${res.status} ${t}`);
+    assert(!t.includes(SECRET_HD), 'upstream text shown');
+    assert(![...cf.kv.keys()].some((k) => k.includes('/_db/')), `${JSON.stringify(body)}: a database was stored`);
+  }
+});
+
+await ok('control: a MySQL config with caching off connects; only id, name, host, database, provider are stored; it lists on Databases', async () => {
+  const cf = fakeCloudflare({ hyperdrive: { [HD]: hdConfig() } });
+  const env = makeEnv();
+  const r = await (await connect(env, cf, { hyperdriveId: HD.toUpperCase(), provider: 'azure' })).json();
+  assert(r.ok && r.database.id === HD, JSON.stringify(r));
+  const stored = [...cf.kv].find(([k]) => k.endsWith(`/_db/${HD}`));
+  assert(stored, 'not stored under _db/');
+  const e = JSON.parse(stored[1]);
+  assert(JSON.stringify(Object.keys(e).sort()) === JSON.stringify(['connectedAt', 'database', 'host', 'id', 'name', 'provider']), `stored keys ${Object.keys(e)}`);
+  assert(!stored[1].includes(SECRET_HD) && !stored[1].includes('wpuser'), 'a field beyond the allowed ones was stored');
+  const page = await (await call(get('/databases'), env, access(), cf)).text();
+  assert(page.includes('shopdb') && /<td>db\.example\.mysql\.database\.azure\.com \/ wp<\/td>/.test(page) && page.includes('Azure Database for MySQL'), 'not listed');
+  assert(!/type="password"/.test(page), 'the Databases page has a password field');
+  // A database entry is not a site.
+  const sites = await (await call(get('/'), env, access(), cf)).text();
+  assert(sites.includes('No sites yet'), 'the database shows as a site');
+});
+
+async function connectedEnv(over = {}) {
+  const cf = fakeCloudflare({ hyperdrive: { [HD]: hdConfig() }, ...over });
+  const env = makeEnv({ BUNDLES: bucket(aBundle()) });
+  const c = await (await connect(env, cf, { hyperdriveId: HD, provider: 'azure' })).json();
+  assert(c.ok, `connect: ${JSON.stringify(c)}`);
+  return { cf, env };
+}
+
+await ok('add a Hyperdrive store: approach-A code, the connected Hyperdrive ID, a table prefix from the name, no SQLite class, its own cache, WooCommerce on', async () => {
+  const { cf, env } = await connectedEnv();
+  const res = await call(post('/api/sites', { name: 'big-shop', tier: 'a', database: HD, hyperdriveId: HD2 }), env, access(), cf);
+  const r = await res.json();
+  assert(res.status === 200 && r.ok && r.tier === 'a' && r.store === true && r.tablePrefix === 'wp_big_shop_', JSON.stringify(r));
+  assert(r.woo && r.woo.activated === true, 'WooCommerce not turned on');
+  assert(!cf.calls.some((c) => c.unknown), `unknown API call: ${JSON.stringify(cf.calls.filter((c) => c.unknown))}`);
+  const site = cf.calls.find((c) => c.method === 'PUT' && c.path.endsWith('/workers/dispatch/namespaces/pagefeather/scripts/site-big-shop'));
+  assert(site, 'no namespace script upload');
+  assert(site.metadata.main_module === 'index-a-lean.js', `main ${site.metadata.main_module}`);
+  const hd = site.metadata.bindings.filter((b) => b.type === 'hyperdrive');
+  assert(hd.length === 1 && hd[0].id === HD, `hyperdrive binding ${JSON.stringify(hd)} (the body's hyperdriveId must be ignored)`);
+  const vars = Object.fromEntries(site.metadata.bindings.filter((b) => b.type === 'plain_text').map((b) => [b.name, b.text]));
+  assert(JSON.parse(vars.PHP_ENV).WP_TABLE_PREFIX === 'wp_big_shop_', `vars ${JSON.stringify(vars)}`);
+  // The code lock (#461): on for every site by default; the render carries NO
+  // CODE_LOCK, and the runtime's own rule gives this env the full lock defines.
+  assert(!site.metadata.bindings.some((b) => b.name === 'CODE_LOCK'), 'the a-store render carries CODE_LOCK');
+  const { lockDefines } = await import(join(ROOT, 'spikes/b2-wordpress/site-lock.mjs'));
+  const defs = lockDefines(vars);
+  for (const d of ["define('DISALLOW_FILE_MODS', true);", "define('DISALLOW_FILE_EDIT', true);", "define('SKYPHUSION_CODE_LOCK', true);"]) assert(defs.includes(d), `the a-store env does not lock: ${JSON.stringify(defs)}`);
+  assert(!(site.metadata.migrations && site.metadata.migrations.new_sqlite_classes || []).length, 'a SQLite class was declared');
+  const oc = site.metadata.bindings.find((b) => b.type === 'kv_namespace' && b.name === 'OC_KV');
+  assert(oc && oc.namespace_id && cf.kvNs.get('wp-wfp-big-shop-oc') === oc.namespace_id, 'no own object cache');
+  const entry = JSON.parse([...cf.kv].find(([k]) => k.endsWith('/wp-big-shop.acme.workers.dev'))[1]);
+  assert(entry.kind === 'a' && entry.database === HD && entry.tablePrefix === 'wp_big_shop_', `entry ${JSON.stringify(entry)}`);
+  const list = await (await call(get('/'), env, access(), cf)).text();
+  assert(list.includes('Hyperdrive store'), 'the site list does not show the store type');
+});
+
+await ok('a Hyperdrive store is refused (400, nothing made) for no database, an unconnected database, and a config that changed since connect', async () => {
+  for (const [label, body, mutate] of [
+    ['no database', { name: 'bigshop', tier: 'a' }, null],
+    ['not connected', { name: 'bigshop', tier: 'a', database: HD2 }, null],
+    ['caching turned on since', { name: 'bigshop', tier: 'a', database: HD }, (cfg) => { cfg.caching.disabled = false; }],
+  ]) {
+    const hyperdrive = { [HD]: hdConfig() };
+    const { cf, env } = await connectedEnv({ hyperdrive });
+    if (mutate) mutate(hyperdrive[HD]);
+    const before = cf.calls.length;
+    const res = await call(post('/api/sites', body), env, access(), cf);
+    assert(res.status === 400, `${label} answered ${res.status}`);
+    // The site-map ensure POSTs and gets 409 (it exists); that makes nothing.
+    const writes = cf.calls.slice(before).filter((c) => c.method !== 'GET' && !(c.method === 'POST' && c.path.endsWith('/storage/kv/namespaces')));
+    assert(!writes.length, `${label}: something was made ${JSON.stringify(writes.map((c) => c.method + c.path))}`);
+  }
+});
+
+await ok('a Hyperdrive store that fails part way is undone: front door, entry, code, cache, bucket gone; the database record stays', async () => {
+  const { cf, env } = await connectedEnv({ failDispatchPut: true });
+  const { value: res } = await capture(() => call(post('/api/sites', { name: 'bigshop', tier: 'a', database: HD }), env, access(), cf));
+  const r = await res.json();
+  assert(res.status === 400 && /was not made \(reference [0-9a-f]{12}\)/.test(r.error) && /Everything it had made in Cloudflare was removed/.test(r.error) && r.error.includes('wp_bigshop_'), r.error);
+  assert(!JSON.stringify(r).includes(SECRET_HD), 'upstream text shown');
+  assert(!cf.buckets.size, `buckets left: ${[...cf.buckets]}`);
+  assert(!cf.kvNs.has('wp-wfp-bigshop-oc'), 'the object cache namespace is left');
+  assert(![...cf.kv.keys()].some((k) => k.endsWith('/wp-bigshop.acme.workers.dev')), 'the site entry is left');
+  assert(!cf.plain.has('wp-bigshop') && !cf.nsScripts.has('site-bigshop'), 'code is left');
+  assert([...cf.kv.keys()].some((k) => k.endsWith(`/_db/${HD}`)), 'the database record was removed');
+  assert(!cf.calls.some((c) => c.path.includes('/hyperdrive/') && c.method !== 'GET'), 'the Hyperdrive config was changed');
+});
+
+await ok('control for the undo: a failed install is undone too; a STANDARD store with a failed install is kept (unchanged behaviour)', async () => {
+  const d = dispatcherStub();
+  d.get = () => ({ fetch: async () => new Response(JSON.stringify({ out: JSON.stringify({ error: 'cannot reach the database' }) })) });
+  const { cf, env } = await connectedEnv();
+  env.DISPATCHER = d;
+  const { value: res } = await capture(() => call(post('/api/sites', { name: 'bigshop', tier: 'a', database: HD }), env, access(), cf));
+  assert(res.status === 400, `answered ${res.status}`);
+  assert(!cf.nsScripts.has('site-bigshop') && !cf.buckets.size, 'not undone');
+  const cf2 = fakeCloudflare();
+  const { value: res2 } = await capture(() => call(post('/api/sites', { name: 'myshop', store: true }), makeEnv({ DISPATCHER: d }), access(), cf2));
+  const r2 = await res2.json();
+  assert(res2.status === 200 && r2.ok && cf2.nsScripts.has('site-myshop'), `standard store ${res2.status} ${JSON.stringify(r2)}`);
+});
+
+await ok('a prefix that already holds WordPress is refused, undone, and the screen says which prefix and what to do', async () => {
+  const d = dispatcherStub();
+  const inner = d.get;
+  d.get = (script) => ({ fetch: async (req) => (new URL(req.url).pathname === '/_install'
+    ? new Response(JSON.stringify({ out: '{"installed":"already"}' }))
+    : inner(script).fetch(req)) });
+  const { cf, env } = await connectedEnv();
+  env.DISPATCHER = d;
+  const { value: res } = await capture(() => call(post('/api/sites', { name: 'bigshop', tier: 'a', database: HD }), env, access(), cf));
+  const r = await res.json();
+  assert(res.status === 400 && /already holds a WordPress site under the table prefix wp_bigshop_/.test(r.error) && /separate database per store/.test(r.error) && /remove those tables first/.test(r.error), `${res.status} ${r.error}`);
+  assert(!r.password && !JSON.stringify(r).includes('"password"'), 'a password was shown');
+  assert(!cf.plain.has('wp-bigshop') && !cf.nsScripts.has('site-bigshop') && !cf.buckets.size && !cf.kvNs.has('wp-wfp-bigshop-oc'), 'not undone');
+  assert(![...cf.kv.keys()].some((k) => k.endsWith('/wp-bigshop.acme.workers.dev')), 'the site entry is left');
+  assert(!cf.calls.some((c) => c.method === 'PUT' && c.path.endsWith('/workers/scripts/wp-bigshop')), 'a front door was made for a taken prefix');
+});
+
+await ok('disconnect: refused while a site uses the database; allowed when none does', async () => {
+  const { cf, env } = await connectedEnv();
+  const r = await (await call(post('/api/sites', { name: 'bigshop', tier: 'a', database: HD }), env, access(), cf)).json();
+  assert(r.ok, JSON.stringify(r));
+  const res = await call(post('/api/databases/remove', { id: HD }), env, access(), cf);
+  const t = await res.json();
+  assert(res.status === 400 && /used by a site \(wp-bigshop\.acme\.workers\.dev\)/.test(t.error), `${res.status} ${t.error}`);
+  assert([...cf.kv.keys()].some((k) => k.endsWith(`/_db/${HD}`)), 'removed while in use');
+  const cf2 = fakeCloudflare({ hyperdrive: { [HD]: hdConfig() } });
+  const env2 = makeEnv();
+  await connect(env2, cf2, { hyperdriveId: HD, provider: 'mysql' });
+  const ok2 = await (await call(post('/api/databases/remove', { id: HD }), env2, access(), cf2)).json();
+  assert(ok2.ok && ![...cf2.kv.keys()].some((k) => k.includes('/_db/')), JSON.stringify(ok2));
+});
+
+await ok('the add form: store questions, the recommendation, and the database select; no password field', async () => {
+  const { cf, env } = await connectedEnv();
+  const body = await (await call(get('/add'), env, access(), cf)).text();
+  for (const s of ['name="busy" value="more"', 'name="tier" value="a"', `<option value="${HD}">shopdb`, 'how many people check out at the same moment']) assert(body.includes(s), `missing ${s}`);
+  assert(!/type="password"/.test(body), 'a password field');
+  const cf2 = fakeCloudflare();
+  const empty = await (await call(get('/add'), makeEnv(), access(), cf2)).text();
+  assert(empty.includes('No database is connected yet') && !empty.includes('<select id="database"'), 'no-database text missing');
+});
+
+await ok('Site Health: the Hyperdrive rows are optional, so a blog-only owner still reads Everything is ready', async () => {
+  const cf = fakeCloudflare({ hyperdriveStatus: 403 });
+  const body = await (await call(get('/health'), makeEnv(), access(), cf)).text();
+  assert(body.includes('Optional') && body.includes('Everything is ready'), 'optional rows block ready');
+  const cf2 = fakeCloudflare({ hyperdrive: { [HD]: hdConfig() } });
+  const body2 = await (await call(get('/health'), makeEnv({ BUNDLES: bucket(aBundle()) }), access(), cf2)).text();
+  assert(!body2.includes('Optional</span>'), 'rows not done when they should be');
+});
+
+await ok('the bundle download: the a. bundle is fetched only with its pin, checked, and written under bundles/a/<version>/', async () => {
+  const mk = async (prefix) => {
+    const mods = [{ name: 'index-a-lean.js', bytes: new TextEncoder().encode('export default {}') }];
+    const manifest = await buildManifest(mods.map((m) => ({ name: m.name, bytes: m.bytes })), { version: '0.1.0', gitSha: 'c'.repeat(40), buildId: 'x-a-wooprimed', wrangler: '4', wordpress: '6', woocommerce: '9', compatibilityDate: '2026-07-01', mainModule: 'index-a-lean.js' });
+    return { mods, bytes: new TextEncoder().encode(JSON.stringify(manifest)) };
+  };
+  const b = await mk(''); const a = await mk('a.');
+  const files = new Map([['manifest.json', b.bytes], ['index-a-lean.js', b.mods[0].bytes], ['a.manifest.json', a.bytes], ['a.index-a-lean.js', a.mods[0].bytes]]);
+  const fetchImpl = async (url) => { const n = String(url).split('/').pop(); return files.has(n) ? new Response(files.get(n)) : new Response('no', { status: 404 }); };
+  const { installBundle } = await import('../bundle.mjs');
+  const env = makeEnv({ BUNDLES: bucket(), BUNDLE_MANIFEST_SHA256: await sha256Hex(b.bytes) });
+  const r1 = await installBundle(env, { fetchImpl });
+  assert(r1.ok && !r1.storeModules && ![...env.BUNDLES.store.keys()].some((k) => k.startsWith('bundles/a/')), 'a bundle fetched with no pin');
+  const env2 = makeEnv({ BUNDLES: bucket(), BUNDLE_MANIFEST_SHA256: await sha256Hex(b.bytes), A_BUNDLE_MANIFEST_SHA256: await sha256Hex(a.bytes) });
+  const r2 = await installBundle(env2, { fetchImpl });
+  assert(r2.storeModules === 1 && env2.BUNDLES.store.has('bundles/a/v0.1.0/index-a-lean.js') && env2.BUNDLES.store.has('bundles/a/v0.1.0/manifest.json'), JSON.stringify(r2));
+  const env3 = makeEnv({ BUNDLES: bucket(), BUNDLE_MANIFEST_SHA256: await sha256Hex(b.bytes), A_BUNDLE_MANIFEST_SHA256: 'b'.repeat(64) });
+  let msg = '';
+  try { await installBundle(env3, { fetchImpl }); } catch (e) { msg = e.message; }
+  assert(/a\.manifest\.json sha256 .* not the pinned/.test(msg) && !env3.BUNDLES.store.size, `wrong pin: ${msg} ${env3.BUNDLES.store.size}`);
+});
+
+await ok('the recommendation: more than 5 recommends the Hyperdrive store; 1 to 5 and I do not know do not', async () => {
+  const { recommendTier, CONCURRENT_CHECKOUT_CUT } = await import('../sites.mjs');
+  assert(recommendTier('more') === 'a' && recommendTier('few') === 'wp' && recommendTier('unknown') === 'wp' && CONCURRENT_CHECKOUT_CUT === 5, 'wrong');
 });
 
 // ---- the core change: a workers.dev base ---------------------------------------
