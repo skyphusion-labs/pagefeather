@@ -5,10 +5,10 @@
 // check (auth.mjs), which fails CLOSED, then the route. Nothing that reads or
 // changes the account runs before the owner check.
 import { owner, sameOriginWrite } from './auth.mjs';
-import { addSite, siteList, health, context, workersSubdomain } from './sites.mjs';
+import { addSite, siteList, health, context, workersSubdomain, connectDatabase, disconnectDatabase, databaseList } from './sites.mjs';
 import { installBundle } from './bundle.mjs';
 import { shown } from './errors.mjs';
-import { page, refusedPage, sitesScreen, addScreen, importScreen, healthScreen, CSS, JS, esc } from './ui.mjs';
+import { page, refusedPage, sitesScreen, addScreen, importScreen, healthScreen, databasesScreen, CSS, JS, esc } from './ui.mjs';
 
 const SECURITY_HEADERS = {
   'content-security-policy': "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
@@ -41,6 +41,8 @@ export async function handle(request, env, ctx, { fetchImpl = fetch, dispatcherS
         return json(await addSite(env, { body, fetchImpl, dispatcherSource }));
       }
       if (url.pathname === '/api/bundle') return json(await installBundle(env, { fetchImpl }));
+      if (url.pathname === '/api/databases') return json(await connectDatabase(env, { body, fetchImpl }));
+      if (url.pathname === '/api/databases/remove') return json(await disconnectDatabase(env, { body, fetchImpl }));
       return json({ ok: false, error: 'not found' }, 404);
     }
     if (request.method !== 'GET') return json({ ok: false, error: 'method not allowed' }, 405);
@@ -49,8 +51,11 @@ export async function handle(request, env, ctx, { fetchImpl = fetch, dispatcherS
     if (url.pathname === '/add') {
       let subdomain = '';
       try { subdomain = await workersSubdomain(await context(env, fetchImpl)); } catch { subdomain = ''; }
-      return view('Add New Site', '/add', addScreen({ subdomain }));
+      let databases = [];
+      try { databases = await databaseList(env, { fetchImpl }); } catch { databases = []; }
+      return view('Add New Site', '/add', addScreen({ subdomain, databases }));
     }
+    if (url.pathname === '/databases') return view('Databases', '/databases', databasesScreen(await databaseList(env, { fetchImpl })));
     if (url.pathname === '/import') return view('Import', '/import', importScreen());
     if (url.pathname === '/health') return view('Site Health', '/health', healthScreen(await health(env, { fetchImpl })));
     return html(page({ title: 'Not found', current: '', email: who.email, body: '<h1>Not found</h1>' }), 404);

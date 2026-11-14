@@ -348,9 +348,21 @@ The one-click site manager (`deploy/oneclick/`) is a third caller of this core. 
 - Any request with no Cloudflare Access identity (`ctx.access`, which only Cloudflare sets), or with a forged Access header and no identity, or from a signed-in person who is not `ADMIN_EMAIL`. No API call runs before this check.
 - A write that does not come from its own page (the `x-pagefeather` header, a same-origin `Origin`, a JSON body).
 - A `wp-<name>` Worker that already exists and is not in its site map. The check runs BEFORE anything is made, so the key never overwrites an owner's own Worker.
-- Any site without the code lock: every site it makes carries `CODE_LOCK=on` (#406).
+- Any site without the code lock. The lock is on for every site by default (#461, `site-lock.mjs`). A standard site's render still carries `CODE_LOCK=on` (`wp-site-config.mjs`). A Hyperdrive store's render carries NO `CODE_LOCK`, and its wp-config gets the lock constants from the same `index.js` boot (`index-a-lean.js` reuses that worker). Tests: `admin-test.mjs` (the a-store render has no `CODE_LOCK`, and `lockDefines` gives it the full lock) and `spikes/b2-wordpress/tests/site-lock.test.mjs`.
 
 **What stays the same.** The operator Worker (`wp-provision`) and the demo Worker keep the restricted token of Decision 2. This widening is only for the site manager's own key, in the owner's own account. The request still chooses only a name and the store checkbox; the Worker builds every binding, the code and the hostname itself (`buildServerCfg`), as for the operator path.
+
+## The Hyperdrive store: one more read, and an undo (#431)
+
+The Hyperdrive store (approach A, PHP in the Worker with the owner's own MySQL through Hyperdrive) widens the site manager's key by ONE read permission: **Hyperdrive Read** (lead ruling 1 on #431: one key, widened). The owner adds it only to use a Hyperdrive store; Site Health shows it as an optional row. The permission group key for the template link is NOT yet confirmed from `GET /accounts/{a}/tokens/permission_groups`, so the link in `package.json` and the README is unchanged; the README tells the owner to add it by hand.
+
+**What the code does with it, and only this:** `GET /accounts/{a}/hyperdrive/configs/{id}` to check a configuration the owner names (MySQL origin, caching off), and `GET .../hyperdrive/configs?per_page=1` for Site Health. It never creates, changes or deletes a Hyperdrive configuration, and it never asks for, sees or stores a database password: Cloudflare takes the password when the owner makes the configuration in the dashboard, and a read never returns it. The manager keeps only `id`, `name`, `host`, `database`, `provider` and the connect time, in the site map under `_db/<id>` (no hostname starts with `_`).
+
+**The request cannot choose the database.** `POST /api/sites` names a connected database by its ID; the manager reads its own `_db/` record, reads the configuration again, and only then passes the ID to `buildServerCfg`. A `hyperdriveId` in the body is ignored (test). The table prefix is made from the vetted site name (`wp_<name>_`).
+
+**The undo.** If a NEW Hyperdrive store fails part way (including a failed install, which for a store almost always means WordPress could not reach the database), the manager deletes what that request made, newest first, each step on its own: the front door `wp-<name>`, the site map entry, the namespace script `site-<name>`, the object cache namespace `wp-wfp-<name>-oc`, the media bucket. These are names derived from the vetted site name, after the anti-clobber check proved the front door was not the owner's own Worker. The undo never touches the database or the Hyperdrive configuration. A standard site keeps its old behaviour (a failed install keeps the site).
+
+**Disconnect** removes only the manager's `_db/` record, and is refused while any site uses that database.
 
 ## Every site is code-locked (#458)
 

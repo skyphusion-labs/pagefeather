@@ -40,6 +40,17 @@ The site manager refuses everyone until Cloudflare checks your email when you si
 3. Select **Add New Site**. When it is done, copy the password. It is shown only once.
 4. Select **Log In**. This is your new site's own WordPress admin.
 
+## A busy store: the Hyperdrive store (optional)
+
+A standard store keeps everything in Cloudflare. It gets slow at checkout when more than 5 people check out at the same moment. For a store that busy, choose the **Hyperdrive store**. It keeps its data in your own MySQL 8 database, through Cloudflare Hyperdrive.
+
+1. Make a MySQL 8 database. We recommend Azure Database for MySQL (Flexible Server). On Azure, set the server parameter `sql_mode` to `ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION`, and keep SSL on.
+2. In Cloudflare, make a Hyperdrive configuration for the database, with caching off. Cloudflare keeps the database password. The site manager never asks for it and never sees it.
+3. Give the key the **Hyperdrive Read** permission (edit the key in Cloudflare). **Site Health** shows when it can read Hyperdrive.
+4. In the site manager, open **Databases**. Paste the configuration's ID. Then, in **Add New Site**, select **This site is a store**, then **Hyperdrive store**, then the database.
+
+Each Hyperdrive store keeps its tables under its own prefix (`wp_<name>_`), so several stores can share one database. If adding a store fails, the site manager removes what it made in Cloudflare. It never changes your database or your Hyperdrive configuration.
+
 ## What to know
 
 - Each site has an address like `https://wp-<name>.<your-name>.workers.dev`. Your own domain is not available yet.
@@ -57,7 +68,7 @@ This directory is self-contained, because the button builds only this directory.
 | `admin.mjs` | The request handler: the owner check first, then the screens and the API. |
 | `auth.mjs` | Who may use it: `ctx.access` from Cloudflare Access, and `ADMIN_EMAIL`. |
 | `sites.mjs` | Add a site through `vendor/provision`, list sites, Site Health, and each site's front door. |
-| `bundle.mjs` | Get the WordPress files from a release, checked against the pinned `manifest.json`. |
+| `bundle.mjs` | Get the WordPress files from a release, checked against the pinned `manifest.json` (and, when `A_BUNDLE_MANIFEST_SHA256` is set, the Hyperdrive store files, checked against the pinned `a.manifest.json`). |
 | `ui.mjs` | The screens in the wp-admin look, the CSS and the one script. |
 | `scripts/ensure-namespace.mjs` | Run by `npm run deploy`: makes the `pagefeather` dispatch namespace if it is missing. |
 | `wrangler.toml`, `package.json`, `.dev.vars.example` | The Worker config, the pinned Wrangler, and the two values the setup page asks for. |
