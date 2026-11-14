@@ -366,6 +366,18 @@ jobs:
       - name: Secret scan
         run: |
           if git grep -nE 'AKIA[0-9A-Z]{16}|cfut_[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|BEGIN [A-Z ]*PRIVATE KEY|xox[bap]-[A-Za-z0-9-]{10,}'; then echo 'possible secret'; exit 1; fi
+      # Last in the job: it switches to Node 24, which runs the JSPI loader (Node 22 cannot).
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+      - name: PHP heap views past the 128 MiB ArrayBuffer limit (issue #518)
+        # prepare.sh builds the loader with the heap subarray patch; the test boots it with an
+        # injected limit, and a copy without the patch must fail as production did.
+        working-directory: spikes/b2-wordpress
+        run: |
+          npm ci --silent --no-audit --no-fund
+          ./prepare.sh
+          node --test tests/heap-subarray.test.mjs
   coverage:
     runs-on: ubuntu-latest
     steps:

@@ -48,6 +48,39 @@ s = s.replace(old, new)
 open(p, 'w').write(s)
 PY3
 
+# Heap views past 128 MiB (#518). In production workerd an ArrayBuffer is at most 128 MiB (2^27
+# bytes, measured 2026-11-14 on a workers.dev probe), but the wasm memory grows past that (200 MiB
+# grew). V8's %TypedArray%.prototype.subarray refuses a begin offset above that limit with
+# "RangeError: Invalid array buffer length" (typed-array-subarray.tq step 17), so every
+# HEAPU8.subarray(ptr, ...) with ptr above 128 MiB throws: the string read of js_module_onMessage
+# (wp/v2 REST 500s with USE_ZEND_ALLOC=1), and the same way the FS writes and randomFill. The
+# TypedArray(buffer, byteOffset, length) constructor checks only the length, so each heap view gets
+# its own subarray that keeps the spec's index rules and builds the view that way.
+python3 - <<'PY4'
+p = 'vendor/php_8_3.js'; s = open(p).read()
+old = """		HEAPU64 = new BigUint64Array(b);
+	}"""
+new = """		HEAPU64 = new BigUint64Array(b);
+		// Pagefeather (#518): a subarray past the 128 MiB ArrayBuffer limit of workerd.
+		[HEAP8, HEAP16, HEAPU8, HEAPU16, HEAP32, HEAPU32, HEAPF32, HEAPF64, HEAP64, HEAPU64].forEach(
+			(v) => Object.defineProperty(v, 'subarray', { value: pagefeatherHeapSubarray, configurable: true, writable: true })
+		);
+	}
+	// %TypedArray%.prototype.subarray (begin and end: ToIntegerOrInfinity, negative from the end,
+	// clamped to the length), through the constructor, which has no limit on the offset (#518).
+	function pagefeatherHeapSubarray(begin, end) {
+		var len = this.length;
+		var b = begin === undefined ? 0 : Math.trunc(Number(begin)) || 0;
+		b = b < 0 ? Math.max(len + b, 0) : Math.min(b, len);
+		var e = end === undefined ? len : Math.trunc(Number(end)) || 0;
+		e = e < 0 ? Math.max(len + e, 0) : Math.min(e, len);
+		return new this.constructor(this.buffer, this.byteOffset + b * this.BYTES_PER_ELEMENT, Math.max(e - b, 0));
+	}"""
+assert s.count(old) == 1, 'heap subarray patch did not apply'
+s = s.replace(old, new)
+open(p, 'w').write(s)
+PY4
+
 # The module reserves 64 MiB (1024 pages) at start. A Worker isolate has 128 MB
 # for everything, so start at 24 MiB (384 pages) and let it grow on demand.
 # Its static data ends at 12.4 MiB. Both values are 2-byte LEB128, so the patch
