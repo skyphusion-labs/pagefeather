@@ -114,7 +114,7 @@ Six mutations each turn a test red: a temp file on the server, the password in t
 | 1 | `import.sh` | Gets the SQLite driver at `SQLITE_DI_REF` of `spikes/b2-wordpress/build.sh`. The driver writes its own `_wp_sqlite_*` tables, and the runtime reads them, so the version must be the same. |
 | 2 | `dump-to-sqlite.php` | Runs the dump through the driver into a new SQLite file. Changes the table prefix to `wp_`. Prints the rows of each table, the site address, the theme and the active plugins. |
 | 3 | `search-replace.py` | Changes the site address to the new origin. Safe for PHP serialized data. |
-| 3b | `cancel-emails.py` | Marks the source site's pending order emails canceled (issue #364). See "Pending order emails". Not for variant `a`. |
+| 3b | `cancel-emails.py` | Marks the source site's pending order emails canceled (issue #364). See "Pending order emails". Variant `a` does it in `mysql-prepare.py --emails`. |
 | 4 | `untar.py`, `import.sh` | With `CONTENT`: extracts the archive safely and prints the `deploy.sh` line for the theme and plugins. Then stops if the theme or an active plugin is not in the local build. |
 | 5 | `dbmove-file.py`, `spikes/b2-wordpress/dbmove.py` | Writes the SQLite file as a `dbmove` dump and imports it into the PHP object. |
 | 6 | `dbmove.py export`, `dbmove-file.py counts` | Exports the database again and compares the rows of each table. |
@@ -129,7 +129,7 @@ So the import marks every pending action in that group `canceled` (step 3b). It 
 
 To keep them pending, set `IMPORT_KEEP_PENDING_EMAILS=1`. The output then says `kept`.
 
-Variant `a` (MySQL) does not have this step yet. It builds its statements from the dump, not from the SQLite copy (#364).
+Variant `a` (MySQL) builds its statements from the dump, not from the SQLite copy. So `mysql-prepare.py --emails` gets the pending email actions from the SQLite copy and changes their status to `canceled` in the statements. It adds one log row for each, after all the tables. The output line and the opt-out are the same. The row check after the load counts the log rows.
 
 ## Variant c1
 

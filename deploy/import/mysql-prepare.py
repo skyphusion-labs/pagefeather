@@ -2,7 +2,7 @@
 """Make the statements that /_sqlimport runs, from a mysqldump (issue #31).
 
   mysql-prepare.py <dump.sql> <out.jsonl> --prefix P --to-prefix T --flavour mysql|mariadb
-      --max-statement BYTES [--old ORIGIN --new ORIGIN]
+      --max-statement BYTES [--old ORIGIN --new ORIGIN] [--emails SITE.SQLITE [--keep-emails]]
 
 Variant a (MySQL or MariaDB through Hyperdrive) only. For each statement of
 the dump:
@@ -30,6 +30,15 @@ In INSERT values (decoded from mysqldump's escapes, then encoded again):
   <T>usermeta, a meta_key that starts with P starts with T. The columns are
   found by name in the dump's CREATE TABLE. Nothing else changes.
 
+With --emails (issue #364): the source site's pending order emails. SITE.SQLITE is
+import.sh's copy of the same dump (step 2); cancel-emails.py's pending_email_ids()
+gives the pending actions of the woocommerce-emails group there. In
+<T>actionscheduler_actions their status 'pending' becomes 'canceled', and one
+INSERT into <T>actionscheduler_logs (after every table, log_id NULL so the
+server numbers it) writes a log row for each, as cancel-emails.py does for the
+other variants. Nothing is deleted. Every listed action must be found pending
+in the dump, or it is an error. With --keep-emails only the count is reported.
+
 An INSERT longer than --max-statement is split between rows; one row longer
 than that is an error. The output is JSON lines {"sql": "..."}; a report (JSON)
 goes to stdout: rows per table, statements, skipped tables, changed values.
@@ -40,11 +49,15 @@ import json
 import os
 import re
 import sys
+import time
 
 here = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("sr", os.path.join(here, "search-replace.py"))
 sr = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sr)
+spec = importlib.util.spec_from_file_location("ce", os.path.join(here, "cancel-emails.py"))
+ce = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ce)
 
 PREFIX_RE = re.compile(r"^[A-Za-z0-9_]{1,40}$")
 MODE = "sql_mode='NO_AUTO_VALUE_ON_ZERO'"
@@ -238,7 +251,11 @@ def main():
     ap.add_argument("--max-statement", type=int, required=True)
     ap.add_argument("--old")
     ap.add_argument("--new")
+    ap.add_argument("--emails", help="import.sh's SQLite copy of the dump: cancel its pending order emails (#364)")
+    ap.add_argument("--keep-emails", action="store_true", help="with --emails: count them only (IMPORT_KEEP_PENDING_EMAILS=1)")
     a = ap.parse_args()
+    if a.keep_emails and not a.emails:
+        fail("--keep-emails needs --emails")
     if a.max_statement < 4096:
         fail("--max-statement is too small")
     if not PREFIX_RE.match(a.to_prefix):
@@ -258,6 +275,40 @@ def main():
     objects = []
     changed = {"address": 0, "user_roles": 0, "usermeta_keys": 0}
     out = []
+    emails = None
+    cancel = set()
+    canceled = []
+    if a.emails:
+        if not os.path.isfile(a.emails):
+            fail("--emails: no file " + a.emails)
+        import sqlite3
+        db = sqlite3.connect(a.emails)  # read only: SELECTs, never a write
+        try:
+            ids = ce.pending_email_ids(db)
+        finally:
+            db.close()
+        emails = {"pending": len(ids or []), "canceled": 0, "kept": a.keep_emails, "action_scheduler": ids is not None}
+        if not a.keep_emails:
+            cancel = set(ids or [])
+    actions_t = NEW + "actionscheduler_actions"
+    logs_t = NEW + "actionscheduler_logs"
+
+    def emit(new_table, enc_rows):
+        t = new_table.decode()
+        h = head(new_table)
+        batch = []
+        size = len(h)
+        for r in enc_rows:
+            if len(h) + len(r) > a.max_statement:
+                fail(f"one row of {t} is {len(r)} bytes: more than --max-statement {a.max_statement}")
+            if batch and size + 1 + len(r) > a.max_statement:
+                out.append(h + b",".join(batch))
+                batch, size = [], len(h)
+            batch.append(r)
+            size += len(r) + 1
+        if batch:
+            out.append(h + b",".join(batch))
+
     for kind, st in statements(a.dump):
         if kind == "conditional":
             m = re.search(rb"\b(TRIGGER|VIEW|PROCEDURE|FUNCTION|EVENT)\b", st)
@@ -293,6 +344,11 @@ def main():
             if t == NEW + "usermeta" and "meta_key" in names and old != NEW.encode():
                 key = ("usermeta_keys", names.index("meta_key"))
             parsed = values(rest[len(b" VALUES "):])
+            st_col = None
+            if cancel and t == actions_t:
+                if "action_id" not in names or "status" not in names:
+                    fail(f"{t} has no action_id or status column: cannot cancel the pending emails")
+                id_col, st_col = names.index("action_id"), names.index("status")
             enc_rows = []
             for row in parsed:
                 if len(row) != len(names):
@@ -310,21 +366,32 @@ def main():
                     if v[0] == "s" and ((what == "user_roles" and v[1] == old + b"user_roles") or (what == "usermeta_keys" and v[1].startswith(old))):
                         row[j] = ("s", NEW.encode() + v[1][len(old):])
                         changed[what] += 1
+                if st_col is not None and row[id_col][0] == "n" and row[st_col] == ("s", b"pending"):
+                    aid = int(row[id_col][1])
+                    if aid in cancel:
+                        row[st_col] = ("s", b"canceled")
+                        canceled.append(aid)
                 enc_rows.append(b"(" + b",".join(encode(v) for v in row) + b")")
             rows[t] = rows.get(t, 0) + len(enc_rows)
-            h = head(new_table)
-            batch = []
-            size = len(h)
-            for r in enc_rows:
-                if len(h) + len(r) > a.max_statement:
-                    fail(f"one row of {t} is {len(r)} bytes: more than --max-statement {a.max_statement}")
-                if batch and size + 1 + len(r) > a.max_statement:
-                    out.append(h + b",".join(batch))
-                    batch, size = [], len(h)
-                batch.append(r)
-                size += len(r) + 1
-            if batch:
-                out.append(h + b",".join(batch))
+            emit(new_table, enc_rows)
+    if cancel:
+        missing = cancel - set(canceled)
+        if missing or len(canceled) != len(cancel):
+            fail(f"--emails: {len(missing)} of the {len(cancel)} pending emails of the SQLite copy are not pending in the dump (first: {sorted(missing)[:5]}): the copy is not of this dump")
+        emails["canceled"] = len(canceled)
+        names = cols.get(logs_t)
+        if names is not None:
+            now = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()).encode()
+            known = {"log_id", "action_id", "message", "log_date_gmt", "log_date_local"}
+            if set(names) - known or "action_id" not in names or "message" not in names:
+                fail(f"{logs_t} has columns {names}: not the Action Scheduler log table this step knows")
+            enc_rows = []
+            for aid in sorted(canceled):
+                v = {"log_id": ("n", b"NULL"), "action_id": ("n", str(aid).encode()), "message": ("s", ce.MESSAGE.encode()), "log_date_gmt": ("s", now), "log_date_local": ("s", now)}
+                enc_rows.append(b"(" + b",".join(encode(v[c]) for c in names) + b")")
+            rows[logs_t] = rows.get(logs_t, 0) + len(enc_rows)
+            emit(logs_t.encode(), enc_rows)
+            emails["logged"] = len(enc_rows)
     tmp = a.out + ".part"
     with open(tmp, "w", encoding="utf-8") as f:
         for st in out:
@@ -334,7 +401,7 @@ def main():
                 fail("a statement is not UTF-8: " + st[:80].decode(errors="replace"))
             f.write(json.dumps({"sql": s}, ensure_ascii=False) + "\n")
     os.replace(tmp, a.out)
-    print(json.dumps({"statements": len(out), "rows": dict(sorted(rows.items())), "skipped_tables": skipped, "not_imported": objects, "changed": changed, "hint": os.environ.get("NO_HINT") != "1", "flavour": a.flavour}, indent=1))
+    print(json.dumps({"statements": len(out), "rows": dict(sorted(rows.items())), "skipped_tables": skipped, "not_imported": objects, "changed": changed, "hint": os.environ.get("NO_HINT") != "1", "flavour": a.flavour, "emails": emails}, indent=1))
 
 
 if __name__ == "__main__":

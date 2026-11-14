@@ -409,5 +409,42 @@ ic=$(grep -n 'dbmove-file.py" from-sqlite' "$IMP/../import.sh" | cut -d: -f1)
 check "import.sh: the email step is between the address change and the load" "$([ -n "$ib" ] && [ "$ia" -lt "$ib" ] && [ "$ib" -lt "$ic" ] && echo ordered)" "ordered"
 check "import.sh: the opt-out reaches the step" "$(grep -c 'IMPORT_KEEP_PENDING_EMAILS:-0}" = 1 ] && echo --keep' "$IMP/../import.sh")" "1"
 
+# Variant a (issue #364): mysql-prepare.py --emails. The ids come from the SQLite copy of the
+# same dump (step 2, the real dump-to-sqlite.php); the statements carry status 'canceled' and one
+# log row for each. fixture-emails.sql: pending emails 1 2 7, sent 3, failed 5, other group 4.
+php "$IMP/dump-to-sqlite.php" "$DRV" "$HERE/fixture-emails.sql" "$T/em.sqlite" > /dev/null
+check "a emails: the SQLite copy lists the pending emails" "$(python3 -c 'import importlib.util as u,sqlite3,sys; s=u.spec_from_file_location("ce",sys.argv[1]); m=u.module_from_spec(s); s.loader.exec_module(m); print(m.pending_email_ids(sqlite3.connect(sys.argv[2])))' "$IMP/cancel-emails.py" "$T/em.sqlite")" "[1, 2, 7]"
+emp() { python3 "$IMP/mysql-prepare.py" "$HERE/fixture-emails.sql" "$T/$1.jsonl" --prefix wpx_ --to-prefix wp_ --flavour mysql --max-statement 1048576 "${@:2}" > "$T/$1.json"; }
+# status of each action in the statements, and the action ids of the added log rows
+ems() { python3 - "$T/$1.jsonl" <<'PY2'
+import json, re, sys
+L = [json.loads(l)["sql"] for l in open(sys.argv[1])]
+acts = [m for s in L if "INTO `wp_actionscheduler_actions`" in s for m in re.findall(r"\((\d+),'[^']*','(\w+)'", s)]
+logs = [m for s in L if "INTO `wp_actionscheduler_logs`" in s for m in re.findall(r"\(NULL,(\d+),'([^']*)'", s)]
+print(" ".join(a + ":" + b for a, b in acts) + " | " + " ".join(a for a, msg in logs if "#364" in msg))
+PY2
+}
+emj() { python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); [v := v[k] for k in sys.argv[2:]]; print(json.dumps(v, sort_keys=True))' "$T/$1.json" "${@:2}"; }
+emp em --emails "$T/em.sqlite"
+check "a emails: the pending emails become canceled, the others stay" "$(ems em)" "1:canceled 2:canceled 3:complete 4:pending 5:failed 7:canceled | 1 2 7"
+check "a emails: the report" "$(emj em emails)" '{"action_scheduler": true, "canceled": 3, "kept": false, "logged": 3, "pending": 3}'
+check "a emails: nothing deleted, the log rows counted for the row check" "$(emj em rows)" '{"wp_actionscheduler_actions": 6, "wp_actionscheduler_groups": 2, "wp_actionscheduler_logs": 4, "wp_options": 4}'
+check "a emails: a string that says pending is not a status" "$(python3 -c 'import json,sys; print(sum(json.loads(l)["sql"].count('"'"'["pending"]'"'"') for l in open(sys.argv[1])))' "$T/em.jsonl")" "2"
+check "a emails: the log rows come after every CREATE TABLE" "$(python3 -c 'import json,sys; L=[json.loads(l)["sql"] for l in open(sys.argv[1])]; c=max(i for i,s in enumerate(L) if s.startswith("CREATE TABLE")); g=[i for i,s in enumerate(L) if "#364" in s]; print(len(g), all(i > c for i in g))' "$T/em.jsonl")" "1 True"
+check "a emails: every statement passes the endpoint check" "$(node "$HERE/sqlimport-file.mjs" "$T/sql-import.mjs" "$T/em.jsonl" | tail -1)" "17 statements, 0 refused"
+emp emkeep --emails "$T/em.sqlite" --keep-emails
+check "a emails: --keep-emails (IMPORT_KEEP_PENDING_EMAILS=1) keeps them" "$(ems emkeep):$(emj emkeep emails pending):$(emj emkeep emails canceled):$(emj emkeep rows wp_actionscheduler_logs)" "1:pending 2:pending 3:complete 4:pending 5:failed 7:pending | :3:0:1"
+emp emoff
+check "a emails: without --emails nothing changes" "$(ems emoff):$(emj emoff emails)" "1:pending 2:pending 3:complete 4:pending 5:failed 7:pending | :null"
+python3 "$IMP/mysql-prepare.py" "$HERE/fixture.sql" "$T/emnone.jsonl" --prefix wpx_ --to-prefix wp_ --flavour mysql --max-statement 1048576 --emails "$T/fx.sqlite" > "$T/emnone.json"
+check "a emails: a site with no Action Scheduler" "$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(r["emails"]["action_scheduler"], r["emails"]["pending"], r["statements"])' "$T/emnone.json")" "False 0 14"
+mkas "$T/as.sqlite"
+set +e; python3 "$IMP/mysql-prepare.py" "$HERE/fixture-emails.sql" "$T/emx.jsonl" --prefix wpx_ --to-prefix wp_ --flavour mysql --max-statement 1048576 --emails "$T/as.sqlite" > /dev/null 2> "$T/emx.err"; code=$?; set -e
+check "a emails: a copy that is not of this dump is refused" "$code:$(grep -c 'not pending in the dump' "$T/emx.err" || true)" "1:1"
+set +e; python3 "$IMP/mysql-prepare.py" "$HERE/fixture-emails.sql" "$T/emx.jsonl" --prefix wpx_ --to-prefix wp_ --flavour mysql --max-statement 1048576 --keep-emails > /dev/null 2>&1; code=$?; set -e
+check "a emails: --keep-emails without --emails is refused" "$code" "1"
+# shellcheck disable=SC2016 # the pattern is the literal shell text of mysql.sh
+check "mysql.sh: passes the SQLite copy and the opt-out" "$(grep -c -- '--emails "$WORK/site.sqlite" $(\[ "${IMPORT_KEEP_PENDING_EMAILS:-0}" = 1 \] && echo --keep-emails)' "$IMP/mysql.sh")" "1"
+
 [ "$fails" = 0 ] || { echo "$fails failed"; exit 1; }
 echo "all passed"
