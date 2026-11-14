@@ -5,7 +5,7 @@
 # After import.sh step 2 (the dump in SQLite gives the prefix and the site
 # facts): read the server (version, max_allowed_packet), make the statements
 # (mysql-prepare.py), send them to /_sqlimport (sqlimport.py), compare the rows
-# of each table, then GET /. replace=1 DROPS EVERY wp_ TABLE FIRST: a run that
+# of each table, then GET /. replace=1 DROPS EVERY TABLE OF THE SITE'S OWN PREFIX FIRST (#487): a run that
 # stops leaves the site empty or partial, and the script says where it stopped.
 # Uses: ROOT IMP APP WORK URL DUMP OLD_ORIGIN NEW_ORIGIN from import.sh.
 
@@ -20,7 +20,12 @@ MAXST=$(( PACKET - 1024 ))
 [ "$MAXST" -le 1400000 ] || MAXST=1400000
 echo "a: $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$WORK/server.json") ($FLAVOUR), max_allowed_packet $PACKET, statements up to $MAXST bytes, server sql_mode $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("sql_mode") or "(not readable)")' "$WORK/server.json")"
 PREFIX=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["prefix"])' "$WORK/report.json")
-python3 "$IMP/mysql-prepare.py" "$DUMP" "$WORK/mysql.jsonl" --prefix "$PREFIX" --flavour "$FLAVOUR" --max-statement "$MAXST" --old "$OLD_ORIGIN" --new "$NEW_ORIGIN" > "$WORK/mysql.json"
+# The TARGET site's own table prefix (#487), from the site: a site whose code predates it does not
+# report one, and the import stops rather than guess wp_ (on a shared database wp_ reaches other stores).
+TO_PREFIX=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("prefix") or "")' "$WORK/server.json")
+[ -n "$TO_PREFIX" ] || { echo "a: the site did not report its table prefix (/_sqlimport?info=1): deploy its code from current main first (#487); nothing was imported" >&2; exit 1; }
+echo "a: the dump's prefix $PREFIX becomes the site's $TO_PREFIX"
+python3 "$IMP/mysql-prepare.py" "$DUMP" "$WORK/mysql.jsonl" --prefix "$PREFIX" --to-prefix "$TO_PREFIX" --flavour "$FLAVOUR" --max-statement "$MAXST" --old "$OLD_ORIGIN" --new "$NEW_ORIGIN" > "$WORK/mysql.json"
 python3 - "$WORK/mysql.json" <<'PY'
 import json, sys
 r = json.load(open(sys.argv[1]))
