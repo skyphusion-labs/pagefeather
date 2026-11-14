@@ -105,6 +105,22 @@ jobs:
         run: |
           node --test spikes/b2-wordpress/tests/mem-trace.test.mjs
           python3 -I tests/wfp/admin-mem-test.py
+      - name: Memory trace hooks mode against WordPress's own hook code (#504)
+        # The three wp-includes files of the pinned WordPress (spikes/b2-wordpress/build.sh
+        # WP_VERSION=7.1.4), each checked against its sha256 (equal to the copies in the
+        # sha1-verified release zip) before the test reads them.
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/wp-includes"
+          mkdir -p "$d"
+          for f in plugin.php:d70b9e18d34ab3fe46e15548a5e8e089ea5920832f06a4d89a9d64b2f7938b0d \
+                   class-wp-hook.php:b839c0e5672246bca8db1ab781ec8835f7732f253c375a237cbf6ec536e8d12e \
+                   class-wp-filter-sentinel.php:68c9c675d3805a343835728d98a0efedf0df9833cb904bebf909c7e0fda5c61c; do
+            name="${f%%:*}"; sum="${f##*:}"
+            curl -fsSL -o "$d/$name" "https://raw.githubusercontent.com/WordPress/WordPress/7.1.4/wp-includes/$name"
+            echo "$sum  $d/$name" | sha256sum -c - || { echo "::error::$name sha256 mismatch"; exit 1; }
+          done
+          php spikes/b2-wordpress/tests/mem-trace-hooks-test.php "$d"
       - name: b-dosql performance headers need the spike token
         run: node --test spikes/b2-wordpress/tests/perf-headers.test.mjs
       - name: b-dosql a memory reset is not an overload (issue #335)
