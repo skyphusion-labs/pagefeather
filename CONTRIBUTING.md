@@ -6,9 +6,9 @@ before you change a cell.
 
 ## License
 
-This project is GPL-2.0. See [LICENSE](LICENSE).
+This project is GPL-2.0-or-later. See [LICENSE](LICENSE).
 
-By sending a contribution you agree that it is licensed under GPL-2.0, the same
+By sending a contribution you agree that it is licensed under GPL-2.0-or-later, the same
 license as the project. You also affirm that the contribution is your own work,
 or work you have the right to license this way. Do not paste code or text you
 do not have the rights to.
