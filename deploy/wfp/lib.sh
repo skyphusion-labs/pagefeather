@@ -218,9 +218,9 @@ for k, v in o.items():
 print("PHP_INI = %s" % chr(39) + json.dumps(o, separators=(",", ":"), sort_keys=True) + chr(39))'
 }
 # LAZY_CACHE_MB (#394, #218): the cap, in MiB, on the inflated copies of bundle files a request keeps
-# (index.js LAZY_CACHE_BYTES, default 8). At the failing post-new INSERT the cache sat at its 8 MiB cap
+# (index.js LAZY_CACHE_BYTES, default 2 since #394, was 8). At the failing post-new INSERT the cache sat at its 8 MiB cap
 # (op48led, 2026-11-13). A smaller cap trades re-inflation (CPU) for isolate memory. An integer from
-# 1 to 64. Read from the run's environment only, like PHP_INI. Unset renders nothing (index.js keeps 8).
+# 1 to 64. Read from the run's environment only, like PHP_INI. Unset renders nothing (index.js keeps its default, 2).
 lazy_cache_var() {
   local v=${LAZY_CACHE_MB:-}
   [ -n "$v" ] || return 0

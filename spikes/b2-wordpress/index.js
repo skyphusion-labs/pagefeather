@@ -410,7 +410,10 @@ function zipEntries(zip) {
 // memory limit".
 // Within a request too: the inflated copies are capped at LAZY_CACHE_BYTES,
 // oldest dropped first. A WooCommerce checkout reads about 1,500 compiled files.
-let LAZY_CACHE_BYTES = 8 * 1024 * 1024; // LAZY_CACHE_MB overrides (#218: lower the in-request V8 peak).
+// 2 MiB since #394 (was 8). At every failing post-new INSERT on pf394a the cache sat at its cap; at 2
+// post-new died 60 of 100 rounds against 82 of 100 at 8, with boot time and inflates per boot unchanged
+// (repeat pair, 2026-11-13/14, #394 issuecomment-6868335297). LAZY_CACHE_MB overrides (#218).
+let LAZY_CACHE_BYTES = 2 * 1024 * 1024;
 const inflated = new Map(); // drop function -> bytes
 // FILE_TRACE=on (#394 M0): record which bundle files each request reads (file-trace.mjs, GET /_trace).
 // Off by default; it changes no behavior, only notes the path of each read.

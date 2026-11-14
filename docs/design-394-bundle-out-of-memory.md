@@ -29,7 +29,7 @@ Every number below cites a measurement or a `file:line`. A number with no source
 | `import opcacheZip from './build/opcache.zip'` | 28 | the OPcache file cache made by `opcache.sh` |
 | `import wasmModule from './vendor/php_8_3.wasm'` | 20 | the PHP runtime code |
 | `zipEntries(zip)` | 316 to 348 | walks a zip's central directory; `data()` inflates from the in-memory zip (343) |
-| `LAZY_CACHE_BYTES` = 8 MiB, `noteInflated`, `evictLazy` | 358 to 377 | caps the inflated copies inside a request, drops all of them after it (3143) |
+| `LAZY_CACHE_BYTES` = 8 MiB (2 MiB since the #394 repeat pair), `noteInflated`, `evictLazy` | 358 to 377 | caps the inflated copies inside a request, drops all of them after it (3143) |
 | `attachLazyContents` | 382 to 412 | the MEMFS `contents` getter: inflate on first read. It is SYNCHRONOUS |
 | `lazyFile` | 414 to 417 | one eager MEMFS node per site file |
 | `mountLazyZip` (`LAZY_NODES=on`) | 419 to 470, 1133 to 1137 | lazy nodes; OFF for b-dosql today |
