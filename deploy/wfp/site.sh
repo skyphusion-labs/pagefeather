@@ -9,7 +9,8 @@
 # hostname is ever requested, or the "absent" answer is cached):
 #   1. the site's Terraform workspace: media bucket, secrets, site map entry
 #   2. the user Worker site-<name> in the namespace (b-dosql), with its secrets
-#   3. the dispatcher copy wp-<name> on workers.dev: the site's hostname
+#   3. the dispatcher copy wp-<name> on workers.dev: the site's hostname, and (#533) the daily
+#      cron of its scheduled snapshot, with the site's SNAPSHOT_TOKEN
 #   4. wait for the site, then install WordPress
 # down, the other way round, each step checked against the API before the next:
 #   1. the dispatcher copy (the hostname)   2. the user Worker
@@ -19,7 +20,7 @@ set -euo pipefail
 need_account
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
 cmd=${1:-}; s=${2:-}
-valid_site "$s" || { echo "usage: site.sh up|down <name> (lower case, digits, hyphens; 1 to 30; not probe)" >&2; exit 2; }
+valid_site "$s" || { echo "usage: site.sh up|down <name> (lower case, digits, hyphens; 1 to 30; not probe, not auto)" >&2; exit 2; }
 umask 077
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 mkdir -p "$GEN"
@@ -81,9 +82,11 @@ if [ "$cmd" = up ]; then
   if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ]; then
     log "site $s: phase B, routed by the shared $SHARED_DISPATCHER and this site's Custom Domain $HOST (attached by the workspace apply above)"
   else
-    log "site $s: dispatcher $D"
-    render_dispatcher "$s" "$KV_ID" > "$GEN/$D.toml"
-    wrangler_deploy "$GEN" "$W/disp.log" --config "$D.toml" || { tail -20 "$W/disp.log"; exit 1; }
+    log "site $s: dispatcher $D, with the scheduled snapshot of this site (#533)"
+    render_site_dispatcher "$s" "$KV_ID" > "$GEN/$D.toml"
+    tfr site output -json | dispatcher_secrets_json "$W/disp-secrets.json"
+    wrangler_deploy "$GEN" "$W/disp.log" --config "$D.toml" --secrets-file "$W/disp-secrets.json" || { rm -f "$W/disp-secrets.json"; tail -20 "$W/disp.log"; exit 1; }
+    rm -f "$W/disp-secrets.json"
     grep -q "$ORIGIN" "$W/disp.log" || { echo "the dispatcher did not deploy to $ORIGIN:" >&2; tail -5 "$W/disp.log" >&2; exit 1; }
   fi
 

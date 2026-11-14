@@ -107,5 +107,72 @@ await check('a site being moved: an operator /_ path still reaches the site (the
 await check('a move whose time has passed is ignored: the site answers', 'https://wp-moved.sub.workers.dev/', {}, (g, t) => [...p(g.status === 200 && JSON.parse(t).script === 'site-one', 'site-one answers')]);
 await check('a moving flag that is not {until: <ms>} closes the site', 'https://wp-movebad.sub.workers.dev/', {}, (g) => [...p(g.status === 503 && g.error === 'moving' && g.calls.length === 0, '503 moving')]);
 await check('moving: false is no move', 'https://wp-moveoff.sub.workers.dev/', {}, (g, t) => [...p(g.status === 200 && JSON.parse(t).script === 'site-one', 'site-one answers')]);
+await check('/_dbsnapshot from a visitor: 404 not-public, no site map read, no script called (#533)', 'https://wp-one.sub.workers.dev/_dbsnapshot', { method: 'POST', headers: { 'x-snapshot-token': 't' } }, (g) => [
+	...p(g.status === 404 && g.error === 'not-public', '404 not-public'),
+	...p(g.calls.length === 0, 'no namespace call'),
+]);
+await check('a path that only starts like it is still dispatched', 'https://wp-one.sub.workers.dev/_dbsnapshotx', {}, (g) => [...p(g.status === 200 && g.calls.length === 1, 'dispatched')]);
+
+// scheduled() (#533): one site, the plain binding, the token, a timeout; a failure throws.
+function cronEnv(vars, answer) {
+	const calls = [];
+	const ns = (binding) => ({
+		get(script, args, opts) {
+			calls.push({ binding, script, opts });
+			return { fetch: (req) => answer(req, calls) };
+		},
+	});
+	return { calls, SITES: { get: async () => { throw new Error('the cron must not read the site map'); } }, DISPATCHER: ns('DISPATCHER'), DISPATCHER_OUT: ns('DISPATCHER_OUT'), ...vars };
+}
+async function cron(name, vars, answer, want) {
+	const e = cronEnv(vars, answer);
+	const logs = [];
+	const orig = console.log;
+	console.log = (m) => logs.push(String(m));
+	let err = null;
+	try {
+		await worker.scheduled({ scheduledTime: 1794640000000, cron: '17 7 * * *' }, e, { waitUntil() {} });
+	} catch (x) {
+		err = x;
+	} finally {
+		console.log = orig;
+	}
+	const ev = logs.filter((l) => l.startsWith('@event snapshot ')).map((l) => JSON.parse(l.slice(16)));
+	const problems = want({ err, calls: e.calls, ev });
+	if (problems.length) {
+		fails++;
+		console.log('FAIL ' + name + ': ' + problems.join('; ') + ' (err ' + (err && err.message) + ', calls ' + JSON.stringify(e.calls) + ', events ' + JSON.stringify(ev) + ')');
+	} else console.log('PASS ' + name);
+}
+const okAnswer = async (req, calls) => {
+	calls.push({ method: req.method, url: req.url, token: req.headers.get('x-snapshot-token') });
+	return new Response(JSON.stringify({ ok: true, key: '_snapshots/auto/20261114T071700Z.ndjson.gz', rows: 8616 }), { status: 200 });
+};
+const CONF = { SNAPSHOT_SCRIPT: 'site-one', SNAPSHOT_TOKEN: 'tok-one' };
+await cron('scheduled: POST /_dbsnapshot to its one site, plain binding, its token; resolves on ok', CONF, okAnswer, ({ err, calls, ev }) => [
+	...p(err === null, 'no throw'),
+	...p(calls[0]?.binding === 'DISPATCHER' && calls[0]?.script === 'site-one', 'site-one on the plain binding'),
+	...p(calls[1]?.method === 'POST' && new URL(calls[1]?.url || 'x:').pathname === '/_dbsnapshot' && calls[1]?.token === 'tok-one', 'POST /_dbsnapshot with the token'),
+	...p(ev.length === 1 && ev[0].ok === true && ev[0].result?.rows === 8616 && ev[0].script === 'site-one', 'one ok event with the result'),
+	...p(!JSON.stringify(ev).includes('tok-one'), 'the token is never logged'),
+]);
+await cron('scheduled: the site answers 500: the run throws, one failed event', CONF, async () => new Response('{"ok":false,"error":"dump-error"}', { status: 500 }), ({ err, ev }) => [
+	...p(err && /HTTP 500/.test(err.message), 'throws HTTP 500'),
+	...p(ev.length === 1 && ev[0].ok === false && ev[0].status === 500, 'failed event'),
+]);
+await cron('scheduled: 200 but ok is not true: the run throws', CONF, async () => new Response('{"ok":false}', { status: 200 }), ({ err }) => [...p(err !== null, 'throws')]);
+await cron('scheduled: 200 with a body that is not JSON: the run throws', CONF, async () => new Response('fine', { status: 200 }), ({ err }) => [...p(err !== null, 'throws')]);
+await cron('scheduled: 409 import-held: the run throws (not stored)', CONF, async () => new Response('{"ok":false,"error":"import-held"}', { status: 409 }), ({ err }) => [...p(err && /409/.test(err.message), 'throws 409')]);
+await cron('scheduled: the namespace throws: the run throws, the event names it', CONF, async () => { throw new Error('Worker not found.'); }, ({ err, ev }) => [
+	...p(err && /Worker not found/.test(err.message), 'throws'),
+	...p(ev[0]?.ok === false && /Worker not found/.test(ev[0]?.error || ''), 'event names it'),
+]);
+await cron('scheduled: a site that never answers: timeout after SNAPSHOT_TIMEOUT_MS', { ...CONF, SNAPSHOT_TIMEOUT_MS: '50' }, () => new Promise(() => {}), ({ err, ev }) => [
+	...p(err && /timeout after 50 ms/.test(err.message), 'timeout after 50 ms'),
+	...p(ev[0]?.ok === false, 'failed event'),
+]);
+await cron('scheduled: no SNAPSHOT_TOKEN: throws not-configured, no call', { SNAPSHOT_SCRIPT: 'site-one' }, okAnswer, ({ err, calls }) => [...p(err && /not configured/.test(err.message), 'not configured'), ...p(calls.length === 0, 'no call')]);
+await cron('scheduled: no SNAPSHOT_SCRIPT: throws not-configured, no call', { SNAPSHOT_TOKEN: 't' }, okAnswer, ({ err, calls }) => [...p(err && /not configured/.test(err.message), 'not configured'), ...p(calls.length === 0, 'no call')]);
+await cron('scheduled: a SNAPSHOT_SCRIPT that is not a site-<name>: throws, no call', { SNAPSHOT_SCRIPT: '../other', SNAPSHOT_TOKEN: 't' }, okAnswer, ({ err, calls }) => [...p(err !== null, 'throws'), ...p(calls.length === 0, 'no call')]);
 console.log(fails + ' failing case(s)');
 process.exit(fails ? 1 : 0);

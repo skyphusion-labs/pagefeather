@@ -48,11 +48,11 @@ STUB_MODE=nozone; export STUB_MODE
 out=$(site_vars shop sub kv1 2>&1); rc=$?
 check "a Custom Domain with no zone in the state stops" "$rc:$(printf '%s' "$out" | grep -c 'no zone_id')" "1:1"
 # The callers use it: an update and a remove read the recorded values.
-check "site update, remove, import and restore use site_vars" "$(grep -c 'site_vars "\$s" "\$SUB" "\$KV_ID"' "$HERE/../site")" "4"
+check "site update, remove, import, restore and schedule (#533) use site_vars" "$(grep -c 'site_vars "\$s" "\$SUB" "\$KV_ID"' "$HERE/../site")" "5"
 check "site.sh down uses site_vars" "$(grep -c 'site_vars "\$s" "\$SUB" "\$KV_ID"' "$HERE/../site.sh")" "1"
-# The update's two applies (the new build, the rollback), the #515 hold, and site restore's clear.
+# The update's applies (the #533 token apply, the new build, the rollback), the #515 hold, and site restore's clear.
 # Since #273 site import applies nothing: its bucket key is a temporary R2 credential.
-check "site update and restore apply the recorded vars (site import applies nothing, #273)" "$(grep -c 'REC_VARS\[@\]' "$HERE/../site")" "4"
+check "site update (with its #533 token apply) and restore apply the recorded vars (site import applies nothing, #273)" "$(grep -c 'REC_VARS\[@\]' "$HERE/../site")" "5"
 check "site import runs no terraform apply" "$(sed -n '/^import_one() {/,/^}/p' "$HERE/../site" | grep -c 'tfr site apply')" "0"
 STUB_MODE=apex; export STUB_MODE SUB=sub; site_vars ggc sub kv1
 check "site_key: the recorded key after site_vars" "$(site_key ggc)" "ggc.sh"

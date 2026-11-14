@@ -30,7 +30,7 @@ WFP_S3_SECRET, and WFP_SITE_URL (a template with {name}). The R2 reads use S3 cr
 token id as the key id, the SHA-256 of its value as the secret, as R2
 documents), so a snapshot makes no key and changes nothing.
 """
-import calendar, hashlib, json, os, random, re, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request
+import calendar, gzip, hashlib, json, os, random, re, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request
 import xml.etree.ElementTree as ET
 
 ENV = os.environ
@@ -478,6 +478,12 @@ def dbrestore(origin, token, bucket, key):
     gst, body = s3("GET", "/%s/%s" % (bucket, full))
     if gst != 200 or not body.strip():
         print(json.dumps({"ok": False, "stage": "get", "status": gst})); return 1
+    # A scheduled snapshot (#533, _snapshots/auto/*.ndjson.gz) is gzipped; a hand-taken one is not.
+    if body[:2] == b"\x1f\x8b":
+        try:
+            body = gzip.decompress(body)
+        except (OSError, EOFError) as e:
+            print(json.dumps({"ok": False, "stage": "gunzip", "error": str(e)[:200]})); return 1
     try:
         parts = parts_of(body)
     except ValueError as e:

@@ -143,6 +143,9 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/runtime-guards.test.mjs
       - name: b-dosql a recycled PHP runtime is released (issue #394)
         run: node --test spikes/b2-wordpress/tests/release-runtime.test.mjs
+      - name: b-dosql the scheduled snapshot route (issue #533)
+        # db-snapshot.mjs: SNAPSHOT_TOKEN only, gzip into the site's own bucket, read back; held, cut, too big and failed dumps store nothing.
+        run: node --test spikes/b2-wordpress/tests/db-snapshot.test.mjs
       - name: b-dosql every Pages.purge RPC result is disposed (issue #510)
         run: node --test spikes/b2-wordpress/tests/rpc-dispose.test.mjs
       - name: load test admin loops and cleanup, against a stub site (issue #394)
@@ -284,6 +287,7 @@ jobs:
         run: |
           node deploy/wfp/tests/dispatcher-test.mjs
           deploy/wfp/tests/render-test.sh
+          deploy/wfp/tests/snapshot-wiring-test.sh
           deploy/wfp/tests/deploy-retry-test.sh
           deploy/wfp/tests/ns-state-test.sh
           deploy/wfp/tests/kv-ready-test.sh
