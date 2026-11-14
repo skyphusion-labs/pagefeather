@@ -315,6 +315,15 @@ jobs:
         # site graph makes no account token (#273). init runs with
         # -backend=false, so no state and no credential: the providers come from the registry.
         run: deploy/wfp/tests/tf-test.sh
+      - name: deploy/destroy.sh checks (offline)
+        # deploy/tests/destroy-test.sh (deploy/README.md) was in no workflow, so it never ran (#527).
+        # It needs the cloudflare provider of deploy/terraform: init with -backend=false (no state,
+        # no credential) and -lockfile=readonly (the tracked lock file must not change), then the
+        # lock file is checked unchanged so the later steps see a clean tree.
+        run: |
+          terraform -chdir=deploy/terraform init -backend=false -input=false -lockfile=readonly >/dev/null
+          git diff --exit-code deploy/terraform/.terraform.lock.hcl
+          deploy/tests/destroy-test.sh
       - name: c1 load analysis tests
         # tests/load/c1_arm.py (issue #99): held requests, CPU per order, the split, on a synthetic job.
         run: python3 tests/load/c1_arm_test.py
