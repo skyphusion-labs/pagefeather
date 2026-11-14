@@ -97,6 +97,9 @@ for r in $(seq 1 "${STRESS_ROUNDS:-30}"); do
   fi
 done
 check "#545 stress: ${STRESS_ROUNDS:-30} rounds of ${STRESS_JOBS:-16} jobs, each exit 0 with ONE fresh credential" "$sbad" 0
+# DATA (#545 draft only): does the lock primitive exclude on this machine?
+echo "  lock-race: $(python3 -I "$HERE/lock-race.py" mkdir 16 200)"
+echo "  lock-race: $(python3 -I "$HERE/lock-race.py" flock 16 200)"
 
 # r2_refresh itself, cut out of the real script: two refusals in a row mint once (the min age),
 # and a refusal after R2_REFRESH_MIN_S mints again.
