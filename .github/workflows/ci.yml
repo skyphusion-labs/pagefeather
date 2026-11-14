@@ -68,6 +68,8 @@ jobs:
         # spikes/b2-wordpress/php/object-cache-js.php: the allowlist + TTL + force-off
         # posture, with a stubbed bridge (no DB). WooCommerce groups never persist.
         run: php spikes/b2-wordpress/tests/object-cache-isolated-test.php
+      - name: approach A object-cache KV writes are coalesced and 429s counted (issue #500)
+        run: node --test spikes/b2-wordpress/tests/oc-l2-writer.test.mjs
       - name: b-dosql approach-A options never persist across isolates (issue #491)
         run: php spikes/b2-wordpress/tests/object-cache-491-test.php
       - name: Approach A object cache source invariants (issue #218)

@@ -18,6 +18,7 @@ import { demoLocked, lockDefines } from './site-lock.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore } from './perf-headers.mjs';
 import { resetFailures, writeLossResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { MEMORY_RESET } from './object-error.mjs';
+import { createL2Writer } from './oc-l2-writer.mjs';
 import { createLedger, memfsBytes, createSqlMeter, ledgerOn, LEDGER_MIB } from './mem-ledger.mjs';
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import { routeClass, createTrace } from './file-trace.mjs';
@@ -99,6 +100,13 @@ function diffCounts(now, was) { const o = {}; for (const k in now) { const dv = 
 // is bounded: a del writes through to KV, and an allowlisted group already tolerates the
 // bounded-TTL class of staleness; KV's min 60 s expiry is the cross-isolate bound.
 let ocCtx = null; // the current request ctx, for L2 write-through via waitUntil
+// #500: one KV writer per isolate: skip an unchanged PUT, at most one PUT per key per second (the
+// latest value), a cap per request, and 429s counted (oc-l2-writer.mjs). Made on first use.
+let ocL2W = null;
+function ocL2Writer() {
+	if (!ocL2W) ocL2W = createL2Writer({ put: (k, v, ttl) => ENV.OC_KV.put(k, v, { expirationTtl: ttl }), del: (k) => ENV.OC_KV.delete(k) });
+	return ocL2W;
+}
 function ocL2On() { return !!(ENV && ENV.OBJECT_CACHE_L2 === 'on' && ENV.OC_KV); }
 function ocTtlMs() { const t = Math.max(0, Math.min(3600, parseInt(ENV && ENV.OBJECT_CACHE_TTL, 10) || 10)); return t * 1000; }
 function ocKvKey(k) { return 'oc:' + encodeURIComponent(k); } // NUL-safe KV key from the pkey
@@ -131,6 +139,7 @@ async function objectCacheOp(op) {
 				try { kv = await ENV.OC_KV.get(ocKvKey(k)); } catch { kv = null; }
 				if (kv != null) {
 					ocStore(k, kv, now + ocTtlMs()); // the shared value is now warm in this isolate
+					ocL2Writer().noteRead(ocKvKey(k), kv); // #500: a set of the same value needs no PUT
 					stats.ocHits++; ocCount(k, "l2hit"); out.push(kv); continue;
 				}
 				ocCount(k, "l2miss");
@@ -145,13 +154,13 @@ async function objectCacheOp(op) {
 		const n = op.k.length + op.v.length;
 		if (n > OBJECT_CACHE_BYTES / 4) return { ok: false };
 		ocStore(op.k, op.v, op.ttl > 0 ? now + op.ttl * 1000 : 0);
-		if (l2 && ocCtx) { const ttl = Math.max(60, op.ttl > 0 ? op.ttl : 60); try { ocCtx.waitUntil(ENV.OC_KV.put(ocKvKey(op.k), op.v, { expirationTtl: ttl })); } catch {} }
+		if (l2 && ocCtx) { const ttl = Math.max(60, op.ttl > 0 ? op.ttl : 60); try { const w = ocL2Writer().set(ocKvKey(op.k), op.v, ttl); if (w) ocCtx.waitUntil(w); } catch {} }
 		return { ok: true };
 	}
 	if (op.op === 'del') {
 		if (txnFrames) for (const k of op.k) txnTouched.add(k);
 		let n = 0;
-		for (const k of op.k) { ocCount(k, "del"); if (objectCacheDrop(k)) n++; if (l2 && ocCtx) { try { ocCtx.waitUntil(ENV.OC_KV.delete(ocKvKey(k))); } catch {} } }
+		for (const k of op.k) { ocCount(k, "del"); if (objectCacheDrop(k)) n++; if (l2 && ocCtx) { try { ocCtx.waitUntil(ocL2Writer().del(ocKvKey(k))); } catch {} } }
 		return { n };
 	}
 	if (op.op === 'flush') {
@@ -3036,6 +3045,7 @@ export default {
 
 async function handle(req, env, url, spikeOk, maxBody, ctx) {
 	ocCtx = ctx; // for L2 (KV) object-cache write-through this request (#218)
+	if (ocL2W) ocL2W.beginRequest(); // #500: the per-request PUT cap starts again
 	{
 		// A runtime serves only the origin it booted with (8i). The first request
 		// after /_install used to boot the runtime for every later one, and that
@@ -3375,7 +3385,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 				out.set('x-db', 'object-sqlite');
 				out.set('x-db-rows', `read=${stats.rowsRead - start.rowsRead} written=${stats.rowsWritten - start.rowsWritten}`);
 			}
-			if (Object.keys(ocTables).length || Object.keys(ocGroupStats).length) out.set('x-oc-stats', JSON.stringify({ dbN: d.calls, dbMs: d.ms, tables: ocTables, groups: ocGroupStats, ocKeys: objectCache.size, ocKiB: Math.round(objectCacheBytes / 1024) }));
+			if (Object.keys(ocTables).length || Object.keys(ocGroupStats).length) out.set('x-oc-stats', JSON.stringify({ dbN: d.calls, dbMs: d.ms, tables: ocTables, groups: ocGroupStats, ocKeys: objectCache.size, ocKiB: Math.round(objectCacheBytes / 1024), ...(ocL2W ? { l2w: { ...ocL2W.counts } } : {}) })); // l2w: this isolate's KV write outcomes so far (#500)
 			out.set('x-d1-calls', String(d.calls));
 			out.set('x-d1-ms', String(d.ms));
 			out.set('x-d1-failures', String(d.failures.length));
