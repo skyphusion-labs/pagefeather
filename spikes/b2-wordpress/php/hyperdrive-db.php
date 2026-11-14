@@ -82,6 +82,19 @@ function skyphusion_hd_run( $query ) {
 class Hyperdrive_WPDB extends wpdb {
 	private $hd_version = null;
 	private $hd_columns = array();
+	// #498: session state Hyperdrive does not keep between statements. It pools to the origin in
+	// transaction mode and resets the session after each statement (tests/a2 probe E1), so a
+	// SELECT FOUND_ROWS() or SELECT LAST_INSERT_ID() sent on its own can run on another origin
+	// connection and read its state (X-WP-Total 0 in 4 of 16 reads on wp-a-lean). The pair is kept
+	// on one connection instead, and the second statement is answered from what the first produced.
+	/** @var int|null FOUND_ROWS() of the SQL_CALC_FOUND_ROWS query just run, read on its own connection. */
+	private $hd_found_rows = null;
+	/** @var int|null The insert id of the write just run (its OK packet): LAST_INSERT_ID() right after it. */
+	private $hd_last_insert = null;
+	/** @var string|null What the previous statement was: 'calc', 'write' or null. */
+	private $hd_prev = null;
+	/** @var bool A transaction WordPress or a plugin opened (START TRANSACTION / BEGIN) is open. */
+	private $hd_in_tx = false;
 
 	public function db_connect( $allow_bail = true ) {
 		// As wpdb::db_connect() does: failed queries return false, not an exception.
@@ -124,6 +137,34 @@ class Hyperdrive_WPDB extends wpdb {
 		return $this->add_placeholder_escape( skyphusion_mysql_escape( $data ) );
 	}
 
+	/**
+	 * #498: a SELECT SQL_CALC_FOUND_ROWS and its FOUND_ROWS() on ONE origin connection. A transaction pins
+	 * the connection in Hyperdrive (the DDL path relies on the same, tests/a2 probe E2). Inside a transaction
+	 * already open (a plugin's START TRANSACTION), no BEGIN is sent: a second BEGIN would COMMIT theirs.
+	 */
+	private function hd_calc_found_rows( $query ) {
+		$own = ! $this->hd_in_tx;
+		if ( $own ) {
+			$begin = skyphusion_hd_call( 'BEGIN' );
+			$own   = ! empty( $begin['ok'] );
+		}
+		$reply = skyphusion_hd_run( $query );
+		$found = null;
+		if ( ! empty( $reply['ok'] ) && ( $own || $this->hd_in_tx ) ) {
+			$f = skyphusion_hd_call( 'SELECT FOUND_ROWS()' );
+			if ( ! empty( $f['ok'] ) && isset( $f['rows'][0][0] ) ) {
+				$v     = $f['rows'][0][0];
+				$v     = ( is_array( $v ) && isset( $v['$b'] ) ) ? base64_decode( $v['$b'] ) : $v;
+				$found = is_numeric( $v ) ? (int) $v : null;
+			}
+		}
+		if ( $own ) {
+			skyphusion_hd_call( 'COMMIT' );
+		}
+		$this->hd_found_rows = $found;
+		return $reply;
+	}
+
 	public function db_server_info() {
 		if ( null === $this->hd_version ) {
 			$reply            = skyphusion_hd_call( 'SELECT VERSION()' );
@@ -147,7 +188,30 @@ class Hyperdrive_WPDB extends wpdb {
 		if ( defined( 'SAVEQUERIES' ) && SAVEQUERIES ) {
 			$this->timer_start();
 		}
-		$reply = skyphusion_hd_run( $query );
+		// #498: keep session state that spans two statements on one connection (see hd_calc_found_rows).
+		$q    = ltrim( $query );
+		$prev = $this->hd_prev;
+		$this->hd_prev = null;
+		if ( preg_match( '/^(START\s+TRANSACTION|BEGIN)\b/i', $q ) ) {
+			$this->hd_in_tx = true;
+		} elseif ( preg_match( '/^(COMMIT|ROLLBACK)\b/i', $q ) && ! preg_match( '/^ROLLBACK\s+TO\b/i', $q ) ) {
+			$this->hd_in_tx = false;
+		}
+		if ( 'calc' === $prev && null !== $this->hd_found_rows && preg_match( '/^SELECT\s+FOUND_ROWS\(\s*\)\s*;?\s*$/i', $q ) ) {
+			$reply = array( 'ok' => true, 'columns' => array( 'FOUND_ROWS()' ), 'rows' => array( array( (string) $this->hd_found_rows ) ) );
+		} elseif ( 'write' === $prev && null !== $this->hd_last_insert && preg_match( '/^SELECT\s+LAST_INSERT_ID\(\s*\)\s*;?\s*$/i', $q ) ) {
+			$reply = array( 'ok' => true, 'columns' => array( 'LAST_INSERT_ID()' ), 'rows' => array( array( (string) $this->hd_last_insert ) ) );
+		} elseif ( preg_match( '/^SELECT\s+SQL_CALC_FOUND_ROWS\b/i', $q ) ) {
+			$reply = $this->hd_calc_found_rows( $query );
+			$this->hd_prev = empty( $reply['ok'] ) ? null : 'calc';
+		} else {
+			$reply = skyphusion_hd_run( $query );
+			if ( ! empty( $reply['ok'] ) && preg_match( '/^(INSERT|REPLACE|UPDATE)\b/i', $q ) ) {
+				// The OK packet's insert id: LAST_INSERT_ID() right after this write, LAST_INSERT_ID(expr) included.
+				$this->hd_last_insert = isset( $reply['insert_id'] ) ? (int) $reply['insert_id'] : null;
+				$this->hd_prev        = null === $this->hd_last_insert ? null : 'write';
+			}
+		}
 		++$this->num_queries;
 		if ( defined( 'SAVEQUERIES' ) && SAVEQUERIES ) {
 			$this->log_query( $query, $this->timer_stop(), $this->get_caller(), $this->time_start, array() );
