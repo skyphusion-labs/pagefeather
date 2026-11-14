@@ -435,7 +435,10 @@ test('index.js: the object never verifies, and the front Worker sets the answer 
 	assert.match(front, /const fwd = new Request\(req\);\s*\/\/[^\n]*\n\s*setResultHeader\(fwd\.headers, pre && pre\.value\);/);
 	// The object: take the header off before PHP, set the slot inside the PHP lock, clear it after.
 	assert.match(src, /req\.headers\.delete\(SENT_HEADER\);\s*\/\/[^\n]*\n\s*const turnstileHeader = takeResultHeader\(req\.headers\);/);
-	const run = src.slice(src.indexOf('turnstileSlot.set(turnstileHeader);'), src.indexOf('phpPending--;'));
+	// The phpPending-- that ends THIS run: the first one after the slot is set (another holder, such as
+	// /_headroom, may decrement it earlier in the file).
+	const setAt = src.indexOf('turnstileSlot.set(turnstileHeader);');
+	const run = src.slice(setAt, src.indexOf('phpPending--;', setAt));
 	assert.ok(run.indexOf('await handle(req, env, url, spikeOk, maxBody, ctx)') > 0);
 	assert.match(run, /finally \{\s*turnstileSlot\.clear\(\);/);
 });

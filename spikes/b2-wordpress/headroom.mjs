@@ -4,8 +4,11 @@
 // isolate reaches 255. Inside the PHP object, 255 minus the reach minus the live wasm heap is what the
 // runtime holds outside the wasm heap (the JS heap, inflate copies, strings, retired runtimes).
 // A MEASUREMENT that ends the isolate: run it only on a throwaway, where the next request may boot cold.
-export function headroomStream({ first, max = 1024, alloc = () => new ArrayBuffer(1048576) }) {
+// every / probe: every `every` MiB, one "ledger <json>" line from probe(), so memory that appears in the
+// isolate during the loop (a PHP runtime the alarm booted, inflates) is visible beside the count.
+export function headroomStream({ first, max = 1024, alloc = () => new ArrayBuffer(1048576), every = 0, probe = null }) {
 	const cap = Math.min(4096, Math.max(1, Math.trunc(Number(max)) || 1));
+	const step = probe && every > 0 ? Math.trunc(every) : 0;
 	const { readable, writable } = new TransformStream();
 	const w = writable.getWriter();
 	const enc = new TextEncoder();
@@ -21,6 +24,7 @@ export function headroomStream({ first, max = 1024, alloc = () => new ArrayBuffe
 				held.push(b);
 				mib++;
 				await line('mib ' + mib);
+				if (step && mib % step === 0) await line('ledger ' + JSON.stringify(probe()));
 			}
 			await line('done ' + mib + ' held ' + held.length);
 		} catch (e) {
