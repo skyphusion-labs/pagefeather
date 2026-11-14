@@ -48,12 +48,28 @@ b-dosql (pnrest, a different round): post-new p50 / p95, arena off 4,690 / 5,480
 - **A in a DO, the first WooCommerce activation died in the object.** `/_activate` at 09:37:24Z answered the write-loss 500, while GraphQL `durableObjectsInvocationsAdaptiveGroups` for 09:37 read DO `exceededMemory` 1 and the Worker only success. The retry at 09:38:33Z succeeded, and its log held "Duplicate entry 'wc_installing'", so the first try had partly run.
 - **A store move must hold the TARGET's cron too, not only the source's.** In the A-in-DO copy, pass 1 failed its check on `wp_actionscheduler_logs` (target 6,179 against 6,178 exported): the target's own alarm ran the cron after the load. With the target held by `/_hold` (#542), passes 2 and 3 matched on all 52 tables.
 
+## The isolate budget (Rollins's floor rounds 1 to 6, #394)
+
+Allocation probes in production, by Rollins, 2026-11-14. Each probe allocates and holds memory until the isolate is killed, with and without the pieces our bundle loads. The raw files are with the comments; this page only summarises them.
+
+| finding | number | round and comment |
+|---|---|---|
+| the isolate budget, a plain Worker and a Durable Object ALIKE | about **256 MiB** (a plain-`ArrayBuffer` probe dies at `mib 255`) | round 1, [issuecomment-6876869608](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6876869608); round 3 corrects round 2's "a DO is held to about 128", [issuecomment-6876985619](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6876985619) |
+| what the bundle's data modules cost before PHP runs | **32 MiB** for both zips (`opcache.zip` alone 20, `site.zip` alone 19; not additive), wasm about 6 alone and 0 on top | rounds 1 to 3, the same comments, and round 2, [issuecomment-6876930979](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6876930979) |
+| php-wasm's heap growth | it grows IN PLACE, with no old + new copy held at once | round 4 (probe G), [issuecomment-6877025165](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6877025165) |
+| a booted PHP runtime | **32 MiB**; running it or tiering it up adds nothing measurable | round 5 (probe I), [issuecomment-6877044444](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6877044444) |
+| the real PHP heap in one request | grows to about **226 MiB**, with no mirror | round 6 (probes P and PZ), [issuecomment-6877086017](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6877086017) |
+| memory outside PHP's heap at a WordPress death | about **100 MiB** | the same round 6 comment |
+
+So a WordPress admin death on approach A or b-dosql is the isolate's whole budget, about 256 MiB, used up. The PHP heap is only part of that. The zips (32) and a booted PHP (32) come out of the budget before a request does anything, and about 100 MiB sits outside the heap when WordPress dies.
+
 ## What it means
 
 1. **In the same shape (PHP in the Worker, Paid, the same store data and the same round), HostlessWP 0.1.1 had 0 platform memory deaths in 210 admin requests, and our approach A lost 31 of 200.** Both run PHP in a 128 MB Worker isolate. HostlessWP's engine is tuned to fit: it reports a flat 82 MB and answers every screen in 1.3 to 2.8 s p50. Our plain-Worker A died after the heavy editor screens with Cloudflare's `exceededMemory`.
 2. **Moving PHP into a Durable Object does not remove the wall: the object has its own limit.** It died 23 times in 210 requests. Our retry of a GET on an object reset (`object-error.mjs` `shouldRetryObjectError`, used at `index.js` `fetchWithMemoryRetry`) hid all 23 from the client. The cost is time: about 2 to 3x slower than the plain Worker, partly because each retried request boots two objects, and 2.4 to 4.5x slower than HostlessWP (the page-time table below).
 3. **On b-dosql, the arena (#508) is the lever for post-new**: 84 of 100 deaths off, 1 of 100 on, with every write durable both ways.
-4. **The Worker-only paths each trade something** (deaths, hidden memory deaths with latency, or a tuned engine that still hits the wall with many plugins at once, 118 MB in 2026-11-05). So admin pages go to the Container. Visitors and checkout stay on Workers, where these rounds do not apply.
+4. **The budget is about 256 MiB per isolate, a Worker and a Durable Object alike** (the floor rounds above). Our bundle spends 32 on its zips and 32 on a booted PHP before any page runs, and a WordPress death has about 100 MiB outside PHP's heap. So the gap to HostlessWP is in what sits in the isolate, not in PHP's heap alone.
+5. **The Worker-only paths each trade something** (deaths, hidden memory deaths with latency, or a tuned engine that still hits the wall with many plugins at once, 118 MB in 2026-11-05). So admin pages go to the Container. Visitors and checkout stay on Workers, where these rounds do not apply.
 
 ## Not measured here
 
