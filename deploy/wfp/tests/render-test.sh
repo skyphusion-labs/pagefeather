@@ -146,6 +146,11 @@ ok "LAZY_ARENA=on renders it" "$(LAZY_ARENA=on render_user one https://wp-one.su
 ok "LAZY_ARENA=on LAZY_ARENA_MB=4 renders both" "$(LAZY_ARENA=on LAZY_ARENA_MB=4 render_user one https://wp-one.sub.workers.dev | larena | grep -qx '\["on", "4"\]' && echo 1 || echo 0)"
 for bad in yes ON 1; do ok "LAZY_ARENA=$bad fails the render" "$(LAZY_ARENA=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
 for bad in 0 65 1.5 abc; do ok "LAZY_ARENA_MB=$bad fails the render" "$(LAZY_ARENA=on LAZY_ARENA_MB=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
+# HEADROOM_PROBE (#394): on or off, only when asked.
+headroom() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["vars"].get("HEADROOM_PROBE")))'; }
+ok "no HEADROOM_PROBE var by default" "$(env -u HEADROOM_PROBE bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | headroom | grep -qx 'null' && echo 1 || echo 0)"
+ok "HEADROOM_PROBE=on renders it" "$(HEADROOM_PROBE=on render_user one https://wp-one.sub.workers.dev | headroom | grep -qx '"on"' && echo 1 || echo 0)"
+for bad in yes ON 1; do ok "HEADROOM_PROBE=$bad fails the render" "$(HEADROOM_PROBE=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
 # PHP_RECYCLE (#394 E1): only "off", only when asked.
 recyc() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["vars"].get("PHP_RECYCLE")))'; }
 ok "no PHP_RECYCLE var by default" "$(env -u PHP_RECYCLE bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | recyc | grep -qx 'null' && echo 1 || echo 0)"

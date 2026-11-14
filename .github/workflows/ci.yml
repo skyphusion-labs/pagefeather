@@ -163,6 +163,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/inflate-arena.test.mjs
       - name: b-dosql a PHP write to a lazy bundle file survives the evict, real MEMFS code (issue #530)
         run: node --test spikes/b2-wordpress/tests/lazy-write.test.mjs
+      - name: b-dosql the headroom probe streams its reach, off by default (issue #394)
+        run: node --test spikes/b2-wordpress/tests/headroom.test.mjs
       - name: b-dosql the lazy inflate cache defaults to 2 MiB (issue #394)
         run: node --test spikes/b2-wordpress/tests/lazy-cache-default.test.mjs
       - name: b-dosql x-perf isoAgeS is the isolate age (issue #474)
@@ -315,6 +317,7 @@ jobs:
           node deploy/provision/tests/wp-site-config-test.mjs
           node deploy/provision/tests/descriptor-table-test.mjs
           node deploy/provision/tests/a-site-config-test.mjs
+          node deploy/provision/tests/measurement-flags-test.mjs
           node deploy/provision/tests/demo-test.mjs
           node deploy/provision/tests/custom-hostname-test.mjs
           node deploy/provision/tests/hostname-cli-test.mjs
