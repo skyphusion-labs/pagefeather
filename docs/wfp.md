@@ -144,7 +144,7 @@ CONTAINER=1 LATENCY_N=0 ./tests/wfp/run.sh   # BOX_PORT defaults to 8080 for the
 
 These two laptop runs were the first try. The direct time itself moved by 25 ms between them, so the laptop cannot settle a difference of a few ms. This is the reason for the Vultr runner.
 
-**From the runner (the answer).** The same test as a runner job (`KIND=latency N=300 ./tests/bench-runner/run.sh <direct-url> <dispatched-url>`), from the Vultr box in Chicago (region `ord`, plan `vc2-2c-4gb`), on 2026-11-05 at 22:50 UTC, with the repository at `52ce048` (`deploy/results/bench-runner-20261105T224951Z-ff13d4.json`):
+**From the runner (the answer).** The same test as a runner job (`KIND=latency N=300 ./tests/bench-runner/run.sh <direct-url> <dispatched-url>`; the runner was removed in #531, so that command is in the git history before it, and this result stays as the record), from the Vultr box in Chicago (region `ord`, plan `vc2-2c-4gb`), on 2026-11-05 at 22:50 UTC, with the repository at `52ce048` (`deploy/results/bench-runner-20261105T224951Z-ff13d4.json`):
 
 | Vantage | N | | p50 | p95 | p99 | mean | min | max |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
