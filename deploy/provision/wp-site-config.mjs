@@ -424,7 +424,7 @@ export function mediaBucketName(name) {
 export function aVars({
   siteOrigin, tablePrefix = 'wp_', hyperdriveSqlMode,
   // #491: options never persist across isolates on A (php/object-cache-js.php drops them even when named).
-  objectCacheGroups = 'terms,theme_json', objectCacheTtl = '10', lazyCacheMb = '4',
+  objectCacheGroups = 'theme_json', objectCacheTtl = '10', lazyCacheMb = '4',
   mailFrom, mailFromName,
 } = {}) {
   if (!siteOrigin) throw new Error('aVars: siteOrigin is required (the site WP_HOME origin, issue #33)');

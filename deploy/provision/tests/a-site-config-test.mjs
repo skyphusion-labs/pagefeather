@@ -34,7 +34,7 @@ ok('PHP_ENV carries USE_ZEND_ALLOC off AND the WP table prefix, matching a-paid-
   varOf('PHP_ENV').text === '{"USE_ZEND_ALLOC":"0","WP_TABLE_PREFIX":"wp_"}' &&
   aLean.includes('PHP_ENV = \'{"USE_ZEND_ALLOC":"0","WP_TABLE_PREFIX":"wp_"}\''));
 ok('OBJECT_CACHE = on matches a-paid-lean', varOf('OBJECT_CACHE').text === 'on' && aLean.includes('OBJECT_CACHE = "on"'));
-ok('OBJECT_CACHE_GROUPS matches a-paid-lean, without options (#491)', varOf('OBJECT_CACHE_GROUPS').text === 'terms,theme_json' && aLean.includes('OBJECT_CACHE_GROUPS = "terms,theme_json"'));
+ok('OBJECT_CACHE_GROUPS matches a-paid-lean, without options (#491) or terms (#494)', varOf('OBJECT_CACHE_GROUPS').text === 'theme_json' && aLean.includes('OBJECT_CACHE_GROUPS = "theme_json"'));
 ok('OBJECT_CACHE_TTL matches a-paid-lean', varOf('OBJECT_CACHE_TTL').text === '10' && aLean.includes('OBJECT_CACHE_TTL = "10"'));
 ok('OBJECT_CACHE_L2 = on matches a-paid-lean', varOf('OBJECT_CACHE_L2').text === 'on' && aLean.includes('OBJECT_CACHE_L2 = "on"'));
 ok('LAZY_NODES = on matches a-paid-lean', varOf('LAZY_NODES').text === 'on' && aLean.includes('LAZY_NODES = "on"'));
