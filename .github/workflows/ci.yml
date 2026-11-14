@@ -282,6 +282,7 @@ jobs:
           deploy/wfp/tests/snapshot-test.sh
           deploy/wfp/tests/site-cmd-test.sh
           deploy/wfp/tests/down-key-test.sh
+          deploy/wfp/tests/r2-temp-test.sh
           deploy/wfp/tests/custom-domain-test.sh
           python3 deploy/wfp/tests/check-test.py
           python3 -I deploy/wfp/tests/obs-settings-test.py
@@ -311,7 +312,7 @@ jobs:
         run: deploy/tests/render-golden/render-golden-test.sh
       - name: WfP terraform checks (issue #336)
         # deploy/wfp/tests/tf-test.sh: validate and fmt for terraform/shared and site, and the
-        # teardown and media import keys depend on nothing in the site graph. init runs with
+        # site graph makes no account token (#273). init runs with
         # -backend=false, so no state and no credential: the providers come from the registry.
         run: deploy/wfp/tests/tf-test.sh
       - name: c1 load analysis tests
