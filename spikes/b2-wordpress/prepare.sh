@@ -54,8 +54,10 @@ PY3
 # "RangeError: Invalid array buffer length" (typed-array-subarray.tq step 17), so every
 # HEAPU8.subarray(ptr, ...) with ptr above 128 MiB throws: the string read of js_module_onMessage
 # (wp/v2 REST 500s with USE_ZEND_ALLOC=1), and the same way the FS writes and randomFill. The
-# TypedArray(buffer, byteOffset, length) constructor checks only the length, so each heap view gets
-# its own subarray that keeps the spec's index rules and builds the view that way.
+# TypedArray(buffer, byteOffset, length) constructor does not cap the offset, so each heap view gets
+# its own subarray that keeps the spec's index rules and builds the view that way. The constructor
+# does cap a length argument at 128 MiB (probe v2: a 136 MiB view threw "Invalid typed array length:
+# 142606336"), so a view to the end of the buffer is built with no length argument.
 python3 - <<'PY4'
 p = 'vendor/php_8_3.js'; s = open(p).read()
 old = """		HEAPU64 = new BigUint64Array(b);
@@ -74,7 +76,12 @@ new = """		HEAPU64 = new BigUint64Array(b);
 		b = b < 0 ? Math.max(len + b, 0) : Math.min(b, len);
 		var e = end === undefined ? len : Math.trunc(Number(end)) || 0;
 		e = e < 0 ? Math.max(len + e, 0) : Math.min(e, len);
-		return new this.constructor(this.buffer, this.byteOffset + b * this.BYTES_PER_ELEMENT, Math.max(e - b, 0));
+		var off = this.byteOffset + b * this.BYTES_PER_ELEMENT, n = Math.max(e - b, 0);
+		// The constructor caps a LENGTH argument at the same 128 MiB, but not a length it derives
+		// from the buffer: a view that reaches the end of the buffer is built without one. A longer
+		// span that ends before the end cannot be a view in workerd at all, and throws as the native does.
+		if (off + n * this.BYTES_PER_ELEMENT === this.buffer.byteLength) return new this.constructor(this.buffer, off);
+		return new this.constructor(this.buffer, off, n);
 	}"""
 assert s.count(old) == 1, 'heap subarray patch did not apply'
 s = s.replace(old, new)

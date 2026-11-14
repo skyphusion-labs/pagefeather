@@ -25,14 +25,25 @@ const FIX = "		// Pagefeather (#518): a subarray past the 128 MiB ArrayBuffer li
 
 const TA = Object.getPrototypeOf(Uint8Array.prototype);
 const nativeSubarray = TA.subarray;
-// V8's step 17 with LIMIT in place of ArrayBufferMaxByteLength(): the clamped begin index, past
-// the limit in elements, throws. Everything else is the native subarray.
+// Production V8 with LIMIT in place of ArrayBufferMaxByteLength() (128 MiB in workerd), both caps:
+// subarray's step 17 (a clamped begin index past the limit: "Invalid array buffer length"), and
+// the constructor's cap on a LENGTH argument ("Invalid typed array length: <bytes>", probe v2).
+// A length the constructor derives from the buffer (no length argument) is not capped.
+const clamp = (v, len, dflt) => { let x = v === undefined ? dflt : Math.trunc(Number(v)) || 0; return x < 0 ? Math.max(len + x, 0) : Math.min(x, len); };
 function limitedSubarray(begin, end) {
 	const len = this.length;
-	let b = begin === undefined ? 0 : Math.trunc(Number(begin)) || 0;
-	b = b < 0 ? Math.max(len + b, 0) : Math.min(b, len);
+	const b = clamp(begin, len, 0), e = clamp(end, len, len);
 	if (b > LIMIT / this.BYTES_PER_ELEMENT) throw new RangeError('Invalid array buffer length');
+	if (Math.max(e - b, 0) * this.BYTES_PER_ELEMENT > LIMIT) throw new RangeError('Invalid typed array length: ' + Math.max(e - b, 0) * this.BYTES_PER_ELEMENT);
 	return nativeSubarray.call(this, begin, end);
+}
+// The constructor with the length cap, set as the view's own constructor (the fix builds through
+// this.constructor). The real constructor makes the view.
+function capped(C) {
+	return function (buffer, offset, length) {
+		if (length !== undefined && length * C.BYTES_PER_ELEMENT > LIMIT) throw new RangeError('Invalid typed array length: ' + length * C.BYTES_PER_ELEMENT);
+		return length === undefined ? new C(buffer, offset) : new C(buffer, offset, length);
+	};
 }
 
 const dir = mkdtempSync(join(tmpdir(), 'heap518-'));
@@ -74,6 +85,9 @@ test('control: the injected limit refuses a subarray past it, as production V8 d
 		const h = new Uint8Array(new WebAssembly.Memory({ initial: 32 }).buffer); // 2 MiB
 		assert.throws(() => h.subarray(LIMIT + 16, LIMIT + 48), /Invalid array buffer length/);
 		assert.equal(h.subarray(LIMIT - 64, LIMIT - 32).length, 32);
+		assert.throws(() => h.subarray(16, LIMIT + 32), /Invalid typed array length/);
+		assert.throws(() => new (capped(Uint8Array))(h.buffer, 16, LIMIT + 1), /Invalid typed array length: 1048577/);
+		assert.equal(new (capped(Uint8Array))(h.buffer, 16).length, h.length - 16, 'a derived length is not capped');
 	} finally { TA.subarray = nativeSubarray; }
 });
 
@@ -93,9 +107,19 @@ test('the heap subarray matches the native one, past the limit too', async () =>
 	const h32 = php[__private__dont__use].HEAPU32;
 	assert.deepEqual([h32.subarray(LIMIT, LIMIT + 4).byteOffset, h32.subarray(-2).length], [4 * LIMIT, 2]);
 	TA.subarray = limitedSubarray;
+	Object.defineProperty(h, 'constructor', { value: capped(Uint8Array), configurable: true });
 	try {
 		assert.equal(h.subarray(3 * LIMIT, 3 * LIMIT + 77).length, 77, 'past the injected limit');
-	} finally { TA.subarray = nativeSubarray; }
+		// Views LONGER than the limit (probe v2: negative_at_64, 136 MiB). To the end of the heap
+		// they work; a long span that stops before the end throws, as the native does.
+		for (const c of [[LIMIT / 2], [-(n - LIMIT / 2)], [LIMIT / 2, n], [LIMIT / 2, n + 9], [0]]) {
+			const v = h.subarray(...c);
+			const want = nativeSubarray.apply(h, c);
+			assert.deepEqual([v.byteOffset, v.length], [want.byteOffset, want.length], 'to the end ' + JSON.stringify(c));
+		}
+		assert.throws(() => h.subarray(0, 3 * LIMIT), /Invalid typed array length/);
+		assert.throws(() => limitedSubarray.call(h, 0, 3 * LIMIT), /Invalid typed array length/, 'the native throws there too');
+	} finally { TA.subarray = nativeSubarray; delete h.constructor; }
 });
 
 test('stock loader: a message read past the limit fails (the #518 defect)', async () => {
