@@ -46,6 +46,13 @@ try:
         open(os.path.join(d, "package.json"), "w").write("{}")
         open(os.path.join(d, "README.md"), "w").write("not packed")
         os.makedirs(os.path.join(d, "node_modules", "x"))
+        # The build/ parts the deploy never uploads (#507): never packed.
+        os.makedirs(os.path.join(d, "build", "wordpress", "wp-admin"))
+        os.makedirs(os.path.join(d, "build", "cache"))
+        open(os.path.join(d, "build", "wordpress", "wp-admin", "x.php"), "w").write("<?php")
+        open(os.path.join(d, "build", "cache", "wordpress.zip"), "wb").write(os.urandom(2048))
+        open(os.path.join(d, "build", "opcache.log"), "w").write("log")
+        open(os.path.join(d, "index.js"), "a").write("\nimport siteZip from './build/site.zip';\n")
         return d
 
     B = "wp-wfp-b-media"
@@ -56,6 +63,7 @@ try:
     names = tarfile.open(tgz).getnames()
     check("  it holds build/, vendor/ and the root sources", all(n in names for n in ("build/build-id.js", "build/site.zip", "build/public/x.css", "vendor/php_8_3.js", "index.js", "turnstile.mjs", "package.json")))
     check("  and not README.md or node_modules", "README.md" not in names and not any(n.startswith("node_modules") for n in names))
+    check("  and not build/wordpress, build/cache or a build log (#507)", not any(n.startswith(("build/wordpress", "build/cache", "build/opcache.log")) for n in names))
     r = run("pack", a1, "aaaaaaaaaaaa", os.path.join(T, "x.tar.gz"))
     check("pack refuses an id that build/ does not hold", r.returncode != 0 and "build/ holds bbbbbbbbbbbb-wooprimed" in r.stderr)
     a_dirty = app("cccccccccccc-dirty", "dirty")
@@ -71,7 +79,7 @@ try:
     out = tempfile.mkdtemp(dir=T)
     r = run("get", B, "bbbbbbbbbbbb-wooprimed", out)
     check("get: exit 0", r.returncode == 0)
-    check("  the tree is the live build's own code", open(os.path.join(out, "index.js")).read() == "// B live" and open(os.path.join(out, "vendor", "php_8_3.js")).read() == "// loader B live")
+    check("  the tree is the live build's own code", open(os.path.join(out, "index.js")).read().startswith("// B live") and open(os.path.join(out, "vendor", "php_8_3.js")).read() == "// loader B live")
     r = run("get", B, "dddddddddddd", tempfile.mkdtemp(dir=T))
     check("get: no artifact: exit 3", r.returncode == 3)
     r = run("get", "wp-wfp-other-media", "bbbbbbbbbbbb-wooprimed", tempfile.mkdtemp(dir=T))

@@ -11,8 +11,10 @@
 #   a site's media bucket           wp-wfp-<name>-media
 #   the stale-entry probe           wp-probe, a dispatcher copy whose entry names a script
 #                                   that does not exist (it must answer 404)
-WFP=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-ROOT=$(cd "$WFP/../.." && pwd)
+# Physical paths (pwd -P), so a clone under a symlinked path deploys from the same path a rollback
+# mirror uses: a symlink in the config path changes the bundle esbuild writes (#507).
+WFP=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+ROOT=$(cd "$WFP/../.." && pwd -P)
 # The pinned Wrangler. A test points WR at a stub.
 WR=${WR:-$ROOT/deploy/wr}
 # A test sets APP to a stand-in tree. A deploy leaves it unset.
@@ -570,6 +572,33 @@ save_rollback_tree() {
   done
   echo "  the rollback code is build/ (this clone built the live build last) with this tree's vendor/ and sources" >&2
   echo "$live"
+}
+# rollback_deploy_dir <saved dir>: build a mirror of the repo layout in a new private temp dir and
+# move the saved rollback tree into it at the app's own path (<mirror>/spikes/b2-wordpress), with a
+# copy of $APP/node_modules and, when WR is this repo's deploy/wr, a copy of deploy/wr and
+# deploy/tools (#507). Prints "<mirror>TAB<app dir>TAB<wrangler>"; the caller removes <mirror>.
+# Why: wrangler bundles with module paths relative to the directory it runs in (deploy/tools and
+# node_modules both show up in the bundle), and esbuild names an anonymous default export of
+# index.js after its directory. From a temp dir elsewhere the bundle came out with other strings in
+# it. In the mirror, every relative path and name is the original's, so the bundle and its modules
+# are byte-equal to the original deploy's (rollback-slim-test.sh). Copies, not hard links: nothing
+# a rollback runs can write through into the real trees.
+rollback_deploy_dir() {
+  local saved=$1 rb rel app wr=$WR
+  case "$APP" in "$ROOT"/*) rel=${APP#"$ROOT"/} ;; *) rel=$(basename "$APP") ;; esac
+  rb=$(mktemp -d) || return 1; chmod 700 "$rb"
+  rb=$(cd "$rb" && pwd -P) || return 1   # physical, as ROOT is: see the note at WFP=
+  app="$rb/$rel"; mkdir -p "$app"
+  if ! mv "$saved"/* "$app"/; then rm -rf "$rb"; return 1; fi
+  if [ -d "$APP/node_modules" ]; then
+    python3 -I -c 'import shutil, sys; shutil.copytree(sys.argv[1], sys.argv[2], symlinks=True)' "$APP/node_modules" "$app/node_modules" || { echo "  the copy of node_modules failed" >&2; rm -rf "$rb"; return 1; }
+  fi
+  if [ "$WR" = "$ROOT/deploy/wr" ] && [ -x "$ROOT/deploy/tools/node_modules/.bin/wrangler" ]; then
+    mkdir -p "$rb/deploy"; cp -p "$ROOT/deploy/wr" "$rb/deploy/wr"
+    python3 -I -c 'import shutil, sys; shutil.copytree(sys.argv[1], sys.argv[2], symlinks=True)' "$ROOT/deploy/tools" "$rb/deploy/tools" || { echo "  the copy of deploy/tools failed" >&2; rm -rf "$rb"; return 1; }
+    wr="$rb/deploy/wr"
+  fi
+  printf '%s\t%s\t%s\n' "$rb" "$app" "$wr"
 }
 # write_rollback_artifact <bucket> <build id> [previous build id]: after a good update or add, store
 # what was deployed ($APP: build/, vendor/, sources) as _build/artifact/<id>.tar.gz, then prune
