@@ -250,19 +250,19 @@ restore_one() {
   echo "site restore $s: done"
 }
 
-# The daily snapshot cron of an EXISTING site (#533, design A', phase A): re-deploy its dispatcher
-# copy wp-<name> with the cron and the site's SNAPSHOT_TOKEN (lib.sh render_site_dispatcher). A new
-# site gets both from site add. Order: the user Worker must hold SNAPSHOT_TOKEN first (site update
+# The daily snapshot cron of an EXISTING site (#533, design A'): re-deploy its dispatcher copy
+# wp-<name> with the cron and the site's SNAPSHOT_TOKEN (lib.sh render_site_dispatcher). A new site
+# gets both from site add. Order: the user Worker must hold SNAPSHOT_TOKEN first (site update
 # uploads it), or every cron run is a 403; this refuses until it does. SNAPSHOT_CRON=off removes the
-# cron. Phase B (one wp-dispatch) has no per-site cron and is refused. The cron can take up to 15
-# minutes to arm. Exit 0 deployed and read back, 1 failed, 2 refused.
+# cron. A phase B site (a Custom Domain on the shared wp-dispatch) gets its CRON-ONLY copy: the same
+# script with no route and no workers.dev, read back unreachable (lib.sh cron_copy_check). The cron
+# can take up to 15 minutes to arm. Exit 0 deployed and read back, 1 failed, 2 refused.
 schedule_one() {
   local s=$1
   valid_site "$s" || { echo "bad site name: $s" >&2; return 2; }
   has_ws "$s" || { echo "no site $s" >&2; return 2; }
   tfr site init -input=false >/dev/null; tfr site workspace select "$s" >/dev/null
   site_vars "$s" "$SUB" "$KV_ID" || return 1
-  [ "$REC_CD" = true ] && { echo "site $s: refused: it is on a Custom Domain (phase B), and phase B has no per-site cron (#533)" >&2; return 2; }
   local D U names want got W
   D=$(dispatcher_name "$s"); U=$(user_script "$s")
   tfr site output -raw snapshot_token >/dev/null 2>&1 || { echo "site $s: refused: its workspace has no snapshot token yet; run site update $s first (#533)" >&2; return 2; }
@@ -270,7 +270,8 @@ schedule_one() {
   printf '%s\n' "$names" | grep -qx SNAPSHOT_TOKEN || { echo "site $s: refused: $U does not hold SNAPSHOT_TOKEN yet, so every cron run would be a 403; run site update $s first (#533)" >&2; return 2; }
   want=$(snapshot_cron) || return 2
   W=$(mktemp -d); chmod 700 "$W"; mkdir -p "$GEN"
-  render_site_dispatcher "$s" "$KV_ID" > "$GEN/$D.toml" || { rm -rf "$W"; return 2; }
+  local mode=""; [ "$REC_CD" = true ] && mode=cron-only
+  render_site_dispatcher "$s" "$KV_ID" ${mode:+"$mode"} > "$GEN/$D.toml" || { rm -rf "$W"; return 2; }
   tfr site output -json | dispatcher_secrets_json "$W/sec.json" || { rm -rf "$W"; return 1; }
   echo "site $s: deploy $D with the snapshot cron [${want:-none}] (#533)"
   wrangler_deploy "$GEN" "$W/disp.log" --config "$D.toml" --secrets-file "$W/sec.json" || { echo "site $s: the dispatcher deploy failed:" >&2; tail -20 "$W/disp.log" >&2; rm -rf "$W"; return 1; }
@@ -282,6 +283,7 @@ except ValueError:
     sys.exit(1)
 print(" ".join(sorted(x.get("cron", "") for x in r.get("schedules") or [])))') || { echo "site $s: DEPLOYED, but the schedules of $D cannot be read back" >&2; return 1; }
   [ "$got" = "$want" ] || { echo "site $s: DEPLOYED, but $D reads schedules [$got], not [$want]" >&2; return 1; }
+  if [ "$mode" = cron-only ]; then cron_copy_check "$D" || { echo "site $s: DEPLOYED, but the cron-only copy $D is reachable: delete it (wr delete --name $D)" >&2; return 1; }; echo "site $s: $D is cron-only (phase B): workers.dev and previews off, no Custom Domain (read back)"; fi
   echo "site $s: $D schedules read back [$got]; the first run can come up to 15 minutes after a change"
   echo "site schedule $s: done"
 }
