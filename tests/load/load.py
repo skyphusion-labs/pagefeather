@@ -218,7 +218,10 @@ def products():
 
 
 def is_1102(r):
-    return r["code"] != 200 and b"1102" in (r["body"] or b"")[:20000]
+    # Cloudflare's 1102 (Worker exceeded resource limits) is an error page, so a 5xx. Any non-200
+    # used to count: a 201 whose JSON held the bytes "1102" (an id or a price) counted as a death
+    # (wp-a-lean load run, 2026-11-14, every status 200 or 201, "e1102 1" at 25 users).
+    return isinstance(r["code"], int) and r["code"] >= 500 and b"1102" in (r["body"] or b"")[:20000]
 
 
 lock = threading.Lock()
