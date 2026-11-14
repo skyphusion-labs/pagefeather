@@ -14,12 +14,12 @@ Control:
   POST /_refuse_mint                          the next mint answers 403
   POST /_expire_after?n=<n>                   every live credential expires after n more S3 requests
   PUT  /_seed/<bucket>/<key>                  store an object with no auth
-  GET  /_state                                {"mints": [...bodies], "objects": [...paths], "denied": n}
+  GET  /_state                                {"mints": [...bodies], "mint_log": [[time, bucket]...], "objects": [...paths], "denied": n}
 """
-import http.server, json, sys, threading, urllib.parse
+import http.server, json, sys, threading, time, urllib.parse
 
 lock = threading.Lock()
-objects, creds, mints = {}, {}, []
+objects, creds, mints, mint_log = {}, {}, [], []
 state = {"refuse_mint": False, "expire_after": None, "denied": 0}
 
 
@@ -52,6 +52,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     state["refuse_mint"] = False
                     return self.send(403, json.dumps({"success": False, "errors": [{"code": 10000, "message": "Authentication error"}]}).encode(), "application/json")
                 mints.append(b)
+                mint_log.append([round(time.time(), 3), b.get("bucket")])
                 n = len(mints)
                 kid, sec, tok = "tmpkey%d" % n, "tmpsecret%d" % n, "sessiontoken%d" % n
                 creds[kid] = {"bucket": b.get("bucket"), "token": tok, "left": None}
@@ -71,7 +72,7 @@ class H(http.server.BaseHTTPRequestHandler):
         if u.path.startswith("/_seed/"):
             objects[urllib.parse.unquote(u.path[len("/_seed"):])] = self.body(); return self.send(200)
         if u.path == "/_state":
-            return self.send(200, json.dumps({"mints": mints, "objects": sorted(objects), "denied": state["denied"]}).encode(), "application/json")
+            return self.send(200, json.dumps({"mints": mints, "mint_log": mint_log, "objects": sorted(objects), "denied": state["denied"]}).encode(), "application/json")
         return self.send(404)
 
     def allowed(self, bucket):
