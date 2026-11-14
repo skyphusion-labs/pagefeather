@@ -78,6 +78,25 @@ r515 big-502once-nocounts
 ok "#515 502 once and no /_dbcounts: exit 0 in TWO passes, the second from part 0 ($NP posts = 7 + $NPARTS) ($R)" "$([ "$RR" = 0 ] && [ "$NP" = $((NPARTS + 7)) ] && printf '%s' "$R" | grep -q '"attempts": 2' && echo 1 || echo 0)"
 r515 big-502always
 ok "#515 502 always at part 6: exit 1 after 3 passes, naming part 6 and 502 ($R)" "$([ "$RR" = 1 ] && printf '%s' "$R" | grep -q '"attempts": 3' && printf '%s' "$R" | grep -q '"part": 6' && printf '%s' "$R" | grep -q '"status": 502' && echo 1 || echo 0)"
+# #517 follow-up (pf512 live run, 2026-11-14): the failed part holds the FIRST rows of a table, so
+# that table has no rows before it. The site counts it 0; the check must read that as "before".
+t517() { # t517 <mode>: restore the site-shaped two-table dump in 4 KB parts; sets R, RR, NP, ROWS, NPARTS
+  local pid; pid=$(start "$1"); U="http://127.0.0.1:$(cat "$T/port")"; snap "$U" "t.ndjson" >/dev/null
+  R=$(DBIMPORT_PART_BYTES=4096 DBIMPORT_RETRY_DELAYS=0,0,0 DBRESTORE_RESTART_S=0 restore "$U" "t.ndjson" 2> "$T/t517.err"); RR=$?
+  NP=$(curl -s "$U/_parts" | python3 -I -c 'import json,sys; print(len(json.load(sys.stdin)))')
+  ROWS=$(curl -s "$U/_dbcounts")
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+  NPARTS=$(printf '%s' "$R" | python3 -I -c 'import json,sys; print(json.loads(sys.stdin.read()).get("parts", 0))')
+}
+t517 tables-502once
+ok "#517: 502 at the part that STARTS a table (not applied): exit 0 in ONE pass, the part sent again ($NP posts for $NPARTS parts) ($R)" "$([ "$RR" = 0 ] && printf '%s' "$R" | grep -q '"attempts": 1' && [ "$NP" = $((NPARTS + 1)) ] && grep -q '^dbrestore: part 6 was not applied (/_dbcounts): sending it again$' "$T/t517.err" && echo 1 || echo 0)"
+ok "  every row is in, none twice ($ROWS)" "$(printf '%s' "$ROWS" | python3 -I -c 'import json,sys; r=json.load(sys.stdin)["rows"]; print(int(r.get("wp_b")==102 and r.get("wp_a",0) > 0))')"
+t517 tables-502applied
+ok "#517: the same part applied, then 502: not sent again ($NP posts for $NPARTS parts)" "$([ "$RR" = 0 ] && [ "$NP" = "$NPARTS" ] && grep -q '^dbrestore: part 6 was applied before the 502 answer' "$T/t517.err" && echo 1 || echo 0)"
+t517 tables-502once-livewrite
+ok "#517: a live write to the part's table after the 502: neither count, so a full restart, and it says why ($R)" "$([ "$RR" = 0 ] && printf '%s' "$R" | grep -q '"attempts": 2' && echo 1 || echo 0)"
+ok "  the log names the table with its live, before and after counts" "$(grep -c '^dbrestore: part 6: /_dbcounts holds neither the counts before nor after it: wp_b live 1, before 0, after 34$' "$T/t517.err")"
+ok "  the restart line carries the reason" "$(grep -c 'failed at part 6 (502; the part.s tables hold neither the counts before it nor after it): starting again' "$T/t517.err")"
 # row_count (lib.sh) reads /_dbexport and counts the rows (the fake ok mode has 3).
 pid=$(start ok); U="http://127.0.0.1:$(cat "$T/port")"; rc_rows=$(row_count "$U" t)
 kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null

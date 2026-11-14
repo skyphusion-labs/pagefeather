@@ -326,12 +326,23 @@ def _restore_once(origin, token, parts, before, after, log):
             if c is None or not tabs:
                 fail["why"] = "cannot tell whether the failed part was applied (/_dbcounts: %s)" % ("no answer" if c is None else "the part has no rows")
                 return fail
-            if all(c.get(t) == after[i].get(t) for t in tabs):
+            # A table with no rows before this part has no key in before[i]: the site counts it 0
+            # (part 0 made it, empty). Missing a 0 here read "neither" on pf512, 2026-11-14, for a
+            # part that starts a table, and the pass started over for no reason (#517 follow-up).
+            live = {t: c.get(t) for t in tabs}
+            want_after = {t: after[i].get(t, 0) for t in tabs}
+            want_before = {t: before[i].get(t, 0) for t in tabs}
+            if live == want_after:
                 log("part %d was applied before the %s answer (/_dbcounts): not sent again" % (i, st))
                 break
-            if not all(c.get(t) == before[i].get(t) for t in tabs):
+            if live != want_before:
                 fail["why"] = "the part's tables hold neither the counts before it nor after it"
+                # Every table of the part (up to 5): tables can disagree among themselves.
+                fail["tables"] = [[t, live[t], want_before[t], want_after[t]] for t in sorted(tabs)][:5]
+                log("part %d: /_dbcounts holds neither the counts before nor after it: %s" % (
+                    i, "; ".join("%s live %s, before %s, after %s" % tuple(x) for x in fail["tables"])))
                 return fail
+            log("part %d was not applied (/_dbcounts): sending it again" % i)
     return None
 
 
@@ -372,7 +383,8 @@ def dbrestore(origin, token, bucket, key):
             break
         if a < attempts:
             wait = float(ENV.get("DBRESTORE_RESTART_S") or 10)
-            log("pass %d of %d failed at part %s (%s): starting again from part 0 in %g s" % (a, attempts, fail["part"], fail["status"], wait))
+            log("pass %d of %d failed at part %s (%s%s): starting again from part 0 in %g s" % (
+                a, attempts, fail["part"], fail["status"], ("; " + fail["why"]) if fail.get("why") else "", wait))
             time.sleep(wait)
     print(json.dumps(dict({"ok": False, "stage": "import", "attempts": attempts}, **fail)))
     return 1
