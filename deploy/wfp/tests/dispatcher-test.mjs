@@ -174,5 +174,20 @@ await cron('scheduled: a site that never answers: timeout after SNAPSHOT_TIMEOUT
 await cron('scheduled: no SNAPSHOT_TOKEN: throws not-configured, no call', { SNAPSHOT_SCRIPT: 'site-one' }, okAnswer, ({ err, calls }) => [...p(err && /not configured/.test(err.message), 'not configured'), ...p(calls.length === 0, 'no call')]);
 await cron('scheduled: no SNAPSHOT_SCRIPT: throws not-configured, no call', { SNAPSHOT_TOKEN: 't' }, okAnswer, ({ err, calls }) => [...p(err && /not configured/.test(err.message), 'not configured'), ...p(calls.length === 0, 'no call')]);
 await cron('scheduled: a SNAPSHOT_SCRIPT that is not a site-<name>: throws, no call', { SNAPSHOT_SCRIPT: '../other', SNAPSHOT_TOKEN: 't' }, okAnswer, ({ err, calls }) => [...p(err !== null, 'throws'), ...p(calls.length === 0, 'no call')]);
+// A bad flag logs a distinct line (a monitor's signal for a store held closed with no end time);
+// a good flag, an expired one and no flag log nothing.
+{
+	const seen = [];
+	const orig = console.log;
+	console.log = (...a) => { seen.push(a.join(' ')); };
+	try {
+		for (const h of ['wp-movebad', 'wp-moving', 'wp-moved', 'wp-moveoff', 'wp-two']) await worker.fetch(new Request(`https://${h}.sub.workers.dev/`), env(MAP, DEPLOYED));
+	} finally {
+		console.log = orig;
+	}
+	const bad = seen.filter((l) => l.includes('"m":"wfp-moving-bad"'));
+	if (bad.length === 1 && bad[0] === JSON.stringify({ m: 'wfp-moving-bad', host: 'wp-movebad.sub.workers.dev' }) && seen.length === 1) console.log('PASS a bad moving flag logs wfp-moving-bad with its host, and nothing else logs');
+	else { fails++; console.log('FAIL the wfp-moving-bad log line: ' + JSON.stringify(seen)); }
+}
 console.log(fails + ' failing case(s)');
 process.exit(fails ? 1 : 0);
