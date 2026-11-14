@@ -224,7 +224,7 @@ function ledgerSnapshot(at) {
 	} catch (e) {
 		memfs = { error: String((e && e.message) || e).slice(0, 80) };
 	}
-	return { at, iso: ISOLATE_ID, rt: runtimeSerial, wasmMiB: php ? LEDGER_MIB(heapOf(php)) : null, runtimes: ledger.runtimes(runtimeSerial, heapOf), memfs, inflatedMiB: LEDGER_MIB(inflatedBytes), ocMiB: LEDGER_MIB(objectCacheBytes), sql: sqlMeter.read(), inflate: { reqN: stats.inflates - ledgerInfl0.n, reqMiB: LEDGER_MIB(stats.inflateBytes - ledgerInfl0.b), isoN: stats.inflates, isoMiB: LEDGER_MIB(stats.inflateBytes), reinflateN: stats.reinflates - ledgerInfl0.r, ...(inflateArena ? { arena: { mib: LEDGER_MIB(inflateArena.size), arenaEvict: inflateArena.counts.evicts - ledgerInfl0.ae, over: inflateArena.counts.over } } : {}) } };
+	return { at, iso: ISOLATE_ID, rt: runtimeSerial, wasmMiB: php ? LEDGER_MIB(heapOf(php)) : null, runtimes: ledger.runtimes(runtimeSerial, heapOf), memfs, inflatedMiB: LEDGER_MIB(inflatedBytes), ocMiB: LEDGER_MIB(objectCacheBytes), sql: sqlMeter.read(), inflate: { reqN: stats.inflates - ledgerInfl0.n, reqMiB: LEDGER_MIB(stats.inflateBytes - ledgerInfl0.b), isoN: stats.inflates, isoMiB: LEDGER_MIB(stats.inflateBytes), reinflateN: stats.reinflates - ledgerInfl0.r, ...(inflateArena ? { arena: { mib: LEDGER_MIB(inflateArena.size), arenaEvict: inflateArena.counts.evicts - ledgerInfl0.ae, over: inflateArena.counts.over, copy: arenaCopyOn() } } : {}) } };
 }
 function ledgerLog(at, extra) {
 	console.log(JSON.stringify({ m: 'mem-ledger', ...(ledgerId ? { id: ledgerId } : {}), ...ledgerSnapshot(at), ...(extra || {}) }));
@@ -432,6 +432,10 @@ let LAZY_CACHE_BYTES = 2 * 1024 * 1024;
 // new buffer per file (inflate-arena.mjs). LAZY_ARENA_MB sizes it (default: LAZY_CACHE_BYTES).
 let inflateArena = null;
 function arenaOn() { return !!(ENV && ENV.LAZY_ARENA === 'on'); }
+// #519 experiment (LAZY_ARENA_COPY=on, only with LAZY_ARENA=on): inflate into the arena exactly as before,
+// then hand MEMFS a COPY (slice) of the region, so no node ever holds a view into the arena. It tests whether a
+// node aliasing arena bytes is what loses acknowledged writes on pf394a; it is not a fix.
+function arenaCopyOn() { return !!(ENV && ENV.LAZY_ARENA_COPY === 'on'); }
 function getArena() {
 	if (!inflateArena) {
 		const mb = Number(ENV && ENV.LAZY_ARENA_MB);
@@ -532,6 +536,7 @@ function attachLazyContents(node, size, dataFn, tag) {
 				let inArena = false;
 				const out = arenaOn() ? (n) => { const v = getArena().alloc(n, drop); inArena = !!v; return v; } : null;
 				contents = dataFn(out);
+				if (inArena && arenaCopyOn()) contents = contents.slice(); // #519: a copy, never a view into the arena
 				if (inArena) {
 					stats.inflates++;
 					stats.inflateBytes += contents.length;

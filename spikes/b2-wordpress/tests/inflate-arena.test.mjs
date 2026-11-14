@@ -120,3 +120,28 @@ test('index.js: off by default; both inflate sites take the arena; evictLazy emp
 	assert.match(src, /reinflates: stats\.reinflates - start\.reinflates/);
 	assert.match(src, /arenaEvict: inflateArena\.counts\.evicts - ledgerInfl0\.ae/);
 });
+
+// #519 (LAZY_ARENA_COPY): a reference held across ring reuse. A VIEW into the arena goes stale when its
+// region is reused; a COPY (slice, as index.js makes with LAZY_ARENA_COPY=on) keeps the file's bytes.
+test('#519: a held view is overwritten by ring reuse; a held copy is not', () => {
+	const rnd = rng(5);
+	const files = makeFiles(12, rnd);
+	for (const copy of [false, true]) {
+		const a = createArena(2 * 1048576);
+		const held = [];
+		for (const f of files) {
+			const v = a.alloc(f.raw.length, () => {});
+			if (!v) continue;
+			const got = inflateSync(f.packed, { out: v });
+			held.push({ bytes: copy ? got.slice() : got, sum: f.sum });
+		}
+		const stale = held.filter((h) => sha(h.bytes) !== h.sum).length;
+		if (copy) assert.equal(stale, 0, 'copies keep their bytes');
+		else assert.ok(stale > 0, `views into a reused region go stale (stale ${stale} of ${held.length})`);
+	}
+});
+test('index.js: LAZY_ARENA_COPY copies only arena regions and reports itself in the ledger', () => {
+	assert.match(src, /function arenaCopyOn\(\) \{ return !!\(ENV && ENV\.LAZY_ARENA_COPY === 'on'\); \}/);
+	assert.match(src, /if \(inArena && arenaCopyOn\(\)\) contents = contents\.slice\(\);/);
+	assert.match(src, /over: inflateArena\.counts\.over, copy: arenaCopyOn\(\) \}/);
+});

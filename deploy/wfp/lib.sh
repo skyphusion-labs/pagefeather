@@ -238,6 +238,12 @@ lazy_arena_var() {
     on|off) echo "LAZY_ARENA = \"${LAZY_ARENA}\"" ;;
     *) echo "LAZY_ARENA must be on, off or unset, not ${LAZY_ARENA}" >&2; return 1 ;;
   esac
+  # LAZY_ARENA_COPY (#519 experiment): "on" hands MEMFS a copy of each arena region instead of a view.
+  case "${LAZY_ARENA_COPY:-}" in
+    "") ;;
+    on|off) echo "LAZY_ARENA_COPY = \"${LAZY_ARENA_COPY}\"" ;;
+    *) echo "LAZY_ARENA_COPY must be on, off or unset, not ${LAZY_ARENA_COPY}" >&2; return 1 ;;
+  esac
   local v=${LAZY_ARENA_MB:-}
   [ -n "$v" ] || return 0
   if ! [[ "$v" =~ ^[0-9]{1,2}$ ]] || [ "$v" -lt 1 ] || [ "$v" -gt 64 ]; then
