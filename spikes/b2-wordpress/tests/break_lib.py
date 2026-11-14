@@ -4,6 +4,10 @@ import http.cookiejar, urllib.request, urllib.parse, json, os, re, time, concurr
 B = os.environ.get("B", "https://wp-on-d1-paid.skyphusion.workers.dev")
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *a, **k): return None
+PERF_N = [0]
+LAST_ID = [None]
+
+
 def opener(jar=None):
     jar = jar if jar is not None else http.cookiejar.CookieJar()
     o = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar), NoRedirect)
@@ -12,6 +16,15 @@ def req(o, path, data=None, headers=None, method=None, timeout=120):
     h = {"User-Agent": "wp-on-cf-breaktest"}
     if os.environ.get("SPIKE_TOKEN"): h["x-spike-token"] = os.environ["SPIKE_TOKEN"]  # the Worker sends its timing headers only with it
     h.update(headers or {})
+    # A per-request id (#394): the Worker logs it on its memory and reset lines (x-perf-id), so a
+    # request that died can be joined to the Workers Logs. Operator requests only (spike token).
+    if os.environ.get("SPIKE_TOKEN") and "x-perf-id" not in {k.lower() for k in h}:
+        PERF_N[0] += 1
+        h["x-perf-id"] = "%s-%d" % (os.environ.get("PERF_RUN", "m394"), PERF_N[0])
+    # The isolate memory ledger (#394, PR 476): asked for on every operator request when MEM_LEDGER_HDR=1.
+    if os.environ.get("SPIKE_TOKEN") and os.environ.get("MEM_LEDGER_HDR") == "1":
+        h.setdefault("x-mem-ledger", "1")
+    LAST_ID[0] = h.get("x-perf-id")
     if isinstance(data, dict): data = urllib.parse.urlencode(data).encode()
     r = urllib.request.Request(B + path, data=data, headers=h, method=method)
     t = time.time()

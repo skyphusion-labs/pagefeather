@@ -19,15 +19,22 @@ Phases (default: gap admin):
          activated): only on a local or throwaway instance with CODE_LOCK=off, since every site
          is code-locked (#458).
   crawl  180 s at 1 request a second: product, product, shop, Store API cart.
+  rest   ROUNDS REST creates on a warm runtime (GET edit.php between them).
+  pnrest ROUNDS rounds of GET post-new.php then a REST create (the #394 trigger sequence).
+Every REST create is read back (check_state): by the id in a 201, else by exact title, in
+context=edit. The state is found, absent, mismatch or read-failed (#519: a failed read is never an
+absent row). The summary counts each, the 201-and-absent rows, and stalls over 30 s.
 Every GET carries a unique nocache= so the edge page cache never answers. One JSON line per request
 (headers only, never a body or a cookie); a summary per label on stderr.
 TURNSTILE_TEST_TOKEN is sent as cf-turnstile-response on the login: on a throwaway with the
 Cloudflare test keys (always pass) the gated login then runs its real siteverify path."""
 import json, os, re, sys, time, urllib.parse
 sys.path.insert(0, os.path.dirname(__file__))
+import break_lib
 from break_lib import opener, req
 
 RUN = sys.argv[1] if len(sys.argv) > 1 else 'run'
+os.environ.setdefault('PERF_RUN', RUN)
 PHASES = sys.argv[2:] or ['gap', 'admin']
 n = [0]
 rows = []
@@ -50,7 +57,8 @@ def rec(phase, label, method, path, r, extra=None):
     row = {'run': RUN, 'phase': phase, 'label': label, 'method': method, 'path': path.split('?')[0], 't': round(time.time(), 3),
            'code': r.get('code'), 's': r.get('s'), 'boot': g('x-boot'), 'wasm': g('x-wasm-mib'),
            'recycled': g('x-runtime-recycled'), 'writeLoss': g('x-write-loss'), 'reset': g('x-isolate-reset'),
-           'perf': {k: perf.get(k) for k in keep} if perf else None}
+           'prerecycled': g('x-runtime-prerecycled'), 'retry': g('x-isolate-retry'), 'perfId': break_lib.LAST_ID[0],
+           'perf': perf}  # the whole perf object: a fixed subset dropped fields the #394 runs needed
     if r.get('err'):
         row['err'] = r['err']  # a client exception (break_lib.req): the repr, never a body
     row.update(extra or {})
@@ -61,6 +69,49 @@ def rec(phase, label, method, path, r, extra=None):
 
 def get(o, phase, label, path):
     return rec(phase, label, 'GET', path, req(o, nc(path)))
+
+
+def classify(code, body, title, want_id=None):
+    """#519: the state of one create from ONE read, in context=edit. found: the row is there (the id
+    from the 201, or one exact title); absent: the read answered and the row is not there; mismatch:
+    the id answered with another title; read-failed: the read did not answer (a non-200 other than a
+    404 by id, an exception, or a body without title.raw, which means the read could not see titles).
+    A failed read is never counted as absent: in op48arena 4 failed read-backs were (#519)."""
+    if code == 404 and want_id is not None:
+        return 'absent'
+    if code != 200:
+        return 'read-failed'
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return 'read-failed'
+    items = data if isinstance(data, list) else [data]
+    if not all(isinstance(x, dict) and isinstance(x.get('title'), dict) and 'raw' in x['title'] for x in items):
+        return 'read-failed'  # no title.raw: not context=edit, so the read is blind (#519)
+    if want_id is not None:
+        hit = [x for x in items if x.get('id') == want_id]
+        if not hit:
+            return 'absent'
+        return 'found' if hit[0]['title']['raw'] == title else 'mismatch'
+    return 'found' if any(x['title']['raw'] == title for x in items) else 'absent'
+
+
+def check_state(a, nonce, r, title):
+    """Read a create back, whatever it answered: by the id in a 201's body, else by exact title."""
+    want = None
+    if r.get('code') == 201:
+        try:
+            want = json.loads(r.get('body') or b'').get('id')
+        except (ValueError, AttributeError):
+            want = None
+    want = want if isinstance(want, int) else None
+    h = {'X-WP-Nonce': nonce}
+    if want is not None:
+        s = req(a, '/?rest_route=/wp/v2/pages/%d&context=edit' % want, None, h)
+    else:
+        s = req(a, '/?rest_route=/wp/v2/pages&status=draft&context=edit&per_page=100&search=' + urllib.parse.quote_plus(title), None, h)
+    st = classify(s['code'], s.get('body'), title, want)
+    return {'state': st, 'stateFound': {'found': 1, 'absent': 0}.get(st), 'stateCode': s['code'], 'stateId': want, 'stateS': s.get('s')}
 
 
 def product_path(o):
@@ -117,9 +168,7 @@ def admin(o):
         r = req(a, '/?rest_route=/wp/v2/pages', json.dumps({'title': title, 'status': 'draft'}).encode(),
                 {'X-WP-Nonce': nonce, 'Content-Type': 'application/json'}, 'POST')
         # The state, whatever the answer said (#394: a 500 write-loss once had created the page).
-        s = req(a, '/?rest_route=/wp/v2/pages&status=draft&search=' + title.replace(' ', '+'), None, {'X-WP-Nonce': nonce})
-        found = sum(1 for x in (json.loads(s['body']) if s['code'] == 200 else []) if x.get('title', {}).get('raw', x.get('title', {}).get('rendered')) == title)
-        rec('admin', 'rest-page', 'POST', '/wp/v2/pages', r, {'stateFound': found, 'stateCode': s['code']})
+        rec('admin', 'rest-page', 'POST', '/wp/v2/pages', r, check_state(a, nonce, r, title))
         if os.environ.get('ADMIN_EXTRA') == '1':
             # The WooCommerce settings screen (a heavy admin page), and a settings save through
             # WooCommerce's settings API with the SAME value (no setting changes).
@@ -139,6 +188,33 @@ def admin(o):
             rec('admin', 'plugin-install', 'POST', '/wp/v2/plugins', ri)
             rd = req(a, '/?rest_route=/wp/v2/plugins/hello-dolly/hello', None, h, 'DELETE')
             rec('admin', 'plugin-delete', 'DELETE', '/wp/v2/plugins', rd)
+
+
+def rest(o):
+    """#394 (b): REST creates on a WARM runtime. Per round: GET edit.php, then a REST draft page,
+    read back. No post-new in between, so the create does not follow a recycle or an isolate reset."""
+    a = login()
+    for i in range(int(os.environ.get('ROUNDS', '50'))):
+        get(a, 'rest', 'edit-list', '/wp-admin/edit.php')
+        rest_round(a, 'rest', i)
+
+
+def pnrest(o):
+    """#394 (b): the trigger sequence. Per round: GET post-new.php (115 to 121 MiB: it recycles the
+    runtime or resets the isolate), then a REST draft page, read back."""
+    a = login()
+    for i in range(int(os.environ.get('ROUNDS', '50'))):
+        get(a, 'pnrest', 'post-new', '/wp-admin/post-new.php?post_type=page')
+        rest_round(a, 'pnrest', i)
+
+
+def rest_round(a, phase, i):
+    nn = req(a, '/wp-admin/admin-ajax.php?action=rest-nonce')
+    nonce = (nn.get('body') or b'').decode().strip()
+    title = 'measure394 %s %d' % (RUN, i)
+    r = req(a, '/?rest_route=/wp/v2/pages', json.dumps({'title': title, 'status': 'draft'}).encode(),
+            {'X-WP-Nonce': nonce, 'Content-Type': 'application/json'}, 'POST')
+    rec(phase, 'rest-page', 'POST', '/wp/v2/pages', r, check_state(a, nonce, r, title))
 
 
 def crawl(o):
@@ -167,12 +243,15 @@ def summary():
             sum(1 for x in rs if x.get('recycled')), sum(1 for x in rs if x.get('writeLoss') not in (None, '0')),
             len(isos - {None}), max((int(x['wasm']) for x in rs if x.get('wasm')), default=None), p(0.5), p(0.99)), file=sys.stderr)
         if lb == 'rest-page':
-            print('       rest-page: created per the database %d of %d; answered 201 %d' % (
-                sum(1 for x in rs if x.get('stateFound')), len(rs), sum(1 for x in rs if x['code'] == 201)), file=sys.stderr)
+            st = {k: sum(1 for x in rs if x.get('state') == k) for k in ('found', 'absent', 'mismatch', 'read-failed')}
+            stalls = sum(1 for x in rs if max(x.get('s') or 0, x.get('stateS') or 0) > 30)
+            print('       rest-page: answered 201 %d; read back: found %d absent %d mismatch %d read-failed %d; 201-and-absent %d; stalls over 30 s %d' % (
+                sum(1 for x in rs if x['code'] == 201), st['found'], st['absent'], st['mismatch'], st['read-failed'],
+                sum(1 for x in rs if x['code'] == 201 and x.get('state') == 'absent'), stalls), file=sys.stderr)
 
 
 if __name__ == '__main__':
     o = opener()
     for ph in PHASES:
-        {'gap': gap, 'admin': admin, 'crawl': crawl}[ph](o)
+        {'gap': gap, 'admin': admin, 'crawl': crawl, 'rest': rest, 'pnrest': pnrest}[ph](o)
     summary()
