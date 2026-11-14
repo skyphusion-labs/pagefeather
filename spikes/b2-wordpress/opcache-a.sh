@@ -61,3 +61,5 @@ PY
 rm -f "$SRC"
 echo "done. The ENGINE=a build/ now carries the precompiled cache. Deploy with:"
 echo "  deploy/wr deploy --env a-paid-lean"
+echo "then redact the query string in its Workers Logs (#394; the env turns observability on):"
+echo "  python3 deploy/wfp/obs_settings.py redact - wp-a-lean"
