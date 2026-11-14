@@ -50,25 +50,25 @@ b-dosql (pnrest, a different round): post-new p50 / p95, arena off 4,690 / 5,480
 
 ## The isolate budget (Rollins's floor rounds 1 to 6, #394)
 
-Allocation probes in production, by Rollins, 2026-11-14. Each probe allocates and holds memory until the isolate is killed, with and without the pieces our bundle loads. The raw files are with the comments; this page only summarises them.
+Allocation probes in production, by Rollins, 2026-11-14. Each one holds memory until the isolate is killed, with and without the pieces our bundle loads. The raw readings are in the comments; this page only summarises them.
 
-| finding | number | round and comment |
+| finding | MiB | round and comment |
 |---|---|---|
-| the isolate budget, a plain Worker and a Durable Object ALIKE | about **256 MiB** (a plain-`ArrayBuffer` probe dies at `mib 255`) | round 1, [issuecomment-6876869608](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6876869608); round 3 corrects round 2's "a DO is held to about 128", [issuecomment-6876985619](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6876985619) |
-| what the bundle's data modules cost before PHP runs | **32 MiB** for both zips (`opcache.zip` alone 20, `site.zip` alone 19; not additive), wasm about 6 alone and 0 on top | rounds 1 to 3, the same comments, and round 2, [issuecomment-6876930979](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6876930979) |
-| php-wasm's heap growth | it grows IN PLACE, with no old + new copy held at once | round 4 (probe G), [issuecomment-6877025165](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6877025165) |
-| a booted PHP runtime | **32 MiB**; running it or tiering it up adds nothing measurable | round 5 (probe I), [issuecomment-6877044444](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6877044444) |
-| the real PHP heap in one request | grows to about **226 MiB**, with no mirror | round 6 (probes P and PZ), [issuecomment-6877086017](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6877086017) |
-| memory outside PHP's heap at a WordPress death | about **100 MiB** | the same round 6 comment |
+| an empty isolate: a plain Worker, a Durable Object, and WebAssembly memory alike | **255** (DO 255, wasm 254) | rounds 1 and 3, [issuecomment-6876869608](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6876869608), [issuecomment-6876985619](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6876985619) |
+| the bundle's zips, before PHP runs | **32** (`opcache.zip` alone 20, `site.zip` alone 19; not additive) | rounds 1 to 3, also [issuecomment-6876930979](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6876930979) |
+| the compiled `php_8_3.wasm` alone | **6** | round 3, [issuecomment-6876985619](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6876985619) |
+| a booted PHP | **32** (24 heap + about 8 for compiled code, the JS glue and the runtime); running it and tier-up add **0** | round 5 (probe I), [issuecomment-6877044444](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6877044444) |
+| php-wasm's heap growth | grows **in place**, to about **248** (no old + new copy at once) | round 4 (probe G), [issuecomment-6877025165](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6877025165) |
+| the real PHP heap in one request | **226**, or **186** with the zips loaded (the zips cost 40 here, against 32 in the `ArrayBuffer` probes: measured, not explained) | round 6 (probes P and PZ), [issuecomment-6877086017](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6877086017) |
 
-So a WordPress admin death on approach A or b-dosql is the isolate's whole budget, about 256 MiB, used up. The PHP heap is only part of that. The zips (32) and a booted PHP (32) come out of the budget before a request does anything, and about 100 MiB sits outside the heap when WordPress dies.
+**Rollins's inference, not proven:** with a budget of about 256, 32 to 40 for the zips and about 8 for the runtime, **about 100 MiB at a real WordPress death sits outside the wasm heap, in our own JS**. That includes the JS heap, inflate garbage, SQL and JSON reply strings, MEMFS contents, response buffers and runtimes not yet collected. `/_headroom` (#559) will measure it: after a real request, the same held-`ArrayBuffer` loop in the same isolate. It is also the best current explanation of HostlessWP's 0 deaths, alongside its code living outside the bundle.
 
 ## What it means
 
-1. **In the same shape (PHP in the Worker, Paid, the same store data and the same round), HostlessWP 0.1.1 had 0 platform memory deaths in 210 admin requests, and our approach A lost 31 of 200.** Both run PHP in a 128 MB Worker isolate. HostlessWP's engine is tuned to fit: it reports a flat 82 MB and answers every screen in 1.3 to 2.8 s p50. Our plain-Worker A died after the heavy editor screens with Cloudflare's `exceededMemory`.
-2. **Moving PHP into a Durable Object does not remove the wall: the object has its own limit.** It died 23 times in 210 requests. Our retry of a GET on an object reset (`object-error.mjs` `shouldRetryObjectError`, used at `index.js` `fetchWithMemoryRetry`) hid all 23 from the client. The cost is time: about 2 to 3x slower than the plain Worker, partly because each retried request boots two objects, and 2.4 to 4.5x slower than HostlessWP (the page-time table below).
+1. **In the same shape (PHP in the Worker, Paid, the same store data and the same round), HostlessWP 0.1.1 had 0 platform memory deaths in 210 admin requests, and our approach A lost 31 of 200.** Both run PHP in a Worker isolate with ONE budget of about 256 MiB, shared by WebAssembly memory and every `ArrayBuffer` (the floor rounds above). HostlessWP reports a flat 82 MB and answers every screen in 1.3 to 2.8 s p50. Our plain-Worker A died after the heavy editor screens with Cloudflare's `exceededMemory`, with the isolate's budget used up, not PHP's heap alone.
+2. **Moving PHP into a Durable Object does not remove the wall: the object hits the same isolate budget of about 256 MiB.** It died 23 times in 210 requests. Our retry of a GET on an object reset (`object-error.mjs` `shouldRetryObjectError`, used at `index.js` `fetchWithMemoryRetry`) hid all 23 from the client. The cost is time: about 2 to 3x slower than the plain Worker, partly because each retried request boots two objects, and 2.4 to 4.5x slower than HostlessWP (the page-time table below).
 3. **On b-dosql, the arena (#508) is the lever for post-new**: 84 of 100 deaths off, 1 of 100 on, with every write durable both ways.
-4. **The budget is about 256 MiB per isolate, a Worker and a Durable Object alike** (the floor rounds above). Our bundle spends 32 on its zips and 32 on a booted PHP before any page runs, and a WordPress death has about 100 MiB outside PHP's heap. So the gap to HostlessWP is in what sits in the isolate, not in PHP's heap alone.
+4. **Where the budget goes** is in the floor section above: 32 for our zips and 32 for a booted PHP before any page runs, and, by Rollins's inference, about 100 MiB of our own JS at a death.
 5. **The Worker-only paths each trade something** (deaths, hidden memory deaths with latency, or a tuned engine that still hits the wall with many plugins at once, 118 MB in 2026-11-05). So admin pages go to the Container. Visitors and checkout stay on Workers, where these rounds do not apply.
 
 ## Not measured here
@@ -78,6 +78,7 @@ So a WordPress admin death on approach A or b-dosql is the isolate's whole budge
 - **HostlessWP with this store's plugin set beyond WooCommerce**, and HostlessWP under `PHP_IN_DO=1`.
 - **Per-request memory on approach A**: the A runtime sends no `x-perf` on these paths. HostlessWP's `wasmMB` is flat and is not a peak.
 - **Concurrency**: every round is one client, requests in sequence.
+- **ServerlessWP** (mitchmac/ServerlessWP) is deliberately not a comparison row, by Conrad's call: its spin-up terms, on platforms like Vercel's hobby tier, which is for non-commercial use, go against what our WooCommerce side is built for. Its code may still be read for research.
 - **Visitor and checkout paths**: out of scope for the admin ruling (see [results.md](results.md) for checkout under load).
 - **Other notes on the data**: HostlessWP made fresh salts at deploy, so the round logged in anew. `home` and `siteurl` in all three copied databases still name the pf394a host; each runtime sets `WP_HOME` from the request host, so it did not matter at runtime.
 
