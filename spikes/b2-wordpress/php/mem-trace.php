@@ -18,6 +18,8 @@
  *   plugin=<slug>  any one plugin is not loaded, by its directory name (tier 1, #422)
  *   wcadmin   woocommerce_admin_disabled (measured: WooCommerce 11 barely honours it)
  *   wcfeatures the wc-admin feature list is emptied (woocommerce_admin_features)
+ *   wcblocks  WooCommerce registers no block types or patterns (woocommerce_should_register_blocks,
+ *             the gate WooCommerce itself uses on its own admin pages; #504)
  *   preload   the block editor REST preload paths are emptied (post-new.php, post.php)
  *   updates   the core, plugin and theme update checks are not hooked on admin_init
  *   dashboard the dashboard widgets are not set up
@@ -123,7 +125,7 @@ foreach ( $skyphusion_mem_off as $o ) {
 		$skyphusion_mem_plugins[] = $mm[1];
 	}
 }
-$skyphusion_mem_off = array_values( array_intersect( $skyphusion_mem_off, array( 'woo', 'wcadmin', 'wcfeatures', 'preload', 'updates', 'dashboard', 'notices', 'l10n' ) ) );
+$skyphusion_mem_off = array_values( array_intersect( $skyphusion_mem_off, array( 'woo', 'wcadmin', 'wcfeatures', 'wcblocks', 'preload', 'updates', 'dashboard', 'notices', 'l10n' ) ) );
 if ( in_array( 'woo', $skyphusion_mem_off, true ) ) {
 	$skyphusion_mem_plugins[] = 'woocommerce';
 }
@@ -159,6 +161,12 @@ if ( in_array( 'wcadmin', $skyphusion_mem_off, true ) ) {
 // files), so wcfeatures empties the wc-admin feature list instead (src/Admin/Features/Features.php).
 if ( in_array( 'wcfeatures', $skyphusion_mem_off, true ) ) {
 	add_filter( 'woocommerce_admin_features', '__return_empty_array', PHP_INT_MAX );
+}
+// wcblocks: WooCommerce 11.2 already skips its eager block and pattern registration on its own admin
+// pages and on non-rendering requests (src/Blocks/Domain/BlockRegistrationContext.php), through this
+// filter. Core admin screens still register every block type; this switch measures that cost (#504).
+if ( in_array( 'wcblocks', $skyphusion_mem_off, true ) ) {
+	add_filter( 'woocommerce_should_register_blocks', '__return_false', PHP_INT_MAX );
 }
 if ( in_array( 'preload', $skyphusion_mem_off, true ) ) {
 	add_filter( 'block_editor_rest_api_preload_paths', '__return_empty_array', PHP_INT_MAX );
