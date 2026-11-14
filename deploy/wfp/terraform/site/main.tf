@@ -107,6 +107,47 @@ resource "cloudflare_r2_bucket" "media" {
   name       = local.media_bucket
 }
 
+# #540: the expiry of the scheduled snapshots (#533 writes them to _snapshots/auto/ every day).
+# A lifecycle PUT replaces EVERY rule on the bucket, so the default multipart abort rule is
+# declared here too. These two rules are the "pagefeather#540" shape of the wp-wfp-*-media pattern
+# in fleet-chezmoi system/cloudflare/r2/lifecycle.declared.json (fc#2654): ids, prefixes and ages
+# must stay equal to it, or the daily census reads a FINDING. The prefix is _snapshots/auto/ ONLY:
+# the update rollback snapshots (_snapshots/<site>/), _build/ and uploads/ never expire.
+resource "cloudflare_r2_bucket_lifecycle" "media" {
+  account_id  = var.account_id
+  bucket_name = cloudflare_r2_bucket.media.name
+
+  rules = [{
+    id      = "Default Multipart Abort Rule"
+    enabled = true
+
+    conditions = {
+      prefix = ""
+    }
+
+    abort_multipart_uploads_transition = {
+      condition = {
+        type    = "Age"
+        max_age = 604800
+      }
+    }
+    }, {
+    id      = "snapshots-auto-35d"
+    enabled = true
+
+    conditions = {
+      prefix = "_snapshots/auto/"
+    }
+
+    delete_objects_transition = {
+      condition = {
+        type    = "Age"
+        max_age = 3024000
+      }
+    }
+  }]
+}
+
 resource "random_password" "wp_salt" {
   length  = 64
   special = false
