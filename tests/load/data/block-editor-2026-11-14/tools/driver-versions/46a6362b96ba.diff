@@ -1,0 +1,116 @@
+--- be-run.mjs
++++ be-run.mjs
+@@ -16,8 +16,7 @@
+ const csvq = (v) => (v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v));
+ function csv(file, cols) {
+   const f = path.join(OUT, file);
+-  // Create with the header atomically ('wx'); a file that already exists keeps its rows (no check-then-write race).
+-  try { fs.writeFileSync(f, cols.join(',') + '\n', { flag: 'wx' }); } catch (e) { if (e.code !== 'EEXIST') throw e; }
++  if (!fs.existsSync(f)) fs.writeFileSync(f, cols.join(',') + '\n');
+   return (row) => fs.appendFileSync(f, cols.map((c) => csvq(row[c])).join(',') + '\n');
+ }
+ const REQ_COLS = ['platform', 'iter', 'step', 't_utc', 'method', 'kind', 'path', 'rest_route', 'query_keys', 'status', 'ms', 'failure', ...KEEP.map((k) => k.replace(/-/g, '_'))];
+@@ -90,24 +89,15 @@
+       try { await fn(); row.retry_ok = 1; } catch { row.retry_ok = 0; }
+     }
+     wstep(row);
+-    return ok || row.retry_ok === 1; // true: the user got past this step (first try or one reload); steps.csv keeps ok and retry_ok apart
++    return ok;
+   }
+   async function openEditor(url) {
+     await page.goto(B + url, { waitUntil: 'domcontentloaded', timeout: LOAD_MS });
+     await page.locator('body.block-editor-page').waitFor({ timeout: LOAD_MS });
+     await canvas().locator('.editor-post-title__input').waitFor({ state: 'visible', timeout: LOAD_MS });
+     await page.waitForFunction(() => window.wp && wp.data && wp.data.select('core/editor').getCurrentPostId() && !wp.data.select('core/editor').isSavingPost(), null, { timeout: LOAD_MS });
+-    await closeModals();
++    await page.keyboard.press('Escape'); // a welcome guide, if shown
+   }
+-  // The welcome guide and the block theme's "Choose a pattern" modal (new pages) can open late; a person closes them.
+-  async function closeModals() {
+-    const ov = page.locator('.components-modal__screen-overlay');
+-    for (let i = 0; i < 10; i++) {
+-      if (await ov.count() && await ov.first().isVisible().catch(() => false)) { await page.keyboard.press('Escape'); await page.waitForTimeout(300); continue; }
+-      if (i >= 4) break; // seen clear for long enough (about 2 s)
+-      await page.waitForTimeout(500);
+-    }
+-  }
+   const postId = () => page.evaluate(() => wp.data.select('core/editor').getCurrentPostId());
+   async function waitSaved(re) {
+     await page.locator('.components-snackbar', { hasText: re }).first().waitFor({ timeout: SAVE_MS });
+@@ -157,8 +147,7 @@
+     fs.writeFileSync(path.join(OUT, `snapshot-${P}.json`), JSON.stringify({ post: { id: s.post.id, content: s.post.content.raw }, page: { id: pg.id, content: pg.content } }), { mode: 0o600 });
+     return 'block-editor';
+   };
+-  if (process.env.CLEANUP_ONLY === '1') setupOk = false; // cleanup reads the saved snapshot; nothing else runs
+-  else if (setupOk) { let ok = false; for (let a = 1; a <= 3 && !ok; a++) ok = await step('setup', a === 1 ? 'editor-check' : 'editor-check#' + a, editorCheck); setupOk = ok; }
++  if (setupOk) { let ok = false; for (let a = 1; a <= 3 && !ok; a++) ok = await step('setup', a === 1 ? 'editor-check' : 'editor-check#' + a, editorCheck); setupOk = ok; }
+   const created = [];
+   const appended = { post: [], page: [] };
+   return {
+@@ -175,8 +164,7 @@
+           [S('new-load'), () => openEditor(newUrl)],
+           [S('new-type'), async () => { const t = canvas().locator('.editor-post-title__input'); await t.click(); await page.keyboard.type(title); await page.keyboard.press('Enter'); await page.keyboard.type(para); }],
+           [S('publish'), async () => {
+-            await closeModals();
+-            if (!(await page.locator('.editor-post-publish-panel').isVisible().catch(() => false))) await page.locator('.editor-post-publish-panel__toggle').click(); // a retry may find the panel open
++            await page.locator('.editor-post-publish-panel__toggle').click();
+             await page.locator('.editor-post-publish-panel .editor-post-publish-button').click();
+             await waitSaved(/published/i); id = await postId(); created.push({ type, id });
+           }],
+@@ -185,41 +173,21 @@
+           [S('edit-append'), async () => {
+             const last = canvas().locator('.is-root-container > .wp-block').last();
+             await last.click(); await page.keyboard.press('ControlOrMeta+Alt+y'); await page.keyboard.type(app);
+-            await closeModals();
+             await page.locator('.editor-header .editor-post-publish-button, .edit-post-header .editor-post-publish-button').first().click();
+             await waitSaved(/updated|saved/i); appended[type].push(app);
+           }],
+           [S('edit-verify'), async () => { await openEditor(`/wp-admin/post.php?post=${setup[type].id}&action=edit`); return readBack(setup[type].id, type, appended[type], null); }],
+         ];
+-        for (const [name, fn] of chain) if (!(await step(n, name, fn))) break; // a step not passed even after one retry stops its chain; the other type still runs
++        for (const [name, fn] of chain) if (!(await step(n, name, fn))) break; // a broken chain stops; the other type still runs
+       }
+     },
+     async cleanup() {
+       cur.iter = 'cleanup';
+       if (!fs.existsSync(path.join(OUT, `snapshot-${P}.json`))) { await ctx.close(); return; }
+-      for (let a = 1; a <= 3; a++) if (await step('cleanup', a === 1 ? 'delete-and-restore' : 'delete-and-restore#' + a, async () => {
++      await step('cleanup', 'delete-and-restore', async () => {
+         const snap = JSON.parse(fs.readFileSync(path.join(OUT, `snapshot-${P}.json`)));
+-        await page.goto(B + '/wp-admin/profile.php', { waitUntil: 'domcontentloaded', timeout: LOAD_MS });
+         const r = await page.evaluate(async ([created, snap]) => {
+-          const nonce = (await (await fetch('/wp-admin/admin-ajax.php?action=rest-nonce', { credentials: 'same-origin' })).text()).trim();
+-          if (!/^[0-9a-f]{6,}$/.test(nonce)) throw new Error('no rest nonce');
+-          const wp = { apiFetch: async ({ path, method = 'GET', data }) => {
+-            const res = await fetch('/index.php?rest_route=' + encodeURIComponent(path.split('?')[0]) + (path.includes('?') ? '&' + path.split('?')[1] : ''), { method, credentials: 'same-origin', headers: { 'X-WP-Nonce': nonce, ...(data ? { 'content-type': 'application/json' } : {}) }, body: data ? JSON.stringify(data) : undefined });
+-            if (method === 'DELETE' && res.status === 404) { out.gone404 = (out.gone404 || 0) + 1; return {}; }
+-            if (!res.ok) throw new Error(method + ' ' + path.split('?')[0] + ' ' + res.status);
+-            return res.json();
+-          } };
+-          var out = { deleted: 0, restored: 0, revs: 0 };
+-          // Inventory first: what is there now (tagged items, and which of our markers sit in the existing two), names and ids only.
+-          out.inventory = { tagged: [], markersInExisting: {} };
+-          for (const t of ['posts', 'pages']) for (const st of ['publish', 'draft', 'auto-draft', 'trash']) {
+-            const l = await wp.apiFetch({ path: `/wp/v2/${t}?status=${st}&search=sb1114e-be&per_page=100&_fields=id,title,status&context=edit` }).catch(() => []);
+-            for (const p of l) if (p.title.raw.startsWith('sb1114e-be')) out.inventory.tagged.push({ type: t, id: p.id, status: p.status, title: p.title.raw });
+-          }
+-          for (const [t, sn] of [['posts', snap.post], ['pages', snap.page]]) {
+-            const cur = await wp.apiFetch({ path: `/wp/v2/${t}/${sn.id}?context=edit&_fields=content` });
+-            out.inventory.markersInExisting[t] = (cur.content.raw.match(/sb1114e-be-[a-z]+-\d+-[a-z]+ appended/g) || []);
+-          }
++          const out = { deleted: 0, restored: 0, revs: 0 };
+           for (const c of created) { await wp.apiFetch({ path: `/wp/v2/${c.type}s/${c.id}?force=true`, method: 'DELETE' }); out.deleted++; }
+           for (const [t, s] of [['posts', snap.post], ['pages', snap.page]]) {
+             const before = (await wp.apiFetch({ path: `/wp/v2/${t}/${s.id}/revisions?per_page=100&_fields=id,date_gmt` }));
+@@ -235,9 +203,8 @@
+           }
+           return out;
+         }, [created, snap]);
+-        fs.writeFileSync(path.join(OUT, `cleanup-${P}.json`), JSON.stringify(r, null, 1));
+-        return JSON.stringify({ deleted: r.deleted, restored: r.restored, revs: r.revs, gone404: r.gone404 || 0, tagged: r.inventory.tagged.length });
+-      })) break;
++        return JSON.stringify(r);
++      });
+       await ctx.close();
+     },
+   };

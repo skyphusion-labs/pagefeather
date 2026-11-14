@@ -16,7 +16,8 @@ fs.mkdirSync(OUT, { recursive: true });
 const csvq = (v) => (v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v));
 function csv(file, cols) {
   const f = path.join(OUT, file);
-  if (!fs.existsSync(f)) fs.writeFileSync(f, cols.join(',') + '\n');
+  // Create with the header atomically ('wx'); a file that already exists keeps its rows (no check-then-write race).
+  try { fs.writeFileSync(f, cols.join(',') + '\n', { flag: 'wx' }); } catch (e) { if (e.code !== 'EEXIST') throw e; }
   return (row) => fs.appendFileSync(f, cols.map((c) => csvq(row[c])).join(',') + '\n');
 }
 const REQ_COLS = ['platform', 'iter', 'step', 't_utc', 'method', 'kind', 'path', 'rest_route', 'query_keys', 'status', 'ms', 'failure', ...KEEP.map((k) => k.replace(/-/g, '_'))];

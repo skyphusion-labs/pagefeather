@@ -36,7 +36,9 @@ Both sites have WordPress 7.1, twentytwentyfive, and WooCommerce as the only plu
 | `round3-pf-437599e` | 20:26 to 22:09, cleanup 22:31 | pf | `384c1afdb7ac`, cleanup `1b494f571ada` | **the pf column past the #578 wall** |
 | `round4-hwp-spot` | 22:09 to 22:30 | HostlessWP, 2 iterations | `384c1afdb7ac` | HostlessWP on the same driver as round 3 |
 
-Driver changes after `46a6362b96ba` (in `tools/be-run.mjs`; the round 1 version is `tools/be-run-46a6362b96ba.mjs`):
+**The driver code:** `tools/be-run.mjs` (sha256 prefix `8d098f55c7ff`) is the final driver, plus one fix made after the runs: the CSV header is created atomically (flag `wx`), not with a check-then-write (CodeQL `js/file-system-race`). Every version that produced data is kept as an exact patch in `tools/driver-versions/<sha>.diff` (`46a6362b96ba`, `384c1afdb7ac`, `1b494f571ada`). Applying one to `tools/be-run.mjs` (`patch -p0`) gives that version, byte for byte; each was checked by its sha256. To run, `playwright@1.64.1` must resolve from the script's directory.
+
+Driver changes after `46a6362b96ba`:
 1. A step that passes on its one retry lets its chain go on. It still counts as failed.
 2. Cleanup uses plain `fetch` with a REST nonce from admin-ajax, so it works on a page whose JavaScript did not boot. A DELETE that answers 404 counts as already gone.
 3. Modals (the welcome guide and the block theme's "Choose a pattern" on a new page) are closed after each editor load and before each Publish or Save. **This adds up to about 2 s to each load step in rounds 3 and 4.**
