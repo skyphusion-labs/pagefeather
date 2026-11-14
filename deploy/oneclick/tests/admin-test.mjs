@@ -480,7 +480,7 @@ await ok('control: a MySQL config with caching off connects; only id, name, host
   assert(JSON.stringify(Object.keys(e).sort()) === JSON.stringify(['connectedAt', 'database', 'host', 'id', 'name', 'provider']), `stored keys ${Object.keys(e)}`);
   assert(!stored[1].includes(SECRET_HD) && !stored[1].includes('wpuser'), 'a field beyond the allowed ones was stored');
   const page = await (await call(get('/databases'), env, access(), cf)).text();
-  assert(page.includes('shopdb') && page.includes('db.example.mysql.database.azure.com') && page.includes('Azure Database for MySQL'), 'not listed');
+  assert(page.includes('shopdb') && /<td>db\.example\.mysql\.database\.azure\.com \/ wp<\/td>/.test(page) && page.includes('Azure Database for MySQL'), 'not listed');
   assert(!/type="password"/.test(page), 'the Databases page has a password field');
   // A database entry is not a site.
   const sites = await (await call(get('/'), env, access(), cf)).text();
