@@ -131,6 +131,7 @@ Tests (offline): `site-cmd-test.sh` refuses `site import` with no source, for a 
 ./deploy/wfp/site update <name>     # one site, with a way back
 ./deploy/wfp/site update --all      # every site, one at a time, stopping at the first failure
 ./deploy/wfp/site restore <name>    # after a failed data restore (exit 3): restore the snapshot, clear the hold (#515)
+./deploy/wfp/site schedule <name>   # the daily snapshot cron of an existing site (#533, "The scheduled snapshot")
 ```
 
 Workers for Platforms has no gradual deployments for user Workers, and `b-dosql` keeps its data in the Durable Object and its code in the Worker bundle. So an update re-uploads the SAME script (`site-<name>`): the object and its data persist, the code swaps. `site update`:
@@ -226,6 +227,29 @@ Every site is code-locked: the generated `wp-config.php` sets `DISALLOW_FILE_MOD
 - **Not a recorded input:** read from the run's environment only, like `PHP_INI`. A same-build update uploads when the rendered value changes. `FORCE_UPLOAD=1` is the explicit override, not a requirement for this change. See "When an update uploads".
 - **Tests:** `deploy/wfp/tests/render-test.sh`, golden case `php-recycle-off`.
 
+## The scheduled snapshot (#533)
+
+Every site takes a daily snapshot of its database into its own media bucket. Phase A only (a dispatcher copy per site).
+
+```sh
+./deploy/wfp/site add <name>            # a new site gets the cron and its key at once
+./deploy/wfp/site update <name>         # an EXISTING site, step 1: makes its key, uploads it to the user Worker
+./deploy/wfp/site schedule <name>       # an existing site, step 2: the cron on its dispatcher copy, read back
+SNAPSHOT_CRON=off ./deploy/wfp/site schedule <name>   # remove the cron
+./deploy/wfp/site restore <name> auto/<stamp>.ndjson.gz   # restore one (it is gzipped; dbrestore unpacks it)
+```
+
+How it works:
+- **The cron.** The site's dispatcher copy `wp-<name>` has a daily cron, `SNAPSHOT_CRON` (default `17 7 * * *`, UTC). Its `scheduled()` handler sends `POST /_dbsnapshot` to the site's user Worker through the plain namespace binding. A cron cannot be set on a user Worker in a dispatch namespace: the API has no route for it, and wrangler skips `[triggers]` there (measured on #533). A cron on the ordinary dispatcher Worker reaches the user Worker: measured live on #533, 2026-11-14.
+- **The key.** `SNAPSHOT_TOKEN`, a `random_password` in the site's workspace. It is a secret on the user Worker and on that site's own dispatcher copy, and nowhere else. It is not `SPIKE_TOKEN`, and it opens only `/_dbsnapshot`. A visitor's `/_dbsnapshot` gets 404 from the dispatcher on every host, and the site checks the key again in the Worker and in the object.
+- **The snapshot.** The object dumps its SQLite (the same dump as `/_dbexport`), gzips it, and writes `_snapshots/auto/<UTC yyyymmddThhmmssZ>.ndjson.gz` to its own bucket. Then it reads the size back. The site's data never passes through the dispatcher. During an import (`/_dbimport` hold) the call answers 409 and stores nothing. A raw dump over 128 MiB answers 413 and stores nothing.
+- **A failed run** throws in `scheduled()`, so it shows as a failure in Cron Events. Every run logs one line, `@event snapshot {json}`, with no key in it. The freshness check reads the bucket, not this log. The wait is `SNAPSHOT_TIMEOUT_MS` (default 60000).
+- **Order for an existing site.** `site update` first: it applies the workspace once to make the key (the same recorded build and hash), and the upload carries the key. `site schedule` refuses until the user Worker holds `SNAPSHOT_TOKEN`, because without it every cron run would be a 403.
+- **The first run.** A new or changed cron can take up to 15 minutes to arm (Cloudflare documents up to 15; 517 s measured on #533). Do not judge a change by the next minute.
+- **Retention (#540).** `terraform/site` expires `_snapshots/auto/` after 35 days (`snapshots-auto-35d`, beside the default multipart abort rule). fleet-chezmoi declares that shape for every `wp-wfp-*-media` bucket (fc#2654). A site gets the rule at its next workspace apply. The site name `auto` is refused, so no site's rollback snapshots (`_snapshots/<site>/`) can fall under the expiring prefix.
+
+The freshness check of these snapshots: see "The freshness check of the scheduled snapshots (#533)" below.
+
 ## Phase B: a custom domain per site (#138)
 
 Phase A gives each site its own origin by deploying the one dispatcher script once per site as `wp-<name>` on `workers.dev`. Phase B instead deploys the dispatcher once as `wp-dispatch` and gives each site a Workers Custom Domain `<name>.wfp-test.skyphusion.org`. The dispatcher code does not change: it already routes by the request's own hostname through the site map, so the site map key becomes the custom hostname.
@@ -289,4 +313,5 @@ deploy/wfp/tests/tf-test.sh                 # terraform validate, fmt, and no ac
 python3 -I deploy/wfp/tests/fresh-test.py   # the freshness check (#533): red on a miss, not on a site's first snapshot
 deploy/wfp/tests/r2-temp-test.sh            # the temporary R2 credential: the mint, one bucket only, a refresh on expiry (#273)
 deploy/wfp/tests/custom-domain-test.sh      # phase B (#138): custom_host, site_host, the shared dispatcher, the Terraform wiring
+deploy/wfp/tests/snapshot-wiring-test.sh    # the scheduled snapshot (#533): the site dispatcher render, both scripts' secrets, the deploy paths
 ```

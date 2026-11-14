@@ -9,6 +9,7 @@ import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
+import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
 import { cronBounds, cronCleanDue, cronLegDue } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronMarkOf, cronFatalOf } from './cron-health.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
@@ -2593,6 +2594,18 @@ export class PhpRuntime extends DurableObject {
 		// #394 L1: the OPcache boot packs live under /_pf/ in the static assets. They hold compiled PHP of
 		// the site's code, so no request may read them; only the object fetches them, through the binding.
 		if (url.pathname.startsWith('/_pf/')) return new Response('Not Found', { status: 404 });
+		// The scheduled snapshot (#533, db-snapshot.mjs): its own key, SNAPSHOT_TOKEN, never SPIKE_TOKEN.
+		// Checked here again, like the spike token: the object trusts nothing it did not check itself.
+		if (url.pathname === SNAPSHOT_PATH) {
+			const gate = snapshotGate(req, env);
+			if (gate !== 'ok') return gateResponse(gate);
+			const sql = env.DB_IN_DO === 'on' ? this.ctx.storage.sql : null;
+			if (!sql || !env.MEDIA) return Response.json({ ok: false, error: 'no-db-or-bucket' }, { status: 409 });
+			const held = cronHeld(await this.ctx.storage.get(IMPORT_HOLD_KEY), Date.now());
+			const r = await takeSnapshot({ dump: (w) => withPhp(() => ((sqlDb = sql), dumpTo(w, env, 'object'))), media: env.MEDIA, build: BUILD_ID, held });
+			console.log('@event snapshot ' + JSON.stringify(r.body));
+			return Response.json(r.body, { status: r.status, headers: { 'cache-control': 'private, no-store' } });
+		}
 		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		// Spike: the URL the object got, and the origin it uses.
@@ -2992,6 +3005,14 @@ const site = {
 		// #394 L1: the OPcache boot packs live under /_pf/ in the static assets. They hold compiled PHP of
 		// the site's code, so no request may read them; only the object fetches them, through the binding.
 		if (url.pathname.startsWith('/_pf/')) return new Response('Not Found', { status: 404 });
+		// The scheduled snapshot (#533): the dispatcher's cron calls it with SNAPSHOT_TOKEN (db-snapshot.mjs),
+		// so it is gated by that key, not by SPIKE_TOKEN, and goes to the object, which is the database.
+		if (url.pathname === SNAPSHOT_PATH) {
+			const gate = snapshotGate(req, env);
+			if (gate !== 'ok') return gateResponse(gate);
+			if (env.PHP_IN_DO !== 'on' || !env.PHP_RUNTIME) return Response.json({ ok: false, error: 'no-object' }, { status: 409 });
+			return toPhpObject(req, env, url, ctx);
+		}
 		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		if (env.MEDIA && (req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/wp-content/uploads/')) return serveUpload(req, env, url);

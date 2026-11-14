@@ -22,6 +22,19 @@
 //   500 bad-entry     the entry is not valid JSON, or its script is not a site-<name>
 //   503 moving        a store move is copying the site (moving, above)
 //   502 dispatch      any other error from the namespace
+//   404 not-public    /_dbsnapshot on any host: the scheduled snapshot is reached only by this
+//                     Worker's own cron, never by a visitor (the site checks SNAPSHOT_TOKEN too)
+//
+// The scheduled snapshot (#533, design A', phase A): a site's copy has a daily cron, and its
+// [vars] name the one site it serves (SNAPSHOT_SCRIPT = "site-<name>"). scheduled() sends
+// POST /_dbsnapshot to that user Worker through the plain namespace binding (not the outbound
+// Worker: this is not the site's own egress), with the site's SNAPSHOT_TOKEN secret, and waits up
+// to SNAPSHOT_TIMEOUT_MS (default 60000). The site dumps its database into its OWN bucket
+// (spikes/b2-wordpress/db-snapshot.mjs); nothing of the site's data passes through here. Every run
+// logs one line "@event snapshot {json}"; a run that did not store throws, so the cron run is a
+// failure in Cron Events. The freshness check (#533) reads the bucket, not this log.
+const SNAPSHOT_PATH = '/_dbsnapshot';
+const SNAPSHOT_TIMEOUT_MS = 60000;
 const SCRIPT = /^site-[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$/;
 
 function fail(status, code, text) {
@@ -52,7 +65,9 @@ function limitsOf(site) {
 export default {
 	async fetch(request, env) {
 		// URL already lowercases the hostname (WHATWG URL), so the site map keys are lower case.
-		const host = new URL(request.url).hostname;
+		const url = new URL(request.url);
+		if (url.pathname === SNAPSHOT_PATH) return fail(404, 'not-public', 'Not found.');
+		const host = url.hostname;
 		const raw = await env.SITES.get(host);
 		if (raw === null) return fail(404, 'no-site', 'No site at this address.');
 		let site;
@@ -83,5 +98,40 @@ export default {
 			if (msg.startsWith('Worker not found')) return fail(404, 'not-deployed', 'This site is not deployed.');
 			return fail(502, 'dispatch', 'This site did not answer.');
 		}
+	},
+	async scheduled(event, env) {
+		const script = env.SNAPSHOT_SCRIPT;
+		const t0 = Date.now();
+		const log = (o) => console.log('@event snapshot ' + JSON.stringify({ script: script || null, scheduledTime: event && event.scheduledTime, ms: Date.now() - t0, ...o }));
+		if (typeof script !== 'string' || !SCRIPT.test(script) || !env.SNAPSHOT_TOKEN) {
+			log({ ok: false, error: 'not-configured' });
+			throw new Error('snapshot: not configured (SNAPSHOT_SCRIPT and SNAPSHOT_TOKEN)');
+		}
+		const n = Number(env.SNAPSHOT_TIMEOUT_MS);
+		const ms = Number.isInteger(n) && n > 0 ? n : SNAPSHOT_TIMEOUT_MS;
+		let timer;
+		const timeout = new Promise((_, no) => (timer = setTimeout(() => no(new Error('timeout after ' + ms + ' ms')), ms)));
+		let status = 0;
+		let body = null;
+		try {
+			const req = new Request('https://snapshot.internal' + SNAPSHOT_PATH, { method: 'POST', headers: { 'x-snapshot-token': env.SNAPSHOT_TOKEN }, signal: AbortSignal.timeout(ms) });
+			const r = await Promise.race([env.DISPATCHER.get(script).fetch(req), timeout]);
+			status = r.status;
+			const text = await Promise.race([r.text(), timeout]);
+			try {
+				body = JSON.parse(text);
+			} catch {
+				body = { text: text.slice(0, 200) };
+			}
+		} catch (e) {
+			const error = String((e && e.message) || e).slice(0, 200);
+			log({ ok: false, error });
+			throw new Error('snapshot of ' + script + ': ' + error);
+		} finally {
+			clearTimeout(timer);
+		}
+		const ok = status === 200 && body && body.ok === true;
+		log({ ok, status, result: body });
+		if (!ok) throw new Error('snapshot of ' + script + ': HTTP ' + status + ' ' + JSON.stringify(body).slice(0, 200));
 	},
 };

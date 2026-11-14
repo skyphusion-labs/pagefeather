@@ -14,8 +14,8 @@ variable "account_id" {
 variable "name" {
   type = string
   validation {
-    condition     = can(regex("^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$", var.name)) && var.name != "probe"
-    error_message = "name: lower case, digits and hyphens, 1 to 30 characters, not probe."
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$", var.name)) && !contains(["probe", "auto"], var.name)
+    error_message = "name: lower case, digits and hyphens, 1 to 30 characters, not probe, not auto (_snapshots/auto/ holds the scheduled snapshots, #533)."
   }
 }
 
@@ -160,6 +160,14 @@ resource "random_password" "admin_password" {
   length  = 24
   special = false
 }
+# #533: the key of the scheduled snapshot. A secret on the site's user Worker (SNAPSHOT_TOKEN) and
+# on its own dispatcher copy wp-<name>, and nowhere else: one per site, never shared, and not the
+# spike token (per-function keys). It opens only POST /_dbsnapshot, which writes only to this
+# site's own bucket.
+resource "random_password" "snapshot_token" {
+  length  = 48
+  special = false
+}
 
 resource "cloudflare_workers_kv" "entry" {
   account_id   = var.account_id
@@ -213,6 +221,10 @@ output "wp_salt" {
 }
 output "spike_token" {
   value     = random_password.spike_token.result
+  sensitive = true
+}
+output "snapshot_token" {
+  value     = random_password.snapshot_token.result
   sensitive = true
 }
 output "admin_password" {

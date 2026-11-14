@@ -43,11 +43,16 @@ API=${WFP_API:-https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID}
 # `site remove dispatch` would see a dispatcher and delete the shared one.
 # tests/render-test.sh checks every shared Worker name in this tree is refused.
 SHARED_WORKER_SITE_NAMES="probe dispatch cacheprobe cacheprobe-direct"
+# #533/#540: "auto" is reserved too. A site's hand-taken snapshots (the update rollback) go to
+# _snapshots/<site>/, and _snapshots/auto/ is where the scheduled snapshots go and expire after
+# 35 days (terraform/site, snapshots-auto-35d). A site named auto would have its rollback
+# snapshots expired, and mixed with the scheduled ones.
+RESERVED_SITE_NAMES="auto"
 valid_site() {
   [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$ ]] || return 1
   case "$1" in wfp-*) return 1 ;; esac
   local n
-  for n in $SHARED_WORKER_SITE_NAMES; do [ "$1" != "$n" ] || return 1; done
+  for n in $SHARED_WORKER_SITE_NAMES $RESERVED_SITE_NAMES; do [ "$1" != "$n" ] || return 1; done
 }
 user_script() { echo "site-$1"; }
 dispatcher_name() { echo "wp-$1"; }
@@ -142,6 +147,59 @@ compat_date() { sed -n 's/^compatibility_date = "\(.*\)"/\1/p' "$APP/wrangler.to
 render_dispatcher() { # render_dispatcher <site> <kv namespace id>
   sed -e "s/@SITE@/$1/g" -e "s/@NAMESPACE@/$NAMESPACE/g" -e "s/@KV_ID@/$2/g" -e "s/@COMPAT@/$(compat_date)/g" "$WFP/dispatcher/wrangler.template.toml"
 }
+# The scheduled snapshot (#533, design A', phase A). A SITE's dispatcher copy is the one template
+# (render_dispatcher) plus a [vars] block naming its one user Worker and a daily cron; its
+# scheduled() handler calls POST /_dbsnapshot on that site with SNAPSHOT_TOKEN, and the site dumps
+# its database into its own bucket (_snapshots/auto/). Only site.sh up and "site schedule" render it;
+# the stale-entry probe and the attacker probes keep the plain template (no cron).
+#   SNAPSHOT_CRON        five cron fields, UTC (default "17 7 * * *", 07:17 UTC daily), or "off": an
+#                        empty list, which removes the cron at the next deploy. A new or changed cron
+#                        can take up to 15 minutes to arm (Cloudflare docs; 517 s measured on #533).
+#   SNAPSHOT_TIMEOUT_MS  the wait for the site's answer, 1 to 840000 (default 60000).
+# Both are read from the run's environment only, like PHP_INI.
+snapshot_cron() {
+  local c=${SNAPSHOT_CRON:-17 7 * * *}
+  [ "$c" = off ] && return 0
+  [[ "$c" =~ ^[0-9*/,-]+( [0-9*/,-]+){4}$ ]] || { echo "SNAPSHOT_CRON must be five cron fields or off, not ${c}" >&2; return 1; }
+  printf '%s\n' "$c"
+}
+snapshot_timeout_ms() {
+  local t=${SNAPSHOT_TIMEOUT_MS:-60000}
+  if ! [[ "$t" =~ ^[1-9][0-9]{0,5}$ ]] || [ "$t" -gt 840000 ]; then echo "SNAPSHOT_TIMEOUT_MS must be an integer from 1 to 840000, not ${t}" >&2; return 1; fi
+  printf '%s\n' "$t"
+}
+render_site_dispatcher() { # render_site_dispatcher <site> <kv namespace id>
+  local cron t
+  cron=$(snapshot_cron) || return 1
+  t=$(snapshot_timeout_ms) || return 1
+  render_dispatcher "$1" "$2"
+  printf '\n# The scheduled snapshot of this one site (#533, lib.sh render_site_dispatcher).\n[vars]\nSNAPSHOT_SCRIPT = "%s"\nSNAPSHOT_TIMEOUT_MS = "%s"\n\n[triggers]\ncrons = [%s]\n' \
+    "$(user_script "$1")" "$t" "${cron:+\"$cron\"}"
+}
+# The --secrets-file JSON of a site's dispatcher copy (#533): its own SNAPSHOT_TOKEN only, from the
+# site workspace (tfr site output -json on stdin). Fails when the workspace has none yet.
+dispatcher_secrets_json() { # dispatcher_secrets_json <out file>
+  python3 -I -c 'import json, os, sys
+o = {k: v["value"] for k, v in json.load(sys.stdin).items()}
+if not o.get("snapshot_token"):
+    sys.exit("the site workspace has no snapshot_token (apply it first)")
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as f:
+    json.dump({"SNAPSHOT_TOKEN": o["snapshot_token"]}, f)' "$1"
+}
+# The secret NAMES a namespace script holds (one per line), from the API; never a value.
+ns_secret_names() { # ns_secret_names <script>
+  api GET "/workers/dispatch/namespaces/$NAMESPACE/scripts/$1/secrets" | sed '$d' | python3 -I -c 'import json, sys
+try:
+    r = json.load(sys.stdin).get("result")
+except ValueError:
+    sys.exit(1)
+if not isinstance(r, list):
+    sys.exit(1)
+for x in r:
+    if isinstance(x, dict) and x.get("name"):
+        print(x["name"])'
+}
 # The Workers Cache probe (CACHE_PROBE=1): render_cacheprobe <name> <true|false>.
 # workers_dev false is the namespace copy, which has no workers.dev name.
 render_cacheprobe() {
@@ -193,13 +251,17 @@ turnstile_vars() {
     case "$v" in "") ;; off) echo "$f = \"off\"" ;; *) echo "$f must be off or unset, not $v" >&2; return 1 ;; esac
   done
 }
-# The --secrets-file JSON of a user Worker: WP_SALT and SPIKE_TOKEN from the site workspace
-# (tfr site output -json on stdin), plus TURNSTILE_SECRET when the run's environment has it (#340).
+# The --secrets-file JSON of a user Worker: WP_SALT, SPIKE_TOKEN and (#533) SNAPSHOT_TOKEN from the
+# site workspace (tfr site output -json on stdin), plus TURNSTILE_SECRET when the run's environment has it (#340).
 # Values go from stdin and the environment to the file only, never to argv or stdout.
 site_secrets_json() { # site_secrets_json <out file>  (stdin: tfr site output -json)
   python3 -I -c 'import json, os, sys
 o = {k: v["value"] for k, v in json.load(sys.stdin).items()}
 s = {"WP_SALT": o["wp_salt"], "SPIKE_TOKEN": o["spike_token"]}
+# #533: the key of the scheduled snapshot, once the workspace has it (a site recorded before #533
+# gets it at its next update, which applies the workspace first).
+if o.get("snapshot_token"):
+    s["SNAPSHOT_TOKEN"] = o["snapshot_token"]
 if os.environ.get("TURNSTILE_SECRET"):
     s["TURNSTILE_SECRET"] = os.environ["TURNSTILE_SECRET"]
 fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

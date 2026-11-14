@@ -72,8 +72,8 @@ good = (a["name"] == "site-cacheprobe" and "workers_dev" not in a and b["name"] 
 print(1 if good else 0)' "$T/cp-ns.toml" "$T/cp-direct.toml")"
 okn=1
 for n in one two a-b a1 x23456789012345678901234567890; do valid_site "$n" || { okn=0; echo "  valid_site refused $n"; }; done
-for n in "" -a a- A a_b a.b probe dispatch cacheprobe cacheprobe-direct wfp-outbound wfp-x x234567890123456789012345678901; do valid_site "$n" && { okn=0; echo "  valid_site took '$n'"; }; done
-ok "valid_site takes 1 to 30 of [a-z0-9-] with no end hyphen, and no shared Worker name" "$okn"
+for n in "" -a a- A a_b a.b probe dispatch cacheprobe cacheprobe-direct auto wfp-outbound wfp-x x234567890123456789012345678901; do valid_site "$n" && { okn=0; echo "  valid_site took '$n'"; }; done
+ok "valid_site takes 1 to 30 of [a-z0-9-] with no end hyphen, no shared Worker name, and not auto (#533)" "$okn"
 
 # Derived, so a NEW shared Worker cannot be missed: every wp-<x> Worker name this tree
 # deploys or deletes by a literal name (wrangler templates, --name, the shared

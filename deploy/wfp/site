@@ -4,6 +4,7 @@
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site remove <name>
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site update <name>    (or: update --all)
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site restore <name> [snapshot key]   (#515: after a failed data restore)
+#   CLOUDFLARE_API_TOKEN=... deploy/wfp/site schedule <name>   (#533: the daily snapshot cron of an existing site)
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site list
 #   CLOUDFLARE_API_TOKEN=... SQLITE=<file>|DUMP=<file> [CONTENT=<wp-content.tar.gz>] deploy/wfp/site import <name>
 # The shared pieces must exist (up.sh). add builds nothing: b-dosql must be
@@ -22,7 +23,7 @@ need_account
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
 cmd=${1:-}; s=${2:-}
 if [ "$cmd" = list ]; then list_sites; exit 0; fi
-case "$cmd" in add|remove|update|import|restore) ;; *) echo "usage: site add|remove|update|import|restore <name> | site update --all | site list" >&2; exit 2 ;; esac
+case "$cmd" in add|remove|update|import|restore|schedule) ;; *) echo "usage: site add|remove|update|import|restore|schedule <name> | site update --all | site list" >&2; exit 2 ;; esac
 tfr shared init -input=false >/dev/null
 KV_ID=$(tfr shared output -raw kv_namespace_id 2>/dev/null) || { echo "no shared pieces (run up.sh first)" >&2; exit 2; }
 [ -n "$KV_ID" ] || { echo "no shared pieces (run up.sh first)" >&2; exit 2; }
@@ -118,6 +119,16 @@ update_one_inner() {
   # Render before the decision (#421). The hash is this file plus the sorted
   # names of the keys in the secrets JSON. Values stay in the file, mode 600,
   # and are removed on every return from this point.
+  # #533: a site recorded before the scheduled snapshot has no snapshot_token in its workspace. The
+  # workspace is applied once, with the values the entry records (build, config hash; no hold: a held
+  # site was refused above), so the upload below carries SNAPSHOT_TOKEN. It adds the token and
+  # changes nothing else.
+  if ! tfr site output -raw snapshot_token >/dev/null 2>&1; then
+    echo "site $s: the workspace has no snapshot token yet (#533): apply it with the recorded build and config hash"
+    tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=${rollback:-unknown}" -var "config_hash=$live_hash" >/dev/null \
+      && tfr site output -raw snapshot_token >/dev/null 2>&1 \
+      || { echo "site $s: the snapshot token could not be made; nothing was uploaded" >&2; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }
+  fi
   local CONF="$APP/wrangler.deploy.wfp-$s.toml" W new_hash="" reasons=""
   W=$(mktemp -d); chmod 700 "$W"
   render_user "$s" "$ORIGIN" > "$CONF" || { echo "site $s: the user config did not render; nothing was uploaded" >&2; rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }
@@ -239,6 +250,42 @@ restore_one() {
   echo "site restore $s: done"
 }
 
+# The daily snapshot cron of an EXISTING site (#533, design A', phase A): re-deploy its dispatcher
+# copy wp-<name> with the cron and the site's SNAPSHOT_TOKEN (lib.sh render_site_dispatcher). A new
+# site gets both from site add. Order: the user Worker must hold SNAPSHOT_TOKEN first (site update
+# uploads it), or every cron run is a 403; this refuses until it does. SNAPSHOT_CRON=off removes the
+# cron. Phase B (one wp-dispatch) has no per-site cron and is refused. The cron can take up to 15
+# minutes to arm. Exit 0 deployed and read back, 1 failed, 2 refused.
+schedule_one() {
+  local s=$1
+  valid_site "$s" || { echo "bad site name: $s" >&2; return 2; }
+  has_ws "$s" || { echo "no site $s" >&2; return 2; }
+  tfr site init -input=false >/dev/null; tfr site workspace select "$s" >/dev/null
+  site_vars "$s" "$SUB" "$KV_ID" || return 1
+  [ "$REC_CD" = true ] && { echo "site $s: refused: it is on a Custom Domain (phase B), and phase B has no per-site cron (#533)" >&2; return 2; }
+  local D U names want got W
+  D=$(dispatcher_name "$s"); U=$(user_script "$s")
+  tfr site output -raw snapshot_token >/dev/null 2>&1 || { echo "site $s: refused: its workspace has no snapshot token yet; run site update $s first (#533)" >&2; return 2; }
+  names=$(ns_secret_names "$U") || { echo "site $s: refused: the secret names of $U cannot be read" >&2; return 2; }
+  printf '%s\n' "$names" | grep -qx SNAPSHOT_TOKEN || { echo "site $s: refused: $U does not hold SNAPSHOT_TOKEN yet, so every cron run would be a 403; run site update $s first (#533)" >&2; return 2; }
+  want=$(snapshot_cron) || return 2
+  W=$(mktemp -d); chmod 700 "$W"; mkdir -p "$GEN"
+  render_site_dispatcher "$s" "$KV_ID" > "$GEN/$D.toml" || { rm -rf "$W"; return 2; }
+  tfr site output -json | dispatcher_secrets_json "$W/sec.json" || { rm -rf "$W"; return 1; }
+  echo "site $s: deploy $D with the snapshot cron [${want:-none}] (#533)"
+  wrangler_deploy "$GEN" "$W/disp.log" --config "$D.toml" --secrets-file "$W/sec.json" || { echo "site $s: the dispatcher deploy failed:" >&2; tail -20 "$W/disp.log" >&2; rm -rf "$W"; return 1; }
+  rm -rf "$W"
+  got=$(api GET "/workers/scripts/$D/schedules" | sed '$d' | python3 -I -c 'import json, sys
+try:
+    r = json.load(sys.stdin).get("result") or {}
+except ValueError:
+    sys.exit(1)
+print(" ".join(sorted(x.get("cron", "") for x in r.get("schedules") or [])))') || { echo "site $s: DEPLOYED, but the schedules of $D cannot be read back" >&2; return 1; }
+  [ "$got" = "$want" ] || { echo "site $s: DEPLOYED, but $D reads schedules [$got], not [$want]" >&2; return 1; }
+  echo "site $s: $D schedules read back [$got]; the first run can come up to 15 minutes after a change"
+  echo "site schedule $s: done"
+}
+
 # Import an existing WordPress site into one site (deploy/import.sh, issue #31,
 # for deploy/wfp). The site must exist (site add). Everything the import needs
 # comes from the site's own workspace: its origin, its SPIKE_TOKEN, its media
@@ -249,7 +296,7 @@ restore_one() {
 # on a refusal. The import replaces the site's whole database.
 import_one() {
   local s=$1
-  valid_site "$s" || { echo "bad site name '$s': lower case, digits, hyphens; 1 to 30; not a shared Worker name (probe, dispatch, cacheprobe, cacheprobe-direct, wfp-*)" >&2; return 2; }
+  valid_site "$s" || { echo "bad site name '$s': lower case, digits, hyphens; 1 to 30; not a shared Worker name (probe, dispatch, cacheprobe, cacheprobe-direct, wfp-*), not auto" >&2; return 2; }
   [ -n "${SQLITE:-}${DUMP:-}" ] || { echo "site import needs SQLITE=<file> or DUMP=<mysqldump file>" >&2; return 2; }
   has_ws "$s" || { echo "no site $s (run site add first)" >&2; return 2; }
   tfr site init -input=false >/dev/null; tfr site workspace select "$s" >/dev/null
@@ -283,6 +330,7 @@ import_one() {
 
 if [ "$cmd" = import ]; then import_one "$s"; exit $?; fi
 if [ "$cmd" = restore ]; then restore_one "$s" "${3:-}"; exit $?; fi
+if [ "$cmd" = schedule ]; then schedule_one "$s"; exit $?; fi
 
 if [ "$cmd" = update ]; then
   if [ "$s" = "--all" ]; then
@@ -291,7 +339,7 @@ if [ "$cmd" = update ]; then
   fi
   update_one "$s"; exit $?
 fi
-valid_site "$s" || { echo "bad site name '$s': lower case, digits, hyphens; 1 to 30; not a shared Worker name (probe, dispatch, cacheprobe, cacheprobe-direct, wfp-*)" >&2; exit 2; }
+valid_site "$s" || { echo "bad site name '$s': lower case, digits, hyphens; 1 to 30; not a shared Worker name (probe, dispatch, cacheprobe, cacheprobe-direct, wfp-*), not auto" >&2; exit 2; }
 
 if [ "$cmd" = add ]; then
   fp=$(site_footprint "$s")

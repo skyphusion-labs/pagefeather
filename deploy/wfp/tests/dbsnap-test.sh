@@ -97,6 +97,20 @@ t517 tables-502once-livewrite
 ok "#517: a live write to the part's table after the 502: neither count, so a full restart, and it says why ($R)" "$([ "$RR" = 0 ] && printf '%s' "$R" | grep -q '"attempts": 2' && echo 1 || echo 0)"
 ok "  the log names the table with its live, before and after counts" "$(grep -c '^dbrestore: part 6: /_dbcounts holds neither the counts before nor after it: wp_b live 1, before 0, after 34$' "$T/t517.err")"
 ok "  the restart line carries the reason" "$(grep -c 'failed at part 6 (502; the part.s tables hold neither the counts before it nor after it): starting again' "$T/t517.err")"
+# #533: a scheduled snapshot is gzipped (_snapshots/auto/*.ndjson.gz); dbrestore gunzips it. A body
+# that starts like gzip and is not: stage gunzip, nothing sent.
+pid=$(start ok); U="http://127.0.0.1:$(cat "$T/port")"
+curl -s "$U/_dbexport" | gzip -c > "$T/auto.gz"
+curl -s -o /dev/null --aws-sigv4 aws:amz:auto:s3 -u k:s -X PUT --data-binary @"$T/auto.gz" "$U/b/_snapshots/auto/20261114T071700Z.ndjson.gz"
+r=$(restore "$U" "auto/20261114T071700Z.ndjson.gz"); rr=$?
+p=$(curl -s "$U/_parts")
+printf '\037\213not gzip at all' > "$T/bad.gz"
+curl -s -o /dev/null --aws-sigv4 aws:amz:auto:s3 -u k:s -X PUT --data-binary @"$T/bad.gz" "$U/b/_snapshots/auto/bad.ndjson.gz"
+r2=$(restore "$U" "auto/bad.ndjson.gz"); rr2=$?
+p2=$(curl -s "$U/_parts")
+kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+ok "dbrestore of a gzipped scheduled snapshot: exit 0, the 3 rows sent ($r; parts $p)" "$([ "$rr" = 0 ] && printf '%s' "$p" | python3 -I -c 'import json,sys; p=json.load(sys.stdin); print(int(len(p)==1 and p[0][1]==3))' | grep -qx 1 && echo 1 || echo 0)"
+ok "dbrestore of a body that only starts like gzip: exit 1, stage gunzip, nothing more sent ($r2)" "$([ "$rr2" = 1 ] && printf '%s' "$r2" | grep -q '"stage": "gunzip"' && [ "$p2" = "$p" ] && echo 1 || echo 0)"
 # row_count (lib.sh) reads /_dbexport and counts the rows (the fake ok mode has 3).
 pid=$(start ok); U="http://127.0.0.1:$(cat "$T/port")"; rc_rows=$(row_count "$U" t)
 kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null

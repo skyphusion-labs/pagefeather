@@ -160,7 +160,8 @@ export APP
 REAL_CURL=$(PATH=/usr/bin:/bin command -v curl)
 UPLOAD_LOG="$T/uploads"; APPLY_LOG="$T/applies"
 : > "$UPLOAD_LOG"; : > "$APPLY_LOG"
-export UPLOAD_LOG APPLY_LOG SALT SPIKE
+SNAP_FILE="$T/snapshot-token-applied"; : > "$SNAP_FILE"
+export UPLOAD_LOG APPLY_LOG SALT SPIKE SNAP_FILE
 cat > "$T/bin/curl" <<EOF
 #!/bin/bash
 args="\$*"
@@ -184,18 +185,23 @@ case "$1" in
     exit 0 ;;
   output)
     if [ "$2" = "-json" ]; then
-      SALT="$SALT" SPIKE="$SPIKE" python3 -I -c 'import json,os; print(json.dumps({"wp_salt":{"value":os.environ["SALT"]},"spike_token":{"value":os.environ["SPIKE"]},"hostname":{"value":"wp-shop.sub.workers.dev"},"r2_endpoint":{"value":os.environ["WFP_S3_ENDPOINT"]}}))'
+      SALT="$SALT" SPIKE="$SPIKE" python3 -I -c 'import json,os; o={"wp_salt":{"value":os.environ["SALT"]},"spike_token":{"value":os.environ["SPIKE"]},"hostname":{"value":"wp-shop.sub.workers.dev"},"r2_endpoint":{"value":os.environ["WFP_S3_ENDPOINT"]}}
+# #533: the snapshot token exists once the workspace has been applied with it (SNAP_FILE).
+if os.path.exists(os.environ["SNAP_FILE"]): o["snapshot_token"]={"value":"snap-value-ddd"}
+print(json.dumps(o))'
     else
       case "$3" in
         kv_namespace_id) printf kv1 ;;
         hostname) printf '%s' "wp-shop.sub.workers.dev" ;;
         spike_token) printf '%s' "$SPIKE" ;;
+        snapshot_token) [ -e "$SNAP_FILE" ] || exit 1; printf '%s' snap-value-ddd ;;
         r2_endpoint) printf '%s' "$WFP_S3_ENDPOINT" ;;
         *) echo "stub terraform: unexpected output $*" >&2; exit 9 ;;
       esac
     fi ;;
   apply)
     printf '%s\n' "$*" >> "$APPLY_LOG"
+    [ -n "${NO_SNAP_APPLY:-}" ] || : > "$SNAP_FILE"
     exit 0 ;;
   *) echo "stub terraform: unexpected $*" >&2; exit 9 ;;
 esac
@@ -316,6 +322,41 @@ u1=$(lines "$UPLOAD_LOG")
 ok "FORCE_UPLOAD=1: reason forced" "$(printf '%s' "$OUT" | grep -Fqx 'site shop: upload build bld-same (was bld-same); reason: forced' && echo 1 || echo 0)"
 ok "FORCE_UPLOAD=1: uploaded" "$([ "$RC" = 0 ] && [ "$u1" = $((u0 + 1)) ] && echo 1 || echo 0)"
 ok "FORCE_UPLOAD=1: no secret in the output" "$(no_secret)"
+[ "$RC" = 0 ] || { echo "$OUT" | sed 's/^/   /'; }
+
+# 7. #533: a site recorded before the scheduled snapshot (no snapshot_token in its workspace): the
+# update applies the workspace ONCE first, with the recorded build and hash, then uploads with
+# SNAPSHOT_TOKEN (a new secret key name, so the hash changes: reason config changed).
+unset FORCE_UPLOAD
+# The hash such a site recorded: this config with the secret key names it had (no SNAPSHOT_TOKEN).
+printf '{"WP_SALT":"x","SPIKE_TOKEN":"x","TURNSTILE_SECRET":"x"}' > "$T/old-sec.json"
+HOLD=$(bash -c '. "'"$LIB"'"; config_hash "'"$APP"'/wrangler.deploy.wfp-shop.toml" "'"$T"'/old-sec.json"')
+ok "  (the pre-#533 hash is a hash, and differs from the one with the token)" "$(printf '%s' "$HOLD" | grep -qxE '[0-9a-f]{64}' && [ "$HOLD" != "$H2" ] && echo 1 || echo 0)"
+# 7a. The apply does not make the token (NO_SNAP_APPLY): the update stops before any upload.
+set_entry bld-same "$HOLD"
+rm -f "$SNAP_FILE"
+u0=$(lines "$UPLOAD_LOG")
+NO_SNAP_APPLY=1 run_update
+u1=$(lines "$UPLOAD_LOG")
+ok "no snapshot token after the apply: exit 1, nothing uploaded" "$([ "$RC" = 1 ] && [ "$u1" = "$u0" ] && printf '%s' "$OUT" | grep -Fq 'the snapshot token could not be made; nothing was uploaded' && echo 1 || echo 0)"
+# 7b. The apply makes it.
+set_entry bld-same "$HOLD"
+rm -f "$SNAP_FILE"
+u0=$(lines "$UPLOAD_LOG"); a0=$(lines "$APPLY_LOG")
+run_update
+u1=$(lines "$UPLOAD_LOG"); a1=$(lines "$APPLY_LOG")
+ok "no snapshot token yet: it says so, and applies the workspace first" "$(printf '%s' "$OUT" | grep -Fq 'site shop: the workspace has no snapshot token yet (#533)' && echo 1 || echo 0)"
+ok "  that first apply carries the recorded build and hash, unchanged" "$(sed -n "$((a0 + 1))p" "$APPLY_LOG" | grep -Fq "build=bld-same" && sed -n "$((a0 + 1))p" "$APPLY_LOG" | grep -Fq "config_hash=$HOLD" && echo 1 || echo 0)"
+ok "  then it uploads once (a new secret key: config changed), and records the new hash" "$([ "$RC" = 0 ] && [ "$u1" = $((u0 + 1)) ] && [ "$a1" = $((a0 + 2)) ] && printf '%s' "$OUT" | grep -Fqx 'site shop: upload build bld-same (was bld-same); reason: config changed' && [ "$(last_hash)" != "$HOLD" ] && echo 1 || echo 0)"
+ok "  no secret in the output (the snapshot token value included)" "$([ "$(no_secret)" = 1 ] && printf '%s' "$OUT" | grep -c snap-value-ddd | grep -qx 0 && echo 1 || echo 0)"
+H3=$(last_hash)
+[ "$RC" = 0 ] || { echo "$OUT" | sed 's/^/   /'; }
+# 8. The token now exists: no extra apply.
+set_entry bld-same "$H3"
+a0=$(lines "$APPLY_LOG")
+run_update
+a1=$(lines "$APPLY_LOG")
+ok "with the token: no extra apply, nothing to do" "$([ "$RC" = 0 ] && [ "$a1" = "$a0" ] && printf '%s' "$OUT" | grep -Fqx 'site shop: already at build bld-same; nothing to do' && echo 1 || echo 0)"
 [ "$RC" = 0 ] || { echo "$OUT" | sed 's/^/   /'; }
 
 echo "$fails failing check(s)"
