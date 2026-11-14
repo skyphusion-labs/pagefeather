@@ -1,0 +1,82 @@
+name: engine-build
+# Our own PHP 8.3 wasm engine (#582). S1: build the upstream pipeline UNCHANGED (engine/build.sh,
+# pinned by engine/UPSTREAM) and compare it with the engine we ship, byte for byte. Nothing is
+# published. The job summary records the phase times, the sha256 of every output and the comparison.
+on:
+  pull_request:
+    paths:
+      - 'engine/**'
+      - '.github/workflows/engine-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upstream-reproduce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+      - name: The compare tool tells equal from unequal (a control before the real comparison)
+        run: |
+          set -euo pipefail
+          printf '\x00asm\x01\x00\x00\x00\x05\x03\x01\x00\x01' > "$RUNNER_TEMP/a.wasm"
+          printf '\x00asm\x01\x00\x00\x00\x05\x03\x01\x00\x02' > "$RUNNER_TEMP/b.wasm"
+          node engine/tools/wasm-compare.mjs "$RUNNER_TEMP/a.wasm" "$RUNNER_TEMP/a.wasm"
+          if node engine/tools/wasm-compare.mjs "$RUNNER_TEMP/a.wasm" "$RUNNER_TEMP/b.wasm"; then
+            echo "::error::the compare tool called two different files equal"; exit 1
+          fi
+      - name: Free runner disk (the build images reach several GB)
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker system prune -af > /dev/null
+          df -h / | tail -1
+      - name: Build upstream unchanged (engine/build.sh)
+        run: |
+          set -euo pipefail
+          s=$(date +%s)
+          ENGINE_WORK="$RUNNER_TEMP/work" engine/build.sh "$RUNNER_TEMP/out" | tee "$RUNNER_TEMP/build.out"
+          echo "build took $(( $(date +%s) - s )) s"
+          df -h / | tail -1
+      - name: Compare with the engine we ship (@php-wasm/web-8-3 3.1.62)
+        id: compare
+        run: |
+          set -euo pipefail
+          . engine/UPSTREAM
+          mkdir -p "$RUNNER_TEMP/shipped"
+          # the shipped files, from the npm registry tarball (the lockfile pins 3.1.62)
+          npm pack --silent @php-wasm/web-8-3@3.1.62 --pack-destination "$RUNNER_TEMP/shipped" > /dev/null
+          tar -xzf "$RUNNER_TEMP"/shipped/php-wasm-web-8-3-3.1.62.tgz -C "$RUNNER_TEMP/shipped"
+          sw="$RUNNER_TEMP/shipped/package/jspi/8_3_36/php_8_3.wasm"; sj="$RUNNER_TEMP/shipped/package/jspi/php_8_3.js"
+          echo "$SHIPPED_WASM_SHA256  $sw" | sha256sum -c -
+          echo "$SHIPPED_JS_SHA256  $sj" | sha256sum -c -
+          bw=$(find "$RUNNER_TEMP/out" -name 'php_8_3.wasm' | head -1); bj=$(find "$RUNNER_TEMP/out" -name 'php_8_3.js' | head -1)
+          echo "built wasm: $bw"; echo "built js: $bj"
+          [ -n "$bw" ] && [ -n "$bj" ] || { echo "::error::the build made no php_8_3.wasm or php_8_3.js"; ls -R "$RUNNER_TEMP/out" | head -50; exit 1; }
+          rc=0; node engine/tools/wasm-compare.mjs "$sw" "$bw" | tee "$RUNNER_TEMP/compare.txt" || rc=$?
+          if cmp -s "$sj" "$bj"; then echo "loader: byte-identical"; js=identical; else js=differs; diff "$sj" "$bj" | head -40 > "$RUNNER_TEMP/loader.diff" || true; echo "loader: differs"; head -40 "$RUNNER_TEMP/loader.diff"; fi
+          echo "wasm_rc=$rc" >> "$GITHUB_OUTPUT"; echo "js=$js" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/out/compare"; cp "$RUNNER_TEMP/compare.txt" "$RUNNER_TEMP/out/compare/"; [ ! -f "$RUNNER_TEMP/loader.diff" ] || cp "$RUNNER_TEMP/loader.diff" "$RUNNER_TEMP/out/compare/"
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## engine-build: upstream unchanged (#582 S1)"
+            echo; echo '```'; grep '^@event phase' "$RUNNER_TEMP/build.out" 2>/dev/null || echo "no phase lines"; echo '```'
+            echo; echo '```'; cat "$RUNNER_TEMP/out/SHA256SUMS" 2>/dev/null || echo "no outputs"; echo '```'
+            echo; echo '```'; cat "$RUNNER_TEMP/compare.txt" 2>/dev/null || echo "no comparison"; echo '```'
+            echo; echo "loader: ${{ steps.compare.outputs.js }}"
+            echo; echo '```'; cat "$RUNNER_TEMP/out/manifest.txt" 2>/dev/null; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: engine-upstream-reproduce
+          path: |
+            ${{ runner.temp }}/out
+          retention-days: 14
