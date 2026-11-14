@@ -79,6 +79,15 @@ test('index.js: the Memory is taken from the instance export at boot and registe
 	assert.ok(src.slice(reg, reg + 200).includes('bootMemory = null;'), 'cleared after use, so a later boot cannot reuse it');
 });
 
+test('index.js: every snapshot carries what was inflated so far in the request and in the isolate', () => {
+	assert.match(src, /inflate: \{ reqN: stats\.inflates - ledgerInfl0\.n, reqMiB: LEDGER_MIB\(stats\.inflateBytes - ledgerInfl0\.b\), isoN: stats\.inflates, isoMiB: LEDGER_MIB\(stats\.inflateBytes\) \}/);
+	// The baseline is taken at the request start, before the boot, and at the cron leg start.
+	const reqStart = src.indexOf("if (ledgerActive) ledgerLog('start');");
+	assert.ok(src.lastIndexOf('ledgerInfl0 = { n: stats.inflates, b: stats.inflateBytes };', reqStart) > reqStart - 200, 'reset just before the start snapshot');
+	const cron = src.indexOf("ledgerActive = this.env.MEM_LEDGER === 'on';");
+	assert.ok(src.indexOf('ledgerInfl0 = { n: stats.inflates, b: stats.inflateBytes };', cron) - cron < 200, 'reset at the cron leg start');
+});
+
 test('sqlMeter and ledgerOn', () => {
 	const s = createSqlMeter();
 	s.add(1024); s.add(3 * MIB);
