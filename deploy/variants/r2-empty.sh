@@ -27,16 +27,37 @@ r2_cfg() { ( if [ -n "${R2_CRED_FILE:-}" ]; then . "$R2_CRED_FILE"; fi
   if [ -n "${R2_SESSION_TOKEN:-}" ]; then printf 'header = "x-amz-security-token: %s"\n' "$R2_SESSION_TOKEN"; fi ); }
 r2_key_set() { if [ -n "${R2_CRED_FILE:-}" ]; then [ -r "$R2_CRED_FILE" ]; else [ -n "${R2_KEY_ID:-}" ] && [ -n "${R2_SECRET:-}" ]; fi; }
 # r2_refresh: on a refusal, mint a fresh credential with R2_CRED_REFRESH (a temporary one may have
-# expired). One at a time (a lock beside the file), and not again within R2_REFRESH_MIN_S (20) s of
-# the last one, so parallel requests that are all refused mint once. No R2_CRED_REFRESH: nothing.
+# expired). One at a time, and not again within R2_REFRESH_MIN_S (20) s of the last one, so parallel
+# requests that are all refused mint once. No R2_CRED_REFRESH: nothing.
+# #545: the lock is a kernel lock (fcntl.flock on <file>.flock, held by one python3 for the whole
+# check and mint). The old mkdir lock did NOT exclude on the CI runner (measured, run 43582183877:
+# 105 overlaps in 159 entries; flock 0 in 320), and two jobs minted at once (run 43581599616). A refusal WAITS for a mint in progress,
+# then sees it. "The last one" is the later of the credential file's mtime (a mint writes it) and
+# the mtime of <file>.minted, which is written inside the lock BEFORE the mint runs, so a mint that fails still
+# counts and every job does not retry it at once. The caller removes <file>.flock and .minted.
 r2_refresh() {
   [ -n "${R2_CRED_REFRESH:-}" ] && [ -n "${R2_CRED_FILE:-}" ] || return 0
-  mkdir "$R2_CRED_FILE.lock" 2>/dev/null || return 0
-  if python3 -I -c 'import os, sys, time; sys.exit(0 if time.time() - os.path.getmtime(sys.argv[1]) >= float(sys.argv[2]) else 1)' "$R2_CRED_FILE" "${R2_REFRESH_MIN_S:-20}"; then
-    echo "r2: refused at $(date -u +%TZ): minting a fresh credential" >&2
-    bash -c "$R2_CRED_REFRESH" >&2 || echo "r2: the fresh credential was NOT minted" >&2
-  fi
-  rmdir "$R2_CRED_FILE.lock" 2>/dev/null || true
+  python3 -I -c 'import fcntl, os, subprocess, sys, time
+f, min_s, cmd = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+fd = os.open(f + ".flock", os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+last = 0.0
+for p in (f, f + ".minted"):
+    try:
+        last = max(last, os.path.getmtime(p))
+    except OSError:
+        pass
+if time.time() - last < min_s:
+    sys.exit(0)
+tmp = "%s.minted.%d" % (f, os.getpid())
+with open(tmp, "w") as m:
+    m.write("a mint started here; its mtime is the time\n")
+os.replace(tmp, f + ".minted")
+print("r2: refused at %s: minting a fresh credential" % time.strftime("%H:%M:%SZ", time.gmtime()), file=sys.stderr, flush=True)
+rc = subprocess.call(["bash", "-c", cmd], stdout=sys.stderr)
+if rc:
+    print("r2: the fresh credential was NOT minted", file=sys.stderr)
+sys.exit(0)' "$R2_CRED_FILE" "${R2_REFRESH_MIN_S:-20}" "$R2_CRED_REFRESH" >&2 || echo "r2: the credential refresh did not run" >&2
 }
 r2_key_set || { echo "set R2_KEY_ID and R2_SECRET, or R2_CRED_FILE" >&2; exit 2; }
 s3() { curl -sS -K <(r2_cfg) --aws-sigv4 "aws:amz:auto:s3" "$@"; }

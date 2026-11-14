@@ -13,14 +13,16 @@ S3 (path style /<bucket>/<key>), as R2 answers a temporary credential:
 Control:
   POST /_refuse_mint                          the next mint answers 403
   POST /_expire_after?n=<n>                   every live credential expires after n more S3 requests
+  POST /_drop_puts?n=<n>                      the next n PUTs get no answer (the connection closes: curl 000)
+  POST /_put_503?n=<n>                        the next n PUTs answer 503 SlowDown
   PUT  /_seed/<bucket>/<key>                  store an object with no auth
-  GET  /_state                                {"mints": [...bodies], "objects": [...paths], "denied": n}
+  GET  /_state                                {"mints": [...bodies], "mint_log": [[time, bucket]...], "objects": [...paths], "denied": n}
 """
-import http.server, json, sys, threading, urllib.parse
+import http.server, json, sys, threading, time, urllib.parse
 
 lock = threading.Lock()
-objects, creds, mints = {}, {}, []
-state = {"refuse_mint": False, "expire_after": None, "denied": 0}
+objects, creds, mints, mint_log = {}, {}, [], []
+state = {"refuse_mint": False, "expire_after": None, "denied": 0, "drop_puts": 0, "put_503": 0}
 
 
 class H(http.server.BaseHTTPRequestHandler):
@@ -52,6 +54,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     state["refuse_mint"] = False
                     return self.send(403, json.dumps({"success": False, "errors": [{"code": 10000, "message": "Authentication error"}]}).encode(), "application/json")
                 mints.append(b)
+                mint_log.append([round(time.time(), 3), b.get("bucket")])
                 n = len(mints)
                 kid, sec, tok = "tmpkey%d" % n, "tmpsecret%d" % n, "sessiontoken%d" % n
                 creds[kid] = {"bucket": b.get("bucket"), "token": tok, "left": None}
@@ -63,6 +66,10 @@ class H(http.server.BaseHTTPRequestHandler):
         q = urllib.parse.parse_qs(u.query)
         if u.path == "/_refuse_mint":
             state["refuse_mint"] = True; self.body(); return self.send(200)
+        if u.path == "/_drop_puts":
+            state["drop_puts"] = int(q["n"][0]); self.body(); return self.send(200)
+        if u.path == "/_put_503":
+            state["put_503"] = int(q["n"][0]); self.body(); return self.send(200)
         if u.path == "/_expire_after":
             with lock:
                 for c in creds.values():
@@ -71,7 +78,7 @@ class H(http.server.BaseHTTPRequestHandler):
         if u.path.startswith("/_seed/"):
             objects[urllib.parse.unquote(u.path[len("/_seed"):])] = self.body(); return self.send(200)
         if u.path == "/_state":
-            return self.send(200, json.dumps({"mints": mints, "objects": sorted(objects), "denied": state["denied"]}).encode(), "application/json")
+            return self.send(200, json.dumps({"mints": mints, "mint_log": mint_log, "objects": sorted(objects), "denied": state["denied"]}).encode(), "application/json")
         return self.send(404)
 
     def allowed(self, bucket):
@@ -103,6 +110,18 @@ class H(http.server.BaseHTTPRequestHandler):
             items = "".join("<Contents><Key>%s</Key><Size>%d</Size></Contents>" % (k[len(bucket) + 2:], len(v)) for k, v in sorted(objects.items()) if k.startswith("/%s/" % bucket))
             return self.send(200, ('<?xml version="1.0"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">%s<IsTruncated>false</IsTruncated></ListBucketResult>' % items).encode(), "application/xml")
         if method == "PUT":
+            with lock:
+                drop = state["drop_puts"] > 0
+                if drop:
+                    state["drop_puts"] -= 1
+                busy = not drop and state["put_503"] > 0
+                if busy:
+                    state["put_503"] -= 1
+            if drop:  # no answer at all: curl reports 000 (#545)
+                self.close_connection = True
+                return
+            if busy:
+                return self.send(503, b"<Error><Code>SlowDown</Code></Error>", "application/xml")
             objects[path] = data; return self.send(200)
         if method == "DELETE":
             objects.pop(path, None); return self.send(204)
