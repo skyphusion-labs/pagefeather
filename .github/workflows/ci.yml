@@ -68,6 +68,8 @@ jobs:
         # spikes/b2-wordpress/php/object-cache-js.php: the allowlist + TTL + force-off
         # posture, with a stubbed bridge (no DB). WooCommerce groups never persist.
         run: php spikes/b2-wordpress/tests/object-cache-isolated-test.php
+      - name: approach A keeps FOUND_ROWS and LAST_INSERT_ID on one pooled connection (issue #498)
+        run: php tests/a/found-rows-test.php
       - name: b-dosql approach-A options never persist across isolates (issue #491)
         run: php spikes/b2-wordpress/tests/object-cache-491-test.php
       - name: Approach A object cache source invariants (issue #218)
