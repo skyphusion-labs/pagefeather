@@ -230,6 +230,11 @@ function ledgerSnapshot(at) {
 	}
 	return { at, iso: ISOLATE_ID, rt: runtimeSerial, wasmMiB: php ? LEDGER_MIB(heapOf(php)) : null, runtimes: ledger.runtimes(runtimeSerial, heapOf), memfs, inflatedMiB: LEDGER_MIB(inflatedBytes), ocMiB: LEDGER_MIB(objectCacheBytes), sql: sqlMeter.read(), inflate: { reqN: stats.inflates - ledgerInfl0.n, reqMiB: LEDGER_MIB(stats.inflateBytes - ledgerInfl0.b), isoN: stats.inflates, isoMiB: LEDGER_MIB(stats.inflateBytes), reinflateN: stats.reinflates - ledgerInfl0.r, ...(inflateArena ? { arena: { mib: LEDGER_MIB(inflateArena.size), arenaEvict: inflateArena.counts.evicts - ledgerInfl0.ae, over: inflateArena.counts.over } } : {}) } };
 }
+// #394 /_headroom: the parts of the ledger that show memory arriving during the probe loop.
+function headroomLedger() {
+	const s = ledgerSnapshot('headroom-step');
+	return { wasmMiB: s.wasmMiB, live: s.runtimes && s.runtimes.live, boots: s.rt, isoMiB: s.inflate && s.inflate.isoMiB, inflatedMiB: s.inflatedMiB };
+}
 function ledgerLog(at, extra) {
 	console.log(JSON.stringify({ m: 'mem-ledger', ...(ledgerId ? { id: ledgerId } : {}), ...ledgerSnapshot(at), ...(extra || {}) }));
 }
@@ -2651,8 +2656,11 @@ export class PhpRuntime extends DurableObject {
 			const snap = ledgerSnapshot('headroom');
 			const gcAvailable = typeof globalThis.gc === 'function';
 			if (gcAvailable && url.searchParams.get('gc') === '1') globalThis.gc();
-			const { response, job } = headroomStream({ first: JSON.stringify({ m: 'headroom', build: BUILD_ID, gc: gcAvailable, ...snap }), max: url.searchParams.get('max') || 1024 });
-			this.ctx.waitUntil(job);
+			// #394: counted as a PHP-pending holder while it runs, so the alarm's cron gate (cronGo needs
+			// phpPending === 0) does not boot PHP in this isolate in the middle of the measurement.
+			phpPending++;
+			const { response, job } = headroomStream({ first: JSON.stringify({ m: 'headroom', build: BUILD_ID, gc: gcAvailable, ...snap }), max: url.searchParams.get('max') || 1024, every: 16, probe: () => headroomLedger() });
+			this.ctx.waitUntil(job.finally(() => { phpPending--; }));
 			return response;
 		}
 		// Reset this object so the next request boots the new code (issue #35

@@ -49,8 +49,27 @@ test('index.js: /_headroom is off by default, sits after the spike check and bef
 	const spike = src.lastIndexOf("if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });", at);
 	assert.ok(spike > 0 && at - spike < 4000, 'after the object spike check');
 	assert.ok(src.indexOf('return withPhp(async () => {', at) > at, 'before the PHP lock');
-	const block = src.slice(at, at + 900);
+	const block = src.slice(at, at + 1600);
 	assert.match(block, /env\.HEADROOM_PROBE !== 'on'\) return new Response\('Not Found', \{ status: 404 \}\)/);
 	assert.match(block, /ledgerSnapshot\('headroom'\)/);
-	assert.match(block, /this\.ctx\.waitUntil\(job\)/);
+	assert.match(block, /this\.ctx\.waitUntil\(job[.)]/);
+});
+
+test('every N MiB, a ledger line from the probe callback (a runtime appearing mid-loop is visible)', async () => {
+	let k = 0;
+	const { response, job } = headroomStream({ first: 'x', max: 5, every: 2, probe: () => ({ k: ++k }) });
+	const [text] = await Promise.all([readAll(response), job]);
+	assert.deepEqual(text.trim().split('\n'), ['x', 'mib 1', 'mib 2', 'ledger {"k":1}', 'mib 3', 'mib 4', 'ledger {"k":2}', 'mib 5', 'done 5 held 5']);
+});
+
+test('index.js: /_headroom holds phpPending while it runs (the alarm cron gate skips) and streams the live ledger every 16 MiB', () => {
+	const at = src.indexOf("if (url.pathname === '/_headroom')");
+	const block = src.slice(at, at + 1600);
+	assert.match(block, /\n\t+phpPending\+\+;\n/, 'counted as a PHP-pending holder (a statement, not a comment)');
+	assert.match(block, /job\.finally\(\(\) => \{ phpPending--; \}\)/, 'released when the job ends');
+	assert.match(block, /every: 16/);
+	assert.match(block, /probe: \(\) => headroomLedger\(\)/);
+	assert.match(src, /function headroomLedger\(\) \{/);
+	const cronGate = /const cronGo = [^\n]*phpPending === 0/;
+	assert.match(src, cronGate, 'the cron gate still reads phpPending');
 });
