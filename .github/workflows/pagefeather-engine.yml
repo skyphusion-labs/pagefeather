@@ -1,12 +1,12 @@
-name: engine-build
-# Our own PHP 8.3 wasm engine (#582). S1: build the upstream pipeline UNCHANGED (engine/build.sh,
+name: pagefeather-engine
+# The pagefeather engine (#582), our own WebAssembly build of PHP 8.3. S1: build the upstream pipeline UNCHANGED (engine/build.sh,
 # pinned by engine/UPSTREAM) and compare it with the engine we ship, byte for byte. Nothing is
 # published. The job summary records the phase times, the sha256 of every output and the comparison.
 on:
   pull_request:
     paths:
       - 'engine/**'
-      - '.github/workflows/engine-build.yml'
+      - '.github/workflows/pagefeather-engine.yml'
   workflow_dispatch:
 
 permissions:
@@ -66,7 +66,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "## engine-build: upstream unchanged (#582 S1)"
+            echo "## pagefeather-engine: upstream unchanged (#582 S1)"
             echo; echo '```'; grep '^@event phase' "$RUNNER_TEMP/build.out" 2>/dev/null || echo "no phase lines"; echo '```'
             echo; echo '```'; cat "$RUNNER_TEMP/out/SHA256SUMS" 2>/dev/null || echo "no outputs"; echo '```'
             echo; echo '```'; cat "$RUNNER_TEMP/compare.txt" 2>/dev/null || echo "no comparison"; echo '```'
@@ -76,7 +76,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: engine-upstream-reproduce
+          name: pagefeather-engine-upstream-reproduce
           path: |
             ${{ runner.temp }}/out
           retention-days: 14

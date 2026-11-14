@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the PHP 8.3 web JSPI engine from the pinned upstream pipeline (#582), with docker.
+# Build the pagefeather engine (PHP 8.3, web, JSPI) from the pinned upstream pipeline (#582), with docker.
 #   engine/build.sh <out-dir>
 # S1: upstream UNCHANGED, with the same build args as Playground's build.js uses for
 # "--PLATFORM=web --PHP_VERSION=8.3.36 --WITH_JSPI=yes" (its platformDefaults.all plus web).
@@ -46,11 +46,11 @@ args=(PHP_VERSION="$PHP_VERSION" PHP_REF="$PHP_REF" OPENSSL_VERSION=1.1.0h
   DEBUG_DWARF_COMPILATION_DIR="$compile/.." WITH_ICONV=yes WITH_MYSQL=no WITH_WS_NETWORKING_PROXY=yes
   WITH_IMAGICK=no EMSCRIPTEN_ENVIRONMENT=web WITH_JSPI=yes WITH_OPCACHE=yes STACK_SIZE=1MB)
 bargs=(); for a in "${args[@]}"; do bargs+=(--build-arg "$a"); done
-(cd "$compile" && docker build -f php/Dockerfile .. --tag=pf-php-wasm --progress=plain "${bargs[@]}" > "$out/docker-build.log" 2>&1) || { tail -60 "$out/docker-build.log"; exit 1; }
+(cd "$compile" && docker build -f php/Dockerfile .. --tag=pagefeather-engine-build --progress=plain "${bargs[@]}" > "$out/docker-build.log" 2>&1) || { tail -60 "$out/docker-build.log"; exit 1; }
 phase php
 
 # 4. The outputs, as build.js copies them.
-docker run --rm -v "$out:/output" pf-php-wasm sh -c "cp -rf /root/output/* /output && chown -R $(id -u):$(id -g) /output"
+docker run --rm -v "$out:/output" pagefeather-engine-build sh -c "cp -rf /root/output/* /output && chown -R $(id -u):$(id -g) /output"
 printf '%s\n' "${args[@]}" > "$out/build-args.txt"
 { echo "UPSTREAM_COMMIT=$UPSTREAM_COMMIT"; echo "PHP_REF_COMMIT=$PHP_REF_COMMIT"; echo "EMSDK_VERSION=$EMSDK_VERSION";
   docker run --rm playground-php-wasm:base bash -lc "source /root/emsdk/emsdk_env.sh >/dev/null 2>&1; emcc --version | head -1; git -C /root/emsdk rev-parse HEAD" ; } > "$out/manifest.txt" 2>&1 || true

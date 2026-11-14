@@ -1,4 +1,4 @@
-# The upstream PHP wasm pipeline our engine starts from (#582). Sourced by engine/build.sh.
+# The upstream pipeline the pagefeather engine starts from (#582). Sourced by engine/build.sh.
 #
 # UPSTREAM_COMMIT is the WordPress Playground commit that PRODUCED the engine we ship: the last commit
 # that changed packages/php-wasm/web-builds/8-3/jspi/8_3_36/php_8_3.wasm before the v3.1.62 tag
