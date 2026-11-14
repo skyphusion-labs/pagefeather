@@ -25,6 +25,7 @@ ok('approach A sets the bounded TTL', src.includes("define('JS_OBJECT_CACHE_TTL'
 const def = (src.match(/: '([a-z0-9_,-]+)';\s*\n\s*lines\.push\("define\('JS_OBJECT_CACHE_PERSIST_GROUPS'/) || [])[1] || '';
 ok('the default allowlist excludes WooCommerce groups', def.length > 0 && !/woo|wc_|product|session|cart|order/.test(def));
 ok('the default allowlist excludes posts/post_meta', def.length > 0 && !/\bpost/.test(def));
+ok('#491: the default allowlist excludes options (a stale alloptions across isolates is a lost update)', def.length > 0 && !/(^|,)options(,|$)/.test(def));
 
 // The per-request off bracket is spike-gated, like x-ast-cache-off.
 ok('x-oc-off is stripped without a spike token', src.includes("if (!spikeOk) delete headers['x-oc-off'];"));
