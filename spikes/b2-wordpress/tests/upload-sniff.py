@@ -39,13 +39,22 @@ for m in man:
         body = {}
     code = body.get('code') if isinstance(body, dict) else None
     head = None if r['code'] == 201 else (r['body'] or b'')[:200].decode('utf-8', 'replace').replace('\n', ' ')
-    # The REST media controller creates the attachment (WordPress's type check has passed), sends
-    # X-WP-Upload-Attachment-ID, then makes the image sub-sizes, then sets 201. An answer with that header
-    # and no 201 is an upload WordPress ACCEPTED whose post-processing stopped: counted as accepted, flagged.
-    att = (r.get('h') or {}).get('X-WP-Upload-Attachment-ID') if r.get('h') else None
-    post = r['code'] != 201 and bool(att)
-    res[m['file']] = {'http': r['code'], 'accepted': r['code'] == 201 or post, 'post_processing_failed': post, 'attachment': att,
+    # Local dev shows PHP warnings (WP_DEBUG, php/wp-config.php; a deploy sets display_errors 0). A warning
+    # printed before the JSON sends the headers with 200 before the REST controller can set 201, and the
+    # attachment's JSON follows the warning text. That upload was ACCEPTED: count it, and flag it.
+    raw = (r['body'] or b'').decode('utf-8', 'replace')
+    att = None
+    if r['code'] != 201 and '{"id":' in raw:
+        try:
+            j, _ = json.JSONDecoder().raw_decode(raw[raw.index('{"id":'):])
+            att = j.get('id') if isinstance(j, dict) and j.get('source_url') else None
+            body = j
+        except ValueError:
+            att = None
+    warned = r['code'] != 201 and att is not None
+    code = body.get('code') if isinstance(body, dict) else None
+    res[m['file']] = {'http': r['code'], 'accepted': r['code'] == 201 or warned, 'warnings_in_body': warned, 'attachment': att,
                       'code': code, 'mime': body.get('mime_type') if isinstance(body, dict) else None, 'head': head}
     print('%-18s %-10s %s %s %s' % (m['file'], m['class'], r['code'], code or res[m['file']]['mime'] or '', (head or '')[:80]))
 json.dump(res, open(out, 'w'), indent=1)
-print('upload-sniff.py: %d uploads, %d accepted (%d of them with image post-processing stopped)' % (len(res), sum(1 for v in res.values() if v['accepted']), sum(1 for v in res.values() if v['post_processing_failed'])))
+print('upload-sniff.py: %d uploads, %d accepted (%d of them answered 200 with PHP warnings before the JSON)' % (len(res), sum(1 for v in res.values() if v['accepted']), sum(1 for v in res.values() if v['warnings_in_body'])))

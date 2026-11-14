@@ -34,8 +34,8 @@ acc = sum(1 for f, m in man.items() if m['class'] == 'accepted' and full.get(f, 
 print('@event upload-sniff-compare ' + json.dumps({'holds': not bad, 'fixtures': n, 'accepted_on_both': acc, 'differences': len(bad)}))
 print('%d accepted types: accepted on both engines (of %d); %d WordPress quirks refused on both, each with its reason in the manifest' % (acc, n['accepted'], n['wp-quirk']))
 for f, m in sorted(man.items()):
-    if got.get(f, {}).get('post_processing_failed') or full.get(f, {}).get('post_processing_failed'):
-        print('  accepted, image post-processing stopped %-10s oracle %s under test %s' % (f, full[f]['http'], got[f]['http']))
+    if got.get(f, {}).get('warnings_in_body') or full.get(f, {}).get('warnings_in_body'):
+        print('  accepted, 200 with PHP warnings before the JSON %-10s oracle %s under test %s: %s' % (f, full[f]['http'], got[f]['http'], (got[f].get('head') or '')[:80]))
 for f, m in sorted(man.items()):
     if m['class'] == 'wp-quirk':
         print('  wp-quirk %-10s %s' % (f, m['why']))
