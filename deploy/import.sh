@@ -172,8 +172,16 @@ media_step() {
   elif [ -n "$SRC_CONTENT" ] && [ -d "$SRC_CONTENT/uploads" ] && [ -n "${MEDIA_BUCKET:-}" ]; then
     # The caller made the key (deploy/wfp "site import", from the site's own
     # workspace) and deletes it after: this step reads no Terraform state.
-    : "${R2_ENDPOINT:?MEDIA_BUCKET needs R2_ENDPOINT}" "${R2_KEY_ID:?MEDIA_BUCKET needs R2_KEY_ID}" "${R2_SECRET:?MEDIA_BUCKET needs R2_SECRET}"
-    export R2_KEY_ID R2_SECRET
+    # The key: R2_KEY_ID and R2_SECRET, or R2_CRED_FILE (a temporary credential, deploy/wfp #273,
+    # with R2_CRED_REFRESH to mint a fresh one on a refusal).
+    : "${R2_ENDPOINT:?MEDIA_BUCKET needs R2_ENDPOINT}"
+    if [ -n "${R2_CRED_FILE:-}" ]; then
+      [ -r "$R2_CRED_FILE" ] || { echo "MEDIA_BUCKET: R2_CRED_FILE $R2_CRED_FILE is not readable" >&2; exit 1; }
+      export R2_CRED_FILE R2_CRED_REFRESH="${R2_CRED_REFRESH:-}"
+    else
+      : "${R2_KEY_ID:?MEDIA_BUCKET needs R2_KEY_ID or R2_CRED_FILE}" "${R2_SECRET:?MEDIA_BUCKET needs R2_SECRET}"
+      export R2_KEY_ID R2_SECRET
+    fi
     "$IMP/media.sh" "$R2_ENDPOINT" "$MEDIA_BUCKET" "$SRC_CONTENT"
     "$IMP/media.sh" "$R2_ENDPOINT" "$MEDIA_BUCKET" "$SRC_CONTENT" | tee "$WORK/media-check.txt"
     grep -q '^media: 0 sent, [0-9]* already there, 0 failed$' "$WORK/media-check.txt" || { echo "media: the check run sent files again" >&2; exit 1; }

@@ -11,7 +11,7 @@
 # AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for it), CHECK=0 (skip check.py),
 # CACHE_PROBE=0 (skip the Workers Cache probe).
 # The token needs Workers Scripts, Workers KV, Workers for Platforms and R2
-# edit, and API token edit (the teardown key in down.sh).
+# edit. No API Tokens permission: the bucket keys are temporary R2 credentials (#273).
 #
 # Order: the namespace and the site map, the outbound Worker (the dispatchers
 # bind it), then each site (site.sh up), then the stale-entry probe and

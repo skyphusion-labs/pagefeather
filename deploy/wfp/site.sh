@@ -102,7 +102,7 @@ elif [ "$cmd" = down ]; then
     log "site $s: phase B, detach the Custom Domain $HOST first (CR #138 remove order: the hostname before the entry)"
     tfr site init -input=false >/dev/null
     if tfr site workspace select "$s" >/dev/null 2>&1; then
-      tfr site destroy -input=false -auto-approve "${VARS[@]}" -var teardown=true -target=cloudflare_workers_custom_domain.site >/dev/null || true
+      tfr site destroy -input=false -auto-approve "${VARS[@]}" -target=cloudflare_workers_custom_domain.site >/dev/null || true
     fi
   else
     log "site $s: dispatcher $D (the hostname first)"
@@ -126,10 +126,10 @@ elif [ "$cmd" = down ]; then
   # A down never creates: no workspace means no data plane to remove.
   tfr site init -input=false >/dev/null
   if tfr site workspace select "$s" >/dev/null 2>&1; then
-    # Empty the bucket with a key that can reach only that bucket, made for this
-    # step and removed again if the empty fails (lib.sh down_empty_bucket).
+    # Empty the bucket with a temporary credential that can reach only that
+    # bucket (lib.sh down_empty_bucket, #273).
     down_empty_bucket "$s"
-    tfr site destroy -input=false -auto-approve "${VARS[@]}" -var teardown=true >/dev/null
+    tfr site destroy -input=false -auto-approve "${VARS[@]}" >/dev/null
     tfr site workspace select default >/dev/null && tfr site workspace delete "$s" >/dev/null
   else
     echo "  no workspace $s: no data plane to remove (checked below)"
