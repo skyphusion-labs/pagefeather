@@ -91,7 +91,7 @@ for r in $(seq 1 "${STRESS_ROUNDS:-10}"); do
   if [ "$rc" != 0 ] || [ "$mn" != 1 ]; then
     sbad=$((sbad + 1))
     echo "  stress round $r: exit $rc, $mn mints; the mints of this round (time, bucket): $(st "d['mint_log'][$m0:]")"
-    grep -E '^r2|^r2 temp|^media: [0-9]+ sent|^fail ' "$T/s$r.out" | sed 's/^/    /' | head -12
+    { grep -E '^r2|^fail ' "$T/s$r.out" | head -8; echo "    (the last lines)"; tail -4 "$T/s$r.out"; } | sed 's/^/    /'
   fi
 done
 check "#545 stress: ${STRESS_ROUNDS:-10} rounds of ${STRESS_JOBS:-16} jobs, each exit 0 with ONE fresh credential" "$sbad" 0
