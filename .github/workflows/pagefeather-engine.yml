@@ -58,6 +58,11 @@ jobs:
           node engine/tools/wasm-stats.mjs "$RUNNER_TEMP/npm/package/jspi/8_3_36/php_8_3.wasm" shipped-3.1.62 > "$RUNNER_TEMP/out/stats.txt"
           node engine/tools/wasm-stats.mjs "$(find "$RUNNER_TEMP/out" -name php_8_3.wasm | head -1)" "${{ matrix.variant }}" >> "$RUNNER_TEMP/out/stats.txt"
           cat "$RUNNER_TEMP/out/stats.txt"
+      - name: LICENSES/, NOTICE and SOURCE from the traced link inputs (lean legs; a gate)
+        # engine/tools/licenses.py fails when a traced link input has no licence row, or a fetched
+        # licence text does not have its pinned sha256 (engine/licenses.tsv).
+        if: startsWith(matrix.variant, 'lean')
+        run: python3 -I engine/tools/licenses.py "$RUNNER_TEMP/out/link-inputs.txt" "$RUNNER_TEMP/out"
       - name: Compare with the engine we ship (@php-wasm/web-8-3 3.1.62)
         if: "!startsWith(matrix.variant, 'lean')"
         id: compare
