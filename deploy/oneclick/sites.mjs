@@ -273,9 +273,16 @@ export async function addSite(env, { body, fetchImpl, dispatcherSource }) {
   // The Hyperdrive store. Any failure before it is installed undoes what this
   // request made (undoStore); a failed install counts, because for a store it
   // almost always means WordPress could not reach the database.
+  // A prefix that already holds WordPress is REFUSED (lead ruling on #483): using
+  // it would bind the new store to another site's data and admin. The manager
+  // cannot query the database itself (it has no Hyperdrive binding), so the check
+  // is the site's own install answer ("already"), read before the front door
+  // exists; the store is then undone like any other failure.
   let r;
+  let taken = false;
   try {
     r = await provisionSite(ctx, cfg);
+    if (!r.existing && r.alreadyInstalled) { taken = true; throw new Error(`table prefix ${aOpts.tablePrefix} already holds WordPress`); }
     if (!r.existing && !r.installed) throw new Error(`install: ${r.installNote || 'not installed'}`);
     await deployFrontDoor(ctx, { name: req.name, kvId, namespace, source: dispatcherSource, compatibilityDate: cfg.compatibilityDate });
     await updateSite(ctx, { kvId, hostname, patch: { database: db.id, tablePrefix: aOpts.tablePrefix } });
@@ -283,18 +290,18 @@ export async function addSite(env, { body, fetchImpl, dispatcherSource }) {
     if (ours) throw e;
     const ref = logged('add Hyperdrive store', (e && e.stack) || e);
     const left = await undoStore(ctx, { name: req.name, kvId, namespace, hostname });
+    const leftText = left.length ? `These could not be removed, remove them in Cloudflare: ${left.join('; ')}.` : 'Everything it had made in Cloudflare was removed.';
+    if (taken) {
+      throw new BadRequest(`The store was not made: the database already holds a WordPress site under the table prefix ${aOpts.tablePrefix}. Choose a database with no WordPress tables under that prefix (a separate database per store is best), or pick another site name, or remove those tables first. The site manager did not change those tables. ${leftText} (reference ${ref})`);
+    }
     throw new BadRequest(`The store was not made (reference ${ref}). ${left.length ? `These could not be removed, remove them in Cloudflare: ${left.join('; ')}.` : 'Everything it had made in Cloudflare was removed.'} Your database was not changed by the removal; tables WordPress already wrote stay in it under the prefix ${aOpts.tablePrefix}.`);
   }
   const woo = r.existing ? null : await activateWoo(ctx, { script: r.script, spikeToken: cfg.secrets.SPIKE_TOKEN });
-  // A prefix that already held WordPress: the new site uses those tables, and the
-  // password made for this install is not that site's. Do not show it.
-  const reused = !!r.alreadyInstalled && !r.existing;
   return {
     ok: true, name: req.name, existing: !!r.existing, installed: !!r.installed,
     url: `https://${hostname}/`, loginUrl: `https://${hostname}/wp-login.php`,
-    user: r.admin && r.admin.user, password: reused ? undefined : (r.admin && r.admin.password),
+    user: r.admin && r.admin.user, password: r.admin && r.admin.password,
     store: true, woo, tier: 'a', tablePrefix: aOpts.tablePrefix,
-    ...(reused ? { note: `This database already holds a WordPress site under the prefix ${aOpts.tablePrefix}. The new store uses it. Log in with that site's own admin account.` } : {}),
   };
 }
 

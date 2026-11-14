@@ -570,6 +570,23 @@ await ok('control for the undo: a failed install is undone too; a STANDARD store
   assert(res2.status === 200 && r2.ok && cf2.nsScripts.has('site-myshop'), `standard store ${res2.status} ${JSON.stringify(r2)}`);
 });
 
+await ok('a prefix that already holds WordPress is refused, undone, and the screen says which prefix and what to do', async () => {
+  const d = dispatcherStub();
+  const inner = d.get;
+  d.get = (script) => ({ fetch: async (req) => (new URL(req.url).pathname === '/_install'
+    ? new Response(JSON.stringify({ out: '{"installed":"already"}' }))
+    : inner(script).fetch(req)) });
+  const { cf, env } = await connectedEnv();
+  env.DISPATCHER = d;
+  const { value: res } = await capture(() => call(post('/api/sites', { name: 'bigshop', tier: 'a', database: HD }), env, access(), cf));
+  const r = await res.json();
+  assert(res.status === 400 && /already holds a WordPress site under the table prefix wp_bigshop_/.test(r.error) && /separate database per store/.test(r.error) && /remove those tables first/.test(r.error), `${res.status} ${r.error}`);
+  assert(!r.password && !JSON.stringify(r).includes('"password"'), 'a password was shown');
+  assert(!cf.plain.has('wp-bigshop') && !cf.nsScripts.has('site-bigshop') && !cf.buckets.size && !cf.kvNs.has('wp-wfp-bigshop-oc'), 'not undone');
+  assert(![...cf.kv.keys()].some((k) => k.endsWith('/wp-bigshop.acme.workers.dev')), 'the site entry is left');
+  assert(!cf.calls.some((c) => c.method === 'PUT' && c.path.endsWith('/workers/scripts/wp-bigshop')), 'a front door was made for a taken prefix');
+});
+
 await ok('disconnect: refused while a site uses the database; allowed when none does', async () => {
   const { cf, env } = await connectedEnv();
   const r = await (await call(post('/api/sites', { name: 'bigshop', tier: 'a', database: HD }), env, access(), cf)).json();

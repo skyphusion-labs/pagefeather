@@ -83,7 +83,7 @@ export function addScreen({ subdomain, databases = [] }) {
 <label><input type="radio" name="tier" value="a"> Hyperdrive store</label>
 <p class="description">Uses your own MySQL database, through Cloudflare Hyperdrive. For stores where many people check out at once.</p></fieldset></td></tr>
 <tr id="row-db" hidden><th><label for="database">Database</label></th><td>${dbOptions
-    ? `<select id="database" name="database">${dbOptions}</select><p class="description">The store's tables go in this database, named for the site.</p>`
+    ? `<select id="database" name="database">${dbOptions}</select><p class="description">The store's tables go in this database, under a prefix named for the site. We recommend a separate database for each store. If the database already holds a WordPress site under that prefix, the store is not made.</p>`
     : '<p>No database is connected yet. <a href="/databases">Connect a database</a>, then come back here.</p>'}</td></tr>
 </table>
 <p><button id="submit" class="button button-primary button-hero" type="submit" disabled>Add New Site</button></p>
@@ -110,7 +110,7 @@ export function databasesScreen(databases) {
 <table class="list"><thead><tr><th>Name</th><th>Server</th><th class="hide-sm">Where it runs</th></tr></thead><tbody>${rows}</tbody></table>
 <div class="card"><h2>Connect a database</h2>
 <ol>
-<li>Make a MySQL 8 database. We recommend <b>Azure Database for MySQL</b> (Flexible Server). On Azure, set the server parameter <code>sql_mode</code> to <code>ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION</code>, and keep SSL on.</li>
+<li>Make a MySQL 8 database. We recommend <b>Azure Database for MySQL</b> (Flexible Server), with <b>a separate database for each store</b> (one server can hold many databases). On Azure, set the server parameter <code>sql_mode</code> to <code>ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION</code>, and keep SSL on.</li>
 <li>In Cloudflare, go to <b>Storage &amp; databases &gt; Hyperdrive</b>. Select <b>Create configuration</b>. Enter the database's server name, port, database name, user and password. Cloudflare keeps the password. This site manager never sees it.</li>
 <li>Turn <b>caching off</b> for the configuration. With caching on, a store can show old prices and stock.</li>
 <li>Copy the configuration's ID. Paste it below.</li>
@@ -139,7 +139,7 @@ const CHECK_TEXT = {
   platforms: ['Workers for Platforms is on', 'Your sites run on this Cloudflare plan. It costs $25 a month, billed by Cloudflare to your own account.', 'Turn on Workers for Platforms in Cloudflare (Workers for Platforms, then Purchase). Then come back here.'],
   subdomain: ['Your site addresses are ready', 'New sites get an address under your workers.dev name.', 'Choose your workers.dev name in Cloudflare (Workers & Pages, then Your subdomain).'],
   files: ['WordPress files are ready', 'The WordPress files for your sites are in place and checked.', 'Get the WordPress files for your sites. This is done once, and checked before it is used.'],
-  hyperdrive: ['The key can read Hyperdrive (optional)', 'You can connect a database for a Hyperdrive store.', 'Only for a Hyperdrive store. Add the Hyperdrive Read permission to the key in Cloudflare (My Profile, API Tokens, edit the key).'],
+  hyperdrive: ['The key can read Hyperdrive (optional)', 'You can connect a database for a Hyperdrive store.', 'Only for a Hyperdrive store. Add the Hyperdrive Read permission to the key in Cloudflare (Manage Account, Account API Tokens, edit the key).'],
   filesA: ['Hyperdrive store files are ready (optional)', 'The files for Hyperdrive stores are in place and checked.', 'Only for a Hyperdrive store. Set A_BUNDLE_MANIFEST_SHA256 for this release, deploy again, then select Get WordPress files.'],
 };
 
