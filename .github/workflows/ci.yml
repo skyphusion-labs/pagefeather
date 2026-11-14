@@ -409,6 +409,12 @@ jobs:
           npm ci --silent --no-audit --no-fund
           ./prepare.sh
           node --test tests/heap-subarray.test.mjs
+      - name: The pagefeather engine's runtime contract, and each check red on the unpatched upstream engine (issue #582)
+        # Boots the prepared engine: loader, extensions, OPcache under SAPI wasm, initial memory, allocator,
+        # clock, heap growth, heap views, the open and read hooks, promising exports. Each check must also
+        # fail on the npm 3.1.62 artifact as shipped (or on a targeted mutation), so none can pass vacuously.
+        working-directory: spikes/b2-wordpress
+        run: node --test tests/engine-contract.test.mjs
       - name: The allocator reading of /_memprobe and the memory trace (issue #547)
         # Boots the loader the step above built with USE_ZEND_ALLOC 0 and 1; each reader must tell them apart.
         working-directory: spikes/b2-wordpress
