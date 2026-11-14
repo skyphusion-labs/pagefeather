@@ -25,7 +25,7 @@ The posture follows from the risk of a stale cross-isolate read, per cache group
 | Group | Written by | What a stale cross-isolate read costs | Tier on approach A |
 | --- | --- | --- | --- |
 | `options` / `alloptions` | `update_option` (core deletes `alloptions`) | a settings change shows late in another isolate, and a form saved from that page writes the old values back (#491) | **never across requests on A** (#491): per request only, whatever `OBJECT_CACHE_GROUPS` says |
-| `terms` | `clean_term_cache` | a taxonomy edit shows late | L1 Map, allowlisted, bounded TTL |
+| `terms` | `clean_term_cache` | a taxonomy edit shows late | **not allowlisted by default** (#494): per request only. On wp-a-lean, 1 read in 140 was stale with it in and 0 in 140 with it out; out costs 2 to 4 more queries per front page |
 | `theme_json` | core recompute | block styling shows late | L1 Map, salted (#199) plus bounded TTL |
 | `posts` / `post_meta` | `save_post`, `clean_post_cache` | stale post content or meta | L0 per request only (NOT allowlisted); a salted or versioned L1 is a measured later step |
 | `users` / `user_meta` | `clean_user_cache` | stale capabilities or session | L0 per request only |
@@ -49,7 +49,7 @@ Tiers:
 
 Off switch and knobs (written into wp-runtime.php as PHP constants):
 - `OBJECT_CACHE=on` turns the A object cache on. **The runtime default on A is off; provisioning (`site add --kind a`) sets it on**, together with `OBJECT_CACHE_L2=on` and `LAZY_NODES=on`. (On b-dosql the same var stays on unless set to `off`; a deploy is one engine, so the var is unambiguous per deploy.)
-- `OBJECT_CACHE_GROUPS` is the persist allowlist, sanitized to `[A-Za-z0-9_,-]`. Default `terms,theme_json`. `options` is dropped from it even when named (#491: a stale `alloptions` read in one isolate, then a form re-save, is a lost update; measured on wp-a-lean, 7 of 20 reads stale right after a write). `terms` is measured separately (#494).
+- `OBJECT_CACHE_GROUPS` is the persist allowlist, sanitized to `[A-Za-z0-9_,-]`. Default `theme_json` (#494 took `terms` out). `options` is dropped from it even when named (#491: a stale `alloptions` read in one isolate, then a form re-save, is a lost update; measured on wp-a-lean, 7 of 20 reads stale right after a write).
 - `OBJECT_CACHE_TTL` is the bounded TTL in seconds, clamped to 0 to 3600. Default 10.
 - `THEME_JSON_CACHE` (unless `off`) also enables the salted theme.json cache (php/theme-json-cache.php), the worked example of the salted path.
 - The request header `x-oc-off` forces the cache off for one request, and is honored only with a valid spike token (like `x-ast-cache-off`), so a visitor cannot disable it. It gives a clean same-binary off bracket.

@@ -24,7 +24,7 @@ Every dispatcher copy is the same script and the same config, and only the name 
 ## Day one
 
 ```sh
-export CLOUDFLARE_API_TOKEN=...   # Workers Scripts, Workers KV, Workers for Platforms, R2: edit. No API Tokens permission (#273)
+export CLOUDFLARE_API_TOKEN=...   # the deploy token: see "The deploy token" below. No API Tokens permission (#273)
 export ACCOUNT_ID=...             # your Cloudflare account id. No default: every tool stops with exit 2 without it
 # The Skyphusion reference deploy sets ACCOUNT_ID (and WFP_ZONE_ID, WFP_SUBDOMAIN) with:  . deploy/wfp/reference.env
 ./deploy/wfp/up.sh                # SITES="one two" by default
@@ -58,6 +58,28 @@ Options:
 - `CHECK=0`;
 - `SITE_WAIT` (seconds to wait for a new site, default 300).
 
+
+## The deploy token
+
+`CLOUDFLARE_API_TOKEN` is one account token. It needs no API Tokens permission (#273), so it can be made through the API.
+
+**Measured 2026-11-14** (the #512 live proof on the throwaway pf512, main `48bdc2a`, wrangler 4.107.0, run by the lead): `site add` (146 s) and `site remove` (29 s) ran to the end with a token that had exactly these groups and no API Tokens permission: Account Settings Read, Vectorize Write, Workers AI Read, Workers KV Storage Write, Workers R2 Storage Write, Workers Scripts Write. So that set is enough for the site commands. It does not show that each group is needed; only Vectorize is measured as needed (below).
+
+**For the site commands** (`site add`, `update`, `remove`, `import`, `restore`, `list`), on the account:
+
+| Permission | Why (the code that needs it) | Status |
+| --- | --- | --- |
+| Workers Scripts Write | the user Worker in the dispatch namespace and the dispatcher (`wrangler deploy`, `/workers/dispatch/namespaces`, `/workers/scripts`), `/workers/subdomain`, and the script settings for the log redaction (`obs_settings.py`) | in the measured set |
+| Workers KV Storage Write | the site map entry (`terraform/site`, `cloudflare_workers_kv`; `lib.sh entry_build` reads it) | in the measured set |
+| Workers R2 Storage Write | the media bucket (`cloudflare_r2_bucket`), the snapshots, the recorded inputs and the rollback artifacts (S3 keys derived from this token, `snapshot.py`), and the parent of the temporary bucket credentials (`r2_temp.py`) | in the measured set |
+| Vectorize (Read at least) | every `site add` and `site remove` reads the site's search index for its footprint (`lib.sh site_footprint`) | measured as NEEDED: with a key that had no Vectorize permission, the add stopped at once with `search unknown` (exit 2). Vectorize Write, in the measured set, includes Read |
+| Vectorize Write | with `WP_VECTORIZE_SEARCH=1`, the per-site index is made and deleted (`ensure_search_index`, `remove_search_index`) | in the measured set; the search path itself was not run (search off) |
+| Workers AI Read | with `WP_VECTORIZE_SEARCH=1`, the site's `AI` binding for the embeddings | in the measured set; not exercised (search off) |
+| Account Settings Read | no call in deploy/wfp was traced to it (`tokens/verify` needs no permission) | in the measured set; not shown to be needed |
+
+With `WFP_CUSTOM_DOMAIN=1` (phase B, CR gated), the site's Custom Domain also needs, on that zone: Workers Routes Edit and DNS Edit. Not measured.
+
+**For `up.sh` and `down.sh` (the shared pieces, `terraform/shared`)**, in addition to the dispatch namespace and the site map namespace (Workers Scripts and Workers KV Storage, above), on the SaaS zone (`saas_zone_id`): Zone WAF Edit (the managed, custom and rate-limit rulesets, `waf.tf`), Workers Routes Edit and DNS Edit (`saas-home.tf`); with `access_enabled`, Access: Apps and Policies Edit (`access.tf`). These are named from the Terraform resources and are not measured with a scoped token.
 
 ## The bucket keys (#273)
 
