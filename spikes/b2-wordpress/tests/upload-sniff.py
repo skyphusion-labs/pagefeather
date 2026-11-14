@@ -12,17 +12,18 @@ fx, out = sys.argv[1], sys.argv[2]
 man = json.load(open(os.path.join(fx, 'manifest.json')))
 o = login()
 res = {}
-family = None
 def font_face(fname, data):
     # Core takes fonts through the Font Library: a font family, then a font face whose src names the
-    # multipart file field (the REST font-faces controller).
-    global family
-    if family is None:
-        r = rest(o, '/wp/v2/font-families', {'font_family_settings': json.dumps({'name': 'Sniff Test', 'slug': 'sniff-test-%d' % os.getpid(), 'fontFamily': 'Sniff Test'})}, method='POST')
-        assert r['code'] == 201, ('font family', r['code'], r['body'][:200])
-        family = json.loads(r['body'])['id']
+    # multipart file field (the REST font-faces controller). One family per font: two faces with the same
+    # settings in one family are refused as rest_duplicate_font_face before the file is checked (run
+    # 43654391202), which would test the duplicate rule, not the type check.
+    slug = 'sniff-%d-%s' % (os.getpid(), fname.replace('.', '-'))
+    name = 'Sniff ' + fname
+    r = rest(o, '/wp/v2/font-families', {'font_family_settings': json.dumps({'name': name, 'slug': slug, 'fontFamily': name})}, method='POST')
+    assert r['code'] == 201, ('font family', r['code'], r['body'][:200])
+    family = json.loads(r['body'])['id']
     bnd = 'pfsniff%d' % os.getpid()
-    parts = [('--%s\r\nContent-Disposition: form-data; name="font_face_settings"\r\n\r\n%s\r\n' % (bnd, json.dumps({'fontFamily': 'Sniff Test', 'src': 'file-0'}))).encode(),
+    parts = [('--%s\r\nContent-Disposition: form-data; name="font_face_settings"\r\n\r\n%s\r\n' % (bnd, json.dumps({'fontFamily': name, 'src': 'file-0'}))).encode(),
              ('--%s\r\nContent-Disposition: form-data; name="file-0"; filename="%s"\r\nContent-Type: application/octet-stream\r\n\r\n' % (bnd, fname)).encode() + data + b'\r\n',
              ('--%s--\r\n' % bnd).encode()]
     return rest(o, '/wp/v2/font-families/%d/font-faces' % family, raw=b''.join(parts), method='POST', headers={'Content-Type': 'multipart/form-data; boundary=' + bnd})
