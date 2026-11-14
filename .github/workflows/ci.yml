@@ -234,6 +234,7 @@ jobs:
         # snapshot/restore, the build activation wait, and the all-sites ordering.
         run: |
           deploy/wfp/tests/dbsnap-test.sh
+          python3 -I deploy/wfp/tests/fresh-test.py
           deploy/wfp/tests/wait-build-test.sh
           deploy/wfp/tests/update-all-test.sh
           deploy/wfp/tests/update-inputs-test.sh

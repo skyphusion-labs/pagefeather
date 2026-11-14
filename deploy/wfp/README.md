@@ -262,6 +262,16 @@ Any other binding fails, and so does a script whose bindings cannot be read. The
 
 `CROSS_OUTBOUND=0` runs the probes with the outbound flag off (default on). A PASS is a public result. A result where A reaches B against the docs, or any platform isolation gap, goes to the lead only, is written to no artifact, and stops that line (`cross.py` marks it `platform`; `cross.sh` exits 3). A reach through a binding we gave A by mistake is our defect, fixed in the open. The binding readback (above) proves the static half: A's bindings name only A's resources. The method is on issue #35.
 
+## The freshness check of the scheduled snapshots (#533)
+
+`.github/workflows/snapshot-freshness.yml` runs daily at 10:17 UTC, 3 hours after the scheduled snapshot (07:17 UTC). It runs `python3 -I deploy/wfp/snapshot.py fresh` for the sites in `deploy/wfp/snapshot-sites`, and reads each site's `_snapshots/auto/` in its BUCKET. It never reads the dispatcher's log, so it does not share fate with the cron. A site is RED when:
+- its `_snapshots/auto/` listing cannot be read;
+- it has no `.ndjson.gz` snapshot;
+- its newest snapshot is over 26 hours old (`FRESH_MAX_AGE_H`);
+- it has a previous snapshot and the newest is under half of its size (`FRESH_MIN_RATIO`, 0.5). A site's FIRST snapshot has nothing to compare against, so this rule does not apply to it.
+
+List a site in `snapshot-sites` only after its cron is live, so a red is a real miss. With no site listed, the check says so and exits 0. The workflow needs `PF_SNAPSHOT_FRESH_TOKEN`, an account token with R2 read only. snapshot.py derives its S3 key from that token. Without it, a run with sites to check is UNMEASURED and fails (exit 2), never green. A manual dispatch can name other sites (the `sites` input): that is how the check is seen going red once on a throwaway.
+
 ## Tests (offline)
 
 ```sh
@@ -276,6 +286,7 @@ python3 deploy/wfp/tests/bindings-test.py   # the bindings read back: each scrip
 python3 deploy/wfp/tests/cross-test.py      # the isolation verdict: a breach is never read as a pass
 deploy/wfp/tests/probe-entry-test.sh        # the probe map entry and the CROSS_OUTBOUND option
 deploy/wfp/tests/tf-test.sh                 # terraform validate, fmt, and no account token in the site graph (local: needs terraform)
+python3 -I deploy/wfp/tests/fresh-test.py   # the freshness check (#533): red on a miss, not on a site's first snapshot
 deploy/wfp/tests/r2-temp-test.sh            # the temporary R2 credential: the mint, one bucket only, a refresh on expiry (#273)
 deploy/wfp/tests/custom-domain-test.sh      # phase B (#138): custom_host, site_host, the shared dispatcher, the Terraform wiring
 ```

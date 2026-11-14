@@ -5,6 +5,7 @@ remove" (issue #35, slice 3; isolation.sh runs it).
   snapshot.py seed <site>...                put a per-site key _snapshots/seed-<site>.txt in each bucket
   snapshot.py take <out.json> <site>...     record each site
   snapshot.py diff <before.json> <after.json>   exit 1 when a site changed
+  snapshot.py fresh [<site>...]             #533: is each site's scheduled snapshot fresh? exit 1 if not
 
 Per site, `take` records:
 - its dispatcher wp-<site>: etag and modified_on, from the account's script list;
@@ -29,7 +30,7 @@ WFP_S3_SECRET, and WFP_SITE_URL (a template with {name}). The R2 reads use S3 cr
 token id as the key id, the SHA-256 of its value as the secret, as R2
 documents), so a snapshot makes no key and changes nothing.
 """
-import hashlib, json, os, random, re, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request
+import calendar, hashlib, json, os, random, re, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request
 import xml.etree.ElementTree as ET
 
 ENV = os.environ
@@ -137,6 +138,104 @@ def bucket_listing(bucket):
             return {"error": "list page %d is truncated but gives no continuation token" % pages}
         if pages >= 10000:
             return {"error": "list did not end after %d pages" % pages}
+
+
+def prefix_listing(bucket, prefix):
+    """Every key under <prefix> with its size and LastModified (epoch s), over every page, like
+    bucket_listing (#525). Any unreadable or inconsistent page is an error, never a short list."""
+    items, token, pages = [], None, 0
+    while True:
+        q = "list-type=2&prefix=" + urllib.parse.quote(prefix, safe="") + ("&continuation-token=" + urllib.parse.quote(token, safe="") if token else "")
+        st, b = s3("GET", "/%s?%s" % (bucket, q))
+        pages += 1
+        if st != 200:
+            return {"error": "list HTTP %s on page %d" % (st, pages)}
+        try:
+            root = ET.fromstring(b)
+        except ET.ParseError:
+            return {"error": "list page %d is not XML" % pages}
+        truncated, token = False, None
+        for c in root:
+            tag = c.tag.rsplit("}", 1)[-1]
+            if tag == "Contents":
+                get = lambda t: next((x.text for x in c if x.tag.rsplit("}", 1)[-1] == t), None)
+                try:
+                    lm = calendar.timegm(time.strptime((get("LastModified") or "")[:19], "%Y-%m-%dT%H:%M:%S"))
+                    size = int(get("Size"))
+                except (ValueError, TypeError):
+                    return {"error": "list page %d has a key without a readable size or LastModified" % pages}
+                items.append({"key": get("Key"), "size": size, "modified": lm})
+            elif tag == "IsTruncated":
+                truncated = (c.text or "").strip().lower() == "true"
+            elif tag == "NextContinuationToken":
+                token = c.text
+        if not truncated:
+            return {"objects": items}
+        if not token:
+            return {"error": "list page %d is truncated but gives no continuation token" % pages}
+        if pages >= 10000:
+            return {"error": "list did not end after %d pages" % pages}
+
+
+AUTO_PREFIX = "_snapshots/auto/"
+
+
+def fresh_sites(args):
+    """The sites to check: the arguments, else FRESH_SITES (spaces or commas), else the inventory
+    file deploy/wfp/snapshot-sites (one name a line; # starts a comment)."""
+    if args:
+        return list(args)
+    if ENV.get("FRESH_SITES", "").strip():
+        return [x for x in re.split(r"[\s,]+", ENV["FRESH_SITES"]) if x]
+    f = ENV.get("FRESH_SITES_FILE") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "snapshot-sites")
+    out = []
+    for line in open(f):
+        line = line.split("#", 1)[0].strip()
+        if line:
+            out.append(line)
+    return out
+
+
+def fresh(args):
+    """#533: the freshness check of the scheduled snapshots. It reads each site's BUCKET (never the
+    dispatcher's log), so a cron that stopped, or a run that said ok and stored nothing, goes red.
+    Per site, RED when:
+      - the bucket listing of _snapshots/auto/ cannot be read (unreadable is never fresh);
+      - there is no .ndjson.gz snapshot;
+      - the newest is older than FRESH_MAX_AGE_H hours (26);
+      - there IS a previous one and the newest is under FRESH_MIN_RATIO (0.5) of its size (a cut
+        dump). The FIRST snapshot of a site has nothing to compare against, so this rule does not
+        apply to it; the age and presence rules apply from the first day.
+    Exit 0 all fresh, 1 any red, 2 a bad site name. No site to check is said, and exits 0."""
+    sites = fresh_sites(args)
+    if not sites:
+        print("fresh: NO SITES LISTED (deploy/wfp/snapshot-sites is empty): nothing was checked")
+        return 0
+    for x in sites:
+        if not re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?", x):
+            print("fresh: %r is not a site name" % x)
+            return 2
+    max_h = float(ENV.get("FRESH_MAX_AGE_H") or 26)
+    ratio = float(ENV.get("FRESH_MIN_RATIO") or 0.5)
+    now = float(ENV.get("FRESH_NOW") or time.time())
+    red = 0
+    for s in sites:
+        b = "wp-wfp-%s-media" % s
+        lst = prefix_listing(b, AUTO_PREFIX)
+        if "error" in lst:
+            print("RED %s: %s: cannot read the snapshots (%s)" % (s, b, lst["error"])); red += 1; continue
+        objs = sorted((o for o in lst["objects"] if (o["key"] or "").startswith(AUTO_PREFIX) and o["key"].endswith(".ndjson.gz")), key=lambda o: o["key"])
+        if not objs:
+            print("RED %s: no snapshot under %s/%s" % (s, b, AUTO_PREFIX)); red += 1; continue
+        n = objs[-1]
+        age_h = (now - n["modified"]) / 3600.0
+        if age_h > max_h:
+            print("RED %s: the newest snapshot %s is %.1f h old (over %g h)" % (s, n["key"], age_h, max_h)); red += 1; continue
+        if len(objs) >= 2 and n["size"] < ratio * objs[-2]["size"]:
+            print("RED %s: the newest snapshot %s is %d bytes, under %g of the previous one (%d bytes, %s)" % (s, n["key"], n["size"], ratio, objs[-2]["size"], objs[-2]["key"])); red += 1; continue
+        print("OK %s: %s, %d bytes, %.1f h old%s" % (s, n["key"], n["size"], age_h, "" if len(objs) >= 2 else " (the first snapshot: no size comparison)"))
+    print("fresh: %d of %d site(s) red" % (red, len(sites)))
+    return 1 if red else 0
 
 
 def script_record(item):
@@ -433,5 +532,7 @@ if __name__ == "__main__":
         sys.exit(dbsnapshot(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]))
     elif cmd == "dbrestore":
         sys.exit(dbrestore(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]))
+    elif cmd == "fresh":
+        sys.exit(fresh(sys.argv[2:]))
     else:
         sys.exit(__doc__)
