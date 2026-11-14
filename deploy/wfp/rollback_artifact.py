@@ -8,10 +8,16 @@ in the site's own media bucket (private outside uploads/, emptied by `site remov
 _build/inputs.json (#379):
 
     _build/artifact/<build id>.tar.gz
-        build/                 everything build/ holds (site.zip, opcache.zip, opcache-boot*,
-                               build-id.js, public/)
+        build/build-id.js      the build id (the #465 guard reads it)
+        build/<imported>       each file a root source imports as ./build/<path> (site.zip,
+                               opcache.zip, opcache-boot-index.js, build-id.js today)
+        build/public/          the static assets (with the _pf/ OPcache boot packs, #394)
         vendor/                the PHP wasm and its loader
         *.js *.mjs package.json package-lock.json   the Worker sources at the app root
+
+Only what the deploy uploads (#507): the bundle is index.js and what it imports, plus the assets
+directory. The rest of build/ (the unpacked WordPress tree, build/cache, the logs) never reaches
+the Worker, and it made the artifact about 3.7 times the bundle (124428180 bytes on pf466).
 
     rollback_artifact.py pack <app dir> <build id> <out.tar.gz>
     rollback_artifact.py put <bucket> <build id> <tar.gz>     write, then read back the size
@@ -44,6 +50,8 @@ import snapshot  # noqa: E402
 PREFIX = "_build/artifact/"
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 DIRS = ("build", "vendor")
+# A static import or a dynamic import() of ./build/<path> in a root source.
+BUILD_IMPORT_RE = re.compile(r"""(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)['"]\./build/([^'"]+)['"]""")
 TOP_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9._-]*\.(?:js|mjs)|package\.json|package-lock\.json)$")
 
 
@@ -106,6 +114,20 @@ def listing(bucket):
             return out
 
 
+def build_imports(app, tops):
+    """The build/ paths the root sources import, sorted. A path with .. or a glob is refused."""
+    out = set()
+    for n in tops:
+        if not n.endswith((".js", ".mjs")):
+            continue
+        for m in BUILD_IMPORT_RE.finditer(open(os.path.join(app, n), encoding="utf-8", errors="replace").read()):
+            rel = m.group(1)
+            if rel.startswith("/") or ".." in rel.split("/") or any(c in rel for c in "*?$`{"):
+                raise SystemExit("rollback artifact: not packed: %s imports an odd build path %r" % (n, rel))
+            out.add(rel)
+    return sorted(out)
+
+
 def pack(app, bid, outp):
     why = id_ok(bid)
     if why:
@@ -114,14 +136,23 @@ def pack(app, bid, outp):
     if have != bid:
         raise SystemExit("rollback artifact: not packed: build/ holds %s, not %s" % (have or "no build", bid))
     tops = sorted(n for n in os.listdir(app) if TOP_RE.match(n) and os.path.isfile(os.path.join(app, n)))
+    want = ["build/" + r for r in sorted(set(build_imports(app, tops)) | {"build-id.js"})]
+    for d in DIRS:
+        if not os.path.isdir(os.path.join(app, d)):
+            raise SystemExit("rollback artifact: not packed: %s has no %s/" % (app, d))
+    for w in want:
+        if not os.path.isfile(os.path.join(app, w)):
+            raise SystemExit("rollback artifact: not packed: a source imports %s, which the build did not make" % w)
     with tarfile.open(outp, "w:gz", dereference=True) as t:
-        for d in DIRS:
-            if not os.path.isdir(os.path.join(app, d)):
-                raise SystemExit("rollback artifact: not packed: %s has no %s/" % (app, d))
-            t.add(os.path.join(app, d), arcname=d)
+        t.add(os.path.join(app, "build"), arcname="build", recursive=False)
+        for w in want:
+            t.add(os.path.join(app, w), arcname=w)
+        if os.path.isdir(os.path.join(app, "build", "public")):
+            t.add(os.path.join(app, "build", "public"), arcname="build/public")
+        t.add(os.path.join(app, "vendor"), arcname="vendor")
         for n in tops:
             t.add(os.path.join(app, n), arcname=n)
-    return len(tops)
+    return len(tops), want
 
 
 def member_ok(m):
@@ -156,8 +187,8 @@ def safe_extract(tgz, outdir):
 def main(argv):
     cmd = argv[1] if len(argv) > 1 else ""
     if cmd == "pack" and len(argv) == 5:
-        n = pack(argv[2], argv[3], argv[4])
-        print("rollback artifact: packed %s (build/, vendor/, %d source file(s)), %d bytes" % (argv[3], n, os.path.getsize(argv[4])))
+        n, want = pack(argv[2], argv[3], argv[4])
+        print("rollback artifact: packed %s (%s, build/public/, vendor/, %d source file(s)), %d bytes" % (argv[3], " ".join(want), n, os.path.getsize(argv[4])))
         return 0
     if cmd == "put" and len(argv) == 5:
         b, bid, f = argv[2], argv[3], argv[4]

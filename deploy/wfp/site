@@ -152,11 +152,20 @@ update_one_inner() {
   if [ -n "$SAVED" ]; then
     echo "site $s: re-deploy the saved build $live_build"
     # From the saved tree: its own build/, vendor/ and sources (#466), this run's config, and
-    # this tree's node_modules (pinned by the lock file). $APP/build is left as it is.
+    # this tree's node_modules (pinned by the lock file). $APP/build is left as it is. The tree is
+    # moved into a mirror of the repo layout first, so the bundle is byte-equal to the original
+    # deploy's (#507, lib.sh rollback_deploy_dir).
+    local RBI="" RBROOT="" RBAPP="" RBWR=$WR
+    if RBI=$(rollback_deploy_dir "$SAVED"); then
+      IFS=$'\t' read -r RBROOT RBAPP RBWR <<< "$RBI"
+      rm -rf "$SAVED"; SAVED=$RBAPP
+    else
+      echo "site $s: the rollback tree could not be placed in a mirror of the repo; it deploys from $SAVED (the bundle may differ in module path strings only)" >&2
+      [ -e "$SAVED/node_modules" ] || ln -s "$APP/node_modules" "$SAVED/node_modules"
+    fi
     cp "$CONF" "$SAVED/wrangler.rollback.toml"
-    [ -e "$SAVED/node_modules" ] || ln -s "$APP/node_modules" "$SAVED/node_modules"
     local W2; W2=$(mktemp -d)
-    if tfr site output -json | site_secrets_json "$W2/sec.json" && (cd "$SAVED" && "$WR" deploy --config "$SAVED/wrangler.rollback.toml" --dispatch-namespace "$NAMESPACE" --secrets-file "$W2/sec.json") > "$W2/rb.log" 2>&1; then
+    if tfr site output -json | site_secrets_json "$W2/sec.json" && (cd "$SAVED" && "$RBWR" deploy --config "$SAVED/wrangler.rollback.toml" --dispatch-namespace "$NAMESPACE" --secrets-file "$W2/sec.json") > "$W2/rb.log" 2>&1; then
       echo "site $s: re-deployed ${live_build:-unknown}"
       tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=$live_build" -var "config_hash=$live_hash" >/dev/null || echo "site $s: the site map entry did not record the rollback build $live_build" >&2
       wait_build "$ORIGIN" "$TOK" "$live_build" || echo "site $s: /_build did not return to $live_build after the rollback re-deploy" >&2
@@ -165,6 +174,7 @@ update_one_inner() {
       tail -20 "$W2/rb.log" 2>/dev/null >&2
     fi
     rm -rf "$W2"
+    [ -n "$RBROOT" ] && rm -rf "$RBROOT"
   else
     echo "site $s: no saved build artifact of this site's live build; the old code is NOT re-deployed. Deploy ${rollback:-the old build} by hand. The data was restored from the snapshot." >&2
   fi
