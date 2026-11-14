@@ -1,0 +1,99 @@
+{
+ "data": {
+  "viewer": {
+   "accounts": [
+    {
+     "d": [],
+     "w": [
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T12:11:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 788256,
+        "cpuTimeP99": 3935221
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 24,
+        "subrequests": 80
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T12:12:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 825522,
+        "cpuTimeP99": 1475037
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 28,
+        "subrequests": 21
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T12:14:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 241471,
+        "cpuTimeP99": 387110
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 5,
+        "subrequests": 2
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T12:13:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 675818,
+        "cpuTimeP99": 1738421
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 29,
+        "subrequests": 6
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T12:10:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 1336351,
+        "cpuTimeP99": 2491747
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 7,
+        "subrequests": 53
+       }
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "errors": null,
+ "_query": {
+  "query": "query($a:String!,$s:String!,$f:Time!,$t:Time!){viewer{accounts(filter:{accountTag:$a}){w:workersInvocationsAdaptive(limit:1000,filter:{scriptName:$s,datetime_geq:$f,datetime_leq:$t}){sum{requests errors subrequests} quantiles{cpuTimeP50 cpuTimeP99} dimensions{status datetimeMinute}} d:durableObjectsInvocationsAdaptiveGroups(limit:1000,filter:{scriptName:$s,datetime_geq:$f,datetime_leq:$t}){sum{requests errors} dimensions{status datetimeMinute}}}}}",
+  "variables": {
+   "s": "hwp504",
+   "f": "2026-11-14T12:10:38Z",
+   "t": "2026-11-14T12:14:04Z"
+  }
+ },
+ "_label": "hwp-plus60",
+ "_read_at": "2026-11-14T12:15:20Z"
+}

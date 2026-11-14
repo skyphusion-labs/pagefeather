@@ -1,0 +1,130 @@
+{
+ "data": {
+  "viewer": {
+   "accounts": [
+    {
+     "d": [
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T09:37:00Z",
+        "status": "success"
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 2
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T09:38:00Z",
+        "status": "success"
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 10
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T09:38:00Z",
+        "status": "scriptThrewException"
+       },
+       "sum": {
+        "errors": 1,
+        "requests": 1
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T09:37:00Z",
+        "status": "exceededMemory"
+       },
+       "sum": {
+        "errors": 1,
+        "requests": 1
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T09:39:00Z",
+        "status": "success"
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 1
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T09:38:00Z",
+        "status": "clientDisconnected"
+       },
+       "sum": {
+        "errors": 1,
+        "requests": 1
+       }
+      }
+     ],
+     "w": [
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T09:37:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 1868,
+        "cpuTimeP99": 2114
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 2,
+        "subrequests": 2
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T09:38:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 1526,
+        "cpuTimeP99": 3873
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 10,
+        "subrequests": 8
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T09:39:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 1113,
+        "cpuTimeP99": 1113
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 1,
+        "subrequests": 1
+       }
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "errors": null,
+ "_query": {
+  "query": "query($a:String!,$s:String!,$f:Time!,$t:Time!){viewer{accounts(filter:{accountTag:$a}){w:workersInvocationsAdaptive(limit:1000,filter:{scriptName:$s,datetime_geq:$f,datetime_leq:$t}){sum{requests errors subrequests} quantiles{cpuTimeP50 cpuTimeP99} dimensions{status datetimeMinute}} d:durableObjectsInvocationsAdaptiveGroups(limit:1000,filter:{scriptName:$s,datetime_geq:$f,datetime_leq:$t}){sum{requests errors} dimensions{status datetimeMinute}}}}}",
+  "variables": {
+   "s": "pfa-do-joan",
+   "f": "2026-11-14T09:37:00Z",
+   "t": "2026-11-14T09:39:00Z"
+  }
+ },
+ "_label": "do-activation",
+ "_read_at": "2026-11-14T10:54:00Z"
+}

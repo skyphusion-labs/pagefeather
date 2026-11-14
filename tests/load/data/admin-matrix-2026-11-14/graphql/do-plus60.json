@@ -1,0 +1,415 @@
+{
+ "data": {
+  "viewer": {
+   "accounts": [
+    {
+     "d": [
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:05:00Z",
+        "status": "exceededMemory"
+       },
+       "sum": {
+        "errors": 1,
+        "requests": 1
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:05:00Z",
+        "status": "success"
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 9
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:10:00Z",
+        "status": "success"
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 8
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:08:00Z",
+        "status": "exceededMemory"
+       },
+       "sum": {
+        "errors": 1,
+        "requests": 1
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:06:00Z",
+        "status": "success"
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 7
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:06:00Z",
+        "status": "scriptThrewException"
+       },
+       "sum": {
+        "errors": 1,
+        "requests": 1
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:07:00Z",
+        "status": "success"
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 9
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:01:00Z",
+        "status": "exceededMemory"
+       },
+       "sum": {
+        "errors": 2,
+        "requests": 2
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:01:00Z",
+        "status": "success"
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 8
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:02:00Z",
+        "status": "exceededMemory"
+       },
+       "sum": {
+        "errors": 1,
+        "requests": 1
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:09:00Z",
+        "status": "success"
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 8
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:05:00Z",
+        "status": "scriptThrewException"
+       },
+       "sum": {
+        "errors": 1,
+        "requests": 1
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:04:00Z",
+        "status": "success"
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 11
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:03:00Z",
+        "status": "exceededMemory"
+       },
+       "sum": {
+        "errors": 1,
+        "requests": 1
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T10:59:00Z",
+        "status": "success"
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 10
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:08:00Z",
+        "status": "success"
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 8
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:09:00Z",
+        "status": "exceededMemory"
+       },
+       "sum": {
+        "errors": 1,
+        "requests": 1
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:03:00Z",
+        "status": "success"
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 9
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:02:00Z",
+        "status": "success"
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 9
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T10:59:00Z",
+        "status": "exceededMemory"
+       },
+       "sum": {
+        "errors": 1,
+        "requests": 1
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:00:00Z",
+        "status": "success"
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 9
+       }
+      }
+     ],
+     "w": [
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:05:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 1393,
+        "cpuTimeP99": 2232
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 8,
+        "subrequests": 9
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:10:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 1408,
+        "cpuTimeP99": 2039
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 8,
+        "subrequests": 8
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:06:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 1690,
+        "cpuTimeP99": 2111
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 6,
+        "subrequests": 6
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:07:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 1233,
+        "cpuTimeP99": 2012
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 8,
+        "subrequests": 8
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:01:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 1501,
+        "cpuTimeP99": 2978
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 7,
+        "subrequests": 9
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:09:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 1399,
+        "cpuTimeP99": 1879
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 7,
+        "subrequests": 8
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:04:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 1352,
+        "cpuTimeP99": 2528
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 10,
+        "subrequests": 10
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T10:59:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 2459,
+        "cpuTimeP99": 3405
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 9,
+        "subrequests": 10
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:08:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 1436,
+        "cpuTimeP99": 1759
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 7,
+        "subrequests": 8
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:03:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 1306,
+        "cpuTimeP99": 3188
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 8,
+        "subrequests": 9
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:02:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 1370,
+        "cpuTimeP99": 2840
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 8,
+        "subrequests": 9
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:00:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 1083,
+        "cpuTimeP99": 4170
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 8,
+        "subrequests": 8
+       }
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "errors": null,
+ "_query": {
+  "query": "query($a:String!,$s:String!,$f:Time!,$t:Time!){viewer{accounts(filter:{accountTag:$a}){w:workersInvocationsAdaptive(limit:1000,filter:{scriptName:$s,datetime_geq:$f,datetime_leq:$t}){sum{requests errors subrequests} quantiles{cpuTimeP50 cpuTimeP99} dimensions{status datetimeMinute}} d:durableObjectsInvocationsAdaptiveGroups(limit:1000,filter:{scriptName:$s,datetime_geq:$f,datetime_leq:$t}){sum{requests errors} dimensions{status datetimeMinute}}}}}",
+  "variables": {
+   "s": "pfa-do-joan",
+   "f": "2026-11-14T10:59:24Z",
+   "t": "2026-11-14T11:10:26Z"
+  }
+ },
+ "_label": "do-plus60",
+ "_read_at": "2026-11-14T11:11:20Z"
+}
