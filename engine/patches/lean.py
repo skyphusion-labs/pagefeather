@@ -29,7 +29,10 @@ edits = [
     # 9. GD without AVIF (the lead's ruling, 2026-11-14): no --with-avif, no libavif in the link.
     ('no AVIF flag', "\t\t\t\techo -n ' --with-avif ' >> /root/.php-configure-flags; \\\n", '\t\t\t\t: ; \\\n'),
     ('no libavif in the link', " /root/lib/lib/libsharpyuv.a /root/lib/lib/libavif.a ' >> /root/.emcc-php-wasm-sources; \\\n", " /root/lib/lib/libsharpyuv.a ' >> /root/.emcc-php-wasm-sources; \\\n"),
-    # 10. Print every input the linker reads (the hygiene files are built from this list).
+    # 11. The trimmed fileinfo database (S2b), when the build arg PF_MAGIC is trim: engine/fileinfo/build-db.sh
+    #     (copied into the docker context by build.sh) runs after php-src is cloned and before configure.
+    ('trimmed fileinfo database', 'COPY ./compile/opcache/ /root/php-src/ext/opcache\n',
+     'COPY ./compile/opcache/ /root/php-src/ext/opcache\n\nARG PF_MAGIC=full\nCOPY ./pagefeather-fileinfo/ /root/pagefeather-fileinfo/\nRUN if [ "$PF_MAGIC" = trim ]; then /root/pagefeather-fileinfo/build-db.sh /root/php-src; fi\n'),
     # 10. Print every input the linker reads (the hygiene files are built from this list), and write
     #     the linker map: every data and BSS symbol with its address and size (the static memory, measured).
     ('trace the link inputs', '\t-s ERROR_ON_UNDEFINED_SYMBOLS=1 \\\n', '\t-s ERROR_ON_UNDEFINED_SYMBOLS=1 \\\n\t-Wl,--trace \\\n\t-Wl,-Map=/root/output/php.map \\\n'),

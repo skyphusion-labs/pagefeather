@@ -1,0 +1,38 @@
+--- a/Magdir/rpm
++++ b/Magdir/rpm
+@@ -29,6 +29,7 @@
+ >>8	beshort		17		SuperH
+ >>8	beshort		18		Xtensa
+ >>8	beshort		255		noarch
++>>10	string		x		%s
+ 
+ #delta RPM    Daniel Novotny (dnovotny@redhat.com)
+ 0	string		drpm		Delta RPM
+--- a/Magdir/securitycerts
++++ b/Magdir/securitycerts
+@@ -4,3 +4,5 @@
+ 0	search/1		-----BEGIN\ CERTIFICATE------	RFC1421 Security Certificate text
+ 0	search/1		-----BEGIN\ NEW\ CERTIFICATE	RFC1421 Security Certificate Signing Request text
+ 0	belong	0xedfeedfe	Sun 'jks' Java Keystore File data
++
++0	string \0volume_key	volume_key escrow packet
+--- a/Magdir/sgml
++++ b/Magdir/sgml
+@@ -3,14 +3,15 @@
+ # $File: sgml,v 1.46 2022/08/16 11:16:39 christos Exp $
+ # Type:	SVG Vectorial Graphics
+ # From:	Noel Torres <tecnico@ejerciciosresueltos.com>
+-0	string		\<?xml\ version=
++0	string/bt	\<?xml\ version=
+ >14	regex		['"\ \t]*[0-9.]+['"\ \t]*
+ >>19	search/4096	\<svg			SVG Scalable Vector Graphics image
++!:strength +50
+ !:mime	image/svg+xml
+ !:ext   svg
+ >>19	search/4096	\<gnc-v2		GnuCash file
+ !:mime	application/x-gnucash
+-0	string		\<svg			SVG Scalable Vector Graphics image
++0	string/bt	\<svg			SVG Scalable Vector Graphics image
+ !:mime	image/svg+xml
+ !:ext   svg
+ 

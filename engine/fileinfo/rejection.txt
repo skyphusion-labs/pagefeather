@@ -1,0 +1,10 @@
+# Rejection signatures (#582 S2b, the lead's ruling of 2026-11-14): types WordPress does NOT accept,
+# kept so that a file of one of these types, renamed to an accepted extension, sniffs as what it is and
+# WordPress refuses it. WordPress accepts a sniff of application/octet-stream for any application/,
+# video/ or audio/ extension, so without these an executable renamed to .zip or .pdf would pass.
+# One regex per line, matched against an entry's !:mime.
+^application/(x-dosexec|x-executable|x-pie-executable|x-sharedlib|x-mach-binary|x-object|vnd\.microsoft\.portable-executable|x-msdos-program|x-elf)$
+^text/(x-shellscript|x-php|x-perl|x-python|x-ruby|x-script\S*|x-awk|x-tcl|x-lua|x-msdos-batch)$
+^(text|application)/(javascript|x-javascript|ecmascript)$
+^(text/html|text/xml|application/xml|image/svg\+xml|application/xhtml\+xml)$
+^application/(x-shockwave-flash|java-archive|x-java-applet|x-java-jnlp-file)$

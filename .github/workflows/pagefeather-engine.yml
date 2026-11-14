@@ -23,7 +23,8 @@ jobs:
       fail-fast: false
       matrix:
         # lean-nofileinfo is a MEASURED arm only (numbers, never shipped, not in lean-gates).
-        variant: [unchanged, pinned-env-1, pinned-env-2, lean, lean-nogd, lean-nofileinfo]
+        # lean-trim: the trimmed fileinfo database (S2b).
+        variant: [unchanged, pinned-env-1, pinned-env-2, lean, lean-nogd, lean-nofileinfo, lean-trim]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -45,10 +46,10 @@ jobs:
         run: |
           set -euo pipefail
           df -h / | tail -1; uname -a
-          pin=0; variant=unchanged; gd=yes; fi_=yes
-          case "${{ matrix.variant }}" in pinned-env-*) pin=1;; lean) variant=lean;; lean-nogd) variant=lean; gd=no;; lean-nofileinfo) variant=lean; fi_=no;; esac
+          pin=0; variant=unchanged; gd=yes; fi_=yes; magic=full
+          case "${{ matrix.variant }}" in pinned-env-*) pin=1;; lean) variant=lean;; lean-nogd) variant=lean; gd=no;; lean-nofileinfo) variant=lean; fi_=no;; lean-trim) variant=lean; magic=trim;; esac
           s=$(date +%s)
-          ENGINE_PIN_ENV=$pin ENGINE_VARIANT=$variant ENGINE_GD=$gd ENGINE_FILEINFO=$fi_ ENGINE_WORK="$RUNNER_TEMP/work" engine/build.sh "$RUNNER_TEMP/out" | tee "$RUNNER_TEMP/build.out"
+          ENGINE_PIN_ENV=$pin ENGINE_VARIANT=$variant ENGINE_GD=$gd ENGINE_FILEINFO=$fi_ ENGINE_MAGIC=$magic ENGINE_WORK="$RUNNER_TEMP/work" engine/build.sh "$RUNNER_TEMP/out" | tee "$RUNNER_TEMP/build.out"
           echo "build took $(( $(date +%s) - s )) s"
           df -h / | tail -1
       - name: Size figures, against the engine we ship (a reading)
