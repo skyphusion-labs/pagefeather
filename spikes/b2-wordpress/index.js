@@ -200,6 +200,10 @@ const sqlMeter = createSqlMeter();
 let ledgerActive = false;
 let ledgerId = null;
 let ledgerFailLogged = false;
+// The inflate counters when this request (or cron leg) started (#394): every inflated copy is a new
+// buffer, and an evicted one stays in the isolate until V8 collects it. The ledger reports what was
+// inflated so far in the request and in the isolate, the upper bound on that garbage.
+let ledgerInfl0 = { n: 0, b: 0 };
 let bootMemory = null; // the WebAssembly.Memory of the runtime being booted (instantiateWasm), for the ledger
 function ledgerSnapshot(at) {
 	const php = lastBootedPhp;
@@ -210,7 +214,7 @@ function ledgerSnapshot(at) {
 	} catch (e) {
 		memfs = { error: String((e && e.message) || e).slice(0, 80) };
 	}
-	return { at, iso: ISOLATE_ID, rt: runtimeSerial, wasmMiB: php ? LEDGER_MIB(heapOf(php)) : null, runtimes: ledger.runtimes(runtimeSerial, heapOf), memfs, inflatedMiB: LEDGER_MIB(inflatedBytes), ocMiB: LEDGER_MIB(objectCacheBytes), sql: sqlMeter.read() };
+	return { at, iso: ISOLATE_ID, rt: runtimeSerial, wasmMiB: php ? LEDGER_MIB(heapOf(php)) : null, runtimes: ledger.runtimes(runtimeSerial, heapOf), memfs, inflatedMiB: LEDGER_MIB(inflatedBytes), ocMiB: LEDGER_MIB(objectCacheBytes), sql: sqlMeter.read(), inflate: { reqN: stats.inflates - ledgerInfl0.n, reqMiB: LEDGER_MIB(stats.inflateBytes - ledgerInfl0.b), isoN: stats.inflates, isoMiB: LEDGER_MIB(stats.inflateBytes) } };
 }
 function ledgerLog(at, extra) {
 	console.log(JSON.stringify({ m: 'mem-ledger', ...(ledgerId ? { id: ledgerId } : {}), ...ledgerSnapshot(at), ...(extra || {}) }));
@@ -2382,6 +2386,7 @@ export class PhpRuntime extends DurableObject {
 				if (typeof this.ctx.storage.sync === 'function') await this.ctx.storage.sync();
 				// #394: the ledger at the start of a cron leg, when MEM_LEDGER=on (a cron leg has no operator header).
 				ledgerActive = this.env.MEM_LEDGER === 'on'; ledgerId = null; ledgerFailLogged = false; sqlMeter.reset();
+				ledgerInfl0 = { n: stats.inflates, b: stats.inflateBytes };
 				if (ledgerActive) ledgerLog('cron-start');
 				const runStorage = this.ctx.storage;
 				cronRunSink = async (patch) => {
@@ -3264,6 +3269,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			ledgerId = ledgerActive ? memIdOf(req, env).id || null : null;
 			ledgerFailLogged = false;
 			sqlMeter.reset();
+			ledgerInfl0 = { n: stats.inflates, b: stats.inflateBytes };
 			if (ledgerActive) ledgerLog('start');
 			const tBoot = Date.now();
 			const booted = !bootPromise;
