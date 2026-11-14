@@ -28,6 +28,9 @@ check "mint: exit 0" "$rc" 0
 check "  the file is mode 600" "$(mode "$cf")" 0o600
 check "  it holds R2_KEY_ID, R2_SECRET and R2_SESSION_TOKEN" "$(grep -cE '^(R2_KEY_ID|R2_SECRET|R2_SESSION_TOKEN)=' "$cf")" 3
 check "  no value is printed" "$(printf '%s' "$out" | grep -cE 'tmpkey|tmpsecret|sessiontoken')" 0
+# It logs when the credential expires: the time before the mint plus the TTL, so never late.
+exp=$(printf '%s' "$out" | sed -n 's/.*expires \([0-9TZ:-]*\) UTC or later.*/\1/p')
+check "  it logs the expiry, about now + 3600 s (got $exp)" "$(python3 -I -c 'import calendar, sys, time; e = calendar.timegm(time.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ")); print(int(abs(e - (time.time() + 3600)) <= 15))' "$exp" 2>/dev/null || echo 0)" 1
 check "  the request: the bucket, the deploy token as parent, object-read-write, the TTL" "$(st 'json.dumps(d["mints"][0], sort_keys=True)')" '{"bucket": "wp-wfp-a-media", "parentAccessKeyId": "tok-parent", "permission": "object-read-write", "ttlSeconds": 3600}'
 ctl /_refuse_mint; python3 -I "$RT" mint wp-wfp-a-media 3600 "$T/refused" > /dev/null 2> "$T/refused.err"; rc=$?
 check "a refused mint: exit 1, no file, and it says what the token needs" "$rc:$([ -e "$T/refused" ] && echo file || echo none):$(grep -c 'R2 Storage Write' "$T/refused.err")" "1:none:1"

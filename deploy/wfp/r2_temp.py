@@ -29,6 +29,7 @@ import re
 import shlex
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
@@ -106,6 +107,9 @@ def mint(bucket, ttl, out):
     tid = token_id()
     if not tid:
         return 1
+    # The mint answers no expiry, so it is the time just BEFORE the request plus the TTL: the real
+    # expiry is at or after the time logged, never before it.
+    t0 = time.time()
     st, d = call("POST", base() + "/r2/temp-access-credentials", {
         "bucket": bucket, "parentAccessKeyId": tid, "permission": "object-read-write", "ttlSeconds": ttl})
     if st != 200 or not (d or {}).get("success"):
@@ -113,7 +117,8 @@ def mint(bucket, ttl, out):
         return 1
     if not write_creds(out, (d.get("result") or {})):
         return 1
-    print("r2 temp: a credential for %s only (object-read-write, %d s) is in %s" % (bucket, ttl, out))
+    print("r2 temp: a credential for %s only (object-read-write, %d s, expires %s UTC or later) is in %s"
+          % (bucket, ttl, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + ttl)), out))
     return 0
 
 
