@@ -1,0 +1,73 @@
+name: m1-mysql-schema
+# #479 M1 (dialect fidelity): the reference schema. A MySQL 8.0 service container gets the SAME
+# WordPress and WooCommerce as the b-dosql build (the pins in spikes/b2-wordpress/build.sh), a
+# normal install and WooCommerce activation, then SHOW CREATE TABLE for every table goes up as an
+# artifact. Local work compares it with what the SQLite driver reports for a real b-dosql store.
+# Draft-PR only (pull_request on this file): nothing here runs on main or touches any account.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/m1-mysql-schema.yml'
+      - 'deploy/import/tests/m1-install.php'
+permissions:
+  contents: read
+jobs:
+  schema:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: m1-throwaway
+          MYSQL_DATABASE: wordpress
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pm1-throwaway"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: PHP has mysqli
+        run: php -v && php -m | grep -qi '^mysqli$'
+      - name: WordPress and WooCommerce at the build pins, checksum-verified
+        run: |
+          set -euo pipefail
+          b=spikes/b2-wordpress/build.sh
+          WP_VERSION=$(sed -n 's/^WP_VERSION=//p' "$b")
+          WOO_VERSION=$(sed -n 's/^WOO_VERSION=//p' "$b")
+          WOO_SHA256=$(sed -n 's/^WOO_SHA256=//p' "$b")
+          echo "WordPress $WP_VERSION, WooCommerce $WOO_VERSION"
+          d="$RUNNER_TEMP/m1"
+          mkdir -p "$d"
+          curl -sfL "https://wordpress.org/wordpress-$WP_VERSION.zip" -o "$d/wp.zip"
+          curl -sfL "https://wordpress.org/wordpress-$WP_VERSION.zip.sha1" -o "$d/wp.zip.sha1"
+          echo "$(cat "$d/wp.zip.sha1")  $d/wp.zip" | sha1sum -c -
+          curl -sfL "https://downloads.wordpress.org/plugin/woocommerce.$WOO_VERSION.zip" -o "$d/woo.zip"
+          echo "$WOO_SHA256  $d/woo.zip" | sha256sum -c -
+          unzip -q "$d/wp.zip" -d "$d"
+          unzip -q "$d/woo.zip" -d "$d/wordpress/wp-content/plugins"
+          { echo "wordpress=$WP_VERSION"; echo "woocommerce=$WOO_VERSION"; mysql -h 127.0.0.1 -uroot -pm1-throwaway -N -e 'SELECT VERSION(), @@sql_mode, @@character_set_server, @@collation_server'; } > "$d/versions.txt"
+      - name: Install WordPress, activate WooCommerce, then two more boots (deferred installers)
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/m1"
+          php deploy/import/tests/m1-install.php "$d/wordpress" install
+          php deploy/import/tests/m1-install.php "$d/wordpress" boot
+          php deploy/import/tests/m1-install.php "$d/wordpress" boot
+      - name: SHOW CREATE TABLE for every table
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/m1"
+          mkdir -p "$d/out"
+          cp "$d/versions.txt" "$d/out/"
+          for t in $(mysql -h 127.0.0.1 -uroot -pm1-throwaway -N -e 'SHOW TABLES' wordpress); do
+            mysql -h 127.0.0.1 -uroot -pm1-throwaway -N -e "SHOW CREATE TABLE \`$t\`" wordpress | cut -f2- | sed 's/\\n/\n/g' > "$d/out/$t.sql"
+          done
+          ls "$d/out" | wc -l
+          ls "$d/out"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: m1-mysql-schema
+          path: ${{ runner.temp }}/m1/out
+          retention-days: 7
