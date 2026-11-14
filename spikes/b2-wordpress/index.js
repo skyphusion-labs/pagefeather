@@ -2929,15 +2929,12 @@ const site = {
 		// Signed invoice PDF download (issue #227). The Worker verifies the HMAC the
 		// browserRender op minted and streams the PDF from R2; PHP never holds the secret.
 		if (env.MEDIA && env.INVOICE_TOKEN && (req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/skyphusion-invoice') return serveInvoice(req, env, url);
-		// Static assets from the Assets binding (edge, no PHP). In WfP dispatch the
-		// automatic assets layer is bypassed (the dispatcher invokes this worker
-		// programmatically), so serve them here. not_found_handling=none makes a miss
-		// a 404, which falls through to PHP: .php, REST and pretty-permalink pages are
-		// not in build/public and so reach PHP unchanged. Uploads already returned above.
-		if (env.ASSETS && (req.method === 'GET' || req.method === 'HEAD') && !url.pathname.startsWith('/_')) {
-			const asset = await env.ASSETS.fetch(req);
-			if (asset.status !== 404) return asset;
-		}
+		// Static files (build/public) never reach this code (#412). The asset router serves them
+		// BEFORE the Worker runs, on a WfP site (measured on ggc.sh 2026-11-13, and the WfP static
+		// assets page) and on every spike env and deploy.sh site alike. The Worker sees only a miss,
+		// or a run_worker_first path (only /_pf/*, refused above). So a gateway asset lookup here
+		// could only miss again; it was removed. The ASSETS binding exists only so the object can
+		// fetch the OPcache boot packs (#394 L1): a WfP site has it only with OPCACHE_SPLIT=1.
 		// XML-RPC lets one request try many passwords (system.multicall). Off unless XMLRPC=on.
 		if (url.pathname === '/xmlrpc.php' && env.XMLRPC !== 'on') return new Response('XML-RPC is off', { status: 403 });
 		const maxBody = env.MEDIA && isMediaUpload(req, url) ? Number(env.MAX_UPLOAD_BYTES || MAX_UPLOAD_BYTES) : Number(env.MAX_BODY_BYTES || MAX_BODY_BYTES);

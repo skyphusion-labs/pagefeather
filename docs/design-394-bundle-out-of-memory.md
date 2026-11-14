@@ -104,6 +104,12 @@ Open item for the build: `deploy/wfp/lib.sh:179` writes `[assets]` with no `bind
 with no `x-php-ms` (curl, 2026-11-13 about 13:31Z), so assets do reach users there. L1 must assert
 `env.ASSETS` exists in the OBJECT and fail loud at boot if it does not.
 
+Resolved by #412 (written 2026-11-13): `lib.sh` renders `binding = "ASSETS"` and
+`run_worker_first = ["/_pf/*"]` only with `OPCACHE_SPLIT=1` (#436); the bindings fixture now matches
+each mode; and the gateway asset branch in `index.js` (the old line 2707) was removed, since the asset
+router serves `build/public` before the Worker on every deploy. The `/_pf/` privacy above now rests
+on `run_worker_first` plus the Worker refusing `/_pf/`, not on that branch.
+
 ### 2.3 How a request's files are known: build-time manifest, plus a runtime miss path
 
 **Route classes, known before PHP runs** (from the method and URL only):
