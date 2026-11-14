@@ -41,6 +41,7 @@ Edge security works at the zone level: a WAF with rate limits on login, the zone
 - [approach-a.md](approach-a.md) the first measurements on a Vultr MariaDB box, and HostlessWP compared.
 - [approach-a2.md](approach-a2.md) the PlanetScale variant (A2).
 - [approach-a-objectcache.md](approach-a-objectcache.md) the write-aware object cache that cuts SQL round trips, including the L2 KV tier.
+- [admin-memory-matrix.md](admin-memory-matrix.md) **where WordPress admin dies on Cloudflare** (2026-11-14): approach A in a Worker and in a Durable Object, HostlessWP and b-dosql with and without the arena, with the raw data. Admin pages go to the Container.
 
 ## b-dosql (store path)
 

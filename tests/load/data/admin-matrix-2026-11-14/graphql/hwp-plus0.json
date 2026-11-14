@@ -1,0 +1,84 @@
+{
+ "data": {
+  "viewer": {
+   "accounts": [
+    {
+     "d": [],
+     "w": [
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:10:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 1274020,
+        "cpuTimeP99": 2524899
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 10,
+        "subrequests": 76
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:12:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 577264,
+        "cpuTimeP99": 2886159
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 29,
+        "subrequests": 53
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:11:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 787177,
+        "cpuTimeP99": 2775247
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 26,
+        "subrequests": 46
+       }
+      },
+      {
+       "dimensions": {
+        "datetimeMinute": "2026-11-14T11:13:00Z",
+        "status": "success"
+       },
+       "quantiles": {
+        "cpuTimeP50": 547927,
+        "cpuTimeP99": 1243571
+       },
+       "sum": {
+        "errors": 0,
+        "requests": 29,
+        "subrequests": 13
+       }
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "errors": null,
+ "_query": {
+  "query": "query($a:String!,$s:String!,$f:Time!,$t:Time!){viewer{accounts(filter:{accountTag:$a}){w:workersInvocationsAdaptive(limit:1000,filter:{scriptName:$s,datetime_geq:$f,datetime_leq:$t}){sum{requests errors subrequests} quantiles{cpuTimeP50 cpuTimeP99} dimensions{status datetimeMinute}} d:durableObjectsInvocationsAdaptiveGroups(limit:1000,filter:{scriptName:$s,datetime_geq:$f,datetime_leq:$t}){sum{requests errors} dimensions{status datetimeMinute}}}}}",
+  "variables": {
+   "s": "hwp504",
+   "f": "2026-11-14T11:10:32Z",
+   "t": "2026-11-14T11:13:53Z"
+  }
+ },
+ "_label": "hwp-plus0",
+ "_read_at": "2026-11-14T11:22:09Z"
+}
