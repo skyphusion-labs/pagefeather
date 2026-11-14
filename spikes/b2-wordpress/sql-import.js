@@ -2,12 +2,12 @@
 // deploy/import.sh, deploy/import/mysql-prepare.py). Variant a only: PHP in the
 // Worker, MySQL (MariaDB, or PlanetScale for a2) through Hyperdrive.
 //
-//   GET  /_sqlimport?info=1    {version, flavour, max_allowed_packet, sql_mode}
-//   GET  /_sqlimport?counts=1  {tables: {name: {rows, min_pk}}} for wp_ tables;
+//   GET  /_sqlimport?info=1    {version, flavour, max_allowed_packet, sql_mode, prefix}
+//   GET  /_sqlimport?counts=1  {tables: {name: {rows, min_pk}}} for the site's own tables (#487);
 //                              a count that is not an integer is a 500, not a null
 //   POST /_sqlimport[?replace=1]  JSON lines {"sql": "..."}, in order
 //   POST /_sqlimport?preflight=1  JSON lines of CREATE TABLE: each one runs
-//        under a scratch name (wp_impchk_<n>) in the DDL mode below, then is
+//        under a scratch name (<prefix>impchk_<n>) in the DDL mode below, then is
 //        dropped. No other table is touched. deploy/import/sqlimport.py runs
 //        it for every CREATE of a dump before replace=1 empties the site.
 //
@@ -23,16 +23,61 @@
 // It needs the SPIKE_TOKEN secret and its x-spike-token header (no token set:
 // refused, unlike other spike endpoints). Every statement must pass
 // checkStatement() before any runs: only DROP TABLE IF EXISTS, CREATE TABLE and
-// INSERT ... VALUES, on a table named wp_*. Nothing else (no GRANT, SET, LOAD
+// INSERT ... VALUES, on one of the site's own tables (#487). Nothing else (no GRANT, SET, LOAD
 // DATA, SELECT, INTO OUTFILE, a function in VALUES, a comment, a second
-// statement). replace=1 first drops every wp_ table of the database. MySQL
-// commits DDL on its own, so a part that fails leaves what ran before it.
+// statement). replace=1 first drops the site's own tables. MySQL commits DDL on
+// its own, so a part that fails leaves what ran before it.
+//
+// The site's tables (#487): several stores can share one MySQL database, each with its own
+// WP_TABLE_PREFIX (the one-click manager makes wp_<name>_, #431). The prefix is the site's own, read
+// from env.PHP_ENV (the WP_TABLE_PREFIX that php/wp-config.php reads), never from the request. A
+// table is the site's when it starts with the prefix AND no LONGER installation prefix in the same
+// database claims it: an installation is a prefix Q with both Q+options and Q+posts. So the default
+// wp_ never reaches wp_ggc_posts. Every statement's table, the scratch tables, replace and counts
+// keep to that set, and a load with any other table is refused before anything runs.
 
-const TABLE = '`wp_[A-Za-z0-9_]{1,60}`';
+const NAME = '[A-Za-z0-9_]{1,64}';
 const MODE = "sql_mode='NO_AUTO_VALUE_ON_ZERO'";
-const DROP_RE = new RegExp(`^DROP TABLE IF EXISTS ${TABLE}$`);
-const CREATE_RE = new RegExp(`^CREATE TABLE ${TABLE} \\(`);
-const INSERT_RE = new RegExp(`^(SET STATEMENT ${MODE} FOR )?INSERT (/\\*\\+ SET_VAR\\(${MODE}\\) \\*/ )?INTO ${TABLE} (\\(\`[A-Za-z0-9_]+\`(, ?\`[A-Za-z0-9_]+\`)*\\) )?VALUES `);
+const DROP_RE = new RegExp(`^DROP TABLE IF EXISTS \`(${NAME})\`$`);
+const CREATE_RE = new RegExp(`^CREATE TABLE \`(${NAME})\` \\(`);
+const INSERT_RE = new RegExp(`^(SET STATEMENT ${MODE} FOR )?INSERT (/\\*\\+ SET_VAR\\(${MODE}\\) \\*/ )?INTO \`(${NAME})\` (\\(\`[A-Za-z0-9_]+\`(, ?\`[A-Za-z0-9_]+\`)*\\) )?VALUES `);
+const PREFIX_RE = /^[A-Za-z0-9_]{1,40}$/;
+/** The site's WP_TABLE_PREFIX, from env.PHP_ENV (as wp-config.php reads it); default wp_. Throws on a bad one. */
+export function tablePrefix(env) {
+	let p = 'wp_';
+	if (env && env.PHP_ENV) {
+		let o;
+		try {
+			o = JSON.parse(env.PHP_ENV);
+		} catch {
+			throw new Error('PHP_ENV is not JSON: the table prefix cannot be read');
+		}
+		if (o && o.WP_TABLE_PREFIX !== undefined && o.WP_TABLE_PREFIX !== '') p = String(o.WP_TABLE_PREFIX);
+	}
+	if (!PREFIX_RE.test(p)) throw new Error('WP_TABLE_PREFIX is not 1 to 40 of A-Z a-z 0-9 _');
+	return p;
+}
+
+/** The table a checked statement names. */
+export function tableOf(sql) {
+	if (sql.endsWith(';')) sql = sql.slice(0, -1);
+	const m = sql.match(DROP_RE) || sql.match(CREATE_RE);
+	if (m) return m[1];
+	const i = sql.match(INSERT_RE);
+	return i ? i[3] : null;
+}
+
+/** The installation prefixes in a list of table names: Q with both Q+options and Q+posts. */
+export function installPrefixes(names) {
+	const set = new Set(names);
+	return names.filter((t) => t.endsWith('options')).map((t) => t.slice(0, -'options'.length)).filter((q) => q && set.has(q + 'posts'));
+}
+
+/** Is table t the site's (prefix p), given the database's installation prefixes? */
+export function ownTable(t, p, installs) {
+	if (typeof t !== 'string' || !new RegExp(`^${NAME}$`).test(t) || !t.startsWith(p)) return false;
+	return !installs.some((q) => q.length > p.length && q.startsWith(p) && t.startsWith(q));
+}
 const TABLE_OPTIONS = new Set(['ENGINE', 'DEFAULT', 'CHARSET', 'CHARACTER', 'SET', 'COLLATE', 'AUTO_INCREMENT', 'ROW_FORMAT', 'COMMENT', 'STATS_PERSISTENT', 'PACK_KEYS', 'KEY_BLOCK_SIZE', 'AVG_ROW_LENGTH']);
 
 // Split SQL into the parts outside string literals: [{text, depth}] runs of
@@ -99,15 +144,19 @@ function scan(sql, { backslash }) {
 	return { code: code.map((x) => x.text).join(' '), parts: code, strings, groups: maxGroups };
 }
 
-// null when the statement may run, else the reason it may not.
-export function checkStatement(sql) {
+// null when the statement may run, else the reason it may not. prefix: the site's table prefix;
+// a statement on a table outside it is refused here too (#487; sqlImport also checks that no other
+// installation in the database owns it).
+export function checkStatement(sql, prefix = 'wp_') {
 	if (typeof sql !== 'string' || !sql) return 'not a statement';
 	if (sql.endsWith(';')) sql = sql.slice(0, -1);
 	if (/[\u0000]/.test(sql)) return 'a NUL byte';
+	const named = tableOf(sql);
+	if (named !== null && !named.startsWith(prefix)) return `table ${named} is outside the prefix ${prefix}`;
 	if (DROP_RE.test(sql)) return null;
 	const create = CREATE_RE.test(sql);
 	const insert = sql.match(INSERT_RE);
-	if (!create && !insert) return 'not DROP TABLE IF EXISTS, CREATE TABLE or INSERT ... VALUES on a wp_ table';
+	if (!create && !insert) return 'not DROP TABLE IF EXISTS, CREATE TABLE or INSERT ... VALUES on one table';
 	// CREATE: no backslash and no double quote in its strings, so the server
 	// reads them the same way in every sql_mode (NO_BACKSLASH_ESCAPES,
 	// ANSI_QUOTES). INSERT: its mode is set by the hint, and backslashes are
@@ -224,9 +273,12 @@ async function ddl(db, env, sql) {
 }
 const run = (db, env, sql) => (CREATE_RE.test(sql) ? ddl(db, env, sql) : db.query(env, { mysql: sql }));
 
-async function wpTables(db, env) {
+// Every table of the database, and the site's own among them (#487).
+async function tablesOf(db, env, prefix) {
 	const r = await one(db, env, 'SHOW TABLES');
-	return (r.rows || []).map((x) => cell(x[0])).filter((t) => /^wp_[A-Za-z0-9_]{1,60}$/.test(t || ''));
+	const all = (r.rows || []).map((x) => cell(x[0])).filter((t) => typeof t === 'string');
+	const installs = installPrefixes(all);
+	return { all, installs, own: all.filter((t) => ownTable(t, prefix, installs)) };
 }
 
 // max_allowed_packet as the server reports it. Through Vitess a SELECT of a
@@ -244,6 +296,12 @@ export async function sqlImport(req, env, url, db) {
 	if (!db) return new Response('/_sqlimport is for variant a only (MySQL through Hyperdrive)', { status: 404 });
 	if (!env.SPIKE_TOKEN || req.headers.get('x-spike-token') !== env.SPIKE_TOKEN) return new Response('forbidden', { status: 403 });
 	const json = (o, status = 200) => Response.json(o, { status, headers: { 'cache-control': 'private, no-store' } });
+	let prefix;
+	try {
+		prefix = tablePrefix(env);
+	} catch (e) {
+		return json({ ok: false, error: 'refused: ' + e.message }, 500);
+	}
 	try {
 		if (req.method === 'GET' && url.searchParams.get('info') === '1') {
 			const v = await one(db, env, 'SELECT VERSION()');
@@ -253,11 +311,11 @@ export async function sqlImport(req, env, url, db) {
 			// returns no row for it: null there, #50).
 			const m = await db.query(env, { mysql: 'SELECT @@SESSION.sql_mode' });
 			const sql_mode = m.ok && m.rows && m.rows.length ? cell(m.rows[0][0]) : null;
-			return json({ version, flavour: /mariadb/i.test(version) ? 'mariadb' : 'mysql', max_allowed_packet: p.bytes, packet_via: p.via, packet_error: p.error, sql_mode });
+			return json({ version, flavour: /mariadb/i.test(version) ? 'mariadb' : 'mysql', max_allowed_packet: p.bytes, packet_via: p.via, packet_error: p.error, sql_mode, prefix });
 		}
 		if (req.method === 'GET' && url.searchParams.get('counts') === '1') {
 			const tables = {};
-			for (const t of await wpTables(db, env)) {
+			for (const t of (await tablesOf(db, env, prefix)).own) {
 				const n = await one(db, env, `SELECT COUNT(*) FROM \`${t}\``);
 				let min_pk = null;
 				const col = await db.query(env, { mysql: `SHOW COLUMNS FROM \`${t}\` WHERE Extra LIKE '%auto_increment%'` });
@@ -281,14 +339,22 @@ export async function sqlImport(req, env, url, db) {
 			} catch {
 				return json({ ok: false, line: i + 1, error: 'not JSON' }, 400);
 			}
-			const why = checkStatement(o.sql);
+			const why = checkStatement(o.sql, prefix);
 			if (why) return json({ ok: false, line: i + 1, error: 'refused: ' + why, ran: 0 }, 400);
 			sqls.push(o.sql);
+		}
+		// #487: every statement's table, and every scratch name, must be the site's own before anything
+		// runs (the drop of replace included).
+		const db0 = await tablesOf(db, env, prefix);
+		for (let i = 0; i < sqls.length; i++) {
+			const t = tableOf(sqls[i]);
+			if (!ownTable(t, prefix, db0.installs)) return json({ ok: false, line: i + 1, error: `refused: table ${t} is not this site's (prefix ${prefix})`, ran: 0 }, 400);
+			if (url.searchParams.get('preflight') === '1' && !ownTable(`${prefix}impchk_${i}`, prefix, db0.installs)) return json({ ok: false, line: i + 1, error: "refused: the scratch table name is not this site's", ran: 0 }, 400);
 		}
 		if (url.searchParams.get('preflight') === '1') {
 			for (let i = 0; i < sqls.length; i++) {
 				if (!CREATE_RE.test(sqls[i])) return json({ ok: false, line: i + 1, error: 'preflight takes CREATE TABLE only' }, 400);
-				const scratch = `wp_impchk_${i}`;
+				const scratch = `${prefix}impchk_${i}`;
 				const sql = sqls[i].replace(/^CREATE TABLE `[^`]+`/, `CREATE TABLE \`${scratch}\``);
 				await one(db, env, `DROP TABLE IF EXISTS \`${scratch}\``);
 				const r = await ddl(db, env, sql);
@@ -299,7 +365,7 @@ export async function sqlImport(req, env, url, db) {
 		}
 		let dropped = 0;
 		if (url.searchParams.get('replace') === '1') {
-			for (const t of await wpTables(db, env)) {
+			for (const t of db0.own) {
 				await one(db, env, `DROP TABLE IF EXISTS \`${t}\``);
 				dropped++;
 			}

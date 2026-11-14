@@ -75,7 +75,7 @@ check('replace drops the wp_ tables only, then runs the lines', db.ran, ['SHOW T
 check('replace result', [r.status, r.o.ok, r.o.statements, r.o.dropped], [200, true, 2, 2]);
 db = fakeDb();
 r = await call(db, 'POST', '/_sqlimport', line("INSERT INTO `wp_a` VALUES (1,'ok')") + line("INSERT INTO `wp_a` VALUES (2,'FAILME')") + line("INSERT INTO `wp_a` VALUES (3,'never')"));
-check('a failing statement stops: line, ran', [r.status, r.o.line, r.o.ran, db.ran.length], [400, 2, 1, 2]);
+check('a failing statement stops: line, ran (after the one SHOW TABLES, #487)', [r.status, r.o.line, r.o.ran, db.ran.length], [400, 2, 1, 3]);
 r = await call(fakeDb(), 'GET', '/_sqlimport?counts=1');
 check('counts: wp_ tables only', Object.keys(r.o.tables), ['wp_options', 'wp_posts']);
 check('counts: rows and min_pk', r.o.tables.wp_options, { rows: 3, min_pk: 0 });
@@ -89,11 +89,11 @@ const zero = "CREATE TABLE `wp_actionscheduler_actions` (`id` bigint NOT NULL, `
 db = fakeDb();
 r = await call(db, 'POST', '/_sqlimport', line('DROP TABLE IF EXISTS `wp_actionscheduler_actions`') + line(zero));
 check('zero-date CREATE runs in the DDL mode on a strict server', [r.status, r.o.ok], [200, true]);
-check('the DDL mode: BEGIN, SET SESSION, CREATE, COMMIT', db.ran.slice(1), ['BEGIN', "SET SESSION sql_mode='NO_AUTO_VALUE_ON_ZERO'", zero, 'COMMIT']);
+check('the DDL mode: BEGIN, SET SESSION, CREATE, COMMIT', db.ran.slice(2), ['BEGIN', "SET SESSION sql_mode='NO_AUTO_VALUE_ON_ZERO'", zero, 'COMMIT']);
 db = fakeDb();
 r = await call(db, 'POST', '/_sqlimport?preflight=1', line(zero) + line(zero.replace('wp_actionscheduler_actions', 'wp_two')));
 check('preflight: each CREATE under a scratch name, then dropped', [r.status, r.o.preflight, db.ran.filter((x) => /^(DROP|CREATE)/.test(x)).map((x) => x.slice(0, 33))], [200, 2, ['DROP TABLE IF EXISTS `wp_impchk_0', 'CREATE TABLE `wp_impchk_0` (`id` ', 'DROP TABLE IF EXISTS `wp_impchk_0', 'DROP TABLE IF EXISTS `wp_impchk_1', 'CREATE TABLE `wp_impchk_1` (`id` ', 'DROP TABLE IF EXISTS `wp_impchk_1']]);
-check('preflight never touches a real table', db.ran.some((x) => /wp_actionscheduler_actions|wp_two|SHOW TABLES/.test(x)), false);
+check('preflight never touches a real table (it only reads SHOW TABLES, #487)', db.ran.some((x) => /^(DROP|CREATE|INSERT)/.test(x) && /wp_actionscheduler_actions|wp_two/.test(x)), false);
 db = fakeDb();
 r = await call(db, 'POST', '/_sqlimport?preflight=1', line(zero) + line('CREATE TABLE `wp_bad` (`a` int) COMMENT=\'FAILDDL\''));
 check('preflight: a refused CREATE is a 400 at its line, scratch dropped', [r.status, r.o.line, r.o.preflight, db.ran[db.ran.length - 1]], [400, 2, true, 'DROP TABLE IF EXISTS `wp_impchk_1`']);
