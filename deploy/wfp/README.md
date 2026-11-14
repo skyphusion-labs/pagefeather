@@ -175,7 +175,7 @@ The command uploads for any of these reasons, and it prints the reason:
 
 When the build id and the config hash are the same, and `FORCE_UPLOAD` is not `1`, the command prints `nothing to do` and it does not upload.
 
-A change only to the rendered config uploads on its own. Do not pass `FORCE_UPLOAD=1` for that change. This includes `PHP_INI`, `PHP_RECYCLE`, `OPCACHE_SPLIT`, `TURNSTILE_*`, `OBSERVABILITY` and the mail variables. These values are still read from the environment of the run only. They are not recorded build inputs. An update that does not pass one of them renders the site without it, so the hash changes and the update uploads. Pass the value on every update of that site.
+A change only to the rendered config uploads on its own. Do not pass `FORCE_UPLOAD=1` for that change. This includes `PHP_INI`, `PHP_RECYCLE`, `HEADROOM_PROBE`, `OPCACHE_SPLIT`, `TURNSTILE_*`, `OBSERVABILITY` and the mail variables. These values are still read from the environment of the run only. They are not recorded build inputs. An update that does not pass one of them renders the site without it, so the hash changes and the update uploads. Pass the value on every update of that site.
 
 A change to a secret value, with the same key names, does not change the hash, so it does not upload. A new secret key does. To push a rotated secret value, run the update with `FORCE_UPLOAD=1`. `site.sh up` records the hash after it uploads the user Worker, so a site added after this change has a hash. Test: `tests/config-hash-test.sh`.
 
@@ -226,6 +226,16 @@ Every site is code-locked: the generated `wp-config.php` sets `DISALLOW_FILE_MOD
 - **Use:** it is for measuring (experiment E1 on #394), and for a site whose admin pages keep recycling.
 - **Not a recorded input:** read from the run's environment only, like `PHP_INI`. A same-build update uploads when the rendered value changes. `FORCE_UPLOAD=1` is the explicit override, not a requirement for this change. See "When an update uploads".
 - **Tests:** `deploy/wfp/tests/render-test.sh`, golden case `php-recycle-off`.
+
+### The headroom probe: HEADROOM_PROBE (#394). It KILLS the isolate.
+
+`HEADROOM_PROBE=on deploy/wfp/site update <name>` turns on `GET /_headroom` (spike-gated, like every `/_` path). In the PHP object's isolate, after a real request, it allocates 1 MiB `ArrayBuffer`s and holds them until the isolate dies, streaming the count (`spikes/b2-wordpress/headroom.mjs`). Its first line is the memory ledger at that moment. 255 MiB (a bare isolate, the #394 floor probes) minus the reach, minus the ledger's `wasmMiB`, is what the runtime holds outside the WebAssembly heap.
+- **It ends the isolate, by design.** Every request in that object at that moment dies with it, and the next one boots a cold PHP runtime.
+- **A measurement-build flag only, like `MEM_LEDGER`:** set it only on a throwaway site, NEVER on a store anyone uses.
+- **The provisioning paths never set it:** neither the reference path (`deploy/provision`) nor the one-click path (`deploy/oneclick`). `deploy/provision/tests/measurement-flags-test.mjs` checks both.
+- **Off or unset:** `/_headroom` answers 404.
+- **Not a recorded input:** read from the run's environment only, like `PHP_RECYCLE`.
+- **Tests:** `spikes/b2-wordpress/tests/headroom.test.mjs`; the render checks in `deploy/wfp/tests/render-test.sh`.
 
 ## The scheduled snapshot (#533)
 
