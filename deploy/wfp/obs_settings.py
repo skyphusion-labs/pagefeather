@@ -3,6 +3,8 @@
 
     obs_settings.py redact <namespace> <script>    set redact_query_string = true, read it back
     obs_settings.py show <namespace> <script>      print the script's observability settings
+A namespace of "-" means an ordinary Worker, not a dispatch-namespace script (approach A's
+wp-a-lean, deployed with `wrangler deploy --env a-paid-lean`, #394).
 
 OBSERVABILITY=1 (deploy/wfp/lib.sh) logs events only, but every event still carries the request's
 URL, and a store's query strings hold order keys and logins. The pinned wrangler (4.107) has no
@@ -30,6 +32,8 @@ def call(method, path, body=None, ctype=None):
 
 
 def settings_path(ns, script):
+    if ns == "-":
+        return "/workers/scripts/%s/settings" % script
     return "/workers/dispatch/namespaces/%s/scripts/%s/settings" % (ns, script)
 
 

@@ -254,6 +254,7 @@ jobs:
           deploy/wfp/tests/down-key-test.sh
           deploy/wfp/tests/custom-domain-test.sh
           python3 deploy/wfp/tests/check-test.py
+          python3 -I deploy/wfp/tests/obs-settings-test.py
           node deploy/provision/tests/ops-test.mjs
           node deploy/provision/tests/provision-test.mjs
           node deploy/provision/tests/cli-test.mjs
