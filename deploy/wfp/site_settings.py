@@ -45,6 +45,9 @@ SETTINGS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PHP_RECY
             "MEM_LEDGER", "TURNSTILE_SITEKEY", "TURNSTILE_WOO", "TURNSTILE_LOGIN", "TURNSTILE_COMMENTS",
             "MAIL_FROM", "MAIL_FROM_NAME", "PHP_LOCATION", "WFP_PHP_ENV", "WP_VECTORIZE_SEARCH")
 SECRETS = ("TURNSTILE_SECRET",)
+# No message prints a name taken from SECRETS (CodeQL py/clear-text-logging-sensitive-data traces
+# it as a secret, though only the name is there): they print this fixed text instead.
+SECRET_TEXT = "the Turnstile secret (TURNSTILE_SECRET)"
 # The settings the live bindings can show dropped: rendered only when set. MAIL_FROM, PHP_LOCATION
 # and WFP_PHP_ENV always render (a default), and WP_VECTORIZE_SEARCH renders bindings, not a var.
 DROPPABLE_VARS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PHP_RECYCLE", "CRON_INTERVAL_MS",
@@ -56,7 +59,7 @@ def drop_list(env=os.environ):
     names = [x for x in re.split(r"[\s,]+", env.get("DROP_SETTINGS", "") or "") if x]
     bad = [x for x in names if x not in SETTINGS + SECRETS]
     if bad:
-        print("site settings: DROP_SETTINGS names an unknown setting: %s (known: %s)" % (" ".join(bad), " ".join(SETTINGS + SECRETS)), file=sys.stderr)
+        print("site settings: DROP_SETTINGS names an unknown setting: %s (known: %s, and %s)" % (" ".join(bad), " ".join(SETTINGS), SECRET_TEXT), file=sys.stderr)
         sys.exit(2)
     return set(names)
 
@@ -80,10 +83,12 @@ def merge(record, env=os.environ):
             lines.append("export %s=%s" % (k, shlex.quote(str(v))))
             print("  settings: %s kept from the record" % k, file=sys.stderr)
     for k in record.get("secrets") or []:
+        if k not in SECRETS:
+            continue
         if k in drop:
-            print("  settings: the secret %s DROPPED on purpose (DROP_SETTINGS)" % k, file=sys.stderr)
+            print("  settings: %s DROPPED on purpose (DROP_SETTINGS)" % SECRET_TEXT, file=sys.stderr)
         elif not env.get(k):
-            print("  settings: the site has the secret %s, and this run does not: export it, or DROP_SETTINGS=%s to drop it; refused" % (k, k), file=sys.stderr)
+            print("  settings: the site has %s, and this run does not: export it, or drop it on purpose with DROP_SETTINGS=TURNSTILE_SECRET; refused" % SECRET_TEXT, file=sys.stderr)
             rc = 5
     # A drop is an empty value, never unset: the caller holds these as local -x (update --all runs
     # many sites), and every render function reads an empty value as not set.
@@ -121,9 +126,10 @@ def dropcheck(conf_path, bindings_path, secrets_path, env=os.environ):
     now_vars = rendered_vars(open(conf_path).read())
     now_secrets = set(json.load(open(secrets_path)))
     lost = sorted(k for k in DROPPABLE_VARS if k in plain and k not in now_vars and k not in drop)
-    lost += sorted(k for k in SECRETS if k in secret and k not in now_secrets and k not in drop)
-    if lost:
-        print("site settings: the live site has %s, and this update would DROP it: export it, or DROP_SETTINGS=<names> to drop it on purpose; refused" % " ".join(lost), file=sys.stderr)
+    lost_secret = any(k in secret and k not in now_secrets and k not in drop for k in SECRETS)
+    if lost or lost_secret:
+        what = " ".join(lost + ([SECRET_TEXT] if lost_secret else []))
+        print("site settings: the live site has %s, and this update would DROP it: export it, or DROP_SETTINGS=<names> to drop it on purpose; refused" % what, file=sys.stderr)
         return 6
     return 0
 
