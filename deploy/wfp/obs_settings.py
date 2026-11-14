@@ -18,6 +18,7 @@ then reads it back. The token comes from CLOUDFLARE_API_TOKEN in the environment
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -58,12 +59,32 @@ def redact(ns, script):
     if not d.get("success"):
         print("obs settings: the PATCH of %s failed: %s" % (script, d.get("errors")), file=sys.stderr)
         return 1
-    after = show(ns, script) or {}
-    if after.get("redact_query_string") is not True:
-        print("obs settings: %s reads back redact_query_string=%r" % (script, after.get("redact_query_string")), file=sys.stderr)
-        return 1
-    print("obs settings: %s query strings redacted in its logs (read back)" % script)
-    return 0
+    # The settings API can read back the old value right after a good PATCH (#481: false once,
+    # true on a rerun two minutes later). Read back a few times with a short backoff before we
+    # declare failure. If it still reads false, fail as before: the caller fails closed.
+    delays = readback_delays()
+    for n, wait in enumerate(delays, 1):
+        if wait:
+            time.sleep(wait)
+        after = show(ns, script) or {}
+        got = after.get("redact_query_string")
+        print("obs settings: %s read-back %d/%d: redact_query_string=%r" % (script, n, len(delays), got), file=sys.stderr)
+        if got is True:
+            print("obs settings: %s query strings redacted in its logs (read back)" % script)
+            return 0
+    print("obs settings: %s reads back redact_query_string=%r after %d read-backs" % (script, got, len(delays)), file=sys.stderr)
+    return 1
+
+
+def readback_delays():
+    """Seconds to wait before each read-back. Default 0,2,3,5: 4 attempts over about 10 s (#481).
+    OBS_READBACK_DELAYS (comma list) overrides it, for the tests."""
+    raw = os.environ.get("OBS_READBACK_DELAYS") or "0,2,3,5"
+    try:
+        d = [max(0.0, float(x)) for x in raw.split(",") if x.strip()]
+    except ValueError:
+        d = []
+    return d or [0.0]
 
 
 def patch_obs(ns, script, obs):
