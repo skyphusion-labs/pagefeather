@@ -1,4 +1,4 @@
-# State is in R2 (bucket wp-on-cf-tfstate), like deploy/ and tests/bench-runner.
+# State is in R2 (bucket wp-on-cf-tfstate), like deploy/.
 # Credentials: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (the state bucket key).
 terraform {
   backend "s3" {
