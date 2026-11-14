@@ -197,6 +197,8 @@ jobs:
       - name: b-dosql import holds the cron off
         # import-hold.mjs: no cron run between two /_dbimport parts (fdprobe1112a, 2026-11-12).
         run: node --test spikes/b2-wordpress/tests/import-hold.test.mjs
+      - name: b-dosql the store-move cron hold (#479)
+        run: node --test spikes/b2-wordpress/tests/move-hold.test.mjs
       - name: b-dosql /_activate reports a plugin that ends the request (issue #289)
         # activate-report.test.mjs runs the real activation script with the php CLI against stubs.
         run: node --test spikes/b2-wordpress/tests/activate-report.test.mjs
