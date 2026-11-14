@@ -35,6 +35,8 @@ A progress screen shows the step and the row counts. It is safe to leave and com
 
 ### 2. The data path: MySQL from the source's own PHP
 
+> **Superseded 2026-11-14 by M1** (#479 issuecomment-6873675033): the driver's DDL matches native MySQL in structure, but its collation differs (52 tables) and one default really differs (`wp_wc_order_product_lookup.date_created`: native `CURRENT_TIMESTAMP`, driver `'1970-01-01 00:00:00'`). So the move does **not** create the target's tables from the source. The target Hyperdrive store already has WordPress's and WooCommerce's NATIVE tables (#431 b). The move copies **rows only, by column name**, with `/_mysqlexport` (raw SQLite, paged by rowid, no PHP; #535). Only a table the target lacks takes the driver's DDL, with the collation rewritten and its defaults checked, and it is listed on the screen. The text below is the original design, kept for the record.
+
 The SQLite file is not converted on the laptop or in the manager. The **source site's own PHP**, with its own driver, writes the MySQL form:
 
 - A new operator endpoint on b-dosql, `/_mysqlexport?table=<t>&after=<pk>&limit=<n>`, under the spike token like `/_dbexport`. For each table it returns `SHOW CREATE TABLE` (MySQL DDL from the driver's information schema), then the rows as MySQL `INSERT` statements, written through `$wpdb`, so the values are MySQL literals. It pages by primary key (`after`), not by OFFSET, so a large table stays bounded per request.
@@ -60,6 +62,8 @@ The move is long (tables by pages) and must survive a restart. It runs as a **Cl
 - **`replace` stays inside the prefix.** Today `replace=1` drops EVERY `wp_*` table in the database (`sql-import.js`). On a database shared by several stores, `wp_` also matches `wp_<other>_*`, so an import into one store would drop the others' tables. This is reachable now with `deploy/import.sh VARIANT=a` against a shared database, operator only (spike token). With the change, `replace` drops only the target's prefix. I report the hazard to the lead separately; it is not public-facing.
 
 ### 6. Check, then open
+
+**The completeness rule (lead, 2026-11-14, from #519: on b-dosql a read can miss rows that exist, while the write was durable).** Every exported table is proved complete against an independent count: the rows of its pages must add up to its `COUNT(*)`, read before the export **and** again after it (`/_mysqlexport?stats=1`), and the last rowid must reach `MAX(rowid)`. Any shortfall is a **failed export**, never a partial success: the move stops before the cut-over, and the store opens again on the standard path. The same holds on the target after the load (`/_sqlimport?counts=1`).
 
 **What must arrive intact (the integrity bar):**
 

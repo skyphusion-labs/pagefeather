@@ -15,6 +15,7 @@ import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHos
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
 import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, lockDefines } from './site-lock.mjs';
+import { exportRequest } from './mysql-export.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore } from './perf-headers.mjs';
 import { resetFailures, writeLossResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { MEMORY_RESET } from './object-error.mjs';
@@ -2600,6 +2601,12 @@ export class PhpRuntime extends DurableObject {
 			const { readable, writable } = new TransformStream();
 			this.ctx.waitUntil(withPhp(() => ((sqlDb = sql), dumpTo(writable.getWriter(), env, from))));
 			return new Response(readable, { headers: { 'content-type': 'application/x-ndjson', 'cache-control': 'private, no-store' } });
+		}
+		if (url.pathname === '/_mysqlexport' && req.method === 'GET') {
+			// #479: a rows-only, paged export of one table (mysql-export.mjs). Raw sql.exec, no PHP
+			// boot, read only; the caller proves it complete against ?stats=1 (COUNT and MAX(rowid)).
+			if (!sql) return new Response('DB_IN_DO is off', { status: 409 });
+			return exportRequest((q, ...b) => { const c = sql.exec(q, ...b); return { columns: c.columnNames, rows: [...c.raw()] }; }, url);
 		}
 		if (url.pathname === '/_dbcounts' && req.method === 'GET') {
 			// Per-table row counts for the import self-verify (issue #165): bounded
