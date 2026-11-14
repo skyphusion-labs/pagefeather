@@ -226,7 +226,7 @@ PHP_ENV = '{"USE_ZEND_ALLOC":"0","WP_TABLE_PREFIX":"wp_"}'
 # OBJECT_CACHE=on turns on the cross-isolate-safe allowlist cache. The bracket
 # toggles it per request with x-oc-off + the spike token on the SAME binary.
 OBJECT_CACHE = "on"
-OBJECT_CACHE_GROUPS = "options,terms,theme_json"
+OBJECT_CACHE_GROUPS = "terms,theme_json"  # #491: options never persist on A
 OBJECT_CACHE_TTL = "10"
 # Approach-A object cache L2 (#218): a KV store shared across isolates, behind the
 # in-isolate Map, so a COLD isolate can hit KV instead of MySQL. Only the groups
@@ -276,7 +276,7 @@ rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
 [env.a-paid-lean.vars]
 PHP_ENV = '{"USE_ZEND_ALLOC":"0","WP_TABLE_PREFIX":"wp_"}'
 OBJECT_CACHE = "on"
-OBJECT_CACHE_GROUPS = "options,terms,theme_json"
+OBJECT_CACHE_GROUPS = "terms,theme_json"  # #491: options never persist on A
 OBJECT_CACHE_TTL = "10"
 OBJECT_CACHE_L2 = "on"
 LAZY_NODES = "on"
@@ -299,6 +299,15 @@ binding = "MEDIA"
 bucket_name = "wp-a-paid-media"
 [env.a-paid-lean.images]
 binding = "IMAGES"
+# Workers Logs for the A-vs-B memory comparison (#394): events only (no invocation logs), as
+# deploy/wfp OBSERVABILITY=1. The URL query string is redacted after each deploy, because wrangler
+# has no key for it: deploy with ./deploy-a-lean.sh, which redacts right after the upload (or turns the logs off).
+[env.a-paid-lean.observability]
+enabled = true
+head_sampling_rate = 1
+[env.a-paid-lean.observability.logs]
+enabled = true
+invocation_logs = false
 [[env.a-paid-lean.kv_namespaces]]
 binding = "OC_KV"
 id = "40e27ef6167e42b18112b931fa46aded"
@@ -324,7 +333,7 @@ PHP_IN_DO = "on"
 LAZY_NODES = "on"
 LAZY_CACHE_MB = "4"
 OBJECT_CACHE = "on"
-OBJECT_CACHE_GROUPS = "options,terms,theme_json"
+OBJECT_CACHE_GROUPS = "terms,theme_json"  # #491: options never persist on A
 OBJECT_CACHE_TTL = "10"
 OBJECT_CACHE_L2 = "on"
 [env.a-paid-do-lean.assets]

@@ -47,9 +47,9 @@ $oc = new JS_Object_Cache();
 
 // 1. An allowlisted group is persistent, and a zero-expire set takes the bounded TTL.
 reset_ops();
-$oc->set( 'a', 'v1', 'options' );
+$oc->set( 'a', 'v1', 'terms' );
 $sets = ops_of( 'set' );
-check( 'an allowlisted group (options) reaches the persistent store', 1 === count( $sets ) );
+check( 'an allowlisted group (terms) reaches the persistent store', 1 === count( $sets ) );
 check( 'a zero-expire persistent set takes the bounded TTL (7)', $sets && 7 === $sets[0]['ttl'] );
 
 // 2. THE CORRECTNESS RULE: a WooCommerce group is NEVER persisted on approach A.
@@ -62,8 +62,23 @@ check( 'a WooCommerce group get never reaches the persistent store', 0 === count
 
 // 3. An allowlisted group read (not in the per-request array) does reach the store.
 reset_ops();
-$oc->get( 'b', 'options' );
+$oc->get( 'b', 'terms' );
 check( 'an allowlisted group get reaches the persistent store', 1 === count( ops_of( 'get' ) ) );
+
+// 3b. #491: options NEVER persist on approach A, though the allowlist above names it. A stale
+// alloptions across isolates (Map or KV), then a form re-save, is a lost update.
+reset_ops();
+$oc->set( 'alloptions', array( 'blogdescription' => 'x' ), 'options' );
+$oc->get( 'alloptions', 'options' );
+$oc->set( 'notoptions', array(), 'options' );
+$oc->delete( 'alloptions', 'options' );
+check( '#491: no options set, get or delete reaches the cross-request store', 0 === count( $GLOBALS['oc_ops'] ) );
+$oc->set( 'k', 'v', 'options' );
+check( '#491: an options get in the same request returns the value it set', 'v' === $oc->get( 'k', 'options' ) );
+$oc->set_group_salt( 'options', 'cafe' );
+reset_ops();
+$oc->set( 'k2', 'v', 'options' );
+check( '#491: a salt does not make options persistent either', 0 === count( ops_of( 'set' ) ) );
 
 // 4. A salted group persists even when it is not on the allowlist, keyed by the salt.
 $oc->set_group_salt( 'woocommerce_cart', 'deadbeef' );
@@ -77,7 +92,7 @@ check( 'the salted key carries the salt', $salted && false !== strpos( $salted[0
 $_SERVER['HTTP_X_OC_OFF'] = '1';
 $off = new JS_Object_Cache();
 reset_ops();
-$off->set( 'a', 'v', 'options' );
+$off->set( 'a', 'v', 'terms' );
 check( 'x-oc-off forces an allowlisted group off the persistent store', 0 === count( ops_of( 'set' ) ) );
 unset( $_SERVER['HTTP_X_OC_OFF'] );
 

@@ -414,7 +414,10 @@ function zipEntries(zip) {
 // memory limit".
 // Within a request too: the inflated copies are capped at LAZY_CACHE_BYTES,
 // oldest dropped first. A WooCommerce checkout reads about 1,500 compiled files.
-let LAZY_CACHE_BYTES = 8 * 1024 * 1024; // LAZY_CACHE_MB overrides (#218: lower the in-request V8 peak).
+// 2 MiB since #394 (was 8). At every failing post-new INSERT on pf394a the cache sat at its cap; at 2
+// post-new died 60 of 100 rounds against 82 of 100 at 8, with boot time and inflates per boot unchanged
+// (repeat pair, 2026-11-13/14, #394 issuecomment-6868335297). LAZY_CACHE_MB overrides (#218).
+let LAZY_CACHE_BYTES = 2 * 1024 * 1024;
 const inflated = new Map(); // drop function -> bytes
 // FILE_TRACE=on (#394 M0): record which bundle files each request reads (file-trace.mjs, GET /_trace).
 // Off by default; it changes no behavior, only notes the path of each read.
@@ -1379,7 +1382,8 @@ async function boot(origin) {
 	// and docs/approach-a-objectcache.md.
 	if (dbHandler && ENV.DB_IN_DO !== 'on' && ENV.OBJECT_CACHE === 'on') {
 		lines.push("define('JS_OBJECT_CACHE', true);");
-		const ocPersist = (typeof ENV.OBJECT_CACHE_GROUPS === 'string' && ENV.OBJECT_CACHE_GROUPS) ? ENV.OBJECT_CACHE_GROUPS.replace(/[^A-Za-z0-9_,-]/g, '') : 'options,terms,theme_json';
+		// #491: options never persist on A (php/object-cache-js.php drops them even when named here).
+		const ocPersist = (typeof ENV.OBJECT_CACHE_GROUPS === 'string' && ENV.OBJECT_CACHE_GROUPS) ? ENV.OBJECT_CACHE_GROUPS.replace(/[^A-Za-z0-9_,-]/g, '') : 'terms,theme_json';
 		lines.push("define('JS_OBJECT_CACHE_PERSIST_GROUPS', " + JSON.stringify(ocPersist) + ");");
 		const ocTtl = Math.max(0, Math.min(3600, parseInt(ENV.OBJECT_CACHE_TTL, 10) || 10));
 		lines.push("define('JS_OBJECT_CACHE_TTL', " + ocTtl + ");");

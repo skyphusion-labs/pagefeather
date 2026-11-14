@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Make the statements that /_sqlimport runs, from a mysqldump (issue #31).
 
-  mysql-prepare.py <dump.sql> <out.jsonl> --prefix P --flavour mysql|mariadb
+  mysql-prepare.py <dump.sql> <out.jsonl> --prefix P --to-prefix T --flavour mysql|mariadb
       --max-statement BYTES [--old ORIGIN --new ORIGIN]
 
 Variant a (MySQL or MariaDB through Hyperdrive) only. For each statement of
 the dump:
 
-- DROP TABLE IF EXISTS, CREATE TABLE, INSERT INTO: kept. The table prefix P
-  becomes wp_ in the TABLE NAME only (the runtime reads wp_options). Tables
-  without the prefix P are skipped and listed: /_sqlimport takes only wp_
-  tables.
+- DROP TABLE IF EXISTS, CREATE TABLE, INSERT INTO: kept. The dump's table
+  prefix P becomes the TARGET site's prefix T in the TABLE NAME only (#487: T is
+  the site's own WP_TABLE_PREFIX, from /_sqlimport?info=1; a fixed wp_ would
+  reach another store's tables on a shared database). Tables without the
+  prefix P are skipped and listed: /_sqlimport takes only the site's tables.
 - Comments, mysqldump's conditional comments ("/*!...", its session settings),
   LOCK and UNLOCK TABLES: skipped. Hyperdrive does not keep session settings
   between statements, so each INSERT carries its own sql_mode:
@@ -25,8 +26,8 @@ the dump:
 In INSERT values (decoded from mysqldump's escapes, then encoded again):
 - with --old and --new, the site address changes (deploy/import/search-replace.py:
   safe for PHP serialized data), except in a guid column, as there;
-- in wp_options, option_name <P>user_roles becomes wp_user_roles; in
-  wp_usermeta, a meta_key that starts with P starts with wp_. The columns are
+- in <T>options, option_name <P>user_roles becomes <T>user_roles; in
+  <T>usermeta, a meta_key that starts with P starts with T. The columns are
   found by name in the dump's CREATE TABLE. Nothing else changes.
 
 An INSERT longer than --max-statement is split between rows; one row longer
@@ -45,7 +46,7 @@ spec = importlib.util.spec_from_file_location("sr", os.path.join(here, "search-r
 sr = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sr)
 
-NEW = "wp_"
+PREFIX_RE = re.compile(r"^[A-Za-z0-9_]{1,40}$")
 MODE = "sql_mode='NO_AUTO_VALUE_ON_ZERO'"
 HEAD_RE = re.compile(rb"^(DROP TABLE IF EXISTS|CREATE TABLE|INSERT INTO) `([^`]+)`")
 DECODE = {b"0": b"\0", b"'": b"'", b'"': b'"', b"b": b"\b", b"n": b"\n", b"r": b"\r", b"t": b"\t", b"Z": b"\x1a", b"\\": b"\\", b"%": b"\\%", b"_": b"\\_"}
@@ -232,6 +233,7 @@ def main():
     ap.add_argument("dump")
     ap.add_argument("out")
     ap.add_argument("--prefix", required=True)
+    ap.add_argument("--to-prefix", required=True, help="the target site's WP_TABLE_PREFIX (/_sqlimport?info=1)")
     ap.add_argument("--flavour", required=True, choices=("mysql", "mariadb"))
     ap.add_argument("--max-statement", type=int, required=True)
     ap.add_argument("--old")
@@ -239,6 +241,9 @@ def main():
     a = ap.parse_args()
     if a.max_statement < 4096:
         fail("--max-statement is too small")
+    if not PREFIX_RE.match(a.to_prefix):
+        fail("--to-prefix must be 1 to 40 of A-Z a-z 0-9 _")
+    NEW = a.to_prefix
     old = a.prefix.encode()
     rep = sr.Replacer(a.old, a.new) if a.old and a.new else None
     if os.environ.get("NO_HINT") == "1":
@@ -283,9 +288,9 @@ def main():
             if names is None:
                 fail(f"INSERT into {t} before its CREATE TABLE")
             key = None
-            if t == "wp_options" and "option_name" in names and old != NEW.encode():
+            if t == NEW + "options" and "option_name" in names and old != NEW.encode():
                 key = ("user_roles", names.index("option_name"))
-            if t == "wp_usermeta" and "meta_key" in names and old != NEW.encode():
+            if t == NEW + "usermeta" and "meta_key" in names and old != NEW.encode():
                 key = ("usermeta_keys", names.index("meta_key"))
             parsed = values(rest[len(b" VALUES "):])
             enc_rows = []

@@ -2,13 +2,13 @@
 """Client of /_sqlimport (variant a; spikes/b2-wordpress/sql-import.js), issue #31.
 
   sqlimport.py info   <base-url>                 server version, flavour, max_allowed_packet
-  sqlimport.py counts <base-url>                 rows and lowest auto_increment id per wp_ table
+  sqlimport.py counts <base-url>                 rows and lowest auto_increment id per table of the site's prefix (#487)
   sqlimport.py load   <base-url> <file.jsonl> [--replace]
 
 SPIKE_TOKEN in the environment is sent as x-spike-token, with User-Agent
 wp-on-cf-import/1 (the edge refuses urllib's default, #72). load sends the
 file in parts of at most PART_BYTES; --replace goes with part 0 only, and the
-endpoint then drops every wp_ table first. Before that, every CREATE TABLE of
+endpoint then drops every table of the site's own prefix first (#487). Before that, every CREATE TABLE of
 the file goes to preflight=1 (each runs under a scratch name in the endpoint's
 DDL mode, then is dropped): a CREATE the server refuses stops the load while
 the site is still whole. A part that fails stops the load:
@@ -84,7 +84,7 @@ def main(a):
             if code != 200 or not o.get("ok"):
                 print(f"STOPPED at part {i}, line {o.get('line')}: {o.get('error')} (statements that ran in this part: {o.get('ran')}, tables dropped first: {o.get('dropped')})", file=sys.stderr)
                 if replace:
-                    print("The site's wp_ tables were dropped before part 0, so the database is now EMPTY or PARTIAL. Fix the cause and import again (with --replace).", file=sys.stderr)
+                    print("The site's own tables (its prefix) were dropped before part 0, so the database is now EMPTY or PARTIAL. Fix the cause and import again (with --replace).", file=sys.stderr)
                 sys.exit(1)
             total += o["statements"]
             print(f"part {i}: {o['statements']} statements" + (f", {o['dropped']} tables dropped first" if o.get("dropped") else ""))

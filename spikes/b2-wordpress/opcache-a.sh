@@ -60,4 +60,4 @@ print(f"   approach-A opcache.zip: kept {kept} scripts, excluded {excluded} (db.
 PY
 rm -f "$SRC"
 echo "done. The ENGINE=a build/ now carries the precompiled cache. Deploy with:"
-echo "  deploy/wr deploy --env a-paid-lean"
+echo "  ./deploy-a-lean.sh [--var LAZY_CACHE_MB:2]   (deploys, then redacts the log query strings, or turns logs off)"

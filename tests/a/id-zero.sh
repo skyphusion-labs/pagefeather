@@ -34,7 +34,7 @@ python3 "$IMP/sqlimport.py" info "$URL" > "$W/info.json"
 FLAVOUR=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["flavour"])' "$W/info.json")
 VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$W/info.json")
 run() { # label -> "rows:min_pk"; any failed step or null read stops the test
-  python3 "$IMP/mysql-prepare.py" "$W/dump.sql" "$W/$1.jsonl" --prefix wp_ --flavour "$FLAVOUR" --max-statement 65536 > "$W/$1.prep" || { cat "$W/$1.prep" >&2; echo "id-zero: prepare failed ($1)" >&2; exit 1; }
+  python3 "$IMP/mysql-prepare.py" "$W/dump.sql" "$W/$1.jsonl" --prefix wp_ --to-prefix wp_ --flavour "$FLAVOUR" --max-statement 65536 > "$W/$1.prep" || { cat "$W/$1.prep" >&2; echo "id-zero: prepare failed ($1)" >&2; exit 1; }
   python3 "$IMP/sqlimport.py" load "$URL" "$W/$1.jsonl" > "$W/$1.load" 2>&1 || { cat "$W/$1.load" >&2; echo "id-zero: load failed ($1)" >&2; exit 1; }
   python3 "$IMP/sqlimport.py" counts "$URL" > "$W/$1.counts" || { cat "$W/$1.counts" >&2; echo "id-zero: counts failed ($1)" >&2; exit 1; }
   python3 -c '

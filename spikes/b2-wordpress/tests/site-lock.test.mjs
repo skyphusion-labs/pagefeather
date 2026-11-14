@@ -64,6 +64,21 @@ test('index.js adds the lock defines to the generated wp-config', () => {
 	assert.ok(src.includes('lines.push(...lockDefines(ENV));'));
 });
 
+// The Hyperdrive store (#431) runs index-a-lean.js. It must reuse index.js's worker
+// (and so its boot and wp-config builder, with the lock defines, ungated by kind),
+// never a builder of its own.
+test('approach A (index-a-lean.js) boots through index.js, so its wp-config gets the lock defines', () => {
+	const lean = readFileSync(new URL('../index-a-lean.js', import.meta.url), 'utf8');
+	assert.match(lean, /^import worker, \{[^}]*\} from '\.\/index\.js';$/m, 'index-a-lean.js does not take its worker from index.js');
+	assert.match(lean, /^export default worker;$/m, 'index-a-lean.js does not export index.js worker');
+	assert.ok(!/wp-config|lockDefines|define\(/.test(lean), 'index-a-lean.js writes wp-config itself');
+	const boot = src.slice(src.indexOf('async function boot(origin) {'));
+	const at = boot.indexOf('lines.push(...lockDefines(ENV));');
+	assert.ok(at > 0, 'boot does not add the lock defines');
+	const before = boot.slice(0, at).split('\n').slice(-3).join('\n');
+	assert.ok(!/^\s*if \(/m.test(before.split('\n').pop()), 'the lock defines line is gated');
+});
+
 // The notice mu-plugin must be in the build, and it must be inert without the constant.
 test('build.sh copies the code lock notice into mu-plugins', () => {
 	const build = readFileSync(new URL('../build.sh', import.meta.url), 'utf8');

@@ -159,7 +159,7 @@ check "media: stored key, size and type" "$(python3 -c 'import json,sys; print(s
 
 # 9. Variant a: mysql-prepare.py (the statements /_sqlimport runs).
 cp "$IMP/../../spikes/b2-wordpress/sql-import.js" "$T/sql-import.mjs"
-python3 "$IMP/mysql-prepare.py" "$HERE/fixture.sql" "$T/my.jsonl" --prefix wpx_ --flavour mysql --max-statement 1048576 --old https://old.example.com --new https://wp.acct.workers.dev > "$T/my.json"
+python3 "$IMP/mysql-prepare.py" "$HERE/fixture.sql" "$T/my.jsonl" --prefix wpx_ --to-prefix wp_ --flavour mysql --max-statement 1048576 --old https://old.example.com --new https://wp.acct.workers.dev > "$T/my.json"
 j() { python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); [v := v[k] for k in sys.argv[2:]]; print(json.dumps(v, sort_keys=True))' "$T/my.json" "$@"; }
 check "mysql: rows per table" "$(j rows)" '{"wp_blobs": 4, "wp_options": 12, "wp_posts": 4, "wp_usermeta": 5}'
 check "mysql: table without the prefix skipped" "$(j skipped_tables)" '{"custom_log": 3}'
@@ -174,21 +174,33 @@ check "mysql: meta key not starting with the prefix kept" "$(sq "'not_wpx_key'")
 check "mysql: SET_VAR hint on every INSERT" "$(sq 'INSERT /*+ SET_VAR(sql_mode='"'"'NO_AUTO_VALUE_ON_ZERO'"'"') */ INTO'):$(sq 'INSERT')" "6:6"
 check "mysql: address changed, guid kept" "$(sq 'https://wp.acct.workers.dev/hello/'):$(sq 'https://old.example.com/?p=1')" "1:1"
 check "mysql: row with id 0 kept as 0" "$(sq "(0,0,'0000-00-00 00:00:00','row with id zero'")" "1"
-python3 "$IMP/mysql-prepare.py" "$HERE/fixture.sql" "$T/maria.jsonl" --prefix wpx_ --flavour mariadb --max-statement 1048576 > /dev/null
+python3 "$IMP/mysql-prepare.py" "$HERE/fixture.sql" "$T/maria.jsonl" --prefix wpx_ --to-prefix wp_ --flavour mariadb --max-statement 1048576 > /dev/null
 check "mariadb: SET STATEMENT on every INSERT" "$(python3 -c 'import json,sys; L=[json.loads(l)["sql"] for l in open(sys.argv[1])]; print(sum(s.startswith("SET STATEMENT sql_mode='"'"'NO_AUTO_VALUE_ON_ZERO'"'"' FOR INSERT INTO") for s in L), sum("INSERT" in s for s in L))' "$T/maria.jsonl")" "6 6"
 check "mariadb: passes the endpoint check" "$(node "$HERE/sqlimport-file.mjs" "$T/sql-import.mjs" "$T/maria.jsonl" | tail -1)" "14 statements, 0 refused"
-NO_HINT=1 python3 "$IMP/mysql-prepare.py" "$HERE/fixture.sql" "$T/nohint.jsonl" --prefix wpx_ --flavour mysql --max-statement 1048576 > /dev/null
+NO_HINT=1 python3 "$IMP/mysql-prepare.py" "$HERE/fixture.sql" "$T/nohint.jsonl" --prefix wpx_ --to-prefix wp_ --flavour mysql --max-statement 1048576 > /dev/null
 check "mysql: NO_HINT=1 leaves the hint out (red control)" "$(grep -c 'NO_AUTO_VALUE_ON_ZERO' "$T/nohint.jsonl" || true)" "0"
-python3 "$IMP/mysql-prepare.py" "$HERE/fixture.sql" "$T/split.jsonl" --prefix wpx_ --flavour mysql --max-statement 4096 > "$T/split.json"
+python3 "$IMP/mysql-prepare.py" "$HERE/fixture.sql" "$T/split.jsonl" --prefix wpx_ --to-prefix wp_ --flavour mysql --max-statement 4096 > "$T/split.json"
 check "mysql: INSERTs split at --max-statement" "$(python3 -c 'import json,sys; L=[json.loads(l)["sql"].encode() for l in open(sys.argv[1])]; print(max(len(s) for s in L) <= 4096, sum(s.startswith(b"INSERT") for s in L) > 5, json.load(open(sys.argv[2]))["rows"]["wp_options"])' "$T/split.jsonl" "$T/split.json")" "True True 12"
 # shellcheck disable=SC2016 # backticks are SQL here
 printf '%s\n' 'CREATE TABLE `wp_b` (' '  `id` int NOT NULL,' '  `data` longblob' ');' "INSERT INTO \`wp_b\` VALUES (1,_binary 'ab');" > "$T/binary.sql"
-set +e; python3 "$IMP/mysql-prepare.py" "$T/binary.sql" "$T/b.jsonl" --prefix wp_ --flavour mysql --max-statement 1048576 > /dev/null 2> "$T/b.err"; code=$?; set -e
+set +e; python3 "$IMP/mysql-prepare.py" "$T/binary.sql" "$T/b.jsonl" --prefix wp_ --to-prefix wp_ --flavour mysql --max-statement 1048576 > /dev/null 2> "$T/b.err"; code=$?; set -e
 check "mysql: _binary refused with --hex-blob advice" "$code:$(grep -c -- '--hex-blob' "$T/b.err" || true)" "1:1"
+# #487: the TARGET site's prefix, not a fixed wp_ (a store of the one-click manager is wp_<name>_).
+# The fixture has 4 tables with the prefix wpx_ (custom_log has none and is skipped).
+python3 "$IMP/mysql-prepare.py" "$HERE/fixture.sql" "$T/ggc.jsonl" --prefix wpx_ --to-prefix wp_ggc_ --flavour mysql --max-statement 1048576 > "$T/ggc.json"
+gq() { python3 -c 'import json,sys; print(sum(1 for l in open(sys.argv[1]) if sys.argv[2] in json.loads(l)["sql"]))' "$T/ggc.jsonl" "$1"; }
+# shellcheck disable=SC2016 # backticks are SQL here
+check "mysql --to-prefix wp_ggc_: tables become wp_ggc_, none stays wp_ or wpx_" "$(gq 'INTO `wp_ggc_options`'):$(gq 'TABLE `wp_ggc_'):$(gq 'INTO `wp_options`'):$(gq 'INTO `wpx_')" "2:4:0:0"
+check "mysql --to-prefix wp_ggc_: user_roles key follows the target prefix" "$(gq "'wp_ggc_user_roles'"):$(gq "'wp_user_roles'")" "1:0"
+check "mysql --to-prefix wp_ggc_: rows per table under the new names" "$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["rows"], sort_keys=True))' "$T/ggc.json")" '{"wp_ggc_blobs": 4, "wp_ggc_options": 12, "wp_ggc_posts": 4, "wp_ggc_usermeta": 5}'
+set +e; python3 "$IMP/mysql-prepare.py" "$HERE/fixture.sql" "$T/badp.jsonl" --prefix wpx_ --to-prefix 'wp-bad' --flavour mysql --max-statement 1048576 > /dev/null 2>&1; code=$?; set -e
+check "mysql --to-prefix: a bad prefix is refused" "$code" "1"
 node "$HERE/sqlimport-check.mjs" "$T/sql-import.mjs" > "$T/check.out" || true
 check "sql-import.js checkStatement cases" "$(tail -1 "$T/check.out")" "all passed"
 node "$HERE/sqlimport-endpoint.mjs" "$T/sql-import.mjs" > "$T/endpoint.out" || true
 check "sql-import.js endpoint rules" "$(tail -1 "$T/endpoint.out")" "all passed"
+node "$HERE/sqlimport-prefix.mjs" "$T/sql-import.mjs" > "$T/prefix.out" || true
+check "sql-import.js keeps to the site prefix on a shared database (#487)" "$(tail -1 "$T/prefix.out")" "all passed"
 python3 "$HERE/test_sqlimport_client.py" 2> "$T/client.err" || { cat "$T/client.err"; fails=$((fails + 1)); }
 check "sqlimport.py: CREATE preflight before replace" "$(tail -1 "$T/client.err")" "OK"
 
