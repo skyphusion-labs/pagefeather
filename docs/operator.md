@@ -8,7 +8,7 @@ This is the day-one walkthrough for one operator who runs a couple of WordPress 
 - Your Cloudflare **account id**, exported as `ACCOUNT_ID`. Every command below uses it.
 - Node and Wrangler (4.107.0 or later), and this repository.
 - Terraform (1.5 or later).
-- A Cloudflare **API token** with edit on: Workers Scripts, Workers KV, Workers for Platforms, R2, and API Tokens (the last for the short-lived key `down.sh` uses to empty a bucket). It is exported as `CLOUDFLARE_API_TOKEN`.
+- A Cloudflare **API token** with edit on: Workers Scripts, Workers KV, Workers for Platforms and R2. It does not need API Tokens: the short-lived keys that empty a bucket and put an import's uploads are R2 temporary credentials made from this token (#273), so the token can itself be made through the API. It is exported as `CLOUDFLARE_API_TOKEN`.
 - Optional, recommended: keep the Terraform state in R2 (so it survives your shell). Set `WFP_STATE=r2` and the R2 state bucket's S3 key in `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. Without it the state is local to the clone.
 
 Nothing is configured in the dashboard; everything below is a command.

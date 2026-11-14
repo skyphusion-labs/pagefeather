@@ -2,6 +2,7 @@
 # Put the uploads of an existing site into the site's R2 media bucket (issue #31).
 #
 #   R2_KEY_ID=... R2_SECRET=... media.sh <endpoint> <bucket> <wp-content dir>
+#   R2_CRED_FILE=<file> [R2_CRED_REFRESH=<command>] media.sh <endpoint> <bucket> <wp-content dir>
 #   media.sh --list <wp-content dir>        the files and keys, no network
 #
 # A file wp-content/uploads/<path> goes to the key uploads/<path>: the key that
@@ -21,7 +22,8 @@
 # "send it". A HEAD that is refused or fails (401, 403, a curl error, 5xx) is
 # tried again for R2_RETRY_S (90) s, then the file FAILS with the code: it
 # never counts as missing, or the check run would send files it could not
-# see. A PUT of 401 or 403 is tried again in the same way.
+# see. A PUT of 401 or 403 is tried again in the same way. With R2_CRED_REFRESH, the first refusal
+# of a streak also mints a fresh credential (a temporary credential expires, deploy/wfp #273).
 set -euo pipefail
 # list <dir> [nul]: key, path, type, size. Tab and newline, or NUL after each field.
 list() { python3 -I - "$1" "${2:-}" <<'PY'
@@ -56,35 +58,58 @@ PY
 if [ "${1:-}" = --list ]; then list "${2:?wp-content dir}"; exit 0; fi
 
 EP=${1:?endpoint} B=${2:?bucket} SRC=${3:?wp-content dir}
-: "${R2_KEY_ID:?set R2_KEY_ID}" "${R2_SECRET:?set R2_SECRET}"
-export R2_KEY_ID R2_SECRET EP B
+# The key (#273): R2_KEY_ID and R2_SECRET (with R2_SESSION_TOKEN for a temporary credential), or
+# R2_CRED_FILE, a file of those three lines that R2_CRED_REFRESH rewrites with a fresh credential.
+# Every request reads the file again, so a refresh reaches every request after it. The session
+# token goes into the curl config on a pipe, as the key does, never into the arguments.
+# shellcheck disable=SC1090 # the file r2_temp.py writes: three shell-quoted assignments
+r2_cfg() { ( if [ -n "${R2_CRED_FILE:-}" ]; then . "$R2_CRED_FILE"; fi
+  printf 'user = "%s:%s"\n' "$R2_KEY_ID" "$R2_SECRET"
+  if [ -n "${R2_SESSION_TOKEN:-}" ]; then printf 'header = "x-amz-security-token: %s"\n' "$R2_SESSION_TOKEN"; fi ); }
+r2_key_set() { if [ -n "${R2_CRED_FILE:-}" ]; then [ -r "$R2_CRED_FILE" ]; else [ -n "${R2_KEY_ID:-}" ] && [ -n "${R2_SECRET:-}" ]; fi; }
+# r2_refresh: on a refusal, mint a fresh credential with R2_CRED_REFRESH (a temporary one may have
+# expired). One at a time (a lock beside the file), and not again within R2_REFRESH_MIN_S (20) s of
+# the last one, so parallel requests that are all refused mint once. No R2_CRED_REFRESH: nothing.
+r2_refresh() {
+  [ -n "${R2_CRED_REFRESH:-}" ] && [ -n "${R2_CRED_FILE:-}" ] || return 0
+  mkdir "$R2_CRED_FILE.lock" 2>/dev/null || return 0
+  if python3 -I -c 'import os, sys, time; sys.exit(0 if time.time() - os.path.getmtime(sys.argv[1]) >= float(sys.argv[2]) else 1)' "$R2_CRED_FILE" "${R2_REFRESH_MIN_S:-20}"; then
+    echo "r2: refused at $(date -u +%TZ): minting a fresh credential" >&2
+    bash -c "$R2_CRED_REFRESH" >&2 || echo "r2: the fresh credential was NOT minted" >&2
+  fi
+  rmdir "$R2_CRED_FILE.lock" 2>/dev/null || true
+}
+r2_key_set || { echo "set R2_KEY_ID and R2_SECRET, or R2_CRED_FILE" >&2; exit 2; }
+export R2_KEY_ID="${R2_KEY_ID:-}" R2_SECRET="${R2_SECRET:-}" R2_SESSION_TOKEN="${R2_SESSION_TOKEN:-}" R2_CRED_FILE="${R2_CRED_FILE:-}" R2_CRED_REFRESH="${R2_CRED_REFRESH:-}" EP B
+export -f r2_cfg r2_refresh
 W=$(mktemp -d "${TMPDIR:-/tmp}/wp-media.XXXXXX"); trap 'rm -rf "${W:?}"' EXIT
 list "$SRC" nul > "$W/list" 2> "$W/skipped"
 n=$(( $(tr -cd '\0' < "$W/list" | wc -c) / 4 ))
 echo "media: $n files to check ($(tr -d '#' < "$W/skipped" | xargs))"
 
-s3() { curl -sS -K <(printf 'user = "%s:%s"\n' "$R2_KEY_ID" "$R2_SECRET") --aws-sigv4 "aws:amz:auto:s3" "$@"; }
+s3() { curl -sS -K <(r2_cfg) --aws-sigv4 "aws:amz:auto:s3" "$@"; }
 tries=0
 while :; do
   code=$(s3 -o /dev/null -w '%{http_code}' "$EP/$B?list-type=2&max-keys=1")
   case "$code" in
     200) break ;;
-    401|403) tries=$((tries + 1)); [ "$tries" -le 18 ] || { echo "media: $B refused ($code)" >&2; exit 1; }; sleep 5 ;;
+    401|403) tries=$((tries + 1)); [ "$tries" -le 18 ] || { echo "media: $B refused ($code)" >&2; exit 1; }; [ "$tries" = 1 ] && r2_refresh; sleep 5 ;;
     *) echo "media: $B list failed ($code)" >&2; exit 1 ;;
   esac
 done
 
 # One file: HEAD, then PUT if it is missing (404) or has another size.
 one() {
-  local key=$1 path=$2 ctype=$3 size=$4 have hc code t0=$SECONDS
-  s3() { curl -sS -K <(printf 'user = "%s:%s"\n' "$R2_KEY_ID" "$R2_SECRET") --aws-sigv4 "aws:amz:auto:s3" "$@"; }
+  local key=$1 path=$2 ctype=$3 size=$4 have hc code t0=$SECONDS refreshed=""
+  s3() { curl -sS -K <(r2_cfg) --aws-sigv4 "aws:amz:auto:s3" "$@"; }
   while :; do
     have=$(s3 -I -o /dev/null -w '%{http_code} %header{content-length}' "$EP/$B/$key" 2>/dev/null) || have="000 -"
     hc=${have%% *}
     case "$hc" in
       200) [ "$have" = "200 $size" ] && { echo skip; return; }; break ;;
       404) break ;;
-      *) [ $((SECONDS - t0)) -lt "${R2_RETRY_S:-90}" ] || { echo "fail head $hc $key"; return; }; sleep "${R2_RETRY_STEP:-3}" ;;
+      *) [ $((SECONDS - t0)) -lt "${R2_RETRY_S:-90}" ] || { echo "fail head $hc $key"; return; }
+         case "$hc" in 401|403) [ -n "$refreshed" ] || { r2_refresh; refreshed=1; } ;; esac; sleep "${R2_RETRY_STEP:-3}" ;;
     esac
   done
   t0=$SECONDS
@@ -92,7 +117,8 @@ one() {
     code=$(s3 -o /dev/null -w '%{http_code}' -X PUT -H "content-type: $ctype" -T "$path" "$EP/$B/$key" 2>/dev/null) || code=000
     case "$code" in
       200) echo sent; return ;;
-      401|403) [ $((SECONDS - t0)) -lt "${R2_RETRY_S:-90}" ] || { echo "fail put $code $key"; return; }; sleep "${R2_RETRY_STEP:-3}" ;;
+      401|403) [ $((SECONDS - t0)) -lt "${R2_RETRY_S:-90}" ] || { echo "fail put $code $key"; return; }
+         [ -n "$refreshed" ] || { r2_refresh; refreshed=1; }; sleep "${R2_RETRY_STEP:-3}" ;;
       *) echo "fail put $code $key"; return ;;
     esac
   done

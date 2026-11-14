@@ -50,8 +50,10 @@ check "a Custom Domain with no zone in the state stops" "$rc:$(printf '%s' "$out
 # The callers use it: an update and a remove read the recorded values.
 check "site update, remove, import and restore use site_vars" "$(grep -c 'site_vars "\$s" "\$SUB" "\$KV_ID"' "$HERE/../site")" "4"
 check "site.sh down uses site_vars" "$(grep -c 'site_vars "\$s" "\$SUB" "\$KV_ID"' "$HERE/../site.sh")" "1"
-# The update's applies (the new build, the rollback, the #515 hold), import's key and restore's clear.
-check "site update, import and restore apply the recorded vars" "$(grep -c 'REC_VARS\[@\]' "$HERE/../site")" "5"
+# The update's two applies (the new build, the rollback), the #515 hold, and site restore's clear.
+# Since #273 site import applies nothing: its bucket key is a temporary R2 credential.
+check "site update and restore apply the recorded vars (site import applies nothing, #273)" "$(grep -c 'REC_VARS\[@\]' "$HERE/../site")" "4"
+check "site import runs no terraform apply" "$(sed -n '/^import_one() {/,/^}/p' "$HERE/../site" | grep -c 'tfr site apply')" "0"
 STUB_MODE=apex; export STUB_MODE SUB=sub; site_vars ggc sub kv1
 check "site_key: the recorded key after site_vars" "$(site_key ggc)" "ggc.sh"
 check "site_key: another site is still computed" "$(site_key blog)" "wp-blog.sub.workers.dev"
