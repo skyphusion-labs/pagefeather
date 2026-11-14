@@ -301,7 +301,7 @@ bucket_name = "wp-a-paid-media"
 binding = "IMAGES"
 # Workers Logs for the A-vs-B memory comparison (#394): events only (no invocation logs), as
 # deploy/wfp OBSERVABILITY=1. The URL query string is redacted after each deploy, because wrangler
-# has no key for it: python3 deploy/wfp/obs_settings.py redact - wp-a-lean (reads it back).
+# has no key for it: deploy with ./deploy-a-lean.sh, which redacts right after the upload (or turns the logs off).
 [env.a-paid-lean.observability]
 enabled = true
 head_sampling_rate = 1

@@ -48,5 +48,18 @@ check("a redaction that does not read back fails (exit 1)", r.returncode == 1)
 state["broken"] = False
 r = run("redact", "-", "wp-off")
 check("observability off: nothing to redact, exit 0, no PATCH", r.returncode == 0 and ("PATCH", "/workers/scripts/wp-off/settings") not in state["paths"])
+# redact-or-off (#394): a redaction that does not read back turns observability OFF.
+state["broken"] = True; state["settings"]["/workers/scripts/wp-c/settings"] = dict(on)
+r = run("redact-or-off", "-", "wp-c")
+check("redact-or-off: a failed redaction exits 1", r.returncode == 1)
+check("  and the script's observability reads back OFF", state["settings"]["/workers/scripts/wp-c/settings"].get("enabled") is False)
+state["broken"] = False; state["settings"]["/workers/scripts/wp-d/settings"] = dict(on)
+r = run("redact-or-off", "-", "wp-d")
+check("redact-or-off: a good redaction exits 0 and leaves the logs on", r.returncode == 0 and state["settings"]["/workers/scripts/wp-d/settings"].get("enabled") is True)
+# The deploy wrapper (#394): the upload, then redact-or-off, in one script under set -e.
+w = open(os.path.join(HERE, "..", "..", "..", "spikes", "b2-wordpress", "deploy-a-lean.sh")).read()
+check("deploy-a-lean.sh runs under set -euo pipefail", "set -euo pipefail" in w)
+i_dep = w.find('../../deploy/wr deploy --env a-paid-lean "$@"'); i_red = w.find("obs_settings.py redact-or-off - wp-a-lean")
+check("  it deploys, then redact-or-off (in that order)", 0 <= i_dep < i_red)
 print("%d failing check(s)" % fails)
 sys.exit(1 if fails else 0)
