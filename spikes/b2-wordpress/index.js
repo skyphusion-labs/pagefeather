@@ -200,6 +200,7 @@ const sqlMeter = createSqlMeter();
 let ledgerActive = false;
 let ledgerId = null;
 let ledgerFailLogged = false;
+let bootMemory = null; // the WebAssembly.Memory of the runtime being booted (instantiateWasm), for the ledger
 function ledgerSnapshot(at) {
 	const php = lastBootedPhp;
 	const heapOf = (p) => p[__private__dont__use].HEAPU8.length;
@@ -1215,6 +1216,7 @@ async function boot(origin) {
 		ENV: JSON.parse(ENV.PHP_ENV || '{"USE_ZEND_ALLOC":"0"}'),
 		instantiateWasm(imports, done) {
 			const inst = new WebAssembly.Instance(wasmModule, imports);
+			bootMemory = inst.exports.memory || null; // #394: the ledger tracks this runtime's real memory
 			done(inst, wasmModule);
 			return inst.exports;
 		},
@@ -1225,7 +1227,8 @@ async function boot(origin) {
 	});
 	const php = new PHP(id);
 	lastBootedPhp = php;
-	ledger.register(php, runtimeSerial); // #394: retired runtimes stay countable while alive
+	ledger.register(php, runtimeSerial, bootMemory); // #394: retired runtimes stay countable while alive, with their real memory
+	bootMemory = null;
 	// php.ini overrides. PHP_INI (a JSON object) lets a deploy or a test change them.
 	// A deploy (WP_SALT is set) never prints PHP errors, even for a script that
 	// does not load wp-config.php (measured 2026-11-04: /wp-content/db.php did).
