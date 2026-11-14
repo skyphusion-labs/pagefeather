@@ -34,6 +34,14 @@ phase checkout
 
 # 2. The base image (emsdk), as the upstream Makefile's base-image target.
 compile="$src/packages/php-wasm/compile"
+# ENGINE_PIN_ENV=1: a VARIANT, not the unchanged build. PHP_UNAME and SOURCE_DATE_EPOCH are set to the
+# shipped binary's build-host values (engine/UPSTREAM), right after the Dockerfile's FROM line.
+if [ "${ENGINE_PIN_ENV:-0}" = 1 ]; then
+  df="$compile/php/Dockerfile"
+  [ "$(head -1 "$df")" = "FROM playground-php-wasm:base" ] || { echo "php/Dockerfile does not start with the expected FROM" >&2; exit 1; }
+  { head -1 "$df"; echo "ENV PHP_UNAME=\"$SHIPPED_PHP_UNAME\" SOURCE_DATE_EPOCH=$SHIPPED_BUILD_EPOCH"; tail -n +2 "$df"; } > "$df.pf" && mv "$df.pf" "$df"
+  sed -n 2p "$df"
+fi
 (cd "$compile/base-image" && docker build -f ./Dockerfile -t playground-php-wasm:base --progress=plain . > "$out/base-image.log" 2>&1) || { tail -60 "$out/base-image.log"; exit 1; }
 phase base-image
 

@@ -19,3 +19,9 @@ EMSDK_VERSION=4.0.19
 # What we ship today (spikes/b2-wordpress/node_modules/@php-wasm/web-8-3/jspi), the S1 byte target.
 SHIPPED_WASM_SHA256=4a35d44ed3decb9b9db529c6802a7c4e16bf921c469cc7613478a645b5e68da8
 SHIPPED_JS_SHA256=aecfbb4aa0303bad244952e0ec850e8ee9429e235a21636ab6ccd708a67befb6
+# The two build-host facts the shipped binary embeds (measured 2026-11-14 with strings on the shipped
+# wasm against our CI build): PHP's uname at configure time, and the compiler's __DATE__/__TIME__
+# (Oct 22 2026 09:42:29 in one file, 09:42:58 in another). A build with ENGINE_PIN_ENV=1 sets
+# PHP_UNAME and SOURCE_DATE_EPOCH (09:42:29 UTC) to them, to show that nothing else differs.
+SHIPPED_PHP_UNAME='Linux buildkitsandbox 7.0.12-linuxkit #1 SMP PREEMPT Thu Aug 27 14:02:21 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux'
+SHIPPED_BUILD_EPOCH=1792662149
