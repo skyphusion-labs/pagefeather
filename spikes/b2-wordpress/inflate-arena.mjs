@@ -31,7 +31,7 @@ export function createArena(bytes) {
 			const end = start + size;
 			const keep = [];
 			for (const e of live) {
-				if (e.start < end && start < e.end) {
+				if (false && e.start < end && start < e.end) { // MUTANT: do not merge (#508 CI red check)
 					counts.evicts++;
 					try { e.drop(); } catch { /* a drop never stops the inflate */ }
 				} else {
