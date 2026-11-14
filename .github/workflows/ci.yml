@@ -121,6 +121,8 @@ jobs:
             echo "$sum  $d/$name" | sha256sum -c - || { echo "::error::$name sha256 mismatch"; exit 1; }
           done
           php spikes/b2-wordpress/tests/mem-trace-hooks-test.php "$d"
+      - name: b-dosql rows-only export for a store move, against a real SQLite (#479)
+        run: node --test spikes/b2-wordpress/tests/mysql-export.test.mjs
       - name: b-dosql performance headers need the spike token
         run: node --test spikes/b2-wordpress/tests/perf-headers.test.mjs
       - name: b-dosql a memory reset is not an overload (issue #335)
