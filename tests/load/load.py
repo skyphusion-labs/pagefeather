@@ -5,6 +5,10 @@ Usage: B=<site url> ADMIN_PASSWORD=... python3 tests/load/load.py
 Options (environment): LEVELS (concurrent users per step, default "1,5,10,25,50,100"),
 SECONDS (per step, default 60), BUYERS (fraction of loops that buy, default 0.2),
 SETUP=0 (skip the admin setup: payment method, store launch, products),
+ADMINS (fraction of loops that are an ADMIN loop, default 0: logged in once per user as ADMIN_USER,
+default "admin", each loop one of the dashboard, post-new.php, or a REST draft page create, #394),
+CLEANUP=1 (after the run: delete the orders the run's checkouts made, put the stock of the products
+it read back as it was, and delete its REST draft pages; prints counts only),
 WOO=0 or 1 (default: 1 when the site's Store API answers). WOO=0 is plain
 WordPress: browse only, over home, a post, a page, search, a
 category and the feed; no setup and no buyers).
@@ -46,6 +50,10 @@ B = os.environ["B"].rstrip("/")
 LEVELS = [int(x) for x in os.environ.get("LEVELS", "1,5,10,25,50,100").split(",")]
 SECONDS = float(os.environ.get("SECONDS", "60"))
 BUYERS = float(os.environ.get("BUYERS", "0.2"))
+ADMINS = float(os.environ.get("ADMINS", "0"))
+CLEANUP = os.environ.get("CLEANUP", "0") == "1"
+RUNTAG = "load394-%08x" % random.getrandbits(32)  # the run's draft pages carry it, so cleanup finds only them
+ORDERS = []  # order ids the run's checkouts made (CLEANUP)
 UA = {"User-Agent": "wp-on-cf-load"}
 
 
@@ -135,6 +143,71 @@ def setup():
     return ids
 
 
+def admin_login():
+    """An admin session and its REST nonce (ADMINS loops and CLEANUP), or None if the login fails."""
+    o = opener()
+    req(o, "/wp-login.php")
+    form = urllib.parse.urlencode({"log": os.environ.get("ADMIN_USER", "admin"), "pwd": os.environ["ADMIN_PASSWORD"], "wp-submit": "Log In", "redirect_to": "/wp-admin/", "testcookie": "1"}).encode()
+    r = req(o, "/wp-login.php", form, {"Content-Type": "application/x-www-form-urlencoded"})
+    if r["code"] != 302:
+        return None
+    n = req(o, "/wp-admin/admin-ajax.php?action=rest-nonce")
+    if n["code"] != 200:
+        return None
+    o.nonce = n["body"].decode().strip()
+    return o
+
+
+tl = threading.local()
+
+
+def admin_loop(rec, abort):
+    # One admin session per user thread, made on its first admin loop.
+    a = getattr(tl, "admin", None)
+    if a is None:
+        a = tl.admin = admin_login()
+        if a is None:
+            abort()
+            return
+    choice = random.randrange(3)
+    if choice == 0:
+        rec("admin-dash", req(a, "/wp-admin/"))
+    elif choice == 1:
+        rec("admin-postnew", req(a, "/wp-admin/post-new.php?post_type=page"))
+    else:
+        rec("admin-rest", req(a, "/?rest_route=/wp/v2/pages", {"title": "%s %08x" % (RUNTAG, random.getrandbits(32)), "status": "draft"}, {"X-WP-Nonce": a.nonce}))
+
+
+def stock_of(a, ids):
+    """{id: (manage_stock, stock_quantity)} from the admin REST API, for CLEANUP."""
+    out = {}
+    for i in ids:
+        r = req(a, "/?rest_route=/wc/v3/products/%d" % i, None, {"X-WP-Nonce": a.nonce})
+        if r["code"] == 200:
+            d = json.loads(r["body"])
+            out[i] = (d.get("manage_stock"), d.get("stock_quantity"))
+    return out
+
+
+def cleanup(a, before):
+    """Delete the run's orders and draft pages; put back the stock read before the run. Counts only."""
+    H = {"X-WP-Nonce": a.nonce}
+    deleted = sum(1 for oid in ORDERS if req(a, "/?rest_route=/wc/v3/orders/%d&force=true" % oid, None, H, "DELETE")["code"] == 200)
+    restored = 0
+    for i, (managed, qty) in before.items():
+        if managed and qty is not None:
+            restored += req(a, "/?rest_route=/wc/v3/products/%d" % i, {"stock_quantity": qty}, H, "PUT")["code"] == 200
+    pages = 0
+    for _ in range(20):
+        r = req(a, "/?rest_route=/wp/v2/pages&status=draft&per_page=100&search=" + RUNTAG, None, H)
+        found = json.loads(r["body"]) if r["code"] == 200 else []
+        if not found:
+            break
+        for pg in found:
+            pages += req(a, "/?rest_route=/wp/v2/pages/%d&force=true" % pg["id"], None, H, "DELETE")["code"] == 200
+    return {"orders_made": len(ORDERS), "orders_deleted": deleted, "stock_restored": restored, "stock_products": len(before), "draft_pages_deleted": pages}
+
+
 def products():
     # In stock too: the Store API keeps an out-of-stock product purchasable, and
     # a buy of it fails twice (add-item 400 woocommerce_rest_product_out_of_stock,
@@ -168,7 +241,10 @@ def backoff(r, stop):
 def user(stop, prods, rec, abort):
     while time.time() < stop:
         o = opener()
-        if random.random() < BUYERS:
+        roll = random.random()
+        if roll < ADMINS:
+            admin_loop(rec, abort)
+        elif roll < ADMINS + BUYERS:
             p = random.choice(prods)
             c = req(o, "/?rest_route=/wc/store/v1/cart")
             rec("cart", c)
@@ -187,6 +263,12 @@ def user(stop, prods, rec, abort):
             addr = {"first_name": "Load", "last_name": "Test", "address_1": "1 Edge Way", "city": "Detroit", "state": "MI", "postcode": "48201", "country": "US", "email": "load@example.com", "phone": "5555550100"}
             k = req(o, "/?rest_route=/wc/store/v1/checkout", {"billing_address": addr, "shipping_address": {x: y for x, y in addr.items() if x != "email"}, "payment_method": "cod"}, H)
             ok = k["code"] == 200 and b'"order_id"' in k["body"]
+            if ok and CLEANUP:
+                try:
+                    with lock:
+                        ORDERS.append(int(json.loads(k["body"])["order_id"]))
+                except (ValueError, KeyError, TypeError):
+                    pass
             rec("checkout", k, ok)
         else:
             p = random.choice(prods)
@@ -252,7 +334,7 @@ def step(n, prods):
         out["status"][str(r["c"])] = out["status"].get(str(r["c"]), 0) + 1
         if r["rec"]:
             out["recycled"][r["rec"]] = out["recycled"].get(r["rec"], 0) + 1
-    for k in ("browse", "cart", "add", "checkout"):
+    for k in ("browse", "cart", "add", "checkout", "admin-dash", "admin-postnew", "admin-rest"):
         xs = [r["s"] for r in rows if r["k"] == k]
         if xs:
             out["kinds"][k] = {"n": len(xs), "ok": sum(1 for r in rows if r["k"] == k and r["ok"]),
@@ -281,9 +363,21 @@ if __name__ == "__main__":
     else:
         BUYERS = 0.0
         prods = [{"permalink": B + p} for p in PLAIN]
+    if (ADMINS > 0 or CLEANUP) and not os.environ.get("ADMIN_PASSWORD"):
+        sys.exit("ADMINS and CLEANUP need ADMIN_PASSWORD")
+    before = {}
+    if CLEANUP and WOO:
+        ca = admin_login()
+        if ca is None:
+            sys.exit("CLEANUP: admin login failed before the run; nothing was run")
+        before = stock_of(ca, [p["id"] for p in prods if "id" in p])
     allsteps = []
     for n in LEVELS:
         s = step(n, prods)
         allsteps.append(s)
         print(json.dumps(s), flush=True)
-    print(json.dumps({"target": B, "woo": WOO, "load_mode": LOAD_MODE, "levels": LEVELS, "seconds_per_level": SECONDS, "buyers": BUYERS, "steps": allsteps}))
+    summary = {"target": B, "woo": WOO, "load_mode": LOAD_MODE, "levels": LEVELS, "seconds_per_level": SECONDS, "buyers": BUYERS, "admins": ADMINS, "steps": allsteps}
+    if CLEANUP:
+        ca = admin_login()
+        summary["cleanup"] = cleanup(ca, before) if ca is not None else {"error": "admin login failed after the run: clean up by hand", "orders_made": len(ORDERS), "runtag": RUNTAG}
+    print(json.dumps(summary))
