@@ -70,6 +70,19 @@ export function initialPages(bytes) {
 
 const ms = (t) => new Promise((r) => setTimeout(r, t));
 
+// The wasm's dylink.0 custom section (a MAIN_MODULE) and its export count.
+export function linkShape(bytes) {
+	const leb = (i) => { let r = 0, s = 0, x; do { x = bytes[i++]; r += (x & 0x7f) * 2 ** s; s += 7; } while (x & 0x80); return [r, i]; };
+	let i = 8, dylink = false, exports = null;
+	while (i < bytes.length) {
+		const id = bytes[i++]; const [size, j] = leb(i); i = j;
+		if (id === 0) { const [n, k] = leb(i); if (bytes.toString('utf8', k, k + n) === 'dylink.0') dylink = true; }
+		if (id === 7) exports = leb(i)[0];
+		i += size;
+	}
+	return { dylink, exports };
+}
+
 export const checks = {
 	// workerd has no import.meta.url; the Worker passes the module through instantiateWasm, so the
 	// loader must never fetch the wasm (prepare.sh, first edit).
@@ -90,6 +103,12 @@ export const checks = {
 		php.writeFile('/tmp/oc582.php', '<?php function oc582() { return 1; }');
 		const got = await jrun(php, '<?php echo json_encode(array(PHP_SAPI, (bool) @opcache_get_status(false), @opcache_compile_file("/tmp/oc582.php")));');
 		assert.deepEqual(got, ['wasm', true, true]);
+	},
+	// A static engine has no dylink.0 section and few exports; today's MAIN_MODULE has both (#582 S2).
+	async 'link: dylink section and export count as expected'(e) {
+		const got = linkShape(e.bytes);
+		assert.equal(got.dylink, e.expect.static.dylink, 'dylink.0 section present: ' + got.dylink);
+		if (e.expect.static.maxExports != null) assert.ok(got.exports <= e.expect.static.maxExports, got.exports + ' exports, over ' + e.expect.static.maxExports);
 	},
 	// The module starts small and grows on demand (prepare.sh: 1024 to 384 pages).
 	async 'memory: the expected initial pages'(e) {
