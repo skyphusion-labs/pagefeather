@@ -76,6 +76,9 @@ if [ "$variant" = lean ]; then
   # Later entries win in build-arg order. No network in a Worker: curl and soap; mb_ereg is used only
   # inside symfony polyfills: mbregex (and oniguruma).
   args+=(WITH_CURL=no WITH_SOAP=no WITH_MBREGEX=no WITH_GD="${ENGINE_GD:-yes}")
+  # ENGINE_FILEINFO=no: a MEASURED arm only, never shipped (the lead's ruling, 2026-11-14): fileinfo's
+  # compiled-in magic database is 7.59 MiB of .rodata (the linker map of run 43648222519).
+  [ "${ENGINE_FILEINFO:-yes}" = yes ] || args+=(WITH_FILEINFO=no)
 fi
 bargs=(); for a in "${args[@]}"; do bargs+=(--build-arg "$a"); done
 (cd "$compile" && docker build -f php/Dockerfile .. --tag=pagefeather-engine-build --progress=plain "${bargs[@]}" > "$out/docker-build.log" 2>&1) || { tail -60 "$out/docker-build.log"; exit 1; }
@@ -84,7 +87,7 @@ phase php
 # 4. The outputs, as build.js copies them.
 docker run --rm -v "$out:/output" pagefeather-engine-build sh -c "cp -rf /root/output/* /output && chown -R $(id -u):$(id -g) /output"
 printf '%s\n' "${args[@]}" > "$out/build-args.txt"
-echo "ENGINE_VARIANT=$variant ENGINE_GD=${ENGINE_GD:-yes} ENGINE_PIN_ENV=${ENGINE_PIN_ENV:-0}" >> "$out/build-args.txt"
+echo "ENGINE_VARIANT=$variant ENGINE_GD=${ENGINE_GD:-yes} ENGINE_FILEINFO=${ENGINE_FILEINFO:-yes} ENGINE_PIN_ENV=${ENGINE_PIN_ENV:-0}" >> "$out/build-args.txt"
 # The linker inputs (wasm-ld --trace, lean only): one path per line, archive members folded into the archive.
 if [ "$variant" = lean ]; then
   sed -E 's/^#[0-9]+ [0-9.]+ //' "$out/docker-build.log" | grep -E '^/[^ ]+\.(a|o)(\([^)]*\))?$' | sed -E 's/\(.*\)$//' | sort -u > "$out/link-inputs.txt"
