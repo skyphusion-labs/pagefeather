@@ -51,7 +51,7 @@ Adding or removing a site changes no other site. The removal is verified like a 
 ./deploy/wfp/site update --all   # every site, one at a time, stopping at the first failure
 ```
 
-An update re-uploads the site with the current build; the site's data (its SQLite) is kept. Before it changes anything it snapshots the data to R2, and it verifies the new version is live before declaring success. If the verify fails it rolls back: it restores the data from the snapshot (a rollback drops any write made since the snapshot) and re-deploys the exact code that was live, from the build artifact it saved before rebuilding. The only interruption is a one-second cold boot of the next request; the address never stops resolving.
+An update re-uploads the site with the current build; the site's data (its SQLite) is kept. Before it changes anything it snapshots the data to R2, and it verifies the new version is live before declaring success. If the verify fails it rolls back: it restores the data from the snapshot (a rollback drops any write made since the snapshot) and re-deploys the code that was live, from the rollback artifact it keeps in the site's own R2 bucket (`_build/artifact/<build id>.tar.gz`, #466). With no artifact of the live build, it restores the data only and says to deploy the old build by hand. The only interruption is a one-second cold boot of the next request; the address never stops resolving.
 
 ## What is isolated
 
