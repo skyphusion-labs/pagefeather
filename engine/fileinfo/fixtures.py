@@ -9,6 +9,7 @@
 #              the trimmed database cannot name it (the documented limit, #582); the test pins that. Its
 #              "decision" says whether WordPress then decides differently (differs) or not (same)
 #   refused    an extension WordPress does not accept: refused by name, as on any host
+#   wp-quirk   a type WordPress lists but itself refuses on a full-database host (QUIRK below names why)
 import io, json, os, struct, sys, zipfile, zlib
 
 out = sys.argv[1]
@@ -50,8 +51,9 @@ def zipped(entries, stored_first=None):
 CT = '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/%s" ContentType="%s"/></Types>'
 def ooxml(main, ctype): return zipped([('[Content_Types].xml', CT % (main, ctype)), ('_rels/.rels', '<Relationships/>'), (main, '<x/>')])
 def odf(mime): return zipped([('META-INF/manifest.xml', '<manifest/>'), ('content.xml', '<x/>')], stored_first=('mimetype', mime))
-def cdf(clsid_hex):
-    # A minimal OLE2 compound file: one directory sector with the root entry, whose CLSID names the type.
+def cdf(clsid_hex, stream=None):
+    # A minimal OLE2 compound file: one directory sector with the root entry (its CLSID) and, when given, one
+    # empty child stream: libmagic's readcdf.c names Word, Excel and PowerPoint by that stream's name.
     sec = 512
     hdr = bytearray(sec)
     hdr[0:8] = bytes.fromhex('d0cf11e0a1b11ae1'); hdr[24:26] = struct.pack('<H', 0x3e); hdr[26:28] = struct.pack('<H', 3)
@@ -66,15 +68,59 @@ def cdf(clsid_hex):
     sat = struct.pack('<I', 0xfffffffd) + struct.pack('<I', 0xfffffffe) + struct.pack('<I', 0xffffffff) * 126
     d = bytearray(128); name = 'Root Entry'.encode('utf-16-le') + b'\x00\x00'
     d[0:len(name)] = name; d[64:66] = struct.pack('<H', len(name)); d[66] = 5; d[67] = 1
-    d[68:80] = struct.pack('<iii', -1, -1, -1); d[80:96] = bytes.fromhex(clsid_hex)
+    d[68:80] = struct.pack('<iii', -1, -1, 1 if stream else -1); d[80:96] = bytes.fromhex(clsid_hex)
     d[116:120] = struct.pack('<i', -2); d[120:124] = struct.pack('<I', 0)
     empty = bytearray(128); empty[68:80] = struct.pack('<iii', -1, -1, -1)
-    dirsec = bytes(d) + bytes(empty) * 3
+    if stream:
+        c = bytearray(128); n = stream.encode('utf-16-le') + b'\x00\x00'
+        c[0:len(n)] = n; c[64:66] = struct.pack('<H', len(n)); c[66] = 2; c[67] = 1  # a stream, black
+        c[68:80] = struct.pack('<iii', -1, -1, -1); c[116:120] = struct.pack('<i', -2); c[120:124] = struct.pack('<I', 0)
+        dirsec = bytes(d) + bytes(c) + bytes(empty) * 2
+    else:
+        dirsec = bytes(d) + bytes(empty) * 3
     return bytes(hdr) + sat + dirsec
+def cdf_summary(app, streams):
+    # An OLE2 compound file as Office writes it: a SummaryInformation property set naming the application
+    # (libmagic's readcdf.c maps that name to the type), beside the named content streams. The property set
+    # is padded to 4096 bytes so it lives in regular sectors (no mini stream).
+    appb = app.encode() + b'\x00'; appb += b'\x00' * (-len(appb) % 4)
+    prop = struct.pack('<II', 0x1e, len(app) + 1) + appb
+    section = struct.pack('<II', 8 + 8 + len(prop), 1) + struct.pack('<II', 0x12, 16) + prop
+    fmtid = bytes.fromhex(clsid('F29F85E0-4FF9-1068-AB91-08002B27B3D9'))
+    ps = struct.pack('<HHI', 0xfffe, 0, 0x00020006) + b'\x00' * 16 + struct.pack('<I', 1) + fmtid + struct.pack('<I', 48) + section
+    ps += b'\x00' * (4096 - len(ps))
+    sec = 512
+    hdr = bytearray(sec)
+    hdr[0:8] = bytes.fromhex('d0cf11e0a1b11ae1'); hdr[24:26] = struct.pack('<H', 0x3e); hdr[26:28] = struct.pack('<H', 3)
+    hdr[28:30] = struct.pack('<H', 0xfffe); hdr[30:32] = struct.pack('<H', 9); hdr[32:34] = struct.pack('<H', 6)
+    hdr[44:48] = struct.pack('<I', 1); hdr[48:52] = struct.pack('<I', 1); hdr[56:60] = struct.pack('<I', 4096)
+    hdr[60:64] = struct.pack('<i', -2); hdr[64:68] = struct.pack('<I', 0); hdr[68:72] = struct.pack('<i', -2); hdr[72:76] = struct.pack('<I', 0)
+    hdr[76:76 + 436] = struct.pack('<109I', *([0] + [0xffffffff] * 108))
+    # sectors: 0 SAT, 1 directory, 2..9 the property set (8 sectors)
+    chain = [0xfffffffd, 0xfffffffe] + [i + 1 for i in range(2, 9)] + [0xfffffffe]
+    sat = struct.pack('<%dI' % len(chain), *chain) + struct.pack('<I', 0xffffffff) * (128 - len(chain))
+    def entry(name, typ, left=-1, right=-1, child=-1, start=-2, size=0, cls=b'\x00' * 16):
+        e = bytearray(128); n = name.encode('utf-16-le') + b'\x00\x00'
+        e[0:len(n)] = n; e[64:66] = struct.pack('<H', len(n)); e[66] = typ; e[67] = 1
+        e[68:80] = struct.pack('<iii', left, right, child); e[80:96] = cls
+        e[116:120] = struct.pack('<i', start); e[120:124] = struct.pack('<I', size)
+        return bytes(e)
+    ents = [entry('Root Entry', 5, child=1)]
+    names = ['\x05SummaryInformation'] + list(streams)
+    for k, n in enumerate(names):
+        right = k + 2 if k + 1 < len(names) else -1
+        ents.append(entry(n, 2, right=right, start=2 if k == 0 else -2, size=4096 if k == 0 else 0))
+    while len(ents) % 4: ents.append(entry('', 0))
+    return bytes(hdr) + sat + b''.join(ents) + ps
 def clsid(guid):  # "00020906-0000-0000-C000-000000000046" to the on-disk (mixed endian) bytes
     a, b, c, d, e = guid.split('-')
     return (struct.pack('<IHH', int(a, 16), int(b, 16), int(c, 16)) + bytes.fromhex(d + e)).hex()
-def sfnt(tag): return tag + struct.pack('>HHHH', 0, 0, 0, 0)
+def sfnt(tag):
+    # An sfnt header with a real table directory (libmagic checks the first table's tag at offset 12).
+    tables = [b'OS/2', b'cmap', b'glyf' if tag != b'OTTO' else b'CFF ', b'head', b'hhea', b'hmtx', b'loca' if tag != b'OTTO' else b'maxp', b'name']
+    n = len(tables); off = 12 + 16 * n
+    d = b''.join(t + struct.pack('>III', 0, off + 64 * i, 64) for i, t in enumerate(tables))
+    return tag + struct.pack('>HHHH', n, 128, 3, n * 16 - 128) + d + b'\x00' * (64 * n)
 def woff(sig, flavor): return sig + flavor + struct.pack('>IHHIHHIIIII', 44, 0, 0, 12, 1, 0, 0, 0, 0, 0, 0)
 PE = b'MZ' + b'\x90\x00' * 29 + struct.pack('<I', 64) + b'PE\x00\x00' + struct.pack('<HHIIIHH', 0x14c, 0, 0, 0, 0, 0xe0, 0x102) + b'\x0b\x01' + b'\x00' * 222
 ELF = b'\x7fELF\x02\x01\x01\x00' + b'\x00' * 8 + struct.pack('<HHIQQQIHHHHHH', 2, 62, 1, 0x400000, 64, 0, 0, 64, 56, 0, 64, 0, 0)
@@ -115,9 +161,9 @@ put('a.gz', b'\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03' + zlib.compress(b'a')[2:
 put('a.rar', b'Rar!\x1a\x07\x00\xcf\x90\x73\x00\x00\x0d\x00\x00\x00\x00\x00\x00\x00', A, 'application/rar'); put('a.7z', b"7z\xbc\xaf\x27\x1c\x00\x04" + b'\x00' * 24, A, 'application/x-7z-compressed')
 put('a.psd', b'8BPS\x00\x01' + b'\x00' * 6 + b'\x00\x03\x00\x00\x00\x01\x00\x00\x00\x01\x00\x08\x00\x03', A, 'application/octet-stream (psd)')
 put('a.xcf', b'gimp xcf v011\x00' + b'\x00' * 16, A, 'application/octet-stream (xcf)')
-put('a.doc', cdf(clsid('00020906-0000-0000-C000-000000000046')), A, 'application/msword')
-put('a.ppt', cdf(clsid('64818D10-4F9B-11CF-86EA-00AA00B929E8')), A, 'application/vnd.ms-powerpoint')
-put('a.xls', cdf(clsid('00020820-0000-0000-C000-000000000046')), A, 'application/vnd.ms-excel')
+put('a.doc', cdf(clsid('00020906-0000-0000-C000-000000000046'), 'WordDocument'), A, 'application/msword')
+put('a.ppt', cdf_summary('Microsoft Office PowerPoint', ['PowerPoint Document', 'Current User']), A, 'application/vnd.ms-powerpoint (named by its SummaryInformation, as a real .ppt is)')
+put('a.xls', cdf(clsid('00020820-0000-0000-C000-000000000046'), 'Workbook'), A, 'application/vnd.ms-excel')
 put('a.wri', b'\x31\xbe\x00\x00\x00\xab' + b'\x00' * 122, A, 'application/vnd.ms-write')
 put('a.mdb', b'\x00\x01\x00\x00Standard Jet DB\x00' + b'\x00' * 108, A, 'application/vnd.ms-access')
 put('a.mpp', cdf(clsid('74B78F3A-C8C8-11D1-BE11-00C04FB6FAF1')), A, 'application/vnd.ms-project')
@@ -125,7 +171,7 @@ for ext, main, ct in [('docx', 'word/document.xml', 'application/vnd.openxmlform
                       ('xlsx', 'xl/workbook.xml', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml'),
                       ('pptx', 'ppt/presentation.xml', 'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml')]:
     put('a.' + ext, ooxml(main, ct), A, 'OOXML ' + ext)
-put('a.onetoc', bytes.fromhex('e4525c7b8cd8a74daeb15378d02996d3') + b'\x00' * 48, A, 'application/onenote')
+put('a.onetoc', bytes.fromhex('e4525c7b8cd8a74daeb15378d02996d3') + bytes(range(256)) * 2, A, 'application/onenote (a OneNote section: binary, no libmagic entry)')
 put('a.xps', zipped([('FixedDocumentSequence.fdseq', '<x/>'), ('[Content_Types].xml', '<Types/>')]), A, 'application/vnd.ms-xpsdocument')
 for ext, mime in [('odt', 'application/vnd.oasis.opendocument.text'), ('odp', 'application/vnd.oasis.opendocument.presentation'), ('ods', 'application/vnd.oasis.opendocument.spreadsheet'),
                   ('odg', 'application/vnd.oasis.opendocument.graphics'), ('odc', 'application/vnd.oasis.opendocument.chart'), ('odb', 'application/vnd.oasis.opendocument.database'), ('odf', 'application/vnd.oasis.opendocument.formula')]:
@@ -161,5 +207,34 @@ put('r.exe', PE, R, 'exe (get_allowed_mime_types removes it)'); put('r.php', PHP
 put('r.swf', b'FWS\x0a' + struct.pack('<I', 21) + b'\x78\x00\x05\x5f\x00\x00\x0f\xa0\x00\x00\x18\x01\x00', R, 'swf (removed)')
 put('r.sh', SH, R, 'sh'); put('r.sqlite', b'SQLite format 3\x00' + b'\x00' * 84, R, 'sqlite')
 
+# wp-quirk: types WordPress lists, that WordPress 7.1.4 itself REFUSES on a host with the full libmagic
+# 5.43 database, for a real file (measured: wp_check_filetype_and_ext on the npm 3.1.62 engine). The reason
+# is libmagic's name for the format against WordPress's, and the rule of wp_check_filetype_and_ext that
+# then refuses it. They are taken out of "accepted": the trimmed engine must refuse them the same way.
+QUIRK = {
+    'gz': 'libmagic says application/gzip, WordPress expects application/x-gzip: an exact-match type',
+    'rar': 'libmagic says application/x-rar, WordPress expects application/rar',
+    'class': 'libmagic says application/x-java-applet, WordPress expects application/java',
+    'mdb': 'libmagic says application/x-msaccess, WordPress expects application/vnd.ms-access',
+    'wpd': 'libmagic says application/vnd.wordperfect, WordPress expects application/wordperfect',
+    'mpp': 'libmagic 5.43 names no Project type (readcdf.c: application/x-ole-storage), WordPress expects application/vnd.ms-project',
+    'ico': 'getimagesize and libmagic say image/vnd.microsoft.icon, WordPress expects image/x-icon, and its rename map has no entry for it',
+    'psd': 'getimagesize says image/psd, WordPress lists psd as application/octet-stream, and its rename map has no psd',
+    'xcf': 'libmagic says image/x-xcf, WordPress lists xcf as application/octet-stream: not a nonspecific sniff, so refused',
+    'wma': 'WMA is an ASF container: libmagic says video/x-ms-asf, WordPress expects audio/x-ms-wma, and the major types must match',
+    'mka': 'libmagic cannot tell audio-only Matroska: it says video/x-matroska, WordPress expects audio/x-matroska',
+    'dfxp': 'DFXP is XML: libmagic says text/xml, WordPress expects application/ttaf+xml',
+    'css': 'libmagic says text/plain, and WordPress allows text/plain only for txt, csv, rtx, tsv and vtt types',
+    'js': 'libmagic says text/plain, and WordPress does not allow text/plain for application/javascript',
+    'tsv': 'libmagic says text/plain; WordPress allows it for text/tsv but maps .tsv to text/tab-separated-values',
+    'wax': 'an ASX playlist is text: libmagic says text/plain, WordPress expects audio/x-ms-wax',
+    'wmx': 'an ASX playlist is text: libmagic says text/plain, WordPress expects video/x-ms-wmx',
+}
+for m in man:
+    if m['class'] == 'accepted' and m['ext'] in QUIRK:
+        m['class'] = 'wp-quirk'; m['why'] = QUIRK[m['ext']]
+    if m['ext'] in ('ttf', 'otf', 'woff', 'woff2') and m['class'] == 'accepted':
+        m['path'] = 'font-library'  # core takes fonts through the Font Library, not the media library
+assert sum(1 for m in man if m['class'] == 'wp-quirk') == len(QUIRK), 'every quirk names a fixture'
 json.dump(man, open(os.path.join(out, 'manifest.json'), 'w'), indent=1)
-print('fixtures.py: %d files (%s)' % (len(man), ', '.join('%s %d' % (c, sum(1 for m in man if m['class'] == c)) for c in ('accepted', 'disguise', 'known-diff', 'refused'))))
+print('fixtures.py: %d files (%s)' % (len(man), ', '.join('%s %d' % (c, sum(1 for m in man if m['class'] == c)) for c in ('accepted', 'wp-quirk', 'disguise', 'known-diff', 'refused'))))

@@ -6,7 +6,7 @@
 // with php-src's full database, the "standard host". The engine under test is vendor/ (or ENGINE_JS and
 // ENGINE_WASM); MAGIC_FILE=<a .mgc> makes the ORACLE engine open that database instead of its own, to try
 // a database before it is built in (the red control below uses that).
-//   accepted   the same MIME type as the full database
+//   accepted   the same MIME type as the full database (and wp-quirk: a type WordPress refuses itself)
 //   disguise   the same MIME type, and the full database names a rejection signature (rejection.txt)
 //   known-diff a DIFFERENT type: the documented limit of a trimmed database (#582); a change is noticed
 import { test } from 'node:test';
@@ -47,7 +47,7 @@ test('the oracle is the full database (it names the disguises)', () => {
 	assert.ok(!full.error, full.error);
 	for (const m of man.filter((x) => x.class === 'disguise')) assert.ok(REJ.some((r) => r.test(full[m.file])), m.file + ': the full database says ' + full[m.file] + ', not a rejection signature');
 });
-for (const cls of ['accepted', 'disguise']) {
+for (const cls of ['accepted', 'wp-quirk', 'disguise']) {
 	test(label + ': every ' + cls + ' fixture sniffs as the full database does', () => {
 		assert.ok(!got.error, got.error);
 		const bad = man.filter((m) => m.class === cls && got[m.file] !== full[m.file]).map((m) => m.file + ': ' + got[m.file] + ', full ' + full[m.file]);

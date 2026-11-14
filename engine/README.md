@@ -54,6 +54,31 @@ this on 2026-11-14:
 The test `the known differences are still different` pins the two examples (a SQLite database as
 `.doc`, PostScript as `.pdf`), so a change to this limit is noticed.
 
+**WordPress quirks.** Some types are in WordPress's list but WordPress 7.1.4 itself refuses them on any host with
+PHP's full libmagic 5.43 database, for a real file. libmagic's name for the format differs from WordPress's, and
+`wp_check_filetype_and_ext()` then refuses it. These are not accepted types in practice. The tests keep them
+apart (`wp-quirk` in `fileinfo/fixtures.py`, each with its reason) and require the trimmed engine to refuse them
+exactly as the full one does:
+
+| extension | libmagic says | WordPress expects |
+|---|---|---|
+| gz | application/gzip | application/x-gzip |
+| rar | application/x-rar | application/rar |
+| class | application/x-java-applet | application/java |
+| mdb | application/x-msaccess | application/vnd.ms-access |
+| wpd | application/vnd.wordperfect | application/wordperfect |
+| mpp | application/x-ole-storage (libmagic names no Project type) | application/vnd.ms-project |
+| ico | image/vnd.microsoft.icon | image/x-icon |
+| psd | image/psd (getimagesize) | application/octet-stream |
+| xcf | image/x-xcf | application/octet-stream |
+| wma | video/x-ms-asf (WMA is an ASF container) | audio/x-ms-wma |
+| mka | video/x-matroska | audio/x-matroska |
+| dfxp | text/xml | application/ttaf+xml |
+| css, js, tsv, wax, wmx | text/plain | text/css, application/javascript, text/tab-separated-values, audio/x-ms-wax, video/x-ms-wmx |
+
+Fonts (ttf, otf, woff, woff2) are not media-library uploads: core accepts them through the Font Library, which
+widens `upload_mimes` for the upload. The tests upload them there.
+
 **The tests:**
 
 - `tests/fileinfo-sniff.test.mjs`: every accepted and disguise fixture (`fileinfo/fixtures.py`) must
