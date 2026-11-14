@@ -16,30 +16,49 @@ const MIB = 1048576;
 const mib = (n) => Math.round((n / MIB) * 10) / 10;
 
 export function createLedger() {
-	const runtimes = []; // { serial, ref }
-	let collected = 0;
+	const runtimes = []; // { serial, ref (the php wrapper), mem (WeakRef to its WebAssembly.Memory) }
+	let collected = 0, memCollected = 0;
 	const reg = typeof FinalizationRegistry === 'function' ? new FinalizationRegistry(() => { collected++; }) : null;
+	const memReg = typeof FinalizationRegistry === 'function' ? new FinalizationRegistry(() => { memCollected++; }) : null;
+	const sizeOf = (m) => { try { return m && m.buffer ? m.buffer.byteLength : 0; } catch { return 0; } };
 	return {
-		/** A runtime was booted. heapOf(php) reads its WASM bytes. */
-		register(php, serial) {
+		/** A runtime was booted. memory is its WebAssembly.Memory (the module export), when known. */
+		register(php, serial, memory) {
 			if (typeof WeakRef !== 'function' || !php) return;
-			runtimes.push({ serial, ref: new WeakRef(php) });
+			runtimes.push({ serial, ref: new WeakRef(php), mem: memory ? new WeakRef(memory) : null });
 			if (reg) reg.register(php, serial);
+			if (memReg && memory) memReg.register(memory, serial);
 			if (runtimes.length > 64) runtimes.splice(0, runtimes.length - 64); // bounded; old entries are long gone
 		},
-		/** The runtimes this isolate booted that are still alive, the current one apart. */
+		/**
+		 * The runtimes this isolate booted that are still alive, the current one apart. Two views: the php
+		 * wrapper (live, retired: its HEAPU8 reads 0 after php.exit, so it cannot size what it held) and
+		 * its WebAssembly.Memory (memLive, retiredMem, retiredMemMiB: buffer.byteLength, the real bytes).
+		 */
 		runtimes(currentSerial, heapOf) {
 			let live = 0, retired = 0, retiredBytes = 0, currentBytes = 0;
+			let memLive = 0, retiredMem = 0, retiredMemBytes = 0, currentMemBytes = 0;
 			for (const r of runtimes) {
 				const php = r.ref.deref();
-				if (!php) continue;
-				live++;
-				let b = 0;
-				try { b = heapOf(php) || 0; } catch { b = 0; }
-				if (r.serial === currentSerial) currentBytes = b;
-				else { retired++; retiredBytes += b; }
+				if (php) {
+					live++;
+					let b = 0;
+					try { b = heapOf(php) || 0; } catch { b = 0; }
+					if (r.serial === currentSerial) currentBytes = b;
+					else { retired++; retiredBytes += b; }
+				}
+				const m = r.mem ? r.mem.deref() : null;
+				if (m) {
+					memLive++;
+					const b = sizeOf(m);
+					if (r.serial === currentSerial) currentMemBytes = b;
+					else { retiredMem++; retiredMemBytes += b; }
+				}
 			}
-			return { booted: runtimes.length, live, collected, finalizer: !!reg, currentMiB: mib(currentBytes), retired, retiredMiB: mib(retiredBytes) };
+			return {
+				booted: runtimes.length, live, collected, finalizer: !!reg, currentMiB: mib(currentBytes), retired, retiredMiB: mib(retiredBytes),
+				memLive, memCollected, currentMemMiB: mib(currentMemBytes), retiredMem, retiredMemMiB: mib(retiredMemBytes),
+			};
 		},
 	};
 }

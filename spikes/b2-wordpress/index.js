@@ -200,6 +200,7 @@ const sqlMeter = createSqlMeter();
 let ledgerActive = false;
 let ledgerId = null;
 let ledgerFailLogged = false;
+let bootMemory = null; // the WebAssembly.Memory of the runtime being booted (instantiateWasm), for the ledger
 function ledgerSnapshot(at) {
 	const php = lastBootedPhp;
 	const heapOf = (p) => p[__private__dont__use].HEAPU8.length;
@@ -409,7 +410,10 @@ function zipEntries(zip) {
 // memory limit".
 // Within a request too: the inflated copies are capped at LAZY_CACHE_BYTES,
 // oldest dropped first. A WooCommerce checkout reads about 1,500 compiled files.
-let LAZY_CACHE_BYTES = 8 * 1024 * 1024; // LAZY_CACHE_MB overrides (#218: lower the in-request V8 peak).
+// 2 MiB since #394 (was 8). At every failing post-new INSERT on pf394a the cache sat at its cap; at 2
+// post-new died 60 of 100 rounds against 82 of 100 at 8, with boot time and inflates per boot unchanged
+// (repeat pair, 2026-11-13/14, #394 issuecomment-6868335297). LAZY_CACHE_MB overrides (#218).
+let LAZY_CACHE_BYTES = 2 * 1024 * 1024;
 const inflated = new Map(); // drop function -> bytes
 // FILE_TRACE=on (#394 M0): record which bundle files each request reads (file-trace.mjs, GET /_trace).
 // Off by default; it changes no behavior, only notes the path of each read.
@@ -1215,6 +1219,7 @@ async function boot(origin) {
 		ENV: JSON.parse(ENV.PHP_ENV || '{"USE_ZEND_ALLOC":"0"}'),
 		instantiateWasm(imports, done) {
 			const inst = new WebAssembly.Instance(wasmModule, imports);
+			bootMemory = inst.exports.memory || null; // #394: the ledger tracks this runtime's real memory
 			done(inst, wasmModule);
 			return inst.exports;
 		},
@@ -1225,7 +1230,8 @@ async function boot(origin) {
 	});
 	const php = new PHP(id);
 	lastBootedPhp = php;
-	ledger.register(php, runtimeSerial); // #394: retired runtimes stay countable while alive
+	ledger.register(php, runtimeSerial, bootMemory); // #394: retired runtimes stay countable while alive, with their real memory
+	bootMemory = null;
 	// php.ini overrides. PHP_INI (a JSON object) lets a deploy or a test change them.
 	// A deploy (WP_SALT is set) never prints PHP errors, even for a script that
 	// does not load wp-config.php (measured 2026-11-04: /wp-content/db.php did).
@@ -2926,15 +2932,12 @@ const site = {
 		// Signed invoice PDF download (issue #227). The Worker verifies the HMAC the
 		// browserRender op minted and streams the PDF from R2; PHP never holds the secret.
 		if (env.MEDIA && env.INVOICE_TOKEN && (req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/skyphusion-invoice') return serveInvoice(req, env, url);
-		// Static assets from the Assets binding (edge, no PHP). In WfP dispatch the
-		// automatic assets layer is bypassed (the dispatcher invokes this worker
-		// programmatically), so serve them here. not_found_handling=none makes a miss
-		// a 404, which falls through to PHP: .php, REST and pretty-permalink pages are
-		// not in build/public and so reach PHP unchanged. Uploads already returned above.
-		if (env.ASSETS && (req.method === 'GET' || req.method === 'HEAD') && !url.pathname.startsWith('/_')) {
-			const asset = await env.ASSETS.fetch(req);
-			if (asset.status !== 404) return asset;
-		}
+		// Static files (build/public) never reach this code (#412). The asset router serves them
+		// BEFORE the Worker runs, on a WfP site (measured on ggc.sh 2026-11-13, and the WfP static
+		// assets page) and on every spike env and deploy.sh site alike. The Worker sees only a miss,
+		// or a run_worker_first path (only /_pf/*, refused above). So a gateway asset lookup here
+		// could only miss again; it was removed. The ASSETS binding exists only so the object can
+		// fetch the OPcache boot packs (#394 L1): a WfP site has it only with OPCACHE_SPLIT=1.
 		// XML-RPC lets one request try many passwords (system.multicall). Off unless XMLRPC=on.
 		if (url.pathname === '/xmlrpc.php' && env.XMLRPC !== 'on') return new Response('XML-RPC is off', { status: 403 });
 		const maxBody = env.MEDIA && isMediaUpload(req, url) ? Number(env.MAX_UPLOAD_BYTES || MAX_UPLOAD_BYTES) : Number(env.MAX_BODY_BYTES || MAX_BODY_BYTES);

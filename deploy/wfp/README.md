@@ -197,7 +197,7 @@ The Worker size limit is 64 MiB uncompressed. Nearly all of a b-dosql upload is 
 ## Bindings read back
 
 After every upload, `bindings.py` reads each script's bindings back from the API (`up.sh` for every site, `site add` for its own site). It fails unless each one binds only its own resources:
-- **A user Worker `site-<name>`** may bind its own bucket, its own Durable Object class, Images, its assets, plain vars, and the secrets `WP_SALT` and `SPIKE_TOKEN`.
+- **A user Worker `site-<name>`** may bind its own bucket, its own Durable Object class, Images, its assets (an `ASSETS` binding only on an `OPCACHE_SPLIT=1` build; without it the asset router serves `build/public` before the Worker runs, #412), plain vars, and the secrets `WP_SALT` and `SPIKE_TOKEN`.
 - **A dispatcher `wp-<name>`** may bind the site map and the namespace, with its outbound going to `wp-wfp-outbound` only.
 
 Any other binding fails, and so does a script whose bindings cannot be read. The output names the bindings and their types, never a value.

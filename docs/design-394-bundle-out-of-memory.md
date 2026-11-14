@@ -29,7 +29,7 @@ Every number below cites a measurement or a `file:line`. A number with no source
 | `import opcacheZip from './build/opcache.zip'` | 28 | the OPcache file cache made by `opcache.sh` |
 | `import wasmModule from './vendor/php_8_3.wasm'` | 20 | the PHP runtime code |
 | `zipEntries(zip)` | 316 to 348 | walks a zip's central directory; `data()` inflates from the in-memory zip (343) |
-| `LAZY_CACHE_BYTES` = 8 MiB, `noteInflated`, `evictLazy` | 358 to 377 | caps the inflated copies inside a request, drops all of them after it (3143) |
+| `LAZY_CACHE_BYTES` = 8 MiB (2 MiB since the #394 repeat pair), `noteInflated`, `evictLazy` | 358 to 377 | caps the inflated copies inside a request, drops all of them after it (3143) |
 | `attachLazyContents` | 382 to 412 | the MEMFS `contents` getter: inflate on first read. It is SYNCHRONOUS |
 | `lazyFile` | 414 to 417 | one eager MEMFS node per site file |
 | `mountLazyZip` (`LAZY_NODES=on`) | 419 to 470, 1133 to 1137 | lazy nodes; OFF for b-dosql today |
@@ -103,6 +103,12 @@ Open item for the build: `deploy/wfp/lib.sh:179` writes `[assets]` with no `bind
 (`deploy/wfp/tests/bindings-test.py:24`). ggc.sh serves `/wp-includes/css/dashicons.min.css` as 200
 with no `x-php-ms` (curl, 2026-11-13 about 13:31Z), so assets do reach users there. L1 must assert
 `env.ASSETS` exists in the OBJECT and fail loud at boot if it does not.
+
+Resolved by #412 (written 2026-11-13): `lib.sh` renders `binding = "ASSETS"` and
+`run_worker_first = ["/_pf/*"]` only with `OPCACHE_SPLIT=1` (#436); the bindings fixture now matches
+each mode; and the gateway asset branch in `index.js` (the old line 2707) was removed, since the asset
+router serves `build/public` before the Worker on every deploy. The `/_pf/` privacy above now rests
+on `run_worker_first` plus the Worker refusing `/_pf/`, not on that branch.
 
 ### 2.3 How a request's files are known: build-time manifest, plus a runtime miss path
 

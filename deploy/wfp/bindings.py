@@ -8,7 +8,8 @@ For each site <s>:
 - the user Worker site-<s> (GET .../dispatch/namespaces/<ns>/scripts/site-<s>/bindings)
   may bind only: its own bucket (r2_bucket wp-wfp-<s>-media), its own
   Durable Object class (durable_object_namespace PhpRuntime, with no
-  script_name or script_name site-<s>), images, assets, plain_text vars, and
+  script_name or script_name site-<s>), images, assets (named ASSETS, and
+  only on an OPCACHE_SPLIT=1 build, #412), plain_text vars, and
   the secrets WP_SALT and SPIKE_TOKEN (secret_text), and TURNSTILE_SECRET when Turnstile is
   wired (#340). It may ALSO bind the
   opinionated defaults wired through the provisioning descriptor table (#201): the
@@ -61,6 +62,8 @@ def check_user(s, bs):
         t, n = b.get("type"), b.get("name")
         if t not in USER_OK:
             bad.append("%s binds %s %s: not allowed for a site" % ("site-" + s, t, n))
+        elif t == "assets" and n != "ASSETS":
+            bad.append("site-%s binds assets as %s, not ASSETS" % (s, n))
         elif t == "r2_bucket" and b.get("bucket_name") != "wp-wfp-%s-media" % s:
             bad.append("site-%s binds the bucket %s, not its own" % (s, b.get("bucket_name")))
         elif t == "durable_object_namespace" and (b.get("class_name") != "PhpRuntime" or b.get("script_name") not in (None, "", "site-" + s)):
