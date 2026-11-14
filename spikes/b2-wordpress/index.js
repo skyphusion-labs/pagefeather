@@ -31,6 +31,7 @@ import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
 import { inflateSync } from 'fflate';
 import { createArena } from './inflate-arena.mjs';
+import { headroomStream } from './headroom.mjs';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
@@ -2640,6 +2641,20 @@ export class PhpRuntime extends DurableObject {
 		// warm object keeps the old code until it is evicted, so this reports the
 		// object's version, which can lag the Worker's until /_evict or a sleep.
 		if (url.pathname === '/_build') return Response.json({ build: BUILD_ID });
+		// #394 headroom probe (HEADROOM_PROBE=on, off by default; a MEASUREMENT that ends this isolate, so
+		// only on a throwaway). After a real request, this same isolate allocates held 1 MiB ArrayBuffers
+		// until it dies, streaming the count (headroom.mjs). The first line is the ledger at that moment, so
+		// 255 (a bare isolate, #394 floor probes) minus the reach minus its wasmMiB is what the runtime holds
+		// outside the wasm heap. No PHP lock: it never runs PHP. gc reports whether a forced GC exists.
+		if (url.pathname === '/_headroom') {
+			if (env.HEADROOM_PROBE !== 'on') return new Response('Not Found', { status: 404 });
+			const snap = ledgerSnapshot('headroom');
+			const gcAvailable = typeof globalThis.gc === 'function';
+			if (gcAvailable && url.searchParams.get('gc') === '1') globalThis.gc();
+			const { response, job } = headroomStream({ first: JSON.stringify({ m: 'headroom', build: BUILD_ID, gc: gcAvailable, ...snap }), max: url.searchParams.get('max') || 1024 });
+			this.ctx.waitUntil(job);
+			return response;
+		}
 		// Reset this object so the next request boots the new code (issue #35
 		// slice 5). ctx.abort() may not exist on an older compat date: then 501,
 		// and the caller falls back to waiting for the idle sleep.

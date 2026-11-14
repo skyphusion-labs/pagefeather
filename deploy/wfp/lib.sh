@@ -321,6 +321,16 @@ lazy_arena_var() {
   fi
   echo "LAZY_ARENA_MB = \"$((10#$v))\""
 }
+# HEADROOM_PROBE (#394): "on" enables the spike-gated GET /_headroom, which allocates in the PHP object's
+# isolate until it dies (spikes/b2-wordpress/headroom.mjs). A measurement for THROWAWAY sites only: it ends
+# the isolate. Off or unset: /_headroom answers 404. Read from the run's environment only.
+headroom_var() {
+  case "${HEADROOM_PROBE:-}" in
+    "") ;;
+    on|off) echo "HEADROOM_PROBE = \"${HEADROOM_PROBE}\"" ;;
+    *) echo "HEADROOM_PROBE must be on, off or unset, not ${HEADROOM_PROBE}" >&2; return 1 ;;
+  esac
+}
 # PHP_RECYCLE (#394, experiment E1): "off" turns off the runtime recycle for MEMORY, so the PHP
 # runtime is kept after a request whose WebAssembly memory passed RECYCLE_WASM_BYTES (100 MiB,
 # index.js). A crashed runtime is still dropped (index.js: crashed || ...). With it off, nothing in
@@ -386,6 +396,8 @@ render_user() { # render_user <site> <origin>
   [ -z "$lazy_cache" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$lazy_cache
   local lazy_arena; lazy_arena=$(lazy_arena_var) || return 1
   [ -z "$lazy_arena" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$lazy_arena
+  local headroom; headroom=$(headroom_var) || return 1
+  [ -z "$headroom" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$headroom
   local php_recycle; php_recycle=$(php_recycle_var) || return 1
   [ -z "$php_recycle" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$php_recycle
   local mem_ledger; mem_ledger=$(mem_ledger_var) || return 1
