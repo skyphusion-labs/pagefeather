@@ -408,7 +408,7 @@ set_entry bld-other "$(last_hash)"
 PHP_INI='{"opcache.memory_consumption":"48"}' run_update
 ok "#558 a run with another PHP_INI replaces the recorded one, and says so" "$([ "$RC" = 0 ] && printf '%s' "$OUT" | grep -Fq 'PHP_INI is set by this run (it replaces the recorded value)' && srec_get | grep -Fq '48' && echo 1 || echo 0)"
 # 9g. A recorded secret the run does not have: refused before anything changes.
-srec_put '{"v": 1, "settings": {}, "sealed": ["TURNSTILE_SECRET"]}'
+srec_put '{"v": 1, "settings": {}, "secrets": ["TURNSTILE_SECRET"]}'
 set_entry bld-other "$(last_hash)"
 u0=$(lines "$UPLOAD_LOG")
 run_update

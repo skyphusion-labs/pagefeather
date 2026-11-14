@@ -648,7 +648,7 @@ settings_dropcheck() {
 record_settings() {
   python3 -I "$WFP/site_settings.py" env-json > "$2/settings-rec.json" || return 1
   python3 -I "$WFP/site_settings.py" put "$1" "$2/settings-rec.json" || return 1
-  echo "  settings recorded in $1/_build/settings.json ($(python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); print(" ".join(sorted(d["settings"])) or "none", "| sealed:", " ".join(d["sealed"]) or "none")' "$2/settings-rec.json"))"
+  echo "  settings recorded in $1/_build/settings.json ($(python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); print(" ".join(sorted(d["settings"])) or "none", "| secrets:", " ".join(d["secrets"]) or "none")' "$2/settings-rec.json"))"
 }
 # record_build_inputs <bucket> <build id> <work dir>: after a good upload, record this run's inputs.
 # The content tree is packed from IMPORT_CONTENT and stored under its content id, unless this run
