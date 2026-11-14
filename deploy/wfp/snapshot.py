@@ -29,7 +29,7 @@ WFP_S3_SECRET, and WFP_SITE_URL (a template with {name}). The R2 reads use S3 cr
 token id as the key id, the SHA-256 of its value as the secret, as R2
 documents), so a snapshot makes no key and changes nothing.
 """
-import hashlib, json, os, random, re, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import hashlib, json, os, random, re, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request
 import xml.etree.ElementTree as ET
 
 ENV = os.environ
@@ -106,17 +106,37 @@ def s3(method, path, body=None):
 
 
 def bucket_listing(bucket):
-    st, b = s3("GET", "/%s?list-type=2" % bucket)
-    if st != 200:
-        return {"error": "list HTTP %s" % st}
-    ns = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
-    root = ET.fromstring(b)
-    items = []
-    for c in root.iter():
-        if c.tag.endswith("Contents"):
-            get = lambda t: next((x.text for x in c if x.tag.endswith(t)), None)
-            items.append([get("Key"), get("ETag"), get("Size")])
-    return {"objects": sorted(items)}
+    """Every key of the bucket with its ETag and size, over EVERY page (#525). R2 answers at most
+    1000 keys a page; one page made a change past key 1000 invisible, so isolation.sh's diff read
+    such a bucket "unchanged". A failed page, a page that cannot be read, or a truncated page with
+    no continuation token is an error, never a short listing: diff refuses an unreadable part."""
+    items, token, pages = [], None, 0
+    while True:
+        q = "list-type=2" + ("&continuation-token=" + urllib.parse.quote(token, safe="") if token else "")
+        st, b = s3("GET", "/%s?%s" % (bucket, q))
+        pages += 1
+        if st != 200:
+            return {"error": "list HTTP %s on page %d" % (st, pages)}
+        try:
+            root = ET.fromstring(b)
+        except ET.ParseError:
+            return {"error": "list page %d is not XML" % pages}
+        truncated, token = False, None
+        for c in root:
+            tag = c.tag.rsplit("}", 1)[-1]
+            if tag == "Contents":
+                get = lambda t: next((x.text for x in c if x.tag.rsplit("}", 1)[-1] == t), None)
+                items.append([get("Key"), get("ETag"), get("Size")])
+            elif tag == "IsTruncated":
+                truncated = (c.text or "").strip().lower() == "true"
+            elif tag == "NextContinuationToken":
+                token = c.text
+        if not truncated:
+            return {"objects": sorted(items)}
+        if not token:
+            return {"error": "list page %d is truncated but gives no continuation token" % pages}
+        if pages >= 10000:
+            return {"error": "list did not end after %d pages" % pages}
 
 
 def script_record(item):
@@ -326,12 +346,23 @@ def _restore_once(origin, token, parts, before, after, log):
             if c is None or not tabs:
                 fail["why"] = "cannot tell whether the failed part was applied (/_dbcounts: %s)" % ("no answer" if c is None else "the part has no rows")
                 return fail
-            if all(c.get(t) == after[i].get(t) for t in tabs):
+            # A table with no rows before this part has no key in before[i]: the site counts it 0
+            # (part 0 made it, empty). Missing a 0 here read "neither" on pf512, 2026-11-14, for a
+            # part that starts a table, and the pass started over for no reason (#517 follow-up).
+            live = {t: c.get(t) for t in tabs}
+            want_after = {t: after[i].get(t, 0) for t in tabs}
+            want_before = {t: before[i].get(t, 0) for t in tabs}
+            if live == want_after:
                 log("part %d was applied before the %s answer (/_dbcounts): not sent again" % (i, st))
                 break
-            if not all(c.get(t) == before[i].get(t) for t in tabs):
+            if live != want_before:
                 fail["why"] = "the part's tables hold neither the counts before it nor after it"
+                # Every table of the part (up to 5): tables can disagree among themselves.
+                fail["tables"] = [[t, live[t], want_before[t], want_after[t]] for t in sorted(tabs)][:5]
+                log("part %d: /_dbcounts holds neither the counts before nor after it: %s" % (
+                    i, "; ".join("%s live %s, before %s, after %s" % tuple(x) for x in fail["tables"])))
                 return fail
+            log("part %d was not applied (/_dbcounts): sending it again" % i)
     return None
 
 
@@ -372,7 +403,8 @@ def dbrestore(origin, token, bucket, key):
             break
         if a < attempts:
             wait = float(ENV.get("DBRESTORE_RESTART_S") or 10)
-            log("pass %d of %d failed at part %s (%s): starting again from part 0 in %g s" % (a, attempts, fail["part"], fail["status"], wait))
+            log("pass %d of %d failed at part %s (%s%s): starting again from part 0 in %g s" % (
+                a, attempts, fail["part"], fail["status"], ("; " + fail["why"]) if fail.get("why") else "", wait))
             time.sleep(wait)
     print(json.dumps(dict({"ok": False, "stage": "import", "attempts": attempts}, **fail)))
     return 1

@@ -15,6 +15,11 @@ Modes: ok; big (about 4 MB, a real store's size); export-empty; export-500; read
 retried part keeps its index): big-502once (502 once, not applied), big-502always (always 502),
 big-502applied (applied, then 502 once: a resend would put its rows twice), big-502once-nocounts
 (502 once, and /_dbcounts answers 404, as an older build would).
+tables-502once and tables-502applied: the export is the site's shape (CREATE TABLE with quoted
+names first, then the rows of "wp_a", then of "wp_b"), sized so that the FIRST rows of "wp_b" are
+in part 6 (DBIMPORT_PART_BYTES=4096). As on the site, a CREATE makes an empty table that
+/_dbcounts reports as 0. The pf512 live run, 2026-11-14, found that case. tables-502once-livewrite:
+502 once at part 6, and a visitor's write puts one row in "wp_b" as it answers (neither count).
 """
 import http.server, sys, urllib.parse
 
@@ -23,6 +28,15 @@ store = {}
 parts = []
 db = {"rows": {}, "applied": 0, "fired": False}
 FAULT_PART = 6
+# The site's dump shape for the tables-* modes: lines of one length, so a 4096-byte part holds
+# exactly PER lines, and "wp_b" starts on the first line of part 6 (part 0 also holds the CREATEs).
+import json as _json
+def _row(t, i):
+    return (_json.dumps({"sql": 'INSERT INTO "%s" ("v") VALUES (?)' % t, "params": ["%s-%06d" % (t, i) + "x" * 40]}) + "\n").encode()
+_L = len(_row("wp_a", 0)); PER = 4096 // _L
+_CREATES = b"".join((_json.dumps({"sql": 'CREATE TABLE "%s" ("v" TEXT)' % t}) + "\n").encode() for t in ("wp_a", "wp_b"))
+_first = PER - (len(_CREATES) + _L - 1) // _L   # rows of wp_a that fit in part 0 beside the CREATEs
+TABLES = _CREATES + b"".join(_row("wp_a", i) for i in range(_first + PER * 5)) + b"".join(_row("wp_b", i) for i in range(PER * 3))
 
 
 def apply_part(body):
@@ -32,7 +46,11 @@ def apply_part(body):
             o = json.loads(line)
         except ValueError:
             continue
-        m = re.match(r'^INSERT INTO\s+([A-Za-z0-9_]+)', str(o.get("sql") or ""))
+        sql = str(o.get("sql") or "")
+        c = re.match(r'^CREATE TABLE\s+"?([A-Za-z0-9_]+)"?', sql)
+        if c:
+            db["rows"].setdefault(c.group(1), 0)   # as the site: an empty table counts 0
+        m = re.match(r'^INSERT INTO\s+"?([A-Za-z0-9_]+)"?', sql)
         if m:
             db["rows"][m.group(1)] = db["rows"].get(m.group(1), 0) + 1
     db["applied"] += 1
@@ -69,6 +87,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self.send(200, b"\n  \n")
             if mode.startswith("big"):
                 return self.send(200, BIG)
+            if mode.startswith("tables"):
+                return self.send(200, TABLES)
             return self.send(200, ROWS)
         if "/_snapshots/" in p:
             if not self.headers.get("authorization", "").startswith("AWS4-HMAC-SHA256"):
@@ -103,11 +123,13 @@ class H(http.server.BaseHTTPRequestHandler):
             at = db["applied"] == FAULT_PART
             if at and mode == "big-502always":
                 return self.send(502, b"error code: 502\n", "text/plain")
-            if at and mode in ("big-502once", "big-502once-nocounts") and not db["fired"]:
+            if at and mode in ("big-502once", "big-502once-nocounts", "tables-502once", "tables-502once-livewrite") and not db["fired"]:
                 db["fired"] = True
+                if mode == "tables-502once-livewrite":
+                    db["rows"]["wp_b"] = db["rows"].get("wp_b", 0) + 1
                 return self.send(502, b"error code: 502\n", "text/plain")
             apply_part(body)
-            if at and mode == "big-502applied" and not db["fired"]:
+            if at and mode in ("big-502applied", "tables-502applied") and not db["fired"]:
                 db["fired"] = True
                 return self.send(502, b"error code: 502\n", "text/plain")
             return self.send(200, b'{"ok": true, "rows": 3}', "application/json")
