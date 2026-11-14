@@ -162,9 +162,12 @@ function skyphusion_mem_sweep( $hook ) {
 				if ( PHP_INT_MIN === $p || PHP_INT_MAX === $p ) {
 					continue;
 				}
-				$owners = array();
-				$n      = 0;
-				$woo    = 0;
+				// WooCommerce's owners first: the list is capped at 6, and a bucket like init@10 holds
+				// over 100 core callbacks ahead of WooCommerce's (pf504z, #504).
+				$wowners = array();
+				$owners  = array();
+				$n       = 0;
+				$woo     = 0;
 				foreach ( $cbs as $cb ) {
 					$o = skyphusion_mem_owner( $cb );
 					if ( isset( $o[2] ) && $o[2] === $self ) {
@@ -173,11 +176,12 @@ function skyphusion_mem_sweep( $hook ) {
 					++$n;
 					if ( $o[1] ) {
 						++$woo;
-					}
-					if ( count( $owners ) < 6 ) {
+						$wowners[] = $o[0];
+					} else {
 						$owners[] = $o[0];
 					}
 				}
+				$owners = array_slice( array_merge( $wowners, $owners ), 0, 6 );
 				if ( ! $n ) {
 					continue;
 				}
