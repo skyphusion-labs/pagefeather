@@ -207,9 +207,17 @@ class Hyperdrive_WPDB extends wpdb {
 		} else {
 			$reply = skyphusion_hd_run( $query );
 			if ( ! empty( $reply['ok'] ) && preg_match( '/^(INSERT|REPLACE|UPDATE)\b/i', $q ) ) {
-				// The OK packet's insert id: LAST_INSERT_ID() right after this write, LAST_INSERT_ID(expr) included.
-				$this->hd_last_insert = isset( $reply['insert_id'] ) ? (int) $reply['insert_id'] : null;
-				$this->hd_prev        = null === $this->hd_last_insert ? null : 'write';
+				// The OK packet's insert id answers LAST_INSERT_ID() right after this write when it is exact:
+				// - the write set it with LAST_INSERT_ID(expr) (WooCommerce QRLoginRateLimits), 0 included;
+				// - or it is above 0 (a new AUTO_INCREMENT id).
+				// Otherwise (0 from a table with no AUTO_INCREMENT) MySQL keeps the PREVIOUS value, which lives
+				// on an unknown pooled connection, so the SELECT goes to the database as before. That fall-through
+				// keeps the pooling risk of #498; no answer is exact there.
+				$id = isset( $reply['insert_id'] ) ? (int) $reply['insert_id'] : null;
+				if ( null !== $id && ( $id > 0 || false !== stripos( $q, 'LAST_INSERT_ID(' ) ) ) {
+					$this->hd_last_insert = $id;
+					$this->hd_prev        = 'write';
+				}
 			}
 		}
 		++$this->num_queries;

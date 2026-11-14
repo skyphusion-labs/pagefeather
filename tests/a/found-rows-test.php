@@ -10,7 +10,8 @@
  * Checks:
  * - a list query with SQL_CALC_FOUND_ROWS then SELECT FOUND_ROWS(), 50 times: the total is N every time;
  * - inside a transaction a plugin opened, no BEGIN or COMMIT of ours is sent (it would commit theirs);
- * - INSERT ... LAST_INSERT_ID(expr) then SELECT LAST_INSERT_ID() (WooCommerce QRLoginRateLimits): its value;
+ * - INSERT ... LAST_INSERT_ID(expr) then SELECT LAST_INSERT_ID() (WooCommerce QRLoginRateLimits): its value, 0 included;
+ * - an insert with no auto-increment id (OK packet 0): LAST_INSERT_ID() goes to the database (MySQL keeps the previous value);
  * - control: on main's drop-in the same reads come back 0 (the test can see the defect).
  */
 $DROPIN = $argv[1] ?? __DIR__ . '/../../spikes/b2-wordpress/php/hyperdrive-db.php';
@@ -70,6 +71,9 @@ function skyphusion_worker_call( $json ) {
 	if ( preg_match( '/^\s*SELECT\s+LAST_INSERT_ID\(\)/i', $sql ) ) {
 		return json_encode( array( 'ok' => true, 'columns' => array( 'LAST_INSERT_ID()' ), 'rows' => array( array( (string) $CONN[ $c ]['lii'] ) ) ) );
 	}
+	if ( preg_match( '/^\s*INSERT\s+INTO\s+wp_noai\b/i', $sql ) ) {
+		return json_encode( array( 'ok' => true, 'affected' => 1, 'insert_id' => 0 ) ); // no AUTO_INCREMENT: MySQL keeps the previous LAST_INSERT_ID()
+	}
 	if ( preg_match( '/^\s*INSERT\b/i', $sql ) ) {
 		$id = preg_match( '/LAST_INSERT_ID\((\d+)\)/', $sql, $mm ) ? (int) $mm[1] : 501;
 		$CONN[ $c ]['lii'] = $id;
@@ -104,6 +108,17 @@ for ( $i = 1; $i <= 20; $i++ ) {
 	$right += ( (string) $i === (string) $wpdb->get_var( 'SELECT LAST_INSERT_ID()' ) ) ? 1 : 0;
 }
 check( '#498: SELECT LAST_INSERT_ID() right after the write returns that write\'s id (20 of 20)', $right, 20 );
+
+// 3b. The same WooCommerce statement with LAST_INSERT_ID(0): the OK packet carries 0, and 0 is the answer.
+$wpdb->query( "INSERT INTO wp_wc_rate_limits (rate_limit_key) VALUES ('k') ON DUPLICATE KEY UPDATE rate_limit_id = LAST_INSERT_ID(0)" );
+check( 'LAST_INSERT_ID(0) right after: 0 (the Woo "limited" signal), not an earlier id', (string) $wpdb->get_var( 'SELECT LAST_INSERT_ID()' ), '0' );
+
+// 3c. An insert into a table with NO auto-increment: OK packet 0, and MySQL keeps the PREVIOUS value.
+// That value lives on an unknown connection, so the drop-in must not answer 0: it sends the SELECT.
+$wpdb->query( 'INSERT INTO wp_noai (k) VALUES (1)' );
+$SENT = array();
+$wpdb->get_var( 'SELECT LAST_INSERT_ID()' );
+check( 'an insert with no auto-increment id (OK packet 0): LAST_INSERT_ID() goes to the database, not a made-up 0', $SENT, array( 'SELECT LAST_INSERT_ID()' ) );
 
 // 4. A FOUND_ROWS() not right after a calc query is sent as before (no made-up answer).
 $wpdb->query( "SELECT SQL_CALC_FOUND_ROWS ID FROM wp_posts LIMIT 1" );
