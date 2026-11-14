@@ -226,7 +226,7 @@ PHP_ENV = '{"USE_ZEND_ALLOC":"0","WP_TABLE_PREFIX":"wp_"}'
 # OBJECT_CACHE=on turns on the cross-isolate-safe allowlist cache. The bracket
 # toggles it per request with x-oc-off + the spike token on the SAME binary.
 OBJECT_CACHE = "on"
-OBJECT_CACHE_GROUPS = "terms,theme_json"  # #491: options never persist on A
+OBJECT_CACHE_GROUPS = "theme_json"  # #491: options never persist on A; #494: terms out
 OBJECT_CACHE_TTL = "10"
 # Approach-A object cache L2 (#218): a KV store shared across isolates, behind the
 # in-isolate Map, so a COLD isolate can hit KV instead of MySQL. Only the groups
@@ -276,7 +276,7 @@ rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
 [env.a-paid-lean.vars]
 PHP_ENV = '{"USE_ZEND_ALLOC":"0","WP_TABLE_PREFIX":"wp_"}'
 OBJECT_CACHE = "on"
-OBJECT_CACHE_GROUPS = "terms,theme_json"  # #491: options never persist on A
+OBJECT_CACHE_GROUPS = "theme_json"  # #491: options never persist on A; #494: terms out
 OBJECT_CACHE_TTL = "10"
 OBJECT_CACHE_L2 = "on"
 LAZY_NODES = "on"
@@ -333,7 +333,7 @@ PHP_IN_DO = "on"
 LAZY_NODES = "on"
 LAZY_CACHE_MB = "4"
 OBJECT_CACHE = "on"
-OBJECT_CACHE_GROUPS = "terms,theme_json"  # #491: options never persist on A
+OBJECT_CACHE_GROUPS = "theme_json"  # #491: options never persist on A; #494: terms out
 OBJECT_CACHE_TTL = "10"
 OBJECT_CACHE_L2 = "on"
 [env.a-paid-do-lean.assets]
