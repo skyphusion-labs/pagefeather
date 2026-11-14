@@ -2,6 +2,10 @@
 """Redact the query string in a site's Workers Logs (#issue: privacy of the live store's logs).
 
     obs_settings.py redact <namespace> <script>    set redact_query_string = true, read it back
+    obs_settings.py redact-or-off <namespace> <script>
+                                                   the same; if it does not read back, turn the
+                                                   script's observability OFF and read that back
+                                                   (fail closed: never leave unredacted logs on)
     obs_settings.py show <namespace> <script>      print the script's observability settings
 A namespace of "-" means an ordinary Worker, not a dispatch-namespace script (approach A's
 wp-a-lean, deployed with `wrangler deploy --env a-paid-lean`, #394).
@@ -62,9 +66,31 @@ def redact(ns, script):
     return 0
 
 
+def patch_obs(ns, script, obs):
+    b = "----wfp" + uuid.uuid4().hex
+    body = ("--%s\r\nContent-Disposition: form-data; name=\"settings\"; filename=\"settings.json\"\r\nContent-Type: application/json\r\n\r\n%s\r\n--%s--\r\n" % (b, json.dumps({"observability": obs}), b)).encode()
+    return call("PATCH", settings_path(ns, script), body, "multipart/form-data; boundary=" + b)
+
+
+def redact_or_off(ns, script):
+    """Redact, or else turn the logs off (#394): a failed redaction never leaves query strings logged."""
+    if redact(ns, script) == 0:
+        return 0
+    obs = dict(show(ns, script) or {}, enabled=False)
+    d = patch_obs(ns, script, obs)
+    after = show(ns, script) or {}
+    if d.get("success") and after.get("enabled") is False:
+        print("obs settings: %s: the redaction did not apply, so its observability is now OFF (read back)" % script, file=sys.stderr)
+    else:
+        print("obs settings: %s: the redaction did not apply AND observability could not be turned off: turn it off by hand" % script, file=sys.stderr)
+    return 1
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 4 or sys.argv[1] not in ("redact", "show"):
+    if len(sys.argv) != 4 or sys.argv[1] not in ("redact", "redact-or-off", "show"):
         sys.exit(__doc__)
     if sys.argv[1] == "show":
         print(json.dumps(show(sys.argv[2], sys.argv[3]))); sys.exit(0)
+    if sys.argv[1] == "redact-or-off":
+        sys.exit(redact_or_off(sys.argv[2], sys.argv[3]))
     sys.exit(redact(sys.argv[2], sys.argv[3]))
