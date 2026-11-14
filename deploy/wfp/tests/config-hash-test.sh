@@ -413,7 +413,7 @@ set_entry bld-other "$(last_hash)"
 u0=$(lines "$UPLOAD_LOG")
 run_update
 u1=$(lines "$UPLOAD_LOG")
-ok "#558 the site has TURNSTILE_SECRET and the run does not: REFUSED (exit 2), nothing uploaded" "$([ "$RC" = 2 ] && [ "$u1" = "$u0" ] && printf '%s' "$OUT" | grep -Fq 'the site has the Turnstile secret (TURNSTILE_SECRET), and this run does not' && echo 1 || echo 0)"
+ok "#558 the site has TURNSTILE_SECRET and the run does not: REFUSED (exit 2), nothing uploaded" "$([ "$RC" = 2 ] && [ "$u1" = "$u0" ] && printf '%s' "$OUT" | grep -Fq 'a required secret is missing from this run' && echo 1 || echo 0)"
 # 9h. Live bindings that cannot be read, on an upload: refused, never read as "nothing to drop".
 srec_del
 python3 -I -c 'import json, sys; p = sys.argv[1]; d = json.load(open(p)); d["bindings_status"] = 500; json.dump(d, open(p, "w"))' "$STATE"
