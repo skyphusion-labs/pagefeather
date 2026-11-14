@@ -31,7 +31,7 @@ test('x-mem-trace is a perf header: a visitor never gets it', () => {
 test('the mu-plugin returns at once without the trace header, and only knows the listed switches', () => {
 	const guard = php.indexOf("if ( empty( $_SERVER['HTTP_X_MEM_TRACE'] ) || ! function_exists( 'post_message_to_js' ) ) {");
 	assert.ok(guard > 0 && guard < php.indexOf('add_action('), 'the guard must come before any hook');
-	assert.ok(php.includes("array( 'woo', 'wcadmin', 'wcfeatures', 'preload', 'updates', 'dashboard', 'notices', 'l10n' )"));
+	assert.ok(php.includes("array( 'woo', 'wcadmin', 'wcfeatures', 'wcblocks', 'preload', 'updates', 'dashboard', 'notices', 'l10n' )"));
 	assert.ok(src.includes("if (m.memMark) { console.log(JSON.stringify({ m: 'mem-mark', ...(typeof m.id === 'string' && MEM_ID_RE.test(m.id) ? { id: m.id } : {}), k: m.memMark })); return '1'; }"));
 });
 
@@ -51,4 +51,12 @@ test('plugin=<slug> switches any one plugin off, by a safe directory name only',
 	assert.ok(php.includes("return ! in_array( strtok( (string) $file, '/' ), $skyphusion_mem_plugins, true );"));
 	// woo is the same filter, for the woocommerce directory.
 	assert.ok(php.includes("$skyphusion_mem_plugins[] = 'woocommerce';"));
+});
+
+test('wcblocks turns off WooCommerce block registration through its own gate, and only that', () => {
+	const at = php.indexOf("if ( in_array( 'wcblocks', $skyphusion_mem_off, true ) ) {");
+	assert.ok(at > 0, 'no wcblocks switch');
+	const body = php.slice(at, php.indexOf('}', at));
+	assert.ok(body.includes("add_filter( 'woocommerce_should_register_blocks', '__return_false', PHP_INT_MAX );"));
+	assert.equal((body.match(/add_filter|add_action/g) || []).length, 1, 'wcblocks hooks exactly one filter');
 });
