@@ -24,7 +24,7 @@ Every dispatcher copy is the same script and the same config, and only the name 
 ## Day one
 
 ```sh
-export CLOUDFLARE_API_TOKEN=...   # Workers Scripts, Workers KV, Workers for Platforms, R2: edit; API Tokens: edit (down.sh)
+export CLOUDFLARE_API_TOKEN=...   # Workers Scripts, Workers KV, Workers for Platforms, R2: edit. No API Tokens permission (#273)
 export ACCOUNT_ID=...             # your Cloudflare account id. No default: every tool stops with exit 2 without it
 # The Skyphusion reference deploy sets ACCOUNT_ID (and WFP_ZONE_ID, WFP_SUBDOMAIN) with:  . deploy/wfp/reference.env
 ./deploy/wfp/up.sh                # SITES="one two" by default
@@ -58,6 +58,17 @@ Options:
 - `CHECK=0`;
 - `SITE_WAIT` (seconds to wait for a new site, default 300).
 
+
+## The bucket keys (#273)
+
+Two steps need a key that reaches only one site's media bucket: `site down` and `site remove` empty the bucket before it is deleted, and `site import` with `CONTENT` puts the uploads in it. They use an R2 **temporary credential**, minted from the deploy token itself by `deploy/wfp/r2_temp.py` (`POST /accounts/{id}/r2/temp-access-credentials`, permission `object-read-write`). The R2 docs say such a credential "is bound to exactly one bucket" and "cannot exceed the permissions of its parent token".
+
+- **The deploy token needs no API Tokens permission.** Before #273 the keys were Cloudflare account tokens, and Cloudflare refuses API Tokens edit on a token that was minted through the API (error 1001). So a deploy token made through the API could not run these steps. Measured 2026-11-14 with a token that has R2 Storage Write and no API Tokens permission: the mint succeeded; the credential could PUT, list, GET and DELETE in its bucket; another bucket answered 403 to a list and a PUT.
+- **Nothing is made in the account or in the Terraform state.** The credential is written to a mode-600 temp file for the one step, and the file is removed after it, also on a failure.
+- **It expires on its own: 3600 s for an empty, 21600 s for an import** (`R2_TEMP_TTL` sets it). It cannot be revoked alone, only by revoking the deploy token, so the TTL is also how long it keeps working after the step.
+- **A refusal mints a fresh one.** When R2 answers 401 or 403 in the middle of a run, `r2-empty.sh` and `media.sh` mint a new credential once (one at a time, under a lock) and go on, inside their usual retry window. Any other answer stops the run. Both scripts are resumable, so run the command again. The code R2 gives for an EXPIRED temporary credential was not measured.
+- The session token goes to curl in its config on a pipe, as the key does, never in the arguments.
+
 ## Adding and removing a site
 
 ```sh
@@ -86,7 +97,7 @@ SQLITE=store.sqlite CONTENT=wp-content.tar.gz ./deploy/wfp/site import <name>   
 DUMP=site.sql CONTENT=wp-content.tar.gz ./deploy/wfp/site import <name>         # a MySQL dump (--hex-blob)
 ```
 
-`site import` runs `deploy/import.sh` against one site that `site add` made. **It replaces the site's whole database.** Everything the import needs comes from the site's own workspace: its origin (`site_host`), its `SPIKE_TOKEN` and its media bucket. Nothing is read from `deploy/terraform`. With `CONTENT`, the uploads go into `wp-wfp-<name>-media` with the `media_import` key, which can read and write objects in that bucket only. The key is made with `-target`; it depends on nothing, so `tests/tf-test.sh` checks that the apply touches nothing else. It is deleted after the import, also when the import fails, and the command checks that it is gone from the state. `DRY_RUN=1` and `SKIP_MEDIA=1` make no key.
+`site import` runs `deploy/import.sh` against one site that `site add` made. **It replaces the site's whole database.** Everything the import needs comes from the site's own workspace: its origin (`site_host`), its `SPIKE_TOKEN` and its media bucket. Nothing is read from `deploy/terraform`. With `CONTENT`, the uploads go into `wp-wfp-<name>-media` with a temporary R2 credential that can read and write objects in that bucket only (see "The bucket keys" below). `DRY_RUN=1` and `SKIP_MEDIA=1` make no credential.
 
 The theme and the active plugins must be in the build (the import checks the local `spikes/b2-wordpress/build`), so build with the `IMPORT_*` line the import prints before `site add`, or `site update` afterwards. The import's rules, refusals and steps are in [`deploy/import/README.md`](../import/README.md).
 
@@ -229,6 +240,7 @@ deploy/wfp/tests/site-cmd-test.sh           # site add and remove refuse, with n
 python3 deploy/wfp/tests/bindings-test.py   # the bindings read back: each script binds only its own resources
 python3 deploy/wfp/tests/cross-test.py      # the isolation verdict: a breach is never read as a pass
 deploy/wfp/tests/probe-entry-test.sh        # the probe map entry and the CROSS_OUTBOUND option
-deploy/wfp/tests/tf-test.sh                 # terraform validate, fmt, and the teardown key with no dependency (local: needs terraform)
+deploy/wfp/tests/tf-test.sh                 # terraform validate, fmt, and no account token in the site graph (local: needs terraform)
+deploy/wfp/tests/r2-temp-test.sh            # the temporary R2 credential: the mint, one bucket only, a refresh on expiry (#273)
 deploy/wfp/tests/custom-domain-test.sh      # phase B (#138): custom_host, site_host, the shared dispatcher, the Terraform wiring
 ```
