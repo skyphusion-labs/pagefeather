@@ -127,4 +127,4 @@ Full cost line items and the per-plan limit table that decides the matrix above:
 
 ## License
 
-GPL-2.0. See [LICENSE](LICENSE).
+GPL-2.0-or-later: the terms of the GNU General Public License version 2, or (at your option) any later version. See [LICENSE](LICENSE) for the version 2 text.
