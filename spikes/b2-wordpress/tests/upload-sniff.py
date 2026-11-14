@@ -20,7 +20,8 @@ for m in man:
     except ValueError:
         body = {}
     code = body.get('code') if isinstance(body, dict) else None
-    res[m['file']] = {'http': r['code'], 'accepted': r['code'] == 201, 'code': code, 'mime': body.get('mime_type') if isinstance(body, dict) else None}
-    print('%-18s %-10s %s %s' % (m['file'], m['class'], r['code'], code or res[m['file']]['mime'] or ''))
+    head = None if r['code'] == 201 else (r['body'] or b'')[:200].decode('utf-8', 'replace').replace('\n', ' ')
+    res[m['file']] = {'http': r['code'], 'accepted': r['code'] == 201, 'code': code, 'mime': body.get('mime_type') if isinstance(body, dict) else None, 'head': head}
+    print('%-18s %-10s %s %s %s' % (m['file'], m['class'], r['code'], code or res[m['file']]['mime'] or '', (head or '')[:80]))
 json.dump(res, open(out, 'w'), indent=1)
 print('upload-sniff.py: %d uploads, %d accepted' % (len(res), sum(1 for v in res.values() if v['accepted'])))

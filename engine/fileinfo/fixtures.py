@@ -6,7 +6,8 @@
 #   accepted   an upload WordPress accepts: the trimmed database must sniff it as the full one does
 #   disguise   a dangerous type renamed to an accepted extension: it must sniff as what it is
 #   known-diff a harmless type WordPress does not accept, renamed to an accepted application/ extension:
-#              the trimmed database cannot name it (the documented limit, #582); the test pins that
+#              the trimmed database cannot name it (the documented limit, #582); the test pins that. Its
+#              "decision" says whether WordPress then decides differently (differs) or not (same)
 #   refused    an extension WordPress does not accept: refused by name, as on any host
 import io, json, os, struct, sys, zipfile, zlib
 
@@ -150,7 +151,9 @@ put('d-swf.zip', b'FWS\x0a' + struct.pack('<I', 21) + b'\x78\x00\x05\x5f\x00\x00
 # known-diff: harmless types WordPress does not accept, renamed to an accepted application/ extension
 K = 'known-diff'
 put('k-sqlite.doc', b'SQLite format 3\x00' + b'\x10\x00\x01\x01\x00\x40\x20\x20' + b'\x00' * 76, K, 'a SQLite database as .doc')
+man[-1]['decision'] = 'differs'  # trimmed: octet-stream, accepted for application/msword; full: vnd.sqlite3, refused
 put('k-ps.pdf', b'%!PS-Adobe-3.0\n%%EOF\n', K, 'PostScript as .pdf')
+man[-1]['decision'] = 'same'     # the sniff differs (text/plain), but WordPress refuses text/plain for .pdf too (run 43652179987)
 
 # refused: extensions WordPress does not accept at all (refused by name, before any sniff)
 R = 'refused'

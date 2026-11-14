@@ -3,7 +3,7 @@
 # a standard host) and the engine under test.
 #   accepted, disguise, refused: the SAME decision (accepted or not) on both
 #   disguise and refused: refused on both (a sanity check of the oracle itself)
-#   known-diff: a DIFFERENT decision (the documented limit of a trimmed database, #582)
+#   known-diff: the decision its manifest entry names (differs or same): the documented limit, #582
 # Exit 0 when all hold, 1 when not (naming each fixture).
 #   python3 tests/upload-sniff-compare.py <manifest.json> <oracle.json> <under-test.json>
 import json, sys
@@ -17,13 +17,20 @@ for f, m in sorted(man.items()):
     if m['class'] in ('disguise', 'refused') and a['accepted']:
         bad.append('%s: the oracle ACCEPTED a %s file (%s)' % (f, m['class'], a)); continue
     if m['class'] == 'known-diff':
-        if a['accepted'] == b['accepted']:
-            bad.append('%s: known-diff now decided the same (%s): update the limit in #582' % (f, b['accepted']))
+        want = m.get('decision', 'differs')
+        if (a['accepted'] != b['accepted']) != (want == 'differs'):
+            bad.append('%s: known-diff expected to decide %s, but oracle %s, under test %s: update the limit in #582' % (f, want, a['accepted'], b['accepted']))
     elif a['accepted'] != b['accepted']:
         bad.append('%s (%s): oracle %s, under test %s' % (f, m['class'], 'accepted' if a['accepted'] else 'refused ' + str(a['code']), 'accepted' if b['accepted'] else 'refused ' + str(b['code'])))
 n = {c: sum(1 for m in man.values() if m['class'] == c) for c in ('accepted', 'disguise', 'refused', 'known-diff')}
 acc = sum(1 for f, m in man.items() if m['class'] == 'accepted' and full.get(f, {}).get('accepted'))
 print('@event upload-sniff-compare ' + json.dumps({'holds': not bad, 'fixtures': n, 'oracle_accepts_of_accepted_class': acc, 'differences': len(bad)}))
+# Transparency: the accepted-class fixtures that the FULL database engine (a standard host) itself refuses.
+# The test asks for the same decision, not acceptance: a minimal fixture, or WordPress's own name mismatch
+# (for example application/gzip against its application/x-gzip), is refused on a standard host too.
+for f, m in sorted(man.items()):
+    if m['class'] == 'accepted' and not full.get(f, {}).get('accepted'):
+        print('  standard host refuses %-14s %s %s %s' % (f, full[f].get('http'), full[f].get('code') or '', (full[f].get('head') or '')[:90]))
 for x in bad:
     print('  ' + x)
 sys.exit(1 if bad else 0)
