@@ -51,6 +51,17 @@ phase base-image
 
 variant=${ENGINE_VARIANT:-unchanged}
 case "$variant" in unchanged) ;; lean) python3 -I "$here/patches/lean.py" "$compile/php/Dockerfile" ;; *) echo "unknown ENGINE_VARIANT $variant" >&2; exit 1 ;; esac
+# Lean with GD: libgd rebuilt from upstream's recipe without AVIF (engine/patches/libgd-noavif.py), as
+# the upstream Makefile's libgd_jspi target does, replacing the prebuilt archive in the tree.
+if [ "$variant" = lean ] && [ "${ENGINE_GD:-yes}" = yes ]; then
+  python3 -I "$here/patches/libgd-noavif.py" "$compile/libgd/Dockerfile"
+  (cd "$compile" && docker build -f ./libgd/Dockerfile -t pagefeather-engine-libgd . --build-arg JSPI=1 --progress=plain > "$out/libgd-build.log" 2>&1) || { tail -60 "$out/libgd-build.log"; exit 1; }
+  rm -rf "$compile/libgd/jspi/dist/root/lib"; mkdir -p "$compile/libgd/jspi/dist/root/lib"
+  cid=$(docker create pagefeather-engine-libgd)
+  for d in lib include bin; do docker cp "$cid:/root/install/$d" "$compile/libgd/jspi/dist/root/lib"; done
+  docker rm "$cid" > /dev/null
+  phase libgd
+fi
 [ -x "$here/tools/node_modules/.bin/prettier" ] || { echo "run npm ci in engine/tools first (the pinned prettier)" >&2; exit 1; }
 
 # 3. PHP, as build.js runs it (context packages/php-wasm).

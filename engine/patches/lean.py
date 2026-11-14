@@ -30,7 +30,9 @@ edits = [
     ('no AVIF flag', "\t\t\t\techo -n ' --with-avif ' >> /root/.php-configure-flags; \\\n", '\t\t\t\t: ; \\\n'),
     ('no libavif in the link', " /root/lib/lib/libsharpyuv.a /root/lib/lib/libavif.a ' >> /root/.emcc-php-wasm-sources; \\\n", " /root/lib/lib/libsharpyuv.a ' >> /root/.emcc-php-wasm-sources; \\\n"),
     # 10. Print every input the linker reads (the hygiene files are built from this list).
-    ('trace the link inputs', '\t-s ERROR_ON_UNDEFINED_SYMBOLS=1 \\\n', '\t-s ERROR_ON_UNDEFINED_SYMBOLS=1 \\\n\t-Wl,--trace \\\n'),
+    # 10. Print every input the linker reads (the hygiene files are built from this list), and write
+    #     the linker map: every data and BSS symbol with its address and size (the static memory, measured).
+    ('trace the link inputs', '\t-s ERROR_ON_UNDEFINED_SYMBOLS=1 \\\n', '\t-s ERROR_ON_UNDEFINED_SYMBOLS=1 \\\n\t-Wl,--trace \\\n\t-Wl,-Map=/root/output/php.map \\\n'),
 ]
 for name, old, new in edits:
     n = s.count(old)

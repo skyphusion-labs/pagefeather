@@ -99,7 +99,7 @@ jobs:
             echo; echo '```'; cat "$RUNNER_TEMP/out/stats.txt" 2>/dev/null || echo "no stats"; echo '```'
             [ ! -f "$RUNNER_TEMP/out/link-inputs.txt" ] || { echo; echo "link inputs: $(wc -l < "$RUNNER_TEMP/out/link-inputs.txt")"; echo '```'; cat "$RUNNER_TEMP/out/link-inputs.txt"; echo '```'; }
             echo; echo '```'; cat "$RUNNER_TEMP/out/compare/compare.txt" 2>/dev/null || echo "no comparison"; echo '```'
-            echo; echo '```'; cat "$RUNNER_TEMP/out/compare/strings.diff" 2>/dev/null; echo '```'
+            echo; echo '```'; cat "$RUNNER_TEMP/out/compare/strings.diff" 2>/dev/null || echo "no strings diff (lean legs have none)"; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
