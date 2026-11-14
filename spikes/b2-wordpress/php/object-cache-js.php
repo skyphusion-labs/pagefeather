@@ -46,6 +46,14 @@ class JS_Object_Cache {
 				}
 			}
 		}
+		// #491: `options` NEVER persists across requests on approach A, even when the allowlist names
+		// it. WordPress keeps every autoloaded option in one key, alloptions, so an isolate that reads it
+		// stale (its own Map, or KV) shows old values, and a form saved from that page writes them back:
+		// a lost update (measured on wp-a-lean: alloptions stale in 7 of 20 reads right after a write).
+		// Options are then read from MySQL once per request (alloptions is one query).
+		if ( null !== $this->persist_allow ) {
+			unset( $this->persist_allow['options'] );
+		}
 		$this->default_ttl = defined( 'JS_OBJECT_CACHE_TTL' ) ? (int) JS_OBJECT_CACHE_TTL : 0;
 		$this->force_off   = ! empty( $_SERVER['HTTP_X_OC_OFF'] );
 	}
@@ -58,6 +66,10 @@ class JS_Object_Cache {
 
 	private function persistent( $group ) {
 		if ( $this->force_off ) {
+			return false;
+		}
+		// #491: on approach A, options stay per request whatever else says (a salt included).
+		if ( null !== $this->persist_allow && 'options' === $group ) {
 			return false;
 		}
 		if ( isset( $this->group_salt[ $group ] ) && '' !== $this->group_salt[ $group ] ) {

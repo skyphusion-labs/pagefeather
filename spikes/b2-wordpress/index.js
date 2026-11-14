@@ -1378,7 +1378,8 @@ async function boot(origin) {
 	// and docs/approach-a-objectcache.md.
 	if (dbHandler && ENV.DB_IN_DO !== 'on' && ENV.OBJECT_CACHE === 'on') {
 		lines.push("define('JS_OBJECT_CACHE', true);");
-		const ocPersist = (typeof ENV.OBJECT_CACHE_GROUPS === 'string' && ENV.OBJECT_CACHE_GROUPS) ? ENV.OBJECT_CACHE_GROUPS.replace(/[^A-Za-z0-9_,-]/g, '') : 'options,terms,theme_json';
+		// #491: options never persist on A (php/object-cache-js.php drops them even when named here).
+		const ocPersist = (typeof ENV.OBJECT_CACHE_GROUPS === 'string' && ENV.OBJECT_CACHE_GROUPS) ? ENV.OBJECT_CACHE_GROUPS.replace(/[^A-Za-z0-9_,-]/g, '') : 'terms,theme_json';
 		lines.push("define('JS_OBJECT_CACHE_PERSIST_GROUPS', " + JSON.stringify(ocPersist) + ");");
 		const ocTtl = Math.max(0, Math.min(3600, parseInt(ENV.OBJECT_CACHE_TTL, 10) || 10));
 		lines.push("define('JS_OBJECT_CACHE_TTL', " + ocTtl + ");");
