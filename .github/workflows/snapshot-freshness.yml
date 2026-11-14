@@ -1,0 +1,41 @@
+name: snapshot-freshness
+# #533: the freshness check of the scheduled snapshots (design A', phase A). Each listed site's
+# dispatcher copy takes a snapshot into the site's own bucket at 07:17 UTC (lib.sh SNAPSHOT_CRON).
+# This runs 3 hours later and reads the BUCKETS (deploy/wfp/snapshot.py fresh), never the
+# dispatcher's own log, so it does not share fate with the cron it checks. It goes red when a
+# listed site's newest snapshot is missing, over 26 hours old, unreadable, or under half the size
+# of the one before it (that rule skips a site's first snapshot). The sites are
+# deploy/wfp/snapshot-sites; a dispatch can name others (the red proof on a throwaway).
+on:
+  schedule:
+    - cron: '17 10 * * *'
+  workflow_dispatch:
+    inputs:
+      sites:
+        description: 'Sites to check instead of deploy/wfp/snapshot-sites (spaces or commas)'
+        required: false
+        default: ''
+permissions:
+  contents: read
+jobs:
+  fresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: The scheduled snapshots are fresh
+        env:
+          # An account token with R2 read only (Workers R2 Storage Read). snapshot.py derives its
+          # S3 credentials from it (the token id and the SHA-256 of its value, as R2 documents).
+          CLOUDFLARE_API_TOKEN: ${{ secrets.PF_SNAPSHOT_FRESH_TOKEN }}
+          # The account id is not a secret: a repo VARIABLE (the CLOUDFLARE_ACCOUNT_ID secret exists only in
+          # the production environment, which this job does not use).
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          FRESH_SITES: ${{ inputs.sites }}
+        run: |
+          if [ -n "$FRESH_SITES" ] || grep -qvE '^[[:space:]]*(#|$)' deploy/wfp/snapshot-sites; then
+            if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+              echo "UNMEASURED: PF_SNAPSHOT_FRESH_TOKEN (secret) or CLOUDFLARE_ACCOUNT_ID (repo variable) is not set, so no bucket was read"
+              exit 2
+            fi
+          fi
+          python3 -I deploy/wfp/snapshot.py fresh

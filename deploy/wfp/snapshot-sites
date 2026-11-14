@@ -1,0 +1,3 @@
+# The sites whose scheduled snapshot (#533) the freshness check reads, one name a line.
+# A site is listed only once its cron is live (site add, or site schedule), so a red here is a
+# real miss. The rollout adds them in order: a throwaway is never listed; then ggc-test; then ggc.

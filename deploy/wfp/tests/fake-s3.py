@@ -8,13 +8,16 @@ GET /<bucket>?list-type=2&prefix=<p> lists the keys under <p> (ListObjectsV2, wi
 It pages as S3 and R2 do (#525): at most max-keys keys (default and cap 1000) a page, in key order,
 with IsTruncated and, when true, NextContinuationToken; continuation-token resumes after it.
 GET /_keys lists every stored path, one per line (for the tests to read).
+Each listed key carries its LastModified (the time of its PUT, UTC). POST /_mtime/<path>?t=<epoch s>
+sets it (#533: the freshness check reads the age of a snapshot).
 POST /_fail_page/<n>: the n-th list request from now answers 500 (once).
 POST /_truncate_no_token: the next list page that is truncated gives no NextContinuationToken.
 """
-import base64, hashlib, http.server, sys, urllib.parse
+import base64, hashlib, http.server, sys, time, urllib.parse
 from xml.sax.saxutils import escape
 
 store = {}
+mtime = {}
 ctl = {"fail_in": 0, "no_token": False}
 
 
@@ -33,6 +36,11 @@ class H(http.server.BaseHTTPRequestHandler):
         p = urllib.parse.urlsplit(self.path).path
         if p.startswith("/_fail_page/"):
             ctl["fail_in"] = int(p.rsplit("/", 1)[1]); return self.send(200)
+        if p.startswith("/_mtime/"):
+            k = urllib.parse.unquote(p[len("/_mtime"):])
+            if k not in store:
+                return self.send(404)
+            mtime[k] = float(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)["t"][0]); return self.send(200)
         if p == "/_truncate_no_token":
             ctl["no_token"] = True; return self.send(200)
         self.send(404)
@@ -40,6 +48,7 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_PUT(self):
         n = int(self.headers.get("content-length") or 0)
         store[urllib.parse.unquote(self.path)] = self.rfile.read(n)
+        mtime[urllib.parse.unquote(self.path)] = time.time()
         self.send(200)
 
     def do_DELETE(self):
@@ -65,8 +74,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 keys = [k for k in keys if k > after]
             n = min(1000, int(q.get("max-keys", ["1000"])[0]))
             page, more = keys[:n], len(keys) > n
-            items = "".join("<Contents><Key>%s</Key><ETag>&quot;%s&quot;</ETag><Size>%d</Size></Contents>" % (
-                escape(k[len(b) + 2:]), hashlib.md5(store[k]).hexdigest(), len(store[k])) for k in page)
+            items = "".join("<Contents><Key>%s</Key><LastModified>%s</LastModified><ETag>&quot;%s&quot;</ETag><Size>%d</Size></Contents>" % (
+                escape(k[len(b) + 2:]), time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(mtime.get(k, 0))), hashlib.md5(store[k]).hexdigest(), len(store[k])) for k in page)
             tail = "<IsTruncated>%s</IsTruncated>" % ("true" if more else "false")
             if more and not ctl["no_token"]:
                 tail += "<NextContinuationToken>%s</NextContinuationToken>" % base64.urlsafe_b64encode(page[-1].encode()).decode()
