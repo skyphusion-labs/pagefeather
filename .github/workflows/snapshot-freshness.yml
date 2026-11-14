@@ -27,12 +27,14 @@ jobs:
           # An account token with R2 read only (Workers R2 Storage Read). snapshot.py derives its
           # S3 credentials from it (the token id and the SHA-256 of its value, as R2 documents).
           CLOUDFLARE_API_TOKEN: ${{ secrets.PF_SNAPSHOT_FRESH_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # The account id is not a secret: a repo VARIABLE (the CLOUDFLARE_ACCOUNT_ID secret exists only in
+          # the production environment, which this job does not use).
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           FRESH_SITES: ${{ inputs.sites }}
         run: |
           if [ -n "$FRESH_SITES" ] || grep -qvE '^[[:space:]]*(#|$)' deploy/wfp/snapshot-sites; then
             if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
-              echo "UNMEASURED: PF_SNAPSHOT_FRESH_TOKEN or CLOUDFLARE_ACCOUNT_ID is not set, so no bucket was read"
+              echo "UNMEASURED: PF_SNAPSHOT_FRESH_TOKEN (secret) or CLOUDFLARE_ACCOUNT_ID (repo variable) is not set, so no bucket was read"
               exit 2
             fi
           fi
