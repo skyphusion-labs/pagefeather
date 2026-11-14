@@ -1,0 +1,104 @@
+# Move a standard store to a Hyperdrive store (#479): design
+
+Joan, 2026-11-14. Design only: nothing is built, and no account, site or database was touched. Each claim names the code it was read from on `main` at `7c9b450`. A claim with no source is marked **unmeasured**.
+
+## The problem
+
+A standard store (`wp`, b-dosql) keeps WordPress and WooCommerce in one Durable Object: PHP and the SQLite database together. It is fine for a few shoppers at once. It collapses at 50 concurrent checkouts (`docs/results.md`, 2026-11-09). A store that grows past the cut (#431) needs a way to the Hyperdrive store (`a`), and it must keep every order, customer, product and image.
+
+Conrad's words: the "tier 2 to 3 move".
+
+## What already exists (read on main)
+
+| Piece | Where | What it does today |
+| --- | --- | --- |
+| SQLite export | `/_dbexport` (`spikes/b2-wordpress/index.js`, `dumpTo`) | NDJSON: the SQLite `CREATE TABLE` text, then one parameterized `INSERT` per row. SQLite dialect, not MySQL. |
+| Row counts | `/_dbcounts` | `COUNT(*)` per table, bounded: it completes where a full `/_dbexport` does not (the code comment says so). |
+| MySQL import | `/_sqlimport` (`spikes/b2-wordpress/sql-import.js`) + `deploy/import/mysql-prepare.py` | Takes a mysqldump, runs `DROP TABLE IF EXISTS` / `CREATE TABLE` / `INSERT` on the a site's MySQL. Takes only tables named `wp_*`. `replace=1` drops every `wp_*` table in the database first. |
+| MySQL dialect on SQLite | the driver at `SQLITE_DI_REF=f05c1f9` (`packages/mysql-on-sqlite`) | Keeps a MySQL information schema (`class-wp-sqlite-information-schema-builder.php`) and answers `SHOW CREATE TABLE` in MySQL form (`class-wp-mysql-on-sqlite.php`). |
+| Media | `mediaBucketName(name)` = `wp-wfp-<name>-media` for BOTH kinds (`deploy/provision/wp-site-config.mjs`) | The same bucket name, so the images do not move. |
+| Object cache | `ocKvNamespaceName(name)` = `wp-wfp-<name>-oc` for both kinds | The same namespace, so it is flushed, not made again. |
+| a code keeps the object class | `index-a-lean.js` re-exports `PhpRuntime` | An a upload over the same script can keep the Durable Object class, and with it the SQLite. |
+
+## Design
+
+### 1. The owner's view (GUI)
+
+In **Sites**, a standard store gets a row action **Move to Hyperdrive store**. The screen asks for one thing: a connected database (from **Databases**, #431). It says what happens, in this order:
+
+1. The store closes to shoppers for the move. Visitors see "Back soon" (HTTP 503 with `Retry-After`). The admin stays open for reading.
+2. The data is copied to the database, then every table is counted on both sides.
+3. The store opens again on the Hyperdrive store. Same address, same logins, same images.
+4. The old data stays in place as a way back for 7 days. **Move back** is a row action in that time.
+
+A progress screen shows the step and the row counts. It is safe to leave and come back: the move runs on its own (section 3).
+
+### 2. The data path: MySQL from the source's own PHP
+
+The SQLite file is not converted on the laptop or in the manager. The **source site's own PHP**, with its own driver, writes the MySQL form:
+
+- A new operator endpoint on b-dosql, `/_mysqlexport?table=<t>&after=<pk>&limit=<n>`, under the spike token like `/_dbexport`. For each table it returns `SHOW CREATE TABLE` (MySQL DDL from the driver's information schema), then the rows as MySQL `INSERT` statements, written through `$wpdb`, so the values are MySQL literals. It pages by primary key (`after`), not by OFFSET, so a large table stays bounded per request.
+- The target is the a site's existing `/_sqlimport`, with two changes (section 5): it writes to the target's own prefix, and `replace` drops only that prefix.
+
+**Why not reuse `/_dbexport` and convert it:** its `CREATE TABLE` is SQLite text with SQLite types. Mapping it back to MySQL by hand repeats what the driver already stores (the original MySQL column types, keys and charsets). **Unmeasured:** how faithful `SHOW CREATE TABLE` is at `f05c1f9` for every WooCommerce table (HPOS order tables, Action Scheduler, `wc_*` lookup tables). That is the first measurement (section 7).
+
+### 3. Who runs it: a Workflow in the site manager
+
+The move is long (tables by pages) and must survive a restart. It runs as a **Cloudflare Workflow** bound to the site manager. Each step is one bounded call with retries: freeze, one page of one table, count, cut over. The Workflow state holds only table names, page keys and counts, never row data. The rows pass from the source's response straight to the target's request in one step.
+
+**Unmeasured:** that the Deploy to Cloudflare button makes a Workflow binding. The button docs list Workflows among the resources it can make (read 2026-11-13 for #401); confirm with the button test.
+
+### 4. Freeze and cut-over
+
+- **Freeze.** The site map entry gets `moving: { since, workflowId }`. The front door (`deploy/wfp/dispatcher/worker.js`) answers 503 + `Retry-After: 120` to anything that is not a signed-in admin GET while `moving` is set. Checkout, cart, comments and REST writes all stop at the edge, so no order is placed mid-copy. The cron is held off on the source, as `/_dbimport` already does (`IMPORT_HOLD_KEY`).
+- **Cut-over.** It uploads the a code over the SAME script `site-<name>`: main module `index-a-lean.js`, the a bindings, the connected Hyperdrive ID, and the table prefix. It **keeps the `PhpRuntime` class** and sends no `deleted_classes` migration, so the SQLite stays. It keeps the existing `WP_SALT` (logins stay valid), flushes `wp-wfp-<name>-oc`, and purges the page cache. The site map entry changes `kind` to `a`, sets `database` and `tablePrefix`, and moves the old values to `previous: { kind: 'wp', until }`. Then it clears `moving`.
+- **Same names, nothing to move:** the hostname, the front door `wp-<name>`, the media bucket and the cache namespace all stay. Only the code and the bindings of `site-<name>` change.
+
+### 5. Two changes to `/_sqlimport` (and one hazard they remove)
+
+- **Prefix.** Today it takes only `wp_*` names and `mysql-prepare.py` renames to `wp_`. A Hyperdrive store from #431 has the prefix `wp_<name>_`. The import takes the target's prefix from the site's own `WP_TABLE_PREFIX`, never from the request. It accepts only tables under that prefix.
+- **`replace` stays inside the prefix.** Today `replace=1` drops EVERY `wp_*` table in the database (`sql-import.js`). On a database shared by several stores, `wp_` also matches `wp_<other>_*`, so an import into one store would drop the others' tables. This is reachable now with `deploy/import.sh VARIANT=a` against a shared database, operator only (spike token). With the change, `replace` drops only the target's prefix. I report the hazard to the lead separately; it is not public-facing.
+
+### 6. Check, then open
+
+Before the cut-over:
+
+- the row count of every table is equal on both sides (source `/_dbcounts`, target `/_sqlimport?counts=1`);
+- the WooCommerce order count and the highest order ID are equal;
+- a test login to the a site works (spike `/_install` answers `already`).
+
+Any difference stops the Workflow **before** the cut-over, and the store opens again on the standard store, unchanged. The copied tables stay in the database, and the screen says how to remove them.
+
+### 7. Move back, and the end of the old data
+
+- **Move back** (7 days): upload the b-dosql code over `site-<name>` again, with the old bindings from `previous`. The SQLite is the state at the freeze. **Orders taken AFTER the move are not in it.** The screen says so in a line of its own and asks for the store name before it acts.
+- After 7 days, a manager task removes the old SQLite by a migration that deletes `PhpRuntime`, then removes `previous`. **Unmeasured:** the exact migration form for a namespace script that keeps its name and drops a class. Measure on a throwaway before building.
+
+### 8. Measurements before it ships (on a throwaway in our account)
+
+1. **Dialect fidelity:** `/_mysqlexport` of a GUI-made standard store with WooCommerce plus a sample catalog and orders. Load it into a fresh Hyperdrive database, then compare `SHOW CREATE TABLE` per table with a native MySQL WooCommerce install of the same versions. Every column type, key and charset must match, or be listed with the reason.
+2. **The move end to end:** 20 orders on the standard store, then move, then `tests/woo.py` 12 of 12 three times on the moved store. All 20 orders are visible with their items.
+3. **The freeze holds:** a checkout started during the copy gets a 503 and no order row on either side.
+4. **Move back:** after the move and one new order, move back. The old 20 orders are there. The new order is not, and the screen said so.
+5. **Failure paths leave the store as it was:** a count mismatch (a row deleted on the target mid-run), the database unreachable, the Workflow stopped mid-copy. Each must end with the store open on the standard path and the inventory (scripts, buckets, map entries) unchanged.
+6. **Shared database:** a move into a database that holds another store must leave the other store's tables and row counts unchanged.
+
+### What it does not do
+
+- It does not move an a store back to b after the 7 days.
+- It does not merge two stores.
+- It does not change the address: a custom domain stays a separate item (#401).
+
+## Order of work (one PR each, design gate first)
+
+1. `/_sqlimport`: target prefix and prefix-scoped `replace` (the hazard fix; useful on its own).
+2. `/_mysqlexport` on b-dosql, with the dialect measurement (8.1).
+3. The front-door freeze (`moving`), with its test.
+4. The manager Workflow, the GUI action and the progress screen.
+5. Move back, and the 7-day removal.
+
+## Open points for the lead
+
+- **Who owns the parts:** `sql-import.js`, `/_mysqlexport` and the dispatcher are the backend lane (Rollins). The Workflow and the screens are mine.
+- **7 days for Move back:** a guess at a safe window. The cost is the SQLite kept in the Durable Object for that time.
+- **WP_SALT kept:** it keeps owners and customers logged in. Making it again is safer if the source was ever compromised; it would need a choice on the screen.
