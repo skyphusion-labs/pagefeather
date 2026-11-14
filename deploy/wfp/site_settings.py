@@ -42,24 +42,31 @@ import snapshot  # noqa: E402
 RECORD = "_build/settings.json"
 # The env-only settings render_user reads (lib.sh), each rendered as a [vars] name of its own.
 SETTINGS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PHP_RECYCLE", "CRON_INTERVAL_MS",
-            "MEM_LEDGER", "TURNSTILE_SITEKEY", "TURNSTILE_WOO", "TURNSTILE_LOGIN", "TURNSTILE_COMMENTS",
-            "MAIL_FROM", "MAIL_FROM_NAME", "PHP_LOCATION", "WFP_PHP_ENV", "WP_VECTORIZE_SEARCH",
-            "HEADROOM_PROBE", "OPCACHE_SPLIT")
+            "TURNSTILE_SITEKEY", "TURNSTILE_WOO", "TURNSTILE_LOGIN", "TURNSTILE_COMMENTS",
+            "MAIL_FROM", "MAIL_FROM_NAME", "PHP_LOCATION", "WP_VECTORIZE_SEARCH", "OPCACHE_SPLIT")
+# Measurement flags: never recorded, never kept, by design (the lead's ruling on #561). Silent
+# persistence is the dangerous direction for them; silently going off is the safe one. A run that
+# exports one turns it on for that upload; the next update without it turns it OFF, and says so.
+#   HEADROOM_PROBE  GET /_headroom allocates until the isolate dies (#394): it KILLS the isolate.
+#   MEM_LEDGER      "on" logs the isolate memory ledger on every request and cron leg: a steady
+#                   log and CPU cost, for a diagnosis only.
+#   WFP_PHP_ENV     a measurement build's PHP env (USE_ZEND_ALLOC=1 swaps PHP's allocator, #434).
+MEASUREMENT = ("HEADROOM_PROBE", "MEM_LEDGER", "WFP_PHP_ENV")
 SECRETS = ("TURNSTILE_SECRET",)
 # No log line carries data from SECRETS: a message about a secret is one fixed text, and which
 # secret, and what happened, is in the exit code (5 a recorded secret is missing, 6 a live one would
 # be dropped). The only place SECRETS reaches is the record itself (env-json): names, never values.
-# The settings the live bindings can show dropped: rendered only when set. MAIL_FROM, PHP_LOCATION
-# and WFP_PHP_ENV always render (a default); WP_VECTORIZE_SEARCH and OPCACHE_SPLIT render
+# The settings the live bindings can show dropped: rendered only when set. MAIL_FROM and PHP_LOCATION
+# always render (a default); WP_VECTORIZE_SEARCH and OPCACHE_SPLIT render
 # bindings (AI and the index; ASSETS), not a var: the record keeps those.
 DROPPABLE_VARS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PHP_RECYCLE", "CRON_INTERVAL_MS",
-                  "MEM_LEDGER", "TURNSTILE_SITEKEY", "TURNSTILE_WOO", "TURNSTILE_LOGIN", "TURNSTILE_COMMENTS",
-                  "MAIL_FROM_NAME", "HEADROOM_PROBE")
+                  "TURNSTILE_SITEKEY", "TURNSTILE_WOO", "TURNSTILE_LOGIN", "TURNSTILE_COMMENTS",
+                  "MAIL_FROM_NAME")
 
 
 def drop_list(env=os.environ):
     names = [x for x in re.split(r"[\s,]+", env.get("DROP_SETTINGS", "") or "") if x]
-    bad = [x for x in names if x not in SETTINGS + SECRETS]
+    bad = [x for x in names if x not in SETTINGS + SECRETS + MEASUREMENT]  # a measurement flag: a no-op
     if bad:
         print("site settings: DROP_SETTINGS names an unknown setting: %s (known: %s, and the Turnstile secret)" % (" ".join(bad), " ".join(SETTINGS)), file=sys.stderr)
         sys.exit(2)
@@ -127,6 +134,10 @@ def dropcheck(conf_path, bindings_path, secrets_path, env=os.environ):
     secret = {b.get("name") for b in live if isinstance(b, dict) and b.get("type") == "secret_text"}
     now_vars = rendered_vars(open(conf_path).read())
     now_secrets = set(json.load(open(secrets_path)))
+    # A measurement flag going off is allowed, and said: it is never kept.
+    for k in MEASUREMENT:
+        if k in plain and k not in now_vars:
+            print("site settings: %s was on and is now OFF: measurement flags are never kept" % k, file=sys.stderr)
     lost = sorted(k for k in DROPPABLE_VARS if k in plain and k not in now_vars and k not in drop)
     lost_secret = any(k in secret and k not in now_secrets and k not in drop for k in SECRETS)
     if lost or lost_secret:

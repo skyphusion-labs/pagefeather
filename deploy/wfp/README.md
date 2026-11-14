@@ -181,12 +181,13 @@ A change to a secret value, with the same key names, does not change the hash, s
 
 ### The settings of a site (#558)
 
-The per-site settings are read from the run's environment only: `PHP_INI`, `LAZY_CACHE_MB`, `LAZY_ARENA`, `LAZY_ARENA_MB`, `PHP_RECYCLE`, `CRON_INTERVAL_MS`, `MEM_LEDGER`, the Turnstile site key and switches, `MAIL_FROM`, `MAIL_FROM_NAME`, `PHP_LOCATION`, `WFP_PHP_ENV` and `WP_VECTORIZE_SEARCH`. An update that did not export one dropped it. On 2026-11-14 ggc-test lost its `PHP_INI` opcache pin that way, and the update said only "config changed". Now:
+The per-site settings are read from the run's environment only: `PHP_INI`, `LAZY_CACHE_MB`, `LAZY_ARENA`, `LAZY_ARENA_MB`, `PHP_RECYCLE`, `CRON_INTERVAL_MS`, the Turnstile site key and switches, `MAIL_FROM`, `MAIL_FROM_NAME`, `PHP_LOCATION`, `WP_VECTORIZE_SEARCH` and `OPCACHE_SPLIT`. An update that did not export one dropped it. On 2026-11-14 ggc-test lost its `PHP_INI` opcache pin that way, and the update said only "config changed". Now:
 - **Recorded.** A good `site add` and `site update` write the run's settings to the site's own bucket, `_build/settings.json` (private, like `_build/inputs.json`). A secret's value is never recorded, only that the site has `TURNSTILE_SECRET`.
 - **Kept.** An update uses the recorded value of a setting the run does not set. A run that sets one replaces it, and the log says so.
 - **Dropped only on purpose.** `DROP_SETTINGS=<names>` (spaces or commas) drops them. An unknown name is refused. An update without a recorded secret is refused, unless `DROP_SETTINGS` names it.
 - **Checked against the live site.** Before any upload, the user Worker's LIVE bindings are read. An upload that would drop a setting or a secret the live script has is refused (exit 2, nothing uploaded), unless `DROP_SETTINGS` names it. This guards a site recorded before #558, and any miss of the record. A read that fails is a refusal too.
 - **Not recorded:** `OBSERVABILITY`. Its logs record client IPs, so they stay on only when a run asks again.
+- **Measurement flags are never recorded, by design:** `HEADROOM_PROBE` (`/_headroom` KILLS the isolate), `MEM_LEDGER` (it logs the memory ledger on every request) and `WFP_PHP_ENV` (a measurement build's allocator). Each is ON only for the run that exports it. The next update without it turns it OFF and logs one line ("... was on and is now OFF: measurement flags are never kept"). It is never refused: for these, going off by itself is the safe direction.
 - **The store-move hold** `CRON_INTERVAL_MS` (#479) is kept like the rest. Clear it with `DROP_SETTINGS=CRON_INTERVAL_MS`.
 
 ### The build inputs of a site (#377, #379)

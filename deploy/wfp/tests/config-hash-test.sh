@@ -429,18 +429,24 @@ want=$(bash -c '. "'"$LIB"'"; printf "%s\n" $SITE_SETTINGS' | sort | tr '\n' ' '
 got=$(sed -n '/^  local -x PHP_INI=/p' "$SITE" | grep -oE '[A-Z_]+="\$\{' | sed 's/="\${//' | sort | tr '\n' ' ')
 pyl=$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import site_settings; print(" ".join(sorted(site_settings.SETTINGS)) + " ")' "$(dirname "$LIB")")
 ok "#558 the settings list is the same in lib.sh, site update (local -x) and site_settings.py" "$([ -n "$want" ] && [ "$want" = "$got" ] && [ "$want" = "$pyl" ] && echo 1 || echo 0)"
-# 9k. A setting the LIVE site binds that is not in PHP_INI's case: HEADROOM_PROBE (#559; pf394a has it).
+# 9k. Measurement flags are never kept (the lead's ruling on #561): HEADROOM_PROBE KILLS the isolate,
+# so after one measurement run it must go OFF by itself, said, and never refused.
 srec_del; live '[{"type":"plain_text","name":"HEADROOM_PROBE","text":"on"},{"type":"plain_text","name":"SITE_ORIGIN","text":"y"}]'
 set_entry bld-other "$(last_hash)"
 u0=$(lines "$UPLOAD_LOG")
 run_update
 u1=$(lines "$UPLOAD_LOG")
-ok "#558 the live site binds HEADROOM_PROBE and the run drops it: REFUSED, nothing uploaded, and the message names DROP_SETTINGS=\"HEADROOM_PROBE\"" "$([ "$RC" = 2 ] && [ "$u1" = "$u0" ] && printf '%s' "$OUT" | grep -Fq 'the live site has HEADROOM_PROBE, and this update would DROP it' && printf '%s' "$OUT" | grep -Fq 'drop it on purpose with DROP_SETTINGS="HEADROOM_PROBE"' && echo 1 || echo 0)"
-HEADROOM_PROBE=on run_update
-ok "#558 the same run WITH HEADROOM_PROBE=on: uploaded, and recorded" "$([ "$RC" = 0 ] && srec_get | grep -Fq '"HEADROOM_PROBE": "on"' && echo 1 || echo 0)"
+ok "#558 the live site has HEADROOM_PROBE and the run does not: NOT refused, uploaded WITHOUT it, and the log says it is now off" "$([ "$RC" = 0 ] && [ "$u1" = $((u0 + 1)) ] && [ "$(conf_has HEADROOM_PROBE)" = 0 ] && printf '%s' "$OUT" | grep -Fq 'HEADROOM_PROBE was on and is now OFF: measurement flags are never kept' && echo 1 || echo 0)"
+[ "$RC" = 0 ] || { echo "$OUT" | tail -5 | sed 's/^/   /'; }
+set_entry bld-other "$(last_hash)"
+HEADROOM_PROBE=on MEM_LEDGER=on run_update
+ok "#558 a run with HEADROOM_PROBE=on MEM_LEDGER=on renders them, and the record holds NEITHER" "$([ "$RC" = 0 ] && [ "$(conf_has HEADROOM_PROBE)" = 1 ] && [ "$(conf_has MEM_LEDGER)" = 1 ] && srec_get | python3 -I -c 'import json, sys; d = json.load(sys.stdin); sys.exit(0 if not {"HEADROOM_PROBE", "MEM_LEDGER", "WFP_PHP_ENV"} & set(d["settings"]) else 1)' && echo 1 || echo 0)"
+live '[{"type":"plain_text","name":"HEADROOM_PROBE","text":"on"},{"type":"plain_text","name":"MEM_LEDGER","text":"on"},{"type":"plain_text","name":"SITE_ORIGIN","text":"y"}]'
 set_entry bld-other "$(last_hash)"
 run_update
-ok "#558 the next run WITHOUT it keeps it from the record" "$([ "$RC" = 0 ] && printf '%s' "$OUT" | grep -Fq 'settings: HEADROOM_PROBE kept from the record' && [ "$(conf_has HEADROOM_PROBE)" = 1 ] && echo 1 || echo 0)"
+ok "#558 the next run without them turns BOTH off, and says so for each" "$([ "$RC" = 0 ] && [ "$(conf_has HEADROOM_PROBE)" = 0 ] && [ "$(conf_has MEM_LEDGER)" = 0 ] && printf '%s' "$OUT" | grep -Fq 'HEADROOM_PROBE was on and is now OFF' && printf '%s' "$OUT" | grep -Fq 'MEM_LEDGER was on and is now OFF' && echo 1 || echo 0)"
+DROP_SETTINGS=HEADROOM_PROBE run_update
+ok "#558 DROP_SETTINGS naming a measurement flag is a no-op, not a refusal" "$([ "$RC" = 0 ] && echo 1 || echo 0)"
 srec_del; live '[{"type":"plain_text","name":"SITE_ORIGIN","text":"y"}]'
 # 9l. THE GUARD for the next new setting: every env name render_user and its helpers read must be a
 # recorded setting, or named here with why it is not. A new one fails this until it is listed.
@@ -463,11 +469,16 @@ PY2
 )
 # Not settings: the deploy's own names (API, APP, the credential, the namespace, the phase B names, a
 # constant). OBSERVABILITY: not recorded on purpose (client IPs). HTTP_ALLOW_HOSTS: #564 (three states).
-notset=" API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN OBSERVABILITY HTTP_ALLOW_HOSTS "
+# measurement flags: never recorded, by design (site_settings.py MEASUREMENT): ON only for the run.
+measurement=" HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV "
+notset=" API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN OBSERVABILITY HTTP_ALLOW_HOSTS$measurement"
 settings=" $(bash -c '. "'"$LIB"'"; echo $SITE_SETTINGS') "
 miss=""; for n in $derived; do case "$settings$notset" in *" $n "*) ;; *) miss="$miss $n" ;; esac; done
 ok "#558 every env name render_user reads is a recorded setting or named with a reason (missing:${miss:- none})" "$([ -z "$miss" ] && [ -n "$derived" ] && printf '%s\n' $derived | grep -qx HEADROOM_PROBE && echo 1 || echo 0)"
-unset PHP_INI DROP_SETTINGS HEADROOM_PROBE
+pym=" $(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import site_settings; print(" ".join(sorted(site_settings.MEASUREMENT)))' "$(dirname "$LIB")") "
+inset=0; for m in $measurement; do case "$settings" in *" $m "*) inset=1 ;; esac; done
+ok "#558 the measurement flags named here are site_settings.py MEASUREMENT, and none is a recorded setting" "$([ "$pym" = "$measurement" ] && [ "$inset" = 0 ] && echo 1 || echo 0)"
+unset PHP_INI DROP_SETTINGS HEADROOM_PROBE MEM_LEDGER
 
 echo "$fails failing check(s)"
 exit "$fails"
