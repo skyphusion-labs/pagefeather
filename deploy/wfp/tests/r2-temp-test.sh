@@ -86,12 +86,14 @@ for r in $(seq 1 "${STRESS_ROUNDS:-10}"); do
   S=$T/stress$r; mkdir -p "$S/uploads/2026"; for k in $(seq 1 32); do echo "s $r $k" > "$S/uploads/2026/s$k.jpg"; done
   python3 -I "$RT" mint wp-wfp-c-media 900 "$cf" > /dev/null; m0=$(st 'len(d["mints"])'); touch -t 202601010000 "$cf"
   ctl "/_expire_after?n=10"
-  R2_CRED_FILE=$cf R2_CRED_REFRESH="python3 -I '$RT' mint wp-wfp-c-media 900 '$cf'" R2_RETRY_S=20 R2_RETRY_STEP=1 JOBS=${STRESS_JOBS:-16} "$MEDIA" "$EP" wp-wfp-c-media "$S" > "$T/s$r.out" 2>&1; rc=$?
+  : > "$T/trace$r"
+  R2_CRED_FILE=$cf R2_CRED_REFRESH="bash '$HERE/r2-mint-trace.sh' '$T/trace$r' '$RT' wp-wfp-c-media '$cf'" R2_RETRY_S=20 R2_RETRY_STEP=1 JOBS=${STRESS_JOBS:-16} "$MEDIA" "$EP" wp-wfp-c-media "$S" > "$T/s$r.out" 2>&1; rc=$?
   mn=$(( $(st 'len(d["mints"])') - m0 ))
   if [ "$rc" != 0 ] || [ "$mn" != 1 ]; then
     sbad=$((sbad + 1))
     echo "  stress round $r: exit $rc, $mn mints; the mints of this round (time, bucket): $(st "d['mint_log'][$m0:]")"
     { grep -E '^r2|^fail ' "$T/s$r.out" | head -8; echo "    (the last lines)"; tail -4 "$T/s$r.out"; } | sed 's/^/    /'
+    echo "    the mint trace (start/end, pid, time, lock dir, cred mtime):"; sed 's/^/      /' "$T/trace$r"
   fi
 done
 check "#545 stress: ${STRESS_ROUNDS:-10} rounds of ${STRESS_JOBS:-16} jobs, each exit 0 with ONE fresh credential" "$sbad" 0
