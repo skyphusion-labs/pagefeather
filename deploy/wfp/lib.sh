@@ -229,6 +229,22 @@ lazy_cache_var() {
   fi
   echo "LAZY_CACHE_MB = \"$((10#$v))\""
 }
+# LAZY_ARENA (#394 step 2): "on" inflates bundle files into ONE reused arena per isolate instead of a
+# new buffer per file (index.js, inflate-arena.mjs); off or unset keeps today's path. LAZY_ARENA_MB sizes
+# the arena (an integer 1 to 64; unset: the LAZY_CACHE_MB size). Read from the run's environment only.
+lazy_arena_var() {
+  case "${LAZY_ARENA:-}" in
+    "") ;;
+    on|off) echo "LAZY_ARENA = \"${LAZY_ARENA}\"" ;;
+    *) echo "LAZY_ARENA must be on, off or unset, not ${LAZY_ARENA}" >&2; return 1 ;;
+  esac
+  local v=${LAZY_ARENA_MB:-}
+  [ -n "$v" ] || return 0
+  if ! [[ "$v" =~ ^[0-9]{1,2}$ ]] || [ "$v" -lt 1 ] || [ "$v" -gt 64 ]; then
+    echo "LAZY_ARENA_MB must be an integer from 1 to 64, not ${v}" >&2; return 1
+  fi
+  echo "LAZY_ARENA_MB = \"$((10#$v))\""
+}
 # PHP_RECYCLE (#394, experiment E1): "off" turns off the runtime recycle for MEMORY, so the PHP
 # runtime is kept after a request whose WebAssembly memory passed RECYCLE_WASM_BYTES (100 MiB,
 # index.js). A crashed runtime is still dropped (index.js: crashed || ...). With it off, nothing in
@@ -279,6 +295,8 @@ render_user() { # render_user <site> <origin>
   [ -z "$php_ini" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$php_ini
   local lazy_cache; lazy_cache=$(lazy_cache_var) || return 1
   [ -z "$lazy_cache" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$lazy_cache
+  local lazy_arena; lazy_arena=$(lazy_arena_var) || return 1
+  [ -z "$lazy_arena" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$lazy_arena
   local php_recycle; php_recycle=$(php_recycle_var) || return 1
   [ -z "$php_recycle" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$php_recycle
   local mem_ledger; mem_ledger=$(mem_ledger_var) || return 1
