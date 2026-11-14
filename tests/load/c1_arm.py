@@ -5,7 +5,7 @@ Usage: python3 tests/load/c1_arm.py <dir> [--seed-complete N] [--seed-pending N]
 
 <dir> holds, for one job:
   result.json   the runner's result: deploy/results/bench-runner-<job>.json
-                (tests/bench-runner, tests/load/load.py with its "slow" list)
+                (the Vultr runner, removed in #531; tests/load/load.py with its "slow" list)
   req.log       the container request log: /_stats.php?what=req
   samples.log   the container 2 s samples: /_stats.php?what=samples
   db.json       the row and action counts after the job: /_stats.php?what=db
