@@ -1,11 +1,13 @@
 #!/bin/bash
 # Build vendor/php_8_3.js from the pinned @php-wasm/web-8-3 JSPI loader.
+# PF_ENGINE_JS and PF_ENGINE_WASM point it at another engine's loader and wasm instead (the
+# pagefeather engine, #582); the same patches apply, each one asserting it matched once.
 # workerd has no import.meta.url, so the first statement (two lines) that
 # builds the wasm URL from it is replaced. The Worker passes the wasm module
 # itself through instantiateWasm, so the file name is never fetched.
 set -euo pipefail
 cd "$(dirname "$0")"
-src=node_modules/@php-wasm/web-8-3/jspi/php_8_3.js
+src=${PF_ENGINE_JS:-node_modules/@php-wasm/web-8-3/jspi/php_8_3.js}
 mkdir -p vendor
 { echo "const dependencyFilename = 'php_8_3.wasm';"; tail -n +3 "$src"; } > vendor/php_8_3.js
 head -1 vendor/php_8_3.js
@@ -223,7 +225,8 @@ PY6
 # Its static data ends at 12.4 MiB. Both values are 2-byte LEB128, so the patch
 # keeps every offset.
 python3 - <<'PY'
-src = 'node_modules/@php-wasm/web-8-3/jspi/8_3_36/php_8_3.wasm'
+import os
+src = os.environ.get('PF_ENGINE_WASM') or 'node_modules/@php-wasm/web-8-3/jspi/8_3_36/php_8_3.wasm'
 dst = 'vendor/php_8_3.wasm'
 b = bytearray(open(src, 'rb').read())
 def leb(b, i):

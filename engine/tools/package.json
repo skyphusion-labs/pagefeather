@@ -1,0 +1,9 @@
+{
+  "name": "pagefeather-engine-tools",
+  "private": true,
+  "description": "Pinned tools for engine/build.sh (#582): prettier formats the loader as upstream does before committing it.",
+  "license": "GPL-2.0-or-later",
+  "devDependencies": {
+    "prettier": "3.8.2"
+  }
+}

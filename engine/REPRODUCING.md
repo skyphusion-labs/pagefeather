@@ -51,9 +51,12 @@ job that must report "differs" on two different files.
 
 ## The loader
 
-After upstream's own prettier 3.8.2 and its `.prettierrc`, our loader equals the shipped
-`php_8_3.js` except one line: `dependenciesTotalSize`, the wasm's size. The shipped loader passes
-`prettier --check`. The two pinned builds' loaders are byte-identical.
+`build.sh` formats the loader with upstream's own prettier 3.8.2 and its `.prettierrc`
+(`engine/tools`), as upstream formats the loaders it commits; the shipped loader passes
+`prettier --check`. For the unchanged build, the formatted loader equals the shipped `php_8_3.js`
+except one line, `dependenciesTotalSize` (the wasm's size). For a pinned build it also differs in
+the data addresses the loader holds for exported data symbols (a MAIN_MODULE exports them), which
+move by the same 16 bytes. The two pinned builds' loaders are byte-identical.
 
 ## Time
 

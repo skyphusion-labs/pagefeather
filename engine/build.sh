@@ -1,8 +1,12 @@
 #!/bin/bash
 # Build the pagefeather engine (PHP 8.3, web, JSPI) from the pinned upstream pipeline (#582), with docker.
 #   engine/build.sh <out-dir>
-# S1: upstream UNCHANGED, with the same build args as Playground's build.js uses for
-# "--PLATFORM=web --PHP_VERSION=8.3.36 --WITH_JSPI=yes" (its platformDefaults.all plus web).
+# ENGINE_VARIANT=unchanged (default, S1): upstream UNCHANGED, with the same build args as Playground's
+# build.js uses for "--PLATFORM=web --PHP_VERSION=8.3.36 --WITH_JSPI=yes" (platformDefaults.all plus web).
+# ENGINE_VARIANT=lean (S2): engine/patches/lean.py edits the Dockerfile (no MAIN_MODULE, the extension
+# list of #582) and curl, soap and mbregex are off; ENGINE_GD=no is the measured arm without GD.
+# The loader is formatted with upstream's prettier (engine/tools, npm ci there first), as upstream
+# formats the loaders it commits; the raw loader is kept as php_8_3.raw.js.
 # build.js itself is not run: it refreshes PHP versions from the network and needs the monorepo's npm
 # install. Each phase prints a line "@event phase {json}" with its time, for the job summary.
 set -euo pipefail
@@ -45,6 +49,10 @@ fi
 (cd "$compile/base-image" && docker build -f ./Dockerfile -t playground-php-wasm:base --progress=plain . > "$out/base-image.log" 2>&1) || { tail -60 "$out/base-image.log"; exit 1; }
 phase base-image
 
+variant=${ENGINE_VARIANT:-unchanged}
+case "$variant" in unchanged) ;; lean) python3 -I "$here/patches/lean.py" "$compile/php/Dockerfile" ;; *) echo "unknown ENGINE_VARIANT $variant" >&2; exit 1 ;; esac
+[ -x "$here/tools/node_modules/.bin/prettier" ] || { echo "run npm ci in engine/tools first (the pinned prettier)" >&2; exit 1; }
+
 # 3. PHP, as build.js runs it (context packages/php-wasm).
 host_out="$compile/../web-builds/8-3/jspi"
 args=(PHP_VERSION="$PHP_VERSION" PHP_REF="$PHP_REF" OPENSSL_VERSION=1.1.0h
@@ -53,6 +61,11 @@ args=(PHP_VERSION="$PHP_VERSION" PHP_REF="$PHP_REF" OPENSSL_VERSION=1.1.0h
   WITH_SQLITE=yes WITH_SOURCEMAPS=no OUTPUT_DIR_ON_HOST="$host_out" WITH_DEBUG=no
   DEBUG_DWARF_COMPILATION_DIR="$compile/.." WITH_ICONV=yes WITH_MYSQL=no WITH_WS_NETWORKING_PROXY=yes
   WITH_IMAGICK=no EMSCRIPTEN_ENVIRONMENT=web WITH_JSPI=yes WITH_OPCACHE=yes STACK_SIZE=1MB)
+if [ "$variant" = lean ]; then
+  # Later entries win in build-arg order. No network in a Worker: curl and soap; mb_ereg is used only
+  # inside symfony polyfills: mbregex (and oniguruma).
+  args+=(WITH_CURL=no WITH_SOAP=no WITH_MBREGEX=no WITH_GD="${ENGINE_GD:-yes}")
+fi
 bargs=(); for a in "${args[@]}"; do bargs+=(--build-arg "$a"); done
 (cd "$compile" && docker build -f php/Dockerfile .. --tag=pagefeather-engine-build --progress=plain "${bargs[@]}" > "$out/docker-build.log" 2>&1) || { tail -60 "$out/docker-build.log"; exit 1; }
 phase php
@@ -60,6 +73,16 @@ phase php
 # 4. The outputs, as build.js copies them.
 docker run --rm -v "$out:/output" pagefeather-engine-build sh -c "cp -rf /root/output/* /output && chown -R $(id -u):$(id -g) /output"
 printf '%s\n' "${args[@]}" > "$out/build-args.txt"
+echo "ENGINE_VARIANT=$variant ENGINE_GD=${ENGINE_GD:-yes} ENGINE_PIN_ENV=${ENGINE_PIN_ENV:-0}" >> "$out/build-args.txt"
+# The linker inputs (wasm-ld --trace, lean only): one path per line, archive members folded into the archive.
+if [ "$variant" = lean ]; then
+  sed -E 's/^#[0-9]+ [0-9.]+ //' "$out/docker-build.log" | grep -E '^/[^ ]+\.(a|o)(\([^)]*\))?$' | sed -E 's/\(.*\)$//' | sort -u > "$out/link-inputs.txt"
+  [ -s "$out/link-inputs.txt" ] || { echo "no link inputs traced" >&2; exit 1; }
+  echo "link inputs: $(wc -l < "$out/link-inputs.txt")"
+fi
+lj=$(find "$out" -name php_8_3.js | head -1)
+cp "$lj" "${lj%.js}.raw.js"
+"$here/tools/node_modules/.bin/prettier" --config "$here/tools/.prettierrc" --write "$lj" > /dev/null
 { echo "UPSTREAM_COMMIT=$UPSTREAM_COMMIT"; echo "PHP_REF_COMMIT=$PHP_REF_COMMIT"; echo "EMSDK_VERSION=$EMSDK_VERSION";
   docker run --rm playground-php-wasm:base bash -lc "source /root/emsdk/emsdk_env.sh >/dev/null 2>&1; emcc --version | head -1; git -C /root/emsdk rev-parse HEAD" ; } > "$out/manifest.txt" 2>&1 || true
 (cd "$out" && find . -type f \( -name "*.wasm" -o -name "*.js" -o -name "*.so" \) -exec shasum -a 256 {} + | sort -k2 > SHA256SUMS)
