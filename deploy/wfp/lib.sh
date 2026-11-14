@@ -543,6 +543,49 @@ save_live_build() {
 # Checked again right before the rollback re-deploy, so no path re-deploys a build that is not
 # this site's live one.
 rollback_build_ok() { [ -n "$1" ] && [ "$1" != unknown ] && [ "$1" = "$2" ]; }
+# The rollback tree of one site update (#466): the code that was live, in <dest dir>, with its own
+# build/, vendor/ and Worker sources. save_rollback_tree <bucket> <live build id> <dest dir> takes
+# the site's own artifact _build/artifact/<live id>.tar.gz first (rollback_artifact.py, which
+# refuses an artifact that does not hold that build), else build/ when it IS the live build
+# (save_live_build), with this tree's vendor/ and sources. Prints the live id on stdout, the
+# source on stderr. Returns 1 with the reason on stdout when there is neither; the update then
+# rolls back the data only, as before.
+save_rollback_tree() {
+  local b=$1 live=$2 dest=$3 rc=0 why f
+  if [ -n "$live" ] && [ "$live" != unknown ]; then
+    mkdir -p "$dest/art"
+    python3 -I "$WFP/rollback_artifact.py" get "$b" "$live" "$dest/art" >&2 || rc=$?
+    if [ "$rc" = 0 ]; then
+      mv "$dest/art"/* "$dest/" && rmdir "$dest/art" || { echo "the fetched artifact did not move into place"; return 1; }
+      echo "  the rollback code is the site's own artifact $b/_build/artifact/$live.tar.gz" >&2
+      echo "$live"; return 0
+    fi
+    rm -rf "$dest/art"
+    [ "$rc" = 3 ] && echo "  no rollback artifact of $live in $b yet" >&2
+  fi
+  why=$(save_live_build "$live" "$dest") || { echo "$why; and no usable artifact of it in $b"; return 1; }
+  cp -a "$APP/vendor" "$dest/vendor" || { echo "the copy of vendor/ failed"; return 1; }
+  for f in "$APP"/*.js "$APP"/*.mjs "$APP/package.json" "$APP/package-lock.json"; do
+    [ -f "$f" ] && { cp -p "$f" "$dest/" || { echo "the copy of $f failed"; return 1; }; }
+  done
+  echo "  the rollback code is build/ (this clone built the live build last) with this tree's vendor/ and sources" >&2
+  echo "$live"
+}
+# write_rollback_artifact <bucket> <build id> [previous build id]: after a good update or add, store
+# what was deployed ($APP: build/, vendor/, sources) as _build/artifact/<id>.tar.gz, then prune
+# every artifact but this one and the previous build (#466). It never fails the caller's result:
+# without an artifact, the next update has no code rollback (data only), which is safe.
+write_rollback_artifact() {
+  local b=$1 id=$2 prev=${3:-} w
+  w=$(mktemp -d); chmod 700 "$w"
+  if python3 -I "$WFP/rollback_artifact.py" pack "$APP" "$id" "$w/a.tar.gz" && python3 -I "$WFP/rollback_artifact.py" put "$b" "$id" "$w/a.tar.gz"; then
+    python3 -I "$WFP/rollback_artifact.py" prune "$b" "$id" "$prev" || echo "  WARNING: the old rollback artifacts in $b were not all pruned" >&2
+  else
+    echo "  WARNING: no rollback artifact of $id was stored in $b: if the NEXT update fails, its code is not rolled back (the data is)" >&2
+  fi
+  rm -rf "$w"
+  return 0
+}
 # The Worker size limit is 64 MiB uncompressed (docs/plan-limits.md; measured:
 # 72 MB refused). Four files make almost all of a b-dosql upload: build/site.zip
 # (WordPress and the site's plugins), build/opcache.zip, and the PHP wasm with
