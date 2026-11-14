@@ -70,7 +70,12 @@ jobs:
           if cmp -s "$sj" "$bj"; then echo "loader: byte-identical"; else echo "loader: differs (raw)"; fi
       - name: The reproduction standard (pinned builds only; a gate)
         if: startsWith(matrix.variant, 'pinned-env-')
-        run: node engine/tools/repro-check.mjs "${{ steps.compare.outputs.sw }}" "${{ steps.compare.outputs.bw }}" | tee -a "$RUNNER_TEMP/out/compare/compare.txt"
+        # No pipe: the default run shell has no pipefail, so a pipe would report tee's status.
+        run: |
+          rc=0
+          node engine/tools/repro-check.mjs "${{ steps.compare.outputs.sw }}" "${{ steps.compare.outputs.bw }}" > "$RUNNER_TEMP/repro.txt" || rc=$?
+          cat "$RUNNER_TEMP/repro.txt"; cat "$RUNNER_TEMP/repro.txt" >> "$RUNNER_TEMP/out/compare/compare.txt"
+          [ "$rc" = 0 ] || { echo "::error::the pinned build does not meet the reproduction standard (rc=$rc)"; exit 1; }
       - name: Job summary
         if: always()
         run: |
