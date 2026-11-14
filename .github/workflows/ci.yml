@@ -161,6 +161,8 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: b-dosql the reused inflate arena keeps every file's bytes (issue #394 step 2)
         run: node --test spikes/b2-wordpress/tests/inflate-arena.test.mjs
+      - name: b-dosql a PHP write to a lazy bundle file survives the evict, real MEMFS code (issue #530)
+        run: node --test spikes/b2-wordpress/tests/lazy-write.test.mjs
       - name: b-dosql the lazy inflate cache defaults to 2 MiB (issue #394)
         run: node --test spikes/b2-wordpress/tests/lazy-cache-default.test.mjs
       - name: b-dosql x-perf isoAgeS is the isolate age (issue #474)
