@@ -81,15 +81,16 @@ update_one_inner() {
       python3 -I "$WFP/snapshot.py" dbsnapshot "$ORIGIN" "$TOK" "$bucket" "$snap_key" \
       || { echo "site $s: the snapshot did not store; aborting (a rollback would have no way back)" >&2; return 1; }
   fi
-  # Save the live build artifact before rebuilding, so a rollback re-uploads
-  # the exact code that was live (issue #137): a git-worktree rebuild of the
-  # old sha is fragile (a fresh worktree has no node_modules or vendor, and it
-  # would carry the dev wrangler.toml, not the wfp user config). build/ is what
-  # this clone built LAST, which can be another site's build (#464), so it is
-  # saved only when its build id is this site's live one (lib.sh save_live_build).
+  # Save the live code before rebuilding, so a rollback re-uploads the code
+  # that was live (issue #137): a git-worktree rebuild of the old sha is
+  # fragile (a fresh worktree has no node_modules or vendor, and it would carry
+  # the dev wrangler.toml, not the wfp user config). The site's own artifact in
+  # its bucket comes first (#466): build/, vendor/ and the Worker sources of
+  # its live build. Else build/, only when its build id is this site's live one:
+  # build/ is what this clone built LAST, which can be another site's (#464).
   local SAVED="" live_build="" why=""
   SAVED=$(mktemp -d)
-  if why=$(save_live_build "${rollback:-}" "$SAVED"); then
+  if why=$(save_rollback_tree "$bucket" "${rollback:-}" "$SAVED"); then
     live_build=$why
     echo "site $s: saved the live build $live_build for rollback"
   else
@@ -131,9 +132,13 @@ update_one_inner() {
   if [ "$ok" = 1 ]; then
     [ -n "$SAVED" ] && rm -rf "$SAVED"
     [ "${COUNT_ROWS:-0}" = 1 ] && echo "site $s: rows after (updated): $(row_count "$ORIGIN" "$TOK")"
+    local rec_rc=0
     echo "site $s: updated $rollback -> $new"
-    record_build_inputs "$bucket" "$new" "$WDIR" || { echo "site $s: UPDATED, but its build inputs were NOT recorded (#379): run the update again with the same inputs" >&2; return 1; }
-    return 0
+    record_build_inputs "$bucket" "$new" "$WDIR" || { echo "site $s: UPDATED, but its build inputs were NOT recorded (#379): run the update again with the same inputs" >&2; rec_rc=1; }
+    # The rollback artifact of the build now live (#466), also when the record failed: the code is
+    # live either way. Keeps this one and $rollback.
+    write_rollback_artifact "$bucket" "$new" "${rollback:-}"
+    return "$rec_rc"
   fi
   echo "site $s: ROLLING BACK to $rollback. NOTE: a rollback drops any write made between the snapshot and now." >&2
   if [ -n "$snap_key" ]; then
@@ -146,9 +151,12 @@ update_one_inner() {
   fi
   if [ -n "$SAVED" ]; then
     echo "site $s: re-deploy the saved build $live_build"
-    rm -rf "$APP/build" && mv "$SAVED/build" "$APP/build"
+    # From the saved tree: its own build/, vendor/ and sources (#466), this run's config, and
+    # this tree's node_modules (pinned by the lock file). $APP/build is left as it is.
+    cp "$CONF" "$SAVED/wrangler.rollback.toml"
+    [ -e "$SAVED/node_modules" ] || ln -s "$APP/node_modules" "$SAVED/node_modules"
     local W2; W2=$(mktemp -d)
-    if tfr site output -json | site_secrets_json "$W2/sec.json" && (cd "$APP" && "$WR" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W2/sec.json") > "$W2/rb.log" 2>&1; then
+    if tfr site output -json | site_secrets_json "$W2/sec.json" && (cd "$SAVED" && "$WR" deploy --config "$SAVED/wrangler.rollback.toml" --dispatch-namespace "$NAMESPACE" --secrets-file "$W2/sec.json") > "$W2/rb.log" 2>&1; then
       echo "site $s: re-deployed ${live_build:-unknown}"
       tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=$live_build" -var "config_hash=$live_hash" >/dev/null || echo "site $s: the site map entry did not record the rollback build $live_build" >&2
       wait_build "$ORIGIN" "$TOK" "$live_build" || echo "site $s: /_build did not return to $live_build after the rollback re-deploy" >&2
@@ -234,6 +242,8 @@ if [ "$cmd" = add ]; then
   footprint_present "$fp" || { echo "site $s: not every part is there after the add:" >&2; printf '%s\n' "$fp" | sed 's/^/  /' >&2; exit 1; }
   # Its scripts bind only its own resources (bindings.py, #35 slice 4).
   NAMESPACE=$NAMESPACE KV_ID=$KV_ID python3 -I "$WFP/bindings.py" "$s"
+  # The rollback artifact of the build this add deployed (#466): the first update can roll back to it.
+  write_rollback_artifact "$(media_bucket "$s")" "$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js")"
   # A build made by this run is recorded (#379); with no BUILD=1 the build came from elsewhere.
   if [ "${BUILD:-0}" != 0 ]; then
     W=$(mktemp -d); chmod 700 "$W"

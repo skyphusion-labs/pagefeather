@@ -70,6 +70,8 @@ jobs:
         run: php spikes/b2-wordpress/tests/object-cache-isolated-test.php
       - name: approach A keeps FOUND_ROWS and LAST_INSERT_ID on one pooled connection (issue #498)
         run: php tests/a/found-rows-test.php
+      - name: approach A object-cache KV writes are coalesced and 429s counted (issue #500)
+        run: node --test spikes/b2-wordpress/tests/oc-l2-writer.test.mjs
       - name: b-dosql approach-A options never persist across isolates (issue #491)
         run: php spikes/b2-wordpress/tests/object-cache-491-test.php
       - name: Approach A object cache source invariants (issue #218)
@@ -123,6 +125,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/release-runtime.test.mjs
       - name: load test admin loops and cleanup, against a stub site (issue #394)
         run: python3 tests/load/admin-stub-test.py
+      - name: load test 1102 counter counts 5xx only (issue #394)
+        run: python3 tests/load/is1102-test.py
       - name: b-dosql the isolate memory ledger (issue #394)
         run: node --test spikes/b2-wordpress/tests/mem-ledger.test.mjs
       - name: b-dosql the lazy inflate cache defaults to 2 MiB (issue #394)
@@ -210,6 +214,7 @@ jobs:
           deploy/wfp/tests/update-all-test.sh
           deploy/wfp/tests/update-inputs-test.sh
           deploy/wfp/tests/rollback-build-test.sh
+          python3 -I deploy/wfp/tests/rollback-artifact-test.py
           deploy/wfp/tests/build-inputs-test.sh
           deploy/wfp/tests/kv-build-test.sh
           deploy/wfp/tests/config-hash-test.sh
