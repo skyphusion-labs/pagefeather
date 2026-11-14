@@ -323,6 +323,7 @@ jobs:
           deploy/oneclick/tests/dryrun-test.sh
           node deploy/oneclick-live/tests/live-test.mjs
           python3 deploy/wfp/tests/bindings-test.py
+          python3 -I deploy/wfp/tests/bindings-render-test.py
           python3 deploy/wfp/tests/cross-test.py
           deploy/wfp/tests/probe-entry-test.sh
           deploy/wfp/tests/setup-green-test.sh

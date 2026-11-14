@@ -10,8 +10,8 @@ For each site <s>:
   Durable Object class (durable_object_namespace PhpRuntime, with no
   script_name or script_name site-<s>), images, assets (named ASSETS, and
   only on an OPCACHE_SPLIT=1 build, #412), plain_text vars, and
-  the secrets WP_SALT and SPIKE_TOKEN (secret_text), and TURNSTILE_SECRET when Turnstile is
-  wired (#340). It may ALSO bind the
+  the secrets WP_SALT and SPIKE_TOKEN (secret_text), TURNSTILE_SECRET when Turnstile is
+  wired (#340), and SNAPSHOT_TOKEN, the key of its scheduled snapshot (#533). It may ALSO bind the
   opinionated defaults wired through the provisioning descriptor table (#201): the
   Browser Rendering binding (browser), the Workers AI binding (ai), its own
   object-cache L2 namespace (kv_namespace named OC_KV), its own durable-email
@@ -22,7 +22,9 @@ For each site <s>:
 - the dispatcher wp-<s> (GET .../workers/scripts/wp-<s>/settings) may bind
   only: the site map (kv_namespace SITES, id KV_ID) and the namespace
   (dispatch_namespace, namespace NAMESPACE, outbound only to
-  wp-wfp-outbound).
+  wp-wfp-outbound). A site's copy also binds its scheduled snapshot (#533, lib.sh
+  render_site_dispatcher), and only that: plain_text SNAPSHOT_SCRIPT naming its OWN user
+  Worker (site-<s>), plain_text SNAPSHOT_TIMEOUT_MS (digits), and the secret SNAPSHOT_TOKEN.
 A script whose bindings cannot be read fails: an unread script is not a pass.
 
 Environment: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, NAMESPACE, KV_ID;
@@ -34,7 +36,7 @@ import json, os, sys, urllib.error, urllib.request
 ENV = os.environ
 USER_OK = {"r2_bucket", "durable_object_namespace", "images", "assets", "send_email", "plain_text", "secret_text", "browser", "ai", "kv_namespace", "queue", "analytics_engine", "vectorize"}
 # TURNSTILE_SECRET: the site's own Turnstile secret, set only when the run has it (#340).
-SECRETS_OK = {"WP_SALT", "SPIKE_TOKEN", "TURNSTILE_SECRET"}
+SECRETS_OK = {"WP_SALT", "SPIKE_TOKEN", "TURNSTILE_SECRET", "SNAPSHOT_TOKEN"}  # SNAPSHOT_TOKEN: #533
 
 
 def api(path):
@@ -94,6 +96,15 @@ def check_dispatcher(s, bs):
                 bad.append("wp-%s binds the dispatch namespace %s" % (s, b.get("namespace")))
             elif b.get("outbound") and out.get("service") != "wp-wfp-outbound":
                 bad.append("wp-%s sends its outbound to %s" % (s, out.get("service")))
+        # #533: the scheduled snapshot of THIS site, and nothing wider.
+        elif t == "plain_text" and n == "SNAPSHOT_SCRIPT":
+            if b.get("text") != "site-" + s:
+                bad.append("wp-%s binds SNAPSHOT_SCRIPT to %s, not its own site-%s" % (s, b.get("text"), s))
+        elif t == "plain_text" and n == "SNAPSHOT_TIMEOUT_MS":
+            if not str(b.get("text", "")).isdigit():
+                bad.append("wp-%s binds SNAPSHOT_TIMEOUT_MS to a value that is not a number" % s)
+        elif t == "secret_text" and n == "SNAPSHOT_TOKEN":
+            pass
         else:
             bad.append("wp-%s binds %s %s: not allowed for a dispatcher" % (s, t, n))
     return bad

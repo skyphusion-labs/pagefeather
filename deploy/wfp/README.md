@@ -271,8 +271,9 @@ The Worker size limit is 64 MiB uncompressed. Nearly all of a b-dosql upload is 
 ## Bindings read back
 
 After every upload, `bindings.py` reads each script's bindings back from the API (`up.sh` for every site, `site add` for its own site). It fails unless each one binds only its own resources:
-- **A user Worker `site-<name>`** may bind its own bucket, its own Durable Object class, Images, its assets (an `ASSETS` binding only on an `OPCACHE_SPLIT=1` build; without it the asset router serves `build/public` before the Worker runs, #412), plain vars, and the secrets `WP_SALT` and `SPIKE_TOKEN`.
-- **A dispatcher `wp-<name>`** may bind the site map and the namespace, with its outbound going to `wp-wfp-outbound` only.
+- **A user Worker `site-<name>`** may bind its own bucket, its own Durable Object class, Images, its assets (an `ASSETS` binding only on an `OPCACHE_SPLIT=1` build; without it the asset router serves `build/public` before the Worker runs, #412), plain vars, and the secrets `WP_SALT`, `SPIKE_TOKEN`, `TURNSTILE_SECRET` (#340) and `SNAPSHOT_TOKEN` (#533).
+- **A dispatcher `wp-<name>`** may bind the site map and the namespace, with its outbound going to `wp-wfp-outbound` only. A site's copy also binds its scheduled snapshot (#533), and only that: `SNAPSHOT_SCRIPT` naming its OWN `site-<name>`, `SNAPSHOT_TIMEOUT_MS` (a number), and the secret `SNAPSHOT_TOKEN`.
+- `tests/bindings-render-test.py` runs the REAL rendered configs (`render_user`, `render_site_dispatcher`) and the secret names the deploy uploads through this audit, so a binding lib.sh renders and the audit does not know fails in CI, not on the first live `site add` (as on pf533, #533, 2026-11-14). Note that `site update` and `site schedule` do not run the audit; `up.sh` and `site add` do.
 
 Any other binding fails, and so does a script whose bindings cannot be read. The output names the bindings and their types, never a value.
 
@@ -307,6 +308,7 @@ deploy/wfp/tests/wait-site-test.sh          # the wait for a new site to answer 
 deploy/wfp/tests/snapshot-test.sh           # the isolation snapshots and diff, and site_footprint
 deploy/wfp/tests/site-cmd-test.sh           # site add and remove refuse, with no write, when they must
 python3 deploy/wfp/tests/bindings-test.py   # the bindings read back: each script binds only its own resources
+python3 -I deploy/wfp/tests/bindings-render-test.py   # the REAL rendered configs and secret names through the binding audit (#533, after the pf533 add)
 python3 deploy/wfp/tests/cross-test.py      # the isolation verdict: a breach is never read as a pass
 deploy/wfp/tests/probe-entry-test.sh        # the probe map entry and the CROSS_OUTBOUND option
 deploy/wfp/tests/tf-test.sh                 # terraform validate, fmt, and no account token in the site graph (local: needs terraform)
