@@ -1,4 +1,4 @@
-// The PHP engine's runtime contract (#582), as checks that run against ANY engine: today's
+// The runtime contract of the pagefeather engine (#582), as checks that run against ANY engine: today's
 // @php-wasm/web-8-3 3.1.62 patched by prepare.sh, and later our own build. Each check boots the
 // real loader and wasm in node and throws an AssertionError when the engine breaks the contract.
 // engine-contract.test.mjs runs every check on the engine under test (they must pass), and on the

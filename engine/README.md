@@ -1,6 +1,8 @@
 # engine
 
-Pagefeather's own PHP 8.3 WebAssembly engine (issue #582). Today the Worker runs WordPress
+The pagefeather engine (issue #582): our own WebAssembly build of PHP 8.3. The product name is
+"pagefeather engine", never a name with "PHP" in it (PHP License clause 4, Conrad's ruling of
+2026-11-14); its notices say that it includes PHP. Today the Worker runs WordPress
 Playground's prebuilt `@php-wasm/web-8-3` 3.1.62, patched by `spikes/b2-wordpress/prepare.sh`.
 This directory will hold the build of our own engine. The design is in issue #582.
 
