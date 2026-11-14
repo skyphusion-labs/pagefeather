@@ -46,6 +46,20 @@ variable "config_hash" {
   }
 }
 
+# #515: set when a rollback's data restore FAILED, to the snapshot key that restores the site
+# (<site>/<build>-<time>.ndjson under _snapshots/). The database is partial until a restore runs
+# through, so "site update" refuses while it is set; "site restore" clears it. site_vars passes
+# the recorded value to every apply, so no other apply clears it by leaving it out.
+variable "data_hold" {
+  type    = string
+  default = ""
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._/-]{0,200}$", var.data_hold))
+    error_message = "data_hold must be empty or a snapshot key ([A-Za-z0-9._/-], at most 200 characters)."
+  }
+}
+
 variable "kv_namespace_id" { type = string }
 
 # Per-call limits, applied by the dispatcher (docs/wfp.md item 4: cpuMs is
@@ -113,6 +127,7 @@ resource "cloudflare_workers_kv" "entry" {
   value = jsonencode(merge(
     { script = "site-${var.name}", outbound = true, build = var.build },
     var.config_hash != "" ? { config_hash = var.config_hash } : {},
+    var.data_hold != "" ? { data_hold = var.data_hold } : {},
     var.cpu_ms > 0 ? { cpuMs = var.cpu_ms } : {},
     var.sub_requests > 0 ? { subRequests = var.sub_requests } : {},
   ))
@@ -146,6 +161,7 @@ resource "cloudflare_workers_custom_domain" "site" {
 
 output "media_bucket" { value = cloudflare_r2_bucket.media.name }
 output "hostname" { value = var.hostname }
+output "data_hold" { value = var.data_hold }
 output "custom_domain_hostname" {
   value = var.custom_domain ? cloudflare_workers_custom_domain.site[0].hostname : ""
 }

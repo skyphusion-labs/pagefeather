@@ -94,6 +94,18 @@ entry_build() { # entry_build <site>
 entry_config_hash() { # entry_config_hash <site>
   api GET "/storage/kv/namespaces/$KV_ID/values/$(site_key "$1")" | python3 "$WFP/kv_build.py" config_hash
 }
+# The "data_hold" field (#515): the snapshot key when a rollback's data restore failed and the
+# database is partial; "" otherwise. site update refuses while it is set.
+entry_data_hold() { # entry_data_hold <site>
+  api GET "/storage/kv/namespaces/$KV_ID/values/$(site_key "$1")" | python3 "$WFP/kv_build.py" data_hold
+}
+# The recovery for a held site (#515), printed by a failed restore and by a refused update. No
+# secret: the token is read from the workspace when the command runs.
+print_restore_help() { # print_restore_help <site> <origin> <bucket> <snapshot key>
+  echo "  restore it:  deploy/wfp/site restore $1            (restores $3/_snapshots/$4, then clears the hold)" >&2
+  echo "  or by hand:  python3 -I deploy/wfp/snapshot.py dbrestore $2 \"\$(cd deploy/wfp/terraform/site && terraform workspace select $1 >/dev/null && terraform output -raw spike_token)\" $3 $4" >&2
+  echo "               (then clear the hold: deploy/wfp/site restore $1, or an apply with -var data_hold=)" >&2
+}
 # sha256 of the rendered user config and the sorted secret key names (#421).
 # config_hash <rendered file> <secrets json>
 # Prints 64 hex characters. A secret value is not hashed and is not printed.
@@ -856,6 +868,11 @@ site_vars() { # site_vars <site> <workers.dev subdomain> <kv id>
   REC_SITE=$1
   REC_VARS=(-var "name=$1" -var "hostname=$REC_HOST" -var "kv_namespace_id=$3" -var "custom_domain=$REC_CD")
   [ "$zone" = - ] || REC_VARS+=(-var "zone_id=$zone")
+  # The recorded data hold (#515) goes to every apply, so an apply that does not mean to clear it
+  # keeps it. Only "site restore" clears it (a later -var data_hold= wins).
+  local hold; hold=$(tfr site output -raw data_hold 2>/dev/null) || hold=""
+  case "$hold" in *[!A-Za-z0-9._/-]*) hold="" ;; esac
+  REC_VARS+=(-var "data_hold=$hold")
 }
 # The sites: the Terraform workspaces of terraform/site, without "default".
 list_sites() {
@@ -907,7 +924,8 @@ update_all() { # update_all <updater-fn> <site>...
   local rc=0 done_list="" failed="" left="" site
   for site in "$@"; do
     if [ "$rc" = 0 ]; then
-      if "$fn" "$site"; then done_list="$done_list $site"; else rc=1; failed=" $site"; fi
+      # The failed site's own code is kept (#515: 3 is a failed data restore, the site is held).
+      if "$fn" "$site"; then done_list="$done_list $site"; else rc=$?; [ "$rc" != 0 ] || rc=1; failed=" $site"; fi
     else left="$left $site"; fi
   done
   echo "update --all: updated:${done_list:- none}; failed:${failed:- none}; not reached:${left:- none}"

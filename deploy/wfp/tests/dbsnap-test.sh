@@ -13,6 +13,12 @@
 #   big restore        dbrestore exit 0 in parts under the 2 MiB cap: replace=1 first,
 #                      append=1 after, every line sent once (#287: one request was 413)
 #   one huge line      dbrestore exit 1, stage split, and nothing is sent
+#   #515, on the big export in parts of 400 KB, a 502 at part 6 of a pass:
+#     once             exit 0 in ONE pass: part 6 sent again, 40000 rows in the database
+#     applied          exit 0 in ONE pass: /_dbcounts says part 6 is in, so it is NOT sent again
+#                      (40000 rows, none twice)
+#     once, no counts  exit 0 in TWO passes: it cannot tell, so it starts over from part 0
+#     always           exit 1 after 3 passes, naming part 6 and 502
 # Exits 0 only when every case gives what it must. Needs bash, curl, python3.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -53,6 +59,25 @@ ok "CONTROL: one request of the big snapshot is 413 (got $c)" "$([ "$c" = 413 ] 
 pid=$(start ok); U="http://127.0.0.1:$(cat "$T/port")"; snap "$U" "k1.ndjson" >/dev/null; r=$(DBIMPORT_PART_BYTES=10 restore "$U" "k1.ndjson"); rr=$?
 p=$(curl -s "$U/_parts"); kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
 ok "dbrestore one huge line: exit 1, stage split, nothing sent ($r; parts $p)" "$([ "$rr" = 1 ] && printf '%s' "$r" | grep -q split && [ "$p" = "[]" ] && echo 1 || echo 0)"
+# #515: a transient 502 at part 6 (fake-dbsnap.py big-502* modes). Parts of 400 KB: about 10.
+r515() { # r515 <mode>: restore the big snapshot; sets R (output), RR (exit), NP (POSTs), ROWS (in the db)
+  local pid; pid=$(start "$1"); U="http://127.0.0.1:$(cat "$T/port")"; snap "$U" "big.ndjson" >/dev/null
+  R=$(DBIMPORT_PART_BYTES=400000 DBIMPORT_RETRY_DELAYS=0,0,0 DBRESTORE_RESTART_S=0 restore "$U" "big.ndjson" 2> "$T/r515.err"); RR=$?
+  NP=$(curl -s "$U/_parts" | python3 -I -c 'import json,sys; print(len(json.load(sys.stdin)))')
+  ROWS=$(curl -s "$U/_dbcounts" | python3 -I -c 'import json,sys
+try: print(sum(json.load(sys.stdin)["rows"].values()))
+except Exception: print("n/a")')
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+  NPARTS=$(printf '%s' "$R" | python3 -I -c 'import json,sys; print(json.loads(sys.stdin.read()).get("parts", 0))')
+}
+r515 big-502once
+ok "#515 502 once at part 6: exit 0 in one pass, part 6 sent again ($NP posts for $NPARTS parts), 40000 rows ($R)" "$([ "$RR" = 0 ] && [ "$NPARTS" -ge 8 ] && [ "$NP" = $((NPARTS + 1)) ] && [ "$ROWS" = 40000 ] && printf '%s' "$R" | grep -q '"attempts": 1' && echo 1 || echo 0)"
+r515 big-502applied
+ok "#515 applied then 502 at part 6: exit 0 in one pass, part 6 NOT sent again ($NP posts for $NPARTS parts), 40000 rows, none twice ($ROWS)" "$([ "$RR" = 0 ] && [ "$NP" = "$NPARTS" ] && [ "$ROWS" = 40000 ] && grep -q 'part 6 was applied' "$T/r515.err" && echo 1 || echo 0)"
+r515 big-502once-nocounts
+ok "#515 502 once and no /_dbcounts: exit 0 in TWO passes, the second from part 0 ($NP posts = 7 + $NPARTS) ($R)" "$([ "$RR" = 0 ] && [ "$NP" = $((NPARTS + 7)) ] && printf '%s' "$R" | grep -q '"attempts": 2' && echo 1 || echo 0)"
+r515 big-502always
+ok "#515 502 always at part 6: exit 1 after 3 passes, naming part 6 and 502 ($R)" "$([ "$RR" = 1 ] && printf '%s' "$R" | grep -q '"attempts": 3' && printf '%s' "$R" | grep -q '"part": 6' && printf '%s' "$R" | grep -q '"status": 502' && echo 1 || echo 0)"
 # row_count (lib.sh) reads /_dbexport and counts the rows (the fake ok mode has 3).
 pid=$(start ok); U="http://127.0.0.1:$(cat "$T/port")"; rc_rows=$(row_count "$U" t)
 kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
