@@ -1,0 +1,8 @@
+platform,iter,step,t_utc,kind,text
+pf,setup,editor-check,2026-11-14T20:10:01.192Z,console-error,Failed to load resource: the server responded with a status of 503 ()
+pf,setup,editor-check,2026-11-14T20:10:01.220Z,console-error,Failed to load resource: the server responded with a status of 503 ()
+pf,setup,editor-check:retry,2026-11-14T20:12:24.432Z,console-warning,global-styles-css-custom-properties-inline-css was added to the iframe incorrectly. Please use block.json or enqueue_block_assets to add styles to the iframe. JSHandle@node
+pf,setup,editor-check#2,2026-11-14T20:12:42.331Z,console-error,Failed to load resource: the server responded with a status of 500 ()
+pf,setup,editor-check#2:retry,2026-11-14T20:14:44.839Z,console-error,Failed to load resource: the server responded with a status of 500 ()
+pf,setup,editor-check#3,2026-11-14T20:16:47.298Z,console-error,Failed to load resource: the server responded with a status of 500 ()
+pf,setup,editor-check#3:retry,2026-11-14T20:18:50.026Z,console-error,Failed to load resource: the server responded with a status of 500 ()

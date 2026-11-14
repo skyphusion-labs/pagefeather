@@ -1,0 +1,14 @@
+{
+ "blockEditorBody": true,
+ "blockTypes": 270,
+ "classicEditorActive": false,
+ "activePlugins": [
+  "woocommerce/woocommerce"
+ ],
+ "wpBranch": "7-1",
+ "postId": 1,
+ "postContentLen": 137,
+ "pageId": 2,
+ "pageSlug": "sample-page",
+ "pageContentLen": 1361
+}

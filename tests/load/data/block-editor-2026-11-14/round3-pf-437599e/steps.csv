@@ -1,0 +1,54 @@
+platform,iter,step,t_utc,ok,ms,verified,fail_reason,editor_error,failing_call,retry_ok,php_calls,php_5xx,aborted
+pf,setup,login,2026-11-14T20:26:45.579Z,1,11825,,,,,,3,0,0
+pf,setup,editor-check,2026-11-14T20:26:57.404Z,0,129575,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 503,0,4,1,0
+pf,setup,editor-check#2,2026-11-14T20:31:09.554Z,0,122555,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,0,1,1,0
+pf,setup,editor-check#3,2026-11-14T20:35:15.292Z,0,122468,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,1,1,1,0
+pf,1,post-new-load,2026-11-14T20:38:04.464Z,0,122740,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,0,2,1,0
+pf,1,page-new-load,2026-11-14T20:42:09.747Z,0,124110,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,0,1,1,0
+pf,2,post-new-load,2026-11-14T20:46:17.177Z,0,122954,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,0,1,1,0
+pf,2,page-new-load,2026-11-14T20:50:22.999Z,1,26322,,,,,,1,0,0
+pf,2,page-new-type,2026-11-14T20:50:49.321Z,1,258,,,,,,0,0,0
+pf,2,page-publish,2026-11-14T20:50:49.579Z,1,10297,,,,OPTIONS /index.php /wp/v2/pages/ 500,,14,1,0
+pf,2,page-new-verify,2026-11-14T20:50:59.877Z,0,129723,,locator.waitFor: Timeout 120000ms exceeded.,,POST /wp-admin/admin-ajax.php 500,1,5,2,0
+pf,2,page-edit-load,2026-11-14T20:53:39.077Z,1,28185,,,,POST /wp-admin/admin-ajax.php 500,,2,1,0
+pf,2,page-edit-append,2026-11-14T20:54:07.263Z,0,92383,,locator.waitFor: Timeout 90000ms exceeded.,"Error notice
+Updating failed. The request did not complete, and some changes may have been saved. Check before you try again.",POST /index.php /wp/v2/pages/<id> 500,0,13,1,0
+pf,3,post-new-load,2026-11-14T20:57:12.083Z,0,123063,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,0,1,1,0
+pf,3,page-new-load,2026-11-14T21:01:17.488Z,0,122725,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,0,1,1,0
+pf,4,post-new-load,2026-11-14T21:05:23.295Z,0,123095,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,0,1,1,0
+pf,4,page-new-load,2026-11-14T21:09:29.168Z,0,122609,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,1,1,1,0
+pf,4,page-new-type,2026-11-14T21:11:58.102Z,1,376,,,,,,0,0,0
+pf,4,page-publish,2026-11-14T21:11:58.478Z,0,92268,,locator.waitFor: Timeout 90000ms exceeded.,"Error notice
+Publishing failed. The request did not complete, and some changes may have been saved. Check before you try again.",OPTIONS /index.php /wp/v2/pages/ 500,0,26,2,0
+pf,5,post-new-load,2026-11-14T21:15:02.742Z,0,123409,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,0,1,1,0
+pf,5,page-new-load,2026-11-14T21:19:08.908Z,0,122556,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,0,1,1,0
+pf,6,post-new-load,2026-11-14T21:23:13.799Z,0,122571,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,1,1,1,0
+pf,6,post-new-type,2026-11-14T21:25:42.573Z,1,536,,,,,,0,0,0
+pf,6,post-publish,2026-11-14T21:25:43.109Z,1,8151,,,,OPTIONS /index.php /wp/v2/posts/ 500,,10,1,0
+pf,6,post-new-verify,2026-11-14T21:25:51.261Z,0,131498,,locator.waitFor: Timeout 120000ms exceeded.,,POST /wp-admin/admin-ajax.php 500,1,2,2,0
+pf,6,post-edit-load,2026-11-14T21:28:35.684Z,1,28594,,,,POST /wp-admin/admin-ajax.php 500,,2,1,0
+pf,6,post-edit-append,2026-11-14T21:29:04.279Z,0,92751,,locator.waitFor: Timeout 90000ms exceeded.,"Error notice
+Updating failed. The request did not complete, and some changes may have been saved. Check before you try again.",POST /index.php /wp/v2/posts/<id> 500,0,13,1,0
+pf,6,page-new-load,2026-11-14T21:32:09.778Z,0,127696,,locator.waitFor: Timeout 120000ms exceeded.,,POST /wp-admin/admin-ajax.php 500,0,2,2,0
+pf,7,post-new-load,2026-11-14T21:36:20.081Z,0,122537,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,0,1,1,0
+pf,7,page-new-load,2026-11-14T21:40:25.607Z,1,24855,,,,,,2,0,0
+pf,7,page-new-type,2026-11-14T21:40:50.463Z,1,436,,,,,,0,0,0
+pf,7,page-publish,2026-11-14T21:40:50.899Z,0,92264,,locator.waitFor: Timeout 90000ms exceeded.,"Error notice
+Publishing failed. The request did not complete, and some changes may have been saved. Check before you try again.",POST /index.php /wp/v2/pages/<id> 500,0,26,2,0
+pf,8,post-new-load,2026-11-14T21:43:55.311Z,0,127655,,locator.waitFor: Timeout 120000ms exceeded.,,POST /wp-admin/admin-ajax.php 500,0,2,2,0
+pf,8,page-new-load,2026-11-14T21:48:05.482Z,0,122695,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,0,1,1,0
+pf,9,post-new-load,2026-11-14T21:52:10.861Z,0,123728,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,0,1,1,0
+pf,9,page-new-load,2026-11-14T21:56:17.046Z,1,25340,,,,,,1,0,0
+pf,9,page-new-type,2026-11-14T21:56:42.386Z,1,504,,,,,,0,0,0
+pf,9,page-publish,2026-11-14T21:56:42.890Z,1,9218,,,,OPTIONS /index.php /wp/v2/pages/ 500,,14,1,0
+pf,9,page-new-verify,2026-11-14T21:56:52.111Z,0,129418,,locator.waitFor: Timeout 120000ms exceeded.,,POST /wp-admin/admin-ajax.php 500,1,6,2,0
+pf,9,page-edit-load,2026-11-14T21:59:29.608Z,1,24748,,,,,,1,0,0
+pf,9,page-edit-append,2026-11-14T21:59:54.357Z,1,3637,,,,,,3,0,0
+pf,9,page-edit-verify,2026-11-14T21:59:57.995Z,1,33096,rest+dom,,,POST /wp-admin/admin-ajax.php 500,,4,1,0
+pf,10,post-new-load,2026-11-14T22:00:31.094Z,0,123206,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,0,1,1,0
+pf,10,page-new-load,2026-11-14T22:04:37.175Z,0,122773,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,0,1,1,0
+pf,cleanup,delete-and-restore,2026-11-14T22:08:42.964Z,0,12111,,page.evaluate: Error: DELETE /wp/v2/pages/5202 500,,,0,2,0,0
+pf,cleanup,delete-and-restore#2,2026-11-14T22:09:06.347Z,0,8258,,page.evaluate: Error: DELETE /wp/v2/pages/5202 404,,,0,2,0,0
+pf,cleanup,delete-and-restore#3,2026-11-14T22:09:23.323Z,0,8646,,page.evaluate: Error: DELETE /wp/v2/pages/5202 404,,,0,2,0,0
+pf,setup,login,2026-11-14T22:31:20.062Z,1,14957,,,,,,3,0,0
+pf,cleanup,delete-and-restore,2026-11-14T22:31:35.020Z,1,82847,"{""deleted"":4,""restored"":2,""revs"":6,""gone404"":0,""tagged"":4}",,,,,33,0,0

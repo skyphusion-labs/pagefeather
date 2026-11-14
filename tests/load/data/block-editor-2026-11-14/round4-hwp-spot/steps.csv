@@ -1,0 +1,32 @@
+platform,iter,step,t_utc,ok,ms,verified,fail_reason,editor_error,failing_call,retry_ok,php_calls,php_5xx,aborted
+hwp,setup,login,2026-11-14T22:09:45.102Z,1,22108,,,,,,3,0,0
+hwp,setup,editor-check,2026-11-14T22:10:07.211Z,1,75151,block-editor,,,,,33,0,0
+hwp,1,post-new-load,2026-11-14T22:11:22.363Z,1,50735,,,,,,23,0,0
+hwp,1,post-new-type,2026-11-14T22:12:13.098Z,1,299,,,,,,0,0,0
+hwp,1,post-publish,2026-11-14T22:12:13.397Z,1,8597,,,,,,8,0,0
+hwp,1,post-new-verify,2026-11-14T22:12:21.995Z,1,60801,rest+dom,,,,,25,0,0
+hwp,1,post-edit-load,2026-11-14T22:13:22.797Z,1,57056,,,,,,24,0,0
+hwp,1,post-edit-append,2026-11-14T22:14:19.854Z,1,12176,,,,,,4,0,0
+hwp,1,post-edit-verify,2026-11-14T22:14:32.031Z,1,58030,rest+dom,,,,,25,0,0
+hwp,1,page-new-load,2026-11-14T22:15:30.063Z,1,53210,,,,,,24,0,0
+hwp,1,page-new-type,2026-11-14T22:16:23.274Z,1,209,,,,,,0,0,0
+hwp,1,page-publish,2026-11-14T22:16:23.483Z,1,9218,,,,,,8,0,0
+hwp,1,page-new-verify,2026-11-14T22:16:32.702Z,1,57160,rest+dom,,,,,27,0,0
+hwp,1,page-edit-load,2026-11-14T22:17:29.862Z,1,45544,,,,,,21,0,0
+hwp,1,page-edit-append,2026-11-14T22:18:15.407Z,1,10534,,,,,,4,0,0
+hwp,1,page-edit-verify,2026-11-14T22:18:25.942Z,1,63602,rest+dom,,,,,26,0,0
+hwp,2,post-new-load,2026-11-14T22:19:29.548Z,1,52989,,,,,,22,0,0
+hwp,2,post-new-type,2026-11-14T22:20:22.538Z,1,515,,,,,,0,0,0
+hwp,2,post-publish,2026-11-14T22:20:23.053Z,1,8809,,,,,,9,0,0
+hwp,2,post-new-verify,2026-11-14T22:20:31.862Z,1,64432,rest+dom,,,,,27,0,0
+hwp,2,post-edit-load,2026-11-14T22:21:36.295Z,1,51270,,,,,,23,0,0
+hwp,2,post-edit-append,2026-11-14T22:22:27.566Z,1,10712,,,,,,3,0,0
+hwp,2,post-edit-verify,2026-11-14T22:22:38.278Z,0,136100,,locator.waitFor: Timeout 120000ms exceeded.,"The editor has encountered an unexpected error.
+
+Copy contents
+Copy error",,1,32,0,0
+hwp,2,page-new-load,2026-11-14T22:25:51.150Z,1,54716,,,,,,23,0,0
+hwp,2,page-new-type,2026-11-14T22:26:45.867Z,1,496,,,,,,1,0,0
+hwp,2,page-publish,2026-11-14T22:26:46.363Z,1,6587,,,,,,5,0,0
+hwp,2,page-new-verify,2026-11-14T22:26:52.951Z,0,67122,,REST lacks sb1114e-be-hwp-2-page paragraph,,,0,29,0,0
+hwp,cleanup,delete-and-restore,2026-11-14T22:29:02.622Z,1,98342,"{""deleted"":4,""restored"":2,""revs"":25}",,,,,21,0,0
