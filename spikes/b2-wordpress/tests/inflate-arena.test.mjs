@@ -145,3 +145,41 @@ test('index.js: LAZY_ARENA_COPY copies only arena regions and reports itself in 
 	assert.match(src, /if \(inArena && arenaCopyOn\(\)\) contents = contents\.slice\(\);/);
 	assert.match(src, /over: inflateArena\.counts\.over, copy: arenaCopyOn\(\) \}/);
 });
+
+// #519 ARENA_VERIFY: the sample index.js takes, and the checks it makes. A region reused under a held
+// node changes its sample; a node evicted properly (drop) never reads stale bytes.
+function sampleOf(u8) {
+	let h = 0x811c9dc5 ^ u8.length;
+	const n = u8.length, k = Math.min(128, n);
+	for (let i = 0; i < k; i++) h = Math.imul(h ^ u8[i], 16777619);
+	for (let i = Math.max(k, n - 128); i < n; i++) h = Math.imul(h ^ u8[i], 16777619);
+	return h >>> 0;
+}
+test('#519 verify: reuse under a held node is caught; proper eviction reads 0 stale', () => {
+	const rnd = rng(9);
+	const files = makeFiles(16, rnd);
+	for (const evict of [true, false]) {
+		const a = createArena(2 * 1048576);
+		const nodes = files.map((f) => {
+			let contents = null, sample = null;
+			const drop = evict ? () => { contents = null; } : () => {};
+			return { read(st) {
+				if (contents === null) { const v = a.alloc(f.raw.length, drop); contents = inflateSync(f.packed, { out: v || new Uint8Array(f.raw.length) }); sample = v ? sampleOf(contents) : null; }
+				else if (sample !== null) { st.checks++; if (sampleOf(contents) !== sample) st.stale++; }
+				return contents;
+			} };
+		});
+		const st = { checks: 0, stale: 0 };
+		for (let k = 0; k < 400; k++) nodes[Math.floor(rnd() * nodes.length)].read(st);
+		if (evict) assert.equal(st.stale, 0, `proper eviction: 0 stale of ${st.checks}`);
+		else assert.ok(st.stale > 0, `no eviction: reuse is caught (stale ${st.stale} of ${st.checks})`);
+	}
+});
+test('index.js: ARENA_VERIFY and PURGE_TEST_OFF are wired, off by default', () => {
+	assert.match(src, /function arenaVerifyOn\(\) \{ return !!\(ENV && ENV\.ARENA_VERIFY === 'on'\); \}/);
+	assert.ok(src.includes(sampleOf.toString().split('\n').slice(1, 6).join('\n').replace(/^\t/gm, '\t')), 'the same sample function as the test');
+	assert.match(src, /\} else if \(sample !== null && !written\) \{\n\t\t\t\tstats\.arenaChecks\+\+;\n\t\t\t\tif \(arenaSample\(contents\) !== sample\) stats\.arenaStale\+\+;/);
+	assert.match(src, /arenaStale: stats\.arenaStale - start\.arenaStale/);
+	assert.match(src, /if \(this\.env && this\.env\.PURGE_TEST_OFF === 'on'\) \{/);
+	assert.match(src, /purgeRequested && !\(ENV && ENV\.PURGE_TEST_OFF === 'on'\)\) schedulePurge\(ctx\);/);
+});

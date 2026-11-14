@@ -362,7 +362,7 @@ async function stageUpload(req, env) {
 }
 
 function newStats() {
-	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, reinflates: 0, dbTables: {}, ocGroups: {}, ocCalls: 0, ocHits: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
+	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, reinflates: 0, arenaChecks: 0, arenaStale: 0, dbTables: {}, ocGroups: {}, ocCalls: 0, ocHits: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
 }
 
 // Every statement failure goes through here. resetFailTotal counts the isolate memory resets among
@@ -436,6 +436,18 @@ function arenaOn() { return !!(ENV && ENV.LAZY_ARENA === 'on'); }
 // then hand MEMFS a COPY (slice) of the region, so no node ever holds a view into the arena. It tests whether a
 // node aliasing arena bytes is what loses acknowledged writes on pf394a; it is not a fix.
 function arenaCopyOn() { return !!(ENV && ENV.LAZY_ARENA_COPY === 'on'); }
+// #519 detector (ARENA_VERIFY=on): an arena-backed node samples its bytes at inflate (length, the first and last
+// 128 bytes, FNV-1a) and checks the sample on every later read. A mismatch means the node was handed bytes that
+// changed under it: its region was reused while it still held it. It only counts (perf arenaChecks, arenaStale).
+// A PHP in-place write to such a file (#530) also changes the bytes, so a stale count is checked against that.
+function arenaVerifyOn() { return !!(ENV && ENV.ARENA_VERIFY === 'on'); }
+function arenaSample(u8) {
+	let h = 0x811c9dc5 ^ u8.length;
+	const n = u8.length, k = Math.min(128, n);
+	for (let i = 0; i < k; i++) h = Math.imul(h ^ u8[i], 16777619);
+	for (let i = Math.max(k, n - 128); i < n; i++) h = Math.imul(h ^ u8[i], 16777619);
+	return h >>> 0;
+}
 function getArena() {
 	if (!inflateArena) {
 		const mb = Number(ENV && ENV.LAZY_ARENA_MB);
@@ -522,6 +534,7 @@ function attachLazyContents(node, size, dataFn, tag) {
 	let written = false;
 	let used = size;
 	let inflations = 0; // #394: a second inflate of this file is a RE-inflate (its copy was evicted)
+	let sample = null; // #519 ARENA_VERIFY: the sample of an arena-backed inflate, null otherwise
 	const drop = () => {
 		if (!written) contents = null;
 	};
@@ -537,17 +550,22 @@ function attachLazyContents(node, size, dataFn, tag) {
 				const out = arenaOn() ? (n) => { const v = getArena().alloc(n, drop); inArena = !!v; return v; } : null;
 				contents = dataFn(out);
 				if (inArena && arenaCopyOn()) contents = contents.slice(); // #519: a copy, never a view into the arena
+				sample = inArena && !arenaCopyOn() && arenaVerifyOn() ? arenaSample(contents) : null;
 				if (inArena) {
 					stats.inflates++;
 					stats.inflateBytes += contents.length;
 				} else {
 					noteInflated(drop, contents.length);
 				}
+			} else if (sample !== null && !written) {
+				stats.arenaChecks++;
+				if (arenaSample(contents) !== sample) stats.arenaStale++;
 			}
 			return contents;
 		},
 		set(v) {
 			contents = v;
+			sample = null;
 			written = true; // PHP wrote this file. Keep it.
 		},
 	});
@@ -2355,6 +2373,12 @@ export class PhpRuntime extends DurableObject {
 	// than one object, each object coalesces on its own.
 	async requestPurge() {
 		const now = Date.now();
+		// #519 TEST ONLY (PURGE_TEST_OFF=on, off by default): skip the purge entirely, no stored state and no alarm.
+		// It serves stale pages; it exists to test whether the storage resets need the purge, alarm and cron path.
+		if (this.env && this.env.PURGE_TEST_OFF === 'on') {
+			console.log(JSON.stringify({ m: 'purge', asked: 1, t: now, skipped: 'test-off', where: 'object' }));
+			return 'skipped';
+		}
 		const st = (await this.ctx.storage.get(PURGE_STATE_KEY)) || { lastSent: 0 };
 		const coalesced = !!st.pending;
 		let waitMs = 0;
@@ -3321,7 +3345,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const { php, handler, bootMs } = await bootPromise;
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
-			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, reinflates: stats.reinflates, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
+			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, reinflates: stats.reinflates, arenaChecks: stats.arenaChecks, arenaStale: stats.arenaStale, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
 			if (url.pathname === '/_install') {
@@ -3374,7 +3398,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const op1 = wantOpcache ? await opcacheStats(php) : null;
 			// Approach A: close this request's MySQL connection after the response.
 			if (dbHandler) (ctx ? ctx.waitUntil(dbHandler.end()) : dbHandler.end());
-			if (ctx && ctx.exports && purgeRequested) schedulePurge(ctx);
+			if (ctx && ctx.exports && purgeRequested && !(ENV && ENV.PURGE_TEST_OFF === 'on')) schedulePurge(ctx); // #519: test-only off
 			const out = new Headers();
 			// In the PHP object, the object itself coalesces the purges of the whole site (issue #78).
 			// x-cache-purge (scheduled or coalesced) is for tests.
@@ -3469,6 +3493,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 					inflates: stats.inflates - start.inflates,
 					inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024),
 					reinflates: stats.reinflates - start.reinflates, // #394 step 2: the CPU side of the arena
+					...(arenaVerifyOn() ? { arenaChecks: stats.arenaChecks - start.arenaChecks, arenaStale: stats.arenaStale - start.arenaStale } : {}), // #519
 					wasm0MiB: Math.round(wasm0 / 1048576),
 					wasm1MiB: Math.round(wasmBytes / 1048576),
 					...(booted ? { l1: l1State } : {}), // #394 L1: where this boot's OPcache boot pack came from

@@ -149,6 +149,12 @@ lacopy() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(s
 ok "no LAZY_ARENA_COPY var by default" "$(env -u LAZY_ARENA_COPY bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | lacopy | grep -qx 'null' && echo 1 || echo 0)"
 ok "LAZY_ARENA_COPY=on renders it" "$(LAZY_ARENA=on LAZY_ARENA_COPY=on render_user one https://wp-one.sub.workers.dev | lacopy | grep -qx '\"on\"' && echo 1 || echo 0)"
 for bad in yes ON 1; do ok "LAZY_ARENA_COPY=$bad fails the render" "$(LAZY_ARENA=on LAZY_ARENA_COPY=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
+for var in ARENA_VERIFY PURGE_TEST_OFF; do
+  getv() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["vars"].get(sys.argv[1])))' "$var"; }
+  ok "no $var var by default" "$(env -u $var bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | getv | grep -qx 'null' && echo 1 || echo 0)"
+  ok "$var=on renders it" "$(env $var=on bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | getv | grep -qx '\"on\"' && echo 1 || echo 0)"
+  for bad in yes ON 1; do ok "$var=$bad fails the render" "$(env $var=$bad bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" >/dev/null 2>&1 && echo 0 || echo 1)"; done
+done
 for bad in 0 65 1.5 abc; do ok "LAZY_ARENA_MB=$bad fails the render" "$(LAZY_ARENA=on LAZY_ARENA_MB=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
 # PHP_RECYCLE (#394 E1): only "off", only when asked.
 recyc() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["vars"].get("PHP_RECYCLE")))'; }

@@ -244,6 +244,18 @@ lazy_arena_var() {
     on|off) echo "LAZY_ARENA_COPY = \"${LAZY_ARENA_COPY}\"" ;;
     *) echo "LAZY_ARENA_COPY must be on, off or unset, not ${LAZY_ARENA_COPY}" >&2; return 1 ;;
   esac
+  # ARENA_VERIFY (#519 detector): "on" counts reads whose arena bytes changed since the inflate (perf arenaStale).
+  case "${ARENA_VERIFY:-}" in
+    "") ;;
+    on|off) echo "ARENA_VERIFY = \"${ARENA_VERIFY}\"" ;;
+    *) echo "ARENA_VERIFY must be on, off or unset, not ${ARENA_VERIFY}" >&2; return 1 ;;
+  esac
+  # PURGE_TEST_OFF (#519, TEST ONLY): "on" skips every page-cache purge, so pages go stale. Never on a real site.
+  case "${PURGE_TEST_OFF:-}" in
+    "") ;;
+    on|off) echo "PURGE_TEST_OFF = \"${PURGE_TEST_OFF}\"" ;;
+    *) echo "PURGE_TEST_OFF must be on, off or unset, not ${PURGE_TEST_OFF}" >&2; return 1 ;;
+  esac
   local v=${LAZY_ARENA_MB:-}
   [ -n "$v" ] || return 0
   if ! [[ "$v" =~ ^[0-9]{1,2}$ ]] || [ "$v" -lt 1 ] || [ "$v" -gt 64 ]; then
