@@ -25,6 +25,12 @@
  *   dashboard the dashboard widgets are not set up
  *   notices   admin_notices callbacks are removed
  *   l10n      translations are not loaded (override_load_textdomain)
+ * x-mem-trace: hooks (#504) adds three things, for WooCommerce's boot: a mark per plugin include
+ *   (inc:<slug>, on plugin_loaded), a priority sweep (p:<hook>@<priority>, one mark after each
+ *   registered priority of plugins_loaded, after_setup_theme, init, wp_loaded and admin_init, with
+ *   the bucket's owner names), and WooCommerce's included files by subtree at every mark. Owner
+ *   names are class and function names only, never callback arguments or values: the marks land
+ *   in logs. Any other x-mem-trace value gives the default trace, unchanged.
  * At shutdown the trace goes to the Worker (post_message_to_js memTrace), which sets the
  * operator-only x-mem-trace response header. Numbers and component names only.
  */
@@ -33,7 +39,12 @@ if ( empty( $_SERVER['HTTP_X_MEM_TRACE'] ) || ! function_exists( 'post_message_t
 	return;
 }
 
-$GLOBALS['skyphusion_mem'] = array( 'm' => array(), 'off' => array(), 'preload' => null );
+$GLOBALS['skyphusion_mem'] = array(
+	'm'       => array(),
+	'off'     => array(),
+	'preload' => null,
+	'hooks'   => 'hooks' === strtolower( trim( (string) $_SERVER['HTTP_X_MEM_TRACE'] ) ),
+);
 
 function skyphusion_mem_wasm() {
 	$r = json_decode( post_message_to_js( json_encode( array( 'probeMem' => 1 ) ) ), true );
@@ -47,8 +58,41 @@ function skyphusion_mem_id() {
 	return preg_match( '/^[A-Za-z0-9_.-]{1,64}$/', $id ) ? $id : null;
 }
 
-function skyphusion_mem_mark( $name ) {
+// WooCommerce's included files by subtree (hooks mode): directory names only.
+function skyphusion_mem_woo_files() {
+	$g = array();
+	foreach ( get_included_files() as $f ) {
+		$p = strpos( $f, '/plugins/woocommerce/' );
+		if ( false === $p ) {
+			continue;
+		}
+		$rest = substr( $f, $p + 21 );
+		if ( 0 === strncmp( $rest, 'src/', 4 ) ) {
+			$parts = explode( '/', $rest );
+			$k     = ( isset( $parts[2] ) && preg_match( '/^[A-Za-z0-9_]{1,40}$/', $parts[1] ) ) ? 'src/' . $parts[1] : 'src';
+		} elseif ( 0 === strncmp( $rest, 'includes/admin/', 15 ) ) {
+			$k = 'includes/admin';
+		} elseif ( 0 === strncmp( $rest, 'includes/', 9 ) ) {
+			$k = 'includes';
+		} elseif ( 0 === strncmp( $rest, 'packages/', 9 ) ) {
+			$k = 'packages';
+		} elseif ( 0 === strncmp( $rest, 'vendor/', 7 ) ) {
+			$k = 'vendor';
+		} else {
+			$k = 'other';
+		}
+		$g[ $k ] = isset( $g[ $k ] ) ? $g[ $k ] + 1 : 1;
+	}
+	ksort( $g );
+	return $g;
+}
+
+function skyphusion_mem_mark( $name, $extra = null ) {
 	$mark = array( $name, memory_get_usage(), memory_get_peak_usage(), skyphusion_mem_wasm(), count( get_included_files() ) );
+	if ( $GLOBALS['skyphusion_mem']['hooks'] ) {
+		$mark[] = skyphusion_mem_woo_files();
+		$mark[] = $extra;
+	}
 	$GLOBALS['skyphusion_mem']['m'][] = $mark;
 	// Each mark is also logged as it happens (index.js memMark, a Workers Logs line), so a request
 	// that the isolate reset kills still shows how far it got and what the heap was.
@@ -65,6 +109,117 @@ function skyphusion_mem_at( $hook, $first, $last ) {
 }
 
 skyphusion_mem_mark( 'mu' );
+
+// ---- hooks mode (#504) ------------------------------------------------------------------------
+// The name of a callback's owner: Class::method or the function name, with the WooCommerce
+// namespace prefix cut, or closure@<file name>. Never an argument or a value. The second item says
+// whether the code lives under plugins/woocommerce/.
+function skyphusion_mem_owner( $cb ) {
+	$fn   = is_array( $cb ) && isset( $cb['function'] ) ? $cb['function'] : null;
+	$name = '?';
+	try {
+		if ( $fn instanceof Closure ) {
+			$r    = new ReflectionFunction( $fn );
+			$name = 'closure@' . basename( (string) $r->getFileName() );
+		} elseif ( is_string( $fn ) && false !== strpos( $fn, '::' ) ) {
+			list( $c, $m ) = explode( '::', $fn, 2 );
+			$r    = new ReflectionMethod( $c, $m );
+			$name = $c . '::' . $m;
+		} elseif ( is_string( $fn ) ) {
+			$r    = new ReflectionFunction( $fn );
+			$name = $fn;
+		} elseif ( is_array( $fn ) && 2 === count( $fn ) ) {
+			$c    = is_object( $fn[0] ) ? get_class( $fn[0] ) : (string) $fn[0];
+			$r    = new ReflectionMethod( $c, (string) $fn[1] );
+			$name = $c . '::' . (string) $fn[1];
+		} elseif ( is_object( $fn ) ) {
+			$r    = new ReflectionMethod( $fn, '__invoke' );
+			$name = get_class( $fn ) . '::__invoke';
+		} else {
+			return array( '?', false );
+		}
+		$file = (string) $r->getFileName();
+	} catch ( \Throwable $e ) {
+		return array( substr( $name, 0, 80 ), false );
+	}
+	$name = preg_replace( '/^Automattic\\\\WooCommerce\\\\/', '', $name );
+	return array( substr( $name, 0, 80 ), false !== strpos( $file, '/plugins/woocommerce/' ), $file );
+}
+
+// One mark after each priority registered on $hook when it starts: the growth between two marks
+// is that priority bucket's cost, named by who ran in it. A priority first registered DURING the
+// hook is not swept, and a callback added later to a swept priority runs after its mark.
+function skyphusion_mem_sweep( $hook ) {
+	add_action(
+		$hook,
+		function () use ( $hook ) {
+			global $wp_filter;
+			if ( ! isset( $wp_filter[ $hook ] ) || ! is_object( $wp_filter[ $hook ] ) ) {
+				return;
+			}
+			$self = __FILE__;
+			foreach ( $wp_filter[ $hook ]->callbacks as $p => $cbs ) {
+				if ( PHP_INT_MIN === $p || PHP_INT_MAX === $p ) {
+					continue;
+				}
+				$owners = array();
+				$n      = 0;
+				$woo    = 0;
+				foreach ( $cbs as $cb ) {
+					$o = skyphusion_mem_owner( $cb );
+					if ( isset( $o[2] ) && $o[2] === $self ) {
+						continue; // the trace's own callbacks
+					}
+					++$n;
+					if ( $o[1] ) {
+						++$woo;
+					}
+					if ( count( $owners ) < 6 ) {
+						$owners[] = $o[0];
+					}
+				}
+				if ( ! $n ) {
+					continue;
+				}
+				$label = 'p:' . $hook . '@' . $p;
+				$extra = array( 'n' => $n, 'woo' => $woo, 'o' => $owners );
+				add_action(
+					$hook,
+					function () use ( $label, $extra ) {
+						skyphusion_mem_mark( $label, $extra );
+					},
+					$p
+				);
+			}
+		},
+		PHP_INT_MIN
+	);
+}
+
+if ( $GLOBALS['skyphusion_mem']['hooks'] ) {
+	add_action(
+		'muplugins_loaded',
+		function () {
+			skyphusion_mem_mark( 'mu_done' );
+		},
+		PHP_INT_MAX
+	);
+	add_action(
+		'plugin_loaded',
+		function ( $file ) {
+			$file = (string) $file;
+			$dir  = basename( dirname( $file ) );
+			$slug = ( 'plugins' === $dir || '' === $dir || '.' === $dir ) ? basename( $file, '.php' ) : $dir;
+			$slug = substr( preg_replace( '/[^a-z0-9_-]/', '', strtolower( $slug ) ), 0, 40 );
+			skyphusion_mem_mark( 'inc:' . ( '' === $slug ? '?' : $slug ) );
+		},
+		PHP_INT_MAX
+	);
+	foreach ( array( 'plugins_loaded', 'after_setup_theme', 'init', 'wp_loaded', 'admin_init' ) as $skyphusion_mem_hook ) {
+		skyphusion_mem_sweep( $skyphusion_mem_hook );
+	}
+	unset( $skyphusion_mem_hook );
+}
 skyphusion_mem_at( 'plugins_loaded', 'plugins_included', 'plugins_loaded' );
 skyphusion_mem_at( 'after_setup_theme', 'theme', null );
 skyphusion_mem_at( 'init', 'init_start', 'init_end' );
@@ -238,7 +393,8 @@ register_shutdown_function(
 		$trace = array(
 			'v'          => 1,
 			'off'        => $t['off'],
-			'm'          => $t['m'],
+			'm'          => $t['hooks'] ? array_map( function ( $mk ) { return array_slice( $mk, 0, 5 ); }, $t['m'] ) : $t['m'],
+			'mode'       => $t['hooks'] ? 'hooks' : 'default',
 			'files'      => $groups,
 			'alloptions' => array( count( $alloptions ), strlen( serialize( $alloptions ) ) ),
 			'l10n'       => isset( $GLOBALS['l10n'] ) && is_array( $GLOBALS['l10n'] ) ? count( $GLOBALS['l10n'] ) : 0,
