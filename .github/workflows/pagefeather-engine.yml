@@ -22,7 +22,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [unchanged, pinned-env-1, pinned-env-2]
+        # lean-nofileinfo is a MEASURED arm only (numbers, never shipped, not in lean-gates).
+        variant: [unchanged, pinned-env-1, pinned-env-2, lean, lean-nogd, lean-nofileinfo]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -37,16 +38,34 @@ jobs:
           if node engine/tools/wasm-compare.mjs "$RUNNER_TEMP/a.wasm" "$RUNNER_TEMP/b.wasm"; then
             echo "::error::the compare tool called two different files equal"; exit 1
           fi
+      - name: The pinned prettier (engine/tools)
+        working-directory: engine/tools
+        run: npm ci --silent --no-audit --no-fund
       - name: Build (engine/build.sh)
         run: |
           set -euo pipefail
           df -h / | tail -1; uname -a
-          pin=0; case "${{ matrix.variant }}" in pinned-env-*) pin=1;; esac
+          pin=0; variant=unchanged; gd=yes; fi_=yes
+          case "${{ matrix.variant }}" in pinned-env-*) pin=1;; lean) variant=lean;; lean-nogd) variant=lean; gd=no;; lean-nofileinfo) variant=lean; fi_=no;; esac
           s=$(date +%s)
-          ENGINE_PIN_ENV=$pin ENGINE_WORK="$RUNNER_TEMP/work" engine/build.sh "$RUNNER_TEMP/out" | tee "$RUNNER_TEMP/build.out"
+          ENGINE_PIN_ENV=$pin ENGINE_VARIANT=$variant ENGINE_GD=$gd ENGINE_FILEINFO=$fi_ ENGINE_WORK="$RUNNER_TEMP/work" engine/build.sh "$RUNNER_TEMP/out" | tee "$RUNNER_TEMP/build.out"
           echo "build took $(( $(date +%s) - s )) s"
           df -h / | tail -1
+      - name: Size figures, against the engine we ship (a reading)
+        run: |
+          set -euo pipefail
+          npm pack --silent @php-wasm/web-8-3@3.1.62 --pack-destination "$RUNNER_TEMP" > /dev/null
+          mkdir -p "$RUNNER_TEMP/npm"; tar -xzf "$RUNNER_TEMP"/php-wasm-web-8-3-3.1.62.tgz -C "$RUNNER_TEMP/npm"
+          node engine/tools/wasm-stats.mjs "$RUNNER_TEMP/npm/package/jspi/8_3_36/php_8_3.wasm" shipped-3.1.62 > "$RUNNER_TEMP/out/stats.txt"
+          node engine/tools/wasm-stats.mjs "$(find "$RUNNER_TEMP/out" -name php_8_3.wasm | head -1)" "${{ matrix.variant }}" >> "$RUNNER_TEMP/out/stats.txt"
+          cat "$RUNNER_TEMP/out/stats.txt"
+      - name: LICENSES/, NOTICE and SOURCE from the traced link inputs (lean legs; a gate)
+        # engine/tools/licenses.py fails when a traced link input has no licence row, or a fetched
+        # licence text does not have its pinned sha256 (engine/licenses.tsv).
+        if: startsWith(matrix.variant, 'lean')
+        run: python3 -I engine/tools/licenses.py "$RUNNER_TEMP/out/link-inputs.txt" "$RUNNER_TEMP/out"
       - name: Compare with the engine we ship (@php-wasm/web-8-3 3.1.62)
+        if: "!startsWith(matrix.variant, 'lean')"
         id: compare
         run: |
           set -euo pipefail
@@ -83,8 +102,10 @@ jobs:
             echo "## pagefeather-engine S1: ${{ matrix.variant }}"
             echo; echo '```'; grep '^@event phase' "$RUNNER_TEMP/build.out" 2>/dev/null || echo "no phase lines"; echo '```'
             echo; echo '```'; cat "$RUNNER_TEMP/out/SHA256SUMS" 2>/dev/null || echo "no outputs"; echo '```'
+            echo; echo '```'; cat "$RUNNER_TEMP/out/stats.txt" 2>/dev/null || echo "no stats"; echo '```'
+            [ ! -f "$RUNNER_TEMP/out/link-inputs.txt" ] || { echo; echo "link inputs: $(wc -l < "$RUNNER_TEMP/out/link-inputs.txt")"; echo '```'; cat "$RUNNER_TEMP/out/link-inputs.txt"; echo '```'; }
             echo; echo '```'; cat "$RUNNER_TEMP/out/compare/compare.txt" 2>/dev/null || echo "no comparison"; echo '```'
-            echo; echo '```'; cat "$RUNNER_TEMP/out/compare/strings.diff" 2>/dev/null; echo '```'
+            echo; echo '```'; cat "$RUNNER_TEMP/out/compare/strings.diff" 2>/dev/null || echo "no strings diff (lean legs have none)"; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
@@ -115,3 +136,62 @@ jobs:
             echo '```'; echo "rc=$rc" > "$RUNNER_TEMP/det.rc"; } | tee -a "$GITHUB_STEP_SUMMARY"
           . "$RUNNER_TEMP/det.rc"
           [ "$rc" = 0 ] || { echo "::error::the two pinned builds differ: the build is not deterministic"; exit 1; }
+  lean-gates:
+    # The lean engine (#582 S2) under the gates the shipped engine passes: the contract suite with the
+    # lean expectations (both arms), the loader tests, then e2e.sh and woo.py (opcache.sh runs both
+    # with WooCommerce primed) and frames-e2e.sh on workerd.
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: pagefeather-engine-s1-lean*
+          path: ${{ runner.temp }}/e
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+      - name: The contract suite on each lean arm (prepare.sh applied to it)
+        working-directory: spikes/b2-wordpress
+        run: |
+          set -euo pipefail
+          npm ci --silent --no-audit --no-fund
+          for arm in lean-nogd lean; do
+            d="$RUNNER_TEMP/e/pagefeather-engine-s1-$arm"
+            PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+            echo "== $arm"
+            ENGINE_EXPECT="../../engine/expect/$arm.json" node --test tests/engine-contract.test.mjs
+          done
+          # vendor/ now holds the lean engine (GD kept): the loader tests that boot vendor/
+          node --test tests/phpwasm-exports.test.mjs tests/heap-subarray.test.mjs tests/allocator-reading.test.mjs
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: No wrangler on PATH (the build must use deploy/wr)
+        run: |
+          if command -v wrangler; then echo "::error::a global wrangler is on the runner PATH; this job could not see a bare call"; exit 1; fi
+      - name: e2e.sh and woo.py on the lean engine (opcache.sh, b-dosql, WooCommerce primed)
+        working-directory: spikes/b2-wordpress
+        run: |
+          set -euo pipefail
+          npm ci --silent --no-audit --no-fund
+          # vendor/ must hold the LEAN engine here, or this step would test the npm one.
+          st=$(node ../../engine/tools/wasm-stats.mjs vendor/php_8_3.wasm vendor-under-e2e); echo "$st"
+          case "$st" in *'"dylink":false'*) ;; *) echo "::error::vendor/ is not the lean engine"; exit 1 ;; esac
+          ./build.sh | tail -1
+          s=$(date +%s)
+          if DEV_ENV=dosql-local WOO_ACTIVE=1 ./opcache.sh > build/opcache.log 2>&1; then
+            tail -1 build/opcache.log; echo "opcache.sh took $(( $(date +%s) - s )) s"
+            tail -40 build/opcache-e2e.log
+          else
+            echo "::error::opcache.sh (e2e.sh, woo.py) failed on the lean engine"
+            tail -40 build/opcache.log; echo '--- e2e'; tail -40 build/opcache-e2e.log 2>/dev/null || true; echo '--- dev.log'; tail -40 dev.log 2>/dev/null || true
+            exit 1
+          fi
+      - name: frames-e2e.sh on the lean engine (e2e.sh and woo.py both ways)
+        working-directory: spikes/b2-wordpress
+        run: |
+          if ! tests/frames-e2e.sh; then
+            echo "::error::frames-e2e.sh failed on the lean engine; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1
+          fi

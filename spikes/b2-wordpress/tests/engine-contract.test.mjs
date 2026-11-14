@@ -12,7 +12,7 @@ import { checks, engine, engineUnderTest, upstreamRaw } from './engine-contract.
 
 const target = engineUnderTest();
 const raw = upstreamRaw(target.expect);
-const NO_PATCH = new Set(['extensions: exactly the expected list', 'allocator: USE_ZEND_ALLOC=0 is honoured', 'exports: the request entry points are promising']);
+const NO_PATCH = new Set(['extensions: exactly the expected list', 'allocator: USE_ZEND_ALLOC=0 is honoured', 'exports: the request entry points are promising', 'link: dylink section and export count as expected']);
 
 for (const [name, check] of Object.entries(checks)) {
 	test('holds on ' + target.name + ': ' + name, async () => { await check(target); });
@@ -40,4 +40,11 @@ test('goes red on a mutation: exports (wasm_sapi_handle_request not promising)',
 	assert.ok(m && m[1].includes('wasm_sapi_handle_request'), 'the pattern names it');
 	const js = target.js.replace(m[0], m[0].replace('wasm_sapi_handle_request', 'wasm_sapi_handle_requestX'));
 	await assert.rejects(async () => checks['exports: the request entry points are promising']({ ...target, js }), assert.AssertionError);
+});
+
+test('goes red on a mutation: link (the opposite dylink expectation, and today\'s 6,603 exports under a bound of 100)', async () => {
+	const flipped = { ...target.expect, static: { ...target.expect.static, dylink: !target.expect.static.dylink } };
+	await assert.rejects(async () => checks['link: dylink section and export count as expected']({ ...target, expect: flipped }), assert.AssertionError);
+	const bounded = { ...raw.expect, static: { dylink: true, maxExports: 100 } };
+	await assert.rejects(async () => checks['link: dylink section and export count as expected']({ ...raw, expect: bounded }), assert.AssertionError);
 });

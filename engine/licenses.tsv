@@ -1,0 +1,29 @@
+# The licence text of every component linked into the pagefeather engine (#582), keyed to the
+# link inputs wasm-ld --trace reports (build/link-inputs.txt). engine/tools/licenses.py fails when a
+# traced input matches no row, or a fetched text does not have the pinned sha256.
+# Columns (tab-separated): out-file  component  version  spdx  match  kind  source  member  lines  sha256
+#   match: a regex on the input path, or ALWAYS (the JS loader and the build itself carry it)
+#   kind: local (a repo file) | raw (a URL) | tar (a member of the tarball at the URL)
+#   lines: a-b to keep only those lines, or -
+#   sha256: of the text written, or MEASURE (licenses.py --measure prints it)
+pagefeather.txt	pagefeather	repo	GPL-2.0-or-later	ALWAYS	local	LICENSE	-	-	edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6
+wordpress-playground.txt	WordPress Playground php-wasm	dcd8e50	GPL-2.0-or-later	(ALWAYS|/(php_wasm|proc_open)\.o$)	raw	https://raw.githubusercontent.com/WordPress/wordpress-playground/dcd8e50fb65121726bb23a686746f68032ff1cb1/LICENSE	-	-	8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643
+php.txt	PHP	8.3.36	PHP-3.01	(libphp\.a|/php_cli[a-z_]*\.o|/ps_title\.o|/php_http_parser\.o)$	raw	https://raw.githubusercontent.com/php/php-src/5ba6ad519229ac09fc4fc74155c76bdca69ae0de/LICENSE	-	-	b42e4df5e50e6ecda1047d503d6d91d71032d09ed1027ba1ef29eed26f890c5a
+zend.txt	Zend Engine	8.3.36	Zend-2.0	libphp\.a$	raw	https://raw.githubusercontent.com/php/php-src/5ba6ad519229ac09fc4fc74155c76bdca69ae0de/Zend/LICENSE	-	-	509aeb3be64e428d7e0004ce224620ab01bf94adaacefbb449611939df56bc5b
+php-README.REDIST.BINS.txt	the third-party code bundled in PHP	8.3.36	see file	(libphp\.a|/php_http_parser\.o)$	raw	https://raw.githubusercontent.com/php/php-src/5ba6ad519229ac09fc4fc74155c76bdca69ae0de/README.REDIST.BINS	-	-	86df604a38cf331d9bf974065d43918f776f9b8de5e17fc9ed7038667319a9b7
+emscripten.txt	Emscripten (runtime JS and system libraries)	4.0.19	MIT OR NCSA	(ALWAYS|/lib(c|sockets|stubs)\.a$)	raw	https://raw.githubusercontent.com/emscripten-core/emscripten/4.0.19/LICENSE	-	-	620a78084fc7ca97c0b5dea9abf891f3ffcadfdbf305276f099c9c4e12fc1d86
+musl.txt	musl libc	emscripten 4.0.19	MIT	/libc\.a$	raw	https://raw.githubusercontent.com/emscripten-core/emscripten/4.0.19/system/lib/libc/musl/COPYRIGHT	-	-	f9bc4423732350eb0b3f7ed7e91d530298476f8fec0c6c427a1c04ade22655af
+compiler-rt.txt	LLVM compiler-rt	emscripten 4.0.19	Apache-2.0 WITH LLVM-exception	/libcompiler_rt[^/]*\.a$	raw	https://raw.githubusercontent.com/emscripten-core/emscripten/4.0.19/system/lib/compiler-rt/LICENSE.TXT	-	-	1a8f1058753f1ba890de984e48f0242a3a5c29a6a8f2ed9fd813f36985387e8d
+dlmalloc.txt	dlmalloc	2.8.6	CC0-1.0	/libdlmalloc\.a$	raw	https://raw.githubusercontent.com/emscripten-core/emscripten/4.0.19/system/lib/dlmalloc.c	-	52-56	5105c7b32f8a290a247944b1bd3f43c31b5656265ec11886195a8745bdcfa414
+openssl.txt	OpenSSL	1.1.1t	OpenSSL	/lib(crypto|ssl)\.a$	tar	https://www.openssl.org/source/old/1.1.1/openssl-1.1.1t.tar.gz	openssl-1.1.1t/LICENSE	-	c32913b33252e71190af2066f08115c69bc9fddadf3bf29296e20c835389841c
+libiconv.txt	GNU libiconv	1.17	LGPL-2.1-or-later	/libiconv\.a$	tar	https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.17.tar.gz	libiconv-1.17/COPYING.LIB	-	dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551
+sqlite.txt	SQLite	3.51.0	blessing	/libsqlite3\.a$	tar	https://sqlite.org/2025/sqlite-autoconf-3510000.tar.gz	sqlite-autoconf-3510000/sqlite3.h	1-11	a4073095982a84421da1a1e49bd26e97ba1a09c2de5dda5eac776cd4a420d41a
+libxml2.txt	libxml2	2.9.10	MIT	/libxml2\.a$	tar	https://download.gnome.org/sources/libxml2/2.9/libxml2-2.9.10.tar.xz	libxml2-2.9.10/Copyright	-	c5c63674f8a83c4d2e385d96d1c670a03cb871ba2927755467017317878574bd
+zlib.txt	zlib	1.2.13	Zlib	/libz\.a$	tar	https://www.zlib.net/fossils/zlib-1.2.13.tar.gz	zlib-1.2.13/LICENSE	-	845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243
+libzip.txt	libzip	1.9.2	BSD-3-Clause	/libzip\.a$	tar	https://libzip.org/download/libzip-1.9.2.tar.gz	libzip-1.9.2/LICENSE	-	01c022eca6d566e2e8792fd0f091a28653b2a608319922bcd4de91c49d1438e1
+libgd.txt	libgd	2.3.3	GD	/libgd\.a$	tar	https://github.com/libgd/libgd/releases/download/gd-2.3.3/libgd-2.3.3.tar.gz	libgd-2.3.3/COPYING	-	005f4b6b0141d1bd11d371bbf7d4f67947f85a4906b7f5465f942204cf918ba3
+libpng.txt	libpng	1.6.39	libpng-2.0	/libpng16\.a$	tar	https://download.sourceforge.net/libpng/libpng-1.6.39.tar.gz	libpng-1.6.39/LICENSE	-	dfe5a536b0e5a531f844fb9c101a3089aca60772a503893b8e15f9457e369960
+libjpeg-turbo.txt	libjpeg-turbo	3.0.3	IJG AND BSD-3-Clause AND Zlib	/libjpeg\.a$	tar	https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.0.3/libjpeg-turbo-3.0.3.tar.gz	libjpeg-turbo-3.0.3/LICENSE.md	-	e548c96c0c09397c94b5c5531836c02ff2c403f1f2b130cad8e3ec9439b5a7cc
+libjpeg-turbo-README.ijg.txt	libjpeg-turbo (IJG terms)	3.0.3	IJG	/libjpeg\.a$	tar	https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.0.3/libjpeg-turbo-3.0.3.tar.gz	libjpeg-turbo-3.0.3/README.ijg	-	5c1f9094835d21f66ee0e9ce81c57264d2dd50801b19832d6723dc8cdbda080e
+libwebp.txt	libwebp (and sharpyuv)	845d547	BSD-3-Clause	/lib(webp|sharpyuv)\.a$	tar	https://chromium.googlesource.com/webm/libwebp/+archive/845d5476a866141ba35ac133f856fa62f0b7445f.tar.gz	COPYING	-	5aec868f669e384a22372a4e8a1a6cd7d44c64cd451f960ca69cc170d1e13acf
+libwebp-PATENTS.txt	libwebp patent grant	845d547	see file	/lib(webp|sharpyuv)\.a$	tar	https://chromium.googlesource.com/webm/libwebp/+archive/845d5476a866141ba35ac133f856fa62f0b7445f.tar.gz	PATENTS	-	cc3273e0694ea5896145e0677699b53471b03ea43021ddc50e7923fbb9f5023c

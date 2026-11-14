@@ -47,5 +47,9 @@
  ],
  "zendExtensions": [
   "Zend OPcache"
- ]
+ ],
+ "static": {
+  "dylink": true,
+  "maxExports": null
+ }
 }
