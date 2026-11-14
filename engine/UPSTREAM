@@ -1,0 +1,27 @@
+# The upstream pipeline the pagefeather engine starts from (#582). Sourced by engine/build.sh.
+#
+# UPSTREAM_COMMIT is the WordPress Playground commit that PRODUCED the engine we ship: the last commit
+# that changed packages/php-wasm/web-builds/8-3/jspi/8_3_36/php_8_3.wasm before the v3.1.62 tag
+# (8c52f103, the gitHead of @php-wasm/web-8-3 3.1.62). The npm package ships that committed binary
+# (git blob 8d38bc1a). The compile tree changed after it (cef108e, 03eb21b), so a build at the tag
+# would not be the binary we run. Licence: GPL-2.0 (the repo), GPL-2.0-or-later (the npm package).
+UPSTREAM_REPO=https://github.com/WordPress/wordpress-playground
+UPSTREAM_COMMIT=dcd8e50fb65121726bb23a686746f68032ff1cb1
+# git tree shas at that commit: the build refuses a checkout that does not match.
+UPSTREAM_COMPILE_TREE=09fefb02c2057d07a448df4322a0077f53dc9bc2
+UPSTREAM_WEB83_TREE=1473b2896afd6b45cacd968376b87da66a23fac2
+# PHP: the Dockerfile clones php-src at the tag PHP_REF; the build checks the tag still names this commit.
+PHP_VERSION=8.3.36
+PHP_REF=php-8.3.36
+PHP_REF_COMMIT=5ba6ad519229ac09fc4fc74155c76bdca69ae0de
+# Emscripten: base-image/Dockerfile installs 4.0.19 with emsdk from its HEAD. S1 keeps that unchanged.
+EMSDK_VERSION=4.0.19
+# What we ship today (spikes/b2-wordpress/node_modules/@php-wasm/web-8-3/jspi), the S1 byte target.
+SHIPPED_WASM_SHA256=4a35d44ed3decb9b9db529c6802a7c4e16bf921c469cc7613478a645b5e68da8
+SHIPPED_JS_SHA256=aecfbb4aa0303bad244952e0ec850e8ee9429e235a21636ab6ccd708a67befb6
+# The two build-host facts the shipped binary embeds (measured 2026-11-14 with strings on the shipped
+# wasm against our CI build): PHP's uname at configure time, and the compiler's __DATE__/__TIME__
+# (Oct 22 2026 09:42:29 in one file, 09:42:58 in another). A build with ENGINE_PIN_ENV=1 sets
+# PHP_UNAME and SOURCE_DATE_EPOCH (09:42:29 UTC) to them, to show that nothing else differs.
+SHIPPED_PHP_UNAME='Linux buildkitsandbox 7.0.12-linuxkit #1 SMP PREEMPT Thu Aug 27 14:02:21 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux'
+SHIPPED_BUILD_EPOCH=1792662149

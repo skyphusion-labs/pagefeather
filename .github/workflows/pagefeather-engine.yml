@@ -1,0 +1,117 @@
+name: pagefeather-engine
+# The pagefeather engine (#582), our own WebAssembly build of PHP 8.3. S1: build the upstream pipeline
+# UNCHANGED (engine/build.sh, pinned by engine/UPSTREAM) and compare it with the engine we ship, byte
+# for byte. Two more builds pin the two build-host facts the shipped binary embeds (PHP_UNAME and
+# SOURCE_DATE_EPOCH) in separate jobs. Gates (engine/REPRODUCING.md): each pinned build meets the
+# reproduction standard against the shipped wasm (engine/tools/repro-check.mjs), and the two pinned
+# builds are byte-identical. The unchanged build's comparison is a reading. Nothing is published.
+on:
+  pull_request:
+    paths:
+      - 'engine/**'
+      - '.github/workflows/pagefeather-engine.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [unchanged, pinned-env-1, pinned-env-2]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+      - name: The compare tool tells equal from unequal (a control before the real comparison)
+        run: |
+          set -euo pipefail
+          printf '\x00asm\x01\x00\x00\x00\x05\x03\x01\x00\x01' > "$RUNNER_TEMP/a.wasm"
+          printf '\x00asm\x01\x00\x00\x00\x05\x03\x01\x00\x02' > "$RUNNER_TEMP/b.wasm"
+          node engine/tools/wasm-compare.mjs "$RUNNER_TEMP/a.wasm" "$RUNNER_TEMP/a.wasm"
+          if node engine/tools/wasm-compare.mjs "$RUNNER_TEMP/a.wasm" "$RUNNER_TEMP/b.wasm"; then
+            echo "::error::the compare tool called two different files equal"; exit 1
+          fi
+      - name: Build (engine/build.sh)
+        run: |
+          set -euo pipefail
+          df -h / | tail -1; uname -a
+          pin=0; case "${{ matrix.variant }}" in pinned-env-*) pin=1;; esac
+          s=$(date +%s)
+          ENGINE_PIN_ENV=$pin ENGINE_WORK="$RUNNER_TEMP/work" engine/build.sh "$RUNNER_TEMP/out" | tee "$RUNNER_TEMP/build.out"
+          echo "build took $(( $(date +%s) - s )) s"
+          df -h / | tail -1
+      - name: Compare with the engine we ship (@php-wasm/web-8-3 3.1.62)
+        id: compare
+        run: |
+          set -euo pipefail
+          . engine/UPSTREAM
+          mkdir -p "$RUNNER_TEMP/shipped"
+          npm pack --silent @php-wasm/web-8-3@3.1.62 --pack-destination "$RUNNER_TEMP/shipped" > /dev/null
+          tar -xzf "$RUNNER_TEMP"/shipped/php-wasm-web-8-3-3.1.62.tgz -C "$RUNNER_TEMP/shipped"
+          sw="$RUNNER_TEMP/shipped/package/jspi/8_3_36/php_8_3.wasm"; sj="$RUNNER_TEMP/shipped/package/jspi/php_8_3.js"
+          echo "$SHIPPED_WASM_SHA256  $sw" | sha256sum -c -
+          echo "$SHIPPED_JS_SHA256  $sj" | sha256sum -c -
+          bw=$(find "$RUNNER_TEMP/out" -name 'php_8_3.wasm' | head -1); bj=$(find "$RUNNER_TEMP/out" -name 'php_8_3.js' | head -1)
+          [ -n "$bw" ] && [ -n "$bj" ] || { echo "::error::the build made no php_8_3.wasm or php_8_3.js"; ls -R "$RUNNER_TEMP/out" | head -50; exit 1; }
+          mkdir -p "$RUNNER_TEMP/out/compare"
+          node engine/tools/wasm-compare.mjs "$sw" "$bw" | tee "$RUNNER_TEMP/out/compare/compare.txt" || true
+          # The wasm's differing strings, as a reading of WHY (strings of 6 or more printable bytes).
+          diff <(strings -n 6 "$sw") <(strings -n 6 "$bw") > "$RUNNER_TEMP/out/compare/strings.diff" || true
+          cat "$RUNNER_TEMP/out/compare/strings.diff"
+          # cmp exits 1 when the files differ; under pipefail that must not end the step (run 43644477670).
+          { cmp -l "$sw" "$bw" 2>/dev/null || true; } | wc -l | sed 's/^/differing bytes (cmp -l lines): /' | tee -a "$RUNNER_TEMP/out/compare/compare.txt"
+          echo "sw=$sw" >> "$GITHUB_OUTPUT"; echo "bw=$bw" >> "$GITHUB_OUTPUT"
+          if cmp -s "$sj" "$bj"; then echo "loader: byte-identical"; else echo "loader: differs (raw)"; fi
+      - name: The reproduction standard (pinned builds only; a gate)
+        if: startsWith(matrix.variant, 'pinned-env-')
+        # No pipe: the default run shell has no pipefail, so a pipe would report tee's status.
+        run: |
+          rc=0
+          node engine/tools/repro-check.mjs "${{ steps.compare.outputs.sw }}" "${{ steps.compare.outputs.bw }}" > "$RUNNER_TEMP/repro.txt" || rc=$?
+          cat "$RUNNER_TEMP/repro.txt"; cat "$RUNNER_TEMP/repro.txt" >> "$RUNNER_TEMP/out/compare/compare.txt"
+          [ "$rc" = 0 ] || { echo "::error::the pinned build does not meet the reproduction standard (rc=$rc)"; exit 1; }
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## pagefeather-engine S1: ${{ matrix.variant }}"
+            echo; echo '```'; grep '^@event phase' "$RUNNER_TEMP/build.out" 2>/dev/null || echo "no phase lines"; echo '```'
+            echo; echo '```'; cat "$RUNNER_TEMP/out/SHA256SUMS" 2>/dev/null || echo "no outputs"; echo '```'
+            echo; echo '```'; cat "$RUNNER_TEMP/out/compare/compare.txt" 2>/dev/null || echo "no comparison"; echo '```'
+            echo; echo '```'; cat "$RUNNER_TEMP/out/compare/strings.diff" 2>/dev/null; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: pagefeather-engine-s1-${{ matrix.variant }}
+          path: |
+            ${{ runner.temp }}/out
+          retention-days: 14
+  determinism:
+    # The two pinned builds ran on separate runners: equal bytes mean the build is deterministic
+    # across hosts once the two build-host facts are pinned.
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: pagefeather-engine-s1-pinned-env-*
+          path: ${{ runner.temp }}/p
+      - name: Compare the two pinned builds
+        run: |
+          set -euo pipefail
+          a=$(find "$RUNNER_TEMP/p/pagefeather-engine-s1-pinned-env-1" -name php_8_3.wasm); b=$(find "$RUNNER_TEMP/p/pagefeather-engine-s1-pinned-env-2" -name php_8_3.wasm)
+          aj=$(find "$RUNNER_TEMP/p/pagefeather-engine-s1-pinned-env-1" -name php_8_3.js); bj=$(find "$RUNNER_TEMP/p/pagefeather-engine-s1-pinned-env-2" -name php_8_3.js)
+          { echo "## pagefeather-engine S1: determinism (pinned-env-1 against pinned-env-2)"; echo '```'
+            rc=0; node engine/tools/wasm-compare.mjs "$a" "$b" || rc=$?
+            if cmp -s "$aj" "$bj"; then echo "loader: byte-identical"; else echo "loader: differs"; rc=1; fi
+            echo '```'; echo "rc=$rc" > "$RUNNER_TEMP/det.rc"; } | tee -a "$GITHUB_STEP_SUMMARY"
+          . "$RUNNER_TEMP/det.rc"
+          [ "$rc" = 0 ] || { echo "::error::the two pinned builds differ: the build is not deterministic"; exit 1; }
