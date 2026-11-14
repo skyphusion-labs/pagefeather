@@ -78,11 +78,11 @@ R2_CRED_FILE=$cf "$MEDIA" "$EP" wp-wfp-c-media "$SRC" > "$T/m2.out" 2>&1
 check "  the check run: 0 sent, 24 there" "$(grep -c '^media: 0 sent, 24 already there, 0 failed$' "$T/m2.out")" 1
 check "  the lock is gone after" "$([ -e "$cf.lock" ] && echo left || echo gone)" gone
 
-# #545: the same case, STRESS_ROUNDS times (10) with STRESS_JOBS (16) jobs and 32 files: every
+# #545: the same case, STRESS_ROUNDS times (30) with STRESS_JOBS (16) jobs and 32 files: every
 # round mints ONE credential, for bucket c. A round that does not prints the mint log and the
 # refresh lines of that run, so a CI flake names its cause.
 sbad=0
-for r in $(seq 1 "${STRESS_ROUNDS:-10}"); do
+for r in $(seq 1 "${STRESS_ROUNDS:-30}"); do
   S=$T/stress$r; mkdir -p "$S/uploads/2026"; for k in $(seq 1 32); do echo "s $r $k" > "$S/uploads/2026/s$k.jpg"; done
   python3 -I "$RT" mint wp-wfp-c-media 900 "$cf" > /dev/null; m0=$(st 'len(d["mints"])'); touch -t 202601010000 "$cf"
   ctl "/_expire_after?n=10"
@@ -96,7 +96,7 @@ for r in $(seq 1 "${STRESS_ROUNDS:-10}"); do
     echo "    the mint trace (start/end, pid, time, lock dir, cred mtime):"; sed 's/^/      /' "$T/trace$r"
   fi
 done
-check "#545 stress: ${STRESS_ROUNDS:-10} rounds of ${STRESS_JOBS:-16} jobs, each exit 0 with ONE fresh credential" "$sbad" 0
+check "#545 stress: ${STRESS_ROUNDS:-30} rounds of ${STRESS_JOBS:-16} jobs, each exit 0 with ONE fresh credential" "$sbad" 0
 
 # r2_refresh itself, cut out of the real script: two refusals in a row mint once (the min age),
 # and a refusal after R2_REFRESH_MIN_S mints again.
