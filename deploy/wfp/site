@@ -311,7 +311,7 @@ import_one() {
   if [ "$need_key" = 1 ]; then
     B=$(media_bucket "$s"); cf=$(mktemp); chmod 600 "$cf"
     # shellcheck disable=SC2064 # the path is fixed now: $cf is local and gone by EXIT
-    trap "rm -f '$cf'; rmdir '$cf.lock' 2>/dev/null" EXIT
+    trap "rm -f '$cf' '$cf.flock' '$cf.minted'" EXIT
     r2_temp_mint "$B" "$ttl" "$cf" || { rm -f "$cf"; trap - EXIT; echo "site $s: no temporary credential for $B; nothing was imported" >&2; return 1; }
   fi
   local rc=0
@@ -321,7 +321,7 @@ import_one() {
     R2_CRED_FILE="$cf" R2_CRED_REFRESH="$([ "$need_key" = 1 ] && r2_temp_refresh_cmd "$B" "$ttl" "$cf")" \
     NAME="" "$ROOT/deploy/import.sh" || rc=$?
   if [ "$need_key" = 1 ]; then
-    rm -f "$cf"; rmdir "$cf.lock" 2>/dev/null || true; trap - EXIT
+    rm -f "$cf" "$cf.flock" "$cf.minted"; trap - EXIT
     echo "site $s: the temporary credential file is removed; the credential expires within $ttl s"
   fi
   [ "$rc" = 0 ] && echo "site import $s: done, https://$HOST"

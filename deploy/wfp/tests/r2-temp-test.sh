@@ -54,7 +54,7 @@ check "no script puts the session token in curl's arguments (only in the -K conf
 for k in 1 2 3 4 5 6; do ctl "/_seed/wp-wfp-a-media/uploads/e$k.jpg" x PUT; done
 python3 -I "$RT" mint wp-wfp-a-media 900 "$cf" > /dev/null; m0=$(st 'len(d["mints"])')
 ctl "/_expire_after?n=3"
-touch -t 202601010000 "$cf"   # an old file, so the refresh may mint (R2_REFRESH_MIN_S)
+touch -t 202601010000 "$cf" "$cf.minted"   # an old file, so the refresh may mint (R2_REFRESH_MIN_S)
 R2_CRED_FILE=$cf R2_CRED_REFRESH="python3 -I '$RT' mint wp-wfp-a-media 900 '$cf'" R2_RETRY_S=20 R2_RETRY_STEP=1 "$EMPTY" "$EP" wp-wfp-a-media > "$T/e4.out" 2>&1; rc=$?
 check "#273: an expiry mid-empty: exit 0, every object deleted" "$rc:$(grep -c 'empty (6 objects deleted)' "$T/e4.out"):$(st 'len([o for o in d["objects"] if "wp-wfp-a-media" in o])')" "0:1:0"
 check "  exactly one fresh credential was minted" "$(( $(st 'len(d["mints"])') - m0 ))" 1
@@ -68,7 +68,7 @@ check "control: the same expiry with no R2_CRED_REFRESH fails" "$rc" 1
 # 4. media.sh (site import) with the credential file, 8 parallel jobs, and an expiry mid-run.
 SRC=$T/wp-content; mkdir -p "$SRC/uploads/2026"
 for k in $(seq 1 24); do echo "img $k" > "$SRC/uploads/2026/p$k.jpg"; done
-python3 -I "$RT" mint wp-wfp-c-media 900 "$cf" > /dev/null; m0=$(st 'len(d["mints"])'); touch -t 202601010000 "$cf"
+python3 -I "$RT" mint wp-wfp-c-media 900 "$cf" > /dev/null; m0=$(st 'len(d["mints"])'); touch -t 202601010000 "$cf" "$cf.minted"
 ctl "/_expire_after?n=10"
 R2_CRED_FILE=$cf R2_CRED_REFRESH="python3 -I '$RT' mint wp-wfp-c-media 900 '$cf'" R2_RETRY_S=20 R2_RETRY_STEP=1 JOBS=8 "$MEDIA" "$EP" wp-wfp-c-media "$SRC" > "$T/m.out" 2>&1; rc=$?
 check "media.sh with R2_CRED_FILE and an expiry mid-run: exit 0, 24 sent, 0 failed" "$rc:$(grep -c '^media: 24 sent, 0 already there, 0 failed$' "$T/m.out")" "0:1"
@@ -76,7 +76,7 @@ mn=$(( $(st 'len(d["mints"])') - m0 ))
 check "  the 8 parallel jobs minted ONE fresh credential (the lock and the min age)" "$mn" 1
 R2_CRED_FILE=$cf "$MEDIA" "$EP" wp-wfp-c-media "$SRC" > "$T/m2.out" 2>&1
 check "  the check run: 0 sent, 24 there" "$(grep -c '^media: 0 sent, 24 already there, 0 failed$' "$T/m2.out")" 1
-check "  the lock is gone after" "$([ -e "$cf.lock" ] && echo left || echo gone)" gone
+check "  no mkdir lock is left (#545: the lock is the kernel lock on <file>.flock)" "$([ -e "$cf.lock" ] && echo left || echo gone):$([ -f "$cf.flock" ] && echo flock || echo none)" "gone:flock"
 
 # #545: the same case, STRESS_ROUNDS times (30) with STRESS_JOBS (16) jobs and 32 files: every
 # round mints ONE credential, for bucket c. A round that does not prints the mint log and the
@@ -84,7 +84,7 @@ check "  the lock is gone after" "$([ -e "$cf.lock" ] && echo left || echo gone)
 sbad=0
 for r in $(seq 1 "${STRESS_ROUNDS:-30}"); do
   S=$T/stress$r; mkdir -p "$S/uploads/2026"; for k in $(seq 1 32); do echo "s $r $k" > "$S/uploads/2026/s$k.jpg"; done
-  python3 -I "$RT" mint wp-wfp-c-media 900 "$cf" > /dev/null; m0=$(st 'len(d["mints"])'); touch -t 202601010000 "$cf"
+  python3 -I "$RT" mint wp-wfp-c-media 900 "$cf" > /dev/null; m0=$(st 'len(d["mints"])'); touch -t 202601010000 "$cf" "$cf.minted"
   ctl "/_expire_after?n=10"
   : > "$T/trace$r"
   R2_CRED_FILE=$cf R2_CRED_REFRESH="bash '$HERE/r2-mint-trace.sh' '$T/trace$r' '$RT' wp-wfp-c-media '$cf'" R2_RETRY_S=20 R2_RETRY_STEP=1 JOBS=${STRESS_JOBS:-16} "$MEDIA" "$EP" wp-wfp-c-media "$S" > "$T/s$r.out" 2>&1; rc=$?
@@ -93,24 +93,48 @@ for r in $(seq 1 "${STRESS_ROUNDS:-30}"); do
     sbad=$((sbad + 1))
     echo "  stress round $r: exit $rc, $mn mints; the mints of this round (time, bucket): $(st "d['mint_log'][$m0:]")"
     { grep -E '^r2|^fail ' "$T/s$r.out" | head -8; echo "    (the last lines)"; tail -4 "$T/s$r.out"; } | sed 's/^/    /'
-    echo "    the mint trace (start/end, pid, time, lock dir, cred mtime):"; sed 's/^/      /' "$T/trace$r"
+    echo "    the mint trace (start/end, pid, time, cred mtime, stamp mtime):"; sed 's/^/      /' "$T/trace$r"
   fi
 done
 check "#545 stress: ${STRESS_ROUNDS:-30} rounds of ${STRESS_JOBS:-16} jobs, each exit 0 with ONE fresh credential" "$sbad" 0
-# DATA (#545 draft only): does the lock primitive exclude on this machine?
-echo "  lock-race: $(python3 -I "$HERE/lock-race.py" mkdir 16 200)"
-echo "  lock-race: $(python3 -I "$HERE/lock-race.py" flock 16 200)"
+# #545: the lock r2_refresh uses must exclude HERE. The mkdir lock it replaced did not on the CI
+# runner (105 overlaps in 159 entries; macOS: 0), so this measures the one in use, on the machine.
+lr=$(python3 -I "$HERE/lock-race.py" flock 16 200); lrc=$?
+check "fcntl.flock excludes on this machine: 16 processes, no two holders at once ($lr)" "$lrc" 0
+
+# #545: a PUT with no answer (curl 000) or a 503 is sent again, as a HEAD is; before, it failed at once.
+SRC2=$T/wc-drop; mkdir -p "$SRC2/uploads/2026"; for k in $(seq 1 6); do echo "d $k" > "$SRC2/uploads/2026/d$k.jpg"; done
+python3 -I "$RT" mint wp-wfp-d-media 900 "$cf" > /dev/null; ctl "/_drop_puts?n=3"
+R2_CRED_FILE=$cf R2_RETRY_S=20 R2_RETRY_STEP=1 JOBS=2 "$MEDIA" "$EP" wp-wfp-d-media "$SRC2" > "$T/d.out" 2>&1; rc=$?
+check "media.sh: 3 PUTs with no answer (000) are sent again: exit 0, 6 sent, 0 failed" "$rc:$(grep -c '^media: 6 sent, 0 already there, 0 failed$' "$T/d.out")" "0:1"
+SRC3=$T/wc-503; mkdir -p "$SRC3/uploads/2026"; for k in $(seq 1 6); do echo "b $k" > "$SRC3/uploads/2026/b$k.jpg"; done
+ctl "/_put_503?n=4"
+R2_CRED_FILE=$cf R2_RETRY_S=20 R2_RETRY_STEP=1 JOBS=2 "$MEDIA" "$EP" wp-wfp-d-media "$SRC3" > "$T/b.out" 2>&1; rc=$?
+check "media.sh: 4 PUTs answered 503 are sent again: exit 0, 6 sent" "$rc:$(grep -c '^media: 6 sent, 0 already there, 0 failed$' "$T/b.out")" "0:1"
+SRC4=$T/wc-400; mkdir -p "$SRC4/uploads/2026"; echo z > "$SRC4/uploads/2026/z.jpg"
+ctl "/_drop_puts?n=100"
+R2_CRED_FILE=$cf R2_RETRY_S=3 R2_RETRY_STEP=1 JOBS=1 "$MEDIA" "$EP" wp-wfp-d-media "$SRC4" > "$T/z.out" 2>&1; rc=$?; ctl "/_drop_puts?n=0"
+check "control: a PUT that never gets an answer still fails after R2_RETRY_S (exit 1, named)" "$rc:$(grep -c '^fail put 000 uploads/2026/z.jpg$' "$T/z.out")" "1:1"
 
 # r2_refresh itself, cut out of the real script: two refusals in a row mint once (the min age),
 # and a refusal after R2_REFRESH_MIN_S mints again.
 for scr in "$EMPTY" "$MEDIA"; do
   ( eval "$(sed -n '/^r2_refresh() {/,/^}/p' "$scr")"
-    f=$T/rf; : > "$T/rf.log"; echo x > "$f"; touch -t 202601010000 "$f"
+    f=$T/rf; rm -f "$f.minted"; : > "$T/rf.log"; echo x > "$f"; touch -t 202601010000 "$f"
     export R2_CRED_FILE=$f R2_CRED_REFRESH="echo minted >> '$T/rf.log'; touch '$f'"
     r2_refresh 2>/dev/null; r2_refresh 2>/dev/null; a=$(wc -l < "$T/rf.log" | tr -d ' ')
     touch -t 202601010000 "$f"; r2_refresh 2>/dev/null; b=$(wc -l < "$T/rf.log" | tr -d ' ')
-    echo "$a:$b" ) > "$T/rf.out"
-  check "r2_refresh ($(basename "$scr")): two refusals in a row mint once; an old file mints again" "$(cat "$T/rf.out")" "1:2"
+    touch -t 202601010000 "$f" "$f.minted"; r2_refresh 2>/dev/null; c=$(wc -l < "$T/rf.log" | tr -d ' ')
+    echo "$a:$b:$c" ) > "$T/rf.out"
+  check "r2_refresh ($(basename "$scr")): two refusals mint once; an old FILE alone does not (the stamp is fresh); old file and stamp mint again" "$(cat "$T/rf.out")" "1:1:2"
+  # #545: a mint that FAILS still counts: the stamp is written before it runs, so the next refusal
+  # within R2_REFRESH_MIN_S does not mint again (every job retrying a failed mint at once).
+  ( eval "$(sed -n '/^r2_refresh() {/,/^}/p' "$scr")"
+    f=$T/rg; rm -f "$f.minted"; : > "$T/rg.log"; echo x > "$f"; touch -t 202601010000 "$f"
+    export R2_CRED_FILE=$f R2_CRED_REFRESH="echo tried >> '$T/rg.log'; exit 1"
+    o=$(r2_refresh 2>&1); r2_refresh 2>/dev/null
+    echo "$(wc -l < "$T/rg.log" | tr -d ' '):$(printf '%s' "$o" | grep -c 'NOT minted')" ) > "$T/rg.out"
+  check "r2_refresh ($(basename "$scr")): a FAILED mint says so and still counts: the next refusal does not try again" "$(cat "$T/rg.out")" "1:1"
 done
 check "r2-empty.sh and media.sh carry the same credential block" "$(sed -n '/^# The key (#273)/,/^r2_key_set ||/p' "$EMPTY" | shasum)" "$(sed -n '/^# The key (#273)/,/^r2_key_set ||/p' "$MEDIA" | shasum)"
 

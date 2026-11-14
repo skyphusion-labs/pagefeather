@@ -1080,7 +1080,7 @@ down_empty_bucket() {
   r2_temp_mint "$B" "$ttl" "$cf" || { rm -f "$cf"; echo "site $s: no temporary credential for $B, so it was not emptied" >&2; return 1; }
   R2_CRED_FILE=$cf R2_CRED_REFRESH=$(r2_temp_refresh_cmd "$B" "$ttl" "$cf") \
     "${R2_EMPTY:-$ROOT/deploy/variants/r2-empty.sh}" "$(tfr site output -raw r2_endpoint)" "$B" || rc=$?
-  rm -f "$cf"; rmdir "$cf.lock" 2>/dev/null || true
+  rm -f "$cf" "$cf.flock" "$cf.minted"
   [ "$rc" = 0 ] || echo "  emptying $B failed (exit $rc); its temporary credential expires within $ttl s" >&2
   return "$rc"
 }
