@@ -123,6 +123,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/runtime-guards.test.mjs
       - name: b-dosql a recycled PHP runtime is released (issue #394)
         run: node --test spikes/b2-wordpress/tests/release-runtime.test.mjs
+      - name: b-dosql every Pages.purge RPC result is disposed (issue #510)
+        run: node --test spikes/b2-wordpress/tests/rpc-dispose.test.mjs
       - name: load test admin loops and cleanup, against a stub site (issue #394)
         run: python3 tests/load/admin-stub-test.py
       - name: load test 1102 counter counts 5xx only (issue #394)

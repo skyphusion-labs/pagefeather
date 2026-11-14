@@ -1514,6 +1514,17 @@ const CRON_CLEAN_KEY = 'cron-cleaned-at';
 // The start of the last cron leg (#470, cron-bound.mjs cronLegDue).
 const CRON_LAST_KEY = 'cron-last-start';
 let lastPurge = 0;
+// #510: dispose a JS RPC result once its fields are read. An RPC result can carry a disposer (and,
+// over Cap'n Web, every object result does); left to the garbage collector it logs "An RPC result
+// was not disposed properly" (wp-a-lean: 4 and 8 warns in the two load windows, 2026-11-14).
+// A plain object with no disposer is left as it is. Never throws.
+function disposeRpc(r) {
+	try {
+		if (r && typeof r[Symbol.dispose] === 'function') r[Symbol.dispose]();
+	} catch {
+		// a failed dispose never fails the purge
+	}
+}
 function schedulePurge(ctx) {
 	// A purge already scheduled for later covers this change too.
 	const wait = Math.max(0, lastPurge + PURGE_GAP_MS - Date.now());
@@ -1526,7 +1537,10 @@ function schedulePurge(ctx) {
 			new Promise((ok) => setTimeout(ok, wait))
 				.then(() => ctx.exports.Pages.purge(['wp-pages']))
 				// A refused purge (Free limits: 5 a minute per account) is reported, not dropped.
-				.then((r) => console.log(JSON.stringify({ m: 'purge', sent: 1, ok: !!(r && r.ok), errors: (r && r.errors) || [] })))
+				.then((r) => {
+					console.log(JSON.stringify({ m: 'purge', sent: 1, ok: !!(r && r.ok), errors: (r && r.errors) || [] }));
+					disposeRpc(r); // #510: after its fields are read
+				})
 				.catch((e) => console.log(JSON.stringify({ m: 'purge', sent: 1, ok: false, error: String(e).slice(0, 200) }))),
 		);
 	}
@@ -2493,6 +2507,7 @@ export class PhpRuntime extends DurableObject {
 		}
 		const ok = !!(r && r.ok);
 		const sent = { t: st.lastSent, ok, errors: (r && r.errors) || [], error: (r && r.error) || null };
+		disposeRpc(r); // #510: its fields are copied into sent
 		console.log(JSON.stringify({ m: 'purge', sent: 1, ...sent, where: 'object' }));
 		// The last 20 sends, for /_purgestate: wrangler tail does not show alarm runs.
 		const logged = (await this.ctx.storage.get(PURGE_STATE_KEY)) || st;
