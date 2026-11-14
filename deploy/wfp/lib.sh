@@ -613,6 +613,47 @@ use_recorded_inputs() {
     *) echo "cannot compare with the recorded build inputs; refused" >&2; return 2 ;;
   esac
 }
+# The per-site settings (#558, site_settings.py): render_user reads PHP_INI, LAZY_CACHE_MB and the
+# rest from the run's environment only, so an update that did not export one DROPPED it (ggc-test
+# lost its PHP_INI pin on 2026-11-14). A good add or update records them in the site's bucket
+# (_build/settings.json); an update keeps them unless the run sets a new value or DROP_SETTINGS
+# names them. SITE_SETTINGS is the list; the caller declares them local -x.
+SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT"
+# The measurement flags (HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV, site_settings.py MEASUREMENT) are
+# never recorded: ON only for the run that exports them; the next update without one turns it off.
+# A setting render_user reads that is not in this list is DROPPED by an update that does not export
+# it: config-hash-test.sh derives the env names render_user's helpers read and fails on a new one.
+# keep_settings <bucket> <work dir>: merge the recorded settings into this run's environment. Sets
+# SETTINGS_RECORDED (1 or 0). Exit 0 merged or none recorded, 2 refused (unreadable, a missing
+# secret, a bad DROP_SETTINGS).
+keep_settings() {
+  local b=$1 rec="$2/settings.json" rc=0 m
+  SETTINGS_RECORDED=0
+  python3 -I "$WFP/site_settings.py" get "$b" "$rec" || rc=$?
+  case "$rc" in
+    0) ;;
+    3) echo "  no recorded settings yet (a site from before #558): the live bindings are checked before the upload"; return 0 ;;
+    *) echo "cannot read the recorded settings of $b; refused" >&2; return 2 ;;
+  esac
+  SETTINGS_RECORDED=1
+  m=$(python3 -I "$WFP/site_settings.py" merge "$rec") || { echo "the recorded settings of $b cannot be kept; refused" >&2; return 2; }
+  eval "$m"
+}
+# settings_dropcheck <user script> <rendered config> <secrets json> <work dir>: refuse (exit 2) an
+# upload that would drop a setting or a secret the LIVE script has, unless DROP_SETTINGS names it.
+settings_dropcheck() {
+  local out
+  out=$(api GET "/workers/dispatch/namespaces/$NAMESPACE/scripts/$1/bindings")
+  [ "${out##*$'\n'}" = 200 ] || { echo "the live bindings of $1 cannot be read (HTTP ${out##*$'\n'}), so a dropped setting cannot be ruled out; refused" >&2; return 2; }
+  printf '%s' "${out%$'\n'*}" > "$4/live-bindings.json"
+  python3 -I "$WFP/site_settings.py" dropcheck "$2" "$4/live-bindings.json" "$3" || return 2
+}
+# record_settings <bucket> <work dir>: after a good add or update, record this run's settings.
+record_settings() {
+  python3 -I "$WFP/site_settings.py" env-json > "$2/settings-rec.json" || return 1
+  python3 -I "$WFP/site_settings.py" put "$1" "$2/settings-rec.json" || return 1
+  echo "  settings recorded in $1/_build/settings.json ($(python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); print(" ".join(sorted(d["settings"])) or "none", "| secrets:", " ".join(d["secrets"]) or "none")' "$2/settings-rec.json"))"
+}
 # record_build_inputs <bucket> <build id> <work dir>: after a good upload, record this run's inputs.
 # The content tree is packed from IMPORT_CONTENT and stored under its content id, unless this run
 # used that same recorded tree (REC_TREE).

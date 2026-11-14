@@ -11,7 +11,7 @@ calls. The state: {"sites": {"<name>": {"dispatcher": {"etag", "modified_on"} | 
 "ns_list_shape": "top" | "nested" | "bare", "ns_list_status": 200,
 "s3_status": 200}. A null part is absent (404).
 Paths: /workers/scripts (list), /workers/scripts/<name>,
-/workers/dispatch/namespaces/wp-wfp/scripts (list) and /<name>,
+/workers/dispatch/namespaces/wp-wfp/scripts (list), /<name> and /<name>/bindings (state "bindings"),
 /storage/kv/namespaces/kv1/values/<host>, /r2/buckets/<b>, /s3/<b>?list-type=2,
 /site/<dispatcher>/ (the page).
 """
@@ -58,6 +58,10 @@ class H(http.server.BaseHTTPRequestHandler):
                     sc = v["script"]
                     items.append({"script": {"id": "site-" + n, **sc}} if shape == "nested" else {"id": "site-" + n} if shape == "bare" else {"id": "site-" + n, **sc})
             return self.send(200, {"success": True, "result": items})
+        if p.startswith("/workers/dispatch/namespaces/wp-wfp/scripts/") and p.endswith("/bindings"):
+            # #558: the live bindings of the user Worker (state "bindings", default none).
+            n = p.split("/")[-2][5:]
+            return self.send(s.get("bindings_status", 200), {"success": True, "result": sites.get(n, {}).get("bindings", [])})
         if p.startswith("/workers/dispatch/namespaces/wp-wfp/scripts/"):
             n = p.rsplit("/", 1)[1][5:]
             if sites.get(n, {}).get("script"):

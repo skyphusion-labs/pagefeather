@@ -3,6 +3,7 @@
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site add <name>
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site remove <name>
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site update <name>    (or: update --all)
+#     (DROP_SETTINGS=<names> drops recorded per-site settings on purpose, #558)
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site restore <name> [snapshot key]   (#515: after a failed data restore)
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site schedule <name>   (#533: the daily snapshot cron of an existing site)
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site list
@@ -81,6 +82,12 @@ update_one_inner() {
   local REC_TREE=""
   echo "site $s: the recorded build inputs"
   use_recorded_inputs "$bucket" "$WDIR" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
+  # The site's recorded settings (#558): kept unless this run sets one or DROP_SETTINGS names it.
+  # local -x keeps them inside this one update (update --all runs many).
+  local -x PHP_INI="${PHP_INI:-}" LAZY_CACHE_MB="${LAZY_CACHE_MB:-}" LAZY_ARENA="${LAZY_ARENA:-}" LAZY_ARENA_MB="${LAZY_ARENA_MB:-}" PHP_RECYCLE="${PHP_RECYCLE:-}" CRON_INTERVAL_MS="${CRON_INTERVAL_MS:-}" TURNSTILE_SITEKEY="${TURNSTILE_SITEKEY:-}" TURNSTILE_WOO="${TURNSTILE_WOO:-}" TURNSTILE_LOGIN="${TURNSTILE_LOGIN:-}" TURNSTILE_COMMENTS="${TURNSTILE_COMMENTS:-}" MAIL_FROM="${MAIL_FROM:-}" MAIL_FROM_NAME="${MAIL_FROM_NAME:-}" PHP_LOCATION="${PHP_LOCATION:-}" WP_VECTORIZE_SEARCH="${WP_VECTORIZE_SEARCH:-}" OPCACHE_SPLIT="${OPCACHE_SPLIT:-}"
+  local SETTINGS_RECORDED=0
+  echo "site $s: the recorded settings"
+  keep_settings "$bucket" "$WDIR" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
   # Refuse before any change a build the live site cannot run (#377, lib.sh update_inputs_check).
   local woo code; woo=$(woo_active_for_build) || return 2
   code=$(store_api_code "$ORIGIN")
@@ -135,7 +142,15 @@ update_one_inner() {
   tfr site output -json | site_secrets_json "$W/sec.json" || { echo "site $s: the site secrets did not read; nothing was uploaded" >&2; rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }
   new_hash=$(config_hash "$CONF" "$W/sec.json") || { rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }
   reasons=$(update_upload_reasons "$new" "${rollback:-}" "$new_hash" "$live_hash")
-  if [ -z "$reasons" ]; then echo "site $s: already at build $new; nothing to do"; rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 0; fi
+  if [ -z "$reasons" ]; then
+    echo "site $s: already at build $new; nothing to do"
+    # Nothing is uploaded, so the live config is this run's: a site with no record gets one (#558).
+    [ "$SETTINGS_RECORDED" = 1 ] || record_settings "$bucket" "$WDIR" || echo "site $s: its settings were NOT recorded (#558)" >&2
+    rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 0
+  fi
+  # #558: never upload a config that drops a setting or a secret the LIVE script has, unless
+  # DROP_SETTINGS names it. The guard for a site with no record yet, and for any miss of the merge.
+  settings_dropcheck "$(user_script "$s")" "$CONF" "$W/sec.json" "$W" || { echo "site $s: update refused; nothing was uploaded" >&2; rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 2; }
   echo "site $s: upload build $new (was ${rollback:-unknown}); reason: $reasons"
   # WP_VECTORIZE_SEARCH (#330): the binding needs its index to exist at deploy (lib.sh).
   if search_on; then ensure_search_index "$s" || { rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }; fi
@@ -159,6 +174,7 @@ update_one_inner() {
     local rec_rc=0
     echo "site $s: updated $rollback -> $new"
     record_build_inputs "$bucket" "$new" "$WDIR" || { echo "site $s: UPDATED, but its build inputs were NOT recorded (#379): run the update again with the same inputs" >&2; rec_rc=1; }
+    record_settings "$bucket" "$WDIR" || { echo "site $s: UPDATED, but its settings were NOT recorded (#558): run the update again with the same settings" >&2; rec_rc=1; }
     # The rollback artifact of the build now live (#466), also when the record failed: the code is
     # live either way. Keeps this one and $rollback.
     write_rollback_artifact "$bucket" "$new" "${rollback:-}"
@@ -360,6 +376,10 @@ if [ "$cmd" = add ]; then
   NAMESPACE=$NAMESPACE KV_ID=$KV_ID python3 -I "$WFP/bindings.py" "$s"
   # The rollback artifact of the build this add deployed (#466): the first update can roll back to it.
   write_rollback_artifact "$(media_bucket "$s")" "$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js")"
+  # The settings this add rendered (#558), so the first update keeps them.
+  W=$(mktemp -d); chmod 700 "$W"
+  record_settings "$(media_bucket "$s")" "$W" || echo "site $s: ADDED, but its settings were NOT recorded (#558): the first update must pass them" >&2
+  rm -rf "$W"
   # A build made by this run is recorded (#379); with no BUILD=1 the build came from elsewhere.
   if [ "${BUILD:-0}" != 0 ]; then
     W=$(mktemp -d); chmod 700 "$W"
