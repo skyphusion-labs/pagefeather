@@ -65,8 +65,20 @@ add_action( 'init', 'tfn_11', 11 );
 // A fake WooCommerce file, so the subtree count has something to count.
 $tmp = sys_get_temp_dir() . '/memtrace-' . getmypid() . '/plugins/woocommerce/src/Blocks';
 @mkdir( $tmp, 0700, true );
-file_put_contents( $tmp . '/Fake.php', "<?php\n" );
+// It also defines a WooCommerce-owned callback, registered at init@10 AFTER six core ones, so a
+// list capped at 6 names it only if WooCommerce's owners come first.
+file_put_contents( $tmp . '/Fake.php', "<?php\nfunction tfn_woo() { \$GLOBALS['ran'][] = 'cb:tfn_woo'; }\n" );
 require $tmp . '/Fake.php';
+for ( $i = 1; $i <= 6; $i++ ) {
+	add_action( 'init', 'tcore' . $i, 10 );
+}
+add_action( 'init', 'tfn_woo', 10 );
+function tcore1() {}
+function tcore2() {}
+function tcore3() {}
+function tcore4() {}
+function tcore5() {}
+function tcore6() {}
 
 do_action( 'muplugins_loaded' );
 do_action( 'plugin_loaded', '/srv/wp-content/plugins/woocommerce/woocommerce.php' );
@@ -101,7 +113,9 @@ if ( 'hooks' === $mode ) {
 	$e5  = $marks['p:init@5'][0][6];
 	$e10 = $marks['p:init@10'][0][6];
 	check( array( 'n' => 1, 'woo' => 0, 'o' => array( 'TClass::b' ) ) === $e5, 'p:init@5 names its owner, and only that' );
-	check( 2 === $e10['n'] && in_array( 'TObj::c', $e10['o'], true ) && in_array( 'closure@' . basename( __FILE__ ), $e10['o'], true ), 'p:init@10 names a method and a closure by file name' );
+	check( 9 === $e10['n'] && 1 === $e10['woo'] && 6 === count( $e10['o'] ), 'p:init@10 counts 9 callbacks, 1 of them WooCommerce, and keeps 6 names' );
+	check( 'tfn_woo' === $e10['o'][0], "p:init@10 lists WooCommerce's owner first, though it was registered last" );
+	check( in_array( 'TObj::c', $e10['o'], true ) && in_array( 'closure@' . basename( __FILE__ ), $e10['o'], true ), 'p:init@10 names a method and a closure by file name' );
 	check( ! isset( $marks['p:init@' . PHP_INT_MIN] ) && ! isset( $marks['p:init@' . PHP_INT_MAX] ), "the trace's own priorities are not swept" );
 	check( isset( $marks['inc:woocommerce'], $marks['inc:hello'], $marks['mu_done'] ), 'inc:<slug> per plugin and mu_done' );
 	check( 7 === count( $marks['p:init@5'][0] ) && array( 'src/Blocks' => 1 ) === $marks['p:init@5'][0][5], 'hooks marks carry the WooCommerce subtree counts' );
