@@ -81,6 +81,13 @@ if [ "$cmd" = up ]; then
 
   if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ]; then
     log "site $s: phase B, routed by the shared $SHARED_DISPATCHER and this site's Custom Domain $HOST (attached by the workspace apply above)"
+    log "site $s: its cron-only copy $D (no route, no workers.dev), for the scheduled snapshot (#533)"
+    render_site_dispatcher "$s" "$KV_ID" cron-only > "$GEN/$D.toml"
+    tfr site output -json | dispatcher_secrets_json "$W/disp-secrets.json"
+    wrangler_deploy "$GEN" "$W/disp.log" --config "$D.toml" --secrets-file "$W/disp-secrets.json" || { rm -f "$W/disp-secrets.json"; tail -20 "$W/disp.log"; exit 1; }
+    rm -f "$W/disp-secrets.json"
+    cron_copy_check "$D" || exit 1
+    echo "  $D: workers.dev and previews off, no Custom Domain (read back)"
   else
     log "site $s: dispatcher $D, with the scheduled snapshot of this site (#533)"
     render_site_dispatcher "$s" "$KV_ID" > "$GEN/$D.toml"
@@ -107,6 +114,13 @@ elif [ "$cmd" = down ]; then
     if tfr site workspace select "$s" >/dev/null 2>&1; then
       tfr site destroy -input=false -auto-approve "${VARS[@]}" -target=cloudflare_workers_custom_domain.site >/dev/null || true
     fi
+    log "site $s: its cron-only copy $D (#533)"
+    case "$(api_code GET "/workers/scripts/$D")" in
+      200) (cd "$ROOT/deploy" && "$ROOT/deploy/wr" delete --name "$D" --force) > "$W/del.log" 2>&1 || tail -5 "$W/del.log"
+           gone "cron-only copy $D" "/workers/scripts/$D" ;;
+      404) echo "  no cron-only copy $D (a phase B site made before #533 has none)" ;;
+      *) echo "  the cron-only copy $D cannot be read: stopping" >&2; exit 1 ;;
+    esac
   else
     log "site $s: dispatcher $D (the hostname first)"
     (cd "$ROOT/deploy" && "$ROOT/deploy/wr" delete --name "$D" --force) > "$W/del.log" 2>&1 || tail -5 "$W/del.log"

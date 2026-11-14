@@ -168,13 +168,41 @@ snapshot_timeout_ms() {
   if ! [[ "$t" =~ ^[1-9][0-9]{0,5}$ ]] || [ "$t" -gt 840000 ]; then echo "SNAPSHOT_TIMEOUT_MS must be an integer from 1 to 840000, not ${t}" >&2; return 1; fi
   printf '%s\n' "$t"
 }
-render_site_dispatcher() { # render_site_dispatcher <site> <kv namespace id>
+# Phase B (#533, option A): a site on a Custom Domain is served by the shared wp-dispatch, so it has
+# no per-site dispatcher to carry the cron. "cron-only" renders the SAME copy wp-<site> with
+# workers_dev = false (preview_urls is false in the template) and no route: it binds what a phase A
+# copy binds and passes the same audit, but no request ever reaches it, so it is never a front
+# door. Each per-site copy, either phase, is one cron of the account's limit (250 on Workers Paid).
+render_site_dispatcher() { # render_site_dispatcher <site> <kv namespace id> [cron-only]
   local cron t
+  case "${3:-}" in "" | cron-only) ;; *) echo "render_site_dispatcher: the mode is cron-only or nothing, not ${3}" >&2; return 1 ;; esac
   cron=$(snapshot_cron) || return 1
   t=$(snapshot_timeout_ms) || return 1
-  render_dispatcher "$1" "$2"
+  if [ "${3:-}" = cron-only ]; then
+    local r; r=$(render_dispatcher "$1" "$2") || return 1
+    printf '%s\n' "$r" | grep -qx 'workers_dev = true' || { echo "render_site_dispatcher: the template has no workers_dev = true line to turn off" >&2; return 1; }
+    printf '%s\n' "$r" | sed 's/^workers_dev = true$/# Phase B cron-only copy (#533): no workers.dev and no route; it only runs the cron.\nworkers_dev = false/'
+  else
+    render_dispatcher "$1" "$2"
+  fi
   printf '\n# The scheduled snapshot of this one site (#533, lib.sh render_site_dispatcher).\n[vars]\nSNAPSHOT_SCRIPT = "%s"\nSNAPSHOT_TIMEOUT_MS = "%s"\n\n[triggers]\ncrons = [%s]\n' \
     "$(user_script "$1")" "$t" "${cron:+\"$cron\"}"
+}
+# The cron-only copy (phase B, #533) must stay unreachable: after a deploy its workers.dev and
+# preview URLs read back OFF, and no Custom Domain names it. Exit 1 on either, or when either read
+# fails (an unread setting is never "off"). cron_copy_check <script>
+cron_copy_check() {
+  local sub dom
+  sub=$(api GET "/workers/scripts/$1/subdomain") || return 1
+  [ "${sub##*$'\n'}" = 200 ] || { echo "cron-only copy $1: its workers.dev setting cannot be read (HTTP ${sub##*$'\n'})" >&2; return 1; }
+  printf '%s' "${sub%$'\n'*}" | python3 -I -c 'import json, sys
+r = json.load(sys.stdin).get("result") or {}
+sys.exit(0 if r.get("enabled") is False and r.get("previews_enabled") is not True else 1)' || { echo "cron-only copy $1: workers.dev or its preview URLs are ON" >&2; return 1; }
+  dom=$(api GET "/workers/domains") || return 1
+  [ "${dom##*$'\n'}" = 200 ] || { echo "cron-only copy $1: the Custom Domain list cannot be read (HTTP ${dom##*$'\n'})" >&2; return 1; }
+  printf '%s' "${dom%$'\n'*}" | python3 -I -c 'import json, sys
+r = json.load(sys.stdin).get("result")
+sys.exit(0 if isinstance(r, list) and not any(isinstance(d, dict) and d.get("service") == sys.argv[1] for d in r) else 1)' "$1" || { echo "cron-only copy $1: a Custom Domain names it" >&2; return 1; }
 }
 # The --secrets-file JSON of a site's dispatcher copy (#533): its own SNAPSHOT_TOKEN only, from the
 # site workspace (tfr site output -json on stdin). Fails when the workspace has none yet.
@@ -900,8 +928,11 @@ wait_site() { # wait_site <origin>
 site_footprint() { # site_footprint <name>
   local s=$1 c
   if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] || { [ "${REC_SITE:-}" = "$s" ] && [ "${REC_CD:-}" = true ]; }; then
-    # Phase B: the per-site routing is the Custom Domain, not a per-site Worker.
+    # Phase B: the per-site routing is the Custom Domain, not a per-site Worker; the site's
+    # cron-only copy wp-<site> (#533) carries its scheduled snapshot.
     if api GET "/workers/domains" | grep -q "\"$(site_key "$s")\""; then echo "domain yes"; else echo "domain no"; fi
+    c=$(api_code GET "/workers/scripts/$(dispatcher_name "$s")")
+    case "$c" in 200) echo "cron yes" ;; 404) echo "cron no" ;; *) echo "cron unknown" ;; esac
   else
     c=$(api_code GET "/workers/scripts/$(dispatcher_name "$s")")
     case "$c" in 200) echo "dispatcher yes" ;; 404) echo "dispatcher no" ;; *) echo "dispatcher unknown" ;; esac
@@ -935,10 +966,10 @@ except ValueError: print("unknown"); sys.exit(0)
 print("core" if isinstance(d, dict) and "kind" in d else "workspace")'
 }
 footprint_absent() { # footprint_absent <footprint text>: 0 when every part is absent
-  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher no|domain no|script gone|entry no|bucket no|search no)$'
+  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher no|domain no|cron no|script gone|entry no|bucket no|search no)$'
 }
 footprint_present() { # footprint_present <footprint text>: 0 when every part is there
-  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher yes|domain yes|script present|entry yes|bucket yes|search yes)$'
+  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher yes|domain yes|cron yes|script present|entry yes|bucket yes|search yes)$'
 }
 # What a site's workspace RECORDS: its hostname, whether it has a Custom
 # Domain, and that domain's zone. Prints "<hostname> <true|false> <zone_id|->",

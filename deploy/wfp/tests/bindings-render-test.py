@@ -10,7 +10,7 @@ renders the site's user Worker config (render_user) and its dispatcher copy (ren
 with lib.sh, takes the secret NAMES the deploy uploads (site_secrets_json, dispatcher_secrets_json),
 turns them into the shape the API reads back (the bindings list), serves them from a stand-in API,
 and runs bindings.py on them. Variants: the default render, OPCACHE_SPLIT=1, WP_VECTORIZE_SEARCH=1,
-and Turnstile. A TOML key it does not know is a FAIL, so the next new binding is caught here too.
+and Turnstile; and the phase B cron-only dispatcher copy. A TOML key it does not know is a FAIL, so the next new binding is caught here too.
 Controls: a foreign binding planted in the same render must still fail the audit.
 Exit 0 only when every case gives what it must.
 """
@@ -148,6 +148,14 @@ for vname, venv in variants:
     rc, out = audit(user, disp)
     check("%s: the rendered site and dispatcher pass the audit" % vname, rc == 0, " ".join(json.loads(out).get("failed", []))[:400] if out.strip().startswith("{") else out[-300:])
     check("%s: the audit prints no binding value (the SITE_ORIGIN text is not in its output)" % vname, "https://wp-%s.sub.workers.dev" % SITE not in out, "a value is in the output")
+# Phase B (#533, option A): the cron-only copy binds exactly what the phase A copy binds, and passes.
+cron_conf = tomllib.loads(lib('render_site_dispatcher %s %s cron-only' % (SITE, KV)))
+cron, unk_c = to_api(cron_conf, secret_names("dispatcher_secrets_json"))
+check("the cron-only copy (phase B) has no binding key this test does not know", not unk_c, unk_c)
+check("the cron-only copy binds the same as the phase A copy", sorted(json.dumps(x, sort_keys=True) for x in cron) == sorted(json.dumps(x, sort_keys=True) for x in disp), "they differ")
+rc, out = audit(to_api(tomllib.loads(lib('render_user %s https://%s.wfp-test.skyphusion.org' % (SITE, SITE))), secret_names("site_secrets_json"))[0], cron)
+check("a phase B site (Custom Domain origin) with its cron-only copy passes the audit", rc == 0, out[-300:])
+check("the cron-only copy renders workers_dev = false", cron_conf.get("workers_dev") is False and cron_conf.get("preview_urls") is False, cron_conf.get("workers_dev"))
 # Controls: the same real render with ONE foreign binding planted still fails.
 uconf = tomllib.loads(lib('render_user %s https://wp-%s.sub.workers.dev' % (SITE, SITE)))
 user, _ = to_api(uconf, secret_names("site_secrets_json"))

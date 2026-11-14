@@ -239,7 +239,7 @@ Every site is code-locked: the generated `wp-config.php` sets `DISALLOW_FILE_MOD
 
 ## The scheduled snapshot (#533)
 
-Every site takes a daily snapshot of its database into its own media bucket. Phase A only (a dispatcher copy per site).
+Every site takes a daily snapshot of its database into its own media bucket: in phase A through its own dispatcher copy, in phase B through a cron-only copy (below).
 
 ```sh
 ./deploy/wfp/site add <name>            # a new site gets the cron and its key at once
@@ -256,6 +256,8 @@ How it works:
 - **A failed run** throws in `scheduled()`, so it shows as a failure in Cron Events. Every run logs one line, `@event snapshot {json}`, with no key in it. The freshness check reads the bucket, not this log. The wait is `SNAPSHOT_TIMEOUT_MS` (default 60000).
 - **Order for an existing site.** `site update` first: it applies the workspace once to make the key (the same recorded build and hash), and the upload carries the key. `site schedule` refuses until the user Worker holds `SNAPSHOT_TOKEN`, because without it every cron run would be a 403.
 - **A held site (`data_hold`, #515) still takes its snapshot.** The object does not know the hold, so a site whose last rollback restore failed snapshots its PARTIAL database every day. That snapshot is not a good restore point: restore from the key the hold names (`site restore <name>`). The freshness check's size rule will usually flag such a snapshot, because it is under half of the one before it.
+- **Phase B (a Custom Domain on the shared `wp-dispatch`).** The site has no per-site dispatcher, so it gets a CRON-ONLY copy `wp-<name>`: the same script and bindings, with `workers_dev = false`, no preview URLs and no route, so no request ever reaches it. `site add` makes it, `site schedule` re-deploys it, and `site remove` deletes it and reads it back gone. After each deploy, `cron_copy_check` reads back that `workers.dev` and previews are off and that no Custom Domain names it. A phase B site made before this has no copy: run `site update`, then `site schedule`.
+- **The account cron limit.** Every per-site copy, in either phase, is one Cron Trigger of the account. Workers Paid allows 250 per account (Workers limits page, read 2026-11-14), so this design reaches about 250 sites. Past that, one cron on the shared dispatcher that walks the site map is the next step (it needs a per-site key derived from one master, to keep one key per site).
 - **The first run.** A new or changed cron can take up to 15 minutes to arm (Cloudflare documents up to 15; 517 s measured on #533). Do not judge a change by the next minute.
 - **Retention (#540).** `terraform/site` expires `_snapshots/auto/` after 35 days (`snapshots-auto-35d`, beside the default multipart abort rule). fleet-chezmoi declares that shape for every `wp-wfp-*-media` bucket (fc#2654). A site gets the rule at its next workspace apply. The site name `auto` is refused, so no site's rollback snapshots (`_snapshots/<site>/`) can fall under the expiring prefix.
 
@@ -327,4 +329,5 @@ python3 -I deploy/wfp/tests/fresh-test.py   # the freshness check (#533): red on
 deploy/wfp/tests/r2-temp-test.sh            # the temporary R2 credential: the mint, one bucket only, a refresh on expiry (#273)
 deploy/wfp/tests/custom-domain-test.sh      # phase B (#138): custom_host, site_host, the shared dispatcher, the Terraform wiring
 deploy/wfp/tests/snapshot-wiring-test.sh    # the scheduled snapshot (#533): the site dispatcher render, both scripts' secrets, the deploy paths
+deploy/wfp/tests/phase-b-cron-test.sh       # the phase B cron-only copy (#533): no route, no workers.dev, read back; add, remove and schedule wiring
 ```
