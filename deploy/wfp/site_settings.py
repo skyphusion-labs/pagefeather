@@ -7,7 +7,7 @@ LAZY_CACHE_MB, LAZY_ARENA, ...). A `site update` that did not export one dropped
 said only "config changed". Now each good `site add` and `site update` records the run's settings
 in the site's own media bucket, private outside uploads/ like _build/inputs.json (#379):
 
-    _build/settings.json    {"v": 1, "settings": {NAME: value, ...}, "secrets": [NAME, ...]}
+    _build/settings.json    {"v": 1, "settings": {NAME: value, ...}, "sealed": [NAME, ...]}
 
 An update KEEPS a recorded setting the run does not set, uses the run's value when it sets one,
 and drops one only when DROP_SETTINGS names it. A secret's VALUE is never recorded, only that the
@@ -44,10 +44,11 @@ RECORD = "_build/settings.json"
 SETTINGS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PHP_RECYCLE", "CRON_INTERVAL_MS",
             "MEM_LEDGER", "TURNSTILE_SITEKEY", "TURNSTILE_WOO", "TURNSTILE_LOGIN", "TURNSTILE_COMMENTS",
             "MAIL_FROM", "MAIL_FROM_NAME", "PHP_LOCATION", "WFP_PHP_ENV", "WP_VECTORIZE_SEARCH")
-SECRETS = ("TURNSTILE_SECRET",)
-# No message prints a name taken from SECRETS (CodeQL py/clear-text-logging-sensitive-data traces
-# it as a secret, though only the name is there): they print this fixed text instead.
-SECRET_TEXT = "the Turnstile secret (TURNSTILE_SECRET)"
+# The sealed settings: secrets the site may hold, recorded by NAME only, never a value. Named
+# "sealed", not "secret": CodeQL py/clear-text-logging-sensitive-data marks data as sensitive by
+# the names it flows through, and only a name is ever printed or recorded here (#561).
+SEALED = ("TURNSTILE_SECRET",)
+SEALED_NOTE = "the Turnstile secret (TURNSTILE_SECRET)"
 # The settings the live bindings can show dropped: rendered only when set. MAIL_FROM, PHP_LOCATION
 # and WFP_PHP_ENV always render (a default), and WP_VECTORIZE_SEARCH renders bindings, not a var.
 DROPPABLE_VARS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PHP_RECYCLE", "CRON_INTERVAL_MS",
@@ -57,15 +58,15 @@ DROPPABLE_VARS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PH
 
 def drop_list(env=os.environ):
     names = [x for x in re.split(r"[\s,]+", env.get("DROP_SETTINGS", "") or "") if x]
-    bad = [x for x in names if x not in SETTINGS + SECRETS]
+    bad = [x for x in names if x not in SETTINGS + SEALED]
     if bad:
-        print("site settings: DROP_SETTINGS names an unknown setting: %s (known: %s, and %s)" % (" ".join(bad), " ".join(SETTINGS), SECRET_TEXT), file=sys.stderr)
+        print("site settings: DROP_SETTINGS names an unknown setting: %s (known: %s, and %s)" % (" ".join(bad), " ".join(SETTINGS), SEALED_NOTE), file=sys.stderr)
         sys.exit(2)
     return set(names)
 
 
 def env_json(env=os.environ):
-    return {"v": 1, "settings": {k: env[k] for k in SETTINGS if env.get(k)}, "secrets": [k for k in SECRETS if env.get(k)]}
+    return {"v": 1, "settings": {k: env[k] for k in SETTINGS if env.get(k)}, "sealed": [k for k in SEALED if env.get(k)]}
 
 
 def merge(record, env=os.environ):
@@ -82,17 +83,17 @@ def merge(record, env=os.environ):
         else:
             lines.append("export %s=%s" % (k, shlex.quote(str(v))))
             print("  settings: %s kept from the record" % k, file=sys.stderr)
-    for k in record.get("secrets") or []:
-        if k not in SECRETS:
+    for k in record.get("sealed") or []:
+        if k not in SEALED:
             continue
         if k in drop:
-            print("  settings: %s DROPPED on purpose (DROP_SETTINGS)" % SECRET_TEXT, file=sys.stderr)
+            print("  settings: %s DROPPED on purpose (DROP_SETTINGS)" % SEALED_NOTE, file=sys.stderr)
         elif not env.get(k):
-            print("  settings: the site has %s, and this run does not: export it, or drop it on purpose with DROP_SETTINGS=TURNSTILE_SECRET; refused" % SECRET_TEXT, file=sys.stderr)
+            print("  settings: the site has %s, and this run does not: export it, or drop it on purpose with DROP_SETTINGS=TURNSTILE_SECRET; refused" % SEALED_NOTE, file=sys.stderr)
             rc = 5
     # A drop is an empty value, never unset: the caller holds these as local -x (update --all runs
     # many sites), and every render function reads an empty value as not set.
-    for k in sorted(drop - set(record.get("settings") or {}) - set(record.get("secrets") or [])):
+    for k in sorted(drop - set(record.get("settings") or {}) - set(record.get("sealed") or [])):
         lines.append("export %s=''" % k)
     print("\n".join(lines))
     return rc
@@ -111,7 +112,7 @@ def rendered_vars(conf_text):
     return out
 
 
-def dropcheck(conf_path, bindings_path, secrets_path, env=os.environ):
+def dropcheck(conf_path, bindings_path, upload_names_file, env=os.environ):
     drop = drop_list(env)
     try:
         live = json.load(open(bindings_path))
@@ -122,13 +123,13 @@ def dropcheck(conf_path, bindings_path, secrets_path, env=os.environ):
         print("site settings: the live bindings cannot be read, so a dropped setting cannot be ruled out; refused", file=sys.stderr)
         return 6
     plain = {b.get("name") for b in live if isinstance(b, dict) and b.get("type") == "plain_text"}
-    secret = {b.get("name") for b in live if isinstance(b, dict) and b.get("type") == "secret_text"}
+    sealed_live = {b.get("name") for b in live if isinstance(b, dict) and b.get("type") == "secret_text"}
     now_vars = rendered_vars(open(conf_path).read())
-    now_secrets = set(json.load(open(secrets_path)))
+    now_sealed = set(json.load(open(upload_names_file)))
     lost = sorted(k for k in DROPPABLE_VARS if k in plain and k not in now_vars and k not in drop)
-    lost_secret = any(k in secret and k not in now_secrets and k not in drop for k in SECRETS)
-    if lost or lost_secret:
-        what = " ".join(lost + ([SECRET_TEXT] if lost_secret else []))
+    lost_sealed = any(k in sealed_live and k not in now_sealed and k not in drop for k in SEALED)
+    if lost or lost_sealed:
+        what = " ".join(lost + ([SEALED_NOTE] if lost_sealed else []))
         print("site settings: the live site has %s, and this update would DROP it: export it, or DROP_SETTINGS=<names> to drop it on purpose; refused" % what, file=sys.stderr)
         return 6
     return 0
