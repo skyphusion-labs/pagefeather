@@ -233,6 +233,7 @@ jobs:
           deploy/wfp/tests/update-inputs-test.sh
           deploy/wfp/tests/rollback-build-test.sh
           python3 -I deploy/wfp/tests/rollback-artifact-test.py
+          python3 -I deploy/wfp/tests/bucket-listing-test.py
           deploy/wfp/tests/rollback-slim-test.sh
           deploy/wfp/tests/build-inputs-test.sh
           deploy/wfp/tests/kv-build-test.sh
