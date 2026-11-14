@@ -108,6 +108,8 @@ bundle_size_check() { return 0; }
 wait_build() { return 0; }
 curl() { printf 200; }   # the front page check; the S3 calls run the real curl (a subprocess)
 record_build_inputs() { return 0; }
+# #558: the settings record and the live drop check (config-hash-test.sh covers them).
+keep_settings() { SETTINGS_RECORDED=1; return 0; }; settings_dropcheck() { return 0; }; record_settings() { return 0; }
 # The build stand-in: the new build of site B.
 build_dosql() { [ "${FAIL_BUILD:-0}" = 1 ] && return 1; setid dddddddddddd-wooprimed; }
 # The temp dirs of the update cases go under $TT, so the test can see that none is left (#513:

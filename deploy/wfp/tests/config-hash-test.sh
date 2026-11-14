@@ -141,6 +141,9 @@ class H(BaseHTTPRequestHandler):
             self._send(200, store[p])
         else:
             self._send(404, b"missing")
+    def do_DELETE(self):
+        store.pop(self.path.split("?", 1)[0], None)
+        self._send(204, b"")
     def do_PUT(self):
         n = int(self.headers.get("content-length", "0") or "0")
         body = self.rfile.read(n) if n else b""
@@ -358,6 +361,75 @@ run_update
 a1=$(lines "$APPLY_LOG")
 ok "with the token: no extra apply, nothing to do" "$([ "$RC" = 0 ] && [ "$a1" = "$a0" ] && printf '%s' "$OUT" | grep -Fqx 'site shop: already at build bld-same; nothing to do' && echo 1 || echo 0)"
 [ "$RC" = 0 ] || { echo "$OUT" | sed 's/^/   /'; }
+
+# 9. #558: a site's env-only settings are recorded and kept. SREC is the record, LB the live bindings.
+SREC="$WFP_S3_ENDPOINT/wp-wfp-shop-media/_build/settings.json"
+srec_put() { printf '%s' "$1" | "$REAL_CURL" -s -o /dev/null -X PUT --data-binary @- "$SREC"; }
+srec_del() { "$REAL_CURL" -s -o /dev/null -X DELETE "$SREC"; }
+srec_get() { "$REAL_CURL" -s "$SREC"; }
+live() { STATE="$STATE" B="$1" python3 -I -c 'import json, os; p = os.environ["STATE"]; d = json.load(open(p)); d["sites"]["shop"]["bindings"] = json.loads(os.environ["B"]); json.dump(d, open(p, "w"))'; }
+conf_has() { grep -c "^$1 = " "$APP/wrangler.deploy.wfp-shop.toml" 2>/dev/null || true; }
+unset PHP_INI TURNSTILE_SECRET FORCE_UPLOAD DROP_SETTINGS
+PIN='{"opcache.memory_consumption":"32"}'
+# 9a. The ggc-test case (2026-11-14): no record, the LIVE site has PHP_INI, this run does not set it.
+srec_del; live '[{"type":"plain_text","name":"PHP_INI","text":"x"},{"type":"plain_text","name":"SITE_ORIGIN","text":"y"}]'
+set_entry bld-other "$(last_hash)"
+u0=$(lines "$UPLOAD_LOG")
+run_update
+u1=$(lines "$UPLOAD_LOG")
+ok "#558 no record, the live site has PHP_INI, the run drops it: REFUSED (exit 2), nothing uploaded" "$([ "$RC" = 2 ] && [ "$u1" = "$u0" ] && printf '%s' "$OUT" | grep -Fq 'the live site has PHP_INI, and this update would DROP it' && echo 1 || echo 0)"
+[ "$RC" = 2 ] || { echo "$OUT" | tail -5 | sed 's/^/   /'; }
+# 9b. The same with DROP_SETTINGS=PHP_INI: it uploads, and records the settings (no PHP_INI).
+u0=$(lines "$UPLOAD_LOG")
+DROP_SETTINGS=PHP_INI run_update
+u1=$(lines "$UPLOAD_LOG")
+ok "#558 DROP_SETTINGS=PHP_INI: the drop is on purpose: uploaded, and the record holds no PHP_INI" "$([ "$RC" = 0 ] && [ "$u1" = $((u0 + 1)) ] && [ "$(conf_has PHP_INI)" = 0 ] && srec_get | python3 -I -c 'import json, sys; d = json.load(sys.stdin); sys.exit(0 if d["v"] == 1 and "PHP_INI" not in d["settings"] else 1)' && echo 1 || echo 0)"
+[ "$RC" = 0 ] || { echo "$OUT" | tail -5 | sed 's/^/   /'; }
+# 9c. A run WITH PHP_INI: uploaded, and the record now holds it.
+live '[{"type":"plain_text","name":"SITE_ORIGIN","text":"y"}]'
+set_entry bld-other "$(last_hash)"
+PHP_INI=$PIN run_update
+ok "#558 a run that sets PHP_INI: uploaded with it, and the record holds it" "$([ "$RC" = 0 ] && [ "$(conf_has PHP_INI)" = 1 ] && srec_get | PIN=$PIN python3 -I -c 'import json, os, sys; d = json.load(sys.stdin); sys.exit(0 if d["settings"].get("PHP_INI") == os.environ["PIN"] else 1)' && echo 1 || echo 0)"
+H5=$(last_hash)
+# 9d. THE FIX: the next update does NOT set PHP_INI. It is kept from the record: same config, nothing to do.
+live '[{"type":"plain_text","name":"PHP_INI","text":"x"},{"type":"plain_text","name":"SITE_ORIGIN","text":"y"}]'
+set_entry bld-same "$H5"
+u0=$(lines "$UPLOAD_LOG")
+run_update
+u1=$(lines "$UPLOAD_LOG")
+ok "#558 THE FIX: an update without PHP_INI keeps the recorded pin: the same config, nothing to do, no upload" "$([ "$RC" = 0 ] && [ "$u1" = "$u0" ] && printf '%s' "$OUT" | grep -Fq 'settings: PHP_INI kept from the record' && printf '%s' "$OUT" | grep -Fqx 'site shop: already at build bld-same; nothing to do' && [ "$(conf_has PHP_INI)" = 1 ] && echo 1 || echo 0)"
+[ "$RC" = 0 ] || { echo "$OUT" | tail -6 | sed 's/^/   /'; }
+# 9e. A new build without PHP_INI: kept, uploaded with it.
+set_entry bld-other "$H5"
+run_update
+ok "#558 a new build without PHP_INI in the run: uploaded WITH the recorded pin" "$([ "$RC" = 0 ] && [ "$(conf_has PHP_INI)" = 1 ] && grep -F 'PHP_INI = ' "$APP/wrangler.deploy.wfp-shop.toml" | grep -Fq '"32"' && echo 1 || echo 0)"
+# 9f. A run that sets ANOTHER value replaces it, and says so.
+set_entry bld-other "$(last_hash)"
+PHP_INI='{"opcache.memory_consumption":"48"}' run_update
+ok "#558 a run with another PHP_INI replaces the recorded one, and says so" "$([ "$RC" = 0 ] && printf '%s' "$OUT" | grep -Fq 'PHP_INI is set by this run (it replaces the recorded value)' && srec_get | grep -Fq '48' && echo 1 || echo 0)"
+# 9g. A recorded secret the run does not have: refused before anything changes.
+srec_put '{"v": 1, "settings": {}, "secrets": ["TURNSTILE_SECRET"]}'
+set_entry bld-other "$(last_hash)"
+u0=$(lines "$UPLOAD_LOG")
+run_update
+u1=$(lines "$UPLOAD_LOG")
+ok "#558 the site has TURNSTILE_SECRET and the run does not: REFUSED (exit 2), nothing uploaded" "$([ "$RC" = 2 ] && [ "$u1" = "$u0" ] && printf '%s' "$OUT" | grep -Fq 'the site has the secret TURNSTILE_SECRET' && echo 1 || echo 0)"
+# 9h. Live bindings that cannot be read, on an upload: refused, never read as "nothing to drop".
+srec_del
+python3 -I -c 'import json, sys; p = sys.argv[1]; d = json.load(open(p)); d["bindings_status"] = 500; json.dump(d, open(p, "w"))' "$STATE"
+set_entry bld-other "$(last_hash)"
+run_update
+ok "#558 the live bindings cannot be read: REFUSED (exit 2)" "$([ "$RC" = 2 ] && printf '%s' "$OUT" | grep -Fq 'cannot be read' && echo 1 || echo 0)"
+python3 -I -c 'import json, sys; p = sys.argv[1]; d = json.load(open(p)); d.pop("bindings_status", None); json.dump(d, open(p, "w"))' "$STATE"
+# 9i. A DROP_SETTINGS that names an unknown setting is refused.
+DROP_SETTINGS=NOT_A_SETTING run_update
+ok "#558 DROP_SETTINGS with an unknown name: REFUSED" "$([ "$RC" = 2 ] && echo 1 || echo 0)"
+# 9j. The local -x list in site update is exactly lib.sh SITE_SETTINGS (a new setting cannot be missed).
+want=$(bash -c '. "'"$LIB"'"; printf "%s\n" $SITE_SETTINGS' | sort | tr '\n' ' ')
+got=$(sed -n '/^  local -x PHP_INI=/p' "$SITE" | grep -oE '[A-Z_]+="\$\{' | sed 's/="\${//' | sort | tr '\n' ' ')
+pyl=$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import site_settings; print(" ".join(sorted(site_settings.SETTINGS)) + " ")' "$(dirname "$LIB")")
+ok "#558 the settings list is the same in lib.sh, site update (local -x) and site_settings.py" "$([ -n "$want" ] && [ "$want" = "$got" ] && [ "$want" = "$pyl" ] && echo 1 || echo 0)"
+unset PHP_INI DROP_SETTINGS
 
 echo "$fails failing check(s)"
 exit "$fails"
