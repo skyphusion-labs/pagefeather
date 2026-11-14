@@ -157,7 +157,8 @@ python3 "$IMP/search-replace.py" "$WORK/site.sqlite" "$OLD_ORIGIN" "$NEW_ORIGIN"
 # 3b. The source site's pending order emails (issue #364): WooCommerce's deferred emails in the
 # woocommerce-emails group belong to the source site, so the new site would send them late or a
 # second time. They are marked canceled, never deleted. IMPORT_KEEP_PENDING_EMAILS=1 keeps them.
-# Variant a builds its statements from the dump, not from this copy: not covered yet (#364).
+# Variant a builds its statements from the dump, not from this copy: mysql.sh marks them there,
+# with the ids from this copy (mysql-prepare.py --emails).
 if [ "$VARIANT" != a ]; then
   python3 "$IMP/cancel-emails.py" "$WORK/site.sqlite" ${DRY_RUN:+--dry-run} $([ "${IMPORT_KEEP_PENDING_EMAILS:-0}" = 1 ] && echo --keep) | tee "$WORK/emails.txt"
   [ "${PIPESTATUS[0]}" = 0 ] || { echo "the pending email step failed" >&2; exit 1; }

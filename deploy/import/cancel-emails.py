@@ -14,6 +14,9 @@ deleted, so the row counts that import.sh checks after the load do not change. -
 (IMPORT_KEEP_PENDING_EMAILS=1) and --dry-run change nothing. The last line of output is the
 count: "pending emails: <n> canceled", "... kept", or "... would be canceled". A database without
 the Action Scheduler tables or the group has none, and says so.
+
+Variant a (MySQL) builds its statements from the dump, not from this copy: mysql-prepare.py
+--emails reads pending_email_ids() of the copy and marks the same actions in its statements.
 """
 import sqlite3
 import sys
@@ -21,6 +24,19 @@ import time
 
 GROUP = "woocommerce-emails"
 MESSAGE = "action canceled by the site import: a pending email of the source site (issue #364)"
+WHERE = (
+    "status = 'pending' AND group_id IN "
+    "(SELECT group_id FROM wp_actionscheduler_groups WHERE slug = ?)"
+)
+
+
+def pending_email_ids(db):
+    """The action_id of every pending action in the woocommerce-emails group, in order, or None
+    when the database has no Action Scheduler tables. Tables are wp_ (dump-to-sqlite.php)."""
+    tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if not {"wp_actionscheduler_actions", "wp_actionscheduler_groups"} <= tables:
+        return None
+    return [r[0] for r in db.execute("SELECT action_id FROM wp_actionscheduler_actions WHERE " + WHERE + " ORDER BY action_id", (GROUP,))]
 
 
 def main(argv):
@@ -32,15 +48,12 @@ def main(argv):
         return 2
     db = sqlite3.connect(args[0])
     try:
-        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-        if not {"wp_actionscheduler_actions", "wp_actionscheduler_groups"} <= tables:
+        ids = pending_email_ids(db)
+        if ids is None:
             print("pending emails: 0 (no Action Scheduler tables)")
             return 0
-        where = (
-            "status = 'pending' AND group_id IN "
-            "(SELECT group_id FROM wp_actionscheduler_groups WHERE slug = ?)"
-        )
-        ids = [r[0] for r in db.execute("SELECT action_id FROM wp_actionscheduler_actions WHERE " + where + " ORDER BY action_id", (GROUP,))]
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        where = WHERE
         n = len(ids)
         if "--keep" in flags:
             print("pending emails: %d kept (IMPORT_KEEP_PENDING_EMAILS=1)" % n)

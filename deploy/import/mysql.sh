@@ -25,10 +25,22 @@ PREFIX=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["prefix
 TO_PREFIX=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("prefix") or "")' "$WORK/server.json")
 [ -n "$TO_PREFIX" ] || { echo "a: the site did not report its table prefix (/_sqlimport?info=1): deploy its code from current main first (#487); nothing was imported" >&2; exit 1; }
 echo "a: the dump's prefix $PREFIX becomes the site's $TO_PREFIX"
-python3 "$IMP/mysql-prepare.py" "$DUMP" "$WORK/mysql.jsonl" --prefix "$PREFIX" --to-prefix "$TO_PREFIX" --flavour "$FLAVOUR" --max-statement "$MAXST" --old "$OLD_ORIGIN" --new "$NEW_ORIGIN" > "$WORK/mysql.json"
-python3 - "$WORK/mysql.json" <<'PY'
-import json, sys
+# The source site's pending order emails (issue #364, import.sh step 3b for the other variants):
+# the statements mark them canceled; the SQLite copy of step 2 lists them. IMPORT_KEEP_PENDING_EMAILS=1 keeps them.
+# shellcheck disable=SC2046 # the opt-out is one flag or none
+python3 "$IMP/mysql-prepare.py" "$DUMP" "$WORK/mysql.jsonl" --prefix "$PREFIX" --to-prefix "$TO_PREFIX" --flavour "$FLAVOUR" --max-statement "$MAXST" --old "$OLD_ORIGIN" --new "$NEW_ORIGIN" --emails "$WORK/site.sqlite" $([ "${IMPORT_KEEP_PENDING_EMAILS:-0}" = 1 ] && echo --keep-emails) > "$WORK/mysql.json"
+DRY_RUN=${DRY_RUN:-} python3 - "$WORK/mysql.json" <<'PY'
+import json, os, sys
 r = json.load(open(sys.argv[1]))
+e = r["emails"]
+if not e["action_scheduler"]:
+    print("pending emails: 0 (no Action Scheduler tables)")
+elif e["kept"]:
+    print(f"pending emails: {e['pending']} kept (IMPORT_KEEP_PENDING_EMAILS=1)")
+elif os.environ.get("DRY_RUN"):
+    print(f"pending emails: {e['canceled']} would be canceled")
+else:
+    print(f"pending emails: {e['canceled']} canceled")
 print(f"a: {r['statements']} statements, {sum(r['rows'].values())} rows; address changed in {r['changed']['address']} values; keys renamed: {r['changed']['user_roles']} user_roles, {r['changed']['usermeta_keys']} user meta")
 if r["skipped_tables"]:
     print("a: NOT IMPORTED, tables without the prefix: " + ", ".join(sorted(r["skipped_tables"])))
