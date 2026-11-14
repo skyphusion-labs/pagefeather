@@ -3,6 +3,7 @@
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site add <name>
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site remove <name>
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site update <name>    (or: update --all)
+#   CLOUDFLARE_API_TOKEN=... deploy/wfp/site restore <name> [snapshot key]   (#515: after a failed data restore)
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site list
 #   CLOUDFLARE_API_TOKEN=... SQLITE=<file>|DUMP=<file> [CONTENT=<wp-content.tar.gz>] deploy/wfp/site import <name>
 # The shared pieces must exist (up.sh). add builds nothing: b-dosql must be
@@ -21,7 +22,7 @@ need_account
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
 cmd=${1:-}; s=${2:-}
 if [ "$cmd" = list ]; then list_sites; exit 0; fi
-case "$cmd" in add|remove|update|import) ;; *) echo "usage: site add|remove|update|import <name> | site update --all | site list" >&2; exit 2 ;; esac
+case "$cmd" in add|remove|update|import|restore) ;; *) echo "usage: site add|remove|update|import|restore <name> | site update --all | site list" >&2; exit 2 ;; esac
 tfr shared init -input=false >/dev/null
 KV_ID=$(tfr shared output -raw kv_namespace_id 2>/dev/null) || { echo "no shared pieces (run up.sh first)" >&2; exit 2; }
 [ -n "$KV_ID" ] || { echo "no shared pieces (run up.sh first)" >&2; exit 2; }
@@ -37,6 +38,11 @@ has_ws() { list_sites | grep -qx "$1"; }
 # the rebuild, only when it IS this site's live build, #464); the rollback drops
 # writes made since the snapshot. Every step that can fail stops the update
 # (this runs where set -e is off: update --all calls it inside an if).
+# #515: if the rollback's data restore FAILS, the database is partial. The update then marks the
+# site map entry (data_hold = the snapshot key), prints the recovery, and exits 3, not 1, so it
+# cannot be read as an ordinary failed update. While the mark is set, an update refuses (exit 2)
+# before it changes anything, so a partial database is never snapshotted as the new truth.
+# Exit codes: 0 updated or nothing to do, 1 failed (rolled back), 2 refused, 3 DATA RESTORE FAILED.
 # The work dir of one update (the recorded inputs, #379), removed however update_one ends.
 update_one() {
   local WDIR rc=0; WDIR=$(mktemp -d); chmod 700 "$WDIR"
@@ -61,6 +67,13 @@ update_one_inner() {
   live_hash=$(entry_config_hash "$s")
   echo "site $s: the live build is ${rollback:-unknown}"
   if [ -n "$live_hash" ]; then echo "site $s: the recorded config hash is $live_hash"; else echo "site $s: no config hash is recorded"; fi
+  # #515: a held site (its last rollback could not restore the data) is not updated.
+  local hold; hold=$(entry_data_hold "$s")
+  if [ -n "$hold" ]; then
+    echo "site $s: update REFUSED: a rollback's data restore failed, so the database may be PARTIAL (#515). The hold names the snapshot $bucket/_snapshots/$hold. Nothing was changed." >&2
+    print_restore_help "$s" "$ORIGIN" "$bucket" "$hold"
+    return 2
+  fi
   # The site's recorded build inputs (#379): reused when this run passes none, compared when it does.
   # local -x keeps a recorded value inside this one update (update --all runs many).
   local -x PLUGINS="${PLUGINS:-}" THEMES="${THEMES:-}" SUITE="${SUITE:-}" THEME_SUITE="${THEME_SUITE:-}" IMPORT_THEMES="${IMPORT_THEMES:-}" IMPORT_PLUGINS="${IMPORT_PLUGINS:-}" IMPORT_MU_PLUGINS="${IMPORT_MU_PLUGINS:-}" WOO_ACTIVE="${WOO_ACTIVE:-}" IMPORT_CONTENT="${IMPORT_CONTENT:-}"
@@ -78,7 +91,7 @@ update_one_inner() {
     snap_key="$s/${rollback:-unknown}-$(date -u +%Y%m%dT%H%M%SZ).ndjson"
     echo "site $s: snapshot the data to $bucket/_snapshots/$snap_key"
     WFP_S3_ENDPOINT="$EP" NAMESPACE=$NAMESPACE KV_ID=$KV_ID SUB=$SUB \
-      python3 -I "$WFP/snapshot.py" dbsnapshot "$ORIGIN" "$TOK" "$bucket" "$snap_key" \
+      python3 -I "${WFP_SNAPSHOT:-$WFP/snapshot.py}" dbsnapshot "$ORIGIN" "$TOK" "$bucket" "$snap_key" \
       || { echo "site $s: the snapshot did not store; aborting (a rollback would have no way back)" >&2; return 1; }
   fi
   # Save the live code before rebuilding, so a rollback re-uploads the code
@@ -141,8 +154,10 @@ update_one_inner() {
     return "$rec_rc"
   fi
   echo "site $s: ROLLING BACK to $rollback. NOTE: a rollback drops any write made between the snapshot and now." >&2
+  local restore_failed=0
   if [ -n "$snap_key" ]; then
-    WFP_S3_ENDPOINT="$EP" python3 -I "$WFP/snapshot.py" dbrestore "$ORIGIN" "$TOK" "$bucket" "$snap_key" || echo "site $s: the data restore FAILED; the snapshot is $bucket/_snapshots/$snap_key" >&2
+    WFP_S3_ENDPOINT="$EP" python3 -I "${WFP_SNAPSHOT:-$WFP/snapshot.py}" dbrestore "$ORIGIN" "$TOK" "$bucket" "$snap_key" \
+      || { restore_failed=1; echo "site $s: the data restore FAILED; the snapshot is $bucket/_snapshots/$snap_key" >&2; }
   fi
   # The saved build must still be this site's live one (#464): never re-deploy another build.
   if [ -n "$SAVED" ] && ! rollback_build_ok "$live_build" "${rollback:-}"; then
@@ -180,7 +195,48 @@ update_one_inner() {
   fi
   [ -n "$SAVED" ] && rm -rf "$SAVED"
   [ "${COUNT_ROWS:-0}" = 1 ] && echo "site $s: rows after (rolled back): $(row_count "$ORIGIN" "$TOK")"
+  if [ "$restore_failed" = 1 ]; then
+    # #515: the database holds only the parts before the failed one. Hold the site.
+    echo "site $s: DATA RESTORE FAILED: the database is PARTIAL. The site map entry is marked, and the next site update REFUSES until the data is restored." >&2
+    if tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=$(entry_build "$s")" -var "config_hash=$(entry_config_hash "$s")" -var "data_hold=$snap_key" >/dev/null \
+      && [ "$(entry_data_hold "$s")" = "$snap_key" ]; then
+      echo "site $s: the hold is recorded (data_hold=$snap_key, read back)" >&2
+    else
+      echo "site $s: the hold could NOT be recorded in the site map entry: do NOT run site update on $s before the restore" >&2
+    fi
+    print_restore_help "$s" "$ORIGIN" "$bucket" "$snap_key"
+    return 3
+  fi
   return 1
+}
+
+# Restore a held site's data from its snapshot, then clear the hold (#515). The key defaults to
+# the one the hold records. Everything comes from the site's workspace (its origin, SPIKE_TOKEN,
+# bucket); nothing secret is printed. On success, the hold is cleared with the build and config
+# hash the entry records, and read back. Exit 0 restored and cleared, 1 failed, 2 refused.
+restore_one() {
+  local s=$1 key=${2:-}
+  valid_site "$s" || { echo "bad site name: $s" >&2; return 2; }
+  has_ws "$s" || { echo "no site $s" >&2; return 2; }
+  tfr site init -input=false >/dev/null; tfr site workspace select "$s" >/dev/null
+  site_vars "$s" "$SUB" "$KV_ID" || return 1
+  local ORIGIN="https://$REC_HOST" TOK bucket EP hold
+  TOK=$(tfr site output -raw spike_token); bucket=$(media_bucket "$s"); EP=$(tfr site output -raw r2_endpoint)
+  hold=$(entry_data_hold "$s")
+  key=${key:-$hold}
+  key=${key#_snapshots/}
+  [ -n "$key" ] || { echo "site $s: no hold is recorded; pass the snapshot key: site restore $s <key under _snapshots/>" >&2; return 2; }
+  case "$key" in *[!A-Za-z0-9._/-]*|*..*) echo "site $s: $key is not a snapshot key" >&2; return 2 ;; esac
+  echo "site $s: restore the data from $bucket/_snapshots/$key (replaces the whole database)"
+  WFP_S3_ENDPOINT="$EP" python3 -I "${WFP_SNAPSHOT:-$WFP/snapshot.py}" dbrestore "$ORIGIN" "$TOK" "$bucket" "$key" || {
+    echo "site $s: the restore FAILED; the hold stays${hold:+ (data_hold=$hold)}" >&2; return 1; }
+  echo "site $s: rows now: $(row_count "$ORIGIN" "$TOK")"
+  if [ -n "$hold" ]; then
+    tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=$(entry_build "$s")" -var "config_hash=$(entry_config_hash "$s")" -var "data_hold=" >/dev/null \
+      && [ -z "$(entry_data_hold "$s")" ] || { echo "site $s: RESTORED, but the hold could not be cleared (it still reads $(entry_data_hold "$s"))" >&2; return 1; }
+    echo "site $s: the hold is cleared (read back)"
+  fi
+  echo "site restore $s: done"
 }
 
 # Import an existing WordPress site into one site (deploy/import.sh, issue #31,
@@ -227,6 +283,7 @@ import_one() {
 }
 
 if [ "$cmd" = import ]; then import_one "$s"; exit $?; fi
+if [ "$cmd" = restore ]; then restore_one "$s" "${3:-}"; exit $?; fi
 
 if [ "$cmd" = update ]; then
   if [ "$s" = "--all" ]; then

@@ -76,7 +76,23 @@ export WRLOG=$T/wr.log
 WR=$T/wrangler; NAMESPACE=wp-wfp; SUB=sub; KV_ID=kv
 LIVE_B=bbbbbbbbbbbb-wooprimed
 valid_site() { return 0; }; has_ws() { return 0; }
-tfr() { case "$*" in "site output -json") printf '{"wp_salt":{"value":"s"},"spike_token":{"value":"t"}}' ;; "site output -raw"*) printf x ;; *) return 0 ;; esac; }
+tfr() { case "$*" in
+    "site output -json") printf '{"wp_salt":{"value":"s"},"spike_token":{"value":"t"}}' ;;
+    "site output -raw spike_token") printf SECRET-SPIKE-TOKEN ;;
+    "site output -raw"*) printf x ;;
+    "site apply"*) # the stand-in site map entry: an apply records its data_hold (#515)
+      echo "$*" >> "$T/tfr.log"; local a; for a in "$@"; do case "$a" in data_hold=*) printf '%s' "${a#data_hold=}" > "$T/hold" ;; esac; done ;;
+    *) return 0 ;; esac; }
+entry_data_hold() { cat "$T/hold" 2>/dev/null; }
+# The stand-in snapshot.py (#515): dbsnapshot stores, dbrestore exits STUB_RESTORE (0 by default).
+cat > "$T/snap.py" <<'PY2'
+import json, os, sys
+open(os.environ["SNAPLOG"], "a").write(sys.argv[1] + "\n")
+if sys.argv[1] == "dbrestore" and os.environ.get("STUB_RESTORE", "0") != "0":
+    print(json.dumps({"ok": False, "stage": "import", "part": 6, "parts": 17, "status": 502, "attempts": 3})); sys.exit(1)
+print(json.dumps({"ok": True}))
+PY2
+export WFP_SNAPSHOT=$T/snap.py SNAPLOG=$T/snap.log
 site_vars() { REC_HOST=127.0.0.1:9; REC_CD=none; REC_VARS=(-var host=x); }
 media_bucket() { echo "${BKT:-wp-wfp}-$1-media"; }
 entry_build() { echo "$LIVE_B"; }
@@ -156,5 +172,40 @@ check "  another site's bucket is untouched" "$(keys | grep -c '^/c466-sitea-med
 out=$(T2=$(mktemp -d "$T/g.XXXX"); python3 -I "$WFP/rollback_artifact.py" get ok-siteb-media dddddddddddd-wooprimed "$T2" >/dev/null && head -1 "$T2/index.js")
 check "  the stored artifact holds the tree that was deployed" "$out" "// current tree"
 check "site add stores the artifact of the build it deployed" "$(grep -c '^  write_rollback_artifact "$(media_bucket "$s")"' "$SITE")" 1
+# #515: the rollback's data restore FAILS. The update exits 3 (not 1), marks the entry, and prints
+# the recovery; the next update refuses before it changes anything; site restore clears the hold.
+rm -f "$T/hold" "$T/tfr.log"; : > "$T/snap.log"
+run_update "$LIVE_B" FORCE_FAIL=verify NO_SNAPSHOT=0 STUB_RESTORE=1
+check "#515: a failed data restore in a rollback exits 3, not 1" "$(grep -c '^rc=3$' "$T/out")" 1
+check "  it snapshotted, then tried the restore" "$(tr '\n' ' ' < "$T/snap.log")" "dbsnapshot dbrestore "
+check "  the code rollback still ran (B's live build re-deployed)" "$(tail -1 "$WRLOG")" "deploy $LIVE_B // current tree"
+key=$(cat "$T/hold" 2>/dev/null)
+check "  the entry is marked with the snapshot key" "$([[ $key == siteb/$LIVE_B-*.ndjson ]] && echo marked || echo "[$key]")" marked
+check "  the log says the hold is recorded (read back)" "$(grep -c "the hold is recorded (data_hold=$key, read back)" "$T/out")" 1
+check "  it prints the restore command" "$(grep -c '  restore it:  deploy/wfp/site restore siteb ' "$T/out")" 1
+check "  and the by-hand dbrestore with the bucket and key" "$(grep -c "snapshot.py dbrestore https://127.0.0.1:9 .* ${BKT:-wp-wfp}-siteb-media $key" "$T/out")" 1
+check "  no secret is printed (the spike token)" "$(grep -c 'SECRET-SPIKE-TOKEN' "$T/out")" 0
+: > "$T/snap.log"
+run_update "$LIVE_B" NO_SNAPSHOT=0
+check "#515: the next update REFUSES (exit 2) while the hold is set" "$(grep -c '^rc=2$' "$T/out")" 1
+check "  nothing was uploaded and no snapshot was taken (the partial data is never the new truth)" "$(wc -l < "$WRLOG" | tr -d ' '):$(wc -l < "$T/snap.log" | tr -d ' ')" "0:0"
+check "  it names the hold and the restore command" "$(grep -c "update REFUSED.*_snapshots/$key" "$T/out"):$(grep -c 'restore it:  deploy/wfp/site restore siteb' "$T/out")" "1:1"
+# A restore that works in the rollback: the ordinary failed update (1), no hold.
+rm -f "$T/hold"; run_update "$LIVE_B" FORCE_FAIL=verify NO_SNAPSHOT=0
+check "control: the restore works: exit 1 (a failed update, rolled back) and no hold" "$(grep -c '^rc=1$' "$T/out"):$(cat "$T/hold" 2>/dev/null)" "1:"
+# site restore (restore_one, cut out of the site file).
+eval "$(sed -n '/^restore_one() {/,/^}/p' "$SITE")"
+row_count() { echo 97696; }
+printf '%s' "$key" > "$T/hold"; : > "$T/snap.log"
+( export STUB_RESTORE=1; restore_one siteb; echo "rc=$?" ) > "$T/rs.out" 2>&1
+check "site restore: a restore that fails exits 1 and keeps the hold" "$(grep -c '^rc=1$' "$T/rs.out"):$(cat "$T/hold")" "1:$key"
+( restore_one siteb; echo "rc=$?" ) > "$T/rs.out" 2>&1
+check "site restore: restores the held snapshot, clears the hold (read back), exit 0" "$(grep -c '^rc=0$' "$T/rs.out"):$(cat "$T/hold"):$(grep -c 'the hold is cleared (read back)' "$T/rs.out")" "1::1"
+check "  it restored the key the hold named" "$(grep -c "restore the data from ${BKT:-wp-wfp}-siteb-media/_snapshots/$key" "$T/rs.out")" 1
+( restore_one siteb; echo "rc=$?" ) > "$T/rs.out" 2>&1
+check "site restore: no hold and no key: refused (2)" "$(grep -c '^rc=2$' "$T/rs.out")" 1
+# update --all keeps the failed site's code: 3 reaches the caller.
+three() { [ "$1" = b ] && return 3; return 0; }
+update_all three a b c > "$T/ua.out" 2>&1; check "update --all returns the failed site's code (3) and stops there" "$?:$(grep -c 'not reached: c' "$T/ua.out")" "3:1"
 echo "$fails failing check(s)"
 [ "$fails" = 0 ]

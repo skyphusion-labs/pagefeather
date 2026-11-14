@@ -97,6 +97,7 @@ Tests (offline): `site-cmd-test.sh` refuses `site import` with no source, for a 
 ```sh
 ./deploy/wfp/site update <name>     # one site, with a way back
 ./deploy/wfp/site update --all      # every site, one at a time, stopping at the first failure
+./deploy/wfp/site restore <name>    # after a failed data restore (exit 3): restore the snapshot, clear the hold (#515)
 ```
 
 Workers for Platforms has no gradual deployments for user Workers, and `b-dosql` keeps its data in the Durable Object and its code in the Worker bundle. So an update re-uploads the SAME script (`site-<name>`): the object and its data persist, the code swaps. `site update`:
@@ -108,6 +109,18 @@ Workers for Platforms has no gradual deployments for user Workers, and `b-dosql`
 5. waits until `/_build` shows the new build (measured 2026-11-06: a re-upload flips it in about 1 s, with the object idle), then checks the site answers 200.
 
 If the verify fails, it rolls back: it restores the data from the snapshot and re-deploys the code that was live. **A rollback drops any write made between the snapshot and the rollback**, and the command and this doc both say so.
+
+**When the data restore fails (#515).** The restore sends the snapshot to `/_dbimport` in parts: `replace=1` for part 0, which drops every table, and `append=1` for the rest. If a part fails, the database holds only the parts before it. Measured on pf394a, 2026-11-14: a 502 on part 6 of 17 left a site with no admin user, posts or pages. So `snapshot.py dbrestore` now:
+
+- tries a part again on a transient answer (429, 502, 503, 504, or no answer), after 2, 5 and 10 s (`DBIMPORT_RETRY_DELAYS`). Before it sends a part again (not part 0), it reads `/_dbcounts`. Each part is one transaction, so the part's tables hold either the counts expected before it or after it. After it means the failed try was applied, and the part is NOT sent again (a table with no primary key would get its rows twice). Before it means it is sent again. Anything else, or no `/_dbcounts`, ends the pass;
+- starts the WHOLE restore again from part 0 when a pass fails on a transient answer, up to 3 passes (`DBRESTORE_ATTEMPTS`), 10 s apart (`DBRESTORE_RESTART_S`). A part the site refuses (a 400) stops at once: a new pass would get the same answer.
+
+If the restore still fails, `site update`:
+- exits **3**, not 1, so it cannot be read as an ordinary failed update (exit codes: 0 updated or nothing to do, 1 failed and rolled back, 2 refused, 3 DATA RESTORE FAILED);
+- marks the site map entry, `data_hold = <snapshot key>`, and reads the mark back;
+- prints the recovery: `deploy/wfp/site restore <name>`, and the same restore by hand (`snapshot.py dbrestore` with the token read from the workspace, so no secret is printed).
+
+While the mark is set, `site update` REFUSES (exit 2) before it changes anything, so a partial database is never snapshotted as the new truth. `site_vars` passes the recorded mark to every apply, so no other command clears it by leaving it out. `site restore <name> [snapshot key]` runs the restore from the site's workspace, prints the row count, then clears the mark and reads that back. `update --all` returns the failed site's own exit code.
 
 The rollback code comes from the site's own rollback artifact (#466). After a good `site update` or `site add`, the command stores what it deployed in the site's media bucket as `_build/artifact/<build id>.tar.gz`: from `build/`, only `build-id.js`, the files the Worker sources import (`site.zip`, `opcache.zip`, `opcache-boot-index.js`) and the static assets `build/public/`; also `vendor/` and the Worker sources at the app root (#507). The rest of `build/` (the unpacked WordPress tree, `build/cache`, the logs) is never uploaded, so it is not kept: on one plain build (OPcache not primed, so `opcache.zip` empty) the artifact is 39111424 bytes, against 115805080 bytes for all of `build/` (2026-11-14). It keeps the artifact of the new build and of the build before it, and deletes the others. Before the rebuild, an update fetches the artifact of the live build. If there is none, it uses `build/`, but only when `build/` holds this site's live build (#464: `build/` is the build this clone made last, which can be another site's). The command refuses an artifact that does not hold the build it is named for, and it checks again that the build is this site's live build right before the re-deploy. It never stores or uses an artifact of a `-dirty` build id. The re-deploy runs from the saved tree, placed in a private copy of the repo layout (`spikes/b2-wordpress`, `deploy/wr` and `deploy/tools`), with the new config and a copy of this tree's `node_modules` (pinned by the lock file). wrangler writes module paths relative to the directory it runs in, so from that layout the bundle and its modules are byte-equal to the original deploy's (`tests/rollback-slim-test.sh`). The config and `node_modules` are the current ones, not the old ones.
 

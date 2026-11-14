@@ -10,12 +10,14 @@ mkdir -p "$T/bin"
 cat > "$T/bin/terraform" <<'SH'
 #!/bin/sh
 # STUB_MODE: apex (ggc.sh on its own zone), phasea (workers.dev, no domain), none (never applied),
-# nozone (a Custom Domain whose state shows no zone_id)
+# nozone (a Custom Domain whose state shows no zone_id), held (phasea with a recorded data hold, #515)
 case "$STUB_MODE:$*" in
   apex:"output -raw hostname") printf ggc.sh ;;
   apex:"state list") printf 'cloudflare_r2_bucket.media\ncloudflare_workers_custom_domain.site[0]\ncloudflare_workers_kv.entry\n' ;;
   apex:"state show -no-color cloudflare_workers_custom_domain.site[0]") printf '    hostname    = "ggc.sh"\n    zone_id     = "8a3456a9f80165678f7fca9f7c913e0b"\n    zone_name   = "ggc.sh"\n' ;;
-  phasea:"output -raw hostname") printf wp-blog.example.workers.dev ;;
+  phasea:"output -raw hostname"|held:"output -raw hostname") printf wp-blog.example.workers.dev ;;
+  held:"output -raw data_hold") printf 'blog/aaaaaaaaaaaa-20261114T044525Z.ndjson' ;;
+  held:"state list") printf 'cloudflare_r2_bucket.media\ncloudflare_workers_kv.entry\n' ;;
   phasea:"state list") printf 'cloudflare_r2_bucket.media\ncloudflare_workers_kv.entry\n' ;;
   none:"output -raw hostname") echo "No outputs found" >&2; exit 1 ;;
   nozone:"output -raw hostname") printf shop.example.org ;;
@@ -32,25 +34,29 @@ fails=0
 check() { if [ "$2" = "$3" ]; then echo "PASS $1"; else echo "FAIL $1: got [$2], want [$3]"; fails=$((fails + 1)); fi; }
 run() { STUB_MODE=$1; export STUB_MODE; REC_VARS=(); site_vars "$2" sub kv1 && echo "${REC_VARS[*]}"; }
 check "apex: the recorded hostname, Custom Domain and its own zone" "$(run apex ggc)" \
-  "-var name=ggc -var hostname=ggc.sh -var kv_namespace_id=kv1 -var custom_domain=true -var zone_id=8a3456a9f80165678f7fca9f7c913e0b"
+  "-var name=ggc -var hostname=ggc.sh -var kv_namespace_id=kv1 -var custom_domain=true -var zone_id=8a3456a9f80165678f7fca9f7c913e0b -var data_hold="
 check "apex: WFP_CUSTOM_DOMAIN=0 does not drop the recorded domain" "$(WFP_CUSTOM_DOMAIN=0 run apex ggc)" \
-  "-var name=ggc -var hostname=ggc.sh -var kv_namespace_id=kv1 -var custom_domain=true -var zone_id=8a3456a9f80165678f7fca9f7c913e0b"
+  "-var name=ggc -var hostname=ggc.sh -var kv_namespace_id=kv1 -var custom_domain=true -var zone_id=8a3456a9f80165678f7fca9f7c913e0b -var data_hold="
 check "phase A: the recorded workers.dev host, no domain, no zone" "$(run phasea blog)" \
-  "-var name=blog -var hostname=wp-blog.example.workers.dev -var kv_namespace_id=kv1 -var custom_domain=false"
+  "-var name=blog -var hostname=wp-blog.example.workers.dev -var kv_namespace_id=kv1 -var custom_domain=false -var data_hold="
+# #515: a recorded data hold goes to every apply, so an apply that does not mean to clear it keeps it.
+check "held: the recorded data hold is passed on" "$(run held blog)" \
+  "-var name=blog -var hostname=wp-blog.example.workers.dev -var kv_namespace_id=kv1 -var custom_domain=false -var data_hold=blog/aaaaaaaaaaaa-20261114T044525Z.ndjson"
 check "never applied: the computed host (phase A)" "$(run none three)" \
-  "-var name=three -var hostname=wp-three.sub.workers.dev -var kv_namespace_id=kv1 -var custom_domain=false"
+  "-var name=three -var hostname=wp-three.sub.workers.dev -var kv_namespace_id=kv1 -var custom_domain=false -var data_hold="
 STUB_MODE=nozone; export STUB_MODE
 out=$(site_vars shop sub kv1 2>&1); rc=$?
 check "a Custom Domain with no zone in the state stops" "$rc:$(printf '%s' "$out" | grep -c 'no zone_id')" "1:1"
 # The callers use it: an update and a remove read the recorded values.
-check "site update, remove and import use site_vars" "$(grep -c 'site_vars "\$s" "\$SUB" "\$KV_ID"' "$HERE/../site")" "3"
+check "site update, remove, import and restore use site_vars" "$(grep -c 'site_vars "\$s" "\$SUB" "\$KV_ID"' "$HERE/../site")" "4"
 check "site.sh down uses site_vars" "$(grep -c 'site_vars "\$s" "\$SUB" "\$KV_ID"' "$HERE/../site.sh")" "1"
-check "site update and import apply the recorded vars" "$(grep -c 'REC_VARS\[@\]' "$HERE/../site")" "3"
+# The update's applies (the new build, the rollback, the #515 hold), import's key and restore's clear.
+check "site update, import and restore apply the recorded vars" "$(grep -c 'REC_VARS\[@\]' "$HERE/../site")" "5"
 STUB_MODE=apex; export STUB_MODE SUB=sub; site_vars ggc sub kv1
 check "site_key: the recorded key after site_vars" "$(site_key ggc)" "ggc.sh"
 check "site_key: another site is still computed" "$(site_key blog)" "wp-blog.sub.workers.dev"
-# entry_build, entry_config_hash, site_footprint and entry_by_core (#294: who wrote the entry) each read site_key.
-check "entry_build, entry_config_hash, site_footprint and entry_by_core read site_key" "$(grep -c 'site_key "\$1"\|site_key "\$s"' "$HERE/../lib.sh")" "5"
+# entry_build, entry_config_hash, entry_data_hold (#515), site_footprint and entry_by_core (#294: who wrote the entry) each read site_key.
+check "entry_build, entry_config_hash, entry_data_hold, site_footprint and entry_by_core read site_key" "$(grep -c 'site_key "\$1"\|site_key "\$s"' "$HERE/../lib.sh")" "6"
 check "site remove reads the recorded values before its footprint" "$(grep -c 'so the footprint checks the right entry' "$HERE/../site")" "1"
 echo "$fails failing case(s)"
 exit $fails

@@ -249,11 +249,101 @@ def parts_of(body, limit=PART_BYTES):
     return out
 
 
+# A transient answer from the site or the edge (#515): the part is tried again, or the restore is
+# started again from part 0. 0 is no answer at all (a connection error). Anything else (a 400 with
+# "ok": false, a 413) is the dump or the site saying no, and stops the attempt at once.
+TRANSIENT = (0, 429, 502, 503, 504)
+INSERT_TABLE_RE = re.compile(r'^INSERT INTO\s+("(?:[^"]|"")+"|`[^`]+`|[A-Za-z0-9_]+)')
+
+
+def _delays(name, default):
+    try:
+        return [max(0.0, float(x)) for x in (ENV.get(name) or default).split(",") if x.strip()]
+    except ValueError:
+        return [float(x) for x in default.split(",")]
+
+
+def part_inserts(part):
+    """{table: rows} for the INSERT lines of one part (dumpTo writes one row per INSERT)."""
+    out = {}
+    for line in part.splitlines():
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        m = INSERT_TABLE_RE.match(str(o.get("sql") or "")) if isinstance(o, dict) else None
+        if m:
+            t = m.group(1)
+            if t[0] in '"`':
+                t = t[1:-1].replace('""', '"')
+            out[t] = out.get(t, 0) + 1
+    return out
+
+
+def _dbcounts(origin, token):
+    """The site's per-table row counts (/_dbcounts, bounded), or None when it cannot say."""
+    st, b = http(origin + "/_dbcounts", headers={"x-spike-token": token})
+    if st != 200:
+        return None
+    try:
+        rows = json.loads(b).get("rows")
+    except (ValueError, AttributeError):
+        return None
+    return rows if isinstance(rows, dict) else None
+
+
+def _post_part(origin, token, i, part):
+    q = "replace=1" if i == 0 else "append=1"
+    st, rb = http(origin + "/_dbimport?" + q, method="POST", data=part, headers={"x-spike-token": token, "content-type": "application/x-ndjson"})
+    return st, rb, (st == 200 and b'"ok": false' not in rb and b'"error"' not in rb)
+
+
+def _restore_once(origin, token, parts, before, after, log):
+    """One pass from part 0. Returns None when every part is in, else a dict naming the failure.
+    A part that fails with a TRANSIENT status is tried again after each of DBIMPORT_RETRY_DELAYS
+    (default 2,5,10 s). Before a part other than 0 is sent again, /_dbcounts says whether the
+    failed try was applied: each part is one transaction in the site, so its tables hold either
+    the counts expected before it or the counts expected after it. Applied: go on, do not send
+    it twice (a table with no primary key would get its rows twice). Not applied: send it again.
+    Neither, or no /_dbcounts: the attempt stops, and the caller starts over from part 0."""
+    delays = _delays("DBIMPORT_RETRY_DELAYS", "2,5,10")
+    for i, part in enumerate(parts):
+        tries = 0
+        while True:
+            st, rb, ok = _post_part(origin, token, i, part)
+            tries += 1
+            if ok:
+                break
+            fail = {"part": i, "parts": len(parts), "status": st, "tries": tries, "body": rb[:160].decode("utf-8", "replace")}
+            if st not in TRANSIENT or tries > len(delays):
+                return fail
+            log("part %d of %d answered %s (try %d); trying again in %g s" % (i, len(parts), st, tries, delays[tries - 1]))
+            time.sleep(delays[tries - 1])
+            if i == 0:
+                continue  # replace=1 drops every table first: sending it again is safe
+            tabs = part_inserts(part)
+            c = _dbcounts(origin, token)
+            if c is None or not tabs:
+                fail["why"] = "cannot tell whether the failed part was applied (/_dbcounts: %s)" % ("no answer" if c is None else "the part has no rows")
+                return fail
+            if all(c.get(t) == after[i].get(t) for t in tabs):
+                log("part %d was applied before the %s answer (/_dbcounts): not sent again" % (i, st))
+                break
+            if not all(c.get(t) == before[i].get(t) for t in tabs):
+                fail["why"] = "the part's tables hold neither the counts before it nor after it"
+                return fail
+    return None
+
+
 def dbrestore(origin, token, bucket, key):
     """GET the snapshot from R2 and POST it to /_dbimport in parts: replace=1 for the first,
-    append=1 for the rest (#287), the way deploy/import/sqlimport.py sends a dump. A failed part
-    stops the restore and is named; the database then holds the parts before it, and running the
-    restore again starts over from part 0 (replace=1 drops every table first)."""
+    append=1 for the rest (#287), the way deploy/import/sqlimport.py sends a dump.
+
+    #515: a part that fails with a transient status (429, 502, 503, 504, no answer) is tried
+    again (_restore_once). If the pass still fails, the WHOLE restore starts again from part 0,
+    up to DBRESTORE_ATTEMPTS (3) passes, DBRESTORE_RESTART_S (10) s apart: replace=1 on part 0
+    drops every table, so a full restart is safe. Only then does it fail. A failed restore leaves
+    the parts before the failed one: the database is PARTIAL until a restore runs through."""
     full = key if key.startswith("_snapshots/") else "_snapshots/" + key
     gst, body = s3("GET", "/%s/%s" % (bucket, full))
     if gst != 200 or not body.strip():
@@ -262,14 +352,30 @@ def dbrestore(origin, token, bucket, key):
         parts = parts_of(body)
     except ValueError as e:
         print(json.dumps({"ok": False, "stage": "split", "error": str(e)})); return 1
-    for i, part in enumerate(parts):
-        q = "replace=1" if i == 0 else "append=1"
-        st, rb = http(origin + "/_dbimport?" + q, method="POST", data=part, headers={"x-spike-token": token, "content-type": "application/x-ndjson"})
-        if not (st == 200 and b'"ok": false' not in rb and b'"error"' not in rb):
-            print(json.dumps({"ok": False, "stage": "import", "part": i, "parts": len(parts), "status": st, "body": rb[:160].decode("utf-8", "replace")}))
-            return 1
-    print(json.dumps({"ok": True, "stage": "import", "parts": len(parts), "bytes": len(body)}))
-    return 0
+    # The counts each part's tables hold before it and after it, from an empty database.
+    before, after, run = [], [], {}
+    for part in parts:
+        before.append(dict(run))
+        for t, n in part_inserts(part).items():
+            run[t] = run.get(t, 0) + n
+        after.append(dict(run))
+    log = lambda m: print("dbrestore: " + m, file=sys.stderr)
+    attempts = max(1, int(ENV.get("DBRESTORE_ATTEMPTS") or 3))
+    fail = None
+    for a in range(1, attempts + 1):
+        fail = _restore_once(origin, token, parts, before, after, log)
+        if fail is None:
+            print(json.dumps({"ok": True, "stage": "import", "parts": len(parts), "bytes": len(body), "attempts": a}))
+            return 0
+        if fail["status"] not in TRANSIENT and "why" not in fail:
+            attempts = a  # the dump or the site said no: a new pass would get the same answer
+            break
+        if a < attempts:
+            wait = float(ENV.get("DBRESTORE_RESTART_S") or 10)
+            log("pass %d of %d failed at part %s (%s): starting again from part 0 in %g s" % (a, attempts, fail["part"], fail["status"], wait))
+            time.sleep(wait)
+    print(json.dumps(dict({"ok": False, "stage": "import", "attempts": attempts}, **fail)))
+    return 1
 
 
 def seed(sites):
