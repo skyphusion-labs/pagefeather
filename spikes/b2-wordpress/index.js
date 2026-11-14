@@ -365,7 +365,7 @@ async function stageUpload(req, env) {
 }
 
 function newStats() {
-	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, reinflates: 0, dbTables: {}, ocGroups: {}, ocCalls: 0, ocHits: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
+	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, reinflates: 0, lazyWrites: 0, dbTables: {}, ocGroups: {}, ocCalls: 0, ocHits: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
 }
 
 // Every statement failure goes through here. resetFailTotal counts the isolate memory resets among
@@ -558,6 +558,30 @@ function attachLazyContents(node, size, dataFn, tag) {
 			used = v;
 		},
 	});
+	// #530: MEMFS.write overwrites in place (contents.set) when a write fits inside usedBytes, and
+	// never assigns node.contents, so the setter above never saw it: the file stayed unwritten and
+	// drop() threw the edit away at the next evict (or, with LAZY_ARENA, the next ring overlap).
+	// Every PHP write goes through stream.stream_ops.write, which FS.open copies from node.stream_ops,
+	// so this node gets its own ops: before ANY write, take a private copy of the contents (never a
+	// view into the bundle, the inflate cache or the arena) and mark the file written. msync calls
+	// MEMFS.stream_ops.write directly, so it is wrapped too.
+	const base = node.stream_ops;
+	if (base && typeof base.write === 'function') {
+		const own = () => {
+			if (written) return;
+			const c = node.contents; // inflates if it was dropped
+			contents = c ? c.slice() : null;
+			written = true;
+			stats.lazyWrites++;
+		};
+		node.stream_ops = Object.assign(Object.create(base), {
+			write(stream, buffer, offset, length, position, canOwn) {
+				own();
+				return base.write(stream, buffer, offset, length, position, canOwn);
+			},
+			...(typeof base.msync === 'function' ? { msync(stream, buffer, offset, length, flags) { own(); return base.msync(stream, buffer, offset, length, flags); } } : {}),
+		});
+	}
 }
 
 function lazyFile(FS, path, entry, src) {
@@ -3364,7 +3388,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const { php, handler, bootMs } = await bootPromise;
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
-			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, reinflates: stats.reinflates, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
+			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, reinflates: stats.reinflates, lazyWrites: stats.lazyWrites, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
 			if (url.pathname === '/_install') {
@@ -3512,6 +3536,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 					inflates: stats.inflates - start.inflates,
 					inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024),
 					reinflates: stats.reinflates - start.reinflates, // #394 step 2: the CPU side of the arena
+					lazyWrites: stats.lazyWrites - start.lazyWrites, // #530: bundle files PHP wrote this request (kept, not dropped)
 					wasm0MiB: Math.round(wasm0 / 1048576),
 					wasm1MiB: Math.round(wasmBytes / 1048576),
 					...(booted ? { l1: l1State } : {}), // #394 L1: where this boot's OPcache boot pack came from
