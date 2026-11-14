@@ -429,7 +429,45 @@ want=$(bash -c '. "'"$LIB"'"; printf "%s\n" $SITE_SETTINGS' | sort | tr '\n' ' '
 got=$(sed -n '/^  local -x PHP_INI=/p' "$SITE" | grep -oE '[A-Z_]+="\$\{' | sed 's/="\${//' | sort | tr '\n' ' ')
 pyl=$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import site_settings; print(" ".join(sorted(site_settings.SETTINGS)) + " ")' "$(dirname "$LIB")")
 ok "#558 the settings list is the same in lib.sh, site update (local -x) and site_settings.py" "$([ -n "$want" ] && [ "$want" = "$got" ] && [ "$want" = "$pyl" ] && echo 1 || echo 0)"
-unset PHP_INI DROP_SETTINGS
+# 9k. A setting the LIVE site binds that is not in PHP_INI's case: HEADROOM_PROBE (#559; pf394a has it).
+srec_del; live '[{"type":"plain_text","name":"HEADROOM_PROBE","text":"on"},{"type":"plain_text","name":"SITE_ORIGIN","text":"y"}]'
+set_entry bld-other "$(last_hash)"
+u0=$(lines "$UPLOAD_LOG")
+run_update
+u1=$(lines "$UPLOAD_LOG")
+ok "#558 the live site binds HEADROOM_PROBE and the run drops it: REFUSED, nothing uploaded, and the message names DROP_SETTINGS=\"HEADROOM_PROBE\"" "$([ "$RC" = 2 ] && [ "$u1" = "$u0" ] && printf '%s' "$OUT" | grep -Fq 'the live site has HEADROOM_PROBE, and this update would DROP it' && printf '%s' "$OUT" | grep -Fq 'drop it on purpose with DROP_SETTINGS="HEADROOM_PROBE"' && echo 1 || echo 0)"
+HEADROOM_PROBE=on run_update
+ok "#558 the same run WITH HEADROOM_PROBE=on: uploaded, and recorded" "$([ "$RC" = 0 ] && srec_get | grep -Fq '"HEADROOM_PROBE": "on"' && echo 1 || echo 0)"
+set_entry bld-other "$(last_hash)"
+run_update
+ok "#558 the next run WITHOUT it keeps it from the record" "$([ "$RC" = 0 ] && printf '%s' "$OUT" | grep -Fq 'settings: HEADROOM_PROBE kept from the record' && [ "$(conf_has HEADROOM_PROBE)" = 1 ] && echo 1 || echo 0)"
+srec_del; live '[{"type":"plain_text","name":"SITE_ORIGIN","text":"y"}]'
+# 9l. THE GUARD for the next new setting: every env name render_user and its helpers read must be a
+# recorded setting, or named here with why it is not. A new one fails this until it is listed.
+derived=$(python3 -I - "$LIB" <<'PY2'
+import re, sys
+s = open(sys.argv[1]).read()
+funcs = {m.group(1): m.group(2) for m in re.finditer(r'^([a-z_][a-z0-9_]*)\(\) \{(.*?)^\}', s, re.S | re.M)}
+seen, todo, names = {"render_user"}, ["render_user"], set()
+while todo:
+    b = funcs[todo.pop()]
+    names |= set(re.findall(r'\$\{?!?([A-Z][A-Z0-9_]+)', b))
+    for m in re.findall(r'\bfor \w+ in ([A-Z0-9_ ]+);', b):
+        names |= set(m.split())
+    for g in funcs:
+        if g not in seen and re.search(r'(?<![A-Za-z0-9_])' + g + r'(?![A-Za-z0-9_])', b):
+            seen.add(g); todo.append(g)
+names.add("HTTP_ALLOW_HOSTS")  # read by node http-allow.mjs, which render_user runs
+print(" ".join(sorted(names)))
+PY2
+)
+# Not settings: the deploy's own names (API, APP, the credential, the namespace, the phase B names, a
+# constant). OBSERVABILITY: not recorded on purpose (client IPs). HTTP_ALLOW_HOSTS: #564 (three states).
+notset=" API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN OBSERVABILITY HTTP_ALLOW_HOSTS "
+settings=" $(bash -c '. "'"$LIB"'"; echo $SITE_SETTINGS') "
+miss=""; for n in $derived; do case "$settings$notset" in *" $n "*) ;; *) miss="$miss $n" ;; esac; done
+ok "#558 every env name render_user reads is a recorded setting or named with a reason (missing:${miss:- none})" "$([ -z "$miss" ] && [ -n "$derived" ] && printf '%s\n' $derived | grep -qx HEADROOM_PROBE && echo 1 || echo 0)"
+unset PHP_INI DROP_SETTINGS HEADROOM_PROBE
 
 echo "$fails failing check(s)"
 exit "$fails"

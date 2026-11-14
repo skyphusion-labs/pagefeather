@@ -618,7 +618,9 @@ use_recorded_inputs() {
 # lost its PHP_INI pin on 2026-11-14). A good add or update records them in the site's bucket
 # (_build/settings.json); an update keeps them unless the run sets a new value or DROP_SETTINGS
 # names them. SITE_SETTINGS is the list; the caller declares them local -x.
-SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE CRON_INTERVAL_MS MEM_LEDGER TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WFP_PHP_ENV WP_VECTORIZE_SEARCH"
+SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE CRON_INTERVAL_MS MEM_LEDGER TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WFP_PHP_ENV WP_VECTORIZE_SEARCH HEADROOM_PROBE OPCACHE_SPLIT"
+# A setting render_user reads that is not in this list is DROPPED by an update that does not export
+# it: config-hash-test.sh derives the env names render_user's helpers read and fails on a new one.
 # keep_settings <bucket> <work dir>: merge the recorded settings into this run's environment. Sets
 # SETTINGS_RECORDED (1 or 0). Exit 0 merged or none recorded, 2 refused (unreadable, a missing
 # secret, a bad DROP_SETTINGS).

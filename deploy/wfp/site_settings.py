@@ -43,16 +43,18 @@ RECORD = "_build/settings.json"
 # The env-only settings render_user reads (lib.sh), each rendered as a [vars] name of its own.
 SETTINGS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PHP_RECYCLE", "CRON_INTERVAL_MS",
             "MEM_LEDGER", "TURNSTILE_SITEKEY", "TURNSTILE_WOO", "TURNSTILE_LOGIN", "TURNSTILE_COMMENTS",
-            "MAIL_FROM", "MAIL_FROM_NAME", "PHP_LOCATION", "WFP_PHP_ENV", "WP_VECTORIZE_SEARCH")
+            "MAIL_FROM", "MAIL_FROM_NAME", "PHP_LOCATION", "WFP_PHP_ENV", "WP_VECTORIZE_SEARCH",
+            "HEADROOM_PROBE", "OPCACHE_SPLIT")
 SECRETS = ("TURNSTILE_SECRET",)
 # No log line carries data from SECRETS: a message about a secret is one fixed text, and which
 # secret, and what happened, is in the exit code (5 a recorded secret is missing, 6 a live one would
 # be dropped). The only place SECRETS reaches is the record itself (env-json): names, never values.
 # The settings the live bindings can show dropped: rendered only when set. MAIL_FROM, PHP_LOCATION
-# and WFP_PHP_ENV always render (a default), and WP_VECTORIZE_SEARCH renders bindings, not a var.
+# and WFP_PHP_ENV always render (a default); WP_VECTORIZE_SEARCH and OPCACHE_SPLIT render
+# bindings (AI and the index; ASSETS), not a var: the record keeps those.
 DROPPABLE_VARS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PHP_RECYCLE", "CRON_INTERVAL_MS",
                   "MEM_LEDGER", "TURNSTILE_SITEKEY", "TURNSTILE_WOO", "TURNSTILE_LOGIN", "TURNSTILE_COMMENTS",
-                  "MAIL_FROM_NAME")
+                  "MAIL_FROM_NAME", "HEADROOM_PROBE")
 
 
 def drop_list(env=os.environ):
@@ -129,7 +131,7 @@ def dropcheck(conf_path, bindings_path, secrets_path, env=os.environ):
     lost_secret = any(k in secret and k not in now_secrets and k not in drop for k in SECRETS)
     if lost or lost_secret:
         what = " ".join(lost + (["a required secret"] if lost_secret else []))
-        print("site settings: the live site has %s, and this update would DROP it: export it, or DROP_SETTINGS=<names> to drop it on purpose; refused" % what, file=sys.stderr)
+        print("site settings: the live site has %s, and this update would DROP it: export it, or drop it on purpose with DROP_SETTINGS=\"%s\"; refused" % (what, " ".join(lost + (["TURNSTILE_SECRET"] if lost_secret else []))), file=sys.stderr)
         return 6
     return 0
 
