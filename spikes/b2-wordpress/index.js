@@ -8,6 +8,7 @@ import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from 
 import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-arm.mjs';
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
+import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { cronBounds, cronCleanDue, cronLegDue } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronMarkOf, cronFatalOf } from './cron-health.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
@@ -15,6 +16,7 @@ import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHos
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
 import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, lockDefines } from './site-lock.mjs';
+import { exportRequest } from './mysql-export.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore } from './perf-headers.mjs';
 import { resetFailures, writeLossResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { MEMORY_RESET } from './object-error.mjs';
@@ -2391,6 +2393,9 @@ export class PhpRuntime extends DurableObject {
 			// part ran out of memory (fdprobe1112a, 2026-11-12).
 			const importHeld = cronHeld(await this.ctx.storage.get(IMPORT_HOLD_KEY), Date.now());
 			if (importHeld) console.log(JSON.stringify({ m: 'cron', held: 'import' }));
+			// A store move holds the cron for its copy (#479, move-hold.mjs).
+			const moveHeld = cronHeld(await this.ctx.storage.get(MOVE_HOLD_KEY), Date.now());
+			if (moveHeld) console.log(JSON.stringify({ m: 'cron', held: 'move' }));
 			// A purge alarm (every PURGE_GAP_MS under writes) runs the cron leg only when the last one
 			// started at least CRON_INTERVAL_MS ago (#470): the purge still goes out below either way.
 			const lastCron = await this.ctx.storage.get(CRON_LAST_KEY);
@@ -2398,9 +2403,9 @@ export class PhpRuntime extends DurableObject {
 			// A leg that keeps dying waits before it tries again (#471, cron-health.mjs): 2, 4, 8 ... min.
 			const prevRun = await this.ctx.storage.get(CRON_RUN_KEY);
 			const bo = cronBackoff(prevRun, Date.now());
-			const cronGo = legDue && !bo.waitMs && !importHeld && phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env;
+			const cronGo = legDue && !bo.waitMs && !importHeld && !moveHeld && phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env;
 			// Why a tick skipped the cron, for /_purgestate cronSkip (#291: a skip was invisible).
-			if (!cronGo) await this.ctx.storage.put(CRON_SKIP_KEY, { t: Date.now(), notDue: !legDue, sinceLastMs: lastCron ? Date.now() - Number(lastCron) : null, backoff: bo.waitMs ? { deaths: bo.deaths, waitMs: bo.waitMs } : null, importHeld, phpPending, sinceSpikeMs: Date.now() - lastSpikeEndAt, origin: !!cronOrigin });
+			if (!cronGo) await this.ctx.storage.put(CRON_SKIP_KEY, { t: Date.now(), notDue: !legDue, sinceLastMs: lastCron ? Date.now() - Number(lastCron) : null, backoff: bo.waitMs ? { deaths: bo.deaths, waitMs: bo.waitMs } : null, importHeld, moveHeld, phpPending, sinceSpikeMs: Date.now() - lastSpikeEndAt, origin: !!cronOrigin });
 			if (!legDue) console.log(JSON.stringify({ m: 'cron', skipped: 'not-due', sinceLastMs: Date.now() - Number(lastCron) }));
 			else if (bo.waitMs) console.log(JSON.stringify({ m: 'cron', skipped: 'backoff', deaths: bo.deaths, waitMs: bo.waitMs, lastMark: (prevRun && prevRun.lastMark) || null, lastFatal: (prevRun && prevRun.lastFatal) || null }));
 			if (cronGo) {
@@ -2600,6 +2605,13 @@ export class PhpRuntime extends DurableObject {
 			const { readable, writable } = new TransformStream();
 			this.ctx.waitUntil(withPhp(() => ((sqlDb = sql), dumpTo(writable.getWriter(), env, from))));
 			return new Response(readable, { headers: { 'content-type': 'application/x-ndjson', 'cache-control': 'private, no-store' } });
+		}
+		if (url.pathname === '/_hold') return moveHoldRequest(this.ctx.storage, req.method, url);
+		if (url.pathname === '/_mysqlexport' && req.method === 'GET') {
+			// #479: a rows-only, paged export of one table (mysql-export.mjs). Raw sql.exec, no PHP
+			// boot, read only; the caller proves it complete against ?stats=1 (COUNT and MAX(rowid)).
+			if (!sql) return new Response('DB_IN_DO is off', { status: 409 });
+			return exportRequest((q, ...b) => { const c = sql.exec(q, ...b); return { columns: c.columnNames, rows: [...c.raw()] }; }, url);
 		}
 		if (url.pathname === '/_dbcounts' && req.method === 'GET') {
 			// Per-table row counts for the import self-verify (issue #165): bounded

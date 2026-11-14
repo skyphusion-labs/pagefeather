@@ -144,6 +144,13 @@ recyc() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sy
 ok "no PHP_RECYCLE var by default" "$(env -u PHP_RECYCLE bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | recyc | grep -qx 'null' && echo 1 || echo 0)"
 ok "PHP_RECYCLE=off renders it" "$(PHP_RECYCLE=off render_user one https://wp-one.sub.workers.dev | recyc | grep -qx '"off"' && echo 1 || echo 0)"
 for bad in on yes OFF 0; do ok "PHP_RECYCLE=$bad fails the render" "$(PHP_RECYCLE=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
+# CRON_INTERVAL_MS (#479): an integer from 60000 to 86400000, only when asked.
+cint() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["vars"].get("CRON_INTERVAL_MS")))'; }
+ok "no CRON_INTERVAL_MS var by default" "$(env -u CRON_INTERVAL_MS bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | cint | grep -qx 'null' && echo 1 || echo 0)"
+ok "CRON_INTERVAL_MS=86400000 renders it as a string" "$(CRON_INTERVAL_MS=86400000 render_user one https://wp-one.sub.workers.dev | cint | grep -qx '"86400000"' && echo 1 || echo 0)"
+ok "CRON_INTERVAL_MS=60000 (the floor) renders it" "$(CRON_INTERVAL_MS=60000 render_user one https://wp-one.sub.workers.dev | cint | grep -qx '"60000"' && echo 1 || echo 0)"
+ok "CRON_INTERVAL_MS=0600000 renders 600000 (no octal surprise)" "$(CRON_INTERVAL_MS=0600000 render_user one https://wp-one.sub.workers.dev | cint | grep -qx '"600000"' && echo 1 || echo 0)"
+for bad in 59999 0 86400001 100000000 1e6 -60000 abc "60000 " 6e4 0x15f90; do ok "CRON_INTERVAL_MS=$bad fails the render" "$(CRON_INTERVAL_MS=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
 # MEM_LEDGER (#394): on or off, only when asked.
 mled() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["vars"].get("MEM_LEDGER")))'; }
 ok "no MEM_LEDGER var by default" "$(env -u MEM_LEDGER bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | mled | grep -qx 'null' && echo 1 || echo 0)"

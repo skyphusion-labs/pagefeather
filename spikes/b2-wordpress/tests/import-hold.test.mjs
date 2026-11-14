@@ -26,7 +26,7 @@ test('/_dbimport stores the hold BEFORE it imports', () => {
 test('the alarm checks the hold before it runs the cron', () => {
 	const a = src.indexOf('async alarm() {');
 	const held = src.indexOf('cronHeld(await this.ctx.storage.get(IMPORT_HOLD_KEY)', a);
-	const gate = src.indexOf('const cronGo = legDue && !bo.waitMs && !importHeld && phpPending === 0', a); // #470 legDue, #471 back-off
+	const gate = src.indexOf('const cronGo = legDue && !bo.waitMs && !importHeld && !moveHeld && phpPending === 0', a); // #470 legDue, #471 back-off, #479 the move hold
 	const cron = src.indexOf('runCron(', a);
 	assert.ok(a >= 0 && held > a && gate > held && cron > gate);
 });

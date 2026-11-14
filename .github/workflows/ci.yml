@@ -121,6 +121,8 @@ jobs:
             echo "$sum  $d/$name" | sha256sum -c - || { echo "::error::$name sha256 mismatch"; exit 1; }
           done
           php spikes/b2-wordpress/tests/mem-trace-hooks-test.php "$d"
+      - name: b-dosql rows-only export for a store move, against a real SQLite (#479)
+        run: node --test spikes/b2-wordpress/tests/mysql-export.test.mjs
       - name: b-dosql performance headers need the spike token
         run: node --test spikes/b2-wordpress/tests/perf-headers.test.mjs
       - name: b-dosql a memory reset is not an overload (issue #335)
@@ -135,6 +137,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/file-trace.test.mjs
       - name: b-dosql OPcache split into warm and boot (issue #394 L1)
         run: python3 -I spikes/b2-wordpress/tests/opcache-split-test.py
+      - name: measure394 read-back states, a failed read is never an absent row (issue #519)
+        run: python3 -I spikes/b2-wordpress/tests/measure394-state-test.py
       - name: b-dosql runtime guards, raw sockets and PHP messages (issue #452)
         run: node --test spikes/b2-wordpress/tests/runtime-guards.test.mjs
       - name: b-dosql a recycled PHP runtime is released (issue #394)
@@ -193,6 +197,8 @@ jobs:
       - name: b-dosql import holds the cron off
         # import-hold.mjs: no cron run between two /_dbimport parts (fdprobe1112a, 2026-11-12).
         run: node --test spikes/b2-wordpress/tests/import-hold.test.mjs
+      - name: b-dosql the store-move cron hold (#479)
+        run: node --test spikes/b2-wordpress/tests/move-hold.test.mjs
       - name: b-dosql /_activate reports a plugin that ends the request (issue #289)
         # activate-report.test.mjs runs the real activation script with the php CLI against stubs.
         run: node --test spikes/b2-wordpress/tests/activate-report.test.mjs

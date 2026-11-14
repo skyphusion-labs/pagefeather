@@ -42,6 +42,11 @@ const MAP = {
 	'wp-evil.sub.workers.dev': JSON.stringify({ script: '../other' }),
 	'wp-null.sub.workers.dev': 'null',
 	'wp-broken.sub.workers.dev': JSON.stringify({ script: 'site-broken' }),
+	// #479: a store move closes the site until its time; a past time is ignored; a bad flag closes.
+	'wp-moving.sub.workers.dev': JSON.stringify({ script: 'site-one', moving: { until: Date.now() + 600000 } }),
+	'wp-moved.sub.workers.dev': JSON.stringify({ script: 'site-one', moving: { until: Date.now() - 1 } }),
+	'wp-movebad.sub.workers.dev': JSON.stringify({ script: 'site-one', moving: 'yes' }),
+	'wp-moveoff.sub.workers.dev': JSON.stringify({ script: 'site-one', moving: false }),
 };
 const DEPLOYED = ['site-one', 'site-two', 'site-raw', 'site-broken'];
 
@@ -50,7 +55,7 @@ async function check(name, url, init, want) {
 	const e = env(MAP, DEPLOYED);
 	const r = await worker.fetch(new Request(url, init), e);
 	const text = await r.text();
-	const got = { status: r.status, error: r.headers.get('x-wfp-error'), calls: e.calls };
+	const got = { status: r.status, error: r.headers.get('x-wfp-error'), calls: e.calls, retry: r.headers.get('retry-after'), cache: r.headers.get('cache-control') };
 	const problems = want(got, text);
 	if (problems.length) {
 		fails++;
@@ -88,5 +93,19 @@ await check('an entry that is not JSON: 500 bad-entry', 'https://wp-junk.sub.wor
 await check('an entry whose script is not a site-<name>: 500, no call', 'https://wp-evil.sub.workers.dev/', {}, (g) => [...p(g.status === 500 && g.error === 'bad-entry', '500 bad-entry'), ...p(g.calls.length === 0, 'no call')]);
 await check('an entry that is JSON null: 500 bad-entry', 'https://wp-null.sub.workers.dev/', {}, (g) => [...p(g.status === 500 && g.error === 'bad-entry', '500 bad-entry')]);
 await check('any other namespace error: 502 dispatch, no internals in the body', 'https://wp-broken.sub.workers.dev/', {}, (g, t) => [...p(g.status === 502 && g.error === 'dispatch', '502 dispatch'), ...p(!t.includes('Internal error'), 'no error text')]);
+// #479: the move freeze at the front door.
+for (const [m, init] of [['GET', {}], ['POST', { method: 'POST', body: 'x=1' }], ['HEAD', { method: 'HEAD' }]]) {
+	await check(`a site being moved: ${m} / answers 503 moving, Retry-After 120, no-store, no script called`, 'https://wp-moving.sub.workers.dev/', init, (g) => [
+		...p(g.status === 503 && g.error === 'moving', '503 moving'),
+		...p(g.retry === '120', 'Retry-After 120'),
+		...p(g.cache === 'no-store', 'no-store'),
+		...p(g.calls.length === 0, 'no namespace call'),
+	]);
+}
+await check('a site being moved: the admin is closed too (WordPress writes on GETs)', 'https://wp-moving.sub.workers.dev/wp-admin/post-new.php', {}, (g) => [...p(g.status === 503 && g.calls.length === 0, '503, no call')]);
+await check('a site being moved: an operator /_ path still reaches the site (the export runs)', 'https://wp-moving.sub.workers.dev/_mysqlexport?stats=1', {}, (g, t) => [...p(g.status === 200 && JSON.parse(t).script === 'site-one', 'reaches site-one')]);
+await check('a move whose time has passed is ignored: the site answers', 'https://wp-moved.sub.workers.dev/', {}, (g, t) => [...p(g.status === 200 && JSON.parse(t).script === 'site-one', 'site-one answers')]);
+await check('a moving flag that is not {until: <ms>} closes the site', 'https://wp-movebad.sub.workers.dev/', {}, (g) => [...p(g.status === 503 && g.error === 'moving' && g.calls.length === 0, '503 moving')]);
+await check('moving: false is no move', 'https://wp-moveoff.sub.workers.dev/', {}, (g, t) => [...p(g.status === 200 && JSON.parse(t).script === 'site-one', 'site-one answers')]);
 console.log(fails + ' failing case(s)');
 process.exit(fails ? 1 : 0);
