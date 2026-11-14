@@ -385,6 +385,10 @@ jobs:
           npm ci --silent --no-audit --no-fund
           ./prepare.sh
           node --test tests/heap-subarray.test.mjs
+      - name: The allocator reading of /_memprobe and the memory trace (issue #547)
+        # Boots the loader the step above built with USE_ZEND_ALLOC 0 and 1; each reader must tell them apart.
+        working-directory: spikes/b2-wordpress
+        run: node --test tests/allocator-reading.test.mjs
   coverage:
     runs-on: ubuntu-latest
     steps:
