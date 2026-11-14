@@ -3309,7 +3309,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			bootPromise ??= boot(origin);
 			const { php } = await bootPromise;
 			const r = await php.run({ code: `<?php
-				$P = array('limit' => ini_get('memory_limit'), 'use_zend_alloc' => getenv('USE_ZEND_ALLOC'));
+				$P = array('limit' => ini_get('memory_limit'), 'use_zend_alloc' => (memory_get_usage(true) > 0 ? '1' : '0')); // #547: not getenv, which php-wasm sets to "0" itself
 				$heap = function () {
 					if (!function_exists('post_message_to_js')) { return null; }
 					$r = json_decode(post_message_to_js(json_encode(array('probeMem' => 1))), true);

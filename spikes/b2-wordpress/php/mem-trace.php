@@ -404,7 +404,9 @@ register_shutdown_function(
 			'l10n'       => isset( $GLOBALS['l10n'] ) && is_array( $GLOBALS['l10n'] ) ? count( $GLOBALS['l10n'] ) : 0,
 			'locale'     => function_exists( 'determine_locale' ) ? determine_locale() : null,
 			'preload'    => $t['preload'],
-			'zend'       => getenv( 'USE_ZEND_ALLOC' ),
+			// The allocator from the live heap (#547): php-wasm sets USE_ZEND_ALLOC=0 itself after Zend's
+			// memory manager read it, so getenv reads "0" either way. The heap is 0 when Zend's allocator is off.
+			'zend'       => ( memory_get_usage( true ) > 0 ? '1' : '0' ),
 		);
 		post_message_to_js( json_encode( array( 'memTrace' => $trace ) ) );
 	}
