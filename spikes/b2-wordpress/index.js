@@ -28,6 +28,7 @@ import wasmModule from './vendor/php_8_3.wasm';
 import * as loader from './vendor/php_8_3.js';
 import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__dont__use } from '@php-wasm/universal';
 import { inflateSync } from 'fflate';
+import { createArena } from './inflate-arena.mjs';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
@@ -213,7 +214,7 @@ let ledgerFailLogged = false;
 // The inflate counters when this request (or cron leg) started (#394): every inflated copy is a new
 // buffer, and an evicted one stays in the isolate until V8 collects it. The ledger reports what was
 // inflated so far in the request and in the isolate, the upper bound on that garbage.
-let ledgerInfl0 = { n: 0, b: 0 };
+let ledgerInfl0 = { n: 0, b: 0, r: 0, ae: 0 };
 let bootMemory = null; // the WebAssembly.Memory of the runtime being booted (instantiateWasm), for the ledger
 function ledgerSnapshot(at) {
 	const php = lastBootedPhp;
@@ -224,7 +225,7 @@ function ledgerSnapshot(at) {
 	} catch (e) {
 		memfs = { error: String((e && e.message) || e).slice(0, 80) };
 	}
-	return { at, iso: ISOLATE_ID, rt: runtimeSerial, wasmMiB: php ? LEDGER_MIB(heapOf(php)) : null, runtimes: ledger.runtimes(runtimeSerial, heapOf), memfs, inflatedMiB: LEDGER_MIB(inflatedBytes), ocMiB: LEDGER_MIB(objectCacheBytes), sql: sqlMeter.read(), inflate: { reqN: stats.inflates - ledgerInfl0.n, reqMiB: LEDGER_MIB(stats.inflateBytes - ledgerInfl0.b), isoN: stats.inflates, isoMiB: LEDGER_MIB(stats.inflateBytes) } };
+	return { at, iso: ISOLATE_ID, rt: runtimeSerial, wasmMiB: php ? LEDGER_MIB(heapOf(php)) : null, runtimes: ledger.runtimes(runtimeSerial, heapOf), memfs, inflatedMiB: LEDGER_MIB(inflatedBytes), ocMiB: LEDGER_MIB(objectCacheBytes), sql: sqlMeter.read(), inflate: { reqN: stats.inflates - ledgerInfl0.n, reqMiB: LEDGER_MIB(stats.inflateBytes - ledgerInfl0.b), isoN: stats.inflates, isoMiB: LEDGER_MIB(stats.inflateBytes), reinflateN: stats.reinflates - ledgerInfl0.r, ...(inflateArena ? { arena: { mib: LEDGER_MIB(inflateArena.size), arenaEvict: inflateArena.counts.evicts - ledgerInfl0.ae, over: inflateArena.counts.over } } : {}) } };
 }
 function ledgerLog(at, extra) {
 	console.log(JSON.stringify({ m: 'mem-ledger', ...(ledgerId ? { id: ledgerId } : {}), ...ledgerSnapshot(at), ...(extra || {}) }));
@@ -362,7 +363,7 @@ async function stageUpload(req, env) {
 }
 
 function newStats() {
-	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, dbTables: {}, ocGroups: {}, ocCalls: 0, ocHits: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
+	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, reinflates: 0, dbTables: {}, ocGroups: {}, ocCalls: 0, ocHits: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
 }
 
 // Every statement failure goes through here. resetFailTotal counts the isolate memory resets among
@@ -406,10 +407,10 @@ function zipEntries(zip) {
 			name,
 			method,
 			size,
-			data() {
+			data(out) {
 				const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
 				const raw = zip.subarray(start, start + csize);
-				return method === 0 ? raw : inflateSync(raw, { out: new Uint8Array(size) });
+				return method === 0 ? raw : inflateSync(raw, { out: (out && out(size)) || new Uint8Array(size) });
 			},
 		});
 	}
@@ -428,6 +429,17 @@ function zipEntries(zip) {
 // post-new died 60 of 100 rounds against 82 of 100 at 8, with boot time and inflates per boot unchanged
 // (repeat pair, 2026-11-13/14, #394 issuecomment-6868335297). LAZY_CACHE_MB overrides (#218).
 let LAZY_CACHE_BYTES = 2 * 1024 * 1024;
+// #394 step 2 (LAZY_ARENA=on, off by default): inflate into ONE reused arena per isolate instead of a
+// new buffer per file (inflate-arena.mjs). LAZY_ARENA_MB sizes it (default: LAZY_CACHE_BYTES).
+let inflateArena = null;
+function arenaOn() { return !!(ENV && ENV.LAZY_ARENA === 'on'); }
+function getArena() {
+	if (!inflateArena) {
+		const mb = Number(ENV && ENV.LAZY_ARENA_MB);
+		inflateArena = createArena(Number.isFinite(mb) && mb >= 1 && mb <= 64 ? Math.round(mb) * 1048576 : LAZY_CACHE_BYTES);
+	}
+	return inflateArena;
+}
 const inflated = new Map(); // drop function -> bytes
 // FILE_TRACE=on (#394 M0): record which bundle files each request reads (file-trace.mjs, GET /_trace).
 // Off by default; it changes no behavior, only notes the path of each read.
@@ -482,6 +494,7 @@ function dropBootPack(FS) {
 }
 function evictLazy() {
 	for (const drop of inflated.keys()) drop();
+	if (inflateArena) inflateArena.evictAll(); // #394: the arena's entries too; the arena itself stays
 	inflated.clear();
 	inflatedBytes = 0;
 }
@@ -505,6 +518,7 @@ function attachLazyContents(node, size, dataFn, tag) {
 	let contents = null;
 	let written = false;
 	let used = size;
+	let inflations = 0; // #394: a second inflate of this file is a RE-inflate (its copy was evicted)
 	const drop = () => {
 		if (!written) contents = null;
 	};
@@ -513,8 +527,18 @@ function attachLazyContents(node, size, dataFn, tag) {
 		get() {
 			if (tag && tracing()) fileTrace.read(tag.src, tag.path, size);
 			if (contents === null) {
-				contents = dataFn();
-				noteInflated(drop, contents.length);
+				if (inflations++ > 0) stats.reinflates++;
+				// #394 step 2: with LAZY_ARENA=on, a deflated file inflates into the arena (a stored one is a view
+				// of the bundle and needs no buffer; a file larger than the arena gets its own, as before).
+				let inArena = false;
+				const out = arenaOn() ? (n) => { const v = getArena().alloc(n, drop); inArena = !!v; return v; } : null;
+				contents = dataFn(out);
+				if (inArena) {
+					stats.inflates++;
+					stats.inflateBytes += contents.length;
+				} else {
+					noteInflated(drop, contents.length);
+				}
 			}
 			return contents;
 		},
@@ -536,7 +560,7 @@ function attachLazyContents(node, size, dataFn, tag) {
 
 function lazyFile(FS, path, entry, src) {
 	FS.writeFile(path, new Uint8Array(0));
-	attachLazyContents(FS.lookupPath(path).node, entry.size, () => entry.data(), src ? { src, path } : null);
+	attachLazyContents(FS.lookupPath(path).node, entry.size, (out) => entry.data(out), src ? { src, path } : null);
 }
 
 // Lazy MEMFS NODE creation (issue #218, LAZY_NODES=on). Eager node creation
@@ -579,14 +603,14 @@ function buildZipIndex(zip) {
 	return { root, zip, dv };
 }
 // The file bytes for one central-directory offset, inflated on demand (same as zipEntries.data()).
-function lazyEntryData(zip, dv, p) {
+function lazyEntryData(zip, dv, p, out) {
 	const method = dv.getUint16(p + 10, true);
 	const csize = dv.getUint32(p + 20, true);
 	const size = dv.getUint32(p + 24, true);
 	const local = dv.getUint32(p + 42, true);
 	const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
 	const raw = zip.subarray(start, start + csize);
-	return method === 0 ? raw : inflateSync(raw, { out: new Uint8Array(size) });
+	return method === 0 ? raw : inflateSync(raw, { out: (out && out(size)) || new Uint8Array(size) });
 }
 function lazyEntrySize(dv, p) {
 	return dv.getUint32(p + 24, true);
@@ -615,7 +639,7 @@ function lazyOpsFor(base, FS, store) {
 		if (p === undefined) return null;
 		idx.files.delete(name);
 		const node = base.mknod(parent, name, 0o100644, 0);
-		attachLazyContents(node, lazyEntrySize(store.dv, p), () => lazyEntryData(store.zip, store.dv, p));
+		attachLazyContents(node, lazyEntrySize(store.dv, p), (out) => lazyEntryData(store.zip, store.dv, p, out));
 		lazyStats.nodes++;
 		return node;
 	};
@@ -2414,7 +2438,7 @@ export class PhpRuntime extends DurableObject {
 				if (typeof this.ctx.storage.sync === 'function') await this.ctx.storage.sync();
 				// #394: the ledger at the start of a cron leg, when MEM_LEDGER=on (a cron leg has no operator header).
 				ledgerActive = this.env.MEM_LEDGER === 'on'; ledgerId = null; ledgerFailLogged = false; sqlMeter.reset();
-				ledgerInfl0 = { n: stats.inflates, b: stats.inflateBytes };
+				ledgerInfl0 = { n: stats.inflates, b: stats.inflateBytes, r: stats.reinflates, ae: inflateArena ? inflateArena.counts.evicts : 0 };
 				if (ledgerActive) ledgerLog('cron-start');
 				const runStorage = this.ctx.storage;
 				cronRunSink = async (patch) => {
@@ -3305,7 +3329,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			ledgerId = ledgerActive ? memIdOf(req, env).id || null : null;
 			ledgerFailLogged = false;
 			sqlMeter.reset();
-			ledgerInfl0 = { n: stats.inflates, b: stats.inflateBytes };
+			ledgerInfl0 = { n: stats.inflates, b: stats.inflateBytes, r: stats.reinflates, ae: inflateArena ? inflateArena.counts.evicts : 0 };
 			if (ledgerActive) ledgerLog('start');
 			const tBoot = Date.now();
 			const booted = !bootPromise;
@@ -3314,7 +3338,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const { php, handler, bootMs } = await bootPromise;
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
-			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
+			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, reinflates: stats.reinflates, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
 			if (url.pathname === '/_install') {
@@ -3461,6 +3485,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 					dbMs: d.ms,
 					inflates: stats.inflates - start.inflates,
 					inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024),
+					reinflates: stats.reinflates - start.reinflates, // #394 step 2: the CPU side of the arena
 					wasm0MiB: Math.round(wasm0 / 1048576),
 					wasm1MiB: Math.round(wasmBytes / 1048576),
 					...(booted ? { l1: l1State } : {}), // #394 L1: where this boot's OPcache boot pack came from
