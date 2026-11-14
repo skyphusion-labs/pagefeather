@@ -94,9 +94,16 @@ curl() { printf 200; }   # the front page check; the S3 calls run the real curl 
 record_build_inputs() { return 0; }
 # The build stand-in: the new build of site B.
 build_dosql() { [ "${FAIL_BUILD:-0}" = 1 ] && return 1; setid dddddddddddd-wooprimed; }
+# The temp dirs of the update cases go under $TT, so the test can see that none is left (#513:
+# run_update made WDIR and never removed it, one empty dir per case). WDIR has an explicit template
+# there. The update's own mktemp -d calls follow TMPDIR with GNU mktemp (the CI runner), so there
+# the check covers them too; macOS mktemp -d without a template ignores TMPDIR, so on a Mac it
+# covers WDIR only.
+TT=$T/tmp; mkdir -p "$TT"
 run_update() { # run_update <id build/ holds at the start> [env...]
   setid "$1"; shift; : > "$WRLOG"
-  ( APP=$FA; WDIR=$(mktemp -d); export NO_SNAPSHOT=1 "$@"; update_one_inner siteb; echo "rc=$?" ) > "$T/out" 2>&1
+  ( export TMPDIR=$TT; APP=$FA; WDIR=$(mktemp -d "$TT/wdir.XXXXXX"); export NO_SNAPSHOT=1 "$@"; rc=0; update_one_inner siteb || rc=$?
+    rm -rf "$WDIR"; echo "rc=$rc" ) > "$T/out" 2>&1   # as update_one removes its work dir
 }
 # THE #464 CASE: the clone last built site A (pf394a's build in the measured run), B is updated,
 # the verify fails. Before the fix, the rollback uploaded A's build to B.
@@ -156,5 +163,7 @@ check "  another site's bucket is untouched" "$(keys | grep -c '^/c466-sitea-med
 out=$(T2=$(mktemp -d "$T/g.XXXX"); python3 -I "$WFP/rollback_artifact.py" get ok-siteb-media dddddddddddd-wooprimed "$T2" >/dev/null && head -1 "$T2/index.js")
 check "  the stored artifact holds the tree that was deployed" "$out" "// current tree"
 check "site add stores the artifact of the build it deployed" "$(grep -c '^  write_rollback_artifact "$(media_bucket "$s")"' "$SITE")" 1
+# #513: no update case leaves a temp dir behind (the saved build, the rollback mirror, the work dirs).
+check "every update case removed its temp dirs" "$(find "$TT" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" 0
 echo "$fails failing check(s)"
 [ "$fails" = 0 ]
