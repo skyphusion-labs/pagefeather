@@ -16,7 +16,7 @@ Control:
   PUT  /_seed/<bucket>/<key>                  store an object with no auth
   GET  /_state                                {"mints": [...bodies], "objects": [...paths], "denied": n}
 """
-import http.server, json, re, sys, threading, urllib.parse
+import http.server, json, sys, threading, urllib.parse
 
 lock = threading.Lock()
 objects, creds, mints = {}, {}, []
@@ -75,8 +75,10 @@ class H(http.server.BaseHTTPRequestHandler):
         return self.send(404)
 
     def allowed(self, bucket):
-        m = re.search(r"Credential=([^/,\s]+)/", self.headers.get("authorization", ""))
-        kid = m.group(1) if m else None
+        # The access key id: the text after "Credential=" up to the first "/" (no regex: CodeQL).
+        auth = self.headers.get("authorization", "")
+        i = auth.find("Credential=")
+        kid = auth[i + len("Credential="):].split("/", 1)[0] if i >= 0 else None
         with lock:
             c = creds.get(kid)
             ok = bool(c) and c["bucket"] == bucket and self.headers.get("x-amz-security-token") == c["token"]
