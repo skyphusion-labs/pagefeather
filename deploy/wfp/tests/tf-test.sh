@@ -4,9 +4,9 @@
 # terraform 1.17.1 (issue #336); run it locally before a live run too.
 #   deploy/wfp/tests/tf-test.sh [a copy of deploy/wfp/terraform]
 # - terraform validate and fmt for terraform/shared and terraform/site;
-# - in terraform/site, the teardown key depends on NOTHING (terraform graph),
-#   so down.sh's "apply -target=cloudflare_account_token.teardown" cannot
-#   create the bucket or the site map entry (a down never creates).
+# - terraform/site makes no account token (#273): the keys that empty the bucket
+#   and put an import's uploads are temporary R2 credentials (r2_temp.py), so the
+#   deploy token needs no API Tokens permission.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 TFD=${1:-$HERE/../terraform}
@@ -18,16 +18,8 @@ for r in shared site; do
 done
 g=$(cd "$TFD/site" && terraform graph 2>/dev/null)
 [ -n "$g" ] || { echo "FAIL terraform graph gave nothing"; exit 1; }
-edges=$(printf '%s\n' "$g" | grep -E '"cloudflare_account_token\.teardown" -> ' || true)
-ok "site: the teardown key has no dependency (got: ${edges:-none})" "$([ -z "$edges" ] && echo 1 || echo 0)"
-# The control: the graph has the teardown key at all, so an empty edge list
-# above is a reading of it, not a miss (the mutant with the token referencing
-# cloudflare_r2_bucket.media makes the check above fail).
-ok "site: the graph has the teardown key (the check above can see it)" "$(printf '%s\n' "$g" | grep -q '"cloudflare_account_token.teardown"' && echo 1 || echo 0)"
-# The same for the import key ("site import", deploy/import.sh for deploy/wfp):
-# its -target apply must not create or change anything else.
-edges=$(printf '%s\n' "$g" | grep -E '"cloudflare_account_token\.media_import" -> ' || true)
-ok "site: the media import key has no dependency (got: ${edges:-none})" "$([ -z "$edges" ] && echo 1 || echo 0)"
-ok "site: the graph has the media import key (the check above can see it)" "$(printf '%s\n' "$g" | grep -q '"cloudflare_account_token.media_import"' && echo 1 || echo 0)"
+ok "site: the graph has no cloudflare_account_token (#273)" "$(printf '%s\n' "$g" | grep -q 'cloudflare_account_token' && echo 0 || echo 1)"
+# The control: the graph has the media bucket, so the check above reads a real graph.
+ok "site: the graph has the media bucket (the check above can see a resource)" "$(printf '%s\n' "$g" | grep -q '"cloudflare_r2_bucket.media"' && echo 1 || echo 0)"
 echo "$fails failing check(s)"
 exit $fails

@@ -187,9 +187,10 @@ update_one_inner() {
 # for deploy/wfp). The site must exist (site add). Everything the import needs
 # comes from the site's own workspace: its origin, its SPIKE_TOKEN, its media
 # bucket. With CONTENT, the uploads go into that bucket with a key that can
-# reach only that bucket. The key is made here with -target (it depends on
-# nothing, so nothing else changes), and deleted after the import, also when
-# the import fails. The import replaces the site's whole database.
+# reach only that bucket: a temporary R2 credential minted here from the deploy
+# token (lib.sh r2_temp_mint, #273), so nothing is made in the account or the
+# state. It expires after R2_TEMP_TTL (21600 s), and media.sh mints a fresh one
+# on a refusal. The import replaces the site's whole database.
 import_one() {
   local s=$1
   valid_site "$s" || { echo "bad site name '$s': lower case, digits, hyphens; 1 to 30; not a shared Worker name (probe, dispatch, cacheprobe, cacheprobe-direct, wfp-*)" >&2; return 2; }
@@ -197,30 +198,28 @@ import_one() {
   has_ws "$s" || { echo "no site $s (run site add first)" >&2; return 2; }
   tfr site init -input=false >/dev/null; tfr site workspace select "$s" >/dev/null
   # The hostname, Custom Domain and zone the workspace records (lib.sh site_vars):
-  # the import's origin is the site's real one, and the key's -target apply
-  # passes the same values, so it can never re-key the entry or move the domain.
+  # the import's origin is the site's real one.
   site_vars "$s" "$SUB" "$KV_ID" || return 1
   local HOST=$REC_HOST
-  local VARS=("${REC_VARS[@]}" -var "build=$(entry_build "$s")" -var "config_hash=$(entry_config_hash "$s")")
   local TOK; TOK=$(tfr site output -raw spike_token)
   local need_key=0
   if [ -n "${CONTENT:-}" ] && [ -z "${DRY_RUN:-}" ] && [ -z "${SKIP_MEDIA:-}" ]; then need_key=1; fi
-  key() { tfr site apply -input=false -auto-approve "${VARS[@]}" -var "media_import=$1" -target=cloudflare_account_token.media_import >/dev/null; }
+  local cf="" ttl=${R2_TEMP_TTL:-21600} B=""
   if [ "$need_key" = 1 ]; then
-    trap 'key false || echo "site $s: DELETE THE IMPORT KEY: deploy/wfp/site import left cloudflare_account_token.media_import in workspace $s" >&2' EXIT
-    key true
+    B=$(media_bucket "$s"); cf=$(mktemp); chmod 600 "$cf"
+    # shellcheck disable=SC2064 # the path is fixed now: $cf is local and gone by EXIT
+    trap "rm -f '$cf'; rmdir '$cf.lock' 2>/dev/null" EXIT
+    r2_temp_mint "$B" "$ttl" "$cf" || { rm -f "$cf"; trap - EXIT; echo "site $s: no temporary credential for $B; nothing was imported" >&2; return 1; }
   fi
   local rc=0
   URL="https://$HOST" SPIKE_TOKEN="$TOK" \
-    MEDIA_BUCKET="$([ "$need_key" = 1 ] && media_bucket "$s")" \
+    MEDIA_BUCKET="$B" \
     R2_ENDPOINT="$([ "$need_key" = 1 ] && tfr site output -raw r2_endpoint)" \
-    R2_KEY_ID="$([ "$need_key" = 1 ] && tfr site output -raw media_import_access_key_id)" \
-    R2_SECRET="$([ "$need_key" = 1 ] && tfr site output -raw media_import_secret_access_key)" \
+    R2_CRED_FILE="$cf" R2_CRED_REFRESH="$([ "$need_key" = 1 ] && r2_temp_refresh_cmd "$B" "$ttl" "$cf")" \
     NAME="" "$ROOT/deploy/import.sh" || rc=$?
   if [ "$need_key" = 1 ]; then
-    key false; trap - EXIT
-    [ -z "$(tfr site output -raw media_import_access_key_id 2>/dev/null)" ] || { echo "site $s: the import key is still in the state" >&2; return 1; }
-    echo "site $s: import key deleted"
+    rm -f "$cf"; rmdir "$cf.lock" 2>/dev/null || true; trap - EXIT
+    echo "site $s: the temporary credential file is removed; the credential expires within $ttl s"
   fi
   [ "$rc" = 0 ] && echo "site import $s: done, https://$HOST"
   return "$rc"
