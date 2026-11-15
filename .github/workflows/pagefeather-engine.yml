@@ -24,7 +24,8 @@ jobs:
       matrix:
         # lean-nofileinfo is a MEASURED arm only (numbers, never shipped, not in lean-gates).
         # lean-trim: the trimmed fileinfo database (S2b).
-        variant: [unchanged, pinned-env-1, pinned-env-2, lean, lean-nogd, lean-nofileinfo, lean-trim]
+        # lean-stats: lean-trim with the OPcache body counters (S4 M1, a measurement build, never shipped).
+        variant: [unchanged, pinned-env-1, pinned-env-2, lean, lean-nogd, lean-nofileinfo, lean-trim, lean-stats]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -46,10 +47,10 @@ jobs:
         run: |
           set -euo pipefail
           df -h / | tail -1; uname -a
-          pin=0; variant=unchanged; gd=yes; fi_=yes; magic=full
-          case "${{ matrix.variant }}" in pinned-env-*) pin=1;; lean) variant=lean;; lean-nogd) variant=lean; gd=no;; lean-nofileinfo) variant=lean; fi_=no;; lean-trim) variant=lean; magic=trim;; esac
+          pin=0; variant=unchanged; gd=yes; fi_=yes; magic=full; stats=0
+          case "${{ matrix.variant }}" in pinned-env-*) pin=1;; lean) variant=lean;; lean-nogd) variant=lean; gd=no;; lean-nofileinfo) variant=lean; fi_=no;; lean-trim) variant=lean; magic=trim;; lean-stats) variant=lean; magic=trim; stats=1;; esac
           s=$(date +%s)
-          ENGINE_PIN_ENV=$pin ENGINE_VARIANT=$variant ENGINE_GD=$gd ENGINE_FILEINFO=$fi_ ENGINE_MAGIC=$magic ENGINE_WORK="$RUNNER_TEMP/work" engine/build.sh "$RUNNER_TEMP/out" | tee "$RUNNER_TEMP/build.out"
+          ENGINE_PIN_ENV=$pin ENGINE_VARIANT=$variant ENGINE_GD=$gd ENGINE_FILEINFO=$fi_ ENGINE_MAGIC=$magic ENGINE_OPCACHE_STATS=$stats ENGINE_WORK="$RUNNER_TEMP/work" engine/build.sh "$RUNNER_TEMP/out" | tee "$RUNNER_TEMP/build.out"
           echo "build took $(( $(date +%s) - s )) s"
           df -h / | tail -1
       - name: Size figures, against the engine we ship (a reading)
@@ -284,3 +285,46 @@ jobs:
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-trim"
           PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
           if ! tests/frames-e2e.sh; then echo "::error::frames-e2e.sh failed on lean-trim"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
+  opcache-stats:
+    # #582 S4 M1: the payoff of OPcache lazy function bodies on the editor screens. The lean-stats engine
+    # counts, per request, every declared user function and its body bytes, and which of them ran. OPcache
+    # is primed first (opcache.sh), so scripts load from the file cache as in production; the screens then
+    # run on one runtime (PHP_RECYCLE off). A reading, not a gate.
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pagefeather-engine-s1-lean-stats
+          path: ${{ runner.temp }}/e
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Prime OPcache with the stats engine, then read the counts after each editor screen
+        working-directory: spikes/b2-wordpress
+        run: |
+          set -euo pipefail
+          npm ci --silent --no-audit --no-fund
+          d="$RUNNER_TEMP/e"
+          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          ./build.sh | tail -1
+          DEV_ENV=dosql-local WOO_ACTIVE=1 ./opcache.sh > build/opcache.log 2>&1 || { tail -30 build/opcache.log; exit 1; }
+          tail -1 build/opcache.log
+          ./run.sh --stop > /dev/null 2>&1 || true
+          export PERSIST_TO=$(mktemp -d)
+          B=http://localhost:8797; PW=local-spike-password
+          ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}")
+          # As frames-e2e.sh runs it after the same opcache.sh priming (the default env), with recycling off.
+          DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off" ./run.sh _ping > /dev/null || { echo "::error::wrangler dev did not start"; tail -40 dev.log; exit 1; }
+          echo "install: $(curl -s -o /dev/null -w '%{http_code}' "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install")"
+          echo "activate woocommerce: $(curl -s -o /dev/null -w '%{http_code}' "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_activate?plugin=woocommerce/woocommerce.php")"
+          B=$B ADMIN_PASSWORD=$PW python3 tests/opcache-stats.py 2 "$RUNNER_TEMP/opcache-stats.jsonl"
+          ./run.sh --stop > /dev/null 2>&1 || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: opcache-stats
+          path: ${{ runner.temp }}/opcache-stats.jsonl
+          retention-days: 14
