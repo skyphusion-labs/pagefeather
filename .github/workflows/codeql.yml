@@ -139,10 +139,10 @@ jobs:
           PY2
           m() { python3 -I engine/opcache/codeql-sarif-map.py "$t/$1.sarif" "$t/$1.out.sarif" codeql-build/php-src codeql-build/php-src/ \
                   codeql-build/applied-patches.txt engine/opcache/codeql-upstream-baseline.json > "$t/$1.log" 2>&1; }
-          m new; rc=$?
+          rc=0; m new || rc=$?
           grep -q "NEW result on an UPSTREAM line, not in the baseline: pf/baseline-selftest" "$t/new.log" && [ "$rc" -eq 3 ] \
             || { cat "$t/new.log"; echo "::error::the baseline gate did not refuse an injected upstream result (exit $rc)"; exit 1; }
-          m known; rc=$?
+          rc=0; m known || rc=$?
           [ "$rc" -eq 0 ] || { cat "$t/known.log"; echo "::error::the baseline gate refused its own baseline entry (exit $rc)"; exit 1; }
           echo "baseline gate self-test: injected new upstream result refused (exit 3); baseline entry accepted (exit 0)"
 
@@ -159,10 +159,11 @@ jobs:
           in="$GITHUB_WORKSPACE/../results/cpp.sarif"
           [ -s "$in" ] || { echo "::error::no c-cpp SARIF at $in"; ls -la "$GITHUB_WORKSPACE/../results" || true; exit 1; }
           mkdir -p "$GITHUB_WORKSPACE/../results-mapped"
+          # The run shell is bash -e: capture the status with ||, or exit 3 ends the step before the upload.
+          rc=0
           python3 -I engine/opcache/codeql-sarif-map.py "$in" "$GITHUB_WORKSPACE/../results-mapped/cpp.sarif" \
             codeql-build/php-src codeql-build/php-src/ codeql-build/applied-patches.txt \
-            engine/opcache/codeql-upstream-baseline.json
-          rc=$?
+            engine/opcache/codeql-upstream-baseline.json || rc=$?
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || exit "$rc"
 
