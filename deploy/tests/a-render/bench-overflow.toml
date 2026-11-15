@@ -1,0 +1,74 @@
+# The hand-made approach-A bench config every #296 run used on pfa-sb1114l (2026-11-15), with its ids
+# replaced by placeholders. deploy/tests/a-render-test.sh diffs deploy.sh's variant-a render against it (#666),
+# so the supported deploy path and the measured site cannot drift apart again.
+# The overflow run, at the shipped pool default of 32 (#646; 237/250 at 250 buyers, 0 exceededMemory).
+# sb1114l #296 step 0: a throwaway approach-A site, [env.a-paid-lean] (wp-a-lean) at main 3e384b9
+# with only the name, the KV namespace and the Hyperdrive config changed. Place it in
+# spikes/b2-wordpress/ of a tree built by `./prepare.sh && OPCACHE` (a_opcache_primed or
+# ./opcache-a.sh), then: ../../deploy/wr deploy --config wrangler.sb1114l.toml
+# and `python3 -I ../../deploy/wfp/obs_settings.py redact-or-off - pfa-sb1114l` (as deploy-a-lean.sh).
+name = "pfa-render"
+main = "index-a-lean.js"
+compatibility_date = "2026-07-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+send_email = [{ name = "EMAIL" }]
+rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
+[vars]
+PHP_ENV = '{"USE_ZEND_ALLOC":"0","WP_TABLE_PREFIX":"wp_"}'
+OBJECT_CACHE = "on"
+OBJECT_CACHE_GROUPS = "theme_json"
+OBJECT_CACHE_TTL = "10"
+OBJECT_CACHE_L2 = "on"
+LAZY_NODES = "on"
+LAZY_CACHE_MB = "4"
+# (c) overflow (#296, 2026-11-15), built from rollins/296-php-overflow. PHP_OVERFLOW: always for the woo.py functional
+# proof, then on for the ladders; PHP_OVERFLOW_POOL 8, 16, 32 (one deploy per size). Hint wnam, depth 1 (defaults).
+PHP_OVERFLOW = "on"
+PHP_OVERFLOW_POOL = "32"
+[assets]
+directory = "build/public"
+binding = "ASSETS"
+not_found_handling = "none"
+[limits]
+cpu_ms = 30000
+[cache]
+enabled = true
+# The page-cache split, as deploy/deploy.sh renders it (lines 241 to 244) and as wrangler.toml's top-level exports give
+# every [env.*]: the default entrypoint (the gateway) is NOT cached; only the Pages entrypoint is (issue #63). Missing from
+# this flat config until 2026-11-15 (found by Joan on #628): every #296 run on pfa-sb1114l before then ran without it.
+[exports.default]
+type = "worker"
+[exports.default.cache]
+enabled = false
+[exports.Pages]
+type = "worker"
+[exports.Pages.cache]
+enabled = true
+[placement]
+region = "aws:us-west-2"
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "HYPERDRIVE_ID"
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "MEDIA_BUCKET"
+[images]
+binding = "IMAGES"
+[observability]
+enabled = true
+head_sampling_rate = 1
+[observability.logs]
+enabled = true
+invocation_logs = true  # run 2: per-request cpuTime and wallTime
+[[kv_namespaces]]
+binding = "OC_KV"
+id = "OC_KV_ID"
+
+# The overflow pool (#296 (3)): index-a-lean.js exports PhpRuntime. One isolate per object (probe 3).
+[[durable_objects.bindings]]
+name = "PHP_RUNTIME"
+class_name = "PhpRuntime"
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PhpRuntime"]

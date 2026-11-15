@@ -17,6 +17,14 @@
 #                     keeps index.js's 100. With the lean engine use 140: at 100 its editor pages
 #                     end between the line and the isolate replacement point and stack a second
 #                     memory (#598: 20 of 70 at 100, 0 of 280 at 140, on b-dosql pf582t).
+# #666, the measured approach-A site. The object cache (L2 in the site's own OC_KV namespace) and lazy MEMFS
+# nodes are always rendered, from the ONE source the provisioning path uses (aVars, through
+# deploy/provision/a-vars-toml.mjs); deploy/tests/a-render-test.sh diffs the render against the bench config.
+#   A_CLIENT          lean (default: index-a-lean.js, the hand-rolled MySQL client every #296 run and
+#                     wp-a-lean measured, #218) or mysql2 (index-a.js, what deploy.sh deployed before #666).
+#   PHP_OVERFLOW      0 (default) or 1: a queued PHP request moves to a Durable Object pool (#646,
+#                     docs/approach-a-overflow.md); renders the PhpRuntime binding and its migration.
+#   PHP_OVERFLOW_POOL 1 to 256 (default 32, the measured default, #646). Needs PHP_OVERFLOW=1.
 #   PF_ENGINE_JS and PF_ENGINE_WASM (every variant): another engine's loader and wasm for
 #                     prepare.sh, for example the lean-trim artifact of the pagefeather-engine
 #                     workflow (#592). Both or neither.
@@ -25,7 +33,7 @@
 a_settings_check() {
   local variant=$1 v
   if [ "$variant" != a ]; then
-    for v in OPCACHE_A OPCACHE_REMOTE SITE_REMOTE RECYCLE_WASM_MIB; do
+    for v in OPCACHE_A OPCACHE_REMOTE SITE_REMOTE RECYCLE_WASM_MIB A_CLIENT PHP_OVERFLOW PHP_OVERFLOW_POOL; do
       [ -z "${!v:-}" ] || { echo "$v is for variant a only (deploy/wfp has its own settings for b-dosql)" >&2; return 2; }
     done
   fi
@@ -41,6 +49,15 @@ a_settings_check() {
   v=${RECYCLE_WASM_MIB:-}
   if [ -n "$v" ] && { ! [[ "$v" =~ ^[0-9]{2,3}$ ]] || [ "$((10#$v))" -lt 64 ] || [ "$((10#$v))" -gt 240 ]; }; then
     echo "RECYCLE_WASM_MIB must be an integer from 64 to 240, not ${v}" >&2; return 2
+  fi
+  case "${A_CLIENT:-lean}" in lean|mysql2) ;; *) echo "A_CLIENT must be lean or mysql2, not ${A_CLIENT}" >&2; return 2 ;; esac
+  case "${PHP_OVERFLOW:-0}" in 0|1) ;; *) echo "PHP_OVERFLOW must be 0 or 1, not ${PHP_OVERFLOW}" >&2; return 2 ;; esac
+  v=${PHP_OVERFLOW_POOL:-}
+  if [ -n "$v" ] && [ "${PHP_OVERFLOW:-0}" != 1 ]; then
+    echo "PHP_OVERFLOW_POOL needs PHP_OVERFLOW=1" >&2; return 2
+  fi
+  if [ -n "$v" ] && { ! [[ "$v" =~ ^[0-9]{1,3}$ ]] || [ "$((10#$v))" -lt 1 ] || [ "$((10#$v))" -gt 256 ]; }; then
+    echo "PHP_OVERFLOW_POOL must be an integer from 1 to 256, not ${v}" >&2; return 2
   fi
   if [ -n "${PF_ENGINE_JS:-}" ] || [ -n "${PF_ENGINE_WASM:-}" ]; then
     [ -n "${PF_ENGINE_JS:-}" ] && [ -n "${PF_ENGINE_WASM:-}" ] || { echo "PF_ENGINE_JS and PF_ENGINE_WASM: set both or neither" >&2; return 2; }
@@ -73,4 +90,22 @@ a_vars() {
 a_assets_first() {
   [ "${OPCACHE_REMOTE:-0}" != 1 ] || echo 'run_worker_first = ["/_pf/*"]'
   return 0
+}
+
+# a_main: the Worker entry (A_CLIENT): the lean MySQL client by default (#218, #666), mysql2 when asked.
+a_main() {
+  if [ "${A_CLIENT:-lean}" = mysql2 ]; then echo index-a.js; else echo index-a-lean.js; fi
+}
+
+# a_overflow_vars and a_overflow_bindings: PHP_OVERFLOW=1 (#646), the [vars] lines, then the PhpRuntime pool
+# with its migration. Nothing when it is off.
+a_overflow_vars() {
+  [ "${PHP_OVERFLOW:-0}" = 1 ] || return 0
+  echo 'PHP_OVERFLOW = "on"'
+  echo "PHP_OVERFLOW_POOL = \"$((10#${PHP_OVERFLOW_POOL:-32}))\""
+}
+a_overflow_bindings() {
+  [ "${PHP_OVERFLOW:-0}" = 1 ] || return 0
+  echo '[[durable_objects.bindings]]'; echo 'name = "PHP_RUNTIME"'; echo 'class_name = "PhpRuntime"'
+  echo '[[migrations]]'; echo 'tag = "v1"'; echo 'new_sqlite_classes = ["PhpRuntime"]'
 }
