@@ -12,7 +12,7 @@ import { checks, engine, engineUnderTest, upstreamRaw } from './engine-contract.
 
 const target = engineUnderTest();
 const raw = upstreamRaw(target.expect);
-const NO_PATCH = new Set(['opcache: a script too big for shared memory takes the file-cache fallback', 'opcache: the inheritance cache links classes across cached files', 'extensions: exactly the expected list', 'allocator: USE_ZEND_ALLOC=0 is honoured', 'exports: the request entry points are promising', 'link: dylink section and export count as expected']);
+const NO_PATCH = new Set(['opcache: a script too big for shared memory takes the file-cache fallback', 'opcache: the inheritance cache links classes across cached files', 'extensions: exactly the expected list', 'allocator: USE_ZEND_ALLOC=0 is honoured', 'exports: the request entry points are promising', 'link: dylink section and export count as expected', 'fibers: start() does not abort the runtime']);
 
 for (const [name, check] of Object.entries(checks)) {
 	test('holds on ' + target.name + ': ' + name, async () => { await check(target); });
@@ -48,6 +48,11 @@ test('goes red on a mutation: exports (wasm_sapi_handle_request not promising)',
 	assert.ok(m && m[1].includes('wasm_sapi_handle_request'), 'the pattern names it');
 	const js = target.js.replace(m[0], m[0].replace('wasm_sapi_handle_request', 'wasm_sapi_handle_requestX'));
 	await assert.rejects(async () => checks['exports: the request entry points are promising']({ ...target, js }), assert.AssertionError);
+});
+
+test('goes red on a mutation: fibers (the npm engine, whose getcontext aborts, judged as the lean engine)', async () => {
+	const exp = { ...raw.expect, static: { ...raw.expect.static, dylink: false } };
+	await assert.rejects(async () => checks['fibers: start() does not abort the runtime']({ ...raw, expect: exp, loaderFile: null }), assert.AssertionError);
 });
 
 test('goes red on a mutation: link (the opposite dylink expectation, and today\'s 6,603 exports under a bound of 100)', async () => {

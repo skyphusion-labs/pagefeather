@@ -266,6 +266,38 @@ trait Pf582T {
 		const p = new Set(m[1].split('|'));
 		for (const n of ['php_wasm_init', 'wasm_sapi_handle_request']) assert.ok(p.has(n), n + ' is not promising');
 	},
+	// Fibers (#624). wasm32 has no boost.context assembly, so the build passes
+	// --disable-fiber-asm and PHP uses ucontext. The loader's getcontext (and
+	// makecontext, swapcontext) is an abort stub: it prints "missing function: ${name}"
+	// and abort() becomes unreachable, which kills the runtime, not just the request.
+	// The probe is the one in the issue. On the lean engine (no dylink) the runtime must
+	// survive it, either by running the fiber or by throwing a catchable Error
+	// ("Fibers are not supported on this platform"), and the next php.run() must work.
+	// The npm engine cannot be patched here. dylink marks it; the check records the
+	// abort as a known gap and does not fail.
+	async 'fibers: start() does not abort the runtime'(e) {
+		const probe = '<?php $f = new Fiber(function ($x) { $g = Fiber::suspend("s:" . $x); return "r:" . $g; }); echo $f->start("a"); $f->resume("b"); echo $f->getReturn();';
+		const caught = '<?php try { $f = new Fiber(function ($x) { $g = Fiber::suspend("s:" . $x); return "r:" . $g; }); $f->start("a"); } catch (Error $e) { echo "caught:" . get_class($e) . ":" . $e->getMessage(); }';
+		const { php } = await boot(e);
+		let text = null;
+		let err = null;
+		try { text = await run(php, probe); } catch (e) { err = e; }
+		const msg = err ? String(err.message || err) : '';
+		const stack = err ? String(err.stack || '') : '';
+		const runtimeAbort = !!err && (err instanceof WebAssembly.RuntimeError || msg.includes('unreachable') || msg.includes('Aborted(') || msg.includes('missing function') || stack.includes('_getcontext'));
+		if (e.expect.static && e.expect.static.dylink === true) {
+			console.log('@event fiber-gap ' + JSON.stringify({ engine: e.name, gap: true, missing: 'getcontext', abort: runtimeAbort, detail: (err ? msg + ' ' + stack : String(text)).slice(0, 300) }));
+			return;
+		}
+		if (err) {
+			assert.ok(!runtimeAbort, 'Fiber::start aborted the runtime: ' + (msg + '\n' + stack).slice(0, 500));
+			assert.match(msg, /Uncaught Error: Fibers are not supported on this platform/);
+			assert.equal(await run(php, caught), 'caught:Error:Fibers are not supported on this platform');
+		} else {
+			assert.equal(text, 's:ar:b', 'the fiber probe did not run and did not throw: ' + String(text).slice(0, 200));
+		}
+		assert.equal(await run(php, '<?php echo 6*7;'), '42', 'the next php.run() after Fiber::start failed');
+	},
 };
 
 // The engine under test: ENGINE_JS and ENGINE_WASM, or the prepared vendor/ engine; ENGINE_EXPECT

@@ -19,6 +19,12 @@ Run it on another build:
 
 It needs `npm ci` and `./prepare.sh` in `spikes/b2-wordpress`, and Node 24 or later (JSPI).
 
+## Fibers (#624)
+
+`Fiber::start()` must not abort the wasm runtime. The check `fibers: start() does not abort the runtime` runs the probe from the issue. On the lean engine (static, no dylink section) the runtime must survive that probe and the next `php.run()` must work. On the npm engine the same probe aborts. The check passes there and records the abort as a known gap (`@event fiber-gap`). The npm package is upstream's binary.
+
+The missing call is `getcontext`. wasm32 has no boost.context assembly, so the build passes `--disable-fiber-asm` and PHP uses ucontext. The loader defines `getcontext`, `makecontext` and `swapcontext` as abort stubs. Each prints `missing function: ${name}` (the name is not filled in) and `abort()` becomes `unreachable`. `Fiber::start()` calls `getcontext` first, so that is the frame in the stack.
+
 ## The fileinfo database (#582 S2b)
 
 WordPress checks every upload with `wp_check_filetype_and_ext()`, and for a file that is not an image it
