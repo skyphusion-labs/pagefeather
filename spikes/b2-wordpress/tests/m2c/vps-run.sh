@@ -6,7 +6,9 @@
 # B per arm. ARMS (default "body script whole") picks the arms, BOOTS (5) and WARM (5) the counts.
 # Arms: body (opcache.pagefeather_lazy_unit=body), script (=script), whole (opcache.pagefeather_lazy_load=0). Each
 # arm's site must report that mode in /_mem (ini.lb.lazy_unit, ini.lb.lazy_load), or the arm is refused.
-# Per boot: /_evict (a new PHP runtime), log in, /_mem, the FIRST post-new.php, /_mem, then WARM more post-new.php,
+# Per boot: a request with x-runtime-recycle: force (spike-gated: the runtime is dropped after it, as a memory recycle
+# would), log in (it must report x-perf boot 1: a new runtime), /_mem, the FIRST post-new.php, /_mem, then WARM more
+# post-new.php,
 # each between two /_mem reads. Each request is one JSON line in $OUT/<arm>.jsonl: wall time, x-perf (phpMs, wasm
 # before and after, remote pack fetches), and the deltas of body_load_ns, body_loads, script_loads,
 # body_bytes_loaded and body_bytes_resident. $OUT/summary.json and the printed table read the decision line:
@@ -28,12 +30,13 @@ for arm in $ARMS; do
   [ -n "$base" ] || { echo "vps-run: no B or $v for arm $arm"; rc=1; continue; }
   f="$OUT/$arm.jsonl"; : > "$f"
   for boot in $(seq 1 "$BOOTS"); do
-    curl -s "${H[@]}" -X POST -o /dev/null "$base/_evict"
-    ok=0; for _ in $(seq 1 60); do sleep 1; [ "$(curl -s "${H[@]}" -o /dev/null -w '%{http_code}' "$base/_ping")" = 200 ] && { ok=1; break; }; done
-    [ "$ok" = 1 ] || { echo "vps-run: $arm boot $boot: the site did not answer /_ping after /_evict"; rc=1; continue; }
     rm -f "$J"
-    curl -s -c "$J" -b "$J" -o /dev/null "$base/wp-login.php"
-    curl -s -c "$J" -b "$J" -o /dev/null --data-urlencode "pwd=$ADMIN_PASSWORD" -d 'log=admin&wp-submit=Log+In&redirect_to=%2Fwp-admin%2F&testcookie=1' "$base/wp-login.php"
+    curl -s "${H[@]}" -H 'x-runtime-recycle: force' -c "$J" -b "$J" -o /dev/null -D "$T/r.txt" "$base/wp-login.php"
+    grep -qi '^x-runtime-recycled:' "$T/r.txt" || { echo "vps-run: $arm boot $boot: the forced recycle was not done (no x-runtime-recycled; is SPIKE_TOKEN right?)"; rc=1; continue; }
+    curl -s -c "$J" -b "$J" -o /dev/null -D "$T/l.txt" --data-urlencode "pwd=$ADMIN_PASSWORD" -d 'log=admin&wp-submit=Log+In&redirect_to=%2Fwp-admin%2F&testcookie=1' "$base/wp-login.php"
+    python3 -I -c 'import json, sys
+p = [json.loads(l.split(":", 1)[1]) for l in open(sys.argv[1], errors="replace") if l.lower().startswith("x-perf:")]
+sys.exit(0 if p and p[0].get("boot") == 1 else 1)' "$T/l.txt" || { echo "vps-run: $arm boot $boot: the login did not boot a new runtime (x-perf boot is not 1)"; rc=1; continue; }
     for i in $(seq 0 "$WARM"); do
       curl -s "${H[@]}" -o "$T/a.json" "$base/_mem"
       w=$(curl -s -c "$J" -b "$J" -o /dev/null -D "$T/h.txt" -w '%{http_code} %{time_total}' "$base/wp-admin/post-new.php")

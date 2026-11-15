@@ -459,7 +459,8 @@ jobs:
         run: |
           set -euo pipefail
           STATE=$(mktemp -d); export PERSIST_TO=$STATE
-          DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off" ./run.sh _ping > /dev/null
+          # dosql-local: PHP in the object, as on a deployed site (x-perf, the forced recycle)
+          DEV_ENV=dosql-local DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off" ./run.sh _ping > /dev/null
           ST=(-H "x-spike-token: local-spike-token"); B=http://localhost:${PORT:-8797}
           curl -sf "${ST[@]}" -X POST -H "x-admin-password: local-spike-password" "$B/_install" > /dev/null
           printf 'B=%s\nSPIKE_TOKEN=local-spike-token\nADMIN_PASSWORD=local-spike-password\n' "$B" > "$RUNNER_TEMP/run.env"
@@ -467,7 +468,7 @@ jobs:
           ./run.sh --stop > /dev/null 2>&1 || true
           [ "$rc" = 0 ] || { echo "::error::vps-run.sh failed against wrangler dev (rc=$rc)"; exit 1; }
           n=$(wc -l < "$RUNNER_TEMP/m2c-smoke/body.jsonl"); [ "$n" = 4 ] || { echo "::error::vps-run.sh wrote $n readings, want 4 (2 boots x 2 requests)"; exit 1; }
-          python3 -I -c 'import json,sys; s=json.load(open(sys.argv[1])); print(json.dumps(s["body"]["first"])); assert s["body"]["first"]["statuses"] == [200], s' "$RUNNER_TEMP/m2c-smoke/summary.json"
+          python3 -I -c 'import json,sys; s=json.load(open(sys.argv[1])); f=s["body"]["first"]; print(json.dumps(f)); assert f["statuses"] == [200], f; assert f["distinct_runtimes"] == 2, "2 boots must run on 2 runtimes"; assert f["wasm1MiB_max"] > 0, "no wasm reading from x-perf"' "$RUNNER_TEMP/m2c-smoke/summary.json"
       - name: Test 16 on lean-stats-lazy (observers see each call once and count the real body)
         working-directory: spikes/b2-wordpress
         run: |
