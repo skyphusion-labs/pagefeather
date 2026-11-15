@@ -183,6 +183,20 @@ VARIANT=a MYSQL=vultr VULTR_API_KEY=... MYSQL_ZONE_ID=<zone> MYSQL_HOST=mysql-my
 
 `MYSQL=vultr` makes the database box with `deploy/mysql` (MariaDB with SSL; port 3306 open to Cloudflare's IPv4 ranges only; no SSH; $10 a month). `MYSQL=external` uses your own server: `MYSQL_HOST`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`. A public server must have SSL. For a server behind a Cloudflare Tunnel and Access (CR #141, `tests/ssh-source`), set `MYSQL_ACCESS_CLIENT_ID` and `MYSQL_ACCESS_CLIENT_SECRET` instead: Hyperdrive reaches it with the service token, the box opens no inbound port, and no SSL is needed. Give Hyperdrive the host **name**: by IP address it measured about 44 ms per query, by name about 7 ms ([docs/approach-a.md](../docs/approach-a.md)). On Workers Free this variant stops at the CPU limit.
 
+### Variant `a` admin settings (#394)
+
+The admin memory fixes built on the b-dosql path, for approach A. All of them are off unless set, so a deploy without them is the deploy of before. The rules are in `deploy/a-settings.sh` and are checked before any step:
+
+| setting | what it does | needs |
+|---|---|---|
+| `OPCACHE_A=1` | primes OPcache on the D1 build, as `spikes/b2-wordpress/opcache-a.sh` does (#218): no Docker, no local MySQL. An empty cache fails the deploy. Unset keeps the Docker MariaDB path, and without Docker that path ships no primed OPcache | |
+| `OPCACHE_REMOTE=1` | every OPcache file leaves the bundle, as packs under `/_pf/` (#563). The config gets `run_worker_first = ["/_pf/*"]` | `OPCACHE_A=1` (it records the file trace, cut to A's zips by `trace-filter.py`) |
+| `SITE_REMOTE=1` | `site.zip` leaves the bundle too (#569) | `OPCACHE_REMOTE=1` |
+| `RECYCLE_WASM_MIB` | the runtime recycle line, 64 to 240 MiB (#602). Unset is 100. Use 140 with the lean engine (#598) | |
+| `PF_ENGINE_JS`, `PF_ENGINE_WASM` | build with another engine, for example the lean-trim artifact of the `pagefeather-engine` workflow (#592). Every variant | both, or neither |
+
+Before the upload, `deploy/wfp/remote_assets_check.py` refuses a remote build whose config lacks the `ASSETS` binding or `/_pf/` first. It is the same guard that deploy/wfp runs.
+
 ## Why `LOCATION` matters
 
 `LOCATION` is the location hint for both the D1 primary and the PHP object. The same hint puts them in the same region. Measured on 2026-11-05 (`tests/do/probe`): 14 to 20 ms per D1 statement in the same region, 38 to 60 ms in different regions. A page makes 30 to 70 statements. Pick the region of your readers: `enam` (Eastern North America), `wnam`, `weur`, `eeur`, `apac`, `oc`.

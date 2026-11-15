@@ -5,13 +5,10 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 fails=0
 O="https://zarapo.skyphusion.workers.dev"
-refuse() { # refuse <expected text> <VAR=value...>
-  local want=$1; shift
-  local out rc
-  out=$(env -i PATH="$PATH" HOME="$HOME" NAME=zarapo ACCOUNT_ID=0123456789abcdef0123456789abcdef CLOUDFLARE_API_TOKEN=fake "$@" bash "$ROOT/deploy/deploy.sh" 2>&1); rc=$?
-  if [ "$rc" = 2 ] && grep -qF "$want" <<<"$out" && ! grep -qE '^== (terraform|build|deploy)' <<<"$out"; then echo "  ok   refuses: $want"
-  else echo "  FAIL expected exit 2 with '$want' before any step (rc=$rc): $(tail -1 <<<"$out")"; fails=$((fails+1)); fi
-}
+# shellcheck source=SCRIPTDIR/lib.sh
+. "$ROOT/deploy/tests/lib.sh"   # refuse, behind the fence
+FENCE=$(mktemp -d "${TMPDIR:-/tmp}/code-only-fence.XXXXXX"); trap 'rm -rf "$FENCE"' EXIT
+fence_dir "$FENCE"
 refuse "is for VARIANT=b-dosql only" VARIANT=b-do CODE_ONLY=1 SITE_ORIGIN=$O
 refuse "is for VARIANT=b-dosql only" VARIANT=a CODE_ONLY=1 SITE_ORIGIN=$O
 refuse "needs SITE_ORIGIN" VARIANT=b-dosql CODE_ONLY=1 MEDIA=1 MEDIA_BUCKET=zarapo-media

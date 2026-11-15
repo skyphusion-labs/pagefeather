@@ -22,25 +22,40 @@
 # isolate cap (the overflow is V8 heap, invisible to x-wasm-mib). tests/woo.py
 # 12/12 with the lean client + LAZY_NODES=on + this cache.
 #
+# WOO_ACTIVE (default 1): prime with WooCommerce active, as before. deploy/deploy.sh OPCACHE_A=1
+# passes its own WOO_ACTIVE. TRACE=1 (#394, OPCACHE_REMOTE): also record the file trace on the
+# primed D1 build (file-trace.sh), then cut it to the files the approach-A zips hold
+# (trace-filter.py), so build/file-trace.json is the trace opcache-remote.py and site-remote.py read.
+#
 # Run after nothing in particular; it does its own builds. Then deploy ENGINE=a:
 #   ./opcache-a.sh && deploy/wr deploy --env a-paid-lean
 set -euo pipefail
 cd "$(dirname "$0")"
 
 SRC=build/opcache-a-src.zip
+TRACE_SRC=build/file-trace-d1.json
+W=${WOO_ACTIVE:-1}
+case "$W" in 0|1) ;; *) echo "WOO_ACTIVE must be 0 or 1, not $W"; exit 2 ;; esac
+case "${TRACE:-0}" in 0|1) ;; *) echo "TRACE must be 0 or 1, not $TRACE"; exit 2 ;; esac
+rm -f "$TRACE_SRC"
 
 echo "== 1/4 build the D1 engine (no external database needed) =="
 WOO=1 ./build.sh >/dev/null
 
 echo "== 2/4 generate the OPcache cache on D1 (installs WP, activates Woo, runs e2e + woo.py locally) =="
-WOO_ACTIVE=1 ./opcache.sh
+WOO_ACTIVE=$W ./opcache.sh
 
 cp build/opcache.zip "$SRC"
+if [ "${TRACE:-0}" = 1 ]; then
+  echo "== 2b/4 record the file trace on the primed D1 build (file-trace.sh) =="
+  WOO_ACTIVE=$W ./file-trace.sh
+  cp build/file-trace.json "$TRACE_SRC"
+fi
 echo "   generated $(python3 -c "import zipfile;print(len(zipfile.ZipFile('$SRC').namelist()))" ) compiled scripts"
 
 echo "== 3/4 build approach A (ENGINE=a; this wipes opcache.zip to empty) =="
 # WOO_ACTIVE=1: the cache below is primed with WooCommerce, so the build id says -wooprimed (#431).
-ENGINE=a WOO=1 WOO_ACTIVE=1 ./build.sh >/dev/null
+ENGINE=a WOO=1 WOO_ACTIVE=$W ./build.sh >/dev/null
 
 echo "== 4/4 bundle the cache for approach A, minus the colliding wp-content/db.php =="
 python3 - "$SRC" <<'PY'
@@ -59,5 +74,10 @@ assert excluded == 1, f"expected exactly one wp-content/db.php.bin, removed {exc
 print(f"   approach-A opcache.zip: kept {kept} scripts, excluded {excluded} (db.php)")
 PY
 rm -f "$SRC"
+if [ "${TRACE:-0}" = 1 ]; then
+  echo "== 4b/4 cut the D1 trace to the files the approach-A zips hold =="
+  python3 -I trace-filter.py "$TRACE_SRC" build/opcache.zip build/site.zip build/file-trace.json
+  rm -f "$TRACE_SRC"
+fi
 echo "done. The ENGINE=a build/ now carries the precompiled cache. Deploy with:"
 echo "  ./deploy-a-lean.sh [--var LAZY_CACHE_MB:2]   (deploys, then redacts the log query strings, or turns logs off)"

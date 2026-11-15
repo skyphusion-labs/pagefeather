@@ -26,6 +26,11 @@
 # BENCH=0 (skip the measurements), N (runs per page, default 10), PORT (local
 # wrangler dev port for the OPcache step, default 8798), DEPLOY_STATE=r2 (keep
 # Terraform state in an R2 bucket; see README.md).
+# Variant a, the #394 admin fixes (deploy/a-settings.sh; all off unless set): OPCACHE_A=1 primes
+# OPcache on the D1 build with no Docker (opcache-a.sh; an empty cache fails), OPCACHE_REMOTE=1 and
+# SITE_REMOTE=1 move the bundle's zips to packs under /_pf/ (#563, #569; they need OPCACHE_A=1), RECYCLE_WASM_MIB sets the
+# runtime recycle line (#602; 140 with the lean engine, #598). Every variant: PF_ENGINE_JS and
+# PF_ENGINE_WASM build with another engine (#592, the lean-trim artifact), both or neither.
 # AI=1 (Workers AI auto alt text for uploaded images with no alt text; needs
 # MEDIA=1 and the b-dosql/b-do variant. AI_ALT=off disables it, AI_ALT_MODEL picks
 # the image-to-text model, AI_ALT_INPUT=prompt selects an llava/llama-style model).
@@ -69,6 +74,11 @@ if [ -n "${HYPERDRIVE_SQL_MODE+x}" ]; then
   [ "$VARIANT" = a ] || { echo "HYPERDRIVE_SQL_MODE is for variant a only" >&2; exit 2; }
   [[ "$HYPERDRIVE_SQL_MODE" =~ ^[A-Za-z_,]*$ ]] || { echo "HYPERDRIVE_SQL_MODE: mode names and commas only" >&2; exit 2; }
 fi
+# The #394 admin fixes for variant a, and the engine pair (deploy/a-settings.sh): checked here,
+# before any Terraform, build or deploy step.
+# shellcheck source=SCRIPTDIR/a-settings.sh
+. "$ROOT/deploy/a-settings.sh"
+a_settings_check "$VARIANT" || exit 2
 
 # Terraform state: local by default; DEPLOY_STATE=r2 writes a backend override
 # for the root in $1 (deploy/terraform or deploy/mysql). backend() is in tf-backend.sh.
@@ -151,13 +161,31 @@ cd "$APP"
 # Every build regenerates the loader (#394, #446): a stale vendor/ never picks up a new patch.
 # No pipe: a pipe would hide a failed patch assert and ship the old loader.
 ./prepare.sh || { echo "prepare.sh failed: the loader was not rebuilt"; exit 1; }
+echo "engine: ${PF_ENGINE_WASM:-the pinned @php-wasm/web-8-3 (npm)}"
 if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
   ./build.sh | tail -1
   DEV_ENV=$([ "$VARIANT" = b-dosql ] && echo dosql-local || echo do-local) opcache
+elif [ "${OPCACHE_A:-0}" = 1 ]; then
+  # #394: prime on the D1 build, the way opcache-a.sh does (#218): the same WordPress, WooCommerce
+  # and mu-plugins, no Docker and no local MySQL. TRACE=1 also records the file trace the remote
+  # packs follow, cut to the files A's zips hold (trace-filter.py). No pipe: a pipe would take
+  # tail's status and ship a half-built tree.
+  ALOG=$(mktemp)
+  TRACE=${OPCACHE_REMOTE:-0} WOO_ACTIVE=$WOO_ACTIVE ./opcache-a.sh > "$ALOG" 2>&1 || { echo "opcache-a.sh failed:"; tail -25 "$ALOG"; rm -f "$ALOG"; exit 1; }
+  grep -E 'approach-A opcache.zip|trace-filter:' "$ALOG" || true
+  rm -f "$ALOG"
+  a_opcache_count build/opcache.zip || exit 1
+  # #563, #569: after the last build.sh (it clears build/public), as deploy/wfp's build_dosql does.
+  if [ "${OPCACHE_REMOTE:-0}" = 1 ]; then
+    python3 -I opcache-remote.py build/opcache.zip build/file-trace.json build/build-id.js || exit 1
+  fi
+  if [ "${SITE_REMOTE:-0}" = 1 ]; then
+    python3 -I site-remote.py build/site.zip build/file-trace.json build/build-id.js || exit 1
+  fi
 else
   ENGINE=a ./build.sh | tail -1
   # OPcache is primed against a temporary local MariaDB (env a-local); without
-  # Docker the site runs, but every new isolate compiles PHP first.
+  # Docker the site runs, but every new isolate compiles PHP first (OPCACHE_A=1 primes without it).
   if docker info >/dev/null 2>&1; then
     LP=$(openssl rand -hex 16); C="deploy-prime-$NAME"
     docker rm -f "$C" >/dev/null 2>&1 || true
@@ -201,6 +229,8 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
   # (spikes/b2-wordpress/mail-from.mjs). A workers.dev host sends nothing.
   SITE_ORIGIN="$SITE_ORIGIN" MAIL_FROM="${MAIL_FROM:-}" node "$APP/mail-from.mjs" --binding
   echo '[assets]'; echo 'directory = "build/public"'; echo 'binding = "ASSETS"'; echo 'not_found_handling = "none"'
+  # #563: a remote build serves its packs from the Worker only (a-settings.sh, #412).
+  [ "$VARIANT" != a ] || a_assets_first
   echo '[cache]'; echo 'enabled = true'
   # Only the Pages entrypoint is cached; the default one is the gateway (issue #63).
   echo '[exports.default]'; echo 'type = "worker"'; echo '[exports.default.cache]'; echo 'enabled = false'
@@ -216,6 +246,8 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
   [ -z "${CRON_INTERVAL_MS+x}" ] || echo "CRON_INTERVAL_MS = \"$CRON_INTERVAL_MS\""
   # The Worker writes it into wp-runtime.php as a PHP constant.
   [ -z "${HYPERDRIVE_SQL_MODE+x}" ] || echo "HYPERDRIVE_SQL_MODE = \"$HYPERDRIVE_SQL_MODE\""
+  # #394: OPCACHE_REMOTE, SITE_REMOTE, RECYCLE_WASM_MIB (a-settings.sh). Nothing when unset.
+  [ "$VARIANT" != a ] || a_vars
   # AI alt text (spikes/b2-wordpress/php/ai-alt-text.php): off switch, model, input flavor.
   [ -z "${AI_ALT+x}" ] || echo "AI_ALT = \"$AI_ALT\""
   [ -z "${AI_ALT_MODEL+x}" ] || echo "AI_ALT_MODEL = \"$AI_ALT_MODEL\""
@@ -243,6 +275,13 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
     echo '[placement]'; echo "region = \"${PLACEMENT:-aws:us-east-2}\""
   fi
 } > "$CONF"
+
+# #569, #563: a remote build is never uploaded without its ASSETS binding and /_pf/ first, and a
+# build and its config agree on SITE_REMOTE (deploy/wfp/remote_assets_check.py, the same guard
+# deploy/wfp runs). A plain build passes it.
+if [ "$VARIANT" = a ]; then
+  python3 -I "$ROOT/deploy/wfp/remote_assets_check.py" "$CONF" "$APP" || { echo "the remote assets check refused $CONF" >&2; exit 2; }
+fi
 
 if [ "$DRY_RUN" = 1 ]; then
   log "dry run: $CONF"
