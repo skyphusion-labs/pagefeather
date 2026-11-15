@@ -56,6 +56,19 @@ case "$variant" in unchanged) ;; lean) python3 -I "$here/patches/lean.py" "$comp
 if [ "${ENGINE_OPCACHE_STATS:-0}" = 1 ]; then
   [ -f "$compile/opcache/opcache_module.c" ] || { echo "upstream opcache_module.c not found" >&2; exit 1; }
   cp "$here/opcache/opcache_module_stats.c" "$compile/opcache/opcache_module.c"
+  # ENGINE_STATS_MUTANT=opcodes-key (#582 M2b, a TEST arm only): the observer keys a body by its opcodes pointer, as
+  # M1 did, so it reads the shared trampoline before the load. Test 16 must fail on it (its red control).
+  if [ "${ENGINE_STATS_MUTANT:-}" = opcodes-key ]; then
+    python3 -I - "$compile/opcache/opcache_module.c" <<'PYMUT'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = "#define PF_BODY_KEY(op) ((zend_ulong)(uintptr_t)zend_pf_body_id(op))"
+assert s.count(old) == 1, "the PF_BODY_KEY line is not there exactly once"
+open(p, "w").write(s.replace(old, "#define PF_BODY_KEY(op) ((zend_ulong)(uintptr_t)(op)->opcodes) /* MUTANT */"))
+PYMUT
+  elif [ -n "${ENGINE_STATS_MUTANT:-}" ]; then
+    echo "unknown ENGINE_STATS_MUTANT ${ENGINE_STATS_MUTANT}" >&2; exit 1
+  fi
 fi
 # ENGINE_LAZY_BODIES=1 (#582 S4 M2a and M2b, off by default): OPcache places the body parts of every function
 # and method (literals, opcodes, live ranges, try/catch) in a tail region of each script's block, with a body
@@ -115,7 +128,7 @@ phase php
 # 4. The outputs, as build.js copies them.
 docker run --rm -v "$out:/output" pagefeather-engine-build sh -c "cp -rf /root/output/* /output && chown -R $(id -u):$(id -g) /output"
 printf '%s\n' "${args[@]}" > "$out/build-args.txt"
-echo "ENGINE_VARIANT=$variant ENGINE_GD=${ENGINE_GD:-yes} ENGINE_FILEINFO=${ENGINE_FILEINFO:-yes} ENGINE_MAGIC=${ENGINE_MAGIC:-full} ENGINE_OPCACHE_STATS=${ENGINE_OPCACHE_STATS:-0} ENGINE_LAZY_BODIES=${ENGINE_LAZY_BODIES:-0} ENGINE_PIN_ENV=${ENGINE_PIN_ENV:-0}" >> "$out/build-args.txt"
+echo "ENGINE_VARIANT=$variant ENGINE_GD=${ENGINE_GD:-yes} ENGINE_FILEINFO=${ENGINE_FILEINFO:-yes} ENGINE_MAGIC=${ENGINE_MAGIC:-full} ENGINE_OPCACHE_STATS=${ENGINE_OPCACHE_STATS:-0} ENGINE_LAZY_BODIES=${ENGINE_LAZY_BODIES:-0} ENGINE_STATS_MUTANT=${ENGINE_STATS_MUTANT:-} ENGINE_PIN_ENV=${ENGINE_PIN_ENV:-0}" >> "$out/build-args.txt"
 # The linker inputs (wasm-ld --trace, lean only): one path per line, archive members folded into the archive.
 if [ "$variant" = lean ]; then
   sed -E 's/^#[0-9]+ [0-9.]+ //' "$out/docker-build.log" | grep -E '^/[^ ]+\.(a|o)(\([^)]*\))?$' | sed -E 's/\(.*\)$//' | sort -u > "$out/link-inputs.txt"

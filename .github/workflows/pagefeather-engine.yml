@@ -60,7 +60,8 @@ jobs:
         # lean-stats: lean-trim with the OPcache body counters (S4 M1, a measurement build, never shipped).
         # lean-lazy: lean-trim with lazy function bodies (S4 M2b: loaded at first call; off by default, never shipped yet).
         # lean-stats-lazy: lean-lazy with the M1 counters (a measurement build): test 16, observers on lazy bodies.
-        variant: [unchanged, pinned-env-1, pinned-env-2, lean, lean-nogd, lean-nofileinfo, lean-trim, lean-stats, lean-lazy, lean-stats-lazy]
+        # lean-stats-lazy-mutant: lean-stats-lazy whose observer keys bodies by the opcodes pointer: test 16's red control.
+        variant: [unchanged, pinned-env-1, pinned-env-2, lean, lean-nogd, lean-nofileinfo, lean-trim, lean-stats, lean-lazy, lean-stats-lazy, lean-stats-lazy-mutant]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -82,10 +83,10 @@ jobs:
         run: |
           set -euo pipefail
           df -h / | tail -1; uname -a
-          pin=0; variant=unchanged; gd=yes; fi_=yes; magic=full; stats=0; lazy=0
-          case "${{ matrix.variant }}" in pinned-env-*) pin=1;; lean) variant=lean;; lean-nogd) variant=lean; gd=no;; lean-nofileinfo) variant=lean; fi_=no;; lean-trim) variant=lean; magic=trim;; lean-stats) variant=lean; magic=trim; stats=1;; lean-lazy) variant=lean; magic=trim; lazy=1;; lean-stats-lazy) variant=lean; magic=trim; stats=1; lazy=1;; esac
+          pin=0; variant=unchanged; gd=yes; fi_=yes; magic=full; stats=0; lazy=0; mutant=""
+          case "${{ matrix.variant }}" in pinned-env-*) pin=1;; lean) variant=lean;; lean-nogd) variant=lean; gd=no;; lean-nofileinfo) variant=lean; fi_=no;; lean-trim) variant=lean; magic=trim;; lean-stats) variant=lean; magic=trim; stats=1;; lean-lazy) variant=lean; magic=trim; lazy=1;; lean-stats-lazy) variant=lean; magic=trim; stats=1; lazy=1;; lean-stats-lazy-mutant) variant=lean; magic=trim; stats=1; lazy=1; mutant=opcodes-key;; esac
           s=$(date +%s)
-          ENGINE_PIN_ENV=$pin ENGINE_VARIANT=$variant ENGINE_GD=$gd ENGINE_FILEINFO=$fi_ ENGINE_MAGIC=$magic ENGINE_OPCACHE_STATS=$stats ENGINE_LAZY_BODIES=$lazy ENGINE_WORK="$RUNNER_TEMP/work" engine/build.sh "$RUNNER_TEMP/out" | tee "$RUNNER_TEMP/build.out"
+          ENGINE_PIN_ENV=$pin ENGINE_VARIANT=$variant ENGINE_GD=$gd ENGINE_FILEINFO=$fi_ ENGINE_MAGIC=$magic ENGINE_OPCACHE_STATS=$stats ENGINE_LAZY_BODIES=$lazy ENGINE_STATS_MUTANT=$mutant ENGINE_WORK="$RUNNER_TEMP/work" engine/build.sh "$RUNNER_TEMP/out" | tee "$RUNNER_TEMP/build.out"
           echo "build took $(( $(date +%s) - s )) s"
           df -h / | tail -1
       - name: Size figures, against the engine we ship (a reading)
@@ -427,6 +428,18 @@ jobs:
           PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
           node --test tests/lazy-bodies.test.mjs 2>&1 | tee "$RUNNER_TEMP/stats-lazy.txt"
           if grep -q 'not a stats build' "$RUNNER_TEMP/stats-lazy.txt"; then echo "::error::test 16 skipped on lean-stats-lazy"; exit 1; fi
+      - name: Test 16's red control on lean-stats-lazy-mutant (the observer keys bodies by the opcodes pointer)
+        working-directory: spikes/b2-wordpress
+        run: |
+          set -uo pipefail
+          d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-stats-lazy-mutant"
+          grep -q 'ENGINE_STATS_MUTANT=opcodes-key' "$d/build-args.txt" || { echo "::error::the mutant arm was not built as the mutant"; exit 1; }
+          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          rc=0; node --test --test-name-pattern 'test 16' tests/lazy-bodies.test.mjs > "$RUNNER_TEMP/stats-mutant.txt" 2>&1 || rc=$?
+          grep -E '^(✖|✔|﹣)|AssertionError|counted other bodies' "$RUNNER_TEMP/stats-mutant.txt" | head -8
+          [ "$rc" != 0 ] || { echo "::error::test 16 PASSED on the mutant observer: it cannot see the stub read as the body"; exit 1; }
+          grep -q 'counted other bodies' "$RUNNER_TEMP/stats-mutant.txt" || { echo "::error::test 16 failed on the mutant for another reason, not the body count"; exit 1; }
+          echo "red control: test 16 fails on the mutant observer (rc=$rc) with its body-count assertion, as it must"
       - name: The body-region gate (e2e from an empty OPcache at 48 MB; mismatch 0) and its red control
         working-directory: spikes/b2-wordpress
         run: |
