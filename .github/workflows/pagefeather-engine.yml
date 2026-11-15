@@ -332,6 +332,21 @@ jobs:
           PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
           ENGINE_EXPECT=../../engine/expect/lean.json node --test tests/engine-contract.test.mjs
           if ! tests/frames-e2e.sh; then echo "::error::frames-e2e.sh failed on lean-lazy"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
+      - name: Keep the logs of a failure (opcache-e2e.log, opcache.log, dev.log), so a red explains itself
+        if: failure()
+        working-directory: spikes/b2-wordpress
+        run: |
+          mkdir -p "$RUNNER_TEMP/fail-logs"
+          for f in build/opcache-e2e.log build/opcache.log dev.log; do
+            if [ -f "$f" ]; then cp "$f" "$RUNNER_TEMP/fail-logs/$(echo "$f" | tr / _)"; else echo "absent: $f"; fi
+          done
+          ls -la "$RUNNER_TEMP/fail-logs"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: lazy-bodies-failure-logs
+          path: ${{ runner.temp }}/fail-logs
+          retention-days: 14
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:

@@ -13,7 +13,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 export const B2 = join(dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(join(B2, 'package.json'));
 globalThis.require ??= require; // the loader takes the node path in node and calls require
-const { loadPHPRuntime, PHP, __private__dont_use, __private__dont__use } = require('@php-wasm/universal');
+const { loadPHPRuntime, PHP, setPhpIniEntries, __private__dont_use, __private__dont__use } = require('@php-wasm/universal');
 const PRIV = __private__dont__use ?? __private__dont_use;
 const MiB = 1048576;
 const dir = mkdtempSync(join(tmpdir(), 'engine582-'));
@@ -103,6 +103,43 @@ export const checks = {
 		php.writeFile('/tmp/oc582.php', '<?php function oc582() { return 1; }');
 		const got = await jrun(php, '<?php echo json_encode(array(PHP_SAPI, (bool) @opcache_get_status(false), @opcache_compile_file("/tmp/oc582.php")));');
 		assert.deepEqual(got, ['wasm', true, true]);
+	},
+	// The inheritance cache (#582 S4 M2a): classes that extend a class and use a trait from ANOTHER cached
+	// file are linked at run time and stored by zend_accel_inheritance_cache_add. Their trait methods are
+	// fresh copies, so that add persists their whole bodies with the same routines a script uses. M2a's
+	// first patch split those bodies to a NULL region (written near address 0 of the wasm memory) and broke
+	// every admin page. 40 classes x 3 trait methods: literals, a loop, try/catch and a string switch; every
+	// method is called; the first run adds to the cache, the second hits it. opts.noOpcache is its mutation.
+	async 'opcache: the inheritance cache links classes across cached files'(e, opts = {}) {
+		const { php } = await boot(e);
+		// The Worker's OPcache (index.js opcacheIni): shared memory, not file_cache_only (the default here,
+		// where opcache_enabled reads false and the inheritance cache never runs).
+		// The eval file is blacklisted as in the Worker (#294): php.run writes every snippet to that ONE path.
+		php.writeFile('/tmp/pf582-blacklist.txt', '/internal/eval.php\n');
+		await setPhpIniEntries(php, { 'opcache.blacklist_filename': '/tmp/pf582-blacklist.txt', 'opcache.file_cache_only': '0', 'opcache.memory_consumption': '48', 'opcache.interned_strings_buffer': '4', 'opcache.max_accelerated_files': '4000', 'opcache.file_update_protection': '0' });
+		const N = 40;
+		php.writeFile('/tmp/pf582-base.php', `<?php
+class Pf582Base { public function base($x) { $s = 0; for ($i = 0; $i < $x; $i++) { $s += $i; } return "base:" . $s; } }
+trait Pf582T {
+	public function t1($x) { $a = array(); for ($i = 0; $i < $x; $i++) { $a[] = "t1-" . $i . "-" . static::class; } return implode(",", $a); }
+	public function t2($x) { try { if ($x > 3) { throw new RuntimeException("big:" . $x); } return "small:" . str_pad((string) $x, 4, "0", STR_PAD_LEFT); } catch (RuntimeException $e) { return "caught " . $e->getMessage(); } }
+	public function t3($k) { switch ($k) { case "alpha": return "A1"; case "beta": return "B2"; case "gamma": return "G3"; default: return "other:" . strtoupper($k); } }
+}`);
+		let kids = '<?php\n';
+		for (let i = 0; i < N; i++) kids += `class Pf582K${i} extends Pf582Base { use Pf582T; public function m${i}($x) { return "k${i}:" . str_repeat("ab", ${i % 7 + 1}) . ($x * ${i + 3}); } }\n`;
+		php.writeFile('/tmp/pf582-kids.php', kids);
+		const want = [];
+		for (let i = 0; i < N; i++) {
+			const c = 'Pf582K' + i;
+			want.push([`k${i}:${'ab'.repeat(i % 7 + 1)}${2 * (i + 3)}`, 'base:10', `t1-0-${c},t1-1-${c},t1-2-${c}`, 'small:0002', 'caught big:9', 'B2', 'other:DELTA'].join('|'));
+		}
+		const off = opts.noOpcache ? 'ini_set("opcache.enable", "0"); ' : '';
+		const code = `<?php ${off}require '/tmp/pf582-base.php'; require '/tmp/pf582-kids.php'; $o = array(); for ($i = 0; $i < ${N}; $i++) { $c = "Pf582K$i"; $k = new $c; $m = "m$i"; $o[] = implode("|", array($k->$m(2), $k->base(5), $k->t1(3), $k->t2(2), $k->t2(9), $k->t3("beta"), $k->t3("delta"))); } $s = function_exists("opcache_get_status") ? opcache_get_status(false) : false; echo json_encode(array(function_exists("opcache_is_script_cached") && opcache_is_script_cached("/tmp/pf582-base.php"), function_exists("opcache_is_script_cached") && opcache_is_script_cached("/tmp/pf582-kids.php"), $o));`;
+		for (const pass of ['adds to the cache', 'hits the cache']) {
+			const got = await jrun(php, code);
+			assert.deepEqual(got.slice(0, 2), [true, true], pass + ': both files must be in OPcache shared memory');
+			assert.deepEqual(got[2], want, pass + ': every inherited and trait method answers as compiled');
+		}
 	},
 	// A static engine has no dylink.0 section and few exports; today's MAIN_MODULE has both (#582 S2).
 	async 'link: dylink section and export count as expected'(e) {
