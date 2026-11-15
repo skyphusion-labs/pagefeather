@@ -401,13 +401,20 @@ cron_interval_var() {
   fi
   echo "CRON_INTERVAL_MS = \"$((10#$v))\""
 }
-# PAGE_CACHE_PRODUCT_TTL (#628 C2, page-cache-ttl.mjs): seconds a WooCommerce product, shop or category page
-# stays fresh at the edge, with stale-while-revalidate cut to match (other pages keep 120 and 600). An
-# integer from 5 to 600. A measurement flag (site_settings.py MEASUREMENT): ON only for the run that
-# exports it, never recorded, until #628 measures it against the bar. Unset renders nothing.
+# PAGE_CACHE_PRODUCT_TTL (#628, page-cache-ttl.mjs): seconds a WooCommerce product, shop or category page
+# stays fresh at the edge, with stale-while-revalidate cut to match (other pages keep 120 and 600).
+# The lead's ruling (2026-11-15, after the #628 C2 verdict: quantity staleness about 120 s to about 30 s,
+# no loss of HIT share, no new purges): a STORE renders 30 by default; a site that is not a store renders
+# nothing. A store is what the build primes (woo_active_for_build: WOO_ACTIVE, or woocommerce in
+# IMPORT_PLUGINS or PLUGINS). PAGE_CACHE_PRODUCT_TTL overrides it: an integer from 5 to 600, anything else
+# refused before any step. It is a RECORDED site setting (SITE_SETTINGS), so an update keeps an override.
 page_cache_product_var() {
-  local v=${PAGE_CACHE_PRODUCT_TTL:-}
-  [ -n "$v" ] || return 0
+  local v=${PAGE_CACHE_PRODUCT_TTL:-} woo
+  if [ -z "$v" ]; then
+    woo=$(woo_active_for_build) || return 1
+    [ "$woo" = 1 ] || return 0
+    v=30
+  fi
   if ! [[ "$v" =~ ^[0-9]{1,3}$ ]] || [ "$((10#$v))" -lt 5 ] || [ "$((10#$v))" -gt 600 ]; then
     echo "PAGE_CACHE_PRODUCT_TTL must be an integer from 5 to 600, not ${v}" >&2; return 1
   fi
@@ -817,8 +824,8 @@ use_recorded_inputs() {
 # unset is the default list, and set, including empty, is that exact list. site update
 # remembers which one this run is, in http_allow_mode, before local -x collapses unset
 # into empty. Empty denies every host, so a drop sets the mode to unset.
-SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS HTTP_ALLOW_HOSTS"
-# The measurement flags (HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV PAGE_CACHE_PRODUCT_TTL, site_settings.py MEASUREMENT) are
+SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS"
+# The measurement flags (HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV, site_settings.py MEASUREMENT) are
 # never recorded: ON only for the run that exports them; the next update without one turns it off.
 # A setting render_user reads that is not in this list is DROPPED by an update that does not export
 # it: config-hash-test.sh derives the env names render_user's helpers read and fails on a new one.

@@ -51,7 +51,7 @@ RECORD = "_build/settings.json"
 SETTINGS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PHP_RECYCLE", "RECYCLE_WASM_MIB", "CRON_INTERVAL_MS",
             "TURNSTILE_SITEKEY", "TURNSTILE_WOO", "TURNSTILE_LOGIN", "TURNSTILE_COMMENTS",
             "MAIL_FROM", "MAIL_FROM_NAME", "PHP_LOCATION", "WP_VECTORIZE_SEARCH", "OPCACHE_SPLIT", "OPCACHE_REMOTE", "SITE_REMOTE",
-            "REMOTE_FETCH_CAP", "REMOTE_HOLD_KIB", "SITE_FETCH_CAP", "SITE_HOLD_KIB", "SITE_RETRY_MS", "REQUEST_FRAMES", "WOO_EXTRAS",
+            "REMOTE_FETCH_CAP", "REMOTE_HOLD_KIB", "SITE_FETCH_CAP", "SITE_HOLD_KIB", "SITE_RETRY_MS", "REQUEST_FRAMES", "PAGE_CACHE_PRODUCT_TTL", "WOO_EXTRAS",
             "HTTP_ALLOW_HOSTS")
 # Three states (#564): absent from the environment means the default list; present, including
 # empty, means that exact list. The record holds {"set": true, "value": "..."} only when present.
@@ -64,9 +64,7 @@ PRESENCE = ("HTTP_ALLOW_HOSTS",)
 #   MEM_LEDGER      "on" logs the isolate memory ledger on every request and cron leg: a steady
 #                   log and CPU cost, for a diagnosis only.
 #   WFP_PHP_ENV     a measurement build's PHP env (USE_ZEND_ALLOC=1 swaps PHP's allocator, #434).
-#   PAGE_CACHE_PRODUCT_TTL  #628 C2: a shorter edge TTL for product pages, measured against the #628 bar
-#                   before it can become a recorded setting.
-MEASUREMENT = ("HEADROOM_PROBE", "MEM_LEDGER", "WFP_PHP_ENV", "PAGE_CACHE_PRODUCT_TTL")
+MEASUREMENT = ("HEADROOM_PROBE", "MEM_LEDGER", "WFP_PHP_ENV")
 SECRETS = ("TURNSTILE_SECRET",)
 # No log line carries data from SECRETS: a message about a secret is one fixed text, and which
 # secret, and what happened, is in the exit code (5 a recorded secret is missing, 6 a live one would
@@ -77,7 +75,7 @@ SECRETS = ("TURNSTILE_SECRET",)
 DROPPABLE_VARS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PHP_RECYCLE", "RECYCLE_WASM_MIB", "CRON_INTERVAL_MS",
                   "TURNSTILE_SITEKEY", "TURNSTILE_WOO", "TURNSTILE_LOGIN", "TURNSTILE_COMMENTS",
                   "MAIL_FROM_NAME", "OPCACHE_REMOTE", "SITE_REMOTE",
-                  "REMOTE_FETCH_CAP", "REMOTE_HOLD_KIB", "SITE_FETCH_CAP", "SITE_HOLD_KIB", "SITE_RETRY_MS", "REQUEST_FRAMES", "WOO_EXTRAS")  # each renders its var only when on (#563, #569, #667)
+                  "REMOTE_FETCH_CAP", "REMOTE_HOLD_KIB", "SITE_FETCH_CAP", "SITE_HOLD_KIB", "SITE_RETRY_MS", "REQUEST_FRAMES", "PAGE_CACHE_PRODUCT_TTL", "WOO_EXTRAS")  # each renders its var only when on (#563, #569, #667)
 # HTTP_ALLOW_HOSTS is not droppable here: render_user always writes the var (the default list
 # when unset), so the live bindings cannot show that a custom list became the default (#564).
 
