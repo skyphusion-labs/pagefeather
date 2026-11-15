@@ -73,6 +73,9 @@ if [ "$cmd" = up ]; then
   bundle_size_check || exit 1
   (cd "$APP" && "$ROOT/deploy/wr" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/secrets.json") > "$W/user.log" 2>&1 \
     || { rm -f "$W/secrets.json"; tail -20 "$W/user.log"; exit 1; }
+  # #639: logs on (OBSERVABILITY 1 or full): redact the query strings now, before the dispatcher routes
+  # the site, or turn the logs off and stop the add (fail closed, lib.sh obs_redact_site).
+  obs_redact_site "$NAMESPACE" "$U" "$CONF" || { rm -f "$W/secrets.json"; echo "site $s: the user Worker is UPLOADED but not routed, and its query-string redaction did NOT read back, so its logs are now OFF (or could not be turned off: read the line above); the add stops" >&2; exit 1; }
   # The salts exist only after the workspace apply above, so the hash is a second
   # apply. It records the hash next to the build id. If this apply fails, the
   # entry has no hash and the next site update uploads once.

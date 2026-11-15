@@ -38,9 +38,21 @@ api() {
   return 1
 }
 stop() { kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null; SRV=; }
-red() { # red <OBSERVABILITY value>: obs_redact_site for site-x in namespace wfp-ns; rc
-  env -i PATH="$PATH" HOME="$HOME" WFP_API="http://127.0.0.1:$PORTN" CLOUDFLARE_API_TOKEN=test OBS_READBACK_DELAYS=0 OBSERVABILITY="$1" \
-    bash -c ". '$LIB' && obs_redact_site wfp-ns site-x" > "$T/red.out" 2>&1
+conf() { # conf <OBSERVABILITY value> <file>: the [observability] block render_user writes for it
+  printf 'name = "site-x"\n[vars]\nSITE_ORIGIN = "https://x.example"\n' > "$2"
+  case "$1" in
+    0|'') printf '\n[observability]\nenabled = false\n' >> "$2" ;;
+    1) printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = false\n' >> "$2" ;;
+    full) printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = true\n' >> "$2" ;;
+    none) ;;
+  esac
+}
+red() { # red <OBSERVABILITY value of the rendered config>: obs_redact_site for site-x in wfp-ns; rc
+  # The env says nothing here (OBSERVABILITY is unset): the rendered config decides (#639, the add and
+  # rollback paths upload a config whose env may be another run's).
+  conf "$1" "$T/c.toml"
+  env -i PATH="$PATH" HOME="$HOME" WFP_API="http://127.0.0.1:$PORTN" CLOUDFLARE_API_TOKEN=test OBS_READBACK_DELAYS=0 \
+    bash -c ". '$LIB' && obs_redact_site wfp-ns site-x '$T/c.toml'" > "$T/red.out" 2>&1
 }
 for v in 1 full; do
   api good; red "$v"; rc=$?; st=$(curl -s "http://127.0.0.1:$PORTN/_state"); stop
@@ -48,11 +60,16 @@ for v in 1 full; do
   api broken; red "$v"; rc=$?; st=$(curl -s "http://127.0.0.1:$PORTN/_state"); stop
   ok "OBSERVABILITY=$v: a redaction that does not read back fails (rc $rc) and turns the logs OFF" "$([ $rc != 0 ] && grep -q '"enabled": false' <<<"$st" && echo 1 || echo 0)"
 done
-for v in '' 0; do
+for v in '' 0 none; do
   api good; red "$v"; rc=$?; st=$(curl -s "http://127.0.0.1:$PORTN/_state"); stop
   ok "OBSERVABILITY='$v': no redaction call (rc $rc)" "$([ $rc = 0 ] && grep -q '"calls": 0' <<<"$st" && echo 1 || echo 0)"
 done
-ok "site update calls obs_redact_site right after the upload" "$(awk '/deploy --config "\$CONF" --dispatch-namespace/ {u=NR} /obs_redact_site "\$NAMESPACE" "site-\$s"/ {r=NR} /tfr site apply/ && u {a=NR} END {print (u && r && a && u < r && r < a) ? 1 : 0}' "$HERE/../site")"
+ok "site update redacts right after its upload, by its rendered config" "$(awk '/"\$WR" deploy --config "\$CONF" --dispatch-namespace/ {u=NR} /obs_redact_site "\$NAMESPACE" "site-\$s" "\$CONF"/ && u && !r {r=NR} /tfr site apply/ && u && !a {a=NR} END {print (u && r && a && u < r && r < a) ? 1 : 0}' "$HERE/../site")"
+# #639 review (the lead): site ADD is site.sh up, which uploaded and never redacted. It must redact right
+# after the upload and fail BEFORE the dispatcher routes the site.
+ok "site add (site.sh up) redacts right after the user Worker upload, before the dispatcher" "$(awk '/deploy --config "\$CONF" --dispatch-namespace "\$NAMESPACE" --secrets-file/ {u=NR} /obs_redact_site "\$NAMESPACE" "\$U" "\$CONF"/ {r=NR} /render_site_dispatcher/ && !d {d=NR} END {print (u && r && d && u < r && r < d) ? 1 : 0}' "$HERE/../site.sh")"
+ok "  and a failed redaction stops the add (exit, never on to the dispatcher)" "$(grep -E 'obs_redact_site "\$NAMESPACE" "\$U" "\$CONF" \|\| \{.*exit 1' "$HERE/../site.sh" >/dev/null && echo 1 || echo 0)"
+ok "the rollback re-deploy redacts after its upload, by the rollback config" "$(awk '/deploy --config "\$SAVED\/wrangler.rollback.toml"/ {u=NR} /obs_redact_site "\$NAMESPACE" "site-\$s" "\$SAVED\/wrangler.rollback.toml"/ {r=NR} END {print (u && r && u < r) ? 1 : 0}' "$HERE/../site")"
 # shellcheck disable=SC2016  # a literal line of the old site
 ok "site no longer gates the redaction on OBSERVABILITY=1 alone" "$(grep -q 'if \[ "\${OBSERVABILITY:-0}" = 1 \]; then python3 -I "\$WFP/obs_settings.py" redact' "$HERE/../site" && echo 0 || echo 1)"
 echo "$fails failing case(s)"

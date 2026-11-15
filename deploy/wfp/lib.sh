@@ -600,16 +600,20 @@ TOML
   # before the deploy; site.sh up makes it (ensure_search_index).
   if search_on; then printf '\n[ai]\nbinding = "AI"\n[[vectorize]]\nbinding = "SEARCH_INDEX"\nindex_name = "%s"\n' "$(search_index "$s")"; fi
 }
-# obs_redact_site <namespace> <script> (#639): with the logs on (OBSERVABILITY 1 or full), redact the
-# query string in the script's Workers Logs and read it back, or turn the logs OFF and return 1
-# (obs_settings.py redact-or-off: fail closed). Every event carries the request URL, and full adds the
-# invocation logs, so both need it; before #639 only 1 was redacted, so a full site logged every URL
-# with its query string (a store's order keys and logins). Unset or 0: nothing to redact, no call.
+# obs_conf_on <rendered config>: true when the config turns Workers Logs on ([observability] enabled = true).
+obs_conf_on() {
+  awk '/^\[observability\][[:space:]]*$/ {o=1; next} /^\[/ {o=0} o && /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*true[[:space:]]*$/ {on=1} END {exit on ? 0 : 1}' "$1"
+}
+# obs_redact_site <namespace> <script> <rendered config> (#639): when the config just uploaded turns the
+# logs on, redact the query string in the script's Workers Logs and read it back, or turn the logs OFF
+# and return 1 (obs_settings.py redact-or-off: fail closed). Every event carries the request URL, and
+# full adds the invocation logs, so both need it: before #639 only update with OBSERVABILITY=1 redacted,
+# so a full site, every site add, and every rollback re-deploy logged URLs with their query strings (a
+# store's order keys and logins). The CONFIG decides, not the env: a rollback uploads a saved config,
+# and a re-upload is what needs the redaction set again. Logs off: nothing to redact, no call.
 obs_redact_site() {
-  case "${OBSERVABILITY:-0}" in
-    1|full) python3 -I "$WFP/obs_settings.py" redact-or-off "$1" "$2" ;;
-    *) return 0 ;;
-  esac
+  obs_conf_on "$3" || return 0
+  python3 -I "$WFP/obs_settings.py" redact-or-off "$1" "$2"
 }
 # The site's search index, as Vectorize answers it (#338): present (200); gone (404, or 410 with
 # error 3005 "vectorize.index.deleted", which is how v2 answers a DELETED index, measured on
