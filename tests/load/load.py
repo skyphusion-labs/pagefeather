@@ -317,6 +317,18 @@ def page_class(path):
 
 # A read served from the edge cache. EXPIRED and MISS came from the Worker.
 CACHE_HITS = ("HIT", "STALE", "UPDATING", "REVALIDATED")
+# #628: the outer cf-cache-status can hide the cache (pf628 at ea50be6, 2026-11-15: EXPIRED on every
+# read while the render stamp showed a 120 s cache). A read is served from cache when its x-pf-rendered
+# (the time Pages rendered it, page-stamp.mjs) is more than STAMP_HIT_MS older than the request's start.
+# A fresh render is stamped after the request starts; the margin covers the client and edge clocks.
+STAMP_HIT_MS = float(os.environ.get("STAMP_HIT_MS", "1500"))
+
+
+def stamp_hit(row):
+    try:
+        return row["t0"] * 1000.0 - float(row["stamp"]) > STAMP_HIT_MS
+    except (TypeError, ValueError, KeyError):
+        return None
 
 
 def pct(xs, q):
@@ -333,7 +345,7 @@ def step(n, prods):
         h = r["h"] or {}
         row = {"k": kind, "c": r["code"], "s": r["s"], "ok": (r["code"] in (200, 201) if ok is None else ok),
                "e1102": is_1102(r), "mib": h.get("x-wasm-mib"), "rec": h.get("x-runtime-recycled"), "boot": h.get("x-boot"),
-               "cf": h.get("cf-cache-status"), "pc": r.get("pc"), "shed": r["code"] == 503 and bool(h.get("x-c1-shed")), "ec": error_code(r)}
+               "cf": h.get("cf-cache-status"), "pc": r.get("pc"), "stamp": h.get("x-pf-rendered"), "t0": r.get("t0"), "shed": r["code"] == 503 and bool(h.get("x-c1-shed")), "ec": error_code(r)}
         if r["s"] >= SLOW_S:
             row["slow"] = {"t0": round(r.get("t0") or 0, 3), "k": kind, "c": r["code"], "s": round(r["s"], 3),
                            "ttfb": round(r["ttfb"], 3) if r.get("ttfb") is not None else None, "ray": h.get("cf-ray")}
@@ -376,6 +388,18 @@ def step(n, prods):
             d = out["cache_by_page"].setdefault(r["pc"], {})
             d[r["cf"] or "none"] = d.get(r["cf"] or "none", 0) + 1
     out["hit_share"] = dict((pc, round(sum(n for st, n in d.items() if st in CACHE_HITS) / float(sum(d.values())), 3)) for pc, d in out["cache_by_page"].items() if sum(d.values()))
+    # #628: the same share by the render stamp, for the pages that carry one (the outer status can hide it).
+    stamped = {}
+    hits = {}
+    for r in rows:
+        if r["k"] == "browse" and r.get("pc") and r.get("stamp"):
+            h = stamp_hit(r)
+            if h is None:
+                continue
+            stamped[r["pc"]] = stamped.get(r["pc"], 0) + 1
+            hits[r["pc"]] = hits.get(r["pc"], 0) + (1 if h else 0)
+    out["stamped"] = stamped
+    out["hit_share_stamp"] = dict((pc, round(hits.get(pc, 0) / float(n), 3)) for pc, n in stamped.items() if n)
     # The Store API error code of every non-2xx, per kind and status (#296): "checkout 403 <code>" names a failure.
     out["error_codes"] = {}
     for r in rows:
