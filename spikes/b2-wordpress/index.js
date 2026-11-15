@@ -22,7 +22,8 @@ import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywher
 import { resetFailures, writeLossResponse, rolledBackResponse, frameProvesRollback, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { MEMORY_RESET } from './object-error.mjs';
 import { createL2Writer } from './oc-l2-writer.mjs';
-import { createLedger, memfsBytes, createSqlMeter, ledgerOn, LEDGER_MIB } from './mem-ledger.mjs';
+import { createLedger, memfsBytes, createSqlMeter, ledgerOn, LEDGER_MIB, currentSerial } from './mem-ledger.mjs';
+import { recycleLine, recycleDecision } from './recycle-line.mjs';
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import { routeClass, createTrace } from './file-trace.mjs';
 import { refuseSocketsDecorator, parseMessage } from './runtime-guards.mjs';
@@ -65,10 +66,11 @@ const DOCROOT = '/wordpress';
 // filesystem. That saves recompiling about 500 scripts per request (CPU), at
 // the cost of JS memory. Override through PHP_INI.
 const INI_DEFAULTS = {};
-// WebAssembly memory never shrinks. Past this, boot a fresh runtime for the next request.
+// WebAssembly memory never shrinks. Past the recycle line, boot a fresh runtime for the next request.
 // OPcache shared memory (48 MB since #394) is part of it. Measured 2026-11-04 on Paid:
-// 81 MiB after the first page with OPcache on.
-const RECYCLE_WASM_BYTES = 100 * 1024 * 1024;
+// 81 MiB after the first page with OPcache on. The line is recycle-line.mjs's: RECYCLE_WASM_MIB, default
+// 100 MiB (#598). A bad value is logged once per isolate.
+let recycleRefusedLogged = false;
 let ENV;
 // Approach A (index-a.js) registers a MySQL handler here. B leaves it null and
 // every database message goes to D1.
@@ -252,7 +254,7 @@ function ledgerSnapshot(at) {
 	} catch (e) {
 		memfs = { error: String((e && e.message) || e).slice(0, 80) };
 	}
-	return { at, iso: ISOLATE_ID, rt: runtimeSerial, wasmMiB: php ? LEDGER_MIB(heapOf(php)) : null, runtimes: ledger.runtimes(runtimeSerial, heapOf), memfs, inflatedMiB: LEDGER_MIB(inflatedBytes), ocMiB: LEDGER_MIB(objectCacheBytes), sql: sqlMeter.read(), inflate: { reqN: stats.inflates - ledgerInfl0.n, reqMiB: LEDGER_MIB(stats.inflateBytes - ledgerInfl0.b), isoN: stats.inflates, isoMiB: LEDGER_MIB(stats.inflateBytes), reinflateN: stats.reinflates - ledgerInfl0.r, ...(inflateArena ? { arena: { mib: LEDGER_MIB(inflateArena.size), arenaEvict: inflateArena.counts.evicts - ledgerInfl0.ae, over: inflateArena.counts.over } } : {}) } };
+	return { at, iso: ISOLATE_ID, rt: runtimeSerial, wasmMiB: php ? LEDGER_MIB(heapOf(php)) : null, runtimes: ledger.runtimes(currentSerial(runtimeSerial, !!bootPromise), heapOf), memfs, inflatedMiB: LEDGER_MIB(inflatedBytes), ocMiB: LEDGER_MIB(objectCacheBytes), sql: sqlMeter.read(), inflate: { reqN: stats.inflates - ledgerInfl0.n, reqMiB: LEDGER_MIB(stats.inflateBytes - ledgerInfl0.b), isoN: stats.inflates, isoMiB: LEDGER_MIB(stats.inflateBytes), reinflateN: stats.reinflates - ledgerInfl0.r, ...(inflateArena ? { arena: { mib: LEDGER_MIB(inflateArena.size), arenaEvict: inflateArena.counts.evicts - ledgerInfl0.ae, over: inflateArena.counts.over } } : {}) } };
 }
 // #394 /_headroom: the parts of the ledger that show memory arriving during the probe loop.
 function headroomLedger() {
@@ -1475,7 +1477,7 @@ async function boot(origin) {
 	//   32: 69 of 75 front GETs booted a new isolate, WASM 99 MiB, p50 about 4.4 s;
 	//   48: 11 of 75, WASM 92 MiB, home and product p50 0.85 to 1.5 s;
 	//   52: 42 of 75, WASM 98 MiB. WASM grows in steps, so the size is not a dial:
-	//   locally 44 and 56 both landed at 104 MiB, over RECYCLE_WASM_BYTES. Change
+	//   locally 44 and 56 both landed at 104 MiB, over the recycle line (then RECYCLE_WASM_BYTES, now RECYCLE_WASM_MIB). Change
 	//   it only with measure394.py on the sample store; PHP_INI overrides it per site.
 	// - blacklist /internal/eval.php (#294): php.run({ code }) writes its code to that ONE
 	//   path on every call, so it is the one script that DOES change within a deploy. With
@@ -3573,7 +3575,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			try { phpSide = JSON.parse(r.text.slice(marker + 5)); } catch { phpSide = { parse_error: true, raw: r.text.slice(Math.max(0, marker), marker + 500) }; }
 			return Response.json({
 				wasmMemoryBytes: php[__private__dont__use].HEAPU8.length,
-				recycleThresholdBytes: RECYCLE_WASM_BYTES,
+				recycleThresholdBytes: recycleLine(env).bytes,
 				objectCache: { entries: objectCache.size, bytes: objectCacheBytes, capBytes: OBJECT_CACHE_BYTES },
 				php: phpSide,
 			});
@@ -3740,11 +3742,19 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			let recycled = null;
 			// #566 verification: x-runtime-recycle: force (spike-gated) recycles this runtime as a memory recycle would.
 			const forceRecycle = spikeOk && req.headers.get('x-runtime-recycle') === 'force';
-			if (crashed || forceRecycle || (wasmBytes > RECYCLE_WASM_BYTES && env.PHP_RECYCLE !== 'off')) {
+			// #598: the line is RECYCLE_WASM_MIB (default 100 MiB, today's). A bad value keeps the default and is
+			// logged once per isolate (recycle-line.mjs).
+			const line = recycleLine(env);
+			if (line.refused && !recycleRefusedLogged) {
+				recycleRefusedLogged = true;
+				console.log(JSON.stringify({ m: 'recycle-line-refused', refused: line.refused }));
+			}
+			const recycleWhy = recycleDecision({ crashed, forced: forceRecycle, wasmBytes, lineBytes: line.bytes, recycleOff: env.PHP_RECYCLE === 'off' });
+			if (recycleWhy) {
 				runtimeDrops++;
 				dropRuntime(); // #566: queued (this run is executing); released when the run ends, after the response below is built
 				recycled = php;
-				out.set('x-runtime-recycled', crashed ? 'crashed' : forceRecycle ? 'forced' : 'memory');
+				out.set('x-runtime-recycled', recycleWhy);
 			}
 			if (ctx && ctx.inObject) {
 				runtimeServed++;

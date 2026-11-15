@@ -20,7 +20,7 @@ test('the memory recycle (or a forced one) marks the runtime, and drops it throu
 	// #566: every drop goes through dropRuntime. The recycle drops INSIDE its own run, so the runtime is
 	// queued and released synchronously when that run ends (withPhp's finally), after handle() returned
 	// its response: the old "build, release, return" order, with no promise continuation (drop-runtime.test.mjs).
-	const rec = src.indexOf("if (crashed || forceRecycle || (wasmBytes > RECYCLE_WASM_BYTES && env.PHP_RECYCLE !== 'off')) {");
+	const rec = src.indexOf('if (recycleWhy) {'); // #598: the decision is recycle-line.mjs's
 	assert.ok(rec >= 0, 'recycle block not found');
 	const block = src.slice(rec, src.indexOf('\n\t\t\t}', rec));
 	assert.match(block, /\n\t+dropRuntime\(\);/);

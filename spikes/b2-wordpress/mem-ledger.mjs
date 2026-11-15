@@ -113,3 +113,11 @@ export function ledgerOn(env, headerValue, operator) {
 }
 
 export const LEDGER_MIB = mib;
+
+// #598: the serial the ledger treats as the CURRENT runtime. After a recycle the runtime is dropped at once,
+// but index.js advances runtimeSerial only at the next boot, so passing runtimeSerial labelled the dropped
+// runtime "current" until then (pf582t: memLive 1, retiredMem 0 at the start of each dead request). Only a
+// live runtime is current; 0 is a serial no runtime has.
+export function currentSerial(runtimeSerial, live) {
+	return live ? runtimeSerial : 0;
+}
