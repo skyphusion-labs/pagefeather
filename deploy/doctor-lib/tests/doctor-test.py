@@ -209,14 +209,15 @@ def check(name, cond, detail=""):
 def never_leaks(name, text):
     for bad, what in ((SECRET_QS, "query string"), ("qsmark", "query string"), (CLIENT_IP, "client IP"), (TOKEN, "token"),
                       ("SELECT", "SQL"), ("wp_users", "SQL"), ("?", "a query mark")):
-        check(name + " never prints the " + what, bad not in text, repr(bad))
+        check(name + " never prints the " + what, bad not in text, "found in the output")
 
 
 def common(name, code_out_err, want_code):
     code, out, err = code_out_err
     check(name + " exit", code == want_code, "exit %r, stderr %r" % (code, err[-300:]))
     check(name + " no unexpected calls", not S["unexpected"], S["unexpected"])
-    check(name + " sends the token in a header", S["auth"] == {"Bearer " + TOKEN}, S["auth"])
+    # The detail names the count only: a failure must not print the header (it holds the token).
+    check(name + " sends the token in a header", S["auth"] == {"Bearer " + TOKEN}, "%d distinct Authorization values" % len(S["auth"]))
     never_leaks(name, out + err)
     return out
 
@@ -347,7 +348,7 @@ import facts  # noqa: E402
 reset([event("wp-shop", "ok", 1, 10, "/a") for _ in range(5)] + [console("wp-shop", {"m": "write-loss", "firstSql": SQL})], {plain("wp-shop"): ON_FULL})
 raw = json.dumps(facts.gather(facts.Api(BASE, TOKEN), "shop", facts.window_ms(24, NOW)))
 for bad in (SECRET_QS, CLIENT_IP, TOKEN, "SELECT", "?"):
-    check("facts layer never keeps " + bad, bad not in raw, raw[:300])
+    check("facts layer never keeps " + ("the token" if bad == TOKEN else bad), bad not in raw, "found in the facts")
 
 # 11. the leak guard can fire: a path that carries an IP and SQL is hidden by the last guard.
 import doctor  # noqa: E402
@@ -359,7 +360,7 @@ reset([], {})
 c0 = S["calls"]
 env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "ACCOUNT_ID": ACCT, "DOCTOR_API_BASE": BASE}
 p = subprocess.run(["/bin/bash", DOCTOR, "shop"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-check("no token is exit 2", p.returncode == 2 and "CLOUDFLARE_API_TOKEN" in p.stderr, (p.returncode, p.stderr))
+check("no token is exit 2", p.returncode == 2 and "CLOUDFLARE_API_TOKEN" in p.stderr, "exit %r" % p.returncode)
 code, out, err = run("shop", "--hours", "0")
 check("bad window is exit 2", code == 2, (code, err))
 check("usage makes no API call", S["calls"] == c0 and not S["unexpected"], S["calls"] - c0)
