@@ -75,6 +75,28 @@ python3 -I "$ROOT/deploy/wfp/remote_assets_check.py" "$T/on.toml" "$APP" 2>"$T/o
 ok "a remote A config passes the guard (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
 python3 -I "$ROOT/deploy/wfp/remote_assets_check.py" "$T/nofirst.toml" "$APP" 2>"$T/nofirst.err"; rc=$?
 ok "the control: the same config without /_pf/ first is REFUSED (rc $rc)" "$([ $rc = 2 ] && grep -q run_worker_first "$T/nofirst.err" && echo 1 || echo 0)"
+# 3b. The DEFAULT variant a deploy (no #394 setting) also runs the guard, so it must pass it. The
+# [assets] line is taken from deploy.sh itself, so a change there reaches this case. A plain build's
+# indexes are what build.sh writes: export default null.
+PLAIN="$T/plain"; mkdir -p "$PLAIN/build"
+for f in opcache-remote-index.js site-remote-index.js opcache-boot-index.js; do echo 'export default null;' > "$PLAIN/build/$f"; done
+ASSETS_LINE=$(grep -E "^  echo '\[assets\]'; " "$ROOT/deploy/deploy.sh")
+ok "  (deploy.sh has exactly one [assets] line, and it binds ASSETS)" "$([ "$(grep -cE "^  echo '\[assets\]'; " "$ROOT/deploy/deploy.sh")" = 1 ] && grep -q 'binding = "ASSETS"' <<<"$ASSETS_LINE" && echo 1 || echo 0)"
+dconf() { # the default render: deploy.sh's [assets] line, then a_assets_first and a_vars with no setting
+  env -i PATH="$PATH" ASSETS_LINE="$ASSETS_LINE" bash -c ". '$S'
+    eval \"\$ASSETS_LINE\"
+    a_assets_first
+    echo '[vars]'; echo 'SITE_ORIGIN = \"https://pf-refusal-test.example.workers.dev\"'; a_vars"
+}
+dconf > "$T/default.toml"
+ok "  (the default render has no remote var and no /_pf/ first)" "$(! grep -qE 'OPCACHE_REMOTE|SITE_REMOTE|RECYCLE_WASM_MIB|run_worker_first' "$T/default.toml" && echo 1 || echo 0)"
+python3 -I "$ROOT/deploy/wfp/remote_assets_check.py" "$T/default.toml" "$PLAIN" 2>"$T/default.err"; rc=$?
+ok "a DEFAULT variant a config passes the guard with a plain build (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
+grep -v 'binding = "ASSETS"' "$T/default.toml" > "$T/default-nobinding.toml" || true
+python3 -I "$ROOT/deploy/wfp/remote_assets_check.py" "$T/default-nobinding.toml" "$PLAIN" 2>"$T/default-nb.err"; rc=$?
+ok "a default config WITHOUT the ASSETS binding passes too: a plain build needs none (rc $rc)" "$([ $rc = 0 ] && ! grep -q ASSETS "$T/default-nobinding.toml" && echo 1 || echo 0)"
+python3 -I "$ROOT/deploy/wfp/remote_assets_check.py" "$T/default.toml" "$APP" 2>"$T/default-red.err"; rc=$?
+ok "the control: the same DEFAULT config over a REMOTE build is REFUSED (rc $rc)" "$([ $rc = 2 ] && grep -q 'disagree' "$T/default-red.err" && echo 1 || echo 0)"
 ok "deploy.sh runs the guard on variant a before the deploy" "$(awk '/remote_assets_check.py/ {g=NR} /^DEP=.*deploy --config/ {d=NR} END {print (g && d && g < d) ? 1 : 0}' "$ROOT/deploy/deploy.sh")"
 
 echo "$fails failing case(s)"
