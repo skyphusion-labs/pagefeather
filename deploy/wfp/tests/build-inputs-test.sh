@@ -106,7 +106,7 @@ run_update() { # run_update <record|norecord> <env assignments...>: one update's
       echo "$IMPORT_CONTENT" > "$T/content.path"
       [ "${1:-}" = record ] && { record_build_inputs "$B" build-1 "$W" > "$T/rec.out" 2>&1 || return 1; }
       return 0
-    }; env -u PLUGINS -u THEMES -u SUITE -u THEME_SUITE -u IMPORT_CONTENT -u IMPORT_THEMES -u IMPORT_PLUGINS -u IMPORT_MU_PLUGINS -u WOO_ACTIVE -u WOO -u REPLACE_INPUTS "${@:2}" bash -c "$(declare -f local_test use_recorded_inputs record_build_inputs content_inputs_set); WFP='$HERE/..' APP='$APP' T='$T' B='$B'; local_test $1" )
+    }; env -u PLUGINS -u THEMES -u SUITE -u THEME_SUITE -u IMPORT_CONTENT -u IMPORT_THEMES -u IMPORT_PLUGINS -u IMPORT_MU_PLUGINS -u WOO_ACTIVE -u WOO -u REPLACE_INPUTS -u PF_ENGINE_JS -u PF_ENGINE_WASM "${@:2}" bash -c "$(declare -f local_test use_recorded_inputs record_build_inputs content_inputs_set); WFP='$HERE/..' APP='$APP' T='$T' B='$B'; local_test $1" )
 }
 # Poison from outside the case. A parent shell, or a batch that exported these,
 # must not count as the update's own inputs. The cases below fail if run_update leaks them.
@@ -156,6 +156,32 @@ run_update norecord "${IN[@]}" THEMES=hello-elementor THEME_SUITE=themes.txt; ch
 run_update norecord "${IN2[@]}"; check "  the same inputs: allowed" "$?" 0
 check "  THEMES alone counts as a content input" "$(env -i THEMES=x bash -c "$(declare -f content_inputs_set); content_inputs_set")" 1
 run_update record REPLACE_INPUTS=1 "${IN[@]}"; check "  (the record goes back to the section 3 inputs)" "$?" 0
+
+# 4c. #642: the engine. A site built with PF_ENGINE_JS and PF_ENGINE_WASM (the lean engine) records the
+# two files' sha256, never a path. An update that would build another engine, or none (npm), is refused
+# unless REPLACE_INPUTS=1, also when it passes no other input (the recorded inputs cannot bring an
+# engine back: it is a file). Before #642 an update without the pair silently rebuilt a lean site on npm.
+printf 'lean js' > "$T/e1.js"; printf 'lean wasm 1' > "$T/e1.wasm"; printf 'lean wasm 2' > "$T/e2.wasm"
+E1=(PF_ENGINE_JS="$T/e1.js" PF_ENGINE_WASM="$T/e1.wasm")
+run_update record REPLACE_INPUTS=1 "${IN[@]}" "${E1[@]}"; check "an engine build records" "$?" 0
+python3 -I "$HERE/../build_inputs.py" get "$B" "$T/rec-e.json"
+want=$(cat "$T/e1.wasm" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1):$(cat "$T/e1.js" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+check "  the record holds the engine's sha256 (wasm:js)" "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("engine", "MISSING"))' "$T/rec-e.json")" "$want"
+check "  and no path" "$(grep -c "$T" "$T/rec-e.json")" 0
+run_update norecord; check "THE #642 CASE: an update with NO input on a lean site: refused" "$?" 2
+check "  it names the engine and how to keep or change it" "$(grep -c 'PF_ENGINE_JS and PF_ENGINE_WASM' "$T/use.out")" 1
+run_update norecord "${E1[@]}"; check "  the same engine and no other input: allowed (the recorded inputs are used)" "$?" 0
+check "    it uses the recorded inputs" "$(grep -c 'using the recorded build inputs' "$T/use.out")" 1
+run_update norecord "${IN[@]}"; check "the recorded inputs but no engine (npm): refused" "$?" 2
+run_update norecord "${IN[@]}" PF_ENGINE_JS="$T/e1.js" PF_ENGINE_WASM="$T/e2.wasm"; check "another engine: refused" "$?" 2
+run_update norecord "${IN[@]}" "${E1[@]}"; check "the same inputs and the same engine: allowed" "$?" 0
+run_update norecord REPLACE_INPUTS=1 "${IN[@]}"; check "REPLACE_INPUTS=1 with no engine: allowed (a change to npm on purpose)" "$?" 0
+check "  it says the engine changes" "$(grep -c 'engine:' "$T/use.out")" 1
+# A record from before #642 has no engine key: it reads as npm, so a run with no engine is unchanged.
+python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); d.pop("engine", None); json.dump(d, open(sys.argv[2], "w"))' "$T/rec-e.json" "$T/rec-old.json"
+check "an old record (no engine key) and an npm run: equal" "$(env -u PF_ENGINE_JS -u PF_ENGINE_WASM python3 -I "$HERE/../build_inputs.py" engine-check "$T/rec-old.json" > /dev/null; echo $?)" 0
+check "an old record and an engine run: differ" "$(env PF_ENGINE_JS="$T/e1.js" PF_ENGINE_WASM="$T/e1.wasm" python3 -I "$HERE/../build_inputs.py" engine-check "$T/rec-old.json" > /dev/null; echo $?)" 4
+run_update record REPLACE_INPUTS=1 "${IN[@]}"; check "  (the record goes back to the section 3 inputs, npm)" "$?" 0
 
 # 5. Scope: a recorded value set inside one update does not leak into the next (update --all).
 unset PLUGINS IMPORT_PLUGINS; f() { local -x IMPORT_PLUGINS=""; IMPORT_PLUGINS=leaked; }; f
