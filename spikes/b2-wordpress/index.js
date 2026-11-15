@@ -2790,9 +2790,9 @@ export class PhpRuntime extends DurableObject {
 		}
 		const inboxMs = raw.headers.get(SENT_HEADER) ? Date.now() - Number(raw.headers.get(SENT_HEADER)) : null;
 		const req = new Request(raw);
+		req.headers.delete(OVERFLOW_HEADER);
 		req.headers.delete(ORIGIN_HEADER);
 		req.headers.delete(SENT_HEADER);
-		req.headers.delete(OVERFLOW_HEADER);
 		// The front Worker's Turnstile answer (#351): kept for this request's PHP run, never shown to PHP.
 		const turnstileHeader = takeResultHeader(req.headers);
 		if (dbHandler) dbHandler.reset();
