@@ -332,12 +332,27 @@ jobs:
           PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
           ENGINE_EXPECT=../../engine/expect/lean.json node --test tests/engine-contract.test.mjs
           if ! tests/frames-e2e.sh; then echo "::error::frames-e2e.sh failed on lean-lazy"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
+      - name: The body-region gate (e2e from an empty OPcache at 48 MB; mismatch 0) and its red control
+        working-directory: spikes/b2-wordpress
+        run: |
+          set -euo pipefail
+          # red control: lean-trim has no pagefeather_lazy_bodies counters, so the gate must fail on it
+          d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-trim"
+          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          ./build.sh | tail -1
+          rc=0; tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate-red.json" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::the body-region gate PASSED on lean-trim, which has no counters: it cannot see a mismatch"; exit 1; }
+          echo "red control: the gate fails on lean-trim (rc=$rc), as it must"
+          d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-lazy"
+          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          ./build.sh | tail -1
+          tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate.json"
       - name: Keep the logs of a failure (opcache-e2e.log, opcache.log, dev.log), so a red explains itself
         if: failure()
         working-directory: spikes/b2-wordpress
         run: |
           mkdir -p "$RUNNER_TEMP/fail-logs"
-          for f in build/opcache-e2e.log build/opcache.log dev.log; do
+          for f in build/opcache-e2e.log build/opcache.log build/lazy-bodies-e2e.log dev.log; do
             if [ -f "$f" ]; then cp "$f" "$RUNNER_TEMP/fail-logs/$(echo "$f" | tr / _)"; else echo "absent: $f"; fi
           done
           ls -la "$RUNNER_TEMP/fail-logs"
@@ -354,6 +369,8 @@ jobs:
           path: |
             ${{ runner.temp }}/bin-split.json
             ${{ runner.temp }}/red.txt
+            ${{ runner.temp }}/gate.json
+            ${{ runner.temp }}/gate-red.json
           retention-days: 14
   opcache-stats:
     # #582 S4 M1: the payoff of OPcache lazy function bodies on the editor screens. The lean-stats engine

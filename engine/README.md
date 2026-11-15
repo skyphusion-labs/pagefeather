@@ -104,4 +104,14 @@ OPcache's shared memory until a function is first called. It is built in slices 
 - `tools/bin-split.py <opcache.zip>` checks the layout of every `.bin` and sums it. The header size is
   read from each file's own length (80 bytes with the patch, 72 without), so `--expect-eager` passes an
   eager zip and the default mode refuses it (the red control in the `lazy-bodies` job).
+- The split runs only in a shared-memory persist. When shared memory is full, OPcache persists the script
+  again for the file cache (`store_script_in_file_cache`). That second calc runs with `corrupted` set and
+  counts strings the first calc had already interned. Upstream then over-counts, which it only warns about,
+  so that persist stays unsplit. A head that does not end where calc said never bails the request
+  (`ACCEL_LOG_ERROR` calls `zend_bailout`): it is logged as a warning and counted, and the script is stored
+  unsplit. `opcache_get_status()["pagefeather_lazy_bodies"]` (also `/_mem`'s `ini.lb`) holds `split_scripts`,
+  `body_bytes`, `mismatch` and `overlap`.
+- `spikes/b2-wordpress/tests/lazy-bodies-e2e.sh` is the gate on that. It runs e2e.sh from an empty OPcache at
+  the default 48 MB, where part of WordPress and WooCommerce takes the fallback, and requires
+  `split_scripts > 0` and `mismatch == 0`. Its red control is lean-trim, which has no counters.
 - M2b (the lazy load at first call) and M2c (the measurement against M1) come next.

@@ -12,7 +12,7 @@ import { checks, engine, engineUnderTest, upstreamRaw } from './engine-contract.
 
 const target = engineUnderTest();
 const raw = upstreamRaw(target.expect);
-const NO_PATCH = new Set(['opcache: the inheritance cache links classes across cached files', 'extensions: exactly the expected list', 'allocator: USE_ZEND_ALLOC=0 is honoured', 'exports: the request entry points are promising', 'link: dylink section and export count as expected']);
+const NO_PATCH = new Set(['opcache: a script too big for shared memory takes the file-cache fallback', 'opcache: the inheritance cache links classes across cached files', 'extensions: exactly the expected list', 'allocator: USE_ZEND_ALLOC=0 is honoured', 'exports: the request entry points are promising', 'link: dylink section and export count as expected']);
 
 for (const [name, check] of Object.entries(checks)) {
 	test('holds on ' + target.name + ': ' + name, async () => { await check(target); });
@@ -33,6 +33,10 @@ test('goes red on a mutation: extensions (one extension missing from the expecta
 
 test('goes red on a mutation: inheritance cache (OPcache turned off for the request)', async () => {
 	await assert.rejects(async () => checks['opcache: the inheritance cache links classes across cached files'](target, { noOpcache: true }), assert.AssertionError);
+});
+
+test('goes red on a mutation: file-cache fallback (shared memory big enough that the script fits)', async () => {
+	await assert.rejects(async () => checks['opcache: a script too big for shared memory takes the file-cache fallback'](target, { bigShm: true }), assert.AssertionError);
 });
 
 test('goes red on a mutation: allocator (USE_ZEND_ALLOC=1)', async () => {

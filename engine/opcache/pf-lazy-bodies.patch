@@ -22,15 +22,16 @@ index 9355604..663f35d 100644
  	accel_globals_id = ts_allocate_id(&accel_globals_id, sizeof(zend_accel_globals), (ts_allocate_ctor) accel_globals_ctor, (ts_allocate_dtor) accel_globals_dtor);
  #else
 diff --git a/ext/opcache/ZendAccelerator.h b/ext/opcache/ZendAccelerator.h
-index a10ae41..45ae6e3 100644
+index a10ae41..82f35fd 100644
 --- a/ext/opcache/ZendAccelerator.h
 +++ b/ext/opcache/ZendAccelerator.h
-@@ -116,6 +116,13 @@ typedef struct _zend_early_binding {
+@@ -116,6 +116,14 @@ typedef struct _zend_early_binding {
  	uint32_t cache_slot;
  } zend_early_binding;
  
 +/* pagefeather lazy bodies (#582 M2a): the body parts (literals, opcodes, live ranges, try/catch) of
 + * every function and method, but not the main script op_array, are placed in a tail region of mem. */
++extern uint32_t pf_lb_split, pf_lb_mismatch, pf_lb_overlap; extern uint64_t pf_lb_body_bytes; /* pagefeather lazy bodies (#582 M2a): opcache_get_status() counters */
 +extern bool  pf_lb_active;    /* set only inside zend_accel_script_persist_calc and zend_accel_script_persist: the inheritance cache and other callers of the same routines never split */
 +extern bool  pf_lb_in_body;   /* calc and persist: inside a body block of an eligible op_array */
 +extern size_t pf_lb_body_size; /* calc: body bytes of the current script */
@@ -39,7 +40,7 @@ index a10ae41..45ae6e3 100644
  typedef struct _zend_persistent_script {
  	zend_script    script;
  	zend_long      compiler_halt_offset;   /* position of __HALT_COMPILER or -1 */
-@@ -131,6 +138,7 @@ typedef struct _zend_persistent_script {
+@@ -131,6 +139,7 @@ typedef struct _zend_persistent_script {
  
  	void          *mem;                    /* shared memory area used by script structures */
  	size_t         size;                   /* size of used shared memory */
@@ -47,6 +48,26 @@ index a10ae41..45ae6e3 100644
  
  	struct zend_persistent_script_dynamic_members {
  		time_t       last_used;
+diff --git a/ext/opcache/zend_accelerator_module.c b/ext/opcache/zend_accelerator_module.c
+index 9093692..9a47f96 100644
+--- a/ext/opcache/zend_accelerator_module.c
++++ b/ext/opcache/zend_accelerator_module.c
+@@ -669,6 +669,15 @@ ZEND_FUNCTION(opcache_get_status)
+ 	add_assoc_long(&memory_usage, "wasted_memory", ZSMMG(wasted_shared_memory));
+ 	add_assoc_double(&memory_usage, "current_wasted_percentage", (((double) ZSMMG(wasted_shared_memory))/ZCG(accel_directives).memory_consumption)*100.0);
+ 	add_assoc_zval(return_value, "memory_usage", &memory_usage);
++	{ /* pagefeather lazy bodies (#582 M2a): scripts persisted split, their body bytes, and head mismatches (each stored unsplit) */
++		zval pf_lb;
++		array_init(&pf_lb);
++		add_assoc_long(&pf_lb, "split_scripts", pf_lb_split);
++		add_assoc_long(&pf_lb, "body_bytes", (zend_long)pf_lb_body_bytes);
++		add_assoc_long(&pf_lb, "mismatch", pf_lb_mismatch);
++		add_assoc_long(&pf_lb, "overlap", pf_lb_overlap);
++		add_assoc_zval(return_value, "pagefeather_lazy_bodies", &pf_lb);
++	}
+ 
+ 	if (ZCSG(interned_strings).start && ZCSG(interned_strings).end) {
+ 		zval interned_strings_usage;
 diff --git a/ext/opcache/zend_file_cache.c b/ext/opcache/zend_file_cache.c
 index 8afc4a4..7bca2ba 100644
 --- a/ext/opcache/zend_file_cache.c
@@ -71,16 +92,18 @@ index 8afc4a4..7bca2ba 100644
  	memcpy(buf, script->mem, script->size);
  
 diff --git a/ext/opcache/zend_persist.c b/ext/opcache/zend_persist.c
-index ac189b6..7d78e24 100644
+index ac189b6..723c458 100644
 --- a/ext/opcache/zend_persist.c
 +++ b/ext/opcache/zend_persist.c
-@@ -22,6 +22,14 @@
+@@ -22,6 +22,16 @@
  #include "zend.h"
  #include "ZendAccelerator.h"
  #include "zend_persist.h"
 +
 +/* pagefeather lazy bodies (#582 M2a) */
 +bool  pf_lb_active = false;
++uint32_t pf_lb_split = 0, pf_lb_mismatch = 0, pf_lb_overlap = 0;
++uint64_t pf_lb_body_bytes = 0;
 +bool  pf_lb_in_body = false;
 +size_t pf_lb_body_size = 0;
 +void *pf_lb_body_mem = NULL;
@@ -89,7 +112,7 @@ index ac189b6..7d78e24 100644
  #include "zend_extensions.h"
  #include "zend_shared_alloc.h"
  #include "zend_vm.h"
-@@ -421,6 +429,7 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
+@@ -421,6 +431,7 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
  {
  	zend_op *persist_ptr;
  	zval *orig_literals = NULL;
@@ -97,7 +120,7 @@ index ac189b6..7d78e24 100644
  
  	if (op_array->refcount && --(*op_array->refcount) == 0) {
  		efree(op_array->refcount);
-@@ -551,6 +560,7 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
+@@ -551,6 +562,7 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
  		GC_TYPE_INFO(op_array->static_variables) = GC_ARRAY | ((IS_ARRAY_IMMUTABLE|GC_NOT_COLLECTABLE) << GC_FLAGS_SHIFT);
  	}
  
@@ -105,7 +128,7 @@ index ac189b6..7d78e24 100644
  	if (op_array->literals) {
  		zval *p, *end;
  
-@@ -567,9 +577,13 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
+@@ -567,9 +579,13 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
  			p++;
  		}
  	}
@@ -120,7 +143,7 @@ index ac189b6..7d78e24 100644
  		zend_op *opline = new_opcodes;
  		zend_op *end = new_opcodes + op_array->last;
  		int offset = 0;
-@@ -681,7 +695,9 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
+@@ -681,7 +697,9 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
  	}
  
  	if (op_array->live_range) {
@@ -130,7 +153,7 @@ index ac189b6..7d78e24 100644
  	}
  
  	if (op_array->doc_comment) {
-@@ -698,7 +714,9 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
+@@ -698,7 +716,9 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
  	}
  
  	if (op_array->try_catch_array) {
@@ -140,29 +163,45 @@ index ac189b6..7d78e24 100644
  	}
  
  	if (op_array->vars) {
-@@ -1379,6 +1397,11 @@ zend_persistent_script *zend_accel_script_persist(zend_persistent_script *script
+@@ -1379,6 +1399,11 @@ zend_persistent_script *zend_accel_script_persist(zend_persistent_script *script
  
  	ZEND_ASSERT(((uintptr_t)ZCG(mem) & 0x7) == 0); /* should be 8 byte aligned */
  
 +	/* pagefeather lazy bodies (#582 M2a): the body region starts where the head ends */
-+	pf_lb_active = true;
++	pf_lb_active = for_shm != 0; /* pagefeather lazy bodies (#582 M2a): as in calc */
 +	pf_lb_in_body = false;
 +	pf_lb_body_mem = (char*)ZCG(mem) + script->size - script->pf_body_size;
 +
  	script = zend_shared_memdup_free(script, sizeof(zend_persistent_script));
  	script->corrupted = false;
  	ZCG(current_persistent_script) = script;
-@@ -1445,6 +1468,16 @@ zend_persistent_script *zend_accel_script_persist(zend_persistent_script *script
+@@ -1445,6 +1470,32 @@ zend_persistent_script *zend_accel_script_persist(zend_persistent_script *script
  	}
  #endif
  
-+	/* pagefeather lazy bodies (#582 M2a): the head must end exactly where the body starts; then ZCG(mem)
-+	 * moves to the true end, so the callers' own size check (mem + size == ZCG(mem)) covers the whole block */
-+	if ((char*)ZCG(mem) != (char*)script->mem + script->size - script->pf_body_size) {
-+		zend_accel_error(ACCEL_LOG_ERROR, "pagefeather lazy bodies: head size mismatch in %s: head ends " ZEND_ADDR_FMT ", body starts " ZEND_ADDR_FMT "\n",
-+			ZSTR_VAL(script->script.filename), (size_t)ZCG(mem), (size_t)((char*)script->mem + script->size - script->pf_body_size));
++	/* pagefeather lazy bodies (#582 M2a): the head must end exactly where the body starts. A mismatch never
++	 * bails (ACCEL_LOG_ERROR calls zend_bailout): it is logged as a WARNING, counted, and the script is stored
++	 * unsplit (pf_body_size 0), so a lazy load never uses a misaligned body. Then ZCG(mem) moves to the true
++	 * end, so the callers' own size check (mem + size == ZCG(mem)) covers the whole block. */
++	if (script->pf_body_size) {
++		char *pf_body_start = (char*)script->mem + script->size - script->pf_body_size;
++		if ((char*)ZCG(mem) != pf_body_start) {
++			pf_lb_mismatch++;
++			if ((char*)ZCG(mem) > pf_body_start) {
++				pf_lb_overlap++;
++			}
++			zend_accel_error(ACCEL_LOG_WARNING, "pagefeather lazy bodies: head size mismatch in %s: head ends " ZEND_ADDR_FMT ", body starts " ZEND_ADDR_FMT "; stored unsplit\n",
++				ZSTR_VAL(script->script.filename), (size_t)ZCG(mem), (size_t)pf_body_start);
++			ZCG(mem) = pf_lb_body_mem;
++			script->pf_body_size = 0;
++		} else {
++			ZCG(mem) = pf_lb_body_mem;
++			pf_lb_split++;
++			pf_lb_body_bytes += script->pf_body_size;
++		}
++	} else {
++		ZCG(mem) = pf_lb_body_mem;
 +	}
-+	ZCG(mem) = pf_lb_body_mem;
 +	pf_lb_body_mem = NULL;
 +	pf_lb_active = false;
 +
@@ -170,7 +209,7 @@ index ac189b6..7d78e24 100644
  	ZCG(current_persistent_script) = NULL;
  
 diff --git a/ext/opcache/zend_persist_calc.c b/ext/opcache/zend_persist_calc.c
-index a0debab..df8a133 100644
+index a0debab..e5ff00d 100644
 --- a/ext/opcache/zend_persist_calc.c
 +++ b/ext/opcache/zend_persist_calc.c
 @@ -28,8 +28,12 @@
@@ -237,7 +276,7 @@ index a0debab..df8a133 100644
  	new_persistent_script->mem = NULL;
  	new_persistent_script->size = 0;
 +	new_persistent_script->pf_body_size = 0; /* pagefeather lazy bodies (#582 M2a) */
-+	pf_lb_active = true;
++	pf_lb_active = for_shm != 0; /* pagefeather lazy bodies (#582 M2a): never in the file-cache fallback, whose calc over-counts */
 +	pf_lb_in_body = false;
 +	pf_lb_body_size = 0;
  	new_persistent_script->corrupted = false;

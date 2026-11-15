@@ -141,6 +141,25 @@ trait Pf582T {
 			assert.deepEqual(got[2], want, pass + ': every inherited and trait method answers as compiled');
 		}
 	},
+	// The file-cache fallback (#582 S4 M2a): a script too big for OPcache's shared memory is persisted again
+	// by store_script_in_file_cache, and that second calc runs with corrupted set, so it counts strings the
+	// first calc had already interned (upstream's calc then over-counts, and only warns). M2a's first patch
+	// split that persist and required the head to end exactly where calc said: on WordPress with
+	// WooCommerce (48 MB, 765 of 2,076 scripts) every page then stopped in a silent zend_bailout. 8,000
+	// generated functions at memory_consumption 8; the script must miss shared memory and still answer.
+	// opts.bigShm (the script fits) is its mutation.
+	async 'opcache: a script too big for shared memory takes the file-cache fallback'(e, opts = {}) {
+		const { php } = await boot(e);
+		php.writeFile('/tmp/pf582-blacklist.txt', '/internal/eval.php\n');
+		await setPhpIniEntries(php, { 'opcache.blacklist_filename': '/tmp/pf582-blacklist.txt', 'opcache.file_cache_only': '0', 'opcache.memory_consumption': opts.bigShm ? '64' : '8', 'opcache.interned_strings_buffer': '1', 'opcache.max_accelerated_files': '4000', 'opcache.file_update_protection': '0' });
+		const N = 8000;
+		let src = '<?php\n';
+		for (let i = 0; i < N; i++) src += `function pf582big_${i}($x) { $a = array("k${i}a" => "v${i}a", "k${i}b" => "v${i}b"); try { if ($x < 0) { throw new Exception("neg${i}"); } return "f${i}:" . $a["k${i}a"] . ($x + ${i}); } catch (Exception $e) { return $e->getMessage(); } }\n`;
+		php.writeFile('/tmp/pf582-big.php', src);
+		const got = await jrun(php, `<?php require "/tmp/pf582-big.php"; echo json_encode(array(pf582big_0(1), pf582big_${N - 1}(-1), pf582big_4321(10), opcache_is_script_cached("/tmp/pf582-big.php")));`);
+		assert.deepEqual(got.slice(0, 3), ['f0:v0a1', `neg${N - 1}`, 'f4321:v4321a4331'], 'the functions of the fallback script answer as compiled');
+		assert.equal(got[3], false, 'the script must miss shared memory (the fallback path ran)');
+	},
 	// A static engine has no dylink.0 section and few exports; today's MAIN_MODULE has both (#582 S2).
 	async 'link: dylink section and export count as expected'(e) {
 		const got = linkShape(e.bytes);
