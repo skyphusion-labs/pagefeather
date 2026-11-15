@@ -22,6 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PROBE = os.path.join(HERE, "page_stale.py")
 PW = "pw-" + "y" * 12  # a stand-in admin password
 TTL = 2.0
+COOKIE_VALUE = "rv" + "z" * 10  # a stand-in cookie value that must never be printed
 
 S = {}
 
@@ -30,7 +31,7 @@ def fresh_state(**kw):
     S.clear()
     S.update({"products": {}, "orders": {}, "next": 100, "cache": {}, "unexpected": [], "guest_bad": [],
               "purges_asked": 0, "purges_done": 0, "purge_limit": None, "purge_qty": False,
-              "decrement": True, "cache_header": True, "deleted": [], "create_purge_delay": 0})
+              "decrement": True, "cache_header": True, "deleted": [], "create_purge_delay": 0, "product_cookie": False})
     S.update(kw)
 
 
@@ -88,6 +89,14 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200, "abcdef0123", "text/plain")
         if rr == "/wc/store/v1/cart":
             return self._send(200, {"items": []}, extra={"Nonce": "storenonce", "Cart-Token": "ct-%d" % time.time()})
+        if path == "/" and not rr:
+            # the home page: a cacheable page with no stock, the probe's site-level control
+            key = "/"
+            c = S["cache"].get(key)
+            if c and time.time() - c[1] < TTL and "nocache" not in q:
+                return self._send(200, "home", "text/html", {"cf-cache-status": "HIT"} if S["cache_header"] else {})
+            S["cache"][key] = ("home", time.time())
+            return self._send(200, "home", "text/html", {"cf-cache-status": "MISS"} if S["cache_header"] else {})
         m = re.match(r"^/product/(p\d+)/$", path)
         if m and not rr:
             p = S["products"].get(m.group(1))
@@ -97,6 +106,13 @@ class H(http.server.BaseHTTPRequestHandler):
             if not guest:
                 S["guest_bad"].append(self.path)
             ext = {}
+            if S["product_cookie"] and guest and "nocache" not in q:
+                # index.js: a page that sets a cookie is not cacheable (cloudflare-cdn-cache-control: no-store);
+                # the edge keeps nothing fresh and answers EXPIRED, as measured live on 2026-11-15.
+                ext = {"Set-Cookie": "woocommerce_recently_viewed=%s; Path=/" % COOKIE_VALUE, "cache-control": "private, no-store"}
+                if S["cache_header"]:
+                    ext["cf-cache-status"] = "EXPIRED"
+                return self._send(200, page_html(p), "text/html", ext)
             if "nocache" in q or not guest:
                 html, status = page_html(p), "MISS"
             else:
@@ -246,11 +262,26 @@ r = [e for e in ev if e.get("case") == "qty"]
 check("qty settles past the create purge", r and r[0].get("stale_s") is not None and TTL - 0.6 <= r[0]["stale_s"] <= TTL + 1.0, r)
 time.sleep(0.7)
 
+# 3c. the live case (pfa-sb1114l, 2026-11-15): the product page sets a cookie, so it is not cacheable
+#     and the edge answers EXPIRED. Could-not-measure, and the evidence names the cause: the cookie's
+#     NAME (never its value), and a home page that IS served from the cache.
+fresh_state(product_cookie=True)
+code, ev, out = run("qty")
+r = [e for e in ev if e.get("case") == "qty"]
+check("product cookie is could-not-measure", r and r[0].get("verdict") == "could_not_measure" and r[0].get("cached_proof") is False and code == 3, (code, r))
+if r:
+    check("product cookie evidence names the cookie", any("woocommerce_recently_viewed" in e.get("cookies", []) for e in r[0].get("warm", [])), r[0].get("warm"))
+    check("product cookie evidence keeps EXPIRED and the cache-control", any(e.get("cache") == "EXPIRED" and e.get("cc") == "private, no-store" for e in r[0].get("warm", [])), r[0].get("warm"))
+    check("product cookie home control is cached", r[0].get("home_cached") is True, r[0].get("home_warm"))
+check("product cookie never prints the cookie value", COOKIE_VALUE not in out)
+check("product cookie plain line names the cause", "the home page IS served from the cache" in out and "cookies set woocommerce_recently_viewed" in out, out[-500:])
+
 # 4. no cache header: the probe cannot tell a cached read from an uncached one, and says so.
 fresh_state(cache_header=False)
 code, ev, out = run("qty")
 r = [e for e in ev if e.get("case") == "qty"]
 check("no cache header is flagged", r and r[0].get("cached_proof") is False and r[0].get("verdict") == "could_not_measure", r)
+check("no cache header home control is not cached either", r and r[0].get("home_cached") is False, r and r[0].get("home_warm"))
 
 # 5. stock-outs: each sale makes a status change and asks a purge. Here the 4 product creates use up
 #    the purge limit, so every sale's purge is refused (the account's 5 a minute, shared by every site),

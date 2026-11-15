@@ -19,6 +19,13 @@ Controls, so a number is never made from a read that could not see:
   - a warm read must come from the cache (cf-cache-status HIT, STALE, UPDATING or REVALIDATED). If
     the site never says so, a fresh page cannot be told from a purged one: could-not-measure.
 Guest reads send no cookie and no operator header: an operator request never uses the page cache.
+EXPIRED is never a cache proof: it means the edge held a copy but fetched the page from the Worker.
+
+Evidence, so a could-not-measure names its cause: each result keeps the two warm reads of its page
+(cf-cache-status, cache-control, Age, x-entrypoint, and the NAMES of any Set-Cookie, never a value),
+and the same for the home page "/", a control that tells "this site caches nothing" from "this page
+is not cacheable". index.js marks a page not cacheable when it sets a cookie, when WordPress sent
+no-cache, no-store or private, or for a status other than 200, 301 or 404 (pageCacheHeaders).
 SETTLE_S waits out the purge the product create asks (PURGE_GAP_MS is 15 s) before the warm read.
 
 Output: one `@event page-stale {json}` line per case, then a plain summary.
@@ -124,10 +131,24 @@ def stock(html):
     return None, None
 
 
+def cookie_names(h):
+    try:
+        vals = h.get_all("Set-Cookie") or []
+    except AttributeError:
+        vals = []
+    return sorted(set(v.split("=", 1)[0].strip() for v in vals if "=" in v))
+
+
 def guest_read(path, bust=False):
     code, body, h = req(opener(cookies=False), nc(path) if bust else path)
     st = stock(body) if code == 200 else (None, None)
-    return {"code": code, "state": st[0], "qty": st[1], "cache": (h.get("cf-cache-status") if h else None), "age": (h.get("age") if h else None)}
+    g = (lambda k: h.get(k)) if h else (lambda k: None)
+    return {"code": code, "state": st[0], "qty": st[1], "cache": g("cf-cache-status"), "age": g("age"),
+            "cc": g("cache-control"), "entry": g("x-entrypoint"), "cookies": cookie_names(h) if h else []}
+
+
+def evidence(r):
+    return dict((k, r[k]) for k in ("code", "cache", "cc", "age", "entry", "cookies"))
 
 
 def buy(pid):
@@ -148,16 +169,20 @@ def buy(pid):
         return None
 
 
-def warm(path):
-    guest_read(path)
+def warm(path, keep=None):
+    first = guest_read(path)
     time.sleep(WARM_S)
-    return guest_read(path)
+    second = guest_read(path)
+    if keep is not None:
+        keep.extend([evidence(first), evidence(second)])
+    return second
 
 
 def case_qty(a, made, orders):
     pid, path = make_product(a, 7, made)
     time.sleep(SETTLE_S)
-    w = warm(path)
+    ev = []
+    w = warm(path, ev)
     before = guest_read(path, bust=True)
     oid = buy(pid)
     t0 = time.time()
@@ -166,7 +191,7 @@ def case_qty(a, made, orders):
     after = guest_read(path, bust=True)
     res = {"case": "qty", "cached_proof": w["cache"] in CACHED, "warm_cache": w["cache"], "before": before["qty"], "after": after["qty"],
            "bought": bool(oid), "control_new": bool(oid) and before["qty"] is not None and after["qty"] == before["qty"] - 1,
-           "stale_s": None, "polls": 0, "cache_seen": {}}
+           "stale_s": None, "polls": 0, "cache_seen": {}, "warm": ev}
     if not (res["cached_proof"] and res["control_new"]):
         res["verdict"] = "could_not_measure"
         return res
@@ -189,7 +214,8 @@ def case_qty(a, made, orders):
 def case_stockout(a, made, orders):
     items = [make_product(a, 1, made) for _ in range(N)]
     time.sleep(SETTLE_S)
-    proofs = [warm(p)["cache"] in CACHED for _, p in items]
+    ev = []
+    proofs = [warm(p, ev)["cache"] in CACHED for _, p in items]
     t0s = {}
     for pid, p in items:
         oid = buy(pid)
@@ -200,7 +226,7 @@ def case_stockout(a, made, orders):
     control_out = sum(1 for _, p in items if guest_read(p, bust=True)["state"] == "out")
     res = {"case": "stockout", "n": N, "bought": len(t0s), "cached_proof": all(proofs), "control_out": control_out,
            "sales_s": round(t_end - min(t0s.values()), 2) if t0s else None, "in_stock_at_0": None, "max_stale_s": None,
-           "never_fresh": None, "in_stock_over_time": []}
+           "never_fresh": None, "in_stock_over_time": [], "warm": ev[:4]}
     if not res["cached_proof"] or control_out != N or len(t0s) != N:
         res["verdict"] = "could_not_measure"
         return res
@@ -244,6 +270,8 @@ def main():
         print(__doc__, file=sys.stderr)
         return 2
     a = admin()
+    home = []
+    home_cached = warm("/", home)["cache"] in CACHED
     made, orders, results = [], [], []
     try:
         if case in ("qty", "both"):
@@ -254,10 +282,14 @@ def main():
         cl = cleanup(a, made, orders)
     for r in results:
         r["cleanup"] = cl
+        r["home_cached"] = home_cached
+        r["home_warm"] = home
         print("@event page-stale " + json.dumps(r, sort_keys=True), flush=True)
     for r in results:
         if r["verdict"] == "could_not_measure":
-            print("%s: COULD NOT MEASURE (cache proof %s, control %s)" % (r["case"], r["cached_proof"], r.get("control_new", r.get("control_out"))))
+            print("%s: COULD NOT MEASURE (cache proof %s, control %s; the home page %s from the cache)" % (r["case"], r["cached_proof"], r.get("control_new", r.get("control_out")), "IS served" if home_cached else "is NOT served"))
+            for e in r.get("warm", [])[:2]:
+                print("  warm read: cf-cache-status %s, cache-control %s, cookies set %s" % (e["cache"], e["cc"], ",".join(e["cookies"]) or "none"))
         elif r["case"] == "qty":
             print("qty: a guest saw %s in stock for %s s after the checkout (now %s)" % (r["before"], r["stale_s"] if r["stale_s"] is not None else "> %s" % MAX_S, r["after"]))
         else:
