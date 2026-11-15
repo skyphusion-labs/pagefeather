@@ -6,17 +6,31 @@
 #   B=http://localhost:8797 ADMIN_PASSWORD=... [STATS_SPIKE_TOKEN=...] python3 tests/opcache-stats.py [rounds] [out.jsonl]
 import json, os, sys
 sys.path.insert(0, os.path.dirname(__file__))
-from break_lib import login, req
+import re
+from break_lib import login, opener, req
 
 rounds = int(sys.argv[1]) if len(sys.argv) > 1 else 2
 out = open(sys.argv[2], 'w') if len(sys.argv) > 2 else None
 screens = [('dashboard', '/wp-admin/'), ('post-new post', '/wp-admin/post-new.php'), ('post-new page', '/wp-admin/post-new.php?post_type=page'),
            ('post.php post', '/wp-admin/post.php?post=1&action=edit'), ('post.php page', '/wp-admin/post.php?post=2&action=edit'), ('profile', '/wp-admin/profile.php')]
-# The spike token goes on /_mem only: with SPIKE_TOKEN in the environment, break_lib adds it to every
-# request, and the login then answered 200, not 302 (runs 43659334789, 43660572446).
+# The spike token goes on /_mem only (the screens need no operator headers).
 st = {'x-spike-token': os.environ.pop('STATS_SPIKE_TOKEN', 'local-spike-token')}
 os.environ.pop('SPIKE_TOKEN', None)
-o = login()
+# The runtime's first request (x-boot 1) displays a WooCommerce notice before the headers in local dev,
+# so wp-login.php cannot set its test cookie and a login on that request fails (#600; it cost runs
+# 43659334789 and 43660572446). Absorb the boot request first, and print the login page's own error if
+# the login still fails.
+w = req(opener(), '/wp-login.php')
+print('warm-up GET /wp-login.php: %s' % w['code'])
+try:
+    o = login()
+except AssertionError:
+    p = opener(); req(p, '/wp-login.php')
+    r = req(p, '/wp-login.php', {'log': 'admin', 'pwd': os.environ['ADMIN_PASSWORD'], 'wp-submit': 'Log In', 'redirect_to': '/wp-admin/', 'testcookie': '1'})
+    b = (r['body'] or b'').decode('utf-8', 'replace')
+    e = re.search(r'id="login_error"[^>]*>(.*?)</div>', b, re.S)
+    print('opcache-stats.py: login failed, %s: %s' % (r['code'], re.sub(r'<[^>]+>', ' ', e.group(1)).strip()[:300] if e else b[:300]))
+    sys.exit(1)
 rows = []
 for n in range(rounds):
     for name, path in screens:
