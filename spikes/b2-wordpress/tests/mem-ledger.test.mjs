@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createLedger, memfsBytes, createSqlMeter, ledgerOn } from '../mem-ledger.mjs';
+import { createLedger, memfsBytes, createSqlMeter, ledgerOn, currentSerial } from '../mem-ledger.mjs';
 
 const MIB = 1048576;
 const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
@@ -114,4 +114,21 @@ test('index.js: off by default, per request, and snapshots at the memory-limit S
 	assert.match(src, /if \(lost\) \{\s*if \(ledgerActive\) ledgerLog\('write-loss'/);
 	assert.match(src, /\.\.\.\(ledgerActive \? \{ mem: ledgerSnapshot\('end'\) \} : \{\}\)/);
 	assert.match(src, /ledgerActive = this\.env\.MEM_LEDGER === 'on';/);
+});
+
+// #598: after a recycle the runtime is dropped (index.js dropRuntime: bootPromise null), but runtimeSerial
+// advances only at the next boot, so the ledger labelled the DROPPED runtime "current" (pf582t, Workers
+// Logs: memLive 1, retiredMem 0, currentMemMiB 109 at the start of each dead request). currentSerial gives
+// the serial only while a runtime is live.
+test('ledger.runtimes: a dropped runtime reads retired, not current, before the next boot', () => {
+	const l = createLedger();
+	const mem = new WebAssembly.Memory({ initial: 2 }); // 128 KiB, sized by its byteLength
+	l.register({}, 1, mem);
+	// today's call in index.js: the serial of the last boot, whether or not that runtime still lives
+	const before = l.runtimes(1, () => 0);
+	assert.equal(before.retiredMem, 0, 'the old call counts the dropped runtime as current');
+	const after = l.runtimes(currentSerial(1, false), () => 0);
+	assert.equal(after.retiredMem, 1, 'the dropped runtime is retired');
+	assert.equal(after.currentMemMiB, 0);
+	assert.equal(l.runtimes(currentSerial(1, true), () => 0).retiredMem, 0, 'a live runtime is still current');
 });
