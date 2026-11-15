@@ -31,6 +31,10 @@
 # SITE_REMOTE=1 move the bundle's zips to packs under /_pf/ (#563, #569; they need OPCACHE_A=1), RECYCLE_WASM_MIB sets the
 # runtime recycle line (#602; 140 with the lean engine, #598). Every variant: PF_ENGINE_JS and
 # PF_ENGINE_WASM build with another engine (#592, the lean-trim artifact), both or neither.
+# OBSERVABILITY (variants b-do, b-dosql and a; deploy/observability.sh): Workers Logs, off unless set.
+# 0 an explicit off, 1 events only, full the invocation logs too (a throwaway only). With 1 or full the
+# query strings are redacted right after the upload and read back; if not, the logs go off and the
+# deploy fails (fail closed).
 # AI=1 (Workers AI auto alt text for uploaded images with no alt text; needs
 # MEDIA=1 and the b-dosql/b-do variant. AI_ALT=off disables it, AI_ALT_MODEL picks
 # the image-to-text model, AI_ALT_INPUT=prompt selects an llava/llama-style model).
@@ -79,6 +83,9 @@ fi
 # shellcheck source=SCRIPTDIR/a-settings.sh
 . "$ROOT/deploy/a-settings.sh"
 a_settings_check "$VARIANT" || exit 2
+# shellcheck source=SCRIPTDIR/observability.sh
+. "$ROOT/deploy/observability.sh"
+obs_check "$VARIANT" || exit 2
 
 # Terraform state: local by default; DEPLOY_STATE=r2 writes a backend override
 # for the root in $1 (deploy/terraform or deploy/mysql). backend() is in tf-backend.sh.
@@ -235,6 +242,8 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
   # Only the Pages entrypoint is cached; the default one is the gateway (issue #63).
   echo '[exports.default]'; echo 'type = "worker"'; echo '[exports.default.cache]'; echo 'enabled = false'
   echo '[exports.Pages]'; echo 'type = "worker"'; echo '[exports.Pages.cache]'; echo 'enabled = true'
+  # Workers Logs (deploy/observability.sh). Nothing when OBSERVABILITY is unset.
+  obs_block
   echo '[vars]'
   echo "PHP_ENV = '{\"USE_ZEND_ALLOC\":\"0\"}'"
   echo "SITE_ORIGIN = \"$SITE_ORIGIN\""
@@ -298,6 +307,8 @@ case "$SITE_ORIGIN" in
   *.workers.dev) [ "$URL" = "$SITE_ORIGIN" ] || { echo "deployed to '$URL', but SITE_ORIGIN is $SITE_ORIGIN" >&2; exit 1; } ;;
 esac
 echo "$DEP" | grep -E 'Total Upload|Current Version'
+# Logs on: redact the query strings now, before anything else runs on the site, or turn the logs off.
+obs_redact "$NAME" || exit 1
 if [ "$CODE_ONLY" = 1 ]; then
   log "code only: secrets, install and measurements skipped (they persist or ran once)"
   echo "$URL"
