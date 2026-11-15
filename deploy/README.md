@@ -197,6 +197,10 @@ The admin memory fixes built on the b-dosql path, for approach A. All of them ar
 
 Before the upload, `deploy/wfp/remote_assets_check.py` refuses a remote build whose config lacks the `ASSETS` binding or `/_pf/` first. It is the same guard that deploy/wfp runs.
 
+### Workers Logs (`OBSERVABILITY`, variants `b-do`, `b-dosql` and `a`)
+
+Off unless set; the values are deploy/wfp's (`deploy/observability.sh`). `0` renders an explicit `enabled = false`; `1` logs events only (our structured lines and uncaught exceptions, no request metadata); `full` adds the invocation logs, each request's outcome, URL, client IP and user agent, so it is for a throwaway only, and enforced: `full` needs `THROWAWAY=1` on the run (an explicit statement that the site is a throwaway; without it the deploy is refused, so an unmarked site fails closed), and it is refused for a site in `deploy/live-sites/` even with `THROWAWAY=1`. With `1` or `full`, right after the upload `deploy/wfp/obs_settings.py redact-or-off` sets `redact_query_string` and reads it back; if it does not read back, the logs are turned off and the deploy fails.
+
 ## Why `LOCATION` matters
 
 `LOCATION` is the location hint for both the D1 primary and the PHP object. The same hint puts them in the same region. Measured on 2026-11-05 (`tests/do/probe`): 14 to 20 ms per D1 statement in the same region, 38 to 60 ms in different regions. A page makes 30 to 70 statements. Pick the region of your readers: `enam` (Eastern North America), `wnam`, `weur`, `eeur`, `apac`, `oc`.

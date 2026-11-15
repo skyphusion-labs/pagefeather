@@ -68,6 +68,7 @@ jobs:
         # rendered lines against remote_assets_check.py; trace-filter.py with the real pack scripts.
         run: |
           bash deploy/tests/a-settings-test.sh
+          bash deploy/tests/observability-test.sh
           bash spikes/b2-wordpress/tests/trace-filter-test.sh
       - name: Wrangler is pinned and called through deploy/wr
         # deploy/tools holds the exact version; a bare npx call runs whatever is installed or the latest.
