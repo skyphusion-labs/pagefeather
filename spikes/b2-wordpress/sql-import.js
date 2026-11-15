@@ -1,6 +1,8 @@
 // Import an existing site's MySQL dump into variant a's database (issue #31,
-// deploy/import.sh, deploy/import/mysql-prepare.py). Variant a only: PHP in the
-// Worker, MySQL (MariaDB, or PlanetScale for a2) through Hyperdrive.
+// deploy/import.sh, deploy/import/mysql-prepare.py). Variant a only: MySQL
+// (MariaDB, or PlanetScale for a2) through Hyperdrive. The caller passes the
+// MySQL client. With PHP_IN_DO=on that client lives in the PhpRuntime object,
+// and index.js sends /_sqlimport there (#551). No client: 404.
 //
 //   GET  /_sqlimport?info=1    {version, flavour, max_allowed_packet, sql_mode, prefix}
 //   GET  /_sqlimport?counts=1  {tables: {name: {rows, min_pk}}} for the site's own tables (#487);

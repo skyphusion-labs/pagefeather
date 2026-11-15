@@ -2840,6 +2840,11 @@ export class PhpRuntime extends DurableObject {
 		}
 		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
+		// MySQL import (#31, #551). The front Worker forwards here when PHP_IN_DO=on,
+		// because this isolate holds the MySQL client (index-a-lean.js). No client
+		// (b-dosql, SQLite in the object): sqlImport answers 404, as before. The token
+		// was checked above; sqlImport checks it again. The prefix rule is unchanged.
+		if (url.pathname === '/_sqlimport') return sqlImport(req, env, url, dbHandler);
 		// Spike: the URL the object got, and the origin it uses.
 		if (url.pathname === '/_origin') return Response.json({ objectUrl: raw.url, publicOrigin: origin, used: url.href });
 		// The purge state of this object (issue #78): pending, last sent, the last 20 sends, the next alarm.
@@ -3354,9 +3359,17 @@ const site = {
 			console.log(JSON.stringify({ m: 'ws-refused', host: req.headers.get('host'), path: url.pathname }));
 			return new Response('WebSocket is not served', { status: 426 });
 		}
-		// Import a MySQL dump (issue #31): variant a only, where dbHandler is the
-		// MySQL bridge (index-a.js). Every other variant gets the 404 of sql-import.js.
-		if (url.pathname === '/_sqlimport') return sqlImport(req, env, url, env.PHP_IN_DO === 'on' ? null : dbHandler);
+		// Import a MySQL dump (issue #31): variant a, where dbHandler is the MySQL
+		// bridge. With PHP_IN_DO=on that bridge lives in the PhpRuntime isolate
+		// (index-a-lean.js), so the request goes there (#551). Every other variant
+		// gets the 404 of sql-import.js. A missing object binding is the same 500
+		// as every other PHP_IN_DO request.
+		if (url.pathname === '/_sqlimport') {
+			if (env.PHP_IN_DO === 'on') {
+				return env.PHP_RUNTIME ? toPhpObject(req, env, url, ctx) : new Response('PHP_IN_DO=on needs the PHP_RUNTIME Durable Object binding', { status: 500 });
+			}
+			return sqlImport(req, env, url, dbHandler);
+		}
 		// The cache versions table and its triggers (#296 (2), cache-versions.mjs): approach A only.
 		// op=status (default), install (all or nothing; versioned false when the provider cannot make
 		// triggers) or remove. Spike-gated like every /_ path above. It works with the flag off too, so
