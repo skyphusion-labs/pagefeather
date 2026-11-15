@@ -65,6 +65,10 @@ Two uploads with the same name on two isolates would overwrite each other. The p
 
 `[cache] enabled = true` with `exports.Pages.cache` turns on Workers Cache for the `Pages` entrypoint only. The default entrypoint is the gateway (not cached): it sends a page request with no WordPress cookie to `Pages` without its Cookie header, so other cookies do not split the cache key (issue #63). `index.js` marks logged-out public pages cacheable at the edge for `PAGE_CACHE_TTL` seconds (default 120) with `Cache-Tag: wp-pages`; the browser gets `no-cache`. The mu-plugin `php/edge-cache.php` purges the tag when content changes, through `Pages.purge()`. Add `?nocache` to a URL to skip the cache. See `docs/approach-b.md` 8c.
 
+**The render stamp, `x-pf-rendered` (#628).** `Pages` adds `x-pf-rendered: <epoch ms>` to every page it renders: the time PHP rendered it. A cached copy keeps the stamp of the run that rendered it. So two reads with the same stamp came from a cache, whatever `cf-cache-status` says. The outer status can hide an inner hit: a top-level `[cache]` with no `exports` blocks caches the gateway too, and its own copy then answers `EXPIRED` while `Pages` is served from cache (measured on pfa-sb1114l, 2026-11-15: 934 gateway runs, 21 `Pages` runs). `tests/load/page_stale.py` uses the stamp as its cache proof.
+
+The header is guest-visible, by choice. It carries a render time only: no request data, no visitor data, no site data. It is not one of the operator-only headers (`perf-headers.mjs`), because a guest read is what the probe must see.
+
 ## PHP in a Durable Object (Workers Free)
 
 `PHP_IN_DO=on` runs PHP in the `PhpRuntime` Durable Object (binding `PHP_RUNTIME`), not in the Worker. A Worker request on Free stops at about 2 s of CPU; an object request may use 30 s. The Worker keeps static assets, R2 uploads and the page cache. The design is from HostlessWP. Local check: `DEV_ENV=do-local ./opcache.sh`, then `DEV_ENV=do-local ./run.sh` and `./e2e.sh`. Deploy env: `do-free`. See `docs/approach-b.md` 8i.
