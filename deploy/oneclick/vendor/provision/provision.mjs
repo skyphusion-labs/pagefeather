@@ -10,6 +10,9 @@ import {
 } from './ops.mjs';
 import { upsertSite, readSite } from './registry.mjs';
 import { assertValidName, genSecret } from './shared.mjs';
+// #650: OBJECT_CACHE_VERSIONS needs a non-caching Hyperdrive config.
+import { versionsGate, versionsFlagOn } from './hyperdrive-gate.mjs';
+
 
 // cfg:
 //   kind: 'wp' (b-dosql, PHP+SQLite in a Durable Object) or
@@ -67,6 +70,12 @@ async function existingSite(ctx, { kvId, hostname }) {
 
 async function provisionNamespaceSite(ctx, cfg) {
   assertValidName(cfg.name);
+  // #650: before ANY read or write of the site, an approach-A site with OBJECT_CACHE_VERSIONS=on must be bound to
+  // a Hyperdrive config that does not cache queries (hyperdrive-gate.mjs; fail closed). Nothing is created first.
+  if (cfg.kind === 'a') {
+    const hd = (cfg.resourceBindings || []).find((b) => b && b.type === 'hyperdrive');
+    await versionsGate(ctx, { hyperdriveId: hd && hd.id, flagOn: versionsFlagOn(cfg.resourceBindings) });
+  }
   const steps = [];
   const script = `site-${cfg.name}`;
   const found = await existingSite(ctx, { kvId: cfg.kvId, hostname: cfg.hostname });

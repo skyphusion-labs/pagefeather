@@ -14,6 +14,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 PAIRS=(
   "deploy/provision/cf.mjs vendor/provision/cf.mjs"
+  "deploy/provision/hyperdrive-gate.mjs vendor/provision/hyperdrive-gate.mjs"
   "deploy/provision/ops.mjs vendor/provision/ops.mjs"
   "deploy/provision/provision.mjs vendor/provision/provision.mjs"
   "deploy/provision/registry.mjs vendor/provision/registry.mjs"

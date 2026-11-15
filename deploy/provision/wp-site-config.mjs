@@ -426,6 +426,9 @@ export function aVars({
   // #491: options never persist across isolates on A (php/object-cache-js.php drops them even when named).
   objectCacheGroups = 'theme_json', objectCacheTtl = '10', lazyCacheMb = '4',
   mailFrom, mailFromName,
+  // #296 (2) / #643: options and transients across isolates under exact versions. Off by default. provisionSite
+  // refuses it when the site's Hyperdrive config caches queries (#650, hyperdrive-gate.mjs).
+  objectCacheVersions = false,
 } = {}) {
   if (!siteOrigin) throw new Error('aVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
   const vars = {
@@ -440,6 +443,7 @@ export function aVars({
     LAZY_NODES: 'on',
     LAZY_CACHE_MB: String(lazyCacheMb),
   };
+  if (objectCacheVersions === true) vars.OBJECT_CACHE_VERSIONS = 'on';
   // HYPERDRIVE_SQL_MODE (#218): a per-statement sql_mode relax, REQUIRED only for
   // strict backends (PlanetScale/Vitess, e.g.
   // ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION). index.js emits it into
@@ -473,7 +477,7 @@ export function aVars({
 // ARE known upfront (the bucket name is derived; the config id comes from
 // onboarding), so they are required.
 export function aBindings({
-  mediaBucket, hyperdriveId, siteOrigin, tablePrefix, hyperdriveSqlMode,
+  mediaBucket, hyperdriveId, siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheVersions,
   objectCacheGroups, objectCacheTtl, lazyCacheMb, ocKvNamespaceId, ocKvBinding = 'OC_KV',
   mailFrom, mailFromName, extra = [],
 } = {}) {
@@ -484,7 +488,7 @@ export function aBindings({
   // only if the caller already knows it (e.g. a re-provision passing the id).
   if (ocKvNamespaceId) ocKv.namespace_id = ocKvNamespaceId;
   return [
-    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName }),
+    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName, objectCacheVersions }),
     { type: 'images', name: 'IMAGES' },
     { type: 'r2_bucket', name: 'MEDIA', bucket_name: mediaBucket },
     { type: 'hyperdrive', name: 'HYPERDRIVE', id: hyperdriveId },
