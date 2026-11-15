@@ -77,6 +77,15 @@ We would rather you hear these from us before you build on the project than find
 - **One Durable Object per site:** one writer, one region, and one request at a time for anything
   the cache cannot answer. That is about 5 uncached requests a second; past that the queue grows,
   and at about 100 clients the object refuses ([docs/perf-dosql.md](docs/perf-dosql.md)).
+- **A cached product page can show an old stock number.** A logged-out product page is cached for
+  120 s (`PAGE_CACHE_TTL`). A checkout that lowers the stock number does not clear that copy. We
+  measured it on a b-dosql store ([#628](https://github.com/skyphusion-labs/pagefeather/issues/628),
+  2026-11-15). A guest saw "7 in stock" for 121 s after the stock fell to 6. After a quiet spell, the
+  first visitor can get an older copy. It can be up to about 12 minutes old.
+  When a product sells out, the page is cleared: it said "out of stock" within 23 s. The checkout
+  always reads the real stock, so it never sells more than you have. If your pages show exact stock
+  numbers, see [Stock numbers on cached pages](docs/from-lamp-to-wfp.md#stock-numbers-on-cached-pages)
+  for the WooCommerce setting that avoids this.
 - **On a WooCommerce store, bundle size is the first wall.** A Worker is limited to 64 MiB
   uncompressed, and the upload gate stops at 62 MiB. WooCommerce alone takes the bundle to 58.3
   MiB. Measured with WooCommerce (#279): Yoast SEO (67.9 MiB), All in One SEO (67.5) and Elementor
