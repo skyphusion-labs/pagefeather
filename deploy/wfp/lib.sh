@@ -89,7 +89,9 @@ render_shared_dispatcher() { sed -e "s/@SITE@/dispatch/g" -e "s/@NAMESPACE@/$NAM
 # The number of rows in the object's SQLite (issue #35 slice 5), via
 # /_dbexport: used to show data survived an update or a rollback.
 row_count() { # row_count <origin> <token>
-  curl -s -m 120 -K <(printf 'header = "x-spike-token: %s"\n' "$2") "$1/_dbexport" 2>/dev/null | grep -c . || true
+  local text
+  text=$(printf 'header = "x-spike-token: %s"\n' "$2")
+  curl_cfg "$text" -s -m 120 "$1/_dbexport" 2>/dev/null | grep -c . || true
 }
 entry_build() { # entry_build <site>
   api GET "/storage/kv/namespaces/$KV_ID/values/$(site_key "$1")" | python3 "$WFP/kv_build.py"
@@ -957,10 +959,31 @@ print("bundle size: %.2f MiB of the %.0f MiB gate (%s)" % (mib, cap, detail))
 PY
 }
 
-# API calls: the token goes to curl in a config on a pipe, never in argv.
+# A curl -K config on a mode-600 file from mktemp, never on argv. The file is
+# removed by an EXIT trap when the curl subshell ends, including when curl
+# fails. macOS /bin/bash 3.2 leaks one descriptor for every process
+# substitution until the enclosing function returns, so these scripts do not
+# use that form (#580, #581). curl_cfg <config text> [curl args...]
+curl_cfg() {
+  local text=$1 cfg q
+  shift
+  cfg=$(mktemp "${TMPDIR:-/tmp}/pf-curlk.XXXXXX")
+  chmod 600 "$cfg" || { rm -f "$cfg"; return 1; }
+  printf '%s' "$text" > "$cfg" || { rm -f "$cfg"; return 1; }
+  # The path is written into the trap text now. Bash runs an EXIT trap after it
+  # has dropped the function's locals, so a "$cfg" there is unset and set -u
+  # skips the rm, which leaves the secret on disk when curl fails.
+  q=$(printf '%q' "$cfg")
+  (
+    trap "rm -f $q" EXIT
+    curl -K "$cfg" "$@"
+  )
+}
+# API calls: the token goes to curl in that mode-600 file, never in argv.
 api() { # api <method> <path> [curl args...]: prints the body, then a line with the HTTP code
-  local m=$1 p=$2; shift 2
-  curl -s -m 60 -X "$m" -K <(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN") -w '\n%{http_code}' "$API$p" "$@"
+  local m=$1 p=$2 text; shift 2
+  text=$(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN")
+  curl_cfg "$text" -s -m 60 -X "$m" -w '\n%{http_code}' "$API$p" "$@"
 }
 api_code() { api "$@" | tail -1; }
 # A script in the namespace: present, gone or unknown. The HTTP status of the
@@ -1208,15 +1231,16 @@ site_title_ok() { # site_title_ok <url> <want>
 # abort() is unproven on our compat date, so this is best-effort), then keep
 # polling to BUILD_WAIT s. Prints the last build seen; 0 when it flips.
 wait_build() { # wait_build <origin> <token> <want>
-  local t0=$SECONDS b evicted=0
+  local t0=$SECONDS b evicted=0 text
+  text=$(printf 'header = "x-spike-token: %s"\n' "$2")
   while :; do
-    b=$(curl -s -m 30 -K <(printf 'header = "x-spike-token: %s"\n' "$2") "$1/_build" 2>/dev/null | python3 -c "import json,sys
+    b=$(curl_cfg "$text" -s -m 30 "$1/_build" 2>/dev/null | python3 -c "import json,sys
 try: print(json.load(sys.stdin).get(\"build\",\"\"))
 except Exception: print(\"\")")
     [ "$b" = "$3" ] && { echo "  build $b live after $((SECONDS - t0)) s"; return 0; }
     if [ "$evicted" = 0 ] && [ $((SECONDS - t0)) -ge "${BUILD_EVICT_AFTER:-20}" ]; then
       echo "  the old build still runs after $((SECONDS - t0)) s; calling /_evict (best-effort)" >&2
-      curl -s -o /dev/null -m 30 -K <(printf 'header = "x-spike-token: %s"\n' "$2") "$1/_evict" || true
+      curl_cfg "$text" -s -o /dev/null -m 30 "$1/_evict" || true
       evicted=1
     fi
     [ $((SECONDS - t0)) -lt "${BUILD_WAIT:-60}" ] || { echo "the new build $3 did not go live in ${BUILD_WAIT:-60} s (last: ${b:-none})" >&2; return 1; }

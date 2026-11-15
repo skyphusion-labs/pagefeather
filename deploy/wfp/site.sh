@@ -102,7 +102,7 @@ if [ "$cmd" = up ]; then
   log "site $s: wait for $ORIGIN (the site itself, lib.sh wait_site), then install"
   wait_site "$ORIGIN"
   hdr() { printf 'header = "x-spike-token: %s"\nheader = "x-admin-password: %s"\n' "$(out spike_token)" "$(out admin_password)"; }
-  curl -s -m 300 -X POST -K <(hdr) "$ORIGIN/_install" > "$W/install.json" || true
+  curl_cfg "$(hdr)" -s -m 300 -X POST "$ORIGIN/_install" > "$W/install.json" || true
   python3 -c 'import json, sys
 try:
     d = json.load(open(sys.argv[1])); print("  install:", str(d.get("installed") or d.get("out", ""))[-80:])
