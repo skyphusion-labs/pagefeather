@@ -2,7 +2,7 @@
 // fake MySQL that keeps the schema state, so install, status and remove are checked as state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { install, status, remove, triggerSql, triggerNames, versionsTable, validPrefix, cell, BUCKETS } from '../cache-versions.mjs';
+import { install, status, remove, triggerSql, triggerNames, versionsTable, validPrefix, cell, BUCKETS, likeEscape } from '../cache-versions.mjs';
 
 const b64 = (s) => ({ $b: Buffer.from(String(s)).toString('base64') });
 function fakeDb({ refuseTrigger = null, binary = false } = {}) {
@@ -108,4 +108,14 @@ test('the bucket count is one number: the JS install and the PHP drop-in agree',
 	assert.equal(Number(m[1]), BUCKETS);
 	const js = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.match(js, /define\('JS_OBJECT_CACHE_VERSIONED', 'options,transient,site-transient'\);/, 'the Worker versions options and both transient groups');
+});
+
+test('likeEscape escapes every LIKE metacharacter, the backslash first (CodeQL js/incomplete-sanitization)', () => {
+	// A LIKE pattern built from a value must escape the escape character itself, or a backslash in the value would
+	// swallow the next escape. validPrefix already refuses anything but [A-Za-z0-9_], so no prefix reaches this
+	// with a backslash today; the escaper is correct on its own anyway.
+	assert.equal(likeEscape('wp_'), 'wp\\_');
+	assert.equal(likeEscape('a%b'), 'a\\%b');
+	assert.equal(likeEscape('a\\b'), 'a\\\\b');
+	assert.equal(likeEscape('x\\_'), 'x\\\\\\_');
 });

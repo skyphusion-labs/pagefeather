@@ -30,6 +30,8 @@ export function validPrefix(prefix) {
 	return typeof prefix === 'string' && /^[A-Za-z0-9_]{1,20}$/.test(prefix);
 }
 export function versionsTable(prefix) { return `${prefix}skyph_cache_versions`; }
+// A value inside a LIKE pattern: the backslash (the default escape) first, then % and _.
+export function likeEscape(s) { return String(s).replace(/[\\%_]/g, (c) => '\\' + c); }
 export function triggerNames(prefix) {
 	return GROUPS.flatMap(({ table }) => EVENTS.map(([, ab]) => `${prefix}skyph_v_${table}_${ab}`));
 }
@@ -62,7 +64,7 @@ const err = (r) => `${(r && r.errno) || ''} ${(r && r.error) || 'no reply'}`.tri
 export async function status(q, prefix) {
 	if (!validPrefix(prefix)) return { ok: false, error: 'bad table prefix' };
 	const t = await q(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = '${versionsTable(prefix)}'`);
-	const g = await q(`SELECT trigger_name FROM information_schema.triggers WHERE trigger_schema = DATABASE() AND trigger_name LIKE '${prefix.replace(/_/g, '\\_')}skyph\\_v\\_%'`);
+	const g = await q(`SELECT trigger_name FROM information_schema.triggers WHERE trigger_schema = DATABASE() AND trigger_name LIKE '${likeEscape(prefix)}skyph\\_v\\_%'`);
 	if (!t.ok || !g.ok) return { ok: false, error: err(t.ok ? g : t) };
 	const table = Number(cell(t.rows[0][0])) > 0;
 	let versions = null;
