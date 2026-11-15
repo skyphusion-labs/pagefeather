@@ -112,6 +112,12 @@ jobs:
           print(f"source archive: {len(names)} entries; marker in zend_persist.c: {patched}; in shared_alloc_mmap.c (control): {control}; stats glue: {len(stats)} bytes")
           if patched < 1:
               sys.exit("::error::the scanned zend_persist.c is not the patched one")
+          # #582 M2b stage 2: the patch reaches three files outside ext/opcache; each scanned copy must be the patched one
+          for f in ("/Zend/zend_execute.c", "/Zend/zend_inheritance.c", "/ext/reflection/php_reflection.c"):
+              n = one(f).count(mark)
+              print(f"marker in {f[1:]}: {n}")
+              if n < 1:
+                  sys.exit(f"::error::the scanned {f[1:]} is not the patched one")
           if control != 0:
               sys.exit("::error::the control file holds the marker; the reading cannot tell patched from unpatched")
           PY
@@ -166,6 +172,22 @@ jobs:
             engine/opcache/codeql-upstream-baseline.json || rc=$?
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || exit "$rc"
+          if [ "$rc" -eq 3 ]; then
+            # A candidate baseline for a deliberate regeneration (a php-src bump, or a widened scan): every upstream
+            # result of this run. Uploaded for review; the job still fails below. Never copied into the repo by CI.
+            cp engine/opcache/codeql-upstream-baseline.json "$RUNNER_TEMP/baseline-candidate.json"
+            python3 -I engine/opcache/codeql-sarif-map.py "$in" "$RUNNER_TEMP/candidate.sarif" \
+              codeql-build/php-src codeql-build/php-src/ codeql-build/applied-patches.txt \
+              "$RUNNER_TEMP/baseline-candidate.json" --write-baseline | tail -1
+          fi
+
+      - name: Keep the candidate baseline for review (c-cpp only, after new upstream results)
+        if: matrix.language == 'c-cpp' && steps.map.outputs.rc == '3'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: codeql-baseline-candidate
+          path: ${{ runner.temp }}/baseline-candidate.json
+          retention-days: 14
 
       - name: Upload the mapped c-cpp results (c-cpp only)
         if: matrix.language == 'c-cpp'

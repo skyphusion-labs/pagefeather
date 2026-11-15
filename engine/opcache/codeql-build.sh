@@ -5,7 +5,7 @@
 # Why native and not engine/build.sh: the engine build is an emscripten docker build (base image, libs,
 # the whole of PHP, then link), far too heavy for every pull request. CodeQL needs the patched C to
 # COMPILE, not to link to wasm, so this configures php-src natively with only opcache and compiles the
-# ext/opcache objects. It also compiles engine/opcache/opcache_module_stats.c (the M1 measurement glue,
+# ext/opcache objects, and the three patched files outside it. It also compiles engine/opcache/opcache_module_stats.c (the M1 measurement glue,
 # which replaces opcache_module.c in that build) as its own translation unit.
 # Every pin comes from engine/UPSTREAM, and each check below stops the build, so a patch that does not
 # apply, or a tree that is not the pinned one, is a red job and never a vacuous green scan.
@@ -81,6 +81,16 @@ for f in zend_persist ZendAccelerator zend_file_cache opcache_module; do
 done
 make -j"$(nproc)" "${objs[@]}" > "$work/make.log" 2>&1 || { tail -60 "$work/make.log"; fail "compiling ext/opcache failed"; }
 echo "compiled ${#objs[@]} ext/opcache objects"
+# The patch also changes three files outside ext/opcache (#582 M2b stage 2: the callers that read opcodes without a
+# call, and the trait collision check). Compile them too, so CodeQL scans those hunks. Each must be a build object
+# and must hold the marker; codeql.yml checks the marker again in the scanned source archive.
+extra=(Zend/zend_execute Zend/zend_inheritance ext/reflection/php_reflection)
+for f in "${extra[@]}"; do
+  grep -qE "(^|[ /])$f\.lo" Makefile || fail "$f.lo is not a build object"
+  grep -q 'pagefeather lazy bodies' "$f.c" || fail "the pf-lazy-bodies marker is not in $f.c after the patch"
+done
+make -j"$(nproc)" "${extra[@]/%/.lo}" > "$work/make-extra.log" 2>&1 || { tail -60 "$work/make-extra.log"; fail "compiling ${extra[*]} failed"; }
+echo "compiled ${#extra[@]} patched objects outside ext/opcache: ${extra[*]}"
 
 # 6. The M1 stats glue, compiled with the same include path as the opcache objects.
 gcc -c -O0 -DHAVE_CONFIG_H -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 -I. -Imain -IZend -ITSRM -Iext/opcache \
