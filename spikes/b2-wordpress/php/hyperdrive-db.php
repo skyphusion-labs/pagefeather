@@ -20,6 +20,8 @@ require_once __DIR__ . '/hyperdrive-sql-mode.php';
 require_once __DIR__ . '/hyperdrive-literals.php';
 // A mysqli for plugins that call mysqli_* on $wpdb->dbh (issue #29).
 require_once __DIR__ . '/hyperdrive-mysqli.php';
+// #296 step 3: the query trace (operator only, measure only): a query carries its caller while it is on.
+require_once __DIR__ . '/hyperdrive-qtrace.php';
 
 // The R2 Uploads and Edge Cache mu-plugins send their messages through this
 // function. Approach B defines it in d1-pdo.php, which A does not load: without
@@ -42,7 +44,11 @@ function skyphusion_hd_call( $sql ) {
 			'errno' => 2000,
 		);
 	}
-	$reply = json_decode( skyphusion_worker_call( json_encode( array( 'mysql' => $text ) ) ), true );
+	$msg = array( 'mysql' => $text );
+	if ( skyphusion_hd_qtrace_on() ) {
+		$msg['c'] = skyphusion_hd_caller();
+	}
+	$reply = json_decode( skyphusion_worker_call( json_encode( $msg ) ), true );
 	return is_array( $reply ) ? $reply : array(
 		'ok'    => false,
 		'error' => 'no reply from the Worker',

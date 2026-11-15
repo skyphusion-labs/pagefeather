@@ -94,6 +94,10 @@ jobs:
         run: php spikes/b2-wordpress/tests/upload-month-json-test.php
       - name: Approach A literal tests (issue #79)
         run: php tests/a/literals-test.php
+      - name: The query trace, operator only and measure only (#296 step 3)
+        run: |
+          php spikes/b2-wordpress/tests/hyperdrive-qtrace-test.php
+          node --test spikes/b2-wordpress/tests/qtrace.test.mjs
       - name: Approach A object cache isolated mode (issue #218)
         # spikes/b2-wordpress/php/object-cache-js.php: the allowlist + TTL + force-off
         # posture, with a stubbed bridge (no DB). WooCommerce groups never persist.
