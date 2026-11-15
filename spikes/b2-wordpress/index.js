@@ -19,6 +19,7 @@ import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, lockDefines } from './site-lock.mjs';
 import { exportRequest } from './mysql-export.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore } from './perf-headers.mjs';
+import { createTrace as createQueryTrace } from './qtrace.mjs';
 import { resetFailures, writeLossResponse, rolledBackResponse, frameProvesRollback, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { MEMORY_RESET } from './object-error.mjs';
 import { createL2Writer } from './oc-l2-writer.mjs';
@@ -246,6 +247,8 @@ function memIdOf(req, env) {
 const ledger = createLedger();
 const sqlMeter = createSqlMeter();
 let ledgerActive = false;
+// #296 step 3: the query trace of THIS request (qtrace.mjs), or null. Spike token AND x-pf-qtrace: 1 only.
+let qtrace = null;
 let ledgerId = null;
 let ledgerFailLogged = false;
 // The inflate counters when this request (or cron leg) started (#394): every inflated copy is a new
@@ -1358,6 +1361,7 @@ async function handleMessage(raw) {
 	// One trace checkpoint as it happens (#434), so a request killed by an isolate reset still
 	// leaves its marks in Workers Logs. Names and numbers only; mem-trace.php runs only for an
 	// operator request.
+	if (m.qtraceOn) return qtrace ? '1' : '0'; // #296 step 3: PHP asks once per request whether to send callers
 	if (m.memMark) { console.log(JSON.stringify({ m: 'mem-mark', ...(typeof m.id === 'string' && MEM_ID_RE.test(m.id) ? { id: m.id } : {}), k: m.memMark })); return '1'; }
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
 	if (m.email) return JSON.stringify(await emailOp(m.email));
@@ -1378,6 +1382,7 @@ async function handleMessage(raw) {
 		if (m.mysql !== undefined) countTable(String(m.mysql));
 		const reply = await dbHandler.query(ENV, m);
 		stats.ms += Date.now() - t;
+		if (qtrace && m.mysql !== undefined) qtrace.add(String(m.mysql), Date.now() - t, typeof m.c === 'string' ? m.c : undefined);
 		const sql = String(m.mysql !== undefined ? m.mysql : '(binary SQL)');
 		if (reply.ok) stats.log.push('ok  ' + sql.slice(0, 160).replace(/\s+/g, ' '));
 		else {
@@ -3705,6 +3710,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 		try {
 			if (!isolateStart) isolateStart = Date.now(); // #474: the isolate's first request
 			ledgerActive = ledgerOn(env, req.headers.get('x-mem-ledger'), perfHeadersAllowed(req, env));
+			qtrace = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN && req.headers.get('x-pf-qtrace') === '1' ? createQueryTrace() : null;
 			ledgerId = ledgerActive ? memIdOf(req, env).id || null : null;
 			ledgerFailLogged = false;
 			sqlMeter.reset();
@@ -3846,6 +3852,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			if (ctx && ctx.inObject) out.set('x-boot-origin', bootOrigin);
 			// The path only, never the query string: a store's URLs carry order keys and logins there.
 			console.log(JSON.stringify({ m: 'req', path: url.pathname, boot: booted, d1: d.calls }));
+			if (qtrace) { console.log(JSON.stringify({ m: 'qtrace', ...memIdOf(req, env), method: req.method, status: r.httpStatusCode, ...qtrace.summary() })); qtrace = null; }
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
 			if (tracing()) fileTrace.end({ status: r.httpStatusCode });
 			evictLazy();
