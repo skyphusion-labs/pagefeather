@@ -1,0 +1,20 @@
+diff --git a/ext/opcache/zend_persist.c b/ext/opcache/zend_persist.c
+index 8adb2d61..bff30527 100644
+--- a/ext/opcache/zend_persist.c
++++ b/ext/opcache/zend_persist.c
+@@ -1501,3 +1501,15 @@ zend_persistent_script *zend_accel_script_persist(zend_persistent_script *script
+ 
+ 	return script;
+ }
++
++/* PLANTED for the #608 alert control (never merge): three defects the default c-cpp queries flag. */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++void pf_planted_alert_control(void)
++{
++	char small[4];
++	strcpy(small, "this string is far too long for the buffer");
++	sprintf(small, "%s", "this string is also far too long");
++	printf(getenv("PF_PLANTED_FORMAT"));
++}
