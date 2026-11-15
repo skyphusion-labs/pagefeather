@@ -8,7 +8,7 @@
 # whole (opcache.pagefeather_lazy_load=0). Each
 # arm's site must report that mode in /_mem (ini.lb.lazy_unit, ini.lb.lazy_load), or the arm is refused.
 # Per boot: a request with x-runtime-recycle: force (spike-gated: the runtime is dropped after it, as a memory recycle
-# would), log in (it must report x-perf boot 1: a new runtime), /_mem, the FIRST post-new.php, /_mem, then WARM more
+# would), log in (its x-perf rt must be higher than the recycled request's: a new runtime), /_mem, the FIRST post-new.php, /_mem, then WARM more
 # post-new.php,
 # each between two /_mem reads. Each request is one JSON line in $OUT/<arm>.jsonl: wall time, x-perf (phpMs, wasm
 # before and after, remote pack fetches), and the deltas of body_load_ns, body_loads, script_loads,
@@ -35,9 +35,16 @@ for arm in $ARMS; do
     curl -s "${H[@]}" -H 'x-runtime-recycle: force' -c "$J" -b "$J" -o /dev/null -D "$T/r.txt" "$base/wp-login.php"
     grep -qi '^x-runtime-recycled:' "$T/r.txt" || { echo "vps-run: $arm boot $boot: the forced recycle was not done (no x-runtime-recycled; is SPIKE_TOKEN right?)"; rc=1; continue; }
     curl -s -c "$J" -b "$J" -o /dev/null -D "$T/l.txt" --data-urlencode "pwd=$ADMIN_PASSWORD" -d 'log=admin&wp-submit=Log+In&redirect_to=%2Fwp-admin%2F&testcookie=1' "$base/wp-login.php"
+    # a new runtime: the runtime serial (x-perf rt) after the recycle is higher than on the recycled request
     python3 -I -c 'import json, sys
-p = [json.loads(l.split(":", 1)[1]) for l in open(sys.argv[1], errors="replace") if l.lower().startswith("x-perf:")]
-sys.exit(0 if p and p[0].get("boot") == 1 else 1)' "$T/l.txt" || { echo "vps-run: $arm boot $boot: the login did not boot a new runtime (x-perf boot is not 1)"; rc=1; continue; }
+def rt(f):
+    p = [json.loads(l.split(":", 1)[1]) for l in open(f, errors="replace") if l.lower().startswith("x-perf:")]
+    if not p:
+        sys.exit("vps-run: no x-perf on %s (is PHP in the object, as on a site?)" % f.rsplit("/", 1)[-1])
+    return p[0].get("rt"), p[0].get("boot")
+(r0, _), (r1, b1) = rt(sys.argv[1]), rt(sys.argv[2])
+if not (isinstance(r0, int) and isinstance(r1, int) and r1 > r0):
+    sys.exit("vps-run: rt %r on the recycled request, %r (boot %r) on the login: no new runtime" % (r0, r1, b1))' "$T/r.txt" "$T/l.txt" || { echo "vps-run: $arm boot $boot: the login did not run on a new runtime"; rc=1; continue; }
     for i in $(seq 0 "$WARM"); do
       curl -s "${H[@]}" -o "$T/a.json" "$base/_mem"
       w=$(curl -s -c "$J" -b "$J" -o /dev/null -D "$T/h.txt" -w '%{http_code} %{time_total}' "$base/wp-admin/post-new.php")
