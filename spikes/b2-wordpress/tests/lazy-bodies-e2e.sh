@@ -36,9 +36,13 @@ if not isinstance(lb, dict):
     sys.exit("lazy-bodies-e2e: opcache_get_status() has no pagefeather_lazy_bodies: not a lazy-body engine")
 if lb.get("split_scripts", 0) <= 0:
     sys.exit("lazy-bodies-e2e: no script was persisted split (split_scripts %r)" % lb.get("split_scripts"))
+if lb.get("dir_mismatch", 0) != 0:
+    sys.exit("lazy-bodies-e2e: dir_mismatch %r: persist found a different number of bodies than calc" % lb.get("dir_mismatch"))
+if "dir_entries" in lb and lb["dir_entries"] <= 0:
+    sys.exit("lazy-bodies-e2e: dir_entries %r: no body directory was written" % lb.get("dir_entries"))
 if lb.get("noregion") != 0:
     sys.exit("lazy-bodies-e2e: noregion %r: a body block was reached with no body region (left unsplit, never a bailout)" % lb.get("noregion"))
 if lb.get("mismatch") != 0:
     sys.exit("lazy-bodies-e2e: %r head mismatches (%r overlapping): calc and persist disagree on the body region" % (lb.get("mismatch"), lb.get("overlap")))
-print("lazy-bodies-e2e: ok at memory_consumption %s: split %d of %s cached scripts, %.2f MiB of bodies, 0 mismatches" % (ini.get("mc"), lb["split_scripts"], ini.get("cached"), lb["body_bytes"] / 2**20))
+print("lazy-bodies-e2e: ok at memory_consumption %s: split %d of %s cached scripts, %.2f MiB of bodies, %s directory entries, 0 mismatches" % (ini.get("mc"), lb["split_scripts"], ini.get("cached"), lb["body_bytes"] / 2**20, lb.get("dir_entries")))
 PY
