@@ -58,6 +58,9 @@ def rec(phase, label, method, path, r, extra=None):
            'code': r.get('code'), 's': r.get('s'), 'boot': g('x-boot'), 'wasm': g('x-wasm-mib'),
            'recycled': g('x-runtime-recycled'), 'writeLoss': g('x-write-loss'), 'reset': g('x-isolate-reset'),
            'prerecycled': g('x-runtime-prerecycled'), 'retry': g('x-isolate-retry'), 'perfId': break_lib.LAST_ID[0],
+           # #589: the request id of a write-loss answer (x-pf-req, for the /_frame probe) and the rows a
+           # proven rollback undid (x-write-undone).
+           'pfReq': g('x-pf-req'), 'undone': g('x-write-undone'),
            'perf': perf}  # the whole perf object: a fixed subset dropped fields the #394 runs needed
     if r.get('err'):
         row['err'] = r['err']  # a client exception (break_lib.req): the repr, never a body
@@ -214,7 +217,49 @@ def rest_round(a, phase, i):
     title = 'measure394 %s %d' % (RUN, i)
     r = req(a, '/?rest_route=/wp/v2/pages', json.dumps({'title': title, 'status': 'draft'}).encode(),
             {'X-WP-Nonce': nonce, 'Content-Type': 'application/json'}, 'POST')
-    rec(phase, 'rest-page', 'POST', '/wp/v2/pages', r, check_state(a, nonce, r, title))
+    rec(phase, 'rest-page', 'POST', '/wp/v2/pages', r, dict(check_state(a, nonce, r, title), **frame_of(a, r)))
+
+
+def frame_of(a, r):
+    """#589: the #352 frame of a write that answered 5xx: /_frame?id=<x-pf-req> (spike token only). The
+    state says when the object died: rolled-back (PHP was still running; nothing kept), kept (PHP had
+    finished: the write is durable), ended-at-reset, open, or none (frames off, or no answer)."""
+    code = r.get('code')
+    if isinstance(code, int) and code < 500:
+        return {}
+    pf = (r.get('h') or {}).get('x-pf-req') if r.get('h') else None
+    if not pf or not os.environ.get('SPIKE_TOKEN'):
+        return {'frame': None}
+    f = req(a, '/_frame?id=' + urllib.parse.quote(pf))
+    try:
+        fr = (json.loads(f.get('body') or b'{}') or {}).get('frame') if f.get('code') == 200 else None
+    except ValueError:
+        fr = None
+    return {'frame': (fr or {}).get('state') if fr else None, 'framePoints': (fr or {}).get('points'), 'frameCode': f.get('code')}
+
+
+def tally(rs):
+    """#589: one REST write's answer by its read-back state by its frame state. 5xx-found is the defect
+    (committed, told failed); 2xx-absent is a silent loss and must be 0; read-failed is never found or
+    absent (#519)."""
+    rs = [x for x in rs if x.get('label') == 'rest-page']
+    ok = lambda x: isinstance(x.get('code'), int) and x['code'] < 500
+    t = {'writes': len(rs), '2xx-found': 0, '2xx-absent': 0, '5xx-found': 0, '5xx-absent': 0, 'read-failed': 0,
+         'frame5xx': {}, '5xx-found-by-frame': {}, 'reset5xx': {}}
+    for x in rs:
+        st = x.get('state')
+        if st not in ('found', 'absent'):
+            t['read-failed'] += 1
+        else:
+            t[('2xx-' if ok(x) else '5xx-') + st] += 1
+        if not ok(x):
+            fk = x.get('frame') or 'none'
+            t['frame5xx'][fk] = t['frame5xx'].get(fk, 0) + 1
+            if st == 'found':
+                t['5xx-found-by-frame'][fk] = t['5xx-found-by-frame'].get(fk, 0) + 1
+            if x.get('reset'):
+                t['reset5xx'][x['reset']] = t['reset5xx'].get(x['reset'], 0) + 1
+    return t
 
 
 def crawl(o):
@@ -248,6 +293,7 @@ def summary():
             print('       rest-page: answered 201 %d; read back: found %d absent %d mismatch %d read-failed %d; 201-and-absent %d; stalls over 30 s %d' % (
                 sum(1 for x in rs if x['code'] == 201), st['found'], st['absent'], st['mismatch'], st['read-failed'],
                 sum(1 for x in rs if x['code'] == 201 and x.get('state') == 'absent'), stalls), file=sys.stderr)
+            print('       rest-page #589: %s' % json.dumps(tally(rs), sort_keys=True), file=sys.stderr)
 
 
 if __name__ == '__main__':
