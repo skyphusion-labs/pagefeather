@@ -40,6 +40,7 @@ import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy } from './overflow.mjs';
 import { stampRendered } from './page-stamp.mjs';
+import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
@@ -1915,11 +1916,15 @@ function pageCacheHeaders(req, url, r, out, env) {
 		!PAGE_CACHE_NO_PATH.test(url.pathname) &&
 		!PAGE_CACHE_NO_PARAM.some((k) => url.searchParams.has(k)) &&
 		!req.headers.has('authorization');
+	// #628 C2: edge-cache.php marks product, shop and category pages for the Worker only. The mark
+	// never leaves, cached or not (page-cache-ttl.mjs).
+	out.delete(PRODUCT_PAGE_HEADER);
 	if (cacheable) {
 		// The edge keeps it (cloudflare-cdn-cache-control, consumed by Cloudflare and
 		// not sent on). The browser must ask again (no-cache): there is no Vary: Cookie
 		// now, so a browser that kept the page would show the logged-out copy after a login.
-		out.set('cloudflare-cdn-cache-control', `max-age=${ttl}, stale-while-revalidate=600`);
+		// PAGE_CACHE_PRODUCT_TTL (#628 C2, off by default) gives product pages a shorter TTL.
+		out.set('cloudflare-cdn-cache-control', edgeCacheControl(ttl, productTtl(env), isProductPage(r.headers)));
 		out.set('cache-control', 'no-cache');
 		out.set('cache-tag', 'wp-pages');
 	} else {
