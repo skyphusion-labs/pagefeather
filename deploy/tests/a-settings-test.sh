@@ -19,6 +19,13 @@ refuse "OPCACHE_A is for variant a only" VARIANT=b-dosql OPCACHE_A=1
 refuse "OPCACHE_REMOTE is for variant a only" VARIANT=b-dosql OPCACHE_REMOTE=1
 refuse "SITE_REMOTE is for variant a only" VARIANT=b-do SITE_REMOTE=1
 refuse "RECYCLE_WASM_MIB is for variant a only" VARIANT=b-dosql RECYCLE_WASM_MIB=140
+refuse "A_CLIENT is for variant a only" VARIANT=b-dosql A_CLIENT=lean
+refuse "PHP_OVERFLOW is for variant a only" VARIANT=b-do PHP_OVERFLOW=1
+refuse "PHP_OVERFLOW_POOL is for variant a only" VARIANT=c1 PHP_OVERFLOW_POOL=32
+refuse "A_CLIENT must be lean or mysql2" VARIANT=a A_CLIENT=pg
+for bad in 2 on yes; do refuse "PHP_OVERFLOW must be 0 or 1" VARIANT=a PHP_OVERFLOW=$bad; done
+refuse "PHP_OVERFLOW_POOL needs PHP_OVERFLOW=1" VARIANT=a PHP_OVERFLOW_POOL=32
+for bad in 0 257 1e3 abc -4 1000; do refuse "PHP_OVERFLOW_POOL must be an integer from 1 to 256" VARIANT=a PHP_OVERFLOW=1 "PHP_OVERFLOW_POOL=$bad"; done
 for bad in 2 on d1 yes; do refuse "OPCACHE_A must be 0 or 1" VARIANT=a OPCACHE_A=$bad; done
 for bad in 2 on yes; do refuse "OPCACHE_REMOTE must be 0 or 1" VARIANT=a OPCACHE_A=1 OPCACHE_REMOTE=$bad; done
 refuse "SITE_REMOTE must be 0 or 1" VARIANT=a OPCACHE_A=1 OPCACHE_REMOTE=1 SITE_REMOTE=on
@@ -46,6 +53,16 @@ ok "RECYCLE_WASM_MIB=064 renders 64 (base 10, not octal)" "$([ "$(r RECYCLE_WASM
 ok "the bounds 64 and 240 pass the check" "$(env -i PATH="$PATH" bash -c ". '$S' && RECYCLE_WASM_MIB=64 a_settings_check a && RECYCLE_WASM_MIB=240 a_settings_check a" >/dev/null 2>&1 && echo 1 || echo 0)"
 ok "no setting passes the check on every variant" "$(env -i PATH="$PATH" bash -c ". '$S' && for v in a b-do b-dosql c1; do a_settings_check \$v || exit 1; done" >/dev/null 2>&1 && echo 1 || echo 0)"
 ok "the lean engine pair passes the check" "$(env -i PATH="$PATH" PF_ENGINE_JS="$T/engine.wasm" PF_ENGINE_WASM="$T/engine.wasm" bash -c ". '$S' && a_settings_check a" >/dev/null 2>&1 && echo 1 || echo 0)"
+
+echo "2c. #666: the client and the overflow pool (a-settings.sh; the object cache is checked by a-render-test.sh)"
+m() { env -i PATH="$PATH" "$@" bash -c ". '$S' && a_main" 2>&1; }
+ok "the default client is lean (index-a-lean.js)" "$([ "$(m)" = index-a-lean.js ] && echo 1 || echo 0)"
+ok "A_CLIENT=mysql2 is index-a.js" "$([ "$(m A_CLIENT=mysql2)" = index-a.js ] && echo 1 || echo 0)"
+o() { env -i PATH="$PATH" "$@" bash -c ". '$S' && a_overflow_vars && echo --- && a_overflow_bindings" 2>&1; }
+ok "PHP_OVERFLOW unset renders nothing" "$([ "$(o)" = '---' ] && echo 1 || echo 0)"
+ok "PHP_OVERFLOW=1: pool 32, the PhpRuntime binding and its migration" "$([ "$(o PHP_OVERFLOW=1)" = "$(printf 'PHP_OVERFLOW = "on"\nPHP_OVERFLOW_POOL = "32"\n---\n[[durable_objects.bindings]]\nname = "PHP_RUNTIME"\nclass_name = "PhpRuntime"\n[[migrations]]\ntag = "v1"\nnew_sqlite_classes = ["PhpRuntime"]')" ] && echo 1 || echo 0)"
+ok "PHP_OVERFLOW_POOL=064 renders 64 (base 10)" "$(grep -qx 'PHP_OVERFLOW_POOL = "64"' <<<"$(o PHP_OVERFLOW=1 PHP_OVERFLOW_POOL=064)" && echo 1 || echo 0)"
+ok "the pool bounds 1 and 256 pass the check" "$(env -i PATH="$PATH" bash -c ". '$S' && PHP_OVERFLOW=1 PHP_OVERFLOW_POOL=1 a_settings_check a && PHP_OVERFLOW=1 PHP_OVERFLOW_POOL=256 a_settings_check a" >/dev/null 2>&1 && echo 1 || echo 0)"
 
 echo "2b. an empty or unreadable primed cache fails (a_opcache_count; from #625, rollins-sb1114l)"
 cnt() { env -i PATH="$PATH" bash -c ". '$S' && a_opcache_count '$1'" 2>&1; }
@@ -78,12 +95,12 @@ ok "a remote A config passes the guard (rc $rc)" "$([ $rc = 0 ] && echo 1 || ech
 python3 -I "$ROOT/deploy/wfp/remote_assets_check.py" "$T/nofirst.toml" "$APP" 2>"$T/nofirst.err"; rc=$?
 ok "the control: the same config without /_pf/ first is REFUSED (rc $rc)" "$([ $rc = 2 ] && grep -q run_worker_first "$T/nofirst.err" && echo 1 || echo 0)"
 # 3b. The DEFAULT variant a deploy (no #394 setting) also runs the guard, so it must pass it. The
-# [assets] line is taken from deploy.sh itself, so a change there reaches this case. A plain build's
+# [assets] line is taken from the render itself (deploy/render-conf.sh since #666), so a change there reaches this case. A plain build's
 # indexes are what build.sh writes: export default null.
 PLAIN="$T/plain"; mkdir -p "$PLAIN/build"
 for f in opcache-remote-index.js site-remote-index.js opcache-boot-index.js; do echo 'export default null;' > "$PLAIN/build/$f"; done
-ASSETS_LINE=$(grep -E "^  echo '\[assets\]'; " "$ROOT/deploy/deploy.sh")
-ok "  (deploy.sh has exactly one [assets] line, and it binds ASSETS)" "$([ "$(grep -cE "^  echo '\[assets\]'; " "$ROOT/deploy/deploy.sh")" = 1 ] && grep -q 'binding = "ASSETS"' <<<"$ASSETS_LINE" && echo 1 || echo 0)"
+ASSETS_LINE=$(grep -E "^  echo '\[assets\]'; " "$ROOT/deploy/render-conf.sh")
+ok "  (the render has exactly one [assets] line, and it binds ASSETS)" "$([ "$(grep -cE "^  echo '\[assets\]'; " "$ROOT/deploy/render-conf.sh")" = 1 ] && grep -q 'binding = "ASSETS"' <<<"$ASSETS_LINE" && echo 1 || echo 0)"
 dconf() { # the default render: deploy.sh's [assets] line, then a_assets_first and a_vars with no setting
   env -i PATH="$PATH" ASSETS_LINE="$ASSETS_LINE" bash -c ". '$S'
     eval \"\$ASSETS_LINE\"
@@ -100,8 +117,9 @@ ok "a default config WITHOUT the ASSETS binding passes too: a plain build needs 
 python3 -I "$ROOT/deploy/wfp/remote_assets_check.py" "$T/default.toml" "$APP" 2>"$T/default-red.err"; rc=$?
 ok "the control: the same DEFAULT config over a REMOTE build is REFUSED (rc $rc)" "$([ $rc = 2 ] && grep -q 'disagree' "$T/default-red.err" && echo 1 || echo 0)"
 ok "deploy.sh runs the guard on variant a before the deploy" "$(awk '/remote_assets_check.py/ {g=NR} /^DEP=.*deploy --config/ {d=NR} END {print (g && d && g < d) ? 1 : 0}' "$ROOT/deploy/deploy.sh")"
-# WOO_EXTRAS (#667) is every variant, so it is deploy.sh's own [vars] line, not a_vars.
-ok "deploy.sh writes WOO_EXTRAS = \"off\" into [vars]" "$(grep -c 'WOO_EXTRAS = "off"' "$ROOT/deploy/deploy.sh" | grep -qx 1 && echo 1 || echo 0)"
+# WOO_EXTRAS (#667) is every variant, so it is the render's own [vars] line, not a_vars (render-conf.sh since #666;
+# a-render-test.sh checks the rendered line itself).
+ok "the render writes WOO_EXTRAS = \"off\" into [vars]" "$(grep -c 'WOO_EXTRAS = "off"' "$ROOT/deploy/render-conf.sh" | grep -qx 1 && echo 1 || echo 0)"
 ok "deploy.sh checks WOO_EXTRAS before its first terraform step" "$(awk '/WOO_EXTRAS must be off or unset/ {c=NR} /log "terraform:/ && !t {t=NR} END {print (c && t && c < t) ? 1 : 0}' "$ROOT/deploy/deploy.sh")"
 
 echo "$fails failing case(s)"

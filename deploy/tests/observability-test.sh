@@ -89,7 +89,8 @@ echo "4. deploy.sh wiring"
 D="$ROOT/deploy/deploy.sh"
 # shellcheck disable=SC2016  # a literal line of deploy.sh
 ok "deploy.sh checks OBSERVABILITY before any step (it sources observability.sh and calls obs_check)" "$(grep -q '^obs_check "\$VARIANT" || exit 2$' "$D" && echo 1 || echo 0)"
-ok "the block is in the rendered config" "$(grep -q '^  obs_block$' "$D" && echo 1 || echo 0)"
+# #666: the render moved to render-conf.sh (render_conf), which deploy.sh sources and runs.
+ok "the block is in the rendered config" "$(grep -q '^  obs_block$' "$ROOT/deploy/render-conf.sh" && grep -q '^render_conf > "\$CONF"$' "$D" && echo 1 || echo 0)"
 ok "deploy.sh redacts after the upload, before the CODE_ONLY exit and the secrets" "$(awk '/^DEP=.*deploy --config/ {d=NR} /obs_redact "\$NAME"/ {r=NR} /^if \[ "\$CODE_ONLY" = 1 \]; then$/ && d {c=NR} /secret bulk/ {s=NR} END {print (d && r && c && s && d < r && r < c && r < s) ? 1 : 0}' "$D")"
 
 echo "$fails failing case(s)"

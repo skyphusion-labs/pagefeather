@@ -183,6 +183,23 @@ VARIANT=a MYSQL=vultr VULTR_API_KEY=... MYSQL_ZONE_ID=<zone> MYSQL_HOST=mysql-my
 
 `MYSQL=vultr` makes the database box with `deploy/mysql` (MariaDB with SSL; port 3306 open to Cloudflare's IPv4 ranges only; no SSH; $10 a month). `MYSQL=external` uses your own server: `MYSQL_HOST`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`. A public server must have SSL. For a server behind a Cloudflare Tunnel and Access (CR #141, `tests/ssh-source`), set `MYSQL_ACCESS_CLIENT_ID` and `MYSQL_ACCESS_CLIENT_SECRET` instead: Hyperdrive reaches it with the service token, the box opens no inbound port, and no SSL is needed. Give Hyperdrive the host **name**: by IP address it measured about 44 ms per query, by name about 7 ms ([docs/approach-a.md](../docs/approach-a.md)). On Workers Free this variant stops at the CPU limit.
 
+### Variant `a`: the measured site (#666)
+
+A plain `VARIANT=a` deploy is the approach-A site that every #296 run measured. Before #666, deploy.sh rendered none of these settings, so the measured site could only be deployed with a hand-made config. `deploy/tests/a-render-test.sh` diffs deploy.sh's render against that bench config (`deploy/tests/a-render/`), so the two cannot drift apart again.
+
+- **Always rendered:**
+  - the object cache: `OBJECT_CACHE`, `OBJECT_CACHE_GROUPS` theme_json, `OBJECT_CACHE_TTL` 10;
+  - its L2: `OBJECT_CACHE_L2`, with the binding `OC_KV` to the site's own KV namespace, which Terraform makes (`<name>-oc`, output `oc_kv_id`);
+  - lazy MEMFS nodes: `LAZY_NODES`, `LAZY_CACHE_MB` 4.
+
+  These come from the same source as the provisioning path, `aVars` in `deploy/provision/wp-site-config.mjs` (through `deploy/provision/a-vars-toml.mjs`). `a-site-config-test.mjs` holds that source to `[env.a-paid-lean]`.
+
+| setting | what it does | needs |
+|---|---|---|
+| `A_CLIENT` | `lean` (default) deploys `index-a-lean.js`, the hand-rolled MySQL client (#218). `mysql2` deploys `index-a.js`, which deploy.sh deployed before #666 | |
+| `PHP_OVERFLOW=1` | a queued PHP request moves to a Durable Object pool (#646, `docs/approach-a-overflow.md`). Renders `PHP_OVERFLOW`, `PHP_OVERFLOW_POOL`, the `PHP_RUNTIME` binding and its migration. Off by default | |
+| `PHP_OVERFLOW_POOL` | the pool size, 1 to 256. Unset is 32, the measured default (#646) | `PHP_OVERFLOW=1` |
+
 ### Variant `a` admin settings (#394)
 
 The admin memory fixes built on the b-dosql path, for approach A. All of them are off unless set, so a deploy without them is the deploy of before. The rules are in `deploy/a-settings.sh` and are checked before any step:

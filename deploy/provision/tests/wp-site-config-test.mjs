@@ -27,7 +27,9 @@ const render = (site, origin) => execFileSync('bash', ['-c', '. "$1"; render_use
 const rendered = render('blog', 'https://blog.skyphusionwp.dev');
 const has = (re) => re.test(rendered);
 const bindingsPy = readFileSync(join(here, '../../wfp/bindings.py'), 'utf8');
-const deploySh = readFileSync(join(here, '../../deploy.sh'), 'utf8');
+// #666: deploy.sh's Wrangler config is rendered by render_conf in deploy/render-conf.sh, which deploy.sh
+// sources: read both, so the check follows the render wherever it lives.
+const deploySh = readFileSync(join(here, '../../deploy.sh'), 'utf8') + readFileSync(join(here, '../../render-conf.sh'), 'utf8');
 
 const b = bDosqlBindings({ mediaBucket: mediaBucketName('blog'), siteOrigin: 'https://blog.skyphusionwp.dev', location: 'enam' });
 const byType = (t) => b.filter((x) => x.type === t);

@@ -10,6 +10,14 @@ resource "cloudflare_d1_database" "wp" {
   read_replication      = { mode = "disabled" }
 }
 
+# #666: variant a's L2 object cache (OBJECT_CACHE_L2, the OC_KV binding deploy.sh renders): the site's own
+# namespace, so one site's cached values never reach another's.
+resource "cloudflare_workers_kv_namespace" "oc" {
+  count      = var.variant == "a" ? 1 : 0
+  account_id = var.account_id
+  title      = "${var.name}-oc"
+}
+
 # c1 always has a media bucket: its Worker serves uploads from R2.
 resource "cloudflare_r2_bucket" "media" {
   count      = var.media || local.c1 ? 1 : 0
