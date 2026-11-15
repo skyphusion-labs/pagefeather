@@ -5,8 +5,8 @@ The fake is a small query engine over an in-memory list of log rows. It answers 
 knows: the telemetry query (views calculations and invocations; filters eq, exists, includes) and a
 script-settings GET. Any other call, view, operation or key is recorded as UNEXPECTED and fails the
 case. It follows the API as measured 2026-11-15: at most 100 invocations a call, and our JSON console
-lines carry their fields in source (a filter names them source.<field>; $metadata.message is null, so a
-message filter is UNEXPECTED). Run: python3 -I deploy/doctor-lib/tests/doctor-test.py   (python3 3.9, macOS /bin/bash 3.2)
+lines carry their fields in source with $metadata.message null (a message filter is UNEXPECTED). A
+filter names a field by its bare name, as measured live; key_style "source" makes it source.<field>. Run: python3 -I deploy/doctor-lib/tests/doctor-test.py   (python3 3.9, macOS /bin/bash 3.2)
 """
 import http.server
 import json
@@ -27,7 +27,7 @@ SQL = "SELECT user_pass FROM wp_users WHERE ID = 1"
 RUNTIME_LINE = "Durable Object's isolate exceeded its memory limit and was reset."
 RUNTIME_LINES = 41  # a count that must never be printed
 
-S = {"rows": [], "settings": {}, "unexpected": [], "auth": set(), "fail_query": False, "calls": 0,
+S = {"rows": [], "settings": {}, "unexpected": [], "auth": set(), "fail_query": False, "calls": 0, "key_style": "bare",
      # inv_drop: the invocations view leaves out this many request records (the views can disagree).
      # count_cap: the calculations view counts at most this many request records.
      "inv_drop": 0, "count_cap": None,
@@ -45,9 +45,12 @@ def get_key(e, key):
         return (e.get("$workers") or {}).get(key[9:])
     if key.startswith("$"):
         raise KeyError(key)
-    if not key.startswith("source."):
-        raise KeyError("bare key " + key)
-    key = key[7:]
+    if key.startswith("source."):
+        if S["key_style"] != "source":
+            return None
+        key = key[7:]
+    elif S["key_style"] != "bare":
+        return None
     src = e.get("source")
     return src.get(key) if isinstance(src, dict) else None
 
@@ -218,6 +221,7 @@ def reset(rows, settings):
     S["unexpected"] = []
     S["auth"] = set()
     S["fail_query"] = False
+    S["key_style"] = "bare"
     S["inv_drop"] = 0
     S["count_cap"] = None
     S["wide_drop"] = None
@@ -309,6 +313,17 @@ never_leaks("console only json", jout)
 check("console only json visibility", j["visibility"] == "console_only" and j["outcomes"] is None, j["visibility"])
 check("console only json never holds the runtime line count", RUNTIME_LINES not in ints(j), sorted(set(ints(j))))
 check("console only json memory resets is a yes", j["memory_resets_seen"] is True)
+
+#    the same lines when the API names the field source.m: the fallback reads the same counts.
+reset(rows, {wfp("site-shop"): ON})
+S["key_style"] = "source"
+out2 = common("console only, source.m", run("shop"), 1)
+check("source.m gives the same signal counts", re.search(r"isolate-reset\s+2 \(memory 2\)", out2) is not None and "queued 3" in out2, out2)
+j2 = json.loads(run("shop", "--json")[1])
+check("source.m is named as the field key", j2["signals"]["field_key"] == "source.m", j2["signals"]["field_key"])
+reset(rows, {wfp("site-shop"): ON})
+j2 = json.loads(run("shop", "--json")[1])
+check("the bare key is tried first and named", j2["signals"]["field_key"] == "m", j2["signals"]["field_key"])
 
 # 5. structured lines unreadable (no "m" field): every signal is could-not-measure, never 0.
 reset([console("site-shop", "plain text line") for _ in range(4)], {wfp("site-shop"): ON})

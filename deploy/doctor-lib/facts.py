@@ -257,9 +257,11 @@ def summarize_rows(rows):
     return out
 
 
-# A field of our JSON console lines is source.<name> (measured 2026-11-15: $metadata.message is null for
-# them; the fields are in the event's source object). Never a message substring.
-FIELD_PREFIXES = ("source.",)
+# A field of our JSON console lines (measured 2026-11-15): $metadata.message is null for them, and the
+# fields are in the event's source object. Never a message substring. The live read at 53d04bc showed
+# the filter key is the bare field name ("m" read isolate-reset-retry, write-loss and boot on pf582s),
+# so it is tried first; "source.m" is the fallback, and the control picks the one that reads.
+FIELD_PREFIXES = ("", "source.")
 
 
 def signals(api, window, service):
