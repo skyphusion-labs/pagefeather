@@ -117,8 +117,9 @@ ok "a default config WITHOUT the ASSETS binding passes too: a plain build needs 
 python3 -I "$ROOT/deploy/wfp/remote_assets_check.py" "$T/default.toml" "$APP" 2>"$T/default-red.err"; rc=$?
 ok "the control: the same DEFAULT config over a REMOTE build is REFUSED (rc $rc)" "$([ $rc = 2 ] && grep -q 'disagree' "$T/default-red.err" && echo 1 || echo 0)"
 ok "deploy.sh runs the guard on variant a before the deploy" "$(awk '/remote_assets_check.py/ {g=NR} /^DEP=.*deploy --config/ {d=NR} END {print (g && d && g < d) ? 1 : 0}' "$ROOT/deploy/deploy.sh")"
-# WOO_EXTRAS (#667) is every variant, so it is deploy.sh's own [vars] line, not a_vars.
-ok "deploy.sh writes WOO_EXTRAS = \"off\" into [vars]" "$(grep -c 'WOO_EXTRAS = "off"' "$ROOT/deploy/deploy.sh" | grep -qx 1 && echo 1 || echo 0)"
+# WOO_EXTRAS (#667) is every variant, so it is the render's own [vars] line, not a_vars (render-conf.sh since #666;
+# a-render-test.sh checks the rendered line itself).
+ok "the render writes WOO_EXTRAS = \"off\" into [vars]" "$(grep -c 'WOO_EXTRAS = "off"' "$ROOT/deploy/render-conf.sh" | grep -qx 1 && echo 1 || echo 0)"
 ok "deploy.sh checks WOO_EXTRAS before its first terraform step" "$(awk '/WOO_EXTRAS must be off or unset/ {c=NR} /log "terraform:/ && !t {t=NR} END {print (c && t && c < t) ? 1 : 0}' "$ROOT/deploy/deploy.sh")"
 
 echo "$fails failing case(s)"

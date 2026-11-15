@@ -61,5 +61,10 @@ differs "$T/b.canon" "A_CLIENT=mysql2 (index-a.js) differs from the bench" A_CLI
 differs "$T/bo.canon" "PHP_OVERFLOW_POOL=31 differs from the overflow bench" PHP_OVERFLOW=1 PHP_OVERFLOW_POOL=31
 differs "$T/b.canon" "OBSERVABILITY=1 (events only) differs from the bench (full)" OBSERVABILITY=1
 
+echo "4. WOO_EXTRAS=off (#667) reaches the rendered [vars], and unset renders nothing"
+render "$T/w.toml" WOO_EXTRAS=off; rc=$?
+ok "WOO_EXTRAS=off renders vars WOO_EXTRAS = \"off\" (rc $rc)" "$([ $rc = 0 ] && python3 -I "$HERE/canon.py" "$T/w.toml" | grep -qx 'vars WOO_EXTRAS = "off"' && echo 1 || echo 0)"
+ok "unset renders no WOO_EXTRAS line" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -q WOO_EXTRAS && echo 0 || echo 1)"
+
 [ "$fails" = 0 ] && echo "a-render: all checks pass" || echo "a-render: $fails failing check(s)"
 exit $((fails > 0))
