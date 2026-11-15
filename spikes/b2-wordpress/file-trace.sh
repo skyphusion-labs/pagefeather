@@ -23,12 +23,13 @@ P=${PORT:-8797}
 B=http://localhost:$P
 ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}")
 PW=${ADMIN_PASSWORD:-local-spike-password}
-curl "${ST[@]}" -sf -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null
+# #677: install_dev keeps the /_install answer and runs server_alive before activation.
+SERVER=$(cut -d' ' -f1 ".dev-$P.pid" 2>/dev/null || true)
+PORT=$P
+# shellcheck source=opcache-activate.sh
+. ./opcache-activate.sh
+install_dev || exit 1
 if [ "${WOO_ACTIVE:-1}" = 1 ]; then
-  # #677: a dead dev server, or the activation's own answer, is named (opcache-activate.sh), with one retry.
-  SERVER=$(cut -d' ' -f1 ".dev-$P.pid" 2>/dev/null || true); PORT=$P
-  # shellcheck source=opcache-activate.sh
-  . ./opcache-activate.sh
   woo_activate || exit 1
 fi
 # Drop what install and activation read: the trace is for page traffic.
