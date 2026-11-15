@@ -2884,7 +2884,7 @@ export class PhpRuntime extends DurableObject {
 		const ahead = phpPending;
 		const isSpikeLongOp = url.pathname === '/_install' || url.pathname === '/_activate';
 		phpPending++;
-		// #296: shed only with PHP_QUEUE_SHED_MS set (the object default is never).
+		// #296: shed only with PHP_QUEUE_SHED_MS set (the default is never, on every path).
 		const objectRun = await withPhp(async () => {
 			const waitMs = Date.now() - tArrive;
 			sqlDb = sql;

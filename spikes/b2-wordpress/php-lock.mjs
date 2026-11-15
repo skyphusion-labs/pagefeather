@@ -112,11 +112,14 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 }
 
 // The shed bound of a path. PHP_QUEUE_SHED_MS: an integer from 1000 to 120000 (ms), or "off" (never).
-// Unset or empty keeps the default: 45 s on the Worker path (approach A: no queue limit in front of it,
-// and a wait past about 60 s ends in a client or proxy timeout anyway), never on the object path (b-do,
-// b-dosql: the Durable Object has its own overload limit, and its slow answers are answers today).
-export function shedMsFor(env, inObject) {
-	const def = inObject ? 0 : 45000;
+// Unset, empty or a bad value: never, on every path. Measured (#296 run 2, 2026-11-15, approach A, VPS
+// checkout ladder): a 45 s default lowered completion at 250 concurrent (159 of 215, against 207 of 241
+// with no shed), because a shed cart step aborts the purchase and some shed waits would have finished.
+// The stale rule alone removed the memory cascade (0 stale events). The shed stays for operators who
+// prefer a fast 503 to a long wait. The path argument stays so a path default can return if measured.
+// eslint-disable-next-line no-unused-vars
+export function shedMsFor(env, _inObject) {
+	const def = 0;
 	const raw = env ? env.PHP_QUEUE_SHED_MS : undefined;
 	if (raw === undefined || raw === null || String(raw).trim() === '') return { ms: def, source: 'default' };
 	const s = String(raw).trim();

@@ -179,13 +179,17 @@ test('a run that throws releases the lock, and the error reaches its caller', as
 	assert.equal(await b, 'b');
 });
 
-test('shedMsFor: the Worker path sheds at 45 s by default, the object path never by default', () => {
-	assert.deepEqual(shedMsFor({}, false), { ms: 45000, source: 'default' });
+test('shedMsFor: no path sheds by default; the setting turns it on for either', () => {
+	// #296 run 2 (2026-11-15): a 45 s default on approach A LOWERED checkout completion at 250 concurrent
+	// (159 of 215, against 207 of 241 with no shed), while the stale rule alone removed the cascade
+	// (0 stale events). So the shed is opt-in on every path.
+	assert.deepEqual(shedMsFor({}, false), { ms: 0, source: 'default' });
 	assert.deepEqual(shedMsFor({}, true), { ms: 0, source: 'default' });
+	assert.deepEqual(shedMsFor({ PHP_QUEUE_SHED_MS: '45000' }, false), { ms: 45000, source: 'PHP_QUEUE_SHED_MS' });
 	assert.deepEqual(shedMsFor({ PHP_QUEUE_SHED_MS: '20000' }, true), { ms: 20000, source: 'PHP_QUEUE_SHED_MS' });
 	assert.deepEqual(shedMsFor({ PHP_QUEUE_SHED_MS: 'off' }, false), { ms: 0, source: 'PHP_QUEUE_SHED_MS' });
 	const bad = shedMsFor({ PHP_QUEUE_SHED_MS: '50' }, false);
-	assert.equal(bad.ms, 45000);
+	assert.equal(bad.ms, 0, 'a bad value keeps the default: no shed');
 	assert.match(bad.refused, /1000 to 120000/);
-	assert.equal(shedMsFor({ PHP_QUEUE_SHED_MS: '' }, false).ms, 45000);
+	assert.equal(shedMsFor({ PHP_QUEUE_SHED_MS: '' }, false).ms, 0);
 });
