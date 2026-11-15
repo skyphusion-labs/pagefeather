@@ -13,9 +13,17 @@ Run it on a THROWAWAY only (it makes products and orders, then deletes them).
             which asks a purge; purges are limited per account), then count the cached pages that
             still say "in stock", every POLL_S. Case 2 of #628.
 
+Two layers can show old stock, and the probe times each one:
+  - the Worker: a page it RENDERS can still show the old stock (a stale object cache inside the
+    Worker; there is no page cache inside it, index.js and the mu-plugins have none). worker_stale_s is
+    the time until a cache-busted read shows the new value. 0 when the first such read does.
+  - the edge (the #63 page cache): stale_s is the time until a CACHED read shows the new value.
+    stale_s is never less than worker_stale_s.
+
 Controls, so a number is never made from a read that could not see:
-  - a cache-busted read (?nocache=) must show the NEW value after the checkout. If it does not, the
-    checkout did not change the stock, and the result is could-not-measure;
+  - a cache-busted read (?nocache=) must show the NEW value (the sale's before minus one) within MAX_S.
+    If it never does, the checkout did not change the stock, or the Worker shows old stock past MAX_S:
+    could-not-measure, with no worker_stale_s;
   - a warm read must come from the cache (cf-cache-status HIT, STALE, UPDATING or REVALIDATED). If
     the site never says so, a fresh page cannot be told from a purged one: could-not-measure.
 Guest reads send no cookie and no operator header: an operator request never uses the page cache.
@@ -189,10 +197,22 @@ def case_qty(a, made, orders):
     if oid:
         orders.append(oid)
     after = guest_read(path, bust=True)
+    want = before["qty"] - 1 if (oid and before["qty"] is not None) else None
     res = {"case": "qty", "cached_proof": w["cache"] in CACHED, "warm_cache": w["cache"], "before": before["qty"], "after": after["qty"],
-           "bought": bool(oid), "control_new": bool(oid) and before["qty"] is not None and after["qty"] == before["qty"] - 1,
-           "stale_s": None, "polls": 0, "cache_seen": {}, "warm": ev}
-    if not (res["cached_proof"] and res["control_new"]):
+           "bought": bool(oid), "control_new": want is not None and after["qty"] == want,
+           "worker_stale_s": None, "stale_s": None, "polls": 0, "cache_seen": {}, "warm": ev}
+    # The Worker layer: poll uncached reads until the new value shows, or MAX_S.
+    if res["control_new"]:
+        res["worker_stale_s"] = 0.0
+    elif want is not None:
+        while time.time() - t0 < MAX_S:
+            time.sleep(POLL_S)
+            if guest_read(path, bust=True)["qty"] == want:
+                res["worker_stale_s"] = round(time.time() - t0, 2)
+                break
+    if res["worker_stale_s"] is not None:
+        res["after"] = want
+    if not (res["cached_proof"] and res["worker_stale_s"] is not None):
         res["verdict"] = "could_not_measure"
         return res
     while True:
@@ -200,7 +220,7 @@ def case_qty(a, made, orders):
         r = guest_read(path)
         res["polls"] += 1
         res["cache_seen"][str(r["cache"])] = res["cache_seen"].get(str(r["cache"]), 0) + 1
-        if r["state"] == "in" and r["qty"] == after["qty"]:
+        if r["state"] == "in" and r["qty"] == want:
             res["stale_s"] = round(dt, 2)
             break
         if dt >= MAX_S:

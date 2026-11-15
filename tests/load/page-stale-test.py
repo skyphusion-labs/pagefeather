@@ -31,11 +31,17 @@ def fresh_state(**kw):
     S.clear()
     S.update({"products": {}, "orders": {}, "next": 100, "cache": {}, "unexpected": [], "guest_bad": [],
               "purges_asked": 0, "purges_done": 0, "purge_limit": None, "purge_qty": False,
-              "decrement": True, "cache_header": True, "deleted": [], "create_purge_delay": 0, "product_cookie": False})
+              "decrement": True, "cache_header": True, "deleted": [], "create_purge_delay": 0, "product_cookie": False,
+              # worker_lag: after a sale, a page RENDERED by the Worker still shows the old stock for this
+              # many seconds (a stale object cache inside the Worker), cached or not.
+              "worker_lag": 0})
     S.update(kw)
 
 
 def page_html(p):
+    if p.get("visible_at") and time.time() < p["visible_at"]:
+        n = p["old"]
+        return ("<p class=\"stock in-stock\">%d in stock</p>" % n) if n > 0 else "<p class=\"stock out-of-stock\">Out of stock</p>"
     if p["stock"] > 0:
         return "<p class=\"stock in-stock\">%d in stock</p><form class=\"cart\"><button name=\"add-to-cart\">Add</button></form>" % p["stock"]
     return "<p class=\"stock out-of-stock\">Out of stock</p>"
@@ -171,6 +177,8 @@ class H(http.server.BaseHTTPRequestHandler):
             was = p["stock"]
             if S["decrement"]:
                 p["stock"] -= 1
+                if S["worker_lag"]:
+                    p["old"], p["visible_at"] = was, time.time() + S["worker_lag"]
             oid = S["next"]
             S["next"] += 1
             S["orders"][oid] = pid
@@ -252,7 +260,24 @@ fresh_state(decrement=False)
 code, ev, out = run("qty")
 r = [e for e in ev if e.get("case") == "qty"]
 check("no change is could-not-measure", r and r[0].get("stale_s") is None and r[0].get("control_new") is False and r[0].get("verdict") == "could_not_measure" and code != 0, (code, r))
+check("no change never times a worker layer", r and r[0].get("worker_stale_s") is None, r)
 check("no change still cleans up", not S["products"] and not S["orders"], (S["products"], S["orders"]))
+
+# 3a. a stale object cache inside the Worker: an uncached read shows the old stock for worker_lag
+#     seconds. The probe times that layer (worker_stale_s), then the edge layer as before.
+fresh_state(worker_lag=1.0)
+code, ev, out = run("qty")
+r = [e for e in ev if e.get("case") == "qty"]
+check("worker lag is timed", r and r[0].get("control_new") is False and r[0].get("worker_stale_s") is not None and 0.7 <= r[0]["worker_stale_s"] <= 1.6, r)
+check("worker lag still measures the edge", r and r[0].get("verdict") == "measured" and r[0].get("stale_s") is not None and r[0]["stale_s"] >= r[0].get("worker_stale_s", 99), r)
+# The edge copy was cached before the sale, so it stays old for about the TTL; the edge poll must wait
+# for the NEW value, not stop at a cached read that equals an old uncached read.
+check("worker lag edge stale for about the TTL", r and r[0].get("stale_s") is not None and TTL - 0.6 <= r[0]["stale_s"] <= TTL + 1.0, r and r[0].get("stale_s"))
+check("worker lag after is the new value", r and r[0].get("after") == 6, r and r[0].get("after"))
+fresh_state(worker_lag=1.0, cache_header=False)
+code, ev, out = run("qty")
+r = [e for e in ev if e.get("case") == "qty"]
+check("worker lag with no edge cache is timed and could-not-measure for the edge", r and r[0].get("verdict") == "could_not_measure" and r[0].get("worker_stale_s") is not None and code == 3, (code, r))
 
 # 3b. a delayed create purge (the Worker sends it up to 15 s later): SETTLE_S waits it out, so the
 #     warm copy is not emptied by it and the reading is the real staleness, not a near-zero one.
