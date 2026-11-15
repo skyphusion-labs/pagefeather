@@ -21,6 +21,10 @@ function api(hd) {
 			if (hd === 'fail') return { ok: false, status: 500, text: async () => '{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}' };
 			return { ok: true, status: 200, text: async () => JSON.stringify({ success: true, result: hd, errors: [] }) };
 		}
+		// The registry and script lookups answer "not found" (as tests/provision-test.mjs does), so provisioning
+		// without the gate runs on to its FIRST WRITE, which then shows up as a mutating call (and fails here).
+		if (init.method === 'GET' && /\/storage\/kv\/namespaces\/[^/]+\/values\//.test(url)) return { ok: false, status: 404, text: async () => '{"success":false,"errors":[{"code":10009,"message":"key not found"}]}' };
+		if (init.method === 'GET' && /\/scripts\/[^/]+$/.test(url)) return { ok: false, status: 404, text: async () => '{"success":false,"errors":[{"code":10090}]}' };
 		return { ok: false, status: 599, text: async () => '{"success":false,"errors":[{"code":599,"message":"fake: unexpected call"}]}' };
 	};
 	return { fetchImpl, calls };
