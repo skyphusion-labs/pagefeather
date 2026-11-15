@@ -192,5 +192,37 @@ $n->get( $k1, 'transient', false, $found );
 $n->set( $k1, array( 'D' ), 'transient', 86400 );
 check( 'no table: transients send nothing to the shared store', 0 === shared_ops( 'transient' ) );
 
+// The lead's check (2026-11-15): a set in bucket k leaves every OTHER bucket's cached values in place.
+// Keys spread over at least 8 distinct buckets are cached; then one key is set again; a new request in
+// another isolate must still hit every key outside that key's bucket.
+$wpdb->table = true;
+$GLOBALS['lag'] = false;
+$GLOBALS['store'] = array();
+$keys = array();
+$seen = array();
+for ( $i = 0; count( $seen ) < 12 && $i < 500; $i++ ) {
+	$c = 'spread_' . $i;
+	$b = bucket_of( $c );
+	if ( ! isset( $seen[ $b ] ) ) {
+		$seen[ $b ] = true;
+		$keys[]     = $c;
+	}
+}
+check( 'spread: 12 keys in 12 distinct buckets', 12 === count( $keys ) );
+$w = new JS_Object_Cache();
+foreach ( $keys as $c ) {
+	$w->set( $c, array( 'v' => $c ), 'transient', 86400 );
+}
+$hot = $keys[0];
+$w2  = new JS_Object_Cache();
+$w2->set( $hot, array( 'v' => 'changed' ), 'transient', 86400 );
+$r   = new JS_Object_Cache();
+$hits = 0;
+foreach ( array_slice( $keys, 1 ) as $c ) {
+	$hits += ( array( 'v' => $c ) === $r->get( $c, 'transient', false, $found ) ) ? 1 : 0;
+}
+check( 'a set in one bucket leaves all 11 other buckets cached (11 of 11 hits)', 11 === $hits );
+check( 'and the changed key reads its new value', array( 'v' => 'changed' ) === $r->get( $hot, 'transient', false, $found ) );
+
 echo $fail ? "$fail failing check(s)\n" : "all checks pass\n";
 exit( $fail ? 1 : 0 );
