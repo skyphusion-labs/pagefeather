@@ -52,7 +52,7 @@ check "the refusal comes before the snapshot and the build" "$([ -n "$l_check" ]
 check "same build and same config: no reason to upload" "$(update_upload_reasons same same h h)" ""
 check "FORCE_UPLOAD=1 is a reason on its own" "$(FORCE_UPLOAD=1 update_upload_reasons same same h h)" "forced"
 l_up=$(grep -n 'deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/sec.json") > "$W/up.log"' "$S" | head -1 | cut -d: -f1)
-l_red=$(grep -n 'obs_settings.py" redact "$NAMESPACE" "site-$s"' "$S" | head -1 | cut -d: -f1)
-check "OBSERVABILITY=1: the query-string redaction is set right after the upload" "$([ -n "$l_red" ] && [ -n "$l_up" ] && [ "$l_red" -gt "$l_up" ] && echo yes || echo no)" yes
+l_red=$(grep -n 'obs_redact_site "$NAMESPACE" "site-$s" "$CONF"' "$S" | head -1 | cut -d: -f1)
+check "OBSERVABILITY=1 or full: the query-string redaction (lib.sh obs_redact_site, #639) is set right after the upload" "$([ -n "$l_red" ] && [ -n "$l_up" ] && [ "$l_red" -gt "$l_up" ] && echo yes || echo no)" yes
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]

@@ -583,19 +583,37 @@ TOML
   # full URL and user agent. So:
   #   OBSERVABILITY=1     events only: our own structured lines and uncaught exceptions, NO request
   #                       metadata (invocation_logs = false). For a diagnosis on a live site.
-  #   OBSERVABILITY=full  the invocation logs too. For a throwaway only.
+  #   OBSERVABILITY=full  the invocation logs too. For a throwaway only, ENFORCED (#639): the run must
+  #                       also set THROWAWAY=1, or the render fails. An opt-in fails closed; a list of
+  #                       live sites would fail open for the next store nobody added to it.
   #   unset or 0          an EXPLICIT enabled = false: without the block a re-upload left a site's
   #                       logging as it was, so "off" did not turn it off.
   case "${OBSERVABILITY:-0}" in
     0) printf '\n[observability]\nenabled = false\n' ;;
     1) printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = false\n' ;;
-    full) printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = true\n' ;;
+    full) [ "${THROWAWAY:-}" = 1 ] || { echo "OBSERVABILITY=full needs THROWAWAY=1 (it logs every request's URL, client IP and user agent; say the site is a throwaway, or use 1, events only)" >&2; return 1; }
+          printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = true\n' ;;
     *) echo "OBSERVABILITY must be 0, 1 (events only) or full (a throwaway only), not ${OBSERVABILITY}" >&2; return 1 ;;
   esac
   # WP_VECTORIZE_SEARCH (default off, metered): the token-free AI and SEARCH_INDEX bindings the
   # skyphusion-ai plugin reaches through the index.js op bridge (#330, #332). The index must exist
   # before the deploy; site.sh up makes it (ensure_search_index).
   if search_on; then printf '\n[ai]\nbinding = "AI"\n[[vectorize]]\nbinding = "SEARCH_INDEX"\nindex_name = "%s"\n' "$(search_index "$s")"; fi
+}
+# obs_conf_on <rendered config>: true when the config turns Workers Logs on ([observability] enabled = true).
+obs_conf_on() {
+  awk '/^\[observability\][[:space:]]*$/ {o=1; next} /^\[/ {o=0} o && /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*true[[:space:]]*$/ {on=1} END {exit on ? 0 : 1}' "$1"
+}
+# obs_redact_site <namespace> <script> <rendered config> (#639): when the config just uploaded turns the
+# logs on, redact the query string in the script's Workers Logs and read it back, or turn the logs OFF
+# and return 1 (obs_settings.py redact-or-off: fail closed). Every event carries the request URL, and
+# full adds the invocation logs, so both need it: before #639 only update with OBSERVABILITY=1 redacted,
+# so a full site, every site add, and every rollback re-deploy logged URLs with their query strings (a
+# store's order keys and logins). The CONFIG decides, not the env: a rollback uploads a saved config,
+# and a re-upload is what needs the redaction set again. Logs off: nothing to redact, no call.
+obs_redact_site() {
+  obs_conf_on "$3" || return 0
+  python3 -I "$WFP/obs_settings.py" redact-or-off "$1" "$2"
 }
 # The site's search index, as Vectorize answers it (#338): present (200); gone (404, or 410 with
 # error 3005 "vectorize.index.deleted", which is how v2 answers a DELETED index, measured on

@@ -167,9 +167,10 @@ update_one_inner() {
   # A failed upload changed nothing live; the log is read BEFORE the work dir goes.
   (cd "$APP" && "$WR" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/sec.json") > "$W/up.log" 2>&1 || { echo "site $s: upload failed:" >&2; tail -20 "$W/up.log" >&2; rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }
   rm -rf "$W"
-  # OBSERVABILITY=1 logs events only, but each event still carries the URL; a store's query strings
-  # hold order keys and logins. wrangler cannot set the redaction, so it is set here, then read back.
-  if [ "${OBSERVABILITY:-0}" = 1 ]; then python3 -I "$WFP/obs_settings.py" redact "$NAMESPACE" "site-$s" || { echo "site $s: UPLOADED, but the query-string redaction did NOT apply: turn the logs off (run the update again with no OBSERVABILITY)" >&2; ok=0; }; fi
+  # OBSERVABILITY=1 or full: every event carries the URL, and a store's query strings hold order keys
+  # and logins. wrangler cannot set the redaction, so it is set here and read back, or the logs are
+  # turned OFF and the update fails (lib.sh obs_redact_site, fail closed, #639).
+  obs_redact_site "$NAMESPACE" "site-$s" "$CONF" || { echo "site $s: UPLOADED, but the query-string redaction did NOT read back, so its logs are now OFF (or could not be turned off: read the line above); the update fails" >&2; ok=0; }
   tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=$new" -var "config_hash=$new_hash" >/dev/null || { echo "site $s: the site map entry did not record build $new" >&2; ok=0; }
   echo "site $s: verify the new build is live"
   wait_build "$ORIGIN" "$TOK" "$new" || ok=0
@@ -221,6 +222,8 @@ update_one_inner() {
       echo "site $s: the rollback was REFUSED: its build and this config do not fit (remote_assets_check above); deploy the old build by hand" >&2
     elif tfr site output -json | site_secrets_json "$W2/sec.json" && (cd "$SAVED" && "$RBWR" deploy --config "$SAVED/wrangler.rollback.toml" --dispatch-namespace "$NAMESPACE" --secrets-file "$W2/sec.json") > "$W2/rb.log" 2>&1; then
       echo "site $s: re-deployed ${live_build:-unknown}"
+      # #639: a re-upload needs the redaction set again, by the config it uploaded.
+      obs_redact_site "$NAMESPACE" "site-$s" "$SAVED/wrangler.rollback.toml" || echo "site $s: the rollback is live, but its query-string redaction did NOT read back, so its logs are now OFF (or could not be turned off: read the line above)" >&2
       tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=$live_build" -var "config_hash=$live_hash" >/dev/null || echo "site $s: the site map entry did not record the rollback build $live_build" >&2
       wait_build "$ORIGIN" "$TOK" "$live_build" || echo "site $s: /_build did not return to $live_build after the rollback re-deploy" >&2
     else

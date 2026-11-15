@@ -89,7 +89,7 @@ check "FORCE and a new build: both reasons" "$(FORCE_UPLOAD=1 update_upload_reas
 unset PHP_INI PHP_RECYCLE RECYCLE_WASM_MIB MEM_LEDGER CRON_INTERVAL_MS OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES TURNSTILE_SITEKEY TURNSTILE_SECRET \
   TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS OBSERVABILITY MAIL_FROM MAIL_FROM_NAME HTTP_ALLOW_HOSTS \
   WFP_PHP_ENV PHP_LOCATION LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB HEADROOM_PROBE WP_VECTORIZE_SEARCH FORCE_UPLOAD PLUGINS IMPORT_CONTENT IMPORT_THEMES \
-  IMPORT_PLUGINS IMPORT_MU_PLUGINS FORCE_FAIL COUNT_ROWS WFP_CUSTOM_DOMAIN REPLACE_INPUTS || true
+  IMPORT_PLUGINS IMPORT_MU_PLUGINS FORCE_FAIL COUNT_ROWS WFP_CUSTOM_DOMAIN REPLACE_INPUTS THROWAWAY || true
 # #394: the remote packs are the default (lib.sh remote_pack_defaults). This test's fake app tree has no
 # file-trace.sh or pack scripts, so its site runs the opt-out: the config-hash cases do not depend on it.
 export OPCACHE_REMOTE=0
@@ -471,12 +471,14 @@ print(" ".join(sorted(names)))
 PY2
 )
 # Not settings: the deploy's own names (API, APP, the credential, the namespace, the phase B names, a
-# constant). OBSERVABILITY: not recorded on purpose (client IPs).
+# constant). OBSERVABILITY: not recorded on purpose (client IPs). THROWAWAY (#639): the run's own
+# statement that this site is a throwaway, the gate for OBSERVABILITY=full; it must never stick to a
+# site across updates, so it is not recorded either (and it renders nothing).
 # measurement flags: never recorded, by design (site_settings.py MEASUREMENT): ON only for the run.
 # HTTP_ALLOW_HOSTS is a recorded setting (#564). The record stores presence, so empty stays empty.
 # TMPDIR: curl_cfg writes the mode-600 curl config there (#581). Not a site setting.
 measurement=" HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV "
-notset=" API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN OBSERVABILITY TMPDIR$measurement"
+notset=" API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN OBSERVABILITY TMPDIR THROWAWAY$measurement"
 settings=" $(bash -c '. "'"$LIB"'"; echo $SITE_SETTINGS') "
 miss=""; for n in $derived; do case "$settings$notset" in *" $n "*) ;; *) miss="$miss $n" ;; esac; done
 ok "#558 every env name render_user reads is a recorded setting or named with a reason (missing:${miss:- none})" "$([ -z "$miss" ] && [ -n "$derived" ] && printf '%s\n' $derived | grep -qx HEADROOM_PROBE && echo 1 || echo 0)"
