@@ -74,11 +74,16 @@ jobs:
         if: matrix.language == 'c-cpp'
         run: engine/opcache/codeql-build.sh "$GITHUB_WORKSPACE/codeql-build"
 
+      # c-cpp is NOT uploaded here: GitHub drops a result whose file is not in the repository, and
+      # every patched file is in codeql-build/php-src (measured on the alert control, #616: 2 local
+      # results, results=0 uploaded). Its SARIF is mapped onto the patch files first (below).
       - name: Analyze
         id: analyze
         uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           category: "/language:${{ matrix.language }}"
+          output: ${{ github.workspace }}/../results
+          upload: ${{ matrix.language == 'c-cpp' && 'never' || 'always' }}
 
       # The scan must have SEEN the patched C, or a green c-cpp leg proves nothing. The database's source
       # archive must hold ext/opcache/zend_persist.c WITH the patch marker, and the stats glue. The
@@ -110,3 +115,23 @@ jobs:
           if control != 0:
               sys.exit("::error::the control file holds the marker; the reading cannot tell patched from unpatched")
           PY
+
+      # A result on a line a patch ADDED moves to that line of the .patch file (in the repository); a
+      # result on an upstream php-src line is listed in the log and not uploaded. The map replays the
+      # patches on pristine php-src and refuses if the replay differs from the built files.
+      - name: Map the c-cpp results onto the engine patches (c-cpp only)
+        if: matrix.language == 'c-cpp'
+        run: |
+          set -euo pipefail
+          in="$GITHUB_WORKSPACE/../results/cpp.sarif"
+          [ -s "$in" ] || { echo "::error::no c-cpp SARIF at $in"; ls -la "$GITHUB_WORKSPACE/../results" || true; exit 1; }
+          mkdir -p "$GITHUB_WORKSPACE/../results-mapped"
+          python3 -I engine/opcache/codeql-sarif-map.py "$in" "$GITHUB_WORKSPACE/../results-mapped/cpp.sarif" \
+            codeql-build/php-src codeql-build/php-src/ codeql-build/applied-patches.txt
+
+      - name: Upload the mapped c-cpp results (c-cpp only)
+        if: matrix.language == 'c-cpp'
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: ${{ github.workspace }}/../results-mapped/cpp.sarif
+          category: "/language:c-cpp"
