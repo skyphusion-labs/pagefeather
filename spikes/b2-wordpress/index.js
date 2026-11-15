@@ -7,6 +7,7 @@ import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
 import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-arm.mjs';
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
+import { callPhpObject, isObjectCallDeadline, objectCallDeadlineMs, objectCallExempt } from './object-deadline.mjs';
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
@@ -3192,9 +3193,14 @@ async function toPhpObject(req, env, url, ctx, target = null) {
 	let t0 = Date.now();
 	// A GET or HEAD that dies in an object reset (memory #335, or storage #398) is sent once more
 	// (object-error.mjs fetchWithMemoryRetry); each attempt makes its own stub and request.
+	// #605: if this attempt has not started answering within the deadline, abort it. Exempt
+	// paths (install, import, sqlimport, cron) pass 0 and are not cut. 0 also means the
+	// operator set OBJECT_CALL_DEADLINE_S=off.
+	const objectDeadlineMs = objectCallExempt(url.pathname) ? 0 : objectCallDeadlineMs(env);
 	const res = await fetchWithMemoryRetry(
 		() => {
 			const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(name), hint ? { locationHint: hint } : undefined);
+			const ac = objectDeadlineMs > 0 ? new AbortController() : null;
 			const fwd = new Request(req);
 			// Only this Worker sets the Turnstile answer: a copy from the client is always dropped.
 			setResultHeader(fwd.headers, pre && pre.value);
@@ -3208,11 +3214,29 @@ async function toPhpObject(req, env, url, ctx, target = null) {
 			fwd.headers.set(SENT_HEADER, String(t0));
 			if (pfReq) fwd.headers.set('x-pf-req', pfReq);
 			else fwd.headers.delete('x-pf-req');
-			return stub.fetch(fwd);
+			// The signal goes on the request that is sent. Headers are copied from fwd, which
+			// already has the Turnstile answer and the other marks.
+			const sent = ac ? new Request(fwd, { signal: ac.signal }) : fwd;
+			return callPhpObject(stub, sent, {
+				deadlineMs: objectDeadlineMs,
+				controller: ac,
+				method: req.method,
+				objectName: name,
+				json: wantsJson(url.pathname, url.search, req.headers.get('accept')),
+				pfReq,
+			});
 		},
 		req.method,
 		(e) => console.log(JSON.stringify({ m: 'isolate-reset-retry', kind: classifyObjectError(e), path: url.pathname, ...memIdOf(req, env), error: String(e.message).slice(0, 200) })),
-	);
+	).catch((e) => {
+		if (!isObjectCallDeadline(e)) throw e;
+		// No frame probe. The probe is another stub.fetch to this same object, which just
+		// failed to start answering, so a probe can hang the same way. Without a frame that
+		// proves rollback, a method that may have written stays x-write-loss: unknown.
+		console.log(JSON.stringify({ m: 'object-deadline', path: url.pathname, method: req.method, deadlineMs: e.deadlineMs, writeLoss: e.response.headers.get('x-write-loss'), ...memIdOf(req, env), answered: e.response.status }));
+		return { deadline: e.response };
+	});
+	if (res.deadline) return res.deadline;
 	const retried = res.attempts > 1;
 	if (res.error) {
 		const e = res.error;
