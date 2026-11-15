@@ -6,7 +6,48 @@ set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 T=$(mktemp -d); chmod 700 "$T"
 fails=0
-check() { if [ "$2" = "$3" ]; then echo "  ok   $1"; else echo "  FAIL $1: got '$2', want '$3'"; fails=$((fails + 1)); fi; }
+SRV=""
+# A failing case prints its inputs and leaves a copy of the work dir. The batch
+# that saw #601 kept no log, and the work dir used to vanish in the exit trap.
+evidence() {
+  echo "  --- evidence ($1) ---"
+  echo "  endpoint: ${WFP_S3_ENDPOINT-<unset>}"
+  if [ -n "$SRV" ] && kill -0 "$SRV" 2>/dev/null; then echo "  server: up"; else echo "  server: down"; fi
+  echo "  temp: $T"
+  local f p
+  for f in last-args use.out rec.out vars content.path pyc.out; do
+    if [ -s "$T/$f" ]; then echo "  $f:"; sed 's/^/    /' "$T/$f"; else echo "  $f: (empty)"; fi
+  done
+  if [ -s "$T/content.path" ]; then
+    p=$(cat "$T/content.path")
+    if [ -n "$p" ] && [ -d "$p" ]; then echo "  content names:"; find "$p" -print | sed 's/^/    /'; fi
+  fi
+  if [ -d "$HERE/../__pycache__" ]; then echo "  shared __pycache__:"; find "$HERE/../__pycache__" -type f -print | sed 's/^/    /'; fi
+  echo "  ambient PLUGINS=${PLUGINS-<unset>} THEMES=${THEMES-<unset>} IMPORT_CONTENT=${IMPORT_CONTENT-<unset>} IMPORT_THEMES=${IMPORT_THEMES-<unset>} IMPORT_PLUGINS=${IMPORT_PLUGINS-<unset>} IMPORT_MU_PLUGINS=${IMPORT_MU_PLUGINS-<unset>} WOO_ACTIVE=${WOO_ACTIVE-<unset>} REPLACE_INPUTS=${REPLACE_INPUTS-<unset>} CLICOLOR_FORCE=${CLICOLOR_FORCE-<unset>}"
+}
+check() {
+  if [ "$2" = "$3" ]; then echo "  ok   $1"; return; fi
+  echo "  FAIL $1"
+  echo "    got:  $(printf '%q' "$2")"
+  echo "    want: $(printf '%q' "$3")"
+  evidence "$1"
+  fails=$((fails + 1))
+}
+cleanup() {
+  local st=$? keep
+  [ -n "$SRV" ] && { kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null; }
+  if [ "$fails" != 0 ] && [ -d "$T" ]; then
+    local td="${TMPDIR:-/tmp}"
+    td="${td%/}"
+    keep=$(mktemp -d "$td/build-inputs-test-fail.XXXXXX")
+    chmod 700 "$keep"
+    cp -R "$T"/. "$keep"/
+    echo "evidence kept at $keep"
+  fi
+  rm -rf "$T"
+  exit "$st"
+}
+trap cleanup EXIT
 
 # A fake S3: PUT stores, GET returns or 404. Path-style /<bucket>/<key>.
 cat > "$T/s3.py" <<'PY'
@@ -25,8 +66,16 @@ s = http.server.HTTPServer(("127.0.0.1", 0), H)
 open(sys.argv[1], "w").write(str(s.server_port)); s.serve_forever()
 PY
 python3 -I "$T/s3.py" "$T/port" & SRV=$!
-trap 'kill $SRV 2>/dev/null; wait $SRV 2>/dev/null; rm -rf "$T"' EXIT
 for _ in $(seq 1 50); do [ -s "$T/port" ] && break; sleep 0.1; done
+if [ ! -s "$T/port" ] || ! kill -0 "$SRV" 2>/dev/null; then
+  echo "  FAIL the fake S3 did not stay up"
+  echo "    got:  port $([ -s "$T/port" ] && echo present || echo missing), server $(kill -0 "$SRV" 2>/dev/null && echo up || echo down)"
+  echo "    want: a port file and a live server"
+  fails=$((fails + 1))
+  evidence "the fake S3 did not stay up"
+  echo "$fails failing case(s)"
+  exit 1
+fi
 export WFP_S3_ENDPOINT="http://127.0.0.1:$(cat "$T/port")" WFP_S3_KEY_ID=test-key WFP_S3_SECRET=test-secret CLOUDFLARE_ACCOUNT_ID=test
 ACCOUNT_ID=test
 . "$HERE/../lib.sh"
@@ -43,8 +92,13 @@ IN=(IMPORT_CONTENT="$SRC" IMPORT_THEMES=tt5 IMPORT_PLUGINS="shop sqlite-database
 
 # 1. No record yet.
 python3 -I "$HERE/../build_inputs.py" get "$B" "$T/none.json"; check "no record: get exits 3" "$?" 3
-run_update() { # run_update <env assignments...> : an update's scope, as update_one_inner declares it
+run_update() { # run_update <record|norecord> <env assignments...>: one update's scope
+  # Drop ambient content inputs first, then apply this case's assignments.
+  # local -x keeps an inherited value, so a parent PLUGINS or REPLACE_INPUTS=1
+  # used to decide the "no input" case and the refusal cases (#601).
+  printf '%q\n' "$@" > "$T/last-args"
   ( local_test() {
+      : > "$T/use.out"; : > "$T/vars"; : > "$T/content.path"; : > "$T/rec.out"
       local -x PLUGINS="${PLUGINS:-}" THEMES="${THEMES:-}" SUITE="${SUITE:-}" THEME_SUITE="${THEME_SUITE:-}" IMPORT_THEMES="${IMPORT_THEMES:-}" IMPORT_PLUGINS="${IMPORT_PLUGINS:-}" IMPORT_MU_PLUGINS="${IMPORT_MU_PLUGINS:-}" WOO_ACTIVE="${WOO_ACTIVE:-}" IMPORT_CONTENT="${IMPORT_CONTENT:-}"
       local REC_TREE="" W; W=$(mktemp -d "$T/w.XXXX")
       use_recorded_inputs "$B" "$W" > "$T/use.out" 2>&1 || return $?
@@ -52,8 +106,11 @@ run_update() { # run_update <env assignments...> : an update's scope, as update_
       echo "$IMPORT_CONTENT" > "$T/content.path"
       [ "${1:-}" = record ] && { record_build_inputs "$B" build-1 "$W" > "$T/rec.out" 2>&1 || return 1; }
       return 0
-    }; env "${@:2}" bash -c "$(declare -f local_test use_recorded_inputs record_build_inputs content_inputs_set); WFP='$HERE/..' APP='$APP' T='$T' B='$B'; local_test $1" )
+    }; env -u PLUGINS -u THEMES -u SUITE -u THEME_SUITE -u IMPORT_CONTENT -u IMPORT_THEMES -u IMPORT_PLUGINS -u IMPORT_MU_PLUGINS -u WOO_ACTIVE -u WOO -u REPLACE_INPUTS "${@:2}" bash -c "$(declare -f local_test use_recorded_inputs record_build_inputs content_inputs_set); WFP='$HERE/..' APP='$APP' T='$T' B='$B'; local_test $1" )
 }
+# Poison from outside the case. A parent shell, or a batch that exported these,
+# must not count as the update's own inputs. The cases below fail if run_update leaks them.
+export PLUGINS=from-the-parent THEMES=from-the-parent WOO_ACTIVE=from-the-parent REPLACE_INPUTS=1
 run_update norecord "${IN[@]}"; check "no record and inputs passed: allowed" "$?" 0
 check "  it says there is no record yet" "$(grep -c 'no recorded build inputs yet' "$T/use.out")" 1
 
@@ -73,7 +130,10 @@ check "  WOO_ACTIVE is the recorded value" "$(grep '^WOO_ACTIVE=' "$T/vars")" "W
 check "  REC_TREE is the recorded tree" "$(grep '^REC_TREE=' "$T/vars")" "REC_TREE=$tree"
 got=$(cat "$T/content.path")
 check "  the fetched tree has the theme, the plugin and the mu-plugin" "$(cat "$got/themes/tt5/style.css" "$got/plugins/shop/shop.php" "$got/mu-plugins/store-cart.php" 2>/dev/null | tr '\n' ' ')" "theme shop mu "
-check "  and only the named subset (no unnamed plugin, not the build's own sqlite copy)" "$(ls "$got/plugins" | tr '\n' ' ')" "shop "
+# BSD ls colors a pipe when CLICOLOR_FORCE is set. env runs the ls binary, so a shell
+# function cannot add -G, and the unset stops the color. Do not pass `command`:
+# GNU env on Ubuntu looks that name up as a program and the listing is empty (CI).
+check "  and only the named subset (no unnamed plugin, not the build's own sqlite copy)" "$(env -u CLICOLOR -u CLICOLOR_FORCE ls "$got/plugins" | tr '\n' ' ')" "shop "
 
 # 4. Different inputs: refused, unless REPLACE_INPUTS=1. The same inputs: allowed.
 run_update norecord IMPORT_CONTENT="$SRC" IMPORT_THEMES=tt5 IMPORT_PLUGINS=shop IMPORT_MU_PLUGINS= WOO_ACTIVE=1; check "different inputs (the mu-plugin dropped): refused" "$?" 2
@@ -131,12 +191,19 @@ ln -s /etc/hosts "$SRC/plugins/shop/hosts"
 python3 -I "$HERE/../build_inputs.py" pack "$SRC" "$T/p.tgz" >/dev/null 2>&1; check "pack refuses a symbolic link in the content" "$?" 1
 rm "$SRC/plugins/shop/hosts"
 
-# 6b. Running build_inputs.py leaves no file in the tree (a __pycache__ would make the next update's
-# tree_clean_check refuse it).
+# 6b. Running build_inputs.py leaves no __pycache__ beside snapshot.py (a file there makes the next
+# update's tree_clean_check refuse the tree). The check uses a private copy. deploy/wfp/__pycache__
+# is shared with the rest of a batch: config-hash-test.sh imports site_settings and leaves
+# site_settings.*.pyc, and rollback-artifact-test.py deletes that directory. Checking the shared
+# directory failed once in that batch and passed on a later run alone (#601).
 # Bytecode writing is switched ON first (some Pythons, Apple's 3.9 under -I, never write it, and
 # then this check could not fail): only the script's own sys.dont_write_bytecode can stop it.
-python3 -I -c 'import runpy, sys; sys.dont_write_bytecode = False; sys.pycache_prefix = None; sys.argv = ["build_inputs.py", "env-json", "c00000000", "", "b"]; runpy.run_path("'"$HERE/../build_inputs.py"'", run_name="__main__")' > /dev/null
-check "build_inputs.py writes no __pycache__ next to snapshot.py" "$([ -e "$HERE/../__pycache__" ] && echo present || echo none)" none
+PYC="$T/pyc"
+mkdir -p "$PYC"
+cp "$HERE/../build_inputs.py" "$HERE/../snapshot.py" "$PYC/"
+python3 -I -c 'import runpy, sys; sys.dont_write_bytecode = False; sys.pycache_prefix = None; sys.argv = ["build_inputs.py", "env-json", "c00000000", "", "b"]; runpy.run_path("'"$PYC"'/build_inputs.py", run_name="__main__")' > "$T/pyc.out" 2>&1
+check "the bytecode probe ran" "$?" 0
+check "build_inputs.py writes no __pycache__ next to snapshot.py" "$([ -e "$PYC/__pycache__" ] && echo present || echo none)" none
 
 # 7. The wiring in deploy/wfp/site: read before the refusals and the snapshot, recorded after a good update.
 S="$HERE/../site"
