@@ -125,7 +125,9 @@ A logged-out product page comes from the edge cache, so a guest can see an old s
 | Only show quantity remaining in stock when low | "In stock", and a number only at or below the low stock threshold. That number can be up to 120 s old. |
 | Never show quantity remaining in stock | "In stock" or "Out of stock" only. That changes within about 25 s. |
 
-For a busy store, "Never show quantity" is the choice that keeps every cached page right. A fix that keeps exact numbers right without the clear is being measured in [#628](https://github.com/skyphusion-labs/pagefeather/issues/628).
+For a busy store, "Never show quantity" is the choice that keeps every cached page right.
+
+**The store default since #628.** A deploy/wfp store caches its product, shop and category pages for 30 s, not 120 s (`PAGE_CACHE_PRODUCT_TTL`). So there an exact number is at most about 30 s old. Measured: 30 s, with no loss of cached reads and no extra cache clears ([#628](https://github.com/skyphusion-labs/pagefeather/issues/628), 2026-11-15). A site made with deploy.sh still uses 120 s.
 
 ## The admin is the heaviest part, and still being worked on
 
