@@ -498,7 +498,15 @@ render_user() { # render_user <site> <origin>
   case $php_env in *"'"*|*$'\n'*) echo "WFP_PHP_ENV must not hold a single quote or a newline" >&2; return 1 ;; esac
   mail_binding=$(SITE_ORIGIN="$origin" MAIL_FROM="${MAIL_FROM:-}" node "$APP/mail-from.mjs" --binding) || return 1
   mail_vars=$(SITE_ORIGIN="$origin" MAIL_FROM="${MAIL_FROM:-}" MAIL_FROM_NAME="${MAIL_FROM_NAME:-}" node "$APP/mail-from.mjs" --vars) || return 1
-  http_allow=$(node "$APP/http-allow.mjs") || return 1
+  # #564: http_allow_mode=unset means this run and the record left the list unset.
+  # site update's local -x turns that into an empty value, and empty denies every host,
+  # so the helper must not see the variable. No mode means the caller's own environment
+  # (site add and up.sh).
+  if [ "${http_allow_mode:-env}" = unset ]; then
+    http_allow=$(env -u HTTP_ALLOW_HOSTS node "$APP/http-allow.mjs") || return 1
+  else
+    http_allow=$(node "$APP/http-allow.mjs") || return 1
+  fi
   ts_vars=$(turnstile_vars) || return 1
   # PHP_INI (#394) joins the Turnstile lines, so a site without it renders byte for byte as before.
   local split_assets; split_assets=$(opcache_split_assets) || return 1
@@ -712,7 +720,11 @@ use_recorded_inputs() {
 # lost its PHP_INI pin on 2026-11-14). A good add or update records them in the site's bucket
 # (_build/settings.json); an update keeps them unless the run sets a new value or DROP_SETTINGS
 # names them. SITE_SETTINGS is the list; the caller declares them local -x.
-SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES"
+# HTTP_ALLOW_HOSTS (#564) is in this list and is recorded with presence (site_settings.py):
+# unset is the default list, and set, including empty, is that exact list. site update
+# remembers which one this run is, in http_allow_mode, before local -x collapses unset
+# into empty. Empty denies every host, so a drop sets the mode to unset.
+SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES HTTP_ALLOW_HOSTS"
 # The measurement flags (HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV, site_settings.py MEASUREMENT) are
 # never recorded: ON only for the run that exports them; the next update without one turns it off.
 # A setting render_user reads that is not in this list is DROPPED by an update that does not export
@@ -730,7 +742,13 @@ keep_settings() {
     *) echo "cannot read the recorded settings of $b; refused" >&2; return 2 ;;
   esac
   SETTINGS_RECORDED=1
-  m=$(python3 -I "$WFP/site_settings.py" merge "$rec") || { echo "the recorded settings of $b cannot be kept; refused" >&2; return 2; }
+  # #564: an unset HTTP_ALLOW_HOSTS is empty inside site update's local -x. Hide that
+  # empty value from merge, or it would look like a run that denies every host.
+  if [ "${http_allow_mode:-env}" = unset ]; then
+    m=$(env -u HTTP_ALLOW_HOSTS python3 -I "$WFP/site_settings.py" merge "$rec") || { echo "the recorded settings of $b cannot be kept; refused" >&2; return 2; }
+  else
+    m=$(python3 -I "$WFP/site_settings.py" merge "$rec") || { echo "the recorded settings of $b cannot be kept; refused" >&2; return 2; }
+  fi
   eval "$m"
 }
 # settings_dropcheck <user script> <rendered config> <secrets json> <work dir>: refuse (exit 2) an
@@ -744,7 +762,12 @@ settings_dropcheck() {
 }
 # record_settings <bucket> <work dir>: after a good add or update, record this run's settings.
 record_settings() {
-  python3 -I "$WFP/site_settings.py" env-json > "$2/settings-rec.json" || return 1
+  # #564: http_allow_mode=unset records "absent" (the default list), not an empty list.
+  if [ "${http_allow_mode:-env}" = unset ]; then
+    env -u HTTP_ALLOW_HOSTS python3 -I "$WFP/site_settings.py" env-json > "$2/settings-rec.json" || return 1
+  else
+    python3 -I "$WFP/site_settings.py" env-json > "$2/settings-rec.json" || return 1
+  fi
   python3 -I "$WFP/site_settings.py" put "$1" "$2/settings-rec.json" || return 1
   echo "  settings recorded in $1/_build/settings.json ($(python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); print(" ".join(sorted(d["settings"])) or "none", "| secrets:", " ".join(d["secrets"]) or "none")' "$2/settings-rec.json"))"
 }
