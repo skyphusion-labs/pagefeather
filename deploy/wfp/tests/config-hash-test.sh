@@ -471,10 +471,11 @@ print(" ".join(sorted(names)))
 PY2
 )
 # Not settings: the deploy's own names (API, APP, the credential, the namespace, the phase B names, a
-# constant). OBSERVABILITY: not recorded on purpose (client IPs). HTTP_ALLOW_HOSTS: #564 (three states).
+# constant). OBSERVABILITY: not recorded on purpose (client IPs).
 # measurement flags: never recorded, by design (site_settings.py MEASUREMENT): ON only for the run.
+# HTTP_ALLOW_HOSTS is a recorded setting (#564). The record stores presence, so empty stays empty.
 measurement=" HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV "
-notset=" API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN OBSERVABILITY HTTP_ALLOW_HOSTS$measurement"
+notset=" API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN OBSERVABILITY$measurement"
 settings=" $(bash -c '. "'"$LIB"'"; echo $SITE_SETTINGS') "
 miss=""; for n in $derived; do case "$settings$notset" in *" $n "*) ;; *) miss="$miss $n" ;; esac; done
 ok "#558 every env name render_user reads is a recorded setting or named with a reason (missing:${miss:- none})" "$([ -z "$miss" ] && [ -n "$derived" ] && printf '%s\n' $derived | grep -qx HEADROOM_PROBE && echo 1 || echo 0)"
@@ -482,6 +483,79 @@ pym=" $(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import site_
 inset=0; for m in $measurement; do case "$settings" in *" $m "*) inset=1 ;; esac; done
 ok "#558 the measurement flags named here are site_settings.py MEASUREMENT, and none is a recorded setting" "$([ "$pym" = "$measurement" ] && [ "$inset" = 0 ] && echo 1 || echo 0)"
 unset PHP_INI DROP_SETTINGS HEADROOM_PROBE MEM_LEDGER
+
+# 9m. #564: HTTP_ALLOW_HOSTS has three states. Unset is the default list. Set, including
+# empty, is that exact list (empty denies every host). An update run that does not
+# export it must keep the recorded state. These run through site update, offline.
+allow_is() { grep -qxF "HTTP_ALLOW_HOSTS = \"$1\"" "$APP/wrangler.deploy.wfp-shop.toml"; }
+rec_allow() {
+  srec_get | python3 -I -c 'import json, sys
+raw = sys.stdin.read()
+try:
+    d = json.loads(raw)
+except Exception:
+    print("NOJSON")
+    raise SystemExit
+h = d.get("settings", {}).get("HTTP_ALLOW_HOSTS", None)
+print("ABSENT" if h is None else json.dumps(h, sort_keys=True))'
+}
+CUSTOM='.wordpress.org,paypal.com'
+CUSTOM_REC='{"set": true, "value": ".wordpress.org,paypal.com"}'
+EMPTY_REC='{"set": true, "value": ""}'
+DEFAULT_ALLOW='.wordpress.org,.woocommerce.com,.gravatar.com'
+srec_del
+live '[{"type":"plain_text","name":"SITE_ORIGIN","text":"y"}]'
+unset HTTP_ALLOW_HOSTS
+set_entry bld-other "$(last_hash)"
+HTTP_ALLOW_HOSTS="$CUSTOM" run_update
+ok "#564 a run that sets a custom list renders it and records it with presence" "$([ "$RC" = 0 ] && allow_is "$CUSTOM" && [ "$(rec_allow)" = "$CUSTOM_REC" ] && echo 1 || echo 0)"
+[ "$RC" = 0 ] || { echo "$OUT" | tail -8 | sed 's/^/   /'; }
+Hallow=$(last_hash)
+unset HTTP_ALLOW_HOSTS
+set_entry bld-same "$Hallow"
+u0=$(lines "$UPLOAD_LOG")
+run_update
+u1=$(lines "$UPLOAD_LOG")
+ok "#564 an update without the variable keeps the custom list" "$([ "$RC" = 0 ] && [ "$u1" = "$u0" ] && allow_is "$CUSTOM" && [ "$(rec_allow)" = "$CUSTOM_REC" ] && printf '%s' "$OUT" | grep -Fq 'settings: HTTP_ALLOW_HOSTS kept from the record' && echo 1 || echo 0)"
+[ "$RC" = 0 ] || { echo "$OUT" | tail -8 | sed 's/^/   /'; }
+set_entry bld-other "$(last_hash)"
+HTTP_ALLOW_HOSTS= run_update
+ok "#564 a run that sets an empty list renders empty and records it set" "$([ "$RC" = 0 ] && allow_is "" && [ "$(rec_allow)" = "$EMPTY_REC" ] && printf '%s' "$OUT" | grep -Fq 'HTTP_ALLOW_HOSTS is set by this run (it replaces the recorded value)' && echo 1 || echo 0)"
+[ "$RC" = 0 ] || { echo "$OUT" | tail -8 | sed 's/^/   /'; }
+Hempty=$(last_hash)
+unset HTTP_ALLOW_HOSTS
+set_entry bld-same "$Hempty"
+u0=$(lines "$UPLOAD_LOG")
+run_update
+u1=$(lines "$UPLOAD_LOG")
+ok "#564 an update without the variable keeps the empty list" "$([ "$RC" = 0 ] && [ "$u1" = "$u0" ] && allow_is "" && [ "$(rec_allow)" = "$EMPTY_REC" ] && printf '%s' "$OUT" | grep -Fq 'settings: HTTP_ALLOW_HOSTS kept from the record' && echo 1 || echo 0)"
+[ "$RC" = 0 ] || { echo "$OUT" | tail -8 | sed 's/^/   /'; }
+set_entry bld-other "$(last_hash)"
+HTTP_ALLOW_HOSTS="$CUSTOM" run_update
+ok "#564 a run that sets the list replaces the recorded one" "$([ "$RC" = 0 ] && allow_is "$CUSTOM" && [ "$(rec_allow)" = "$CUSTOM_REC" ] && printf '%s' "$OUT" | grep -Fq 'HTTP_ALLOW_HOSTS is set by this run (it replaces the recorded value)' && echo 1 || echo 0)"
+# A site never given the variable: no presence in the record, the run does not set it, both updates render the default.
+srec_put '{"v": 1, "settings": {}, "secrets": []}'
+unset HTTP_ALLOW_HOSTS
+set_entry bld-other "$(last_hash)"
+run_update
+ok "#564 a site never given HTTP_ALLOW_HOSTS renders the default list" "$([ "$RC" = 0 ] && allow_is "$DEFAULT_ALLOW" && [ "$(rec_allow)" = "ABSENT" ] && echo 1 || echo 0)"
+[ "$RC" = 0 ] || { echo "$OUT" | tail -8 | sed 's/^/   /'; }
+Hdef=$(last_hash)
+set_entry bld-same "$Hdef"
+u0=$(lines "$UPLOAD_LOG")
+run_update
+u1=$(lines "$UPLOAD_LOG")
+ok "#564 the next update, still without the variable, keeps the default" "$([ "$RC" = 0 ] && [ "$u1" = "$u0" ] && allow_is "$DEFAULT_ALLOW" && [ "$(rec_allow)" = "ABSENT" ] && echo 1 || echo 0)"
+[ "$RC" = 0 ] || { echo "$OUT" | tail -8 | sed 's/^/   /'; }
+# DROP returns to the default. Empty would deny every host, so a drop must not export an empty list.
+set_entry bld-other "$(last_hash)"
+HTTP_ALLOW_HOSTS="$CUSTOM" run_update
+set_entry bld-other "$(last_hash)"
+unset HTTP_ALLOW_HOSTS
+DROP_SETTINGS=HTTP_ALLOW_HOSTS run_update
+ok "#564 DROP_SETTINGS=HTTP_ALLOW_HOSTS returns the site to the default list" "$([ "$RC" = 0 ] && allow_is "$DEFAULT_ALLOW" && [ "$(rec_allow)" = "ABSENT" ] && printf '%s' "$OUT" | grep -Fq 'HTTP_ALLOW_HOSTS DROPPED on purpose' && echo 1 || echo 0)"
+[ "$RC" = 0 ] || { echo "$OUT" | tail -8 | sed 's/^/   /'; }
+unset HTTP_ALLOW_HOSTS DROP_SETTINGS
 
 echo "$fails failing check(s)"
 exit "$fails"

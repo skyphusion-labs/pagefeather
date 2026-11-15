@@ -9,6 +9,11 @@ in the site's own media bucket, private outside uploads/ like _build/inputs.json
 
     _build/settings.json    {"v": 1, "settings": {NAME: value, ...}, "secrets": [NAME, ...]}
 
+HTTP_ALLOW_HOSTS is the exception (#564). It has three states, so the record stores presence,
+not a bare string: {"set": true, "value": "..."} when the run set it, including an empty value
+(empty denies every host). Unset is absent from the record and means the default list. Merge
+exports it only when it was set. A drop sets it back to unset, not to empty.
+
 An update KEEPS a recorded setting the run does not set, uses the run's value when it sets one,
 and drops one only when DROP_SETTINGS names it. A secret's VALUE is never recorded, only that the
 site has it (TURNSTILE_SECRET): an update without it is refused unless DROP_SETTINGS names it.
@@ -20,7 +25,9 @@ run asks again (lib.sh render_user).
     site_settings.py put <bucket> <record.json>       write and read back
     site_settings.py merge <record.json>              the shell lines that keep the recorded
                                                       settings (stdout: export lines, a drop is
-                                                      an empty value); what it did (stderr);
+                                                      an empty value, except HTTP_ALLOW_HOSTS,
+                                                      whose drop sets http_allow_mode=unset);
+                                                      what it did (stderr);
                                                       exit 5 when a recorded secret is missing
     site_settings.py dropcheck <user config> <bindings.json> <secrets.json>
                                                       exit 6 when the live script binds a setting
@@ -44,7 +51,12 @@ RECORD = "_build/settings.json"
 SETTINGS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PHP_RECYCLE", "RECYCLE_WASM_MIB", "CRON_INTERVAL_MS",
             "TURNSTILE_SITEKEY", "TURNSTILE_WOO", "TURNSTILE_LOGIN", "TURNSTILE_COMMENTS",
             "MAIL_FROM", "MAIL_FROM_NAME", "PHP_LOCATION", "WP_VECTORIZE_SEARCH", "OPCACHE_SPLIT", "OPCACHE_REMOTE", "SITE_REMOTE",
-            "REMOTE_FETCH_CAP", "REMOTE_HOLD_KIB", "SITE_FETCH_CAP", "SITE_HOLD_KIB", "SITE_RETRY_MS", "REQUEST_FRAMES")
+            "REMOTE_FETCH_CAP", "REMOTE_HOLD_KIB", "SITE_FETCH_CAP", "SITE_HOLD_KIB", "SITE_RETRY_MS", "REQUEST_FRAMES",
+            "HTTP_ALLOW_HOSTS")
+# Three states (#564): absent from the environment means the default list; present, including
+# empty, means that exact list. The record holds {"set": true, "value": "..."} only when present.
+# A bare string cannot say "empty" and "unset" apart, and empty denies every host.
+PRESENCE = ("HTTP_ALLOW_HOSTS",)
 # Measurement flags: never recorded, never kept, by design (the lead's ruling on #561). Silent
 # persistence is the dangerous direction for them; silently going off is the safe one. A run that
 # exports one turns it on for that upload; the next update without it turns it OFF, and says so.
@@ -64,6 +76,8 @@ DROPPABLE_VARS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PH
                   "TURNSTILE_SITEKEY", "TURNSTILE_WOO", "TURNSTILE_LOGIN", "TURNSTILE_COMMENTS",
                   "MAIL_FROM_NAME", "OPCACHE_REMOTE", "SITE_REMOTE",
                   "REMOTE_FETCH_CAP", "REMOTE_HOLD_KIB", "SITE_FETCH_CAP", "SITE_HOLD_KIB", "SITE_RETRY_MS", "REQUEST_FRAMES")  # each renders its var only when on (#563, #569)
+# HTTP_ALLOW_HOSTS is not droppable here: render_user always writes the var (the default list
+# when unset), so the live bindings cannot show that a custom list became the default (#564).
 
 
 # #394: the default-on remote packs, which a run turns off with the value 0 (lib.sh remote_pack_defaults).
@@ -79,8 +93,38 @@ def drop_list(env=os.environ):
     return set(names)
 
 
+def presence_lines(k, mode, value=""):
+    """Shell lines for one presence setting. mode "set" exports value, even when it is empty.
+    mode "unset" is the default list. The empty export is not the state: http_allow_mode is.
+    site update cannot unset a local on bash 3.2 (that reveals the global), so the mode tells
+    render and the recorder to take the variable out of the child environment."""
+    if mode == "set":
+        return ["export %s=%s" % (k, shlex.quote(value)), "http_allow_mode=set"]
+    return ["export %s=''" % k, "http_allow_mode=unset"]
+
+
+def recorded_presence(v):
+    """(set, value) for a presence object, or None when the shape is not one."""
+    if isinstance(v, dict) and isinstance(v.get("set"), bool):
+        if not v["set"]:
+            return False, ""
+        val = v.get("value", "")
+        if isinstance(val, str):
+            return True, val
+    return None
+
+
 def env_json(env=os.environ):
-    return {"v": 1, "settings": {k: env[k] for k in SETTINGS if env.get(k)}, "secrets": [k for k in SECRETS if env.get(k)]}
+    settings = {}
+    for k in SETTINGS:
+        if k in PRESENCE:
+            # Present in the environment, including empty. Absent means the default list.
+            if k in env:
+                settings[k] = {"set": True, "value": env[k]}
+            continue
+        if env.get(k):
+            settings[k] = env[k]
+    return {"v": 1, "settings": settings, "secrets": [k for k in SECRETS if env.get(k)]}
 
 
 def merge(record, env=os.environ):
@@ -89,7 +133,26 @@ def merge(record, env=os.environ):
     for k, v in sorted((record.get("settings") or {}).items()):
         if k not in SETTINGS:
             print("  settings: the record has %s, which is not a known setting: ignored" % k, file=sys.stderr)
-        elif k in drop:
+            continue
+        if k in PRESENCE:
+            if k in drop:
+                lines.extend(presence_lines(k, "unset"))
+                print("  settings: %s DROPPED on purpose (DROP_SETTINGS)" % k, file=sys.stderr)
+                continue
+            parsed = recorded_presence(v)
+            if parsed is None:
+                print("  settings: the record has %s in a shape this run does not keep: ignored" % k, file=sys.stderr)
+                continue
+            is_set, val = parsed
+            if k in env:
+                # Present, including empty: this run's value wins.
+                extra = " (it replaces the recorded value)" if is_set and env[k] != val else ""
+                print("  settings: %s is set by this run%s" % (k, extra), file=sys.stderr)
+            elif is_set:
+                lines.extend(presence_lines(k, "set", val))
+                print("  settings: %s kept from the record" % k, file=sys.stderr)
+            continue
+        if k in drop:
             lines.append("export %s=''" % k)
             print("  settings: %s DROPPED on purpose (DROP_SETTINGS)" % k, file=sys.stderr)
         elif env.get(k):
@@ -107,8 +170,12 @@ def merge(record, env=os.environ):
             rc = 5
     # A drop is an empty value, never unset: the caller holds these as local -x (update --all runs
     # many sites), and every render function reads an empty value as not set.
+    # HTTP_ALLOW_HOSTS is the exception: empty denies every host, so a drop is "unset" (the default).
     for k in sorted(drop - set(record.get("settings") or {}) - set(record.get("secrets") or [])):
-        lines.append("export %s=''" % k)
+        if k in PRESENCE:
+            lines.extend(presence_lines(k, "unset"))
+        else:
+            lines.append("export %s=''" % k)
     print("\n".join(lines))
     return rc
 
