@@ -38,13 +38,16 @@ export function isResetKind(kind) {
 
 // Retry once (#335, the lead's ruling 2026-11-12). A memory reset kills every request in the
 // isolate, also a page that only queued behind the cron tick; the same page on the next isolate
-// answered 200 after each of the 13 cold 503s measured on fdprobe1112g. So a GET or HEAD is sent
-// once more. Never a POST or any other method: it may have run in part (an order, a login) before
+// answered 200 after each of the 13 cold 503s measured on fdprobe1112g. So a GET, HEAD or OPTIONS is
+// sent once more. Never a POST or any other method: it may have run in part (an order, a login) before
 // the reset. Never a full queue: a retry adds load to it. Never a second time.
-export const RETRY_METHODS = new Set(['GET', 'HEAD']);
+// OPTIONS (#589, the lead's ruling): a safe method by HTTP's contract, like GET and HEAD, and WordPress
+// answers it from the route schema. In the block editor round, 5 OPTIONS /wp/v2/... that died in a reset
+// each got the write-loss 500 "may have been saved", though it writes nothing.
+export const RETRY_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /**
- * A method that may have changed state (anything but GET or HEAD). After a memory reset its earlier
+ * A method that may have changed state (anything but GET, HEAD or OPTIONS). After a memory reset its earlier
  * writes may be saved (measured on fdprobe1112h, #350), so it is never retried and never told to try
  * again: it gets write-loss.mjs's 500 "may have been saved" answer.
  */
@@ -61,7 +64,7 @@ export function objectErrorOutcome(kind, method) {
 	return isResetKind(kind) && mayHaveWritten(method) ? 'write-loss' : '503';
 }
 
-/** Retry this failure? Only a reset (memory or storage, #398), only a GET or HEAD, only the first attempt. */
+/** Retry this failure? Only a reset (memory or storage, #398), only a GET, HEAD or OPTIONS, only the first attempt. */
 export function shouldRetryObjectError(kind, method, attempt) {
 	return isResetKind(kind) && RETRY_METHODS.has(String(method || '').toUpperCase()) && attempt === 0;
 }

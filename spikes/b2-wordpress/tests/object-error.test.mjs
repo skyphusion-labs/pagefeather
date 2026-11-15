@@ -58,7 +58,7 @@ test('index.js answers through fetchWithMemoryRetry, and never tags a memory res
 test('shouldRetryObjectError: a memory reset on the first GET or HEAD only', () => {
 	assert.equal(shouldRetryObjectError('memory', 'GET', 0), true);
 	assert.equal(shouldRetryObjectError('memory', 'head', 0), true);
-	for (const m of ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', '', undefined]) assert.equal(shouldRetryObjectError('memory', m, 0), false, String(m));
+	for (const m of ['POST', 'PUT', 'PATCH', 'DELETE', '', undefined]) assert.equal(shouldRetryObjectError('memory', m, 0), false, String(m));
 	assert.equal(shouldRetryObjectError('memory', 'GET', 1), false, 'never a second retry');
 	assert.equal(shouldRetryObjectError('overloaded', 'GET', 0), false, 'never into a full queue');
 	assert.equal(shouldRetryObjectError(null, 'GET', 0), false);
@@ -87,6 +87,31 @@ test('a POST that dies in a memory reset is NOT retried', async () => {
 	assert.deepEqual(f.calls, [0], 'sent once');
 });
 
+// #589 (the lead's ruling): OPTIONS is a safe method like GET and HEAD (WordPress answers it from the
+// route schema). In the block editor round, 5 OPTIONS /wp/v2/... died in a memory reset and each got
+// the write-loss 500 "may have been saved", though it writes nothing. Now it is retried once, and a
+// reset it cannot outlive is the 503, never the write-loss answer.
+test('#589: an OPTIONS that dies in a reset is retried once and answered by the second attempt', async () => {
+	for (const err of [reset, new Error('Internal error in Durable Object storage caused object to be reset; reference = abc')]) {
+		const f = fake(err, 'schema');
+		assert.deepEqual(await fetchWithMemoryRetry(f.send, 'OPTIONS'), { r: 'schema', attempts: 2 });
+		assert.deepEqual(f.calls, [0, 1]);
+	}
+	assert.equal(shouldRetryObjectError('memory', 'OPTIONS', 0), true);
+	assert.equal(shouldRetryObjectError('storage', 'options', 0), true, 'case-insensitive, like GET');
+	assert.equal(shouldRetryObjectError('memory', 'OPTIONS', 1), false, 'never a second retry');
+	assert.equal(shouldRetryObjectError('overloaded', 'OPTIONS', 0), false, 'never into a full queue');
+});
+
+test('#589: an OPTIONS that dies twice is the 503, never the write-loss 500', async () => {
+	const f = fake(reset, reset);
+	const res = await fetchWithMemoryRetry(f.send, 'OPTIONS');
+	assert.equal(res.kind, 'memory');
+	assert.deepEqual(f.calls, [0, 1]);
+	assert.equal(objectErrorOutcome(res.kind, 'OPTIONS'), '503');
+	assert.equal(mayHaveWritten('OPTIONS'), false);
+});
+
 test('a GET that dies twice is answered with the memory 503 after one retry, never a third send', async () => {
 	const f = fake(reset, reset, 'page');
 	const res = await fetchWithMemoryRetry(f.send, 'GET');
@@ -112,7 +137,7 @@ test('an answer on the first attempt is one send', async () => {
 
 // #398: a Durable Object storage reset. The message is the platform's own, from Workers Logs for
 // site-tsv1113w (2026-11-13, 10:53:48.563Z); the reference id changes on every reset.
-import { objectErrorOutcome, isResetKind, STORAGE_RESET } from '../object-error.mjs';
+import { objectErrorOutcome, isResetKind, STORAGE_RESET, mayHaveWritten } from '../object-error.mjs';
 const storage = new Error('Internal error in Durable Object storage caused object to be reset; reference = 6voil23sc4636vq005nmetul');
 const storageOther = new Error('Internal error in Durable Object storage caused object to be reset; reference = zz00aa11bb22cc33dd44ee55');
 const unknown = new Error('Network connection lost.');
@@ -142,7 +167,7 @@ test('objectErrorOutcome: a reset on a method that may have written is the write
 		assert.equal(objectErrorOutcome('storage', m), 'write-loss', 'storage ' + m);
 		assert.equal(objectErrorOutcome('overloaded', m), '503', 'a full queue never ran the request: overloaded ' + m);
 	}
-	for (const m of ['GET', 'HEAD']) {
+	for (const m of ['GET', 'HEAD', 'OPTIONS']) {
 		assert.equal(objectErrorOutcome('memory', m), '503', 'memory ' + m);
 		assert.equal(objectErrorOutcome('storage', m), '503', 'storage ' + m);
 		assert.equal(objectErrorOutcome('overloaded', m), '503', 'overloaded ' + m);
