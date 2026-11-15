@@ -59,6 +59,10 @@ export function wantsJson(pathname, search, accept) {
  * number of statements that failed in the reset, or 'unknown' when the reset killed the whole
  * request (the object answered nothing). kind is the reset (object-error.mjs): 'memory', or
  * 'storage' for a storage reset (#398). No Retry-After, no Set-Cookie, never cached.
+ *
+ * phpStatus is PHP's own status on the write-loss log line (index.js), read before this
+ * guard replaces the answer. It is not the status the client got: that is `answered`
+ * (this status, or rolledBackResponse's). A phpStatus of 200 is still a lost write.
  */
 export function writeLossResponse(n, json = false, kind = 'memory') {
 	const headers = {

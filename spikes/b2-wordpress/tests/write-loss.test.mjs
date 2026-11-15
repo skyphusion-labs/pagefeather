@@ -38,7 +38,9 @@ test('index.js: the guard returns the replacement BEFORE PHP headers are copied 
 	assert.ok(guard > 0 && replace > guard, 'the guard and its replacement are present');
 	assert.ok(copy > replace, 'PHP headers (Set-Cookie) are copied only after the guard');
 	assert.ok(answer > replace, 'PHP own answer is built only after the guard');
-	assert.match(src.slice(guard, replace + 200), /'@event': 'write-loss'.*failed: lost/s, 'a structured log line with the failed count');
+	const lossLog = src.indexOf("'@event': 'write-loss'", replace);
+	assert.ok(lossLog > replace, 'the log follows the client status');
+	assert.match(src.slice(lossLog, src.indexOf('\n', lossLog)), /failed: lost/, 'a structured log line with the failed count');
 });
 
 // The lead's ruling (2026-11-12): API calls get JSON; both reset paths; GET/HEAD keep #349's retry.
@@ -120,4 +122,109 @@ test('writeLossResponse: x-isolate-reset names the kind, memory by default', () 
 	assert.equal(s.headers['x-write-loss'], 'unknown');
 	assert.equal(s.headers['retry-after'], undefined);
 	assert.equal(JSON.parse(s.body).message, WRITE_LOSS_MESSAGE);
+});
+
+// #596: phpStatus is PHP's own status, before the guard. A reader took phpStatus 200 for a success.
+// The line must also carry the operator perf id (memIdOf) and answered, the status the client got.
+import { perfHeadersAllowed } from '../perf-headers.mjs';
+import { rolledBackResponse } from '../write-loss.mjs';
+
+const indexSrc = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+const memAt = indexSrc.indexOf('function memIdOf(req, env) {');
+const memBody = indexSrc.slice(memAt, indexSrc.indexOf('\n}', memAt) + 2);
+const memRe = indexSrc.split('\n').find((l) => l.includes('const MEM_ID_RE = ')).match(/const MEM_ID_RE = (\/.*\/);/);
+const MEM_ID_RE = new Function(`return ${memRe[1]};`)();
+const memIdOf = new Function('perfHeadersAllowed', 'MEM_ID_RE', memBody + '\nreturn memIdOf;')(perfHeadersAllowed, MEM_ID_RE);
+
+function objectLiteral(line) {
+	const at = line.indexOf('JSON.stringify(');
+	const start = line.indexOf('{', at);
+	let depth = 0;
+	for (let i = start; i < line.length; i++) {
+		if (line[i] === '{') depth++;
+		else if (line[i] === '}' && --depth === 0) return line.slice(start, i + 1);
+	}
+	throw new Error('no object literal: ' + line);
+}
+function logged(line, scope) {
+	const names = Object.keys(scope);
+	const value = new Function(...names, 'return ' + objectLiteral(line) + ';')(...names.map((k) => scope[k]));
+	return JSON.parse(JSON.stringify(value));
+}
+
+const PERF_ID = 'm504-woo-97e9cd-8-edit-post';
+const TOKEN = 'spike-token-value';
+const post = (headers) => new Request('https://shop.example/wp-admin/post.php', { method: 'POST', headers });
+
+test('#596: the write-loss lines carry id for a valid x-perf-id, no id without one, and answered equal to the status returned', () => {
+	const lines = indexSrc.split('\n').filter((l) => l.includes("m: 'write-loss'"));
+	assert.equal(lines.length, 2, 'the PHP-answered line and the request-killed line');
+	const phpLine = lines.find((l) => l.includes('phpStatus'));
+	const killedLine = lines.find((l) => l.includes("phase: 'request-killed'"));
+	assert.ok(phpLine && killedLine);
+
+	const lost = 1;
+	const sql = "UPDATE `wp_postmeta` SET `meta_value` = 'secret@example.com'";
+	const base = {
+		req: post({ 'x-perf-id': PERF_ID, 'x-spike-token': TOKEN }),
+		env: { SPIKE_TOKEN: TOKEN },
+		url: { pathname: '/wp-admin/post.php' },
+		lost,
+		r: { httpStatusCode: 200 },
+		d: { failures: [{ sql }] },
+		sqlShape,
+		memIdOf,
+		kind: 'memory',
+		wl: writeLossResponse(lost, wantsJson('/wp-admin/post.php', '', 'text/html')),
+	};
+	const withId = logged(phpLine, base);
+	assert.equal(withId.id, PERF_ID, 'a valid x-perf-id is on the line, got ' + JSON.stringify(withId));
+	assert.equal(withId.answered, base.wl.status, 'answered is the status the client got');
+	assert.equal(withId.answered, 500);
+	assert.equal(withId.phpStatus, 200, 'phpStatus stays PHP own status, before the guard');
+	assert.equal(withId.failed, lost);
+	assert.equal(withId.firstSql, 'UPDATE wp_postmeta');
+	assert.equal(withId['@event'], 'write-loss');
+	// 321 is not a real status: it proves the field is wl.status, not a hardcoded 500 and not phpStatus.
+	assert.equal(logged(phpLine, { ...base, wl: { status: 321 } }).answered, 321);
+
+	const noHeader = logged(phpLine, { ...base, req: post({ 'x-spike-token': TOKEN }) });
+	assert.equal(Object.hasOwn(noHeader, 'id'), false, 'no id without x-perf-id, got ' + JSON.stringify(noHeader));
+	assert.equal(noHeader.answered, base.wl.status);
+	assert.equal(noHeader.phpStatus, 200);
+
+	const visitor = logged(phpLine, { ...base, req: post({ 'x-perf-id': PERF_ID }), env: { SPIKE_TOKEN: TOKEN } });
+	assert.equal(Object.hasOwn(visitor, 'id'), false, 'a visitor id is not logged');
+	const unsafe = logged(phpLine, { ...base, req: post({ 'x-perf-id': 'not a safe id', 'x-spike-token': TOKEN }) });
+	assert.equal(Object.hasOwn(unsafe, 'id'), false, 'an id outside MEM_ID_RE is not logged');
+	const tooLong = logged(phpLine, { ...base, req: post({ 'x-perf-id': 'a'.repeat(65), 'x-spike-token': TOKEN }) });
+	assert.equal(Object.hasOwn(tooLong, 'id'), false);
+	const on = logged(phpLine, { ...base, req: post({ 'x-perf-id': PERF_ID }), env: { PERF_HEADERS: 'on' } });
+	assert.equal(on.id, PERF_ID, 'PERF_HEADERS=on is the other operator path');
+
+	for (const wl of [
+		writeLossResponse('unknown', false, 'memory'),
+		rolledBackResponse(true, 'storage', 2),
+	]) {
+		const killed = logged(killedLine, { ...base, wl, kind: wl.headers['x-isolate-reset'] });
+		assert.equal(killed.answered, wl.status, 'the killed line answered matches the response');
+		assert.equal(killed.phase, 'request-killed');
+		assert.equal(killed.failed, 'unknown');
+		assert.equal(Object.hasOwn(killed, 'phpStatus'), false, 'PHP never answered on this path');
+		assert.equal(logged(killedLine, { ...base, wl: { status: 321 } }).answered, 321);
+	}
+	const killedId = logged(killedLine, base);
+	assert.equal(killedId.id, PERF_ID);
+	const killedNone = logged(killedLine, { ...base, req: post({ 'x-spike-token': TOKEN }) });
+	assert.equal(Object.hasOwn(killedNone, 'id'), false);
+
+	const guard = indexSrc.indexOf('const lost = resetFailures(d.failures);');
+	const built = indexSrc.indexOf('const wl = writeLossResponse(lost', guard);
+	const loggedAt = indexSrc.indexOf("'@event': 'write-loss'", built);
+	assert.ok(built > guard && loggedAt > built, 'answered is computed before the PHP-path log line');
+	assert.match(indexSrc, /return new Response\(wl\.body, \{ status: wl\.status, headers: wl\.headers \}\)/);
+
+	const doc = readFileSync(new URL('../write-loss.mjs', import.meta.url), 'utf8');
+	assert.match(doc, /phpStatus is PHP's own status/);
+	assert.match(doc, /not the status the client got/);
 });

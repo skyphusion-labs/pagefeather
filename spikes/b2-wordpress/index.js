@@ -3143,11 +3143,12 @@ async function toPhpObject(req, env, url, ctx) {
 		// writes may be saved (#350; #398 saw a page create and a delete saved), so no 503 "try
 		// again" and never the dispatcher 502 (write-loss.mjs).
 		if (objectErrorOutcome(kind, req.method) === 'write-loss') {
-			console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', kind, method: req.method, path: url.pathname, failed: 'unknown', phase: 'request-killed' }));
 			// #352: "nothing was saved" only when the object PROVES the frame rolled back.
 			const fr = await frameProbe(env, name, pfReq);
 			console.log(JSON.stringify({ m: 'frame-probe', phase: 'request-killed', state: fr ? fr.state : null, points: fr ? fr.points : null }));
 			const wl = frameProvesRollback(fr) ? rolledBackResponse(wantsJson(url.pathname, url.search, req.headers.get('accept')), kind, fr.undone) : writeLossResponse('unknown', wantsJson(url.pathname, url.search, req.headers.get('accept')), kind);
+			// #596: id is the operator perf id. answered is this response's status. PHP never answered here, so there is no phpStatus.
+			console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', kind, method: req.method, path: url.pathname, failed: 'unknown', phase: 'request-killed', ...memIdOf(req, env), answered: wl.status }));
 			wl.headers['x-php-object'] = name;
 			if (pfReq) wl.headers['x-pf-req'] = pfReq; // the request id, for a spike-token /_frame read (#352)
 			return new Response(wl.body, { status: wl.status, headers: wl.headers });
@@ -3690,9 +3691,10 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			}
 			if (lost) {
 				if (ledgerActive) ledgerLog('write-loss', { lost });
-				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, phpStatus: r.httpStatusCode, firstSql: sqlShape(d.failures[0].sql) }));
-				dropRuntime(); // the runtime saw the reset; the next request boots a new one
 				const wl = writeLossResponse(lost, wantsJson(url.pathname, url.search, req.headers.get('accept')));
+				// phpStatus is PHP's status before this replacement. answered is the status returned below (#596).
+				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, phpStatus: r.httpStatusCode, firstSql: sqlShape(d.failures[0].sql), ...memIdOf(req, env), answered: wl.status }));
+				dropRuntime(); // the runtime saw the reset; the next request boots a new one
 				return new Response(wl.body, { status: wl.status, headers: wl.headers });
 			}
 			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
