@@ -21,7 +21,11 @@ ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}")
 PW=${ADMIN_PASSWORD:-local-spike-password}
 curl "${ST[@]}" -sf -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null
 if [ "${WOO_ACTIVE:-1}" = 1 ]; then
-  curl "${ST[@]}" -sf -X POST -H "x-admin-password: $PW" "$B/_activate?plugin=woocommerce/woocommerce.php" | grep -q '\\"active\\":true' || { echo "WooCommerce did not activate"; exit 1; }
+  # #677: a dead dev server, or the activation's own answer, is named (opcache-activate.sh), with one retry.
+  SERVER=$(cut -d' ' -f1 ".dev-$P.pid" 2>/dev/null || true); PORT=$P
+  # shellcheck source=opcache-activate.sh
+  . ./opcache-activate.sh
+  woo_activate || exit 1
 fi
 # Drop what install and activation read: the trace is for page traffic.
 curl "${ST[@]}" -sf "$B/_trace" > /dev/null
