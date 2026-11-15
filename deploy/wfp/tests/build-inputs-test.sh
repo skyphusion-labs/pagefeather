@@ -130,8 +130,10 @@ check "  WOO_ACTIVE is the recorded value" "$(grep '^WOO_ACTIVE=' "$T/vars")" "W
 check "  REC_TREE is the recorded tree" "$(grep '^REC_TREE=' "$T/vars")" "REC_TREE=$tree"
 got=$(cat "$T/content.path")
 check "  the fetched tree has the theme, the plugin and the mu-plugin" "$(cat "$got/themes/tt5/style.css" "$got/plugins/shop/shop.php" "$got/mu-plugins/store-cart.php" 2>/dev/null | tr '\n' ' ')" "theme shop mu "
-# /bin/ls colors a pipe when CLICOLOR_FORCE is set, so the name is not the bytes compared.
-check "  and only the named subset (no unnamed plugin, not the build's own sqlite copy)" "$(env -u CLICOLOR -u CLICOLOR_FORCE command ls "$got/plugins" | tr '\n' ' ')" "shop "
+# BSD ls colors a pipe when CLICOLOR_FORCE is set. env runs the ls binary, so a shell
+# function cannot add -G, and the unset stops the color. Do not pass `command`:
+# GNU env on Ubuntu looks that name up as a program and the listing is empty (CI).
+check "  and only the named subset (no unnamed plugin, not the build's own sqlite copy)" "$(env -u CLICOLOR -u CLICOLOR_FORCE ls "$got/plugins" | tr '\n' ' ')" "shop "
 
 # 4. Different inputs: refused, unless REPLACE_INPUTS=1. The same inputs: allowed.
 run_update norecord IMPORT_CONTENT="$SRC" IMPORT_THEMES=tt5 IMPORT_PLUGINS=shop IMPORT_MU_PLUGINS= WOO_ACTIVE=1; check "different inputs (the mu-plugin dropped): refused" "$?" 2
