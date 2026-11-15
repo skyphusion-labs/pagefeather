@@ -46,6 +46,13 @@ M = [
     ("script-load-skips-adler", [(FC, "ok = a == e->adler && pf_lb_unserialize_into(", "ok = (a == e->adler || 1) && pf_lb_unserialize_into(")], ["fail"]),
     ("script-failure-keeps-bodies", [(FC, "\t\tfree(chunk); /* the bodies unserialized before the failure are not marked loaded: nothing is kept */\n",
       "\t\tfor (i = 0; i < s->n; i++) { if (s->descs[i].s) { s->descs[i].loaded = true; } }\n")], ["fail"]),
+    # stage 5: the profile-guided hot set
+    ("hot-profile-not-read", [(FC, "\t\tpf_lb_read_hot(pf_s, info.pf_head_checksum);", "\t\t(void)0;")], ["hot", "plain"]),
+    ("hot-keeps-cold-bodies", [(FC, "if (!x->s || x->loaded || !(x->hot || x == want)) {", "if (!x->s || x->loaded) {")], ["hot"]),
+    ("hot-skips-adler", [(FC, "\t\t\tgood = zend_adler32(ADLER32_INIT, (unsigned char*)c, size) == e->adler;",
+      "\t\t\tgood = zend_adler32(ADLER32_INIT, (unsigned char*)c, size) == e->adler || 1;")], ["fail"]),
+    ("profile-not-recorded", [(FC, "\tif (!pf_prof_on || !d->s) {\n\t\treturn;\n\t}\n\tpath = zend_string_init(d->s->path",
+      "\tif (1) {\n\t\treturn;\n\t}\n\tpath = zend_string_init(d->s->path")], ["hot", "plain"]),
 ]
 
 def sh(cmd, cwd):

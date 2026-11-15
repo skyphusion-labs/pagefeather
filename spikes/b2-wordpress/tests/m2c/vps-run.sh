@@ -3,8 +3,9 @@
 # deploys (one per arm: the same build, engine and primed opcache.zip; only PHP_INI differs). Never from a laptop.
 #   vps-run.sh            (reads $RUN_ENV, default /root/run.env; writes $OUT, default /root/out)
 # run.env: B (the site, https://<name>.workers.dev), SPIKE_TOKEN, ADMIN_PASSWORD. B_body, B_script and B_whole override
-# B per arm. ARMS (default "body script whole") picks the arms, BOOTS (5) and WARM (5) the counts.
-# Arms: body (opcache.pagefeather_lazy_unit=body), script (=script), whole (opcache.pagefeather_lazy_load=0). Each
+# B per arm. ARMS (default "body hot script whole") picks the arms, BOOTS (5) and WARM (5) the counts.
+# Arms: body (opcache.pagefeather_lazy_unit=body), hot (=hot, on a zip primed with PROFILE_HOT=1), script (=script),
+# whole (opcache.pagefeather_lazy_load=0). Each
 # arm's site must report that mode in /_mem (ini.lb.lazy_unit, ini.lb.lazy_load), or the arm is refused.
 # Per boot: a request with x-runtime-recycle: force (spike-gated: the runtime is dropped after it, as a memory recycle
 # would), log in (it must report x-perf boot 1: a new runtime), /_mem, the FIRST post-new.php, /_mem, then WARM more
@@ -19,7 +20,7 @@ RUN_ENV=${RUN_ENV:-/root/run.env}; OUT=${OUT:-/root/out}
 # shellcheck disable=SC1090
 . "$RUN_ENV"
 : "${SPIKE_TOKEN:?SPIKE_TOKEN is not set in $RUN_ENV}" "${ADMIN_PASSWORD:?ADMIN_PASSWORD is not set in $RUN_ENV}"
-ARMS=${ARMS:-body script whole}; BOOTS=${BOOTS:-5}; WARM=${WARM:-5}
+ARMS=${ARMS:-body hot script whole}; BOOTS=${BOOTS:-5}; WARM=${WARM:-5}
 mkdir -p "$OUT"
 J=$(mktemp "${TMPDIR:-/tmp}/m2c-jar.XXXXXX"); T=$(mktemp -d "${TMPDIR:-/tmp}/m2c.XXXXXX")
 trap 'rm -rf "$J" "$T"' EXIT
@@ -50,14 +51,14 @@ def lb(p):
     except Exception as e:
         sys.exit("vps-run: %s is not a /_mem reading (%s)" % (p, e))
 a, b = lb(t + "/a.json"), lb(t + "/b.json")
-want = {"body": (True, "body"), "script": (True, "script"), "whole": (False, None)}[arm]
+want = {"body": (True, "body"), "hot": (True, "hot"), "script": (True, "script"), "whole": (False, None)}[arm]
 if b.get("lazy_load") != want[0] or (want[1] and b.get("lazy_unit") != want[1]):
     sys.exit("vps-run: arm %s, but the site reports lazy_load %r, lazy_unit %r" % (arm, b.get("lazy_load"), b.get("lazy_unit")))
 perf = {}
 for line in open(t + "/h.txt", errors="replace"):
     if line.lower().startswith("x-perf:"):
         perf = json.loads(line.split(":", 1)[1].strip())
-d = {k: b.get(k, 0) - a.get(k, 0) for k in ("body_load_ns", "body_loads", "script_loads", "body_bytes_loaded", "body_bytes_resident", "body_fail",
+d = {k: b.get(k, 0) - a.get(k, 0) for k in ("body_load_ns", "body_loads", "script_loads", "hot_loads", "body_bytes_loaded", "body_bytes_resident", "body_fail",
                                            "body_open_ns", "body_read_ns", "body_check_ns", "body_unser_ns", "body_install_ns")}
 print(json.dumps({"arm": arm, "boot": boot, "req": i, "first": i == 0, "status": int(code), "wall_ms": round(float(wall) * 1000, 1),
     "body_load_ms": round(d["body_load_ns"] / 1e6, 2), **{k: v for k, v in d.items() if k != "body_load_ns"},

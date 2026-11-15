@@ -28,22 +28,32 @@ mkdir "$work/$1"; d=$1; shift
 }
 prime oc0
 prime oc1 -d opcache.interned_strings_buffer=1
+# The hot-set cache (stage 5): oc0's files, plus the .hot profiles that opcache.pagefeather_profile=1 writes while
+# the cases run (and prof_hot.php, which makes only a and b of f_hot.php hot). The probe's own files are dropped.
+cp -R "$work/oc0" "$work/oc2"
+for c in plain methods refl copy fail never missing ic xref; do
+  "$php" "${opc[@]}" -d "opcache.file_cache=$work/oc2" -d opcache.pagefeather_profile=1 "$work/probe.php" "$c" profile > /dev/null 2>&1
+done
+"$php" "${opc[@]}" -d "opcache.file_cache=$work/oc2" -d opcache.pagefeather_profile=1 "$work/prof_hot.php" > /dev/null 2>&1
+find "$work/oc2" \( -name 'probe.php.bin*' -o -name 'prof_hot.php.bin*' \) -exec rm -f {} +
+echo "prime: $(find "$work/oc2" -name '*.hot' | wc -l | tr -d ' ') hot profiles"
 n=$(find "$work/oc0" -name "*.bin" | wc -l | tr -d " ")
 [ "$n" -ge 15 ] || { echo "prime: only $n .bin files written"; exit 1; }
 rc=0
-for case in plain methods refl copy fail never missing ic xref xstr tcbad; do
-  for mode in lazy script eager compiled; do
-    src=oc0; [ "$case" = xstr ] && src=oc1
+for case in plain methods refl copy fail never missing ic xref xstr hot tcbad; do
+  for mode in lazy script hot eager compiled; do
+    src=oc0; [ "$case" = xstr ] && src=oc1; [ "$mode" = hot ] && [ "$case" != xstr ] && src=oc2
     rm -rf "$work/oc"; cp -R "$work/$src" "$work/oc"
     extra=(); [ "$mode" = eager ] && extra=(-d opcache.pagefeather_lazy_load=0); [ "$mode" = compiled ] && extra=(-d opcache.enable_cli=0)
     [ "$mode" = script ] && extra=(-d opcache.pagefeather_lazy_unit=script)
+    [ "$mode" = hot ] && extra=(-d opcache.pagefeather_lazy_unit=hot)
     [ "$case" = xstr ] && extra+=(-d opcache.interned_strings_buffer=1)
     "$php" "${opc[@]}" -d "opcache.file_cache=$work/oc" ${extra[@]+"${extra[@]}"} "$work/probe.php" "$case" "$mode" > "$work/$case.$mode.out" 2>&1
   done
   python3 -I - "$work" "$case" <<'PY' || rc=1
 import json, sys
 work, case = sys.argv[1], sys.argv[2]
-txt = {m: open("%s/%s.%s.out" % (work, case, m)).read() for m in ("lazy", "script", "eager", "compiled")}
+txt = {m: open("%s/%s.%s.out" % (work, case, m)).read() for m in ("lazy", "script", "hot", "eager", "compiled")}
 why = []
 if case == "tcbad":
     for m, t in txt.items():
@@ -66,6 +76,17 @@ else:
             why.append("script out differs from compiled: %s" % json.dumps(got["script"]["out"])[:300])
         why += ["lazy: " + f for f in got["lazy"]["fail"]]
         why += ["script: " + f for f in got["script"]["fail"]]
+        if got["hot"]["out"] != got["compiled"]["out"]:
+            why.append("hot out differs from compiled: %s" % json.dumps(got["hot"]["out"])[:300])
+        why += ["hot: " + f for f in got["hot"]["fail"]]
+        lz, ht = got["lazy"].get("lb") or {}, got["hot"].get("lb") or {}
+        if case != "hot":
+            # every function a case calls was profiled hot, so the hot unit loads the same bodies as lazy, in fewer reads
+            for k in ("body_loads", "body_fail"):
+                if ht.get(k) != lz.get(k):
+                    why.append("hot %s %r, lazy %r: the hot set loaded other bodies" % (k, ht.get(k), lz.get(k)))
+            if case != "xstr" and (lz.get("body_loads") or 0) > 0 and not (ht.get("hot_loads") or 0) > 0:
+                why.append("hot: no hot load at all (hot_loads %r): the profile or the unit did not take" % ht.get("hot_loads"))
         if any(t.lstrip().startswith(("PHP ", "Warning", "Fatal", "Notice", "Deprecated")) for t in txt.values()):
             why.append("a run printed a diagnostic before its JSON")
     ev = {"case": case, "ok": not why, "lb": got.get("lazy", {}).get("lb")}

@@ -454,6 +454,11 @@ jobs:
           LB_PRIMED=1 tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate-primed.json"
           # M2b stage 4: the same gate and M2c reading with a whole script per load (opcache.pagefeather_lazy_unit=script)
           LB_PRIMED=1 LB_UNIT=script tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate-primed-script.json"
+          # M2b stage 5: the profile pass on that zip (the .hot files), then the gate and M2c with the hot set
+          PF_PROFILE_PASS=1 PRIME_OPCACHE_MB=128 DEV_ENV=dosql-local WOO_ACTIVE=1 ./opcache.sh > build/opcache-profile.log 2>&1 || { echo "::error::the profile pass failed"; tail -30 build/opcache-profile.log; exit 1; }
+          tail -2 build/opcache-profile.log
+          ./run.sh --stop > /dev/null 2>&1 || true
+          LB_PRIMED=1 LB_UNIT=hot tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate-primed-hot.json"
       - name: vps-run.sh, the M2c live runner, against wrangler dev (a smoke test of the script, not a measurement)
         working-directory: spikes/b2-wordpress
         run: |
@@ -534,6 +539,7 @@ jobs:
             ${{ runner.temp }}/gate-128.json
             ${{ runner.temp }}/gate-primed.json*
             ${{ runner.temp }}/gate-primed-script.json*
+            ${{ runner.temp }}/gate-primed-hot.json*
             ${{ runner.temp }}/gate-primed-red.json
           retention-days: 14
   opcache-stats:

@@ -74,6 +74,8 @@ if __import__("os").environ.get("LB_PRIMED") == "1":
         sys.exit("lazy-bodies-e2e: body_fail %r: a body did not load on a primed run (each is a request that threw)" % lb.get("body_fail"))
     if __import__("os").environ.get("LB_UNIT") == "script" and (lb.get("lazy_unit") != "script" or lb.get("script_loads", 0) <= 0):
         sys.exit("lazy-bodies-e2e: LB_UNIT=script, but lazy_unit is %r and script_loads %r: the unit switch did not take" % (lb.get("lazy_unit"), lb.get("script_loads")))
+    if __import__("os").environ.get("LB_UNIT") == "hot" and (lb.get("lazy_unit") != "hot" or lb.get("hot_scripts", 0) <= 0 or lb.get("hot_loads", 0) <= 0):
+        sys.exit("lazy-bodies-e2e: LB_UNIT=hot, but lazy_unit %r, hot_scripts %r, hot_loads %r: no hot set was used (was the zip profiled?)" % (lb.get("lazy_unit"), lb.get("hot_scripts"), lb.get("hot_loads")))
     print("lazy-bodies-e2e: primed (unit %s): %d scripts lazy, %d whole (%d of them for a tail crossing), %d bodies loaded in %d script loads (%.2f MiB resident), body_fail 0, %.1f ms in body loads" % (lb.get("lazy_unit"), lb["lazy_scripts"], lb.get("eager_scripts", 0), lb.get("xref_scripts", 0), lb["body_loads"], lb.get("script_loads", 0), lb.get("body_bytes_resident", 0) / 2**20, lb.get("body_load_ns", 0) / 1e6))
 print("lazy-bodies-e2e: ok at memory_consumption %s: split %d of %s cached scripts, %.2f MiB of bodies, %s directory entries, 0 mismatches" % (ini.get("mc"), lb["split_scripts"], ini.get("cached"), lb["body_bytes"] / 2**20, lb.get("dir_entries")))
 PY
@@ -100,7 +102,7 @@ wall_ms = float(wall) * 1000
 share = ns / 1e6 / wall_ms if wall_ms else 0
 trig = ns / 1e6 > 250 or share > 0.05
 r = {"unit": b.get("lazy_unit"), "lazy_load": b.get("lazy_load"), "status": int(code), "wall_ms": round(wall_ms, 1), "body_load_ms": round(ns / 1e6, 2), "share": round(share, 4), "body_loads": loads,
-     "body_bytes": b.get("body_bytes_loaded", 0) - a.get("body_bytes_loaded", 0), "script_loads": b.get("script_loads", 0) - a.get("script_loads", 0), "fallback_triggered": trig,
+     "body_bytes": b.get("body_bytes_loaded", 0) - a.get("body_bytes_loaded", 0), "script_loads": b.get("script_loads", 0) - a.get("script_loads", 0), "hot_loads": b.get("hot_loads", 0) - a.get("hot_loads", 0), "fallback_triggered": trig,
      "phases_ms": {k: round((b.get("body_%s_ns" % k, 0) - a.get("body_%s_ns" % k, 0)) / 1e6, 2) for k in ("open", "read", "check", "unser", "install")}}
 print("@event m2c-first-post-new " + json.dumps(r))
 print("lazy-bodies-e2e: M2c phases (ms): " + ", ".join("%s %.1f" % kv for kv in r["phases_ms"].items()))

@@ -162,6 +162,16 @@ OPcache's shared memory until a function is first called. It is built in slices 
   (`opcache.pagefeather_lazy_load=0`). The counter `script_loads` counts the script loads, and `lazy_unit`
   shows the mode. The suites run every case in both units (run-native.sh, lazy-bodies.test.mjs), and the
   primed gate and the M2c reading run in both units (`LB_UNIT=script`).
+- **M2b stage 5, the hot set** (profile-guided, ruled 2026-11-15). `opcache.pagefeather_lazy_unit=hot`
+  loads a script's hot set at its first call, in one open and one read. The hot bodies and the called one are
+  copied out, checked and unserialized one by one, and the read buffer is freed. The cold bodies stay lazy
+  per body. The hot set comes from priming: `PROFILE_HOT=1 ./opcache.sh` runs the pages again on its own
+  primed zip with `opcache.pagefeather_profile=1`. Each body the lazy load reads is recorded into
+  `<bin>.hot` (the .bin's head checksum, the directory size, the indices), and the second dump ships it. A
+  stale `.hot` (another checksum or size) is ignored. A profile observer is NOT used: an observer changes the
+  OPcache system id, so its files would sit beside files the shipped engine never loads. Counters:
+  `hot_scripts`, `hot_loads`, `hot_bodies`, `hot_read_bytes`, `profile_writes`. The load phases are
+  `body_open_ns`, `body_read_ns`, `body_check_ns`, `body_unser_ns` and `body_install_ns`.
 - **Code that reads opcodes without a call** asks for the body first: named arguments that skip a default
   (`zend_handle_undef_args`), Reflection default values, and the text of an inheritance error. The trait
   collision check compares body ids (`zend_pf_body_id`), not opcodes pointers, because every unloaded body
