@@ -213,8 +213,29 @@ def products():
     # a buy of it fails twice (add-item 400 woocommerce_rest_product_out_of_stock,
     # then checkout 409 woocommerce_rest_cart_empty). A stock-managed product left
     # by tests/woo.py ran out during the wp-a2 matrix (2026-11-06, issue #50).
+    # Not stock-managed either (#296, the #668 burst: a long run sold a stock-managed product out mid-run, and
+    # its buy loops failed as above). The Store API has no manage_stock field; add_to_cart.maximum is below 9999
+    # exactly when stock is managed without backorders, or a purchase limit applies (WooCommerce QuantityLimits).
+    # A product with no add_to_cart field (an older Store API) is kept, as before.
     r = req(opener(), nc("/?rest_route=/wc/store/v1/products&per_page=20"))
-    return [p for p in json.loads(r["body"]) if p.get("is_purchasable") and p.get("is_in_stock")] if r["code"] == 200 else []
+    return [p for p in json.loads(r["body"]) if p.get("is_purchasable") and p.get("is_in_stock") and unlimited(p)] if r["code"] == 200 else []
+
+
+def unlimited(p):
+    m = (p.get("add_to_cart") or {}).get("maximum")
+    return m is None or (isinstance(m, (int, float)) and m >= 9999)
+
+
+def error_code(r):
+    """The Store API error CODE of a non-2xx answer, and nothing else (#296): never the message or the body,
+    which can carry order data. "none" when the body is not JSON or has no code."""
+    if not isinstance(r["code"], int) or 200 <= r["code"] < 300:
+        return None
+    try:
+        c = json.loads(r["body"]).get("code")
+    except (ValueError, AttributeError, TypeError):
+        return "none"
+    return c if isinstance(c, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", c) else "none"
 
 
 def is_1102(r):
@@ -297,7 +318,7 @@ def step(n, prods):
         h = r["h"] or {}
         row = {"k": kind, "c": r["code"], "s": r["s"], "ok": (r["code"] in (200, 201) if ok is None else ok),
                "e1102": is_1102(r), "mib": h.get("x-wasm-mib"), "rec": h.get("x-runtime-recycled"), "boot": h.get("x-boot"),
-               "cf": h.get("cf-cache-status"), "shed": r["code"] == 503 and bool(h.get("x-c1-shed"))}
+               "cf": h.get("cf-cache-status"), "shed": r["code"] == 503 and bool(h.get("x-c1-shed")), "ec": error_code(r)}
         if r["s"] >= SLOW_S:
             row["slow"] = {"t0": round(r.get("t0") or 0, 3), "k": kind, "c": r["code"], "s": round(r["s"], 3),
                            "ttfb": round(r["ttfb"], 3) if r.get("ttfb") is not None else None, "ray": h.get("cf-ray")}
@@ -333,6 +354,12 @@ def step(n, prods):
     for r in rows:
         if r["k"] == "browse":
             out["cache"][r["cf"] or "none"] = out["cache"].get(r["cf"] or "none", 0) + 1
+    # The Store API error code of every non-2xx, per kind and status (#296): "checkout 403 <code>" names a failure.
+    out["error_codes"] = {}
+    for r in rows:
+        if r["ec"]:
+            key = "%s %s %s" % (r["k"], r["c"], r["ec"])
+            out["error_codes"][key] = out["error_codes"].get(key, 0) + 1
     for r in rows:
         out["status"][str(r["c"])] = out["status"].get(str(r["c"]), 0) + 1
         if r["rec"]:
@@ -362,7 +389,7 @@ if __name__ == "__main__":
             setup()
         prods = products()
         if not prods:
-            sys.exit("no purchasable products")
+            sys.exit("no purchasable products without a stock limit (SETUP=1, the default, makes 5)")
     else:
         BUYERS = 0.0
         prods = [{"permalink": B + p} for p in PLAIN]

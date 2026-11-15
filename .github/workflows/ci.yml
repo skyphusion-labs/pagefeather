@@ -194,6 +194,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/rpc-dispose.test.mjs
       - name: load test admin loops and cleanup, against a stub site (issue #394)
         run: python3 tests/load/admin-stub-test.py
+      - name: load test skips stock-managed products and keeps each non-2xx Store API code, never a body (#296)
+        run: python3 tests/load/stock-codes-stub-test.py
       - name: load test 1102 counter counts 5xx only (issue #394)
         run: python3 tests/load/is1102-test.py
       - name: page-stale probe measures old stock on a cached page, with its controls (#628)
