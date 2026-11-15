@@ -3,7 +3,7 @@
 Each process takes the lock iters times, logs enter/exit with time.time_ns, holds it 2 ms.
 Prints the number of overlaps (two holders at once). The mkdir form is the exact shell pattern
 of r2_refresh (mkdir "$F.lock" || skip; ...; rmdir "$F.lock"), run through /bin/sh."""
-import os, subprocess, sys, tempfile, time
+import os, shutil, subprocess, sys, tempfile, time
 kind, procs, iters = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 SH_MKDIR = r'''for i in $(seq 1 %d); do
   if mkdir "$F.lock" 2>/dev/null; then
@@ -20,10 +20,12 @@ for _ in range(n):
     fcntl.flock(fd, fcntl.LOCK_EX)
     f = open(LOG, "a"); f.write("in %d\n" % time.time_ns()); f.close(); time.sleep(0.002); f = open(LOG, "a"); f.write("out %d\n" % time.time_ns()); f.close()
     fcntl.flock(fd, fcntl.LOCK_UN); os.close(fd)'''
-# #567: this directory used to be left behind on every run. TemporaryDirectory removes it
-# on the way out, including a failing run. WFP_TEMP_CLEAN_FAIL=1 exits 1 from inside it
-# (tempdir-clean-test.py).
-with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+# #567: this directory used to be left behind on every run. mkdtemp plus rmtree in a
+# finally removes it on the way out, including a failing run. ignore_errors so a cleanup
+# error is not the test result. Python 3.9 has no TemporaryDirectory(ignore_cleanup_errors).
+# WFP_TEMP_CLEAN_FAIL=1 exits 1 from inside it (tempdir-clean-test.py).
+d = tempfile.mkdtemp()
+try:
     if os.environ.get("WFP_TEMP_CLEAN_FAIL") == "1":
         sys.exit(1)
     F = os.path.join(d, "cred"); open(F, "w").close(); log = os.path.join(d, "log")
@@ -47,3 +49,5 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
             held -= 1
     print("%s: %d entries, %d overlaps" % (kind, n_in, over))
     sys.exit(1 if over else 0)
+finally:
+    shutil.rmtree(d, ignore_errors=True)

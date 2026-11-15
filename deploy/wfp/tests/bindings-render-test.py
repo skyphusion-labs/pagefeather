@@ -27,10 +27,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 WFP = os.path.dirname(HERE)
 PROG = sys.argv[1] if len(sys.argv) > 1 else os.path.join(WFP, "bindings.py")
 SITE, KV, NS = "one", "kv123", "wp-wfp"
-# #567: this directory used to be left behind on every run. TemporaryDirectory removes it
-# on the way out, including a failing run. WFP_TEMP_CLEAN_FAIL=1 exits 1 from inside it
-# (tempdir-clean-test.py).
-with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as T:
+# #567: this directory used to be left behind on every run. mkdtemp plus rmtree in a
+# finally removes it on the way out, including a failing run. ignore_errors so a cleanup
+# error is not the test result. Python 3.9 has no TemporaryDirectory(ignore_cleanup_errors).
+# WFP_TEMP_CLEAN_FAIL=1 exits 1 from inside it (tempdir-clean-test.py).
+T = tempfile.mkdtemp()
+try:
     if os.environ.get("WFP_TEMP_CLEAN_FAIL") == "1":
         sys.exit(1)
     fails = 0
@@ -176,3 +178,5 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as T:
         check(name + ": fails the audit, named", rc == 1 and want in out, (rc, out[-200:]))
     print("%d failing check(s)" % fails)
     sys.exit(1 if fails else 0)
+finally:
+    shutil.rmtree(T, ignore_errors=True)

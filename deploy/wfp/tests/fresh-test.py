@@ -3,14 +3,16 @@
 fake-s3.py (it lists with LastModified and pages as R2 does). The check must go red on every miss
 it exists for, and must NOT go red on a site's first snapshot (nothing to compare its size to).
 No account. Run: python3 -I deploy/wfp/tests/fresh-test.py"""
-import os, subprocess, sys, tempfile, time, urllib.request
+import os, shutil, subprocess, sys, tempfile, time, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SNAP = os.path.join(HERE, "..", "snapshot.py")
-# #567: this directory used to be left behind on every run. TemporaryDirectory removes it
-# on the way out, including a failing run. WFP_TEMP_CLEAN_FAIL=1 exits 1 from inside it
-# (tempdir-clean-test.py).
-with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as T:
+# #567: this directory used to be left behind on every run. mkdtemp plus rmtree in a
+# finally removes it on the way out, including a failing run. ignore_errors so a cleanup
+# error is not the test result. Python 3.9 has no TemporaryDirectory(ignore_cleanup_errors).
+# WFP_TEMP_CLEAN_FAIL=1 exits 1 from inside it (tempdir-clean-test.py).
+T = tempfile.mkdtemp()
+try:
     if os.environ.get("WFP_TEMP_CLEAN_FAIL") == "1":
         sys.exit(1)
     fails = 0
@@ -91,3 +93,5 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as T:
         srv.wait()
     print("%d failing check(s)" % fails)
     sys.exit(1 if fails else 0)
+finally:
+    shutil.rmtree(T, ignore_errors=True)
