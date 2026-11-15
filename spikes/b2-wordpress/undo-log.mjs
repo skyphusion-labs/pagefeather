@@ -23,6 +23,18 @@
 // - defer(fn) holds work that must not outlive a rollback (the KV L2 cache sets) until the frame is kept.
 // _wp_frame keeps the outcome per request id (a short history) for the Worker's /_frame probe, so a
 // client is only told "nothing was saved" when it is proven.
+//
+// #577: _wp_undo.seq is INTEGER PRIMARY KEY, not AUTOINCREMENT. AUTOINCREMENT updates sqlite_sequence
+// on every insert, and the object's rowsWritten bills that extra row (one per undo row, about 3 per
+// framed save). Replay stays ORDER BY seq DESC. A reused seq cannot pass a live savepoint: undoTo
+// deletes only seq > s, and every savepoint still live has recorded a seq at or below the log's top.
+// A site that already has the AUTOINCREMENT table is rebuilt on first use, when the log is empty.
+// recover() (the constructor, inside blockConcurrencyWhile) undoes an open frame first, then rebuilds.
+// undoSetup rebuilds too, if it finds the old table and the log is already empty. A non-empty log stays
+// on the old table until the next empty point, and still replays. The rebuild (trigger drop, rename,
+// create, copy, drop, the sqlite_sequence delete, and the trigger recreate) is one
+// storage.transactionSync, so it commits whole or not at all. The trigger bodies insert into
+// _wp_undo by name, so they do not change.
 
 const UNDO_TABLES = new Set(['_wp_undo', '_wp_undo_state', '_wp_frame']);
 const FRAME_HISTORY = 32;
@@ -91,9 +103,58 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 	const own = (cur) => { counts.own += (cur && cur.rowsWritten) || 0; return cur; };
 	let openedBy = null; // the shape (verb and table, never values) of the statement that opened the last frame
 
-	function undoSetup(db) {
+	// One-time rebuild of a _wp_undo left by a build that used AUTOINCREMENT (#577). Only when the log
+	// is empty and no frame is active: a non-empty log is mid-frame, or leftover rows this call must
+	// not rewrite. The swap, triggers included, is one storage transaction: a throw anywhere in it
+	// leaves the old table and its triggers. Move the old table aside, create the plain one under the
+	// same name, copy, drop the old table, drop its sqlite_sequence row, then put the triggers back.
+	function migrateUndo(db, storage) {
+		let sql = '';
+		try {
+			sql = db.exec("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '_wp_undo'").one().sql || '';
+		} catch {
+			return false;
+		}
+		if (!/autoincrement/i.test(sql)) return false;
+		if (db.exec('SELECT COUNT(*) AS n FROM _wp_undo').one().n !== 0) return false;
+		try {
+			if (db.exec('SELECT active FROM _wp_undo_state WHERE id = 1').one().active) return false;
+		} catch {
+			// no state row yet: nothing is mid-frame
+		}
+		// Drop the undo triggers first. Renaming or dropping _wp_undo while they still name it makes
+		// SQLite recompile them against a missing table ("no such table: main._wp_undo"). They are
+		// recreated below, same bodies: the body hashes to the same name, and it inserts into _wp_undo
+		// by name, so the new table needs no trigger edit. The drop and the recreate are in the same
+		// transaction, so a failure cannot leave the table with no triggers.
+		const swap = () => {
+			const triggers = [...db.exec("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE '\\_wp\\_undo\\_%' ESCAPE '\\'").raw()].map((r) => r[0]);
+			for (const name of triggers) db.exec(`DROP TRIGGER IF EXISTS ${sqlId(name)}`);
+			db.exec('ALTER TABLE _wp_undo RENAME TO _wp_undo_old');
+			db.exec('CREATE TABLE _wp_undo (seq INTEGER PRIMARY KEY, sql TEXT NOT NULL)');
+			db.exec('INSERT INTO _wp_undo (seq, sql) SELECT seq, sql FROM _wp_undo_old');
+			db.exec('DROP TABLE _wp_undo_old');
+			try {
+				db.exec("DELETE FROM sqlite_sequence WHERE name = '_wp_undo' OR name = '_wp_undo_old'");
+			} catch {
+				// the drop already removed the row, or this database has no sequence table
+			}
+			undoSchemaSig = null; // sqlite_master changed; put the same triggers back on the new table
+			undoTriggers(db);
+		};
+		try {
+			if (storage && typeof storage.transactionSync === 'function') storage.transactionSync(swap);
+			else swap();
+		} catch (e) {
+			undoSchemaSig = null; // the swap did not commit; drop any sig taken inside it
+			throw e;
+		}
+		return true;
+	}
+	function undoSetup(db, storage) {
 		if (setupDone) return;
-		db.exec('CREATE TABLE IF NOT EXISTS _wp_undo (seq INTEGER PRIMARY KEY AUTOINCREMENT, sql TEXT NOT NULL)');
+		migrateUndo(db, storage);
+		db.exec('CREATE TABLE IF NOT EXISTS _wp_undo (seq INTEGER PRIMARY KEY, sql TEXT NOT NULL)');
 		db.exec('CREATE TABLE IF NOT EXISTS _wp_undo_state (id INTEGER PRIMARY KEY CHECK (id = 1), active INTEGER NOT NULL)');
 		own(db.exec('INSERT OR IGNORE INTO _wp_undo_state (id, active) VALUES (1, 0)'));
 		if (framesOn()) db.exec('CREATE TABLE IF NOT EXISTS _wp_frame (req TEXT PRIMARY KEY, state TEXT NOT NULL, points INTEGER NOT NULL, kinds TEXT NOT NULL, undone INTEGER NOT NULL, t INTEGER NOT NULL)');
@@ -154,9 +215,9 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 	function frameRow(db, req, state) {
 		own(db.exec('INSERT INTO _wp_frame (req, state, points, kinds, undone, t) VALUES (?, ?, ?, ?, 0, ?) ON CONFLICT (req) DO UPDATE SET state = excluded.state, points = excluded.points, kinds = excluded.kinds, t = excluded.t', req, state, points, kinds.join(','), Date.now()));
 	}
-	function frameOpenNow(db, sql) {
+	function frameOpenNow(db, sql, storage) {
 		openedBy = sql ? shapeOf(sql) : 'php-begin';
-		undoSetup(db);
+		undoSetup(db, storage);
 		undoTriggers(db);
 		setActive(db, true);
 		frameOpen = true;
@@ -205,10 +266,10 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			if (txnFrames) txnTouched.add(k);
 		},
 		/** Before every PHP statement: open the frame just before the first one that may write; a DDL is a commit point. */
-		beforeStatement(db, sql) {
+		beforeStatement(db, sql, storage) {
 			if (!armedReq) return;
 			if (frameOpen && isDdl(sql)) return this.commitPoint(db, 'ddl');
-			if (!frameOpen && mayWrite(sql) && !isDdl(sql)) frameOpenNow(db, sql);
+			if (!frameOpen && mayWrite(sql) && !isDdl(sql)) frameOpenNow(db, sql, storage);
 		},
 		/**
 		 * Run one PHP statement (fn runs it and returns its result). When it would open the frame, the open,
@@ -221,7 +282,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			const opens = armedReq && !frameOpen && mayWrite(sql) && !isDdl(sql) && storage && typeof storage.transactionSync === 'function';
 			if (!opens) {
 				const was = frameOpen;
-				this.beforeStatement(db, sql);
+				this.beforeStatement(db, sql, storage);
 				if (!was && frameOpen) log({ m: 'frame-open', req: armedReq, by: openedBy, tx: false });
 				return fn();
 			}
@@ -230,7 +291,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			let result;
 			try {
 				storage.transactionSync(() => {
-					frameOpenNow(db, sql);
+					frameOpenNow(db, sql, storage);
 					const seq = undoSeq(db);
 					result = fn();
 					const logged = db.exec('SELECT COUNT(*) AS n FROM _wp_undo WHERE seq > ?', seq).one().n;
@@ -297,10 +358,10 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 				if (kind === 'begin') {
 					if (txnFrames && !frameOpen) phpClose(db); // MySQL commits an open transaction first
 					if (armedReq && !frameOpen) {
-						frameOpenNow(db);
+						frameOpenNow(db, undefined, storage);
 						log({ m: 'frame-open', req: armedReq, by: openedBy, tx: false });
 					}
-					undoSetup(db);
+					undoSetup(db, storage);
 					undoTriggers(db);
 					txnFrames = [{ name: null, seq: undoSeq(db) }];
 					txnTouched.clear();
@@ -355,7 +416,8 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			}
 			if (!active) {
 				const relabeled = relabelEnded(db);
-				log({ m: 'frame-recover', active: 0, tables: true, frames: framesOn(), relabeled });
+				const rebuilt = migrateUndo(db, storage);
+				log({ m: 'frame-recover', active: 0, tables: true, frames: framesOn(), relabeled, rebuilt });
 				return null;
 			}
 			const n = undoTo(db, storage, 0);
@@ -372,8 +434,9 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 				// frames were never on here
 			}
 			const relabeled = relabelEnded(db);
+			const rebuilt = migrateUndo(db, storage);
 			log({ m: 'txn', recovered: true, undone: n, req });
-			log({ m: 'frame-recover', active: 1, tables: true, frames: framesOn(), undone: n, req, relabeled });
+			log({ m: 'frame-recover', active: 1, tables: true, frames: framesOn(), undone: n, req, relabeled, rebuilt });
 			return { undone: n, req };
 		},
 		/** The outcome of a request, for the Worker's /_frame probe: null when unknown. */

@@ -104,6 +104,26 @@ Measured by `tests/frames-e2e.sh` in opcache-build (local workerd, the priming s
 off: 10 REST post saves, 10 `post-new.php` GETs and 10 public GETs, `x-perf` `dbMs` and `dbN`, and
 `x-db-rows` written. The numbers are in the PR and in #352.
 
+## The undo seq (#577)
+
+`_wp_undo.seq` is `INTEGER PRIMARY KEY`, not `AUTOINCREMENT`. An `AUTOINCREMENT` key updates
+`sqlite_sequence` on every insert, and the object's `rowsWritten` bills that extra row: one per undo
+row, about 3 per framed save. Replay is `ORDER BY seq DESC`.
+
+Within one frame that only appends, seqs are monotonic either way, so newest-first does not use
+`AUTOINCREMENT`'s never-reuse rule. After `ROLLBACK TO` deletes the tail, a new row may reuse a
+cleared seq. Every live savepoint's seq is still at or below the log's top (`undoTo` deletes only
+`seq > s`, and `ROLLBACK TO` keeps its own savepoint), so the reused seq is undone with that
+savepoint and not with an older one.
+
+A site that already has the old table is rebuilt on first use, when the log is empty. `recover()`
+(the `PhpRuntime` constructor, inside `blockConcurrencyWhile`) undoes an open frame first, then
+rebuilds. `undoSetup` rebuilds too, if it finds the old table and the log is already empty. A
+non-empty log stays on the old table until the next empty point, and still replays. The rebuild
+(the trigger drop, the rename, the copy, the drop, the `sqlite_sequence` delete, and the trigger
+recreate) is one `storage.transactionSync`, so a failure leaves the old table and its triggers.
+The bodies insert into `_wp_undo` by name, so they do not change.
+
 ## Not in this
 
 - Cron ticks are not framed: Action Scheduler hands each email off inside its action (#362), so each
