@@ -19,6 +19,7 @@ import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, lockDefines } from './site-lock.mjs';
 import { exportRequest } from './mysql-export.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore } from './perf-headers.mjs';
+import * as pageVersions from './page-versions.mjs';
 import { resetFailures, writeLossResponse, rolledBackResponse, frameProvesRollback, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { MEMORY_RESET } from './object-error.mjs';
 import { createL2Writer } from './oc-l2-writer.mjs';
@@ -75,6 +76,11 @@ let ENV;
 // Approach A (index-a.js) registers a MySQL handler here. B leaves it null and
 // every database message goes to D1.
 let dbHandler = null;
+// The WordPress table prefix of this site (php/wp-config.php reads WP_TABLE_PREFIX from PHP_ENV).
+function tablePrefix(env) {
+	try { const p = JSON.parse((env && env.PHP_ENV) || '{}').WP_TABLE_PREFIX; if (typeof p === 'string' && p) return p; } catch {}
+	return 'wp_';
+}
 export function setDbHandler(h) {
 	dbHandler = h;
 }
@@ -3275,6 +3281,20 @@ const site = {
 		// Import a MySQL dump (issue #31): variant a only, where dbHandler is the
 		// MySQL bridge (index-a.js). Every other variant gets the 404 of sql-import.js.
 		if (url.pathname === '/_sqlimport') return sqlImport(req, env, url, env.PHP_IN_DO === 'on' ? null : dbHandler);
+		// The page version counter and its triggers (#296 step 1, page-versions.mjs): approach A only.
+		// op=status (default), install (all or nothing; versioned false when the provider cannot make
+		// triggers) or remove. Spike-gated like every /_ path above. It works with the flag off too, so
+		// the schema can be installed and checked before PAGE_CACHE_VERSIONS=on is deployed.
+		if (url.pathname === '/_pcversions') {
+			if (!dbHandler || env.PHP_IN_DO === 'on') return new Response('approach A only', { status: 404 });
+			const op = url.searchParams.get('op') || 'status';
+			if (!['status', 'install', 'remove'].includes(op)) return new Response('op is status, install or remove', { status: 400 });
+			if (op !== 'status' && req.method !== 'POST') return new Response('install and remove need POST', { status: 405 });
+			const q = (sql) => dbHandler.query(env, { mysql: sql });
+			const out = await pageVersions[op](q, tablePrefix(env));
+			ctx.waitUntil(dbHandler.end());
+			return Response.json(out, { status: out.ok ? 200 : 500 });
+		}
 		// PHP in a Durable Object (PHP_IN_DO=on, issue #28): every request that
 		// needs PHP goes to the object, including /_d1ping (D1 as PHP sees it).
 		// DB_IN_DO needs the object; without it the Worker would use D1 silently.
@@ -3315,6 +3335,8 @@ const site = {
 // pageCacheRoute() lets through, with no Cookie header.
 export class Pages extends WorkerEntrypoint {
 	async fetch(req) {
+		// #296 step 1: the page version is part of the cache key only; WordPress never sees it.
+		if (pageVersions.pageVersionsOn(this.env, dbHandler)) req = pageVersions.stripPcv(req);
 		const r = await site.fetch(req, this.env, this.ctx);
 		// So a test can see which entrypoint answered (the gateway sets nothing).
 		const out = new Response(r.body, r);
@@ -3339,18 +3361,46 @@ export class Pages extends WorkerEntrypoint {
 export default {
 	async fetch(req, env, ctx) {
 		const url = new URL(req.url);
+		let pcvMissed = false;
 		if (pageCacheRoute(req, url, env)) {
 			const h = new Headers(req.headers);
 			h.delete('cookie');
 			h.delete('authorization');
-			return ctx.exports.Pages.fetch(new Request(req, { headers: h }));
+			// #296 step 1: with PAGE_CACHE_VERSIONS=on the version is SET on the URL (the cache key); a
+			// failed read gives null, and the request is served below, uncached.
+			const pages = pageVersions.pageVersionsOn(env, dbHandler) ? await versionedPagesRequest(req, h, env) : new Request(req, { headers: h });
+			if (pages) return ctx.exports.Pages.fetch(pages);
+			pcvMissed = true;
 		}
-		return site.fetch(req, env, ctx);
+		const r = await site.fetch(req, env, ctx);
+		if (!pcvMissed) return r;
+		// Served without a version: no cache in front (a zone cache on a custom domain) may keep it.
+		const out = new Response(r.body, r);
+		noStoreAnywhere(out.headers);
+		return out;
 	},
 	async queue(batch, env, ctx) {
 		return consumeEmailQueue(batch, env);
 	},
 };
+
+// #296 step 1 (PAGE_CACHE_VERSIONS=on): read the page version on the gateway's OWN connection, then
+// send the request to Pages with the version SET on its URL, which is the cache key. A write bumps
+// the version in the same statement (page-versions.mjs triggers), so the next request of any
+// isolate asks for a new key. A failed or slow read returns null: the gateway serves the request
+// uncached, never from an old key. One log line per read (m: pcv), so a run can measure its cost.
+const PCV_TIMEOUT_MS = 3000;
+async function versionedPagesRequest(req, h, env) {
+	const t0 = Date.now();
+	const read = await Promise.race([
+		pageVersions.readPageVersion((sql) => dbHandler.oneShot(env, sql), tablePrefix(env)).catch((e) => ({ ok: false, error: String(e) })),
+		new Promise((res) => setTimeout(() => res({ ok: false, error: 'timeout' }), PCV_TIMEOUT_MS)),
+	]);
+	const ms = Date.now() - t0;
+	console.log(JSON.stringify(read.ok ? { m: 'pcv', ok: true, ms, v: read.v } : { m: 'pcv', ok: false, ms, error: String(read.error).slice(0, 200) }));
+	if (!read.ok) return null;
+	return new Request(pageVersions.versionedUrl(req.url, read.v), new Request(req, { headers: h }));
+}
 
 async function handle(req, env, url, spikeOk, maxBody, ctx) {
 	ocCtx = ctx; // for L2 (KV) object-cache write-through this request (#218)
