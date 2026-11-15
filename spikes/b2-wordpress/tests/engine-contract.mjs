@@ -4,7 +4,7 @@
 // engine-contract.test.mjs runs every check on the engine under test (they must pass), and on the
 // UNPATCHED upstream 3.1.62 artifact from node_modules (each one that a patch exists for must fail).
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -16,7 +16,16 @@ globalThis.require ??= require; // the loader takes the node path in node and ca
 const { loadPHPRuntime, PHP, setPhpIniEntries, __private__dont_use, __private__dont__use } = require('@php-wasm/universal');
 const PRIV = __private__dont__use ?? __private__dont_use;
 const MiB = 1048576;
-const dir = mkdtempSync(join(tmpdir(), 'engine582-'));
+// Loader copies for this process (#612). The name carries the seat (PAGEFEATHER_SEAT)
+// or the pid, so a leftover in a shared TMPDIR can be attributed. Removed on exit,
+// including a failing run. It holds only copies, rewritten on every run.
+function engine582Prefix() {
+	const seat = (process.env.PAGEFEATHER_SEAT || '').replace(/[^A-Za-z0-9._-]/g, '');
+	const who = seat ? seat + '-' + process.pid : String(process.pid);
+	return 'engine582-' + who + '-';
+}
+const dir = mkdtempSync(join(tmpdir(), engine582Prefix()));
+process.on('exit', () => { rmSync(dir, { recursive: true, force: true }); });
 let seq = 0;
 
 // An engine: the loader source, the compiled module, the wasm bytes, and what it must be.
