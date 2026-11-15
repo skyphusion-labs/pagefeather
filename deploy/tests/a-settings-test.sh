@@ -11,17 +11,9 @@ fails=0
 ok() { if [ "$2" = 1 ]; then echo "  ok   $1"; else echo "  FAIL $1"; fails=$((fails+1)); fi; }
 T=$(mktemp -d "${TMPDIR:-/tmp}/a-settings-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT
-# A fence: a case that gets past its refusal stops at the first real step, never runs it. The stubs
-# shadow terraform, curl, docker and npm; deploy.sh reaches one of them before anything is built or sent.
-STUB="$T/stub"; mkdir -p "$STUB"
-for c in terraform curl docker npm; do printf '#!/bin/sh\necho "STUB %s called: a refusal did not fire" >&2\nexit 97\n' "$c" > "$STUB/$c"; chmod +x "$STUB/$c"; done
-refuse() { # refuse <expected text> <VAR=value...>
-  local want=$1; shift
-  local out rc
-  out=$(env -i PATH="$STUB:$PATH" HOME="$HOME" NAME=zarapo ACCOUNT_ID=0123456789abcdef0123456789abcdef CLOUDFLARE_API_TOKEN=fake "$@" bash "$ROOT/deploy/deploy.sh" 2>&1); rc=$?
-  if [ "$rc" = 2 ] && grep -qF "$want" <<<"$out" && ! grep -qE '^== (terraform|build|deploy)' <<<"$out"; then echo "  ok   refuses: $want ($*)"
-  else echo "  FAIL expected exit 2 with '$want' before any step ($*; rc=$rc): $(tail -1 <<<"$out")"; fails=$((fails+1)); fi
-}
+# shellcheck source=SCRIPTDIR/lib.sh
+. "$ROOT/deploy/tests/lib.sh"   # refuse, behind the fence
+FENCE="$T/fence"; fence_dir "$FENCE"
 echo "1. refusals through deploy.sh"
 refuse "OPCACHE_A is for variant a only" VARIANT=b-dosql OPCACHE_A=1
 refuse "OPCACHE_REMOTE is for variant a only" VARIANT=b-dosql OPCACHE_REMOTE=1
