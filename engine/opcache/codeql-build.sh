@@ -66,7 +66,11 @@ cd "$php"
 ./buildconf --force > "$work/buildconf.log" 2>&1 || { tail -40 "$work/buildconf.log"; fail "buildconf failed"; }
 ./configure --disable-all --disable-cgi --disable-phpdbg --enable-opcache --disable-opcache-jit \
   --disable-huge-code-pages > "$work/configure.log" 2>&1 || { tail -60 "$work/configure.log"; fail "configure failed"; }
-make -j"$(nproc)" Zend/zend_language_parser.h Zend/zend_ini_parser.h > "$work/make-gen.log" 2>&1 \
+# The bison headers the opcache sources include. Zend/Makefile.frag names them with an absolute srcdir,
+# so the targets are read from the Makefile; both must be found.
+mapfile -t gen < <(grep -oE '^[^ :#]*Zend/zend_(language|ini)_parser\.h' Makefile | sort -u)
+[ "${#gen[@]}" -eq 2 ] || fail "expected 2 Zend parser header targets in the Makefile, found ${#gen[@]}: ${gen[*]:-none}"
+make -j"$(nproc)" "${gen[@]}" > "$work/make-gen.log" 2>&1 \
   || { tail -40 "$work/make-gen.log"; fail "generating the Zend parser headers failed"; }
 mapfile -t objs < <(grep -oE 'ext/opcache/[A-Za-z0-9_/]+\.lo' Makefile | sort -u)
 [ "${#objs[@]}" -gt 0 ] || fail "no ext/opcache objects in the Makefile"
