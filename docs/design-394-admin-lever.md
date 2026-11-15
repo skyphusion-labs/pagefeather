@@ -26,7 +26,7 @@ heap. It fits what we see: admin requests fail about half the time, whatever cam
 | lever | in-request peak of post-new (before JS heap) | room for the JS heap | gets admin to 100%? |
 |---|---|---|---|
 | today | 177 to 187 | 1 to 11 | no: about 50% fail (pf394a, 4 runs) |
-| admin-aware recycle line (raise 100 MiB for admin) | unchanged: the line acts AFTER a request | unchanged | **no.** A recycle never fails the request it follows. It only decides whether the NEXT request boots. Raising it keeps a 111 to 143 MiB WASM resident between requests, which leaves LESS room for the next one. It is a speed lever for admin (fewer boots), never a success lever. |
+| admin-aware recycle line (raise 100 MiB for admin) | unchanged: the line acts AFTER a request | unchanged | **no.** A recycle never fails the request it follows. It only decides whether the NEXT request boots. Raising it keeps a 111 to 143 MiB WASM resident between requests, which leaves LESS room for the next one. It is a speed lever for admin (fewer boots), never a success lever. **Superseded in part on 2026-11-15, see the correction under this table.** |
 | L1: opcache.zip out (21.1) | 156 to 166 | 22 to 32 | **unknown.** It depends on the unmeasured JS heap. The boot request of an admin page reads 59 to 66 MiB (raw) of .bin files (M0), about 15 to 19 MiB deflated, so the BOOT request still holds most of that pack while it runs. |
 | L2: site.zip AND opcache.zip out (40.4) | 137 to 147 | 41 to 51 | **the only option with real room**, if the JS heap of an admin request is under about 40 MiB |
 
@@ -34,6 +34,24 @@ A side check against the data, and why the recycle line is not the cause: reques
 recycle failed 17 of 56 (30%). Requests after an OK request failed 26 of 57 (46%), and after a 500,
 45 of 82 (55%) (all four pf394a runs, my headers). So in-isolate re-boots are not what fails admin
 pages. The steady peak is.
+
+**Correction (written 2026-11-15 by rollins, seat rollins-sb1114h; measured 2026-11-14 and
+2026-11-15; supersedes the recycle-line row above and this side check, both of 2026-11-13).** The
+row and the side check were measured with the bundle in module memory (pf394a). On the remote-pack
+sites (OPCACHE_REMOTE and SITE_REMOTE on), the in-isolate re-boot IS the failure, and a higher line
+is a success lever on the lean engine, not only a speed lever (#598 issuecomment-6887747003 and
+issuecomment-6887936796):
+- The premise "a recycle never fails" holds only for the request it follows. The NEXT request boots a
+  new runtime while the retired one is still live in the isolate (Workers Logs, #598), so it needs
+  about two memories.
+- Lean engine (pf582t, 630 requests): all 40 deaths were the request right after our recycle. That is
+  20 and 19 of 70 at line 100, 1 of 140 at line 120, and 0 of 280 at line 140, with 0 mid-request
+  deaths. The platform changed the isolate between requests 7 times, at 84 to 127 MiB, with no
+  failure.
+- npm engine (pf394r, today's default engine): line 140 did NOT hold. Of 140 requests, 3 got no answer
+  for 63 to 155 s, at a 119 to 123 MiB heap. Line 100 gave 1 to 2 after-recycle deaths per 70 (#605).
+- Ruling (the lead, #598): the code default stays 100. RECYCLE_WASM_MIB=140 is a per-site setting for
+  lean-engine sites. Removing the stacked second memory (#603) is the fix for a death AT the recycle.
 
 ## 3. Recommendation: L2, built as two slices, with L1 first
 
