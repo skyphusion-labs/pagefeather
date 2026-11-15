@@ -41,12 +41,20 @@ if unmatched:
 
 # 2. Fetch, cut, check, write.
 cache = {}
+meta = {}
 def fetch(url):
     if url not in cache:
         req = urllib.request.Request(url, headers={'User-Agent': 'pagefeather-engine-licenses'})
         with urllib.request.urlopen(req, timeout=120) as r:
             cache[url] = r.read()
+            meta[url] = (r.status, r.geturl(), r.headers.get('content-type'))
     return cache[url]
+def not_an_archive(name, url, blob, err):
+    # #604: a 200 whose body is not an archive. Say which row, which host, and what came back, then fail.
+    # No retry: the next one must explain itself, not be hidden.
+    status, final, ctype = meta.get(url, (None, None, None))
+    sys.exit('licenses.py: %s: the tar from %s is not an archive (%s)\n  final url: %s\n  status: %s, content-type: %s, length: %d\n  first bytes: %r'
+             % (name, url, err, final, status, ctype, len(blob), blob[:120]))
 os.makedirs(os.path.join(out, 'LICENSES'), exist_ok=True)
 bad = []
 for name, r in sorted(needed.items()):
@@ -56,7 +64,11 @@ for name, r in sorted(needed.items()):
         text = fetch(r['source'])
     elif r['kind'] == 'tar':
         blob = fetch(r['source'])
-        with tarfile.open(fileobj=io.BytesIO(blob), mode='r:*') as t:
+        try:
+            t = tarfile.open(fileobj=io.BytesIO(blob), mode='r:*')
+        except tarfile.ReadError as e:
+            not_an_archive(name, r['source'], blob, str(e).splitlines()[0])
+        with t:
             text = t.extractfile(t.getmember(r['member'])).read()
     else:
         sys.exit('licenses.tsv: unknown kind ' + r['kind'])
