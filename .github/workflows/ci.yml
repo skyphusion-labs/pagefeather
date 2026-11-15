@@ -393,6 +393,7 @@ jobs:
           deploy/wfp/tests/turnstile-wiring-test.sh
           deploy/wfp/tests/woo-active-test.sh
           spikes/b2-wordpress/tests/opcache-check-test.sh
+          spikes/b2-wordpress/tests/opcache-shm-test.sh
           spikes/b2-wordpress/tests/local-creds-test.sh
           spikes/b2-wordpress/tests/opcache-activate-test.sh
           spikes/b2-wordpress/tests/opcache-server-alive-test.sh
