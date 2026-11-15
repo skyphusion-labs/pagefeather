@@ -97,5 +97,14 @@ ok('OC_KV binding carries namespace_id when the caller already knows it',
 ok('negative control: a-paid-lean does not carry a bogus var name', !aLean.includes('NOT_A_REAL_VAR ='));
 ok('negative control: a-paid-lean does not set OBJECT_CACHE = off', !aLean.includes('OBJECT_CACHE = "off"'));
 
+// #697: WooCommerce HPOS Data Caching for approach A, default OFF. aVars renders WOO_HPOS_CACHE only when asked.
+{
+  const plain = aVars({ siteOrigin: 'https://x' });
+  ok('aVars: no WOO_HPOS_CACHE by default (#697, the default is off)', !plain.some((b) => b.name === 'WOO_HPOS_CACHE'));
+  const on = aVars({ siteOrigin: 'https://x', wooHposCache: true });
+  ok('aVars: wooHposCache true renders WOO_HPOS_CACHE=on', on.some((b) => b.type === 'plain_text' && b.name === 'WOO_HPOS_CACHE' && b.text === 'on'));
+  ok('aVars: only a real true turns it on (a truthy string does not)', !aVars({ siteOrigin: 'https://x', wooHposCache: 'yes' }).some((b) => b.name === 'WOO_HPOS_CACHE'));
+}
+
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

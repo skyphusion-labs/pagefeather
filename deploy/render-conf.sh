@@ -35,7 +35,7 @@ render_conf() {
   # The Worker writes it into wp-runtime.php as a PHP constant.
   [ -z "${HYPERDRIVE_SQL_MODE+x}" ] || echo "HYPERDRIVE_SQL_MODE = \"$HYPERDRIVE_SQL_MODE\""
   # #666: the measured object cache and lazy nodes, from aVars (the provisioning path's one source).
-  if [ "$VARIANT" = a ]; then SITE_ORIGIN="$SITE_ORIGIN" OBJECT_CACHE_VERSIONS="${OBJECT_CACHE_VERSIONS:-0}" node "$ROOT/deploy/provision/a-vars-toml.mjs" vars || return 1; fi
+  if [ "$VARIANT" = a ]; then SITE_ORIGIN="$SITE_ORIGIN" OBJECT_CACHE_VERSIONS="${OBJECT_CACHE_VERSIONS:-0}" WOO_HPOS_CACHE="${WOO_HPOS_CACHE:-}" node "$ROOT/deploy/provision/a-vars-toml.mjs" vars || return 1; fi
   # #394: OPCACHE_REMOTE, SITE_REMOTE, RECYCLE_WASM_MIB (a-settings.sh). Nothing when unset. #646: PHP_OVERFLOW.
   [ "$VARIANT" != a ] || a_vars
   [ "$VARIANT" != a ] || a_overflow_vars

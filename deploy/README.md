@@ -199,6 +199,7 @@ A plain `VARIANT=a` deploy is the approach-A site that every #296 run measured. 
 | `A_CLIENT` | `lean` (default) deploys `index-a-lean.js`, the hand-rolled MySQL client (#218). `mysql2` deploys `index-a.js`, which deploy.sh deployed before #666 | |
 | `PHP_OVERFLOW=1` | a queued PHP request moves to a Durable Object pool (#646, `docs/approach-a-overflow.md`). Renders `PHP_OVERFLOW`, `PHP_OVERFLOW_POOL`, the `PHP_RUNTIME` binding and its migration. Off by default | |
 | `PHP_OVERFLOW_POOL` | the pool size, 1 to 256. Unset is 32, the measured default (#646) | `PHP_OVERFLOW=1` |
+| `WOO_HPOS_CACHE=on` | WooCommerce's HPOS Data Caching (#697; `hpos_datastore_caching`, off by default in WooCommerce 11.2.1). The must-use plugin answers its option "yes". On approach A the cache lives for one request only (group `orders_data`, which the object cache does not persist there). Unset leaves WooCommerce's own setting | |
 | `OBJECT_CACHE_VERSIONS=1` | options in the cross-isolate cache under an exact version (#668, #686). Off by default. Exact only when Hyperdrive does not cache queries (#650); deploy.sh's Terraform makes the config with caching disabled | |
 
 ### Variant `a` admin settings (#394)

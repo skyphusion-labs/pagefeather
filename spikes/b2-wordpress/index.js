@@ -20,6 +20,7 @@ import { demoLocked, lockDefines } from './site-lock.mjs';
 import { exportRequest } from './mysql-export.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore } from './perf-headers.mjs';
 import { createTrace as createQueryTrace } from './qtrace.mjs';
+import { hposCacheDefine } from './woo-hpos-cache.mjs';
 import { resetFailures, writeLossResponse, rolledBackResponse, frameProvesRollback, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { MEMORY_RESET } from './object-error.mjs';
 import { createL2Writer } from './oc-l2-writer.mjs';
@@ -1729,6 +1730,8 @@ async function boot(origin) {
 	// marketplace suggestions and remote logging off. Unset defines nothing, so WooCommerce's
 	// own defaults stay. Analytics is not one of the four options.
 	if (ENV.WOO_EXTRAS === 'off') lines.push(`define('SKYPHUSION_WOO_EXTRAS', 'off');`);
+	// WOO_HPOS_CACHE=on (#697): approach A only (the Hyperdrive dbHandler), php/woo-hpos-cache.php. Unset: nothing.
+	{ const l = hposCacheDefine(ENV, Boolean(dbHandler)); if (l) lines.push(l); }
 	// Media write trim mu-plugin (issue #189): free isolate memory on the rare admin
 	// media-upload request so the attachment insert fits under the 128 MiB cap on a
 	// WooCommerce-warmed b-dosql isolate. b-dosql + MEDIA only, and only the async-upload /
