@@ -36,6 +36,7 @@ import { headroomStream } from './headroom.mjs';
 import { createUndoLog } from './undo-log.mjs';
 import { createRetirer } from './runtime-drop.mjs';
 import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
+import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy } from './overflow.mjs';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
@@ -2522,6 +2523,21 @@ const SENT_HEADER = 'x-perf-sent';
 // always sets this header (a visitor's value is replaced), and only the
 // Worker can reach the object, so the object can trust it.
 const ORIGIN_HEADER = 'x-wp-public-origin';
+// #296 (3): set by the front Worker on a request it moved to an overflow pool object (overflow.mjs). Only
+// the Worker sets it; a client copy is always dropped. The object then does not arm its cron alarm: N pool
+// objects must not become N WordPress cron runners.
+const OVERFLOW_HEADER = 'x-pf-overflow';
+// #296 (3)(c): set by the front Worker when it can retry this request elsewhere (not Turnstile-gated). The object then
+// answers busy (503, x-php-busy) instead of queueing, before it runs anything. Only the Worker sets it.
+const OVERFLOW_BUSY_OK_HEADER = 'x-pf-busy-ok';
+// A request whose declared body is over this stays in the Worker, which stages large bodies in R2 (#296 (3)).
+const OVERFLOW_MAX_BODY = 1024 * 1024;
+// One picker per isolate, per pool size (the in-flight counts are what this isolate sent).
+let ovPicker = null;
+function ovPickerFor(pool) {
+	if (!ovPicker || ovPicker.pool !== pool) ovPicker = { pool, p: createPicker(pool) };
+	return ovPicker.p;
+}
 export class PhpRuntime extends DurableObject {
 	// #352: an isolate that died with a frame or a transaction open is rolled back FIRST, before any request,
 	// alarm, /_dbexport or snapshot reads the database (blockConcurrencyWhile holds them all).
@@ -2756,7 +2772,14 @@ export class PhpRuntime extends DurableObject {
 		// alarm there let it fire runCron mid-activation and its php.run output replaced the
 		// activation's (WooCommerce did not activate, #185). A real visitor (a page, an order)
 		// arms it instead, which is when the deferred work actually needs to run.
-		if (!url.pathname.startsWith('/_')) {
+		// An overflowed request (#296 (3)) never arms the cron alarm: the pool objects only absorb a queue.
+		const overflowed = raw.headers.get(OVERFLOW_HEADER) === '1';
+		// #296 (3)(c): this object already runs or holds PHP, and the Worker can send the request elsewhere: answer busy
+		// now, before anything runs (no cron arm, no PHP, no write), so the queue never moves into the pool.
+		if (overflowed && raw.headers.get(OVERFLOW_BUSY_OK_HEADER) === '1' && objectBusy({ running: phpLock.running, waiting: phpLock.waiting })) {
+			return new Response(null, { status: 503, headers: { 'x-php-busy': '1', 'cache-control': 'no-store', 'retry-after': '1' } });
+		}
+		if (!url.pathname.startsWith('/_') && !overflowed) {
 			lastOrigin = origin;
 			await this.ctx.storage.put(ORIGIN_KEY, origin);
 			// A STALE alarm (long past, its run never completed) counts as none (#291): otherwise it
@@ -2767,6 +2790,7 @@ export class PhpRuntime extends DurableObject {
 		}
 		const inboxMs = raw.headers.get(SENT_HEADER) ? Date.now() - Number(raw.headers.get(SENT_HEADER)) : null;
 		const req = new Request(raw);
+		req.headers.delete(OVERFLOW_HEADER);
 		req.headers.delete(ORIGIN_HEADER);
 		req.headers.delete(SENT_HEADER);
 		// The front Worker's Turnstile answer (#351): kept for this request's PHP run, never shown to PHP.
@@ -2831,7 +2855,10 @@ export class PhpRuntime extends DurableObject {
 			return Response.json({ evicting: true, build: BUILD_ID });
 		}
 		const maxBody = env.MEDIA && isMediaUpload(req, url) ? Number(env.MAX_UPLOAD_BYTES || MAX_UPLOAD_BYTES) : Number(env.MAX_BODY_BYTES || MAX_BODY_BYTES);
-		const ctx = { inObject: true, waitUntil: (p) => this.ctx.waitUntil(p), requestPurge: () => this.requestPurge() };
+		// An overflowed request (#296 (3)) hands its purge back to the front Worker: the object's purge alarm is
+		// also its cron driver (a pool object must never run cron), and an object cannot purge the Worker's page
+		// cache anyway (measured locally: "no cache API").
+		const ctx = { inObject: true, waitUntil: (p) => this.ctx.waitUntil(p), requestPurge: overflowed ? async () => 'front' : () => this.requestPurge() };
 		if (url.pathname === '/_d1ping') return d1ping(req, env, url, ctx);
 		// DB_IN_DO=on: WordPress's database is this object's SQLite (8j).
 		const sql = env.DB_IN_DO === 'on' ? this.ctx.storage.sql : null;
@@ -3113,8 +3140,11 @@ async function frameProbe(env, name, id) {
 		return null;
 	}
 }
-async function toPhpObject(req, env, url, ctx) {
-	const name = phpObjectName(env, url);
+// target (#296 (3), overflow): { name, hint, overflow: true } sends the request to that pool object
+// instead of the PHP_IN_DO object. Without it, everything is as before.
+async function toPhpObject(req, env, url, ctx, target = null) {
+	const name = target ? target.name : phpObjectName(env, url);
+	const hint = target ? target.hint : env.PHP_LOCATION;
 	// #352: /_frame is the Worker's own probe of the object. A client gets 404; a spike-token holder gets the
 	// frame of ?id= (the proof reads it; the request id is in the x-pf-req response header).
 	const frameSpikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
@@ -3131,10 +3161,15 @@ async function toPhpObject(req, env, url, ctx) {
 	// (object-error.mjs fetchWithMemoryRetry); each attempt makes its own stub and request.
 	const res = await fetchWithMemoryRetry(
 		() => {
-			const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(name), env.PHP_LOCATION ? { locationHint: env.PHP_LOCATION } : undefined);
+			const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(name), hint ? { locationHint: hint } : undefined);
 			const fwd = new Request(req);
 			// Only this Worker sets the Turnstile answer: a copy from the client is always dropped.
 			setResultHeader(fwd.headers, pre && pre.value);
+			// The same for the overflow mark (#296 (3)).
+			fwd.headers.delete(OVERFLOW_HEADER);
+			if (target && target.overflow) fwd.headers.set(OVERFLOW_HEADER, '1');
+			fwd.headers.delete(OVERFLOW_BUSY_OK_HEADER);
+			if (target && target.busyOk) fwd.headers.set(OVERFLOW_BUSY_OK_HEADER, '1');
 			fwd.headers.set(ORIGIN_HEADER, siteOrigin(env, url));
 			t0 = Date.now();
 			fwd.headers.set(SENT_HEADER, String(t0));
@@ -3328,6 +3363,41 @@ const site = {
 			// Checkout is per shopper: never let the edge cache keep it.
 			if (!out.headers.has('cache-control')) out.headers.set('cache-control', 'private, no-store');
 			return out;
+		}
+		// #296 (3): a request that would WAIT here (this isolate busy, the queue at the depth) runs on a pool
+		// object instead, before it has run. Wherever PHP runs in this Worker with the database outside the
+		// object (approach A; also a D1 Worker, which is how it is tested locally), with the binding.
+		const ovs = overflowSettings(env);
+		// Uploads never move: media uploads, and any request whose declared body is over 1 MiB (the Font Library, #591).
+		const ovUpload = isMediaUpload(req, url) || Number(req.headers.get('content-length') || 0) > OVERFLOW_MAX_BODY;
+		if (ovs.on && env.PHP_RUNTIME && env.PHP_IN_DO !== 'on' && env.DB_IN_DO !== 'on' && shouldOverflow(ovs, { running: phpLock.running, waiting: phpLock.waiting }, url, ovUpload)) {
+			const picker = ovPickerFor(ovs.pool);
+			// #296 (3)(c), PHP_OVERFLOW_BUSY=on (default off): a retry-safe request asks the object to answer busy instead
+			// of queueing; it then tries the second choice, then runs here. A Turnstile-gated request is verified once at
+			// the front, so it is sent once. With busy off, each request goes to one choice and may queue in the object.
+			const busyOk = ovs.busy && !turnstileRoute(env, req.method, url);
+			const choices = busyOk ? picker.pickTwo() : [picker.pick()];
+			for (const i of choices) {
+				picker.start(i);
+				console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow', obj: overflowName(i), running: phpLock.running, waiting: phpLock.waiting, inflight: picker.inflight(i) }));
+				let r;
+				try {
+					// A copy per attempt: a busy answer leaves the original request (and its body) unread for the next one.
+					r = await toPhpObject(busyOk ? req.clone() : req, env, url, ctx, { name: overflowName(i), hint: ovs.hint, overflow: true, busyOk });
+				} finally {
+					picker.end(i);
+				}
+				if (busyOk && r.status === 503 && r.headers.get('x-php-busy') === '1') {
+					console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-busy', obj: overflowName(i) }));
+					continue;
+				}
+				r.headers.set('x-php-overflow', overflowName(i));
+				// The object handed a content change's purge back (x-cache-purge: front): this Worker owns the page cache.
+				if (r.headers.get('x-cache-purge') === 'front') schedulePurge(ctx);
+				return r;
+			}
+			// Both choices were busy: run here, as without overflow (the request has not run anywhere).
+			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-local', running: phpLock.running, waiting: phpLock.waiting }));
 		}
 		const workerRun = await withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx), { shedMs: phpShedMs(env, false) });
 		return workerRun === PHP_SHED ? phpShedResponse() : workerRun;
