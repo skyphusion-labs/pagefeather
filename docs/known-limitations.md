@@ -10,7 +10,7 @@ Under the `CRON_SIMULATE_COLD=1` test seam (a forced cold wake on every alarm), 
 
 ### Deactivating WooCommerce can return 500 on a warm isolate (#219)
 
-Deactivating WooCommerce in wp-admin, on an isolate that WooCommerce already warmed, can return 500. The cause is the 128 MiB isolate cap. A skip of WooCommerce, as the media-upload path uses, cannot apply, because the request is about WooCommerce itself. The lever is memory headroom, mainly lazy MEMFS nodes (`LAZY_NODES=on`, #218). Containers are retired (#214), so a container is not the fix.
+Deactivating WooCommerce in wp-admin, on an isolate that WooCommerce already warmed, can return 500. The cause is the 128 MiB isolate cap. A skip of WooCommerce, as the media-upload path uses, cannot apply, because the request is about WooCommerce itself. The lever is memory headroom, mainly lazy MEMFS nodes (`LAZY_NODES=on`, #218). The store Container (approach C) was retired (#214), so it is not the fix here. That is separate from the open question of where wp-admin runs (Workers or a Container), which is decided after the new engine is fully tested.
 
 ## Provisioning
 
