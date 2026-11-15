@@ -167,9 +167,10 @@ update_one_inner() {
   # A failed upload changed nothing live; the log is read BEFORE the work dir goes.
   (cd "$APP" && "$WR" deploy --config "$CONF" --dispatch-namespace "$NAMESPACE" --secrets-file "$W/sec.json") > "$W/up.log" 2>&1 || { echo "site $s: upload failed:" >&2; tail -20 "$W/up.log" >&2; rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }
   rm -rf "$W"
-  # OBSERVABILITY=1 logs events only, but each event still carries the URL; a store's query strings
-  # hold order keys and logins. wrangler cannot set the redaction, so it is set here, then read back.
-  if [ "${OBSERVABILITY:-0}" = 1 ]; then python3 -I "$WFP/obs_settings.py" redact "$NAMESPACE" "site-$s" || { echo "site $s: UPLOADED, but the query-string redaction did NOT apply: turn the logs off (run the update again with no OBSERVABILITY)" >&2; ok=0; }; fi
+  # OBSERVABILITY=1 or full: every event carries the URL, and a store's query strings hold order keys
+  # and logins. wrangler cannot set the redaction, so it is set here and read back, or the logs are
+  # turned OFF and the update fails (lib.sh obs_redact_site, fail closed, #639).
+  obs_redact_site "$NAMESPACE" "site-$s" || { echo "site $s: UPLOADED, but the query-string redaction did NOT read back, so its logs are now OFF (or could not be turned off: read the line above); the update fails" >&2; ok=0; }
   tfr site apply -input=false -auto-approve "${REC_VARS[@]}" -var "build=$new" -var "config_hash=$new_hash" >/dev/null || { echo "site $s: the site map entry did not record build $new" >&2; ok=0; }
   echo "site $s: verify the new build is live"
   wait_build "$ORIGIN" "$TOK" "$new" || ok=0

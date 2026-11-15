@@ -597,6 +597,17 @@ TOML
   # before the deploy; site.sh up makes it (ensure_search_index).
   if search_on; then printf '\n[ai]\nbinding = "AI"\n[[vectorize]]\nbinding = "SEARCH_INDEX"\nindex_name = "%s"\n' "$(search_index "$s")"; fi
 }
+# obs_redact_site <namespace> <script> (#639): with the logs on (OBSERVABILITY 1 or full), redact the
+# query string in the script's Workers Logs and read it back, or turn the logs OFF and return 1
+# (obs_settings.py redact-or-off: fail closed). Every event carries the request URL, and full adds the
+# invocation logs, so both need it; before #639 only 1 was redacted, so a full site logged every URL
+# with its query string (a store's order keys and logins). Unset or 0: nothing to redact, no call.
+obs_redact_site() {
+  case "${OBSERVABILITY:-0}" in
+    1|full) python3 -I "$WFP/obs_settings.py" redact-or-off "$1" "$2" ;;
+    *) return 0 ;;
+  esac
+}
 # The site's search index, as Vectorize answers it (#338): present (200); gone (404, or 410 with
 # error 3005 "vectorize.index.deleted", which is how v2 answers a DELETED index, measured on
 # fdprobe1112e 2026-11-12); otherwise "unknown <code>", never read as gone.
