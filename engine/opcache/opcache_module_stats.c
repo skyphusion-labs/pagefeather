@@ -23,7 +23,8 @@
 #include "Zend/zend_extensions.h"
 #include "Zend/zend_observer.h"
 #ifdef ZEND_PF_LAZY_BODY
-#include "ZendAccelerator.h" /* pf_lb_real_counts */
+/* from the lazy-body patch (zend_file_cache.c); declared here, since ZendAccelerator.h wants a phpize config.h */
+bool pf_lb_real_counts(const zend_op_array *op_array, uint32_t counts[4]);
 #endif
 
 static HashTable *pf_called = NULL;
