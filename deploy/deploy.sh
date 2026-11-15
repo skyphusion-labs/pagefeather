@@ -23,6 +23,11 @@
 # sql_mode each statement carries, e.g.
 # ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION; see
 # spikes/b2-wordpress/php/hyperdrive-sql-mode.php. Unset: no change),
+# WOO_EXTRAS=off (every variant's Worker config): the b2 mu-plugin forces
+# WooCommerce order attribution, usage tracking, marketplace suggestions and
+# remote logging off. Unset leaves WooCommerce's defaults. Analytics stays on.
+# b-dosql through deploy/wfp records it (site_settings.py). A value other than
+# off is refused before any step.
 # BENCH=0 (skip the measurements), N (runs per page, default 10), PORT (local
 # wrangler dev port for the OPcache step, default 8798), DEPLOY_STATE=r2 (keep
 # Terraform state in an R2 bucket; see README.md).
@@ -83,6 +88,13 @@ fi
 # shellcheck source=SCRIPTDIR/a-settings.sh
 . "$ROOT/deploy/a-settings.sh"
 a_settings_check "$VARIANT" || exit 2
+# WOO_EXTRAS (#667): off or unset, every variant, before any Terraform or build step.
+# The same rule as deploy/wfp/lib.sh woo_extras_var. Unset writes no [vars] line.
+case "${WOO_EXTRAS:-}" in
+  "") ;;
+  off) ;;
+  *) echo "WOO_EXTRAS must be off or unset, not ${WOO_EXTRAS}" >&2; exit 2 ;;
+esac
 # shellcheck source=SCRIPTDIR/observability.sh
 . "$ROOT/deploy/observability.sh"
 obs_check "$VARIANT" || exit 2
@@ -257,6 +269,8 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
   [ -z "${HYPERDRIVE_SQL_MODE+x}" ] || echo "HYPERDRIVE_SQL_MODE = \"$HYPERDRIVE_SQL_MODE\""
   # #394: OPCACHE_REMOTE, SITE_REMOTE, RECYCLE_WASM_MIB (a-settings.sh). Nothing when unset.
   [ "$VARIANT" != a ] || a_vars
+  # WOO_EXTRAS (#667): off only. Checked above, before any step. Unset writes nothing.
+  [ -z "${WOO_EXTRAS:-}" ] || echo 'WOO_EXTRAS = "off"'
   # AI alt text (spikes/b2-wordpress/php/ai-alt-text.php): off switch, model, input flavor.
   [ -z "${AI_ALT+x}" ] || echo "AI_ALT = \"$AI_ALT\""
   [ -z "${AI_ALT_MODEL+x}" ] || echo "AI_ALT_MODEL = \"$AI_ALT_MODEL\""
