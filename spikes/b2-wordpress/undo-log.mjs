@@ -82,6 +82,26 @@ function schemaSig(db) {
 	const r = db.exec('SELECT COUNT(*) AS n, TOTAL(LENGTH(sql)) AS l FROM sqlite_master').one();
 	return r.n + ':' + r.l;
 }
+// #684 (measure only): each undo row records the request it was WRITTEN under (_wp_undo.req, copied by the
+// triggers from _wp_undo_state.req, which holds the request now writing), so a recovery can name a row
+// another request wrote. A database from a build before this gets the columns on first use.
+function hasCol(db, table, col) {
+	return [...db.exec(`PRAGMA table_info(${table})`).raw()].some((r) => r[1] === col);
+}
+function ensureReqCols(db) {
+	if (!hasCol(db, '_wp_undo', 'req')) db.exec('ALTER TABLE _wp_undo ADD COLUMN req TEXT');
+	if (!hasCol(db, '_wp_undo_state', 'req')) db.exec('ALTER TABLE _wp_undo_state ADD COLUMN req TEXT');
+}
+// The shape of one replay statement (the trigger bodies below write it): its verb, table and rowid. Never values.
+export function undoShape(stmt) {
+	const s = String(stmt || '');
+	const m = s.match(/^(DELETE FROM|UPDATE|INSERT INTO) "((?:[^"]|"")*)"/);
+	if (!m) return { t: null, op: '?', rowid: null };
+	const op = m[1].split(' ')[0].toLowerCase();
+	const r = op === 'insert' ? s.match(/\) VALUES \((-?\d+),/) : s.match(/WHERE rowid = (-?\d+)$/);
+	return { t: m[2].replace(/""/g, '"'), op, rowid: r ? Number(r[1]) : null };
+}
+const RECOVER_ROWS_MAX = 64;
 
 // frames: a boolean, or a function asked each time it matters (index.js: the undo log may be made by the
 // PhpRuntime constructor's recovery before any fetch has set ENV, so a value fixed at creation was wrong).
@@ -97,6 +117,8 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 	let kinds = [];
 	let deferred = [];
 	let recovered = false;
+	let stateReq = null; // the request _wp_undo_state.req names now (#684); null after a frame or txn closes
+	let lastUndone = null; // the shapes of the rows undoTo replayed, when asked (recover)
 	const counts = { opened: 0, kept: 0, points: 0, miss: 0, noop: 0, own: 0 };
 	// The rows the undo log and the frame write THEMSELVES (state, frame rows, the log cleared or replayed),
 	// which x-db-rows never sees: it counts PHP's statements, their undo-trigger rows included.
@@ -131,7 +153,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			const triggers = [...db.exec("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE '\\_wp\\_undo\\_%' ESCAPE '\\'").raw()].map((r) => r[0]);
 			for (const name of triggers) db.exec(`DROP TRIGGER IF EXISTS ${sqlId(name)}`);
 			db.exec('ALTER TABLE _wp_undo RENAME TO _wp_undo_old');
-			db.exec('CREATE TABLE _wp_undo (seq INTEGER PRIMARY KEY, sql TEXT NOT NULL)');
+			db.exec('CREATE TABLE _wp_undo (seq INTEGER PRIMARY KEY, sql TEXT NOT NULL, req TEXT)');
 			db.exec('INSERT INTO _wp_undo (seq, sql) SELECT seq, sql FROM _wp_undo_old');
 			db.exec('DROP TABLE _wp_undo_old');
 			try {
@@ -154,18 +176,21 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 	function undoSetup(db, storage) {
 		if (setupDone) return;
 		migrateUndo(db, storage);
-		db.exec('CREATE TABLE IF NOT EXISTS _wp_undo (seq INTEGER PRIMARY KEY, sql TEXT NOT NULL)');
-		db.exec('CREATE TABLE IF NOT EXISTS _wp_undo_state (id INTEGER PRIMARY KEY CHECK (id = 1), active INTEGER NOT NULL)');
+		db.exec('CREATE TABLE IF NOT EXISTS _wp_undo (seq INTEGER PRIMARY KEY, sql TEXT NOT NULL, req TEXT)');
+		db.exec('CREATE TABLE IF NOT EXISTS _wp_undo_state (id INTEGER PRIMARY KEY CHECK (id = 1), active INTEGER NOT NULL, req TEXT)');
+		ensureReqCols(db);
 		own(db.exec('INSERT OR IGNORE INTO _wp_undo_state (id, active) VALUES (1, 0)'));
 		if (framesOn()) db.exec('CREATE TABLE IF NOT EXISTS _wp_frame (req TEXT PRIMARY KEY, state TEXT NOT NULL, points INTEGER NOT NULL, kinds TEXT NOT NULL, undone INTEGER NOT NULL, t INTEGER NOT NULL)');
 		setupDone = true;
 	}
 	function undoTriggers(db) {
 		if (schemaSig(db) === undoSchemaSig) return;
+		ensureReqCols(db);
 		const tables = [...db.exec("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\'").raw()].filter(([name, sql]) => !UNDO_TABLES.has(name) && !/WITHOUT\s+ROWID/i.test(sql || ''));
 		const existing = new Set([...db.exec("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE '\\_wp\\_undo\\_%' ESCAPE '\\'").raw()].map((r) => r[0]));
 		const want = new Set();
 		const when = 'WHEN (SELECT active FROM _wp_undo_state WHERE id = 1) = 1';
+		const writer = '(SELECT req FROM _wp_undo_state WHERE id = 1)';
 		for (const [table] of tables) {
 			const cols = [...db.exec(`PRAGMA table_info(${sqlId(table)})`).raw()].map((r) => r[1]);
 			if (!cols.length) continue;
@@ -173,9 +198,9 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			// name: the old trigger is dropped below and the new one is created. Never keep a trigger by table name alone.
 			const t = sqlId(table);
 			const bodies = {
-				i: `AFTER INSERT ON ${t} ${when} BEGIN INSERT INTO _wp_undo (sql) VALUES (${sqlLit(`DELETE FROM ${t} WHERE rowid = `)} || new.rowid); END`,
-				u: `AFTER UPDATE ON ${t} ${when} BEGIN INSERT INTO _wp_undo (sql) VALUES (${sqlLit(`UPDATE ${t} SET rowid = `)} || old.rowid || ${cols.map((c) => `${sqlLit(`, ${sqlId(c)} = `)} || quote(old.${sqlId(c)})`).join(' || ')} || ${sqlLit(' WHERE rowid = ')} || new.rowid); END`,
-				d: `AFTER DELETE ON ${t} ${when} BEGIN INSERT INTO _wp_undo (sql) VALUES (${sqlLit(`INSERT INTO ${t} (rowid, ${cols.map(sqlId).join(', ')}) VALUES (`)} || old.rowid || ${cols.map((c) => `${sqlLit(', ')} || quote(old.${sqlId(c)})`).join(' || ')} || ')'); END`,
+				i: `AFTER INSERT ON ${t} ${when} BEGIN INSERT INTO _wp_undo (sql, req) VALUES (${sqlLit(`DELETE FROM ${t} WHERE rowid = `)} || new.rowid, ${writer}); END`,
+				u: `AFTER UPDATE ON ${t} ${when} BEGIN INSERT INTO _wp_undo (sql, req) VALUES (${sqlLit(`UPDATE ${t} SET rowid = `)} || old.rowid || ${cols.map((c) => `${sqlLit(`, ${sqlId(c)} = `)} || quote(old.${sqlId(c)})`).join(' || ')} || ${sqlLit(' WHERE rowid = ')} || new.rowid, ${writer}); END`,
+				d: `AFTER DELETE ON ${t} ${when} BEGIN INSERT INTO _wp_undo (sql, req) VALUES (${sqlLit(`INSERT INTO ${t} (rowid, ${cols.map(sqlId).join(', ')}) VALUES (`)} || old.rowid || ${cols.map((c) => `${sqlLit(', ')} || quote(old.${sqlId(c)})`).join(' || ')} || ')', ${writer}); END`,
 			};
 			for (const [kind, body] of Object.entries(bodies)) {
 				const name = `_wp_undo_${shortHash(table + '\u0000' + body)}_${kind}`;
@@ -188,10 +213,19 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 	}
 	const undoSeq = (db) => db.exec('SELECT COALESCE(MAX(seq), 0) AS s FROM _wp_undo').one().s;
 	const setActive = (db, on) => own(db.exec('UPDATE _wp_undo_state SET active = ? WHERE id = 1', on ? 1 : 0));
+	// Off at a frame's or a transaction's close, in the same one-row write: the writer goes too (#684).
+	const setIdle = (db) => { stateReq = null; return own(db.exec('UPDATE _wp_undo_state SET active = 0, req = NULL WHERE id = 1')); };
+	// The request now writing, before its statement (#684): one state write, only when the writer changes.
+	function tagWriter(db) {
+		if (!armedReq || !frameOpen || stateReq === armedReq) return;
+		own(db.exec('UPDATE _wp_undo_state SET req = ? WHERE id = 1', armedReq));
+		stateReq = armedReq;
+	}
 	// Undo every change after seq, newest first, in one storage transaction.
-	function undoTo(db, storage, seq) {
+	function undoTo(db, storage, seq, detail = false) {
 		setActive(db, false);
-		const rows = [...db.exec('SELECT sql FROM _wp_undo WHERE seq > ? ORDER BY seq DESC', seq).raw()];
+		const rows = [...db.exec(`SELECT sql${detail ? ', req' : ''} FROM _wp_undo WHERE seq > ? ORDER BY seq DESC`, seq).raw()];
+		if (detail) lastUndone = rows.map(([stmt, req]) => ({ ...undoShape(stmt), req: req ?? null }));
 		const apply = () => {
 			for (const [stmt] of rows) own(db.exec(stmt));
 			own(db.exec('DELETE FROM _wp_undo WHERE seq > ?', seq));
@@ -208,7 +242,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 		txnFrames = null;
 		txnTouched.clear();
 		if (!frameOpen) {
-			setActive(db, false);
+			setIdle(db);
 			own(db.exec('DELETE FROM _wp_undo'));
 		}
 	}
@@ -219,7 +253,8 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 		openedBy = sql ? shapeOf(sql) : 'php-begin';
 		undoSetup(db, storage);
 		undoTriggers(db);
-		setActive(db, true);
+		own(db.exec('UPDATE _wp_undo_state SET active = 1, req = ? WHERE id = 1', armedReq));
+		stateReq = armedReq;
 		frameOpen = true;
 		counts.opened++;
 		frameRow(db, armedReq, 'open');
@@ -238,7 +273,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 	// Close the frame KEPT: its rows stay, the log goes, deferred work runs.
 	function frameKeep(db, state) {
 		if (txnFrames) txnFrames = txnFrames.map((f) => ({ ...f, seq: 0 })); // a PHP txn spanning a commit point keeps what came before it
-		setActive(db, false);
+		setIdle(db);
 		own(db.exec('DELETE FROM _wp_undo'));
 		frameOpen = false;
 		frameRow(db, armedReq, state);
@@ -283,6 +318,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			if (!opens) {
 				const was = frameOpen;
 				this.beforeStatement(db, sql, storage);
+				if (was && frameOpen && mayWrite(sql) && !isDdl(sql)) tagWriter(db);
 				if (!was && frameOpen) log({ m: 'frame-open', req: armedReq, by: openedBy, tx: false });
 				return fn();
 			}
@@ -420,7 +456,8 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 				log({ m: 'frame-recover', active: 0, tables: true, frames: framesOn(), relabeled, rebuilt });
 				return null;
 			}
-			const n = undoTo(db, storage, 0);
+			ensureReqCols(db);
+			const n = undoTo(db, storage, 0, true);
 			own(db.exec('DELETE FROM _wp_undo'));
 			txnFrames = null;
 			let req = null;
@@ -436,6 +473,12 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			const relabeled = relabelEnded(db);
 			const rebuilt = migrateUndo(db, storage);
 			log({ m: 'txn', recovered: true, undone: n, req });
+			// #684: what this recovery undid, per row: table, replayed op, rowid, and the request that wrote it.
+			const shapes = lastUndone || [];
+			lastUndone = null;
+			const byReq = {};
+			for (const r of shapes) byReq[r.req ?? 'null'] = (byReq[r.req ?? 'null'] || 0) + 1;
+			log({ m: 'frame-recover-rows', frameReq: req, undone: n, rows: shapes.slice(0, RECOVER_ROWS_MAX), truncated: shapes.length > RECOVER_ROWS_MAX, byReq, cross: shapes.filter((r) => r.req !== req).length });
 			log({ m: 'frame-recover', active: 1, tables: true, frames: framesOn(), undone: n, req, relabeled, rebuilt });
 			return { undone: n, req };
 		},

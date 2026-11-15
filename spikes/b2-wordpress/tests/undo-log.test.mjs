@@ -738,3 +738,79 @@ test('a throw during the undo swap leaves the old table and its triggers; the ne
 	isolate().u.recover(db, storage);
 	assert.deepEqual(ids(db), ['seed', 'A'], 'a frame on the migrated table still rolls back');
 });
+
+// #684 (P0, measure only): a 201 create was absent after a CONCURRENT request's recovery. Recovery now
+// names what it undid: per undone row the table, the op it replays, the rowid, and the request id the row
+// was WRITTEN under. Shapes and ids only, never row data. cross counts rows of another request than the
+// rolled-back frame's: a cross-request undo shows as cross > 0.
+const rowsLine = (logs) => logs.find((o) => o.m === 'frame-recover-rows');
+test('#684: recovery logs the table, op, rowid and writer request of each undone row, never values', () => {
+	const { db, storage } = site();
+	const a = isolate();
+	a.u.arm(db, 'rA');
+	run(a.u, db, "INSERT INTO t (v) VALUES ('secretA')");
+	run(a.u, db, "UPDATE t SET v = 'secretS' WHERE v = 'seed'");
+	// A second request arms while the frame is still open (the interleave #684 suspects).
+	a.u.arm(db, 'rB');
+	run(a.u, db, "INSERT INTO t (v) VALUES ('secretB')");
+	run(a.u, db, "DELETE FROM t WHERE v = 'secretA'");
+	const b = isolate();
+	b.u.recover(db, storage);
+	const l = rowsLine(b.logs);
+	assert.ok(l, 'a frame-recover-rows line');
+	assert.deepEqual(l.rows, [
+		{ t: 't', op: 'insert', rowid: 2, req: 'rB' },
+		{ t: 't', op: 'delete', rowid: 3, req: 'rB' },
+		{ t: 't', op: 'update', rowid: 1, req: 'rA' },
+		{ t: 't', op: 'delete', rowid: 2, req: 'rA' },
+	], 'newest first, as replayed');
+	assert.equal(l.undone, 4);
+	assert.equal(l.frameReq, 'rA', 'the frame row recovery labels rolled-back: the request that OPENED it');
+	assert.deepEqual(l.byReq, { rA: 2, rB: 2 });
+	assert.equal(l.cross, 2, 'rows written under another request than the rolled-back frame');
+	assert.ok(!/secret|seed/.test(JSON.stringify(b.logs)), 'no row value in any log line');
+});
+test('#684: a recovery of one request reports cross 0; a recovery with nothing active logs no rows line', () => {
+	const { db, storage } = site();
+	const a = isolate();
+	a.u.arm(db, 'r1');
+	run(a.u, db, "INSERT INTO t (v) VALUES ('x')");
+	const b = isolate();
+	b.u.recover(db, storage);
+	const l = rowsLine(b.logs);
+	assert.deepEqual(l.rows, [{ t: 't', op: 'delete', rowid: 2, req: 'r1' }]);
+	assert.equal(l.cross, 0);
+	const c = isolate();
+	c.u.recover(db, storage);
+	assert.equal(rowsLine(c.logs), undefined);
+});
+test('#684: an undo log from a build before the req column is recovered, its rows reported with req null', () => {
+	const { db, storage, raw } = site();
+	raw.exec('CREATE TABLE _wp_undo (seq INTEGER PRIMARY KEY, sql TEXT NOT NULL)');
+	raw.exec('CREATE TABLE _wp_undo_state (id INTEGER PRIMARY KEY CHECK (id = 1), active INTEGER NOT NULL)');
+	raw.exec('INSERT INTO _wp_undo_state (id, active) VALUES (1, 1)');
+	raw.exec("INSERT INTO t (v) VALUES ('old')");
+	raw.exec(`INSERT INTO _wp_undo (sql) VALUES ('DELETE FROM "t" WHERE rowid = 2')`);
+	const b = isolate();
+	b.u.recover(db, storage);
+	assert.deepEqual(ids(db), ['seed']);
+	assert.deepEqual(rowsLine(b.logs).rows, [{ t: 't', op: 'delete', rowid: 2, req: null }]);
+	// The next frame on this database writes the req column (added on first use).
+	b.u.arm(db, 'r9');
+	run(b.u, db, "INSERT INTO t (v) VALUES ('n')");
+	const c = isolate();
+	c.u.recover(db, storage);
+	assert.deepEqual(rowsLine(c.logs).rows, [{ t: 't', op: 'delete', rowid: 2, req: 'r9' }]);
+});
+test('#684: the writer tag costs a state write only when the writing request changes', () => {
+	const { db } = site();
+	const a = isolate();
+	a.u.arm(db, 'rA');
+	run(a.u, db, "INSERT INTO t (v) VALUES ('1')");
+	const own1 = a.u.counts().own;
+	run(a.u, db, "INSERT INTO t (v) VALUES ('2')");
+	assert.equal(a.u.counts().own, own1, 'same request: no extra write');
+	a.u.arm(db, 'rB');
+	run(a.u, db, "INSERT INTO t (v) VALUES ('3')");
+	assert.equal(a.u.counts().own, own1 + 1, 'a new writer: one state update');
+});
