@@ -300,8 +300,23 @@ def user(stop, prods, rec, abort):
             own = u.path + ("?" + u.query if u.query else "")
             path = own if not WOO else random.choice(["/", "/?post_type=product", own])
             b = browse_req(o, path)
+            b["pc"] = page_class(path)
             rec("browse", b)
             backoff(b, stop)
+
+
+def page_class(path):
+    """home, shop or product (#628 C2): the bar compares the PRODUCT-page HIT share, and the home page
+    is not under PAGE_CACHE_PRODUCT_TTL. The browse mix is "/", "/?post_type=product" and permalinks."""
+    if path == "/":
+        return "home"
+    if "post_type=product" in path:
+        return "shop"
+    return "product"
+
+
+# A read served from the edge cache. EXPIRED and MISS came from the Worker.
+CACHE_HITS = ("HIT", "STALE", "UPDATING", "REVALIDATED")
 
 
 def pct(xs, q):
@@ -318,7 +333,7 @@ def step(n, prods):
         h = r["h"] or {}
         row = {"k": kind, "c": r["code"], "s": r["s"], "ok": (r["code"] in (200, 201) if ok is None else ok),
                "e1102": is_1102(r), "mib": h.get("x-wasm-mib"), "rec": h.get("x-runtime-recycled"), "boot": h.get("x-boot"),
-               "cf": h.get("cf-cache-status"), "shed": r["code"] == 503 and bool(h.get("x-c1-shed")), "ec": error_code(r)}
+               "cf": h.get("cf-cache-status"), "pc": r.get("pc"), "shed": r["code"] == 503 and bool(h.get("x-c1-shed")), "ec": error_code(r)}
         if r["s"] >= SLOW_S:
             row["slow"] = {"t0": round(r.get("t0") or 0, 3), "k": kind, "c": r["code"], "s": round(r["s"], 3),
                            "ttfb": round(r["ttfb"], 3) if r.get("ttfb") is not None else None, "ray": h.get("cf-ray")}
@@ -354,6 +369,13 @@ def step(n, prods):
     for r in rows:
         if r["k"] == "browse":
             out["cache"][r["cf"] or "none"] = out["cache"].get(r["cf"] or "none", 0) + 1
+    # #628 C2: the same browse mix split by page class, and the share served from the edge cache.
+    out["cache_by_page"] = {}
+    for r in rows:
+        if r["k"] == "browse" and r.get("pc"):
+            d = out["cache_by_page"].setdefault(r["pc"], {})
+            d[r["cf"] or "none"] = d.get(r["cf"] or "none", 0) + 1
+    out["hit_share"] = dict((pc, round(sum(n for st, n in d.items() if st in CACHE_HITS) / float(sum(d.values())), 3)) for pc, d in out["cache_by_page"].items() if sum(d.values()))
     # The Store API error code of every non-2xx, per kind and status (#296): "checkout 403 <code>" names a failure.
     out["error_codes"] = {}
     for r in rows:
