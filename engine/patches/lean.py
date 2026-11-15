@@ -36,6 +36,14 @@ edits = [
     # 10. Print every input the linker reads (the hygiene files are built from this list), and write
     #     the linker map: every data and BSS symbol with its address and size (the static memory, measured).
     ('trace the link inputs', '\t-s ERROR_ON_UNDEFINED_SYMBOLS=1 \\\n', '\t-s ERROR_ON_UNDEFINED_SYMBOLS=1 \\\n\t-Wl,--trace \\\n\t-Wl,-Map=/root/output/php.map \\\n'),
+    # 12. FreeType is off in libgd (ENABLE_FREETYPE=OFF, #590). PHP's external-gd check
+    #     defines HAVE_GD_FREETYPE when gdFontCacheShutdown links, and the libgd recipe
+    #     stubs that symbol, so configure enables FreeType the library was built without.
+    #     Undefine it after configure, before gd.c is compiled: gd_info reports FreeType
+    #     Support false, and imagettftext is not registered.
+    ('no FreeType in PHP GD',
+     "\t\techo '#define HAVE_GD_AVIF 1' >> /root/php-src/main/php_config.h; \\\n\t\techo '#endif' >> /root/php-src/main/php_config.h; \\\n\tfi; \\\nfi;\n",
+     "\t\techo '#define HAVE_GD_AVIF 1' >> /root/php-src/main/php_config.h; \\\n\t\techo '#endif' >> /root/php-src/main/php_config.h; \\\n\t\techo '#undef HAVE_GD_FREETYPE' >> /root/php-src/main/php_config.h; \\\n\t\techo '#undef HAVE_LIBFREETYPE' >> /root/php-src/main/php_config.h; \\\n\tfi; \\\nfi;\n"),
 ]
 for name, old, new in edits:
     n = s.count(old)

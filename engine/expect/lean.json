@@ -1,5 +1,5 @@
 {
- "engine": "pagefeather engine, lean static build (#582 S2): upstream dcd8e50 without MAIN_MODULE, minus calendar, curl, soap, sqlite3; GD without AVIF; patched by prepare.sh",
+ "engine": "pagefeather engine, lean static build (#582 S2): upstream dcd8e50 without MAIN_MODULE, minus calendar, curl, soap, sqlite3; GD without AVIF and without FreeType; patched by prepare.sh",
  "php": "8.3.36",
  "sapi": "wasm",
  "initialPages": 384,

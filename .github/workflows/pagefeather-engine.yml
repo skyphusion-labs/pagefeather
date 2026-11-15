@@ -196,7 +196,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
-      - name: The contract suite on each lean arm (prepare.sh applied to it)
+      - name: The contract suite on each lean arm, then the GD FreeType smoke
         working-directory: spikes/b2-wordpress
         run: |
           set -euo pipefail
@@ -209,6 +209,10 @@ jobs:
           done
           # vendor/ now holds the lean engine (GD kept): the loader tests that boot vendor/
           node --test tests/phpwasm-exports.test.mjs tests/heap-subarray.test.mjs tests/allocator-reading.test.mjs
+          # GD smoke (#590). libgd is built with ENABLE_FREETYPE=OFF. gd_info() must report
+          # FreeType Support false, and function_exists('imagettftext') must be false.
+          echo "== gd freetype smoke (lean)"
+          node ../../engine/tools/gd-freetype-smoke.mjs vendor/php_8_3.js vendor/php_8_3.wasm
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'

@@ -90,8 +90,9 @@ PYEDIT
 fi
 # The fileinfo trim inputs ride in the docker context (lean only; lean.py's edit 11 copies them).
 if [ "$variant" = lean ]; then rm -rf "$compile/../pagefeather-fileinfo"; cp -R "$here/fileinfo" "$compile/../pagefeather-fileinfo"; fi
-# Lean with GD: libgd rebuilt from upstream's recipe without AVIF (engine/patches/libgd-noavif.py), as
-# the upstream Makefile's libgd_jspi target does, replacing the prebuilt archive in the tree.
+# Lean with GD: libgd rebuilt from upstream's recipe without AVIF and without advertising
+# FreeType (engine/patches/libgd-noavif.py), as the upstream Makefile's libgd_jspi target does,
+# replacing the prebuilt archive in the tree. lean.py then undefines HAVE_GD_FREETYPE (#590).
 if [ "$variant" = lean ] && [ "${ENGINE_GD:-yes}" = yes ]; then
   python3 -I "$here/patches/libgd-noavif.py" "$compile/libgd/Dockerfile"
   (cd "$compile" && docker build -f ./libgd/Dockerfile -t pagefeather-engine-libgd . --build-arg JSPI=1 --progress=plain > "$out/libgd-build.log" 2>&1) || { tail -60 "$out/libgd-build.log"; exit 1; }

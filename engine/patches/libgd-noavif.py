@@ -13,8 +13,10 @@ edits = [
     ('AVIF off in cmake', '        -DENABLE_AVIF=ON \\\n', '        -DENABLE_AVIF=OFF \\\n'),
     ('no libavif in gdlib.pc Requires', 'Requires.private: libpng libjpeg libwebp libavif zlib\n', 'Requires.private: libpng libjpeg libwebp zlib\n'),
     ('no libavif in gdlib.pc Libs', 'Libs: -L${libdir} -lgd -lpng16 -lz -ljpeg -lwebp -lsharpyuv -lavif\n', 'Libs: -L${libdir} -lgd -lpng16 -lz -ljpeg -lwebp -lsharpyuv\n'),
-    # FREETYPE stays as upstream advertises it (cmake has ENABLE_FREETYPE=OFF); reported, not changed here.
-    ('no AVIF in gdlib-config --features', '  --features) echo "PNG JPEG WEBP AVIF GIF XBM WBMP FREETYPE" ;;\n', '  --features) echo "PNG JPEG WEBP GIF XBM WBMP FREETYPE" ;;\n'),
+    # cmake has ENABLE_FREETYPE=OFF. The hand-written gdlib-config must say so (#590).
+    # PHP 8.3 does not read this line (it links gdFontCacheShutdown; lean.py undefines
+    # HAVE_GD_FREETYPE). The line still has to match the library that was built.
+    ('no AVIF or FREETYPE in gdlib-config --features', '  --features) echo "PNG JPEG WEBP AVIF GIF XBM WBMP FREETYPE" ;;\n', '  --features) echo "PNG JPEG WEBP GIF XBM WBMP" ;;\n'),
     ('no libavif in gdlib-config --libs', '  --libs) echo "-L/root/lib/lib -lgd -lpng16 -lz -ljpeg -lwebp -lsharpyuv -lavif" ;;\n', '  --libs) echo "-L/root/lib/lib -lgd -lpng16 -lz -ljpeg -lwebp -lsharpyuv" ;;\n'),
 ]
 for name, old, new in edits:
