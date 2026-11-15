@@ -1,0 +1,112 @@
+name: CodeQL
+
+# Advanced CodeQL setup (#608), from the estate form (fleet-chezmoi system/ci/codeql-standard.yml).
+# It replaces code-scanning DEFAULT setup, for two reasons measured on pagefeather:
+# 1. Default setup listed c-cpp but ran no c-cpp analysis on a pull request without a C change, so the
+#    code_scanning rule of aviation-grade-main-org waited for a c-cpp result that never came (PR #606).
+#    This workflow runs every language on EVERY pull request, so every PR gets each result.
+# 2. The engine's real C changes are patches (engine/opcache/*.patch) applied to php-src inside the
+#    emscripten docker build; default setup never saw them. The c-cpp leg builds php-src 8.3.36's
+#    ext/opcache WITH the patches (engine/opcache/codeql-build.sh, build-mode manual), and then proves
+#    the patched source is in the CodeQL database.
+#
+# CHECK-NAME DISTINCTNESS (fc#1918): the display name is `CodeQL scan (<language>)`, never
+# `Analyze (...)`, which the dynamic default-setup workflow also emits. The job id `analyze` and the
+# category `/language:<language>` match default setup's, so alert history carries over.
+# The `CodeQL` status the code_scanning rule reads comes from the results upload, not from this name.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+concurrency:
+  group: codeql-pagefeather-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: CodeQL scan (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+          - language: c-cpp
+            build-mode: manual
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Build tools for php-src (c-cpp only)
+        if: matrix.language == 'c-cpp'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends autoconf bison re2c pkg-config > /dev/null
+          bison --version | head -1; re2c --version
+
+      # `languages`, PLURAL: `language` is ignored and the action falls back to auto-detection.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      # The traced build. The work tree is inside the workspace so that alerts in the patched php-src
+      # files resolve to a path. It is not committed (codeql-build/ is in .gitignore).
+      - name: Build php-src ext/opcache with the engine patches (c-cpp only)
+        if: matrix.language == 'c-cpp'
+        run: engine/opcache/codeql-build.sh "$GITHUB_WORKSPACE/codeql-build"
+
+      - name: Analyze
+        id: analyze
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+      # The scan must have SEEN the patched C, or a green c-cpp leg proves nothing. The database's source
+      # archive must hold ext/opcache/zend_persist.c WITH the patch marker, and the stats glue. The
+      # control in the same step: a file the patch does not touch must NOT hold the marker, so the
+      # reading can come out both ways.
+      - name: The c-cpp database holds the patched opcache source (c-cpp only)
+        if: matrix.language == 'c-cpp'
+        env:
+          DB_LOCATIONS: ${{ steps.analyze.outputs.db-locations }}
+        run: |
+          set -euo pipefail
+          db=$(python3 -I -c 'import json,os; d=json.loads(os.environ["DB_LOCATIONS"]); print(d.get("cpp") or d.get("c-cpp") or "")')
+          [ -n "$db" ] && [ -f "$db/src.zip" ] || { echo "::error::no c-cpp database source archive (db-locations: $DB_LOCATIONS)"; exit 1; }
+          python3 -I - "$db/src.zip" <<'PY'
+          import sys, zipfile
+          z = zipfile.ZipFile(sys.argv[1]); names = z.namelist()
+          def one(suffix):
+              m = [n for n in names if n.endswith(suffix)]
+              if len(m) != 1:
+                  sys.exit(f"::error::{len(m)} entries end with {suffix} in the source archive ({len(names)} entries)")
+              return z.read(m[0]).decode("utf-8", "replace")
+          mark = "pagefeather lazy bodies"
+          patched = one("/ext/opcache/zend_persist.c").count(mark)
+          control = one("/ext/opcache/shared_alloc_mmap.c").count(mark)
+          stats = one("/engine/opcache/opcache_module_stats.c")
+          print(f"source archive: {len(names)} entries; marker in zend_persist.c: {patched}; in shared_alloc_mmap.c (control): {control}; stats glue: {len(stats)} bytes")
+          if patched < 1:
+              sys.exit("::error::the scanned zend_persist.c is not the patched one")
+          if control != 0:
+              sys.exit("::error::the control file holds the marker; the reading cannot tell patched from unpatched")
+          PY
