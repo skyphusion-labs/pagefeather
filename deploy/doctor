@@ -1,0 +1,11 @@
+#!/bin/bash
+# deploy/doctor <site> [--hours N] [--service NAME] [--namespace NS] [--json]   (#652)
+# A READ-ONLY report on one site from Workers Logs, in plain English (--json for tools).
+# It changes nothing. Needs CLOUDFLARE_API_TOKEN and ACCOUNT_ID in the environment; the token is read
+# inside python3 and sent in a header, never on argv. Runs on macOS /bin/bash 3.2 and python3 3.9.
+# Exit: 0 no failures found, 1 problems found, 3 cannot see or cannot count, 2 usage or environment.
+# Facts: deploy/doctor-lib/facts.py. Wording (a first draft): deploy/doctor-lib/words.py.
+# Test: python3 -I deploy/doctor-lib/tests/doctor-test.py (a fake telemetry API, no account).
+set -u
+HERE=$(cd "$(dirname "$0")" && pwd)
+exec python3 -I "$HERE/doctor-lib/doctor.py" "$@"

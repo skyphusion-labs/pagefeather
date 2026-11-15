@@ -274,3 +274,22 @@ builds and renders and deploys nothing. The live sites it serves are pinned in `
 `.github/workflows/deploy-workers.yml` runs it (manual dispatch from main), after checking the live Worker
 matches the site file. `deploy/tests/code-only-test.sh` and `deploy/live-sites/tests/check-live-test.py`
 hold the refusals.
+
+## Check a site's health: `deploy/doctor` (#652)
+
+`deploy/doctor <site>` reads the site's Workers Logs and tells you what it sees. It only reads. It changes nothing.
+
+```
+CLOUDFLARE_API_TOKEN=... ACCOUNT_ID=... deploy/doctor <site> [--hours 24] [--service NAME] [--json]
+```
+
+- It finds the site's name in the logs. It tries `<site>`, `site-<site>` (deploy/wfp) and `wp-<site>` (deploy.sh). It picks the name with the most rows. `--service` sets the name.
+- Zero rows is never healthy. Doctor says it cannot see the site, and gives the reasons.
+- With `OBSERVABILITY=1` the logs hold console lines only. Doctor says that failures cannot be counted. It does not say "0 failures".
+- With request logs on, it counts each result (ok, out of memory, out of CPU time, exception, canceled). It gives CPU and total time for the Worker and the Durable Object, and the slowest paths.
+- It counts Pagefeather's own log lines and names the header each one matches (`x-isolate-reset`, `x-write-loss`, `x-overloaded`, `x-php-lock`, `x-boot`).
+- It says "memory resets happened" or not. It never counts the runtime's reset line, because that line is not one per failed request.
+- It never prints a query string, SQL text, a client IP or a token. It warns when the site's logs do not hide query strings.
+- Exit status: 0 no failures found, 1 problems found, 3 cannot see the site or cannot count failures, 2 a usage error.
+
+The facts are in `deploy/doctor-lib/facts.py`. The wording is a first draft in `deploy/doctor-lib/words.py`; new wording goes there only. Test: `python3 -I deploy/doctor-lib/tests/doctor-test.py`.

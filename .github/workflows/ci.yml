@@ -73,6 +73,13 @@ jobs:
           bash deploy/tests/a-settings-test.sh
           bash deploy/tests/observability-test.sh
           bash spikes/b2-wordpress/tests/trace-filter-test.sh
+      - name: doctor reads Workers Logs and never reports zero rows or console-only logs as healthy (#652)
+        # deploy/doctor against a fake telemetry API that fails any call it does not expect: no rows, a
+        # wrong name, console lines only, outcome rows, paging, redaction off, and no query string, SQL,
+        # client IP or token in the output.
+        run: |
+          bash -n deploy/doctor
+          python3 -I deploy/doctor-lib/tests/doctor-test.py
       - name: Wrangler is pinned and called through deploy/wr
         # deploy/tools holds the exact version; a bare npx call runs whatever is installed or the latest.
         run: bash deploy/tests/wrangler-pin-test.sh
