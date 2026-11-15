@@ -110,3 +110,27 @@ jobs:
           if control != 0:
               sys.exit("::error::the control file holds the marker; the reading cannot tell patched from unpatched")
           PY
+
+      - name: DIAGNOSTIC (alert control only) local SARIF results by path
+        if: always() && matrix.language == 'c-cpp'
+        run: |
+          set -euo pipefail
+          ls -la "$GITHUB_WORKSPACE/../results" || true
+          python3 -I - "$GITHUB_WORKSPACE/../results/cpp.sarif" <<'PY'
+          import json, sys, collections
+          d = json.load(open(sys.argv[1]))
+          for r in d["runs"]:
+              res = r.get("results", [])
+              print("results", len(res), "artifacts", len(r.get("artifacts", [])))
+              print("originalUriBaseIds", r.get("originalUriBaseIds"))
+              c = collections.Counter()
+              for x in res:
+                  loc = x["locations"][0]["physicalLocation"]["artifactLocation"]
+                  c[(x["ruleId"], loc.get("uri"), loc.get("uriBaseId"))] += 1
+              for k, v in c.most_common(30): print(v, k)
+          PY
+          db=/home/runner/work/_temp/codeql_databases/cpp
+          codeql=$(ls -d /opt/hostedtoolcache/CodeQL/*/x64/codeql | head -1)/codeql
+          "$codeql" database interpret-results --help >/dev/null 2>&1 && echo codeql ok
+          grep -rl "pf_planted_alert_control" "$db/src" 2>/dev/null | head -3 || true
+          unzip -l "$db/src.zip" 2>/dev/null | grep zend_persist.c || true
