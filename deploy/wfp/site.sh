@@ -21,6 +21,8 @@ need_account
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
 cmd=${1:-}; s=${2:-}
 valid_site "$s" || { echo "usage: site.sh up|down <name> (lower case, digits, hyphens; 1 to 30; not probe, not auto)" >&2; exit 2; }
+# #639: full on a live site is refused before Terraform, the API, or the user Worker upload.
+if [ "$cmd" = up ]; then obs_refuse_full "$s" || exit 2; fi
 umask 077
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 mkdir -p "$GEN"

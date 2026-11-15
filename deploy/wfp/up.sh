@@ -22,6 +22,8 @@ need_account
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
 SITES=${SITES:-one two}
 for s in $SITES; do valid_site "$s" || { echo "bad site name: $s" >&2; exit 2; }; done
+# #639: full on a live site is refused before the build and every upload. 1 and unset are unchanged.
+for s in $SITES; do obs_refuse_full "$s" || exit 2; done
 umask 077
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 mkdir -p "$GEN"

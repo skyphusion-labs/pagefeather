@@ -120,11 +120,14 @@ ok "off by default: [observability] enabled = false, explicitly" "$(env -u OBSER
 ok "OBSERVABILITY=0 is the same explicit off" "$(OBSERVABILITY=0 render_user one https://wp-one.sub.workers.dev | obs | grep -qx '{"enabled": false}' && echo 1 || echo 0)"
 ok "OBSERVABILITY=1 is events only: enabled, invocation_logs false" "$(OBSERVABILITY=1 render_user one https://wp-one.sub.workers.dev | obs | grep -qx '{"enabled": true, "head_sampling_rate": 1, "logs": {"enabled": true, "invocation_logs": false}}' && echo 1 || echo 0)"
 # #639 (the lead's ruling): full is refused unless the run says the site is a throwaway, THROWAWAY=1.
-# An opt-in fails closed: a site nobody marked gets no full logging. (No live-site list: it fails open.)
+# An opt-in fails closed: a site nobody marked gets no full logging. A site in deploy/live-sites/
+# is refused even with THROWAWAY=1 (obs_refuse_full).
 ok "OBSERVABILITY=full WITHOUT THROWAWAY fails the render" "$(env -u THROWAWAY OBSERVABILITY=full bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" >/dev/null 2>"$T/full.err" && echo 0 || { grep -q 'needs THROWAWAY=1' "$T/full.err" && echo 1 || echo 0; })"
 for bad in 0 yes 2 wp-one.sub.workers.dev; do ok "OBSERVABILITY=full with THROWAWAY=$bad fails the render" "$(THROWAWAY=$bad OBSERVABILITY=full render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
 ok "OBSERVABILITY=1 needs no THROWAWAY" "$(env -u THROWAWAY OBSERVABILITY=1 bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" >/dev/null 2>&1 && echo 1 || echo 0)"
 ok "OBSERVABILITY=full with THROWAWAY=1 keeps the invocation logs" "$(THROWAWAY=1 OBSERVABILITY=full render_user one https://wp-one.sub.workers.dev | obs | grep -qx '{"enabled": true, "head_sampling_rate": 1, "logs": {"enabled": true, "invocation_logs": true}}' && echo 1 || echo 0)"
+ok "OBSERVABILITY=full with THROWAWAY=1 on a live site (woocap) is refused" "$(THROWAWAY=1 OBSERVABILITY=full bash -c ". '$LIB'; render_user woocap https://woocap.skyphusion.workers.dev" >/dev/null 2>"$T/livefull.err" && echo 0 || { grep -q 'is a live site' "$T/livefull.err" && echo 1 || echo 0; })"
+ok "OBSERVABILITY=1 on a live site (woocap) still renders" "$(OBSERVABILITY=1 render_user woocap https://woocap.skyphusion.workers.dev >/dev/null 2>&1 && echo 1 || echo 0)"
 # #639: obs_conf_on reads the REAL render (the redaction decision follows the uploaded config).
 ok "obs_conf_on: on for a rendered OBSERVABILITY=1" "$(OBSERVABILITY=1 render_user one https://wp-one.sub.workers.dev > "$T/o1.toml" && obs_conf_on "$T/o1.toml" && echo 1 || echo 0)"
 ok "obs_conf_on: on for a rendered full (THROWAWAY=1)" "$(THROWAWAY=1 OBSERVABILITY=full render_user one https://wp-one.sub.workers.dev > "$T/of.toml" && obs_conf_on "$T/of.toml" && echo 1 || echo 0)"

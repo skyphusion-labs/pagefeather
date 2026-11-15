@@ -610,15 +610,17 @@ TOML
   # full URL and user agent. So:
   #   OBSERVABILITY=1     events only: our own structured lines and uncaught exceptions, NO request
   #                       metadata (invocation_logs = false). For a diagnosis on a live site.
-  #   OBSERVABILITY=full  the invocation logs too. For a throwaway only, ENFORCED (#639): the run must
-  #                       also set THROWAWAY=1, or the render fails. An opt-in fails closed; a list of
-  #                       live sites would fail open for the next store nobody added to it.
+  #   OBSERVABILITY=full  the invocation logs too. Throwaway only, enforced (#639): the run must
+  #                       also set THROWAWAY=1, or the render fails (an unmarked site fails closed).
+  #                       A site listed in deploy/live-sites/ is refused even with THROWAWAY=1
+  #                       (obs_refuse_full), before any upload or build: use 1, events only.
   #   unset or 0          an EXPLICIT enabled = false: without the block a re-upload left a site's
   #                       logging as it was, so "off" did not turn it off.
   case "${OBSERVABILITY:-0}" in
     0) printf '\n[observability]\nenabled = false\n' ;;
     1) printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = false\n' ;;
     full) [ "${THROWAWAY:-}" = 1 ] || { echo "OBSERVABILITY=full needs THROWAWAY=1 (it logs every request's URL, client IP and user agent; say the site is a throwaway, or use 1, events only)" >&2; return 1; }
+          obs_refuse_full "$s" || return 2
           printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = true\n' ;;
     *) echo "OBSERVABILITY must be 0, 1 (events only) or full (a throwaway only), not ${OBSERVABILITY}" >&2; return 1 ;;
   esac
@@ -626,6 +628,20 @@ TOML
   # skyphusion-ai plugin reaches through the index.js op bridge (#330, #332). The index must exist
   # before the deploy; site.sh up makes it (ensure_search_index).
   if search_on; then printf '\n[ai]\nbinding = "AI"\n[[vectorize]]\nbinding = "SEARCH_INDEX"\nindex_name = "%s"\n' "$(search_index "$s")"; fi
+}
+# obs_live_site <name>: the site has deploy/live-sites/<name>.env (a live b-dosql site).
+obs_live_site() {
+  [ -n "${1:-}" ] && [ -e "$WFP/../live-sites/$1.env" ]
+}
+# obs_refuse_full <name>: OBSERVABILITY=full is refused for a live site (#639). Invocation logs
+# record each request's URL, and a store's query strings hold order keys and logins. 1 (events
+# only), 0 and unset are not refused. A name with no live-sites file is not refused here
+# (THROWAWAY=1 still gates the render). Returns 2 when refused, before any upload or build.
+obs_refuse_full() {
+  [ "${OBSERVABILITY:-}" = full ] || return 0
+  obs_live_site "$1" || return 0
+  echo "OBSERVABILITY=full logs every request's URL, client IP and user agent, and $1 is a live site (deploy/live-sites/$1.env): use 1 (events only)" >&2
+  return 2
 }
 # obs_conf_on <rendered config>: true when the config turns Workers Logs on ([observability] enabled = true).
 obs_conf_on() {
