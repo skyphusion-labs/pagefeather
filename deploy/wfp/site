@@ -25,8 +25,9 @@ need_account
 cmd=${1:-}; s=${2:-}
 if [ "$cmd" = list ]; then list_sites; exit 0; fi
 case "$cmd" in add|remove|update|import|restore|schedule) ;; *) echo "usage: site add|remove|update|import|restore|schedule <name> | site update --all | site list" >&2; exit 2 ;; esac
-# #639: OBSERVABILITY=full on a site in deploy/live-sites/ is refused before shared init, the
-# build, or any upload. 1 and unset are unchanged. update --all checks each site in update_one.
+# #639, #693: OBSERVABILITY=full on a live site (deploy/live-sites/<name>.env or
+# deploy/wfp/live-sites/<name>) is refused before shared init, the build, or any
+# upload. 1 and unset are unchanged. update --all checks each site in update_one.
 if [ "$cmd" = add ]; then obs_refuse_full "$s" || exit 2; fi
 if [ "$cmd" = update ] && [ "$s" != "--all" ]; then obs_refuse_full "$s" || exit 2; fi
 tfr shared init -input=false >/dev/null
@@ -59,8 +60,8 @@ update_one() {
 update_one_inner() {
   local s=$1
   valid_site "$s" || { echo "bad site name: $s" >&2; return 2; }
-  # #639: full on a live site is refused before the snapshot, the build and the upload.
-  # update --all reaches this; a single update is also refused before shared init, below.
+  # #639, #693: full on a live site is refused before the snapshot, the build and the upload.
+  # update --all reaches this; a single update is also refused before shared init, above.
   obs_refuse_full "$s" || return 2
   has_ws "$s" || { echo "no site $s (run site add first)" >&2; return 2; }
   tfr site init -input=false >/dev/null; tfr site workspace select "$s" >/dev/null
