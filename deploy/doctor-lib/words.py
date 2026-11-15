@@ -85,7 +85,7 @@ def render(f):
                 L.append("  %-22s %d" % (names.get(k, k), oc[k]))
         s = f.get("sample")
         if s:
-            L.append("Timing, from the newest %d request records%s:" % (s["rows"], "" if s["complete"] else " (NOT the whole window: the read stopped at its page limit)"))
+            L.append("Timing, from %d of %d request records%s:" % (s["rows"], s["of"], "" if s["complete"] else " (NOT the whole window: the read stopped early)"))
             for where, label in (("worker", "Worker"), ("durable_object", "Durable Object")):
                 x = s[where]
                 if x["rows"]:

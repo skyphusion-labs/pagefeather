@@ -249,22 +249,34 @@ def summarize_rows(rows):
     return out
 
 
+# How the query API names a field of a JSON console line. The rows carry it as source.m; the filter
+# key is not yet measured live, so both spellings are tried, and the control picks the one that reads.
+FIELD_PREFIXES = ("", "source.")
+
+
 def signals(api, window, service):
-    """Counts of our own structured lines. The control first: if no line carries the field "m", the
-    counts below cannot be read (a wrong key reads zero), so every signal is None, not 0."""
+    """Counts of our own structured lines. The control first: if no line carries the field "m" under
+    any spelling, the counts below cannot be read (a wrong key reads zero), so every signal is None, not 0."""
     base = [_svc(service), _leaf("$metadata.type", "eq", "cf-worker")]
-    control = count(api, window, base + [_leaf("m", "exists", "")])
-    out = {"structured_lines": control, "items": []}
+    control, pre = None, None
+    for p in FIELD_PREFIXES:
+        c = count(api, window, base + [_leaf(p + "m", "exists", "")])
+        if c is not None and (control is None or c > control):
+            control = c
+        if c:
+            pre = p
+            break
+    out = {"structured_lines": control, "field_key": None if pre is None else pre + "m", "items": []}
     for m, split, header, meaning in SIGNALS:
         item = {"m": m, "header": header, "meaning": meaning, "count": None, "split": None}
-        if control:
+        if pre is not None:
             if split:
-                by = count_by(api, window, base + [_leaf("m", "eq", m)], split)
+                by = count_by(api, window, base + [_leaf(pre + "m", "eq", m)], pre + split)
                 if by is not None:
                     item["count"] = sum(by.values())
                     item["split"] = by
             else:
-                item["count"] = count(api, window, base + [_leaf("m", "eq", m)])
+                item["count"] = count(api, window, base + [_leaf(pre + "m", "eq", m)])
         out["items"].append(item)
     out["header_only"] = [{"header": h, "meaning": t} for h, t in HEADER_ONLY]
     return out
@@ -295,7 +307,10 @@ def gather(api, site, window, namespace="wp-wfp", forced=None):
         oc = count_by(api, window, [_svc(svc), _leaf("$metadata.type", "eq", "cf-worker-event")], "$workers.outcome")
         facts["outcomes"] = None if oc is None else dict((k, oc.get(k, 0)) for k in sorted(set(OUTCOMES) | set(oc)))
         rows, complete = invocation_rows(api, window, svc)
-        facts["sample"] = None if rows is None else {"rows": len(rows), "complete": complete, **summarize_rows(rows)}
+        # The server's own count is the denominator: fewer rows read than it counted is not complete.
+        if rows is not None and len(rows) < facts["event_rows"]:
+            complete = False
+        facts["sample"] = None if rows is None else {"rows": len(rows), "of": facts["event_rows"], "complete": complete, **summarize_rows(rows)}
         if rows is None or not complete:
             facts["complete"] = False
     else:

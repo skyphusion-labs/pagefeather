@@ -25,7 +25,11 @@ SQL = "SELECT user_pass FROM wp_users WHERE ID = 1"
 RUNTIME_LINE = "Durable Object's isolate exceeded its memory limit and was reset."
 RUNTIME_LINES = 41  # a count that must never be printed
 
-S = {"rows": [], "settings": {}, "unexpected": [], "auth": set(), "fail_query": False, "calls": 0}
+# key_style: how the fake names a JSON line field in a filter. "bare" reads m, "source" reads source.m.
+S = {"rows": [], "settings": {}, "unexpected": [], "auth": set(), "fail_query": False, "calls": 0, "key_style": "bare",
+     # inv_drop: the invocations view leaves out this many request records (the views can disagree).
+     # count_cap: the calculations view counts at most this many request records.
+     "inv_drop": 0, "count_cap": None}
 
 
 def get_key(e, key):
@@ -35,6 +39,12 @@ def get_key(e, key):
         return (e.get("$workers") or {}).get(key[9:])
     if key.startswith("$"):
         raise KeyError(key)
+    if key.startswith("source."):
+        if S["key_style"] != "source":
+            return None
+        key = key[7:]
+    elif S["key_style"] != "bare":
+        return None
     src = e.get("source")
     return src.get(key) if isinstance(src, dict) else None
 
@@ -68,6 +78,9 @@ def query(body):
         gb = p.get("groupBys") or []
         if len(gb) > 1:
             raise KeyError("groupBys")
+        if S["count_cap"] is not None:
+            ev = [e for e in rows if e["$metadata"].get("type") == "cf-worker-event"]
+            rows = [e for e in rows if e["$metadata"].get("type") != "cf-worker-event"] + ev[:S["count_cap"]]
         if not gb:
             return {"calculations": [{"aggregates": [{"value": len(rows)}] if rows else []}]}
         by = {}
@@ -80,6 +93,8 @@ def query(body):
     if view == "invocations":
         lim = body.get("limit") or 50
         groups = {}
+        if S["inv_drop"]:
+            rows = sorted(rows, key=lambda e: -e["timestamp"])[S["inv_drop"]:]
         for e in sorted(rows, key=lambda e: -e["timestamp"]):
             rid = e["$metadata"].get("requestId")
             if rid not in groups and len(groups) >= lim:
@@ -195,6 +210,9 @@ def reset(rows, settings):
     S["unexpected"] = []
     S["auth"] = set()
     S["fail_query"] = False
+    S["key_style"] = "bare"
+    S["inv_drop"] = 0
+    S["count_cap"] = None
 
 
 FAILS = []
@@ -283,6 +301,12 @@ check("console only json visibility", j["visibility"] == "console_only" and j["o
 check("console only json never holds the runtime line count", RUNTIME_LINES not in ints(j), sorted(set(ints(j))))
 check("console only json memory resets is a yes", j["memory_resets_seen"] is True)
 
+#    the same lines when the API names the field source.m: the same counts.
+reset(rows, {wfp("site-shop"): ON})
+S["key_style"] = "source"
+out2 = common("console only, source.m", run("shop"), 1)
+check("source.m gives the same signal counts", re.search(r"isolate-reset\s+2 \(memory 2\)", out2) is not None and "queued 3" in out2, out2)
+
 # 5. structured lines unreadable (no "m" field): every signal is could-not-measure, never 0.
 reset([console("site-shop", "plain text line") for _ in range(4)], {wfp("site-shop"): ON})
 out = common("no structured", run("shop"), 3)
@@ -335,12 +359,24 @@ check("paging reads every row", j["sample"]["rows"] == 250 and j["sample"]["comp
 check("paging no unexpected calls", not S["unexpected"], S["unexpected"])
 reset([event("wp-shop", "ok", 1, 10, "/", t=NOW - 5000) for _ in range(150)], {plain("wp-shop"): ON_FULL})
 j = json.loads(run("shop", "--json")[1])
-# 12 calls outside paging (3 names, outcomes, the signal control and 6 signals, the reset check)
+# 13 calls outside paging (3 names, outcomes, the control under m and source.m, 6 signals, the reset check)
 # plus 2 pages: the second page adds no row, so the read stops there, not at the 20-page cap.
-check("same millisecond ends after 2 pages", j["api_calls"] <= 14, j["api_calls"])
+check("same millisecond ends after 2 pages", j["api_calls"] <= 15, j["api_calls"])
+check("same millisecond reads fewer than the server counted", j["sample"]["rows"] < j["sample"]["of"] == 150, (j["sample"]["rows"], j["sample"]["of"]))
 check("same millisecond is not complete", j["sample"]["complete"] is False and j["complete"] is False, j["sample"])
 out = run("shop")[1]
 check("same millisecond says the read stopped", "NOT the whole window" in out and "lower bound" in out, out)
+
+# 10a. each guard alone. The views read fewer rows than the server counted: not complete, even when
+#      paging ended normally. And a stuck page is not complete, even when the count is low.
+reset([event("wp-shop", "ok", 1, 10, "/") for _ in range(30)], {plain("wp-shop"): ON_FULL})
+S["inv_drop"] = 5
+j = json.loads(run("shop", "--json")[1])
+check("fewer rows than counted is not complete", j["sample"]["rows"] == 25 and j["sample"]["of"] == 30 and j["sample"]["complete"] is False, (j["sample"]["rows"], j["sample"]["complete"]))
+reset([event("wp-shop", "ok", 1, 10, "/", t=NOW - 5000) for _ in range(150)], {plain("wp-shop"): ON_FULL})
+S["count_cap"] = 50
+j = json.loads(run("shop", "--json")[1])
+check("a stuck page is not complete even under a low count", j["sample"]["complete"] is False, j["sample"]["complete"])
 
 # 10b. the facts layer itself keeps no query string or IP: checked with the print guard out of the way.
 sys.path.insert(0, os.path.join(HERE, ".."))
