@@ -3372,9 +3372,10 @@ const site = {
 		const ovUpload = isMediaUpload(req, url) || Number(req.headers.get('content-length') || 0) > OVERFLOW_MAX_BODY;
 		if (ovs.on && env.PHP_RUNTIME && env.PHP_IN_DO !== 'on' && env.DB_IN_DO !== 'on' && shouldOverflow(ovs, { running: phpLock.running, waiting: phpLock.waiting }, url, ovUpload)) {
 			const picker = ovPickerFor(ovs.pool);
-			// #296 (3)(c): a retry-safe request asks the object to answer busy instead of queueing; it then tries the
-			// second choice, then runs here. A Turnstile-gated request is verified once at the front, so it is sent once.
-			const busyOk = !turnstileRoute(env, req.method, url);
+			// #296 (3)(c), PHP_OVERFLOW_BUSY=on (default off): a retry-safe request asks the object to answer busy instead
+			// of queueing; it then tries the second choice, then runs here. A Turnstile-gated request is verified once at
+			// the front, so it is sent once. With busy off, each request goes to one choice and may queue in the object.
+			const busyOk = ovs.busy && !turnstileRoute(env, req.method, url);
 			const choices = busyOk ? picker.pickTwo() : [picker.pick()];
 			for (const i of choices) {
 				picker.start(i);

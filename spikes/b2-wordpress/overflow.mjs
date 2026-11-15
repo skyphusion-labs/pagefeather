@@ -13,6 +13,9 @@
 //                         (default 1; 0 means any run in flight), 0 to 50
 //   PHP_OVERFLOW_POOL     pool size, 1 to 128 (default 8); objects are named ovf-<i>
 //   PHP_OVERFLOW_HINT     the location hint for the objects (default wnam, measured best)
+//   PHP_OVERFLOW_BUSY     on: an object already running PHP answers busy and the Worker tries elsewhere (default
+//                         OFF: at pool 32, busy moved the queue back into the Worker and brought 5 exceededMemory
+//                         back at 250 concurrent; without it, 0. #296, 2026-11-15)
 // Never moved: spike and operator paths (/_*) and media uploads (their body is staged in R2 here).
 // Routing: power of two choices over the in-flight count this isolate holds per object.
 // BUSY (#296 (3)(c), ruled 2026-11-15): (c) measured the queue moving INTO the pool (pool 32: 507 of 699 granted
@@ -39,6 +42,7 @@ export function overflowSettings(env) {
 		depth: int(env && env.PHP_OVERFLOW_DEPTH, 0, 50, 1),
 		pool: int(env && env.PHP_OVERFLOW_POOL, 1, 128, 8),
 		hint: HINTS.has(hint) ? hint : 'wnam',
+		busy: env ? String(env.PHP_OVERFLOW_BUSY || '').trim() === 'on' : false,
 	};
 }
 
