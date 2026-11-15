@@ -24,8 +24,13 @@ Controls, so a number is never made from a read that could not see:
   - a cache-busted read (?nocache=) must show the NEW value (the sale's before minus one) within MAX_S.
     If it never does, the checkout did not change the stock, or the Worker shows old stock past MAX_S:
     could-not-measure, with no worker_stale_s;
-  - a warm read must come from the cache (cf-cache-status HIT, STALE, UPDATING or REVALIDATED). If
-    the site never says so, a fresh page cannot be told from a purged one: could-not-measure.
+  - a warm read must come from the cache. Two proofs count (the result names which one, "proof"):
+      status  the outer cf-cache-status is HIT, STALE, UPDATING or REVALIDATED;
+      stamp   the two warm reads carry the SAME x-pf-rendered, the time Pages rendered the page
+              (page-stamp.mjs, #628). A cached copy keeps the stamp of the run that rendered it, so
+              this sees the entrypoint cache of Pages too, which the outer status can hide (measured
+              on pfa-sb1114l, 2026-11-15: EXPIRED outside, 934 front runs and 21 Pages runs).
+    Neither: a fresh page cannot be told from a purged one, so the result is could-not-measure.
 Guest reads send no cookie and no operator header: an operator request never uses the page cache.
 EXPIRED is never a cache proof: it means the edge held a copy but fetched the page from the Worker.
 
@@ -152,11 +157,20 @@ def guest_read(path, bust=False):
     st = stock(body) if code == 200 else (None, None)
     g = (lambda k: h.get(k)) if h else (lambda k: None)
     return {"code": code, "state": st[0], "qty": st[1], "cache": g("cf-cache-status"), "age": g("age"),
-            "cc": g("cache-control"), "entry": g("x-entrypoint"), "cookies": cookie_names(h) if h else []}
+            "cc": g("cache-control"), "entry": g("x-entrypoint"), "rendered": g("x-pf-rendered"), "cookies": cookie_names(h) if h else []}
 
 
 def evidence(r):
-    return dict((k, r[k]) for k in ("code", "cache", "cc", "age", "entry", "cookies"))
+    return dict((k, r[k]) for k in ("code", "cache", "cc", "age", "entry", "rendered", "cookies"))
+
+
+def proof_of(first, second):
+    """'status', 'stamp' or None: how the second warm read is known to come from a cache."""
+    if second["cache"] in CACHED:
+        return "status"
+    if first["rendered"] and first["rendered"] == second["rendered"]:
+        return "stamp"
+    return None
 
 
 def buy(pid):
@@ -183,6 +197,7 @@ def warm(path, keep=None):
     second = guest_read(path)
     if keep is not None:
         keep.extend([evidence(first), evidence(second)])
+    second["proof"] = proof_of(first, second)
     return second
 
 
@@ -198,7 +213,7 @@ def case_qty(a, made, orders):
         orders.append(oid)
     after = guest_read(path, bust=True)
     want = before["qty"] - 1 if (oid and before["qty"] is not None) else None
-    res = {"case": "qty", "cached_proof": w["cache"] in CACHED, "warm_cache": w["cache"], "before": before["qty"], "after": after["qty"],
+    res = {"case": "qty", "cached_proof": w["proof"] is not None, "proof": w["proof"], "warm_cache": w["cache"], "before": before["qty"], "after": after["qty"],
            "bought": bool(oid), "control_new": want is not None and after["qty"] == want,
            "worker_stale_s": None, "stale_s": None, "polls": 0, "cache_seen": {}, "warm": ev}
     # The Worker layer: poll uncached reads until the new value shows, or MAX_S.
@@ -235,7 +250,7 @@ def case_stockout(a, made, orders):
     items = [make_product(a, 1, made) for _ in range(N)]
     time.sleep(SETTLE_S)
     ev = []
-    proofs = [warm(p, ev)["cache"] in CACHED for _, p in items]
+    proofs = [warm(p, ev)["proof"] for _, p in items]
     t0s = {}
     for pid, p in items:
         oid = buy(pid)
@@ -244,7 +259,7 @@ def case_stockout(a, made, orders):
             t0s[p] = time.time()
     t_end = time.time()
     control_out = sum(1 for _, p in items if guest_read(p, bust=True)["state"] == "out")
-    res = {"case": "stockout", "n": N, "bought": len(t0s), "cached_proof": all(proofs), "control_out": control_out,
+    res = {"case": "stockout", "n": N, "bought": len(t0s), "cached_proof": all(x is not None for x in proofs), "proof": sorted(set(str(x) for x in proofs)), "control_out": control_out,
            "sales_s": round(t_end - min(t0s.values()), 2) if t0s else None, "in_stock_at_0": None, "max_stale_s": None,
            "never_fresh": None, "in_stock_over_time": [], "warm": ev[:4]}
     if not res["cached_proof"] or control_out != N or len(t0s) != N:
@@ -291,7 +306,7 @@ def main():
         return 2
     a = admin()
     home = []
-    home_cached = warm("/", home)["cache"] in CACHED
+    home_cached = warm("/", home)["proof"] is not None
     made, orders, results = [], [], []
     try:
         if case in ("qty", "both"):

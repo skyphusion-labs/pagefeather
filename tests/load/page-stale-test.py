@@ -34,7 +34,13 @@ def fresh_state(**kw):
               "decrement": True, "cache_header": True, "deleted": [], "create_purge_delay": 0, "product_cookie": False,
               # worker_lag: after a sale, a page RENDERED by the Worker still shows the old stock for this
               # many seconds (a stale object cache inside the Worker), cached or not.
-              "worker_lag": 0})
+              "worker_lag": 0,
+              # stamp: Pages sends x-pf-rendered (the render time; a cached copy keeps it), as index.js
+              # does since #628. flat: the live pfa-sb1114l shape, a top-level [cache] that caches the
+              # gateway too, so the OUTER status is EXPIRED on every read while the inner cache serves.
+              "stamp": True, "flat": False,
+              # never_cache: nothing is ever stored, so each read renders afresh (a new stamp each time).
+              "never_cache": False})
     S.update(kw)
 
 
@@ -72,6 +78,25 @@ class H(http.server.BaseHTTPRequestHandler):
         S["unexpected"].append("%s %s: %s" % (self.command, self.path, why))
         self._send(599, {"error": why})
 
+    def _cached(self, key, render, bypass, guest):
+        """A page through the fake page cache. The stored copy keeps its render stamp. The outer
+        status is HIT on a cached read; in the flat shape it is EXPIRED on every read."""
+        now = time.time()
+        c = S["cache"].get(key)
+        if not bypass and not S["never_cache"] and c and now - c[1] < TTL:
+            html, made, status = c[0], c[2], "HIT"
+        else:
+            html, made, status = render(), int(now * 1000), "MISS"
+            if not bypass:
+                S["cache"][key] = (html, now, made)
+        ext = {}
+        if S["cache_header"]:
+            ext["cf-cache-status"] = "EXPIRED" if (S["flat"] and not bypass) else status
+        if S["stamp"]:
+            ext["x-pf-rendered"] = str(made)
+        time.sleep(0.002)  # two renders never share a millisecond
+        return self._send(200, html, "text/html", ext)
+
     def _admin(self):
         return "wordpress_logged_in_x=admin" in (self.headers.get("Cookie") or "") and self.headers.get("X-WP-Nonce") == "abcdef0123"
 
@@ -97,12 +122,7 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200, {"items": []}, extra={"Nonce": "storenonce", "Cart-Token": "ct-%d" % time.time()})
         if path == "/" and not rr:
             # the home page: a cacheable page with no stock, the probe's site-level control
-            key = "/"
-            c = S["cache"].get(key)
-            if c and time.time() - c[1] < TTL and "nocache" not in q:
-                return self._send(200, "home", "text/html", {"cf-cache-status": "HIT"} if S["cache_header"] else {})
-            S["cache"][key] = ("home", time.time())
-            return self._send(200, "home", "text/html", {"cf-cache-status": "MISS"} if S["cache_header"] else {})
+            return self._cached("/", lambda: "home", "nocache" in q, True)
         m = re.match(r"^/product/(p\d+)/$", path)
         if m and not rr:
             p = S["products"].get(m.group(1))
@@ -111,28 +131,16 @@ class H(http.server.BaseHTTPRequestHandler):
             guest = not self.headers.get("Cookie") and not any(k.lower() == "x-spike-token" for k in self.headers.keys())
             if not guest:
                 S["guest_bad"].append(self.path)
-            ext = {}
             if S["product_cookie"] and guest and "nocache" not in q:
                 # index.js: a page that sets a cookie is not cacheable (cloudflare-cdn-cache-control: no-store);
-                # the edge keeps nothing fresh and answers EXPIRED, as measured live on 2026-11-15.
+                # the edge keeps nothing fresh and answers EXPIRED.
                 ext = {"Set-Cookie": "woocommerce_recently_viewed=%s; Path=/" % COOKIE_VALUE, "cache-control": "private, no-store"}
                 if S["cache_header"]:
                     ext["cf-cache-status"] = "EXPIRED"
+                if S["stamp"]:
+                    ext["x-pf-rendered"] = str(int(time.time() * 1000))
                 return self._send(200, page_html(p), "text/html", ext)
-            if "nocache" in q or not guest:
-                html, status = page_html(p), "MISS"
-            else:
-                key = path
-                now = time.time()
-                c = S["cache"].get(key)
-                if c and now - c[1] < TTL:
-                    html, status = c[0], "HIT"
-                else:
-                    html, status = page_html(p), "MISS"
-                    S["cache"][key] = (html, now)
-            if S["cache_header"]:
-                ext["cf-cache-status"] = status
-            return self._send(200, html, "text/html", ext)
+            return self._cached(path, lambda: page_html(p), "nocache" in q or not guest, guest)
         return self._bad("unknown GET")
 
     def do_POST(self):
@@ -274,7 +282,7 @@ check("worker lag still measures the edge", r and r[0].get("verdict") == "measur
 # for the NEW value, not stop at a cached read that equals an old uncached read.
 check("worker lag edge stale for about the TTL", r and r[0].get("stale_s") is not None and TTL - 0.6 <= r[0]["stale_s"] <= TTL + 1.0, r and r[0].get("stale_s"))
 check("worker lag after is the new value", r and r[0].get("after") == 6, r and r[0].get("after"))
-fresh_state(worker_lag=1.0, cache_header=False)
+fresh_state(worker_lag=1.0, cache_header=False, stamp=False)
 code, ev, out = run("qty")
 r = [e for e in ev if e.get("case") == "qty"]
 check("worker lag with no edge cache is timed and could-not-measure for the edge", r and r[0].get("verdict") == "could_not_measure" and r[0].get("worker_stale_s") is not None and code == 3, (code, r))
@@ -301,8 +309,28 @@ if r:
 check("product cookie never prints the cookie value", COOKIE_VALUE not in out)
 check("product cookie plain line names the cause", "the home page IS served from the cache" in out and "cookies set woocommerce_recently_viewed" in out, out[-500:])
 
-# 4. no cache header: the probe cannot tell a cached read from an uncached one, and says so.
-fresh_state(cache_header=False)
+# 3d. the flat shape (pfa-sb1114l): EXPIRED outside on every read, but the inner cache serves the
+#     old copy. The render stamp proves it, and the probe measures the staleness #628 is about.
+fresh_state(flat=True)
+code, ev, out = run("qty")
+common("flat", out)
+r = [e for e in ev if e.get("case") == "qty"]
+check("flat proves the inner cache by the stamp", r and r[0].get("cached_proof") is True and r[0].get("proof") == "stamp", r)
+check("flat measures the inner staleness", r and r[0].get("verdict") == "measured" and r[0].get("stale_s") is not None and TTL - 0.6 <= r[0]["stale_s"] <= TTL + 1.0, r and r[0].get("stale_s"))
+check("flat home control is cached by the stamp", r and r[0].get("home_cached") is True, r and r[0].get("home_warm"))
+fresh_state(flat=True)
+code, ev, out = run("stockout", N="3")
+r = [e for e in ev if e.get("case") == "stockout"]
+check("flat stockout proves the cache by the stamp", r and r[0].get("cached_proof") is True, r)
+
+# 3e. stamps that differ are never a proof: the site stamps but never caches, and says EXPIRED.
+fresh_state(never_cache=True, flat=True)
+code, ev, out = run("qty")
+r = [e for e in ev if e.get("case") == "qty"]
+check("different stamps are no proof", r and r[0].get("cached_proof") is False and r[0].get("verdict") == "could_not_measure" and code == 3, (code, r))
+
+# 4. no cache header and no stamp: the probe cannot tell a cached read from an uncached one, and says so.
+fresh_state(cache_header=False, stamp=False)
 code, ev, out = run("qty")
 r = [e for e in ev if e.get("case") == "qty"]
 check("no cache header is flagged", r and r[0].get("cached_proof") is False and r[0].get("verdict") == "could_not_measure", r)

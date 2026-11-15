@@ -39,6 +39,7 @@ import { createRetirer } from './runtime-drop.mjs';
 import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy } from './overflow.mjs';
+import { stampRendered } from './page-stamp.mjs';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
@@ -3445,6 +3446,8 @@ export class Pages extends WorkerEntrypoint {
 		// So a test can see which entrypoint answered (the gateway sets nothing).
 		const out = new Response(r.body, r);
 		out.headers.set('x-entrypoint', 'pages');
+		// #628: when PHP rendered this answer. A cached copy keeps it (page-stamp.mjs).
+		stampRendered(out.headers);
 		// An operator request (it carries the token header) may be answered with the performance
 		// headers; never let the edge cache keep that copy for the next visitor. cache-control alone
 		// was not enough: the edge obeys cloudflare-cdn-cache-control over it (perf-headers.mjs).
