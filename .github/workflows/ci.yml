@@ -196,6 +196,11 @@ jobs:
         run: python3 tests/load/admin-stub-test.py
       - name: load test 1102 counter counts 5xx only (issue #394)
         run: python3 tests/load/is1102-test.py
+      - name: page-stale probe measures old stock on a cached page, with its controls (#628)
+        # tests/load/page_stale.py against a fake site with a page cache: the quantity case (no purge),
+        # refused stock-out purges, a delayed create purge, and could-not-measure when the checkout did not
+        # change the stock or the site never says a read was cached.
+        run: python3 -I tests/load/page-stale-test.py
       - name: b-dosql the isolate memory ledger (issue #394)
         run: node --test spikes/b2-wordpress/tests/mem-ledger.test.mjs
       # The arena test inflates real deflate data with fflate, the Worker's own inflater (#508). The
