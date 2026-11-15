@@ -9,6 +9,10 @@
 # Summarize with: python3 file-trace-report.py build/file-trace.json
 set -euo pipefail
 cd "$(dirname "$0")"
+# #682: the local dev server and every request here run on the local token and password.
+# shellcheck source=local-creds.sh
+. ./local-creds.sh
+local_creds
 [ -s build/opcache.zip ] || { echo "build/opcache.zip is missing or empty: run ./opcache.sh first"; exit 1; }
 STATE=$(mktemp -d "${TMPDIR:-/tmp}/file-trace-state.XXXXXX")
 export PERSIST_TO=$STATE

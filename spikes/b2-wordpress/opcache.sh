@@ -7,6 +7,10 @@
 # Run after ./build.sh, then deploy.
 set -euo pipefail
 cd "$(dirname "$0")"
+# #682: the local dev server and every request here run on the local token and password.
+# shellcheck source=local-creds.sh
+. ./local-creds.sh
+local_creds
 python3 -c "import zipfile; zipfile.ZipFile('build/opcache.zip', 'w').close()"
 # #394 L1: priming runs unsplit; a split from an earlier run would point at other files.
 rm -f build/opcache-boot.zip
