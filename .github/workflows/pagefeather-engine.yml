@@ -452,6 +452,8 @@ jobs:
           [ "$rc" != 0 ] || { echo "::error::the primed gate PASSED with the lazy load off: it cannot see a body that never loads lazily"; exit 1; }
           echo "red control: the primed gate fails with opcache.pagefeather_lazy_load=0 (rc=$rc), as it must"
           LB_PRIMED=1 tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate-primed.json"
+          # M2b stage 4: the same gate and M2c reading with a whole script per load (opcache.pagefeather_lazy_unit=script)
+          LB_PRIMED=1 LB_UNIT=script tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate-primed-script.json"
       - name: Test 16 on lean-stats-lazy (observers see each call once and count the real body)
         working-directory: spikes/b2-wordpress
         run: |
@@ -516,6 +518,7 @@ jobs:
             ${{ runner.temp }}/gate-red.json
             ${{ runner.temp }}/gate-128.json
             ${{ runner.temp }}/gate-primed.json*
+            ${{ runner.temp }}/gate-primed-script.json*
             ${{ runner.temp }}/gate-primed-red.json
           retention-days: 14
   opcache-stats:

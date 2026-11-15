@@ -2,9 +2,10 @@
 # #582 S4 M2b: the lazy-body contract suite (probe.php) on a NATIVE php-cli built with pf-lazy-bodies.patch.
 #   engine/opcache/lazy/run-native.sh <php-cli> <opcache.so>
 # Primes a file cache from the fixtures (opcache_compile_file, so nothing runs), then runs each case of probe.php in
-# its own process three ways, each on a fresh copy of that cache: lazy (bodies load at first call), eager (the same
+# its own process four ways, each on a fresh copy of that cache: lazy (a body loads at the first call of its function),
+# script (opcache.pagefeather_lazy_unit=script: the first call into a script loads all of its bodies), eager (the same
 # engine, opcache.pagefeather_lazy_load=0) and compiled (OPcache off). A case passes when "out" is the same in all
-# three and the lazy run lists no failed check. tcbad must stop with the trait-collision fatal in every mode.
+# four and neither lazy run lists a failed check. tcbad must stop with the trait-collision fatal in every mode.
 # Prints "@event lazy-case {json}" per case; exit 1 on any failure. The wasm engine runs the same probe through
 # spikes/b2-wordpress/tests/lazy-bodies.test.mjs.
 set -u
@@ -31,17 +32,18 @@ n=$(find "$work/oc0" -name "*.bin" | wc -l | tr -d " ")
 [ "$n" -ge 15 ] || { echo "prime: only $n .bin files written"; exit 1; }
 rc=0
 for case in plain methods refl copy fail never missing ic xref xstr tcbad; do
-  for mode in lazy eager compiled; do
+  for mode in lazy script eager compiled; do
     src=oc0; [ "$case" = xstr ] && src=oc1
     rm -rf "$work/oc"; cp -R "$work/$src" "$work/oc"
     extra=(); [ "$mode" = eager ] && extra=(-d opcache.pagefeather_lazy_load=0); [ "$mode" = compiled ] && extra=(-d opcache.enable_cli=0)
+    [ "$mode" = script ] && extra=(-d opcache.pagefeather_lazy_unit=script)
     [ "$case" = xstr ] && extra+=(-d opcache.interned_strings_buffer=1)
     "$php" "${opc[@]}" -d "opcache.file_cache=$work/oc" ${extra[@]+"${extra[@]}"} "$work/probe.php" "$case" "$mode" > "$work/$case.$mode.out" 2>&1
   done
   python3 -I - "$work" "$case" <<'PY' || rc=1
 import json, sys
 work, case = sys.argv[1], sys.argv[2]
-txt = {m: open("%s/%s.%s.out" % (work, case, m)).read() for m in ("lazy", "eager", "compiled")}
+txt = {m: open("%s/%s.%s.out" % (work, case, m)).read() for m in ("lazy", "script", "eager", "compiled")}
 why = []
 if case == "tcbad":
     for m, t in txt.items():
@@ -60,7 +62,10 @@ else:
             why.append("lazy out differs from compiled: %s vs %s" % (json.dumps(got["lazy"]["out"])[:400], json.dumps(got["compiled"]["out"])[:400]))
         if got["eager"]["out"] != got["compiled"]["out"]:
             why.append("eager out differs from compiled")
+        if got["script"]["out"] != got["compiled"]["out"]:
+            why.append("script out differs from compiled: %s" % json.dumps(got["script"]["out"])[:300])
         why += ["lazy: " + f for f in got["lazy"]["fail"]]
+        why += ["script: " + f for f in got["script"]["fail"]]
         if any(t.lstrip().startswith(("PHP ", "Warning", "Fatal", "Notice", "Deprecated")) for t in txt.values()):
             why.append("a run printed a diagnostic before its JSON")
     ev = {"case": case, "ok": not why, "lb": got.get("lazy", {}).get("lb")}

@@ -103,10 +103,10 @@ index 93556041..f1e850f9 100644
  	accel_globals_id = ts_allocate_id(&accel_globals_id, sizeof(zend_accel_globals), (ts_allocate_ctor) accel_globals_ctor, (ts_allocate_dtor) accel_globals_dtor);
  #else
 diff --git a/ext/opcache/ZendAccelerator.h b/ext/opcache/ZendAccelerator.h
-index a10ae41a..ca3f7351 100644
+index a10ae41a..7b651518 100644
 --- a/ext/opcache/ZendAccelerator.h
 +++ b/ext/opcache/ZendAccelerator.h
-@@ -116,6 +116,30 @@ typedef struct _zend_early_binding {
+@@ -116,6 +116,31 @@ typedef struct _zend_early_binding {
  	uint32_t cache_slot;
  } zend_early_binding;
  
@@ -133,11 +133,12 @@ index a10ae41a..ca3f7351 100644
 +/* pagefeather lazy bodies (#582 M2b stage 3): arrays calc found reached from more than one owner, persisted in the head */
 +extern HashTable *pf_lb_shared;
 +extern uint32_t pf_lb_head_arrays, pf_lb_head_strings;
++extern uint32_t pf_lb_script_loads; /* pagefeather lazy bodies (#582 M2b stage 4) */
 +
  typedef struct _zend_persistent_script {
  	zend_script    script;
  	zend_long      compiler_halt_offset;   /* position of __HALT_COMPILER or -1 */
-@@ -131,6 +155,11 @@ typedef struct _zend_persistent_script {
+@@ -131,6 +156,11 @@ typedef struct _zend_persistent_script {
  
  	void          *mem;                    /* shared memory area used by script structures */
  	size_t         size;                   /* size of used shared memory */
@@ -149,27 +150,51 @@ index a10ae41a..ca3f7351 100644
  
  	struct zend_persistent_script_dynamic_members {
  		time_t       last_used;
-@@ -179,6 +208,7 @@ typedef struct _zend_accel_directives {
+@@ -179,6 +209,8 @@ typedef struct _zend_accel_directives {
  	char          *file_cache;
  	bool      file_cache_only;
  	bool      file_cache_consistency_checks;
 +	bool      pf_lazy_load; /* pagefeather lazy bodies (#582 M2b stage 2): opcache.pagefeather_lazy_load */
++	zend_long pf_lazy_unit; /* pagefeather lazy bodies (#582 M2b stage 4): opcache.pagefeather_lazy_unit, 0 body, 1 script */
  #if ENABLE_FILE_CACHE_FALLBACK
  	bool      file_cache_fallback;
  #endif
 diff --git a/ext/opcache/zend_accelerator_module.c b/ext/opcache/zend_accelerator_module.c
-index 90936929..0c895f67 100644
+index 90936929..e609645c 100644
 --- a/ext/opcache/zend_accelerator_module.c
 +++ b/ext/opcache/zend_accelerator_module.c
-@@ -303,6 +303,7 @@ ZEND_INI_BEGIN()
+@@ -260,6 +260,21 @@ static ZEND_INI_MH(OnUpdateMaxTraceLength)
+ }
+ #endif
+ 
++/* pagefeather lazy bodies (#582 M2b stage 4): what one lazy load reads, a body (stage 2) or every body of its script */
++static ZEND_INI_MH(OnUpdatePfLazyUnit)
++{
++	zend_long *p = (zend_long *) ZEND_INI_GET_ADDR();
++	if (zend_string_equals_literal(new_value, "body")) {
++		*p = 0;
++	} else if (zend_string_equals_literal(new_value, "script")) {
++		*p = 1;
++	} else {
++		zend_accel_error(ACCEL_LOG_WARNING, "opcache.pagefeather_lazy_unit must be body or script\n");
++		return FAILURE;
++	}
++	return SUCCESS;
++}
++
+ ZEND_INI_BEGIN()
+ 	STD_PHP_INI_BOOLEAN("opcache.enable"             , "1", PHP_INI_ALL,    OnEnable,     enabled                             , zend_accel_globals, accel_globals)
+ 	STD_PHP_INI_BOOLEAN("opcache.use_cwd"            , "1", PHP_INI_SYSTEM, OnUpdateBool, accel_directives.use_cwd            , zend_accel_globals, accel_globals)
+@@ -303,6 +318,8 @@ ZEND_INI_BEGIN()
  	STD_PHP_INI_ENTRY("opcache.file_cache"                    , NULL  , PHP_INI_SYSTEM, OnUpdateFileCache, accel_directives.file_cache,                    zend_accel_globals, accel_globals)
  	STD_PHP_INI_BOOLEAN("opcache.file_cache_only"               , "0"   , PHP_INI_SYSTEM, OnUpdateBool,	   accel_directives.file_cache_only,               zend_accel_globals, accel_globals)
  	STD_PHP_INI_BOOLEAN("opcache.file_cache_consistency_checks" , "1"   , PHP_INI_SYSTEM, OnUpdateBool,	   accel_directives.file_cache_consistency_checks, zend_accel_globals, accel_globals)
++	STD_PHP_INI_ENTRY("opcache.pagefeather_lazy_unit" , "body", PHP_INI_SYSTEM, OnUpdatePfLazyUnit, accel_directives.pf_lazy_unit, zend_accel_globals, accel_globals) /* pagefeather lazy bodies (#582 M2b stage 4) */
 +	STD_PHP_INI_BOOLEAN("opcache.pagefeather_lazy_load" , "1"   , PHP_INI_SYSTEM, OnUpdateBool,	   accel_directives.pf_lazy_load, zend_accel_globals, accel_globals) /* pagefeather lazy bodies (#582 M2b stage 2) */
  #if ENABLE_FILE_CACHE_FALLBACK
  	STD_PHP_INI_BOOLEAN("opcache.file_cache_fallback"           , "1"   , PHP_INI_SYSTEM, OnUpdateBool,	   accel_directives.file_cache_fallback,           zend_accel_globals, accel_globals)
  #endif
-@@ -669,6 +670,31 @@ ZEND_FUNCTION(opcache_get_status)
+@@ -669,6 +686,33 @@ ZEND_FUNCTION(opcache_get_status)
  	add_assoc_long(&memory_usage, "wasted_memory", ZSMMG(wasted_shared_memory));
  	add_assoc_double(&memory_usage, "current_wasted_percentage", (((double) ZSMMG(wasted_shared_memory))/ZCG(accel_directives).memory_consumption)*100.0);
  	add_assoc_zval(return_value, "memory_usage", &memory_usage);
@@ -185,6 +210,8 @@ index 90936929..0c895f67 100644
 +		add_assoc_long(&pf_lb, "dir_mismatch", pf_lb_dir_mismatch);
 +		/* pagefeather lazy bodies (#582 M2b stage 2) */
 +		add_assoc_bool(&pf_lb, "lazy_load", ZCG(accel_directives).pf_lazy_load);
++		add_assoc_string(&pf_lb, "lazy_unit", ZCG(accel_directives).pf_lazy_unit ? "script" : "body"); /* pagefeather lazy bodies (#582 M2b stage 4) */
++		add_assoc_long(&pf_lb, "script_loads", pf_lb_script_loads);
 +		add_assoc_long(&pf_lb, "lazy_scripts", pf_lb_lazy_scripts);
 +		add_assoc_long(&pf_lb, "eager_scripts", pf_lb_eager_scripts);
 +		add_assoc_long(&pf_lb, "xref_scripts", pf_lb_xref_scripts);
@@ -202,7 +229,7 @@ index 90936929..0c895f67 100644
  	if (ZCSG(interned_strings).start && ZCSG(interned_strings).end) {
  		zval interned_strings_usage;
 diff --git a/ext/opcache/zend_file_cache.c b/ext/opcache/zend_file_cache.c
-index 8afc4a43..b7b6b32a 100644
+index 8afc4a43..21a46db9 100644
 --- a/ext/opcache/zend_file_cache.c
 +++ b/ext/opcache/zend_file_cache.c
 @@ -24,6 +24,7 @@
@@ -282,11 +309,11 @@ index 8afc4a43..b7b6b32a 100644
 +	} while (0)
 +/* While one lazy body is unserialized, its serialized offsets in [lo, hi] map into chunk, offsets below tail into the
 + * resident head; anything else marks the load bad (the store keeps such files whole, so only corruption gets here). */
-+static struct { char *chunk, *head; size_t len, lo, hi, tail; bool bad; } pf_lz;
++static struct { char *chunk, *span, *head; size_t len, lo, hi, tail; bool bad; } pf_lz; /* pagefeather lazy bodies (#582 M2b stage 4): span, where [lo, hi] starts */
 +static void *pf_lz_map(size_t off)
 +{
 +	if (off >= pf_lz.lo && off <= pf_lz.hi) {
-+		return pf_lz.chunk + (off - pf_lz.lo);
++		return pf_lz.span + (off - pf_lz.lo);
 +	}
 +	if (off < pf_lz.tail) {
 +		return pf_lz.head + off;
@@ -573,7 +600,7 @@ index 8afc4a43..b7b6b32a 100644
  	efree(mem);
  	if (zend_file_cache_flock(fd, LOCK_UN) != 0) {
  		zend_accel_error(ACCEL_LOG_WARNING, "opcache cannot unlock file '%s': %s\n", filename, strerror(errno));
-@@ -1300,6 +1482,424 @@ static void zend_file_cache_unserialize_type(
+@@ -1300,6 +1482,501 @@ static void zend_file_cache_unserialize_type(
  	}
  }
  
@@ -595,6 +622,10 @@ index 8afc4a43..b7b6b32a 100644
 +	char *head;                   /* the shared-memory head (script->mem) */
 +	size_t full_size, tail;       /* the serialized block size; where its body tail starts */
 +	size_t bstr_base;             /* file offset of the body-string section */
++	size_t bstr_len;              /* pagefeather lazy bodies (#582 M2b stage 4): its length */
++	struct _pf_lb_desc *descs;    /* pagefeather lazy bodies (#582 M2b stage 4): the script's descriptors, for a whole-script load */
++	uint32_t n;
++	char *chunk;                  /* pagefeather lazy bodies (#582 M2b stage 4): the whole tail and body strings, once loaded as a unit */
 +} pf_lb_script;
 +
 +typedef struct _pf_lb_desc {
@@ -616,6 +647,7 @@ index 8afc4a43..b7b6b32a 100644
 +static int pf_lb_slot = -1;
 +uint32_t pf_lb_lazy_scripts = 0, pf_lb_eager_scripts = 0, pf_lb_xref_scripts = 0, pf_lb_body_loads = 0, pf_lb_body_fail = 0, pf_lb_copy_installs = 0;
 +uint64_t pf_lb_body_bytes_loaded = 0, pf_lb_body_bytes_resident = 0, pf_lb_body_load_ns = 0;
++uint32_t pf_lb_script_loads = 0; /* pagefeather lazy bodies (#582 M2b stage 4) */
 +/* set only while the head of a lazily loaded script is unserialized */
 +static struct { pf_lb_script *s; pf_lb_desc *descs; uint32_t n; } pf_lzh;
 +
@@ -812,15 +844,123 @@ index 8afc4a43..b7b6b32a 100644
 +	UNSERIALIZE_PTR(op_array->try_catch_array);
 +}
 +
-+/* read, check and unserialize one body; on success it is resident, on failure nothing is kept */
++/* unserialize one body: its span is at span (serialized offsets [span_off, span_off + span_len] map there), its own
++ * strings at strs; chunk..chunk + len is everything just read. Nothing is installed here. */
++static bool pf_lb_unserialize_into(pf_lb_desc *d, char *chunk, size_t len, char *span, char *strs)
++{
++	const pf_body_dir_entry *e = &d->s->dir[d->k];
++	zend_op_array tmp;
++	zend_persistent_script fake;
++	void *saved_mem = ZCG(mem);
++	bool ok;
++
++	memset(&tmp, 0, sizeof(tmp));
++	memset(&fake, 0, sizeof(fake));
++	tmp.literals = (zval*)d->lit;
++	tmp.last_literal = d->last_literal;
++	tmp.opcodes = (zend_op*)d->ops;
++	tmp.last = d->last;
++	tmp.live_range = (zend_live_range*)d->lr;
++	tmp.last_live_range = d->last_live_range;
++	tmp.try_catch_array = (zend_try_catch_element*)d->tc;
++	tmp.last_try_catch = d->last_try_catch;
++	fake.mem = d->s->head;
++	fake.size = d->s->full_size;
++	fake.corrupted = false;
++	pf_lz.chunk = chunk;
++	pf_lz.span = span;
++	pf_lz.head = d->s->head;
++	pf_lz.len = len;
++	pf_lz.lo = e->span_off;
++	pf_lz.hi = (size_t)e->span_off + e->span_len;
++	pf_lz.tail = d->s->tail;
++	pf_lz.bad = false;
++	ZCG(mem) = strs;
++	pf_lb_unserialize_body(&tmp, &fake, NULL);
++	ZCG(mem) = saved_mem;
++	ok = !pf_lz.bad;
++	pf_lz.chunk = NULL;
++	if (ok) {
++		d->literals = tmp.literals;
++		d->opcodes = tmp.opcodes;
++		d->live_range = tmp.live_range;
++		d->try_catch_array = tmp.try_catch_array;
++	}
++	return ok;
++}
++
++/* opcache.pagefeather_lazy_unit=script: read the script's whole body tail and body-string section, check and
++ * unserialize every body of it, and only when all of them succeed mark them loaded. A failure keeps nothing. */
++static zend_result pf_lb_load_script(pf_lb_script *s)
++{
++	size_t tail = s->full_size - s->tail, len = tail + s->bstr_len;
++	zend_hrtime_t t0 = zend_hrtime();
++	char *chunk = malloc(len ? len : 1);
++	bool ok = chunk != NULL;
++	uint32_t i, n = 0;
++
++	if (ok) {
++		int fd = open(s->path, O_RDONLY | O_BINARY);
++		ok = fd >= 0
++			&& pf_lb_pread(fd, chunk, tail, sizeof(zend_file_cache_metainfo) + s->tail)
++			&& pf_lb_pread(fd, chunk + tail, s->bstr_len, s->bstr_base);
++		if (fd >= 0) {
++			close(fd);
++		}
++	}
++	for (i = 0; ok && i < s->n; i++) {
++		pf_lb_desc *d = &s->descs[i];
++		const pf_body_dir_entry *e;
++		uint32_t a;
++		if (!d->s || d->loaded) {
++			continue;
++		}
++		e = &s->dir[d->k];
++		if ((size_t)e->span_off < s->tail || (size_t)e->span_off + e->span_len > s->full_size
++		 || (size_t)e->str_off + e->str_len > s->bstr_len) {
++			ok = false;
++			break;
++		}
++		a = zend_adler32(ADLER32_INIT, (unsigned char*)chunk + (e->span_off - s->tail), e->span_len);
++		a = zend_adler32(a, (unsigned char*)chunk + tail + e->str_off, e->str_len);
++		ok = a == e->adler && pf_lb_unserialize_into(d, chunk, len, chunk + (e->span_off - s->tail), chunk + tail + e->str_off);
++		n += ok ? 1 : 0;
++	}
++	pf_lb_body_load_ns += (uint64_t)(zend_hrtime() - t0);
++	if (!ok) {
++		free(chunk); /* the bodies unserialized before the failure are not marked loaded: nothing is kept */
++		pf_lb_body_fail++;
++		return FAILURE;
++	}
++	for (i = 0; i < s->n; i++) {
++		if (s->descs[i].s && !s->descs[i].loaded) {
++			s->descs[i].loaded = true;
++		}
++	}
++	s->chunk = chunk;
++	pf_lb_script_loads++;
++	pf_lb_body_loads += n;
++	pf_lb_body_bytes_loaded += len;
++	pf_lb_body_bytes_resident += len;
++	return SUCCESS;
++}
++
++/* read, check and unserialize one body (or, by opcache.pagefeather_lazy_unit, its whole script); on success it is
++ * resident, on failure nothing is kept */
 +static zend_result pf_lb_load(pf_lb_desc *d)
 +{
 +	const pf_body_dir_entry *e = &d->s->dir[d->k];
 +	size_t span = e->span_len, len = span + e->str_len;
-+	zend_hrtime_t t0 = zend_hrtime();
-+	char *chunk = malloc(len ? len : 1);
-+	bool ok = chunk != NULL;
++	zend_hrtime_t t0;
++	char *chunk;
++	bool ok;
 +
++	if (ZCG(accel_directives).pf_lazy_unit == 1) {
++		return pf_lb_load_script(d->s);
++	}
++	t0 = zend_hrtime();
++	chunk = malloc(len ? len : 1);
++	ok = chunk != NULL;
 +	if (ok) {
 +		int fd = open(d->s->path, O_RDONLY | O_BINARY);
 +		ok = fd >= 0
@@ -831,43 +971,7 @@ index 8afc4a43..b7b6b32a 100644
 +		}
 +	}
 +	ok = ok && zend_adler32(ADLER32_INIT, (unsigned char*)chunk, len) == e->adler;
-+	if (ok) {
-+		zend_op_array tmp;
-+		zend_persistent_script fake;
-+		void *saved_mem = ZCG(mem);
-+
-+		memset(&tmp, 0, sizeof(tmp));
-+		memset(&fake, 0, sizeof(fake));
-+		tmp.literals = (zval*)d->lit;
-+		tmp.last_literal = d->last_literal;
-+		tmp.opcodes = (zend_op*)d->ops;
-+		tmp.last = d->last;
-+		tmp.live_range = (zend_live_range*)d->lr;
-+		tmp.last_live_range = d->last_live_range;
-+		tmp.try_catch_array = (zend_try_catch_element*)d->tc;
-+		tmp.last_try_catch = d->last_try_catch;
-+		fake.mem = d->s->head;
-+		fake.size = d->s->full_size;
-+		fake.corrupted = false;
-+		pf_lz.chunk = chunk;
-+		pf_lz.head = d->s->head;
-+		pf_lz.len = len;
-+		pf_lz.lo = e->span_off;
-+		pf_lz.hi = (size_t)e->span_off + span;
-+		pf_lz.tail = d->s->tail;
-+		pf_lz.bad = false;
-+		ZCG(mem) = chunk + span;
-+		pf_lb_unserialize_body(&tmp, &fake, NULL);
-+		ZCG(mem) = saved_mem;
-+		ok = !pf_lz.bad;
-+		pf_lz.chunk = NULL;
-+		if (ok) {
-+			d->literals = tmp.literals;
-+			d->opcodes = tmp.opcodes;
-+			d->live_range = tmp.live_range;
-+			d->try_catch_array = tmp.try_catch_array;
-+		}
-+	}
++	ok = ok && pf_lb_unserialize_into(d, chunk, len, chunk, chunk + span);
 +	pf_lb_body_load_ns += (uint64_t)(zend_hrtime() - t0);
 +	if (!ok) {
 +		free(chunk);
@@ -998,7 +1102,7 @@ index 8afc4a43..b7b6b32a 100644
  static void zend_file_cache_unserialize_op_array(zend_op_array           *op_array,
                                                   zend_persistent_script  *script,
                                                   void                    *buf)
-@@ -1322,13 +1922,14 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
+@@ -1322,13 +1999,14 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
  	}
  
  	/* Check whether this op_array has already been unserialized. */
@@ -1014,7 +1118,7 @@ index 8afc4a43..b7b6b32a 100644
  		UNSERIALIZE_PTR(op_array->static_variables);
  		UNSERIALIZE_PTR(op_array->literals);
  		UNSERIALIZE_PTR(op_array->opcodes);
-@@ -1342,6 +1943,9 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
+@@ -1342,6 +2020,9 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
  		UNSERIALIZE_ATTRIBUTES(op_array->attributes);
  		UNSERIALIZE_PTR(op_array->try_catch_array);
  		UNSERIALIZE_PTR(op_array->prototype);
@@ -1024,7 +1128,7 @@ index 8afc4a43..b7b6b32a 100644
  		return;
  	}
  
-@@ -1354,7 +1958,16 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
+@@ -1354,7 +2035,16 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
  				script, buf, zend_file_cache_unserialize_zval, ZVAL_PTR_DTOR);
  	}
  
@@ -1042,7 +1146,7 @@ index 8afc4a43..b7b6b32a 100644
  		zval *p, *end;
  
  		UNSERIALIZE_PTR(op_array->literals);
-@@ -1366,12 +1979,15 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
+@@ -1366,12 +2056,15 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
  		}
  	}
  
@@ -1059,7 +1163,7 @@ index 8afc4a43..b7b6b32a 100644
  		while (opline < end) {
  #if ZEND_USE_ABS_CONST_ADDR
  			if (opline->op1_type == IS_CONST) {
-@@ -1475,6 +2091,9 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
+@@ -1475,6 +2168,9 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
  		UNSERIALIZE_ATTRIBUTES(op_array->attributes);
  		UNSERIALIZE_PTR(op_array->try_catch_array);
  		UNSERIALIZE_PTR(op_array->prototype);
@@ -1069,7 +1173,7 @@ index 8afc4a43..b7b6b32a 100644
  	}
  }
  
-@@ -1750,7 +2369,19 @@ static void zend_file_cache_unserialize_early_bindings(zend_persistent_script *s
+@@ -1750,7 +2446,19 @@ static void zend_file_cache_unserialize_early_bindings(zend_persistent_script *s
  static void zend_file_cache_unserialize(zend_persistent_script  *script,
                                          void                    *buf)
  {
@@ -1089,7 +1193,7 @@ index 8afc4a43..b7b6b32a 100644
  
  	UNSERIALIZE_STR(script->script.filename);
  
-@@ -1776,6 +2407,12 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
+@@ -1776,6 +2484,12 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
  	unsigned int actual_checksum;
  	bool ok;
  	size_t orig_map_ptr_last = 0;
@@ -1102,7 +1206,7 @@ index 8afc4a43..b7b6b32a 100644
  
  	if (!full_path) {
  		return NULL;
-@@ -1833,16 +2470,13 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
+@@ -1833,16 +2547,13 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
  		return NULL;
  	}
  
@@ -1124,7 +1228,7 @@ index 8afc4a43..b7b6b32a 100644
  		zend_accel_error(ACCEL_LOG_WARNING, "opcache cannot read from file '%s' (mem)\n", filename);
  		zend_file_cache_flock(fd, LOCK_UN);
  		close(fd);
-@@ -1854,12 +2488,19 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
+@@ -1854,12 +2565,19 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
  	if (zend_file_cache_flock(fd, LOCK_UN) != 0) {
  		zend_accel_error(ACCEL_LOG_WARNING, "opcache cannot unlock file '%s'\n", filename);
  	}
@@ -1147,7 +1251,7 @@ index 8afc4a43..b7b6b32a 100644
  		zend_file_cache_unlink(filename);
  		zend_arena_release(&CG(arena), checkpoint);
  		efree(filename);
-@@ -1884,6 +2525,9 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
+@@ -1884,6 +2602,9 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
  				zend_shared_alloc_unlock();
  				zend_arena_release(&CG(arena), checkpoint);
  				efree(filename);
@@ -1157,7 +1261,7 @@ index 8afc4a43..b7b6b32a 100644
  				return script;
  			}
  		}
-@@ -1896,26 +2540,63 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
+@@ -1896,26 +2617,66 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
  			goto use_process_mem;
  		}
  
@@ -1217,6 +1321,9 @@ index 8afc4a43..b7b6b32a 100644
 +		pf_s->full_size = info.mem_size;
 +		pf_s->tail = info.pf_body_offset;
 +		pf_s->bstr_base = sizeof(info) + (size_t)info.mem_size + info.str_size;
++		pf_s->bstr_len = info.pf_bstr_size; /* pagefeather lazy bodies (#582 M2b stage 4) */
++		pf_s->descs = pf_descs;
++		pf_s->n = pf_n;
 +		pf_lzh.s = pf_s;
 +		pf_lzh.descs = pf_descs;
 +		pf_lzh.n = pf_n;
@@ -1224,7 +1331,7 @@ index 8afc4a43..b7b6b32a 100644
  
  	ok = true;
  	zend_try {
-@@ -1923,6 +2604,9 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
+@@ -1923,6 +2684,9 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
  	} zend_catch {
  		ok = false;
  	} zend_end_try();
@@ -1234,7 +1341,7 @@ index 8afc4a43..b7b6b32a 100644
  	if (!ok) {
  		if (cache_it) {
  			/* The slots allocated by the failed unserialization are referenced
-@@ -1934,11 +2618,28 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
+@@ -1934,11 +2698,28 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
  		} else {
  			zend_arena_release(&CG(arena), checkpoint);
  			efree(filename);

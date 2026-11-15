@@ -153,6 +153,15 @@ OPcache's shared memory until a function is first called. It is built in slices 
   crossed (73.2% of the body bytes) before, 0 after; at the Worker's 4 MB interned buffer, 0 after as well
   (1283 arrays and 2185 strings moved). `tools/bin-split.py --max-whole-share 0.01` is the gate on the
   primed zip. The counters `head_arrays` and `head_strings` show what moved.
+- **M2b stage 4, the unit of a load** (the M2c fallback, ruled 2026-11-15). `opcache.pagefeather_lazy_unit`
+  is `body` (the default: a body loads at the first call of its function) or `script`. With `script`, the
+  first call into a script reads that script's whole body tail and body-string section in two reads. It
+  checks every body's adler32 and unserializes every body. Only when all of them succeed does it mark them
+  loaded. Each op_array still installs at its own first call, with no read. A failure keeps nothing and
+  throws the same `Error`. So one engine runs all three modes: `body`, `script`, and whole
+  (`opcache.pagefeather_lazy_load=0`). The counter `script_loads` counts the script loads, and `lazy_unit`
+  shows the mode. The suites run every case in both units (run-native.sh, lazy-bodies.test.mjs), and the
+  primed gate and the M2c reading run in both units (`LB_UNIT=script`).
 - **Code that reads opcodes without a call** asks for the body first: named arguments that skip a default
   (`zend_handle_undef_args`), Reflection default values, and the text of an inheritance error. The trait
   collision check compares body ids (`zend_pf_body_id`), not opcodes pointers, because every unloaded body

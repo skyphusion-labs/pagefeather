@@ -40,6 +40,12 @@ M = [
     ("head-list-not-unserialized", [(FC,
       "\tif (script->pf_head_arr) { /* pagefeather lazy bodies (#582 M2b stage 3): the arrays moved to the head, before the tables */\n\t\tUNSERIALIZE_PTR",
       "\tif (0) { /* pagefeather lazy bodies (#582 M2b stage 3): the arrays moved to the head, before the tables */\n\t\tUNSERIALIZE_PTR")], ["xref"]),
+    # stage 4: opcache.pagefeather_lazy_unit=script
+    ("script-unit-ignored", [(FC, "\tif (ZCG(accel_directives).pf_lazy_unit == 1) {\n\t\treturn pf_lb_load_script(d->s);",
+      "\tif (0) {\n\t\treturn pf_lb_load_script(d->s);")], ["plain"]),
+    ("script-load-skips-adler", [(FC, "ok = a == e->adler && pf_lb_unserialize_into(", "ok = (a == e->adler || 1) && pf_lb_unserialize_into(")], ["fail"]),
+    ("script-failure-keeps-bodies", [(FC, "\t\tfree(chunk); /* the bodies unserialized before the failure are not marked loaded: nothing is kept */\n",
+      "\t\tfor (i = 0; i < s->n; i++) { if (s->descs[i].s) { s->descs[i].loaded = true; } }\n")], ["fail"]),
 ]
 
 def sh(cmd, cwd):

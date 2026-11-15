@@ -31,10 +31,12 @@ STATE=$(mktemp -d "${TMPDIR:-/tmp}/lazy-bodies-state.XXXXXX")
 export PERSIST_TO=$STATE
 trap './run.sh --stop > /dev/null 2>&1; rm -rf "$STATE"' EXIT
 # LB_EAGER=1: the same engine with opcache.pagefeather_lazy_load=0 (the primed gate's red control: it must fail).
-mc_vars=$(LB_MC=${LB_MC:-} LB_EAGER=${LB_EAGER:-0} python3 -I -c 'import json, os
+# LB_UNIT=script: opcache.pagefeather_lazy_unit=script (M2b stage 4: the first call into a script loads all its bodies).
+mc_vars=$(LB_MC=${LB_MC:-} LB_EAGER=${LB_EAGER:-0} LB_UNIT=${LB_UNIT:-} python3 -I -c 'import json, os
 ini = {}
 if os.environ["LB_MC"]: ini["opcache.memory_consumption"] = os.environ["LB_MC"]
 if os.environ["LB_EAGER"] == "1": ini["opcache.pagefeather_lazy_load"] = "0"
+if os.environ["LB_UNIT"]: ini["opcache.pagefeather_lazy_unit"] = os.environ["LB_UNIT"]
 print("PHP_INI:" + json.dumps(ini, separators=(",", ":")) if ini else "")')
 DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off${mc_vars:+ $mc_vars}" ./run.sh _ping > /dev/null || { echo "lazy-bodies-e2e: wrangler dev did not start"; tail -20 dev.log; exit 1; }
 server_port || exit 1
@@ -70,7 +72,9 @@ if __import__("os").environ.get("LB_PRIMED") == "1":
             sys.exit("lazy-bodies-e2e: primed, but %s is %r: nothing loaded lazily (not a stage 2 engine, or the zip was not used)" % (k, lb.get(k)))
     if lb.get("body_fail") != 0:
         sys.exit("lazy-bodies-e2e: body_fail %r: a body did not load on a primed run (each is a request that threw)" % lb.get("body_fail"))
-    print("lazy-bodies-e2e: primed: %d scripts lazy, %d whole (%d of them for a tail crossing), %d bodies loaded (%.2f MiB resident), body_fail 0, %.1f ms in body loads" % (lb["lazy_scripts"], lb.get("eager_scripts", 0), lb.get("xref_scripts", 0), lb["body_loads"], lb.get("body_bytes_resident", 0) / 2**20, lb.get("body_load_ns", 0) / 1e6))
+    if __import__("os").environ.get("LB_UNIT") == "script" and (lb.get("lazy_unit") != "script" or lb.get("script_loads", 0) <= 0):
+        sys.exit("lazy-bodies-e2e: LB_UNIT=script, but lazy_unit is %r and script_loads %r: the unit switch did not take" % (lb.get("lazy_unit"), lb.get("script_loads")))
+    print("lazy-bodies-e2e: primed (unit %s): %d scripts lazy, %d whole (%d of them for a tail crossing), %d bodies loaded in %d script loads (%.2f MiB resident), body_fail 0, %.1f ms in body loads" % (lb.get("lazy_unit"), lb["lazy_scripts"], lb.get("eager_scripts", 0), lb.get("xref_scripts", 0), lb["body_loads"], lb.get("script_loads", 0), lb.get("body_bytes_resident", 0) / 2**20, lb.get("body_load_ns", 0) / 1e6))
 print("lazy-bodies-e2e: ok at memory_consumption %s: split %d of %s cached scripts, %.2f MiB of bodies, %s directory entries, 0 mismatches" % (ini.get("mc"), lb["split_scripts"], ini.get("cached"), lb["body_bytes"] / 2**20, lb.get("dir_entries")))
 PY
 [ "${LB_PRIMED:-0}" = 1 ] || exit 0
@@ -95,8 +99,8 @@ loads = b.get("body_loads", 0) - a.get("body_loads", 0)
 wall_ms = float(wall) * 1000
 share = ns / 1e6 / wall_ms if wall_ms else 0
 trig = ns / 1e6 > 250 or share > 0.05
-r = {"status": int(code), "wall_ms": round(wall_ms, 1), "body_load_ms": round(ns / 1e6, 2), "share": round(share, 4), "body_loads": loads,
-     "body_bytes": b.get("body_bytes_loaded", 0) - a.get("body_bytes_loaded", 0), "fallback_triggered": trig}
+r = {"unit": b.get("lazy_unit"), "lazy_load": b.get("lazy_load"), "status": int(code), "wall_ms": round(wall_ms, 1), "body_load_ms": round(ns / 1e6, 2), "share": round(share, 4), "body_loads": loads,
+     "body_bytes": b.get("body_bytes_loaded", 0) - a.get("body_bytes_loaded", 0), "script_loads": b.get("script_loads", 0) - a.get("script_loads", 0), "fallback_triggered": trig}
 print("@event m2c-first-post-new " + json.dumps(r))
 print("lazy-bodies-e2e: M2c reading (local wrangler dev, not the live site): the first post-new.php after a boot spent %.1f ms in %d body loads, %.2f%% of its %.0f ms; threshold 250 ms or 5%%: fallback %s" % (ns / 1e6, loads, share * 100, wall_ms, "TRIGGERED" if trig else "not triggered"))
 if int(code) != 200:
