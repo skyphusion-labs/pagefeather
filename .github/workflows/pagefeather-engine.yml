@@ -58,8 +58,10 @@ jobs:
         # lean-nofileinfo is a MEASURED arm only (numbers, never shipped, not in lean-gates).
         # lean-trim: the trimmed fileinfo database (S2b).
         # lean-stats: lean-trim with the OPcache body counters (S4 M1, a measurement build, never shipped).
-        # lean-lazy: lean-trim with the lazy-body layout (S4 M2a, loads eagerly; off by default, never shipped yet).
-        variant: [unchanged, pinned-env-1, pinned-env-2, lean, lean-nogd, lean-nofileinfo, lean-trim, lean-stats, lean-lazy]
+        # lean-lazy: lean-trim with lazy function bodies (S4 M2b: loaded at first call; off by default, never shipped yet).
+        # lean-stats-lazy: lean-lazy with the M1 counters (a measurement build): test 16, observers on lazy bodies.
+        # lean-stats-lazy-mutant: lean-stats-lazy whose observer keys bodies by the opcodes pointer: test 16's red control.
+        variant: [unchanged, pinned-env-1, pinned-env-2, lean, lean-nogd, lean-nofileinfo, lean-trim, lean-stats, lean-lazy, lean-stats-lazy, lean-stats-lazy-mutant]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -81,10 +83,10 @@ jobs:
         run: |
           set -euo pipefail
           df -h / | tail -1; uname -a
-          pin=0; variant=unchanged; gd=yes; fi_=yes; magic=full; stats=0; lazy=0
-          case "${{ matrix.variant }}" in pinned-env-*) pin=1;; lean) variant=lean;; lean-nogd) variant=lean; gd=no;; lean-nofileinfo) variant=lean; fi_=no;; lean-trim) variant=lean; magic=trim;; lean-stats) variant=lean; magic=trim; stats=1;; lean-lazy) variant=lean; magic=trim; lazy=1;; esac
+          pin=0; variant=unchanged; gd=yes; fi_=yes; magic=full; stats=0; lazy=0; mutant=""
+          case "${{ matrix.variant }}" in pinned-env-*) pin=1;; lean) variant=lean;; lean-nogd) variant=lean; gd=no;; lean-nofileinfo) variant=lean; fi_=no;; lean-trim) variant=lean; magic=trim;; lean-stats) variant=lean; magic=trim; stats=1;; lean-lazy) variant=lean; magic=trim; lazy=1;; lean-stats-lazy) variant=lean; magic=trim; stats=1; lazy=1;; lean-stats-lazy-mutant) variant=lean; magic=trim; stats=1; lazy=1; mutant=opcodes-key;; esac
           s=$(date +%s)
-          ENGINE_PIN_ENV=$pin ENGINE_VARIANT=$variant ENGINE_GD=$gd ENGINE_FILEINFO=$fi_ ENGINE_MAGIC=$magic ENGINE_OPCACHE_STATS=$stats ENGINE_LAZY_BODIES=$lazy ENGINE_WORK="$RUNNER_TEMP/work" engine/build.sh "$RUNNER_TEMP/out" | tee "$RUNNER_TEMP/build.out"
+          ENGINE_PIN_ENV=$pin ENGINE_VARIANT=$variant ENGINE_GD=$gd ENGINE_FILEINFO=$fi_ ENGINE_MAGIC=$magic ENGINE_OPCACHE_STATS=$stats ENGINE_LAZY_BODIES=$lazy ENGINE_STATS_MUTANT=$mutant ENGINE_WORK="$RUNNER_TEMP/work" engine/build.sh "$RUNNER_TEMP/out" | tee "$RUNNER_TEMP/build.out"
           echo "build took $(( $(date +%s) - s )) s"
           df -h / | tail -1
       - name: Size figures, against the engine we ship (a reading)
@@ -325,12 +327,46 @@ jobs:
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-trim"
           PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
           if ! tests/frames-e2e.sh; then echo "::error::frames-e2e.sh failed on lean-trim"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
+  lazy-native:
+    # #582 S4 M2b: the lazy-body contract suite on a NATIVE php-cli, in minutes and with no engine build: php-src
+    # from the php.net tarball (sha256 in engine/UPSTREAM), pf-lazy-bodies.patch (git apply --check first), a
+    # minimal CLI with OPcache and debug assertions. run-native.sh runs every case of engine/opcache/lazy/probe.php
+    # lazy, eager and compiled (they must agree; the lazy checks must pass). mutations.py then breaks each
+    # mechanism on purpose (rebuilding, and proving the rebuild compiled the edit): each must turn its case red.
+    # The wasm-only cases (the read hook, observers) run in lazy-bodies below.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: php-src (the php.net tarball), patched, built natively
+        run: |
+          set -euo pipefail
+          . engine/UPSTREAM
+          url="https://www.php.net/distributions/php-$PHP_VERSION.tar.xz"
+          curl -sfL --retry 2 -o "$RUNNER_TEMP/php.tar.xz" "$url" || { echo "::error::the php-src tarball fetch failed: $url"; exit 1; }
+          echo "$PHP_TARBALL_SHA256  $RUNNER_TEMP/php.tar.xz" | sha256sum -c - || { echo "::error::$url is not the pinned tarball"; exit 1; }
+          mkdir "$RUNNER_TEMP/src"; tar xf "$RUNNER_TEMP/php.tar.xz" -C "$RUNNER_TEMP/src"
+          src="$RUNNER_TEMP/src/php-$PHP_VERSION"; echo "PF_SRC=$src" >> "$GITHUB_ENV"
+          cd "$src"
+          git apply --check "$GITHUB_WORKSPACE/engine/opcache/pf-lazy-bodies.patch"
+          git apply "$GITHUB_WORKSPACE/engine/opcache/pf-lazy-bodies.patch"
+          ./configure --disable-all --enable-cli --disable-cgi --disable-phpdbg --enable-opcache --disable-opcache-jit \
+            --without-pcre-jit --enable-debug-assertions > configure.log 2>&1 || { tail -40 configure.log; exit 1; }
+          make -j"$(nproc)" > make.log 2>&1 || { grep -m20 -E 'error' make.log; tail -30 make.log; exit 1; }
+          ./sapi/cli/php -v
+      - name: The suite (lazy, eager and compiled agree; the lazy checks pass)
+        run: engine/opcache/lazy/run-native.sh "$PF_SRC/sapi/cli/php" "$PF_SRC/modules/opcache.so"
+      - name: The mutations (each mechanism broken on purpose turns its case red)
+        run: python3 -I engine/opcache/lazy/mutations.py "$PF_SRC"
   lazy-bodies:
-    # #582 S4 M2a: the lazy-body LAYOUT (engine/opcache/pf-lazy-bodies.patch), still loaded eagerly. Gates:
+    # #582 S4 M2b: lazy function bodies, loaded at first call (engine/opcache/pf-lazy-bodies.patch). Gates:
     # bin-split.py refuses the eager lean-trim opcache.zip as lazy (its red control), then passes the
     # lean-lazy one (every .bin has the body-tail header, the tail ends at mem_size, body bytes > 0); the
-    # contract suite and frames-e2e.sh (e2e.sh and woo.py both ways) on lean-lazy, which must behave as
-    # lean-trim does, since nothing loads lazily yet.
+    # contract suite and frames-e2e.sh (e2e.sh and woo.py both ways) on lean-lazy, loading from its primed zip;
+    # the wasm lazy-body suite (tests/lazy-bodies.test.mjs: the probe cases, the read hook, a transient failure)
+    # on lean-lazy and lean-stats-lazy (observers); the primed gate (LB_PRIMED: e2e.sh and woo.py from the zip,
+    # body_fail 0, bodies loaded) with its red control (the same run with the lazy load off must fail it), and
+    # the M2c reading (the first post-new.php after a boot); then the body-region gate from an empty OPcache.
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 75
@@ -372,7 +408,38 @@ jobs:
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-lazy"
           PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
           ENGINE_EXPECT=../../engine/expect/lean.json node --test tests/engine-contract.test.mjs
+          node --test tests/lazy-bodies.test.mjs
           if ! tests/frames-e2e.sh; then echo "::error::frames-e2e.sh failed on lean-lazy"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
+      - name: The primed gate (e2e.sh and woo.py from the lean-lazy zip, body_fail 0), its red control, and the M2c reading
+        working-directory: spikes/b2-wordpress
+        run: |
+          set -euo pipefail
+          # build/ still holds the lean-lazy build and the zip opcache.sh primed at 128 MiB (no build.sh since)
+          cmp build/opcache.zip "$RUNNER_TEMP/opcache-lean-lazy.zip" || { echo "::error::build/opcache.zip is not the primed lean-lazy zip"; exit 1; }
+          rc=0; LB_PRIMED=1 LB_EAGER=1 tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate-primed-red.json" || rc=$?
+          [ "$rc" != 0 ] || { echo "::error::the primed gate PASSED with the lazy load off: it cannot see a body that never loads lazily"; exit 1; }
+          echo "red control: the primed gate fails with opcache.pagefeather_lazy_load=0 (rc=$rc), as it must"
+          LB_PRIMED=1 tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate-primed.json"
+      - name: Test 16 on lean-stats-lazy (observers see each call once and count the real body)
+        working-directory: spikes/b2-wordpress
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-stats-lazy"
+          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          node --test tests/lazy-bodies.test.mjs 2>&1 | tee "$RUNNER_TEMP/stats-lazy.txt"
+          if grep -q 'not a stats build' "$RUNNER_TEMP/stats-lazy.txt"; then echo "::error::test 16 skipped on lean-stats-lazy"; exit 1; fi
+      - name: Test 16's red control on lean-stats-lazy-mutant (the observer keys bodies by the opcodes pointer)
+        working-directory: spikes/b2-wordpress
+        run: |
+          set -uo pipefail
+          d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-stats-lazy-mutant"
+          grep -q 'ENGINE_STATS_MUTANT=opcodes-key' "$d/build-args.txt" || { echo "::error::the mutant arm was not built as the mutant"; exit 1; }
+          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          rc=0; node --test --test-name-pattern 'test 16' tests/lazy-bodies.test.mjs > "$RUNNER_TEMP/stats-mutant.txt" 2>&1 || rc=$?
+          grep -E '^(✖|✔|﹣)|AssertionError|counted other bodies' "$RUNNER_TEMP/stats-mutant.txt" | head -8
+          [ "$rc" != 0 ] || { echo "::error::test 16 PASSED on the mutant observer: it cannot see the stub read as the body"; exit 1; }
+          grep -q 'counted other bodies' "$RUNNER_TEMP/stats-mutant.txt" || { echo "::error::test 16 failed on the mutant for another reason, not the body count"; exit 1; }
+          echo "red control: test 16 fails on the mutant observer (rc=$rc) with its body-count assertion, as it must"
       - name: The body-region gate (e2e from an empty OPcache at 48 MB; mismatch 0) and its red control
         working-directory: spikes/b2-wordpress
         run: |
@@ -416,6 +483,8 @@ jobs:
             ${{ runner.temp }}/gate.json
             ${{ runner.temp }}/gate-red.json
             ${{ runner.temp }}/gate-128.json
+            ${{ runner.temp }}/gate-primed.json*
+            ${{ runner.temp }}/gate-primed-red.json
           retention-days: 14
   opcache-stats:
     # #582 S4 M1: the payoff of OPcache lazy function bodies on the editor screens. The lean-stats engine

@@ -210,7 +210,7 @@ def main():
         entries = [{"rule": k[0], "file": k[1], "line_sha256": k[2], "line": texts[k]}
                    for k in sorted(seen) for _ in range(seen[k])]
         json.dump({"about": "CodeQL c-cpp results on UPSTREAM php-src lines of the patched ext/opcache "
-                            "(#608). Regenerate on a php-src bump: codeql-sarif-map.py ... --write-baseline.",
+                            "and the three patched Zend and reflection files (#608, #582 M2b). Regenerate on a php-src bump: codeql-sarif-map.py ... --write-baseline.",
                    "php_ref": open(f"{php}/main/php_version.h").read().split('PHP_VERSION "')[1].split('"')[0],
                    "results": entries}, open(basefile, "w"), indent=2)
         open(basefile, "a").write("\n")

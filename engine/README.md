@@ -96,13 +96,13 @@ issuecomment-6887162662, measured with `ENGINE_OPCACHE_STATS=1`). The lazy-body 
 OPcache's shared memory until a function is first called. It is built in slices behind
 `ENGINE_LAZY_BODIES=1`, off by default (the plan: #582 issuecomment-6888051884).
 
-- **M2a, the layout (this flag today).** `opcache/pf-lazy-bodies.patch` makes OPcache place the body parts
+- **M2a, the layout.** `opcache/pf-lazy-bodies.patch` makes OPcache place the body parts
   of every function and method (literals, opcodes, live ranges, try/catch; not the main script) in a
   tail region of each script's block. The file cache header records where the tail starts
   (`pf_body_offset`, `pf_body_size`), and the system id changes with the flag, so lazy and eager files
-  never mix. Files still load EAGERLY: nothing about running PHP changes.
+  never mix.
 - `tools/bin-split.py <opcache.zip>` checks the layout of every `.bin` and sums it. The header size is
-  read from each file's own length (80 bytes with the patch, 72 without), so `--expect-eager` passes an
+  read from each file's own length (88 bytes with the patch, 72 without), so `--expect-eager` passes an
   eager zip and the default mode refuses it (the red control in the `lazy-bodies` job).
 - The split runs only in a shared-memory persist. When shared memory is full, OPcache persists the script
   again for the file cache (`store_script_in_file_cache`). That second calc runs with `corrupted` set and
@@ -120,4 +120,33 @@ OPcache's shared memory until a function is first called. It is built in slices 
   primes lean-lazy at 128 and reads the split count with `LB_MC=128 tests/lazy-bodies-e2e.sh`. Unset keeps
   today's priming, so the eager zips that ship now are unchanged. It becomes the default with the
   lazy-body default (S5).
-- M2b (the lazy load at first call) and M2c (the measurement against M1) come next.
+- **M2b, the lazy load (#582 issuecomment-6889399893).** Each lazy body is one span of the tail, with its
+  own table of interned strings and an adler32, in a per-script body directory. A script that loads from
+  the file cache into shared memory reads only its head. Each named function and method points at a
+  shared trampoline of 256 ops (`ZEND_PF_LAZY_BODY`, op k carries k). Its frame fields are real, so the
+  caller pushes the right frame. The first call reads the span and its strings from the `.bin`, checks the
+  adler32 and unserializes them into one chunk. Only then does it write the body into every op_array that
+  shares it, and it continues at op k of the real body.
+- **A failed load** (a short read, EIO from a remote pack, a bad checksum) installs nothing. It throws a
+  catchable `Error` that names the function and the path, and the next call tries again. It never bails.
+- **Never lazy:** the main script, closures, a function with 256 or more declared parameters, a script
+  compiled at run time, and a file that the store marks with `pf_xref`. `pf_xref` counts pointers into the
+  tail from outside their own body. Example: the optimizer shares a class constant's array with a method
+  literal, so the constant points into that method's body. Such a file always loads whole.
+- **Code that reads opcodes without a call** asks for the body first: named arguments that skip a default
+  (`zend_handle_undef_args`), Reflection default values, and the text of an inheritance error. The trait
+  collision check compares body ids (`zend_pf_body_id`), not opcodes pointers, because every unloaded body
+  shares the trampoline.
+- `opcache.pagefeather_lazy_load=0` loads whole files on the same engine (the eager arm of the tests).
+  `opcache.protect_memory=1` also turns the lazy load off, because the load writes shared memory.
+- **Counters** in `pagefeather_lazy_bodies`: `lazy_scripts`, `eager_scripts`, `xref_scripts`, `body_loads`,
+  `body_fail`, `body_bytes_loaded`, `body_bytes_resident`, `body_load_ns` and `copy_installs`.
+- **Tests:** `opcache/lazy/` holds the fixtures and `probe.php` (tests 1 to 11 and 13 of the design).
+  `opcache/lazy/run-native.sh` runs it on a native php-cli built with the patch, lazy, eager and compiled.
+  `opcache/lazy/mutations.py` breaks each mechanism and requires its case to go red. The
+  `lazy-native` job runs both. `spikes/b2-wordpress/tests/lazy-bodies.test.mjs` runs the same probe on the
+  wasm engine, plus the read-hook delay (12), a remote read that fails once (14) and observers on
+  lean-stats-lazy (16). `LB_PRIMED=1 tests/lazy-bodies-e2e.sh` runs e2e.sh and woo.py from a primed zip and
+  requires `body_fail == 0`. It also prints the M2c reading for the first `post-new.php` after a boot.
+- M2c (the measurement against M1, and the fallback if the first editor request after a boot spends over
+  250 ms or 5% of its time in body loads) comes next.

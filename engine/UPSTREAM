@@ -14,6 +14,9 @@ UPSTREAM_WEB83_TREE=1473b2896afd6b45cacd968376b87da66a23fac2
 PHP_VERSION=8.3.36
 PHP_REF=php-8.3.36
 PHP_REF_COMMIT=5ba6ad519229ac09fc4fc74155c76bdca69ae0de
+# The php.net release tarball of the same version: the native lazy-body suite builds from it (#582 M2b,
+# pagefeather-engine.yml lazy-native). sha256 as php.net publishes it (releases/index.php?json&version=8.3.36).
+PHP_TARBALL_SHA256=dd54693aa334c5c4d72e9aee96b082c2473750a18a6c1d105789c93a3b1692fd
 # Emscripten: base-image/Dockerfile installs 4.0.19 with emsdk from its HEAD. S1 keeps that unchanged.
 EMSDK_VERSION=4.0.19
 # What we ship today (spikes/b2-wordpress/node_modules/@php-wasm/web-8-3/jspi), the S1 byte target.
