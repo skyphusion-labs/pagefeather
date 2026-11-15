@@ -1,0 +1,22 @@
+diff --git a/ext/opcache/zend_persist.c b/ext/opcache/zend_persist.c
+index bff30527..ee70d749 100644
+--- a/ext/opcache/zend_persist.c
++++ b/ext/opcache/zend_persist.c
+@@ -1513,3 +1513,17 @@ void pf_planted_alert_control(void)
+ 	sprintf(small, "%s", "this string is also far too long");
+ 	printf(getenv("PF_PLANTED_FORMAT"));
+ }
++
++/* PLANTED for the #608 upstream-line control (never merge): values we introduce flow into the
++ * UNCHANGED upstream helper _zend_shared_memdup (zend_shared_alloc.c), whose memcpy and size
++ * arithmetic are upstream lines. */
++void pf_planted_upstream_control(void)
++{
++	char *p = malloc(16);
++	if (!p) {
++		return;
++	}
++	free(p);
++	(void)zend_shared_memdup(p, 16);
++	(void)zend_shared_memdup(p, (size_t)rand());
++}
