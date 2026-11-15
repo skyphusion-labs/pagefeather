@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
 	PCV_PARAM, ORDER_TYPES, versionTable, triggerNames, triggerSql, install, status, remove,
-	readPageVersion, versionedUrl, stripPcv, pageVersionsOn, cell,
+	readPageVersion, versionedUrl, stripPcv, pageVersionsOn, cell, likeEscape,
 } from '../page-versions.mjs';
 
 const b64 = (s) => ({ $b: Buffer.from(String(s)).toString('base64') });
@@ -165,4 +165,10 @@ test('a failed counter read is served uncached, never from an old key', async ()
 	await remove(s.db.q, 'wp_');
 	const r = await s.get('/');
 	assert.equal(r.cached, false);
+});
+
+test('likeEscape escapes every LIKE metacharacter, the backslash first (CodeQL js/incomplete-sanitization)', () => {
+	assert.equal(likeEscape('wp_'), 'wp\\_');
+	assert.equal(likeEscape('a%b'), 'a\\%b');
+	assert.equal(likeEscape('a\\b'), 'a\\\\b');
 });
