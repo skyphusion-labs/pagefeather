@@ -25,7 +25,15 @@ _snapshots/:
     build_inputs.py tree-put <bucket> <key> <tar.gz>           write and read back (size)
     build_inputs.py tree-get <bucket> <key> <out dir>          into <out dir>/wp-content
     build_inputs.py exports <record.json> <wp-content dir>     the shell lines that set the inputs
+    build_inputs.py engine-check <record.json>                exit 0 when this run builds the recorded
+                                                               engine, 4 when not (#642)
+
+The engine (#642): a build with PF_ENGINE_JS and PF_ENGINE_WASM (the lean engine, #592) records
+"engine": "<wasm sha256>:<js sha256>", never a path; npm (both unset) records "". A record from
+before #642 has no engine key and reads as npm. The engine is not an exported input: it is a file,
+so an update cannot bring it back from the record, only refuse a different one.
 """
+import hashlib
 import io
 import json
 import os
@@ -59,8 +67,22 @@ def env_inputs(env=os.environ):
     return d
 
 
+def engine_id(env=os.environ):
+    """#642: "<wasm sha256>:<js sha256>" of PF_ENGINE_WASM and PF_ENGINE_JS, "" for npm (both unset)."""
+    js, wasm = env.get("PF_ENGINE_JS") or "", env.get("PF_ENGINE_WASM") or ""
+    if not js and not wasm:
+        return ""
+    if not (js and wasm):
+        raise SystemExit("PF_ENGINE_JS and PF_ENGINE_WASM: set both or neither")
+    sha = lambda p: hashlib.sha256(open(p, "rb").read()).hexdigest()
+    try:
+        return "%s:%s" % (sha(wasm), sha(js))
+    except OSError as e:
+        raise SystemExit("an engine file cannot be read: %s" % e)
+
+
 def env_json(content_id, key, build):
-    return {"v": 1, "inputs": env_inputs(), "content_id": content_id or "", "tree": key or "",
+    return {"v": 1, "inputs": env_inputs(), "engine": engine_id(), "content_id": content_id or "", "tree": key or "",
             "build": build or "", "written": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
 
@@ -146,6 +168,14 @@ def main(argv):
         for k, a, b in diffs:
             print("  %s: recorded '%s', this run '%s'" % (k, a, b))
         return 4 if diffs else 0
+    if cmd == "engine-check":
+        rec = json.load(open(argv[2])).get("engine", "") or ""
+        now = engine_id()
+        if rec == now:
+            return 0
+        name = lambda e: ("npm" if not e else "wasm %s js %s" % (e.split(":")[0][:12], e.split(":")[-1][:12]))
+        print("  engine: recorded %s, this run %s" % (name(rec), name(now)))
+        return 4
     if cmd == "pack":
         n = pack(argv[2], argv[3]); print("packed %d part(s), %d bytes" % (n, os.path.getsize(argv[3]))); return 0
     if cmd == "tree-put":

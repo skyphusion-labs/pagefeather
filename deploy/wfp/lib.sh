@@ -716,6 +716,16 @@ use_recorded_inputs() {
     3) echo "  no recorded build inputs yet (a site from before #379): this run's inputs are recorded after the update"; return 0 ;;
     *) echo "cannot read the recorded build inputs of $b; refused" >&2; return 2 ;;
   esac
+  # #642: the engine, checked in BOTH branches below. It is a file, so the recorded inputs cannot
+  # bring it back; an update that builds another engine (or none: npm) is refused unless
+  # REPLACE_INPUTS=1. Before #642 an update without the pair silently rebuilt a lean site on npm.
+  rc=0; python3 -I "$WFP/build_inputs.py" engine-check "$rec" > "$w/engine" 2>&1 || rc=$?
+  case "$rc" in
+    0) ;;
+    4) if [ "${REPLACE_INPUTS:-0}" = 1 ]; then echo "  REPLACE_INPUTS=1: the engine changes:"; cat "$w/engine"
+       else echo "this run would build another engine than the site runs; refused. Set PF_ENGINE_JS and PF_ENGINE_WASM to the site's engine, or REPLACE_INPUTS=1 to change it on purpose:" >&2; cat "$w/engine" >&2; return 2; fi ;;
+    *) echo "cannot check the recorded engine; refused:" >&2; cat "$w/engine" >&2; return 2 ;;
+  esac
   if [ "$(content_inputs_set)" = 0 ] && [ -z "${WOO_ACTIVE:-}" ]; then
     local tree; tree=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1])).get("tree", ""))' "$rec")
     if [ -n "$tree" ]; then

@@ -8,7 +8,7 @@ check() { if [ "$2" = "$3" ]; then echo "  ok   $1"; else echo "  FAIL $1: got '
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/wp-content/plugins/woocommerce" "$T/wp-content/themes" "$T/wp-content/mu-plugins"
 echo x > "$T/wp-content/plugins/woocommerce/woocommerce.php"
-id() { env -u BUILD_ID_OVERRIDE -u PLUGINS -u IMPORT_CONTENT -u WOO_ACTIVE -u ENGINE "$@" "$HERE/build-id.sh" "$T/wp-content"; }
+id() { env -u BUILD_ID_OVERRIDE -u PLUGINS -u IMPORT_CONTENT -u WOO_ACTIVE -u ENGINE -u PF_ENGINE_JS -u PF_ENGINE_WASM "$@" "$HERE/build-id.sh" "$T/wp-content"; }
 base=$(id)
 check "a plain build: the sha (and -dirty in a dirty tree), no suffix" "$(echo "$base" | grep -cE '^[0-9a-f]{12}(-dirty)?$')" 1
 check "WOO_ACTIVE=1 adds -wooprimed" "$(id WOO_ACTIVE=1)" "$base-wooprimed"
@@ -25,6 +25,21 @@ check "ENGINE=d1 adds nothing" "$(id ENGINE=d1)" "$base"
 check "the a and b-dosql builds of one sha differ" "$([ "$(id ENGINE=a WOO_ACTIVE=1)" != "$(id WOO_ACTIVE=1)" ] && echo yes || echo no)" yes
 ca=$(id ENGINE=a IMPORT_CONTENT="$T/wp-content" IMPORT_PLUGINS=woocommerce WOO_ACTIVE=1)
 check "the -a marker leaves the -c<8 hex>(-wooprimed) tail that deploy/wfp reads" "$(echo "$ca" | grep -cE "^${base}-a-c[0-9a-f]{8}-wooprimed$")" 1
+# #642: a build with another engine (PF_ENGINE_JS and PF_ENGINE_WASM, the lean engine) carries
+# -e<8 hex> of the two files, after -a and before -c, so a lean and an npm build of one sha never share
+# an id and the -c<8 hex>(-wooprimed) tail deploy/wfp reads stays the tail. npm (unset) adds nothing.
+printf 'lean js' > "$T/e1.js"; printf 'lean wasm 1' > "$T/e1.wasm"; printf 'lean wasm 2' > "$T/e2.wasm"
+e1=$(id PF_ENGINE_JS="$T/e1.js" PF_ENGINE_WASM="$T/e1.wasm")
+check "an engine pair adds -e<8 hex>" "$(echo "$e1" | grep -cE "^${base}-e[0-9a-f]{8}$")" 1
+check "two engines of one sha differ" "$([ "$e1" != "$(id PF_ENGINE_JS="$T/e1.js" PF_ENGINE_WASM="$T/e2.wasm")" ] && echo yes || echo no)" yes
+check "the same engine twice: the same id" "$([ "$e1" = "$(id PF_ENGINE_JS="$T/e1.js" PF_ENGINE_WASM="$T/e1.wasm")" ] && echo yes || echo no)" yes
+ec=$(id PF_ENGINE_JS="$T/e1.js" PF_ENGINE_WASM="$T/e1.wasm" IMPORT_CONTENT="$T/wp-content" IMPORT_PLUGINS=woocommerce WOO_ACTIVE=1)
+check "-e sits before the -c<8 hex>-wooprimed tail" "$(echo "$ec" | grep -cE "^${base}-e[0-9a-f]{8}-c[0-9a-f]{8}-wooprimed$")" 1
+check "ENGINE=a with an engine: <sha>-a-e<8 hex>" "$(id ENGINE=a PF_ENGINE_JS="$T/e1.js" PF_ENGINE_WASM="$T/e1.wasm" | grep -cE "^${base}-a-e[0-9a-f]{8}$")" 1
+id PF_ENGINE_JS="$T/e1.js" > "$T/one.out" 2>&1; rc=$?
+check "only one of the pair: refused (exit 2), never a misnamed build" "$rc:$(grep -c 'both or neither' "$T/one.out")" "2:1"
+id PF_ENGINE_JS="$T/e1.js" PF_ENGINE_WASM="$T/missing.wasm" > "$T/miss.out" 2>&1; rc=$?
+check "an engine file that is missing: refused (exit 2)" "$rc" 2
 # opcache-a.sh primes and builds with ONE value, $W (WOO_ACTIVE, default 1; #394), so the ENGINE=a
 # build id says -wooprimed exactly when its cache was primed with WooCommerce active.
 check "opcache-a.sh primes with \$W" "$(grep -c 'WOO_ACTIVE=$W ./opcache.sh' "$HERE/opcache-a.sh")" 1
