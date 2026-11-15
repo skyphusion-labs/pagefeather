@@ -16,7 +16,40 @@ permissions:
   contents: read
 
 jobs:
+  licence-archives:
+    # One fetch of each tar row in engine/licenses.tsv, shared by the build legs (#604). The legs
+    # used to download the same tarballs from upstream at the same moment, and a host sometimes
+    # answered 200 with an HTML page. The cache key is the sha256 of engine/licenses.tsv, so a run
+    # whose pins did not change does not touch upstream. The pinned sha256 of each licence text
+    # stays the gate, here and again in the leg. No retries.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Hash engine/licenses.tsv
+        id: licences
+        run: echo "tsv=$(sha256sum engine/licenses.tsv | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: archives
+        with:
+          path: ${{ runner.temp }}/licence-archives
+          key: pagefeather-licence-archives-${{ steps.licences.outputs.tsv }}
+      - name: Fetch each tar archive once
+        if: steps.archives.outputs.cache-hit != 'true'
+        run: python3 -I engine/tools/licenses.py --fetch-archives "$RUNNER_TEMP/licence-archives"
+      - name: Cached archives still match the pinned sha256
+        if: steps.archives.outputs.cache-hit == 'true'
+        run: python3 -I engine/tools/licenses.py --check-archives "$RUNNER_TEMP/licence-archives"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: licence-archives
+          path: ${{ runner.temp }}/licence-archives
+          retention-days: 1
+          if-no-files-found: error
   build:
+    needs: licence-archives
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -62,11 +95,17 @@ jobs:
           node engine/tools/wasm-stats.mjs "$RUNNER_TEMP/npm/package/jspi/8_3_36/php_8_3.wasm" shipped-3.1.62 > "$RUNNER_TEMP/out/stats.txt"
           node engine/tools/wasm-stats.mjs "$(find "$RUNNER_TEMP/out" -name php_8_3.wasm | head -1)" "${{ matrix.variant }}" >> "$RUNNER_TEMP/out/stats.txt"
           cat "$RUNNER_TEMP/out/stats.txt"
-      - name: LICENSES/, NOTICE and SOURCE from the traced link inputs (lean legs; a gate)
-        # engine/tools/licenses.py fails when a traced link input has no licence row, or a fetched
-        # licence text does not have its pinned sha256 (engine/licenses.tsv).
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: startsWith(matrix.variant, 'lean')
-        run: python3 -I engine/tools/licenses.py "$RUNNER_TEMP/out/link-inputs.txt" "$RUNNER_TEMP/out"
+        with:
+          name: licence-archives
+          path: ${{ runner.temp }}/licence-archives
+      - name: LICENSES/, NOTICE and SOURCE from the traced link inputs (lean legs; a gate)
+        # Tar rows are read from the licence-archives artifact (--archives), fetched once by the
+        # licence-archives job. The pinned sha256 is still the gate. A missing archive fails and
+        # names the row. Raw rows are still fetched. No retries.
+        if: startsWith(matrix.variant, 'lean')
+        run: python3 -I engine/tools/licenses.py "$RUNNER_TEMP/out/link-inputs.txt" "$RUNNER_TEMP/out" --archives "$RUNNER_TEMP/licence-archives"
       - name: Compare with the engine we ship (@php-wasm/web-8-3 3.1.62)
         if: "!startsWith(matrix.variant, 'lean')"
         id: compare

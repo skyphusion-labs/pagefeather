@@ -1,6 +1,8 @@
 # The licence text of every component linked into the pagefeather engine (#582), keyed to the
 # link inputs wasm-ld --trace reports (build/link-inputs.txt). engine/tools/licenses.py fails when a
-# traced input matches no row, or a fetched text does not have the pinned sha256.
+# traced input matches no row, or a licence text does not have the pinned sha256.
+# --archives <dir> reads each tar from <dir>/<url basename> instead of the network (#604). A missing
+# file fails and names the row. With no --archives, tar rows are fetched, as before. No retries.
 # Columns (tab-separated): out-file  component  version  spdx  match  kind  source  member  lines  sha256
 #   match: a regex on the input path, or ALWAYS (the JS loader and the build itself carry it)
 #   kind: local (a repo file) | raw (a URL) | tar (a member of the tarball at the URL)
