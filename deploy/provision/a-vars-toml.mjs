@@ -2,7 +2,7 @@
 // (#666): aVars and aBindings in wp-site-config.mjs, which a-site-config-test.mjs holds to the measured
 // [env.a-paid-lean]. deploy.sh used to render none of them, so every #296 run used a hand-made config.
 //
-//   SITE_ORIGIN=https://x node a-vars-toml.mjs vars     the object cache and lazy-node [vars] lines
+//   SITE_ORIGIN=https://x [OBJECT_CACHE_VERSIONS=1] node a-vars-toml.mjs vars     the object cache and lazy-node [vars] lines
 //   node a-vars-toml.mjs kv <namespace id>              the OC_KV [[kv_namespaces]] block
 //
 // `vars` leaves out the lines deploy.sh already writes for every variant (PHP_ENV, SITE_ORIGIN, the mail
@@ -13,7 +13,8 @@ const OWN = new Set(['PHP_ENV', 'SITE_ORIGIN', 'MAIL_FROM', 'MAIL_FROM_NAME', 'H
 const line = (k, v) => `${k} = ${JSON.stringify(String(v))}`;
 const [cmd, arg] = process.argv.slice(2);
 if (cmd === 'vars') {
-	const vars = aVars({ siteOrigin: process.env.SITE_ORIGIN });
+	// #686: OBJECT_CACHE_VERSIONS=1 (checked by a-settings.sh) is aVars' objectCacheVersions, as on the provisioning path.
+	const vars = aVars({ siteOrigin: process.env.SITE_ORIGIN, objectCacheVersions: process.env.OBJECT_CACHE_VERSIONS === '1' });
 	for (const v of vars) if (!OWN.has(v.name)) console.log(line(v.name, v.text));
 } else if (cmd === 'kv') {
 	if (!/^[A-Za-z0-9_-]{1,64}$/.test(arg || '')) { console.error('a-vars-toml: kv needs the namespace id (Terraform output oc_kv_id)'); process.exit(2); }
