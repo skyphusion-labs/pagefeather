@@ -2,11 +2,11 @@
 
 **Status: current.** Both pieces have merged: the onboarding step (PR #242) and `site add --kind a` (PR #243). The commands below are the real ones.
 
-This page is for a person who wants to run WordPress or WooCommerce sites on their own Cloudflare account, on the scalable path ([approach A](approach-a-overview.md)). If you want zero outside infrastructure instead, use the b-dosql kind in [framework.md](framework.md); it needs no onboarding step.
+This page is for you if you want to run WordPress or WooCommerce sites on your own Cloudflare account, on the path that scales out ([approach A](approach-a-overview.md)). If you would rather have zero outside infrastructure, the b-dosql kind in [framework.md](framework.md) is simpler; it needs no onboarding step.
 
 ## The idea in one paragraph
 
-Approach A needs a MySQL database. You choose where it lives. An onboarding step takes that choice and makes one Hyperdrive configuration for it. After that, you can make as many type-a sites as you want, and each one uses that configuration. You do the provider choice once; you make each site with one command.
+Approach A needs a MySQL database, and you choose where it lives. An onboarding step takes that choice and makes one Hyperdrive configuration for it. After that, you can make as many type-a sites as you want, and each one uses that configuration. So you make the provider choice once, and then each site is one command.
 
 ## The flow
 
@@ -22,7 +22,7 @@ Approach A needs a MySQL database. You choose where it lives. An onboarding step
 
 ### Step 1: choose a MySQL provider
 
-You pick one. The choice table, with measured speed and cost, is in [approach-a-overview.md](approach-a-overview.md#choose-a-database-provider). In short:
+Pick the one that suits you. The choice table, with measured speed and cost, is in [approach-a-overview.md](approach-a-overview.md#choose-a-database-provider). In short:
 
 | Choice | Pick it when |
 | --- | --- |
@@ -40,7 +40,7 @@ Before step 2, have these ready:
 
 ### Step 2: set up the Hyperdrive configuration
 
-The onboarding step reads your provider choice and makes the Hyperdrive configuration. It does the parts that are easy to get wrong:
+The onboarding step reads your provider choice and makes the Hyperdrive configuration. It exists because a few settings are easy to get wrong by hand, and each one costs you speed or correct data. It handles them for you:
 
 - It uses the database **host name**, not the IP address. By IP, every query measured about 6 times slower.
 - It turns the Hyperdrive **query cache off**. The default cache serves stale WordPress reads.
@@ -86,9 +86,9 @@ After a site is added:
 
 `site add` reports the deployed Worker URL. Check the site by hand: `curl -sI https://<worker>.workers.dev/` for a 200, and open `/_install` to confirm `installed: true` with `user_id: 1`.
 
-## What can go wrong
+## If something goes wrong
 
-| Symptom | Likely cause | Where it is explained |
+| What you see | Likely cause | Where it is explained |
 | --- | --- | --- |
 | Every query is slow (40 ms or more) | Hyperdrive was given an IP address, not a host name | [approach-a.md](approach-a.md) |
 | "DNS lookup failed" just after you made the record | The new DNS record is not ready yet; wait a few minutes | [approach-a.md](approach-a.md) |
@@ -97,7 +97,7 @@ After a site is added:
 | Edits show late or old data appears | The Hyperdrive query cache is on | [approach-a2.md](approach-a2.md) |
 | First install or WooCommerce activation fails once on PlanetScale | Schema lag across pooled connections; run it again | [approach-a-overview.md](approach-a-overview.md) |
 
-## Not in scope here
+## What this page does not cover
 
 - Billing or a sign-up flow. This repository has no funnel; your own Cloudflare account runs everything (see the root `CLAUDE.md`).
 - Moving a site between kinds. See `deploy/import/README.md` for importing a dump.

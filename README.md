@@ -4,36 +4,46 @@
 
 Before 2026-11-13, the name of this repository was `wordpress-on-cloudflare`.
 
-This is for edge and serverless developers, and for anyone tired of looking after a WordPress VPS.
-It is a framework you run on your own Cloudflare Workers for Platforms account. Each site is
-WordPress with PHP and its SQLite database inside one Durable Object, made by one command or by a
-Worker. It also holds the research behind that design (the matrix below).
+Welcome. If you build WordPress sites, for yourself or for clients, and you are tired of looking
+after a WordPress VPS, this project is for you. It is also for edge and serverless developers who
+want to see how far WordPress can go on Cloudflare.
 
-## What it handles well, and where the ceiling is
+Pagefeather is a framework you run on your own Cloudflare Workers for Platforms account. Each site
+is WordPress with PHP and its SQLite database inside one Durable Object (one Cloudflare object that
+keeps the site's state), made by one command or by a Worker. The repository also holds the research
+behind that design (the matrix below), so you can see what we measured and what we did not.
 
-- **WordPress sites, including high-traffic ones, served from the edge.** Logged-out pages come from
-  the edge page cache and never reach PHP. Measured: cached reads ran at about 26 to 30 requests a
-  second per site with a p50 near 200 ms, a lower bound set by the test client
-  ([docs/load-152.md](docs/load-152.md), 2026-11-08). That is 20 to 100 times the uncached rate.
+This is a young project. Some parts are measured and solid, and some are still being built. This
+page tells you which is which.
+
+## What it does well today, and where it stops
+
+- **WordPress sites, including high-traffic ones, served from the edge.** When a visitor is logged
+  out, the page comes from the edge page cache and never reaches PHP. In our load test, cached
+  reads ran at about 26 to 30 requests a second per site with a p50 near 200 ms. That figure is a
+  lower bound set by the test client ([docs/load-152.md](docs/load-152.md), 2026-11-08), and it is
+  20 to 100 times the uncached rate.
 - **WooCommerce for low-to-moderate stores.** Cart, checkout, the admin and logged-in pages are
-  never cached, so every one of them runs PHP in the site's one Durable Object. That path is about
+  never cached, so each of them runs PHP in the site's one Durable Object. That path handles about
   5 requests a second per site ([docs/perf-dosql.md](docs/perf-dosql.md), "What sets b-dosql's
-  limit"). For real concurrent store traffic, use approach A (external MySQL through Hyperdrive),
-  below.
+  limit"). If your store has real concurrent traffic, approach A (external MySQL through
+  Hyperdrive, below) is the better fit.
 
 ## A live example
 
-[ggc.sh](https://ggc.sh) is an example WooCommerce store on this framework. It is slower than a
-cached site on purpose: its `ggc-cache.php` sends `Cache-Control: private, no-store` on every
-storefront page, because those pages carry the live catalog and the order-attribution decision. So
-what you see on ggc.sh is the uncached path, not the cached one.
+If you want to see it running, [ggc.sh](https://ggc.sh) is an example WooCommerce store on this
+framework. It is slower than a cached site on purpose: its `ggc-cache.php` sends
+`Cache-Control: private, no-store` on every storefront page, because those pages carry the live
+catalog and the order-attribution decision. So on ggc.sh you see the uncached path, not the cached
+one.
 
 ## Quickstart
 
-> **Not yet run end to end from a fresh clone.** The commands below are the `deploy/wfp` flow in
-> [docs/operator.md](docs/operator.md), the one the isolation proofs use. A measured run of
-> `site add` and `site remove` from a fresh clone is next. `deploy/wfp/site` is the one operator
-> surface of this deployment
+> **We have not yet run this end to end from a fresh clone.** The commands below are the
+> `deploy/wfp` flow in [docs/operator.md](docs/operator.md), the same flow the isolation proofs
+> use. A measured run of `site add` and `site remove` from a fresh clone is next. If you try it
+> first and something breaks, please open an issue; it helps us a lot. `deploy/wfp/site` is the
+> one operator surface of this deployment
 > ([#294](https://github.com/skyphusion-labs/pagefeather/issues/294)).
 > `deploy/provision/cli.mjs` is for a site on a Cloudflare for SaaS zone only: without
 > `WFP_SAAS_ZONE_ID` it refuses before any API call and names `deploy/wfp/site`.
@@ -56,10 +66,13 @@ Each site answers at `https://wp-<name>.<your-subdomain>.workers.dev` and instal
 first boot. The admin user is `admin`; its password is a Terraform output (docs/operator.md shows
 the command).
 
-Coming from a LAMP host? Read [docs/from-lamp-to-wfp.md](docs/from-lamp-to-wfp.md) first. Every
-document is indexed in [docs/](docs/README.md).
+Coming from a LAMP host? [docs/from-lamp-to-wfp.md](docs/from-lamp-to-wfp.md) is written for you:
+it maps the jobs you already do onto this stack, so read it first. Every document is indexed in
+[docs/](docs/README.md).
 
-## Honest limits
+## Limits you should know about
+
+We would rather you hear these from us before you build on the project than find them later.
 
 - **One Durable Object per site:** one writer, one region, and one request at a time for anything
   the cache cannot answer. That is about 5 uncached requests a second; past that the queue grows,
@@ -68,22 +81,23 @@ document is indexed in [docs/](docs/README.md).
   uncompressed, and the upload gate stops at 62 MiB. WooCommerce alone takes the bundle to 58.3
   MiB. Measured with WooCommerce (#279): Yoast SEO (67.9 MiB), All in One SEO (67.5) and Elementor
   (83.8) do not fit, and SEOPress (63.1) is over the gate. Rank Math fits the bundle but hits the
-  memory wall (next item). The SEO Framework and Slim SEO fit the bundle; their memory is not
-  measured yet, because activation failed on the test store (#289). A way to move plugin and theme
-  source out of the bundle is being designed; it is not a promise that these plugins will fit
-  ([#279](https://github.com/skyphusion-labs/pagefeather/issues/279)).
+  memory wall (next item). The SEO Framework and Slim SEO fit the bundle; we have not measured
+  their memory yet, because activation failed on the test store (#289). We are designing a way to
+  move plugin and theme source out of the bundle. That is work in progress, not a promise that
+  these plugins will fit ([#279](https://github.com/skyphusion-labs/pagefeather/issues/279)).
 - **128 MiB of memory per request (the isolate).** A heavy plugin set can exceed it. A store with
   Rank Math reaches 119 MiB a request, and every other request answers 503; without it, the same
   store passes checkout ([docs/known-limitations.md](docs/known-limitations.md),
   [#279](https://github.com/skyphusion-labs/pagefeather/issues/279)).
 - **Workers Free only partly works.** Cached pages hit and most renders fit, but the installer and
-  WooCommerce do not (the plan table below).
+  WooCommerce do not (see the plan table below).
 - **Cost:** two idle sites cost about $25 a month, the Workers for Platforms Paid subscription
   ([docs/plan-limits.md](docs/plan-limits.md)).
 
 ## The research
 
-A cell in the tables below is **measured** (we deployed it and ran a test in `tests/`, linked to [docs/results.md](docs/results.md)), **docs** (Cloudflare documents it but we did not deploy it), **claimed** (a third party says so), **no** (a named limit blocks it), or **unbuilt**.
+Every claim in the tables below carries a label, so you can tell what we tested from what we only
+read. A cell is **measured** (we deployed it and ran a test in `tests/`, linked to [docs/results.md](docs/results.md)), **docs** (Cloudflare documents it but we did not deploy it), **claimed** (a third party says so), **no** (a named limit blocks it), or **unbuilt**.
 
 ## The approaches
 
@@ -96,7 +110,7 @@ A cell in the tables below is **measured** (we deployed it and ran a test in `te
 
 ## What runs on which plan
 
-Short verdicts here; the linked doc carries the numbers, dates and caveats.
+These are short verdicts; the linked doc carries the numbers, dates and caveats.
 
 | Id | Workers Free | Workers Paid | Detail |
 | --- | --- | --- | --- |
@@ -107,23 +121,28 @@ Short verdicts here; the linked doc carries the numbers, dates and caveats.
 | **C1** (Container, SQLite, Litestream to R2) | **no** (Containers are Paid only) | **retired (#214).** It worked (12 of 12 store tests, 18 of 18 plugins), but b-dosql replaced the container store path, including the earlier in-container checkout (B+C), [approach-c-checkout.md](docs/approach-c-checkout.md). | [approach-c1.md](docs/approach-c1.md) |
 | **C / D** | **no** / **docs** | **docs** | Containers are Paid-only with ephemeral disk; D needs one of A, B or C behind it. |
 
-**Which to use for a store:** **b-dosql** (zero outside infrastructure) for light-to-moderate traffic; **approach A** (external MySQL) to scale out to real concurrent traffic. The container store path is retired; a standard-LAMP VPS is the alternative for a store that outgrows b-dosql.
+**Which to choose for a store:** **b-dosql** (zero outside infrastructure) for light-to-moderate traffic; **approach A** (external MySQL) to scale out to real concurrent traffic. The container store path is retired; a standard-LAMP VPS is the alternative for a store that outgrows b-dosql.
 
 ## Before you trust the speed numbers
 
 - **Transactions.** `b-do` (D1) has no cross-call `ROLLBACK`; `b-dosql`, `c1`, `a` and `a2` do. Code that relies on `ROLLBACK` (WooCommerce, some plugins, upgrades) must not run on `b-do`. See [approach-b.md](docs/approach-b.md).
-- **One run is not a number.** The same build moved up to 15% between runs, and `a` served 18.7 requests a second in one load matrix and 8.63 in another. So every comparison here is bracketed (the same build with the change off, on, and off again) or repeated across starts; a single run is never quoted as the number for a variant.
+- **One run is not a number.** The same build moved up to 15% between runs, and `a` served 18.7 requests a second in one load matrix and 8.63 in another. So we bracket every comparison here (the same build with the change off, on, and off again) or repeat it across starts; we never quote a single run as the number for a variant.
 
 ## Cost
 
-Two idle `b-dosql` sites cost about **$25 a month**, the Workers for Platforms Paid subscription, with every per-site resource (Durable Object storage, R2 media, KV) inside a free or included tier at rest. Traffic is metered on top. One open question: whether the per-site dispatcher and the shared outbound Worker need a separate Workers Paid subscription ($5 a month), which would make it about $30; this is not stated on the WfP pricing page and needs a billing check.
+Two idle `b-dosql` sites cost about **$25 a month**, the Workers for Platforms Paid subscription, with every per-site resource (Durable Object storage, R2 media, KV) inside a free or included tier at rest. Traffic is metered on top. One question is still open: whether the per-site dispatcher and the shared outbound Worker need a separate Workers Paid subscription ($5 a month), which would make it about $30. The WfP pricing page does not say, and we still need to confirm it with a billing check.
 
 Full cost line items and the per-plan limit table that decides the matrix above: [docs/plan-limits.md](docs/plan-limits.md).
 
 ## More
 
-- Prior art: [docs/prior-art.md](docs/prior-art.md).
+- Prior art: [docs/prior-art.md](docs/prior-art.md). This project builds on others' work, and we credit it there.
 - **How a cell becomes measured:** put a deploy script and a test in `tests/<id>/`; deploy to an account on the plan named in the column; run the test and record the command, date, Wrangler version and result in [docs/results.md](docs/results.md); then change the mark and link the result.
+
+## Contributing
+
+Contributions are welcome, from a typo fix to a newly measured cell. A failed deploy on a plan we
+have not tried is a useful result too. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

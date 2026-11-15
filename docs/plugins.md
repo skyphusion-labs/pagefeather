@@ -1,6 +1,6 @@
 # The plugin suite
 
-Conrad, 2026-11-05: "test each setup with a standard suite of plugins, SEO, standard stuff".
+Most WordPress sites depend on plugins, so a setup is only useful to you if the common plugins work on it. This page shows how we test that, and what we found. The goal, in Conrad's words (2026-11-05): "test each setup with a standard suite of plugins, SEO, standard stuff".
 
 ## The suite
 
@@ -18,7 +18,7 @@ The 20 most popular plugins on wordpress.org (`browse=popular`, read 2026-11-05)
 
 A step is tried up to 3 times. "pass (n retried)" means n steps needed a second or third try. `tests/plugins/report.py` makes the matrix below from `tests/plugins/results/*.jsonl`.
 
-Plugins must be in the build on every target. Every site is code-locked, so a plugin is never installed from wp-admin: adding one is a code deploy (#458). A wp-admin install would not persist anyway (approach B and A: the in-memory file system; C1, now retired: the container disk; HostlessWP: the bundle made at deploy). Approach B and our A put the 18 plugins in 7 builds (`spikes/b2-wordpress/plugin-suite.sh`): all 18 do not fit under the 64 MiB Worker limit (with Jetpack alone the upload is 63,024 KiB). HostlessWP bundles them all in one Worker (code bundles loaded on first read, 211 to 348 MB packaged).
+If you are used to installing plugins from wp-admin, this is the biggest change. Plugins must be in the build on every target. Every site is code-locked, so a plugin is never installed from wp-admin: adding one is a code deploy (#458). A wp-admin install would not persist anyway (approach B and A: the in-memory file system; C1, now retired: the container disk; HostlessWP: the bundle made at deploy). Approach B and our A put the 18 plugins in 7 builds (`spikes/b2-wordpress/plugin-suite.sh`): all 18 do not fit under the 64 MiB Worker limit (with Jetpack alone the upload is 63,024 KiB). HostlessWP bundles them all in one Worker (code bundles loaded on first read, 211 to 348 MB packaged).
 
 ## Matrix
 
@@ -60,6 +60,8 @@ Runs of 2026-11-05. A and HostlessWP on the public MySQL path ([approach-a.md](a
 
 ## Gate 2: the harness for the plugins a developer keeps (#422, #426)
 
+This part, and the two sections after it, are a working record for maintainers, so they are terser.
+
 `tests/plugins/gate2.py` tests the Gate 2 list in `tests/plugins/gate2.txt` on the sample store with WooCommerce active. WooCommerce is the control. The Nov 5 suite above used a near-empty site; this harness does not. It runs on a throwaway site only.
 
 - **Plugins and themes are in the build** (`PLUGINS=`, `THEMES=`). Conrad's ruling (2026-11-13): installs and updates are code deploys, so the harness has no wp-admin install phase. The old `install`, `check` and `fetch` phases were removed.
@@ -69,7 +71,7 @@ Runs of 2026-11-05. A and HostlessWP on the public MySQL path ([approach-a.md](a
 - **The report:** it prints each item's first failing step next to its prediction.
 - **One SEO plugin per site** (Conrad, 2026-11-13): Yoast and Rank Math are each tested alone. Before the harness activates one, it checks that the other is not active. If the other is active, it records a refusal and runs nothing for that item.
 
-The first use is a one-pass prediction check (the lead's ruling, 2026-11-13). Payments, mail, the stack profile and the 10-round runs are deferred until #293, #407 and the admin memory work (#394, #411) move.
+The first use is a one-pass prediction check (a maintainer ruling, 2026-11-13). Payments, mail, the stack profile and the 10-round runs are deferred until #293, #407 and the admin memory work (#394, #411) move.
 
 ## Gate 2, tier 1: the CMS phase (#422)
 
@@ -95,6 +97,6 @@ Tier 1 runs the same harness on a plain b-dosql site with no WooCommerce. The si
 - **The stack:** `GATE2_LIST=tier1.txt` holds Elementor, Yoast SEO, Contact Form 7, ACF, Wordfence, UpdraftPlus and Astra, one of each kind. `tier1-alt.txt` holds the second run's alternates: Rank Math, WPForms Lite and Hello Elementor.
 - **`STACK=1`:** the items stay active together. The `stack-activate` phase activates them all, and the one-SEO guard still holds.
 - **Elementor's visible job:** a new page, its editor, a save through Elementor's own `elementor_ajax` `save_builder`, and then the page renders the saved heading.
-- **Request classes:** every request is labelled operator, login, `admin-ajax:<action>`, editor-save, admin-page, admin-write, rest-read, rest-write or front. The report adds a class table with the request count, fail rate, resets, write-loss and WASM memory. That table is the evidence for which requests an admin container should take.
+- **Request classes:** every request is labelled operator, login, `admin-ajax:<action>`, editor-save, admin-page, admin-write, rest-read, rest-write or front. The report adds a class table with the request count, fail rate, resets, write-loss and WASM memory. That table is the evidence for which requests would go to an admin container, if that path is chosen (the decision is open until the new engine is fully tested).
 - **Visible jobs not in the first pass:** ACF's field group, Wordfence's scan and UpdraftPlus's backup report "not in this pass". They report that, never a pass.
 
