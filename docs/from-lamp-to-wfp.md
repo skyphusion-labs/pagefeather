@@ -41,8 +41,8 @@ path stands today, measured:
 
 | Plan | What runs on it today |
 | --- | --- |
-| Workers Free | A plain WordPress site (no WooCommerce) runs on the Durable Object path and cached pages hit, but the installer does not fit Free's CPU limit today, and WooCommerce does not fit Free. A fully working Free tier is a goal, not yet measured as working. |
-| Workers Paid | The practical starting tier today. WordPress and WooCommerce, checkout included, on `b-dosql` (PHP and SQLite in one Durable Object). |
+| Workers Free | Not a verdict yet. On the engine sites run today, a plain WordPress site (no WooCommerce) runs and cached pages hit, but the installer does not fit Free's CPU limit (`/_install` answered 1102, 2026-11-03) and neither does WooCommerce (every page answered "Worker exceeded CPU time limit", 2026-11-04; both in [results.md](results.md)). The lean pagefeather engine (#582) has not been measured on Free yet; that measurement is being set up. A fully working Free tier is a goal. |
+| Workers Paid | The practical starting tier until the Free measurement on the lean engine lands. WordPress and WooCommerce, checkout included, on `b-dosql` (PHP and SQLite in one Durable Object). |
 | Workers for Platforms Paid | The framework itself: many sites on one account, each its own Worker, routed by one dispatcher (below). This is the path to go big. Two idle sites cost about $25 a month, the subscription itself ([plan-limits.md](plan-limits.md)). |
 | Workers Paid plus your own MySQL | Approach A: PHP in a Worker, MySQL through Hyperdrive. This is the path that scales out to real concurrent traffic ([onboarding.md](onboarding.md)). |
 
@@ -119,9 +119,9 @@ Where it stands, plainly:
   lost requests from 95 of 210 to 5 of 210 ([admin-memory-matrix.md](admin-memory-matrix.md), the
   D/R row, 2026-11-14). Every save that answered 302 read back on both arms.
 - Five lost of 210 is still not zero, and the editor screens are where it happens.
-- Conrad's ruling (2026-11-14) is that admin pages will go to a Cloudflare Container, with visitors
-  and checkout staying on Workers. That is not built yet, and no admin round has run on it.
-  Meanwhile, the admin memory work on the Worker-side Durable Object path continues (#394, #582).
+- Whether wp-admin runs on Workers or in a Cloudflare Container is still an open question. It is
+  decided after the new engine is fully tested. Meanwhile, the admin memory work on the Durable
+  Object path continues (#394, #582).
 - A leaner PHP engine is in progress (#582: #587, #592), measured in CI but not yet shipped to
   sites.
 - A heavy plugin set can pass the 128 MiB cap on any page; the measured case is in

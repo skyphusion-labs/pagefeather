@@ -97,6 +97,6 @@ Tier 1 runs the same harness on a plain b-dosql site with no WooCommerce. The si
 - **The stack:** `GATE2_LIST=tier1.txt` holds Elementor, Yoast SEO, Contact Form 7, ACF, Wordfence, UpdraftPlus and Astra, one of each kind. `tier1-alt.txt` holds the second run's alternates: Rank Math, WPForms Lite and Hello Elementor.
 - **`STACK=1`:** the items stay active together. The `stack-activate` phase activates them all, and the one-SEO guard still holds.
 - **Elementor's visible job:** a new page, its editor, a save through Elementor's own `elementor_ajax` `save_builder`, and then the page renders the saved heading.
-- **Request classes:** every request is labelled operator, login, `admin-ajax:<action>`, editor-save, admin-page, admin-write, rest-read, rest-write or front. The report adds a class table with the request count, fail rate, resets, write-loss and WASM memory. That table is the evidence for which requests an admin container should take.
+- **Request classes:** every request is labelled operator, login, `admin-ajax:<action>`, editor-save, admin-page, admin-write, rest-read, rest-write or front. The report adds a class table with the request count, fail rate, resets, write-loss and WASM memory. That table is the evidence for which requests would go to an admin container, if that path is chosen (the decision is open until the new engine is fully tested).
 - **Visible jobs not in the first pass:** ACF's field group, Wordfence's scan and UpdraftPlus's backup report "not in this pass". They report that, never a pass.
 
