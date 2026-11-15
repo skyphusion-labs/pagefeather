@@ -39,6 +39,17 @@ class JS_Object_Cache {
 	private $versions = null;
 	/** @var int Version reads this request (0 or 1), for x-oc-stats. */
 	public $version_reads = 0;
+	/**
+	 * @var array<string,bool> Versioned groups whose keys are BUCKETED (#296 (2), the transient half): each
+	 * key hashes into one of TRANSIENT_BUCKETS version rows (tb0..), and a set or delete bumps its bucket
+	 * in the database first. Transients: with this cache on, WordPress keeps them only here.
+	 */
+	private $bucketed = array();
+	/** @var bool Every bucket row was read this request (no row missing): bucketed groups may persist. */
+	private $buckets_ok = false;
+	/** @var int Bucket bumps this request, for x-oc-stats. */
+	public $bucket_bumps = 0;
+	const TRANSIENT_BUCKETS = 64;
 
 	public function __construct() {
 		$this->blog_prefix = is_multisite() ? get_current_blog_id() . ':' : '';
@@ -70,9 +81,45 @@ class JS_Object_Cache {
 				$g = trim( $g );
 				if ( '' !== $g ) {
 					$this->versioned[ $g ] = true;
+					if ( 'transient' === $g || 'site-transient' === $g ) {
+						$this->bucketed[ $g ] = true;
+					}
 				}
 			}
 		}
+	}
+
+	/** The version row of a bucketed key: tb0 .. tb63. */
+	private static function bucket( $key ) {
+		return 'tb' . ( abs( crc32( (string) $key ) ) % self::TRANSIENT_BUCKETS );
+	}
+
+	/**
+	 * Bump a bucketed key's version in the database, then read it back, BEFORE its new value is written: the
+	 * value then goes under the new version, and every isolate's next request asks for that key. False when
+	 * the bump did not land: the caller must not write to the shared store (an old version could be served).
+	 */
+	private function bump_bucket( $key ) {
+		global $wpdb;
+		$b = self::bucket( $key );
+		if ( ! $this->buckets_ok || ! isset( $wpdb ) || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'query' ) || ! method_exists( $wpdb, 'get_var' ) ) {
+			return false;
+		}
+		$t     = $wpdb->prefix . 'skyph_cache_versions';
+		$quiet = method_exists( $wpdb, 'suppress_errors' ) ? $wpdb->suppress_errors( true ) : null;
+		$ok    = $wpdb->query( "UPDATE {$t} SET v = v + 1 WHERE grp = '{$b}'" );
+		$v     = $ok ? $wpdb->get_var( "SELECT v FROM {$t} WHERE grp = '{$b}'" ) : null;
+		if ( null !== $quiet ) {
+			$wpdb->suppress_errors( $quiet );
+		}
+		if ( ! $ok || ! is_numeric( $v ) ) {
+			// Fail closed: bucketed groups stop persisting for the rest of this request.
+			$this->buckets_ok = false;
+			return false;
+		}
+		$this->versions[ $b ] = (int) $v;
+		++$this->bucket_bumps;
+		return true;
 	}
 
 	/**
@@ -98,12 +145,21 @@ class JS_Object_Cache {
 			$wpdb->suppress_errors( $quiet );
 		}
 		++$this->version_reads;
+		$buckets = 0;
 		foreach ( (array) $rows as $row ) {
-			if ( is_array( $row ) && isset( $row[0], $row[1], $this->versioned[ $row[0] ] ) && is_numeric( $row[1] ) ) {
+			if ( ! is_array( $row ) || ! isset( $row[0], $row[1] ) || ! is_numeric( $row[1] ) ) {
+				continue;
+			}
+			if ( isset( $this->versioned[ $row[0] ] ) && ! isset( $this->bucketed[ $row[0] ] ) ) {
 				$this->versions[ $row[0] ] = (int) $row[1];
 				$this->set_group_salt( $row[0], 'v' . (int) $row[1] );
+			} elseif ( preg_match( '/^tb([0-9]+)$/', $row[0], $m ) && (int) $m[1] < self::TRANSIENT_BUCKETS ) {
+				$this->versions[ $row[0] ] = (int) $row[1];
+				++$buckets;
 			}
 		}
+		// Every bucket row must be there, or a key could fall in a missing one: then nothing bucketed persists.
+		$this->buckets_ok = ( self::TRANSIENT_BUCKETS === $buckets );
 	}
 
 	private function call( array $op ) {
@@ -121,6 +177,10 @@ class JS_Object_Cache {
 		if ( null !== $this->persist_allow && 'options' === $group ) {
 			return isset( $this->versions['options'] );
 		}
+		// #296 (2): a bucketed group (transients) persists only with every bucket version read this request.
+		if ( isset( $this->bucketed[ $group ] ) ) {
+			return $this->buckets_ok;
+		}
 		if ( isset( $this->group_salt[ $group ] ) && '' !== $this->group_salt[ $group ] ) {
 			return true;
 		}
@@ -137,6 +197,10 @@ class JS_Object_Cache {
 	private function pkey( $key, $group ) {
 		$prefix = isset( $this->global_groups[ $group ] ) ? '' : $this->blog_prefix;
 		$salt   = ( isset( $this->group_salt[ $group ] ) && '' !== $this->group_salt[ $group ] ) ? $this->group_salt[ $group ] . "\0" : '';
+		if ( isset( $this->bucketed[ $group ] ) ) {
+			$b    = self::bucket( $key );
+			$salt = $b . 'v' . ( isset( $this->versions[ $b ] ) ? (int) $this->versions[ $b ] : 0 ) . "\0";
+		}
 		return $group . "\0" . $salt . $prefix . $key;
 	}
 
@@ -252,6 +316,17 @@ class JS_Object_Cache {
 		$this->version_gate( $group );
 		$this->cache[ $group ][ $key ] = self::copy( $data );
 		unset( $this->missing[ $group ][ $key ] );
+		// A bucketed set moves its bucket first, then writes under the new version; a bump that did not land
+		// writes nothing to the shared store (this request keeps its own value locally).
+		if ( isset( $this->bucketed[ $group ] ) && $this->persistent( $group ) ) {
+			$old = $this->pkey( $key, $group );
+			if ( ! $this->bump_bucket( $key ) ) {
+				// The version did not move, so every isolate still asks for the old key: drop its old value
+				// (best effort: another isolate's Map keeps a copy up to its TTL).
+				$this->call( array( 'op' => 'del', 'k' => array( $old ) ) );
+				return true;
+			}
+		}
 		if ( $this->persistent( $group ) ) {
 			if ( 0 === (int) $expire && $this->default_ttl > 0 ) {
 				$expire = $this->default_ttl;
@@ -297,6 +372,14 @@ class JS_Object_Cache {
 		$had = $this->has_local( $key, $group );
 		unset( $this->cache[ $group ][ $key ] );
 		$this->missing[ $group ][ $key ] = true;
+		// A bucketed delete moves its bucket: every isolate's next request misses the key.
+		if ( isset( $this->bucketed[ $group ] ) && $this->persistent( $group ) ) {
+			$old = $this->pkey( $key, $group );
+			if ( ! $this->bump_bucket( $key ) ) {
+				$this->call( array( 'op' => 'del', 'k' => array( $old ) ) );
+			}
+			return $had;
+		}
 		if ( $this->persistent( $group ) ) {
 			$r = $this->call( array( 'op' => 'del', 'k' => array( $this->pkey( $key, $group ) ) ) );
 			return $had || ! empty( $r['n'] );

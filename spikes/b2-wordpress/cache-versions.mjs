@@ -18,6 +18,12 @@
 // so a test drives it with a fake.
 
 export const GROUPS = [{ table: 'options', grp: 'options' }];
+// The transient half (#296 (2)): each transient name hashes into one of BUCKETS version rows, tb0 .. tb63
+// (php/object-cache-js.php bucket(); keep the two equal). No trigger: with the object cache on, transients
+// are not database rows, so PHP bumps a key's bucket on its set and delete. 64 rows, not one per key: the
+// catalog's wc_related_<id> alone would make a per-key table grow with every product.
+export const BUCKETS = 64;
+const BUCKET_ROWS = Array.from({ length: BUCKETS }, (_, i) => 'tb' + i);
 const EVENTS = [['INSERT', 'ai', 'NEW'], ['UPDATE', 'au', 'NEW'], ['DELETE', 'ad', 'OLD']];
 
 export function validPrefix(prefix) {
@@ -65,7 +71,9 @@ export async function status(q, prefix) {
 		if (v.ok) versions = Object.fromEntries(v.rows.map(([k, n]) => [cell(k), Number(cell(n))]));
 	}
 	const triggers = g.rows.map((r) => cell(r[0])).sort();
-	return { ok: true, table, triggers, versions, complete: table && triggers.length === triggerNames(prefix).length };
+	const buckets = versions ? BUCKET_ROWS.filter((b) => Number.isFinite(versions[b])).length : 0;
+	const groupsOk = versions ? GROUPS.every(({ grp }) => Number.isFinite(versions[grp])) : false;
+	return { ok: true, table, triggers, versions, buckets, complete: table && groupsOk && buckets === BUCKETS && triggers.length === triggerNames(prefix).length };
 }
 
 export async function remove(q, prefix) {
@@ -85,7 +93,7 @@ export async function install(q, prefix) {
 	const vt = versionsTable(prefix);
 	const steps = [
 		`CREATE TABLE IF NOT EXISTS ${vt} (grp VARCHAR(32) NOT NULL PRIMARY KEY, v BIGINT UNSIGNED NOT NULL DEFAULT 0) ENGINE=InnoDB`,
-		`INSERT IGNORE INTO ${vt} (grp, v) VALUES ${GROUPS.map(({ grp }) => `('${grp}', 0)`).join(', ')}`,
+		`INSERT IGNORE INTO ${vt} (grp, v) VALUES ${[...GROUPS.map(({ grp }) => grp), ...BUCKET_ROWS].map((g) => `('${g}', 0)`).join(', ')}`,
 	];
 	for (const s of steps) {
 		const r = await q(s);

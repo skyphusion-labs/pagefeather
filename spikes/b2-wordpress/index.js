@@ -1693,10 +1693,12 @@ async function boot(origin) {
 		lines.push("define('JS_OBJECT_CACHE_PERSIST_GROUPS', " + JSON.stringify(ocPersist) + ");");
 		const ocTtl = Math.max(0, Math.min(3600, parseInt(ENV.OBJECT_CACHE_TTL, 10) || 10));
 		lines.push("define('JS_OBJECT_CACHE_TTL', " + ocTtl + ");");
-		// #296 (2): with OBJECT_CACHE_VERSIONS=on, options persist across isolates under their exact version
-		// from <prefix>skyph_cache_versions (one read per request; AFTER triggers on wp_options bump it, and
-		// skip transients). Without the table (not installed, or no triggers) the #491 posture holds.
-		if (ENV.OBJECT_CACHE_VERSIONS === 'on') lines.push("define('JS_OBJECT_CACHE_VERSIONED', 'options');");
+		// #296 (2): with OBJECT_CACHE_VERSIONS=on, options and transients persist across isolates under exact
+		// versions from <prefix>skyph_cache_versions, read once per request. options: AFTER triggers on
+		// wp_options bump it (they skip transients). Transients (only in this cache once it is on): each name
+		// hashes into one of 64 bucket rows, bumped by PHP on its set and delete. Without the table, the rows
+		// or the triggers, both keep their old posture (per request).
+		if (ENV.OBJECT_CACHE_VERSIONS === 'on') lines.push("define('JS_OBJECT_CACHE_VERSIONED', 'options,transient,site-transient');");
 		if (ENV.THEME_JSON_CACHE !== 'off') lines.push("define('JS_THEME_JSON_CACHE', true);");
 	}
 	// Real SQL transactions (php/real-transactions.php, #60): the database in the

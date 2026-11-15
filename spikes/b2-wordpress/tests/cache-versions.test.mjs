@@ -2,7 +2,7 @@
 // fake MySQL that keeps the schema state, so install, status and remove are checked as state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { install, status, remove, triggerSql, triggerNames, versionsTable, validPrefix, cell } from '../cache-versions.mjs';
+import { install, status, remove, triggerSql, triggerNames, versionsTable, validPrefix, cell, BUCKETS } from '../cache-versions.mjs';
 
 const b64 = (s) => ({ $b: Buffer.from(String(s)).toString('base64') });
 function fakeDb({ refuseTrigger = null, binary = false } = {}) {
@@ -12,6 +12,7 @@ function fakeDb({ refuseTrigger = null, binary = false } = {}) {
 		let m;
 		if ((m = sql.match(/^CREATE TABLE IF NOT EXISTS (\w+)/))) { db.tables.add(m[1]); return { ok: true, affected: 0 }; }
 		if ((m = sql.match(/^INSERT IGNORE INTO (\w+) \(grp, v\) VALUES (.*)$/))) { for (const g of m[2].matchAll(/\('(\w+)', 0\)/g)) if (!db.rows.has(g[1])) db.rows.set(g[1], 0); return { ok: true }; }
+		if ((m = sql.match(/^DELETE FROM (\w+) WHERE grp = '(\w+)'$/))) { db.rows.delete(m[2]); return { ok: true }; }
 		if ((m = sql.match(/^DROP TRIGGER IF EXISTS (\w+)$/))) { db.triggers.delete(m[1]); return { ok: true }; }
 		if ((m = sql.match(/^CREATE TRIGGER (\w+) AFTER (INSERT|UPDATE|DELETE) ON (\w+) FOR EACH ROW /))) {
 			if (refuseTrigger && refuseTrigger(m[1])) return { ok: false, errno: 1235, error: 'This version of MySQL does not yet support triggers' };
@@ -26,12 +27,14 @@ function fakeDb({ refuseTrigger = null, binary = false } = {}) {
 	return db;
 }
 
-test('install makes the versions table, its options row and its three triggers', async () => {
+test('install makes the versions table, the options row, the 64 transient bucket rows and the three triggers', async () => {
 	const db = fakeDb();
 	const r = await install(db.q, 'wp_');
 	assert.equal(r.ok, true); assert.equal(r.versioned, true);
 	assert.deepEqual([...db.tables], ['wp_skyph_cache_versions']);
-	assert.deepEqual(Object.fromEntries(db.rows), { options: 0 });
+	assert.equal(BUCKETS, 64);
+	const want = { options: 0 }; for (let i = 0; i < 64; i++) want['tb' + i] = 0;
+	assert.deepEqual(Object.fromEntries(db.rows), want);
 	assert.deepEqual([...db.triggers].sort(), triggerNames('wp_').sort());
 	assert.equal(r.status.complete, true);
 });
@@ -76,13 +79,33 @@ test('THE LIVE CASE: binary-charset cells ({ $b: base64 }, COUNT(*) and the BIGI
 	const db = fakeDb({ binary: true });
 	const r = await install(db.q, 'wp_');
 	assert.equal(r.versioned, true, 'the table is seen, so the install is complete');
-	db.rows.set('options', 4);
+	db.rows.set('options', 4); db.rows.set('tb7', 9);
 	const s = await status(db.q, 'wp_');
-	assert.equal(s.table, true); assert.deepEqual(s.versions, { options: 4 });
+	assert.equal(s.table, true); assert.equal(s.versions.options, 4); assert.equal(s.versions.tb7, 9); assert.equal(s.buckets, 64);
 });
 test('the table prefix is validated before any SQL', async () => {
 	assert.equal(validPrefix('wp_'), true); assert.equal(validPrefix("wp_'; DROP"), false); assert.equal(validPrefix(''), false);
 	const db = fakeDb();
 	assert.equal((await install(db.q, 'x; --')).ok, false); assert.equal(db.log.length, 0);
 	assert.equal(versionsTable('shop_'), 'shop_skyph_cache_versions');
+});
+
+test('status is complete only with the options row AND every bucket row: a missing bucket is not complete', async () => {
+	const db = fakeDb();
+	await install(db.q, 'wp_');
+	assert.equal((await status(db.q, 'wp_')).complete, true);
+	db.rows.delete('tb63');
+	const s = await status(db.q, 'wp_');
+	assert.equal(s.buckets, 63);
+	assert.equal(s.complete, false, 'the PHP side would refuse to persist transients; status must say so too');
+});
+
+test('the bucket count is one number: the JS install and the PHP drop-in agree', async () => {
+	const { readFileSync } = await import('node:fs');
+	const php = readFileSync(new URL('../php/object-cache-js.php', import.meta.url), 'utf8');
+	const m = php.match(/const TRANSIENT_BUCKETS = (\d+);/);
+	assert.ok(m, 'the drop-in declares TRANSIENT_BUCKETS');
+	assert.equal(Number(m[1]), BUCKETS);
+	const js = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(js, /define\('JS_OBJECT_CACHE_VERSIONED', 'options,transient,site-transient'\);/, 'the Worker versions options and both transient groups');
 });
