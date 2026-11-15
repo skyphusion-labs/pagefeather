@@ -23,7 +23,8 @@ jobs:
       fail-fast: false
       matrix:
         # lean-nofileinfo is a MEASURED arm only (numbers, never shipped, not in lean-gates).
-        variant: [unchanged, pinned-env-1, pinned-env-2, lean, lean-nogd, lean-nofileinfo]
+        # lean-trim: the trimmed fileinfo database (S2b).
+        variant: [unchanged, pinned-env-1, pinned-env-2, lean, lean-nogd, lean-nofileinfo, lean-trim]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -45,10 +46,10 @@ jobs:
         run: |
           set -euo pipefail
           df -h / | tail -1; uname -a
-          pin=0; variant=unchanged; gd=yes; fi_=yes
-          case "${{ matrix.variant }}" in pinned-env-*) pin=1;; lean) variant=lean;; lean-nogd) variant=lean; gd=no;; lean-nofileinfo) variant=lean; fi_=no;; esac
+          pin=0; variant=unchanged; gd=yes; fi_=yes; magic=full
+          case "${{ matrix.variant }}" in pinned-env-*) pin=1;; lean) variant=lean;; lean-nogd) variant=lean; gd=no;; lean-nofileinfo) variant=lean; fi_=no;; lean-trim) variant=lean; magic=trim;; esac
           s=$(date +%s)
-          ENGINE_PIN_ENV=$pin ENGINE_VARIANT=$variant ENGINE_GD=$gd ENGINE_FILEINFO=$fi_ ENGINE_WORK="$RUNNER_TEMP/work" engine/build.sh "$RUNNER_TEMP/out" | tee "$RUNNER_TEMP/build.out"
+          ENGINE_PIN_ENV=$pin ENGINE_VARIANT=$variant ENGINE_GD=$gd ENGINE_FILEINFO=$fi_ ENGINE_MAGIC=$magic ENGINE_WORK="$RUNNER_TEMP/work" engine/build.sh "$RUNNER_TEMP/out" | tee "$RUNNER_TEMP/build.out"
           echo "build took $(( $(date +%s) - s )) s"
           df -h / | tail -1
       - name: Size figures, against the engine we ship (a reading)
@@ -189,9 +190,97 @@ jobs:
             tail -40 build/opcache.log; echo '--- e2e'; tail -40 build/opcache-e2e.log 2>/dev/null || true; echo '--- dev.log'; tail -40 dev.log 2>/dev/null || true
             exit 1
           fi
+      - name: accepted.txt matches the WordPress tree (and its red control)
+        # check-accepted.py re-reads wp_get_mime_types(), get_allowed_mime_types() and the Font Library's
+        # types from the tree build.sh downloaded; a copy of accepted.txt with one extension dropped must fail.
+        working-directory: spikes/b2-wordpress
+        run: |
+          set -euo pipefail
+          python3 -I ../../engine/fileinfo/check-accepted.py build/wordpress ../../engine/fileinfo/accepted.txt
+          sed -E 's/^(EXT .*) webp /\1 /' ../../engine/fileinfo/accepted.txt > "$RUNNER_TEMP/accepted-dropped.txt"
+          if grep -q ' webp ' "$RUNNER_TEMP/accepted-dropped.txt"; then echo "::error::the red control did not drop webp"; exit 1; fi
+          rc=0; python3 -I ../../engine/fileinfo/check-accepted.py build/wordpress "$RUNNER_TEMP/accepted-dropped.txt" || rc=$?
+          [ "$rc" = 1 ] || { echo "::error::check-accepted.py did not fail on a copy missing webp (rc=$rc)"; exit 1; }
+          echo "red control: check-accepted.py fails on a copy missing webp, as it must"
       - name: frames-e2e.sh on the lean engine (e2e.sh and woo.py both ways)
         working-directory: spikes/b2-wordpress
         run: |
           if ! tests/frames-e2e.sh; then
             echo "::error::frames-e2e.sh failed on the lean engine; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1
           fi
+  fileinfo-gates:
+    # The trimmed fileinfo database (#582 S2b) under its own gates, on the lean-trim engine: the contract
+    # suite; fileinfo-sniff.test.mjs against the full database (and its red control); WordPress's own
+    # upload decision for every fixture against the full-database engine (and its red control); then
+    # e2e.sh and woo.py both ways. Every "must fail" is asserted to fail.
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: pagefeather-engine-s1-lean*
+          path: ${{ runner.temp }}/e
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+      - name: The contract suite and the sniff test on lean-trim
+        working-directory: spikes/b2-wordpress
+        run: |
+          set -euo pipefail
+          npm ci --silent --no-audit --no-fund
+          d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-trim"
+          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          node ../../engine/tools/wasm-stats.mjs vendor/php_8_3.wasm lean-trim-under-test
+          ENGINE_EXPECT=../../engine/expect/lean.json node --test tests/engine-contract.test.mjs
+          node --test tests/fileinfo-sniff.test.mjs
+      - name: The sniff test's red control (a database with no rejection signatures must fail it)
+        working-directory: spikes/b2-wordpress
+        run: |
+          set -euo pipefail
+          ../../engine/fileinfo/compile-mgc.sh "$RUNNER_TEMP/mgc"
+          MAGIC_FILE="$RUNNER_TEMP/mgc/trim.mgc" node --test tests/fileinfo-sniff.test.mjs
+          rc=0; MAGIC_FILE="$RUNNER_TEMP/mgc/norej.mgc" node --test tests/fileinfo-sniff.test.mjs > "$RUNNER_TEMP/norej.txt" 2>&1 || rc=$?
+          grep -E "^ℹ (tests|pass|fail)" "$RUNNER_TEMP/norej.txt"
+          [ "$rc" != 0 ] || { echo "::error::the sniff test PASSED with no rejection signatures: it cannot see a disguise"; exit 1; }
+          echo "red control: the sniff test fails with no rejection signatures (rc=$rc), as it must"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: WordPress's upload decision per fixture, three engines (full database, trimmed, none)
+        working-directory: spikes/b2-wordpress
+        run: |
+          set -euo pipefail
+          npm ci --silent --no-audit --no-fund
+          python3 -I ../../engine/fileinfo/fixtures.py "$RUNNER_TEMP/fx"
+          ./build.sh | tail -1
+          B=http://localhost:8797; PW=local-spike-password
+          ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}")  # the local test token, as frames-e2e.sh passes it
+          for arm in lean lean-trim lean-nofileinfo; do
+            d="$RUNNER_TEMP/e/pagefeather-engine-s1-$arm"
+            PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+            ./run.sh --stop > /dev/null 2>&1 || true
+            export PERSIST_TO=$(mktemp -d)
+            DEV_LOCAL=1 ./run.sh _ping > /dev/null || { echo "::error::wrangler dev did not start ($arm)"; tail -40 dev.log; exit 1; }
+            curl -s "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null
+            echo "== $arm"
+            B=$B ADMIN_PASSWORD=$PW python3 tests/upload-sniff.py "$RUNNER_TEMP/fx" "$RUNNER_TEMP/up-$arm.json"
+            ./run.sh --stop > /dev/null 2>&1 || true
+          done
+      - name: The trimmed database decides every upload as the full one does (and the red control)
+        working-directory: spikes/b2-wordpress
+        run: |
+          set -euo pipefail
+          python3 tests/upload-sniff-compare.py "$RUNNER_TEMP/fx/manifest.json" "$RUNNER_TEMP/up-lean.json" "$RUNNER_TEMP/up-lean-trim.json"
+          rc=0; python3 tests/upload-sniff-compare.py "$RUNNER_TEMP/fx/manifest.json" "$RUNNER_TEMP/up-lean.json" "$RUNNER_TEMP/up-lean-nofileinfo.json" > "$RUNNER_TEMP/nofi.txt" || rc=$?
+          head -12 "$RUNNER_TEMP/nofi.txt"
+          [ "$rc" != 0 ] || { echo "::error::the compare PASSED on an engine without fileinfo: it cannot see a missed disguise"; exit 1; }
+          echo "red control: the compare fails without fileinfo (rc=$rc), as it must"
+      - name: e2e.sh and woo.py on lean-trim (frames-e2e.sh, both ways)
+        working-directory: spikes/b2-wordpress
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-trim"
+          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          if ! tests/frames-e2e.sh; then echo "::error::frames-e2e.sh failed on lean-trim"; tail -40 dev.log 2>/dev/null || true; exit 1; fi

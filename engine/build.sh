@@ -51,6 +51,8 @@ phase base-image
 
 variant=${ENGINE_VARIANT:-unchanged}
 case "$variant" in unchanged) ;; lean) python3 -I "$here/patches/lean.py" "$compile/php/Dockerfile" ;; *) echo "unknown ENGINE_VARIANT $variant" >&2; exit 1 ;; esac
+# The fileinfo trim inputs ride in the docker context (lean only; lean.py's edit 11 copies them).
+if [ "$variant" = lean ]; then rm -rf "$compile/../pagefeather-fileinfo"; cp -R "$here/fileinfo" "$compile/../pagefeather-fileinfo"; fi
 # Lean with GD: libgd rebuilt from upstream's recipe without AVIF (engine/patches/libgd-noavif.py), as
 # the upstream Makefile's libgd_jspi target does, replacing the prebuilt archive in the tree.
 if [ "$variant" = lean ] && [ "${ENGINE_GD:-yes}" = yes ]; then
@@ -79,6 +81,8 @@ if [ "$variant" = lean ]; then
   # ENGINE_FILEINFO=no: a MEASURED arm only, never shipped (the lead's ruling, 2026-11-14): fileinfo's
   # compiled-in magic database is 7.59 MiB of .rodata (the linker map of run 43648222519).
   [ "${ENGINE_FILEINFO:-yes}" = yes ] || args+=(WITH_FILEINFO=no)
+  # ENGINE_MAGIC=trim: the trimmed fileinfo database (S2b, engine/fileinfo/build-db.sh).
+  args+=(PF_MAGIC="${ENGINE_MAGIC:-full}")
 fi
 bargs=(); for a in "${args[@]}"; do bargs+=(--build-arg "$a"); done
 (cd "$compile" && docker build -f php/Dockerfile .. --tag=pagefeather-engine-build --progress=plain "${bargs[@]}" > "$out/docker-build.log" 2>&1) || { tail -60 "$out/docker-build.log"; exit 1; }
@@ -87,7 +91,7 @@ phase php
 # 4. The outputs, as build.js copies them.
 docker run --rm -v "$out:/output" pagefeather-engine-build sh -c "cp -rf /root/output/* /output && chown -R $(id -u):$(id -g) /output"
 printf '%s\n' "${args[@]}" > "$out/build-args.txt"
-echo "ENGINE_VARIANT=$variant ENGINE_GD=${ENGINE_GD:-yes} ENGINE_FILEINFO=${ENGINE_FILEINFO:-yes} ENGINE_PIN_ENV=${ENGINE_PIN_ENV:-0}" >> "$out/build-args.txt"
+echo "ENGINE_VARIANT=$variant ENGINE_GD=${ENGINE_GD:-yes} ENGINE_FILEINFO=${ENGINE_FILEINFO:-yes} ENGINE_MAGIC=${ENGINE_MAGIC:-full} ENGINE_PIN_ENV=${ENGINE_PIN_ENV:-0}" >> "$out/build-args.txt"
 # The linker inputs (wasm-ld --trace, lean only): one path per line, archive members folded into the archive.
 if [ "$variant" = lean ]; then
   sed -E 's/^#[0-9]+ [0-9.]+ //' "$out/docker-build.log" | grep -E '^/[^ ]+\.(a|o)(\([^)]*\))?$' | sed -E 's/\(.*\)$//' | sort -u > "$out/link-inputs.txt"
