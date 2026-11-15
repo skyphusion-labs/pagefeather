@@ -38,6 +38,11 @@ jobs:
           npm ci --silent
           ./prepare.sh | tail -1
           ./build.sh | tail -1
+          # #679: the placeholder image WooCommerce copies at activation is in the PHP tree. The listing goes to
+          # a file first: piped into grep -q under pipefail, unzip dies of SIGPIPE at the first match (rc 141).
+          unzip -l build/site.zip > build/site-list.txt
+          grep -q 'wordpress/wp-content/plugins/woocommerce/assets/images/placeholder-attachment.webp' build/site-list.txt \
+            || { echo "::error::site.zip has no WooCommerce placeholder-attachment.webp (#679)"; exit 1; }
           s=$(date +%s)
           if DEV_ENV=dosql-local WOO_ACTIVE=1 ./opcache.sh > build/opcache.log 2>&1; then
             tail -1 build/opcache.log
