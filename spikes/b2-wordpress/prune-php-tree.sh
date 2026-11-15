@@ -9,10 +9,13 @@
 # Core reads three scripts with file_get_contents and prints them inline: the emoji loader (every public
 # page) and the two embed scripts (oEmbed and the embed page). They stay (#578).
 # wp-admin's scripts load as static files (CONCATENATE_SCRIPTS in php/wp-config.php).
+# WooCommerce's installer copies its placeholder image from the plugin tree into uploads at activation
+# (WC_Install::create_placeholder_image); without it activation warns and the store has no placeholder (#679).
 # Test: tests/prune-php-tree-test.sh.
 set -euo pipefail
 cd "${1:?usage: prune-php-tree.sh <wordpress dir>}"
 find . -type f \( -name '*.js' -o -name '*.map' -o -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' -o -name '*.gif' -o -name '*.svg' -o -name '*.webp' -o -name '*.woff' -o -name '*.woff2' -o -name '*.ttf' -o -name '*.eot' -o -name '*.mo' -o -name '*.po' -o -name '*.zip' -o \( -name '*.css' ! -name '*.min.css' \) -o -name '*.txt' -o -name '*.scss' -o -name '*.md' \) \
   ! -path './wp-content/themes/*/style.css' ! \( -path './wp-content/plugins/*' \( -name '*.js' -o -name '*.svg' \) \) \
   ! -path './wp-includes/js/wp-emoji-loader.min.js' ! -path './wp-includes/js/wp-embed.min.js' ! -path './wp-includes/js/wp-embed-template.min.js' \
+  ! -path './wp-content/plugins/woocommerce/assets/images/placeholder-attachment.webp' \
   -delete
