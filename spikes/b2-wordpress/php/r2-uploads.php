@@ -255,7 +255,17 @@ class R2_Uploads_Stream {
 
 	public function url_stat( $uri, $flags ) {
 		$key = self::key( $uri );
-		if ( '' === $key || isset( self::$dirs[ $key ] ) ) {
+		// '' is the stream root. 'uploads' is the media mount: the upload_dir
+		// filter maps WP_CONTENT_DIR/uploads onto r2://uploads. Both are
+		// directories even when the bucket has no object under them.
+		//
+		// wp_mkdir_p walks dirname() until is_dir() is true, then chmod()s each
+		// new component. dirname('r2://uploads') is 'r2:', then '.'. On the wasm
+		// filesystem that directory is mode 0777, outside umask 022, so chmod()
+		// runs on plain paths such as './://uploads/YYYY/MM'. Those paths are
+		// not on this stream and do not exist, so PHP prints
+		// "chmod(): No such file or directory" before the REST JSON (#594).
+		if ( '' === $key || 'uploads' === $key || isset( self::$dirs[ $key ] ) ) {
 			return self::stat_array( true );
 		}
 		$r = self::call( array( 'op' => 'head', 'key' => $key ) );
