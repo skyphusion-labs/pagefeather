@@ -40,10 +40,12 @@ cp "$pg/packages/php-wasm/compile/opcache/"* "$php/ext/opcache/"
 # 3. The engine's patches, as engine/build.sh applies them: --check first, then apply. A patch that does
 #    not apply stops here.
 n=0
+: > "$work/applied-patches.txt"
 for p in "$here"/opcache/*.patch; do
   [ -f "$p" ] || continue
   git -C "$php" apply --check "$p" || fail "$(basename "$p") does not apply to php-src $PHP_REF"
   git -C "$php" apply "$p"
+  echo "engine/opcache/$(basename "$p")" >> "$work/applied-patches.txt"  # for codeql-sarif-map.py
   echo "applied $(basename "$p")"; n=$((n + 1))
 done
 [ "$n" -gt 0 ] || fail "no engine/opcache/*.patch found"

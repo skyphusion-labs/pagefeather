@@ -95,6 +95,11 @@ The `c-cpp` scan builds php-src 8.3.36 `ext/opcache` natively, with the engine p
 If a patch in `engine/opcache/` does not apply, the `c-cpp` scan fails. A step after the analysis
 checks that the database holds the patched `zend_persist.c`.
 
+GitHub drops a result whose file is not in the repository, and the patched php-src files are not.
+So `engine/opcache/codeql-sarif-map.py` moves each result on a line that a patch added to that line
+of the `.patch` file. A result on an upstream php-src line is not ours: the job log lists it, and it
+is not uploaded.
+
 Default setup must stay off. While it is on, GitHub refuses each upload from this workflow ("CodeQL
 analyses from advanced configurations cannot be processed when the default setup is enabled").
 The repo cannot turn it off itself: the org security configuration controls it. Pagefeather is
