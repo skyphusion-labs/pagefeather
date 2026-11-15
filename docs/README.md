@@ -60,6 +60,7 @@ Edge security works at the zone level: a WAF with rate limits on login, the zone
 ## Evidence
 
 - [results.md](results.md) every deploy and test run that backs a measured cell, with the command, date and Wrangler version. Measurements are never deleted. A later row can correct an earlier one; read the whole table (see the note at its top).
+- [opcache-shm-610.md](opcache-shm-610.md) OPcache shared memory vs the file-cache fallback, re-measured after #582 M2b (#610).
 - [prior-art.md](prior-art.md) the projects this builds on, credited.
 
 ## Historical (retired, not the product)
