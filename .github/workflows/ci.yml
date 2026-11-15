@@ -81,6 +81,10 @@ jobs:
         run: bash deploy/tests/curl-argv-test.sh
       - name: Dialect tests
         run: php spikes/b2-wordpress/tests/dialect-test.php
+      - name: A new month upload returns JSON with no chmod warning (issue #594)
+        # php/r2-uploads.php: the uploads root is a directory when the bucket is empty,
+        # so wp_mkdir_p chmod()s the r2 stream and not a plain path that does not exist.
+        run: php spikes/b2-wordpress/tests/upload-month-json-test.php
       - name: Approach A literal tests (issue #79)
         run: php tests/a/literals-test.php
       - name: Approach A object cache isolated mode (issue #218)
