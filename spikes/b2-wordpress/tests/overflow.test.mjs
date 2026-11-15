@@ -4,7 +4,7 @@
 // and every request runs exactly once, wherever it runs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { overflowSettings, shouldOverflow, createPicker, overflowName } from '../overflow.mjs';
+import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy } from '../overflow.mjs';
 import { createPhpLock } from '../php-lock.mjs';
 
 test('settings: off by default; on, always, the depth, the pool and the hint', () => {
@@ -136,4 +136,81 @@ test('uploads stay in the Worker: media uploads, and any request whose declared 
 	assert.match(src, /const ovUpload = isMediaUpload\(req, url\) \|\| Number\(req\.headers\.get\('content-length'\) \|\| 0\) > OVERFLOW_MAX_BODY;/);
 	assert.match(src, /const OVERFLOW_MAX_BODY = 1024 \* 1024;/);
 	assert.match(src, /shouldOverflow\(ovs, \{ running: phpLock\.running, waiting: phpLock\.waiting \}, url, ovUpload\)/);
+});
+
+
+// #296 (3)(c), the object-side BUSY answer (ruled 2026-11-15). (c) measured the queue MOVING INTO THE POOL:
+// 507 of 699 granted waits were in objects at pool 32. Now an object that already runs or holds PHP answers
+// busy BEFORE it runs anything; the Worker tries its second choice, then runs the request locally.
+test('objectBusy: any run in flight or any waiter', () => {
+	assert.equal(objectBusy({ running: 0, waiting: 0 }), false);
+	assert.equal(objectBusy({ running: 1, waiting: 0 }), true);
+	assert.equal(objectBusy({ running: 0, waiting: 1 }), true);
+});
+
+test('pickTwo: two distinct objects, the less loaded first; one object gives one choice', () => {
+	const seq = [0.1, 0.6]; let k = 0;
+	const p = createPicker(8, () => seq[k++ % seq.length]);
+	p.start(0); p.start(0);
+	assert.deepEqual(p.pickTwo(), [5, 0], 'object 5 (0 in flight) before object 0 (2 in flight)');
+	const one = createPicker(1, Math.random);
+	assert.deepEqual(one.pickTwo(), [0]);
+});
+
+async function simulateBusy({ env, requests, runMs, busy }) {
+	const c = fakeClock();
+	const mk = () => createPhpLock({ staleMs: 60000, now: c.now, setTimer: c.setTimer, clearTimer: c.clearTimer });
+	const isolates = [mk(), mk()];
+	const s = overflowSettings(env);
+	const objects = Array.from({ length: s.pool }, mk);
+	const picker = createPicker(s.pool, Math.random);
+	const ran = new Map(); const live = new Map(); let maxLive = 0; let maxObjWaiting = 0; let busyAnswers = 0; let local = 0;
+	const job = (id, where) => () => new Promise((res) => {
+		const n = (live.get(where) || 0) + 1; live.set(where, n); maxLive = Math.max(maxLive, n);
+		const r = ran.get(id) || { n: 0, where: [] }; r.n++; r.where.push(where); ran.set(id, r);
+		c.setTimer(() => { live.set(where, live.get(where) - 1); res(id); }, runMs);
+	});
+	const ps = [];
+	for (let id = 0; id < requests; id++) {
+		const iso = isolates[id % 2];
+		if (shouldOverflow(s, { running: iso.running, waiting: iso.waiting }, new URL('https://s.example/'), false)) {
+			let done = false;
+			for (const o of picker.pickTwo()) {
+				if (busy && objectBusy(objects[o])) { busyAnswers++; continue; } // answered before anything runs
+				picker.start(o);
+				ps.push(objects[o].run(job(id, 'obj' + o)).finally(() => picker.end(o)));
+				maxObjWaiting = Math.max(maxObjWaiting, objects[o].waiting);
+				done = true; break;
+			}
+			if (!done) { local++; ps.push(iso.run(job(id, 'iso' + (id % 2)))); }
+		} else ps.push(iso.run(job(id, 'iso' + (id % 2))));
+	}
+	await c.advance(requests * runMs + 10000);
+	await Promise.all(ps);
+	return { ran, maxLive, maxObjWaiting, busyAnswers, local, moved: [...ran.values()].filter((r) => r.where[0].startsWith('obj')).length };
+}
+
+test('busy: an object never queues; a busy answer means the request runs exactly once elsewhere', async () => {
+	const r = await simulateBusy({ env: { PHP_OVERFLOW: 'on', PHP_OVERFLOW_POOL: '4' }, requests: 60, runMs: 600, busy: true });
+	assert.equal(r.ran.size, 60);
+	assert.ok([...r.ran.values()].every((x) => x.n === 1), 'each request ran once');
+	assert.equal(r.maxLive, 1, 'never two runs at once in an isolate or an object');
+	assert.equal(r.maxObjWaiting, 0, 'no object ever holds a waiter: the queue does not move into the pool');
+	assert.ok(r.busyAnswers > 0 && r.local > 0, `busy answers sent some requests back to run locally (busy ${r.busyAnswers}, local ${r.local})`);
+	// Control 1: the same load WITHOUT busy queues in the objects (the measured (c) defect).
+	const nb = await simulateBusy({ env: { PHP_OVERFLOW: 'on', PHP_OVERFLOW_POOL: '4' }, requests: 60, runMs: 600, busy: false });
+	assert.ok(nb.maxObjWaiting > 0, 'the control must queue in an object, or this test cannot fail');
+	// Control 2: overflow off moves none.
+	const off = await simulateBusy({ env: {}, requests: 60, runMs: 600, busy: true });
+	assert.equal(off.moved, 0);
+	assert.ok([...off.ran.values()].every((x) => x.n === 1));
+});
+
+test('index.js: the object answers busy only for an overflowed, retry-safe request, before anything runs', () => {
+	assert.match(src, /const OVERFLOW_BUSY_OK_HEADER = 'x-pf-busy-ok';/);
+	assert.match(src, /if \(overflowed && raw\.headers\.get\(OVERFLOW_BUSY_OK_HEADER\) === '1' && objectBusy\(\{ running: phpLock\.running, waiting: phpLock\.waiting \}\)\) \{/, 'the object checks its own lock');
+	assert.match(src, /fwd\.headers\.delete\(OVERFLOW_BUSY_OK_HEADER\);\n\t+if \(target && target\.busyOk\) fwd\.headers\.set\(OVERFLOW_BUSY_OK_HEADER, '1'\);/, 'only the Worker sets it; a client copy is dropped');
+	assert.match(src, /const busyOk = !turnstileRoute\(env, req\.method, url\);/, 'a Turnstile-gated request is verified once: it is never retried, so it never asks for busy');
+	assert.match(src, /event: 'overflow-busy'/);
+	assert.match(src, /event: 'overflow-local'/);
 });

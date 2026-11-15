@@ -15,6 +15,11 @@
 //   PHP_OVERFLOW_HINT     the location hint for the objects (default wnam, measured best)
 // Never moved: spike and operator paths (/_*) and media uploads (their body is staged in R2 here).
 // Routing: power of two choices over the in-flight count this isolate holds per object.
+// BUSY (#296 (3)(c), ruled 2026-11-15): (c) measured the queue moving INTO the pool (pool 32: 507 of 699 granted
+// waits in objects, object queues up to 8 deep). So an object that already runs or holds PHP answers busy BEFORE it
+// runs anything, and the Worker tries its second choice, then runs the request locally. The object's own lock is
+// the real queue state; no shared estimate is needed. Only a retry-safe request may be answered busy (index.js:
+// a Turnstile-gated one is verified once, so it is never retried).
 // Pure, so tests/overflow.test.mjs drives it.
 
 const HINTS = new Set(['wnam', 'enam', 'sam', 'weur', 'eeur', 'apac', 'oc', 'afr', 'me']);
@@ -45,6 +50,11 @@ export function shouldOverflow(s, lock, url, isUpload) {
 	return lock.running > 0 && lock.waiting >= s.depth;
 }
 
+// An object with a run in flight or a waiter is busy (lock: its php-lock.mjs { running, waiting }).
+export function objectBusy(lock) {
+	return lock.running > 0 || lock.waiting > 0;
+}
+
 export function overflowName(i) {
 	return 'ovf-' + i;
 }
@@ -58,6 +68,14 @@ export function createPicker(pool, rand = Math.random) {
 			let j = Math.min(pool - 2, Math.floor(rand() * (pool - 1)));
 			if (j >= i) j++;
 			return inflight[j] < inflight[i] ? j : i;
+		},
+		// The two choices, the less loaded first (the Worker tries the second when the first answers busy).
+		pickTwo() {
+			if (pool === 1) return [0];
+			const i = Math.min(pool - 1, Math.floor(rand() * pool));
+			let j = Math.min(pool - 2, Math.floor(rand() * (pool - 1)));
+			if (j >= i) j++;
+			return inflight[j] < inflight[i] ? [j, i] : [i, j];
 		},
 		start(i) { inflight[i]++; },
 		end(i) { inflight[i] = Math.max(0, inflight[i] - 1); },

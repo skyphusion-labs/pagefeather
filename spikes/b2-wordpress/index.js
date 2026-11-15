@@ -36,7 +36,7 @@ import { headroomStream } from './headroom.mjs';
 import { createUndoLog } from './undo-log.mjs';
 import { createRetirer } from './runtime-drop.mjs';
 import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
-import { overflowSettings, shouldOverflow, createPicker, overflowName } from './overflow.mjs';
+import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy } from './overflow.mjs';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
@@ -2527,6 +2527,9 @@ const ORIGIN_HEADER = 'x-wp-public-origin';
 // the Worker sets it; a client copy is always dropped. The object then does not arm its cron alarm: N pool
 // objects must not become N WordPress cron runners.
 const OVERFLOW_HEADER = 'x-pf-overflow';
+// #296 (3)(c): set by the front Worker when it can retry this request elsewhere (not Turnstile-gated). The object then
+// answers busy (503, x-php-busy) instead of queueing, before it runs anything. Only the Worker sets it.
+const OVERFLOW_BUSY_OK_HEADER = 'x-pf-busy-ok';
 // A request whose declared body is over this stays in the Worker, which stages large bodies in R2 (#296 (3)).
 const OVERFLOW_MAX_BODY = 1024 * 1024;
 // One picker per isolate, per pool size (the in-flight counts are what this isolate sent).
@@ -2771,6 +2774,11 @@ export class PhpRuntime extends DurableObject {
 		// arms it instead, which is when the deferred work actually needs to run.
 		// An overflowed request (#296 (3)) never arms the cron alarm: the pool objects only absorb a queue.
 		const overflowed = raw.headers.get(OVERFLOW_HEADER) === '1';
+		// #296 (3)(c): this object already runs or holds PHP, and the Worker can send the request elsewhere: answer busy
+		// now, before anything runs (no cron arm, no PHP, no write), so the queue never moves into the pool.
+		if (overflowed && raw.headers.get(OVERFLOW_BUSY_OK_HEADER) === '1' && objectBusy({ running: phpLock.running, waiting: phpLock.waiting })) {
+			return new Response(null, { status: 503, headers: { 'x-php-busy': '1', 'cache-control': 'no-store', 'retry-after': '1' } });
+		}
 		if (!url.pathname.startsWith('/_') && !overflowed) {
 			lastOrigin = origin;
 			await this.ctx.storage.put(ORIGIN_KEY, origin);
@@ -3160,6 +3168,8 @@ async function toPhpObject(req, env, url, ctx, target = null) {
 			// The same for the overflow mark (#296 (3)).
 			fwd.headers.delete(OVERFLOW_HEADER);
 			if (target && target.overflow) fwd.headers.set(OVERFLOW_HEADER, '1');
+			fwd.headers.delete(OVERFLOW_BUSY_OK_HEADER);
+			if (target && target.busyOk) fwd.headers.set(OVERFLOW_BUSY_OK_HEADER, '1');
 			fwd.headers.set(ORIGIN_HEADER, siteOrigin(env, url));
 			t0 = Date.now();
 			fwd.headers.set(SENT_HEADER, String(t0));
@@ -3362,18 +3372,31 @@ const site = {
 		const ovUpload = isMediaUpload(req, url) || Number(req.headers.get('content-length') || 0) > OVERFLOW_MAX_BODY;
 		if (ovs.on && env.PHP_RUNTIME && env.PHP_IN_DO !== 'on' && env.DB_IN_DO !== 'on' && shouldOverflow(ovs, { running: phpLock.running, waiting: phpLock.waiting }, url, ovUpload)) {
 			const picker = ovPickerFor(ovs.pool);
-			const i = picker.pick();
-			picker.start(i);
-			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow', obj: overflowName(i), running: phpLock.running, waiting: phpLock.waiting, inflight: picker.inflight(i) }));
-			try {
-				const r = await toPhpObject(req, env, url, ctx, { name: overflowName(i), hint: ovs.hint, overflow: true });
+			// #296 (3)(c): a retry-safe request asks the object to answer busy instead of queueing; it then tries the
+			// second choice, then runs here. A Turnstile-gated request is verified once at the front, so it is sent once.
+			const busyOk = !turnstileRoute(env, req.method, url);
+			const choices = busyOk ? picker.pickTwo() : [picker.pick()];
+			for (const i of choices) {
+				picker.start(i);
+				console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow', obj: overflowName(i), running: phpLock.running, waiting: phpLock.waiting, inflight: picker.inflight(i) }));
+				let r;
+				try {
+					// A copy per attempt: a busy answer leaves the original request (and its body) unread for the next one.
+					r = await toPhpObject(busyOk ? req.clone() : req, env, url, ctx, { name: overflowName(i), hint: ovs.hint, overflow: true, busyOk });
+				} finally {
+					picker.end(i);
+				}
+				if (busyOk && r.status === 503 && r.headers.get('x-php-busy') === '1') {
+					console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-busy', obj: overflowName(i) }));
+					continue;
+				}
 				r.headers.set('x-php-overflow', overflowName(i));
 				// The object handed a content change's purge back (x-cache-purge: front): this Worker owns the page cache.
 				if (r.headers.get('x-cache-purge') === 'front') schedulePurge(ctx);
 				return r;
-			} finally {
-				picker.end(i);
 			}
+			// Both choices were busy: run here, as without overflow (the request has not run anywhere).
+			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-local', running: phpLock.running, waiting: phpLock.waiting }));
 		}
 		const workerRun = await withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx), { shedMs: phpShedMs(env, false) });
 		return workerRun === PHP_SHED ? phpShedResponse() : workerRun;
