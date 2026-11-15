@@ -300,6 +300,19 @@ def signals(api, window, service):
             else:
                 item["count"] = count(api, window, base + [_leaf("m", "eq", m)])
         out["items"].append(item)
+    # Page-cache purges (#628): index.js logs m: purge "asked" for each change and "sent" (with ok) for each
+    # clear it sends. A refused clear leaves cached pages old until the TTL. Counts only, never the errors.
+    item = {"m": "purge", "header": "x-cache-purge", "meaning": "the page cache was asked to clear (asked), a clear was sent (sent), and Cloudflare refused it (refused); a refused clear leaves cached pages old until the TTL",
+            "count": None, "split": None, "parts": None}
+    if control:
+        b = base + [_leaf("m", "eq", "purge")]
+        asked = count(api, window, b + [_leaf("asked", "exists", "")])
+        sent = count(api, window, b + [_leaf("sent", "exists", "")])
+        okc = count(api, window, b + [_leaf("sent", "exists", ""), _leaf("ok", "eq", True, "boolean")])
+        item["parts"] = {"asked": asked, "sent": sent, "ok": okc,
+                         "refused": None if sent is None or okc is None else sent - okc}
+        item["count"] = None if asked is None or sent is None else asked + sent
+    out["items"].append(item)
     out["header_only"] = [{"header": h, "meaning": t} for h, t in HEADER_ONLY]
     return out
 

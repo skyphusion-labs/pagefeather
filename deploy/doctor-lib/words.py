@@ -125,6 +125,10 @@ def render(f):
     if not sg["structured_lines"]:
         L.append("  could not measure: I found no Pagefeather structured lines (%s), so I cannot count these." % _n(sg["structured_lines"]))
     for i in sg["items"]:
+        if i.get("parts") is not None:
+            pt = i["parts"]
+            L.append("  %-20s asked %s, sent %s, refused %s. Matches header %s: %s." % (i["m"], _n(pt["asked"]), _n(pt["sent"]), _n(pt["refused"]), i["header"], i["meaning"]))
+            continue
         extra = ""
         if i["split"]:
             extra = " (" + ", ".join("%s %d" % (k, n) for k, n in sorted(i["split"].items())) + ")"
