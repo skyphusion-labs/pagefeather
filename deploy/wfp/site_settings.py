@@ -64,7 +64,9 @@ PRESENCE = ("HTTP_ALLOW_HOSTS",)
 #   MEM_LEDGER      "on" logs the isolate memory ledger on every request and cron leg: a steady
 #                   log and CPU cost, for a diagnosis only.
 #   WFP_PHP_ENV     a measurement build's PHP env (USE_ZEND_ALLOC=1 swaps PHP's allocator, #434).
-MEASUREMENT = ("HEADROOM_PROBE", "MEM_LEDGER", "WFP_PHP_ENV")
+#   PAGE_CACHE_PRODUCT_TTL  #628 C2: a shorter edge TTL for product pages, measured against the #628 bar
+#                   before it can become a recorded setting.
+MEASUREMENT = ("HEADROOM_PROBE", "MEM_LEDGER", "WFP_PHP_ENV", "PAGE_CACHE_PRODUCT_TTL")
 SECRETS = ("TURNSTILE_SECRET",)
 # No log line carries data from SECRETS: a message about a secret is one fixed text, and which
 # secret, and what happened, is in the exit code (5 a recorded secret is missing, 6 a live one would

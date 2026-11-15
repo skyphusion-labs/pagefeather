@@ -401,6 +401,18 @@ cron_interval_var() {
   fi
   echo "CRON_INTERVAL_MS = \"$((10#$v))\""
 }
+# PAGE_CACHE_PRODUCT_TTL (#628 C2, page-cache-ttl.mjs): seconds a WooCommerce product, shop or category page
+# stays fresh at the edge, with stale-while-revalidate cut to match (other pages keep 120 and 600). An
+# integer from 5 to 600. A measurement flag (site_settings.py MEASUREMENT): ON only for the run that
+# exports it, never recorded, until #628 measures it against the bar. Unset renders nothing.
+page_cache_product_var() {
+  local v=${PAGE_CACHE_PRODUCT_TTL:-}
+  [ -n "$v" ] || return 0
+  if ! [[ "$v" =~ ^[0-9]{1,3}$ ]] || [ "$((10#$v))" -lt 5 ] || [ "$((10#$v))" -gt 600 ]; then
+    echo "PAGE_CACHE_PRODUCT_TTL must be an integer from 5 to 600, not ${v}" >&2; return 1
+  fi
+  echo "PAGE_CACHE_PRODUCT_TTL = \"$((10#$v))\""
+}
 # MEM_LEDGER (#394, mem-ledger.mjs): "on" logs the isolate memory ledger on every request and at
 # every cron leg start; "off" or unset leaves it to operator requests (x-mem-ledger: 1). Read from
 # the run's environment only, like PHP_INI. Unset renders nothing (byte for byte as before).
@@ -536,7 +548,9 @@ render_user() { # render_user <site> <origin>
   local recycle_mib; recycle_mib=$(recycle_mib_var) || return 1
   [ -z "$recycle_mib" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$recycle_mib
   local mem_ledger; mem_ledger=$(mem_ledger_var) || return 1
+  local page_cache_product; page_cache_product=$(page_cache_product_var) || return 1
   [ -z "$mem_ledger" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$mem_ledger
+  [ -z "$page_cache_product" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$page_cache_product
   local cron_interval; cron_interval=$(cron_interval_var) || return 1
   [ -z "$cron_interval" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$cron_interval
   local oc_remote; oc_remote=$(opcache_remote_var) || return 1
@@ -768,7 +782,7 @@ use_recorded_inputs() {
 # remembers which one this run is, in http_allow_mode, before local -x collapses unset
 # into empty. Empty denies every host, so a drop sets the mode to unset.
 SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS HTTP_ALLOW_HOSTS"
-# The measurement flags (HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV, site_settings.py MEASUREMENT) are
+# The measurement flags (HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV PAGE_CACHE_PRODUCT_TTL, site_settings.py MEASUREMENT) are
 # never recorded: ON only for the run that exports them; the next update without one turns it off.
 # A setting render_user reads that is not in this list is DROPPED by an update that does not export
 # it: config-hash-test.sh derives the env names render_user's helpers read and fails on a new one.

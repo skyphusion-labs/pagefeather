@@ -92,3 +92,24 @@ add_action(
 		}
 	}
 );
+
+/*
+ * #628 C2: mark a WooCommerce product, shop or product-category page for the Worker, which gives it
+ * PAGE_CACHE_PRODUCT_TTL at the edge when that flag is set (page-cache-ttl.mjs). These pages show stock.
+ * The Worker removes the mark from every answer, so a visitor never sees it.
+ */
+function skyphusion_edge_cache_is_product_page() {
+	if ( ! function_exists( 'is_product' ) || ! function_exists( 'is_shop' ) || ! function_exists( 'is_product_taxonomy' ) ) {
+		return false;
+	}
+	return (bool) ( is_product() || is_shop() || is_product_taxonomy() );
+}
+add_action(
+	'template_redirect',
+	function () {
+		if ( skyphusion_edge_cache_is_product_page() && ! headers_sent() ) {
+			header( 'x-pf-page: product' );
+		}
+	},
+	0
+);

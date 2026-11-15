@@ -168,6 +168,11 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/perf-headers.test.mjs
       - name: b-dosql the Pages entrypoint stamps its render time, so a cached copy can be told from a fresh one (#628)
         run: node --test spikes/b2-wordpress/tests/page-stamp.test.mjs
+      - name: b-dosql a shorter edge TTL for product pages, off by default, and the mark never leaves (#628 C2)
+        run: |
+          node --test spikes/b2-wordpress/tests/page-cache-ttl.test.mjs
+          php spikes/b2-wordpress/tests/edge-cache-product-test.php
+          bash deploy/wfp/tests/page-cache-product-test.sh
       - name: b-dosql a memory reset is not an overload (issue #335)
         # object-error.mjs: an isolate memory reset answers x-isolate-reset, never x-overloaded.
         run: node --test spikes/b2-wordpress/tests/object-error.test.mjs

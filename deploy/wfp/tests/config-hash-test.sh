@@ -88,7 +88,7 @@ check "FORCE and a new build: both reasons" "$(FORCE_UPLOAD=1 update_upload_reas
 # Nothing here talks to Cloudflare.
 unset PHP_INI PHP_RECYCLE RECYCLE_WASM_MIB MEM_LEDGER CRON_INTERVAL_MS OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS TURNSTILE_SITEKEY TURNSTILE_SECRET \
   TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS OBSERVABILITY MAIL_FROM MAIL_FROM_NAME HTTP_ALLOW_HOSTS \
-  WFP_PHP_ENV PHP_LOCATION LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB HEADROOM_PROBE WP_VECTORIZE_SEARCH FORCE_UPLOAD PLUGINS IMPORT_CONTENT IMPORT_THEMES \
+  WFP_PHP_ENV PHP_LOCATION LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB HEADROOM_PROBE PAGE_CACHE_PRODUCT_TTL WP_VECTORIZE_SEARCH FORCE_UPLOAD PLUGINS IMPORT_CONTENT IMPORT_THEMES \
   IMPORT_PLUGINS IMPORT_MU_PLUGINS FORCE_FAIL COUNT_ROWS WFP_CUSTOM_DOMAIN REPLACE_INPUTS THROWAWAY || true
 # #394: the remote packs are the default (lib.sh remote_pack_defaults). This test's fake app tree has no
 # file-trace.sh or pack scripts, so its site runs the opt-out: the config-hash cases do not depend on it.
@@ -444,6 +444,12 @@ ok "#558 the live site has HEADROOM_PROBE and the run does not: NOT refused, upl
 set_entry bld-other "$(last_hash)"
 HEADROOM_PROBE=on MEM_LEDGER=on run_update
 ok "#558 a run with HEADROOM_PROBE=on MEM_LEDGER=on renders them, and the record holds NEITHER" "$([ "$RC" = 0 ] && [ "$(conf_has HEADROOM_PROBE)" = 1 ] && [ "$(conf_has MEM_LEDGER)" = 1 ] && srec_get | python3 -I -c 'import json, sys; d = json.load(sys.stdin); sys.exit(0 if not {"HEADROOM_PROBE", "MEM_LEDGER", "WFP_PHP_ENV"} & set(d["settings"]) else 1)' && echo 1 || echo 0)"
+# #628 C2: PAGE_CACHE_PRODUCT_TTL is a measurement flag too: rendered for the run that sets it, never recorded.
+PAGE_CACHE_PRODUCT_TTL=30 run_update
+ok "#628 a run with PAGE_CACHE_PRODUCT_TTL=30 renders it, and the record does not hold it" "$([ "$RC" = 0 ] && [ "$(conf_has PAGE_CACHE_PRODUCT_TTL)" = 1 ] && srec_get | python3 -I -c 'import json, sys; d = json.load(sys.stdin); sys.exit(0 if "PAGE_CACHE_PRODUCT_TTL" not in d["settings"] else 1)' && echo 1 || echo 0)"
+u0=$(lines "$UPLOAD_LOG")
+PAGE_CACHE_PRODUCT_TTL=601 run_update
+ok "#628 a run with PAGE_CACHE_PRODUCT_TTL=601 is refused before any upload" "$([ "$RC" != 0 ] && [ "$(lines "$UPLOAD_LOG")" = "$u0" ] && echo 1 || echo 0)"
 live '[{"type":"plain_text","name":"HEADROOM_PROBE","text":"on"},{"type":"plain_text","name":"MEM_LEDGER","text":"on"},{"type":"plain_text","name":"SITE_ORIGIN","text":"y"}]'
 set_entry bld-other "$(last_hash)"
 run_update
@@ -477,7 +483,7 @@ PY2
 # measurement flags: never recorded, by design (site_settings.py MEASUREMENT): ON only for the run.
 # HTTP_ALLOW_HOSTS is a recorded setting (#564). The record stores presence, so empty stays empty.
 # TMPDIR: curl_cfg writes the mode-600 curl config there (#581). Not a site setting.
-measurement=" HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV "
+measurement=" HEADROOM_PROBE MEM_LEDGER PAGE_CACHE_PRODUCT_TTL WFP_PHP_ENV "
 notset=" API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN OBSERVABILITY TMPDIR THROWAWAY$measurement"
 settings=" $(bash -c '. "'"$LIB"'"; echo $SITE_SETTINGS') "
 miss=""; for n in $derived; do case "$settings$notset" in *" $n "*) ;; *) miss="$miss $n" ;; esac; done
