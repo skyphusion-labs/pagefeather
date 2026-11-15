@@ -93,7 +93,12 @@ def render(f):
             if x:
                 L.append("  %s: %s" % (label, ", ".join("%s %d" % (names.get(k, k), n) for k, n in sorted(x.items(), key=lambda kv: (kv[0] != "ok", kv[0])))))
         t = f.get("timing")
-        L.append("Timing, computed by Cloudflare over every request in the window:")
+        if t is None or f.get("timing_of") is None:
+            L.append("Timing, computed by Cloudflare:")
+        else:
+            L.append("Timing, computed by Cloudflare, from %s of %d requests:" % (_n(f.get("timing_requests")), f["timing_of"]))
+            if (f.get("timing_requests") or 0) < f["timing_of"]:
+                L.append("  Some requests have no time or no Worker/Durable Object label, so they are not in these numbers.")
         if t is None:
             L.append("  could not measure")
         else:

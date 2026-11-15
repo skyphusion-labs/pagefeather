@@ -326,10 +326,15 @@ def gather(api, site, window, namespace="wp-wfp", forced=None):
     facts["event_rows"] = by.get("cf-worker-event", 0)
     facts["visibility"] = "outcomes" if facts["event_rows"] else "console_only"
     facts["outcomes"] = facts["timing"] = facts["outcomes_by_model"] = facts["slowest_paths"] = facts["examples"] = None
+    facts["timing_requests"] = facts["timing_of"] = None
     if facts["event_rows"]:
         oc = count_by(api, window, _events(svc), "$workers.outcome")
         facts["outcomes"] = None if oc is None else dict((k, oc.get(k, 0)) for k in sorted(set(OUTCOMES) | set(oc)))
         facts["timing"] = timing(api, window, svc)
+        # The denominator (#662): a record with no time or no execution model is not in the grouped
+        # percentile call, so the percentiles can cover fewer requests than the outcome total.
+        facts["timing_of"] = None if facts["outcomes"] is None else sum(facts["outcomes"].values())
+        facts["timing_requests"] = None if facts["timing"] is None else sum(x["requests"] or 0 for x in facts["timing"].values())
         if facts["timing"] is not None:
             facts["outcomes_by_model"] = outcomes_by_model(api, window, svc, facts["timing"])
         facts["slowest_paths"] = slowest_paths(api, window, svc)
