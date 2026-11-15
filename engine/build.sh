@@ -57,10 +57,12 @@ if [ "${ENGINE_OPCACHE_STATS:-0}" = 1 ]; then
   [ -f "$compile/opcache/opcache_module.c" ] || { echo "upstream opcache_module.c not found" >&2; exit 1; }
   cp "$here/opcache/opcache_module_stats.c" "$compile/opcache/opcache_module.c"
 fi
-# ENGINE_LAZY_BODIES=1 (#582 S4 M2a, off by default): OPcache places the body parts of every function and
-# method (literals, opcodes, live ranges, try/catch) in a tail region of each script's block, and the file
-# cache records where it starts (engine/opcache/pf-lazy-bodies.patch). M2a still loads EAGERLY: it proves
-# the layout only. The system id changes with the flag, so lazy and eager files never mix.
+# ENGINE_LAZY_BODIES=1 (#582 S4 M2a and M2b, off by default): OPcache places the body parts of every function
+# and method (literals, opcodes, live ranges, try/catch) in a tail region of each script's block, with a body
+# directory and per-body string tables (engine/opcache/pf-lazy-bodies.patch). A script loaded from the file
+# cache keeps only its head; each body is read at the first call of its function (M2b; the suite is
+# engine/opcache/lazy/). opcache.pagefeather_lazy_load=0 loads whole files again on the same engine. The system
+# id changes with the flag, so lazy and eager files never mix.
 if [ "${ENGINE_LAZY_BODIES:-0}" = 1 ]; then
   df="$compile/php/Dockerfile"
   cp "$here/opcache/pf-lazy-bodies.patch" "$compile/opcache/pf-lazy-bodies.patch"
