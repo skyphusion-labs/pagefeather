@@ -89,13 +89,14 @@ J=$(mktemp "${TMPDIR:-/tmp}/lazy-bodies-jar.XXXXXX")
 curl -s -c "$J" -b "$J" -o /dev/null "$B/wp-login.php"
 curl -s -c "$J" -b "$J" -o /dev/null --data-urlencode "pwd=$PW" -d 'log=admin&wp-submit=Log+In&redirect_to=%2Fwp-admin%2F&testcookie=1' "$B/wp-login.php"
 curl -sf "${T[@]}" "$B/_mem" > "$out.m2c-a" || { echo "lazy-bodies-e2e: /_mem before post-new.php failed"; exit 1; }
-wall=$(curl -s -c "$J" -b "$J" -o /dev/null -w '%{http_code} %{time_total}' "$B/wp-admin/post-new.php")
+wall=$(curl -s -c "$J" -b "$J" -o /dev/null -D "$out.m2c-h" -w '%{http_code} %{time_total}' "$B/wp-admin/post-new.php")
 curl -sf "${T[@]}" "$B/_mem" > "$out.m2c-b" || { echo "lazy-bodies-e2e: /_mem after post-new.php failed"; exit 1; }
 rm -f "$J"
 python3 -I - "$out" "$wall" <<'PY'
 import json, sys
 out, (code, wall) = sys.argv[1], sys.argv[2].split()
 a, b = (json.load(open(out + s))["ini"]["lb"] for s in (".m2c-a", ".m2c-b"))
+perf = next((json.loads(l.split(":", 1)[1]) for l in open(out + ".m2c-h", errors="replace") if l.lower().startswith("x-perf:")), {})
 ns = b.get("body_load_ns", 0) - a.get("body_load_ns", 0)
 loads = b.get("body_loads", 0) - a.get("body_loads", 0)
 wall_ms = float(wall) * 1000
@@ -103,9 +104,10 @@ share = ns / 1e6 / wall_ms if wall_ms else 0
 trig = ns / 1e6 > 250 or share > 0.05
 r = {"unit": b.get("lazy_unit"), "lazy_load": b.get("lazy_load"), "status": int(code), "wall_ms": round(wall_ms, 1), "body_load_ms": round(ns / 1e6, 2), "share": round(share, 4), "body_loads": loads,
      "body_bytes": b.get("body_bytes_loaded", 0) - a.get("body_bytes_loaded", 0), "script_loads": b.get("script_loads", 0) - a.get("script_loads", 0), "hot_loads": b.get("hot_loads", 0) - a.get("hot_loads", 0), "fallback_triggered": trig,
-     "phases_ms": {k: round((b.get("body_%s_ns" % k, 0) - a.get("body_%s_ns" % k, 0)) / 1e6, 2) for k in ("open", "read", "check", "unser", "install")}}
+     "phases_ms": {k: round((b.get("body_%s_ns" % k, 0) - a.get("body_%s_ns" % k, 0)) / 1e6, 2) for k in ("open", "read", "check", "unser", "install")},
+     "inflate": {k: perf.get(k) for k in ("inflates", "inflateKiB", "reinflates", "phpMs", "wasm1MiB")}}
 print("@event m2c-first-post-new " + json.dumps(r))
-print("lazy-bodies-e2e: M2c phases (ms): " + ", ".join("%s %.1f" % kv for kv in r["phases_ms"].items()))
+print("lazy-bodies-e2e: M2c phases (ms): " + ", ".join("%s %.1f" % kv for kv in r["phases_ms"].items()) + "; x-perf " + json.dumps(r["inflate"]))
 print("lazy-bodies-e2e: M2c reading (local wrangler dev, not the live site): the first post-new.php after a boot spent %.1f ms in %d body loads, %.2f%% of its %.0f ms; threshold 250 ms or 5%%: fallback %s" % (ns / 1e6, loads, share * 100, wall_ms, "TRIGGERED" if trig else "not triggered"))
 if int(code) != 200:
     sys.exit("lazy-bodies-e2e: post-new.php answered %s for the M2c reading (the login did not hold?)" % code)
