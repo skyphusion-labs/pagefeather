@@ -20,6 +20,8 @@ refuse "OPCACHE_REMOTE is for variant a only" VARIANT=b-dosql OPCACHE_REMOTE=1
 refuse "SITE_REMOTE is for variant a only" VARIANT=b-do SITE_REMOTE=1
 refuse "RECYCLE_WASM_MIB is for variant a only" VARIANT=b-dosql RECYCLE_WASM_MIB=140
 refuse "OBJECT_CACHE_VERSIONS is for variant a only" VARIANT=b-dosql OBJECT_CACHE_VERSIONS=1
+refuse "WOO_HPOS_CACHE is for variant a only" VARIANT=b-dosql WOO_HPOS_CACHE=on
+for bad in yes 1 off ON true; do refuse "WOO_HPOS_CACHE must be on or unset" VARIANT=a "WOO_HPOS_CACHE=$bad"; done
 for bad in on yes 2 true; do refuse "OBJECT_CACHE_VERSIONS must be 0 or 1" VARIANT=a "OBJECT_CACHE_VERSIONS=$bad"; done
 refuse "A_CLIENT is for variant a only" VARIANT=b-dosql A_CLIENT=lean
 refuse "PHP_OVERFLOW is for variant a only" VARIANT=b-do PHP_OVERFLOW=1

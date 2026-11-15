@@ -99,6 +99,10 @@ jobs:
         run: |
           php spikes/b2-wordpress/tests/hyperdrive-qtrace-test.php
           node --test spikes/b2-wordpress/tests/qtrace.test.mjs
+      - name: WooCommerce HPOS Data Caching for approach A, default off (#697)
+        run: |
+          node --test spikes/b2-wordpress/tests/woo-hpos-cache.test.mjs
+          php spikes/b2-wordpress/tests/woo-hpos-cache-test.php
       - name: Approach A object cache isolated mode (issue #218)
         # spikes/b2-wordpress/php/object-cache-js.php: the allowlist + TTL + force-off
         # posture, with a stubbed bridge (no DB). WooCommerce groups never persist.

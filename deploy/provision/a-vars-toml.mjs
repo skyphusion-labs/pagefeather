@@ -14,7 +14,7 @@ const line = (k, v) => `${k} = ${JSON.stringify(String(v))}`;
 const [cmd, arg] = process.argv.slice(2);
 if (cmd === 'vars') {
 	// #686: OBJECT_CACHE_VERSIONS=1 (checked by a-settings.sh) is aVars' objectCacheVersions, as on the provisioning path.
-	const vars = aVars({ siteOrigin: process.env.SITE_ORIGIN, objectCacheVersions: process.env.OBJECT_CACHE_VERSIONS === '1' });
+	const vars = aVars({ siteOrigin: process.env.SITE_ORIGIN, objectCacheVersions: process.env.OBJECT_CACHE_VERSIONS === '1', wooHposCache: process.env.WOO_HPOS_CACHE === 'on' }); // #697
 	for (const v of vars) if (!OWN.has(v.name)) console.log(line(v.name, v.text));
 } else if (cmd === 'kv') {
 	if (!/^[A-Za-z0-9_-]{1,64}$/.test(arg || '')) { console.error('a-vars-toml: kv needs the namespace id (Terraform output oc_kv_id)'); process.exit(2); }

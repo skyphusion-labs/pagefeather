@@ -76,5 +76,10 @@ ok "unset renders none" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -q OBJ
 # so its hyperdrive resource must keep caching disabled (provisionSite checks the live config; this path cannot).
 ok "the Terraform Hyperdrive config keeps caching disabled (#650)" "$(awk '/resource "cloudflare_hyperdrive_config" "wp"/{f=1} f&&/^}/{exit} f&&/caching = \{ disabled = true \}/{print 1; exit}' "$ROOT/deploy/terraform/main.tf" | grep -qx 1 && echo 1 || echo 0)"
 
+echo "6. WOO_HPOS_CACHE=on (#697) reaches the rendered [vars]; unset renders nothing (the default is OFF)"
+render "$T/h.toml" WOO_HPOS_CACHE=on; rc=$?
+ok "WOO_HPOS_CACHE=on renders vars WOO_HPOS_CACHE = \"on\" (rc $rc)" "$([ $rc = 0 ] && python3 -I "$HERE/canon.py" "$T/h.toml" | grep -qx 'vars WOO_HPOS_CACHE = "on"' && echo 1 || echo 0)"
+ok "unset renders no WOO_HPOS_CACHE line" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -q WOO_HPOS_CACHE && echo 0 || echo 1)"
+
 [ "$fails" = 0 ] && echo "a-render: all checks pass" || echo "a-render: $fails failing check(s)"
 exit $((fails > 0))
