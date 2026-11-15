@@ -171,6 +171,8 @@ async function objectCacheOp(op) {
 			}
 			out.push(null);
 		}
+		// #296 (b) probe: a re-check carries cmp (the value about to be written); count whether the stored value equals it.
+		if (op.cmp != null && op.k.length === 1) { const o = cacheVersions.recheckOutcome(out[0], op.cmp); if (o !== 'nocmp') ocCount(op.k[0], 'recheck_' + o); }
 		return { v: out };
 	}
 	if (op.op === 'set') {
@@ -3773,7 +3775,8 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			lastMemTrace = null;
 			if (ctx && ctx.inObject) out.set('x-boot-origin', bootOrigin);
 			// The path only, never the query string: a store's URLs carry order keys and logins there.
-			console.log(JSON.stringify({ m: 'req', path: url.pathname, boot: booted, d1: d.calls }));
+			const rc = {}; for (const [g, n] of Object.entries(ocGroupStats)) if (g.includes('.recheck_')) rc[g] = n; // #296 (b) probe
+			console.log(JSON.stringify({ m: 'req', path: url.pathname, boot: booted, d1: d.calls, ...(Object.keys(rc).length ? { rc } : {}) }));
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
 			if (tracing()) fileTrace.end({ status: r.httpStatusCode });
 			evictLazy();

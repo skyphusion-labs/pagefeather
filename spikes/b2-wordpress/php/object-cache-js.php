@@ -118,12 +118,17 @@ class JS_Object_Cache {
 	 * True when this request found the key ABSENT in the shared store and it is STILL absent there (the safe
 	 * re-check): writing it is a regeneration, not an overwrite. Clears the flag either way.
 	 */
-	private function is_regeneration( $key, $group, $pkey ) {
+	private function is_regeneration( $key, $group, $pkey, $data = null, $has_data = false ) {
 		if ( empty( $this->absent[ $group ][ $key ] ) ) {
 			return false;
 		}
 		unset( $this->absent[ $group ][ $key ] );
-		$r = $this->call( array( 'op' => 'get', 'k' => array( $pkey ) ) );
+		$op = array( 'op' => 'get', 'k' => array( $pkey ) );
+		if ( $has_data ) {
+			// #296 (b) probe, measure only: the JS side counts whether a found value equals the one about to be written.
+			$op['cmp'] = base64_encode( serialize( $data ) );
+		}
+		$r = $this->call( $op );
 		return ! ( isset( $r['v'][0] ) && null !== $r['v'][0] );
 	}
 
@@ -364,7 +369,7 @@ class JS_Object_Cache {
 			// #643 probe (b), the bump cascade: a set of a key this request found ABSENT is a regeneration. Nobody can
 			// hold a value for it under this version, so it does not bump, unless the safe re-check (ruled 2026-11-15:
 			// one shared-store read) finds a value another isolate wrote meanwhile; then it is an overwrite and bumps.
-			if ( $this->is_regeneration( $key, $group, $old ) ) {
+			if ( $this->is_regeneration( $key, $group, $old, $data, true ) ) {
 				$old = null;
 			} elseif ( ! $this->bump_bucket( $key ) ) {
 				// The version did not move, so every isolate still asks for the old key: drop its old value

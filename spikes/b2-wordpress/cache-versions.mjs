@@ -32,6 +32,14 @@ export function validPrefix(prefix) {
 export function versionsTable(prefix) { return `${prefix}skyph_cache_versions`; }
 // A value inside a LIKE pattern: the backslash (the default escape) first, then % and _.
 export function likeEscape(s) { return String(s).replace(/[\\%_]/g, (c) => '\\' + c); }
+// #296 (b) probe: a bucketed set re-checks the shared store; when it finds a value, is that value the one being
+// written? Both sides are base64(serialize(value)), so string equality is equality of the SERIALIZED value, never
+// object identity. 'nocmp' when no value was sent (a delete re-check).
+export function recheckOutcome(stored, cmp) {
+	if (cmp == null) return 'nocmp';
+	if (stored == null) return 'absent';
+	return stored === cmp ? 'eq' : 'ne';
+}
 export function triggerNames(prefix) {
 	return GROUPS.flatMap(({ table }) => EVENTS.map(([, ab]) => `${prefix}skyph_v_${table}_${ab}`));
 }

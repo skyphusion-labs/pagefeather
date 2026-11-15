@@ -2,7 +2,7 @@
 // fake MySQL that keeps the schema state, so install, status and remove are checked as state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { install, status, remove, triggerSql, triggerNames, versionsTable, validPrefix, cell, BUCKETS, likeEscape } from '../cache-versions.mjs';
+import { install, status, remove, triggerSql, triggerNames, versionsTable, validPrefix, cell, BUCKETS, likeEscape, recheckOutcome } from '../cache-versions.mjs';
 
 const b64 = (s) => ({ $b: Buffer.from(String(s)).toString('base64') });
 function fakeDb({ refuseTrigger = null, binary = false } = {}) {
@@ -118,4 +118,20 @@ test('likeEscape escapes every LIKE metacharacter, the backslash first (CodeQL j
 	assert.equal(likeEscape('a%b'), 'a\\%b');
 	assert.equal(likeEscape('a\\b'), 'a\\\\b');
 	assert.equal(likeEscape('x\\_'), 'x\\\\\\_');
+});
+
+test('recheckOutcome: a re-check compares the SERIALIZED value, never object identity (#296 (b) probe)', () => {
+	// PHP sends base64(serialize($data)) as cmp; the store holds the same encoding. Two distinct PHP objects with the
+	// same fields serialize to the same bytes, so they are equal; any byte difference is not.
+	const enc = (s) => Buffer.from(s).toString('base64');
+	const a = enc('O:8:"stdClass":1:{s:1:"x";i:1;}');
+	const b = enc('O:8:"stdClass":1:{s:1:"x";i:1;}');
+	const c = enc('O:8:"stdClass":1:{s:1:"x";i:2;}');
+	assert.equal(recheckOutcome(null, a), 'absent');
+	assert.equal(recheckOutcome(undefined, a), 'absent');
+	assert.equal(recheckOutcome(a, b), 'eq');
+	assert.equal(recheckOutcome(a, c), 'ne');
+	// No cmp sent (a delete re-check): nothing to compare, so it is not counted as either.
+	assert.equal(recheckOutcome(a, undefined), 'nocmp');
+	assert.equal(recheckOutcome(a, null), 'nocmp');
 });
