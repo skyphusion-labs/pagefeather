@@ -118,7 +118,12 @@ obs() { "$PY" -c 'import json, sys, tomllib; c = tomllib.loads(sys.stdin.read())
 ok "off by default: [observability] enabled = false, explicitly" "$(env -u OBSERVABILITY bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | obs | grep -qx '{"enabled": false}' && echo 1 || echo 0)"
 ok "OBSERVABILITY=0 is the same explicit off" "$(OBSERVABILITY=0 render_user one https://wp-one.sub.workers.dev | obs | grep -qx '{"enabled": false}' && echo 1 || echo 0)"
 ok "OBSERVABILITY=1 is events only: enabled, invocation_logs false" "$(OBSERVABILITY=1 render_user one https://wp-one.sub.workers.dev | obs | grep -qx '{"enabled": true, "head_sampling_rate": 1, "logs": {"enabled": true, "invocation_logs": false}}' && echo 1 || echo 0)"
-ok "OBSERVABILITY=full keeps the invocation logs (throwaways only)" "$(OBSERVABILITY=full render_user one https://wp-one.sub.workers.dev | obs | grep -qx '{"enabled": true, "head_sampling_rate": 1, "logs": {"enabled": true, "invocation_logs": true}}' && echo 1 || echo 0)"
+# #639 (the lead's ruling): full is refused unless the run says the site is a throwaway, THROWAWAY=1.
+# An opt-in fails closed: a site nobody marked gets no full logging. (No live-site list: it fails open.)
+ok "OBSERVABILITY=full WITHOUT THROWAWAY fails the render" "$(env -u THROWAWAY OBSERVABILITY=full bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" >/dev/null 2>"$T/full.err" && echo 0 || { grep -q 'needs THROWAWAY=1' "$T/full.err" && echo 1 || echo 0; })"
+for bad in 0 yes 2 wp-one.sub.workers.dev; do ok "OBSERVABILITY=full with THROWAWAY=$bad fails the render" "$(THROWAWAY=$bad OBSERVABILITY=full render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
+ok "OBSERVABILITY=1 needs no THROWAWAY" "$(env -u THROWAWAY OBSERVABILITY=1 bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" >/dev/null 2>&1 && echo 1 || echo 0)"
+ok "OBSERVABILITY=full with THROWAWAY=1 keeps the invocation logs" "$(THROWAWAY=1 OBSERVABILITY=full render_user one https://wp-one.sub.workers.dev | obs | grep -qx '{"enabled": true, "head_sampling_rate": 1, "logs": {"enabled": true, "invocation_logs": true}}' && echo 1 || echo 0)"
 ok "any other OBSERVABILITY value fails the render" "$(OBSERVABILITY=yes render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"
 # WP_VECTORIZE_SEARCH (#330): the AI and SEARCH_INDEX bindings for this site's own index only.
 ok "render_user has no [ai] or [[vectorize]] by default" "$(render_user one https://wp-one.sub.workers.dev | grep -cE '^\[ai\]|^\[\[vectorize\]\]' | grep -qx 0 && echo 1 || echo 0)"

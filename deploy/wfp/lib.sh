@@ -583,13 +583,16 @@ TOML
   # full URL and user agent. So:
   #   OBSERVABILITY=1     events only: our own structured lines and uncaught exceptions, NO request
   #                       metadata (invocation_logs = false). For a diagnosis on a live site.
-  #   OBSERVABILITY=full  the invocation logs too. For a throwaway only.
+  #   OBSERVABILITY=full  the invocation logs too. For a throwaway only, ENFORCED (#639): the run must
+  #                       also set THROWAWAY=1, or the render fails. An opt-in fails closed; a list of
+  #                       live sites would fail open for the next store nobody added to it.
   #   unset or 0          an EXPLICIT enabled = false: without the block a re-upload left a site's
   #                       logging as it was, so "off" did not turn it off.
   case "${OBSERVABILITY:-0}" in
     0) printf '\n[observability]\nenabled = false\n' ;;
     1) printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = false\n' ;;
-    full) printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = true\n' ;;
+    full) [ "${THROWAWAY:-}" = 1 ] || { echo "OBSERVABILITY=full needs THROWAWAY=1 (it logs every request's URL, client IP and user agent; say the site is a throwaway, or use 1, events only)" >&2; return 1; }
+          printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = true\n' ;;
     *) echo "OBSERVABILITY must be 0, 1 (events only) or full (a throwaway only), not ${OBSERVABILITY}" >&2; return 1 ;;
   esac
   # WP_VECTORIZE_SEARCH (default off, metered): the token-free AI and SEARCH_INDEX bindings the
