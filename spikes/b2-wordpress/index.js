@@ -2845,7 +2845,10 @@ export class PhpRuntime extends DurableObject {
 			return Response.json({ evicting: true, build: BUILD_ID });
 		}
 		const maxBody = env.MEDIA && isMediaUpload(req, url) ? Number(env.MAX_UPLOAD_BYTES || MAX_UPLOAD_BYTES) : Number(env.MAX_BODY_BYTES || MAX_BODY_BYTES);
-		const ctx = { inObject: true, waitUntil: (p) => this.ctx.waitUntil(p), requestPurge: () => this.requestPurge() };
+		// An overflowed request (#296 (3)) hands its purge back to the front Worker: the object's purge alarm is
+		// also its cron driver (a pool object must never run cron), and an object cannot purge the Worker's page
+		// cache anyway (measured locally: "no cache API").
+		const ctx = { inObject: true, waitUntil: (p) => this.ctx.waitUntil(p), requestPurge: overflowed ? async () => 'front' : () => this.requestPurge() };
 		if (url.pathname === '/_d1ping') return d1ping(req, env, url, ctx);
 		// DB_IN_DO=on: WordPress's database is this object's SQLite (8j).
 		const sql = env.DB_IN_DO === 'on' ? this.ctx.storage.sql : null;
@@ -3361,6 +3364,8 @@ const site = {
 			try {
 				const r = await toPhpObject(req, env, url, ctx, { name: overflowName(i), hint: ovs.hint, overflow: true });
 				r.headers.set('x-php-overflow', overflowName(i));
+				// The object handed a content change's purge back (x-cache-purge: front): this Worker owns the page cache.
+				if (r.headers.get('x-cache-purge') === 'front') schedulePurge(ctx);
 				return r;
 			} finally {
 				picker.end(i);

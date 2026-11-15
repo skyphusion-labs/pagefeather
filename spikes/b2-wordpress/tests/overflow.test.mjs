@@ -117,3 +117,17 @@ test('control: overflow off keeps all 40 in the two isolates (and they still run
 	assert.ok([...r.ran.values()].every((x) => x.n === 1));
 	assert.equal(r.maxLive, 1);
 });
+
+// index.js cannot be imported under node (it loads php-wasm), so these read its source (as perf-headers.test.mjs).
+// Found in review on local workerd (2026-11-15, PHP_OVERFLOW=always, e2e.sh): an overflowed content change made
+// the POOL OBJECT schedule its own purge, so its alarm fired, and the alarm is the object's cron driver: a cron
+// run happened in a pool object. Its purge also failed ("no cache API": an object cannot purge the Worker's page
+// cache). So an overflowed request hands its purge back to the front Worker.
+import { readFileSync } from 'node:fs';
+const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+test('an overflowed request never arms the object alarm: neither the cron rearm nor a purge alarm', () => {
+	assert.match(src, /if \(!url\.pathname\.startsWith\('\/_'\) && !overflowed\) \{/, 'the cron rearm is skipped');
+	assert.match(src, /requestPurge: overflowed \? async \(\) => 'front' : \(\) => this\.requestPurge\(\)/, 'the purge goes back to the front, not to an object alarm');
+	assert.match(src, /if \(r\.headers\.get\('x-cache-purge'\) === 'front'\) schedulePurge\(ctx\);/, 'and the front Worker purges its own page cache');
+	assert.match(src, /fwd\.headers\.delete\(OVERFLOW_HEADER\);\n\t+if \(target && target\.overflow\) fwd\.headers\.set\(OVERFLOW_HEADER, '1'\);/, 'a client copy of the mark is always dropped');
+});
