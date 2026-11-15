@@ -127,5 +127,26 @@ $t = new JS_Object_Cache();
 $t->set( 'wc_attribute_taxonomies', array( 1 ), 'transient' );
 check( 'control: a transient still stays per request (no shared-store op)', 0 === count( $GLOBALS['ops'] ) );
 
+// ---- The options misses (#643 live check, 2026-11-15): 49 options gets per request, 0 L1 hits, 39 KV misses, but
+// only 0.84 options sets per request. WordPress core's wp_prime_option_caches() asks the cache for every listed option
+// by key (wp_cache_get_multiple), also the ones that live in alloptions or notoptions, and never writes those keys
+// alone, so they miss forever; with options persistent, each such miss was a KV read. A key this request's alloptions
+// or notoptions already holds is answered as a miss locally, with no bridge call (core ignores that value anyway).
+$wpdb->table = true;
+$GLOBALS['ops'] = array();
+$q = new JS_Object_Cache();
+$q->set( 'alloptions', array( 'blogname' => 'X', 'woocommerce_cod_settings' => 'a:0:{}' ), 'options' );
+$q->set( 'notoptions', array( 'no_such_option' => true ), 'options' );
+$GLOBALS['ops'] = array();
+$got = $q->get_multiple( array( 'blogname', 'woocommerce_cod_settings', 'no_such_option' ), 'options' );
+check( 'keys in alloptions or notoptions: answered as misses, as before', false === $got['blogname'] && false === $got['woocommerce_cod_settings'] && false === $got['no_such_option'] );
+check( 'and with NO bridge call (no KV read) for them', 0 === count( array_filter( $GLOBALS['ops'], function ( $op ) { return 'get' === $op['op']; } ) ) );
+$GLOBALS['ops'] = array();
+$q->get( 'woocommerce_cod_settings', 'options', false, $found );
+check( 'the same for a single get', 0 === count( array_filter( $GLOBALS['ops'], function ( $op ) { return 'get' === $op['op']; } ) ) && false === $found );
+$GLOBALS['ops'] = array();
+$q->get( 'a_real_unautoloaded_option', 'options', false, $found );
+check( 'a key in neither still goes to the shared store', 1 === count( array_filter( $GLOBALS['ops'], function ( $op ) { return 'get' === $op['op']; } ) ) );
+
 echo $fail ? "$fail failing check(s)\n" : "all checks pass\n";
 exit( $fail ? 1 : 0 );

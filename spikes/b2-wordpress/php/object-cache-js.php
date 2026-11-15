@@ -49,6 +49,11 @@ class JS_Object_Cache {
 	private $buckets_ok = false;
 	/** @var int Bucket bumps this request, for x-oc-stats. */
 	public $bucket_bumps = 0;
+	/**
+	 * @var array<string,array<string,bool>> Bucketed keys this request found ABSENT in the shared store (#643 probe (b),
+	 * the bump cascade): a set of such a key is a regeneration, and bumps only if a re-check finds a value written meanwhile.
+	 */
+	private $absent = array();
 	const TRANSIENT_BUCKETS = 64;
 
 	public function __construct() {
@@ -89,9 +94,37 @@ class JS_Object_Cache {
 		}
 	}
 
+	/**
+	 * #643 live check: wp_prime_option_caches() (core) looks up every listed option by key, also the ones in
+	 * alloptions or notoptions, and never writes those alone, so they miss in any persistent cache. Answer them as
+	 * misses here, with no bridge call (49 gets, 39 KV misses and 0.84 sets per request were measured). Core uses
+	 * alloptions or notoptions for them anyway. Approach A, versioned options only.
+	 */
+	private function options_known_miss( $key, $group ) {
+		if ( 'options' !== $group || ! isset( $this->versions['options'] ) || 'alloptions' === $key || 'notoptions' === $key ) {
+			return false;
+		}
+		$all = isset( $this->cache['options']['alloptions'] ) ? $this->cache['options']['alloptions'] : null;
+		$not = isset( $this->cache['options']['notoptions'] ) ? $this->cache['options']['notoptions'] : null;
+		return ( is_array( $all ) && array_key_exists( $key, $all ) ) || ( is_array( $not ) && isset( $not[ $key ] ) );
+	}
+
 	/** The version row of a bucketed key: tb0 .. tb63. */
 	private static function bucket( $key ) {
 		return 'tb' . ( abs( crc32( (string) $key ) ) % self::TRANSIENT_BUCKETS );
+	}
+
+	/**
+	 * True when this request found the key ABSENT in the shared store and it is STILL absent there (the safe
+	 * re-check): writing it is a regeneration, not an overwrite. Clears the flag either way.
+	 */
+	private function is_regeneration( $key, $group, $pkey ) {
+		if ( empty( $this->absent[ $group ][ $key ] ) ) {
+			return false;
+		}
+		unset( $this->absent[ $group ][ $key ] );
+		$r = $this->call( array( 'op' => 'get', 'k' => array( $pkey ) ) );
+		return ! ( isset( $r['v'][0] ) && null !== $r['v'][0] );
 	}
 
 	/**
@@ -259,16 +292,20 @@ class JS_Object_Cache {
 			++$this->cache_hits;
 			return self::copy( $this->cache[ $group ][ $key ] );
 		}
-		if ( $this->persistent( $group ) && empty( $this->missing[ $group ][ $key ] ) ) {
+		if ( $this->persistent( $group ) && empty( $this->missing[ $group ][ $key ] ) && ! $this->options_known_miss( $key, $group ) ) {
 			$r = $this->call( array( 'op' => 'get', 'k' => array( $this->pkey( $key, $group ) ) ) );
 			if ( isset( $r['v'][0] ) && null !== $r['v'][0] ) {
 				$value                          = unserialize( base64_decode( $r['v'][0] ) );
 				$this->cache[ $group ][ $key ] = $value;
 				$found                          = true;
 				++$this->cache_hits;
+				unset( $this->absent[ $group ][ $key ] );
 				return self::copy( $value );
 			}
 			$this->missing[ $group ][ $key ] = true;
+			if ( isset( $this->bucketed[ $group ] ) ) {
+				$this->absent[ $group ][ $key ] = true;
+			}
 		}
 		$found = false;
 		++$this->cache_misses;
@@ -283,7 +320,7 @@ class JS_Object_Cache {
 			if ( $this->has_local( $key, $group ) && ! $force ) {
 				$out[ $key ] = self::copy( $this->cache[ $group ][ $key ] );
 				++$this->cache_hits;
-			} elseif ( $this->persistent( $group ) && empty( $this->missing[ $group ][ $key ] ) ) {
+			} elseif ( $this->persistent( $group ) && empty( $this->missing[ $group ][ $key ] ) && ! $this->options_known_miss( $key, $group ) ) {
 				$need[] = $key;
 			} else {
 				$out[ $key ] = false;
@@ -298,8 +335,12 @@ class JS_Object_Cache {
 					$this->cache[ $group ][ $key ] = $value;
 					$out[ $key ]                    = self::copy( $value );
 					++$this->cache_hits;
+					unset( $this->absent[ $group ][ $key ] );
 				} else {
 					$this->missing[ $group ][ $key ] = true;
+					if ( isset( $this->bucketed[ $group ] ) ) {
+						$this->absent[ $group ][ $key ] = true;
+					}
 					$out[ $key ]                      = false;
 					++$this->cache_misses;
 				}
@@ -320,7 +361,12 @@ class JS_Object_Cache {
 		// writes nothing to the shared store (this request keeps its own value locally).
 		if ( isset( $this->bucketed[ $group ] ) && $this->persistent( $group ) ) {
 			$old = $this->pkey( $key, $group );
-			if ( ! $this->bump_bucket( $key ) ) {
+			// #643 probe (b), the bump cascade: a set of a key this request found ABSENT is a regeneration. Nobody can
+			// hold a value for it under this version, so it does not bump, unless the safe re-check (ruled 2026-11-15:
+			// one shared-store read) finds a value another isolate wrote meanwhile; then it is an overwrite and bumps.
+			if ( $this->is_regeneration( $key, $group, $old ) ) {
+				$old = null;
+			} elseif ( ! $this->bump_bucket( $key ) ) {
 				// The version did not move, so every isolate still asks for the old key: drop its old value
 				// (best effort: another isolate's Map keeps a copy up to its TTL).
 				$this->call( array( 'op' => 'del', 'k' => array( $old ) ) );
@@ -375,6 +421,10 @@ class JS_Object_Cache {
 		// A bucketed delete moves its bucket: every isolate's next request misses the key.
 		if ( isset( $this->bucketed[ $group ] ) && $this->persistent( $group ) ) {
 			$old = $this->pkey( $key, $group );
+			// A delete of a key found absent, and still absent on re-check, has nothing to invalidate.
+			if ( $this->is_regeneration( $key, $group, $old ) ) {
+				return $had;
+			}
 			if ( ! $this->bump_bucket( $key ) ) {
 				$this->call( array( 'op' => 'del', 'k' => array( $old ) ) );
 			}

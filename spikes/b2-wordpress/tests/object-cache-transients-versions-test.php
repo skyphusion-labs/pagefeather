@@ -130,7 +130,9 @@ $x->get( $k1, 'transient', false, $found );
 $q0 = count( $wpdb->sql );
 $x->set( $k1, array( 'A' ), 'transient', 86400 );
 check( 'request 1: one versions read', 1 === $wpdb->reads );
-check( 'request 1: a set bumps its bucket first (one UPDATE, one SELECT)', 2 === count( $wpdb->sql ) - $q0 && 1 === $wpdb->writes && 1 === $wpdb->rows[ bucket_of( $k1 ) ] );
+// Request 1 SET k1 after a MISS: a regeneration (#643 probe (b) cascade fix). No bump; one safe re-check read of the
+// shared store (a bridge get, not SQL); the value is written. The bump cases are checked below (overwrite, explicit write).
+check( 'request 1: a regeneration set after a miss does not bump (no SQL, version unchanged)', 0 === count( $wpdb->sql ) - $q0 && 0 === $wpdb->writes && 0 === $wpdb->rows[ bucket_of( $k1 ) ] );
 check( 'request 1: the value is written to the shared store', shared_ops( 'transient' ) >= 1 );
 $x->set( $k2, array( 'K2' ), 'transient', 86400 );
 
@@ -223,6 +225,67 @@ foreach ( array_slice( $keys, 1 ) as $c ) {
 }
 check( 'a set in one bucket leaves all 11 other buckets cached (11 of 11 hits)', 11 === $hits );
 check( 'and the changed key reads its new value', array( 'v' => 'changed' ) === $r->get( $hot, 'transient', false, $found ) );
+
+// ---- The bump cascade (#643 probe (b), 2026-11-15): 1,295 bucket bumps in 22 quiet requests. A regeneration set
+// after a miss bumped its bucket, every co-bucketed transient then missed, was regenerated, set, and bumped again.
+// Ruled: a set bumps only when it may OVERWRITE a cached value (the safe variant re-checks the shared store).
+$GLOBALS['store'] = array();
+$GLOBALS['lag']   = false;
+$wpdb->table = true; $wpdb->fail_bump = false;
+$same = array();
+for ( $i = 0; count( $same ) < 2 && $i < 5000; $i++ ) {
+	$c = 'cascade_' . $i;
+	if ( 'tb7' === bucket_of( $c ) ) {
+		$same[] = $c;
+	}
+}
+check( 'cascade: two keys in one bucket', 2 === count( $same ) );
+list( $ka, $kb ) = $same;
+$seed = new JS_Object_Cache();
+$seed->set( $kb, array( 'B' ), 'transient', 86400 ); // kb cached (an explicit write, never read: it bumps)
+$w0 = $wpdb->writes;
+// A request regenerates ka after a miss: it must NOT bump, so kb stays cached for everyone.
+$r1 = new JS_Object_Cache();
+$r1->get( $ka, 'transient', false, $found );
+$r1->set( $ka, array( 'A' ), 'transient', 86400 );
+check( 'a regeneration set after a miss does NOT bump its bucket', $w0 === $wpdb->writes );
+$r2 = new JS_Object_Cache();
+check( 'so the co-bucketed kb is still a hit in the next request', array( 'B' ) === $r2->get( $kb, 'transient', false, $found ) );
+check( 'and ka reads its regenerated value', array( 'A' ) === $r2->get( $ka, 'transient', false, $found ) );
+// An overwrite after a hit bumps.
+$w1 = $wpdb->writes;
+$r3 = new JS_Object_Cache();
+$r3->get( $ka, 'transient', false, $found );
+$r3->set( $ka, array( 'A2' ), 'transient', 86400 );
+check( 'an overwrite after a hit bumps', $w1 + 1 === $wpdb->writes );
+// A write of a key not read in this request (an explicit write, e.g. a version refresh) bumps.
+$w2 = $wpdb->writes;
+$r4 = new JS_Object_Cache();
+$r4->set( $ka, array( 'A3' ), 'transient', 86400 );
+check( 'a write of a key not read in this request bumps', $w2 + 1 === $wpdb->writes );
+// The race (the safe variant): X finds kc absent; Y regenerates kc = OLD (no bump); X then writes kc = NEW. X
+// re-checks the shared store, sees Y's value, and bumps: the next request reads NEW, never Y's OLD.
+$kc = 'race_key_1';
+$x  = new JS_Object_Cache();
+$x->get( $kc, 'transient', false, $found );
+$y  = new JS_Object_Cache();
+$y->get( $kc, 'transient', false, $found );
+$y->set( $kc, array( 'OLD' ), 'transient', 86400 );
+$w3 = $wpdb->writes;
+$x->set( $kc, array( 'NEW' ), 'transient', 86400 );
+check( 'the race: X re-checks, finds a value written meanwhile, and bumps', $w3 + 1 === $wpdb->writes );
+$n = new JS_Object_Cache();
+check( 'the race: the next request reads NEW, never the stale OLD', array( 'NEW' ) === $n->get( $kc, 'transient', false, $found ) );
+// A delete of a key found absent (and still absent) does not bump; any other delete bumps.
+$w4 = $wpdb->writes;
+$d  = new JS_Object_Cache();
+$d->get( 'never_set_key', 'transient', false, $found );
+$d->delete( 'never_set_key', 'transient' );
+check( 'a delete of a key found absent does not bump', $w4 === $wpdb->writes );
+$w5 = $wpdb->writes;
+$d2 = new JS_Object_Cache();
+$d2->delete( $ka, 'transient' );
+check( 'a delete of a key not read here bumps', $w5 + 1 === $wpdb->writes );
 
 echo $fail ? "$fail failing check(s)\n" : "all checks pass\n";
 exit( $fail ? 1 : 0 );
