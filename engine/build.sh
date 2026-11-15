@@ -51,6 +51,12 @@ phase base-image
 
 variant=${ENGINE_VARIANT:-unchanged}
 case "$variant" in unchanged) ;; lean) python3 -I "$here/patches/lean.py" "$compile/php/Dockerfile" ;; *) echo "unknown ENGINE_VARIANT $variant" >&2; exit 1 ;; esac
+# ENGINE_OPCACHE_STATS=1 (#582 S4 M1, a MEASUREMENT build, never shipped): the opcache glue module counts
+# declared and called user functions and their body bytes (engine/opcache/opcache_module_stats.c).
+if [ "${ENGINE_OPCACHE_STATS:-0}" = 1 ]; then
+  [ -f "$compile/opcache/opcache_module.c" ] || { echo "upstream opcache_module.c not found" >&2; exit 1; }
+  cp "$here/opcache/opcache_module_stats.c" "$compile/opcache/opcache_module.c"
+fi
 # The fileinfo trim inputs ride in the docker context (lean only; lean.py's edit 11 copies them).
 if [ "$variant" = lean ]; then rm -rf "$compile/../pagefeather-fileinfo"; cp -R "$here/fileinfo" "$compile/../pagefeather-fileinfo"; fi
 # Lean with GD: libgd rebuilt from upstream's recipe without AVIF (engine/patches/libgd-noavif.py), as
@@ -91,7 +97,7 @@ phase php
 # 4. The outputs, as build.js copies them.
 docker run --rm -v "$out:/output" pagefeather-engine-build sh -c "cp -rf /root/output/* /output && chown -R $(id -u):$(id -g) /output"
 printf '%s\n' "${args[@]}" > "$out/build-args.txt"
-echo "ENGINE_VARIANT=$variant ENGINE_GD=${ENGINE_GD:-yes} ENGINE_FILEINFO=${ENGINE_FILEINFO:-yes} ENGINE_MAGIC=${ENGINE_MAGIC:-full} ENGINE_PIN_ENV=${ENGINE_PIN_ENV:-0}" >> "$out/build-args.txt"
+echo "ENGINE_VARIANT=$variant ENGINE_GD=${ENGINE_GD:-yes} ENGINE_FILEINFO=${ENGINE_FILEINFO:-yes} ENGINE_MAGIC=${ENGINE_MAGIC:-full} ENGINE_OPCACHE_STATS=${ENGINE_OPCACHE_STATS:-0} ENGINE_PIN_ENV=${ENGINE_PIN_ENV:-0}" >> "$out/build-args.txt"
 # The linker inputs (wasm-ld --trace, lean only): one path per line, archive members folded into the archive.
 if [ "$variant" = lean ]; then
   sed -E 's/^#[0-9]+ [0-9.]+ //' "$out/docker-build.log" | grep -E '^/[^ ]+\.(a|o)(\([^)]*\))?$' | sed -E 's/\(.*\)$//' | sort -u > "$out/link-inputs.txt"
