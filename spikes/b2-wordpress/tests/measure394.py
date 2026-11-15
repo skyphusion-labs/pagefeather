@@ -211,11 +211,30 @@ def pnrest(o):
         rest_round(a, 'pnrest', i)
 
 
+# #589: REST_CONTENT_KIB=N gives each REST draft about N KiB of paragraph blocks (unset or 0: the title only,
+# as before). WordPress renders that content for the create's answer AFTER the insert, so an object reset in
+# that window kills a create that already wrote: the population the rolled-back share needs.
+PARA = ('measure394 content for the #589 post-write window. ' * 9).strip()
+def page_body(title):
+    v = os.environ.get('REST_CONTENT_KIB', '') or '0'
+    if not v.isdigit() or int(v) > 4096:
+        raise SystemExit('REST_CONTENT_KIB must be a whole number 0 to 4096, not %r' % v)
+    body = {'title': title, 'status': 'draft'}
+    kib = int(v)
+    if kib:
+        block = '<!-- wp:paragraph -->\n<p>%s</p>\n<!-- /wp:paragraph -->' % PARA
+        parts = []
+        while len('\n\n'.join(parts).encode()) < kib * 1024:
+            parts.append(block)
+        body['content'] = '\n\n'.join(parts)
+    return body
+
+
 def rest_round(a, phase, i):
     nn = req(a, '/wp-admin/admin-ajax.php?action=rest-nonce')
     nonce = (nn.get('body') or b'').decode().strip()
     title = 'measure394 %s %d' % (RUN, i)
-    r = req(a, '/?rest_route=/wp/v2/pages', json.dumps({'title': title, 'status': 'draft'}).encode(),
+    r = req(a, '/?rest_route=/wp/v2/pages', json.dumps(page_body(title)).encode(),
             {'X-WP-Nonce': nonce, 'Content-Type': 'application/json'}, 'POST')
     rec(phase, 'rest-page', 'POST', '/wp/v2/pages', r, dict(check_state(a, nonce, r, title), **frame_of(a, r)))
 
