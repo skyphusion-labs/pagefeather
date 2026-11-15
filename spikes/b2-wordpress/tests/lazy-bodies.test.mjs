@@ -65,7 +65,7 @@ async function prime() {
 		$o = array(); $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($P["oc"], FilesystemIterator::SKIP_DOTS));
 		foreach ($it as $p) { $o[(string) $p] = base64_encode(file_get_contents((string) $p)); } echo json_encode(array("lb" => lbx(), "bins" => $o));`);
 	assert.ok(!got.err, 'prime: could not compile ' + got.err);
-	assert.ok(got.lb && got.lb.dir_entries > 0, 'prime: this engine has no lazy-body directory (not a lazy-body engine): ' + JSON.stringify(got.lb));
+	assert.ok(got.lb && got.lb.dir_entries > 0, 'prime: this engine has no lazy-body directory (not a lazy-body engine); dir_entries ' + String(got.lb && got.lb.dir_entries));
 	assert.ok(Object.keys(got.bins).length >= FIXTURES.length - 1, 'prime: only ' + Object.keys(got.bins).length + ' .bin files');
 	primed = got.bins;
 	return primed;
@@ -115,7 +115,7 @@ test('test 12: a body read held back by pagefeatherRead still loads (Suspending 
 	const read = (stream) => (h.on && String(stream.path || '').endsWith('/f_delay.php.bin')) ? (h.hits++, ms(25)) : null;
 	const php = await runtime('lazy', { bins, read });
 	const a = await json(php, '<?php ' + PRE + LB + ` $t = lbx(); require $P["dir"] . "/f_delay.php"; echo json_encode(lbd($t, lbx()));`);
-	assert.equal(a.lazy_scripts, 1, 'f_delay.php did not load lazily: ' + JSON.stringify(a));
+	assert.equal(a.lazy_scripts, 1, 'f_delay.php did not load lazily (lazy_scripts)');
 	h.on = true;
 	const b = await json(php, '<?php ' + PRE + LB + ` require $P["dir"] . "/f_delay.php"; $t = lbx(); $r = pf_lb_delayed(7); echo json_encode(array($r, lbd($t, lbx())));`);
 	assert.equal(b[0], 'delayed:7');
@@ -162,7 +162,7 @@ test('test 16: observers see each call of a lazy function once, and count the re
 	const eager = await runtime('eager', { bins });
 	const eagerRun = await json(eager, work), eagerStats = await json(eager, read);
 	assert.deepEqual(lazy[0], eagerRun[0]);
-	assert.deepEqual([lazy[1], lazy[2]], [4, 4], 'observer begin and end per call of a lazy function (4 calls): ' + JSON.stringify(lazy));
-	assert.deepEqual([eagerRun[1], eagerRun[2]], [4, 4], 'eager: ' + JSON.stringify(eagerRun));
+	assert.deepEqual([lazy[1], lazy[2]], [4, 4], 'observer begin and end, once per call of a lazy body (4 calls)');
+	assert.deepEqual([eagerRun[1], eagerRun[2]], [4, 4], 'observer begin and end on the eager runtime (4 calls)');
 	assert.deepEqual(lazyStats, eagerStats, 'the stats observer counted other bodies with lazy loading (the stub, not the real opcodes?)');
 });
