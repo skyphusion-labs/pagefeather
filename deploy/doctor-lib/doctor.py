@@ -7,7 +7,7 @@ READ-ONLY. It reads the Workers Logs query API and the script's log settings. It
 Needs CLOUDFLARE_API_TOKEN and ACCOUNT_ID (or CLOUDFLARE_ACCOUNT_ID) in the environment. The token
 stays in this process; it is sent in a header, never on a command line.
 
-Exit: 0 no failures found; 1 problems found; 3 cannot see the site or cannot count failures;
+Exit: 0 no failures found; 1 problems found; 3 cannot see the site, cannot count failures, or a read failed;
 2 a usage or environment error.
 """
 import argparse

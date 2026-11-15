@@ -8,15 +8,24 @@ Rules this file keeps (issue #652):
   - Zero rows is "cannot see this site", never healthy.
   - Console lines only (OBSERVABILITY=1): failures cannot be counted, so no failure count is made.
   - The runtime line "Durable Object's isolate exceeded its memory limit and was reset." is not one
-    line per failed request. It becomes a yes or no, never a number.
+    line per failed request. Memory resets are a yes or no, never a number.
   - No query string, SQL text, client IP or token is ever kept. A row keeps the URL PATH only.
+
+Every count and percentile comes from the calculations view: the server computes it over the whole
+window in one call, so it is complete by construction (measured 2026-11-15: the invocations view
+returns at most 100 invocations a call, and reading a busy hour row by row took over 10 minutes).
+Rows are fetched only for the few examples doctor prints, and they are called examples.
+
+Our JSON console lines (measured 2026-11-15): $metadata.message is null, and the fields are in the
+returned row's source object. A FILTER or GROUP names a field by its bare key ("m", "kind", "event");
+"source.m" as a filter key reads 0 (php-lock on pfa-sb1114l: "m" 4,751, "source.m" 0).
 
 The token is read from CLOUDFLARE_API_TOKEN in this process and sent in a header. It is never on argv.
 """
 import json
+import time
 import os
 import sys
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,8 +33,10 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATASET = "cloudflare-workers"
 OUTCOMES = ("ok", "exceededMemory", "exceededCpu", "exception", "canceled")
-# Our structured console lines (spikes/b2-wordpress/index.js). The key is the field "m" of the JSON
-# line. Each one maps to the response header a site owner sees. One place, so the code is the record.
+# $workers.executionModel values (measured 2026-11-15) and the name doctor uses for each.
+MODELS = {"stateless": "worker", "durableObject": "durable_object"}
+# Our structured console lines (spikes/b2-wordpress/index.js), by their field "m". Each one maps to the
+# response header a site owner sees. One place, so the code is the record.
 SIGNALS = (
     # (m value, field to split by or None, the header it matches, what the line means)
     ("isolate-reset", "kind", "x-isolate-reset", "a request died in a platform reset (memory or storage) and got a 503 or a write-loss answer"),
@@ -39,8 +50,8 @@ SIGNALS = (
 HEADER_ONLY = (
     ("x-d1-failures", "failed database statements in one request; logged only inside a write-loss line"),
 )
-PAGE_LIMIT = 100  # the invocations view returns at most 100 invocations a call (measured 2026-11-15)
-MAX_SLICE_CALLS = 1500  # the budget of the sliced read; past it the read is marked NOT complete
+SLOW_PATHS = 5
+EXAMPLES = 5
 
 
 class Api(object):
@@ -84,27 +95,66 @@ def _svc(service):
     return _leaf("$metadata.service", "eq", service)
 
 
-def count_by(api, window, filters, group_key):
-    """{group value: count} from the calculations view, or None when the read failed."""
-    body = {"queryId": "doctor-count", "timeframe": window, "view": "calculations",
-            "parameters": {"datasets": [DATASET], "filters": filters,
-                           "calculations": [{"operator": "count"}]}}
+def _events(service):
+    return [_svc(service), _leaf("$metadata.type", "eq", "cf-worker-event")]
+
+
+def _group_of(a):
+    """The group value of one aggregate: groupKey (as the live API answers), or groups[0].value."""
+    if "groupKey" in a:
+        return a.get("groupKey")
+    g = a.get("groups") or []
+    return g[0].get("value") if g and isinstance(g[0], dict) else None
+
+
+def calc(api, window, filters, calcs, group_key=None, order_by=None, limit=None):
+    """One calculations call. calcs is [(alias, operator, number key or None)].
+    Returns {alias: {group: {"value": v, "count": n}}} ("_all" when not grouped), or None when the
+    read failed or the answer is not the expected shape."""
+    cs = []
+    for alias, op, key in calcs:
+        c = {"operator": op, "alias": alias}
+        if key:
+            c["key"] = key
+            c["keyType"] = "number"
+        cs.append(c)
+    params = {"datasets": [DATASET], "filters": filters, "calculations": cs}
     if group_key:
-        body["parameters"]["groupBys"] = [{"type": "string", "value": group_key}]
+        params["groupBys"] = [{"type": "string", "value": group_key}]
+    if order_by:
+        params["orderBy"] = {"value": order_by, "order": "desc"}
+    body = {"queryId": "doctor-calc", "timeframe": window, "view": "calculations", "parameters": params}
+    if limit:
+        body["limit"] = limit
     res = api.query(body)
     if res is None:
         return None
-    out = {}
-    for c in res.get("calculations") or []:
+    got = res.get("calculations") or []
+    out = dict((a, {}) for a, _, _ in calcs)
+    for i, c in enumerate(got):
+        alias = c.get("alias") or (calcs[i][0] if i < len(calcs) and len(got) == len(calcs) else None)
+        if alias not in out:
+            return None
         for a in c.get("aggregates") or []:
-            k = a.get("groupKey")
-            if not group_key or k is None:
-                k = "_all"
+            k = _group_of(a) if group_key else "_all"
+            if k is None:
+                continue
             try:
-                out[str(k)] = out.get(str(k), 0) + int(a.get("value") or 0)
+                v = a.get("value")
+                v = None if v is None else float(v)
+                n = int(a["count"]) if a.get("count") is not None else None
             except (TypeError, ValueError):
                 return None
+            out[alias][str(k)] = {"value": v, "count": n}
     return out
+
+
+def count_by(api, window, filters, group_key):
+    """{group value: count}, or None when the read failed."""
+    d = calc(api, window, filters, [("n", "count", None)], group_key)
+    if d is None:
+        return None
+    return dict((k, int(v["value"] or 0)) for k, v in d["n"].items())
 
 
 def count(api, window, filters):
@@ -164,129 +214,91 @@ def _path_only(url):
     return p or "/"
 
 
-def _event_row(e):
-    m = e.get("$metadata") or {}
-    w = e.get("$workers") or {}
-    ev = w.get("event") or {}
-    path = ev.get("path") if isinstance(ev.get("path"), str) else None
-    return {
-        "t": e.get("timestamp"),
-        "outcome": w.get("outcome"),
-        "cpu_ms": w.get("cpuTimeMs"),
-        "wall_ms": w.get("wallTimeMs"),
-        "type": w.get("eventType"),
-        "entrypoint": w.get("entrypoint"),
-        "where": "durable_object" if (w.get("durableObjectId") or (w.get("entrypoint") not in (None, "", "default"))) else "worker",
-        "path": _path_only(path) if path else _path_only((ev.get("request") or {}).get("url")),
-        "status": (ev.get("response") or {}).get("status"),
-    }
+TIMING = [("cpu_p50", "median", "$workers.cpuTimeMs"), ("cpu_p95", "p95", "$workers.cpuTimeMs"),
+          ("wall_p50", "median", "$workers.wallTimeMs"), ("wall_p95", "p95", "$workers.wallTimeMs")]
 
 
-def invocation_rows(api, window, service):
-    """Every cf-worker-event row in the window, by splitting the time window (measured 2026-11-15:
-    the invocations view returns at most PAGE_LIMIT invocations a call, and paging by moving the
-    window end read 1,666 of 3,771). A slice is read whole only when it returns fewer than
-    PAGE_LIMIT invocations AND as many request records as the calculations view counts in it.
-    Otherwise it is split in two. Returns (rows, complete): complete is False when a slice could
-    not be read whole (more than a page in one millisecond, a failed read, or the call budget)."""
-    rows = {}
-    state = {"complete": True, "calls": 0}
-    ev_type = [_svc(service), _leaf("$metadata.type", "eq", "cf-worker-event")]
-
-    def read(t0, t1):
-        if state["calls"] >= MAX_SLICE_CALLS:
-            state["complete"] = False
-            return
-        state["calls"] += 2
-        want = count(api, {"from": t0, "to": t1}, ev_type)
-        if want is None:
-            state["complete"] = False
-            return
-        if want == 0:
-            return
-        res = api.query({"queryId": "doctor-rows", "timeframe": {"from": t0, "to": t1},
-                         "view": "invocations", "limit": PAGE_LIMIT,
-                         "parameters": {"datasets": [DATASET], "filters": [_svc(service)]}})
-        if res is None:
-            state["complete"] = False
-            return
-        inv = res.get("invocations") or {}
-        evs = [e for v in inv.values() for e in (v or []) if (e.get("$metadata") or {}).get("type") == "cf-worker-event"]
-        if len(inv) >= PAGE_LIMIT or len(evs) < want:
-            if t1 - t0 >= 1:
-                mid = (t0 + t1) // 2
-                read(t0, mid)
-                read(mid + 1, t1)
-                return
-            state["complete"] = False  # one millisecond holds more than a page: keep what came back
-        for e in evs:
-            m = e.get("$metadata") or {}
-            w = e.get("$workers") or {}
-            rows[(m.get("requestId"), w.get("eventType"), w.get("entrypoint"), e.get("timestamp"))] = _event_row(e)
-
-    read(window["from"], window["to"])
-    return list(rows.values()), state["complete"]
-
-
-def _pct(vals, p):
-    v = sorted(x for x in vals if isinstance(x, (int, float)))
-    if not v:
+def timing(api, window, service):
+    """CPU and wall p50 and p95 per execution model, computed by the server over every request
+    record in the window. {model: {"requests", "cpu_ms": {p50, p95}, "wall_ms": {p50, p95}}} or None."""
+    d = calc(api, window, _events(service), TIMING, "$workers.executionModel")
+    if d is None:
         return None
-    i = min(len(v) - 1, max(0, int(round(p / 100.0 * len(v) + 0.5)) - 1))
-    return v[i]
-
-
-def summarize_rows(rows):
     out = {}
-    for where in ("worker", "durable_object"):
-        rs = [r for r in rows if r["where"] == where]
-        oc = {}
-        for r in rs:
-            k = r["outcome"] or "unknown"
-            oc[k] = oc.get(k, 0) + 1
-        out[where] = {"rows": len(rs), "outcomes": oc,
-                      "cpu_ms": {"p50": _pct([r["cpu_ms"] for r in rs], 50), "p95": _pct([r["cpu_ms"] for r in rs], 95)},
-                      "wall_ms": {"p50": _pct([r["wall_ms"] for r in rs], 50), "p95": _pct([r["wall_ms"] for r in rs], 95)}}
-    by_path = {}
-    for r in rows:
-        if r["path"] and isinstance(r["wall_ms"], (int, float)):
-            by_path.setdefault(r["path"], []).append(r["wall_ms"])
-    slow = sorted(({"path": p, "requests": len(v), "wall_ms_p95": _pct(v, 95)} for p, v in by_path.items()),
-                  key=lambda x: -(x["wall_ms_p95"] or 0))[:5]
-    out["slowest_paths"] = slow
+    for model in sorted(set(k for a in d.values() for k in a)):
+        name = MODELS.get(model, model)
+        g = lambda a: (d[a].get(model) or {})
+        ns = [g(a).get("count") for a, _, _ in TIMING if g(a).get("count") is not None]
+        out[name] = {"requests": max(ns) if ns else None,
+                     "cpu_ms": {"p50": g("cpu_p50").get("value"), "p95": g("cpu_p95").get("value")},
+                     "wall_ms": {"p50": g("wall_p50").get("value"), "p95": g("wall_p95").get("value")}}
     return out
 
 
-# A field of our JSON console lines (measured 2026-11-15): $metadata.message is null for them, and the
-# fields are in the event's source object. Never a message substring. The live read at 53d04bc showed
-# the filter key is the bare field name ("m" read isolate-reset-retry, write-loss and boot on pf582s),
-# so it is tried first; "source.m" is the fallback, and the control picks the one that reads.
-FIELD_PREFIXES = ("", "source.")
+def outcomes_by_model(api, window, service, models):
+    out = {}
+    for model, name in MODELS.items():
+        if name not in models:
+            continue
+        oc = count_by(api, window, _events(service) + [_leaf("$workers.executionModel", "eq", model)], "$workers.outcome")
+        out[name] = oc
+    return out
+
+
+def slowest_paths(api, window, service):
+    """The paths with the highest p95 wall time, from the server, or None when it cannot group so."""
+    d = calc(api, window, _events(service), [("wall_p95", "p95", "$workers.wallTimeMs")],
+             "$workers.event.path", order_by="wall_p95", limit=SLOW_PATHS)
+    if d is None:
+        return None
+    rows = []
+    for k, v in d["wall_p95"].items():
+        p = _path_only(k)
+        if p:
+            rows.append({"path": p, "requests": v["count"], "wall_ms_p95": v["value"]})
+    rows.sort(key=lambda r: -(r["wall_ms_p95"] or 0))
+    return rows[:SLOW_PATHS]
+
+
+def failure_examples(api, window, service):
+    """A few failed requests, newest first, to print as EXAMPLES. One invocations call."""
+    res = api.query({"queryId": "doctor-examples", "timeframe": window, "view": "invocations", "limit": EXAMPLES,
+                     "parameters": {"datasets": [DATASET], "filters": _events(service) + [_leaf("$workers.outcome", "neq", "ok")]}})
+    if res is None:
+        return None
+    out = []
+    for evs in (res.get("invocations") or {}).values():
+        for e in evs or []:
+            m = e.get("$metadata") or {}
+            w = e.get("$workers") or {}
+            if m.get("type") != "cf-worker-event" or w.get("outcome") in (None, "ok"):
+                continue
+            ev = w.get("event") or {}
+            path = ev.get("path") if isinstance(ev.get("path"), str) else (ev.get("request") or {}).get("url")
+            out.append({"t": e.get("timestamp"), "outcome": w.get("outcome"),
+                        "where": MODELS.get(w.get("executionModel"), w.get("executionModel")),
+                        "path": _path_only(path), "wall_ms": w.get("wallTimeMs"),
+                        "status": (ev.get("response") or {}).get("status")})
+    out.sort(key=lambda r: -(r["t"] or 0))
+    return out[:EXAMPLES]
 
 
 def signals(api, window, service):
-    """Counts of our own structured lines. The control first: if no line carries the field "m" under
-    any spelling, the counts below cannot be read (a wrong key reads zero), so every signal is None, not 0."""
+    """Counts of our own structured lines. The control first: if no line carries the field "m", the
+    counts below cannot be read (a wrong key reads zero), so every signal is None, not 0."""
     base = [_svc(service), _leaf("$metadata.type", "eq", "cf-worker")]
-    control, pre = None, None
-    for p in FIELD_PREFIXES:
-        c = count(api, window, base + [_leaf(p + "m", "exists", "")])
-        if c is not None and (control is None or c > control):
-            control = c
-        if c:
-            pre = p
-            break
-    out = {"structured_lines": control, "field_key": None if pre is None else pre + "m", "items": []}
+    control = count(api, window, base + [_leaf("m", "exists", "")])
+    out = {"structured_lines": control, "field_key": "m" if control else None, "items": []}
     for m, split, header, meaning in SIGNALS:
         item = {"m": m, "header": header, "meaning": meaning, "count": None, "split": None}
-        if pre is not None:
+        if control:
             if split:
-                by = count_by(api, window, base + [_leaf(pre + "m", "eq", m)], pre + split)
+                by = count_by(api, window, base + [_leaf("m", "eq", m)], split)
                 if by is not None:
                     item["count"] = sum(by.values())
                     item["split"] = by
             else:
-                item["count"] = count(api, window, base + [_leaf(pre + "m", "eq", m)])
+                item["count"] = count(api, window, base + [_leaf("m", "eq", m)])
         out["items"].append(item)
     out["header_only"] = [{"header": h, "meaning": t} for h, t in HEADER_ONLY]
     return out
@@ -313,19 +325,18 @@ def gather(api, site, window, namespace="wp-wfp", forced=None):
     facts["console_lines"] = by.get("cf-worker", 0)
     facts["event_rows"] = by.get("cf-worker-event", 0)
     facts["visibility"] = "outcomes" if facts["event_rows"] else "console_only"
+    facts["outcomes"] = facts["timing"] = facts["outcomes_by_model"] = facts["slowest_paths"] = facts["examples"] = None
     if facts["event_rows"]:
-        oc = count_by(api, window, [_svc(svc), _leaf("$metadata.type", "eq", "cf-worker-event")], "$workers.outcome")
+        oc = count_by(api, window, _events(svc), "$workers.outcome")
         facts["outcomes"] = None if oc is None else dict((k, oc.get(k, 0)) for k in sorted(set(OUTCOMES) | set(oc)))
-        rows, complete = invocation_rows(api, window, svc)
-        # The server's own count is the denominator: fewer rows read than it counted is not complete.
-        if rows is not None and len(rows) < facts["event_rows"]:
-            complete = False
-        facts["sample"] = None if rows is None else {"rows": len(rows), "of": facts["event_rows"], "complete": complete, **summarize_rows(rows)}
-        if rows is None or not complete:
+        facts["timing"] = timing(api, window, svc)
+        if facts["timing"] is not None:
+            facts["outcomes_by_model"] = outcomes_by_model(api, window, svc, facts["timing"])
+        facts["slowest_paths"] = slowest_paths(api, window, svc)
+        if facts["outcomes"] and any(v for k, v in facts["outcomes"].items() if k != "ok"):
+            facts["examples"] = failure_examples(api, window, svc)
+        if facts["outcomes"] is None or facts["timing"] is None:
             facts["complete"] = False
-    else:
-        facts["outcomes"] = None
-        facts["sample"] = None
     facts["signals"] = signals(api, window, svc)
     # Memory resets: yes, no, or unknown. Never a count of the runtime's reset line (#652 item 6), and
     # never a message substring: the answer comes from outcomes and our own reset lines (kind memory).

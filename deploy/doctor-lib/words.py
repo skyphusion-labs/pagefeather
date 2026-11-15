@@ -10,6 +10,10 @@ def _t(ms):
     return datetime.datetime.utcfromtimestamp(ms / 1000.0).strftime("%Y-%m-%d %H:%M UTC")
 
 
+names = {"ok": "ok", "exceededMemory": "out of memory", "exceededCpu": "out of CPU time",
+         "exception": "crashed (exception)", "canceled": "canceled"}
+
+
 def _n(v):
     return "could not measure" if v is None else str(v)
 
@@ -19,7 +23,7 @@ def _ms(v):
 
 
 def verdict(f):
-    """One of: cannot_see, problems, cannot_count, healthy."""
+    """One of: cannot_see, problems, cannot_count, incomplete, healthy. Healthy needs every read."""
     if f["visibility"] == "cannot_see":
         return "cannot_see"
     sig = dict((i["m"], i["count"]) for i in (f.get("signals") or {}).get("items", []))
@@ -32,6 +36,8 @@ def verdict(f):
             return "problems"
         if f.get("outcomes") is None:
             return "cannot_count"
+        if not f.get("complete", True):
+            return "incomplete"
         return "healthy"
     if ours_bad or shed or f.get("memory_resets_seen"):
         return "problems"
@@ -79,22 +85,35 @@ def render(f):
         if oc is None:
             L.append("  could not measure")
         else:
-            names = {"ok": "ok", "exceededMemory": "out of memory", "exceededCpu": "out of CPU time",
-                     "exception": "crashed (exception)", "canceled": "canceled"}
             for k in sorted(oc, key=lambda k: (k != "ok", k)):
                 L.append("  %-22s %d" % (names.get(k, k), oc[k]))
-        s = f.get("sample")
-        if s:
-            L.append("Timing, from %d of %d request records%s:" % (s["rows"], s["of"], "" if s["complete"] else " (NOT the whole window: the read stopped early)"))
+        ob = f.get("outcomes_by_model") or {}
+        for where, label in (("worker", "Worker"), ("durable_object", "Durable Object")):
+            x = ob.get(where)
+            if x:
+                L.append("  %s: %s" % (label, ", ".join("%s %d" % (names.get(k, k), n) for k, n in sorted(x.items(), key=lambda kv: (kv[0] != "ok", kv[0])))))
+        t = f.get("timing")
+        L.append("Timing, computed by Cloudflare over every request in the window:")
+        if t is None:
+            L.append("  could not measure")
+        else:
             for where, label in (("worker", "Worker"), ("durable_object", "Durable Object")):
-                x = s[where]
-                if x["rows"]:
-                    L.append("  %s: %d records. CPU p50 %s, p95 %s. Total time p50 %s, p95 %s." % (
-                        label, x["rows"], _ms(x["cpu_ms"]["p50"]), _ms(x["cpu_ms"]["p95"]), _ms(x["wall_ms"]["p50"]), _ms(x["wall_ms"]["p95"])))
-            if s["slowest_paths"]:
-                L.append("  Slowest paths (p95 total time):")
-                for p in s["slowest_paths"]:
-                    L.append("    %s  %s  (%d requests)" % (_ms(p["wall_ms_p95"]), p["path"], p["requests"]))
+                x = t.get(where)
+                if x:
+                    L.append("  %s: %s requests. CPU p50 %s, p95 %s. Total time p50 %s, p95 %s." % (
+                        label, _n(x["requests"]), _ms(x["cpu_ms"]["p50"]), _ms(x["cpu_ms"]["p95"]), _ms(x["wall_ms"]["p50"]), _ms(x["wall_ms"]["p95"])))
+        sp = f.get("slowest_paths")
+        if sp is None:
+            L.append("  Slowest paths: could not measure.")
+        elif sp:
+            L.append("  Slowest paths (p95 total time):")
+            for p in sp:
+                L.append("    %s  %s  (%s requests)" % (_ms(p["wall_ms_p95"]), p["path"], _n(p["requests"])))
+        ex = f.get("examples")
+        if ex:
+            L.append("Examples of failed requests (a few, newest first; not a count):")
+            for e in ex:
+                L.append("  %s  %s  %s  %s" % (_t(e["t"]) if e["t"] else "-", names.get(e["outcome"], e["outcome"]), e["path"] or "-", _ms(e["wall_ms"])))
     L.append("")
     sg = f["signals"]
     L.append("Pagefeather's own signals:")
@@ -129,7 +148,8 @@ def render(f):
     L.append("")
     L.append({"healthy": "Summary: no failures found.",
               "problems": "Summary: PROBLEMS FOUND. See above.",
-              "cannot_count": "Summary: no problems seen, but failures cannot be counted at this logging level."}[v])
+              "cannot_count": "Summary: no problems seen, but failures cannot be counted at this logging level.",
+              "incomplete": "Summary: no problems seen in what I could read, but some reads failed. This is not a healthy result."}[v])
     if not f.get("complete", True):
-        L.append("Some reads were incomplete. Treat the numbers above as a lower bound.")
+        L.append("Some reads failed. The numbers above are not complete.")
     return "\n".join(L) + "\n"
