@@ -127,6 +127,9 @@ def render(f):
     for i in sg["items"]:
         if i.get("parts") is not None:
             pt = i["parts"]
+            if pt["asked"] is None and i.get("lines") is not None:
+                L.append("  %-20s %d lines; asked, sent and refused could not be measured. Matches header %s: %s." % (i["m"], i["lines"], i["header"], i["meaning"]))
+                continue
             L.append("  %-20s asked %s, sent %s, refused %s. Matches header %s: %s." % (i["m"], _n(pt["asked"]), _n(pt["sent"]), _n(pt["refused"]), i["header"], i["meaning"]))
             continue
         extra = ""

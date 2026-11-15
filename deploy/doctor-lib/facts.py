@@ -306,12 +306,20 @@ def signals(api, window, service):
             "count": None, "split": None, "parts": None}
     if control:
         b = base + [_leaf("m", "eq", "purge")]
-        asked = count(api, window, b + [_leaf("asked", "exists", "")])
-        sent = count(api, window, b + [_leaf("sent", "exists", "")])
-        okc = count(api, window, b + [_leaf("sent", "exists", ""), _leaf("ok", "eq", True, "boolean")])
-        item["parts"] = {"asked": asked, "sent": sent, "ok": okc,
-                         "refused": None if sent is None or okc is None else sent - okc}
-        item["count"] = None if asked is None or sent is None else asked + sent
+        # asked and sent are NUMBERS (asked: 1). A filter's type must match the field's type, or it
+        # matches nothing: filtered as strings they read 0 of 44 lines on pf628 (#688).
+        lines = count(api, window, b)
+        asked = count(api, window, b + [_leaf("asked", "exists", "", "number")])
+        sent = count(api, window, b + [_leaf("sent", "exists", "", "number")])
+        okc = count(api, window, b + [_leaf("sent", "exists", "", "number"), _leaf("ok", "eq", True, "boolean")])
+        item["lines"] = lines
+        item["count"] = lines
+        # The guard (#688): every purge line is an asked or a sent line, so the parts must add up to
+        # the lines. If they do not, a filter read nothing: could-not-measure, never a false 0.
+        if None in (lines, asked, sent, okc) or asked + sent != lines or okc > sent:
+            item["parts"] = {"asked": None, "sent": None, "ok": None, "refused": None}
+        else:
+            item["parts"] = {"asked": asked, "sent": sent, "ok": okc, "refused": sent - okc}
     out["items"].append(item)
     out["header_only"] = [{"header": h, "meaning": t} for h, t in HEADER_ONLY]
     return out

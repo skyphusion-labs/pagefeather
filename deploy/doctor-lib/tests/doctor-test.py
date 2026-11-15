@@ -57,11 +57,28 @@ def get_key(e, key):
     return src.get(key) if isinstance(src, dict) else None
 
 
+TYPES = {"string": (str,), "number": (int, float), "boolean": (bool,)}
+
+
+def typed(v, typ):
+    """Measured live 2026-11-15 (#688): a filter whose type does not match the field's type matches
+    NOTHING (asked: 1 filtered as a string read 0 of 44 purge lines). A bool is not a number here."""
+    if v is None or typ is None:
+        return v is not None
+    if typ == "number" and isinstance(v, bool):
+        return False
+    return isinstance(v, TYPES.get(typ, ()))
+
+
 def match(e, f):
     op, key, val = f.get("operation"), f.get("key"), f.get("value")
     if f.get("kind") == "group":
         raise KeyError("group")
+    if f.get("type") not in TYPES:
+        raise KeyError("filter type " + str(f.get("type")))
     v = get_key(e, key)
+    if not typed(v, f.get("type")):
+        return False
     if op == "eq":
         return v == val
     if op == "neq":
@@ -360,6 +377,16 @@ check("purge counts", p is not None and p.get("parts") == {"asked": 3, "sent": 3
 out = common("purge", run("shop"), 3)
 check("purge plain line", re.search(r"purge\s+asked 3, sent 3, refused 1\.", out) is not None, out)
 check("purge error text never printed", "rate limited" not in out and "rate limited" not in jout)
+# #688: the parts must add up to the purge lines, or they are could-not-measure, never a false 0.
+rows = [console("site-shop", {"m": "req", "path": "/"}) for _ in range(5)]
+rows += [console("site-shop", {"m": "purge", "asked": "1", "coalesced": 0}) for _ in range(4)]
+rows += [console("site-shop", {"m": "purge", "sent": 1, "ok": True, "where": "object"})]
+reset(rows, {wfp("site-shop"): ON})
+j = json.loads(run("shop", "--json")[1])
+p = next((i for i in j["signals"]["items"] if i["m"] == "purge"), None)
+check("purge parts that do not add up are could-not-measure", p is not None and p.get("lines") == 5 and p.get("parts") == {"asked": None, "sent": None, "ok": None, "refused": None}, p)
+out = run("shop")[1]
+check("purge could-not-measure is said, never 0", re.search(r"purge\s+5 lines; asked, sent and refused could not be measured", out) is not None and not re.search(r"purge\s+asked 0", out), out)
 
 # 5. structured lines unreadable (no "m" field): every signal is could-not-measure, never 0.
 reset([console("site-shop", "plain text line") for _ in range(4)], {wfp("site-shop"): ON})
