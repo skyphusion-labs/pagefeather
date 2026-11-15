@@ -395,8 +395,12 @@ jobs:
           node deploy/onboard/tests/hyperdrive-test.mjs
           node deploy/onboard/tests/onboard-test.mjs
       - name: No em or en dashes
+        # -I skips binary files. A gzip matched these code points by chance while its
+        # text had none (#593). The test runs this same git grep: it must fail on a
+        # text file that holds an em dash and pass on a binary file with those bytes.
         run: |
-          if git grep -nP '\x{2014}|\x{2013}' -- . ':!**/package-lock.json'; then echo 'em or en dash found'; exit 1; fi
+          tests/ci/no-em-en-dash-test.sh
+          if git grep -nIP '\x{2014}|\x{2013}' -- . ':!**/package-lock.json'; then echo 'em or en dash found'; exit 1; fi
       - name: Secret scan
         run: |
           if git grep -nE 'AKIA[0-9A-Z]{16}|cfut_[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|BEGIN [A-Z ]*PRIVATE KEY|xox[bap]-[A-Za-z0-9-]{10,}'; then echo 'possible secret'; exit 1; fi
