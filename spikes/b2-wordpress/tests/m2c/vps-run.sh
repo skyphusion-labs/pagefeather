@@ -57,7 +57,8 @@ perf = {}
 for line in open(t + "/h.txt", errors="replace"):
     if line.lower().startswith("x-perf:"):
         perf = json.loads(line.split(":", 1)[1].strip())
-d = {k: b.get(k, 0) - a.get(k, 0) for k in ("body_load_ns", "body_loads", "script_loads", "body_bytes_loaded", "body_bytes_resident", "body_fail")}
+d = {k: b.get(k, 0) - a.get(k, 0) for k in ("body_load_ns", "body_loads", "script_loads", "body_bytes_loaded", "body_bytes_resident", "body_fail",
+                                           "body_open_ns", "body_read_ns", "body_check_ns", "body_unser_ns", "body_install_ns")}
 print(json.dumps({"arm": arm, "boot": boot, "req": i, "first": i == 0, "status": int(code), "wall_ms": round(float(wall) * 1000, 1),
     "body_load_ms": round(d["body_load_ns"] / 1e6, 2), **{k: v for k, v in d.items() if k != "body_load_ns"},
     "phpMs": perf.get("phpMs"), "wasm0MiB": perf.get("wasm0MiB"), "wasm1MiB": perf.get("wasm1MiB"), "rt": perf.get("rt"), "bootFlag": perf.get("boot"),

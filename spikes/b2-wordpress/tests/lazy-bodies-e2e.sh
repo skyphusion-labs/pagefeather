@@ -100,8 +100,10 @@ wall_ms = float(wall) * 1000
 share = ns / 1e6 / wall_ms if wall_ms else 0
 trig = ns / 1e6 > 250 or share > 0.05
 r = {"unit": b.get("lazy_unit"), "lazy_load": b.get("lazy_load"), "status": int(code), "wall_ms": round(wall_ms, 1), "body_load_ms": round(ns / 1e6, 2), "share": round(share, 4), "body_loads": loads,
-     "body_bytes": b.get("body_bytes_loaded", 0) - a.get("body_bytes_loaded", 0), "script_loads": b.get("script_loads", 0) - a.get("script_loads", 0), "fallback_triggered": trig}
+     "body_bytes": b.get("body_bytes_loaded", 0) - a.get("body_bytes_loaded", 0), "script_loads": b.get("script_loads", 0) - a.get("script_loads", 0), "fallback_triggered": trig,
+     "phases_ms": {k: round((b.get("body_%s_ns" % k, 0) - a.get("body_%s_ns" % k, 0)) / 1e6, 2) for k in ("open", "read", "check", "unser", "install")}}
 print("@event m2c-first-post-new " + json.dumps(r))
+print("lazy-bodies-e2e: M2c phases (ms): " + ", ".join("%s %.1f" % kv for kv in r["phases_ms"].items()))
 print("lazy-bodies-e2e: M2c reading (local wrangler dev, not the live site): the first post-new.php after a boot spent %.1f ms in %d body loads, %.2f%% of its %.0f ms; threshold 250 ms or 5%%: fallback %s" % (ns / 1e6, loads, share * 100, wall_ms, "TRIGGERED" if trig else "not triggered"))
 if int(code) != 200:
     sys.exit("lazy-bodies-e2e: post-new.php answered %s for the M2c reading (the login did not hold?)" % code)
