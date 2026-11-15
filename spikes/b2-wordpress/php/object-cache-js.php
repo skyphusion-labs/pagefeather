@@ -30,6 +30,15 @@ class JS_Object_Cache {
 	private $default_ttl = 0;
 	/** @var bool Force the cache off this request (spike-gated x-oc-off), for a clean same-binary bracket. */
 	private $force_off = false;
+	/**
+	 * @var array<string,bool> Groups under exact invalidation (#296 (2)): JS_OBJECT_CACHE_VERSIONED.
+	 * Each persists across requests under its version from <prefix>skyph_cache_versions, as its salt.
+	 */
+	private $versioned = array();
+	/** @var array<string,int>|null The versions, read once per request on first use; null before. */
+	private $versions = null;
+	/** @var int Version reads this request (0 or 1), for x-oc-stats. */
+	public $version_reads = 0;
 
 	public function __construct() {
 		$this->blog_prefix = is_multisite() ? get_current_blog_id() . ':' : '';
@@ -56,6 +65,60 @@ class JS_Object_Cache {
 		}
 		$this->default_ttl = defined( 'JS_OBJECT_CACHE_TTL' ) ? (int) JS_OBJECT_CACHE_TTL : 0;
 		$this->force_off   = ! empty( $_SERVER['HTTP_X_OC_OFF'] );
+		if ( defined( 'JS_OBJECT_CACHE_VERSIONED' ) ) {
+			foreach ( explode( ',', (string) JS_OBJECT_CACHE_VERSIONED ) as $g ) {
+				$g = trim( $g );
+				if ( '' !== $g ) {
+					$this->versioned[ $g ] = true;
+				}
+			}
+		}
+	}
+
+	/**
+	 * #643 live check: wp_prime_option_caches() (core) looks up every listed option by key, also the ones in
+	 * alloptions or notoptions, and never writes those alone, so they miss in any persistent cache. Answer them as
+	 * misses here, with no bridge call (49 gets, 39 KV misses and 0.84 sets per request were measured). Core uses
+	 * alloptions or notoptions for them anyway. Approach A, versioned options only.
+	 */
+	private function options_known_miss( $key, $group ) {
+		if ( 'options' !== $group || ! isset( $this->versions['options'] ) || 'alloptions' === $key || 'notoptions' === $key ) {
+			return false;
+		}
+		$all = isset( $this->cache['options']['alloptions'] ) ? $this->cache['options']['alloptions'] : null;
+		$not = isset( $this->cache['options']['notoptions'] ) ? $this->cache['options']['notoptions'] : null;
+		return ( is_array( $all ) && array_key_exists( $key, $all ) ) || ( is_array( $not ) && isset( $not[ $key ] ) );
+	}
+
+	/**
+	 * #296 (2): before the first read or write of a versioned group this request, read every version
+	 * ONCE (a request-start snapshot) and make each versioned group's salt its version. A bump (an AFTER
+	 * trigger on wp_options, in the same statement as the write; cache-versions.mjs) changes every key
+	 * of the group at once, in every isolate's Map and in L2, so a lagging store can only answer a key
+	 * nobody asks for any more. No table, no row or an error: the group keeps its unversioned posture
+	 * (for options on approach A, #491: per request only).
+	 */
+	private function version_gate( $group ) {
+		if ( null !== $this->versions || ! isset( $this->versioned[ $group ] ) || $this->force_off ) {
+			return;
+		}
+		$this->versions = array();
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'get_results' ) ) {
+			return;
+		}
+		$quiet = method_exists( $wpdb, 'suppress_errors' ) ? $wpdb->suppress_errors( true ) : null;
+		$rows  = $wpdb->get_results( 'SELECT grp, v FROM ' . $wpdb->prefix . 'skyph_cache_versions', ARRAY_N );
+		if ( null !== $quiet ) {
+			$wpdb->suppress_errors( $quiet );
+		}
+		++$this->version_reads;
+		foreach ( (array) $rows as $row ) {
+			if ( is_array( $row ) && isset( $row[0], $row[1], $this->versioned[ $row[0] ] ) && is_numeric( $row[1] ) ) {
+				$this->versions[ $row[0] ] = (int) $row[1];
+				$this->set_group_salt( $row[0], 'v' . (int) $row[1] );
+			}
+		}
 	}
 
 	private function call( array $op ) {
@@ -68,9 +131,10 @@ class JS_Object_Cache {
 		if ( $this->force_off ) {
 			return false;
 		}
-		// #491: on approach A, options stay per request whatever else says (a salt included).
+		// #491: on approach A, options stay per request whatever else says, UNLESS this request read
+		// an exact options version (#296 (2)): then a write anywhere moves every options key at once.
 		if ( null !== $this->persist_allow && 'options' === $group ) {
-			return false;
+			return isset( $this->versions['options'] );
 		}
 		if ( isset( $this->group_salt[ $group ] ) && '' !== $this->group_salt[ $group ] ) {
 			return true;
@@ -140,12 +204,13 @@ class JS_Object_Cache {
 	}
 
 	public function get( $key, $group = 'default', $force = false, &$found = null ) {
+		$this->version_gate( $group );
 		if ( $this->has_local( $key, $group ) && ! $force ) {
 			$found = true;
 			++$this->cache_hits;
 			return self::copy( $this->cache[ $group ][ $key ] );
 		}
-		if ( $this->persistent( $group ) && empty( $this->missing[ $group ][ $key ] ) ) {
+		if ( $this->persistent( $group ) && empty( $this->missing[ $group ][ $key ] ) && ! $this->options_known_miss( $key, $group ) ) {
 			$r = $this->call( array( 'op' => 'get', 'k' => array( $this->pkey( $key, $group ) ) ) );
 			if ( isset( $r['v'][0] ) && null !== $r['v'][0] ) {
 				$value                          = unserialize( base64_decode( $r['v'][0] ) );
@@ -162,13 +227,14 @@ class JS_Object_Cache {
 	}
 
 	public function get_multiple( $keys, $group = 'default', $force = false ) {
+		$this->version_gate( $group );
 		$out  = array();
 		$need = array();
 		foreach ( $keys as $key ) {
 			if ( $this->has_local( $key, $group ) && ! $force ) {
 				$out[ $key ] = self::copy( $this->cache[ $group ][ $key ] );
 				++$this->cache_hits;
-			} elseif ( $this->persistent( $group ) && empty( $this->missing[ $group ][ $key ] ) ) {
+			} elseif ( $this->persistent( $group ) && empty( $this->missing[ $group ][ $key ] ) && ! $this->options_known_miss( $key, $group ) ) {
 				$need[] = $key;
 			} else {
 				$out[ $key ] = false;
@@ -198,6 +264,7 @@ class JS_Object_Cache {
 	}
 
 	public function set( $key, $data, $group = 'default', $expire = 0 ) {
+		$this->version_gate( $group );
 		$this->cache[ $group ][ $key ] = self::copy( $data );
 		unset( $this->missing[ $group ][ $key ] );
 		if ( $this->persistent( $group ) ) {
@@ -241,6 +308,7 @@ class JS_Object_Cache {
 	}
 
 	public function delete( $key, $group = 'default' ) {
+		$this->version_gate( $group );
 		$had = $this->has_local( $key, $group );
 		unset( $this->cache[ $group ][ $key ] );
 		$this->missing[ $group ][ $key ] = true;

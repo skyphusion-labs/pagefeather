@@ -106,6 +106,10 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/frame-probe.test.mjs
       - name: b-dosql approach-A options never persist across isolates (issue #491)
         run: php spikes/b2-wordpress/tests/object-cache-491-test.php
+      - name: approach A options persist across isolates under an exact version, never stale (#296)
+        run: |
+          php spikes/b2-wordpress/tests/object-cache-options-versions-test.php
+          node --test spikes/b2-wordpress/tests/cache-versions.test.mjs
       - name: Approach A object cache source invariants (issue #218)
         # spikes/b2-wordpress/index.js: the approach-A gate, the x-oc-off bracket, and
         # the per-table / per-group instrumentation, as shipped-source invariants.
