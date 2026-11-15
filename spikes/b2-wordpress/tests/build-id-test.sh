@@ -25,7 +25,11 @@ check "ENGINE=d1 adds nothing" "$(id ENGINE=d1)" "$base"
 check "the a and b-dosql builds of one sha differ" "$([ "$(id ENGINE=a WOO_ACTIVE=1)" != "$(id WOO_ACTIVE=1)" ] && echo yes || echo no)" yes
 ca=$(id ENGINE=a IMPORT_CONTENT="$T/wp-content" IMPORT_PLUGINS=woocommerce WOO_ACTIVE=1)
 check "the -a marker leaves the -c<8 hex>(-wooprimed) tail that deploy/wfp reads" "$(echo "$ca" | grep -cE "^${base}-a-c[0-9a-f]{8}-wooprimed$")" 1
-check "opcache-a.sh builds ENGINE=a with WOO_ACTIVE=1 (its cache is WooCommerce-primed)" "$(grep -c 'ENGINE=a WOO=1 WOO_ACTIVE=1 ./build.sh' "$HERE/opcache-a.sh")" 1
+# opcache-a.sh primes and builds with ONE value, $W (WOO_ACTIVE, default 1; #394), so the ENGINE=a
+# build id says -wooprimed exactly when its cache was primed with WooCommerce active.
+check "opcache-a.sh primes with \$W" "$(grep -c 'WOO_ACTIVE=$W ./opcache.sh' "$HERE/opcache-a.sh")" 1
+check "opcache-a.sh builds ENGINE=a with the same \$W" "$(grep -c 'ENGINE=a WOO=1 WOO_ACTIVE=$W ./build.sh' "$HERE/opcache-a.sh")" 1
+check "opcache-a.sh defaults \$W to 1 (its cache is WooCommerce-primed unless told)" "$(grep -c '^W=${WOO_ACTIVE:-1}$' "$HERE/opcache-a.sh")" 1
 check "build.sh takes its id from build-id.sh" "$(grep -c 'BUILD_ID=$(./build-id.sh "$wp/wp-content")' "$HERE/build.sh")" 1
 check "build_dosql passes WOO_ACTIVE to build.sh" "$(grep -c 'WOO_ACTIVE=$woo ./build.sh' "$HERE/../../deploy/wfp/lib.sh")" 1
 check "build-id.sh hashes the public tree too (a JS-only change, #385 follow-up)" "$(grep -c 'content-id.py "${1:?usage: build-id.sh <wp-content dir>}" build/public/wp-content' "$HERE/build-id.sh")" 1
