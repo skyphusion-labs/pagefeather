@@ -416,6 +416,11 @@ jobs:
           npm ci --silent --no-audit --no-fund
           ./prepare.sh
           node --test tests/heap-subarray.test.mjs
+      - name: engine-contract.mjs removes its engine582 temp dir on exit (issue #612)
+        # Imports the real module. Reuses the npm ci in the step above (@php-wasm/universal).
+        # Does not boot the engine, so it does not need prepare.sh.
+        working-directory: spikes/b2-wordpress
+        run: node --test tests/engine-contract-tmpdir.test.mjs
       - name: The pagefeather engine's runtime contract, and each check red on the unpatched upstream engine (issue #582)
         # Boots the prepared engine: loader, extensions, OPcache under SAPI wasm, initial memory, allocator,
         # clock, heap growth, heap views, the open and read hooks, promising exports. Each check must also
