@@ -446,7 +446,9 @@ jobs:
         working-directory: spikes/b2-wordpress
         run: |
           set -euo pipefail
-          # build/ still holds the lean-lazy build and the zip opcache.sh primed at 128 MiB (no build.sh since)
+          # build/ still holds the lean-lazy build and the zip opcache.sh primed at 128 MiB (no build.sh since).
+          # dosql-local, as opcache.sh primed it: PHP in the object, as on a site (x-perf, so the M2c reading has the inflates)
+          export DEV_ENV=dosql-local
           cmp build/opcache.zip "$RUNNER_TEMP/opcache-lean-lazy.zip" || { echo "::error::build/opcache.zip is not the primed lean-lazy zip"; exit 1; }
           rc=0; LB_PRIMED=1 LB_EAGER=1 tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate-primed-red.json" || rc=$?
           [ "$rc" != 0 ] || { echo "::error::the primed gate PASSED with the lazy load off: it cannot see a body that never loads lazily"; exit 1; }

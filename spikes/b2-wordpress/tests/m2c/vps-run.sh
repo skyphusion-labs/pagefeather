@@ -7,8 +7,9 @@
 # Arms: body (opcache.pagefeather_lazy_unit=body), hot (=hot, on a zip primed with PROFILE_HOT=1), script (=script),
 # whole (opcache.pagefeather_lazy_load=0). Each
 # arm's site must report that mode in /_mem (ini.lb.lazy_unit, ini.lb.lazy_load), or the arm is refused.
-# Per boot: a request with x-runtime-recycle: force (spike-gated: the runtime is dropped after it, as a memory recycle
-# would), log in (its x-perf rt must be higher than the recycled request's: a new runtime), /_mem, the FIRST post-new.php, /_mem, then WARM more
+# Per boot (the first post-new.php must report a higher x-perf rt than the recycled request: a new runtime):
+# a request with x-runtime-recycle: force (spike-gated: the runtime is dropped after it, as a memory recycle
+# would), log in, /_mem, the FIRST post-new.php, /_mem, then WARM more
 # post-new.php,
 # each between two /_mem reads. Each request is one JSON line in $OUT/<arm>.jsonl: wall time, x-perf (phpMs, wasm
 # before and after, remote pack fetches), and the deltas of body_load_ns, body_loads, script_loads,
@@ -35,21 +36,11 @@ for arm in $ARMS; do
     curl -s "${H[@]}" -H 'x-runtime-recycle: force' -c "$J" -b "$J" -o /dev/null -D "$T/r.txt" "$base/wp-login.php"
     grep -qi '^x-runtime-recycled:' "$T/r.txt" || { echo "vps-run: $arm boot $boot: the forced recycle was not done (no x-runtime-recycled; is SPIKE_TOKEN right?)"; rc=1; continue; }
     curl -s -c "$J" -b "$J" -o /dev/null -D "$T/l.txt" --data-urlencode "pwd=$ADMIN_PASSWORD" -d 'log=admin&wp-submit=Log+In&redirect_to=%2Fwp-admin%2F&testcookie=1' "$base/wp-login.php"
-    # a new runtime: the runtime serial (x-perf rt) after the recycle is higher than on the recycled request
-    python3 -I -c 'import json, sys
-def rt(f):
-    p = [json.loads(l.split(":", 1)[1]) for l in open(f, errors="replace") if l.lower().startswith("x-perf:")]
-    if not p:
-        sys.exit("vps-run: no x-perf on %s (is PHP in the object, as on a site?)" % f.rsplit("/", 1)[-1])
-    return p[0].get("rt"), p[0].get("boot")
-(r0, _), (r1, b1) = rt(sys.argv[1]), rt(sys.argv[2])
-if not (isinstance(r0, int) and isinstance(r1, int) and r1 > r0):
-    sys.exit("vps-run: rt %r on the recycled request, %r (boot %r) on the login: no new runtime" % (r0, r1, b1))' "$T/r.txt" "$T/l.txt" || { echo "vps-run: $arm boot $boot: the login did not run on a new runtime"; rc=1; continue; }
     for i in $(seq 0 "$WARM"); do
       curl -s "${H[@]}" -o "$T/a.json" "$base/_mem"
       w=$(curl -s -c "$J" -b "$J" -o /dev/null -D "$T/h.txt" -w '%{http_code} %{time_total}' "$base/wp-admin/post-new.php")
       curl -s "${H[@]}" -o "$T/b.json" "$base/_mem"
-      python3 -I - "$arm" "$boot" "$i" "$w" "$T" >> "$f" <<'PY' || { echo "vps-run: $arm boot $boot request $i: no reading (see above)" >&2; rc=1; }
+      python3 -I - "$arm" "$boot" "$i" "$w" "$T" >> "$f" <<'PY' || { echo "vps-run: $arm boot $boot request $i: no reading (see above)" >&2; rc=1; [ "$i" = 0 ] && break; }
 import json, sys
 arm, boot, i, (code, wall), t = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4].split(), sys.argv[5]
 def lb(p):
@@ -61,10 +52,16 @@ a, b = lb(t + "/a.json"), lb(t + "/b.json")
 want = {"body": (True, "body"), "hot": (True, "hot"), "script": (True, "script"), "whole": (False, None)}[arm]
 if b.get("lazy_load") != want[0] or (want[1] and b.get("lazy_unit") != want[1]):
     sys.exit("vps-run: arm %s, but the site reports lazy_load %r, lazy_unit %r" % (arm, b.get("lazy_load"), b.get("lazy_unit")))
-perf = {}
-for line in open(t + "/h.txt", errors="replace"):
-    if line.lower().startswith("x-perf:"):
-        perf = json.loads(line.split(":", 1)[1].strip())
+def xperf(f):
+    for line in open(f, errors="replace"):
+        if line.lower().startswith("x-perf:"):
+            return json.loads(line.split(":", 1)[1].strip())
+    sys.exit("vps-run: no x-perf on %s (is PHP in the object, as on a site?)" % f.rsplit("/", 1)[-1])
+perf = xperf(t + "/h.txt")
+if i == 0:  # the first post-new.php of a boot must run on a NEW runtime: its serial is higher than the recycled one's
+    r0 = xperf(t + "/r.txt").get("rt")
+    if not (isinstance(r0, int) and isinstance(perf.get("rt"), int) and perf["rt"] > r0):
+        sys.exit("vps-run: %s boot %d: rt %r on the recycled request, %r on the first post-new.php: no new runtime" % (arm, boot, r0, perf.get("rt")))
 d = {k: b.get(k, 0) - a.get(k, 0) for k in ("body_load_ns", "body_loads", "script_loads", "hot_loads", "body_bytes_loaded", "body_bytes_resident", "body_fail",
                                            "body_open_ns", "body_read_ns", "body_check_ns", "body_unser_ns", "body_install_ns")}
 print(json.dumps({"arm": arm, "boot": boot, "req": i, "first": i == 0, "status": int(code), "wall_ms": round(float(wall) * 1000, 1),
