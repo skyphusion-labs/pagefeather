@@ -311,6 +311,7 @@ jobs:
           node deploy/wfp/tests/dispatcher-test.mjs
           deploy/wfp/tests/render-test.sh
           deploy/wfp/tests/remote-assets-test.sh
+          deploy/wfp/tests/remote-default-test.sh
           deploy/wfp/tests/snapshot-wiring-test.sh
           deploy/wfp/tests/phase-b-cron-test.sh
           deploy/wfp/tests/deploy-retry-test.sh

@@ -88,6 +88,9 @@ update_one_inner() {
   local SETTINGS_RECORDED=0
   echo "site $s: the recorded settings"
   keep_settings "$bucket" "$WDIR" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
+  # #394: the remote packs by default, after the record (a recorded 0 opts out) and before the build.
+  remote_pack_defaults
+  echo "site $s: remote packs OPCACHE_REMOTE=$OPCACHE_REMOTE SITE_REMOTE=$SITE_REMOTE"
   # Refuse before any change a build the live site cannot run (#377, lib.sh update_inputs_check).
   local woo code; woo=$(woo_active_for_build) || return 2
   code=$(store_api_code "$ORIGIN")
@@ -372,6 +375,9 @@ if [ "$cmd" = add ]; then
     printf '%s\n' "$fp" | sed 's/^/  /' >&2
     exit 2
   fi
+  # #394: the remote packs by default (0 opts out), before the build and the render read them.
+  remote_pack_defaults
+  echo "site $s: remote packs OPCACHE_REMOTE=$OPCACHE_REMOTE SITE_REMOTE=$SITE_REMOTE"
   [ "${BUILD:-0}" = 0 ] || build_dosql
   [ -f "$APP/build/opcache.log" ] || { echo "b-dosql is not built (run up.sh, or BUILD=1)" >&2; exit 2; }
   "$WFP/site.sh" up "$s"

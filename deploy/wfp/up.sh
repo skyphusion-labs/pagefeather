@@ -26,6 +26,8 @@ umask 077
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 mkdir -p "$GEN"
 
+# #394: the remote packs by default (0 opts out), before the build and every render read them.
+remote_pack_defaults
 [ "${BUILD:-1}" = 0 ] || build_dosql
 
 log "shared: namespace $NAMESPACE and the site map"

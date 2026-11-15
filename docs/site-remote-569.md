@@ -1,6 +1,9 @@
 # site.zip as remote packs: PHP pauses in open() (#569, #394 Gate 2)
 
-Status: built behind a flag, default OFF. Written 2026-11-14 by rollins (seat rollins-sb1114d).
+Status: built behind a flag, **default ON for every deploy/wfp site since #394's D/R round** (written
+2026-11-15 by rollins, seat rollins-sb1114g; supersedes the "default OFF" of 2026-11-14). `SITE_REMOTE`
+follows `OPCACHE_REMOTE` when it is unset; `SITE_REMOTE=0` opts out (`docs/opcache-remote-563.md`,
+"Default ON"). First written 2026-11-14 by rollins (seat rollins-sb1114d).
 - Design: #394 [issuecomment-6879005325](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6879005325),
   approved with one retry added.
 - Measured before the build: [issuecomment-6879197224](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6879197224).
@@ -31,8 +34,9 @@ leaves the bundle too.
   - The lead chose 8192 on the pf570m readings (see "The gate readings").
 - **There is NO runtime off switch** (the lead accepted it: the bytes are not in the bundle). The
   rollback path is explicit:
-  - **`site update` without `SITE_REMOTE`** (with `DROP_SETTINGS=SITE_REMOTE`, because the setting is
-    recorded, #558) rebuilds with `site.zip` back in the bundle;
+  - **`SITE_REMOTE=0 site update <name>`** rebuilds with `site.zip` back in the bundle. Since the
+    default is on (#394), an unset or dropped `SITE_REMOTE` is ON again, so `DROP_SETTINGS=SITE_REMOTE`
+    is no longer the way back: the `0` is, and it is recorded (#558);
   - a bad remote build that went live is covered by **#466's rollback artifact**. `site update` stores
     each deployed build and re-deploys the live one when an update fails.
 - **A remote build with no `ASSETS` binding is refused at DEPLOY time.** `remote_assets_check`
@@ -177,10 +181,16 @@ first line reads `rt` 1 or more and a numeric `wasmMiB`. On pf570m's control, ro
 `wasmMiB` null: it ran on an object with no PHP runtime, an empty isolate (237 MiB), so it is excluded.
 All 3 cap0 rounds read `rt` 1 and `wasmMiB` 76.2.
 
-## The proof still to run (the 7-screen round)
+## The 7-screen round: RUN (the D/R round, 2026-11-14)
 
-The memory gate above was read on pf570m. The 7-screen admin round on a SITE_REMOTE site is not run
-here; pf394a carries it. The dropRuntime() prerequisite is met (#571, #566 closed).
+Result, [#394 issuecomment-6886246890](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6886246890): on two throwaways with the pf394a store, `pf394r` (`OPCACHE_REMOTE=1`, `SITE_REMOTE=1`)
+lost **5 of 210** (4 memory resets) and `pf394d` (neither) lost **95 of 210** (95 memory resets).
+- `rfCapped`, `rsCapped`, `rfFail` and `rsFail` summed to 0 over 202 of the 210 `m: perf` log lines of
+  `site-pf394r` (the lead's Workers Logs read). The 8 missing lines are the 5 failed requests and 3
+  unexplained. No `m: remote` line (capped, fail) in any window, and those lines are written on their own,
+  so they also cover the 8.
+- The pass line below asked for 0 failed responses; R had 5, all from memory, none from a site fetch.
+- On that reading, the packs became the default (this section's PR). The plan as it was written:
 
 1. On the sample store: (a) main plus `OPCACHE_REMOTE=1`, and (b) that plus `SITE_REMOTE=1`. Both
    have `HEADROOM_PROBE=on`.
