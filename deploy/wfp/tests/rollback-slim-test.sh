@@ -51,7 +51,12 @@ echo '{"name":"fakedep","version":"1.0.0","type":"module","main":"index.js"}' > 
 echo 'export function hi() { return "hi"; }' > "$FA/node_modules/fakedep/index.js"
 printf '\0asm\1\0\0\0' > "$FA/vendor/php_8_3.wasm"
 echo 'export const ready = 1;' > "$FA/vendor/php_8_3.js"
-head -c 20000 /dev/urandom > "$FA/build/site.zip"; head -c 9000 /dev/urandom > "$FA/build/opcache.zip"
+head -c 20000 /dev/urandom > "$FA/build/site.zip"
+# Byte 100 is X. A write of X at that offset changes nothing, and the bundle
+# then compares equal (1 of 256 for /dev/urandom; CI run 43660179897, #599).
+# Plant it so a control that writes X goes red on every run.
+python3 -c 'import sys; p=sys.argv[1]; d=bytearray(open(p,"rb").read()); d[100]=ord("X"); open(p,"wb").write(d)' "$FA/build/site.zip"
+head -c 9000 /dev/urandom > "$FA/build/opcache.zip"
 echo 'export default "ab96cafab127";' > "$FA/build/build-id.js"
 echo 'export default {"id":"abc","chunks":["boot-0.zip"]};' > "$FA/build/opcache-boot-index.js"
 echo 'a{}' > "$FA/build/public/wp-includes/a.css"; head -c 5000 /dev/urandom > "$FA/build/public/_pf/abc/boot-0.zip"
@@ -95,10 +100,43 @@ WR=$RBWR dry "$RB" "$RB/wrangler.rollback.toml" "$T/out2"; check "wrangler dry-r
 check "#507: the rollback's bundle and modules are byte-equal to the original deploy's" "$(shas "$T/out2")" "$(shas "$T/out1")"
 check "  and its static assets are byte-equal" "$(shas "$RB/build/public")" "$(shas "$FA/build/public")"
 
-# The instrument can go red: one byte of site.zip changed, and the comparison differs.
-printf 'X' | dd of="$RB/build/site.zip" bs=1 seek=100 conv=notrunc 2>/dev/null
+# One changed byte of site.zip, and the bundle differs (#599). The fixture's byte
+# 100 is X, so the old write of X was a no-op and this check read equal. Write a
+# different byte, and check each step. A failure prints what this run saw.
+fails_at=$fails
+ino() { python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_ino)' "$1"; }
+sha256f() { shasum -a 256 "$1" | awk '{print $1}'; }
+o1=$(find "$T/out1" -type f -name '*-site.zip')
+o1n=$(printf '%s\n' "$o1" | grep -c .) || true
+check "control: out1 holds one site.zip module" "$o1n" 1
+fa_i=$(ino "$FA/build/site.zip"); rb_i=$(ino "$RB/build/site.zip"); o1_i=$(ino "$o1")
+check "control: the app, the rollback tree and out1 do not share site.zip's inode" \
+  "$([ -n "$fa_i" ] && [ "$fa_i" != "$rb_i" ] && [ "$fa_i" != "$o1_i" ] && [ "$rb_i" != "$o1_i" ] && echo distinct || echo shared)" distinct
+out3_before=$([ -e "$T/out3" ] && echo present || echo absent)
+check "control: the out dir is fresh" "$out3_before" absent
+zip_before=$(sha256f "$RB/build/site.zip")
+mod_before=$(sha256f "$o1")
+byte_before=$(python3 -c 'import sys; print(open(sys.argv[1],"rb").read()[100])' "$RB/build/site.zip")
+if [ "$byte_before" = 88 ]; then newb=Y; else newb=X; fi
+printf '%s' "$newb" | dd of="$RB/build/site.zip" bs=1 seek=100 conv=notrunc >"$T/dd.out" 2>"$T/dd.err"
+ddrc=$?
+zip_after=$(sha256f "$RB/build/site.zip")
+byte_after=$(python3 -c 'import sys; print(open(sys.argv[1],"rb").read()[100])' "$RB/build/site.zip")
+check "control: dd changed site.zip" "$ddrc:$([ "$zip_before" = "$zip_after" ] && echo same || echo changed)" "0:changed"
 WR=$RBWR dry "$RB" "$RB/wrangler.rollback.toml" "$T/out3"
-check "control: one changed byte in site.zip makes the bundle differ" "$([ "$(shas "$T/out3")" = "$(shas "$T/out1")" ] && echo equal || echo differs)" differs
+dryrc=$?
+check "control: dry-run of the changed tree" "$dryrc" 0
+o3=$(find "$T/out3" -type f -name '*-site.zip')
+mod_after=$(sha256f "$o3")
+check "control: out3's site.zip module is the changed file" "$mod_after" "$zip_after"
+check "control: out3's site.zip module differs from the original" "$([ "$mod_after" = "$mod_before" ] && echo equal || echo differs)" differs
+bundle=$([ "$(shas "$T/out3")" = "$(shas "$T/out1")" ] && echo equal || echo differs)
+check "control: one changed byte in site.zip makes the bundle differ" "$bundle" differs
+if [ "$fails" != "$fails_at" ]; then
+  printf '  control saw: dd=%s byte %s to %s zip_before=%s zip_after=%s out3_before=%s dry=%s inode_fa=%s inode_rb=%s inode_out1=%s module_before=%s module_after=%s bundle=%s\n' \
+    "$ddrc" "$byte_before" "$byte_after" "$zip_before" "$zip_after" "$out3_before" "$dryrc" "$fa_i" "$rb_i" "$o1_i" "$mod_before" "$mod_after" "$bundle"
+  printf '  dd stderr: %s\n' "$(tr '\n' ' ' < "$T/dd.err")"
+fi
 # The #466 way (a temp dir elsewhere, node_modules linked) differs in path strings: why the tree moves.
 O=$(mktemp -d "$T/elsewhere/x.XXXX" 2>/dev/null || { mkdir -p "$T/elsewhere/deep/er"; mktemp -d "$T/elsewhere/deep/er/x.XXXX"; })
 python3 -I "$WFP/rollback_artifact.py" get wp-wfp-s-media ab96cafab127 "$O" > /dev/null; ln -s "$FA/node_modules" "$O/node_modules"; cp "$FA/wrangler.deploy.slim-test.toml" "$O/w.toml"
