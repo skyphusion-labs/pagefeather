@@ -23,6 +23,17 @@
 // - defer(fn) holds work that must not outlive a rollback (the KV L2 cache sets) until the frame is kept.
 // _wp_frame keeps the outcome per request id (a short history) for the Worker's /_frame probe, so a
 // client is only told "nothing was saved" when it is proven.
+//
+// #577: _wp_undo.seq is INTEGER PRIMARY KEY, not AUTOINCREMENT. AUTOINCREMENT updates sqlite_sequence
+// on every insert, and the object's rowsWritten bills that extra row (one per undo row, about 3 per
+// framed save). Replay stays ORDER BY seq DESC. A reused seq cannot pass a live savepoint: undoTo
+// deletes only seq > s, and every savepoint still live has recorded a seq at or below the log's top.
+// A site that already has the AUTOINCREMENT table is rebuilt on first use, when the log is empty.
+// recover() (the constructor, inside blockConcurrencyWhile) undoes an open frame first, then rebuilds.
+// undoSetup rebuilds too, if it finds the old table and the log is already empty. A non-empty log stays
+// on the old table until the next empty point, and still replays. The rebuild drops the undo triggers
+// for the swap and creates the same bodies again. They insert into _wp_undo by name, so the body
+// does not change.
 
 const UNDO_TABLES = new Set(['_wp_undo', '_wp_undo_state', '_wp_frame']);
 const FRAME_HISTORY = 32;
@@ -91,9 +102,47 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 	const own = (cur) => { counts.own += (cur && cur.rowsWritten) || 0; return cur; };
 	let openedBy = null; // the shape (verb and table, never values) of the statement that opened the last frame
 
+	// One-time rebuild of a _wp_undo left by a build that used AUTOINCREMENT (#577). Only when the log
+	// is empty and no frame is active: a non-empty log is mid-frame, or leftover rows this call must
+	// not rewrite. Move the old table aside, create the plain one under the same name, copy, drop the
+	// old table, then drop its sqlite_sequence row.
+	function migrateUndo(db) {
+		let sql = '';
+		try {
+			sql = db.exec("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '_wp_undo'").one().sql || '';
+		} catch {
+			return false;
+		}
+		if (!/autoincrement/i.test(sql)) return false;
+		if (db.exec('SELECT COUNT(*) AS n FROM _wp_undo').one().n !== 0) return false;
+		try {
+			if (db.exec('SELECT active FROM _wp_undo_state WHERE id = 1').one().active) return false;
+		} catch {
+			// no state row yet: nothing is mid-frame
+		}
+		// Drop the undo triggers first. Renaming or dropping _wp_undo while they still name it makes
+		// SQLite recompile them against a missing table ("no such table: main._wp_undo"). They are
+		// recreated below, same bodies: the body hashes to the same name, and it inserts into _wp_undo
+		// by name, so the new table needs no trigger edit.
+		const triggers = [...db.exec("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE '\\_wp\\_undo\\_%' ESCAPE '\\'").raw()].map((r) => r[0]);
+		for (const name of triggers) db.exec(`DROP TRIGGER IF EXISTS ${sqlId(name)}`);
+		db.exec('ALTER TABLE _wp_undo RENAME TO _wp_undo_old');
+		db.exec('CREATE TABLE _wp_undo (seq INTEGER PRIMARY KEY, sql TEXT NOT NULL)');
+		db.exec('INSERT INTO _wp_undo (seq, sql) SELECT seq, sql FROM _wp_undo_old');
+		db.exec('DROP TABLE _wp_undo_old');
+		try {
+			db.exec("DELETE FROM sqlite_sequence WHERE name = '_wp_undo' OR name = '_wp_undo_old'");
+		} catch {
+			// the drop already removed the row, or this database has no sequence table
+		}
+		undoSchemaSig = null; // sqlite_master changed; put the same triggers back on the new table
+		undoTriggers(db);
+		return true;
+	}
 	function undoSetup(db) {
 		if (setupDone) return;
-		db.exec('CREATE TABLE IF NOT EXISTS _wp_undo (seq INTEGER PRIMARY KEY AUTOINCREMENT, sql TEXT NOT NULL)');
+		migrateUndo(db);
+		db.exec('CREATE TABLE IF NOT EXISTS _wp_undo (seq INTEGER PRIMARY KEY, sql TEXT NOT NULL)');
 		db.exec('CREATE TABLE IF NOT EXISTS _wp_undo_state (id INTEGER PRIMARY KEY CHECK (id = 1), active INTEGER NOT NULL)');
 		own(db.exec('INSERT OR IGNORE INTO _wp_undo_state (id, active) VALUES (1, 0)'));
 		if (framesOn()) db.exec('CREATE TABLE IF NOT EXISTS _wp_frame (req TEXT PRIMARY KEY, state TEXT NOT NULL, points INTEGER NOT NULL, kinds TEXT NOT NULL, undone INTEGER NOT NULL, t INTEGER NOT NULL)');
@@ -355,7 +404,8 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			}
 			if (!active) {
 				const relabeled = relabelEnded(db);
-				log({ m: 'frame-recover', active: 0, tables: true, frames: framesOn(), relabeled });
+				const rebuilt = migrateUndo(db);
+				log({ m: 'frame-recover', active: 0, tables: true, frames: framesOn(), relabeled, rebuilt });
 				return null;
 			}
 			const n = undoTo(db, storage, 0);
@@ -372,8 +422,9 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 				// frames were never on here
 			}
 			const relabeled = relabelEnded(db);
+			const rebuilt = migrateUndo(db);
 			log({ m: 'txn', recovered: true, undone: n, req });
-			log({ m: 'frame-recover', active: 1, tables: true, frames: framesOn(), undone: n, req, relabeled });
+			log({ m: 'frame-recover', active: 1, tables: true, frames: framesOn(), undone: n, req, relabeled, rebuilt });
 			return { undone: n, req };
 		},
 		/** The outcome of a request, for the Worker's /_frame probe: null when unknown. */

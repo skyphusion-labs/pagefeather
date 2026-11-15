@@ -1,4 +1,4 @@
-// node --test spikes/b2-wordpress/tests/undo-log.test.mjs (#352, and #60's first CI coverage).
+// node --test spikes/b2-wordpress/tests/undo-log.test.mjs (#352, #577, and #60's first CI coverage).
 // undo-log.mjs on node:sqlite through an adapter shaped like the Durable Object's ctx.storage.sql
 // (exec(sql, ...params) -> a cursor with raw(), one(), toArray(), columnNames, rowsWritten) and
 // ctx.storage.transactionSync. A "new isolate" is a NEW createUndoLog on the SAME database: what the
@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { createUndoLog, mayWrite, isDdl } from '../undo-log.mjs';
 
-function objectSql() {
+function objectSql(onExec) {
 	const d = new DatabaseSync(':memory:');
 	const cursor = (rows, cols, changes) => ({
 		columnNames: cols,
@@ -18,14 +18,33 @@ function objectSql() {
 		toArray: () => rows.map((r) => Object.fromEntries(cols.map((c, i) => [c, r[i]]))),
 		one: () => Object.fromEntries(cols.map((c, i) => [c, rows[0][i]])),
 	});
+	// sqlite_sequence is not in total_changes(). The Durable Object bills that update as a row
+	// written, one per insert into an AUTOINCREMENT table (#577). onExec sees both.
+	const seqOf = () => {
+		try {
+			const r = d.prepare("SELECT seq FROM sqlite_sequence WHERE name = '_wp_undo'").get();
+			return r ? r.seq : null;
+		} catch {
+			return null;
+		}
+	};
 	const exec = (sql, ...params) => {
+		const seqBefore = onExec ? seqOf() : null;
+		const changesBefore = onExec ? d.prepare('SELECT total_changes() AS c').get().c : 0;
 		const st = d.prepare(sql);
 		const cols = st.columns().map((c) => c.name);
+		let cur;
 		if (cols.length) {
 			st.setReturnArrays(true);
-			return cursor(st.all(...params), cols, 0);
+			cur = cursor(st.all(...params), cols, 0);
+		} else {
+			cur = cursor([], [], st.run(...params).changes);
 		}
-		return cursor([], [], st.run(...params).changes);
+		if (onExec) {
+			const logical = d.prepare('SELECT total_changes() AS c').get().c - changesBefore;
+			onExec({ logical, seq: seqOf() === seqBefore ? 0 : 1 });
+		}
+		return cur;
 	};
 	const storage = {
 		transactionSync(fn) {
@@ -33,7 +52,7 @@ function objectSql() {
 			try { const r = fn(); d.exec('RELEASE ts'); return r; } catch (e) { d.exec('ROLLBACK TO ts'); d.exec('RELEASE ts'); throw e; }
 		},
 	};
-	return { db: { exec, storage }, storage };
+	return { db: { exec, storage }, storage, raw: d };
 }
 function isolate(frames = true) {
 	const dropped = [];
@@ -524,4 +543,155 @@ test('ROLLBACK TO the same savepoint twice, with writes and an inner savepoint b
 	// The frame still covers all of it: a reset now rolls back to before 'pre'.
 	isolate().u.recover(db, storage);
 	assert.deepEqual(ids(db), ['seed']);
+});
+
+// #577. A framed save's billed rows are total_changes() plus one sqlite_sequence update per undo
+// insert. The Durable Object's rowsWritten counts that sequence row; node:sqlite's changes() does not.
+// Three covered writes on a warm database: 6 logical rows through the statement (the user row and its
+// undo row, each) plus 7 of the frame's own (active on, the frame row, active off, the 3 undo rows
+// cleared, the frame row updated) = 13. AUTOINCREMENT adds 3, billed 16. The plain rowid bills 13.
+function meteredSite() {
+	const tally = { logical: 0, seqWrites: 0 };
+	const s = objectSql((delta) => {
+		tally.logical += delta.logical;
+		tally.seqWrites += delta.seq;
+	});
+	s.db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
+	s.db.exec("INSERT INTO t (v) VALUES ('seed')");
+	s.tally = tally;
+	return s;
+}
+test('a framed save bills the logical rows only: no sqlite_sequence write (#577)', () => {
+	const { db, tally } = meteredSite();
+	const a = isolate();
+	a.u.arm(db, 'warm');
+	run(a.u, db, "INSERT INTO t (v) VALUES ('w')");
+	a.u.end(db);
+	const base = { logical: tally.logical, seqWrites: tally.seqWrites, own: a.u.counts().own };
+	a.u.arm(db, 'save');
+	run(a.u, db, "INSERT INTO t (v) VALUES ('A')");
+	run(a.u, db, "UPDATE t SET v = 'seed2' WHERE v = 'seed'");
+	run(a.u, db, "DELETE FROM t WHERE v = 'A'");
+	a.u.end(db);
+	const logical = tally.logical - base.logical;
+	const seqWrites = tally.seqWrites - base.seqWrites;
+	const own = a.u.counts().own - base.own;
+	assert.deepEqual(ids(db), ['seed2', 'w'], 'the save kept its writes');
+	// billed is what x-db-rows plus the frame's own rows cost. seqWrites is the AUTOINCREMENT tax.
+	assert.deepEqual(
+		{ billed: logical + seqWrites, logical, seqWrites, own },
+		{ billed: 13, logical: 13, seqWrites: 0, own: 7 },
+	);
+});
+
+// Within one frame that only appends, seq order is insertion order, so newest-first does not need
+// AUTOINCREMENT's never-reuse rule. Two updates of one row prove the replay order: oldest-first would
+// leave the intermediate value.
+test('undo restores the exact pre-request state, newest first (#577)', () => {
+	const { db, storage } = site();
+	const a = isolate();
+	a.u.arm(db, 'ord');
+	run(a.u, db, "UPDATE t SET v = 'X' WHERE v = 'seed'");
+	run(a.u, db, "UPDATE t SET v = 'Y' WHERE v = 'X'");
+	const logged = [...db.exec('SELECT sql FROM _wp_undo ORDER BY seq DESC').raw()].map((r) => r[0]);
+	assert.equal(logged.length, 2);
+	assert.match(logged[0], /'X'/, 'the newer undo runs first: it puts the intermediate value back');
+	assert.match(logged[1], /'seed'/, 'then the original');
+	isolate().u.recover(db, storage);
+	assert.deepEqual(ids(db), ['seed']);
+});
+
+// After ROLLBACK TO deletes the tail, a plain rowid reuses the cleared seq. The new row is the one
+// a later undo applies. AUTOINCREMENT would hand out a fresh seq; the replay does not need that.
+test('a cleared undo seq is reused, and the new row is what a later undo applies (#577)', () => {
+	const { db, storage } = site();
+	const a = isolate();
+	a.u.arm(db, 'reuse');
+	run(a.u, db, "INSERT INTO t (v) VALUES ('pre')");
+	run(a.u, db, "INSERT INTO t (v) VALUES ('in')");
+	a.u.txnOp(db, storage, { op: 'begin' });
+	a.u.txnOp(db, storage, { op: 'savepoint', name: 'p' });
+	run(a.u, db, "DELETE FROM t WHERE v = 'in'");
+	const cleared = db.exec('SELECT MAX(seq) AS s FROM _wp_undo').one().s;
+	assert.match(db.exec('SELECT sql FROM _wp_undo WHERE seq = ?', cleared).one().sql, /'in'/);
+	assert.deepEqual(a.u.txnOp(db, storage, { op: 'rollback_to', name: 'p' }), { ok: true, undone: 1 });
+	run(a.u, db, "DELETE FROM t WHERE v = 'pre'");
+	const again = db.exec('SELECT MAX(seq) AS s FROM _wp_undo').one().s;
+	const againSql = db.exec('SELECT sql FROM _wp_undo WHERE seq = ?', again).one().sql;
+	assert.equal(again, cleared, 'plain rowid reuses the cleared seq');
+	assert.match(againSql, /'pre'/);
+	assert.doesNotMatch(againSql, /'in'/);
+	assert.deepEqual(a.u.txnOp(db, storage, { op: 'rollback_to', name: 'p' }), { ok: true, undone: 1 });
+	assert.deepEqual(ids(db), ['seed', 'pre', 'in'], 'the reused seq undid the new delete, not the old one');
+	isolate().u.recover(db, storage);
+	assert.deepEqual(ids(db), ['seed'], 'the whole frame still rolls back to the pre-request row');
+});
+
+function oldUndo(raw) {
+	raw.exec('CREATE TABLE _wp_undo (seq INTEGER PRIMARY KEY AUTOINCREMENT, sql TEXT NOT NULL)');
+	raw.exec('CREATE TABLE _wp_undo_state (id INTEGER PRIMARY KEY CHECK (id = 1), active INTEGER NOT NULL)');
+	raw.exec('INSERT INTO _wp_undo_state (id, active) VALUES (1, 0)');
+}
+function undoDdl(raw) {
+	return raw.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '_wp_undo'").get().sql;
+}
+function sequenceNames(raw) {
+	try {
+		return raw.prepare('SELECT name FROM sqlite_sequence').all().map((r) => r.name);
+	} catch {
+		return [];
+	}
+}
+function triggerCount(raw) {
+	return raw.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'trigger' AND name LIKE '\\_wp\\_undo\\_%' ESCAPE '\\'").get().n;
+}
+function triggerSql(raw) {
+	return raw.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name LIKE '\\_wp\\_undo\\_%' ESCAPE '\\' ORDER BY name").all().map((r) => r.sql);
+}
+
+test('an open frame on the old AUTOINCREMENT table is undone, then the table is rebuilt (#577)', () => {
+	const { db, storage, raw } = site();
+	oldUndo(raw);
+	raw.exec("INSERT INTO t (v) VALUES ('A')");
+	const id = raw.prepare("SELECT id FROM t WHERE v = 'A'").get().id;
+	raw.prepare('INSERT INTO _wp_undo (sql) VALUES (?)').run(`DELETE FROM "t" WHERE rowid = ${id}`);
+	raw.exec('UPDATE _wp_undo_state SET active = 1 WHERE id = 1');
+	const rec = isolate().u.recover(db, storage);
+	assert.equal(rec.undone, 1);
+	assert.deepEqual(ids(db), ['seed'], 'the open frame was undone before the rebuild');
+	assert.doesNotMatch(undoDdl(raw), /AUTOINCREMENT/i);
+	assert.ok(!sequenceNames(raw).includes('_wp_undo') && !sequenceNames(raw).includes('_wp_undo_old'), 'sqlite_sequence no longer tracks the undo log');
+	const b = isolate();
+	b.u.arm(db, 'after');
+	run(b.u, db, "UPDATE t SET v = 'Z' WHERE v = 'seed'");
+	isolate().u.recover(db, storage);
+	assert.deepEqual(ids(db), ['seed'], 'triggers on the rebuilt table still undo newest first');
+});
+
+test('a non-empty old log is left alone; the rebuild runs once it is empty, and the triggers stay (#577)', () => {
+	const { db, storage, raw } = site();
+	oldUndo(raw);
+	raw.prepare('INSERT INTO _wp_undo (sql) VALUES (?)').run('UPDATE "t" SET "v" = "v" WHERE 0');
+	const a = isolate();
+	a.u.recover(db, storage);
+	assert.match(undoDdl(raw), /AUTOINCREMENT/i, 'a non-empty log is not rebuilt');
+	assert.equal(raw.prepare('SELECT COUNT(*) AS n FROM _wp_undo').get().n, 1);
+	a.u.arm(db, 'keep');
+	run(a.u, db, "INSERT INTO t (v) VALUES ('A')");
+	assert.equal(triggerCount(raw), 3, 'triggers were installed against the old table');
+	a.u.end(db);
+	assert.deepEqual(ids(db), ['seed', 'A']);
+	assert.equal(raw.prepare('SELECT COUNT(*) AS n FROM _wp_undo').get().n, 0, 'a kept frame clears the log');
+	const bodies = triggerSql(raw);
+	assert.equal(bodies.length, 3);
+	const b = isolate();
+	b.u.recover(db, storage);
+	assert.doesNotMatch(undoDdl(raw), /AUTOINCREMENT/i);
+	assert.deepEqual(triggerSql(raw), bodies, 'the rebuilt table keeps the same trigger bodies; they name _wp_undo');
+	assert.ok(!sequenceNames(raw).includes('_wp_undo') && !sequenceNames(raw).includes('_wp_undo_old'));
+	b.u.arm(db, 'later');
+	run(b.u, db, "UPDATE t SET v = 'Z' WHERE v = 'seed'");
+	run(b.u, db, "UPDATE t SET v = 'Y' WHERE v = 'Z'");
+	isolate().u.recover(db, storage);
+	assert.deepEqual(ids(db), ['seed', 'A']);
 });
