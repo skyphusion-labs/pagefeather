@@ -12,3 +12,8 @@ Store API answers 200 and the file does not set `WOO_ACTIVE=1` (#373).
 
 Before a deploy the workflow reads the live Worker and refuses unless its `MEDIA` bucket,
 `SITE_ORIGIN` and `PHP_RUNTIME` Durable Object binding match this file.
+
+Workers for Platforms sites are not listed here. `ggc` and `ggc-test` are namespace scripts, and
+`deploy/wfp/site` is their operator surface (`deploy-workers.yml` says the per-site Workers are not
+redeployed by this workflow). Their live marker is `deploy/wfp/live-sites/` (#693). A file here is a
+b-dosql site that this workflow can redeploy with `CODE_ONLY=1`.

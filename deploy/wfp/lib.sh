@@ -612,8 +612,9 @@ TOML
   #                       metadata (invocation_logs = false). For a diagnosis on a live site.
   #   OBSERVABILITY=full  the invocation logs too. Throwaway only, enforced (#639): the run must
   #                       also set THROWAWAY=1, or the render fails (an unmarked site fails closed).
-  #                       A site listed in deploy/live-sites/ is refused even with THROWAWAY=1
-  #                       (obs_refuse_full), before any upload or build: use 1, events only.
+  #                       A live site is refused even with THROWAWAY=1 (obs_refuse_full), before any
+  #                       upload or build: deploy/live-sites/<name>.env (b-dosql, #639) or
+  #                       deploy/wfp/live-sites/<name> (Workers for Platforms, #693). Use 1, events only.
   #   unset or 0          an EXPLICIT enabled = false: without the block a re-upload left a site's
   #                       logging as it was, so "off" did not turn it off.
   case "${OBSERVABILITY:-0}" in
@@ -629,18 +630,37 @@ TOML
   # before the deploy; site.sh up makes it (ensure_search_index).
   if search_on; then printf '\n[ai]\nbinding = "AI"\n[[vectorize]]\nbinding = "SEARCH_INDEX"\nindex_name = "%s"\n' "$(search_index "$s")"; fi
 }
-# obs_live_site <name>: the site has deploy/live-sites/<name>.env (a live b-dosql site).
-obs_live_site() {
-  [ -n "${1:-}" ] && [ -e "$WFP/../live-sites/$1.env" ]
+# wfp_live_site <name>: a Workers for Platforms site marked live
+# (deploy/wfp/live-sites/<name>). Presence is the marker. No setting and no
+# secret is stored there. deploy/live-sites/ does not fit these sites: that
+# directory is the b-dosql CODE_ONLY contract (its README, deploy-workers.yml).
+wfp_live_site() {
+  [ -n "${1:-}" ] && [ -f "$WFP/live-sites/$1" ]
 }
-# obs_refuse_full <name>: OBSERVABILITY=full is refused for a live site (#639). Invocation logs
-# record each request's URL, and a store's query strings hold order keys and logins. 1 (events
-# only), 0 and unset are not refused. A name with no live-sites file is not refused here
-# (THROWAWAY=1 still gates the render). Returns 2 when refused, before any upload or build.
+# obs_live_site <name>: the one predicate for the OBSERVABILITY=full refusal.
+# Clause 1 is a deploy/live-sites/<name>.env file (b-dosql, #639).
+# Clause 2 is deploy/wfp/live-sites/<name> (Workers for Platforms, #693).
+# Keep both clauses in this one function. Do not add a second refusal.
+obs_live_site() {
+  [ -n "${1:-}" ] || return 1
+  [ -e "$WFP/../live-sites/$1.env" ] && return 0
+  wfp_live_site "$1"
+}
+# obs_refuse_full <name>: OBSERVABILITY=full is refused for a live site (#639, #693).
+# Invocation logs record each request's URL, and a store's query strings hold
+# order keys and logins. 1 (events only), 0 and unset are not refused. A name
+# with neither marker is not refused here (THROWAWAY=1 still gates the render).
+# Returns 2 when refused, before any upload or build.
 obs_refuse_full() {
   [ "${OBSERVABILITY:-}" = full ] || return 0
   obs_live_site "$1" || return 0
-  echo "OBSERVABILITY=full logs every request's URL, client IP and user agent, and $1 is a live site (deploy/live-sites/$1.env): use 1 (events only)" >&2
+  local where
+  if [ -e "$WFP/../live-sites/$1.env" ]; then
+    where="deploy/live-sites/$1.env"
+  else
+    where="deploy/wfp/live-sites/$1"
+  fi
+  echo "OBSERVABILITY=full logs every request's URL, client IP and user agent, and $1 is a live site ($where): use 1 (events only)" >&2
   return 2
 }
 # obs_conf_on <rendered config>: true when the config turns Workers Logs on ([observability] enabled = true).
