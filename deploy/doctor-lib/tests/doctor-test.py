@@ -17,9 +17,9 @@ import threading
 HERE = os.path.dirname(os.path.abspath(__file__))
 DOCTOR = os.path.join(HERE, "..", "..", "doctor")
 NOW = 1763200000000  # fixed clock: 2025-11-15 09:46:40 UTC
-TOKEN = "fake-" + "x" * 20  # a stand-in, never a real credential
+STAND_IN = "fake-" + "x" * 20  # a stand-in, never a real credential
 ACCT = "acct0"
-SECRET_QS = "orderkey=" + "qsmark" * 3  # a stand-in query string
+QS_MARK = "orderkey=" + "qsmark" * 3  # a stand-in query string
 CLIENT_IP = "203.0.113.97"
 SQL = "SELECT user_pass FROM wp_users WHERE ID = 1"
 RUNTIME_LINE = "Durable Object's isolate exceeded its memory limit and was reset."
@@ -157,7 +157,7 @@ def console(service, src, t=None, msg=None):
 def event(service, outcome, cpu, wall, path, t=None, entry=None, status=200, rid=None):
     _id[0] += 1
     w = {"outcome": outcome, "cpuTimeMs": cpu, "wallTimeMs": wall, "eventType": "fetch",
-         "event": {"request": {"url": "https://shop.example" + path + "?" + SECRET_QS,
+         "event": {"request": {"url": "https://shop.example" + path + "?" + QS_MARK,
                                "headers": {"cf-connecting-ip": CLIENT_IP}},
                    "response": {"status": status}}}
     if entry:
@@ -181,10 +181,10 @@ def plain(svc):
 
 
 def run(site, *args):
-    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "CLOUDFLARE_API_TOKEN": TOKEN, "ACCOUNT_ID": ACCT,
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "CLOUDFLARE_API_TOKEN": STAND_IN, "ACCOUNT_ID": ACCT,
            "DOCTOR_API_BASE": BASE, "DOCTOR_NOW_MS": str(NOW)}
     argv = ["/bin/bash", DOCTOR, site] + list(args)
-    assert TOKEN not in " ".join(argv)
+    assert STAND_IN not in " ".join(argv)
     p = subprocess.run(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=60)
     return p.returncode, p.stdout, p.stderr
 
@@ -207,7 +207,7 @@ def check(name, cond, detail=""):
 
 
 def never_leaks(name, text):
-    for bad, what in ((SECRET_QS, "query string"), ("qsmark", "query string"), (CLIENT_IP, "client IP"), (TOKEN, "token"),
+    for bad, what in ((QS_MARK, "query string"), ("qsmark", "query string"), (CLIENT_IP, "client IP"), (STAND_IN, "token"),
                       ("SELECT", "SQL"), ("wp_users", "SQL"), ("?", "a query mark")):
         check(name + " never prints the " + what, bad not in text, "found in the output")
 
@@ -217,7 +217,7 @@ def common(name, code_out_err, want_code):
     check(name + " exit", code == want_code, "exit %r, stderr %r" % (code, err[-300:]))
     check(name + " no unexpected calls", not S["unexpected"], S["unexpected"])
     # The detail names the count only: a failure must not print the header (it holds the token).
-    check(name + " sends the token in a header", S["auth"] == {"Bearer " + TOKEN}, "%d distinct Authorization values" % len(S["auth"]))
+    check(name + " sends the token in a header", S["auth"] == {"Bearer " + STAND_IN}, "%d distinct Authorization values" % len(S["auth"]))
     never_leaks(name, out + err)
     return out
 
@@ -346,13 +346,13 @@ check("same millisecond says the read stopped", "NOT the whole window" in out an
 sys.path.insert(0, os.path.join(HERE, ".."))
 import facts  # noqa: E402
 reset([event("wp-shop", "ok", 1, 10, "/a") for _ in range(5)] + [console("wp-shop", {"m": "write-loss", "firstSql": SQL})], {plain("wp-shop"): ON_FULL})
-raw = json.dumps(facts.gather(facts.Api(BASE, TOKEN), "shop", facts.window_ms(24, NOW)))
-for bad in (SECRET_QS, CLIENT_IP, TOKEN, "SELECT", "?"):
-    check("facts layer never keeps " + ("the token" if bad == TOKEN else bad), bad not in raw, "found in the facts")
+raw = json.dumps(facts.gather(facts.Api(BASE, STAND_IN), "shop", facts.window_ms(24, NOW)))
+for bad, label in ((QS_MARK, "a query string"), (CLIENT_IP, "a client IP"), (STAND_IN, "the token"), ("SELECT", "SQL"), ("?", "a query mark")):
+    check("facts layer never keeps " + label, bad not in raw, "found in the facts")
 
 # 11. the leak guard can fire: a path that carries an IP and SQL is hidden by the last guard.
 import doctor  # noqa: E402
-t = doctor.scrub("GET /x?" + SECRET_QS + " from " + CLIENT_IP + " ran " + SQL + " Bearer " + TOKEN, [TOKEN])
+t = doctor.scrub("GET /x?" + QS_MARK + " from " + CLIENT_IP + " ran " + SQL + " Bearer " + STAND_IN, [STAND_IN])
 never_leaks("scrub", t)
 
 # 12. usage: no token, or a bad window, is exit 2 with no API call.
