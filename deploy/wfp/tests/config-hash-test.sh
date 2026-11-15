@@ -474,8 +474,9 @@ PY2
 # constant). OBSERVABILITY: not recorded on purpose (client IPs).
 # measurement flags: never recorded, by design (site_settings.py MEASUREMENT): ON only for the run.
 # HTTP_ALLOW_HOSTS is a recorded setting (#564). The record stores presence, so empty stays empty.
+# TMPDIR: curl_cfg writes the mode-600 curl config there (#581). Not a site setting.
 measurement=" HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV "
-notset=" API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN OBSERVABILITY$measurement"
+notset=" API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN OBSERVABILITY TMPDIR$measurement"
 settings=" $(bash -c '. "'"$LIB"'"; echo $SITE_SETTINGS') "
 miss=""; for n in $derived; do case "$settings$notset" in *" $n "*) ;; *) miss="$miss $n" ;; esac; done
 ok "#558 every env name render_user reads is a recorded setting or named with a reason (missing:${miss:- none})" "$([ -z "$miss" ] && [ -n "$derived" ] && printf '%s\n' $derived | grep -qx HEADROOM_PROBE && echo 1 || echo 0)"

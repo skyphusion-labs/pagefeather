@@ -50,12 +50,15 @@ jobs:
       - name: No process substitution in the macOS-run scripts (macOS /bin/bash 3.2 leaks one fd each)
         run: |
           set -u
-          # e2e.sh and the build scripts run on an operator's Mac under /bin/bash 3.2, where `< <(...)`
-          # inside a function keeps a descriptor open until the function returns. #578's asset loop hit
-          # the limit and the local build died with SIGTRAP. CI's bash 5 cannot see that, so refuse the form.
-          hits=$(grep -nE '<[[:space:]]*<\(' spikes/b2-wordpress/*.sh deploy/wfp/*.sh deploy/wfp/site | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)
+          # e2e.sh and the build scripts run on an operator's Mac under /bin/bash 3.2, where every
+          # process substitution keeps a descriptor open until the enclosing function returns.
+          # #578's asset loop hit the limit and the local build died with SIGTRAP. #580 refused
+          # only the redirect form. #581 refuses every one outside a comment. CI's bash 5 does
+          # not leak, so this guard is what catches it. The test also runs the guard on a fixture.
+          hits=$(grep -nE '<\(' spikes/b2-wordpress/*.sh deploy/wfp/*.sh deploy/wfp/site | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)
           if [ -n "$hits" ]; then echo "process substitution found:"; echo "$hits"; exit 1; fi
           echo "no process substitution in the macOS-run scripts"
+          tests/ci/no-process-sub-test.sh
       - name: Release bundle manifest (issue #405)
         # deploy/release: the manifest the one-click admin checks a downloaded bundle against. Offline.
         run: node deploy/release/tests/bundle-manifest-test.mjs
@@ -281,6 +284,7 @@ jobs:
           python3 -I deploy/wfp/tests/fresh-test.py
           python3 -I deploy/wfp/tests/tempdir-clean-test.py
           deploy/wfp/tests/wait-build-test.sh
+          deploy/wfp/tests/curl-k-file-test.sh
           deploy/wfp/tests/update-all-test.sh
           deploy/wfp/tests/update-inputs-test.sh
           deploy/wfp/tests/rollback-build-test.sh
