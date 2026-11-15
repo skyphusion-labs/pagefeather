@@ -313,7 +313,9 @@ jobs:
             d="$RUNNER_TEMP/e/pagefeather-engine-s1-$arm"
             PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
             ./build.sh | tail -1
-            DEV_ENV=dosql-local WOO_ACTIVE=1 ./opcache.sh > build/opcache.log 2>&1 || { echo "::error::opcache.sh failed on $arm"; tail -30 build/opcache.log; exit 1; }
+            # lean-lazy primes at 128 MiB (PRIME_OPCACHE_MB): every script fits, so the zip is split as it would ship
+            mb=""; [ "$arm" = lean-lazy ] && mb=128
+            PRIME_OPCACHE_MB=$mb DEV_ENV=dosql-local WOO_ACTIVE=1 ./opcache.sh > build/opcache.log 2>&1 || { echo "::error::opcache.sh failed on $arm"; tail -30 build/opcache.log; exit 1; }
             tail -1 build/opcache.log
             ./run.sh --stop > /dev/null 2>&1 || true
             cp build/opcache.zip "$RUNNER_TEMP/opcache-$arm.zip"
@@ -346,7 +348,10 @@ jobs:
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-lazy"
           PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
           ./build.sh | tail -1
+          # at the runtime default (48): part of the scripts take the file-cache fallback; mismatch must be 0
           tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate.json"
+          # at the priming size (128): nothing falls back; the reading is how many scripts are split
+          LB_MC=128 tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate-128.json"
       - name: Keep the logs of a failure (opcache-e2e.log, opcache.log, dev.log), so a red explains itself
         if: failure()
         working-directory: spikes/b2-wordpress
@@ -371,6 +376,7 @@ jobs:
             ${{ runner.temp }}/red.txt
             ${{ runner.temp }}/gate.json
             ${{ runner.temp }}/gate-red.json
+            ${{ runner.temp }}/gate-128.json
           retention-days: 14
   opcache-stats:
     # #582 S4 M1: the payoff of OPcache lazy function bodies on the editor screens. The lean-stats engine

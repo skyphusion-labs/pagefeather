@@ -25,7 +25,18 @@ trap 'rm -rf "$STATE"' EXIT
 # compile everything, or the dump holds only what compiled after a recycle.
 # --local (#371): priming compiles PHP and needs no remote binding. Without it the env's AI binding
 # starts a remote proxy session, which needs a login (none on a runner) and would run on the deploy token.
-DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off${DEV_VARS:+ $DEV_VARS}" ./run.sh _ping > /dev/null
+# PRIME_OPCACHE_MB (#582 S4 M2a, opt-in): the OPcache shared memory of THIS priming run only, in MiB.
+# At the runtime default (48, index.js) WordPress and WooCommerce overflow shared memory, and a script
+# that does not fit takes the file-cache fallback, which a lazy-body engine stores unsplit. 128 held
+# all 2,076 scripts of the admin e2e (69.8 MB used). Unset keeps today's priming, so the eager zips
+# that ship now are unchanged; it becomes the default with the lazy-body default (S5).
+prime_vars=""
+if [ -n "${PRIME_OPCACHE_MB:-}" ]; then
+  case "$PRIME_OPCACHE_MB" in *[!0-9]*) echo "PRIME_OPCACHE_MB must be a whole number of MiB, not $PRIME_OPCACHE_MB"; exit 1;; esac
+  case " ${DEV_VARS:-} " in *" PHP_INI:"*) echo "PRIME_OPCACHE_MB and a PHP_INI in DEV_VARS: set one"; exit 1;; esac
+  prime_vars="PHP_INI:{\"opcache.memory_consumption\":\"$PRIME_OPCACHE_MB\"}"
+fi
+DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off${prime_vars:+ $prime_vars}${DEV_VARS:+ $DEV_VARS}" ./run.sh _ping > /dev/null
 # Stop the server this run started, however the script ends (run.sh records it).
 # Before this, a failed step exited under set -e before the kill, and the server
 # stayed on the port for the next run.

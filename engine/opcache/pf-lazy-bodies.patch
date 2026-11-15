@@ -209,7 +209,7 @@ index ac189b6..723c458 100644
  	ZCG(current_persistent_script) = NULL;
  
 diff --git a/ext/opcache/zend_persist_calc.c b/ext/opcache/zend_persist_calc.c
-index a0debab..e5ff00d 100644
+index a0debab..d499183 100644
 --- a/ext/opcache/zend_persist_calc.c
 +++ b/ext/opcache/zend_persist_calc.c
 @@ -28,8 +28,12 @@
@@ -271,18 +271,23 @@ index a0debab..e5ff00d 100644
  	}
  
  	if (op_array->vars) {
-@@ -600,6 +611,10 @@ uint32_t zend_accel_script_persist_calc(zend_persistent_script *new_persistent_s
+@@ -600,6 +611,15 @@ uint32_t zend_accel_script_persist_calc(zend_persistent_script *new_persistent_s
  
  	new_persistent_script->mem = NULL;
  	new_persistent_script->size = 0;
 +	new_persistent_script->pf_body_size = 0; /* pagefeather lazy bodies (#582 M2a) */
-+	pf_lb_active = for_shm != 0; /* pagefeather lazy bodies (#582 M2a): never in the file-cache fallback, whose calc over-counts */
++	/* pagefeather lazy bodies (#582 M2a): split only in a shared-memory persist. The file-cache fallback
++	 * (store_script_in_file_cache) runs this calc again with corrupted set, so ADD_INTERNED_STRING counts every
++	 * string (zend_persist_calc.c:37), while persist skips the ones the first calc interned (zend_persist.c:76). Upstream
++	 * tolerates that over-count: real < end is ACCEL_LOG_WARNING, only an overrun is ACCEL_LOG_ERROR
++	 * (ZendAccelerator.c:1533-1540 and 1646-1653, php-8.3.36). Splitting that persist moved the head end. */
++	pf_lb_active = for_shm != 0;
 +	pf_lb_in_body = false;
 +	pf_lb_body_size = 0;
  	new_persistent_script->corrupted = false;
  	ZCG(current_persistent_script) = new_persistent_script;
  
-@@ -637,6 +652,12 @@ uint32_t zend_accel_script_persist_calc(zend_persistent_script *new_persistent_s
+@@ -637,6 +657,12 @@ uint32_t zend_accel_script_persist_calc(zend_persistent_script *new_persistent_s
  
  	new_persistent_script->corrupted = false;
  

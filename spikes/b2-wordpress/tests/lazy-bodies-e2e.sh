@@ -5,6 +5,8 @@
 # WooCommerce, run e2e.sh, then read opcache_get_status()'s pagefeather_lazy_bodies through /_mem.
 # Gate: e2e.sh passes, split_scripts > 0 and mismatch == 0. Usage (in spikes/b2-wordpress, after
 # prepare.sh and build.sh): tests/lazy-bodies-e2e.sh <out.json>. Exit 1 on any failure, with the reason.
+# LB_MC=<MiB> runs it at another memory_consumption: at the priming size (128) nothing falls back, and the
+# line "split <n> of <cached> cached scripts" is the reading of how many scripts a primed zip holds split.
 set -u
 out=${1:?out.json}
 cd "$(dirname "$0")/.."
@@ -17,7 +19,8 @@ rm -rf build/public/_pf
 STATE=$(mktemp -d "${TMPDIR:-/tmp}/lazy-bodies-state.XXXXXX")
 export PERSIST_TO=$STATE
 trap './run.sh --stop > /dev/null 2>&1; rm -rf "$STATE"' EXIT
-DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off" ./run.sh _ping > /dev/null || { echo "lazy-bodies-e2e: wrangler dev did not start"; tail -20 dev.log; exit 1; }
+mc_vars=""; [ -z "${LB_MC:-}" ] || mc_vars="PHP_INI:{\"opcache.memory_consumption\":\"$LB_MC\"}"
+DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off${mc_vars:+ $mc_vars}" ./run.sh _ping > /dev/null || { echo "lazy-bodies-e2e: wrangler dev did not start"; tail -20 dev.log; exit 1; }
 B=http://localhost:${PORT:-8797}; T=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}"); PW=${ADMIN_PASSWORD:-local-spike-password}
 curl -sf "${T[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null || { echo "lazy-bodies-e2e: /_install failed"; exit 1; }
 curl -sf "${T[@]}" -X POST -H "x-admin-password: $PW" "$B/_activate?plugin=woocommerce/woocommerce.php" > /dev/null || { echo "lazy-bodies-e2e: activating WooCommerce failed"; exit 1; }
@@ -35,5 +38,5 @@ if lb.get("split_scripts", 0) <= 0:
     sys.exit("lazy-bodies-e2e: no script was persisted split (split_scripts %r)" % lb.get("split_scripts"))
 if lb.get("mismatch") != 0:
     sys.exit("lazy-bodies-e2e: %r head mismatches (%r overlapping): calc and persist disagree on the body region" % (lb.get("mismatch"), lb.get("overlap")))
-print("lazy-bodies-e2e: ok, %d scripts split, %.2f MiB of bodies, 0 mismatches" % (lb["split_scripts"], lb["body_bytes"] / 2**20))
+print("lazy-bodies-e2e: ok at memory_consumption %s: split %d of %s cached scripts, %.2f MiB of bodies, 0 mismatches" % (ini.get("mc"), lb["split_scripts"], ini.get("cached"), lb["body_bytes"] / 2**20))
 PY

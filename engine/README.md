@@ -114,4 +114,10 @@ OPcache's shared memory until a function is first called. It is built in slices 
 - `spikes/b2-wordpress/tests/lazy-bodies-e2e.sh` is the gate on that. It runs e2e.sh from an empty OPcache at
   the default 48 MB, where part of WordPress and WooCommerce takes the fallback, and requires
   `split_scripts > 0` and `mismatch == 0`. Its red control is lean-trim, which has no counters.
+- Only scripts persisted into shared memory are split. So `opcache.sh` takes `PRIME_OPCACHE_MB`, the shared
+  memory of the priming run only (opt-in). At the runtime default of 48 MB, 765 of 2,076 admin-e2e scripts
+  overflow into the fallback and would ship unsplit (#610). 128 holds all of them. The `lazy-bodies` job
+  primes lean-lazy at 128 and reads the split count with `LB_MC=128 tests/lazy-bodies-e2e.sh`. Unset keeps
+  today's priming, so the eager zips that ship now are unchanged. It becomes the default with the
+  lazy-body default (S5).
 - M2b (the lazy load at first call) and M2c (the measurement against M1) come next.
