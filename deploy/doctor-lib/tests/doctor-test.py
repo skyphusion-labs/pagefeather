@@ -4,7 +4,9 @@
 The fake is a small query engine over an in-memory list of log rows. It answers only the calls it
 knows: the telemetry query (views calculations and invocations; filters eq, exists, includes) and a
 script-settings GET. Any other call, view, operation or key is recorded as UNEXPECTED and fails the
-case. Run: python3 -I deploy/doctor-lib/tests/doctor-test.py   (python3 3.9, macOS /bin/bash 3.2)
+case. It follows the API as measured 2026-11-15: at most 100 invocations a call, and our JSON console
+lines carry their fields in source (a filter names them source.<field>; $metadata.message is null, so a
+message filter is UNEXPECTED). Run: python3 -I deploy/doctor-lib/tests/doctor-test.py   (python3 3.9, macOS /bin/bash 3.2)
 """
 import http.server
 import json
@@ -25,26 +27,27 @@ SQL = "SELECT user_pass FROM wp_users WHERE ID = 1"
 RUNTIME_LINE = "Durable Object's isolate exceeded its memory limit and was reset."
 RUNTIME_LINES = 41  # a count that must never be printed
 
-# key_style: how the fake names a JSON line field in a filter. "bare" reads m, "source" reads source.m.
-S = {"rows": [], "settings": {}, "unexpected": [], "auth": set(), "fail_query": False, "calls": 0, "key_style": "bare",
+S = {"rows": [], "settings": {}, "unexpected": [], "auth": set(), "fail_query": False, "calls": 0,
      # inv_drop: the invocations view leaves out this many request records (the views can disagree).
      # count_cap: the calculations view counts at most this many request records.
-     "inv_drop": 0, "count_cap": None}
+     "inv_drop": 0, "count_cap": None,
+     # wide_drop: a window wider than this (ms) leaves out its 5 newest request records; a split recovers them.
+     # type_extra: the by-type total counts this many more request records than the slices do.
+     "wide_drop": None, "type_extra": 0}
 
 
 def get_key(e, key):
+    if key == "$metadata.message":
+        raise KeyError("a message filter: our lines are in source, never message text")
     if key.startswith("$metadata."):
         return (e.get("$metadata") or {}).get(key[10:])
     if key.startswith("$workers."):
         return (e.get("$workers") or {}).get(key[9:])
     if key.startswith("$"):
         raise KeyError(key)
-    if key.startswith("source."):
-        if S["key_style"] != "source":
-            return None
-        key = key[7:]
-    elif S["key_style"] != "bare":
-        return None
+    if not key.startswith("source."):
+        raise KeyError("bare key " + key)
+    key = key[7:]
     src = e.get("source")
     return src.get(key) if isinstance(src, dict) else None
 
@@ -89,12 +92,16 @@ def query(body):
             if k is None:
                 continue
             by[k] = by.get(k, 0) + 1
+        if gb[0]["value"] == "$metadata.type" and S["type_extra"] and "cf-worker-event" in by:
+            by["cf-worker-event"] += S["type_extra"]
         return {"calculations": [{"aggregates": [{"groupKey": k, "value": n} for k, n in by.items()]}]}
     if view == "invocations":
-        lim = body.get("limit") or 50
+        lim = min(body.get("limit") or 50, 100)
         groups = {}
         if S["inv_drop"]:
             rows = sorted(rows, key=lambda e: -e["timestamp"])[S["inv_drop"]:]
+        if S["wide_drop"] is not None and tf.get("to", 0) - tf.get("from", 0) > S["wide_drop"]:
+            rows = sorted(rows, key=lambda e: -e["timestamp"])[5:]
         for e in sorted(rows, key=lambda e: -e["timestamp"]):
             rid = e["$metadata"].get("requestId")
             if rid not in groups and len(groups) >= lim:
@@ -165,7 +172,8 @@ _id = [0]
 def console(service, src, t=None, msg=None):
     _id[0] += 1
     m = {"id": "c%d" % _id[0], "type": "cf-worker", "service": service, "requestId": "r%d" % _id[0]}
-    m["message"] = msg if msg is not None else (json.dumps(src) if isinstance(src, dict) else src)
+    # measured: a JSON line has message null, its fields in source; a text line has its text as message
+    m["message"] = msg if msg is not None else (None if isinstance(src, dict) else src)
     return {"timestamp": t or NOW - 60000 - _id[0], "$metadata": m, "source": src}
 
 
@@ -210,9 +218,10 @@ def reset(rows, settings):
     S["unexpected"] = []
     S["auth"] = set()
     S["fail_query"] = False
-    S["key_style"] = "bare"
     S["inv_drop"] = 0
     S["count_cap"] = None
+    S["wide_drop"] = None
+    S["type_extra"] = 0
 
 
 FAILS = []
@@ -301,12 +310,6 @@ check("console only json visibility", j["visibility"] == "console_only" and j["o
 check("console only json never holds the runtime line count", RUNTIME_LINES not in ints(j), sorted(set(ints(j))))
 check("console only json memory resets is a yes", j["memory_resets_seen"] is True)
 
-#    the same lines when the API names the field source.m: the same counts.
-reset(rows, {wfp("site-shop"): ON})
-S["key_style"] = "source"
-out2 = common("console only, source.m", run("shop"), 1)
-check("source.m gives the same signal counts", re.search(r"isolate-reset\s+2 \(memory 2\)", out2) is not None and "queued 3" in out2, out2)
-
 # 5. structured lines unreadable (no "m" field): every signal is could-not-measure, never 0.
 reset([console("site-shop", "plain text line") for _ in range(4)], {wfp("site-shop"): ON})
 out = common("no structured", run("shop"), 3)
@@ -352,18 +355,18 @@ S["fail_query"] = True
 out = common("read failed", run("shop"), 3)
 check("read failed is not 0 rows", "0 rows" not in out and "the read failed" in out, out)
 
-# 10. paging: 250 requests read whole; 150 in one millisecond end (the old exporter could loop).
-reset([event("wp-shop", "ok", 1, 10, "/p%d" % (i % 7)) for i in range(250)], {plain("wp-shop"): ON_FULL})
+# 10. the sliced read. 3,771 requests over the window (the measured busy case: paging by the window
+#     end read 1,666 of them): every row, and complete. 150 in one millisecond: NOT complete, and the
+#     read ends well inside its call budget.
+reset([event("wp-shop", "ok", 1, 10, "/p%d" % (i % 7), t=NOW - 60000 - i * 20000) for i in range(3771)], {plain("wp-shop"): ON_FULL})
 j = json.loads(run("shop", "--json")[1])
-check("paging reads every row", j["sample"]["rows"] == 250 and j["sample"]["complete"], (j["sample"]["rows"], j["sample"]["complete"]))
-check("paging no unexpected calls", not S["unexpected"], S["unexpected"])
+check("slicing reads every row", j["sample"]["rows"] == 3771 and j["sample"]["of"] == 3771 and j["sample"]["complete"], (j["sample"]["rows"], j["sample"]["complete"]))
+check("slicing no unexpected calls", not S["unexpected"], S["unexpected"])
 reset([event("wp-shop", "ok", 1, 10, "/", t=NOW - 5000) for _ in range(150)], {plain("wp-shop"): ON_FULL})
 j = json.loads(run("shop", "--json")[1])
-# 13 calls outside paging (3 names, outcomes, the control under m and source.m, 6 signals, the reset check)
-# plus 2 pages: the second page adds no row, so the read stops there, not at the 20-page cap.
-check("same millisecond ends after 2 pages", j["api_calls"] <= 15, j["api_calls"])
+check("same millisecond ends inside the budget", j["api_calls"] < 200, j["api_calls"])
+check("same millisecond is not complete", j["sample"]["complete"] is False and j["complete"] is False, j["sample"]["complete"])
 check("same millisecond reads fewer than the server counted", j["sample"]["rows"] < j["sample"]["of"] == 150, (j["sample"]["rows"], j["sample"]["of"]))
-check("same millisecond is not complete", j["sample"]["complete"] is False and j["complete"] is False, j["sample"])
 out = run("shop")[1]
 check("same millisecond says the read stopped", "NOT the whole window" in out and "lower bound" in out, out)
 
@@ -372,11 +375,22 @@ check("same millisecond says the read stopped", "NOT the whole window" in out an
 reset([event("wp-shop", "ok", 1, 10, "/") for _ in range(30)], {plain("wp-shop"): ON_FULL})
 S["inv_drop"] = 5
 j = json.loads(run("shop", "--json")[1])
-check("fewer rows than counted is not complete", j["sample"]["rows"] == 25 and j["sample"]["of"] == 30 and j["sample"]["complete"] is False, (j["sample"]["rows"], j["sample"]["complete"]))
+check("fewer rows than counted is not complete", j["sample"]["rows"] < 30 and j["sample"]["of"] == 30 and j["sample"]["complete"] is False, (j["sample"]["rows"], j["sample"]["complete"]))
 reset([event("wp-shop", "ok", 1, 10, "/", t=NOW - 5000) for _ in range(150)], {plain("wp-shop"): ON_FULL})
 S["count_cap"] = 50
 j = json.loads(run("shop", "--json")[1])
 check("a stuck page is not complete even under a low count", j["sample"]["complete"] is False, j["sample"]["complete"])
+
+# 10c. a wide slice that under-returns is split, and the split reads every row (the slice check).
+reset([event("wp-shop", "ok", 1, 10, "/", t=NOW - 60000 - i * 1000) for i in range(40)], {plain("wp-shop"): ON_FULL})
+S["wide_drop"] = 10000
+j = json.loads(run("shop", "--json")[1])
+check("a short slice is split until it reads whole", j["sample"]["rows"] == 40 and j["sample"]["complete"] is True, (j["sample"]["rows"], j["sample"]["complete"]))
+# 10d. the slices read whole, but the total count is higher: not complete (the total check).
+reset([event("wp-shop", "ok", 1, 10, "/") for _ in range(20)], {plain("wp-shop"): ON_FULL})
+S["type_extra"] = 3
+j = json.loads(run("shop", "--json")[1])
+check("rows under the total count is not complete", j["sample"]["rows"] == 20 and j["sample"]["of"] == 23 and j["sample"]["complete"] is False, (j["sample"]["rows"], j["sample"]["of"], j["sample"]["complete"]))
 
 # 10b. the facts layer itself keeps no query string or IP: checked with the print guard out of the way.
 sys.path.insert(0, os.path.join(HERE, ".."))

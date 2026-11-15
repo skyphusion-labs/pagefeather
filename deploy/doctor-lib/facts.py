@@ -24,8 +24,6 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATASET = "cloudflare-workers"
 OUTCOMES = ("ok", "exceededMemory", "exceededCpu", "exception", "canceled")
-# The runtime's own reset line (object-error.mjs MEMORY_RESET). Counted only to answer yes or no.
-RUNTIME_RESET_TEXT = "exceeded its memory limit"
 # Our structured console lines (spikes/b2-wordpress/index.js). The key is the field "m" of the JSON
 # line. Each one maps to the response header a site owner sees. One place, so the code is the record.
 SIGNALS = (
@@ -41,8 +39,8 @@ SIGNALS = (
 HEADER_ONLY = (
     ("x-d1-failures", "failed database statements in one request; logged only inside a write-loss line"),
 )
-PAGE_LIMIT = 100
-MAX_PAGES = 20
+PAGE_LIMIT = 100  # the invocations view returns at most 100 invocations a call (measured 2026-11-15)
+MAX_SLICE_CALLS = 1500  # the budget of the sliced read; past it the read is marked NOT complete
 
 
 class Api(object):
@@ -166,58 +164,68 @@ def _path_only(url):
     return p or "/"
 
 
+def _event_row(e):
+    m = e.get("$metadata") or {}
+    w = e.get("$workers") or {}
+    ev = w.get("event") or {}
+    path = ev.get("path") if isinstance(ev.get("path"), str) else None
+    return {
+        "t": e.get("timestamp"),
+        "outcome": w.get("outcome"),
+        "cpu_ms": w.get("cpuTimeMs"),
+        "wall_ms": w.get("wallTimeMs"),
+        "type": w.get("eventType"),
+        "entrypoint": w.get("entrypoint"),
+        "where": "durable_object" if (w.get("durableObjectId") or (w.get("entrypoint") not in (None, "", "default"))) else "worker",
+        "path": _path_only(path) if path else _path_only((ev.get("request") or {}).get("url")),
+        "status": (ev.get("response") or {}).get("status"),
+    }
+
+
 def invocation_rows(api, window, service):
-    """cf-worker-event rows, newest first, paged by moving the window end back to the oldest row seen.
-    Returns (rows, complete). complete is False when the page cap stopped the read."""
-    seen = set()
-    rows = []
-    end = window["to"]
-    for _ in range(MAX_PAGES):
-        res = api.query({"queryId": "doctor-rows", "timeframe": {"from": window["from"], "to": end},
+    """Every cf-worker-event row in the window, by splitting the time window (measured 2026-11-15:
+    the invocations view returns at most PAGE_LIMIT invocations a call, and paging by moving the
+    window end read 1,666 of 3,771). A slice is read whole only when it returns fewer than
+    PAGE_LIMIT invocations AND as many request records as the calculations view counts in it.
+    Otherwise it is split in two. Returns (rows, complete): complete is False when a slice could
+    not be read whole (more than a page in one millisecond, a failed read, or the call budget)."""
+    rows = {}
+    state = {"complete": True, "calls": 0}
+    ev_type = [_svc(service), _leaf("$metadata.type", "eq", "cf-worker-event")]
+
+    def read(t0, t1):
+        if state["calls"] >= MAX_SLICE_CALLS:
+            state["complete"] = False
+            return
+        state["calls"] += 2
+        want = count(api, {"from": t0, "to": t1}, ev_type)
+        if want is None:
+            state["complete"] = False
+            return
+        if want == 0:
+            return
+        res = api.query({"queryId": "doctor-rows", "timeframe": {"from": t0, "to": t1},
                          "view": "invocations", "limit": PAGE_LIMIT,
-                         "parameters": {"datasets": [DATASET], "filters": [_svc(service), _leaf("$metadata.type", "eq", "cf-worker-event")]}})
+                         "parameters": {"datasets": [DATASET], "filters": [_svc(service)]}})
         if res is None:
-            return None, False
+            state["complete"] = False
+            return
         inv = res.get("invocations") or {}
-        evs = [e for v in inv.values() for e in (v or [])]
-        added = 0
-        oldest = None
+        evs = [e for v in inv.values() for e in (v or []) if (e.get("$metadata") or {}).get("type") == "cf-worker-event"]
+        if len(inv) >= PAGE_LIMIT or len(evs) < want:
+            if t1 - t0 >= 1:
+                mid = (t0 + t1) // 2
+                read(t0, mid)
+                read(mid + 1, t1)
+                return
+            state["complete"] = False  # one millisecond holds more than a page: keep what came back
         for e in evs:
-            ts = e.get("timestamp")
-            if isinstance(ts, (int, float)) and (oldest is None or ts < oldest):
-                oldest = ts
             m = e.get("$metadata") or {}
-            if m.get("type") != "cf-worker-event":
-                continue
             w = e.get("$workers") or {}
-            ev = w.get("event") or {}
-            key = (m.get("requestId"), w.get("eventType"), w.get("entrypoint"), ts)
-            if key in seen:
-                continue
-            seen.add(key)
-            added += 1
-            path = ev.get("path") if isinstance(ev.get("path"), str) else None
-            rows.append({
-                "t": ts,
-                "outcome": w.get("outcome"),
-                "cpu_ms": w.get("cpuTimeMs"),
-                "wall_ms": w.get("wallTimeMs"),
-                "type": w.get("eventType"),
-                "entrypoint": w.get("entrypoint"),
-                "where": "durable_object" if (w.get("durableObjectId") or (w.get("entrypoint") not in (None, "", "default"))) else "worker",
-                "path": _path_only(path) if path else _path_only((ev.get("request") or {}).get("url")),
-                "status": (ev.get("response") or {}).get("status"),
-            })
-        # Fewer groups than a page: the window is read to its start, so the read is complete.
-        if len(inv) < PAGE_LIMIT:
-            return rows, True
-        # A full page that adds no row, or leaves no clock to move the end with, cannot go on: more
-        # than a page of requests share one millisecond. Stop and say the read is NOT complete (the
-        # old exporter looped here, or dropped the rest without a word).
-        if added == 0 or oldest is None or oldest >= end:
-            return rows, False
-        end = oldest
-    return rows, False
+            rows[(m.get("requestId"), w.get("eventType"), w.get("entrypoint"), e.get("timestamp"))] = _event_row(e)
+
+    read(window["from"], window["to"])
+    return list(rows.values()), state["complete"]
 
 
 def _pct(vals, p):
@@ -249,9 +257,9 @@ def summarize_rows(rows):
     return out
 
 
-# How the query API names a field of a JSON console line. The rows carry it as source.m; the filter
-# key is not yet measured live, so both spellings are tried, and the control picks the one that reads.
-FIELD_PREFIXES = ("", "source.")
+# A field of our JSON console lines is source.<name> (measured 2026-11-15: $metadata.message is null for
+# them; the fields are in the event's source object). Never a message substring.
+FIELD_PREFIXES = ("source.",)
 
 
 def signals(api, window, service):
@@ -317,11 +325,13 @@ def gather(api, site, window, namespace="wp-wfp", forced=None):
         facts["outcomes"] = None
         facts["sample"] = None
     facts["signals"] = signals(api, window, svc)
-    # Memory resets: yes, no, or unknown. Never a count of the runtime line (#652 item 6).
-    rt = count(api, window, [_svc(svc), _leaf("$metadata.message", "includes", RUNTIME_RESET_TEXT)])
-    ours = next((i for i in facts["signals"]["items"] if i["m"] == "isolate-reset"), {})
-    em = (facts.get("outcomes") or {}).get("exceededMemory")
-    known = [x for x in (rt, (ours.get("split") or {}).get("memory") if ours.get("split") is not None else None, em) if x is not None]
+    # Memory resets: yes, no, or unknown. Never a count of the runtime's reset line (#652 item 6), and
+    # never a message substring: the answer comes from outcomes and our own reset lines (kind memory).
+    def kind_memory(m):
+        it = next((i for i in facts["signals"]["items"] if i["m"] == m), {})
+        return None if it.get("split") is None else it["split"].get("memory", 0)
+    em = (facts.get("outcomes") or {}).get("exceededMemory") if facts.get("outcomes") is not None else None
+    known = [x for x in (em, kind_memory("isolate-reset"), kind_memory("isolate-reset-retry")) if x is not None]
     facts["memory_resets_seen"] = (any(x > 0 for x in known)) if known else None
     return facts
 

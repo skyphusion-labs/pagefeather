@@ -287,6 +287,8 @@ CLOUDFLARE_API_TOKEN=... ACCOUNT_ID=... deploy/doctor <site> [--hours 24] [--ser
 - Zero rows is never healthy. Doctor says it cannot see the site, and gives the reasons.
 - With `OBSERVABILITY=1` the logs hold console lines only. Doctor says that failures cannot be counted. It does not say "0 failures".
 - With request logs on, it counts each result (ok, out of memory, out of CPU time, exception, canceled). It gives CPU and total time for the Worker and the Durable Object, and the slowest paths.
+- The log API returns at most 100 requests a call. Doctor splits the time window until each part reads whole. It checks the rows it read against the server's count, and says so when they do not match.
+- It reads Pagefeather's own lines by their fields (`source.m`), never by message text.
 - It counts Pagefeather's own log lines and names the header each one matches (`x-isolate-reset`, `x-write-loss`, `x-overloaded`, `x-php-lock`, `x-boot`).
 - It says "memory resets happened" or not. It never counts the runtime's reset line, because that line is not one per failed request.
 - It never prints a query string, SQL text, a client IP or a token. It warns when the site's logs do not hide query strings.
