@@ -421,6 +421,27 @@ out = run("shop")[1]
 check("timing failure says could not measure", re.search(r"Timing, computed.*\n  could not measure", out) is not None and "not complete" in out, out)
 check("timing failure is never healthy", "Summary: no failures found" not in out, out)
 
+# 10c. the timing denominator (#662): records with no time, or no execution model, drop out of the
+#      grouped percentile call. Doctor prints "from N of M requests" and keeps both in the JSON.
+rows = [event("wp-shop", "ok", 2, 40, "/") for _ in range(10)]
+for _ in range(3):
+    e = event("wp-shop", "canceled", 1, 1, "/c")
+    del e["$workers"]["cpuTimeMs"], e["$workers"]["wallTimeMs"]
+    rows.append(e)
+for _ in range(2):
+    e = event("wp-shop", "ok", 2, 40, "/m")
+    del e["$workers"]["executionModel"]
+    rows.append(e)
+reset(rows, {plain("wp-shop"): ON_FULL})
+code, jout, _ = run("shop", "--json")
+j = json.loads(jout)
+check("timing denominator json", j.get("timing_requests") == 10 and j.get("timing_of") == 15, (j.get("timing_requests"), j.get("timing_of")))
+out = run("shop")[1]
+check("timing denominator printed", "Timing, computed by Cloudflare, from 10 of 15 requests:" in out, out)
+reset([event("wp-shop", "ok", 2, 40, "/") for _ in range(10)], {plain("wp-shop"): ON_FULL})
+out = run("shop")[1]
+check("timing denominator printed when whole", "from 10 of 10 requests:" in out, out)
+
 # 11. the facts layer itself keeps no query string or IP: checked with the print guard out of the way.
 sys.path.insert(0, os.path.join(HERE, ".."))
 import facts  # noqa: E402
