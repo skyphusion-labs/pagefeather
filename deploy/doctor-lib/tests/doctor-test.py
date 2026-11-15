@@ -346,6 +346,21 @@ check("console only json field key is the bare m", j["signals"]["field_key"] == 
 check("console only json never holds the runtime line count", RUNTIME_LINES not in ints(j), sorted(set(ints(j))))
 check("console only json memory resets is a yes", j["memory_resets_seen"] is True)
 
+# 4b. page-cache purges (#628): asked, sent, and refused, from the m: purge lines (index.js schedulePurge
+#     and the object's alarm). A refused purge leaves the cached pages old until the TTL.
+rows = [console("site-shop", {"m": "req", "path": "/"}) for _ in range(5)]
+rows += [console("site-shop", {"m": "purge", "asked": 1, "coalesced": 0, "waitMs": 0}) for _ in range(3)]
+rows += [console("site-shop", {"m": "purge", "sent": 1, "ok": True, "errors": [], "where": "object"}) for _ in range(2)]
+rows += [console("site-shop", {"m": "purge", "sent": 1, "ok": False, "errors": ["rate limited"], "where": "object"})]
+reset(rows, {wfp("site-shop"): ON})
+code, jout, _ = run("shop", "--json")
+j = json.loads(jout)
+p = next((i for i in j["signals"]["items"] if i["m"] == "purge"), None)
+check("purge counts", p is not None and p.get("parts") == {"asked": 3, "sent": 3, "ok": 2, "refused": 1}, p)
+out = common("purge", run("shop"), 3)
+check("purge plain line", re.search(r"purge\s+asked 3, sent 3, refused 1\.", out) is not None, out)
+check("purge error text never printed", "rate limited" not in out and "rate limited" not in jout)
+
 # 5. structured lines unreadable (no "m" field): every signal is could-not-measure, never 0.
 reset([console("site-shop", "plain text line") for _ in range(4)], {wfp("site-shop"): ON})
 out = common("no structured", run("shop"), 3)
