@@ -249,13 +249,33 @@ case "ic": // test 11
 	}
 	break;
 
-case "xref": // the store keeps a file with a head-to-body pointer whole
+case "xref": // test of stage 3: an array shared into bodies lives in the head, so the file still loads lazily
 	require $pf_dir . "/f_xref.php";
 	$d = $step("require");
 	if ($lazy) {
-		pf_chk(($d["xref_scripts"] ?? null) === 1 && ($d["eager_scripts"] ?? null) === 1 && ($d["lazy_scripts"] ?? null) === 0, "xref: f_xref.php must load whole (xref_scripts 1, eager_scripts 1, lazy_scripts 0): " . json_encode($d));
+		pf_chk(($d["xref_scripts"] ?? null) === 0 && ($d["lazy_scripts"] ?? null) === 1, "xref: f_xref.php must load lazily with no tail crossing (xref_scripts 0, lazy_scripts 1): " . json_encode($d));
 	}
-	$out[] = array(PfLbX::A, (new PfLbX)->get(), pf_lb_x_after());
+	$o = new PfLbX;
+	$out[] = array(PfLbX::A, $o->get2()); // the constant, and the SECOND body first: get() is still not loaded
+	$d = $step("constant and get2");
+	if ($lazy) {
+		pf_chk(($d["body_loads"] ?? null) === 1, "xref: the constant and get2() loaded " . json_encode($d["body_loads"] ?? null) . " bodies, want 1 (get2 only)");
+	}
+	$out[] = array($o->get(), pf_lb_x_after(), $o->get2());
+	break;
+
+case "xstr": // stage 3: a class constant string shared into bodies (run with a full interned buffer)
+	require $pf_dir . "/f_xstr.php";
+	$d = $step("require");
+	if ($lazy) {
+		pf_chk(($d["xref_scripts"] ?? null) === 0 && ($d["lazy_scripts"] ?? null) === 1, "xstr: f_xstr.php must load lazily with no tail crossing: " . json_encode($d));
+	}
+	$out[] = array(PfLbXs::NAME, PfLbXs::len()); // the constant, and the SECOND body first
+	$d = $step("constant and len");
+	if ($lazy) {
+		pf_chk(($d["body_loads"] ?? null) === 1, "xstr: the constant and len() loaded " . json_encode($d["body_loads"] ?? null) . " bodies, want 1");
+	}
+	$out[] = array(PfLbXs::get(), PfLbXs::len());
 	break;
 
 case "tcbad": // test 11: a real trait collision must still be one (prints a fatal, not JSON)

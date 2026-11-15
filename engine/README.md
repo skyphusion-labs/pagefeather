@@ -143,6 +143,16 @@ OPcache's shared memory until a function is first called. It is built in slices 
   compiled at run time, and a file that the store marks with `pf_xref`. `pf_xref` counts pointers into the
   tail from outside their own body. Example: the optimizer shares a class constant's array with a method
   literal, so the constant points into that method's body. Such a file always loads whole.
+- **M2b stage 3, the head keeps what is shared.** Every crossing found on WordPress and WooCommerce came from
+  persist reusing an array (or, when the interned-string buffer is full, a string) that a body had persisted
+  first. Calc now runs twice. Pass 1 records which owner (the head, or one body) reaches each literal array and
+  each string that is not interned first. It marks the array or string shared when another owner reaches it
+  later. Pass 2 and persist place a shared array or string in the head. A head list of the moved arrays is
+  unserialized at the head load, before the tables, with the main strings, so an array that only bodies reach
+  is still ready. Measured 2026-11-15 on every WordPress and WooCommerce file, natively: 1187 of 3715 files
+  crossed (73.2% of the body bytes) before, 0 after; at the Worker's 4 MB interned buffer, 0 after as well
+  (1283 arrays and 2185 strings moved). `tools/bin-split.py --max-whole-share 0.01` is the gate on the
+  primed zip. The counters `head_arrays` and `head_strings` show what moved.
 - **Code that reads opcodes without a call** asks for the body first: named arguments that skip a default
   (`zend_handle_undef_args`), Reflection default values, and the text of an inheritance error. The trait
   collision check compares body ids (`zend_pf_body_id`), not opcodes pointers, because every unloaded body

@@ -15,18 +15,27 @@ trap 'rm -rf "$work"' EXIT
 cp "$here"/*.php "$work/"
 opc=(-n -d "zend_extension=$so" -d opcache.enable_cli=1 -d opcache.validate_timestamps=0 -d opcache.file_update_protection=0
   -d opcache.memory_consumption=64 -d opcache.interned_strings_buffer=8 -d opcache.max_accelerated_files=4000)
-mkdir "$work/oc0"
-"$php" "${opc[@]}" -d "opcache.file_cache=$work/oc0" -r '
+# Case xstr runs with a FULL 1 MB interned-string buffer, from its own primed cache: f_0fill.php (generated here,
+# compiled first) fills it, so later literals are not interned, as on the Worker (4 MB, full on WordPress).
+"$php" -n -r 'echo "<?php\nfunction pf_lb_fill() { return array("; for ($i = 0; $i < 30000; $i++) { echo "\"pf-lb-fill-", $i, "-", str_repeat("q", 40), "\","; } echo "); }\n";' > "$work/f_0fill.php"
+prime() { # <dir> [extra -d ...]
+mkdir "$work/$1"; d=$1; shift
+"$php" "${opc[@]}" -d "opcache.file_cache=$work/$d" "$@" -r '
   foreach (glob($argv[1] . "/f_*.php") as $f) { if (!opcache_compile_file($f)) { echo "prime: could not compile $f\n"; exit(1); } }
   $s = opcache_get_status(false)["pagefeather_lazy_bodies"] ?? null;
   echo "prime: ", json_encode($s), "\n";' "$work" || exit 1
+}
+prime oc0
+prime oc1 -d opcache.interned_strings_buffer=1
 n=$(find "$work/oc0" -name "*.bin" | wc -l | tr -d " ")
-[ "$n" -ge 12 ] || { echo "prime: only $n .bin files written"; exit 1; }
+[ "$n" -ge 15 ] || { echo "prime: only $n .bin files written"; exit 1; }
 rc=0
-for case in plain methods refl copy fail never missing ic xref tcbad; do
+for case in plain methods refl copy fail never missing ic xref xstr tcbad; do
   for mode in lazy eager compiled; do
-    rm -rf "$work/oc"; cp -R "$work/oc0" "$work/oc"
+    src=oc0; [ "$case" = xstr ] && src=oc1
+    rm -rf "$work/oc"; cp -R "$work/$src" "$work/oc"
     extra=(); [ "$mode" = eager ] && extra=(-d opcache.pagefeather_lazy_load=0); [ "$mode" = compiled ] && extra=(-d opcache.enable_cli=0)
+    [ "$case" = xstr ] && extra+=(-d opcache.interned_strings_buffer=1)
     "$php" "${opc[@]}" -d "opcache.file_cache=$work/oc" ${extra[@]+"${extra[@]}"} "$work/probe.php" "$case" "$mode" > "$work/$case.$mode.out" 2>&1
   done
   python3 -I - "$work" "$case" <<'PY' || rc=1

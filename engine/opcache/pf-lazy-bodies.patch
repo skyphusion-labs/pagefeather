@@ -77,7 +77,7 @@ index a89114b8..e9bd9a37 100644
  			(existing_fn->common.scope->ce_flags & ZEND_ACC_TRAIT) == ZEND_ACC_TRAIT) {
  			return;
 diff --git a/ext/opcache/ZendAccelerator.c b/ext/opcache/ZendAccelerator.c
-index 93556041..b1d39829 100644
+index 93556041..f1e850f9 100644
 --- a/ext/opcache/ZendAccelerator.c
 +++ b/ext/opcache/ZendAccelerator.c
 @@ -44,6 +44,7 @@
@@ -95,7 +95,7 @@ index 93556041..b1d39829 100644
 +	/* pagefeather lazy bodies (#582 M2a): ACCEL_LOG_ERROR on purpose. This runs once at startup, before any
 +	 * request, with no bailout address, so the runtime stops LOUDLY (it does not boot). Without the entropy,
 +	 * lazy and eager file-cache files could share a system id and mix. No request path is affected. */
-+	if (zend_add_system_entropy("opcache", "pagefeather-lazy-body-3", NULL, 0) != SUCCESS) {
++	if (zend_add_system_entropy("opcache", "pagefeather-lazy-body-4", NULL, 0) != SUCCESS) {
 +		zend_accel_error(ACCEL_LOG_ERROR, "pagefeather lazy bodies: the system id could not take the lazy-body entropy\n");
 +	}
 +	pf_lb_startup(); /* pagefeather lazy bodies (#582 M2b stage 2): the trampoline, its opcode handler, the op_array slot (warns and stays eager on failure) */
@@ -103,10 +103,10 @@ index 93556041..b1d39829 100644
  	accel_globals_id = ts_allocate_id(&accel_globals_id, sizeof(zend_accel_globals), (ts_allocate_ctor) accel_globals_ctor, (ts_allocate_dtor) accel_globals_dtor);
  #else
 diff --git a/ext/opcache/ZendAccelerator.h b/ext/opcache/ZendAccelerator.h
-index a10ae41a..59dc7a9b 100644
+index a10ae41a..ca3f7351 100644
 --- a/ext/opcache/ZendAccelerator.h
 +++ b/ext/opcache/ZendAccelerator.h
-@@ -116,6 +116,27 @@ typedef struct _zend_early_binding {
+@@ -116,6 +116,30 @@ typedef struct _zend_early_binding {
  	uint32_t cache_slot;
  } zend_early_binding;
  
@@ -130,21 +130,26 @@ index a10ae41a..59dc7a9b 100644
 +extern uint64_t pf_lb_body_bytes_loaded, pf_lb_body_bytes_resident, pf_lb_body_load_ns;
 +void pf_lb_startup(void);
 +bool pf_lb_real_counts(const zend_op_array *op_array, uint32_t counts[4]);
++/* pagefeather lazy bodies (#582 M2b stage 3): arrays calc found reached from more than one owner, persisted in the head */
++extern HashTable *pf_lb_shared;
++extern uint32_t pf_lb_head_arrays, pf_lb_head_strings;
 +
  typedef struct _zend_persistent_script {
  	zend_script    script;
  	zend_long      compiler_halt_offset;   /* position of __HALT_COMPILER or -1 */
-@@ -131,6 +152,9 @@ typedef struct _zend_persistent_script {
+@@ -131,6 +155,11 @@ typedef struct _zend_persistent_script {
  
  	void          *mem;                    /* shared memory area used by script structures */
  	size_t         size;                   /* size of used shared memory */
 +	size_t         pf_body_size;           /* pagefeather lazy bodies (#582 M2a): the last pf_body_size bytes of mem are function bodies */
 +	pf_body_dir_entry *pf_body_dir;        /* pagefeather lazy bodies (#582 M2b): the body directory, at the end of the head (NULL when unsplit) */
 +	uint32_t       pf_body_dir_n;          /* pagefeather lazy bodies (#582 M2b): its entries (calc sets the expected count, persist the real one) */
++	HashTable    **pf_head_arr;            /* pagefeather lazy bodies (#582 M2b stage 3): arrays moved to the head, after the directory (NULL when none) */
++	uint32_t       pf_head_arr_n;          /* pagefeather lazy bodies (#582 M2b stage 3): their count (calc the expected one, persist the real one) */
  
  	struct zend_persistent_script_dynamic_members {
  		time_t       last_used;
-@@ -179,6 +203,7 @@ typedef struct _zend_accel_directives {
+@@ -179,6 +208,7 @@ typedef struct _zend_accel_directives {
  	char          *file_cache;
  	bool      file_cache_only;
  	bool      file_cache_consistency_checks;
@@ -153,7 +158,7 @@ index a10ae41a..59dc7a9b 100644
  	bool      file_cache_fallback;
  #endif
 diff --git a/ext/opcache/zend_accelerator_module.c b/ext/opcache/zend_accelerator_module.c
-index 90936929..6a158447 100644
+index 90936929..0c895f67 100644
 --- a/ext/opcache/zend_accelerator_module.c
 +++ b/ext/opcache/zend_accelerator_module.c
 @@ -303,6 +303,7 @@ ZEND_INI_BEGIN()
@@ -164,7 +169,7 @@ index 90936929..6a158447 100644
  #if ENABLE_FILE_CACHE_FALLBACK
  	STD_PHP_INI_BOOLEAN("opcache.file_cache_fallback"           , "1"   , PHP_INI_SYSTEM, OnUpdateBool,	   accel_directives.file_cache_fallback,           zend_accel_globals, accel_globals)
  #endif
-@@ -669,6 +670,29 @@ ZEND_FUNCTION(opcache_get_status)
+@@ -669,6 +670,31 @@ ZEND_FUNCTION(opcache_get_status)
  	add_assoc_long(&memory_usage, "wasted_memory", ZSMMG(wasted_shared_memory));
  	add_assoc_double(&memory_usage, "current_wasted_percentage", (((double) ZSMMG(wasted_shared_memory))/ZCG(accel_directives).memory_consumption)*100.0);
  	add_assoc_zval(return_value, "memory_usage", &memory_usage);
@@ -189,13 +194,15 @@ index 90936929..6a158447 100644
 +		add_assoc_long(&pf_lb, "body_bytes_resident", (zend_long)pf_lb_body_bytes_resident);
 +		add_assoc_long(&pf_lb, "body_load_ns", (zend_long)pf_lb_body_load_ns);
 +		add_assoc_long(&pf_lb, "copy_installs", pf_lb_copy_installs);
++		add_assoc_long(&pf_lb, "head_arrays", pf_lb_head_arrays); /* pagefeather lazy bodies (#582 M2b stage 3) */
++		add_assoc_long(&pf_lb, "head_strings", pf_lb_head_strings);
 +		add_assoc_zval(return_value, "pagefeather_lazy_bodies", &pf_lb);
 +	}
  
  	if (ZCSG(interned_strings).start && ZCSG(interned_strings).end) {
  		zval interned_strings_usage;
 diff --git a/ext/opcache/zend_file_cache.c b/ext/opcache/zend_file_cache.c
-index 8afc4a43..ba15e85a 100644
+index 8afc4a43..b7b6b32a 100644
 --- a/ext/opcache/zend_file_cache.c
 +++ b/ext/opcache/zend_file_cache.c
 @@ -24,6 +24,7 @@
@@ -351,7 +358,24 @@ index 8afc4a43..ba15e85a 100644
  	if (!in_shm) {
  		return str;
  	}
-@@ -469,6 +556,12 @@ static void zend_file_cache_serialize_op_array(zend_op_array            *op_arra
+@@ -384,11 +471,16 @@ static void zend_file_cache_serialize_zval(zval                     *zv,
+ 		case IS_ARRAY:
+ 			if (!IS_SERIALIZED(Z_ARR_P(zv))) {
+ 				HashTable *ht;
++				bool pf_b = pf_bmode;
+ 
+ 				SERIALIZE_PTR(Z_ARR_P(zv));
++				if (pf_bmode && pf_xr.on && (size_t)Z_ARR_P(zv) < pf_xr.tail) {
++					pf_bmode = false; /* pagefeather lazy bodies (#582 M2b stage 3): an array in the head takes the main string table */
++				}
+ 				ht = Z_ARR_P(zv);
+ 				UNSERIALIZE_PTR(ht);
+ 				zend_file_cache_serialize_hash(ht, script, info, buf, zend_file_cache_serialize_zval);
++				pf_bmode = pf_b;
+ 			}
+ 			break;
+ 		case IS_CONSTANT_AST:
+@@ -469,6 +561,12 @@ static void zend_file_cache_serialize_op_array(zend_op_array            *op_arra
  	if (op_array->scope) {
  		if (UNEXPECTED(zend_shared_alloc_get_xlat_entry(op_array->opcodes))) {
  			op_array->refcount = (uint32_t*)(intptr_t)-1;
@@ -364,7 +388,7 @@ index 8afc4a43..ba15e85a 100644
  			SERIALIZE_PTR(op_array->static_variables);
  			SERIALIZE_PTR(op_array->literals);
  			SERIALIZE_PTR(op_array->opcodes);
-@@ -482,6 +575,8 @@ static void zend_file_cache_serialize_op_array(zend_op_array            *op_arra
+@@ -482,6 +580,8 @@ static void zend_file_cache_serialize_op_array(zend_op_array            *op_arra
  			SERIALIZE_ATTRIBUTES(op_array->attributes);
  			SERIALIZE_PTR(op_array->try_catch_array);
  			SERIALIZE_PTR(op_array->prototype);
@@ -373,7 +397,7 @@ index 8afc4a43..ba15e85a 100644
  			return;
  		}
  		zend_shared_alloc_register_xlat_entry(op_array->opcodes, op_array->opcodes);
-@@ -496,6 +591,21 @@ static void zend_file_cache_serialize_op_array(zend_op_array            *op_arra
+@@ -496,6 +596,21 @@ static void zend_file_cache_serialize_op_array(zend_op_array            *op_arra
  		zend_file_cache_serialize_hash(ht, script, info, buf, zend_file_cache_serialize_zval);
  	}
  
@@ -395,7 +419,7 @@ index 8afc4a43..ba15e85a 100644
  	if (op_array->literals) {
  		zval *p, *end;
  
-@@ -509,6 +619,10 @@ static void zend_file_cache_serialize_op_array(zend_op_array            *op_arra
+@@ -509,6 +624,10 @@ static void zend_file_cache_serialize_op_array(zend_op_array            *op_arra
  		}
  	}
  
@@ -406,7 +430,7 @@ index 8afc4a43..ba15e85a 100644
  	{
  		zend_op *opline, *end;
  
-@@ -574,6 +688,9 @@ static void zend_file_cache_serialize_op_array(zend_op_array            *op_arra
+@@ -574,6 +693,9 @@ static void zend_file_cache_serialize_op_array(zend_op_array            *op_arra
  			opline++;
  		}
  
@@ -416,7 +440,7 @@ index 8afc4a43..ba15e85a 100644
  		if (op_array->arg_info) {
  			zend_arg_info *p, *end;
  			SERIALIZE_PTR(op_array->arg_info);
-@@ -626,11 +743,19 @@ static void zend_file_cache_serialize_op_array(zend_op_array            *op_arra
+@@ -626,11 +748,19 @@ static void zend_file_cache_serialize_op_array(zend_op_array            *op_arra
  
  		SERIALIZE_STR(op_array->function_name);
  		SERIALIZE_STR(op_array->filename);
@@ -436,7 +460,7 @@ index 8afc4a43..ba15e85a 100644
  		SERIALIZE_PTR(op_array->prototype);
  	}
  }
-@@ -932,11 +1057,20 @@ static void zend_file_cache_serialize(zend_persistent_script   *script,
+@@ -932,11 +1062,35 @@ static void zend_file_cache_serialize(zend_persistent_script   *script,
  	info->str_size = 0;
  	info->script_offset = (char*)script - (char*)script->mem;
  	info->timestamp = script->timestamp;
@@ -454,10 +478,25 @@ index 8afc4a43..ba15e85a 100644
  	new_script = (zend_persistent_script*)((char*)buf + info->script_offset);
  	SERIALIZE_STR(new_script->script.filename);
 +	SERIALIZE_PTR(new_script->pf_body_dir); /* pagefeather lazy bodies (#582 M2b) */
++	if (new_script->pf_head_arr) { /* pagefeather lazy bodies (#582 M2b stage 3): the arrays moved to the head, before the tables, with the main strings */
++		HashTable **pf_l;
++		SERIALIZE_PTR(new_script->pf_head_arr);
++		pf_l = new_script->pf_head_arr;
++		UNSERIALIZE_PTR(pf_l);
++		for (uint32_t i = 0; i < new_script->pf_head_arr_n; i++) {
++			if (!IS_SERIALIZED(pf_l[i])) {
++				HashTable *ht;
++				SERIALIZE_PTR(pf_l[i]);
++				ht = pf_l[i];
++				UNSERIALIZE_PTR(ht);
++				zend_file_cache_serialize_hash(ht, script, info, buf, zend_file_cache_serialize_zval);
++			}
++		}
++	}
  
  	zend_file_cache_serialize_hash(&new_script->script.class_table, script, info, buf, zend_file_cache_serialize_class);
  	zend_file_cache_serialize_hash(&new_script->script.function_table, script, info, buf, zend_file_cache_serialize_func);
-@@ -1010,13 +1144,14 @@ static char *zend_file_cache_get_bin_file_path(zend_string *script_path)
+@@ -1010,13 +1164,14 @@ static char *zend_file_cache_get_bin_file_path(zend_string *script_path)
  static bool zend_file_cache_script_write(int fd, const zend_persistent_script *script, const zend_file_cache_metainfo *info, const void *buf, const zend_string *s)
  {
  	ssize_t written;
@@ -473,7 +512,7 @@ index 8afc4a43..ba15e85a 100644
  	};
  
  	written = writev(fd, vec, sizeof(vec) / sizeof(vec[0]));
-@@ -1053,6 +1188,11 @@ static bool zend_file_cache_script_write(int fd, const zend_persistent_script *s
+@@ -1053,6 +1208,11 @@ static bool zend_file_cache_script_write(int fd, const zend_persistent_script *s
  		errno = written == -1 ? errno : EAGAIN;
  		return false;
  	}
@@ -485,7 +524,7 @@ index 8afc4a43..ba15e85a 100644
  
  	return true;
  #endif
-@@ -1104,6 +1244,10 @@ int zend_file_cache_script_store(zend_persistent_script *script, bool in_shm)
+@@ -1104,6 +1264,10 @@ int zend_file_cache_script_store(zend_persistent_script *script, bool in_shm)
  #endif
  
  	ZCG(mem) = zend_string_alloc(4096 - (_ZSTR_HEADER_SIZE + 1), 0);
@@ -496,7 +535,7 @@ index 8afc4a43..ba15e85a 100644
  
  	zend_shared_alloc_init_xlat_table();
  	if (!in_shm) {
-@@ -1125,12 +1269,28 @@ int zend_file_cache_script_store(zend_persistent_script *script, bool in_shm)
+@@ -1125,12 +1289,28 @@ int zend_file_cache_script_store(zend_persistent_script *script, bool in_shm)
  	__msan_unpoison(buf, script->size);
  #endif
  
@@ -525,7 +564,7 @@ index 8afc4a43..ba15e85a 100644
  		close(fd);
  		efree(mem);
  		zend_file_cache_unlink(filename);
-@@ -1139,6 +1299,8 @@ int zend_file_cache_script_store(zend_persistent_script *script, bool in_shm)
+@@ -1139,6 +1319,8 @@ int zend_file_cache_script_store(zend_persistent_script *script, bool in_shm)
  	}
  
  	zend_string_release_ex(s, 0);
@@ -534,7 +573,7 @@ index 8afc4a43..ba15e85a 100644
  	efree(mem);
  	if (zend_file_cache_flock(fd, LOCK_UN) != 0) {
  		zend_accel_error(ACCEL_LOG_WARNING, "opcache cannot unlock file '%s': %s\n", filename, strerror(errno));
-@@ -1300,6 +1462,424 @@ static void zend_file_cache_unserialize_type(
+@@ -1300,6 +1482,424 @@ static void zend_file_cache_unserialize_type(
  	}
  }
  
@@ -959,7 +998,7 @@ index 8afc4a43..ba15e85a 100644
  static void zend_file_cache_unserialize_op_array(zend_op_array           *op_array,
                                                   zend_persistent_script  *script,
                                                   void                    *buf)
-@@ -1322,13 +1902,14 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
+@@ -1322,13 +1922,14 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
  	}
  
  	/* Check whether this op_array has already been unserialized. */
@@ -975,7 +1014,7 @@ index 8afc4a43..ba15e85a 100644
  		UNSERIALIZE_PTR(op_array->static_variables);
  		UNSERIALIZE_PTR(op_array->literals);
  		UNSERIALIZE_PTR(op_array->opcodes);
-@@ -1342,6 +1923,9 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
+@@ -1342,6 +1943,9 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
  		UNSERIALIZE_ATTRIBUTES(op_array->attributes);
  		UNSERIALIZE_PTR(op_array->try_catch_array);
  		UNSERIALIZE_PTR(op_array->prototype);
@@ -985,7 +1024,7 @@ index 8afc4a43..ba15e85a 100644
  		return;
  	}
  
-@@ -1354,7 +1938,16 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
+@@ -1354,7 +1958,16 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
  				script, buf, zend_file_cache_unserialize_zval, ZVAL_PTR_DTOR);
  	}
  
@@ -1003,7 +1042,7 @@ index 8afc4a43..ba15e85a 100644
  		zval *p, *end;
  
  		UNSERIALIZE_PTR(op_array->literals);
-@@ -1366,12 +1959,15 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
+@@ -1366,12 +1979,15 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
  		}
  	}
  
@@ -1020,7 +1059,7 @@ index 8afc4a43..ba15e85a 100644
  		while (opline < end) {
  #if ZEND_USE_ABS_CONST_ADDR
  			if (opline->op1_type == IS_CONST) {
-@@ -1475,6 +2071,9 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
+@@ -1475,6 +2091,9 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
  		UNSERIALIZE_ATTRIBUTES(op_array->attributes);
  		UNSERIALIZE_PTR(op_array->try_catch_array);
  		UNSERIALIZE_PTR(op_array->prototype);
@@ -1030,15 +1069,27 @@ index 8afc4a43..ba15e85a 100644
  	}
  }
  
-@@ -1750,6 +2349,7 @@ static void zend_file_cache_unserialize_early_bindings(zend_persistent_script *s
+@@ -1750,7 +2369,19 @@ static void zend_file_cache_unserialize_early_bindings(zend_persistent_script *s
  static void zend_file_cache_unserialize(zend_persistent_script  *script,
                                          void                    *buf)
  {
 +	UNSERIALIZE_PTR(script->pf_body_dir); /* pagefeather lazy bodies (#582 M2b) */
  	script->mem = buf;
++	if (script->pf_head_arr) { /* pagefeather lazy bodies (#582 M2b stage 3): the arrays moved to the head, before the tables */
++		UNSERIALIZE_PTR(script->pf_head_arr);
++		for (uint32_t i = 0; i < script->pf_head_arr_n; i++) {
++			if (!IS_UNSERIALIZED(script->pf_head_arr[i])) {
++				HashTable *ht;
++				UNSERIALIZE_PTR(script->pf_head_arr[i]);
++				ht = script->pf_head_arr[i];
++				zend_file_cache_unserialize_hash(ht, script, buf, zend_file_cache_unserialize_zval, ZVAL_PTR_DTOR);
++			}
++		}
++	}
  
  	UNSERIALIZE_STR(script->script.filename);
-@@ -1776,6 +2376,12 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
+ 
+@@ -1776,6 +2407,12 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
  	unsigned int actual_checksum;
  	bool ok;
  	size_t orig_map_ptr_last = 0;
@@ -1051,7 +1102,7 @@ index 8afc4a43..ba15e85a 100644
  
  	if (!full_path) {
  		return NULL;
-@@ -1833,16 +2439,13 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
+@@ -1833,16 +2470,13 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
  		return NULL;
  	}
  
@@ -1073,7 +1124,7 @@ index 8afc4a43..ba15e85a 100644
  		zend_accel_error(ACCEL_LOG_WARNING, "opcache cannot read from file '%s' (mem)\n", filename);
  		zend_file_cache_flock(fd, LOCK_UN);
  		close(fd);
-@@ -1854,12 +2457,19 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
+@@ -1854,12 +2488,19 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
  	if (zend_file_cache_flock(fd, LOCK_UN) != 0) {
  		zend_accel_error(ACCEL_LOG_WARNING, "opcache cannot unlock file '%s'\n", filename);
  	}
@@ -1096,7 +1147,7 @@ index 8afc4a43..ba15e85a 100644
  		zend_file_cache_unlink(filename);
  		zend_arena_release(&CG(arena), checkpoint);
  		efree(filename);
-@@ -1884,6 +2494,9 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
+@@ -1884,6 +2525,9 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
  				zend_shared_alloc_unlock();
  				zend_arena_release(&CG(arena), checkpoint);
  				efree(filename);
@@ -1106,7 +1157,7 @@ index 8afc4a43..ba15e85a 100644
  				return script;
  			}
  		}
-@@ -1896,26 +2509,63 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
+@@ -1896,26 +2540,63 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
  			goto use_process_mem;
  		}
  
@@ -1173,7 +1224,7 @@ index 8afc4a43..ba15e85a 100644
  
  	ok = true;
  	zend_try {
-@@ -1923,6 +2573,9 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
+@@ -1923,6 +2604,9 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
  	} zend_catch {
  		ok = false;
  	} zend_end_try();
@@ -1183,7 +1234,7 @@ index 8afc4a43..ba15e85a 100644
  	if (!ok) {
  		if (cache_it) {
  			/* The slots allocated by the failed unserialization are referenced
-@@ -1934,11 +2587,28 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
+@@ -1934,11 +2618,28 @@ zend_persistent_script *zend_file_cache_script_load(zend_file_handle *file_handl
  		} else {
  			zend_arena_release(&CG(arena), checkpoint);
  			efree(filename);
@@ -1213,10 +1264,10 @@ index 8afc4a43..ba15e85a 100644
  	if (cache_it) {
  		ZCSG(map_ptr_last) = CG(map_ptr_last);
 diff --git a/ext/opcache/zend_persist.c b/ext/opcache/zend_persist.c
-index ac189b67..4bc79aae 100644
+index ac189b67..9229c8ef 100644
 --- a/ext/opcache/zend_persist.c
 +++ b/ext/opcache/zend_persist.c
-@@ -22,6 +22,32 @@
+@@ -22,6 +22,36 @@
  #include "zend.h"
  #include "ZendAccelerator.h"
  #include "zend_persist.h"
@@ -1227,6 +1278,10 @@ index ac189b67..4bc79aae 100644
 +uint64_t pf_lb_body_bytes = 0;
 +uint32_t pf_lb_dir_total = 0, pf_lb_dir_mismatch = 0; /* pagefeather lazy bodies (#582 M2b) */
 +static pf_body_dir_entry *pf_lb_dir_tmp = NULL;
++HashTable *pf_lb_shared = NULL; /* pagefeather lazy bodies (#582 M2b stage 3): set by calc pass 1, read by calc pass 2 and persist */
++uint32_t pf_lb_head_arrays = 0, pf_lb_head_strings = 0;
++static HashTable **pf_lb_harr_tmp = NULL;
++static uint32_t pf_lb_harr_n = 0, pf_lb_harr_cap = 0;
 +static uint32_t pf_lb_dir_n = 0, pf_lb_dir_cap = 0;
 +static void pf_lb_dir_push(uint32_t off, uint32_t len)
 +{
@@ -1249,7 +1304,41 @@ index ac189b67..4bc79aae 100644
  #include "zend_extensions.h"
  #include "zend_shared_alloc.h"
  #include "zend_vm.h"
-@@ -421,6 +447,8 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
+@@ -54,7 +84,15 @@
+ 			zend_string_release_ex(str, 0); \
+ 			str = new_str; \
+ 		} else { \
++			bool pf_h = pf_lb_in_body && pf_lb_shared && zend_hash_index_exists(pf_lb_shared, (zend_ulong)(uintptr_t)(str)); \
++			if (pf_h) { /* pagefeather lazy bodies (#582 M2b stage 3): a string reached from another owner too goes to the head */ \
++				PF_LB_END(); \
++				pf_lb_head_strings++; \
++			} \
+ 			new_str = zend_shared_memdup_put((void*)str, _ZSTR_STRUCT_SIZE(ZSTR_LEN(str))); \
++			if (pf_h) { \
++				PF_LB_BEGIN(true); \
++			} \
+ 			zend_string_release_ex(str, 0); \
+ 			str = new_str; \
+ 			zend_string_hash_val(str); \
+@@ -218,6 +256,17 @@ static void zend_persist_zval(zval *z)
+ 			} else if (!ZCG(current_persistent_script)->corrupted
+ 			 && zend_accel_in_shm(Z_ARR_P(z))) {
+ 				/* pass */
++			} else if (pf_lb_in_body && pf_lb_shared && zend_hash_index_exists(pf_lb_shared, (zend_ulong)(uintptr_t)Z_ARR_P(z))) {
++				/* pagefeather lazy bodies (#582 M2b stage 3): reached from another owner too: persist it in the head */
++				PF_LB_END();
++				pf_lb_head_arrays++;
++				zend_persist_zval(z);
++				PF_LB_BEGIN(true);
++				if (pf_lb_harr_n == pf_lb_harr_cap) {
++					pf_lb_harr_cap = pf_lb_harr_cap ? pf_lb_harr_cap * 2 : 64;
++					pf_lb_harr_tmp = perealloc(pf_lb_harr_tmp, sizeof(HashTable*) * pf_lb_harr_cap, 1);
++				}
++				pf_lb_harr_tmp[pf_lb_harr_n++] = Z_ARR_P(z);
+ 			} else {
+ 				HashTable *ht;
+ 
+@@ -421,6 +470,8 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
  {
  	zend_op *persist_ptr;
  	zval *orig_literals = NULL;
@@ -1258,7 +1347,7 @@ index ac189b67..4bc79aae 100644
  
  	if (op_array->refcount && --(*op_array->refcount) == 0) {
  		efree(op_array->refcount);
-@@ -551,6 +579,10 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
+@@ -551,6 +602,10 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
  		GC_TYPE_INFO(op_array->static_variables) = GC_ARRAY | ((IS_ARRAY_IMMUTABLE|GC_NOT_COLLECTABLE) << GC_FLAGS_SHIFT);
  	}
  
@@ -1269,7 +1358,7 @@ index ac189b67..4bc79aae 100644
  	if (op_array->literals) {
  		zval *p, *end;
  
-@@ -567,9 +599,13 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
+@@ -567,9 +622,13 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
  			p++;
  		}
  	}
@@ -1284,7 +1373,7 @@ index ac189b67..4bc79aae 100644
  		zend_op *opline = new_opcodes;
  		zend_op *end = new_opcodes + op_array->last;
  		int offset = 0;
-@@ -681,7 +717,9 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
+@@ -681,7 +740,9 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
  	}
  
  	if (op_array->live_range) {
@@ -1294,7 +1383,7 @@ index ac189b67..4bc79aae 100644
  	}
  
  	if (op_array->doc_comment) {
-@@ -698,7 +736,12 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
+@@ -698,7 +759,12 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
  	}
  
  	if (op_array->try_catch_array) {
@@ -1307,20 +1396,21 @@ index ac189b67..4bc79aae 100644
  	}
  
  	if (op_array->vars) {
-@@ -1379,6 +1422,12 @@ zend_persistent_script *zend_accel_script_persist(zend_persistent_script *script
+@@ -1379,6 +1445,13 @@ zend_persistent_script *zend_accel_script_persist(zend_persistent_script *script
  
  	ZEND_ASSERT(((uintptr_t)ZCG(mem) & 0x7) == 0); /* should be 8 byte aligned */
  
 +	/* pagefeather lazy bodies (#582 M2a): the body region starts where the head ends */
 +	pf_lb_active = for_shm != 0; /* pagefeather lazy bodies (#582 M2a): as in calc */
 +	pf_lb_dir_n = 0;
++	pf_lb_harr_n = 0;
 +	pf_lb_in_body = false;
 +	pf_lb_body_mem = (char*)ZCG(mem) + script->size - script->pf_body_size;
 +
  	script = zend_shared_memdup_free(script, sizeof(zend_persistent_script));
  	script->corrupted = false;
  	ZCG(current_persistent_script) = script;
-@@ -1445,6 +1494,53 @@ zend_persistent_script *zend_accel_script_persist(zend_persistent_script *script
+@@ -1445,6 +1518,73 @@ zend_persistent_script *zend_accel_script_persist(zend_persistent_script *script
  	}
  #endif
  
@@ -1339,6 +1429,19 @@ index ac189b67..4bc79aae 100644
 +		} else {
 +			pf_lb_dir_mismatch++;
 +			zend_accel_error(ACCEL_LOG_WARNING, "pagefeather lazy bodies: %u bodies, calc said %u, in %s; stored unsplit\n", pf_lb_dir_n, script->pf_body_dir_n, ZSTR_VAL(script->script.filename));
++			script->pf_body_size = 0;
++		}
++	}
++	script->pf_head_arr = NULL; /* pagefeather lazy bodies (#582 M2b stage 3): the head list, after the directory, sized by calc */
++	if (script->pf_head_arr_n) {
++		HashTable **pf_l = (HashTable**)ZCG(mem);
++		ZCG(mem) = (void*)((char*)ZCG(mem) + ZEND_ALIGNED_SIZE(sizeof(HashTable*) * script->pf_head_arr_n));
++		if (pf_lb_harr_n == script->pf_head_arr_n) {
++			memcpy(pf_l, pf_lb_harr_tmp, sizeof(HashTable*) * pf_lb_harr_n);
++			script->pf_head_arr = pf_l;
++		} else {
++			pf_lb_dir_mismatch++;
++			zend_accel_error(ACCEL_LOG_WARNING, "pagefeather lazy bodies: %u arrays moved to the head, calc said %u, in %s; stored unsplit\n", pf_lb_harr_n, script->pf_head_arr_n, ZSTR_VAL(script->script.filename));
 +			script->pf_body_size = 0;
 +		}
 +	}
@@ -1367,18 +1470,25 @@ index ac189b67..4bc79aae 100644
 +	if (!script->pf_body_size) { /* pagefeather lazy bodies (#582 M2b): unsplit means no directory */
 +		script->pf_body_dir = NULL;
 +		script->pf_body_dir_n = 0;
++		script->pf_head_arr = NULL;
++		script->pf_head_arr_n = 0;
 +	}
 +	pf_lb_body_mem = NULL;
 +	pf_lb_active = false;
++	if (pf_lb_shared) { /* pagefeather lazy bodies (#582 M2b stage 3): calc's marks end with this persist */
++		zend_hash_destroy(pf_lb_shared);
++		FREE_HASHTABLE(pf_lb_shared);
++		pf_lb_shared = NULL;
++	}
 +
  	script->corrupted = false;
  	ZCG(current_persistent_script) = NULL;
  
 diff --git a/ext/opcache/zend_persist_calc.c b/ext/opcache/zend_persist_calc.c
-index a0debab1..a78ffb73 100644
+index a0debab1..360089fd 100644
 --- a/ext/opcache/zend_persist_calc.c
 +++ b/ext/opcache/zend_persist_calc.c
-@@ -28,8 +28,13 @@
+@@ -28,10 +28,51 @@
  #include "zend_attributes.h"
  #include "zend_constants.h"
  
@@ -1391,10 +1501,75 @@ index a0debab1..a78ffb73 100644
 +#define PF_LB_CALC_BEGIN(eligible) do { pf_lb_in_body = (eligible); } while (0)
 +#define PF_LB_CALC_END() do { pf_lb_in_body = false; } while (0)
 +static uint32_t pf_lb_dir_calc_n = 0; /* pagefeather lazy bodies (#582 M2b) */
++/* pagefeather lazy bodies (#582 M2b stage 3): pass 1 records the first owner of each literal array (0 the head, else body index + 1) */
++static int pf_lb_pass = 0;
++static uint32_t pf_lb_harr_calc_n = 0;
++static uint32_t pf_lb_cur_body = 0;
++static HashTable pf_lb_owner;
++static void pf_lb_note_owner(const void *ptr)
++{
++	zend_ulong key = (zend_ulong)(uintptr_t)ptr;
++	zend_long own = pf_lb_in_body ? (zend_long)pf_lb_cur_body + 1 : 0;
++	zval *v = zend_hash_index_find(&pf_lb_owner, key);
++	if (!v) {
++		zval z;
++		ZVAL_LONG(&z, own);
++		zend_hash_index_add_new(&pf_lb_owner, key, &z);
++	} else if (Z_LVAL_P(v) > 0 && Z_LVAL_P(v) != own) {
++		Z_LVAL_P(v) = -1; /* a body's array reached by the head or by another body */
++		if (!pf_lb_shared) {
++			ALLOC_HASHTABLE(pf_lb_shared);
++			zend_hash_init(pf_lb_shared, 64, NULL, NULL, 0);
++		}
++		zend_hash_index_add_empty_element(pf_lb_shared, key);
++	}
++}
  
  # define ADD_STRING(str) ADD_DUP_SIZE((str), _ZSTR_STRUCT_SIZE(ZSTR_LEN(str)))
++/* pagefeather lazy bodies (#582 M2b stage 3): a string that is not interned is marked like an array (pass 1) and counted in the head (pass 2) */
++# define PF_LB_ADD_STRING(str) do { \
++		if (pf_lb_pass == 1) { \
++			pf_lb_note_owner(str); \
++			ADD_STRING(str); \
++		} else if (pf_lb_pass == 2 && pf_lb_in_body && pf_lb_shared && zend_hash_index_exists(pf_lb_shared, (zend_ulong)(uintptr_t)(str))) { \
++			pf_lb_in_body = false; \
++			ADD_STRING(str); \
++			pf_lb_in_body = true; \
++		} else { \
++			ADD_STRING(str); \
++		} \
++	} while (0)
  
-@@ -202,6 +207,7 @@ static void zend_persist_type_calc(zend_type *type)
+ # define ADD_INTERNED_STRING(str) do { \
+ 		if (ZCG(current_persistent_script)->corrupted) { \
+@@ -41,7 +82,7 @@
+ 			if (tmp != (str)) { \
+ 				(str) = tmp; \
+ 			} else { \
+-				ADD_STRING(str); \
++				PF_LB_ADD_STRING(str); \
+ 			} \
+ 		} \
+ 	} while (0)
+@@ -113,6 +154,17 @@ static void zend_persist_zval_calc(zval *z)
+ 			 && zend_accel_in_shm(Z_ARR_P(z))) {
+ 				return;
+ 			}
++			if (pf_lb_pass == 1) {
++				pf_lb_note_owner(Z_ARR_P(z)); /* pagefeather lazy bodies (#582 M2b stage 3) */
++			} else if (pf_lb_pass == 2 && pf_lb_in_body && pf_lb_shared && zend_hash_index_exists(pf_lb_shared, (zend_ulong)(uintptr_t)Z_ARR_P(z))) {
++				if (!zend_shared_alloc_get_xlat_entry(Z_ARR_P(z))) {
++					pf_lb_harr_calc_n++; /* one head-list entry per array moved */
++				}
++				pf_lb_in_body = false; /* pagefeather lazy bodies (#582 M2b stage 3): counted in the head, as persist places it */
++				zend_persist_zval_calc(z);
++				pf_lb_in_body = true;
++				return;
++			}
+ 			size = zend_shared_memdup_size(Z_ARR_P(z), sizeof(zend_array));
+ 			if (size) {
+ 				HashTable *ht = Z_ARRVAL_P(z);
+@@ -202,6 +254,7 @@ static void zend_persist_type_calc(zend_type *type)
  
  static void zend_persist_op_array_calc_ex(zend_op_array *op_array)
  {
@@ -1402,18 +1577,19 @@ index a0debab1..a78ffb73 100644
  	if (op_array->function_name) {
  		zend_string *old_name = op_array->function_name;
  		ADD_INTERNED_STRING(op_array->function_name);
-@@ -241,6 +247,10 @@ static void zend_persist_op_array_calc_ex(zend_op_array *op_array)
+@@ -241,6 +294,11 @@ static void zend_persist_op_array_calc_ex(zend_op_array *op_array)
  		}
  	}
  
 +	if (pf_lb_eligible) {
 +		pf_lb_dir_calc_n++; /* pagefeather lazy bodies (#582 M2b): one directory entry per body */
++		pf_lb_cur_body = pf_lb_dir_calc_n;
 +	}
 +	PF_LB_CALC_BEGIN(pf_lb_eligible);
  	if (op_array->literals) {
  		zval *p = op_array->literals;
  		zval *end = p + op_array->last_literal;
-@@ -253,6 +263,7 @@ static void zend_persist_op_array_calc_ex(zend_op_array *op_array)
+@@ -253,6 +311,7 @@ static void zend_persist_op_array_calc_ex(zend_op_array *op_array)
  
  	zend_shared_alloc_register_xlat_entry(op_array->opcodes, op_array->opcodes);
  	ADD_SIZE(sizeof(zend_op) * op_array->last);
@@ -1421,7 +1597,7 @@ index a0debab1..a78ffb73 100644
  
  	if (op_array->filename) {
  		ADD_STRING(op_array->filename);
-@@ -280,7 +291,9 @@ static void zend_persist_op_array_calc_ex(zend_op_array *op_array)
+@@ -280,7 +339,9 @@ static void zend_persist_op_array_calc_ex(zend_op_array *op_array)
  	}
  
  	if (op_array->live_range) {
@@ -1431,7 +1607,7 @@ index a0debab1..a78ffb73 100644
  	}
  
  	if (ZCG(accel_directives).save_comments && op_array->doc_comment) {
-@@ -292,7 +305,9 @@ static void zend_persist_op_array_calc_ex(zend_op_array *op_array)
+@@ -292,7 +353,9 @@ static void zend_persist_op_array_calc_ex(zend_op_array *op_array)
  	}
  
  	if (op_array->try_catch_array) {
@@ -1441,7 +1617,14 @@ index a0debab1..a78ffb73 100644
  	}
  
  	if (op_array->vars) {
-@@ -600,6 +615,18 @@ uint32_t zend_accel_script_persist_calc(zend_persistent_script *new_persistent_s
+@@ -594,12 +657,27 @@ static void zend_persist_early_bindings_calc(
+ 	}
+ }
+ 
+-uint32_t zend_accel_script_persist_calc(zend_persistent_script *new_persistent_script, int for_shm)
++static uint32_t pf_lb_script_persist_calc_once(zend_persistent_script *new_persistent_script, int for_shm)
+ {
+ 	Bucket *p;
  
  	new_persistent_script->mem = NULL;
  	new_persistent_script->size = 0;
@@ -1455,12 +1638,15 @@ index a0debab1..a78ffb73 100644
 +	pf_lb_in_body = false;
 +	pf_lb_body_size = 0;
 +	pf_lb_dir_calc_n = 0;
++	pf_lb_harr_calc_n = 0;
 +	new_persistent_script->pf_body_dir = NULL;
 +	new_persistent_script->pf_body_dir_n = 0;
++	new_persistent_script->pf_head_arr = NULL;
++	new_persistent_script->pf_head_arr_n = 0;
  	new_persistent_script->corrupted = false;
  	ZCG(current_persistent_script) = new_persistent_script;
  
-@@ -637,6 +664,17 @@ uint32_t zend_accel_script_persist_calc(zend_persistent_script *new_persistent_s
+@@ -637,7 +715,46 @@ uint32_t zend_accel_script_persist_calc(zend_persistent_script *new_persistent_s
  
  	new_persistent_script->corrupted = false;
  
@@ -1470,6 +1656,10 @@ index a0debab1..a78ffb73 100644
 +		ADD_SIZE(sizeof(pf_body_dir_entry) * pf_lb_dir_calc_n);
 +	}
 +	new_persistent_script->pf_body_dir_n = pf_lb_dir_calc_n;
++	if (pf_lb_harr_calc_n) { /* pagefeather lazy bodies (#582 M2b stage 3): the head list follows the directory */
++		ADD_SIZE(sizeof(HashTable*) * pf_lb_harr_calc_n);
++	}
++	new_persistent_script->pf_head_arr_n = pf_lb_harr_calc_n;
 +	new_persistent_script->pf_body_size = pf_lb_body_size;
 +	new_persistent_script->size += pf_lb_body_size;
 +	pf_lb_active = false;
@@ -1478,6 +1668,31 @@ index a0debab1..a78ffb73 100644
  	ZCG(current_persistent_script) = NULL;
  
  	return new_persistent_script->size;
+ }
++
++/* pagefeather lazy bodies (#582 M2b stage 3): a shared-memory persist calcs twice (pass 1 marks arrays reached from more than one owner, pass 2
++ * counts them in the head); the file-cache calc (for_shm 0) never splits, and calcs once as upstream does. */
++uint32_t zend_accel_script_persist_calc(zend_persistent_script *new_persistent_script, int for_shm)
++{
++	uint32_t size;
++	if (!for_shm) {
++		return pf_lb_script_persist_calc_once(new_persistent_script, for_shm);
++	}
++	if (pf_lb_shared) {
++		zend_hash_destroy(pf_lb_shared);
++		FREE_HASHTABLE(pf_lb_shared);
++		pf_lb_shared = NULL;
++	}
++	zend_hash_init(&pf_lb_owner, 256, NULL, NULL, 0);
++	pf_lb_pass = 1;
++	pf_lb_script_persist_calc_once(new_persistent_script, for_shm);
++	zend_hash_destroy(&pf_lb_owner);
++	zend_shared_alloc_clear_xlat_table();
++	pf_lb_pass = 2;
++	size = pf_lb_script_persist_calc_once(new_persistent_script, for_shm);
++	pf_lb_pass = 0;
++	return size;
++}
 diff --git a/ext/reflection/php_reflection.c b/ext/reflection/php_reflection.c
 index 50dcd489..cc1269f9 100644
 --- a/ext/reflection/php_reflection.c
