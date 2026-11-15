@@ -106,6 +106,27 @@ WooCommerce runs on `b-dosql`, **including checkout** (measured on Workers Paid:
 
 The one real limit is the Worker isolate: **128 MiB, one writer, one region.** A blog or a light-to-moderate store fits comfortably. A store with real concurrent traffic should use **approach A** (PHP in a Worker, a managed MySQL through Hyperdrive; see [onboarding.md](onboarding.md)), which scales sideways. A store that outgrows b-dosql can also go to a **VPS** (the standard LAMP stack you already know). The container store path that used to fill that role was retired (#214) because b-dosql proved capable; see the README matrix.
 
+### Stock numbers on cached pages
+
+A logged-out product page comes from the edge cache, so a guest can see an old stock number.
+
+- **What you see.** A product page is cached for 120 s (`PAGE_CACHE_TTL`). A checkout that lowers the stock number does not clear that copy. So after a sale, a guest can see "7 in stock" for up to 120 s when there are 6. Measured on a b-dosql store: 121 s ([#628](https://github.com/skyphusion-labs/pagefeather/issues/628), 2026-11-15).
+- **The worst case.** After a quiet spell, the first visitor can get an older copy. It can be up to about 12 minutes old. The next visitor gets the new one.
+- **A sold-out product is different.** When the stock status changes to out of stock, the cache is cleared. Measured: every page said "out of stock" within 23 s of its sale.
+- **No oversell.** The checkout always reads the real stock. A guest who sees an old number cannot buy more than you have.
+
+**Why it is not cleared on every sale.** On a LAMP host, a page cache plugin can clear a product page on every stock change. Here a cache clear empties every cached page of the site. Cloudflare allows only 5 clears a minute for the whole account. Every site on the account shares them. A busy store would use them up. Then even the sold-out clears would be refused. So the cache is cleared on a stock status change only.
+
+**The setting that avoids it.** In WooCommerce, go to **Settings > Products > Inventory > Stock display format**:
+
+| Setting | What a guest sees on a cached page |
+| --- | --- |
+| Always show quantity remaining in stock (the WooCommerce default) | an exact number, which can be up to 120 s old |
+| Only show quantity remaining in stock when low | "In stock", and a number only at or below the low stock threshold. That number can be up to 120 s old. |
+| Never show quantity remaining in stock | "In stock" or "Out of stock" only. That changes within about 25 s. |
+
+For a busy store, "Never show quantity" is the choice that keeps every cached page right. A fix that keeps exact numbers right without the clear is being measured in [#628](https://github.com/skyphusion-labs/pagefeather/issues/628).
+
 ## The admin is the heaviest part, and still being worked on
 
 A heavy wp-admin screen, such as the block editor on a large store, needs far more memory than a
