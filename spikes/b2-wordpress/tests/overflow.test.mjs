@@ -131,3 +131,9 @@ test('an overflowed request never arms the object alarm: neither the cron rearm 
 	assert.match(src, /if \(r\.headers\.get\('x-cache-purge'\) === 'front'\) schedulePurge\(ctx\);/, 'and the front Worker purges its own page cache');
 	assert.match(src, /fwd\.headers\.delete\(OVERFLOW_HEADER\);\n\t+if \(target && target\.overflow\) fwd\.headers\.set\(OVERFLOW_HEADER, '1'\);/, 'a client copy of the mark is always dropped');
 });
+
+test('uploads stay in the Worker: media uploads, and any request whose declared body is over 1 MiB (the Font Library, #591)', () => {
+	assert.match(src, /const ovUpload = isMediaUpload\(req, url\) \|\| Number\(req\.headers\.get\('content-length'\) \|\| 0\) > OVERFLOW_MAX_BODY;/);
+	assert.match(src, /const OVERFLOW_MAX_BODY = 1024 \* 1024;/);
+	assert.match(src, /shouldOverflow\(ovs, \{ running: phpLock\.running, waiting: phpLock\.waiting \}, url, ovUpload\)/);
+});

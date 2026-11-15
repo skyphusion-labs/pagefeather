@@ -2527,6 +2527,8 @@ const ORIGIN_HEADER = 'x-wp-public-origin';
 // the Worker sets it; a client copy is always dropped. The object then does not arm its cron alarm: N pool
 // objects must not become N WordPress cron runners.
 const OVERFLOW_HEADER = 'x-pf-overflow';
+// A request whose declared body is over this stays in the Worker, which stages large bodies in R2 (#296 (3)).
+const OVERFLOW_MAX_BODY = 1024 * 1024;
 // One picker per isolate, per pool size (the in-flight counts are what this isolate sent).
 let ovPicker = null;
 function ovPickerFor(pool) {
@@ -3356,7 +3358,9 @@ const site = {
 		// object instead, before it has run. Wherever PHP runs in this Worker with the database outside the
 		// object (approach A; also a D1 Worker, which is how it is tested locally), with the binding.
 		const ovs = overflowSettings(env);
-		if (ovs.on && env.PHP_RUNTIME && env.PHP_IN_DO !== 'on' && env.DB_IN_DO !== 'on' && shouldOverflow(ovs, { running: phpLock.running, waiting: phpLock.waiting }, url, isMediaUpload(req, url))) {
+		// Uploads never move: media uploads, and any request whose declared body is over 1 MiB (the Font Library, #591).
+		const ovUpload = isMediaUpload(req, url) || Number(req.headers.get('content-length') || 0) > OVERFLOW_MAX_BODY;
+		if (ovs.on && env.PHP_RUNTIME && env.PHP_IN_DO !== 'on' && env.DB_IN_DO !== 'on' && shouldOverflow(ovs, { running: phpLock.running, waiting: phpLock.waiting }, url, ovUpload)) {
 			const picker = ovPickerFor(ovs.pool);
 			const i = picker.pick();
 			picker.start(i);
