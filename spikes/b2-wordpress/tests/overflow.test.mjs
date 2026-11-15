@@ -8,7 +8,9 @@ import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBus
 import { createPhpLock } from '../php-lock.mjs';
 
 test('settings: off by default; on, always, the depth, the pool and the hint', () => {
-	assert.deepEqual(overflowSettings({}), { on: false, always: false, depth: 1, pool: 8, hint: 'wnam', busy: false });
+	// The default pool is 32, the measured best (#296, 2026-11-15): pool 8 and 16 were WORSE than no overflow at 250
+	// concurrent checkouts; pool 32 was the only setting with 0 exceededMemory. A bad value falls back to 32 too.
+	assert.deepEqual(overflowSettings({}), { on: false, always: false, depth: 1, pool: 32, hint: 'wnam', busy: false });
 	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on' }).on, true);
 	const a = overflowSettings({ PHP_OVERFLOW: 'always', PHP_OVERFLOW_DEPTH: '0', PHP_OVERFLOW_POOL: '32', PHP_OVERFLOW_HINT: 'enam' });
 	assert.deepEqual(a, { on: true, always: true, depth: 0, pool: 32, hint: 'enam', busy: false });
@@ -17,8 +19,10 @@ test('settings: off by default; on, always, the depth, the pool and the hint', (
 	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_BUSY: 'on' }).busy, true);
 	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_BUSY: 'yes' }).busy, false);
 	assert.equal(overflowSettings({ PHP_OVERFLOW: 'yes' }).on, false, 'only on or always turn it on');
-	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_POOL: '0' }).pool, 8, 'a bad pool keeps the default');
-	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_POOL: '999' }).pool, 8);
+	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_POOL: '0' }).pool, 32, 'a bad pool keeps the default (32)');
+	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_POOL: '999' }).pool, 32);
+	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_POOL: 'x' }).pool, 32);
+	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_POOL: '8' }).pool, 8, 'a valid value is kept');
 	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_DEPTH: 'x' }).depth, 1);
 	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_HINT: 'mars' }).hint, 'wnam', 'only a real location hint');
 });

@@ -19,7 +19,7 @@ With `PHP_OVERFLOW=on`, a request that finds its isolate busy (a run in flight A
 | setting | default | meaning |
 |---|---|---|
 | `PHP_OVERFLOW` | off | `on`: overflow. `always`: every eligible request (a functional test only) |
-| `PHP_OVERFLOW_POOL` | 8 | the number of pool objects (1 to 128) |
+| `PHP_OVERFLOW_POOL` | 32 | the number of pool objects (1 to 128). The default is the measured best: pools 8 and 16 were worse than no overflow. A bad value falls back to 32 |
 | `PHP_OVERFLOW_DEPTH` | 1 | move when this many are already waiting (0 to 50) |
 | `PHP_OVERFLOW_HINT` | `wnam` | the objects' location hint (measured best) |
 | `PHP_OVERFLOW_BUSY` | off | `on`: a busy object answers busy, and the Worker tries elsewhere (see below) |
@@ -28,7 +28,7 @@ The site needs the `PHP_RUNTIME` Durable Object binding (class `PhpRuntime`) and
 
 ## Recommended setting for a busy approach-A store
 
-**`PHP_OVERFLOW=on`, `PHP_OVERFLOW_POOL=32`, `PHP_OVERFLOW_BUSY` off.** It is the only measured setting with **0 memory deaths at 250 concurrent checkouts**: errors first.
+**`PHP_OVERFLOW=on`, `PHP_OVERFLOW_POOL=32` (the default), `PHP_OVERFLOW_BUSY` off (the default).** So `PHP_OVERFLOW=on` alone gives it. It is the only measured setting with **0 memory deaths at 250 concurrent checkouts**: errors first.
 
 Measured at 250 concurrent (checkout ladder, copy of the bench DB, 2026-11-15):
 
