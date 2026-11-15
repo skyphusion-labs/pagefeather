@@ -1,10 +1,10 @@
 # Docs
 
-This repository is two things: a **framework** you run on your own Cloudflare account, and the **research** that produced it. Start with the product map below.
+This repository is two things: a **framework** you run on your own Cloudflare account, and the **research** that produced it. This page is the map of both. If this is your first visit, the table below shows the two current paths, and "Use the product" tells you where to start.
 
 ## The product in one view
 
-Two paths are current. Pick by how much traffic you expect and how much infrastructure you want to run. Containers are retired for the store path (#214); a store that outgrows b-dosql goes to approach A or to a VPS.
+Two paths are current. The right one for you depends on how much traffic you expect and how much infrastructure you want to run. Containers are retired for the store path (#214); a store that outgrows b-dosql goes to approach A or to a VPS.
 
 | | **b-dosql** (the store path, zero infrastructure) | **Approach A** (the scale-out path) |
 | --- | --- | --- |
@@ -27,13 +27,13 @@ Edge security works at the zone level: a WAF with rate limits on login, the zone
 
 ## Use the product
 
-1. [framework.md](framework.md) the quickstart for the b-dosql kind and the one provisioning surface: default integrations, edge security, provisioning from a Worker.
-2. [onboarding.md](onboarding.md) the flow for approach A: choose a MySQL provider, set up its Hyperdrive configuration, then add type-a sites.
-3. [from-lamp-to-wfp.md](from-lamp-to-wfp.md) coming from a traditional LAMP WordPress host: your stack mapped one to one onto this one.
-4. [operator.md](operator.md) the day-one walkthrough for running a couple of sites: scripts, Terraform, update and rollback, custom hostnames, teardown.
-5. [byo-domain.md](byo-domain.md) the self-service flow for a customer's own domain.
-6. [reference-wfp.md](reference-wfp.md) the reference-deployment design for a Workers for Platforms operator (issue #35).
-7. [known-limitations.md](known-limitations.md) the open items, each with its issue.
+1. [framework.md](framework.md): the quickstart for the b-dosql kind and the one provisioning surface: default integrations, edge security, provisioning from a Worker.
+2. [onboarding.md](onboarding.md): the flow for approach A: choose a MySQL provider, set up its Hyperdrive configuration, then add type-a sites.
+3. [from-lamp-to-wfp.md](from-lamp-to-wfp.md): if you come from a traditional LAMP WordPress host, this maps your stack one to one onto this one. A good first read.
+4. [operator.md](operator.md): the day-one walkthrough for running a couple of sites: scripts, Terraform, update and rollback, custom hostnames, teardown.
+5. [byo-domain.md](byo-domain.md): the self-service flow for a customer's own domain.
+6. [reference-wfp.md](reference-wfp.md): the reference-deployment design for a Workers for Platforms operator (issue #35).
+7. [known-limitations.md](known-limitations.md): what does not work yet, each item with its issue. Worth a read before you build.
 
 ## Approach A (scale-out)
 
@@ -63,7 +63,7 @@ Edge security works at the zone level: a WAF with rate limits on login, the zone
 
 ## Historical (retired, not the product)
 
-These pages record work that is retired or superseded. They stay because a failed or retired result is still a result. Do not build on them.
+These pages record work that is retired or superseded. We keep them because a failed or retired result is still a result, but please do not build on them.
 
 - [approach-c1.md](approach-c1.md) WooCommerce in a Container, SQLite on disk, Litestream to R2. **Retired (#214).** It worked, but b-dosql and approach A do checkout without a container.
 - [approach-c-checkout.md](approach-c-checkout.md) checkout in a Container (B+C). **Retired (#214).** Never stable.

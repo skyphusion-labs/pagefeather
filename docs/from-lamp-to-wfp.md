@@ -122,4 +122,4 @@ A LAMP box gives WordPress a filesystem, a MySQL socket, a mail transport, image
 
 None of these is a dead end: each is handled. The point is that the handling is explicit, so a plugin that assumes a traditional host instead of using the WordPress APIs is the thing to test before you rely on it. `docs/plugins.md` is how a standard plugin set is checked against each setup.
 
-Every number here is measured; the sources are in the framework quickstart's architecture section (`docs/framework.md`) and `docs/results.md`. Next: the quickstart, for the commands and the prerequisites.
+Every number here is measured; the sources are in the framework quickstart's architecture section (`docs/framework.md`) and `docs/results.md`. When you are ready, the quickstart has the commands and the prerequisites.

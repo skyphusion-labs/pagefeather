@@ -1,12 +1,12 @@
 # Known limitations
 
-The open items of the final scope, kept as documented knowledge. Each one names its issue. None of them blocks the current paths: b-dosql for a store, approach A to scale out. See the [docs map](README.md).
+This page lists what does not work yet, or works only with care, so you can plan around it before you build. Each item names its issue, where you can follow it or help. None of them blocks the current paths: b-dosql for a store, approach A to scale out. See the [docs map](README.md).
 
 ## b-dosql
 
 ### Cold-start write can return 1101 under a test seam (#213)
 
-Under the `CRON_SIMULATE_COLD=1` test seam (a forced cold wake on every alarm), two runs right after a fresh redeploy hit a 1101 on an admin write (`create a product`). It was not seen in any warm run, and it does not happen with the seam off, which is production. The exact exception was never captured. Low priority. If it appears in production, redeploy, then run `wrangler tail` while repeating an admin write to capture the error.
+Under the `CRON_SIMULATE_COLD=1` test seam (a forced cold wake on every alarm), two runs right after a fresh redeploy hit a 1101 on an admin write (`create a product`). It was not seen in any warm run, and it does not happen with the seam off, which is production. The exact exception was never captured, and we treat it as low priority. If you see it in production, redeploy, then run `wrangler tail` while you repeat an admin write, to capture the error. Please add what you find to the issue.
 
 ### Deactivating WooCommerce can return 500 on a warm isolate (#219)
 
@@ -39,5 +39,5 @@ Measured on a real store imported for skyphusion-labs/ggc#101. It runs WooCommer
 | with Rank Math | 119 MiB, the runtime recycled on every request | every other request 503; no checkout completed | 61.46 MiB |
 | without Rank Math | 99 MiB (the shop page alone reaches 119 MiB and recycles, still 200) | 24 of 24 checks pass over 3 runs; checkout works | 58.40 MiB |
 
-So the 128 MiB isolate cap, not the code, decides whether a store this heavy runs on b-dosql. The bundle has a limit too: the Worker limit is 64 MiB uncompressed. `deploy/wfp/lib.sh bundle_size_check` stops an upload above `BUNDLE_MAX_MIB` (default 62), and `build_dosql`, `site.sh up` and `site update` all run it. A store that needs Rank Math, or a plugin set this heavy, is a fit for approach A (MySQL through Hyperdrive) rather than b-dosql.
+So the 128 MiB isolate cap, not the code, decides whether a store this heavy runs on b-dosql. The bundle has a limit too: the Worker limit is 64 MiB uncompressed. `deploy/wfp/lib.sh bundle_size_check` stops an upload above `BUNDLE_MAX_MIB` (default 62), and `build_dosql`, `site.sh up` and `site update` all run it. If your store needs Rank Math, or a plugin set this heavy, approach A (MySQL through Hyperdrive) is the better fit, rather than b-dosql.
 
