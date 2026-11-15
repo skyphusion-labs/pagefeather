@@ -189,8 +189,6 @@ HTML = b'<!DOCTYPE html>\n<html><head><title>x</title></head><body><script>alert
 SVG = b'<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>\n'
 for kind, data in [('pe', PE), ('elf', ELF), ('macho', MACHO), ('sh', SH), ('php', PHP), ('html', HTML), ('svg', SVG), ('jclass', JCLASS)]:
     for ext in ('jpg', 'png', 'zip', 'pdf', 'docx', 'mp3', 'mp4', 'txt'):
-        if kind == 'jclass' and ext == 'class':
-            continue
         put('d-%s.%s' % (kind, ext), data, D, kind + ' as .' + ext)
 put('d-swf.zip', b'FWS\x0a' + struct.pack('<I', 21) + b'\x78\x00\x05\x5f\x00\x00\x0f\xa0\x00\x00\x18\x01\x00', D, 'flash as .zip')
 

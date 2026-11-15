@@ -190,6 +190,18 @@ jobs:
             tail -40 build/opcache.log; echo '--- e2e'; tail -40 build/opcache-e2e.log 2>/dev/null || true; echo '--- dev.log'; tail -40 dev.log 2>/dev/null || true
             exit 1
           fi
+      - name: accepted.txt matches the WordPress tree (and its red control)
+        # check-accepted.py re-reads wp_get_mime_types(), get_allowed_mime_types() and the Font Library's
+        # types from the tree build.sh downloaded; a copy of accepted.txt with one extension dropped must fail.
+        working-directory: spikes/b2-wordpress
+        run: |
+          set -euo pipefail
+          python3 -I ../../engine/fileinfo/check-accepted.py build/wordpress ../../engine/fileinfo/accepted.txt
+          sed -E 's/^(EXT .*) webp /\1 /' ../../engine/fileinfo/accepted.txt > "$RUNNER_TEMP/accepted-dropped.txt"
+          if grep -q ' webp ' "$RUNNER_TEMP/accepted-dropped.txt"; then echo "::error::the red control did not drop webp"; exit 1; fi
+          rc=0; python3 -I ../../engine/fileinfo/check-accepted.py build/wordpress "$RUNNER_TEMP/accepted-dropped.txt" || rc=$?
+          [ "$rc" = 1 ] || { echo "::error::check-accepted.py did not fail on a copy missing webp (rc=$rc)"; exit 1; }
+          echo "red control: check-accepted.py fails on a copy missing webp, as it must"
       - name: frames-e2e.sh on the lean engine (e2e.sh and woo.py both ways)
         working-directory: spikes/b2-wordpress
         run: |
