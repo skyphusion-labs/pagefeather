@@ -23,11 +23,17 @@ const CASES = ['plain', 'methods', 'refl', 'copy', 'fail', 'never', 'missing', '
 const e = engineUnderTest();
 const ms = (t) => new Promise((r) => setTimeout(r, t));
 
-async function text(php, code) {
+// Every PHP snippet below is a constant string. The values it needs (paths, the case, the mode, the primed files)
+// travel as DATA: text() writes them to PARAMS as JSON, and the PRE prelude reads them into $P. Nothing is ever
+// interpolated into PHP source (CodeQL js/bad-code-sanitization, alert #29 on #614).
+const PARAMS = '/tmp/pf582-params.json';
+const PRE = '$P = json_decode(file_get_contents("/tmp/pf582-params.json"), true); ';
+async function text(php, code, params = {}) {
+	php.writeFile(PARAMS, JSON.stringify({ dir: DIR, oc: OC, ...params }));
 	try { const r = await php.run({ code }); return r.text + (r.errors || ''); } catch (err) { return String(err && err.message || err); }
 }
-async function json(php, code) {
-	const t = await text(php, code);
+async function json(php, code, params) {
+	const t = await text(php, code, params);
 	try { return JSON.parse(t.trim().split('\n').pop()); } catch { assert.fail('PHP printed no JSON: ' + t.slice(0, 400)); }
 }
 const LB = 'function lbx() { $s = @opcache_get_status(false); return is_array($s) && isset($s["pagefeather_lazy_bodies"]) ? $s["pagefeather_lazy_bodies"] : array(); } function lbd($a, $b) { $d = array(); foreach ($b as $k => $v) { if (is_int($v)) { $d[$k] = $v - ($a[$k] ?? 0); } } return $d; }';
@@ -44,8 +50,8 @@ async function runtime(mode, opts = {}) {
 	if (mode === 'eager') ini['opcache.pagefeather_lazy_load'] = '0';
 	await setPhpIniEntries(php, ini);
 	if (opts.bins) {
-		const payload = Buffer.from(JSON.stringify(opts.bins)).toString('base64');
-		const w = await text(php, `<?php $n = 0; foreach (json_decode(base64_decode("${payload}"), true) as $p => $b) { @mkdir(dirname($p), 0777, true); file_put_contents($p, base64_decode($b)); $n++; } echo $n;`);
+		php.writeFile('/tmp/pf582-bins.json', JSON.stringify(opts.bins));
+		const w = await text(php, '<?php ' + PRE + '$n = 0; foreach (json_decode(file_get_contents($P["bins"]), true) as $p => $b) { @mkdir(dirname($p), 0777, true); file_put_contents($p, base64_decode($b)); $n++; } echo $n;', { bins: '/tmp/pf582-bins.json' });
 		assert.equal(w.trim(), String(Object.keys(opts.bins).length), 'the primed .bin files were not all written: ' + w.slice(0, 200));
 	}
 	return php;
@@ -55,8 +61,8 @@ let primed = null;
 async function prime() {
 	if (primed) return primed;
 	const php = await runtime('lazy');
-	const got = await json(php, `<?php ${LB} foreach (glob("${DIR}/f_*.php") as $f) { if (!opcache_compile_file($f)) { echo json_encode(array("err" => $f)); exit; } }
-		$o = array(); $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator("${OC}", FilesystemIterator::SKIP_DOTS));
+	const got = await json(php, '<?php ' + PRE + LB + ` foreach (glob($P["dir"] . "/f_*.php") as $f) { if (!opcache_compile_file($f)) { echo json_encode(array("err" => $f)); exit; } }
+		$o = array(); $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($P["oc"], FilesystemIterator::SKIP_DOTS));
 		foreach ($it as $p) { $o[(string) $p] = base64_encode(file_get_contents((string) $p)); } echo json_encode(array("lb" => lbx(), "bins" => $o));`);
 	assert.ok(!got.err, 'prime: could not compile ' + got.err);
 	assert.ok(got.lb && got.lb.dir_entries > 0, 'prime: this engine has no lazy-body directory (not a lazy-body engine): ' + JSON.stringify(got.lb));
@@ -76,7 +82,8 @@ async function noFiber() {
 	}
 	return fiberless;
 }
-const probe = async (php, c, mode) => json(php, `<?php $pf_lb_nofiber = ${(await noFiber()) ? 'true' : 'false'}; $pf_lb_case = "${c}"; $pf_lb_mode = "${mode}"; require "${DIR}/probe.php";`);
+const PROBE = '<?php ' + PRE + '$pf_lb_nofiber = $P["nofiber"]; $pf_lb_case = $P["case"]; $pf_lb_mode = $P["mode"]; require $P["dir"] . "/probe.php";';
+const probe = async (php, c, mode) => json(php, PROBE, { nofiber: await noFiber(), case: c, mode });
 
 test('the probe cases answer the same lazy, eager and compiled, and pass their lazy checks (tests 1 to 11, 13)', async () => {
 	const bins = await prime();
@@ -90,7 +97,7 @@ test('the probe cases answer the same lazy, eager and compiled, and pass their l
 		console.log('@event lazy-case ' + JSON.stringify({ case: c, ok: true, lb: got.lazy.lb }));
 	}
 	for (const m of ['lazy', 'eager', 'compiled']) {
-		const t = await text(rt[m], `<?php $pf_lb_case = "tcbad"; $pf_lb_mode = "${m}"; require "${DIR}/probe.php";`);
+		const t = await text(rt[m], PROBE, { nofiber: await noFiber(), case: 'tcbad', mode: m });
 		assert.ok(/collision/.test(t) && !/NO COLLISION/.test(t), 'tcbad ' + m + ': want the trait-collision fatal, got ' + t.slice(-300));
 	}
 });
@@ -107,10 +114,10 @@ test('test 12: a body read held back by pagefeatherRead still loads (Suspending 
 	const h = { on: false, hits: 0 };
 	const read = (stream) => (h.on && String(stream.path || '').endsWith('/f_delay.php.bin')) ? (h.hits++, ms(25)) : null;
 	const php = await runtime('lazy', { bins, read });
-	const a = await json(php, `<?php ${LB} $t = lbx(); require "${DIR}/f_delay.php"; echo json_encode(lbd($t, lbx()));`);
+	const a = await json(php, '<?php ' + PRE + LB + ` $t = lbx(); require $P["dir"] . "/f_delay.php"; echo json_encode(lbd($t, lbx()));`);
 	assert.equal(a.lazy_scripts, 1, 'f_delay.php did not load lazily: ' + JSON.stringify(a));
 	h.on = true;
-	const b = await json(php, `<?php ${LB} require "${DIR}/f_delay.php"; $t = lbx(); $r = pf_lb_delayed(7); echo json_encode(array($r, lbd($t, lbx())));`);
+	const b = await json(php, '<?php ' + PRE + LB + ` require $P["dir"] . "/f_delay.php"; $t = lbx(); $r = pf_lb_delayed(7); echo json_encode(array($r, lbd($t, lbx())));`);
 	assert.equal(b[0], 'delayed:7');
 	assert.ok(h.hits >= 1, 'the read hook never held a body read: the check saw nothing');
 	assert.equal(b[1].body_loads, 1);
@@ -125,9 +132,9 @@ test('test 14: a remote read that fails once: the call throws, NOTHING is instal
 		return null;
 	};
 	const php = await runtime('lazy', { bins, read });
-	await json(php, `<?php ${LB} require "${DIR}/f_transient.php"; echo json_encode(lbx());`);
+	await json(php, '<?php ' + PRE + LB + ` require $P["dir"] . "/f_transient.php"; echo json_encode(lbx());`);
 	h.rejectOnce = true;
-	const a = await json(php, `<?php ${LB} require "${DIR}/f_transient.php"; $cl = Closure::fromCallable("pf_lb_transient"); $t = lbx(); $m = null;
+	const a = await json(php, '<?php ' + PRE + LB + ` require $P["dir"] . "/f_transient.php"; $cl = Closure::fromCallable("pf_lb_transient"); $t = lbx(); $m = null;
 		try { pf_lb_transient(1); } catch (Error $x) { $m = $x->getMessage(); } $d = lbd($t, lbx()); $m2 = null; echo json_encode(array($m, $d));`);
 	assert.equal(h.rejected, 1, 'the hook did not fail the body read: the check saw nothing');
 	assert.ok(a[0] && a[0].includes('pf_lb_transient') && a[0].includes('f_transient.php.bin'), 'want an Error naming the function and the path, got ' + a[0]);
@@ -135,7 +142,7 @@ test('test 14: a remote read that fails once: the call throws, NOTHING is instal
 	assert.equal(a[1].body_loads, 0, 'a failed load counted as a load');
 	assert.equal(a[1].body_bytes_resident, 0, 'a failed load left bytes resident');
 	assert.equal(a[1].copy_installs, 0, 'a failed load installed into a copy');
-	const b = await json(php, `<?php ${LB} require "${DIR}/f_transient.php"; $t = lbx(); $r = array(pf_lb_transient(2), pf_lb_transient(3)); echo json_encode(array($r, lbd($t, lbx())));`);
+	const b = await json(php, '<?php ' + PRE + LB + ` require $P["dir"] . "/f_transient.php"; $t = lbx(); $r = array(pf_lb_transient(2), pf_lb_transient(3)); echo json_encode(array($r, lbd($t, lbx())));`);
 	assert.deepEqual(b[0], ['transient:2', 'transient:3']);
 	assert.equal(b[1].body_loads, 1, 'the call after the failure did not read the body: the failure left something installed');
 	assert.equal(b[1].body_fail, 0);
@@ -148,7 +155,7 @@ test('test 16: observers see each call of a lazy function once, and count the re
 		t.skip('not a stats build (ENGINE_OPCACHE_STATS=0): runs on lean-stats-lazy');
 		return;
 	}
-	const work = `<?php require "${DIR}/f_obs.php"; $a = pagefeather_opcache_stats(); $r = array(pf_lb_observed(3), pf_lb_observed(3), pf_lb_observed(2), pf_lb_observed_other(45)); $b = pagefeather_opcache_stats();
+	const work = '<?php ' + PRE + ` require $P["dir"] . "/f_obs.php"; $a = pagefeather_opcache_stats(); $r = array(pf_lb_observed(3), pf_lb_observed(3), pf_lb_observed(2), pf_lb_observed_other(45)); $b = pagefeather_opcache_stats();
 		echo json_encode(array($r, $b["observed_begin"] - $a["observed_begin"], $b["observed_end"] - $a["observed_end"]));`;
 	const read = '<?php $s = pagefeather_opcache_stats(); echo json_encode(array($s["declared_functions"], $s["called_functions"], $s["called_body_bytes"]));';
 	const lazy = await json(php, work), lazyStats = await json(php, read);
