@@ -2,19 +2,62 @@
 # The OSS hygiene files of the pagefeather engine (#582, Conrad's ruling 2026-11-14: plain hygiene,
 # no lawyer gate): LICENSES/ (one licence text per linked component), NOTICE (the PHP and Zend
 # acknowledgments) and SOURCE (where the exact source is). Built from the MEASURED link inputs.
-#   licenses.py <link-inputs.txt> <out-dir> [--measure]
-# Fails when a traced link input matches no row of engine/licenses.tsv, or a fetched text does not
+#   licenses.py <link-inputs.txt> <out-dir> [--measure] [--archives <dir>]
+#   licenses.py --fetch-archives <dir>
+#   licenses.py --check-archives <dir>
+# Fails when a traced link input matches no row of engine/licenses.tsv, or a licence text does not
 # have its pinned sha256. --measure prints each text's sha256 instead of checking it.
+# --archives reads each tar row from <dir>/<url basename> instead of the network (#604). A missing
+# file fails and names the row. With no --archives, tar rows are fetched, as before. No retries.
+# --fetch-archives downloads each tar URL once into <dir> and checks the pinned sha256 before it
+# writes the file. --check-archives checks a directory already filled (a cache hit) and does not
+# touch the network.
 import hashlib, io, os, re, sys, tarfile, urllib.request
 
 here = os.path.dirname(os.path.abspath(__file__))
 root = os.path.dirname(os.path.dirname(here))
-args = [a for a in sys.argv[1:] if not a.startswith('--')]
-measure = '--measure' in sys.argv
-if len(args) != 2:
-    sys.exit('usage: licenses.py <link-inputs.txt> <out-dir> [--measure]')
-inputs = [l.strip() for l in open(args[0]) if l.strip()]
-out = args[1]
+
+def usage():
+    sys.exit('usage: licenses.py <link-inputs.txt> <out-dir> [--measure] [--archives <dir>]\n'
+             '       licenses.py --fetch-archives <dir>\n'
+             '       licenses.py --check-archives <dir>')
+
+def parse(argv):
+    measure = False
+    archives_opt = None
+    fetch_to = None
+    check_to = None
+    pos = []
+    i = 0
+    args = argv[1:]
+    while i < len(args):
+        a = args[i]
+        if a == '--measure':
+            measure = True
+        elif a in ('--archives', '--fetch-archives', '--check-archives'):
+            if i + 1 >= len(args) or args[i + 1].startswith('-'):
+                usage()
+            i += 1
+            if a == '--archives':
+                archives_opt = args[i]
+            elif a == '--fetch-archives':
+                fetch_to = args[i]
+            else:
+                check_to = args[i]
+        elif a.startswith('-'):
+            usage()
+        else:
+            pos.append(a)
+        i += 1
+    if fetch_to or check_to:
+        if measure or archives_opt is not None or pos or (fetch_to and check_to):
+            usage()
+        return ('fetch', fetch_to) if fetch_to else ('check', check_to)
+    if len(pos) != 2:
+        usage()
+    return ('run', pos, measure, archives_opt)
+
+parsed = parse(sys.argv)
 rows = []
 for line in open(os.path.join(root, 'engine', 'licenses.tsv'), encoding='utf-8'):
     if line.startswith('#') or not line.strip():
@@ -23,6 +66,134 @@ for line in open(os.path.join(root, 'engine', 'licenses.tsv'), encoding='utf-8')
     if len(f) != 10:
         sys.exit('licenses.tsv: a row has %d columns, not 10: %s' % (len(f), f[0]))
     rows.append(dict(zip(['out', 'component', 'version', 'spdx', 'match', 'kind', 'source', 'member', 'lines', 'sha256'], f)))
+
+# Set by the run path (--archives) and by --check-archives. None means fetch tar rows.
+archives = None
+cache = {}
+meta = {}
+
+def fetch(url):
+    # One attempt. A bad body must fail in the open, not be hidden by a second try (#604).
+    if url not in cache:
+        req = urllib.request.Request(url, headers={'User-Agent': 'pagefeather-engine-licenses'})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            cache[url] = r.read()
+            meta[url] = (r.status, r.geturl(), r.headers.get('content-type'))
+    return cache[url]
+
+def archive_filename(url):
+    path = url.split('?', 1)[0].split('#', 1)[0]
+    name = path.rsplit('/', 1)[-1]
+    if not name or name in ('.', '..') or '/' in name or '\\' in name:
+        sys.exit('licenses.py: tar URL has no usable archive name: ' + url)
+    return name
+
+def tar_groups():
+    groups = []
+    index = {}
+    for r in rows:
+        if r['kind'] != 'tar':
+            continue
+        i = index.get(r['source'])
+        if i is None:
+            index[r['source']] = len(groups)
+            groups.append((r['source'], [r]))
+        else:
+            groups[i][1].append(r)
+    return groups
+
+def check_names(groups):
+    seen = {}
+    for url, _rs in groups:
+        name = archive_filename(url)
+        if name in seen and seen[name] != url:
+            sys.exit('licenses.py: tar URLs share the archive name %s' % name)
+        seen[name] = url
+
+def not_an_archive(name, url, blob, err):
+    # #604: a body that is not an archive. Say which row, which host, and what came back, then fail.
+    # No retry: the next one must explain itself, not be hidden.
+    if url in meta:
+        status, final, ctype = meta[url]
+        sys.exit('licenses.py: %s: the tar from %s is not an archive (%s)\n  final url: %s\n  status: %s, content-type: %s, length: %d\n  first bytes: %r'
+                 % (name, url, err, final, status, ctype, len(blob), blob[:120]))
+    where = os.path.join(archives, archive_filename(url)) if archives else url
+    sys.exit('licenses.py: %s: the tar from %s is not an archive (%s)\n  local file: %s\n  length: %d\n  first bytes: %r'
+             % (name, url, err, where, len(blob), blob[:120]))
+
+def blob_for(r):
+    if archives is None:
+        return fetch(r['source'])
+    path = os.path.join(archives, archive_filename(r['source']))
+    if not os.path.isfile(path):
+        sys.exit('licenses.py: %s: archive missing from %s (%s)' % (r['out'], archives, archive_filename(r['source'])))
+    return open(path, 'rb').read()
+
+def licence_bytes(r, blob):
+    try:
+        t = tarfile.open(fileobj=io.BytesIO(blob), mode='r:*')
+    except tarfile.ReadError as e:
+        not_an_archive(r['out'], r['source'], blob, str(e).splitlines()[0])
+    with t:
+        try:
+            member = t.getmember(r['member'])
+        except KeyError:
+            sys.exit('licenses.py: %s: member %s is not in the tar from %s' % (r['out'], r['member'], r['source']))
+        extracted = t.extractfile(member)
+        if extracted is None:
+            sys.exit('licenses.py: %s: member %s is not a file in the tar from %s' % (r['out'], r['member'], r['source']))
+        return extracted.read()
+
+def cut_lines(text, spec):
+    # Applied to every kind, as before: dlmalloc is a raw row with a line range, sqlite a tar row.
+    if spec == '-':
+        return text
+    a, b = (int(x) for x in spec.split('-'))
+    return b''.join(text.splitlines(keepends=True)[a - 1:b])
+
+def verify_rows(rs, blob):
+    bad = []
+    for r in rs:
+        h = hashlib.sha256(cut_lines(licence_bytes(r, blob), r['lines'])).hexdigest()
+        if h != r['sha256']:
+            bad.append('%s: sha256 %s, pinned %s' % (r['out'], h, r['sha256']))
+    if bad:
+        sys.exit('licenses.py: licence text changed:\n  ' + '\n  '.join(bad))
+
+def fetch_archives(dest):
+    os.makedirs(dest, exist_ok=True)
+    groups = tar_groups()
+    check_names(groups)
+    for url, rs in groups:
+        blob = fetch(url)
+        verify_rows(rs, blob)
+        path = os.path.join(dest, archive_filename(url))
+        tmp = path + '.partial'
+        open(tmp, 'wb').write(blob)
+        os.replace(tmp, path)
+    print('licenses.py: %d tar archives written to %s' % (len(groups), dest))
+
+def check_archives(dest):
+    global archives
+    archives = dest
+    groups = tar_groups()
+    check_names(groups)
+    for _url, rs in groups:
+        verify_rows(rs, blob_for(rs[0]))
+    print('licenses.py: %d tar archives in %s match the pinned sha256' % (len(groups), dest))
+
+if parsed[0] == 'fetch':
+    fetch_archives(parsed[1])
+    sys.exit(0)
+if parsed[0] == 'check':
+    check_archives(parsed[1])
+    sys.exit(0)
+
+_kind, pos, measure, archives = parsed
+inputs = [l.strip() for l in open(pos[0]) if l.strip()]
+out = pos[1]
+if archives is not None:
+    check_names(tar_groups())
 
 # 1. Every traced input needs a row; a row is needed when an input matches it (or it is ALWAYS).
 needed, unmatched, by_input = {}, [], {}
@@ -39,22 +210,7 @@ for p in inputs:
 if unmatched:
     sys.exit('licenses.py: no licence row for these link inputs:\n  ' + '\n  '.join(unmatched))
 
-# 2. Fetch, cut, check, write.
-cache = {}
-meta = {}
-def fetch(url):
-    if url not in cache:
-        req = urllib.request.Request(url, headers={'User-Agent': 'pagefeather-engine-licenses'})
-        with urllib.request.urlopen(req, timeout=120) as r:
-            cache[url] = r.read()
-            meta[url] = (r.status, r.geturl(), r.headers.get('content-type'))
-    return cache[url]
-def not_an_archive(name, url, blob, err):
-    # #604: a 200 whose body is not an archive. Say which row, which host, and what came back, then fail.
-    # No retry: the next one must explain itself, not be hidden.
-    status, final, ctype = meta.get(url, (None, None, None))
-    sys.exit('licenses.py: %s: the tar from %s is not an archive (%s)\n  final url: %s\n  status: %s, content-type: %s, length: %d\n  first bytes: %r'
-             % (name, url, err, final, status, ctype, len(blob), blob[:120]))
+# 2. Fetch, cut, check, write. Tar rows come from --archives when that directory is set.
 os.makedirs(os.path.join(out, 'LICENSES'), exist_ok=True)
 bad = []
 for name, r in sorted(needed.items()):
@@ -63,18 +219,10 @@ for name, r in sorted(needed.items()):
     elif r['kind'] == 'raw':
         text = fetch(r['source'])
     elif r['kind'] == 'tar':
-        blob = fetch(r['source'])
-        try:
-            t = tarfile.open(fileobj=io.BytesIO(blob), mode='r:*')
-        except tarfile.ReadError as e:
-            not_an_archive(name, r['source'], blob, str(e).splitlines()[0])
-        with t:
-            text = t.extractfile(t.getmember(r['member'])).read()
+        text = licence_bytes(r, blob_for(r))
     else:
         sys.exit('licenses.tsv: unknown kind ' + r['kind'])
-    if r['lines'] != '-':
-        a, b = (int(x) for x in r['lines'].split('-'))
-        text = b''.join(text.splitlines(keepends=True)[a - 1:b])
+    text = cut_lines(text, r['lines'])
     h = hashlib.sha256(text).hexdigest()
     if measure:
         print('%s\t%s' % (name, h))
