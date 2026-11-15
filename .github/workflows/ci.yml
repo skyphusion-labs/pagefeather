@@ -481,16 +481,27 @@ jobs:
         # savepoints, commit points, the miss guard, deferred L2 work, row-id reuse, and frames off = #60.
         working-directory: spikes/b2-wordpress
         run: node --test tests/undo-log.test.mjs
-      # Python 3.9 floor (#644). The steps above run these same three tests on the
-      # runner python3, which is newer, so a 3.10-only call stays green there.
-      # setup-python puts 3.9 first on PATH for the step after it. Nothing later
-      # in this job uses python3.
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: '3.9'
+      # Python 3.9 floor (#644), last so it does not change python3 for the steps
+      # above. actions/setup-python has no 3.9 build for Ubuntu 26.04 (the
+      # manifest stops at 24.04 for 3.9). Run 43721961122 failed here with
+      # "not found for Ubuntu 26.04". ubuntu-latest is 26.04, and the check
+      # stays in this job so the required ci context enforces it. deadsnakes
+      # publishes python3.9 for resolute. The shell tests call python3, so a
+      # shim directory puts that binary first on PATH.
       - name: deploy/wfp temp tests on Python 3.9 (issue #644)
         run: |
-          python3 -c 'import sys; v = sys.version_info[:2]; assert v == (3, 9), v'
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update -q
+          sudo apt-get install -y -q software-properties-common
+          sudo add-apt-repository -y ppa:deadsnakes/ppa
+          sudo apt-get update -q
+          sudo apt-get install -y -q python3.9
+          shim=$(mktemp -d)
+          ln -s "$(command -v python3.9)" "$shim/python3"
+          ln -s "$(command -v python3.9)" "$shim/python"
+          export PATH="$shim:$PATH"
+          python3 -c 'import sys; v = sys.version_info[:2]; assert v == (3, 9), sys.version'
           python3 -I deploy/wfp/tests/fresh-test.py
           python3 -I deploy/wfp/tests/tempdir-clean-test.py
           deploy/wfp/tests/r2-temp-test.sh
