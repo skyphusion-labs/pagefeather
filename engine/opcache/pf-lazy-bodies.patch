@@ -1,5 +1,5 @@
 diff --git a/ext/opcache/ZendAccelerator.c b/ext/opcache/ZendAccelerator.c
-index 9355604..663f35d 100644
+index 9355604..5d23ac3 100644
 --- a/ext/opcache/ZendAccelerator.c
 +++ b/ext/opcache/ZendAccelerator.c
 @@ -44,6 +44,7 @@
@@ -10,11 +10,13 @@ index 9355604..663f35d 100644
  #include "zend_accelerator_hash.h"
  #include "zend_file_cache.h"
  #include "ext/pcre/php_pcre.h"
-@@ -3122,6 +3123,10 @@ static void accel_move_code_to_huge_pages(void)
+@@ -3122,6 +3123,12 @@ static void accel_move_code_to_huge_pages(void)
  
  static int accel_startup(zend_extension *extension)
  {
-+	/* pagefeather lazy bodies (#582 M2a) */
++	/* pagefeather lazy bodies (#582 M2a): ACCEL_LOG_ERROR on purpose. This runs once at startup, before any
++	 * request, with no bailout address, so the runtime stops LOUDLY (it does not boot). Without the entropy,
++	 * lazy and eager file-cache files could share a system id and mix. No request path is affected. */
 +	if (zend_add_system_entropy("opcache", "pagefeather-lazy-body-1", NULL, 0) != SUCCESS) {
 +		zend_accel_error(ACCEL_LOG_ERROR, "pagefeather lazy bodies: the system id could not take the lazy-body entropy\n");
 +	}
@@ -22,7 +24,7 @@ index 9355604..663f35d 100644
  	accel_globals_id = ts_allocate_id(&accel_globals_id, sizeof(zend_accel_globals), (ts_allocate_ctor) accel_globals_ctor, (ts_allocate_dtor) accel_globals_dtor);
  #else
 diff --git a/ext/opcache/ZendAccelerator.h b/ext/opcache/ZendAccelerator.h
-index a10ae41..82f35fd 100644
+index a10ae41..b5617c1 100644
 --- a/ext/opcache/ZendAccelerator.h
 +++ b/ext/opcache/ZendAccelerator.h
 @@ -116,6 +116,14 @@ typedef struct _zend_early_binding {
@@ -31,7 +33,7 @@ index a10ae41..82f35fd 100644
  
 +/* pagefeather lazy bodies (#582 M2a): the body parts (literals, opcodes, live ranges, try/catch) of
 + * every function and method, but not the main script op_array, are placed in a tail region of mem. */
-+extern uint32_t pf_lb_split, pf_lb_mismatch, pf_lb_overlap; extern uint64_t pf_lb_body_bytes; /* pagefeather lazy bodies (#582 M2a): opcache_get_status() counters */
++extern uint32_t pf_lb_split, pf_lb_mismatch, pf_lb_overlap, pf_lb_noregion; extern uint64_t pf_lb_body_bytes; /* pagefeather lazy bodies (#582 M2a): opcache_get_status() counters */
 +extern bool  pf_lb_active;    /* set only inside zend_accel_script_persist_calc and zend_accel_script_persist: the inheritance cache and other callers of the same routines never split */
 +extern bool  pf_lb_in_body;   /* calc and persist: inside a body block of an eligible op_array */
 +extern size_t pf_lb_body_size; /* calc: body bytes of the current script */
@@ -49,10 +51,10 @@ index a10ae41..82f35fd 100644
  	struct zend_persistent_script_dynamic_members {
  		time_t       last_used;
 diff --git a/ext/opcache/zend_accelerator_module.c b/ext/opcache/zend_accelerator_module.c
-index 9093692..9a47f96 100644
+index 9093692..522e630 100644
 --- a/ext/opcache/zend_accelerator_module.c
 +++ b/ext/opcache/zend_accelerator_module.c
-@@ -669,6 +669,15 @@ ZEND_FUNCTION(opcache_get_status)
+@@ -669,6 +669,16 @@ ZEND_FUNCTION(opcache_get_status)
  	add_assoc_long(&memory_usage, "wasted_memory", ZSMMG(wasted_shared_memory));
  	add_assoc_double(&memory_usage, "current_wasted_percentage", (((double) ZSMMG(wasted_shared_memory))/ZCG(accel_directives).memory_consumption)*100.0);
  	add_assoc_zval(return_value, "memory_usage", &memory_usage);
@@ -63,6 +65,7 @@ index 9093692..9a47f96 100644
 +		add_assoc_long(&pf_lb, "body_bytes", (zend_long)pf_lb_body_bytes);
 +		add_assoc_long(&pf_lb, "mismatch", pf_lb_mismatch);
 +		add_assoc_long(&pf_lb, "overlap", pf_lb_overlap);
++		add_assoc_long(&pf_lb, "noregion", pf_lb_noregion);
 +		add_assoc_zval(return_value, "pagefeather_lazy_bodies", &pf_lb);
 +	}
  
@@ -92,7 +95,7 @@ index 8afc4a4..7bca2ba 100644
  	memcpy(buf, script->mem, script->size);
  
 diff --git a/ext/opcache/zend_persist.c b/ext/opcache/zend_persist.c
-index ac189b6..723c458 100644
+index ac189b6..8adb2d6 100644
 --- a/ext/opcache/zend_persist.c
 +++ b/ext/opcache/zend_persist.c
 @@ -22,6 +22,16 @@
@@ -102,12 +105,12 @@ index ac189b6..723c458 100644
 +
 +/* pagefeather lazy bodies (#582 M2a) */
 +bool  pf_lb_active = false;
-+uint32_t pf_lb_split = 0, pf_lb_mismatch = 0, pf_lb_overlap = 0;
++uint32_t pf_lb_split = 0, pf_lb_mismatch = 0, pf_lb_overlap = 0, pf_lb_noregion = 0;
 +uint64_t pf_lb_body_bytes = 0;
 +bool  pf_lb_in_body = false;
 +size_t pf_lb_body_size = 0;
 +void *pf_lb_body_mem = NULL;
-+#define PF_LB_BEGIN(eligible) do { if ((eligible) && pf_lb_active) { if (UNEXPECTED(!pf_lb_body_mem)) { zend_accel_error(ACCEL_LOG_ERROR, "pagefeather lazy bodies: a body block with no body region\n"); } else { ZEND_ASSERT(!pf_lb_in_body); pf_lb_in_body = true; do { void *pf_t = ZCG(mem); ZCG(mem) = pf_lb_body_mem; pf_lb_body_mem = pf_t; } while (0); } } } while (0)
++#define PF_LB_BEGIN(eligible) do { if ((eligible) && pf_lb_active) { if (UNEXPECTED(!pf_lb_body_mem)) { pf_lb_noregion++; zend_accel_error(ACCEL_LOG_WARNING, "pagefeather lazy bodies: a body block with no body region; left unsplit\n"); } else { ZEND_ASSERT(!pf_lb_in_body); pf_lb_in_body = true; do { void *pf_t = ZCG(mem); ZCG(mem) = pf_lb_body_mem; pf_lb_body_mem = pf_t; } while (0); } } } while (0)
 +#define PF_LB_END() do { if (pf_lb_in_body) { pf_lb_in_body = false; do { void *pf_t = ZCG(mem); ZCG(mem) = pf_lb_body_mem; pf_lb_body_mem = pf_t; } while (0); } } while (0)
  #include "zend_extensions.h"
  #include "zend_shared_alloc.h"

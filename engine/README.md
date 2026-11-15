@@ -110,10 +110,10 @@ OPcache's shared memory until a function is first called. It is built in slices 
   so that persist stays unsplit. A head that does not end where calc said never bails the request
   (`ACCEL_LOG_ERROR` calls `zend_bailout`): it is logged as a warning and counted, and the script is stored
   unsplit. `opcache_get_status()["pagefeather_lazy_bodies"]` (also `/_mem`'s `ini.lb`) holds `split_scripts`,
-  `body_bytes`, `mismatch` and `overlap`.
+  `body_bytes`, `mismatch`, `overlap` and `noregion`. `noregion` counts a body block reached with no body region; that block is left unsplit, with a warning and never a bailout. Only the startup entropy check logs an error, which stops the runtime loudly before any request.
 - `spikes/b2-wordpress/tests/lazy-bodies-e2e.sh` is the gate on that. It runs e2e.sh from an empty OPcache at
   the default 48 MB, where part of WordPress and WooCommerce takes the fallback, and requires
-  `split_scripts > 0` and `mismatch == 0`. Its red control is lean-trim, which has no counters.
+  `split_scripts > 0`, `mismatch == 0` and `noregion == 0`. Its red control is lean-trim, which has no counters.
 - Only scripts persisted into shared memory are split. So `opcache.sh` takes `PRIME_OPCACHE_MB`, the shared
   memory of the priming run only (opt-in). At the runtime default of 48 MB, 765 of 2,076 admin-e2e scripts
   overflow into the fallback and would ship unsplit (#610). 128 holds all of them. The `lazy-bodies` job

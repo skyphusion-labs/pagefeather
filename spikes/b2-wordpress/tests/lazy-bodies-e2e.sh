@@ -3,7 +3,7 @@
 # during the requests, as opcache.sh primes), at the default memory_consumption 48, where WordPress and
 # WooCommerce overflow shared memory and part of the scripts take the file-cache fallback: install, activate
 # WooCommerce, run e2e.sh, then read opcache_get_status()'s pagefeather_lazy_bodies through /_mem.
-# Gate: e2e.sh passes, split_scripts > 0 and mismatch == 0. Usage (in spikes/b2-wordpress, after
+# Gate: e2e.sh passes, split_scripts > 0, mismatch == 0 and noregion == 0. Usage (in spikes/b2-wordpress, after
 # prepare.sh and build.sh): tests/lazy-bodies-e2e.sh <out.json>. Exit 1 on any failure, with the reason.
 # LB_MC=<MiB> runs it at another memory_consumption: at the priming size (128) nothing falls back, and the
 # line "split <n> of <cached> cached scripts" is the reading of how many scripts a primed zip holds split.
@@ -36,6 +36,8 @@ if not isinstance(lb, dict):
     sys.exit("lazy-bodies-e2e: opcache_get_status() has no pagefeather_lazy_bodies: not a lazy-body engine")
 if lb.get("split_scripts", 0) <= 0:
     sys.exit("lazy-bodies-e2e: no script was persisted split (split_scripts %r)" % lb.get("split_scripts"))
+if lb.get("noregion") != 0:
+    sys.exit("lazy-bodies-e2e: noregion %r: a body block was reached with no body region (left unsplit, never a bailout)" % lb.get("noregion"))
 if lb.get("mismatch") != 0:
     sys.exit("lazy-bodies-e2e: %r head mismatches (%r overlapping): calc and persist disagree on the body region" % (lb.get("mismatch"), lb.get("overlap")))
 print("lazy-bodies-e2e: ok at memory_consumption %s: split %d of %s cached scripts, %.2f MiB of bodies, 0 mismatches" % (ini.get("mc"), lb["split_scripts"], ini.get("cached"), lb["body_bytes"] / 2**20))
