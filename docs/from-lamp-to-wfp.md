@@ -41,8 +41,8 @@ path stands today, measured:
 
 | Plan | What runs on it today |
 | --- | --- |
-| Workers Free | Not a verdict yet. On the engine sites run today, a plain WordPress site (no WooCommerce) runs and cached pages hit, but the installer does not fit Free's CPU limit (`/_install` answered 1102, 2026-11-03) and neither does WooCommerce (every page answered "Worker exceeded CPU time limit", 2026-11-04; both in [results.md](results.md)). The lean pagefeather engine (#582) has not been measured on Free yet; that measurement is being set up. A fully working Free tier is a goal. |
-| Workers Paid | The practical starting tier until the Free measurement on the lean engine lands. WordPress and WooCommerce, checkout included, on `b-dosql` (PHP and SQLite in one Durable Object). |
+| Workers Free | Plain WordPress and a light storefront. On `b-dosql` the installer, the pages, the login, the dashboard and the editor work, and a WooCommerce shop, cart and checkout work, on both engines. Editing a WooCommerce store does not fit Free's memory limit, so a store you edit needs Workers Paid. Measured 2026-11-15 ([#638](https://github.com/skyphusion-labs/pagefeather/issues/638)). |
+| Workers Paid | The tier for a store you edit. WordPress and WooCommerce, checkout included, on `b-dosql` (PHP and SQLite in one Durable Object). |
 | Workers for Platforms Paid | The framework itself: many sites on one account, each its own Worker, routed by one dispatcher (below). This is the path to go big. Two idle sites cost about $25 a month, the subscription itself ([plan-limits.md](plan-limits.md)). |
 | Workers Paid plus your own MySQL | Approach A: PHP in a Worker, MySQL through Hyperdrive. This is the path that scales out to real concurrent traffic ([onboarding.md](onboarding.md)). |
 

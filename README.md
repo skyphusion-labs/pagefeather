@@ -89,8 +89,9 @@ We would rather you hear these from us before you build on the project than find
   Rank Math reaches 119 MiB a request, and every other request answers 503; without it, the same
   store passes checkout ([docs/known-limitations.md](docs/known-limitations.md),
   [#279](https://github.com/skyphusion-labs/pagefeather/issues/279)).
-- **Workers Free only partly works.** Cached pages hit and most renders fit, but the installer and
-  WooCommerce do not (see the plan table below).
+- **Workers Free runs plain WordPress and a light storefront.** Editing a WooCommerce store needs
+  Workers Paid: on Free its editor hits the memory limit
+  ([#638](https://github.com/skyphusion-labs/pagefeather/issues/638); the plan table below).
 - **Cost:** two idle sites cost about $25 a month, the Workers for Platforms Paid subscription
   ([docs/plan-limits.md](docs/plan-limits.md)).
 
@@ -116,8 +117,8 @@ These are short verdicts; the linked doc carries the numbers, dates and caveats.
 | --- | --- | --- | --- |
 | **A** (external MySQL) | **no** (the installer is refused at the 10 ms CPU limit) | **measured: yes.** Full WordPress and WooCommerce, 12 of 12 checkout tests, under the 128 MiB cap with no container; scales out horizontally. Cost is per-query database latency (give Hyperdrive the host name, about 7 ms). | [approach-a.md](docs/approach-a.md) |
 | **A2** (A on PlanetScale) | not tried | **measured: yes.** WooCommerce 12 of 12; about 16 ms a query; one Cloudflare bill. Set `HYPERDRIVE_SQL_MODE` and turn the Hyperdrive query cache off. | [approach-a2.md](docs/approach-a2.md) |
-| **B** (D1 or Durable Object) | **partial.** Cached pages hit; most renders fit with OPcache; the installer does not fit. | **measured: yes.** Every page renders, the installer runs, 18 of 18 plugins. Media library on R2 works (turn R2 on in the dashboard first). | [approach-b.md](docs/approach-b.md) |
-| **B with WooCommerce** | **no** (CPU limit) | **measured: yes, this is the store path.** b-dosql (SQLite in a Durable Object) runs WooCommerce including checkout under the 128 MiB cap. Use it over plain D1, whose checkout exceeds the memory limit. | [results.md](docs/results.md) |
+| **B** (D1 or Durable Object) | **measured: yes on b-dosql** (PHP in a Durable Object): the installer, the pages, the login, the dashboard and the editor, on both engines ([#638](https://github.com/skyphusion-labs/pagefeather/issues/638)). The D1 variant, with PHP in the Worker, is only partial (its CPU limit). | **measured: yes.** Every page renders, the installer runs, 18 of 18 plugins. Media library on R2 works (turn R2 on in the dashboard first). | [approach-b.md](docs/approach-b.md) |
+| **B with WooCommerce** | **a light storefront only.** Shop, cart and checkout work on b-dosql ([#638](https://github.com/skyphusion-labs/pagefeather/issues/638)); editing the store does not fit Free's memory limit, so use Workers Paid. | **measured: yes, this is the store path.** b-dosql (SQLite in a Durable Object) runs WooCommerce including checkout under the 128 MiB cap. Use it over plain D1, whose checkout exceeds the memory limit. | [results.md](docs/results.md) |
 | **C1** (Container, SQLite, Litestream to R2) | **no** (Containers are Paid only) | **retired (#214).** It worked (12 of 12 store tests, 18 of 18 plugins), but b-dosql replaced the container store path, including the earlier in-container checkout (B+C), [approach-c-checkout.md](docs/approach-c-checkout.md). | [approach-c1.md](docs/approach-c1.md) |
 | **C / D** | **no** / **docs** | **docs** | Containers are Paid-only with ephemeral disk; D needs one of A, B or C behind it. |
 
