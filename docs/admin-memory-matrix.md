@@ -2,7 +2,7 @@
 
 This page puts every admin-memory measurement of 2026-11-14 in one place, so the next person can reuse it without the chat that made it. Each number names its **method**. The raw data is in [`tests/load/data/admin-matrix-2026-11-14/`](../tests/load/data/admin-matrix-2026-11-14/README.md).
 
-**Since the D/R round (2026-11-14, the D/R row below), the remote packs are the deploy/wfp default** (the lead's decision): they took the round from 95 to 5 of 210. **Ruling (Conrad, 2026-11-14): admin pages go to the Container.** All wp-admin requests run in a Cloudflare Container; visitors and checkout stay on Workers. The rounds below are the evidence behind that ruling and the record of what each Worker-only path costs.
+**Since the D/R round (2026-11-14, the D/R row below), the remote packs are the deploy/wfp default** (the lead's decision): they took the round from 95 to 5 of 210. **Ruling (Conrad, 2026-11-14): admin pages go to the Container.** **HELD (Conrad, 2026-11-15): this decision is on hold until the new engine is fully tested; meanwhile the admin memory work continues on the Durable Object path (#394, #582).** All wp-admin requests run in a Cloudflare Container; visitors and checkout stay on Workers. The rounds below are the evidence behind that ruling and the record of what each Worker-only path costs.
 
 ## The targets
 
