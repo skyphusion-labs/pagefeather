@@ -8,7 +8,9 @@
 # Fails when a traced link input matches no row of engine/licenses.tsv, or a licence text does not
 # have its pinned sha256. --measure prints each text's sha256 instead of checking it.
 # --archives reads each tar row from <dir>/<url basename> instead of the network (#604). A missing
-# file fails and names the row. With no --archives, tar rows are fetched, as before. No retries.
+# file fails and names the row. Two different URLs that share a file name are refused, and the
+# failure names both rows. Two rows that share one URL still share one file. With no --archives,
+# tar rows are fetched, as before. No retries.
 # --fetch-archives downloads each tar URL once into <dir> and checks the pinned sha256 before it
 # writes the file. --check-archives checks a directory already filled (a cache hit) and does not
 # touch the network.
@@ -103,12 +105,19 @@ def tar_groups():
     return groups
 
 def check_names(groups):
-    seen = {}
-    for url, _rs in groups:
+    # One file per archive name. The same URL on several rows is one file (libjpeg, libwebp).
+    # Two different URLs with that name would silently share a file, and the pin would then
+    # fail against the wrong bytes. Refuse and name every row on each URL.
+    by_name = {}
+    for url, rs in groups:
         name = archive_filename(url)
-        if name in seen and seen[name] != url:
-            sys.exit('licenses.py: tar URLs share the archive name %s' % name)
-        seen[name] = url
+        by_name.setdefault(name, []).append((url, rs))
+    for name in sorted(by_name):
+        hits = by_name[name]
+        if len(hits) < 2:
+            continue
+        described = ['%s (%s)' % (', '.join(r['out'] for r in rs), url) for url, rs in hits]
+        sys.exit('licenses.py: %s map different URLs to the archive name %s' % (' and '.join(described), name))
 
 def not_an_archive(name, url, blob, err):
     # #604: a body that is not an archive. Say which row, which host, and what came back, then fail.

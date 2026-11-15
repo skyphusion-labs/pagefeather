@@ -6,6 +6,8 @@ network. The archive and its pinned sha256 are made here. The pass must not
 open a connection. A missing archive must fail and name the row. A wrong pin
 must still fail and name the row. --fetch-archives takes one response and does
 not retry: an HTML 200 fails and names the row after exactly one request.
+Two different URLs that share an archive file name are refused, and the
+failure names both rows. Two rows that share one URL still share one file.
 """
 import hashlib, io, os, shutil, socket, subprocess, sys, tarfile, tempfile, threading
 
@@ -229,6 +231,48 @@ try:
         r3 = run(root, ['--check-archives', empty])
         text3 = r3.stdout + r3.stderr
         ok('check-archives names the row when the archive is missing', r3.returncode != 0 and ROW in text3 and 'missing' in text3)
+
+    # 6. Two different URLs with one archive file name are refused, and both rows are named.
+    #    The same URL on two rows is still one file (libjpeg, libwebp). No request either way.
+    srv.reset()
+    srv.status, srv.body = 500, b'no'
+    url_a = 'http://127.0.0.1:%d/rel/a/fixture-1.tar.gz' % srv.port
+    url_b = 'http://127.0.0.1:%d/rel/b/fixture-1.tar.gz' % srv.port
+    row_a, row_b = 'alpha.txt', 'beta.txt'
+    collided = '\n'.join([
+        '\t'.join([row_a, 'Fixture', '1', 'MIT', r'/libfixture\.a$', 'tar', url_a, MEMBER, '-', pin]),
+        '\t'.join([row_b, 'Other', '1', 'MIT', r'/libother\.a$', 'tar', url_b, MEMBER, '-', pin]),
+    ]) + '\n'
+    shared = '\n'.join([
+        '\t'.join([row_a, 'Fixture', '1', 'MIT', r'/libfixture\.a$', 'tar', url, MEMBER, '-', pin]),
+        '\t'.join([row_b, 'Other', '1', 'MIT', r'/libother\.a$', 'tar', url, MEMBER, '-', pin]),
+    ]) + '\n'
+    for flag in ('--fetch-archives', '--archives'):
+        srv.reset()
+        with tempfile.TemporaryDirectory() as root:
+            inputs = write_tree(root, pin, url)
+            open(os.path.join(root, 'engine', 'licenses.tsv'), 'w', encoding='utf-8').write(collided)
+            dest = os.path.join(root, 'archives')
+            os.makedirs(dest)
+            args = ['--fetch-archives', dest] if flag == '--fetch-archives' else [inputs, os.path.join(root, 'out'), '--archives', dest]
+            r = run(root, args)
+            text = r.stdout + r.stderr
+            ok('%s refuses two URLs that share %s (rc=%d)' % (flag, 'fixture-1.tar.gz', r.returncode),
+               r.returncode != 0 and 'fixture-1.tar.gz' in text)
+            ok('%s names both rows (%s and %s)' % (flag, row_a, row_b), row_a in text and row_b in text)
+            ok('%s opened no connection (hits %d)' % (flag, len(srv.hits)), len(srv.hits) == 0)
+    srv.reset()
+    with tempfile.TemporaryDirectory() as root:
+        inputs = write_tree(root, pin, url)
+        open(os.path.join(root, 'engine', 'licenses.tsv'), 'w', encoding='utf-8').write(shared)
+        archives = os.path.join(root, 'archives')
+        os.makedirs(archives)
+        open(os.path.join(archives, 'fixture-1.tar.gz'), 'wb').write(blob)
+        out = os.path.join(root, 'out')
+        r = run(root, [inputs, out, '--archives', archives])
+        text = r.stdout + r.stderr
+        ok('two rows that share one URL still pass (rc=%d)' % r.returncode, r.returncode == 0)
+        ok('the shared URL opened no connection (hits %d)' % len(srv.hits), len(srv.hits) == 0)
 finally:
     srv.close()
 
