@@ -66,5 +66,15 @@ render "$T/w.toml" WOO_EXTRAS=off; rc=$?
 ok "WOO_EXTRAS=off renders vars WOO_EXTRAS = \"off\" (rc $rc)" "$([ $rc = 0 ] && python3 -I "$HERE/canon.py" "$T/w.toml" | grep -qx 'vars WOO_EXTRAS = "off"' && echo 1 || echo 0)"
 ok "unset renders no WOO_EXTRAS line" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -q WOO_EXTRAS && echo 0 || echo 1)"
 
+echo "5. OBJECT_CACHE_VERSIONS=1 (#668, #686) reaches the rendered [vars]; unset or 0 renders nothing"
+render "$T/v.toml" OBJECT_CACHE_VERSIONS=1; rc=$?
+ok "OBJECT_CACHE_VERSIONS=1 renders vars OBJECT_CACHE_VERSIONS = \"on\" (rc $rc)" "$([ $rc = 0 ] && python3 -I "$HERE/canon.py" "$T/v.toml" | grep -qx 'vars OBJECT_CACHE_VERSIONS = "on"' && echo 1 || echo 0)"
+render "$T/v0.toml" OBJECT_CACHE_VERSIONS=0; rc=$?
+ok "OBJECT_CACHE_VERSIONS=0 renders none (rc $rc)" "$([ $rc = 0 ] && ! python3 -I "$HERE/canon.py" "$T/v0.toml" | grep -q OBJECT_CACHE_VERSIONS && echo 1 || echo 0)"
+ok "unset renders none" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -q OBJECT_CACHE_VERSIONS && echo 0 || echo 1)"
+# #650: versions are exact only when Hyperdrive does not cache queries. deploy.sh's Terraform makes the site's config,
+# so its hyperdrive resource must keep caching disabled (provisionSite checks the live config; this path cannot).
+ok "the Terraform Hyperdrive config keeps caching disabled (#650)" "$(awk '/resource "cloudflare_hyperdrive_config" "wp"/{f=1} f&&/^}/{exit} f&&/caching = \{ disabled = true \}/{print 1; exit}' "$ROOT/deploy/terraform/main.tf" | grep -qx 1 && echo 1 || echo 0)"
+
 [ "$fails" = 0 ] && echo "a-render: all checks pass" || echo "a-render: $fails failing check(s)"
 exit $((fails > 0))
