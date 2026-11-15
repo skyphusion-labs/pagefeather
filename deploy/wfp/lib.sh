@@ -373,6 +373,19 @@ php_recycle_var() {
     *) echo "PHP_RECYCLE must be off or unset, not ${PHP_RECYCLE}" >&2; return 1 ;;
   esac
 }
+# RECYCLE_WASM_MIB (#598): the PHP runtime recycle line, in MiB: after a request whose WebAssembly memory
+# passed it, the runtime is dropped and the next request boots a fresh one (index.js, recycle-line.mjs). A heap
+# that ends between the line and the point where Workers replaces the isolate keeps the dropped memory in the
+# isolate, and the next boot stacks a second one (pf582t: 20 of 70 died with the line at 100). An integer from
+# 64 to 240. Read from the run's environment only, like PHP_INI. Unset renders nothing (index.js keeps 100).
+recycle_mib_var() {
+  local v=${RECYCLE_WASM_MIB:-}
+  [ -n "$v" ] || return 0
+  if ! [[ "$v" =~ ^[0-9]{2,3}$ ]] || [ "$((10#$v))" -lt 64 ] || [ "$((10#$v))" -gt 240 ]; then
+    echo "RECYCLE_WASM_MIB must be an integer from 64 to 240, not ${v}" >&2; return 1
+  fi
+  echo "RECYCLE_WASM_MIB = \"$((10#$v))\""
+}
 # CRON_INTERVAL_MS (#479): how often the object's alarm runs the WordPress cron leg (index.js,
 # default 60000). A store move holds the cron by rendering a long interval for its window: in #479 M2
 # an idle store's Action Scheduler kept writing wp_actionscheduler_logs during an export, so the
@@ -499,6 +512,8 @@ render_user() { # render_user <site> <origin>
   [ -z "$headroom" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$headroom
   local php_recycle; php_recycle=$(php_recycle_var) || return 1
   [ -z "$php_recycle" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$php_recycle
+  local recycle_mib; recycle_mib=$(recycle_mib_var) || return 1
+  [ -z "$recycle_mib" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$recycle_mib
   local mem_ledger; mem_ledger=$(mem_ledger_var) || return 1
   [ -z "$mem_ledger" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$mem_ledger
   local cron_interval; cron_interval=$(cron_interval_var) || return 1
@@ -697,7 +712,7 @@ use_recorded_inputs() {
 # lost its PHP_INI pin on 2026-11-14). A good add or update records them in the site's bucket
 # (_build/settings.json); an update keeps them unless the run sets a new value or DROP_SETTINGS
 # names them. SITE_SETTINGS is the list; the caller declares them local -x.
-SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES"
+SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES"
 # The measurement flags (HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV, site_settings.py MEASUREMENT) are
 # never recorded: ON only for the run that exports them; the next update without one turns it off.
 # A setting render_user reads that is not in this list is DROPPED by an update that does not export

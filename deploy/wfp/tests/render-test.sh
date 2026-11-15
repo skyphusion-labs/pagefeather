@@ -156,6 +156,13 @@ recyc() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sy
 ok "no PHP_RECYCLE var by default" "$(env -u PHP_RECYCLE bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | recyc | grep -qx 'null' && echo 1 || echo 0)"
 ok "PHP_RECYCLE=off renders it" "$(PHP_RECYCLE=off render_user one https://wp-one.sub.workers.dev | recyc | grep -qx '"off"' && echo 1 || echo 0)"
 for bad in on yes OFF 0; do ok "PHP_RECYCLE=$bad fails the render" "$(PHP_RECYCLE=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
+# RECYCLE_WASM_MIB (#598): the PHP runtime recycle line, an integer from 64 to 240 (MiB), only when asked.
+# Unset renders nothing, and index.js keeps today's 100 (recycle-line.mjs).
+rmib() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["vars"].get("RECYCLE_WASM_MIB")))'; }
+ok "no RECYCLE_WASM_MIB var by default" "$(env -u RECYCLE_WASM_MIB bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | rmib | grep -qx 'null' && echo 1 || echo 0)"
+ok "RECYCLE_WASM_MIB=130 renders it as a string" "$(RECYCLE_WASM_MIB=130 render_user one https://wp-one.sub.workers.dev | rmib | grep -qx '"130"' && echo 1 || echo 0)"
+ok "RECYCLE_WASM_MIB=64 and 240 (the bounds) render" "$(RECYCLE_WASM_MIB=64 render_user one https://wp-one.sub.workers.dev | rmib | grep -qx '"64"' && RECYCLE_WASM_MIB=240 render_user one https://wp-one.sub.workers.dev | rmib | grep -qx '"240"' && echo 1 || echo 0)"
+for bad in 63 241 0 12.5 abc -100 1000 ' 130'; do ok "RECYCLE_WASM_MIB='$bad' fails the render" "$(RECYCLE_WASM_MIB="$bad" render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
 # CRON_INTERVAL_MS (#479): an integer from 60000 to 86400000, only when asked.
 cint() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["vars"].get("CRON_INTERVAL_MS")))'; }
 ok "no CRON_INTERVAL_MS var by default" "$(env -u CRON_INTERVAL_MS bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | cint | grep -qx 'null' && echo 1 || echo 0)"

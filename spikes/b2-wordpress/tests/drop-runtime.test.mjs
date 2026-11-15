@@ -90,5 +90,9 @@ test('index.js: every drop retires synchronously, and every PHP run reaps in its
 	const ev = code.indexOf("if (url.pathname === '/_evict') {");
 	assert.ok(code.indexOf('dropRuntime();', ev) < code.indexOf("this.ctx.abort('evict", ev), '/_evict drops (and so releases, when idle) before it schedules the abort');
 	assert.match(code, /const forceRecycle = spikeOk && req\.headers\.get\('x-runtime-recycle'\) === 'force';/, 'the forced recycle is spike-gated');
-	assert.match(code, /if \(crashed \|\| forceRecycle \|\| \(wasmBytes > RECYCLE_WASM_BYTES && env\.PHP_RECYCLE !== 'off'\)\) \{/);
+	// #598: the decision is recycle-line.mjs's (tests/recycle-line.test.mjs); it still takes crashed, the forced
+	// recycle and PHP_RECYCLE, and the line is RECYCLE_WASM_MIB's.
+	assert.match(code, /const recycleWhy = recycleDecision\(\{ crashed, forced: forceRecycle, wasmBytes, lineBytes: line\.bytes, recycleOff: env\.PHP_RECYCLE === 'off' \}\);/);
+	assert.match(code, /const line = recycleLine\(env\);/);
+	assert.match(code, /if \(recycleWhy\) \{/);
 });
