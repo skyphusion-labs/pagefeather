@@ -32,10 +32,10 @@ page tells you which is which.
 ## A live example
 
 If you want to see it running, [ggc.sh](https://ggc.sh) is an example WooCommerce store on this
-framework. It is slower than a cached site on purpose: its `ggc-cache.php` sends
-`Cache-Control: private, no-store` on every storefront page, because those pages carry the live
-catalog and the order-attribution decision. So on ggc.sh you see the uncached path, not the cached
-one.
+framework. Since 2026-11-15, its guest storefront pages are cached at the edge. ggc#111 removed the
+mu-plugin that turned the cache off. After its next update, its product, shop and category pages
+stay fresh for 30 s (`PAGE_CACHE_PRODUCT_TTL`, #628). Its other guest pages stay fresh for 120 s.
+Cart, checkout, account and logged-in pages are never cached, so they run PHP every time.
 
 ## Quickstart
 
