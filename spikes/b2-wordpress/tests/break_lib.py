@@ -35,9 +35,13 @@ def req(o, path, data=None, headers=None, method=None, timeout=120):
     except Exception as e:
         return {"code": "EXC", "err": repr(e)[:160], "s": round(time.time()-t, 2), "body": b"", "h": {}}
     return {"code": code, "s": round(time.time()-t, 2), "body": body, "h": hd,
-            "calls": hd.get("x-d1-calls"), "fail": hd.get("x-d1-failures"), "mib": hd.get("x-wasm-mib"), "recycled": hd.get("x-runtime-recycled")}
+            "calls": hd.get("x-d1-calls"), "fail": hd.get("x-d1-failures"), "mib": hd.get("x-wasm-mib"), "recycled": hd.get("x-runtime-recycled"),
+            # #638: the first failed SQL statement of the request (index.js, sent with the spike token only).
+            # D1_FIRST_FAILURE=1 records it, so a run names what an x-d1-failures count is. Off by
+            # default: it is SQL text, which can hold row data. Use it on a throwaway.
+            "firstFail": hd.get("x-d1-first-failure") if os.environ.get("D1_FIRST_FAILURE") == "1" else None}
 def short(r):
-    return {k: r.get(k) for k in ("code", "s", "calls", "fail", "mib", "recycled", "err") if r.get(k) is not None}
+    return {k: r.get(k) for k in ("code", "s", "calls", "fail", "firstFail", "mib", "recycled", "err") if r.get(k) is not None}
 def login():
     o = opener(); pw = os.environ["ADMIN_PASSWORD"]
     req(o, "/wp-login.php")
