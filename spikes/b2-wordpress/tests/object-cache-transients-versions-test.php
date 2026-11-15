@@ -287,5 +287,41 @@ $d2 = new JS_Object_Cache();
 $d2->delete( $ka, 'transient' );
 check( 'a delete of a key not read here bumps', $w5 + 1 === $wpdb->writes );
 
+// #296 (b) probe v2, measure only: every bucketed set that BUMPS says whether the new value equals the copy this
+// request already held, on the SERIALIZED value (two distinct objects with the same fields are equal), or that it had
+// none (a blind set). A regeneration says so. Every bumping delete is counted too, so the counts cover every bump.
+function last_op( $type ) {
+	for ( $i = count( $GLOBALS['ops'] ) - 1; $i >= 0; $i-- ) {
+		if ( $type === $GLOBALS['ops'][ $i ]['op'] ) {
+			return $GLOBALS['ops'][ $i ];
+		}
+	}
+	return null;
+}
+$ke = 'probe_eq_key';
+$p  = new JS_Object_Cache();
+$p->set( $ke, (object) array( 'x' => 1 ), 'transient', 86400 );
+$s = last_op( 'set' );
+check( 'probe v2: a blind set says nolocal', isset( $s['pc'] ) && 'nolocal' === $s['pc'] );
+$we = $wpdb->writes;
+$p->set( $ke, (object) array( 'x' => 1 ), 'transient', 86400 );
+$s = last_op( 'set' );
+check( 'probe v2: behavior unchanged, an equal set still bumps', $we + 1 === $wpdb->writes );
+check( 'probe v2: a set of a distinct object with equal fields says eq', isset( $s['pc'] ) && 'eq' === $s['pc'] );
+$p->set( $ke, (object) array( 'x' => 2 ), 'transient', 86400 );
+$s = last_op( 'set' );
+check( 'probe v2: a set of a different value says ne', isset( $s['pc'] ) && 'ne' === $s['pc'] );
+$p2 = new JS_Object_Cache();
+$p2->get( 'probe_regen_key', 'transient', false, $found );
+$p2->set( 'probe_regen_key', array( 'R' ), 'transient', 86400 );
+$s = last_op( 'set' );
+check( 'probe v2: a regeneration set says regen', isset( $s['pc'] ) && 'regen' === $s['pc'] );
+$p3 = new JS_Object_Cache();
+$n0 = count( $GLOBALS['ops'] );
+$w6 = $wpdb->writes;
+$p3->delete( $ke, 'transient' );
+$c = last_op( 'count' );
+check( 'probe v2: a bumping delete is counted', $w6 + 1 === $wpdb->writes && null !== $c && 'del_bump' === $c['f'] && count( $GLOBALS['ops'] ) > $n0 );
+
 echo $fail ? "$fail failing check(s)\n" : "all checks pass\n";
 exit( $fail ? 1 : 0 );

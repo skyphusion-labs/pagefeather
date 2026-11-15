@@ -175,8 +175,10 @@ async function objectCacheOp(op) {
 		if (op.cmp != null && op.k.length === 1) { const o = cacheVersions.recheckOutcome(out[0], op.cmp); if (o !== 'nocmp') ocCount(op.k[0], 'recheck_' + o); }
 		return { v: out };
 	}
+	if (op.op === 'count') { if (typeof op.k === 'string' && /^[a-z_]{1,24}$/.test(op.f)) ocCount(op.k, 'recheck_' + op.f); return { ok: true }; } // #296 (b) probe v2
 	if (op.op === 'set') {
 		ocCount(op.k, "set");
+		if (op.pc === 'eq' || op.pc === 'ne' || op.pc === 'nolocal' || op.pc === 'regen') ocCount(op.k, 'recheck_set_' + op.pc); // #296 (b) probe v2
 		if (undoLog) undoLog.touch(op.k);
 		const n = op.k.length + op.v.length;
 		if (n > OBJECT_CACHE_BYTES / 4) return { ok: false };

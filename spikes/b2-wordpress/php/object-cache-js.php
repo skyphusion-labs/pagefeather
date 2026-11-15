@@ -360,6 +360,11 @@ class JS_Object_Cache {
 
 	public function set( $key, $data, $group = 'default', $expire = 0 ) {
 		$this->version_gate( $group );
+		// #296 (b) probe v2, measure only: does the new value equal the copy this request held (SERIALIZED, never identity)?
+		$pc = null;
+		if ( isset( $this->bucketed[ $group ] ) ) {
+			$pc = $this->has_local( $key, $group ) ? ( serialize( $this->cache[ $group ][ $key ] ) === serialize( $data ) ? 'eq' : 'ne' ) : 'nolocal';
+		}
 		$this->cache[ $group ][ $key ] = self::copy( $data );
 		unset( $this->missing[ $group ][ $key ] );
 		// A bucketed set moves its bucket first, then writes under the new version; a bump that did not land
@@ -371,6 +376,7 @@ class JS_Object_Cache {
 			// one shared-store read) finds a value another isolate wrote meanwhile; then it is an overwrite and bumps.
 			if ( $this->is_regeneration( $key, $group, $old, $data, true ) ) {
 				$old = null;
+				$pc  = 'regen';
 			} elseif ( ! $this->bump_bucket( $key ) ) {
 				// The version did not move, so every isolate still asks for the old key: drop its old value
 				// (best effort: another isolate's Map keeps a copy up to its TTL).
@@ -382,7 +388,11 @@ class JS_Object_Cache {
 			if ( 0 === (int) $expire && $this->default_ttl > 0 ) {
 				$expire = $this->default_ttl;
 			}
-			$this->call( array( 'op' => 'set', 'k' => $this->pkey( $key, $group ), 'v' => base64_encode( serialize( $data ) ), 'ttl' => (int) $expire ) );
+			$op = array( 'op' => 'set', 'k' => $this->pkey( $key, $group ), 'v' => base64_encode( serialize( $data ) ), 'ttl' => (int) $expire );
+			if ( null !== $pc ) {
+				$op['pc'] = $pc; // #296 (b) probe v2
+			}
+			$this->call( $op );
 		}
 		return true;
 	}
@@ -432,6 +442,8 @@ class JS_Object_Cache {
 			}
 			if ( ! $this->bump_bucket( $key ) ) {
 				$this->call( array( 'op' => 'del', 'k' => array( $old ) ) );
+			} else {
+				$this->call( array( 'op' => 'count', 'k' => $old, 'f' => 'del_bump' ) ); // #296 (b) probe v2, measure only
 			}
 			return $had;
 		}
