@@ -316,9 +316,10 @@ jobs:
           export PERSIST_TO=$(mktemp -d)
           B=http://localhost:8797; PW=local-spike-password
           ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}")
-          DEV_LOCAL=1 DEV_ENV=dosql-local DEV_VARS="PHP_RECYCLE:off" ./run.sh _ping > /dev/null || { echo "::error::wrangler dev did not start"; tail -40 dev.log; exit 1; }
-          curl -s "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null
-          curl -s "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_activate?plugin=woocommerce/woocommerce.php" > /dev/null
+          # As frames-e2e.sh runs it after the same opcache.sh priming (the default env), with recycling off.
+          DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off" ./run.sh _ping > /dev/null || { echo "::error::wrangler dev did not start"; tail -40 dev.log; exit 1; }
+          echo "install: $(curl -s -o /dev/null -w '%{http_code}' "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install")"
+          echo "activate woocommerce: $(curl -s -o /dev/null -w '%{http_code}' "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_activate?plugin=woocommerce/woocommerce.php")"
           B=$B ADMIN_PASSWORD=$PW SPIKE_TOKEN=local-spike-token python3 tests/opcache-stats.py 2 "$RUNNER_TEMP/opcache-stats.jsonl"
           ./run.sh --stop > /dev/null 2>&1 || true
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
