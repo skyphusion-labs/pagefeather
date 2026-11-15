@@ -116,6 +116,36 @@ jobs:
               sys.exit("::error::the control file holds the marker; the reading cannot tell patched from unpatched")
           PY
 
+      # The baseline gate must be able to go red, on every run: the real mapper, on the real built tree
+      # and the committed baseline, is fed (a) a result on an upstream line that is NOT in the baseline
+      # and must exit 3 naming it, and (b) the baseline's own first entry, which must exit 0.
+      - name: Self-test of the upstream baseline gate (c-cpp only)
+        if: matrix.language == 'c-cpp'
+        run: |
+          set -uo pipefail
+          t="$RUNNER_TEMP/baseline-selftest"; mkdir -p "$t"
+          python3 -I - "$t" <<'PY2'
+          import json, sys
+          t = sys.argv[1]
+          b = json.load(open("engine/opcache/codeql-upstream-baseline.json"))["results"][0]
+          src = open("codeql-build/php-src/" + b["file"]).read().split("\n")
+          line = 1 + [l.strip() for l in src].index(b["line"])
+          def sarif(rule, f, n):
+              return {"runs": [{"tool": {"driver": {"name": "CodeQL"}}, "results": [{"ruleId": rule, "message": {"text": "self-test"},
+                  "locations": [{"physicalLocation": {"artifactLocation": {"uri": "codeql-build/php-src/" + f, "uriBaseId": "%SRCROOT%"},
+                  "region": {"startLine": n}}}]}]}]}
+          json.dump(sarif("pf/baseline-selftest", "ext/opcache/ZendAccelerator.c", 1), open(t + "/new.sarif", "w"))
+          json.dump(sarif(b["rule"], b["file"], line), open(t + "/known.sarif", "w"))
+          PY2
+          m() { python3 -I engine/opcache/codeql-sarif-map.py "$t/$1.sarif" "$t/$1.out.sarif" codeql-build/php-src codeql-build/php-src/ \
+                  codeql-build/applied-patches.txt engine/opcache/codeql-upstream-baseline.json > "$t/$1.log" 2>&1; }
+          m new; rc=$?
+          grep -q "NEW result on an UPSTREAM line, not in the baseline: pf/baseline-selftest" "$t/new.log" && [ "$rc" -eq 3 ] \
+            || { cat "$t/new.log"; echo "::error::the baseline gate did not refuse an injected upstream result (exit $rc)"; exit 1; }
+          m known; rc=$?
+          [ "$rc" -eq 0 ] || { cat "$t/known.log"; echo "::error::the baseline gate refused its own baseline entry (exit $rc)"; exit 1; }
+          echo "baseline gate self-test: injected new upstream result refused (exit 3); baseline entry accepted (exit 0)"
+
       # A result on a line a patch ADDED moves to that line of the .patch file (in the repository). A
       # result on an upstream php-src line must be in engine/opcache/codeql-upstream-baseline.json; one
       # that is not (a patch made upstream code dangerous) is uploaded at the patch header and exit 3
