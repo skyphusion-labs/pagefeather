@@ -181,6 +181,9 @@ jobs:
         run: |
           node --test spikes/b2-wordpress/tests/page-cache-ttl.test.mjs
           php spikes/b2-wordpress/tests/edge-cache-product-test.php
+          # #704: edge-cache.php names why it asks a purge, and the Worker logs it as m: purge-why
+          php spikes/b2-wordpress/tests/edge-cache-why-test.php
+          node --test spikes/b2-wordpress/tests/purge-why.test.mjs
           bash deploy/wfp/tests/page-cache-product-test.sh
       - name: b-dosql a memory reset is not an overload (issue #335)
         # object-error.mjs: an isolate memory reset answers x-isolate-reset, never x-overloaded.
