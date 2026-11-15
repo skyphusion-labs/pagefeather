@@ -23,6 +23,9 @@
 # sql_mode each statement carries, e.g.
 # ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION; see
 # spikes/b2-wordpress/php/hyperdrive-sql-mode.php. Unset: no change),
+# OPCACHE_A=1 (variant a: prime the OPcache with spikes/b2-wordpress/opcache-a.sh, on the D1
+# engine, so no Docker and no local MySQL are needed; an empty cache fails the deploy. Unset: a
+# local MariaDB in Docker primes it, and without Docker the site ships unprimed),
 # BENCH=0 (skip the measurements), N (runs per page, default 10), PORT (local
 # wrangler dev port for the OPcache step, default 8798), DEPLOY_STATE=r2 (keep
 # Terraform state in an R2 bucket; see README.md).
@@ -65,6 +68,9 @@ if [ "$CODE_ONLY" = 1 ]; then
 elif [ "$DRY_RUN" = 1 ]; then
   echo "DRY_RUN=1 is for CODE_ONLY=1 only" >&2; exit 2
 fi
+if [ "${OPCACHE_A:-0}" = 1 ] && [ "$VARIANT" != a ]; then
+  echo "OPCACHE_A=1 is for VARIANT=a only" >&2; exit 2
+fi
 if [ -n "${HYPERDRIVE_SQL_MODE+x}" ]; then
   [ "$VARIANT" = a ] || { echo "HYPERDRIVE_SQL_MODE is for variant a only" >&2; exit 2; }
   [[ "$HYPERDRIVE_SQL_MODE" =~ ^[A-Za-z_,]*$ ]] || { echo "HYPERDRIVE_SQL_MODE: mode names and commas only" >&2; exit 2; }
@@ -74,6 +80,8 @@ fi
 # for the root in $1 (deploy/terraform or deploy/mysql). backend() is in tf-backend.sh.
 # shellcheck source=SCRIPTDIR/tf-backend.sh
 . "$ROOT/deploy/tf-backend.sh"
+# shellcheck source=SCRIPTDIR/a-opcache.sh
+. "$ROOT/deploy/a-opcache.sh"
 # One workspace (one state) per site: a second NAME never touches the first.
 tf() { local dir=$1; shift; (cd "$dir" && terraform workspace select -or-create "$NAME" >/dev/null && terraform "$@"); }
 out() { tf "$TF" output -raw "$1"; }
@@ -154,10 +162,11 @@ cd "$APP"
 if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
   ./build.sh | tail -1
   DEV_ENV=$([ "$VARIANT" = b-dosql ] && echo dosql-local || echo do-local) opcache
+elif [ "${OPCACHE_A:-0}" = 1 ]; then a_opcache_primed || exit 1
 else
   ENGINE=a ./build.sh | tail -1
   # OPcache is primed against a temporary local MariaDB (env a-local); without
-  # Docker the site runs, but every new isolate compiles PHP first.
+  # Docker the site runs, but every new isolate compiles PHP first (OPCACHE_A=1 primes without Docker).
   if docker info >/dev/null 2>&1; then
     LP=$(openssl rand -hex 16); C="deploy-prime-$NAME"
     docker rm -f "$C" >/dev/null 2>&1 || true
@@ -168,7 +177,7 @@ else
     WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="mysql://wp:$LP@127.0.0.1:3399/wordpress" DEV_ENV=a-local opcache
     docker rm -f "$C" >/dev/null
   else
-    echo "  no Docker: OPcache not primed (the site works; cold starts are slower)"
+    echo "  no Docker: OPcache NOT primed (the site works; cold starts are slower). OPCACHE_A=1 primes it without Docker."
   fi
 fi
 

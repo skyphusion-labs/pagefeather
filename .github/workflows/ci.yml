@@ -66,6 +66,8 @@ jobs:
       - name: Wrangler is pinned and called through deploy/wr
         # deploy/tools holds the exact version; a bare npx call runs whatever is installed or the latest.
         run: bash deploy/tests/wrangler-pin-test.sh
+      - name: Approach A primes its OPcache without Docker, and an empty cache fails (#296)
+        run: bash deploy/tests/a-opcache-test.sh
       - name: Deploy scripts keep the spike token and admin password out of curl's command line
         # -K <(printf 'header = ...') instead of -H: the value is not in the process list.
         run: bash deploy/tests/curl-argv-test.sh
