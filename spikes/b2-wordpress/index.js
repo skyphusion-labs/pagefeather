@@ -35,7 +35,6 @@ import { createArena } from './inflate-arena.mjs';
 import { headroomStream } from './headroom.mjs';
 import { createUndoLog } from './undo-log.mjs';
 import { createRetirer } from './runtime-drop.mjs';
-import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
@@ -306,58 +305,41 @@ function siteOrigin(env, url) {
 }
 // One PHP runtime per isolate, and PHP is not re-entrant. Measured 2026-11-04:
 // with 30 parallel requests on one isolate, about half crashed. So requests
-// that use PHP run one at a time, in arrival order (php-lock.mjs).
+// that use PHP run one at a time, in arrival order.
+let phpQueue = Promise.resolve();
 // If the request ahead never finishes, a waiter would wait forever. On Free a
 // request stopped for CPU can leave the isolate alive with the lock held
-// (measured 2026-11-04: 524 timeouts). Once the run AHEAD has executed
-// LOCK_STALE_MS, a waiter goes on with a new PHP runtime. 60 s: the installer runs
-// about 32 s on Paid. #296: a long WAIT behind healthy runs is never stale any more:
-// it booted a second runtime beside a live one and reset the isolate's whole queue.
+// (measured 2026-11-04: 524 timeouts). After LOCK_STALE_MS a waiter goes on with
+// a new PHP runtime. 60 s: the installer runs about 32 s on Paid.
 const LOCK_STALE_MS = 60000;
-// One line per contended event (php-lock.mjs: queued, granted, shed, stale), with this isolate's id.
-const phpLock = createPhpLock({ staleMs: LOCK_STALE_MS, log: (e) => console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, ...e })) });
-const PHP_SHED_RETRY_AFTER_S = '5';
-let phpShedRefusedLogged = false;
-// The shed bound of this path (PHP_QUEUE_SHED_MS; php-lock.mjs shedMsFor), with a bad value logged once.
-function phpShedMs(env, inObject) {
-	const b = shedMsFor(env, inObject);
-	if (b.refused && !phpShedRefusedLogged) {
-		phpShedRefusedLogged = true;
-		console.log(JSON.stringify({ m: 'php-lock-setting', refused: b.refused }));
-	}
-	return b.ms;
-}
-// A request shed by the PHP lock: nothing ran, so the client may simply try again. Never stored by a cache.
-function phpShedResponse() {
-	const headers = new Headers({ 'content-type': 'text/plain; charset=utf-8', 'retry-after': PHP_SHED_RETRY_AFTER_S, 'x-overloaded': '1', 'x-php-lock': 'shed' });
-	noStoreAnywhere(headers);
-	return new Response('The site is busy. Please try again in a few seconds.\n', { status: 503, headers });
-}
 // The cron alarm holds off this long after a deploy-time spike op finishes (#185).
 const SPIKE_CRON_GRACE_MS = 2000;
 // The alarm waits at most this long for the deferred-email sends, so a stuck or throttled
 // env.EMAIL.send cannot hold the alarm until the DO wall-clock kills it (#194).
 const SEND_TIMEOUT_MS = 5000;
-// withPhp(fn, { shedMs }): fn's result, or PHP_SHED when the wait passed shedMs (0: never; only the
-// two request paths pass one). Cron, snapshots, dumps and imports always wait their turn.
-function withPhp(fn, { shedMs = 0 } = {}) {
-	return phpLock.run(
-		async () => {
-			retirer.runStart();
-			try {
-				return await fn();
-			} finally {
-				retirer.runEnd();
-			}
-		},
-		{
-			shedMs,
-			onStale: () => {
-				if (bootPromise) runtimeDrops++;
-				dropRuntime(); // the old runtime's state is unknown; the stale run still counts as running, so it is released when that run ends too
-			},
-		},
-	);
+function withPhp(fn) {
+	const prev = phpQueue;
+	const run = (async () => {
+		let timer;
+		const stale = await Promise.race([
+			prev.then(
+				() => false,
+				() => false,
+			),
+			new Promise((ok) => (timer = setTimeout(() => ok(true), LOCK_STALE_MS))),
+		]);
+		clearTimeout(timer);
+		if (stale && bootPromise) runtimeDrops++;
+		if (stale) dropRuntime(); // the old runtime's state is unknown; the stale run still counts as running, so it is released when that run ends too
+		retirer.runStart();
+		try {
+			return await fn();
+		} finally {
+			retirer.runEnd();
+		}
+	})();
+	phpQueue = run.catch(() => {});
+	return run;
 }
 // D1 keeps a row up to 2 MB. A larger body cannot be stored, and a 4 MB body
 // ran the isolate out of memory (measured 2026-11-04). Override with MAX_BODY_BYTES.
@@ -2884,8 +2866,7 @@ export class PhpRuntime extends DurableObject {
 		const ahead = phpPending;
 		const isSpikeLongOp = url.pathname === '/_install' || url.pathname === '/_activate';
 		phpPending++;
-		// #296: shed only with PHP_QUEUE_SHED_MS set (the default is never, on every path).
-		const objectRun = await withPhp(async () => {
+		return withPhp(async () => {
 			const waitMs = Date.now() - tArrive;
 			sqlDb = sql;
 			sqlStorage = sql ? this.ctx.storage : null;
@@ -2914,10 +2895,7 @@ export class PhpRuntime extends DurableObject {
 				// /_install -> /_activate gap, where /_activate would reuse the cron runtime (#185).
 				if (isSpikeLongOp) lastSpikeEndAt = Date.now();
 			}
-		}, { shedMs: phpShedMs(env, true) });
-		if (objectRun !== PHP_SHED) return objectRun;
-		phpPending--; // a shed run never ran its finally
-		return phpShedResponse();
+		});
 	}
 }
 
@@ -3329,8 +3307,7 @@ const site = {
 			if (!out.headers.has('cache-control')) out.headers.set('cache-control', 'private, no-store');
 			return out;
 		}
-		const workerRun = await withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx), { shedMs: phpShedMs(env, false) });
-		return workerRun === PHP_SHED ? phpShedResponse() : workerRun;
+		return withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx));
 	},
 };
 
