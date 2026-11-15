@@ -53,14 +53,15 @@ ok "  with the dev.log lines" "$(grep -q 'all goroutines are asleep' "$T/out" &&
 ok "  and not blamed on WooCommerce" "$(! grep -q 'WooCommerce did not activate' "$T/out" && echo 1 || echo 0)"
 : > "$T/dev.log"
 
+echo 0 > "$T/count"
 serve 500; DEAD=99999999; act "$DEAD"; rc=$?; stop
-ok "the server process is gone: named dead, rc 1, no retry" "$([ $rc = 1 ] && grep -q 'local dev server died' "$T/out" && [ "$(cat "$T/count")" = 1 ] && echo 1 || echo 0)"
+ok "the server process is gone: named dead, rc 1, no activate call" "$([ $rc = 1 ] && grep -q 'local dev server died' "$T/out" && [ "$(cat "$T/count")" = 0 ] && echo 1 || echo 0)"
 
 # The wiring: both priming scripts activate through the helper, and neither keeps the old one-shot line.
 for f in opcache.sh file-trace.sh; do
   ok "$f activates through woo_activate" "$(grep -qE '^\s*woo_activate \|\| exit 1$' "$HERE/$f" && echo 1 || echo 0)"
   ok "$f no longer has the bare 'WooCommerce did not activate' one-shot" "$(grep -q 'echo "WooCommerce did not activate"; exit 1' "$HERE/$f" && echo 0 || echo 1)"
 done
-ok "opcache.sh's install says why it failed (never a silent set -e exit)" "$(grep -q 'the install answered HTTP' "$HERE/opcache.sh" && echo 1 || echo 0)"
+ok "the install answer is kept (install_dev), never a silent curl -sf" "$(grep -q 'the install answered HTTP' "$HERE/opcache-activate.sh" && grep -q 'install_dev || exit 1' "$HERE/opcache.sh" && echo 1 || echo 0)"
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]

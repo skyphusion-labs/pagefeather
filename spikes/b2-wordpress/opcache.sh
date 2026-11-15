@@ -47,7 +47,7 @@ DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off${prime_vars:+ $prime_vars}${DEV_VARS:+ $DE
 trap './run.sh --stop; rm -rf "$STATE"' EXIT
 P=${PORT:-8797}
 SERVER=$(cut -d' ' -f1 ".dev-$P.pid")
-# #677: the activation names a dead dev server or the activation's own answer (opcache-activate.sh).
+# #677: server_alive and the kept /_install answer (opcache-activate.sh).
 PORT=$P
 # shellcheck source=opcache-activate.sh
 . ./opcache-activate.sh
@@ -57,13 +57,8 @@ hdr() { grep -i "^$1:" "$2" | tr -d '\r' | awk '{print $2}'; }
 curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -D build/opcache.headers.start -o /dev/null localhost:$P/_opcache-dump
 ISO0=$(hdr x-isolate build/opcache.headers.start)
 [ -n "$ISO0" ] || { echo "/_opcache-dump gave no x-isolate before the pages: no OPcache files saved"; exit 1; }
-# "already" when installed. #677: a failed install says why (its answer, or a dead dev server), never silently.
-code=$(curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -m 300 -o build/install.out -w '%{http_code}' -X POST -H "x-admin-password: ${ADMIN_PASSWORD:-local-spike-password}" "localhost:$P/_install") || code=000
-if [ "$code" != 200 ]; then
-  if why=$(dev_dead); then echo "the local dev server died ($why) during the install; this is the local tooling. Last lines of dev.log:"; dev_log_tail
-  else echo "the install answered HTTP $code. The tail of its answer:"; tr -c '[:print:]\n' ' ' < build/install.out | tail -c 1200; echo; echo "Last lines of dev.log:"; dev_log_tail; fi
-  exit 1
-fi
+# "already" when installed. #677: install_dev keeps the answer and runs server_alive before activation.
+install_dev || exit 1
 # WOO_ACTIVE=1: activate WooCommerce (its files are in every build, WOO=1).
 if [ "${WOO_ACTIVE:-0}" = 1 ]; then
   woo_activate || exit 1
