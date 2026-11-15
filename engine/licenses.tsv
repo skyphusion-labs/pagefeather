@@ -19,7 +19,7 @@ openssl.txt	OpenSSL	1.1.1t	OpenSSL	/lib(crypto|ssl)\.a$	tar	https://www.openssl.
 libiconv.txt	GNU libiconv	1.17	LGPL-2.1-or-later	/libiconv\.a$	tar	https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.17.tar.gz	libiconv-1.17/COPYING.LIB	-	dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551
 sqlite.txt	SQLite	3.51.0	blessing	/libsqlite3\.a$	tar	https://sqlite.org/2025/sqlite-autoconf-3510000.tar.gz	sqlite-autoconf-3510000/sqlite3.h	1-11	a4073095982a84421da1a1e49bd26e97ba1a09c2de5dda5eac776cd4a420d41a
 libxml2.txt	libxml2	2.9.10	MIT	/libxml2\.a$	tar	https://download.gnome.org/sources/libxml2/2.9/libxml2-2.9.10.tar.xz	libxml2-2.9.10/Copyright	-	c5c63674f8a83c4d2e385d96d1c670a03cb871ba2927755467017317878574bd
-zlib.txt	zlib	1.2.13	Zlib	/libz\.a$	tar	https://www.zlib.net/fossils/zlib-1.2.13.tar.gz	zlib-1.2.13/LICENSE	-	845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243
+zlib.txt	zlib	1.2.13	Zlib	/libz\.a$	tar	https://github.com/madler/zlib/releases/download/v1.2.13/zlib-1.2.13.tar.gz	zlib-1.2.13/LICENSE	-	845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243
 libzip.txt	libzip	1.9.2	BSD-3-Clause	/libzip\.a$	tar	https://libzip.org/download/libzip-1.9.2.tar.gz	libzip-1.9.2/LICENSE	-	01c022eca6d566e2e8792fd0f091a28653b2a608319922bcd4de91c49d1438e1
 libgd.txt	libgd	2.3.3	GD	/libgd\.a$	tar	https://github.com/libgd/libgd/releases/download/gd-2.3.3/libgd-2.3.3.tar.gz	libgd-2.3.3/COPYING	-	005f4b6b0141d1bd11d371bbf7d4f67947f85a4906b7f5465f942204cf918ba3
 libpng.txt	libpng	1.6.39	libpng-2.0	/libpng16\.a$	tar	https://download.sourceforge.net/libpng/libpng-1.6.39.tar.gz	libpng-1.6.39/LICENSE	-	dfe5a536b0e5a531f844fb9c101a3089aca60772a503893b8e15f9457e369960
