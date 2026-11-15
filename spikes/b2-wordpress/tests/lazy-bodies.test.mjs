@@ -64,7 +64,19 @@ async function prime() {
 	primed = got.bins;
 	return primed;
 }
-const probe = (php, c, mode) => json(php, `<?php $pf_lb_case = "${c}"; $pf_lb_mode = "${mode}"; require "${DIR}/probe.php";`);
+// Fibers abort the runtime on the wasm engines today, OPcache on or off (a gap of the engine, not of lazy bodies;
+// run-native.sh covers the Fiber half of test 15). A throwaway runtime finds out, and the probe is told.
+let fiberless = null;
+async function noFiber() {
+	if (fiberless === null) {
+		const { php } = await boot(e);
+		const t = await text(php, '<?php $f = new Fiber(function () { return Fiber::suspend(1); }); $f->start(); $f->resume(2); echo "fiber-ok";');
+		fiberless = !t.includes('fiber-ok');
+		if (fiberless) console.log('@event lazy-note ' + JSON.stringify({ fiber: 'not supported by this engine (the Fiber half of test 15 runs natively only)', got: t.slice(0, 120) }));
+	}
+	return fiberless;
+}
+const probe = async (php, c, mode) => json(php, `<?php $pf_lb_nofiber = ${(await noFiber()) ? 'true' : 'false'}; $pf_lb_case = "${c}"; $pf_lb_mode = "${mode}"; require "${DIR}/probe.php";`);
 
 test('the probe cases answer the same lazy, eager and compiled, and pass their lazy checks (tests 1 to 11, 13)', async () => {
 	const bins = await prime();

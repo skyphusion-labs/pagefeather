@@ -22,11 +22,16 @@ function pf_bin($file) {
 	}
 	return null;
 }
-// header fields of a .bin: [header size, pf_body_offset, pf_body_size] (64-bit or wasm32 metainfo)
+// header fields of a .bin: [header size, pf_body_offset, pf_body_size]. The metainfo is 96 bytes where size_t is
+// 8 bytes (native) and 88 where it is 4 (wasm32); PHP_INT_SIZE does not tell (zend_long may be 64-bit on wasm32),
+// so the layout is the one whose sizes add up to the file length, as engine/tools/bin-split.py reads it.
 function pf_hdr($bytes) {
-	$w = PHP_INT_SIZE == 8 ? array(96, 76) : array(88, 68);
-	$u = unpack("Voff/Vsize", substr($bytes, $w[1], 8));
-	return array($w[0], $u["off"], $u["size"]);
+	$n = strlen($bytes);
+	$m = unpack("Pmem/Pstr", substr($bytes, 40, 16)); $b = unpack("Voff/Vsize/Vbstr", substr($bytes, 76, 12));
+	if (96 + $m["mem"] + $m["str"] + $b["bstr"] === $n) { return array(96, $b["off"], $b["size"]); }
+	$m = unpack("Vmem/Vstr", substr($bytes, 40, 8)); $b = unpack("Voff/Vsize/Vbstr", substr($bytes, 68, 12));
+	if (88 + $m["mem"] + $m["str"] + $b["bstr"] === $n) { return array(88, $b["off"], $b["size"]); }
+	return array(0, 0, 0);
 }
 $lazy = $pf_mode === "lazy";
 $t0 = pf_lb();
@@ -146,12 +151,17 @@ case "copy": // tests 8 and 15
 	$gs[] = $g->current();
 	for ($g->next(); $g->valid(); $g->next()) { $gs[] = $g->key() . "=" . $g->current(); }
 	$gs[] = $g->getReturn();
-	$fb = new Fiber("pf_lb_in_fiber");
-	$s = $fb->start("x");
-	$fb->resume("y");
-	$out[] = array($gs, $s, $fb->getReturn());
+	if (!empty($pf_lb_nofiber)) { // the runner found that this engine cannot run a Fiber at all (the wasm engines today)
+		$out[] = array($gs, "fiber: not supported by this engine");
+	} else {
+		$fb = new Fiber("pf_lb_in_fiber");
+		$s = $fb->start("x");
+		$fb->resume("y");
+		$out[] = array($gs, $s, $fb->getReturn());
+	}
 	$d = $step("generator and fiber");
-	if ($lazy) { pf_chk(($d["body_loads"] ?? null) === 2, "copy: the generator and the fiber loaded " . json_encode($d["body_loads"] ?? null) . " bodies, want 2"); }
+	$want = empty($pf_lb_nofiber) ? 2 : 1;
+	if ($lazy) { pf_chk(($d["body_loads"] ?? null) === $want, "copy: the generator and the fiber loaded " . json_encode($d["body_loads"] ?? null) . " bodies, want $want"); }
 	break;
 
 case "fail": // tests 9, 13 (the Error's line and trace) and 14 (a failure, then a success)
@@ -163,7 +173,7 @@ case "fail": // tests 9, 13 (the Error's line and trace) and 14 (a failure, then
 		pf_chk($bin !== null, "fail: no .bin for f_fail.php under " . ini_get("opcache.file_cache"));
 		$orig = $bin ? file_get_contents($bin) : "";
 		list($hs, $boff, $bsize) = pf_hdr($orig);
-		pf_chk($bsize > 0, "fail: f_fail.php has no body tail");
+		pf_chk($hs > 0 && $bsize > 0, "fail: f_fail.php has no body tail, or its header matches neither layout");
 		$at = $hs + $boff + intdiv($bsize, 2);
 		$bad = $orig; $bad[$at] = chr(ord($bad[$at]) ^ 0x5a);
 		file_put_contents($bin, $bad);
