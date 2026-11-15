@@ -8,7 +8,15 @@ own is the patch, so a result on a line that a patch ADDED is moved to that line
 file, which is in the repository. A result on an upstream php-src line is not ours: it is listed
 in the log and not uploaded.
 
-  codeql-sarif-map.py <in.sarif> <out.sarif> <php-src dir> <src-prefix> <applied-patches.txt>
+  codeql-sarif-map.py <in.sarif> <out.sarif> <php-src dir> <src-prefix> <applied-patches.txt> \
+      <baseline.json> [--write-baseline]
+
+A patch can make an UNCHANGED upstream line dangerous (a changed caller, a new value flowing in),
+and that result sits on an upstream line. So every upstream result is checked against the committed
+baseline (engine/opcache/codeql-upstream-baseline.json: rule, file and a hash of the line text, not
+the line number). A result that is not in the baseline is printed, uploaded at the header of the
+last patch that touches its file (so the code_scanning rule sees it), and the exit status is 3.
+A php-src bump regenerates the baseline deliberately with --write-baseline.
 
 <src-prefix> is the php-src path as the SARIF names it, relative to the source root
 (codeql-build/php-src/). applied-patches.txt holds the repo-relative patch paths in the order the
@@ -16,6 +24,8 @@ build applied them. The line map is built by replaying each patch on the pristin
 (git show HEAD:<path> in the php-src clone); the replayed text must equal the built file byte for
 byte, or the map is refused (exit 1), so an offset or fuzzy apply cannot misplace an alert.
 """
+import collections
+import hashlib
 import json
 import re
 import subprocess
@@ -97,15 +107,47 @@ def build_maps(php, patches):
     return {rel: org for rel, (_, org) in state.items()}
 
 
+def header_lines(patches):
+    """{rel path: (patch, line of its diff --git header)} for the LAST patch touching each file."""
+    out = {}
+    for p in patches:
+        for i, l in enumerate(open(p, encoding="utf-8").read().split("\n"), 1):
+            if l.startswith("diff --git a/"):
+                out[l.split(" b/", 1)[1]] = (p, i)
+    return out
+
+
+def line_key(php, rule, rel, line):
+    try:
+        text = open(f"{php}/{rel}", encoding="utf-8", errors="surrogateescape").read().split("\n")[line - 1]
+    except (OSError, IndexError):
+        fail(f"cannot read php-src/{rel}:{line} for the baseline key")
+    return (rule, rel, hashlib.sha256(text.strip().encode("utf-8", "surrogateescape")).hexdigest()), text.strip()
+
+
 def main():
-    src, dst, php, prefix, applied = sys.argv[1:6]
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    write = "--write-baseline" in sys.argv[1:]
+    src, dst, php, prefix, applied, basefile = args[:6]
     patches = [l.strip() for l in open(applied) if l.strip()]
     if not patches:
         fail("no applied patches listed")
     maps = build_maps(php, patches)
+    headers = header_lines(patches)
+    if write:
+        base = collections.Counter()
+    else:
+        b = json.load(open(basefile))
+        base = collections.Counter((e["rule"], e["file"], e["line_sha256"]) for e in b["results"])
+        print(f"upstream baseline: {sum(base.values())} entries ({basefile})")
+    seen, new, texts = collections.Counter(), [], {}
     print(f"line maps: {len(maps)} patched files from {len(patches)} patches")
     d = json.load(open(src))
     kept = moved = dropped = 0
+    def remap_new(rel):
+        p, i = headers.get(rel, (patches[0], 1))
+        return {"physicalLocation": {"artifactLocation": {"uri": p, "uriBaseId": "%SRCROOT%"},
+                                     "region": {"startLine": i}}}
 
     def remap(loc):
         """Return the mapped physicalLocation, the unchanged one, or None to drop."""
@@ -128,8 +170,24 @@ def main():
         for r in run.get("results", []):
             loc, where = remap(r["locations"][0])
             if loc is None:
-                dropped += 1
-                print(f"upstream (not uploaded): {r['ruleId']} php-src/{where}")
+                rel, line = where.rsplit(":", 1)
+                key, text = line_key(php, r["ruleId"], rel, int(line))
+                texts[key] = text
+                seen[key] += 1
+                if write or seen[key] <= base[key]:
+                    dropped += 1
+                    print(f"upstream, in the baseline (not uploaded): {r['ruleId']} php-src/{where}")
+                    continue
+                new.append(f"{r['ruleId']} php-src/{where}: {text[:120]}")
+                print(f"::error::NEW result on an UPSTREAM line, not in the baseline: {r['ruleId']} php-src/{where}: {text[:120]}")
+                loc = remap_new(rel)
+                r["locations"] = [loc]
+                r["message"]["text"] = ("NEW on an upstream php-src line, not in codeql-upstream-baseline.json: "
+                                        + r["message"].get("text", "") + f" (php-src {where})")
+                r.pop("partialFingerprints", None)
+                r.pop("relatedLocations", None)
+                r.pop("codeFlows", None)
+                out.append(r)
                 continue
             if where is not None:
                 moved += 1
@@ -147,7 +205,23 @@ def main():
             out.append(r)
         run["results"] = out
     json.dump(d, open(dst, "w"))
-    print(f"results: {moved} mapped to a patch, {kept} in repo files, {dropped} upstream not uploaded")
+    print(f"results: {moved} mapped to a patch, {kept} in repo files, {dropped} upstream in the baseline, {len(new)} NEW upstream")
+    if write:
+        entries = [{"rule": k[0], "file": k[1], "line_sha256": k[2], "line": texts[k]}
+                   for k in sorted(seen) for _ in range(seen[k])]
+        json.dump({"about": "CodeQL c-cpp results on UPSTREAM php-src lines of the patched ext/opcache "
+                            "(#608). Regenerate on a php-src bump: codeql-sarif-map.py ... --write-baseline.",
+                   "php_ref": open(f"{php}/main/php_version.h").read().split('PHP_VERSION "')[1].split('"')[0],
+                   "results": entries}, open(basefile, "w"), indent=2)
+        open(basefile, "a").write("\n")
+        print(f"wrote {len(entries)} baseline entries to {basefile}")
+        return
+    for k in base:
+        if seen[k] < base[k]:
+            print(f"baseline entry not seen (stale; regenerate on a php-src bump): {k[0]} {k[1]} {k[2][:12]}")
+    if new:
+        print(f"::error::{len(new)} NEW result(s) on upstream php-src lines; a patch may have made upstream code dangerous")
+        sys.exit(3)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,12 @@
+{
+  "about": "CodeQL c-cpp results on UPSTREAM php-src lines of the patched ext/opcache (#608). Regenerate on a php-src bump: codeql-sarif-map.py ... --write-baseline.",
+  "php_ref": "8.3.36",
+  "results": [
+    {
+      "rule": "cpp/unsigned-difference-expression-compared-zero",
+      "file": "ext/opcache/ZendAccelerator.c",
+      "line_sha256": "e0e019e39383a59e4f3d16df230d75a0578f251a0ef71b57dac2e5708066d81f",
+      "line": "if (op_array->num_dynamic_func_defs - opline->op2.num > 0) {"
+    }
+  ]
+}

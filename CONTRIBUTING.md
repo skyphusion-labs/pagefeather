@@ -97,8 +97,12 @@ checks that the database holds the patched `zend_persist.c`.
 
 GitHub drops a result whose file is not in the repository, and the patched php-src files are not.
 So `engine/opcache/codeql-sarif-map.py` moves each result on a line that a patch added to that line
-of the `.patch` file. A result on an upstream php-src line is not ours: the job log lists it, and it
-is not uploaded.
+of the `.patch` file. A result on an upstream php-src line is not ours, but a patch can make an
+unchanged upstream line dangerous. So each upstream result must be in
+`engine/opcache/codeql-upstream-baseline.json` (rule, file and a hash of the line text). A result
+that is not in it fails the `c-cpp` scan, and it is uploaded at the header of the patch for that
+file. After a php-src bump, regenerate the baseline with `codeql-sarif-map.py ... --write-baseline`
+and review the diff.
 
 Default setup must stay off. While it is on, GitHub refuses each upload from this workflow ("CodeQL
 analyses from advanced configurations cannot be processed when the default setup is enabled").

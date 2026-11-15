@@ -116,18 +116,25 @@ jobs:
               sys.exit("::error::the control file holds the marker; the reading cannot tell patched from unpatched")
           PY
 
-      # A result on a line a patch ADDED moves to that line of the .patch file (in the repository); a
-      # result on an upstream php-src line is listed in the log and not uploaded. The map replays the
-      # patches on pristine php-src and refuses if the replay differs from the built files.
+      # A result on a line a patch ADDED moves to that line of the .patch file (in the repository). A
+      # result on an upstream php-src line must be in engine/opcache/codeql-upstream-baseline.json; one
+      # that is not (a patch made upstream code dangerous) is uploaded at the patch header and exit 3
+      # fails the job after the upload. The map replays the patches on pristine php-src and refuses
+      # (exit 1) if the replay differs from the built files.
       - name: Map the c-cpp results onto the engine patches (c-cpp only)
+        id: map
         if: matrix.language == 'c-cpp'
         run: |
-          set -euo pipefail
+          set -uo pipefail
           in="$GITHUB_WORKSPACE/../results/cpp.sarif"
           [ -s "$in" ] || { echo "::error::no c-cpp SARIF at $in"; ls -la "$GITHUB_WORKSPACE/../results" || true; exit 1; }
           mkdir -p "$GITHUB_WORKSPACE/../results-mapped"
           python3 -I engine/opcache/codeql-sarif-map.py "$in" "$GITHUB_WORKSPACE/../results-mapped/cpp.sarif" \
-            codeql-build/php-src codeql-build/php-src/ codeql-build/applied-patches.txt
+            codeql-build/php-src codeql-build/php-src/ codeql-build/applied-patches.txt \
+            engine/opcache/codeql-upstream-baseline.json
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || exit "$rc"
 
       - name: Upload the mapped c-cpp results (c-cpp only)
         if: matrix.language == 'c-cpp'
@@ -135,3 +142,10 @@ jobs:
         with:
           sarif_file: ${{ github.workspace }}/../results-mapped/cpp.sarif
           category: "/language:c-cpp"
+
+
+      - name: No new result on an upstream php-src line (c-cpp only)
+        if: matrix.language == 'c-cpp' && steps.map.outputs.rc != '0'
+        run: |
+          echo "::error::the c-cpp scan found a result on an UPSTREAM php-src line that is not in engine/opcache/codeql-upstream-baseline.json (see the map step). Fix the patch, or, for a php-src bump only, regenerate the baseline with codeql-sarif-map.py --write-baseline."
+          exit 1
