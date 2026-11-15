@@ -320,7 +320,7 @@ jobs:
           DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off" ./run.sh _ping > /dev/null || { echo "::error::wrangler dev did not start"; tail -40 dev.log; exit 1; }
           echo "install: $(curl -s -o /dev/null -w '%{http_code}' "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install")"
           echo "activate woocommerce: $(curl -s -o /dev/null -w '%{http_code}' "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_activate?plugin=woocommerce/woocommerce.php")"
-          B=$B ADMIN_PASSWORD=$PW SPIKE_TOKEN=local-spike-token python3 tests/opcache-stats.py 2 "$RUNNER_TEMP/opcache-stats.jsonl"
+          B=$B ADMIN_PASSWORD=$PW python3 tests/opcache-stats.py 2 "$RUNNER_TEMP/opcache-stats.jsonl"
           ./run.sh --stop > /dev/null 2>&1 || true
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
