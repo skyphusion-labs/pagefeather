@@ -83,6 +83,34 @@ cp spikes/b1-boot/index.js /tmp/woc-b1.mjs && node --check /tmp/woc-b1.mjs
 CI does not deploy, and it does not run `e2e.sh`. If your change affects a
 measured cell, run that approach's test and record the result.
 
+## Code scanning
+
+CodeQL runs from `.github/workflows/codeql.yml` (advanced setup, issue #608), not from default
+setup. It scans `actions`, `javascript-typescript`, `python` and `c-cpp` on every pull request and
+on each push to `main`. The `code_scanning` rule of the org ruleset needs a result for each of
+them on every pull request.
+
+The `c-cpp` scan builds php-src 8.3.36 `ext/opcache` natively, with the engine patches applied
+(`engine/opcache/codeql-build.sh`). The emscripten engine build is too heavy for each pull request.
+If a patch in `engine/opcache/` does not apply, the `c-cpp` scan fails. A step after the analysis
+checks that the database holds the patched `zend_persist.c`.
+
+GitHub drops a result whose file is not in the repository, and the patched php-src files are not.
+So `engine/opcache/codeql-sarif-map.py` moves each result on a line that a patch added to that line
+of the `.patch` file. A result on an upstream php-src line is not ours, but a patch can make an
+unchanged upstream line dangerous. So each upstream result must be in
+`engine/opcache/codeql-upstream-baseline.json` (rule, file and a hash of the line text). A result
+that is not in it fails the `c-cpp` scan, and it is uploaded at the header of the patch for that
+file. After a php-src bump, regenerate the baseline with `codeql-sarif-map.py ... --write-baseline`
+and review the diff.
+
+Default setup must stay off. While it is on, GitHub refuses each upload from this workflow ("CodeQL
+analyses from advanced configurations cannot be processed when the default setup is enabled").
+The repo cannot turn it off itself: the org security configuration controls it. Pagefeather is
+attached (enforced) to the org configuration 295954 `public-advanced-codeql`. That configuration is
+the GitHub recommended configuration 17 with default setup disabled; all other settings are the
+same. Attach any other repo that moves to advanced CodeQL to 295954 in the same way (2026-11-15).
+
 ## Pull requests
 
 Branch from `main`. Open the pull request against `main`. Keep it to one

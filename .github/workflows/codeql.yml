@@ -1,0 +1,182 @@
+name: CodeQL
+
+# Advanced CodeQL setup (#608), from the estate form (fleet-chezmoi system/ci/codeql-standard.yml).
+# It replaces code-scanning DEFAULT setup, for two reasons measured on pagefeather:
+# 1. Default setup listed c-cpp but ran no c-cpp analysis on a pull request without a C change, so the
+#    code_scanning rule of aviation-grade-main-org waited for a c-cpp result that never came (PR #606).
+#    This workflow runs every language on EVERY pull request, so every PR gets each result.
+# 2. The engine's real C changes are patches (engine/opcache/*.patch) applied to php-src inside the
+#    emscripten docker build; default setup never saw them. The c-cpp leg builds php-src 8.3.36's
+#    ext/opcache WITH the patches (engine/opcache/codeql-build.sh, build-mode manual), and then proves
+#    the patched source is in the CodeQL database.
+#
+# CHECK-NAME DISTINCTNESS (fc#1918): the display name is `CodeQL scan (<language>)`, never
+# `Analyze (...)`, which the dynamic default-setup workflow also emits. The job id `analyze` and the
+# category `/language:<language>` match default setup's, so alert history carries over.
+# The `CodeQL` status the code_scanning rule reads comes from the results upload, not from this name.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+concurrency:
+  group: codeql-pagefeather-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: CodeQL scan (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+          - language: c-cpp
+            build-mode: manual
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Build tools for php-src (c-cpp only)
+        if: matrix.language == 'c-cpp'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends autoconf bison re2c pkg-config > /dev/null
+          bison --version | head -1; re2c --version
+
+      # `languages`, PLURAL: `language` is ignored and the action falls back to auto-detection.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      # The traced build. The work tree is inside the workspace so that alerts in the patched php-src
+      # files resolve to a path. It is not committed (codeql-build/ is in .gitignore).
+      - name: Build php-src ext/opcache with the engine patches (c-cpp only)
+        if: matrix.language == 'c-cpp'
+        run: engine/opcache/codeql-build.sh "$GITHUB_WORKSPACE/codeql-build"
+
+      # c-cpp is NOT uploaded here: GitHub drops a result whose file is not in the repository, and
+      # every patched file is in codeql-build/php-src (measured on the alert control, #616: 2 local
+      # results, results=0 uploaded). Its SARIF is mapped onto the patch files first (below).
+      - name: Analyze
+        id: analyze
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: "/language:${{ matrix.language }}"
+          output: ${{ github.workspace }}/../results
+          upload: ${{ matrix.language == 'c-cpp' && 'never' || 'always' }}
+
+      # The scan must have SEEN the patched C, or a green c-cpp leg proves nothing. The database's source
+      # archive must hold ext/opcache/zend_persist.c WITH the patch marker, and the stats glue. The
+      # control in the same step: a file the patch does not touch must NOT hold the marker, so the
+      # reading can come out both ways.
+      - name: The c-cpp database holds the patched opcache source (c-cpp only)
+        if: matrix.language == 'c-cpp'
+        env:
+          DB_LOCATIONS: ${{ steps.analyze.outputs.db-locations }}
+        run: |
+          set -euo pipefail
+          db=$(python3 -I -c 'import json,os; d=json.loads(os.environ["DB_LOCATIONS"]); print(d.get("cpp") or d.get("c-cpp") or "")')
+          [ -n "$db" ] && [ -f "$db/src.zip" ] || { echo "::error::no c-cpp database source archive (db-locations: $DB_LOCATIONS)"; exit 1; }
+          python3 -I - "$db/src.zip" <<'PY'
+          import sys, zipfile
+          z = zipfile.ZipFile(sys.argv[1]); names = z.namelist()
+          def one(suffix):
+              m = [n for n in names if n.endswith(suffix)]
+              if len(m) != 1:
+                  sys.exit(f"::error::{len(m)} entries end with {suffix} in the source archive ({len(names)} entries)")
+              return z.read(m[0]).decode("utf-8", "replace")
+          mark = "pagefeather lazy bodies"
+          patched = one("/ext/opcache/zend_persist.c").count(mark)
+          control = one("/ext/opcache/shared_alloc_mmap.c").count(mark)
+          stats = one("/engine/opcache/opcache_module_stats.c")
+          print(f"source archive: {len(names)} entries; marker in zend_persist.c: {patched}; in shared_alloc_mmap.c (control): {control}; stats glue: {len(stats)} bytes")
+          if patched < 1:
+              sys.exit("::error::the scanned zend_persist.c is not the patched one")
+          if control != 0:
+              sys.exit("::error::the control file holds the marker; the reading cannot tell patched from unpatched")
+          PY
+
+      # The baseline gate must be able to go red, on every run: the real mapper, on the real built tree
+      # and the committed baseline, is fed (a) a result on an upstream line that is NOT in the baseline
+      # and must exit 3 naming it, and (b) the baseline's own first entry, which must exit 0.
+      - name: Self-test of the upstream baseline gate (c-cpp only)
+        if: matrix.language == 'c-cpp'
+        run: |
+          set -uo pipefail
+          t="$RUNNER_TEMP/baseline-selftest"; mkdir -p "$t"
+          python3 -I - "$t" <<'PY2'
+          import json, sys
+          t = sys.argv[1]
+          b = json.load(open("engine/opcache/codeql-upstream-baseline.json"))["results"][0]
+          src = open("codeql-build/php-src/" + b["file"]).read().split("\n")
+          line = 1 + [l.strip() for l in src].index(b["line"])
+          def sarif(rule, f, n):
+              return {"runs": [{"tool": {"driver": {"name": "CodeQL"}}, "results": [{"ruleId": rule, "message": {"text": "self-test"},
+                  "locations": [{"physicalLocation": {"artifactLocation": {"uri": "codeql-build/php-src/" + f, "uriBaseId": "%SRCROOT%"},
+                  "region": {"startLine": n}}}]}]}]}
+          json.dump(sarif("pf/baseline-selftest", "ext/opcache/ZendAccelerator.c", 1), open(t + "/new.sarif", "w"))
+          json.dump(sarif(b["rule"], b["file"], line), open(t + "/known.sarif", "w"))
+          PY2
+          m() { python3 -I engine/opcache/codeql-sarif-map.py "$t/$1.sarif" "$t/$1.out.sarif" codeql-build/php-src codeql-build/php-src/ \
+                  codeql-build/applied-patches.txt engine/opcache/codeql-upstream-baseline.json > "$t/$1.log" 2>&1; }
+          rc=0; m new || rc=$?
+          grep -q "NEW result on an UPSTREAM line, not in the baseline: pf/baseline-selftest" "$t/new.log" && [ "$rc" -eq 3 ] \
+            || { cat "$t/new.log"; echo "::error::the baseline gate did not refuse an injected upstream result (exit $rc)"; exit 1; }
+          rc=0; m known || rc=$?
+          [ "$rc" -eq 0 ] || { cat "$t/known.log"; echo "::error::the baseline gate refused its own baseline entry (exit $rc)"; exit 1; }
+          echo "baseline gate self-test: injected new upstream result refused (exit 3); baseline entry accepted (exit 0)"
+
+      # A result on a line a patch ADDED moves to that line of the .patch file (in the repository). A
+      # result on an upstream php-src line must be in engine/opcache/codeql-upstream-baseline.json; one
+      # that is not (a patch made upstream code dangerous) is uploaded at the patch header and exit 3
+      # fails the job after the upload. The map replays the patches on pristine php-src and refuses
+      # (exit 1) if the replay differs from the built files.
+      - name: Map the c-cpp results onto the engine patches (c-cpp only)
+        id: map
+        if: matrix.language == 'c-cpp'
+        run: |
+          set -uo pipefail
+          in="$GITHUB_WORKSPACE/../results/cpp.sarif"
+          [ -s "$in" ] || { echo "::error::no c-cpp SARIF at $in"; ls -la "$GITHUB_WORKSPACE/../results" || true; exit 1; }
+          mkdir -p "$GITHUB_WORKSPACE/../results-mapped"
+          # The run shell is bash -e: capture the status with ||, or exit 3 ends the step before the upload.
+          rc=0
+          python3 -I engine/opcache/codeql-sarif-map.py "$in" "$GITHUB_WORKSPACE/../results-mapped/cpp.sarif" \
+            codeql-build/php-src codeql-build/php-src/ codeql-build/applied-patches.txt \
+            engine/opcache/codeql-upstream-baseline.json || rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || exit "$rc"
+
+      - name: Upload the mapped c-cpp results (c-cpp only)
+        if: matrix.language == 'c-cpp'
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: ${{ github.workspace }}/../results-mapped/cpp.sarif
+          category: "/language:c-cpp"
+
+
+      - name: No new result on an upstream php-src line (c-cpp only)
+        if: matrix.language == 'c-cpp' && steps.map.outputs.rc != '0'
+        run: |
+          echo "::error::the c-cpp scan found a result on an UPSTREAM php-src line that is not in engine/opcache/codeql-upstream-baseline.json (see the map step). Fix the patch, or, for a php-src bump only, regenerate the baseline with codeql-sarif-map.py --write-baseline."
+          exit 1

@@ -4,3 +4,6 @@ node_modules/
 # Wrangler configs generated per site/run by the deploy and test scripts
 gen/
 *.log
+
+# The CodeQL c-cpp build tree (engine/opcache/codeql-build.sh, #608)
+codeql-build/
