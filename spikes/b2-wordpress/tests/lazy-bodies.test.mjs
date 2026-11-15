@@ -70,8 +70,10 @@ async function prime() {
 	primed = got.bins;
 	return primed;
 }
-// Fibers abort the runtime on the wasm engines today, OPcache on or off (a gap of the engine, not of lazy bodies;
-// run-native.sh covers the Fiber half of test 15). A throwaway runtime finds out, and the probe is told.
+// Fibers do not run on the wasm engines (a gap of the engine, not of lazy bodies). The npm engine
+// aborts in getcontext (#624). The lean engine throws a catchable Error from Fiber::start. Either
+// way the output is not fiber-ok. run-native.sh covers the Fiber half of test 15. A throwaway
+// runtime finds out, and the probe is told.
 let fiberless = null;
 async function noFiber() {
 	if (fiberless === null) {

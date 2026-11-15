@@ -104,6 +104,30 @@ if [ "$variant" = lean ] && [ "${ENGINE_GD:-yes}" = yes ]; then
 fi
 [ -x "$here/tools/node_modules/.bin/prettier" ] || { echo "run npm ci in engine/tools first (the pinned prettier)" >&2; exit 1; }
 
+# Fibers (#624). wasm32 has no boost.context assembly, so PHP uses ucontext and
+# emscripten's getcontext aborts the runtime. The patch throws a catchable Error
+# before that call. The unchanged build stays byte-identical and does not get it.
+if [ "$variant" = lean ]; then
+  cp "$here/patches/no-fibers.patch" "$compile/php/pagefeather-no-fibers.patch"
+  python3 -I - "$compile/php/Dockerfile" <<'PYFIBER'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+anchor = "\ttouch php-src/patched\n\n# Install Mysql support if needed\n"
+insert = (
+    "\ttouch php-src/patched\n\n"
+    "COPY ./compile/php/pagefeather-no-fibers.patch /root/pagefeather-no-fibers.patch\n"
+    "RUN cd /root/php-src && git apply --check /root/pagefeather-no-fibers.patch && git apply /root/pagefeather-no-fibers.patch && test \"$(grep -c 'Fibers are not supported on this platform' Zend/zend_fibers.c)\" = 1\n\n"
+    "# Install Mysql support if needed\n"
+)
+n = s.count(anchor)
+if n != 1:
+    sys.exit('no-fibers: the php-src patched anchor matched %d times, not once' % n)
+open(p, 'w', encoding='utf-8').write(s.replace(anchor, insert, 1))
+print('no-fibers: patch wired into the Dockerfile')
+PYFIBER
+fi
+
 # 3. PHP, as build.js runs it (context packages/php-wasm).
 host_out="$compile/../web-builds/8-3/jspi"
 args=(PHP_VERSION="$PHP_VERSION" PHP_REF="$PHP_REF" OPENSSL_VERSION=1.1.0h
