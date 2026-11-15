@@ -19,6 +19,8 @@ FENCE="$T/fence"; fence_dir "$FENCE"
 echo "1. refusals through deploy.sh"
 for bad in 2 on yes true; do refuse "OBSERVABILITY must be 0, 1 (events only) or full" VARIANT=b-dosql "OBSERVABILITY=$bad"; done
 refuse "OBSERVABILITY is for variants b-do, b-dosql and a" VARIANT=c1 OBSERVABILITY=1
+refuse "OBSERVABILITY=full needs THROWAWAY=1" VARIANT=b-dosql OBSERVABILITY=full
+for bad in 0 yes 2; do refuse "OBSERVABILITY=full needs THROWAWAY=1" VARIANT=b-dosql OBSERVABILITY=full "THROWAWAY=$bad"; done
 
 echo "1b. full is refused for a live site (deploy/live-sites/<NAME>.env), before any step"
 # obs_check is called directly with a stand-in ROOT: a deploy.sh run under a live NAME would write that
@@ -26,12 +28,16 @@ echo "1b. full is refused for a live site (deploy/live-sites/<NAME>.env), before
 O="$ROOT/deploy/observability.sh"
 LR="$T/liveroot"; mkdir -p "$LR/deploy/live-sites"; : > "$LR/deploy/live-sites/livesite.env"
 chk() { env -i PATH="$PATH" ROOT="$LR" "$@" bash -c ". '$O' && obs_check b-dosql" 2>&1; }
-out=$(chk NAME=livesite OBSERVABILITY=full); rc=$?
-ok "full on a live site is refused (rc $rc)" "$([ $rc = 2 ] && grep -qF 'is a live site' <<<"$out" && echo 1 || echo 0)"
+out=$(chk NAME=livesite OBSERVABILITY=full THROWAWAY=1); rc=$?
+ok "full on a live site is refused even with THROWAWAY=1 (rc $rc)" "$([ $rc = 2 ] && grep -qF 'is a live site' <<<"$out" && echo 1 || echo 0)"
 out=$(chk NAME=livesite OBSERVABILITY=1); rc=$?
 ok "1 (events only) on a live site is allowed (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
+out=$(chk NAME=throwaway OBSERVABILITY=full THROWAWAY=1); rc=$?
+ok "full with THROWAWAY=1 on a site NOT in deploy/live-sites is allowed (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
 out=$(chk NAME=throwaway OBSERVABILITY=full); rc=$?
-ok "full on a site NOT in deploy/live-sites is allowed (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
+ok "full WITHOUT THROWAWAY=1 is refused, also off the list (rc $rc)" "$([ $rc = 2 ] && grep -qF 'needs THROWAWAY=1' <<<"$out" && echo 1 || echo 0)"
+out=$(chk NAME=throwaway OBSERVABILITY=1); rc=$?
+ok "1 (events only) needs no THROWAWAY (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
 ok "  (the real list is not empty, so the rule has something to guard)" "$(ls "$ROOT"/deploy/live-sites/*.env >/dev/null 2>&1 && echo 1 || echo 0)"
 
 echo "2. the rendered block (deploy/observability.sh)"
