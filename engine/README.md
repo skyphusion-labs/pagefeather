@@ -88,3 +88,36 @@ widens `upload_mimes` for the upload. The tests upload them there.
 
 Both have red controls in the `fileinfo-gates` job: with no rejection signatures, and with no fileinfo,
 they must fail.
+
+## OPcache lazy function bodies (#582 S4)
+
+Most function bodies an editor screen loads never run: 31 of 42 MiB on the editor screens (M1, #582
+issuecomment-6887162662, measured with `ENGINE_OPCACHE_STATS=1`). The lazy-body work keeps them out of
+OPcache's shared memory until a function is first called. It is built in slices behind
+`ENGINE_LAZY_BODIES=1`, off by default (the plan: #582 issuecomment-6888051884).
+
+- **M2a, the layout (this flag today).** `opcache/pf-lazy-bodies.patch` makes OPcache place the body parts
+  of every function and method (literals, opcodes, live ranges, try/catch; not the main script) in a
+  tail region of each script's block. The file cache header records where the tail starts
+  (`pf_body_offset`, `pf_body_size`), and the system id changes with the flag, so lazy and eager files
+  never mix. Files still load EAGERLY: nothing about running PHP changes.
+- `tools/bin-split.py <opcache.zip>` checks the layout of every `.bin` and sums it. The header size is
+  read from each file's own length (80 bytes with the patch, 72 without), so `--expect-eager` passes an
+  eager zip and the default mode refuses it (the red control in the `lazy-bodies` job).
+- The split runs only in a shared-memory persist. When shared memory is full, OPcache persists the script
+  again for the file cache (`store_script_in_file_cache`). That second calc runs with `corrupted` set and
+  counts strings the first calc had already interned. Upstream then over-counts, which it only warns about,
+  so that persist stays unsplit. A head that does not end where calc said never bails the request
+  (`ACCEL_LOG_ERROR` calls `zend_bailout`): it is logged as a warning and counted, and the script is stored
+  unsplit. `opcache_get_status()["pagefeather_lazy_bodies"]` (also `/_mem`'s `ini.lb`) holds `split_scripts`,
+  `body_bytes`, `mismatch`, `overlap` and `noregion`. `noregion` counts a body block reached with no body region; that block is left unsplit, with a warning and never a bailout. Only the startup entropy check logs an error, which stops the runtime loudly before any request.
+- `spikes/b2-wordpress/tests/lazy-bodies-e2e.sh` is the gate on that. It runs e2e.sh from an empty OPcache at
+  the default 48 MB, where part of WordPress and WooCommerce takes the fallback, and requires
+  `split_scripts > 0`, `mismatch == 0` and `noregion == 0`. Its red control is lean-trim, which has no counters.
+- Only scripts persisted into shared memory are split. So `opcache.sh` takes `PRIME_OPCACHE_MB`, the shared
+  memory of the priming run only (opt-in). At the runtime default of 48 MB, 765 of 2,076 admin-e2e scripts
+  overflow into the fallback and would ship unsplit (#610). 128 holds all of them. The `lazy-bodies` job
+  primes lean-lazy at 128 and reads the split count with `LB_MC=128 tests/lazy-bodies-e2e.sh`. Unset keeps
+  today's priming, so the eager zips that ship now are unchanged. It becomes the default with the
+  lazy-body default (S5).
+- M2b (the lazy load at first call) and M2c (the measurement against M1) come next.
