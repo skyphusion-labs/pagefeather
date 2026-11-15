@@ -347,6 +347,7 @@ python3 deploy/wfp/tests/cross-test.py      # the isolation verdict: a breach is
 deploy/wfp/tests/probe-entry-test.sh        # the probe map entry and the CROSS_OUTBOUND option
 deploy/wfp/tests/tf-test.sh                 # terraform validate, fmt, and no account token in the site graph (local: needs terraform)
 python3 -I deploy/wfp/tests/fresh-test.py   # the freshness check (#533): red on a miss, not on a site's first snapshot
+python3 -I deploy/wfp/tests/tempdir-clean-test.py   # #567: fresh-test, bindings-render-test and lock-race leave no temp directory
 deploy/wfp/tests/r2-temp-test.sh            # the temporary R2 credential: the mint, one bucket only, a refresh on expiry (#273)
 deploy/wfp/tests/custom-domain-test.sh      # phase B (#138): custom_host, site_host, the shared dispatcher, the Terraform wiring
 deploy/wfp/tests/snapshot-wiring-test.sh    # the scheduled snapshot (#533): the site dispatcher render, both scripts' secrets, the deploy paths
