@@ -88,3 +88,20 @@ widens `upload_mimes` for the upload. The tests upload them there.
 
 Both have red controls in the `fileinfo-gates` job: with no rejection signatures, and with no fileinfo,
 they must fail.
+
+## OPcache lazy function bodies (#582 S4)
+
+Most function bodies an editor screen loads never run: 31 of 42 MiB on the editor screens (M1, #582
+issuecomment-6887162662, measured with `ENGINE_OPCACHE_STATS=1`). The lazy-body work keeps them out of
+OPcache's shared memory until a function is first called. It is built in slices behind
+`ENGINE_LAZY_BODIES=1`, off by default (the plan: #582 issuecomment-6888051884).
+
+- **M2a, the layout (this flag today).** `opcache/pf-lazy-bodies.patch` makes OPcache place the body parts
+  of every function and method (literals, opcodes, live ranges, try/catch; not the main script) in a
+  tail region of each script's block. The file cache header records where the tail starts
+  (`pf_body_offset`, `pf_body_size`), and the system id changes with the flag, so lazy and eager files
+  never mix. Files still load EAGERLY: nothing about running PHP changes.
+- `tools/bin-split.py <opcache.zip>` checks the layout of every `.bin` and sums it. The header size is
+  read from each file's own length (80 bytes with the patch, 72 without), so `--expect-eager` passes an
+  eager zip and the default mode refuses it (the red control in the `lazy-bodies` job).
+- M2b (the lazy load at first call) and M2c (the measurement against M1) come next.
