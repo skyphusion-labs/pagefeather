@@ -1,0 +1,31 @@
+platform,iter,step,t_utc,kind,text
+hwp,setup,editor-check,2026-11-14T22:10:56.616Z,console-warning,global-styles-css-custom-properties-inline-css was added to the iframe incorrectly. Please use block.json or enqueue_block_assets to add styles to the iframe. JSHandle@node
+hwp,1,post-new-load,2026-11-14T22:12:11.042Z,console-warning,global-styles-css-custom-properties-inline-css was added to the iframe incorrectly. Please use block.json or enqueue_block_assets to add styles to the iframe. JSHandle@node
+hwp,1,post-new-verify,2026-11-14T22:13:14.487Z,console-warning,global-styles-css-custom-properties-inline-css was added to the iframe incorrectly. Please use block.json or enqueue_block_assets to add styles to the iframe. JSHandle@node
+hwp,1,post-edit-load,2026-11-14T22:14:17.432Z,console-warning,global-styles-css-custom-properties-inline-css was added to the iframe incorrectly. Please use block.json or enqueue_block_assets to add styles to the iframe. JSHandle@node
+hwp,1,post-edit-verify,2026-11-14T22:15:26.610Z,console-warning,global-styles-css-custom-properties-inline-css was added to the iframe incorrectly. Please use block.json or enqueue_block_assets to add styles to the iframe. JSHandle@node
+hwp,1,page-new-load,2026-11-14T22:16:21.197Z,console-warning,global-styles-css-custom-properties-inline-css was added to the iframe incorrectly. Please use block.json or enqueue_block_assets to add styles to the iframe. JSHandle@node
+hwp,1,page-new-verify,2026-11-14T22:17:17.600Z,console-warning,global-styles-css-custom-properties-inline-css was added to the iframe incorrectly. Please use block.json or enqueue_block_assets to add styles to the iframe. JSHandle@node
+hwp,1,page-edit-load,2026-11-14T22:18:13.283Z,console-warning,global-styles-css-custom-properties-inline-css was added to the iframe incorrectly. Please use block.json or enqueue_block_assets to add styles to the iframe. JSHandle@node
+hwp,1,page-edit-verify,2026-11-14T22:19:17.832Z,console-warning,global-styles-css-custom-properties-inline-css was added to the iframe incorrectly. Please use block.json or enqueue_block_assets to add styles to the iframe. JSHandle@node
+hwp,2,post-new-load,2026-11-14T22:20:20.013Z,console-warning,global-styles-css-custom-properties-inline-css was added to the iframe incorrectly. Please use block.json or enqueue_block_assets to add styles to the iframe. JSHandle@node
+hwp,2,post-new-verify,2026-11-14T22:21:28.833Z,console-warning,global-styles-css-custom-properties-inline-css was added to the iframe incorrectly. Please use block.json or enqueue_block_assets to add styles to the iframe. JSHandle@node
+hwp,2,post-edit-load,2026-11-14T22:22:25.198Z,console-warning,global-styles-css-custom-properties-inline-css was added to the iframe incorrectly. Please use block.json or enqueue_block_assets to add styles to the iframe. JSHandle@node
+hwp,2,post-edit-verify,2026-11-14T22:22:46.164Z,console-error,Failed to load resource: net::ERR_CONNECTION_CLOSED
+hwp,2,post-edit-verify,2026-11-14T22:22:46.164Z,console-error,Failed to load resource: net::ERR_QUIC_PROTOCOL_ERROR
+hwp,2,post-edit-verify,2026-11-14T22:22:46.165Z,console-error,Failed to load resource: net::ERR_QUIC_PROTOCOL_ERROR
+hwp,2,post-edit-verify,2026-11-14T22:22:46.165Z,console-error,Failed to load resource: net::ERR_QUIC_PROTOCOL_ERROR
+hwp,2,post-edit-verify,2026-11-14T22:22:46.166Z,console-error,Failed to load resource: net::ERR_QUIC_PROTOCOL_ERROR
+hwp,2,post-edit-verify,2026-11-14T22:22:46.175Z,console-error,Failed to load resource: net::ERR_QUIC_PROTOCOL_ERROR
+hwp,2,post-edit-verify,2026-11-14T22:22:46.176Z,console-error,Failed to load resource: net::ERR_QUIC_PROTOCOL_ERROR
+hwp,2,post-edit-verify,2026-11-14T22:22:46.178Z,console-error,Failed to load resource: net::ERR_QUIC_PROTOCOL_ERROR
+hwp,2,post-edit-verify,2026-11-14T22:22:46.179Z,console-error,Failed to load resource: net::ERR_QUIC_PROTOCOL_ERROR
+hwp,2,post-edit-verify,2026-11-14T22:22:46.179Z,console-error,Failed to load resource: net::ERR_QUIC_PROTOCOL_ERROR
+hwp,2,post-edit-verify,2026-11-14T22:23:26.882Z,console-error,"TypeError: (0 , USe.__unstableStripHTML) is not a function
+    at G3 (<origin>/wp-includes/js/dist/editor.min.js?ver=af070cfff88093363220:168:22564)
+    at mf (<origin>/wp-includes/js/dist/vendor/react-dom.min.js?ver=18.3.1.1:105:412)
+    a"
+hwp,2,post-edit-verify:retry,2026-11-14T22:25:46.791Z,console-warning,global-styles-css-custom-properties-inline-css was added to the iframe incorrectly. Please use block.json or enqueue_block_assets to add styles to the iframe. JSHandle@node
+hwp,2,page-new-load,2026-11-14T22:26:43.374Z,console-warning,global-styles-css-custom-properties-inline-css was added to the iframe incorrectly. Please use block.json or enqueue_block_assets to add styles to the iframe. JSHandle@node
+hwp,2,page-new-verify,2026-11-14T22:27:51.556Z,console-warning,global-styles-css-custom-properties-inline-css was added to the iframe incorrectly. Please use block.json or enqueue_block_assets to add styles to the iframe. JSHandle@node
+hwp,2,page-new-verify:retry,2026-11-14T22:28:54.263Z,console-warning,global-styles-css-custom-properties-inline-css was added to the iframe incorrectly. Please use block.json or enqueue_block_assets to add styles to the iframe. JSHandle@node

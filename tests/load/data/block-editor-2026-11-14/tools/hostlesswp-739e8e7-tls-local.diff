@@ -1,0 +1,13 @@
+diff --git a/lib/db.mjs b/lib/db.mjs
+index 420d648..5e3c759 100644
+--- a/lib/db.mjs
++++ b/lib/db.mjs
+@@ -9,7 +9,7 @@ export async function connect(db) {
+   const base = { user: db.user, password: db.password, database: db.name, connectTimeout: 8000, dateStrings: true, supportBigNumbers: true, bigNumberStrings: true };
+   const attempts = [];
+   if (db.socketPath) attempts.push({ socketPath: db.socketPath });
+-  attempts.push({ host: db.host === 'localhost' ? '127.0.0.1' : db.host, port: db.port });
++  attempts.push({ host: db.host === "localhost" ? "127.0.0.1" : db.host, port: db.port, ...(process.env.HOSTLESSWP_DB_TLS === "1" ? { ssl: { minVersion: "TLSv1.2", rejectUnauthorized: true } } : {}) });
+   if (!db.socketPath && ['localhost', '127.0.0.1'].includes(db.host)) for (const s of COMMON_SOCKETS) attempts.push({ socketPath: s });
+   let lastErr;
+   for (const a of attempts) {

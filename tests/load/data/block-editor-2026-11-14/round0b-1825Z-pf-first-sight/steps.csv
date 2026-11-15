@@ -1,0 +1,26 @@
+platform,iter,step,t_utc,ok,ms,verified,fail_reason,editor_error,failing_call,retry_ok,php_calls,php_5xx,aborted
+hwp,setup,login,2026-11-14T18:24:16.236Z,1,11638,,,,,,3,0,0
+hwp,setup,editor-check,2026-11-14T18:24:27.874Z,1,77181,block-editor,,,,,35,0,0
+pf,setup,login,2026-11-14T18:25:45.128Z,1,8051,,,,,,6,0,0
+pf,setup,editor-check,2026-11-14T18:25:53.179Z,0,126109,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,0,4,1,0
+hwp,1,post-new-load,2026-11-14T18:30:08.970Z,0,33304,,"locator.waitFor: Target page, context or browser has been closed",WHITE-SCREEN,,0,15,0,0
+hwp,1,page-new-load,2026-11-14T18:30:42.275Z,0,1,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,2,post-new-load,2026-11-14T18:30:42.276Z,0,1,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,2,page-new-load,2026-11-14T18:30:42.277Z,0,0,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,3,post-new-load,2026-11-14T18:30:42.279Z,0,17,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,3,page-new-load,2026-11-14T18:30:42.296Z,0,1,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,4,post-new-load,2026-11-14T18:30:42.297Z,0,0,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,4,page-new-load,2026-11-14T18:30:42.298Z,0,0,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,5,post-new-load,2026-11-14T18:30:42.298Z,0,1,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,5,page-new-load,2026-11-14T18:30:42.299Z,0,1,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,6,post-new-load,2026-11-14T18:30:42.300Z,0,1,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,6,page-new-load,2026-11-14T18:30:42.301Z,0,1,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,7,post-new-load,2026-11-14T18:30:42.302Z,0,1,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,7,page-new-load,2026-11-14T18:30:42.303Z,0,0,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,8,post-new-load,2026-11-14T18:30:42.303Z,0,1,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,8,page-new-load,2026-11-14T18:30:42.304Z,0,1,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,9,post-new-load,2026-11-14T18:30:42.305Z,0,1,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,9,page-new-load,2026-11-14T18:30:42.306Z,0,1,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,10,post-new-load,2026-11-14T18:30:42.307Z,0,0,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,10,page-new-load,2026-11-14T18:30:42.307Z,0,0,,"page.goto: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0
+hwp,cleanup,delete-and-restore,2026-11-14T18:30:42.309Z,0,7,,"page.evaluate: Target page, context or browser has been closed",WHITE-SCREEN,,0,0,0,0

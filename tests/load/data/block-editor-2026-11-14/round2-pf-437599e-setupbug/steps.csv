@@ -1,0 +1,6 @@
+platform,iter,step,t_utc,ok,ms,verified,fail_reason,editor_error,failing_call,retry_ok,php_calls,php_5xx,aborted
+pf,setup,login,2026-11-14T20:09:40.017Z,1,10142,,,,,,3,0,0
+pf,setup,editor-check,2026-11-14T20:09:50.159Z,0,131165,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/admin-ajax.php 503,1,5,2,0
+pf,setup,editor-check#2,2026-11-14T20:12:39.669Z,0,122758,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,0,2,1,0
+pf,setup,editor-check#3,2026-11-14T20:16:44.881Z,0,122551,,locator.waitFor: Timeout 120000ms exceeded.,,GET /wp-admin/post-new.php 500,0,1,1,0
+pf,cleanup,delete-and-restore,2026-11-14T20:20:50.080Z,0,44,,page.evaluate: ReferenceError: wp is not defined,,,0,0,0,0

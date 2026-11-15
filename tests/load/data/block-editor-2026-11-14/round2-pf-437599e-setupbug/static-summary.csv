@@ -1,0 +1,4 @@
+platform,iter,step,static_requests,status_200,status_304,status_404,status_other,status_no_answer
+pf,setup,login,148,148,0,0,0,0
+pf,setup,editor-check,2,2,0,0,0,0
+pf,setup,editor-check:retry,591,523,68,0,0,0

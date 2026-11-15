@@ -1,0 +1,12 @@
+--- be-run.mjs
++++ be-run.mjs
+@@ -16,8 +16,7 @@
+ const csvq = (v) => (v == null ? '' : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v));
+ function csv(file, cols) {
+   const f = path.join(OUT, file);
+-  // Create with the header atomically ('wx'); a file that already exists keeps its rows (no check-then-write race).
+-  try { fs.writeFileSync(f, cols.join(',') + '\n', { flag: 'wx' }); } catch (e) { if (e.code !== 'EEXIST') throw e; }
++  if (!fs.existsSync(f)) fs.writeFileSync(f, cols.join(',') + '\n');
+   return (row) => fs.appendFileSync(f, cols.map((c) => csvq(row[c])).join(',') + '\n');
+ }
+ const REQ_COLS = ['platform', 'iter', 'step', 't_utc', 'method', 'kind', 'path', 'rest_route', 'query_keys', 'status', 'ms', 'failure', ...KEEP.map((k) => k.replace(/-/g, '_'))];

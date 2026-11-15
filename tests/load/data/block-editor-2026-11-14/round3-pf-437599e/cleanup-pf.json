@@ -1,0 +1,44 @@
+{
+ "deleted": 4,
+ "restored": 2,
+ "revs": 6,
+ "inventory": {
+  "tagged": [
+   {
+    "type": "posts",
+    "id": 5210,
+    "status": "publish",
+    "title": "sb1114e-be-pf-6-post"
+   },
+   {
+    "type": "pages",
+    "id": 5219,
+    "status": "publish",
+    "title": "sb1114e-be-pf-9-page"
+   },
+   {
+    "type": "pages",
+    "id": 5215,
+    "status": "publish",
+    "title": "sb1114e-be-pf-7-page"
+   },
+   {
+    "type": "pages",
+    "id": 5207,
+    "status": "publish",
+    "title": "sb1114e-be-pf-4-page"
+   }
+  ],
+  "markersInExisting": {
+   "posts": [
+    "sb1114e-be-pf-6-post appended",
+    "sb1114e-be-pf-6-post appended"
+   ],
+   "pages": [
+    "sb1114e-be-pf-2-page appended",
+    "sb1114e-be-pf-2-page appended",
+    "sb1114e-be-pf-9-page appended"
+   ]
+  }
+ }
+}
