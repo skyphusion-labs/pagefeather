@@ -695,3 +695,46 @@ test('a non-empty old log is left alone; the rebuild runs once it is empty, and 
 	isolate().u.recover(db, storage);
 	assert.deepEqual(ids(db), ['seed', 'A']);
 });
+
+// The swap is several statements. A throw anywhere between the trigger drop and the recreate must
+// leave the OLD table and its triggers, and the next isolate's recover() must migrate cleanly.
+// The stub throws on the rename, which is the first statement after the drops.
+test('a throw during the undo swap leaves the old table and its triggers; the next recover migrates (#577)', () => {
+	const { db, storage, raw } = site();
+	oldUndo(raw);
+	raw.prepare('INSERT INTO _wp_undo (sql) VALUES (?)').run('UPDATE "t" SET "v" = \'seed\' WHERE 0');
+	const a = isolate();
+	a.u.recover(db, storage);
+	a.u.arm(db, 'prime');
+	run(a.u, db, "INSERT INTO t (v) VALUES ('A')");
+	assert.equal(triggerCount(raw), 3, 'triggers installed against the old table');
+	a.u.end(db);
+	assert.equal(raw.prepare('SELECT COUNT(*) AS n FROM _wp_undo').get().n, 0);
+	assert.match(undoDdl(raw), /AUTOINCREMENT/i);
+	const beforeDdl = undoDdl(raw);
+	const beforeTriggers = triggerSql(raw);
+	const beforeSeq = sequenceNames(raw);
+	const realExec = db.exec;
+	let dropped = false;
+	db.exec = (sql, ...params) => {
+		const s = String(sql);
+		if (/^\s*DROP TRIGGER\b/i.test(s)) dropped = true;
+		if (dropped && /^\s*ALTER TABLE _wp_undo RENAME\b/i.test(s)) throw new Error('swap-cut');
+		return realExec(sql, ...params);
+	};
+	assert.throws(() => isolate().u.recover(db, storage), /swap-cut/);
+	db.exec = realExec;
+	assert.equal(undoDdl(raw), beforeDdl, 'the old table is still _wp_undo');
+	assert.equal(raw.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = '_wp_undo_old'").get().n, 0, 'the rename did not stay');
+	assert.deepEqual(triggerSql(raw), beforeTriggers, 'the old triggers are intact');
+	assert.deepEqual(sequenceNames(raw), beforeSeq, 'sqlite_sequence was not rewritten');
+	const b = isolate();
+	b.u.recover(db, storage);
+	assert.doesNotMatch(undoDdl(raw), /AUTOINCREMENT/i, 'the next recover migrates');
+	assert.deepEqual(triggerSql(raw), beforeTriggers, 'the same trigger bodies come back');
+	assert.ok(!sequenceNames(raw).includes('_wp_undo') && !sequenceNames(raw).includes('_wp_undo_old'));
+	b.u.arm(db, 'after');
+	run(b.u, db, "UPDATE t SET v = 'Z' WHERE v = 'seed'");
+	isolate().u.recover(db, storage);
+	assert.deepEqual(ids(db), ['seed', 'A'], 'a frame on the migrated table still rolls back');
+});

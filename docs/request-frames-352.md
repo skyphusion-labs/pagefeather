@@ -120,8 +120,9 @@ A site that already has the old table is rebuilt on first use, when the log is e
 (the `PhpRuntime` constructor, inside `blockConcurrencyWhile`) undoes an open frame first, then
 rebuilds. `undoSetup` rebuilds too, if it finds the old table and the log is already empty. A
 non-empty log stays on the old table until the next empty point, and still replays. The rebuild
-drops the undo triggers for the table swap and creates the same bodies again. They insert into
-`_wp_undo` by name, so the body does not change.
+(the trigger drop, the rename, the copy, the drop, the `sqlite_sequence` delete, and the trigger
+recreate) is one `storage.transactionSync`, so a failure leaves the old table and its triggers.
+The bodies insert into `_wp_undo` by name, so they do not change.
 
 ## Not in this
 
