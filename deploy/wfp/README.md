@@ -175,7 +175,7 @@ The command uploads for any of these reasons, and it prints the reason:
 
 When the build id and the config hash are the same, and `FORCE_UPLOAD` is not `1`, the command prints `nothing to do` and it does not upload.
 
-A change only to the rendered config uploads on its own. Do not pass `FORCE_UPLOAD=1` for that change. This includes `PHP_INI`, `PHP_RECYCLE`, `HEADROOM_PROBE`, `OPCACHE_SPLIT`, `OPCACHE_REMOTE` (#563, never with `OPCACHE_SPLIT=1`; see `docs/opcache-remote-563.md`), `SITE_REMOTE` (#569, needs `OPCACHE_REMOTE=1`; see `docs/site-remote-569.md`), `REQUEST_FRAMES` (#352, on or off; see `docs/request-frames-352.md`), `TURNSTILE_*`, `OBSERVABILITY` and the mail variables. These values are still read from the environment of the run only. They are not recorded build inputs. An update that does not pass one of them renders the site without it, so the hash changes and the update uploads. Pass the value on every update of that site.
+A change only to the rendered config uploads on its own. Do not pass `FORCE_UPLOAD=1` for that change. This includes `PHP_INI`, `PHP_RECYCLE`, `HEADROOM_PROBE`, `OPCACHE_SPLIT`, `OPCACHE_REMOTE` (#563, never with `OPCACHE_SPLIT=1`; see `docs/opcache-remote-563.md`), `SITE_REMOTE` (#569, needs `OPCACHE_REMOTE=1`; see `docs/site-remote-569.md`; both ON by default since #394, `0` opts out, see "The remote packs" below), `REQUEST_FRAMES` (#352, on or off; see `docs/request-frames-352.md`), `TURNSTILE_*`, `OBSERVABILITY` and the mail variables. These values are still read from the environment of the run only. They are not recorded build inputs. An update that does not pass one of them renders the site without it, so the hash changes and the update uploads. Pass the value on every update of that site.
 
 A change to a secret value, with the same key names, does not change the hash, so it does not upload. A new secret key does. To push a rotated secret value, run the update with `FORCE_UPLOAD=1`. `site.sh up` records the hash after it uploads the user Worker, so a site added after this change has a hash. Test: `tests/config-hash-test.sh`.
 
@@ -189,6 +189,15 @@ The per-site settings are read from the run's environment only: `PHP_INI`, `LAZY
 - **Not recorded:** `OBSERVABILITY`. Its logs record client IPs, so they stay on only when a run asks again.
 - **Measurement flags are never recorded, by design:** `HEADROOM_PROBE` (`/_headroom` KILLS the isolate), `MEM_LEDGER` (it logs the memory ledger on every request) and `WFP_PHP_ENV` (a measurement build's allocator). Each is ON only for the run that exports it. The next update without it turns it OFF and logs one line ("... was on and is now OFF: measurement flags are never kept"). It is never refused: for these, going off by itself is the safe direction.
 - **The store-move hold** `CRON_INTERVAL_MS` (#479) is kept like the rest. Clear it with `DROP_SETTINGS=CRON_INTERVAL_MS`.
+
+### The remote packs are the default (#394)
+
+Every `site add`, `site update` and `up.sh` builds and renders with `OPCACHE_REMOTE=1` and `SITE_REMOTE=1` unless the run (or the site's record, #558) says otherwise: the compiled PHP and the site's files are static-asset packs that PHP fetches when it first opens them, not modules held in the isolate (`docs/opcache-remote-563.md`, `docs/site-remote-569.md`). On the pf394a store this took the 7-screen admin round from 95 to 5 failed requests of 210 ([#394 issuecomment-6886246890](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6886246890)).
+- **The defaults** (`lib.sh` `remote_pack_defaults`): an unset or empty `OPCACHE_REMOTE` is 1, except with `OPCACHE_SPLIT=1` (no remote then); an unset or empty `SITE_REMOTE` follows `OPCACHE_REMOTE`. The update applies them after the recorded settings and before the build, so the build and the config agree (`remote_assets_check` refuses a disagreement).
+- **An existing site** switches at its next `site update` (the update always rebuilds).
+- **Opt out:** `OPCACHE_REMOTE=0` (both off) or `SITE_REMOTE=0` (only `site.zip` back in the bundle) on the add or update. The `0` is recorded and kept. The live-bindings check takes this run's `0` as the opt-out, not a drop. `DROP_SETTINGS` does not opt out: a dropped setting is empty, and empty is the default.
+- **The cost:** the build traces the primed pages (`file-trace.sh`) and writes the packs, so a build takes longer. Each pack fetch is a subrequest; the caps (`REMOTE_FETCH_CAP` 64, `SITE_FETCH_CAP` 96) fit the Paid limit that every Workers for Platforms site has.
+- **Tested** offline by `tests/remote-default-test.sh`: the defaults, the render, the order of the calls in add, update and up.sh, and the opt-out in the live-bindings check (with a control that the check still refuses a silent drop).
 
 ### The build inputs of a site (#377, #379)
 
@@ -326,6 +335,7 @@ List a site in `snapshot-sites` only after its cron is live, so a red is a real 
 ```sh
 node deploy/wfp/tests/dispatcher-test.mjs   # the dispatcher with a stand-in site map and namespace
 deploy/wfp/tests/render-test.sh             # the rendered configs and the site names
+deploy/wfp/tests/remote-default-test.sh     # the remote packs by default (#394): defaults, render, call order, opt-out
 deploy/wfp/tests/ns-state-test.sh           # "is this namespace script gone" (the empty-record case)
 deploy/wfp/tests/kv-ready-test.sh           # the wait for a new site map to accept writes
 deploy/wfp/tests/wait-site-test.sh          # the wait for a new site to answer from its own user Worker

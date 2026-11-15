@@ -463,6 +463,20 @@ site_remote_var() {
     *) echo "SITE_REMOTE must be 0 or 1, not ${SITE_REMOTE}" >&2; return 1 ;;
   esac
 }
+# #394 (the D/R round of 2026-11-14, issuecomment-6886246890): the remote packs are the DEFAULT for
+# every site. On the pf394a store, the 7-screen admin round lost 5 of 210 requests with OPCACHE_REMOTE=1
+# and SITE_REMOTE=1 against 95 of 210 without them. An unset or empty OPCACHE_REMOTE becomes 1, except
+# with OPCACHE_SPLIT=1 (the split cannot be remote, opcache_remote_var); an unset or empty SITE_REMOTE
+# follows OPCACHE_REMOTE. 0 opts out: it is recorded (#558) and kept by later updates. The add, the
+# update and up.sh call this AFTER the recorded settings are merged and BEFORE the build and the render,
+# so the build and the config read the same values (remote_assets_check refuses a disagreement).
+remote_pack_defaults() {
+  if [ -z "${OPCACHE_REMOTE:-}" ]; then
+    if [ "${OPCACHE_SPLIT:-0}" = 1 ]; then OPCACHE_REMOTE=0; else OPCACHE_REMOTE=1; fi
+  fi
+  [ -n "${SITE_REMOTE:-}" ] || SITE_REMOTE=$OPCACHE_REMOTE
+  export OPCACHE_REMOTE SITE_REMOTE
+}
 render_user() { # render_user <site> <origin>
   local s=$1 origin=$2 mail_binding mail_vars http_allow ts_vars php_env
   # WFP_PHP_ENV (#434): a measurement build may set USE_ZEND_ALLOC=1 so memory_get_usage reads

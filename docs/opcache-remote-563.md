@@ -1,6 +1,8 @@
 # All OPcache files as remote packs: PHP pauses in open() (#563, #394 Gate 1)
 
-Status: built behind a flag, default OFF. Written 2026-11-14 by rollins (seat rollins-sb1114d).
+Status: built behind a flag, **default ON for every deploy/wfp site since #394's D/R round** (written
+2026-11-15 by rollins, seat rollins-sb1114g; supersedes the "default OFF" of 2026-11-14). First written
+2026-11-14 by rollins (seat rollins-sb1114d).
 - Design: pagefeather#394 [issuecomment-6878206213](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6878206213).
   It supersedes the first, warm-only scope of 6877914398, which needed the split.
 - Gate 0 (production): [issuecomment-6878010968](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6878010968).
@@ -32,9 +34,21 @@ boot pack, and nothing held across requests.
 
 The wasm is unchanged. Under JSPI the loader picks the suspendable imports in JS, by name.
 
-## Default OFF
+## Default ON (deploy/wfp), and how to opt out
 
-- **Without `OPCACHE_REMOTE=1`:**
+- **The default (#394):** `deploy/wfp/lib.sh` `remote_pack_defaults` turns an unset or empty
+  `OPCACHE_REMOTE` into 1, except with `OPCACHE_SPLIT=1`. `site add`, `site update` (after the recorded
+  settings, #558) and `up.sh` call it before the build and the render.
+  - **Why:** the D/R round, [#394 issuecomment-6886246890](https://github.com/skyphusion-labs/pagefeather/issues/394#issuecomment-6886246890). On a copy of the pf394a store, the 7-screen admin round lost 5 of
+    210 requests on `pf394r` (`OPCACHE_REMOTE=1`, `SITE_REMOTE=1`) against 95 of 210 on `pf394d` (the old
+    default), interleaved in time, with every screen faster.
+  - **Existing sites** switch at their next `site update`, which rebuilds with the packs.
+- **The opt-out is `OPCACHE_REMOTE=0`** on the add or the update. It is recorded (#558), so later
+  updates keep it. `site_settings.py dropcheck` takes a run's `0` as the opt-out, not as a dropped
+  setting. `DROP_SETTINGS=OPCACHE_REMOTE` does NOT opt out: a dropped setting is empty, and empty is
+  the default.
+- **Approach A (`deploy/deploy.sh`)** is not changed.
+- **Without `OPCACHE_REMOTE=1`** (the opt-out, or a build outside deploy/wfp):
   - the index is `export default null;`;
   - `boot()` passes no hook, and the loader does not wrap `__syscall_openat` (tested).
 - **`OPCACHE_REMOTE=1` and `OPCACHE_SPLIT=1` together fail the render.**

@@ -66,6 +66,10 @@ DROPPABLE_VARS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PH
                   "REMOTE_FETCH_CAP", "REMOTE_HOLD_KIB", "SITE_FETCH_CAP", "SITE_HOLD_KIB", "SITE_RETRY_MS", "REQUEST_FRAMES")  # each renders its var only when on (#563, #569)
 
 
+# #394: the default-on remote packs, which a run turns off with the value 0 (lib.sh remote_pack_defaults).
+OPT_OUT = ("OPCACHE_REMOTE", "SITE_REMOTE")
+
+
 def drop_list(env=os.environ):
     names = [x for x in re.split(r"[\s,]+", env.get("DROP_SETTINGS", "") or "") if x]
     bad = [x for x in names if x not in SETTINGS + SECRETS + MEASUREMENT]  # a measurement flag: a no-op
@@ -140,7 +144,10 @@ def dropcheck(conf_path, bindings_path, secrets_path, env=os.environ):
     for k in MEASUREMENT:
         if k in plain and k not in now_vars:
             print("site settings: %s was on and is now OFF: measurement flags are never kept" % k, file=sys.stderr)
-    lost = sorted(k for k in DROPPABLE_VARS if k in plain and k not in now_vars and k not in drop)
+    # #394: OPCACHE_REMOTE=0 or SITE_REMOTE=0 set by this run is the opt-out from the default remote
+    # packs: on purpose, so not a drop. (DROP_SETTINGS would empty it, and an empty value is the default.)
+    opted_out = {k for k in OPT_OUT if env.get(k) == "0"}
+    lost = sorted(k for k in DROPPABLE_VARS if k in plain and k not in now_vars and k not in drop and k not in opted_out)
     lost_secret = any(k in secret and k not in now_secrets and k not in drop for k in SECRETS)
     if lost or lost_secret:
         what = " ".join(lost + (["a required secret"] if lost_secret else []))
