@@ -1,22 +1,13 @@
-diff --git a/ext/opcache/zend_persist.c b/ext/opcache/zend_persist.c
-index bff30527..ee70d749 100644
---- a/ext/opcache/zend_persist.c
-+++ b/ext/opcache/zend_persist.c
-@@ -1513,3 +1513,17 @@ void pf_planted_alert_control(void)
- 	sprintf(small, "%s", "this string is also far too long");
- 	printf(getenv("PF_PLANTED_FORMAT"));
- }
-+
-+/* PLANTED for the #608 upstream-line control (never merge): values we introduce flow into the
-+ * UNCHANGED upstream helper _zend_shared_memdup (zend_shared_alloc.c), whose memcpy and size
-+ * arithmetic are upstream lines. */
-+void pf_planted_upstream_control(void)
-+{
-+	char *p = malloc(16);
-+	if (!p) {
-+		return;
-+	}
-+	free(p);
-+	(void)zend_shared_memdup(p, 16);
-+	(void)zend_shared_memdup(p, (size_t)rand());
-+}
+diff --git a/ext/opcache/shared_alloc_posix.c b/ext/opcache/shared_alloc_posix.c
+index 70391473..3e3534f5 100644
+--- a/ext/opcache/shared_alloc_posix.c
++++ b/ext/opcache/shared_alloc_posix.c
+@@ -39,7 +39,7 @@ typedef struct  {
+ static int create_segments(size_t requested_size, zend_shared_segment_posix ***shared_segments_p, int *shared_segments_count, const char **error_in)
+ {
+ 	zend_shared_segment_posix *shared_segment;
+-	char shared_segment_name[sizeof("/ZendAccelerator.") + 20];
++	char shared_segment_name[sizeof("/ZendAccelerator.")]; /* PLANTED #608 upstream-line control: too small for the unchanged sprintf below */
+ 
+ 	*shared_segments_count = 1;
+ 	*shared_segments_p = (zend_shared_segment_posix **) calloc(1, sizeof(zend_shared_segment_posix) + sizeof(void *));
