@@ -199,7 +199,7 @@ Before the upload, `deploy/wfp/remote_assets_check.py` refuses a remote build wh
 
 ### Workers Logs (`OBSERVABILITY`, variants `b-do`, `b-dosql` and `a`)
 
-Off unless set; the values are deploy/wfp's (`deploy/observability.sh`). `0` renders an explicit `enabled = false`; `1` logs events only (our structured lines and uncaught exceptions, no request metadata); `full` adds the invocation logs, each request's outcome, URL, client IP and user agent, so use it on a throwaway only. With `1` or `full`, right after the upload `deploy/wfp/obs_settings.py redact-or-off` sets `redact_query_string` and reads it back; if it does not read back, the logs are turned off and the deploy fails.
+Off unless set; the values are deploy/wfp's (`deploy/observability.sh`). `0` renders an explicit `enabled = false`; `1` logs events only (our structured lines and uncaught exceptions, no request metadata); `full` adds the invocation logs, each request's outcome, URL, client IP and user agent, so use it on a throwaway only: it is refused for a site in `deploy/live-sites/`. With `1` or `full`, right after the upload `deploy/wfp/obs_settings.py redact-or-off` sets `redact_query_string` and reads it back; if it does not read back, the logs are turned off and the deploy fails.
 
 ## Why `LOCATION` matters
 
