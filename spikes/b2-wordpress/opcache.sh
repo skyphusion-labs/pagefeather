@@ -43,16 +43,26 @@ DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off${prime_vars:+ $prime_vars}${DEV_VARS:+ $DE
 trap './run.sh --stop; rm -rf "$STATE"' EXIT
 P=${PORT:-8797}
 SERVER=$(cut -d' ' -f1 ".dev-$P.pid")
+# #677: the activation names a dead dev server or the activation's own answer (opcache-activate.sh).
+PORT=$P
+# shellcheck source=opcache-activate.sh
+. ./opcache-activate.sh
 # The isolate before any page (the dump answers 409 with its id): the dump at the
 # end must come from the same one. A reload by wrangler dev makes a new isolate.
 hdr() { grep -i "^$1:" "$2" | tr -d '\r' | awk '{print $2}'; }
 curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -D build/opcache.headers.start -o /dev/null localhost:$P/_opcache-dump
 ISO0=$(hdr x-isolate build/opcache.headers.start)
 [ -n "$ISO0" ] || { echo "/_opcache-dump gave no x-isolate before the pages: no OPcache files saved"; exit 1; }
-curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -sf -X POST -H "x-admin-password: ${ADMIN_PASSWORD:-local-spike-password}" localhost:${PORT:-8797}/_install > /dev/null   # "already" when installed
+# "already" when installed. #677: a failed install says why (its answer, or a dead dev server), never silently.
+code=$(curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -m 300 -o build/install.out -w '%{http_code}' -X POST -H "x-admin-password: ${ADMIN_PASSWORD:-local-spike-password}" "localhost:$P/_install") || code=000
+if [ "$code" != 200 ]; then
+  if why=$(dev_dead); then echo "the local dev server died ($why) during the install; this is the local tooling. Last lines of dev.log:"; dev_log_tail
+  else echo "the install answered HTTP $code. The tail of its answer:"; tr -c '[:print:]\n' ' ' < build/install.out | tail -c 1200; echo; echo "Last lines of dev.log:"; dev_log_tail; fi
+  exit 1
+fi
 # WOO_ACTIVE=1: activate WooCommerce (its files are in every build, WOO=1).
 if [ "${WOO_ACTIVE:-0}" = 1 ]; then
-  curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -sf -X POST -H "x-admin-password: ${ADMIN_PASSWORD:-local-spike-password}" "localhost:${PORT:-8797}/_activate?plugin=woocommerce/woocommerce.php" | grep -q '\\"active\\":true' || { echo "WooCommerce did not activate"; exit 1; }
+  woo_activate || exit 1
 fi
 ./e2e.sh > build/opcache-e2e.log 2>&1 || { echo "e2e failed; no OPcache files saved. Last lines of build/opcache-e2e.log:"; tail -15 build/opcache-e2e.log; exit 1; }
 # WooCommerce pages too, when it is active (tests/woo.py buys a product).
