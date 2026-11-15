@@ -1708,6 +1708,10 @@ async function boot(origin) {
 	// Woo-warmed isolate otherwise spends re-initialising each request, headroom approach A needs
 	// because its DB client sits in the same isolate as PHP (#218). BOOTSTRAP_TRIM=off turns it off.
 	if (((ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on') || dbHandler) && ENV.BOOTSTRAP_TRIM !== 'off') lines.push(`define('SKYPHUSION_BOOTSTRAP_TRIM', true);`);
+	// WOO_EXTRAS=off (#667): php/woo-extras.php forces order attribution, usage tracking,
+	// marketplace suggestions and remote logging off. Unset defines nothing, so WooCommerce's
+	// own defaults stay. Analytics is not one of the four options.
+	if (ENV.WOO_EXTRAS === 'off') lines.push(`define('SKYPHUSION_WOO_EXTRAS', 'off');`);
 	// Media write trim mu-plugin (issue #189): free isolate memory on the rare admin
 	// media-upload request so the attachment insert fits under the 128 MiB cap on a
 	// WooCommerce-warmed b-dosql isolate. b-dosql + MEDIA only, and only the async-upload /

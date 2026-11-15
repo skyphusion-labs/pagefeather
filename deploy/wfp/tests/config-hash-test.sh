@@ -86,7 +86,7 @@ check "FORCE and a new build: both reasons" "$(FORCE_UPLOAD=1 update_upload_reas
 
 # The real `site update`, with the build, terraform, S3 and the upload stubbed.
 # Nothing here talks to Cloudflare.
-unset PHP_INI PHP_RECYCLE RECYCLE_WASM_MIB MEM_LEDGER CRON_INTERVAL_MS OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES TURNSTILE_SITEKEY TURNSTILE_SECRET \
+unset PHP_INI PHP_RECYCLE RECYCLE_WASM_MIB MEM_LEDGER CRON_INTERVAL_MS OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS TURNSTILE_SITEKEY TURNSTILE_SECRET \
   TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS OBSERVABILITY MAIL_FROM MAIL_FROM_NAME HTTP_ALLOW_HOSTS \
   WFP_PHP_ENV PHP_LOCATION LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB HEADROOM_PROBE WP_VECTORIZE_SEARCH FORCE_UPLOAD PLUGINS IMPORT_CONTENT IMPORT_THEMES \
   IMPORT_PLUGINS IMPORT_MU_PLUGINS FORCE_FAIL COUNT_ROWS WFP_CUSTOM_DOMAIN REPLACE_INPUTS THROWAWAY || true
@@ -559,6 +559,39 @@ DROP_SETTINGS=HTTP_ALLOW_HOSTS run_update
 ok "#564 DROP_SETTINGS=HTTP_ALLOW_HOSTS returns the site to the default list" "$([ "$RC" = 0 ] && allow_is "$DEFAULT_ALLOW" && [ "$(rec_allow)" = "ABSENT" ] && printf '%s' "$OUT" | grep -Fq 'HTTP_ALLOW_HOSTS DROPPED on purpose' && echo 1 || echo 0)"
 [ "$RC" = 0 ] || { echo "$OUT" | tail -8 | sed 's/^/   /'; }
 unset HTTP_ALLOW_HOSTS DROP_SETTINGS
+
+# 9n. WOO_EXTRAS (#667): off is a recorded setting. Unset keeps a recorded off.
+# A live var with no record and no value in this run is a drop, and is refused.
+srec_del
+live '[{"type":"plain_text","name":"SITE_ORIGIN","text":"y"}]'
+set_entry bld-other "$(last_hash)"
+WOO_EXTRAS=off run_update
+ok "#667 WOO_EXTRAS=off renders the var and records off" "$([ "$RC" = 0 ] && [ "$(conf_has WOO_EXTRAS)" = 1 ] && grep -Fqx 'WOO_EXTRAS = "off"' "$APP/wrangler.deploy.wfp-shop.toml" && srec_get | python3 -I -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("settings",{}).get("WOO_EXTRAS")=="off" else 1)' && echo 1 || echo 0)"
+[ "$RC" = 0 ] || { echo "$OUT" | tail -8 | sed 's/^/   /'; }
+Hoff=$(last_hash)
+unset WOO_EXTRAS
+set_entry bld-same "$Hoff"
+u0=$(lines "$UPLOAD_LOG")
+run_update
+u1=$(lines "$UPLOAD_LOG")
+ok "#667 an update without WOO_EXTRAS keeps the recorded off" "$([ "$RC" = 0 ] && [ "$u1" = "$u0" ] && [ "$(conf_has WOO_EXTRAS)" = 1 ] && printf '%s' "$OUT" | grep -Fq 'settings: WOO_EXTRAS kept from the record' && echo 1 || echo 0)"
+[ "$RC" = 0 ] || { echo "$OUT" | tail -8 | sed 's/^/   /'; }
+srec_del
+live '[{"type":"plain_text","name":"WOO_EXTRAS","text":"off"},{"type":"plain_text","name":"SITE_ORIGIN","text":"y"}]'
+set_entry bld-other "$(last_hash)"
+u0=$(lines "$UPLOAD_LOG")
+unset WOO_EXTRAS
+run_update
+u1=$(lines "$UPLOAD_LOG")
+ok "#667 the live site has WOO_EXTRAS and this run does not: REFUSED, nothing uploaded" "$([ "$RC" = 2 ] && [ "$u1" = "$u0" ] && printf '%s' "$OUT" | grep -Fq 'would DROP it' && printf '%s' "$OUT" | grep -Fq 'WOO_EXTRAS' && echo 1 || echo 0)"
+srec_put '{"v": 1, "settings": {"WOO_EXTRAS": "off"}, "secrets": []}'
+live '[{"type":"plain_text","name":"WOO_EXTRAS","text":"off"},{"type":"plain_text","name":"SITE_ORIGIN","text":"y"}]'
+set_entry bld-other "$(last_hash)"
+unset WOO_EXTRAS
+DROP_SETTINGS=WOO_EXTRAS run_update
+ok "#667 DROP_SETTINGS=WOO_EXTRAS drops it: no var, and the record does not keep it" "$([ "$RC" = 0 ] && [ "$(conf_has WOO_EXTRAS)" = 0 ] && srec_get | python3 -I -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if "WOO_EXTRAS" not in d.get("settings",{}) else 1)' && printf '%s' "$OUT" | grep -Fq 'WOO_EXTRAS DROPPED on purpose' && echo 1 || echo 0)"
+[ "$RC" = 0 ] || { echo "$OUT" | tail -8 | sed 's/^/   /'; }
+unset WOO_EXTRAS DROP_SETTINGS
 
 echo "$fails failing check(s)"
 exit "$fails"

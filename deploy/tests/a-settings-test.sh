@@ -31,6 +31,8 @@ refuse "PF_ENGINE_JS and PF_ENGINE_WASM: set both or neither" VARIANT=a PF_ENGIN
 refuse "PF_ENGINE_JS and PF_ENGINE_WASM: set both or neither" VARIANT=b-dosql PF_ENGINE_WASM="$T/engine.wasm"
 refuse "PF_ENGINE_JS is not a file with content" VARIANT=a PF_ENGINE_JS="$T/engine.js" PF_ENGINE_WASM="$T/engine.wasm"
 refuse "PF_ENGINE_WASM is not a file with content" VARIANT=a PF_ENGINE_JS="$T/engine.wasm" PF_ENGINE_WASM="$T/missing.wasm"
+for bad in on yes 0 1 NO; do refuse "WOO_EXTRAS must be off or unset" VARIANT=b-dosql WOO_EXTRAS=$bad; done
+refuse "WOO_EXTRAS must be off or unset" VARIANT=a WOO_EXTRAS=on
 
 echo "2. the rendered lines (deploy/a-settings.sh)"
 S="$ROOT/deploy/a-settings.sh"
@@ -98,6 +100,9 @@ ok "a default config WITHOUT the ASSETS binding passes too: a plain build needs 
 python3 -I "$ROOT/deploy/wfp/remote_assets_check.py" "$T/default.toml" "$APP" 2>"$T/default-red.err"; rc=$?
 ok "the control: the same DEFAULT config over a REMOTE build is REFUSED (rc $rc)" "$([ $rc = 2 ] && grep -q 'disagree' "$T/default-red.err" && echo 1 || echo 0)"
 ok "deploy.sh runs the guard on variant a before the deploy" "$(awk '/remote_assets_check.py/ {g=NR} /^DEP=.*deploy --config/ {d=NR} END {print (g && d && g < d) ? 1 : 0}' "$ROOT/deploy/deploy.sh")"
+# WOO_EXTRAS (#667) is every variant, so it is deploy.sh's own [vars] line, not a_vars.
+ok "deploy.sh writes WOO_EXTRAS = \"off\" into [vars]" "$(grep -c 'WOO_EXTRAS = "off"' "$ROOT/deploy/deploy.sh" | grep -qx 1 && echo 1 || echo 0)"
+ok "deploy.sh checks WOO_EXTRAS before its first terraform step" "$(awk '/WOO_EXTRAS must be off or unset/ {c=NR} /log "terraform:/ && !t {t=NR} END {print (c && t && c < t) ? 1 : 0}' "$ROOT/deploy/deploy.sh")"
 
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]

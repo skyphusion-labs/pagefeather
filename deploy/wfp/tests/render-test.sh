@@ -13,6 +13,7 @@
 set -u
 unset MAIL_FROM MAIL_FROM_NAME
 unset HTTP_ALLOW_HOSTS
+unset WOO_EXTRAS
 HERE=$(cd "$(dirname "$0")" && pwd)
 LIB=${1:-$HERE/../lib.sh}
 # shellcheck disable=SC1090
@@ -224,5 +225,26 @@ ok "no REQUEST_FRAMES var by default" "$(env -u REQUEST_FRAMES bash -c ". '$LIB'
 ok "REQUEST_FRAMES=on renders it" "$(REQUEST_FRAMES=on render_user one https://wp-one.sub.workers.dev | rqf | grep -qx '"on"' && echo 1 || echo 0)"
 ok "REQUEST_FRAMES=off renders it" "$(REQUEST_FRAMES=off render_user one https://wp-one.sub.workers.dev | rqf | grep -qx '"off"' && echo 1 || echo 0)"
 for bad in yes 1 ON; do ok "REQUEST_FRAMES=$bad fails the render" "$(REQUEST_FRAMES=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
+# WOO_EXTRAS (#667): off, or unset (no var). Analytics is not this switch.
+wex() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["vars"].get("WOO_EXTRAS")))'; }
+ok "no WOO_EXTRAS var by default" "$(env -u WOO_EXTRAS bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | wex | grep -qx 'null' && echo 1 || echo 0)"
+ok "WOO_EXTRAS=off renders it" "$(WOO_EXTRAS=off render_user one https://wp-one.sub.workers.dev | wex | grep -qx '"off"' && echo 1 || echo 0)"
+for bad in on yes 0 1 NO; do ok "WOO_EXTRAS=$bad fails the render" "$(WOO_EXTRAS=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
+B2=$(cd "$HERE/../../../spikes/b2-wordpress" && pwd)
+ok "woo-extras.php forces the four pinned options off and does not filter analytics" "$(
+  f=$B2/php/woo-extras.php
+  [ -f "$f" ] \
+    && grep -q woocommerce_feature_order_attribution_enabled "$f" \
+    && grep -q woocommerce_allow_tracking "$f" \
+    && grep -q woocommerce_show_marketplace_suggestions "$f" \
+    && grep -q woocommerce_feature_remote_logging_enabled "$f" \
+    && grep -q pre_option_ "$f" \
+    && grep -q SKYPHUSION_WOO_EXTRAS "$f" \
+    && ! grep -q "'woocommerce_analytics_enabled'" "$f" \
+    && ! grep -q 'pre_option_woocommerce_analytics_enabled' "$f" \
+    && echo 1 || echo 0
+)"
+ok "index.js defines SKYPHUSION_WOO_EXTRAS only for WOO_EXTRAS off" "$(grep -q "ENV.WOO_EXTRAS === 'off'" "$B2/index.js" && grep -q "define('SKYPHUSION_WOO_EXTRAS', 'off')" "$B2/index.js" && echo 1 || echo 0)"
+ok "build.sh copies woo-extras.php into mu-plugins" "$(grep -q 'php/woo-extras.php' "$B2/build.sh" && echo 1 || echo 0)"
 echo "$fails failing check(s)"
 exit $fails
