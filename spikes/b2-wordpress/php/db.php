@@ -19,6 +19,7 @@ require_once $skyphusion_sqlite . '/wp-includes/sqlite/class-wp-sqlite-db.php';
 require_once $skyphusion_sqlite . '/wp-includes/sqlite/install-functions.php';
 require_once __DIR__ . '/d1-dialect.php';
 require_once __DIR__ . '/d1-pdo.php';
+require_once __DIR__ . '/table-status-size.php';
 
 class D1_WPDB extends WP_SQLite_DB {
 	public function db_connect( $allow_bail = true ) {
@@ -46,6 +47,18 @@ class D1_WPDB extends WP_SQLite_DB {
 		$this->ready = true;
 		$this->set_sql_mode();
 		return true;
+	}
+
+	/**
+	 * #780: SHOW TABLE STATUS carries the database's real size (php/table-status-size.php), so Site Health has a
+	 * database size and a total. Every other query is untouched.
+	 */
+	public function query( $query ) {
+		$r = parent::query( $query );
+		if ( is_string( $query ) && false !== stripos( $query, 'TABLE STATUS' ) && function_exists( 'skyphusion_worker_call' ) && is_array( $this->last_result ) ) {
+			$this->last_result = skyphusion_table_status_size( $query, $this->last_result, 'skyphusion_worker_call' );
+		}
+		return $r;
 	}
 }
 
