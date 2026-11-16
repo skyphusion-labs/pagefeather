@@ -74,7 +74,7 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 
 A fresh install boots a new PHP runtime on purpose. Before the fix, the install's own runtime was retired but its memory was not collected yet. So the first page booted a second runtime beside it, and reached the memory ceiling.
 
-- **Fresh installs (756b, PR #790):** measured on `deploy/wfp` with the lean engine, on 2026-11-16. On main, the first page died in 3 of 3 counting trials (`pf756m1`, `m3`, `m4`). Each died with a write-loss 500. With the fix it died in 0 of 3 (`pf756k1`, `k2`, `k4`). Two more trials were void (#783).
+- **Fresh installs (756b, [the scored run](https://github.com/skyphusion-labs/pagefeather/issues/756#issuecomment-6921835983)):** measured on `deploy/wfp` with the lean engine, on 2026-11-16. On main, the first page died in 3 of 3 counting trials (`pf756m1`, `m3`, `m4`). Each died with a write-loss 500. With the fix (PR #790) it died in 0 of 3 (`pf756k1`, `k2`, `k4`). Two more trials were void (#783).
 - **Code-only updates (756a):** live sites update this way, with no install. On lean (`pf724l0`), 3 updates and 9 first pages all answered 200, with 0 deaths ([the scored run](https://github.com/skyphusion-labs/pagefeather/issues/756#issuecomment-6919876119)).
 
 So only the first page after a fresh install is affected. PR #790 keeps the install's runtime for that first page. It is open, and it closes #756.
