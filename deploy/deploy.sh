@@ -42,8 +42,10 @@
 # Variant a, the #394 admin fixes (deploy/a-settings.sh; all off unless set): OPCACHE_A=1 primes
 # OPcache on the D1 build with no Docker (opcache-a.sh; an empty cache fails), OPCACHE_REMOTE=1 and
 # SITE_REMOTE=1 move the bundle's zips to packs under /_pf/ (#563, #569; they need OPCACHE_A=1), RECYCLE_WASM_MIB sets the
-# runtime recycle line (#602; 140 with the lean engine, #598). Every variant: PF_ENGINE_JS and
-# PF_ENGINE_WASM build with another engine (#592, the lean-trim artifact), both or neither.
+# runtime recycle line (#602; the engine's own default when unset: 140 lean, 100 npm, #771). Every variant: the PHP
+# engine is the pinned LEAN engine by default (#771, spikes/b2-wordpress/engine.lock, fetched by hash);
+# PHP_ENGINE=npm builds the @php-wasm/web-8-3 package engine; PF_ENGINE_JS and PF_ENGINE_WASM build with other
+# engine files (both or neither).
 # OBSERVABILITY (variants b-do, b-dosql and a; deploy/observability.sh): Workers Logs, off unless set.
 # 0 an explicit off, 1 events only, full the invocation logs too (a throwaway only). With 1 or full the
 # query strings are redacted right after the upload and read back; if not, the logs go off and the
@@ -149,6 +151,13 @@ fi
 # shellcheck source=SCRIPTDIR/observability.sh
 . "$ROOT/deploy/observability.sh"
 obs_check "$VARIANT" || exit 2
+# #771: the PHP engine, resolved ONCE here and exported (spikes/b2-wordpress/engine.sh): prepare.sh, build.sh and
+# everything after see the same pair. The default is the pinned lean engine; PHP_ENGINE=npm, or PF_ENGINE_JS and
+# PF_ENGINE_WASM, choose another. After every other check (each refuses first, as
+# its tests pin), and before any Terraform, build or deploy step: a fetch that fails leaves nothing half-applied.
+# shellcheck source=../spikes/b2-wordpress/engine.sh
+. "$ROOT/spikes/b2-wordpress/engine.sh"
+engine_resolve || exit 2
 
 # Terraform state: local by default; DEPLOY_STATE=r2 writes a backend override
 # for the root in $1 (deploy/terraform or deploy/mysql). backend() is in tf-backend.sh.
@@ -231,7 +240,7 @@ cd "$APP"
 # Every build regenerates the loader (#394, #446): a stale vendor/ never picks up a new patch.
 # No pipe: a pipe would hide a failed patch assert and ship the old loader.
 ./prepare.sh || { echo "prepare.sh failed: the loader was not rebuilt"; exit 1; }
-echo "engine: ${PF_ENGINE_WASM:-the pinned @php-wasm/web-8-3 (npm)}"
+echo "engine: $PHP_ENGINE_RESOLVED (${PF_ENGINE_WASM:-the pinned @php-wasm/web-8-3}), recycle line $(engine_recycle_mib) MiB unless RECYCLE_WASM_MIB"
 if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
   ./build.sh | tail -1
   DEV_ENV=$([ "$VARIANT" = b-dosql ] && echo dosql-local || echo do-local) opcache

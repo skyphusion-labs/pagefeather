@@ -116,6 +116,15 @@ echo 'export default null;' > build/opcache-remote-index.js
 echo 'export default null;' > build/site-remote-index.js
 echo "public/ $(find build/public -type f | wc -l | tr -d ' ') files"
 # The build id (build-id.sh): the git sha, -dirty, the content id and -wooprimed (#377).
+# #771: the id must name the engine vendor/ holds. A tree prepared with one engine (prepare.sh writes
+# vendor/engine.mjs) and built with another would carry a false id, so it is refused here, before the id is stamped.
+(
+  . ./engine.sh
+  engine_resolve >/dev/null || exit 2
+  built=$(sed -n "s/^export const PHP_ENGINE = '\\([a-z]*\\)';$/\\1/p" vendor/engine.mjs 2>/dev/null)
+  [ -n "$built" ] || { echo "build.sh: vendor/engine.mjs is missing: run prepare.sh first" >&2; exit 2; }
+  [ "$built" = "$PHP_ENGINE_RESOLVED" ] || { echo "build.sh: vendor/ holds the $built engine, but this run resolves $PHP_ENGINE_RESOLVED: run prepare.sh with the same PHP_ENGINE (or PF_ENGINE_JS and PF_ENGINE_WASM)" >&2; exit 2; }
+) || exit 2
 BUILD_ID=$(./build-id.sh "$wp/wp-content")
 printf 'export default %s;\n' "\"$BUILD_ID\"" > build/build-id.js
 echo "build-id $BUILD_ID"

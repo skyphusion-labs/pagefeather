@@ -30,6 +30,7 @@ import { MEMORY_RESET } from './object-error.mjs';
 import { createL2Writer } from './oc-l2-writer.mjs';
 import { createLedger, memfsBytes, createSqlMeter, ledgerOn, LEDGER_MIB, currentSerial } from './mem-ledger.mjs';
 import { recycleLine, recycleDecision } from './recycle-line.mjs';
+import { PHP_ENGINE, ENGINE_RECYCLE_MIB } from './vendor/engine.mjs'; // #771: written by prepare.sh
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import { routeClass, createTrace } from './file-trace.mjs';
 import { refuseSocketsDecorator, parseMessage } from './runtime-guards.mjs';
@@ -3092,7 +3093,7 @@ export class PhpRuntime extends DurableObject {
 		// The build this OBJECT is running (issue #35 slice 5). After a re-upload a
 		// warm object keeps the old code until it is evicted, so this reports the
 		// object's version, which can lag the Worker's until /_evict or a sleep.
-		if (url.pathname === '/_build') return Response.json({ build: BUILD_ID });
+		if (url.pathname === '/_build') return Response.json({ build: BUILD_ID, engine: PHP_ENGINE, recycleMiB: recycleLine(env, ENGINE_RECYCLE_MIB).mib }); // #771: engine and line
 		// #394 headroom probe (HEADROOM_PROBE=on, off by default; a MEASUREMENT that ends this isolate, so
 		// only on a throwaway). After a real request, this same isolate allocates held 1 MiB ArrayBuffers
 		// until it dies, streaming the count (headroom.mjs). The first line is the ledger at that moment, so
@@ -4088,7 +4089,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			try { phpSide = JSON.parse(r.text.slice(marker + 5)); } catch { phpSide = { parse_error: true, raw: r.text.slice(Math.max(0, marker), marker + 500) }; }
 			return Response.json({
 				wasmMemoryBytes: php[__private__dont__use].HEAPU8.length,
-				recycleThresholdBytes: recycleLine(env).bytes,
+				recycleThresholdBytes: recycleLine(env, ENGINE_RECYCLE_MIB).bytes,
 				objectCache: { entries: objectCache.size, bytes: objectCacheBytes, capBytes: OBJECT_CACHE_BYTES },
 				php: phpSide,
 			});
@@ -4286,7 +4287,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			const forceRecycle = spikeOk && req.headers.get('x-runtime-recycle') === 'force';
 			// #598: the line is RECYCLE_WASM_MIB (default 100 MiB, today's). A bad value keeps the default and is
 			// logged once per isolate (recycle-line.mjs).
-			const line = recycleLine(env);
+			const line = recycleLine(env, ENGINE_RECYCLE_MIB);
 			if (line.refused && !recycleRefusedLogged) {
 				recycleRefusedLogged = true;
 				console.log(JSON.stringify({ m: 'recycle-line-refused', refused: line.refused }));

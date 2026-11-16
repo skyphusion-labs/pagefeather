@@ -6,19 +6,21 @@
 // replacement point, the dropped memory stays and the next boot stacks a second one: pf582t (the lean engine,
 // #582) ended editor pages at 109 to 114 MiB and lost 20 of 70 to memory resets that way.
 //
-// RECYCLE_WASM_MIB moves the line: an integer from 64 to 240 (MiB). Unset or empty keeps today's 100. A bad
-// value keeps 100 and says why (refused), so a typo never turns the recycle off or onto every request. The
-// value to ship is set by a measured window, not here (the lead's ruling, #598).
+// RECYCLE_WASM_MIB moves the line: an integer from 64 to 240 (MiB). Unset or empty keeps the ENGINE's default
+// (#771: index.js passes ENGINE_RECYCLE_MIB from vendor/engine.mjs, 140 on lean and 100 on npm, as the #598 and
+// #724 measurements set them; RECYCLE_DEFAULT_MIB when none is passed). A bad value keeps the default and says why
+// (refused), so a typo never turns the recycle off or onto every request.
 export const RECYCLE_DEFAULT_MIB = 100;
 const MiB = 1048576;
 
-export function recycleLine(env) {
+export function recycleLine(env, def = RECYCLE_DEFAULT_MIB) {
+	const d = Number.isInteger(def) && def >= 64 && def <= 240 ? def : RECYCLE_DEFAULT_MIB;
 	const v = env ? env.RECYCLE_WASM_MIB : undefined;
-	if (v === undefined || v === null || v === '') return { bytes: RECYCLE_DEFAULT_MIB * MiB, mib: RECYCLE_DEFAULT_MIB, source: 'default' };
+	if (v === undefined || v === null || v === '') return { bytes: d * MiB, mib: d, source: 'default' };
 	const s = String(v);
 	const n = /^[0-9]{2,3}$/.test(s) ? Number(s) : NaN;
 	if (!(n >= 64 && n <= 240)) {
-		return { bytes: RECYCLE_DEFAULT_MIB * MiB, mib: RECYCLE_DEFAULT_MIB, source: 'default', refused: 'RECYCLE_WASM_MIB must be an integer from 64 to 240, not ' + JSON.stringify(s) };
+		return { bytes: d * MiB, mib: d, source: 'default', refused: 'RECYCLE_WASM_MIB must be an integer from 64 to 240, not ' + JSON.stringify(s) };
 	}
 	return { bytes: n * MiB, mib: n, source: 'RECYCLE_WASM_MIB' };
 }

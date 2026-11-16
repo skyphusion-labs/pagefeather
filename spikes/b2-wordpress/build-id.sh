@@ -20,6 +20,10 @@ if [ -n "${BUILD_ID_OVERRIDE:-}" ]; then echo "$BUILD_ID_OVERRIDE"; exit 0; fi
 id=$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 [ -z "$(git status --porcelain 2>/dev/null)" ] || id="$id-dirty"
 [ "${ENGINE:-d1}" != a ] || id="$id-a"
+# #771: the engine as prepare.sh resolves it (engine.sh): the default lean engine is named by its -e tag too.
+# shellcheck source=engine.sh
+. ./engine.sh
+engine_resolve || exit 2
 if [ -n "${PF_ENGINE_JS:-}${PF_ENGINE_WASM:-}" ]; then
   [ -n "${PF_ENGINE_JS:-}" ] && [ -n "${PF_ENGINE_WASM:-}" ] || { echo "build-id.sh: PF_ENGINE_JS and PF_ENGINE_WASM: set both or neither" >&2; exit 2; }
   [ -s "$PF_ENGINE_JS" ] && [ -s "$PF_ENGINE_WASM" ] || { echo "build-id.sh: an engine file is missing or empty: $PF_ENGINE_JS $PF_ENGINE_WASM" >&2; exit 2; }
