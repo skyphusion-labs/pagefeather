@@ -71,6 +71,7 @@ jobs:
         # rendered lines against remote_assets_check.py; trace-filter.py with the real pack scripts.
         run: |
           bash deploy/tests/a-settings-test.sh
+          bash deploy/tests/fault-inject-test.sh
           bash deploy/tests/a-render-test.sh
           bash deploy/tests/page-cache-product-test.sh
           bash deploy/tests/observability-test.sh
@@ -222,6 +223,8 @@ jobs:
         run: python3 -I spikes/b2-wordpress/tests/measure394-tally-test.py
       - name: measure394 REST create body, opt-in content for the post-write window (#589)
         run: python3 -I spikes/b2-wordpress/tests/measure394-body-test.py
+      - name: measure394 FAULT_EVERY and the paged title read-back (#730, #589 B)
+        run: python3 -I spikes/b2-wordpress/tests/measure394-fault-test.py
       - name: b-dosql runtime guards, raw sockets and PHP messages (issue #452)
         run: node --test spikes/b2-wordpress/tests/runtime-guards.test.mjs
       - name: b-dosql a recycled PHP runtime is released (issue #394)
@@ -568,6 +571,9 @@ jobs:
         # savepoints, commit points, the miss guard, deferred L2 work, row-id reuse, and frames off = #60.
         working-directory: spikes/b2-wordpress
         run: node --test tests/undo-log.test.mjs
+      - name: The post-INSERT fault injector, armed, fired and wired (#730, #589 B)
+        working-directory: spikes/b2-wordpress
+        run: node --test tests/fault-inject.test.mjs
       # Python 3.9 floor (#644), last so it does not change python3 for the steps
       # above. ubuntu-latest is 26.04 (resolute) and its apt index is amd64v3.
       # Two installs do not work here, both measured. actions/setup-python has
