@@ -47,8 +47,10 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 			const check = () => {
 				timer = null;
 				if (done) return;
-				if (headSince !== null && headMs() >= staleMs) return finish('stale');
+				// #708 review 1: SHED first. A waiter past its bound never runs, even if the head has also run past the stale
+				// time: with the default start-by (60 s) equal to LOCK_STALE_MS, both can fall due at the one check.
 				if (shedMs > 0 && now() - t0 >= shedMs) return finish('shed');
+				if (headSince !== null && headMs() >= staleMs) return finish('stale');
 				let next = TICK_MS;
 				if (shedMs > 0) next = Math.min(next, Math.max(1, t0 + shedMs - now()));
 				if (headSince !== null) next = Math.min(next, Math.max(1, headSince + staleMs - now()));
@@ -83,9 +85,11 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 				// this turn (a microtask) beats the overdue timer. Measured on local workerd (b-do): without
 				// this, waits of 2.7 s were granted against a 1 s bound. A waiter over its bound sheds here.
 				let at = 'wait';
-				if (why === 'turn' && shedMs > 0 && waitMs >= shedMs) {
+				// #708 review 1: the stale path too. A waiter taken as stale after its bound would otherwise drop the runtime
+				// and RUN fn after its caller was answered; it sheds instead, and never runs.
+				if ((why === 'turn' || why === 'stale') && shedMs > 0 && waitMs >= shedMs) {
+					at = why === 'stale' ? 'stale' : 'grant';
 					why = 'shed';
-					at = 'grant';
 				}
 				if (why === 'shed') {
 					lg({ event: 'shed', at, waitMs, depth: waiting + running, headMs: headMs() });

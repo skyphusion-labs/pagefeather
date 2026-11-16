@@ -333,8 +333,6 @@ const LOCK_STALE_MS = 60000;
 const phpLock = createPhpLock({ staleMs: LOCK_STALE_MS, log: (e) => console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, ...e })) });
 const PHP_SHED_RETRY_AFTER_S = '5';
 let phpShedRefusedLogged = false;
-// #708: the correlation id of the forwarded request whose PHP run is executing now (one run at a time), or null.
-let currentCall = null;
 // The shed bound of this path (PHP_QUEUE_SHED_MS; php-lock.mjs shedMsFor), with a bad value logged once.
 function phpShedMs(env, inObject) {
 	const b = shedMsFor(env, inObject);
@@ -2814,6 +2812,14 @@ export class PhpRuntime extends DurableObject {
 		if (overflowed && raw.headers.get(OVERFLOW_BUSY_OK_HEADER) === '1' && objectBusy({ running: phpLock.running, waiting: phpLock.waiting })) {
 			return new Response(null, { status: 503, headers: { 'x-php-busy': '1', 'cache-control': 'no-store', 'retry-after': '1' } });
 		}
+		// #708 review 7: a request whose start-by has already passed is refused HERE, before this object writes its origin
+		// or arms cron, so a refused request writes nothing (x-write-loss: none is then exact).
+		const startByHeader = raw.headers.get(START_BY_HEADER);
+		const callId = raw.headers.get(CALL_HEADER);
+		if (objectShedPlan(startByHeader, Date.now(), 0).refuseNow) {
+			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'shed', at: 'arrive', why: 'start-by', ...(callId ? { call: callId } : {}) }));
+			return startByResponse();
+		}
 		if (!url.pathname.startsWith('/_') && !overflowed) {
 			lastOrigin = origin;
 			await this.ctx.storage.put(ORIGIN_KEY, origin);
@@ -2824,9 +2830,7 @@ export class PhpRuntime extends DurableObject {
 			if (ra.stale) console.log(JSON.stringify({ m: 'alarm', unstuck: true, was: ra.was }));
 		}
 		const inboxMs = raw.headers.get(SENT_HEADER) ? Date.now() - Number(raw.headers.get(SENT_HEADER)) : null;
-		// #708: the Worker's start-by and correlation id. Read here, and PHP never sees them.
-		const startByHeader = raw.headers.get(START_BY_HEADER);
-		const callId = raw.headers.get(CALL_HEADER);
+		// #708: PHP never sees the Worker's start-by or correlation id.
 		const req = new Request(raw);
 		req.headers.delete(START_BY_HEADER);
 		req.headers.delete(CALL_HEADER);
@@ -2904,6 +2908,7 @@ export class PhpRuntime extends DurableObject {
 		// also its cron driver (a pool object must never run cron), and an object cannot purge the Worker's page
 		// cache anyway (measured locally: "no cache API").
 		const ctx = { inObject: true, waitUntil: (p) => this.ctx.waitUntil(p), requestPurge: overflowed ? async () => 'front' : () => this.requestPurge() };
+		ctx.callId = callId; // #708 review 2: per request, so overlapping runs (after a stale takeover) keep their own id
 		if (url.pathname === '/_d1ping') return d1ping(req, env, url, ctx);
 		// DB_IN_DO=on: WordPress's database is this object's SQLite (8j).
 		const sql = env.DB_IN_DO === 'on' ? this.ctx.storage.sql : null;
@@ -2966,7 +2971,6 @@ export class PhpRuntime extends DurableObject {
 		// #296: shed only with PHP_QUEUE_SHED_MS set (the default is never, on every path).
 		const objectRun = await withPhp(async () => {
 			const waitMs = Date.now() - tArrive;
-			currentCall = callId;
 			sqlDb = sql;
 			sqlStorage = sql ? this.ctx.storage : null;
 			const realTxn = sql && env.REAL_TRANSACTIONS !== 'off';
@@ -2987,7 +2991,6 @@ export class PhpRuntime extends DurableObject {
 				return res;
 			} finally {
 				turnstileSlot.clear();
-				currentCall = null;
 				// A request that threw also ends its transaction (rolled back), and keeps its frame. Idempotent.
 				if (realTxn) txnEnd(sql, this.ctx.storage);
 				phpPending--;
@@ -3197,7 +3200,24 @@ async function frameProbe(env, name, id) {
 }
 // target (#296 (3), overflow): { name, hint, overflow: true } sends the request to that pool object
 // instead of the PHP_IN_DO object. Without it, everything is as before.
+// #708: the client sees the call id on every answer of the object path (review 5), so a client-seen 503 joins to its
+// object lines. One id per client request (a retry keeps it). /_frame is the operator's own probe and is left as is.
 async function toPhpObject(req, env, url, ctx, target = null) {
+	const callId = (target && target.callId) || crypto.randomUUID();
+	const r = await toPhpObjectCall(req, env, url, ctx, target, callId);
+	return url.pathname === '/_frame' ? r : withCallHeader(r, callId);
+}
+function withCallHeader(r, callId) {
+	try {
+		r.headers.set(CALL_HEADER, callId);
+		return r;
+	} catch {
+		const out = new Response(r.body, r); // an immutable answer is copied once
+		out.headers.set(CALL_HEADER, callId);
+		return out;
+	}
+}
+async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 	const name = target ? target.name : phpObjectName(env, url);
 	const hint = target ? target.hint : env.PHP_LOCATION;
 	// #352: /_frame is the Worker's own probe of the object. A client gets 404; a spike-token holder gets the
@@ -3218,10 +3238,9 @@ async function toPhpObject(req, env, url, ctx, target = null) {
 	// paths (install, import, sqlimport, cron) pass 0 and are not cut. 0 also means the
 	// operator set OBJECT_CALL_DEADLINE_S=off.
 	const objectDeadlineMs = objectCallExempt(url.pathname) ? 0 : objectCallDeadlineMs(env);
-	// #708: one correlation id per client request (a retry keeps it), and a start-by per attempt: the object never
-	// starts a request it has not granted by then, so the deadline above only ever catches a request that started.
-	const callId = (target && target.callId) || crypto.randomUUID();
-	const startByQ = startByMs(env, objectDeadlineMs);
+	// #708: a start-by per attempt: the object never starts a request it has not granted by then, so the deadline
+	// above only ever catches a request that started. An exempt path never gets one (review 6).
+	const startByQ = startByMs(env, objectDeadlineMs, { exempt: objectCallExempt(url.pathname) });
 	const res = await fetchWithMemoryRetry(
 		() => {
 			const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(name), hint ? { locationHint: hint } : undefined);
@@ -3239,11 +3258,10 @@ async function toPhpObject(req, env, url, ctx, target = null) {
 			fwd.headers.set(SENT_HEADER, String(t0));
 			if (pfReq) fwd.headers.set('x-pf-req', pfReq);
 			else fwd.headers.delete('x-pf-req');
-			// #708: only this Worker sets these two; a client copy is always dropped.
-			fwd.headers.delete(START_BY_HEADER);
-			fwd.headers.delete(CALL_HEADER);
+			// #708: the call id, and this attempt's start-by or none (serve() already dropped any client copy).
 			fwd.headers.set(CALL_HEADER, callId);
 			if (startByQ > 0) fwd.headers.set(START_BY_HEADER, String(t0 + startByQ));
+			else fwd.headers.delete(START_BY_HEADER);
 			// The signal goes on the request that is sent. Headers are copied from fwd, which
 			// already has the Turnstile answer and the other marks.
 			const sent = ac ? new Request(fwd, { signal: ac.signal }) : fwd;
@@ -3372,6 +3390,13 @@ const site = {
 	},
 	async serve(req, env, ctx) {
 		ENV = env;
+		// #708 review 8: only this Worker sets the start-by and the call id. A client copy is dropped on EVERY path
+		// (the object path, and this Worker's own PHP, where WordPress would see HTTP_X_PF_*).
+		if (req.headers.has(START_BY_HEADER) || req.headers.has(CALL_HEADER)) {
+			req = new Request(req);
+			req.headers.delete(START_BY_HEADER);
+			req.headers.delete(CALL_HEADER);
+		}
 		const url = new URL(req.url);
 		if (url.pathname === '/_ping') return new Response('ok');
 		// Approach A: a Worker request cannot use a connection another request opened.
@@ -3970,7 +3995,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 				const now = Date.now();
 				const perf = {
 					iso: ISOLATE_ID,
-					...(currentCall ? { call: currentCall } : {}), // #708
+					...(ctx && ctx.callId ? { call: ctx.callId } : {}), // #708: per request (review 2)
 					isoAgeS: Math.round((now - isolateStart) / 1000),
 					rt: runtimeSerial,
 					rtServed: runtimeServed,

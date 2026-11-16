@@ -41,7 +41,7 @@ test('index.js answers through fetchWithMemoryRetry, and never tags a memory res
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	// #398: the write-loss decision is objectErrorOutcome (it holds #350's mayHaveWritten), and isResetKind names the log line.
 	assert.match(src, /import \{ classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome \} from '\.\/object-error\.mjs';/);
-	const i = src.indexOf('async function toPhpObject(');
+	const i = src.indexOf('async function toPhpObjectCall(') /* #708: the body behind the toPhpObject wrapper */;
 	const body = src.slice(i, src.indexOf('\n}\n', i));
 	assert.match(body, /const res = await fetchWithMemoryRetry\(/);
 	assert.match(body, /req\.method,/, 'the retry decision gets the request method');
@@ -217,7 +217,7 @@ test('an unknown error is still thrown, for every method (the #398 fix classifie
 
 test('index.js toPhpObject: the storage kind reaches the log line and the write-loss answer', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	const i = src.indexOf('async function toPhpObject(');
+	const i = src.indexOf('async function toPhpObjectCall(') /* #708: the body behind the toPhpObject wrapper */;
 	const body = src.slice(i, src.indexOf('\n}\n', i));
 	assert.match(body, /const reset = isResetKind\(kind\);/);
 	assert.match(body, /m: reset \? 'isolate-reset' : 'overloaded', kind,/, 'logged as isolate-reset with its kind, so it is counted');

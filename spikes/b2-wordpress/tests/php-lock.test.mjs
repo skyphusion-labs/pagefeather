@@ -213,3 +213,42 @@ test('#708: a waiter past its start-by bound never runs fn, and its lock lines c
 	assert.equal(queued && queued.call, 'wait-2', 'the queued line carries the call id');
 	assert.equal(shed && shed.call, 'wait-2', 'the shed line carries the call id');
 });
+
+test('#708 review 1: SHED beats STALE. A waiter past its bound when the head also passes the stale time never runs', async () => {
+	// The defect: check() tested stale first, and the grant-time shed ran only on a normal turn. With the default
+	// start-by (60 s) equal to the stale time (60 s), a head run that holds the lock past both took the waiter on
+	// the STALE path: onStale dropped the runtime and the waiter RAN fn after its caller was answered.
+	let t = 0; let timers = [];
+	const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+	const lock = createPhpLock({ staleMs: 60000, now: () => t, setTimer: (fn, ms) => { timers.push({ at: t + ms, fn }); return timers.length; }, clearTimer: () => {} });
+	const advance = async (to) => { while (true) { timers.sort((a, b) => a.at - b.at); const n = timers[0]; if (!n || n.at > to) break; timers.shift(); t = n.at; n.fn(); await flush(); } t = to; await flush(); };
+	let ran = 0; let stale = 0; let finishHead;
+	const head = lock.run(() => new Promise((r) => (finishHead = r)));
+	await flush();
+	await advance(10000);
+	// Queued at 10 s with a 50 s bound: its bound passes at 60 s, the same instant the head passes the stale time.
+	const waiter = lock.run(async () => { ran++; return 'ran'; }, { shedMs: 50000, onStale: () => { stale++; } });
+	await flush();
+	await advance(61000);
+	assert.equal(await waiter, PHP_SHED, 'the waiter is shed');
+	assert.equal(ran, 0, 'it never ran');
+	assert.equal(stale, 0, 'and it did not take the runtime as stale');
+	finishHead('done'); assert.equal(await head, 'done');
+});
+test('#708 review 1: a waiter granted on the STALE path after its bound is still shed at grant, never run', async () => {
+	// The timer can be late (a run that does not yield fires no timer): both bounds are overdue at the one check.
+	let t = 0; let timers = [];
+	const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+	const lock = createPhpLock({ staleMs: 60000, now: () => t, setTimer: (fn, ms) => { timers.push({ at: t + ms, fn }); return timers.length; }, clearTimer: () => {} });
+	let ran = 0; let finishHead;
+	const head = lock.run(() => new Promise((r) => (finishHead = r)));
+	await flush();
+	const waiter = lock.run(async () => { ran++; }, { shedMs: 30000 });
+	await flush();
+	// No timer fires until 90 s (both the 30 s bound and the 60 s stale time are overdue at once).
+	t = 90000; for (const x of timers.splice(0)) x.fn(); await flush();
+	for (const x of timers.splice(0)) x.fn(); await flush();
+	assert.equal(await waiter, PHP_SHED);
+	assert.equal(ran, 0);
+	finishHead('done'); await head;
+});
