@@ -41,7 +41,7 @@ import { createUndoLog } from './undo-log.mjs';
 import { createRetirer } from './runtime-drop.mjs';
 import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
 import * as cacheVersions from './cache-versions.mjs';
-import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy } from './overflow.mjs';
+import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse } from './overflow.mjs';
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
@@ -332,6 +332,8 @@ const LOCK_STALE_MS = 60000;
 // One line per contended event (php-lock.mjs: queued, granted, shed, stale), with this isolate's id.
 const phpLock = createPhpLock({ staleMs: LOCK_STALE_MS, log: (e) => console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, ...e })) });
 let phpShedRefusedLogged = false;
+// #714: the overflowed requests this Worker isolate holds in flight now (PHP_OVERFLOW_MAX_HELD caps it).
+let ovHeld = 0;
 // The shed bound of this path (PHP_QUEUE_SHED_MS; php-lock.mjs shedMsFor), with a bad value logged once.
 function phpShedMs(env, inObject) {
 	const b = shedMsFor(env, inObject);
@@ -3502,13 +3504,23 @@ const site = {
 		// Uploads never move: media uploads, and any request whose declared body is over 1 MiB (the Font Library, #591).
 		const ovUpload = isMediaUpload(req, url) || Number(req.headers.get('content-length') || 0) > OVERFLOW_MAX_BODY;
 		if (ovs.on && env.PHP_RUNTIME && env.PHP_IN_DO !== 'on' && env.DB_IN_DO !== 'on' && shouldOverflow(ovs, { running: phpLock.running, waiting: phpLock.waiting }, url, ovUpload)) {
+			// #714: at the cap, refuse before anything is forwarded: a fast, retry-safe 503 that never ran.
+			if (overHeld(ovs, ovHeld)) {
+				console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-capped', held: ovHeld, max: ovs.maxHeld }));
+				return overflowCapResponse();
+			}
 			const picker = ovPickerFor(ovs.pool);
+			const callId = crypto.randomUUID(); // #708: one id for this request across its choices
+			ovHeld++;
+			// #714 measurement: with MEM_LEDGER=on, what this isolate holds while it forwards (the ledger is otherwise taken
+			// only in handle(), which a forwarded request never calls here).
+			if (env.MEM_LEDGER === 'on') console.log(JSON.stringify({ m: 'mem-ledger', ...ledgerSnapshot('overflow-held'), held: ovHeld }));
+			try {
 			// #296 (3)(c), PHP_OVERFLOW_BUSY=on (default off): a retry-safe request asks the object to answer busy instead
 			// of queueing; it then tries the second choice, then runs here. A Turnstile-gated request is verified once at
 			// the front, so it is sent once. With busy off, each request goes to one choice and may queue in the object.
 			const busyOk = ovs.busy && !turnstileRoute(env, req.method, url);
 			const choices = busyOk ? picker.pickTwo() : [picker.pick()];
-			const callId = crypto.randomUUID(); // #708: one id for this request across its choices
 			for (const i of choices) {
 				picker.start(i);
 				console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow', obj: overflowName(i), running: phpLock.running, waiting: phpLock.waiting, inflight: picker.inflight(i), call: callId }));
@@ -3527,6 +3539,9 @@ const site = {
 				// The object handed a content change's purge back (x-cache-purge: front): this Worker owns the page cache.
 				if (r.headers.get('x-cache-purge') === 'front') schedulePurge(ctx);
 				return r;
+			}
+			} finally {
+				ovHeld--;
 			}
 			// Both choices were busy: run here, as without overflow (the request has not run anywhere).
 			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-local', running: phpLock.running, waiting: phpLock.waiting, call: callId })); // review2 8 (callId is always set here)
