@@ -27,6 +27,14 @@ export const FAULT_AFTER_INSERT = 'after-insert';
 export const FAULT_SQL_FAIL = 'sql-fail';
 export const FAULT_SQL_HEADER = 'x-pf-fault-sql';
 export const SQL_FAIL_MESSAGE = "Durable Object's isolate exceeded its memory limit and was reset.";
+// x-pf-fault-sql-kind: other throws a NON-reset error instead (#770 review: any other SQLite failure), which the
+// write-loss answer does not replace, so PHP answers with what it saw.
+export const FAULT_SQL_KIND_HEADER = 'x-pf-fault-sql-kind';
+export const SQL_FAIL_OTHER_MESSAGE = 'SQLITE_ERROR: injected statement failure (#766, a measurement)';
+/** The message the armed statement throws: the platform's reset (the default) or another SQLite error. */
+export function sqlFailMessage(headers) {
+	return headers && headers.get(FAULT_SQL_KIND_HEADER) === 'other' ? SQL_FAIL_OTHER_MESSAGE : SQL_FAIL_MESSAGE;
+}
 
 /** The piece of SQL to fail in this request, or null: the site var, the spike token, the header, and 3 to 120 characters. */
 export function sqlFailNeedle(env, spikeOk, headers) {

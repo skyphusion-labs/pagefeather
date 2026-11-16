@@ -39,7 +39,7 @@ import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__do
 import { inflateSync } from 'fflate';
 import { createArena } from './inflate-arena.mjs';
 import { headroomStream } from './headroom.mjs';
-import { faultArmed, isFaultTarget, exhaustMemory, sqlFailNeedle, SQL_FAIL_MESSAGE } from './fault-inject.mjs';
+import { faultArmed, isFaultTarget, exhaustMemory, sqlFailNeedle, sqlFailMessage } from './fault-inject.mjs';
 import { failuresSince } from './activate-report.mjs';
 import { createUndoLog } from './undo-log.mjs';
 import { createRetirer } from './runtime-drop.mjs';
@@ -109,6 +109,7 @@ let sqlStorage = null;
 let faultPending = false;
 let faultReq = null; // its x-pf-req, for the log line
 let sqlFailAt = null; // #766: the piece of SQL whose first statement this request fails (fault-inject.mjs sqlFailNeedle)
+let sqlFailMsg = ''; // #766: and the message it throws (sqlFailMessage)
 const faultHeld = []; // the memory the kill holds, so nothing can be collected before the platform resets
 
 // Object cache across requests (php/object-cache.php, docs/perf-dosql.md), in
@@ -127,6 +128,8 @@ function objectCacheClear() {
 // cache would otherwise hand that to every later request: a 404 for a product that exists. poisoned also stops the
 // request's L2 sets that the undo log still holds (#352 defer), which run after the response.
 let ocReq = null;
+// #766: a failed READ statement (SELECT, WITH): PHP saw an empty result, whatever the error's class.
+function readFailed(failures) { return (failures || []).some((f) => f && /^\s*(SELECT|WITH)\b/i.test(String(f.sql || ''))); }
 function ocReqBegin() { ocReq = { writes: new Set(), poisoned: false }; }
 function ocReqForget() {
 	const r = ocReq;
@@ -2104,11 +2107,12 @@ function pageCacheRoute(req, url, env) {
 		!isOperatorRequest(req)
 	);
 }
-function pageCacheHeaders(req, url, r, out, env) {
+function pageCacheHeaders(req, url, r, out, env, failed = 0) {
 	const ttl = Number(env.PAGE_CACHE_TTL || 120);
 	const wpCc = String([].concat(r.headers['cache-control'] || []).join(','));
 	const cacheable =
 		ttl > 0 &&
+		failed === 0 && // #766: an answer made while a statement failed (a read that came back empty) is never stored
 		(req.method === 'GET' || req.method === 'HEAD') &&
 		[200, 301, 404].includes(r.httpStatusCode) &&
 		!WP_COOKIE.test(req.headers.get('cookie') || '') &&
@@ -2589,7 +2593,7 @@ function sqlStatement(db, m) {
 		if (sqlFailAt && String(m.sql).includes(sqlFailAt)) {
 			sqlFailAt = null;
 			console.log(JSON.stringify({ m: 'fault-inject', at: 'sql-fail', sql: String(m.sql).slice(0, 160) }));
-			throw new Error(SQL_FAIL_MESSAGE);
+			throw new Error(sqlFailMsg);
 		}
 		const params = sqlParams(m.params);
 		// #352: the statement runs through the undo log. The request frame opens with the first statement that
@@ -3218,6 +3222,7 @@ export class PhpRuntime extends DurableObject {
 			faultPending = faultArmed(env, spikeOk, req.headers);
 			faultReq = faultPending ? req.headers.get('x-pf-req') : null;
 			sqlFailAt = sqlFailNeedle(env, spikeOk, req.headers); // #766
+			sqlFailMsg = sqlFailMessage(req.headers);
 			// One PHP run at a time (withPhp), so one slot holds this run's answer.
 			turnstileSlot.set(turnstileHeader);
 			try {
@@ -4209,10 +4214,16 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				dropRuntime(); // the runtime saw the reset; the next request boots a new one
 				return new Response(wl.body, { status: wl.status, headers: wl.headers });
 			}
+			// #766 (the #770 review): a read that failed for any other reason also came back empty to PHP, so what the
+			// request cached from it is not kept either (a reset-class failure took the write-loss branch above).
+			if (readFailed(d.failures)) {
+				const f = ocReqForget();
+				console.log(JSON.stringify({ m: 'read-fail-cache-drop', method: req.method, path: url.pathname, ocDropped: f.n, ocDroppedGroups: f.groups, firstSql: sqlShape(d.failures[0].sql), ...memIdOf(req, env) }));
+			}
 			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
 			const ocTables = diffCounts(stats.dbTables, start.dbTables);
 			const ocGroupStats = diffCounts(stats.ocGroups, start.ocGroups);
-			pageCacheHeaders(req, url, r, out, env);
+			pageCacheHeaders(req, url, r, out, env, d.failures.length);
 			// A filled cart means a checkout may follow: start the container now.
 			if (env.WOO_CHECKOUT && env.CHECKOUT_CONTAINER === 'on' && r.httpStatusCode === 201 && ADD_TO_CART_ROUTE.test(restRoute(url))) {
 				ctx.waitUntil(checkoutContainer(env).startAndWaitForPorts().catch((e) => console.log('checkout warm-up failed', String(e))));

@@ -7,6 +7,9 @@
 #   2. A post write (a REST draft) moves the posts' last_changed, so the next product query is not a cache hit.
 #   3. ONE guest request has its product lookup fail (x-pf-fault-sql: the product's slug). Whatever it answers.
 #   4. The next guest requests for the product, which fail nothing, must answer 200 (three in a row). Red: 404.
+#   5. The same with a NON-reset failure (x-pf-fault-sql-kind: other): the next three answer 200. (That its own
+#      answer is never edge-cached is a unit test, page-cache-ttl.test.mjs: a spike-token request, which the seam
+#      needs, is never page-cached anyway, so this e2e cannot show it.)
 #   And the failing request's write-loss line (dev.log) must show its cache writes dropped (ocDropped > 0), so a green
 #   is the fix at work, not a cache that happened to miss.
 set -u
@@ -46,6 +49,14 @@ wl = [x for x in wl if x.get("ocDropped") is not None]
 print("  the failing request's write-loss line: ocDropped %s, by group %s" % ((wl[-1].get("ocDropped"), wl[-1].get("ocDroppedGroups")) if wl else ("none", "-")))
 check("3. the failing request's object-cache writes were dropped (write-loss line, ocDropped > 0)", bool(wl) and wl[-1]["ocDropped"] > 0)
 check("4. every later request for the product answers 200 (no false 404)", after == [200, 200, 200])
+# 5 (#770 review): a NON-reset failure of the same read. The write-loss answer does not replace it, so PHP answers
+# with what it saw; what it cached from the empty read must not reach the later requests.
+w2 = BL.rest(o, "/wp/v2/posts", {"title": "move last_changed again %d" % T, "status": "draft"})
+check("5. a post write again (REST draft): 201", w2["code"] == 201)
+x = BL.req(g, "/?product=%s&nocache=%d" % (slug, time.time_ns()), headers={"x-pf-fault": "sql-fail", "x-pf-fault-sql": slug, "x-pf-fault-sql-kind": "other"})
+print("  5. its lookup fails (non-reset)    %s" % x["code"])
+after2 = [ask(tag="5. after, attempt %d" % (i + 1)) for i in range(3)]
+check("5. every later request for the product answers 200 (no false 404 from a non-reset failure)", after2 == [200, 200, 200])
 print("false-404: %d failing" % len(fails))
 sys.exit(1 if fails else 0)
 PY
