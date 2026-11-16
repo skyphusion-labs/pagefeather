@@ -108,6 +108,7 @@ jobs:
         run: |
           node --test spikes/b2-wordpress/tests/woo-hpos-cache.test.mjs
           php spikes/b2-wordpress/tests/woo-hpos-cache-test.php
+          php spikes/b2-wordpress/tests/woo-cart-page-test.php
       - name: Approach A object cache isolated mode (issue #218)
         # spikes/b2-wordpress/php/object-cache-js.php: the allowlist + TTL + force-off
         # posture, with a stubbed bridge (no DB). WooCommerce groups never persist.
