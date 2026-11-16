@@ -367,7 +367,7 @@ lazy_arena_var() {
 # isolate until it dies (spikes/b2-wordpress/headroom.mjs). A measurement for THROWAWAY sites only: it ends
 # the isolate. Off or unset: /_headroom answers 404. Read from the run's environment only.
 # FAULT_INJECT (#730, #589 B): the operator-only post-INSERT fault injector. ONE rule with deploy/deploy.sh:
-# deploy/fault-inject.sh (after-insert only, b-dosql, THROWAWAY=1, never a live site by either marker). A
+# deploy/fault-inject.sh (after-insert or sql-fail only, b-dosql, THROWAWAY=1, never a live site by either marker). A
 # measurement flag (site_settings.py MEASUREMENT): never recorded, so the next update without it turns it off.
 # fault_inject_var <site>: the [vars] line, nothing when unset; exit 2 with the reason when refused.
 fault_inject_var() {

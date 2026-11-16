@@ -25,7 +25,11 @@ chk b-dosql pf9x FAULT_INJECT=after-insert THROWAWAY=1; ok "after-insert with TH
 ok "  and it renders FAULT_INJECT = \"after-insert\"" "$([ "$(line FAULT_INJECT=after-insert THROWAWAY=1)" = 'FAULT_INJECT = "after-insert"' ] && echo 1 || echo 0)"
 chk b-dosql pf9x FAULT_INJECT=after-insert; ok "no THROWAWAY: refused (rc 2), named" "$([ $? = 2 ] && grep -q 'FAULT_INJECT needs THROWAWAY=1' "$T/chk.err" && echo 1 || echo 0)"
 chk b-dosql pf9x FAULT_INJECT=after-insert THROWAWAY=0; ok "THROWAWAY=0: refused" "$([ $? = 2 ] && echo 1 || echo 0)"
-for bad in on 1 yes after_insert ''x; do chk b-dosql pf9x FAULT_INJECT=$bad THROWAWAY=1; ok "FAULT_INJECT=$bad: refused" "$([ $? = 2 ] && grep -q 'FAULT_INJECT must be after-insert or unset' "$T/chk.err" && echo 1 || echo 0)"; done
+chk b-dosql pf9x FAULT_INJECT=sql-fail THROWAWAY=1; ok "sql-fail (#766) with THROWAWAY=1 on a throwaway: allowed" "$([ $? = 0 ] && echo 1 || echo 0)"
+ok "  and it renders FAULT_INJECT = \"sql-fail\"" "$([ "$(line FAULT_INJECT=sql-fail THROWAWAY=1)" = 'FAULT_INJECT = "sql-fail"' ] && echo 1 || echo 0)"
+chk b-dosql pf9x FAULT_INJECT=sql-fail; ok "sql-fail without THROWAWAY: refused (rc 2)" "$([ $? = 2 ] && grep -q 'FAULT_INJECT needs THROWAWAY=1' "$T/chk.err" && echo 1 || echo 0)"
+chk b-dosql zarapo FAULT_INJECT=sql-fail THROWAWAY=1; ok "sql-fail on a live site: refused even with THROWAWAY=1" "$([ $? = 2 ] && grep -q 'zarapo is a live site' "$T/chk.err" && echo 1 || echo 0)"
+for bad in on 1 yes after_insert sql_fail ''x; do chk b-dosql pf9x FAULT_INJECT=$bad THROWAWAY=1; ok "FAULT_INJECT=$bad: refused" "$([ $? = 2 ] && grep -q 'FAULT_INJECT must be after-insert, sql-fail or unset' "$T/chk.err" && echo 1 || echo 0)"; done
 for v in a b-do c1; do chk $v pf9x FAULT_INJECT=after-insert THROWAWAY=1; ok "variant $v: refused (frames are b-dosql)" "$([ $? = 2 ] && grep -q 'FAULT_INJECT is for variant b-dosql' "$T/chk.err" && echo 1 || echo 0)"; done
 chk b-dosql zarapo FAULT_INJECT=after-insert THROWAWAY=1; ok "a deploy/live-sites/<name>.env site: refused even with THROWAWAY=1" "$([ $? = 2 ] && grep -q 'zarapo is a live site (deploy/live-sites/zarapo.env)' "$T/chk.err" && echo 1 || echo 0)"
 chk b-dosql ggc FAULT_INJECT=after-insert THROWAWAY=1; ok "a deploy/wfp/live-sites/<name> site: refused even with THROWAWAY=1" "$([ $? = 2 ] && grep -q 'ggc is a live site (deploy/wfp/live-sites/ggc)' "$T/chk.err" && echo 1 || echo 0)"
@@ -34,7 +38,7 @@ chk b-dosql '' FAULT_INJECT=after-insert THROWAWAY=1; ok "no site name: refused 
 echo "2. deploy/deploy.sh refuses before any step"
 refuse "FAULT_INJECT needs THROWAWAY=1" VARIANT=b-dosql FAULT_INJECT=after-insert
 refuse "FAULT_INJECT is for variant b-dosql" VARIANT=a FAULT_INJECT=after-insert THROWAWAY=1
-refuse "FAULT_INJECT must be after-insert or unset" VARIANT=b-dosql FAULT_INJECT=on THROWAWAY=1
+refuse "FAULT_INJECT must be after-insert, sql-fail or unset" VARIANT=b-dosql FAULT_INJECT=on THROWAWAY=1
 refuse "ggc-test is a live site" VARIANT=b-dosql FAULT_INJECT=after-insert THROWAWAY=1 NAME=ggc-test
 ok "render-conf.sh renders the line through fault_line" "$(grep -q 'fault_line' "$ROOT/deploy/render-conf.sh" && grep -q 'fault-inject.sh' "$ROOT/deploy/deploy.sh" && echo 1 || echo 0)"
 

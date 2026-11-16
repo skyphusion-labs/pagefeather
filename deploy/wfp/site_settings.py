@@ -64,7 +64,8 @@ PRESENCE = ("HTTP_ALLOW_HOSTS",)
 #   MEM_LEDGER      "on" logs the isolate memory ledger on every request and cron leg: a steady
 #                   log and CPU cost, for a diagnosis only.
 #   WFP_PHP_ENV     a measurement build's PHP env (USE_ZEND_ALLOC=1 swaps PHP's allocator, #434).
-#   FAULT_INJECT    "after-insert" kills the object after a request's INSERT on purpose (#730): throwaway only.
+#   FAULT_INJECT    "after-insert" kills the object after a request's INSERT on purpose (#730); "sql-fail" fails a
+#                   request's chosen SQL statement as the memory ceiling does (#766). Throwaway only.
 MEASUREMENT = ("HEADROOM_PROBE", "MEM_LEDGER", "WFP_PHP_ENV", "FAULT_INJECT")
 SECRETS = ("TURNSTILE_SECRET",)
 # No log line carries data from SECRETS: a message about a secret is one fixed text, and which

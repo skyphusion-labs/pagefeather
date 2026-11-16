@@ -51,3 +51,26 @@ test('index.js uses it in pageCacheHeaders, and always removes the mark from the
 	const del = fn.indexOf('out.delete(PRODUCT_PAGE_HEADER)');
 	assert.ok(del > 0 && del < fn.indexOf('if (cacheable)'), 'the mark is removed on every answer');
 });
+
+test('#766: an answer made while any SQL statement failed is never stored at the edge (pageCacheHeaders, run)', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const start = src.indexOf('function pageCacheHeaders(');
+	const fn = src.slice(start, src.indexOf('\n}\n', start) + 2);
+	const consts = ['WP_COOKIE', 'PAGE_CACHE_NO_PATH', 'PAGE_CACHE_NO_PARAM'].map((n) => {
+		const m = src.match(new RegExp('^const ' + n + ' = [^\\n]*;$', 'm'));
+		assert.ok(m, n + ' is defined in index.js');
+		return m[0];
+	}).join('\n');
+	const pageCacheHeaders = new Function('PRODUCT_PAGE_HEADER', 'productTtl', 'isProductPage', 'edgeCacheControl',
+		consts + '\n' + fn + '\nreturn pageCacheHeaders;')(PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl);
+	const run = (failed) => {
+		const out = new Headers();
+		const req = new Request('https://shop.example/?product=mug');
+		pageCacheHeaders(req, new URL(req.url), { httpStatusCode: 200, headers: {} }, out, {}, failed);
+		return out.get('cloudflare-cdn-cache-control');
+	};
+	assert.match(run(0), /^max-age=120, /, 'control: a guest 200 with no failed statement is stored');
+	assert.equal(run(1), 'no-store', 'one failed statement: not stored');
+	assert.equal(run(3), 'no-store');
+	assert.match(src, /pageCacheHeaders\(req, url, r, out, env, d\.failures\.length\);/, 'index.js passes the request failures');
+});

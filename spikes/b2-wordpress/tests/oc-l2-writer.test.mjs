@@ -121,7 +121,7 @@ test('index.js: every KV put and delete goes through the writer; reads are noted
 	assert.ok(!/ENV\.OC_KV\.put\(ocKvKey/.test(src), 'no direct KV put is left in objectCacheOp');
 	assert.ok(!/waitUntil\(ENV\.OC_KV\.delete\(/.test(src), 'no direct KV delete is left');
 	// #352: the set still goes through the writer, inside doSet, which a request frame holds until it is kept.
-	assert.match(src, /const k2 = ocKvKey\(op\.k\), v2 = op\.v, c2 = ocCtx; const doSet = \(\) => \{ try \{ const w = ocL2Writer\(\)\.set\(k2, v2, ttl\); if \(w\) c2\.waitUntil\(w\); \} catch \{\} \};/);
+	assert.match(src, /const k2 = ocKvKey\(op\.k\), v2 = op\.v, c2 = ocCtx; const doSet = \(\) => \{ if \(req0 && req0\.poisoned\) return; try \{ const w = ocL2Writer\(\)\.set\(k2, v2, ttl\); if \(w\) c2\.waitUntil\(w\); \} catch \{\} \};/); // #766: a poisoned request's held set never runs
 	assert.match(src, /if \(!\(undoLog && undoLog\.defer\(doSet\)\)\) doSet\(\);/);
 	assert.match(src, /ocL2Writer\(\)\.noteRead\(ocKvKey\(k\), kv\);/);
 	assert.match(src, /ocCtx\.waitUntil\(ocL2Writer\(\)\.del\(ocKvKey\(k\)\)\)/);

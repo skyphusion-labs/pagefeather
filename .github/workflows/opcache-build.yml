@@ -70,9 +70,11 @@ jobs:
         # runcron-boot-e2e.sh (#724 review, 2): /_runcron runs on the current runtime and boots nothing.
         # rest-list-memory-e2e.sh (#728): a REST list over 120 pages of 512 KiB loads no content it does not answer with;
         # a list that would load too much is a 400 rest_list_too_large before any row loads; ordinary lists unchanged.
+        # false-404-e2e.sh (#766): a SQL failure at the memory ceiling never makes later requests answer 404 for a product
+        # that exists (the failing request's object-cache writes are dropped); injected with FAULT_INJECT=sql-fail.
         working-directory: spikes/b2-wordpress
         run: |
-          for t in tests/recycle-stack-e2e.sh tests/recycle-loop-e2e.sh tests/boot-race-e2e.sh tests/boot-gate-e2e.sh tests/spare-persist-e2e.sh tests/runcron-boot-e2e.sh tests/rest-list-memory-e2e.sh; do
+          for t in tests/recycle-stack-e2e.sh tests/recycle-loop-e2e.sh tests/boot-race-e2e.sh tests/boot-gate-e2e.sh tests/spare-persist-e2e.sh tests/runcron-boot-e2e.sh tests/rest-list-memory-e2e.sh tests/false-404-e2e.sh; do
             if ! "$t"; then echo "::error::$t failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
           done
           # #724 review, finding 4: the drop lands inside instantiation, after the boot took the spare

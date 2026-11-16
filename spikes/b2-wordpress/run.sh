@@ -50,12 +50,13 @@ rm -f out.json; : > dev.log
 # e2e.sh and opcache.sh use, whatever request boots PHP first.
 # DEV_LOCAL=1: --local, no remote bindings (#371). The env's AI binding has no local mode, so
 # without it wrangler dev starts a remote proxy session, which needs a Cloudflare login.
+# DEV_LOG_LEVEL: wrangler's --log-level (default warn); log keeps the Worker's console lines in dev.log (#766).
 # DEV_VARS: more vars, "NAME:value" separated by spaces (opcache.sh sets PHP_RECYCLE:off).
 # PERSIST_TO: the local state directory (default .wrangler/state). opcache.sh passes a fresh,
 # empty one, so what it primes depends on the build, not on what an earlier run left (#313).
 vars=()
 for v in ${DEV_VARS:-}; do vars+=(--var "$v"); done
-"$WR" dev --port "$PORT" --log-level warn ${DEV_LOCAL:+--local} ${DEV_ENV:+--env $DEV_ENV} ${PERSIST_TO:+--persist-to "$PERSIST_TO"} --var "SITE_ORIGIN:http://localhost:$PORT" --var "SPIKE_TOKEN:${SPIKE_TOKEN:-local-spike-token}" "${vars[@]}" > dev.log 2>&1 &
+"$WR" dev --port "$PORT" --log-level "${DEV_LOG_LEVEL:-warn}" ${DEV_LOCAL:+--local} ${DEV_ENV:+--env $DEV_ENV} ${PERSIST_TO:+--persist-to "$PERSIST_TO"} --var "SITE_ORIGIN:http://localhost:$PORT" --var "SPIKE_TOKEN:${SPIKE_TOKEN:-local-spike-token}" "${vars[@]}" > dev.log 2>&1 &
 started=$!
 up=0
 devlog() { grep -v '^\s*$' dev.log | grep -v '🪵' | tail -20 | cut -c1-400 >&2; }
