@@ -113,6 +113,8 @@ esac
 # OBJECT_CALL_DEADLINE_S, OBJECT_START_BY_S (#703, #708): checked before any step; render_conf renders them.
 # shellcheck source=SCRIPTDIR/object-time.sh
 . "$ROOT/deploy/object-time.sh"
+# shellcheck source=SCRIPTDIR/deploy-url.sh
+. "$ROOT/deploy/deploy-url.sh"
 # FAULT_INJECT (#730): the post-INSERT fault injector, a throwaway-only measurement. One rule with deploy/wfp.
 # shellcheck source=SCRIPTDIR/fault-inject.sh
 . "$ROOT/deploy/fault-inject.sh"
@@ -297,16 +299,15 @@ fi
 # 4. Deploy and set the secrets.
 log "deploy"
 DEP=$("$ROOT/deploy/wr" deploy --config "$CONF" 2>&1) || { echo "$DEP" | tail -20; exit 1; }
-URL=$(echo "$DEP" | grep -oE 'https://[a-z0-9.-]+\.workers\.dev' | head -1)
-# A workers.dev site must be at its configured origin, or every link points elsewhere.
-case "$SITE_ORIGIN" in
-  *.workers.dev) [ "$URL" = "$SITE_ORIGIN" ] || { echo "deployed to '$URL', but SITE_ORIGIN is $SITE_ORIGIN" >&2; exit 1; } ;;
-esac
+# #754: the URL on wrangler's trigger line, never the first workers.dev URL in the output (a var such as
+# a var holding a workers.dev URL prints one in the bindings). deploy/deploy-url.sh. The origin check runs below, after the secrets.
+URL=$(deployed_workers_url "$NAME" <<<"$DEP")
 echo "$DEP" | grep -E 'Total Upload|Current Version'
 # Logs on: redact the query strings now, before anything else runs on the site, or turn the logs off.
 obs_redact "$NAME" || exit 1
 if [ "$CODE_ONLY" = 1 ]; then
   log "code only: secrets, install and measurements skipped (they persist or ran once)"
+  origin_check "$URL" "$SITE_ORIGIN" || exit 1
   echo "$URL"
   exit 0
 fi
@@ -317,6 +318,9 @@ o = {k: v["value"] for k, v in json.load(sys.stdin).items()}
 json.dump({"WP_SALT": o["wp_salt"], "SPIKE_TOKEN": o["spike_token"]}, open(sys.argv[1], "w"))' "$SECRETS"
 "$ROOT/deploy/wr" secret bulk "$SECRETS" --config "$CONF" | tail -1
 rm -f "$SECRETS"
+# #754: AFTER the redaction and the secrets: a wrong origin fails the deploy, but it never strands a site without its
+# secrets or with its logs unredacted. (The URL is known only after the upload, so the check cannot move before it.)
+origin_check "$URL" "$SITE_ORIGIN" || exit 1
 SPIKE_TOKEN=$(out spike_token); ADMIN_PASSWORD=$(out admin_password)
 
 # 5. Install WordPress (once). b-do: in the PHP object (on Workers Free too:

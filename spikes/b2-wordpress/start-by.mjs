@@ -70,12 +70,45 @@ export function shedAnswer(body, extra = {}) {
 // lag one run ahead can cause (CLOCK_LAG_MAX_MS, the per-request CPU limit). Several CPU-bound runs in a row can lag
 // more; the arrival refusal and the lock's own timer still bound those, and clockMs on a shed line measures the lag.
 export const CLOCK_LAG_MAX_MS = 30000;
-export async function recheckStartBy(startByAt, { now = Date.now, tick = () => new Promise((r) => setTimeout(r, 0)), lagMs = CLOCK_LAG_MAX_MS } = {}) {
+export async function recheckStartBy(startByAt, { now = Date.now, tick = () => new Promise((r) => setTimeout(r, 0)), lagMs = CLOCK_LAG_MAX_MS, signal = null } = {}) {
 	const stale = now();
 	if (startByAt - stale >= lagMs) return { late: false, clockMs: 0, ticked: false };
-	await tick();
+	// #754 (the lead's rule, from the live proof): the tick exists to MOVE the clock, and a FAILED subrequest moves it too
+	// (measured: clockMs 12.5 to 20.8 s on refused self-fetches). So after the tick SETTLES, ok or error, re-read the clock
+	// and decide by the start-by. Only a clock that did NOT advance across the tick is unknown: then shed, why tick-failed.
+	let tickOutcome = 'ok', err;
+	try {
+		await tick();
+	} catch (e) {
+		tickOutcome = 'error';
+		err = String((e && e.message) || e).slice(0, 160);
+	}
 	const fresh = now();
-	return { late: fresh >= startByAt, clockMs: fresh - stale };
+	const seen = { clockMs: fresh - stale, tick: tickOutcome, ...(err ? { err } : {}) };
+	// #752, #721: a caller that disconnected while this waited: its abort is only seen after the real I/O.
+	if (signal && signal.aborted) return { late: true, why: 'disconnect', ...seen };
+	if (fresh === stale) return { late: true, why: 'tick-failed', ...seen };
+	const late = fresh >= startByAt;
+	return { late, ...(late ? { why: 'start-by' } : {}), ...seen };
+}
+
+// #752: the tick is a REAL subrequest. Measured on the edge (#752, 2026-11-16): only a fetch moved Date.now() in a Durable
+// Object (5 of 5 rechecks saw the true clock); a setTimeout(0) turn, a storage read and the assets binding did not. The
+// endpoint is the site's own front Worker, which answers TICK_PATH before any object call: it never reaches the PHP
+// object (busy holding the head), and it needs no outside service. One subrequest per CONTENDED grant within
+// CLOCK_LAG_MAX_MS of a start-by, inside the waiter's own invocation (Workers Free: 50 subrequests per invocation).
+export const TICK_PATH = '/_tick';
+export const TICK_TIMEOUT_MS = 2000;
+export async function tickFetch(origin, { fetchImpl = fetch, timeoutMs = TICK_TIMEOUT_MS } = {}) {
+	const r = await fetchImpl(origin + TICK_PATH, { method: 'GET', signal: AbortSignal.timeout(timeoutMs) });
+	try { if (r.body) await r.body.cancel(); } catch {}
+	if (r.status !== 204) throw new Error('tick answered ' + r.status);
+}
+// The front Worker's answer to TICK_PATH: an empty 204 that no cache keeps.
+export function tickResponse() {
+	const headers = new Headers();
+	noStoreAnywhere(headers);
+	return new Response(null, { status: 204, headers });
 }
 
 // #721 escape hatch: OBJECT_DISCONNECT_SHED=off hands the PHP lock no signal, so a queued waiter ignores its caller's

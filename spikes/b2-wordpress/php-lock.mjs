@@ -118,13 +118,15 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 				let clock = null;
 				if (why !== 'shed' && contended && recheck) {
 					clock = await recheck();
+					// #754: every recheck is logged, granted or shed: its outcome, the clock it saw, and the tick's error text.
+					if (clock) lg({ event: 'recheck', late: !!clock.late, clockMs: clock.clockMs, ...(clock.why ? { why: clock.why } : {}), ...(clock.tick ? { tick: clock.tick } : {}), ...(clock.err ? { err: clock.err } : {}) });
 					if (clock && clock.late) {
 						why = 'shed';
 						at = 'clock';
 					}
 				}
 				if (why === 'shed') {
-					const whyShed = disconnect ? 'disconnect' : at === 'clock' ? 'start-by' : shedWhy;
+					const whyShed = disconnect ? 'disconnect' : at === 'clock' ? (clock.why || 'start-by') : shedWhy; // #752: tick-failed, disconnect
 					lg({ event: 'shed', at, waitMs, depth: waiting + running, headMs: headMs(), ...(whyShed ? { why: whyShed } : {}), ...(at === 'clock' ? { clockMs: clock.clockMs } : {}) });
 					// This waiter never runs: the one behind it waits for the run ahead instead.
 					prev.then(release, release);

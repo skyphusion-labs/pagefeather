@@ -261,7 +261,17 @@ What the client sees:
 
 Every answer of the object path that the edge never keeps carries `x-pf-call`: an answer whose `cloudflare-cdn-cache-control` (the Worker's own edge directive) says `no-store`, such as the cart and checkout, and every failure answer above (no edge directive, `cache-control: no-store`), the request's correlation id (a random id, no request data). A cacheable page does not carry it: the edge would give one request's id to every later visitor. It is the same id that the Worker's `overflow`, `overflow-local` and `object-deadline` lines and the object's `php-lock` and `perf` lines carry, so a client-seen answer can be found in the logs. `deploy/doctor` counts the `object-deadline` lines, split by the answer (500 or 503).
 
-**What the start-by can prove.** In a deployed Worker, `Date.now()` moves only at I/O. When a request that queued behind another gets its turn with less than 30 s (the per-request CPU limit) left before its start-by, the PHP lock reads the clock again after one timer turn, and sheds it if the start-by has passed (`php-lock` event `shed`, `at: clock`, logged instead of `granted`). With more time left it is granted at once. Cloudflare's docs do not say that a timer turn moves the clock; the line's `clockMs` measures that on a live site. Until it is measured, the bound is the start-by plus the clock lag, and the lag is at most the CPU time of the runs ahead since their last I/O (30 s per run at the default CPU limit).
+**What the start-by can prove (#752, #754).** In a deployed Worker or Durable Object, `Date.now()` moves only at I/O, and a timer turn does NOT move it (measured on #714 and #752). When a request that queued behind another gets its turn with under 30 s left on its (possibly stale) clock, the PHP lock first makes ONE real subrequest, the tick.
+
+- **The tick's target:** the site's own `/_tick`. The front Worker answers it with an empty 204, before any object call. Measured on #754 (round 2): a tick that times out or fails STILL moves the clock to the real time, so every decision is made on the true clock. The FIRST tick after a CPU stretch usually aborts at once, because its 2 s timeout was set on the frozen clock and has already passed in real time.
+- **After the tick SETTLES, ok or error,** the lock re-reads the clock and decides by the start-by. A failed subrequest still moves the clock (measured on #754).
+  - Late: shed, `why: start-by`.
+  - Time left: granted.
+  - The client disconnected: shed, `why: disconnect`.
+  - Only a clock that did NOT advance across the tick is unknown: shed, `why: tick-failed` (fail safe).
+- **Every recheck logs a `php-lock` line with event `recheck`:** late, clockMs, the tick's outcome, and its error text.
+- **Every shed answers the retry-safe 503** (`x-object-deadline: queued`, `x-write-loss: none`): nothing ran.
+- **Cost:** one subrequest per contended request with under 30 s left, inside that request's own invocation. Workers Free allows 50 subrequests per invocation. An uncontended request, or one with 30 s or more left, never ticks.
 
 **The escape hatch for a live site:** `OBJECT_START_BY_S=off` on that site's next `deploy/wfp/site` update or `deploy.sh` run restores the behavior before #708: no start-by, with #703's deadline unchanged. `deploy/wfp` records it, so a later update keeps it; `DROP_SETTINGS=OBJECT_START_BY_S` returns to the default. Do not set it in the dashboard: the next deploy writes `[vars]` again and erases it.
 
