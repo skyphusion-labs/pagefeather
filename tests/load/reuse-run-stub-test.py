@@ -198,7 +198,11 @@ wexport(os.path.join(tmp, "L-on"), [{"t": ms, "rid": "x0", "m": "mem-reuse", "of
 wexport(os.path.join(tmp, "L-bad"),
         [{"t": ms, "rid": "f1", "m": "object-deadline", "id": slow["perfId"], "deadlineMs": 90000, "answered": 503, "w_executionModel": "stateless"},
          {"t": ms + 10, "rid": "d1", "m": "perf", "id": slow["perfId"], "w_executionModel": "durableObject"},
-         {"t": ms + 20, "rid": "d2", "m": "mem-reuse", "offer": "in-flight"}],
+         {"t": ms + 20, "rid": "d2", "m": "mem-reuse", "offer": "in-flight"},
+         {"t": ms + 30, "rid": "d3", "m": "purge", "asked": 1, "coalesced": 0, "waitMs": 0, "where": "object"},
+         {"t": ms + 31, "rid": "d3", "m": "purge", "asked": 1, "coalesced": 1, "waitMs": 9000, "where": "object"},
+         {"t": ms + 40, "rid": "d3", "m": "purge", "sent": 1, "ok": False, "errors": [{"code": 971}]},
+         {"t": ms + 41, "rid": "d3", "m": "purge_zone", "sent": 1, "status": 429, "ok": False, "errors": []}],
         [{"t": ms, "type": "fetch", "outcome": "ok", "status": 503, "path": "/wp-admin/post-new.php", "wallMs": 90012, "cpuMs": 3, "rid": "f1"},
          {"t": ms + 5, "type": "fetch", "outcome": "exceededMemory", "status": 500, "path": "/wp-admin/post-new.php", "wallMs": 400, "cpuMs": 300, "rid": "d1", "w_durableObjectId": "o1"}])
 wexport(os.path.join(tmp, "D-bad"), [], [{"t": ms + 300, "type": "fetch", "outcome": "ok", "status": 503, "path": "/wp-admin/post-new.php", "wallMs": 90100, "rid": "z1"}])
@@ -212,6 +216,9 @@ ok("with logs, off vs bad: bar 2 FAILS and counts the exceededMemory invocation"
 row = next((l for l in b2.stdout.splitlines() if l.startswith("| " + slow["perfId"] + " ")), "")
 ok("the slow row joins the site lines by x-perf-id across both rids", "'object-deadline': 1" in row and "'perf': 1" in row and "('exceededMemory', 400)" in row and "('ok', 90012)" in row, row)
 ok("the slow row joins the dispatcher invocation by path and time", "ok 503 90100" in row, row)
+ok("the purge confounder is counted per arm (asked 2, coalesced 1, sent 1, refused 1; zone 429)",
+   "purges, on arm (a confounder, not a bar: freshness only): asked 2, coalesced 1, sent 1, refused 1; purge_zone sent 1, refused 1, status {'429': 1}" in b2.stdout,
+   next((l for l in b2.stdout.splitlines() if l.startswith("purges, on")), ""))
 ok("a log file instead of a directory is refused, loudly", subprocess.run([sys.executable, "-I", SCORE, files["off"], files["on"], "--logs-on", files["on"]], capture_output=True, text=True).returncode == 3)
 def check(mode, eng, reuse, build=""):
     reset(mode)

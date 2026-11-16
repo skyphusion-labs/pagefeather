@@ -9,7 +9,8 @@ per service: lines.jsonl (one console line per row, its JSON fields flattened at
 rid) and invocations.jsonl (one row per invocation: t, outcome, status, path, wallMs, cpuMs, rid, ...). --logs-* is
 the arm's site; --disp-* is the dispatcher, for the #605 rows. Read from the site: invocation outcome
 exceededMemory, and the lines m: isolate-reset, write-loss, mem-reuse (offer: kept or the refusal reason),
-boot-gate, boot-refused, object-deadline. A request is joined to its lines by its x-perf-id (the lines' id field,
+boot-gate, boot-refused, object-deadline, and the purge lines (purge, purge_zone: asked, coalesced, sent,
+refused), printed per arm as a confounder, not a bar. A request is joined to its lines by its x-perf-id (the lines' id field,
 front Worker and object both), then by rid to its invocations; to the dispatcher by path and time. A bar that
 needs the logs and has none says "could not measure", never a pass. Prints the bar table (spec: #598 issuecomment-6910964924), then the #605
 reading (#598 issuecomment-6912013983): every admin request over 30 s. Exit 0 when the on arm passes every bar
@@ -105,6 +106,14 @@ def arm(rows, lg):
         A["refusedOffers"] = [x for x in offers if x != "kept"]
         A["gateLines"] = sum(1 for o in lg["lines"] if o.get("m") in ("boot-gate", "boot-refused"))
         A["deadlineLines"] = sum(1 for o in lg["lines"] if o.get("m") == "object-deadline")
+        # The purge confounder (not a bar): purges coalesce per object (PURGE_GAP_MS 15 s); two concurrent sites can
+        # ask more than the account allows, and a refused purge costs cache freshness only. Counted per arm.
+        pl = [o for o in lg["lines"] if o.get("m") == "purge"]
+        pz = [o for o in lg["lines"] if o.get("m") == "purge_zone"]
+        A["purge"] = {"asked": sum(1 for o in pl if o.get("asked")), "coalesced": sum(1 for o in pl if o.get("coalesced")),
+                      "sent": sum(1 for o in pl if o.get("sent")), "refused": sum(1 for o in pl if o.get("sent") and o.get("ok") is False),
+                      "zoneSent": len(pz), "zoneRefused": sum(1 for o in pz if o.get("ok") is False),
+                      "zoneStatus": {str(k): sum(1 for o in pz if o.get("status") == k) for k in sorted({o.get("status") for o in pz}, key=str)}}
     led = [r for r in a if r.get("memLive") is not None]
     A["ledger"] = len(led)
     A["stacked"] = [r for r in led if (r.get("memLive") or 0) >= 2 or (r.get("retiredMem") or 0) > 0]
@@ -236,6 +245,9 @@ def main(argv):
         if "outcomes" in A:
             print("\nlogs, %s arm: invocation outcomes %s; mem-reuse offers %s; isolate-reset %d, write-loss %d, gate %d, object-deadline %d lines"
                   % (name, A["outcomes"], A["offers"], A["logResets"], A["logWriteLoss"], A["gateLines"], A["deadlineLines"]))
+            p = A["purge"]
+            print("purges, %s arm (a confounder, not a bar: freshness only): asked %d, coalesced %d, sent %d, refused %d; purge_zone sent %d, refused %d, status %s"
+                  % (name, p["asked"], p["coalesced"], p["sent"], p["refused"], p["zoneSent"], p["zoneRefused"], p["zoneStatus"]))
     for name, A, lgk, dk in (("off", off, "--logs-off", "--disp-off"), ("on", on, "--logs-on", "--disp-on")):
         print("\n#605 reading, %s arm: %d admin requests over %g s (of %d)" % (name, len(A["slow"]), SLOW_S, A["admin"]))
         if A["slow"]:
