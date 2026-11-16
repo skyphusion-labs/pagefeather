@@ -7,8 +7,9 @@
 # Exits 1 on any failure.
 set -u
 cd "$(dirname "$0")/.." || exit 1
-export PORT=${PORT:-8797} DEV_ENV=${DEV_ENV:-dosql-local}
-B=http://localhost:$PORT
+export DEV_ENV=${DEV_ENV:-dosql-local}
+# shellcheck source=port.sh
+. ./port.sh
 [ -s build/site.zip ] || { echo "FAIL build/site.zip missing: run ./build.sh"; exit 1; }
 SAVE=$(mktemp "${TMPDIR:-/tmp}/site-zip.XXXXXX"); cp build/site.zip "$SAVE"
 STATE=$(mktemp -d "${TMPDIR:-/tmp}/guards.XXXXXX"); export PERSIST_TO=$STATE
@@ -37,6 +38,8 @@ with zipfile.ZipFile(sys.argv[1], 'a') as z:
     z.writestr('wordpress/pf-guard-test.php', php)
 PY
 DEV_LOCAL=1 ./run.sh _ping > /dev/null || { echo "FAIL wrangler dev did not start"; exit 1; }
+server_port || exit 1
+B=http://localhost:$PORT
 out=$(curl -s -m 60 "$B/pf-guard-test.php")
 echo "answer: $out"
 bad=0

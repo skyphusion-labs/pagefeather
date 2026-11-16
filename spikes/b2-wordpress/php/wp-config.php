@@ -56,10 +56,13 @@ $table_prefix = getenv( 'WP_TABLE_PREFIX' ) ?: 'wp_';
 // checkout (measured 2026-11-04). Logs go to local disk instead.
 define( 'WC_LOG_DIR', '/tmp/wc-logs/' );
 
-if ( ! defined( 'WP_HOME' ) ) {
-	define( 'WP_HOME', 'http://localhost:8797' );
+// No wp-runtime.php, so nothing has named the origin. Use this request's host.
+// There is no default port: run.sh sets SITE_ORIGIN, and the Worker writes
+// WP_HOME from that. A hard-coded port would be the wrong server (#839).
+if ( ! defined( 'WP_HOME' ) && ! empty( $_SERVER['HTTP_HOST'] ) ) {
+	define( 'WP_HOME', ( ! empty( $_SERVER['HTTPS'] ) && 'off' !== $_SERVER['HTTPS'] ? 'https' : 'http' ) . '://' . $_SERVER['HTTP_HOST'] );
 }
-if ( ! defined( 'WP_SITEURL' ) ) {
+if ( ! defined( 'WP_SITEURL' ) && defined( 'WP_HOME' ) ) {
 	define( 'WP_SITEURL', WP_HOME );
 }
 // wp-runtime.php sets WP_DEBUG to false on a deploy. Locally, errors show.

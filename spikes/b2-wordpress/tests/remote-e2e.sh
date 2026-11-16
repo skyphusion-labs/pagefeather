@@ -11,8 +11,10 @@
 # Exits 1 on any failure.
 set -u
 cd "$(dirname "$0")/.." || exit 1
-export PORT=${PORT:-8797} DEV_ENV=${DEV_ENV:-dosql-local}
-B=http://localhost:$PORT
+export DEV_ENV=${DEV_ENV:-dosql-local}
+# shellcheck source=port.sh
+. ./port.sh
+B=
 ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}")
 PW=local-spike-password
 ID=$(python3 -c "import json,re; m=re.search(r'\{.*\}', open('build/opcache-remote-index.js').read()); print(json.loads(m.group(0))['id'] if m else '')")
@@ -72,6 +74,8 @@ run_case() { # run_case <label> <DEV_VARS> <python test on the perf_sum line>
   STATE=$(mktemp -d "${TMPDIR:-/tmp}/remote-e2e.XXXXXX"); export PERSIST_TO=$STATE
   [ "$SITE" = 1 ] && [ -n "$SITE_HOLD" ] && vars="${vars:+$vars }SITE_HOLD_KIB:$SITE_HOLD"
   DEV_LOCAL=1 DEV_VARS="$vars" ./run.sh _ping > /dev/null || { echo "FAIL $label: wrangler dev did not start"; bad=1; return; }
+  server_port || { echo "FAIL $label: no port"; bad=1; return; }
+  B=http://localhost:$PORT
   curl -s "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null
   curl -s "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_activate?plugin=woocommerce/woocommerce.php" > /dev/null
   ./e2e.sh "$B" > "build/remote-e2e-$label.log" 2>&1; local e2e=$?
@@ -106,6 +110,10 @@ if [ "$SITE" = 1 ]; then
   ./run.sh --stop >/dev/null 2>&1; [ -n "$STATE" ] && rm -rf "$STATE"
   STATE=$(mktemp -d "${TMPDIR:-/tmp}/remote-e2e.XXXXXX"); export PERSIST_TO=$STATE
   DEV_LOCAL=1 DEV_VARS="OPCACHE_REMOTE:off" ./run.sh _ping > /dev/null 2>&1 || true
+  server_port || true
+  if [ -n "${PORT:-}" ]; then
+    B=http://localhost:$PORT
+  fi
   r=$(curl -s -D - -o /dev/null "$B/?nocache=off$RANDOM" | tr -d '\r')
   code=$(printf '%s\n' "$r" | head -1 | awk '{print $2}')
   why=$(printf '%s\n' "$r" | grep -i '^x-site-remote-refused:' | awk '{print $2}')

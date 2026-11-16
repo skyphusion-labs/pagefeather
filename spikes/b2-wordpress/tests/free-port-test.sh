@@ -1,8 +1,11 @@
 #!/bin/bash
 # #839: when PORT is unset and 8797 is already held, run.sh picks another free
 # TCP port on 127.0.0.1 and a later step (e2e.sh) uses that same port. An
-# explicit PORT is passed through unchanged. WR is a stub, so this does not
-# start wrangler. The listener this test starts is the only process it stops.
+# explicit PORT is passed through unchanged. A caller that then reaches the
+# server, with PORT unset in its own environment, uses server_port (explicit
+# PORT, else .dev-port, else a loud failure). That is the case that missed
+# the port in CI. WR is a stub, so this does not start wrangler. The listener
+# this test starts is the only process it stops.
 # Wired from .github/workflows/ci.yml next to inspector-port-test.sh.
 set -u
 HERE=$(cd "$(dirname "$0")/.." && pwd)
@@ -254,9 +257,10 @@ set +e
 set -u
 first=$(head -1 "$T/urls" 2>/dev/null || true)
 same=0
+held_port=8797
 if [ "$chose" = 1 ] && [ -n "$first" ] \
   && printf '%s\n' "$first" | grep -q "^http://localhost:${CHOSEN}/" \
-  && ! grep -q 'localhost:8797' "$T/urls"; then
+  && ! grep -q "localhost:${held_port}" "$T/urls"; then
   same=1
 fi
 ok "a later step (e2e.sh) receives that same port (first ${first:-none})" "$same"
@@ -267,9 +271,101 @@ if [ "$same" != 1 ]; then
   sed -n '1,20p' "$T/e2e.out" 2>/dev/null || true
 fi
 
+# The CI failure: ./run.sh has started (PORT unset in the caller), and the
+# next step has to reach that server. server_port reads .dev-port. The stub
+# answers 200 only on the port it was given.
+reach=0
+set +e
+(
+  cd "$HERE" || exit 1
+  # PORT is unset in this caller, as it is after ./run.sh returns.
+  env -u PORT -u INSPECTOR_PORT bash -c '
+    # shellcheck source=port.sh
+    . ./port.sh
+    server_port || exit 1
+    code=$(curl -s -m 3 -o /dev/null -w "%{http_code}" "http://127.0.0.1:${PORT}/_ping")
+    printf "port=%s code=%s\n" "$PORT" "$code"
+    [ "$PORT" = "'"$CHOSEN"'" ] && [ "$code" = 200 ]
+  '
+) > "$T/reach.out" 2>&1
+rc_reach=$?
+set -u
+if [ "$chose" = 1 ] && [ "$rc_reach" = 0 ]; then
+  reach=1
+fi
+ok "a caller with PORT unset reaches the server run.sh bound (exit $rc_reach)" "$reach"
+if [ "$reach" != 1 ]; then
+  echo "  --- reach ---"
+  sed -n '1,20p' "$T/reach.out" 2>/dev/null || true
+fi
+
+py_reach=0
+set +e
+(
+  cd "$HERE" || exit 1
+  env -u PORT -u B CHOSEN="$CHOSEN" python3 -I -c '
+import os, sys, urllib.request
+sys.path.insert(0, os.path.join(os.getcwd(), "tests"))
+from dev_port import server_port
+p = server_port()
+url = "http://127.0.0.1:%s/_ping" % p
+code = urllib.request.urlopen(url, timeout=3).getcode()
+sys.stdout.write("port=%s code=%s\n" % (p, code))
+if str(p) != os.environ["CHOSEN"] or code != 200:
+    sys.exit(1)
+'
+) > "$T/py-reach.out" 2>&1
+rc_py=$?
+set -u
+if [ "$chose" = 1 ] && [ "$rc_py" = 0 ]; then
+  py_reach=1
+fi
+ok "a python caller with PORT unset reaches that same server (exit $rc_py)" "$py_reach"
+if [ "$py_reach" != 1 ]; then
+  echo "  --- python reach ---"
+  sed -n '1,20p' "$T/py-reach.out" 2>/dev/null || true
+fi
+
 stop_port "$CHOSEN"
 rm -f "$HERE/.dev-port"
 CHOSEN=
+
+# Neither PORT nor .dev-port: fail, and do not invent a port.
+loud=0
+set +e
+(
+  cd "$HERE" || exit 1
+  env -u PORT -u INSPECTOR_PORT bash -c '. ./port.sh; server_port'
+) > "$T/loud.out" 2> "$T/loud.err"
+rc_loud=$?
+set -u
+if [ "$rc_loud" != 0 ] && grep -q 'no PORT' "$T/loud.err" && ! grep -q '8797' "$T/loud.err" "$T/loud.out"; then
+  loud=1
+fi
+ok "server_port with no PORT and no .dev-port fails and names no default (exit $rc_loud)" "$loud"
+if [ "$loud" != 1 ]; then
+  echo "  --- loud ---"
+  sed -n '1,20p' "$T/loud.err" 2>/dev/null || true
+fi
+
+py_loud=0
+set +e
+env -u PORT -u B python3 -I -c '
+import os, sys
+sys.path.insert(0, os.path.join("'"$HERE"'", "tests"))
+from dev_port import server_port
+server_port()
+' > "$T/py-loud.out" 2> "$T/py-loud.err"
+rc_py_loud=$?
+set -u
+if [ "$rc_py_loud" != 0 ] && grep -q 'no PORT' "$T/py-loud.err" && ! grep -q '8797' "$T/py-loud.err" "$T/py-loud.out"; then
+  py_loud=1
+fi
+ok "python with no PORT and no .dev-port fails and names no default (exit $rc_py_loud)" "$py_loud"
+if [ "$py_loud" != 1 ]; then
+  echo "  --- python loud ---"
+  sed -n '1,20p' "$T/py-loud.err" 2>/dev/null || true
+fi
 
 PEX=$(free_port)
 rm -f "$T/explicit.log" "$T/explicit.out"

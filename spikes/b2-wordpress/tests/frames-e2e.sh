@@ -9,8 +9,9 @@
 # Prints one MEASURE line per mode and exits 1 on any failure.
 set -u
 cd "$(dirname "$0")/.." || exit 1
-export PORT=${PORT:-8797} DEV_ENV=${DEV_ENV:-dosql-local}
-B=http://localhost:$PORT
+export DEV_ENV=${DEV_ENV:-dosql-local}
+# shellcheck source=port.sh
+. ./port.sh
 ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}")
 PW=local-spike-password
 bad=0
@@ -21,6 +22,8 @@ for mode in off on; do
   ./run.sh --stop >/dev/null 2>&1; [ -n "$STATE" ] && rm -rf "$STATE"
   STATE=$(mktemp -d "${TMPDIR:-/tmp}/frames-e2e.XXXXXX"); export PERSIST_TO=$STATE
   DEV_LOCAL=1 DEV_VARS="REQUEST_FRAMES:$mode" ./run.sh _ping > /dev/null || { echo "FAIL $mode: wrangler dev did not start"; bad=1; continue; }
+  server_port || { echo "FAIL $mode: no port"; bad=1; continue; }
+  B=http://localhost:$PORT
   curl -s "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null
   curl -s "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_activate?plugin=woocommerce/woocommerce.php" > /dev/null
   ./e2e.sh "$B" > "build/frames-e2e-$mode.log" 2>&1; e=$?

@@ -13,11 +13,15 @@
 # wrangler dev does not enforce the 128 MiB isolate limit: (1) is checked on the memory the request reaches.
 set -u
 cd "$(dirname "$0")/.." || exit 1
-export PORT=${PORT:-8797} DEV_ENV=${DEV_ENV:-dosql-local}
-B=http://localhost:$PORT; PW=${ADMIN_PASSWORD:-local-spike-password}; TOK=${SPIKE_TOKEN:-local-spike-token}
+export DEV_ENV=${DEV_ENV:-dosql-local}
+# shellcheck source=port.sh
+. ./port.sh
+PW=${ADMIN_PASSWORD:-local-spike-password}; TOK=${SPIKE_TOKEN:-local-spike-token}
 STATE=$(mktemp -d "${TMPDIR:-/tmp}/rest-list-mem.XXXXXX"); export PERSIST_TO=$STATE
 trap './run.sh --stop > /dev/null 2>&1; rm -rf "$STATE"' EXIT
 DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off" ./run.sh _ping > /dev/null || { echo "rest-list-mem: wrangler dev did not start"; tail -20 dev.log; exit 1; }
+server_port || exit 1
+B=http://localhost:$PORT
 curl -sf -H "x-spike-token: $TOK" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null || { echo "rest-list-mem: /_install failed"; exit 1; }
 B=$B SPIKE_TOKEN=$TOK ADMIN_USER=admin ADMIN_PASSWORD=$PW ROUNDS=120 REST_CONTENT_KIB=512 python3 tests/measure394.py seed rest > "$STATE/seed.jsonl" 2> "$STATE/seed.err" || { echo "rest-list-mem: seeding failed"; tail -5 "$STATE/seed.err"; exit 1; }
 B=$B TOK=$TOK PW=$PW python3 -I - <<'PY'

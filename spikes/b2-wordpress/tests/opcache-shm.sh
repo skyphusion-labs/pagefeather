@@ -12,6 +12,8 @@ mc=${1:?usage: tests/opcache-shm.sh <memory_consumption_mib> <out.json>}
 out=${2:?usage: tests/opcache-shm.sh <memory_consumption_mib> <out.json>}
 case "$mc" in *[!0-9]*) echo "opcache-shm: memory_consumption must be a whole number of MiB, not $mc"; exit 2;; esac
 cd "$(dirname "$0")/.." || exit 1
+# shellcheck source=port.sh
+. ./port.sh
 # shellcheck disable=SC1091
 . ./local-creds.sh
 local_creds
@@ -26,7 +28,8 @@ export PERSIST_TO=$STATE
 trap './run.sh --stop > /dev/null 2>&1; rm -rf "$STATE"' EXIT
 ini=$(python3 -I -c 'import json,sys; print(json.dumps({"opcache.memory_consumption": sys.argv[1]}, separators=(",", ":")))' "$mc")
 DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off PHP_INI:$ini" ./run.sh _ping > /dev/null || { echo "opcache-shm: wrangler dev did not start"; tail -20 dev.log; exit 1; }
-B=http://localhost:${PORT:-8797}
+server_port || exit 1
+B=http://localhost:$PORT
 T=(-H "x-spike-token: ${SPIKE_TOKEN}")
 PW=${ADMIN_PASSWORD}
 curl -sf "${T[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null || { echo "opcache-shm: /_install failed"; exit 1; }

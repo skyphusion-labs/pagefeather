@@ -2,7 +2,9 @@
 # A free TCP port on 127.0.0.1 (#839). The inspector pick (#808) is the same
 # bind: python3 binds port 0, then lsof confirms nothing is listening.
 # run.sh records the port it bound in .dev-port (this directory). Later steps
-# export that port. An explicit PORT is never changed.
+# learn that port with server_port. An explicit PORT is never changed.
+# server_port fails when PORT is unset and .dev-port is missing. It does not
+# pick a port, and it has no default.
 # Sourced, not executed.
 
 # One ephemeral port. Empty output and status 1 when the bind fails.
@@ -76,4 +78,34 @@ take_port() {
 	PORT=$p
 	export PORT
 	return 0
+}
+
+# Absolute directory of this file, captured at source time. run.sh writes
+# .dev-port here after it cds to this directory. A relative BASH_SOURCE would
+# point at the wrong place if the caller cds before server_port runs.
+port_sh_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+# The port of the server run.sh already started. Exports PORT.
+#   PORT set: that value, unchanged. port_from=given.
+#   .dev-port beside this file: the port run.sh recorded. port_from=recorded.
+#   neither: status 1 and a line on stderr. Never a default port.
+server_port() {
+	local p
+	port_from=given
+	if [ -n "${PORT:-}" ]; then
+		export PORT
+		return 0
+	fi
+	port_from=recorded
+	if [ ! -f "$port_sh_dir/.dev-port" ]; then
+		echo "no PORT and no .dev-port in $port_sh_dir: run.sh did not record the port it bound" >&2
+		return 1
+	fi
+	if p=$(cd "$port_sh_dir" && read_recorded_port); then
+		PORT=$p
+		export PORT
+		return 0
+	fi
+	echo "no PORT and .dev-port in $port_sh_dir is not a port" >&2
+	return 1
 }

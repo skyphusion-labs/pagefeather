@@ -15,6 +15,8 @@
 set -u
 out=${1:?out.json}
 cd "$(dirname "$0")/.."
+# shellcheck source=port.sh
+. ./port.sh
 if [ "${LB_PRIMED:-0}" = 1 ]; then
   python3 -I -c "import sys, zipfile; n = sum(1 for x in zipfile.ZipFile('build/opcache.zip').namelist() if x.endswith('.bin')); print('primed zip: %d .bin files' % n); sys.exit(0 if n else 1)" || { echo "lazy-bodies-e2e: LB_PRIMED=1 but build/opcache.zip holds no .bin (run opcache.sh first, with no build.sh after it)"; exit 1; }
 else
@@ -35,7 +37,8 @@ if os.environ["LB_MC"]: ini["opcache.memory_consumption"] = os.environ["LB_MC"]
 if os.environ["LB_EAGER"] == "1": ini["opcache.pagefeather_lazy_load"] = "0"
 print("PHP_INI:" + json.dumps(ini, separators=(",", ":")) if ini else "")')
 DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off${mc_vars:+ $mc_vars}" ./run.sh _ping > /dev/null || { echo "lazy-bodies-e2e: wrangler dev did not start"; tail -20 dev.log; exit 1; }
-B=http://localhost:${PORT:-8797}; T=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}"); PW=${ADMIN_PASSWORD:-local-spike-password}
+server_port || exit 1
+B=http://localhost:$PORT; T=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}"); PW=${ADMIN_PASSWORD:-local-spike-password}
 curl -sf "${T[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null || { echo "lazy-bodies-e2e: /_install failed"; exit 1; }
 curl -sf "${T[@]}" -X POST -H "x-admin-password: $PW" "$B/_activate?plugin=woocommerce/woocommerce.php" > /dev/null || { echo "lazy-bodies-e2e: activating WooCommerce failed"; exit 1; }
 ./e2e.sh > build/lazy-bodies-e2e.log 2>&1 || { echo "lazy-bodies-e2e: e2e.sh failed; last lines:"; tail -15 build/lazy-bodies-e2e.log; exit 1; }
@@ -74,6 +77,8 @@ PY
 # The M2c reading: a NEW runtime (the site stays: same PERSIST_TO), a login, then the first post-new.php.
 ./run.sh --stop > /dev/null 2>&1
 DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off${mc_vars:+ $mc_vars}" ./run.sh _ping > /dev/null || { echo "lazy-bodies-e2e: wrangler dev did not restart for the M2c reading"; exit 1; }
+server_port || exit 1
+B=http://localhost:$PORT
 J=$(mktemp "${TMPDIR:-/tmp}/lazy-bodies-jar.XXXXXX")
 curl -s -c "$J" -b "$J" -o /dev/null "$B/wp-login.php"
 curl -s -c "$J" -b "$J" -o /dev/null --data-urlencode "pwd=$PW" -d 'log=admin&wp-submit=Log+In&redirect_to=%2Fwp-admin%2F&testcookie=1' "$B/wp-login.php"
