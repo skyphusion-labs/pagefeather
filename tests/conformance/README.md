@@ -22,7 +22,7 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
 | `themes.txt`, `plugins.txt` | The wordpress.org themes and plugins for the throwaway, checked by SHA-256 (`tests/plugins/fetch.sh`). They are separate from the product lists. |
 | `php/pf-conformance-throwaway.php` | The marker mu-plugin. Its REST route says "throwaway" and names the host. |
 | `exclude/<suite>.txt` | The specs NOT run, each with its reason. Each one becomes a "not run" row of the matrix. |
-| `runner.py` | `prepare`: checks the site, sets it up, writes `<run-dir>/env` (mode 600). `config`: writes the Playwright wrapper config. `summarize` and `compare`: the matrix rows. |
+| `runner.py` | `prepare`: CHECKS the site and the seed setup (it never writes), then writes `<run-dir>/env` (mode 600). `config`: writes the Playwright wrapper config. `summarize` and `compare`: the matrix rows. |
 | `vps-run.sh` | Installs a suite at its pin, runs the stock baseline, and runs it on our throwaway. Run it on a Vultr VPS only. |
 | `prepare-content-test.sh`, `runner_test.py` | The tests, against stub repos and a stub WordPress. No network. |
 
@@ -34,9 +34,16 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
    - For the cache-off run, deploy with `PAGE_CACHE_TTL=0`.
 3. **Install the suite on the VPS:** `vps-run.sh install <suite> <work-dir>`.
 4. **The baseline:** `vps-run.sh baseline <suite> <work-dir> <base-run>`. It runs the suite on stock upstream in Docker (wp-env), at the same pins.
-5. **Prepare our site:** `WP_PASSWORD=<admin password> runner.py prepare --suite <suite> --base-url https://<site> --cache on|off --run-dir <our-run> --suite-dir <the suite e2e dir>`.
-   - It STOPS before any change if a check fails. The checks: https; the marker for this host; the deny list; the form login; the cache matches `--cache`.
-   - For `wc`, two more checks: HTTP Basic is 200 with the right password and 401 with a wrong one.
+5. **Check our site:** first, Rollins' seed sets the site up. It owns ALL setup, and it reruns for the reseed between the API half and this one. Then run `WP_PASSWORD=<admin password> CUSTOMER_PASSWORD=<customer password> runner.py prepare --suite <suite> --base-url https://<site> --cache on|off --run-dir <our-run>`.
+   - It never writes to the site: one owner (the seed), one checker (the runner).
+   - It STOPS if a check fails. The checks: https; the marker for this host; the deny list; the admin form login; the cache matches `--cache`.
+   - For `wc`, more checks:
+     - Basic is 200 with `WP_PASSWORD` and 401 with a wrong one;
+     - the user `customer` exists, with the role customer and a working form login;
+     - blogname;
+     - pretty permalinks: `/wp-json/` must answer the REST index (#760);
+     - the 3 test images.
+   - `woocommerce_allow_tracking` has no read route at the pin, so it is reported NOT VERIFIED.
 6. **Our run:** `vps-run.sh run <suite> <work-dir> <our-run>`.
 7. **The rows:**
    - Run `runner.py summarize` on each `report.json`.
@@ -49,15 +56,9 @@ Run each suite twice on our site, once with the cache on and once with it off. A
 
 The WordPress and Gutenberg suites log in through the `wp-login.php` form and a REST nonce.
 
-The WooCommerce suite uses one `ADMIN_PASSWORD` for the form AND for HTTP Basic. So `prepare` does three things:
+The WooCommerce suite uses one `ADMIN_PASSWORD` for the form AND for HTTP Basic. So the seed creates an application password and sets the admin ACCOUNT password to that same string. The unmodified suite then passes both. No Basic-Auth plugin is used (lead ruling on #759). `prepare` checks it: the form login works, and Basic answers 200 with that value and 401 with a wrong one. No password is printed.
 
-1. It creates an application password and checks Basic with it.
-2. It sets the admin account password to that same string.
-3. It writes it to `env`.
-
-No Basic-Auth plugin is needed. A password is never printed.
-
-On b2, Basic auth needs #761 (`PHP_AUTH_USER` is never set). Until #761 is fixed, `prepare --suite wc` stops at the Basic check. It stops before it changes the admin password.
+Basic auth on b2 needs #761 (`PHP_AUTH_USER` was never set). Until that fix merges, `prepare --suite wc` stops at the Basic check.
 
 ## What is not run yet
 

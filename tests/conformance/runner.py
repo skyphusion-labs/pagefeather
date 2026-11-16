@@ -6,8 +6,8 @@
     runner.py summarize --report <playwright json> --out <results.json>
     runner.py compare --baseline <results.json> --ours <results.json>
 
-prepare checks the site, sets it up and writes <run-dir>/env (mode 600) for Playwright. It STOPS
-(exit 3) before any change when:
+prepare CHECKS the site and writes <run-dir>/env (mode 600) for Playwright. It never writes to the
+site: Rollins' seed owns all setup (lead ruling on #759), and prepare verifies it. It STOPS (exit 3) when:
   - the URL is not https;
   - the site has no throwaway marker (php/pf-conformance-throwaway.php, shipped only by
     prepare-content.sh) or the marker names another host: the suites delete ALL content;
@@ -15,18 +15,21 @@ prepare checks the site, sets it up and writes <run-dir>/env (mode 600) for Play
   - the admin cannot log in through the wp-login.php form (deploy with TURNSTILE_LOGIN=off: an API
     POST carries no Turnstile token; the checkout and comment gates stay on with the test keys);
   - the page cache does not match --cache (one guest URL, fetched three times);
-  - wc only: HTTP Basic with the application password is not 200, or a WRONG password is not
-    401 (the control: it proves Basic is checked, not ignored). See #761.
-The admin password comes from WP_PASSWORD and is never printed. For wc, the admin's account
-password becomes a new application password, so ONE value passes the form and Basic (the
-WooCommerce suite uses ADMIN_PASSWORD for both).
+  - wc only: HTTP Basic with WP_PASSWORD is not 200, or a WRONG password is not 401 (the control:
+    it proves Basic is checked, not ignored; see #761). The seed sets the admin account password to
+    an application password, so ONE value passes the form and Basic: the WooCommerce suite uses
+    ADMIN_PASSWORD for both, unmodified;
+  - wc only: the seed's setup is missing: the customer (role, form login with CUSTOMER_PASSWORD),
+    blogname, pretty permalinks (/wp-json/ must answer the REST index, #760) or the 3 test images.
+    woocommerce_allow_tracking has no read route at the pin and is reported NOT VERIFIED.
+The passwords come from WP_PASSWORD and CUSTOMER_PASSWORD and are never printed.
 
 config writes pf-conformance.config.mjs beside the upstream config: one worker, no retries, no
 webServer (the site is deployed), the exclusions of exclude/<suite>.txt as testIgnore, and a JSON
 report. summarize and compare turn reports into the rows of the support matrix: compare marks a
 test that fails on the stock baseline as "upstream", never as ours.
 """
-import argparse, base64, http.cookiejar, json, os, re, shlex, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, base64, http.cookiejar, json, os, re, shlex, sys, urllib.error, urllib.parse, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DENY = {"ggc.sh", "www.ggc.sh"}
@@ -63,8 +66,8 @@ class Site:
         self.op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar), NoRedirect)
         self.nonce = None
 
-    def req(self, method, path, data=None, headers=None, form=False, cookies=True, raw=None, ctype=None):
-        url = self.base + rest_path(path)
+    def req(self, method, path, data=None, headers=None, form=False, cookies=True, raw=None, ctype=None, keep_path=False):
+        url = self.base + (path if keep_path else rest_path(path))
         h = {"User-Agent": "pf-conformance/759"}
         h.update(headers or {})
         body = None
@@ -150,58 +153,50 @@ def check_cache(site, want):
     return seen
 
 
-def wc_setup(site, user, password, suite_dir):
-    """The WooCommerce external setup, over REST (upstream: bin/test-env-setup-external.sh, WP-CLI)."""
-    st, j = site.json("POST", "/wp-json/wp/v2/users/me/application-passwords", {"name": "pf-conformance-%d" % int(time.time())})
-    if st != 201 or not isinstance(j, dict) or not j.get("password"):
-        raise Stop("could not create an application password (HTTP %d)" % st)
-    app = j["password"]
-    # Basic FIRST: an application password works for Basic on its own. If Basic fails (#761), the
-    # run stops while the account password is still the operator's own.
-    good = site.basic(user, app)
+WC_BLOGNAME = "WooCommerce Core E2E Test Suite"
+
+
+def wc_verify(site, user, password):
+    """CHECK the WooCommerce setup that Rollins' seed owns (lead ruling, #759). Read only: it never
+    writes, so the setup has one owner. Upstream does it with WP-CLI (bin/test-env-setup-external.sh)."""
+    good = site.basic(user, password)
     if good != 200:
-        raise Stop("HTTP Basic with the application password returned %d, not 200. The WooCommerce suite "
-                   "needs Basic; on b2 see #761 (PHP_AUTH_USER never set)" % good)
-    bad = site.basic(user, app[:-1] + ("x" if app[-1] != "x" else "y"))
+        raise Stop("HTTP Basic with WP_PASSWORD returned %d, not 200. The seed must set the admin account "
+                   "password to an application password (one value for the form and Basic); on b2 see #761" % good)
+    bad = site.basic(user, password[:-1] + ("x" if password[-1] != "x" else "y"))
     if bad != 401:
         raise Stop("HTTP Basic with a WRONG password returned %d, not 401: Basic is not checked" % bad)
-    say("basic auth: right password 200, wrong password 401")
-    st, _ = site.json("POST", "/wp-json/wp/v2/users/me", {"password": app})
-    if st != 200:
-        raise Stop("could not set the account password (HTTP %d)" % st)
-    site.login(user, app)
-    say("admin: the account password is now the application password (form login ok)")
-    cust = os.environ.get("CUSTOMER_PASSWORD") or base64.b32encode(os.urandom(15)).decode().lower()
-    st, j = site.json("POST", "/wp-json/wp/v2/users", {"username": "customer", "password": cust,
-        "email": "customer@woocommercecoree2etestsuite.com", "roles": ["customer"],
-        "first_name": "Jane", "last_name": "Smith", "name": "Jane Smith"})
-    if st == 400 and isinstance(j, dict) and j.get("code") == "existing_user_login":
-        st, users = site.json("GET", "/wp-json/wp/v2/users?search=customer&context=edit")
-        uid = next((u["id"] for u in users or [] if u.get("username") == "customer"), None)
-        st, _ = site.json("POST", "/wp-json/wp/v2/users/%s" % uid, {"password": cust}) if uid else (404, None)
-    if st not in (200, 201):
-        raise Stop("could not create or update the customer user (HTTP %d)" % st)
-    for name, value in (("blogname", "WooCommerce Core E2E Test Suite"), ("woocommerce_allow_tracking", "yes"),
-                        ("permalink_structure", "/%postname%/")):
-        st, _ = site.json("POST", "/wp-json/e2e-options/update", {"option_name": name, "option_value": value})
-        if st != 200:
-            raise Stop("e2e-options/update %s returned %d (is woocommerce-e2e-test-helper active?)" % (name, st))
-    # An empty rewrite_rules option makes WordPress rebuild the rules on the next request.
-    st, _ = site.json("POST", "/wp-json/e2e-options/delete", {"option_name": "rewrite_rules"})
-    if st != 200:
-        raise Stop("e2e-options/delete rewrite_rules returned %d" % st)
-    images = os.path.join(suite_dir, "test-data", "images")
+    say("basic auth: WP_PASSWORD 200, a wrong password 401 (it is also an application password)")
+    cust = os.environ.get("CUSTOMER_PASSWORD")
+    if not cust:
+        raise Stop("CUSTOMER_PASSWORD is not set (the seed's customer password)")
+    st, users = site.json("GET", "/wp-json/wp/v2/users?search=customer&context=edit")
+    u = next((x for x in users or [] if isinstance(x, dict) and x.get("username") == "customer"), None) if st == 200 else None
+    if not u or "customer" not in (u.get("roles") or []):
+        raise Stop("no user 'customer' with the role customer (HTTP %d): the seed did not run" % st)
+    try:
+        Site(site.base).login("customer", cust)
+    except Stop:
+        raise Stop("the customer cannot log in through the form with CUSTOMER_PASSWORD")
+    st, j = site.json("GET", "/wp-json/wp/v2/settings")
+    if st != 200 or not isinstance(j, dict) or j.get("title") != WC_BLOGNAME:
+        raise Stop("blogname is %r, not %r" % ((j or {}).get("title") if isinstance(j, dict) else None, WC_BLOGNAME))
+    # Pretty permalinks, measured: the suites call /wp-json/ directly, so it must answer the REST index.
+    st, h, b = site.req("GET", "/wp-json/", cookies=False, keep_path=True)
+    try:
+        ns = json.loads(b.decode()).get("namespaces")
+    except (ValueError, AttributeError):
+        ns = None
+    if st != 200 or not ns:
+        raise Stop("/wp-json/ does not answer the REST index (HTTP %d): pretty permalinks are not active (#760)" % st)
     for i in (1, 2, 3):
-        p = os.path.join(images, "image-0%d.png" % i)
-        if not os.path.isfile(p):
-            raise Stop("no test image %s" % p)
-        with open(p, "rb") as f:
-            st, _, _ = site.req("POST", "/wp-json/wp/v2/media", raw=f.read(), ctype="image/png",
-                                headers={"Content-Disposition": 'attachment; filename="image-0%d.png"' % i})
-        if st != 201:
-            raise Stop("media upload image-0%d.png returned %d" % (i, st))
-    say("woocommerce setup: customer, options, permalinks, 3 images")
-    return app, cust
+        name = "image-0%d" % i
+        st, items = site.json("GET", "/wp-json/wp/v2/media?search=%s&per_page=100" % name)
+        if st != 200 or not any(name in (m.get("source_url") or "") for m in items or [] if isinstance(m, dict)):
+            raise Stop("no media %s.png (HTTP %d): the seed did not upload the test images" % (name, st))
+    say("woocommerce setup verified: customer (role and login), blogname, pretty permalinks, 3 images")
+    say("woocommerce_allow_tracking: NOT VERIFIED (no read route at the pin; the seed owns it)")
+    return cust
 
 
 def write_env(run_dir, pairs):
@@ -226,10 +221,8 @@ def cmd_prepare(a):
     cache = check_cache(site, a.cache)
     pairs = [("WP_BASE_URL", site.base), ("WP_USERNAME", user)]
     if a.suite == "wc":
-        if not a.suite_dir:
-            raise Stop("--suite-dir is needed for wc (the test images)")
-        app, cust = wc_setup(site, user, password, a.suite_dir)
-        pairs += [("WP_PASSWORD", app), ("BASE_URL", site.base), ("ADMIN_USER", user), ("ADMIN_PASSWORD", app),
+        cust = wc_verify(site, user, password)
+        pairs += [("WP_PASSWORD", password), ("BASE_URL", site.base), ("ADMIN_USER", user), ("ADMIN_PASSWORD", password),
                   ("CUSTOMER_USER", "customer"), ("CUSTOMER_PASSWORD", cust)]
     else:
         pairs += [("WP_PASSWORD", password)]
@@ -344,7 +337,6 @@ def main(argv=None):
     p.add_argument("--base-url", required=True)
     p.add_argument("--cache", choices=("on", "off"), required=True)
     p.add_argument("--run-dir", required=True)
-    p.add_argument("--suite-dir")
     p = sub.add_parser("config")
     p.add_argument("--suite", choices=("wp", "wc", "gb"), required=True)
     p.add_argument("--suite-dir", required=True)

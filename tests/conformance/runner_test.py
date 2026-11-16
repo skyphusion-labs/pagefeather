@@ -28,7 +28,12 @@ def bad(m):
 
 class Stub:
     def __init__(self):
-        self.password = "Operator-Pass-1!"
+        self.password = "SeedAppPass24CharsAbCdEf"  # the seed made the account password an app password
+        self.customer_pw = "Cust-Pass-9"
+        self.blogname = "WooCommerce Core E2E Test Suite"
+        self.images = ["image-01", "image-02", "image-03"]
+        self.customer_role = "customer"
+        self.basic_ok_pw = None          # None: Basic accepts self.password
         self.marker = "self"     # self | none | other
         self.basic = "ok"        # ok | always401 | ignores
         self.cache = "HIT"       # what cf-cache-status says on the 2nd and 3rd guest GET
@@ -38,7 +43,7 @@ class Stub:
         self.media = 0
         self.users = {}
         self.nonce = "0a1b2c3d4e"
-        self.plain = True        # plain permalinks (#760): /wp-json/ answers the home page
+        self.plain = False       # True: plain permalinks (#760), /wp-json/ answers the home page
         stub = self
 
         class H(http.server.BaseHTTPRequestHandler):
@@ -59,10 +64,10 @@ class Stub:
                 self.wfile.write(body)
 
             def logged_in(self):
-                return "wordpress_logged_in_x=admin" in (self.headers.get("Cookie") or "")
+                return re.search(r"wordpress_logged_in_x=(admin|customer)", self.headers.get("Cookie") or "") is not None
 
             def rest_ok(self):
-                return self.logged_in() and self.headers.get("X-WP-Nonce") == stub.nonce
+                return "wordpress_logged_in_x=admin" in (self.headers.get("Cookie") or "") and self.headers.get("X-WP-Nonce") == stub.nonce
 
             def body(self):
                 n = int(self.headers.get("Content-Length") or 0)
@@ -100,12 +105,21 @@ class Stub:
                         u, _, p = base64.b64decode(a[6:]).decode().partition(":")
                         if stub.basic == "always401":
                             return self.send(401, {"code": "rest_not_logged_in"})
-                        if stub.basic == "ignores" or (u == "admin" and p == stub.app):
+                        if stub.basic == "ignores" or (u == "admin" and p == stub.password):
                             return self.send(200, {"id": 1})
                         return self.send(401, {"code": "incorrect_password"})
                     return self.send(401, {"code": "rest_not_logged_in"})
+                if self.path == "/wp-json/":
+                    return self.send(200, {"namespaces": ["wp/v2", "wc/v3"]})
                 if self.path.startswith("/wp-json/wp/v2/users?search=customer"):
-                    return self.send(200, [{"id": 7, "username": "customer"}] if "customer" in stub.users else [])
+                    if not self.rest_ok():
+                        return self.send(401, {})
+                    return self.send(200, [{"id": 7, "username": "customer", "roles": [stub.customer_role]}] if stub.customer_role else [])
+                if self.path == "/wp-json/wp/v2/settings":
+                    return self.send(200, {"title": stub.blogname}) if self.rest_ok() else self.send(401, {})
+                if self.path.startswith("/wp-json/wp/v2/media?search="):
+                    q = self.path.split("search=")[1].split("&")[0]
+                    return self.send(200, [{"source_url": "https://x/wp-content/uploads/%s.png" % q}] if q in stub.images else [])
                 if self.path == "/":
                     n = sum(1 for c in stub.calls if c == ("GET", "/"))
                     return self.send(200, "<html>", [("cf-cache-status", "MISS" if n == 1 else stub.cache)], "text/html")
@@ -119,8 +133,9 @@ class Stub:
                 if self.path == "/wp-login.php":
                     f = dict(x.split("=", 1) for x in b.decode().split("&"))
                     from urllib.parse import unquote_plus
-                    if unquote_plus(f.get("log", "")) == "admin" and unquote_plus(f.get("pwd", "")) == stub.password:
-                        return self.send(302, "", [("Set-Cookie", "wordpress_logged_in_x=admin; Path=/"), ("Location", "/wp-admin/")])
+                    log, pwd = unquote_plus(f.get("log", "")), unquote_plus(f.get("pwd", ""))
+                    if (log, pwd) in (("admin", stub.password), ("customer", stub.customer_pw)):
+                        return self.send(302, "", [("Set-Cookie", "wordpress_logged_in_x=%s; Path=/" % log), ("Location", "/wp-admin/")])
                     return self.send(200, "<form>ERROR</form>", ctype="text/html")
                 if not self.rest_ok():
                     return self.send(401, {"code": "rest_cookie_invalid_nonce"})
@@ -177,23 +192,20 @@ def run(argv, env):
 def main():
     t = tempfile.mkdtemp(prefix="conf-runner.")
     try:
-        suite = os.path.join(t, "wc-e2e")
-        os.makedirs(os.path.join(suite, "test-data", "images"))
-        for i in (1, 2, 3):
-            with open(os.path.join(suite, "test-data", "images", "image-0%d.png" % i), "wb") as f:
-                f.write(b"\x89PNG\r\n\x1a\n" + bytes([i]))
 
         def case(label, why, suite_name="wc", cache="on", setup=None, env_extra=None, expect_rc=3):
             s = Stub()
             if setup:
                 setup(s)
-            env = {"WP_USERNAME": "admin", "WP_PASSWORD": "Operator-Pass-1!", "PATH": os.environ.get("PATH", "")}
+            env = {"WP_USERNAME": "admin", "WP_PASSWORD": s.password, "CUSTOMER_PASSWORD": s.customer_pw, "PATH": os.environ.get("PATH", "")}
             env.update(env_extra or {})
             rd = os.path.join(t, "run-" + re.sub(r"\W+", "-", label))
-            rc, o, e = run(["prepare", "--suite", suite_name, "--base-url", s.url, "--cache", cache, "--run-dir", rd,
-                            "--suite-dir", suite], env)
+            rc, o, e = run(["prepare", "--suite", suite_name, "--base-url", s.url, "--cache", cache, "--run-dir", rd], env)
             s.close()
-            secrets = [x for x in ("Operator-Pass-1!", s.app) if x]
+            writes = [c for c in s.calls if c[0] == "POST" and c[1] != "/wp-login.php"]
+            if writes:
+                bad("%s: the runner WROTE to the site (%s); the seed owns setup" % (label, writes[:2]))
+            secrets = [x for x in (s.password, s.customer_pw) if x]
             leaked = [x for x in secrets if x in o or x in e]
             if leaked:
                 bad("%s: a password reached the output" % label)
@@ -221,43 +233,40 @@ def main():
         else:
             ok("no marker: nothing was POSTed")
         case("a marker for another host", r"names host 'other.example'", setup=lambda s: setattr(s, "marker", "other"))
-        case("a wrong admin password", r"form did not log the admin in.*Turnstile", env_extra={"WP_PASSWORD": "wrong"})
+        case("a wrong admin password", r"form did not log the admin in.*TURNSTILE_LOGIN=off", env_extra={"WP_PASSWORD": "wrong"})
         case("no WP_PASSWORD", r"WP_PASSWORD is not set", env_extra={"WP_PASSWORD": ""})
         case("cache on, but nothing cached", r"--cache on, but no cached answer", setup=lambda s: setattr(s, "cache", "DYNAMIC"))
         case("cache off, but HIT", r"--cache off, but the page cache answered", cache="off")
         # Basic auth (#761).
-        s, _ = case("Basic always 401 (#761)", r"returned 401, not 200.*#761", setup=lambda s: setattr(s, "basic", "always401"))
-        if s.password == "Operator-Pass-1!":
-            ok("#761 stop: the operator's account password is unchanged")
-        else:
-            bad("#761 stop: the account password was changed before the stop")
+        case("Basic always 401 (#761)", r"returned 401, not 200.*#761", setup=lambda s: setattr(s, "basic", "always401"))
         case("Basic ignores the password", r"WRONG password returned 200, not 401", setup=lambda s: setattr(s, "basic", "ignores"))
+        # The seed's setup, verified one item at a time (the seed owns it; the runner only reads).
+        case("no customer user", r"no user 'customer'", setup=lambda s: setattr(s, "customer_role", None))
+        case("customer without the customer role", r"no user 'customer' with the role", setup=lambda s: setattr(s, "customer_role", "subscriber"))
+        case("no CUSTOMER_PASSWORD", r"CUSTOMER_PASSWORD is not set", env_extra={"CUSTOMER_PASSWORD": ""})
+        case("a wrong CUSTOMER_PASSWORD", r"customer cannot log in", env_extra={"CUSTOMER_PASSWORD": "nope"})
+        case("the wrong blogname", r"blogname is 'My Site'", setup=lambda s: setattr(s, "blogname", "My Site"))
+        case("plain permalinks (#760)", r"pretty permalinks are not active", setup=lambda s: setattr(s, "plain", True))
+        case("a missing test image", r"no media image-02.png", setup=lambda s: setattr(s, "images", ["image-01", "image-03"]))
         # The happy paths.
-        s, rd = case("wc happy path", None, expect_rc=0)
+        s, rd = case("wc happy path (a seeded site)", None, expect_rc=0)
         envf = os.path.join(rd, "env")
         mode = stat.S_IMODE(os.stat(envf).st_mode) if os.path.exists(envf) else None
         ok("env is mode 600") if mode == 0o600 else bad("env mode is %r" % (oct(mode) if mode else None))
         env_text = open(envf).read() if mode else ""
-        for want in ("export ADMIN_PASSWORD=%s" % s.app, "export WP_PASSWORD=%s" % s.app, "export ADMIN_USER=admin",
-                     "export BASE_URL=%s" % s.url, "export CUSTOMER_USER=customer", "export PF_CONFORMANCE_CACHE=on"):
+        for want in ("export ADMIN_PASSWORD=%s" % s.password, "export WP_PASSWORD=%s" % s.password, "export ADMIN_USER=admin",
+                     "export BASE_URL=%s" % s.url, "export CUSTOMER_USER=customer", "export CUSTOMER_PASSWORD=%s" % s.customer_pw,
+                     "export PF_CONFORMANCE_CACHE=on"):
             ok("env has %s" % want.split("=")[0]) if want in env_text else bad("env lacks %s" % want.split("=")[0])
-        ok("the account password became the app password") if s.password == s.app else bad("account password not changed")
-        cp = re.search(r"export CUSTOMER_PASSWORD=(\S+)", env_text)
-        ok("the customer password in env is the one the site got") if cp and s.users.get("customer", {}).get("password") == cp.group(1) else bad("customer password mismatch")
-        want_opts = {"blogname": "WooCommerce Core E2E Test Suite", "woocommerce_allow_tracking": "yes",
-                     "permalink_structure": "/%postname%/", "rewrite_rules": None}
-        ok("options set, rewrite_rules emptied") if s.options == want_opts else bad("options are %r" % s.options)
-        ok("3 images uploaded") if s.media == 3 else bad("%d images uploaded" % s.media)
-        s, rd = case("wp happy path (cache off, no Basic, no WooCommerce setup)", None, suite_name="wp", cache="off",
-                     setup=lambda s: setattr(s, "cache", "DYNAMIC"), expect_rc=0)
+        ok("no application password was created") if s.app is None else bad("the runner created an application password")
+        rc, o, e = run(["prepare", "--suite", "wc", "--base-url", Stub().url, "--cache", "on", "--run-dir", os.path.join(t, "x")],
+                       {"WP_PASSWORD": "SeedAppPass24CharsAbCdEf", "CUSTOMER_PASSWORD": "Cust-Pass-9"})
+        ok("tracking is reported NOT VERIFIED, never as checked") if "woocommerce_allow_tracking: NOT VERIFIED" in o else bad("tracking line missing")
+        s, rd = case("wp happy path (cache off, plain permalinks, no WooCommerce checks)", None, suite_name="wp", cache="off",
+                     setup=lambda s: (setattr(s, "cache", "DYNAMIC"), setattr(s, "plain", True), setattr(s, "customer_role", None)), expect_rc=0)
         env_text = open(os.path.join(rd, "env")).read()
-        ok("wp: WP_PASSWORD is the operator's own") if "export WP_PASSWORD='Operator-Pass-1!'" in env_text else bad("wp: WP_PASSWORD wrong")
-        ok("wp: no application password, no setup calls") if s.app is None and not s.options and not s.media else bad("wp: it ran WooCommerce setup")
-        # An existing customer is updated, not a failure.
-        def pre(s):
-            s.users["customer"] = {"username": "customer", "password": "old"}
-        s, rd = case("wc with an existing customer", None, setup=pre, expect_rc=0)
-        ok("existing customer: password updated") if s.users["customer"]["password"] != "old" else bad("existing customer not updated")
+        ok("wp: WP_PASSWORD is the operator's own") if "export WP_PASSWORD=SeedAppPass24CharsAbCdEf" in env_text else bad("wp: WP_PASSWORD wrong")
+        ok("wp: no customer or Basic checks") if not any(c[1].startswith("/wp-json/wp/v2/users") for c in s.calls) else bad("wp: it ran WooCommerce checks")
 
         # rest_path, directly.
         for got, want in ((runner.rest_path("/wp-json/wp/v2/users/me?context=edit"), "/?rest_route=/wp/v2/users/me&context=edit"),
