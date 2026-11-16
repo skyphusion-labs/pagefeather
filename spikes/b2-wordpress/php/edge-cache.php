@@ -84,6 +84,13 @@ add_action(
 	'clean_post_cache',
 	function ( $post_id ) {
 		$type = get_post_type( $post_id );
+		// No post type: the id is not a row in wp_posts, so it is on no page. A WooCommerce order under HPOS
+		// is such an id, and WooCommerce cleans its post cache on every order: measured on pf704
+		// (2026-11-16), one purge per checkout (#704). A deleted post still purges: wp_delete_post passes
+		// the post object, whose type is known.
+		if ( ! $type ) {
+			return;
+		}
 		if ( in_array( $type, array( 'shop_order', 'shop_order_placehold', 'shop_order_refund', 'shop_subscription', 'scheduled-action', 'revision' ), true ) ) {
 			return;
 		}
@@ -105,10 +112,20 @@ add_action(
 	function ( $ids ) {
 		foreach ( (array) $ids as $id ) {
 			$c = get_comment( $id );
-			if ( ! $c || 'order_note' !== $c->comment_type ) {
-				skyphusion_edge_cache_purge( $id );
-				return;
+			// A comment purges only when a guest can see it: it exists, it is not an order note, and its post
+			// has a publicly viewable type. A comment WordPress cannot find, and a note on an order (an HPOS
+			// order id has no post type), asked one purge per checkout on pf704 (#704). Deleting an approved
+			// public comment still purges: wp_delete_comment updates the post's comment count, which cleans
+			// the post's cache, and that purges through clean_post_cache.
+			if ( ! $c || 'order_note' === $c->comment_type ) {
+				continue;
 			}
+			$type = get_post_type( $c->comment_post_ID );
+			if ( ! $type || ( function_exists( 'is_post_type_viewable' ) && ! is_post_type_viewable( $type ) ) ) {
+				continue;
+			}
+			skyphusion_edge_cache_purge( $id );
+			return;
 		}
 	}
 );
