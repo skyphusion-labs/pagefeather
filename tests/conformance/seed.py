@@ -20,6 +20,11 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
      HTTP Basic on the unmodified suite). Older "conformance-" application passwords are revoked. Checked: the
      form login; Basic on /wp/v2/users/me answers 200 (#761); a wrong password gets 401.
 
+  7. the upstream test plugins prepare-content.sh copied into the build are ACTIVATED over REST (IMPORT_PLUGINS only
+     copies them): woocommerce-e2e-test-helper and woocommerce-cleanup. gutenberg-test-plugins stays inactive (the
+     Gutenberg specs toggle each one). On a marked throwaway a missing one fails; on a local site without the
+     content (SEED_ALLOW_LOCAL=1) it is reported and skipped.
+
 It refuses (exit 2, before any write) a site that is not a throwaway: one whose
 GET ?rest_route=/pf-conformance/v1/throwaway does not answer {"throwaway": true, "host": <its own host>} (the
 marker mu-plugin from prepare-content.sh). A local wrangler dev site (host localhost or 127.0.0.1) has no
@@ -49,6 +54,7 @@ IMAGES = ("image-01.png", "image-02.png", "image-03.png")
 IMG_PATH = "plugins/woocommerce/tests/e2e/test-data/images/"
 WC_TAG_SHA = "67e007c3c4cca5725e056ddaaa2ed2fb0e282045"  # woocommerce 11.2.1
 UA = {"User-Agent": "pagefeather-conformance-seed"}
+TEST_PLUGINS = ("woocommerce-e2e-test-helper/woocommerce-e2e-test-helper", "woocommerce-cleanup/woocommerce-cleanup")
 report = {"site": B, "checks": {}}
 failed = []
 
@@ -249,6 +255,24 @@ def main():
             check("image %s uploads under its own stem" % name, False, status=c, source=r.get("source_url") if isinstance(r, dict) else None)
     check("the three test images, found by search under their own stems", sorted(have) == sorted(IMAGES), stored=stored, wc_sha=sha)
 
+    # 7. activate the upstream test plugins the build carries (the code lock allows activation)
+    c, plist = rest(a, n, "/wp/v2/plugins?context=edit")
+    have = {p.get("plugin"): p.get("status") for p in plist} if isinstance(plist, list) else {}
+    for pid in TEST_PLUGINS:
+        if pid not in have:
+            if marked:
+                check("test plugin %s is in the build" % pid, False, listed=c)
+            else:
+                report["checks"]["test plugin %s" % pid] = {"ok": None, "skipped": "not in this build (a local site without the content)"}
+                event("skip", name="test plugin %s" % pid, why="not in this build")
+            continue
+        if have[pid] != "active":
+            rest(a, n, "/wp/v2/plugins/%s" % pid, {"status": "active"}, "POST")
+        c, st = rest(a, n, "/wp/v2/plugins/%s?context=edit" % pid)
+        check("test plugin %s is active" % pid, isinstance(st, dict) and st.get("status") == "active", status=st.get("status") if isinstance(st, dict) else c)
+    gb = [k for k, v in have.items() if (k or "").startswith("gutenberg-test-plugins/") and v == "active"]
+    if gb:
+        check("gutenberg-test-plugins stay inactive (the specs toggle them)", False, active=gb)
     # 6. the admin's account password = a new application password
     c, me = rest(a, n, "/wp/v2/users/me?context=edit")
     uid = me.get("id") if isinstance(me, dict) else None
