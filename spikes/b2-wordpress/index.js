@@ -3201,7 +3201,7 @@ export class PhpRuntime extends DurableObject {
 		// #755 PROBE (MEASUREMENT BRANCH ONLY, NEVER MERGED; always on here, so no deploy plumbing): when does the caller's abort reach this object? It logs the
 		// abort event's own arrival, and signal.aborted at arrival, after the recheck, at the grant and at the end of the run.
 		const discProbe = raw.signal ? { at0: tArrive, abortAt: null, call: callId || null, pid: new URL(raw.url).searchParams.get('pf_probe') } : null;
-		const probeStore = (who, extra) => discProbe && discProbe.pid && this.ctx.storage.put('pf755:' + who + ':' + discProbe.pid, { sinceArriveMs: Date.now() - discProbe.at0, aborted: !!raw.signal.aborted, ...extra }).catch(() => {});
+		const probeStore = (who, extra) => discProbe && discProbe.pid && this.ctx.storage.put('pf755:' + who + ':' + discProbe.pid, { sinceArriveMs: Date.now() - discProbe.at0, t: Date.now(), aborted: !!raw.signal.aborted, ...extra }).catch(() => {});
 		const probeLog = (at, extra) => discProbe && console.log(JSON.stringify({ m: 'disc-probe', at, call: discProbe.call, aborted: !!raw.signal.aborted, abortAt: discProbe.abortAt, sinceArriveMs: Date.now() - discProbe.at0, phpPending, ...extra }));
 		if (discProbe) {
 			if (raw.signal.aborted) discProbe.abortAt = 'before-arrive';
