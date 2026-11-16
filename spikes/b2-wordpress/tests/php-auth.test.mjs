@@ -1,7 +1,8 @@
 // node --test spikes/b2-wordpress/tests/php-auth.test.mjs (#761)
 // Authorization: Basic becomes PHP_AUTH_USER and PHP_AUTH_PW, as Apache with
-// mod_php does. A Bearer header, bad base64, or a value with no colon sets
-// nothing and does not throw. The header and the decoded values are never logged.
+// mod_php does. A Bearer header, bad base64, a value with no colon, or bytes
+// that are not UTF-8 sets nothing and does not throw. Non-ASCII credentials
+// stay the client's UTF-8 bytes. The header and the decoded values are never logged.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
@@ -55,6 +56,37 @@ test('a password with colons survives the first-colon split', () => {
 test('an empty user or an empty password is still set', () => {
 	assert.deepEqual(phpBasicAuthEntries({ authorization: 'Basic ' + btoa(':secret') }), { PHP_AUTH_USER: '', PHP_AUTH_PW: 'secret' });
 	assert.deepEqual(phpBasicAuthEntries({ authorization: 'Basic ' + btoa('ada:') }), { PHP_AUTH_USER: 'ada', PHP_AUTH_PW: '' });
+});
+
+test('a Basic header for josé:pässword sets PHP_AUTH_USER and PHP_AUTH_PW as the client UTF-8 bytes', () => {
+	const user = 'josé';
+	const pass = 'pässword';
+	// The client sends UTF-8 bytes (RFC 7617). btoa would Latin-1 encode each
+	// code unit, which is a different token.
+	const client = Buffer.from(user + ':' + pass, 'utf8');
+	const colon = client.indexOf(0x3a);
+	const got = phpBasicAuthEntries({ authorization: 'Basic ' + client.toString('base64') });
+	assert.ok(got);
+	assert.deepEqual(Buffer.from(got.PHP_AUTH_USER, 'utf8'), client.subarray(0, colon));
+	assert.deepEqual(Buffer.from(got.PHP_AUTH_PW, 'utf8'), client.subarray(colon + 1));
+	assert.equal(got.PHP_AUTH_USER, user);
+	assert.equal(got.PHP_AUTH_PW, pass);
+});
+
+test('a token that decodes to invalid UTF-8 sets nothing and does not throw', () => {
+	// 0xFF is not UTF-8. The colon makes the old binary-string path return entries.
+	const token = Buffer.from([0xff, 0x3a, 0x61]).toString('base64');
+	const request = { headers: { authorization: 'Basic ' + token }, $_SERVER: { HTTPS: 'on' } };
+	let got;
+	let applied;
+	assert.doesNotThrow(() => {
+		got = phpBasicAuthEntries({ authorization: 'Basic ' + token });
+		applied = applyPhpBasicAuth(request);
+	});
+	assert.equal(got, null);
+	assert.equal(applied, request);
+	assert.equal(request.$_SERVER.PHP_AUTH_USER, undefined);
+	assert.equal(request.$_SERVER.PHP_AUTH_PW, undefined);
 });
 
 test('a Bearer header sets nothing', () => {

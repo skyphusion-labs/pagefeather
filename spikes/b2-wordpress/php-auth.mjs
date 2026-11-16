@@ -3,9 +3,12 @@
 // HTTP_AUTHORIZATION, so WordPress application passwords and WooCommerce keys
 // in the Basic header fail closed, the same as a request with no credentials.
 //
-// Decode the token, then split on the first colon (the password may contain
-// colons). A Bearer header, bad base64, or a value with no colon sets nothing
-// and does not throw. Nothing here logs the header or the decoded values.
+// Decode the token to bytes, then to a JS string as UTF-8, then split on the
+// first colon (the password may contain colons). php-wasm writes $_SERVER as
+// UTF-8, so the string has to be the Unicode text: a binary string from atob
+// would encode each byte above 0x7F as two bytes. A Bearer header, bad base64,
+// a value with no colon, or bytes that are not UTF-8 sets nothing and does
+// not throw. Nothing here logs the header or the decoded values.
 
 const INSTALLED = Symbol('pfPhpBasicAuth');
 
@@ -26,23 +29,31 @@ function authorizationValue(headers) {
 }
 
 // Strict enough that a bad token does not become a user. atob accepts some
-// short strings; the re-encode drops those. A failed decode returns null.
+// short strings; the re-encode drops those. Bytes that are not UTF-8, or a
+// failed decode, return null.
 function decodeBasic(token) {
 	if (typeof token !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(token)) return null;
 	if (token.length % 4 === 1) return null;
-	let decoded;
+	let binary;
 	try {
-		decoded = atob(token);
+		binary = atob(token);
 	} catch {
 		return null;
 	}
 	let again;
 	try {
-		again = btoa(decoded);
+		again = btoa(binary);
 	} catch {
 		return null;
 	}
 	if (again.replace(/=+$/, '') !== token.replace(/=+$/, '')) return null;
+	const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+	let decoded;
+	try {
+		decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+	} catch {
+		return null;
+	}
 	const colon = decoded.indexOf(':');
 	if (colon < 0) return null;
 	return { PHP_AUTH_USER: decoded.slice(0, colon), PHP_AUTH_PW: decoded.slice(colon + 1) };
