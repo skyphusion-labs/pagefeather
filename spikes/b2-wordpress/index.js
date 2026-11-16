@@ -2825,7 +2825,7 @@ export class PhpRuntime extends DurableObject {
 					const cleanDue = cronCleanDue(await this.ctx.storage.get(CRON_CLEAN_KEY), Date.now());
 					mail = tickMailFor(this.env, this.ctx.storage);
 					try {
-						cr = await runCron(await (bootPromise ??= boot(cronOrigin)), cleanDue, mail);
+						cr = await runCron(() => (bootPromise ??= boot(cronOrigin)), cleanDue, mail);
 					} catch (e) {
 						if (!(e && e.bootRefused)) throw e;
 						// #598 part 2: the leg is deferred, not a death: it ran nothing, the run record closes as done
@@ -3205,8 +3205,10 @@ async function pruneDedupe(storage, now, ttlMs, limit = 128) {
 	}
 }
 
-async function runCron(booted, cleanDue = false, mail = null, { held = false } = {}) {
-		const { php } = booted;
+// runCron(getBooted): getBooted() resolves the runtime INSIDE the PHP lock (#603 B), so no cron boot starts outside
+// it, and a runtime a request released while this leg waited for the lock is never the one it runs on. held (#720):
+// the caller already holds the lock (/_runcron), so runCron's withPhp reuses it instead of waiting for itself.
+async function runCron(getBooted, cleanDue = false, mail = null, { held = false } = {}) {
 		// A bounded tick (cron-bound.mjs, #291): our own claim/process loop, not the queue runner,
 		// which grew the runtime past the 128 MiB isolate on a big store even for one action.
 		const { actions, wpEvents } = cronBounds(ENV);
@@ -3808,10 +3810,10 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			// order emails) and due WP-Cron events. Spike/manual trigger and the test seam.
 			// #720: already inside the request withPhp (object fetch and the Worker serve both call
 			// handle inside it). Pass held so runCron does not take the lock again. The alarm calls
-			// runCron without it, so that leg always takes the lock.
-			bootPromise ??= boot(origin);
+			// runCron without it, so that leg always takes the lock. #603 (B): the runtime is resolved in
+			// runCron, under that lock.
 			const mail = tickMailFor(env, sqlStorage);
-			const r = await runCron(await bootPromise, false, mail, { held: true });
+			const r = await runCron(() => (bootPromise ??= boot(origin)), false, mail, { held: true });
 			// Drain + SEND here too (a manual run), awaiting delivery so the response reports actual
 			// sends, not enqueues (#185). The alarm uses waitUntil; a manual trigger awaits the signal.
 			const drained = pendingEmails.length;

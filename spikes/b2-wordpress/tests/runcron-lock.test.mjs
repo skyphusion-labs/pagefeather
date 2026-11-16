@@ -86,9 +86,10 @@ function letsGatingHeld(code) {
 }
 
 // 'module': runCron reads a shared let at its withPhp. 'explicit': only this call is passed { held }.
+// (#603: runCron takes a function that resolves the runtime inside its lock; the call shapes below follow it.)
 function holdMode(code) {
 	if (letsGatingHeld(code).length > 0 || code.includes('let runcronHoldsLock')) return 'module';
-	const explicit = code.includes('const r = await runCron(await bootPromise, false, mail, { held: true });');
+	const explicit = code.includes('const r = await runCron(() => (bootPromise ??= boot(origin)), false, mail, { held: true });');
 	const runCronFn = code.indexOf('async function runCron(');
 	const runCronEnd = code.indexOf('async function preverifyTurnstile(', runCronFn);
 	const runCron = runCronFn >= 0 && runCronEnd > runCronFn ? code.slice(runCronFn, runCronEnd) : '';
@@ -96,7 +97,7 @@ function holdMode(code) {
 	const alarmStart = code.indexOf('async alarmRun()');
 	const alarmEnd = code.indexOf('\tasync fetch(raw) {', alarmStart);
 	const alarm = alarmStart >= 0 && alarmEnd > alarmStart ? code.slice(alarmStart, alarmEnd) : '';
-	const alarmPlain = alarm.includes('cr = await runCron(await (bootPromise ??= boot(cronOrigin)), cleanDue, mail);') && !alarm.includes('{ held');
+	const alarmPlain = alarm.includes('cr = await runCron(() => (bootPromise ??= boot(cronOrigin)), cleanDue, mail);') && !alarm.includes('{ held');
 	if (explicit && forwards && alarmPlain) return 'explicit';
 	return 'unknown';
 }
@@ -180,7 +181,7 @@ function lockShape(code) {
 	const clearAt = block.indexOf('runcronHoldsLock = false');
 	const bracketed = setAt >= 0 && callAt > setAt && clearAt > callAt && block.includes('finally');
 	const oneTrue = code.split('runcronHoldsLock = true').length - 1 === 1;
-	const explicitCall = block.includes('const r = await runCron(await bootPromise, false, mail, { held: true });');
+	const explicitCall = block.includes('const r = await runCron(() => (bootPromise ??= boot(origin)), false, mail, { held: true });');
 
 	const runCronFn = code.indexOf('async function runCron(');
 	const runCronEnd = code.indexOf('async function preverifyTurnstile(', runCronFn);
@@ -199,7 +200,7 @@ function lockShape(code) {
 
 	const alarmStart = code.indexOf('async alarmRun()');
 	const alarm = code.slice(alarmStart, code.indexOf('\tasync fetch(raw) {', alarmStart));
-	const alarmUntouched = alarm.includes('cr = await runCron(await (bootPromise ??= boot(cronOrigin)), cleanDue, mail);')
+	const alarmUntouched = alarm.includes('cr = await runCron(() => (bootPromise ??= boot(cronOrigin)), cleanDue, mail);')
 		&& !alarm.includes('runcronHoldsLock')
 		&& !alarm.includes('{ held')
 		&& !alarm.includes('withPhp(');
