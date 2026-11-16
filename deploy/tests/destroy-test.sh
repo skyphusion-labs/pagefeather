@@ -14,6 +14,7 @@ APIPID=""
 trap '[ -z "$APIPID" ] || kill "$APIPID" 2>/dev/null; rm -rf "${T:?}"' EXIT
 mkdir -p "$T/deploy/terraform/.terraform" "$T/deploy/mysql/.terraform" "$T/spikes/b2-wordpress" "$T/bin"
 cp "$SRC/destroy.sh" "$SRC/tf-backend.sh" "$T/deploy/"
+mkdir -p "$T/deploy/lib" && cp "$SRC/lib/gone-wait.sh" "$T/deploy/lib/"  # #789: the bounded gone check
 cp -R "$SRC/variants" "$T/deploy/"
 cp "$SRC"/terraform/*.tf "$SRC/terraform/.terraform.lock.hcl" "$T/deploy/terraform/"
 cp "$SRC"/mysql/*.tf "$SRC"/mysql/*.tftpl "$T/deploy/mysql/"
@@ -22,7 +23,8 @@ ln -s "$SRC/terraform/.terraform/providers" "$T/deploy/terraform/.terraform/prov
 # shellcheck disable=SC2016 # the stub script, not shell to expand here
 printf '#!/bin/bash\necho "$*" >> %q\nexit "${NPX_RC:-0}"\n' "$T/npx.log" > "$T/bin/wr"; chmod +x "$T/bin/wr"
 # A stand-in for the Cloudflare API: GET .../workers/scripts/<name> answers the
-# code in $T/api/<name> (default 404, gone).
+# code in $T/api/<name> (default 404, gone). A comma list is a SEQUENCE (#789): each GET takes the
+# next code, and the last one repeats, as a just-deleted Worker that reads 200 for a while, then 404.
 mkdir -p "$T/api"
 cat > "$T/fake-api.py" <<'PY'
 import http.server, os, sys
@@ -32,7 +34,12 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         name = self.path.rstrip("/").rsplit("/", 1)[-1]
         f = os.path.join(root, name)
-        code = int(open(f).read().strip()) if os.path.exists(f) else 404
+        code = 404
+        if os.path.exists(f):
+            seq = [c for c in open(f).read().strip().split(",") if c]
+            code = int(seq[0])
+            if len(seq) > 1:
+                open(f, "w").write(",".join(seq[1:]))
         self.send_response(code); self.send_header("content-length", "2"); self.end_headers(); self.wfile.write(b"{}")
 srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
 open(sys.argv[1], "w").write(str(srv.server_address[1])); srv.serve_forever()
@@ -42,6 +49,8 @@ for _ in $(seq 1 50); do [ -s "$T/api.port" ] && break; sleep 0.1; done
 CF_API="http://127.0.0.1:$(cat "$T/api.port")"
 export CF_API
 export WR="$T/bin/wr" PATH="$T/bin:$PATH" CLOUDFLARE_API_TOKEN=test ACCOUNT_ID=00000000000000000000000000000000
+# #789: the gone check polls up to GONE_WAIT_S; short here, so a Worker that never goes fails in seconds.
+export GONE_WAIT_S=3 GONE_POLL_S=0.2
 unset DEPLOY_STATE
 fails=0
 check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got [$2], want [$3]"; fails=$((fails + 1)); fi; }
@@ -61,6 +70,8 @@ push site-a site-a a
 push site-g1 site-g1 b-do
 push site-g2 site-g2 b-do
 push site-g3 site-g3 b-do
+push site-g4 site-g4 b-do
+push site-g5 site-g5 b-do
 run() { : > "$T/npx.log"; set +e; NAME=$1 "$T/deploy/destroy.sh" > "$T/out" 2>&1; rc=$?; set -e; }
 ws() { (cd "$TFD" && terraform workspace list | tr -d ' *' | grep -cx "$1" || true); }
 
@@ -113,6 +124,16 @@ check "delete fails, Worker still there: data plane kept" "$(ws site-g2)" "1"
 echo 500 > "$T/api/site-g3"
 run site-g3
 check "API unclear: stopped, data plane kept" "$rc:$(grep -c 'cannot tell whether Worker site-g3 is gone (API: HTTP 500)' "$T/out"):$(ws site-g3)" "1:1:1"
+
+# 9. (#789) A just-deleted Worker reads 200 for a while, then 404 (pf755f, 2026-11-16: "STILL EXISTS", then 404
+#    on a retry 30 s later): the check polls, and the destroy goes on.
+echo 200,200,404 > "$T/api/site-g4"
+run site-g4
+check "#789 the Worker reads 200 twice, then 404: the check waits, and the destroy goes on" "$rc:$(grep -c 'is gone (API: 404)' "$T/out"):$(ws site-g4)" "0:1:0"
+# 10. (#789) An unreadable answer (5xx) is never gone; it is retried within the cap.
+echo 503,404 > "$T/api/site-g5"
+run site-g5
+check "#789 a 503, then 404: retried, never taken as gone, then gone" "$rc:$(grep -c 'is gone (API: 404)' "$T/out"):$(ws site-g5)" "0:1:0"
 
 [ "$fails" = 0 ] || { echo "$fails failed"; cat "$T/out"; exit 1; }
 echo "all passed"

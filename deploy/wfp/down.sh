@@ -13,10 +13,6 @@ need_account
 SITES=${SITES-$(list_sites | tr '\n' ' ')}
 echo "sites: ${SITES:-none}"
 for s in $SITES; do valid_site "$s" || { echo "bad site name: $s" >&2; exit 2; }; done
-gone() {
-  local c; c=$(api_code GET "$2")
-  case "$c" in 404) echo "  $1 is gone (API 404)" ;; *) echo "  $1 is NOT gone (API $c): stopping" >&2; exit 1 ;; esac
-}
 tfr shared init -input=false >/dev/null
 KV_ID=$(tfr shared output -raw kv_namespace_id)
 SUB=$(subdomain)
@@ -45,9 +41,7 @@ for w in wp-cacheprobe wp-cacheprobe-direct; do
   gone "Worker $w" "/workers/scripts/$w"
 done
 api DELETE "/workers/dispatch/namespaces/$NAMESPACE/scripts/site-cacheprobe?force=true" > /dev/null || true
-st=$(ns_script_state site-cacheprobe)
-[ "$st" = gone ] || { echo "  site-cacheprobe is NOT known to be gone ($st): stopping" >&2; exit 1; }
-echo "  site-cacheprobe is gone"
+ns_gone site-cacheprobe site-cacheprobe
 api DELETE "/storage/kv/namespaces/$KV_ID/values/wp-cacheprobe.$SUB.workers.dev" > /dev/null || true
 gone "cache probe entry" "/storage/kv/namespaces/$KV_ID/values/wp-cacheprobe.$SUB.workers.dev"
 

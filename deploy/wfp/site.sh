@@ -57,10 +57,6 @@ fi
 BUILD_ID=$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js" 2>/dev/null || true); BUILD_ID=${BUILD_ID:-unknown}
 out() { tfr site output -raw "$1"; }
 ws() { tfr site init -input=false >/dev/null && tfr site workspace select -or-create "$s" >/dev/null; }
-gone() { # gone <what> <API path>: 404 or stop
-  local c; c=$(api_code GET "$2")
-  case "$c" in 404) echo "  $1 is gone (API 404)" ;; *) echo "  $1 is NOT gone (API $c): stopping" >&2; exit 1 ;; esac
-}
 
 if [ "$cmd" = up ]; then
   log "site $s: data plane and site map entry (workspace $s)"
@@ -147,12 +143,8 @@ elif [ "$cmd" = down ]; then
 
   log "site $s: user Worker $U"
   api DELETE "/workers/dispatch/namespaces/$NAMESPACE/scripts/$U?force=true" > /dev/null || true
-  # Not by the single GET's status (a deleted script can read 200 there): lib.sh ns_script_state.
-  st=$(ns_script_state "$U")
-  case "$st" in
-    gone) echo "  user Worker $U is gone (not in the namespace list; the single GET is 404 or an empty record)" ;;
-    *) echo "  user Worker $U is NOT known to be gone ($st): stopping" >&2; exit 1 ;;
-  esac
+  # Not by the single GET's status (a deleted script can read 200 there): lib.sh ns_script_state, polled (#789).
+  ns_gone "user Worker $U" "$U"
 
   log "site $s: search index (after the user Worker that binds it)"
   remove_search_index "$s" || exit 1

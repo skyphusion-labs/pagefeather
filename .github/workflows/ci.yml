@@ -483,6 +483,7 @@ jobs:
           deploy/wfp/tests/snapshot-test.sh
           deploy/wfp/tests/site-cmd-test.sh
           deploy/wfp/tests/down-key-test.sh
+          deploy/wfp/tests/gone-wait-test.sh
           deploy/wfp/tests/r2-temp-test.sh
           deploy/wfp/tests/custom-domain-test.sh
           python3 deploy/wfp/tests/check-test.py
