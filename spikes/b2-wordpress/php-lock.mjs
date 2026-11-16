@@ -25,7 +25,9 @@ export const PHP_SHED = Symbol('php-shed');
 const TICK_MS = 1000;
 const GRANT_LOG_MS = 1000;
 
-export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, log = () => {} } = {}) {
+// yieldTurn (#755): one macrotask, so an event already queued (a caller's abort) runs before the grant decides. Injected
+// for tests; the default is a real setTimeout(0), never the injected setTimer (fake clocks there may never fire).
+export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, log = () => {}, yieldTurn = () => new Promise((r) => setTimeout(r, 0)) } = {}) {
 	let tail = Promise.resolve();
 	let waiting = 0;
 	let running = 0;
@@ -115,6 +117,18 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 					at = why === 'stale' ? 'stale' : 'grant';
 					why = 'shed';
 				}
+				// #755: a caller that hung up while a CPU-bound run kept the isolate busy has its abort event delivered only when
+				// that run ends, queued as a task BEHIND this grant (measured on pf755i: the grant read aborted=false at
+				// 13311 ms, the abort ran at 13318 ms, and the abandoned request ran). Yield one macrotask, then read again.
+				// Only a contended grant with a caller signal pays it; cron, imports and an idle object never yield.
+				if (why !== 'shed' && contended && signal) {
+					await yieldTurn();
+					if (signal.aborted) {
+						at = 'grant';
+						why = 'shed';
+						disconnect = true;
+					}
+				}
 				let clock = null;
 				if (why !== 'shed' && contended && recheck) {
 					clock = await recheck();
@@ -123,6 +137,12 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 					if (clock && clock.late) {
 						why = 'shed';
 						at = 'clock';
+					}
+					// #755: the recheck's tick is real I/O; a caller that hung up during it is gone too.
+					if (why !== 'shed' && signal && signal.aborted) {
+						at = 'grant';
+						why = 'shed';
+						disconnect = true;
 					}
 				}
 				if (why === 'shed') {

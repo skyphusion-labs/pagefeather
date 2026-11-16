@@ -384,3 +384,63 @@ test('#754: EVERY recheck logs its outcome (event recheck: late, clockMs, tick, 
 	const rc = log.find((e) => e.event === 'recheck' && e.call === 'h1');
 	assert.ok(rc && rc.late === false && rc.clockMs === 15000 && rc.tick === 'error' && rc.err === 'refused 1042', JSON.stringify(rc));
 });
+
+// #755 (measured on pf755i, logs off, cpu arm): a caller that hangs up while its request is queued behind a CPU-BOUND run
+// has its abort event delivered only when the isolate frees, i.e. queued as a task behind the run's end. The grant then
+// read signal.aborted as false a few ms BEFORE the event ran (grant at 13311 ms, the abort at 13318 ms, "own-run"), and
+// the abandoned request ran. The grant must yield once to the event loop and read the signal again.
+test('#755: an abort already queued when the head run ends is seen at the grant: shed (why disconnect), never run', async () => {
+	const log = [];
+	const lock = createPhpLock({ staleMs: 10 ** 9, log: (e) => log.push(e) }); // real timers: the order of tasks is the point
+	let endHead;
+	const head = lock.run(() => new Promise((r) => (endHead = r)));
+	const ac = new AbortController();
+	let ran = false;
+	const w = lock.run(async () => { ran = true; }, { signal: ac.signal, tag: { call: 'b1' } });
+	await new Promise((r) => setTimeout(r, 5)); // b1 is queued behind the head
+	setTimeout(() => ac.abort(), 0); // the client's hang-up, pending as a task while the head still runs
+	endHead('head done'); // the head run ends in this same turn; its grant microtask comes before the abort task
+	assert.equal(await head, 'head done');
+	assert.equal(await w, PHP_SHED, 'shed at the grant, not run');
+	assert.equal(ran, false, 'the abandoned request never ran');
+	const shed = log.find((e) => e.event === 'shed' && e.call === 'b1');
+	assert.ok(shed, 'a shed line names it');
+	assert.equal(shed.why, 'disconnect');
+	assert.equal(shed.at, 'grant');
+});
+
+test('#755: the grant yield sheds nothing that is still wanted, and an uncontended run does not yield', async () => {
+	let yields = 0;
+	const lock = createPhpLock({ staleMs: 10 ** 9, yieldTurn: () => { yields++; return new Promise((r) => setTimeout(r, 0)); } });
+	const ac = new AbortController();
+	assert.equal(await lock.run(async () => 'alone', { signal: ac.signal }), 'alone', 'uncontended: runs');
+	assert.equal(yields, 0, 'uncontended: no yield');
+	let endHead;
+	const head = lock.run(() => new Promise((r) => (endHead = r)));
+	const w = lock.run(async () => 'b ran', { signal: ac.signal });
+	await new Promise((r) => setTimeout(r, 5));
+	endHead('h');
+	assert.equal(await head, 'h');
+	assert.equal(await w, 'b ran', 'a waiter whose caller is still there runs');
+	assert.equal(yields, 1, 'one yield, at the contended grant');
+	const noSignal = lock.run(async () => 'cron');
+	assert.equal(await noSignal, 'cron', 'no signal (cron, imports): runs');
+});
+
+test('#755: an abort that arrives during the start-by recheck (its tick is real I/O) is seen before the run', async () => {
+	const log = [];
+	const lock = createPhpLock({ staleMs: 10 ** 9, log: (e) => log.push(e) });
+	let endHead;
+	const head = lock.run(() => new Promise((r) => (endHead = r)));
+	const ac = new AbortController();
+	let ran = false;
+	const recheck = async () => { await new Promise((r) => setTimeout(r, 2)); ac.abort(); await new Promise((r) => setTimeout(r, 2)); return { late: false, clockMs: 0 }; };
+	const w = lock.run(async () => { ran = true; }, { signal: ac.signal, recheck, tag: { call: 'b2' } });
+	await new Promise((r) => setTimeout(r, 5));
+	endHead('h');
+	assert.equal(await head, 'h');
+	assert.equal(await w, PHP_SHED, 'shed after the recheck, not run');
+	assert.equal(ran, false);
+	const shed = log.find((e) => e.event === 'shed' && e.call === 'b2');
+	assert.equal(shed && shed.why, 'disconnect');
+});
