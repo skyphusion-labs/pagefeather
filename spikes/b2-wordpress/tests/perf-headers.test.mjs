@@ -62,7 +62,7 @@ test('a response that carries none of them is returned untouched', () => {
 const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 
 test('every answer of the Worker passes through the scrub', () => {
-	assert.match(src, /import \{ perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore \} from '\.\/perf-headers\.mjs';/);
+	assert.match(src, /import \{ perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore, serverTimingPhp \} from '\.\/perf-headers\.mjs';/);
 	assert.match(src, /async fetch\(req, env, ctx\) \{\s*(\/\/[^\n]*\n\s*)?return operatorNoStore\(scrubPerfHeaders\(await this\.serve\(req, env, ctx\), perfHeadersAllowed\(req, env\)\), req\);/);
 	assert.match(src, /async serve\(req, env, ctx\) \{\s*ENV = env;/);
 });
@@ -135,4 +135,20 @@ test('index.js: an operator request never reaches the cached entrypoint, and bot
 	const pages = src.slice(src.indexOf('export class Pages extends WorkerEntrypoint'), src.indexOf('async purge(tags)'));
 	assert.match(pages, /if \(isOperatorRequest\(req\)\) noStoreAnywhere\(out\.headers\);/, 'the cached entrypoint marks it too');
 	assert.ok(!/out\.headers\.set\('cache-control', 'private, no-store'\);\s*return out;\s*}\s*\/\/ An RPC/.test(pages), 'not cache-control alone');
+});
+
+// #716: phpMs (and so Server-Timing php;dur) is Date.now() around handler.request. In a Worker or a Durable Object that
+// clock moves only at I/O, so it is PHP's wall time at I/O points, never its CPU. The label says so where it is read.
+test('#716: the Server-Timing php entry says it is wall time at I/O points, not CPU', async () => {
+	const m = await import('../perf-headers.mjs');
+	assert.equal(typeof m.serverTimingPhp, 'function', 'serverTimingPhp is exported');
+	const e = m.serverTimingPhp({ phpMs: 95, dbMs: 3, dbN: 12 });
+	assert.equal(e.length, 2);
+	assert.match(e[0], /^php;dur=95;desc="[^"]*"$/);
+	assert.match(e[0], /not CPU/, 'the desc names it');
+	assert.match(e[0], /I\/O/);
+	assert.equal(e[1], 'db;dur=3;desc="12 statements"', 'db is unchanged');
+	assert.deepEqual(m.serverTimingPhp({}), [], 'no phpMs: no entries');
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.ok(/t\.push\(\.\.\.serverTimingPhp\(p\)\)/.test(src) && !/`php;dur=\$\{p\.phpMs\}`/.test(src), 'index.js builds it there, nowhere else');
 });

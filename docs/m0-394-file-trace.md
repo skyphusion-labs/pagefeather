@@ -61,6 +61,8 @@ and the lead's comment of 12:05Z). Not yet measured on a deployed site.
 
 ### 4. OPcache size sweep (local, one run each, 13 requests: front, then admin)
 
+The `phpMs` column is a LOCAL `wrangler dev` figure, where the clock moves during CPU work. On Cloudflare `phpMs` is wall time at I/O points, not CPU (#716).
+
 | `memory_consumption` | front WASM | dashboard | post-new | front warm inflate | front warm phpMs | boots of 13 |
 |---|---|---|---|---|---|---|
 | 32 (today) | 99 | 119 | 143 | about 20.2 to 21.1 MiB | 271 to 325 | 3 |

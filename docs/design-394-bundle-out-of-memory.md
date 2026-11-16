@@ -159,7 +159,7 @@ OPcache loads a script from the file cache only on a cold runtime. With `opcache
 - a later include of a script with no `.bin` present COMPILES it from source. That is OPcache's
   normal path: correct, it only costs CPU on that one request.
 
-So L1 cannot fail a page. Its only risk is CPU, measured as `opMisses` and `phpMs` in M3.
+So L1 cannot fail a page. Its only risk is CPU, measured as `opMisses` and the invocation's `$workers.cpuTimeMs` in M3. On Cloudflare `phpMs` is wall time at I/O points, not CPU (#716; `docs/perf-dosql.md`, "Citing CPU").
 
 ### 2.6 L2: a site file miss must never fail a page or lose a write
 

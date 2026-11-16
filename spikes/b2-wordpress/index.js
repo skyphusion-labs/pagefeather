@@ -20,7 +20,7 @@ import { analyticsEnabled, recordPageview } from './analytics.mjs';
 import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, lockDefines } from './site-lock.mjs';
 import { exportRequest } from './mysql-export.mjs';
-import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore } from './perf-headers.mjs';
+import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore, serverTimingPhp } from './perf-headers.mjs';
 import { createTrace as createQueryTrace } from './qtrace.mjs';
 import { hposCacheDefine } from './woo-hpos-cache.mjs';
 import { resetFailures, writeLossResponse, rolledBackResponse, frameProvesRollback, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
@@ -3370,7 +3370,7 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 		if (q.waitMs !== undefined) t.push(`queue;dur=${q.waitMs};desc="ahead ${q.ahead}"`);
 		if (q.inMs !== undefined && q.inboxMs !== undefined && q.inboxMs !== null) t.push(`in;dur=${q.inMs}`, `outbox;dur=${objectMs - q.inboxMs - q.inMs}`);
 		if (p.bootWaitMs !== undefined) t.push(`boot;dur=${p.bootWaitMs};desc="boot ${p.boot}"`);
-		if (p.phpMs !== undefined) t.push(`php;dur=${p.phpMs}`, `db;dur=${p.dbMs};desc="${p.dbN} statements"`);
+		t.push(...serverTimingPhp(p)); // #716: php is wall time at I/O points, not CPU (the desc says so)
 		out.headers.set('server-timing', t.join(', '));
 		out.headers.set('x-perf-worker', JSON.stringify({ colo: (req.cf && req.cf.colo) || null, iso: ISOLATE_ID }));
 	} catch {}
@@ -3925,6 +3925,8 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			const tPhp = Date.now();
 			lastMemTrace = null;
 			const r = await handler.request({ url: url.pathname + url.search, method: req.method, headers, body });
+			// #716: NOT CPU. Date.now() moves only at I/O on Cloudflare, so this is PHP's wall time at I/O points; a CPU-bound
+			// render reads near 0. Cite the invocation's $workers.cpuTimeMs for CPU (docs/perf-dosql.md, "Citing CPU").
 			const phpOnlyMs = Date.now() - tPhp;
 			const op1 = wantOpcache ? await opcacheStats(php) : null;
 			// Approach A: close this request's MySQL connection after the response.
@@ -3981,7 +3983,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			out.set('x-d1-ms', String(d.ms));
 			out.set('x-d1-failures', String(d.failures.length));
 			if (d.failures.length && spikeOk && env.SPIKE_TOKEN) out.set('x-d1-first-failure', (d.failures[0].error + ' | ' + d.failures[0].sql).replace(/[^\x20-\x7e]/g, ' ').slice(0, 600));
-			out.set('x-php-ms', String(Date.now() - t0));
+			out.set('x-php-ms', String(Date.now() - t0)); // #716: wall time at I/O points, not CPU (as phpMs)
 			out.set('x-boot', booted ? '1' : '0');
 			if (spikeOk && lastMemTrace) out.set('x-mem-trace', JSON.stringify(lastMemTrace).slice(0, 7900));
 			lastMemTrace = null;
