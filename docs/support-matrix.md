@@ -30,16 +30,17 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 
 | feature | Free DO | Paid DO | WfP | Hyperdrive |
 |---|---|---|---|---|
-| Install, pages, login, dashboard | yes (#638) | yes ([results.md](results.md) 2026-11-07, `cochk4`); limited: the first page after a fresh install (#756) | limited: the first page after a fresh install (#756) | yes ([results.md](results.md) 2026-11-05, `e2e.sh` 17 of 17) |
-| The block editor | yes, plain WordPress (#638); limited on a store (#638) | limited: memory ceiling (#768) | limited: memory ceiling (#768) | not measured |
-| REST API | limited: fresh installs (#760) | limited: fresh installs (#760) | limited: fresh installs (#760) | not measured |
+| Install, pages, login, dashboard | yes (#638) | yes ([results.md](results.md) 2026-11-07, `cochk4`); limited: the first page after a fresh install can answer 500 (#756; fix in PR #790, open) | limited: the first page after a fresh install can answer 500 (#756; fix in PR #790, open); code-only updates: yes (#756, 756a) | yes ([results.md](results.md) 2026-11-05, `e2e.sh` 17 of 17) |
+| The block editor | yes, plain WordPress (#638); limited on a store (#638); limited: no icon content at `/wp/v2/icons` (#777; fix in PR #778, open) | limited: memory ceiling (#768); the icon library (#777) | limited: memory ceiling (#768); the icon library (#777) | not measured |
+| REST API | limited: fresh installs (#760; fix in PR #773, open); `/wp/v2/icons` (#777) | the same | the same | not measured |
 | Application passwords and HTTP Basic | yes in code (#762); live run pending | yes in code (#762); live run pending | yes in code (#762); live run pending | not measured |
-| Permalinks | limited: plain on a fresh install (#760), soft 404 (#772) | limited: (#760), (#772) | limited: (#760), (#772) | not measured |
+| Permalinks | limited: plain on a fresh install (#760; fix in PR #773, open); a soft 404 under a plain structure the owner chose (#772) | the same | the same | not measured |
 | Cron | not measured | not measured | not measured | not measured |
 | Mail | not measured | not measured | not measured | not measured |
 | Media uploads | not measured | yes without WooCommerce ([results.md](results.md) 2026-11-07 and 11-08: R2 and Cloudflare Images); with WooCommerce not measured | not measured | not measured |
 | Search | not measured; semantic search limited (opt-in, plugin change) | the same | the same | not measured |
 | Comments | not measured | not measured | not measured | not measured |
+| Site Health | limited: directory sizes answer 500 (#780) | limited: directory sizes answer 500 (#780) | limited: directory sizes answer 500 (#780) | not measured |
 | Multisite | not measured | not measured | not measured | not measured |
 | Installing plugins and themes from wp-admin | no, by design ([why](#plugins-and-themes-are-not-installed-from-wp-admin-by-design)) | no, by design | no, by design | no, by design |
 
@@ -71,11 +72,12 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 
 ### The first page after a fresh install can fail (#756)
 
-This was measured on b-dosql with the npm engine, on 2026-11-16. Five of 5 deploys ran `/_install`, and then the first page died with `exceededMemory`. A fresh install boots a new PHP runtime on purpose, and the old one is still held at that moment.
+A fresh install boots a new PHP runtime on purpose. Before the fix, the install's own runtime was retired but its memory was not collected yet. So the first page booted a second runtime beside it, and reached the memory ceiling.
 
-Live sites do not update that way. They update with a code-only deploy (`CODE_ONLY=1`), with no install. On the lean engine (`pf724l0`, 2026-11-16), all 9 first pages after code-only updates answered 200. The one failure there was the `/_install` request itself. Its logs are being re-run.
+- **Fresh installs (756b, PR #790):** measured on `deploy/wfp` with the lean engine, on 2026-11-16. On main, the first page died in 3 of 3 counting trials (`pf756m1`, `m3`, `m4`). Each died with a write-loss 500. With the fix it died in 0 of 3 (`pf756k1`, `k2`, `k4`). Two more trials were void (#783).
+- **Code-only updates (756a):** live sites update this way, with no install. On lean (`pf724l0`), 3 updates and 9 first pages all answered 200, with 0 deaths ([the scored run](https://github.com/skyphusion-labs/pagefeather/issues/756#issuecomment-6919876119)).
 
-So this may be a fresh-install defect only. Whether a code-only update fails is still being measured. #756 is open.
+So only the first page after a fresh install is affected. PR #790 keeps the install's runtime for that first page. It is open, and it closes #756.
 
 ### The block editor reaches the memory ceiling (#768)
 
@@ -83,17 +85,26 @@ A b-dosql site has one PHP object, and that object has a memory ceiling. `post-n
 
 On Workers Free, a WooCommerce store's editor does not fit the memory limit (#638). Use Workers Paid to edit a store.
 
+### The icon library has no icons (#777)
+
+WordPress 7.0 added an icon library, which the editor's Icon block reads from `/wp/v2/icons`. Our build drops every core `.svg` from the PHP tree, so PHP cannot read the 88 icon files. The route answers 200 with no icon content. PR #778 keeps those files (352 KB). It is open.
+
 ### Fresh installs keep plain permalinks (#760, #772)
 
 Our HTTP bridge refuses the installer's loopback probe, so a fresh install keeps plain permalinks. Then `/wp-json/` and every unknown path answer the home page with 200. Stock WordPress with working rewrites chooses pretty permalinks.
 
 - **The workaround today:** set a permalink structure in Settings, or call REST as `/?rest_route=/`.
-- **The fix:** PR #773 is open.
-- **#772:** under a plain structure, an unknown path still answers 200 and not 404. It is a soft 404, and stock WordPress on Apache answers 404. #772 is open.
+- **The fix:** PR #773 is open. A fresh install then gets the day-and-name structure, as stock does.
+- **`/wp-json/` under plain:** with #773, `/wp-json/` reaches the REST API even under a plain structure. That goes beyond stock: under plain, stock has no rewrite rule for it.
+- **#772:** under a plain structure, an unknown path still answers 200 and not 404. That is a soft 404; stock WordPress on Apache answers 404. After #773 this affects only a site whose owner CHOSE plain. #772 is open.
 
 ### HTTP Basic auth was broken, now fixed in code (#761, #762)
 
 Before #762, PHP never received `PHP_AUTH_USER` and `PHP_AUTH_PW`. So application passwords and WooCommerce REST keys in the `Authorization: Basic` header failed. The lead confirmed it live on 2026-11-16. #762 maps the header and is merged. A live run on a site built from main is still pending, so the cells say "yes in code".
+
+### Site Health directory sizes answer 500 (#780)
+
+The Site Health > Info panel asks `/wp-site-health/v1/directory-sizes`. On b-dosql it answers 500 `not_available`. The cause is the database size: WordPress reads it with `SHOW TABLE STATUS`, which reports no size over SQLite. The directory sizes themselves are readable. #780 is open.
 
 ### Guests can get 404 for products that exist (#766)
 
