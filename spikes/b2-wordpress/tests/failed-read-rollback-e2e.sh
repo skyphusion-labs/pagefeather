@@ -13,7 +13,9 @@ cd "$(dirname "$0")/.." || exit 1
 export PORT=${PORT:-8797} DEV_ENV=${DEV_ENV:-dosql-local}
 B=http://localhost:$PORT; PW=${ADMIN_PASSWORD:-local-spike-password}; TOK=${SPIKE_TOKEN:-local-spike-token}
 STATE=$(mktemp -d "${TMPDIR:-/tmp}/failed-read-rollback.XXXXXX"); export PERSIST_TO=$STATE/db
-trap './run.sh --stop > /dev/null 2>&1; rm -rf "$STATE"' EXIT
+# This test builds with its own mu-plugin (IMPORT_CONTENT): on exit it rebuilds the tree as it found it, so a later
+# step (opcache-build's remote-e2e, which expects the packs of the plain build) never sees the test build.
+trap './run.sh --stop > /dev/null 2>&1; ./build.sh > "$STATE/rebuild.log" 2>&1 || { echo "failed-read-rollback: the plain rebuild FAILED"; tail -5 "$STATE/rebuild.log"; }; rm -rf "$STATE"' EXIT
 mkdir -p "$STATE/content/mu-plugins"
 cat > "$STATE/content/mu-plugins/pf-derived-test.php" <<'PHP'
 <?php
