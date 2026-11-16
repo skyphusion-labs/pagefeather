@@ -238,6 +238,7 @@ The hint is not a promise. An `enam` object landed in EWR two times in three and
 | `VARIANT` | `b-do` | `b-do`, `b-dosql`, `a`, `c1` (see above) |
 | `SITE_ORIGIN` | `https://<name>.<subdomain>.workers.dev` | The site's own address (`scheme://host[:port]`). WordPress's `WP_HOME` and every link come from it, not from the first request (issue #33). Give it for a custom domain. On workers.dev the deploy stops if Wrangler's address differs. `c1` uses `PUBLIC_HOST` instead. |
 | `HTTP_ALLOW_HOSTS` | `.wordpress.org,.woocommerce.com,.gravatar.com` | Hosts `wp_remote_*()` may call. A leading dot is that name and its subdomains. An empty value denies every host. `*` allows every http(s) host. A custom list replaces the default, so keep the WordPress hosts in it. Payment hosts are not included. The site's own host is always refused, so PHP cannot call itself and wait behind itself. |
+| `PDF_INVOICE` | unset | `on` (variant `b-dosql` only) turns on PDF order invoices (`php/pdf-invoice.php`, #765): the Browser Rendering binding `BROWSER` and the download-signing secret `INVOICE_TOKEN` (Terraform output `invoice_token`). Metered, so opt-in. `off` or unset binds nothing. Turn it on with a full deploy, not `CODE_ONLY=1`, which skips the secrets. The same switch as deploy/wfp and one-click's `WP_PDF_INVOICE`. |
 | `DEPLOY_STATE` | `local` | `r2` keeps Terraform state in an R2 bucket (`STATE_BUCKET`, `STATE_ENDPOINT`, and an R2 key in `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) |
 
 Each `NAME` has its own Terraform workspace, so two sites never share state.

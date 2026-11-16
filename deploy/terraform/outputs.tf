@@ -22,3 +22,7 @@ output "admin_password" {
   value     = random_password.admin_password.result
   sensitive = true
 }
+output "invoice_token" {
+  value     = random_password.invoice_token.result
+  sensitive = true
+}

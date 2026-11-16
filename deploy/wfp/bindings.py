@@ -36,7 +36,7 @@ import json, os, sys, urllib.error, urllib.request
 ENV = os.environ
 USER_OK = {"r2_bucket", "durable_object_namespace", "images", "assets", "send_email", "plain_text", "secret_text", "browser", "ai", "kv_namespace", "queue", "analytics_engine", "vectorize"}
 # TURNSTILE_SECRET: the site's own Turnstile secret, set only when the run has it (#340).
-SECRETS_OK = {"WP_SALT", "SPIKE_TOKEN", "TURNSTILE_SECRET", "SNAPSHOT_TOKEN"}  # SNAPSHOT_TOKEN: #533
+SECRETS_OK = {"WP_SALT", "SPIKE_TOKEN", "TURNSTILE_SECRET", "SNAPSHOT_TOKEN", "INVOICE_TOKEN"}  # SNAPSHOT_TOKEN: #533; INVOICE_TOKEN: #765 (PDF_INVOICE=on)
 
 
 def api(path):

@@ -52,7 +52,7 @@ SETTINGS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PHP_RECY
             "TURNSTILE_SITEKEY", "TURNSTILE_WOO", "TURNSTILE_LOGIN", "TURNSTILE_COMMENTS",
             "MAIL_FROM", "MAIL_FROM_NAME", "PHP_LOCATION", "WP_VECTORIZE_SEARCH", "OPCACHE_SPLIT", "OPCACHE_REMOTE", "SITE_REMOTE",
             "REMOTE_FETCH_CAP", "REMOTE_HOLD_KIB", "SITE_FETCH_CAP", "SITE_HOLD_KIB", "SITE_RETRY_MS", "REQUEST_FRAMES", "PAGE_CACHE_PRODUCT_TTL", "WOO_EXTRAS",
-            "OBJECT_CALL_DEADLINE_S", "OBJECT_START_BY_S", "OBJECT_DISCONNECT_SHED", "HTTP_ALLOW_HOSTS")
+            "OBJECT_CALL_DEADLINE_S", "OBJECT_START_BY_S", "OBJECT_DISCONNECT_SHED", "HTTP_ALLOW_HOSTS", "PDF_INVOICE")
 # Three states (#564): absent from the environment means the default list; present, including
 # empty, means that exact list. The record holds {"set": true, "value": "..."} only when present.
 # A bare string cannot say "empty" and "unset" apart, and empty denies every host.

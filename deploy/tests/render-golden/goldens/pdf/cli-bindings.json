@@ -1,9 +1,7 @@
 {
-  "exit": 1,
+  "exit": 0,
   "output": {
-    "failed": [
-      "site-pdf has an unexpected secret INVOICE_TOKEN"
-    ],
+    "failed": [],
     "sites": {
       "pdf": {
         "dispatcher": [

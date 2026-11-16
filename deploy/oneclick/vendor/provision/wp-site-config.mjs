@@ -214,10 +214,8 @@ export const B_DOSQL_DESCRIPTORS = [
   // pdfInvoiceEnabled() turns the feature on whenever env.BROWSER is present (and
   // PDF_INVOICE != off), so provisioning the binding IS the whole switch: no gate
   // var and no drop-in change. Opt-in (metered), so default:false keeps every
-  // other site byte-identical. NOTE: the WFP allowlist (deploy/wfp/bindings.py
-  // USER_OK) does not yet list "browser"; the provisioning core deploys with the
-  // account token and is unaffected, but a WFP lib.sh deploy of a PDF site needs
-  // that entry added first (out of this lane's scope; flagged on the PR).
+  // other site byte-identical. deploy/wfp (PDF_INVOICE=on, lib.sh render_user) and
+  // deploy/deploy.sh (deploy/pdf-invoice.sh) bind the same pair (#765).
   {
     name: 'pdf-invoices', default: false,
     bindings: () => [{ type: 'browser', name: 'BROWSER' }],

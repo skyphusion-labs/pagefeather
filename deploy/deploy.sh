@@ -119,6 +119,10 @@ esac
 # shellcheck source=SCRIPTDIR/fault-inject.sh
 . "$ROOT/deploy/fault-inject.sh"
 fault_check "$VARIANT" "${NAME:-}" || exit 2
+# PDF_INVOICE (#765): PDF order invoices, b-dosql only, the same switch as deploy/wfp and one-click.
+# shellcheck source=SCRIPTDIR/pdf-invoice.sh
+. "$ROOT/deploy/pdf-invoice.sh"
+pdf_invoice_check "$VARIANT" || exit 2
 object_time_vars >/dev/null || exit 2
 # WOO_ACTIVE is 0 or 1 (#706). Unset was set to 0 above. Anything else is refused
 # before any step, the same as deploy/wfp woo_active_for_build.
@@ -312,10 +316,8 @@ if [ "$CODE_ONLY" = 1 ]; then
   exit 0
 fi
 SECRETS=$(mktemp); chmod 600 "$SECRETS"
-tf "$TF" output -json | python3 -c '
-import json, sys
-o = {k: v["value"] for k, v in json.load(sys.stdin).items()}
-json.dump({"WP_SALT": o["wp_salt"], "SPIKE_TOKEN": o["spike_token"]}, open(sys.argv[1], "w"))' "$SECRETS"
+# #765: one writer (deploy/pdf-invoice.sh): WP_SALT, SPIKE_TOKEN, and INVOICE_TOKEN when PDF_INVOICE=on.
+tf "$TF" output -json | deploy_secrets_json "$SECRETS" || { rm -f "$SECRETS"; exit 1; }
 "$ROOT/deploy/wr" secret bulk "$SECRETS" --config "$CONF" | tail -1
 rm -f "$SECRETS"
 # #754: AFTER the redaction and the secrets: a wrong origin fails the deploy, but it never strands a site without its

@@ -42,6 +42,13 @@ resource "random_password" "admin_password" {
   special = false
 }
 
+# #765: the download-signing key of PDF invoices (INVOICE_TOKEN), set as a secret only when PDF_INVOICE=on.
+# One per site, used for nothing else (per-function keys).
+resource "random_password" "invoice_token" {
+  length  = 48
+  special = false
+}
+
 # Variant "a": Hyperdrive to the MySQL server. Caching off: WordPress reads its
 # own writes. Hyperdrive checks the connection when it makes the config, so the
 # database must answer first (deploy.sh retries while a new box starts).
