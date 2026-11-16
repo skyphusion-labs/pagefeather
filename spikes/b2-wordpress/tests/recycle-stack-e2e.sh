@@ -7,8 +7,8 @@
 # comes at once, as the 16:54Z login came after the fixture load. Twice. Each time that request must answer 200
 # with ONE live WebAssembly.Memory in the isolate (the ledger in its x-perf: runtimes.memLive 1, retiredMem 0)
 # and a memory taken for reuse (memReuse.taken grew). A 503 fails too: with a spare the size check must not refuse.
-# Before the recycles, the deploy flow: /_install, a page, then /_activate (WooCommerce), which drops the runtime and
-# boots a fresh one INSIDE its own request (#705 review, findings 1 and 2). /_activate must answer 200 (the gate must
+# Before the recycles, the deploy flow: /_install, a page, then /_activate (WooCommerce). It used to drop the runtime and
+# boot a fresh one inside its own request (#705 review, findings 1 and 2); since #798 it runs on the current one. /_activate must answer 200 (the gate must
 # not refuse it), and the next request must see ONE live memory (the old one must not be kept beside the new one).
 # Caveat: wrangler dev does not enforce the 128 MiB isolate limit, so this checks the invariant, not the death.
 set -u
@@ -25,7 +25,7 @@ server_port || exit 1
 B=http://localhost:$PORT
 curl -sf "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null || { echo "recycle-stack: /_install failed"; exit 1; }
 req() { curl -s -c "$J" -b "$J" -o /dev/null -D "$H" -w '%{http_code}' "$@"; }
-# a page first, so a runtime is CURRENT when /_activate drops and reboots inside its own request
+# a page first, so a runtime is CURRENT when /_activate runs (before #798 it dropped and rebooted here)
 c=$(req "$B/wp-login.php"); [ "$c" = 200 ] || { echo "recycle-stack: deploy flow: wp-login.php answered $c"; exit 1; }
 c=$(req "${ST[@]}" -X POST "$B/_activate?plugin=woocommerce/woocommerce.php")
 [ "$c" = 200 ] || { echo "recycle-stack: deploy flow: /_activate after /_install answered $c ($(grep -i '^x-runtime-wait' "$H" | tr -d '\r' | tr '\n' ' '))"; exit 1; }
