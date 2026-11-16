@@ -11,7 +11,7 @@ CLEANUP=1 (after the run: delete the orders the run's checkouts made, put the st
 it read back as it was, and delete its REST draft pages; prints counts only),
 WOO=0 or 1 (default: 1 when the site's Store API answers). WOO=0 is plain
 WordPress: browse only, over home, a post, a page, search, a
-category and the feed; no setup and no buyers).
+category and the feed; no setup and no buyers. Those paths are class post.
 
 Each user loops until the step ends. A browse loop is one fresh GET (home, shop,
 or a product page). A buy loop is three Store API requests: cart, add item,
@@ -298,21 +298,30 @@ def user(stop, prods, rec, abort):
             p = random.choice(prods)
             u = urllib.parse.urlparse(p["permalink"])
             own = u.path + ("?" + u.query if u.query else "")
-            path = own if not WOO else random.choice(["/", "/?post_type=product", own])
+            # Class by where the path was chosen (#691), not by its text. A PLAIN
+            # path is post. A Store API permalink is product. The two fixed Woo
+            # paths stay home and shop, the names the #628 scorer reads.
+            if not WOO:
+                path, source = own, "plain"
+            else:
+                path, source = random.choice((("/", "home"), ("/?post_type=product", "shop"), (own, "store")))
             b = browse_req(o, path)
-            b["pc"] = page_class(path)
+            b["pc"] = page_class(source)
             rec("browse", b)
             backoff(b, stop)
 
 
-def page_class(path):
-    """home, shop or product (#628 C2): the bar compares the PRODUCT-page HIT share, and the home page
-    is not under PAGE_CACHE_PRODUCT_TTL. The browse mix is "/", "/?post_type=product" and permalinks."""
-    if path == "/":
-        return "home"
-    if "post_type=product" in path:
-        return "shop"
-    return "product"
+def page_class(source):
+    """home, shop, product or post (#628 C2, #691).
+
+    The class is where the path was chosen, not the path text. home and shop are
+    the two fixed Woo browse paths. The home page is not under
+    PAGE_CACHE_PRODUCT_TTL, and the #628 bar compares the product-page hit share.
+    product is a permalink from the Store API product list. post is a PLAIN path
+    on a non-Woo run: home, a post, a page, search, a category and the feed.
+    The #628 scorer reads the names home, shop and product; those stay.
+    """
+    return {"home": "home", "shop": "shop", "store": "product", "plain": "post"}[source]
 
 
 # A read served from the edge cache. EXPIRED and MISS came from the Worker.
