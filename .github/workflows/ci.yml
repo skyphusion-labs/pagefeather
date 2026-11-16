@@ -222,6 +222,8 @@ jobs:
           # #704: a checkout asks no purge (an HPOS order id, its notes); real changes still purge
           php spikes/b2-wordpress/tests/edge-cache-704-test.php
           node --test spikes/b2-wordpress/tests/purge-why.test.mjs
+          # #699: a refused purge stays pending with a back-off, and expires only after TTL + stale-while-revalidate.
+          node --test spikes/b2-wordpress/tests/purge-state.test.mjs
           bash deploy/wfp/tests/page-cache-product-test.sh
       - name: b-dosql a memory reset is not an overload (issue #335)
         # object-error.mjs: an isolate memory reset answers x-isolate-reset, never x-overloaded.
