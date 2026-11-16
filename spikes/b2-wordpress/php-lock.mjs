@@ -62,16 +62,18 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 	return {
 		get waiting() { return waiting; },
 		get running() { return running; },
-		// run(fn, { shedMs, onStale }): fn's result, or PHP_SHED. onStale runs before fn when the lock was
-		// taken as stale (index.js drops the runtime there).
-		run(fn, { shedMs = 0, onStale = () => {} } = {}) {
+		// run(fn, { shedMs, onStale, tag }): fn's result, or PHP_SHED. onStale runs before fn when the lock was
+		// taken as stale (index.js drops the runtime there). tag (#708) is added to this run's log lines (the
+		// correlation id of the forwarded request), so a queued, granted or shed line names its request.
+		run(fn, { shedMs = 0, onStale = () => {}, tag = null } = {}) {
+			const lg = tag ? (e) => log({ ...e, ...tag }) : log;
 			const prev = tail;
 			let release;
 			const mine = new Promise((r) => (release = r));
 			tail = mine;
 			const t0 = now();
 			const contended = waiting + running > 0;
-			if (contended) log({ event: 'queued', depth: waiting + running, headMs: headMs() });
+			if (contended) lg({ event: 'queued', depth: waiting + running, headMs: headMs() });
 			waiting++;
 			return (async () => {
 				let why = contended ? await waitTurn(prev, t0, shedMs) : 'turn';
@@ -86,16 +88,16 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 					at = 'grant';
 				}
 				if (why === 'shed') {
-					log({ event: 'shed', at, waitMs, depth: waiting + running, headMs: headMs() });
+					lg({ event: 'shed', at, waitMs, depth: waiting + running, headMs: headMs() });
 					// This waiter never runs: the one behind it waits for the run ahead instead.
 					prev.then(release, release);
 					return PHP_SHED;
 				}
 				if (why === 'stale') {
-					log({ event: 'stale', waitMs, depth: waiting + running, headMs: headMs() });
+					lg({ event: 'stale', waitMs, depth: waiting + running, headMs: headMs() });
 					onStale();
 				} else if (waitMs >= GRANT_LOG_MS) {
-					log({ event: 'granted', waitMs, depth: waiting + running });
+					lg({ event: 'granted', waitMs, depth: waiting + running });
 				}
 				running++;
 				headSince = now();

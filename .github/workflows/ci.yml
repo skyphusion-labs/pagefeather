@@ -261,6 +261,8 @@ jobs:
         run: node --expose-gc --test spikes/b2-wordpress/tests/drop-runtime.test.mjs
       - name: The PHP lock never boots a second runtime beside a live one, and sheds past its bound (#296)
         run: node --test spikes/b2-wordpress/tests/php-lock.test.mjs
+      - name: A queued request never runs after its caller gave up; the start-by and the call id (#708)
+        run: node --test spikes/b2-wordpress/tests/start-by.test.mjs
       - name: A queued PHP request overflows to a pool object before it runs, and runs once (#296)
         run: node --test spikes/b2-wordpress/tests/overflow.test.mjs
       - name: b-dosql the lazy inflate cache defaults to 2 MiB (issue #394)

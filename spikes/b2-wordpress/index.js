@@ -8,6 +8,7 @@ import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from 
 import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-arm.mjs';
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
 import { callPhpObject, isObjectCallDeadline, objectCallDeadlineMs, objectCallExempt } from './object-deadline.mjs';
+import { startByMs, objectShedPlan, startByResponse, START_BY_HEADER, CALL_HEADER } from './start-by.mjs';
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
@@ -332,6 +333,8 @@ const LOCK_STALE_MS = 60000;
 const phpLock = createPhpLock({ staleMs: LOCK_STALE_MS, log: (e) => console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, ...e })) });
 const PHP_SHED_RETRY_AFTER_S = '5';
 let phpShedRefusedLogged = false;
+// #708: the correlation id of the forwarded request whose PHP run is executing now (one run at a time), or null.
+let currentCall = null;
 // The shed bound of this path (PHP_QUEUE_SHED_MS; php-lock.mjs shedMsFor), with a bad value logged once.
 function phpShedMs(env, inObject) {
 	const b = shedMsFor(env, inObject);
@@ -354,7 +357,7 @@ const SPIKE_CRON_GRACE_MS = 2000;
 const SEND_TIMEOUT_MS = 5000;
 // withPhp(fn, { shedMs }): fn's result, or PHP_SHED when the wait passed shedMs (0: never; only the
 // two request paths pass one). Cron, snapshots, dumps and imports always wait their turn.
-function withPhp(fn, { shedMs = 0 } = {}) {
+function withPhp(fn, { shedMs = 0, tag = null } = {}) {
 	return phpLock.run(
 		async () => {
 			retirer.runStart();
@@ -366,6 +369,7 @@ function withPhp(fn, { shedMs = 0 } = {}) {
 		},
 		{
 			shedMs,
+			tag, // #708: the forwarded request's correlation id, on its lock lines
 			onStale: () => {
 				if (bootPromise) runtimeDrops++;
 				dropRuntime(); // the old runtime's state is unknown; the stale run still counts as running, so it is released when that run ends too
@@ -2820,7 +2824,12 @@ export class PhpRuntime extends DurableObject {
 			if (ra.stale) console.log(JSON.stringify({ m: 'alarm', unstuck: true, was: ra.was }));
 		}
 		const inboxMs = raw.headers.get(SENT_HEADER) ? Date.now() - Number(raw.headers.get(SENT_HEADER)) : null;
+		// #708: the Worker's start-by and correlation id. Read here, and PHP never sees them.
+		const startByHeader = raw.headers.get(START_BY_HEADER);
+		const callId = raw.headers.get(CALL_HEADER);
 		const req = new Request(raw);
+		req.headers.delete(START_BY_HEADER);
+		req.headers.delete(CALL_HEADER);
 		req.headers.delete(OVERFLOW_HEADER);
 		req.headers.delete(ORIGIN_HEADER);
 		req.headers.delete(SENT_HEADER);
@@ -2944,12 +2953,20 @@ export class PhpRuntime extends DurableObject {
 		// Queue: requests ahead of this one in the PHP lock (a count), and the
 		// wait for the lock (the clock moves at the I/O that ends each request).
 		const tArrive = Date.now();
+		// #708: a request whose start-by has passed never queues and never runs: its caller has given up. Otherwise the
+		// remainder is this run's shed bound (the tighter of it and PHP_QUEUE_SHED_MS), and a shed never runs PHP.
+		const plan = objectShedPlan(startByHeader, tArrive, phpShedMs(env, true));
+		if (plan.refuseNow) {
+			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'shed', at: 'arrive', why: 'start-by', ...(callId ? { call: callId } : {}) }));
+			return startByResponse();
+		}
 		const ahead = phpPending;
 		const isSpikeLongOp = url.pathname === '/_install' || url.pathname === '/_activate';
 		phpPending++;
 		// #296: shed only with PHP_QUEUE_SHED_MS set (the default is never, on every path).
 		const objectRun = await withPhp(async () => {
 			const waitMs = Date.now() - tArrive;
+			currentCall = callId;
 			sqlDb = sql;
 			sqlStorage = sql ? this.ctx.storage : null;
 			const realTxn = sql && env.REAL_TRANSACTIONS !== 'off';
@@ -2970,6 +2987,7 @@ export class PhpRuntime extends DurableObject {
 				return res;
 			} finally {
 				turnstileSlot.clear();
+				currentCall = null;
 				// A request that threw also ends its transaction (rolled back), and keeps its frame. Idempotent.
 				if (realTxn) txnEnd(sql, this.ctx.storage);
 				phpPending--;
@@ -2977,10 +2995,11 @@ export class PhpRuntime extends DurableObject {
 				// /_install -> /_activate gap, where /_activate would reuse the cron runtime (#185).
 				if (isSpikeLongOp) lastSpikeEndAt = Date.now();
 			}
-		}, { shedMs: phpShedMs(env, true) });
+		}, { shedMs: plan.shedMs, tag: callId ? { call: callId } : null });
 		if (objectRun !== PHP_SHED) return objectRun;
 		phpPending--; // a shed run never ran its finally
-		return phpShedResponse();
+		// A start-by shed says so: queued, never ran, safe to retry. The operator's PHP_QUEUE_SHED_MS keeps its own answer.
+		return plan.byStartBy ? startByResponse() : phpShedResponse();
 	}
 }
 
@@ -3199,6 +3218,10 @@ async function toPhpObject(req, env, url, ctx, target = null) {
 	// paths (install, import, sqlimport, cron) pass 0 and are not cut. 0 also means the
 	// operator set OBJECT_CALL_DEADLINE_S=off.
 	const objectDeadlineMs = objectCallExempt(url.pathname) ? 0 : objectCallDeadlineMs(env);
+	// #708: one correlation id per client request (a retry keeps it), and a start-by per attempt: the object never
+	// starts a request it has not granted by then, so the deadline above only ever catches a request that started.
+	const callId = (target && target.callId) || crypto.randomUUID();
+	const startByQ = startByMs(env, objectDeadlineMs);
 	const res = await fetchWithMemoryRetry(
 		() => {
 			const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(name), hint ? { locationHint: hint } : undefined);
@@ -3216,6 +3239,11 @@ async function toPhpObject(req, env, url, ctx, target = null) {
 			fwd.headers.set(SENT_HEADER, String(t0));
 			if (pfReq) fwd.headers.set('x-pf-req', pfReq);
 			else fwd.headers.delete('x-pf-req');
+			// #708: only this Worker sets these two; a client copy is always dropped.
+			fwd.headers.delete(START_BY_HEADER);
+			fwd.headers.delete(CALL_HEADER);
+			fwd.headers.set(CALL_HEADER, callId);
+			if (startByQ > 0) fwd.headers.set(START_BY_HEADER, String(t0 + startByQ));
 			// The signal goes on the request that is sent. Headers are copied from fwd, which
 			// already has the Turnstile answer and the other marks.
 			const sent = ac ? new Request(fwd, { signal: ac.signal }) : fwd;
@@ -3235,7 +3263,7 @@ async function toPhpObject(req, env, url, ctx, target = null) {
 		// No frame probe. The probe is another stub.fetch to this same object, which just
 		// failed to start answering, so a probe can hang the same way. Without a frame that
 		// proves rollback, a method that may have written stays x-write-loss: unknown.
-		console.log(JSON.stringify({ m: 'object-deadline', path: url.pathname, method: req.method, deadlineMs: e.deadlineMs, writeLoss: e.response.headers.get('x-write-loss'), ...memIdOf(req, env), answered: e.response.status }));
+		console.log(JSON.stringify({ m: 'object-deadline', path: url.pathname, method: req.method, deadlineMs: e.deadlineMs, writeLoss: e.response.headers.get('x-write-loss'), call: callId, ...memIdOf(req, env), answered: e.response.status }));
 		return { deadline: e.response };
 	});
 	if (res.deadline) return res.deadline;
@@ -3458,13 +3486,14 @@ const site = {
 			// the front, so it is sent once. With busy off, each request goes to one choice and may queue in the object.
 			const busyOk = ovs.busy && !turnstileRoute(env, req.method, url);
 			const choices = busyOk ? picker.pickTwo() : [picker.pick()];
+			const callId = crypto.randomUUID(); // #708: one id for this request across its choices
 			for (const i of choices) {
 				picker.start(i);
-				console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow', obj: overflowName(i), running: phpLock.running, waiting: phpLock.waiting, inflight: picker.inflight(i) }));
+				console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow', obj: overflowName(i), running: phpLock.running, waiting: phpLock.waiting, inflight: picker.inflight(i), call: callId }));
 				let r;
 				try {
 					// A copy per attempt: a busy answer leaves the original request (and its body) unread for the next one.
-					r = await toPhpObject(busyOk ? req.clone() : req, env, url, ctx, { name: overflowName(i), hint: ovs.hint, overflow: true, busyOk });
+					r = await toPhpObject(busyOk ? req.clone() : req, env, url, ctx, { name: overflowName(i), hint: ovs.hint, overflow: true, busyOk, callId });
 				} finally {
 					picker.end(i);
 				}
@@ -3941,6 +3970,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 				const now = Date.now();
 				const perf = {
 					iso: ISOLATE_ID,
+					...(currentCall ? { call: currentCall } : {}), // #708
 					isoAgeS: Math.round((now - isolateStart) / 1000),
 					rt: runtimeSerial,
 					rtServed: runtimeServed,

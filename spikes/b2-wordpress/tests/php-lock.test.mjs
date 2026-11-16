@@ -193,3 +193,23 @@ test('shedMsFor: no path sheds by default; the setting turns it on for either', 
 	assert.match(bad.refused, /1000 to 120000/);
 	assert.equal(shedMsFor({ PHP_QUEUE_SHED_MS: '' }, false).ms, 0);
 });
+
+test('#708: a waiter past its start-by bound never runs fn, and its lock lines carry the tag (the call id)', async () => {
+	let t = 0; const timers = [];
+	const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+	const log = [];
+	const lock = createPhpLock({ staleMs: 10 ** 9, now: () => t, setTimer: (fn, ms) => { timers.push({ at: t + ms, fn }); return timers.length; }, clearTimer: () => {}, log: (e) => log.push(e) });
+	let ran = 0; let finishHead;
+	const head = lock.run(() => new Promise((r) => (finishHead = r)), { tag: { call: 'head-1' } });
+	await flush();
+	const waiter = lock.run(async () => { ran++; return 'ran'; }, { shedMs: 60000, tag: { call: 'wait-2' } });
+	await flush();
+	// 60 s pass with the head still running: the waiter's bound passes.
+	for (const step of [30000, 30000, 1]) { t += step; for (const x of timers.splice(0).sort((a, b) => a.at - b.at)) if (x.at <= t) x.fn(); else timers.push(x); await flush(); }
+	assert.equal(await waiter, PHP_SHED);
+	assert.equal(ran, 0, 'the waiter never ran');
+	finishHead('done'); assert.equal(await head, 'done');
+	const queued = log.find((e) => e.event === 'queued'); const shed = log.find((e) => e.event === 'shed');
+	assert.equal(queued && queued.call, 'wait-2', 'the queued line carries the call id');
+	assert.equal(shed && shed.call, 'wait-2', 'the shed line carries the call id');
+});
