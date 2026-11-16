@@ -3,6 +3,14 @@
 # PORT (default 8797) picks the local port, so two seats on one laptop do not
 # answer each other's requests (measured 2026-11-05: a collision on 8797).
 #
+# INSPECTOR_PORT (#802): workerd's inspector listens on 9230 unless
+# --inspector-port is set, so two seats collide there even when PORT differs.
+# Set: that port is passed through, exactly. Unset: a free port is chosen
+# (python3 binds port 0) and printed on one line, "inspector port N".
+# A port another process holds is refused, never killed, the same rule as
+# PORT. PORT is the address the caller uses, so a busy PORT is still refused
+# rather than replaced: e2e.sh and the rest keep using the PORT they set.
+#
 # ./run.sh --stop stops the server this script started on PORT, and nothing else.
 # The server is recorded in .dev-<PORT>.pid (the listening workerd and its
 # wrangler parent). A port held by anything else is refused, never killed: a
@@ -42,9 +50,67 @@ if [ -n "$held" ]; then
 		exit 1
 	fi
 fi
+# Inspector port (#802). Chosen after the PORT stop above, so a server this
+# script already recorded is gone before the check. An explicit port that
+# another process still holds is refused. Unset picks a free port.
+free_port() {
+	python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+inspector_listener() { lsof -t -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | sort -u | head -1; }
+inspector_chose=0
+if [ -z "${INSPECTOR_PORT:-}" ]; then
+	inspector_chose=1
+	i=0
+	INSPECTOR_PORT=
+	while [ "$i" -lt 20 ]; do
+		INSPECTOR_PORT=$(free_port) || { echo "could not pick a free inspector port" >&2; exit 1; }
+		case "$INSPECTOR_PORT" in
+			''|*[!0-9]*) INSPECTOR_PORT=; i=$((i + 1)); continue ;;
+		esac
+		if [ "$INSPECTOR_PORT" = "$PORT" ]; then
+			i=$((i + 1))
+			continue
+		fi
+		ih=$(inspector_listener "$INSPECTOR_PORT")
+		if [ -z "$ih" ]; then
+			break
+		fi
+		INSPECTOR_PORT=
+		i=$((i + 1))
+	done
+	if [ -z "$INSPECTOR_PORT" ]; then
+		echo "could not pick a free inspector port" >&2
+		exit 1
+	fi
+else
+	case "$INSPECTOR_PORT" in
+		*[!0-9]*)
+			echo "INSPECTOR_PORT must be a port number, got: $INSPECTOR_PORT" >&2
+			exit 1
+			;;
+	esac
+	if [ "${#INSPECTOR_PORT}" -gt 5 ]; then
+		echo "INSPECTOR_PORT must be a port from 1 to 65535, got: $INSPECTOR_PORT" >&2
+		exit 1
+	fi
+	n=$((10#$INSPECTOR_PORT))
+	if [ "$n" -lt 1 ] || [ "$n" -gt 65535 ]; then
+		echo "INSPECTOR_PORT must be a port from 1 to 65535, got: $INSPECTOR_PORT" >&2
+		exit 1
+	fi
+	INSPECTOR_PORT=$n
+	ih=$(inspector_listener "$INSPECTOR_PORT")
+	if [ -n "$ih" ]; then
+		echo "inspector port $INSPECTOR_PORT is in use by pid $ih ($(ps -o user= -o command= -p "$ih" | cut -c1-120)): not started by this script; set INSPECTOR_PORT to a free port" >&2
+		exit 1
+	fi
+fi
 # Resolve (and on a fresh clone install) the pinned Wrangler in the foreground, so a missing or
 # broken one fails here, loudly, not as a silent timeout below.
 "$WR" --version > /dev/null || { echo "the pinned wrangler ($WR) does not run" >&2; exit 1; }
+if [ "$inspector_chose" = 1 ]; then
+	echo "inspector port $INSPECTOR_PORT"
+fi
 rm -f out.json; : > dev.log
 # SITE_ORIGIN (issue #33): the site's links are localhost:<port>, the address
 # e2e.sh and opcache.sh use, whatever request boots PHP first.
@@ -56,7 +122,7 @@ rm -f out.json; : > dev.log
 # empty one, so what it primes depends on the build, not on what an earlier run left (#313).
 vars=()
 for v in ${DEV_VARS:-}; do vars+=(--var "$v"); done
-"$WR" dev --port "$PORT" --log-level "${DEV_LOG_LEVEL:-warn}" ${DEV_LOCAL:+--local} ${DEV_ENV:+--env $DEV_ENV} ${PERSIST_TO:+--persist-to "$PERSIST_TO"} --var "SITE_ORIGIN:http://localhost:$PORT" --var "SPIKE_TOKEN:${SPIKE_TOKEN:-local-spike-token}" "${vars[@]}" > dev.log 2>&1 &
+"$WR" dev --port "$PORT" --inspector-port "$INSPECTOR_PORT" --log-level "${DEV_LOG_LEVEL:-warn}" ${DEV_LOCAL:+--local} ${DEV_ENV:+--env $DEV_ENV} ${PERSIST_TO:+--persist-to "$PERSIST_TO"} --var "SITE_ORIGIN:http://localhost:$PORT" --var "SPIKE_TOKEN:${SPIKE_TOKEN:-local-spike-token}" "${vars[@]}" > dev.log 2>&1 &
 started=$!
 up=0
 devlog() { grep -v '^\s*$' dev.log | grep -v '🪵' | tail -20 | cut -c1-400 >&2; }
