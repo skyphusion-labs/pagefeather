@@ -36,20 +36,23 @@ engine_resolve() {
   here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   lock="$here/engine.lock"
   [ -s "$lock" ] || { echo "engine.sh: $lock is missing" >&2; return 2; }
-  local PHP_ENGINE_DEFAULT LEAN_TAG LEAN_BASE_URL LEAN_WASM_SHA256 LEAN_JS_SHA256
+  local PHP_ENGINE_DEFAULT LEAN_TAG LEAN_BASE_URL LEAN_WASM_ASSET LEAN_JS_ASSET LEAN_WASM_SHA256 LEAN_JS_SHA256 asset
   # shellcheck disable=SC1090
   . "$lock"
   [[ "$LEAN_WASM_SHA256" =~ ^[0-9a-f]{64}$ ]] && [[ "$LEAN_JS_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "engine.lock: the two sha256 values are not 64 hex" >&2; return 2; }
+  [ -n "${LEAN_WASM_ASSET:-}" ] && [ -n "${LEAN_JS_ASSET:-}" ] || { echo "engine.lock: LEAN_WASM_ASSET and LEAN_JS_ASSET are not set" >&2; return 2; }
   url=${PF_ENGINE_BASE_URL:-$LEAN_BASE_URL}
   cache="${PF_ENGINE_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/pagefeather-engine}/$LEAN_WASM_SHA256-${LEAN_JS_SHA256:0:16}"
   mkdir -p "$cache" || return 2
   for f in php_8_3.wasm php_8_3.js; do
-    if [ "$f" = php_8_3.wasm ]; then want=$LEAN_WASM_SHA256; else want=$LEAN_JS_SHA256; fi
+    # The published names (pagefeather-engine-lean.*; no published name says PHP) are renamed here, in the cache, to
+    # the loader's own file names, an internal path.
+    if [ "$f" = php_8_3.wasm ]; then want=$LEAN_WASM_SHA256; asset=$LEAN_WASM_ASSET; else want=$LEAN_JS_SHA256; asset=$LEAN_JS_ASSET; fi
     if [ -s "$cache/$f" ] && [ "$(engine_sha256 "$cache/$f")" = "$want" ]; then continue; fi
     rm -f "$cache/$f" "$cache/$f.part"
-    curl -fsSL --retry 3 --retry-delay 2 -o "$cache/$f.part" "$url/$f" || { rm -f "$cache/$f.part"; echo "engine.sh: could not fetch $url/$f (the lean engine, $LEAN_TAG)" >&2; return 2; }
+    curl -fsSL --retry 3 --retry-delay 2 -o "$cache/$f.part" "$url/$asset" || { rm -f "$cache/$f.part"; echo "engine.sh: could not fetch $url/$asset (the lean engine, $LEAN_TAG)" >&2; return 2; }
     got=$(engine_sha256 "$cache/$f.part")
-    [ "$got" = "$want" ] || { rm -f "$cache/$f.part"; echo "engine.sh: $f from $url has sha256 $got, not the pin $want; refused" >&2; return 2; }
+    [ "$got" = "$want" ] || { rm -f "$cache/$f.part"; echo "engine.sh: $asset from $url has sha256 $got, not the pin $want; refused" >&2; return 2; }
     mv "$cache/$f.part" "$cache/$f"
   done
   export PF_ENGINE_WASM="$cache/php_8_3.wasm" PF_ENGINE_JS="$cache/php_8_3.js" PHP_ENGINE_RESOLVED=lean

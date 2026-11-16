@@ -1,0 +1,49 @@
+The pagefeather engine: corresponding source
+
+This bundle ships the custom pagefeather engine, variant s1-lean: the prerelease
+@LEAN_TAG@ of this repository, built from engine/ at that tag by
+.github/workflows/pagefeather-engine.yml (its own SOURCE, NOTICE and LICENSES.tar.gz
+are published with it). The build inputs are engine/build.sh, engine/patches/,
+engine/fileinfo/, engine/opcache/ and engine/UPSTREAM at that tag, plus the pinned
+upstream sources listed below. The licence text of each component is the matching row
+of engine/licenses.tsv (LICENSES.tar.gz in this release).
+
+The pinned Playground build is the npm binary recorded in engine/UPSTREAM.
+Its source is the upstream pipeline listed below.
+wasm sha256 4a35d44ed3decb9b9db529c6802a7c4e16bf921c469cc7613478a645b5e68da8, loader sha256 aecfbb4aa0303bad244952e0ec850e8ee9429e235a21636ab6ccd708a67befb6.
+
+The engine files of @LEAN_TAG@ are pagefeather-engine-lean.wasm (sha256 @LEAN_WASM_SHA256@)
+and pagefeather-engine-lean.js (sha256 @LEAN_JS_SHA256@), the output of engine/build.sh.
+The shipped php_8_3.wasm and php_8_3.js of this bundle are produced from those two files
+by spikes/b2-wordpress/prepare.sh (GPL) in this repository at this release's tag.
+That script is part of the corresponding source. It applies the memory-import transform (the wasm memory section becomes an imported env.memory) and the loader patch.
+The sha256 of the shipped php_8_3.wasm is the line in this release's SHA256SUMS whose file name ends in php_8_3.wasm.
+
+Upstream pipeline: https://github.com/WordPress/wordpress-playground at commit dcd8e50fb65121726bb23a686746f68032ff1cb1
+  (packages/php-wasm/compile, git tree 09fefb02c2057d07a448df4322a0077f53dc9bc2)
+PHP: php-src tag php-8.3.36, commit 5ba6ad519229ac09fc4fc74155c76bdca69ae0de
+Emscripten: 4.0.19
+
+Each library, the version, and where its source is (the URL the upstream recipe
+downloads, fetched at the pinned version when this file was written):
+- dlmalloc 2.8.6: https://raw.githubusercontent.com/emscripten-core/emscripten/4.0.19/system/lib/dlmalloc.c
+- Emscripten (runtime JS and system libraries) 4.0.19: https://raw.githubusercontent.com/emscripten-core/emscripten/4.0.19/LICENSE
+- GNU libiconv 1.17: https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.17.tar.gz
+- libgd 2.3.3: https://github.com/libgd/libgd/releases/download/gd-2.3.3/libgd-2.3.3.tar.gz
+- libjpeg-turbo 3.0.3: https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.0.3/libjpeg-turbo-3.0.3.tar.gz
+- libpng 1.6.39: https://download.sourceforge.net/libpng/libpng-1.6.39.tar.gz
+- libwebp (and sharpyuv) 845d547: https://chromium.googlesource.com/webm/libwebp/+archive/845d5476a866141ba35ac133f856fa62f0b7445f.tar.gz
+- libxml2 2.9.10: https://download.gnome.org/sources/libxml2/2.9/libxml2-2.9.10.tar.xz
+- libzip 1.9.2: https://libzip.org/download/libzip-1.9.2.tar.gz
+- LLVM compiler-rt emscripten 4.0.19: https://raw.githubusercontent.com/emscripten-core/emscripten/4.0.19/system/lib/compiler-rt/LICENSE.TXT
+- musl libc emscripten 4.0.19: https://raw.githubusercontent.com/emscripten-core/emscripten/4.0.19/system/lib/libc/musl/COPYRIGHT
+- OpenSSL 1.1.1t: https://www.openssl.org/source/old/1.1.1/openssl-1.1.1t.tar.gz
+- pagefeather repo: LICENSE in this repository
+- PHP 8.3.36: https://raw.githubusercontent.com/php/php-src/5ba6ad519229ac09fc4fc74155c76bdca69ae0de/LICENSE
+- SQLite 3.51.0: https://sqlite.org/2025/sqlite-autoconf-3510000.tar.gz
+- the third-party code bundled in PHP 8.3.36: https://raw.githubusercontent.com/php/php-src/5ba6ad519229ac09fc4fc74155c76bdca69ae0de/README.REDIST.BINS
+- WordPress Playground php-wasm dcd8e50: https://raw.githubusercontent.com/WordPress/wordpress-playground/dcd8e50fb65121726bb23a686746f68032ff1cb1/LICENSE
+- Zend Engine 8.3.36: https://raw.githubusercontent.com/php/php-src/5ba6ad519229ac09fc4fc74155c76bdca69ae0de/Zend/LICENSE
+- zlib 1.2.13: https://github.com/madler/zlib/releases/download/v1.2.13/zlib-1.2.13.tar.gz
+
+This list is every row of engine/licenses.tsv (no wasm-ld trace).
