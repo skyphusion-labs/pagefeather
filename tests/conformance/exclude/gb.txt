@@ -1,0 +1,6 @@
+# Gutenberg test/e2e at GB_SHA: specs NOT run on a deployed site (#759).
+# Path (a glob) relative to test/e2e, then the reason. runner.py passes them as testIgnore.
+specs/editor/collaboration/**                           needs the RTC WebSocket provider (GUTENBERG_RTC_TEST_WS_PROVIDER)
+specs/editor/various/adding-inline-tokens.spec.js       writes files on the RUNNER disk
+specs/interactivity/router-regions.spec.ts              writes files on the RUNNER disk
+specs/interactivity/router-script-modules.spec.ts       writes files on the RUNNER disk

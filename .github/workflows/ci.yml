@@ -155,6 +155,13 @@ jobs:
           bash tests/fixtures/tests/theme-unit-test.sh
           # fetch.sh (#457): THEMES, the unpinned-slug refusal, the SHA, link and parent-theme refusals.
           bash tests/plugins/fetch-test.sh
+      - name: Conformance content and runner, offline (#759)
+        # prepare-content.sh against stub git repos, into the real deploy/import/content.sh; runner.py
+        # against a stub WordPress: the throwaway marker, the deny list, the #761 Basic stop, the cache
+        # label, no password in the output, the wrapper configs (node --check) and the baseline compare.
+        run: |
+          bash tests/conformance/prepare-content-test.sh
+          python3 -I tests/conformance/runner_test.py
       - name: b-dosql mail From address
         run: node --test spikes/b2-wordpress/tests/mail-from.test.mjs
       - name: b-dosql demo site lock

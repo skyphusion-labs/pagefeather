@@ -1,0 +1,5 @@
+# Pinned wordpress.org plugins for the conformance throwaway (#759), read by
+# tests/plugins/fetch.sh with SUITE=<this file>. Never for a real site.
+# wp-mail-logging: the WooCommerce external setup installs it; its email specs read the log.
+# slug version sha256-of-zip
+wp-mail-logging 1.17.1 051115048717cc37d682dd45526ad3552eb95937098930ce440b109228863311
