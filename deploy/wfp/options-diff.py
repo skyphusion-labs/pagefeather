@@ -14,7 +14,7 @@ What it compares (the lead's spec): NON-AUTOLOADED options by default (autoload 
 are read one by one, the path #794 hits); --all adds the autoloaded ones. Transients (_transient_*, _site_transient_*)
 are counted, not listed: they churn by design.
 
-SECRETS: an option whose NAME or VALUE looks secret-like (keys, tokens, passwords, salts, nonces, payment settings,
+SECRETS: an option whose NAME or VALUE looks secret-like (must_withhold) (keys, tokens, passwords, salts, nonces, payment settings,
 private keys...) is listed by NAME ONLY: its value is never printed, not even its length. Every other value is
 printed truncated (--width, default 100) with control characters escaped.
 
@@ -39,10 +39,10 @@ import sys
 
 AUTOLOADED = {"yes", "on", "auto", "auto-on"}
 TRANSIENT = re.compile(r"^_(site_)?transient_")
-SECRET_NAME = re.compile(
+WITHHOLD_BY_NAME = re.compile(
     r"(key|token|secret|passw|pwd|auth|salt|nonce|private|credential|licen[cs]e|session|cookie|hash|signature|"
     r"webhook|stripe|paypal|ppcp|square|braintree|smtp|mailgun|sendgrid|oauth|bearer|jwt|cert|api)", re.I)
-SECRET_VALUE = re.compile(
+WITHHOLD_BY_VALUE = re.compile(
     r"(sk_live_|sk_test_|rk_live_|pk_live_|whsec_|-----BEGIN|password|passwd|secret|api[_-]?key|access[_-]?token|"
     r"client[_-]?secret|private[_-]?key|bearer\s)", re.I)
 # The options table, whatever its prefix: an INSERT into a table named <prefix>options. A dump with more than one
@@ -104,8 +104,21 @@ def read_options(path, table=None):
     return rows
 
 
-def secret_like(name, *values):
-    return bool(SECRET_NAME.search(name)) or any(SECRET_VALUE.search(v or "") for v in values)
+def must_withhold(name, *values):
+    """True when the option's NAME or any of its VALUES looks secret-like: then only its name is ever reported."""
+    return bool(WITHHOLD_BY_NAME.search(name)) or any(WITHHOLD_BY_VALUE.search(v or "") for v in values)
+
+
+def withheld_row(name, id_changed, autoload):
+    """A row for an option whose value is withheld: built from its name and metadata ONLY (no value is passed in)."""
+    return {"name": name, "withheld": True, "idChanged": id_changed, "autoload": autoload}
+
+
+def shown_row(name, id_changed, autoload, old_value, new_value, width):
+    """A row for an option judged NOT secret-like (must_withhold false): its values, truncated and escaped."""
+    return {"name": name, "withheld": False, "idChanged": id_changed, "autoload": autoload,
+            "old": None if old_value is None else show(old_value, width),
+            "new": None if new_value is None else show(new_value, width)}
 
 
 def show(v, width):
@@ -171,14 +184,13 @@ def main(argv):
     d = diff(old, new, include_all)
 
     def rec(name, a, b):
-        sec = secret_like(name, a[1] if a else "", b[1] if b else "")
-        r = {"name": name, "secretLike": sec,
-             "idChanged": bool(a and b and a[0] != b[0]),
-             "autoload": [a[2] if a else None, b[2] if b else None]}
-        if not sec:
-            r["old"] = None if a is None else show(a[1], width)
-            r["new"] = None if b is None else show(b[1], width)
-        return r
+        # Decide FIRST whether the value is withheld; a withheld row is then built from the name and metadata alone,
+        # so no value of it reaches any printed structure (the CodeQL data flow, alert 36, and the reader's).
+        id_changed = bool(a and b and a[0] != b[0])
+        autoload = [a[2] if a else None, b[2] if b else None]
+        if must_withhold(name, a[1] if a else "", b[1] if b else ""):
+            return withheld_row(name, id_changed, autoload)
+        return shown_row(name, id_changed, autoload, a[1] if a else None, b[1] if b else None, width)
 
     report = {
         "older": os.path.basename(older), "newer": os.path.basename(newer),
@@ -202,7 +214,7 @@ def main(argv):
         print("\n%s" % title)
         for r in report[key]:
             tag = (" [id changed: the row was replaced]" if r["idChanged"] else "") + (" [autoload %s -> %s]" % tuple(r["autoload"]) if key == "changed" and r["autoload"][0] != r["autoload"][1] else "")
-            if r["secretLike"]:
+            if r["withheld"]:
                 print("  %s  (secret-like: value withheld)%s" % (r["name"], tag))
             else:
                 print("  %s%s" % (r["name"], tag))

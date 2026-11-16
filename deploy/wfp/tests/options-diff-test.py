@@ -88,7 +88,7 @@ check("--all adds the autoloaded ones", rc == 0 and "blogname" in out_all and "N
 rc, js, _ = run(a, b, "--json")
 r = json.loads(js)
 check("--json: the same counts", rc == 0 and len(r["changed"]) == 4 and len(r["added"]) == 1 and len(r["removed"]) == 1, str([len(r[k]) for k in ("changed", "added", "removed")]))
-check("--json: secret-like records carry no old or new", all("old" not in x and "new" not in x for x in r["changed"] if x["secretLike"]))
+check("--json: secret-like records carry no old or new", all("old" not in x and "new" not in x for x in r["changed"] if x["withheld"]))
 
 c = snap(os.path.join(d, "20261108T000000Z.ndjson.gz"), OLD)
 rc, out_dir, _ = run(d)
