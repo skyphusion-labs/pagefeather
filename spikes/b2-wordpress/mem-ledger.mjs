@@ -20,6 +20,7 @@ export function createLedger() {
 	let collected = 0, memCollected = 0;
 	const reg = typeof FinalizationRegistry === 'function' ? new FinalizationRegistry(() => { collected++; }) : null;
 	const memReg = typeof FinalizationRegistry === 'function' ? new FinalizationRegistry(() => { memCollected++; }) : null;
+	const memSeen = typeof WeakSet === 'function' ? new WeakSet() : null; // #705 finding 7: one finalizer entry per memory
 	const sizeOf = (m) => { try { return m && m.buffer ? m.buffer.byteLength : 0; } catch { return 0; } };
 	return {
 		/** A runtime was booted. memory is its WebAssembly.Memory (the module export), when known. */
@@ -27,7 +28,11 @@ export function createLedger() {
 			if (typeof WeakRef !== 'function' || !php) return;
 			runtimes.push({ serial, ref: new WeakRef(php), mem: memory ? new WeakRef(memory) : null });
 			if (reg) reg.register(php, serial);
-			if (memReg && memory) memReg.register(memory, serial);
+			// One Memory can serve several runtimes (a memory handed to a boot, #603): register it once, so one collection counts once.
+			if (memReg && memory && !(memSeen && memSeen.has(memory))) {
+				memReg.register(memory, serial);
+				if (memSeen) memSeen.add(memory);
+			}
 			if (runtimes.length > 64) runtimes.splice(0, runtimes.length - 64); // bounded; old entries are long gone
 		},
 		/**
@@ -38,6 +43,11 @@ export function createLedger() {
 		runtimes(currentSerial, heapOf) {
 			let live = 0, retired = 0, retiredBytes = 0, currentBytes = 0;
 			let memLive = 0, retiredMem = 0, retiredMemBytes = 0, currentMemBytes = 0;
+			// #598: one Memory can serve several runtimes (#603), so memories are counted once, by
+			// identity, and the current runtime's Memory is never counted as retired.
+			const cur = runtimes.find((r) => r.serial === currentSerial);
+			const curMem = cur && cur.mem ? cur.mem.deref() : null;
+			const seen = new Set();
 			for (const r of runtimes) {
 				const php = r.ref.deref();
 				if (php) {
@@ -48,10 +58,11 @@ export function createLedger() {
 					else { retired++; retiredBytes += b; }
 				}
 				const m = r.mem ? r.mem.deref() : null;
-				if (m) {
+				if (m && !seen.has(m)) {
+					seen.add(m);
 					memLive++;
 					const b = sizeOf(m);
-					if (r.serial === currentSerial) currentMemBytes = b;
+					if (m === curMem) currentMemBytes = b;
 					else { retiredMem++; retiredMemBytes += b; }
 				}
 			}

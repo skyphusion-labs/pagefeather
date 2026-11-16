@@ -42,20 +42,20 @@ async function loaderOf(e) {
 }
 
 // Boot PHP from an engine. opts: env, open (pagefeatherOpen), read (pagefeatherRead), noFetch.
-// Returns { php, imports } (the import object the loader built, to see what it wrapped).
+// Returns { php, imports, exports } (the import object the loader built, to see what it wrapped, and the instance exports).
 export async function boot(e, opts = {}) {
 	const loader = await loaderOf(e);
-	let imports = null;
+	let imports = null, exports = null;
 	const realFetch = globalThis.fetch;
 	if (opts.noFetch) globalThis.fetch = () => { throw new Error('the engine fetched while booting'); };
 	try {
 		const id = await loadPHPRuntime(loader, {
 			ENV: opts.env || { USE_ZEND_ALLOC: '0' },
-			instantiateWasm(imp, done) { imports = imp; const inst = new WebAssembly.Instance(e.module, imp); done(inst, e.module); return inst.exports; },
+			instantiateWasm(imp, done) { imports = imp; const inst = new WebAssembly.Instance(e.module, imp); exports = inst.exports; done(inst, e.module); return inst.exports; },
 			...(opts.open ? { pagefeatherOpen: opts.open } : {}),
 			...(opts.read ? { pagefeatherRead: opts.read } : {}),
 		});
-		return { php: new PHP(id), imports };
+		return { php: new PHP(id), imports, exports };
 	} finally { globalThis.fetch = realFetch; }
 }
 const run = async (php, code) => (await php.run({ code })).text;
@@ -65,16 +65,38 @@ async function jrun(php, code) {
 	try { return JSON.parse(t); } catch { assert.fail('PHP printed no JSON: ' + t.slice(0, 200)); }
 }
 
-// The initial memory (pages) of the wasm's own memory section.
-export function initialPages(bytes) {
+// The wasm's memory: the one its memory section defines, and the one it imports (#598: prepare.sh turns the first
+// into the second, env.memory, so the loader can hand a boot a retired runtime's memory). { min, max } in pages.
+export function memoryShape(bytes) {
 	const leb = (i) => { let r = 0, s = 0, x; do { x = bytes[i++]; r += (x & 0x7f) * 2 ** s; s += 7; } while (x & 0x80); return [r, i]; };
+	const str = (i) => { const [n, k] = leb(i); return [bytes.toString('utf8', k, k + n), k + n]; };
+	const limits = (i) => { const fl = bytes[i]; let [min, k] = leb(i + 1); let max = null; if (fl & 1) [max, k] = leb(k); return [{ min, max }, k]; };
+	const out = { defined: null, imported: null };
 	let i = 8;
 	while (i < bytes.length) {
 		const id = bytes[i++]; const [size, j] = leb(i); i = j;
-		if (id === 5) { const [, k] = leb(i); return leb(k + 1)[0]; }
+		if (id === 5) out.defined = limits(leb(i)[1])[0];
+		if (id === 2) {
+			let [n, k] = leb(i);
+			for (; n > 0; n--) {
+				let mod, field; [mod, k] = str(k); [field, k] = str(k);
+				const kind = bytes[k++];
+				if (kind === 0) k = leb(k)[1];
+				else if (kind === 1) k = limits(k + 1)[1];
+				else if (kind === 2) { let l; [l, k] = limits(k); out.imported = { module: mod, field, ...l }; }
+				else if (kind === 3) k += 2;
+				else if (kind === 4) k = leb(k + 1)[1];
+				else throw new Error('import kind ' + kind);
+			}
+		}
 		i += size;
 	}
-	return null;
+	return out;
+}
+// The initial memory (pages) of the wasm, defined or imported.
+export function initialPages(bytes) {
+	const m = memoryShape(bytes);
+	return (m.defined || m.imported || { min: null }).min;
 }
 
 const ms = (t) => new Promise((r) => setTimeout(r, t));
@@ -180,6 +202,22 @@ trait Pf582T {
 		assert.equal(initialPages(e.bytes), e.expect.initialPages);
 		const { php } = await boot(e);
 		assert.ok(php[PRIV].HEAPU8.buffer.byteLength >= e.expect.initialPages * 65536);
+	},
+	// #598: the engine IMPORTS its memory (prepare.sh), with the limits it defined, and the loader builds it with
+	// exactly those limits (one source: prepare.sh writes both, so a changed start page cannot LinkError). Each boot
+	// gets a NEW memory, and the runtime runs on the memory it imported.
+	async 'memory: imported (env.memory), and the loader builds it with the same limits'(e) {
+		const m = memoryShape(e.bytes);
+		assert.equal(m.defined, null, 'the module still defines its own memory');
+		assert.ok(m.imported && m.imported.module === 'env' && m.imported.field === 'memory', 'no env.memory import');
+		assert.equal(m.imported.min, e.expect.initialPages);
+		const lit = /wasmImports\['memory'\] = new WebAssembly\.Memory\(\{ initial: (\d+), maximum: (\d+) \}\)/.exec(e.js);
+		assert.ok(lit, 'the loader does not build the imported memory');
+		assert.deepEqual([Number(lit[1]), Number(lit[2])], [m.imported.min, m.imported.max], 'the loader and the import disagree on the limits');
+		const a = await boot(e), b = await boot(e);
+		assert.equal(await run(a.php, '<?php echo 6 * 7;'), '42');
+		assert.equal(a.php[PRIV].HEAPU8.buffer, a.exports.memory.buffer, 'the runtime is not on the memory it imported');
+		assert.notEqual(a.php[PRIV].HEAPU8.buffer, b.php[PRIV].HEAPU8.buffer, 'two boots share a memory');
 	},
 	// USE_ZEND_ALLOC=0: plain malloc, so the Zend allocator reports 0 (#547 reads it this way).
 	async 'allocator: USE_ZEND_ALLOC=0 is honoured'(e, opts = {}) {

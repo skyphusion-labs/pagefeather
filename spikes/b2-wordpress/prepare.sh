@@ -222,8 +222,14 @@ PY6
 
 # The module reserves 64 MiB (1024 pages) at start. A Worker isolate has 128 MB
 # for everything, so start at 24 MiB (384 pages) and let it grow on demand.
-# Its static data ends at 12.4 MiB. Both values are 2-byte LEB128, so the patch
-# keeps every offset.
+# Its static data ends at 12.4 MiB.
+# #598 / #603: the memory is no longer DEFINED by the module but IMPORTED (env.memory, the same limits: 384
+# pages at start, the module's own maximum), so a boot CAN be handed an existing memory instead of a second one:
+# the memory reuse of #603, which this build does not do yet (nothing hands one in). The section-5 memory is removed and an import is appended to section 2:
+# the export "memory" keeps index 0 (an imported memory takes index 0) and no function index moves (memories are
+# their own index space). With the flag off the loader imports a NEW memory of these limits: the same memory,
+# built by the loader instead of by the module. One transform, the npm and the lean engine alike (both define
+# exactly one memory and export it, measured 2026-11-15).
 python3 - <<'PY'
 import os
 src = os.environ.get('PF_ENGINE_WASM') or 'node_modules/@php-wasm/web-8-3/jspi/8_3_36/php_8_3.wasm'
@@ -234,26 +240,87 @@ def leb(b, i):
     while True:
         x = b[i]; i += 1; r |= (x & 0x7f) << s; s += 7
         if x < 0x80: return r, i
-i = 8; done = False
+def enc(n):
+    out = bytearray()
+    while True:
+        x = n & 0x7f; n >>= 7
+        out.append(x | (0x80 if n else 0))
+        if not n: return bytes(out)
+secs = []  # (id, payload)
+i = 8
 while i < len(b):
-    sid = b[i]; i += 1; size, i = leb(b, i); start = i
-    if sid == 5:
-        n, j = leb(b, i); flags = b[j]; j += 1; k = j
-        initial, j = leb(b, j)
-        assert initial == 1024 and j - k == 2, (initial, j - k)
-        b[k:j] = bytes([0x80, 0x03])  # 384
-        done = True
-    i = start + size
-assert done, 'memory section not found'
+    sid = b[i]; i += 1; size, i = leb(b, i)
+    secs.append((sid, bytes(b[i:i + size]))); i += size
+mem = [p for sid, p in secs if sid == 5]
+imp = [p for sid, p in secs if sid == 2]
+assert len(imp) == 1, 'no import section'
+# The ONE source of the memory limits (#705 review, finding 6): the start is START_PAGES (policy, above); the maximum
+# is the module's own. Both go into the import entry here, and into the loader below, so the JS can never ask for a
+# memory the import does not accept (a LinkError).
+START_PAGES = 384
+def import_entries(payload):
+    # [(module, field, kind, limits or None, start, end)] for the import section payload
+    cnt, k = leb(payload, 0); out = []
+    for _ in range(cnt):
+        st = k
+        ml, k = leb(payload, k); mod = payload[k:k + ml].decode(); k += ml
+        fl, k = leb(payload, k); fld = payload[k:k + fl].decode(); k += fl
+        kind = payload[k]; k += 1; lim = None
+        if kind == 0: _, k = leb(payload, k)
+        elif kind == 1: k += 1; f = payload[k]; k += 1; _, k = leb(payload, k); k = leb(payload, k)[1] if f & 1 else k
+        elif kind == 2:
+            f = payload[k]; k += 1; mn, k = leb(payload, k); mx = None
+            if f & 1: mx, k = leb(payload, k)
+            lim = (f, mn, mx)
+        elif kind == 3: k += 2
+        elif kind == 4: k += 1; _, k = leb(payload, k)
+        else: raise SystemExit('import kind %d' % kind)
+        out.append((mod, fld, kind, lim, st, k))
+    return out
+entries = import_entries(imp[0])
+mem_imports = [e for e in entries if e[2] == 2]
+# Idempotent (#598): a module this transform already made (no memory section, an env.memory import with a maximum)
+# passes through untouched, its limits read from that import. Anything else without a memory section is refused.
+done_mem = not mem and len(mem_imports) == 1 and mem_imports[0][:2] == ('env', 'memory') and mem_imports[0][3][0] == 1
+assert done_mem or (len(mem) == 1 and not mem_imports), 'memory section not found, and the module does not import env.memory as this transform makes it'
+if done_mem:
+    _, PAGES0, PAGES_MAX = mem_imports[0][3]
+else:
+    n, j = leb(mem[0], 0); flags = mem[0][j]; j += 1
+    initial, j = leb(mem[0], j); maximum, j = leb(mem[0], j) if flags & 1 else (None, j)
+    assert n == 1 and flags == 1 and maximum is not None and initial >= START_PAGES, (n, flags, initial, maximum)
+    PAGES0, PAGES_MAX = START_PAGES, maximum
+    entry = enc(3) + b'env' + enc(6) + b'memory' + bytes([0x02, 0x01]) + enc(PAGES0) + enc(PAGES_MAX)
+    cnt, j = leb(imp[0], 0)
+    new_imp = enc(cnt + 1) + imp[0][j:] + entry
+    out = bytearray(b[:8])
+    for sid, p_ in secs:
+        if sid == 5:
+            continue
+        if sid == 2:
+            p_ = new_imp
+        out += bytes([sid]) + enc(len(p_)) + p_
+    b = out
 # OPcache runs only under the SAPIs in its own list (Apache, FPM, FastCGI,
 # FrankenPHP, LiteSpeed, uWSGI). php-wasm's SAPI is "wasm", so OPcache was off
 # (measured 2026-11-04: opcache_compile_file() returned false). Change the
 # list entry "frankenphp" to "wasm". Only the first 5 bytes change, to
 # "wasm\0", so a string that shares the tail ("php", "enphp") is not touched.
+# Idempotent too: a list already patched ("\0wasm\0enphp\0") passes through.
 old = b'\x00frankenphp\x00'
-assert b.count(old) == 1, b.count(old)
-i = b.find(old)
-b[i + 1:i + 6] = b'wasm\x00'
+done_sapi = b.count(old) == 0 and b.count(b'\x00wasm\x00enphp\x00') == 1
+assert done_sapi or b.count(old) == 1, b.count(old)
+if not done_sapi:
+    i = b.find(old)
+    b[i + 1:i + 6] = b'wasm\x00'
 open(dst, 'wb').write(b)
-print('patched initial memory: 1024 -> 384 pages; OPcache SAPI list: frankenphp -> wasm')
+# The loader satisfies env.memory with a NEW memory of exactly those limits: what the module had, built by the
+# loader instead of by the module (#598). The literal is written from PAGES0 and PAGES_MAX, never typed twice.
+jp = 'vendor/php_8_3.js'; js = open(jp).read()
+old = "\tfunction getWasmImports() {\n"
+assert js.count(old) == 1, 'getWasmImports not found'
+js = js.replace(old, old + "\t\t// Pagefeather (#598): the module imports its memory; a new one of the module's own limits (prepare.sh).\n"
+    "\t\twasmImports['memory'] = new WebAssembly.Memory({ initial: %d, maximum: %d });\n" % (PAGES0, PAGES_MAX))
+open(jp, 'w').write(js)
+print('%s initial memory: %d pages, imported (env.memory, max %d pages; the loader builds it); OPcache SAPI list: frankenphp -> wasm%s' % ('kept (already transformed)' if done_mem else 'patched', PAGES0, PAGES_MAX, ' (kept)' if done_sapi else ''))
 PY
