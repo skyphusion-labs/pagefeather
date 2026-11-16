@@ -66,8 +66,8 @@ ok('vars come before bindings in the assembled order',
   asm.bindings[0].name === 'IMAGES' && asm.bindings[asm.bindings.length - 1].name === 'OC_KV');
 
 // 4. bDosqlVars is the RUNTIME var subset only (not the integration vars), in order.
-ok('bDosqlVars emits exactly the six runtime vars in order',
-  bDosqlVars(DEFAULT_OPTS).map((v) => v.name).join(',') === 'PHP_ENV,SITE_ORIGIN,PHP_IN_DO,PHP_LOCATION,PHP_DO_POOL,DB_IN_DO');
+ok('bDosqlVars emits exactly the seven runtime vars in order (#589 part 1: REQUEST_FRAMES on by default, after DB_IN_DO)',
+  bDosqlVars(DEFAULT_OPTS).map((v) => v.name).join(',') === 'PHP_ENV,SITE_ORIGIN,PHP_IN_DO,PHP_LOCATION,PHP_DO_POOL,DB_IN_DO,REQUEST_FRAMES');
 
 // 5. PDF opt-in: exactly one BROWSER binding appended after the default set,
 // INVOICE_TOKEN generated, and the DEFAULT set is untouched (no browser, no secret).
