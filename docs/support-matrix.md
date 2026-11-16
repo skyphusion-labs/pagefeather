@@ -38,7 +38,7 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 | Cron | not measured | not measured | not measured | not measured |
 | Mail | not measured | not measured | not measured | not measured |
 | Media uploads | not measured | yes without WooCommerce ([results.md](results.md) 2026-11-07 and 11-08: R2 and Cloudflare Images); with WooCommerce not measured | not measured | not measured |
-| Search | not measured; semantic search limited (opt-in, plugin change); limited: a very long search term fails on SQLite (#805) | the same | the same | not measured; not affected by #805 (MySQL) |
+| Search | yes for a long term: a search builds `%term%`, which is rewritten over SQLite's 50-byte LIKE cap (#805, measured locally); semantic search limited (opt-in, plugin change); limited: a LIKE with a wildcard INSIDE it, over 50 bytes, fails (#805, plugin-built only) | the same | the same | not measured; not affected by #805 (MySQL) |
 | Comments | not measured | not measured | not measured | not measured |
 | Site Health | limited: directory sizes answer 500 (#780) | limited: directory sizes answer 500 (#780) | limited: directory sizes answer 500 (#780) | not measured |
 | Multisite | not measured | not measured | not measured | not measured |
@@ -135,17 +135,17 @@ The feature needs the `BROWSER` binding. `deploy/wfp` and `deploy.sh` rendered n
 
 The one-click CLI implements only `site add`. Its `update` and `remove` refuse, and they name `deploy/wfp/site`, which cannot manage a one-click site. An issue for it is being filed.
 
-### A very long search term fails on SQLite (#805)
+### A LIKE with a wildcard inside it, over 50 bytes, fails on SQLite (#805)
 
-SQLite caps the length of a `LIKE` pattern. It answers "LIKE or GLOB pattern too complex". MySQL has no such cap.
+The Durable Object's SQLite caps a `LIKE` pattern at **50 bytes**, not SQLite's default 50,000 (measured locally, 2026-11-17: 50 bytes pass, 51 fail, "LIKE or GLOB pattern too complex"). D1 documents the same 50. MySQL has no such cap. Hyperdrive runs MySQL, so #805 does not affect it.
 
-- **Where:** the SQLite tiers (Free DO, Paid DO and WfP). Hyperdrive runs MySQL, so #805 does not affect it.
-- **What fails:** a search (`?s=`) with a very long term, or any query with a very long `LIKE` pattern. The same query succeeds on MySQL.
-- **What the visitor sees:** the error is deterministic. By #795's ruling, it goes back to WordPress through wpdb's error path, as a MySQL error does. So a search finds nothing, with no 5xx. A long search has not been measured on its own yet.
-- **Measured at setup:** WordPress hit it once, on its own. It looked for an existing page by a long pattern ([#795](https://github.com/skyphusion-labs/pagefeather/issues/795#issuecomment-6922159077), local, npm and lean).
-- **Not measured yet:** the exact threshold on the Durable Object's SQLite. The SQLite default is 50,000 bytes.
-
-A fix needs its own ruling (#805).
+- **Rewritten, so it works at any length** (the SQL dialect, `php/d1-dialect.php`): a pattern over the cap that is ONE literal becomes a plain comparison with the same result:
+  - `'%term%'` (every WordPress search: the site search, the users list, the REST searches, `meta_query` LIKE);
+  - `'term%'` (a prefix);
+  - `'term'` (an exact match, such as a plugin calling `get_users()` with a long search and no `*`; before #805 this returned an empty list).
+  NOT LIKE is rewritten too. A pattern at or under 50 bytes is left to SQLite as before.
+- **Still a limit:** a pattern over 50 bytes with a wildcard INSIDE it (`_` anywhere, or `%` between literals), or a suffix match (`'%term'`). SQLite refuses it. **No WordPress core path builds one from user input** (measured on #805). Plugin code that writes such a `LIKE` by hand can. WooCommerce's cart-page check is the one known case, and `php/woo-cart-page.php` handles it (#744).
+- **What the visitor sees in that case:** an empty result with HTTP 200, a plausible wrong answer. Whether a deterministic refusal should answer a visible error instead is #836.
 
 ### Semantic search needs a plugin change
 
