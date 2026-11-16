@@ -4,6 +4,7 @@ import { sender, replyTo, deliverableRecipients } from './mail-from.mjs';
 import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, handleQueuedEmail } from './email-queue.mjs';
 import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
+import { installPhpBasicAuth } from './php-auth.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
 import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-arm.mjs';
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
@@ -1642,6 +1643,10 @@ async function boot(origin) {
 		...(reuseActive() ? { pagefeatherReuse: true } : {}),
 	});
 	const php = new PHP(id);
+	// #761: php-wasm copies Authorization onto HTTP_AUTHORIZATION only. Apache with
+	// mod_php also sets PHP_AUTH_USER and PHP_AUTH_PW. One install covers the object
+	// and approach A's Worker: both run this runtime.
+	installPhpBasicAuth(php);
 	lastBootedPhp = php;
 	runtimeBootBytes = php[__private__dont__use].HEAPU8.length; // #603 (A): what this runtime starts from
 	if (instMemory) memOf.set(php, instMemory); // #598: the memory the spare keeps at release
