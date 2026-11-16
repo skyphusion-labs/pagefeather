@@ -92,7 +92,7 @@ def arm(rows, lg):
     A["resets"] = sum(1 for r in a + g if r.get("x-isolate-reset"))
     A["noAnswer"] = sum(1 for r in a if r.get("status") == "EXC")
     A["lostWrites"] = sum(1 for r in rb if r.get("lostWrite"))
-    A["writeLossHdr"] = sum(1 for r in a if r.get("kind") == "save" and r.get("x-write-loss") not in (None, "none"))
+    A["writeLossHdr"] = sum(1 for r in a if r.get("kind") == "save" and r.get("x-write-loss") not in (None, "none", "rolled-back"))
     A["readBackUnknown"] = sum(1 for r in rb if r.get("found") is None)
     if lg is not None:
         A["outcomes"] = {}
@@ -203,12 +203,23 @@ def main(argv):
             bar(1, "no stacking (on)", "FAIL", "%d stacked readings, %d named refused offers; first: %s memLive %s retiredMemMiB %s" % (len(st), len(named), st[0]["perfId"], st[0].get("memLive"), st[0].get("retiredMemMiB")))
     # 2
     d_on, d_off = on["resets"] + on["noAnswer"], off["resets"] + off["noAnswer"]
-    detail = "client: resets+no-answer on %d, off %d; lost writes on %d, off %d" % (d_on, d_off, on["lostWrites"], off["lostWrites"])
-    if "exceededMemory" in on and "exceededMemory" in off:
+    # Lost writes as the spec counts them (issuecomment-6910964924: "the write-loss logs"), plus silent losses (a 2xx
+    # save absent on read-back), which log no write-loss line. Without both arms' logs, the client stands in: saves
+    # answered with an x-write-loss header (1, 2, unknown; not rolled-back), plus silent losses.
+    logs2 = "exceededMemory" in on and "exceededMemory" in off
+    def lost(A):
+        if logs2:
+            return A["logWriteLoss"] + A["lostWrites"]
+        return A["writeLossHdr"] + A["lostWrites"]
+    lw_on, lw_off = lost(on), lost(off)
+    detail = "lost writes (%s) on %d, off %d (silent on %d, off %d); client resets+no-answer on %d, off %d" % (
+        "write-loss logs + silent" if logs2 else "client x-write-loss + silent", lw_on, lw_off, on["lostWrites"], off["lostWrites"], d_on, d_off)
+    worse_lw = lw_on > lw_off or (lw_off == 0 and lw_on > 0)
+    if logs2:
         detail += "; exceededMemory on %d, off %d" % (on["exceededMemory"], off["exceededMemory"])
-        v = "pass" if (d_on <= d_off and on["exceededMemory"] <= off["exceededMemory"] and on["lostWrites"] <= off["lostWrites"]) else "FAIL"
+        v = "pass" if (d_on <= d_off and on["exceededMemory"] <= off["exceededMemory"] and not worse_lw) else "FAIL"
     else:
-        v = "FAIL" if (d_on > d_off or on["lostWrites"] > off["lostWrites"]) else "could not measure"
+        v = "FAIL" if (d_on > d_off or worse_lw) else "could not measure"
         detail += "; exceededMemory needs both arms' logs"
     if on["readBackUnknown"]:
         detail += "; %d read-backs unknown" % on["readBackUnknown"]
