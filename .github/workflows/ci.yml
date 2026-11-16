@@ -61,7 +61,9 @@ jobs:
           tests/ci/no-process-sub-test.sh
       - name: Release bundle manifest (issue #405)
         # deploy/release: the manifest the one-click admin checks a downloaded bundle against. Offline.
-        run: node deploy/release/tests/bundle-manifest-test.mjs
+        run: |
+          node deploy/release/tests/bundle-manifest-test.mjs
+          node deploy/release/tests/vendor-sync-test.mjs
       - name: Live-site code redeploys refuse a mismatch (fleet-chezmoi#2620)
         run: |
           bash deploy/tests/code-only-test.sh
@@ -404,6 +406,7 @@ jobs:
         # deploy/wfp (issue #35): the dispatcher, the rendered configs (one dispatcher config), the namespace-script check, the new site map write wait.
         run: |
           node deploy/wfp/tests/dispatcher-test.mjs
+          node deploy/wfp/tests/vendor-sync-test.mjs
           deploy/wfp/tests/render-test.sh
           deploy/wfp/tests/remote-assets-test.sh
           deploy/wfp/tests/remote-default-test.sh
@@ -436,6 +439,7 @@ jobs:
           bash deploy/wfp/tests/fault-early-test.sh
           bash deploy/wfp/tests/obs-wfp-live-test.sh
           node deploy/provision/tests/ops-test.mjs
+          node deploy/provision/tests/vendor-sync-test.mjs
           node deploy/provision/tests/provision-test.mjs
           node deploy/provision/tests/cli-test.mjs
           node deploy/provision/tests/worker-test.mjs
