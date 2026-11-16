@@ -42,6 +42,7 @@ with tempfile.TemporaryDirectory() as d:
     idx = json.loads(open(os.path.join(b, 'opcache-boot-index.js')).read()[len('export default '):].rstrip(';\n'))
     ok('the index names the build id, the chunk and the file count', idx['id'] == 'abc123-wooprimed' and idx['chunks'] == ['boot-0.zip'] and idx['files'] == len(boot))
     chunk = os.path.join(b, 'public', '_pf', 'abc123-wooprimed', 'boot-0.zip')
+    ok('#801: the index records each chunk length, which the loader checks', idx.get('chunkBytes') == [os.path.getsize(chunk)])
     ok('the asset chunk holds the boot files', os.path.isfile(chunk) and sorted(zipfile.ZipFile(chunk).namelist()) == boot)
 with tempfile.TemporaryDirectory() as d:
     r = run(setup(d, files, warm, nwarm=3))

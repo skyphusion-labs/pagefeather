@@ -704,6 +704,11 @@ async function loadBootPacks() {
 					return new Uint8Array(await r.arrayBuffer());
 				}),
 			);
+			// #801: a pack that is not the length the split wrote (truncated, or another build's) is refused, loudly,
+			// rather than reported as 'assets' while OPcache compiles the boot from source. An older index has no
+			// chunkBytes and is not checked.
+			const want = Array.isArray(OPCACHE_BOOT.chunkBytes) ? OPCACHE_BOOT.chunkBytes : null;
+			if (want) packs.forEach((p, i) => { if (p.length !== want[i]) throw new Error(OPCACHE_BOOT.chunks[i] + ' is ' + p.length + ' bytes, the index says ' + want[i]); });
 			const kib = Math.round(packs.reduce((n, p) => n + p.length, 0) / 1024);
 			console.log(JSON.stringify({ m: 'l1', source: 'assets', chunks: packs.length, kib, ms: Date.now() - t }));
 			l1State = `assets ${kib}KiB ${Date.now() - t}ms`;
