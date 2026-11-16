@@ -22,6 +22,34 @@ function rig(opts = {}) {
 	return { w, store, log, clock, kvPut };
 }
 
+// `last` is closed over. Record every Map built while the writer is constructed and pick the one
+// whose values are { v, t }, so a test can measure what the writer kept.
+function rigTracked(opts = {}) {
+	const made = [];
+	const Orig = globalThis.Map;
+	globalThis.Map = class TrackedMap extends Orig {
+		constructor(...args) { super(...args); made.push(this); }
+	};
+	try {
+		return { ...rig(opts), maps: made };
+	} finally {
+		globalThis.Map = Orig;
+	}
+}
+function lastMap(maps) {
+	for (const m of maps) {
+		for (const val of m.values()) {
+			if (val && typeof val === 'object' && 'v' in val && 't' in val && !('ttl' in val)) return m;
+		}
+	}
+	throw new Error('last map not found');
+}
+function retained(m) {
+	let bytes = 0;
+	for (const e of m.values()) bytes += e.v.length;
+	return { entries: m.size, bytes };
+}
+
 test('THE LOAD-RUN CASE: 50 identical sets of one key within a second make ONE put, no 429', async () => {
 	const { w, log } = rig({ capPerRequest: 1000 });
 	const ps = [];
@@ -99,4 +127,34 @@ test('index.js: every KV put and delete goes through the writer; reads are noted
 	assert.match(src, /ocCtx\.waitUntil\(ocL2Writer\(\)\.del\(ocKvKey\(k\)\)\)/);
 	assert.match(src, /if \(ocL2W\) ocL2W\.beginRequest\(\);/);
 	assert.match(src, /l2w: \{ \.\.\.ocL2W\.counts \}/);
+});
+
+// #711. Each options-version bump is a new salted key (object-cache-js.php pkey). The per-request
+// PUT cap is raised so this measures `last`, which beginRequest does not clear. The cap the writer
+// must keep: 1024 entries and 2 MiB of values. An uncapped `last` fails both.
+const LAST_ENTRIES = 1024;
+const LAST_BYTES = 2 * 1024 * 1024;
+test('#711: N version bumps (distinct keys) leave last bounded by entries and by value bytes', async () => {
+	const N = 3000;
+	const fat = 'x'.repeat(4096);
+	const { w, maps } = rigTracked({ capPerRequest: N + 10 });
+	for (let i = 0; i < N; i++) await w.set('oc:options%00v' + i + '%001alloptions', fat, 60);
+	const r = retained(lastMap(maps));
+	assert.ok(r.entries <= LAST_ENTRIES && r.bytes <= LAST_BYTES,
+		`last retained ${r.entries} entries and ${r.bytes} bytes after ${N} distinct keys; cap is ${LAST_ENTRIES} entries and ${LAST_BYTES} bytes`);
+	// The key just written is the newest, so the same value is still skipped (#500).
+	assert.equal(w.set('oc:options%00v' + (N - 1) + '%001alloptions', fat, 60), null);
+	assert.equal(w.counts.skipped, 1);
+});
+
+test('#500: a write of the same value as last time is still skipped', async () => {
+	const { w, log } = rig();
+	const key = 'oc:options%00v3%001alloptions';
+	await w.set(key, 'same-value', 60);
+	assert.equal(w.set(key, 'same-value', 60), null);
+	assert.equal(log.puts, 1);
+	assert.equal(w.counts.skipped, 1);
+	await w.set(key, 'other-value', 60);
+	assert.equal(log.puts, 2, 'a different value is still written');
+	assert.equal(w.counts.skipped, 1);
 });

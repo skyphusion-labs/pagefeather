@@ -110,6 +110,7 @@ jobs:
       - name: approach A keeps FOUND_ROWS and LAST_INSERT_ID on one pooled connection (issue #498)
         run: php tests/a/found-rows-test.php
       - name: approach A object-cache KV writes are coalesced and 429s counted (issue #500)
+        # #711: oc-l2-writer.test.mjs also asserts `last` stays within 1024 entries and 2 MiB.
         run: node --test spikes/b2-wordpress/tests/oc-l2-writer.test.mjs
       - name: b-dosql the request frame answers "nothing saved" only on the /_frame proof (issue #352)
         run: node --test spikes/b2-wordpress/tests/frame-probe.test.mjs
