@@ -48,7 +48,7 @@ req --data-urlencode "pwd=$PW" -d 'log=admin&wp-submit=Log+In&redirect_to=%2Fwp-
 # The check of one round (prints the new memReuse.taken on stdout)
 read -r -d '' CHECK <<'PY'
 import json, sys
-h, code, rnd, taken0 = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+h, code, rnd, taken0 = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4])  # sys.argv[5]: REUSE
 hdr = {}
 for line in open(h, errors="replace"):
     if ":" in line:
@@ -68,7 +68,9 @@ if code != 200:
 if rt.get("retiredMem", 0) > 0 or rt.get("memLive", 0) != 1:
     sys.exit("%s VIOLATION: the request booted beside %s MiB of a retired runtime still resident (memLive %s)" % (tag, rt.get("retiredMemMiB"), rt.get("memLive")))
 taken = int(mr.get("taken", 0))
-if taken <= taken0:
+# #798 (the lead's ruling): with REUSE=off nothing can be taken for reuse, so that check would make the red control
+# fail for a TAUTOLOGY. The red must fail on its own reason, the stacking VIOLATION above; opcache-build greps for it.
+if sys.argv[5] != "off" and taken <= taken0:
     sys.exit("%s no memory was taken for reuse (taken %d, before %d)" % (tag, taken, taken0))
 print("%s ok: ONE memory, reused (taken %d)" % (tag, taken), file=sys.stderr)
 print(taken)
@@ -80,6 +82,6 @@ for round in 1 2; do
   grep -qi '^x-runtime-recycled:' "$H" || { echo "recycle-stack: round $round: the forced recycle was not done (status $code)"; exit 1; }
   # the next admin request, at once
   code=$(req "${ST[@]}" -H 'x-mem-ledger: 1' "$B/wp-admin/edit.php")
-  taken0=$(python3 -I -c "$CHECK" "$H" "$code" "$round" "$taken0") || exit 1
+  taken0=$(python3 -I -c "$CHECK" "$H" "$code" "$round" "$taken0" "${REUSE:-on}") || exit 1
 done
 echo "recycle-stack: ok: two recycles, one memory each time, no retired memory resident"
