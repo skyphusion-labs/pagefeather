@@ -436,6 +436,34 @@ def has_woo():
 WOO = {"1": True, "0": False}.get(os.environ.get("WOO", ""), None)
 PLAIN = ["/", "/?p=1", "/?page_id=2", "/?s=hello", "/?cat=1", "/?feed=rss2"]
 
+
+def resolve_plain(paths, hops=5):
+    """#760: each PLAIN path at the URL that renders it, resolved once before the run.
+
+    A fresh install has pretty permalinks now (stock's choice), so /?p=1, /?page_id=2, /?cat=1 and
+    /?feed=rss2 answer 301 to their pretty URL, and this opener follows no redirect: the run would
+    measure four cheap redirects in place of four renders, and no longer compare with earlier runs.
+    So each path follows its same-site Location (up to `hops`) and the run uses where it lands, with
+    the query string WordPress put there. A path that does not redirect is kept as it is (plain
+    permalinks, or search). A redirect off this site, or one that never settles, exits: the run
+    would not be measuring this site's pages."""
+    host = urllib.parse.urlparse(B).netloc
+    out = []
+    for p in paths:
+        cur = p
+        for _ in range(hops):
+            r = req(opener(), cur)
+            if r["code"] not in (301, 302, 303, 307, 308):
+                break
+            loc = urllib.parse.urlparse(urllib.parse.urljoin(B + cur, (r["h"] or {}).get("Location") or ""))
+            if loc.netloc != host:
+                sys.exit("PLAIN path %s redirects off this site (%s)" % (p, loc.netloc))
+            cur = loc.path + ("?" + loc.query if loc.query else "")
+        else:
+            sys.exit("PLAIN path %s did not settle in %d redirects" % (p, hops))
+        out.append(cur)
+    return out
+
 if __name__ == "__main__":
     if WOO is None:
         WOO = has_woo()
@@ -447,7 +475,8 @@ if __name__ == "__main__":
             sys.exit("no purchasable products without a stock limit (SETUP=1, the default, makes 5)")
     else:
         BUYERS = 0.0
-        prods = [{"permalink": B + p} for p in PLAIN]
+        # #760: where each page renders, so a redirect is never measured as the page.
+        prods = [{"permalink": B + p} for p in resolve_plain(PLAIN)]
     if (ADMINS > 0 or CLEANUP) and not os.environ.get("ADMIN_PASSWORD"):
         sys.exit("ADMINS and CLEANUP need ADMIN_PASSWORD")
     before = {}

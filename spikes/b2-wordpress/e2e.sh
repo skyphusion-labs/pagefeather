@@ -20,6 +20,17 @@ import json,sys
 for f in json.load(sys.stdin).get('failures',[])[:3]: print('   ', f['error'][:140], '|', f['sql'][:160])"; }
 }
 get() { curl -s -c "$J" -b "$J" -o "$T/body" -D "$H" -w '%{time_total}' "$B$2" > "$T/t"; row "$1"; }
+# getl: a page GET that follows WordPress's canonical redirect (#760). A fresh install has pretty permalinks
+# now, as stock does, so /?p=1 answers 301 to its pretty link, and a GET that stopped there primed and
+# checked no template. Every hop's Location must stay on this site; the row is the final answer.
+getl() {
+  curl -s -L --max-redirs 5 -c "$J" -b "$J" -o "$T/body" -D "$T/hops" -w '%{time_total}' "$B$2" > "$T/t"
+  local loc
+  grep -i '^location:' "$T/hops" | cut -d: -f2- | tr -d ' \r' > "$T/locs" || true
+  while read -r loc; do case "$loc" in "$B"/*|"$B"|/*) ;; *) echo "   redirect to another origin: $loc"; bad=1 ;; esac; done < "$T/locs"
+  awk '/^HTTP\//{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' "$T/hops" > "$H"
+  row "$1"
+}
 # Issue #578: every script and stylesheet a page loads from this site must answer a real body. build.sh
 # keeps no .js of core in PHP's files, so a script PHP builds from them (load-scripts.php)
 # answered 200 with one newline per handle, and wp-admin had no jQuery. Core sends
@@ -59,14 +70,14 @@ if grep -q 'wp-emoji-settings' "$T/body"; then
   grep -q 'script#wp-emoji-settings' "$T/body" && echo "emoji loader inline: present" || { echo "   GET / emoji loader inline script is empty (#578)"; bad=1; }
 fi
 get 'GET / (warm)' /
-get 'GET /?p=1' '/?p=1'
-get 'GET /?page_id=2' '/?page_id=2'
-get 'GET /?feed=rss2' '/?feed=rss2'
-get 'GET /?s=hello' '/?s=hello'
-get 'GET /?cat=1' '/?cat=1'
-get 'GET /?m=2026' "/?m=$(date -u +%Y)"
+getl 'GET /?p=1' '/?p=1'
+getl 'GET /?page_id=2' '/?page_id=2'
+getl 'GET /?feed=rss2' '/?feed=rss2'
+getl 'GET /?s=hello' '/?s=hello'
+getl 'GET /?cat=1' '/?cat=1'
+getl 'GET /?m=2026' "/?m=$(date -u +%Y)"
 # #578: the embed scripts are printed inline from wp-includes/js too.
-get 'GET embed page' '/?p=1&embed=true'
+getl 'GET embed page' '/?p=1&embed=true'
 grep -q 'postMessage({message:' "$T/body" && echo "embed template script inline: present" || { echo "   embed page: wp-embed-template script is empty (#578)"; bad=1; }
 get 'GET REST oembed' "/?rest_route=/oembed/1.0/embed&url=$(python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1] + '/?p=1', safe=''))" "$B")"
 grep -q 'receiveEmbedMessage' "$T/body" && echo "oembed wp-embed script inline: present" || { echo "   oembed html: wp-embed script is empty (#578)"; bad=1; }
@@ -82,7 +93,7 @@ curl -s -c "$J" -b "$J" -o "$T/post" -D "$H" -H "X-WP-Nonce: $N" -H 'Content-Typ
   -d '{"title":"Written to D1","content":"<!-- wp:paragraph --><p>This post lives in Cloudflare D1.</p><!-- /wp:paragraph -->","status":"publish"}' \
   "$B/?rest_route=/wp/v2/posts"; row 'POST REST create post'
 id=$(python3 -c "import json; print(json.load(open('$T/post')).get('id',''))")
-get 'GET new post' "/?p=$id"
+getl 'GET new post' "/?p=$id"
 grep -q 'This post lives in Cloudflare D1' "$T/body" && echo "new post content present" || { echo "new post content MISSING"; bad=1; }
 get 'GET /wp-admin/edit.php' /wp-admin/edit.php
 get 'GET upload.php' /wp-admin/upload.php

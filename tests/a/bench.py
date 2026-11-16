@@ -8,7 +8,7 @@ N runs, plus queries and database ms per request where the target reports them
 (our x-d1-calls / x-d1-ms; HostlessWP's x-hostlesswp JSON).
 Usage: B=<url> ADMIN_PASSWORD=... N=10 python3 tests/a/bench.py
 """
-import json, os, statistics, sys, uuid
+import json, os, statistics, sys, urllib.parse, uuid
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "spikes", "b2-wordpress", "tests"))
 import break_lib as L
 
@@ -20,7 +20,9 @@ admin = L.login()
 # The first published post, not ?p=1: plugin content can take the low ids.
 try:
     first = json.loads(L.req(anon, "/?rest_route=/wp/v2/posts&per_page=1&orderby=id&order=asc")["body"])
-    PAGES[1] = ("post", "/?p=%d" % first[0]["id"], False)
+    # #760: its own link: /?p=<id> answers 301 to it under pretty permalinks, and a redirect is not a render.
+    _l = urllib.parse.urlsplit(first[0].get("link") or "")
+    PAGES[1] = ("post", (_l.path + ("?" + _l.query if _l.query else "")) if _l.path else "/?p=%d" % first[0]["id"], False)
 except (ValueError, IndexError, KeyError):
     pass  # lookup failed (for example a CPU limit on Workers Free): keep ?p=1
 out = {"target": L.B, "n": N, "pages": {}}
