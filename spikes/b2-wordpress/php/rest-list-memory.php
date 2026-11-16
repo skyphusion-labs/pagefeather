@@ -18,9 +18,13 @@
  *      was the whole cost (the same 177 MiB with the columns trimmed). The query is marked thumbnails_cached
  *      (posts_results), so it is skipped; featured_media, when asked, still reads the post meta WP_Query primed.
  *    - a permission check (check_read_permission, check_update_permission, then map_meta_cap) may load one full post
- *      (get_post); after each item is prepared its post cache entry is dropped (rest_prepare_<type>), so at most
- *      about one full row is alive at a time. A cache entry is only a cache: dropping it costs a later request a
- *      reload, never correctness.
+ *      (get_post); after each item is prepared, THIS request's copy of it is dropped (rest_prepare_<type>), so at
+ *      most about one full row is alive at a time. Only the request's copy: JS_Object_Cache::forget_local() makes no
+ *      bridge call, so the shared Map and the KV tier keep the post (a wp_cache_delete would delete it there, one
+ *      delete per item); core's own cache is per request, so there wp_cache_delete is the same thing; any other
+ *      persistent cache is left alone. Nothing else in the request can hold the dropped copy: get_post builds a new
+ *      WP_Post on every call, and the cache's get() returns a copy. A later get_post of the same post in this
+ *      request reads it back from the Map (or the database).
  * 2. A list that needs the content and would load too much of it is refused, BEFORE its rows load: one cheap query
  *    takes the IDs of the requested page, a second one the SUM(LENGTH(post_content)) of those IDs, and over the
  *    budget the request answers rest_list_too_large (HTTP 400), naming the budget and what to ask instead. Never a
@@ -36,6 +40,7 @@ class Skyphusion_Rest_List_Memory {
 	const KEEP = array( 'id', 'date', 'date_gmt', 'guid', 'modified', 'modified_gmt', 'slug', 'status', 'type', 'link', 'title', 'author', 'parent', 'menu_order', 'template', 'comment_status', 'ping_status', 'format', 'sticky', 'categories', 'tags', 'featured_media', 'meta', 'permalink_template', 'generated_slug', 'class_list', 'password', '_links' );
 	private static $refused = null;
 	private static $light = false; // this request's list loads no content (layer 1)
+	private static $sized = null;  // X-PF-List-Content: 'light', or the KiB of content the list loads (layer 2's sum)
 
 	public static function init() {
 		add_action( 'rest_api_init', array( __CLASS__, 'register' ), 99 );
@@ -74,6 +79,7 @@ class Skyphusion_Rest_List_Memory {
 			$args[ self::FLAG ] = true;
 			$args['cache_results'] = false;
 			self::$light = true;
+			self::$sized = 'light';
 			return $args;
 		}
 		$budget = (int) apply_filters( 'pagefeather_rest_list_content_budget', self::BUDGET );
@@ -87,6 +93,7 @@ class Skyphusion_Rest_List_Memory {
 		}
 		global $wpdb;
 		$bytes = (int) $wpdb->get_var( "SELECT SUM(LENGTH(post_content)) FROM {$wpdb->posts} WHERE ID IN (" . implode( ',', $ids ) . ')' );
+		self::$sized = (string) (int) ceil( $bytes / 1024 );
 		if ( $bytes <= $budget ) {
 			return $args;
 		}
@@ -124,13 +131,22 @@ class Skyphusion_Rest_List_Memory {
 	/** Layer 1: drop the full post the permission check loaded for this item, so the page never holds them all. */
 	public static function evict( $response, $post ) {
 		if ( self::$light && $post instanceof WP_Post ) {
-			wp_cache_delete( $post->ID, 'posts' );
+			global $wp_object_cache;
+			if ( is_object( $wp_object_cache ) && method_exists( $wp_object_cache, 'forget_local' ) ) {
+				$wp_object_cache->forget_local( $post->ID, 'posts' );
+			} elseif ( ! wp_using_ext_object_cache() ) {
+				wp_cache_delete( $post->ID, 'posts' );
+			}
 		}
 		return $response;
 	}
 
 	public static function answer( $response, $handler, $request ) {
 		self::$light = false;
+		if ( null !== self::$sized && $response instanceof WP_REST_Response ) {
+			$response->header( 'X-PF-List-Content', self::$sized );
+		}
+		self::$sized = null;
 		if ( null === self::$refused ) {
 			return $response;
 		}

@@ -51,6 +51,8 @@ st, h, b, m = fresh(big % (100, '&_fields=id,title'))
 items = json.loads(b) if st == 200 else []
 check('1. _fields=id,title per_page=100: 200 with all 100 ids', st == 200 and len(items) == 100 and all('id' in x for x in items), 'status %d, %d items' % (st, len(items)))
 check('1. it loads no content: its wasm high-water stays within 20 MiB of per_page=5', m is not None and m5 is not None and m - m5 <= 20, 'per_page=5 %s MiB, per_page=100 %s MiB' % (m5, m))
+g = (json.loads(h.get('x-oc-stats') or '{}').get('groups') or {})
+check('1. it drops only its own copies: no delete reaches the shared cache (posts.del 0)', 'x-oc-stats' in h and not g.get('posts.del'), 'x-oc-stats %s, posts.del %s' % ('x-oc-stats' in h, g.get('posts.del')))
 # 2
 st, _, b, _ = fresh(big % (5, '&_fields=id,content'))
 c = json.loads(b) if st == 200 else []

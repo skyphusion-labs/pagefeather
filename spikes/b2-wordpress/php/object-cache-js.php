@@ -325,6 +325,15 @@ class JS_Object_Cache {
 		return $had;
 	}
 
+	/**
+	 * Drop THIS request's copy of a value, nothing else (#728): no bridge call, so the Map (and the KV tier) keep it,
+	 * and no known-missing mark, so a later get in this request reads it back from the Map. Only memory is freed: get()
+	 * hands out copies, so no caller holds the instance dropped here.
+	 */
+	public function forget_local( $key, $group = 'default' ) {
+		unset( $this->cache[ $group ][ $key ] );
+	}
+
 	public function delete_multiple( array $keys, $group = 'default' ) {
 		$out = array();
 		foreach ( $keys as $key ) {
