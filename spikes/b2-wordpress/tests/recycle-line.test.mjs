@@ -40,6 +40,19 @@ test('a heap between 100 MiB and the line is KEPT (the pf582t band), over the li
 	assert.equal(recycleDecision({ wasmBytes: 114 * MiB, lineBytes: recycleLine({}).bytes }), 'memory');
 });
 
+test('#603 (A): a memory recycle needs THIS runtime to have grown past the line, not an inherited size', () => {
+	const line = 64 * MiB;
+	// a runtime that booted on a reused 82 MiB memory and grew nothing: no recycle (the loop)
+	assert.equal(recycleDecision({ wasmBytes: 82 * MiB, lineBytes: line, bootBytes: 82 * MiB }), null, 'an inherited size recycles every request');
+	// it grew past what it inherited, and past the line: recycle
+	assert.equal(recycleDecision({ wasmBytes: 90 * MiB, lineBytes: line, bootBytes: 82 * MiB }), 'memory');
+	// grew, but stays under the line: no recycle
+	assert.equal(recycleDecision({ wasmBytes: 60 * MiB, lineBytes: line, bootBytes: 24 * MiB }), null);
+	// no reuse: it booted at the 24 MiB start, so the rule is today's
+	assert.equal(recycleDecision({ wasmBytes: 65 * MiB, lineBytes: line, bootBytes: 24 * MiB }), 'memory');
+	assert.equal(recycleDecision({ wasmBytes: 65 * MiB, lineBytes: line }), 'memory', 'without bootBytes, today');
+});
+
 test('the heap AT the line is kept: only a heap over it is recycled (as index.js compared, >)', () => {
 	assert.equal(recycleDecision({ wasmBytes: 100 * MiB, lineBytes: 100 * MiB }), null);
 	assert.equal(recycleDecision({ wasmBytes: 100 * MiB + 1, lineBytes: 100 * MiB }), 'memory');

@@ -208,7 +208,7 @@ jobs:
             ENGINE_EXPECT="../../engine/expect/$arm.json" node --test tests/engine-contract.test.mjs
           done
           # vendor/ now holds the lean engine (GD kept): the loader tests that boot vendor/
-          node --test tests/phpwasm-exports.test.mjs tests/heap-subarray.test.mjs tests/allocator-reading.test.mjs tests/memory-transform.test.mjs
+          node --test tests/phpwasm-exports.test.mjs tests/heap-subarray.test.mjs tests/allocator-reading.test.mjs tests/memory-transform.test.mjs tests/memory-reuse.test.mjs
           # GD smoke (#590). libgd is built with ENABLE_FREETYPE=OFF. gd_info() must report
           # FreeType Support false, and function_exists('imagettftext') must be false.
           echo "== gd freetype smoke (lean)"

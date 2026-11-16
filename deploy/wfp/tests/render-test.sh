@@ -177,6 +177,16 @@ ok "no RECYCLE_WASM_MIB var by default" "$(env -u RECYCLE_WASM_MIB bash -c ". '$
 ok "RECYCLE_WASM_MIB=130 renders it as a string" "$(RECYCLE_WASM_MIB=130 render_user one https://wp-one.sub.workers.dev | rmib | grep -qx '"130"' && echo 1 || echo 0)"
 ok "RECYCLE_WASM_MIB=64 and 240 (the bounds) render" "$(RECYCLE_WASM_MIB=64 render_user one https://wp-one.sub.workers.dev | rmib | grep -qx '"64"' && RECYCLE_WASM_MIB=240 render_user one https://wp-one.sub.workers.dev | rmib | grep -qx '"240"' && echo 1 || echo 0)"
 for bad in 63 241 0 12.5 abc -100 1000 ' 130'; do ok "RECYCLE_WASM_MIB='$bad' fails the render" "$(RECYCLE_WASM_MIB="$bad" render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
+# PHP_MEMORY_REUSE and BOOT_GATE (#598, #705): each on or unset; BOOT_GATE=on alone is refused (the 503 storm).
+mreuse() { "$PY" -c 'import json, sys, tomllib; v = tomllib.loads(sys.stdin.read())["vars"]; print(json.dumps([v.get("PHP_MEMORY_REUSE"), v.get("BOOT_GATE")]))'; }
+ok "no PHP_MEMORY_REUSE or BOOT_GATE var by default" "$(env -u PHP_MEMORY_REUSE -u BOOT_GATE bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | mreuse | grep -qx '\[null, null\]' && echo 1 || echo 0)"
+ok "PHP_MEMORY_REUSE=on alone renders it" "$(env -u BOOT_GATE PHP_MEMORY_REUSE=on bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | mreuse | grep -qx '\["on", null\]' && echo 1 || echo 0)"
+ok "PHP_MEMORY_REUSE=on BOOT_GATE=on renders both" "$(PHP_MEMORY_REUSE=on BOOT_GATE=on render_user one https://wp-one.sub.workers.dev | mreuse | grep -qx '\["on", "on"\]' && echo 1 || echo 0)"
+ok "BOOT_GATE=on without PHP_MEMORY_REUSE fails the render, and says why" "$(env -u PHP_MEMORY_REUSE BOOT_GATE=on bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" 2>&1 >/dev/null | grep -q 'BOOT_GATE=on needs PHP_MEMORY_REUSE=on' && echo 1 || echo 0)"
+ok "BOOT_GATE=on without PHP_MEMORY_REUSE renders nothing" "$(env -u PHP_MEMORY_REUSE BOOT_GATE=on bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" 2>/dev/null | grep -c . | grep -qx 0 && echo 1 || echo 0)"
+for bad in yes ON 1 off; do ok "PHP_MEMORY_REUSE=$bad fails the render" "$(PHP_MEMORY_REUSE=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
+ok "BOOT_TEST_DELAY_MS (the boot race test seam) fails the render" "$(PHP_MEMORY_REUSE=on BOOT_TEST_DELAY_MS=1500 render_user one https://wp-one.sub.workers.dev 2>&1 >/dev/null | grep -q 'BOOT_TEST_DELAY_MS is a local test seam' && echo 1 || echo 0)"
+for bad in yes ON 1 off; do ok "BOOT_GATE=$bad fails the render" "$(PHP_MEMORY_REUSE=on BOOT_GATE=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
 # CRON_INTERVAL_MS (#479): an integer from 60000 to 86400000, only when asked.
 cint() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["vars"].get("CRON_INTERVAL_MS")))'; }
 ok "no CRON_INTERVAL_MS var by default" "$(env -u CRON_INTERVAL_MS bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" | cint | grep -qx 'null' && echo 1 || echo 0)"

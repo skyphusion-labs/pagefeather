@@ -17,6 +17,9 @@
 #                     keeps index.js's 100. With the lean engine use 140: at 100 its editor pages
 #                     end between the line and the isolate replacement point and stack a second
 #                     memory (#598: 20 of 70 at 100, 0 of 280 at 140, on b-dosql pf582t).
+#   PHP_MEMORY_REUSE  on or unset: a recycled PHP runtime hands its memory to the next boot (#598, #705).
+#   BOOT_GATE         on or unset: a boot that would stack past the budget answers a known 503. Only WITH
+#                     PHP_MEMORY_REUSE=on: alone it refuses every reboot until GC (the 503 storm), so it is refused.
 # #666, the measured approach-A site. The object cache (L2 in the site's own OC_KV namespace) and lazy MEMFS
 # nodes are always rendered, from the ONE source the provisioning path uses (aVars, through
 # deploy/provision/a-vars-toml.mjs); deploy/tests/a-render-test.sh diffs the render against the bench config.
@@ -40,11 +43,14 @@
 #                     prepare.sh, for example the lean-trim artifact of the pagefeather-engine
 #                     workflow (#592). Both or neither.
 
+# shellcheck source=lib/memory-reuse.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/memory-reuse.sh" # #603: one rule with deploy/wfp/lib.sh
+
 # a_settings_check <variant>: exit status 2 and the reason on stderr when a setting is wrong.
 a_settings_check() {
   local variant=$1 v
   if [ "$variant" != a ]; then
-    for v in OPCACHE_A OPCACHE_REMOTE SITE_REMOTE RECYCLE_WASM_MIB A_CLIENT PHP_OVERFLOW PHP_OVERFLOW_POOL PHP_OVERFLOW_MAX_HELD MEM_LEDGER OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE; do
+    for v in OPCACHE_A OPCACHE_REMOTE SITE_REMOTE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE A_CLIENT PHP_OVERFLOW PHP_OVERFLOW_POOL PHP_OVERFLOW_MAX_HELD MEM_LEDGER OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE; do
       [ -z "${!v:-}" ] || { echo "$v is for variant a only (deploy/wfp has its own settings for b-dosql)" >&2; return 2; }
     done
   fi
@@ -61,6 +67,7 @@ a_settings_check() {
   if [ -n "$v" ] && { ! [[ "$v" =~ ^[0-9]{2,3}$ ]] || [ "$((10#$v))" -lt 64 ] || [ "$((10#$v))" -gt 240 ]; }; then
     echo "RECYCLE_WASM_MIB must be an integer from 64 to 240, not ${v}" >&2; return 2
   fi
+  memory_reuse_check || return 2   # #603: the one rule (deploy/lib/memory-reuse.sh)
   case "${A_CLIENT:-lean}" in lean|mysql2) ;; *) echo "A_CLIENT must be lean or mysql2, not ${A_CLIENT}" >&2; return 2 ;; esac
   case "${PHP_OVERFLOW:-0}" in 0|1) ;; *) echo "PHP_OVERFLOW must be 0 or 1, not ${PHP_OVERFLOW}" >&2; return 2 ;; esac
   case "${OBJECT_CACHE_VERSIONS:-0}" in 0|1) ;; *) echo "OBJECT_CACHE_VERSIONS must be 0 or 1, not ${OBJECT_CACHE_VERSIONS}" >&2; return 2 ;; esac
@@ -104,6 +111,7 @@ a_vars() {
   [ "${SITE_REMOTE:-0}" != 1 ] || echo 'SITE_REMOTE = "on"'
   [ -z "${RECYCLE_WASM_MIB:-}" ] || echo "RECYCLE_WASM_MIB = \"$((10#$RECYCLE_WASM_MIB))\""
   [ "${MEM_LEDGER:-}" != on ] || echo 'MEM_LEDGER = "on"' # #714: a measurement flag, only when set
+  memory_reuse_lines
   return 0
 }
 

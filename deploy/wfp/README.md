@@ -181,7 +181,7 @@ A change to a secret value, with the same key names, does not change the hash, s
 
 ### The settings of a site (#558)
 
-The per-site settings are read from the run's environment only: `PHP_INI`, `LAZY_CACHE_MB`, `LAZY_ARENA`, `LAZY_ARENA_MB`, `PHP_RECYCLE`, `CRON_INTERVAL_MS`, the Turnstile site key and switches, `MAIL_FROM`, `MAIL_FROM_NAME`, `PHP_LOCATION`, `WP_VECTORIZE_SEARCH`, `OPCACHE_SPLIT` and `WOO_EXTRAS`. An update that did not export one dropped it. On 2026-11-14 ggc-test lost its `PHP_INI` opcache pin that way, and the update said only "config changed". Now:
+The per-site settings are read from the run's environment only: `PHP_INI`, `LAZY_CACHE_MB`, `LAZY_ARENA`, `LAZY_ARENA_MB`, `PHP_RECYCLE`, `PHP_MEMORY_REUSE`, `BOOT_GATE`, `CRON_INTERVAL_MS`, the Turnstile site key and switches, `MAIL_FROM`, `MAIL_FROM_NAME`, `PHP_LOCATION`, `WP_VECTORIZE_SEARCH`, `OPCACHE_SPLIT` and `WOO_EXTRAS`. An update that did not export one dropped it. On 2026-11-14 ggc-test lost its `PHP_INI` opcache pin that way, and the update said only "config changed". Now:
 - **Recorded.** A good `site add` and `site update` write the run's settings to the site's own bucket, `_build/settings.json` (private, like `_build/inputs.json`). A secret's value is never recorded, only that the site has `TURNSTILE_SECRET`.
 - **Kept.** An update uses the recorded value of a setting the run does not set. A run that sets one replaces it, and the log says so.
 - **`HTTP_ALLOW_HOSTS` (#564)** is recorded with presence, because it has three states. Unset means the default list (`.wordpress.org,.woocommerce.com,.gravatar.com`). Set, including an empty value, means that exact list. An empty list denies every host. An update exports the recorded list only when it was set. `DROP_SETTINGS=HTTP_ALLOW_HOSTS` returns the site to the default list. It does not set an empty list. A site that already had a custom list before this record must pass that list on one update. The live-binding check cannot see this drop: the variable is always in the rendered config.
@@ -243,6 +243,17 @@ Every site is code-locked: the generated `wp-config.php` sets `DISALLOW_FILE_MOD
 - **No off switch for a deployed site:** `CODE_LOCK=off` exists only for a local or throwaway test instance (`wrangler dev --var CODE_LOCK:off`). No deploy tool renders it.
 - **Approach `a`** generates its `wp-config.php` in the same `index.js`, so it is locked the same way.
 - **Tests:** `spikes/b2-wordpress/tests/site-lock.test.mjs`, `spikes/b2-wordpress/tests/code-lock-e2e.sh` (local, with a `CODE_LOCK=off` control).
+
+### Reusing a recycled runtime's memory: PHP_MEMORY_REUSE and BOOT_GATE (#598)
+
+`PHP_MEMORY_REUSE=on deploy/wfp/site update <name>` makes a recycled PHP runtime hand its WebAssembly memory to the next boot, so the isolate never holds two. Without it, the retired memory stays allocated until V8 collects it, and the next boot grows a second one beside it (#598).
+
+`BOOT_GATE=on` adds a guard for the rare boot that has no memory to reuse. If the retired memory plus an admin request's high-water would pass the budget, the request gets a fast 503 (`x-runtime-wait: retired-resident`, `retry-after: 5`) instead of an out-of-memory reset.
+
+- Each is `on` or unset. Unset is today's behaviour.
+- `BOOT_GATE=on` without `PHP_MEMORY_REUSE=on` fails the render. Alone, the gate refuses every reboot until GC, and locally that did not come within 660 s.
+- So the valid sets are: neither, `PHP_MEMORY_REUSE` alone, or both.
+- Both are per-site settings, recorded and kept like `RECYCLE_WASM_MIB` (below). `DROP_SETTINGS=PHP_MEMORY_REUSE,BOOT_GATE` turns both off. Dropping `PHP_MEMORY_REUSE` alone leaves a kept `BOOT_GATE` without it, and that render is refused, so it fails loudly instead of running the storm.
 
 ### Keeping the PHP runtime past 100 MiB: PHP_RECYCLE (#394)
 

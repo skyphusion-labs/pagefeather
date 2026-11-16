@@ -547,6 +547,13 @@ jobs:
           node --test tests/memory-transform.test.mjs
           node --expose-gc --test tests/mem-ledger-identity.test.mjs
           tests/prepare-idempotent-test.sh
+      - name: A recycled runtime hands its memory to the next boot; the boot gate is bounded and never waits (issue #603)
+        # memory-reuse: one memory across three runtimes by identity (red on upstream), a runtime retired mid-call
+        # keeps its memory until the call settles, the doors stay open while in flight, the spare TTL, the module
+        # imports check. boot-gate: the arithmetic, the bound, one conversion point. cron-deferred: a refused cron boot
+        # is a deferral, resolved inside the PHP lock.
+        working-directory: spikes/b2-wordpress
+        run: node --expose-gc --test tests/memory-reuse.test.mjs tests/boot-gate.test.mjs tests/cron-deferred.test.mjs
       - name: The allocator reading of /_memprobe and the memory trace (issue #547)
         # Boots the loader the step above built with USE_ZEND_ALLOC 0 and 1; each reader must tell them apart.
         working-directory: spikes/b2-wordpress

@@ -41,7 +41,8 @@ async function loaderOf(e) {
 	return import(pathToFileURL(e.loaderFile).href + '?b=' + (seq++));
 }
 
-// Boot PHP from an engine. opts: env, open (pagefeatherOpen), read (pagefeatherRead), noFetch.
+// Boot PHP from an engine. opts: env, open (pagefeatherOpen), read (pagefeatherRead), memory (pagefeatherMemory),
+// reuse (pagefeatherReuse: the loader installs the reuse guards, #603), noFetch.
 // Returns { php, imports, exports } (the import object the loader built, to see what it wrapped, and the instance exports).
 export async function boot(e, opts = {}) {
 	const loader = await loaderOf(e);
@@ -54,6 +55,8 @@ export async function boot(e, opts = {}) {
 			instantiateWasm(imp, done) { imports = imp; const inst = new WebAssembly.Instance(e.module, imp); exports = inst.exports; done(inst, e.module); return inst.exports; },
 			...(opts.open ? { pagefeatherOpen: opts.open } : {}),
 			...(opts.read ? { pagefeatherRead: opts.read } : {}),
+			...(opts.memory ? { pagefeatherMemory: opts.memory } : {}),
+			...(opts.reuse ? { pagefeatherReuse: true } : {}),
 		});
 		return { php: new PHP(id), imports, exports };
 	} finally { globalThis.fetch = realFetch; }
@@ -65,34 +68,9 @@ async function jrun(php, code) {
 	try { return JSON.parse(t); } catch { assert.fail('PHP printed no JSON: ' + t.slice(0, 200)); }
 }
 
-// The wasm's memory: the one its memory section defines, and the one it imports (#598: prepare.sh turns the first
-// into the second, env.memory, so the loader can hand a boot a retired runtime's memory). { min, max } in pages.
-export function memoryShape(bytes) {
-	const leb = (i) => { let r = 0, s = 0, x; do { x = bytes[i++]; r += (x & 0x7f) * 2 ** s; s += 7; } while (x & 0x80); return [r, i]; };
-	const str = (i) => { const [n, k] = leb(i); return [bytes.toString('utf8', k, k + n), k + n]; };
-	const limits = (i) => { const fl = bytes[i]; let [min, k] = leb(i + 1); let max = null; if (fl & 1) [max, k] = leb(k); return [{ min, max }, k]; };
-	const out = { defined: null, imported: null };
-	let i = 8;
-	while (i < bytes.length) {
-		const id = bytes[i++]; const [size, j] = leb(i); i = j;
-		if (id === 5) out.defined = limits(leb(i)[1])[0];
-		if (id === 2) {
-			let [n, k] = leb(i);
-			for (; n > 0; n--) {
-				let mod, field; [mod, k] = str(k); [field, k] = str(k);
-				const kind = bytes[k++];
-				if (kind === 0) k = leb(k)[1];
-				else if (kind === 1) k = limits(k + 1)[1];
-				else if (kind === 2) { let l; [l, k] = limits(k); out.imported = { module: mod, field, ...l }; }
-				else if (kind === 3) k += 2;
-				else if (kind === 4) k = leb(k + 1)[1];
-				else throw new Error('import kind ' + kind);
-			}
-		}
-		i += size;
-	}
-	return out;
-}
+// The wasm's sections are read by the ONE parser (engine/tools/wasm-sections.mjs, #603).
+export { memoryShape, linkShape } from '../../../engine/tools/wasm-sections.mjs';
+import { memoryShape, linkShape } from '../../../engine/tools/wasm-sections.mjs';
 // The initial memory (pages) of the wasm, defined or imported.
 export function initialPages(bytes) {
 	const m = memoryShape(bytes);
@@ -100,19 +78,6 @@ export function initialPages(bytes) {
 }
 
 const ms = (t) => new Promise((r) => setTimeout(r, t));
-
-// The wasm's dylink.0 custom section (a MAIN_MODULE) and its export count.
-export function linkShape(bytes) {
-	const leb = (i) => { let r = 0, s = 0, x; do { x = bytes[i++]; r += (x & 0x7f) * 2 ** s; s += 7; } while (x & 0x80); return [r, i]; };
-	let i = 8, dylink = false, exports = null;
-	while (i < bytes.length) {
-		const id = bytes[i++]; const [size, j] = leb(i); i = j;
-		if (id === 0) { const [n, k] = leb(i); if (bytes.toString('utf8', k, k + n) === 'dylink.0') dylink = true; }
-		if (id === 7) exports = leb(i)[0];
-		i += size;
-	}
-	return { dylink, exports };
-}
 
 export const checks = {
 	// workerd has no import.meta.url; the Worker passes the module through instantiateWasm, so the
@@ -211,13 +176,91 @@ trait Pf582T {
 		assert.equal(m.defined, null, 'the module still defines its own memory');
 		assert.ok(m.imported && m.imported.module === 'env' && m.imported.field === 'memory', 'no env.memory import');
 		assert.equal(m.imported.min, e.expect.initialPages);
-		const lit = /wasmImports\['memory'\] = new WebAssembly\.Memory\(\{ initial: (\d+), maximum: (\d+) \}\)/.exec(e.js);
+		const lit = /wasmImports\['memory'\] = [^\n]*?new WebAssembly\.Memory\(\{ initial: (\d+), maximum: (\d+) \}\)/.exec(e.js);
 		assert.ok(lit, 'the loader does not build the imported memory');
 		assert.deepEqual([Number(lit[1]), Number(lit[2])], [m.imported.min, m.imported.max], 'the loader and the import disagree on the limits');
 		const a = await boot(e), b = await boot(e);
 		assert.equal(await run(a.php, '<?php echo 6 * 7;'), '42');
 		assert.equal(a.php[PRIV].HEAPU8.buffer, a.exports.memory.buffer, 'the runtime is not on the memory it imported');
 		assert.notEqual(a.php[PRIV].HEAPU8.buffer, b.php[PRIV].HEAPU8.buffer, 'two boots share a memory');
+	},
+	// #603: a reuse runtime takes a memory handed to it (pagefeatherMemory) as its own, by identity.
+	async 'memory: a reuse runtime runs on a memory handed to it'(e) {
+		const lim = memoryShape(e.bytes).imported;
+		assert.ok(lim, 'the module does not import its memory');
+		const mem = new WebAssembly.Memory({ initial: lim.min, maximum: lim.max });
+		const { php } = await boot(e, { memory: mem, reuse: true });
+		assert.equal(await run(php, '<?php echo 6 * 7;'), '42');
+		assert.equal(php[PRIV].HEAPU8.buffer, mem.buffer, 'the runtime is not using the handed-in memory');
+	},
+	// #603: the loader counts a reuse runtime's promising calls in flight at the wasm boundary (pfInFlight): JSPI
+	// suspends only inside one. usleep suspends (emscripten_sleep).
+	async 'memory: promising calls in flight are counted'(e) {
+		const { php } = await boot(e, { reuse: true });
+		const M = php[PRIV];
+		assert.equal(M.pfInFlight | 0, 0);
+		const p = php.run({ code: '<?php usleep(150000); echo "slept";' });
+		await ms(40);
+		assert.ok((M.pfInFlight | 0) >= 1, 'a suspended run is not counted: pfInFlight ' + M.pfInFlight);
+		assert.equal((await p).text, 'slept');
+		assert.equal(M.pfInFlight | 0, 0, 'a settled run is still counted');
+	},
+	// #603 (#705 review, finding 2): once retired (pfDead), EVERY new call is refused, even while another call of it
+	// is still in flight: only started calls may finish, so a retired runtime always drains. (index.js sets pfDead
+	// only after the drain; this sets it mid-call on purpose.)
+	async 'memory: a retired runtime refuses every new call, even with a call in flight'(e) {
+		const { php } = await boot(e, { reuse: true });
+		const M = php[PRIV];
+		const p = php.run({ code: '<?php usleep(150000); echo "slept";' });
+		await ms(40);
+		assert.ok((M.pfInFlight | 0) >= 1, 'not in flight: the check proves nothing');
+		M.pfDead = true;
+		let sync = false, promising = false;
+		try { M._malloc(16); } catch (err) { sync = /retired/.test(String(err && err.message)); }
+		try { await M.___errno_location(); } catch (err) { promising = /retired/.test(String(err && err.message)); }
+		assert.ok(sync, 'a synchronous export of a retired runtime ran');
+		assert.ok(promising, 'a promising export of a retired runtime ran while another call was in flight');
+		// every door refuses unconditionally once retired: the promising entry too, which async table entries reach
+		// without the export wrapper (getWasmTableEntry); no door keeps the old "open while in flight" rule
+		const doors = (e.js.match(/if \(Module\['pfDead'\]\) throw new Error\('pagefeather: this PHP runtime is retired'\);/g) || []).length;
+		assert.equal(doors, 2, doors + ' unconditional call doors (the export wrapper and the promising entry)');
+		assert.ok(!/pfDead'\] && !\(Module\['pfInFlight'\] > 0\)/.test(e.js), 'a door admits new calls while one is in flight');
+		p.catch(() => {});
+	},
+	// #603 (#705 review, finding 8): a retired runtime runs NO callback (callUserCallback: the timers and the sleep
+	// wake). A suspended usleep of a runtime retired mid-sleep is never woken.
+	async 'memory: a retired runtime runs no callback (its sleep wake is refused)'(e) {
+		const { php } = await boot(e, { reuse: true });
+		const M = php[PRIV];
+		let settled = false;
+		php.run({ code: '<?php usleep(60000); echo "woke";' }).then(() => { settled = true; }, () => { settled = true; });
+		await ms(20);
+		M.pfDead = true;
+		await ms(250);
+		assert.equal(settled, false, 'the sleep wake of a retired runtime ran (callUserCallback is not guarded)');
+	},
+	// #598: without the reuse option, the loader adds NO per-call work: nothing is counted, and a runtime marked
+	// retired still runs (the guards are not installed). Red on a loader whose guards are unconditional.
+	async 'memory: without reuse the loader counts and checks nothing per call'(e) {
+		const { php } = await boot(e);
+		const M = php[PRIV];
+		const p = php.run({ code: '<?php usleep(60000); echo "slept";' });
+		await ms(20);
+		assert.equal(M.pfInFlight, undefined, 'a call was counted without reuse: per-call work on the hot path');
+		assert.equal((await p).text, 'slept');
+		M.pfDead = true;
+		assert.equal(await run(php, '<?php echo 3;'), '3', 'a runtime marked retired was refused without reuse');
+	},
+	// #603 (#705 review, finding 7): the reuse choice is read ONCE, at the top of the loader's init: setting the option
+	// after a runtime booted installs nothing, in the wrappers built at instantiation or later (getWasmTableEntry).
+	async 'memory: the reuse choice is fixed at init'(e) {
+		const reads = (e.js.match(/Module\['pagefeatherReuse'\]/g) || []).length;
+		assert.equal(reads, 1, 'the loader reads the reuse option ' + reads + ' times, not once at init');
+		const { php } = await boot(e);
+		const M = php[PRIV];
+		M.pagefeatherReuse = true;
+		M.pfDead = true;
+		assert.equal(await run(php, '<?php echo 4;'), '4', 'a later flip of the option changed a running runtime');
 	},
 	// USE_ZEND_ALLOC=0: plain malloc, so the Zend allocator reports 0 (#547 reads it this way).
 	async 'allocator: USE_ZEND_ALLOC=0 is honoured'(e, opts = {}) {

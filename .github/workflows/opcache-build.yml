@@ -60,16 +60,21 @@ jobs:
           if ! tests/frames-e2e.sh; then
             echo "::error::frames-e2e.sh failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1
           fi
-      - name: The #598 stacking, characterized, non-gating (issue #598)
-        # tests/recycle-stack-e2e.sh on workerd, dosql-local: a forced recycle of post-new.php, then an admin request at
-        # once, and the ledger it reports (memLive, retiredMem). Not a gate on the stacking: whether V8 has collected
-        # the retired memory yet is not ours to assert. It fails only when the ledger cannot be read. #603 makes it a
-        # gate (memLive 1 with the memory reuse on).
+      - name: The #598 reproducer flipped by #603, the recycle loop, the boot race, the bounded gate (issue #603)
+        # recycle-stack-e2e.sh: the deploy flow and two forced recycles; with PHP_MEMORY_REUSE and BOOT_GATE on, ONE
+        # live memory each time; with both off it must FAIL with the VIOLATION (the stacking is still reproduced).
+        # recycle-loop-e2e.sh (#603 A): three requests on an inherited memory above the line, no recycle.
+        # boot-race-e2e.sh (#603 B): a drop in the middle of a boot leaves one runtime (the BOOT_TEST_DELAY_MS seam).
+        # boot-gate-e2e.sh: a refused operator boot is the known 503, decided per request, never past the bound.
         working-directory: spikes/b2-wordpress
         run: |
-          if ! tests/recycle-stack-e2e.sh; then
-            echo "::error::recycle-stack-e2e.sh could not read the ledger; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1
+          for t in tests/recycle-stack-e2e.sh tests/recycle-loop-e2e.sh tests/boot-race-e2e.sh tests/boot-gate-e2e.sh; do
+            if ! "$t"; then echo "::error::$t failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
+          done
+          if REUSE=off GATE=off tests/recycle-stack-e2e.sh > build/recycle-red.log 2>&1; then
+            echo "::error::recycle-stack-e2e.sh passed with reuse off: the reproducer no longer reproduces"; cat build/recycle-red.log; exit 1
           fi
+          grep 'VIOLATION' build/recycle-red.log || { echo "::error::the red run failed for another reason"; cat build/recycle-red.log; exit 1; }
       - name: ALL OPcache files as remote packs, end to end on workerd (issue #563, OPCACHE_REMOTE, no split)
         # On the primed build above: the trace, opcache-remote.py, then tests/remote-e2e.sh runs the
         # pages, the admin and the store three ways (remote packs, cap 0, off). Each must work.

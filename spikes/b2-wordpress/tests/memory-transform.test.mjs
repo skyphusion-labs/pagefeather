@@ -6,39 +6,10 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { boot, engineUnderTest, memoryShape, B2 } from './engine-contract.mjs';
+import { untransformMemory } from '../../../engine/tools/wasm-sections.mjs';
 
 const PRIV = createRequire(join(B2, 'package.json'))('@php-wasm/universal').__private__dont__use;
 
-// The engine under test as it was BEFORE the prepare.sh memory transform: the env.memory import (the last import,
-// as the transform appends it) removed, and a memory section with the same limits put back in its place in the
-// section order (after the table section, before tag/global/export). Same build, same other imports.
-function untransform(bytes) {
-	const b = Buffer.from(bytes);
-	const lim = memoryShape(b).imported; // the limits come from the module, never typed here (#705 review, finding 6)
-	assert.ok(lim && lim.max != null, 'the module does not import a bounded memory');
-	const leb = (i) => { let r = 0, s = 0, x; do { x = b[i++]; r += (x & 0x7f) * 2 ** s; s += 7; } while (x & 0x80); return [r, i]; };
-	const enc = (n) => { const o = []; do { let x = n & 0x7f; n = Math.floor(n / 128); o.push(x | (n ? 0x80 : 0)); } while (n); return Buffer.from(o); };
-	const entry = Buffer.concat([enc(3), Buffer.from('env'), enc(6), Buffer.from('memory'), Buffer.from([0x02, 0x01]), enc(lim.min), enc(lim.max)]);
-	const secs = [];
-	for (let i = 8; i < b.length;) { const id = b[i]; const [size, j] = leb(i + 1); secs.push([id, b.subarray(j, j + size)]); i = j + size; }
-	const out = [b.subarray(0, 8)];
-	let lastPre = -1;
-	secs.forEach(([id], k) => { if (id >= 1 && id <= 4) lastPre = k; });
-	secs.forEach(([id, p], k) => {
-		if (id === 5) throw new Error('already defines a memory');
-		if (id === 2) {
-			assert.ok(p.subarray(p.length - entry.length).equals(entry), 'the last import is not the transform env.memory');
-		}
-		let q = p;
-		if (id === 2) {
-			let r = 0, sh = 0, i = 0, x; do { x = p[i++]; r += (x & 0x7f) * 2 ** sh; sh += 7; } while (x & 0x80);
-			q = Buffer.concat([enc(r - 1), p.subarray(i, p.length - entry.length)]);
-		}
-		out.push(Buffer.from([id]), enc(q.length), q);
-		if (k === lastPre) { const m = Buffer.concat([enc(1), Buffer.from([0x01]), enc(lim.min), enc(lim.max)]); out.push(Buffer.from([5]), enc(m.length), m); }
-	});
-	return Buffer.concat(out);
-}
 
 async function answers(e) {
 	const { php, exports } = await boot(e);
@@ -61,7 +32,7 @@ test('each boot of the transformed engine gets a NEW memory of the module limits
 // (it defines its own memory). It must keep working, on its own memory: fail safe, no crash.
 test('a pre-transform wasm under this loader keeps working on its own memory', async () => {
 	const t = engineUnderTest();
-	const pre = untransform(t.bytes);
+	const pre = untransformMemory(t.bytes);
 	const m = memoryShape(pre);
 	assert.deepEqual([m.defined && m.defined.min, m.imported], [t.expect.initialPages, null], 'the untransformed wasm does not define its memory');
 	const e = { ...t, name: 'mismatch: this loader, pre-transform wasm', bytes: pre, module: new WebAssembly.Module(pre), loaderFile: null };

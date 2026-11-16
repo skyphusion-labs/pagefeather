@@ -319,8 +319,45 @@ open(dst, 'wb').write(b)
 jp = 'vendor/php_8_3.js'; js = open(jp).read()
 old = "\tfunction getWasmImports() {\n"
 assert js.count(old) == 1, 'getWasmImports not found'
-js = js.replace(old, old + "\t\t// Pagefeather (#598): the module imports its memory; a new one of the module's own limits (prepare.sh).\n"
-    "\t\twasmImports['memory'] = new WebAssembly.Memory({ initial: %d, maximum: %d });\n" % (PAGES0, PAGES_MAX))
+js = js.replace(old, old + "\t\t// Pagefeather (#598): the module imports its memory: one handed in (a reuse runtime, #603), else a new one\n"
+    "\t\t// of the module's own limits (prepare.sh).\n"
+    "\t\twasmImports['memory'] = (pfReuse && Module['pagefeatherMemory']) || new WebAssembly.Memory({ initial: %d, maximum: %d });\n"
+    "\t\tModule['pagefeatherMemory'] = null;\n" % (PAGES0, PAGES_MAX))
+# #603: the reuse guards, only for a reuse runtime (Module.pagefeatherReuse), read ONCE, at the very top of the
+# loader's init, into pfReuse; every wrapper closes over it, the ones getWasmTableEntry builds lazily too (#705
+# review, finding 7). Without it every wrapper is the upstream code. With it:
+#   - the promising calls are counted at the wasm boundary (Module.pfInFlight; JSPI suspends only inside one), and
+#     Module.pfOnIdle runs when the count returns to 0;
+#   - a retired runtime (Module.pfDead) is refused by EVERY door, for EVERY new call: each promising entry, each
+#     export wrapper, callUserCallback (the timers and the sleep wake). index.js sets pfDead only once the runtime
+#     has drained (no call in flight and one macrotask later), so there is no call left to finish (#705 review,
+#     findings 1 and 2).
+old = "\tvar Module = typeof PHPLoader != 'undefined' ? PHPLoader : {};\n"
+assert js.count(old) == 1, 'var Module not found'
+js = js.replace(old, old + "\t// Pagefeather (#603): a reuse runtime installs the reuse guards; read once, here, before anything is wrapped.\n"
+    "\tvar pfReuse = !!Module['pagefeatherReuse'];\n")
+old = "\t\tmakeAsyncFunction(original) {\n\t\t\treturn WebAssembly.promising(original);\n\t\t},\n"
+assert js.count(old) == 1, 'makeAsyncFunction not found'
+js = js.replace(old, "\t\tmakeAsyncFunction(original) {\n"
+    "\t\t\tvar pfPromising = WebAssembly.promising(original);\n"
+    "\t\t\tif (!pfReuse) return pfPromising;\n"
+    "\t\t\treturn (...args) => {\n"
+    "\t\t\t\tif (Module['pfDead']) throw new Error('pagefeather: this PHP runtime is retired');\n"
+    "\t\t\t\tModule['pfInFlight'] = (Module['pfInFlight'] || 0) + 1;\n"
+    "\t\t\t\tvar pfDone = () => { if (--Module['pfInFlight'] === 0 && Module['pfOnIdle']) Module['pfOnIdle'](); };\n"
+    "\t\t\t\tlet r;\n"
+    "\t\t\t\ttry {\n\t\t\t\t\tr = pfPromising(...args);\n\t\t\t\t} catch (e) {\n\t\t\t\t\tpfDone();\n\t\t\t\t\tthrow e;\n\t\t\t\t}\n"
+    "\t\t\t\treturn r.finally(pfDone);\n"
+    "\t\t\t};\n\t\t},\n")
+old = "\t\tinstrumentFunction(original) {\n\t\t\tvar wrapper = (...args) => original(...args);\n"
+assert js.count(old) == 1, 'instrumentFunction not found'
+js = js.replace(old, "\t\tinstrumentFunction(original) {\n"
+    "\t\t\tvar wrapper = !pfReuse ? (...args) => original(...args) : (...args) => {\n"
+    "\t\t\t\tif (Module['pfDead']) throw new Error('pagefeather: this PHP runtime is retired');\n"
+    "\t\t\t\treturn original(...args);\n\t\t\t};\n")
+old = "\tvar callUserCallback = (func) => {\n\t\tif (runtimeExited || ABORT) {\n"
+assert js.count(old) == 1, 'callUserCallback not found'
+js = js.replace(old, "\tvar callUserCallback = (func) => {\n\t\tif (runtimeExited || ABORT || (pfReuse && Module['pfDead'])) {\n")
 open(jp, 'w').write(js)
 print('%s initial memory: %d pages, imported (env.memory, max %d pages; the loader builds it); OPcache SAPI list: frankenphp -> wasm%s' % ('kept (already transformed)' if done_mem else 'patched', PAGES0, PAGES_MAX, ' (kept)' if done_sapi else ''))
 PY
