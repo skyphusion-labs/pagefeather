@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """#728: on an ordinary site, the editor's own requests never meet rest_list_too_large.
 
-  B=https://<site> ADMIN_USER=admin ADMIN_PASSWORD=... [SPIKE_TOKEN=...] python3 -I tests/editor-lists-check.py
+  B=https://<site> ADMIN_PASSWORD=... [SPIKE_TOKEN=...] [TURNSTILE_TEST_TOKEN=...] python3 -I tests/editor-lists-check.py
 
-Logs in, then sends what the core editors send (read from wp-includes/js/dist):
+Logs in as admin through break_lib.login() (as woo.py and break.py do), then sends what the core editors send (read from wp-includes/js/dist):
   1. the editor pages, whose REST preloads run server-side and land in the HTML: post-new.php (post, page),
      post.php for the newest post and page, site-editor.php and its pages, templates, patterns and navigation
      views, and the edit.php lists. Each must answer 200 with no rest_list_too_large in it.
@@ -14,28 +14,25 @@ Logs in, then sends what the core editors send (read from wp-includes/js/dist):
 Prints the X-PF-List-Content of each list (KiB of post content it loaded, or light) and the largest, which is
 the margin under the budget. Exit 1 on any refusal or any editor page that is not a 200.
 """
-import http.cookiejar, json, os, re, sys, urllib.error, urllib.parse, urllib.request
+import json, os, sys, urllib.parse
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import break_lib  # the same login and opener as woo.py and break.py: no redirects followed, the 302 asserted, Turnstile
 
-B = os.environ['B'].rstrip('/'); USER = os.environ.get('ADMIN_USER', 'admin'); PW = os.environ['ADMIN_PASSWORD']
-TOK = os.environ.get('SPIKE_TOKEN', '')
-jar = http.cookiejar.CookieJar(); op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-BASE_H = {'x-spike-token': TOK} if TOK else {}
-
-
-def get(path, h=None, data=None):
-    r = urllib.request.Request(B + path, data=data, headers={**BASE_H, **(h or {})})
-    try:
-        with op.open(r, timeout=300) as x:
-            return x.status, {k.lower(): v for k, v in x.headers.items()}, x.read()
-    except urllib.error.HTTPError as e:
-        return e.code, {k.lower(): v for k, v in e.headers.items()}, e.read()
+if not os.environ.get('B') or not os.environ.get('ADMIN_PASSWORD'):
+    sys.exit('editor-lists: set B and ADMIN_PASSWORD')
+try:
+    o = break_lib.login()
+except AssertionError as e:
+    sys.exit('editor-lists: login failed: %s' % (str(e)[:200],))
 
 
-get('/wp-login.php')
-get('/wp-login.php', data=urllib.parse.urlencode({'log': USER, 'pwd': PW, 'wp-submit': 'Log In', 'redirect_to': '/wp-admin/', 'testcookie': '1'}).encode())
-nonce = get('/wp-admin/admin-ajax.php?action=rest-nonce')[2].decode().strip()
-if not re.fullmatch(r'[0-9a-f]{10}', nonce):
-    sys.exit('editor-lists: login failed (no REST nonce)')
+def get(path, h=None):
+    r = break_lib.req(o, path, headers=h, timeout=300)
+    hd = r.get('h') or {}
+    return (r['code'] if r['code'] != 'EXC' else 0), {k.lower(): v for k, v in hd.items()}, r.get('body') or b''
+
+
+nonce = o.nonce
 H = {'X-WP-Nonce': nonce}
 fail, sized = [], []
 
