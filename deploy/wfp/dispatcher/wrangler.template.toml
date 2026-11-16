@@ -6,8 +6,6 @@
 name = "wp-@SITE@"
 main = "../dispatcher/worker.js"
 compatibility_date = "@COMPAT@"
-# #755 PROBE (measurement branch only): does the dispatch hop pass a client disconnect on with this flag?
-compatibility_flags = ["enable_request_signal"]
 workers_dev = true
 preview_urls = false
 

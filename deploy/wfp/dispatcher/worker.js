@@ -66,12 +66,6 @@ function limitsOf(site) {
 
 export default {
 	async fetch(request, env) {
-		// #755 PROBE (measurement branch only): the dispatcher's own view of a client disconnect. Path only.
-		if (request.signal) {
-			const dp0 = Date.now(), dpPath = new URL(request.url).pathname;
-			if (request.signal.aborted) console.log(JSON.stringify({ m: 'disp-probe', at: 'before-fetch', path: dpPath }));
-			else request.signal.addEventListener('abort', () => console.log(JSON.stringify({ m: 'disp-probe', at: 'abort-event', path: dpPath, sinceStartMs: Date.now() - dp0 })), { once: true });
-		}
 		// URL already lowercases the hostname (WHATWG URL), so the site map keys are lower case.
 		const url = new URL(request.url);
 		if (url.pathname === SNAPSHOT_PATH) return fail(404, 'not-public', 'Not found.');
@@ -102,14 +96,7 @@ export default {
 		if (viaOutbound) opts.outbound = { SITE: site.script };
 		const ns = viaOutbound ? env.DISPATCHER_OUT : env.DISPATCHER;
 		try {
-			// #755 step 2b PROBE (measurement branch only): forward the client's abort EXPLICITLY across the dispatch call.
-			// A new Request carries a controller linked to this request.signal, instead of passing `request` through.
-			const fwdCtl = new AbortController();
-			if (request.signal) {
-				if (request.signal.aborted) fwdCtl.abort(request.signal.reason);
-				else request.signal.addEventListener('abort', () => fwdCtl.abort(request.signal.reason), { once: true });
-			}
-			return await ns.get(site.script, {}, opts).fetch(new Request(request, { signal: fwdCtl.signal }));
+			return await ns.get(site.script, {}, opts).fetch(request);
 		} catch (e) {
 			const msg = String((e && e.message) || e);
 			if (msg.startsWith('Worker not found')) return fail(404, 'not-deployed', 'This site is not deployed.');
