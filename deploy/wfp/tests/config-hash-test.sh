@@ -86,7 +86,7 @@ check "FORCE and a new build: both reasons" "$(FORCE_UPLOAD=1 update_upload_reas
 
 # The real `site update`, with the build, terraform, S3 and the upload stubbed.
 # Nothing here talks to Cloudflare.
-unset PHP_INI PHP_RECYCLE RECYCLE_WASM_MIB MEM_LEDGER CRON_INTERVAL_MS OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS TURNSTILE_SITEKEY TURNSTILE_SECRET \
+unset PHP_INI PHP_RECYCLE RECYCLE_WASM_MIB MEM_LEDGER CRON_INTERVAL_MS OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS OBJECT_START_BY_S OBJECT_CALL_DEADLINE_S TURNSTILE_SITEKEY TURNSTILE_SECRET \
   TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS OBSERVABILITY MAIL_FROM MAIL_FROM_NAME HTTP_ALLOW_HOSTS \
   WFP_PHP_ENV PHP_LOCATION LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB HEADROOM_PROBE PAGE_CACHE_PRODUCT_TTL WP_VECTORIZE_SEARCH FORCE_UPLOAD PLUGINS IMPORT_CONTENT IMPORT_THEMES \
   IMPORT_PLUGINS IMPORT_MU_PLUGINS FORCE_FAIL COUNT_ROWS WFP_CUSTOM_DOMAIN REPLACE_INPUTS THROWAWAY || true
@@ -609,6 +609,30 @@ DROP_SETTINGS=WOO_EXTRAS run_update
 ok "#667 DROP_SETTINGS=WOO_EXTRAS drops it: no var, and the record does not keep it" "$([ "$RC" = 0 ] && [ "$(conf_has WOO_EXTRAS)" = 0 ] && srec_get | python3 -I -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if "WOO_EXTRAS" not in d.get("settings",{}) else 1)' && printf '%s' "$OUT" | grep -Fq 'WOO_EXTRAS DROPPED on purpose' && echo 1 || echo 0)"
 [ "$RC" = 0 ] || { echo "$OUT" | tail -8 | sed 's/^/   /'; }
 unset WOO_EXTRAS DROP_SETTINGS
+
+# 9o. #715 review2 2: OBJECT_START_BY_S (the #708 escape hatch) is a recorded setting: set once, an update
+# without it keeps it, so the next deploy never silently re-enables the start-by.
+srec_del
+live '[{"type":"plain_text","name":"SITE_ORIGIN","text":"y"}]'
+set_entry bld-other "$(last_hash)"
+OBJECT_START_BY_S=off run_update
+ok "#715 OBJECT_START_BY_S=off renders the var and records it" "$([ "$RC" = 0 ] && grep -Fqx 'OBJECT_START_BY_S = "off"' "$APP/wrangler.deploy.wfp-shop.toml" && srec_get | python3 -I -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("settings",{}).get("OBJECT_START_BY_S")=="off" else 1)' && echo 1 || echo 0)"
+[ "$RC" = 0 ] || { echo "$OUT" | tail -8 | sed 's/^/   /'; }
+Hsb=$(last_hash)
+unset OBJECT_START_BY_S
+set_entry bld-same "$Hsb"
+run_update
+ok "#715 an update without OBJECT_START_BY_S keeps the recorded off" "$([ "$RC" = 0 ] && grep -Fqx 'OBJECT_START_BY_S = "off"' "$APP/wrangler.deploy.wfp-shop.toml" && printf '%s' "$OUT" | grep -Fq 'OBJECT_START_BY_S kept from the record' && echo 1 || echo 0)"
+[ "$RC" = 0 ] || { echo "$OUT" | tail -8 | sed 's/^/   /'; }
+OBJECT_CALL_DEADLINE_S=120 run_update
+ok "#715 OBJECT_CALL_DEADLINE_S=120 is recorded too" "$([ "$RC" = 0 ] && grep -Fqx 'OBJECT_CALL_DEADLINE_S = "120"' "$APP/wrangler.deploy.wfp-shop.toml" && srec_get | python3 -I -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("settings",{}).get("OBJECT_CALL_DEADLINE_S")=="120" else 1)' && echo 1 || echo 0)"
+[ "$RC" = 0 ] || { echo "$OUT" | tail -8 | sed 's/^/   /'; }
+unset OBJECT_CALL_DEADLINE_S
+DROP_SETTINGS="OBJECT_START_BY_S OBJECT_CALL_DEADLINE_S" run_update
+ok "#715 DROP_SETTINGS returns both to the code default" "$([ "$RC" = 0 ] && ! grep -q '^OBJECT_START_BY_S\|^OBJECT_CALL_DEADLINE_S' "$APP/wrangler.deploy.wfp-shop.toml" && echo 1 || echo 0)"
+[ "$RC" = 0 ] || { echo "$OUT" | tail -8 | sed 's/^/   /'; }
+unset DROP_SETTINGS
+srec_del
 
 echo "$fails failing check(s)"
 exit "$fails"

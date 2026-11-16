@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { startByMs, objectShedPlan, startByResponse, START_BY_HEADER, CALL_HEADER } from '../start-by.mjs';
+import { startByMs, objectShedPlan, startByResponse, START_BY_HEADER, CALL_HEADER, tagCallId, startByExempt, shedAnswer, recheckStartBy } from '../start-by.mjs';
 
 test('startByMs: the default is the deadline minus a run allowance (30 s, or a third of a short deadline)', () => {
 	assert.equal(startByMs({}, 90000), 60000);
@@ -65,7 +65,7 @@ test('index.js wires it on both sides (index.js imports the wasm engine, so it c
 	assert.ok(/if \(startByQ > 0\) fwd\.headers\.set\(START_BY_HEADER, String\(t0 \+ startByQ\)\);\s*else fwd\.headers\.delete\(START_BY_HEADER\);/.test(src), 'a start-by, or none');
 	assert.ok(!/fwd\.headers\.delete\(CALL_HEADER\);\s*fwd\.headers\.set\(CALL_HEADER/.test(src), 'review 9: no delete-then-set');
 	// review 5: the client sees the call id on every answer of the object path (the wrapper tags what comes back).
-	assert.ok(/async function toPhpObject\(req, env, url, ctx, target = null\) \{[\s\S]{0,400}withCallHeader\(/.test(src), 'toPhpObject tags its answer');
+	assert.ok(/async function toPhpObject\(req, env, url, ctx, target = null\) \{[\s\S]{0,400}tagCallId\(/.test(src), 'toPhpObject tags its answer');
 	// review 7: a request refused on arrival writes nothing: the refusal comes before the origin write and the cron rearm.
 	const obj = src.slice(src.indexOf('	async fetch(raw) {'));
 	const refuse = obj.indexOf('startByResponse()'); const write = obj.indexOf('this.ctx.storage.put(ORIGIN_KEY, origin)');
@@ -77,4 +77,86 @@ test('index.js wires it on both sides (index.js imports the wasm engine, so it c
 	// The correlation id is on the Worker's overflow and deadline lines.
 	assert.ok(/event: 'overflow', [^\n]*call:/.test(src), 'overflow line carries call');
 	assert.ok(/m: 'object-deadline', [^\n]*call:/.test(src), 'deadline line carries call');
+});
+
+// #715 second review.
+test('review2 1: the call id rides only on answers no cache can keep (the edge would replay one request\'s id on every hit)', () => {
+	const page = new Response('<html>', { status: 200, headers: { 'cache-control': 'public, max-age=300' } });
+	assert.equal(tagCallId(page, 'c1').headers.get(CALL_HEADER), null, 'a cacheable page is not tagged');
+	const bare = new Response('<html>', { status: 200 });
+	assert.equal(tagCallId(bare, 'c1').headers.get(CALL_HEADER), null, 'no cache-control: not tagged');
+	for (const cc of ['no-store', 'private, no-store', 'private']) {
+		const r = new Response('x', { status: 503, headers: { 'cache-control': cc } });
+		assert.equal(tagCallId(r, 'c2').headers.get(CALL_HEADER), 'c2', cc);
+	}
+	assert.equal(tagCallId(startByResponse(), 'c3').headers.get(CALL_HEADER), 'c3', 'the start-by answer is tagged');
+	// An immutable answer (as stub.fetch may return) is copied once, and tagged.
+	const im = new Response('x', { status: 500, headers: { 'cache-control': 'no-store' } });
+	const frozen = new Proxy(im, { get: (t, k) => (k === 'headers' ? new Proxy(t.headers, { get: (h, kk) => (kk === 'set' ? () => { throw new TypeError('immutable'); } : Reflect.get(h, kk).bind ? Reflect.get(h, kk).bind(h) : Reflect.get(h, kk)) }) : Reflect.get(t, k)) });
+	const out = tagCallId(frozen, 'c4');
+	assert.equal(out.headers.get(CALL_HEADER), 'c4');
+});
+test('review2 6: operator and control paths (/_*) and the deadline-exempt paths never get a start-by', () => {
+	for (const p of ['/_evict', '/_hold', '/_build', '/_purgestate', '/_dbexport', '/_mysqlexport', '/_dbcounts', '/_snapshot', '/_install', '/_activate', '/_runcron', '/wp-cron.php'])
+		assert.equal(startByExempt(p), true, p);
+	for (const p of ['/', '/shop/', '/wp-admin/admin-ajax.php', '/wp-login.php', '/?rest_route=x'])
+		assert.equal(startByExempt(new URL('https://x' + p).pathname), false, p);
+	assert.equal(startByMs({}, 90000, { exempt: startByExempt('/_evict') }), 0, 'so a late /_evict is never refused');
+});
+test('review2 10: one shed answer for both sheds: never stored, overloaded, Retry-After 5, the given body and headers', async () => {
+	const r = shedAnswer('busy\n', { 'x-php-lock': 'shed' });
+	assert.equal(r.status, 503);
+	assert.equal(r.headers.get('x-overloaded'), '1');
+	assert.equal(r.headers.get('retry-after'), '5');
+	assert.equal(r.headers.get('cloudflare-cdn-cache-control'), 'no-store');
+	assert.equal(r.headers.get('x-php-lock'), 'shed');
+	assert.equal(await r.text(), 'busy\n');
+	const sb = startByResponse();
+	for (const h of ['x-overloaded', 'retry-after', 'cloudflare-cdn-cache-control', 'x-php-lock']) assert.equal(sb.headers.get(h), r.headers.get(h), h);
+});
+test('review2 wiring: one arrival refusal and no write before the run; the shed says why; the call id on overflow-local; the deadline line names its answer', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const obj = src.slice(src.indexOf('	async fetch(raw) {'), src.indexOf('function phpObjectName('));
+	// review2 5 and 9: exactly one refusal, and the origin write and the cron rearm happen INSIDE the run (a shed never writes).
+	assert.equal(obj.split('startByResponse()').length - 1, 2, 'one arrival refusal, one lock-shed answer');
+	const run = obj.indexOf('const objectRun = await withPhp(');
+	const put = obj.indexOf('this.ctx.storage.put(ORIGIN_KEY, origin)');
+	assert.ok(run > 0 && put > run, 'the origin write is inside the run, never before it');
+	assert.ok(/shedWhy: plan\.byStartBy \? 'start-by' : 'queue-shed'/.test(obj), 'review2 8: the shed says why');
+	assert.ok(/event: 'overflow-local', [^\n]*call:/.test(src), 'review2 8: overflow-local carries the call id');
+	assert.ok(/m: 'object-deadline', [^\n]*answered:/.test(src), 'review2 3: the deadline line names its answer');
+	assert.ok(/startByExempt\(url\.pathname\)/.test(src), 'review2 6: the Worker exempts control paths');
+	assert.ok(/tagCallId\(r, callId\)/.test(src) && !/^function withCallHeader/m.test(src), 'review2 1: the module rule tags, not a local helper');
+});
+test('review2 10: the seconds parser is shared with #703 (no second regex in start-by.mjs)', () => {
+	const sb = readFileSync(new URL('../start-by.mjs', import.meta.url), 'utf8');
+	assert.ok(/import \{[^}]*secondsMs[^}]*\} from '\.\/object-deadline\.mjs'/.test(sb), 'start-by imports the shared parser');
+	assert.ok(!/\/\^\[0-9\]\+/.test(sb), 'and has no parser of its own');
+});
+
+test('review2 4: a request granted on a stale clock reads it again after a tick, and sheds when its start-by has passed', async () => {
+	// Date.now() moves only at I/O: the grant can read a clock that is behind. The tick lets it move.
+	let t = 1000; const tickTo = (v) => async () => { t = v; };
+	let r = await recheckStartBy(5000, { now: () => t, tick: tickTo(7000) });
+	assert.deepEqual(r, { late: true, clockMs: 6000 }, 'the fresh clock is past the start-by: shed');
+	t = 1000;
+	r = await recheckStartBy(5000, { now: () => t, tick: tickTo(4000) });
+	assert.deepEqual(r, { late: false, clockMs: 3000 }, 'still before the start-by: run');
+	t = 1000;
+	r = await recheckStartBy(5000, { now: () => t, tick: async () => {} });
+	assert.deepEqual(r, { late: false, clockMs: 0 }, 'a tick that does not move the clock proves nothing: clockMs 0 says so');
+	// The default tick is one timer turn.
+	t = 6000;
+	r = await recheckStartBy(5000, { now: () => t });
+	assert.equal(r.late, true);
+});
+test('review2 4 wiring: the object rechecks before the writes and before PHP, only when it queued behind another run', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const obj = src.slice(src.indexOf('	async fetch(raw) {'), src.indexOf('function phpObjectName('));
+	const run = obj.indexOf('const objectRun = await withPhp(');
+	const re = obj.indexOf('await recheckStartBy(startByAt', run);
+	assert.ok(re > run, 'inside the run');
+	assert.ok(/if \(startByAt > 0 && queuedBehind\) \{\n\t+const rc = await recheckStartBy\(startByAt\);/.test(obj), 'only when it queued behind another run');
+	assert.ok(re < obj.indexOf('this.ctx.storage.put(ORIGIN_KEY, origin)', run) && re < obj.indexOf('await handle(req, env, url, spikeOk, maxBody, ctx)', run), 'before the writes and before PHP');
+	assert.ok(/event: 'shed', at: 'clock', why: 'start-by', clockMs: rc\.clockMs/.test(obj), 'the line measures the tick');
 });

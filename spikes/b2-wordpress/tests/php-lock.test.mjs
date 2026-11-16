@@ -252,3 +252,18 @@ test('#708 review 1: a waiter granted on the STALE path after its bound is still
 	assert.equal(ran, 0);
 	finishHead('done'); await head;
 });
+
+test('#715 review2 8: a shed line says WHY (start-by or the operator queue-shed bound)', async () => {
+	let t = 0; let timers = [];
+	const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+	const log = [];
+	const lock = createPhpLock({ staleMs: 10 ** 9, now: () => t, setTimer: (fn, ms) => { timers.push({ at: t + ms, fn }); return timers.length; }, clearTimer: () => {}, log: (e) => log.push(e) });
+	let finishHead; const head = lock.run(() => new Promise((r) => (finishHead = r)));
+	await flush();
+	const w = lock.run(async () => 'ran', { shedMs: 1000, shedWhy: 'start-by' });
+	await flush(); t = 1500; for (const x of timers.splice(0)) x.fn(); await flush();
+	assert.equal(await w, PHP_SHED);
+	const shed = log.find((e) => e.event === 'shed');
+	assert.equal(shed && shed.why, 'start-by');
+	finishHead(); await head;
+});

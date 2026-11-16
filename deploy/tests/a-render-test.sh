@@ -81,5 +81,13 @@ render "$T/h.toml" WOO_HPOS_CACHE=on; rc=$?
 ok "WOO_HPOS_CACHE=on renders vars WOO_HPOS_CACHE = \"on\" (rc $rc)" "$([ $rc = 0 ] && python3 -I "$HERE/canon.py" "$T/h.toml" | grep -qx 'vars WOO_HPOS_CACHE = "on"' && echo 1 || echo 0)"
 ok "unset renders no WOO_HPOS_CACHE line" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -q WOO_HPOS_CACHE && echo 0 || echo 1)"
 
+echo "7. #715 review2 2: OBJECT_START_BY_S and OBJECT_CALL_DEADLINE_S reach [vars]; unset renders nothing; a bad value fails"
+render "$T/s.toml" OBJECT_START_BY_S=off OBJECT_CALL_DEADLINE_S=120; rc=$?
+ok "both render (rc $rc)" "$([ $rc = 0 ] && python3 -I "$HERE/canon.py" "$T/s.toml" | grep -qx 'vars OBJECT_START_BY_S = "off"' && python3 -I "$HERE/canon.py" "$T/s.toml" | grep -qx 'vars OBJECT_CALL_DEADLINE_S = "120"' && echo 1 || echo 0)"
+ok "unset renders neither" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -q 'OBJECT_START_BY_S\|OBJECT_CALL_DEADLINE_S' && echo 0 || echo 1)"
+render "$T/bad.toml" OBJECT_START_BY_S=0; rc=$?
+ok "OBJECT_START_BY_S=0 fails the render (rc $rc)" "$([ $rc != 0 ] && echo 1 || echo 0)"
+ok "deploy.sh checks both before any step" "$(grep -q 'object_time_vars >/dev/null || exit 2' "$ROOT/deploy/deploy.sh" && echo 1 || echo 0)"
+
 [ "$fails" = 0 ] && echo "a-render: all checks pass" || echo "a-render: $fails failing check(s)"
 exit $((fails > 0))

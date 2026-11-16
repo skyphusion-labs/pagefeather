@@ -388,6 +388,20 @@ check("purge parts that do not add up are could-not-measure", p is not None and 
 out = run("shop")[1]
 check("purge could-not-measure is said, never 0", re.search(r"purge\s+5 lines; asked, sent and refused could not be measured", out) is not None and not re.search(r"purge\s+asked 0", out), out)
 
+# 4c. #715 review2 3: the object-call deadline answers (m: object-deadline, index.js toPhpObject). A 500 may have written
+#     (x-write-loss: unknown); a 503 was a safe method. Counted, split by the answer, and a problem.
+rows = [console("site-shop", {"m": "req", "path": "/"}) for _ in range(5)]
+rows += [console("site-shop", {"m": "object-deadline", "path": "/checkout/", "method": "POST", "deadlineMs": 90000, "writeLoss": "unknown", "answered": 500}) for _ in range(2)]
+rows += [console("site-shop", {"m": "object-deadline", "path": "/", "method": "GET", "deadlineMs": 90000, "writeLoss": None, "answered": 503})]
+reset(rows, {wfp("site-shop"): ON})
+out = common("object-deadline", run("shop"), 1)
+line = next((l for l in out.splitlines() if "object-deadline" in l and "x-object-deadline" not in l), "") or next((l for l in out.splitlines() if l.strip().startswith("object-deadline")), "")
+check("object-deadline counted and split by the answer", re.search(r"object-deadline\s+3\b", out) is not None and "500 2" in out and "503 1" in out, out)
+j = json.loads(run("shop", "--json")[1])
+od = next((i for i in j["signals"]["items"] if i["m"] == "object-deadline"), None)
+check("object-deadline json split", od is not None and od.get("count") == 3 and od.get("split") in ({"500": 2, "503": 1}, {500: 2, 503: 1}), od)
+check("object-deadline is a problem", j.get("verdict") == "problems", j.get("verdict"))
+
 # 5. structured lines unreadable (no "m" field): every signal is could-not-measure, never 0.
 reset([console("site-shop", "plain text line") for _ in range(4)], {wfp("site-shop"): ON})
 out = common("no structured", run("shop"), 3)

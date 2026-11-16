@@ -67,7 +67,8 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 		// run(fn, { shedMs, onStale, tag }): fn's result, or PHP_SHED. onStale runs before fn when the lock was
 		// taken as stale (index.js drops the runtime there). tag (#708) is added to this run's log lines (the
 		// correlation id of the forwarded request), so a queued, granted or shed line names its request.
-		run(fn, { shedMs = 0, onStale = () => {}, tag = null } = {}) {
+		// shedWhy (#715 review2 8) names the bound on a shed line: start-by, or the operator's queue-shed.
+		run(fn, { shedMs = 0, onStale = () => {}, tag = null, shedWhy = null } = {}) {
 			const lg = tag ? (e) => log({ ...e, ...tag }) : log;
 			const prev = tail;
 			let release;
@@ -92,7 +93,7 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 					why = 'shed';
 				}
 				if (why === 'shed') {
-					lg({ event: 'shed', at, waitMs, depth: waiting + running, headMs: headMs() });
+					lg({ event: 'shed', at, waitMs, depth: waiting + running, headMs: headMs(), ...(shedWhy ? { why: shedWhy } : {}) });
 					// This waiter never runs: the one behind it waits for the run ahead instead.
 					prev.then(release, release);
 					return PHP_SHED;

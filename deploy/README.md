@@ -244,23 +244,26 @@ Each `NAME` has its own Terraform workspace, so two sites never share state.
 
 ## When a PHP object does not answer in time (#703, #708)
 
-Every request the front Worker hands to a PHP Durable Object (the b-dosql object, and approach A's overflow pool) has two time bounds. They are Worker vars, so they are set per site and need no code change.
+Every request the front Worker hands to a PHP Durable Object (the b-dosql object, and approach A's overflow pool) has two time bounds. They are recorded settings: give one to `deploy.sh` or `deploy/wfp/site` and it is rendered into the Worker's `[vars]` (`deploy/object-time.sh`), and `deploy/wfp` keeps it on later updates (`site_settings.py`). Unset means the code default.
 
 | setting | default | what it bounds |
 |---|---|---|
-| `OBJECT_CALL_DEADLINE_S` | `90` | How long the Worker waits for the object to START answering (#703). `off` turns it off. Install, import and cron are exempt. |
-| `OBJECT_START_BY_S` | the deadline minus 30 s (`60`) | How long a request may wait in the object's PHP queue before it would start (#708). A request not started by then never runs. `off` restores the behavior before #708. Clamped below the deadline. With the deadline `off`, an explicit value still applies. |
+| `OBJECT_CALL_DEADLINE_S` | `90` | How long the Worker waits for the object to START answering (#703). `off`, or 1 to 600 s. `off` turns it off. Install, import and cron are exempt. |
+| `OBJECT_START_BY_S` | the deadline minus 30 s, or minus a third of a deadline under 90 s (`60` for the default `90`) | How long a request may wait in the object's PHP queue before it would start (#708). `off`, or 1 to 600 s. A request not started by then never runs. `off` restores the behavior before #708. Clamped below the deadline. With the deadline `off`, an explicit value still applies. Control paths (`/_*`: `/_evict`, `/_hold`, the exports) and cron never get one. |
 
 What the client sees:
 
 | answer | headers | meaning |
 |---|---|---|
 | 503 | `x-object-deadline: queued`, `x-write-loss: none`, `x-overloaded: 1`, `Retry-After: 5` | The request waited past its start-by and **never ran**. Nothing was written. It is safe to retry. |
-| 500 | `x-object-deadline: no-answer`, `x-write-loss: unknown` | The request STARTED, and the object did not answer within the deadline. It **may have saved** (an order, for example). The client should check before retrying. |
+| 500 | `x-object-deadline: no-answer`, `x-write-loss: unknown` | A request that can write (not GET, HEAD or OPTIONS) STARTED, and the object did not answer within the deadline. It **may have saved** (an order, for example). The client should check before retrying. |
+| 503 | `x-object-deadline: no-answer`, `Retry-After` | The same for a GET, HEAD or OPTIONS: nothing to save, safe to retry. |
 
-Every answer of the object path also carries `x-pf-call`, the request's correlation id (a random id, no request data). It is the same id that the Worker's `overflow` and `object-deadline` lines and the object's `php-lock` and `perf` lines carry, so a client-seen answer can be found in the logs.
+Every answer of the object path that no cache keeps (`no-store` or `private`: every answer above, and pages that are never cached, such as the cart and checkout) carries `x-pf-call`, the request's correlation id (a random id, no request data). A cacheable page does not carry it: the edge would give one request's id to every later visitor. It is the same id that the Worker's `overflow`, `overflow-local` and `object-deadline` lines and the object's `php-lock` and `perf` lines carry, so a client-seen answer can be found in the logs. `deploy/doctor` counts the `object-deadline` lines, split by the answer (500 or 503).
 
-**The escape hatch for a live site:** `OBJECT_START_BY_S=off` on that site, as a Worker var, restores the behavior before #708: no start-by, with #703's deadline unchanged.
+**What the start-by can prove.** In a deployed Worker, `Date.now()` moves only at I/O. A request that queued behind another reads the clock again after one timer turn before it starts, and sheds if its start-by has passed (`php-lock` event `shed`, `at: clock`). Cloudflare's docs do not say that a timer turn moves the clock; the line's `clockMs` measures that on a live site. Until it is measured, the bound is the start-by plus the clock lag, and the lag is at most the CPU time of the runs ahead since their last I/O (30 s per run at the default CPU limit).
+
+**The escape hatch for a live site:** `OBJECT_START_BY_S=off` on that site's next `deploy/wfp/site` update or `deploy.sh` run restores the behavior before #708: no start-by, with #703's deadline unchanged. `deploy/wfp` records it, so a later update keeps it; `DROP_SETTINGS=OBJECT_START_BY_S` returns to the default. Do not set it in the dashboard: the next deploy writes `[vars]` again and erases it.
 
 ## Remove a site safely
 

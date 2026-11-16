@@ -103,6 +103,10 @@ case "${WOO_EXTRAS:-}" in
   off) ;;
   *) echo "WOO_EXTRAS must be off or unset, not ${WOO_EXTRAS}" >&2; exit 2 ;;
 esac
+# OBJECT_CALL_DEADLINE_S, OBJECT_START_BY_S (#703, #708): checked before any step; render_conf renders them.
+# shellcheck source=SCRIPTDIR/object-time.sh
+. "$ROOT/deploy/object-time.sh"
+object_time_vars >/dev/null || exit 2
 # WOO_ACTIVE is 0 or 1 (#706). Unset was set to 0 above. Anything else is refused
 # before any step, the same as deploy/wfp woo_active_for_build.
 case "$WOO_ACTIVE" in
