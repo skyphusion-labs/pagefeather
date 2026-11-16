@@ -18,7 +18,8 @@ check. The content is present when any of these holds:
 - `SUITE` or `THEME_SUITE` points into `tests/conformance/` (the conformance-only pins);
 - `IMPORT_CONTENT` is a `wp-content` that holds `mu-plugins/pf-conformance-throwaway.php`, whatever `IMPORT_*` says.
 
-With the content, a deploy needs `THROWAWAY=1` and a named site that is not live (neither `deploy/live-sites/<name>.env`
+With the content, a deploy needs `CONFORMANCE=on` (the run states that it carries this content: a deploy-time
+statement only, never rendered or recorded), `THROWAWAY=1`, and a named site that is not live (neither `deploy/live-sites/<name>.env`
 nor `deploy/wfp/live-sites/<name>`; ggc and ggc-test are refused). It is checked, before any step, at the entry of
 `deploy/deploy.sh` and of every Workers for Platforms command (`site add`, `site update`, each site of `update --all`,
 `site.sh up`, `up.sh`). A `site update` checks again on the site's **recorded** build inputs, which can carry the
@@ -26,11 +27,11 @@ content, and `render_user` checks as the last guard.
 
 ## A run
 
-1. **Build and deploy:** the throwaway with `prepare-content.sh`'s line, `THROWAWAY=1`, and these settings:
+1. **Build and deploy:** the throwaway with `prepare-content.sh`'s line, `CONFORMANCE=on THROWAWAY=1`, and these settings:
    - `TURNSTILE_LOGIN=off`: the suites' login posts carry no Turnstile token. The checkout and comment gates stay on,
      with Turnstile's always-pass test keys.
    - `WOO_EXTRAS` must NOT be `off`: it forces `woocommerce_allow_tracking` off, which the WooCommerce suite needs on.
-2. **Seed:** `B=<site> ADMIN_PASSWORD=<the workspace's> python3 -I tests/conformance/seed.py <out>` (#775). It owns all
+2. **Seed** (it also activates the two WooCommerce test plugins the line copied in; Gutenberg's stay inactive): `B=<site> ADMIN_PASSWORD=<the workspace's> python3 -I tests/conformance/seed.py <out>` (#775). It owns all
    setup and checks each item. `<out>/creds.env` (mode 600, `export` lines) holds the admin's account password, which
    is an application password (one value passes both the login form and Basic, #762), and the customer's.
 3. **Run:** `. <out>/creds.env`, then `runner.py prepare` (it checks the seed and never writes), then the suite

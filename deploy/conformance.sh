@@ -11,7 +11,9 @@
 #   - IMPORT_PLUGINS names woocommerce-cleanup, woocommerce-e2e-test-helper or gutenberg-test-plugins;
 #   - SUITE or THEME_SUITE points into tests/conformance/ (the conformance-only pins: plugins.txt, themes.txt);
 #   - IMPORT_CONTENT is a wp-content that holds mu-plugins/pf-conformance-throwaway.php, whatever IMPORT_* says.
-# Then it is allowed only when ALL hold: THROWAWAY=1, and the site is named and not live (neither
+# Then it is allowed only when ALL hold: CONFORMANCE=on (the run states it carries this content: a deploy-time
+# statement only, never rendered or recorded, so not a runtime switch), THROWAWAY=1, and the site is named and not
+# live (neither
 # deploy/live-sites/<name>.env nor deploy/wfp/live-sites/<name>; ggc and ggc-test are refused).
 # Test: deploy/tests/conformance-test.sh, deploy/wfp/tests/conformance-early-test.sh.
 
@@ -35,8 +37,10 @@ conformance_content() {
 # conformance_check <name>: exit status 2 and the reason on stderr when refused; 0 when allowed or no content.
 conformance_check() {
   local n=${1:-} why root
+  case "${CONFORMANCE:-}" in ""|on) ;; *) echo "CONFORMANCE must be on or unset, not ${CONFORMANCE}" >&2; return 2 ;; esac
   why=$(conformance_content)
   [ -n "$why" ] || return 0
+  [ "${CONFORMANCE:-}" = on ] || { echo "conformance content needs CONFORMANCE=on ($why): state that this build carries the upstream suites' content, which wipes the store" >&2; return 2; }
   [ "${THROWAWAY:-}" = 1 ] || { echo "conformance content needs THROWAWAY=1 ($why): it wipes the store and deletes all posts; say the site is a throwaway" >&2; return 2; }
   [ -n "$n" ] || { echo "conformance content needs the site's name, to check it is not a live site ($why)" >&2; return 2; }
   root=${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}

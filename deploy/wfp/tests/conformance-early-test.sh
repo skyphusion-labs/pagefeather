@@ -51,14 +51,15 @@ refused() { # refused <label> <want text> <command> [args...]
 NO_TA="conformance content needs THROWAWAY=1"
 LIVE="ggc-test is a live site"
 # BUILD stays unset (site add's default is 0): a missing refusal stops at "not built", never at a real build.
-refused "site add, no THROWAWAY" "$NO_TA" env IMPORT_PLUGINS=woocommerce-cleanup "$SITE" add pf9x
-refused "site add, a live site" "$LIVE" env IMPORT_PLUGINS=woocommerce-cleanup THROWAWAY=1 "$SITE" add ggc-test
-refused "site update, no THROWAWAY" "$NO_TA" env IMPORT_PLUGINS=woocommerce-cleanup "$SITE" update pf9x
-refused "site update, a live site" "$LIVE" env IMPORT_PLUGINS=woocommerce-cleanup THROWAWAY=1 "$SITE" update ggc-test
-refused "site.sh up, no THROWAWAY" "$NO_TA" env IMPORT_PLUGINS=woocommerce-cleanup "$SITESH" up pf9x
-refused "site.sh up, a live site" "$LIVE" env IMPORT_PLUGINS=woocommerce-cleanup THROWAWAY=1 "$SITESH" up ggc-test
-refused "up.sh, no THROWAWAY" "$NO_TA" env IMPORT_PLUGINS=woocommerce-cleanup BUILD=0 SITES=pf9x "$UPSH"
-refused "up.sh 'one ggc-test' refuses before either" "$LIVE" env IMPORT_PLUGINS=woocommerce-cleanup THROWAWAY=1 BUILD=0 SITES="one ggc-test" "$UPSH"
+refused "site add, no THROWAWAY" "$NO_TA" env IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on "$SITE" add pf9x
+refused "site add, no CONFORMANCE=on" "needs CONFORMANCE=on" env IMPORT_PLUGINS=woocommerce-cleanup THROWAWAY=1 "$SITE" add pf9x
+refused "site add, a live site" "$LIVE" env IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 "$SITE" add ggc-test
+refused "site update, no THROWAWAY" "$NO_TA" env IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on "$SITE" update pf9x
+refused "site update, a live site" "$LIVE" env IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 "$SITE" update ggc-test
+refused "site.sh up, no THROWAWAY" "$NO_TA" env IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on "$SITESH" up pf9x
+refused "site.sh up, a live site" "$LIVE" env IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 "$SITESH" up ggc-test
+refused "up.sh, no THROWAWAY" "$NO_TA" env IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on BUILD=0 SITES=pf9x "$UPSH"
+refused "up.sh 'one ggc-test' refuses before either" "$LIVE" env IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 BUILD=0 SITES="one ggc-test" "$UPSH"
 ok "update_one (update --all) checks each site before the snapshot and build" "$(awk '/^update_one_inner\(\)/,/^}/' "$SITE" | grep -q 'conformance_var "\$s" || { echo' && echo 1 || echo 0)"
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]
