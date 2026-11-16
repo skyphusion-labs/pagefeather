@@ -4,5 +4,9 @@
   "description": "The one pinned Wrangler every deploy and test script calls through deploy/wr.",
   "devDependencies": {
     "wrangler": "4.107.0"
+  },
+  "overrides": {
+    "undici": "7.30.1",
+    "sharp": "0.35.5"
   }
 }
