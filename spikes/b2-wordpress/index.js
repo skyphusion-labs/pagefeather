@@ -1452,6 +1452,9 @@ async function handleMessage(raw) {
 	const m = parsed.m;
 	if (m.http) return JSON.stringify(await httpOp(m.http));
 	if (m.txn) return JSON.stringify(sqlDb ? txnOp(sqlDb, sqlStorage, m.txn) : { ok: false, error: 'no database in the object' });
+	// #780: the whole database's size for SHOW TABLE STATUS (php/table-status-size.php). A Durable Object's SQLite
+	// reports only that (no dbstat, no PRAGMA page_count). Without the object's database: no size.
+	if (m.dbSize) return JSON.stringify(sqlDb ? { ok: true, bytes: sqlDb.databaseSize } : { ok: false, error: 'no database in the object' });
 	if (m.oc) return JSON.stringify(await objectCacheOp(m.oc));
 	if (m.probeMem) return JSON.stringify({ wasm: lastBootedPhp ? lastBootedPhp[__private__dont__use].HEAPU8.length : null });
 	if (m.memTrace) { lastMemTrace = m.memTrace; return '1'; }

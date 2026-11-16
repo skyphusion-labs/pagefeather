@@ -72,7 +72,7 @@ if [ "${ENGINE:-d1}" = a ]; then
   cp php/hyperdrive-literals.php "$wp/wp-content/hyperdrive-literals.php"
   cp php/hyperdrive-qtrace.php "$wp/wp-content/hyperdrive-qtrace.php" # #296 step 3
 else
-cp php/db.php php/d1-pdo.php php/d1-dialect.php "$wp/wp-content/"
+cp php/db.php php/d1-pdo.php php/d1-dialect.php php/table-status-size.php "$wp/wp-content/"
 # The plugin's installer opens its own connection to DB_PATH. Make it use the
 # D1-backed connection that wp-content/db.php already made.
 python3 - "$wp/wp-content/plugins/sqlite-database-integration/wp-includes/sqlite/install-functions.php" <<'PY'
