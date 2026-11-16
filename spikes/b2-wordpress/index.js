@@ -14,6 +14,7 @@ import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
 import { cronBounds, cronCleanDue, cronLegDue } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronRunDeferred, cronMarkOf, cronFatalOf } from './cron-health.mjs';
+import { cronFailureLine } from './cron-error.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION, setResultHeader, takeResultHeader, turnstileRoute, readGatedToken, encodeResult, TurnstileSlot, turnstileTimeoutMs, retryAfterFor } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
@@ -2928,10 +2929,13 @@ export class PhpRuntime extends DurableObject {
 			// never drain until a request reboots the runtime (#191). Reset so the next tick reboots fresh.
 			dropRuntime();
 			cronRunSink = null; // #471: no cron leg is running any more
-			console.log(JSON.stringify({ m: 'cron', error: String((e && e.message) || e).slice(0, 200) }));
+			// #348: the thrown message starts with WordPress's HTML error page, so the
+			// first 200 characters never reach the fatal. Log the fatal from stderr.
+			const detail = cronFailureLine(e);
+			console.log(JSON.stringify({ m: 'cron', error: detail.error, errMsg: detail.errMsg, errFile: detail.errFile, errLine: detail.errLine, stderrHead: detail.stderrHead }));
 			// Visible in /_purgestate too (#291): wrangler tail shows nothing for a dispatch script's alarm.
 			const cst = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
-			cst.cron = { t: Date.now(), error: String((e && e.message) || e).slice(0, 300), stack: String((e && e.stack) || '').slice(0, 1200) };
+			cst.cron = { t: Date.now(), error: detail.error, errMsg: detail.errMsg, errFile: detail.errFile, errLine: detail.errLine, stderrHead: detail.stderrHead, stack: detail.stack };
 			await this.ctx.storage.put(PURGE_STATE_KEY, cst);
 		}
 		const st = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
