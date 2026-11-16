@@ -13,6 +13,9 @@
  * Customizer, the dashboard (a plugin's dashboard widget could render a block), list screens and any plugin screen.
  * It only ever turns upstream's "yes" into "no" on a listed screen; it never turns a "no" into a "yes". AJAX and REST
  * are left to upstream's own rules, and so is the front end. Tested in tests/woo-blocks-scope-test.php.
+ *
+ * Operator A/B on one build: `x-mem-off: wcscope` keeps upstream's answer everywhere. index.js passes x-mem-off to
+ * PHP only with the spike token; if it ever reached PHP otherwise, the worst case is upstream's own default.
  */
 
 if ( ! function_exists( 'skyphusion_woo_blocks_off_screens' ) ) {
@@ -40,13 +43,21 @@ if ( ! function_exists( 'skyphusion_woo_blocks_off_screens' ) ) {
 	}
 }
 
+if ( ! function_exists( 'skyphusion_woo_blocks_scope_off' ) ) {
+	/** True when the operator switch x-mem-off names wcscope (an exact token in the comma list). */
+	function skyphusion_woo_blocks_scope_off() {
+		$h = isset( $_SERVER['HTTP_X_MEM_OFF'] ) ? strtolower( (string) $_SERVER['HTTP_X_MEM_OFF'] ) : '';
+		return in_array( 'wcscope', array_map( 'trim', explode( ',', $h ) ), true );
+	}
+}
+
 if ( ! function_exists( 'skyphusion_woo_blocks_scope' ) ) {
 	/**
 	 * @param bool $register Upstream's answer.
 	 * @return bool
 	 */
 	function skyphusion_woo_blocks_scope( $register ) {
-		if ( ! is_admin() || wp_doing_ajax() ) {
+		if ( ! is_admin() || wp_doing_ajax() || skyphusion_woo_blocks_scope_off() ) {
 			return $register;
 		}
 		global $pagenow;

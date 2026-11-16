@@ -40,5 +40,11 @@ ok( 'AJAX from profile.php: left to upstream', true === decide( 'profile.php', t
 ok( 'the front end: left to upstream', true === decide( 'profile.php', true, false ) );
 ok( 'an unknown screen name: kept (an allowlist)', true === decide( 'my-plugin-screen.php' ) );
 ok( 'no pagenow at all: kept', true === decide( null ) );
+// The operator A/B switch: x-mem-off carrying wcscope (index.js passes x-mem-off only with the spike token).
+$_SERVER['HTTP_X_MEM_OFF'] = 'preload, WCSCOPE';
+ok( 'x-mem-off: wcscope keeps upstream on a listed screen', true === decide( 'profile.php' ) );
+$_SERVER['HTTP_X_MEM_OFF'] = 'wcscopex,wcblocks';
+ok( 'x-mem-off without the exact wcscope token: still off', false === decide( 'profile.php' ) );
+unset( $_SERVER['HTTP_X_MEM_OFF'] );
 echo $fails . " failing\n";
 exit( $fails ? 1 : 0 );
