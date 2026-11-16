@@ -14,6 +14,9 @@
 #   5. (#795) a read-only request whose read fails by the platform's hand (nothing written): the same retryable 503.
 #   6. (#795) a DETERMINISTIC statement error (kind other: the statement itself is wrong) is NOT a 5xx: it goes back to
 #      WordPress through wpdb's error path, as MySQL's does, and WordPress answers (a retry would fail forever).
+#   7. (#795, the lead's case) a plugin upgrade's table probe on an ORDINARY ADMIN request (a real "no such table" on
+#      admin_init, as a deploy that ships a plugin's new version would run on its first admin request): the dashboard
+#      answers exactly as it does without the probe. Red, by path: 503 with Retry-After on every retry (locked out).
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export PORT=${PORT:-8797} DEV_ENV=${DEV_ENV:-dosql-local}
@@ -28,7 +31,12 @@ trap './run.sh --stop > /dev/null 2>&1; rm -rf build && mv "$STATE/build.saved" 
 mkdir -p "$STATE/content/mu-plugins"
 cat > "$STATE/content/mu-plugins/pf-derived-test.php" <<'PHP'
 <?php
-// #794 test fixture, an e2e build only: a failed read followed by a default (tests/failed-read-rollback-e2e.sh).
+// #794 and #795 test fixture, an e2e build only (tests/failed-read-rollback-e2e.sh).
+// x-pf-upgrade-probe: a plugin upgrade's table probe on an ordinary admin request (a REAL "no such table", not injected).
+if ( ! empty( $_SERVER['HTTP_X_PF_UPGRADE_PROBE'] ) ) {
+	add_action( 'admin_init', function () { global $wpdb; $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->prefix}pf_upgrade_probe" ); } );
+}
+// x-pf-derived: a failed read followed by a default.
 if ( empty( $_SERVER['HTTP_X_PF_DERIVED'] ) ) { return; }
 add_action( 'init', function () {
 	if ( 'set' === $_SERVER['HTTP_X_PF_DERIVED'] ) { update_option( 'pf_derived_test', 'the-real-value', false ); return; }
@@ -38,7 +46,7 @@ PHP
 IMPORT_CONTENT="$STATE/content" IMPORT_MU_PLUGINS="pf-derived-test.php" ./build.sh > "$STATE/build.log" 2>&1 || { echo "failed-read-rollback: build.sh failed"; tail -5 "$STATE/build.log"; exit 1; }
 DEV_LOCAL=1 DEV_LOG_LEVEL=log DEV_VARS="PHP_RECYCLE:off FAULT_INJECT:sql-fail REQUEST_FRAMES:on" ./run.sh _ping > /dev/null || { echo "failed-read-rollback: wrangler dev did not start"; tail -20 dev.log; exit 1; }
 curl -sf -H "x-spike-token: $TOK" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null || { echo "failed-read-rollback: /_install failed"; exit 1; }
-B=$B TOK=$TOK python3 -I - <<'PY'
+B=$B TOK=$TOK PW=$PW python3 -I - <<'PY'
 import json, os, sys, urllib.request, urllib.error
 B, TOK = os.environ["B"], os.environ["TOK"]
 def get(path, h):
@@ -87,6 +95,16 @@ logs = [json.loads(l[l.index("{"):]) for l in open("dev.log", errors="replace") 
 cls = [x.get("class") for x in logs]
 check("6. a deterministic statement error is not a 5xx: WordPress answers it, as on MySQL", st < 500 and "x-sql-failure" not in hl, "%s" % st)
 check("6. and every failed statement is logged by class (shape only): platform and deterministic both seen", "platform" in cls and "deterministic" in cls, str(sorted(set(cls))))
+sys.path.insert(0, os.path.join(os.getcwd(), "tests")); os.environ.setdefault("SPIKE_TOKEN", TOK); os.environ.setdefault("ADMIN_PASSWORD", os.environ.get("PW", "local-spike-password"))
+import break_lib as BL
+o = BL.login()
+plain = BL.req(o, "/wp-admin/", timeout=300)
+probed = BL.req(o, "/wp-admin/", headers={"x-pf-upgrade-probe": "1"}, timeout=300)
+ph = {k.lower(): v for k, v in (probed["h"] or {}).items()}
+logs = [json.loads(l[l.index("{"):]) for l in open("dev.log", errors="replace") if '"statement-failure"' in l and "upgrade_probe" in l and "{" in l] if os.path.exists("dev.log") else []
+print("  7. the dashboard: %s without the probe, %s with it (x-sql-failure %s); logged %s" % (plain["code"], probed["code"], ph.get("x-sql-failure"), [(x.get("class"), x.get("shapes")) for x in logs[-1:]]))
+check("7. a plugin-upgrade table probe on an admin request answers as stock does (no 5xx, no lock-out)", probed["code"] == plain["code"] == 200 and "x-sql-failure" not in ph, "%s %s" % (plain["code"], probed["code"]))
+check("7. its real 'no such table' was the deterministic class, and logged by shape", bool(logs) and logs[-1].get("class") == "deterministic", str([x.get("class") for x in logs]))
 print("failed-read-rollback: %d failing" % len(fails))
 sys.exit(1 if fails else 0)
 PY
