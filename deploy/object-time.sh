@@ -8,6 +8,8 @@
 #   OBJECT_START_BY_S       off, or seconds from 1 to 600 (a decimal is allowed)
 #   OBJECT_DISCONNECT_SHED  on or off (#721): off, a queued waiter ignores its caller's disconnect and only the
 #                           start-by applies. The enable_request_signal flag stays on either way.
+#   START_BY_TICK_URL       an https URL (#754): the start-by recheck's tick target, a tiny dedicated Worker outside the
+#                           site's hostname (the object's fetch to its OWN hostname is refused). Unset: the site's /_tick.
 # The code takes a deadline from 0.01 s; the recorded setting asks for 1 s or more, so a typo such as 0.09
 # for 90 is refused, not deployed.
 # An explicit OBJECT_START_BY_S is at most the deadline minus the run allowance (30 s, or a third of a deadline under
@@ -31,6 +33,12 @@ object_time_vars() {
     on|off) echo "OBJECT_DISCONNECT_SHED = \"$OBJECT_DISCONNECT_SHED\"" ;;
     *) echo "OBJECT_DISCONNECT_SHED must be on or off, not $OBJECT_DISCONNECT_SHED" >&2; return 1 ;;
   esac
+  if [ -n "${START_BY_TICK_URL:-}" ]; then
+    if ! [[ "$START_BY_TICK_URL" =~ ^https://[A-Za-z0-9.-]+(/[^[:space:]]*)?$ ]]; then
+      echo "START_BY_TICK_URL must be an https URL, not $START_BY_TICK_URL" >&2; return 1
+    fi
+    echo "START_BY_TICK_URL = \"$START_BY_TICK_URL\""
+  fi
   local sb=${OBJECT_START_BY_S:-} dl=${OBJECT_CALL_DEADLINE_S:-90} cap
   if [ -n "$sb" ] && [ "$sb" != off ] && [ "$dl" != off ]; then
     cap=$(awk -v d="$dl" 'BEGIN { ms = d * 1000; a = int(ms / 3); if (a > 30000) a = 30000; printf "%g", (ms - a) / 1000 }')

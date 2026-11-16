@@ -14,7 +14,7 @@ set -u
 unset MAIL_FROM MAIL_FROM_NAME
 unset HTTP_ALLOW_HOSTS
 unset WOO_EXTRAS
-unset OBJECT_START_BY_S OBJECT_CALL_DEADLINE_S OBJECT_DISCONNECT_SHED
+unset OBJECT_START_BY_S OBJECT_CALL_DEADLINE_S OBJECT_DISCONNECT_SHED START_BY_TICK_URL
 HERE=$(cd "$(dirname "$0")" && pwd)
 LIB=${1:-$HERE/../lib.sh}
 # shellcheck disable=SC1090
@@ -281,5 +281,10 @@ ok "no OBJECT_DISCONNECT_SHED var by default" "$(render_user one https://wp-one.
 ok "OBJECT_DISCONNECT_SHED=off renders it" "$(OBJECT_DISCONNECT_SHED=off render_user one https://wp-one.sub.workers.dev | ods | grep -qx '"off"' && echo 1 || echo 0)"
 for bad in 0 1 yes OFF; do ok "OBJECT_DISCONNECT_SHED=$bad fails the render" "$(OBJECT_DISCONNECT_SHED=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
 ok "the compatibility flag stays on with the shed off" "$(OBJECT_DISCONNECT_SHED=off render_user one https://wp-one.sub.workers.dev | grep -q 'enable_request_signal' && echo 1 || echo 0)"
+# #754: START_BY_TICK_URL, an https URL (a dedicated tick Worker); unset renders nothing (the site's own /_tick).
+stu() { "$PY" -c 'import json, sys, tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())["vars"].get("START_BY_TICK_URL")))'; }
+ok "no START_BY_TICK_URL by default" "$(render_user one https://wp-one.sub.workers.dev | stu | grep -qx null && echo 1 || echo 0)"
+ok "an https URL renders" "$(START_BY_TICK_URL=https://pf-tick.example.workers.dev/ render_user one https://wp-one.sub.workers.dev | stu | grep -qx '"https://pf-tick.example.workers.dev/"' && echo 1 || echo 0)"
+for bad in http://x.example/ ftp://x 'https://a b/' notaurl; do ok "START_BY_TICK_URL=$bad fails the render" "$(START_BY_TICK_URL="$bad" render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
 echo "$fails failing check(s)"
 exit $fails

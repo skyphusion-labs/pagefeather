@@ -1,0 +1,8 @@
+# #754: the start-by tick Worker (deploy/tick-worker/index.mjs). One per account, shared by its sites.
+#   deploy/wr deploy --config deploy/tick-worker/wrangler.toml
+# A site points at it with START_BY_TICK_URL=https://pf-tick.<account subdomain>.workers.dev/ (deploy.sh, deploy/wfp,
+# or one-click: deploy/object-time.sh and objectTimeInputs check it).
+name = "pf-tick"
+main = "index.mjs"
+compatibility_date = "2026-07-01"
+workers_dev = true

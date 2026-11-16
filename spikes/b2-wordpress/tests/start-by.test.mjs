@@ -141,13 +141,13 @@ test('review2 4: a request granted on a stale clock reads it again after a tick,
 	// Date.now() moves only at I/O: the grant can read a clock that is behind. The tick lets it move.
 	let t = 1000; const tickTo = (v) => async () => { t = v; };
 	let r = await recheckStartBy(5000, { now: () => t, tick: tickTo(7000) });
-	assert.deepEqual(r, { late: true, clockMs: 6000, why: 'start-by' }, 'the fresh clock is past the start-by: shed');
+	assert.deepEqual(r, { late: true, clockMs: 6000, why: 'start-by', tick: 'ok' }, 'the fresh clock is past the start-by: shed');
 	t = 1000;
 	r = await recheckStartBy(5000, { now: () => t, tick: tickTo(4000) });
-	assert.deepEqual(r, { late: false, clockMs: 3000 }, 'still before the start-by: run');
+	assert.deepEqual(r, { late: false, clockMs: 3000, tick: 'ok' }, 'still before the start-by: run');
 	t = 1000;
 	r = await recheckStartBy(5000, { now: () => t, tick: async () => {} });
-	assert.deepEqual(r, { late: false, clockMs: 0 }, 'a tick that does not move the clock proves nothing: clockMs 0 says so');
+	assert.deepEqual(r, { late: true, why: 'tick-failed', clockMs: 0, tick: 'ok' }, '#754: a tick that does not move the clock leaves it unknown: shed');
 	// The default tick is one timer turn.
 	t = 6000;
 	r = await recheckStartBy(5000, { now: () => t });
@@ -283,8 +283,9 @@ test('#752 recheckStartBy: a failed tick SHEDS (why tick-failed); a caller gone 
 	const ac = new AbortController();
 	r = await recheckStartBy(5000, { now: () => 1000, tick: async () => { ac.abort(); }, signal: ac.signal });
 	assert.equal(r.late, true); assert.equal(r.why, 'disconnect', 'the abort is read AFTER the real I/O');
+	// #754: a tick that settles on an UNMOVED clock leaves the clock unknown: shed (was: granted, before the lead's rule).
 	r = await recheckStartBy(5000, { now: () => 1000, tick: async () => {} });
-	assert.equal(r.late, false); assert.equal(r.why, undefined);
+	assert.equal(r.late, true); assert.equal(r.why, 'tick-failed');
 	let t = 1000;
 	r = await recheckStartBy(5000, { now: () => t, tick: async () => { t = 9000; } });
 	assert.equal(r.late, true); assert.equal(r.why, 'start-by');
@@ -295,5 +296,35 @@ test('#752 wiring: the front Worker answers /_tick FIRST; the object ticks again
 	const tick = entry.indexOf('if (url.pathname === TICK_PATH) return tickResponse();');
 	assert.ok(tick > 0 && tick < entry.indexOf('pageCacheRoute('), 'before the page cache, before any object call');
 	const obj = src.slice(src.indexOf('	async fetch(raw) {'), src.indexOf('function phpObjectName('));
-	assert.ok(/recheckStartBy\(plan\.startBy, \{ tick: \(\) => tickFetch\(origin\), signal: callerSignal \}\)/.test(obj), 'a real tick to the own origin, with the caller signal');
+	assert.ok(/recheckStartBy\(plan\.startBy, \{ tick: \(\) => tickFetch\(tickUrl\(env, origin\), \{ full: true \}\), signal: callerSignal \}\)/.test(obj), 'a real tick (START_BY_TICK_URL or the own origin), with the caller signal');
+});
+
+// #754 live proof: the self-fetch was refused, yet the failed attempt still MOVED the clock (clockMs 12.5 to 20.8 s). The
+// lead's rule: after the tick SETTLES (ok or error), decide by the start-by on the re-read clock. tick-failed ONLY when the
+// clock did not advance across the tick: then it is truly unknown, and the waiter sheds (fail safe).
+test('#754 rule: a failed tick that MOVED the clock decides by the start-by; only an unmoved clock is tick-failed', { timeout: 3000 }, async () => {
+	let t = 1000;
+	const failMoving = (to) => async () => { t = to; throw new Error('refused 1042'); };
+	// A HEALTHY waiter that still TICKS: under 30 s left on the stale clock (so it ticks), time left on the true one.
+	let r = await recheckStartBy(25000, { now: () => t, tick: failMoving(16000) });
+	assert.equal(r.late, false, 'a healthy waiter (9 s really left) is granted, not falsely shed');
+	assert.equal(r.tick, 'error'); assert.match(r.err, /1042/);
+	t = 1000; r = await recheckStartBy(10000, { now: () => t, tick: failMoving(16000) });
+	assert.equal(r.late, true); assert.equal(r.why, 'start-by', 'late by the moved clock: start-by, not tick-failed');
+	t = 1000; r = await recheckStartBy(10000, { now: () => t, tick: async () => { throw new Error('no io'); } });
+	assert.equal(r.late, true); assert.equal(r.why, 'tick-failed', 'the clock did not move: unknown, shed');
+	t = 1000; r = await recheckStartBy(25000, { now: () => t, tick: async () => { t = 16000; } });
+	assert.equal(r.late, false); assert.equal(r.tick, 'ok'); assert.equal(r.err, undefined);
+	// 30 s or more left even on the stale clock: no tick at all (#715 review3 4), granted at once.
+	t = 1000; let ticked = false; r = await recheckStartBy(60000, { now: () => t, tick: async () => { ticked = true; } });
+	assert.equal(r.late, false); assert.equal(ticked, false);
+});
+test('#754 the tick target: START_BY_TICK_URL when set (a dedicated Worker), else the site origin + /_tick', async () => {
+	const { tickUrl } = await import('../start-by.mjs');
+	assert.equal(tickUrl({}, 'https://s.example'), 'https://s.example/_tick');
+	assert.equal(tickUrl({ START_BY_TICK_URL: 'https://tick.example.workers.dev/' }, 'https://s.example'), 'https://tick.example.workers.dev/');
+	assert.equal(tickUrl({ START_BY_TICK_URL: 'http://plain.example/' }, 'https://s.example'), 'https://s.example/_tick', 'only https is taken');
+	let seen = null;
+	await tickFetch('https://tick.example.workers.dev/', { fetchImpl: async (u) => { seen = u; return new Response(null, { status: 204 }); }, full: true });
+	assert.equal(seen, 'https://tick.example.workers.dev/');
 });

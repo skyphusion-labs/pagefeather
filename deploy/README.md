@@ -249,6 +249,7 @@ Every request the front Worker hands to a PHP Durable Object (the b-dosql object
 | setting | default | what it bounds |
 |---|---|---|
 | `OBJECT_CALL_DEADLINE_S` | `90` | How long the Worker waits for the object to START answering (#703). `off`, or 1 to 600 s. `off` turns it off. Install, import and cron are exempt. |
+| `START_BY_TICK_URL` | unset (the site's own `/_tick`) | The start-by recheck's tick target (#754): an https URL, normally `deploy/tick-worker`. See "What the start-by can prove" below. |
 | `OBJECT_START_BY_S` | the deadline minus 30 s, or minus a third of a deadline under 90 s (`60` for the default `90`) | How long a request may wait in the object's PHP queue before it would start (#708). `off`, or 1 to 600 s. A request not started by then never runs. `off` restores the behavior before #708. An explicit value is at most the deadline minus that run allowance (`60` at `90`); a larger one is refused when the site is deployed, with the cap in the message. With the deadline `off`, any value from 1 to 600 applies. Control paths (`/_*`: `/_evict`, `/_hold`, the exports) and cron never get one. |
 
 What the client sees:
@@ -261,12 +262,17 @@ What the client sees:
 
 Every answer of the object path that the edge never keeps carries `x-pf-call`: an answer whose `cloudflare-cdn-cache-control` (the Worker's own edge directive) says `no-store`, such as the cart and checkout, and every failure answer above (no edge directive, `cache-control: no-store`), the request's correlation id (a random id, no request data). A cacheable page does not carry it: the edge would give one request's id to every later visitor. It is the same id that the Worker's `overflow`, `overflow-local` and `object-deadline` lines and the object's `php-lock` and `perf` lines carry, so a client-seen answer can be found in the logs. `deploy/doctor` counts the `object-deadline` lines, split by the answer (500 or 503).
 
-**What the start-by can prove (#752).** In a deployed Worker or Durable Object, `Date.now()` moves only at I/O, and a timer turn does NOT move it (measured on #714 and #752). When a request that queued behind another gets its turn within 30 s of its start-by, the PHP lock makes ONE real subrequest first: `GET <site origin>/_tick`. The site's own front Worker answers it with an empty 204, before the page cache and any object call, so it never reaches the busy PHP object and needs no outside service.
+**What the start-by can prove (#752, #754).** In a deployed Worker or Durable Object, `Date.now()` moves only at I/O, and a timer turn does NOT move it (measured on #714 and #752). When a request that queued behind another gets its turn with under 30 s left on its (possibly stale) clock, the PHP lock first makes ONE real subrequest, the tick.
 
-- **Then the lock re-reads the clock and the caller's signal.** A request past its start-by sheds (`php-lock` event `shed`, `at: clock`, `why: start-by`). A request whose client disconnected sheds with `why: disconnect`.
-- **If the tick fails or takes more than 2 s,** the request also sheds (`why: tick-failed`): an unknown clock fails safe, because running late is what the start-by exists to prevent.
-- **Every such shed answers the retry-safe 503** (`x-object-deadline: queued`, `x-write-loss: none`): nothing ran.
-- **Cost:** one subrequest per contended request within 30 s of its start-by, inside that request's own invocation. Workers Free allows 50 subrequests per invocation. An uncontended request never ticks.
+- **The tick's target:** `START_BY_TICK_URL` when set: an https URL, normally the tiny dedicated Worker in `deploy/tick-worker/`, deployed once per account. Unset, it is the site's own `/_tick`, which the front Worker answers with an empty 204 before any object call. Measured on #754: the object's fetch to its OWN site's hostname is refused by the platform, so set `START_BY_TICK_URL`.
+- **After the tick SETTLES, ok or error,** the lock re-reads the clock and decides by the start-by. A failed subrequest still moves the clock (measured on #754).
+  - Late: shed, `why: start-by`.
+  - Time left: granted.
+  - The client disconnected: shed, `why: disconnect`.
+  - Only a clock that did NOT advance across the tick is unknown: shed, `why: tick-failed` (fail safe).
+- **Every recheck logs a `php-lock` line with event `recheck`:** late, clockMs, the tick's outcome, and its error text.
+- **Every shed answers the retry-safe 503** (`x-object-deadline: queued`, `x-write-loss: none`): nothing ran.
+- **Cost:** one subrequest per contended request with under 30 s left, inside that request's own invocation. Workers Free allows 50 subrequests per invocation. An uncontended request, or one with 30 s or more left, never ticks.
 
 **The escape hatch for a live site:** `OBJECT_START_BY_S=off` on that site's next `deploy/wfp/site` update or `deploy.sh` run restores the behavior before #708: no start-by, with #703's deadline unchanged. `deploy/wfp` records it, so a later update keeps it; `DROP_SETTINGS=OBJECT_START_BY_S` returns to the default. Do not set it in the dashboard: the next deploy writes `[vars]` again and erases it.
 

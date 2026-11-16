@@ -98,13 +98,18 @@ export function objectTimeInputs(env = {}) {
   const ds = env.OBJECT_DISCONNECT_SHED;
   if (!(ds === undefined || ds === null || ds === '' || ds === 'on' || ds === 'off')) throw new Error(`OBJECT_DISCONNECT_SHED must be on or off, not ${ds}`);
   const objectDisconnectShed = ds === 'on' || ds === 'off' ? ds : undefined;
-  return { objectCallDeadlineS, objectStartByS, objectDisconnectShed };
+  // #754: the start-by tick's target, an https URL (a dedicated Worker). Unset: the site's own /_tick.
+  const tu = env.START_BY_TICK_URL;
+  if (!(tu === undefined || tu === null || tu === '' || /^https:\/\/[A-Za-z0-9.-]+(\/\S*)?$/.test(String(tu)))) throw new Error(`START_BY_TICK_URL must be an https URL, not ${tu}`);
+  const startByTickUrl = tu ? String(tu) : undefined;
+  return { objectCallDeadlineS, objectStartByS, objectDisconnectShed, startByTickUrl };
 }
-function assignObjectTime(vars, { objectCallDeadlineS, objectStartByS, objectDisconnectShed }) {
-  const v = objectTimeInputs({ OBJECT_CALL_DEADLINE_S: objectCallDeadlineS, OBJECT_START_BY_S: objectStartByS, OBJECT_DISCONNECT_SHED: objectDisconnectShed });
+function assignObjectTime(vars, { objectCallDeadlineS, objectStartByS, objectDisconnectShed, startByTickUrl }) {
+  const v = objectTimeInputs({ OBJECT_CALL_DEADLINE_S: objectCallDeadlineS, OBJECT_START_BY_S: objectStartByS, OBJECT_DISCONNECT_SHED: objectDisconnectShed, START_BY_TICK_URL: startByTickUrl });
   if (v.objectCallDeadlineS !== undefined) vars.OBJECT_CALL_DEADLINE_S = v.objectCallDeadlineS;
   if (v.objectStartByS !== undefined) vars.OBJECT_START_BY_S = v.objectStartByS;
   if (v.objectDisconnectShed !== undefined) vars.OBJECT_DISCONNECT_SHED = v.objectDisconnectShed;
+  if (v.startByTickUrl !== undefined) vars.START_BY_TICK_URL = v.startByTickUrl;
 }
 
 // ---- b-dosql integration-descriptor table (#201 Phase 1) --------------------
@@ -157,7 +162,7 @@ function assignObjectTime(vars, { objectCallDeadlineS, objectStartByS, objectDis
 // turn on the default-on gates in index.js (object cache, route cache, theme.json
 // cache, async email, bootstrap trim, media-write trim): index.js enables each
 // unless its var is "off", so the site gets them with no gate var set.
-function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, demo, codeLock, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed, requestFrames } = {}) {
+function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, demo, codeLock, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed, startByTickUrl, requestFrames } = {}) {
   if (!siteOrigin) throw new Error('bDosqlVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
   if (requestFrames !== undefined && requestFrames !== 'on' && requestFrames !== 'off') {
     throw new Error(`bDosqlVars: requestFrames must be 'on', 'off' or unset, not ${JSON.stringify(requestFrames)}`);
@@ -194,7 +199,7 @@ function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mail
   else if (codeLock === true) vars.CODE_LOCK = 'on';
   // #706: after the always-on six, so a non-store stays byte-identical.
   assignPageCacheProduct(vars, { wooActive, importPlugins, plugins, pageCacheProductTtl, store });
-  assignObjectTime(vars, { objectCallDeadlineS, objectStartByS, objectDisconnectShed });
+  assignObjectTime(vars, { objectCallDeadlineS, objectStartByS, objectDisconnectShed, startByTickUrl });
   return vars;
 }
 
@@ -555,7 +560,7 @@ export function aVars({
   // #706: the same store rule as b-dosql. Unset on a non-store adds no var.
   wooActive, importPlugins, plugins, pageCacheProductTtl, store,
   // #715 review3 6: the PHP-object time bounds (the overflow pool), objectTimeInputs.
-  objectCallDeadlineS, objectStartByS, objectDisconnectShed,
+  objectCallDeadlineS, objectStartByS, objectDisconnectShed, startByTickUrl,
 } = {}) {
   if (!siteOrigin) throw new Error('aVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
   const vars = {
@@ -593,7 +598,7 @@ export function aVars({
     if (mailFromName) vars.MAIL_FROM_NAME = mailFromName;
   }
   assignPageCacheProduct(vars, { wooActive, importPlugins, plugins, pageCacheProductTtl, store });
-  assignObjectTime(vars, { objectCallDeadlineS, objectStartByS, objectDisconnectShed });
+  assignObjectTime(vars, { objectCallDeadlineS, objectStartByS, objectDisconnectShed, startByTickUrl });
   return Object.entries(vars).map(([name, text]) => ({ type: 'plain_text', name, text }));
 }
 
@@ -614,7 +619,7 @@ export function aBindings({
   objectCacheGroups, objectCacheTtl, lazyCacheMb, ocKvNamespaceId, ocKvBinding = 'OC_KV',
   mailFrom, mailFromName, extra = [],
   wooActive, importPlugins, plugins, pageCacheProductTtl, store,
-  objectCallDeadlineS, objectStartByS, objectDisconnectShed,
+  objectCallDeadlineS, objectStartByS, objectDisconnectShed, startByTickUrl,
 } = {}) {
   if (!mediaBucket) throw new Error('aBindings: mediaBucket is required');
   if (!hyperdriveId) throw new Error('aBindings: hyperdriveId is required (the Hyperdrive config id from onboarding)');
@@ -624,7 +629,7 @@ export function aBindings({
   // only if the caller already knows it (e.g. a re-provision passing the id).
   if (ocKvNamespaceId) ocKv.namespace_id = ocKvNamespaceId;
   return [
-    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName, objectCacheVersions, wooHposCache, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed }),
+    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName, objectCacheVersions, wooHposCache, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed, startByTickUrl }),
     { type: 'images', name: 'IMAGES' },
     { type: 'r2_bucket', name: 'MEDIA', bucket_name: mediaBucket },
     { type: 'hyperdrive', name: 'HYPERDRIVE', id: hyperdriveId },

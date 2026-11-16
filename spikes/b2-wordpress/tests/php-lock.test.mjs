@@ -371,3 +371,16 @@ test('#752: a clock shed carries the recheck reason (tick-failed or disconnect),
 		assert.equal(shed.at, 'clock'); assert.equal(shed.why, why || 'start-by', String(why));
 	}
 });
+
+test('#754: EVERY recheck logs its outcome (event recheck: late, clockMs, tick, err), granted or shed', { timeout: 3000 }, async () => {
+	let t = 0; const log = [];
+	const lock = createPhpLock({ staleMs: 10 ** 9, now: () => t, setTimer: () => 1, clearTimer: () => {}, log: (e) => log.push(e) });
+	let finishHead; const head = lock.run(() => new Promise((r) => (finishHead = r)));
+	for (let i = 0; i < 20; i++) await Promise.resolve();
+	const w = lock.run(async () => 'ran', { tag: { call: 'h1' }, recheck: async () => ({ late: false, clockMs: 15000, tick: 'error', err: 'refused 1042' }) });
+	for (let i = 0; i < 20; i++) await Promise.resolve();
+	finishHead(); await head;
+	assert.equal(await w, 'ran', 'a healthy waiter runs');
+	const rc = log.find((e) => e.event === 'recheck' && e.call === 'h1');
+	assert.ok(rc && rc.late === false && rc.clockMs === 15000 && rc.tick === 'error' && rc.err === 'refused 1042', JSON.stringify(rc));
+});

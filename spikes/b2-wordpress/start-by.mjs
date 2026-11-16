@@ -73,19 +73,23 @@ export const CLOCK_LAG_MAX_MS = 30000;
 export async function recheckStartBy(startByAt, { now = Date.now, tick = () => new Promise((r) => setTimeout(r, 0)), lagMs = CLOCK_LAG_MAX_MS, signal = null } = {}) {
 	const stale = now();
 	if (startByAt - stale >= lagMs) return { late: false, clockMs: 0, ticked: false };
-	// #752: a tick that fails or times out leaves the clock UNKNOWN: shed (the lead's ruling). Running late is what #708
-	// exists to prevent, and this only arises within CLOCK_LAG_MAX_MS of a start-by.
+	// #754 (the lead's rule, from the live proof): the tick exists to MOVE the clock, and a FAILED subrequest moves it too
+	// (measured: clockMs 12.5 to 20.8 s on refused self-fetches). So after the tick SETTLES, ok or error, re-read the clock
+	// and decide by the start-by. Only a clock that did NOT advance across the tick is unknown: then shed, why tick-failed.
+	let tickOutcome = 'ok', err;
 	try {
 		await tick();
-	} catch {
-		return { late: true, clockMs: now() - stale, why: 'tick-failed' };
+	} catch (e) {
+		tickOutcome = 'error';
+		err = String((e && e.message) || e).slice(0, 160);
 	}
 	const fresh = now();
-	// #752, #721: a caller that disconnected while this waited behind a CPU-bound head: its abort is only seen after the
-	// real I/O lets the event loop run (measured: at the grant it was not).
-	if (signal && signal.aborted) return { late: true, clockMs: fresh - stale, why: 'disconnect' };
+	const seen = { clockMs: fresh - stale, tick: tickOutcome, ...(err ? { err } : {}) };
+	// #752, #721: a caller that disconnected while this waited: its abort is only seen after the real I/O.
+	if (signal && signal.aborted) return { late: true, why: 'disconnect', ...seen };
+	if (fresh === stale) return { late: true, why: 'tick-failed', ...seen };
 	const late = fresh >= startByAt;
-	return { late, clockMs: fresh - stale, ...(late ? { why: 'start-by' } : {}) };
+	return { late, ...(late ? { why: 'start-by' } : {}), ...seen };
 }
 
 // #752: the tick is a REAL subrequest. Measured on the edge (#752, 2026-11-16): only a fetch moved Date.now() in a Durable
@@ -95,8 +99,14 @@ export async function recheckStartBy(startByAt, { now = Date.now, tick = () => n
 // CLOCK_LAG_MAX_MS of a start-by, inside the waiter's own invocation (Workers Free: 50 subrequests per invocation).
 export const TICK_PATH = '/_tick';
 export const TICK_TIMEOUT_MS = 2000;
-export async function tickFetch(origin, { fetchImpl = fetch, timeoutMs = TICK_TIMEOUT_MS } = {}) {
-	const r = await fetchImpl(origin + TICK_PATH, { method: 'GET', signal: AbortSignal.timeout(timeoutMs) });
+// #754: the tick's target. START_BY_TICK_URL (an https URL: a tiny dedicated Worker, outside the site's hostname, since
+// the live proof showed the object's fetch to its OWN hostname is refused), else the site origin + TICK_PATH.
+export function tickUrl(env, origin) {
+	const u = env && env.START_BY_TICK_URL ? String(env.START_BY_TICK_URL).trim() : '';
+	return /^https:\/\/[A-Za-z0-9.-]+(\/[^\s]*)?$/.test(u) ? u : origin + TICK_PATH;
+}
+export async function tickFetch(target, { fetchImpl = fetch, timeoutMs = TICK_TIMEOUT_MS, full = false } = {}) {
+	const r = await fetchImpl(full ? target : target + TICK_PATH, { method: 'GET', signal: AbortSignal.timeout(timeoutMs) });
 	try { if (r.body) await r.body.cancel(); } catch {}
 	if (r.status !== 204) throw new Error('tick answered ' + r.status);
 }

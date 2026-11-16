@@ -30,6 +30,10 @@ ok('OBJECT_DISCONNECT_SHED=off renders on both', !r.error && val(r.b, 'OBJECT_DI
 r = tryBoth({});
 ok('unset renders no OBJECT_DISCONNECT_SHED', !r.error && val(r.b, 'OBJECT_DISCONNECT_SHED') === null);
 for (const bad of ['0', 'yes', 'OFF']) ok('refused: OBJECT_DISCONNECT_SHED=' + bad, Boolean(tryBoth({ OBJECT_DISCONNECT_SHED: bad }).error));
+// #754: START_BY_TICK_URL through the same inputs.
+r = tryBoth({ START_BY_TICK_URL: 'https://pf-tick.example.workers.dev/' });
+ok('START_BY_TICK_URL renders on both', !r.error && val(r.b, 'START_BY_TICK_URL') === 'https://pf-tick.example.workers.dev/' && val(r.a, 'START_BY_TICK_URL') === 'https://pf-tick.example.workers.dev/');
+for (const bad of ['http://x.example/', 'notaurl', 'https://a b/']) ok('refused: START_BY_TICK_URL=' + bad, Boolean(tryBoth({ START_BY_TICK_URL: bad }).error));
 const fs = await import('node:fs');
 const src = (p) => fs.readFileSync(new URL(p, import.meta.url), 'utf8');
 ok('cli.mjs spreads objectTimeInputs for b-dosql and a', (src('../cli.mjs').match(/\.\.\.objectTimeInputs\(env\)/g) || []).length === 2);
