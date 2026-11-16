@@ -25,12 +25,16 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
      Gutenberg specs toggle each one). On a marked throwaway a missing one fails; on a local site without the
      content (SEED_ALLOW_LOCAL=1) it is reported and skipped.
 
+  8. --theme <slug> (optional): activates that installed theme (the admin's own activation link on themes.php) and
+     checks it is the active stylesheet. joan's runner asks twentytwentythree before wc and wc-api: WooCommerce's
+     external setup activates it, and the wp and gb global setups switch to twentytwentyone before.
+
 It refuses (exit 2, before any write) a site that is not a throwaway: one whose
 GET ?rest_route=/pf-conformance/v1/throwaway does not answer {"throwaway": true, "host": <its own host>} (the
 marker mu-plugin from prepare-content.sh). A local wrangler dev site (host localhost or 127.0.0.1) has no
 marker; it is accepted only with SEED_ALLOW_LOCAL=1, so the gate fails closed.
 
-  B=<site> ADMIN_PASSWORD=<current admin password> python3 -I tests/conformance/seed.py <out-dir>
+  B=<site> ADMIN_PASSWORD=<current admin password> python3 -I tests/conformance/seed.py <out-dir> [--theme <slug>]
 
   ADMIN_USER (default admin). ADMIN_PASSWORD is the admin's current password: the workspace's on a first seed,
   or the WP_PASSWORD of <out-dir>/creds.env on a reseed (read from there when ADMIN_PASSWORD is unset).
@@ -47,6 +51,7 @@ import base64, hashlib, http.cookiejar, json, os, re, secrets, sys, time, urllib
 HERE = os.path.dirname(os.path.abspath(__file__))
 B = os.environ.get("B", "").rstrip("/")
 OUT = sys.argv[1] if len(sys.argv) > 1 else ""
+THEME = sys.argv[sys.argv.index("--theme") + 1] if "--theme" in sys.argv[2:] and sys.argv.index("--theme") + 1 < len(sys.argv) else ""
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 BLOGNAME = "WooCommerce Core E2E Test Suite"
 CUSTOMER = {"username": "customer", "email": "customer@woocommercecoree2etestsuite.com", "first_name": "Jane", "last_name": "Smith"}
@@ -273,6 +278,22 @@ def main():
     gb = [k for k, v in have.items() if (k or "").startswith("gutenberg-test-plugins/") and v == "active"]
     if gb:
         check("gutenberg-test-plugins stay inactive (the specs toggle them)", False, active=gb)
+    # 8. --theme: activate an installed theme through its own link (the nonce is on themes.php), then read it back
+    if THEME:
+        if not re.fullmatch(r"[a-z0-9-]{1,64}", THEME):
+            check("theme %s: a theme slug" % THEME, False)
+        else:
+            c, b, _ = req(a, "/wp-admin/themes.php")
+            # The theme list is rendered from JSON on the page, so the link may be HTML-escaped (&amp;) or JSON-escaped
+            # (\u0026): match the query string itself.
+            amp = rb'(?:&|&amp;|\\u0026)'
+            link = re.search(rb'action=activate' + amp + rb'stylesheet=' + re.escape(THEME.encode()) + amp + rb'_wpnonce=([0-9a-f]+)', b or b"")
+            if link:
+                req(a, "/wp-admin/themes.php?action=activate&stylesheet=%s&_wpnonce=%s" % (THEME, link.group(1).decode()))
+            c, act = rest(a, n, "/wp/v2/themes?status=active")
+            active = act[0].get("stylesheet") if isinstance(act, list) and act else None
+            check("theme %s is active" % THEME, active == THEME, active=active, link_found=bool(link) or "already active or not installed")
+
     # 6. the admin's account password = a new application password
     c, me = rest(a, n, "/wp/v2/users/me?context=edit")
     uid = me.get("id") if isinstance(me, dict) else None
