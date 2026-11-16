@@ -346,6 +346,9 @@ Any other binding fails, and so does a script whose bindings cannot be read. The
 - it has no `.ndjson.gz` snapshot;
 - its newest snapshot is over 26 hours old (`FRESH_MAX_AGE_H`);
 - it has a previous snapshot and the newest is under half of its size (`FRESH_MIN_RATIO`, 0.5). A site's FIRST snapshot has nothing to compare against, so this rule does not apply to it.
+- #841: its newest snapshot's alarm record says the cron alarm was missing (`none`) or long past (`stale`) when the snapshot ran, or that no alarm was left after it. The record is the snapshot's R2 custom metadata, `alarmState` and `alarmAt`, read with a HEAD. A snapshot from before #841 has no record; the check says so and is not red.
+
+**The snapshot re-arms the cron alarm (#841).** Before it dumps, the object's `/_dbsnapshot` calls `snapshotRearm` (`alarm-arm.mjs`): the same `rearm` a request runs. It sets an alarm when there is none or a stale one, and it runs no cron inline. The daily snapshot reaches every site's object, so even a fully edge-cached site, where no request reaches the object, gets a deleted alarm back within a day. Cloudflare support (case 02430361) says an alarm past its retry budget is deleted. The state found before the re-arm goes into the snapshot's metadata, so the freshness check above sees that cron had stopped.
 
 List a site in `snapshot-sites` only after its cron is live, so a red is a real miss. With no site listed, the check says so and exits 0. The workflow needs `PF_SNAPSHOT_FRESH_TOKEN`, an account token with R2 read only. snapshot.py derives its S3 key from that token. Without it, a run with sites to check is UNMEASURED and fails (exit 2), never green. A manual dispatch can name other sites (the `sites` input): that is how the check is seen going red once on a throwaway.
 

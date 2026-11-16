@@ -36,8 +36,9 @@ try:
         empty = os.path.join(T, "sites-empty")
         open(empty, "w").write("# none yet\n\n")
 
-        def put(path, body, age_h):
-            urllib.request.urlopen(urllib.request.Request(EP + path, data=body, method="PUT"))
+        def put(path, body, age_h, alarm=None):
+            h = {} if alarm is None else {"x-amz-meta-alarmstate": alarm[0], "x-amz-meta-alarmat": alarm[1]}
+            urllib.request.urlopen(urllib.request.Request(EP + path, data=body, method="PUT", headers=h))
             urllib.request.urlopen(urllib.request.Request(EP + "/_mtime" + path + "?t=%d" % (NOW - age_h * 3600), data=b"", method="POST"))
 
         def post(path):
@@ -67,6 +68,13 @@ try:
         for i in range(1000):
             put(A % ("paged", "2026010%dT%06dZ" % (1 + i // 500, i)), b"x" * 1000, 500)
         put(A % ("paged", "20261114T071700Z"), b"x" * 1000, 1)
+        # #841: the newest snapshot's alarm record (the state BEFORE the snapshot re-armed the cron alarm).
+        put(A % ("alarmok", "20261114T071700Z"), b"x" * 1000, 2, ("ok", "1794640060000"))
+        put(A % ("alarmnone", "20261114T071700Z"), b"x" * 1000, 2, ("none", "1794640060000"))
+        put(A % ("alarmstale", "20261114T071700Z"), b"x" * 1000, 2, ("stale", "1794640060000"))
+        put(A % ("alarmgone", "20261114T071700Z"), b"x" * 1000, 2, ("ok", "none"))
+        put(A % ("alarmold", "20261113T071700Z"), b"x" * 1000, 26, ("none", "1794540060000"))
+        put(A % ("alarmold", "20261114T071700Z"), b"x" * 1000, 2, ("ok", "1794640060000"))
 
         rc, out = fresh(); check("no site listed: exit 0, and it SAYS nothing was checked", rc == 0 and "NO SITES LISTED" in out, out.strip())
         rc, out = fresh("first"); check("the FIRST snapshot (tiny, nothing to compare): not red", rc == 0 and "OK first" in out and "first snapshot" in out, out.strip())
@@ -78,6 +86,12 @@ try:
         rc, out = fresh("half"); check("exactly half: not red", rc == 0, out.strip())
         rc, out = fresh("handonly"); check("only a hand-taken snapshot and a stray key: RED, no scheduled snapshot", rc == 1 and "RED handonly: no snapshot" in out, out.strip())
         rc, out = fresh("paged"); check("1001 snapshots: the newest on page 2 is found, fresh", rc == 0 and "OK paged: _snapshots/auto/20261114T071700Z" in out, out.strip())
+        rc, out = fresh("ok"); check("#841: a snapshot with no alarm record (a build from before #841) is not red, and says so", rc == 0 and "no alarm record" in out, out.strip())
+        rc, out = fresh("alarmok"); check("#841: alarm ok before the snapshot: OK, and says so", rc == 0 and "OK alarmok" in out and "alarm ok" in out, out.strip())
+        rc, out = fresh("alarmnone"); check("#841 THE CASE: the cron alarm was MISSING until the snapshot re-armed it: RED", rc == 1 and "RED alarmnone" in out and "alarm was none" in out, out.strip())
+        rc, out = fresh("alarmstale"); check("#841: the cron alarm was long past (stale): RED", rc == 1 and "RED alarmstale" in out and "alarm was stale" in out, out.strip())
+        rc, out = fresh("alarmgone"); check("#841: no cron alarm even after the re-arm: RED", rc == 1 and "RED alarmgone" in out and "no cron alarm after" in out, out.strip())
+        rc, out = fresh("alarmold"); check("#841: only the NEWEST snapshot's record counts (an older none, a newer ok: OK)", rc == 0 and "OK alarmold" in out, out.strip())
         rc, out = fresh("ok", "stale", "first"); check("three sites, one red: exit 1, the count", rc == 1 and "1 of 3 site(s) red" in out, out.strip())
         rc, out = fresh(FRESH_SITES="ok, first"); check("FRESH_SITES (commas and spaces) names the sites", rc == 0 and "0 of 2" in out, out.strip())
         lst = os.path.join(T, "sites")
