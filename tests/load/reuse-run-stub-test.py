@@ -13,8 +13,10 @@ API product list and guest pages. Every third admin request recycles (x-runtime-
        one guest page answers 500.
 The driver runs all three steps per mode (small settings). Then: every request line has the fields the bar reads;
 off vs on: no bar but 5 FAILS, and 5 is measured (its stub p95s are a few ms, noise); off vs bad: bar 1 is could
-not measure (no logs to excuse the stacked reading), bars 2, 4 and 5 FAIL, and it lists the slow request in the #605 table with its deadline header. Exit 0 when
-all pass.
+not measure (no logs to excuse the stacked reading), bars 2, 4 and 5 FAIL, and it lists the slow request in the #605 table with its deadline header. Then the same with Workers Logs in the wexport.py
+shape: bar 2 is measured, a named refused offer excuses the stacked reading (bar 1 passes), an exceededMemory
+invocation fails bar 2, and the slow row joins its front Worker and object lines by x-perf-id and the dispatcher
+by path and time. Exit 0 when all pass.
 """
 import json, os, subprocess, sys, tempfile, threading, urllib.parse
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -164,9 +166,48 @@ ok("off vs bad: bar 2 FAILS (a lost write)", "| 2 | deaths and lost writes at or
 ok("off vs bad: bar 4 FAILS (a refusal streak past the bound)", "| 4 | the gate never stalls | FAIL |" in bad.stdout)
 ok("off vs bad: bar 5 FAILS (a guest 500 the off arm did not have)", "| 5 | guests no worse | FAIL |" in bad.stdout)
 ok("off vs bad: the slow request is in the #605 table with no-answer", "| no-answer |" in bad.stdout)
+
+
+# Workers Logs in the wexport.py shape (one directory per service: lines.jsonl, invocations.jsonl; lines flattened,
+# t in ms, rid; front Worker and object on different rids). For the bad arm: one named refused offer (it excuses the
+# one stacked reading), one exceededMemory invocation, and the slow request's lines (an object-deadline line on the
+# front Worker's rid, a perf line on the object's), all carrying its x-perf-id as id; a dispatcher invocation for it.
+def wexport(d, lines, inv):
+    os.makedirs(d)
+    with open(os.path.join(d, "lines.jsonl"), "w") as f:
+        for o in lines:
+            f.write(json.dumps(o) + "\n")
+    with open(os.path.join(d, "invocations.jsonl"), "w") as f:
+        for o in inv:
+            f.write(json.dumps(o) + "\n")
+
+
+brows = [json.loads(x) for x in open(files["bad"]) if x.strip()]
+slow = next(r for r in brows if r.get("x-object-deadline") == "no-answer")
+ms = int((slow["t"] - slow["s"]) * 1000)
+ok_inv = [{"t": ms - 1000, "type": "fetch", "outcome": "ok", "status": 200, "path": "/", "wallMs": 5, "cpuMs": 1, "rid": "x0"}]
+wexport(os.path.join(tmp, "L-off"), [{"t": ms, "rid": "x0", "m": "req", "w_executionModel": "stateless"}], ok_inv)
+wexport(os.path.join(tmp, "L-on"), [{"t": ms, "rid": "x0", "m": "mem-reuse", "offer": "kept"}], ok_inv)
+wexport(os.path.join(tmp, "L-bad"),
+        [{"t": ms, "rid": "f1", "m": "object-deadline", "id": slow["perfId"], "deadlineMs": 90000, "answered": 503, "w_executionModel": "stateless"},
+         {"t": ms + 10, "rid": "d1", "m": "perf", "id": slow["perfId"], "w_executionModel": "durableObject"},
+         {"t": ms + 20, "rid": "d2", "m": "mem-reuse", "offer": "in-flight"}],
+        [{"t": ms, "type": "fetch", "outcome": "ok", "status": 503, "path": "/wp-admin/post-new.php", "wallMs": 90012, "cpuMs": 3, "rid": "f1"},
+         {"t": ms + 5, "type": "fetch", "outcome": "exceededMemory", "status": 500, "path": "/wp-admin/post-new.php", "wallMs": 400, "cpuMs": 300, "rid": "d1", "w_durableObjectId": "o1"}])
+wexport(os.path.join(tmp, "D-bad"), [], [{"t": ms + 300, "type": "fetch", "outcome": "ok", "status": 503, "path": "/wp-admin/post-new.php", "wallMs": 90100, "rid": "z1"}])
+g2 = subprocess.run([sys.executable, "-I", SCORE, files["off"], files["on"], "--logs-off", os.path.join(tmp, "L-off"), "--logs-on", os.path.join(tmp, "L-on")], env=senv, capture_output=True, text=True)
+ok("with logs, off vs on: bar 2 is measured and passes (exceededMemory 0 and 0)", "| 2 | deaths and lost writes at or below off | pass |" in g2.stdout and "exceededMemory on 0, off 0" in g2.stdout, g2.stdout[-400:])
+b2 = subprocess.run([sys.executable, "-I", SCORE, files["off"], files["bad"], "--logs-off", os.path.join(tmp, "L-off"), "--logs-on", os.path.join(tmp, "L-bad"),
+                     "--disp-on", os.path.join(tmp, "D-bad")], env=senv, capture_output=True, text=True)
+print(b2.stdout)
+ok("with logs, off vs bad: bar 1 passes (the stacked reading matched by a named refused offer, in-flight)", "| 1 | no stacking (on) | pass |" in b2.stdout and "in-flight" in b2.stdout)
+ok("with logs, off vs bad: bar 2 FAILS and counts the exceededMemory invocation", "| 2 | deaths and lost writes at or below off | FAIL |" in b2.stdout and "exceededMemory on 1, off 0" in b2.stdout)
+row = next((l for l in b2.stdout.splitlines() if l.startswith("| " + slow["perfId"] + " ")), "")
+ok("the slow row joins the site lines by x-perf-id across both rids", "'object-deadline': 1" in row and "'perf': 1" in row and "('exceededMemory', 400)" in row and "('ok', 90012)" in row, row)
+ok("the slow row joins the dispatcher invocation by path and time", "ok 503 90100" in row, row)
+ok("a log file instead of a directory is refused, loudly", subprocess.run([sys.executable, "-I", SCORE, files["off"], files["on"], "--logs-on", files["on"]], capture_output=True, text=True).returncode == 3)
 srv.shutdown()
-for f in files.values():
-    os.remove(f)
-os.rmdir(tmp)
+import shutil
+shutil.rmtree(tmp)
 print("reuse-run-stub: %d failing" % len(fails))
 sys.exit(1 if fails else 0)

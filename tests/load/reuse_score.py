@@ -1,20 +1,33 @@
 #!/usr/bin/env python3
 """Score one engine of the #724 live run (#598) against the bar pinned before the data.
 
-  python3 -I tests/load/reuse_score.py OFF.jsonl ON.jsonl [--logs-off L.jsonl] [--logs-on L.jsonl]
+  python3 -I tests/load/reuse_score.py OFF.jsonl ON.jsonl [--logs-off DIR] [--logs-on DIR] [--disp-off DIR] [--disp-on DIR]
 
 OFF and ON are tests/load/reuse_run.py files of the same engine (npm-off and npm-on, or lean-off and lean-on).
---logs-* are Workers Logs of each arm's site (and its dispatcher), one JSON object per line, as exported; the
-lines this reads are the Worker's own JSON (m: isolate-reset, write-loss, mem-reuse, boot-refused, object-deadline,
-...) and the platform outcome (outcome: exceededMemory). A bar that needs the logs and has none says
-"could not measure", never a pass. Prints the bar table (spec: #598 issuecomment-6910964924), then the #605
+--logs-* and --disp-* are Workers Logs exports (the lead's wexport.py <service> <from> <to> <dir>), one directory
+per service: lines.jsonl (one console line per row, its JSON fields flattened at the top level, plus t in ms and
+rid) and invocations.jsonl (one row per invocation: t, outcome, status, path, wallMs, cpuMs, rid, ...). --logs-* is
+the arm's site; --disp-* is the dispatcher, for the #605 rows. Read from the site: invocation outcome
+exceededMemory, and the lines m: isolate-reset, write-loss, mem-reuse (offer: kept or the refusal reason),
+boot-gate, boot-refused, object-deadline. A request is joined to its lines by its x-perf-id (the lines' id field,
+front Worker and object both), then by rid to its invocations; to the dispatcher by path and time. A bar that
+needs the logs and has none says "could not measure", never a pass. Prints the bar table (spec: #598 issuecomment-6910964924), then the #605
 reading (#598 issuecomment-6912013983): every admin request over 30 s. Exit 0 when the on arm passes every bar
-that could be measured, 1 when one fails, 2 when one could not be measured and none failed.
+that could be measured, 1 when one fails, 2 when one could not be measured and none failed, 3 on a bad argument
+or input.
 Env: BOOT_GATE_MAX_REFUSE_S (default 60), SLOW_S (default 30, the #605 threshold).
 """
 import json, statistics, sys
 
 import os
+
+
+def usage_error(msg):
+    """A bad argument or input exits 3, never 1 (1 is a bar FAIL) or 2 (could not measure)."""
+    sys.stderr.write(msg.rstrip() + "\n")
+    sys.exit(3)
+
+
 MAX_REFUSE_S = float(os.environ.get("BOOT_GATE_MAX_REFUSE_S", "60"))
 SLOW_S = float(os.environ.get("SLOW_S", "30"))  # the #605 reading: admin requests slower than this
 NAMED = ("in-flight", "newer-runtime", "no-drain", "no-guards")
@@ -33,19 +46,38 @@ def load(p):
     return rows
 
 
-def logs(p):
-    if not p:
+def logs(d):
+    """One wexport.py directory: lines.jsonl and invocations.jsonl. None when not given."""
+    if not d:
         return None
-    out = []
-    for o in load(p):
-        m = o.get("message") if isinstance(o.get("message"), (dict, str)) else None
-        if isinstance(m, str):
-            try:
-                m = json.loads(m)
-            except ValueError:
-                m = None
-        out.append({"raw": o, "j": m if isinstance(m, dict) else o})
-    return out
+    lp, ip = os.path.join(d, "lines.jsonl"), os.path.join(d, "invocations.jsonl")
+    if not (os.path.isfile(lp) and os.path.isfile(ip)):
+        usage_error("reuse-score: %s must hold lines.jsonl and invocations.jsonl (a wexport.py directory)" % d)
+    L, I = load(lp), load(ip)
+    X = {"lines": L, "inv": I, "rids_by_id": {}, "lines_by_rid": {}, "inv_by_rid": {}}
+    for o in L:
+        X["lines_by_rid"].setdefault(o.get("rid"), []).append(o)
+        if o.get("id"):
+            X["rids_by_id"].setdefault(o["id"], set()).add(o.get("rid"))
+    for o in I:
+        X["inv_by_rid"].setdefault(o.get("rid"), []).append(o)
+    return X
+
+
+def joined(X, perf_id):
+    """The site's lines and invocations of one request, by its x-perf-id."""
+    rids = X["rids_by_id"].get(perf_id, set())
+    lines = [l for r in rids for l in X["lines_by_rid"].get(r, [])]
+    inv = [i for r in rids for i in X["inv_by_rid"].get(r, [])]
+    return lines, inv
+
+
+def dispatcher_row(D, r):
+    """The dispatcher invocation of a client request: same pathname, started within 5 s of the client's start."""
+    path = r.get("path", "").split("?")[0] or "/"
+    start = (r["t"] - (r.get("s") or 0)) * 1000
+    c = [i for i in D["inv"] if i.get("path") == path and abs(i.get("t", 0) - start) <= 5000]
+    return min(c, key=lambda i: abs(i["t"] - start)) if c else None
 
 
 ADMIN_KINDS = ("dashboard", "post-new", "edit", "save", "before-gap", "after-gap")
@@ -62,10 +94,17 @@ def arm(rows, lg):
     A["writeLossHdr"] = sum(1 for r in a if r.get("kind") == "save" and r.get("x-write-loss") not in (None, "none"))
     A["readBackUnknown"] = sum(1 for r in rb if r.get("found") is None)
     if lg is not None:
-        A["exceededMemory"] = sum(1 for x in lg if (x["raw"].get("outcome") or x["j"].get("outcome")) == "exceededMemory")
-        A["logResets"] = sum(1 for x in lg if x["j"].get("m") == "isolate-reset")
-        A["logWriteLoss"] = sum(1 for x in lg if x["j"].get("m") == "write-loss")
-        A["refusedOffers"] = [x["j"].get("reason") for x in lg if x["j"].get("m") == "mem-reuse" and x["j"].get("reason")]
+        A["outcomes"] = {}
+        for i in lg["inv"]:
+            A["outcomes"][i.get("outcome")] = A["outcomes"].get(i.get("outcome"), 0) + 1
+        A["exceededMemory"] = A["outcomes"].get("exceededMemory", 0)
+        A["logResets"] = sum(1 for o in lg["lines"] if o.get("m") == "isolate-reset")
+        A["logWriteLoss"] = sum(1 for o in lg["lines"] if o.get("m") == "write-loss")
+        offers = [o.get("offer") for o in lg["lines"] if o.get("m") == "mem-reuse" and o.get("offer")]
+        A["offers"] = {k: offers.count(k) for k in sorted(set(offers))}
+        A["refusedOffers"] = [x for x in offers if x != "kept"]
+        A["gateLines"] = sum(1 for o in lg["lines"] if o.get("m") in ("boot-gate", "boot-refused"))
+        A["deadlineLines"] = sum(1 for o in lg["lines"] if o.get("m") == "object-deadline")
     led = [r for r in a if r.get("memLive") is not None]
     A["ledger"] = len(led)
     A["stacked"] = [r for r in led if (r.get("memLive") or 0) >= 2 or (r.get("retiredMem") or 0) > 0]
@@ -80,7 +119,7 @@ def arm(rows, lg):
                     d[k] = max(d.get(k, 0), mr[k])
     A["taken"] = sum(d.get("taken", 0) for d in per_iso.values())
     A["noGuards"] = sum(d.get("noGuards", 0) for d in per_iso.values())
-    A["noDrain"] = sum(1 for r in a if (r.get("memReuse") or {}).get("lastOffer") == "no-drain") if lg is None else sum(1 for x in A["refusedOffers"] if x == "no-drain")
+    A["noDrain"] = sum(1 for r in a if (r.get("memReuse") or {}).get("lastOffer") == "no-drain") if lg is None else A["refusedOffers"].count("no-drain")
     # the quiet gap: did the request after it take the spare (taken rose on its isolate)?
     bg = [r for r in a if r.get("kind") == "before-gap"]; ag = [r for r in a if r.get("kind") == "after-gap"]
     if not (bg and ag):
@@ -123,14 +162,15 @@ def main(argv):
     args, opts = [], {}
     i = 0
     while i < len(argv):
-        if argv[i] in ("--logs-off", "--logs-on"):
+        if argv[i] in ("--logs-off", "--logs-on", "--disp-off", "--disp-on"):
             opts[argv[i]] = argv[i + 1]; i += 2
         else:
             args.append(argv[i]); i += 1
     if len(args) != 2:
-        sys.exit(__doc__)
-    off = arm(load(args[0]), logs(opts.get("--logs-off")))
-    on = arm(load(args[1]), logs(opts.get("--logs-on")))
+        usage_error(__doc__)
+    LG = {k: logs(opts.get(k)) for k in ("--logs-off", "--logs-on", "--disp-off", "--disp-on")}
+    off = arm(load(args[0]), LG["--logs-off"])
+    on = arm(load(args[1]), LG["--logs-on"])
     res = []
 
     def bar(n, name, verdict, detail):
@@ -192,17 +232,33 @@ def main(argv):
     tb = [s["toBootS"] for s in on["streaks"] if s.get("toBootS") is not None]
     print("\nBOOT_GATE_MAX_REFUSE_S: %s" % ("stays 60 (no refusals)" if not on["streaks"] else
           "%g (the longest time to a successful boot after a refusal, %.1f s, plus 50%%, capped at 600)" % (min(600, round(1.5 * max(tb), 1)), max(tb)) if tb else "a streak never reached a successful boot: report it"))
-    for name, A, lgk in (("off", off, "--logs-off"), ("on", on, "--logs-on")):
+    for name, A in (("off", off), ("on", on)):
+        if "outcomes" in A:
+            print("\nlogs, %s arm: invocation outcomes %s; mem-reuse offers %s; isolate-reset %d, write-loss %d, gate %d, object-deadline %d lines"
+                  % (name, A["outcomes"], A["offers"], A["logResets"], A["logWriteLoss"], A["gateLines"], A["deadlineLines"]))
+    for name, A, lgk, dk in (("off", off, "--logs-off", "--disp-off"), ("on", on, "--logs-on", "--disp-on")):
         print("\n#605 reading, %s arm: %d admin requests over %g s (of %d)" % (name, len(A["slow"]), SLOW_S, A["admin"]))
         if A["slow"]:
-            print("| x-perf-id | kind | client s | status | x-object-deadline | x-write-loss | request before: wasm1MiB, iso | next iso new | log lines |\n|---|---|---|---|---|---|---|---|---|")
-        lg = logs(opts.get(lgk))
+            print("| x-perf-id | kind | client s | status | x-object-deadline | x-write-loss | request before: wasm1MiB, iso | next iso new | site: lines (m), invocations (outcome wallMs) | dispatcher: outcome status wallMs |\n|---|---|---|---|---|---|---|---|---|---|")
+        lg, dg = LG[lgk], LG[dk]
         for r in A["slow"]:
             o = A["order"]; k = o.index(r)
             prev = o[k - 1] if k > 0 else {}; nxt = o[k + 1] if k + 1 < len(o) else {}
-            nl = "logs not given" if lg is None else str(sum(1 for x in lg if r["perfId"] in json.dumps(x["raw"])))
-            print("| %s | %s | %.1f | %s | %s | %s | %s, %s | %s | %s |" % (r["perfId"], r["kind"], r["s"], r["status"], r.get("x-object-deadline", "absent"),
-                  r.get("x-write-loss", "-"), prev.get("wasm1MiB"), prev.get("iso"), (nxt.get("iso") not in (None, r.get("iso"))) if nxt else "-", nl))
+            if lg is None:
+                nl = "logs not given"
+            else:
+                jl, ji = joined(lg, r["perfId"])
+                ms = {}
+                for l in jl:
+                    ms[l.get("m")] = ms.get(l.get("m"), 0) + 1
+                nl = "%d %s; %s" % (len(jl), ms, [(i.get("outcome"), i.get("wallMs")) for i in ji]) if (jl or ji) else "none joined"
+            if dg is None:
+                dl = "not given"
+            else:
+                d = dispatcher_row(dg, r)
+                dl = "%s %s %s" % (d.get("outcome"), d.get("status"), d.get("wallMs")) if d else "none matched"
+            print("| %s | %s | %.1f | %s | %s | %s | %s, %s | %s | %s | %s |" % (r["perfId"], r["kind"], r["s"], r["status"], r.get("x-object-deadline", "absent"),
+                  r.get("x-write-loss", "-"), prev.get("wasm1MiB"), prev.get("iso"), (nxt.get("iso") not in (None, r.get("iso"))) if nxt else "-", nl, dl))
     bad = [v for v in res if v == "FAIL"]
     return 1 if bad else (2 if "could not measure" in res else 0)
 
