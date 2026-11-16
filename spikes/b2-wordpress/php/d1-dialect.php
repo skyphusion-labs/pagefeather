@@ -46,7 +46,7 @@ class D1_Dialect {
 		$has_calls = (bool) preg_match( '/\b(' . implode( '|', self::DRIVER_FUNCTIONS ) . ')\b/i', $sql );
 		$too_big   = strlen( $sql ) > self::MAX_STATEMENT_BYTES;
 		$union_par = (bool) preg_match( '/\)\s*UNION\b/i', $sql );
-		$long_like = (bool) preg_match( "/\\bLIKE\\s*'(?:[^']|''){" . ( self::MAX_LIKE_BYTES + 1 ) . ',}/i', $sql );
+		$long_like = self::has_long_like( $sql );
 		if ( ! $has_calls && ! $too_big && ! $long_like && ! $union_par ) {
 			return array( $sql, $params );
 		}
@@ -76,6 +76,32 @@ class D1_Dialect {
 	}
 
 	/**
+	 * Whether a LIKE in $sql has a string pattern longer than MAX_LIKE_BYTES. #805: this was one regex whose repetition
+	 * ran over the whole pattern, and PCRE gave up on a pattern of about 50,000 bytes (preg_match returned false), so
+	 * such a pattern was never rewritten and failed. This walks each pattern with strpos instead.
+	 */
+	private static function has_long_like( $sql ) {
+		if ( ! preg_match_all( "/\\bLIKE\\s*'/i", $sql, $m, PREG_OFFSET_CAPTURE ) ) {
+			return false;
+		}
+		foreach ( $m[0] as $hit ) {
+			$open = $hit[1] + strlen( $hit[0] ); // just after the opening quote
+			$j    = $open;
+			while ( false !== ( $q = strpos( $sql, "'", $j ) ) ) {
+				if ( isset( $sql[ $q + 1 ] ) && "'" === $sql[ $q + 1 ] ) {
+					$j = $q + 2; // '' is one quote inside the string
+					continue;
+				}
+				if ( strlen( str_replace( "''", "'", substr( $sql, $open, $q - $open ) ) ) > self::MAX_LIKE_BYTES ) {
+					return true;
+				}
+				break;
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * D1 refuses a statement longer than 100 KB (SQLITE_TOOBIG). The driver
 	 * writes values into the SQL as literals, so a large post is a large
 	 * statement. Move each long string literal into a bound parameter.
@@ -97,12 +123,15 @@ class D1_Dialect {
 	}
 
 	/**
-	 * D1 refuses a LIKE pattern longer than 50 bytes. A WordPress search for a
-	 * long phrase writes `col LIKE '%phrase%' ESCAPE '\'`. When the pattern is
-	 * one literal between two %, and the left side is a column name, write
-	 * `instr(lower(col), lower('phrase')) > 0` instead. SQLite LIKE and lower()
-	 * both fold ASCII case only, so the result is the same. Other patterns are
-	 * left alone, and D1 refuses them as before.
+	 * D1, and the Durable Object's SQLite (#805, measured: 50 bytes pass, 51 fail), refuse a LIKE pattern longer than
+	 * 50 bytes. When the pattern is ONE literal (escapes resolved) and the left side is a column name, write a plain
+	 * comparison instead; NOT LIKE takes the negation:
+	 *   '%lit%'  instr(lower(col), lower('lit')) > 0     (a WordPress search for a long phrase)
+	 *   'lit%'   instr(lower(col), lower('lit')) = 1     (#805: a prefix; the first occurrence is at the start)
+	 *   'lit'    lower(col) = lower('lit')               (#805: an exact match, e.g. get_users() with no '*')
+	 * SQLite LIKE and lower() both fold ASCII case only, and each form is NULL where LIKE is, so the result is the same.
+	 * Only patterns OVER the cap are touched, so a short LIKE (and SQLite's index range for a prefix) is unchanged.
+	 * Other patterns ('_' anywhere, or '%' inside) are left alone, and SQLite refuses them as before.
 	 */
 	private static function rewrite_long_like( array $tokens ) {
 		for ( $i = count( $tokens ) - 1; $i >= 0; $i-- ) {
@@ -129,10 +158,11 @@ class D1_Dialect {
 				$escape = str_replace( "''", "'", substr( $tokens[ $ci ]['text'], 1, -1 ) );
 				$end    = $ci;
 			}
-			$needle = self::like_substring( $pattern, $escape );
-			if ( null === $needle ) {
+			$shape = self::like_literal( $pattern, $escape );
+			if ( null === $shape ) {
 				continue;
 			}
+			list( $kind, $needle ) = $shape;
 			// Left side: a column reference such as `t`.`c` or t.c.
 			$start = $i;
 			$not   = false;
@@ -156,13 +186,24 @@ class D1_Dialect {
 				continue;
 			}
 			$col  = array_slice( $tokens, $col_start, $col_end - $col_start + 1 );
-			$repl = array_merge(
-				array( array( 'type' => 'word', 'text' => 'instr(lower(' ) ),
-				$col,
-				array( array( 'type' => 'word', 'text' => '), lower(' ) ),
-				array( self::literal( $needle ) ),
-				array( array( 'type' => 'word', 'text' => ')) ' . ( $not ? '=' : '>' ) . ' 0' ) )
-			);
+			if ( 'exact' === $kind ) {
+				$repl = array_merge(
+					array( array( 'type' => 'word', 'text' => 'lower(' ) ),
+					$col,
+					array( array( 'type' => 'word', 'text' => ') ' . ( $not ? '<>' : '=' ) . ' lower(' ) ),
+					array( self::literal( $needle ) ),
+					array( array( 'type' => 'word', 'text' => ')' ) )
+				);
+			} else {
+				$cmp  = 'prefix' === $kind ? ( $not ? '<> 1' : '= 1' ) : ( $not ? '= 0' : '> 0' );
+				$repl = array_merge(
+					array( array( 'type' => 'word', 'text' => 'instr(lower(' ) ),
+					$col,
+					array( array( 'type' => 'word', 'text' => '), lower(' ) ),
+					array( self::literal( $needle ) ),
+					array( array( 'type' => 'word', 'text' => ')) ' . $cmp ) )
+				);
+			}
 			array_splice( $tokens, $col_start, $end - $col_start + 1, $repl );
 			unset( $col_start );
 			self::count_rewrite( 'long_like' );
@@ -269,28 +310,45 @@ class D1_Dialect {
 		return $kind;
 	}
 
-	/** The literal inside '%literal%', or null if the pattern has other wildcards. */
-	private static function like_substring( $pattern, $escape ) {
-		$n = strlen( $pattern );
-		if ( $n < 2 || '%' !== $pattern[0] || '%' !== $pattern[ $n - 1 ] ) {
-			return null;
-		}
-		$out = '';
-		for ( $j = 1; $j < $n - 1; $j++ ) {
+	/**
+	 * A LIKE pattern that is ONE literal: array( 'substring'|'prefix'|'exact', literal ), or null. 'substring' is
+	 * '%lit%', 'prefix' is 'lit%', 'exact' is 'lit' (#805). Escapes are resolved; an unescaped '_' anywhere, a '%' other
+	 * than a leading one with a trailing one or a lone trailing one, or an empty literal, gives null.
+	 */
+	private static function like_literal( $pattern, $escape ) {
+		$n     = strlen( $pattern );
+		$units = array(); // array( wildcard?, char )
+		for ( $j = 0; $j < $n; $j++ ) {
 			$c = $pattern[ $j ];
 			if ( null !== $escape && '' !== $escape && $c === $escape ) {
-				if ( $j + 1 >= $n - 1 ) {
-					return null;
+				if ( $j + 1 >= $n ) {
+					return null; // a pattern ending in its escape character is malformed
 				}
-				$out .= $pattern[ ++$j ];
+				$units[] = array( false, $pattern[ ++$j ] );
 				continue;
 			}
-			if ( '%' === $c || '_' === $c ) {
-				return null;
-			}
-			$out .= $c;
+			$units[] = array( '%' === $c || '_' === $c, $c );
 		}
-		return '' === $out ? null : $out;
+		$lead  = ! empty( $units ) && $units[0][0] && '%' === $units[0][1];
+		$trail = count( $units ) > 1 && end( $units )[0] && '%' === end( $units )[1];
+		$inner = array_slice( $units, $lead ? 1 : 0, count( $units ) - ( $lead ? 1 : 0 ) - ( $trail ? 1 : 0 ) );
+		$out   = '';
+		foreach ( $inner as $u ) {
+			if ( $u[0] ) {
+				return null; // a wildcard inside: not one literal
+			}
+			$out .= $u[1];
+		}
+		if ( '' === $out ) {
+			return null;
+		}
+		if ( $lead && $trail ) {
+			return array( 'substring', $out );
+		}
+		if ( $lead ) {
+			return null; // '%lit' (a suffix) is not one of the ruled shapes: left alone
+		}
+		return array( $trail ? 'prefix' : 'exact', $out );
 	}
 
 	/** @return array<array{type:string,text:string}> */
