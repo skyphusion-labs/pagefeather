@@ -524,6 +524,16 @@ jobs:
         # fail on the npm 3.1.62 artifact as shipped (or on a targeted mutation), so none can pass vacuously.
         working-directory: spikes/b2-wordpress
         run: node --test tests/engine-contract.test.mjs
+      - name: The memory transform with no reuse, a pre-transform build fails safe, the ledger counts memories once (issue #598)
+        # memory-transform: each boot of the transformed engine gets a new memory of the module limits, and the same
+        # engine built BEFORE the transform still runs under this loader and ignores a memory handed to it.
+        # mem-ledger-identity: one memory under two runtimes is one live memory, collected once. prepare-idempotent:
+        # the transform run twice gives the same bytes, a transformed wasm passes through, a memoryless one is refused.
+        working-directory: spikes/b2-wordpress
+        run: |
+          node --test tests/memory-transform.test.mjs
+          node --expose-gc --test tests/mem-ledger-identity.test.mjs
+          tests/prepare-idempotent-test.sh
       - name: The allocator reading of /_memprobe and the memory trace (issue #547)
         # Boots the loader the step above built with USE_ZEND_ALLOC 0 and 1; each reader must tell them apart.
         working-directory: spikes/b2-wordpress
