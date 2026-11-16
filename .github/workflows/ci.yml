@@ -68,6 +68,8 @@ jobs:
         # A bundle that ships an engine must carry LICENSES.tar.gz, SOURCE and NOTICE.
         # Offline: committed texts at the pins in engine/licenses.tsv, no fetch.
         run: bash deploy/release/tests/release-notices-test.sh
+      - name: the lean engine prerelease is assembled only from the pinned bytes, with its notices (#771)
+        run: bash engine/tools/publish-lean-test.sh
       - name: Live-site code redeploys refuse a mismatch (fleet-chezmoi#2620)
         run: |
           bash deploy/tests/code-only-test.sh

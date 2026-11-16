@@ -11,12 +11,24 @@ on:
       - 'engine/**'
       - '.github/workflows/pagefeather-engine.yml'
   workflow_dispatch:
+    inputs:
+      # #771: publish the lean engine prerelease (the publish job below). Main only. With publish on, the build
+      # matrix does not run: the release is made from the named run's s1-lean artifact, the exact bytes measured.
+      publish:
+        description: "Publish the lean engine prerelease from a run's s1-lean artifact (main only)"
+        type: boolean
+        default: false
+      from_run:
+        description: "The pagefeather-engine run whose pagefeather-engine-s1-lean artifact to publish (for engine-lean-187d5fa1: 43826507687)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
 jobs:
   licence-archives:
+    if: ${{ !inputs.publish }}
     # One fetch of each tar row in engine/licenses.tsv, shared by the build legs (#604). The legs
     # used to download the same tarballs from upstream at the same moment, and a host sometimes
     # answered 200 with an HTML page. The cache key is the sha256 of engine/licenses.tsv, so a run
@@ -332,6 +344,7 @@ jobs:
           PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
           if ! tests/frames-e2e.sh; then echo "::error::frames-e2e.sh failed on lean-trim"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
   lazy-native:
+    if: ${{ !inputs.publish }}
     # #582 S4 M2b: the lazy-body contract suite on a NATIVE php-cli, in minutes and with no engine build: php-src
     # from the php.net tarball (sha256 in engine/UPSTREAM), pf-lazy-bodies.patch (git apply --check first), a
     # minimal CLI with OPcache and debug assertions. run-native.sh runs every case of engine/opcache/lazy/probe.php
@@ -533,3 +546,48 @@ jobs:
           name: opcache-stats
           path: ${{ runner.temp }}/opcache-stats.jsonl
           retention-days: 14
+
+  publish:
+    # #771: the lean engine prerelease, from the named run's s1-lean artifact. engine/tools/publish-lean.sh refuses
+    # unless both files are exactly the pins in spikes/b2-wordpress/engine.lock, renames them (no published name says
+    # PHP), writes SHA256SUMS and the notices from #742's packager (NOTICE, SOURCE, LICENSES.tar.gz). Then the
+    # prerelease is created at this commit, never Latest, and refused if the tag already exists. Main only.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: The named run, and the tag not taken
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FROM_RUN: ${{ inputs.from_run }}
+        run: |
+          set -euo pipefail
+          [[ "$FROM_RUN" =~ ^[0-9]+$ ]] || { echo "::error::from_run must be a run id"; exit 1; }
+          tag=$(sed -n 's/^LEAN_TAG=//p' spikes/b2-wordpress/engine.lock)
+          [ -n "$tag" ] || { echo "::error::engine.lock has no LEAN_TAG"; exit 1; }
+          if gh release view "$tag" > /dev/null 2>&1; then echo "::error::the release $tag exists already"; exit 1; fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pagefeather-engine-s1-lean
+          path: ${{ runner.temp }}/art
+          run-id: ${{ inputs.from_run }}
+          github-token: ${{ github.token }}
+      - name: Assemble (refuses unless the files are the pins)
+        env:
+          FROM_RUN: ${{ inputs.from_run }}
+        run: engine/tools/publish-lean.sh "$RUNNER_TEMP/art" "$RUNNER_TEMP/rel"
+      - name: Create the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          r="$RUNNER_TEMP/rel"
+          gh release create "$TAG" --prerelease --latest=false --target "$GITHUB_SHA" --title "pagefeather engine, lean ($TAG)" \
+            --notes-file "$r/release-body.md" \
+            "$r/pagefeather-engine-lean.wasm" "$r/pagefeather-engine-lean.js" "$r/SHA256SUMS" "$r/NOTICE" "$r/SOURCE" "$r/LICENSES.tar.gz"
+          gh release view "$TAG" --json isPrerelease,assets -q '"prerelease \(.isPrerelease); assets: \([.assets[].name] | join(" "))"'

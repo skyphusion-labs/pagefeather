@@ -1,0 +1,14 @@
+# The default PHP engine (#771): the lean pagefeather engine (#582, #592), pinned by the sha256 of its two files.
+# The build #724 measured: pagefeather-engine run 43826507687 (head ad5c4a6; main's engine/ is byte-identical),
+# build id tag -e187d5fa1. Published by .github/workflows/pagefeather-engine.yml (input publish, from that run) as
+# the prerelease LEAN_TAG, with its notices (#584, #742). No published name says PHP (Conrad, 2026-11-14): the
+# assets are pagefeather-engine-lean.*, renamed to the loader's own file names only inside a build's cache.
+# Read by spikes/b2-wordpress/engine.sh and engine/tools/publish-lean.sh. To change the default engine: publish
+# the new build, then change these values in one PR.
+PHP_ENGINE_DEFAULT=lean
+LEAN_TAG=engine-lean-187d5fa1
+LEAN_BASE_URL=https://github.com/skyphusion-labs/pagefeather/releases/download/engine-lean-187d5fa1
+LEAN_WASM_ASSET=pagefeather-engine-lean.wasm
+LEAN_JS_ASSET=pagefeather-engine-lean.js
+LEAN_WASM_SHA256=0af657c04a48f8a714a2ae93ae57878bcaa1bf61fb8f3e737473e3502a603f65
+LEAN_JS_SHA256=6bcd0f3791016e05f5af9f882a17569f25f99b6ea7dee04691e7a717c2bb4eeb
