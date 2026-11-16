@@ -298,7 +298,12 @@ try:
         ok('--all writes the tar row that no input matched', os.path.isfile(os.path.join(out, 'LICENSES', ROW)))
         ok('--all writes NOTICE and SOURCE', os.path.isfile(os.path.join(out, 'NOTICE')) and os.path.isfile(os.path.join(out, 'SOURCE')))
         src = open(os.path.join(out, 'SOURCE'), encoding='utf-8').read() if os.path.isfile(os.path.join(out, 'SOURCE')) else ''
-        ok('--all SOURCE names the shipped wasm pin', 'ww' in src)
+        ok('--all SOURCE names the pinned Playground wasm', 'ww' in src)
+        ok('--all SOURCE names prepare.sh', 'spikes/b2-wordpress/prepare.sh' in src)
+        ok('--all SOURCE points at SHA256SUMS', 'SHA256SUMS' in src)
+        ok('--all SOURCE says whether the shipped hash differs or equals',
+           'That sha256 differs from the pinned Playground wasm sha256 above.' in src
+           or 'That sha256 equals the pinned Playground wasm sha256 above.' in src)
         ok('--all opened no connection (hits %d)' % len(srv.hits), len(srv.hits) == 0)
         notice = open(os.path.join(out, 'NOTICE'), encoding='utf-8').read() if os.path.isfile(os.path.join(out, 'NOTICE')) else ''
         ok('--all NOTICE has the PHP acknowledgment', 'This product includes PHP software, freely available from' in notice)

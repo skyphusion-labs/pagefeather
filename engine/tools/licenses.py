@@ -7,8 +7,9 @@
 #   licenses.py --fetch-archives <dir>
 #   licenses.py --check-archives <dir>
 # Fails when a traced link input matches no row of engine/licenses.tsv, or a licence text does not
-# have its pinned sha256. --all writes every row (a product release has no wasm-ld trace; it ships
-# the pinned php-wasm binary). --measure prints each text's sha256 instead of checking it.
+# have its pinned sha256. --all writes every row (a product release has no wasm-ld trace; it is the
+# pinned Playground binary after spikes/b2-wordpress/prepare.sh, not the lean custom build).
+# --measure prints each text's sha256 instead of checking it.
 # --archives reads each tar row from <dir>/<url basename> instead of the network (#604). A missing
 # file fails and names the row. Two different URLs that share a file name are refused, and the
 # failure names both rows. Two rows that share one URL still share one file. With no --archives,
@@ -220,8 +221,8 @@ if archives is not None:
     check_names(tar_groups())
 
 # 1. Every traced input needs a row; a row is needed when an input matches it (or it is ALWAYS).
-#    --all writes every row: a product release ships the pinned php-wasm binary and has no
-#    wasm-ld trace (#584).
+#    --all writes every row: a product release has no wasm-ld trace (#584). It ships the
+#    pinned Playground binary after prepare.sh, not the lean custom build.
 needed, unmatched, by_input = {}, [], {}
 if all_mode:
     for r in rows:
@@ -293,8 +294,16 @@ source = """The pagefeather engine: corresponding source
 Build: engine/build.sh in https://github.com/skyphusion-labs/pagefeather (this
 release's tag), with engine/patches/ and engine/UPSTREAM at that tag.
 
-The product bundle (deploy/release) ships the Playground php-wasm binary
-pinned in engine/UPSTREAM: wasm sha256 %s, loader sha256 %s.
+The pinned Playground build is the binary this product starts from, the one
+pinned in engine/UPSTREAM. Its source is the upstream pipeline listed below.
+wasm sha256 %s, loader sha256 %s.
+
+The shipped php_8_3.wasm and php_8_3.js are produced from that pinned binary
+by spikes/b2-wordpress/prepare.sh (GPL) in this repository at the release tag.
+That script is part of the corresponding source. It applies the memory-import transform (the wasm memory section becomes an imported env.memory) and the loader patch.
+
+The sha256 of the shipped php_8_3.wasm is the line in this release's SHA256SUMS whose file name ends in php_8_3.wasm.
+That sha256 differs from the pinned Playground wasm sha256 above.
 
 Upstream pipeline: %s at commit %s
   (packages/php-wasm/compile, git tree %s)

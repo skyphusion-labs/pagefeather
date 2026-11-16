@@ -108,7 +108,82 @@ if [ -f "$T/release/SOURCE" ]; then
   check "SOURCE names the php-src tag" "$(grep -F "$PHP_REF" "$T/release/SOURCE" >/dev/null && echo yes || echo no)" yes
   check "SOURCE names the php-src commit" "$(grep -F "$PHP_REF_COMMIT" "$T/release/SOURCE" >/dev/null && echo yes || echo no)" yes
   check "SOURCE names Emscripten" "$(grep -F "$EMSDK_VERSION" "$T/release/SOURCE" >/dev/null && echo yes || echo no)" yes
-  check "SOURCE names the shipped wasm sha256" "$(grep -F "$SHIPPED_WASM_SHA256" "$T/release/SOURCE" >/dev/null && echo yes || echo no)" yes
+  check "SOURCE names the pinned Playground wasm sha256" "$(grep -F "$SHIPPED_WASM_SHA256" "$T/release/SOURCE" >/dev/null && echo yes || echo no)" yes
+
+  # 5b. The shipped php_8_3.wasm is not that pin byte for byte. prepare.sh
+  #     (the memory-import transform and the loader patch) produces it, and
+  #     that script is part of the corresponding source. The shipped hash is
+  #     the php_8_3.wasm line of SHA256SUMS, not a second digest in SOURCE.
+  #     That hash differs from the pin or equals it, and SOURCE says which.
+  #     The wasm in this fake release is not the product file (it is not in
+  #     the tree). Its SHA256SUMS line is enough to run the same check a
+  #     bundle directory must pass. A flipped sentence is the failing control.
+  #     A sums line whose hash is the pin passes only a SOURCE that says equals.
+  srcf="$T/release/SOURCE"
+  check "SOURCE names spikes/b2-wordpress/prepare.sh" "$(grep -F 'spikes/b2-wordpress/prepare.sh' "$srcf" >/dev/null && echo yes || echo no)" yes
+  check "SOURCE names the memory-import transform" "$(grep -F 'memory-import transform' "$srcf" >/dev/null && echo yes || echo no)" yes
+  check "SOURCE names the loader patch" "$(grep -F 'loader patch' "$srcf" >/dev/null && echo yes || echo no)" yes
+  check "SOURCE names prepare.sh as part of the corresponding source" "$(grep -F 'That script is part of the corresponding source.' "$srcf" >/dev/null && echo yes || echo no)" yes
+  check "SOURCE says prepare.sh is GPL in this repository at the release tag" "$(grep -F 'spikes/b2-wordpress/prepare.sh (GPL) in this repository at the release tag.' "$srcf" >/dev/null && echo yes || echo no)" yes
+  check "SOURCE points at SHA256SUMS for the shipped php_8_3.wasm" "$(grep -F 'The sha256 of the shipped php_8_3.wasm is the line in this release'"'"'s SHA256SUMS whose file name ends in php_8_3.wasm.' "$srcf" >/dev/null && echo yes || echo no)" yes
+  printf 'not-the-pinned-playground-binary\n' > "$T/release/notpin-php_8_3.wasm"
+  pyrel=$(python3 -I - "$srcf" "$T/release/notpin-php_8_3.wasm" "$T/release/SHA256SUMS" "$SHIPPED_WASM_SHA256" "$SHIPPED_JS_SHA256" <<'PY'
+import hashlib, re, sys
+source = open(sys.argv[1], encoding='utf-8').read()
+wasm = open(sys.argv[2], 'rb').read()
+sums_path, pin, loader_pin = sys.argv[3], sys.argv[4], sys.argv[5]
+shipped = hashlib.sha256(wasm).hexdigest()
+# The line build-bundle.sh writes (shasum -a 256): digest, two spaces, name.
+open(sums_path, 'w', encoding='utf-8').write('%s  notpin-php_8_3.wasm\n' % shipped)
+got_hash = None
+for line in open(sums_path, encoding='utf-8'):
+    parts = line.split()
+    if len(parts) == 2 and parts[1].endswith('php_8_3.wasm'):
+        if got_hash is not None:
+            print('two wasm lines'); sys.exit(2)
+        got_hash = parts[0]
+if got_hash is None:
+    print('no wasm line'); sys.exit(2)
+relation = 'equals' if got_hash == pin else 'differs'
+differs_s = 'That sha256 differs from the pinned Playground wasm sha256 above.'
+equals_s = 'That sha256 equals the pinned Playground wasm sha256 above.'
+def says(text):
+    d = differs_s in text
+    e = equals_s in text
+    if d and not e:
+        return 'differs'
+    if e and not d:
+        return 'equals'
+    return 'neither'
+def matches(text, rel):
+    return 'yes' if says(text) == rel else 'no'
+print('relation %s' % relation)
+print('says %s' % says(source))
+print('shipped-in-source %s' % ('yes' if got_hash in source else 'no'))
+print('match %s' % matches(source, relation))
+found = set(re.findall(r'[0-9a-f]{64}', source))
+other = sorted(found - {pin, loader_pin})
+print('other-sha %d' % len(other))
+if differs_s in source and equals_s not in source:
+    flipped = source.replace(differs_s, equals_s)
+elif equals_s in source and differs_s not in source:
+    flipped = source.replace(equals_s, differs_s)
+else:
+    flipped = source
+print('flip-match %s' % matches(flipped, relation))
+# The pin itself, as the wasm line of a sums file: SOURCE must say equals.
+print('equal-match %s' % matches(equals_s + '\n', 'equals'))
+print('equal-mismatch %s' % matches(differs_s + '\n', 'equals'))
+PY
+)
+  echo "$pyrel"
+  check "the fixture wasm hash in SHA256SUMS differs from the pin" "$(echo "$pyrel" | awk '/^relation /{print $2}')" differs
+  check "SOURCE says which, and it matches that SHA256SUMS hash" "$(echo "$pyrel" | awk '/^match /{print $2}')" yes
+  check "SOURCE does not hard-code the shipped wasm sha256" "$(echo "$pyrel" | awk '/^shipped-in-source /{print $2}')" no
+  check "SOURCE has no sha256 other than the two upstream pins" "$(echo "$pyrel" | awk '/^other-sha /{print $2}')" 0
+  check "a flipped sentence does not match the same SHA256SUMS" "$(echo "$pyrel" | awk '/^flip-match /{print $2}')" no
+  check "a hash equal to the pin matches a SOURCE that says equals" "$(echo "$pyrel" | awk '/^equal-match /{print $2}')" yes
+  check "a hash equal to the pin does not match a SOURCE that says differs" "$(echo "$pyrel" | awk '/^equal-mismatch /{print $2}')" no
 fi
 if [ -f "$T/release/NOTICE" ]; then
   check "release NOTICE has the PHP acknowledgment" "$(grep -c 'This product includes PHP software, freely available from' "$T/release/NOTICE")" 1

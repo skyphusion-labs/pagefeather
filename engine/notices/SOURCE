@@ -3,8 +3,16 @@ The pagefeather engine: corresponding source
 Build: engine/build.sh in https://github.com/skyphusion-labs/pagefeather (this
 release's tag), with engine/patches/ and engine/UPSTREAM at that tag.
 
-The product bundle (deploy/release) ships the Playground php-wasm binary
-pinned in engine/UPSTREAM: wasm sha256 4a35d44ed3decb9b9db529c6802a7c4e16bf921c469cc7613478a645b5e68da8, loader sha256 aecfbb4aa0303bad244952e0ec850e8ee9429e235a21636ab6ccd708a67befb6.
+The pinned Playground build is the binary this product starts from, the one
+pinned in engine/UPSTREAM. Its source is the upstream pipeline listed below.
+wasm sha256 4a35d44ed3decb9b9db529c6802a7c4e16bf921c469cc7613478a645b5e68da8, loader sha256 aecfbb4aa0303bad244952e0ec850e8ee9429e235a21636ab6ccd708a67befb6.
+
+The shipped php_8_3.wasm and php_8_3.js are produced from that pinned binary
+by spikes/b2-wordpress/prepare.sh (GPL) in this repository at the release tag.
+That script is part of the corresponding source. It applies the memory-import transform (the wasm memory section becomes an imported env.memory) and the loader patch.
+
+The sha256 of the shipped php_8_3.wasm is the line in this release's SHA256SUMS whose file name ends in php_8_3.wasm.
+That sha256 differs from the pinned Playground wasm sha256 above.
 
 Upstream pipeline: https://github.com/WordPress/wordpress-playground at commit dcd8e50fb65121726bb23a686746f68032ff1cb1
   (packages/php-wasm/compile, git tree 09fefb02c2057d07a448df4322a0077f53dc9bc2)
