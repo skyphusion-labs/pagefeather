@@ -214,6 +214,8 @@ jobs:
         run: python3 -I spikes/b2-wordpress/tests/measure394-state-test.py
       - name: break_lib records the first failed SQL statement when asked (#638)
         run: python3 -I spikes/b2-wordpress/tests/break-lib-first-failure-test.py
+      - name: login and Store API checkout send the Turnstile test token when set (#718)
+        run: python3 -I spikes/b2-wordpress/tests/turnstile-tools-test.py
       - name: measure394 tallies each REST write by answer, read-back and frame state (#589)
         run: python3 -I spikes/b2-wordpress/tests/measure394-tally-test.py
       - name: measure394 REST create body, opt-in content for the post-write window (#589)

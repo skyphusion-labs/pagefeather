@@ -45,7 +45,11 @@ def short(r):
 def login():
     o = opener(); pw = os.environ["ADMIN_PASSWORD"]
     req(o, "/wp-login.php")
-    r = req(o, "/wp-login.php", {"log": "admin", "pwd": pw, "wp-submit": "Log In", "redirect_to": "/wp-admin/", "testcookie": "1"})
+    # The login gate reads $_POST['cf-turnstile-response'] (measure394.py). Unset, the form is unchanged.
+    form = {"log": "admin", "pwd": pw, "wp-submit": "Log In", "redirect_to": "/wp-admin/", "testcookie": "1"}
+    if os.environ.get("TURNSTILE_TEST_TOKEN"):
+        form["cf-turnstile-response"] = os.environ["TURNSTILE_TEST_TOKEN"]
+    r = req(o, "/wp-login.php", form)
     assert r["code"] == 302, short(r)
     # A REST nonce for the logged-in user. admin-ajax "rest-nonce" works with any plugin set.
     n = req(o, "/wp-admin/admin-ajax.php?action=rest-nonce")
