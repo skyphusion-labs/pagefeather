@@ -59,7 +59,8 @@
 # the image-to-text model, AI_ALT_INPUT=prompt selects an llava/llama-style model).
 #
 # Steps: Terraform makes the data plane -> build -> Wrangler config from the
-# Terraform outputs -> deploy (secrets in that version) -> install -> measure -> deploy/results/.
+# Terraform outputs -> deploy (secrets in that version) -> redact logs when they
+# are on -> read the serving version -> install -> measure -> deploy/results/.
 #
 # CODE_ONLY=1 (fleet-chezmoi#2620): redeploy the code of a site that already exists, from any clone,
 # with no Terraform state. b-dosql only (its config needs one Terraform output, the media bucket,
@@ -339,7 +340,11 @@ log "deploy"
 # a var holding a workers.dev URL prints one in the bindings). deploy/deploy-url.sh. The origin check runs below, after the redaction.
 deploy_code_and_secrets || exit 1
 # Logs on: redact the query strings now, before anything else runs on the site, or turn the logs off.
+# That PATCH can publish a new Worker version. Nothing between here and the install publishes another.
 obs_redact "$NAME" || exit 1
+# The line is the deployments API's answer (newest deployment, version at 100 percent), not wrangler's
+# Current Version ID. CODE_ONLY runs obs_redact too, so it is printed here, before that exit. A failed read stops the deploy.
+pf_print_serving_version || exit 1
 if [ "$CODE_ONLY" = 1 ]; then
   log "code only: secrets, install and measurements skipped (they persist or ran once)"
   origin_check "$URL" "$SITE_ORIGIN" || exit 1
