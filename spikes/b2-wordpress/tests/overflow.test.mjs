@@ -4,16 +4,17 @@
 // and every request runs exactly once, wherever it runs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy } from '../overflow.mjs';
+import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse } from '../overflow.mjs';
+import { readFileSync } from 'node:fs';
 import { createPhpLock } from '../php-lock.mjs';
 
 test('settings: off by default; on, always, the depth, the pool and the hint', () => {
 	// The default pool is 32, the measured best (#296, 2026-11-15): pool 8 and 16 were WORSE than no overflow at 250
 	// concurrent checkouts; pool 32 was the only setting with 0 exceededMemory. A bad value falls back to 32 too.
-	assert.deepEqual(overflowSettings({}), { on: false, always: false, depth: 1, pool: 32, hint: 'wnam', busy: false });
+	assert.deepEqual(overflowSettings({}), { on: false, always: false, depth: 1, pool: 32, hint: 'wnam', busy: false, maxHeld: 16 });
 	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on' }).on, true);
 	const a = overflowSettings({ PHP_OVERFLOW: 'always', PHP_OVERFLOW_DEPTH: '0', PHP_OVERFLOW_POOL: '32', PHP_OVERFLOW_HINT: 'enam' });
-	assert.deepEqual(a, { on: true, always: true, depth: 0, pool: 32, hint: 'enam', busy: false });
+	assert.deepEqual(a, { on: true, always: true, depth: 0, pool: 32, hint: 'enam', busy: false, maxHeld: 16 });
 	// #296 (3)(c): busy is its own flag, OFF by default (ruled 2026-11-15: pool 32 WITHOUT busy was the only setting
 	// with 0 exceededMemory at 250; busy moved the queue back into the Worker). Only "on" turns it on.
 	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_BUSY: 'on' }).busy, true);
@@ -131,7 +132,6 @@ test('control: overflow off keeps all 40 in the two isolates (and they still run
 // the POOL OBJECT schedule its own purge, so its alarm fired, and the alarm is the object's cron driver: a cron
 // run happened in a pool object. Its purge also failed ("no cache API": an object cannot purge the Worker's page
 // cache). So an overflowed request hands its purge back to the front Worker.
-import { readFileSync } from 'node:fs';
 const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 test('an overflowed request never arms the object alarm: neither the cron rearm nor a purge alarm', () => {
 	// #715 review2 5: the guard is named armsCron, and the rearm happens inside the run.
@@ -224,4 +224,40 @@ test('index.js: the object answers busy only for an overflowed, retry-safe reque
 	assert.match(src, /const busyOk = ovs\.busy && !turnstileRoute\(env, req\.method, url\);/, 'busy only with its flag; a Turnstile-gated request is verified once: it is never retried, so it never asks for busy');
 	assert.match(src, /event: 'overflow-busy'/);
 	assert.match(src, /event: 'overflow-local'/);
+});
+
+// #714: a Worker isolate that dies holding its overflowed requests takes every one with it (3 to 5 shoppers got a 503
+// after about 40 s, in both arms of #296). A cap on the overflowed requests one isolate holds bounds that, whatever the
+// cause: past the cap, the next one is answered at once, retry-safe, and never ran.
+test('#714 settings: PHP_OVERFLOW_MAX_HELD, default 16; off is no cap; a bad value keeps 16', () => {
+	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on' }).maxHeld, 16);
+	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_MAX_HELD: '8' }).maxHeld, 8);
+	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_MAX_HELD: 'off' }).maxHeld, 0, 'off: no cap (the measured no-cap arm)');
+	for (const bad of ['0', '-1', 'x', '100000', '']) assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_MAX_HELD: bad }).maxHeld, 16, bad);
+});
+test('#714 the cap: at or past maxHeld held, the next overflow is refused; no cap never refuses', () => {
+	const s = overflowSettings({ PHP_OVERFLOW: 'on' });
+	assert.equal(overHeld(s, 15), false);
+	assert.equal(overHeld(s, 16), true);
+	assert.equal(overHeld(s, 40), true);
+	assert.equal(overHeld(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_MAX_HELD: 'off' }), 10 ** 6), false);
+});
+test('#714 the at-cap answer: a fast, retry-safe 503 that never ran', async () => {
+	const r = overflowCapResponse();
+	assert.equal(r.status, 503);
+	assert.equal(r.headers.get('x-php-overflow'), 'capped');
+	assert.equal(r.headers.get('x-write-loss'), 'none');
+	assert.equal(r.headers.get('retry-after'), '5');
+	assert.match(r.headers.get('cache-control') || '', /no-store/);
+	assert.match(await r.text(), /try again/i);
+});
+test('#714 index.js: the held count wraps the forward (decremented in finally), the cap answers before forwarding, and MEM_LEDGER=on logs the held count', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const at = src.indexOf('shouldOverflow(ovs,');
+	assert.ok(at > 0);
+	const branch = src.slice(at, src.indexOf('overflow-local', at));
+	assert.ok(/\n\t+if \(overHeld\(ovs, ovHeld\)\) \{[\s\S]{0,300}?\n\t+return overflowCapResponse\(\);/.test(branch), 'the cap is an unconditional guard that returns the at-cap answer');
+	assert.ok(branch.indexOf('overHeld(ovs, ovHeld)') < branch.indexOf('toPhpObject('), 'the cap answers BEFORE anything is forwarded');
+	assert.ok(/ovHeld\+\+/.test(branch) && /finally \{[^}]*ovHeld--/.test(branch), 'held is counted, and released in finally');
+	assert.ok(/MEM_LEDGER === 'on'[^\n]*overflow-held/.test(branch), 'the ledger line is gated by MEM_LEDGER=on');
 });

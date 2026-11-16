@@ -45,7 +45,21 @@ export function overflowSettings(env) {
 		pool: int(env && env.PHP_OVERFLOW_POOL, 1, 128, 32),
 		hint: HINTS.has(hint) ? hint : 'wnam',
 		busy: env ? String(env.PHP_OVERFLOW_BUSY || '').trim() === 'on' : false,
+		// #714: the most overflowed requests one Worker isolate holds in flight (default 16; "off": no cap). An isolate
+		// that died holding them took every one with it (3 to 5 shoppers, a 503 after about 40 s, in both #296 arms).
+		maxHeld: env && String(env.PHP_OVERFLOW_MAX_HELD || '').trim() === 'off' ? 0 : int(env && env.PHP_OVERFLOW_MAX_HELD, 1, 1000, 16),
 	};
+}
+
+// #714: true when this isolate already holds maxHeld overflowed requests (the next one is refused, never forwarded).
+export function overHeld(s, held) {
+	return !!s && s.maxHeld > 0 && held >= s.maxHeld;
+}
+
+// #714: the at-cap answer. Nothing ran and nothing was forwarded, so the client may simply try again.
+export function overflowCapResponse() {
+	const headers = new Headers({ 'content-type': 'text/plain; charset=utf-8', 'retry-after': '5', 'x-php-overflow': 'capped', 'x-write-loss': 'none', 'x-overloaded': '1', 'cache-control': 'no-store, private' });
+	return new Response('The site is busy and did not start your request. Please try again in a few seconds.\n', { status: 503, headers });
 }
 
 // lock: { running, waiting } of this isolate's PHP lock, read just before the request would queue.
