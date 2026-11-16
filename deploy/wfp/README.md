@@ -357,6 +357,7 @@ deploy/wfp/tests/remote-default-test.sh     # the remote packs by default (#394)
 deploy/wfp/tests/ns-state-test.sh           # "is this namespace script gone" (the empty-record case)
 deploy/wfp/tests/kv-ready-test.sh           # the wait for a new site map to accept writes
 deploy/wfp/tests/wait-site-test.sh          # the wait for a new site to answer from its own user Worker
+deploy/wfp/tests/wait-site-edge-test.sh     # a Cloudflare edge 403 or 401 (error code: N) is not the site (#783)
 deploy/wfp/tests/snapshot-test.sh           # the isolation snapshots and diff, and site_footprint
 deploy/wfp/tests/site-cmd-test.sh           # site add and remove refuse, with no write, when they must
 python3 deploy/wfp/tests/bindings-test.py   # the bindings read back: each script binds only its own resources

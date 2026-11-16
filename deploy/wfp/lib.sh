@@ -1229,15 +1229,34 @@ kv_wait_writable() { # kv_wait_writable <namespace id>
     sleep "${KV_READY_STEP:-5}"
   done
 }
+# The dispatcher script must exist before wait_site. wrangler_deploy retries, and a
+# retry in the log is not the script (#783, the pf756m2 add). Fail, and say so,
+# when the account does not have it. dispatcher_script_present <script name>
+dispatcher_script_present() {
+  local c
+  c=$(api_code GET "/workers/scripts/$1") || c=000
+  if [ "$c" = 200 ]; then
+    echo "  dispatcher $1 is on the account (API 200)"
+    return 0
+  fi
+  echo "dispatcher $1 is not on the account after deploy (API $c); not waiting for the site" >&2
+  return 1
+}
 # Wait for a new site to answer from its OWN user Worker, not from the
 # platform or the dispatcher (the #92 trap: any answer is not "ready").
 # Seen 2026-11-06 (the third day one): site two's first answer was a 404, and
 # one second later the dispatcher answered "not deployed" (x-wfp-error
 # not-deployed: the entry was read, but the namespace did not have the new
-# script yet). The probe is GET /_dbping with no spike token: b-dosql answers
-# it with its own 403 before and after the install.
-#   ready:    2xx, 3xx, 401 or 403, with no x-wfp-error
-#   retried:  no answer, 404, 5xx, x-wfp-error no-site or not-deployed
+# script yet). The probe is GET /_dbping with no spike token. The site's spike
+# gate (spikes/b2-wordpress/index.js, the Worker and the object) answers an
+# untokened /_* with status 403 and the body "forbidden", and nothing else:
+#   return new Response('forbidden', { status: 403 })
+# A 401 is accepted only when the body is those same bytes (#783). Cloudflare's
+# edge uses 403 and 401 too, with the body "error code: <n>" (1104 on the
+# pf756m2 add). That is not the site: keep waiting to the cap, then fail and
+# name the code.
+#   ready:    2xx or 3xx, with no x-wfp-error; or 401 or 403 whose body is exactly "forbidden"
+#   retried:  no answer, 404, 5xx, any other 401 or 403, x-wfp-error no-site or not-deployed
 #   fails at once: x-wfp-error bad-entry or dispatch (a configuration fault)
 # Bound SITE_WAIT (300) s, every SITE_WAIT_STEP (10) s; a timeout prints the last answer.
 # The time wait_site waits for a new site to answer. Phase B's FIRST deploy
@@ -1251,15 +1270,50 @@ site_wait_cap() { echo "${SITE_WAIT:-$([ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && echo
 # move a case across a bound. The defaults are the real ones: $SECONDS and sleep.
 wait_now() { echo "$SECONDS"; }
 wait_sleep() { sleep "$1"; }
+# The bytes of the site's spike gate. spikes/b2-wordpress/index.js, both copies:
+#   if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
+site_gate_body() { printf '%s' 'forbidden'; }
+# Print the integer when the whole body is "error code: <n>" (a Cloudflare edge
+# error). Surrounding whitespace is ignored. Anything else prints nothing.
+edge_error_code() {
+  local b="$1"
+  b=${b//$'\r'/}
+  while :; do
+    case $b in
+      [[:space:]]*) b=${b#?} ;;
+      *) break ;;
+    esac
+  done
+  while :; do
+    case $b in
+      *[[:space:]]) b=${b%?} ;;
+      *) break ;;
+    esac
+  done
+  case $b in
+    'error code: '[0-9]*)
+      b=${b#error code: }
+      case $b in
+        *[!0-9]*|'') return 0 ;;
+        *) printf '%s' "$b" ;;
+      esac
+      ;;
+  esac
+}
 wait_site() { # wait_site <origin>
-  local t0 t code err body cap said_tls=0 said_dispatch=0
+  local t0 t code err body body_raw edge cap said_tls=0 said_dispatch=0 last_edge="" site_up
   t0=$(wait_now)
   cap=$(site_wait_cap)
   t=$(mktemp -d)
   while :; do
     code=$(curl -s -o "$t/b" -D "$t/h" -w '%{http_code}' -m 60 "$1/_dbping?nocache=$RANDOM$RANDOM" 2>/dev/null) || code=000
     err=$(tr -d '\r' < "$t/h" 2>/dev/null | awk -F': ' 'tolower($1) == "x-wfp-error" { print $2 }')
-    body=$(head -c 80 "$t/b" 2>/dev/null | tr -s '\n\r\t' ' ')
+    # The sentinel keeps a trailing newline, which $(...) would strip. The gate
+    # match is exact ("forbidden"); the edge match allows surrounding whitespace.
+    body_raw=$(head -c 80 "$t/b" 2>/dev/null || true; printf x)
+    body_raw=${body_raw%x}
+    body=$(printf '%s' "$body_raw" | tr -s '\n\r\t' ' ')
+    edge=$(edge_error_code "$body_raw")
     # bad-entry is a malformed site map entry: a fault at once. dispatch is any error from
     # the namespace script, and a brand-new site's FIRST cold boot can give one before it
     # answers (#294: fdprobe1111c answered 502 dispatch once, then served). So a dispatch
@@ -1272,10 +1326,19 @@ wait_site() { # wait_site <origin>
         fi
         [ "${said_dispatch:-0}" = 1 ] || { echo "  the site script errored ($code $err); retrying for up to ${WFP_DISPATCH_GRACE:-120} s (a first cold boot)"; said_dispatch=1; } ;;
     esac
-    if [ -z "$err" ] && [[ "$code" =~ ^(2..|3..|401|403)$ ]]; then
+    site_up=0
+    if [ -z "$err" ]; then
+      if [[ "$code" =~ ^(2..|3..)$ ]]; then
+        site_up=1
+      elif [[ "$code" =~ ^(401|403)$ ]] && [ "$body_raw" = "$(site_gate_body)" ]; then
+        site_up=1
+      fi
+    fi
+    if [ "$site_up" = 1 ]; then
       echo "  the site answered HTTP $code after $(($(wait_now) - t0)) s"
       rm -rf "$t"; return 0
     fi
+    if [ -n "$edge" ]; then last_edge=$edge; fi
     # Phase B first deploy: a new Custom Domain's Advanced Certificate may still
     # be issuing, so TLS is not ready and curl reads 000 or a 52x edge code.
     # That is a delay, not a fault: say so once and keep waiting to the cap.
@@ -1284,7 +1347,11 @@ wait_site() { # wait_site <origin>
       said_tls=1
     fi
     if [ $(($(wait_now) - t0)) -ge "$cap" ]; then
-      echo "the site did not answer in ${cap} s; last: HTTP $code${err:+, x-wfp-error $err}, body: $body" >&2
+      if [ -n "$last_edge" ]; then
+        echo "the site did not answer in ${cap} s; last: HTTP $code${err:+, x-wfp-error $err}, Cloudflare edge error code: $last_edge, body: $body" >&2
+      else
+        echo "the site did not answer in ${cap} s; last: HTTP $code${err:+, x-wfp-error $err}, body: $body" >&2
+      fi
       [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && echo "  if the Advanced Certificate for $1 is still issuing, re-run up.sh once it is active: the data plane persists and the install completes on the re-run" >&2
       rm -rf "$t"; return 1
     fi

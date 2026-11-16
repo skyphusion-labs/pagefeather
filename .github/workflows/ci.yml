@@ -464,6 +464,7 @@ jobs:
           deploy/wfp/tests/ns-state-test.sh
           deploy/wfp/tests/kv-ready-test.sh
           deploy/wfp/tests/wait-site-test.sh
+          deploy/wfp/tests/wait-site-edge-test.sh
           deploy/wfp/tests/recorded-host-test.sh
           deploy/wfp/tests/bundle-size-test.sh
           deploy/wfp/tests/search-index-test.sh
