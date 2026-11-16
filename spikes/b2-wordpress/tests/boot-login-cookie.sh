@@ -35,7 +35,9 @@ code=$(curl -sS -m 240 -o /tmp/boot-login-activate.json -w '%{http_code}' -X POS
 active=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('1' if '\"active\":true' in d.get('out','') else '0')" /tmp/boot-login-activate.json 2>/dev/null || echo 0)
 ok "WooCommerce active (http $code)" "$([ "$code" = 200 ] && [ "$active" = 1 ] && echo 1 || echo 0)"
 if [ "$active" != 1 ]; then echo "activate body:"; python3 -c "import pathlib; print(pathlib.Path('/tmp/boot-login-activate.json').read_text(errors='replace')[-800:])"; fi
-# Activation drops the runtime. This GET is the first request the new runtime serves.
+# #798: activation no longer drops the runtime, so a forced recycle does (spike-gated). The GET after it is the first
+# request a new runtime serves.
+curl -sS -m 60 -o /dev/null -H "x-spike-token: $TOKEN" -H 'x-runtime-recycle: force' "$B/?nocache=blc$RANDOM"
 curl -sS -m 180 -D /tmp/boot-login.hdr -o /tmp/boot-login.body -H "x-spike-token: $TOKEN" "$B/wp-login.php"
 python3 - << 'PY'
 import pathlib, sys
