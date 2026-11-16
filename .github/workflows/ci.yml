@@ -167,6 +167,7 @@ jobs:
         run: |
           bash tests/conformance/prepare-content-test.sh
           python3 -I tests/conformance/runner_test.py
+          python3 -I tests/conformance/seed-test.py
       - name: b-dosql mail From address
         run: node --test spikes/b2-wordpress/tests/mail-from.test.mjs
       - name: b-dosql demo site lock
