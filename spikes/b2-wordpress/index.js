@@ -8,7 +8,7 @@ import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from 
 import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-arm.mjs';
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
 import { callPhpObject, isObjectCallDeadline, objectCallDeadlineMs, objectCallExempt } from './object-deadline.mjs';
-import { startByMs, objectShedPlan, startByResponse, shedAnswer, startByExempt, tagCallId, recheckStartBy, disconnectAnswer, START_BY_HEADER, CALL_HEADER } from './start-by.mjs';
+import { startByMs, objectShedPlan, startByResponse, shedAnswer, startByExempt, tagCallId, recheckStartBy, disconnectAnswer, disconnectSignal, START_BY_HEADER, CALL_HEADER } from './start-by.mjs';
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
@@ -2959,7 +2959,8 @@ export class PhpRuntime extends DurableObject {
 		let lateByClock = false;
 		// #721: a caller already gone (request.signal, with enable_request_signal) is refused here too: one refusal, before
 		// this object writes anything.
-		const gone = !!(raw.signal && raw.signal.aborted);
+		const callerSignal = disconnectSignal(env, raw.signal); // null with OBJECT_DISCONNECT_SHED=off
+		const gone = !!(callerSignal && callerSignal.aborted);
 		if (plan.refuseNow || gone) {
 			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'shed', at: 'arrive', why: gone ? 'disconnect' : 'start-by', ...(callId ? { call: callId } : {}) }));
 			return startByResponse();
@@ -3014,7 +3015,7 @@ export class PhpRuntime extends DurableObject {
 			tag: callId ? { call: callId } : null,
 			shedWhy: plan.byStartBy ? 'start-by' : 'queue-shed',
 			// #715 review2 4, review3 4 and 5: the lock rechecks the start-by at a contended grant, on a clock read again.
-			signal: raw.signal, // #721: a queued waiter sheds when its caller disconnects (why: disconnect)
+			signal: callerSignal, // #721: a queued waiter sheds when its caller disconnects (why: disconnect), unless off
 			recheck: plan.startBy > 0 ? async () => { const rc = await recheckStartBy(plan.startBy); lateByClock = rc.late; return rc; } : null,
 		});
 		if (objectRun !== PHP_SHED) return objectRun;

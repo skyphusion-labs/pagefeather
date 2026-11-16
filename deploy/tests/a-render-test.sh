@@ -104,5 +104,13 @@ echo "8. #721: every render sets enable_request_signal, the specific flag (the c
 ok "the default render sets the flag" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -qx -- '- compatibility_flags = \["nodejs_compat", "enable_request_signal"\]' && echo 1 || echo 0)"
 ok "the compatibility date is the bench's" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -qx -- "$(python3 -I "$HERE/canon.py" "$HERE/bench.toml" | grep -- '^- compatibility_date')" && echo 1 || echo 0)"
 
+echo "9. #721: OBJECT_DISCONNECT_SHED=off reaches [vars] (deploy.sh); unset renders nothing; a bad value fails; the flag stays"
+render "$T/ds.toml" OBJECT_DISCONNECT_SHED=off; rc=$?
+ok "off renders it (rc $rc)" "$([ $rc = 0 ] && python3 -I "$HERE/canon.py" "$T/ds.toml" | grep -qx 'vars OBJECT_DISCONNECT_SHED = "off"' && echo 1 || echo 0)"
+ok "and the flag stays on" "$(python3 -I "$HERE/canon.py" "$T/ds.toml" | grep -q enable_request_signal && echo 1 || echo 0)"
+ok "unset renders none" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -q OBJECT_DISCONNECT_SHED && echo 0 || echo 1)"
+render "$T/dsb.toml" OBJECT_DISCONNECT_SHED=0; rc=$?
+ok "OBJECT_DISCONNECT_SHED=0 fails the render (rc $rc)" "$([ $rc != 0 ] && echo 1 || echo 0)"
+
 [ "$fails" = 0 ] && echo "a-render: all checks pass" || echo "a-render: $fails failing check(s)"
 exit $((fails > 0))

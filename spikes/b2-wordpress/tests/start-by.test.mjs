@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { startByMs, objectShedPlan, startByResponse, START_BY_HEADER, CALL_HEADER, tagCallId, startByExempt, shedAnswer, recheckStartBy, CLOCK_LAG_MAX_MS, disconnectAnswer } from '../start-by.mjs';
+import { startByMs, objectShedPlan, startByResponse, START_BY_HEADER, CALL_HEADER, tagCallId, startByExempt, shedAnswer, recheckStartBy, CLOCK_LAG_MAX_MS, disconnectAnswer, disconnectSignal } from '../start-by.mjs';
 
 test('startByMs: the default is the deadline minus a run allowance (30 s, or a third of a short deadline)', () => {
 	assert.equal(startByMs({}, 90000), 60000);
@@ -194,10 +194,10 @@ test('review3 7 and 8: one start-by parser (objectShedPlan returns it), no dead 
 test('#721 wiring: the object hands its request.signal to the lock, refuses a request already gone, and every site Worker emitter sets the flag', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	const obj = src.slice(src.indexOf('	async fetch(raw) {'), src.indexOf('function phpObjectName('));
-	assert.ok(/signal: raw\.signal,/.test(obj), 'the object passes raw.signal to withPhp');
+	assert.ok(/signal: callerSignal,/.test(obj), 'the object passes its caller signal (disconnectSignal) to withPhp');
 	assert.ok(/function withPhp\(fn, \{[^}]*signal = null[^}]*\} = \{\}\)/.test(src) && /\t\t\tsignal,[^\n]*\n/.test(src), 'withPhp forwards it to the lock');
 	const refuse = obj.indexOf('if (plan.refuseNow || gone) {');
-	assert.ok(/const gone = !!\(raw\.signal && raw\.signal\.aborted\);/.test(obj) && refuse > 0 && refuse < obj.indexOf('if (armsCron) {'), 'a request already gone is refused in the one arrival refusal, before the origin write');
+	assert.ok(/const gone = !!\(callerSignal && callerSignal\.aborted\);/.test(obj) && refuse > 0 && refuse < obj.indexOf('if (armsCron) {'), 'a request already gone is refused in the one arrival refusal, before the origin write');
 	assert.ok(/why: gone \? 'disconnect' : 'start-by'/.test(obj), 'and says why');
 	const root = new URL('../../../', import.meta.url);
 	const files = ['spikes/b2-wordpress/wrangler.toml', 'deploy/render-conf.sh', 'deploy/wfp/lib.sh', 'deploy/provision/server-config.mjs', 'deploy/provision/cli.mjs', 'deploy/release/build-bundle.sh'];
@@ -225,4 +225,25 @@ test('#721 audit wiring: an unclassified error on a disconnected caller is answe
 	// A disconnect must never abort a started write: a checkout in the container must not inherit the caller's signal.
 	assert.ok(/checkoutContainer\(env\)\.fetch\(new Request\(req, \{ signal: null \}\)\)/.test(src), 'the checkout container forward detaches it');
 	assert.ok(/checkoutContainer\(env\)\.fetch\(new Request\(inner, req\)/.test(src) === false && /new Request\(new Request\(inner, req\), \{ signal: null \}\)/.test(src), 'the spike container forward too');
+});
+
+// #721 escape hatch (the lead's rule: a new default needs one on every path). OBJECT_DISCONNECT_SHED=off: a queued
+// waiter ignores its caller's signal and only the start-by applies. The compatibility flag stays on either way.
+test('OBJECT_DISCONNECT_SHED: on by default; off hands the lock no signal, so a waiter whose caller is gone still runs', { timeout: 3000 }, async () => {
+	const { createPhpLock, PHP_SHED } = await import('../php-lock.mjs');
+	const ac = new AbortController(); ac.abort();
+	assert.equal(disconnectSignal({}, ac.signal), ac.signal, 'unset: on');
+	assert.equal(disconnectSignal({ OBJECT_DISCONNECT_SHED: 'on' }, ac.signal), ac.signal);
+	assert.equal(disconnectSignal({ OBJECT_DISCONNECT_SHED: 'off' }, ac.signal), null, 'off: no signal');
+	assert.equal(disconnectSignal({ OBJECT_DISCONNECT_SHED: 'bogus' }, ac.signal), ac.signal, 'a bad value keeps the default (the render refuses it)');
+	const lock = createPhpLock({ log: () => {} });
+	assert.equal(await lock.run(async () => 'ran', { signal: disconnectSignal({ OBJECT_DISCONNECT_SHED: 'off' }, ac.signal) }), 'ran', 'off: it runs');
+	assert.equal(await lock.run(async () => 'ran', { signal: disconnectSignal({}, ac.signal) }), PHP_SHED, 'on: it sheds');
+});
+test('OBJECT_DISCONNECT_SHED wiring: the object takes both the lock signal and the arrival check from disconnectSignal', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const obj = src.slice(src.indexOf('	async fetch(raw) {'), src.indexOf('function phpObjectName('));
+	assert.ok(/const callerSignal = disconnectSignal\(env, raw\.signal\);/.test(obj), 'one decision');
+	assert.ok(/const gone = !!\(callerSignal && callerSignal\.aborted\);/.test(obj), 'the arrival check follows it');
+	assert.ok(/signal: callerSignal,/.test(obj) && !/signal: raw\.signal,/.test(obj), 'the lock gets it, never raw.signal directly');
 });

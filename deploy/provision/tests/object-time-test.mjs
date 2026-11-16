@@ -24,6 +24,12 @@ for (const [env, why] of [[{ OBJECT_START_BY_S: '61' }, 'over the cap at the def
 }
 let threw = false; try { inputs({ OBJECT_START_BY_S: '61' }); } catch { threw = true; }
 ok('objectTimeInputs itself refuses, so the callers refuse before IO', threw);
+// #721: OBJECT_DISCONNECT_SHED through the same inputs.
+r = tryBoth({ OBJECT_DISCONNECT_SHED: 'off' });
+ok('OBJECT_DISCONNECT_SHED=off renders on both', !r.error && val(r.b, 'OBJECT_DISCONNECT_SHED') === 'off' && val(r.a, 'OBJECT_DISCONNECT_SHED') === 'off');
+r = tryBoth({});
+ok('unset renders no OBJECT_DISCONNECT_SHED', !r.error && val(r.b, 'OBJECT_DISCONNECT_SHED') === null);
+for (const bad of ['0', 'yes', 'OFF']) ok('refused: OBJECT_DISCONNECT_SHED=' + bad, Boolean(tryBoth({ OBJECT_DISCONNECT_SHED: bad }).error));
 const fs = await import('node:fs');
 const src = (p) => fs.readFileSync(new URL(p, import.meta.url), 'utf8');
 ok('cli.mjs spreads objectTimeInputs for b-dosql and a', (src('../cli.mjs').match(/\.\.\.objectTimeInputs\(env\)/g) || []).length === 2);

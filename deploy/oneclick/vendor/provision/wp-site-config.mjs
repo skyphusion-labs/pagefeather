@@ -94,12 +94,17 @@ export function objectTimeInputs(env = {}) {
     const cap = (ms - Math.min(30000, Math.floor(ms / 3))) / 1000;
     if (Number(objectStartByS) > cap) throw new Error(`OBJECT_START_BY_S must be at most ${cap} with a ${dl} s deadline (the deadline minus the run allowance), not ${objectStartByS}`);
   }
-  return { objectCallDeadlineS, objectStartByS };
+  // #721: the disconnect shed's off switch. on or off; unset adds no var (the code default, on).
+  const ds = env.OBJECT_DISCONNECT_SHED;
+  if (!(ds === undefined || ds === null || ds === '' || ds === 'on' || ds === 'off')) throw new Error(`OBJECT_DISCONNECT_SHED must be on or off, not ${ds}`);
+  const objectDisconnectShed = ds === 'on' || ds === 'off' ? ds : undefined;
+  return { objectCallDeadlineS, objectStartByS, objectDisconnectShed };
 }
-function assignObjectTime(vars, { objectCallDeadlineS, objectStartByS }) {
-  const v = objectTimeInputs({ OBJECT_CALL_DEADLINE_S: objectCallDeadlineS, OBJECT_START_BY_S: objectStartByS });
+function assignObjectTime(vars, { objectCallDeadlineS, objectStartByS, objectDisconnectShed }) {
+  const v = objectTimeInputs({ OBJECT_CALL_DEADLINE_S: objectCallDeadlineS, OBJECT_START_BY_S: objectStartByS, OBJECT_DISCONNECT_SHED: objectDisconnectShed });
   if (v.objectCallDeadlineS !== undefined) vars.OBJECT_CALL_DEADLINE_S = v.objectCallDeadlineS;
   if (v.objectStartByS !== undefined) vars.OBJECT_START_BY_S = v.objectStartByS;
+  if (v.objectDisconnectShed !== undefined) vars.OBJECT_DISCONNECT_SHED = v.objectDisconnectShed;
 }
 
 // ---- b-dosql integration-descriptor table (#201 Phase 1) --------------------
@@ -150,7 +155,7 @@ function assignObjectTime(vars, { objectCallDeadlineS, objectStartByS }) {
 // turn on the default-on gates in index.js (object cache, route cache, theme.json
 // cache, async email, bootstrap trim, media-write trim): index.js enables each
 // unless its var is "off", so the site gets them with no gate var set.
-function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, demo, codeLock, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS } = {}) {
+function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, demo, codeLock, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed } = {}) {
   if (!siteOrigin) throw new Error('bDosqlVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
   const vars = {
     PHP_ENV: '{"USE_ZEND_ALLOC":"0"}',
@@ -183,7 +188,7 @@ function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mail
   else if (codeLock === true) vars.CODE_LOCK = 'on';
   // #706: after the always-on six, so a non-store stays byte-identical.
   assignPageCacheProduct(vars, { wooActive, importPlugins, plugins, pageCacheProductTtl, store });
-  assignObjectTime(vars, { objectCallDeadlineS, objectStartByS });
+  assignObjectTime(vars, { objectCallDeadlineS, objectStartByS, objectDisconnectShed });
   return vars;
 }
 
@@ -521,7 +526,7 @@ export function aVars({
   // #706: the same store rule as b-dosql. Unset on a non-store adds no var.
   wooActive, importPlugins, plugins, pageCacheProductTtl, store,
   // #715 review3 6: the PHP-object time bounds (the overflow pool), objectTimeInputs.
-  objectCallDeadlineS, objectStartByS,
+  objectCallDeadlineS, objectStartByS, objectDisconnectShed,
 } = {}) {
   if (!siteOrigin) throw new Error('aVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
   const vars = {
@@ -559,7 +564,7 @@ export function aVars({
     if (mailFromName) vars.MAIL_FROM_NAME = mailFromName;
   }
   assignPageCacheProduct(vars, { wooActive, importPlugins, plugins, pageCacheProductTtl, store });
-  assignObjectTime(vars, { objectCallDeadlineS, objectStartByS });
+  assignObjectTime(vars, { objectCallDeadlineS, objectStartByS, objectDisconnectShed });
   return Object.entries(vars).map(([name, text]) => ({ type: 'plain_text', name, text }));
 }
 
@@ -580,7 +585,7 @@ export function aBindings({
   objectCacheGroups, objectCacheTtl, lazyCacheMb, ocKvNamespaceId, ocKvBinding = 'OC_KV',
   mailFrom, mailFromName, extra = [],
   wooActive, importPlugins, plugins, pageCacheProductTtl, store,
-  objectCallDeadlineS, objectStartByS,
+  objectCallDeadlineS, objectStartByS, objectDisconnectShed,
 } = {}) {
   if (!mediaBucket) throw new Error('aBindings: mediaBucket is required');
   if (!hyperdriveId) throw new Error('aBindings: hyperdriveId is required (the Hyperdrive config id from onboarding)');
@@ -589,7 +594,7 @@ export function aBindings({
   // only if the caller already knows it (e.g. a re-provision passing the id).
   if (ocKvNamespaceId) ocKv.namespace_id = ocKvNamespaceId;
   return [
-    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName, objectCacheVersions, wooHposCache, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS }),
+    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName, objectCacheVersions, wooHposCache, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed }),
     { type: 'images', name: 'IMAGES' },
     { type: 'r2_bucket', name: 'MEDIA', bucket_name: mediaBucket },
     { type: 'hyperdrive', name: 'HYPERDRIVE', id: hyperdriveId },

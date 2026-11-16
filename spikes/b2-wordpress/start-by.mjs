@@ -78,6 +78,12 @@ export async function recheckStartBy(startByAt, { now = Date.now, tick = () => n
 	return { late: fresh >= startByAt, clockMs: fresh - stale };
 }
 
+// #721 escape hatch: OBJECT_DISCONNECT_SHED=off hands the PHP lock no signal, so a queued waiter ignores its caller's
+// disconnect and only the start-by applies. Unset, on or a bad value: the signal (the render refuses a bad value).
+export function disconnectSignal(env, signal) {
+	return env && env.OBJECT_DISCONNECT_SHED === 'off' ? null : signal || null;
+}
+
 // #721: the caller disconnected while its call was in flight (request.signal, with enable_request_signal). No client
 // reads this; it exists so the Worker answers instead of throwing an AbortError (an exception outcome, which doctor
 // counts as a failure). An object run that started is never cancelled (measured on the edge, #721), so a method that
