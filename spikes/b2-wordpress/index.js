@@ -3906,11 +3906,12 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			runtimeDrops++;
 			dropRuntimeIdle();
 		}
-		// A deploy-time spike long-op boots a FRESH runtime so it never inherits one the cron alarm
-		// just used: runCron and the install/activate share one PHP runtime, and a reused runtime
-		// returns runCron's output (or aborts) in place of the activation (#185). This runs inside
-		// the per-object PHP lock, so any cron run it isolates from has already finished.
-		if (url.pathname === '/_install' || url.pathname === '/_activate') dropRuntimeIdle();
+		// #798: /_install and /_activate RUN ON THE CURRENT RUNTIME. They used to drop it first and boot a fresh one (#185:
+		// "a reused runtime returns runCron's output in place of the activation"). That symptom was internal/eval.php kept
+		// in OPcache (every php.run wrote that one path), fixed by its blacklist (#294). With PHP_MEMORY_REUSE off, the
+		// live default, the dropped runtime's memory stayed resident beside the fresh one: 3 live memories (173 MiB
+		// retired) after install, a page, /_runcron and /_activate (tests/deploy-flow-e2e.sh). That test also checks that
+		// /_activate after /_runcron answers its own result.
 		if (url.pathname === '/_last') return Response.json(globalThis.__lastRequest || {});
 		if (url.pathname === '/_peak') {
 			bootPromise ??= boot(origin);
@@ -4036,7 +4037,9 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				dropRuntime();
 				return new Response('activate failed: ' + String((e && e.message) || e), { status: 500 });
 			}
-			dropRuntime(); // a fresh runtime loads the plugin cleanly
+			// #798: the runtime is KEPT after an activation. WordPress reads the active plugins from the database on every
+			// request, so the next request loads the new plugin on this runtime; a drop here made that request boot beside
+			// this runtime's uncollected memory. A FAILED activation (the catch above) still drops: its runtime is not trusted.
 			// #744: dbFailures names each failed statement of this run (its error and SQL, bounded), which the 2,000-character
 			// errors cut hid: WooCommerce's cart-page probe failed mid-query and showed only the query head.
 			return new Response(JSON.stringify({ out: r.text.slice(-2000), errors: String(r.errors).slice(0, 2000), d1: stats.calls - start, dbFailures: failuresSince(stats.failures, failSeq0) }), { headers: { 'content-type': 'application/json' } });
