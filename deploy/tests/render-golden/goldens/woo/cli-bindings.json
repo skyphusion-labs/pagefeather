@@ -14,6 +14,7 @@
           "kv_namespace OC_KV",
           "plain_text DB_IN_DO",
           "plain_text OBJECT_CACHE_L2",
+          "plain_text PAGE_CACHE_PRODUCT_TTL",
           "plain_text PHP_DO_POOL",
           "plain_text PHP_ENV",
           "plain_text PHP_IN_DO",

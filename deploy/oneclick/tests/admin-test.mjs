@@ -271,6 +271,7 @@ await ok('add a site: deploy/provision makes it locked, on workers.dev, with its
   assert(!('DEMO_LOCK' in vars), 'a one-click site is not a demo');
   assert(vars.SITE_ORIGIN === 'https://wp-blog.acme.workers.dev', `SITE_ORIGIN ${vars.SITE_ORIGIN}`);
   assert(!('MAIL_FROM' in vars), 'MAIL_FROM set on a workers.dev site');
+  assert(!('PAGE_CACHE_PRODUCT_TTL' in vars), 'a non-store renders a product TTL');
   assert(!cf.calls.some((c) => c.path.includes('/zones/')), 'a DNS call was made');
   const door = cf.calls.find((c) => c.method === 'PUT' && c.path.endsWith('/workers/scripts/wp-blog'));
   assert(door, 'no front door');
@@ -290,6 +291,10 @@ await ok('a store: WooCommerce is turned on through the site itself', async () =
   const env = makeEnv();
   const r = await (await call(post('/api/sites', { name: 'myshop', store: true }), env, access(), cf)).json();
   assert(r.ok && r.store === true && r.woo && r.woo.activated === true, JSON.stringify(r));
+  const up = cf.calls.find((c) => c.method === 'PUT' && c.path.endsWith('/scripts/site-myshop'));
+  assert(up, 'no namespace script upload');
+  const upVars = Object.fromEntries(up.metadata.bindings.filter((b) => b.type === 'plain_text').map((b) => [b.name, b.text]));
+  assert(upVars.PAGE_CACHE_PRODUCT_TTL === '30', `store ttl ${upVars.PAGE_CACHE_PRODUCT_TTL}`);
   const act = env.DISPATCHER.seen.find((s) => s.path === '/_activate');
   assert(act && act.script === 'site-myshop' && act.search.includes('woocommerce%2Fwoocommerce.php') && act.token, 'no activation');
 });
@@ -509,6 +514,7 @@ await ok('add a Hyperdrive store: approach-A code, the connected Hyperdrive ID, 
   assert(hd.length === 1 && hd[0].id === HD, `hyperdrive binding ${JSON.stringify(hd)} (the body's hyperdriveId must be ignored)`);
   const vars = Object.fromEntries(site.metadata.bindings.filter((b) => b.type === 'plain_text').map((b) => [b.name, b.text]));
   assert(JSON.parse(vars.PHP_ENV).WP_TABLE_PREFIX === 'wp_big_shop_', `vars ${JSON.stringify(vars)}`);
+  assert(vars.PAGE_CACHE_PRODUCT_TTL === '30', `hyperdrive store ttl ${vars.PAGE_CACHE_PRODUCT_TTL}`);
   // The code lock (#461): on for every site by default; the render carries NO
   // CODE_LOCK, and the runtime's own rule gives this env the full lock defines.
   assert(!site.metadata.bindings.some((b) => b.name === 'CODE_LOCK'), 'the a-store render carries CODE_LOCK');

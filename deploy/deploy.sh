@@ -28,6 +28,12 @@
 # remote logging off. Unset leaves WooCommerce's defaults. Analytics stays on.
 # b-dosql through deploy/wfp records it (site_settings.py). A value other than
 # off is refused before any step.
+# PAGE_CACHE_PRODUCT_TTL (b-do, b-dosql and a, #706): seconds a WooCommerce
+# product, shop or category page stays fresh. A store (WOO_ACTIVE=1) renders 30
+# when this is unset. A site that is not a store renders nothing, so those pages
+# keep 120 s. Set an integer from 5 to 600 to override. Any other value, or a
+# WOO_ACTIVE other than 0 or 1, is refused before any step. The line comes from
+# deploy/provision/wp-site-config.mjs, the same function the one-click paths use.
 # BENCH=0 (skip the measurements), N (runs per page, default 10), PORT (local
 # wrangler dev port for the OPcache step, default 8798), DEPLOY_STATE=r2 (keep
 # Terraform state in an R2 bucket; see README.md).
@@ -97,6 +103,24 @@ case "${WOO_EXTRAS:-}" in
   off) ;;
   *) echo "WOO_EXTRAS must be off or unset, not ${WOO_EXTRAS}" >&2; exit 2 ;;
 esac
+# WOO_ACTIVE is 0 or 1 (#706). Unset was set to 0 above. Anything else is refused
+# before any step, the same as deploy/wfp woo_active_for_build.
+case "$WOO_ACTIVE" in
+  0|1) ;;
+  *) echo "WOO_ACTIVE must be 0 or 1, not ${WOO_ACTIVE}" >&2; exit 2 ;;
+esac
+# PAGE_CACHE_PRODUCT_TTL (#706): unset, or an integer from 5 to 600. The rendered
+# line is render-conf.sh (a store gets 30 when this is unset). A bad value is
+# refused here, before Terraform, the build or a deploy. The same bounds as
+# pageCacheProductTtl; this copy exists so the refusal does not call node (the
+# refusal tests stub node).
+if [ -n "${PAGE_CACHE_PRODUCT_TTL:-}" ]; then
+  page_cache_ttl=$PAGE_CACHE_PRODUCT_TTL
+  if ! [[ "$page_cache_ttl" =~ ^[0-9]{1,3}$ ]] || [ "$((10#$page_cache_ttl))" -lt 5 ] || [ "$((10#$page_cache_ttl))" -gt 600 ]; then
+    echo "PAGE_CACHE_PRODUCT_TTL must be an integer from 5 to 600, not ${page_cache_ttl}" >&2
+    exit 2
+  fi
+fi
 # shellcheck source=SCRIPTDIR/observability.sh
 . "$ROOT/deploy/observability.sh"
 obs_check "$VARIANT" || exit 2
