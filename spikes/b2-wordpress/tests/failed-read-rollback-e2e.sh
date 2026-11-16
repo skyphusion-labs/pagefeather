@@ -8,10 +8,12 @@
 #   3. the read fails at the memory ceiling (the #766 seam, reset kind; the object cache off for the request, so the
 #      read reaches the database): the answer is the visible failure, and the real value is still there. Red: the
 #      default persists. When nothing was kept at a commit point, the answer says so: x-write-loss: rolled-back.
-#   4. (#795) the same read fails with a NON-reset error (x-pf-fault-sql-kind: other): never a plausible wrong
-#      answer. It answers the retryable failure (503, Retry-After, no-store, x-sql-failure), and the real value is
-#      still there (a failed read of any class rolls the frame back). Red: a 200, and the default persists.
-#   5. (#795) a read-only request whose read fails (nothing written): the same retryable 503.
+#   4. (#795) the same read fails by the PLATFORM's hand, not the reset (x-pf-fault-sql-kind: busy, the database busy):
+#      never a plausible wrong answer. It answers the retryable failure (503, Retry-After, no-store, x-sql-failure),
+#      and the real value is still there (the failed read rolls the frame back). Red: a 200, and the default persists.
+#   5. (#795) a read-only request whose read fails by the platform's hand (nothing written): the same retryable 503.
+#   6. (#795) a DETERMINISTIC statement error (kind other: the statement itself is wrong) is NOT a 5xx: it goes back to
+#      WordPress through wpdb's error path, as MySQL's does, and WordPress answers (a retry would fail forever).
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export PORT=${PORT:-8797} DEV_ENV=${DEV_ENV:-dosql-local}
@@ -69,16 +71,22 @@ check("3. the answer is the visible failure (a 500)", st == 500)
 check("3. a value derived from the failed read did not persist: the real value is intact", v == "the-real-value", repr(v))
 check("3. nothing was kept at a commit point, so the answer says so: x-write-loss: rolled-back", wl == "rolled-back", repr(wl))
 get("/?pf=4", {"x-pf-derived": "set"})
-st, h, _ = get("/?pf=5", {"x-pf-derived": "check", "x-oc-off": "1", "x-pf-fault": "sql-fail", "x-pf-fault-sql": "pf_derived_test", "x-pf-fault-sql-kind": "other"})
+st, h, _ = get("/?pf=5", {"x-pf-derived": "check", "x-oc-off": "1", "x-pf-fault": "sql-fail", "x-pf-fault-sql": "pf_derived_test", "x-pf-fault-sql-kind": "busy"})
 hl = {k.lower(): v for k, v in h.items()}
 v = option()
-print("  4. the read fails (non-reset kind): %s, retry-after %s, x-sql-failure %s, cache-control %s; the option now %r" % (st, hl.get("retry-after"), hl.get("x-sql-failure"), hl.get("cache-control"), v))
-check("4. a non-reset failed read answers the retryable failure, never a 200 (503, Retry-After, no-store)", st == 503 and hl.get("retry-after") and "no-store" in (hl.get("cache-control") or ""), "%s" % st)
+print("  4. the read fails (busy, a platform failure): %s, retry-after %s, x-sql-failure %s, cache-control %s; the option now %r" % (st, hl.get("retry-after"), hl.get("x-sql-failure"), hl.get("cache-control"), v))
+check("4. a platform failed read answers the retryable failure, never a 200 (503, Retry-After, no-store)", st == 503 and hl.get("retry-after") and "no-store" in (hl.get("cache-control") or ""), "%s" % st)
 check("4. and no value derived from it persists: the real value is intact (the frame rolled back)", v == "the-real-value", repr(v))
 check("4. it says what failed (x-sql-failure) and does not claim an isolate reset", hl.get("x-sql-failure") == "1" and "x-isolate-reset" not in hl, "%s %s" % (hl.get("x-sql-failure"), hl.get("x-isolate-reset")))
-st, h, _ = get("/?pf=6", {"x-oc-off": "1", "x-pf-fault": "sql-fail", "x-pf-fault-sql": "wp_options", "x-pf-fault-sql-kind": "other"})
+st, h, _ = get("/?pf=6", {"x-oc-off": "1", "x-pf-fault": "sql-fail", "x-pf-fault-sql": "wp_options", "x-pf-fault-sql-kind": "busy"})
 hl = {k.lower(): v for k, v in h.items()}
-check("5. a read-only request whose read fails (nothing written): the retryable 503", st == 503 and hl.get("retry-after"), "%s %s" % (st, hl.get("retry-after")))
+check("5. a read-only request whose read fails by the platform's hand (nothing written): the retryable 503", st == 503 and hl.get("retry-after"), "%s %s" % (st, hl.get("retry-after")))
+st, h, _ = get("/?pf=7", {"x-oc-off": "1", "x-pf-fault": "sql-fail", "x-pf-fault-sql": "wp_options", "x-pf-fault-sql-kind": "other"})
+hl = {k.lower(): v for k, v in h.items()}
+logs = [json.loads(l[l.index("{"):]) for l in open("dev.log", errors="replace") if '"statement-failure"' in l and "{" in l] if os.path.exists("dev.log") else []
+cls = [x.get("class") for x in logs]
+check("6. a deterministic statement error is not a 5xx: WordPress answers it, as on MySQL", st < 500 and "x-sql-failure" not in hl, "%s" % st)
+check("6. and every failed statement is logged by class (shape only): platform and deterministic both seen", "platform" in cls and "deterministic" in cls, str(sorted(set(cls))))
 print("failed-read-rollback: %d failing" % len(fails))
 sys.exit(1 if fails else 0)
 PY

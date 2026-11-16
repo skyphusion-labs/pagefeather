@@ -25,7 +25,7 @@ import { exportRequest } from './mysql-export.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore, serverTimingPhp } from './perf-headers.mjs';
 import { createTrace as createQueryTrace } from './qtrace.mjs';
 import { hposCacheDefine } from './woo-hpos-cache.mjs';
-import { resetFailures, writeLossResponse, rolledBackResponse, frameProvesRollback, statementFailureResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
+import { resetFailures, platformFailures, writeLossResponse, rolledBackResponse, frameProvesRollback, statementFailureResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { MEMORY_RESET } from './object-error.mjs';
 import { createL2Writer } from './oc-l2-writer.mjs';
 import { createLedger, memfsBytes, createSqlMeter, ledgerOn, LEDGER_MIB, currentSerial } from './mem-ledger.mjs';
@@ -129,9 +129,6 @@ function objectCacheClear() {
 // cache would otherwise hand that to every later request: a 404 for a product that exists. poisoned also stops the
 // request's L2 sets that the undo log still holds (#352 defer), which run after the response.
 let ocReq = null;
-// #795: the operator setup endpoints fail statements by design (WordPress probes its tables before they exist; measured,
-// all 208 failures of a full workload were here). They keep their own answers.
-const SETUP_PATHS = new Set(['/_install', '/_activate']);
 // #766: a failed READ statement (SELECT, WITH): PHP saw an empty result, whatever the error's class.
 function readFailed(failures) { return (failures || []).some((f) => f && /^\s*(SELECT|WITH)\b/i.test(String(f.sql || ''))); }
 function ocReqBegin() { ocReq = { writes: new Set(), poisoned: false }; }
@@ -4237,25 +4234,32 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				dropRuntime(); // the runtime saw the reset; the next request boots a new one
 				return new Response(answer.body, { status: answer.status, headers: answer.headers });
 			}
-			// #795: never a plausible wrong answer. A statement that failed for any other reason (the reset took the branch
-			// above) still came back empty or unapplied to PHP, so PHP's own 200 or 404 would look like the truth.
-			// Measured on #795: no statement fails on a normal site outside the setup endpoints, so every failure here is
-			// answered as one. What the request cached is not kept (#766). A failed READ of any class also rolls the frame
-			// back, as #794 does for the reset (what PHP wrote from an empty read must not persist). "Nothing was saved"
-			// only when the request wrote nothing, or its frame row proves the rollback.
-			if (d.failures.length && !SETUP_PATHS.has(url.pathname)) {
-				const f = ocReqForget();
-				const wrote = d.log.some((l) => /^ok\s+\(?\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(l));
-				let rb = null;
-				if (readFailed(d.failures)) {
-					try { rb = undoLog && sqlDb ? undoLog.rollbackFrame(sqlDb, sqlStorage) : null; } catch (e) { console.log(JSON.stringify({ m: 'frame-rollback-failed', error: String((e && e.message) || e).slice(0, 160) })); }
-				}
-				const fr = rb && undoLog ? undoLog.status(sqlDb, rb.req) : null;
-				const saved = rb ? !frameProvesRollback(fr) : wrote;
-				const sf = statementFailureResponse(d.failures.length, wantsJson(url.pathname, url.search, req.headers.get('accept')), saved);
+			// #795, by FAILURE CLASS (write-loss.mjs PLATFORM_FAILURE). A PLATFORM failure other than the reset (busy, out of
+			// memory, disk full, a timeout...) is never answered as a success: PHP saw an empty or unapplied result that was
+			// not the truth. What the request cached is not kept (#766); a failed READ rolls the frame back (#794's
+			// boundary); the answer is the visible failure, retryable when nothing was saved. A DETERMINISTIC error (the
+			// statement itself is wrong: no such table, syntax, the LIKE cap) goes back to WordPress through wpdb's error
+			// path, as MySQL's does: no 5xx (a retry would fail forever), its cache writes from a failed read dropped, and
+			// the answer never edge-cached (pageCacheHeaders below). Every failed statement is logged, its shape only.
+			if (d.failures.length) {
+				const platform = platformFailures(d.failures) > 0;
 				const shapes = [...new Set(d.failures.map((x) => sqlShape(x.sql)))].slice(0, 8);
-				console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: String(d.failures[0].error || '').slice(0, 100), wrote, rolledBack: !!(rb && !saved), answered: sf.status, phpStatus: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env) }));
-				return new Response(sf.body, { status: sf.status, headers: sf.headers });
+				const errShape = String(d.failures[0].error || '').replace(/'[^']*'|"[^"]*"|[0-9]+/g, '?').slice(0, 100);
+				if (platform) {
+					const f = ocReqForget();
+					const wrote = d.log.some((l) => /^ok\s+\(?\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(l));
+					let rb = null;
+					if (readFailed(d.failures)) {
+						try { rb = undoLog && sqlDb ? undoLog.rollbackFrame(sqlDb, sqlStorage) : null; } catch (e) { console.log(JSON.stringify({ m: 'frame-rollback-failed', error: String((e && e.message) || e).slice(0, 160) })); }
+					}
+					const fr = rb && undoLog ? undoLog.status(sqlDb, rb.req) : null;
+					const saved = rb ? !frameProvesRollback(fr) : wrote;
+					const sf = statementFailureResponse(d.failures.length, wantsJson(url.pathname, url.search, req.headers.get('accept')), saved);
+					console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', class: 'platform', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, wrote, rolledBack: !!(rb && !saved), answered: sf.status, phpStatus: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env) }));
+					return new Response(sf.body, { status: sf.status, headers: sf.headers });
+				}
+				const f = readFailed(d.failures) ? ocReqForget() : { n: 0 };
+				console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', class: 'deterministic', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, answered: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env) }));
 			}
 			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
 			const ocTables = diffCounts(stats.dbTables, start.dbTables);

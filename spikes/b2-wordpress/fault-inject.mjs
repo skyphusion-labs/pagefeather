@@ -31,9 +31,13 @@ export const SQL_FAIL_MESSAGE = "Durable Object's isolate exceeded its memory li
 // write-loss answer does not replace, so PHP answers with what it saw.
 export const FAULT_SQL_KIND_HEADER = 'x-pf-fault-sql-kind';
 export const SQL_FAIL_OTHER_MESSAGE = 'SQLITE_ERROR: injected statement failure (#766, a measurement)';
-/** The message the armed statement throws: the platform's reset (the default) or another SQLite error. */
+// #795: busy is a platform failure that is not the reset (the database busy), the class that gets a retryable answer;
+// other is a deterministic statement error, which goes back to WordPress as MySQL's would.
+export const SQL_FAIL_BUSY_MESSAGE = 'SQLITE_BUSY: database is locked (injected, #795, a measurement)';
+/** The message the armed statement throws: the platform's reset (the default), busy, or a deterministic error. */
 export function sqlFailMessage(headers) {
-	return headers && headers.get(FAULT_SQL_KIND_HEADER) === 'other' ? SQL_FAIL_OTHER_MESSAGE : SQL_FAIL_MESSAGE;
+	const k = headers ? headers.get(FAULT_SQL_KIND_HEADER) : null;
+	return k === 'other' ? SQL_FAIL_OTHER_MESSAGE : k === 'busy' ? SQL_FAIL_BUSY_MESSAGE : SQL_FAIL_MESSAGE;
 }
 
 /** The piece of SQL to fail in this request, or null: the site var, the spike token, the header, and 3 to 120 characters. */

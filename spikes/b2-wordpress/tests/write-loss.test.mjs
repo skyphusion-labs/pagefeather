@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { resetFailures, writeLossResponse, WRITE_LOSS_BODY, statementFailureResponse } from '../write-loss.mjs';
+import { resetFailures, writeLossResponse, WRITE_LOSS_BODY, statementFailureResponse, PLATFORM_FAILURE, platformFailures } from '../write-loss.mjs';
 
 const RESET = "Durable Object's isolate exceeded its memory limit and was reset.";
 test('THE FDPROBE1112H CASE: the session_tokens UPDATE failed in a reset, so the run has lost writes', () => {
@@ -252,13 +252,40 @@ test('#795 statementFailureResponse: never a plausible wrong answer; retryable o
 	assert.equal(j.data.status, 500);
 });
 
-test('#795 index.js: any failed statement outside the setup endpoints is answered as a failure, after the reset branch', () => {
+test('#795 the failure class: platform failures (retryable) against deterministic statement errors (WordPress handles them)', () => {
+	const platform = [
+		"Durable Object's isolate exceeded its memory limit and was reset.",
+		'SQLITE_BUSY: database is locked',
+		'SQLITE_NOMEM: out of memory',
+		'SQLITE_FULL: database or disk is full',
+		'SQLITE_IOERR: disk I/O error',
+		'Network connection lost.',
+		'the operation timed out',
+		'no reply from the Worker',
+	];
+	const deterministic = [
+		'no such table: wp_options: SQLITE_ERROR',
+		'near "SELEC": syntax error: SQLITE_ERROR',
+		'LIKE or GLOB pattern too complex: SQLITE_ERROR',
+		'UNIQUE constraint failed: wp_options.option_name: SQLITE_CONSTRAINT',
+		'dialect: unsupported statement',
+		'SQLITE_ERROR: injected statement failure (#766, a measurement)',
+	];
+	for (const e of platform) assert.ok(PLATFORM_FAILURE.test(e), 'platform: ' + e);
+	for (const e of deterministic) assert.ok(!PLATFORM_FAILURE.test(e), 'deterministic: ' + e);
+	assert.equal(platformFailures([{ error: platform[1] }, { error: deterministic[0] }, { error: platform[0] }]), 2);
+});
+
+test('#795 index.js: a PLATFORM failure is answered as a failure (after the reset branch); a deterministic one goes back to WordPress', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	const lost = src.indexOf('const lost = resetFailures(d.failures);');
-	const any = src.indexOf('if (d.failures.length && !SETUP_PATHS.has(url.pathname)) {');
+	const any = src.indexOf('const platform = platformFailures(d.failures) > 0;');
 	const copy = src.indexOf('for (const [k, v] of Object.entries(r.headers))', lost);
 	assert.ok(lost > 0 && any > lost && copy > any, 'after the reset branch, before PHP headers are copied');
-	assert.match(src, /const SETUP_PATHS = new Set\(\['\/_install', '\/_activate'\]\);/, 'only the measured setup endpoints are excluded');
-	assert.match(src.slice(any, copy), /readFailed\(d\.failures\)\) \{\s*try \{ rb = undoLog && sqlDb \? undoLog\.rollbackFrame/, 'a failed read of any class rolls the frame back');
-	assert.match(src.slice(any, copy), /const saved = rb \? !frameProvesRollback\(fr\) : wrote;/, '"nothing saved" only on the proof, or when nothing was written');
+	const blk = src.slice(any, copy);
+	assert.ok(!/SETUP_PATHS/.test(src), 'no path exclusion: the class decides');
+	assert.match(blk, /if \(platform\) \{[\s\S]*readFailed\(d\.failures\)\) \{\s*try \{ rb = undoLog && sqlDb \? undoLog\.rollbackFrame/, 'a platform failure with a failed read rolls the frame back');
+	assert.match(blk, /const saved = rb \? !frameProvesRollback\(fr\) : wrote;/, '"nothing saved" only on the proof, or when nothing was written');
+	assert.match(blk, /class: 'deterministic'/, 'a deterministic failure is logged and falls through to PHP own answer');
+	assert.match(src, /pageCacheHeaders\(req, url, r, out, env, d\.failures\.length\);/, 'and is still never edge-cached (#766)');
 });

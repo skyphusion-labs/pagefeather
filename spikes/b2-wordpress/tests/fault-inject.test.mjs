@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { faultArmed, isFaultTarget, exhaustMemory, FAULT_HEADER, FAULT_AFTER_INSERT, sqlFailNeedle, FAULT_SQL_FAIL, FAULT_SQL_HEADER, SQL_FAIL_MESSAGE } from '../fault-inject.mjs';
+import { faultArmed, isFaultTarget, exhaustMemory, FAULT_HEADER, FAULT_AFTER_INSERT, sqlFailNeedle, FAULT_SQL_FAIL, FAULT_SQL_HEADER, SQL_FAIL_MESSAGE, sqlFailMessage, FAULT_SQL_KIND_HEADER, SQL_FAIL_BUSY_MESSAGE, SQL_FAIL_OTHER_MESSAGE } from '../fault-inject.mjs';
 import { MEMORY_RESET } from '../object-error.mjs';
 
 const H = (o) => new Headers(o);
@@ -69,6 +69,11 @@ test('#766 sql-fail: armed only with the var, the spike token and the header; th
 	assert.equal(sqlFailNeedle(env, true, h({ [FAULT_HEADER]: FAULT_SQL_FAIL, [FAULT_SQL_HEADER]: 'x'.repeat(121) })), null, 'too long');
 	assert.equal(faultArmed(env, true, ok), false, 'sql-fail never arms the after-insert kill');
 	assert.ok(MEMORY_RESET.test(SQL_FAIL_MESSAGE), 'the message is one resetFailures counts, as the platform reset is');
+	const kind = (k) => sqlFailMessage(h(k ? { [FAULT_SQL_KIND_HEADER]: k } : {}));
+	assert.equal(kind(''), SQL_FAIL_MESSAGE, 'the default is the reset');
+	assert.equal(kind('busy'), SQL_FAIL_BUSY_MESSAGE, 'busy: a platform failure that is not the reset');
+	assert.equal(kind('other'), SQL_FAIL_OTHER_MESSAGE, 'other: a deterministic statement error');
+	assert.ok(!MEMORY_RESET.test(SQL_FAIL_BUSY_MESSAGE) && /SQLITE_BUSY/.test(SQL_FAIL_BUSY_MESSAGE));
 });
 test('#766 index.js wiring: a request with a reset-class failure drops the object-cache keys it wrote, and its held L2 sets', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
