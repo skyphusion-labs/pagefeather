@@ -7,6 +7,9 @@ B=${1:-http://localhost:${PORT:-8797}}
 PW=${ADMIN_PASSWORD:-local-spike-password}
 ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}")
 T=$(mktemp -d); J=$T/jar; H=$T/h; bad=0
+# A redirect must stay on this site (same-site.sh: a protocol-relative //other/ is off site, #760).
+# shellcheck source=same-site.sh
+. "$(dirname "$0")/same-site.sh"
 val() { grep -i "^$1:" "$H" | head -1 | cut -d: -f2- | tr -d ' \r'; }
 row() {
   local code; code=$(head -1 "$H" | cut -d' ' -f2)
@@ -14,7 +17,7 @@ row() {
   case "$code" in 2*|3*) ;; *) bad=1 ;; esac
   # A redirect must stay on this site. (PHP in a Durable Object once redirected
   # every logged-out page to http://<host>:443/, docs/approach-b.md 8i.)
-  case "$code" in 3*) loc=$(val location); case "$loc" in "$B"/*|"$B"|/*|'') ;; *) echo "   redirect to another origin: $loc"; bad=1 ;; esac ;; esac
+  case "$code" in 3*) loc=$(val location); same_site_location "$B" "$loc" || { echo "   redirect to another origin: $loc"; bad=1; } ;; esac
   f=$(val x-d1-failures); [ -z "$f" ] || [ "$f" = "0" ] || { bad=1; curl -s "${ST[@]}" "$B/_last" | python3 -c "
 import json,sys
 for f in json.load(sys.stdin).get('failures',[])[:3]: print('   ', f['error'][:140], '|', f['sql'][:160])"; }
@@ -27,7 +30,7 @@ getl() {
   curl -s -L --max-redirs 5 -c "$J" -b "$J" -o "$T/body" -D "$T/hops" -w '%{time_total}' "$B$2" > "$T/t"
   local loc
   grep -i '^location:' "$T/hops" | cut -d: -f2- | tr -d ' \r' > "$T/locs" || true
-  while read -r loc; do case "$loc" in "$B"/*|"$B"|/*) ;; *) echo "   redirect to another origin: $loc"; bad=1 ;; esac; done < "$T/locs"
+  while read -r loc; do same_site_location "$B" "$loc" || { echo "   redirect to another origin: $loc"; bad=1; }; done < "$T/locs"
   awk '/^HTTP\//{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' "$T/hops" > "$H"
   row "$1"
 }
