@@ -371,6 +371,30 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			return true;
 		},
 		/** The request ended (PHP finished, a fatal included): a PHP transaction still open is rolled back, the frame kept. */
+		/**
+		 * #794: roll the open frame back NOW, in the request that met a reset-class storage failure in an isolate that
+		 * survives. #352 keeps a frame at the request's end because the frame hides OUR platform's failure, not
+		 * WordPress's; a storage failure at the memory ceiling is the platform's, and recover() rolls it back only in the
+		 * NEXT isolate, which never comes when the object goes on. So it is undone here, as recover() would: back to the
+		 * last commit point (what was kept at a point stays kept), the frame marked rolled-back (what /_frame proves), the
+		 * deferred work (L2 sets) dropped, never run. Returns { undone, points } or null when no frame is open.
+		 */
+		rollbackFrame(db, storage) {
+			if (!frameOpen) return null;
+			const n = undoTo(db, storage, 0);
+			txnFrames = null;
+			txnTouched.clear();
+			setIdle(db);
+			own(db.exec('DELETE FROM _wp_undo'));
+			frameOpen = false;
+			counts.rolledBack = (counts.rolledBack || 0) + 1;
+			frameRow(db, armedReq, 'rolled-back');
+			own(db.exec('UPDATE _wp_frame SET undone = ? WHERE req = ?', n, armedReq));
+			deferred = [];
+			const out = { undone: n, points, req: armedReq };
+			armedReq = null; // end() must not mark it again
+			return out;
+		},
 		end(db, storage) {
 			if (txnFrames) {
 				const n = undoTo(db, storage, txnFrames[0].seq);

@@ -4213,11 +4213,22 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			if (lost) {
 				if (ledgerActive) ledgerLog('write-loss', { lost });
 				const ocForgot = ocReqForget(); // #766: what this request cached after its failed statements is not kept
-				const wl = writeLossResponse(lost, wantsJson(url.pathname, url.search, req.headers.get('accept')));
+				// #794: and what it WROTE is not kept either. A value it derived from a failed read (an add_option of a
+				// default over a real value whose read failed) would outlive every cache and deploy. The storage failure
+				// is the platform's, so the frame is rolled back now, as the next isolate's recover() would (undo-log.mjs).
+				let rb = null;
+				try { rb = undoLog && sqlDb ? undoLog.rollbackFrame(sqlDb, sqlStorage) : null; } catch (e) { console.log(JSON.stringify({ m: 'frame-rollback-failed', error: String((e && e.message) || e).slice(0, 160) })); }
+				if (rb) console.log(JSON.stringify({ m: 'frame-rolled-back', at: 'reset-failure', req: rb.req, undone: rb.undone, points: rb.points, path: url.pathname, ...memIdOf(req, env) }));
+				const json = wantsJson(url.pathname, url.search, req.headers.get('accept'));
+				// "Nothing was saved" only on the proof, the frame's own row as /_frame reads it (#352).
+				const fr = rb && undoLog ? undoLog.status(sqlDb, rb.req) : null;
+				const rolled = frameProvesRollback(fr) ? rolledBackResponse(json, 'memory', fr.undone) : null;
+				const wl = writeLossResponse(lost, json);
+				const answer = rolled || wl;
 				// phpStatus is PHP's status before this replacement. answered is the status returned below (#596).
-				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, ocDropped: ocForgot.n, ocDroppedGroups: ocForgot.groups, phpStatus: r.httpStatusCode, firstSql: sqlShape(d.failures[0].sql), ...memIdOf(req, env), answered: wl.status }));
+				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, rolledBack: !!rolled, ocDropped: ocForgot.n, ocDroppedGroups: ocForgot.groups, phpStatus: r.httpStatusCode, firstSql: sqlShape(d.failures[0].sql), ...memIdOf(req, env), answered: wl.status }));
 				dropRuntime(); // the runtime saw the reset; the next request boots a new one
-				return new Response(wl.body, { status: wl.status, headers: wl.headers });
+				return new Response(answer.body, { status: answer.status, headers: answer.headers });
 			}
 			// #766 (the #770 review): a read that failed for any other reason also came back empty to PHP, so what the
 			// request cached from it is not kept either (a reset-class failure took the write-loss branch above).
