@@ -33,6 +33,8 @@ class Stub:
         self.blogname = "WooCommerce Core E2E Test Suite"
         self.images = ["image-01", "image-02", "image-03"]
         self.customer_role = "customer"
+        self.cuser = "customer"
+        self.tracking = "yes"        # None: the route answers 404
         self.basic_ok_pw = None          # None: Basic accepts self.password
         self.marker = "self"     # self | none | other
         self.basic = "ok"        # ok | always401 | ignores
@@ -65,7 +67,7 @@ class Stub:
                 self.wfile.write(body)
 
             def logged_in(self):
-                return re.search(r"wordpress_logged_in_x=(admin|customer)", self.headers.get("Cookie") or "") is not None
+                return re.search(r"wordpress_logged_in_x=\w+", self.headers.get("Cookie") or "") is not None
 
             def rest_ok(self):
                 return "wordpress_logged_in_x=admin" in (self.headers.get("Cookie") or "") and self.headers.get("X-WP-Nonce") == stub.nonce
@@ -116,20 +118,29 @@ class Stub:
                         return self.send(200, '<form name="loginform" id="loginform">', ctype="text/html")
                     if "wordpress_logged_in_x=admin" in c:
                         return self.send(200, "<html>Dashboard</html>", ctype="text/html")
-                    if "wordpress_logged_in_x=customer" in c:
+                    if "wordpress_logged_in_x=%s" % stub.cuser in c:
                         return self.send(302, "", [("Location", "/my-account/")])
                     return self.send(302, "", [("Location", "/wp-login.php?redirect_to=%2Fwp-admin%2F&reauth=1")])
                 if self.path == "/wp-json/":
                     return self.send(200, {"namespaces": ["wp/v2", "wc/v3"]})
-                if self.path.startswith("/wp-json/wp/v2/users?search=customer"):
+                if self.path.startswith("/wp-json/wp/v2/users?search="):
                     if not self.rest_ok():
                         return self.send(401, {})
-                    return self.send(200, [{"id": 7, "username": "customer", "roles": [stub.customer_role]}] if stub.customer_role else [])
+                    q = self.path.split("search=")[1].split("&")[0]
+                    hit = q == stub.cuser and stub.customer_role
+                    return self.send(200, [{"id": 7, "username": stub.cuser, "roles": [stub.customer_role]}] if hit else [])
+                if self.path == "/wp-json/wc/v3/settings/advanced/woocommerce_allow_tracking":
+                    if not self.rest_ok():
+                        return self.send(401, {})
+                    if stub.tracking is None:
+                        return self.send(404, {"code": "rest_setting_setting_invalid"})
+                    return self.send(200, {"id": "woocommerce_allow_tracking", "value": stub.tracking})
                 if self.path == "/wp-json/wp/v2/settings":
                     return self.send(200, {"title": stub.blogname}) if self.rest_ok() else self.send(401, {})
                 if self.path.startswith("/wp-json/wp/v2/media?search="):
                     q = self.path.split("search=")[1].split("&")[0]
-                    return self.send(200, [{"source_url": "https://x/wp-content/uploads/%s.png" % q}] if q in stub.images else [])
+                    ext = "jpg" if q == "image-01" else "png"
+                    return self.send(200, [{"source_url": "https://x/wp-content/uploads/%s.%s" % (q, ext)}] if q in stub.images else [])
                 if self.path == "/":
                     n = sum(1 for c in stub.calls if c == ("GET", "/"))
                     return self.send(200, "<html>", [("cf-cache-status", "MISS" if n == 1 else stub.cache)], "text/html")
@@ -144,7 +155,7 @@ class Stub:
                     f = dict(x.split("=", 1) for x in b.decode().split("&"))
                     from urllib.parse import unquote_plus
                     log, pwd = unquote_plus(f.get("log", "")), unquote_plus(f.get("pwd", ""))
-                    if (log, pwd) in (("admin", stub.password), ("customer", stub.customer_pw)):
+                    if (log, pwd) in (("admin", stub.password), (stub.cuser, stub.customer_pw)):
                         return self.send(302, "", [("Set-Cookie", "wordpress_logged_in_x=%s; Path=/" % log), ("Location", "/wp-admin/")])
                     return self.send(200, "<form>ERROR</form>", ctype="text/html")
                 if not self.rest_ok():
@@ -254,10 +265,17 @@ def main():
         case("no customer user", r"no user 'customer'", setup=lambda s: setattr(s, "customer_role", None))
         case("customer without the customer role", r"no user 'customer' with the role", setup=lambda s: setattr(s, "customer_role", "subscriber"))
         case("no CUSTOMER_PASSWORD", r"CUSTOMER_PASSWORD is not set", env_extra={"CUSTOMER_PASSWORD": ""})
-        case("a wrong CUSTOMER_PASSWORD", r"customer cannot log in", env_extra={"CUSTOMER_PASSWORD": "nope"})
+        case("a wrong CUSTOMER_PASSWORD", r"the customer 'customer' cannot log in", env_extra={"CUSTOMER_PASSWORD": "nope"})
         case("the wrong blogname", r"blogname is 'My Site'", setup=lambda s: setattr(s, "blogname", "My Site"))
         case("plain permalinks (#760)", r"pretty permalinks are not active", setup=lambda s: setattr(s, "plain", True))
-        case("a missing test image", r"no media image-02.png", setup=lambda s: setattr(s, "images", ["image-01", "image-03"]))
+        case("a missing test image", r"no media image-02\.\* ", setup=lambda s: setattr(s, "images", ["image-01", "image-03"]))
+        case("tracking is no", r"woocommerce_allow_tracking is 'no'.*WOO_EXTRAS=off", setup=lambda s: setattr(s, "tracking", "no"))
+        case("no tracking route", r"woocommerce_allow_tracking is None \(HTTP 404\)", setup=lambda s: setattr(s, "tracking", None))
+        case("a malformed CUSTOMER_USERNAME", r"is not a plain user name", env_extra={"CUSTOMER_USERNAME": "x y;z"})
+        s2, rd2 = case("a seed customer named jane (CUSTOMER_USERNAME)", None, setup=lambda s: setattr(s, "cuser", "jane"),
+                       env_extra={"CUSTOMER_USERNAME": "jane"}, expect_rc=0)
+        ok("CUSTOMER_USER in env is the seed's name") if "export CUSTOMER_USER=jane\n" in open(os.path.join(rd2, "env")).read() else bad("CUSTOMER_USER is not jane")
+        case("the seed's customer is jane but CUSTOMER_USERNAME is unset", r"no user 'customer' with the role", setup=lambda s: setattr(s, "cuser", "jane"))
         # The happy paths.
         s, rd = case("wc happy path (a seeded site)", None, expect_rc=0)
         envf = os.path.join(rd, "env")
@@ -271,9 +289,6 @@ def main():
             has = ("export %s=%s\n" % (key, val)) in env_text
             ok("env has " + key) if has else bad("env lacks " + key)
         ok("no application password was created") if s.app is None else bad("the runner created an application password")
-        rc, o, e = run(["prepare", "--suite", "wc", "--base-url", Stub().url, "--cache", "on", "--run-dir", os.path.join(t, "x")],
-                       {"WP_PASSWORD": "SeedAppPass24CharsAbCdEf", "CUSTOMER_PASSWORD": "Cust-Pass-9"})
-        ok("tracking is reported NOT VERIFIED, never as checked") if "woocommerce_allow_tracking: NOT VERIFIED" in o else bad("tracking line missing")
         s, rd = case("wp happy path (cache off, plain permalinks, no WooCommerce checks)", None, suite_name="wp", cache="off",
                      setup=lambda s: (setattr(s, "cache", "DYNAMIC"), setattr(s, "plain", True), setattr(s, "customer_role", None)), expect_rc=0)
         env_text = open(os.path.join(rd, "env")).read()

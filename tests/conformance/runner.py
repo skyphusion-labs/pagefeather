@@ -22,7 +22,8 @@ site: Rollins' seed owns all setup (lead ruling on #759), and prepare verifies i
     ADMIN_PASSWORD for both, unmodified;
   - wc only: the seed's setup is missing: the customer (role, form login with CUSTOMER_PASSWORD),
     blogname, pretty permalinks (/wp-json/ must answer the REST index, #760) or the 3 test images.
-    woocommerce_allow_tracking has no read route at the pin and is reported NOT VERIFIED.
+    woocommerce_allow_tracking must be "yes" (the WooCommerce settings API; WOO_EXTRAS=off forces it off).
+    The customer is CUSTOMER_USERNAME (default "customer"); the images match by stem (image-01 is a JPEG).
 The passwords come from WP_PASSWORD and CUSTOMER_PASSWORD and are never printed.
 
 config writes pf-conformance.config.mjs beside the upstream config: one worker, no retries, no
@@ -171,14 +172,18 @@ def wc_verify(site, user, password):
     cust = os.environ.get("CUSTOMER_PASSWORD")
     if not cust:
         raise Stop("CUSTOMER_PASSWORD is not set (the seed's customer password)")
-    st, users = site.json("GET", "/wp-json/wp/v2/users?search=customer&context=edit")
-    u = next((x for x in users or [] if isinstance(x, dict) and x.get("username") == "customer"), None) if st == 200 else None
+    # The seed's creds.env names the customer (CUSTOMER_USERNAME); upstream's default is "customer".
+    cuser = os.environ.get("CUSTOMER_USERNAME") or "customer"
+    if not re.fullmatch(r"[A-Za-z0-9_.@-]{1,60}", cuser):
+        raise Stop("CUSTOMER_USERNAME %r is not a plain user name" % cuser)
+    st, users = site.json("GET", "/wp-json/wp/v2/users?search=%s&context=edit" % urllib.parse.quote(cuser))
+    u = next((x for x in users or [] if isinstance(x, dict) and x.get("username") == cuser), None) if st == 200 else None
     if not u or "customer" not in (u.get("roles") or []):
-        raise Stop("no user 'customer' with the role customer (HTTP %d): the seed did not run" % st)
+        raise Stop("no user %r with the role customer (HTTP %d): the seed did not run" % (cuser, st))
     try:
-        Site(site.base).login("customer", cust)
+        Site(site.base).login(cuser, cust)
     except Stop:
-        raise Stop("the customer cannot log in through the form with CUSTOMER_PASSWORD")
+        raise Stop("the customer %r cannot log in through the form with CUSTOMER_PASSWORD" % cuser)
     st, j = site.json("GET", "/wp-json/wp/v2/settings")
     if st != 200 or not isinstance(j, dict) or j.get("title") != WC_BLOGNAME:
         raise Stop("blogname is %r, not %r" % ((j or {}).get("title") if isinstance(j, dict) else None, WC_BLOGNAME))
@@ -190,14 +195,21 @@ def wc_verify(site, user, password):
         ns = None
     if st != 200 or not ns:
         raise Stop("/wp-json/ does not answer the REST index (HTTP %d): pretty permalinks are not active (#760)" % st)
+    # Matched by STEM: upstream image-01.png is a JPEG, and WordPress names a file by its content,
+    # so it is stored as image-01.jpg, on stock WordPress too (Rollins, measured on the seed).
     for i in (1, 2, 3):
         name = "image-0%d" % i
         st, items = site.json("GET", "/wp-json/wp/v2/media?search=%s&per_page=100" % name)
         if st != 200 or not any(name in (m.get("source_url") or "") for m in items or [] if isinstance(m, dict)):
-            raise Stop("no media %s.png (HTTP %d): the seed did not upload the test images" % (name, st))
-    say("woocommerce setup verified: customer (role and login), blogname, pretty permalinks, 3 images")
-    say("woocommerce_allow_tracking: NOT VERIFIED (no read route at the pin; the seed owns it)")
-    return cust
+            raise Stop("no media %s.* (HTTP %d): the seed did not upload the test images" % (name, st))
+    # Tracking: readable through the WooCommerce settings API at the pin (Rollins, measured).
+    # WOO_EXTRAS=off forces it off, so a throwaway deployed with that setting stops here.
+    st, j = site.json("GET", "/wp-json/wc/v3/settings/advanced/woocommerce_allow_tracking")
+    val = j.get("value") if isinstance(j, dict) else None
+    if st != 200 or val != "yes":
+        raise Stop("woocommerce_allow_tracking is %r (HTTP %d), not 'yes'. The seed sets it; WOO_EXTRAS=off forces it off" % (val, st))
+    say("woocommerce setup verified: customer (role and login), blogname, pretty permalinks, 3 images, tracking")
+    return cuser, cust
 
 
 def write_env(run_dir, pairs):
@@ -222,9 +234,9 @@ def cmd_prepare(a):
     cache = check_cache(site, a.cache)
     pairs = [("WP_BASE_URL", site.base), ("WP_USERNAME", user)]
     if a.suite == "wc":
-        cust = wc_verify(site, user, password)
+        cuser, cust = wc_verify(site, user, password)
         pairs += [("WP_PASSWORD", password), ("BASE_URL", site.base), ("ADMIN_USER", user), ("ADMIN_PASSWORD", password),
-                  ("CUSTOMER_USER", "customer"), ("CUSTOMER_PASSWORD", cust)]
+                  ("CUSTOMER_USER", cuser), ("CUSTOMER_PASSWORD", cust)]
     else:
         pairs += [("WP_PASSWORD", password)]
     pairs += [("PF_CONFORMANCE_SUITE", a.suite), ("PF_CONFORMANCE_CACHE", a.cache),

@@ -35,16 +35,16 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
    - For the cache-off run, deploy with `PAGE_CACHE_TTL=0`.
 3. **Install the suite on the VPS:** `vps-run.sh install <suite> <work-dir>`.
 4. **The baseline:** `vps-run.sh baseline <suite> <work-dir> <base-run>`. It runs the suite on stock upstream in Docker (wp-env), at the same pins.
-5. **Check our site:** first, Rollins' seed sets the site up. It owns ALL setup, and it reruns for the reseed between the API half and this one. Then run `WP_PASSWORD=<admin password> CUSTOMER_PASSWORD=<customer password> runner.py prepare --suite <suite> --base-url https://<site> --cache on|off --run-dir <our-run>`.
+5. **Check our site:** first, Rollins' seed sets the site up. It owns ALL setup, and it reruns for the reseed between the API half and this one. Then run `. <seed out>/creds.env` (the seed writes `WP_USERNAME`, `WP_PASSWORD`, `CUSTOMER_USERNAME` and `CUSTOMER_PASSWORD` there, mode 600), then `runner.py prepare --suite <suite> --base-url https://<site> --cache on|off --run-dir <our-run>`.
    - It never writes to the site: one owner (the seed), one checker (the runner).
    - It STOPS if a check fails. The checks: https; the marker for this host; the deny list; the admin form login; the cache matches `--cache`.
    - For `wc`, more checks:
      - Basic is 200 with `WP_PASSWORD` and 401 with a wrong one;
-     - the user `customer` exists, with the role customer and a working form login;
+     - the customer (`CUSTOMER_USERNAME`, default `customer`) exists, with the role customer and a working form login;
      - blogname;
      - pretty permalinks: `/wp-json/` must answer the REST index (#760);
-     - the 3 test images.
-   - `woocommerce_allow_tracking` has no read route at the pin, so it is reported NOT VERIFIED.
+     - the 3 test images, matched by stem: upstream `image-01.png` is a JPEG, so WordPress stores it as `image-01.jpg`, on stock WordPress too.
+     - `woocommerce_allow_tracking` is `yes` (the WooCommerce settings API). Do not deploy the throwaway with `WOO_EXTRAS=off`, which forces it off.
 6. **Our run:** `vps-run.sh run <suite> <work-dir> <our-run>`. The login is ASSERTED before any test (lead ruling), because upstream auth setup never checks its response. An empty login would otherwise read as hundreds of test failures.
    - WordPress and Gutenberg: `assert-login.mjs` runs after the upstream `globalSetup`.
    - WooCommerce: the setup projects run first. Then `runner.py check-state` checks `.state/admin.json` and `.state/customer.json`. Then the tests run with `--no-deps`.
