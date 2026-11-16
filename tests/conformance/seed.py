@@ -32,7 +32,8 @@ marker; it is accepted only with SEED_ALLOW_LOCAL=1, so the gate fails closed.
   WC_SHA: the WooCommerce pin (default: tests/conformance/pins.env, else 11.2.1's commit).
   TURNSTILE_TEST_TOKEN: sent as cf-turnstile-response on a login, if set (the throwaway runs TURNSTILE_LOGIN=off).
 
-Writes <out-dir>/creds.env (mode 600: WP_USERNAME, WP_PASSWORD, CUSTOMER_USERNAME, CUSTOMER_PASSWORD) and
+Writes <out-dir>/creds.env (mode 600; `export` lines, so `. creds.env` hands them to runner.py: WP_USERNAME,
+WP_PASSWORD, CUSTOMER_USERNAME, CUSTOMER_PASSWORD) and
 <out-dir>/seed.json (every check, no secret). Prints one @event JSON line per step and never a secret.
 Exit 0: every item is set and checked. 1: an item failed. 2: refused.
 """
@@ -157,8 +158,11 @@ def main():
     old = {}
     if os.path.exists(credsf):
         for line in open(credsf):
+            line = line.rstrip("\n")
+            if line.startswith("export "):
+                line = line[len("export "):]
             if "=" in line:
-                k, v = line.rstrip("\n").split("=", 1)
+                k, v = line.split("=", 1)
                 old[k] = v
     host = urllib.parse.urlparse(B).hostname or ""
     c, b, _ = req(jar(), "/?rest_route=/pf-conformance/v1/throwaway")
@@ -268,10 +272,14 @@ def main():
         check("admin: Basic with it on /wp/v2/users/me answers 200 (#761)", st == 200, status=st)
         wrong = basic(ADMIN_USER, newpw[:-1] + ("x" if newpw[-1] != "x" else "y"))
         check("admin: a wrong password over Basic gets 401", wrong == 401, status=wrong)
-        if a2 is not None:
+        if a2 is not None and not all(re.fullmatch(r"[A-Za-z0-9_-]+", v) for v in (ADMIN_USER, newpw, CUSTOMER["username"], cpw)):
+            check("creds.env values are shell-safe ([A-Za-z0-9_-])", False)
+        elif a2 is not None:
             fd = os.open(credsf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w") as f:
-                f.write("WP_USERNAME=%s\nWP_PASSWORD=%s\nCUSTOMER_USERNAME=%s\nCUSTOMER_PASSWORD=%s\n" % (ADMIN_USER, newpw, CUSTOMER["username"], cpw))
+                # export lines: after `. creds.env` the values reach a child process (runner.py prepare reads os.environ).
+                # Every value is [A-Za-z0-9_-] (an application password, a token_urlsafe, a user name): no quoting needed.
+                f.write("export WP_USERNAME=%s\nexport WP_PASSWORD=%s\nexport CUSTOMER_USERNAME=%s\nexport CUSTOMER_PASSWORD=%s\n" % (ADMIN_USER, newpw, CUSTOMER["username"], cpw))
             report["creds"] = credsf
     report["failed"] = failed
     with open(os.path.join(OUT, "seed.json"), "w") as f:
