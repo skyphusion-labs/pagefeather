@@ -289,3 +289,22 @@ test('#795 index.js: a PLATFORM failure is answered as a failure (after the rese
 	assert.match(blk, /class: 'deterministic'/, 'a deterministic failure is logged and falls through to PHP own answer');
 	assert.match(src, /pageCacheHeaders\(req, url, r, out, env, d\.failures\.length\);/, 'and is still never edge-cached (#766)');
 });
+
+test('#809 index.js: a stranded frame answers the retryable 503 before PHP runs, and the cron leg is deferred', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const rec = src.indexOf("if (realTxn) txnRecover(sql, this.ctx.storage);\n\t\t\t// #352: arm the request frame");
+	const gate = src.indexOf('if (realTxn && undo(env).stranded()) {');
+	const php = src.indexOf('const res = await handle(req, env, url, spikeOk, maxBody, ctx);');
+	assert.ok(rec > 0 && gate > rec && php > gate, 'the fetch path: recover, then the gate, then PHP');
+	assert.match(src.slice(gate, php), /statementFailureResponse\(1, wantsJson\(url\.pathname, url\.search, req\.headers\.get\('accept'\)\), false\)/, 'nothing saved: the 503 with Retry-After');
+	const cgate = src.indexOf('if (realTxn && undo().stranded()) {');
+	const cron = src.indexOf('cr = await runCron(', cgate);
+	assert.ok(cgate > 0 && cron > cgate && src.slice(cgate, cron).includes("cr = { deferred: 'frame-stranded' };"), 'the alarm: the cron leg deferred, not run');
+	assert.ok(src.lastIndexOf('txnRecover(sql, this.ctx.storage);', cgate) > src.lastIndexOf('async alarmRun', cgate), 'the alarm recovers first');
+});
+
+test('#809 the stranded refusal is a PLATFORM failure, not the reset: #795 answers it retryable, never write-loss', async () => {
+	const { STRANDED_ERROR } = await import('../undo-log.mjs');
+	assert.equal(platformFailures([{ error: STRANDED_ERROR }]), 1);
+	assert.equal(resetFailures([{ error: STRANDED_ERROR }]), 0);
+});

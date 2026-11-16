@@ -105,6 +105,9 @@ const RECOVER_ROWS_MAX = 64;
 
 // frames: a boolean, or a function asked each time it matters (index.js: the undo log may be made by the
 // PhpRuntime constructor's recovery before any fetch has set ENV, so a value fixed at creation was wrong).
+// #809: the refusal's message. It names a storage failure, so #795 classes it a PLATFORM failure (a retryable answer).
+export const STRANDED_ERROR = 'storage reset pending: a request frame is stranded until its recovery succeeds (#809)';
+
 export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {}, frames = false } = {}) {
 	const framesOn = () => !!(typeof frames === 'function' ? frames() : frames);
 	let undoSchemaSig = null;
@@ -112,6 +115,11 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 	let txnFrames = null; // PHP's transaction and its savepoints: [{ name, seq }]
 	const txnTouched = new Set();
 	let armedReq = null; // the request id a frame may open for
+	// #809: a frame is STRANDED when its rollback failed and no recovery has succeeded since. It is still stored open
+	// (active 1, its undo rows), and no write may land under it: an unarmed write would be logged into it and erased at
+	// the recovery, and a later frame kept, a commit point or a PHP transaction would wipe its undo and keep the
+	// write it exists to undo. Writes are refused until recover() succeeds; index.js answers a retryable 503 first.
+	let stranded = false;
 	let frameOpen = false;
 	let points = 0;
 	let kinds = [];
@@ -289,13 +297,15 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 	return {
 		/** Arm a frame for this request (frames on). It opens at the first write. */
 		arm(db, req) {
-			if (!framesOn()) return;
+			if (!framesOn() || stranded) return; // #809: no frame opens over a stranded one
 			armedReq = String(req || 'req-' + Date.now());
 			points = 0;
 			kinds = [];
 			deferred = [];
 		},
 		frameOpen: () => frameOpen,
+		/** #809: true while a stranded frame waits for a recovery that succeeds; writes are refused meanwhile. */
+		stranded: () => stranded,
 		phpTxnOpen: () => !!txnFrames,
 		counts: () => ({ ...counts }),
 		openedBy: () => openedBy,
@@ -316,6 +326,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 		 * is (changes 0). An undo row decides, not the reported count alone (a counter may under-report).
 		 */
 		statement(db, storage, sql, fn) {
+			if (stranded && mayWrite(sql)) throw new Error(STRANDED_ERROR);
 			const opens = armedReq && !frameOpen && mayWrite(sql) && !isDdl(sql) && storage && typeof storage.transactionSync === 'function';
 			if (!opens) {
 				const was = frameOpen;
@@ -399,6 +410,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 				armedReq = null;
 				stateReq = null;
 				recovered = false;
+				stranded = true;
 				counts.stranded = (counts.stranded || 0) + 1;
 				log({ m: 'frame-stranded', error: String((e && e.message) || e).slice(0, 160) });
 				throw e;
@@ -437,6 +449,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			try {
 				const kind = op.op;
 				if (kind === 'begin') {
+					if (stranded) return { ok: false, error: STRANDED_ERROR }; // #809: its close would wipe the stranded undo
 					if (txnFrames && !frameOpen) phpClose(db); // MySQL commits an open transaction first
 					if (armedReq && !frameOpen) {
 						frameOpenNow(db, undefined, storage);
@@ -493,12 +506,14 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 				active = db.exec('SELECT active FROM _wp_undo_state WHERE id = 1').one().active;
 			} catch {
 				log({ m: 'frame-recover', active: 0, tables: false, frames: framesOn() });
+				stranded = false;
 				return null; // no undo tables yet: no transaction or frame was ever opened
 			}
 			if (!active) {
 				const relabeled = relabelEnded(db);
 				const rebuilt = migrateUndo(db, storage);
 				log({ m: 'frame-recover', active: 0, tables: true, frames: framesOn(), relabeled, rebuilt });
+				stranded = false;
 				return null;
 			}
 			ensureReqCols(db);
@@ -507,6 +522,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 				n = undoTo(db, storage, 0, true);
 			} catch (e) {
 				recovered = false; // #794 review: not done; the next request tries again (the frame is still stored open)
+				stranded = true; // #809: and nothing writes under it meanwhile
 				throw e;
 			}
 			own(db.exec('DELETE FROM _wp_undo'));
@@ -531,6 +547,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			for (const r of shapes) byReq[r.req ?? 'null'] = (byReq[r.req ?? 'null'] || 0) + 1;
 			log({ m: 'frame-recover-rows', frameReq: req, undone: n, rows: shapes.slice(0, RECOVER_ROWS_MAX), truncated: shapes.length > RECOVER_ROWS_MAX, byReq, cross: shapes.filter((r) => r.req !== req).length });
 			log({ m: 'frame-recover', active: 1, tables: true, frames: framesOn(), undone: n, req, relabeled, rebuilt });
+			stranded = false;
 			return { undone: n, req };
 		},
 		/** The outcome of a request, for the Worker's /_frame probe: null when unknown. */

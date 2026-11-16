@@ -2906,7 +2906,12 @@ export class PhpRuntime extends DurableObject {
 					const cleanDue = cronCleanDue(await this.ctx.storage.get(CRON_CLEAN_KEY), Date.now());
 					mail = tickMailFor(this.env, this.ctx.storage);
 					try {
-						cr = await runCron(() => (bootPromise ??= boot(cronOrigin)), cleanDue, mail);
+						// #809: no cron write under a stranded frame (it would be erased at the recovery). The leg is
+						// deferred, as a refused boot is; the next tick is already armed (armBeforeRun) and recovers first.
+						if (realTxn && undo().stranded()) {
+							console.log(JSON.stringify({ m: 'cron', deferred: 'frame-stranded' }));
+							cr = { deferred: 'frame-stranded' };
+						} else cr = await runCron(() => (bootPromise ??= boot(cronOrigin)), cleanDue, mail);
 					} catch (e) {
 						if (!(e && e.bootRefused)) throw e;
 						// #598 part 2: the leg is deferred, not a death: it ran nothing, the run record closes as done
@@ -3226,6 +3231,14 @@ export class PhpRuntime extends DurableObject {
 			// One PHP run at a time (withPhp), so one slot holds this run's answer.
 			turnstileSlot.set(turnstileHeader);
 			try {
+				// #809: a stranded frame (its rollback and the recovery above both failed) is still stored open. Nothing
+				// may write under it, so no PHP runs: the answer is the retryable platform failure, until a recovery
+				// succeeds (txnRecover above, on the next request). undo-log.mjs refuses its writes as well.
+				if (realTxn && undo(env).stranded()) {
+					const sf = statementFailureResponse(1, wantsJson(url.pathname, url.search, req.headers.get('accept')), false);
+					console.log(JSON.stringify({ '@event': 'frame-stranded-refused', m: 'frame-stranded-refused', method: req.method, path: url.pathname, answered: sf.status }));
+					return new Response(sf.body, { status: sf.status, headers: sf.headers });
+				}
 				const res = await handle(req, env, url, spikeOk, maxBody, ctx);
 				if (realTxn) txnEnd(sql, this.ctx.storage);
 				try {
