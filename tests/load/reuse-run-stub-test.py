@@ -208,6 +208,10 @@ wexport(os.path.join(tmp, "L-bad"),
 wexport(os.path.join(tmp, "D-bad"), [], [{"t": ms + 300, "type": "fetch", "outcome": "ok", "status": 503, "path": "/wp-admin/post-new.php", "wallMs": 90100, "rid": "z1"}])
 g2 = subprocess.run([sys.executable, "-I", SCORE, files["off"], files["on"], "--logs-off", os.path.join(tmp, "L-off"), "--logs-on", os.path.join(tmp, "L-on")], env=senv, capture_output=True, text=True)
 ok("with logs, off vs on: bar 2 is measured and passes (exceededMemory 0 and 0)", "| 2 | deaths and lost writes at or below off | pass |" in g2.stdout and "exceededMemory on 0, off 0" in g2.stdout, g2.stdout[-400:])
+wexport(os.path.join(tmp, "L-on-wl"), [{"t": ms, "rid": "w1", "m": "write-loss", "method": "POST", "path": "/", "failed": 1, "answered": 500}], ok_inv)
+g3 = subprocess.run([sys.executable, "-I", SCORE, files["off"], files["on"], "--logs-off", os.path.join(tmp, "L-off"), "--logs-on", os.path.join(tmp, "L-on-wl")], env=senv, capture_output=True, text=True)
+ok("with logs, a write-loss line on the on arm where off has none FAILS bar 2 (the spec counts the write-loss logs)",
+   "| 2 | deaths and lost writes at or below off | FAIL |" in g3.stdout and "write-loss logs + silent) on 1, off 0" in g3.stdout, next((l for l in g3.stdout.splitlines() if l.startswith("| 2 |")), ""))
 b2 = subprocess.run([sys.executable, "-I", SCORE, files["off"], files["bad"], "--logs-off", os.path.join(tmp, "L-off"), "--logs-on", os.path.join(tmp, "L-bad"),
                      "--disp-on", os.path.join(tmp, "D-bad")], env=senv, capture_output=True, text=True)
 print(b2.stdout)
