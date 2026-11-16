@@ -61,15 +61,22 @@ The PHP object adds these to each response. The Worker adds `Server-Timing` and 
 
 | Header | What it holds |
 | --- | --- |
-| `x-perf` | `boot`, `bootWaitMs`, `phpMs`, statements (`dbN`, `dbMs`), lazy file inflations (`inflates`, `inflateKiB`), WebAssembly memory before and after (`wasm0MiB`, `wasm1MiB`), response `bytes`, the isolate (`iso`, `isoAgeS`), the runtime (`rt`, `rtAgeS`, `rtServed`: requests since its boot). With `x-perf-opcache: 1` and the spike token: OPcache `opHits`, `opMisses`, `opCached`, `opFull` (two extra `php.run` calls). |
+| `x-perf` | `boot`, `bootWaitMs`, `phpMs` (wall time at I/O points, **not CPU**: see the clock below and #716), statements (`dbN`, `dbMs`), lazy file inflations (`inflates`, `inflateKiB`), WebAssembly memory before and after (`wasm0MiB`, `wasm1MiB`), response `bytes`, the isolate (`iso`, `isoAgeS`), the runtime (`rt`, `rtAgeS`, `rtServed`: requests since its boot). With `x-perf-opcache: 1` and the spike token: OPcache `opHits`, `opMisses`, `opCached`, `opFull` (two extra `php.run` calls). |
 | `x-perf-queue` | `inboxMs` (the object's clock at the start of `fetch` minus `x-perf-sent`, the Worker's clock when it sent), `ahead` and `waitMs` (the PHP lock), `inMs` (start of `fetch` to the response). |
 | `x-object-ms` | The Worker's wall time for the call to the object. |
-| `Server-Timing` | `object`, `inbox`, `queue`, `in`, `outbox` (= object minus inbox minus in), `boot`, `php`, `db`. |
+| `Server-Timing` | `object`, `inbox`, `queue`, `in`, `outbox` (= object minus inbox minus in), `boot`, `php` (its `desc` says "wall at I/O points, not CPU"), `db`. |
 | `x-perf-worker` | The Worker's colo and isolate. |
 
 The object also logs `{"m":"perf","id":...}` with the request's `x-perf-id`. `tests/load/perf_tail.py` joins those log lines from `wrangler tail --format json` with the samples of `tests/load/perf.py`. Tail gives Cloudflare's own `cpuTime` and `wallTime` for each object invocation.
 
 **The clock.** In a Worker and in a Durable Object, `Date.now()` moves only at I/O. PHP with its database in the object does no I/O while it runs, so on Cloudflare every millisecond figure measured inside the object reads near 0 (`phpMs`, `dbMs`, `bootWaitMs`, `inMs`). `inboxMs` read about -600 ms, because the two clocks stop at different points, so `inbox` and `outbox` are valid locally only. On Cloudflare, use `x-object-ms` (the Worker's clock moves at the call to the object) and tail CPU. The counts do not depend on the clock.
+
+**Citing CPU (#716).** `phpMs`, `php;dur` and `x-php-ms` are `Date.now()` around PHP, so on Cloudflare they hold PHP's wall time at I/O points (R2, subrequests, storage at commit, the KV object cache), never its CPU. Measured on #716: REST creates with 0 to 512 KiB of content read `phpMs` 79 to 127, while the client's wall time went from 1.21 s to 3.29 s. A measurement or a run spec that needs CPU cites the platform's figure instead:
+
+- **Per invocation:** the invocation record's `$workers.cpuTimeMs` (and `$workers.wallTimeMs`) in Workers Logs, or tail's `cpuTime`. Join it to a request through the object's `{"m":"perf","id":...}` line: that line's `id` is the request's `x-perf-id`, and the line and its invocation record share `$metadata.requestId` (the field `deploy/doctor` reads). `tests/load/perf_tail.py` does the same join for tail.
+- **Per request, at the client:** wall time against a control request that skips the work, for example a REST create's full answer against `?_fields=id`.
+
+Locally (`wrangler dev`) the clock moves during CPU work, so a local `phpMs` does include CPU. A figure is only comparable to one measured the same way.
 
 **Tail drops events.** Of 180 samples at one client, 121 joined with a tail event. Each figure below that comes from tail gives its number of joined samples.
 
@@ -297,7 +304,7 @@ The test filter and the mutations went into the built tree only, never into a so
 
 The values are tail CPU in ms, p50 / p95, with the joined n. post-new p95: -6 to -14%. The routes-only ceiling was 440 ms.
 
-Locally, inside post-new, all three routes hit, and post-new `phpMs` went from 208 to 160 (n=20, off to on).
+Locally, inside post-new, all three routes hit, and post-new `phpMs` went from 208 to 160 (n=20, off to on). That is a LOCAL figure: there the clock moves during CPU work. On Cloudflare `phpMs` is not CPU (#716).
 
 **Not measured:** the editor settings half (#53, the next decision); a site with two administrators (the key holds the user, so each one fills their own cache); the cache after an isolate restart.
 

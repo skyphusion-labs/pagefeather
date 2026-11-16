@@ -67,3 +67,13 @@ export function operatorNoStore(res, req) {
 	noStoreAnywhere(out.headers);
 	return out;
 }
+
+// #716: the php and db entries of Server-Timing. phpMs is Date.now() around handler.request, and in a Worker or a
+// Durable Object that clock moves only at I/O (developers.cloudflare.com/workers/reference/security-model). So it is
+// PHP's WALL time at I/O points (R2, subrequests, storage at commit, the KV object cache), never its CPU: a CPU-bound
+// render of seconds reads near 0 (measured on #716). The CPU figure is the invocation's $workers.cpuTimeMs in Workers
+// Logs (docs/perf-dosql.md, "Citing CPU").
+export function serverTimingPhp(p) {
+	if (!p || p.phpMs === undefined) return [];
+	return [`php;dur=${p.phpMs};desc="wall at I/O points, not CPU"`, `db;dur=${p.dbMs};desc="${p.dbN} statements"`];
+}
