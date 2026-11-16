@@ -22,7 +22,7 @@ need_account
 cmd=${1:-}; s=${2:-}
 valid_site "$s" || { echo "usage: site.sh up|down <name> (lower case, digits, hyphens; 1 to 30; not probe, not auto)" >&2; exit 2; }
 # #639, #693: full on a live site is refused before Terraform, the API, or the user Worker upload.
-if [ "$cmd" = up ]; then obs_refuse_full "$s" || exit 2; fi
+if [ "$cmd" = up ]; then obs_refuse_full "$s" || exit 2; dispatch_perf_log_var "$s" > /dev/null || exit 2; fi
 # #736: FAULT_INJECT is refused before any step too (deploy/fault-inject.sh).
 if [ "$cmd" = up ]; then fault_inject_var "$s" >/dev/null || exit 2; fi
 # #764: conformance content is refused before any step too (deploy/conformance.sh).
@@ -93,7 +93,7 @@ if [ "$cmd" = up ]; then
   if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ]; then
     log "site $s: phase B, routed by the shared $SHARED_DISPATCHER and this site's Custom Domain $HOST (attached by the workspace apply above)"
     log "site $s: its cron-only copy $D (no route, no workers.dev), for the scheduled snapshot (#533)"
-    render_site_dispatcher "$s" "$KV_ID" cron-only > "$GEN/$D.toml"
+    render_site_dispatcher "$s" "$KV_ID" cron-only > "$GEN/$D.toml" || exit 1
     tfr site output -json | dispatcher_secrets_json "$W/disp-secrets.json"
     wrangler_deploy "$GEN" "$W/disp.log" --config "$D.toml" --secrets-file "$W/disp-secrets.json" || { rm -f "$W/disp-secrets.json"; tail -20 "$W/disp.log"; exit 1; }
     rm -f "$W/disp-secrets.json"
@@ -104,7 +104,7 @@ if [ "$cmd" = up ]; then
     echo "  $D: workers.dev and previews off, no Custom Domain (read back)"
   else
     log "site $s: dispatcher $D, with the scheduled snapshot of this site (#533)"
-    render_site_dispatcher "$s" "$KV_ID" > "$GEN/$D.toml"
+    render_site_dispatcher "$s" "$KV_ID" > "$GEN/$D.toml" || exit 1
     tfr site output -json | dispatcher_secrets_json "$W/disp-secrets.json"
     wrangler_deploy "$GEN" "$W/disp.log" --config "$D.toml" --secrets-file "$W/disp-secrets.json" || { rm -f "$W/disp-secrets.json"; tail -20 "$W/disp.log"; exit 1; }
     rm -f "$W/disp-secrets.json"

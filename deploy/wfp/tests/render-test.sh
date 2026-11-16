@@ -125,6 +125,15 @@ ok "OBSERVABILITY=1 is events only: enabled, invocation_logs false" "$(OBSERVABI
 # is refused even with THROWAWAY=1 (obs_refuse_full).
 ok "OBSERVABILITY=full WITHOUT THROWAWAY fails the render" "$(env -u THROWAWAY OBSERVABILITY=full bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" >/dev/null 2>"$T/full.err" && echo 0 || { grep -q 'needs THROWAWAY=1' "$T/full.err" && echo 1 || echo 0; })"
 for bad in 0 yes 2 wp-one.sub.workers.dev; do ok "OBSERVABILITY=full with THROWAWAY=$bad fails the render" "$(THROWAWAY=$bad OBSERVABILITY=full render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
+# #605: DISPATCH_PERF_LOG=on renders one [vars] line into the site's dispatcher, for a THROWAWAY that is not live only.
+env -u DISPATCH_PERF_LOG bash -c ". '$LIB'; render_site_dispatcher one kv123" > "$T/dp0.toml" 2>/dev/null
+ok "DISPATCH_PERF_LOG unset: the dispatcher render has no such line" "$(grep -c DISPATCH_PERF_LOG "$T/dp0.toml" | grep -qx 0 && echo 1 || echo 0)"
+THROWAWAY=1 DISPATCH_PERF_LOG=on bash -c ". '$LIB'; render_site_dispatcher one kv123" > "$T/dp1.toml" 2>/dev/null
+ok "DISPATCH_PERF_LOG=on with THROWAWAY=1: the line, in [vars], before [triggers]" "$(awk '/^\[vars\]/{v=1} /^\[triggers\]/{v=0} v && /^DISPATCH_PERF_LOG = "on"$/{f=1} END{print f?1:0}' "$T/dp1.toml")"
+ok "DISPATCH_PERF_LOG=on adds that one line and nothing else" "$(diff "$T/dp0.toml" "$T/dp1.toml" | grep -c '^[<>]' | grep -qx 1 && echo 1 || echo 0)"
+ok "DISPATCH_PERF_LOG=on WITHOUT THROWAWAY is refused" "$(env -u THROWAWAY DISPATCH_PERF_LOG=on bash -c ". '$LIB'; render_site_dispatcher one kv123" >/dev/null 2>&1; [ $? = 2 ] && echo 1 || echo 0)"
+ok "DISPATCH_PERF_LOG=on for a live site (woocap) is refused, even with THROWAWAY=1" "$(THROWAWAY=1 DISPATCH_PERF_LOG=on bash -c ". '$LIB'; render_site_dispatcher woocap kv123" >/dev/null 2>&1; [ $? = 2 ] && echo 1 || echo 0)"
+for bad in 1 yes off ON; do ok "DISPATCH_PERF_LOG=$bad is refused" "$(THROWAWAY=1 DISPATCH_PERF_LOG=$bad bash -c ". '$LIB'; render_site_dispatcher one kv123" >/dev/null 2>&1; [ $? = 2 ] && echo 1 || echo 0)"; done
 ok "OBSERVABILITY=1 needs no THROWAWAY" "$(env -u THROWAWAY OBSERVABILITY=1 bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" >/dev/null 2>&1 && echo 1 || echo 0)"
 ok "OBSERVABILITY=full with THROWAWAY=1 keeps the invocation logs" "$(THROWAWAY=1 OBSERVABILITY=full render_user one https://wp-one.sub.workers.dev | obs | grep -qx '{"enabled": true, "head_sampling_rate": 1, "logs": {"enabled": true, "invocation_logs": true}}' && echo 1 || echo 0)"
 ok "OBSERVABILITY=full with THROWAWAY=1 on a live site (woocap) is refused" "$(THROWAWAY=1 OBSERVABILITY=full bash -c ". '$LIB'; render_user woocap https://woocap.skyphusion.workers.dev" >/dev/null 2>"$T/livefull.err" && echo 0 || { grep -q 'is a live site' "$T/livefull.err" && echo 1 || echo 0; })"
