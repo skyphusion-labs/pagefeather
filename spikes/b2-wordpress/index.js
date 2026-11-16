@@ -3023,7 +3023,7 @@ export class PhpRuntime extends DurableObject {
 		// there). Answered first: before the origin guard and the PHP lock. Keys pf755:<who>:<id>.
 		if (objectUrl.pathname === '/_pf755-mark') {
 			const q = objectUrl.searchParams;
-			await this.ctx.storage.put('pf755:' + (q.get('who') || '?') + ':' + (q.get('id') || '?'), { at: Number(q.get('at')), aborted: q.get('aborted'), t: Date.now() });
+			await this.ctx.storage.put('pf755:' + (q.get('who') || '?') + ':' + (q.get('id') || '?'), { at: Number(q.get('at')), aborted: q.get('aborted'), t: Date.now(), iso: ISOLATE_ID });
 			return new Response('ok');
 		}
 		if (objectUrl.pathname === '/_pf755-read') {
@@ -3201,8 +3201,8 @@ export class PhpRuntime extends DurableObject {
 		// #755 PROBE (MEASUREMENT BRANCH ONLY, NEVER MERGED; always on here, so no deploy plumbing): when does the caller's abort reach this object? It logs the
 		// abort event's own arrival, and signal.aborted at arrival, after the recheck, at the grant and at the end of the run.
 		const discProbe = raw.signal ? { at0: tArrive, abortAt: null, call: callId || null, pid: new URL(raw.url).searchParams.get('pf_probe') } : null;
-		const probeStore = (who, extra) => discProbe && discProbe.pid && this.ctx.storage.put('pf755:' + who + ':' + discProbe.pid, { sinceArriveMs: Date.now() - discProbe.at0, t: Date.now(), aborted: !!raw.signal.aborted, ...extra }).catch(() => {});
-		const probeLog = (at, extra) => discProbe && console.log(JSON.stringify({ m: 'disc-probe', at, call: discProbe.call, aborted: !!raw.signal.aborted, abortAt: discProbe.abortAt, sinceArriveMs: Date.now() - discProbe.at0, phpPending, ...extra }));
+		const probeStore = (who, extra) => discProbe && discProbe.pid && this.ctx.storage.put('pf755:' + who + ':' + discProbe.pid, { sinceArriveMs: Date.now() - discProbe.at0, t: Date.now(), iso: ISOLATE_ID, aborted: !!raw.signal.aborted, ...extra }).catch(() => {});
+		const probeLog = (at, extra) => discProbe && console.log(JSON.stringify({ m: 'disc-probe', at, iso: ISOLATE_ID, call: discProbe.call, aborted: !!raw.signal.aborted, abortAt: discProbe.abortAt, sinceArriveMs: Date.now() - discProbe.at0, phpPending, ...extra }));
 		if (discProbe) {
 			if (raw.signal.aborted) discProbe.abortAt = 'before-arrive';
 			else raw.signal.addEventListener('abort', () => { discProbe.abortAt = Date.now() - discProbe.at0; probeLog('abort-event', { runningNow: discProbe.granted ? 'own-run' : 'queued' }); probeStore('obj-abort', { runningNow: discProbe.granted ? 'own-run' : 'queued' }); }, { once: true });
@@ -3892,7 +3892,7 @@ export default {
 		// answer. 'cached' says whether this request takes the cached Pages hop (pageCacheRoute) or site.fetch directly.
 		if (req.signal && !url.pathname.startsWith('/_')) {
 			const gp0 = Date.now(), gpPath = url.pathname, gpCached = pageCacheRoute(req, url, env);
-			const gpLog = (at, extra) => console.log(JSON.stringify({ m: 'gw-probe', at, path: gpPath, cached: gpCached, aborted: !!req.signal.aborted, sinceStartMs: Date.now() - gp0, ...extra }));
+			const gpLog = (at, extra) => console.log(JSON.stringify({ m: 'gw-probe', at, iso: ISOLATE_ID, pid: url.searchParams.get('pf_probe'), path: gpPath, cached: gpCached, aborted: !!req.signal.aborted, sinceStartMs: Date.now() - gp0, ...extra }));
 			gpLog('armed', {});
 			const gpPid = url.searchParams.get('pf_probe');
 			const gpMark = (who) => { if (!gpPid || !env.PHP_RUNTIME) return; const st = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName('php-0'), env.PHP_LOCATION ? { locationHint: env.PHP_LOCATION } : undefined); ctx.waitUntil(st.fetch('https://do/_pf755-mark?who=' + who + '&id=' + encodeURIComponent(gpPid) + '&at=' + (Date.now() - gp0) + '&aborted=' + !!req.signal.aborted).catch(() => {})); };

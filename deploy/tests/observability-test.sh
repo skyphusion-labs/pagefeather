@@ -38,6 +38,20 @@ out=$(chk NAME=throwaway OBSERVABILITY=full); rc=$?
 ok "full WITHOUT THROWAWAY=1 is refused, also off the list (rc $rc)" "$([ $rc = 2 ] && grep -qF 'needs THROWAWAY=1' <<<"$out" && echo 1 || echo 0)"
 out=$(chk NAME=throwaway OBSERVABILITY=1); rc=$?
 ok "1 (events only) needs no THROWAWAY (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
+
+echo "1c. OBS_NO_REDACT=1 (#755): unredacted logs on a THROWAWAY only, refused otherwise, before any step"
+out=$(chk NAME=throwaway OBSERVABILITY=full THROWAWAY=1 OBS_NO_REDACT=1); rc=$?
+ok "OBS_NO_REDACT=1 with THROWAWAY=1 is allowed (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
+out=$(chk NAME=throwaway OBSERVABILITY=full OBS_NO_REDACT=1); rc=$?
+ok "OBS_NO_REDACT=1 WITHOUT THROWAWAY=1 is refused (rc $rc)" "$([ $rc = 2 ] && grep -qF 'OBS_NO_REDACT=1 needs THROWAWAY=1' <<<"$out" && echo 1 || echo 0)"
+out=$(chk NAME=throwaway OBSERVABILITY=1 OBS_NO_REDACT=1); rc=$?
+ok "OBS_NO_REDACT=1 with logs 1 and no THROWAWAY is refused too (rc $rc)" "$([ $rc = 2 ] && echo 1 || echo 0)"
+out=$(chk NAME=livesite OBSERVABILITY=1 THROWAWAY=1 OBS_NO_REDACT=1); rc=$?
+ok "OBS_NO_REDACT=1 on a live site is refused even with THROWAWAY=1 (rc $rc)" "$([ $rc = 2 ] && grep -qF 'is a live site' <<<"$out" && echo 1 || echo 0)"
+for bad in 0 yes 2; do out=$(chk NAME=throwaway OBSERVABILITY=full THROWAWAY=1 "OBS_NO_REDACT=$bad"); rc=$?
+  ok "OBS_NO_REDACT=$bad is refused: 1 or unset only (rc $rc)" "$([ $rc = 2 ] && echo 1 || echo 0)"; done
+out=$(env -i PATH="$PATH" ROOT="$LR" OBSERVABILITY=full THROWAWAY=1 OBS_NO_REDACT=1 bash -c ". '$O' && obs_redact site-x" 2>&1); rc=$?
+ok "obs_redact with OBS_NO_REDACT=1 makes no settings call and says so (rc $rc)" "$([ $rc = 0 ] && grep -qF 'NOT redacted' <<<"$out" && echo 1 || echo 0)"
 ok "  (the real list is not empty, so the rule has something to guard)" "$(ls "$ROOT"/deploy/live-sites/*.env >/dev/null 2>&1 && echo 1 || echo 0)"
 
 echo "2. the rendered block (deploy/observability.sh)"

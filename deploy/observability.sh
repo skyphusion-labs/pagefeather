@@ -16,6 +16,17 @@
 
 # obs_check <variant>: exit status 2 and the reason on stderr when the setting is wrong.
 obs_check() {
+  # OBS_NO_REDACT=1 (#755): logs on WITHOUT the query-string redaction, on a THROWAWAY only. #755 found that
+  # script-level [cache] PLUS redact_query_string stops request.signal; a measurement that needs the logs must
+  # run without the redaction. Checked first, before any step, and never on a live site.
+  case "${OBS_NO_REDACT:-}" in
+    '') ;;
+    1) [ "${THROWAWAY:-}" = 1 ] || { echo "OBS_NO_REDACT=1 needs THROWAWAY=1 (its logs keep every query string; say the site is a throwaway)" >&2; return 2; }
+       if [ -n "${NAME:-}" ] && [ -e "${ROOT:-.}/deploy/live-sites/$NAME.env" ]; then
+         echo "OBS_NO_REDACT=1 would leave $NAME's query strings unredacted, and $NAME is a live site (deploy/live-sites/$NAME.env)" >&2; return 2
+       fi ;;
+    *) echo "OBS_NO_REDACT must be 1 or unset, not ${OBS_NO_REDACT}" >&2; return 2 ;;
+  esac
   [ -n "${OBSERVABILITY:-}" ] || return 0
   case "$1" in b-do|b-dosql|a) ;; *) echo "OBSERVABILITY is for variants b-do, b-dosql and a (c1 has its own steps), not $1" >&2; return 2 ;; esac
   case "$OBSERVABILITY" in 0|1|full) ;; *) echo "OBSERVABILITY must be 0, 1 (events only) or full (a throwaway only), not ${OBSERVABILITY}" >&2; return 2 ;; esac
@@ -49,6 +60,10 @@ obs_wants_redact() { [ "${OBSERVABILITY:-}" = 1 ] || [ "${OBSERVABILITY:-}" = fu
 # environment (obs_settings.py reads them; the token never goes in argv).
 obs_redact() {
   obs_wants_redact || return 0
+  if [ "${OBS_NO_REDACT:-}" = 1 ]; then # obs_check refused it unless THROWAWAY=1, on a site not in deploy/live-sites
+    echo "$1: logs on and query strings NOT redacted (OBS_NO_REDACT=1, a throwaway; #755)" >&2
+    return 0
+  fi
   python3 -I "$ROOT/deploy/wfp/obs_settings.py" redact-or-off - "$1" && return 0
   echo "$1 is DEPLOYED, but the query-string redaction did not read back, so its logs are OFF (obs_settings.py redact-or-off). Deploy again to retry." >&2
   return 1
