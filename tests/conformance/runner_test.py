@@ -44,6 +44,7 @@ class Stub:
         self.users = {}
         self.nonce = "0a1b2c3d4e"
         self.plain = False       # True: plain permalinks (#760), /wp-json/ answers the home page
+        self.admin_form = False  # True: /wp-admin/ answers 200 with the login form (no redirect)
         stub = self
 
         class H(http.server.BaseHTTPRequestHandler):
@@ -109,6 +110,15 @@ class Stub:
                             return self.send(200, {"id": 1})
                         return self.send(401, {"code": "incorrect_password"})
                     return self.send(401, {"code": "rest_not_logged_in"})
+                if self.path == "/wp-admin/":
+                    c = self.headers.get("Cookie") or ""
+                    if stub.admin_form:
+                        return self.send(200, '<form name="loginform" id="loginform">', ctype="text/html")
+                    if "wordpress_logged_in_x=admin" in c:
+                        return self.send(200, "<html>Dashboard</html>", ctype="text/html")
+                    if "wordpress_logged_in_x=customer" in c:
+                        return self.send(302, "", [("Location", "/my-account/")])
+                    return self.send(302, "", [("Location", "/wp-login.php?redirect_to=%2Fwp-admin%2F&reauth=1")])
                 if self.path == "/wp-json/":
                     return self.send(200, {"namespaces": ["wp/v2", "wc/v3"]})
                 if self.path.startswith("/wp-json/wp/v2/users?search=customer"):
@@ -268,6 +278,44 @@ def main():
         ok("wp: WP_PASSWORD is the operator's own") if "export WP_PASSWORD=SeedAppPass24CharsAbCdEf" in env_text else bad("wp: WP_PASSWORD wrong")
         ok("wp: no customer or Basic checks") if not any(c[1].startswith("/wp-json/wp/v2/users") for c in s.calls) else bad("wp: it ran WooCommerce checks")
 
+        # check-state: a saved login is asserted before any test (lead ruling).
+        def state(name, cookies):
+            p = os.path.join(t, name)
+            json.dump({"cookies": cookies, "origins": []}, open(p, "w"))
+            return p
+        ck = lambda name, value, domain="127.0.0.1": {"name": name, "value": value, "domain": domain, "path": "/"}
+        sa = state("admin.json", [ck("wordpress_logged_in_x", "admin"), ck("wordpress_sec_x", "S3CRET-COOKIE-VALUE")])
+        sc = state("customer.json", [ck("wordpress_logged_in_x", "customer")])
+        empty = state("empty.json", [])
+        bogus = state("bogus.json", [ck("wordpress_logged_in_x", "bogus")])
+        foreign = state("foreign.json", [ck("wordpress_logged_in_x", "admin", "elsewhere.example")])
+        def cs(label, paths, why, expect=3, setup=None):
+            st = Stub()
+            if setup:
+                setup(st)
+            argv = ["check-state", "--base-url", st.url]
+            for x in paths:
+                argv += ["--state", x]
+            rc, o, e = run(argv, {})
+            st.close()
+            if "S3CRET-COOKIE-VALUE" in o + e:
+                bad("check-state %s: a cookie value reached the output" % label)
+            if rc != expect:
+                bad("check-state %s: rc %d, expected %d (%s)" % (label, rc, expect, (e or o).strip()[:120]))
+            elif expect == 3 and not re.search(why, e):
+                bad("check-state %s: stopped for another reason: %s" % (label, e.strip()[:120]))
+            else:
+                ok("check-state %s%s" % (label, (": " + e.strip()[:100]) if expect == 3 else ""))
+            return st
+        st = cs("admin and customer logged in", [sa, sc], None, expect=0)
+        sent = [c for c in st.calls if c[1] == "/wp-admin/"]
+        ok("check-state asked /wp-admin/ once per state") if len(sent) == 2 else bad("check-state made %d /wp-admin/ calls" % len(sent))
+        cs("an empty storage state", [sa, empty], r"empty.json has no login cookie")
+        cs("a login cookie the site rejects", [bogus], r"bogus.json is not logged in: /wp-admin/ answers with the login page \(HTTP 302\)")
+        cs("a cookie for another domain", [foreign], r"foreign.json has no login cookie for 127.0.0.1")
+        cs("a missing storage state", [os.path.join(t, "nope.json")], r"cannot read the storage state")
+        cs("a 200 that shows the login form", [sa], r"admin.json is not logged in: /wp-admin/ answers with the login page \(HTTP 200\)", setup=lambda s: setattr(s, "admin_form", True))
+
         # rest_path, directly.
         for got, want in ((runner.rest_path("/wp-json/wp/v2/users/me?context=edit"), "/?rest_route=/wp/v2/users/me&context=edit"),
                           (runner.rest_path("/wp-json/pf-conformance/v1/throwaway"), "/?rest_route=/pf-conformance/v1/throwaway"),
@@ -295,7 +343,17 @@ def main():
                 bad("config %s: no node to check the syntax (could not measure)" % sn)
         rc, o, e = run(["config", "--suite", "wp", "--suite-dir", os.path.join(t, "nowhere"), "--run-dir", t], {})
         ok("config refuses a dir without the upstream config") if rc == 3 and "no upstream config" in e else bad("config: no refusal (%d)" % rc)
-        ok("wc config drops blocks/**") if '"blocks/**"' in open(os.path.join(t, "cfg-wc", "pf-conformance.config.mjs")).read() else bad("wc config lacks blocks/**")
+        wct = open(os.path.join(t, "cfg-wc", "pf-conformance.config.mjs")).read()
+        ok("wc config drops blocks/**") if '"blocks/**"' in wct else bad("wc config lacks blocks/**")
+        ok("wc config has NO reset project (it would wipe the seed)") if "reset" not in wct else bad("wc config still runs reset")
+        ok("wc e2e-pf depends on site setup only") if "dependencies: [ 'site setup' ]" in wct else bad("wc e2e-pf dependencies wrong")
+        for sn in ("wp", "gb"):
+            txt = open(os.path.join(t, "cfg-" + sn, "pf-conformance.config.mjs")).read()
+            want = "config.globalSetup = [ base.globalSetup, %s ]" % json.dumps(os.path.join(HERE, "assert-login.mjs"))
+            ok("config %s: the login assert runs after the upstream globalSetup" % sn) if want in txt else bad("config %s: no login assert" % sn)
+        if node:
+            r = subprocess.run([node, "--check", os.path.join(HERE, "assert-login.mjs")], capture_output=True, text=True)
+            ok("assert-login.mjs: node --check") if r.returncode == 0 else bad("assert-login.mjs: %s" % r.stderr.strip()[:120])
 
         # summarize and compare.
         def report(statuses):

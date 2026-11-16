@@ -22,7 +22,8 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
 | `themes.txt`, `plugins.txt` | The wordpress.org themes and plugins for the throwaway, checked by SHA-256 (`tests/plugins/fetch.sh`). They are separate from the product lists. |
 | `php/pf-conformance-throwaway.php` | The marker mu-plugin. Its REST route says "throwaway" and names the host. |
 | `exclude/<suite>.txt` | The specs NOT run, each with its reason. Each one becomes a "not run" row of the matrix. |
-| `runner.py` | `prepare`: CHECKS the site and the seed setup (it never writes), then writes `<run-dir>/env` (mode 600). `config`: writes the Playwright wrapper config. `summarize` and `compare`: the matrix rows. |
+| `assert-login.mjs` | The WordPress and Gutenberg `globalSetup` step that calls `runner.py check-state`. |
+| `runner.py` | `prepare`: CHECKS the site and the seed setup (it never writes), then writes `<run-dir>/env` (mode 600). `check-state`: asserts a saved login is real. `config`: writes the Playwright wrapper config. `summarize` and `compare`: the matrix rows. |
 | `vps-run.sh` | Installs a suite at its pin, runs the stock baseline, and runs it on our throwaway. Run it on a Vultr VPS only. |
 | `prepare-content-test.sh`, `runner_test.py` | The tests, against stub repos and a stub WordPress. No network. |
 
@@ -44,7 +45,11 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
      - pretty permalinks: `/wp-json/` must answer the REST index (#760);
      - the 3 test images.
    - `woocommerce_allow_tracking` has no read route at the pin, so it is reported NOT VERIFIED.
-6. **Our run:** `vps-run.sh run <suite> <work-dir> <our-run>`.
+6. **Our run:** `vps-run.sh run <suite> <work-dir> <our-run>`. The login is ASSERTED before any test (lead ruling), because upstream auth setup never checks its response. An empty login would otherwise read as hundreds of test failures.
+   - WordPress and Gutenberg: `assert-login.mjs` runs after the upstream `globalSetup`.
+   - WooCommerce: the setup projects run first. Then `runner.py check-state` checks `.state/admin.json` and `.state/customer.json`. Then the tests run with `--no-deps`.
+   - `check-state` sends each saved login to `/wp-admin/`. A redirect to `wp-login.php`, or the login form, STOPS the run.
+   - WooCommerce's upstream `reset` project is NOT run: `woocommerce-cleanup` would wipe the seed. The seed is the reset.
 7. **The rows:**
    - Run `runner.py summarize` on each `report.json`.
    - Then run `runner.py compare --baseline <base-run>/results.json --ours <our-run>/results.json`.

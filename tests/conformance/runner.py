@@ -3,6 +3,7 @@
 
     runner.py prepare --suite wp|wc|gb --base-url https://<site> --cache on|off --run-dir <dir>
     runner.py config  --suite wp|wc|gb --suite-dir <upstream e2e dir> --run-dir <dir>
+    runner.py check-state --base-url https://<site> --state <storage state json> [--state ...]
     runner.py summarize --report <playwright json> --out <results.json>
     runner.py compare --baseline <results.json> --ours <results.json>
 
@@ -232,6 +233,36 @@ def cmd_prepare(a):
     say("wrote %s (mode 600; it holds the passwords, never print it)" % p)
 
 
+def cmd_check_state(a):
+    """STOP unless each saved Playwright storage state is a REAL login (lead ruling, #759). It sends only
+    the cookies for this host to /wp-admin/ and never follows a redirect. A redirect to wp-login.php, or
+    the login form, means the auth setup did not log in. A customer is sent to My Account, which counts
+    as logged in. No cookie value is printed."""
+    host = urllib.parse.urlparse(a.base_url).hostname
+    for path in a.state:
+        try:
+            with open(path) as f:
+                cookies = json.load(f).get("cookies") or []
+        except (OSError, ValueError, AttributeError) as e:
+            raise Stop("cannot read the storage state %s (%s): the auth setup did not save it" % (path, type(e).__name__))
+        def for_host(c):
+            d = (c.get("domain") or "").lstrip(".")
+            return d == host or host.endswith("." + d)
+        mine = [c for c in cookies if isinstance(c, dict) and c.get("name") and for_host(c)]
+        if not any(str(c["name"]).startswith("wordpress_logged_in_") for c in mine):
+            raise Stop("the storage state %s has no login cookie for %s: the auth setup did not log in"
+                       % (os.path.basename(path), host))
+        hdr = "; ".join("%s=%s" % (c["name"], c.get("value", "")) for c in mine)
+        st, h, b = Site(a.base_url).req("GET", "/wp-admin/", headers={"Cookie": hdr}, cookies=False)
+        loc = {k.lower(): v for k, v in h.items()}.get("location", "")
+        if (st in (301, 302, 303, 307, 308) and "wp-login.php" in loc) or b'id="loginform"' in b:
+            raise Stop("the storage state %s is not logged in: /wp-admin/ answers with the login page (HTTP %d). "
+                       "Stopping before the tests, so an empty login never reads as test failures" % (os.path.basename(path), st))
+        if st >= 400:
+            raise Stop("the storage state %s: /wp-admin/ answered HTTP %d" % (os.path.basename(path), st))
+        print("check-state: %s is logged in (/wp-admin/ HTTP %d)" % (os.path.basename(path), st), flush=True)
+
+
 def read_excludes(suite):
     out = []
     with open(os.path.join(HERE, "exclude", suite + ".txt")) as f:
@@ -249,19 +280,21 @@ def config_text(suite, run_dir):
     lines = ["// Written by tests/conformance/runner.py config (#759). Do not edit; re-run it.",
              "import base from './%s';" % UPSTREAM_CONFIG[suite]]
     if suite == "wc":
-        lines.append("import { coreSetupProjects, TESTS_ROOT_PATH } from './%s';" % UPSTREAM_CONFIG[suite])
+        lines.append("import { coreSetupProjects } from './%s';" % UPSTREAM_CONFIG[suite])
     lines += ["const ignore = %s;" % json.dumps(ign),
               "const config = { ...base, workers: 1, retries: 0, fullyParallel: false, webServer: undefined,",
               "  reporter: [ [ 'list' ], [ 'json', { outputFile: %s } ] ] };" % json.dumps(rep)]
     if suite == "wc":
-        # As upstream envs/default-pressable: the setup projects, then one e2e project. No reset of the
-        # whole store per run here (DISABLE_SITE_RESET is honoured by fixtures/reset.setup.ts).
+        # As upstream envs/default-pressable, but WITHOUT its 'reset' project: woocommerce-cleanup
+        # TRUNCATEs the store, which would wipe the seed (Rollins' seed owns setup AND the reset between
+        # runs). vps-run.sh runs 'site setup' first, then check-state, then e2e-pf with --no-deps.
         lines += ["config.testIgnore = undefined;",
                   "config.projects = [ ...coreSetupProjects,",
-                  "  { name: 'reset', testDir: `${ TESTS_ROOT_PATH }/fixtures`, testMatch: 'reset.setup.ts' },",
-                  "  { name: 'e2e-pf', testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'reset', 'site setup' ] } ];" % json.dumps(WC_GREP_INVERT)]
+                  "  { name: 'e2e-pf', testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % json.dumps(WC_GREP_INVERT)]
     else:
-        lines += ["config.testIgnore = ignore;",
+        assert_login = os.path.join(HERE, "assert-login.mjs")
+        lines += ["config.globalSetup = [ base.globalSetup, %s ].filter( Boolean );" % json.dumps(assert_login),
+                  "config.testIgnore = ignore;",
                   "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: ignore } ) );"]
     lines.append("export default config;")
     return "\n".join(lines) + "\n"
@@ -341,6 +374,9 @@ def main(argv=None):
     p.add_argument("--suite", choices=("wp", "wc", "gb"), required=True)
     p.add_argument("--suite-dir", required=True)
     p.add_argument("--run-dir", required=True)
+    p = sub.add_parser("check-state")
+    p.add_argument("--base-url", required=True)
+    p.add_argument("--state", action="append", required=True)
     p = sub.add_parser("summarize")
     p.add_argument("--report", required=True)
     p.add_argument("--out", required=True)
@@ -349,7 +385,7 @@ def main(argv=None):
     p.add_argument("--ours", required=True)
     a = ap.parse_args(argv)
     try:
-        return {"prepare": cmd_prepare, "config": cmd_config, "summarize": cmd_summarize, "compare": cmd_compare}[a.cmd](a) or 0
+        return {"prepare": cmd_prepare, "config": cmd_config, "check-state": cmd_check_state, "summarize": cmd_summarize, "compare": cmd_compare}[a.cmd](a) or 0
     except Stop as e:
         print("STOP: %s" % e, file=sys.stderr, flush=True)
         return 3

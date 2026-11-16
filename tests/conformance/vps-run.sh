@@ -33,7 +33,13 @@ playwright() { # dir config: run Playwright with OUR wrapper config (exclusions,
   local d=$1
   x python3 -I "$here/runner.py" config --suite "$suite" --suite-dir "$src/$e2e" --run-dir "$run"
   case "$suite" in
-    wc) in_dir "$src/plugins/woocommerce" pnpm exec playwright test --config=tests/e2e/pf-conformance.config.mjs ;;
+    wc) # Two phases, so the login is asserted BEFORE any test (lead ruling): the setup projects
+        # (install wc, global authentication, site setup), then check-state on both saved logins,
+        # then the tests alone. The WP and Gutenberg configs assert it in globalSetup instead.
+        local st=$src/$e2e/.state
+        in_dir "$src/plugins/woocommerce" pnpm exec playwright test --config=tests/e2e/pf-conformance.config.mjs --project="site setup"
+        x python3 -I "$here/runner.py" check-state --base-url "${BASE_URL:-http://localhost:${WP_ENV_PORT:-8086}}" --state "$st/admin.json" --state "$st/customer.json"
+        in_dir "$src/plugins/woocommerce" pnpm exec playwright test --config=tests/e2e/pf-conformance.config.mjs --project=e2e-pf --no-deps ;;
     *) in_dir "$d" npx playwright test --config="$e2e/pf-conformance.config.mjs" ;;
   esac
 }
