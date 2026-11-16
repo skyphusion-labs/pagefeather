@@ -2,7 +2,7 @@
 
 This page says what works on each tier and each deploy path, what is limited, and why. Conrad asked for it in #759: "document things that are limited and why".
 
-**State on 2026-11-16, main `345cef4`.** The conformance runs of #759 will fill in the cells that say "not measured". They run the upstream WordPress, WooCommerce and Gutenberg suites, plus a stock baseline (`tests/conformance/`).
+**State on 2026-11-16, main `c9157f8`.** The conformance runs of #759 will fill in the cells that say "not measured". They run the upstream WordPress, WooCommerce and Gutenberg suites, plus a stock baseline (`tests/conformance/`).
 
 ## How to read a cell
 
@@ -38,7 +38,7 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 | Cron | not measured | not measured | not measured | not measured |
 | Mail | not measured | not measured | not measured | not measured |
 | Media uploads | not measured | yes without WooCommerce ([results.md](results.md) 2026-11-07 and 11-08: R2 and Cloudflare Images); with WooCommerce not measured | not measured | not measured |
-| Search | not measured; semantic search limited (opt-in, plugin change) | the same | the same | not measured |
+| Search | not measured; semantic search limited (opt-in, plugin change); limited: a very long search term fails on SQLite (#805) | the same | the same | not measured; not affected by #805 (MySQL) |
 | Comments | not measured | not measured | not measured | not measured |
 | Site Health | limited: directory sizes answer 500 (#780) | limited: directory sizes answer 500 (#780) | limited: directory sizes answer 500 (#780) | not measured |
 | Multisite | not measured | not measured | not measured | not measured |
@@ -132,6 +132,18 @@ The feature needs the `BROWSER` binding. `deploy/wfp` and `deploy.sh` render non
 ### One-click can add a site, not update or remove it (#765)
 
 The one-click CLI implements only `site add`. Its `update` and `remove` refuse, and they name `deploy/wfp/site`, which cannot manage a one-click site. An issue for it is being filed.
+
+### A very long search term fails on SQLite (#805)
+
+SQLite caps the length of a `LIKE` pattern. It answers "LIKE or GLOB pattern too complex". MySQL has no such cap.
+
+- **Where:** the SQLite tiers (Free DO, Paid DO and WfP). Hyperdrive runs MySQL, so #805 does not affect it.
+- **What fails:** a search (`?s=`) with a very long term, or any query with a very long `LIKE` pattern. The same query succeeds on MySQL.
+- **What the visitor sees:** the error is deterministic. By #795's ruling, it goes back to WordPress through wpdb's error path, as a MySQL error does. So a search finds nothing, with no 5xx. A long search has not been measured on its own yet.
+- **Measured at setup:** WordPress hit it once, on its own. It looked for an existing page by a long pattern ([#795](https://github.com/skyphusion-labs/pagefeather/issues/795#issuecomment-6922159077), local, npm and lean).
+- **Not measured yet:** the exact threshold on the Durable Object's SQLite. The SQLite default is 50,000 bytes.
+
+A fix needs its own ruling (#805).
 
 ### Semantic search needs a plugin change
 
