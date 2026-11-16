@@ -40,12 +40,27 @@ if [ -n "${PRIME_OPCACHE_MB:-}" ]; then
   case " ${DEV_VARS:-} " in *" PHP_INI:"*) echo "PRIME_OPCACHE_MB and a PHP_INI in DEV_VARS: set one"; exit 1;; esac
   prime_vars="PHP_INI:{\"opcache.memory_consumption\":\"$PRIME_OPCACHE_MB\"}"
 fi
-DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off${prime_vars:+ $prime_vars}${DEV_VARS:+ $DEV_VARS}" ./run.sh _ping > /dev/null
+had_port=0
+if [ -n "${PORT:-}" ]; then
+  had_port=1
+fi
+run_out=$(mktemp "${TMPDIR:-/tmp}/pf-run-port.XXXXXX")
+DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off${prime_vars:+ $prime_vars}${DEV_VARS:+ $DEV_VARS}" ./run.sh _ping > "$run_out" || { cat "$run_out" >&2; rm -f "$run_out"; exit 1; }
+# #839: one line in this build's log, the port run.sh chose. An explicit PORT
+# was honored and is not announced again. e2e.sh, woo.py and the plugin step
+# then export that same port.
+if [ "$had_port" = 0 ]; then
+  grep -E '^port [0-9]+$' "$run_out" || true
+fi
+rm -f "$run_out"
+# shellcheck source=port.sh
+. ./port.sh
+take_port || { echo "could not pick a free port"; exit 1; }
 # Stop the server this run started, however the script ends (run.sh records it).
 # Before this, a failed step exited under set -e before the kill, and the server
 # stayed on the port for the next run.
 trap './run.sh --stop; rm -rf "$STATE"' EXIT
-P=${PORT:-8797}
+P=$PORT
 SERVER=$(cut -d' ' -f1 ".dev-$P.pid")
 # #677: server_alive and the kept /_install answer (opcache-activate.sh).
 PORT=$P
@@ -65,15 +80,15 @@ if [ "${WOO_ACTIVE:-0}" = 1 ]; then
 fi
 ./e2e.sh > build/opcache-e2e.log 2>&1 || { echo "e2e failed; no OPcache files saved. Last lines of build/opcache-e2e.log:"; tail -15 build/opcache-e2e.log; exit 1; }
 # WooCommerce pages too, when it is active (tests/woo.py buys a product).
-if curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -sf "localhost:${PORT:-8797}/?rest_route=/wc/store/v1/cart" > /dev/null; then
-  B=http://localhost:${PORT:-8797} ADMIN_PASSWORD=local-spike-password python3 tests/woo.py > /dev/null || { echo "woo.py failed; no OPcache files saved"; exit 1; }
+if curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -sf "localhost:${P}/?rest_route=/wc/store/v1/cart" > /dev/null; then
+  B=http://localhost:${P} ADMIN_PASSWORD=local-spike-password python3 tests/woo.py > /dev/null || { echo "woo.py failed; no OPcache files saved"; exit 1; }
 elif [ "${WOO_ACTIVE:-0}" = 1 ]; then
   echo "WOO_ACTIVE=1 but the WooCommerce Store API did not answer: the store pages were not primed. No OPcache files saved (#313)"; exit 1
 fi
 # Plugins from the suite in this build (PLUGINS, see build.sh): activate and
 # exercise each one so its scripts compile too.
 if [ -n "${PLUGINS:-}" ]; then
-  B=http://localhost:${PORT:-8797} ADMIN_PASSWORD=local-spike-password python3 ../../tests/plugins/plugins.py $PLUGINS > build/opcache-plugins.jsonl || { echo "plugins.py failed; no OPcache files saved"; exit 1; }
+  B=http://localhost:${P} ADMIN_PASSWORD=local-spike-password python3 ../../tests/plugins/plugins.py $PLUGINS > build/opcache-plugins.jsonl || { echo "plugins.py failed; no OPcache files saved"; exit 1; }
 fi
 # The dump must come from the server that ran the pages above.
 now=$(lsof -t -nP -iTCP:"$P" -sTCP:LISTEN 2>/dev/null | sort -u | head -1)

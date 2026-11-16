@@ -17,9 +17,26 @@ local_creds
 STATE=$(mktemp -d "${TMPDIR:-/tmp}/file-trace-state.XXXXXX")
 export PERSIST_TO=$STATE
 trap 'rm -rf "$STATE"' EXIT
-DEV_LOCAL=1 DEV_VARS="FILE_TRACE:on${DEV_VARS:+ $DEV_VARS}" ./run.sh _ping > /dev/null
+had_port=0
+if [ -n "${PORT:-}" ]; then
+  had_port=1
+fi
+run_out=$(mktemp "${TMPDIR:-/tmp}/pf-run-port.XXXXXX")
+DEV_LOCAL=1 DEV_VARS="FILE_TRACE:on${DEV_VARS:+ $DEV_VARS}" ./run.sh _ping > "$run_out" || { cat "$run_out" >&2; rm -f "$run_out"; exit 1; }
+# #839: one line, the port run.sh chose. An explicit PORT is not announced again.
+# e2e.sh and woo.py then use that same port.
+if [ "$had_port" = 0 ]; then
+  grep -E '^port [0-9]+$' "$run_out" || true
+fi
+rm -f "$run_out"
+# shellcheck source=port.sh
+. ./port.sh
+take_port || { echo "could not pick a free port"; exit 1; }
+if [ "${port_from:-}" = picked ]; then
+  echo "port $PORT"
+fi
 trap './run.sh --stop; rm -rf "$STATE"' EXIT
-P=${PORT:-8797}
+P=$PORT
 B=http://localhost:$P
 ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}")
 PW=${ADMIN_PASSWORD:-local-spike-password}
