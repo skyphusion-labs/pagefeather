@@ -155,6 +155,14 @@ def basic(user, pw, route="/wp/v2/users/me"):
     return c
 
 
+def activation_nonce(page, slug):
+    """The _wpnonce of themes.php's activation link for slug, or None. The theme list is rendered from JSON on the
+    page, so the link may be plain (&), HTML-escaped (&amp;) or JSON-escaped (\\u0026): match the query string itself.
+    Tested in seed-test.py."""
+    amp = rb'(?:&|&amp;|\\u0026)'
+    m = re.search(rb'action=activate' + amp + rb'stylesheet=' + re.escape(slug.encode()) + amp + rb'_wpnonce=([0-9a-f]+)', page)
+    return m.group(1).decode() if m else None
+
 def refuse(why):
     event("refused", why=why)
     sys.stderr.write("seed: refused: %s\n" % why)
@@ -284,15 +292,12 @@ def main():
             check("theme %s: a theme slug" % THEME, False)
         else:
             c, b, _ = req(a, "/wp-admin/themes.php")
-            # The theme list is rendered from JSON on the page, so the link may be HTML-escaped (&amp;) or JSON-escaped
-            # (\u0026): match the query string itself.
-            amp = rb'(?:&|&amp;|\\u0026)'
-            link = re.search(rb'action=activate' + amp + rb'stylesheet=' + re.escape(THEME.encode()) + amp + rb'_wpnonce=([0-9a-f]+)', b or b"")
-            if link:
-                req(a, "/wp-admin/themes.php?action=activate&stylesheet=%s&_wpnonce=%s" % (THEME, link.group(1).decode()))
+            nonce = activation_nonce(b or b"", THEME)
+            if nonce:
+                req(a, "/wp-admin/themes.php?action=activate&stylesheet=%s&_wpnonce=%s" % (THEME, nonce))
             c, act = rest(a, n, "/wp/v2/themes?status=active")
             active = act[0].get("stylesheet") if isinstance(act, list) and act else None
-            check("theme %s is active" % THEME, active == THEME, active=active, link_found=bool(link) or "already active or not installed")
+            check("theme %s is active" % THEME, active == THEME, active=active, link_found=bool(nonce) or "already active or not installed")
 
     # 6. the admin's account password = a new application password
     c, me = rest(a, n, "/wp/v2/users/me?context=edit")
