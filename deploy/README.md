@@ -242,6 +242,29 @@ The hint is not a promise. An `enam` object landed in EWR two times in three and
 
 Each `NAME` has its own Terraform workspace, so two sites never share state.
 
+## When a PHP object does not answer in time (#703, #708)
+
+Every request the front Worker hands to a PHP Durable Object (the b-dosql object, and approach A's overflow pool) has two time bounds. They are recorded settings: give one to `deploy.sh`, `deploy/wfp/site` or the one-click provisioning (`deploy/provision`, `objectTimeInputs`) and it is rendered into the Worker's `[vars]` (`deploy/object-time.sh`), and `deploy/wfp` keeps it on later updates (`site_settings.py`). Unset means the code default.
+
+| setting | default | what it bounds |
+|---|---|---|
+| `OBJECT_CALL_DEADLINE_S` | `90` | How long the Worker waits for the object to START answering (#703). `off`, or 1 to 600 s. `off` turns it off. Install, import and cron are exempt. |
+| `OBJECT_START_BY_S` | the deadline minus 30 s, or minus a third of a deadline under 90 s (`60` for the default `90`) | How long a request may wait in the object's PHP queue before it would start (#708). `off`, or 1 to 600 s. A request not started by then never runs. `off` restores the behavior before #708. An explicit value is at most the deadline minus that run allowance (`60` at `90`); a larger one is refused when the site is deployed, with the cap in the message. With the deadline `off`, any value from 1 to 600 applies. Control paths (`/_*`: `/_evict`, `/_hold`, the exports) and cron never get one. |
+
+What the client sees:
+
+| answer | headers | meaning |
+|---|---|---|
+| 503 | `x-object-deadline: queued`, `x-write-loss: none`, `x-overloaded: 1`, `Retry-After: 5` | The request waited past its start-by and **never ran**. Nothing was written. It is safe to retry. |
+| 500 | `x-object-deadline: no-answer`, `x-write-loss: unknown` | A request that can write (not GET, HEAD or OPTIONS) STARTED, and the object did not answer within the deadline. It **may have saved** (an order, for example). The client should check before retrying. |
+| 503 | `x-object-deadline: no-answer`, `Retry-After` | The same for a GET, HEAD or OPTIONS: nothing to save, safe to retry. |
+
+Every answer of the object path that the edge never keeps carries `x-pf-call`: an answer whose `cloudflare-cdn-cache-control` (the Worker's own edge directive) says `no-store`, such as the cart and checkout, and every failure answer above (no edge directive, `cache-control: no-store`), the request's correlation id (a random id, no request data). A cacheable page does not carry it: the edge would give one request's id to every later visitor. It is the same id that the Worker's `overflow`, `overflow-local` and `object-deadline` lines and the object's `php-lock` and `perf` lines carry, so a client-seen answer can be found in the logs. `deploy/doctor` counts the `object-deadline` lines, split by the answer (500 or 503).
+
+**What the start-by can prove.** In a deployed Worker, `Date.now()` moves only at I/O. When a request that queued behind another gets its turn with less than 30 s (the per-request CPU limit) left before its start-by, the PHP lock reads the clock again after one timer turn, and sheds it if the start-by has passed (`php-lock` event `shed`, `at: clock`, logged instead of `granted`). With more time left it is granted at once. Cloudflare's docs do not say that a timer turn moves the clock; the line's `clockMs` measures that on a live site. Until it is measured, the bound is the start-by plus the clock lag, and the lag is at most the CPU time of the runs ahead since their last I/O (30 s per run at the default CPU limit).
+
+**The escape hatch for a live site:** `OBJECT_START_BY_S=off` on that site's next `deploy/wfp/site` update or `deploy.sh` run restores the behavior before #708: no start-by, with #703's deadline unchanged. `deploy/wfp` records it, so a later update keeps it; `DROP_SETTINGS=OBJECT_START_BY_S` returns to the default. Do not set it in the dashboard: the next deploy writes `[vars]` again and erases it.
+
 ## Remove a site safely
 
 `NAME=my-site ./deploy/destroy.sh` (with `CLOUDFLARE_API_TOKEN` and `ACCOUNT_ID`) finds the state as `deploy.sh` keeps it (`deploy/tf-backend.sh`): local in the clone that deployed the site, or `DEPLOY_STATE=r2` from any clone. It checks all of this before it deletes anything:
@@ -308,7 +331,7 @@ CLOUDFLARE_API_TOKEN=... ACCOUNT_ID=... deploy/doctor <site> [--hours 24] [--ser
 - With request logs on, it counts each result (ok, out of memory, out of CPU time, exception, canceled), for the Worker and the Durable Object. It gives CPU and total time p50 and p95, and the slowest paths.
 - Cloudflare computes every count and percentile over the whole window, in a few calls. Doctor reads single requests only for a few examples of failures, and it calls them examples.
 - It reads Pagefeather's own lines by their field `m`, never by message text.
-- It counts Pagefeather's own log lines and names the header each one matches (`x-isolate-reset`, `x-write-loss`, `x-overloaded`, `x-php-lock`, `x-boot`).
+- It counts Pagefeather's own log lines and names the header each one matches (`x-isolate-reset`, `x-write-loss`, `x-overloaded`, `x-php-lock`, `x-boot`). A start-by shed (#708) is a `php-lock` line with event `shed`, the same as a `PHP_QUEUE_SHED_MS` shed. Its answer also says `x-object-deadline: queued`.
 - It says "memory resets happened" or not. It never counts the runtime's reset line, because that line is not one per failed request.
 - It never prints a query string, SQL text, a client IP or a token. It warns when the site's logs do not hide query strings.
 - Exit status: 0 no failures found, 1 problems found, 3 cannot see the site, cannot count failures, or a read failed, 2 a usage error.

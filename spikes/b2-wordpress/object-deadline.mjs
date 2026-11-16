@@ -46,17 +46,23 @@ export function objectCallExempt(pathname) {
 	return EXEMPT.has(pathname);
 }
 
+// A setting in seconds (#703, #708 share it): 'off', ms for a decimal from min to max seconds, or null (unset, empty
+// or a bad value: the caller's default).
+export function secondsMs(raw, min, max) {
+	if (raw === undefined || raw === null) return null;
+	const s = String(raw).trim();
+	if (s === 'off') return 'off';
+	if (!/^[0-9]+(\.[0-9]+)?$/.test(s)) return null;
+	const n = Number(s);
+	return n >= min && n <= max ? Math.round(n * 1000) : null;
+}
+
 // Milliseconds, or 0 when OBJECT_CALL_DEADLINE_S=off (no deadline).
 // Unset or a value that is not a number from 0.01 to 600: the default.
 export function objectCallDeadlineMs(env) {
-	const raw = env && env.OBJECT_CALL_DEADLINE_S;
-	if (raw === undefined || raw === null || String(raw).trim() === '') return DEFAULT_OBJECT_CALL_DEADLINE_S * 1000;
-	const s = String(raw).trim();
-	if (s === 'off') return 0;
-	if (!/^[0-9]+(\.[0-9]+)?$/.test(s)) return DEFAULT_OBJECT_CALL_DEADLINE_S * 1000;
-	const n = Number(s);
-	if (!(n >= 0.01) || n > 600) return DEFAULT_OBJECT_CALL_DEADLINE_S * 1000;
-	return Math.round(n * 1000);
+	const ms = secondsMs(env && env.OBJECT_CALL_DEADLINE_S, 0.01, 600);
+	if (ms === 'off') return 0;
+	return ms === null ? DEFAULT_OBJECT_CALL_DEADLINE_S * 1000 : ms;
 }
 
 export class ObjectCallDeadlineError extends Error {

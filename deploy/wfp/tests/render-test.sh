@@ -14,6 +14,7 @@ set -u
 unset MAIL_FROM MAIL_FROM_NAME
 unset HTTP_ALLOW_HOSTS
 unset WOO_EXTRAS
+unset OBJECT_START_BY_S OBJECT_CALL_DEADLINE_S
 HERE=$(cd "$(dirname "$0")" && pwd)
 LIB=${1:-$HERE/../lib.sh}
 # shellcheck disable=SC1090
@@ -249,5 +250,20 @@ ok "woo-extras.php forces the four pinned options off and does not filter analyt
 )"
 ok "index.js defines SKYPHUSION_WOO_EXTRAS only for WOO_EXTRAS off" "$(grep -q "ENV.WOO_EXTRAS === 'off'" "$B2/index.js" && grep -q "define('SKYPHUSION_WOO_EXTRAS', 'off')" "$B2/index.js" && echo 1 || echo 0)"
 ok "build.sh copies woo-extras.php into mu-plugins" "$(grep -q 'php/woo-extras.php' "$B2/build.sh" && echo 1 || echo 0)"
+# #715 review2 2: the start-by and the object-call deadline are recorded settings, so the escape hatch
+# (OBJECT_START_BY_S=off) has an IaC path. Unset renders no var (the code default); off or 1..600 renders it.
+otv() { "$PY" -c 'import json, sys, tomllib; v=tomllib.loads(sys.stdin.read())["vars"]; print(json.dumps([v.get("OBJECT_START_BY_S"), v.get("OBJECT_CALL_DEADLINE_S")]))'; }
+ok "no OBJECT_START_BY_S or OBJECT_CALL_DEADLINE_S var by default" "$(render_user one https://wp-one.sub.workers.dev | otv | grep -qx '\[null, null\]' && echo 1 || echo 0)"
+ok "OBJECT_START_BY_S=off renders it" "$(OBJECT_START_BY_S=off render_user one https://wp-one.sub.workers.dev | otv | grep -qx '\["off", null\]' && echo 1 || echo 0)"
+ok "OBJECT_START_BY_S=45 and OBJECT_CALL_DEADLINE_S=120 render" "$(OBJECT_START_BY_S=45 OBJECT_CALL_DEADLINE_S=120 render_user one https://wp-one.sub.workers.dev | otv | grep -qx '\["45", "120"\]' && echo 1 || echo 0)"
+for bad in on 0 601 -5 1e3 abc; do ok "OBJECT_START_BY_S=$bad fails the render" "$(OBJECT_START_BY_S=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
+for bad in on 0 601 x; do ok "OBJECT_CALL_DEADLINE_S=$bad fails the render" "$(OBJECT_CALL_DEADLINE_S=$bad render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"; done
+# #715 review3 1: an explicit start-by over the cap (the deadline minus the run allowance) is refused at render time.
+ok "OBJECT_START_BY_S=60 at the default deadline renders" "$(OBJECT_START_BY_S=60 render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 1 || echo 0)"
+ok "OBJECT_START_BY_S=61 at the default deadline fails (cap 60)" "$(OBJECT_START_BY_S=61 render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"
+ok "the refusal names the cap" "$(OBJECT_START_BY_S=61 render_user one https://wp-one.sub.workers.dev 2>&1 >/dev/null | grep -q 'at most 60' && echo 1 || echo 0)"
+ok "OBJECT_START_BY_S=90 with a 120 s deadline renders, 91 fails" "$(OBJECT_START_BY_S=90 OBJECT_CALL_DEADLINE_S=120 render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && ! OBJECT_START_BY_S=91 OBJECT_CALL_DEADLINE_S=120 render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 1 || echo 0)"
+ok "OBJECT_START_BY_S=20 with a 30 s deadline renders (cap: 30 minus a third), 21 fails" "$(OBJECT_START_BY_S=20 OBJECT_CALL_DEADLINE_S=30 render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && ! OBJECT_START_BY_S=21 OBJECT_CALL_DEADLINE_S=30 render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 1 || echo 0)"
+ok "with the deadline off, 600 renders" "$(OBJECT_START_BY_S=600 OBJECT_CALL_DEADLINE_S=off render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 1 || echo 0)"
 echo "$fails failing check(s)"
 exit $fails

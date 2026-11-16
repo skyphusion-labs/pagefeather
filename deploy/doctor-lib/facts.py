@@ -43,7 +43,8 @@ SIGNALS = (
     ("isolate-reset-retry", "kind", "x-isolate-retry", "a GET or HEAD died in a reset and was sent once more"),
     ("overloaded", None, "x-overloaded", "the Durable Object queue was full and the request got a 503"),
     ("write-loss", None, "x-write-loss", "a write may have been saved before a reset; the user was told to check before a retry"),
-    ("php-lock", "event", "x-php-lock / x-php-overflow", "requests waited for the one PHP runtime (queued, granted, shed, stale, overflow)"),
+    ("php-lock", "event", "x-php-lock / x-php-overflow / x-object-deadline", "requests waited for the one PHP runtime (queued, granted, shed, stale, overflow); a shed past its start-by answered x-object-deadline: queued and never ran (#708)"),
+    ("object-deadline", "answered", "x-object-deadline", "a PHP object did not answer in time (#703); a 500 may have saved (x-write-loss: unknown), a 503 was a safe method"),
     ("boot", "origin", "x-boot", "a PHP runtime started (a cold start)"),
 )
 # Headers with no log line of their own. Doctor reads logs, so it says it cannot count these.

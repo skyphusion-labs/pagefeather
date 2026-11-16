@@ -255,7 +255,7 @@ test('an object reset still rejects with the platform error', async () => {
 test('index.js applies the deadline inside toPhpObject and returns it before any frame probe', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.match(src, /import \{ callPhpObject, isObjectCallDeadline, objectCallDeadlineMs, objectCallExempt \} from '\.\/object-deadline\.mjs';/);
-	const fnStart = src.indexOf('async function toPhpObject(');
+	const fnStart = src.indexOf('async function toPhpObjectCall(') /* #708: the body behind the toPhpObject wrapper */;
 	const fn = src.slice(fnStart, src.indexOf('\n}\n', fnStart));
 	assert.match(fn, /const objectDeadlineMs = objectCallExempt\(url\.pathname\) \? 0 : objectCallDeadlineMs\(env\);/);
 	assert.match(fn, /return callPhpObject\(stub, sent,/);

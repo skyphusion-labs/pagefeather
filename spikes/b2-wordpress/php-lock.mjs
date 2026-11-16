@@ -47,8 +47,10 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 			const check = () => {
 				timer = null;
 				if (done) return;
-				if (headSince !== null && headMs() >= staleMs) return finish('stale');
+				// #708 review 1: SHED first. A waiter past its bound never runs, even if the head has also run past the stale
+				// time: with the default start-by (60 s) equal to LOCK_STALE_MS, both can fall due at the one check.
 				if (shedMs > 0 && now() - t0 >= shedMs) return finish('shed');
+				if (headSince !== null && headMs() >= staleMs) return finish('stale');
 				let next = TICK_MS;
 				if (shedMs > 0) next = Math.min(next, Math.max(1, t0 + shedMs - now()));
 				if (headSince !== null) next = Math.min(next, Math.max(1, headSince + staleMs - now()));
@@ -62,16 +64,21 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 	return {
 		get waiting() { return waiting; },
 		get running() { return running; },
-		// run(fn, { shedMs, onStale }): fn's result, or PHP_SHED. onStale runs before fn when the lock was
-		// taken as stale (index.js drops the runtime there).
-		run(fn, { shedMs = 0, onStale = () => {} } = {}) {
+		// run(fn, { shedMs, onStale, tag }): fn's result, or PHP_SHED. onStale runs before fn when the lock was
+		// taken as stale (index.js drops the runtime there). tag (#708) is added to this run's log lines (the
+		// correlation id of the forwarded request), so a queued, granted or shed line names its request.
+		// shedWhy (#715 review2 8) names the bound on a shed line: start-by, or the operator's queue-shed.
+		// recheck (#715 review3 5): an async start-by check at a contended grant (the clock may be stale there,
+		// start-by.mjs recheckStartBy). { late: true } sheds before any grant line: at: clock, why: start-by.
+		run(fn, { shedMs = 0, onStale = () => {}, tag = null, shedWhy = null, recheck = null } = {}) {
+			const lg = tag ? (e) => log({ ...e, ...tag }) : log;
 			const prev = tail;
 			let release;
 			const mine = new Promise((r) => (release = r));
 			tail = mine;
 			const t0 = now();
 			const contended = waiting + running > 0;
-			if (contended) log({ event: 'queued', depth: waiting + running, headMs: headMs() });
+			if (contended) lg({ event: 'queued', depth: waiting + running, headMs: headMs() });
 			waiting++;
 			return (async () => {
 				let why = contended ? await waitTurn(prev, t0, shedMs) : 'turn';
@@ -81,21 +88,32 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 				// this turn (a microtask) beats the overdue timer. Measured on local workerd (b-do): without
 				// this, waits of 2.7 s were granted against a 1 s bound. A waiter over its bound sheds here.
 				let at = 'wait';
-				if (why === 'turn' && shedMs > 0 && waitMs >= shedMs) {
+				// #708 review 1: the stale path too. A waiter taken as stale after its bound would otherwise drop the runtime
+				// and RUN fn after its caller was answered; it sheds instead, and never runs.
+				if ((why === 'turn' || why === 'stale') && shedMs > 0 && waitMs >= shedMs) {
+					at = why === 'stale' ? 'stale' : 'grant';
 					why = 'shed';
-					at = 'grant';
+				}
+				let clock = null;
+				if (why !== 'shed' && contended && recheck) {
+					clock = await recheck();
+					if (clock && clock.late) {
+						why = 'shed';
+						at = 'clock';
+					}
 				}
 				if (why === 'shed') {
-					log({ event: 'shed', at, waitMs, depth: waiting + running, headMs: headMs() });
+					const whyShed = at === 'clock' ? 'start-by' : shedWhy;
+					lg({ event: 'shed', at, waitMs, depth: waiting + running, headMs: headMs(), ...(whyShed ? { why: whyShed } : {}), ...(at === 'clock' ? { clockMs: clock.clockMs } : {}) });
 					// This waiter never runs: the one behind it waits for the run ahead instead.
 					prev.then(release, release);
 					return PHP_SHED;
 				}
 				if (why === 'stale') {
-					log({ event: 'stale', waitMs, depth: waiting + running, headMs: headMs() });
+					lg({ event: 'stale', waitMs, depth: waiting + running, headMs: headMs() });
 					onStale();
 				} else if (waitMs >= GRANT_LOG_MS) {
-					log({ event: 'granted', waitMs, depth: waiting + running });
+					lg({ event: 'granted', waitMs, depth: waiting + running });
 				}
 				running++;
 				headSince = now();

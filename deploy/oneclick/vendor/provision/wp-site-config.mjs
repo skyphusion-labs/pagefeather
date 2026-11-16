@@ -63,6 +63,35 @@ function assignPageCacheProduct(vars, opts) {
   if (text !== null) vars.PAGE_CACHE_PRODUCT_TTL = text;
 }
 
+// OBJECT_CALL_DEADLINE_S and OBJECT_START_BY_S (#703, #708; #715 review3 6): the same rule as deploy/object-time.sh,
+// so a one-click site has the #708 escape hatch (OBJECT_START_BY_S=off) as IaC. Each is off, or seconds from 1 to 600;
+// an explicit start-by is at most the deadline minus the run allowance (60 at the default 90). Unset adds no var (the
+// code default). Anything else throws, so the callers refuse it before a bundle is read or an API call is made.
+function objectTimeValue(name, raw) {
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  const s = String(raw);
+  if (s === 'off') return s;
+  const n = Number(s);
+  if (!/^[0-9]+(\.[0-9]+)?$/.test(s) || !(n >= 1 && n <= 600)) throw new Error(`${name} must be off or seconds from 1 to 600, not ${s}`);
+  return s;
+}
+export function objectTimeInputs(env = {}) {
+  const objectCallDeadlineS = objectTimeValue('OBJECT_CALL_DEADLINE_S', env.OBJECT_CALL_DEADLINE_S);
+  const objectStartByS = objectTimeValue('OBJECT_START_BY_S', env.OBJECT_START_BY_S);
+  const dl = objectCallDeadlineS === undefined ? '90' : objectCallDeadlineS;
+  if (objectStartByS !== undefined && objectStartByS !== 'off' && dl !== 'off') {
+    const ms = Number(dl) * 1000;
+    const cap = (ms - Math.min(30000, Math.floor(ms / 3))) / 1000;
+    if (Number(objectStartByS) > cap) throw new Error(`OBJECT_START_BY_S must be at most ${cap} with a ${dl} s deadline (the deadline minus the run allowance), not ${objectStartByS}`);
+  }
+  return { objectCallDeadlineS, objectStartByS };
+}
+function assignObjectTime(vars, { objectCallDeadlineS, objectStartByS }) {
+  const v = objectTimeInputs({ OBJECT_CALL_DEADLINE_S: objectCallDeadlineS, OBJECT_START_BY_S: objectStartByS });
+  if (v.objectCallDeadlineS !== undefined) vars.OBJECT_CALL_DEADLINE_S = v.objectCallDeadlineS;
+  if (v.objectStartByS !== undefined) vars.OBJECT_START_BY_S = v.objectStartByS;
+}
+
 // ---- b-dosql integration-descriptor table (#201 Phase 1) --------------------
 // The provisioning core builds a b-dosql site's bindings, vars and generated
 // secrets from a TABLE of integration descriptors, not a hand-edited inline
@@ -111,7 +140,7 @@ function assignPageCacheProduct(vars, opts) {
 // turn on the default-on gates in index.js (object cache, route cache, theme.json
 // cache, async email, bootstrap trim, media-write trim): index.js enables each
 // unless its var is "off", so the site gets them with no gate var set.
-function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, demo, codeLock, wooActive, importPlugins, plugins, pageCacheProductTtl, store } = {}) {
+function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, demo, codeLock, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS } = {}) {
   if (!siteOrigin) throw new Error('bDosqlVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
   const vars = {
     PHP_ENV: '{"USE_ZEND_ALLOC":"0"}',
@@ -144,6 +173,7 @@ function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mail
   else if (codeLock === true) vars.CODE_LOCK = 'on';
   // #706: after the always-on six, so a non-store stays byte-identical.
   assignPageCacheProduct(vars, { wooActive, importPlugins, plugins, pageCacheProductTtl, store });
+  assignObjectTime(vars, { objectCallDeadlineS, objectStartByS });
   return vars;
 }
 
@@ -479,6 +509,8 @@ export function aVars({
   wooHposCache = false,
   // #706: the same store rule as b-dosql. Unset on a non-store adds no var.
   wooActive, importPlugins, plugins, pageCacheProductTtl, store,
+  // #715 review3 6: the PHP-object time bounds (the overflow pool), objectTimeInputs.
+  objectCallDeadlineS, objectStartByS,
 } = {}) {
   if (!siteOrigin) throw new Error('aVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
   const vars = {
@@ -513,6 +545,7 @@ export function aVars({
     if (mailFromName) vars.MAIL_FROM_NAME = mailFromName;
   }
   assignPageCacheProduct(vars, { wooActive, importPlugins, plugins, pageCacheProductTtl, store });
+  assignObjectTime(vars, { objectCallDeadlineS, objectStartByS });
   return Object.entries(vars).map(([name, text]) => ({ type: 'plain_text', name, text }));
 }
 
@@ -533,6 +566,7 @@ export function aBindings({
   objectCacheGroups, objectCacheTtl, lazyCacheMb, ocKvNamespaceId, ocKvBinding = 'OC_KV',
   mailFrom, mailFromName, extra = [],
   wooActive, importPlugins, plugins, pageCacheProductTtl, store,
+  objectCallDeadlineS, objectStartByS,
 } = {}) {
   if (!mediaBucket) throw new Error('aBindings: mediaBucket is required');
   if (!hyperdriveId) throw new Error('aBindings: hyperdriveId is required (the Hyperdrive config id from onboarding)');
@@ -541,7 +575,7 @@ export function aBindings({
   // only if the caller already knows it (e.g. a re-provision passing the id).
   if (ocKvNamespaceId) ocKv.namespace_id = ocKvNamespaceId;
   return [
-    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName, objectCacheVersions, wooHposCache, wooActive, importPlugins, plugins, pageCacheProductTtl, store }),
+    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName, objectCacheVersions, wooHposCache, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS }),
     { type: 'images', name: 'IMAGES' },
     { type: 'r2_bucket', name: 'MEDIA', bucket_name: mediaBucket },
     { type: 'hyperdrive', name: 'HYPERDRIVE', id: hyperdriveId },

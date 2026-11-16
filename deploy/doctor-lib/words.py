@@ -27,7 +27,7 @@ def verdict(f):
     if f["visibility"] == "cannot_see":
         return "cannot_see"
     sig = dict((i["m"], i["count"]) for i in (f.get("signals") or {}).get("items", []))
-    ours_bad = any((sig.get(k) or 0) > 0 for k in ("isolate-reset", "write-loss", "overloaded"))
+    ours_bad = any((sig.get(k) or 0) > 0 for k in ("isolate-reset", "write-loss", "overloaded", "object-deadline"))
     shed = ((next((i for i in f["signals"]["items"] if i["m"] == "php-lock"), {}).get("split") or {}).get("shed") or 0)
     if f["visibility"] == "outcomes":
         oc = f.get("outcomes") or {}
