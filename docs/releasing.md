@@ -38,6 +38,12 @@ If the build fails, fix the cause on `main` and cut the next PATCH version. To r
 
 The one-click admin checks each module against `manifest.json`, and it may pin the hashes of a release. Two builds of one commit are not the same byte for byte (zip timestamps, the OPcache). So replacing the assets of a release could break a site manager that already trusts them. A new build is a new version.
 
+## Which engine a release ships
+
+A version tag `vX.Y.Z` ships the npm Playground engine (the binary pinned in `engine/UPSTREAM`), after `spikes/b2-wordpress/prepare.sh`, in both the b-dosql bundle and the approach-A bundle. `build-bundle.sh` packages that engine's notices (the default of `package-notices.sh`).
+
+The custom engine (variant s1-lean) is a separate prerelease. Its assets are `pagefeather-engine-lean.js` and `pagefeather-engine-lean.wasm`. It carries notices by running `package-notices.sh <release dir> "" lean` before `SHA256SUMS`. That SOURCE names `engine/` at the tag, the pins and licences in `engine/licenses.tsv`, and `.github/workflows/pagefeather-engine.yml` (variant s1-lean). `release-bundle.yml` does not publish that prerelease.
+
 ## The bundle
 
 See [deploy/release/README.md](../deploy/release/README.md) for what is in the bundle and how to check it.

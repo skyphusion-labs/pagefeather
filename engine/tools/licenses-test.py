@@ -136,6 +136,14 @@ try:
             written = open(lic, encoding='utf-8').read()
         ok('the licence file contains the archive member', PAYLOAD in written and 'Component: Fixture' in written)
         ok('the pass opened no connection (hits %d)' % len(srv.hits), len(srv.hits) == 0)
+        traced = ''
+        traced_path = os.path.join(out, 'SOURCE')
+        if os.path.isfile(traced_path):
+            traced = open(traced_path, encoding='utf-8').read()
+        ok('traced SOURCE names engine/build.sh', 'engine/build.sh' in traced)
+        ok('traced SOURCE names the build workflow', '.github/workflows/pagefeather-engine.yml' in traced)
+        ok('traced SOURCE does not say prepare.sh produced the wasm',
+           'produced from that pinned binary' not in traced)
 
     # 2. Missing archive names the row and does not touch the network.
     srv.reset()
@@ -307,6 +315,36 @@ try:
         ok('--all opened no connection (hits %d)' % len(srv.hits), len(srv.hits) == 0)
         notice = open(os.path.join(out, 'NOTICE'), encoding='utf-8').read() if os.path.isfile(os.path.join(out, 'NOTICE')) else ''
         ok('--all NOTICE has the PHP acknowledgment', 'This product includes PHP software, freely available from' in notice)
+
+    # 8. --all --engine lean --notices-only writes the lean release SOURCE offline.
+    #    The traced run above is a custom build; this is the prerelease text
+    #    (asset pagefeather-engine-lean.wasm, variant s1-lean).
+    srv.reset()
+    srv.status, srv.body = 500, b'no'
+    with tempfile.TemporaryDirectory() as root:
+        write_tree(root, pin, url)
+        out = os.path.join(root, 'lean-out')
+        r = run(root, ['--all', out, '--engine', 'lean', '--notices-only'])
+        text = r.stdout + r.stderr
+        src = ''
+        notice = ''
+        src_path = os.path.join(out, 'SOURCE')
+        notice_path = os.path.join(out, 'NOTICE')
+        if os.path.isfile(src_path):
+            src = open(src_path, encoding='utf-8').read()
+        if os.path.isfile(notice_path):
+            notice = open(notice_path, encoding='utf-8').read()
+        ok('lean --notices-only exits 0 (rc=%d) %s' % (r.returncode, text.strip().splitlines()[-1:] or ''), r.returncode == 0)
+        ok('lean SOURCE names the workflow and variant s1-lean',
+           '.github/workflows/pagefeather-engine.yml' in src and 'variant s1-lean' in src)
+        ok('lean SOURCE names engine/licenses.tsv and the pin',
+           'engine/licenses.tsv' in src and 'ww' in src)
+        ok('lean SOURCE names pagefeather-engine-lean.wasm', 'pagefeather-engine-lean.wasm' in src)
+        ok('lean SOURCE does not say prepare.sh produced the wasm',
+           'produced from that pinned binary' not in src)
+        ok('lean NOTICE names variant s1-lean', 'variant s1-lean' in notice)
+        ok('lean --notices-only opened no connection (hits %d)' % len(srv.hits), len(srv.hits) == 0)
+        ok('lean --notices-only writes no LICENSES directory', not os.path.isdir(os.path.join(out, 'LICENSES')))
 finally:
     srv.close()
 

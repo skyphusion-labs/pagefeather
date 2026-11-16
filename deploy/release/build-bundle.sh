@@ -123,6 +123,8 @@ if [ -n "$prefix" ]; then mv "$OUT/release/manifest.json" "$OUT/release/${prefix
 tar -czf "$OUT/release/${prefix}wordpress-static.tar.gz" -C "$APP/build" public
 # #584: notices, SOURCE and LICENSES.tar.gz sit next to the wasm. SHA256SUMS
 # hashes every other file in release/, so these cannot be omitted once they are here.
+# Product bundles ship the npm Playground engine (no engine argument).
+# The lean prerelease passes engine lean; this script does not.
 "$REL/package-notices.sh" "$OUT/release" "$prefix"
 ( cd "$OUT/release" && shasum -a 256 $(ls | grep -v "^${prefix}SHA256SUMS\$" | sort) > "${prefix}SHA256SUMS" )
 echo "build-bundle: $engine v$version, build $build_id, main $main, $(ls "$OUT/release" | wc -l | tr -d ' ') assets in $OUT/release"
