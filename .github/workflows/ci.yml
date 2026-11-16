@@ -83,6 +83,7 @@ jobs:
         run: |
           bash deploy/tests/a-settings-test.sh
           bash deploy/tests/fault-inject-test.sh
+          bash deploy/tests/page-cache-ttl-test.sh
           bash deploy/tests/conformance-test.sh
           bash deploy/tests/pdf-invoice-wiring-test.sh
           bash deploy/tests/frames-default-test.sh

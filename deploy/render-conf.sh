@@ -7,6 +7,8 @@
 . "$(dirname "${BASH_SOURCE[0]}")/object-time.sh"
 # shellcheck source=SCRIPTDIR/fault-inject.sh
 . "$(dirname "${BASH_SOURCE[0]}")/fault-inject.sh"
+# shellcheck source=SCRIPTDIR/page-cache-ttl.sh
+. "$(dirname "${BASH_SOURCE[0]}")/page-cache-ttl.sh"
 # shellcheck source=SCRIPTDIR/pdf-invoice.sh
 . "$(dirname "${BASH_SOURCE[0]}")/pdf-invoice.sh"
 render_conf() {
@@ -55,6 +57,8 @@ render_conf() {
   # PAGE_CACHE_PRODUCT_TTL (#706): the same function the one-click paths use. A store renders 30.
   # A non-store renders nothing. deploy.sh refuses a bad value before any step; this refuses it again.
   node "$ROOT/deploy/provision/a-vars-toml.mjs" product-ttl || return 1
+  # PAGE_CACHE_TTL (#759): b-dosql only (c1 renders its own). deploy.sh checked it before any step. Unset writes nothing.
+  if [ "$VARIANT" = b-dosql ]; then page_cache_ttl_check || return 1; page_cache_ttl_line; fi
   # AI alt text (spikes/b2-wordpress/php/ai-alt-text.php): off switch, model, input flavor.
   [ -z "${AI_ALT+x}" ] || echo "AI_ALT = \"$AI_ALT\""
   [ -z "${AI_ALT_MODEL+x}" ] || echo "AI_ALT_MODEL = \"$AI_ALT_MODEL\""

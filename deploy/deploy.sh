@@ -124,6 +124,10 @@ esac
 # shellcheck source=SCRIPTDIR/fault-inject.sh
 . "$ROOT/deploy/fault-inject.sh"
 fault_check "$VARIANT" "${NAME:-}" || exit 2
+# PAGE_CACHE_TTL (#759): the edge page cache seconds on b-dosql (0 = off); checked before any step.
+# shellcheck source=SCRIPTDIR/page-cache-ttl.sh
+. "$ROOT/deploy/page-cache-ttl.sh"
+page_cache_ttl_check "$VARIANT" || exit 2
 # #764: the conformance content (#759: it wipes the store) is for a throwaway only. One rule with deploy/wfp.
 # shellcheck source=SCRIPTDIR/conformance.sh
 . "$ROOT/deploy/conformance.sh"

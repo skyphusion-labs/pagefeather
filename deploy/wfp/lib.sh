@@ -490,6 +490,15 @@ page_cache_product_var() {
   fi
   echo "PAGE_CACHE_PRODUCT_TTL = \"$((10#$v))\""
 }
+# PAGE_CACHE_TTL (#759 pass 2; deploy/page-cache-ttl.sh, the same rule as deploy.sh): the edge page cache seconds
+# (0 = off). Rendered only when set; a RECORDED setting, so an update keeps it, and DROP_SETTINGS=PAGE_CACHE_TTL
+# returns the site to the default (120). Refused (the render fails) outside 0 to 86400.
+page_cache_ttl_var() {
+  # shellcheck source=../page-cache-ttl.sh
+  . "$WFP/../page-cache-ttl.sh"
+  page_cache_ttl_check || return 1
+  page_cache_ttl_line
+}
 # MEM_LEDGER (#394, mem-ledger.mjs): "on" logs the isolate memory ledger on every request and at
 # every cron leg start; "off" or unset leaves it to operator requests (x-mem-ledger: 1). Read from
 # the run's environment only, like PHP_INI. Unset renders nothing (byte for byte as before).
@@ -632,6 +641,8 @@ render_user() { # render_user <site> <origin>
   local page_cache_product; page_cache_product=$(page_cache_product_var) || return 1
   [ -z "$mem_ledger" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$mem_ledger
   [ -z "$page_cache_product" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$page_cache_product
+  local page_cache_ttl; page_cache_ttl=$(page_cache_ttl_var) || return 1
+  [ -z "$page_cache_ttl" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$page_cache_ttl
   local cron_interval; cron_interval=$(cron_interval_var) || return 1
   [ -z "$cron_interval" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$cron_interval
   local oc_remote; oc_remote=$(opcache_remote_var) || return 1
@@ -919,7 +930,7 @@ use_recorded_inputs() {
 # unset is the default list, and set, including empty, is that exact list. site update
 # remembers which one this run is, in http_allow_mode, before local -x collapses unset
 # into empty. Empty denies every host, so a drop sets the mode to unset.
-SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED PDF_INVOICE"
+SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED PDF_INVOICE PAGE_CACHE_TTL"
 # The measurement flags (HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV, site_settings.py MEASUREMENT) are
 # never recorded: ON only for the run that exports them; the next update without one turns it off.
 # A setting render_user reads that is not in this list is DROPPED by an update that does not export
