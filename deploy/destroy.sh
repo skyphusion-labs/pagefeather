@@ -29,6 +29,8 @@ APP="$ROOT/spikes/b2-wordpress"
 export CLOUDFLARE_ACCOUNT_ID=$ACCOUNT_ID
 # shellcheck source=SCRIPTDIR/tf-backend.sh
 . "$ROOT/deploy/tf-backend.sh"
+# shellcheck source=SCRIPTDIR/lib/gone-wait.sh
+. "$ROOT/deploy/lib/gone-wait.sh"
 W=$(mktemp -d "${TMPDIR:-/tmp}/wp-destroy.XXXXXX"); trap 'rm -rf "${W:?}"' EXIT
 
 # The Worker: delete it, then ASK the API whether it is gone. wrangler
@@ -36,22 +38,27 @@ W=$(mktemp -d "${TMPDIR:-/tmp}/wp-destroy.XXXXXX"); trap 'rm -rf "${W:?}"' EXIT
 # 2026-11-06: it failed on a KV listing after the delete), and it can also
 # fail with the Worker still there. So its exit status is reported as a fact,
 # and the API decides: 404 is gone (go on), 200 is still there (stop before
-# the data plane), anything else is unknown (stop). CF_API exists for
-# deploy/tests/destroy-test.sh.
+# the data plane), anything else is unknown (stop). The API is read until it says 404, for up to
+# GONE_WAIT_S (#789, deploy/lib/gone-wait.sh): a just-deleted Worker can read 200 for 30 s or more. CF_API exists
+# for deploy/tests/destroy-test.sh.
 CF_API=${CF_API:-https://api.cloudflare.com/client/v4}
 worker_status() { # -> HTTP status of GET .../workers/scripts/NAME
   curl -s -o /dev/null -w '%{http_code}' -m 30 -K <(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN") "$CF_API/accounts/$ACCOUNT_ID/workers/scripts/$NAME" || echo 000
 }
+worker_gone_state() { gone_http_state "$(worker_status)"; }
 delete_worker() { # delete_worker <command...>
-  local rc=0 code
+  local rc=0
   "$@" || rc=$?
   echo "destroy: wrangler delete for $NAME exited $rc"
-  code=$(worker_status)
-  case "$code" in
-    404) echo "destroy: Worker $NAME is gone (API: 404)" ;;
-    200) echo "destroy: Worker $NAME STILL EXISTS (API: 200). Stopping before the data plane; delete it, then run this again." >&2; exit 1 ;;
-    *) echo "destroy: cannot tell whether Worker $NAME is gone (API: HTTP $code). Stopping before the data plane." >&2; exit 1 ;;
+  if wait_gone worker_gone_state; then
+    echo "destroy: Worker $NAME is gone (API: 404)$(gone_waited_note)"
+    return 0
+  fi
+  case "$GONE_LAST" in
+    200) echo "destroy: Worker $NAME STILL EXISTS (API: 200) after ${GONE_WAITED} s. Stopping before the data plane; delete it, then run this again." >&2 ;;
+    *) echo "destroy: cannot tell whether Worker $NAME is gone (API: HTTP $GONE_LAST) after ${GONE_WAITED} s. Stopping before the data plane." >&2 ;;
   esac
+  exit 1
 }
 
 # 1. Checks, before anything is deleted.

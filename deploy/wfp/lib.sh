@@ -1192,6 +1192,21 @@ api() { # api <method> <path> [curl args...]: prints the body, then a line with 
   curl_cfg "$text" -s -m 60 -X "$m" -w '\n%{http_code}' "$API$p" "$@"
 }
 api_code() { api "$@" | tail -1; }
+# The bounded gone checks (#789, deploy/lib/gone-wait.sh): a just-deleted script can read back as present for 30 s
+# or more, so each check polls up to GONE_WAIT_S (90) and an unreadable read (000, 5xx, unknown) is never gone.
+# shellcheck source=../lib/gone-wait.sh
+. "$WFP/../lib/gone-wait.sh"
+gone_api_state() { gone_http_state "$(api_code GET "$1")"; }
+# gone <what> <API path>: 404 (polled), or stop with the last state. Used by site.sh down and down.sh.
+gone() {
+  if wait_gone gone_api_state "$2"; then echo "  $1 is gone (API 404)$(gone_waited_note)"; return 0; fi
+  echo "  $1 is NOT gone (API $GONE_LAST) after ${GONE_WAITED} s: stopping" >&2; exit 1
+}
+# ns_gone <what> <script>: gone from the namespace by ns_script_state (polled), or stop with the last state.
+ns_gone() {
+  if wait_gone ns_script_state "$2"; then echo "  $1 is gone (not in the namespace list; the single GET is 404 or an empty record)$(gone_waited_note)"; return 0; fi
+  echo "  $1 is NOT known to be gone ($GONE_LAST) after ${GONE_WAITED} s: stopping" >&2; exit 1
+}
 # A script in the namespace: present, gone or unknown. The HTTP status of the
 # single GET is NOT enough: after a DELETE it can answer 200 with success true
 # and a record whose script id is null (a ghost, seen live 2026-11-06 on

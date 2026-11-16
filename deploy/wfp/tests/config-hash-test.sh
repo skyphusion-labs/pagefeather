@@ -497,7 +497,8 @@ measurement=" DISPATCH_PERF_LOG FAULT_INJECT HEADROOM_PROBE MEM_LEDGER WFP_PHP_E
 # a store renders PAGE_CACHE_PRODUCT_TTL 30). They are recorded BUILD INPUTS (_build/inputs.json, #379), restored
 # by use_recorded_inputs before the render, so an update keeps them without SITE_SETTINGS.
 buildinputs=" WOO_ACTIVE IMPORT_PLUGINS PLUGINS "
-notset=" API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN OBSERVABILITY TMPDIR THROWAWAY$measurement$buildinputs"
+# GONE_LAST, GONE_WAITED (#789): the outputs of the bounded gone check (deploy/lib/gone-wait.sh), set per call, never a setting.
+notset=" API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN OBSERVABILITY TMPDIR THROWAWAY GONE_LAST GONE_WAITED$measurement$buildinputs"
 settings=" $(bash -c '. "'"$LIB"'"; echo $SITE_SETTINGS') "
 miss=""; for n in $derived; do case "$settings$notset" in *" $n "*) ;; *) miss="$miss $n" ;; esac; done
 ok "#558 every env name render_user reads is a recorded setting or named with a reason (missing:${miss:- none})" "$([ -z "$miss" ] && [ -n "$derived" ] && printf '%s\n' $derived | grep -qx HEADROOM_PROBE && echo 1 || echo 0)"
