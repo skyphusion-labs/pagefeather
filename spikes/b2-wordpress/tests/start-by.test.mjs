@@ -259,9 +259,18 @@ test('#752 tickFetch: GET <origin>/_tick; a 204 resolves; anything else, an erro
 	await assert.rejects(tickFetch('https://s.example', { fetchImpl: async () => new Response('x', { status: 500 }) }), /tick answered 500/);
 	await assert.rejects(tickFetch('https://s.example', { fetchImpl: async () => { throw new Error('1042'); } }), /1042/);
 	const hang = (u, init) => new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(new Error('aborted'))));
-	const t0 = Date.now();
-	await assert.rejects(tickFetch('https://s.example', { fetchImpl: hang, timeoutMs: 50 }));
-	assert.ok(Date.now() - t0 < 2000, 'a hung tick is cut at its timeout');
+	// Node's AbortSignal.timeout timer is unref'd: with nothing else pending, the event loop empties before it fires and
+	// the runner cancels the test (CI, Node 22: "Promise resolution is still pending but the event loop has already
+	// resolved"). A ref'd timer holds the loop open while the hung tick waits for its timeout. (The Workers runtime has no
+	// unref; this is the test harness only.)
+	const keep = setInterval(() => {}, 1000);
+	try {
+		const t0 = Date.now();
+		await assert.rejects(tickFetch('https://s.example', { fetchImpl: hang, timeoutMs: 50 }));
+		assert.ok(Date.now() - t0 < 2000, 'a hung tick is cut at its timeout');
+	} finally {
+		clearInterval(keep);
+	}
 });
 test('#752 tickResponse: a 204 that no cache keeps', () => {
 	const r = tickResponse();
