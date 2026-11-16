@@ -33,6 +33,8 @@ if [ "$cmd" = update ] && [ "$s" != "--all" ]; then obs_refuse_full "$s" || exit
 # #736: FAULT_INJECT (#730, deploy/fault-inject.sh) is refused here too, before shared init, the build or any
 # upload. render_user keeps its own call as the last guard.
 if [ "$cmd" = add ] || { [ "$cmd" = update ] && [ "$s" != "--all" ]; }; then fault_inject_var "$s" >/dev/null || exit 2; fi
+# #764: conformance content (deploy/conformance.sh) is refused here too, before shared init, the build or any upload.
+if [ "$cmd" = add ] || { [ "$cmd" = update ] && [ "$s" != "--all" ]; }; then conformance_var "$s" || exit 2; fi
 tfr shared init -input=false >/dev/null
 KV_ID=$(tfr shared output -raw kv_namespace_id 2>/dev/null) || { echo "no shared pieces (run up.sh first)" >&2; exit 2; }
 [ -n "$KV_ID" ] || { echo "no shared pieces (run up.sh first)" >&2; exit 2; }
@@ -94,6 +96,9 @@ update_one_inner() {
   local REC_TREE=""
   echo "site $s: the recorded build inputs"
   use_recorded_inputs "$bucket" "$WDIR" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
+  # #764: the RECORDED inputs can carry conformance content too: checked again on them, before the snapshot,
+  # the build and the upload.
+  conformance_var "$s" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
   # The site's recorded settings (#558): kept unless this run sets one or DROP_SETTINGS names it.
   # local -x keeps them inside this one update (update --all runs many).
   # #564: HTTP_ALLOW_HOSTS is unset, empty, or a list. The local -x line turns unset into

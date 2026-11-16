@@ -119,6 +119,10 @@ esac
 # shellcheck source=SCRIPTDIR/fault-inject.sh
 . "$ROOT/deploy/fault-inject.sh"
 fault_check "$VARIANT" "${NAME:-}" || exit 2
+# #764: the conformance content (#759: it wipes the store) is for a throwaway only. One rule with deploy/wfp.
+# shellcheck source=SCRIPTDIR/conformance.sh
+. "$ROOT/deploy/conformance.sh"
+conformance_check "${NAME:-}" || exit 2
 # PDF_INVOICE (#765): PDF order invoices, b-dosql only, the same switch as deploy/wfp and one-click.
 # shellcheck source=SCRIPTDIR/pdf-invoice.sh
 . "$ROOT/deploy/pdf-invoice.sh"
