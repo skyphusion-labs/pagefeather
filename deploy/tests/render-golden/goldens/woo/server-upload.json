@@ -76,6 +76,11 @@
           },
           {
             "type": "plain_text",
+            "name": "PAGE_CACHE_PRODUCT_TTL",
+            "text": "30"
+          },
+          {
+            "type": "plain_text",
             "name": "OBJECT_CACHE_L2",
             "text": "on"
           },

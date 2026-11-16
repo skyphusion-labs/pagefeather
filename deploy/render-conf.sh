@@ -41,6 +41,9 @@ render_conf() {
   [ "$VARIANT" != a ] || a_overflow_vars
   # WOO_EXTRAS (#667): off only. Checked above, before any step. Unset writes nothing.
   [ -z "${WOO_EXTRAS:-}" ] || echo 'WOO_EXTRAS = "off"'
+  # PAGE_CACHE_PRODUCT_TTL (#706): the same function the one-click paths use. A store renders 30.
+  # A non-store renders nothing. deploy.sh refuses a bad value before any step; this refuses it again.
+  node "$ROOT/deploy/provision/a-vars-toml.mjs" product-ttl || return 1
   # AI alt text (spikes/b2-wordpress/php/ai-alt-text.php): off switch, model, input flavor.
   [ -z "${AI_ALT+x}" ] || echo "AI_ALT = \"$AI_ALT\""
   [ -z "${AI_ALT_MODEL+x}" ] || echo "AI_ALT_MODEL = \"$AI_ALT_MODEL\""

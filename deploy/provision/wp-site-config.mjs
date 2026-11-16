@@ -19,6 +19,50 @@
 import { genSecret } from './shared.mjs';
 import { freshKVNamespace, createQueue, createVectorizeIndex } from './ops.mjs';
 
+// PAGE_CACHE_PRODUCT_TTL (#706). The same rule as deploy/wfp lib.sh page_cache_product_var.
+// A store renders "30" when the override is unset. A site that is not a store renders nothing
+// (product pages keep 120 s). An override is an integer from 5 to 600. A leading zero is decimal.
+// Anything else throws, before the caller reads a bundle or makes an API call.
+// A store: an explicit WOO_ACTIVE of 0 or 1 wins (0 is not a store, even over the store flag and
+// over a plugin list). Else the one-click store flag. Else the token woocommerce in IMPORT_PLUGINS
+// or PLUGINS. A bad WOO_ACTIVE throws, and is never read as "not a store".
+export function pageCacheInputs(env = {}, { store = false } = {}) {
+  return {
+    wooActive: env.WOO_ACTIVE,
+    importPlugins: env.IMPORT_PLUGINS,
+    plugins: env.PLUGINS,
+    pageCacheProductTtl: env.PAGE_CACHE_PRODUCT_TTL,
+    store: store === true,
+  };
+}
+function wooActiveValue({ wooActive, importPlugins, plugins, store }) {
+  if (wooActive === undefined || wooActive === null || wooActive === '') {
+    if (store === true) return 1;
+    const tokens = `${importPlugins || ''} ${plugins || ''}`.split(/\s+/);
+    return tokens.includes('woocommerce') ? 1 : 0;
+  }
+  const w = String(wooActive);
+  if (w !== '0' && w !== '1') throw new Error(`WOO_ACTIVE must be 0 or 1, not ${w}`);
+  return w === '1' ? 1 : 0;
+}
+export function pageCacheProductTtl(opts = {}) {
+  const woo = wooActiveValue(opts);
+  let raw = opts.pageCacheProductTtl;
+  if (raw === undefined || raw === null || raw === '') {
+    if (woo !== 1) return null;
+    raw = '30';
+  }
+  const s = String(raw);
+  if (!/^[0-9]{1,3}$/.test(s)) throw new Error(`PAGE_CACHE_PRODUCT_TTL must be an integer from 5 to 600, not ${s}`);
+  const n = Number(s);
+  if (n < 5 || n > 600) throw new Error(`PAGE_CACHE_PRODUCT_TTL must be an integer from 5 to 600, not ${s}`);
+  return String(n);
+}
+function assignPageCacheProduct(vars, opts) {
+  const text = pageCacheProductTtl(opts);
+  if (text !== null) vars.PAGE_CACHE_PRODUCT_TTL = text;
+}
+
 // ---- b-dosql integration-descriptor table (#201 Phase 1) --------------------
 // The provisioning core builds a b-dosql site's bindings, vars and generated
 // secrets from a TABLE of integration descriptors, not a hand-edited inline
@@ -67,7 +111,7 @@ import { freshKVNamespace, createQueue, createVectorizeIndex } from './ops.mjs';
 // turn on the default-on gates in index.js (object cache, route cache, theme.json
 // cache, async email, bootstrap trim, media-write trim): index.js enables each
 // unless its var is "off", so the site gets them with no gate var set.
-function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, demo, codeLock } = {}) {
+function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, demo, codeLock, wooActive, importPlugins, plugins, pageCacheProductTtl, store } = {}) {
   if (!siteOrigin) throw new Error('bDosqlVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
   const vars = {
     PHP_ENV: '{"USE_ZEND_ALLOC":"0"}',
@@ -98,6 +142,8 @@ function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mail
   // A one-click site (opts.codeLock, #406) locks plugin and theme code but keeps
   // mail. A demo site already locks code through DEMO_LOCK, so it stays byte-identical.
   else if (codeLock === true) vars.CODE_LOCK = 'on';
+  // #706: after the always-on six, so a non-store stays byte-identical.
+  assignPageCacheProduct(vars, { wooActive, importPlugins, plugins, pageCacheProductTtl, store });
   return vars;
 }
 
@@ -431,6 +477,8 @@ export function aVars({
   objectCacheVersions = false,
   // #697: WooCommerce HPOS Data Caching (per request on A). Off by default; only a real true turns it on.
   wooHposCache = false,
+  // #706: the same store rule as b-dosql. Unset on a non-store adds no var.
+  wooActive, importPlugins, plugins, pageCacheProductTtl, store,
 } = {}) {
   if (!siteOrigin) throw new Error('aVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
   const vars = {
@@ -464,6 +512,7 @@ export function aVars({
     vars.MAIL_FROM = mailFrom;
     if (mailFromName) vars.MAIL_FROM_NAME = mailFromName;
   }
+  assignPageCacheProduct(vars, { wooActive, importPlugins, plugins, pageCacheProductTtl, store });
   return Object.entries(vars).map(([name, text]) => ({ type: 'plain_text', name, text }));
 }
 
@@ -483,6 +532,7 @@ export function aBindings({
   mediaBucket, hyperdriveId, siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheVersions, wooHposCache,
   objectCacheGroups, objectCacheTtl, lazyCacheMb, ocKvNamespaceId, ocKvBinding = 'OC_KV',
   mailFrom, mailFromName, extra = [],
+  wooActive, importPlugins, plugins, pageCacheProductTtl, store,
 } = {}) {
   if (!mediaBucket) throw new Error('aBindings: mediaBucket is required');
   if (!hyperdriveId) throw new Error('aBindings: hyperdriveId is required (the Hyperdrive config id from onboarding)');
@@ -491,7 +541,7 @@ export function aBindings({
   // only if the caller already knows it (e.g. a re-provision passing the id).
   if (ocKvNamespaceId) ocKv.namespace_id = ocKvNamespaceId;
   return [
-    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName, objectCacheVersions, wooHposCache }),
+    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName, objectCacheVersions, wooHposCache, wooActive, importPlugins, plugins, pageCacheProductTtl, store }),
     { type: 'images', name: 'IMAGES' },
     { type: 'r2_bucket', name: 'MEDIA', bucket_name: mediaBucket },
     { type: 'hyperdrive', name: 'HYPERDRIVE', id: hyperdriveId },

@@ -72,6 +72,7 @@ jobs:
         run: |
           bash deploy/tests/a-settings-test.sh
           bash deploy/tests/a-render-test.sh
+          bash deploy/tests/page-cache-product-test.sh
           bash deploy/tests/observability-test.sh
           bash spikes/b2-wordpress/tests/trace-filter-test.sh
       - name: doctor reads Workers Logs and never reports zero rows or console-only logs as healthy (#652)
@@ -422,6 +423,7 @@ jobs:
           node deploy/provision/tests/cli-test.mjs
           node deploy/provision/tests/worker-test.mjs
           node deploy/provision/tests/server-config-test.mjs
+          node deploy/provision/tests/page-cache-product-test.mjs
           node deploy/provision/tests/wp-site-config-test.mjs
           node deploy/provision/tests/descriptor-table-test.mjs
           node deploy/provision/tests/a-site-config-test.mjs

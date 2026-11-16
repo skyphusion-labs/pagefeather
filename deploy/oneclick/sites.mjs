@@ -252,7 +252,7 @@ export async function addSite(env, { body, fetchImpl, dispatcherSource }) {
     await readHyperdrive(ctx, db.id);
     aOpts = { hyperdriveId: db.id, tablePrefix: tablePrefixFor(req.name) };
   }
-  const cfg = await buildServerCfg(penv, { kind, name: req.name, domain: 'workers.dev', codeLock: true, ...aOpts });
+  const cfg = await buildServerCfg(penv, { kind, name: req.name, domain: 'workers.dev', codeLock: true, ...aOpts, store });
   cfg.outbound = false;
 
   if (kind === 'wp') {

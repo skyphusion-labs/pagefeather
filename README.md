@@ -85,7 +85,7 @@ We would rather you hear these from us before you build on the project than find
   When a product sells out, the page is cleared: it said "out of stock" within 23 s. The checkout
   always reads the real stock, so it never sells more than you have. If your pages show exact stock
   numbers, see [Stock numbers on cached pages](docs/from-lamp-to-wfp.md#stock-numbers-on-cached-pages)
-  for the WooCommerce setting that avoids this. Since #628, a deploy/wfp store caches its product,
+  for the WooCommerce setting that avoids this. Since #628, a store caches its product,
   shop and category pages for 30 s by default (`PAGE_CACHE_PRODUCT_TTL`). There, the number is at
   most about 30 s old.
 - **On a WooCommerce store, bundle size is the first wall.** A Worker is limited to 64 MiB
