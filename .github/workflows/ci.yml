@@ -414,6 +414,7 @@ jobs:
         run: |
           deploy/wfp/tests/dbsnap-test.sh
           python3 -I deploy/wfp/tests/fresh-test.py
+          python3 -I deploy/wfp/tests/options-diff-test.py
           python3 -I deploy/wfp/tests/tempdir-clean-test.py
           deploy/wfp/tests/wait-build-test.sh
           deploy/wfp/tests/curl-k-file-test.sh
