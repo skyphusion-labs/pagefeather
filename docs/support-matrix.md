@@ -30,7 +30,7 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 
 | feature | Free DO | Paid DO | WfP | Hyperdrive |
 |---|---|---|---|---|
-| Install, pages, login, dashboard | yes (#638); the first-request failure (#756) not measured here | limited: the first request after a deploy (#756) | limited: the first request after a deploy (#756) | yes ([results.md](results.md) 2026-11-05, `e2e.sh` 17 of 17) |
+| Install, pages, login, dashboard | yes (#638) | yes ([results.md](results.md) 2026-11-07, `cochk4`); limited: the first page after a fresh install (#756) | limited: the first page after a fresh install (#756) | yes ([results.md](results.md) 2026-11-05, `e2e.sh` 17 of 17) |
 | The block editor | yes, plain WordPress (#638); limited on a store (#638) | limited: memory ceiling (#768) | limited: memory ceiling (#768) | not measured |
 | REST API | limited: fresh installs (#760) | limited: fresh installs (#760) | limited: fresh installs (#760) | not measured |
 | Application passwords and HTTP Basic | yes in code (#762); live run pending | yes in code (#762); live run pending | yes in code (#762); live run pending | not measured |
@@ -41,13 +41,13 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 | Search | not measured; semantic search limited (opt-in, plugin change) | the same | the same | not measured |
 | Comments | not measured | not measured | not measured | not measured |
 | Multisite | not measured | not measured | not measured | not measured |
-| Installing plugins and themes from wp-admin | no, by design | no, by design | no, by design | no, by design |
+| Installing plugins and themes from wp-admin | no, by design ([why](#plugins-and-themes-are-not-installed-from-wp-admin-by-design)) | no, by design | no, by design | no, by design |
 
 ## WooCommerce
 
 | feature | Free DO | Paid DO | WfP | Hyperdrive |
 |---|---|---|---|---|
-| Catalog: shop and product pages | yes (#638); limited: false 404 (#766) | yes ([results.md](results.md) 2026-11-07, `cochk4`); limited: false 404 (#766) | limited: false 404 (#766); stock on cached pages (#628) | yes ([results.md](results.md) 2026-11-09, `wp-a-lean` 12 of 12) |
+| Catalog: shop and product pages | yes (#638); limited: false 404 (#766; fix in PR #770, open) | yes ([results.md](results.md) 2026-11-07, `cochk4`); limited: false 404 (#766; fix in PR #770, open) | limited: false 404 (#766; fix in PR #770, open); stock on cached pages (#628) | yes ([results.md](results.md) 2026-11-09, `wp-a-lean` 12 of 12) |
 | Cart and checkout | yes (#638) | yes ([results.md](results.md) 2026-11-08, `woocap`; the flaky failure fixed in #208) | yes (#704, `pf704`: `load.py` checkouts placed orders) | yes ([results.md](results.md) 2026-11-09, three runs of 12 of 12) |
 | Editing the store in wp-admin | no: memory (#638) | not measured | not measured | not measured |
 | Payments | not measured | cash on delivery: yes ([results.md](results.md) 2026-11-07, `cochk4`); other gateways not measured | not measured | not measured |
@@ -64,13 +64,18 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 | feature | `deploy/deploy.sh` | `deploy/wfp` | one-click |
 |---|---|---|---|
 | PDF invoices | no: no `BROWSER` binding (#765; PR #769 is open) | no: no `BROWSER` binding (#765; PR #769 is open) | yes (#765) |
-| Update and remove a site | not measured | not measured | no: add only (#765; an issue for it is being filed) |
+| Update a site | yes: `CODE_ONLY=1` in `.github/workflows/deploy-workers.yml` (the live sites `woocap`, `zarapo`) | yes: `deploy/wfp/site update` (#642; the #724 throwaways, 2026-11-16; ggc.sh) | no: add only (#765; an issue for it is being filed) |
+| Remove a site | not measured (`deploy/destroy.sh`) | yes: `deploy/wfp/site remove` (`pf704`, #704; the #724 throwaways) | no: add only (#765) |
 
 ## Limited, and why
 
-### The first request after a deploy fails (#756)
+### The first page after a fresh install can fail (#756)
 
-On b-dosql, the first request to the PHP object after each deploy ended `exceededMemory`. That happened on 5 of 5 deploys on 2026-11-16. A shopper can see that error after every site update. #756 is open.
+This was measured on b-dosql with the npm engine, on 2026-11-16. Five of 5 deploys ran `/_install`, and then the first page died with `exceededMemory`. A fresh install boots a new PHP runtime on purpose, and the old one is still held at that moment.
+
+Live sites do not update that way. They update with a code-only deploy (`CODE_ONLY=1`), with no install. On the lean engine (`pf724l0`, 2026-11-16), all 9 first pages after code-only updates answered 200. The one failure there was the `/_install` request itself. Its logs are being re-run.
+
+So this may be a fresh-install defect only. Whether a code-only update fails is still being measured. #756 is open.
 
 ### The block editor reaches the memory ceiling (#768)
 
@@ -112,7 +117,9 @@ The `vectorize-search` descriptor is opt-in. The search engine is the skyphusion
 
 ### Plugins and themes are not installed from wp-admin (by design)
 
-Every site is code-locked. `wp-config.php` sets `DISALLOW_FILE_MODS` and `DISALLOW_FILE_EDIT`. A plugin, theme or core install or update is a code deploy, pinned by content hash in the build (#458). See [from-lamp-to-wfp.md](from-lamp-to-wfp.md).
+WordPress, its plugins and its themes run from the Worker's code bundle. The bundle is read-only at run time: a site has no writable disk to install into. So plugins and themes ship in the build, pinned by content hash, and a change is a code deploy (#458).
+
+To make that plain in wp-admin, every site is code-locked. `wp-config.php` sets `DISALLOW_FILE_MODS` and `DISALLOW_FILE_EDIT`, so the install, update and editor screens are off. See [from-lamp-to-wfp.md](from-lamp-to-wfp.md).
 
 ## Not measured, and what will measure it
 
