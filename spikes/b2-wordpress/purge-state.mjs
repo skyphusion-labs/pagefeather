@@ -13,6 +13,10 @@ import { STALE_S } from './page-cache-ttl.mjs';
 export const PURGE_GAP_MS = 15000;
 // After a refusal: one refill of the account bucket (5 a minute is one token per 12 s), then twice, then 48 s.
 export const RETRY_MS = [12000, 24000, 48000];
+// The one result that is NOT retried: the Pages entrypoint has no ctx.cache on this runtime (local wrangler dev), so
+// no purge can ever succeed there. index.js Pages.purge returns { ok: false, error: NO_CACHE_API }. A purge that THREW
+// is a different case: index.js catches it as { ok: false, errors: [message] }, and it is retried like a refusal.
+export const NO_CACHE_API = 'no cache API';
 
 // How long a pending purge is still worth sending: the longest time a page copy can be served after the change that
 // asked for it. index.js reads the TTL as Number(env.PAGE_CACHE_TTL || 120); 0 (or junk) turns the page cache off,
@@ -60,8 +64,9 @@ export function onResult(st, now, r, covered) {
 		s.lastCode = null;
 		return { st: s, alarmAt: null, outcome: 'ok' };
 	}
-	// No cache API (locally): nothing can purge, so nothing to retry.
-	if (r && r.error) {
+	// No cache API on this runtime: nothing can ever purge, so it is dropped (deliberate, #699 review). Only this exact
+	// marker drops; any other error, a thrown purge included, falls through and is retried with the back-off.
+	if (r && r.error === NO_CACHE_API) {
 		s.attempts = 0;
 		return { st: s, alarmAt: null, outcome: 'unavailable' };
 	}

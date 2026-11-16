@@ -4,11 +4,13 @@
 // Run: node --test spikes/b2-wordpress/tests/purge-state.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PURGE_GAP_MS, RETRY_MS, purgeWindowMs, onAsk, onDue, onResult } from '../purge-state.mjs';
+import { PURGE_GAP_MS, RETRY_MS, NO_CACHE_API, purgeWindowMs, onAsk, onDue, onResult } from '../purge-state.mjs';
 
 const REFUSED = { ok: false, errors: [{ code: 1134, message: 'Unable to purge, rate limit reached.' }] };
 const OK = { ok: true, errors: [] };
-const LOCAL = { ok: false, errors: [], error: 'no cache API' };
+const LOCAL = { ok: false, errors: [], error: NO_CACHE_API };
+// A purge that threw: index.js catches it as errors only, no error field.
+const THREW = { ok: false, errors: ['TypeError: network connection lost'] };
 
 // Drive one send: due, then the result. Returns the state and the next alarm.
 function send(st, now, r, windowMs = 720000) {
@@ -114,12 +116,27 @@ test('a refused purge keeps retrying up to the window, then expires', () => {
 	assert.ok(now > 720000, 'and stopped only after the window');
 });
 
-test('no cache API (local): nothing to retry, as today', () => {
+test('no cache API on this runtime (r.error is the marker): DROPPED on purpose, nothing can ever purge there', () => {
 	const st = onAsk({ lastSent: 0 }, 1000).st;
 	const r = send(st, 16000, LOCAL);
 	assert.equal(r.outcome, 'unavailable');
 	assert.equal(r.st.pending, false);
 	assert.equal(r.alarmAt, null);
+});
+
+test('a purge that THREW (errors, no error field) is kept and retried, not dropped', () => {
+	const st = onAsk({ lastSent: 0 }, 1000).st;
+	const r = send(st, 16000, THREW);
+	assert.equal(r.outcome, 'refused');
+	assert.equal(r.st.pending, true);
+	assert.equal(r.alarmAt, 16000 + RETRY_MS[0]);
+});
+
+test('any other error value is kept and retried: only the exact no-cache marker drops', () => {
+	const st = onAsk({ lastSent: 0 }, 1000).st;
+	const r = send(st, 16000, { ok: false, errors: [], error: 'something else went wrong' });
+	assert.equal(r.st.pending, true);
+	assert.notEqual(r.alarmAt, null);
 });
 
 test('the page cache off (window 0): a pending purge expires at once, never sent', () => {

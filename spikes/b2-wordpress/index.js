@@ -51,7 +51,7 @@ import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse } from './overflow.mjs';
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
-import { PURGE_GAP_MS, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
+import { PURGE_GAP_MS, NO_CACHE_API, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
@@ -3827,7 +3827,7 @@ export class Pages extends WorkerEntrypoint {
 	// An RPC method, so not cached. A purge reaches only the cache of the
 	// entrypoint that calls it, so the purge of the page cache runs here.
 	async purge(tags) {
-		if (!this.ctx.cache) return { ok: false, error: 'no cache API' };
+		if (!this.ctx.cache) return { ok: false, error: NO_CACHE_API }; // purge-state.mjs drops only this (#699)
 		const r = await this.ctx.cache.purge({ tags });
 		return { ok: !!(r && r.success !== false), errors: (r && r.errors) || [] };
 	}
