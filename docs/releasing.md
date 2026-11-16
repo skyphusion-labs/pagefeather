@@ -30,7 +30,7 @@ A release is a version of this repository, `vX.Y.Z`. The version is in the file 
    - refuses a release that already has assets (assets are never replaced, see below);
    - builds both bundles with `deploy/release/build-bundle.sh` (the b-dosql bundle, then `BUNDLE_ENGINE=a` for the approach-A bundle of the Hyperdrive store, #431), uploads them in one upload, then downloads them again and checks every file of each.
 
-5. Read the Release page. It must list `manifest.json`, `SHA256SUMS`, `wordpress-static.tar.gz` and the modules (`index.js` and the `.wasm` and `.zip` files).
+5. Read the Release page. It must list `manifest.json`, `SHA256SUMS`, `wordpress-static.tar.gz`, `NOTICE`, `SOURCE`, `LICENSES.tar.gz` and the modules (`index.js` and the `.wasm` and `.zip` files). The approach-A bundle is the same names with the `a.` prefix.
 
 If the build fails, fix the cause on `main` and cut the next PATCH version. To run the build again for a tag whose Release has no assets yet, run the workflow by hand with that tag (`gh workflow run release-bundle.yml -f tag=v0.1.0`).
 

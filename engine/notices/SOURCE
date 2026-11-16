@@ -1,0 +1,40 @@
+The pagefeather engine: corresponding source
+
+Build: engine/build.sh in https://github.com/skyphusion-labs/pagefeather (this
+release's tag), with engine/patches/ and engine/UPSTREAM at that tag.
+
+The product bundle (deploy/release) ships the Playground php-wasm binary
+pinned in engine/UPSTREAM: wasm sha256 4a35d44ed3decb9b9db529c6802a7c4e16bf921c469cc7613478a645b5e68da8, loader sha256 aecfbb4aa0303bad244952e0ec850e8ee9429e235a21636ab6ccd708a67befb6.
+
+Upstream pipeline: https://github.com/WordPress/wordpress-playground at commit dcd8e50fb65121726bb23a686746f68032ff1cb1
+  (packages/php-wasm/compile, git tree 09fefb02c2057d07a448df4322a0077f53dc9bc2)
+PHP: php-src tag php-8.3.36, commit 5ba6ad519229ac09fc4fc74155c76bdca69ae0de
+Emscripten: 4.0.19
+
+Changes relative to that upstream live in this repository at the same tag:
+engine/patches/, engine/fileinfo/ and engine/opcache/. Each patch file has a
+header that says why.
+
+Each library, the version, and where its source is (the URL the upstream recipe
+downloads, fetched at the pinned version when this file was written):
+- dlmalloc 2.8.6: https://raw.githubusercontent.com/emscripten-core/emscripten/4.0.19/system/lib/dlmalloc.c
+- Emscripten (runtime JS and system libraries) 4.0.19: https://raw.githubusercontent.com/emscripten-core/emscripten/4.0.19/LICENSE
+- GNU libiconv 1.17: https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.17.tar.gz
+- libgd 2.3.3: https://github.com/libgd/libgd/releases/download/gd-2.3.3/libgd-2.3.3.tar.gz
+- libjpeg-turbo 3.0.3: https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.0.3/libjpeg-turbo-3.0.3.tar.gz
+- libpng 1.6.39: https://download.sourceforge.net/libpng/libpng-1.6.39.tar.gz
+- libwebp (and sharpyuv) 845d547: https://chromium.googlesource.com/webm/libwebp/+archive/845d5476a866141ba35ac133f856fa62f0b7445f.tar.gz
+- libxml2 2.9.10: https://download.gnome.org/sources/libxml2/2.9/libxml2-2.9.10.tar.xz
+- libzip 1.9.2: https://libzip.org/download/libzip-1.9.2.tar.gz
+- LLVM compiler-rt emscripten 4.0.19: https://raw.githubusercontent.com/emscripten-core/emscripten/4.0.19/system/lib/compiler-rt/LICENSE.TXT
+- musl libc emscripten 4.0.19: https://raw.githubusercontent.com/emscripten-core/emscripten/4.0.19/system/lib/libc/musl/COPYRIGHT
+- OpenSSL 1.1.1t: https://www.openssl.org/source/old/1.1.1/openssl-1.1.1t.tar.gz
+- pagefeather repo: LICENSE in this repository
+- PHP 8.3.36: https://raw.githubusercontent.com/php/php-src/5ba6ad519229ac09fc4fc74155c76bdca69ae0de/LICENSE
+- SQLite 3.51.0: https://sqlite.org/2025/sqlite-autoconf-3510000.tar.gz
+- the third-party code bundled in PHP 8.3.36: https://raw.githubusercontent.com/php/php-src/5ba6ad519229ac09fc4fc74155c76bdca69ae0de/README.REDIST.BINS
+- WordPress Playground php-wasm dcd8e50: https://raw.githubusercontent.com/WordPress/wordpress-playground/dcd8e50fb65121726bb23a686746f68032ff1cb1/LICENSE
+- Zend Engine 8.3.36: https://raw.githubusercontent.com/php/php-src/5ba6ad519229ac09fc4fc74155c76bdca69ae0de/Zend/LICENSE
+- zlib 1.2.13: https://github.com/madler/zlib/releases/download/v1.2.13/zlib-1.2.13.tar.gz
+
+This list is every row of engine/licenses.tsv (no wasm-ld trace).

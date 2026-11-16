@@ -101,7 +101,9 @@ def write_tree(root, sha, url):
         'UPSTREAM_COMPILE_TREE=def\n'
         'PHP_REF=php-test\n'
         'PHP_REF_COMMIT=012\n'
-        'EMSDK_VERSION=0\n')
+        'EMSDK_VERSION=0\n'
+        'SHIPPED_WASM_SHA256=ww\n'
+        'SHIPPED_JS_SHA256=jj\n')
     inputs = os.path.join(root, 'link-inputs.txt')
     open(inputs, 'w', encoding='utf-8').write('/work/libfixture.a\n')
     return inputs
@@ -273,6 +275,33 @@ try:
         text = r.stdout + r.stderr
         ok('two rows that share one URL still pass (rc=%d)' % r.returncode, r.returncode == 0)
         ok('the shared URL opened no connection (hits %d)' % len(srv.hits), len(srv.hits) == 0)
+
+    # 7. --all writes every row with no link-inputs file, still offline with --archives.
+    srv.reset()
+    srv.status, srv.body = 500, b'no'
+    with tempfile.TemporaryDirectory() as root:
+        inputs = write_tree(root, pin, url)
+        open(os.path.join(root, 'LICENSE'), 'w', encoding='utf-8').write('GPL fixture\n')
+        local_pin = hashlib.sha256(b'GPL fixture\n').hexdigest()
+        open(os.path.join(root, 'engine', 'licenses.tsv'), 'w', encoding='utf-8').write('\n'.join([
+            '\t'.join(['pagefeather.txt', 'pagefeather', 'repo', 'GPL-2.0-or-later', 'ALWAYS', 'local', 'LICENSE', '-', '-', local_pin]),
+            '\t'.join([ROW, 'Fixture', '1', 'MIT', r'/libfixture\.a$', 'tar', url, MEMBER, '-', pin]),
+        ]) + '\n')
+        archives = os.path.join(root, 'archives')
+        os.makedirs(archives)
+        open(os.path.join(archives, 'fixture-1.tar.gz'), 'wb').write(blob)
+        out = os.path.join(root, 'out')
+        r = run(root, ['--all', out, '--archives', archives])
+        text = r.stdout + r.stderr
+        ok('--all exits 0 with no link-inputs (rc=%d)' % r.returncode, r.returncode == 0)
+        ok('--all writes the ALWAYS local row', os.path.isfile(os.path.join(out, 'LICENSES', 'pagefeather.txt')))
+        ok('--all writes the tar row that no input matched', os.path.isfile(os.path.join(out, 'LICENSES', ROW)))
+        ok('--all writes NOTICE and SOURCE', os.path.isfile(os.path.join(out, 'NOTICE')) and os.path.isfile(os.path.join(out, 'SOURCE')))
+        src = open(os.path.join(out, 'SOURCE'), encoding='utf-8').read() if os.path.isfile(os.path.join(out, 'SOURCE')) else ''
+        ok('--all SOURCE names the shipped wasm pin', 'ww' in src)
+        ok('--all opened no connection (hits %d)' % len(srv.hits), len(srv.hits) == 0)
+        notice = open(os.path.join(out, 'NOTICE'), encoding='utf-8').read() if os.path.isfile(os.path.join(out, 'NOTICE')) else ''
+        ok('--all NOTICE has the PHP acknowledgment', 'This product includes PHP software, freely available from' in notice)
 finally:
     srv.close()
 
