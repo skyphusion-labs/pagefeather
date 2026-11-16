@@ -10,6 +10,7 @@ password may reach stdout or stderr.
 import base64, http.server, io, json, os, re, shutil, subprocess, sys, tempfile, threading, contextlib, stat
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+PINS_WC_SHA = next(l.split("=", 1)[1].strip() for l in open(os.path.join(HERE, "pins.env")) if l.startswith("WC_SHA="))
 sys.path.insert(0, HERE)
 import runner  # noqa: E402
 
@@ -392,6 +393,46 @@ def main():
         if node:
             r = subprocess.run([node, "--check", os.path.join(HERE, "assert-login.mjs")], capture_output=True, text=True)
             ok("assert-login.mjs: node --check") if r.returncode == 0 else bad("assert-login.mjs: %s" % r.stderr.strip()[:120])
+
+        # A STOP is never a result (1): summarize refuses a report whose global setup failed, or with no test.
+        for label, rep, why in (("a report with a global-setup error", {"errors": [{"message": "Error: assert-login: STOP"}], "suites": []}, r"top-level error"),
+                                ("a report with no test", {"suites": []}, r"holds no test")):
+            rp = os.path.join(t, "stop-%d.json" % len(label))
+            json.dump(rep, open(rp, "w"))
+            rc, o, e = run(["summarize", "--report", rp, "--out", os.path.join(t, "stop-out.json")], {})
+            ok("summarize refuses %s (exit 3)" % label) if rc == 3 and re.search(why, e) else bad("summarize on %s: rc %d %s" % (label, rc, e.strip()[:120]))
+
+        # A STOP is never a result (2): vps-run.sh run wc, for real, with a stub pnpm on PATH. The setup phase writes
+        # report.json, as Playwright does. A failed setup, or a login check-state refuses, must exit 3 and leave NO report.
+        vw = os.path.join(t, "vw")
+        sd = os.path.join(vw, "wc-" + PINS_WC_SHA, "plugins", "woocommerce", "tests", "e2e")
+        os.makedirs(sd)
+        open(os.path.join(sd, "playwright.config.ts"), "w").write("export default {};\n")
+        bindir = os.path.join(t, "bin")
+        os.makedirs(bindir)
+        open(os.path.join(bindir, "pnpm"), "w").write("#!/bin/bash\n# stub: writes the report, as Playwright does, then exits PNPM_RC\n"
+            "for a in \"$@\"; do case \"$a\" in --project=*) ;; esac; done\n"
+            "echo '{\"suites\":[]}' > \"$RUN_DIR/report.json\"\nexit ${PNPM_RC:-0}\n")
+        os.chmod(os.path.join(bindir, "pnpm"), 0o755)
+        for label, pnpm_rc, want in (("the setup phase fails", "1", "the setup projects failed"),
+                                     ("the saved login is missing (check-state)", "0", "check-state")):
+            rd = os.path.join(t, "vr-" + pnpm_rc)
+            os.makedirs(rd, exist_ok=True)
+            open(os.path.join(rd, "env"), "w").write("export BASE_URL=http://127.0.0.1:9\nexport PF_CONFORMANCE_SUITE=wc\n")
+            vr = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "run", "wc", vw, rd],
+                                env={"PATH": bindir + ":" + os.environ.get("PATH", ""), "RUN_DIR": rd, "PNPM_RC": pnpm_rc},
+                                capture_output=True, text=True)
+            left = os.path.exists(os.path.join(rd, "report.json"))
+            if vr.returncode == 3 and want in vr.stderr and not left:
+                ok("vps-run run wc: %s: exit 3, no report.json left" % label)
+            else:
+                bad("vps-run run wc: %s: rc %d, report left %s: %s" % (label, vr.returncode, left, vr.stderr.strip()[-200:]))
+        # The baseline never sees our throwaway: exported BASE_URL and ADMIN_PASSWORD are unset, and the env stops on exit.
+        vb = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "baseline", "wc", vw, os.path.join(t, "vb")],
+                            env={"PATH": os.environ.get("PATH", ""), "DRY": "1", "BASE_URL": "https://cf759a.example", "ADMIN_PASSWORD": "x"},
+                            capture_output=True, text=True)
+        ok("baseline wc: check-state targets the local wp-env, not an exported BASE_URL") if "check-state --base-url http://localhost:8086" in vb.stdout and "cf759a" not in vb.stdout else bad("baseline wc target: %s" % vb.stdout[-300:])
+        ok("baseline wc: its env stops on exit") if "pnpm env:e2e:stop" in vb.stdout else bad("baseline wc: no env stop")
 
         # summarize and compare.
         def report(statuses):
