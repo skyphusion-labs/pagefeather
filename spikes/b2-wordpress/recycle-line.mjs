@@ -27,9 +27,13 @@ export function recycleLine(env) {
 // 500; never reuse it), 'forced' (the spike-gated x-runtime-recycle: force), or 'memory' (the heap is OVER
 // the line; PHP_RECYCLE=off turns only this one off). The order is the one index.js reported in
 // x-runtime-recycled before this change.
-export function recycleDecision({ crashed = false, forced = false, wasmBytes, lineBytes, recycleOff = false }) {
+// bootBytes (#603 A): the memory's size when THIS runtime booted. A runtime that booted on a reused memory inherits
+// its old size (wasm memory never shrinks), so a recycle for memory needs this runtime to have GROWN it past the
+// line; an inherited size alone would recycle every request, forever. Without reuse a runtime boots at the 24 MiB
+// start, so the rule is today's.
+export function recycleDecision({ crashed = false, forced = false, wasmBytes, lineBytes, bootBytes = 0, recycleOff = false }) {
 	if (crashed) return 'crashed';
 	if (forced) return 'forced';
-	if (!recycleOff && wasmBytes > lineBytes) return 'memory';
+	if (!recycleOff && wasmBytes > lineBytes && wasmBytes > bootBytes) return 'memory';
 	return null;
 }

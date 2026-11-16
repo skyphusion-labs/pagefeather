@@ -13,7 +13,7 @@ import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
 import { cronBounds, cronCleanDue, cronLegDue } from './cron-bound.mjs';
-import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronMarkOf, cronFatalOf } from './cron-health.mjs';
+import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronRunDeferred, cronMarkOf, cronFatalOf } from './cron-health.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION, setResultHeader, takeResultHeader, turnstileRoute, readGatedToken, encodeResult, TurnstileSlot, turnstileTimeoutMs, retryAfterFor } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
@@ -40,6 +40,8 @@ import { headroomStream } from './headroom.mjs';
 import { faultArmed, isFaultTarget, exhaustMemory } from './fault-inject.mjs';
 import { createUndoLog } from './undo-log.mjs';
 import { createRetirer } from './runtime-drop.mjs';
+import { gateSettings, decide, BootRefused, bootRefusedResponse, createGateClock, withBootRefusal } from './boot-gate.mjs'; // #598
+import { reuseOn, createSpare, bootTestDelayMs, bootTestDelayAt, moduleImportsMemory, offerWhenDrained } from './memory-reuse.mjs'; // #598 / #603
 import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse } from './overflow.mjs';
@@ -232,10 +234,28 @@ let lastBootedPhp = null;
 // errors are ignored, since the runtime is finished either way.
 function releaseRuntime(php) {
 	if (lastBootedPhp === php) lastBootedPhp = null;
+	const M = php[__private__dont__use]; // exit() deletes it: read it first
 	try {
 		php.exit(0);
 	} catch {
 		// already exited, or exit threw: nothing more to release
+	}
+	// #598 / #603: the memory is handed on only once the runtime has DRAINED (memory-reuse.mjs drainAndRetire): no
+	// call in flight, then one macrotask so the settled calls' JS continuations are done with the heap, then pfDead,
+	// after which the loader refuses it every new call. The retirer calls this only on a clean reap (no PHP run
+	// executing). The offer is the spare's pending offer, so the next boot waits for it (bounded).
+	// With reuse off nothing here changes what the runtime does: the loader installed no guards (#598 condition 2).
+	const on = reuseActive();
+	if (M && on) {
+		const mem = memOf.get(php);
+		// current (#705 finding 1): a runtime was instantiated AFTER this one was dropped. It runs on a memory of
+		// its own, so this one would be held beside it for its whole life: never kept. (A runtime with no drop
+		// recorded, an orphan boot, counts as current: fail safe.)
+		const droppedAt = droppedAtSerial.get(php);
+		spare.setPending(offerWhenDrained(spare, M, mem, { on, droppedAt, serialNow: () => runtimeSerial }).then((why) => {
+			lastSpareOffer = why;
+			console.log(JSON.stringify({ m: 'mem-reuse', offer: why, spareMiB: spare.mib }));
+		}));
 	}
 }
 // #566: drop the runtime and RELEASE it, synchronously, at a point where nothing can be using it.
@@ -245,11 +265,42 @@ function releaseRuntime(php) {
 // those of a finished or aborted request (#568 chained one, and on pf394a the release never ran).
 let bootGen = 0; // bumped on every drop, so a boot that finishes after one knows it is an orphan
 const retirer = createRetirer(releaseRuntime);
+// #598 / #603 (memory-reuse.mjs): the retired runtime's memory, kept for the next boot (PHP_MEMORY_REUSE=on).
+const spare = createSpare();
+// #603 (C): read once, from the module, before any instantiation: a build that does not import its memory never
+// reuses (a spare handed to it would be held beside the memory it makes itself).
+const MODULE_IMPORTS_MEMORY = moduleImportsMemory(wasmModule);
+let reuseMismatchLogged = false;
+function reuseActive() {
+	const on = reuseOn(ENV);
+	if (on && !MODULE_IMPORTS_MEMORY && !reuseMismatchLogged) {
+		reuseMismatchLogged = true;
+		console.log(JSON.stringify({ m: 'mem-reuse', off: 'the engine defines its own memory (a build without the prepare.sh transform)' }));
+	}
+	return on && MODULE_IMPORTS_MEMORY;
+}
+const memOf = new WeakMap(); // php -> its WebAssembly.Memory (instantiateWasm), for the spare
+let lastSpareOffer = null;
+// #705: the runtime serial at which each runtime was dropped (dropRuntime). An offer still waiting for the loader's
+// pfOnIdle (php.exit leaves its exit handlers in flight for one microtask) is the spare's pending offer: a boot
+// waits for it, at most PENDING_OFFER_MS (memory-reuse.mjs waitPending).
+const droppedAtSerial = new WeakMap();
+const PENDING_OFFER_MS = 100;
 function dropRuntime() {
 	const held = lastBootedPhp;
+	if (held && !droppedAtSerial.has(held)) droppedAtSerial.set(held, runtimeSerial);
 	bootGen++;
 	bootPromise = null;
 	retirer.retire(held);
+}
+// #705 (findings 1, 2): a drop at the START of a request, before it has run anything on that runtime. When this
+// request's own run is the only one executing, nothing can be using the runtime, so it is released NOW: its memory
+// can be the spare of the boot that follows in this request, and is not left alive beside it until the request ends.
+// With a stale lock (another run executing) it stays queued, as dropRuntime leaves it.
+function dropRuntimeIdle() {
+	const held = lastBootedPhp;
+	dropRuntime();
+	if (held && reuseActive()) retirer.releaseNow(held); // #724 review, finding 3: with reuse off, queued as main
 }
 // The admin memory trace of the request now running (#434, php/mem-trace.php): set by the
 // memTrace message at PHP shutdown, read once into the operator-only x-mem-trace header.
@@ -275,17 +326,16 @@ let ledgerFailLogged = false;
 // buffer, and an evicted one stays in the isolate until V8 collects it. The ledger reports what was
 // inflated so far in the request and in the isolate, the upper bound on that garbage.
 let ledgerInfl0 = { n: 0, b: 0, r: 0, ae: 0 };
-let bootMemory = null; // the WebAssembly.Memory of the runtime being booted (instantiateWasm), for the ledger
+const heapOf = (p) => p[__private__dont__use].HEAPU8.length; // a runtime's wasm heap bytes (the ledger, the gate)
 function ledgerSnapshot(at) {
 	const php = lastBootedPhp;
-	const heapOf = (p) => p[__private__dont__use].HEAPU8.length;
 	let memfs = null;
 	try {
 		memfs = php ? memfsBytes(php[__private__dont__use].FS) : null;
 	} catch (e) {
 		memfs = { error: String((e && e.message) || e).slice(0, 80) };
 	}
-	return { at, iso: ISOLATE_ID, rt: runtimeSerial, wasmMiB: php ? LEDGER_MIB(heapOf(php)) : null, runtimes: ledger.runtimes(currentSerial(runtimeSerial, !!bootPromise), heapOf), memfs, inflatedMiB: LEDGER_MIB(inflatedBytes), ocMiB: LEDGER_MIB(objectCacheBytes), sql: sqlMeter.read(), inflate: { reqN: stats.inflates - ledgerInfl0.n, reqMiB: LEDGER_MIB(stats.inflateBytes - ledgerInfl0.b), isoN: stats.inflates, isoMiB: LEDGER_MIB(stats.inflateBytes), reinflateN: stats.reinflates - ledgerInfl0.r, ...(inflateArena ? { arena: { mib: LEDGER_MIB(inflateArena.size), arenaEvict: inflateArena.counts.evicts - ledgerInfl0.ae, over: inflateArena.counts.over } } : {}) } };
+	return { at, iso: ISOLATE_ID, rt: runtimeSerial, wasmMiB: php ? LEDGER_MIB(heapOf(php)) : null, runtimes: ledger.runtimes(currentSerial(runtimeSerial, !!bootPromise), heapOf), memReuse: { on: reuseActive(), spareMiB: spare.mib, lastOffer: lastSpareOffer, ...spare.counts }, memfs, inflatedMiB: LEDGER_MIB(inflatedBytes), ocMiB: LEDGER_MIB(objectCacheBytes), sql: sqlMeter.read(), inflate: { reqN: stats.inflates - ledgerInfl0.n, reqMiB: LEDGER_MIB(stats.inflateBytes - ledgerInfl0.b), isoN: stats.inflates, isoMiB: LEDGER_MIB(stats.inflateBytes), reinflateN: stats.reinflates - ledgerInfl0.r, ...(inflateArena ? { arena: { mib: LEDGER_MIB(inflateArena.size), arenaEvict: inflateArena.counts.evicts - ledgerInfl0.ae, over: inflateArena.counts.over } } : {}) } };
 }
 // #394 /_headroom: the parts of the ledger that show memory arriving during the probe loop.
 function headroomLedger() {
@@ -309,6 +359,7 @@ let runtimeSerial = 0; // runtimes booted in this isolate
 let runtimeDrops = 0;
 let runtimeServed = 0; // requests the current runtime served
 let runtimeBootAt = 0;
+let runtimeBootBytes = 0; // #603 (A): the memory's size when this runtime booted (an inherited size, with reuse)
 let phpPending = 0; // object requests in the PHP queue or running
 // When the last deploy-time spike long-op (/_install, /_activate) finished. The cron alarm
 // skips a run within SPIKE_CRON_GRACE_MS of it, so an externally-armed alarm (a visitor to the
@@ -1486,21 +1537,89 @@ async function handleMessage(raw) {
 	}
 }
 
+// #598 part 2 (BOOT_GATE=on, default off; boot-gate.mjs): a boot never starts beside retired memory that, with what
+// this boot is expected to reach, passes the budget. It decides ONCE and never waits: the retired memory is not
+// collected on any useful timescale (#598, 2026-11-15). A spare the boot will reuse is not retired memory, it is the
+// new runtime's: it is the floor of the expected size instead. The ledger's WeakRefs read what is still alive; no
+// runtime is current while a boot starts, so every live memory counts. A refusal throws BootRefused: the request
+// path answers the known 503, a cron leg is deferred.
+let gateDecisions = 0; // #705: each gate decision's serial, sent on a refusal (x-runtime-wait-decision)
+const gateClock = createGateClock(); // #705 second review, finding 1: how long refusals have lasted
+function bootGate() {
+	const gate = gateSettings(ENV);
+	if (!gate.on) return;
+	const r = ledger.runtimes(-1, heapOf);
+	const d = { ...decide(Math.max(0, r.retiredMemMiB - spare.mib), gate, spare.mib, gateClock.refusingForMs()), decision: ++gateDecisions };
+	if (d.boot) gateClock.booted();
+	else gateClock.refused();
+	console.log(JSON.stringify({ m: d.boot ? 'boot-gate' : 'boot-refused', ...d, spareMiB: spare.mib, ...(gate.refused.length ? { settingsRefused: gate.refused } : {}) }));
+	if (!d.boot) throw new BootRefused(d);
+}
+// #724 review, finding 4: a superseded boot's callers get the current boot of THEIR origin: never a runtime booted for
+// another origin (a request for another origin drops and boots, as handle() does).
+function handOff(origin) {
+	if (bootPromise && bootOrigin !== origin) dropRuntimeIdle();
+	return (bootPromise ??= boot(origin));
+}
+let instantiating = null; // #724 review, finding 4: the boot between its spare take and the end of instantiation
 async function boot(origin) {
-	const gen = bootGen; // #566: a drop during this boot makes its runtime an orphan
+	// #603 (B): this boot's generation and origin are captured SYNCHRONOUSLY, before any await: a request that
+	// arrives during the waits below sees this origin (no second runtime for a stale one), and a drop during them
+	// is seen by the check after them.
+	const gen = bootGen; // #566: a drop during this boot makes it superseded (before instantiation) or an orphan (after)
 	bootOrigin = origin;
+	// #724 review, finding 3: the waits below exist only for reuse and the gate; with both off, boot() runs as main
+	// (no added await).
+	if (reuseActive() || gateSettings(ENV).on) {
+		// One turn, so the caller's bootPromise ??= boot() holds THIS promise when the gate decides (#705 finding 3).
+		await null;
+		// #724 review, finding 4: a boot still instantiating (it may hold the spare) finishes first; if a drop
+		// superseded it, its memory comes back as the offer, which this boot then takes.
+		while (instantiating) await instantiating;
+		// A spare still being offered (its runtime's exit handlers settle in a microtask): wait for it, bounded. If
+		// it is late, this boot goes without it, and the late offer is refused (a newer runtime then exists).
+		await spare.waitPending(PENDING_OFFER_MS);
+		// #603 (B) test seam: BOOT_TEST_DELAY_MS lengthens the wait, so a drop can land in it (boot-race-e2e.sh)
+		if (bootTestDelayMs(ENV) && bootTestDelayAt(ENV) === 'wait') await new Promise((ok) => setTimeout(ok, bootTestDelayMs(ENV)));
+		// #603 (B): a drop during the waits superseded this boot. It instantiates nothing and hands off to the
+		// current boot of ITS origin, so a superseded boot never runs beside a newer runtime.
+		if (gen !== bootGen) {
+			console.log(JSON.stringify({ m: 'boot-superseded', at: 'wait' }));
+			return handOff(origin);
+		}
+	}
+	// From the check above to here nothing awaits, so bootPromise is still THIS boot's promise: a refusal drops it.
+	try {
+		bootGate();
+	} catch (e) {
+		dropRuntime();
+		throw e;
+	}
+	// #598 / #603: the retired runtime's memory, zeroed, when one was kept (PHP_MEMORY_REUSE=on); else null and the
+	// loader imports a new memory of the module's own limits.
+	const reuse = reuseActive() ? spare.take() : null;
+	if (reuse) console.log(JSON.stringify({ m: 'mem-reuse', taken: LEDGER_MIB(reuse.buffer.byteLength) }));
 	// The origin is WP_HOME for this runtime: log it, so a wrong one is visible.
 	console.log(JSON.stringify({ m: 'boot', origin }));
 	runtimeSerial++;
+	const serial = runtimeSerial; // this runtime's serial (the drop serial if a drop supersedes it, finding 4)
 	runtimeServed = 0;
 	runtimeBootAt = Date.now();
+	// #724 review, finding 4: from the take to the end of instantiation, a later boot waits for this one
+	let instDone;
+	const inst0 = reuseActive() ? new Promise((ok) => { instDone = ok; }) : null;
+	if (inst0) instantiating = inst0;
+	const instEnd = () => { if (inst0) { if (instantiating === inst0) instantiating = null; instDone(); } };
+	// #724 review, finding 4, test seam: BOOT_TEST_DELAY_AT=instantiate waits here, after the spare was taken
+	if (bootTestDelayMs(ENV) && bootTestDelayAt(ENV) === 'instantiate') await new Promise((ok) => setTimeout(ok, bootTestDelayMs(ENV)));
 	const t0 = Date.now();
+	let instMemory = null; // #724 review, finding 5: this boot's memory, a local (instantiateWasm sets it)
 	const id = await loadPHPRuntime(loader, {
 		// PHP_ENV (JSON) sets process environment for PHP, e.g. USE_ZEND_ALLOC.
 		ENV: JSON.parse(ENV.PHP_ENV || '{"USE_ZEND_ALLOC":"0"}'),
 		instantiateWasm(imports, done) {
 			const inst = new WebAssembly.Instance(wasmModule, imports);
-			bootMemory = inst.exports.memory || null; // #394: the ledger tracks this runtime's real memory
+			instMemory = inst.exports.memory || null; // #394: the ledger tracks this runtime's real memory (a local, finding 5)
 			done(inst, wasmModule);
 			return inst.exports;
 		},
@@ -1512,11 +1631,17 @@ async function boot(origin) {
 		...(remoteOn() || SITE_REMOTE ? { pagefeatherOpen: remoteOpenHook } : {}),
 		// #569: only on a SITE_REMOTE build. Without it no read path is wrapped at all.
 		...(SITE_REMOTE ? { pagefeatherRead: remoteReadHook } : {}),
+		// #598 / #603: prepare.sh makes the engine import its memory; the loader takes this one when set.
+		...(reuse ? { pagefeatherMemory: reuse } : {}),
+		// #603: the loader installs its reuse guards (the in-flight count, the retired refusals) only for a reuse
+		// runtime; every other runtime runs the upstream wrappers.
+		...(reuseActive() ? { pagefeatherReuse: true } : {}),
 	});
 	const php = new PHP(id);
 	lastBootedPhp = php;
-	ledger.register(php, runtimeSerial, bootMemory); // #394: retired runtimes stay countable while alive, with their real memory
-	bootMemory = null;
+	runtimeBootBytes = php[__private__dont__use].HEAPU8.length; // #603 (A): what this runtime starts from
+	if (instMemory) memOf.set(php, instMemory); // #598: the memory the spare keeps at release
+	ledger.register(php, serial, instMemory); // #394: retired runtimes stay countable while alive, with their real memory
 	// php.ini overrides. PHP_INI (a JSON object) lets a deploy or a test change them.
 	// A deploy (WP_SALT is set) never prints PHP errors, even for a script that
 	// does not load wp-config.php (measured 2026-11-04: /wp-content/db.php did).
@@ -1840,9 +1965,23 @@ async function boot(origin) {
 		cookieStore: false,
 		getFileNotFoundAction: () => ({ type: 'internal-redirect', uri: '/index.php' }),
 	});
-	// #566: dropped while booting: nothing will reuse this runtime, but whoever awaited this boot may still use
-	// it now, so it is only queued, and the end of the next PHP run releases it.
-	if (gen !== bootGen) retirer.retire(php, true);
+	instEnd();
+	if (gen !== bootGen) {
+		if (reuseActive()) {
+			// #724 review, finding 4: superseded after instantiation (it may hold the spare). It retires through the
+			// normal path NOW (no caller has run on it: the handoff below gives them the current runtime), with its
+			// own serial as its drop serial, so its memory comes back as the offer, and the boot that waited for it
+			// (instantiating) takes it. Never orphaned beside a second memory.
+			console.log(JSON.stringify({ m: 'boot-superseded', at: 'instantiated' }));
+			if (!droppedAtSerial.has(php)) droppedAtSerial.set(php, serial);
+			retirer.retire(php, true);
+			retirer.releaseNow(php);
+			return handOff(origin);
+		}
+		// #566: dropped while booting: nothing will reuse this runtime, but whoever awaited this boot may still use
+		// it now, so it is only queued, and the end of the next PHP run releases it.
+		retirer.retire(php, true);
+	}
 	return { php, handler, bootMs: { wasm: tWasm, site: tSite, files: tFiles, fileCount: count, fileBytes, opcacheFiles, memAt } };
 }
 
@@ -2719,11 +2858,22 @@ export class PhpRuntime extends DurableObject {
 				try {
 					const cleanDue = cronCleanDue(await this.ctx.storage.get(CRON_CLEAN_KEY), Date.now());
 					mail = tickMailFor(this.env, this.ctx.storage);
-					cr = await runCron(await (bootPromise ??= boot(cronOrigin)), cleanDue, mail);
+					try {
+						cr = await runCron(() => (bootPromise ??= boot(cronOrigin)), cleanDue, mail);
+					} catch (e) {
+						if (!(e && e.bootRefused)) throw e;
+						// #598 part 2: the leg is deferred, not a death: it ran nothing, the run record closes as done
+						// below, and the next leg comes at the usual interval (CRON_LAST_KEY was stored before it).
+						// boot() has already dropped the refused promise.
+						console.log(JSON.stringify({ m: 'cron', deferred: 'boot-refused', ...e.bootRefused }));
+						cr = { deferred: 'boot-refused' };
+					}
 					if (cr && cr.cleaned) await this.ctx.storage.put(CRON_CLEAN_KEY, Date.now());
-					// Finished (#471): the death count resets. A throw above leaves it unfinished, so it counts.
+					// Finished (#471): the death count resets. A throw above leaves it unfinished, so it counts. A
+					// deferred leg ran nothing: closed, the deaths kept, the deferral recorded (#705 second review, 7).
 					cronRunSink = null;
-					await this.ctx.storage.put(CRON_RUN_KEY, cronRunDone(await this.ctx.storage.get(CRON_RUN_KEY), Date.now()));
+					const runRec = await this.ctx.storage.get(CRON_RUN_KEY);
+					await this.ctx.storage.put(CRON_RUN_KEY, cr && cr.deferred ? cronRunDeferred(runRec, Date.now(), cr.deferred) : cronRunDone(runRec, Date.now()));
 				} finally {
 					cronRunSink = null;
 					// A cron run that left a transaction open is rolled back, as a request is (MySQL rolls
@@ -2752,11 +2902,17 @@ export class PhpRuntime extends DurableObject {
 				// handedOff/held/lostWrites (#362): this tick's mail, handed off from inside the op, and the
 				// writes it lost to a reset. A tick the reset kills writes no record; its email-handoff lines
 				// in Workers Logs are the count.
+				if (cr && cr.deferred) {
+					// #705 second review, finding 7: no cron work ran; the summary and the log say so, and keep the last
+					// leg that did run (lastRan) instead of claiming a completed tick.
+					cst.cron = { t: Date.now(), deferred: cr.deferred, lastRan: cst.cron && cst.cron.lastRan, drained, queued: (stats.email || 0), sent: (stats.emailSent || 0) };
+				} else {
 				cst.cron = { t: Date.now(), ...cr, lastRan: cr.ran, drained, queued: (stats.email || 0), sent: (stats.emailSent || 0), ...mail.counts, lostWrites: mail.lostWritesSeen() };
 				// One line per completed tick (#335): the backlog it left and the WP-Cron event it ran, so
 				// the drain rate and WP-Cron starvation can be read from Workers Logs (/_purgestate keeps
 				// only the last tick).
 				console.log(JSON.stringify({ m: 'cron', done: 1, as_actions: cr.as_actions, as_pass: cr.as_pass, as_dates: cr.as_dates, as_hooks: cr.as_hooks, as_pending: cr.as_pending, as_due: cr.as_due, wp_cron_hooks: cr.wp_cron_hooks, wp_cron_skipped: cr.wp_cron_skipped, wp_cron_due: cr.wp_cron_due, mail: mail.counts, lostWrites: mail.lostWritesSeen() }));
+				}
 				await this.ctx.storage.put(PURGE_STATE_KEY, cst);
 				// The #370 dedupe markers expire after DEDUPE_TTL_MS (14 days by default: past any Action
 				// Scheduler retry). Bounded: at most 128 a tick (the storage delete limit), so a big backlog cannot hold the alarm.
@@ -3002,6 +3158,9 @@ export class PhpRuntime extends DurableObject {
 		}
 		const ahead = phpPending;
 		const isSpikeLongOp = url.pathname === '/_install' || url.pathname === '/_activate';
+		// #603 (B) test seam (BOOT_TEST_DELAY_MS set, a spike request only): drop the runtime OUTSIDE the PHP lock,
+		// as /_evict and a stale lock do, so the drop can land in the middle of another request's boot.
+		if (bootTestDelayMs(env) && spikeOk && req.headers.get('x-pf-test-drop') === '1') dropRuntime();
 		phpPending++;
 		// #296: shed only with PHP_QUEUE_SHED_MS set (the default is never, on every path).
 		const objectRun = await withPhp(async () => {
@@ -3080,12 +3239,15 @@ async function pruneDedupe(storage, now, ttlMs, limit = 128) {
 	}
 }
 
-async function runCron(booted, cleanDue = false, mail = null, { held = false } = {}) {
-		const { php } = booted;
+// runCron(getBooted): getBooted() resolves the runtime INSIDE the PHP lock (#603 B), so no cron boot starts outside
+// it, and a runtime a request released while this leg waited for the lock is never the one it runs on. held (#720):
+// the caller already holds the lock (/_runcron), so runCron's withPhp reuses it instead of waiting for itself.
+async function runCron(getBooted, cleanDue = false, mail = null, { held = false } = {}) {
 		// A bounded tick (cron-bound.mjs, #291): our own claim/process loop, not the queue runner,
 		// which grew the runtime past the 128 MiB isolate on a big store even for one action.
 		const { actions, wpEvents } = cronBounds(ENV);
 		return withPhp(async () => {
+		const { php } = await getBooted();
 		// The tick's mail handoff (#362) is live only for this PHP run.
 		tickMail = mail;
 		let r;
@@ -3638,7 +3800,12 @@ export default {
 	},
 };
 
+// #598 / #603: the ONE conversion of a refused boot into the known 503, for every route and both callers (the object
+// and the Worker, variant a). A cron leg converts its own into a deferral (alarmRun).
 async function handle(req, env, url, spikeOk, maxBody, ctx) {
+	return withBootRefusal(() => handleInner(req, env, url, spikeOk, maxBody, ctx));
+}
+async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 	ocCtx = ctx; // for L2 (KV) object-cache write-through this request (#218)
 	if (ocL2W) ocL2W.beginRequest(); // #500: the per-request PUT cap starts again
 	{
@@ -3652,13 +3819,13 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 		const origin = siteOrigin(env, url);
 		if (bootPromise && bootOrigin !== origin) {
 			runtimeDrops++;
-			dropRuntime();
+			dropRuntimeIdle();
 		}
 		// A deploy-time spike long-op boots a FRESH runtime so it never inherits one the cron alarm
 		// just used: runCron and the install/activate share one PHP runtime, and a reused runtime
 		// returns runCron's output (or aborts) in place of the activation (#185). This runs inside
 		// the per-object PHP lock, so any cron run it isolates from has already finished.
-		if (url.pathname === '/_install' || url.pathname === '/_activate') dropRuntime();
+		if (url.pathname === '/_install' || url.pathname === '/_activate') dropRuntimeIdle();
 		if (url.pathname === '/_last') return Response.json(globalThis.__lastRequest || {});
 		if (url.pathname === '/_peak') {
 			bootPromise ??= boot(origin);
@@ -3677,10 +3844,10 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// order emails) and due WP-Cron events. Spike/manual trigger and the test seam.
 			// #720: already inside the request withPhp (object fetch and the Worker serve both call
 			// handle inside it). Pass held so runCron does not take the lock again. The alarm calls
-			// runCron without it, so that leg always takes the lock.
-			bootPromise ??= boot(origin);
+			// runCron without it, so that leg always takes the lock. #603 (B): the runtime is resolved in
+			// runCron, under that lock.
 			const mail = tickMailFor(env, sqlStorage);
-			const r = await runCron(await bootPromise, false, mail, { held: true });
+			const r = await runCron(() => (bootPromise ??= boot(origin)), false, mail, { held: true });
 			// Drain + SEND here too (a manual run), awaiting delivery so the response reports actual
 			// sends, not enqueues (#185). The alarm uses waitUntil; a manual trigger awaits the signal.
 			const drained = pendingEmails.length;
@@ -4044,7 +4211,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 				recycleRefusedLogged = true;
 				console.log(JSON.stringify({ m: 'recycle-line-refused', refused: line.refused }));
 			}
-			const recycleWhy = recycleDecision({ crashed, forced: forceRecycle, wasmBytes, lineBytes: line.bytes, recycleOff: env.PHP_RECYCLE === 'off' });
+			const recycleWhy = recycleDecision({ crashed, forced: forceRecycle, wasmBytes, lineBytes: line.bytes, bootBytes: reuseActive() ? runtimeBootBytes : 0, recycleOff: env.PHP_RECYCLE === 'off' });
 			if (recycleWhy) {
 				runtimeDrops++;
 				dropRuntime(); // #566: queued (this run is executing); released when the run ends, after the response below is built
@@ -4111,6 +4278,9 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// The response above is built first, so its bytes are not touched.
 			return response;
 		} catch (e) {
+			// #598: a refused boot ran nothing: not a runtime drop. It is converted once, at handle() (boot() has
+			// already dropped the refused promise).
+			if (e && e.bootRefused) throw e;
 			if (bootPromise) runtimeDrops++;
 			dropRuntime(); // a failed runtime is not reused
 			// The stack names internal paths. It goes to the tail log for every caller, never to the body,

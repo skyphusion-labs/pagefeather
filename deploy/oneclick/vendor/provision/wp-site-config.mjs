@@ -453,9 +453,32 @@ export function bDosqlVars(opts = {}) {
 // CLI's WP_BINDINGS slot). The Worker passes none; the standard set is never
 // caller-controlled. enable: opt-in descriptor names (default none), so the
 // default set is byte-identical to the old hard-coded array.
+// #724 (#603): PHP_MEMORY_REUSE and BOOT_GATE reach a one-click site only as caller-supplied extra bindings
+// (cli.mjs WP_BINDINGS). The same rule as deploy/lib/memory-reuse.sh, which render_user and deploy.sh source: each is
+// "on" or absent, the gate alone is refused, the boot race test seam is refused. Approach A refuses them all until
+// measured (the drain and the offer run in timers of the recycling Worker request; b-dosql, one object, is the target).
+const MEMORY_REUSE_NAMES = ['PHP_MEMORY_REUSE', 'BOOT_GATE', 'BOOT_TEST_DELAY_MS', 'BOOT_TEST_DELAY_AT'];
+export function memoryReuseExtraCheck(extra, variant) {
+  const get = (n) => { const b = (extra || []).find((x) => x && x.name === n); return b ? String(b.text ?? '') : null; };
+  const set = MEMORY_REUSE_NAMES.filter((n) => get(n) !== null);
+  if (!set.length) return;
+  if (variant === 'a') throw new Error(`${set[0]} is not supported on approach A yet (#724): provision the site as b-dosql`);
+  for (const n of ['PHP_MEMORY_REUSE', 'BOOT_GATE']) {
+    const v = get(n);
+    if (v !== null && v !== 'on') throw new Error(`${n} must be on or unset, not ${v}`);
+  }
+  if (get('BOOT_GATE') === 'on' && get('PHP_MEMORY_REUSE') !== 'on') {
+    throw new Error('BOOT_GATE=on needs PHP_MEMORY_REUSE=on: without reuse every runtime reboot is refused until V8 collects the retired memory, which locally did not happen within 660 s (#598, #603)');
+  }
+  if (get('BOOT_TEST_DELAY_MS') !== null || get('BOOT_TEST_DELAY_AT') !== null) {
+    throw new Error('BOOT_TEST_DELAY_MS is a local test seam (tests/boot-race-e2e.sh) and is never rendered for a site');
+  }
+}
+
 export function bDosqlBindings(opts = {}) {
   if (!opts.mediaBucket) throw new Error('bDosqlBindings: mediaBucket is required');
   const { extra = [] } = opts;
+  memoryReuseExtraCheck(extra, 'b-dosql');
   const { vars, bindings } = assembleBDosql(opts);
   return [...vars, ...bindings, ...extra];
 }
@@ -589,6 +612,7 @@ export function aBindings({
 } = {}) {
   if (!mediaBucket) throw new Error('aBindings: mediaBucket is required');
   if (!hyperdriveId) throw new Error('aBindings: hyperdriveId is required (the Hyperdrive config id from onboarding)');
+  memoryReuseExtraCheck(extra, 'a');
   const ocKv = { type: 'kv_namespace', name: ocKvBinding };
   // The id is injected by provisionSite after the namespace is created; carry it
   // only if the caller already knows it (e.g. a re-provision passing the id).

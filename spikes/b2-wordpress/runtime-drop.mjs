@@ -34,6 +34,19 @@ export function createRetirer(release) {
 		runStart() {
 			running++;
 		},
+		// #705 (findings 1, 2): release php NOW when the only run executing is the caller's own and the caller
+		// has not used php in it (a drop at the start of a request). Never while another run executes (a stale
+		// lock): then it stays queued, as retire() leaves it.
+		releaseNow(php) {
+			if (!php || !queued.has(php) || running > 1) return 0;
+			queued.delete(php);
+			try {
+				release(php);
+			} catch {
+				// already exited, or exit threw: the runtime is finished either way
+			}
+			return 1;
+		},
 		runEnd() {
 			running = Math.max(0, running - 1);
 			return reap();

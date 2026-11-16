@@ -26,6 +26,8 @@ export function cronBackoffMs(deaths) {
 // The deaths counted if a leg started now: the stored count, plus one when the last run never finished.
 function pendingDeaths(prev) {
 	if (!prev || !(Number(prev.startedAt) > 0)) return 0;
+	// A deferred leg (#598: its boot refused) ran nothing: it neither adds a death nor ends a streak of them.
+	if (prev.done && prev.deferred) return Number(prev.deaths) || 0;
 	return prev.done ? 0 : (Number(prev.deaths) || 0) + 1;
 }
 
@@ -60,6 +62,14 @@ export function cronRunStart(prev, now) {
 /** The record once the leg finished. */
 export function cronRunDone(rec, now) {
 	return { ...(rec || {}), done: true, doneAt: now, deaths: 0 };
+}
+
+/**
+ * A leg that ran NOTHING (#598: the boot gate refused its boot): the record is closed (done, so the next leg does
+ * not count it as a death), the death count is NOT reset (no work finished), and the deferral is recorded.
+ */
+export function cronRunDeferred(rec, now, why) {
+	return { ...(rec || {}), done: true, doneAt: now, deferred: String(why || 'deferred'), deferredAt: now };
 }
 
 const clip = (v, n) => String(v ?? '').replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, n);

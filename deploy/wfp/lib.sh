@@ -17,6 +17,8 @@ WFP=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 # object_time_vars (#703, #708): the same rule as deploy.sh.
 # shellcheck source=../object-time.sh
 . "$WFP/../object-time.sh"
+# shellcheck source=../lib/memory-reuse.sh
+. "$WFP/../lib/memory-reuse.sh" # #603: PHP_MEMORY_REUSE and BOOT_GATE, one rule with deploy/a-settings.sh
 ROOT=$(cd "$WFP/../.." && pwd -P)
 # The pinned Wrangler. A test points WR at a stub.
 WR=${WR:-$ROOT/deploy/wr}
@@ -401,6 +403,16 @@ recycle_mib_var() {
   fi
   echo "RECYCLE_WASM_MIB = \"$((10#$v))\""
 }
+# PHP_MEMORY_REUSE and BOOT_GATE (#598, #705; index.js, memory-reuse.mjs, boot-gate.mjs). PHP_MEMORY_REUSE=on: a
+# recycled PHP runtime hands its WebAssembly memory to the next boot, so the isolate never holds two. BOOT_GATE=on:
+# a boot beside retired memory that, with an admin request's high-water, passes the budget answers a known 503.
+# Each is on or unset (unset: off, today's path). The gate is only valid WITH reuse: alone it refuses every reboot
+# until GC, the measured 503 storm. So the valid sets are: neither, PHP_MEMORY_REUSE alone, or both. Read from
+# the run's environment only, like PHP_INI.
+memory_reuse_vars() {
+  memory_reuse_check || return 1
+  memory_reuse_lines
+}
 # CRON_INTERVAL_MS (#479): how often the object's alarm runs the WordPress cron leg (index.js,
 # default 60000). A store move holds the cron by rendering a long interval for its window: in #479 M2
 # an idle store's Action Scheduler kept writing wp_actionscheduler_logs during an export, so the
@@ -567,6 +579,8 @@ render_user() { # render_user <site> <origin>
   [ -z "$php_recycle" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$php_recycle
   local recycle_mib; recycle_mib=$(recycle_mib_var) || return 1
   [ -z "$recycle_mib" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$recycle_mib
+  local mem_reuse; mem_reuse=$(memory_reuse_vars) || return 1
+  [ -z "$mem_reuse" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$mem_reuse
   local mem_ledger; mem_ledger=$(mem_ledger_var) || return 1
   local page_cache_product; page_cache_product=$(page_cache_product_var) || return 1
   [ -z "$mem_ledger" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$mem_ledger
@@ -842,7 +856,7 @@ use_recorded_inputs() {
 # unset is the default list, and set, including empty, is that exact list. site update
 # remembers which one this run is, in http_allow_mode, before local -x collapses unset
 # into empty. Empty denies every host, so a drop sets the mode to unset.
-SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED"
+SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED"
 # The measurement flags (HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV, site_settings.py MEASUREMENT) are
 # never recorded: ON only for the run that exports them; the next update without one turns it off.
 # A setting render_user reads that is not in this list is DROPPED by an update that does not export

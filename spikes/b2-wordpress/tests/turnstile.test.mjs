@@ -439,6 +439,7 @@ test('index.js: the object never verifies, and the front Worker sets the answer 
 	// /_headroom, may decrement it earlier in the file).
 	const setAt = src.indexOf('turnstileSlot.set(turnstileHeader);');
 	const run = src.slice(setAt, src.indexOf('phpPending--;', setAt));
-	assert.ok(run.indexOf('await handle(req, env, url, spikeOk, maxBody, ctx)') > 0);
+	// #705: the call may be wrapped in withBootRefusal (a refused boot is the known 503); it is still inside the slot
+	assert.match(run, /await (withBootRefusal\(\(\) => )?handle\(req, env, url, spikeOk, maxBody, ctx\)/);
 	assert.match(run, /finally \{\s*turnstileSlot\.clear\(\);/);
 });

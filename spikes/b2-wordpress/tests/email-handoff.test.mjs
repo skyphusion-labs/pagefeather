@@ -250,8 +250,9 @@ test('index.js: runCron sets the tick mail inside its withPhp turn and always cl
 	assert.ok(w >= 0);
 	assert.ok(rc.indexOf('tickMail = mail;') > w);
 	assert.ok(/\} finally \{\s*tickMail = null;/.test(rc));
-	assert.ok(src.includes('cr = await runCron(await (bootPromise ??= boot(cronOrigin)), cleanDue, mail);'), 'the alarm');
-	assert.ok(src.includes('const r = await runCron(await bootPromise, false, mail, { held: true });'), '/_runcron');
+	// #603 (B): both pass a function, so the runtime is resolved inside runCron's PHP lock; #720: /_runcron holds it
+	assert.ok(src.includes('cr = await runCron(() => (bootPromise ??= boot(cronOrigin)), cleanDue, mail);'), 'the alarm');
+	assert.ok(src.includes('const r = await runCron(() => (bootPromise ??= boot(origin)), false, mail, { held: true });'), '/_runcron');
 	assert.ok(src.includes('resetFailTotal += resetFailures([f]);'));
 	assert.equal((src.match(/stats\.failures\.push\(/g) || []).length, 1, 'every failure is counted through noteFailure');
 });
