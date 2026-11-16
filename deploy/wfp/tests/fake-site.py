@@ -10,12 +10,17 @@ by time (#319): the test drives a fake clock, so CPU load cannot move a case.
   not-deployed   404 x-wfp-error not-deployed (the third day one, 2026-11-06), then the site
   no-site        404 x-wfp-error no-site (a site map read that lags), then the site
   cold-503       503, then the site
-  site           the site from the first request (403)
+  site           the site from the first request (403 forbidden)
   site-200       200 from the first request
   bad-entry      500 x-wfp-error bad-entry, always
   dispatch       502 x-wfp-error dispatch, always
   cold-dispatch  502 x-wfp-error dispatch, then the site (a first cold boot, #294)
   never          404 x-wfp-error not-deployed, always
+  edge-1104      403 body "error code: 1104", always (#783, a Cloudflare edge error)
+  edge-1104-nl   the same, with a trailing newline
+  edge-401       401 body "error code: 1104", always
+  gate-401       401 body "forbidden" (the site's own gate bytes, status 401)
+  edge-then-site 403 "error code: 1104" for the first EARLY requests, then the site
 """
 import http.server, os, sys
 
@@ -55,6 +60,16 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.send(503, "starting")
         if mode == "site-200":
             return self.send(200, "ok")
+        # #783. Bodies and header values are constants. Nothing from the request is copied
+        # into a header.
+        if mode == "edge-1104" or (mode == "edge-then-site" and early):
+            return self.send(403, "error code: 1104")
+        if mode == "edge-1104-nl":
+            return self.send(403, "error code: 1104\n")
+        if mode == "edge-401":
+            return self.send(401, "error code: 1104")
+        if mode == "gate-401":
+            return self.send(401, "forbidden")
         return self.send(403, "forbidden")
 
 
