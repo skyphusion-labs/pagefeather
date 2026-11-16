@@ -59,6 +59,8 @@ render_conf() {
   node "$ROOT/deploy/provision/a-vars-toml.mjs" product-ttl || return 1
   # PAGE_CACHE_TTL (#759): b-dosql only (c1 renders its own). deploy.sh checked it before any step. Unset writes nothing.
   if [ "$VARIANT" = b-dosql ]; then page_cache_ttl_check || return 1; page_cache_ttl_line; fi
+  # OPCACHE_MC (#610): a b-dosql store renders 64 (the runtime's OPcache size), every other site nothing (48).
+  [ "$VARIANT" != b-dosql ] || node "$ROOT/deploy/provision/a-vars-toml.mjs" opcache-mc || return 1
   # AI alt text (spikes/b2-wordpress/php/ai-alt-text.php): off switch, model, input flavor.
   [ -z "${AI_ALT+x}" ] || echo "AI_ALT = \"$AI_ALT\""
   [ -z "${AI_ALT_MODEL+x}" ] || echo "AI_ALT_MODEL = \"$AI_ALT_MODEL\""
