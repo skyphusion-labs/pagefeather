@@ -61,6 +61,44 @@ check( 'a long LIKE with a wildcard inside is left alone', $s, "SELECT 1 FROM t 
 list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE '%short%'", array(), $none );
 check( 'a short LIKE is left alone', $s, "SELECT 1 FROM t WHERE c LIKE '%short%'" );
 
+// #805: the Durable Object's SQLite caps a LIKE pattern at 50 bytes (measured: 50 passes, 51 fails). Over the cap, the
+// single-literal shapes that are not '%lit%' become plain comparisons, with the same ASCII-only case folding as LIKE.
+// At or under 50 bytes nothing changes, so SQLite's own LIKE (and its index range for a prefix) stands.
+list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE '$long'", array(), $none );
+check( '#805 an exact long LIKE becomes lower() equality', $s, "SELECT 1 FROM t WHERE lower(c) = lower('$long')" );
+
+list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c NOT LIKE '$long'", array(), $none );
+check( '#805 an exact long NOT LIKE becomes lower() inequality', $s, "SELECT 1 FROM t WHERE lower(c) <> lower('$long')" );
+
+list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE '$long%'", array(), $none );
+check( '#805 a long prefix LIKE becomes instr() = 1', $s, "SELECT 1 FROM t WHERE instr(lower(c), lower('$long')) = 1" );
+
+list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c NOT LIKE '$long%'", array(), $none );
+check( '#805 a long prefix NOT LIKE becomes instr() <> 1', $s, "SELECT 1 FROM t WHERE instr(lower(c), lower('$long')) <> 1" );
+
+list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE 'a\\_b$long' ESCAPE '\\'", array(), $none );
+check( '#805 an escaped _ in a long exact LIKE is a literal', $s, "SELECT 1 FROM t WHERE lower(c) = lower('a_b$long')" );
+
+$login = 'pf805-' . str_repeat( 'x', 50 );
+list( $s ) = D1_Dialect::rewrite( "SELECT `wp_users`.`ID` FROM `wp_users` WHERE 1 = 1 AND ( `user_login` LIKE '$login' ESCAPE '\\' ) ORDER BY `user_login` ASC", array(), $none );
+check( '#805 WP_User_Query exact search for a 56-character login', $s, "SELECT `wp_users`.`ID` FROM `wp_users` WHERE 1 = 1 AND ( lower(`user_login`) = lower('$login') ) ORDER BY `user_login` ASC" );
+
+list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE 'a_b$long%'", array(), $none );
+check( '#805 a long prefix with a wildcard inside is left alone', $s, "SELECT 1 FROM t WHERE c LIKE 'a_b$long%'" );
+
+$fifty = str_repeat( 'a', 50 );
+list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE '$fifty' AND d LIKE '" . str_repeat( 'a', 49 ) . "%'", array(), $none );
+check( '#805 exact and prefix at the 50-byte cap are left alone', $s, "SELECT 1 FROM t WHERE c LIKE '$fifty' AND d LIKE '" . str_repeat( 'a', 49 ) . "%'" );
+
+list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE 'a$fifty'", array(), $none );
+check( '#805 an exact LIKE of 51 bytes is rewritten', $s, "SELECT 1 FROM t WHERE lower(c) = lower('a$fifty')" );
+
+// #805: the rewrite's trigger regex gave up on a very long pattern (PCRE), so a '%lit%' of about 50,000 bytes was never
+// rewritten and failed (measured: 50,023 bytes passed, 50,024 failed).
+$huge = str_repeat( 'a', 50022 );
+list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE '%$huge%'", array(), $none );
+check( '#805 a 50,024-byte %literal% still becomes instr', $s === "SELECT 1 FROM t WHERE instr(lower(c), lower('$huge')) > 0", true );
+
 $body = str_repeat( "it''s ", 20000 );
 list( $s, $p ) = D1_Dialect::rewrite( "INSERT INTO `wp_posts` (`post_content`, `post_title`) VALUES ('$body', 'small')", array(), $none );
 check( 'a statement over 90 KB binds its long strings', array( $s, strlen( $p[0] ), substr( $p[0], 0, 6 ) ), array( "INSERT INTO `wp_posts` (`post_content`, `post_title`) VALUES (?, 'small')", 100000, "it's i" ) );
