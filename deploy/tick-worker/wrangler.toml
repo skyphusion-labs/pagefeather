@@ -6,3 +6,6 @@ name = "pf-tick"
 main = "index.mjs"
 compatibility_date = "2026-07-01"
 workers_dev = true
+# Workers Logs on, so the tick count per site can be read (#754: its export was empty without it).
+[observability]
+enabled = true

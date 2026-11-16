@@ -9,7 +9,7 @@
 #   OBJECT_DISCONNECT_SHED  on or off (#721): off, a queued waiter ignores its caller's disconnect and only the
 #                           start-by applies. The enable_request_signal flag stays on either way.
 #   START_BY_TICK_URL       an https URL (#754): the start-by recheck's tick target, a tiny dedicated Worker outside the
-#                           site's hostname (the object's fetch to its OWN hostname is refused). Unset: the site's /_tick.
+#                           site's hostname (deploy/tick-worker). Unset: the site's own /_tick. Either is correct (#754).
 # The code takes a deadline from 0.01 s; the recorded setting asks for 1 s or more, so a typo such as 0.09
 # for 90 is refused, not deployed.
 # An explicit OBJECT_START_BY_S is at most the deadline minus the run allowance (30 s, or a third of a deadline under

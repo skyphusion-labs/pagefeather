@@ -99,8 +99,10 @@ export async function recheckStartBy(startByAt, { now = Date.now, tick = () => n
 // CLOCK_LAG_MAX_MS of a start-by, inside the waiter's own invocation (Workers Free: 50 subrequests per invocation).
 export const TICK_PATH = '/_tick';
 export const TICK_TIMEOUT_MS = 2000;
-// #754: the tick's target. START_BY_TICK_URL (an https URL: a tiny dedicated Worker, outside the site's hostname, since
-// the live proof showed the object's fetch to its OWN hostname is refused), else the site origin + TICK_PATH.
+// #754: the tick's target. START_BY_TICK_URL (an https URL: the tiny dedicated Worker in deploy/tick-worker), else the
+// site origin + TICK_PATH. Either is correct: measured on #754 round 2, a tick that times out or fails still moves the
+// clock to the real time (the first tick after a CPU stretch usually aborts at once, its 2 s timeout having been set on
+// the frozen clock), so the decision after it is made on the true clock.
 export function tickUrl(env, origin) {
 	const u = env && env.START_BY_TICK_URL ? String(env.START_BY_TICK_URL).trim() : '';
 	return /^https:\/\/[A-Za-z0-9.-]+(\/[^\s]*)?$/.test(u) ? u : origin + TICK_PATH;
