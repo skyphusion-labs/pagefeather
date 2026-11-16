@@ -26,6 +26,9 @@ class H(BaseHTTPRequestHandler):
     def send(self, code, headers=None):
         self.send_response(code)
         for k, v in (headers or {}).items():
+            # A header name or value with CR or LF would split the response: refuse it loudly, so a test fails.
+            if any(ch in str(x) for x in (k, v) for ch in "\r\n"):
+                raise ValueError("CR or LF in a response header: %r" % k)
             self.send_header(k, v)
         self.send_header("content-length", "2"); self.end_headers(); self.wfile.write(b"ok")
     def do_GET(self):
@@ -38,7 +41,9 @@ class H(BaseHTTPRequestHandler):
             if self.mode == "loop" and p == "/?cat=1":
                 return self.send(301, {"Location": "/?cat=1"})
             # one absolute, the rest relative, as WordPress sends absolute ones
-            loc = ("http://%s" % self.headers.get("Host") + PRETTY[p]) if p == "/?page_id=2" else PRETTY[p]
+            # The absolute one is built from the server's own bound address, never from the request (Host).
+            host, port = self.server.server_address[:2]
+            loc = ("http://%s:%d" % (host, port) + PRETTY[p]) if p == "/?page_id=2" else PRETTY[p]
             return self.send(301, {"Location": loc})
         self.send(200, {"cf-cache-status": "HIT"})
 def run(mode):
