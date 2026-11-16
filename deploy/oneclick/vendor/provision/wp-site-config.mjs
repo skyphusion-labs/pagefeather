@@ -151,12 +151,17 @@ function assignObjectTime(vars, { objectCallDeadlineS, objectStartByS, objectDis
 //   PHP_LOCATION the object's location hint
 //   PHP_DO_POOL  the object pool size
 //   DB_IN_DO     the database is the object's own SQLite (b-dosql)
+//   REQUEST_FRAMES  the request frame on the undo log (#352), on by default since #589 part 1
+//                (render_user renders the same); opts.requestFrames 'off' is the escape hatch
 // PHP_IN_DO=on + DB_IN_DO=on + the MEDIA binding are also the PRECONDITIONS that
 // turn on the default-on gates in index.js (object cache, route cache, theme.json
 // cache, async email, bootstrap trim, media-write trim): index.js enables each
 // unless its var is "off", so the site gets them with no gate var set.
-function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, demo, codeLock, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed } = {}) {
+function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, demo, codeLock, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed, requestFrames } = {}) {
   if (!siteOrigin) throw new Error('bDosqlVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
+  if (requestFrames !== undefined && requestFrames !== 'on' && requestFrames !== 'off') {
+    throw new Error(`bDosqlVars: requestFrames must be 'on', 'off' or unset, not ${JSON.stringify(requestFrames)}`);
+  }
   const vars = {
     PHP_ENV: '{"USE_ZEND_ALLOC":"0"}',
     SITE_ORIGIN: siteOrigin,
@@ -164,6 +169,7 @@ function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mail
     PHP_LOCATION: location,
     PHP_DO_POOL: '1',
     DB_IN_DO: 'on',
+    REQUEST_FRAMES: requestFrames || 'on',
   };
   // Optional, matching deploy.sh's optional emit (the DO alarm cadence, #185);
   // omitted by default, exactly as render_user omits it (index.js defaults 60000).
