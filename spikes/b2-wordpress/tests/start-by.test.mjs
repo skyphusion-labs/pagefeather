@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { startByMs, objectShedPlan, startByResponse, START_BY_HEADER, CALL_HEADER, tagCallId, startByExempt, shedAnswer, recheckStartBy, CLOCK_LAG_MAX_MS, disconnectAnswer, disconnectSignal } from '../start-by.mjs';
+import { startByMs, objectShedPlan, startByResponse, START_BY_HEADER, CALL_HEADER, tagCallId, startByExempt, shedAnswer, recheckStartBy, CLOCK_LAG_MAX_MS, disconnectAnswer, disconnectSignal, tickFetch, tickResponse, TICK_PATH } from '../start-by.mjs';
 
 test('startByMs: the default is the deadline minus a run allowance (30 s, or a third of a short deadline)', () => {
 	assert.equal(startByMs({}, 90000), 60000);
@@ -141,7 +141,7 @@ test('review2 4: a request granted on a stale clock reads it again after a tick,
 	// Date.now() moves only at I/O: the grant can read a clock that is behind. The tick lets it move.
 	let t = 1000; const tickTo = (v) => async () => { t = v; };
 	let r = await recheckStartBy(5000, { now: () => t, tick: tickTo(7000) });
-	assert.deepEqual(r, { late: true, clockMs: 6000 }, 'the fresh clock is past the start-by: shed');
+	assert.deepEqual(r, { late: true, clockMs: 6000, why: 'start-by' }, 'the fresh clock is past the start-by: shed');
 	t = 1000;
 	r = await recheckStartBy(5000, { now: () => t, tick: tickTo(4000) });
 	assert.deepEqual(r, { late: false, clockMs: 3000 }, 'still before the start-by: run');
@@ -158,7 +158,7 @@ test('review2 4 wiring: the object rechecks before the writes and before PHP, on
 	const obj = src.slice(src.indexOf('	async fetch(raw) {'), src.indexOf('function phpObjectName('));
 	const run = obj.indexOf('const objectRun = await withPhp(');
 	// review3 5: the lock runs the recheck at its grant (php-lock.mjs recheck), through its own tagged logger.
-	assert.ok(/recheck: plan\.startBy > 0 \? async \(\) => \{[^\n]*recheckStartBy\(plan\.startBy\)/.test(obj), 'the object hands the recheck to the lock');
+	assert.ok(/recheck: plan\.startBy > 0 \? async \(\) => \{[^\n]*recheckStartBy\(plan\.startBy, \{/.test(obj), 'the object hands the recheck to the lock');
 	assert.ok(!/event: 'shed', at: 'clock'/.test(obj), 'and logs no shed line of its own');
 });
 
@@ -246,4 +246,45 @@ test('OBJECT_DISCONNECT_SHED wiring: the object takes both the lock signal and t
 	assert.ok(/const callerSignal = disconnectSignal\(env, raw\.signal\);/.test(obj), 'one decision');
 	assert.ok(/const gone = !!\(callerSignal && callerSignal\.aborted\);/.test(obj), 'the arrival check follows it');
 	assert.ok(/signal: callerSignal,/.test(obj) && !/signal: raw\.signal,/.test(obj), 'the lock gets it, never raw.signal directly');
+});
+
+// #752: the recheck's tick is a REAL subrequest (measured on the edge: only a fetch moves Date.now() in a Durable Object;
+// a timer turn, a storage read and the assets binding do not). The endpoint is the site's own front Worker, answered
+// before any object call. A failed or slow tick sheds the waiter (the lead's ruling): an unknown clock must fail safe.
+test('#752 tickFetch: GET <origin>/_tick; a 204 resolves; anything else, an error or a timeout rejects', { timeout: 5000 }, async () => {
+	assert.equal(TICK_PATH, '/_tick');
+	let seen = null;
+	await tickFetch('https://s.example', { fetchImpl: async (u, init) => { seen = { u, m: init && init.method, sig: !!(init && init.signal) }; return new Response(null, { status: 204 }); } });
+	assert.deepEqual(seen, { u: 'https://s.example/_tick', m: 'GET', sig: true });
+	await assert.rejects(tickFetch('https://s.example', { fetchImpl: async () => new Response('x', { status: 500 }) }), /tick answered 500/);
+	await assert.rejects(tickFetch('https://s.example', { fetchImpl: async () => { throw new Error('1042'); } }), /1042/);
+	const hang = (u, init) => new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(new Error('aborted'))));
+	const t0 = Date.now();
+	await assert.rejects(tickFetch('https://s.example', { fetchImpl: hang, timeoutMs: 50 }));
+	assert.ok(Date.now() - t0 < 2000, 'a hung tick is cut at its timeout');
+});
+test('#752 tickResponse: a 204 that no cache keeps', () => {
+	const r = tickResponse();
+	assert.equal(r.status, 204);
+	assert.equal(r.headers.get('cloudflare-cdn-cache-control'), 'no-store');
+});
+test('#752 recheckStartBy: a failed tick SHEDS (why tick-failed); a caller gone after the tick sheds (why disconnect)', { timeout: 3000 }, async () => {
+	let r = await recheckStartBy(5000, { now: () => 1000, tick: async () => { throw new Error('down'); } });
+	assert.equal(r.late, true); assert.equal(r.why, 'tick-failed');
+	const ac = new AbortController();
+	r = await recheckStartBy(5000, { now: () => 1000, tick: async () => { ac.abort(); }, signal: ac.signal });
+	assert.equal(r.late, true); assert.equal(r.why, 'disconnect', 'the abort is read AFTER the real I/O');
+	r = await recheckStartBy(5000, { now: () => 1000, tick: async () => {} });
+	assert.equal(r.late, false); assert.equal(r.why, undefined);
+	let t = 1000;
+	r = await recheckStartBy(5000, { now: () => t, tick: async () => { t = 9000; } });
+	assert.equal(r.late, true); assert.equal(r.why, 'start-by');
+});
+test('#752 wiring: the front Worker answers /_tick FIRST; the object ticks against its own origin and passes its caller signal', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const entry = src.slice(src.lastIndexOf('export default {'));
+	const tick = entry.indexOf('if (url.pathname === TICK_PATH) return tickResponse();');
+	assert.ok(tick > 0 && tick < entry.indexOf('pageCacheRoute('), 'before the page cache, before any object call');
+	const obj = src.slice(src.indexOf('	async fetch(raw) {'), src.indexOf('function phpObjectName('));
+	assert.ok(/recheckStartBy\(plan\.startBy, \{ tick: \(\) => tickFetch\(origin\), signal: callerSignal \}\)/.test(obj), 'a real tick to the own origin, with the caller signal');
 });

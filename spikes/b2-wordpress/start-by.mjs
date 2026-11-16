@@ -70,12 +70,41 @@ export function shedAnswer(body, extra = {}) {
 // lag one run ahead can cause (CLOCK_LAG_MAX_MS, the per-request CPU limit). Several CPU-bound runs in a row can lag
 // more; the arrival refusal and the lock's own timer still bound those, and clockMs on a shed line measures the lag.
 export const CLOCK_LAG_MAX_MS = 30000;
-export async function recheckStartBy(startByAt, { now = Date.now, tick = () => new Promise((r) => setTimeout(r, 0)), lagMs = CLOCK_LAG_MAX_MS } = {}) {
+export async function recheckStartBy(startByAt, { now = Date.now, tick = () => new Promise((r) => setTimeout(r, 0)), lagMs = CLOCK_LAG_MAX_MS, signal = null } = {}) {
 	const stale = now();
 	if (startByAt - stale >= lagMs) return { late: false, clockMs: 0, ticked: false };
-	await tick();
+	// #752: a tick that fails or times out leaves the clock UNKNOWN: shed (the lead's ruling). Running late is what #708
+	// exists to prevent, and this only arises within CLOCK_LAG_MAX_MS of a start-by.
+	try {
+		await tick();
+	} catch {
+		return { late: true, clockMs: now() - stale, why: 'tick-failed' };
+	}
 	const fresh = now();
-	return { late: fresh >= startByAt, clockMs: fresh - stale };
+	// #752, #721: a caller that disconnected while this waited behind a CPU-bound head: its abort is only seen after the
+	// real I/O lets the event loop run (measured: at the grant it was not).
+	if (signal && signal.aborted) return { late: true, clockMs: fresh - stale, why: 'disconnect' };
+	const late = fresh >= startByAt;
+	return { late, clockMs: fresh - stale, ...(late ? { why: 'start-by' } : {}) };
+}
+
+// #752: the tick is a REAL subrequest. Measured on the edge (#752, 2026-11-16): only a fetch moved Date.now() in a Durable
+// Object (5 of 5 rechecks saw the true clock); a setTimeout(0) turn, a storage read and the assets binding did not. The
+// endpoint is the site's own front Worker, which answers TICK_PATH before any object call: it never reaches the PHP
+// object (busy holding the head), and it needs no outside service. One subrequest per CONTENDED grant within
+// CLOCK_LAG_MAX_MS of a start-by, inside the waiter's own invocation (Workers Free: 50 subrequests per invocation).
+export const TICK_PATH = '/_tick';
+export const TICK_TIMEOUT_MS = 2000;
+export async function tickFetch(origin, { fetchImpl = fetch, timeoutMs = TICK_TIMEOUT_MS } = {}) {
+	const r = await fetchImpl(origin + TICK_PATH, { method: 'GET', signal: AbortSignal.timeout(timeoutMs) });
+	try { if (r.body) await r.body.cancel(); } catch {}
+	if (r.status !== 204) throw new Error('tick answered ' + r.status);
+}
+// The front Worker's answer to TICK_PATH: an empty 204 that no cache keeps.
+export function tickResponse() {
+	const headers = new Headers();
+	noStoreAnywhere(headers);
+	return new Response(null, { status: 204, headers });
 }
 
 // #721 escape hatch: OBJECT_DISCONNECT_SHED=off hands the PHP lock no signal, so a queued waiter ignores its caller's

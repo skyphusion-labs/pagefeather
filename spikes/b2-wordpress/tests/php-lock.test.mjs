@@ -356,3 +356,18 @@ test('#721: the start-by still sheds a waiter whose caller never disconnects', {
 	assert.equal(await w, PHP_SHED);
 	assert.equal(log.find((e) => e.event === 'shed').why, 'start-by');
 });
+
+test('#752: a clock shed carries the recheck reason (tick-failed or disconnect), start-by by default', { timeout: 3000 }, async () => {
+	for (const why of ['tick-failed', 'disconnect', undefined]) {
+		let t = 0; const log = [];
+		const lock = createPhpLock({ staleMs: 10 ** 9, now: () => t, setTimer: () => 1, clearTimer: () => {}, log: (e) => log.push(e) });
+		let finishHead; const head = lock.run(() => new Promise((r) => (finishHead = r)));
+		for (let i = 0; i < 20; i++) await Promise.resolve();
+		const w = lock.run(async () => 'ran', { recheck: async () => ({ late: true, clockMs: 0, ...(why ? { why } : {}) }) });
+		for (let i = 0; i < 20; i++) await Promise.resolve();
+		finishHead(); await head;
+		assert.equal(await w, PHP_SHED);
+		const shed = log.find((e) => e.event === 'shed');
+		assert.equal(shed.at, 'clock'); assert.equal(shed.why, why || 'start-by', String(why));
+	}
+});

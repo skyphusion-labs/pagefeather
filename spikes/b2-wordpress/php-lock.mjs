@@ -124,7 +124,7 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 					}
 				}
 				if (why === 'shed') {
-					const whyShed = disconnect ? 'disconnect' : at === 'clock' ? 'start-by' : shedWhy;
+					const whyShed = disconnect ? 'disconnect' : at === 'clock' ? (clock.why || 'start-by') : shedWhy; // #752: tick-failed, disconnect
 					lg({ event: 'shed', at, waitMs, depth: waiting + running, headMs: headMs(), ...(whyShed ? { why: whyShed } : {}), ...(at === 'clock' ? { clockMs: clock.clockMs } : {}) });
 					// This waiter never runs: the one behind it waits for the run ahead instead.
 					prev.then(release, release);
