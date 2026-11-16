@@ -64,11 +64,28 @@ export async function drainAndRetire(M, { rounds = 20, roundMs = 50, tick = () =
 	return 'no-drain';
 }
 
+/** Where the boot race seam waits: 'wait' (default: before the boot takes the spare) or 'instantiate' (after it took it). */
+export function bootTestDelayAt(env) {
+	return String((env && env.BOOT_TEST_DELAY_AT) || '').trim() === 'instantiate' ? 'instantiate' : 'wait';
+}
+
+/**
+ * The release side of a reuse runtime, as index.js runs it (#724 review, finding 6: one function, tested as such).
+ * M: the released runtime's loader Module; mem: its memory; droppedAt: the runtime serial at its drop (undefined
+ * when none was recorded); serialNow(): the runtime serial now. It drains and retires M (drainAndRetire), then offers
+ * mem, refused when a runtime was instantiated since the drop (it would be held beside that runtime), when M was
+ * booted without the loader's guards, or when the drain did not settle. Resolves why it was or was not kept.
+ */
+export async function offerWhenDrained(spare, M, mem, { on, droppedAt, serialNow, drain = drainAndRetire } = {}) {
+	if (M.pagefeatherReuse !== true) return spare.offer(mem, { on, inFlight: 0, current: false, guarded: false });
+	const why = await drain(M);
+	if (why !== 'drained') return why;
+	return spare.offer(mem, { on, inFlight: M.pfInFlight | 0, current: droppedAt === undefined || serialNow() !== droppedAt, guarded: true });
+}
+
 /** PHP_MEMORY_REUSE=on (default off). */
 import { LEDGER_MIB } from './mem-ledger.mjs';
 
-/** #603 (C): how long a spare is kept with no boot (then it goes to GC; the alarm also drops it). */
-export const SPARE_TTL_MS = 30000;
 
 /**
  * #603 (C): does this module import its memory (env.memory, the prepare.sh transform)? Read from the module before
@@ -87,29 +104,22 @@ export function reuseOn(env) {
 	return String((env && env.PHP_MEMORY_REUSE) || '').trim().toLowerCase() === 'on';
 }
 
-export function createSpare({ ttlMs = SPARE_TTL_MS, now = () => Date.now() } = {}) {
+// No lifetime (#724 review, finding 1): a dropped spare is not freed (GC did not come within 660 s, #598), so dropping
+// it only makes the next boot grow a second memory beside it. The spare persists until a boot takes it, or the
+// isolate goes.
+export function createSpare() {
 	let spare = null;
-	let keptAt = 0;
-	let timer = null;
 	const drop = () => {
-		if (timer) clearTimeout(timer);
-		timer = null;
 		spare = null;
 	};
 	let pendingP = null;
-	const counts = { kept: 0, inFlight: 0, current: 0, noGuards: 0, taken: 0, replaced: 0, expired: 0 };
-	const expire = (t = now()) => {
-		if (!spare || t - keptAt < ttlMs) return false;
-		drop();
-		counts.expired++;
-		return true;
-	};
+	const counts = { kept: 0, inFlight: 0, current: 0, noGuards: 0, taken: 0, replaced: 0 };
 	return {
 		/**
 		 * The retired runtime's memory, offered at release (the caller has set the loader's pfDead first). on: reuse
 		 * is active; inFlight: the loader's pfInFlight; current: a runtime was instantiated since this one was
 		 * dropped; guarded: the runtime was booted with the loader's reuse guards (only then is pfInFlight counted).
-		 * Returns why it was or was not kept. A kept spare is dropped after ttlMs with no boot.
+		 * Returns why it was or was not kept.
 		 */
 		offer(memory, { on, inFlight, current, guarded = true }) {
 			if (!on) return 'off';
@@ -118,17 +128,12 @@ export function createSpare({ ttlMs = SPARE_TTL_MS, now = () => Date.now() } = {
 			if (current) { counts.current++; return 'newer-runtime'; }
 			if ((inFlight | 0) !== 0) { counts.inFlight++; return 'in-flight'; }
 			if (spare && spare !== memory) counts.replaced++;
-			drop();
 			spare = memory;
-			keptAt = now();
-			timer = setTimeout(() => expire(), ttlMs + 1);
-			if (timer && typeof timer.unref === 'function') timer.unref();
 			counts.kept++;
 			return 'kept';
 		},
 		/** The spare, zeroed, for the next boot (and forgotten here); null when none. */
 		take() {
-			if (expire()) return null;
 			const m = spare;
 			drop();
 			if (!m) return null;
@@ -158,8 +163,6 @@ export function createSpare({ ttlMs = SPARE_TTL_MS, now = () => Date.now() } = {
 			if (r === 'timeout' && pendingP === p) pendingP = null;
 			return r;
 		},
-		/** Drop a spare past its TTL now (the alarm calls this); true when one was dropped. */
-		expire,
 		get mib() {
 			return spare ? LEDGER_MIB(spare.buffer.byteLength) : 0;
 		},

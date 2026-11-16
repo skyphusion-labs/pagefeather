@@ -79,6 +79,18 @@ export function initialPages(bytes) {
 
 const ms = (t) => new Promise((r) => setTimeout(r, t));
 
+// How many async exports the engine's function table holds (getWasmTableEntry builds a promising wrapper lazily only
+// for those). 0 on a static engine (lean): there, no lazily built promising wrapper can exist.
+export async function asyncTableEntries(e) {
+	const end = '\treturn PHPLoader;\n';
+	const js = e.js.slice(0, e.js.lastIndexOf(end)) + "\tModule['__pfTest'] = { table: () => wasmTable, isAsync: (f) => Asyncify.isAsyncExport(f) };\n" + e.js.slice(e.js.lastIndexOf(end));
+	const { php } = await boot({ ...e, js, loaderFile: null });
+	const h = php[PRIV].__pfTest; const tab = h.table();
+	let n = 0;
+	for (let i = 1; i < tab.length; i++) { const f = tab.get(i); if (f && h.isAsync(f)) n++; }
+	return n;
+}
+
 export const checks = {
 	// workerd has no import.meta.url; the Worker passes the module through instantiateWasm, so the
 	// loader must never fetch the wasm (prepare.sh, first edit).
@@ -261,6 +273,46 @@ trait Pf582T {
 		M.pagefeatherReuse = true;
 		M.pfDead = true;
 		assert.equal(await run(php, '<?php echo 4;'), '4', 'a later flip of the option changed a running runtime');
+	},
+	// #724 review, finding 6: the choice is fixed at init BEHAVIOURALLY, for the doors built later too. A test-only
+	// copy of the loader (never the product file) exposes getWasmTableEntry, its mirror and the table, so a table
+	// entry of an async export can be rebuilt lazily AFTER the option is flipped: it must carry no guard. And a
+	// callback of a runtime booted without reuse still runs after the option is flipped and the runtime marked
+	// retired (callUserCallback reads the init choice, not the Module).
+	async 'memory: the reuse choice is fixed at init, for lazily built wrappers and callbacks too'(e, opts = {}) {
+		const hook = "\tvar pfReuse = !!Module['pagefeatherReuse'];\n";
+		const end = '\treturn PHPLoader;\n';
+		assert.ok(e.js.includes(hook) && e.js.lastIndexOf(end) > 0, 'the loader shape changed: the test cannot hook it');
+		const js = e.js.slice(0, e.js.lastIndexOf(end)) + "\tModule['__pfTest'] = { getWasmTableEntry, mirror: wasmTableMirror, table: () => wasmTable, isAsync: (f) => Asyncify.isAsyncExport(f) };\n" + e.js.slice(e.js.lastIndexOf(end));
+		const t = { ...e, js, loaderFile: null };
+		const lazyGuarded = async (reuse) => {
+			const { php } = await boot(t, reuse ? { reuse: true } : {});
+			const M = php[PRIV]; const h = M.__pfTest; const tab = h.table();
+			let idx = -1;
+			for (let i = 1; i < tab.length && idx < 0; i++) { const f = tab.get(i); if (f && h.isAsync(f)) idx = i; }
+			if (idx < 0) return 'none';
+			delete h.mirror[idx];
+			M.pagefeatherReuse = !reuse; // flipped after init
+			return /pfDead/.test(String(h.getWasmTableEntry(idx)));
+		};
+		// A static engine (lean) puts no async export in its table: getWasmTableEntry can then build no promising
+		// wrapper at all, so that door does not exist there (the loop above proved the table holds none). The npm engine
+		// has them, and there both sides are checked: the control must see the guard, the flipped boot must not.
+		const control = await lazyGuarded(true);
+		if (control !== 'none') {
+			assert.equal(control, true, 'control: a reuse runtime\'s lazily built wrapper has no guard: the check cannot see one');
+			assert.equal(await lazyGuarded(false), false, 'a wrapper built after the option was flipped read the Module, not the init choice');
+		} else {
+			assert.equal(await lazyGuarded(false), 'none', 'the two boots of one engine disagree on its table');
+		}
+		const { php } = await boot(opts.engine || e);
+		const M = php[PRIV];
+		const p = php.run({ code: '<?php usleep(60000); echo "woke";' });
+		await ms(20);
+		M.pagefeatherReuse = true;
+		M.pfDead = true;
+		const r = await Promise.race([p.then((x) => x.text), ms(1500).then(() => 'stuck')]);
+		assert.equal(r, 'woke', 'a callback of a runtime booted without reuse was refused after the option was flipped');
 	},
 	// USE_ZEND_ALLOC=0: plain malloc, so the Zend allocator reports 0 (#547 reads it this way).
 	async 'allocator: USE_ZEND_ALLOC=0 is honoured'(e, opts = {}) {

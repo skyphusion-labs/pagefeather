@@ -15,7 +15,7 @@ memory_reuse_check() {
   if [ "${BOOT_GATE:-}" = on ] && [ "${PHP_MEMORY_REUSE:-}" != on ]; then
     echo "BOOT_GATE=on needs PHP_MEMORY_REUSE=on: without reuse every runtime reboot is refused until V8 collects the retired memory, which locally did not happen within 660 s (#598, #603)" >&2; return 1
   fi
-  if [ -n "${BOOT_TEST_DELAY_MS:-}" ]; then
+  if [ -n "${BOOT_TEST_DELAY_MS:-}" ] || [ -n "${BOOT_TEST_DELAY_AT:-}" ]; then
     echo "BOOT_TEST_DELAY_MS is a local test seam (tests/boot-race-e2e.sh) and is never rendered for a site" >&2; return 1
   fi
   return 0

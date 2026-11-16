@@ -23,6 +23,8 @@ refuse "OBJECT_CACHE_VERSIONS is for variant a only" VARIANT=b-dosql OBJECT_CACH
 refuse "PHP_MEMORY_REUSE is for variant a only" VARIANT=b-dosql PHP_MEMORY_REUSE=on
 refuse "BOOT_GATE is for variant a only" VARIANT=b-dosql BOOT_GATE=on
 refuse "BOOT_GATE=on needs PHP_MEMORY_REUSE=on" VARIANT=a BOOT_GATE=on
+refuse "PHP_MEMORY_REUSE is not supported on variant a yet" VARIANT=a PHP_MEMORY_REUSE=on
+refuse "PHP_MEMORY_REUSE is not supported on variant a yet" VARIANT=a PHP_MEMORY_REUSE=on BOOT_GATE=on
 refuse "BOOT_TEST_DELAY_MS is a local test seam" VARIANT=a PHP_MEMORY_REUSE=on BOOT_TEST_DELAY_MS=1500
 for bad in yes 1 off ON; do refuse "PHP_MEMORY_REUSE must be on or unset" VARIANT=a "PHP_MEMORY_REUSE=$bad"; done
 for bad in yes 1 off ON; do refuse "BOOT_GATE must be on or unset" VARIANT=a PHP_MEMORY_REUSE=on "BOOT_GATE=$bad"; done
@@ -109,9 +111,7 @@ ok "OPCACHE_REMOTE=0 SITE_REMOTE=0 renders nothing" "$([ "$(r OPCACHE_REMOTE=0 S
 ok "OPCACHE_REMOTE=1: the var, and /_pf/ first" "$([ "$(r OPCACHE_REMOTE=1)" = "$(printf 'OPCACHE_REMOTE = "on"\n---\nrun_worker_first = ["/_pf/*"]')" ] && echo 1 || echo 0)"
 ok "OPCACHE_REMOTE=1 SITE_REMOTE=1: both vars, and /_pf/ first" "$([ "$(r OPCACHE_REMOTE=1 SITE_REMOTE=1)" = "$(printf 'OPCACHE_REMOTE = "on"\nSITE_REMOTE = "on"\n---\nrun_worker_first = ["/_pf/*"]')" ] && echo 1 || echo 0)"
 ok "RECYCLE_WASM_MIB=140 renders it as a string" "$([ "$(r RECYCLE_WASM_MIB=140)" = "$(printf 'RECYCLE_WASM_MIB = "140"\n---')" ] && echo 1 || echo 0)"
-ok "PHP_MEMORY_REUSE=on renders it alone" "$([ "$(r PHP_MEMORY_REUSE=on)" = "$(printf 'PHP_MEMORY_REUSE = "on"\n---')" ] && echo 1 || echo 0)"
-ok "PHP_MEMORY_REUSE=on BOOT_GATE=on renders both" "$([ "$(r PHP_MEMORY_REUSE=on BOOT_GATE=on)" = "$(printf 'PHP_MEMORY_REUSE = "on"\nBOOT_GATE = "on"\n---')" ] && echo 1 || echo 0)"
-ok "the reuse pair passes the check" "$(env -i PATH="$PATH" bash -c ". '$S' && PHP_MEMORY_REUSE=on BOOT_GATE=on a_settings_check a && PHP_MEMORY_REUSE=on a_settings_check a" >/dev/null 2>&1 && echo 1 || echo 0)"
+ok "variant a refuses the reuse pair at the check (#724 review, finding 7)" "$(env -i PATH="$PATH" bash -c ". '$S' && PHP_MEMORY_REUSE=on BOOT_GATE=on a_settings_check a" >/dev/null 2>&1 && echo 0 || echo 1)"
 ok "RECYCLE_WASM_MIB=064 renders 64 (base 10, not octal)" "$([ "$(r RECYCLE_WASM_MIB=064)" = "$(printf 'RECYCLE_WASM_MIB = "64"\n---')" ] && echo 1 || echo 0)"
 ok "the bounds 64 and 240 pass the check" "$(env -i PATH="$PATH" bash -c ". '$S' && RECYCLE_WASM_MIB=64 a_settings_check a && RECYCLE_WASM_MIB=240 a_settings_check a" >/dev/null 2>&1 && echo 1 || echo 0)"
 ok "no setting passes the check on every variant" "$(env -i PATH="$PATH" bash -c ". '$S' && for v in a b-do b-dosql c1; do a_settings_check \$v || exit 1; done" >/dev/null 2>&1 && echo 1 || echo 0)"

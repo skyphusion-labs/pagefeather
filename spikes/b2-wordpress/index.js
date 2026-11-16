@@ -41,7 +41,7 @@ import { faultArmed, isFaultTarget, exhaustMemory } from './fault-inject.mjs';
 import { createUndoLog } from './undo-log.mjs';
 import { createRetirer } from './runtime-drop.mjs';
 import { gateSettings, decide, BootRefused, bootRefusedResponse, createGateClock, withBootRefusal } from './boot-gate.mjs'; // #598
-import { reuseOn, createSpare, bootTestDelayMs, moduleImportsMemory, drainAndRetire } from './memory-reuse.mjs'; // #598 / #603
+import { reuseOn, createSpare, bootTestDelayMs, bootTestDelayAt, moduleImportsMemory, offerWhenDrained } from './memory-reuse.mjs'; // #598 / #603
 import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse } from './overflow.mjs';
@@ -252,9 +252,9 @@ function releaseRuntime(php) {
 		// its own, so this one would be held beside it for its whole life: never kept. (A runtime with no drop
 		// recorded, an orphan boot, counts as current: fail safe.)
 		const droppedAt = droppedAtSerial.get(php);
-		spare.setPending(drainAndRetire(M).then((why) => {
-			lastSpareOffer = why !== 'drained' ? why : spare.offer(mem, { on, inFlight: M.pfInFlight | 0, current: droppedAt === undefined || runtimeSerial !== droppedAt, guarded: M.pagefeatherReuse === true });
-			console.log(JSON.stringify({ m: 'mem-reuse', offer: lastSpareOffer, spareMiB: spare.mib }));
+		spare.setPending(offerWhenDrained(spare, M, mem, { on, droppedAt, serialNow: () => runtimeSerial }).then((why) => {
+			lastSpareOffer = why;
+			console.log(JSON.stringify({ m: 'mem-reuse', offer: why, spareMiB: spare.mib }));
 		}));
 	}
 }
@@ -300,7 +300,7 @@ function dropRuntime() {
 function dropRuntimeIdle() {
 	const held = lastBootedPhp;
 	dropRuntime();
-	if (held) retirer.releaseNow(held);
+	if (held && reuseActive()) retirer.releaseNow(held); // #724 review, finding 3: with reuse off, queued as main
 }
 // The admin memory trace of the request now running (#434, php/mem-trace.php): set by the
 // memTrace message at PHP shutdown, read once into the operator-only x-mem-trace header.
@@ -326,7 +326,6 @@ let ledgerFailLogged = false;
 // buffer, and an evicted one stays in the isolate until V8 collects it. The ledger reports what was
 // inflated so far in the request and in the isolate, the upper bound on that garbage.
 let ledgerInfl0 = { n: 0, b: 0, r: 0, ae: 0 };
-let bootMemory = null; // the WebAssembly.Memory of the runtime being booted (instantiateWasm), for the ledger
 const heapOf = (p) => p[__private__dont__use].HEAPU8.length; // a runtime's wasm heap bytes (the ledger, the gate)
 function ledgerSnapshot(at) {
 	const php = lastBootedPhp;
@@ -1556,24 +1555,38 @@ function bootGate() {
 	console.log(JSON.stringify({ m: d.boot ? 'boot-gate' : 'boot-refused', ...d, spareMiB: spare.mib, ...(gate.refused.length ? { settingsRefused: gate.refused } : {}) }));
 	if (!d.boot) throw new BootRefused(d);
 }
+// #724 review, finding 4: a superseded boot's callers get the current boot of THEIR origin: never a runtime booted for
+// another origin (a request for another origin drops and boots, as handle() does).
+function handOff(origin) {
+	if (bootPromise && bootOrigin !== origin) dropRuntimeIdle();
+	return (bootPromise ??= boot(origin));
+}
+let instantiating = null; // #724 review, finding 4: the boot between its spare take and the end of instantiation
 async function boot(origin) {
 	// #603 (B): this boot's generation and origin are captured SYNCHRONOUSLY, before any await: a request that
 	// arrives during the waits below sees this origin (no second runtime for a stale one), and a drop during them
 	// is seen by the check after them.
 	const gen = bootGen; // #566: a drop during this boot makes it superseded (before instantiation) or an orphan (after)
 	bootOrigin = origin;
-	// One turn, so the caller's bootPromise ??= boot() holds THIS promise when the gate decides (#705 finding 3).
-	await null;
-	// A spare still being offered (its runtime's exit handlers settle in a microtask): wait for it, bounded. If
-	// it is late, this boot goes without it, and the late offer is refused (a newer runtime then exists).
-	await spare.waitPending(PENDING_OFFER_MS);
-	// #603 (B) test seam: BOOT_TEST_DELAY_MS lengthens the wait, so a drop can land in it (boot-race-e2e.sh)
-	if (bootTestDelayMs(ENV)) await new Promise((ok) => setTimeout(ok, bootTestDelayMs(ENV)));
-	// #603 (B): a drop during the waits superseded this boot. It instantiates nothing and hands off to the current
-	// boot (a new one only when none exists), so a superseded boot never runs beside a newer runtime.
-	if (gen !== bootGen) {
-		console.log(JSON.stringify({ m: 'boot-superseded' }));
-		return (bootPromise ??= boot(origin));
+	// #724 review, finding 3: the waits below exist only for reuse and the gate; with both off, boot() runs as main
+	// (no added await).
+	if (reuseActive() || gateSettings(ENV).on) {
+		// One turn, so the caller's bootPromise ??= boot() holds THIS promise when the gate decides (#705 finding 3).
+		await null;
+		// #724 review, finding 4: a boot still instantiating (it may hold the spare) finishes first; if a drop
+		// superseded it, its memory comes back as the offer, which this boot then takes.
+		while (instantiating) await instantiating;
+		// A spare still being offered (its runtime's exit handlers settle in a microtask): wait for it, bounded. If
+		// it is late, this boot goes without it, and the late offer is refused (a newer runtime then exists).
+		await spare.waitPending(PENDING_OFFER_MS);
+		// #603 (B) test seam: BOOT_TEST_DELAY_MS lengthens the wait, so a drop can land in it (boot-race-e2e.sh)
+		if (bootTestDelayMs(ENV) && bootTestDelayAt(ENV) === 'wait') await new Promise((ok) => setTimeout(ok, bootTestDelayMs(ENV)));
+		// #603 (B): a drop during the waits superseded this boot. It instantiates nothing and hands off to the
+		// current boot of ITS origin, so a superseded boot never runs beside a newer runtime.
+		if (gen !== bootGen) {
+			console.log(JSON.stringify({ m: 'boot-superseded', at: 'wait' }));
+			return handOff(origin);
+		}
 	}
 	// From the check above to here nothing awaits, so bootPromise is still THIS boot's promise: a refusal drops it.
 	try {
@@ -1589,15 +1602,24 @@ async function boot(origin) {
 	// The origin is WP_HOME for this runtime: log it, so a wrong one is visible.
 	console.log(JSON.stringify({ m: 'boot', origin }));
 	runtimeSerial++;
+	const serial = runtimeSerial; // this runtime's serial (the drop serial if a drop supersedes it, finding 4)
 	runtimeServed = 0;
 	runtimeBootAt = Date.now();
+	// #724 review, finding 4: from the take to the end of instantiation, a later boot waits for this one
+	let instDone;
+	const inst0 = reuseActive() ? new Promise((ok) => { instDone = ok; }) : null;
+	if (inst0) instantiating = inst0;
+	const instEnd = () => { if (inst0) { if (instantiating === inst0) instantiating = null; instDone(); } };
+	// #724 review, finding 4, test seam: BOOT_TEST_DELAY_AT=instantiate waits here, after the spare was taken
+	if (bootTestDelayMs(ENV) && bootTestDelayAt(ENV) === 'instantiate') await new Promise((ok) => setTimeout(ok, bootTestDelayMs(ENV)));
 	const t0 = Date.now();
+	let instMemory = null; // #724 review, finding 5: this boot's memory, a local (instantiateWasm sets it)
 	const id = await loadPHPRuntime(loader, {
 		// PHP_ENV (JSON) sets process environment for PHP, e.g. USE_ZEND_ALLOC.
 		ENV: JSON.parse(ENV.PHP_ENV || '{"USE_ZEND_ALLOC":"0"}'),
 		instantiateWasm(imports, done) {
 			const inst = new WebAssembly.Instance(wasmModule, imports);
-			bootMemory = inst.exports.memory || null; // #394: the ledger tracks this runtime's real memory
+			instMemory = inst.exports.memory || null; // #394: the ledger tracks this runtime's real memory (a local, finding 5)
 			done(inst, wasmModule);
 			return inst.exports;
 		},
@@ -1618,9 +1640,8 @@ async function boot(origin) {
 	const php = new PHP(id);
 	lastBootedPhp = php;
 	runtimeBootBytes = php[__private__dont__use].HEAPU8.length; // #603 (A): what this runtime starts from
-	if (bootMemory) memOf.set(php, bootMemory); // #598: the memory the spare keeps at release
-	ledger.register(php, runtimeSerial, bootMemory); // #394: retired runtimes stay countable while alive, with their real memory
-	bootMemory = null;
+	if (instMemory) memOf.set(php, instMemory); // #598: the memory the spare keeps at release
+	ledger.register(php, serial, instMemory); // #394: retired runtimes stay countable while alive, with their real memory
 	// php.ini overrides. PHP_INI (a JSON object) lets a deploy or a test change them.
 	// A deploy (WP_SALT is set) never prints PHP errors, even for a script that
 	// does not load wp-config.php (measured 2026-11-04: /wp-content/db.php did).
@@ -1944,9 +1965,23 @@ async function boot(origin) {
 		cookieStore: false,
 		getFileNotFoundAction: () => ({ type: 'internal-redirect', uri: '/index.php' }),
 	});
-	// #566: dropped while booting: nothing will reuse this runtime, but whoever awaited this boot may still use
-	// it now, so it is only queued, and the end of the next PHP run releases it.
-	if (gen !== bootGen) retirer.retire(php, true);
+	instEnd();
+	if (gen !== bootGen) {
+		if (reuseActive()) {
+			// #724 review, finding 4: superseded after instantiation (it may hold the spare). It retires through the
+			// normal path NOW (no caller has run on it: the handoff below gives them the current runtime), with its
+			// own serial as its drop serial, so its memory comes back as the offer, and the boot that waited for it
+			// (instantiating) takes it. Never orphaned beside a second memory.
+			console.log(JSON.stringify({ m: 'boot-superseded', at: 'instantiated' }));
+			if (!droppedAtSerial.has(php)) droppedAtSerial.set(php, serial);
+			retirer.retire(php, true);
+			retirer.releaseNow(php);
+			return handOff(origin);
+		}
+		// #566: dropped while booting: nothing will reuse this runtime, but whoever awaited this boot may still use
+		// it now, so it is only queued, and the end of the next PHP run releases it.
+		retirer.retire(php, true);
+	}
 	return { php, handler, bootMs: { wasm: tWasm, site: tSite, files: tFiles, fileCount: count, fileBytes, opcacheFiles, memAt } };
 }
 
@@ -2753,7 +2788,6 @@ export class PhpRuntime extends DurableObject {
 	}
 
 	async alarmRun() {
-		spare.expire(); // #603 (C): a spare past its TTL goes to GC, even with no request to drop it
 		// Phase 2 (#185): run due background work (Action Scheduler + WP-Cron) off the request
 		// path, so deferred WC order emails fire with no traffic. DISABLE_WP_CRON stays on; this
 		// alarm is the only cron driver. One alarm also coalesces purges, below.
@@ -4177,7 +4211,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				recycleRefusedLogged = true;
 				console.log(JSON.stringify({ m: 'recycle-line-refused', refused: line.refused }));
 			}
-			const recycleWhy = recycleDecision({ crashed, forced: forceRecycle, wasmBytes, lineBytes: line.bytes, bootBytes: runtimeBootBytes, recycleOff: env.PHP_RECYCLE === 'off' });
+			const recycleWhy = recycleDecision({ crashed, forced: forceRecycle, wasmBytes, lineBytes: line.bytes, bootBytes: reuseActive() ? runtimeBootBytes : 0, recycleOff: env.PHP_RECYCLE === 'off' });
 			if (recycleWhy) {
 				runtimeDrops++;
 				dropRuntime(); // #566: queued (this run is executing); released when the run ends, after the response below is built

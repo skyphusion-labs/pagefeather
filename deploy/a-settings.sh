@@ -68,6 +68,11 @@ a_settings_check() {
     echo "RECYCLE_WASM_MIB must be an integer from 64 to 240, not ${v}" >&2; return 2
   fi
   memory_reuse_check || return 2   # #603: the one rule (deploy/lib/memory-reuse.sh)
+  # #724 review, finding 7: not on variant a until measured. The drain and the offer run in timers and continuations
+  # of the recycling Worker request, which workerd may cancel at that request's end; b-dosql (one object) is the target.
+  if [ "$variant" = a ] && { [ -n "${PHP_MEMORY_REUSE:-}" ] || [ -n "${BOOT_GATE:-}" ]; }; then
+    echo "PHP_MEMORY_REUSE is not supported on variant a yet (#724): render it for a b-dosql site with deploy/wfp" >&2; return 2
+  fi
   case "${A_CLIENT:-lean}" in lean|mysql2) ;; *) echo "A_CLIENT must be lean or mysql2, not ${A_CLIENT}" >&2; return 2 ;; esac
   case "${PHP_OVERFLOW:-0}" in 0|1) ;; *) echo "PHP_OVERFLOW must be 0 or 1, not ${PHP_OVERFLOW}" >&2; return 2 ;; esac
   case "${OBJECT_CACHE_VERSIONS:-0}" in 0|1) ;; *) echo "OBJECT_CACHE_VERSIONS must be 0 or 1, not ${OBJECT_CACHE_VERSIONS}" >&2; return 2 ;; esac

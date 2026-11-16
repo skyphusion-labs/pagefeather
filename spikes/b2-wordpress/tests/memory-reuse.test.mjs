@@ -3,7 +3,7 @@
 // engine, and the red tests boot the UNPATCHED upstream artifact).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { reuseOn, createSpare, moduleImportsMemory, bootTestDelayMs, SPARE_TTL_MS, drainAndRetire } from '../memory-reuse.mjs';
+import { reuseOn, createSpare, moduleImportsMemory, bootTestDelayMs, drainAndRetire } from '../memory-reuse.mjs';
 import { boot, engineUnderTest, upstreamRaw, memoryShape } from './engine-contract.mjs';
 import { untransformMemory } from '../../../engine/tools/wasm-sections.mjs';
 import { createRequire } from 'node:module';
@@ -21,25 +21,43 @@ test('the flag: off by default, on only for "on"', () => {
 	assert.equal(reuseOn({ PHP_MEMORY_REUSE: '1' }), false);
 });
 
-test('#603 (C): the spare has a lifetime: dropped after its TTL with no boot', async () => {
-	assert.equal(SPARE_TTL_MS, 30000);
-	const sp = createSpare({ ttlMs: 30 });
+test('#724 review, finding 1: the spare PERSISTS until a boot takes it (no TTL: dropping it frees nothing GC would free)', async () => {
+	const mod = await import('../memory-reuse.mjs');
+	assert.equal('SPARE_TTL_MS' in mod, false, 'a spare TTL is back');
+	let t = 1000;
+	const sp = createSpare({ now: () => t });
 	const m = new WebAssembly.Memory({ initial: 1 });
 	assert.equal(sp.offer(m, { on: true, inFlight: 0, current: false }), 'kept');
-	assert.equal(sp.mib > 0, true);
-	await ms(60);
-	assert.equal(sp.mib, 0, 'the spare outlived its TTL: memory pinned with no boot');
-	assert.equal(sp.take(), null);
-	assert.equal(sp.counts.expired, 1);
-	// taken in time: no expiry
-	const sp2 = createSpare({ ttlMs: 1000 });
-	sp2.offer(m, { on: true, inFlight: 0, current: false });
-	assert.equal(sp2.take(), m);
-	// expire() drops it at once (the alarm calls it for a spare past its TTL)
-	const sp3 = createSpare({ ttlMs: 50 });
-	sp3.offer(m, { on: true, inFlight: 0, current: false });
-	assert.equal(sp3.expire(Date.now() + 51), true);
-	assert.equal(sp3.mib, 0);
+	t += 35 * 60 * 1000; // a quiet half hour
+	await ms(40);
+	assert.equal(sp.take(), m, 'a boot long after the recycle did not get the spare: the next boot would grow a second memory');
+});
+
+test('#724 review, finding 6: the real release and boot sequence (offerWhenDrained, setPending, waitPending, take)', async () => {
+	const { offerWhenDrained } = await import('../memory-reuse.mjs');
+	// a released runtime with its exit handlers in flight; no newer runtime: the next boot gets its memory
+	let serial = 5;
+	const sp = createSpare();
+	const m = new WebAssembly.Memory({ initial: 1 });
+	const M = { pfInFlight: 2, pfOnIdle: null, pfDead: false, pagefeatherReuse: true };
+	sp.setPending(offerWhenDrained(sp, M, m, { on: true, droppedAt: 5, serialNow: () => serial }));
+	setTimeout(() => { M.pfInFlight = 0; if (M.pfOnIdle) M.pfOnIdle(); }, 5);
+	assert.equal(await sp.waitPending(1000), 'settled');
+	assert.equal(M.pfDead, true);
+	assert.equal(sp.take(), m, 'the boot did not get the drained memory');
+	// a newer runtime was instantiated while it drained: refused, the boot gets nothing
+	const sp2 = createSpare();
+	const M2 = { pfInFlight: 1, pfOnIdle: null, pfDead: false, pagefeatherReuse: true };
+	sp2.setPending(offerWhenDrained(sp2, M2, m, { on: true, droppedAt: 5, serialNow: () => serial }));
+	serial = 6;
+	setTimeout(() => { M2.pfInFlight = 0; if (M2.pfOnIdle) M2.pfOnIdle(); }, 5);
+	await sp2.waitPending(1000);
+	assert.equal(sp2.take(), null, 'a memory was handed on beside a newer runtime');
+	// booted without the guards: never offered
+	const sp3 = createSpare();
+	sp3.setPending(offerWhenDrained(sp3, { pfInFlight: 0 }, m, { on: true, droppedAt: 6, serialNow: () => 6 }));
+	await sp3.waitPending(1000);
+	assert.equal(sp3.take(), null, 'an unguarded runtime was handed on');
 });
 
 test('#603 (C): a module that does not import env.memory never gets reuse (read from the module, before instantiation)', () => {

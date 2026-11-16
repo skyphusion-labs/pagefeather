@@ -8,11 +8,11 @@
 // patch changes. The three checks with no patch behind them fail on a targeted mutation instead.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checks, engine, engineUnderTest, upstreamRaw } from './engine-contract.mjs';
+import { checks, engine, engineUnderTest, upstreamRaw, asyncTableEntries } from './engine-contract.mjs';
 
 const target = engineUnderTest();
 const raw = upstreamRaw(target.expect);
-const NO_PATCH = new Set(['opcache: a script too big for shared memory takes the file-cache fallback', 'opcache: the inheritance cache links classes across cached files', 'extensions: exactly the expected list', 'allocator: USE_ZEND_ALLOC=0 is honoured', 'exports: the request entry points are promising', 'link: dylink section and export count as expected', 'fibers: start() does not abort the runtime', 'memory: without reuse the loader counts and checks nothing per call', 'memory: the reuse choice is fixed at init']);
+const NO_PATCH = new Set(['opcache: a script too big for shared memory takes the file-cache fallback', 'opcache: the inheritance cache links classes across cached files', 'extensions: exactly the expected list', 'allocator: USE_ZEND_ALLOC=0 is honoured', 'exports: the request entry points are promising', 'link: dylink section and export count as expected', 'fibers: start() does not abort the runtime', 'memory: without reuse the loader counts and checks nothing per call', 'memory: the reuse choice is fixed at init', 'memory: the reuse choice is fixed at init, for lazily built wrappers and callbacks too']);
 
 for (const [name, check] of Object.entries(checks)) {
 	test('holds on ' + target.name + ': ' + name, async () => { await check(target); });
@@ -39,6 +39,15 @@ test('goes red on a mutation: the promising door admits a new call while one is 
 });
 test('goes red on a mutation: callUserCallback not guarded', async () => {
 	await assert.rejects(async () => checks['memory: a retired runtime runs no callback (its sleep wake is refused)'](mutant("(pfReuse && Module['pfDead'])", 'false')), assert.AssertionError);
+});
+test('goes red on a mutation (the #724 reviewer\'s): the promising wrapper reads the Module option when it is built', async (t) => {
+	// the door this mutant breaks exists only where the table holds async exports (the npm engine); the lean arms have none
+	if ((await asyncTableEntries(target)) === 0) return t.skip('no async export in this engine\'s function table: no lazily built promising wrapper to break (the npm arm runs this)');
+	await assert.rejects(async () => checks['memory: the reuse choice is fixed at init, for lazily built wrappers and callbacks too'](mutant('if (!pfReuse) return pfPromising;', "if (!Module['pagefeatherReuse']) return pfPromising;")), assert.AssertionError);
+});
+test('goes red on a mutation (the #724 reviewer\'s): callUserCallback reads the Module option at each call', async () => {
+	const m = mutant("(pfReuse && Module['pfDead'])", "(Module['pagefeatherReuse'] && Module['pfDead'])");
+	await assert.rejects(async () => checks['memory: the reuse choice is fixed at init, for lazily built wrappers and callbacks too']({ ...target }, { engine: m }), assert.AssertionError);
 });
 test('goes red on a mutation: the reuse option read per wrapper, not once at init', async () => {
 	await assert.rejects(async () => checks['memory: the reuse choice is fixed at init'](mutant('if (!pfReuse) return pfPromising;', "if (!Module['pagefeatherReuse']) return pfPromising;")), assert.AssertionError);

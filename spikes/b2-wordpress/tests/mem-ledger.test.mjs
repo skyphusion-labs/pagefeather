@@ -73,10 +73,12 @@ test('ledger.runtimes: the real WebAssembly.Memory of a retired runtime is sized
 });
 
 test('index.js: the Memory is taken from the instance export at boot and registered with the runtime', () => {
-	assert.match(src, /bootMemory = inst\.exports\.memory \|\| null;/);
-	assert.match(src, /ledger\.register\(php, runtimeSerial, bootMemory\);/);
-	const reg = src.indexOf('ledger.register(php, runtimeSerial, bootMemory);');
-	assert.ok(src.slice(reg, reg + 200).includes('bootMemory = null;'), 'cleared after use, so a later boot cannot reuse it');
+	// #724 review, finding 5: a LOCAL of boot(), so no later boot can see it (it was a module global, cleared after use)
+	const boot = src.slice(src.indexOf('async function boot(origin) {'), src.indexOf('\n}\n', src.indexOf('async function boot(origin) {')));
+	assert.match(boot, /let instMemory = null;/, 'the boot memory is not a local of boot()');
+	assert.match(boot, /instMemory = inst\.exports\.memory \|\| null;/);
+	assert.match(boot, /ledger\.register\(php, serial, instMemory\);/);
+	assert.ok(!/^let bootMemory/m.test(src), 'a module-level bootMemory is back');
 });
 
 test('index.js: every snapshot carries what was inflated so far in the request and in the isolate', () => {
@@ -105,7 +107,7 @@ test('sqlMeter and ledgerOn', () => {
 
 test('index.js: off by default, per request, and snapshots at the memory-limit SQL write, write-loss and end', () => {
 	assert.match(src, /ledgerActive = ledgerOn\(env, req\.headers\.get\('x-mem-ledger'\), perfHeadersAllowed\(req, env\)\);/);
-	assert.match(src, /ledger\.register\(php, runtimeSerial, bootMemory\);/);
+	assert.match(src, /ledger\.register\(php, serial, instMemory\);/);
 	const sql = src.indexOf('const reply = sqlStatement(sqlDb, m);');
 	const blk = src.slice(sql, src.indexOf('return out;', sql));
 	assert.match(blk, /if \(ledgerActive\) \{/);

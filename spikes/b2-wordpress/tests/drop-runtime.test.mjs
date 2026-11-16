@@ -85,14 +85,18 @@ test('index.js: every drop retires synchronously, and every PHP run reaps in its
 	assert.match(drop, /retirer\.retire\(held\)/);
 	assert.doesNotMatch(drop, /\bawait\b|\.then\(|waitUntil|\bPromise\./, 'no continuation in the drop');
 	assert.match(code, /retirer\.runStart\(\);\n\t+try \{\n\t+return await fn\(\);\n\t+\} finally \{\n\t+retirer\.runEnd\(\);/, 'withPhp brackets every run');
-	assert.match(code, /if \(gen !== bootGen\) retirer\.retire\(php, true\);/, 'a boot that finished after a drop is queued, never released on the spot');
+	// A boot that finished after a drop: with reuse off it is queued, never released on the spot (a caller may still use
+	// it). With reuse on (#724 review, finding 4) its callers are handed the current runtime instead, so nothing runs
+	// on it, and it is released at once (its memory comes back as the offer).
+	const late = code.slice(code.indexOf('if (gen !== bootGen) {', code.indexOf('async function boot(origin) {')), code.indexOf('return { php, handler,'));
+	assert.match(late, /if \(reuseActive\(\)\) \{[\s\S]*?retirer\.retire\(php, true\);\n\t+retirer\.releaseNow\(php\);\n\t+return handOff\(origin\);\n\t+\}\n(\t+\/\/[^\n]*\n)*\t+retirer\.retire\(php, true\);\n\t\}/, 'a boot that finished after a drop is queued (reuse off), or released and handed off (reuse on)');
 	assert.ok(!/dropAndRelease/.test(code), 'the continuation-based release is gone');
 	const ev = code.indexOf("if (url.pathname === '/_evict') {");
 	assert.ok(code.indexOf('dropRuntime();', ev) < code.indexOf("this.ctx.abort('evict", ev), '/_evict drops (and so releases, when idle) before it schedules the abort');
 	assert.match(code, /const forceRecycle = spikeOk && req\.headers\.get\('x-runtime-recycle'\) === 'force';/, 'the forced recycle is spike-gated');
 	// #598: the decision is recycle-line.mjs's (tests/recycle-line.test.mjs); it still takes crashed, the forced
 	// recycle and PHP_RECYCLE, and the line is RECYCLE_WASM_MIB's.
-	assert.match(code, /const recycleWhy = recycleDecision\(\{ crashed, forced: forceRecycle, wasmBytes, lineBytes: line\.bytes, bootBytes: runtimeBootBytes, recycleOff: env\.PHP_RECYCLE === 'off' \}\);/);
+	assert.match(code, /const recycleWhy = recycleDecision\(\{ crashed, forced: forceRecycle, wasmBytes, lineBytes: line\.bytes, bootBytes: reuseActive\(\) \? runtimeBootBytes : 0, recycleOff: env\.PHP_RECYCLE === 'off' \}\);/);
 	assert.match(code, /const line = recycleLine\(env\);/);
 	assert.match(code, /if \(recycleWhy\) \{/);
 });
