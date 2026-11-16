@@ -48,12 +48,12 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 
 | feature | Free DO | Paid DO | WfP | Hyperdrive |
 |---|---|---|---|---|
-| Catalog: shop and product pages | yes (#638); limited: false 404 (#766; fix in PR #770, open) | yes ([results.md](results.md) 2026-11-07, `cochk4`); limited: false 404 (#766; fix in PR #770, open) | limited: false 404 (#766; fix in PR #770, open); stock on cached pages (#628) | yes ([results.md](results.md) 2026-11-09, `wp-a-lean` 12 of 12) |
+| Catalog: shop and product pages | yes (#638); limited: false 404 (#766; fix in PR #770, open) | yes ([results.md](results.md) 2026-11-07, `cochk4`); limited: false 404 (#766; fix in PR #770, open) | limited: false 404 (#766; fix in PR #770, open) | yes ([results.md](results.md) 2026-11-09, `wp-a-lean` 12 of 12) |
 | Cart and checkout | yes (#638) | yes ([results.md](results.md) 2026-11-08, `woocap`; the flaky failure fixed in #208) | yes (#704, `pf704`: `load.py` checkouts placed orders) | yes ([results.md](results.md) 2026-11-09, three runs of 12 of 12) |
 | Editing the store in wp-admin | no: memory (#638) | not measured | not measured | not measured |
 | Payments | not measured | cash on delivery: yes ([results.md](results.md) 2026-11-07, `cochk4`); other gateways not measured | not measured | not measured |
 | Orders and HPOS | not measured | orders placed: yes (checkout rows above); HPOS not measured | the same | orders screen: yes ([results.md](results.md) 2026-11-09); HPOS not measured |
-| Stock | not measured | yes: checkout lowers stock ([results.md](results.md) 2026-11-07); limited on cached pages (#628) | limited on cached pages (#628) | yes: checkout lowers stock ([results.md](results.md) 2026-11-09) |
+| Stock | not measured | yes: checkout lowers stock ([results.md](results.md) 2026-11-07); a cached page is at most about 30 s old by default (PR #713; [why](#a-cached-product-page-can-show-stock-up-to-about-30-s-old-628-closed)), not measured live on this path | yes: a cached page is at most about 30 s old ([C2 verdict](https://github.com/skyphusion-labs/pagefeather/issues/628#issuecomment-6902826012), PR #707; ggc.sh [read-back](https://github.com/skyphusion-labs/pagefeather/issues/628#issuecomment-6909672971)) | yes: checkout lowers stock ([results.md](results.md) 2026-11-09) |
 | Coupons | not measured | not measured | not measured | not measured |
 | Tax | not measured | not measured | not measured | not measured |
 | Emails | not measured | not measured | not measured | not measured |
@@ -110,9 +110,20 @@ The Site Health > Info panel asks `/wp-site-health/v1/directory-sizes`. On b-dos
 
 After a SQL failure at the memory ceiling, a later guest can get 404 for a real product. No header or log marks it. It was measured on b-dosql in the #724 runs on 2026-11-16. In one arm, 15 of 15 false 404s came within 3 s of a memory failure. The likely cause is a failed request that still writes the object cache. PR #770 is open.
 
-### A cached product page can show an old stock number (#628)
+### A cached product page can show stock up to about 30 s old (#628, closed)
 
-A logged-out product page comes from the edge cache. A checkout that lowers stock does not clear that copy. A store caches its product, shop and category pages for 30 s by default (`PAGE_CACHE_PRODUCT_TTL`). So the number is at most about 30 s old. Checkout always reads the real stock, so it never sells more than the store has. When a product sells out, the page is cleared. See the README.
+This is by design, and it is bounded. #628 is closed.
+
+A logged-out product, shop or category page comes from the edge cache. A checkout that lowers stock does not clear that copy. So a guest can see a stock number or price that is a little old.
+
+- **The bound:** a store caches those pages for 30 s by default (`PAGE_CACHE_PRODUCT_TTL`). Other guest pages keep 120 s.
+- **The fix that closed #628:** PR #707 made 30 s the store default on `deploy/wfp`, as a recorded setting. PR #713 (#706) did the same for `deploy.sh` and one-click.
+- **The evidence:**
+  - The [C2 verdict](https://github.com/skyphusion-labs/pagefeather/issues/628#issuecomment-6902826012) passed all four bars on a `deploy/wfp` store.
+  - On ggc.sh, a product page re-rendered every 32 to 36 s, the longest 36.5 s ([read-back](https://github.com/skyphusion-labs/pagefeather/issues/628#issuecomment-6909672971), 2026-11-16).
+- **What stays safe:** checkout always reads the real stock, so the store never sells more than it has. When a product sells out, its page is cleared.
+
+A store that shows exact stock numbers can use a lower `PAGE_CACHE_PRODUCT_TTL` (5 to 600 s). See [Stock numbers on cached pages](from-lamp-to-wfp.md#stock-numbers-on-cached-pages).
 
 ### PDF invoices work on one-click only (#765)
 
