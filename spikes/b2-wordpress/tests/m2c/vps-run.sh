@@ -38,7 +38,8 @@ for arm in $ARMS; do
     curl -s -c "$J" -b "$J" -o /dev/null -D "$T/l.txt" --data-urlencode "pwd=$ADMIN_PASSWORD" -d 'log=admin&wp-submit=Log+In&redirect_to=%2Fwp-admin%2F&testcookie=1' "$base/wp-login.php"
     for i in $(seq 0 "$WARM"); do
       curl -s "${H[@]}" -o "$T/a.json" "$base/_mem"
-      w=$(curl -s -c "$J" -b "$J" -o /dev/null -D "$T/h.txt" -w '%{http_code} %{time_total}' "$base/wp-admin/post-new.php")
+      # The spike token: x-perf is operator-only (perf-headers.mjs scrubs it without the token or PERF_HEADERS=on).
+      w=$(curl -s "${H[@]}" -c "$J" -b "$J" -o /dev/null -D "$T/h.txt" -w '%{http_code} %{time_total}' "$base/wp-admin/post-new.php")
       curl -s "${H[@]}" -o "$T/b.json" "$base/_mem"
       python3 -I - "$arm" "$boot" "$i" "$w" "$T" >> "$f" <<'PY' || { echo "vps-run: $arm boot $boot request $i: no reading (see above)" >&2; rc=1; [ "$i" = 0 ] && break; }
 import json, sys
