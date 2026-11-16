@@ -3237,6 +3237,16 @@ export class PhpRuntime extends DurableObject {
 			try {
 				const res = await handle(req, env, url, spikeOk, maxBody, ctx);
 				if (realTxn) txnEnd(sql, this.ctx.storage);
+				// #598 arm B PROBE (a THROWAWAY-ONLY branch, never merged): after a runtime recycle, end this Durable
+				// Object once the answer is on its way, so the platform drops the isolate's memory instead of leaving the
+				// retired WebAssembly.Memory for a GC that does not come. The next request shows which it was: a NEW
+				// x-perf iso and memLive 1 (the isolate was freed), or the same iso with the ledger still counting the
+				// old memory (only the object was reset).
+				if (res.headers.get('x-runtime-recycled')) {
+					res.headers.set('x-pf598b-abort', 'scheduled');
+					console.log(JSON.stringify({ m: 'pf598b-abort', why: res.headers.get('x-runtime-recycled'), iso: ISOLATE_ID }));
+					setTimeout(() => { try { this.ctx.abort('pf598b: recycle, abort the object'); } catch (e) { console.log(JSON.stringify({ m: 'pf598b-abort-threw', error: String((e && e.message) || e).slice(0, 120) })); } }, 250);
+				}
 				try {
 					// inMs: from the start of fetch to the response (object clock). The
 					// Worker's object time minus inbox minus inMs is the wait to send the
