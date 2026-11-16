@@ -1,6 +1,10 @@
 # The request frame: an isolate reset rolls a request back (#352)
 
-Status: built behind a flag, default OFF (`REQUEST_FRAMES=on`). Written 2026-11-14 by rollins (seat
+Status: **ON by default for b-dosql** since #589 part 1 (written 2026-11-16; this supersedes the status line of
+2026-11-14, "built behind a flag, default OFF"). `REQUEST_FRAMES=off` is the escape hatch on every path
+(deploy.sh, deploy/wfp `site add` and `update`, one-click). The evidence is #589 run8 (2026-11-16): 50 of 50
+writes killed right after their INSERT by the #730 fault injector were rolled back with frames on, and all 50
+were kept while the client was told they failed with frames off. First written 2026-11-14 by rollins (seat
 rollins-sb1114d).
 - Design: #352 [issuecomment-6881076430](https://github.com/skyphusion-labs/pagefeather/issues/352#issuecomment-6881076430),
   with the lead's rulings.

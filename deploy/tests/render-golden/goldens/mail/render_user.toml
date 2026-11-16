@@ -23,7 +23,7 @@ SITE_ORIGIN = "https://letters.example.com"
 MAIL_FROM = "shop@example.com"
 MAIL_FROM_NAME = "Test Shop"
 HTTP_ALLOW_HOSTS = ".wordpress.org,.woocommerce.com,.gravatar.com"
-
+REQUEST_FRAMES = "on"
 PHP_IN_DO = "on"
 PHP_LOCATION = "enam"
 PHP_DO_POOL = "1"

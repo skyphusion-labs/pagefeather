@@ -155,5 +155,16 @@ ok('analytics-engine opt-in adds WP_ANALYTICS=on + the ANALYTICS analytics_engin
   bA.some((x) => x.type === 'plain_text' && x.name === 'WP_ANALYTICS' && x.text === 'on') &&
   bA.some((x) => x.type === 'analytics_engine' && x.name === 'ANALYTICS' && x.dataset === 'wp-wfp-blog-analytics'));
 
+// #589 part 1 (the lead's ruling after run8): REQUEST_FRAMES is ON by default on the one-click path too, as render_user
+// renders it; requestFrames 'off' is the escape hatch; anything else is refused.
+ok('REQUEST_FRAMES = on by default, and render_user renders the same', varOf('REQUEST_FRAMES') && varOf('REQUEST_FRAMES').text === 'on' && has(/^REQUEST_FRAMES = "on"$/m));
+const bOff = bDosqlBindings({ mediaBucket: mediaBucketName('blog'), siteOrigin: 'https://blog.skyphusionwp.dev', location: 'enam', requestFrames: 'off' });
+ok('requestFrames off renders REQUEST_FRAMES = off (the escape hatch)', bOff.some((x) => x.type === 'plain_text' && x.name === 'REQUEST_FRAMES' && x.text === 'off'));
+for (const bad of ['yes', 'ON', '1', true]) {
+  let threw = false;
+  try { bDosqlBindings({ mediaBucket: mediaBucketName('blog'), siteOrigin: 'https://blog.skyphusionwp.dev', location: 'enam', requestFrames: bad }); } catch { threw = true; }
+  ok(`requestFrames ${JSON.stringify(bad)} is refused`, threw);
+}
+
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

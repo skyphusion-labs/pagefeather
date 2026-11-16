@@ -23,6 +23,7 @@ SITE_ORIGIN = "https://norecycle.example.com"
 
 HTTP_ALLOW_HOSTS = ".wordpress.org,.woocommerce.com,.gravatar.com"
 PHP_RECYCLE = "off"
+REQUEST_FRAMES = "on"
 PHP_IN_DO = "on"
 PHP_LOCATION = "enam"
 PHP_DO_POOL = "1"

@@ -23,6 +23,7 @@ SITE_ORIGIN = "https://ini.example.com"
 
 HTTP_ALLOW_HOSTS = ".wordpress.org,.woocommerce.com,.gravatar.com"
 PHP_INI = '{"opcache.memory_consumption":"48"}'
+REQUEST_FRAMES = "on"
 PHP_IN_DO = "on"
 PHP_LOCATION = "enam"
 PHP_DO_POOL = "1"

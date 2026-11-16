@@ -63,6 +63,9 @@ render_conf() {
     echo 'PHP_DO_POOL = "1"'
     # b-dosql: the object's own SQLite is the database (one object).
     [ "$VARIANT" != b-dosql ] || echo 'DB_IN_DO = "on"'
+    # REQUEST_FRAMES (#352, #589 part 1): on by default for b-dosql (the object-SQLite undo log), off the escape
+    # hatch. deploy.sh refuses a bad value, and the var on another variant, before any step.
+    [ "$VARIANT" != b-dosql ] || echo "REQUEST_FRAMES = \"${REQUEST_FRAMES:-on}\""
   fi
   echo '[images]'; echo 'binding = "IMAGES"'
   # Workers AI binding for auto alt text (AI=1). Unified Billing (Cloudflare credit).

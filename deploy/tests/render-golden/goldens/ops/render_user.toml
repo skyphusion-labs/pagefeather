@@ -22,7 +22,7 @@ PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
 SITE_ORIGIN = "https://wp-ops.sub.workers.dev"
 
 HTTP_ALLOW_HOSTS = ""
-
+REQUEST_FRAMES = "on"
 PHP_IN_DO = "on"
 PHP_LOCATION = "weur"
 PHP_DO_POOL = "1"

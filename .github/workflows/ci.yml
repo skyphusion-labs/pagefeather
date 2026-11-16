@@ -72,6 +72,7 @@ jobs:
         run: |
           bash deploy/tests/a-settings-test.sh
           bash deploy/tests/fault-inject-test.sh
+          bash deploy/tests/frames-default-test.sh
           bash deploy/tests/a-render-test.sh
           bash deploy/tests/page-cache-product-test.sh
           bash deploy/tests/observability-test.sh
