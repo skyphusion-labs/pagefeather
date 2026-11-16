@@ -66,6 +66,12 @@ function limitsOf(site) {
 
 export default {
 	async fetch(request, env) {
+		// #755 PROBE (measurement branch only): the dispatcher's own view of a client disconnect. Path only.
+		if (request.signal) {
+			const dp0 = Date.now(), dpPath = new URL(request.url).pathname;
+			if (request.signal.aborted) console.log(JSON.stringify({ m: 'disp-probe', at: 'before-fetch', path: dpPath }));
+			else request.signal.addEventListener('abort', () => console.log(JSON.stringify({ m: 'disp-probe', at: 'abort-event', path: dpPath, sinceStartMs: Date.now() - dp0 })), { once: true });
+		}
 		// URL already lowercases the hostname (WHATWG URL), so the site map keys are lower case.
 		const url = new URL(request.url);
 		if (url.pathname === SNAPSHOT_PATH) return fail(404, 'not-public', 'Not found.');
