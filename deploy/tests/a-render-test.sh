@@ -12,6 +12,9 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 HERE="$ROOT/deploy/tests/a-render"
 fails=0
+# #721: enable_request_signal was added after the #296 benches ran. The benches stay the record; the comparison maps the
+# render's flags line back to theirs (benchflags), and section 8 asserts the flag itself.
+benchflags() { sed 's/^- compatibility_flags = \["nodejs_compat", "enable_request_signal"\]$/- compatibility_flags = ["nodejs_compat"]/'; }
 ok() { if [ "$2" = 1 ]; then echo "  ok   $1"; else echo "  FAIL $1"; fails=$((fails+1)); fi; }
 T=$(mktemp -d "${TMPDIR:-/tmp}/a-render-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT
@@ -33,7 +36,7 @@ render() {
 }
 # compare <render.toml> <bench.toml> <label>: equal settings, apart from the two render-only lines.
 compare() {
-  python3 -I "$HERE/canon.py" "$1" | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS) = ' > "$T/r.canon"
+  python3 -I "$HERE/canon.py" "$1" | benchflags | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS) = ' > "$T/r.canon"
   python3 -I "$HERE/canon.py" "$2" > "$T/b.canon"
   if diff -u "$T/b.canon" "$T/r.canon" > "$T/d"; then ok "$3" 1; else sed 's/^/        /' "$T/d"; ok "$3 (above: - the bench, + deploy.sh)" 0; fi
 }
@@ -42,7 +45,7 @@ echo "1. the defaults render the measured site: the #666 bench plus the two #296
 render "$T/a.toml"; rc=$?
 ok "render_conf ran (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"; [ $rc = 0 ] || cat "$T/render.err"
 # #296: the step 3 series measured arm C (both on) against the bench; the lead ruled them approach A's defaults.
-python3 -I "$HERE/canon.py" "$T/a.toml" | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS) = ' > "$T/d.canon"
+python3 -I "$HERE/canon.py" "$T/a.toml" | benchflags | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS) = ' > "$T/d.canon"
 { python3 -I "$HERE/canon.py" "$HERE/bench.toml"; echo 'vars OBJECT_CACHE_VERSIONS = "on"'; echo 'vars WOO_HPOS_CACHE = "on"'; } | sort > "$T/bd.canon"
 if diff -u "$T/bd.canon" <(sort "$T/d.canon") > "$T/d1"; then ok "deploy.sh variant a equals the bench plus the two defaults" 1; else sed 's/^/        /' "$T/d1"; ok "deploy.sh variant a equals the bench plus the two defaults" 0; fi
 render "$T/a0.toml" OBJECT_CACHE_VERSIONS=0 WOO_HPOS_CACHE=off; rc=$?
@@ -60,7 +63,7 @@ python3 -I "$HERE/canon.py" "$HERE/bench-overflow.toml" > "$T/bo.canon"
 differs() { # differs <bench.canon> <label> [VAR=value ...]
   local b=$1 label=$2; shift 2
   render "$T/m.toml" "$@" || { ok "$label (the render ran)" 0; return; }
-  python3 -I "$HERE/canon.py" "$T/m.toml" | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS) = ' > "$T/m.canon"
+  python3 -I "$HERE/canon.py" "$T/m.toml" | benchflags | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS) = ' > "$T/m.canon"
   ok "$label" "$(diff -q "$b" "$T/m.canon" >/dev/null && echo 0 || echo 1)"
 }
 differs "$T/b.canon" "A_CLIENT=mysql2 (index-a.js) differs from the bench" A_CLIENT=mysql2
@@ -96,6 +99,10 @@ ok "unset renders neither" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -q 
 render "$T/bad.toml" OBJECT_START_BY_S=0; rc=$?
 ok "OBJECT_START_BY_S=0 fails the render (rc $rc)" "$([ $rc != 0 ] && echo 1 || echo 0)"
 ok "deploy.sh checks both before any step" "$(grep -q 'object_time_vars >/dev/null || exit 2' "$ROOT/deploy/deploy.sh" && echo 1 || echo 0)"
+
+echo "8. #721: every render sets enable_request_signal, the specific flag (the compatibility date is unchanged)"
+ok "the default render sets the flag" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -qx -- '- compatibility_flags = \["nodejs_compat", "enable_request_signal"\]' && echo 1 || echo 0)"
+ok "the compatibility date is the bench's" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -qx -- "$(python3 -I "$HERE/canon.py" "$HERE/bench.toml" | grep -- '^- compatibility_date')" && echo 1 || echo 0)"
 
 [ "$fails" = 0 ] && echo "a-render: all checks pass" || echo "a-render: $fails failing check(s)"
 exit $((fails > 0))

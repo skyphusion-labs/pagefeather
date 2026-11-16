@@ -78,6 +78,17 @@ export async function recheckStartBy(startByAt, { now = Date.now, tick = () => n
 	return { late: fresh >= startByAt, clockMs: fresh - stale };
 }
 
+// #721: the caller disconnected while its call was in flight (request.signal, with enable_request_signal). No client
+// reads this; it exists so the Worker answers instead of throwing an AbortError (an exception outcome, which doctor
+// counts as a failure). An object run that started is never cancelled (measured on the edge, #721), so a method that
+// may write says unknown.
+export function disconnectAnswer(method) {
+	const safe = ['GET', 'HEAD', 'OPTIONS'].includes(String(method || '').toUpperCase());
+	const headers = new Headers({ 'content-type': 'text/plain; charset=utf-8', 'x-write-loss': safe ? 'none' : 'unknown' });
+	noStoreAnywhere(headers);
+	return new Response('The connection closed before the answer.\n', { status: 499, headers });
+}
+
 // A request the object never ran because it was not granted by its start-by.
 export function startByResponse() {
 	return shedAnswer('The site is busy and did not start your request. Please try again in a few seconds.\n', { 'x-object-deadline': 'queued', 'x-write-loss': 'none' });

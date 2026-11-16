@@ -8,7 +8,7 @@ import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from 
 import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-arm.mjs';
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
 import { callPhpObject, isObjectCallDeadline, objectCallDeadlineMs, objectCallExempt } from './object-deadline.mjs';
-import { startByMs, objectShedPlan, startByResponse, shedAnswer, startByExempt, tagCallId, recheckStartBy, START_BY_HEADER, CALL_HEADER } from './start-by.mjs';
+import { startByMs, objectShedPlan, startByResponse, shedAnswer, startByExempt, tagCallId, recheckStartBy, disconnectAnswer, START_BY_HEADER, CALL_HEADER } from './start-by.mjs';
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
@@ -357,7 +357,7 @@ const SEND_TIMEOUT_MS = 5000;
 // #720: held reuses the lock the caller already holds. A second phpLock.run waits out staleMs, then
 // onStale drops the runtime. The lock is not reentrant. Only /_runcron passes held, because that
 // route is already inside the request withPhp. The alarm does not, so it always takes the lock.
-function withPhp(fn, { shedMs = 0, tag = null, shedWhy = null, recheck = null, held = false } = {}) {
+function withPhp(fn, { shedMs = 0, tag = null, shedWhy = null, recheck = null, held = false, signal = null } = {}) {
 	if (held) return fn();
 	return phpLock.run(
 		async () => {
@@ -373,6 +373,7 @@ function withPhp(fn, { shedMs = 0, tag = null, shedWhy = null, recheck = null, h
 			tag, // #708: the forwarded request's correlation id, on its lock lines
 			shedWhy,
 			recheck,
+			signal, // #721: the caller's request.signal (a disconnect sheds a waiter)
 			onStale: () => {
 				if (bootPromise) runtimeDrops++;
 				dropRuntime(); // the old runtime's state is unknown; the stale run still counts as running, so it is released when that run ends too
@@ -2956,8 +2957,11 @@ export class PhpRuntime extends DurableObject {
 		// remainder is this run's shed bound (the tighter of it and PHP_QUEUE_SHED_MS), and a shed never runs PHP.
 		const plan = objectShedPlan(startByHeader, tArrive, phpShedMs(env, true));
 		let lateByClock = false;
-		if (plan.refuseNow) {
-			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'shed', at: 'arrive', why: 'start-by', ...(callId ? { call: callId } : {}) }));
+		// #721: a caller already gone (request.signal, with enable_request_signal) is refused here too: one refusal, before
+		// this object writes anything.
+		const gone = !!(raw.signal && raw.signal.aborted);
+		if (plan.refuseNow || gone) {
+			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'shed', at: 'arrive', why: gone ? 'disconnect' : 'start-by', ...(callId ? { call: callId } : {}) }));
 			return startByResponse();
 		}
 		// #715 review3 2: a real request writes its origin and arms cron after the refusal (review2 5: a refused request
@@ -3010,6 +3014,7 @@ export class PhpRuntime extends DurableObject {
 			tag: callId ? { call: callId } : null,
 			shedWhy: plan.byStartBy ? 'start-by' : 'queue-shed',
 			// #715 review2 4, review3 4 and 5: the lock rechecks the start-by at a contended grant, on a clock read again.
+			signal: raw.signal, // #721: a queued waiter sheds when its caller disconnects (why: disconnect)
 			recheck: plan.startBy > 0 ? async () => { const rc = await recheckStartBy(plan.startBy); lateByClock = rc.late; return rc; } : null,
 		});
 		if (objectRun !== PHP_SHED) return objectRun;
@@ -3280,6 +3285,7 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 		req.method,
 		(e) => console.log(JSON.stringify({ m: 'isolate-reset-retry', kind: classifyObjectError(e), path: url.pathname, ...memIdOf(req, env), error: String(e.message).slice(0, 200) })),
 	).catch((e) => {
+		if (req.signal && req.signal.aborted) return { gone: true }; // #721: the caller disconnected (not an object error)
 		if (!isObjectCallDeadline(e)) throw e;
 		// No frame probe. The probe is another stub.fetch to this same object, which just
 		// failed to start answering, so a probe can hang the same way. Without a frame that
@@ -3287,6 +3293,10 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 		console.log(JSON.stringify({ m: 'object-deadline', path: url.pathname, method: req.method, deadlineMs: e.deadlineMs, writeLoss: e.response.headers.get('x-write-loss'), call: callId, ...memIdOf(req, env), answered: e.response.status }));
 		return { deadline: e.response };
 	});
+	if (res.gone) {
+		console.log(JSON.stringify({ m: 'disconnect', path: url.pathname, method: req.method, call: callId, writeLoss: disconnectAnswer(req.method).headers.get('x-write-loss') }));
+		return disconnectAnswer(req.method);
+	}
 	if (res.deadline) return res.deadline;
 	const retried = res.attempts > 1;
 	if (res.error) {
@@ -3488,13 +3498,15 @@ const site = {
 		// Spike: reach the checkout Container on any path, e.g. /_container/_diag.php
 		if (env.WOO_CHECKOUT && url.pathname.startsWith('/_container/')) {
 			const inner = new URL(url.pathname.slice('/_container'.length) + url.search, url.origin);
-			const r = await checkoutContainer(env).fetch(new Request(inner, req));
+			const r = await checkoutContainer(env).fetch(new Request(new Request(inner, req), { signal: null })); // #721: detached
 			const out = new Response(r.body, r);
 			out.headers.set('cache-control', 'private, no-store');
 			return out;
 		}
 		if (env.WOO_CHECKOUT && env.CHECKOUT_CONTAINER === 'on' && isCheckout(url)) {
-			const r = await checkoutContainer(env).fetch(req);
+			// #721: a checkout in the container must never inherit the caller's signal: a disconnect would abort it
+			// mid-write (signal: null detaches it; measured locally on workerd).
+			const r = await checkoutContainer(env).fetch(new Request(req, { signal: null }));
 			const out = new Response(r.body, r);
 			out.headers.set('x-served-by', 'checkout-container');
 			// Checkout is per shopper: never let the edge cache keep it.

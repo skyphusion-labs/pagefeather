@@ -292,3 +292,67 @@ test('#715 review3 5: the grant-time recheck sheds before the grant line, throug
 	let c2 = 0; await lock.run(async () => 'x', { recheck: async () => { c2++; return { late: true }; } });
 	assert.equal(c2, 0);
 });
+
+// #721: a QUEUED waiter whose caller disconnected (request.signal, with enable_request_signal) sheds and never runs.
+// Measured on the edge (#721): a real client disconnect aborts the object's request.signal at 206 to 298 ms, only with
+// the flag. A run that has started is never stopped by it.
+function sigLock() {
+	let t = 0; const timers = [];
+	const log = [];
+	const lock = createPhpLock({ staleMs: 10 ** 9, now: () => t, setTimer: (fn, ms) => { timers.push({ at: t + ms, fn }); return timers.length; }, clearTimer: () => {}, log: (e) => log.push(e) });
+	return { lock, log, at: (v) => { t = v; } };
+}
+const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+test('#721: a waiter sheds the moment its caller disconnects: never runs, why disconnect, no grant line, the next one keeps its order', { timeout: 3000 }, async () => {
+	const { lock, log, at } = sigLock();
+	let finishHead; let headDone = false;
+	const head = lock.run(() => new Promise((r) => (finishHead = r)).then(() => { headDone = true; }));
+	await flush();
+	const ac = new AbortController(); let ran = false;
+	const w = lock.run(async () => { ran = true; }, { signal: ac.signal, tag: { call: 'gone' } });
+	let nextRanAfterHead = null;
+	const next = lock.run(async () => { nextRanAfterHead = headDone; return 'next'; });
+	await flush();
+	at(250); ac.abort(); await flush();
+	assert.equal(await w, PHP_SHED, 'shed at once, while the head still runs');
+	assert.equal(ran, false, 'it never ran');
+	const mine = log.filter((e) => e.call === 'gone');
+	const shed = mine.find((e) => e.event === 'shed');
+	assert.ok(shed && shed.why === 'disconnect' && shed.at === 'wait' && shed.waitMs === 250 && 'depth' in shed && 'headMs' in shed, JSON.stringify(shed));
+	assert.ok(!mine.some((e) => e.event === 'granted'), 'no grant line');
+	at(2000); finishHead(); await head;
+	assert.equal(await next, 'next');
+	assert.equal(nextRanAfterHead, true, 'the waiter behind it still waited for the head: no overlap');
+});
+test('#721: a caller already gone at the grant, or on arrival, sheds without running; a started run is never stopped', { timeout: 3000 }, async () => {
+	{
+		const { lock, log } = sigLock();
+		const ac = new AbortController(); ac.abort(); let ran = false;
+		assert.equal(await lock.run(async () => { ran = true; }, { signal: ac.signal }), PHP_SHED, 'gone on arrival: even uncontended');
+		assert.equal(ran, false);
+		const shed = log.find((e) => e.event === 'shed');
+		assert.ok(shed && shed.why === 'disconnect' && shed.at === 'arrive', JSON.stringify(shed));
+	}
+	{
+		const { lock } = sigLock();
+		const ac = new AbortController(); let ended = false;
+		const r = lock.run(async () => { await flush(); ac.abort(); await flush(); ended = true; return 'ran'; }, { signal: ac.signal });
+		assert.equal(await r, 'ran', 'a run that started finishes');
+		assert.equal(ended, true);
+	}
+	{
+		// No signal (cron, imports): unchanged.
+		const { lock } = sigLock();
+		assert.equal(await lock.run(async () => 'x'), 'x');
+	}
+});
+test('#721: the start-by still sheds a waiter whose caller never disconnects', { timeout: 3000 }, async () => {
+	const { lock, log, at } = sigLock();
+	let finishHead; const head = lock.run(() => new Promise((r) => (finishHead = r)));
+	await flush();
+	const ac = new AbortController();
+	const w = lock.run(async () => 'ran', { signal: ac.signal, shedMs: 1000, shedWhy: 'start-by' });
+	await flush(); at(1500); finishHead(); await head;
+	assert.equal(await w, PHP_SHED);
+	assert.equal(log.find((e) => e.event === 'shed').why, 'start-by');
+});

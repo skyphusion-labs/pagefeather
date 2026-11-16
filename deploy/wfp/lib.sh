@@ -580,7 +580,7 @@ render_user() { # render_user <site> <origin>
 name = "$(user_script "$s")"
 main = "index.js"
 compatibility_date = "$(compat_date)"
-compatibility_flags = ["nodejs_compat"]
+compatibility_flags = ["nodejs_compat", "enable_request_signal"]
 rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
 $mail_binding
 [assets]

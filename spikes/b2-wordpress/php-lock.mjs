@@ -32,17 +32,21 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 	let headSince = null; // when the newest executing run started; null when none executes
 	const headMs = () => (headSince === null ? 0 : now() - headSince);
 
-	// Resolves 'turn' when prev settles, 'stale' when the run ahead has executed staleMs, 'shed' at shedMs.
-	function waitTurn(prev, t0, shedMs) {
+	// Resolves 'turn' when prev settles, 'stale' when the run ahead has executed staleMs, 'shed' at shedMs, and 'gone'
+	// when signal aborts (#721: the caller disconnected; it needs enable_request_signal).
+	function waitTurn(prev, t0, shedMs, signal) {
 		return new Promise((resolve) => {
 			let timer = null;
 			let done = false;
+			const onAbort = () => finish('gone');
 			const finish = (why) => {
 				if (done) return;
 				done = true;
 				if (timer !== null) clearTimer(timer);
+				if (signal) signal.removeEventListener('abort', onAbort);
 				resolve(why);
 			};
+			if (signal) signal.addEventListener('abort', onAbort, { once: true });
 			prev.then(() => finish('turn'), () => finish('turn'));
 			const check = () => {
 				timer = null;
@@ -70,8 +74,15 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 		// shedWhy (#715 review2 8) names the bound on a shed line: start-by, or the operator's queue-shed.
 		// recheck (#715 review3 5): an async start-by check at a contended grant (the clock may be stale there,
 		// start-by.mjs recheckStartBy). { late: true } sheds before any grant line: at: clock, why: start-by.
-		run(fn, { shedMs = 0, onStale = () => {}, tag = null, shedWhy = null, recheck = null } = {}) {
+		// signal (#721): the caller's request.signal. A waiter whose caller disconnected sheds (why: disconnect) and never
+		// runs: on arrival, while it waits, or at its grant. A run that has started is never stopped by it.
+		run(fn, { shedMs = 0, onStale = () => {}, tag = null, shedWhy = null, recheck = null, signal = null } = {}) {
 			const lg = tag ? (e) => log({ ...e, ...tag }) : log;
+			if (signal && signal.aborted) {
+				// Gone before it queued: it takes no place in the order.
+				lg({ event: 'shed', at: 'arrive', waitMs: 0, depth: waiting + running, headMs: headMs(), why: 'disconnect' });
+				return Promise.resolve(PHP_SHED);
+			}
 			const prev = tail;
 			let release;
 			const mine = new Promise((r) => (release = r));
@@ -81,13 +92,23 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 			if (contended) lg({ event: 'queued', depth: waiting + running, headMs: headMs() });
 			waiting++;
 			return (async () => {
-				let why = contended ? await waitTurn(prev, t0, shedMs) : 'turn';
+				let why = contended ? await waitTurn(prev, t0, shedMs, signal) : 'turn';
 				waiting--;
 				const waitMs = now() - t0;
 				// The grant-time check: a run that does not yield lets no waiter timer fire, and when it ends
 				// this turn (a microtask) beats the overdue timer. Measured on local workerd (b-do): without
 				// this, waits of 2.7 s were granted against a 1 s bound. A waiter over its bound sheds here.
 				let at = 'wait';
+				// #721: a caller that disconnected while this waited, or is gone at the grant: shed, never run.
+				let disconnect = false;
+				if (why === 'gone') {
+					why = 'shed';
+					disconnect = true;
+				} else if ((why === 'turn' || why === 'stale') && signal && signal.aborted) {
+					at = 'grant';
+					why = 'shed';
+					disconnect = true;
+				}
 				// #708 review 1: the stale path too. A waiter taken as stale after its bound would otherwise drop the runtime
 				// and RUN fn after its caller was answered; it sheds instead, and never runs.
 				if ((why === 'turn' || why === 'stale') && shedMs > 0 && waitMs >= shedMs) {
@@ -103,7 +124,7 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 					}
 				}
 				if (why === 'shed') {
-					const whyShed = at === 'clock' ? 'start-by' : shedWhy;
+					const whyShed = disconnect ? 'disconnect' : at === 'clock' ? 'start-by' : shedWhy;
 					lg({ event: 'shed', at, waitMs, depth: waiting + running, headMs: headMs(), ...(whyShed ? { why: whyShed } : {}), ...(at === 'clock' ? { clockMs: clock.clockMs } : {}) });
 					// This waiter never runs: the one behind it waits for the run ahead instead.
 					prev.then(release, release);
