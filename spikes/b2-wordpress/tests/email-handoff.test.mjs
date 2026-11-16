@@ -251,7 +251,7 @@ test('index.js: runCron sets the tick mail inside its withPhp turn and always cl
 	assert.ok(rc.indexOf('tickMail = mail;') > w);
 	assert.ok(/\} finally \{\s*tickMail = null;/.test(rc));
 	assert.ok(src.includes('cr = await runCron(await (bootPromise ??= boot(cronOrigin)), cleanDue, mail);'), 'the alarm');
-	assert.ok(src.includes('const r = await runCron(await bootPromise, false, mail);'), '/_runcron');
+	assert.ok(src.includes('const r = await runCron(await bootPromise, false, mail, { held: true });'), '/_runcron');
 	assert.ok(src.includes('resetFailTotal += resetFailures([f]);'));
 	assert.equal((src.match(/stats\.failures\.push\(/g) || []).length, 1, 'every failure is counted through noteFailure');
 });
