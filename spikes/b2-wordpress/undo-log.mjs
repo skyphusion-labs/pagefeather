@@ -108,7 +108,7 @@ const RECOVER_ROWS_MAX = 64;
 // #809: the refusal's message. It names a storage failure, so #795 classes it a PLATFORM failure (a retryable answer).
 export const STRANDED_ERROR = 'storage reset pending: a request frame is stranded until its recovery succeeds (#809)';
 
-export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {}, frames = false } = {}) {
+export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {}, frames = false, undoFault = () => null } = {}) {
 	const framesOn = () => !!(typeof frames === 'function' ? frames() : frames);
 	let undoSchemaSig = null;
 	let setupDone = false;
@@ -230,7 +230,8 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 		stateReq = armedReq;
 	}
 	// Undo every change after seq, newest first, in one storage transaction.
-	function undoTo(db, storage, seq, detail = false) {
+	// faultable: the frame rollback and the recovery only (#809's seam, fault-inject.mjs); a PHP ROLLBACK never.
+	function undoTo(db, storage, seq, detail = false, faultable = false) {
 		const rows = [...db.exec(`SELECT sql${detail ? ', req' : ''} FROM _wp_undo WHERE seq > ? ORDER BY seq DESC`, seq).raw()];
 		if (detail) lastUndone = rows.map(([stmt, req]) => ({ ...undoShape(stmt), req: req ?? null }));
 		// #794 review: the stored active flag goes off INSIDE the transaction (the triggers must not log the undo
@@ -239,6 +240,8 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			setActive(db, false);
 			for (const [stmt] of rows) own(db.exec(stmt));
 			own(db.exec('DELETE FROM _wp_undo WHERE seq > ?', seq));
+			const injected = faultable ? undoFault() : null;
+			if (injected) throw new Error(injected); // #809's seam: after the statements, so the transaction takes them back
 		};
 		if (storage && typeof storage.transactionSync === 'function') storage.transactionSync(apply);
 		else apply();
@@ -396,7 +399,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			if (!frameOpen) return null;
 			let n;
 			try {
-				n = undoTo(db, storage, 0);
+				n = undoTo(db, storage, 0, false, true);
 			} catch (e) {
 				// #794 review: the undo met the same ceiling (likely: the request just failed there). Inside
 				// transactionSync nothing of it applied, and the stored frame is intact (active = 1, its undo rows, its
@@ -519,7 +522,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			ensureReqCols(db);
 			let n;
 			try {
-				n = undoTo(db, storage, 0, true);
+				n = undoTo(db, storage, 0, true, true);
 			} catch (e) {
 				recovered = false; // #794 review: not done; the next request tries again (the frame is still stored open)
 				stranded = true; // #809: and nothing writes under it meanwhile

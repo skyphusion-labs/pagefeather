@@ -936,6 +936,28 @@ test('#809 a stranded frame refuses writes only: reads still run (the Worker gat
 	assert.deepEqual(run(a.u, db, 'SELECT v FROM t').toArray(), [{ v: 'derived' }]);
 });
 
+test('#809 the undo-failure seam strands a frame through rollbackFrame and recover() only, never a PHP ROLLBACK', () => {
+	const { db, storage } = site();
+	let on = true;
+	const logs = [];
+	const u = createUndoLog({ stats: { txnOps: 0, undoRows: 0 }, log: (o) => logs.push(o), frames: true, undoFault: () => (on ? 'injected reset' : null) });
+	u.arm(db, 'r-seam');
+	assert.equal(u.txnOp(db, storage, { op: 'begin' }).ok, true);
+	run(u, db, "INSERT INTO t (v) VALUES ('in-txn')");
+	assert.equal(u.txnOp(db, storage, { op: 'rollback' }).ok, true, 'a PHP ROLLBACK is never faulted');
+	assert.deepEqual(ids(db), ['seed']);
+	run(u, db, "UPDATE t SET v = 'derived' WHERE v = 'seed'");
+	assert.throws(() => u.rollbackFrame(db, storage), /injected reset/);
+	assert.deepEqual(ids(db), ['derived'], 'the faulted undo applied nothing');
+	u.end(db, storage);
+	assert.throws(() => u.recover(db, storage), /injected reset/);
+	assert.equal(u.stranded(), true);
+	on = false;
+	assert.equal(u.recover(db, storage).req, 'r-seam');
+	assert.deepEqual(ids(db), ['seed']);
+	assert.equal(u.stranded(), false);
+});
+
 test('#794 rollbackFrame stops at a commit point: what was kept at the point stays kept, and it is not proof of "nothing saved"', () => {
 	const { db, storage } = site();
 	const a = isolate();

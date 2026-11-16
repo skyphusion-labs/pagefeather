@@ -40,7 +40,7 @@ import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__do
 import { inflateSync } from 'fflate';
 import { createArena } from './inflate-arena.mjs';
 import { headroomStream } from './headroom.mjs';
-import { faultArmed, isFaultTarget, exhaustMemory, sqlFailNeedle, sqlFailMessage } from './fault-inject.mjs';
+import { faultArmed, isFaultTarget, exhaustMemory, sqlFailNeedle, sqlFailMessage, undoFailSet, UNDO_FAIL_MESSAGE } from './fault-inject.mjs';
 import { failuresSince } from './activate-report.mjs';
 import { createUndoLog } from './undo-log.mjs';
 import { createRetirer } from './runtime-drop.mjs';
@@ -2505,10 +2505,11 @@ async function httpOp(op) {
 // (tests/undo-log.test.mjs). One instance per isolate: recover() runs once, in the PhpRuntime
 // constructor, before anything reads the database.
 let undoLog = null;
+let undoFailOn = false; // #809's seam (fault-inject.mjs undoFailSet): throwaway and local sites only
 function undo(env = ENV) {
 	// frames is asked at each arm, from the env of the call or ENV: the first undo() of a deployed object is
 	// the constructor's recovery, before any fetch has set ENV (pf352f, 2026-11-14: no frame ever armed).
-	if (!undoLog) undoLog = createUndoLog({ stats, objectCacheDrop, log: (o) => console.log(JSON.stringify(o)), frames: () => !!((env || ENV) && (env || ENV).REQUEST_FRAMES === 'on') });
+	if (!undoLog) undoLog = createUndoLog({ stats, objectCacheDrop, log: (o) => console.log(JSON.stringify(o)), frames: () => !!((env || ENV) && (env || ENV).REQUEST_FRAMES === 'on'), undoFault: () => (undoFailOn ? UNDO_FAIL_MESSAGE : null) });
 	return undoLog;
 }
 function txnOp(db, storage, op) {
@@ -3220,6 +3221,9 @@ export class PhpRuntime extends DurableObject {
 			sqlDb = sql;
 			sqlStorage = sql ? this.ctx.storage : null;
 			const realTxn = sql && env.REAL_TRANSACTIONS !== 'off';
+			// #809's seam, read BEFORE the recovery: the request that turns it off is the one whose recovery succeeds.
+			const uf = undoFailSet(env, spikeOk, req.headers);
+			if (uf !== null) { undoFailOn = uf; console.log(JSON.stringify({ m: 'fault-undo', on: uf })); }
 			if (realTxn) txnRecover(sql, this.ctx.storage);
 			// #352: arm the request frame (REQUEST_FRAMES=on); it opens at the first write. The Worker sends the id.
 			if (realTxn) undo(env).arm(sql, req.headers.get('x-pf-req') || 'obj-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
