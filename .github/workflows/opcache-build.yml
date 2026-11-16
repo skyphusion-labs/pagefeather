@@ -85,7 +85,7 @@ jobs:
             echo "::error::recycle-stack-e2e.sh passed with reuse off: the reproducer no longer reproduces"; cat build/recycle-red.log; exit 1
           fi
           grep 'VIOLATION' build/recycle-red.log || { echo "::error::the red run failed for another reason"; cat build/recycle-red.log; exit 1; }
-      - name: ALL OPcache files as remote packs, end to end on workerd (issue #563, OPCACHE_REMOTE, no split)
+      - name: ALL OPcache files as remote packs, end to end on workerd (issue #563, OPCACHE_REMOTE, no split; and #801, the #394 L1 split)
         # On the primed build above: the trace, opcache-remote.py, then tests/remote-e2e.sh runs the
         # pages, the admin and the store three ways (remote packs, cap 0, off). Each must work.
         working-directory: spikes/b2-wordpress
@@ -95,6 +95,16 @@ jobs:
           if ! WOO_ACTIVE=1 DEV_ENV=dosql-local ./file-trace.sh > build/file-trace.log 2>&1; then
             echo "::error::file-trace.sh failed"; tail -30 build/file-trace.log; exit 1
           fi
+          # #801: #394 L1 (OPCACHE_SPLIT=1) is off everywhere (the 2026-11-13 ruling) and kept in main as inert code, so
+          # it is tested here or it rots unseen: the split of this primed, traced build, tests/l1-e2e.sh on it (the boot
+          # pack from Assets, the forced compile fallback, the split off; /_pf/ never served), then build/ put back
+          # EXACTLY, because opcache-split.py rewrites build/opcache.zip and opcache-remote.py below reads it.
+          cp -a build "$RUNNER_TEMP/l1-build"
+          python3 -I opcache-split.py build/opcache.zip build/file-trace.json build/build-id.js
+          if ! tests/l1-e2e.sh; then
+            echo "::error::l1-e2e.sh (#394 L1, the OPcache split) failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1
+          fi
+          rm -rf build && mv "$RUNNER_TEMP/l1-build" build
           python3 -I opcache-remote.py build/opcache.zip build/file-trace.json build/build-id.js
           # #569 (#394 Gate 2): the site.zip read pattern and the simulated fetches per request, from
           # the same trace (a measurement; site.zip is untouched by opcache-remote.py).
