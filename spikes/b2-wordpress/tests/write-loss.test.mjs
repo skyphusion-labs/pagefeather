@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { resetFailures, writeLossResponse, WRITE_LOSS_BODY } from '../write-loss.mjs';
+import { resetFailures, writeLossResponse, WRITE_LOSS_BODY, statementFailureResponse } from '../write-loss.mjs';
 
 const RESET = "Durable Object's isolate exceeded its memory limit and was reset.";
 test('THE FDPROBE1112H CASE: the session_tokens UPDATE failed in a reset, so the run has lost writes', () => {
@@ -232,4 +232,33 @@ test('#596: the write-loss lines carry id for a valid x-perf-id, no id without o
 	const doc = readFileSync(new URL('../write-loss.mjs', import.meta.url), 'utf8');
 	assert.match(doc, /phpStatus is PHP's own status/);
 	assert.match(doc, /not the status the client got/);
+});
+
+test('#795 statementFailureResponse: never a plausible wrong answer; retryable only when nothing was saved', () => {
+	const a = statementFailureResponse(1, false, false);
+	assert.equal(a.status, 503, 'nothing saved: a retryable 503');
+	assert.equal(a.headers['retry-after'], '5');
+	assert.equal(a.headers['cache-control'], 'no-store');
+	assert.equal(a.headers['x-sql-failure'], '1');
+	assert.equal(a.headers['x-write-loss'], 'none');
+	assert.ok(!('x-isolate-reset' in a.headers), 'it claims no isolate reset: there was none');
+	assert.match(a.body, /Nothing was saved/);
+	const b = statementFailureResponse(2, true, true);
+	assert.equal(b.status, 500, 'a write may have been kept: a 500');
+	assert.ok(!('retry-after' in b.headers), 'and no Retry-After: a blind retry could apply a kept write twice');
+	assert.equal(b.headers['x-write-loss'], 'unknown');
+	const j = JSON.parse(b.body);
+	assert.equal(j.data.statementFailure, true);
+	assert.equal(j.data.status, 500);
+});
+
+test('#795 index.js: any failed statement outside the setup endpoints is answered as a failure, after the reset branch', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const lost = src.indexOf('const lost = resetFailures(d.failures);');
+	const any = src.indexOf('if (d.failures.length && !SETUP_PATHS.has(url.pathname)) {');
+	const copy = src.indexOf('for (const [k, v] of Object.entries(r.headers))', lost);
+	assert.ok(lost > 0 && any > lost && copy > any, 'after the reset branch, before PHP headers are copied');
+	assert.match(src, /const SETUP_PATHS = new Set\(\['\/_install', '\/_activate'\]\);/, 'only the measured setup endpoints are excluded');
+	assert.match(src.slice(any, copy), /readFailed\(d\.failures\)\) \{\s*try \{ rb = undoLog && sqlDb \? undoLog\.rollbackFrame/, 'a failed read of any class rolls the frame back');
+	assert.match(src.slice(any, copy), /const saved = rb \? !frameProvesRollback\(fr\) : wrote;/, '"nothing saved" only on the proof, or when nothing was written');
 });

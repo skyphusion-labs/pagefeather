@@ -38,6 +38,28 @@ export function rolledBackResponse(json = false, kind = 'memory', undone = 0) {
 	const body = json ? JSON.stringify({ code: WRITE_LOSS_CODE, message: ROLLED_BACK_MESSAGE, data: { status: 500, rolledBack: true } }) : ROLLED_BACK_MESSAGE + '\n';
 	return { status: 500, headers, body };
 }
+/**
+ * #795: the answer to a request in which a SQL statement failed with an error that is NOT the isolate memory reset
+ * (resetFailures counts those). Never a plausible wrong answer: PHP saw a failed read as an empty result, so its own
+ * 200 or 404 would look like the truth. saved says whether the request may have kept a write:
+ *   false (it wrote nothing, or its frame is proven rolled back): 503 with Retry-After, "Nothing was saved. You can try
+ *         again." A retry is safe, and it gets the truth.
+ *   true  (a write may have been kept): 500 with no Retry-After, as writeLossResponse: "check before you try again".
+ * Both are no-store, carry x-sql-failure (the count), and claim no isolate reset (there was none).
+ */
+export function statementFailureResponse(n, json = false, saved = false) {
+	const headers = {
+		'content-type': json ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8',
+		'cache-control': 'no-store',
+		'x-sql-failure': String(n),
+		'x-write-loss': saved ? 'unknown' : 'none',
+	};
+	if (!saved) headers['retry-after'] = '5';
+	const message = saved ? WRITE_LOSS_MESSAGE : ROLLED_BACK_MESSAGE;
+	const status = saved ? 500 : 503;
+	const body = json ? JSON.stringify({ code: WRITE_LOSS_CODE, message, data: { status, statementFailure: true } }) : message + '\n';
+	return { status, headers, body };
+}
 /** Whether a /_frame answer PROVES the request kept nothing: rolled back, and no commit point passed. */
 export function frameProvesRollback(frame) {
 	return !!(frame && frame.state === 'rolled-back' && Number(frame.points) === 0);
