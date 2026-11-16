@@ -88,8 +88,9 @@ The [support matrix](docs/support-matrix.md) lists each WordPress and WooCommerc
   always reads the real stock, so it never sells more than you have. If your pages show exact stock
   numbers, see [Stock numbers on cached pages](docs/from-lamp-to-wfp.md#stock-numbers-on-cached-pages)
   for the WooCommerce setting that avoids this. Since #628, a store caches its product,
-  shop and category pages for 30 s by default (`PAGE_CACHE_PRODUCT_TTL`). There, the number is at
-  most about 30 s old.
+  shop and category pages for 30 s by default (`PAGE_CACHE_PRODUCT_TTL`). There, the number is
+  usually at most about 30 s old. After a quiet spell, the first visitor can get a copy up to 60 s
+  old. That is the 30 s, plus a 30 s stale-while-revalidate window (#699).
 - **On a WooCommerce store, bundle size is the first wall.** A Worker is limited to 64 MiB
   uncompressed, and the upload gate stops at 62 MiB. WooCommerce alone takes the bundle to 58.3
   MiB. Measured with WooCommerce (#279): Yoast SEO (67.9 MiB), All in One SEO (67.5) and Elementor

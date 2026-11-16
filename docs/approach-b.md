@@ -232,6 +232,8 @@ The 2 MB body cap (8b) blocked a normal phone photo (3 to 14 MB). Now a media up
 
 Purge limits: Workers Cache purges always have the Free-tier limits, 5 a minute with bursts of 25, per account. A busy site runs out. So pages use `max-age=120, stale-while-revalidate=600`, purges are best effort (at most one per 15 s per isolate), and uploads are `private, max-age=86400` (browsers cache them, the edge does not, so a deleted upload is gone at once). `tests/break.py` passed 27 of 27 twice in a row after this change.
 
+**Since #699 (2026-11-16):** a refused purge is no longer dropped. The PHP object keeps it pending and retries it after 12 s, 24 s, then every 48 s. It gives up only when no cached copy can still be served: `max-age` plus `stale-while-revalidate`, so 720 s by default. Until then, a purge still stops a stale copy. The account-wide budget for these purges is #699's part b.
+
 ### 8e. CPU: OPcache, and a boot with no copies. Measured 2026-11-04.
 
 **OPcache was off the whole time.** PHP turns OPcache on only for the SAPIs in its own list (Apache, FPM, FastCGI, FrankenPHP, LiteSpeed, uWSGI). The php-wasm SAPI is `wasm`. `opcache_compile_file()` returned false, and every request compiled about 540 scripts. Two fixes made it work:

@@ -127,7 +127,7 @@ A logged-out product page comes from the edge cache, so a guest can see an old s
 
 For a busy store, "Never show quantity" is the choice that keeps every cached page right.
 
-**The store default since #628.** A store caches its product, shop and category pages for 30 s, not 120 s (`PAGE_CACHE_PRODUCT_TTL`). So there an exact number is at most about 30 s old. Measured: 30 s, with no loss of cached reads and no extra cache clears ([#628](https://github.com/skyphusion-labs/pagefeather/issues/628), 2026-11-15). deploy/wfp, the one-click paths and deploy.sh all render that default.
+**The store default since #628.** A store caches its product, shop and category pages for 30 s, not 120 s. The setting is `PAGE_CACHE_PRODUCT_TTL`. So there an exact number is usually at most about 30 s old. After a quiet spell, the first visitor can get a copy up to 60 s old. That is the 30 s, plus a 30 s stale-while-revalidate window (#699). Measured: 30 s, with no loss of cached reads and no extra cache clears ([#628](https://github.com/skyphusion-labs/pagefeather/issues/628), 2026-11-15). deploy/wfp, the one-click paths and deploy.sh all render that default.
 
 ## The admin is the heaviest part, and still being worked on
 
