@@ -92,7 +92,7 @@ cat > "$cfg" <<TOML
 name = "pagefeather-release"
 main = "$main"
 compatibility_date = "$(compat_date)"
-compatibility_flags = ["nodejs_compat"]
+compatibility_flags = ["nodejs_compat", "enable_request_signal"]
 rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
 TOML
 dry="$OUT/dry-run"

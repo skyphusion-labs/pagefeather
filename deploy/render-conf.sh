@@ -10,7 +10,8 @@ render_conf() {
   echo "name = \"$NAME\""
   echo "main = \"$([ "$VARIANT" = a ] && a_main || echo index.js)\""
   echo "compatibility_date = \"$COMPAT\""
-  echo 'compatibility_flags = ["nodejs_compat"]'
+  # enable_request_signal (#721): the specific flag, never a compatibility-date bump.
+  echo 'compatibility_flags = ["nodejs_compat", "enable_request_signal"]'
   echo 'workers_dev = true'
   echo 'rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]'
   # From address: MAIL_FROM, else wordpress@<site host> when that host can send

@@ -190,7 +190,7 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
   const compatibilityDate = env.WFP_COMPAT || '2026-07-01';
   const common = {
     name, namespace: target.namespace, kvId: target.kvId,
-    compatibilityDate, compatibilityFlags: ['nodejs_compat'],
+    compatibilityDate, compatibilityFlags: ['nodejs_compat', 'enable_request_signal'], // #721
     modules: await loadBundle(env, kind),
   };
   if (kind === 'wp') {

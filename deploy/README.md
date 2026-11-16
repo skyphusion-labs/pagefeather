@@ -265,6 +265,14 @@ Every answer of the object path that the edge never keeps carries `x-pf-call`: a
 
 **The escape hatch for a live site:** `OBJECT_START_BY_S=off` on that site's next `deploy/wfp/site` update or `deploy.sh` run restores the behavior before #708: no start-by, with #703's deadline unchanged. `deploy/wfp` records it, so a later update keeps it; `DROP_SETTINGS=OBJECT_START_BY_S` returns to the default. Do not set it in the dashboard: the next deploy writes `[vars]` again and erases it.
 
+**When the client disconnects (#721).** Every site Worker sets the compatibility flag `enable_request_signal` (the specific flag; the compatibility date is unchanged). With it, a client that drops the connection aborts the PHP object's `request.signal` (measured on the edge: 206 to 298 ms; without the flag it never fires).
+
+- **What it adds:** a request still QUEUED in the object's PHP lock sheds at once and never runs. That holds on arrival, while it waits, or at its turn. It logs `php-lock` event `shed` with `why: disconnect`, and never a `granted` line. The request behind it keeps its place and still waits for the run ahead.
+- **What still relies on the start-by:** a caller that waits without disconnecting, such as a client whose timeout is longer than the start-by. The start-by is unchanged, and `OBJECT_START_BY_S=off` turns off only the start-by.
+- **Its own off switch:** `OBJECT_DISCONNECT_SHED=off` (`on` or `off`; unset is on), a recorded setting like the two above (`deploy.sh`, `deploy/wfp/site`, the one-click `objectTimeInputs`). With it off, a queued waiter ignores its caller's disconnect and only the start-by applies. The compatibility flag stays on either way, because the 499 answer and the detached container forward below are right with or without the shed.
+- **A started run always finishes.** The signal never stops PHP once it runs (the object's handler is not cancelled; measured on the edge). An order that started is saved or not as before. No write path uses the caller's signal: PHP's outbound HTTP has its own timeout, and the checkout container forward detaches it (`signal: null`).
+- **A disconnect while the call is in flight:** the Worker answers `499` with `x-write-loss: unknown` for a method that may write (`none` for GET, HEAD and OPTIONS), and logs `m: disconnect`. No client reads that answer. It exists so a disconnect is a counted line, not an exception. A POST that started may have saved, because the object run goes on.
+
 ## Remove a site safely
 
 `NAME=my-site ./deploy/destroy.sh` (with `CLOUDFLARE_API_TOKEN` and `ACCOUNT_ID`) finds the state as `deploy.sh` keeps it (`deploy/tf-backend.sh`): local in the clone that deployed the site, or `DEPLOY_STATE=r2` from any clone. It checks all of this before it deletes anything:

@@ -203,7 +203,7 @@ async function buildCfg(parsed, env) {
   const kvId = env.WFP_KV_ID;
   const compatibilityDate = env.WFP_COMPAT || '2026-07-01';
   if (!kvId) throw new Error('set WFP_KV_ID (the wp-wfp-sites map id)');
-  const common = { name, namespace, kvId, compatibilityDate, compatibilityFlags: ['nodejs_compat'] };
+  const common = { name, namespace, kvId, compatibilityDate, compatibilityFlags: ['nodejs_compat', 'enable_request_signal'] }; // #721
   if (kind === 'wp') {
     const mediaBucket = mediaBucketName(name);
     const hostname = siteHostname(name, env);

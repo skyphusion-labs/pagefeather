@@ -6,6 +6,8 @@
 # object-deadline.mjs, start-by.mjs).
 #   OBJECT_CALL_DEADLINE_S  off, or seconds from 1 to 600 (a decimal is allowed)
 #   OBJECT_START_BY_S       off, or seconds from 1 to 600 (a decimal is allowed)
+#   OBJECT_DISCONNECT_SHED  on or off (#721): off, a queued waiter ignores its caller's disconnect and only the
+#                           start-by applies. The enable_request_signal flag stays on either way.
 # The code takes a deadline from 0.01 s; the recorded setting asks for 1 s or more, so a typo such as 0.09
 # for 90 is refused, not deployed.
 # An explicit OBJECT_START_BY_S is at most the deadline minus the run allowance (30 s, or a third of a deadline under
@@ -24,6 +26,11 @@ object_time_vars() {
     fi
     echo "$n = \"$v\""
   done
+  case "${OBJECT_DISCONNECT_SHED:-}" in
+    '') ;;
+    on|off) echo "OBJECT_DISCONNECT_SHED = \"$OBJECT_DISCONNECT_SHED\"" ;;
+    *) echo "OBJECT_DISCONNECT_SHED must be on or off, not $OBJECT_DISCONNECT_SHED" >&2; return 1 ;;
+  esac
   local sb=${OBJECT_START_BY_S:-} dl=${OBJECT_CALL_DEADLINE_S:-90} cap
   if [ -n "$sb" ] && [ "$sb" != off ] && [ "$dl" != off ]; then
     cap=$(awk -v d="$dl" 'BEGIN { ms = d * 1000; a = int(ms / 3); if (a > 30000) a = 30000; printf "%g", (ms - a) / 1000 }')
