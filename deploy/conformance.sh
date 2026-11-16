@@ -1,0 +1,50 @@
+# shellcheck shell=bash
+# The conformance content gate (#759, #764). The upstream test suites' content (tests/conformance/prepare-content.sh,
+# #763) holds WooCommerce Cleanup (a REST route that DELETES every order, product, coupon and term and truncates
+# tables), the WooCommerce e2e test helper (set and delete any option over REST), Gutenberg's test plugins, and the
+# throwaway marker mu-plugin; both upstream suites also delete all posts. So a deploy whose build inputs carry that
+# content is for a THROWAWAY site only. The gate keys on the CONTENT, never on a flag, so the content cannot reach a
+# site by a path that skips it. Same shape as FAULT_INJECT (deploy/fault-inject.sh), the one rule for both emitters:
+# deploy/deploy.sh (before any step) and deploy/wfp (every entry, after an update restores its recorded inputs, and
+# render_user as the last guard). The content is present when ANY holds:
+#   - IMPORT_MU_PLUGINS names pf-conformance-throwaway.php (the marker);
+#   - IMPORT_PLUGINS names woocommerce-cleanup, woocommerce-e2e-test-helper or gutenberg-test-plugins;
+#   - SUITE or THEME_SUITE points into tests/conformance/ (the conformance-only pins: plugins.txt, themes.txt);
+#   - IMPORT_CONTENT is a wp-content that holds mu-plugins/pf-conformance-throwaway.php, whatever IMPORT_* says.
+# Then it is allowed only when ALL hold: CONFORMANCE=on (the run states it carries this content: a deploy-time
+# statement only, never rendered or recorded, so not a runtime switch), THROWAWAY=1, and the site is named and not
+# live (neither
+# deploy/live-sites/<name>.env nor deploy/wfp/live-sites/<name>; ggc and ggc-test are refused).
+# Test: deploy/tests/conformance-test.sh, deploy/wfp/tests/conformance-early-test.sh.
+
+CONFORMANCE_PLUGINS="woocommerce-cleanup woocommerce-e2e-test-helper gutenberg-test-plugins"
+CONFORMANCE_MARKER=pf-conformance-throwaway.php
+
+# conformance_content: prints the first trigger found, nothing when the inputs carry no conformance content.
+conformance_content() {
+  local w p
+  for w in ${IMPORT_MU_PLUGINS:-}; do [ "$w" = "$CONFORMANCE_MARKER" ] && { echo "IMPORT_MU_PLUGINS names $CONFORMANCE_MARKER"; return 0; }; done
+  for w in ${IMPORT_PLUGINS:-}; do for p in $CONFORMANCE_PLUGINS; do [ "$w" = "$p" ] && { echo "IMPORT_PLUGINS names $p"; return 0; }; done; done
+  for p in SUITE THEME_SUITE; do
+    case "${!p:-}" in */tests/conformance/*|tests/conformance/*) echo "$p points into tests/conformance/ (${!p})"; return 0 ;; esac
+  done
+  if [ -n "${IMPORT_CONTENT:-}" ] && [ -e "${IMPORT_CONTENT}/mu-plugins/$CONFORMANCE_MARKER" ]; then
+    echo "IMPORT_CONTENT holds mu-plugins/$CONFORMANCE_MARKER"; return 0
+  fi
+  return 0
+}
+
+# conformance_check <name>: exit status 2 and the reason on stderr when refused; 0 when allowed or no content.
+conformance_check() {
+  local n=${1:-} why root
+  case "${CONFORMANCE:-}" in ""|on) ;; *) echo "CONFORMANCE must be on or unset, not ${CONFORMANCE}" >&2; return 2 ;; esac
+  why=$(conformance_content)
+  [ -n "$why" ] || return 0
+  [ "${CONFORMANCE:-}" = on ] || { echo "conformance content needs CONFORMANCE=on ($why): state that this build carries the upstream suites' content, which wipes the store" >&2; return 2; }
+  [ "${THROWAWAY:-}" = 1 ] || { echo "conformance content needs THROWAWAY=1 ($why): it wipes the store and deletes all posts; say the site is a throwaway" >&2; return 2; }
+  [ -n "$n" ] || { echo "conformance content needs the site's name, to check it is not a live site ($why)" >&2; return 2; }
+  root=${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+  if [ -e "$root/deploy/live-sites/$n.env" ]; then echo "conformance content wipes the store, and $n is a live site (deploy/live-sites/$n.env; $why)" >&2; return 2; fi
+  if [ -e "$root/deploy/wfp/live-sites/$n" ]; then echo "conformance content wipes the store, and $n is a live site (deploy/wfp/live-sites/$n; $why)" >&2; return 2; fi
+  return 0
+}

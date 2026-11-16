@@ -394,6 +394,14 @@ fault_inject_var() {
   ROOT="$WFP/../.." fault_check b-dosql "${1:-}" || return 2
   fault_line
 }
+# #764: the conformance content gate (deploy/conformance.sh): a build that carries the upstream suites' content
+# (#759: it wipes the store) is for a throwaway that is not live. ONE rule with deploy/deploy.sh. Renders nothing.
+# conformance_var <site>: exit 2 with the reason when refused.
+conformance_var() {
+  # shellcheck source=../conformance.sh
+  . "$WFP/../conformance.sh"
+  ROOT="$WFP/../.." conformance_check "${1:-}" || return 2
+}
 headroom_var() {
   case "${HEADROOM_PROBE:-}" in
     "") ;;
@@ -628,6 +636,7 @@ render_user() { # render_user <site> <origin>
   [ -z "$woo_extras" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$woo_extras
   # FAULT_INJECT (#730): the throwaway-only post-INSERT fault, the same rule as deploy.sh (deploy/fault-inject.sh).
   local fault; fault=$(fault_inject_var "$s") || return 2
+  conformance_var "$s" || return 2  # #764: the last guard, on the inputs this render builds from
   [ -z "$fault" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$fault
   local otime; otime=$(object_time_vars) || return 1
   [ -z "$otime" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$otime

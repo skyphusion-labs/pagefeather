@@ -81,6 +81,7 @@ jobs:
         run: |
           bash deploy/tests/a-settings-test.sh
           bash deploy/tests/fault-inject-test.sh
+          bash deploy/tests/conformance-test.sh
           bash deploy/tests/pdf-invoice-wiring-test.sh
           bash deploy/tests/frames-default-test.sh
           bash deploy/tests/a-render-test.sh
@@ -468,6 +469,7 @@ jobs:
           bash deploy/wfp/tests/obs-redact-site-test.sh
           bash deploy/wfp/tests/obs-full-live-test.sh
           bash deploy/wfp/tests/fault-early-test.sh
+          bash deploy/wfp/tests/conformance-early-test.sh
           bash deploy/wfp/tests/obs-wfp-live-test.sh
           node deploy/provision/tests/ops-test.mjs
           node deploy/provision/tests/vendor-sync-test.mjs
