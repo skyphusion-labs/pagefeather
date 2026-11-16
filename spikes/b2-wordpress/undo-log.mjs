@@ -223,10 +223,12 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 	}
 	// Undo every change after seq, newest first, in one storage transaction.
 	function undoTo(db, storage, seq, detail = false) {
-		setActive(db, false);
 		const rows = [...db.exec(`SELECT sql${detail ? ', req' : ''} FROM _wp_undo WHERE seq > ? ORDER BY seq DESC`, seq).raw()];
 		if (detail) lastUndone = rows.map(([stmt, req]) => ({ ...undoShape(stmt), req: req ?? null }));
+		// #794 review: the stored active flag goes off INSIDE the transaction (the triggers must not log the undo
+		// itself). An undo that fails takes it back with everything else, so a recovery still sees the open frame.
 		const apply = () => {
+			setActive(db, false);
 			for (const [stmt] of rows) own(db.exec(stmt));
 			own(db.exec('DELETE FROM _wp_undo WHERE seq > ?', seq));
 		};
@@ -381,7 +383,26 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 		 */
 		rollbackFrame(db, storage) {
 			if (!frameOpen) return null;
-			const n = undoTo(db, storage, 0);
+			let n;
+			try {
+				n = undoTo(db, storage, 0);
+			} catch (e) {
+				// #794 review: the undo met the same ceiling (likely: the request just failed there). Inside
+				// transactionSync nothing of it applied, and the stored frame is intact (active = 1, its undo rows, its
+				// row 'open'). It must never be KEPT: forget it in memory only (storage is failing; no write here), so
+				// end() has nothing to keep, and run recover() again, which every request calls before PHP: the next
+				// request in this isolate, or the next isolate, rolls it back.
+				frameOpen = false;
+				txnFrames = null;
+				txnTouched.clear();
+				deferred = [];
+				armedReq = null;
+				stateReq = null;
+				recovered = false;
+				counts.stranded = (counts.stranded || 0) + 1;
+				log({ m: 'frame-stranded', error: String((e && e.message) || e).slice(0, 160) });
+				throw e;
+			}
 			txnFrames = null;
 			txnTouched.clear();
 			setIdle(db);
@@ -481,7 +502,13 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 				return null;
 			}
 			ensureReqCols(db);
-			const n = undoTo(db, storage, 0, true);
+			let n;
+			try {
+				n = undoTo(db, storage, 0, true);
+			} catch (e) {
+				recovered = false; // #794 review: not done; the next request tries again (the frame is still stored open)
+				throw e;
+			}
 			own(db.exec('DELETE FROM _wp_undo'));
 			txnFrames = null;
 			let req = null;

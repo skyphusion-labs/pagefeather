@@ -836,6 +836,43 @@ test('#794 rollbackFrame: a reset-class failure in a SURVIVING isolate rolls the
 	assert.equal(a.u.rollbackFrame(db, storage), null, 'no frame open: nothing to roll back');
 });
 
+test('#794 a rollbackFrame that THROWS (its undo meets the same ceiling) is never kept: the frame stays for recover()', () => {
+	const { db, storage } = site();
+	const ran = [];
+	const a = isolate();
+	a.u.arm(db, 'r794x');
+	run(a.u, db, "UPDATE t SET v = 'the-default' WHERE v = 'seed'");
+	a.u.defer(() => ran.push('l2'));
+	// The undo runs, then the storage fails inside the same transaction: SQLite takes the whole of it back.
+	const ceiling = { transactionSync: (fn) => storage.transactionSync(() => { fn(); throw new Error("Durable Object's isolate exceeded its memory limit and was reset."); }) };
+	assert.throws(() => a.u.rollbackFrame(db, ceiling), /memory limit/);
+	assert.deepEqual(ids(db), ['the-default'], 'the failed undo changed nothing');
+	a.u.end(db, storage); // the request ends as usual (txnEnd)
+	assert.equal(a.u.status(db, 'r794x').state, 'open', 'end() did NOT mark it kept');
+	assert.equal(db.exec('SELECT active FROM _wp_undo_state WHERE id = 1').one().active, 1, 'stored active stays 1, so a recovery sees it');
+	assert.ok(db.exec('SELECT COUNT(*) AS c FROM _wp_undo').one().c > 0, 'its undo rows are still there');
+	assert.deepEqual(ran, [], 'its deferred work (L2 sets) never runs');
+	// The next request in THIS isolate recovers first (txnRecover runs on every request): it is rolled back now.
+	const r = a.u.recover(db, storage);
+	assert.equal(r && r.req, 'r794x');
+	assert.deepEqual(ids(db), ['seed'], 'the derived write is gone');
+	assert.equal(a.u.status(db, 'r794x').state, 'rolled-back');
+	assert.equal(a.u.recover(db, storage), null, 'and recover() is once per isolate again');
+});
+
+test('#794 a recover() whose undo throws is tried again by the next request, never marked done', () => {
+	const { db, storage } = site();
+	const a = isolate();
+	a.u.arm(db, 'r794y');
+	run(a.u, db, "UPDATE t SET v = 'the-default' WHERE v = 'seed'"); // the isolate dies here: the frame stays open
+	const b = isolate();
+	const ceiling = { transactionSync: (fn) => storage.transactionSync(() => { fn(); throw new Error('SQLITE_FULL: database or disk is full'); }) };
+	assert.throws(() => b.u.recover(db, ceiling), /SQLITE_FULL/);
+	assert.equal(db.exec('SELECT active FROM _wp_undo_state WHERE id = 1').one().active, 1, 'still visible to a recovery');
+	assert.equal(b.u.recover(db, storage).req, 'r794y', 'the next request retries it');
+	assert.deepEqual(ids(db), ['seed']);
+});
+
 test('#794 rollbackFrame stops at a commit point: what was kept at the point stays kept, and it is not proof of "nothing saved"', () => {
 	const { db, storage } = site();
 	const a = isolate();
