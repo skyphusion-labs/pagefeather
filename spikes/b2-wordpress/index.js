@@ -3187,6 +3187,15 @@ export class PhpRuntime extends DurableObject {
 		// this object writes anything.
 		const callerSignal = disconnectSignal(env, raw.signal); // null with OBJECT_DISCONNECT_SHED=off
 		const gone = !!(callerSignal && callerSignal.aborted);
+		// #755 PROBE (MEASUREMENT BRANCH ONLY, NEVER MERGED; always on here, so no deploy plumbing): when does the caller's abort reach this object? It logs the
+		// abort event's own arrival, and signal.aborted at arrival, after the recheck, at the grant and at the end of the run.
+		const discProbe = raw.signal ? { at0: tArrive, abortAt: null, call: callId || null } : null;
+		const probeLog = (at, extra) => discProbe && console.log(JSON.stringify({ m: 'disc-probe', at, call: discProbe.call, aborted: !!raw.signal.aborted, abortAt: discProbe.abortAt, sinceArriveMs: Date.now() - discProbe.at0, phpPending, ...extra }));
+		if (discProbe) {
+			if (raw.signal.aborted) discProbe.abortAt = 'before-arrive';
+			else raw.signal.addEventListener('abort', () => { discProbe.abortAt = Date.now() - discProbe.at0; probeLog('abort-event', { runningNow: discProbe.granted ? 'own-run' : 'queued' }); }, { once: true });
+			probeLog('arrive', { ahead: phpPending });
+		}
 		if (plan.refuseNow || gone) {
 			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'shed', at: 'arrive', why: gone ? 'disconnect' : 'start-by', ...(callId ? { call: callId } : {}) }));
 			return startByResponse();
@@ -3212,6 +3221,7 @@ export class PhpRuntime extends DurableObject {
 		// #296: shed only with PHP_QUEUE_SHED_MS set (the default is never, on every path).
 		const objectRun = await withPhp(async () => {
 			const waitMs = Date.now() - tArrive;
+			if (discProbe) { discProbe.granted = true; probeLog('grant', { waitMs }); }
 			sqlDb = sql;
 			sqlStorage = sql ? this.ctx.storage : null;
 			const realTxn = sql && env.REAL_TRANSACTIONS !== 'off';
@@ -3245,6 +3255,7 @@ export class PhpRuntime extends DurableObject {
 				// Hold cron off briefly so an externally-armed alarm cannot run runCron in the
 				// /_install -> /_activate gap, where /_activate would reuse the cron runtime (#185).
 				if (isSpikeLongOp) lastSpikeEndAt = Date.now();
+				if (discProbe) probeLog('end', {});
 			}
 		}, {
 			shedMs: plan.shedMs,
@@ -3253,7 +3264,7 @@ export class PhpRuntime extends DurableObject {
 			// #715 review2 4, review3 4 and 5: the lock rechecks the start-by at a contended grant, on a clock read again.
 			signal: callerSignal, // #721: a queued waiter sheds when its caller disconnects (why: disconnect), unless off
 			// #752, #754: the tick is a real subrequest to this site's own TICK_PATH, never to this object.
-			recheck: plan.startBy > 0 ? async () => { const rc = await recheckStartBy(plan.startBy, { tick: () => tickFetch(origin), signal: callerSignal }); lateByClock = rc.late; return rc; } : null,
+			recheck: plan.startBy > 0 ? async () => { probeLog('recheck-before', {}); const rc = await recheckStartBy(plan.startBy, { tick: () => tickFetch(origin), signal: callerSignal }); lateByClock = rc.late; probeLog('recheck-after', { tick: rc.tick || null }); return rc; } : null,
 		});
 		if (objectRun !== PHP_SHED) return objectRun;
 		phpPending--; // a shed run never ran its finally
