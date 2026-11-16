@@ -159,3 +159,5 @@ have not tried is a useful result too. Start with [CONTRIBUTING.md](CONTRIBUTING
 ## License
 
 GPL-2.0-or-later: the terms of the GNU General Public License version 2, or (at your option) any later version. See [LICENSE](LICENSE) for the version 2 text.
+
+The pagefeather engine includes PHP and the Zend Engine. See [NOTICE](NOTICE) for the required acknowledgment lines and the list of linked components. The licence texts are in [engine/notices/LICENSES](engine/notices/LICENSES), and each GitHub Release that ships the engine carries `NOTICE`, `SOURCE` and `LICENSES.tar.gz`. A version tag ships the npm Playground engine. The custom engine (variant s1-lean) is a separate prerelease; its notices are `engine/notices/lean/`.

@@ -46,6 +46,8 @@ jobs:
         run: node deploy/release/tests/bundle-manifest-test.mjs
       - name: build-bundle.sh argument refusals (#431)
         run: bash deploy/release/tests/build-bundle-args-test.sh
+      - name: Release notices, SOURCE and NOTICE (#584)
+        run: bash deploy/release/tests/release-notices-test.sh
       - name: Build and package (no upload)
         # A pull request checks out a merge commit, which build-id.sh reads as clean; the
         # bundle is thrown away with the runner.
@@ -56,6 +58,10 @@ jobs:
           cd "$RUNNER_TEMP/bundle/release"
           sha256sum -c SHA256SUMS
           node "$GITHUB_WORKSPACE/deploy/release/bundle-cli.mjs" verify "$RUNNER_TEMP/bundle/modules" manifest.json
+          for f in NOTICE SOURCE LICENSES.tar.gz; do
+            [ -f "$f" ] || { echo "::error::missing release asset $f (#584)"; exit 1; }
+            grep -E " ${f}\$" SHA256SUMS >/dev/null || { echo "::error::$f is not in SHA256SUMS"; exit 1; }
+          done
           ls -l
       - name: Build and package the approach-A bundle (no upload, #431)
         run: BUNDLE_ENGINE=a deploy/release/build-bundle.sh "$RUNNER_TEMP/bundle-a"
@@ -68,6 +74,10 @@ jobs:
           node -e 'const m=require(process.argv[1]); if (m.mainModule!=="index-a-lean.js") { console.error("main module", m.mainModule); process.exit(1); } if (!/-a(-|$)/.test(m.buildId)) { console.error("build id", m.buildId); process.exit(1); }' "$PWD/a.manifest.json"
           for f in *; do case "$f" in a.*) ;; *) echo "::error::approach-A asset without the a. prefix: $f"; exit 1 ;; esac; done
           clash=$(comm -12 <(ls | sort) <(ls "$RUNNER_TEMP/bundle/release" | sort)); [ -z "$clash" ] || { echo "::error::asset names clash: $clash"; exit 1; }
+          for f in a.NOTICE a.SOURCE a.LICENSES.tar.gz; do
+            [ -f "$f" ] || { echo "::error::missing approach-A release asset $f (#584)"; exit 1; }
+            grep -E " ${f}\$" a.SHA256SUMS >/dev/null || { echo "::error::$f is not in a.SHA256SUMS"; exit 1; }
+          done
           ls -l
 
   publish:
@@ -99,6 +109,8 @@ jobs:
           [ "$n" = 0 ] || { echo "::error::release $TAG already has $n assets; refusing to replace them"; exit 1; }
       - name: Manifest tests
         run: node deploy/release/tests/bundle-manifest-test.mjs
+      - name: Release notices, SOURCE and NOTICE (#584)
+        run: bash deploy/release/tests/release-notices-test.sh
       - name: Build and package
         run: VERSION_TAG="$TAG" deploy/release/build-bundle.sh "$RUNNER_TEMP/bundle"
       - name: Build and package the approach-A bundle (#431)
@@ -122,4 +134,7 @@ jobs:
           (cd "$d" && sha256sum -c a.SHA256SUMS)
           for m in $(node -e 'for (const x of require(process.argv[1]).modules) console.log(x.name)' "$d/a.manifest.json"); do cp "$d/a.$m" "$d/modules-a/$m"; done
           node deploy/release/bundle-cli.mjs verify "$d/modules-a" "$d/a.manifest.json"
+          for f in NOTICE SOURCE LICENSES.tar.gz a.NOTICE a.SOURCE a.LICENSES.tar.gz; do
+            [ -f "$d/$f" ] || { echo "::error::published release is missing $f (#584)"; exit 1; }
+          done
           echo "published and verified: $TAG (b-dosql and approach-A)"

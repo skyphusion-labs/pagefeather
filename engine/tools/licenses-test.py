@@ -101,7 +101,9 @@ def write_tree(root, sha, url):
         'UPSTREAM_COMPILE_TREE=def\n'
         'PHP_REF=php-test\n'
         'PHP_REF_COMMIT=012\n'
-        'EMSDK_VERSION=0\n')
+        'EMSDK_VERSION=0\n'
+        'SHIPPED_WASM_SHA256=ww\n'
+        'SHIPPED_JS_SHA256=jj\n')
     inputs = os.path.join(root, 'link-inputs.txt')
     open(inputs, 'w', encoding='utf-8').write('/work/libfixture.a\n')
     return inputs
@@ -134,6 +136,14 @@ try:
             written = open(lic, encoding='utf-8').read()
         ok('the licence file contains the archive member', PAYLOAD in written and 'Component: Fixture' in written)
         ok('the pass opened no connection (hits %d)' % len(srv.hits), len(srv.hits) == 0)
+        traced = ''
+        traced_path = os.path.join(out, 'SOURCE')
+        if os.path.isfile(traced_path):
+            traced = open(traced_path, encoding='utf-8').read()
+        ok('traced SOURCE names engine/build.sh', 'engine/build.sh' in traced)
+        ok('traced SOURCE names the build workflow', '.github/workflows/pagefeather-engine.yml' in traced)
+        ok('traced SOURCE does not say prepare.sh produced the wasm',
+           'produced from that pinned binary' not in traced)
 
     # 2. Missing archive names the row and does not touch the network.
     srv.reset()
@@ -273,6 +283,68 @@ try:
         text = r.stdout + r.stderr
         ok('two rows that share one URL still pass (rc=%d)' % r.returncode, r.returncode == 0)
         ok('the shared URL opened no connection (hits %d)' % len(srv.hits), len(srv.hits) == 0)
+
+    # 7. --all writes every row with no link-inputs file, still offline with --archives.
+    srv.reset()
+    srv.status, srv.body = 500, b'no'
+    with tempfile.TemporaryDirectory() as root:
+        inputs = write_tree(root, pin, url)
+        open(os.path.join(root, 'LICENSE'), 'w', encoding='utf-8').write('GPL fixture\n')
+        local_pin = hashlib.sha256(b'GPL fixture\n').hexdigest()
+        open(os.path.join(root, 'engine', 'licenses.tsv'), 'w', encoding='utf-8').write('\n'.join([
+            '\t'.join(['pagefeather.txt', 'pagefeather', 'repo', 'GPL-2.0-or-later', 'ALWAYS', 'local', 'LICENSE', '-', '-', local_pin]),
+            '\t'.join([ROW, 'Fixture', '1', 'MIT', r'/libfixture\.a$', 'tar', url, MEMBER, '-', pin]),
+        ]) + '\n')
+        archives = os.path.join(root, 'archives')
+        os.makedirs(archives)
+        open(os.path.join(archives, 'fixture-1.tar.gz'), 'wb').write(blob)
+        out = os.path.join(root, 'out')
+        r = run(root, ['--all', out, '--archives', archives])
+        text = r.stdout + r.stderr
+        ok('--all exits 0 with no link-inputs (rc=%d)' % r.returncode, r.returncode == 0)
+        ok('--all writes the ALWAYS local row', os.path.isfile(os.path.join(out, 'LICENSES', 'pagefeather.txt')))
+        ok('--all writes the tar row that no input matched', os.path.isfile(os.path.join(out, 'LICENSES', ROW)))
+        ok('--all writes NOTICE and SOURCE', os.path.isfile(os.path.join(out, 'NOTICE')) and os.path.isfile(os.path.join(out, 'SOURCE')))
+        src = open(os.path.join(out, 'SOURCE'), encoding='utf-8').read() if os.path.isfile(os.path.join(out, 'SOURCE')) else ''
+        ok('--all SOURCE names the pinned Playground wasm', 'ww' in src)
+        ok('--all SOURCE names prepare.sh', 'spikes/b2-wordpress/prepare.sh' in src)
+        ok('--all SOURCE points at SHA256SUMS', 'SHA256SUMS' in src)
+        ok('--all SOURCE says whether the shipped hash differs or equals',
+           'That sha256 differs from the pinned Playground wasm sha256 above.' in src
+           or 'That sha256 equals the pinned Playground wasm sha256 above.' in src)
+        ok('--all opened no connection (hits %d)' % len(srv.hits), len(srv.hits) == 0)
+        notice = open(os.path.join(out, 'NOTICE'), encoding='utf-8').read() if os.path.isfile(os.path.join(out, 'NOTICE')) else ''
+        ok('--all NOTICE has the PHP acknowledgment', 'This product includes PHP software, freely available from' in notice)
+
+    # 8. --all --engine lean --notices-only writes the lean release SOURCE offline.
+    #    The traced run above is a custom build; this is the prerelease text
+    #    (asset pagefeather-engine-lean.wasm, variant s1-lean).
+    srv.reset()
+    srv.status, srv.body = 500, b'no'
+    with tempfile.TemporaryDirectory() as root:
+        write_tree(root, pin, url)
+        out = os.path.join(root, 'lean-out')
+        r = run(root, ['--all', out, '--engine', 'lean', '--notices-only'])
+        text = r.stdout + r.stderr
+        src = ''
+        notice = ''
+        src_path = os.path.join(out, 'SOURCE')
+        notice_path = os.path.join(out, 'NOTICE')
+        if os.path.isfile(src_path):
+            src = open(src_path, encoding='utf-8').read()
+        if os.path.isfile(notice_path):
+            notice = open(notice_path, encoding='utf-8').read()
+        ok('lean --notices-only exits 0 (rc=%d) %s' % (r.returncode, text.strip().splitlines()[-1:] or ''), r.returncode == 0)
+        ok('lean SOURCE names the workflow and variant s1-lean',
+           '.github/workflows/pagefeather-engine.yml' in src and 'variant s1-lean' in src)
+        ok('lean SOURCE names engine/licenses.tsv and the pin',
+           'engine/licenses.tsv' in src and 'ww' in src)
+        ok('lean SOURCE names pagefeather-engine-lean.wasm', 'pagefeather-engine-lean.wasm' in src)
+        ok('lean SOURCE does not say prepare.sh produced the wasm',
+           'produced from that pinned binary' not in src)
+        ok('lean NOTICE names variant s1-lean', 'variant s1-lean' in notice)
+        ok('lean --notices-only opened no connection (hits %d)' % len(srv.hits), len(srv.hits) == 0)
+        ok('lean --notices-only writes no LICENSES directory', not os.path.isdir(os.path.join(out, 'LICENSES')))
 finally:
     srv.close()
 

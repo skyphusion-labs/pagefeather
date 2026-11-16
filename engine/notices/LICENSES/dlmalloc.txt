@@ -1,0 +1,10 @@
+Component: dlmalloc
+Version: 2.8.6
+Licence: CC0-1.0
+Source: https://raw.githubusercontent.com/emscripten-core/emscripten/4.0.19/system/lib/dlmalloc.c lines 52-56
+
+ This is a version (aka dlmalloc) of malloc/free/realloc written by
+ Doug Lea and released to the public domain, as explained at
+ http://creativecommons.org/publicdomain/zero/1.0/ Send questions,
+ comments, complaints, performance data, etc to dl@cs.oswego.edu
+ 

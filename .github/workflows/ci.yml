@@ -64,6 +64,10 @@ jobs:
         run: |
           node deploy/release/tests/bundle-manifest-test.mjs
           node deploy/release/tests/vendor-sync-test.mjs
+      - name: Release notices, SOURCE and NOTICE (issue #584)
+        # A bundle that ships an engine must carry LICENSES.tar.gz, SOURCE and NOTICE.
+        # Offline: committed texts at the pins in engine/licenses.tsv, no fetch.
+        run: bash deploy/release/tests/release-notices-test.sh
       - name: Live-site code redeploys refuse a mismatch (fleet-chezmoi#2620)
         run: |
           bash deploy/tests/code-only-test.sh
