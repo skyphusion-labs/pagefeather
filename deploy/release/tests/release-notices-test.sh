@@ -209,7 +209,7 @@ fi
 #    SHA256SUMS of that asset, and the shipped digest is not written into SOURCE.
 #    A release dir with no such wasm is the refusal; the fixture wasm is the
 #    passing control.
-check "build-bundle.sh packages playground notices (no engine argument)" "$(grep -F -c 'package-notices.sh" "$OUT/release" "$prefix"' "$bb")" 1
+check "build-bundle.sh packages the notices of the engine it built: Playground with no engine argument, lean-bundle otherwise (#771)" "$(grep -F -c 'package-notices.sh" "$OUT/release" "$prefix" ${notice_arg:+"$notice_arg"}' "$bb")" 1
 if [ -x "$pack" ]; then
   mkdir -p "$T/lean-missing"
   bash "$pack" "$T/lean-missing" "a." lean >/dev/null 2>&1

@@ -40,6 +40,7 @@
 #   WOO_HPOS_CACHE    on (default since #296 step 3; unset is on) or off: WooCommerce's HPOS Data Caching (#697), through
 #                     aVars. On approach A its cache (group orders_data) lives for one request only. off leaves WooCommerce's
 #                     own setting.
+#   PHP_ENGINE (every variant, #771): lean (the default, pinned in spikes/b2-wordpress/engine.lock) or npm.
 #   PF_ENGINE_JS and PF_ENGINE_WASM (every variant): another engine's loader and wasm for
 #                     prepare.sh, for example the lean-trim artifact of the pagefeather-engine
 #                     workflow (#592). Both or neither.

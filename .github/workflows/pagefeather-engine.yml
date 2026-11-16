@@ -215,7 +215,7 @@ jobs:
           npm ci --silent --no-audit --no-fund
           for arm in lean-nogd lean; do
             d="$RUNNER_TEMP/e/pagefeather-engine-s1-$arm"
-            PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+            PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
             echo "== $arm"
             ENGINE_EXPECT="../../engine/expect/$arm.json" node --test tests/engine-contract.test.mjs
           done
@@ -239,6 +239,9 @@ jobs:
           # vendor/ must hold the LEAN engine here, or this step would test the npm one.
           st=$(node ../../engine/tools/wasm-stats.mjs vendor/php_8_3.wasm vendor-under-e2e); echo "$st"
           case "$st" in *'"dylink":false'*) ;; *) echo "::error::vendor/ is not the lean engine"; exit 1 ;; esac
+          # #771: build.sh checks vendor/ against the engine this run resolves; name the arm the step above vendored.
+          d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean"
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM
           ./build.sh | tail -1
           s=$(date +%s)
           if DEV_ENV=dosql-local WOO_ACTIVE=1 ./opcache.sh > build/opcache.log 2>&1; then
@@ -290,7 +293,7 @@ jobs:
           set -euo pipefail
           npm ci --silent --no-audit --no-fund
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-trim"
-          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
           node ../../engine/tools/wasm-stats.mjs vendor/php_8_3.wasm lean-trim-under-test
           ENGINE_EXPECT=../../engine/expect/lean.json node --test tests/engine-contract.test.mjs
           node --test tests/fileinfo-sniff.test.mjs
@@ -313,12 +316,15 @@ jobs:
           set -euo pipefail
           npm ci --silent --no-audit --no-fund
           python3 -I ../../engine/fileinfo/fixtures.py "$RUNNER_TEMP/fx"
+          # #771: build.sh checks vendor/ against the engine this run resolves; vendor/ holds lean-trim (the step above).
+          d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-trim"
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM
           ./build.sh | tail -1
           B=http://localhost:8797; PW=local-spike-password
           ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}")  # the local test token, as frames-e2e.sh passes it
           for arm in lean lean-trim lean-nofileinfo; do
             d="$RUNNER_TEMP/e/pagefeather-engine-s1-$arm"
-            PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+            PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
             ./run.sh --stop > /dev/null 2>&1 || true
             export PERSIST_TO=$(mktemp -d)
             DEV_LOCAL=1 ./run.sh _ping > /dev/null || { echo "::error::wrangler dev did not start ($arm)"; tail -40 dev.log; exit 1; }
@@ -341,7 +347,7 @@ jobs:
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-trim"
-          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
           if ! tests/frames-e2e.sh; then echo "::error::frames-e2e.sh failed on lean-trim"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
   lazy-native:
     if: ${{ !inputs.publish }}
@@ -403,7 +409,7 @@ jobs:
           npm ci --silent --no-audit --no-fund
           for arm in lean-trim lean-lazy; do
             d="$RUNNER_TEMP/e/pagefeather-engine-s1-$arm"
-            PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+            PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
             ./build.sh | tail -1
             # lean-lazy primes at 128 MiB (PRIME_OPCACHE_MB): every script fits, so the zip is split as it would ship
             mb=""; [ "$arm" = lean-lazy ] && mb=128
@@ -423,7 +429,7 @@ jobs:
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-lazy"
-          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
           ENGINE_EXPECT=../../engine/expect/lean.json node --test tests/engine-contract.test.mjs
           node --test tests/lazy-bodies.test.mjs
           if ! tests/frames-e2e.sh; then echo "::error::frames-e2e.sh failed on lean-lazy"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
@@ -442,7 +448,7 @@ jobs:
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-stats-lazy"
-          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
           node --test tests/lazy-bodies.test.mjs 2>&1 | tee "$RUNNER_TEMP/stats-lazy.txt"
           if grep -q 'not a stats build' "$RUNNER_TEMP/stats-lazy.txt"; then echo "::error::test 16 skipped on lean-stats-lazy"; exit 1; fi
       - name: Test 16's red control on lean-stats-lazy-mutant (the observer keys bodies by the opcodes pointer)
@@ -451,7 +457,7 @@ jobs:
           set -uo pipefail
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-stats-lazy-mutant"
           grep -q 'ENGINE_STATS_MUTANT=opcodes-key' "$d/build-args.txt" || { echo "::error::the mutant arm was not built as the mutant"; exit 1; }
-          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
           rc=0; node --test --test-name-pattern 'test 16' tests/lazy-bodies.test.mjs > "$RUNNER_TEMP/stats-mutant.txt" 2>&1 || rc=$?
           grep -E '^(✖|✔|﹣)|AssertionError|counted other bodies' "$RUNNER_TEMP/stats-mutant.txt" | head -8
           [ "$rc" != 0 ] || { echo "::error::test 16 PASSED on the mutant observer: it cannot see the stub read as the body"; exit 1; }
@@ -463,13 +469,13 @@ jobs:
           set -euo pipefail
           # red control: lean-trim has no pagefeather_lazy_bodies counters, so the gate must fail on it
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-trim"
-          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
           ./build.sh | tail -1
           rc=0; tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate-red.json" || rc=$?
           [ "$rc" != 0 ] || { echo "::error::the body-region gate PASSED on lean-trim, which has no counters: it cannot see a mismatch"; exit 1; }
           echo "red control: the gate fails on lean-trim (rc=$rc), as it must"
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-lazy"
-          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
           ./build.sh | tail -1
           # at the runtime default (48): part of the scripts take the file-cache fallback; mismatch must be 0
           tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate.json"
@@ -526,7 +532,7 @@ jobs:
           set -euo pipefail
           npm ci --silent --no-audit --no-fund
           d="$RUNNER_TEMP/e"
-          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
           ./build.sh | tail -1
           DEV_ENV=dosql-local WOO_ACTIVE=1 ./opcache.sh > build/opcache.log 2>&1 || { tail -30 build/opcache.log; exit 1; }
           tail -1 build/opcache.log

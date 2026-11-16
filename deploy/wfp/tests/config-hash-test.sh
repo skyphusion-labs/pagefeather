@@ -93,6 +93,8 @@ unset PHP_INI PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE MEM_LEDGER
 # #394: the remote packs are the default (lib.sh remote_pack_defaults). This test's fake app tree has no
 # file-trace.sh or pack scripts, so its site runs the opt-out: the config-hash cases do not depend on it.
 export OPCACHE_REMOTE=0
+# #771: the npm engine keeps this offline (the default, lean, is fetched; tests/engine-resolve-test.sh).
+export PHP_ENGINE=npm
 export WOO_ACTIVE=0 ALLOW_DIRTY=1 NO_SNAPSHOT=1 BUILD_WAIT=4 BUILD_POLL_S=0.2 BUILD_EVICT_AFTER=3
 export ACCOUNT_ID=test-account CLOUDFLARE_API_TOKEN=test NAMESPACE=wp-wfp
 export SALT=salt-value-aaa SPIKE=spike-value-bbb

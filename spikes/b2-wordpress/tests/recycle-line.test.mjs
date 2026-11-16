@@ -66,3 +66,14 @@ test('a crashed runtime is always dropped, a forced recycle too; PHP_RECYCLE=off
 	assert.equal(recycleDecision({ wasmBytes: 200 * MiB, lineBytes: 100 * MiB, recycleOff: true }), null);
 	assert.equal(recycleDecision({ wasmBytes: 200 * MiB, lineBytes: 100 * MiB, recycleOff: true, forced: true }), 'forced');
 });
+
+test('#771: the engine passes its own default line (140 lean, 100 npm); an explicit RECYCLE_WASM_MIB still wins', () => {
+	assert.deepEqual(recycleLine({}, 140), { bytes: 140 * MiB, mib: 140, source: 'default' }, 'lean, unset: 140');
+	assert.deepEqual(recycleLine({}, 100), { bytes: 100 * MiB, mib: 100, source: 'default' }, 'npm, unset: 100');
+	assert.deepEqual(recycleLine({ RECYCLE_WASM_MIB: '110' }, 140), { bytes: 110 * MiB, mib: 110, source: 'RECYCLE_WASM_MIB' }, 'the site setting wins');
+	const bad = recycleLine({ RECYCLE_WASM_MIB: 'lots' }, 140);
+	assert.equal(bad.mib, 140, 'a bad value keeps the ENGINE default, not 100');
+	assert.ok(bad.refused, 'and says why');
+	assert.equal(recycleLine({}, 'x').mib, RECYCLE_DEFAULT_MIB, 'a malformed default falls back to the constant');
+	assert.equal(recycleLine({}, 500).mib, RECYCLE_DEFAULT_MIB, 'an out-of-range default too');
+});

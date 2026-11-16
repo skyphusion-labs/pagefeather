@@ -6,6 +6,8 @@ set -u
 HERE=$(cd "$(dirname "$0")" && pwd); ROOT=$(cd "$HERE/../../.." && pwd)
 # shellcheck disable=SC1091
 . "$HERE/../lib.sh"
+# #771: build_dosql resolves the PHP engine; the npm engine keeps this offline (tests/engine-resolve-test.sh).
+export PHP_ENGINE=npm
 fails=0
 check() { if [ "$2" = "$3" ]; then echo "PASS $1"; else echo "FAIL $1: got [$2], want [$3]"; fails=$((fails + 1)); fi; }
 w() { (unset WOO_ACTIVE IMPORT_PLUGINS PLUGINS; for kv in "$@"; do export "$kv"; done; woo_active_for_build 2>/dev/null; echo "rc$?") | tr '\n' ' '; }

@@ -68,6 +68,8 @@ jobs:
         # A bundle that ships an engine must carry LICENSES.tar.gz, SOURCE and NOTICE.
         # Offline: committed texts at the pins in engine/licenses.tsv, no fetch.
         run: bash deploy/release/tests/release-notices-test.sh
+      - name: a product bundle ships the notices of the engine it built; approach A held on npm (#771, #788)
+        run: bash deploy/release/tests/bundle-notices-test.sh
       - name: the lean engine prerelease is assembled only from the pinned bytes, with its notices (#771)
         run: bash engine/tools/publish-lean-test.sh
       - name: Live-site code redeploys refuse a mismatch (fleet-chezmoi#2620)
@@ -394,6 +396,9 @@ jobs:
         run: python3 -I spikes/b2-wordpress/tests/content-id-test.py
       - name: b-dosql build id says whether the OPcache is primed (issue #377)
         run: spikes/b2-wordpress/tests/build-id-test.sh
+      - name: "the PHP engine resolver: lean by default, by hash; npm and explicit files (#771)"
+        run: bash spikes/b2-wordpress/tests/engine-resolve-test.sh
+
       - name: b-dosql operator endpoints (issue #35)
         # /_build and /_evict are gated and never cached (spikes/b2-wordpress).
         run: node spikes/b2-wordpress/tests/build-evict-test.mjs
@@ -577,7 +582,9 @@ jobs:
         # Imports the real module. Reuses the npm ci in the step above (@php-wasm/universal).
         # Does not boot the engine, so it does not need prepare.sh.
         working-directory: spikes/b2-wordpress
-        run: node --test tests/engine-contract-tmpdir.test.mjs
+        run: |
+          node --test tests/engine-contract-tmpdir.test.mjs
+          node --test tests/engine-expect-default.test.mjs
       - name: The pagefeather engine's runtime contract, and each check red on the unpatched upstream engine (issue #582)
         # Boots the prepared engine: loader, extensions, OPcache under SAPI wasm, initial memory, allocator,
         # clock, heap growth, heap views, the open and read hooks, promising exports. Each check must also

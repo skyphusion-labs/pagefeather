@@ -3,7 +3,9 @@
 #
 #   package-notices.sh <release-dir> [prefix] [engine]
 #
-# engine is playground (default) or lean.
+# engine is playground (default), lean, or lean-bundle (#771: a product bundle built on the lean engine; NOTICE and
+# SOURCE are filled from engine/notices/lean-bundle/*.in with the prerelease tag and the two sha256 values in
+# spikes/b2-wordpress/engine.lock, and name prepare.sh's transform; the bundle's own SHA256SUMS hashes its wasm).
 # prefix is empty for the b-dosql bundle and "a." for the approach-A bundle.
 # Both of those product bundles ship the npm Playground engine, so they omit
 # engine. The lean engine prerelease is unprefixed:
@@ -23,8 +25,8 @@ REL=${1:?usage: package-notices.sh <release-dir> [prefix] [engine]}
 prefix=${2:-}
 engine=${3:-playground}
 case "$engine" in
-  playground|lean) ;;
-  *) echo "package-notices: engine must be playground or lean, not '$engine'" >&2; exit 2 ;;
+  playground|lean|lean-bundle) ;;
+  *) echo "package-notices: engine must be playground, lean or lean-bundle, not '$engine'" >&2; exit 2 ;;
 esac
 if [ "$engine" = "lean" ] && [ -n "$prefix" ]; then
   echo "package-notices: the lean engine release is unprefixed" >&2
@@ -42,6 +44,20 @@ if [ "$engine" = "lean" ]; then
     echo "package-notices: lean engine requires ${prefix}pagefeather-engine-lean.wasm in the release dir" >&2
     exit 1
   fi
+fi
+if [ "$engine" = "lean-bundle" ]; then
+  lock="${ENGINE_LOCK:-$ROOT/spikes/b2-wordpress/engine.lock}"
+  [ -s "$lock" ] || { echo "package-notices: lean-bundle needs $lock" >&2; exit 1; }
+  lv() { sed -n "s/^$1=//p" "$lock"; }
+  tag=$(lv LEAN_TAG); lw=$(lv LEAN_WASM_SHA256); lj=$(lv LEAN_JS_SHA256)
+  [ -n "$tag" ] && [[ "$lw" =~ ^[0-9a-f]{64}$ ]] && [[ "$lj" =~ ^[0-9a-f]{64}$ ]] || { echo "package-notices: $lock has no LEAN_TAG and two sha256 values" >&2; exit 1; }
+  gen="$(mktemp -d)"; trap 'rm -rf "$gen"' EXIT
+  for f in NOTICE SOURCE; do
+    [ -f "$ROOT/engine/notices/lean-bundle/$f.in" ] || { echo "package-notices: missing engine/notices/lean-bundle/$f.in" >&2; exit 1; }
+    sed -e "s/@LEAN_TAG@/$tag/g" -e "s/@LEAN_WASM_SHA256@/$lw/g" -e "s/@LEAN_JS_SHA256@/$lj/g" "$ROOT/engine/notices/lean-bundle/$f.in" > "$gen/$f"
+    if grep -q '@[A-Z_]*@' "$gen/$f"; then echo "package-notices: engine/notices/lean-bundle/$f.in has a placeholder left" >&2; exit 1; fi
+  done
+  notes="$gen"
 fi
 [ -f "$notes/NOTICE" ] || { echo "package-notices: missing $notes/NOTICE" >&2; exit 1; }
 [ -f "$notes/SOURCE" ] || { echo "package-notices: missing $notes/SOURCE" >&2; exit 1; }

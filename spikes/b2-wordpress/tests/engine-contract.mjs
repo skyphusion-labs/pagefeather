@@ -435,8 +435,18 @@ trait Pf582T {
 
 // The engine under test: ENGINE_JS and ENGINE_WASM, or the prepared vendor/ engine; ENGINE_EXPECT
 // names its expectation file (default: today's engine).
+// #771: with no ENGINE_EXPECT, vendor/ holding the PINNED lean engine (vendor/engine.mjs says lean, the default) is
+// judged by engine/expect/lean.json, as pagefeather-engine.yml judges the published build. Everything else keeps the
+// default it always had, the upstream 3.1.62 file: npm, no marker (an older prepare.sh), and a custom engine (the
+// engine workflow's gate jobs vendor their own arm and name ENGINE_EXPECT where the expectation matters).
+export function defaultExpect(vendorEngineMjs = join(B2, 'vendor/engine.mjs')) {
+	let src = '';
+	try { src = readFileSync(vendorEngineMjs, 'utf8'); } catch { /* no marker */ }
+	const m = src.match(/export const PHP_ENGINE = '([a-z]+)';/);
+	return m && m[1] === 'lean' ? join(B2, '../../engine/expect/lean.json') : join(B2, '../../engine/expect/upstream-3.1.62.json');
+}
 export function engineUnderTest() {
-	const expectPath = process.env.ENGINE_EXPECT || join(B2, '../../engine/expect/upstream-3.1.62.json');
+	const expectPath = process.env.ENGINE_EXPECT || defaultExpect();
 	return engine(process.env.ENGINE_JS ? 'ENGINE_JS' : 'vendor',
 		process.env.ENGINE_JS || join(B2, 'vendor/php_8_3.js'), process.env.ENGINE_WASM || join(B2, 'vendor/php_8_3.wasm'),
 		JSON.parse(readFileSync(expectPath, 'utf8')));

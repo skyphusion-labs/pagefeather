@@ -388,6 +388,17 @@ lazy_arena_var() {
 # deploy/fault-inject.sh (after-insert or sql-fail only, b-dosql, THROWAWAY=1, never a live site by either marker). A
 # measurement flag (site_settings.py MEASUREMENT): never recorded, so the next update without it turns it off.
 # fault_inject_var <site>: the [vars] line, nothing when unset; exit 2 with the reason when refused.
+# engine_ensure (#771): resolve the PHP engine once, on first need (spikes/b2-wordpress/engine.sh), and export it, so
+# the #642 engine check, the build (prepare.sh in build_dosql's subshell) and the recorded inputs all see the same
+# pair. A resolution in a subshell is done again in the parent: the same answer, from the cache. Refusals before the
+# first need never fetch. The default is the pinned lean engine; PHP_ENGINE=npm or PF_ENGINE_JS/WASM choose another.
+engine_ensure() {
+  [ -z "${PHP_ENGINE_RESOLVED:-}" ] || return 0
+  # shellcheck source=../../spikes/b2-wordpress/engine.sh
+  . "$WFP/../../spikes/b2-wordpress/engine.sh"
+  engine_resolve || return 2
+  echo "  PHP engine for this run: $PHP_ENGINE_RESOLVED${PF_ENGINE_WASM:+ ($PF_ENGINE_WASM)}" >&2
+}
 fault_inject_var() {
   # shellcheck source=../fault-inject.sh
   . "$WFP/../fault-inject.sh"
@@ -855,11 +866,12 @@ use_recorded_inputs() {
   # #642: the engine, checked in BOTH branches below. It is a file, so the recorded inputs cannot
   # bring it back; an update that builds another engine (or none: npm) is refused unless
   # REPLACE_INPUTS=1. Before #642 an update without the pair silently rebuilt a lean site on npm.
+  engine_ensure || { echo "the PHP engine cannot be resolved; refused" >&2; return 2; }
   rc=0; python3 -I "$WFP/build_inputs.py" engine-check "$rec" > "$w/engine" 2>&1 || rc=$?
   case "$rc" in
     0) ;;
     4) if [ "${REPLACE_INPUTS:-0}" = 1 ]; then echo "  REPLACE_INPUTS=1: the engine changes:"; cat "$w/engine"
-       else echo "this run would build another engine than the site runs; refused. Set PF_ENGINE_JS and PF_ENGINE_WASM to the site's engine, or REPLACE_INPUTS=1 to change it on purpose:" >&2; cat "$w/engine" >&2; return 2; fi ;;
+       else echo "this run would build another engine than the site runs; refused. Build the site's engine (PHP_ENGINE=npm, or PF_ENGINE_JS and PF_ENGINE_WASM; the default is the pinned lean engine, #771), or REPLACE_INPUTS=1 to change it on purpose:" >&2; cat "$w/engine" >&2; return 2; fi ;;
     *) echo "cannot check the recorded engine; refused:" >&2; cat "$w/engine" >&2; return 2 ;;
   esac
   if [ "$(content_inputs_set)" = 0 ] && [ -z "${WOO_ACTIVE:-}" ]; then
@@ -951,6 +963,7 @@ record_build_inputs() {
       python3 -I "$WFP/build_inputs.py" tree-put "$b" "$key" "$w/tree.tar.gz" || return 1
     fi
   fi
+  engine_ensure || return 1
   python3 -I "$WFP/build_inputs.py" env-json "$cid" "$key" "$id" > "$w/record.json" || return 1
   python3 -I "$WFP/build_inputs.py" put "$b" "$w/record.json" || return 1
   echo "  build inputs recorded in $b/_build/inputs.json (content ${cid:-none}, tree ${key:-none})"
@@ -968,6 +981,7 @@ build_dosql() {
     # old loader in a tree that had built before, so a new loader patch never reached a deploy
     # (measured on pf394a, 2026-11-13: the heap patch build showed the stock 111 and 133 MiB stairs).
     # No pipe: a pipe takes tail's status and would hide a failed patch assert, shipping the old loader.
+    engine_ensure || { echo "the PHP engine cannot be resolved"; exit 1; }
     ./prepare.sh || { echo "prepare.sh failed: the loader was not rebuilt"; exit 1; }
     # WOO_ACTIVE reaches build.sh too, so the build id says whether it is primed (#377).
     # WOO follows it (#451): WooCommerce is in the bundle only when the site runs it. A plain site
