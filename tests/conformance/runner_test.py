@@ -364,6 +364,21 @@ def main():
         ok("wc config drops blocks/**") if '"blocks/**"' in wct else bad("wc config lacks blocks/**")
         ok("wc config has NO reset project (it would wipe the seed)") if "reset" not in wct else bad("wc config still runs reset")
         ok("wc e2e-pf depends on site setup only") if "dependencies: [ 'site setup' ]" in wct else bad("wc e2e-pf dependencies wrong")
+        # wc-api (the API half): no reset project, api-pf depends on 'site setup' only, runs ONLY the api-tests,
+        # and does not carry the wc exclusion of api-tests/**.
+        wat = open(os.path.join(t, "cfg-wc-api", "pf-conformance.config.mjs")).read()
+        ok("wc-api config has NO reset project") if "reset" not in wat else bad("wc-api config runs reset")
+        ok("wc-api api-pf depends on site setup only") if wat.count("dependencies:") == 1 and "dependencies: [ 'site setup' ]" in wat else bad("wc-api dependencies wrong")
+        ok("wc-api runs only the api-tests") if "name: 'api-pf', testMatch: [ '**/api-tests/**' ]" in wat and "e2e-pf" not in wat else bad("wc-api project wrong")
+        ok("wc-api does not ignore the api-tests") if '"api-tests/**"' not in wat else bad("wc-api ignores api-tests/**")
+        # vps-run.sh run wc-api (DRY): the wc checkout, site setup, then check-state, then api-pf alone.
+        vr = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "run", "wc-api", os.path.join(t, "w"), os.path.join(t, "rr")],
+                            env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
+        lines = vr.stdout.splitlines()
+        idx = lambda pat: next((i for i, l in enumerate(lines) if pat in l), -1)
+        s_, c_, a_ = idx('--project="site setup"') if idx('--project="site setup"') >= 0 else idx("--project=site setup"), idx("runner.py check-state"), idx("--project=api-pf --no-deps")
+        ok("vps-run run wc-api: site setup, then check-state, then api-pf --no-deps") if vr.returncode == 0 and 0 <= s_ < c_ < a_ else bad("vps-run wc-api order (rc %d, %d %d %d): %s" % (vr.returncode, s_, c_, a_, vr.stderr[-200:]))
+        ok("vps-run wc-api uses the wc checkout") if any("/wc-" in l and "wc-api-" not in l for l in lines) else bad("vps-run wc-api checkout: %s" % lines[:3])
         for sn in ("wp", "gb"):
             txt = open(os.path.join(t, "cfg-" + sn, "pf-conformance.config.mjs")).read()
             want = "config.globalSetup = [ base.globalSetup, %s ]" % json.dumps(os.path.join(HERE, "assert-login.mjs"))
