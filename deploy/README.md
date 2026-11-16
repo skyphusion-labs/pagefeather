@@ -264,7 +264,7 @@ Every answer of the object path that the edge never keeps carries `x-pf-call`: a
 
 **What the start-by can prove (#752, #754).** In a deployed Worker or Durable Object, `Date.now()` moves only at I/O, and a timer turn does NOT move it (measured on #714 and #752). When a request that queued behind another gets its turn with under 30 s left on its (possibly stale) clock, the PHP lock first makes ONE real subrequest, the tick.
 
-- **The tick's target:** `START_BY_TICK_URL` when set: an https URL, normally the tiny dedicated Worker in `deploy/tick-worker/`, deployed once per account. Unset, it is the site's own `/_tick`, which the front Worker answers with an empty 204 before any object call. Measured on #754: the object's fetch to its OWN site's hostname is refused by the platform, so set `START_BY_TICK_URL`.
+- **The tick's target:** `START_BY_TICK_URL` when set: an https URL, normally the tiny dedicated Worker in `deploy/tick-worker/`, deployed once per account. **One-time step per account:** `deploy/wr deploy --config deploy/tick-worker/wrangler.toml` makes `pf-tick`. Check it with `curl -s -o /dev/null -w '%{http_code}' https://pf-tick.<subdomain>.workers.dev/`, which must print 204. Then give each site `START_BY_TICK_URL=https://pf-tick.<subdomain>.workers.dev/`. Unset, it is the site's own `/_tick`, which the front Worker answers with an empty 204 before any object call. Measured on #754: the object's fetch to its OWN site's hostname is refused by the platform, so set `START_BY_TICK_URL`.
 - **After the tick SETTLES, ok or error,** the lock re-reads the clock and decides by the start-by. A failed subrequest still moves the clock (measured on #754).
   - Late: shed, `why: start-by`.
   - Time left: granted.
