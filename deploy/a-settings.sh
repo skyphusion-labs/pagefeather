@@ -30,7 +30,8 @@
 #   PHP_OVERFLOW_POOL 1 to 128 (default 32, the measured default, #646). Needs PHP_OVERFLOW=1. The runtime
 #                     (overflow.mjs) takes 1 to 128; it ran 129 to 256 as 32, so those are refused here (#714).
 #   PHP_OVERFLOW_MAX_HELD off, or 1 to 1000 (#714, #717): the most overflowed requests one Worker isolate holds in
-#                     flight. Unset renders nothing: the code default, 16. off: no cap. Needs PHP_OVERFLOW=1.
+#                     flight. Unset renders nothing: the code default, NO cap (#714 measured a cap of 16 losing 479
+#                     requests to save 2). A number caps; off: no cap. Needs PHP_OVERFLOW=1.
 #   MEM_LEDGER        on or unset: a MEASUREMENT flag (the isolate memory ledger on every request, and the
 #                     overflow-held line, #714). Never a default; a deploy without it turns it off.
 #   OBJECT_CACHE_VERSIONS 1 (default since #296 step 3) or 0: options in the cross-isolate cache under an exact version (#668, #686),
@@ -163,7 +164,7 @@ a_overflow_vars() {
   [ "${PHP_OVERFLOW:-0}" = 1 ] || return 0
   echo 'PHP_OVERFLOW = "on"'
   echo "PHP_OVERFLOW_POOL = \"$((10#${PHP_OVERFLOW_POOL:-32}))\""
-  # #714: unset renders nothing (the code default, 16); off or a number renders it.
+  # #714: unset renders nothing (the code default, no cap); off or a number renders it.
   case "${PHP_OVERFLOW_MAX_HELD:-}" in '') ;; off) echo 'PHP_OVERFLOW_MAX_HELD = "off"' ;; *) echo "PHP_OVERFLOW_MAX_HELD = \"$((10#$PHP_OVERFLOW_MAX_HELD))\"" ;; esac
 }
 a_overflow_bindings() {
