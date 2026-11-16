@@ -435,8 +435,20 @@ trait Pf582T {
 
 // The engine under test: ENGINE_JS and ENGINE_WASM, or the prepared vendor/ engine; ENGINE_EXPECT
 // names its expectation file (default: today's engine).
+// #771: with no ENGINE_EXPECT, the expectation follows the engine prepare.sh vendored (vendor/engine.mjs): the lean
+// engine is judged by engine/expect/lean.json (as pagefeather-engine.yml judges the published build), npm by the
+// upstream 3.1.62 file. A custom engine has no default: it must name its expectation.
+export function defaultExpect(vendorEngineMjs = join(B2, 'vendor/engine.mjs')) {
+	let src = '';
+	try { src = readFileSync(vendorEngineMjs, 'utf8'); } catch { /* an older prepare.sh wrote none: the npm engine */ }
+	const m = src.match(/export const PHP_ENGINE = '([a-z]+)';/);
+	const kind = m ? m[1] : 'npm';
+	if (kind === 'lean') return join(B2, '../../engine/expect/lean.json');
+	if (kind === 'npm') return join(B2, '../../engine/expect/upstream-3.1.62.json');
+	throw new Error('vendor/ holds a ' + kind + ' engine: set ENGINE_EXPECT to its expectation file');
+}
 export function engineUnderTest() {
-	const expectPath = process.env.ENGINE_EXPECT || join(B2, '../../engine/expect/upstream-3.1.62.json');
+	const expectPath = process.env.ENGINE_EXPECT || defaultExpect();
 	return engine(process.env.ENGINE_JS ? 'ENGINE_JS' : 'vendor',
 		process.env.ENGINE_JS || join(B2, 'vendor/php_8_3.js'), process.env.ENGINE_WASM || join(B2, 'vendor/php_8_3.wasm'),
 		JSON.parse(readFileSync(expectPath, 'utf8')));
