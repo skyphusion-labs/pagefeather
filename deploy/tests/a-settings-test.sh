@@ -101,7 +101,7 @@ ok "done: ONE status read and NO install (a re-deploy never drops and re-makes t
 ok "notrig: rc 0, and a loud WARNING that the var is inert" "$([ "$(cat "$T/ocv-notrig.rc")" = 0 ] && grep -q 'WARNING: OBJECT_CACHE_VERSIONS is on but INERT' "$T/ocv-notrig.out" && echo 1 || echo 0)"
 ok "down: rc 1 (the deploy stops: the default's state is unknown)" "$([ "$(cat "$T/ocv-down.rc")" = 1 ] && echo 1 || echo 0)"
 ok "the output never prints the token" "$(cat "$T"/ocv-*.out | grep -q tok && echo 0 || echo 1)"
-ok "deploy.sh runs it after the install, for variant a unless OBJECT_CACHE_VERSIONS=0" "$(grep -q 'if \[ "\$VARIANT" = a \] && \[ "\${OBJECT_CACHE_VERSIONS:-1}" != 0 \]; then a_ocv_install "\$URL" "\$SPIKE_TOKEN" || exit 1; fi' "$ROOT/deploy/deploy.sh" && [ "$(grep -n 'a_ocv_install "\$URL"' "$ROOT/deploy/deploy.sh" | cut -d: -f1)" -gt "$(grep -n '"\$URL/_install"' "$ROOT/deploy/deploy.sh" | cut -d: -f1)" ] && echo 1 || echo 0)"
+ok "deploy.sh runs it after the install, for variant a unless OBJECT_CACHE_VERSIONS=0" "$(grep -q 'if \[ "\$VARIANT" = a \] && \[ "\${OBJECT_CACHE_VERSIONS:-1}" != 0 \]; then a_ocv_install "\$URL" "\$SPIKE_TOKEN" || exit 1; fi' "$ROOT/deploy/deploy.sh" && [ "$(grep -n 'a_ocv_install "\$URL"' "$ROOT/deploy/deploy.sh" | cut -d: -f1)" -gt "$(grep -n 'install_wordpress "\$URL"' "$ROOT/deploy/deploy.sh" | cut -d: -f1)" ] && echo 1 || echo 0)"
 
 echo "2. the rendered lines (deploy/a-settings.sh)"
 S="$ROOT/deploy/a-settings.sh"

@@ -103,6 +103,9 @@ jobs:
       - name: Deploy scripts keep the spike token and admin password out of curl's command line
         # -K <(printf 'header = ...') instead of -H: the value is not in the process list.
         run: bash deploy/tests/curl-argv-test.sh
+      - name: /_install retries until the site is installed (#811)
+        # A stub answers 403, then the install JSON. A stub that never installs fails the step.
+        run: bash deploy/tests/install-retry-test.sh
       - name: Dialect tests
         run: php spikes/b2-wordpress/tests/dialect-test.php
       - name: A new month upload returns JSON with no chmod warning (issue #594)

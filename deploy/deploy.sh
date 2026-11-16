@@ -37,6 +37,9 @@
 # BENCH=0 (skip the measurements), N (runs per page, default 10), PORT (local
 # wrangler dev port for the OPcache step, default 8798), DEPLOY_STATE=r2 (keep
 # Terraform state in an R2 bucket; see README.md).
+# INSTALL_WAIT_S (default 120, at most 600; #811): how long to retry /_install while
+# the answer is 403, 5xx, no answer, or not JSON. INSTALL_INTERVAL_S (default 5) is
+# the pause. A JSON answer that is not installed fails the deploy.
 # Variant a renders the measured site by default (#666, deploy/README.md): the lean client (A_CLIENT), the
 # object cache with its L2 KV and lazy nodes; PHP_OVERFLOW=1 adds the overflow pool (PHP_OVERFLOW_POOL, default 32).
 # Variant a, the #394 admin fixes (deploy/a-settings.sh; all off unless set): OPCACHE_A=1 primes
@@ -129,6 +132,9 @@ conformance_check "${NAME:-}" || exit 2
 # shellcheck source=SCRIPTDIR/pdf-invoice.sh
 . "$ROOT/deploy/pdf-invoice.sh"
 pdf_invoice_check "$VARIANT" || exit 2
+# #811: /_install retries while the PHP object is still on the previous version.
+# shellcheck source=SCRIPTDIR/install.sh
+. "$ROOT/deploy/install.sh"
 object_time_vars >/dev/null || exit 2
 # WOO_ACTIVE is 0 or 1 (#706). Unset was set to 0 above. Anything else is refused
 # before any step, the same as deploy/wfp woo_active_for_build.
@@ -341,16 +347,14 @@ rm -f "$SECRETS"
 origin_check "$URL" "$SITE_ORIGIN" || exit 1
 SPIKE_TOKEN=$(out spike_token); ADMIN_PASSWORD=$(out admin_password)
 
-# 5. Install WordPress (once). b-do: in the PHP object (on Workers Free too:
+# 5. Install WordPress. b-do: in the PHP object (on Workers Free too:
 # 901 D1 queries, 57 s measured). a: in the Worker (Workers Paid).
+# #811: the object can still be on the previous version and answer 403. Retry
+# until it is installed, and fail the deploy if it never is (deploy/install.sh).
+# The failure prints the last status and the body's first bytes. When the retries
+# run out it also names the current deployment, read with the deploy token.
 log "install"
-sleep 5
-curl -s -m 300 -X POST -K <(printf 'header = "x-spike-token: %s"\nheader = "x-admin-password: %s"\n' "$SPIKE_TOKEN" "$ADMIN_PASSWORD") "$URL/_install" \
-  | python3 -c 'import json, sys
-try:
-    d = json.load(sys.stdin); print(d.get("out", "")[-80:], d.get("ms"), "ms")
-except ValueError:
-    print("install did not answer JSON (on Workers Free, variant a stops at the CPU limit)")'
+install_wordpress "$URL" || exit 1
 
 if [ "${WOO_ACTIVE:-0}" = 1 ]; then
   log "activate WooCommerce"
