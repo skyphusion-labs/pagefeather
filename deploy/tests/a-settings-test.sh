@@ -29,7 +29,14 @@ refuse "PHP_OVERFLOW_POOL is for variant a only" VARIANT=c1 PHP_OVERFLOW_POOL=32
 refuse "A_CLIENT must be lean or mysql2" VARIANT=a A_CLIENT=pg
 for bad in 2 on yes; do refuse "PHP_OVERFLOW must be 0 or 1" VARIANT=a PHP_OVERFLOW=$bad; done
 refuse "PHP_OVERFLOW_POOL needs PHP_OVERFLOW=1" VARIANT=a PHP_OVERFLOW_POOL=32
-for bad in 0 257 1e3 abc -4 1000; do refuse "PHP_OVERFLOW_POOL must be an integer from 1 to 256" VARIANT=a PHP_OVERFLOW=1 "PHP_OVERFLOW_POOL=$bad"; done
+# #714: the overflow cap (#717, default 16) has a deploy input and an off switch; MEM_LEDGER is a measurement input.
+refuse "PHP_OVERFLOW_MAX_HELD needs PHP_OVERFLOW=1" VARIANT=a PHP_OVERFLOW_MAX_HELD=16
+for bad in 0 1001 abc -1 on 16.5; do refuse "PHP_OVERFLOW_MAX_HELD must be off or an integer from 1 to 1000" VARIANT=a PHP_OVERFLOW=1 "PHP_OVERFLOW_MAX_HELD=$bad"; done
+refuse "PHP_OVERFLOW_MAX_HELD is for variant a only" VARIANT=b-dosql PHP_OVERFLOW_MAX_HELD=off
+for bad in off 1 yes ON; do refuse "MEM_LEDGER must be on or unset" VARIANT=a "MEM_LEDGER=$bad"; done
+refuse "MEM_LEDGER is for variant a only" VARIANT=b-dosql MEM_LEDGER=on
+# #714: the runtime takes 1 to 128 (overflow.mjs) and silently ran 129 to 256 as 32; the deploy bound is now the same.
+for bad in 0 129 256 257 1e3 abc -4 1000; do refuse "PHP_OVERFLOW_POOL must be an integer from 1 to 128" VARIANT=a PHP_OVERFLOW=1 "PHP_OVERFLOW_POOL=$bad"; done
 for bad in 2 on d1 yes; do refuse "OPCACHE_A must be 0 or 1" VARIANT=a OPCACHE_A=$bad; done
 for bad in 2 on yes; do refuse "OPCACHE_REMOTE must be 0 or 1" VARIANT=a OPCACHE_A=1 OPCACHE_REMOTE=$bad; done
 refuse "SITE_REMOTE must be 0 or 1" VARIANT=a OPCACHE_A=1 OPCACHE_REMOTE=1 SITE_REMOTE=on
@@ -66,7 +73,8 @@ o() { env -i PATH="$PATH" "$@" bash -c ". '$S' && a_overflow_vars && echo --- &&
 ok "PHP_OVERFLOW unset renders nothing" "$([ "$(o)" = '---' ] && echo 1 || echo 0)"
 ok "PHP_OVERFLOW=1: pool 32, the PhpRuntime binding and its migration" "$([ "$(o PHP_OVERFLOW=1)" = "$(printf 'PHP_OVERFLOW = "on"\nPHP_OVERFLOW_POOL = "32"\n---\n[[durable_objects.bindings]]\nname = "PHP_RUNTIME"\nclass_name = "PhpRuntime"\n[[migrations]]\ntag = "v1"\nnew_sqlite_classes = ["PhpRuntime"]')" ] && echo 1 || echo 0)"
 ok "PHP_OVERFLOW_POOL=064 renders 64 (base 10)" "$(grep -qx 'PHP_OVERFLOW_POOL = "64"' <<<"$(o PHP_OVERFLOW=1 PHP_OVERFLOW_POOL=064)" && echo 1 || echo 0)"
-ok "the pool bounds 1 and 256 pass the check" "$(env -i PATH="$PATH" bash -c ". '$S' && PHP_OVERFLOW=1 PHP_OVERFLOW_POOL=1 a_settings_check a && PHP_OVERFLOW=1 PHP_OVERFLOW_POOL=256 a_settings_check a" >/dev/null 2>&1 && echo 1 || echo 0)"
+ok "the pool bounds 1 and 128 pass the check (the runtime range)" "$(env -i PATH="$PATH" bash -c ". '$S' && PHP_OVERFLOW=1 PHP_OVERFLOW_POOL=1 a_settings_check a && PHP_OVERFLOW=1 PHP_OVERFLOW_POOL=128 a_settings_check a" >/dev/null 2>&1 && echo 1 || echo 0)"
+ok "the cap bounds 1, 1000 and off pass the check" "$(env -i PATH="$PATH" bash -c ". '$S' && PHP_OVERFLOW=1 PHP_OVERFLOW_MAX_HELD=1 a_settings_check a && PHP_OVERFLOW=1 PHP_OVERFLOW_MAX_HELD=1000 a_settings_check a && PHP_OVERFLOW=1 PHP_OVERFLOW_MAX_HELD=off a_settings_check a" >/dev/null 2>&1 && echo 1 || echo 0)"
 
 echo "2b. an empty or unreadable primed cache fails (a_opcache_count; from #625, rollins-sb1114l)"
 cnt() { env -i PATH="$PATH" bash -c ". '$S' && a_opcache_count '$1'" 2>&1; }
