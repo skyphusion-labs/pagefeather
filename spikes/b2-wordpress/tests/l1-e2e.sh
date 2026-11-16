@@ -32,8 +32,11 @@ run_case() { # run_case <label> <DEV_VARS> <expected l1 log fragment or "none">
   ok "$label: e2e.sh (pages, login, admin, editor, REST write)" "$([ $e2e = 0 ] && echo 1 || echo 0)"
   B=$B ADMIN_PASSWORD=$PW python3 tests/woo.py > "build/l1-woo-$label.log" 2>&1; local woo=$?
   ok "$label: tests/woo.py (the store and a checkout)" "$([ $woo = 0 ] && echo 1 || echo 0)"
-  # The boot's L1 state, from x-perf on a request that boots a NEW runtime (/_install drops it).
+  # The boot's L1 state, from x-perf on a request that boots a NEW runtime (a forced recycle after /_install drops it, #756).
   curl -s "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null
+  # #756: /_install keeps its runtime now, so a forced recycle of a page (x-runtime-recycle: force, spike-gated)
+  # drops it, and the NEXT request boots a new runtime.
+  curl -s -o /dev/null "${ST[@]}" -H "x-runtime-recycle: force" "$B/?nocache=fr$RANDOM"
   local l1; l1=$(curl -s -D - -o /dev/null "${ST[@]}" "$B/?nocache=l1$RANDOM" | grep -i '^x-perf:' | python3 -c "import json,sys; l=sys.stdin.read(); d=json.loads(l.split(': ',1)[1]) if l else {}; print(str(d.get('boot'))+' '+str(d.get('l1')))")
   ok "$label: a booting request reports l1 '$want' (got: $l1)" "$([[ "$l1" == "1 $want"* ]] && echo 1 || echo 0)"
   local c1 c2

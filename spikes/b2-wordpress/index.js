@@ -4145,8 +4145,8 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				// #756: the runtime is KEPT, so the first page reuses it. Dropping it here (a claim from the first D1
 				// spike, never measured) made the first page boot a second runtime beside this one's WebAssembly
 				// memory, which V8 had not yet collected, and the isolate died of exceededMemory: 6 of 6
-				// install-then-page deploys. /_activate has always kept its runtime after WordPress code, an exit
-				// included. #185's reuse hazard (a reused runtime ran the previous php.run's code) was
+				// install-then-page deploys; with it kept, 0 of 3 (#756, lean, wfp). #185's reuse hazard (a reused
+				// runtime ran the previous php.run's code) was
 				// internal/eval.php in OPcache, fixed by its blacklist (#294). A runtime over the recycle line
 				// is still recycled by the next request's run, as any other one is.
 				objectCacheClear(); // the database changed outside WordPress's cache

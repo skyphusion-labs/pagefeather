@@ -35,10 +35,13 @@ bad=0
 ok() { if [ "$2" = 1 ]; then echo "PASS $1"; else echo "FAIL $1"; bad=1; fi; }
 STATE=""
 trap './run.sh --stop >/dev/null 2>&1; [ -n "$STATE" ] && rm -rf "$STATE"' EXIT
-# perf_sum <field>...: boot a NEW runtime (/_install drops it), GET a few pages, print the summed
+# perf_sum <field>...: boot a NEW runtime (a forced recycle after /_install drops it, #756), GET a few pages, print the summed
 # x-perf fields and the boot's remote state, as "rfN=.. rfFail=.. rfCapped=.. remote=..".
 perf_sum() {
   curl -s "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null
+  # #756: /_install keeps its runtime now, so a forced recycle of a page (x-runtime-recycle: force, spike-gated)
+  # drops it, and the NEXT request boots a new runtime.
+  curl -s -o /dev/null "${ST[@]}" -H "x-runtime-recycle: force" "$B/?nocache=fr$RANDOM"
   local f; f=$(mktemp)
   for u in "/?nocache=r$RANDOM" "/?post_type=product&nocache=r$RANDOM" "/wp-login.php" "/?rest_route=/wp/v2/types&nocache=r$RANDOM"; do
     curl -s -D - -o /dev/null "${ST[@]}" -H 'x-mem-ledger: 1' "$B$u" | grep -i '^x-perf:' >> "$f"
