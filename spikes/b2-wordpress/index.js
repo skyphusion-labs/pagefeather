@@ -3655,6 +3655,13 @@ const site = {
 	},
 	async serve(req, env, ctx) {
 		ENV = env;
+		// #755 PROBE (measurement branch only): the FRONT Worker's own req.signal. Does a client disconnect reach the site's
+		// Worker at all? Logged with the path only, never the query string.
+		if (req.signal) {
+			const fp0 = Date.now(), fpPath = new URL(req.url).pathname;
+			if (req.signal.aborted) console.log(JSON.stringify({ m: 'front-probe', at: 'before-serve', path: fpPath }));
+			else req.signal.addEventListener('abort', () => console.log(JSON.stringify({ m: 'front-probe', at: 'abort-event', path: fpPath, sinceStartMs: Date.now() - fp0 })), { once: true });
+		}
 		// #708 review 8: only this Worker sets the start-by and the call id. A client copy is dropped on EVERY path
 		// (the object path, and this Worker's own PHP, where WordPress would see HTTP_X_PF_*).
 		if (req.headers.has(START_BY_HEADER) || req.headers.has(CALL_HEADER)) {
