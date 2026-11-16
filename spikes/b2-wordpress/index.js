@@ -4219,6 +4219,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			if (!spikeOk) delete headers['x-oc-off'];
 			// The memory trace and its switches (#434) reach PHP only with a valid spike token.
 			if (!spikeOk) { delete headers['x-mem-trace']; delete headers['x-mem-off']; }
+			if (!spikeOk) delete headers['x-pf-wc-defer']; // #768: the deferral's operator A/B switch (php/wc-route-defer.php)
 			let body;
 			if (env.MEDIA && isMediaUpload(req, url) && Number(req.headers.get('content-length') || 0) > STAGE_MIN_BYTES) {
 				const staged = await stageUpload(req, env);
