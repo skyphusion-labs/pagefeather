@@ -74,6 +74,8 @@ it maps the jobs you already do onto this stack, so read it first. Every documen
 
 We would rather you hear these from us before you build on the project than find them later.
 
+The [support matrix](docs/support-matrix.md) lists each WordPress and WooCommerce feature per tier and deploy path: supported, limited (and why), not supported, or not measured yet.
+
 - **One Durable Object per site:** one writer, one region, and one request at a time for anything
   the cache cannot answer. That is about 5 uncached requests a second; past that the queue grows,
   and at about 100 clients the object refuses ([docs/perf-dosql.md](docs/perf-dosql.md)).
@@ -148,6 +150,7 @@ Full cost line items and the per-plan limit table that decides the matrix above:
 
 ## More
 
+- What works on each tier and deploy path, and what is limited: [docs/support-matrix.md](docs/support-matrix.md).
 - Prior art: [docs/prior-art.md](docs/prior-art.md). This project builds on others' work, and we credit it there.
 - **How a cell becomes measured:** put a deploy script and a test in `tests/<id>/`; deploy to an account on the plan named in the column; run the test and record the command, date, Wrangler version and result in [docs/results.md](docs/results.md); then change the mark and link the result.
 

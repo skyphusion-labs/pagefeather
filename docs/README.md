@@ -34,6 +34,7 @@ Edge security works at the zone level: a WAF with rate limits on login, the zone
 5. [byo-domain.md](byo-domain.md): the self-service flow for a customer's own domain.
 6. [reference-wfp.md](reference-wfp.md): the reference-deployment design for a Workers for Platforms operator (issue #35).
 7. [known-limitations.md](known-limitations.md): what does not work yet, each item with its issue. Worth a read before you build.
+8. [support-matrix.md](support-matrix.md): each WordPress and WooCommerce feature per tier and deploy path, with a citation for every "yes" and the reason for every limit (#759).
 
 ## Approach A (scale-out)
 
