@@ -118,6 +118,8 @@ jobs:
           node --test spikes/b2-wordpress/tests/woo-hpos-cache.test.mjs
           php spikes/b2-wordpress/tests/woo-hpos-cache-test.php
           php spikes/b2-wordpress/tests/woo-cart-page-test.php
+          php spikes/b2-wordpress/tests/permalinks-test.php
+          bash spikes/b2-wordpress/tests/same-site-test.sh
       - name: Approach A object cache isolated mode (issue #218)
         # spikes/b2-wordpress/php/object-cache-js.php: the allowlist + TTL + force-off
         # posture, with a stubbed bridge (no DB). WooCommerce groups never persist.
@@ -264,7 +266,9 @@ jobs:
       - name: load test prints its run markers, so a count window never mixes the checkouts and the CLEANUP (#704)
         run: python3 -I tests/load/cleanup-marker-test.py
       - name: load test classes a plain post as post and a Woo product as product (#691)
-        run: python3 -I tests/load/page-class-test.py
+        run: |
+          python3 -I tests/load/page-class-test.py
+          python3 -I tests/load/plain-resolve-test.py
       - name: load test skips stock-managed products and keeps each non-2xx Store API code, never a body (#296)
         run: python3 tests/load/stock-codes-stub-test.py
       - name: load test 1102 counter counts 5xx only (issue #394)

@@ -64,7 +64,9 @@ check("12 parallel post creates, unique ids", len(ids) == 12 and len(set(ids)) =
 for kb in [100, 1900]:
     r = rest(o, "/wp/v2/posts", {"title": f"break {kb}KB", "content": "<p>" + ("x" * 99 + "\n") * (kb * 10) + "</p>", "status": "publish"})
     pid = json.loads(r["body"]).get("id") if r["code"] == 201 else None
-    back = req(opener(), f"/?p={pid}") if pid else {"body": b""}
+    # #760: the post's own link. A fresh site has pretty permalinks, so /?p=<id> answers 301 to it.
+    link = urllib.parse.urlsplit(json.loads(r["body"]).get("link") or "") if pid else None
+    back = req(opener(), (link.path or "/") + ("?" + link.query if link.query else "")) if pid else {"body": b""}
     check(f"a {kb} KB post saves and reads back", bool(pid) and b"x" * 99 in back["body"], short(r))
 r = rest(o, "/wp/v2/media", raw=b"\x89PNG\r\n\x1a\n" + b"\x00" * 64, headers={"Content-Type": "image/png", "Content-Disposition": "attachment; filename=break.png"})
 url = json.loads(r["body"]).get("source_url") if r["code"] == 201 else None
@@ -87,7 +89,7 @@ T = int(time.time())
 r = upload(png(6000, 6000), f"break-bomb-{T}.png")
 sizes = json.loads(r["body"]).get("media_details", {}).get("sizes", {}) if r["code"] == 201 else {}
 check("a 6000x6000 image uploads and gets its sizes (Images binding)", r["code"] == 201 and "thumbnail" in sizes, short(r))
-check("the site still serves after it", req(opener(), "/?p=1")["code"] == 200)
+check("the site still serves after it", req(opener(), "/")["code"] == 200)  # #760: /?p=1 is a 301 under pretty permalinks
 rs = par(lambda i: upload(png(20 + i, 20), f"break-same-{T}.png"), range(8), 8)
 srcs = [json.loads(x["body"]).get("source_url") for x in rs if x["code"] == 201]
 check("8 parallel uploads of one name get 8 files", len(srcs) == 8 and len(set(srcs)) == 8, f"{len(set(srcs))} distinct of {len(srcs)}")
