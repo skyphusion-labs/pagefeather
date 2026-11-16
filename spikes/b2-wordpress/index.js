@@ -3856,6 +3856,19 @@ export class Pages extends WorkerEntrypoint {
 export default {
 	async fetch(req, env, ctx) {
 		const url = new URL(req.url);
+		// #755 step 3 PROBE (measurement branch only): #721's F arm at the TOP of pagefeather's own gateway, before
+		// anything else runs. /pf-sigprobe?id=..&ms=6000 waits on a TIMER only (no object, no site.fetch). It logs
+		// m: sig-probe at armed, abort-event and end (with req.signal.aborted). It splits "anything on this script"
+		// from "the page path". Public on purpose: a throwaway measurement build only.
+		if (url.pathname === '/pf-sigprobe') {
+			const sp0 = Date.now(), spId = (url.searchParams.get('id') || 'x').slice(0, 40);
+			const spLog = (at) => console.log(JSON.stringify({ m: 'sig-probe', at, id: spId, hasSignal: !!req.signal, aborted: !!(req.signal && req.signal.aborted), sinceStartMs: Date.now() - sp0 }));
+			spLog('armed');
+			if (req.signal) { if (req.signal.aborted) spLog('abort-event'); else req.signal.addEventListener('abort', () => spLog('abort-event'), { once: true }); }
+			await new Promise((r) => setTimeout(r, Math.min(10000, Math.max(0, Number(url.searchParams.get('ms')) || 6000))));
+			spLog('end');
+			return new Response('sigprobe done\n', { headers: { 'cache-control': 'no-store' } });
+		}
 		// #752: the PHP object's start-by tick lands here, FIRST: a cheap 204, before the page cache and any object call.
 		if (url.pathname === TICK_PATH) return tickResponse();
 		// #755 PROBE (measurement branch only): the GATEWAY, the client's first hop. 'armed' on every page request, so a
