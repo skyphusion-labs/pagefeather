@@ -3202,7 +3202,7 @@ export class PhpRuntime extends DurableObject {
 		// abort event's own arrival, and signal.aborted at arrival, after the recheck, at the grant and at the end of the run.
 		const discProbe = raw.signal ? { at0: tArrive, abortAt: null, call: callId || null, pid: new URL(raw.url).searchParams.get('pf_probe') } : null;
 		const probeStore = (who, extra) => discProbe && discProbe.pid && this.ctx.storage.put('pf755:' + who + ':' + discProbe.pid, { sinceArriveMs: Date.now() - discProbe.at0, t: Date.now(), iso: ISOLATE_ID, aborted: !!raw.signal.aborted, ...extra }).catch(() => {});
-		const probeLog = (at, extra) => discProbe && console.log(JSON.stringify({ m: 'disc-probe', at, iso: ISOLATE_ID, call: discProbe.call, aborted: !!raw.signal.aborted, abortAt: discProbe.abortAt, sinceArriveMs: Date.now() - discProbe.at0, phpPending, ...extra }));
+		const probeLog = (at, extra) => discProbe && console.log(JSON.stringify({ m: 'disc-probe', at, iso: ISOLATE_ID, pid: discProbe.pid, call: discProbe.call, aborted: !!raw.signal.aborted, abortAt: discProbe.abortAt, sinceArriveMs: Date.now() - discProbe.at0, phpPending, ...extra }));
 		if (discProbe) {
 			if (raw.signal.aborted) discProbe.abortAt = 'before-arrive';
 			else raw.signal.addEventListener('abort', () => { discProbe.abortAt = Date.now() - discProbe.at0; probeLog('abort-event', { runningNow: discProbe.granted ? 'own-run' : 'queued' }); probeStore('obj-abort', { runningNow: discProbe.granted ? 'own-run' : 'queued' }); }, { once: true });
