@@ -3858,6 +3858,19 @@ export default {
 		const url = new URL(req.url);
 		// #752: the PHP object's start-by tick lands here, FIRST: a cheap 204, before the page cache and any object call.
 		if (url.pathname === TICK_PATH) return tickResponse();
+		// #755 PROBE (measurement branch only): the GATEWAY, the client's first hop. 'armed' on every page request, so a
+		// zero count is never ambiguous; 'abort-event' when req.signal fires; 'end' with req.signal.aborted after the
+		// answer. 'cached' says whether this request takes the cached Pages hop (pageCacheRoute) or site.fetch directly.
+		if (req.signal && !url.pathname.startsWith('/_')) {
+			const gp0 = Date.now(), gpPath = url.pathname, gpCached = pageCacheRoute(req, url, env);
+			const gpLog = (at, extra) => console.log(JSON.stringify({ m: 'gw-probe', at, path: gpPath, cached: gpCached, aborted: !!req.signal.aborted, sinceStartMs: Date.now() - gp0, ...extra }));
+			gpLog('armed', {});
+			if (!req.signal.aborted) req.signal.addEventListener('abort', () => gpLog('abort-event', {}), { once: true });
+			const gpAnswer = gpCached
+				? ctx.exports.Pages.fetch(new Request(req, { headers: (() => { const h = new Headers(req.headers); h.delete('cookie'); h.delete('authorization'); return h; })() }))
+				: site.fetch(req, env, ctx);
+			try { return await gpAnswer; } finally { gpLog('end', {}); }
+		}
 		if (pageCacheRoute(req, url, env)) {
 			const h = new Headers(req.headers);
 			h.delete('cookie');
