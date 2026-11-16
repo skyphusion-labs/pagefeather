@@ -102,7 +102,14 @@ export default {
 		if (viaOutbound) opts.outbound = { SITE: site.script };
 		const ns = viaOutbound ? env.DISPATCHER_OUT : env.DISPATCHER;
 		try {
-			return await ns.get(site.script, {}, opts).fetch(request);
+			// #755 step 2b PROBE (measurement branch only): forward the client's abort EXPLICITLY across the dispatch call.
+			// A new Request carries a controller linked to this request.signal, instead of passing `request` through.
+			const fwdCtl = new AbortController();
+			if (request.signal) {
+				if (request.signal.aborted) fwdCtl.abort(request.signal.reason);
+				else request.signal.addEventListener('abort', () => fwdCtl.abort(request.signal.reason), { once: true });
+			}
+			return await ns.get(site.script, {}, opts).fetch(new Request(request, { signal: fwdCtl.signal }));
 		} catch (e) {
 			const msg = String((e && e.message) || e);
 			if (msg.startsWith('Worker not found')) return fail(404, 'not-deployed', 'This site is not deployed.');
