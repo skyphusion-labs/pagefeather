@@ -331,7 +331,6 @@ function siteOrigin(env, url) {
 const LOCK_STALE_MS = 60000;
 // One line per contended event (php-lock.mjs: queued, granted, shed, stale), with this isolate's id.
 const phpLock = createPhpLock({ staleMs: LOCK_STALE_MS, log: (e) => console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, ...e })) });
-const PHP_SHED_RETRY_AFTER_S = '5'; // the same as start-by.mjs START_BY_RETRY_AFTER_S (shedAnswer)
 let phpShedRefusedLogged = false;
 // The shed bound of this path (PHP_QUEUE_SHED_MS; php-lock.mjs shedMsFor), with a bad value logged once.
 function phpShedMs(env, inObject) {
@@ -353,7 +352,7 @@ const SPIKE_CRON_GRACE_MS = 2000;
 const SEND_TIMEOUT_MS = 5000;
 // withPhp(fn, { shedMs }): fn's result, or PHP_SHED when the wait passed shedMs (0: never; only the
 // two request paths pass one). Cron, snapshots, dumps and imports always wait their turn.
-function withPhp(fn, { shedMs = 0, tag = null, shedWhy = null } = {}) {
+function withPhp(fn, { shedMs = 0, tag = null, shedWhy = null, recheck = null } = {}) {
 	return phpLock.run(
 		async () => {
 			retirer.runStart();
@@ -367,6 +366,7 @@ function withPhp(fn, { shedMs = 0, tag = null, shedWhy = null } = {}) {
 			shedMs,
 			tag, // #708: the forwarded request's correlation id, on its lock lines
 			shedWhy,
+			recheck,
 			onStale: () => {
 				if (bootPromise) runtimeDrops++;
 				dropRuntime(); // the old runtime's state is unknown; the stale run still counts as running, so it is released when that run ends too
@@ -2949,28 +2949,28 @@ export class PhpRuntime extends DurableObject {
 		// #708: a request whose start-by has passed never queues and never runs: its caller has given up. Otherwise the
 		// remainder is this run's shed bound (the tighter of it and PHP_QUEUE_SHED_MS), and a shed never runs PHP.
 		const plan = objectShedPlan(startByHeader, tArrive, phpShedMs(env, true));
-		const startByAt = Number(startByHeader) > 0 ? Number(startByHeader) : 0;
-		const queuedBehind = phpLock.running + phpLock.waiting > 0;
 		let lateByClock = false;
 		if (plan.refuseNow) {
 			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'shed', at: 'arrive', why: 'start-by', ...(callId ? { call: callId } : {}) }));
 			return startByResponse();
+		}
+		// #715 review3 2: a real request writes its origin and arms cron after the refusal (review2 5: a refused request
+		// writes nothing) and OUTSIDE the PHP lock, so this storage I/O never delays a grant. A request shed later in the
+		// queue has written only these two: the origin key and the alarm, never site data (x-write-loss is about the site).
+		if (armsCron) {
+			lastOrigin = origin;
+			await this.ctx.storage.put(ORIGIN_KEY, origin);
+			// A STALE alarm (long past, its run never completed) counts as none (#291): otherwise it
+			// blocks every later arm and the cron stops for good. alarm-arm.mjs.
+			// A stale one is deleted, then set (rearm): a re-set alone was not delivered on ggc-test.
+			const ra = await rearm(this.ctx.storage, Date.now(), Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
+			if (ra.stale) console.log(JSON.stringify({ m: 'alarm', unstuck: true, was: ra.was }));
 		}
 		const ahead = phpPending;
 		const isSpikeLongOp = url.pathname === '/_install' || url.pathname === '/_activate';
 		phpPending++;
 		// #296: shed only with PHP_QUEUE_SHED_MS set (the default is never, on every path).
 		const objectRun = await withPhp(async () => {
-			// #715 review2 4: a request that queued behind another may be granted on a stale clock (start-by.mjs
-			// recheckStartBy). It reads the clock again before it writes or runs PHP, and sheds if its start-by has passed.
-			if (startByAt > 0 && queuedBehind) {
-				const rc = await recheckStartBy(startByAt);
-				if (rc.late) {
-					lateByClock = true;
-					console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'shed', at: 'clock', why: 'start-by', clockMs: rc.clockMs, ...(callId ? { call: callId } : {}) }));
-					return PHP_SHED;
-				}
-			}
 			const waitMs = Date.now() - tArrive;
 			sqlDb = sql;
 			sqlStorage = sql ? this.ctx.storage : null;
@@ -2981,15 +2981,6 @@ export class PhpRuntime extends DurableObject {
 			// One PHP run at a time (withPhp), so one slot holds this run's answer.
 			turnstileSlot.set(turnstileHeader);
 			try {
-				if (armsCron) {
-					lastOrigin = origin;
-					await this.ctx.storage.put(ORIGIN_KEY, origin);
-					// A STALE alarm (long past, its run never completed) counts as none (#291): otherwise it
-					// blocks every later arm and the cron stops for good. alarm-arm.mjs.
-					// A stale one is deleted, then set (rearm): a re-set alone was not delivered on ggc-test.
-					const ra = await rearm(this.ctx.storage, Date.now(), Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
-					if (ra.stale) console.log(JSON.stringify({ m: 'alarm', unstuck: true, was: ra.was }));
-				}
 				const res = await handle(req, env, url, spikeOk, maxBody, ctx);
 				if (realTxn) txnEnd(sql, this.ctx.storage);
 				try {
@@ -3008,7 +2999,13 @@ export class PhpRuntime extends DurableObject {
 				// /_install -> /_activate gap, where /_activate would reuse the cron runtime (#185).
 				if (isSpikeLongOp) lastSpikeEndAt = Date.now();
 			}
-		}, { shedMs: plan.shedMs, tag: callId ? { call: callId } : null, shedWhy: plan.byStartBy ? 'start-by' : 'queue-shed' });
+		}, {
+			shedMs: plan.shedMs,
+			tag: callId ? { call: callId } : null,
+			shedWhy: plan.byStartBy ? 'start-by' : 'queue-shed',
+			// #715 review2 4, review3 4 and 5: the lock rechecks the start-by at a contended grant, on a clock read again.
+			recheck: plan.startBy > 0 ? async () => { const rc = await recheckStartBy(plan.startBy); lateByClock = rc.late; return rc; } : null,
+		});
 		if (objectRun !== PHP_SHED) return objectRun;
 		phpPending--; // a shed run never ran its finally
 		// A start-by shed says so: queued, never ran, safe to retry. The operator's PHP_QUEUE_SHED_MS keeps its own answer.
@@ -3532,7 +3529,7 @@ const site = {
 				return r;
 			}
 			// Both choices were busy: run here, as without overflow (the request has not run anywhere).
-			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-local', running: phpLock.running, waiting: phpLock.waiting, ...(callId ? { call: callId } : {}) })); // review2 8
+			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-local', running: phpLock.running, waiting: phpLock.waiting, call: callId })); // review2 8 (callId is always set here)
 		}
 		const workerRun = await withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx), { shedMs: phpShedMs(env, false) });
 		return workerRun === PHP_SHED ? phpShedResponse() : workerRun;

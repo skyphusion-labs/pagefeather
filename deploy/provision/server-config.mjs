@@ -9,7 +9,7 @@
 // bundle in the Worker's own R2 bucket. The caller chooses a type and a name,
 // and picks an OWNED base domain from an allowlist; it configures nothing.
 import { SITE_NAME_RE, assertValidName, isCallerReservedName, genSecret } from './shared.mjs';
-import { bDosqlBindings, bDosqlResourceCreateOps, bDosqlSecrets, mediaBucketName, aBindings, ocKvNamespaceName, pageCacheInputs, pageCacheProductTtl } from './wp-site-config.mjs';
+import { bDosqlBindings, bDosqlResourceCreateOps, bDosqlSecrets, mediaBucketName, aBindings, ocKvNamespaceName, pageCacheInputs, pageCacheProductTtl, objectTimeInputs } from './wp-site-config.mjs';
 
 // ---- 1. Caller auth (operator baseline) --------------------------------------
 // A shared operator secret in env.PROVISION_AUTH, sent as `Authorization:
@@ -178,7 +178,7 @@ export const TABLE_PREFIX_RE = /^[A-Za-z0-9_]{1,39}_$/;
 
 export async function buildServerCfg(env, { kind, name, domain, demo = false, expiresAt, codeLock = false, hyperdriveId, tablePrefix, hyperdriveSqlMode, store = false }) {
   // #706: refuse a bad TTL or a bad WOO_ACTIVE before the bundle is read.
-  try { pageCacheProductTtl(pageCacheInputs(env, { store })); }
+  try { pageCacheProductTtl(pageCacheInputs(env, { store })); objectTimeInputs(env); }
   catch (e) { throw new BadRequest(e.message); }
   // Kind 'a' (#431): checked before any IO, so a bad call loads no bundle.
   if (kind === 'a') {
@@ -200,7 +200,7 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
     // async-email-queue descriptors provision their per-site backing resource on the
     // HOSTED provisioning path too. Without resourceCreateOps here, the OC_KV /
     // EMAIL_QUEUE bindings would deploy with no namespace / queue behind them.
-    const bdosqlOpts = { mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS, mailFrom: target.workersDev ? undefined : `wordpress@${domain}`, mailFromName: name, demo: demo === true, codeLock: codeLock === true, ...pageCacheInputs(env, { store }) };
+    const bdosqlOpts = { mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS, mailFrom: target.workersDev ? undefined : `wordpress@${domain}`, mailFromName: name, demo: demo === true, codeLock: codeLock === true, ...pageCacheInputs(env, { store }), ...objectTimeInputs(env) };
     return {
       ...common, kind: 'wp', mainModule: env.WP_MAIN || 'index.js',
       hostname: target.hostname,
@@ -235,6 +235,7 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
         siteOrigin: `https://${target.hostname}`,
         mailFrom: target.workersDev ? undefined : `wordpress@${domain}`, mailFromName: name,
         ...pageCacheInputs(env, { store }),
+        ...objectTimeInputs(env),
       }),
       sqliteClasses: [],
       kvNamespaces: [{ title: ocKvNamespaceName(name), binding: 'OC_KV' }],

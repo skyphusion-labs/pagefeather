@@ -267,3 +267,28 @@ test('#715 review2 8: a shed line says WHY (start-by or the operator queue-shed 
 	assert.equal(shed && shed.why, 'start-by');
 	finishHead(); await head;
 });
+
+test('#715 review3 5: the grant-time recheck sheds before the grant line, through the tagged logger, and the next waiter runs', async () => {
+	let t = 0; const timers = [];
+	const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+	const log = [];
+	const lock = createPhpLock({ staleMs: 10 ** 9, now: () => t, setTimer: (fn, ms) => { timers.push({ at: t + ms, fn }); return timers.length; }, clearTimer: () => {}, log: (e) => log.push(e) });
+	let finishHead; const head = lock.run(() => new Promise((r) => (finishHead = r)));
+	await flush();
+	let calls = 0; let ran = false;
+	const w = lock.run(async () => { ran = true; return 'ran'; }, { shedMs: 60000, shedWhy: 'start-by', tag: { call: 'c9' }, recheck: async () => { calls++; return { late: true, clockMs: 7 }; } });
+	const behind = lock.run(async () => 'next');
+	await flush();
+	t = 2000; finishHead(); await head; await flush();
+	assert.equal(await w, PHP_SHED, 'shed by the recheck');
+	assert.equal(ran, false, 'it never ran');
+	assert.equal(calls, 1);
+	const mine = log.filter((e) => e.call === 'c9');
+	assert.ok(!mine.some((e) => e.event === 'granted'), 'no grant line for a request that was shed');
+	const shed = mine.find((e) => e.event === 'shed');
+	assert.ok(shed && shed.at === 'clock' && shed.why === 'start-by' && shed.clockMs === 7 && shed.waitMs === 2000 && 'depth' in shed && 'headMs' in shed, JSON.stringify(shed));
+	assert.equal(await behind, 'next', 'the waiter behind it runs');
+	// An uncontended run is never rechecked (its clock is the fresh arrival clock).
+	let c2 = 0; await lock.run(async () => 'x', { recheck: async () => { c2++; return { late: true }; } });
+	assert.equal(c2, 0);
+});

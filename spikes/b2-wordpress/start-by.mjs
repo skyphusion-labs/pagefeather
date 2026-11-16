@@ -44,12 +44,13 @@ export function startByExempt(pathname) {
 export function objectShedPlan(startByHeader, now, baseShedMs) {
 	const startBy = Number(startByHeader);
 	if (startByHeader === null || startByHeader === undefined || startByHeader === '' || !Number.isFinite(startBy) || startBy <= 0) {
-		return { refuseNow: false, shedMs: baseShedMs, byStartBy: false };
+		return { refuseNow: false, shedMs: baseShedMs, byStartBy: false, startBy: 0 };
 	}
+	// startBy: the parsed bound, so the caller never parses the header again (#715 review3 7).
 	const left = startBy - now;
-	if (left <= 0) return { refuseNow: true, shedMs: 0, byStartBy: true };
-	if (baseShedMs > 0 && baseShedMs < left) return { refuseNow: false, shedMs: baseShedMs, byStartBy: false };
-	return { refuseNow: false, shedMs: left, byStartBy: true };
+	if (left <= 0) return { refuseNow: true, shedMs: 0, byStartBy: true, startBy };
+	if (baseShedMs > 0 && baseShedMs < left) return { refuseNow: false, shedMs: baseShedMs, byStartBy: false, startBy };
+	return { refuseNow: false, shedMs: left, byStartBy: true, startBy };
 }
 
 // #715 review2 10: the one shed answer. Both sheds (the start-by, and the operator's PHP_QUEUE_SHED_MS) are a retry-safe
@@ -65,8 +66,13 @@ export function shedAnswer(body, extra = {}) {
 // a clock that lags by that stretch: up to the per-request CPU limit (30 s by default), summed over consecutive CPU-bound
 // runs, so more than the 30 s run allowance. A request that queued reads the clock again after one timer turn. The docs
 // do not say that a timer turn moves the clock, so clockMs is logged: 0 on a live site means the tick did not move it.
-export async function recheckStartBy(startByAt, { now = Date.now, tick = () => new Promise((r) => setTimeout(r, 0)) } = {}) {
+// #715 review3 4: the tick costs a timer turn with the lock held, so it runs only when the start-by is nearer than the
+// lag one run ahead can cause (CLOCK_LAG_MAX_MS, the per-request CPU limit). Several CPU-bound runs in a row can lag
+// more; the arrival refusal and the lock's own timer still bound those, and clockMs on a shed line measures the lag.
+export const CLOCK_LAG_MAX_MS = 30000;
+export async function recheckStartBy(startByAt, { now = Date.now, tick = () => new Promise((r) => setTimeout(r, 0)), lagMs = CLOCK_LAG_MAX_MS } = {}) {
 	const stale = now();
+	if (startByAt - stale >= lagMs) return { late: false, clockMs: 0, ticked: false };
 	await tick();
 	const fresh = now();
 	return { late: fresh >= startByAt, clockMs: fresh - stale };
@@ -77,12 +83,18 @@ export function startByResponse() {
 	return shedAnswer('The site is busy and did not start your request. Please try again in a few seconds.\n', { 'x-object-deadline': 'queued', 'x-write-loss': 'none' });
 }
 
-// #715 review2 1: the call id rides only on an answer no cache keeps (no-store or private). A cacheable page would carry
-// one request's id to every later hit, so a client-seen id would no longer name its request. The failure answers
-// (deadline, write-loss, error, shed) are all no-store. An immutable answer is copied once.
+// #715 review2 1, review3 3: the call id rides only on an answer the edge never keeps. A cacheable page would carry one
+// request's id to every later hit, so a client-seen id would no longer name its request. The edge obeys the Worker's
+// own directive, cloudflare-cdn-cache-control (handle's pageCacheHeaders sets it on every page: an edge TTL or
+// no-store), so that decides, never WordPress's cache-control. A Worker failure answer (deadline, write-loss, error,
+// shed) has no edge directive and its own cache-control: no-store. Directives are compared whole, by name, so a field
+// form such as private="set-cookie" is never read as no-store. An immutable answer is copied once.
+function hasNoStore(v) {
+	return String(v || '').toLowerCase().split(',').some((d) => d.split('=')[0].trim() === 'no-store');
+}
 export function tagCallId(r, callId) {
-	const cc = (r.headers.get('cache-control') || '').toLowerCase();
-	if (!callId || !/(^|[\s,])(no-store|private)([\s,=]|$)/.test(cc)) return r;
+	const edge = r.headers.get('cloudflare-cdn-cache-control');
+	if (!hasNoStore(edge === null ? r.headers.get('cache-control') : edge)) return r;
 	try {
 		r.headers.set(CALL_HEADER, callId);
 		return r;

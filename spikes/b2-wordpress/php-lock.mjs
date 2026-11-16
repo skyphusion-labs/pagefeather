@@ -68,7 +68,9 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 		// taken as stale (index.js drops the runtime there). tag (#708) is added to this run's log lines (the
 		// correlation id of the forwarded request), so a queued, granted or shed line names its request.
 		// shedWhy (#715 review2 8) names the bound on a shed line: start-by, or the operator's queue-shed.
-		run(fn, { shedMs = 0, onStale = () => {}, tag = null, shedWhy = null } = {}) {
+		// recheck (#715 review3 5): an async start-by check at a contended grant (the clock may be stale there,
+		// start-by.mjs recheckStartBy). { late: true } sheds before any grant line: at: clock, why: start-by.
+		run(fn, { shedMs = 0, onStale = () => {}, tag = null, shedWhy = null, recheck = null } = {}) {
 			const lg = tag ? (e) => log({ ...e, ...tag }) : log;
 			const prev = tail;
 			let release;
@@ -92,8 +94,17 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 					at = why === 'stale' ? 'stale' : 'grant';
 					why = 'shed';
 				}
+				let clock = null;
+				if (why !== 'shed' && contended && recheck) {
+					clock = await recheck();
+					if (clock && clock.late) {
+						why = 'shed';
+						at = 'clock';
+					}
+				}
 				if (why === 'shed') {
-					lg({ event: 'shed', at, waitMs, depth: waiting + running, headMs: headMs(), ...(shedWhy ? { why: shedWhy } : {}) });
+					const whyShed = at === 'clock' ? 'start-by' : shedWhy;
+					lg({ event: 'shed', at, waitMs, depth: waiting + running, headMs: headMs(), ...(whyShed ? { why: whyShed } : {}), ...(at === 'clock' ? { clockMs: clock.clockMs } : {}) });
 					// This waiter never runs: the one behind it waits for the run ahead instead.
 					prev.then(release, release);
 					return PHP_SHED;

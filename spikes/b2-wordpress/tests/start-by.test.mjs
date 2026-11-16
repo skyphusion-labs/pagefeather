@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { startByMs, objectShedPlan, startByResponse, START_BY_HEADER, CALL_HEADER, tagCallId, startByExempt, shedAnswer, recheckStartBy } from '../start-by.mjs';
+import { startByMs, objectShedPlan, startByResponse, START_BY_HEADER, CALL_HEADER, tagCallId, startByExempt, shedAnswer, recheckStartBy, CLOCK_LAG_MAX_MS } from '../start-by.mjs';
 
 test('startByMs: the default is the deadline minus a run allowance (30 s, or a third of a short deadline)', () => {
 	assert.equal(startByMs({}, 90000), 60000);
@@ -28,16 +28,16 @@ test('startByMs: OBJECT_START_BY_S sets it (seconds), off turns it off, a bad va
 	assert.equal(startByMs({ OBJECT_START_BY_S: '45' }, 90000, { exempt: true }), 0, 'an exempt path (install, import, cron) never gets one');
 });
 test('objectShedPlan: no or a bad start-by header keeps the base shed (today)', () => {
-	assert.deepEqual(objectShedPlan(null, 1000, 0), { refuseNow: false, shedMs: 0, byStartBy: false });
-	assert.deepEqual(objectShedPlan('abc', 1000, 5000), { refuseNow: false, shedMs: 5000, byStartBy: false });
+	assert.deepEqual(objectShedPlan(null, 1000, 0), { refuseNow: false, shedMs: 0, byStartBy: false, startBy: 0 });
+	assert.deepEqual(objectShedPlan('abc', 1000, 5000), { refuseNow: false, shedMs: 5000, byStartBy: false, startBy: 0 });
 });
 test('objectShedPlan: a start-by already past refuses at once; otherwise the remainder becomes the shed bound', () => {
-	assert.deepEqual(objectShedPlan('1000', 1000, 0), { refuseNow: true, shedMs: 0, byStartBy: true });
-	assert.deepEqual(objectShedPlan('900', 1000, 0), { refuseNow: true, shedMs: 0, byStartBy: true });
-	assert.deepEqual(objectShedPlan('61000', 1000, 0), { refuseNow: false, shedMs: 60000, byStartBy: true });
+	assert.deepEqual(objectShedPlan('1000', 1000, 0), { refuseNow: true, shedMs: 0, byStartBy: true, startBy: 1000 });
+	assert.deepEqual(objectShedPlan('900', 1000, 0), { refuseNow: true, shedMs: 0, byStartBy: true, startBy: 900 });
+	assert.deepEqual(objectShedPlan('61000', 1000, 0), { refuseNow: false, shedMs: 60000, byStartBy: true, startBy: 61000 });
 	// With PHP_QUEUE_SHED_MS also set (#635), the tighter bound wins, and says which one it is.
-	assert.deepEqual(objectShedPlan('61000', 1000, 30000), { refuseNow: false, shedMs: 30000, byStartBy: false });
-	assert.deepEqual(objectShedPlan('11000', 1000, 30000), { refuseNow: false, shedMs: 10000, byStartBy: true });
+	assert.deepEqual(objectShedPlan('61000', 1000, 30000), { refuseNow: false, shedMs: 30000, byStartBy: false, startBy: 61000 });
+	assert.deepEqual(objectShedPlan('11000', 1000, 30000), { refuseNow: false, shedMs: 10000, byStartBy: true, startBy: 11000 });
 });
 test('startByResponse: a fast, retry-safe 503 that says the request was queued and never ran', async () => {
 	const r = startByResponse();
@@ -85,7 +85,7 @@ test('review2 1: the call id rides only on answers no cache can keep (the edge w
 	assert.equal(tagCallId(page, 'c1').headers.get(CALL_HEADER), null, 'a cacheable page is not tagged');
 	const bare = new Response('<html>', { status: 200 });
 	assert.equal(tagCallId(bare, 'c1').headers.get(CALL_HEADER), null, 'no cache-control: not tagged');
-	for (const cc of ['no-store', 'private, no-store', 'private']) {
+	for (const cc of ['no-store', 'private, no-store']) {
 		const r = new Response('x', { status: 503, headers: { 'cache-control': cc } });
 		assert.equal(tagCallId(r, 'c2').headers.get(CALL_HEADER), 'c2', cc);
 	}
@@ -121,7 +121,10 @@ test('review2 wiring: one arrival refusal and no write before the run; the shed 
 	assert.equal(obj.split('startByResponse()').length - 1, 2, 'one arrival refusal, one lock-shed answer');
 	const run = obj.indexOf('const objectRun = await withPhp(');
 	const put = obj.indexOf('this.ctx.storage.put(ORIGIN_KEY, origin)');
-	assert.ok(run > 0 && put > run, 'the origin write is inside the run, never before it');
+	const refuse = obj.indexOf('if (plan.refuseNow) {');
+	const rearmAt = obj.indexOf('await rearm(this.ctx.storage');
+	// review3 2: OUTSIDE the PHP lock (storage I/O must not delay grants), and only after the refusal (review2 5).
+	assert.ok(refuse > 0 && put > refuse && put < run && rearmAt > refuse && rearmAt < run, 'the origin write and the rearm are after the refusal and outside the lock');
 	assert.ok(/shedWhy: plan\.byStartBy \? 'start-by' : 'queue-shed'/.test(obj), 'review2 8: the shed says why');
 	assert.ok(/event: 'overflow-local', [^\n]*call:/.test(src), 'review2 8: overflow-local carries the call id');
 	assert.ok(/m: 'object-deadline', [^\n]*answered:/.test(src), 'review2 3: the deadline line names its answer');
@@ -154,9 +157,36 @@ test('review2 4 wiring: the object rechecks before the writes and before PHP, on
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	const obj = src.slice(src.indexOf('	async fetch(raw) {'), src.indexOf('function phpObjectName('));
 	const run = obj.indexOf('const objectRun = await withPhp(');
-	const re = obj.indexOf('await recheckStartBy(startByAt', run);
-	assert.ok(re > run, 'inside the run');
-	assert.ok(/if \(startByAt > 0 && queuedBehind\) \{\n\t+const rc = await recheckStartBy\(startByAt\);/.test(obj), 'only when it queued behind another run');
-	assert.ok(re < obj.indexOf('this.ctx.storage.put(ORIGIN_KEY, origin)', run) && re < obj.indexOf('await handle(req, env, url, spikeOk, maxBody, ctx)', run), 'before the writes and before PHP');
-	assert.ok(/event: 'shed', at: 'clock', why: 'start-by', clockMs: rc\.clockMs/.test(obj), 'the line measures the tick');
+	// review3 5: the lock runs the recheck at its grant (php-lock.mjs recheck), through its own tagged logger.
+	assert.ok(/recheck: plan\.startBy > 0 \? async \(\) => \{[^\n]*recheckStartBy\(plan\.startBy\)/.test(obj), 'the object hands the recheck to the lock');
+	assert.ok(!/event: 'shed', at: 'clock'/.test(obj), 'and logs no shed line of its own');
+});
+
+// #715 third review.
+test('review3 3: uncached is the Worker edge directive (cloudflare-cdn-cache-control), and a field form never fools it', () => {
+	const tag = (h) => tagCallId(new Response('x', { headers: h }), 'c').headers.get(CALL_HEADER);
+	assert.equal(tag({ 'cloudflare-cdn-cache-control': 'no-store', 'cache-control': 'no-cache, must-revalidate, max-age=0' }), 'c', 'an uncached page');
+	assert.equal(tag({ 'cloudflare-cdn-cache-control': 'max-age=300, stale-while-revalidate=60', 'cache-control': 'no-cache' }), null, 'an edge-cached page, whatever WordPress said');
+	assert.equal(tag({ 'cloudflare-cdn-cache-control': 'max-age=300', 'cache-control': 'private, no-store' }), null, 'the edge directive wins');
+	assert.equal(tag({ 'cache-control': 'private="set-cookie", max-age=300' }), null, 'a private="..." field is not no-store');
+	assert.equal(tag({ 'cache-control': 'no-store' }), 'c', 'a Worker failure answer (no edge directive): its own no-store');
+	assert.equal(tag({ 'cache-control': 'x-no-store-ish' }), null, 'only the whole directive');
+});
+test('review3 4: the recheck ticks only when the start-by is within the possible clock lag; otherwise it grants at once', async () => {
+	assert.equal(CLOCK_LAG_MAX_MS, 30000, 'the per-request CPU limit (the default; b-dosql sets none)');
+	let ticks = 0; const tick = async () => { ticks++; };
+	let r = await recheckStartBy(100000, { now: () => 1000, tick });
+	assert.equal(ticks, 0, '99 s left: no tick');
+	assert.equal(r.late, false);
+	r = await recheckStartBy(20000, { now: () => 1000, tick });
+	assert.equal(ticks, 1, '19 s left: one tick');
+});
+test('review3 7 and 8: one start-by parser (objectShedPlan returns it), no dead constant, no always-true guard', () => {
+	assert.equal(objectShedPlan('5000', 1000, 0).startBy, 5000);
+	assert.equal(objectShedPlan('5000', 6000, 0).startBy, 5000);
+	for (const bad of [null, '', 'x', '-1', '0']) assert.equal(objectShedPlan(bad, 1000, 0).startBy, 0, String(bad));
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.ok(!/Number\(startByHeader\)/.test(src), 'index.js parses no start-by of its own');
+	assert.ok(!/PHP_SHED_RETRY_AFTER_S/.test(src), 'the dead constant is gone');
+	assert.ok(!/event: 'overflow-local'[^\n]*callId \?/.test(src), 'overflow-local: the id is always set there');
 });

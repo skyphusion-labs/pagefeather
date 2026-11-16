@@ -21,7 +21,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { provisionSite } from './provision.mjs';
 import { SITE_NAME_RE, isCallerReservedName, genSecret } from './shared.mjs';
-import { bDosqlBindings, bDosqlSecrets, bDosqlResourceCreateOps, aBindings, mediaBucketName, ocKvNamespaceName, analyticsDatasetName, pageCacheInputs, pageCacheProductTtl } from './wp-site-config.mjs';
+import { bDosqlBindings, bDosqlSecrets, bDosqlResourceCreateOps, aBindings, mediaBucketName, ocKvNamespaceName, analyticsDatasetName, pageCacheInputs, pageCacheProductTtl, objectTimeInputs } from './wp-site-config.mjs';
 import { addCustomHostname, getCustomHostnameStatus } from './ops.mjs';
 import { updateSite, readSite } from './registry.mjs';
 
@@ -196,6 +196,7 @@ function bDosqlEnabledIntegrations(env) {
 async function buildCfg(parsed, env) {
   // #706: refuse a bad TTL or a bad WOO_ACTIVE before the bundle is read.
   pageCacheProductTtl(pageCacheInputs(env));
+  objectTimeInputs(env); // #715 review3 6: refused here too, before the bundle is read
   const { kind, name } = parsed;
   const namespace = env.WFP_NAMESPACE || 'wp-wfp';
   const kvId = env.WFP_KV_ID;
@@ -231,6 +232,7 @@ async function buildCfg(parsed, env) {
       analyticsDataset: analyticsDatasetName(name),
       enable: bDosqlEnabledIntegrations(env),
       ...pageCacheInputs(env),
+      ...objectTimeInputs(env),
     };
     return {
       ...common, kind: 'wp', mainModule: env.WP_MAIN || 'index.js',
@@ -281,6 +283,7 @@ async function buildCfg(parsed, env) {
         mailFromName: env.WP_MAIL_FROM_NAME,
         extra: JSON.parse(env.WP_BINDINGS || '[]'),
         ...pageCacheInputs(env),
+        ...objectTimeInputs(env),
       }),
       // Approach A runs PHP in the WORKER: NO Durable Object, so NO SQLite
       // migration (an empty class list leaves the migration unset in ops).
