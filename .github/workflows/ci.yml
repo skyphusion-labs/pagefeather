@@ -237,6 +237,8 @@ jobs:
         run: python3 tests/load/admin-stub-test.py
       - name: load test splits the cache mix by page class, home, shop and product (#628 C2)
         run: python3 -I tests/load/cache-by-page-test.py
+      - name: load test prints its run markers, so a count window never mixes the checkouts and the CLEANUP (#704)
+        run: python3 -I tests/load/cleanup-marker-test.py
       - name: load test classes a plain post as post and a Woo product as product (#691)
         run: python3 -I tests/load/page-class-test.py
       - name: load test skips stock-managed products and keeps each non-2xx Store API code, never a body (#296)
