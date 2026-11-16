@@ -60,14 +60,15 @@ jobs:
           if ! tests/frames-e2e.sh; then
             echo "::error::frames-e2e.sh failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1
           fi
-      - name: The #598 stacking, characterized (issue #598)
+      - name: The #598 stacking, characterized, non-gating (issue #598)
         # tests/recycle-stack-e2e.sh on workerd, dosql-local: a forced recycle of post-new.php, then an admin request at
-        # once. Today it boots beside the retired runtime (the ledger: memLive 2 or more). This asserts that it does,
-        # so it fails, and must be flipped, the day the memory reuse of #603 lands.
+        # once, and the ledger it reports (memLive, retiredMem). Not a gate on the stacking: whether V8 has collected
+        # the retired memory yet is not ours to assert. It fails only when the ledger cannot be read. #603 makes it a
+        # gate (memLive 1 with the memory reuse on).
         working-directory: spikes/b2-wordpress
         run: |
           if ! tests/recycle-stack-e2e.sh; then
-            echo "::error::recycle-stack-e2e.sh: the #598 stacking was not characterized; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1
+            echo "::error::recycle-stack-e2e.sh could not read the ledger; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1
           fi
       - name: ALL OPcache files as remote packs, end to end on workerd (issue #563, OPCACHE_REMOTE, no split)
         # On the primed build above: the trace, opcache-remote.py, then tests/remote-e2e.sh runs the

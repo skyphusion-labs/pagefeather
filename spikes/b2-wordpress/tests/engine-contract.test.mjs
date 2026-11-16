@@ -12,7 +12,7 @@ import { checks, engine, engineUnderTest, upstreamRaw } from './engine-contract.
 
 const target = engineUnderTest();
 const raw = upstreamRaw(target.expect);
-const NO_PATCH = new Set(['opcache: a script too big for shared memory takes the file-cache fallback', 'opcache: the inheritance cache links classes across cached files', 'extensions: exactly the expected list', 'allocator: USE_ZEND_ALLOC=0 is honoured', 'exports: the request entry points are promising', 'link: dylink section and export count as expected', 'fibers: start() does not abort the runtime', 'memory: without reuse the loader counts and checks nothing per call']);
+const NO_PATCH = new Set(['opcache: a script too big for shared memory takes the file-cache fallback', 'opcache: the inheritance cache links classes across cached files', 'extensions: exactly the expected list', 'allocator: USE_ZEND_ALLOC=0 is honoured', 'exports: the request entry points are promising', 'link: dylink section and export count as expected', 'fibers: start() does not abort the runtime']);
 
 for (const [name, check] of Object.entries(checks)) {
 	test('holds on ' + target.name + ': ' + name, async () => { await check(target); });
@@ -24,12 +24,6 @@ for (const [name, check] of Object.entries(checks)) {
 		await assert.rejects(async () => check(raw), assert.AssertionError);
 	});
 }
-
-test('goes red on a mutation: without reuse (the reuse guards installed unconditionally)', async () => {
-	const js = target.js.split("Module['pagefeatherReuse']").join('true');
-	assert.notEqual(js, target.js, 'the loader names the reuse option');
-	await assert.rejects(async () => checks['memory: without reuse the loader counts and checks nothing per call']({ ...target, js, loaderFile: null }), assert.AssertionError);
-});
 
 test('goes red on a mutation: extensions (one extension missing from the expectation)', async () => {
 	const exp = { ...target.expect, extensions: target.expect.extensions.filter((x) => x !== 'pdo_sqlite') };

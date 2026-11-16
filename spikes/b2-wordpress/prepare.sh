@@ -10,51 +10,6 @@ cd "$(dirname "$0")"
 src=${PF_ENGINE_JS:-node_modules/@php-wasm/web-8-3/jspi/php_8_3.js}
 mkdir -p vendor
 { echo "const dependencyFilename = 'php_8_3.wasm';"; tail -n +3 "$src"; } > vendor/php_8_3.js
-# #598 / #603: the wasm imports its memory (below). The loader satisfies env.memory with Module.pagefeatherMemory
-# when a caller hands one in, else a NEW memory of the limits the module had (384 pages, 32768 at most): with
-# none handed in, the same memory as before, built by the loader instead of by the module.
-# The reuse guards are installed only with Module.pagefeatherReuse (a reuse runtime, #603; nothing sets it yet).
-# The loader reads it ONCE, when it builds each wrapper (at instantiation), and callUserCallback reads a boolean
-# fixed at init: without it every wrapper is the upstream code and nothing is counted or checked per call. With
-# it: the promising calls are counted at the wasm boundary (Module.pfInFlight; JSPI can suspend only inside one),
-# Module.pfOnIdle runs when the count returns to 0, and a retired runtime (Module.pfDead) is refused by every door
-# (each export wrapper, each promising entry, callUserCallback: the timers and the sleep wake) once nothing of it
-# is in flight. While a call is in flight every door stays open, so that call can finish.
-python3 - <<'PYMEM'
-p = 'vendor/php_8_3.js'; s = open(p).read()
-old = "\tfunction getWasmImports() {\n"
-assert s.count(old) == 1, 'getWasmImports not found'
-s = s.replace(old, old + "\t\t// Pagefeather (#598): the module imports its memory: one handed in, or a new one of the module's own limits.\n"
-    "\t\twasmImports['memory'] = Module['pagefeatherMemory'] || new WebAssembly.Memory({ initial: 384, maximum: 32768 });\n"
-    "\t\tModule['pagefeatherMemory'] = null;\n")
-old = "\t\tmakeAsyncFunction(original) {\n\t\t\treturn WebAssembly.promising(original);\n\t\t},\n"
-assert s.count(old) == 1, 'makeAsyncFunction not found'
-s = s.replace(old, "\t\tmakeAsyncFunction(original) {\n"
-    "\t\t\tvar pfPromising = WebAssembly.promising(original);\n"
-    "\t\t\t// Pagefeather (#603): the upstream wrapper unless this is a reuse runtime (decided here, once per wrapper).\n"
-    "\t\t\tif (!Module['pagefeatherReuse']) return pfPromising;\n"
-    "\t\t\treturn (...args) => {\n"
-    "\t\t\t\tif (Module['pfDead'] && !(Module['pfInFlight'] > 0)) throw new Error('pagefeather: this PHP runtime is retired');\n"
-    "\t\t\t\tModule['pfInFlight'] = (Module['pfInFlight'] || 0) + 1;\n"
-    "\t\t\t\tlet r;\n"
-    "\t\t\t\ttry {\n\t\t\t\t\tr = pfPromising(...args);\n\t\t\t\t} catch (e) {\n\t\t\t\t\tif (--Module['pfInFlight'] === 0 && Module['pfOnIdle']) Module['pfOnIdle']();\n\t\t\t\t\tthrow e;\n\t\t\t\t}\n"
-    "\t\t\t\treturn r.finally(() => {\n\t\t\t\t\tif (--Module['pfInFlight'] === 0 && Module['pfOnIdle']) Module['pfOnIdle']();\n\t\t\t\t});\n"
-    "\t\t\t};\n\t\t},\n")
-old = "\t\tinstrumentFunction(original) {\n\t\t\tvar wrapper = (...args) => original(...args);\n"
-assert s.count(old) == 1, 'instrumentFunction not found'
-s = s.replace(old, "\t\tinstrumentFunction(original) {\n"
-    "\t\t\t// Pagefeather (#603): the upstream wrapper unless this is a reuse runtime (decided here, once per wrapper).\n"
-    "\t\t\tvar wrapper = !Module['pagefeatherReuse'] ? (...args) => original(...args) : (...args) => {\n"
-    "\t\t\t\tif (Module['pfDead'] && !(Module['pfInFlight'] > 0)) throw new Error('pagefeather: this PHP runtime is retired');\n"
-    "\t\t\t\treturn original(...args);\n\t\t\t};\n")
-old = "\tvar callUserCallback = (func) => {\n\t\tif (runtimeExited || ABORT) {\n"
-assert s.count(old) == 1, 'callUserCallback not found'
-s = s.replace(old, "\t// Pagefeather (#603): fixed at init; false (the upstream check) unless this is a reuse runtime.\n"
-    "\tvar pfReuse = !!Module['pagefeatherReuse'];\n"
-    "\tvar callUserCallback = (func) => {\n\t\tif (runtimeExited || ABORT || (pfReuse && Module['pfDead'] && !(Module['pfInFlight'] > 0))) {\n")
-open(p, 'w').write(s)
-print('loader: env.memory imported (one handed in, or a new one); the reuse guards only with Module.pagefeatherReuse')
-PYMEM
 head -1 vendor/php_8_3.js
 
 # A Worker does not advance Date.now() while code runs (the clock moves only at
@@ -299,29 +254,53 @@ while i < len(b):
 mem = [p for sid, p in secs if sid == 5]
 imp = [p for sid, p in secs if sid == 2]
 assert len(imp) == 1, 'no import section'
-ENTRY = enc(3) + b'env' + enc(6) + b'memory' + bytes([0x02, 0x01]) + enc(384) + enc(32768)
-# Idempotent (#598): a module this transform already made (no memory section, its import list ending in exactly
-# that env.memory entry) passes through untouched. Anything else without a memory section is refused.
-done_mem = not mem and imp[0].endswith(ENTRY)
-assert done_mem or len(mem) == 1, 'memory section not found, and the module does not import env.memory as this transform makes it'
+# The ONE source of the memory limits (#705 review, finding 6): the start is START_PAGES (policy, above); the maximum
+# is the module's own. Both go into the import entry here, and into the loader below, so the JS can never ask for a
+# memory the import does not accept (a LinkError).
+START_PAGES = 384
+def import_entries(payload):
+    # [(module, field, kind, limits or None, start, end)] for the import section payload
+    cnt, k = leb(payload, 0); out = []
+    for _ in range(cnt):
+        st = k
+        ml, k = leb(payload, k); mod = payload[k:k + ml].decode(); k += ml
+        fl, k = leb(payload, k); fld = payload[k:k + fl].decode(); k += fl
+        kind = payload[k]; k += 1; lim = None
+        if kind == 0: _, k = leb(payload, k)
+        elif kind == 1: k += 1; f = payload[k]; k += 1; _, k = leb(payload, k); k = leb(payload, k)[1] if f & 1 else k
+        elif kind == 2:
+            f = payload[k]; k += 1; mn, k = leb(payload, k); mx = None
+            if f & 1: mx, k = leb(payload, k)
+            lim = (f, mn, mx)
+        elif kind == 3: k += 2
+        elif kind == 4: k += 1; _, k = leb(payload, k)
+        else: raise SystemExit('import kind %d' % kind)
+        out.append((mod, fld, kind, lim, st, k))
+    return out
+entries = import_entries(imp[0])
+mem_imports = [e for e in entries if e[2] == 2]
+# Idempotent (#598): a module this transform already made (no memory section, an env.memory import with a maximum)
+# passes through untouched, its limits read from that import. Anything else without a memory section is refused.
+done_mem = not mem and len(mem_imports) == 1 and mem_imports[0][:2] == ('env', 'memory') and mem_imports[0][3][0] == 1
+assert done_mem or (len(mem) == 1 and not mem_imports), 'memory section not found, and the module does not import env.memory as this transform makes it'
 if done_mem:
-    PAGES_MAX = 32768
+    _, PAGES0, PAGES_MAX = mem_imports[0][3]
 else:
-  n, j = leb(mem[0], 0); flags = mem[0][j]; j += 1
-  initial, j = leb(mem[0], j); maximum, j = leb(mem[0], j) if flags & 1 else (None, j)
-  assert n == 1 and flags == 1 and initial == 1024 and maximum == 32768, (n, flags, initial, maximum)
-  PAGES0, PAGES_MAX = 384, maximum
-  assert (PAGES0, PAGES_MAX) == (384, 32768), (PAGES0, PAGES_MAX)  # the limits ENTRY encodes
-  cnt, j = leb(imp[0], 0)
-  new_imp = enc(cnt + 1) + imp[0][j:] + ENTRY
-  out = bytearray(b[:8])
-  for sid, p in secs:
-      if sid == 5:
-          continue
-      if sid == 2:
-          p = new_imp
-      out += bytes([sid]) + enc(len(p)) + p
-  b = out
+    n, j = leb(mem[0], 0); flags = mem[0][j]; j += 1
+    initial, j = leb(mem[0], j); maximum, j = leb(mem[0], j) if flags & 1 else (None, j)
+    assert n == 1 and flags == 1 and maximum is not None and initial >= START_PAGES, (n, flags, initial, maximum)
+    PAGES0, PAGES_MAX = START_PAGES, maximum
+    entry = enc(3) + b'env' + enc(6) + b'memory' + bytes([0x02, 0x01]) + enc(PAGES0) + enc(PAGES_MAX)
+    cnt, j = leb(imp[0], 0)
+    new_imp = enc(cnt + 1) + imp[0][j:] + entry
+    out = bytearray(b[:8])
+    for sid, p_ in secs:
+        if sid == 5:
+            continue
+        if sid == 2:
+            p_ = new_imp
+        out += bytes([sid]) + enc(len(p_)) + p_
+    b = out
 # OPcache runs only under the SAPIs in its own list (Apache, FPM, FastCGI,
 # FrankenPHP, LiteSpeed, uWSGI). php-wasm's SAPI is "wasm", so OPcache was off
 # (measured 2026-11-04: opcache_compile_file() returned false). Change the
@@ -335,5 +314,13 @@ if not done_sapi:
     i = b.find(old)
     b[i + 1:i + 6] = b'wasm\x00'
 open(dst, 'wb').write(b)
-print('%s initial memory: 1024 -> 384 pages, imported (env.memory, max %d pages); OPcache SAPI list: frankenphp -> wasm%s' % ('kept (already transformed)' if done_mem else 'patched', PAGES_MAX, ' (kept)' if done_sapi else ''))
+# The loader satisfies env.memory with a NEW memory of exactly those limits: what the module had, built by the
+# loader instead of by the module (#598). The literal is written from PAGES0 and PAGES_MAX, never typed twice.
+jp = 'vendor/php_8_3.js'; js = open(jp).read()
+old = "\tfunction getWasmImports() {\n"
+assert js.count(old) == 1, 'getWasmImports not found'
+js = js.replace(old, old + "\t\t// Pagefeather (#598): the module imports its memory; a new one of the module's own limits (prepare.sh).\n"
+    "\t\twasmImports['memory'] = new WebAssembly.Memory({ initial: %d, maximum: %d });\n" % (PAGES0, PAGES_MAX))
+open(jp, 'w').write(js)
+print('%s initial memory: %d pages, imported (env.memory, max %d pages; the loader builds it); OPcache SAPI list: frankenphp -> wasm%s' % ('kept (already transformed)' if done_mem else 'patched', PAGES0, PAGES_MAX, ' (kept)' if done_sapi else ''))
 PY

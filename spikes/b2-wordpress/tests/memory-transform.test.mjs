@@ -14,9 +14,11 @@ const PRIV = createRequire(join(B2, 'package.json'))('@php-wasm/universal').__pr
 // section order (after the table section, before tag/global/export). Same build, same other imports.
 function untransform(bytes) {
 	const b = Buffer.from(bytes);
+	const lim = memoryShape(b).imported; // the limits come from the module, never typed here (#705 review, finding 6)
+	assert.ok(lim && lim.max != null, 'the module does not import a bounded memory');
 	const leb = (i) => { let r = 0, s = 0, x; do { x = b[i++]; r += (x & 0x7f) * 2 ** s; s += 7; } while (x & 0x80); return [r, i]; };
 	const enc = (n) => { const o = []; do { let x = n & 0x7f; n = Math.floor(n / 128); o.push(x | (n ? 0x80 : 0)); } while (n); return Buffer.from(o); };
-	const entry = Buffer.concat([enc(3), Buffer.from('env'), enc(6), Buffer.from('memory'), Buffer.from([0x02, 0x01]), enc(384), enc(32768)]);
+	const entry = Buffer.concat([enc(3), Buffer.from('env'), enc(6), Buffer.from('memory'), Buffer.from([0x02, 0x01]), enc(lim.min), enc(lim.max)]);
 	const secs = [];
 	for (let i = 8; i < b.length;) { const id = b[i]; const [size, j] = leb(i + 1); secs.push([id, b.subarray(j, j + size)]); i = j + size; }
 	const out = [b.subarray(0, 8)];
@@ -33,13 +35,13 @@ function untransform(bytes) {
 			q = Buffer.concat([enc(r - 1), p.subarray(i, p.length - entry.length)]);
 		}
 		out.push(Buffer.from([id]), enc(q.length), q);
-		if (k === lastPre) { const m = Buffer.concat([enc(1), Buffer.from([0x01]), enc(384), enc(32768)]); out.push(Buffer.from([5]), enc(m.length), m); }
+		if (k === lastPre) { const m = Buffer.concat([enc(1), Buffer.from([0x01]), enc(lim.min), enc(lim.max)]); out.push(Buffer.from([5]), enc(m.length), m); }
 	});
 	return Buffer.concat(out);
 }
 
-async function answers(e, opts) {
-	const { php, exports } = await boot(e, opts);
+async function answers(e) {
+	const { php, exports } = await boot(e);
 	const out = (await php.run({ code: '<?php $a = str_repeat("r", 8 * 1048576); echo "ok ", strlen($a);' })).text;
 	return { out, buffer: php[PRIV].HEAPU8.buffer, memory: exports.memory };
 }
@@ -47,7 +49,7 @@ async function answers(e, opts) {
 test('each boot of the transformed engine gets a NEW memory of the module limits', async () => {
 	const e = engineUnderTest();
 	const m = memoryShape(e.bytes);
-	assert.deepEqual([m.defined, m.imported && m.imported.min, m.imported && m.imported.max], [null, 384, 32768]);
+	assert.deepEqual([m.defined, m.imported && m.imported.min], [null, e.expect.initialPages]);
 	const a = await answers(e), b = await answers(e);
 	assert.equal(a.out, 'ok 8388608');
 	assert.equal(b.out, 'ok 8388608');
@@ -55,16 +57,15 @@ test('each boot of the transformed engine gets a NEW memory of the module limits
 	assert.equal(a.memory.buffer, a.buffer, 'the runtime does not use the memory it imported');
 });
 
-// The mismatched build: this loader (it would hand a memory in) with the same engine's wasm made BEFORE the
-// transform (it defines its own memory). It must keep working and ignore what it is handed: fail safe, no crash.
-test('a pre-transform wasm under this loader keeps working and ignores a memory handed to it', async () => {
+// The mismatched build: this loader (it builds an env.memory) with the same engine's wasm made BEFORE the transform
+// (it defines its own memory). It must keep working, on its own memory: fail safe, no crash.
+test('a pre-transform wasm under this loader keeps working on its own memory', async () => {
 	const t = engineUnderTest();
 	const pre = untransform(t.bytes);
 	const m = memoryShape(pre);
-	assert.deepEqual([m.defined && m.defined.min, m.imported], [384, null], 'the untransformed wasm does not define its memory');
+	assert.deepEqual([m.defined && m.defined.min, m.imported], [t.expect.initialPages, null], 'the untransformed wasm does not define its memory');
 	const e = { ...t, name: 'mismatch: this loader, pre-transform wasm', bytes: pre, module: new WebAssembly.Module(pre), loaderFile: null };
-	const handed = new WebAssembly.Memory({ initial: 384, maximum: 32768 });
-	const r = await answers(e, { memory: handed });
+	const r = await answers(e);
 	assert.equal(r.out, 'ok 8388608');
-	assert.notEqual(r.buffer, handed.buffer, 'a pre-transform wasm used a memory it does not import');
+	assert.equal(r.memory.buffer, r.buffer, 'the pre-transform runtime is not on its own memory');
 });

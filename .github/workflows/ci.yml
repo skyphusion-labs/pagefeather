@@ -526,7 +526,7 @@ jobs:
         run: node --test tests/engine-contract.test.mjs
       - name: The memory transform with no reuse, a pre-transform build fails safe, the ledger counts memories once (issue #598)
         # memory-transform: each boot of the transformed engine gets a new memory of the module limits, and the same
-        # engine built BEFORE the transform still runs under this loader and ignores a memory handed to it.
+        # engine built BEFORE the transform still runs under this loader, on its own memory.
         # mem-ledger-identity: one memory under two runtimes is one live memory, collected once. prepare-idempotent:
         # the transform run twice gives the same bytes, a transformed wasm passes through, a memoryless one is refused.
         working-directory: spikes/b2-wordpress
