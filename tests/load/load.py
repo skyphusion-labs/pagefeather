@@ -457,12 +457,22 @@ if __name__ == "__main__":
             sys.exit("CLEANUP: admin login failed before the run; nothing was run")
         before = stock_of(ca, [p["id"] for p in prods if "id" in p])
     allsteps = []
+    # #704: the run's edges, as structured lines with the UTC time, so a count window (Workers Logs) can
+    # hold the checkouts or the CLEANUP, never both. The first #704 window held both, and the cleanup's
+    # order deletions (one purge each) read as "one purge per checkout".
+    def mark(name):
+        t = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        print(json.dumps({"@event": name, "t": t}), flush=True)
+        return t
+    mark("steps-start")
     for n in LEVELS:
         s = step(n, prods)
         allsteps.append(s)
         print(json.dumps(s), flush=True)
     summary = {"target": B, "woo": WOO, "load_mode": LOAD_MODE, "levels": LEVELS, "seconds_per_level": SECONDS, "buyers": BUYERS, "admins": ADMINS, "steps": allsteps}
     if CLEANUP:
+        c0 = mark("cleanup-start")
         ca = admin_login()
         summary["cleanup"] = cleanup(ca, before) if ca is not None else {"error": "admin login failed after the run: clean up by hand", "orders_made": len(ORDERS), "runtag": RUNTAG}
+        summary["cleanup_window"] = [c0, mark("cleanup-end")]
     print(json.dumps(summary))
