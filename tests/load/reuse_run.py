@@ -2,11 +2,16 @@
 """The #724 live run (#598): PHP_MEMORY_REUSE and BOOT_GATE on against off, one arm per invocation.
 
   B=https://<site> ADMIN_PASSWORD=... SPIKE_TOKEN=... ARM=npm-on OUT=runs/npm-on.jsonl \\
-    python3 -I tests/load/reuse_run.py [repro|burst|quiet|all]
+    python3 -I tests/load/reuse_run.py [check|repro|burst|quiet|all]
 
 The spec, with the bar pinned before the data: #598 issuecomment-6910964924, plus the #605 reading
 (#598 issuecomment-6912013983). The bar is scored by tests/load/reuse_score.py from the files this writes.
-Run from a Vultr VPS, never a laptop. Steps (all = the three in order, the default):
+Run from a Vultr VPS, never a laptop. Steps (all = repro, burst, quiet in order, the default):
+  check  BEFORE the fixture load: is the live site the arm it claims? GET /_build (the build id: -wooprimed,
+         and -e<8 hex> exactly when the engine is lean) and one ledgered front page (no login, so the repro's
+         first admin login stays first): x-perf mem.memReuse.on. EXPECT_ENGINE=npm|lean and EXPECT_REUSE=on|off,
+         and EXPECT_BUILD (optional) a part the build id must hold (the sha, the -e tag); exit 1 on a mismatch,
+         so the arm never runs on the wrong build.
   repro  the 16:54Z repro: run it AT ONCE after tests/fixtures/load-sample-store.sh loads the site. The first
          admin login, then the first admin screens (dashboard, post-new.php, edit.php).
   burst  the 4-editor burst: EDITORS logged-in editors in parallel (separate sessions of the admin user), each
@@ -43,8 +48,8 @@ GUEST_RPS = float(os.environ.get("GUEST_RPS", "1"))
 QUIET_S = float(os.environ.get("QUIET_S", "300"))
 TIMEOUT = float(os.environ.get("TIMEOUT", "300"))
 STEP = sys.argv[1] if len(sys.argv) > 1 else "all"
-if STEP not in ("repro", "burst", "quiet", "all"):
-    sys.exit("reuse-run: the step is repro, burst, quiet or all")
+if STEP not in ("check", "repro", "burst", "quiet", "all"):
+    sys.exit("reuse-run: the step is check, repro, burst, quiet or all")
 RUN = ARM + "-" + uuid.uuid4().hex[:6]
 KEEP = ("x-runtime-recycled", "x-runtime-wait", "x-runtime-wait-decision", "x-runtime-wait-mib", "x-isolate-reset",
         "x-write-loss", "x-object-deadline", "x-wasm-mib", "x-boot", "retry-after")
@@ -227,8 +232,41 @@ def step_quiet():
     admin(o, "quiet", "e0", "after-gap", "/wp-admin/post-new.php")
 
 
+def step_check():
+    want_e, want_r = os.environ.get("EXPECT_ENGINE"), os.environ.get("EXPECT_REUSE")
+    if want_e not in ("npm", "lean") or want_r not in ("on", "off"):
+        sys.exit("reuse-run: check needs EXPECT_ENGINE=npm|lean and EXPECT_REUSE=on|off")
+    o = BL.opener()
+    r = BL.req(o, "/_build", timeout=TIMEOUT)
+    try:
+        build = json.loads(r["body"]).get("build", "") if r["code"] == 200 else ""
+    except ValueError:
+        build = ""
+    r2 = BL.req(o, "/", headers={"x-mem-ledger": "1", "x-perf-id": pid()}, timeout=TIMEOUT)
+    pf = perf_fields(r2.get("h") or {})
+    reuse_on = (pf.get("memReuse") or {}).get("on")
+    lean = bool(re.search(r"-e[0-9a-f]{8}", build))
+    bad = []
+    if not build:
+        bad.append("no build id (/_build answered %s)" % r["code"])
+    if "-wooprimed" not in build:
+        bad.append("the build is not WooCommerce primed")
+    if lean != (want_e == "lean"):
+        bad.append("engine: build %s is %s, want %s" % (build, "lean" if lean else "npm", want_e))
+    if os.environ.get("EXPECT_BUILD") and os.environ["EXPECT_BUILD"] not in build:
+        bad.append("build %s does not hold %s" % (build, os.environ["EXPECT_BUILD"]))
+    if reuse_on is None:
+        bad.append("no ledger on x-perf (front page answered %s)" % r2["code"])
+    elif bool(reuse_on) != (want_r == "on"):
+        bad.append("PHP_MEMORY_REUSE: live %s, want %s" % ("on" if reuse_on else "off", want_r))
+    emit(kind="check", build=build, engine="lean" if lean else "npm", reuseOn=reuse_on, ok=not bad, bad=bad)
+    print("reuse-run: check %s: build %s, engine %s, memReuse.on %s" % ("ok" if not bad else "FAIL: " + "; ".join(bad), build, "lean" if lean else "npm", reuse_on))
+    if bad:
+        sys.exit(1)
+
+
 emit(kind="run-start", step=STEP, b=B, editors=EDITORS, windowReqs=WINDOW_REQS, windows=WINDOWS, guestRps=GUEST_RPS, quietS=QUIET_S)
 for s in (("repro", "burst", "quiet") if STEP == "all" else (STEP,)):
-    {"repro": step_repro, "burst": step_burst, "quiet": step_quiet}[s]()
+    {"check": step_check, "repro": step_repro, "burst": step_burst, "quiet": step_quiet}[s]()
 emit(kind="run-end", step=STEP)
 print("reuse-run: %s done, %d requests, %s" % (RUN, N[0], os.environ["OUT"]))

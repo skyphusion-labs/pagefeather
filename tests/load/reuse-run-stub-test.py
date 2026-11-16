@@ -16,7 +16,8 @@ off vs on: no bar but 5 FAILS, and 5 is measured (its stub p95s are a few ms, no
 not measure (no logs to excuse the stacked reading), bars 2, 4 and 5 FAIL, and it lists the slow request in the #605 table with its deadline header. Then the same with Workers Logs in the wexport.py
 shape: bar 2 is measured, a named refused offer excuses the stacked reading (bar 1 passes), an exceededMemory
 invocation fails bar 2, and the slow row joins its front Worker and object lines by x-perf-id and the dispatcher
-by path and time. Exit 0 when all pass.
+by path and time. The check step: passes the arm it is, refuses a wrong engine and a wrong reuse setting, and
+logs nobody in. Exit 0 when all pass.
 """
 import json, os, subprocess, sys, tempfile, threading, urllib.parse
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -76,6 +77,10 @@ class H(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path); q = urllib.parse.parse_qs(u.query)
         if u.path == "/wp-login.php":
             return self.send(200, b"<form>")
+        if u.path == "/_build":
+            return self.send(200, {"build": "abcdef012345-wooprimed" + ("-e1234abcd" if S["mode"] == "on" else "")})
+        if u.path == "/" and self.headers.get("x-mem-ledger") == "1":
+            return self.send(200, b"<html>", {"x-perf": json.dumps({"mem": {"memReuse": {"on": S["mode"] != "off"}}})})
         if u.path == "/wp-admin/admin-ajax.php":
             return self.send(200, b"0123456789")
         if u.path.startswith("/wp-admin/"):
@@ -98,6 +103,8 @@ class H(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path); q = urllib.parse.parse_qs(u.query)
         body = self.rfile.read(int(self.headers.get("content-length") or 0))
         if u.path == "/wp-login.php":
+            with lock:
+                S["logins"] = S.get("logins", 0) + 1
             return self.send(302, b"", {"Location": "/wp-admin/", "Set-Cookie": "wordpress_logged_in_x=1; Path=/"})
         if q.get("rest_route", [""])[0] == "/wp/v2/posts":
             c, h = self.admin_headers()
@@ -206,6 +213,26 @@ row = next((l for l in b2.stdout.splitlines() if l.startswith("| " + slow["perfI
 ok("the slow row joins the site lines by x-perf-id across both rids", "'object-deadline': 1" in row and "'perf': 1" in row and "('exceededMemory', 400)" in row and "('ok', 90012)" in row, row)
 ok("the slow row joins the dispatcher invocation by path and time", "ok 503 90100" in row, row)
 ok("a log file instead of a directory is refused, loudly", subprocess.run([sys.executable, "-I", SCORE, files["off"], files["on"], "--logs-on", files["on"]], capture_output=True, text=True).returncode == 3)
+def check(mode, eng, reuse, build=""):
+    reset(mode)
+    f = os.path.join(tmp, "check.jsonl")
+    env = dict(os.environ, B=B, ADMIN_PASSWORD="pw", SPIKE_TOKEN="tok", ARM="stub-check", OUT=f, EXPECT_ENGINE=eng, EXPECT_REUSE=reuse, EXPECT_BUILD=build)
+    r = subprocess.run([sys.executable, "-I", RUN, "check"], env=env, capture_output=True, text=True, timeout=120)
+    os.remove(f)
+    return r.returncode, r.stdout + r.stderr, S.get("logins", 0)
+
+
+c, t, n = check("on", "lean", "on")
+ok("check passes the arm it is (stub on: lean, reuse on)", c == 0, t[-200:])
+ok("check logs nobody in (the repro's first login stays first)", n == 0, "%d logins" % n)
+c, t, n = check("on", "npm", "on")
+ok("check refuses the wrong engine", c == 1 and "engine:" in t, t[-200:])
+c, t, n = check("on", "lean", "on", "-e1234abcd")
+ok("check passes the expected build part", c == 0, t[-200:])
+c, t, n = check("on", "lean", "on", "-e187d5fa1")
+ok("check refuses another build", c == 1 and "does not hold -e187d5fa1" in t, t[-200:])
+c, t, n = check("off", "npm", "on")
+ok("check refuses reuse off where on is wanted", c == 1 and "PHP_MEMORY_REUSE: live off" in t, t[-200:])
 srv.shutdown()
 import shutil
 shutil.rmtree(tmp)
