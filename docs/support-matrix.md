@@ -2,7 +2,7 @@
 
 This page says what works on each tier and each deploy path, what is limited, and why. Conrad asked for it in #759: "document things that are limited and why".
 
-**State on 2026-11-16, main `345cef4`.** The conformance runs of #759 will fill in the cells that say "not measured". They run the upstream WordPress, WooCommerce and Gutenberg suites, plus a stock baseline (`tests/conformance/`).
+**State on 2026-11-16, main `2357f6a`.** The conformance runs of #759 will fill in the cells that say "not measured". They run the upstream WordPress, WooCommerce and Gutenberg suites, plus a stock baseline (`tests/conformance/`).
 
 ## How to read a cell
 
@@ -30,16 +30,17 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 
 | feature | Free DO | Paid DO | WfP | Hyperdrive |
 |---|---|---|---|---|
-| Install, pages, login, dashboard | yes (#638) | yes ([results.md](results.md) 2026-11-07, `cochk4`); limited: the first page after a fresh install (#756) | limited: the first page after a fresh install (#756) | yes ([results.md](results.md) 2026-11-05, `e2e.sh` 17 of 17) |
-| The block editor | yes, plain WordPress (#638); limited on a store (#638) | limited: memory ceiling (#768) | limited: memory ceiling (#768) | not measured |
-| REST API | limited: fresh installs (#760) | limited: fresh installs (#760) | limited: fresh installs (#760) | not measured |
+| Install, pages, login, dashboard | yes (#638) | yes ([results.md](results.md) 2026-11-07, `cochk4`); the first page after a fresh install: fixed in #790 (merged 2026-11-16), measured on `deploy/wfp` only | yes: the first page after a fresh install is fixed in #790 (merged 2026-11-16; 0 of 3 died, [756b](https://github.com/skyphusion-labs/pagefeather/issues/756#issuecomment-6921835983)); code-only updates: yes (756a) | yes ([results.md](results.md) 2026-11-05, `e2e.sh` 17 of 17) |
+| The block editor | yes, plain WordPress (#638); limited on a store (#638); the icon library: fixed in #778 (merged 2026-11-16); not yet measured live | limited: memory ceiling (#768); the icon library: fixed in #778 (merged 2026-11-16); not yet measured live | limited: memory ceiling (#768); the icon library: fixed in #778 (merged 2026-11-16); not yet measured live | not measured |
+| REST API | `/wp-json/` on fresh installs: fixed in #773 (merged 2026-11-16); not yet measured live; `/wp/v2/icons`: fixed in #778 (merged 2026-11-16); not yet measured live | the same | the same | not measured |
 | Application passwords and HTTP Basic | yes in code (#762); live run pending | yes in code (#762); live run pending | yes in code (#762); live run pending | not measured |
-| Permalinks | limited: plain on a fresh install (#760), soft 404 (#772) | limited: (#760), (#772) | limited: (#760), (#772) | not measured |
+| Permalinks | fresh installs get pretty permalinks: fixed in #773 (merged 2026-11-16); not yet measured live; limited: a soft 404 under a plain structure the owner chose (#772) | the same | the same | not measured |
 | Cron | not measured | not measured | not measured | not measured |
 | Mail | not measured | not measured | not measured | not measured |
 | Media uploads | not measured | yes without WooCommerce ([results.md](results.md) 2026-11-07 and 11-08: R2 and Cloudflare Images); with WooCommerce not measured | not measured | not measured |
-| Search | not measured; semantic search limited (opt-in, plugin change) | the same | the same | not measured |
+| Search | not measured; semantic search limited (opt-in, plugin change); limited: a very long search term fails on SQLite (#805) | the same | the same | not measured; not affected by #805 (MySQL) |
 | Comments | not measured | not measured | not measured | not measured |
+| Site Health | limited: directory sizes answer 500 (#780) | limited: directory sizes answer 500 (#780) | limited: directory sizes answer 500 (#780) | not measured |
 | Multisite | not measured | not measured | not measured | not measured |
 | Installing plugins and themes from wp-admin | no, by design ([why](#plugins-and-themes-are-not-installed-from-wp-admin-by-design)) | no, by design | no, by design | no, by design |
 
@@ -47,35 +48,36 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 
 | feature | Free DO | Paid DO | WfP | Hyperdrive |
 |---|---|---|---|---|
-| Catalog: shop and product pages | yes (#638); limited: false 404 (#766; fix in PR #770, open) | yes ([results.md](results.md) 2026-11-07, `cochk4`); limited: false 404 (#766; fix in PR #770, open) | limited: false 404 (#766; fix in PR #770, open); stock on cached pages (#628) | yes ([results.md](results.md) 2026-11-09, `wp-a-lean` 12 of 12) |
+| Catalog: shop and product pages | yes (#638); the false 404 (#766): fixed in #770 (merged 2026-11-16); not yet measured live | yes ([results.md](results.md) 2026-11-07, `cochk4`); the false 404 (#766): fixed in #770 (merged 2026-11-16); not yet measured live | the false 404 (#766): fixed in #770 (merged 2026-11-16); not yet measured live | yes ([results.md](results.md) 2026-11-09, `wp-a-lean` 12 of 12) |
 | Cart and checkout | yes (#638) | yes ([results.md](results.md) 2026-11-08, `woocap`; the flaky failure fixed in #208) | yes (#704, `pf704`: `load.py` checkouts placed orders) | yes ([results.md](results.md) 2026-11-09, three runs of 12 of 12) |
 | Editing the store in wp-admin | no: memory (#638) | not measured | not measured | not measured |
 | Payments | not measured | cash on delivery: yes ([results.md](results.md) 2026-11-07, `cochk4`); other gateways not measured | not measured | not measured |
 | Orders and HPOS | not measured | orders placed: yes (checkout rows above); HPOS not measured | the same | orders screen: yes ([results.md](results.md) 2026-11-09); HPOS not measured |
-| Stock | not measured | yes: checkout lowers stock ([results.md](results.md) 2026-11-07); limited on cached pages (#628) | limited on cached pages (#628) | yes: checkout lowers stock ([results.md](results.md) 2026-11-09) |
+| Stock | not measured | yes: checkout lowers stock ([results.md](results.md) 2026-11-07); a cached page is at most about 30 s old by default (PR #713; [why](#a-cached-product-page-can-show-stock-up-to-about-30-s-old-628-closed)), not measured live on this path | yes: a cached page is at most about 30 s old ([C2 verdict](https://github.com/skyphusion-labs/pagefeather/issues/628#issuecomment-6902826012), PR #707; ggc.sh [read-back](https://github.com/skyphusion-labs/pagefeather/issues/628#issuecomment-6909672971)) | yes: checkout lowers stock ([results.md](results.md) 2026-11-09) |
 | Coupons | not measured | not measured | not measured | not measured |
 | Tax | not measured | not measured | not measured | not measured |
 | Emails | not measured | not measured | not measured | not measured |
-| PDF invoices | limited by deploy path (#765) | limited by deploy path (#765) | limited by deploy path (#765) | not measured |
+| PDF invoices | every deploy path: fixed in #769 (merged 2026-11-16); not yet measured live | the same | the same | not measured |
 | REST API keys in the Basic header | yes in code (#762); live run pending | yes in code (#762); live run pending | yes in code (#762); live run pending | not measured |
 
 ## The deploy paths
 
 | feature | `deploy/deploy.sh` | `deploy/wfp` | one-click |
 |---|---|---|---|
-| PDF invoices | no: no `BROWSER` binding (#765; PR #769 is open) | no: no `BROWSER` binding (#765; PR #769 is open) | yes (#765) |
+| PDF invoices | fixed in #769 (merged 2026-11-16); not yet measured live | fixed in #769 (merged 2026-11-16); not yet measured live | yes (#765) |
 | Update a site | yes: `CODE_ONLY=1` in `.github/workflows/deploy-workers.yml` (the live sites `woocap`, `zarapo`) | yes: `deploy/wfp/site update` (#642; the #724 throwaways, 2026-11-16; ggc.sh) | no: add only (#765; an issue for it is being filed) |
 | Remove a site | not measured (`deploy/destroy.sh`) | yes: `deploy/wfp/site remove` (`pf704`, #704; the #724 throwaways) | no: add only (#765) |
 
 ## Limited, and why
 
-### The first page after a fresh install can fail (#756)
+### The first page after a fresh install could fail (#756, fixed)
 
-This was measured on b-dosql with the npm engine, on 2026-11-16. Five of 5 deploys ran `/_install`, and then the first page died with `exceededMemory`. A fresh install boots a new PHP runtime on purpose, and the old one is still held at that moment.
+A fresh install boots a new PHP runtime on purpose. Before the fix, the install's own runtime was retired but its memory was not collected yet. So the first page booted a second runtime beside it, and reached the memory ceiling.
 
-Live sites do not update that way. They update with a code-only deploy (`CODE_ONLY=1`), with no install. On the lean engine (`pf724l0`, 2026-11-16), all 9 first pages after code-only updates answered 200. The one failure there was the `/_install` request itself. Its logs are being re-run.
+- **Fresh installs (756b, [the scored run](https://github.com/skyphusion-labs/pagefeather/issues/756#issuecomment-6921835983)):** measured on `deploy/wfp` with the lean engine, on 2026-11-16. On main before the fix, the first page died in 3 of 3 counting trials (`pf756m1`, `m3`, `m4`). Each died with a write-loss 500. With the fix (PR #790) it died in 0 of 3 (`pf756k1`, `k2`, `k4`). Two more trials were void (#783).
+- **Code-only updates (756a):** live sites update this way, with no install. On lean (`pf724l0`), 3 updates and 9 first pages all answered 200, with 0 deaths ([the scored run](https://github.com/skyphusion-labs/pagefeather/issues/756#issuecomment-6919876119)).
 
-So this may be a fresh-install defect only. Whether a code-only update fails is still being measured. #756 is open.
+So only the first page after a fresh install was affected. #790 keeps the install's runtime for that first page. It merged on 2026-11-16 and closed #756. 756b measured the fix on `deploy/wfp` only.
 
 ### The block editor reaches the memory ceiling (#768)
 
@@ -83,33 +85,67 @@ A b-dosql site has one PHP object, and that object has a memory ceiling. `post-n
 
 On Workers Free, a WooCommerce store's editor does not fit the memory limit (#638). Use Workers Paid to edit a store.
 
-### Fresh installs keep plain permalinks (#760, #772)
+### The icon library had no icons (#777, fixed)
+
+WordPress 7.0 added an icon library, which the editor's Icon block reads from `/wp/v2/icons`. Our build dropped every core `.svg` from the PHP tree, so PHP could not read the 88 icon files. The route answered 200 with no icon content. #778 keeps those files (352 KB). It merged on 2026-11-16. It is not yet measured live.
+
+### Fresh installs kept plain permalinks (#760, fixed), and the soft 404 (#772)
 
 Our HTTP bridge refuses the installer's loopback probe, so a fresh install keeps plain permalinks. Then `/wp-json/` and every unknown path answer the home page with 200. Stock WordPress with working rewrites chooses pretty permalinks.
 
 - **The workaround today:** set a permalink structure in Settings, or call REST as `/?rest_route=/`.
-- **The fix:** PR #773 is open.
-- **#772:** under a plain structure, an unknown path still answers 200 and not 404. It is a soft 404, and stock WordPress on Apache answers 404. #772 is open.
+- **The fix:** #773 merged on 2026-11-16. A fresh install now gets the day-and-name structure, as stock does. It is not yet measured live.
+- **`/wp-json/` under plain:** with #773, `/wp-json/` reaches the REST API even under a plain structure. That goes beyond stock: under plain, stock has no rewrite rule for it.
+- **#772:** under a plain structure, an unknown path still answers 200 and not 404. That is a soft 404; stock WordPress on Apache answers 404. After #773 this affects only a site whose owner CHOSE plain. #772 is open.
 
 ### HTTP Basic auth was broken, now fixed in code (#761, #762)
 
 Before #762, PHP never received `PHP_AUTH_USER` and `PHP_AUTH_PW`. So application passwords and WooCommerce REST keys in the `Authorization: Basic` header failed. The lead confirmed it live on 2026-11-16. #762 maps the header and is merged. A live run on a site built from main is still pending, so the cells say "yes in code".
 
-### Guests can get 404 for products that exist (#766)
+### Site Health directory sizes answer 500 (#780)
 
-After a SQL failure at the memory ceiling, a later guest can get 404 for a real product. No header or log marks it. It was measured on b-dosql in the #724 runs on 2026-11-16. In one arm, 15 of 15 false 404s came within 3 s of a memory failure. The likely cause is a failed request that still writes the object cache. PR #770 is open.
+The Site Health > Info panel asks `/wp-site-health/v1/directory-sizes`. On b-dosql it answers 500 `not_available`. The cause is the database size: WordPress reads it with `SHOW TABLE STATUS`, which reports no size over SQLite. The directory sizes themselves are readable. #780 is open.
 
-### A cached product page can show an old stock number (#628)
+### Guests could get 404 for products that exist (#766, fixed; also #794)
 
-A logged-out product page comes from the edge cache. A checkout that lowers stock does not clear that copy. A store caches its product, shop and category pages for 30 s by default (`PAGE_CACHE_PRODUCT_TTL`). So the number is at most about 30 s old. Checkout always reads the real stock, so it never sells more than the store has. When a product sells out, the page is cleared. See the README.
+After a SQL failure at the memory ceiling, a later guest could get 404 for a real product. No header or log marks it. It was measured on b-dosql in the #724 runs on 2026-11-16. In one arm, 15 of 15 false 404s came within 3 s of a memory failure. The cause was a failed request that still wrote the object cache. #770 fixed it, merged on 2026-11-16. It is not yet measured live.
 
-### PDF invoices work on one-click only (#765)
+A related case was #794: a value derived from a failed read, then written to the database, persisted. Unlike a cache entry, it outlives every deploy. #797 rolls the request back on that kind of failure. It merged on 2026-11-16, and it is not yet measured live.
 
-The feature needs the `BROWSER` binding. `deploy/wfp` and `deploy.sh` render none, so only one-click sites can make invoices. PR #769 is open: it adds `PDF_INVOICE=on` to both paths.
+### A cached product page can show stock up to about 30 s old (#628, closed)
+
+This is by design, and it is bounded. #628 is closed.
+
+A logged-out product, shop or category page comes from the edge cache. A checkout that lowers stock does not clear that copy. So a guest can see a stock number or price that is a little old.
+
+- **The bound:** a store caches those pages for 30 s by default (`PAGE_CACHE_PRODUCT_TTL`). Other guest pages keep 120 s.
+- **The fix that closed #628:** PR #707 made 30 s the store default on `deploy/wfp`, as a recorded setting. PR #713 (#706) did the same for `deploy.sh` and one-click.
+- **The evidence:**
+  - The [C2 verdict](https://github.com/skyphusion-labs/pagefeather/issues/628#issuecomment-6902826012) passed all four bars on a `deploy/wfp` store.
+  - On ggc.sh, a product page re-rendered every 32 to 36 s, the longest 36.5 s ([read-back](https://github.com/skyphusion-labs/pagefeather/issues/628#issuecomment-6909672971), 2026-11-16).
+- **What stays safe:** checkout always reads the real stock, so the store never sells more than it has. When a product sells out, its page is cleared.
+
+A store that shows exact stock numbers can use a lower `PAGE_CACHE_PRODUCT_TTL` (5 to 600 s). See [Stock numbers on cached pages](from-lamp-to-wfp.md#stock-numbers-on-cached-pages).
+
+### PDF invoices worked on one-click only (#765, fixed)
+
+The feature needs the `BROWSER` binding. `deploy/wfp` and `deploy.sh` rendered none, so only one-click sites could make invoices. #769 adds `PDF_INVOICE=on` to both paths. It merged on 2026-11-16 (`5a94341`). It is not yet measured live on those paths.
 
 ### One-click can add a site, not update or remove it (#765)
 
 The one-click CLI implements only `site add`. Its `update` and `remove` refuse, and they name `deploy/wfp/site`, which cannot manage a one-click site. An issue for it is being filed.
+
+### A very long search term fails on SQLite (#805)
+
+SQLite caps the length of a `LIKE` pattern. It answers "LIKE or GLOB pattern too complex". MySQL has no such cap.
+
+- **Where:** the SQLite tiers (Free DO, Paid DO and WfP). Hyperdrive runs MySQL, so #805 does not affect it.
+- **What fails:** a search (`?s=`) with a very long term, or any query with a very long `LIKE` pattern. The same query succeeds on MySQL.
+- **What the visitor sees:** the error is deterministic. By #795's ruling, it goes back to WordPress through wpdb's error path, as a MySQL error does. So a search finds nothing, with no 5xx. A long search has not been measured on its own yet.
+- **Measured at setup:** WordPress hit it once, on its own. It looked for an existing page by a long pattern ([#795](https://github.com/skyphusion-labs/pagefeather/issues/795#issuecomment-6922159077), local, npm and lean).
+- **Not measured yet:** the exact threshold on the Durable Object's SQLite. The SQLite default is 50,000 bytes.
+
+A fix needs its own ruling (#805).
 
 ### Semantic search needs a plugin change
 
