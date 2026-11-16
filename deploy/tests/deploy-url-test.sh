@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # deploy/deploy-url.sh (#754): which workers.dev URL a deploy landed on, and the origin check, against wrangler output
-# that ALSO prints a workers.dev URL in its bindings (START_BY_TICK_URL). Before #754's fix, deploy.sh took the FIRST
+# that ALSO prints a workers.dev URL in its bindings (any var holding one; a tick URL did in #754's proof). Before #754's fix, deploy.sh took the FIRST
 # workers.dev URL anywhere in the output, so a tick URL in the vars failed every deploy, after the upload and before the
 # secrets, stranding the site. Also checks deploy.sh's order: the origin check runs after the secrets and the redaction.
 set -uo pipefail

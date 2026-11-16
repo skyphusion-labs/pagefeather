@@ -8,7 +8,7 @@ import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from 
 import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-arm.mjs';
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
 import { callPhpObject, isObjectCallDeadline, objectCallDeadlineMs, objectCallExempt } from './object-deadline.mjs';
-import { startByMs, objectShedPlan, startByResponse, shedAnswer, startByExempt, tagCallId, recheckStartBy, disconnectAnswer, disconnectSignal, tickFetch, tickUrl, tickResponse, TICK_PATH, START_BY_HEADER, CALL_HEADER } from './start-by.mjs';
+import { startByMs, objectShedPlan, startByResponse, shedAnswer, startByExempt, tagCallId, recheckStartBy, disconnectAnswer, disconnectSignal, tickFetch, tickResponse, TICK_PATH, START_BY_HEADER, CALL_HEADER } from './start-by.mjs';
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
@@ -3209,8 +3209,8 @@ export class PhpRuntime extends DurableObject {
 			shedWhy: plan.byStartBy ? 'start-by' : 'queue-shed',
 			// #715 review2 4, review3 4 and 5: the lock rechecks the start-by at a contended grant, on a clock read again.
 			signal: callerSignal, // #721: a queued waiter sheds when its caller disconnects (why: disconnect), unless off
-			// #752, #754: the tick is a real subrequest (START_BY_TICK_URL, else this site's own TICK_PATH), never to this object.
-			recheck: plan.startBy > 0 ? async () => { const rc = await recheckStartBy(plan.startBy, { tick: () => tickFetch(tickUrl(env, origin), { full: true }), signal: callerSignal }); lateByClock = rc.late; return rc; } : null,
+			// #752, #754: the tick is a real subrequest to this site's own TICK_PATH, never to this object.
+			recheck: plan.startBy > 0 ? async () => { const rc = await recheckStartBy(plan.startBy, { tick: () => tickFetch(origin), signal: callerSignal }); lateByClock = rc.late; return rc; } : null,
 		});
 		if (objectRun !== PHP_SHED) return objectRun;
 		phpPending--; // a shed run never ran its finally

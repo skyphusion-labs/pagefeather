@@ -300,7 +300,7 @@ fi
 log "deploy"
 DEP=$("$ROOT/deploy/wr" deploy --config "$CONF" 2>&1) || { echo "$DEP" | tail -20; exit 1; }
 # #754: the URL on wrangler's trigger line, never the first workers.dev URL in the output (a var such as
-# START_BY_TICK_URL prints one in the bindings). deploy/deploy-url.sh. The origin check runs below, after the secrets.
+# a var holding a workers.dev URL prints one in the bindings). deploy/deploy-url.sh. The origin check runs below, after the secrets.
 URL=$(deployed_workers_url "$NAME" <<<"$DEP")
 echo "$DEP" | grep -E 'Total Upload|Current Version'
 # Logs on: redact the query strings now, before anything else runs on the site, or turn the logs off.

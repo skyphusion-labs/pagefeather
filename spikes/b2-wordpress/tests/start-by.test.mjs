@@ -296,7 +296,7 @@ test('#752 wiring: the front Worker answers /_tick FIRST; the object ticks again
 	const tick = entry.indexOf('if (url.pathname === TICK_PATH) return tickResponse();');
 	assert.ok(tick > 0 && tick < entry.indexOf('pageCacheRoute('), 'before the page cache, before any object call');
 	const obj = src.slice(src.indexOf('	async fetch(raw) {'), src.indexOf('function phpObjectName('));
-	assert.ok(/recheckStartBy\(plan\.startBy, \{ tick: \(\) => tickFetch\(tickUrl\(env, origin\), \{ full: true \}\), signal: callerSignal \}\)/.test(obj), 'a real tick (START_BY_TICK_URL or the own origin), with the caller signal');
+	assert.ok(/recheckStartBy\(plan\.startBy, \{ tick: \(\) => tickFetch\(origin\), signal: callerSignal \}\)/.test(obj), 'a real tick to the own origin, with the caller signal');
 });
 
 // #754 live proof: the self-fetch was refused, yet the failed attempt still MOVED the clock (clockMs 12.5 to 20.8 s). The
@@ -318,13 +318,4 @@ test('#754 rule: a failed tick that MOVED the clock decides by the start-by; onl
 	// 30 s or more left even on the stale clock: no tick at all (#715 review3 4), granted at once.
 	t = 1000; let ticked = false; r = await recheckStartBy(60000, { now: () => t, tick: async () => { ticked = true; } });
 	assert.equal(r.late, false); assert.equal(ticked, false);
-});
-test('#754 the tick target: START_BY_TICK_URL when set (a dedicated Worker), else the site origin + /_tick', async () => {
-	const { tickUrl } = await import('../start-by.mjs');
-	assert.equal(tickUrl({}, 'https://s.example'), 'https://s.example/_tick');
-	assert.equal(tickUrl({ START_BY_TICK_URL: 'https://tick.example.workers.dev/' }, 'https://s.example'), 'https://tick.example.workers.dev/');
-	assert.equal(tickUrl({ START_BY_TICK_URL: 'http://plain.example/' }, 'https://s.example'), 'https://s.example/_tick', 'only https is taken');
-	let seen = null;
-	await tickFetch('https://tick.example.workers.dev/', { fetchImpl: async (u) => { seen = u; return new Response(null, { status: 204 }); }, full: true });
-	assert.equal(seen, 'https://tick.example.workers.dev/');
 });

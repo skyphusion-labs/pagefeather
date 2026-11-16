@@ -249,7 +249,6 @@ Every request the front Worker hands to a PHP Durable Object (the b-dosql object
 | setting | default | what it bounds |
 |---|---|---|
 | `OBJECT_CALL_DEADLINE_S` | `90` | How long the Worker waits for the object to START answering (#703). `off`, or 1 to 600 s. `off` turns it off. Install, import and cron are exempt. |
-| `START_BY_TICK_URL` | unset (the site's own `/_tick`) | The start-by recheck's tick target (#754): an https URL, normally `deploy/tick-worker`. See "What the start-by can prove" below. |
 | `OBJECT_START_BY_S` | the deadline minus 30 s, or minus a third of a deadline under 90 s (`60` for the default `90`) | How long a request may wait in the object's PHP queue before it would start (#708). `off`, or 1 to 600 s. A request not started by then never runs. `off` restores the behavior before #708. An explicit value is at most the deadline minus that run allowance (`60` at `90`); a larger one is refused when the site is deployed, with the cap in the message. With the deadline `off`, any value from 1 to 600 applies. Control paths (`/_*`: `/_evict`, `/_hold`, the exports) and cron never get one. |
 
 What the client sees:
@@ -264,7 +263,7 @@ Every answer of the object path that the edge never keeps carries `x-pf-call`: a
 
 **What the start-by can prove (#752, #754).** In a deployed Worker or Durable Object, `Date.now()` moves only at I/O, and a timer turn does NOT move it (measured on #714 and #752). When a request that queued behind another gets its turn with under 30 s left on its (possibly stale) clock, the PHP lock first makes ONE real subrequest, the tick.
 
-- **The tick's target:** the site's own `/_tick` by default (the front Worker answers it with an empty 204, before any object call), or `START_BY_TICK_URL` when set: an https URL, normally the tiny dedicated Worker in `deploy/tick-worker/`. Either is correct. Measured on #754 (round 2): a tick that times out or fails STILL moves the clock to the real time, so every decision is made on the true clock. The FIRST tick after a CPU stretch usually aborts at once, because its 2 s timeout was set on the frozen clock and has already passed in real time. Later ticks reach the target: pf-tick answered in 10 to 61 ms. Whether the object can reach its OWN site's `/_tick` is not yet measured. **pf-tick's one-time step per account:** `deploy/wr deploy --config deploy/tick-worker/wrangler.toml`. Check it with `curl -s -o /dev/null -w '%{http_code}' https://pf-tick.<subdomain>.workers.dev/`, which must print 204. Then give each site `START_BY_TICK_URL=https://pf-tick.<subdomain>.workers.dev/`. Its Workers Logs are on (`[observability]`), so its tick count can be read.
+- **The tick's target:** the site's own `/_tick`. The front Worker answers it with an empty 204, before any object call. Measured on #754 (round 2): a tick that times out or fails STILL moves the clock to the real time, so every decision is made on the true clock. The FIRST tick after a CPU stretch usually aborts at once, because its 2 s timeout was set on the frozen clock and has already passed in real time.
 - **After the tick SETTLES, ok or error,** the lock re-reads the clock and decides by the start-by. A failed subrequest still moves the clock (measured on #754).
   - Late: shed, `why: start-by`.
   - Time left: granted.
