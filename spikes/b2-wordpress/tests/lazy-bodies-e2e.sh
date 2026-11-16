@@ -56,12 +56,19 @@ lb = ini.get("lb")
 print("lazy-bodies-e2e:", json.dumps({"lb": lb, "cached": ini.get("cached"), "mc": ini.get("mc"), "fco": ini.get("fco")}))
 if not isinstance(lb, dict):
     sys.exit("lazy-bodies-e2e: opcache_get_status() has no pagefeather_lazy_bodies: not a lazy-body engine")
-if lb.get("split_scripts", 0) <= 0:
+primed = __import__("os").environ.get("LB_PRIMED") == "1"
+# split_scripts and dir_entries count the scripts compiled and persisted in THIS run. From an empty OPcache that is
+# every script, and the layout is gated here. On a primed run it is only what the zip missed: a zip that covers
+# every page compiles nothing (measured on #629 after the rebase: the zip held 2136 and 2137 were cached), so 0 is
+# not a failure there. The layout of a primed zip is gated by the unprimed runs of this script and by bin-split.py.
+if not primed and lb.get("split_scripts", 0) <= 0:
     sys.exit("lazy-bodies-e2e: no script was persisted split (split_scripts %r)" % lb.get("split_scripts"))
 if lb.get("dir_mismatch", 0) != 0:
     sys.exit("lazy-bodies-e2e: dir_mismatch %r: persist found a different number of bodies than calc" % lb.get("dir_mismatch"))
-if "dir_entries" in lb and lb["dir_entries"] <= 0:
+if not primed and "dir_entries" in lb and lb["dir_entries"] <= 0:
     sys.exit("lazy-bodies-e2e: dir_entries %r: no body directory was written" % lb.get("dir_entries"))
+if primed and lb.get("split_scripts", 0) == 0:
+    print("lazy-bodies-e2e: primed: no script compiled in this run (the zip covered every page); the layout is gated unprimed")
 if lb.get("noregion") != 0:
     sys.exit("lazy-bodies-e2e: noregion %r: a body block was reached with no body region (left unsplit, never a bailout)" % lb.get("noregion"))
 if lb.get("mismatch") != 0:
