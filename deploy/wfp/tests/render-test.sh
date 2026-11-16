@@ -134,6 +134,20 @@ ok "obs_conf_on: on for a rendered OBSERVABILITY=1" "$(OBSERVABILITY=1 render_us
 ok "obs_conf_on: on for a rendered full (THROWAWAY=1)" "$(THROWAWAY=1 OBSERVABILITY=full render_user one https://wp-one.sub.workers.dev > "$T/of.toml" && obs_conf_on "$T/of.toml" && echo 1 || echo 0)"
 ok "obs_conf_on: off for the default render (an explicit enabled = false)" "$(env -u OBSERVABILITY bash -c ". '$LIB'; render_user one https://wp-one.sub.workers.dev" > "$T/o0.toml" && ! obs_conf_on "$T/o0.toml" && echo 1 || echo 0)"
 ok "any other OBSERVABILITY value fails the render" "$(OBSERVABILITY=yes render_user one https://wp-one.sub.workers.dev >/dev/null 2>&1 && echo 0 || echo 1)"
+# #767: the site's dispatcher (wp-<name>) follows the same OBSERVABILITY rule (obs_render). Before, it had no
+# block at all, so it never logged (#605's dispatcher side). Both its modes, routed and cron-only.
+rsd() { render_site_dispatcher "$@" 2>/dev/null; }
+for mode in "" cron-only; do
+  lbl=${mode:-routed}
+  ok "dispatcher ($lbl): off by default, an explicit enabled = false" "$(env -u OBSERVABILITY bash -c ". '$LIB'; render_site_dispatcher one kv-id $mode" 2>/dev/null | obs | grep -qx '{"enabled": false}' && echo 1 || echo 0)"
+  ok "dispatcher ($lbl): OBSERVABILITY=1 is events only, invocation_logs false" "$(OBSERVABILITY=1 rsd one kv-id $mode | obs | grep -qx '{"enabled": true, "head_sampling_rate": 1, "logs": {"enabled": true, "invocation_logs": false}}' && echo 1 || echo 0)"
+  ok "dispatcher ($lbl): full with THROWAWAY=1 keeps the invocation logs" "$(THROWAWAY=1 OBSERVABILITY=full rsd one kv-id $mode | obs | grep -qx '{"enabled": true, "head_sampling_rate": 1, "logs": {"enabled": true, "invocation_logs": true}}' && echo 1 || echo 0)"
+  ok "dispatcher ($lbl): full WITHOUT THROWAWAY fails the render" "$(env -u THROWAWAY OBSERVABILITY=full bash -c ". '$LIB'; render_site_dispatcher one kv-id $mode" >/dev/null 2>"$T/dfull.err" && echo 0 || { grep -q 'needs THROWAWAY=1' "$T/dfull.err" && echo 1 || echo 0; })"
+  ok "dispatcher ($lbl): full on a live site (ggc) is refused even with THROWAWAY=1" "$(THROWAWAY=1 OBSERVABILITY=full bash -c ". '$LIB'; render_site_dispatcher ggc kv-id $mode" >/dev/null 2>"$T/dlive.err" && echo 0 || { grep -q 'is a live site' "$T/dlive.err" && echo 1 || echo 0; })"
+  ok "dispatcher ($lbl): the render is still valid TOML with the snapshot vars and the block" "$(OBSERVABILITY=1 rsd one kv-id $mode | "$PY" -c 'import sys, tomllib; c = tomllib.loads(sys.stdin.read()); print(1 if c.get("vars", {}).get("SNAPSHOT_SCRIPT") and c.get("observability", {}).get("enabled") is True else 0)')"
+done
+ok "dispatcher: obs_conf_on reads its rendered config (the redaction follows it)" "$(OBSERVABILITY=1 rsd one kv-id > "$T/d1.toml" && obs_conf_on "$T/d1.toml" && echo 1 || echo 0)"
+ok "every dispatcher deploy redacts its query strings, or turns its logs off (site.sh both modes, site schedule)" "$([ "$(grep -c 'obs_redact_site - "$D" "$GEN/$D.toml"' "$HERE/../site.sh")" = 2 ] && [ "$(grep -c 'obs_redact_site - "$D" "$GEN/$D.toml"' "$HERE/../site")" = 1 ] && echo 1 || echo 0)"
 # WP_VECTORIZE_SEARCH (#330): the AI and SEARCH_INDEX bindings for this site's own index only.
 ok "render_user has no [ai] or [[vectorize]] by default" "$(render_user one https://wp-one.sub.workers.dev | grep -cE '^\[ai\]|^\[\[vectorize\]\]' | grep -qx 0 && echo 1 || echo 0)"
 ok "WP_VECTORIZE_SEARCH=on renders AI and SEARCH_INDEX on wp-wfp-one-search" "$(WP_VECTORIZE_SEARCH=on render_user one https://wp-one.sub.workers.dev | tr '\n' ' ' | grep -q '\[ai\] binding = "AI" \[\[vectorize\]\] binding = "SEARCH_INDEX" index_name = "wp-wfp-one-search"' && echo 1 || echo 0)"

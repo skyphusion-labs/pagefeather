@@ -319,6 +319,8 @@ schedule_one() {
   echo "site $s: deploy $D with the snapshot cron [${want:-none}] (#533)"
   wrangler_deploy "$GEN" "$W/disp.log" --config "$D.toml" --secrets-file "$W/sec.json" || { echo "site $s: the dispatcher deploy failed:" >&2; tail -20 "$W/disp.log" >&2; rm -rf "$W"; return 1; }
   rm -rf "$W"
+  # #767: the dispatcher's logs follow OBSERVABILITY; with them on, its query strings are redacted, or they go off.
+  obs_redact_site - "$D" "$GEN/$D.toml" || { echo "site $s: DEPLOYED, but the query-string redaction of $D did NOT read back, so its logs are now OFF (or could not be turned off: check)" >&2; return 1; }
   got=$(api GET "/workers/scripts/$D/schedules" | sed '$d' | python3 -I -c 'import json, sys
 try:
     r = json.load(sys.stdin).get("result") or {}

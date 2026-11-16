@@ -180,6 +180,21 @@ snapshot_timeout_ms() {
 # workers_dev = false (preview_urls is false in the template) and no route: it binds what a phase A
 # copy binds and passes the same audit, but no request ever reaches it, so it is never a front
 # door. Each per-site copy, either phase, is one cron of the account's limit (250 on Workers Paid).
+# obs_render <site> (#767): the [observability] block of OBSERVABILITY, for BOTH the site's user Worker
+# (render_user) and its dispatcher wp-<name> (render_site_dispatcher), under one rule: unset or 0 an explicit
+# off, 1 events only (no request metadata), full with THROWAWAY=1 and never for a live site (obs_refuse_full).
+# A dispatcher with logs on has its query strings redacted after its deploy too (obs_redact_site -).
+obs_render() {
+  local s=$1
+  case "${OBSERVABILITY:-0}" in
+    0) printf '\n[observability]\nenabled = false\n' ;;
+    1) printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = false\n' ;;
+    full) [ "${THROWAWAY:-}" = 1 ] || { echo "OBSERVABILITY=full needs THROWAWAY=1 (it logs every request's URL, client IP and user agent; say the site is a throwaway, or use 1, events only)" >&2; return 1; }
+          obs_refuse_full "$s" || return 2
+          printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = true\n' ;;
+    *) echo "OBSERVABILITY must be 0, 1 (events only) or full (a throwaway only), not ${OBSERVABILITY}" >&2; return 1 ;;
+  esac
+}
 render_site_dispatcher() { # render_site_dispatcher <site> <kv namespace id> [cron-only]
   local cron t
   case "${3:-}" in "" | cron-only) ;; *) echo "render_site_dispatcher: the mode is cron-only or nothing, not ${3}" >&2; return 1 ;; esac
@@ -194,6 +209,9 @@ render_site_dispatcher() { # render_site_dispatcher <site> <kv namespace id> [cr
   fi
   printf '\n# The scheduled snapshot of this one site (#533, lib.sh render_site_dispatcher).\n[vars]\nSNAPSHOT_SCRIPT = "%s"\nSNAPSHOT_TIMEOUT_MS = "%s"\n\n[triggers]\ncrons = [%s]\n' \
     "$(user_script "$1")" "$t" "${cron:+\"$cron\"}"
+  # #767: the dispatcher's Workers Logs follow the site's OBSERVABILITY (they were never rendered: #605's
+  # dispatcher side could not be read). The same rule as the user Worker.
+  obs_render "$1"
 }
 # The cron-only copy (phase B, #533) must stay unreachable: after a deploy its workers.dev and
 # preview URLs read back OFF, and no Custom Domain names it. Exit 1 on either, or when either read
@@ -667,14 +685,7 @@ TOML
   #                       deploy/wfp/live-sites/<name> (Workers for Platforms, #693). Use 1, events only.
   #   unset or 0          an EXPLICIT enabled = false: without the block a re-upload left a site's
   #                       logging as it was, so "off" did not turn it off.
-  case "${OBSERVABILITY:-0}" in
-    0) printf '\n[observability]\nenabled = false\n' ;;
-    1) printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = false\n' ;;
-    full) [ "${THROWAWAY:-}" = 1 ] || { echo "OBSERVABILITY=full needs THROWAWAY=1 (it logs every request's URL, client IP and user agent; say the site is a throwaway, or use 1, events only)" >&2; return 1; }
-          obs_refuse_full "$s" || return 2
-          printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = true\n' ;;
-    *) echo "OBSERVABILITY must be 0, 1 (events only) or full (a throwaway only), not ${OBSERVABILITY}" >&2; return 1 ;;
-  esac
+  obs_render "$s" || return $?
   # WP_VECTORIZE_SEARCH (default off, metered): the token-free AI and SEARCH_INDEX bindings the
   # skyphusion-ai plugin reaches through the index.js op bridge (#330, #332). The index must exist
   # before the deploy; site.sh up makes it (ensure_search_index).
