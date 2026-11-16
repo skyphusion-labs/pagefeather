@@ -351,6 +351,8 @@ SPIKE_TOKEN=$(out spike_token); ADMIN_PASSWORD=$(out admin_password)
 # 901 D1 queries, 57 s measured). a: in the Worker (Workers Paid).
 # #811: the object can still be on the previous version and answer 403. Retry
 # until it is installed, and fail the deploy if it never is (deploy/install.sh).
+# The failure prints the last status and the body's first bytes. When the retries
+# run out it also names the current deployment, read with the deploy token.
 log "install"
 install_wordpress "$URL" || exit 1
 

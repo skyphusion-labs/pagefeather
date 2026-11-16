@@ -12,11 +12,54 @@
 # Retry while the answer is 403, 5xx, no answer, or not JSON, for INSTALL_WAIT_S seconds
 # (default 120, at most 600). INSTALL_INTERVAL_S (default 5, at most 60) is the pause.
 # A JSON answer that does not say installed fails at once.
-# On failure, print the last status, the body's first bytes, and the Worker version from the
-# response header x-worker-version (the build that answered; "(none)" when it did not send one).
-# Never print the spike token or the admin password. They reach curl through -K and a process
-# substitution, as before, never as -H on the command line.
+# On failure, print the last status and the body's first bytes. When the retries run out,
+# and CLOUDFLARE_API_TOKEN, ACCOUNT_ID and NAME are set, also name the Worker's current
+# deployment from the Cloudflare API (the script name, the deployment id and the version
+# ids). That read uses the token deploy.sh already holds. The public 403 is not a source
+# for a version. Never print the spike token, the admin password or the API token. They
+# reach curl through -K and a process substitution, as before, never as -H on the command line.
 # Returns 0 when installed, 1 when not.
+
+# The latest deployment that is serving traffic. The API lists that deployment first
+# (List Worker Deployments, read 2026-11-16). Writes $1/note, or leaves it empty.
+# Names and ids only. A miss prints a status code and no body.
+install_deployment_note() {
+  local work=$1
+  local token acct name api code port proto
+  : > "$work/note"
+  token=${CLOUDFLARE_API_TOKEN:-}
+  acct=${ACCOUNT_ID:-}
+  name=${NAME:-}
+  [ -n "$token" ] && [ -n "$acct" ] && [ -n "$name" ] || return 0
+  [[ "$acct" =~ ^[0-9a-fA-F]{32}$ ]] || return 0
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$ ]] || return 0
+  api=${CF_API:-https://api.cloudflare.com/client/v4}
+  proto=https
+  case "$api" in
+    https://api.cloudflare.com/client/v4) ;;
+    http://127.0.0.1:*|http://localhost:*)
+      [[ "$api" =~ ^http://(127\.0\.0\.1|localhost):[0-9]{1,5}$ ]] || return 0
+      port=${api##*:}
+      port=$((10#$port))
+      [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || return 0
+      proto=http
+      ;;
+    *) return 0 ;;
+  esac
+  : > "$work/cf.json"
+  code=$(curl -s --proto "=$proto" --connect-timeout 10 -m 20 -o "$work/cf.json" -w '%{http_code}' \
+    -K <(printf 'header = "Authorization: Bearer %s"\n' "$token") \
+    "$api/accounts/$acct/workers/scripts/$name/deployments") || code=000
+  [[ "$code" =~ ^[0-9]{3}$ ]] || code=000
+  if [ "$code" != 200 ]; then
+    echo "install: Worker deployment was not read (HTTP $code)" >&2
+    return 0
+  fi
+  python3 -I "$work/note.py" "$work/cf.json" "$name" "$work/note" || true
+  if ! [ -s "$work/note" ]; then
+    echo "install: Worker deployment was not read (no deployment id)" >&2
+  fi
+}
 
 install_wordpress() {
   local url=$1
@@ -39,10 +82,48 @@ install_wordpress() {
   local dir start now elapsed remain sleep_for attempt status rc shown
   dir=$(mktemp -d "${TMPDIR:-/tmp}/pf-install.XXXXXX")
   # The checker redacts these. A builtin write, mode 600, so they are not in argv or the environment.
-  (umask 077; printf '%s\n' "$SPIKE_TOKEN" > "$dir/token"; printf '%s\n' "$ADMIN_PASSWORD" > "$dir/password")
+  (umask 077
+    printf '%s\n' "$SPIKE_TOKEN" > "$dir/token"
+    printf '%s\n' "$ADMIN_PASSWORD" > "$dir/password"
+    printf '%s\n' "${CLOUDFLARE_API_TOKEN:-}" > "$dir/api-token")
+  : > "$dir/note"
+  cat > "$dir/note.py" <<'PY'
+import json, re, sys
+json_path, name, note_path = sys.argv[1:4]
+uuid_re = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+name_re = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$")
+line = ""
+try:
+    if name_re.fullmatch(name or ""):
+        d = json.loads(open(json_path, "rb").read().decode("utf-8"))
+        result = d.get("result") if isinstance(d, dict) else None
+        deps = result.get("deployments") if isinstance(result, dict) else None
+        if isinstance(d, dict) and d.get("success") is True and isinstance(deps, list) and deps:
+            dep = deps[0]
+            dep_id = dep.get("id") if isinstance(dep, dict) else None
+            if isinstance(dep_id, str) and uuid_re.fullmatch(dep_id):
+                vids = []
+                versions = dep.get("versions") if isinstance(dep, dict) else None
+                if isinstance(versions, list):
+                    for item in versions:
+                        vid = item.get("version_id") if isinstance(item, dict) else None
+                        if isinstance(vid, str) and uuid_re.fullmatch(vid):
+                            vids.append(vid.lower())
+                        if len(vids) >= 20:
+                            break
+                line = "worker %s deployment %s" % (name, dep_id.lower())
+                if vids:
+                    line = line + " version " + ",".join(vids)
+except (OSError, ValueError, UnicodeError, AttributeError):
+    line = ""
+try:
+    open(note_path, "w").write(line)
+except OSError:
+    pass
+PY
   cat > "$dir/check.py" <<'PY'
 import json, re, sys
-body_path, status, hdr_path, mode, elapsed, token_path, password_path = sys.argv[1:8]
+body_path, status, mode, elapsed, token_path, password_path, note_path, api_token_path = sys.argv[1:9]
 
 def read_secret(path):
     try:
@@ -55,13 +136,14 @@ def read_secret(path):
 
 token = read_secret(token_path)
 password = read_secret(password_path)
+api_token = read_secret(api_token_path)
 try:
     raw = open(body_path, "rb").read()
 except OSError:
     raw = b""
 
 def redact(s):
-    for secret in (token, password):
+    for secret in (token, password, api_token):
         if secret and secret in s:
             s = s.replace(secret, "[redacted]")
     return s
@@ -78,24 +160,22 @@ def body_prefix(buf):
         return "(empty)"
     return redact(text[:120])
 
-def worker_version(path):
-    # Only a version token is printed. A header that carries a secret is dropped.
+# The note is the script name plus deployment and version ids. Anything else is dropped.
+NOTE_RE = re.compile(
+    r"^worker [A-Za-z0-9][A-Za-z0-9_-]{0,62} deployment "
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"( version [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"(,[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})*)?$")
+
+def deployment_clause(path):
     try:
-        text = open(path, "r", errors="replace").read()
+        note = open(path, "r").read().strip()
     except OSError:
-        return "(none)"
-    val = ""
-    for line in text.splitlines():
-        if ":" not in line:
-            continue
-        name, rest = line.split(":", 1)
-        if name.strip().lower() == "x-worker-version":
-            val = rest.strip()
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}", val or ""):
-        return "(none)"
-    if (token and token in val) or (password and password in val):
-        return "(none)"
-    return val
+        return ""
+    note = redact(note)
+    if not NOTE_RE.fullmatch(note or ""):
+        return ""
+    return "; " + note
 
 def inner_installed(buf):
     # None: the HTTP body is not JSON. False: JSON, but not installed.
@@ -133,15 +213,19 @@ def retryable(st, parsed):
         return True
     return False
 
-def fail(st, after):
-    head = "install failed: "
-    if after is not None:
-        head = "install failed after %ss: " % after
-    sys.stderr.write(head + "last status %s; body: %s; worker version: %s\n" % (
-        show_status(st), body_prefix(raw), worker_version(hdr_path)))
+def fail(st, when):
+    if when == "after":
+        head = "install failed after %ss: " % elapsed
+    else:
+        head = "install failed: "
+    sys.stderr.write(head + "last status %s; body: %s%s\n" % (
+        show_status(st), body_prefix(raw), deployment_clause(note_path)))
 
-if mode == "report":
-    fail(status, elapsed)
+if mode == "report-after":
+    fail(status, "after")
+    sys.exit(11)
+if mode == "report-now":
+    fail(status, "now")
     sys.exit(11)
 parsed = inner_installed(raw)
 if isinstance(parsed, dict) and not retryable(status, parsed):
@@ -150,7 +234,6 @@ if isinstance(parsed, dict) and not retryable(status, parsed):
     sys.exit(0)
 if retryable(status, parsed):
     sys.exit(10)
-fail(status, None)
 sys.exit(11)
 PY
   start=$(date +%s)
@@ -166,14 +249,18 @@ PY
     fi
     attempt=$((attempt + 1))
     : > "$dir/body"
-    : > "$dir/hdr"
-    status=$(curl -s -S --connect-timeout 10 -m "$curl_max" -D "$dir/hdr" -o "$dir/body" -w '%{http_code}' -X POST \
+    status=$(curl -s -S --connect-timeout 10 -m "$curl_max" -o "$dir/body" -w '%{http_code}' -X POST \
       -K <(printf 'header = "x-spike-token: %s"\nheader = "x-admin-password: %s"\n' "$SPIKE_TOKEN" "$ADMIN_PASSWORD") \
       "$url/_install") || status=000
     rc=0
-    python3 -I "$dir/check.py" "$dir/body" "$status" "$dir/hdr" check "$elapsed" "$dir/token" "$dir/password" || rc=$?
+    python3 -I "$dir/check.py" "$dir/body" "$status" check "$elapsed" "$dir/token" "$dir/password" "$dir/note" "$dir/api-token" || rc=$?
     if [ "$rc" -eq 0 ]; then rm -rf "$dir"; return 0; fi
-    if [ "$rc" -eq 11 ]; then rm -rf "$dir"; return 1; fi
+    if [ "$rc" -eq 11 ]; then
+      # JSON that is not installed. One report, with no deployment read: the answer was the new code.
+      python3 -I "$dir/check.py" "$dir/body" "$status" report-now "$elapsed" "$dir/token" "$dir/password" "$dir/note" "$dir/api-token" || true
+      rm -rf "$dir"
+      return 1
+    fi
     if [ "$rc" -ne 10 ]; then
       echo "install: could not read the answer (checker status $rc)" >&2
       rm -rf "$dir"
@@ -194,7 +281,9 @@ PY
   done
   now=$(date +%s)
   elapsed=$((now - start))
-  python3 -I "$dir/check.py" "$dir/body" "$status" "$dir/hdr" report "$elapsed" "$dir/token" "$dir/password" || true
+  # Only after the retries run out. The 403's headers are not kept.
+  install_deployment_note "$dir"
+  python3 -I "$dir/check.py" "$dir/body" "$status" report-after "$elapsed" "$dir/token" "$dir/password" "$dir/note" "$dir/api-token" || true
   rm -rf "$dir"
   return 1
 }

@@ -94,7 +94,7 @@ test('index.js serves /_mysqlexport only in the object, behind the spike-token g
 	assert.ok(src.includes("import { exportRequest } from './mysql-export.mjs';"));
 	const at = src.indexOf("if (url.pathname === '/_mysqlexport' && req.method === 'GET') {");
 	assert.ok(at > 0, 'the route exists');
-	const gate = src.lastIndexOf("if (url.pathname.startsWith('/_') && !spikeOk) return spikeForbidden();", at);
+	const gate = src.lastIndexOf("if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });", at);
 	assert.ok(gate > 0 && gate < at, 'the spike-token gate comes before the route');
 	const body = src.slice(at, src.indexOf('}', src.indexOf('exportRequest(', at)) + 1);
 	assert.ok(body.includes("if (!sql) return new Response('DB_IN_DO is off', { status: 409 });"));

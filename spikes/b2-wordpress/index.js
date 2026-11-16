@@ -73,12 +73,6 @@ import { createRemotePacks, createFetchBudget, createSiteHooks, selfCheckCode, c
 // object can report which code version it runs (issue #35 slice 5).
 import BUILD_ID from './build/build-id.js';
 
-// #811: the isolate that refuses the spike token names its build. A PHP object can keep the
-// previous build for about a minute after deploy, and that is the version a failed install prints.
-function spikeForbidden() {
-	return new Response('forbidden', { status: 403, headers: { 'x-worker-version': BUILD_ID } });
-}
-
 const OPCACHE_DIR = '/internal/shared/opcache';
 // The scripts OPcache must never cache (#294): the eval file of php.run.
 const OPCACHE_BLACKLIST = '/internal/shared/opcache-blacklist.txt';
@@ -3089,7 +3083,7 @@ export class PhpRuntime extends DurableObject {
 			return Response.json(r.body, { status: r.status, headers: { 'cache-control': 'private, no-store' } });
 		}
 		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
-		if (url.pathname.startsWith('/_') && !spikeOk) return spikeForbidden();
+		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		// MySQL import (#31, #551). The front Worker forwards here when PHP_IN_DO=on,
 		// because this isolate holds the MySQL client (index-a-lean.js). No client
 		// (b-dosql, SQLite in the object): sqlImport answers 404, as before. The token
@@ -3679,7 +3673,7 @@ const site = {
 			return toPhpObject(req, env, url, ctx);
 		}
 		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
-		if (url.pathname.startsWith('/_') && !spikeOk) return spikeForbidden();
+		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		if (env.MEDIA && (req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/wp-content/uploads/')) return serveUpload(req, env, url);
 		// Signed invoice PDF download (issue #227). The Worker verifies the HMAC the
 		// browserRender op minted and streams the PDF from R2; PHP never holds the secret.
