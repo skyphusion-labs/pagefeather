@@ -26,7 +26,8 @@ function skyphusion_edge_cache_reason( $hook, $args ) {
 			$d = isset( $a[0] ) && is_string( $a[0] ) ? $a[0] : '';
 			break;
 		case 'clean_post_cache':
-			$d = isset( $a[0] ) ? (string) get_post_type( $a[0] ) : '';
+			// core: do_action( 'clean_post_cache', $post->ID, $post ). The object carries the type after its row is gone.
+			$d = isset( $a[1] ) && is_object( $a[1] ) && ! empty( $a[1]->post_type ) ? (string) $a[1]->post_type : ( isset( $a[0] ) ? (string) get_post_type( $a[0] ) : '' );
 			break;
 		case 'clean_term_cache':
 			$d = isset( $a[1] ) && is_string( $a[1] ) ? $a[1] : '';
@@ -34,7 +35,7 @@ function skyphusion_edge_cache_reason( $hook, $args ) {
 		case 'clean_comment_cache':
 			$ids = isset( $a[0] ) ? (array) $a[0] : array();
 			$c   = $ids ? get_comment( reset( $ids ) ) : null;
-			$d   = $c && isset( $c->comment_type ) ? (string) $c->comment_type : '';
+			$d   = $c && isset( $c->comment_type ) ? (string) $c->comment_type : ( $ids && skyphusion_edge_cache_deleted_note( reset( $ids ) ) ? 'order_note' : '' );
 			break;
 		case 'woocommerce_product_set_stock_status':
 		case 'woocommerce_variation_set_stock_status':
@@ -82,8 +83,14 @@ function skyphusion_edge_cache_order_request() {
 }
 add_action(
 	'clean_post_cache',
-	function ( $post_id ) {
-		$type = get_post_type( $post_id );
+	function ( $post_id, $post = null ) {
+		// Core calls do_action( 'clean_post_cache', $post->ID, $post ), after it has deleted the post's cache. When
+		// the row is gone too, get_post_type( $post_id ) is false, so the type comes from the object. A WooCommerce
+		// order deleted under HPOS: its shop_order_placehold row is DELETEd, then clean_post_cache( $order_id ) runs
+		// on the object still in the cache (WooCommerce 11.2.1, OrdersTableDataStore::handle_order_deletion_with_sync_disabled).
+		// Read by id, that read no type and purged, once per deleted order (pf704, 2026-11-16, #704); read from the
+		// object it is shop_order_placehold, which the list below skips. A force-deleted published page keeps its type.
+		$type = is_object( $post ) && ! empty( $post->post_type ) ? $post->post_type : get_post_type( $post_id );
 		if ( in_array( $type, array( 'shop_order', 'shop_order_placehold', 'shop_order_refund', 'shop_subscription', 'scheduled-action', 'revision' ), true ) ) {
 			return;
 		}
@@ -97,18 +104,43 @@ add_action(
 		if ( 'auto-draft' === get_post_status( $post_id ) ) {
 			return;
 		}
-		skyphusion_edge_cache_purge( $post_id );
+		skyphusion_edge_cache_purge( $post_id, $post );
+	},
+	10,
+	2
+);
+/*
+ * Order notes being deleted (#704). wp_delete_comment() fires delete_comment( $id, $comment ) BEFORE it deletes
+ * the row, and clean_comment_cache( $id ) AFTER, when get_comment() finds nothing. Deleting a WooCommerce order
+ * deletes its notes this way, so the type is remembered here for the clean_comment_cache below.
+ */
+function skyphusion_edge_cache_deleted_note( $id, $set = false ) {
+	static $ids = array();
+	if ( $set ) {
+		$ids[ (int) $id ] = true;
 	}
+	return isset( $ids[ (int) $id ] );
+}
+add_action(
+	'delete_comment',
+	function ( $id, $comment = null ) {
+		if ( is_object( $comment ) && 'order_note' === $comment->comment_type ) {
+			skyphusion_edge_cache_deleted_note( $id, true );
+		}
+	},
+	10,
+	2
 );
 add_action(
 	'clean_comment_cache',
 	function ( $ids ) {
 		foreach ( (array) $ids as $id ) {
 			$c = get_comment( $id );
-			if ( ! $c || 'order_note' !== $c->comment_type ) {
-				skyphusion_edge_cache_purge( $id );
-				return;
+			if ( $c ? 'order_note' === $c->comment_type : skyphusion_edge_cache_deleted_note( $id ) ) {
+				continue;
 			}
+			skyphusion_edge_cache_purge( $id );
+			return;
 		}
 	}
 );
