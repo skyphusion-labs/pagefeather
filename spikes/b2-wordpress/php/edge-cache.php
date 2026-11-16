@@ -13,19 +13,57 @@ if ( ! function_exists( 'post_message_to_js' ) ) {
 	return;
 }
 
-function skyphusion_edge_cache_purge() {
-	static $sent = false;
-	// Which hook asked, for measurement (c1 logs it: php/c1-purge-log.php).
-	do_action( 'skyphusion_edge_cache_purge_request', current_filter(), func_get_args(), $sent );
-	if ( ! $sent ) {
-		$sent = true;
-		$reply = post_message_to_js( json_encode( array( 'cache' => 'purge' ) ) );
-		do_action( 'skyphusion_edge_cache_purge_reply', $reply );
+/*
+ * Why a purge was asked (#704): a hook and a NAME only, never a value. An ordinary checkout asked
+ * about one purge per order on pf628 (2026-11-15), and every sent purge empties every cached page of
+ * the site, from the account's 5 purges a minute (#699). The Worker logs each reason as m: purge-why.
+ */
+function skyphusion_edge_cache_reason( $hook, $args ) {
+	$a = array_values( (array) $args );
+	$d = '';
+	switch ( $hook ) {
+		case 'updated_option':
+			$d = isset( $a[0] ) && is_string( $a[0] ) ? $a[0] : '';
+			break;
+		case 'clean_post_cache':
+			$d = isset( $a[0] ) ? (string) get_post_type( $a[0] ) : '';
+			break;
+		case 'clean_term_cache':
+			$d = isset( $a[1] ) && is_string( $a[1] ) ? $a[1] : '';
+			break;
+		case 'clean_comment_cache':
+			$ids = isset( $a[0] ) ? (array) $a[0] : array();
+			$c   = $ids ? get_comment( reset( $ids ) ) : null;
+			$d   = $c && isset( $c->comment_type ) ? (string) $c->comment_type : '';
+			break;
+		case 'woocommerce_product_set_stock_status':
+		case 'woocommerce_variation_set_stock_status':
+			$d = isset( $a[1] ) && is_string( $a[1] ) ? $a[1] : '';
+			break;
 	}
+	$r = '' === $d ? (string) $hook : $hook . ':' . $d;
+	return substr( preg_replace( '/[^A-Za-z0-9_:.-]/', '_', $r ), 0, 120 );
 }
 
+function skyphusion_edge_cache_purge() {
+	static $seen = array();
+	$args = func_get_args();
+	// Which hook asked, for measurement.
+	do_action( 'skyphusion_edge_cache_purge_request', current_filter(), $args, ! empty( $seen ) );
+	// The first reason asks the purge, as before. Each NEW reason in the request is sent too, so the
+	// Worker can log every distinct cause (#704); a repeat sends nothing.
+	$why = skyphusion_edge_cache_reason( current_filter(), $args );
+	if ( isset( $seen[ $why ] ) ) {
+		return;
+	}
+	$seen[ $why ] = true;
+	$reply = post_message_to_js( json_encode( array( 'cache' => 'purge', 'why' => $why ) ) );
+	do_action( 'skyphusion_edge_cache_purge_reply', $reply );
+}
+
+// 3 accepted arguments, so the reason can name the taxonomy (clean_term_cache) and the status (#704).
 foreach ( array( 'clean_term_cache', 'switch_theme', 'customize_save_after', 'wp_update_nav_menu', 'activated_plugin', 'deactivated_plugin' ) as $skyphusion_hook ) {
-	add_action( $skyphusion_hook, 'skyphusion_edge_cache_purge' );
+	add_action( $skyphusion_hook, 'skyphusion_edge_cache_purge', 10, 3 );
 }
 
 /*
@@ -75,7 +113,7 @@ add_action(
 	}
 );
 foreach ( array( 'woocommerce_product_set_stock_status', 'woocommerce_variation_set_stock_status' ) as $skyphusion_hook ) {
-	add_action( $skyphusion_hook, 'skyphusion_edge_cache_purge' );
+	add_action( $skyphusion_hook, 'skyphusion_edge_cache_purge', 10, 3 );
 }
 
 // Site options (title, permalinks, reading settings, widgets) change pages too.

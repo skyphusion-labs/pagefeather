@@ -1378,6 +1378,8 @@ async function handleMessage(raw) {
 	if (m.browserRender) return JSON.stringify(await browserRenderOp(m.browserRender));
 	if (m.cache === 'purge') {
 		purgeRequested = true;
+		// #704: why edge-cache.php asked (a hook and a name only), once per distinct reason in a request.
+		if (m.why) console.log(JSON.stringify({ m: 'purge-why', why: String(m.why).slice(0, 120) }));
 		return '{}';
 	}
 	if (dbHandler && (m.mysql !== undefined || m.mysql_b64 !== undefined)) {
