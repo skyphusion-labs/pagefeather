@@ -299,6 +299,13 @@ if o.get("snapshot_token"):
     s["SNAPSHOT_TOKEN"] = o["snapshot_token"]
 if os.environ.get("TURNSTILE_SECRET"):
     s["TURNSTILE_SECRET"] = os.environ["TURNSTILE_SECRET"]
+# #765: the PDF invoice download key, from the workspace, only when PDF_INVOICE=on. A site recorded before #765
+# gets it at its next update, which applies the workspace first. None is refused: no link is not a pass.
+if os.environ.get("PDF_INVOICE") == "on":
+    if not o.get("invoice_token"):
+        sys.stderr.write("PDF_INVOICE=on but the site workspace has no invoice_token output (apply it first)\n")
+        sys.exit(2)
+    s["INVOICE_TOKEN"] = o["invoice_token"]
 fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 with os.fdopen(fd, "w") as f:
     json.dump(s, f)' "$1"
@@ -597,6 +604,8 @@ render_user() { # render_user <site> <origin>
   [ -z "$rtune" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$rtune
   local rqframes; rqframes=$(request_frames_var) || return 1
   [ -z "$rqframes" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$rqframes
+  # #765: PDF_INVOICE is on, off or unset (deploy/pdf-invoice.sh); this site is b-dosql.
+  ( . "$WFP/../pdf-invoice.sh"; pdf_invoice_check b-dosql ) || return 1
   local woo_extras; woo_extras=$(woo_extras_var) || return 1
   [ -z "$woo_extras" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$woo_extras
   # FAULT_INJECT (#730): the throwaway-only post-INSERT fault, the same rule as deploy.sh (deploy/fault-inject.sh).
@@ -670,6 +679,9 @@ TOML
   # skyphusion-ai plugin reaches through the index.js op bridge (#330, #332). The index must exist
   # before the deploy; site.sh up makes it (ensure_search_index).
   if search_on; then printf '\n[ai]\nbinding = "AI"\n[[vectorize]]\nbinding = "SEARCH_INDEX"\nindex_name = "%s"\n' "$(search_index "$s")"; fi
+  # PDF_INVOICE (#765): Browser Rendering for PDF order invoices, the same switch as deploy.sh (deploy/pdf-invoice.sh).
+  # Metered, so opt-in. Its download key INVOICE_TOKEN goes in with the other secrets (the secrets JSON).
+  [ "${PDF_INVOICE:-}" != on ] || printf '\n[browser]\nbinding = "BROWSER"\n'
 }
 # wfp_live_site <name>: a Workers for Platforms site marked live
 # (deploy/wfp/live-sites/<name>). Presence is the marker. No setting and no
@@ -858,7 +870,7 @@ use_recorded_inputs() {
 # unset is the default list, and set, including empty, is that exact list. site update
 # remembers which one this run is, in http_allow_mode, before local -x collapses unset
 # into empty. Empty denies every host, so a drop sets the mode to unset.
-SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED"
+SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED PDF_INVOICE"
 # The measurement flags (HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV, site_settings.py MEASUREMENT) are
 # never recorded: ON only for the run that exports them; the next update without one turns it off.
 # A setting render_user reads that is not in this list is DROPPED by an update that does not export

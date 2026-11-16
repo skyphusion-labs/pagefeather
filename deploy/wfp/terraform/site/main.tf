@@ -168,6 +168,11 @@ resource "random_password" "snapshot_token" {
   length  = 48
   special = false
 }
+# #765: the download-signing key of PDF invoices (INVOICE_TOKEN), on the user Worker only when PDF_INVOICE=on.
+resource "random_password" "invoice_token" {
+  length  = 48
+  special = false
+}
 
 resource "cloudflare_workers_kv" "entry" {
   account_id   = var.account_id
@@ -225,6 +230,10 @@ output "spike_token" {
 }
 output "snapshot_token" {
   value     = random_password.snapshot_token.result
+  sensitive = true
+}
+output "invoice_token" {
+  value     = random_password.invoice_token.result
   sensitive = true
 }
 output "admin_password" {
