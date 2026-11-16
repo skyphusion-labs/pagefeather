@@ -360,7 +360,8 @@ Cloudflare support (case 02430361, 2026-11-16) said: after its retry budget (exp
 `deploy/wfp/alarm-record.py <site> <base url> [hours]` prints all four, read-only, as `@event` lines. It needs `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` and the site's `SPIKE_TOKEN`, plus `WFP_KV_ID` and `HOSTNAME` for the site map's limits.
 - **The set time:** every alarm the object sets goes through `setAlarmRecorded` (`alarm-arm.mjs`), which stores `{at, setAt, by}` under `alarm-set`. `/_purgestate` reports it as `alarmSet`. `by` is one of `tick`, `request`, `request-stale`, `purge-request` or `purge-retry`.
 - **The limits:** the script also prints the CPU of minutes whose only invocations were alarms, and whether the map's `cpuMs` is below the worst of them.
-- **No guesses:** a section it cannot read prints `could_not_measure`.
+- **No guesses:** a section it cannot read prints `could_not_measure`. A 403 from `/_purgestate` says which layer refused: the site (the token) or the edge (error code 1010, the client signature; the script sends its own User-Agent).
+- **Output:** the invocations are summarized by type and status; `--rows` also prints every alarm and non-success row.
 ## Tests (offline)
 
 ```sh

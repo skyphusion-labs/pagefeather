@@ -6,7 +6,9 @@ analytics rows. This prints those four for one site, plus the site map's limits 
 
   CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... SPIKE_TOKEN=<the site's> \\
     [WFP_KV_ID=<the site map's KV namespace id> HOSTNAME=<the site's map key>] \\
-    python3 -I deploy/wfp/alarm-record.py <site name> <base url> [hours, default 2]
+    python3 -I deploy/wfp/alarm-record.py <site name> <base url> [hours, default 2] [--rows]
+
+The invocation rows are summarized by type and status; --rows prints every alarm and non-success row too.
 
 Reads only: GET <base>/_purgestate (the site's object: getAlarm(), alarmSet, alarmFatal, cronRun), GraphQL
 durableObjectsInvocationsAdaptiveGroups and durableObjectsPeriodicGroups for script site-<name>, and GET of the
@@ -17,13 +19,16 @@ import datetime as D
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 
 GQL_INV = """query($a: String!, $s: Time!, $e: Time!, $n: String!) { viewer { accounts(filter: {accountTag: $a}) {
   inv: durableObjectsInvocationsAdaptiveGroups(limit: 10000, filter: {datetime_geq: $s, datetime_lt: $e, scriptName: $n}, orderBy: [datetimeMinute_ASC]) {
     sum { requests errors wallTime } dimensions { datetimeMinute type status objectId } } } } }"""
-GQL_CPU = """query($a: String!, $s: Time!, $e: Time!, $n: String!) { viewer { accounts(filter: {accountTag: $a}) {
-  cpu: durableObjectsPeriodicGroups(limit: 10000, filter: {datetimeMinute_geq: $s, datetimeMinute_lt: $e, scriptName: $n}, orderBy: [datetimeMinute_ASC]) {
+# durableObjectsPeriodicGroups has no scriptName filter (live, 2026-11-16: "unknown arg scriptName"); it is filtered by
+# the object ids the invocation query found.
+GQL_CPU = """query($a: String!, $s: Time!, $e: Time!, $o: [String!]) { viewer { accounts(filter: {accountTag: $a}) {
+  cpu: durableObjectsPeriodicGroups(limit: 10000, filter: {datetimeMinute_geq: $s, datetimeMinute_lt: $e, objectId_in: $o}, orderBy: [datetimeMinute_ASC]) {
     sum { cpuTime } dimensions { datetimeMinute objectId } } } } }"""
 
 
@@ -63,13 +68,40 @@ def verdict(cpu_ms_limit, ticks):
             "cpuMs": cpu_ms_limit, "worst_tick_cpu_ms": worst, "headroom_ms": round(cpu_ms_limit - worst, 1)}
 
 
+# A client with no User-Agent is refused at Cloudflare's edge on these hosts (error code 1010, a browser-signature
+# block: live, 2026-11-16), before the site sees the token. seed.py sends its own for the same reason.
+UA = {"User-Agent": "pagefeather-alarm-record"}
+
+
+def summarize(inv_rows):
+    """Invocations per (type, status): {"alarm/success": {"requests": n, "errors": n}, ...}."""
+    out = {}
+    for r in inv_rows:
+        d = r["dimensions"]
+        k = "%s/%s" % (d["type"], d["status"])
+        t = out.setdefault(k, {"requests": 0, "errors": 0})
+        t["requests"] += r["sum"].get("requests", 0); t["errors"] += r["sum"].get("errors", 0)
+    return out
+
+
+def classify_403(body):
+    """Which layer refused /_purgestate: the site (index.js answers 'forbidden': missing or wrong SPIKE_TOKEN) or
+    Cloudflare's edge (error code 1010: the client's signature), or something else."""
+    b = (body or b"").decode("utf-8", "replace").strip()
+    if b == "forbidden":
+        return "the site refused the token (index.js: x-spike-token missing or not this site's SPIKE_TOKEN)"
+    if "1010" in b:
+        return "Cloudflare's edge refused the client (error code 1010, browser signature), before the site; the token was not checked"
+    return "an unknown 403: " + b[:80]
+
+
 def event(name, obj):
     print("@event %s %s" % (name, json.dumps(obj, sort_keys=True)))
     sys.stdout.flush()
 
 
 def http_json(url, headers=None, data=None, timeout=60):
-    req = urllib.request.Request(url, data=data, headers=headers or {})
+    req = urllib.request.Request(url, data=data, headers={**UA, **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
 
@@ -87,6 +119,8 @@ def gql(q, variables, tok):
 
 
 def main(argv):
+    rows_flag = "--rows" in argv
+    argv = [a for a in argv if a != "--rows"]
     if len(argv) < 3:
         sys.exit(__doc__)
     site, base = argv[1], argv[2].rstrip("/")
@@ -103,6 +137,8 @@ def main(argv):
                         "set": ({"at": utc(st.get("at")), "setAt": utc(st.get("setAt")), "by": st.get("by")} if st else
                                 "not recorded (a build from before alarmSet, #291)"),
                         "alarmFatal": ps.get("alarmFatal"), "cronRun": ps.get("cronRun")})
+    except urllib.error.HTTPError as e:
+        event("alarm", {"could_not_measure": "HTTP %s" % e.code, "why": classify_403(e.read()) if e.code == 403 else None})
     except Exception as e:  # noqa: BLE001 (a read that failed is reported, never guessed)
         event("alarm", {"could_not_measure": str(e)[:300]})
     # 1 and 4: the object id and the analytics rows.
@@ -112,7 +148,8 @@ def main(argv):
     try:
         inv = gql(GQL_INV, v, tok)
         event("objects", {"objectIds": sorted({r["dimensions"]["objectId"] for r in inv if r["dimensions"]["objectId"]})})
-        for r in inv:
+        event("invocations", summarize(inv))
+        for r in (inv if rows_flag else []):
             d = r["dimensions"]
             if d["type"] == "alarm" or d["status"] != "success":
                 event("invocation", {"minute": d["datetimeMinute"], "type": d["type"], "status": d["status"], "objectId": d["objectId"],
@@ -120,7 +157,10 @@ def main(argv):
     except Exception as e:  # noqa: BLE001
         event("objects", {"could_not_measure": str(e)[:300]})
     try:
-        cpu = gql(GQL_CPU, v, tok)
+        ids = sorted({r["dimensions"]["objectId"] for r in (inv or []) if r["dimensions"]["objectId"]})
+        if not ids:
+            raise RuntimeError("no object id from the invocation query")
+        cpu = gql(GQL_CPU, {"a": v["a"], "s": v["s"], "e": v["e"], "o": ids}, tok)
     except Exception as e:  # noqa: BLE001
         event("tick_cpu", {"could_not_measure": "durableObjectsPeriodicGroups: " + str(e)[:300]})
     ticks = alarm_only_minutes(inv, cpu) if inv is not None and cpu is not None else []
