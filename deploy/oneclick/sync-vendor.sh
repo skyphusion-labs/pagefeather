@@ -9,6 +9,11 @@
 #
 #   deploy/oneclick/sync-vendor.sh          copy
 #   deploy/oneclick/sync-vendor.sh --list   print "source vendor-path" pairs
+#   deploy/oneclick/sync-vendor.sh --check [prefix]
+#                                            compare, copy nothing (#739): exit 1 naming each source whose copy
+#                                            differs, 2 when no pair's source starts with the prefix. The suites
+#                                            that edit a vendored source run it for their prefix
+#                                            (deploy/provision, deploy/release, deploy/wfp/dispatcher tests).
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -25,6 +30,23 @@ PAIRS=(
   "deploy/wfp/dispatcher/worker.js vendor/wfp-dispatcher/worker.js"
 )
 if [ "${1:-}" = --list ]; then printf '%s\n' "${PAIRS[@]}"; exit 0; fi
+if [ "${1:-}" = --check ]; then
+  prefix=${2:-}
+  n=0; bad=0
+  for p in "${PAIRS[@]}"; do
+    read -r src dst <<<"$p"
+    case "$src" in "$prefix"*) ;; *) continue ;; esac
+    n=$((n + 1))
+    if ! cmp -s "$ROOT/$src" "$HERE/$dst"; then
+      echo "vendor: deploy/oneclick/$dst differs from $src: run deploy/oneclick/sync-vendor.sh and commit the copy" >&2
+      bad=$((bad + 1))
+    fi
+  done
+  [ "$n" -gt 0 ] || { echo "vendor: no vendored pair has a source under '${prefix}' (a check that compares nothing is not a pass)" >&2; exit 2; }
+  [ "$bad" = 0 ] || exit 1
+  echo "vendor: $n pair$([ "$n" = 1 ] || echo s) equal${prefix:+ under $prefix}"
+  exit 0
+fi
 for p in "${PAIRS[@]}"; do
   read -r src dst <<<"$p"
   mkdir -p "$HERE/$(dirname "$dst")"
