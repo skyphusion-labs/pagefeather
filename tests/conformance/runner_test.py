@@ -38,6 +38,7 @@ class Stub:
         self.media = 0
         self.users = {}
         self.nonce = "0a1b2c3d4e"
+        self.plain = True        # plain permalinks (#760): /wp-json/ answers the home page
         stub = self
 
         class H(http.server.BaseHTTPRequestHandler):
@@ -67,7 +68,24 @@ class Stub:
                 n = int(self.headers.get("Content-Length") or 0)
                 return self.rfile.read(n)
 
+            def norm(self):
+                # ?rest_route=/x&q -> /wp-json/x?q. A /wp-json/ path on plain permalinks gets the home page.
+                from urllib.parse import urlsplit, parse_qsl, urlencode
+                u = urlsplit(self.path)
+                if u.path == "/" and u.query.startswith("rest_route="):
+                    qs = parse_qsl(u.query, keep_blank_values=True)
+                    route = qs[0][1]
+                    rest = urlencode(qs[1:], safe="/%")
+                    self.path = "/wp-json" + route + ("?" + rest if rest else "")
+                    return True
+                if self.path.startswith("/wp-json/") and stub.plain:
+                    self.send(200, "<html>home</html>", ctype="text/html")
+                    return False
+                return True
+
             def do_GET(self):
+                if not self.norm():
+                    return
                 stub.calls.append(("GET", self.path))
                 if self.path == "/wp-json/pf-conformance/v1/throwaway":
                     if stub.marker == "none":
@@ -95,6 +113,8 @@ class Stub:
 
             def do_POST(self):
                 b = self.body()
+                if not self.norm():
+                    return
                 stub.calls.append(("POST", self.path))
                 if self.path == "/wp-login.php":
                     f = dict(x.split("=", 1) for x in b.decode().split("&"))
@@ -238,6 +258,12 @@ def main():
             s.users["customer"] = {"username": "customer", "password": "old"}
         s, rd = case("wc with an existing customer", None, setup=pre, expect_rc=0)
         ok("existing customer: password updated") if s.users["customer"]["password"] != "old" else bad("existing customer not updated")
+
+        # rest_path, directly.
+        for got, want in ((runner.rest_path("/wp-json/wp/v2/users/me?context=edit"), "/?rest_route=/wp/v2/users/me&context=edit"),
+                          (runner.rest_path("/wp-json/pf-conformance/v1/throwaway"), "/?rest_route=/pf-conformance/v1/throwaway"),
+                          (runner.rest_path("/wp-login.php"), "/wp-login.php")):
+            ok("rest_path %s" % want) if got == want else bad("rest_path gave %s, want %s" % (got, want))
 
         # config: one file per suite, it parses, and it carries the exclusions.
         node = shutil.which("node")

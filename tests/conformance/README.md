@@ -29,7 +29,7 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
 ## One run, step by step
 
 1. **The content.** Run `tests/conformance/prepare-content.sh <new dir> wp wc gb`. Keep the last line it prints.
-2. **The site.** Build and deploy a throwaway with the lean engine. Put that line in front of the build. Turnstile must be OFF.
+2. **The site.** Build and deploy a throwaway with the lean engine. Put that line in front of the build. Turnstile must be OFF, or on its always-pass test keys.
    - For the cache-on run, keep the default page cache.
    - For the cache-off run, deploy with `PAGE_CACHE_TTL=0`.
 3. **Install the suite on the VPS:** `vps-run.sh install <suite> <work-dir>`.

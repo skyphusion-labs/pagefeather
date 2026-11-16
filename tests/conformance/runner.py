@@ -37,6 +37,15 @@ WC_GREP_INVERT = "@skip-on-external-env|@skip-on-pressable|@could-be-lower-level
 TIMEOUT = 60
 
 
+def rest_path(path):
+    """/wp-json/<route>?<q> -> /?rest_route=/<route>&<q>. It works with PLAIN permalinks too: a fresh
+    b2 install keeps them (#760), and there /wp-json/ answers the home page with 200."""
+    if not path.startswith("/wp-json/"):
+        return path
+    route, _, q = path[len("/wp-json"):].partition("?")
+    return "/?" + urllib.parse.urlencode({"rest_route": route}, safe="/") + ("&" + q if q else "")
+
+
 class Stop(Exception):
     """A refusal: the runner stops before (or instead of) the run."""
 
@@ -54,7 +63,7 @@ class Site:
         self.nonce = None
 
     def req(self, method, path, data=None, headers=None, form=False, cookies=True, raw=None, ctype=None):
-        url = self.base + path
+        url = self.base + rest_path(path)
         h = {"User-Agent": "pf-conformance/759"}
         h.update(headers or {})
         body = None
@@ -92,7 +101,7 @@ class Site:
         st, h, _ = self.req("POST", "/wp-login.php", {"log": user, "pwd": password, "wp-submit": "Log In",
                                                       "testcookie": "1", "redirect_to": self.base + "/wp-admin/"}, form=True)
         if not any(c.name.startswith("wordpress_logged_in_") for c in self.jar):
-            raise Stop("the wp-login.php form did not log the admin in (HTTP %d). Is Turnstile OFF on this site, "
+            raise Stop("the wp-login.php form did not log the admin in (HTTP %d). Is Turnstile OFF (or on its always-pass test keys), "
                        "and is WP_PASSWORD the account password?" % st)
         st, h, b = self.req("GET", "/wp-admin/admin-ajax.php?action=rest-nonce")
         n = b.decode().strip()
