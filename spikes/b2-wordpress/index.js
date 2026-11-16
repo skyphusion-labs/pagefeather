@@ -354,7 +354,13 @@ const SPIKE_CRON_GRACE_MS = 2000;
 const SEND_TIMEOUT_MS = 5000;
 // withPhp(fn, { shedMs }): fn's result, or PHP_SHED when the wait passed shedMs (0: never; only the
 // two request paths pass one). Cron, snapshots, dumps and imports always wait their turn.
-function withPhp(fn, { shedMs = 0, tag = null, shedWhy = null, recheck = null } = {}) {
+// True only while /_runcron is inside runCron (#720). That route already holds the request withPhp
+// (object fetch and the Worker serve both call handle inside it). runCron passes held so this one
+// call does not take the lock again. The lock itself is not reentrant: any other nested withPhp still waits.
+let runcronHoldsLock = false;
+function withPhp(fn, { shedMs = 0, tag = null, shedWhy = null, recheck = null, held = false } = {}) {
+	// #720: reuse the lock the caller already holds. A second phpLock.run waits out staleMs, then onStale drops the runtime.
+	if (held) return fn();
 	return phpLock.run(
 		async () => {
 			retirer.runStart();
@@ -3168,7 +3174,7 @@ async function runCron(booted, cleanDue = false, mail = null) {
 		let out = {};
 		try { out = JSON.parse(String(r.text).slice(String(r.text).lastIndexOf('{'))); } catch (e) { out = { parse: String(r.text).slice(-200) }; }
 		return out;
-		});
+		}, { held: runcronHoldsLock });
 	}
 
 // The front Worker verifies a gated POST before it reaches the object (#351, turnstile.mjs). It
@@ -3631,25 +3637,33 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// disabled (DISABLE_WP_CRON), so nothing runs it otherwise; the DO alarm calls the
 			// same runCron() on a cadence. Runs the Action Scheduler queue (the deferred WC
 			// order emails) and due WP-Cron events. Spike/manual trigger and the test seam.
+			// #720: already inside the request withPhp. Tell runCron to reuse it. Cleared before the
+			// drain and again in finally, including when runCron throws, so a later alarm still takes the lock.
 			bootPromise ??= boot(origin);
 			const mail = tickMailFor(env, sqlStorage);
-			const r = await runCron(await bootPromise, false, mail);
-			// Drain + SEND here too (a manual run), awaiting delivery so the response reports actual
-			// sends, not enqueues (#185). The alarm uses waitUntil; a manual trigger awaits the signal.
-			const drained = pendingEmails.length;
-			const sp = sendPending(env);
-			// Bound the drain the same way the alarm does (#198): a manual /_runcron must
-			// not hang on a send env.EMAIL.send will not promptly answer. sendBounded flags
-			// a send still in flight at the bound; the next alarm tick (and #190's Queue)
-			// re-drives it.
-			let sent = 0;
-			let sendBounded = false;
-			if (sp) {
-				const res = await boundedWait(sp, SEND_TIMEOUT_MS);
-				if (res === TIMED_OUT) sendBounded = true;
-				else sent = res;
+			runcronHoldsLock = true;
+			try {
+				const r = await runCron(await bootPromise, false, mail);
+				runcronHoldsLock = false;
+				// Drain + SEND here too (a manual run), awaiting delivery so the response reports actual
+				// sends, not enqueues (#185). The alarm uses waitUntil; a manual trigger awaits the signal.
+				const drained = pendingEmails.length;
+				const sp = sendPending(env);
+				// Bound the drain the same way the alarm does (#198): a manual /_runcron must
+				// not hang on a send env.EMAIL.send will not promptly answer. sendBounded flags
+				// a send still in flight at the bound; the next alarm tick (and #190's Queue)
+				// re-drives it.
+				let sent = 0;
+				let sendBounded = false;
+				if (sp) {
+					const res = await boundedWait(sp, SEND_TIMEOUT_MS);
+					if (res === TIMED_OUT) sendBounded = true;
+					else sent = res;
+				}
+				return new Response(JSON.stringify({ ...r, drained, sent, mail: mail.counts, lostWrites: mail.lostWritesSeen(), ...(sendBounded ? { sendBounded: true } : {}) }), { headers: { 'content-type': 'application/json' } });
+			} finally {
+				runcronHoldsLock = false;
 			}
-			return new Response(JSON.stringify({ ...r, drained, sent, mail: mail.counts, lostWrites: mail.lostWritesSeen(), ...(sendBounded ? { sendBounded: true } : {}) }), { headers: { 'content-type': 'application/json' } });
 		}
 		if (url.pathname === '/_activate') {
 			// Activate a plugin, e.g. ?plugin=woocommerce/woocommerce.php. Spike only.
