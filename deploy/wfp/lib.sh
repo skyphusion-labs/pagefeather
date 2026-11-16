@@ -196,8 +196,9 @@ obs_render() {
   esac
 }
 render_site_dispatcher() { # render_site_dispatcher <site> <kv namespace id> [cron-only]
-  local cron t
+  local cron t pl
   case "${3:-}" in "" | cron-only) ;; *) echo "render_site_dispatcher: the mode is cron-only or nothing, not ${3}" >&2; return 1 ;; esac
+  pl=$(dispatch_perf_log_var "$1") || return 2
   cron=$(snapshot_cron) || return 1
   t=$(snapshot_timeout_ms) || return 1
   if [ "${3:-}" = cron-only ]; then
@@ -207,8 +208,8 @@ render_site_dispatcher() { # render_site_dispatcher <site> <kv namespace id> [cr
   else
     render_dispatcher "$1" "$2"
   fi
-  printf '\n# The scheduled snapshot of this one site (#533, lib.sh render_site_dispatcher).\n[vars]\nSNAPSHOT_SCRIPT = "%s"\nSNAPSHOT_TIMEOUT_MS = "%s"\n\n[triggers]\ncrons = [%s]\n' \
-    "$(user_script "$1")" "$t" "${cron:+\"$cron\"}"
+  printf '\n# The scheduled snapshot of this one site (#533, lib.sh render_site_dispatcher).\n[vars]\nSNAPSHOT_SCRIPT = "%s"\nSNAPSHOT_TIMEOUT_MS = "%s"\n%s\n[triggers]\ncrons = [%s]\n' \
+    "$(user_script "$1")" "$t" "${pl:+$pl$'\n'}" "${cron:+\"$cron\"}"
   # #767: the dispatcher's Workers Logs follow the site's OBSERVABILITY (they were never rendered: #605's
   # dispatcher side could not be read). The same rule as the user Worker.
   obs_render "$1"
@@ -729,6 +730,22 @@ obs_live_site() {
   [ -n "${1:-}" ] || return 1
   [ -e "$WFP/../live-sites/$1.env" ] && return 0
   wfp_live_site "$1"
+}
+# DISPATCH_PERF_LOG (#605): "on" makes the site's dispatcher log a shape-only line when a request carries the
+# operator's x-perf-id (the id, the path, the times), so a slow request joins the dispatcher exactly: query strings
+# are redacted in Workers Logs, so an id in the URL never arrives. A measurement for a THROWAWAY that is not live
+# (the OBSERVABILITY=full rule, obs_live_site); never recorded (site_settings.py MEASUREMENT).
+# dispatch_perf_log_var <site>: the [vars] line, nothing when unset; exit 2 with the reason when refused.
+dispatch_perf_log_var() {
+  case "${DISPATCH_PERF_LOG:-}" in
+    "") return 0 ;;
+    on) ;;
+    *) echo "DISPATCH_PERF_LOG must be on or unset, not ${DISPATCH_PERF_LOG}" >&2; return 2 ;;
+  esac
+  [ "${THROWAWAY:-}" = 1 ] || { echo "DISPATCH_PERF_LOG is a measurement: it needs THROWAWAY=1" >&2; return 2; }
+  [ -n "${1:-}" ] || { echo "DISPATCH_PERF_LOG needs the site's name, to check it is not a live site" >&2; return 2; }
+  if obs_live_site "$1"; then echo "DISPATCH_PERF_LOG is a measurement, and $1 is a live site" >&2; return 2; fi
+  echo 'DISPATCH_PERF_LOG = "on"'
 }
 # obs_refuse_full <name>: OBSERVABILITY=full is refused for a live site (#639, #693).
 # Invocation logs record each request's URL, and a store's query strings hold

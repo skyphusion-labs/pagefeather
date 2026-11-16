@@ -66,7 +66,8 @@ PRESENCE = ("HTTP_ALLOW_HOSTS",)
 #   WFP_PHP_ENV     a measurement build's PHP env (USE_ZEND_ALLOC=1 swaps PHP's allocator, #434).
 #   FAULT_INJECT    "after-insert" kills the object after a request's INSERT on purpose (#730); "sql-fail" fails a
 #                   request's chosen SQL statement as the memory ceiling does (#766). Throwaway only.
-MEASUREMENT = ("HEADROOM_PROBE", "MEM_LEDGER", "WFP_PHP_ENV", "FAULT_INJECT")
+#   DISPATCH_PERF_LOG "on": the dispatcher logs each request's operator x-perf-id with its times (#605). Throwaway only.
+MEASUREMENT = ("HEADROOM_PROBE", "MEM_LEDGER", "WFP_PHP_ENV", "FAULT_INJECT", "DISPATCH_PERF_LOG")
 SECRETS = ("TURNSTILE_SECRET",)
 # No log line carries data from SECRETS: a message about a secret is one fixed text, and which
 # secret, and what happened, is in the exit code (5 a recorded secret is missing, 6 a live one would

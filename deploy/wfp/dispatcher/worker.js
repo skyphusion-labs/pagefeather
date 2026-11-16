@@ -64,78 +64,106 @@ function limitsOf(site) {
 	return l;
 }
 
+// #605: on a throwaway (DISPATCH_PERF_LOG, lib.sh dispatch_perf_log_var), the operator's x-perf-id, so a slow request
+// joins the dispatcher's own invocation exactly (query strings are redacted in Workers Logs). Shape only: an id of
+// this form, the path (never the query), the times. A request without one, or a site without the var, logs nothing.
+const PERF_ID = /^[A-Za-z0-9._:-]{1,80}$/;
+function perfIdOf(request, env) {
+	if (!env || env.DISPATCH_PERF_LOG !== 'on') return null;
+	const id = request.headers.get('x-perf-id');
+	return id && PERF_ID.test(id) ? id : null;
+}
+
 export default {
 	async fetch(request, env) {
-		// URL already lowercases the hostname (WHATWG URL), so the site map keys are lower case.
-		const url = new URL(request.url);
-		if (url.pathname === SNAPSHOT_PATH) return fail(404, 'not-public', 'Not found.');
-		const host = url.hostname;
-		const raw = await env.SITES.get(host);
-		if (raw === null) return fail(404, 'no-site', 'No site at this address.');
-		let site;
-		try {
-			site = JSON.parse(raw);
-		} catch {
-			return fail(500, 'bad-entry', 'This site is not configured correctly.');
-		}
-		if (!site || typeof site.script !== 'string' || !SCRIPT.test(site.script)) {
-			return fail(500, 'bad-entry', 'This site is not configured correctly.');
-		}
-		const mv = movingNow(site, Date.now());
-		if (mv.bad) console.log(JSON.stringify({ m: 'wfp-moving-bad', host }));
-		if (mv.closed && !new URL(request.url).pathname.startsWith('/_')) {
-			return new Response(request.method === 'HEAD' ? null : MOVING_PAGE, {
-				status: 503,
-				headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'retry-after': '120', 'x-wfp-error': 'moving' },
-			});
-		}
-		const opts = {};
-		const limits = limitsOf(site);
-		if (Object.keys(limits).length) opts.limits = limits;
-		const viaOutbound = site.outbound !== false;
-		if (viaOutbound) opts.outbound = { SITE: site.script };
-		const ns = viaOutbound ? env.DISPATCHER_OUT : env.DISPATCHER;
-		try {
-			return await ns.get(site.script, {}, opts).fetch(request);
-		} catch (e) {
-			const msg = String((e && e.message) || e);
-			if (msg.startsWith('Worker not found')) return fail(404, 'not-deployed', 'This site is not deployed.');
-			return fail(502, 'dispatch', 'This site did not answer.');
-		}
-	},
-	async scheduled(event, env) {
-		const script = env.SNAPSHOT_SCRIPT;
+		const pid = perfIdOf(request, env);
+		if (!pid) return dispatchFetch(request, env);
 		const t0 = Date.now();
-		const log = (o) => console.log('@event snapshot ' + JSON.stringify({ script: script || null, scheduledTime: event && event.scheduledTime, ms: Date.now() - t0, ...o }));
-		if (typeof script !== 'string' || !SCRIPT.test(script) || !env.SNAPSHOT_TOKEN) {
-			log({ ok: false, error: 'not-configured' });
-			throw new Error('snapshot: not configured (SNAPSHOT_SCRIPT and SNAPSHOT_TOKEN)');
-		}
-		const n = Number(env.SNAPSHOT_TIMEOUT_MS);
-		const ms = Number.isInteger(n) && n > 0 ? n : SNAPSHOT_TIMEOUT_MS;
-		let timer;
-		const timeout = new Promise((_, no) => (timer = setTimeout(() => no(new Error('timeout after ' + ms + ' ms')), ms)));
-		let status = 0;
-		let body = null;
+		const path = new URL(request.url).pathname;
+		console.log(JSON.stringify({ m: 'disp-req', at: 'start', id: pid, path }));
 		try {
-			const req = new Request('https://snapshot.internal' + SNAPSHOT_PATH, { method: 'POST', headers: { 'x-snapshot-token': env.SNAPSHOT_TOKEN }, signal: AbortSignal.timeout(ms) });
-			const r = await Promise.race([env.DISPATCHER.get(script).fetch(req), timeout]);
-			status = r.status;
-			const text = await Promise.race([r.text(), timeout]);
-			try {
-				body = JSON.parse(text);
-			} catch {
-				body = { text: text.slice(0, 200) };
-			}
+			const res = await dispatchFetch(request, env);
+			console.log(JSON.stringify({ m: 'disp-req', at: 'end', id: pid, path, ms: Date.now() - t0, status: res.status }));
+			return res;
 		} catch (e) {
-			const error = String((e && e.message) || e).slice(0, 200);
-			log({ ok: false, error });
-			throw new Error('snapshot of ' + script + ': ' + error);
-		} finally {
-			clearTimeout(timer);
+			console.log(JSON.stringify({ m: 'disp-req', at: 'threw', id: pid, path, ms: Date.now() - t0 }));
+			throw e;
 		}
-		const ok = status === 200 && body && body.ok === true;
-		log({ ok, status, result: body });
-		if (!ok) throw new Error('snapshot of ' + script + ': HTTP ' + status + ' ' + JSON.stringify(body).slice(0, 200));
 	},
+	scheduled: (event, env) => scheduledRun(event, env),
 };
+
+async function dispatchFetch(request, env) {
+	// URL already lowercases the hostname (WHATWG URL), so the site map keys are lower case.
+	const url = new URL(request.url);
+	if (url.pathname === SNAPSHOT_PATH) return fail(404, 'not-public', 'Not found.');
+	const host = url.hostname;
+	const raw = await env.SITES.get(host);
+	if (raw === null) return fail(404, 'no-site', 'No site at this address.');
+	let site;
+	try {
+		site = JSON.parse(raw);
+	} catch {
+		return fail(500, 'bad-entry', 'This site is not configured correctly.');
+	}
+	if (!site || typeof site.script !== 'string' || !SCRIPT.test(site.script)) {
+		return fail(500, 'bad-entry', 'This site is not configured correctly.');
+	}
+	const mv = movingNow(site, Date.now());
+	if (mv.bad) console.log(JSON.stringify({ m: 'wfp-moving-bad', host }));
+	if (mv.closed && !new URL(request.url).pathname.startsWith('/_')) {
+		return new Response(request.method === 'HEAD' ? null : MOVING_PAGE, {
+			status: 503,
+			headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'retry-after': '120', 'x-wfp-error': 'moving' },
+		});
+	}
+	const opts = {};
+	const limits = limitsOf(site);
+	if (Object.keys(limits).length) opts.limits = limits;
+	const viaOutbound = site.outbound !== false;
+	if (viaOutbound) opts.outbound = { SITE: site.script };
+	const ns = viaOutbound ? env.DISPATCHER_OUT : env.DISPATCHER;
+	try {
+		return await ns.get(site.script, {}, opts).fetch(request);
+	} catch (e) {
+		const msg = String((e && e.message) || e);
+		if (msg.startsWith('Worker not found')) return fail(404, 'not-deployed', 'This site is not deployed.');
+		return fail(502, 'dispatch', 'This site did not answer.');
+	}
+}
+
+async function scheduledRun(event, env) {
+	const script = env.SNAPSHOT_SCRIPT;
+	const t0 = Date.now();
+	const log = (o) => console.log('@event snapshot ' + JSON.stringify({ script: script || null, scheduledTime: event && event.scheduledTime, ms: Date.now() - t0, ...o }));
+	if (typeof script !== 'string' || !SCRIPT.test(script) || !env.SNAPSHOT_TOKEN) {
+		log({ ok: false, error: 'not-configured' });
+		throw new Error('snapshot: not configured (SNAPSHOT_SCRIPT and SNAPSHOT_TOKEN)');
+	}
+	const n = Number(env.SNAPSHOT_TIMEOUT_MS);
+	const ms = Number.isInteger(n) && n > 0 ? n : SNAPSHOT_TIMEOUT_MS;
+	let timer;
+	const timeout = new Promise((_, no) => (timer = setTimeout(() => no(new Error('timeout after ' + ms + ' ms')), ms)));
+	let status = 0;
+	let body = null;
+	try {
+		const req = new Request('https://snapshot.internal' + SNAPSHOT_PATH, { method: 'POST', headers: { 'x-snapshot-token': env.SNAPSHOT_TOKEN }, signal: AbortSignal.timeout(ms) });
+		const r = await Promise.race([env.DISPATCHER.get(script).fetch(req), timeout]);
+		status = r.status;
+		const text = await Promise.race([r.text(), timeout]);
+		try {
+			body = JSON.parse(text);
+		} catch {
+			body = { text: text.slice(0, 200) };
+		}
+	} catch (e) {
+		const error = String((e && e.message) || e).slice(0, 200);
+		log({ ok: false, error });
+		throw new Error('snapshot of ' + script + ': ' + error);
+	} finally {
+		clearTimeout(timer);
+	}
+	const ok = status === 200 && body && body.ok === true;
+	log({ ok, status, result: body });
+	if (!ok) throw new Error('snapshot of ' + script + ': HTTP ' + status + ' ' + JSON.stringify(body).slice(0, 200));
+}

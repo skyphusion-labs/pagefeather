@@ -53,13 +53,23 @@ jl(os.path.join(tmp, "run.jsonl"), run)
 ms = lambda s: s * 1000.0  # noqa: E731
 start = lambda r: ms(r["t"] - r["s"])  # noqa: E731
 A, B_, C, D, E, F, G = run
+# The dispatcher with DISPATCH_PERF_LOG=on: its disp-req lines (by x-perf-id) and its invocation records (by rid).
+# G's lines come FIRST: an id match that is not exact would hand them to A (r-1 is a prefix of r-10).
+disp_lines = [
+    {"t": start(G) + 20, "rid": "dG", "m": "disp-req", "at": "start", "id": "r-10", "path": "/wp-admin/edit.php"},
+    {"t": start(A) + 30, "rid": "dA", "m": "disp-req", "at": "start", "id": "r-1", "path": "/wp-admin/post-new.php"},
+    {"t": ms(A["t"]) - 10, "rid": "dA", "m": "disp-req", "at": "end", "id": "r-1", "path": "/wp-admin/post-new.php", "ms": 39960, "status": 200},
+    {"t": start(C) + 40, "rid": "dC", "m": "disp-req", "at": "start", "id": "r-3", "path": "/wp-admin/post-new.php"},
+    {"t": start(D) + 40, "rid": "dD", "m": "disp-req", "at": "start", "id": "r-4", "path": "/wp-admin/edit.php"},
+    {"t": ms(D["t"]) - 10, "rid": "dD", "m": "disp-req", "at": "end", "id": "r-4", "path": "/wp-admin/edit.php", "ms": 89950, "status": 503},
+    {"t": start(E) + 40, "rid": "dE", "m": "disp-req", "at": "start", "id": "r-5", "path": "/wp-admin/profile.php"},
+]
 disp_inv = [
-    # G's own invocation FIRST: a prefix join would hand it to A (pfid=r-1 is a prefix of pfid=r-10)
-    {"t": start(G) + 20, "type": "fetch", "outcome": "canceled", "status": None, "path": "/wp-admin/edit.php", "url": "https://x/wp-admin/edit.php?pfid=r-10", "wallMs": 30900, "rid": "dG"},
-    {"t": start(A) + 30, "type": "fetch", "outcome": "ok", "status": 200, "path": "/wp-admin/post-new.php", "url": "https://x/wp-admin/post-new.php?pfid=r-1", "wallMs": 39900, "rid": "dA"},
-    {"t": start(C) + 40, "type": "fetch", "outcome": "canceled", "status": None, "path": "/wp-admin/post-new.php", "url": "https://x/wp-admin/post-new.php?pfid=r-3", "wallMs": 120900, "rid": "dC"},
-    {"t": start(D) + 40, "type": "fetch", "outcome": "ok", "status": 503, "path": "/wp-admin/edit.php", "url": "https://x/wp-admin/edit.php?pfid=r-4", "wallMs": 89900, "rid": "dD"},
-    {"t": start(E) + 40, "type": "fetch", "outcome": "canceled", "status": None, "path": "/wp-admin/profile.php", "url": "https://x/wp-admin/profile.php?pfid=r-5", "wallMs": 154900, "rid": "dE"},
+    {"t": start(G) + 19, "type": "fetch", "outcome": "canceled", "status": None, "path": "/wp-admin/edit.php", "wallMs": 30900, "rid": "dG"},
+    {"t": start(A) + 29, "type": "fetch", "outcome": "ok", "status": 200, "path": "/wp-admin/post-new.php", "wallMs": 39900, "rid": "dA"},
+    {"t": start(C) + 39, "type": "fetch", "outcome": "canceled", "status": None, "path": "/wp-admin/post-new.php", "wallMs": 120900, "rid": "dC"},
+    {"t": start(D) + 39, "type": "fetch", "outcome": "ok", "status": 503, "path": "/wp-admin/edit.php", "wallMs": 89900, "rid": "dD"},
+    {"t": start(E) + 39, "type": "fetch", "outcome": "canceled", "status": None, "path": "/wp-admin/profile.php", "wallMs": 154900, "rid": "dE"},
 ]
 site_lines = [
     {"t": start(A) + 120, "rid": "sA", "m": "mem-ledger", "id": "r-1", "at": "start"},
@@ -73,7 +83,7 @@ site_inv = [
     {"t": start(E) + 120, "type": "fetch", "outcome": "exceededMemory", "status": 500, "path": "/wp-admin/profile.php", "wallMs": 154000, "rid": "oE"},
 ]
 wexport(os.path.join(tmp, "site"), site_lines, site_inv)
-wexport(os.path.join(tmp, "disp"), [], disp_inv)
+wexport(os.path.join(tmp, "disp"), disp_lines, disp_inv)
 
 p = subprocess.run([sys.executable, "-I", TOOL, os.path.join(tmp, "run.jsonl"), "--site", os.path.join(tmp, "site"), "--disp", os.path.join(tmp, "disp"), "--json"],
                    capture_output=True, text=True, env=dict(os.environ, SLOW_S="30"))
@@ -86,24 +96,23 @@ ok("A: the segments add up from the layers (edge 30, dispatch 30, to-object 50 f
    by.get("r-1", {}).get("segmentsMs", {}) and [by["r-1"]["segmentsMs"][k] for k in ("edge", "dispatch", "to-object", "php")] == [30, 30, 50, 3800], str(by.get("r-1", {}).get("segmentsMs")))
 ok("A: the db entry is inside php, never summed (rest = 40000 - 30 - 30 - 50 - 36000 - 3800)", by.get("r-1", {}).get("segmentsMs", {}).get("rest") == 90, str(by.get("r-1", {}).get("segmentsMs")))
 ok("B: no dispatcher invocation: never reached the dispatcher", by.get("r-2", {}).get("where") == "never reached the dispatcher", by.get("r-2", {}).get("where"))
-ok("C: the dispatcher joined by pfid, no site invocation: dispatch", by.get("r-3", {}).get("where") == "dispatch: the site Worker never started" and by["r-3"]["disp"]["join"] == "pfid", json.dumps(by.get("r-3")))
-ok("C: the dispatcher's own outcome and wall time are shown", by.get("r-3", {}).get("disp", {}).get("outcome") == "canceled" and by["r-3"]["disp"]["wallMs"] == 120900)
+ok("C: the dispatcher joined by its disp-req line, no site invocation: dispatch", by.get("r-3", {}).get("where") == "dispatch: the site Worker never started" and by["r-3"]["disp"]["join"] == "disp-req", json.dumps(by.get("r-3")))
+ok("C: no end line (the call never returned): end is None", by.get("r-3", {}).get("disp", {}).get("end") is None, json.dumps(by.get("r-3", {}).get("disp")))
+ok("C: the dispatcher's own outcome and wall time are shown (from its invocation, by rid)", by.get("r-3", {}).get("disp", {}).get("outcome") == "canceled" and by["r-3"]["disp"]["wallMs"] == 120900)
+ok("D: the dispatcher's end line gives its status and time", by.get("r-4", {}).get("disp", {}).get("status") == 503 and by["r-4"]["disp"]["ms"] == 89950 and by["r-4"]["disp"]["end"] == "end", json.dumps(by.get("r-4", {}).get("disp")))
 ok("D: the site Worker started, no object line: to-object (the #703 deadline shown)", by.get("r-4", {}).get("where") == "to-object: the object never ran it" and by["r-4"]["deadline"] == "no-answer", json.dumps(by.get("r-4")))
 ok("E: the object started it and never ended: inside the object, its exceededMemory shown",
    by.get("r-5", {}).get("where") == "inside the object (it started; no end line)" and ("exceededMemory", 500, 154000) in [tuple(x) for x in by["r-5"]["site"]["invocations"]], json.dumps(by.get("r-5")))
-ok("A joins its OWN dispatcher invocation, not r-10's listed first (an exact pfid, not a prefix)", by.get("r-1", {}).get("disp", {}).get("wallMs") == 39900, json.dumps(by.get("r-1", {}).get("disp")))
-ok("G joins its own invocation by pfid", by.get("r-10", {}).get("disp", {}).get("wallMs") == 30900 and by["r-10"]["disp"]["join"] == "pfid", json.dumps(by.get("r-10", {}).get("disp")))
+ok("A joins its OWN dispatcher invocation, not r-10's listed first (an exact id, not a prefix)", by.get("r-1", {}).get("disp", {}).get("wallMs") == 39900, json.dumps(by.get("r-1", {}).get("disp")))
+ok("G joins its own invocation by its id", by.get("r-10", {}).get("disp", {}).get("wallMs") == 30900 and by["r-10"]["disp"]["join"] == "disp-req", json.dumps(by.get("r-10", {}).get("disp")))
 ok("the verdict histogram counts each placement", r.get("where", {}).get("queue") == 1 and r["where"].get("never reached the dispatcher") == 1, json.dumps(r.get("where")))
 
-# The dispatcher export without the query: the fallback joins by path and start time, and says so.
-d2 = [dict(i) for i in disp_inv]
-for i in d2:
-    i.pop("url")
-wexport(os.path.join(tmp, "disp-noquery"), [], d2)
-p = subprocess.run([sys.executable, "-I", TOOL, os.path.join(tmp, "run.jsonl"), "--site", os.path.join(tmp, "site"), "--disp", os.path.join(tmp, "disp-noquery"), "--json"], capture_output=True, text=True)
+# DISPATCH_PERF_LOG off: no disp-req lines. The only fallback joins by path and start time, and says so.
+wexport(os.path.join(tmp, "disp-nolines"), [], disp_inv)
+p = subprocess.run([sys.executable, "-I", TOOL, os.path.join(tmp, "run.jsonl"), "--site", os.path.join(tmp, "site"), "--disp", os.path.join(tmp, "disp-nolines"), "--json"], capture_output=True, text=True)
 r2 = json.loads(p.stdout)
 by2 = {x["perfId"]: x for x in r2["rows"]}
-ok("no query in the export: the dispatcher joins by path and time, marked so", by2["r-3"]["disp"]["join"] == "by time", json.dumps(by2["r-3"]["disp"]))
+ok("no disp-req lines: the dispatcher joins by path and time, marked so", by2["r-3"]["disp"]["join"] == "by time", json.dumps(by2["r-3"]["disp"]))
 
 p = subprocess.run([sys.executable, "-I", TOOL, os.path.join(tmp, "run.jsonl"), "--site", os.path.join(tmp, "site")], capture_output=True, text=True)
 ok("no dispatcher export: exit 2, and the rows say could not measure", p.returncode == 2 and "could not measure" in p.stdout, str(p.returncode))

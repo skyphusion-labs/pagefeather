@@ -25,8 +25,7 @@ Every admin request sends the spike token, x-mem-ledger: 1 and its own x-perf-id
 One JSON line per request: step, window, who, kind, method, path, perf id, status (EXC for no answer),
 client seconds, the headers the bar reads, and from x-perf: wasm1MiB, boot, bootWaitMs, phpMs and the ledger
 (mem.runtimes memLive retiredMem retiredMemMiB; mem.memReuse). Headers only, never a body.
-Settings (environment): EDITORS 4, WINDOW_REQS 70, WINDOWS 0,20,60, GUEST_RPS 1, QUIET_S 300, TIMEOUT 300,
-PFID_IN_URL (1: each admin request's x-perf-id also in its query, pfid=<id>, for the #605 dispatcher join)
+Settings (environment): EDITORS 4, WINDOW_REQS 70, WINDOWS 0,20,60, GUEST_RPS 1, QUIET_S 300, TIMEOUT 300
 (above #703's 90 s bound and #605's 155 s hang, so a hang is measured, not cut by the client).
 """
 import json, os, random, re, sys, threading, time, urllib.error, urllib.parse, urllib.request, uuid
@@ -48,9 +47,6 @@ WINDOWS = [float(x) for x in os.environ.get("WINDOWS", "0,20,60").split(",")]
 GUEST_RPS = float(os.environ.get("GUEST_RPS", "1"))
 QUIET_S = float(os.environ.get("QUIET_S", "300"))
 TIMEOUT = float(os.environ.get("TIMEOUT", "300"))
-# #605: PFID_IN_URL=1 also puts each admin request's x-perf-id in its query (pfid=<id>), so the dispatcher's Workers
-# Logs invocation (which records the URL, not our headers) joins to the request exactly (tests/load/hang_read.py).
-PFID_IN_URL = os.environ.get("PFID_IN_URL") == "1"
 STEP = sys.argv[1] if len(sys.argv) > 1 else "all"
 if STEP not in ("check", "repro", "burst", "quiet", "all"):
     sys.exit("reuse-run: the step is check, repro, burst, quiet or all")
@@ -95,8 +91,6 @@ def admin(o, step, who, kind, path, data=None, method=None, window=None, rest=Fa
         if data is not None:
             data = json.dumps(data).encode(); h["Content-Type"] = "application/json"
         path = "/?rest_route=" + path
-    if PFID_IN_URL:
-        path = path + ("&" if "?" in path else "?") + "pfid=" + p
     r = BL.req(o, path, data, h, method, timeout=TIMEOUT)
     hd = r.get("h") or {}
     row = {"step": step, "window": window, "who": who, "kind": kind, "method": method or ("POST" if data is not None else "GET"),

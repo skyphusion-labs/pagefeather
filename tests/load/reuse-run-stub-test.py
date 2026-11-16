@@ -246,23 +246,19 @@ c, t, n = check("on", "lean", "on", "-e187d5fa1")
 ok("check refuses another build", c == 1 and "does not hold -e187d5fa1" in t, t[-200:])
 c, t, n = check("off", "npm", "on")
 ok("check refuses reuse off where on is wanted", c == 1 and "PHP_MEMORY_REUSE: live off" in t, t[-200:])
-# #605: PFID_IN_URL=1 puts each admin request's x-perf-id in its query, and Server-Timing is kept per request.
+# #605: every admin request carries its x-perf-id header (the dispatcher's DISPATCH_PERF_LOG joins by it), and
+# Server-Timing is kept per request (hang_read.py's queue, boot and php segments).
 reset("on")
-fp = os.path.join(tmp, "pfid.jsonl")
-env = dict(os.environ, B=B, ADMIN_PASSWORD="pw", SPIKE_TOKEN="tok", ARM="stub-pfid", OUT=fp, PFID_IN_URL="1",
+fp = os.path.join(tmp, "st.jsonl")
+env = dict(os.environ, B=B, ADMIN_PASSWORD="pw", SPIKE_TOKEN="tok", ARM="stub-st", OUT=fp,
            EDITORS="1", WINDOW_REQS="3", WINDOWS="0", GUEST_RPS="20", QUIET_S="0.1", TIMEOUT="20")
 r = subprocess.run([sys.executable, "-I", RUN, "burst"], env=env, capture_output=True, text=True, timeout=300)
 seen = list(S["seen"])
 padm = [x for x in (json.loads(l) for l in open(fp) if l.strip()) if x.get("perfId") and x.get("kind") in ("post-new", "edit", "save")]
-ok("PFID_IN_URL: the run exits 0 and has admin requests", r.returncode == 0 and len(padm) >= 3, (r.stdout + r.stderr)[-200:])
-ok("PFID_IN_URL: every admin request the site saw carries pfid=<its x-perf-id> in its query",
-   seen and all(pid and ("pfid=" + pid) in path for path, pid in seen), str(seen[:3]))
-ok("Server-Timing is kept on each admin line", all("queue;dur=5" in (x.get("server-timing") or "") for x in padm if x.get("status") == 200))
-reset("on")
-fq = os.path.join(tmp, "nopfid.jsonl")
-env.pop("PFID_IN_URL"); env.update(OUT=fq)
-subprocess.run([sys.executable, "-I", RUN, "burst"], env=env, capture_output=True, text=True, timeout=300)
-ok("without PFID_IN_URL no query is added", S["seen"] and not any("pfid=" in path for path, _ in S["seen"]))
+ok("#605: the run exits 0 and has admin requests", r.returncode == 0 and len(padm) >= 3, (r.stdout + r.stderr)[-200:])
+ok("#605: every admin request the site saw carries an x-perf-id header", seen and all(pid for _, pid in seen), str(seen[:3]))
+ok("#605: and no query is added to its path for it", not any("pfid" in path for path, _ in seen), str(seen[:3]))
+ok("#605: Server-Timing is kept on each admin line", all("queue;dur=5" in (x.get("server-timing") or "") for x in padm if x.get("status") == 200))
 srv.shutdown()
 import shutil
 shutil.rmtree(tmp)
