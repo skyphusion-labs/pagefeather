@@ -506,10 +506,12 @@ remote_tuning_vars() {
   [ -z "$out" ] || printf '%s\n' "$out"
 }
 # REQUEST_FRAMES (#352): on wraps each PHP request in a request frame on the undo log (it opens at the
-# first write), so an isolate reset rolls the whole request back. on, off, or unset (no var).
+# first write), so an isolate reset rolls the whole request back. ON BY DEFAULT since #589 part 1 (run8,
+# 2026-11-16: 50 of 50 writes killed after their INSERT were rolled back with frames on, and all 50 kept while
+# the client was told they failed without). Unset renders on; off is the escape hatch; anything else fails.
 request_frames_var() {
   case "${REQUEST_FRAMES:-}" in
-    "") ;;
+    "") echo 'REQUEST_FRAMES = "on"' ;;
     on|off) echo "REQUEST_FRAMES = \"${REQUEST_FRAMES}\"" ;;
     *) echo "REQUEST_FRAMES must be on, off or unset, not ${REQUEST_FRAMES}" >&2; return 1 ;;
   esac

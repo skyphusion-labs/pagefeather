@@ -28,7 +28,7 @@ echo "1. render-conf.sh"
 ok "b-dosql, unset: REQUEST_FRAMES = \"on\" (the default)" "$([ "$(render b-dosql)" = 'REQUEST_FRAMES = "on"' ] && echo 1 || echo 0)"
 ok "b-dosql, REQUEST_FRAMES=off: rendered off (the escape hatch)" "$([ "$(render b-dosql REQUEST_FRAMES=off)" = 'REQUEST_FRAMES = "off"' ] && echo 1 || echo 0)"
 ok "b-dosql, REQUEST_FRAMES=on: rendered on" "$([ "$(render b-dosql REQUEST_FRAMES=on)" = 'REQUEST_FRAMES = "on"' ] && echo 1 || echo 0)"
-ok "it sits in [vars], before the first table (with DB_IN_DO)" "$(render b-dosql >/dev/null; awk '/^\[/{exit} /^REQUEST_FRAMES = /{f=1} END{exit !f}' "$T/r.toml" && echo 1 || echo 0)"
+ok "it sits in [vars] (between [vars] and the next table, with DB_IN_DO)" "$(render b-dosql >/dev/null; awk '/^\[vars\]/{v=1; next} /^\[/{v=0} v && /^REQUEST_FRAMES = /{f=1} END{exit !f}' "$T/r.toml" && echo 1 || echo 0)"
 for v in b-do a; do ok "variant $v: no REQUEST_FRAMES line (no object-SQLite undo log)" "$([ "$(render $v)" = none ] && echo 1 || echo 0)"; done
 echo "2. deploy.sh refuses before any step"
 for bad in yes 1 ON true; do refuse "REQUEST_FRAMES must be on, off or unset" VARIANT=b-dosql "REQUEST_FRAMES=$bad"; done

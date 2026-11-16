@@ -30,6 +30,7 @@ const EXPECTED_DEFAULT = [
   { type: 'plain_text', name: 'PHP_LOCATION', text: 'enam' },
   { type: 'plain_text', name: 'PHP_DO_POOL', text: '1' },
   { type: 'plain_text', name: 'DB_IN_DO', text: 'on' },
+  { type: 'plain_text', name: 'REQUEST_FRAMES', text: 'on' }, // #589 part 1: on by default
   { type: 'plain_text', name: 'OBJECT_CACHE_L2', text: 'on' },
   { type: 'images', name: 'IMAGES' },
   { type: 'r2_bucket', name: 'MEDIA', bucket_name: 'wp-wfp-blog-media' },

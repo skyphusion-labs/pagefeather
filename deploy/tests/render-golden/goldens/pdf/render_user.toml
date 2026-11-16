@@ -22,7 +22,7 @@ PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
 SITE_ORIGIN = "https://pdf.example.com"
 
 HTTP_ALLOW_HOSTS = ".wordpress.org,.woocommerce.com,.gravatar.com"
-
+REQUEST_FRAMES = "on"
 PHP_IN_DO = "on"
 PHP_LOCATION = "enam"
 PHP_DO_POOL = "1"

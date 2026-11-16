@@ -67,6 +67,11 @@
           },
           {
             "type": "plain_text",
+            "name": "REQUEST_FRAMES",
+            "text": "on"
+          },
+          {
+            "type": "plain_text",
             "name": "OBJECT_CACHE_L2",
             "text": "on"
           },

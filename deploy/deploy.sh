@@ -96,6 +96,13 @@ fi
 # shellcheck source=SCRIPTDIR/a-settings.sh
 . "$ROOT/deploy/a-settings.sh"
 a_settings_check "$VARIANT" || exit 2
+# REQUEST_FRAMES (#352, #589 part 1): on by default for b-dosql (render-conf.sh), off the escape hatch. Only
+# b-dosql has the object-SQLite undo log, so the var on another variant is refused, before any step.
+case "${REQUEST_FRAMES:-}" in
+  ""|on|off) ;;
+  *) echo "REQUEST_FRAMES must be on, off or unset, not ${REQUEST_FRAMES}" >&2; exit 2 ;;
+esac
+if [ -n "${REQUEST_FRAMES:-}" ] && [ "${VARIANT:-}" != b-dosql ]; then echo "REQUEST_FRAMES is for variant b-dosql (the object-SQLite undo log), not ${VARIANT:-unset}" >&2; exit 2; fi
 # WOO_EXTRAS (#667): off or unset, every variant, before any Terraform or build step.
 # The same rule as deploy/wfp/lib.sh woo_extras_var. Unset writes no [vars] line.
 case "${WOO_EXTRAS:-}" in

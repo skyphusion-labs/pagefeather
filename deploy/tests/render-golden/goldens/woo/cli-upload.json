@@ -67,6 +67,11 @@
           },
           {
             "type": "plain_text",
+            "name": "REQUEST_FRAMES",
+            "text": "on"
+          },
+          {
+            "type": "plain_text",
             "name": "PAGE_CACHE_PRODUCT_TTL",
             "text": "30"
           },
