@@ -261,3 +261,22 @@ test('#714 index.js: the held count wraps the forward (decremented in finally), 
 	assert.ok(/ovHeld\+\+/.test(branch) && /finally \{[^}]*ovHeld--/.test(branch), 'held is counted, and released in finally');
 	assert.ok(/MEM_LEDGER === 'on'[^\n]*overflow-held/.test(branch), 'the ledger line is gated by MEM_LEDGER=on');
 });
+
+// #714 after the #715 rebase: overflow-local logs the call id after the held-count try/finally, so the id must be
+// declared OUTSIDE that try. Inside it, the line throws a ReferenceError on every both-busy fallback (block scope).
+test('the call id is declared before the held-count try, so overflow-local can read it', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const decl = src.indexOf('const callId = crypto.randomUUID(); // #708: one id for this request across its choices');
+	const tryAt = src.indexOf('\t\t\ttry {\n', src.indexOf('ovHeld++;'));
+	const local = src.indexOf("event: 'overflow-local'");
+	assert.ok(decl > 0 && tryAt > 0 && local > tryAt, 'the shape is found');
+	assert.ok(decl < tryAt, 'declared before the try, in the scope overflow-local runs in');
+});
+
+test('the capped answer is never stored, at the edge either (as #715\'s shed answers)', async () => {
+	const { overflowCapResponse } = await import('../overflow.mjs');
+	const r = overflowCapResponse();
+	assert.equal(r.headers.get('cloudflare-cdn-cache-control'), 'no-store');
+	assert.equal(r.headers.get('x-write-loss'), 'none');
+	assert.equal(r.headers.get('x-php-overflow'), 'capped');
+});

@@ -3510,6 +3510,7 @@ const site = {
 				return overflowCapResponse();
 			}
 			const picker = ovPickerFor(ovs.pool);
+			const callId = crypto.randomUUID(); // #708: one id for this request across its choices
 			ovHeld++;
 			// #714 measurement: with MEM_LEDGER=on, what this isolate holds while it forwards (the ledger is otherwise taken
 			// only in handle(), which a forwarded request never calls here).
@@ -3520,7 +3521,6 @@ const site = {
 			// the front, so it is sent once. With busy off, each request goes to one choice and may queue in the object.
 			const busyOk = ovs.busy && !turnstileRoute(env, req.method, url);
 			const choices = busyOk ? picker.pickTwo() : [picker.pick()];
-			const callId = crypto.randomUUID(); // #708: one id for this request across its choices
 			for (const i of choices) {
 				picker.start(i);
 				console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow', obj: overflowName(i), running: phpLock.running, waiting: phpLock.waiting, inflight: picker.inflight(i), call: callId }));

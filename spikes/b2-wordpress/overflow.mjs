@@ -1,3 +1,4 @@
+import { noStoreAnywhere } from './perf-headers.mjs';
 // PHP overflow to a Durable Object pool on approach A (#296 step (3); ruled 2026-11-15).
 //
 // Approach A runs PHP in the Worker isolate, one request at a time (php-lock.mjs). Cloudflare keeps
@@ -58,7 +59,8 @@ export function overHeld(s, held) {
 
 // #714: the at-cap answer. Nothing ran and nothing was forwarded, so the client may simply try again.
 export function overflowCapResponse() {
-	const headers = new Headers({ 'content-type': 'text/plain; charset=utf-8', 'retry-after': '5', 'x-php-overflow': 'capped', 'x-write-loss': 'none', 'x-overloaded': '1', 'cache-control': 'no-store, private' });
+	const headers = new Headers({ 'content-type': 'text/plain; charset=utf-8', 'retry-after': '5', 'x-php-overflow': 'capped', 'x-write-loss': 'none', 'x-overloaded': '1' });
+	noStoreAnywhere(headers); // never stored, at the edge either
 	return new Response('The site is busy and did not start your request. Please try again in a few seconds.\n', { status: 503, headers });
 }
 
