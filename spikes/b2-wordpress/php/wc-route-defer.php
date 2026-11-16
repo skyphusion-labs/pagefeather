@@ -12,9 +12,13 @@
  *     - the full index "/" (the editor's site-settings-only _fields does not need the route table);
  *     - a route that matches no registered route (the fail-safe: a namespace the map missed is never a false 404).
  *   Settings and REST fields stay eager (their callbacks are not in the map), so the editor's preloaded settings are
- *   unchanged. The map is of WooCommerce MAPPED_WOO: on any other version nothing is deferred (and
+ *   unchanged.
+ *   SCOPE (the lead's ruling): ONLY the block editor screens measured to need it, wp-admin post-new.php and post.php
+ *   (not AJAX, not REST). Every other request (the front end, REST, cron, AJAX, every other admin page) is exactly as
+ *   without this plugin: nothing deferred, no header. The map is of WooCommerce MAPPED_WOO: on any other version nothing is deferred (and
  *   tests/wc-route-defer-test.sh fails until the map is checked again).
- *   Operator only, for an A/B on one build: x-pf-wc-defer: off (index.js passes it to PHP only with the spike token).
+ *   Operator only (index.js passes it to PHP only with the spike token): x-pf-wc-defer: off turns it off on an editor
+ *   screen (an A/B on one build); x-pf-wc-defer: force turns it on for any one request (the tests of on demand).
  *   A REST answer says what happened in X-PF-WC-Routes: deferred N/13 or registered N/13 (N: the map's callbacks
  *   found live; tests/wc-route-defer-e2e.sh fails unless all are), off, or unmapped <version>.
  */
@@ -60,7 +64,22 @@ class Skyphusion_WC_Route_Defer {
 		return is_string( $f ) ? $f : '';
 	}
 
+	/** The editor screens (post-new.php, post.php), or an operator's force. */
+	public static function in_scope() {
+		if ( isset( $_SERVER['HTTP_X_PF_WC_DEFER'] ) && 'force' === $_SERVER['HTTP_X_PF_WC_DEFER'] ) {
+			return true;
+		}
+		if ( ! is_admin() || wp_doing_ajax() || ( defined( 'REST_REQUEST' ) && REST_REQUEST ) ) {
+			return false;
+		}
+		global $pagenow;
+		return in_array( $pagenow, array( 'post-new.php', 'post.php' ), true );
+	}
+
 	public static function defer() {
+		if ( ! self::in_scope() ) {
+			return; // out of scope: exactly as without this plugin
+		}
 		if ( ! defined( 'WC_VERSION' ) ) {
 			self::$state = 'no-woocommerce';
 			return;
