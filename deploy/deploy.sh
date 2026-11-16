@@ -320,6 +320,10 @@ if [ "$VARIANT" = a ]; then
   python3 -I "$ROOT/deploy/wfp/remote_assets_check.py" "$CONF" "$APP" || { echo "the remote assets check refused $CONF" >&2; exit 2; }
 fi
 
+# #827: the build is for the engine vendor/ holds (build/engine-tag against vendor/engine.mjs), so the upload cannot
+# ship an engine its build id does not name.
+engine_build_check "$APP" || exit 2
+
 if [ "$DRY_RUN" = 1 ]; then
   log "dry run: $CONF"
   "$ROOT/deploy/wr" deploy --dry-run --outdir "${DRY_OUT:-$(mktemp -d)}" --config "$CONF" 2>&1 | grep -E 'Total Upload|dry-run|Your Worker has access'
