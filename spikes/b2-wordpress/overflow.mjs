@@ -46,9 +46,12 @@ export function overflowSettings(env) {
 		pool: int(env && env.PHP_OVERFLOW_POOL, 1, 128, 32),
 		hint: HINTS.has(hint) ? hint : 'wnam',
 		busy: env ? String(env.PHP_OVERFLOW_BUSY || '').trim() === 'on' : false,
-		// #714: the most overflowed requests one Worker isolate holds in flight (default 16; "off": no cap). An isolate
-		// that died holding them took every one with it (3 to 5 shoppers, a 503 after about 40 s, in both #296 arms).
-		maxHeld: env && String(env.PHP_OVERFLOW_MAX_HELD || '').trim() === 'off' ? 0 : int(env && env.PHP_OVERFLOW_MAX_HELD, 1, 1000, 16),
+		// #714: the most overflowed requests one Worker isolate holds in flight. DEFAULT: no cap (0). Measured on #714
+		// (2026-11-16, three pairs at 250 concurrent checkouts): a cap of 16 lost 479 requests to capped 503s while no cap
+		// lost 2 to one isolate death, and completion at 250 fell 6 to 19 points in every pair. Healthy isolates hold p95
+		// 23 to 25 and the one death held 23, so no cap level both catches a death and spares healthy load. A number from
+		// 1 to 1000 still caps; "off" or a bad value is no cap.
+		maxHeld: env && String(env.PHP_OVERFLOW_MAX_HELD || '').trim() === 'off' ? 0 : int(env && env.PHP_OVERFLOW_MAX_HELD, 1, 1000, 0),
 	};
 }
 

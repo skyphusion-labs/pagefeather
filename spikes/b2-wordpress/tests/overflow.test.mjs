@@ -11,10 +11,10 @@ import { createPhpLock } from '../php-lock.mjs';
 test('settings: off by default; on, always, the depth, the pool and the hint', () => {
 	// The default pool is 32, the measured best (#296, 2026-11-15): pool 8 and 16 were WORSE than no overflow at 250
 	// concurrent checkouts; pool 32 was the only setting with 0 exceededMemory. A bad value falls back to 32 too.
-	assert.deepEqual(overflowSettings({}), { on: false, always: false, depth: 1, pool: 32, hint: 'wnam', busy: false, maxHeld: 16 });
+	assert.deepEqual(overflowSettings({}), { on: false, always: false, depth: 1, pool: 32, hint: 'wnam', busy: false, maxHeld: 0 });
 	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on' }).on, true);
 	const a = overflowSettings({ PHP_OVERFLOW: 'always', PHP_OVERFLOW_DEPTH: '0', PHP_OVERFLOW_POOL: '32', PHP_OVERFLOW_HINT: 'enam' });
-	assert.deepEqual(a, { on: true, always: true, depth: 0, pool: 32, hint: 'enam', busy: false, maxHeld: 16 });
+	assert.deepEqual(a, { on: true, always: true, depth: 0, pool: 32, hint: 'enam', busy: false, maxHeld: 0 });
 	// #296 (3)(c): busy is its own flag, OFF by default (ruled 2026-11-15: pool 32 WITHOUT busy was the only setting
 	// with 0 exceededMemory at 250; busy moved the queue back into the Worker). Only "on" turns it on.
 	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_BUSY: 'on' }).busy, true);
@@ -229,14 +229,19 @@ test('index.js: the object answers busy only for an overflowed, retry-safe reque
 // #714: a Worker isolate that dies holding its overflowed requests takes every one with it (3 to 5 shoppers got a 503
 // after about 40 s, in both arms of #296). A cap on the overflowed requests one isolate holds bounds that, whatever the
 // cause: past the cap, the next one is answered at once, retry-safe, and never ran.
-test('#714 settings: PHP_OVERFLOW_MAX_HELD, default 16; off is no cap; a bad value keeps 16', () => {
-	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on' }).maxHeld, 16);
+// #714 measured (2026-11-16, three alternating pairs at 250 concurrent checkouts): cap 16 lost 479 requests to capped
+// 503s while no cap lost 2 to one isolate death, and completion at 250 fell 6 to 19 points in every pair. Healthy isolates
+// hold p95 23 to 25; the death held 23. So the default is NO cap, and the knob stays for an operator who wants one.
+test('#714 settings: PHP_OVERFLOW_MAX_HELD defaults to no cap (0); a number caps; off and a bad value are no cap', () => {
+	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on' }).maxHeld, 0, 'the default: no cap (the #714 score)');
+	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_MAX_HELD: '16' }).maxHeld, 16, 'an explicit 16 still caps');
 	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_MAX_HELD: '8' }).maxHeld, 8);
 	assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_MAX_HELD: 'off' }).maxHeld, 0, 'off: no cap (the measured no-cap arm)');
-	for (const bad of ['0', '-1', 'x', '100000', '']) assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_MAX_HELD: bad }).maxHeld, 16, bad);
+	for (const bad of ['0', '-1', 'x', '100000', '']) assert.equal(overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_MAX_HELD: bad }).maxHeld, 0, bad);
 });
 test('#714 the cap: at or past maxHeld held, the next overflow is refused; no cap never refuses', () => {
-	const s = overflowSettings({ PHP_OVERFLOW: 'on' });
+	assert.equal(overHeld(overflowSettings({ PHP_OVERFLOW: 'on' }), 10 ** 6), false, 'the default never refuses');
+	const s = overflowSettings({ PHP_OVERFLOW: 'on', PHP_OVERFLOW_MAX_HELD: '16' });
 	assert.equal(overHeld(s, 15), false);
 	assert.equal(overHeld(s, 16), true);
 	assert.equal(overHeld(s, 40), true);
