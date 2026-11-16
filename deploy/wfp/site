@@ -33,6 +33,8 @@ if [ "$cmd" = update ] && [ "$s" != "--all" ]; then obs_refuse_full "$s" || exit
 # #736: FAULT_INJECT (#730, deploy/fault-inject.sh) is refused here too, before shared init, the build or any
 # upload. render_user keeps its own call as the last guard.
 if [ "$cmd" = add ] || { [ "$cmd" = update ] && [ "$s" != "--all" ]; }; then fault_inject_var "$s" >/dev/null || exit 2; fi
+# #759: CONFORMANCE (deploy/conformance.sh) is refused here too, before shared init, the build or any upload.
+if [ "$cmd" = add ] || { [ "$cmd" = update ] && [ "$s" != "--all" ]; }; then conformance_var "$s" >/dev/null || exit 2; fi
 tfr shared init -input=false >/dev/null
 KV_ID=$(tfr shared output -raw kv_namespace_id 2>/dev/null) || { echo "no shared pieces (run up.sh first)" >&2; exit 2; }
 [ -n "$KV_ID" ] || { echo "no shared pieces (run up.sh first)" >&2; exit 2; }
@@ -67,6 +69,7 @@ update_one_inner() {
   # update --all reaches this; a single update is also refused before shared init, above.
   obs_refuse_full "$s" || return 2
   fault_inject_var "$s" >/dev/null || return 2  # #736: before the snapshot, the build and the upload
+  conformance_var "$s" >/dev/null || return 2  # #759: the same
   has_ws "$s" || { echo "no site $s (run site add first)" >&2; return 2; }
   tfr site init -input=false >/dev/null; tfr site workspace select "$s" >/dev/null
   # The hostname, Custom Domain and zone the workspace records win over the

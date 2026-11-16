@@ -89,7 +89,7 @@ check "FORCE and a new build: both reasons" "$(FORCE_UPLOAD=1 update_upload_reas
 unset PHP_INI PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE MEM_LEDGER CRON_INTERVAL_MS OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS OBJECT_START_BY_S OBJECT_CALL_DEADLINE_S OBJECT_DISCONNECT_SHED TURNSTILE_SITEKEY TURNSTILE_SECRET \
   TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS OBSERVABILITY MAIL_FROM MAIL_FROM_NAME HTTP_ALLOW_HOSTS \
   WFP_PHP_ENV PHP_LOCATION LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB HEADROOM_PROBE PAGE_CACHE_PRODUCT_TTL WP_VECTORIZE_SEARCH FORCE_UPLOAD PLUGINS IMPORT_CONTENT IMPORT_THEMES \
-  IMPORT_PLUGINS IMPORT_MU_PLUGINS FORCE_FAIL COUNT_ROWS WFP_CUSTOM_DOMAIN REPLACE_INPUTS THROWAWAY FAULT_INJECT || true
+  IMPORT_PLUGINS IMPORT_MU_PLUGINS FORCE_FAIL COUNT_ROWS WFP_CUSTOM_DOMAIN REPLACE_INPUTS THROWAWAY FAULT_INJECT CONFORMANCE || true
 # #394: the remote packs are the default (lib.sh remote_pack_defaults). This test's fake app tree has no
 # file-trace.sh or pack scripts, so its site runs the opt-out: the config-hash cases do not depend on it.
 export OPCACHE_REMOTE=0
@@ -490,7 +490,7 @@ PY2
 # measurement flags: never recorded, by design (site_settings.py MEASUREMENT): ON only for the run.
 # HTTP_ALLOW_HOSTS is a recorded setting (#564). The record stores presence, so empty stays empty.
 # TMPDIR: curl_cfg writes the mode-600 curl config there (#581). Not a site setting.
-measurement=" FAULT_INJECT HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV "
+measurement=" CONFORMANCE FAULT_INJECT HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV "
 # #628: page_cache_product_var reads the build inputs WOO_ACTIVE, IMPORT_PLUGINS and PLUGINS (woo_active_for_build:
 # a store renders PAGE_CACHE_PRODUCT_TTL 30). They are recorded BUILD INPUTS (_build/inputs.json, #379), restored
 # by use_recorded_inputs before the render, so an update keeps them without SITE_SETTINGS.

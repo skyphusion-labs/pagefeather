@@ -1,0 +1,7 @@
+# Upstream test plugins for CONFORMANCE (#759). Each file is the upstream file byte for byte: the git blob
+# sha must equal upstream's at the pinned ref, and the sha256 is of these bytes. Checked by
+# tests/conformance-pins-test.sh. Update: fetch the raw file at the new ref, then update this line.
+# file | upstream repo | ref | path | git blob sha | sha256
+basic-auth.php | WP-API/Basic-Auth | 9e9d5267c7805c024f141d115b224cdee5a10008 | basic-auth.php | 1ef6f85f7a70fa6cfcfa06a3c1917481eca57e7a | 9faf7e55b42e8da4a40e172ce268171b2b8c766c21de359a4d5e98e6e9917049
+woocommerce-e2e-test-helper.php | woocommerce/woocommerce | 11.2.1 | plugins/woocommerce/tests/e2e/test-plugins/woocommerce-e2e-test-helper/woocommerce-e2e-test-helper.php | 085fe79d6f4554d323c4e257b34e38af7d8c58df | 1b43ce7eeb26770af220394e3ba42030320fca63225079f249c15ed3be842db9
+woocommerce-cleanup.php | woocommerce/woocommerce | 11.2.1 | plugins/woocommerce/tests/e2e/test-plugins/woocommerce-cleanup/woocommerce-cleanup.php | 4a9274042845d8972c4e22e53e37bf9c7e97f9e8 | f12105d1aef6fffc80154971852fd7186b89e7e0289011e6d1c4d8ba22bf025b

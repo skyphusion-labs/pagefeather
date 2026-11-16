@@ -369,6 +369,16 @@ fault_inject_var() {
   ROOT="$WFP/../.." fault_check b-dosql "${1:-}" || return 2
   fault_line
 }
+# CONFORMANCE (#759): the upstream test plugins (password Basic auth, an option-setting REST route, a REST
+# route that wipes the store). ONE rule with deploy/deploy.sh: deploy/conformance.sh (on only, THROWAWAY=1,
+# never a live site by either marker). A measurement flag (site_settings.py MEASUREMENT): never recorded.
+# conformance_var <site>: the [vars] line, nothing when unset; exit 2 with the reason when refused.
+conformance_var() {
+  # shellcheck source=../conformance.sh
+  . "$WFP/../conformance.sh"
+  ROOT="$WFP/../.." conformance_check "${1:-}" || return 2
+  conformance_line
+}
 headroom_var() {
   case "${HEADROOM_PROBE:-}" in
     "") ;;
@@ -602,6 +612,9 @@ render_user() { # render_user <site> <origin>
   # FAULT_INJECT (#730): the throwaway-only post-INSERT fault, the same rule as deploy.sh (deploy/fault-inject.sh).
   local fault; fault=$(fault_inject_var "$s") || return 2
   [ -z "$fault" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$fault
+  # CONFORMANCE (#759): the throwaway-only upstream test plugins, the same rule as deploy.sh (deploy/conformance.sh).
+  local conf; conf=$(conformance_var "$s") || return 2
+  [ -z "$conf" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$conf
   local otime; otime=$(object_time_vars) || return 1
   [ -z "$otime" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$otime
   cat <<TOML
@@ -859,7 +872,7 @@ use_recorded_inputs() {
 # remembers which one this run is, in http_allow_mode, before local -x collapses unset
 # into empty. Empty denies every host, so a drop sets the mode to unset.
 SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED"
-# The measurement flags (HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV, site_settings.py MEASUREMENT) are
+# The measurement flags (HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV FAULT_INJECT CONFORMANCE, site_settings.py MEASUREMENT) are
 # never recorded: ON only for the run that exports them; the next update without one turns it off.
 # A setting render_user reads that is not in this list is DROPPED by an update that does not export
 # it: config-hash-test.sh derives the env names render_user's helpers read and fails on a new one.

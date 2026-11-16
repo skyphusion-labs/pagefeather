@@ -65,7 +65,9 @@ PRESENCE = ("HTTP_ALLOW_HOSTS",)
 #                   log and CPU cost, for a diagnosis only.
 #   WFP_PHP_ENV     a measurement build's PHP env (USE_ZEND_ALLOC=1 swaps PHP's allocator, #434).
 #   FAULT_INJECT    "after-insert" kills the object after a request's INSERT on purpose (#730): throwaway only.
-MEASUREMENT = ("HEADROOM_PROBE", "MEM_LEDGER", "WFP_PHP_ENV", "FAULT_INJECT")
+#   CONFORMANCE     "on" loads the upstream test plugins (#759): password Basic auth and a store-wiping
+#                   REST route. Throwaway only.
+MEASUREMENT = ("HEADROOM_PROBE", "MEM_LEDGER", "WFP_PHP_ENV", "FAULT_INJECT", "CONFORMANCE")
 SECRETS = ("TURNSTILE_SECRET",)
 # No log line carries data from SECRETS: a message about a secret is one fixed text, and which
 # secret, and what happened, is in the exit code (5 a recorded secret is missing, 6 a live one would

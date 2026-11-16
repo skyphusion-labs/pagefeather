@@ -1836,6 +1836,9 @@ async function boot(origin) {
 	// Outbound HTTP through fetch() (php/http-bridge.php, #26). HTTP_BRIDGE=off: no
 	// bridge, and WordPress blocks external requests, as before the bridge.
 	if (ENV.HTTP_BRIDGE === 'off') lines.push(`define('SKYPHUSION_HTTP_BRIDGE_OFF', true);`, `define('WP_HTTP_BLOCK_EXTERNAL', true);`);
+	// CONFORMANCE (#759): the upstream test plugins (php/conformance.php). Exactly "on"; the deploy renders the
+	// var only on a throwaway that is not live (deploy/conformance.sh).
+	if (ENV.CONFORMANCE === 'on') lines.push(`define('SKYPHUSION_CONFORMANCE', true);`);
 	// Variant a on a strict MySQL (PlanetScale): the sql_mode each statement
 	// carries (php/hyperdrive-sql-mode.php). Mode names and commas only.
 	if (typeof ENV.HYPERDRIVE_SQL_MODE === 'string' && /^[A-Za-z_,]*$/.test(ENV.HYPERDRIVE_SQL_MODE))

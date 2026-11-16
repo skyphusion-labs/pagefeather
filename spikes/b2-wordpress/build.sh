@@ -46,7 +46,11 @@ rm -rf "$wp/wp-content/themes/twentytwentythree" "$wp/wp-content/themes/twentytw
 # from that site. Rules in deploy/import/content.sh.
 [ -z "${IMPORT_CONTENT:-}" ] || ../../deploy/import/content.sh "$IMPORT_CONTENT" "$wp/wp-content"
 mkdir -p "$wp/wp-content/mu-plugins"
-cp php/r2-uploads.php php/edge-cache.php php/woo-edge.php php/woo-cron-schedules.php php/woo-extras.php php/woo-cart-page.php php/woo-hpos-cache.php php/rest-route-cache.php php/rest-list-memory.php php/theme-json-cache.php php/http-bridge.php php/real-transactions.php php/ast-cache-stats.php php/woo-bootstrap-trim.php php/media-write-trim.php php/wp-mail-queue.php php/ai-alt-text.php php/zone-cache-purge.php php/pdf-invoice.php php/turnstile-forms.php php/analytics-pageview.php php/action-scheduler-alarm-only.php php/code-lock-notice.php php/mem-trace.php "$wp/wp-content/mu-plugins/"
+cp php/r2-uploads.php php/edge-cache.php php/woo-edge.php php/woo-cron-schedules.php php/woo-extras.php php/woo-cart-page.php php/woo-hpos-cache.php php/rest-route-cache.php php/rest-list-memory.php php/theme-json-cache.php php/http-bridge.php php/real-transactions.php php/ast-cache-stats.php php/woo-bootstrap-trim.php php/media-write-trim.php php/wp-mail-queue.php php/ai-alt-text.php php/zone-cache-purge.php php/pdf-invoice.php php/turnstile-forms.php php/analytics-pageview.php php/action-scheduler-alarm-only.php php/code-lock-notice.php php/mem-trace.php php/conformance.php "$wp/wp-content/mu-plugins/"
+# The upstream test plugins for CONFORMANCE (#759): dormant, loaded by php/conformance.php only when
+# SKYPHUSION_CONFORMANCE is defined (a throwaway). Outside mu-plugins, so WordPress never loads them itself.
+mkdir -p "$wp/wp-content/conformance"
+cp conformance/basic-auth.php conformance/woocommerce-e2e-test-helper.php conformance/woocommerce-cleanup.php "$wp/wp-content/conformance/"
 # The block checkout Turnstile script (issue #308). It reaches public/ as a static file and
 # turnstile-forms.php prints a script tag for it. A subdirectory, because WordPress loads every
 # .php file at the top of mu-plugins.

@@ -119,6 +119,10 @@ esac
 # shellcheck source=SCRIPTDIR/fault-inject.sh
 . "$ROOT/deploy/fault-inject.sh"
 fault_check "$VARIANT" "${NAME:-}" || exit 2
+# CONFORMANCE (#759): the upstream test plugins, a throwaway-only switch. One rule with deploy/wfp.
+# shellcheck source=SCRIPTDIR/conformance.sh
+. "$ROOT/deploy/conformance.sh"
+conformance_check "${NAME:-}" || exit 2
 object_time_vars >/dev/null || exit 2
 # WOO_ACTIVE is 0 or 1 (#706). Unset was set to 0 above. Anything else is refused
 # before any step, the same as deploy/wfp woo_active_for_build.
