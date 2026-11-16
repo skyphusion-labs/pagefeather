@@ -2,7 +2,7 @@
 
 This page says what works on each tier and each deploy path, what is limited, and why. Conrad asked for it in #759: "document things that are limited and why".
 
-**State on 2026-11-16, main `c9157f8`.** The conformance runs of #759 will fill in the cells that say "not measured". They run the upstream WordPress, WooCommerce and Gutenberg suites, plus a stock baseline (`tests/conformance/`).
+**State on 2026-11-16, main `2357f6a`.** The conformance runs of #759 will fill in the cells that say "not measured". They run the upstream WordPress, WooCommerce and Gutenberg suites, plus a stock baseline (`tests/conformance/`).
 
 ## How to read a cell
 
@@ -106,9 +106,11 @@ Before #762, PHP never received `PHP_AUTH_USER` and `PHP_AUTH_PW`. So applicatio
 
 The Site Health > Info panel asks `/wp-site-health/v1/directory-sizes`. On b-dosql it answers 500 `not_available`. The cause is the database size: WordPress reads it with `SHOW TABLE STATUS`, which reports no size over SQLite. The directory sizes themselves are readable. #780 is open.
 
-### Guests could get 404 for products that exist (#766, fixed)
+### Guests could get 404 for products that exist (#766, fixed; also #794)
 
 After a SQL failure at the memory ceiling, a later guest could get 404 for a real product. No header or log marks it. It was measured on b-dosql in the #724 runs on 2026-11-16. In one arm, 15 of 15 false 404s came within 3 s of a memory failure. The cause was a failed request that still wrote the object cache. #770 fixed it, merged on 2026-11-16. It is not yet measured live.
+
+A related case was #794: a value derived from a failed read, then written to the database, persisted. Unlike a cache entry, it outlives every deploy. #797 rolls the request back on that kind of failure. It merged on 2026-11-16, and it is not yet measured live.
 
 ### A cached product page can show stock up to about 30 s old (#628, closed)
 
