@@ -35,6 +35,7 @@ class Stub:
         self.customer_role = "customer"
         self.cuser = "customer"
         self.tracking = "yes"        # None: the route answers 404
+        self.theme = "twentytwentythree"
         self.basic_ok_pw = None          # None: Basic accepts self.password
         self.marker = "self"     # self | none | other
         self.basic = "ok"        # ok | always401 | ignores
@@ -129,6 +130,10 @@ class Stub:
                     q = self.path.split("search=")[1].split("&")[0]
                     hit = q == stub.cuser and stub.customer_role
                     return self.send(200, [{"id": 7, "username": stub.cuser, "roles": [stub.customer_role]}] if hit else [])
+                if self.path == "/wp-json/wp/v2/themes?status=active":
+                    if not self.rest_ok():
+                        return self.send(401, {})
+                    return self.send(200, [{"stylesheet": stub.theme, "status": "active"}])
                 if self.path == "/wp-json/wc/v3/settings/advanced/woocommerce_allow_tracking":
                     if not self.rest_ok():
                         return self.send(401, {})
@@ -269,6 +274,7 @@ def main():
         case("the wrong blogname", r"blogname is 'My Site'", setup=lambda s: setattr(s, "blogname", "My Site"))
         case("plain permalinks (#760)", r"pretty permalinks are not active", setup=lambda s: setattr(s, "plain", True))
         case("a missing test image", r"no media image-02\.\* ", setup=lambda s: setattr(s, "images", ["image-01", "image-03"]))
+        case("the wrong theme (after a wp or gb pass)", r"active theme is \['twentytwentyone'\].*not 'twentytwentythree'", setup=lambda s: setattr(s, "theme", "twentytwentyone"))
         case("tracking is no", r"woocommerce_allow_tracking is 'no'.*WOO_EXTRAS=off", setup=lambda s: setattr(s, "tracking", "no"))
         case("no tracking route", r"woocommerce_allow_tracking is None \(HTTP 404\)", setup=lambda s: setattr(s, "tracking", None))
         case("a malformed CUSTOMER_USERNAME", r"is not a plain user name", env_extra={"CUSTOMER_USERNAME": "x y;z"})

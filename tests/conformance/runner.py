@@ -22,6 +22,7 @@ site: Rollins' seed owns all setup (lead ruling on #759), and prepare verifies i
     ADMIN_PASSWORD for both, unmodified;
   - wc only: the seed's setup is missing: the customer (role, form login with CUSTOMER_PASSWORD),
     blogname, pretty permalinks (/wp-json/ must answer the REST index, #760) or the 3 test images.
+    the active theme must be twentytwentythree (as upstream's external setup leaves it);
     woocommerce_allow_tracking must be "yes" (the WooCommerce settings API; WOO_EXTRAS=off forces it off).
     The customer is CUSTOMER_USERNAME (default "customer"); the images match by stem (image-01 is a JPEG).
 The passwords come from WP_PASSWORD and CUSTOMER_PASSWORD and are never printed.
@@ -157,6 +158,7 @@ def check_cache(site, want):
 
 
 WC_BLOGNAME = "WooCommerce Core E2E Test Suite"
+WC_THEME = "twentytwentythree"
 
 
 def wc_verify(site, user, password):
@@ -209,7 +211,14 @@ def wc_verify(site, user, password):
     val = j.get("value") if isinstance(j, dict) else None
     if st != 200 or val != "yes":
         raise Stop("woocommerce_allow_tracking is %r (HTTP %d), not 'yes'. The seed sets it; WOO_EXTRAS=off forces it off" % (val, st))
-    say("woocommerce setup verified: customer (role and login), blogname, pretty permalinks, 3 images, tracking")
+    # The theme: WooCommerce's external setup activates twentytwentythree (bin/test-env-setup-external.sh),
+    # and its site.setup.ts never sets one. The wp and gb global setups switch to twentytwentyone, so the
+    # reseed before a wc or wc-api pass must put twentytwentythree back.
+    st, themes = site.json("GET", "/wp-json/wp/v2/themes?status=active")
+    active = [t.get("stylesheet") for t in themes or [] if isinstance(t, dict)] if st == 200 else []
+    if active != [WC_THEME]:
+        raise Stop("the active theme is %r (HTTP %d), not %r: the seed sets it before a wc or wc-api pass" % (active, st, WC_THEME))
+    say("woocommerce setup verified: customer (role and login), blogname, pretty permalinks, 3 images, tracking, theme")
     return cuser, cust
 
 

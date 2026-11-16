@@ -1,8 +1,8 @@
 # Conformance: the upstream browser suites (#759)
 
-These tools run the Playwright suites of WordPress, WooCommerce and Gutenberg against a THROWAWAY site, then compare the result with a stock upstream run. The output becomes the rows of `docs/support-matrix.md`. The inventory behind these choices is on #759.
+These tools run the Playwright suites of WordPress, WooCommerce and Gutenberg against a THROWAWAY site. Then they compare the result with a stock upstream run. The output becomes the rows of `docs/support-matrix.md`. The inventory behind these choices is on #759.
 
-**Never point them at a real site.** The suites delete all posts, pages and blocks, and the WooCommerce cleanup plugin resets the whole store. The runner refuses a site without the throwaway marker.
+**Never point them at a real site.** The suites delete all posts, pages and blocks. The WooCommerce cleanup plugin resets the whole store. The runner refuses a site without the throwaway marker.
 
 ## The pins (`pins.env`)
 
@@ -12,6 +12,7 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
 |---|---|---|
 | `wp` | `wordpress-develop` `tests/e2e` | 7.1.4 (`0afb74de8c3f`) |
 | `wc` | `woocommerce` `plugins/woocommerce/tests/e2e`, core profile | 11.2.1 (`67e007c3c4cc`) |
+| `wc-api` | the same checkout, its `tests/api-tests` (the API half, Rollins, #785) | 11.2.1 (`67e007c3c4cc`) |
 | `gb` | `gutenberg` `test/e2e` | `8daba429215e` (23.6.0-rc.1): the sha that wordpress-develop 7.1.4 names |
 
 ## The files
@@ -30,12 +31,12 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
 ## One run, step by step
 
 1. **The content.** Run `tests/conformance/prepare-content.sh <new dir> wp wc gb`. Keep the last line it prints.
-2. **The site.** Build and deploy a throwaway with the lean engine. Put that line in front of the build. Deploy it with `TURNSTILE_LOGIN=off`: WooCommerce `auth.setup.ts` logs in with an API POST to `wp-login.php`, which carries no Turnstile token, and our login gate fails closed without one. The checkout and comment gates stay ON with Turnstile's always-pass test keys. Our own test in the matrix covers Turnstile on login.
+2. **The site.** Build and deploy a throwaway with the lean engine. Put that line in front of the build. Deploy it with `TURNSTILE_LOGIN=off`. WooCommerce `auth.setup.ts` logs in with an API POST to `wp-login.php`, which carries no Turnstile token. Our login gate fails closed without one. The checkout and comment gates stay ON with Turnstile's always-pass test keys. Our own test in the matrix covers Turnstile on login.
    - For the cache-on run, keep the default page cache.
-   - For the cache-off run, deploy with `PAGE_CACHE_TTL=0`.
+   - For the cache-off run, the site needs `PAGE_CACHE_TTL=0`. Only the c1 variant renders that setting today, and it refuses 0. Rollins is adding it to `deploy/wfp` as a recorded setting. Until then, `prepare --cache off` STOPs on a cached answer, so the pass cannot run mislabelled.
 3. **Install the suite on the VPS:** `vps-run.sh install <suite> <work-dir>`.
 4. **The baseline:** `vps-run.sh baseline <suite> <work-dir> <base-run>`. It runs the suite on stock upstream in Docker (wp-env), at the same pins.
-5. **Check our site:** first, Rollins' seed sets the site up. It owns ALL setup, and it reruns for the reseed between the API half and this one. Then run `. <seed out>/creds.env` (the seed writes `WP_USERNAME`, `WP_PASSWORD`, `CUSTOMER_USERNAME` and `CUSTOMER_PASSWORD` there, mode 600), then `runner.py prepare --suite <suite> --base-url https://<site> --cache on|off --run-dir <our-run>`.
+5. **Check our site:** first, Rollins' seed sets the site up. It owns ALL setup, and it reruns before each suite. The seed writes `WP_USERNAME`, `WP_PASSWORD`, `CUSTOMER_USERNAME` and `CUSTOMER_PASSWORD` to `<seed out>/creds.env`, mode 600. Run `. <seed out>/creds.env`, then `runner.py prepare --suite <suite> --base-url https://<site> --cache on|off --run-dir <our-run>`.
    - It never writes to the site: one owner (the seed), one checker (the runner).
    - It STOPS if a check fails. The checks: https; the marker for this host; the deny list; the admin form login; the cache matches `--cache`.
    - For `wc`, more checks:
@@ -44,6 +45,7 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
      - blogname;
      - pretty permalinks: `/wp-json/` must answer the REST index (#760);
      - the 3 test images, matched by stem: upstream `image-01.png` is a JPEG, so WordPress stores it as `image-01.jpg`, on stock WordPress too.
+     - the active theme is `twentytwentythree`, as upstream's external setup leaves it. The wp and gb setups switch to `twentytwentyone`, so the seed resets it before each wc or wc-api pass;
      - `woocommerce_allow_tracking` is `yes` (the WooCommerce settings API). Do not deploy the throwaway with `WOO_EXTRAS=off`, which forces it off.
 6. **Our run:** `vps-run.sh run <suite> <work-dir> <our-run>`. The login is ASSERTED before any test (lead ruling), because upstream auth setup never checks its response. An empty login would otherwise read as hundreds of test failures.
    - WordPress and Gutenberg: `assert-login.mjs` runs after the upstream `globalSetup`.
@@ -56,6 +58,8 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
    - A test that fails on the baseline too is marked `upstream`. One that fails only on ours is marked `OURS`, and compare exits 1.
 
 Run each suite twice on our site, once with the cache on and once with it off. A failure that happens only with the cache on is a cache effect, not a WordPress defect.
+
+In each cache pass, run wp, gb, wc, then wc-api. Reseed before EACH suite: the wp and gb setups delete all posts, pages and blocks, and they change the theme.
 
 ## Auth
 
