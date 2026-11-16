@@ -176,6 +176,7 @@ test('#596: the write-loss lines carry id for a valid x-perf-id, no id without o
 		memIdOf,
 		kind: 'memory',
 		wl: writeLossResponse(lost, wantsJson('/wp-admin/post.php', '', 'text/html')),
+		ocForgot: { n: 3, groups: { 'post-queries': 3 } }, // #766
 	};
 	const withId = logged(phpLine, base);
 	assert.equal(withId.id, PERF_ID, 'a valid x-perf-id is on the line, got ' + JSON.stringify(withId));
@@ -183,6 +184,8 @@ test('#596: the write-loss lines carry id for a valid x-perf-id, no id without o
 	assert.equal(withId.answered, 500);
 	assert.equal(withId.phpStatus, 200, 'phpStatus stays PHP own status, before the guard');
 	assert.equal(withId.failed, lost);
+	assert.equal(withId.ocDropped, 3, '#766: the line says how many of the request object-cache writes were dropped');
+	assert.deepEqual(withId.ocDroppedGroups, { 'post-queries': 3 }, '#766: and in which groups');
 	assert.equal(withId.firstSql, 'UPDATE wp_postmeta');
 	assert.equal(withId['@event'], 'write-loss');
 	// 321 is not a real status: it proves the field is wl.status, not a hardcoded 500 and not phpStatus.

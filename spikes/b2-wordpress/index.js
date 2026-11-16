@@ -39,7 +39,7 @@ import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__do
 import { inflateSync } from 'fflate';
 import { createArena } from './inflate-arena.mjs';
 import { headroomStream } from './headroom.mjs';
-import { faultArmed, isFaultTarget, exhaustMemory } from './fault-inject.mjs';
+import { faultArmed, isFaultTarget, exhaustMemory, sqlFailNeedle, SQL_FAIL_MESSAGE } from './fault-inject.mjs';
 import { failuresSince } from './activate-report.mjs';
 import { createUndoLog } from './undo-log.mjs';
 import { createRetirer } from './runtime-drop.mjs';
@@ -108,6 +108,7 @@ let sqlStorage = null;
 // token and x-pf-fault, all three). One shot: sqlStatement clears it when it fires; the run clears it at the end.
 let faultPending = false;
 let faultReq = null; // its x-pf-req, for the log line
+let sqlFailAt = null; // #766: the piece of SQL whose first statement this request fails (fault-inject.mjs sqlFailNeedle)
 const faultHeld = []; // the memory the kill holds, so nothing can be collected before the platform resets
 
 // Object cache across requests (php/object-cache.php, docs/perf-dosql.md), in
@@ -120,6 +121,26 @@ let objectCacheBytes = 0;
 function objectCacheClear() {
 	objectCache.clear();
 	objectCacheBytes = 0;
+}
+// #766: the object-cache keys this request wrote (set or del), so a request that met a reset-class SQL failure can
+// take them back. Such a request saw failed statements as empty results (a product query that found nothing), and the
+// cache would otherwise hand that to every later request: a 404 for a product that exists. poisoned also stops the
+// request's L2 sets that the undo log still holds (#352 defer), which run after the response.
+let ocReq = null;
+function ocReqBegin() { ocReq = { writes: new Set(), poisoned: false }; }
+function ocReqForget() {
+	const r = ocReq;
+	if (!r) return { n: 0, groups: {} };
+	r.poisoned = true;
+	const l2 = ocL2On();
+	const groups = {};
+	for (const k of r.writes) {
+		objectCacheDrop(k);
+		const g = ocGroupOf(k).slice(-40);
+		groups[g] = (groups[g] || 0) + 1;
+		if (l2 && ocCtx) { try { ocCtx.waitUntil(ocL2Writer().del(ocKvKey(k))); } catch {} }
+	}
+	return { n: r.writes.size, groups };
 }
 function objectCacheDrop(k) {
 	const e = objectCache.get(k);
@@ -203,14 +224,17 @@ async function objectCacheOp(op) {
 	if (op.op === 'set') {
 		ocCount(op.k, "set");
 		if (undoLog) undoLog.touch(op.k);
+		const req0 = ocReq; // #766
+		if (req0) req0.writes.add(op.k);
 		const n = op.k.length + op.v.length;
 		if (n > OBJECT_CACHE_BYTES / 4) return { ok: false };
 		ocStore(op.k, op.v, op.ttl > 0 ? now + op.ttl * 1000 : 0);
-		if (l2 && ocCtx) { const ttl = Math.max(60, op.ttl > 0 ? op.ttl : 60); const k2 = ocKvKey(op.k), v2 = op.v, c2 = ocCtx; const doSet = () => { try { const w = ocL2Writer().set(k2, v2, ttl); if (w) c2.waitUntil(w); } catch {} }; if (!(undoLog && undoLog.defer(doSet))) doSet(); } // #352: held until the frame is kept
+		if (l2 && ocCtx) { const ttl = Math.max(60, op.ttl > 0 ? op.ttl : 60); const k2 = ocKvKey(op.k), v2 = op.v, c2 = ocCtx; const doSet = () => { if (req0 && req0.poisoned) return; try { const w = ocL2Writer().set(k2, v2, ttl); if (w) c2.waitUntil(w); } catch {} }; if (!(undoLog && undoLog.defer(doSet))) doSet(); } // #352: held until the frame is kept
 		return { ok: true };
 	}
 	if (op.op === 'del') {
 		if (undoLog) for (const k of op.k) undoLog.touch(k);
+		if (ocReq) for (const k of op.k) ocReq.writes.add(k); // #766
 		let n = 0;
 		for (const k of op.k) { ocCount(k, "del"); if (objectCacheDrop(k)) n++; if (l2 && ocCtx) { try { ocCtx.waitUntil(ocL2Writer().del(ocKvKey(k))); } catch {} } }
 		return { n };
@@ -2560,6 +2584,13 @@ function sqlStatement(db, m) {
 	const t = Date.now();
 	stats.calls++;
 	try {
+		// #766: the injected statement failure (a measurement; fault-inject.mjs). It throws before the statement runs,
+		// so nothing of it reaches the storage, and the catch below records it as the platform's reset would be.
+		if (sqlFailAt && String(m.sql).includes(sqlFailAt)) {
+			sqlFailAt = null;
+			console.log(JSON.stringify({ m: 'fault-inject', at: 'sql-fail', sql: String(m.sql).slice(0, 160) }));
+			throw new Error(SQL_FAIL_MESSAGE);
+		}
 		const params = sqlParams(m.params);
 		// #352: the statement runs through the undo log. The request frame opens with the first statement that
 		// changes a row, in one storage transaction with it; a statement that changes nothing takes the open
@@ -3186,6 +3217,7 @@ export class PhpRuntime extends DurableObject {
 			// #730: the post-INSERT fault, a measurement for throwaway sites only (fault-inject.mjs).
 			faultPending = faultArmed(env, spikeOk, req.headers);
 			faultReq = faultPending ? req.headers.get('x-pf-req') : null;
+			sqlFailAt = sqlFailNeedle(env, spikeOk, req.headers); // #766
 			// One PHP run at a time (withPhp), so one slot holds this run's answer.
 			turnstileSlot.set(turnstileHeader);
 			try {
@@ -3201,6 +3233,7 @@ export class PhpRuntime extends DurableObject {
 			} finally {
 				turnstileSlot.clear();
 				faultPending = false; // #730: never carried to the next request
+				sqlFailAt = null; // #766: nor this
 				// A request that threw also ends its transaction (rolled back), and keeps its frame. Idempotent.
 				if (realTxn) txnEnd(sql, this.ctx.storage);
 				phpPending--;
@@ -4073,6 +4106,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			const { php, handler, bootMs } = await bootPromise;
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
+			ocReqBegin(); // #766
 			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, reinflates: stats.reinflates, lazyWrites: stats.lazyWrites, rfN: stats.rfN, rfBytes: stats.rfBytes, rfMs: stats.rfMs, rfFail: stats.rfFail, rfCapped: stats.rfCapped, rsN: stats.rsN, rsBytes: stats.rsBytes, rsMs: stats.rsMs, rsFail: stats.rsFail, rsCapped: stats.rsCapped, rsRetry: stats.rsRetry, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
@@ -4168,9 +4202,10 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			}
 			if (lost) {
 				if (ledgerActive) ledgerLog('write-loss', { lost });
+				const ocForgot = ocReqForget(); // #766: what this request cached after its failed statements is not kept
 				const wl = writeLossResponse(lost, wantsJson(url.pathname, url.search, req.headers.get('accept')));
 				// phpStatus is PHP's status before this replacement. answered is the status returned below (#596).
-				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, phpStatus: r.httpStatusCode, firstSql: sqlShape(d.failures[0].sql), ...memIdOf(req, env), answered: wl.status }));
+				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, ocDropped: ocForgot.n, ocDroppedGroups: ocForgot.groups, phpStatus: r.httpStatusCode, firstSql: sqlShape(d.failures[0].sql), ...memIdOf(req, env), answered: wl.status }));
 				dropRuntime(); // the runtime saw the reset; the next request boots a new one
 				return new Response(wl.body, { status: wl.status, headers: wl.headers });
 			}

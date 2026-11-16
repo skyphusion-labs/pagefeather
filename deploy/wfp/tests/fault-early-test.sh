@@ -50,7 +50,7 @@ refused() { # refused <label> <want text> <command> [args...]
 }
 NO_TA="FAULT_INJECT needs THROWAWAY=1"
 LIVE="ggc-test is a live site"
-BAD="FAULT_INJECT must be after-insert or unset"
+BAD="FAULT_INJECT must be after-insert, sql-fail or unset"
 # BUILD stays unset (site add's default is 0): a missing refusal stops at "not built", never at a real build.
 refused "site add, no THROWAWAY" "$NO_TA" env FAULT_INJECT=after-insert "$SITE" add pf9x
 refused "site add, a live site" "$LIVE" env FAULT_INJECT=after-insert THROWAWAY=1 "$SITE" add ggc-test

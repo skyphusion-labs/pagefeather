@@ -18,6 +18,23 @@
 export const FAULT_HEADER = 'x-pf-fault';
 export const FAULT_AFTER_INSERT = 'after-insert';
 
+// #766: the SQL statement failure, a MEASUREMENT for throwaway and local sites only, under the same rule (the site var
+// FAULT_INJECT is "sql-fail", deploy/fault-inject.sh; the spike token; x-pf-fault: sql-fail). x-pf-fault-sql names a
+// piece of the statement to fail: the FIRST statement of the request containing it throws the platform's own message,
+// once. So everything after it (noteFailure, resetFailures, the write-loss answer, the ledger's sql-memory-fail) runs
+// as for a real failure at the memory ceiling, and the isolate is NOT killed: in #724 the object went on after such
+// a failure.
+export const FAULT_SQL_FAIL = 'sql-fail';
+export const FAULT_SQL_HEADER = 'x-pf-fault-sql';
+export const SQL_FAIL_MESSAGE = "Durable Object's isolate exceeded its memory limit and was reset.";
+
+/** The piece of SQL to fail in this request, or null: the site var, the spike token, the header, and 3 to 120 characters. */
+export function sqlFailNeedle(env, spikeOk, headers) {
+	if (!env || env.FAULT_INJECT !== FAULT_SQL_FAIL || spikeOk !== true || !headers || headers.get(FAULT_HEADER) !== FAULT_SQL_FAIL) return null;
+	const n = String(headers.get(FAULT_SQL_HEADER) || '');
+	return n.length >= 3 && n.length <= 120 ? n : null;
+}
+
 /** True only with the site var, the spike token (the boolean from the object's own check) and the header. */
 export function faultArmed(env, spikeOk, headers) {
 	return Boolean(env) && env.FAULT_INJECT === FAULT_AFTER_INSERT && spikeOk === true && Boolean(headers) && headers.get(FAULT_HEADER) === FAULT_AFTER_INSERT;
