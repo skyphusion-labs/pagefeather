@@ -59,7 +59,7 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
 
 Run each suite twice on our site, once with the cache on and once with it off. A failure that happens only with the cache on is a cache effect, not a WordPress defect.
 
-In each cache pass, run wp, gb, wc, then wc-api. Reseed before EACH suite: the wp and gb setups delete all posts, pages and blocks, and they change the theme.
+In each cache pass, run the API half first: wc-api, then the REST route check (`routes.py`). Then run wp, wc and gb. Reseed before EACH suite. The wp and gb setups delete all posts, pages and blocks, and they change the theme. This is the order of the lead script for the shared run (`conf759-run.md`).
 
 ## Auth
 
