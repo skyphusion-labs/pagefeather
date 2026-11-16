@@ -43,7 +43,7 @@ test('refusals change nothing: too short, too long, not a number, another method
 const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 test('index.js: /_hold sits behind the spike-token gate in the object, and the alarm checks the hold before the cron', () => {
 	const route = src.indexOf("if (url.pathname === '/_hold') return moveHoldRequest(this.ctx.storage, req.method, url);");
-	const gate = src.lastIndexOf("if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });", route);
+	const gate = src.lastIndexOf("if (url.pathname.startsWith('/_') && !spikeOk) return spikeForbidden();", route);
 	assert.ok(route > 0 && gate > 0 && gate < route, 'the route exists after the gate');
 	const a = src.indexOf('async alarm() {');
 	const held = src.indexOf('const moveHeld = cronHeld(await this.ctx.storage.get(MOVE_HOLD_KEY), Date.now());', a);

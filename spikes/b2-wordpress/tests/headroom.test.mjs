@@ -46,8 +46,10 @@ const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 test('index.js: /_headroom is off by default, sits after the spike check and before the PHP lock, and logs the ledger first', () => {
 	const at = src.indexOf("if (url.pathname === '/_headroom')");
 	assert.ok(at > 0, 'the route exists');
-	const spike = src.lastIndexOf("if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });", at);
+	const spike = src.lastIndexOf("if (url.pathname.startsWith('/_') && !spikeOk) return spikeForbidden();", at);
 	assert.ok(spike > 0 && at - spike < 4000, 'after the object spike check');
+	assert.ok(src.includes("function spikeForbidden()"), 'the refusal names its build');
+	assert.ok(src.includes("'x-worker-version': BUILD_ID"), 'x-worker-version is the build that answered');
 	assert.ok(src.indexOf('return withPhp(async () => {', at) > at, 'before the PHP lock');
 	const block = src.slice(at, at + 1600);
 	assert.match(block, /env\.HEADROOM_PROBE !== 'on'\) return new Response\('Not Found', \{ status: 404 \}\)/);
