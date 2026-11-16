@@ -26,8 +26,20 @@ ok( 'every other size is 0', '0' === $r[1]->Data_length && '0' === $r[2]->Data_l
 ok( 'the sum over the rows is the database size (what get_database_size reads)', 1826816 === array_sum( array_map( function ( $x ) { return (int) $x->Data_length + (int) $x->Index_length; }, $r ) ) );
 ok( 'the other columns are untouched', 'wp_posts' === $r[0]->Name && 'InnoDB' === $r[0]->Engine );
 $calls = array();
-$r = skyphusion_table_status_size( '  show table status like "wp_%"', rows(), $call );
-ok( 'any case and a LIKE: handled', '1826816' === $r[0]->Data_length && 1 === count( $calls ) );
+$r = skyphusion_table_status_size( '  show table status', rows(), $call );
+ok( 'any case: handled', '1826816' === $r[0]->Data_length && 1 === count( $calls ) );
+foreach ( array( 'SHOW TABLE STATUS FROM wordpress', 'SHOW TABLE STATUS IN `wordpress`', "SHOW TABLE STATUS FROM wordpress;" ) as $q ) {
+	$calls = array();
+	$r = skyphusion_table_status_size( $q, rows(), $call );
+	ok( "unfiltered ($q): the whole size on the first row", '1826816' === $r[0]->Data_length && 1 === count( $calls ) );
+}
+// #780 review: a FILTERED query names some tables, and the whole database's size is not theirs. Per-table sizes are
+// not available, so a filtered query says 0 (unknown) for every row, and asks the Worker nothing.
+foreach ( array( "SHOW TABLE STATUS LIKE 'wp_posts'", '  show table status like "wp_%"', "SHOW TABLE STATUS WHERE Name = 'wp_options'", "SHOW TABLE STATUS FROM wordpress LIKE 'wp_x'" ) as $q ) {
+	$calls = array();
+	$r = skyphusion_table_status_size( $q, rows(), $call );
+	ok( "filtered ($q): every size 0, no call", '0' === $r[0]->Data_length && '0' === $r[1]->Data_length && array() === $calls );
+}
 $calls = array();
 foreach ( array( 'SELECT * FROM wp_posts', 'SHOW TABLES', 'SHOW FULL TABLES', 'SHOW TABLE STATUSX' ) as $q ) {
 	$r = skyphusion_table_status_size( $q, rows(), $call );

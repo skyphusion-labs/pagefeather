@@ -13,7 +13,7 @@
 # (WC_Install::create_placeholder_image); without it activation warns and the store has no placeholder (#679).
 # WordPress 7.0's icon library (WP_Icons_Registry) reads wp-includes/images/icon-library/*.svg with
 # file_get_contents at runtime (/wp/v2/icons, the Icon block): without them each icon has no content and
-# PHP prints "Icon file is missing or unreadable" (#759's route runner). 88 files, 352 KB.
+# PHP prints "Icon file is missing or unreadable" (#759's route runner). 88 files, 28,381 bytes (18,523 in site.zip).
 # Test: tests/prune-php-tree-test.sh.
 set -euo pipefail
 cd "${1:?usage: prune-php-tree.sh <wordpress dir>}"
