@@ -24,7 +24,12 @@
 #                     wp-a-lean measured, #218) or mysql2 (index-a.js, what deploy.sh deployed before #666).
 #   PHP_OVERFLOW      0 (default) or 1: a queued PHP request moves to a Durable Object pool (#646,
 #                     docs/approach-a-overflow.md); renders the PhpRuntime binding and its migration.
-#   PHP_OVERFLOW_POOL 1 to 256 (default 32, the measured default, #646). Needs PHP_OVERFLOW=1.
+#   PHP_OVERFLOW_POOL 1 to 128 (default 32, the measured default, #646). Needs PHP_OVERFLOW=1. The runtime
+#                     (overflow.mjs) takes 1 to 128; it ran 129 to 256 as 32, so those are refused here (#714).
+#   PHP_OVERFLOW_MAX_HELD off, or 1 to 1000 (#714, #717): the most overflowed requests one Worker isolate holds in
+#                     flight. Unset renders nothing: the code default, 16. off: no cap. Needs PHP_OVERFLOW=1.
+#   MEM_LEDGER        on or unset: a MEASUREMENT flag (the isolate memory ledger on every request, and the
+#                     overflow-held line, #714). Never a default; a deploy without it turns it off.
 #   OBJECT_CACHE_VERSIONS 1 (default since #296 step 3) or 0: options in the cross-isolate cache under an exact version (#668, #686),
 #                     through aVars. Exact only on a Hyperdrive config that does not cache queries (#650): deploy.sh's
 #                     Terraform makes it with caching disabled, and a-render-test.sh holds that line.
@@ -39,7 +44,7 @@
 a_settings_check() {
   local variant=$1 v
   if [ "$variant" != a ]; then
-    for v in OPCACHE_A OPCACHE_REMOTE SITE_REMOTE RECYCLE_WASM_MIB A_CLIENT PHP_OVERFLOW PHP_OVERFLOW_POOL OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE; do
+    for v in OPCACHE_A OPCACHE_REMOTE SITE_REMOTE RECYCLE_WASM_MIB A_CLIENT PHP_OVERFLOW PHP_OVERFLOW_POOL PHP_OVERFLOW_MAX_HELD MEM_LEDGER OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE; do
       [ -z "${!v:-}" ] || { echo "$v is for variant a only (deploy/wfp has its own settings for b-dosql)" >&2; return 2; }
     done
   fi
@@ -64,9 +69,17 @@ a_settings_check() {
   if [ -n "$v" ] && [ "${PHP_OVERFLOW:-0}" != 1 ]; then
     echo "PHP_OVERFLOW_POOL needs PHP_OVERFLOW=1" >&2; return 2
   fi
-  if [ -n "$v" ] && { ! [[ "$v" =~ ^[0-9]{1,3}$ ]] || [ "$((10#$v))" -lt 1 ] || [ "$((10#$v))" -gt 256 ]; }; then
-    echo "PHP_OVERFLOW_POOL must be an integer from 1 to 256, not ${v}" >&2; return 2
+  if [ -n "$v" ] && { ! [[ "$v" =~ ^[0-9]{1,3}$ ]] || [ "$((10#$v))" -lt 1 ] || [ "$((10#$v))" -gt 128 ]; }; then
+    echo "PHP_OVERFLOW_POOL must be an integer from 1 to 128, not ${v}" >&2; return 2
   fi
+  v=${PHP_OVERFLOW_MAX_HELD:-}
+  if [ -n "$v" ] && [ "${PHP_OVERFLOW:-0}" != 1 ]; then
+    echo "PHP_OVERFLOW_MAX_HELD needs PHP_OVERFLOW=1" >&2; return 2
+  fi
+  if [ -n "$v" ] && [ "$v" != off ] && { ! [[ "$v" =~ ^[0-9]{1,4}$ ]] || [ "$((10#$v))" -lt 1 ] || [ "$((10#$v))" -gt 1000 ]; }; then
+    echo "PHP_OVERFLOW_MAX_HELD must be off or an integer from 1 to 1000, not ${v}" >&2; return 2
+  fi
+  case "${MEM_LEDGER:-}" in ''|on) ;; *) echo "MEM_LEDGER must be on or unset, not ${MEM_LEDGER}" >&2; return 2 ;; esac
   if [ -n "${PF_ENGINE_JS:-}" ] || [ -n "${PF_ENGINE_WASM:-}" ]; then
     [ -n "${PF_ENGINE_JS:-}" ] && [ -n "${PF_ENGINE_WASM:-}" ] || { echo "PF_ENGINE_JS and PF_ENGINE_WASM: set both or neither" >&2; return 2; }
     [ -s "$PF_ENGINE_JS" ] || { echo "PF_ENGINE_JS is not a file with content: $PF_ENGINE_JS" >&2; return 2; }
@@ -90,6 +103,7 @@ a_vars() {
   [ "${OPCACHE_REMOTE:-0}" != 1 ] || echo 'OPCACHE_REMOTE = "on"'
   [ "${SITE_REMOTE:-0}" != 1 ] || echo 'SITE_REMOTE = "on"'
   [ -z "${RECYCLE_WASM_MIB:-}" ] || echo "RECYCLE_WASM_MIB = \"$((10#$RECYCLE_WASM_MIB))\""
+  [ "${MEM_LEDGER:-}" != on ] || echo 'MEM_LEDGER = "on"' # #714: a measurement flag, only when set
   return 0
 }
 
@@ -111,6 +125,8 @@ a_overflow_vars() {
   [ "${PHP_OVERFLOW:-0}" = 1 ] || return 0
   echo 'PHP_OVERFLOW = "on"'
   echo "PHP_OVERFLOW_POOL = \"$((10#${PHP_OVERFLOW_POOL:-32}))\""
+  # #714: unset renders nothing (the code default, 16); off or a number renders it.
+  case "${PHP_OVERFLOW_MAX_HELD:-}" in '') ;; off) echo 'PHP_OVERFLOW_MAX_HELD = "off"' ;; *) echo "PHP_OVERFLOW_MAX_HELD = \"$((10#$PHP_OVERFLOW_MAX_HELD))\"" ;; esac
 }
 a_overflow_bindings() {
   [ "${PHP_OVERFLOW:-0}" = 1 ] || return 0

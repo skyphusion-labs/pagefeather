@@ -112,5 +112,13 @@ ok "unset renders none" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -q OBJ
 render "$T/dsb.toml" OBJECT_DISCONNECT_SHED=0; rc=$?
 ok "OBJECT_DISCONNECT_SHED=0 fails the render (rc $rc)" "$([ $rc != 0 ] && echo 1 || echo 0)"
 
+echo "10. #714: PHP_OVERFLOW_MAX_HELD (off or 1 to 1000) and MEM_LEDGER=on reach [vars]; unset renders neither (the code default cap is 16)"
+render "$T/mh.toml" PHP_OVERFLOW=1 PHP_OVERFLOW_MAX_HELD=off MEM_LEDGER=on; rc=$?
+ok "off and the ledger render (rc $rc)" "$([ $rc = 0 ] && python3 -I "$HERE/canon.py" "$T/mh.toml" | grep -qx 'vars PHP_OVERFLOW_MAX_HELD = "off"' && python3 -I "$HERE/canon.py" "$T/mh.toml" | grep -qx 'vars MEM_LEDGER = "on"' && echo 1 || echo 0)"
+render "$T/m8.toml" PHP_OVERFLOW=1 PHP_OVERFLOW_MAX_HELD=08; rc=$?
+ok "PHP_OVERFLOW_MAX_HELD=08 renders 8 (base 10) (rc $rc)" "$([ $rc = 0 ] && python3 -I "$HERE/canon.py" "$T/m8.toml" | grep -qx 'vars PHP_OVERFLOW_MAX_HELD = "8"' && echo 1 || echo 0)"
+render "$T/m0.toml" PHP_OVERFLOW=1; rc=$?
+ok "PHP_OVERFLOW=1 alone renders neither (rc $rc)" "$([ $rc = 0 ] && ! python3 -I "$HERE/canon.py" "$T/m0.toml" | grep -qE 'PHP_OVERFLOW_MAX_HELD|MEM_LEDGER' && echo 1 || echo 0)"
+
 [ "$fails" = 0 ] && echo "a-render: all checks pass" || echo "a-render: $fails failing check(s)"
 exit $((fails > 0))
