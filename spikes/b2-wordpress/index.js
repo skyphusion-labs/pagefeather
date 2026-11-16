@@ -3205,7 +3205,13 @@ export class PhpRuntime extends DurableObject {
 			shedWhy: plan.byStartBy ? 'start-by' : 'queue-shed',
 			// #715 review2 4, review3 4 and 5: the lock rechecks the start-by at a contended grant, on a clock read again.
 			signal: callerSignal, // #721: a queued waiter sheds when its caller disconnects (why: disconnect), unless off
-			recheck: plan.startBy > 0 ? async () => { const rc = await recheckStartBy(plan.startBy); lateByClock = rc.late; return rc; } : null,
+			// #752 PROBE BUILD ONLY (never merged): the recheck's tick is 'assets', and every recheck is logged with its clockMs.
+			recheck: plan.startBy > 0 ? async () => {
+				const t0 = Date.now();
+				const rc = await recheckStartBy(plan.startBy, { tick: () => env.ASSETS.fetch(new Request('https://assets.local/pf-tick-absent', { method: 'HEAD' })).then((r) => r.body && r.body.cancel()) /* (b) a binding read: a DO has no Cache API, the probe site no KV */ });
+				console.log(JSON.stringify({ m: 'recheck', tick: 'assets', iso: ISOLATE_ID, call: callId, late: rc.late, clockMs: rc.clockMs, ticked: rc.ticked !== false, tickWallMs: Date.now() - t0 }));
+				lateByClock = rc.late; return rc;
+			} : null,
 		});
 		if (objectRun !== PHP_SHED) return objectRun;
 		phpPending--; // a shed run never ran its finally
