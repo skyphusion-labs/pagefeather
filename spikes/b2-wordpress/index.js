@@ -352,9 +352,13 @@ const SPIKE_CRON_GRACE_MS = 2000;
 // The alarm waits at most this long for the deferred-email sends, so a stuck or throttled
 // env.EMAIL.send cannot hold the alarm until the DO wall-clock kills it (#194).
 const SEND_TIMEOUT_MS = 5000;
-// withPhp(fn, { shedMs }): fn's result, or PHP_SHED when the wait passed shedMs (0: never; only the
+// withPhp(fn, { shedMs, held }): fn's result, or PHP_SHED when the wait passed shedMs (0: never; only the
 // two request paths pass one). Cron, snapshots, dumps and imports always wait their turn.
-function withPhp(fn, { shedMs = 0, tag = null, shedWhy = null, recheck = null } = {}) {
+// #720: held reuses the lock the caller already holds. A second phpLock.run waits out staleMs, then
+// onStale drops the runtime. The lock is not reentrant. Only /_runcron passes held, because that
+// route is already inside the request withPhp. The alarm does not, so it always takes the lock.
+function withPhp(fn, { shedMs = 0, tag = null, shedWhy = null, recheck = null, held = false } = {}) {
+	if (held) return fn();
 	return phpLock.run(
 		async () => {
 			retirer.runStart();
@@ -3043,7 +3047,7 @@ async function pruneDedupe(storage, now, ttlMs, limit = 128) {
 	}
 }
 
-async function runCron(booted, cleanDue = false, mail = null) {
+async function runCron(booted, cleanDue = false, mail = null, { held = false } = {}) {
 		const { php } = booted;
 		// A bounded tick (cron-bound.mjs, #291): our own claim/process loop, not the queue runner,
 		// which grew the runtime past the 128 MiB isolate on a big store even for one action.
@@ -3168,7 +3172,7 @@ async function runCron(booted, cleanDue = false, mail = null) {
 		let out = {};
 		try { out = JSON.parse(String(r.text).slice(String(r.text).lastIndexOf('{'))); } catch (e) { out = { parse: String(r.text).slice(-200) }; }
 		return out;
-		});
+		}, { held });
 	}
 
 // The front Worker verifies a gated POST before it reaches the object (#351, turnstile.mjs). It
@@ -3631,9 +3635,12 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 			// disabled (DISABLE_WP_CRON), so nothing runs it otherwise; the DO alarm calls the
 			// same runCron() on a cadence. Runs the Action Scheduler queue (the deferred WC
 			// order emails) and due WP-Cron events. Spike/manual trigger and the test seam.
+			// #720: already inside the request withPhp (object fetch and the Worker serve both call
+			// handle inside it). Pass held so runCron does not take the lock again. The alarm calls
+			// runCron without it, so that leg always takes the lock.
 			bootPromise ??= boot(origin);
 			const mail = tickMailFor(env, sqlStorage);
-			const r = await runCron(await bootPromise, false, mail);
+			const r = await runCron(await bootPromise, false, mail, { held: true });
 			// Drain + SEND here too (a manual run), awaiting delivery so the response reports actual
 			// sends, not enqueues (#185). The alarm uses waitUntil; a manual trigger awaits the signal.
 			const drained = pendingEmails.length;
