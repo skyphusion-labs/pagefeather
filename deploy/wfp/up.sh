@@ -24,6 +24,8 @@ SITES=${SITES:-one two}
 for s in $SITES; do valid_site "$s" || { echo "bad site name: $s" >&2; exit 2; }; done
 # #639, #693: full on a live site is refused before the build and every upload. 1 and unset are unchanged.
 for s in $SITES; do obs_refuse_full "$s" || exit 2; done
+# #736: FAULT_INJECT is refused before the build and every upload too (deploy/fault-inject.sh).
+for s in $SITES; do fault_inject_var "$s" >/dev/null || exit 2; done
 umask 077
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 mkdir -p "$GEN"

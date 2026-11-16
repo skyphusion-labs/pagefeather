@@ -23,6 +23,8 @@ cmd=${1:-}; s=${2:-}
 valid_site "$s" || { echo "usage: site.sh up|down <name> (lower case, digits, hyphens; 1 to 30; not probe, not auto)" >&2; exit 2; }
 # #639, #693: full on a live site is refused before Terraform, the API, or the user Worker upload.
 if [ "$cmd" = up ]; then obs_refuse_full "$s" || exit 2; fi
+# #736: FAULT_INJECT is refused before any step too (deploy/fault-inject.sh).
+if [ "$cmd" = up ]; then fault_inject_var "$s" >/dev/null || exit 2; fi
 umask 077
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 mkdir -p "$GEN"
