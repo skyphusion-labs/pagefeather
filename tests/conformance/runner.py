@@ -12,7 +12,8 @@ prepare checks the site, sets it up and writes <run-dir>/env (mode 600) for Play
   - the site has no throwaway marker (php/pf-conformance-throwaway.php, shipped only by
     prepare-content.sh) or the marker names another host: the suites delete ALL content;
   - the host is on the deny list (PF_CONFORMANCE_DENY adds hosts);
-  - the admin cannot log in through the wp-login.php form (Turnstile must be OFF on the site);
+  - the admin cannot log in through the wp-login.php form (deploy with TURNSTILE_LOGIN=off: an API
+    POST carries no Turnstile token; the checkout and comment gates stay on with the test keys);
   - the page cache does not match --cache (one guest URL, fetched three times);
   - wc only: HTTP Basic with the application password is not 200, or a WRONG password is not
     401 (the control: it proves Basic is checked, not ignored). See #761.
@@ -101,7 +102,7 @@ class Site:
         st, h, _ = self.req("POST", "/wp-login.php", {"log": user, "pwd": password, "wp-submit": "Log In",
                                                       "testcookie": "1", "redirect_to": self.base + "/wp-admin/"}, form=True)
         if not any(c.name.startswith("wordpress_logged_in_") for c in self.jar):
-            raise Stop("the wp-login.php form did not log the admin in (HTTP %d). Is Turnstile OFF (or on its always-pass test keys), "
+            raise Stop("the wp-login.php form did not log the admin in (HTTP %d). Deploy with TURNSTILE_LOGIN=off: this POST and the WooCommerce auth.setup.ts carry no Turnstile token, "
                        "and is WP_PASSWORD the account password?" % st)
         st, h, b = self.req("GET", "/wp-admin/admin-ajax.php?action=rest-nonce")
         n = b.decode().strip()

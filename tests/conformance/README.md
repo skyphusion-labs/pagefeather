@@ -29,7 +29,7 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
 ## One run, step by step
 
 1. **The content.** Run `tests/conformance/prepare-content.sh <new dir> wp wc gb`. Keep the last line it prints.
-2. **The site.** Build and deploy a throwaway with the lean engine. Put that line in front of the build. Turnstile must be OFF, or on its always-pass test keys.
+2. **The site.** Build and deploy a throwaway with the lean engine. Put that line in front of the build. Deploy it with `TURNSTILE_LOGIN=off`: WooCommerce `auth.setup.ts` logs in with an API POST to `wp-login.php`, which carries no Turnstile token, and our login gate fails closed without one. The checkout and comment gates stay ON with Turnstile's always-pass test keys. Our own test in the matrix covers Turnstile on login.
    - For the cache-on run, keep the default page cache.
    - For the cache-off run, deploy with `PAGE_CACHE_TTL=0`.
 3. **Install the suite on the VPS:** `vps-run.sh install <suite> <work-dir>`.
