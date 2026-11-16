@@ -14,12 +14,12 @@ const at = (kind) => {
 	return f;
 };
 
-test('#771 the lean engine is judged by lean.json, the npm engine by the upstream 3.1.62 file', () => {
+test('#771 the pinned lean engine is judged by lean.json; npm, no marker and a custom engine keep the upstream file', () => {
 	try {
 		assert.equal(basename(defaultExpect(at('lean'))), 'lean.json');
 		assert.equal(basename(defaultExpect(at('npm'))), 'upstream-3.1.62.json');
 		assert.equal(basename(defaultExpect(join(dir, 'absent.mjs'))), 'upstream-3.1.62.json', 'no marker (an older prepare.sh): npm');
-		assert.throws(() => defaultExpect(at('custom')), /set ENGINE_EXPECT/, 'a custom engine must name its expectation');
+		assert.equal(basename(defaultExpect(at('custom'))), 'upstream-3.1.62.json', 'a custom engine keeps the old default (the engine workflow gates)');
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

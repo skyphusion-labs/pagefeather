@@ -435,17 +435,15 @@ trait Pf582T {
 
 // The engine under test: ENGINE_JS and ENGINE_WASM, or the prepared vendor/ engine; ENGINE_EXPECT
 // names its expectation file (default: today's engine).
-// #771: with no ENGINE_EXPECT, the expectation follows the engine prepare.sh vendored (vendor/engine.mjs): the lean
-// engine is judged by engine/expect/lean.json (as pagefeather-engine.yml judges the published build), npm by the
-// upstream 3.1.62 file. A custom engine has no default: it must name its expectation.
+// #771: with no ENGINE_EXPECT, vendor/ holding the PINNED lean engine (vendor/engine.mjs says lean, the default) is
+// judged by engine/expect/lean.json, as pagefeather-engine.yml judges the published build. Everything else keeps the
+// default it always had, the upstream 3.1.62 file: npm, no marker (an older prepare.sh), and a custom engine (the
+// engine workflow's gate jobs vendor their own arm and name ENGINE_EXPECT where the expectation matters).
 export function defaultExpect(vendorEngineMjs = join(B2, 'vendor/engine.mjs')) {
 	let src = '';
-	try { src = readFileSync(vendorEngineMjs, 'utf8'); } catch { /* an older prepare.sh wrote none: the npm engine */ }
+	try { src = readFileSync(vendorEngineMjs, 'utf8'); } catch { /* no marker */ }
 	const m = src.match(/export const PHP_ENGINE = '([a-z]+)';/);
-	const kind = m ? m[1] : 'npm';
-	if (kind === 'lean') return join(B2, '../../engine/expect/lean.json');
-	if (kind === 'npm') return join(B2, '../../engine/expect/upstream-3.1.62.json');
-	throw new Error('vendor/ holds a ' + kind + ' engine: set ENGINE_EXPECT to its expectation file');
+	return m && m[1] === 'lean' ? join(B2, '../../engine/expect/lean.json') : join(B2, '../../engine/expect/upstream-3.1.62.json');
 }
 export function engineUnderTest() {
 	const expectPath = process.env.ENGINE_EXPECT || defaultExpect();
