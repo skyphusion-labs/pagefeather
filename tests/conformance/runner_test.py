@@ -264,10 +264,12 @@ def main():
         mode = stat.S_IMODE(os.stat(envf).st_mode) if os.path.exists(envf) else None
         ok("env is mode 600") if mode == 0o600 else bad("env mode is %r" % (oct(mode) if mode else None))
         env_text = open(envf).read() if mode else ""
-        for want in ("export ADMIN_PASSWORD=%s" % s.password, "export WP_PASSWORD=%s" % s.password, "export ADMIN_USER=admin",
-                     "export BASE_URL=%s" % s.url, "export CUSTOMER_USER=customer", "export CUSTOMER_PASSWORD=%s" % s.customer_pw,
-                     "export PF_CONFORMANCE_CACHE=on"):
-            ok("env has %s" % want.split("=")[0]) if want in env_text else bad("env lacks %s" % want.split("=")[0])
+        # Checked by (key, value); only the literal KEY is ever printed, never a value.
+        for key, val in (("ADMIN_PASSWORD", s.password), ("WP_PASSWORD", s.password), ("ADMIN_USER", "admin"),
+                         ("BASE_URL", s.url), ("CUSTOMER_USER", "customer"), ("CUSTOMER_PASSWORD", s.customer_pw),
+                         ("PF_CONFORMANCE_CACHE", "on")):
+            has = ("export %s=%s\n" % (key, val)) in env_text
+            ok("env has " + key) if has else bad("env lacks " + key)
         ok("no application password was created") if s.app is None else bad("the runner created an application password")
         rc, o, e = run(["prepare", "--suite", "wc", "--base-url", Stub().url, "--cache", "on", "--run-dir", os.path.join(t, "x")],
                        {"WP_PASSWORD": "SeedAppPass24CharsAbCdEf", "CUSTOMER_PASSWORD": "Cust-Pass-9"})
