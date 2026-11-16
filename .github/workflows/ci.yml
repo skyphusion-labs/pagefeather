@@ -257,6 +257,11 @@ jobs:
         # refused stock-out purges, a delayed create purge, and could-not-measure when the checkout did not
         # change the stock or the site never says a read was cached.
         run: python3 -I tests/load/page-stale-test.py
+      - name: the #724 live-run driver and its scorer, against a stub site (#598)
+        # tests/load/reuse_run.py runs repro, a 2-window burst with guests and the quiet gap; reuse_score.py passes a
+        # clean on arm and fails a bad one on bars 2, 4 and 5 (bar 1 could not measure without logs), and lists a
+        # slow no-answer request in the #605 table.
+        run: python3 -I tests/load/reuse-run-stub-test.py
       - name: b-dosql the isolate memory ledger (issue #394)
         run: node --test spikes/b2-wordpress/tests/mem-ledger.test.mjs
       # The arena test inflates real deflate data with fflate, the Worker's own inflater (#508). The
