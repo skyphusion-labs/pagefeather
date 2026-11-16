@@ -3019,6 +3019,17 @@ export class PhpRuntime extends DurableObject {
 		const env = this.env;
 		ENV = env;
 		const objectUrl = new URL(raw.url);
+		// #755 PROBE (measurement branch only): a store for the probes, for a site with logs OFF (console lines are invisible
+		// there). Answered first: before the origin guard and the PHP lock. Keys pf755:<who>:<id>.
+		if (objectUrl.pathname === '/_pf755-mark') {
+			const q = objectUrl.searchParams;
+			await this.ctx.storage.put('pf755:' + (q.get('who') || '?') + ':' + (q.get('id') || '?'), { at: Number(q.get('at')), aborted: q.get('aborted'), t: Date.now() });
+			return new Response('ok');
+		}
+		if (objectUrl.pathname === '/_pf755-read') {
+			const m = await this.ctx.storage.list({ prefix: 'pf755:' });
+			return Response.json(Object.fromEntries(m));
+		}
 		// #352: the outcome of a request's frame, for the front Worker's write-loss answer (never a client: the
 		// Worker answers a client's /_frame itself). It needs no public origin, so it is answered before the
 		// origin guard below (pf352f at ebb62f5: every probe got 500 "missing x-wp-public-origin").
@@ -3189,11 +3200,12 @@ export class PhpRuntime extends DurableObject {
 		const gone = !!(callerSignal && callerSignal.aborted);
 		// #755 PROBE (MEASUREMENT BRANCH ONLY, NEVER MERGED; always on here, so no deploy plumbing): when does the caller's abort reach this object? It logs the
 		// abort event's own arrival, and signal.aborted at arrival, after the recheck, at the grant and at the end of the run.
-		const discProbe = raw.signal ? { at0: tArrive, abortAt: null, call: callId || null } : null;
+		const discProbe = raw.signal ? { at0: tArrive, abortAt: null, call: callId || null, pid: new URL(raw.url).searchParams.get('pf_probe') } : null;
+		const probeStore = (who, extra) => discProbe && discProbe.pid && this.ctx.storage.put('pf755:' + who + ':' + discProbe.pid, { sinceArriveMs: Date.now() - discProbe.at0, aborted: !!raw.signal.aborted, ...extra }).catch(() => {});
 		const probeLog = (at, extra) => discProbe && console.log(JSON.stringify({ m: 'disc-probe', at, call: discProbe.call, aborted: !!raw.signal.aborted, abortAt: discProbe.abortAt, sinceArriveMs: Date.now() - discProbe.at0, phpPending, ...extra }));
 		if (discProbe) {
 			if (raw.signal.aborted) discProbe.abortAt = 'before-arrive';
-			else raw.signal.addEventListener('abort', () => { discProbe.abortAt = Date.now() - discProbe.at0; probeLog('abort-event', { runningNow: discProbe.granted ? 'own-run' : 'queued' }); }, { once: true });
+			else raw.signal.addEventListener('abort', () => { discProbe.abortAt = Date.now() - discProbe.at0; probeLog('abort-event', { runningNow: discProbe.granted ? 'own-run' : 'queued' }); probeStore('obj-abort', { runningNow: discProbe.granted ? 'own-run' : 'queued' }); }, { once: true });
 			probeLog('arrive', { ahead: phpPending });
 		}
 		if (plan.refuseNow || gone) {
@@ -3221,7 +3233,7 @@ export class PhpRuntime extends DurableObject {
 		// #296: shed only with PHP_QUEUE_SHED_MS set (the default is never, on every path).
 		const objectRun = await withPhp(async () => {
 			const waitMs = Date.now() - tArrive;
-			if (discProbe) { discProbe.granted = true; probeLog('grant', { waitMs }); }
+			if (discProbe) { discProbe.granted = true; probeLog('grant', { waitMs }); probeStore('obj-grant', { waitMs }); }
 			sqlDb = sql;
 			sqlStorage = sql ? this.ctx.storage : null;
 			const realTxn = sql && env.REAL_TRANSACTIONS !== 'off';
@@ -3255,7 +3267,7 @@ export class PhpRuntime extends DurableObject {
 				// Hold cron off briefly so an externally-armed alarm cannot run runCron in the
 				// /_install -> /_activate gap, where /_activate would reuse the cron runtime (#185).
 				if (isSpikeLongOp) lastSpikeEndAt = Date.now();
-				if (discProbe) probeLog('end', {});
+				if (discProbe) { probeLog('end', {}); probeStore('obj-end', {}); }
 			}
 		}, {
 			shedMs: plan.shedMs,
@@ -3860,6 +3872,10 @@ export default {
 		// anything else runs. /pf-sigprobe?id=..&ms=6000 waits on a TIMER only (no object, no site.fetch). It logs
 		// m: sig-probe at armed, abort-event and end (with req.signal.aborted). It splits "anything on this script"
 		// from "the page path". Public on purpose: a throwaway measurement build only.
+		if (url.pathname === '/pf755-read' && env.PHP_RUNTIME) { // #755 PROBE: the stored marks (a throwaway build only)
+			const st = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName('php-0'), env.PHP_LOCATION ? { locationHint: env.PHP_LOCATION } : undefined);
+			return st.fetch('https://do/_pf755-read');
+		}
 		if (url.pathname === '/pf-sigprobe') {
 			const sp0 = Date.now(), spId = (url.searchParams.get('id') || 'x').slice(0, 40);
 			const spLog = (at) => console.log(JSON.stringify({ m: 'sig-probe', at, id: spId, hasSignal: !!req.signal, aborted: !!(req.signal && req.signal.aborted), sinceStartMs: Date.now() - sp0 }));
@@ -3878,11 +3894,13 @@ export default {
 			const gp0 = Date.now(), gpPath = url.pathname, gpCached = pageCacheRoute(req, url, env);
 			const gpLog = (at, extra) => console.log(JSON.stringify({ m: 'gw-probe', at, path: gpPath, cached: gpCached, aborted: !!req.signal.aborted, sinceStartMs: Date.now() - gp0, ...extra }));
 			gpLog('armed', {});
-			if (!req.signal.aborted) req.signal.addEventListener('abort', () => gpLog('abort-event', {}), { once: true });
+			const gpPid = url.searchParams.get('pf_probe');
+			const gpMark = (who) => { if (!gpPid || !env.PHP_RUNTIME) return; const st = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName('php-0'), env.PHP_LOCATION ? { locationHint: env.PHP_LOCATION } : undefined); ctx.waitUntil(st.fetch('https://do/_pf755-mark?who=' + who + '&id=' + encodeURIComponent(gpPid) + '&at=' + (Date.now() - gp0) + '&aborted=' + !!req.signal.aborted).catch(() => {})); };
+			if (!req.signal.aborted) req.signal.addEventListener('abort', () => { gpLog('abort-event', {}); gpMark('gw-abort'); }, { once: true });
 			const gpAnswer = gpCached
 				? ctx.exports.Pages.fetch(new Request(req, { headers: (() => { const h = new Headers(req.headers); h.delete('cookie'); h.delete('authorization'); return h; })() }))
 				: site.fetch(req, env, ctx);
-			try { return await gpAnswer; } finally { gpLog('end', {}); }
+			try { return await gpAnswer; } finally { gpLog('end', {}); gpMark('gw-end'); }
 		}
 		if (pageCacheRoute(req, url, env)) {
 			const h = new Headers(req.headers);
