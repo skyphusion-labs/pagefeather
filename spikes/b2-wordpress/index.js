@@ -37,6 +37,7 @@ import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__do
 import { inflateSync } from 'fflate';
 import { createArena } from './inflate-arena.mjs';
 import { headroomStream } from './headroom.mjs';
+import { faultArmed, isFaultTarget, exhaustMemory } from './fault-inject.mjs';
 import { createUndoLog } from './undo-log.mjs';
 import { createRetirer } from './runtime-drop.mjs';
 import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
@@ -98,6 +99,11 @@ export function setDbHandler(h) {
 let sqlDb = null;
 // The object's storage, for transactionSync (real transactions, #60). Set with sqlDb.
 let sqlStorage = null;
+// #730 (#589 B): this object request asked for the post-INSERT fault (fault-inject.mjs: the site var, the spike
+// token and x-pf-fault, all three). One shot: sqlStatement clears it when it fires; the run clears it at the end.
+let faultPending = false;
+let faultReq = null; // its x-pf-req, for the log line
+const faultHeld = []; // the memory the kill holds, so nothing can be collected before the platform resets
 
 // Object cache across requests (php/object-cache.php, docs/perf-dosql.md), in
 // the PHP object with DB_IN_DO only: one object is the only writer, so
@@ -2403,6 +2409,14 @@ function sqlStatement(db, m) {
 		// back (a DDL is a commit point).
 		const run = () => sqlRun(db, m, params);
 		const { reply } = undoLog ? undoLog.statement(db, sqlStorage, m.sql, run) : run();
+		// #730: the statement, and the frame's opening transaction with it, has returned. The request's INSERT into
+		// wp_posts is the point to kill, so every injected kill is post-write. The kill is a memory reset by the platform.
+		if (faultPending && isFaultTarget(m.sql, reply)) {
+			faultPending = false;
+			console.log(JSON.stringify({ m: 'fault-inject', at: 'after-insert', req: faultReq }));
+			const r = exhaustMemory({ held: faultHeld });
+			console.log(JSON.stringify({ m: 'fault-not-killed', ...r }));
+		}
 		stats.ms += Date.now() - t;
 		stats.log.push('ok  ' + m.sql.slice(0, 160).replace(/\s+/g, ' '));
 		return reply;
@@ -2989,6 +3003,9 @@ export class PhpRuntime extends DurableObject {
 			if (realTxn) txnRecover(sql, this.ctx.storage);
 			// #352: arm the request frame (REQUEST_FRAMES=on); it opens at the first write. The Worker sends the id.
 			if (realTxn) undo(env).arm(sql, req.headers.get('x-pf-req') || 'obj-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
+			// #730: the post-INSERT fault, a measurement for throwaway sites only (fault-inject.mjs).
+			faultPending = faultArmed(env, spikeOk, req.headers);
+			faultReq = faultPending ? req.headers.get('x-pf-req') : null;
 			// One PHP run at a time (withPhp), so one slot holds this run's answer.
 			turnstileSlot.set(turnstileHeader);
 			try {
@@ -3003,6 +3020,7 @@ export class PhpRuntime extends DurableObject {
 				return res;
 			} finally {
 				turnstileSlot.clear();
+				faultPending = false; // #730: never carried to the next request
 				// A request that threw also ends its transaction (rolled back), and keeps its frame. Idempotent.
 				if (realTxn) txnEnd(sql, this.ctx.storage);
 				phpPending--;

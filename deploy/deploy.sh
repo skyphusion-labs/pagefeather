@@ -106,6 +106,10 @@ esac
 # OBJECT_CALL_DEADLINE_S, OBJECT_START_BY_S (#703, #708): checked before any step; render_conf renders them.
 # shellcheck source=SCRIPTDIR/object-time.sh
 . "$ROOT/deploy/object-time.sh"
+# FAULT_INJECT (#730): the post-INSERT fault injector, a throwaway-only measurement. One rule with deploy/wfp.
+# shellcheck source=SCRIPTDIR/fault-inject.sh
+. "$ROOT/deploy/fault-inject.sh"
+fault_check "$VARIANT" "${NAME:-}" || exit 2
 object_time_vars >/dev/null || exit 2
 # WOO_ACTIVE is 0 or 1 (#706). Unset was set to 0 above. Anything else is refused
 # before any step, the same as deploy/wfp woo_active_for_build.

@@ -357,6 +357,16 @@ lazy_arena_var() {
 # HEADROOM_PROBE (#394): "on" enables the spike-gated GET /_headroom, which allocates in the PHP object's
 # isolate until it dies (spikes/b2-wordpress/headroom.mjs). A measurement for THROWAWAY sites only: it ends
 # the isolate. Off or unset: /_headroom answers 404. Read from the run's environment only.
+# FAULT_INJECT (#730, #589 B): the operator-only post-INSERT fault injector. ONE rule with deploy/deploy.sh:
+# deploy/fault-inject.sh (after-insert only, b-dosql, THROWAWAY=1, never a live site by either marker). A
+# measurement flag (site_settings.py MEASUREMENT): never recorded, so the next update without it turns it off.
+# fault_inject_var <site>: the [vars] line, nothing when unset; exit 2 with the reason when refused.
+fault_inject_var() {
+  # shellcheck source=../fault-inject.sh
+  . "$WFP/../fault-inject.sh"
+  ROOT="$WFP/../.." fault_check b-dosql "${1:-}" || return 2
+  fault_line
+}
 headroom_var() {
   case "${HEADROOM_PROBE:-}" in
     "") ;;
@@ -573,6 +583,9 @@ render_user() { # render_user <site> <origin>
   [ -z "$rqframes" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$rqframes
   local woo_extras; woo_extras=$(woo_extras_var) || return 1
   [ -z "$woo_extras" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$woo_extras
+  # FAULT_INJECT (#730): the throwaway-only post-INSERT fault, the same rule as deploy.sh (deploy/fault-inject.sh).
+  local fault; fault=$(fault_inject_var "$s") || return 2
+  [ -z "$fault" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$fault
   local otime; otime=$(object_time_vars) || return 1
   [ -z "$otime" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$otime
   cat <<TOML

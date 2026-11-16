@@ -111,10 +111,35 @@ def check_state(a, nonce, r, title):
     h = {'X-WP-Nonce': nonce}
     if want is not None:
         s = req(a, '/?rest_route=/wp/v2/pages/%d&context=edit' % want, None, h)
-    else:
-        s = req(a, '/?rest_route=/wp/v2/pages&status=draft&context=edit&per_page=100&search=' + urllib.parse.quote_plus(title), None, h)
-    st = classify(s['code'], s.get('body'), title, want)
+        st = classify(s['code'], s.get('body'), title, want)
+        return {'state': st, 'stateFound': {'found': 1, 'absent': 0}.get(st), 'stateCode': s['code'], 'stateId': want, 'stateS': s.get('s')}
+    st, s = search_title(a, h, title)
     return {'state': st, 'stateFound': {'found': 1, 'absent': 0}.get(st), 'stateCode': s['code'], 'stateId': want, 'stateS': s.get('s')}
+
+
+# #730 (#589 run7c): a read-back by title asked for 100 rows with every field. WordPress loads each matching row,
+# content included, before the REST layer drops fields, so with 512 KiB pages that was a memory death (503, the site
+# restarted) and every such read-back failed. Now: the exact title as ONE quoted phrase (a single LIKE term, so round
+# 17 matches only 17 and 170 to 179), SEARCH_PER_PAGE rows a page (3) with _fields=id,title, paged until found or the
+# results run out. A page that fails makes it read-failed, never absent.
+SEARCH_PER_PAGE = 3
+def search_title(a, h, title):
+    q = urllib.parse.quote_plus('"%s"' % title)
+    s = {'code': None}
+    for page in range(1, 51):
+        s = req(a, '/?rest_route=/wp/v2/pages&status=draft&context=edit&per_page=%d&page=%d&_fields=id,title&search=%s' % (SEARCH_PER_PAGE, page, q), None, h)
+        if page > 1 and s['code'] == 400:
+            return 'absent', s  # rest_post_invalid_page_number: past the last page
+        st = classify(s['code'], s.get('body'), title)
+        if st != 'absent':
+            return st, s  # found, or read-failed
+        try:
+            n = len(json.loads(s.get('body') or b'[]'))
+        except ValueError:
+            return 'read-failed', s
+        if n < SEARCH_PER_PAGE:
+            return 'absent', s
+    return 'read-failed', s
 
 
 def product_path(o):
@@ -230,13 +255,35 @@ def page_body(title):
     return body
 
 
+# #730 (#589 B): FAULT_EVERY=k sends x-pf-fault: after-insert on every k-th REST create (rounds 0, k, 2k ...). A
+# site with FAULT_INJECT=after-insert (throwaway only) then kills its object right after that create's INSERT, so
+# the kill is post-write by construction. Needs SPIKE_TOKEN (the object arms it only for the token). Rows get
+# injected true or false; unset adds no key, so earlier runs read the same.
+def fault_every():
+    v = os.environ.get('FAULT_EVERY', '')
+    if not v:
+        return 0
+    if not v.isdigit() or int(v) < 1:
+        raise SystemExit('FAULT_EVERY must be a whole number 1 or more, not %r' % v)
+    if not os.environ.get('SPIKE_TOKEN'):
+        raise SystemExit('FAULT_EVERY needs SPIKE_TOKEN: the site arms the fault only for the spike token')
+    return int(v)
+
+
 def rest_round(a, phase, i):
+    k = fault_every()
     nn = req(a, '/wp-admin/admin-ajax.php?action=rest-nonce')
     nonce = (nn.get('body') or b'').decode().strip()
     title = 'measure394 %s %d' % (RUN, i)
-    r = req(a, '/?rest_route=/wp/v2/pages', json.dumps(page_body(title)).encode(),
-            {'X-WP-Nonce': nonce, 'Content-Type': 'application/json'}, 'POST')
-    rec(phase, 'rest-page', 'POST', '/wp/v2/pages', r, dict(check_state(a, nonce, r, title), **frame_of(a, r)))
+    hd = {'X-WP-Nonce': nonce, 'Content-Type': 'application/json'}
+    injected = bool(k) and i % k == 0
+    if injected:
+        hd['x-pf-fault'] = 'after-insert'
+    r = req(a, '/?rest_route=/wp/v2/pages', json.dumps(page_body(title)).encode(), hd, 'POST')
+    extra = dict(check_state(a, nonce, r, title), **frame_of(a, r))
+    if k:
+        extra['injected'] = injected
+    rec(phase, 'rest-page', 'POST', '/wp/v2/pages', r, extra)
 
 
 def frame_of(a, r):
@@ -278,6 +325,17 @@ def tally(rs):
                 t['5xx-found-by-frame'][fk] = t['5xx-found-by-frame'].get(fk, 0) + 1
             if x.get('reset'):
                 t['reset5xx'][x['reset']] = t['reset5xx'].get(x['reset'], 0) + 1
+    # #730: the injected creates (FAULT_EVERY). Each should answer 5xx with its frame row there (rolled-back with
+    # frames on); a 2xx means the injector did not fire, and a frame of none means the frame row is missing.
+    inj = [x for x in rs if x.get('injected')]
+    if inj:
+        i5 = [x for x in inj if not ok(x)]
+        fr = {}
+        for x in i5:
+            fk = x.get('frame') or 'none'
+            fr[fk] = fr.get(fk, 0) + 1
+        t['injected'] = {'n': len(inj), '5xx': len(i5), '2xx': len(inj) - len(i5), 'frame': fr,
+                         '5xx-found': sum(1 for x in i5 if x.get('state') == 'found')}
     return t
 
 
