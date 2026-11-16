@@ -45,7 +45,12 @@ r = req(g, "/?rest_route=/wc/store/v1/cart", headers={"Cart-Token": token or ""}
 body = json.loads(r["body"]) if r["code"] == 200 else {}
 check("guest: cart keeps the items (session in D1)", body.get("items_count") == 2, r)
 addr = {"first_name": "Ada", "last_name": "Edge", "address_1": "1 Worker Way", "city": "Austin", "state": "TX", "postcode": "78701", "country": "US", "email": "ada@example.com", "phone": "5555550100"}
-r = req(g, "/?rest_route=/wc/store/v1/checkout", json.dumps({"billing_address": addr, "shipping_address": {k: v for k, v in addr.items() if k not in ("email",)}, "payment_method": "cod"}).encode(), H)
+payload = {"billing_address": addr, "shipping_address": {k: v for k, v in addr.items() if k not in ("email",)}, "payment_method": "cod"}
+if os.environ.get("TURNSTILE_TEST_TOKEN"):
+    # Store API checkout never sees a form field. The block gate reads extensions["skyphusion-turnstile"].token
+    # (php/turnstile-forms.php, skyphusion_turnstile_block_token). Unset, the body is unchanged.
+    payload["extensions"] = {"skyphusion-turnstile": {"token": os.environ["TURNSTILE_TEST_TOKEN"]}}
+r = req(g, "/?rest_route=/wc/store/v1/checkout", json.dumps(payload).encode(), H)
 order = json.loads(r["body"]) if r["code"] == 200 else {}
 check("guest: checkout with cash on delivery", r["code"] == 200 and order.get("order_id"), r, f"order {order.get('order_id')} status {order.get('status')}")
 if order.get("order_id"):
