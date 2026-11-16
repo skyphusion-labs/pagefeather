@@ -33,6 +33,9 @@ function recorder(opts = {}) {
       if (opts.scriptExists) return { ok: true, status: 200, text: async () => '{"success":true,"result":{"id":"existing"}}' };
       return { ok: false, status: 404, text: async () => '{"success":false,"errors":[{"code":10090}]}' };
     }
+    // #650, #296: OBJECT_CACHE_VERSIONS is on by default for approach A, so provisionSite reads the Hyperdrive config.
+    // This is the config deploy/onboard makes: caching disabled. hyperdrive-gate-test.mjs covers the caching refusal.
+    if (init.method === 'GET' && /\/hyperdrive\/configs\/[^/]+$/.test(url)) return { ok: true, status: 200, text: async () => '{"success":true,"result":{"id":"HDID","caching":{"disabled":true}}}' };
     if (init.method === 'GET' && url.endsWith('/tokens')) {
       const body = opts.existingToken ? '{"success":true,"result":[{"id":"OLDID","name":"c1-store-litestream"}]}' : '{"success":true,"result":[]}';
       return { ok: true, status: 200, text: async () => body };

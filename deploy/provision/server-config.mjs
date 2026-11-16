@@ -9,7 +9,7 @@
 // bundle in the Worker's own R2 bucket. The caller chooses a type and a name,
 // and picks an OWNED base domain from an allowlist; it configures nothing.
 import { SITE_NAME_RE, assertValidName, isCallerReservedName, genSecret } from './shared.mjs';
-import { bDosqlBindings, bDosqlResourceCreateOps, bDosqlSecrets, mediaBucketName, aBindings, ocKvNamespaceName, pageCacheInputs, pageCacheProductTtl, objectTimeInputs } from './wp-site-config.mjs';
+import { bDosqlBindings, bDosqlResourceCreateOps, bDosqlSecrets, mediaBucketName, aBindings, ocKvNamespaceName, pageCacheInputs, pageCacheProductTtl, objectTimeInputs, aCacheInputs } from './wp-site-config.mjs';
 
 // ---- 1. Caller auth (operator baseline) --------------------------------------
 // A shared operator secret in env.PROVISION_AUTH, sent as `Authorization:
@@ -178,7 +178,7 @@ export const TABLE_PREFIX_RE = /^[A-Za-z0-9_]{1,39}_$/;
 
 export async function buildServerCfg(env, { kind, name, domain, demo = false, expiresAt, codeLock = false, hyperdriveId, tablePrefix, hyperdriveSqlMode, store = false }) {
   // #706: refuse a bad TTL or a bad WOO_ACTIVE before the bundle is read.
-  try { pageCacheProductTtl(pageCacheInputs(env, { store })); objectTimeInputs(env); }
+  try { pageCacheProductTtl(pageCacheInputs(env, { store })); objectTimeInputs(env); aCacheInputs(env); }
   catch (e) { throw new BadRequest(e.message); }
   // Kind 'a' (#431): checked before any IO, so a bad call loads no bundle.
   if (kind === 'a') {
@@ -236,6 +236,7 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
         mailFrom: target.workersDev ? undefined : `wordpress@${domain}`, mailFromName: name,
         ...pageCacheInputs(env, { store }),
         ...objectTimeInputs(env),
+        ...aCacheInputs(env), // #296: the escape hatch for the two cache defaults
       }),
       sqliteClasses: [],
       kvNamespaces: [{ title: ocKvNamespaceName(name), binding: 'OC_KV' }],

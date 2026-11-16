@@ -27,7 +27,7 @@ export async function versionsGate(ctx, { hyperdriveId, flagOn }) {
 		throw new Error(`#650: could not read Hyperdrive config ${hyperdriveId} (HTTP ${r.status}${codes ? ', codes ' + codes : ''}); OBJECT_CACHE_VERSIONS=on is refused (fail closed)`);
 	}
 	if (!cachingDisabled(r.result)) {
-		throw new Error(`#650: Hyperdrive config ${hyperdriveId} caches queries (caching.disabled is not true); OBJECT_CACHE_VERSIONS=on would read stale versions. Disable its caching, or leave the flag off`);
+		throw new Error(`#650: Hyperdrive config ${hyperdriveId} caches queries (caching.disabled is not true); OBJECT_CACHE_VERSIONS=on (the approach A default since #296) would read stale versions. Disable its caching, or turn the flag off`);
 	}
 	return { checked: true };
 }

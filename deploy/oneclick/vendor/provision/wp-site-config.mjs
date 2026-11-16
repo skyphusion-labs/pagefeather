@@ -75,6 +75,16 @@ function objectTimeValue(name, raw) {
   if (!/^[0-9]+(\.[0-9]+)?$/.test(s) || !(n >= 1 && n <= 600)) throw new Error(`${name} must be off or seconds from 1 to 600, not ${s}`);
   return s;
 }
+// #296: the escape hatch for approach A's two cache defaults on the one-click path (as OBJECT_START_BY_S=off for #715).
+// The same values as deploy/a-settings.sh: OBJECT_CACHE_VERSIONS 1 or 0, WOO_HPOS_CACHE on or off. Unset is ON. An
+// explicit 0 or off wins. Anything else throws, so the callers refuse it before a bundle is read or an API call is made.
+export function aCacheInputs(env = {}) {
+  const v = env.OBJECT_CACHE_VERSIONS, h = env.WOO_HPOS_CACHE;
+  if (!(v === undefined || v === null || v === '' || v === '0' || v === '1')) throw new Error(`OBJECT_CACHE_VERSIONS must be 0 or 1, not ${v}`);
+  if (!(h === undefined || h === null || h === '' || h === 'on' || h === 'off')) throw new Error(`WOO_HPOS_CACHE must be on or off, not ${h}`);
+  return { objectCacheVersions: v !== '0', wooHposCache: h !== 'off' };
+}
+
 export function objectTimeInputs(env = {}) {
   const objectCallDeadlineS = objectTimeValue('OBJECT_CALL_DEADLINE_S', env.OBJECT_CALL_DEADLINE_S);
   const objectStartByS = objectTimeValue('OBJECT_START_BY_S', env.OBJECT_START_BY_S);
@@ -504,9 +514,10 @@ export function aVars({
   mailFrom, mailFromName,
   // #296 (2) / #643: options and transients across isolates under exact versions. Off by default. provisionSite
   // refuses it when the site's Hyperdrive config caches queries (#650, hyperdrive-gate.mjs).
-  objectCacheVersions = false,
+  // #296 step 3 (the lead's ruling): ON by default, with #697 below. false turns it off; anything but a boolean throws.
+  objectCacheVersions = true,
   // #697: WooCommerce HPOS Data Caching (per request on A). Off by default; only a real true turns it on.
-  wooHposCache = false,
+  wooHposCache = true,
   // #706: the same store rule as b-dosql. Unset on a non-store adds no var.
   wooActive, importPlugins, plugins, pageCacheProductTtl, store,
   // #715 review3 6: the PHP-object time bounds (the overflow pool), objectTimeInputs.
@@ -525,8 +536,11 @@ export function aVars({
     LAZY_NODES: 'on',
     LAZY_CACHE_MB: String(lazyCacheMb),
   };
-  if (objectCacheVersions === true) vars.OBJECT_CACHE_VERSIONS = 'on';
-  if (wooHposCache === true) vars.WOO_HPOS_CACHE = 'on';
+  for (const [k, v] of [['objectCacheVersions', objectCacheVersions], ['wooHposCache', wooHposCache]]) {
+    if (typeof v !== 'boolean') throw new Error(`aVars: ${k} must be true or false (got ${JSON.stringify(v)})`);
+  }
+  if (objectCacheVersions) vars.OBJECT_CACHE_VERSIONS = 'on';
+  if (wooHposCache) vars.WOO_HPOS_CACHE = 'on';
   // HYPERDRIVE_SQL_MODE (#218): a per-statement sql_mode relax, REQUIRED only for
   // strict backends (PlanetScale/Vitess, e.g.
   // ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION). index.js emits it into

@@ -25,11 +25,12 @@
 #   PHP_OVERFLOW      0 (default) or 1: a queued PHP request moves to a Durable Object pool (#646,
 #                     docs/approach-a-overflow.md); renders the PhpRuntime binding and its migration.
 #   PHP_OVERFLOW_POOL 1 to 256 (default 32, the measured default, #646). Needs PHP_OVERFLOW=1.
-#   OBJECT_CACHE_VERSIONS 0 (default) or 1: options in the cross-isolate cache under an exact version (#668, #686),
+#   OBJECT_CACHE_VERSIONS 1 (default since #296 step 3) or 0: options in the cross-isolate cache under an exact version (#668, #686),
 #                     through aVars. Exact only on a Hyperdrive config that does not cache queries (#650): deploy.sh's
 #                     Terraform makes it with caching disabled, and a-render-test.sh holds that line.
-#   WOO_HPOS_CACHE    on or unset (default): WooCommerce's HPOS Data Caching (#697), through aVars. On approach A
-#                     its cache (group orders_data) lives for one request only. Unset leaves WooCommerce's setting.
+#   WOO_HPOS_CACHE    on (default since #296 step 3; unset is on) or off: WooCommerce's HPOS Data Caching (#697), through
+#                     aVars. On approach A its cache (group orders_data) lives for one request only. off leaves WooCommerce's
+#                     own setting.
 #   PF_ENGINE_JS and PF_ENGINE_WASM (every variant): another engine's loader and wasm for
 #                     prepare.sh, for example the lean-trim artifact of the pagefeather-engine
 #                     workflow (#592). Both or neither.
@@ -58,7 +59,7 @@ a_settings_check() {
   case "${A_CLIENT:-lean}" in lean|mysql2) ;; *) echo "A_CLIENT must be lean or mysql2, not ${A_CLIENT}" >&2; return 2 ;; esac
   case "${PHP_OVERFLOW:-0}" in 0|1) ;; *) echo "PHP_OVERFLOW must be 0 or 1, not ${PHP_OVERFLOW}" >&2; return 2 ;; esac
   case "${OBJECT_CACHE_VERSIONS:-0}" in 0|1) ;; *) echo "OBJECT_CACHE_VERSIONS must be 0 or 1, not ${OBJECT_CACHE_VERSIONS}" >&2; return 2 ;; esac
-  case "${WOO_HPOS_CACHE:-}" in ''|on) ;; *) echo "WOO_HPOS_CACHE must be on or unset, not ${WOO_HPOS_CACHE}" >&2; return 2 ;; esac
+  case "${WOO_HPOS_CACHE:-}" in ''|on|off) ;; *) echo "WOO_HPOS_CACHE must be on, off or unset, not ${WOO_HPOS_CACHE}" >&2; return 2 ;; esac
   v=${PHP_OVERFLOW_POOL:-}
   if [ -n "$v" ] && [ "${PHP_OVERFLOW:-0}" != 1 ]; then
     echo "PHP_OVERFLOW_POOL needs PHP_OVERFLOW=1" >&2; return 2

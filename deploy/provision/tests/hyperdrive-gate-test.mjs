@@ -72,8 +72,10 @@ ok('versionsFlagOn: reads the plain_text var from a binding list', versionsFlagO
 	ok('the refusal never carries the token', e && !e.includes('SECRET-TOKEN-VALUE'));
 }
 
-// aVars renders the flag only when asked.
-ok('aVars: no OBJECT_CACHE_VERSIONS by default', !aVars({ siteOrigin: 'https://x' }).some((b) => b.name === 'OBJECT_CACHE_VERSIONS'));
+// #296: the flag is ON by default for approach A (the step 3 series; the lead's ruling). An explicit false turns it off.
+ok('aVars: OBJECT_CACHE_VERSIONS=on by default', aVars({ siteOrigin: 'https://x' }).some((b) => b.name === 'OBJECT_CACHE_VERSIONS' && b.text === 'on'));
+ok('aVars: objectCacheVersions false renders none', !aVars({ siteOrigin: 'https://x', objectCacheVersions: false }).some((b) => b.name === 'OBJECT_CACHE_VERSIONS'));
+ok('aVars: a value that is not a boolean is refused', (() => { try { aVars({ siteOrigin: 'https://x', objectCacheVersions: 'no' }); return false; } catch { return true; } })());
 ok('aVars: objectCacheVersions true renders OBJECT_CACHE_VERSIONS=on', aVars({ siteOrigin: 'https://x', objectCacheVersions: true }).some((b) => b.name === 'OBJECT_CACHE_VERSIONS' && b.text === 'on'));
 
 // provisionSite: a kind 'a' site with the flag on and a caching config is refused BEFORE any resource is made.

@@ -38,13 +38,19 @@ compare() {
   if diff -u "$T/b.canon" "$T/r.canon" > "$T/d"; then ok "$3" 1; else sed 's/^/        /' "$T/d"; ok "$3 (above: - the bench, + deploy.sh)" 0; fi
 }
 
-echo "1. the defaults render the measured site"
+echo "1. the defaults render the measured site: the #666 bench plus the two #296 step 3 defaults (OCV and HPOS cache on)"
 render "$T/a.toml"; rc=$?
 ok "render_conf ran (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"; [ $rc = 0 ] || cat "$T/render.err"
-compare "$T/a.toml" "$HERE/bench.toml" "deploy.sh variant a equals the bench config"
+# #296: the step 3 series measured arm C (both on) against the bench; the lead ruled them approach A's defaults.
+python3 -I "$HERE/canon.py" "$T/a.toml" | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS) = ' > "$T/d.canon"
+{ python3 -I "$HERE/canon.py" "$HERE/bench.toml"; echo 'vars OBJECT_CACHE_VERSIONS = "on"'; echo 'vars WOO_HPOS_CACHE = "on"'; } | sort > "$T/bd.canon"
+if diff -u "$T/bd.canon" <(sort "$T/d.canon") > "$T/d1"; then ok "deploy.sh variant a equals the bench plus the two defaults" 1; else sed 's/^/        /' "$T/d1"; ok "deploy.sh variant a equals the bench plus the two defaults" 0; fi
+render "$T/a0.toml" OBJECT_CACHE_VERSIONS=0 WOO_HPOS_CACHE=off; rc=$?
+compare "$T/a0.toml" "$HERE/bench.toml" "with both set off, deploy.sh variant a equals the #666 bench config exactly"
 
 echo "2. PHP_OVERFLOW=1 renders the overflow run (pool 32, the PhpRuntime binding and its migration)"
-render "$T/o.toml" PHP_OVERFLOW=1; rc=$?
+# The overflow bench predates the #296 defaults: compared with both off (test 1 covers the defaults).
+render "$T/o.toml" PHP_OVERFLOW=1 OBJECT_CACHE_VERSIONS=0 WOO_HPOS_CACHE=off; rc=$?
 ok "render_conf ran (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"; [ $rc = 0 ] || cat "$T/render.err"
 compare "$T/o.toml" "$HERE/bench-overflow.toml" "deploy.sh variant a with PHP_OVERFLOW=1 equals the overflow bench"
 
@@ -66,20 +72,22 @@ render "$T/w.toml" WOO_EXTRAS=off; rc=$?
 ok "WOO_EXTRAS=off renders vars WOO_EXTRAS = \"off\" (rc $rc)" "$([ $rc = 0 ] && python3 -I "$HERE/canon.py" "$T/w.toml" | grep -qx 'vars WOO_EXTRAS = "off"' && echo 1 || echo 0)"
 ok "unset renders no WOO_EXTRAS line" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -q WOO_EXTRAS && echo 0 || echo 1)"
 
-echo "5. OBJECT_CACHE_VERSIONS=1 (#668, #686) reaches the rendered [vars]; unset or 0 renders nothing"
+echo "5. OBJECT_CACHE_VERSIONS (#668, #686): unset or 1 renders it on (the #296 default); an explicit 0 renders nothing"
 render "$T/v.toml" OBJECT_CACHE_VERSIONS=1; rc=$?
 ok "OBJECT_CACHE_VERSIONS=1 renders vars OBJECT_CACHE_VERSIONS = \"on\" (rc $rc)" "$([ $rc = 0 ] && python3 -I "$HERE/canon.py" "$T/v.toml" | grep -qx 'vars OBJECT_CACHE_VERSIONS = "on"' && echo 1 || echo 0)"
 render "$T/v0.toml" OBJECT_CACHE_VERSIONS=0; rc=$?
 ok "OBJECT_CACHE_VERSIONS=0 renders none (rc $rc)" "$([ $rc = 0 ] && ! python3 -I "$HERE/canon.py" "$T/v0.toml" | grep -q OBJECT_CACHE_VERSIONS && echo 1 || echo 0)"
-ok "unset renders none" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -q OBJECT_CACHE_VERSIONS && echo 0 || echo 1)"
+ok "unset renders it on (the default)" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -qx 'vars OBJECT_CACHE_VERSIONS = "on"' && echo 1 || echo 0)"
 # #650: versions are exact only when Hyperdrive does not cache queries. deploy.sh's Terraform makes the site's config,
 # so its hyperdrive resource must keep caching disabled (provisionSite checks the live config; this path cannot).
 ok "the Terraform Hyperdrive config keeps caching disabled (#650)" "$(awk '/resource "cloudflare_hyperdrive_config" "wp"/{f=1} f&&/^}/{exit} f&&/caching = \{ disabled = true \}/{print 1; exit}' "$ROOT/deploy/terraform/main.tf" | grep -qx 1 && echo 1 || echo 0)"
 
-echo "6. WOO_HPOS_CACHE=on (#697) reaches the rendered [vars]; unset renders nothing (the default is OFF)"
+echo "6. WOO_HPOS_CACHE (#697): unset or on renders it on (the #296 default); an explicit off renders nothing"
 render "$T/h.toml" WOO_HPOS_CACHE=on; rc=$?
 ok "WOO_HPOS_CACHE=on renders vars WOO_HPOS_CACHE = \"on\" (rc $rc)" "$([ $rc = 0 ] && python3 -I "$HERE/canon.py" "$T/h.toml" | grep -qx 'vars WOO_HPOS_CACHE = "on"' && echo 1 || echo 0)"
-ok "unset renders no WOO_HPOS_CACHE line" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -q WOO_HPOS_CACHE && echo 0 || echo 1)"
+ok "unset renders it on (the default)" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -qx 'vars WOO_HPOS_CACHE = "on"' && echo 1 || echo 0)"
+render "$T/h0.toml" WOO_HPOS_CACHE=off; rc=$?
+ok "WOO_HPOS_CACHE=off renders none (rc $rc)" "$([ $rc = 0 ] && ! python3 -I "$HERE/canon.py" "$T/h0.toml" | grep -q WOO_HPOS_CACHE && echo 1 || echo 0)"
 
 echo "7. #715 review2 2: OBJECT_START_BY_S and OBJECT_CALL_DEADLINE_S reach [vars]; unset renders nothing; a bad value fails"
 render "$T/s.toml" OBJECT_START_BY_S=off OBJECT_CALL_DEADLINE_S=120; rc=$?
