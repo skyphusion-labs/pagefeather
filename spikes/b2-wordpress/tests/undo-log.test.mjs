@@ -814,3 +814,76 @@ test('#684: the writer tag costs a state write only when the writing request cha
 	run(a.u, db, "INSERT INTO t (v) VALUES ('3')");
 	assert.equal(a.u.counts().own, own1 + 1, 'a new writer: one state update');
 });
+
+test('#794 rollbackFrame: a reset-class failure in a SURVIVING isolate rolls the frame back now, as recover() would', () => {
+	const { db, storage } = site();
+	const ran = [];
+	const a = isolate();
+	a.u.arm(db, 'r794');
+	run(a.u, db, "UPDATE t SET v = 'the-default' WHERE v = 'seed'");
+	run(a.u, db, "INSERT INTO t (v) VALUES ('B')");
+	a.u.defer(() => ran.push('l2'));
+	const rb = a.u.rollbackFrame(db, storage);
+	assert.deepEqual({ undone: rb.undone, points: rb.points, req: rb.req }, { undone: 2, points: 0, req: 'r794' });
+	assert.deepEqual(ids(db), ['seed'], 'the overwrite and the insert are both undone, in the same isolate');
+	assert.equal(a.u.frameOpen(), false);
+	a.u.end(db); // the request ends as usual
+	assert.deepEqual({ ...a.u.status(db, 'r794'), t: 0 }, { req: 'r794', state: 'rolled-back', points: 0, kinds: '', undone: 2, t: 0 }, 'end() does not mark it kept again; /_frame proves it');
+	assert.deepEqual(ran, [], 'its deferred work (L2 sets) never runs');
+	const b = isolate();
+	b.u.recover(db, storage);
+	assert.deepEqual(ids(db), ['seed'], 'a later recovery has nothing left to undo');
+	assert.equal(a.u.rollbackFrame(db, storage), null, 'no frame open: nothing to roll back');
+});
+
+test('#794 a rollbackFrame that THROWS (its undo meets the same ceiling) is never kept: the frame stays for recover()', () => {
+	const { db, storage } = site();
+	const ran = [];
+	const a = isolate();
+	a.u.arm(db, 'r794x');
+	run(a.u, db, "UPDATE t SET v = 'the-default' WHERE v = 'seed'");
+	a.u.defer(() => ran.push('l2'));
+	// The undo runs, then the storage fails inside the same transaction: SQLite takes the whole of it back.
+	const ceiling = { transactionSync: (fn) => storage.transactionSync(() => { fn(); throw new Error("Durable Object's isolate exceeded its memory limit and was reset."); }) };
+	assert.throws(() => a.u.rollbackFrame(db, ceiling), /memory limit/);
+	assert.deepEqual(ids(db), ['the-default'], 'the failed undo changed nothing');
+	a.u.end(db, storage); // the request ends as usual (txnEnd)
+	assert.equal(a.u.status(db, 'r794x').state, 'open', 'end() did NOT mark it kept');
+	assert.equal(db.exec('SELECT active FROM _wp_undo_state WHERE id = 1').one().active, 1, 'stored active stays 1, so a recovery sees it');
+	assert.ok(db.exec('SELECT COUNT(*) AS c FROM _wp_undo').one().c > 0, 'its undo rows are still there');
+	assert.deepEqual(ran, [], 'its deferred work (L2 sets) never runs');
+	// The next request in THIS isolate recovers first (txnRecover runs on every request): it is rolled back now.
+	const r = a.u.recover(db, storage);
+	assert.equal(r && r.req, 'r794x');
+	assert.deepEqual(ids(db), ['seed'], 'the derived write is gone');
+	assert.equal(a.u.status(db, 'r794x').state, 'rolled-back');
+	assert.equal(a.u.recover(db, storage), null, 'and recover() is once per isolate again');
+});
+
+test('#794 a recover() whose undo throws is tried again by the next request, never marked done', () => {
+	const { db, storage } = site();
+	const a = isolate();
+	a.u.arm(db, 'r794y');
+	run(a.u, db, "UPDATE t SET v = 'the-default' WHERE v = 'seed'"); // the isolate dies here: the frame stays open
+	const b = isolate();
+	const ceiling = { transactionSync: (fn) => storage.transactionSync(() => { fn(); throw new Error('SQLITE_FULL: database or disk is full'); }) };
+	assert.throws(() => b.u.recover(db, ceiling), /SQLITE_FULL/);
+	assert.equal(db.exec('SELECT active FROM _wp_undo_state WHERE id = 1').one().active, 1, 'still visible to a recovery');
+	assert.equal(b.u.recover(db, storage).req, 'r794y', 'the next request retries it');
+	assert.deepEqual(ids(db), ['seed']);
+});
+
+test('#794 rollbackFrame stops at a commit point: what was kept at the point stays kept, and it is not proof of "nothing saved"', () => {
+	const { db, storage } = site();
+	const a = isolate();
+	a.u.arm(db, 'r794p');
+	run(a.u, db, "INSERT INTO t (v) VALUES ('A')");
+	run(a.u, db, 'CREATE TABLE n2 (id INTEGER PRIMARY KEY, w TEXT)');
+	run(a.u, db, "INSERT INTO n2 (w) VALUES ('N')");
+	const rb = a.u.rollbackFrame(db, storage);
+	assert.equal(rb.points, 1);
+	assert.deepEqual(ids(db), ['seed', 'A'], 'before the DDL: kept');
+	assert.equal(db.exec('SELECT COUNT(*) AS c FROM n2').one().c, 0, 'after it: undone');
+	assert.equal(a.u.status(db, 'r794p').state, 'rolled-back');
+	assert.equal(a.u.status(db, 'r794p').points, 1, 'a point passed, so frameProvesRollback is false and the answer stays "may have been saved"');
+});

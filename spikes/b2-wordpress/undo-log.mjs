@@ -223,10 +223,12 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 	}
 	// Undo every change after seq, newest first, in one storage transaction.
 	function undoTo(db, storage, seq, detail = false) {
-		setActive(db, false);
 		const rows = [...db.exec(`SELECT sql${detail ? ', req' : ''} FROM _wp_undo WHERE seq > ? ORDER BY seq DESC`, seq).raw()];
 		if (detail) lastUndone = rows.map(([stmt, req]) => ({ ...undoShape(stmt), req: req ?? null }));
+		// #794 review: the stored active flag goes off INSIDE the transaction (the triggers must not log the undo
+		// itself). An undo that fails takes it back with everything else, so a recovery still sees the open frame.
 		const apply = () => {
+			setActive(db, false);
 			for (const [stmt] of rows) own(db.exec(stmt));
 			own(db.exec('DELETE FROM _wp_undo WHERE seq > ?', seq));
 		};
@@ -371,6 +373,49 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			return true;
 		},
 		/** The request ended (PHP finished, a fatal included): a PHP transaction still open is rolled back, the frame kept. */
+		/**
+		 * #794: roll the open frame back NOW, in the request that met a reset-class storage failure in an isolate that
+		 * survives. #352 keeps a frame at the request's end because the frame hides OUR platform's failure, not
+		 * WordPress's; a storage failure at the memory ceiling is the platform's, and recover() rolls it back only in the
+		 * NEXT isolate, which never comes when the object goes on. So it is undone here, as recover() would: back to the
+		 * last commit point (what was kept at a point stays kept), the frame marked rolled-back (what /_frame proves), the
+		 * deferred work (L2 sets) dropped, never run. Returns { undone, points } or null when no frame is open.
+		 */
+		rollbackFrame(db, storage) {
+			if (!frameOpen) return null;
+			let n;
+			try {
+				n = undoTo(db, storage, 0);
+			} catch (e) {
+				// #794 review: the undo met the same ceiling (likely: the request just failed there). Inside
+				// transactionSync nothing of it applied, and the stored frame is intact (active = 1, its undo rows, its
+				// row 'open'). It must never be KEPT: forget it in memory only (storage is failing; no write here), so
+				// end() has nothing to keep, and run recover() again, which every request calls before PHP: the next
+				// request in this isolate, or the next isolate, rolls it back.
+				frameOpen = false;
+				txnFrames = null;
+				txnTouched.clear();
+				deferred = [];
+				armedReq = null;
+				stateReq = null;
+				recovered = false;
+				counts.stranded = (counts.stranded || 0) + 1;
+				log({ m: 'frame-stranded', error: String((e && e.message) || e).slice(0, 160) });
+				throw e;
+			}
+			txnFrames = null;
+			txnTouched.clear();
+			setIdle(db);
+			own(db.exec('DELETE FROM _wp_undo'));
+			frameOpen = false;
+			counts.rolledBack = (counts.rolledBack || 0) + 1;
+			frameRow(db, armedReq, 'rolled-back');
+			own(db.exec('UPDATE _wp_frame SET undone = ? WHERE req = ?', n, armedReq));
+			deferred = [];
+			const out = { undone: n, points, req: armedReq };
+			armedReq = null; // end() must not mark it again
+			return out;
+		},
 		end(db, storage) {
 			if (txnFrames) {
 				const n = undoTo(db, storage, txnFrames[0].seq);
@@ -457,7 +502,13 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 				return null;
 			}
 			ensureReqCols(db);
-			const n = undoTo(db, storage, 0, true);
+			let n;
+			try {
+				n = undoTo(db, storage, 0, true);
+			} catch (e) {
+				recovered = false; // #794 review: not done; the next request tries again (the frame is still stored open)
+				throw e;
+			}
 			own(db.exec('DELETE FROM _wp_undo'));
 			txnFrames = null;
 			let req = null;

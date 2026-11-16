@@ -31,8 +31,9 @@ test('the rolled-back answer is still a 500, says nothing was saved, and is neve
 const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 test('index.js: both write-loss paths answer "rolled back" ONLY behind frameProvesRollback, and /_frame is refused to clients', () => {
 	const uses = [...src.matchAll(/rolledBackResponse\(/g)].length;
-	assert.equal(uses, 2, 'two answer sites: the killed request and the object-answered one');
-	assert.equal([...src.matchAll(/frameProvesRollback\(fr\) \? rolledBackResponse\(/g)].length + [...src.matchAll(/if \(frameProvesRollback\(fr\)\) \{\n\t\t\tconst rb = rolledBackResponse\(/g)].length, 2, 'each one gated on the proof');
+	assert.equal(uses, 3, 'three answer sites: the killed request, the object-answered one, and #794 (a reset-class failure in a surviving isolate, rolled back at once)');
+	assert.equal([...src.matchAll(/frameProvesRollback\(fr\) \? rolledBackResponse\(/g)].length + [...src.matchAll(/if \(frameProvesRollback\(fr\)\) \{\n\t\t\tconst rb = rolledBackResponse\(/g)].length, 3, 'each one gated on the proof');
+	assert.match(src, /const fr = rb && undoLog \? undoLog\.status\(sqlDb, rb\.req\) : null;/, '#794: its proof is the frame row itself, read as /_frame reads it');
 	assert.match(src, /if \(url\.pathname === '\/_frame'\) return new Response\('Not Found', \{ status: 404 \}\);/);
 });
 
