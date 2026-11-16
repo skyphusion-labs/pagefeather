@@ -11,6 +11,10 @@
  * The sum over the rows, which is all Site Health reads, is then the real database size. Per-table sizes are not
  * available on Durable Object SQLite, and every row but the first says 0 (documented, not a measurement of it).
  * Any reply without a positive size leaves the rows as they are (D1, or no database in the object).
+ *
+ * Only an UNFILTERED SHOW TABLE STATUS (optionally FROM or IN a database) gets the size. A filtered one (LIKE or
+ * WHERE) names some tables, and the whole database's size is not theirs: it says 0 (unknown) for every row and asks
+ * the Worker nothing (the lead's review of #780).
  */
 if ( ! function_exists( 'skyphusion_table_status_size' ) ) {
 	/**
@@ -22,6 +26,18 @@ if ( ! function_exists( 'skyphusion_table_status_size' ) ) {
 	function skyphusion_table_status_size( $query, $rows, $call ) {
 		if ( ! is_string( $query ) || ! preg_match( '/^\s*SHOW\s+TABLE\s+STATUS(\s|$)/i', $query ) || empty( $rows ) || ! is_array( $rows ) ) {
 			return $rows;
+		}
+		$zero = function ( $rows ) {
+			foreach ( $rows as $row ) {
+				if ( is_object( $row ) ) {
+					$row->Data_length  = '0';
+					$row->Index_length = '0';
+				}
+			}
+			return $rows;
+		};
+		if ( ! preg_match( '/^\s*SHOW\s+TABLE\s+STATUS(\s+(FROM|IN)\s+[`"]?[\w$]+[`"]?)?\s*;?\s*$/i', $query ) ) {
+			return $zero( $rows ); // filtered: per-table sizes are not available
 		}
 		$reply = json_decode( (string) call_user_func( $call, '{"dbSize":1}' ), true );
 		$bytes = is_array( $reply ) && ! empty( $reply['ok'] ) && isset( $reply['bytes'] ) ? (int) $reply['bytes'] : 0;
