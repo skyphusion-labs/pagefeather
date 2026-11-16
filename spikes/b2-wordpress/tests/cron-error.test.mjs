@@ -100,6 +100,14 @@ test('with no stderr, a fatal printed in the error page text is kept', () => {
 	assert.equal(detail.stderrHead, '');
 });
 
+test('a script block whose end tag has a space is stripped, so its text is never read as the fatal (CodeQL js/bad-tag-filter)', () => {
+	const html = '<script>var x = "Fatal error: Uncaught Error: from_script in /wordpress/s.php on line 3";</script >' +
+		'<b>Fatal error</b>:  Uncaught Error: boom_from_page in <b>/wordpress/wp-content/plugins/p/a.php</b> on line <b>9</b><br />';
+	const detail = cronFailureLine(phpRunError(html, '')[0]);
+	assert.equal(detail.errMsg, 'Uncaught Error: boom_from_page');
+	assert.equal(detail.errLine, 9);
+});
+
 test('index.js: the cron catch logs errMsg, errFile, errLine and stderrHead from cronFailureLine', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.match(src, /import \{ cronFailureLine \} from '\.\/cron-error\.mjs'/);

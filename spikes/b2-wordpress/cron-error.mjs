@@ -94,8 +94,8 @@ function fatalOf(text) {
 // error page does not contain it; callers skip that page.
 function htmlToText(html) {
 	return String(html || '')
-		.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
-		.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+		.replace(/<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/gi, ' ')
+		.replace(/<style\b[^>]*>[\s\S]*?<\/style\b[^>]*>/gi, ' ')
 		.replace(/<[^>]+>/g, ' ')
 		.replace(/&nbsp;/gi, ' ')
 		.replace(/&#0*39;|&apos;/gi, "'")
