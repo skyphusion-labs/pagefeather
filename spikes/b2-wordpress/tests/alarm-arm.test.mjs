@@ -1,7 +1,7 @@
 // alarm-arm.mjs (issue #291): a stale alarm no longer blocks the cron for good.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { shouldArmAlarm, STALE_MS, armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm } from '../alarm-arm.mjs';
+import { shouldArmAlarm, STALE_MS, armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm, setAlarmRecorded, ALARM_SET_KEY } from '../alarm-arm.mjs';
 import { readFileSync } from 'node:fs';
 
 const now = Date.parse('2026-11-11T21:15:00Z');
@@ -30,18 +30,28 @@ test('CONTROL: the old rule ("only when none") would never arm in the ggc.sh cas
 });
 
 // armBeforeRun (issue #291, 2026-11-12): the next tick is set and flushed BEFORE the run.
-test('armBeforeRun sets now + interval and flushes it, in that order', async () => {
+test('armBeforeRun sets now + interval, records it (#291: when and by whom), and flushes both, in that order', async () => {
 	const calls = [];
-	const storage = { setAlarm: async (t) => calls.push(['setAlarm', t]), sync: async () => calls.push(['sync']) };
+	const storage = { setAlarm: async (t) => calls.push(['setAlarm', t]), put: async (k, v) => calls.push(['put', k, v]), sync: async () => calls.push(['sync']) };
 	const at = await armBeforeRun(storage, now, 60_000);
 	assert.equal(at, now + 60_000);
-	assert.deepEqual(calls, [['setAlarm', now + 60_000], ['sync']]);
+	assert.deepEqual(calls, [['setAlarm', now + 60_000], ['put', ALARM_SET_KEY, { at: now + 60_000, setAt: now, by: 'tick' }], ['sync']]);
 });
 
 test('armBeforeRun works on a storage without sync()', async () => {
 	const calls = [];
-	await armBeforeRun({ setAlarm: async (t) => calls.push(t) }, now, 1000);
+	await armBeforeRun({ setAlarm: async (t) => calls.push(t), put: async () => {} }, now, 1000);
 	assert.deepEqual(calls, [now + 1000]);
+});
+
+// #291, Cloudflare case 02430361 (2026-11-16): support asks for the UTC time an alarm was SET. getAlarm() says only
+// when it is due, so every set records {at, setAt, by} under ALARM_SET_KEY (/_purgestate reports it).
+test('setAlarmRecorded sets the alarm and records when, for when, and by whom', async () => {
+	const m = new Map(); const calls = [];
+	const storage = { setAlarm: async (t) => calls.push(['setAlarm', t]), put: async (k, v) => { calls.push(['put', k]); m.set(k, v); } };
+	await setAlarmRecorded(storage, now + 5000, now, 'purge-request');
+	assert.deepEqual(calls, [['setAlarm', now + 5000], ['put', ALARM_SET_KEY]]);
+	assert.deepEqual(m.get(ALARM_SET_KEY), { at: now + 5000, setAt: now, by: 'purge-request' });
 });
 
 test('alarm() calls armBeforeRun before it boots PHP or runs the cron (index.js source order)', () => {
@@ -59,18 +69,18 @@ test('alarm() calls armBeforeRun before it boots PHP or runs the cron (index.js 
 // rearm (issue #291): a stale alarm is deleted, then set; others are left alone.
 const fakeStorage = (at) => {
 	const calls = [];
-	return { calls, getAlarm: async () => at, deleteAlarm: async () => calls.push(['deleteAlarm']), setAlarm: async (t) => calls.push(['setAlarm', t]) };
+	return { calls, getAlarm: async () => at, deleteAlarm: async () => calls.push(['deleteAlarm']), setAlarm: async (t) => calls.push(['setAlarm', t]), put: async (k, v) => calls.push(['put', k, v]) };
 };
-test('rearm: no alarm -> set only', async () => {
+test('rearm: no alarm -> set only, recorded as a request arm', async () => {
 	const s = fakeStorage(null);
 	assert.deepEqual(await rearm(s, now, 60_000), { armed: true, stale: false, was: null });
-	assert.deepEqual(s.calls, [['setAlarm', now + 60_000]]);
+	assert.deepEqual(s.calls, [['setAlarm', now + 60_000], ['put', ALARM_SET_KEY, { at: now + 60_000, setAt: now, by: 'request' }]]);
 });
-test('rearm: THE STUCK CASE, a stale alarm -> deleteAlarm THEN setAlarm', async () => {
+test('rearm: THE STUCK CASE, a stale alarm -> deleteAlarm THEN setAlarm, recorded as request-stale', async () => {
 	const was = Date.parse('2026-11-11T19:14:26Z');
 	const s = fakeStorage(was);
 	assert.deepEqual(await rearm(s, now, 60_000), { armed: true, stale: true, was });
-	assert.deepEqual(s.calls, [['deleteAlarm'], ['setAlarm', now + 60_000]]);
+	assert.deepEqual(s.calls, [['deleteAlarm'], ['setAlarm', now + 60_000], ['put', ALARM_SET_KEY, { at: now + 60_000, setAt: now, by: 'request-stale' }]]);
 });
 test('rearm: a future or just-due alarm is untouched', async () => {
 	for (const at of [now + 60_000, now - 30_000]) {
@@ -78,6 +88,13 @@ test('rearm: a future or just-due alarm is untouched', async () => {
 		assert.deepEqual(await rearm(s, now, 60_000), { armed: false });
 		assert.deepEqual(s.calls, []);
 	}
+});
+test('index.js: every alarm it sets is recorded (no bare storage.setAlarm), and /_purgestate reports the record', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.equal(/\.storage\.setAlarm\(/.test(src), false, 'no bare this.ctx.storage.setAlarm( in index.js');
+	assert.equal((src.match(/await setAlarmRecorded\(this\.ctx\.storage/g) || []).length, 2, 'the purge request and the purge retry');
+	const ps = src.slice(src.indexOf("url.pathname === '/_purgestate'"), src.indexOf("url.pathname === '/_purgestate'") + 600);
+	assert.ok(/alarmSet: \(await this\.ctx\.storage\.get\(ALARM_SET_KEY\)\) \|\| null/.test(ps), '/_purgestate reports alarmSet');
 });
 test('index.js: both re-arm sites go through rearm (no bare setAlarm over a stale alarm)', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');

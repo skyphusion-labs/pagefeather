@@ -24,10 +24,21 @@ export function shouldArmAlarm(at, now, staleMs = STALE_MS) {
 // (1 run + 6 retries), then no alarm invocation for 8 hours; on ggc-test 10 alarm OOMs at
 // 03:10 to 03:16Z. Arming first means a killed run still leaves a future alarm, so the cron never
 // depends on the retry budget. sync() flushes the write, so a reset right after cannot drop it.
+// #291, Cloudflare case 02430361 (2026-11-16): support asks for the UTC time an alarm was SET, and getAlarm() says
+// only when it is due. Every alarm this object sets goes through setAlarmRecorded, which also stores
+// {at, setAt, by} under ALARM_SET_KEY (/_purgestate reports it; deploy/wfp/alarm-record.py prints it).
+// by: tick (the alarm run arms the next), request, request-stale (a request armed a missing or stale one),
+// purge-request, purge-retry.
+export const ALARM_SET_KEY = 'alarm-set';
+export async function setAlarmRecorded(storage, at, now, by) {
+	await storage.setAlarm(at);
+	await storage.put(ALARM_SET_KEY, { at, setAt: now, by });
+}
+
 /** Set the next alarm at now + intervalMs and flush it, before the run. Returns the time set. */
 export async function armBeforeRun(storage, now, intervalMs) {
 	const at = now + intervalMs;
-	await storage.setAlarm(at);
+	await setAlarmRecorded(storage, at, now, 'tick');
 	if (typeof storage.sync === 'function') await storage.sync();
 	return at;
 }
@@ -42,7 +53,7 @@ export async function rearm(storage, now, intervalMs, staleMs = STALE_MS) {
 	if (!shouldArmAlarm(at, now, staleMs)) return { armed: false };
 	const stale = at !== null && at !== undefined;
 	if (stale) await storage.deleteAlarm();
-	await storage.setAlarm(now + intervalMs);
+	await setAlarmRecorded(storage, now + intervalMs, now, stale ? 'request-stale' : 'request');
 	return { armed: true, stale, was: stale ? Number(at) : null };
 }
 
