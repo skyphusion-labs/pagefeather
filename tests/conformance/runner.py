@@ -349,9 +349,17 @@ def walk(suite, path=()):
 
 
 def cmd_summarize(a):
+    """A STOP is never a result: a report whose global setup failed (top-level errors, such as the login
+    assert in assert-login.mjs) or that ran no test at all is refused with exit 3, so the run stops."""
     with open(a.report) as f:
         rep = json.load(f)
+    errors = rep.get("errors") or []
+    if errors:
+        first = errors[0].get("message", "") if isinstance(errors[0], dict) else str(errors[0])
+        raise Stop("the report has %d top-level error(s), so the run did not reach its tests: %s" % (len(errors), first.splitlines()[0][:200] if first else "?"))
     rows = [r for s in rep.get("suites", []) for r in walk(s, (s.get("title") or "",))]
+    if not rows:
+        raise Stop("the report holds no test: the run did not reach its tests")
     with open(a.out, "w") as f:
         json.dump(rows, f, indent=1)
     c = {}
