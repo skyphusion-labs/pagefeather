@@ -402,6 +402,22 @@ od = next((i for i in j["signals"]["items"] if i["m"] == "object-deadline"), Non
 check("object-deadline json split", od is not None and od.get("count") == 3 and od.get("split") in ({"500": 2, "503": 1}, {500: 2, 503: 1}), od)
 check("object-deadline is a problem", j.get("verdict") == "problems", j.get("verdict"))
 
+# 4d. #734: a site running OBJECT_CACHE_VERSIONS=on without its versions table logs m: ocv, table: missing (once per
+#     isolate). Doctor WARNS: the var reads as on and does nothing. It is a warning, not a failure: the verdict is unchanged.
+rows = [console("site-shop", {"m": "req", "path": "/"}) for _ in range(5)]
+rows += [console("site-shop", {"m": "ocv", "table": "missing", "iso": "i%d" % n}) for n in range(2)]
+reset(rows, {wfp("site-shop"): ON})
+code, jout, _ = run("shop", "--json")
+j = json.loads(jout)
+it = next((i for i in j["signals"]["items"] if i["m"] == "ocv"), None)
+check("ocv missing counted", it is not None and it.get("count") == 2, it)
+out = run("shop")[1]
+check("ocv missing is a WARNING line", "WARNING: OBJECT_CACHE_VERSIONS is on but its versions table is MISSING" in out, out)
+check("ocv missing does not make the verdict problems", j.get("verdict") != "problems", j.get("verdict"))
+rows = [console("site-shop", {"m": "req", "path": "/"}) for _ in range(5)]
+reset(rows, {wfp("site-shop"): ON})
+check("no ocv line, no warning", "versions table is MISSING" not in run("shop")[1])
+
 # 5. structured lines unreadable (no "m" field): every signal is could-not-measure, never 0.
 reset([console("site-shop", "plain text line") for _ in range(4)], {wfp("site-shop"): ON})
 out = common("no structured", run("shop"), 3)

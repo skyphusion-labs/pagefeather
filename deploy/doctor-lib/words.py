@@ -141,6 +141,10 @@ def render(f):
     pl = next((i for i in sg["items"] if i["m"] == "php-lock"), None)
     if pl and pl["split"]:
         L.append("Note: 'queued' means requests waited their turn (slow, not failed). 'shed' means a request got a fast 503.")
+    ov = next((i for i in sg["items"] if i["m"] == "ocv"), None)
+    if ov and (ov.get("count") or 0) > 0:
+        L.append("WARNING: OBJECT_CACHE_VERSIONS is on but its versions table is MISSING, so the options cache does nothing (#734).")
+        L.append("Fix: deploy the site again (the deploy installs the table and reads it back), or POST /_ocversions?op=install.")
     L.append("")
     mr = f.get("memory_resets_seen")
     if mr is None:

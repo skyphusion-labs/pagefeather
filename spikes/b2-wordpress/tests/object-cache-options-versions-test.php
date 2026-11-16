@@ -148,5 +148,18 @@ $GLOBALS['ops'] = array();
 $q->get( 'a_real_unautoloaded_option', 'options', false, $found );
 check( 'a key in neither still goes to the shared store', 1 === count( array_filter( $GLOBALS['ops'], function ( $op ) { return 'get' === $op['op']; } ) ) );
 
+// #734: with OBJECT_CACHE_VERSIONS on and NO versions table, PHP tells JS once per request (op vmiss), so the Worker can
+// log it and deploy/doctor can warn. With the table: nothing.
+$vmiss = function () { return count( array_filter( $GLOBALS['ops'], function ( $op ) { return 'vmiss' === $op['op']; } ) ); };
+$wpdb->table = false; $GLOBALS['ops'] = array();
+$m = new JS_Object_Cache();
+$m->get( 'alloptions', 'options', false, $found );
+$m->get( 'blogname', 'options', false, $found );
+check( '#734: no table: one vmiss for the request', 1 === $vmiss() );
+$wpdb->table = true; $GLOBALS['ops'] = array();
+$m2 = new JS_Object_Cache();
+$m2->get( 'alloptions', 'options', false, $found );
+check( '#734: the table there: no vmiss', 0 === $vmiss() );
+
 echo $fail ? "$fail failing check(s)\n" : "all checks pass\n";
 exit( $fail ? 1 : 0 );

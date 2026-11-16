@@ -157,8 +157,17 @@ function ocStore(k, v, exp) {
 	for (const kk of objectCache.keys()) { if (objectCacheBytes <= OBJECT_CACHE_BYTES) break; objectCacheDrop(kk); }
 	return true;
 }
+// #734: a missing versions table is logged once per isolate (m: ocv), so deploy/doctor can warn.
+let ocvMissLogged = false;
 async function objectCacheOp(op) {
 	stats.ocCalls++;
+	if (op.op === 'vmiss') {
+		if (!ocvMissLogged) {
+			ocvMissLogged = true;
+			console.log(JSON.stringify({ m: 'ocv', table: 'missing', iso: ISOLATE_ID }));
+		}
+		return {};
+	}
 	const now = Date.now();
 	const l2 = ocL2On();
 	if (op.op === 'get') {

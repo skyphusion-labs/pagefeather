@@ -434,6 +434,29 @@ export async function installWordPress({
   throw new Error(`installWordPress(${scriptName || hostname}) failed after ${retries} tries (${viaDispatch ? 'dispatch' : 'http'}): ${last}`);
 }
 
+// #734: the options versions table for an approach-A site that renders OBJECT_CACHE_VERSIONS=on, which no provision
+// installed before (#722 made the var a default). The same transport as installWordPress. A status read first: a
+// complete table is never re-installed (install drops and re-makes the triggers). Otherwise install, then read back.
+// Returns { complete, installed, versioned?, reason? }. Throws on a transport or HTTP failure.
+export async function ensureCacheVersions({ dispatcher, scriptName, hostname, spikeToken, fetchImpl = fetch }) {
+  if (!spikeToken) throw new Error('ensureCacheVersions: no SPIKE_TOKEN');
+  const viaDispatch = Boolean(dispatcher && scriptName && typeof dispatcher.get === 'function');
+  const headers = { 'x-spike-token': spikeToken };
+  const call = async (method, op) => {
+    const res = viaDispatch
+      ? await dispatcher.get(scriptName).fetch(new Request(`https://internal/_ocversions?op=${op}`, { method, headers }))
+      : await fetchImpl(`https://${hostname}/_ocversions?op=${op}`, { method, headers });
+    if (!res.ok) throw new Error(`/_ocversions?op=${op}: HTTP ${res.status}`);
+    return res.json();
+  };
+  const before = await call('GET', 'status');
+  if (before && before.complete === true) return { complete: true, installed: false };
+  const inst = await call('POST', 'install');
+  if (inst && inst.versioned === false) return { complete: false, installed: false, versioned: false, reason: String(inst.reason || '').slice(0, 200) };
+  const after = await call('GET', 'status');
+  return { complete: Boolean(after && after.complete === true), installed: true };
+}
+
 // ---- Approach A (#218): the per-site object-cache L2 KV namespace ------------
 // Approach A binds a per-site OC_KV namespace (the object-cache L2, so a cold
 // isolate reads KV instead of crossing the Hyperdrive hop to MySQL). Unlike the

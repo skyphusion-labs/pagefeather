@@ -107,6 +107,31 @@ a_vars() {
   return 0
 }
 
+# a_ocv_install <site url> <spike token> (#734): the options versions table for OBJECT_CACHE_VERSIONS=on, which no
+# deploy installed before. A status read first: a complete table is NEVER re-installed (install drops and re-makes the
+# triggers, and an options write in that gap would bump no version). Otherwise install, then read back. A provider
+# that cannot make triggers answers versioned false: the var is then on but inert (safe; options stay per request),
+# said loudly. A failed read or install stops the deploy: the default's state would be unknown. No token is printed.
+a_ocv_install() {
+  local url=$1 tok=$2 st out
+  st=$(curl -s -f -m 60 -K <(printf 'header = "x-spike-token: %s"\n' "$tok") "$url/_ocversions?op=status") \
+    || { echo "versions table: the status read failed; OBJECT_CACHE_VERSIONS is on and its state is unknown, so the deploy stops (#734)" >&2; return 1; }
+  if python3 -I -c 'import json, sys; sys.exit(0 if json.loads(sys.argv[1]).get("complete") is True else 1)' "$st" 2>/dev/null; then
+    echo "  versions table: already complete"; return 0
+  fi
+  out=$(curl -s -f -m 120 -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$tok") "$url/_ocversions?op=install") \
+    || { echo "versions table: the install failed; the deploy stops (#734)" >&2; return 1; }
+  if python3 -I -c 'import json, sys; sys.exit(0 if json.loads(sys.argv[1]).get("versioned") is False else 1)' "$out" 2>/dev/null; then
+    echo "  WARNING: OBJECT_CACHE_VERSIONS is on but INERT on this site: $(python3 -I -c 'import json, sys; print(str(json.loads(sys.argv[1]).get("reason", ""))[:200])' "$out"). Options stay per request (safe). Deploy with OBJECT_CACHE_VERSIONS=0 to make that explicit."
+    return 0
+  fi
+  st=$(curl -s -f -m 60 -K <(printf 'header = "x-spike-token: %s"\n' "$tok") "$url/_ocversions?op=status") || st='{}'
+  if python3 -I -c 'import json, sys; sys.exit(0 if json.loads(sys.argv[1]).get("complete") is True else 1)' "$st" 2>/dev/null; then
+    echo "  versions table: installed, complete"; return 0
+  fi
+  echo "versions table: installed, but the read-back is not complete; the deploy stops (#734)" >&2; return 1
+}
+
 # a_assets_first: the [assets] line a remote build needs. Without /_pf/ first the asset router
 # would serve the packs, the site's PHP source and its compiled PHP, to anyone (#412).
 a_assets_first() {

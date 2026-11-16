@@ -20,8 +20,11 @@ const ok = (n, c) => { if (c) { pass++; console.log('PASS', n); } else { fail++;
 //  - POST /tokens      = create, returns {id,value}.
 function recorder(opts = {}) {
   const calls = [];
+  let ocv = opts.ocvComplete === true; // #734: the versions table's state on the stub site
   const fetchImpl = async (url, init) => {
     calls.push({ url, method: init.method, body: init.body });
+    if (/\/_ocversions\?op=status$/.test(url)) { const b = { ok: true, table: ocv, triggers: [], complete: ocv }; return { ok: true, status: 200, json: async () => b, text: async () => JSON.stringify(b) }; }
+    if (init.method === 'POST' && /\/_ocversions\?op=install$/.test(url)) { ocv = !opts.ocvNoTriggers; const b = ocv ? { ok: true, versioned: true, status: { complete: true } } : { ok: true, versioned: false, reason: 'no triggers' }; return { ok: true, status: 200, json: async () => b, text: async () => JSON.stringify(b) }; }
     if (init.method === 'POST' && url.endsWith('/_install')) return { ok: true, status: 200, json: async () => ({ out: '{"installed":true,"user_id":1}', ms: 5 }) };
     if (init.method === 'POST' && /\/storage\/kv\/namespaces$/.test(url)) return { ok: true, status: 200, text: async () => '{"success":true,"result":{"id":"OCKVID","title":"oc"}}' };
     if (init.method === 'POST' && /\/queues$/.test(url)) return { ok: true, status: 200, text: async () => '{"success":true,"result":{"queue_id":"EMAILQID","queue_name":"q"}}' };
@@ -390,6 +393,39 @@ const mutating = (calls) => calls.filter((c) => c.method !== 'GET');
     meta.bindings.some((b) => b.type === 'kv_namespace' && b.name === 'OC_KV' && b.namespace_id === 'NEWKV') &&
     !meta.bindings.some((b) => b.namespace_id === 'OLDKV'));
   ok('leftover KV: the step records the replacement', r.steps.some((st) => st.kvNamespace === title && st.replaced === true));
+}
+
+// #734: a site that renders OBJECT_CACHE_VERSIONS=on gets its versions table at provision time, after the install,
+// checked by a status read before and after. A complete table is never re-installed. The flag off makes no call.
+async function provisionAOcv(opts, objectCacheVersions) {
+  const rec = recorder(opts);
+  const name = 'aocv';
+  const r = await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl }, {
+    kind: 'a', name, namespace: 'wp-wfp', kvId: 'KV', hostname: 'aocv.skyphusionwp.dev',
+    compatibilityDate: '2026-07-01', mainModule: 'index-a-lean.js', modules: [{ name: 'index-a-lean.js', content: 'export default {}' }],
+    resourceBindings: aBindings({ mediaBucket: mediaBucketName(name), hyperdriveId: 'HDID', siteOrigin: 'https://aocv.skyphusionwp.dev', ...(objectCacheVersions === undefined ? {} : { objectCacheVersions }) }),
+    sqliteClasses: [], kvNamespaces: [{ title: ocKvNamespaceName(name), binding: 'OC_KV' }],
+    secrets: { WP_SALT: 's1', SPIKE_TOKEN: 'spk' }, buckets: { media: mediaBucketName(name) },
+  });
+  const seq = rec.calls.filter((c) => /\/_install$|\/_ocversions\?/.test(c.url)).map((c) => c.method + ' ' + c.url.replace(/^https:\/\/[^/]+/, ''));
+  return { r, seq };
+}
+{
+  const { r, seq } = await provisionAOcv({}, undefined);
+  ok('#734 a (default on): install, then status, install, status, in order', seq.join(' | ') === 'POST /_install | GET /_ocversions?op=status | POST /_ocversions?op=install | GET /_ocversions?op=status');
+  ok('#734 a: the step records the read-back', r.steps.some((st) => st.ocVersions && st.ocVersions.complete === true && st.ocVersions.installed === true));
+}
+{
+  const { r, seq } = await provisionAOcv({ ocvComplete: true }, undefined);
+  ok('#734 a: an already complete table is read once, never re-installed', seq.join(' | ') === 'POST /_install | GET /_ocversions?op=status' && r.steps.some((st) => st.ocVersions && st.ocVersions.complete === true && st.ocVersions.installed === false));
+}
+{
+  const { r, seq } = await provisionAOcv({}, false);
+  ok('#734 a: OBJECT_CACHE_VERSIONS off makes no /_ocversions call', seq.join(' | ') === 'POST /_install' && !r.steps.some((st) => st.ocVersions));
+}
+{
+  const { r } = await provisionAOcv({ ocvNoTriggers: true }, undefined);
+  ok('#734 a: a provider without triggers is recorded INERT and surfaced, never hidden', r.steps.some((st) => st.ocVersions && st.ocVersions.complete === false) && /inert/i.test(r.ocVersionsNote || ''));
 }
 
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
