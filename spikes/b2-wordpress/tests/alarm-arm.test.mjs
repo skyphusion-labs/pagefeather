@@ -150,3 +150,22 @@ test('index.js #841: the snapshot path re-arms (snapshotRearm) after its token g
 	assert.ok(/takeSnapshot\(\{[^}]*alarm: snapAlarm/.test(branch.replace(/\n/g, ' ')), 'the result goes to takeSnapshot');
 	assert.equal(/alarmRun\(|runCron\(|this\.alarm\(/.test(branch), false, 'no cron runs inline on the snapshot request');
 });
+
+// #846 review (the lead, 2026-11-16): the snapshot re-arms BEFORE its import-held return, so a snapshot taken mid-import
+// can arm an alarm that fires while the import still holds the site. That is safe only because alarmRun refuses the
+// cron then: its gate requires !importHeld, and every PHP boot (boot, runCron) is inside that gate.
+test('index.js #846: an alarm during an import boots no PHP (cronGo needs !importHeld; boot and runCron only inside if (cronGo))', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const r = src.indexOf('async alarmRun() {');
+	const body = src.slice(r, src.indexOf('async fetch(raw)', r));
+	assert.ok(/const importHeld = cronHeld\(await this\.ctx\.storage\.get\(IMPORT_HOLD_KEY\)/.test(body), 'alarmRun reads the import hold');
+	const gateLine = body.split('\n').find((l) => l.includes('const cronGo ='));
+	assert.ok(gateLine && gateLine.includes('!importHeld'), 'the cron gate requires !importHeld');
+	const open = body.indexOf('if (cronGo) {');
+	assert.ok(open > 0, 'the cron leg is inside if (cronGo)');
+	for (const call of ['runCron(', 'boot(cronOrigin)']) {
+		const at = body.indexOf(call);
+		assert.ok(at > open, call + ' only after if (cronGo) opens');
+	}
+	assert.equal(body.slice(0, open).search(/\bboot\(|runCron\(|withPhp\(/), -1, 'no PHP before the gate');
+});
