@@ -162,6 +162,8 @@ update_one_inner() {
   fi
   local CONF="$APP/wrangler.deploy.wfp-$s.toml" W new_hash="" reasons=""
   W=$(mktemp -d); chmod 700 "$W"
+  # #699 part B: bind the account's purge budget when it is there; say which. Not a recorded setting: read each time.
+  purge_budget_decide "site $s"
   render_user "$s" "$ORIGIN" > "$CONF" || { echo "site $s: the user config did not render; nothing was uploaded" >&2; rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }
   tfr site output -json | site_secrets_json "$W/sec.json" || { echo "site $s: the site secrets did not read; nothing was uploaded" >&2; rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }
   new_hash=$(config_hash "$CONF" "$W/sec.json") || { rm -rf "$W"; [ -n "$SAVED" ] && rm -rf "$SAVED"; return 1; }

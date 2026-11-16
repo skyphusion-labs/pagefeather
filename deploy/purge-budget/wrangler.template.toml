@@ -1,5 +1,5 @@
 # pf-purge-budget (#699 part B): ONE per account. deploy/wfp/up.sh deploys it when it is absent; down.sh removes it only
-# when no site and no namespace still binds it. @COMPAT@ is filled by deploy/wfp/lib.sh render_purge_budget.
+# when no site and no namespace still binds it. deploy/wfp/lib.sh render_purge_budget fills the compatibility date.
 name = "pf-purge-budget"
 main = "../../purge-budget/worker.mjs"
 compatibility_date = "@COMPAT@"

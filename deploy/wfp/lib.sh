@@ -21,6 +21,8 @@ WFP=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 . "$WFP/../lib/memory-reuse.sh" # #603: PHP_MEMORY_REUSE and BOOT_GATE, one rule with deploy/a-settings.sh
 # shellcheck source=SCRIPTDIR/../lib/remote-packs.sh
 . "$WFP/../lib/remote-packs.sh" # #598: OPCACHE_REMOTE and SITE_REMOTE, their default and the pack step, one rule with deploy.sh b-dosql
+# shellcheck source=../purge-budget/budget.sh
+. "$WFP/../purge-budget/budget.sh" # #699 part B: PURGE_BUDGET_BIND and the binding render_user appends
 ROOT=$(cd "$WFP/../.." && pwd -P)
 # The pinned Wrangler. A test points WR at a stub.
 WR=${WR:-$ROOT/deploy/wr}
@@ -289,6 +291,12 @@ wrangler_deploy() { # wrangler_deploy <dir> <logfile> <wrangler deploy args...>
 }
 render_outbound() {
   sed -e "s/@COMPAT@/$(compat_date)/g" "$WFP/outbound/wrangler.template.toml"
+}
+
+# pf-purge-budget (#699 part B), ONE per account: up.sh deploys it when absent, down.sh removes it only when nothing
+# binds it (deploy/purge-budget/binders.py). Its template sits beside the Worker; the config is rendered into $GEN.
+render_purge_budget() {
+  sed -e "s/@COMPAT@/$(compat_date)/g" "$WFP/../purge-budget/wrangler.template.toml"
 }
 
 # The user Worker config: deploy/deploy.sh's b-dosql config, as a namespace
@@ -674,7 +682,7 @@ binding = "MEDIA"
 bucket_name = "$(media_bucket "$s")"
 [[durable_objects.bindings]]
 name = "PHP_RUNTIME"
-class_name = "PhpRuntime"
+class_name = "PhpRuntime"$(purge_budget_toml_suffix)
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["PhpRuntime"]

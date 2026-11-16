@@ -14,8 +14,9 @@
 # edit. No API Tokens permission: the bucket keys are temporary R2 credentials (#273).
 #
 # Order: the namespace and the site map, the outbound Worker (the dispatchers
-# bind it), then each site (site.sh up), then the stale-entry probe and
-# check.py. Remove it all with down.sh.
+# bind it), the account's purge budget pf-purge-budget when it is absent (the
+# sites bind it, #699 part B), then each site (site.sh up), then the stale-entry
+# probe and check.py. Remove it all with down.sh.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 need_account
@@ -48,6 +49,20 @@ SUB=$(subdomain)
 log "outbound Worker wp-wfp-outbound"
 render_outbound > "$GEN/outbound.toml"
 wrangler_deploy "$GEN" "$W/outbound.log" --config outbound.toml || { tail -20 "$W/outbound.log"; exit 1; }
+
+# #699 part B: ONE purge budget per account, shared by every namespace and every deploy.sh site. Created when absent;
+# a present one is left as it is (its state is the account's). Unreadable: not deployed, and the sites keep part A's
+# own rules (fail-open), never a guess.
+log "purge budget $PURGE_BUDGET_SCRIPT (one per account, #699)"
+case "$(purge_budget_present)" in
+  yes) echo "  present: left as it is" ;;
+  no)
+    render_purge_budget > "$GEN/purge-budget.toml"
+    wrangler_deploy "$GEN" "$W/purge-budget.log" --config purge-budget.toml || { tail -20 "$W/purge-budget.log"; exit 1; }
+    [ "$(purge_budget_present)" = yes ] || { echo "  $PURGE_BUDGET_SCRIPT was deployed but does not read back" >&2; exit 1; }
+    echo "  deployed, and read back" ;;
+  *) echo "  its presence could NOT be read: not deployed; the sites keep part A's own rules (fail-open)" >&2 ;;
+esac
 
 # Phase B (#138): the ONE shared dispatcher wp-dispatch, deployed once before
 # any site, because each site's Custom Domain attaches to it (the service must
