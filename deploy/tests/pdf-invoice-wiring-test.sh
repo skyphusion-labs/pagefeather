@@ -60,7 +60,7 @@ rc_ "$T/on.toml" PDF_INVOICE=on; r=$?; ok "on: exactly one [browser] binding BRO
 ok "on and unset differ by the [browser] binding only" "$({ diff <(grep -v '^ *$' "$T/u.toml") <(grep -v '^ *$' "$T/on.toml") || true; } | grep -E '^[<>]' | LC_ALL=C sort | tr '\n' '|' | grep -Fqx '> [browser]|> binding = "BROWSER"|' && echo 1 || echo 0)"
 refuse "PDF_INVOICE must be on, off or unset" VARIANT=b-dosql PDF_INVOICE=yes
 refuse "PDF_INVOICE is for variant b-dosql" VARIANT=a PDF_INVOICE=on
-ok "deploy.sh writes its secrets through deploy_secrets_json (one writer)" "$(grep -q 'deploy_secrets_json "\$SECRETS"' "$ROOT/deploy/deploy.sh" && ! grep -qE '"SPIKE_TOKEN": ?o\["spike_token"\]' "$ROOT/deploy/deploy.sh" && echo 1 || echo 0)"
+ok "deploy.sh writes its secrets through deploy_secrets_json (one writer)" "$(grep -q 'deploy_secrets_json "\$secrets"' "$ROOT/deploy/deploy-upload.sh" && ! grep -qE '"SPIKE_TOKEN": ?o\["spike_token"\]' "$ROOT/deploy/deploy.sh" && echo 1 || echo 0)"
 dj() { local out=$1 in=$2; shift 2; printf '%s' "$in" | env -i PATH="$PATH" HOME="$T" ROOT="$ROOT" "$@" bash -c ". '$ROOT/deploy/pdf-invoice.sh' && deploy_secrets_json '$out'" > "$T/dj.out" 2> "$T/dj.err"; }
 dj "$T/d1.json" "$tf"; ok "deploy_secrets_json, unset: exactly WP_SALT and SPIKE_TOKEN" "$([ $? = 0 ] && python3 -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])) == {"WP_SALT":"salt-1","SPIKE_TOKEN":"tok-1"} else 1)' "$T/d1.json" && echo 1 || echo 0)"
 dj "$T/d2.json" "$tf" PDF_INVOICE=on; ok "deploy_secrets_json, on: plus INVOICE_TOKEN" "$([ $? = 0 ] && python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get("INVOICE_TOKEN") == "inv-1" and len(d) == 3 else 1)' "$T/d2.json" && echo 1 || echo 0)"
