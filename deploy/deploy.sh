@@ -341,6 +341,9 @@ if [ "${WOO_ACTIVE:-0}" = 1 ]; then
   [ "$act_ok" = 1 ] || { echo "WooCommerce did not activate after $ACT_TRIES attempts (a result: record it)"; exit 1; }
 fi
 
+# #734: OBJECT_CACHE_VERSIONS is on by default for variant a; its versions table is installed here and read back.
+if [ "$VARIANT" = a ] && [ "${OBJECT_CACHE_VERSIONS:-1}" != 0 ]; then a_ocv_install "$URL" "$SPIKE_TOKEN" || exit 1; fi
+
 PW_HINT="(admin; password: cd deploy/terraform && terraform workspace select $NAME && terraform output -raw admin_password)"
 [ "${BENCH:-1}" = 0 ] && { echo "$URL $PW_HINT"; exit 0; }
 

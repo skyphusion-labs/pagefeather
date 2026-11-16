@@ -119,6 +119,12 @@ class JS_Object_Cache {
 				$this->set_group_salt( $row[0], 'v' . (int) $row[1] );
 			}
 		}
+		// #734: the var is on but no version was read (no versions table, or no row): the groups stay per request,
+		// which is safe, but the default does nothing. Tell the Worker (once per request) so it logs it once per isolate
+		// and deploy/doctor can warn.
+		if ( empty( $this->versions ) ) {
+			$this->call( array( 'op' => 'vmiss' ) );
+		}
 	}
 
 	private function call( array $op ) {

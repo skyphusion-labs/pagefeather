@@ -7,6 +7,7 @@
 import {
   createR2Bucket, deployNamespaceScript, ensureProxiedHostname, scriptExists,
   installWordPress, freshKVNamespace,
+  ensureCacheVersions,
 } from './ops.mjs';
 import { upsertSite, readSite } from './registry.mjs';
 import { assertValidName, genSecret } from './shared.mjs';
@@ -175,6 +176,17 @@ async function provisionNamespaceSite(ctx, cfg) {
   } catch (e) { installError = (e && e.message) || String(e); }
   const installed = Boolean(install && install.installed);
   steps.push(installed ? { installed: true, already: install.already, via: install.via } : { installed: false, error: installError });
+  // #734: an approach-A site with OBJECT_CACHE_VERSIONS=on gets its versions table now, checked. Best-effort like the
+  // install (a provision never fails on it), but never hidden: a table that is not complete is surfaced in the result.
+  let ocVersionsNote = null;
+  if (installed && cfg.kind === 'a' && versionsFlagOn(cfg.resourceBindings)) {
+    let ocv;
+    try {
+      ocv = await ensureCacheVersions({ dispatcher: ctx.dispatcher, scriptName: script, hostname: cfg.hostname, spikeToken: cfg.secrets && cfg.secrets.SPIKE_TOKEN, fetchImpl: ctx.fetchImpl });
+    } catch (e) { ocv = { complete: false, installed: false, error: (e && e.message) || String(e) }; }
+    steps.push({ ocVersions: ocv });
+    if (!ocv.complete) ocVersionsNote = `OBJECT_CACHE_VERSIONS is on but INERT on this site (${ocv.reason || ocv.error || 'the read-back is not complete'}): options stay per request. Finish with POST /_ocversions?op=install`;
+  }
   // Record install state + the admin URL/user (NEVER the password) so a re-provision
   // returns the site without re-installing.
   const finalEntry = { ...entry, installed, adminUrl, adminUser: 'admin' };
@@ -186,5 +198,6 @@ async function provisionNamespaceSite(ctx, cfg) {
     // valid); a deferred install returns the url + user and a note.
     admin: installed ? { url: adminUrl, user: 'admin', password: adminPassword } : { url: adminUrl, user: 'admin' },
     ...(installError ? { installNote: `install deferred (finish via /_install): ${installError}` } : {}),
+    ...(ocVersionsNote ? { ocVersionsNote } : {}),
   };
 }

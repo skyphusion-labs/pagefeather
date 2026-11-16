@@ -52,6 +52,49 @@ refuse "PF_ENGINE_WASM is not a file with content" VARIANT=a PF_ENGINE_JS="$T/en
 for bad in on yes 0 1 NO; do refuse "WOO_EXTRAS must be off or unset" VARIANT=b-dosql WOO_EXTRAS=$bad; done
 refuse "WOO_EXTRAS must be off or unset" VARIANT=a WOO_EXTRAS=on
 
+echo "1b. #734: a_ocv_install, against a local stub of /_ocversions (status, then install only when incomplete)"
+STUB="$T/ocv-stub.py"
+cat > "$STUB" <<'PYSTUB'
+# A stand-in for /_ocversions. MODE: fresh (no table; install completes), done (complete), notrig (install says
+# versioned false), down (500). It records each call in LOG, and needs the right x-spike-token.
+import http.server, json, sys
+port, mode, log = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+state = {'complete': mode == 'done'}
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def answer(self, code, body):
+        b = json.dumps(body).encode(); self.send_response(code); self.send_header('content-type', 'application/json')
+        self.send_header('content-length', str(len(b))); self.end_headers(); self.wfile.write(b)
+    def handle_one(self, method):
+        open(log, 'a').write(method + ' ' + self.path + '\n')
+        if self.headers.get('x-spike-token') != 'tok': return self.answer(403, {'ok': False})
+        if mode == 'down': return self.answer(500, {'ok': False, 'error': 'db down'})
+        if self.path.endswith('op=install') and method == 'POST':
+            if mode == 'notrig': return self.answer(200, {'ok': True, 'versioned': False, 'reason': 'the trigger x: no triggers'})
+            state['complete'] = True
+            return self.answer(200, {'ok': True, 'versioned': True, 'status': {'complete': True}})
+        if self.path.endswith('op=status'):
+            return self.answer(200, {'ok': True, 'table': state['complete'], 'triggers': [], 'complete': state['complete']})
+        self.answer(404, {})
+    def do_GET(self): self.handle_one('GET')
+    def do_POST(self): self.handle_one('POST')
+http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
+PYSTUB
+ocv_case() { # ocv_case <mode> <port>: runs a_ocv_install; the calls (the readiness probe GET / is not one), rc, output
+  local mode=$1 port=$2; : > "$T/ocv-$mode.log"
+  python3 -I "$STUB" "$port" "$mode" "$T/ocv-$mode.log" & local p=$!
+  for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:$port/" && break; sleep 0.1; done
+  env -i PATH="$PATH" bash -c ". '$ROOT/deploy/a-settings.sh' && a_ocv_install http://127.0.0.1:$port tok" > "$T/ocv-$mode.out" 2>&1; echo $? > "$T/ocv-$mode.rc"
+  kill $p 2>/dev/null; wait $p 2>/dev/null
+}
+ocv_case fresh 18731; ocv_case done 18732; ocv_case notrig 18733; ocv_case down 18734
+ok "fresh: status, install, status; rc 0; the read-back says complete" "$([ "$(cat "$T/ocv-fresh.rc")" = 0 ] && [ "$(grep _ocversions "$T/ocv-fresh.log" | tr '\n' ' ')" = "GET /_ocversions?op=status POST /_ocversions?op=install GET /_ocversions?op=status " ] && grep -q 'versions table: installed, complete' "$T/ocv-fresh.out" && echo 1 || echo 0)"
+ok "done: ONE status read and NO install (a re-deploy never drops and re-makes the triggers)" "$([ "$(cat "$T/ocv-done.rc")" = 0 ] && [ "$(grep _ocversions "$T/ocv-done.log" | tr '\n' ' ')" = "GET /_ocversions?op=status " ] && grep -q 'versions table: already complete' "$T/ocv-done.out" && echo 1 || echo 0)"
+ok "notrig: rc 0, and a loud WARNING that the var is inert" "$([ "$(cat "$T/ocv-notrig.rc")" = 0 ] && grep -q 'WARNING: OBJECT_CACHE_VERSIONS is on but INERT' "$T/ocv-notrig.out" && echo 1 || echo 0)"
+ok "down: rc 1 (the deploy stops: the default's state is unknown)" "$([ "$(cat "$T/ocv-down.rc")" = 1 ] && echo 1 || echo 0)"
+ok "the output never prints the token" "$(cat "$T"/ocv-*.out | grep -q tok && echo 0 || echo 1)"
+ok "deploy.sh runs it after the install, for variant a unless OBJECT_CACHE_VERSIONS=0" "$(grep -q 'if \[ "\$VARIANT" = a \] && \[ "\${OBJECT_CACHE_VERSIONS:-1}" != 0 \]; then a_ocv_install "\$URL" "\$SPIKE_TOKEN" || exit 1; fi' "$ROOT/deploy/deploy.sh" && [ "$(grep -n 'a_ocv_install "\$URL"' "$ROOT/deploy/deploy.sh" | cut -d: -f1)" -gt "$(grep -n '"\$URL/_install"' "$ROOT/deploy/deploy.sh" | cut -d: -f1)" ] && echo 1 || echo 0)"
+
 echo "2. the rendered lines (deploy/a-settings.sh)"
 S="$ROOT/deploy/a-settings.sh"
 r() { env -i PATH="$PATH" "$@" bash -c ". '$S' && a_vars && echo --- && a_assets_first" 2>&1; }
