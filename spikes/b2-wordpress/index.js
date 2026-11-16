@@ -38,6 +38,7 @@ import { inflateSync } from 'fflate';
 import { createArena } from './inflate-arena.mjs';
 import { headroomStream } from './headroom.mjs';
 import { faultArmed, isFaultTarget, exhaustMemory } from './fault-inject.mjs';
+import { failuresSince } from './activate-report.mjs';
 import { createUndoLog } from './undo-log.mjs';
 import { createRetirer } from './runtime-drop.mjs';
 import { gateSettings, decide, BootRefused, bootRefusedResponse, createGateClock, withBootRefusal } from './boot-gate.mjs'; // #598
@@ -515,7 +516,9 @@ function newStats() {
 // them and only grows, so a cron tick can read how many writes it has lost so far (#362) even when
 // trimStats cuts the list.
 let resetFailTotal = 0;
+let failureSeq = 0; // #744: each failure's number, so /_activate can name the failures of its own run
 function noteFailure(f) {
+	f.seq = ++failureSeq;
 	stats.failures.push(f);
 	resetFailTotal += resetFailures([f]);
 }
@@ -3874,6 +3877,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			// No dot, quote or second slash: the value is interpolated into the PHP below.
 			if (!/^[a-z0-9_-]+\/[a-z0-9_-]+\.php$/.test(plugin)) return new Response('bad plugin', { status: 400 });
 			const start = stats.calls;
+			const failSeq0 = failureSeq; // #744: this run's database failures are the ones numbered after this
 			let r;
 			try {
 				r = await php.run({ code: `<?php
@@ -3928,7 +3932,9 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				return new Response('activate failed: ' + String((e && e.message) || e), { status: 500 });
 			}
 			dropRuntime(); // a fresh runtime loads the plugin cleanly
-			return new Response(JSON.stringify({ out: r.text.slice(-2000), errors: String(r.errors).slice(0, 2000), d1: stats.calls - start }), { headers: { 'content-type': 'application/json' } });
+			// #744: dbFailures names each failed statement of this run (its error and SQL, bounded), which the 2,000-character
+			// errors cut hid: WooCommerce's cart-page probe failed mid-query and showed only the query head.
+			return new Response(JSON.stringify({ out: r.text.slice(-2000), errors: String(r.errors).slice(0, 2000), d1: stats.calls - start, dbFailures: failuresSince(stats.failures, failSeq0) }), { headers: { 'content-type': 'application/json' } });
 		}
 		if (url.pathname === '/_opcache-dump') {
 			// Zip of the OPcache file cache, for opcache.sh. Run it after the e2e

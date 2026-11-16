@@ -588,6 +588,9 @@ jobs:
       - name: The post-INSERT fault injector, armed, fired and wired (#730, #589 B)
         working-directory: spikes/b2-wordpress
         run: node --test tests/fault-inject.test.mjs
+      - name: /_activate names the database failures of its own run (#744)
+        working-directory: spikes/b2-wordpress
+        run: node --test tests/activate-report.test.mjs
       # Python 3.9 floor (#644), last so it does not change python3 for the steps
       # above. ubuntu-latest is 26.04 (resolute) and its apt index is amd64v3.
       # Two installs do not work here, both measured. actions/setup-python has
