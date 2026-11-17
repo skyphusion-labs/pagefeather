@@ -10,6 +10,8 @@ with IsTruncated and, when true, NextContinuationToken; continuation-token resum
 GET /_keys lists every stored path, one per line (for the tests to read).
 Each listed key carries its LastModified (the time of its PUT, UTC). POST /_mtime/<path>?t=<epoch s>
 sets it (#533: the freshness check reads the age of a snapshot).
+HEAD returns a stored key's x-amz-meta-* headers (kept from its PUT, as R2 returns customMetadata) and its size, or 404
+(#841: the freshness check reads a snapshot's alarm record).
 POST /_fail_page/<n>: the n-th list request from now answers 500 (once).
 POST /_truncate_no_token: the next list page that is truncated gives no NextContinuationToken.
 """
@@ -18,6 +20,7 @@ from xml.sax.saxutils import escape
 
 store = {}
 mtime = {}
+meta = {}
 ctl = {"fail_in": 0, "no_token": False}
 
 
@@ -49,7 +52,18 @@ class H(http.server.BaseHTTPRequestHandler):
         n = int(self.headers.get("content-length") or 0)
         store[urllib.parse.unquote(self.path)] = self.rfile.read(n)
         mtime[urllib.parse.unquote(self.path)] = time.time()
+        meta[urllib.parse.unquote(self.path)] = {k.lower(): v for k, v in self.headers.items() if k.lower().startswith("x-amz-meta-")}
         self.send(200)
+
+    def do_HEAD(self):
+        p = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
+        if p not in store:
+            self.send_response(404); self.end_headers(); return
+        self.send_response(200)
+        for k, v in meta.get(p, {}).items():
+            self.send_header(k, v)
+        self.send_header("content-length", str(len(store[p])))
+        self.end_headers()
 
     def do_DELETE(self):
         store.pop(urllib.parse.unquote(self.path), None)

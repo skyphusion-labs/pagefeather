@@ -51,6 +51,19 @@ export async function rearm(storage, now, intervalMs, staleMs = STALE_MS) {
 // (fdprobe1112c, 2026-11-12: 7 scriptThrewException 04:08 to 04:11Z, then none). So alarm() never
 // lets an error out: the next tick is already armed (armBeforeRun), the error is stored here for
 // /_purgestate, and the alarm returns normally. ALARM_FATAL_KEY holds the last one.
+/**
+ * #841: the daily /_dbsnapshot re-arms. It reaches every site's object, even a fully edge-cached site where no
+ * request does, so a deleted alarm (Cloudflare case 02430361: past its retry budget) is back within a day. ONLY a
+ * re-arm (rearm), never a cron run. Returns the state found BEFORE (ok, none, stale), and the alarm after, for the
+ * snapshot's metadata (the freshness check goes red on none or stale).
+ */
+export async function snapshotRearm(storage, now, intervalMs, staleMs = STALE_MS) {
+	const r = await rearm(storage, now, intervalMs, staleMs);
+	const state = !r.armed ? 'ok' : r.stale ? 'stale' : 'none';
+	const at = await storage.getAlarm();
+	return { state, at: at === null || at === undefined ? null : Number(at) };
+}
+
 export const ALARM_FATAL_KEY = 'alarm-fatal';
 /** Store the error an alarm run threw (time, message, the top of the stack) and return it. */
 export async function recordAlarmFatal(storage, e, now) {

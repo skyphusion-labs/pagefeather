@@ -6,7 +6,7 @@ import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { installPhpBasicAuth } from './php-auth.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
-import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-arm.mjs';
+import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm } from './alarm-arm.mjs';
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
 import { callPhpObject, isObjectCallDeadline, objectCallDeadlineMs, objectCallExempt } from './object-deadline.mjs';
 import { startByMs, objectShedPlan, startByResponse, shedAnswer, startByExempt, tagCallId, recheckStartBy, disconnectAnswer, disconnectSignal, tickFetch, tickResponse, TICK_PATH, START_BY_HEADER, CALL_HEADER } from './start-by.mjs';
@@ -3080,10 +3080,14 @@ export class PhpRuntime extends DurableObject {
 		if (url.pathname === SNAPSHOT_PATH) {
 			const gate = snapshotGate(req, env);
 			if (gate !== 'ok') return gateResponse(gate);
+			// #841: re-arm the cron alarm FIRST (only a re-arm; no cron runs here). This call reaches every object daily,
+			// even a fully edge-cached site's, where no request re-arms a deleted alarm. Its state goes in the snapshot.
+			const snapAlarm = await snapshotRearm(this.ctx.storage, Date.now(), Number(env.CRON_INTERVAL_MS || 60000));
+			if (snapAlarm.state !== 'ok') console.log(JSON.stringify({ m: 'alarm', rearmedBy: 'snapshot', was: snapAlarm.state }));
 			const sql = env.DB_IN_DO === 'on' ? this.ctx.storage.sql : null;
 			if (!sql || !env.MEDIA) return Response.json({ ok: false, error: 'no-db-or-bucket' }, { status: 409 });
 			const held = cronHeld(await this.ctx.storage.get(IMPORT_HOLD_KEY), Date.now());
-			const r = await takeSnapshot({ dump: (w) => withPhp(() => ((sqlDb = sql), dumpTo(w, env, 'object'))), media: env.MEDIA, build: BUILD_ID, held });
+			const r = await takeSnapshot({ dump: (w) => withPhp(() => ((sqlDb = sql), dumpTo(w, env, 'object'))), media: env.MEDIA, build: BUILD_ID, held, alarm: snapAlarm });
 			console.log('@event snapshot ' + JSON.stringify(r.body));
 			return Response.json(r.body, { status: r.status, headers: { 'cache-control': 'private, no-store' } });
 		}
