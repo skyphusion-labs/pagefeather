@@ -309,12 +309,23 @@ def config_text(suite, run_dir):
     lines += ["const ignore = %s;" % json.dumps(ign),
               "const config = { ...base, workers: 1, retries: 0, fullyParallel: false, webServer: undefined,",
               "  reporter: [ [ 'list' ], [ 'json', { outputFile: %s } ] ] };" % json.dumps(rep)]
+    if suite in ("wc", "wc-api", "wc-cpt"):
+        # External throwaway (conf759 STOP 2026-11-17): upstream coreSetupProjects starts with
+        # 'install wc' (WC Beta Tester). Its restApi fixture requires Playwright baseURL before
+        # setup.skip(!INSTALL_WC) can run, so the project fails in milliseconds on a seeded site.
+        # Drop 'install wc', clear that dependency, and force use.baseURL from the prepare env.
+        lines += [
+            "const url = (process.env.BASE_URL || process.env.WP_BASE_URL || '').replace(/\\/+$/, '') + '/';",
+            "config.use = { ...(base.use || {}), baseURL: url };",
+            "const setup = coreSetupProjects.filter((p) => p.name !== 'install wc')"
+            ".map((p) => p.name === 'global authentication' ? { ...p, dependencies: [] } : p);",
+            "config.testIgnore = undefined;",
+        ]
     if suite == "wc":
         # As upstream envs/default-pressable, but WITHOUT its 'reset' project: woocommerce-cleanup
         # TRUNCATEs the store, which would wipe the seed (Rollins' seed owns setup AND the reset between
         # runs). vps-run.sh runs 'site setup' first, then check-state, then e2e-pf with --no-deps.
-        lines += ["config.testIgnore = undefined;",
-                  "config.projects = [ ...coreSetupProjects,",
+        lines += ["config.projects = [ ...setup,",
                   "  { name: 'e2e-pf', testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % json.dumps(WC_GREP_INVERT)]
     elif suite == "wc-cpt":
         # As upstream envs/default-hpos-disabled: DISABLE_HPOS=1, read by fixtures/site.setup.ts, turns HPOS OFF in the
@@ -322,14 +333,12 @@ def config_text(suite, run_dir):
         # tag filter and exclusions as wc. No reset project (the seed owns setup and reset). Its API half is the wc-api
         # side's to add.
         lines += ["process.env.DISABLE_HPOS = '1';",
-                  "config.testIgnore = undefined;",
-                  "config.projects = [ ...coreSetupProjects,",
+                  "config.projects = [ ...setup,",
                   "  { name: 'e2e-cpt', grep: new RegExp( %s ), testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % (json.dumps("@hpos"), json.dumps(WC_GREP_INVERT))]
     elif suite == "wc-api":
         # The API half: the same setup projects and the same tag filter, and only the api-tests (which the wc
         # config ignores). No reset project either: the seed owns setup and the reseed between the halves.
-        lines += ["config.testIgnore = undefined;",
-                  "config.projects = [ ...coreSetupProjects,",
+        lines += ["config.projects = [ ...setup,",
                   "  { name: 'api-pf', testMatch: [ '**/api-tests/**' ], testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % json.dumps(WC_GREP_INVERT)]
     else:
         assert_login = os.path.join(HERE, "assert-login.mjs")
