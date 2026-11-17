@@ -364,10 +364,14 @@ def config_text(suite, run_dir):
                   "  { name: 'api-pf', testMatch: [ '**/api-tests/**' ], testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % json.dumps(WC_GREP_INVERT)]
     else:
         assert_login = os.path.join(HERE, "assert-login.mjs")
-        # Playwright globalSetup accepts string module paths only, not base.globalSetup (a function).
-        lines += ["config.globalSetup = [ %s, %s ].filter( Boolean );" % (json.dumps("./pf-global-setup.mjs"), json.dumps(assert_login)),
-                  "config.testIgnore = ignore;",
-                  "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: ignore } ) );"]
+        # External throwaway: wp-env webServer is off. Upstream global-setup reads baseURL from projects[0].use.
+        lines += [
+            "const url = (process.env.BASE_URL || process.env.WP_BASE_URL || '').replace(/\\/+$/, '') + '/';",
+            "config.use = { ...(base.use || {}), baseURL: url };",
+            "if ( config.projects?.[0] ) config.projects[0].use = { ...config.projects[0].use, baseURL: url };",
+            "config.globalSetup = [ %s, %s ].filter( Boolean );" % (json.dumps("./pf-global-setup.mjs"), json.dumps(assert_login)),
+            "config.testIgnore = ignore;",
+            "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: ignore } ) );"]
     lines.append("export default config;")
     return "\n".join(lines) + "\n"
 
