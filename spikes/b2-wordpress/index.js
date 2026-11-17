@@ -26,6 +26,7 @@ import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywher
 import * as pageVersions from './page-versions.mjs';
 import { opcacheMemoryMib } from './opcache-size.mjs';
 import { createTrace as createQueryTrace } from './qtrace.mjs';
+import { asyncEmailDefine } from './async-email-wiring.mjs';
 import { hposCacheDefine } from './woo-hpos-cache.mjs';
 import { resetFailures, platformFailures, writeLossResponse, rolledBackResponse, frameProvesRollback, statementFailureResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { MEMORY_RESET } from './object-error.mjs';
@@ -1919,8 +1920,8 @@ async function boot(origin) {
 	// theme.json data kept across requests (php/theme-json-cache.php, #49). Needs the
 	// object cache. THEME_JSON_CACHE=off turns it off (to measure).
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.OBJECT_CACHE !== 'off' && ENV.THEME_JSON_CACHE !== 'off') lines.push(`define('JS_THEME_JSON_CACHE', true);`);
-	// Async email mu-plugin (issue #185): wp_mail hands messages to the Worker. b-dosql only.
-	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.ASYNC_EMAIL !== 'off') lines.push(`define('SKYPHUSION_ASYNC_EMAIL', true);`);
+	// Async email mu-plugin (issue #185, #856): wp_mail hands messages to the Worker.
+	{ const l = asyncEmailDefine(ENV, Boolean(dbHandler)); if (l) lines.push(l); }
 	// Bootstrap trim mu-plugin (perf): skip pure-background wc-admin features (remote-inbox,
 	// marketing) that re-init every request. The trim is pure-background wc-admin and touches
 	// no database engine specifics, so it is safe for approach A (external MySQL) too: with PHP
