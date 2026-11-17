@@ -120,6 +120,32 @@ ok("apply: a cell that is only an earlier run's text is replaced whole", "| Ship
 NM = MD.replace("| Coupons | not measured | not measured |", "| Coupons | not measured | not measured |")
 nm, _ = M.apply_md(NM, "Paid DO", {("WooCommerce", "Coupons"): ("yes", "yes (C2)")}, block)
 ok("apply: a not measured cell is replaced", "| Coupons | not measured | yes (C2) | not measured | not measured |" in nm, nm)
+# DOWNGRADE (the lead's ruling, 2026-11-17): a run never upgrades a cell, but it MUST downgrade one. An OURS failure
+# where the cell leads with "yes" makes it lead with limited (or no), keeps the old text after it, names the specs.
+YES = MD.replace("| Install, pages, login, dashboard | yes (#638) | old paid |", "| Install, pages, login, dashboard | yes (#638) | yes (results.md 2026-11-07) |")
+rows_bad = R("pass", 3, "specs/dashboard.test.js") + R("OURS", 1, "specs/hello.test.js")
+dn, _ = M.apply_md(YES, "Paid DO", {("WordPress", "Install, pages, login, dashboard"): M.cell(rows_bad, CITE)}, block)
+row = [l for l in dn.split("\n") if l.startswith("| Install")][0]
+paid = M._split_row(row)[2]
+ok("downgrade: a yes cell with an OURS failure no longer leads with yes", not paid.startswith("yes") and paid.startswith("limited"), paid)
+ok("downgrade: the old text is kept after the run's verdict", "before this run: yes (results.md 2026-11-07)" in paid, paid)
+ok("downgrade: the run's part names the failing spec", "specs/hello.test.js" in paid, paid)
+alln, _ = M.apply_md(YES, "Paid DO", {("WordPress", "Install, pages, login, dashboard"): M.cell(R("OURS", 2, "specs/hello.test.js"), CITE)}, block)
+paid = M._split_row([l for l in alln.split("\n") if l.startswith("| Install")][0])[2]
+ok("downgrade: nothing passed makes it lead with no", paid.startswith("no:") and "before this run: yes (results.md" in paid, paid)
+# A later run replaces only its own part: a passing run lifts the downgrade, and keeps the old yes first.
+up, _ = M.apply_md(dn, "Paid DO", {("WordPress", "Install, pages, login, dashboard"): M.cell(R("pass", 4, "specs/hello.test.js"), CITE)}, block)
+paid = M._split_row([l for l in up.split("\n") if l.startswith("| Install")][0])[2]
+ok("downgrade: a later passing run lifts it, the old yes leads again", paid.startswith("yes (results.md 2026-11-07); conformance run: yes (") and "before this run" not in paid, paid)
+again, _ = M.apply_md(dn, "Paid DO", {("WordPress", "Install, pages, login, dashboard"): M.cell(rows_bad, CITE)}, block)
+paid = M._split_row([l for l in again.split("\n") if l.startswith("| Install")][0])[2]
+ok("downgrade: a later failing run replaces its part, never stacks", paid.count("before this run") == 1 and paid.count("specs/hello.test.js") == 1, paid)
+# A limited cell plus a failing run keeps its own lead (it is already not yes); the run is appended, specs named.
+lm, _ = M.apply_md(LIM, "Paid DO", {("WordPress", "Install, pages, login, dashboard"): M.cell(rows_bad, CITE)}, block)
+paid = M._split_row([l for l in lm.split("\n") if l.startswith("| Install")][0])[2]
+ok("a limited cell plus an OURS failure keeps its lead; the run is appended with the spec", paid.startswith("limited: memory ceiling (#768); conformance run: limited") and "specs/hello.test.js" in paid, paid)
+w, t = M.cell(R("pass", 1) + R("OURS", 2, "order/x.spec.ts") + R("OURS", 1, "order/y.spec.ts"), CITE)
+ok("cell: a limited cell names its failing specs once each", "order/x.spec.ts" in t and "order/y.spec.ts" in t and t.count("order/x.spec.ts") == 1, t)
 ok("apply: a pipe in a cell is escaped, so the table keeps its shape", "a \\| b" in M.apply_md(MD, "WfP", {("WooCommerce", "Coupons"): ("yes", "yes a | b")}, block)[0])
 
 # 6. The not-run block: every excluded spec, with its reason, from exclude/<suite>.txt.

@@ -19,8 +19,11 @@ A cell, per the matrix's own rules (docs/support-matrix.md, "How to read a cell"
                  even on stock. It is never turned into yes.
 --apply changes only the given tier's column, for the features this run measured. A cell that says
 "not measured" (or holds only an earlier run's text) is replaced. Any other cell is measured text, a
-citation or a known limit, and is KEPT: the run is appended as "; conformance run: ...", so a passing
-suite never erases a limit it does not test (the block editor's memory ceiling, the stock page's age). A feature the
+citation or a known limit, and is KEPT. A run never UPGRADES a cell: a passing run is appended as
+"; conformance run: ...", so it never erases a limit it does not test (the block editor's memory
+ceiling, the stock page's age). A run MUST DOWNGRADE one: OURS failures where the measured text leads
+with "yes" put the run's limited or no first, naming the failing specs, and keep the old text after
+"; before this run: ". A later run replaces its own part, so a fixed regression lifts the downgrade. A feature the
 matrix does not have yet is added as a row of its section, "not measured" in the other columns.
 Every change is printed old to new. The excluded specs (exclude/<suite>.txt) are written as a
 "not run" block between two markers, replaced on each apply. Exit 1 with --strict when a spec maps
@@ -85,10 +88,11 @@ def cell(rows, cite):
     ran = n - _n(c, "skipped")
     ours = _n(c, "OURS")
     look = n - sum(_n(c, k) for k in ("pass", "upstream", "ours-passes", "skipped", "OURS"))
-    if ours and ours == ran:
-        return "no", "no: %d of %d tests fail here and pass on stock (%s)" % (ours, n, cite)
     if ours:
-        return "limited", "limited: %d of %d tests fail here and pass on stock (%s)" % (ours, n, cite)
+        specs = sorted({r["file"] for r in rows if r["verdict"] == "OURS"})
+        named = ", ".join("`%s`" % f for f in specs[:6]) + (" and %d more" % (len(specs) - 6) if len(specs) > 6 else "")
+        word = "no" if ours == ran else "limited"
+        return word, "%s: %d of %d tests fail here and pass on stock (%s): %s" % (word, ours, n, cite, named)
     if look:
         return "not measured", "not measured: %d of %d results need a look (%s)" % (look, n, cite)
     if not (_n(c, "pass") + _n(c, "ours-passes")):
@@ -137,18 +141,29 @@ def notrun_block(excludes, tag):
 
 
 APPENDED = "; conformance run: "
+DOWNGRADED = "; before this run: "
 _OWN = re.compile(r"^(yes|limited|no|not measured)[: (].*\(conformance `")
 
 
 def merge(old, new):
     """A cell's new text. A cell that says "not measured", or holds only an earlier run's text, is replaced. Any
-    other cell is measured text (a citation, a known limit): it is KEPT, and the run is appended after it, so a
-    passing suite never erases a limit it does not test. An earlier run's appended part is replaced, never stacked."""
-    human = old.split(APPENDED, 1)[0].strip()
-    if _OWN.match(human):
-        human = ""
+    other cell is measured text (a citation, a known limit): it is KEPT. A run never UPGRADES a cell: a passing run
+    is appended after the measured text, so a passing suite never erases a limit it does not test. A run MUST
+    DOWNGRADE one (the lead's ruling, 2026-11-17): when it finds OURS failures and the measured text leads with
+    "yes", the run's limited or no leads, naming the failing specs, and the old text follows "; before this run: ",
+    so an old yes never hides a regression. An earlier run's part is replaced on the next run, never stacked."""
+    old = old.strip()
+    head, sep, rest = old.partition(DOWNGRADED)
+    if sep and _OWN.match(head):
+        human = rest.strip()
+    else:
+        human = old.split(APPENDED, 1)[0].strip()
+        if _OWN.match(human):
+            human = ""
     if human in ("", "not measured"):
         return new
+    if re.match(r"^(limited|no)\b", new) and re.match(r"^yes\b", human):
+        return new + DOWNGRADED + human
     return human + APPENDED + new
 
 

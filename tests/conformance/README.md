@@ -66,7 +66,8 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
            --routes <routes.json> --apply docs/support-matrix.md --strict
 
    - Each cell cites the run tag, date, build and cache mode. A cell is `yes` only when a test passed and none failed only here. One that fails only here makes it `limited` (or `no`, if every test that ran did). A result that needs a look stays `not measured`.
-   - A cell that already holds measured text (a citation, or a known limit such as #768's memory ceiling) is KEPT. The run is appended after it as `; conformance run: ...`. A passing suite never erases a limit it does not test.
+   - A cell that already holds measured text (a citation, or a known limit such as #768's memory ceiling) is KEPT. A run never UPGRADES a cell: a passing run is appended after it as `; conformance run: ...`, so it never erases a limit it does not test.
+   - A run MUST DOWNGRADE a cell. If it finds tests that fail only here (`OURS`) where the cell leads with `yes`, its `limited` (or `no`, if nothing passed) leads, naming the failing specs, and the old text follows `; before this run: `. An old `yes` never hides a regression. A later run replaces its own part, so a fixed regression lifts the downgrade.
    - The excluded specs are written as a "not run" block. `--strict` exits 1 on an unmapped spec or an `OURS` test, so a run that needs a look is never quiet.
    - **For the first shared run** (`conf759-run.md`): its exports are `results-<suite>-<on|off>.json`, `baseline-<suite>.json` and `routes-<on|off>.json`, and its throwaway `cf759a` is a `deploy/wfp` site, so the tier is `WfP`. One call per cache pass, from the pulled `conf759/<RUN_ID>/` directory:
 
