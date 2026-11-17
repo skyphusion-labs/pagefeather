@@ -6,7 +6,7 @@
 #   tests/deploy-flow-e2e.sh   (in spikes/b2-wordpress, after prepare.sh and build.sh)
 # dosql-local, PHP_RECYCLE off, PHP_MEMORY_REUSE off, BOOT_GATE off: /_install, a page, /_runcron, /_activate
 # (WooCommerce), a page. It must hold: ONE live memory after the flow, NO boot after the first page's runtime, and
-# /_activate after /_runcron answers its OWN result ({"active": true}), never the cron's output (#185's symptom).
+# /_activate after /_runcron answers its OWN result (active true; install may be nested, #661), never the cron's output (#185's symptom).
 # Caveat: wrangler dev does not enforce the 128 MiB isolate limit, so this checks the invariant, not the death.
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -28,10 +28,26 @@ c=$(curl -s "${ST[@]}" -o /dev/null -w '%{http_code}' --max-time 120 "$B/_runcro
 [ "$c" = 200 ] || { echo "deploy-flow: FAIL: /_runcron answered $c"; exit 1; }
 c=$(curl -s "${ST[@]}" -X POST -o "$A" -w '%{http_code}' --max-time 300 "$B/_activate?plugin=woocommerce/woocommerce.php")
 act=$(python3 -I -c '
-import json, re, sys
+import json, sys
 d = json.load(open(sys.argv[1])); out = d.get("out") or ""
-m = [json.loads(x) for x in re.findall(r"\{[^{}]*\"active\"[^{}]*\}", out)]
-print("own" if m and m[-1].get("active") is True else "NOT-OWN:" + out[-160:].replace("\n", " "))' "$A" 2>/dev/null || echo "NOT-JSON")
+# #661 nests install inside the shutdown object, so a scan that rejects nested braces misses active.
+own = False
+dec = json.JSONDecoder()
+i = 0
+while True:
+    j = out.find("{", i)
+    if j < 0:
+        break
+    try:
+        obj, _end = dec.raw_decode(out, j)
+    except json.JSONDecodeError:
+        i = j + 1
+        continue
+    if isinstance(obj, dict) and obj.get("active") is True:
+        own = True
+        break
+    i = j + 1
+print("own" if own else "NOT-OWN:" + out[-160:].replace("\n", " "))' "$A" 2>/dev/null || echo "NOT-JSON")
 echo "deploy-flow: /_activate after /_runcron: status $c, answer $act"
 [ "$c" = 200 ] || { echo "deploy-flow: FAIL: /_activate answered $c"; exit 1; }
 [ "$act" = own ] || { echo "deploy-flow: FAIL: /_activate did not answer its own result (#185): $act"; exit 1; }
