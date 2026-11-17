@@ -386,6 +386,24 @@ def main():
         s_, c_, a_ = idx('--project="site setup"') if idx('--project="site setup"') >= 0 else idx("--project=site setup"), idx("runner.py check-state"), idx("--project=api-pf --no-deps")
         ok("vps-run run wc-api: site setup, then check-state, then api-pf --no-deps") if vr.returncode == 0 and 0 <= s_ < c_ < a_ else bad("vps-run wc-api order (rc %d, %d %d %d): %s" % (vr.returncode, s_, c_, a_, vr.stderr[-200:]))
         ok("vps-run wc-api uses the wc checkout") if any("/wc-" in l and "wc-api-" not in l for l in lines) else bad("vps-run wc-api checkout: %s" % lines[:3])
+        # wc-cpt (#759 gap 2): upstream's envs/default-hpos-disabled. HPOS OFF in site setup, only the @hpos tests,
+        # the wc exclusions (one list, never a copy), no reset project.
+        if "wc-cpt" in runner.UPSTREAM_CONFIG:
+            wcc = open(os.path.join(t, "cfg-wc-cpt", "pf-conformance.config.mjs")).read()
+            ok("wc-cpt config turns HPOS off for site setup") if "process.env.DISABLE_HPOS = '1';" in wcc else bad("wc-cpt config does not set DISABLE_HPOS")
+            ok("wc-cpt runs only the @hpos tests, as e2e-cpt") if "name: 'e2e-cpt', grep: new RegExp( \"@hpos\" )" in wcc and "e2e-pf" not in wcc and "api-pf" not in wcc else bad("wc-cpt project wrong")
+            ok("wc-cpt has NO reset project and depends on site setup") if "reset" not in wcc and "dependencies: [ 'site setup' ]" in wcc else bad("wc-cpt reset or dependencies wrong")
+            ok("wc-cpt carries the wc exclusions") if '"blocks/**"' in wcc and '"api-tests/**"' in wcc else bad("wc-cpt lacks the wc exclusions")
+        else:
+            bad("wc-cpt is not a suite")
+        ok("wc-cpt reads the wc exclusion list itself") if runner.read_excludes("wc-cpt") == runner.read_excludes("wc") else bad("wc-cpt excludes differ from wc")
+        vr = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "run", "wc-cpt", os.path.join(t, "w"), os.path.join(t, "rc")],
+                            env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
+        lines = vr.stdout.splitlines()
+        idx = lambda pat: next((i for i, l in enumerate(lines) if pat in l), -1)
+        s_, c_, a_ = max(idx('--project="site setup"'), idx("--project=site setup")), idx("runner.py check-state"), idx("--project=e2e-cpt --no-deps")
+        ok("vps-run run wc-cpt: site setup, then check-state, then e2e-cpt --no-deps") if vr.returncode == 0 and 0 <= s_ < c_ < a_ else bad("vps-run wc-cpt order (rc %d, %d %d %d): %s" % (vr.returncode, s_, c_, a_, (vr.stderr or "")[:120]))
+        ok("vps-run wc-cpt uses the wc checkout") if lines and any("/wc-" in l for l in lines) and not any("/wc-cpt-" in l for l in lines) else bad("vps-run wc-cpt checkout: %s" % lines[:3])
         for sn in ("wp", "gb"):
             txt = open(os.path.join(t, "cfg-" + sn, "pf-conformance.config.mjs")).read()
             want = "config.globalSetup = [ base.globalSetup, %s ]" % json.dumps(os.path.join(HERE, "assert-login.mjs"))

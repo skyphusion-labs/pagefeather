@@ -39,7 +39,10 @@ DENY = {"ggc.sh", "www.ggc.sh"}
 REQUIRE_HTTPS = True  # runner_test.py turns it off for its local http stub; no flag or env reaches it.
 CACHED = {"HIT", "EXPIRED", "STALE", "REVALIDATED", "UPDATING"}
 # wc-api: the WooCommerce suite's api-tests (the API half), the same checkout and config as wc.
-UPSTREAM_CONFIG = {"wp": "playwright.config.js", "wc": "playwright.config.ts", "wc-api": "playwright.config.ts", "gb": "playwright.config.ts"}
+UPSTREAM_CONFIG = {"wp": "playwright.config.js", "wc": "playwright.config.ts", "wc-api": "playwright.config.ts", "wc-cpt": "playwright.config.ts", "gb": "playwright.config.ts"}
+# wc-cpt (#759 gap 2, upstream envs/default-hpos-disabled) runs the wc suite with HPOS OFF, so it reads the wc exclusion
+# list itself: one list, never a copy that could drift.
+EXCLUDE_AS = {"wc-cpt": "wc"}
 # The tags the upstream external envs drop (envs/default-pressable/playwright.config.ts).
 WC_GREP_INVERT = "@skip-on-external-env|@skip-on-pressable|@could-be-lower-level-test|@non-critical|@to-be-removed"
 TIMEOUT = 60
@@ -243,7 +246,7 @@ def cmd_prepare(a):
     say("admin: form login and REST nonce ok")
     cache = check_cache(site, a.cache)
     pairs = [("WP_BASE_URL", site.base), ("WP_USERNAME", user)]
-    if a.suite in ("wc", "wc-api"):
+    if a.suite in ("wc", "wc-api", "wc-cpt"):
         cuser, cust = wc_verify(site, user, password)
         pairs += [("WP_PASSWORD", password), ("BASE_URL", site.base), ("ADMIN_USER", user), ("ADMIN_PASSWORD", password),
                   ("CUSTOMER_USER", cuser), ("CUSTOMER_PASSWORD", cust)]
@@ -287,7 +290,7 @@ def cmd_check_state(a):
 
 def read_excludes(suite):
     out = []
-    with open(os.path.join(HERE, "exclude", suite + ".txt")) as f:
+    with open(os.path.join(HERE, "exclude", EXCLUDE_AS.get(suite, suite) + ".txt")) as f:
         for line in f:
             line = line.strip()
             if line and not line.startswith("#"):
@@ -301,7 +304,7 @@ def config_text(suite, run_dir):
     rep = os.path.join(os.path.abspath(run_dir), "report.json")
     lines = ["// Written by tests/conformance/runner.py config (#759). Do not edit; re-run it.",
              "import base from './%s';" % UPSTREAM_CONFIG[suite]]
-    if suite in ("wc", "wc-api"):
+    if suite in ("wc", "wc-api", "wc-cpt"):
         lines.append("import { coreSetupProjects } from './%s';" % UPSTREAM_CONFIG[suite])
     lines += ["const ignore = %s;" % json.dumps(ign),
               "const config = { ...base, workers: 1, retries: 0, fullyParallel: false, webServer: undefined,",
@@ -313,6 +316,15 @@ def config_text(suite, run_dir):
         lines += ["config.testIgnore = undefined;",
                   "config.projects = [ ...coreSetupProjects,",
                   "  { name: 'e2e-pf', testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % json.dumps(WC_GREP_INVERT)]
+    elif suite == "wc-cpt":
+        # As upstream envs/default-hpos-disabled: DISABLE_HPOS=1, read by fixtures/site.setup.ts, turns HPOS OFF in the
+        # 'site setup' project; then only the @hpos-tagged tests (upstream's e2e-hpos-disabled project), with the same
+        # tag filter and exclusions as wc. No reset project (the seed owns setup and reset). Its API half is the wc-api
+        # side's to add.
+        lines += ["process.env.DISABLE_HPOS = '1';",
+                  "config.testIgnore = undefined;",
+                  "config.projects = [ ...coreSetupProjects,",
+                  "  { name: 'e2e-cpt', grep: new RegExp( %s ), testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % (json.dumps("@hpos"), json.dumps(WC_GREP_INVERT))]
     elif suite == "wc-api":
         # The API half: the same setup projects and the same tag filter, and only the api-tests (which the wc
         # config ignores). No reset project either: the seed owns setup and the reseed between the halves.
@@ -402,12 +414,12 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("prepare")
-    p.add_argument("--suite", choices=("wp", "wc", "wc-api", "gb"), required=True)
+    p.add_argument("--suite", choices=("wp", "wc", "wc-api", "wc-cpt", "gb"), required=True)
     p.add_argument("--base-url", required=True)
     p.add_argument("--cache", choices=("on", "off"), required=True)
     p.add_argument("--run-dir", required=True)
     p = sub.add_parser("config")
-    p.add_argument("--suite", choices=("wp", "wc", "wc-api", "gb"), required=True)
+    p.add_argument("--suite", choices=("wp", "wc", "wc-api", "wc-cpt", "gb"), required=True)
     p.add_argument("--suite-dir", required=True)
     p.add_argument("--run-dir", required=True)
     p = sub.add_parser("check-state")

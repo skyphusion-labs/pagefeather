@@ -61,5 +61,8 @@ wc  marketing/*                                  WooCommerce | Onboarding and ma
 wc  basic/*                                     WooCommerce | Editing the store in wp-admin
 wc  editor/*                                    WooCommerce | Editing the store in wp-admin
 
+# ---- WooCommerce with HPOS OFF (wc-cpt: the @hpos tests, upstream envs/default-hpos-disabled) ----
+wc-cpt  *                                        WooCommerce | Orders with HPOS off (posts storage)
+
 # ---- WooCommerce api-tests (the wc-api half) ----
 wc-api  *                                        WooCommerce | WooCommerce REST API
