@@ -16,6 +16,7 @@
           "plain_text MAIL_FROM",
           "plain_text MAIL_FROM_NAME",
           "plain_text OBJECT_CACHE_L2",
+          "plain_text OPCACHE_MC",
           "plain_text PAGE_CACHE_PRODUCT_TTL",
           "plain_text PHP_DO_POOL",
           "plain_text PHP_ENV",

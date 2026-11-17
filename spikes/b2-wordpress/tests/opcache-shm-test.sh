@@ -72,7 +72,9 @@ check "opcache-shm.sh reads /_mem" "$(grep -c '/_mem"' "$SH")" 1
 check "opcache-shm.sh dumps the file cache" "$(grep -c '/_opcache-dump"' "$SH")" 1
 check "opcache-shm.sh pins local creds" "$(grep -c 'local_creds' "$SH")" 1
 check "opcache-shm.sh turns PHP_RECYCLE off" "$(grep -c 'PHP_RECYCLE:off' "$SH")" 1
-check "index.js default memory_consumption stays 48" "$(grep -c "opcache.memory_consumption': '48'" "$IDX")" 1
+# #610: the size follows the site (opcache-size.mjs): a store's build renders OPCACHE_MC = "64"; every other site keeps 48.
+check "index.js takes memory_consumption from opcacheMemoryMib" "$(grep -c "opcache.memory_consumption': opcacheMemoryMib(ENV)" "$IDX")" 1
+check "a non-store site's default memory_consumption stays 48" "$(node --input-type=module -e "import { opcacheMemoryMib } from '$(dirname "$IDX")/opcache-size.mjs'; console.log(opcacheMemoryMib({}) === '48' ? 1 : 0)")" 1
 
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]

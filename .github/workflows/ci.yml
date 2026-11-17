@@ -85,6 +85,7 @@ jobs:
           bash deploy/tests/fault-inject-test.sh
           bash deploy/tests/page-cache-ttl-test.sh
           bash deploy/tests/conformance-test.sh
+          bash deploy/tests/opcache-store-test.sh
           bash deploy/tests/pdf-invoice-wiring-test.sh
           bash deploy/tests/frames-default-test.sh
           bash deploy/tests/a-render-test.sh
@@ -228,7 +229,9 @@ jobs:
           bash deploy/wfp/tests/page-cache-product-test.sh
       - name: b-dosql a memory reset is not an overload (issue #335)
         # object-error.mjs: an isolate memory reset answers x-isolate-reset, never x-overloaded.
-        run: node --test spikes/b2-wordpress/tests/object-error.test.mjs
+        run: |
+          node --test spikes/b2-wordpress/tests/object-error.test.mjs
+          node --test spikes/b2-wordpress/tests/opcache-size.test.mjs
       - name: b-dosql a PHP object that does not start answering fails fast (issue #605)
         # object-deadline.mjs: abort a stub.fetch that has not started answering within
         # OBJECT_CALL_DEADLINE_S and answer 503 x-object-deadline, or write-loss when the
