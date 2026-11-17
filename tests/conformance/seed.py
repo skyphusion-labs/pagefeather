@@ -25,7 +25,9 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
      Gutenberg specs toggle each one). On a marked throwaway a missing one fails; on a local site without the
      content (SEED_ALLOW_LOCAL=1) it is reported and skipped.
 
-  8. --theme <slug> (optional): activates that installed theme (the admin's own activation link on themes.php) and
+  8. the block editor welcome guide is dismissed (wp_persisted_preferences / REST meta persisted_preferences), so post-new.php opens an interactable canvas (#759, #605).
+
+  9. --theme <slug> (optional): activates that installed theme (the admin's own activation link on themes.php) and
      checks it is the active stylesheet. joan's runner asks twentytwentythree before wc and wc-api: WooCommerce's
      external setup activates it, and the wp and gb global setups switch to twentytwentyone before.
 
@@ -62,6 +64,26 @@ UA = {"User-Agent": "pagefeather-conformance-seed"}
 TEST_PLUGINS = ("woocommerce-e2e-test-helper/woocommerce-e2e-test-helper", "woocommerce-cleanup/woocommerce-cleanup")
 report = {"site": B, "checks": {}}
 failed = []
+
+
+EDITOR_WELCOME_PREFS = {
+    "core/edit-post": {"welcomeGuide": False},
+    "core/edit-site": {"welcomeGuide": False},
+}
+
+
+def welcome_guide_dismissed(prefs):
+    """True when core/edit-post welcomeGuide is false. prefs may be dict or JSON string from REST."""
+    if isinstance(prefs, str):
+        try:
+            prefs = json.loads(prefs)
+        except ValueError:
+            return False
+    if not isinstance(prefs, dict):
+        return False
+    ep = prefs.get("core/edit-post") or {}
+    return ep.get("welcomeGuide") is False
+
 
 
 def event(kind, **kw):
@@ -267,6 +289,16 @@ def main():
         else:
             check("image %s uploads under its own stem" % name, False, status=c, source=r.get("source_url") if isinstance(r, dict) else None)
     check("the three test images, found by search under their own stems", sorted(have) == sorted(IMAGES), stored=stored, wc_sha=sha)
+
+    # 6b. dismiss the block editor welcome guide (#759 conf759: it blocks the canvas until closed)
+    c, me = rest(a, n, "/wp/v2/users/me?context=edit")
+    uid = me.get("id") if isinstance(me, dict) else None
+    if uid:
+        rest(a, n, "/wp/v2/users/%s" % uid, {"meta": {"persisted_preferences": EDITOR_WELCOME_PREFS}}, "POST")
+        c2, me2 = rest(a, n, "/wp/v2/users/me?context=edit")
+        prefs = (me2 or {}).get("meta", {}).get("persisted_preferences") if isinstance(me2, dict) else None
+        check("block editor: welcome guide dismissed (persisted_preferences)",
+              welcome_guide_dismissed(prefs), http=c2, got=type(prefs).__name__)
 
     # 7. activate the upstream test plugins the build carries (the code lock allows activation)
     c, plist = rest(a, n, "/wp/v2/plugins?context=edit")

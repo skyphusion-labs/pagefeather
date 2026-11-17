@@ -32,7 +32,7 @@ webServer (the site is deployed), the exclusions of exclude/<suite>.txt as testI
 report. summarize and compare turn reports into the rows of the support matrix: compare marks a
 test that fails on the stock baseline as "upstream", never as ours.
 """
-import argparse, base64, http.cookiejar, json, os, re, shlex, sys, urllib.error, urllib.parse, urllib.request
+import argparse, base64, http.cookiejar, importlib.util, json, os, re, shlex, sys, urllib.error, urllib.parse, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DENY = {"ggc.sh", "www.ggc.sh"}
@@ -163,6 +163,19 @@ def check_cache(site, want):
 WC_BLOGNAME = "WooCommerce Core E2E Test Suite"
 WC_THEME = "twentytwentythree"
 
+def editor_welcome_verify(site):
+    """#759 / #605: the seed must dismiss the welcome guide so Playwright can reach the canvas."""
+    st, me = site.json("GET", "/wp-json/wp/v2/users/me?context=edit")
+    prefs = me.get("meta", {}).get("persisted_preferences") if isinstance(me, dict) else None
+    seed = os.path.join(HERE, "seed.py")
+    spec = importlib.util.spec_from_file_location("pf_seed", seed)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    if not mod.welcome_guide_dismissed(prefs):
+        raise Stop("the block editor welcome guide is not dismissed (HTTP %d): rerun the seed" % st)
+    say("block editor: welcome guide dismissed (persisted_preferences)")
+
+
 
 def wc_verify(site, user, password):
     """CHECK the WooCommerce setup that Rollins' seed owns (lead ruling, #759). Read only: it never
@@ -252,6 +265,8 @@ def cmd_prepare(a):
     check_target(site, a)
     site.login(user, password)
     say("admin: form login and REST nonce ok")
+    if a.suite in ("wp", "gb"):
+        editor_welcome_verify(site)
     cache = check_cache(site, a.cache)
     pairs = [("WP_BASE_URL", site.base), ("WP_USERNAME", user)]
     if a.suite in ("wc", "wc-api", "wc-cpt"):
