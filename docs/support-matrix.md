@@ -135,7 +135,12 @@ The feature needs the `BROWSER` binding. `deploy/wfp` and `deploy.sh` rendered n
 
 The one-click CLI implements `site add` and, since #782, `site remove` and `site update`. Both are built and unit-tested against a stand-in API. Neither is **yet measured on a live site**.
 
-A live probe (2026-11-17) measured the update's base: a re-upload with no migrations keeps the site's data, and re-sending the applied migration tag is refused. Whether `keep_bindings` is what keeps the secrets is not settled yet. A re-upload without it kept them too, and that is not documented. The update reads its bindings back and fails if one is gone.
+A live probe (2026-11-17, #782 issuecomment-6933558225) measured the update's base:
+- a re-upload with no migrations keeps the site's data;
+- re-sending the applied migration tag is refused;
+- a re-upload with `keep_bindings: ["secret_text"]` keeps the secrets. The probe's control deleted the secret and read it absent, so the check can fail.
+
+A re-upload without `keep_bindings` also kept the secret. That is not documented, so update sends `keep_bindings` explicitly. The update reads its bindings back and fails if one is gone.
 
 ### A very long search term fails on SQLite (#805)
 

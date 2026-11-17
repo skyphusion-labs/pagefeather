@@ -108,8 +108,10 @@ all reject it. Design: issue #154. Worker hardening: issue #182 and `HARDENING.m
   `update` puts the site's code on the bundle in `BDOSQL_BUNDLE_DIR` (or `A_BUNDLE_DIR`) and keeps the rest
   (`provision.mjs` `updateNamespaceSite`). It re-sends the live script's non-secret bindings exactly, keeps the
   secrets with `keep_bindings` (the core stores no secret, so none can be re-sent), and sends **no migrations**.
-  The update probe (2026-11-17) measured that this keeps the Durable Object's data, and that re-sending the applied
-  tag is refused (412, 10079). After the upload it reads the settings back and fails if any binding is gone.
+  The update probe (2026-11-17, #782) measured three things. This keeps the Durable Object's data. Re-sending the
+  applied tag is refused (412, 10079). And `keep_bindings: ["secret_text"]` keeps the secrets; a control deleted the
+  secret and read it absent, so the check can fail. After the upload update reads the settings back and fails if any
+  binding is gone.
 - `provision.mjs`: `removeNamespaceSite(ctx, opts)` is the ONE removal (#782). The CLI's `remove`, the demo
   reaper (`demo.mjs` `teardownDemoSite`) and the one-click undo (`deploy/oneclick/sites.mjs` `undoStore`, with
   `keepGoing`) all call it, so they cannot drift on what a site is made of.
