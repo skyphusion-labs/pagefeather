@@ -41,8 +41,10 @@ c = tomllib.load(open(sys.argv[1], "rb"))
 ns = c["dispatch_namespaces"]
 good = (c["name"] == "wp-one" and c["workers_dev"] is True and c["kv_namespaces"] == [{"binding": "SITES", "id": "kv123"}]
         and [n["binding"] for n in ns] == ["DISPATCHER", "DISPATCHER_OUT"] and all(n["namespace"] == "wp-wfp" for n in ns)
-        and ns[1]["outbound"] == {"service": "wp-wfp-outbound", "parameters": ["SITE"]} and "outbound" not in ns[0])
+        and ns[1]["outbound"] == {"service": "wp-wfp-outbound", "parameters": ["SITE"]} and "outbound" not in ns[0]
+        and c.get("compatibility_flags") == ["enable_request_signal"])
 print(1 if good else 0)' "$T/one.toml")"
+ok "the shared dispatcher sets enable_request_signal (#807)" "$(render_shared_dispatcher kv123 | grep -Fq 'compatibility_flags = ["enable_request_signal"]' && echo 1 || echo 0)"
 render_user one https://wp-one.sub.workers.dev > "$T/user.toml"
 ok "the user Worker config" "$("$PY" -c '
 import sys, tomllib

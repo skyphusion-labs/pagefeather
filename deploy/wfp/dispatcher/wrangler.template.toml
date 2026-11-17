@@ -6,6 +6,8 @@
 name = "wp-@SITE@"
 main = "../dispatcher/worker.js"
 compatibility_date = "@COMPAT@"
+# #721 / #807: the client disconnect must reach dispatch stub.fetch (enable_request_signal).
+compatibility_flags = ["enable_request_signal"]
 workers_dev = true
 preview_urls = false
 
