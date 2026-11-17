@@ -91,7 +91,7 @@ render_conf() {
     # database (aws:us-east-2 runs in ORD; deploy/mysql defaults to Chicago).
     echo '[limits]'; echo 'cpu_ms = 30000'
     echo '[placement]'; echo "region = \"${PLACEMENT:-aws:us-east-2}\""
-    # #666: the L2 object cache's own KV namespace (Terraform), and the overflow pool when PHP_OVERFLOW=1.
+    # #666: the L2 object cache's own KV namespace (Terraform), and the overflow pool when PHP_OVERFLOW=1 or always.
     node "$ROOT/deploy/provision/a-vars-toml.mjs" kv "$(out oc_kv_id)" || return 1
     a_overflow_bindings
   fi
