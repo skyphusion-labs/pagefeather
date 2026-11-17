@@ -8,8 +8,11 @@ import {
   createR2Bucket, deployNamespaceScript, ensureProxiedHostname, scriptExists,
   installWordPress, freshKVNamespace,
   ensureCacheVersions,
+  deleteNamespaceScript, deleteR2Bucket, deleteProxiedHostname, deleteCustomHostname,
+  deleteKVNamespaceByTitle, deleteQueueByName, deleteVectorizeIndex,
 } from './ops.mjs';
-import { upsertSite, readSite } from './registry.mjs';
+import { upsertSite, readSite, removeSite } from './registry.mjs';
+import { mediaBucketName, ocKvNamespaceName, emailQueueName, emailDlqName, searchIndexName } from './wp-site-config.mjs';
 import { assertValidName, genSecret } from './shared.mjs';
 // #650: OBJECT_CACHE_VERSIONS needs a non-caching Hyperdrive config.
 import { versionsGate, versionsFlagOn } from './hyperdrive-gate.mjs';
@@ -200,4 +203,41 @@ async function provisionNamespaceSite(ctx, cfg) {
     ...(installError ? { installNote: `install deferred (finish via /_install): ${installError}` } : {}),
     ...(ocVersionsNote ? { ocVersionsNote } : {}),
   };
+}
+
+// #782: remove a core-path site (and, through it, a demo site and a failed one-click store): ONE removal, so the
+// demo reaper, the one-click undo and the operator CLI cannot drift on what a site is made of. The lead's ruling
+// (2026-11-17): traffic first (the custom hostname, then the proxied DNS record), then the script and its
+// resources, and the registry entry LAST, so a run that fails part way leaves the entry for the retry. Each step
+// treats "not there" as done (the ops answer 404 as done), so a rerun is safe.
+// deleteData false (the default) is a dry run: no API call, only the plan. A b-dosql site keeps its whole
+// database in its PhpRuntime Durable Object, so deleting the script deletes the database, not only the code.
+// keepGoing (a rollback) tries every step and returns the failed ones in left instead of throwing.
+// withEntry false removes a half-made site that has no registry entry: the parts are found by their derived names.
+// Not removable here: the Analytics Engine dataset, which has no delete (it is created on first write).
+export const REMOVE_DATA_LOSS = 'Deleting the site code deletes the site database (it lives in the site script\'s Durable Object), and its media bucket. There is no undo.';
+export async function removeNamespaceSite(ctx, { ns, kvId, hostname, name, entry = null, saasZoneId, deleteData = false, withEntry = true, keepGoing = false }) {
+  assertValidName(name);
+  const e = entry || {};
+  const script = typeof e.script === 'string' ? e.script : `site-${name}`;
+  const zone = saasZoneId || e.saasZoneId;
+  const steps = [];
+  if (zone && e.customHostnameId) steps.push({ part: 'custom hostname', what: e.customHostnameId, run: () => deleteCustomHostname(ctx, { saasZoneId: zone, id: e.customHostnameId }) });
+  if (zone) steps.push({ part: 'DNS record', what: hostname, run: () => deleteProxiedHostname(ctx, { zoneId: zone, hostname }) });
+  steps.push({ part: 'site code and database', what: script, run: () => deleteNamespaceScript(ctx, { ns, name: script }) });
+  steps.push({ part: 'object cache', what: ocKvNamespaceName(name), run: () => deleteKVNamespaceByTitle(ctx, ocKvNamespaceName(name)) });
+  steps.push({ part: 'email queues', what: `${emailQueueName(name)}, ${emailDlqName(name)}`,
+    run: async () => [await deleteQueueByName(ctx, emailQueueName(name)), await deleteQueueByName(ctx, emailDlqName(name))] });
+  steps.push({ part: 'search index', what: searchIndexName(name), run: () => deleteVectorizeIndex(ctx, searchIndexName(name)) });
+  const bucket = typeof e.mediaBucket === 'string' ? e.mediaBucket : mediaBucketName(name);
+  steps.push({ part: 'media bucket', what: bucket, run: () => deleteR2Bucket(ctx, bucket) });
+  if (withEntry) steps.push({ part: 'site entry', what: hostname, run: () => removeSite(ctx, { kvId, hostname }) });
+  const plan = steps.map(({ part, what }) => ({ part, what }));
+  if (!deleteData) return { dryRun: true, plan, done: [], left: [], dataLoss: REMOVE_DATA_LOSS };
+  const done = [], left = [];
+  for (const st of steps) {
+    try { done.push({ part: st.part, what: st.what, result: await st.run() }); }
+    catch (err) { if (!keepGoing) throw err; left.push({ part: st.part, what: st.what, error: (err && err.message) || String(err) }); }
+  }
+  return { dryRun: false, plan, done, left, dataLoss: REMOVE_DATA_LOSS };
 }
