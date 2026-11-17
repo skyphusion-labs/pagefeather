@@ -51,7 +51,7 @@ import { gateSettings, decide, BootRefused, bootRefusedResponse, createGateClock
 import { reuseOn, createSpare, bootTestDelayMs, bootTestDelayAt, moduleImportsMemory, offerWhenDrained } from './memory-reuse.mjs'; // #598 / #603
 import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
 import * as cacheVersions from './cache-versions.mjs';
-import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse } from './overflow.mjs';
+import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse } from './overflow.mjs';
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
 import { PURGE_GAP_MS, NO_CACHE_API, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
@@ -3860,8 +3860,17 @@ const site = {
 			} finally {
 				ovHeld--;
 			}
-			// Both choices were busy: run here, as without overflow (the request has not run anywhere).
+			// Both choices were busy: run here, as without overflow (the request has not run anywhere), unless this
+			// isolate still holds other overflowed requests (#714: a booted runtime beside held waiters exceeded memory).
+			if (overflowHeldBlocksLocal(ovs, ovHeld)) {
+				console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-held-block', held: ovHeld, call: callId }));
+				return overflowHeldBlockResponse();
+			}
 			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-local', running: phpLock.running, waiting: phpLock.waiting, call: callId })); // review2 8 (callId is always set here)
+		}
+		if (overflowHeldBlocksLocal(ovs, ovHeld) && !url.pathname.startsWith('/_') && !ovUpload) {
+			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-held-block', held: ovHeld }));
+			return overflowHeldBlockResponse();
 		}
 		const workerRun = await withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx), { shedMs: phpShedMs(env, false) });
 		return workerRun === PHP_SHED ? phpShedResponse() : workerRun;
