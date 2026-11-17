@@ -371,13 +371,17 @@ def main():
         ok("wc config drops blocks/**") if '"blocks/**"' in wct else bad("wc config lacks blocks/**")
         ok("wc config has NO reset project (it would wipe the seed)") if "reset" not in wct else bad("wc config still runs reset")
         ok("wc e2e-pf depends on site setup only") if "dependencies: [ 'site setup' ]" in wct else bad("wc e2e-pf dependencies wrong")
+        ok("wc config drops install wc") if "p.name !== 'install wc'" in wct else bad("wc config still keeps install wc")
+        ok("wc config sets use.baseURL") if "baseURL: url" in wct and "BASE_URL" in wct else bad("wc config missing baseURL")
         # wc-api (the API half): no reset project, api-pf depends on 'site setup' only, runs ONLY the api-tests,
-        # and does not carry the wc exclusion of api-tests/**.
+        # and does not carry the wc exclusion of api-tests/**. The setup map clears global authentication's
+        # install-wc dependency (one 'dependencies:' there) plus api-pf's site-setup dependency.
         wat = open(os.path.join(t, "cfg-wc-api", "pf-conformance.config.mjs")).read()
         ok("wc-api config has NO reset project") if "reset" not in wat else bad("wc-api config runs reset")
-        ok("wc-api api-pf depends on site setup only") if wat.count("dependencies:") == 1 and "dependencies: [ 'site setup' ]" in wat else bad("wc-api dependencies wrong")
+        ok("wc-api api-pf depends on site setup only") if wat.count("dependencies: [ 'site setup' ]") == 1 and "p.name !== 'install wc'" in wat else bad("wc-api dependencies wrong")
         ok("wc-api runs only the api-tests") if "name: 'api-pf', testMatch: [ '**/api-tests/**' ]" in wat and "e2e-pf" not in wat else bad("wc-api project wrong")
         ok("wc-api does not ignore the api-tests") if '"api-tests/**"' not in wat else bad("wc-api ignores api-tests/**")
+        ok("wc-api config sets use.baseURL") if "baseURL: url" in wat else bad("wc-api config missing baseURL")
         # vps-run.sh run wc-api (DRY): the wc checkout, site setup, then check-state, then api-pf alone.
         vr = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "run", "wc-api", os.path.join(t, "w"), os.path.join(t, "rr")],
                             env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)

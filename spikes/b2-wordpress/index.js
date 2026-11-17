@@ -27,6 +27,7 @@ import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywher
 import * as pageVersions from './page-versions.mjs';
 import { opcacheMemoryMib } from './opcache-size.mjs';
 import { createTrace as createQueryTrace } from './qtrace.mjs';
+import { asyncEmailDefine } from './async-email-wiring.mjs';
 import { hposCacheDefine } from './woo-hpos-cache.mjs';
 import { resetFailures, platformFailures, writeLossResponse, rolledBackResponse, frameProvesRollback, statementFailureResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { MEMORY_RESET } from './object-error.mjs';
@@ -51,7 +52,7 @@ import { gateSettings, decide, BootRefused, bootRefusedResponse, createGateClock
 import { reuseOn, createSpare, bootTestDelayMs, bootTestDelayAt, moduleImportsMemory, offerWhenDrained } from './memory-reuse.mjs'; // #598 / #603
 import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
 import * as cacheVersions from './cache-versions.mjs';
-import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse } from './overflow.mjs';
+import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse } from './overflow.mjs';
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
 import { PURGE_GAP_MS, NO_CACHE_API, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
@@ -1920,8 +1921,8 @@ async function boot(origin) {
 	// theme.json data kept across requests (php/theme-json-cache.php, #49). Needs the
 	// object cache. THEME_JSON_CACHE=off turns it off (to measure).
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.OBJECT_CACHE !== 'off' && ENV.THEME_JSON_CACHE !== 'off') lines.push(`define('JS_THEME_JSON_CACHE', true);`);
-	// Async email mu-plugin (issue #185): wp_mail hands messages to the Worker. b-dosql only.
-	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.ASYNC_EMAIL !== 'off') lines.push(`define('SKYPHUSION_ASYNC_EMAIL', true);`);
+	// Async email mu-plugin (issue #185, #856): wp_mail hands messages to the Worker.
+	{ const l = asyncEmailDefine(ENV, Boolean(dbHandler)); if (l) lines.push(l); }
 	// Bootstrap trim mu-plugin (perf): skip pure-background wc-admin features (remote-inbox,
 	// marketing) that re-init every request. The trim is pure-background wc-admin and touches
 	// no database engine specifics, so it is safe for approach A (external MySQL) too: with PHP
@@ -3873,8 +3874,17 @@ const site = {
 			} finally {
 				ovHeld--;
 			}
-			// Both choices were busy: run here, as without overflow (the request has not run anywhere).
+			// Both choices were busy: run here, as without overflow (the request has not run anywhere), unless this
+			// isolate still holds other overflowed requests (#714: a booted runtime beside held waiters exceeded memory).
+			if (overflowHeldBlocksLocal(ovs, ovHeld)) {
+				console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-held-block', held: ovHeld, call: callId }));
+				return overflowHeldBlockResponse();
+			}
 			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-local', running: phpLock.running, waiting: phpLock.waiting, call: callId })); // review2 8 (callId is always set here)
+		}
+		if (overflowHeldBlocksLocal(ovs, ovHeld) && !url.pathname.startsWith('/_') && !ovUpload) {
+			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-held-block', held: ovHeld }));
+			return overflowHeldBlockResponse();
 		}
 		const workerRun = await withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx), { shedMs: phpShedMs(env, false) });
 		return workerRun === PHP_SHED ? phpShedResponse() : workerRun;

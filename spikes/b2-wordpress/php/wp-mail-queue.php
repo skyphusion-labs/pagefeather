@@ -1,13 +1,13 @@
 <?php
 /**
- * Plugin Name: Async email via the Worker (b-dosql)
+ * Plugin Name: Async email via the Worker
  * Description: Overrides wp_mail to hand the message to the Worker through the
  *   post_message_to_js bridge instead of PHP mail(), which has no transport in the
  *   isolate (WooCommerce order emails otherwise fail silently). The Worker records
  *   the message and, once the send leg lands (a Queue producer or ctx.waitUntil to
  *   Cloudflare Email Service, pending the WfP queue-binding decision and a verified
  *   sender domain), a consumer sends it. Checkout never blocks on email.
- *   b-dosql only (SKYPHUSION_ASYNC_EMAIL); ASYNC_EMAIL=off disables it.
+ *   b-dosql and approach A (SKYPHUSION_ASYNC_EMAIL); ASYNC_EMAIL=off disables it.
  *
  * wp_mail is a pluggable function: a mu-plugin defines it before wp-includes/
  * pluggable.php, so this replaces core's transport.
