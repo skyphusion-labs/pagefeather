@@ -55,7 +55,27 @@ function is_admin() { return false; }
 class WP_Error {
 	public $code;
 	public $message;
-	public function __construct( $code = '', $message = '' ) { $this->code = $code; $this->message = $message; }
+	public $errors = array();
+	public function __construct( $code = '', $message = '' ) {
+		$this->code    = $code;
+		$this->message = $message;
+		if ( '' !== $code ) {
+			$this->errors[ $code ] = array( $message );
+		}
+	}
+	public function add( $code, $message ) {
+		$this->errors[ $code ][] = $message;
+		if ( '' === (string) $this->code ) {
+			$this->code    = $code;
+			$this->message = $message;
+		}
+	}
+	public function get_error_code() {
+		return (string) $this->code;
+	}
+}
+function is_wp_error( $thing ) {
+	return $thing instanceof WP_Error;
 }
 class WpDieException extends Exception {
 	public $args;
@@ -379,6 +399,87 @@ check( 'classic scripts: config, then the script, then api.js', $c_cfg < $c_js &
 ob_start();
 do_action( 'woocommerce_after_checkout_form' );
 check( 'classic scripts: printed once per page', ob_get_clean(), '' );
+
+// 7) My Account login, both registrations and both lost-password forms (#857).
+// A missing token is refused, an outage is refused even when the comment form's
+// fail-open filter is on, and a good token is checked and then allowed. On main
+// none of these hooks exist, so a right password with no token is not challenged.
+function ts_code( $errors ) {
+	return is_wp_error( $errors ) ? $errors->get_error_code() : null;
+}
+function ts_widget( $hook ) {
+	ob_start();
+	do_action( $hook );
+	return ob_get_clean();
+}
+$_SERVER['REQUEST_METHOD'] = 'POST';
+unset( $_POST['log'], $_POST['cf-turnstile-response'] );
+$GLOBALS['hooks']['skyphusion_turnstile_failopen'][] = function () { return true; };
+
+$_POST['username'] = 'ada';
+$_POST['password'] = 'secret';
+$_POST['woocommerce-login-nonce'] = 'n';
+$out = apply_filters( 'woocommerce_process_login_errors', new WP_Error(), 'ada', 'secret' );
+check( 'account login missing token: rejected', ts_code( $out ), 'turnstile_failed' );
+check( 'account login widget', false !== strpos( ts_widget( 'woocommerce_login_form' ), 'class="cf-turnstile"' ), true );
+$_POST['cf-turnstile-response'] = 'good-token';
+ts_reply( array( 'ok' => true, 'success' => true ) );
+$out = apply_filters( 'woocommerce_process_login_errors', new WP_Error(), 'ada', 'secret' );
+check( 'account login good token: not rejected', ts_code( $out ), '' );
+check( 'account login good token: verifier was called', $GLOBALS['ts_calls'], 1 );
+ts_reply( array( 'ok' => true, 'success' => false, 'error' => 'timeout' ) );
+$out = apply_filters( 'woocommerce_process_login_errors', new WP_Error(), 'ada', 'secret' );
+check( 'account login outage: still rejected (fail closed)', ts_code( $out ), 'turnstile_unavailable' );
+
+unset( $_POST['username'], $_POST['password'], $_POST['woocommerce-login-nonce'], $_POST['cf-turnstile-response'] );
+$_POST['email'] = 'ada@example.com';
+$_POST['woocommerce-register-nonce'] = 'n';
+$out = apply_filters( 'woocommerce_process_registration_errors', new WP_Error(), '', '', 'ada@example.com' );
+check( 'WooCommerce registration missing token: rejected', ts_code( $out ), 'turnstile_failed' );
+check( 'WooCommerce registration widget', false !== strpos( ts_widget( 'woocommerce_register_form' ), 'class="cf-turnstile"' ), true );
+$_POST['cf-turnstile-response'] = 'good-token';
+ts_reply( array( 'ok' => true, 'success' => true ) );
+$out = apply_filters( 'woocommerce_process_registration_errors', new WP_Error(), '', '', 'ada@example.com' );
+check( 'WooCommerce registration good token: not rejected', ts_code( $out ), '' );
+check( 'WooCommerce registration good token: verifier was called', $GLOBALS['ts_calls'], 1 );
+ts_reply( array( 'ok' => true, 'success' => false, 'error' => 'timeout' ) );
+$out = apply_filters( 'woocommerce_process_registration_errors', new WP_Error(), '', '', 'ada@example.com' );
+check( 'WooCommerce registration outage: still rejected (fail closed)', ts_code( $out ), 'turnstile_unavailable' );
+
+unset( $_POST['email'], $_POST['woocommerce-register-nonce'], $_POST['cf-turnstile-response'] );
+$_POST['user_login'] = 'ada';
+$_POST['user_email'] = 'ada@example.com';
+$out = apply_filters( 'registration_errors', new WP_Error(), 'ada', 'ada@example.com' );
+check( 'WordPress registration missing token: rejected', ts_code( $out ), 'turnstile_failed' );
+check( 'WordPress registration widget', false !== strpos( ts_widget( 'register_form' ), 'class="cf-turnstile"' ), true );
+$_POST['cf-turnstile-response'] = 'good-token';
+ts_reply( array( 'ok' => true, 'success' => true ) );
+$out = apply_filters( 'registration_errors', new WP_Error(), 'ada', 'ada@example.com' );
+check( 'WordPress registration good token: not rejected', ts_code( $out ), '' );
+check( 'WordPress registration good token: verifier was called', $GLOBALS['ts_calls'], 1 );
+ts_reply( array( 'ok' => true, 'success' => false, 'error' => 'timeout' ) );
+$out = apply_filters( 'registration_errors', new WP_Error(), 'ada', 'ada@example.com' );
+check( 'WordPress registration outage: still rejected (fail closed)', ts_code( $out ), 'turnstile_unavailable' );
+
+unset( $_POST['user_login'], $_POST['user_email'], $_POST['cf-turnstile-response'] );
+$_POST['user_login'] = 'ada';
+$_POST['woocommerce-lost-password-nonce'] = 'n';
+$lost = new WP_Error();
+do_action( 'lostpassword_post', $lost );
+check( 'lost password missing token: rejected', ts_code( $lost ), 'turnstile_failed' );
+check( 'WordPress lost-password widget', false !== strpos( ts_widget( 'lostpassword_form' ), 'class="cf-turnstile"' ), true );
+check( 'WooCommerce lost-password widget', false !== strpos( ts_widget( 'woocommerce_lostpassword_form' ), 'class="cf-turnstile"' ), true );
+$_POST['cf-turnstile-response'] = 'good-token';
+ts_reply( array( 'ok' => true, 'success' => true ) );
+$lost = new WP_Error();
+do_action( 'lostpassword_post', $lost );
+check( 'lost password good token: not rejected', ts_code( $lost ), '' );
+check( 'lost password good token: verifier was called', $GLOBALS['ts_calls'], 1 );
+ts_reply( array( 'ok' => true, 'success' => false, 'error' => 'timeout' ) );
+$lost = new WP_Error();
+do_action( 'lostpassword_post', $lost );
+check( 'lost password outage: still rejected (fail closed)', ts_code( $lost ), 'turnstile_unavailable' );
+unset( $GLOBALS['hooks']['skyphusion_turnstile_failopen'] );
 
 echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
 exit( $fail ? 1 : 0 );
