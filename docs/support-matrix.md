@@ -38,7 +38,7 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 | Cron | not measured | not measured | not measured | not measured |
 | Mail | not measured | not measured | not measured | not measured |
 | Media uploads | not measured | yes without WooCommerce ([results.md](results.md) 2026-11-07 and 11-08: R2 and Cloudflare Images); with WooCommerce not measured | not measured | not measured |
-| Search | yes for a long term: a search builds `%term%`, which is rewritten over SQLite's 50-byte LIKE cap (#805, measured locally); semantic search limited (opt-in, plugin change); limited: a LIKE with a wildcard INSIDE it, over 50 bytes, fails (#805, plugin-built only) | the same | the same | not measured; not affected by #805 (MySQL) |
+| Search | yes for a long term: a search builds `%term%`, which is rewritten over SQLite's 50-byte LIKE cap (#805, measured locally); semantic search limited (opt-in; the plugin side closed upstream, not measured here); limited: a LIKE with a wildcard INSIDE it, over 50 bytes, fails (#805, plugin-built only) | the same | the same | not measured; not affected by #805 (MySQL) |
 | Comments | not measured | not measured | not measured | not measured |
 | Site Health | limited: directory sizes answer 500 (#780) | limited: directory sizes answer 500 (#780) | limited: directory sizes answer 500 (#780) | not measured |
 | Multisite | not measured | not measured | not measured | not measured |
@@ -149,9 +149,9 @@ The Durable Object's SQLite caps a `LIKE` pattern at **50 bytes**, not SQLite's 
 - **Still a limit:** a pattern over 50 bytes with a wildcard INSIDE it (`_` anywhere, or `%` between literals), or a suffix match (`'%term'`). SQLite refuses it. **No WordPress core path builds one from user input** (measured on #805). Plugin code that writes such a `LIKE` by hand can. WooCommerce's cart-page check is the one known case, and `php/woo-cart-page.php` handles it (#744).
 - **What the visitor sees in that case:** an empty result with HTTP 200, a plausible wrong answer. Whether a deterministic refusal should answer a visible error instead is #836.
 
-### Semantic search needs a plugin change
+### Semantic search: the plugin side is closed upstream, not measured here
 
-The `vectorize-search` descriptor is opt-in. The search engine is the skyphusion-ai plugin, which needs a change (skyphusion-ai#193). See [known-limitations.md](known-limitations.md).
+The `vectorize-search` descriptor is opt-in. The search engine is the skyphusion-ai plugin. Its token-free bridge path is closed upstream (skyphusion-ai#193, completed 2026-11-12), but no Pagefeather run has measured a search through it, so the cell stays limited. See [known-limitations.md](known-limitations.md).
 
 ### Plugins and themes are not installed from wp-admin (by design)
 
