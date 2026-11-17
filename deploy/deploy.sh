@@ -41,7 +41,8 @@
 # the answer is 403, 5xx, no answer, or not JSON. INSTALL_INTERVAL_S (default 5) is
 # the pause. A JSON answer that is not installed fails the deploy.
 # Variant a renders the measured site by default (#666, deploy/README.md): the lean client (A_CLIENT), the
-# object cache with its L2 KV and lazy nodes; PHP_OVERFLOW=1 adds the overflow pool (PHP_OVERFLOW_POOL, default 32).
+# object cache with its L2 KV and lazy nodes; PHP_OVERFLOW=1 adds the overflow pool (PHP_OVERFLOW_POOL, default 32);
+# PHP_OVERFLOW=always (#714, a measurement arm) moves every eligible request to it.
 # Variant a, the #394 admin fixes (deploy/a-settings.sh; all off unless set): OPCACHE_A=1 primes
 # OPcache on the D1 build with no Docker (opcache-a.sh; an empty cache fails), OPCACHE_REMOTE=1 and
 # SITE_REMOTE=1 move the bundle's zips to packs under /_pf/ (#563, #569; they need OPCACHE_A=1), RECYCLE_WASM_MIB sets the
