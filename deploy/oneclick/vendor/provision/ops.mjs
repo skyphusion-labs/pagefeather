@@ -363,6 +363,20 @@ export async function deleteR2Bucket(ctx, name) {
 }
 
 // Delete the proxied originless routing record(s) for a hostname on the SaaS zone.
+// #782: delete a site's Cloudflare for SaaS custom hostname by its id. Absent (404) is done.
+export async function deleteCustomHostname(ctx, { saasZoneId, id }) {
+  const r = await cfFetch(ctx.token, 'DELETE', `/zones/${saasZoneId}/custom_hostnames/${id}`, { fetchImpl: ctx.fetchImpl });
+  if (r.ok || r.status === 404) return { customHostname: id, deleted: r.ok };
+  throw opError('deleteCustomHostname', id, r);
+}
+
+// #782: delete a site's Vectorize index by name (the vectorize-search descriptor makes it). Absent (404) is done.
+export async function deleteVectorizeIndex(ctx, name) {
+  const r = await cfFetch(ctx.token, 'DELETE', `/accounts/${ctx.acct}/vectorize/v2/indexes/${name}`, { fetchImpl: ctx.fetchImpl });
+  if (r.ok || r.status === 404) return { vectorizeIndex: name, deleted: r.ok };
+  throw opError('deleteVectorizeIndex', name, r);
+}
+
 export async function deleteProxiedHostname(ctx, { zoneId, hostname }) {
   const list = await cfFetch(ctx.token, 'GET',
     `/zones/${zoneId}/dns_records?type=AAAA&name=${encodeURIComponent(hostname)}`, { fetchImpl: ctx.fetchImpl });

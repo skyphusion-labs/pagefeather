@@ -497,6 +497,7 @@ jobs:
           node deploy/provision/tests/ops-test.mjs
           node deploy/provision/tests/vendor-sync-test.mjs
           node deploy/provision/tests/provision-test.mjs
+          node deploy/provision/tests/remove-site-test.mjs
           node deploy/provision/tests/cli-test.mjs
           node deploy/provision/tests/worker-test.mjs
           node deploy/provision/tests/server-config-test.mjs

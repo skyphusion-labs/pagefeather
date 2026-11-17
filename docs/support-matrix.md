@@ -66,7 +66,7 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 |---|---|---|---|
 | PDF invoices | fixed in #769 (merged 2026-11-16); not yet measured live | fixed in #769 (merged 2026-11-16); not yet measured live | yes (#765) |
 | Update a site | yes: `CODE_ONLY=1` in `.github/workflows/deploy-workers.yml` (the live sites `woocap`, `zarapo`) | yes: `deploy/wfp/site update` (#642; the #724 throwaways, 2026-11-16; ggc.sh) | no: add only (#765; an issue for it is being filed) |
-| Remove a site | not measured (`deploy/destroy.sh`) | yes: `deploy/wfp/site remove` (`pf704`, #704; the #724 throwaways) | no: add only (#765) |
+| Remove a site | not measured (`deploy/destroy.sh`) | yes: `deploy/wfp/site remove` (`pf704`, #704; the #724 throwaways) | built, not measured live: add, and remove (#782); update not built |
 
 ## Limited, and why
 
@@ -131,9 +131,9 @@ A store that shows exact stock numbers can use a lower `PAGE_CACHE_PRODUCT_TTL` 
 
 The feature needs the `BROWSER` binding. `deploy/wfp` and `deploy.sh` rendered none, so only one-click sites could make invoices. #769 adds `PDF_INVOICE=on` to both paths. It merged on 2026-11-16 (`5a94341`). It is not yet measured live on those paths.
 
-### One-click can add a site, not update or remove it (#765)
+### One-click can add and remove a site, not update it (#765, #782)
 
-The one-click CLI implements only `site add`. Its `update` and `remove` refuse, and they name `deploy/wfp/site`, which cannot manage a one-click site. An issue for it is being filed.
+The one-click CLI implements `site add` and, since #782, `site remove`. Remove is built and unit-tested against a stand-in API. It is **not yet measured on a live site**. `update` still refuses and names `deploy/wfp/site`, which cannot manage a one-click site. It waits on a live probe: does a re-upload keep a site's secrets and its data (#782).
 
 ### A very long search term fails on SQLite (#805)
 

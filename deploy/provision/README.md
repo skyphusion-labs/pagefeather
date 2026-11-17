@@ -91,13 +91,22 @@ all reject it. Design: issue #154. Worker hardening: issue #182 and `HARDENING.m
   is NOT installed here; the site owner enables it inside the site.
 - `cli.mjs`: `add --kind wp <name>` or
   `add --kind a <name> --hyperdrive <HYPERDRIVE_ID> [--hyperdrive-sql-mode <mode>]`
-  (node). Implements `add` and `hostname`, for a SaaS-zone site only: with no
+  (node), and `remove <name> [--delete-data] [--no-entry]` (#782). Implements `add`, `hostname` and `remove`,
+  for a SaaS-zone site only: with no
   `WFP_SAAS_ZONE_ID` it refuses before any API call and names `deploy/wfp/site`,
   the one operator surface of the reference deployment (#294; #328 makes the two
   paths one site definition). Parses args, loads the PRE-BUILT bundle dir
   (`BDOSQL_BUNDLE_DIR` for `wp`, `A_BUNDLE_DIR` for `a`), generates per-site
   secrets, calls `provisionSite`. The Hyperdrive config id (and whether a strict
   backend needs `HYPERDRIVE_SQL_MODE`) comes from the Phase-1 onboarding step.
+  `remove` is a **dry run** unless `--delete-data`: it prints every part it would delete. Deleting the site code
+  deletes the site database, because it lives in the site's Durable Object. The order is traffic first (the
+  custom hostname, then the DNS record), then the code and its resources, and the registry entry last, so a
+  failed run can be retried. After a real removal it reads back the entry and the code. `--no-entry` removes a
+  half-made site by its derived names. The Analytics Engine dataset has no delete, so it stays.
+- `provision.mjs`: `removeNamespaceSite(ctx, opts)` is the ONE removal (#782). The CLI's `remove`, the demo
+  reaper (`demo.mjs` `teardownDemoSite`) and the one-click undo (`deploy/oneclick/sites.mjs` `undoStore`, with
+  `keepGoing`) all call it, so they cannot drift on what a site is made of.
 - `worker.mjs` (hardened, #182): the provisioning Worker, TWO front doors over one
   core. `POST /` is Path A (private operator bearer, b-dosql only, caller names it);
   `POST /demo` is Path B (public Turnstile, demo-tier b-dosql only, ephemeral); the
