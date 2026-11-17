@@ -46,6 +46,25 @@ export async function mysqlQuery(env, m) {
 	}
 }
 
+// One query on its OWN connection, opened and closed here (#296 step 1: the gateway reads the page
+// version before it calls the cached Pages entrypoint, and must share no connection with it). The
+// same reply shape as mysqlQuery.
+export async function mysqlOneShot(env, sql) {
+	let c = null;
+	try {
+		c = await LeanMysql.connect({ host: env.HYPERDRIVE.host, user: env.HYPERDRIVE.user, password: env.HYPERDRIVE.password, database: env.HYPERDRIVE.database, port: env.HYPERDRIVE.port });
+		const res = await c.query(sql);
+		if (res.kind === 'ok') return { ok: true, affected: res.affectedRows || 0, insert_id: res.insertId || 0 };
+		const binary = res.columns.map((f) => f.characterSet === 63);
+		const rows = res.rows.map((r) => r.map((v, i) => (v === null ? null : binary[i] ? { $b: Buffer.from(v).toString('base64') } : Buffer.from(v).toString('utf8'))));
+		return { ok: true, columns: res.columns.map((f) => f.name), rows };
+	} catch (e) {
+		return { ok: false, error: String((e && e.message) || e), errno: e && e.errno };
+	} finally {
+		if (c) await c.end().catch(() => {});
+	}
+}
+
 // Forget a connection another request opened (a Worker request cannot touch
 // another request's I/O). Not closed here: awaiting it hangs.
 export function mysqlReset() {
