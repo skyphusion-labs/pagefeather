@@ -47,12 +47,20 @@
 
 # shellcheck source=lib/memory-reuse.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/memory-reuse.sh" # #603: one rule with deploy/wfp/lib.sh
+# shellcheck source=SCRIPTDIR/lib/remote-packs.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/remote-packs.sh" # #598: the b-dosql packs, one rule with deploy/wfp/lib.sh
 
 # a_settings_check <variant>: exit status 2 and the reason on stderr when a setting is wrong.
 a_settings_check() {
   local variant=$1 v
+  if [ "$variant" != a ] && [ "$variant" != b-dosql ]; then
+    # #598: the packs are b-dosql's too (on by default there, deploy/lib/remote-packs.sh); b-do and c1 have none.
+    for v in OPCACHE_REMOTE SITE_REMOTE; do
+      [ -z "${!v:-}" ] || { echo "$v is for variant a or b-dosql only" >&2; return 2; }
+    done
+  fi
   if [ "$variant" != a ]; then
-    for v in OPCACHE_A OPCACHE_REMOTE SITE_REMOTE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE A_CLIENT PHP_OVERFLOW PHP_OVERFLOW_POOL PHP_OVERFLOW_MAX_HELD MEM_LEDGER OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE; do
+    for v in OPCACHE_A RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE A_CLIENT PHP_OVERFLOW PHP_OVERFLOW_POOL PHP_OVERFLOW_MAX_HELD MEM_LEDGER OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE; do
       [ -z "${!v:-}" ] || { echo "$v is for variant a only (deploy/wfp has its own settings for b-dosql)" >&2; return 2; }
     done
   fi
@@ -62,7 +70,7 @@ a_settings_check() {
   if [ "${SITE_REMOTE:-0}" = 1 ] && [ "${OPCACHE_REMOTE:-0}" != 1 ]; then
     echo "SITE_REMOTE=1 needs OPCACHE_REMOTE=1 (the same open hook and fetch budget; OPcache off cannot fit it)" >&2; return 2
   fi
-  if [ "${OPCACHE_REMOTE:-0}" = 1 ] && [ "${OPCACHE_A:-0}" != 1 ]; then
+  if [ "$variant" = a ] && [ "${OPCACHE_REMOTE:-0}" = 1 ] && [ "${OPCACHE_A:-0}" != 1 ]; then
     echo "OPCACHE_REMOTE=1 on variant a needs OPCACHE_A=1 (the D1 priming records the file trace the packs follow)" >&2; return 2
   fi
   v=${RECYCLE_WASM_MIB:-}

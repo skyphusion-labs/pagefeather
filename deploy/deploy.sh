@@ -101,6 +101,10 @@ fi
 # shellcheck source=SCRIPTDIR/a-settings.sh
 . "$ROOT/deploy/a-settings.sh"
 a_settings_check "$VARIANT" || exit 2
+# #598: b-dosql renders the remote packs by default, as deploy/wfp does (deploy/lib/remote-packs.sh): unset is on,
+# OPCACHE_REMOTE=0 opts out. Here, before the build and the render, so both read the same values (the guard below
+# refuses a disagreement). #598's live run: 14 of 40 post-new.php lost to memory resets without them, 0 of 40 with.
+[ "$VARIANT" != b-dosql ] || remote_pack_defaults
 # REQUEST_FRAMES (#352, #589 part 1): on by default for b-dosql (render-conf.sh), off the escape hatch. Only
 # b-dosql has the object-SQLite undo log, so the var on another variant is refused, before any step.
 case "${REQUEST_FRAMES:-}" in
@@ -255,8 +259,13 @@ cd "$APP"
 ./prepare.sh || { echo "prepare.sh failed: the loader was not rebuilt"; exit 1; }
 echo "engine: $PHP_ENGINE_RESOLVED (${PF_ENGINE_WASM:-the pinned @php-wasm/web-8-3}), recycle line $(engine_recycle_mib) MiB unless RECYCLE_WASM_MIB"
 if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
-  ./build.sh | tail -1
-  DEV_ENV=$([ "$VARIANT" = b-dosql ] && echo dosql-local || echo do-local) opcache
+  # No pipe (#464): a pipe takes tail's status, so a failed build.sh went on with a half-built tree.
+  BLOG=$(mktemp)
+  ./build.sh > "$BLOG" || { echo "build.sh failed:"; tail -25 "$BLOG"; rm -f "$BLOG"; exit 1; }
+  tail -1 "$BLOG"; rm -f "$BLOG"
+  DEV_ENV=$([ "$VARIANT" = b-dosql ] && echo dosql-local || echo do-local) opcache || exit 1
+  # #598: the pack step deploy/wfp's build_dosql runs (deploy/lib/remote-packs.sh). Nothing with OPCACHE_REMOTE=0.
+  [ "$VARIANT" != b-dosql ] || remote_pack_build "$WOO_ACTIVE" || exit 1
 elif [ "${OPCACHE_A:-0}" = 1 ]; then
   # #394: prime on the D1 build, the way opcache-a.sh does (#218): the same WordPress, WooCommerce
   # and mu-plugins, no Docker and no local MySQL. TRACE=1 also records the file trace the remote
@@ -315,8 +324,8 @@ render_conf > "$CONF"
 
 # #569, #563: a remote build is never uploaded without its ASSETS binding and /_pf/ first, and a
 # build and its config agree on SITE_REMOTE (deploy/wfp/remote_assets_check.py, the same guard
-# deploy/wfp runs). A plain build passes it.
-if [ "$VARIANT" = a ]; then
+# deploy/wfp runs). A plain build passes it. Variant a and, since #598, b-dosql (its packs are on by default).
+if [ "$VARIANT" = a ] || [ "$VARIANT" = b-dosql ]; then
   python3 -I "$ROOT/deploy/wfp/remote_assets_check.py" "$CONF" "$APP" || { echo "the remote assets check refused $CONF" >&2; exit 2; }
 fi
 

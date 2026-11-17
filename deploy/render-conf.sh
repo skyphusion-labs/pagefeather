@@ -24,8 +24,9 @@ render_conf() {
   # (spikes/b2-wordpress/mail-from.mjs). A workers.dev host sends nothing.
   SITE_ORIGIN="$SITE_ORIGIN" MAIL_FROM="${MAIL_FROM:-}" node "$APP/mail-from.mjs" --binding
   echo '[assets]'; echo 'directory = "build/public"'; echo 'binding = "ASSETS"'; echo 'not_found_handling = "none"'
-  # #563: a remote build serves its packs from the Worker only (a-settings.sh, #412).
-  [ "$VARIANT" != a ] || a_assets_first
+  # #563: a remote build serves its packs from the Worker only (a-settings.sh, #412). #598: b-dosql too (on by default,
+  # deploy/lib/remote-packs.sh; deploy.sh applies remote_pack_defaults before this render).
+  [ "$VARIANT" != a ] && [ "$VARIANT" != b-dosql ] || a_assets_first
   echo '[cache]'; echo 'enabled = true'
   # Only the Pages entrypoint is cached; the default one is the gateway (issue #63).
   echo '[exports.default]'; echo 'type = "worker"'; echo '[exports.default.cache]'; echo 'enabled = false'
@@ -47,6 +48,8 @@ render_conf() {
   if [ "$VARIANT" = a ]; then SITE_ORIGIN="$SITE_ORIGIN" OBJECT_CACHE_VERSIONS="${OBJECT_CACHE_VERSIONS:-1}" WOO_HPOS_CACHE="${WOO_HPOS_CACHE:-on}" node "$ROOT/deploy/provision/a-vars-toml.mjs" vars || return 1; fi
   # #394: OPCACHE_REMOTE, SITE_REMOTE, RECYCLE_WASM_MIB (a-settings.sh). Nothing when unset. #646: PHP_OVERFLOW.
   [ "$VARIANT" != a ] || a_vars
+  # #598: b-dosql's two pack vars, from the ONE rule deploy/wfp renders them with (the config hash follows the flags).
+  if [ "$VARIANT" = b-dosql ]; then opcache_remote_var || return 1; site_remote_var || return 1; fi
   [ "$VARIANT" != a ] || a_overflow_vars
   # WOO_EXTRAS (#667): off only. Checked above, before any step. Unset writes nothing.
   [ -z "${WOO_EXTRAS:-}" ] || echo 'WOO_EXTRAS = "off"'

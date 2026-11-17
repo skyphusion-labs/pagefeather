@@ -19,6 +19,8 @@ WFP=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 . "$WFP/../object-time.sh"
 # shellcheck source=../lib/memory-reuse.sh
 . "$WFP/../lib/memory-reuse.sh" # #603: PHP_MEMORY_REUSE and BOOT_GATE, one rule with deploy/a-settings.sh
+# shellcheck source=SCRIPTDIR/../lib/remote-packs.sh
+. "$WFP/../lib/remote-packs.sh" # #598: OPCACHE_REMOTE and SITE_REMOTE, their default and the pack step, one rule with deploy.sh b-dosql
 ROOT=$(cd "$WFP/../.." && pwd -P)
 # The pinned Wrangler. A test points WR at a stub.
 WR=${WR:-$ROOT/deploy/wr}
@@ -521,22 +523,6 @@ opcache_split_assets() {
     *) echo "OPCACHE_SPLIT must be 0 or 1, not ${OPCACHE_SPLIT}" >&2; return 1 ;;
   esac
 }
-# #563 (#394 Gate 1, OPCACHE_REMOTE=1): ALL OPcache files leave the bundle, as packs under /_pf/ that
-# PHP fetches while it pauses in open() (opcache-remote.py, remote-packs.mjs). NO split: the
-# 2026-11-13 ruling keeps OPCACHE_SPLIT off (#394 issuecomment-6862048364), so the two flags
-# together fail. The var is rendered so that the config hash changes with the flag: the build id
-# does not, and an update would otherwise upload nothing.
-opcache_remote_var() {
-  case "${OPCACHE_REMOTE:-0}" in
-    0) ;;
-    1) [ "${OPCACHE_SPLIT:-0}" = 1 ] && { echo "OPCACHE_REMOTE=1 and OPCACHE_SPLIT=1 together: pick one (#563 has no split)" >&2; return 1; }
-       echo 'OPCACHE_REMOTE = "on"' ;;
-    *) echo "OPCACHE_REMOTE must be 0 or 1, not ${OPCACHE_REMOTE}" >&2; return 1 ;;
-  esac
-}
-# #569 (#394 Gate 2, SITE_REMOTE=1): site.zip leaves the bundle too, as packs PHP fetches while it
-# pauses in open() (site-remote.py, remote-packs.mjs). Only on top of OPCACHE_REMOTE=1: the same hook,
-# request budget, ASSETS binding and /_pf/ first. The var makes the config hash change with the flag.
 # remote_assets_check <rendered config> [app dir] (#569): refuse (exit 2) an upload of a remote build
 # (OPCACHE_REMOTE or SITE_REMOTE) whose config lacks the ASSETS binding or /_pf/ first, or whose
 # config and build disagree on SITE_REMOTE. Called before every user-script upload of a site build.
@@ -580,28 +566,6 @@ woo_extras_var() {
     off) echo 'WOO_EXTRAS = "off"' ;;
     *) echo "WOO_EXTRAS must be off or unset, not ${WOO_EXTRAS}" >&2; return 1 ;;
   esac
-}
-site_remote_var() {
-  case "${SITE_REMOTE:-0}" in
-    0) ;;
-    1) [ "${OPCACHE_REMOTE:-0}" = 1 ] || { echo "SITE_REMOTE=1 needs OPCACHE_REMOTE=1" >&2; return 1; }
-       echo 'SITE_REMOTE = "on"' ;;
-    *) echo "SITE_REMOTE must be 0 or 1, not ${SITE_REMOTE}" >&2; return 1 ;;
-  esac
-}
-# #394 (the D/R round of 2026-11-14, issuecomment-6886246890): the remote packs are the DEFAULT for
-# every site. On the pf394a store, the 7-screen admin round lost 5 of 210 requests with OPCACHE_REMOTE=1
-# and SITE_REMOTE=1 against 95 of 210 without them. An unset or empty OPCACHE_REMOTE becomes 1, except
-# with OPCACHE_SPLIT=1 (the split cannot be remote, opcache_remote_var); an unset or empty SITE_REMOTE
-# follows OPCACHE_REMOTE. 0 opts out: it is recorded (#558) and kept by later updates. The add, the
-# update and up.sh call this AFTER the recorded settings are merged and BEFORE the build and the render,
-# so the build and the config read the same values (remote_assets_check refuses a disagreement).
-remote_pack_defaults() {
-  if [ -z "${OPCACHE_REMOTE:-}" ]; then
-    if [ "${OPCACHE_SPLIT:-0}" = 1 ]; then OPCACHE_REMOTE=0; else OPCACHE_REMOTE=1; fi
-  fi
-  [ -n "${SITE_REMOTE:-}" ] || SITE_REMOTE=$OPCACHE_REMOTE
-  export OPCACHE_REMOTE SITE_REMOTE
 }
 render_user() { # render_user <site> <origin>
   local s=$1 origin=$2 mail_binding mail_vars http_allow ts_vars php_env
@@ -1026,24 +990,9 @@ build_dosql() {
     tail -1 "$blog"; rm -f "$blog"
     WOO_ACTIVE=$woo DEV_ENV=dosql-local ./opcache.sh > build/opcache.log 2>&1 || { echo "opcache.sh failed:"; tail -25 build/opcache.log; exit 1; }
     tail -1 build/opcache.log
-    # #394 L1 (OPCACHE_SPLIT=1): trace which OPcache files a WARM request reads on the primed build,
-    # then keep only those as the module; the rest become static assets fetched when a runtime boots.
-    # #563 (OPCACHE_REMOTE=1): the same trace, then EVERY OPcache file to packs in cold-boot read order.
-    opcache_remote_var > /dev/null || exit 1
-    site_remote_var > /dev/null || exit 1
-    if [ "${OPCACHE_SPLIT:-0}" = 1 ] || [ "${OPCACHE_REMOTE:-0}" = 1 ]; then
-      WOO_ACTIVE=$woo DEV_ENV=dosql-local ./file-trace.sh > build/file-trace.log 2>&1 || { echo "file-trace.sh failed:"; tail -15 build/file-trace.log; exit 1; }
-    fi
-    if [ "${OPCACHE_SPLIT:-0}" = 1 ]; then
-      python3 -I opcache-split.py build/opcache.zip build/file-trace.json build/build-id.js || exit 1
-    fi
-    if [ "${OPCACHE_REMOTE:-0}" = 1 ]; then
-      python3 -I opcache-remote.py build/opcache.zip build/file-trace.json build/build-id.js || exit 1
-    fi
-    # #569: after opcache-remote.py (it clears _pf/<id>/; site-remote.py adds st-*.zip and site-hot.zip).
-    if [ "${SITE_REMOTE:-0}" = 1 ]; then
-      python3 -I site-remote.py build/site.zip build/file-trace.json build/build-id.js || exit 1
-    fi ) || return 1
+    # The split (#394 L1), the remote OPcache packs (#563) and the remote site packs (#569): the ONE pack step,
+    # shared with deploy/deploy.sh b-dosql (deploy/lib/remote-packs.sh).
+    remote_pack_build "$woo" || exit 1 ) || return 1
   # The subshell status is checked (#313): under "site update --all" (if "$fn") set -e is off, and
   # a failed opcache.sh used to fall through to the size check with the EMPTY opcache.zip that
   # build.sh starts, and that bundle was uploaded.
