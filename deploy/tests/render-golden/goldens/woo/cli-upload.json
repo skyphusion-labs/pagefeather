@@ -77,6 +77,11 @@
           },
           {
             "type": "plain_text",
+            "name": "OPCACHE_MC",
+            "text": "64"
+          },
+          {
+            "type": "plain_text",
             "name": "OBJECT_CACHE_L2",
             "text": "on"
           },

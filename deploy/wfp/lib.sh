@@ -499,6 +499,14 @@ page_cache_ttl_var() {
   page_cache_ttl_check || return 1
   page_cache_ttl_line
 }
+# OPCACHE_MC (#610, spikes/b2-wordpress/opcache-size.mjs): a STORE renders "64", the runtime's OPcache shared memory;
+# every other site renders nothing and keeps 48. The store rule is woo_active_for_build, as page_cache_product_var. Not a
+# recorded setting: it follows the build. An explicit PHP_INI opcache.memory_consumption still wins in the runtime.
+opcache_mc_var() {
+  local woo; woo=$(woo_active_for_build) || return 1
+  [ "$woo" = 1 ] || return 0
+  echo 'OPCACHE_MC = "64"'
+}
 # MEM_LEDGER (#394, mem-ledger.mjs): "on" logs the isolate memory ledger on every request and at
 # every cron leg start; "off" or unset leaves it to operator requests (x-mem-ledger: 1). Read from
 # the run's environment only, like PHP_INI. Unset renders nothing (byte for byte as before).
@@ -643,6 +651,8 @@ render_user() { # render_user <site> <origin>
   [ -z "$page_cache_product" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$page_cache_product
   local page_cache_ttl; page_cache_ttl=$(page_cache_ttl_var) || return 1
   [ -z "$page_cache_ttl" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$page_cache_ttl
+  local opcache_mc; opcache_mc=$(opcache_mc_var) || return 1
+  [ -z "$opcache_mc" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$opcache_mc
   local cron_interval; cron_interval=$(cron_interval_var) || return 1
   [ -z "$cron_interval" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$cron_interval
   local oc_remote; oc_remote=$(opcache_remote_var) || return 1

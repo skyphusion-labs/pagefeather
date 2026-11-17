@@ -9,8 +9,9 @@
 # refusal above is the lock, not a broken install path. Needs outbound HTTPS to wordpress.org.
 set -u
 cd "$(dirname "$0")/.." || exit 1
-export PORT=${PORT:-8797} DEV_ENV=${DEV_ENV:-dosql-local}
-B=http://localhost:$PORT
+export DEV_ENV=${DEV_ENV:-dosql-local}
+# shellcheck source=port.sh
+. ./port.sh
 ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}")
 PW=local-spike-password
 J=$(mktemp "${TMPDIR:-/tmp}/code-lock-jar.XXXXXX"); STATE=""
@@ -21,6 +22,8 @@ start() { # start <DEV_VARS>
   ./run.sh --stop >/dev/null 2>&1; [ -n "$STATE" ] && rm -rf "$STATE"
   STATE=$(mktemp -d "${TMPDIR:-/tmp}/code-lock.XXXXXX"); export PERSIST_TO=$STATE
   DEV_LOCAL=1 DEV_VARS="$1" ./run.sh _ping > /dev/null || { echo "FAIL wrangler dev did not start"; exit 1; }
+  server_port || { echo "FAIL no port"; exit 1; }
+  B=http://localhost:$PORT
   curl -s "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null
   ./e2e.sh "$B" > /dev/null 2>&1
   rm -f "$J"; curl -s -c "$J" -b "$J" -o /dev/null "$B/wp-login.php"

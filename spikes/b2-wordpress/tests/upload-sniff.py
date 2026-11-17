@@ -3,9 +3,14 @@
 # admin, POST each file to the REST media endpoint (fonts: the Font Library's font-faces endpoint, the path
 # core accepts fonts on), record the answer. Run it once per engine; compare
 # the two records with tests/upload-sniff-compare.py.
-#   B=http://localhost:8797 ADMIN_PASSWORD=... python3 tests/upload-sniff.py <fixtures-dir> <out.json>
+#   ADMIN_PASSWORD=... python3 tests/upload-sniff.py <fixtures-dir> <out.json>
+# The base URL is B if set, else http://localhost:$PORT, else the port in
+# .dev-port (dev_port.py). With none of those, this script exits.
 import json, mimetypes, os, sys
 sys.path.insert(0, os.path.dirname(__file__))
+from dev_port import base_url
+if not os.environ.get("B", "").strip():
+    os.environ["B"] = base_url()
 from break_lib import login, rest
 
 fx, out = sys.argv[1], sys.argv[2]

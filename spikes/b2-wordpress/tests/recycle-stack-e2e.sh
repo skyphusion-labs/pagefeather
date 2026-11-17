@@ -13,12 +13,16 @@
 # Caveat: wrangler dev does not enforce the 128 MiB isolate limit, so this checks the invariant, not the death.
 set -u
 cd "$(dirname "$0")/.." || exit 1
-export PORT=${PORT:-8797} DEV_ENV=${DEV_ENV:-dosql-local}
-B=http://localhost:$PORT; ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}"); PW=${ADMIN_PASSWORD:-local-spike-password}
+export DEV_ENV=${DEV_ENV:-dosql-local}
+# shellcheck source=port.sh
+. ./port.sh
+ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}"); PW=${ADMIN_PASSWORD:-local-spike-password}
 STATE=$(mktemp -d "${TMPDIR:-/tmp}/recycle-stack.XXXXXX"); export PERSIST_TO=$STATE
 J=$(mktemp "${TMPDIR:-/tmp}/recycle-stack-jar.XXXXXX"); H=$(mktemp "${TMPDIR:-/tmp}/recycle-stack-h.XXXXXX")
 trap './run.sh --stop > /dev/null 2>&1; rm -rf "$STATE" "$J" "$H"' EXIT
 DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off PHP_MEMORY_REUSE:${REUSE:-on} BOOT_GATE:${GATE:-on}" ./run.sh _ping > /dev/null || { echo "recycle-stack: wrangler dev did not start"; tail -20 dev.log; exit 1; }
+server_port || exit 1
+B=http://localhost:$PORT
 curl -sf "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null || { echo "recycle-stack: /_install failed"; exit 1; }
 req() { curl -s -c "$J" -b "$J" -o /dev/null -D "$H" -w '%{http_code}' "$@"; }
 # a page first, so a runtime is CURRENT when /_activate drops and reboots inside its own request

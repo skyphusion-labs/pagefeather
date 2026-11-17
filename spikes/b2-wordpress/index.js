@@ -6,7 +6,7 @@ import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { installPhpBasicAuth } from './php-auth.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
-import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-arm.mjs';
+import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm } from './alarm-arm.mjs';
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
 import { callPhpObject, isObjectCallDeadline, objectCallDeadlineMs, objectCallExempt } from './object-deadline.mjs';
 import { startByMs, objectShedPlan, startByResponse, shedAnswer, startByExempt, tagCallId, recheckStartBy, disconnectAnswer, disconnectSignal, tickFetch, tickResponse, TICK_PATH, START_BY_HEADER, CALL_HEADER } from './start-by.mjs';
@@ -23,6 +23,7 @@ import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, lockDefines } from './site-lock.mjs';
 import { exportRequest } from './mysql-export.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore, serverTimingPhp } from './perf-headers.mjs';
+import { opcacheMemoryMib } from './opcache-size.mjs';
 import { createTrace as createQueryTrace } from './qtrace.mjs';
 import { hposCacheDefine } from './woo-hpos-cache.mjs';
 import { resetFailures, platformFailures, writeLossResponse, rolledBackResponse, frameProvesRollback, statementFailureResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
@@ -1724,7 +1725,9 @@ async function boot(origin) {
 		'opcache.file_update_protection': '0',
 		'opcache.validate_timestamps': '0',
 		'opcache.file_cache_only': '0',
-		'opcache.memory_consumption': '48',
+		// #610: 64 MB for a store (OPCACHE_MC = "64", rendered by the deploy paths), 48 for every other site
+		// (opcache-size.mjs). PHP_INI is spread last, so an explicit opcache.memory_consumption still wins.
+		'opcache.memory_consumption': opcacheMemoryMib(ENV),
 		'opcache.interned_strings_buffer': '4',
 		'opcache.max_accelerated_files': '4000',
 	};
@@ -3083,10 +3086,14 @@ export class PhpRuntime extends DurableObject {
 		if (url.pathname === SNAPSHOT_PATH) {
 			const gate = snapshotGate(req, env);
 			if (gate !== 'ok') return gateResponse(gate);
+			// #841: re-arm the cron alarm FIRST (only a re-arm; no cron runs here). This call reaches every object daily,
+			// even a fully edge-cached site's, where no request re-arms a deleted alarm. Its state goes in the snapshot.
+			const snapAlarm = await snapshotRearm(this.ctx.storage, Date.now(), Number(env.CRON_INTERVAL_MS || 60000));
+			if (snapAlarm.state !== 'ok') console.log(JSON.stringify({ m: 'alarm', rearmedBy: 'snapshot', was: snapAlarm.state }));
 			const sql = env.DB_IN_DO === 'on' ? this.ctx.storage.sql : null;
 			if (!sql || !env.MEDIA) return Response.json({ ok: false, error: 'no-db-or-bucket' }, { status: 409 });
 			const held = cronHeld(await this.ctx.storage.get(IMPORT_HOLD_KEY), Date.now());
-			const r = await takeSnapshot({ dump: (w) => withPhp(() => ((sqlDb = sql), dumpTo(w, env, 'object'))), media: env.MEDIA, build: BUILD_ID, held });
+			const r = await takeSnapshot({ dump: (w) => withPhp(() => ((sqlDb = sql), dumpTo(w, env, 'object'))), media: env.MEDIA, build: BUILD_ID, held, alarm: snapAlarm });
 			console.log('@event snapshot ' + JSON.stringify(r.body));
 			return Response.json(r.body, { status: r.status, headers: { 'cache-control': 'private, no-store' } });
 		}

@@ -1,7 +1,7 @@
 // alarm-arm.mjs (issue #291): a stale alarm no longer blocks the cron for good.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { shouldArmAlarm, STALE_MS, armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from '../alarm-arm.mjs';
+import { shouldArmAlarm, STALE_MS, armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm } from '../alarm-arm.mjs';
 import { readFileSync } from 'node:fs';
 
 const now = Date.parse('2026-11-11T21:15:00Z');
@@ -111,4 +111,61 @@ test('index.js: a failed cron run is stored in the cron record, not only logged'
 	const i = src.indexOf("console.log(JSON.stringify({ m: 'cron', error:");
 	assert.ok(i >= 0);
 	assert.ok(/cst\.cron = \{ t: Date\.now\(\), error:/.test(src.slice(i, i + 600)), 'the catch writes cron.error');
+});
+
+// #841: a fully edge-cached site, where no request reaches the object, got no cron back after an alarm deletion
+// (Cloudflare case 02430361: an alarm past its retry budget is deleted). The daily /_dbsnapshot reaches every object,
+// so it re-arms: the same rearm as a request, ONLY a re-arm, never a cron run inline.
+const fakeAlarm = (initial) => {
+	let at = initial; const calls = [];
+	return { calls, getAlarm: async () => at, deleteAlarm: async () => { calls.push('deleteAlarm'); at = null; }, setAlarm: async (t) => { calls.push('setAlarm'); at = t; }, put: async () => {} };
+};
+test('#841 THE CASE: no alarm, and the only request in a day is /_dbsnapshot: it leaves an alarm set', async () => {
+	const s = fakeAlarm(null);
+	const r = await snapshotRearm(s, now, 60_000);
+	assert.deepEqual(r, { state: 'none', at: now + 60_000 });
+	assert.equal(await s.getAlarm(), now + 60_000);
+});
+test('#841: a long-past (stale) alarm is replaced, and reported stale', async () => {
+	const s = fakeAlarm(now - STALE_MS - 1);
+	assert.deepEqual(await snapshotRearm(s, now, 60_000), { state: 'stale', at: now + 60_000 });
+	assert.deepEqual(s.calls, ['deleteAlarm', 'setAlarm']);
+});
+test('#841: a future alarm is left alone, and reported ok', async () => {
+	const s = fakeAlarm(now + 30_000);
+	assert.deepEqual(await snapshotRearm(s, now, 60_000), { state: 'ok', at: now + 30_000 });
+	assert.deepEqual(s.calls, []);
+});
+test('index.js #841: the snapshot path re-arms (snapshotRearm) after its token gate and BEFORE any other return, passes the result to takeSnapshot, and runs no cron', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const i = src.indexOf('if (url.pathname === SNAPSHOT_PATH) {');
+	assert.ok(i >= 0);
+	const end = src.indexOf('\n\t\t}\n', i);
+	const branch = src.slice(i, end);
+	const gate = branch.indexOf("if (gate !== 'ok') return gateResponse(gate);");
+	const arm = branch.indexOf('await snapshotRearm(this.ctx.storage');
+	assert.ok(gate >= 0 && arm > gate, 'snapshotRearm comes after the token gate');
+	assert.ok(arm < branch.indexOf("error: 'no-db-or-bucket'"), 'and before the no-db return');
+	assert.ok(arm < branch.indexOf('takeSnapshot('), 'and before the snapshot');
+	assert.ok(/takeSnapshot\(\{[^}]*alarm: snapAlarm/.test(branch.replace(/\n/g, ' ')), 'the result goes to takeSnapshot');
+	assert.equal(/alarmRun\(|runCron\(|this\.alarm\(/.test(branch), false, 'no cron runs inline on the snapshot request');
+});
+
+// #846 review (the lead, 2026-11-16): the snapshot re-arms BEFORE its import-held return, so a snapshot taken mid-import
+// can arm an alarm that fires while the import still holds the site. That is safe only because alarmRun refuses the
+// cron then: its gate requires !importHeld, and every PHP boot (boot, runCron) is inside that gate.
+test('index.js #846: an alarm during an import boots no PHP (cronGo needs !importHeld; boot and runCron only inside if (cronGo))', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const r = src.indexOf('async alarmRun() {');
+	const body = src.slice(r, src.indexOf('async fetch(raw)', r));
+	assert.ok(/const importHeld = cronHeld\(await this\.ctx\.storage\.get\(IMPORT_HOLD_KEY\)/.test(body), 'alarmRun reads the import hold');
+	const gateLine = body.split('\n').find((l) => l.includes('const cronGo ='));
+	assert.ok(gateLine && gateLine.includes('!importHeld'), 'the cron gate requires !importHeld');
+	const open = body.indexOf('if (cronGo) {');
+	assert.ok(open > 0, 'the cron leg is inside if (cronGo)');
+	for (const call of ['runCron(', 'boot(cronOrigin)']) {
+		const at = body.indexOf(call);
+		assert.ok(at > open, call + ' only after if (cronGo) opens');
+	}
+	assert.equal(body.slice(0, open).search(/\bboot\(|runCron\(|withPhp\(/), -1, 'no PHP before the gate');
 });

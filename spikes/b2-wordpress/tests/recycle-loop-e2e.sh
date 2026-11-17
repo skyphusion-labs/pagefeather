@@ -8,12 +8,16 @@
 # requests on that runtime must each answer 200 with NO recycle, on the same runtime serial (x-perf rt).
 set -u
 cd "$(dirname "$0")/.." || exit 1
-export PORT=${PORT:-8797} DEV_ENV=${DEV_ENV:-dosql-local}
-B=http://localhost:$PORT; ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}"); PW=${ADMIN_PASSWORD:-local-spike-password}
+export DEV_ENV=${DEV_ENV:-dosql-local}
+# shellcheck source=port.sh
+. ./port.sh
+ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}"); PW=${ADMIN_PASSWORD:-local-spike-password}
 STATE=$(mktemp -d "${TMPDIR:-/tmp}/recycle-loop.XXXXXX"); export PERSIST_TO=$STATE
 J=$(mktemp "${TMPDIR:-/tmp}/recycle-loop-jar.XXXXXX"); H=$(mktemp "${TMPDIR:-/tmp}/recycle-loop-h.XXXXXX")
 trap './run.sh --stop > /dev/null 2>&1; rm -rf "$STATE" "$J" "$H"' EXIT
 DEV_LOCAL=1 DEV_VARS="PHP_MEMORY_REUSE:on BOOT_GATE:on RECYCLE_WASM_MIB:64" ./run.sh _ping > /dev/null || { echo "recycle-loop: wrangler dev did not start"; tail -20 dev.log; exit 1; }
+server_port || exit 1
+B=http://localhost:$PORT
 curl -sf "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null || { echo "recycle-loop: /_install failed"; exit 1; }
 req() { curl -s -c "$J" -b "$J" -o /dev/null -D "$H" -w '%{http_code}' "$@"; }
 hdr() { grep -i "^$1:" "$H" | head -1 | tr -d '\r' | cut -d' ' -f2-; }

@@ -13,12 +13,16 @@
 #
 # Run (b-dosql, WooCommerce not required):
 #   DEV_ENV=dosql-local DEV_VARS="CRON_SIMULATE_COLD:1 CRON_INTERVAL_MS:3000" ./run.sh _ping
-#   B=http://localhost:8797 SPIKE_TOKEN=local-spike-token ADMIN_PASSWORD=local-spike-password \
+#   SPIKE_TOKEN=local-spike-token ADMIN_PASSWORD=local-spike-password \
 #     python3 tests/cron-cold.py
+# The base URL is B if set, else http://localhost:$PORT, else the port in
+# .dev-port. With none of those, this script exits. It does not guess a port.
 # Exits 0 when a fresh cold alarm ran WP-Cron green against the object DB, 1 otherwise.
 import json, os, sys, time, urllib.request, urllib.error
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from dev_port import base_url
 
-B = os.environ.get("B", "http://localhost:8797").rstrip("/")
+B = base_url()
 TOKEN = os.environ.get("SPIKE_TOKEN", "local-spike-token")
 ADMIN = os.environ.get("ADMIN_PASSWORD", "local-spike-password")
 

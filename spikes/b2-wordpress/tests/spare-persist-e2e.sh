@@ -6,12 +6,16 @@
 # the next request must reuse it: one live memory, and memReuse.taken grew.
 set -u
 cd "$(dirname "$0")/.." || exit 1
-export PORT=${PORT:-8797} DEV_ENV=${DEV_ENV:-dosql-local}
-B=http://localhost:$PORT; ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}"); PW=${ADMIN_PASSWORD:-local-spike-password}
+export DEV_ENV=${DEV_ENV:-dosql-local}
+# shellcheck source=port.sh
+. ./port.sh
+ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}"); PW=${ADMIN_PASSWORD:-local-spike-password}
 STATE=$(mktemp -d "${TMPDIR:-/tmp}/spare-persist.XXXXXX"); export PERSIST_TO=$STATE
 H=$(mktemp "${TMPDIR:-/tmp}/spare-persist-h.XXXXXX")
 trap './run.sh --stop > /dev/null 2>&1; rm -rf "$STATE" "$H"' EXIT
 DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off PHP_MEMORY_REUSE:on BOOT_GATE:on" ./run.sh _ping > /dev/null || { echo "spare-persist: wrangler dev did not start"; tail -20 dev.log; exit 1; }
+server_port || exit 1
+B=http://localhost:$PORT
 curl -sf "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null || { echo "spare-persist: /_install failed"; exit 1; }
 # reuse [curl args]: "taken memLive status" of one wp-login.php request; a reading it cannot take says why on stderr
 reuse() {

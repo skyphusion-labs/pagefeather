@@ -64,7 +64,7 @@ const startsWith = (chunk, pre) => chunk.byteLength >= pre.length && pre.every((
  * `media` is the site's R2 binding (put, head).
  * Returns {status, body}.
  */
-export async function takeSnapshot({ dump, media, now = Date.now(), build = '', held = false, maxRawBytes = SNAPSHOT_MAX_RAW_BYTES, clock = Date.now }) {
+export async function takeSnapshot({ dump, media, now = Date.now(), build = '', held = false, maxRawBytes = SNAPSHOT_MAX_RAW_BYTES, clock = Date.now, alarm = null }) {
 	const t0 = clock();
 	if (held) return { status: 409, body: { ok: false, error: 'import-held' } };
 	const { readable, writable } = new TransformStream();
@@ -127,9 +127,10 @@ export async function takeSnapshot({ dump, media, now = Date.now(), build = '', 
 	const key = snapshotKey(now);
 	await media.put(key, bytes, {
 		httpMetadata: { contentType: 'application/gzip' },
-		customMetadata: { rows: String(end.rows), rawBytes: String(raw), build: String(build || '') },
+		// #841: the cron alarm's state from before this snapshot re-armed it (snapshotRearm), when given.
+		customMetadata: { rows: String(end.rows), rawBytes: String(raw), build: String(build || ''), ...(alarm ? { alarmState: String(alarm.state), alarmAt: alarm.at === null || alarm.at === undefined ? 'none' : String(alarm.at) } : {}) },
 	});
 	const h = await media.head(key);
 	if (!h || h.size !== bytes.byteLength) return { status: 500, body: { ok: false, error: 'readback', key, bytes: bytes.byteLength, stored: h ? h.size : null, ms: ms() } };
-	return { status: 200, body: { ok: true, key, bytes: bytes.byteLength, rawBytes: raw, rows: end.rows, build: String(build || ''), ms: ms() } };
+	return { status: 200, body: { ok: true, key, bytes: bytes.byteLength, rawBytes: raw, rows: end.rows, build: String(build || ''), ...(alarm ? { alarm } : {}), ms: ms() } };
 }

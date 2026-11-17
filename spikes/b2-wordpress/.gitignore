@@ -9,3 +9,4 @@ tail.log
 __pycache__/
 wrangler.deploy.*.toml
 .dev-*.pid
+.dev-port
