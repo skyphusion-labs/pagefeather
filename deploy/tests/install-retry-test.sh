@@ -211,8 +211,9 @@ ok "deploy.sh sources install.sh and fails the deploy when install_wordpress fai
   "$(grep -q '\. "\$ROOT/deploy/install.sh"' "$ROOT/deploy/deploy.sh" && grep -q 'install_wordpress "\$URL" || exit 1' "$ROOT/deploy/deploy.sh" && ! grep -q 'install did not answer JSON' "$ROOT/deploy/deploy.sh" && echo yes || echo no)" "yes"
 ok "the headers still go through curl -K and a process substitution" \
   "$(grep -q -- '-K <(printf' "$ROOT/deploy/install.sh" && ! grep -E -- '-H[[:space:]]+["'"'"']x-(spike-token|admin-password)' "$ROOT/deploy/install.sh" && echo yes || echo no)" "yes"
+# #855: PhpRuntime /_cron-tick adds one more plain 403 (not spike; no build id).
 ok "a refused spike stays the plain 403, with no build id" \
-  "$(grep -c "return new Response('forbidden', { status: 403 });" "$ROOT/spikes/b2-wordpress/index.js") $(grep -c 'spikeForbidden' "$ROOT/spikes/b2-wordpress/index.js" || true) $(grep -c 'x-worker-version' "$ROOT/spikes/b2-wordpress/index.js" || true)" "2 0 0"
+  "$(grep -c "return new Response('forbidden', { status: 403 });" "$ROOT/spikes/b2-wordpress/index.js") $(grep -c 'spikeForbidden' "$ROOT/spikes/b2-wordpress/index.js" || true) $(grep -c 'x-worker-version' "$ROOT/spikes/b2-wordpress/index.js" || true)" "3 0 0"
 ok "install.sh does not read x-worker-version" "$(grep -c 'x-worker-version' "$ROOT/deploy/install.sh" || true)" "0"
 
 # #605: deploy/wfp's site add installs through the SAME helper (one check, no drift): its own one-read check took a
