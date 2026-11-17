@@ -10,7 +10,7 @@ on 2026-11-15:
     call, with one group-by, orderBy and limit; "p50" and "percentile" are refused with a 400;
   - the invocations view returns at most 100 invocations a call.
 Any other call, view, operation or key is recorded as UNEXPECTED and fails the case; so does a write.
-Run: python3 -I deploy/doctor-lib/tests/doctor-test.py   (python3 3.9, macOS /bin/bash 3.2)
+Run: python3 -I deploy/doctor-lib/tests/doctor-test.py   (python3 3.12+, macOS /bin/bash 3.2)
 """
 import http.server
 import json
