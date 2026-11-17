@@ -6,7 +6,7 @@ import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { installPhpBasicAuth } from './php-auth.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
-import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm } from './alarm-arm.mjs';
+import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm, setAlarmRecorded, ALARM_SET_KEY } from './alarm-arm.mjs';
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
 import { callPhpObject, isObjectCallDeadline, objectCallDeadlineMs, objectCallExempt } from './object-deadline.mjs';
 import { startByMs, objectShedPlan, startByResponse, shedAnswer, startByExempt, tagCallId, recheckStartBy, disconnectAnswer, disconnectSignal, tickFetch, tickResponse, TICK_PATH, START_BY_HEADER, CALL_HEADER } from './start-by.mjs';
@@ -2825,7 +2825,7 @@ export class PhpRuntime extends DurableObject {
 		// #699: the rules are purge-state.mjs onAsk. A purge already pending (or waiting out a refusal) covers this change.
 		const a = onAsk(await this.ctx.storage.get(PURGE_STATE_KEY), now);
 		await this.ctx.storage.put(PURGE_STATE_KEY, a.st);
-		if (a.alarmAt != null) await this.ctx.storage.setAlarm(a.alarmAt);
+		if (a.alarmAt != null) await setAlarmRecorded(this.ctx.storage, a.alarmAt, now, 'purge-request');
 		console.log(JSON.stringify({ m: 'purge', asked: 1, t: now, coalesced: a.coalesced ? 1 : 0, waitMs: a.alarmAt != null ? a.alarmAt - now : 0, where: 'object' }));
 		return a.coalesced ? 'coalesced' : 'scheduled';
 	}
@@ -3024,7 +3024,7 @@ export class PhpRuntime extends DurableObject {
 			// The last 20 sends, for /_purgestate: wrangler tail does not show alarm runs.
 			res.st.sends = [...(res.st.sends || []), sent].slice(-20);
 			await this.ctx.storage.put(PURGE_STATE_KEY, res.st);
-			if (res.alarmAt != null) await this.ctx.storage.setAlarm(res.alarmAt);
+			if (res.alarmAt != null) await setAlarmRecorded(this.ctx.storage, res.alarmAt, now, 'purge-retry');
 		}
 		// Keep the cron cadence unless the purge logic set a sooner retry alarm.
 		await rearm(this.ctx.storage, Date.now(), Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
@@ -3107,7 +3107,7 @@ export class PhpRuntime extends DurableObject {
 		// Spike: the URL the object got, and the origin it uses.
 		if (url.pathname === '/_origin') return Response.json({ objectUrl: raw.url, publicOrigin: origin, used: url.href });
 		// The purge state of this object (issue #78): pending, last sent, the last 20 sends, the next alarm.
-		if (url.pathname === '/_purgestate') return Response.json({ ...((await this.ctx.storage.get(PURGE_STATE_KEY)) || {}), alarm: await this.ctx.storage.getAlarm(), alarmFatal: (await this.ctx.storage.get(ALARM_FATAL_KEY)) || null, cronSkip: (await this.ctx.storage.get(CRON_SKIP_KEY)) || null, cronRun: (await this.ctx.storage.get(CRON_RUN_KEY)) || null, now: Date.now() });
+		if (url.pathname === '/_purgestate') return Response.json({ ...((await this.ctx.storage.get(PURGE_STATE_KEY)) || {}), alarm: await this.ctx.storage.getAlarm(), alarmSet: (await this.ctx.storage.get(ALARM_SET_KEY)) || null, alarmFatal: (await this.ctx.storage.get(ALARM_FATAL_KEY)) || null, cronSkip: (await this.ctx.storage.get(CRON_SKIP_KEY)) || null, cronRun: (await this.ctx.storage.get(CRON_RUN_KEY)) || null, now: Date.now() });
 		// The build this OBJECT is running (issue #35 slice 5). After a re-upload a
 		// warm object keeps the old code until it is evicted, so this reports the
 		// object's version, which can lag the Worker's until /_evict or a sleep.
