@@ -48,6 +48,7 @@ async function runtime(mode, opts = {}) {
 		'opcache.file_cache_only': '0', 'opcache.memory_consumption': '64', 'opcache.interned_strings_buffer': '8', 'opcache.max_accelerated_files': '4000',
 		'opcache.validate_timestamps': '0', 'opcache.file_update_protection': '0' };
 	if (mode === 'eager') ini['opcache.pagefeather_lazy_load'] = '0';
+	if (mode === 'script') ini['opcache.pagefeather_lazy_unit'] = 'script'; // M2b stage 4: a whole script per load
 	await setPhpIniEntries(php, ini);
 	if (opts.bins) {
 		php.writeFile('/tmp/pf582-bins.json', JSON.stringify(opts.bins));
@@ -89,16 +90,18 @@ const probe = async (php, c, mode) => json(php, PROBE, { nofiber: await noFiber(
 
 test('the probe cases answer the same lazy, eager and compiled, and pass their lazy checks (tests 1 to 11, 13)', async () => {
 	const bins = await prime();
-	const rt = { lazy: await runtime('lazy', { bins }), eager: await runtime('eager', { bins }), compiled: await runtime('compiled', { bins }) };
+	const rt = { lazy: await runtime('lazy', { bins }), script: await runtime('script', { bins }), eager: await runtime('eager', { bins }), compiled: await runtime('compiled', { bins }) };
 	for (const c of CASES) {
 		const got = {};
-		for (const m of ['lazy', 'eager', 'compiled']) got[m] = await probe(rt[m], c, m);
+		for (const m of ['lazy', 'script', 'eager', 'compiled']) got[m] = await probe(rt[m], c, m);
 		assert.deepEqual(got.lazy.fail, [], c + ': lazy checks failed');
+		assert.deepEqual(got.script.fail, [], c + ': script-unit checks failed');
 		assert.deepEqual(got.lazy.out, got.compiled.out, c + ': lazy answers differ from compiled');
+		assert.deepEqual(got.script.out, got.compiled.out, c + ': script-unit answers differ from compiled');
 		assert.deepEqual(got.eager.out, got.compiled.out, c + ': eager answers differ from compiled');
-		console.log('@event lazy-case ' + JSON.stringify({ case: c, ok: true, lb: got.lazy.lb }));
+		console.log('@event lazy-case ' + JSON.stringify({ case: c, ok: true, lb: got.lazy.lb, lb_script: got.script.lb }));
 	}
-	for (const m of ['lazy', 'eager', 'compiled']) {
+	for (const m of ['lazy', 'script', 'eager', 'compiled']) {
 		const t = await text(rt[m], PROBE, { nofiber: await noFiber(), case: 'tcbad', mode: m });
 		assert.ok(/collision/.test(t) && !/NO COLLISION/.test(t), 'tcbad ' + m + ': want the trait-collision fatal, got ' + t.slice(-300));
 	}

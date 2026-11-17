@@ -11,7 +11,16 @@ cd "$(dirname "$0")"
 # shellcheck source=local-creds.sh
 . ./local-creds.sh
 local_creds
-python3 -c "import zipfile; zipfile.ZipFile('build/opcache.zip', 'w').close()"
+# PROFILE_HOT=1 (#582 M2b stage 5, opt-in, a lazy-body engine only): after the priming below, a SECOND pass runs the
+# same pages on the zip it made, with opcache.pagefeather_profile=1. Each body the lazy load reads is recorded, and
+# each script's set goes into <bin>.hot beside its .bin, in the runtime's file cache; the second dump ships both.
+# opcache.pagefeather_lazy_unit=hot then loads that hot set in one read. (No observer: one would change the system
+# id, and the .hot files would sit beside files the shipped engine never loads.) PF_PROFILE_PASS=1 is that pass.
+if [ "${PF_PROFILE_PASS:-0}" = 1 ]; then
+  python3 -I -c "import sys, zipfile; n = sum(1 for x in zipfile.ZipFile('build/opcache.zip').namelist() if x.endswith('.bin')); sys.exit(0 if n else 1)" || { echo "the profile pass needs a primed build/opcache.zip"; exit 1; }
+else
+  python3 -c "import zipfile; zipfile.ZipFile('build/opcache.zip', 'w').close()"
+fi
 # #394 L1: priming runs unsplit; a split from an earlier run would point at other files.
 rm -f build/opcache-boot.zip
 echo 'export default null;' > build/opcache-boot-index.js
@@ -35,10 +44,14 @@ trap 'rm -rf "$STATE"' EXIT
 # all 2,076 scripts of the admin e2e (69.8 MB used). Unset keeps today's priming, so the eager zips
 # that ship now are unchanged; it becomes the default with the lazy-body default (S5).
 prime_vars=""
-if [ -n "${PRIME_OPCACHE_MB:-}" ]; then
-  case "$PRIME_OPCACHE_MB" in *[!0-9]*) echo "PRIME_OPCACHE_MB must be a whole number of MiB, not $PRIME_OPCACHE_MB"; exit 1;; esac
-  case " ${DEV_VARS:-} " in *" PHP_INI:"*) echo "PRIME_OPCACHE_MB and a PHP_INI in DEV_VARS: set one"; exit 1;; esac
-  prime_vars="PHP_INI:{\"opcache.memory_consumption\":\"$PRIME_OPCACHE_MB\"}"
+if [ -n "${PRIME_OPCACHE_MB:-}" ] || [ "${PF_PROFILE_PASS:-0}" = 1 ]; then
+  case "${PRIME_OPCACHE_MB:-}" in *[!0-9]*) echo "PRIME_OPCACHE_MB must be a whole number of MiB, not $PRIME_OPCACHE_MB"; exit 1;; esac
+  case " ${DEV_VARS:-} " in *" PHP_INI:"*) echo "PRIME_OPCACHE_MB or PROFILE_HOT and a PHP_INI in DEV_VARS: set one"; exit 1;; esac
+  prime_vars=$(PRIME_OPCACHE_MB=${PRIME_OPCACHE_MB:-} PF_PROFILE_PASS=${PF_PROFILE_PASS:-0} python3 -I -c 'import json, os
+ini = {}
+if os.environ["PRIME_OPCACHE_MB"]: ini["opcache.memory_consumption"] = os.environ["PRIME_OPCACHE_MB"]
+if os.environ["PF_PROFILE_PASS"] == "1": ini["opcache.pagefeather_profile"] = "1"
+print("PHP_INI:" + json.dumps(ini, separators=(",", ":")))')
 fi
 had_port=0
 if [ -n "${PORT:-}" ]; then
@@ -119,3 +132,13 @@ fi
 python3 opcache-check.py build/opcache.zip.new "${WOO_ACTIVE:-0}" || { echo "No OPcache files saved"; exit 1; }
 mv build/opcache.zip.new build/opcache.zip
 echo "opcache.zip $(wc -c < build/opcache.zip) bytes, $files files, isolate $iso, 0 runtime drops, $(grep -i '^x-files' build/opcache.headers | tr -d '\r')"
+if [ "${PF_PROFILE_PASS:-0}" = 1 ]; then
+  hot=$(python3 -I -c "import sys, zipfile; print(sum(1 for x in zipfile.ZipFile(sys.argv[1]).namelist() if x.endswith('.bin.hot')))" build/opcache.zip)
+  [ "$hot" -gt 0 ] || { echo "the profile pass wrote no .hot file: not a lazy-body engine, or nothing loaded lazily"; exit 1; }
+  echo "profile pass: $hot hot profiles in opcache.zip"
+elif [ "${PROFILE_HOT:-0}" = 1 ]; then
+  ./run.sh --stop > /dev/null 2>&1 || true
+  rm -rf "$STATE"
+  trap - EXIT
+  PF_PROFILE_PASS=1 exec ./opcache.sh
+fi

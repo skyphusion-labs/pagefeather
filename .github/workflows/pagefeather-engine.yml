@@ -431,7 +431,8 @@ jobs:
           head -3 "$RUNNER_TEMP/red.txt"
           [ "$rc" != 0 ] || { echo "::error::bin-split passed an EAGER opcache.zip as lazy: it cannot see a missing split"; exit 1; }
           echo "red control: bin-split refuses the eager zip (rc=$rc), as it must"
-          python3 -I ../../engine/tools/bin-split.py "$RUNNER_TEMP/opcache-lean-lazy.zip" | tee "$RUNNER_TEMP/bin-split.json"
+          # M2b stage 3: under 1% of the body bytes may sit in files that load whole for a tail crossing (it was 84%)
+          python3 -I ../../engine/tools/bin-split.py "$RUNNER_TEMP/opcache-lean-lazy.zip" --max-whole-share 0.01 | tee "$RUNNER_TEMP/bin-split.json"
       - name: The contract suite and frames-e2e.sh on lean-lazy (it must behave as lean-trim)
         working-directory: spikes/b2-wordpress
         run: |
@@ -445,12 +446,40 @@ jobs:
         working-directory: spikes/b2-wordpress
         run: |
           set -euo pipefail
-          # build/ still holds the lean-lazy build and the zip opcache.sh primed at 128 MiB (no build.sh since)
+          # build/ still holds the lean-lazy build and the zip opcache.sh primed at 128 MiB (no build.sh since).
+          # dosql-local, as opcache.sh primed it: PHP in the object, as on a site (x-perf, so the M2c reading has the inflates)
+          export DEV_ENV=dosql-local
           cmp build/opcache.zip "$RUNNER_TEMP/opcache-lean-lazy.zip" || { echo "::error::build/opcache.zip is not the primed lean-lazy zip"; exit 1; }
           rc=0; LB_PRIMED=1 LB_EAGER=1 tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate-primed-red.json" || rc=$?
           [ "$rc" != 0 ] || { echo "::error::the primed gate PASSED with the lazy load off: it cannot see a body that never loads lazily"; exit 1; }
           echo "red control: the primed gate fails with opcache.pagefeather_lazy_load=0 (rc=$rc), as it must"
           LB_PRIMED=1 tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate-primed.json"
+          # M2b stage 4: the same gate and M2c reading with a whole script per load (opcache.pagefeather_lazy_unit=script)
+          LB_PRIMED=1 LB_UNIT=script tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate-primed-script.json"
+          # M2b stage 5: the profile pass on that zip (the .hot files), then the gate and M2c with the hot set
+          PF_PROFILE_PASS=1 PRIME_OPCACHE_MB=128 DEV_ENV=dosql-local WOO_ACTIVE=1 ./opcache.sh > build/opcache-profile.log 2>&1 || { echo "::error::the profile pass failed"; tail -30 build/opcache-profile.log; exit 1; }
+          tail -2 build/opcache-profile.log
+          ./run.sh --stop > /dev/null 2>&1 || true
+          LB_PRIMED=1 LB_UNIT=hot tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate-primed-hot.json"
+      - name: vps-run.sh, the M2c live runner, against wrangler dev (a smoke test of the script, not a measurement)
+        working-directory: spikes/b2-wordpress
+        run: |
+          set -euo pipefail
+          STATE=$(mktemp -d); export PERSIST_TO=$STATE
+          # dosql-local: PHP in the object, as on a deployed site (x-perf, the forced recycle)
+          DEV_ENV=dosql-local DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off" ./run.sh _ping > /dev/null || { echo "::error::wrangler dev did not start (m2c smoke)"; tail -40 dev.log; exit 1; }
+          # #839: run.sh picks a free port; read it back (same as the other wrangler steps).
+          # shellcheck source=port.sh
+          . ./port.sh
+          server_port || { echo "::error::run.sh did not record a port"; exit 1; }
+          ST=(-H "x-spike-token: local-spike-token"); B=http://localhost:$PORT
+          curl -sf "${ST[@]}" -X POST -H "x-admin-password: local-spike-password" "$B/_install" > /dev/null
+          printf 'B=%s\nSPIKE_TOKEN=local-spike-token\nADMIN_PASSWORD=local-spike-password\n' "$B" > "$RUNNER_TEMP/run.env"
+          rc=0; RUN_ENV="$RUNNER_TEMP/run.env" OUT="$RUNNER_TEMP/m2c-smoke" ARMS=body BOOTS=2 WARM=1 tests/m2c/vps-run.sh || rc=$?
+          ./run.sh --stop > /dev/null 2>&1 || true
+          [ "$rc" = 0 ] || { echo "::error::vps-run.sh failed against wrangler dev (rc=$rc)"; exit 1; }
+          n=$(wc -l < "$RUNNER_TEMP/m2c-smoke/body.jsonl"); [ "$n" = 4 ] || { echo "::error::vps-run.sh wrote $n readings, want 4 (2 boots x 2 requests)"; exit 1; }
+          python3 -I -c 'import json,sys; s=json.load(open(sys.argv[1])); f=s["body"]["first"]; print(json.dumps(f)); assert f["statuses"] == [200], f; assert f["distinct_runtimes"] == 2, "2 boots must run on 2 runtimes"; assert f["wasm1MiB_max"] > 0, "no wasm reading from x-perf"' "$RUNNER_TEMP/m2c-smoke/summary.json"
       - name: Test 16 on lean-stats-lazy (observers see each call once and count the real body)
         working-directory: spikes/b2-wordpress
         run: |
@@ -515,6 +544,8 @@ jobs:
             ${{ runner.temp }}/gate-red.json
             ${{ runner.temp }}/gate-128.json
             ${{ runner.temp }}/gate-primed.json*
+            ${{ runner.temp }}/gate-primed-script.json*
+            ${{ runner.temp }}/gate-primed-hot.json*
             ${{ runner.temp }}/gate-primed-red.json
           retention-days: 14
   opcache-stats:

@@ -143,6 +143,35 @@ OPcache's shared memory until a function is first called. It is built in slices 
   compiled at run time, and a file that the store marks with `pf_xref`. `pf_xref` counts pointers into the
   tail from outside their own body. Example: the optimizer shares a class constant's array with a method
   literal, so the constant points into that method's body. Such a file always loads whole.
+- **M2b stage 3, the head keeps what is shared.** Every crossing found on WordPress and WooCommerce came from
+  persist reusing an array (or, when the interned-string buffer is full, a string) that a body had persisted
+  first. Calc now runs twice. Pass 1 records which owner (the head, or one body) reaches each literal array and
+  each string that is not interned first. It marks the array or string shared when another owner reaches it
+  later. Pass 2 and persist place a shared array or string in the head. A head list of the moved arrays is
+  unserialized at the head load, before the tables, with the main strings, so an array that only bodies reach
+  is still ready. Measured 2026-11-15 on every WordPress and WooCommerce file, natively: 1187 of 3715 files
+  crossed (73.2% of the body bytes) before, 0 after; at the Worker's 4 MB interned buffer, 0 after as well
+  (1283 arrays and 2185 strings moved). `tools/bin-split.py --max-whole-share 0.01` is the gate on the
+  primed zip. The counters `head_arrays` and `head_strings` show what moved.
+- **M2b stage 4, the unit of a load** (the M2c fallback, ruled 2026-11-15). `opcache.pagefeather_lazy_unit`
+  is `body` (the default: a body loads at the first call of its function) or `script`. With `script`, the
+  first call into a script reads that script's whole body tail and body-string section in two reads. It
+  checks every body's adler32 and unserializes every body. Only when all of them succeed does it mark them
+  loaded. Each op_array still installs at its own first call, with no read. A failure keeps nothing and
+  throws the same `Error`. So one engine runs all three modes: `body`, `script`, and whole
+  (`opcache.pagefeather_lazy_load=0`). The counter `script_loads` counts the script loads, and `lazy_unit`
+  shows the mode. The suites run every case in both units (run-native.sh, lazy-bodies.test.mjs), and the
+  primed gate and the M2c reading run in both units (`LB_UNIT=script`).
+- **M2b stage 5, the hot set** (profile-guided, ruled 2026-11-15). `opcache.pagefeather_lazy_unit=hot`
+  loads a script's hot set at its first call, in one open and one read. The hot bodies and the called one are
+  copied out, checked and unserialized one by one, and the read buffer is freed. The cold bodies stay lazy
+  per body. The hot set comes from priming: `PROFILE_HOT=1 ./opcache.sh` runs the pages again on its own
+  primed zip with `opcache.pagefeather_profile=1`. Each body the lazy load reads is recorded into
+  `<bin>.hot` (the .bin's head checksum, the directory size, the indices), and the second dump ships it. A
+  stale `.hot` (another checksum or size) is ignored. A profile observer is NOT used: an observer changes the
+  OPcache system id, so its files would sit beside files the shipped engine never loads. Counters:
+  `hot_scripts`, `hot_loads`, `hot_bodies`, `hot_read_bytes`, `profile_writes`. The load phases are
+  `body_open_ns`, `body_read_ns`, `body_check_ns`, `body_unser_ns` and `body_install_ns`.
 - **Code that reads opcodes without a call** asks for the body first: named arguments that skip a default
   (`zend_handle_undef_args`), Reflection default values, and the text of an inheritance error. The trait
   collision check compares body ids (`zend_pf_body_id`), not opcodes pointers, because every unloaded body

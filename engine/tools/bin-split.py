@@ -12,14 +12,16 @@ str_size and pf_bstr_size, so a file from the other build is told apart by its o
 Gate (default): every .bin has an 88-byte header, pf_body_offset + pf_body_size == mem_size, the body
 starts after the script offset, and pf_head_checksum is the adler32 of [head | string section] (what a lazy
 load reads). Files with pf_xref != 0 (a pointer reaches into the body tail from outside its body) always load
-whole: they are counted (xrefFiles, xrefBodyBytes), not refused. Prints one JSON line of totals. --expect-eager inverts it: every .bin
+whole: they are counted (xrefFiles, xrefBodyBytes, and wholeShare, their share of the body bytes), not refused.
+--max-whole-share <x> refuses the zip when wholeShare is over x (the M2b stage 3 gate: persist keeps every array and
+string that more than one owner reaches in the head, so no file should load whole for a crossing). Prints one JSON line of totals. --expect-eager inverts it: every .bin
 must have the 72-byte header (the red control: the tool must refuse an eager zip as lazy).
 """
 import json, struct, sys, zipfile, zlib
 
 LAZY_HDR, EAGER_HDR = 88, 72
 
-def main(path, expect_eager):
+def main(path, expect_eager, max_whole=None):
     z = zipfile.ZipFile(path)
     names = [n for n in z.namelist() if n.endswith(".bin")]
     if not names:
@@ -61,6 +63,7 @@ def main(path, expect_eager):
         tot["bodyMiB"] = round(tot["bodyBytes"] / 2**20, 2)
         tot["memMiB"] = round(tot["memBytes"] / 2**20, 2)
         tot["bodyShare"] = round(tot["bodyBytes"] / tot["memBytes"], 3) if tot["memBytes"] else None
+        tot["wholeShare"] = round(tot.get("xrefBodyBytes", 0) / tot["bodyBytes"], 4) if tot["bodyBytes"] else None
     print(json.dumps({"tool": "bin-split", "zip": path, "mode": "eager" if expect_eager else "lazy", "bad": len(bad), **tot}))
     for n, why in bad[:10]:
         print("  %s: %s" % (n, why))
@@ -68,9 +71,12 @@ def main(path, expect_eager):
         sys.exit(1)
     if not expect_eager and tot["bodyBytes"] == 0:
         sys.exit("bin-split: no body bytes at all (the split did not run)")
+    if max_whole is not None and tot["wholeShare"] > max_whole:
+        sys.exit("bin-split: %.2f%% of the body bytes are in files that load whole for a tail crossing (%d files), over %.2f%%" % (tot["wholeShare"] * 100, tot.get("xrefFiles", 0), max_whole * 100))
 
 if __name__ == "__main__":
     a = sys.argv[1:]
     if not a:
         sys.exit(__doc__)
-    main(a[0], "--expect-eager" in a[1:])
+    mw = float(a[a.index("--max-whole-share") + 1]) if "--max-whole-share" in a else None
+    main(a[0], "--expect-eager" in a[1:], mw)
