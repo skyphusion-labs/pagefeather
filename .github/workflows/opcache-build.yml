@@ -120,3 +120,13 @@ jobs:
             echo "::error::remote-e2e.sh (site) failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1
           fi
           echo "remote steps took $(( $(date +%s) - s )) s"
+      - name: A first WooCommerce activation that died mid-install still ends installed (issue #661)
+        # The lock a dead first attempt leaves (planted by the test-only fixture tests/fixtures/wc-lock): /_activate
+        # must answer active AND installed, and the store must be a real install (version, no lock, the admin's caps,
+        # the customer role) with a guest page failing no statement. It builds with the fixture and rebuilds without
+        # it on exit, so it runs LAST (the remote steps above emptied the zips anyway).
+        working-directory: spikes/b2-wordpress
+        run: |
+          if ! tests/wc-install-lock-e2e.sh; then
+            echo "::error::wc-install-lock-e2e.sh failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1
+          fi

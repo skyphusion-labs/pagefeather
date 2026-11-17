@@ -79,7 +79,7 @@ With `PHP_IN_DO=on`, `DB_IN_DO=on` makes the object's own SQLite (`ctx.storage.s
 
 ## WooCommerce
 
-WooCommerce is in the build (`WOO_VERSION` in `build.sh`). `tests/woo.py` runs a store and a guest checkout. Activate it with `POST /_activate?plugin=woocommerce/woocommerce.php` (spike token). On Paid, checkout exceeds the isolate memory limit; see `docs/approach-b.md` 8f.
+WooCommerce is in the build (`WOO_VERSION` in `build.sh`). `tests/woo.py` runs a store and a guest checkout. Activate it with `POST /_activate?plugin=woocommerce/woocommerce.php` (spike token). For WooCommerce the answer also carries `installed` (#661): true only when the install really completed (the stored `woocommerce_version` equals the code's, no `wc_installing` lock is left, and the administrator holds `edit_products` and `manage_woocommerce`), with the details in `install`. deploy.sh requires `active` AND `installed`. An activation that finds WooCommerce inactive first clears a `wc_installing` lock, which only an earlier attempt that died mid-install can have left; otherwise `WC_Install::install()` would skip the install while WordPress still saved the plugin as active. On Paid, checkout exceeds the isolate memory limit; see `docs/approach-b.md` 8f.
 
 ## How it fits together
 
