@@ -140,7 +140,9 @@ A live probe (2026-11-17, #782 issuecomment-6933558225) measured the update's ba
 - re-sending the applied migration tag is refused;
 - a re-upload with `keep_bindings: ["secret_text"]` keeps the secrets. The probe's control deleted the secret and read it absent, so the check can fail.
 
-A re-upload without `keep_bindings` also kept the secret. That is not documented, so update sends `keep_bindings` explicitly. The update reads its bindings back and fails if one is gone.
+**Settled:** the probe's secret check works. It read the secret absent after a delete.
+
+**Not settled:** whether `keep_bindings` is NECESSARY. A re-upload without it also kept the secret, and that is not documented. So update sends `keep_bindings` explicitly. It reads its bindings back and fails if one is gone.
 
 ### A very long search term fails on SQLite (#805)
 
