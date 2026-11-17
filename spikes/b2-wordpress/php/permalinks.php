@@ -24,6 +24,12 @@
  *      and this does nothing.
  */
 
+// #834: the rules version. Raise it when the stored rewrite rules must be rebuilt on every existing site.
+// 1: the rules from before #834 had no /category/ or /tag/ archive (an install outside wp-admin, below).
+if ( ! defined( 'SKYPHUSION_REWRITE_RULES_VERSION' ) ) {
+	define( 'SKYPHUSION_REWRITE_RULES_VERSION', 1 );
+}
+
 if ( ! function_exists( 'skyphusion_permalinks_on_install' ) ) {
 	/** The structure stock's install probe would have kept on a host with working rewrites. */
 	function skyphusion_permalinks_on_install() {
@@ -32,11 +38,34 @@ if ( ! function_exists( 'skyphusion_permalinks_on_install' ) ) {
 		}
 		global $wp_rewrite;
 		$wp_rewrite->set_permalink_structure( '/%year%/%monthnum%/%day%/%postname%/' );
+		// /_install runs wp_install outside wp-admin. There, category and post_tag registered at init with NO
+		// rewrite rules (WP_Taxonomy adds them only under is_admin() or a permalink structure, and the structure
+		// was empty then), so this flush stored rules with no /category/ or /tag/ archive: /?cat=1 redirected to
+		// /category/uncategorized/, which answered 404 (opcache.sh's e2e, 2026-11-16). Stock's installer runs in
+		// wp-admin, so its flush has them. Register the core taxonomies again (core does the same on change_locale)
+		// now that the structure is set, then flush.
+		create_initial_taxonomies();
 		// Soft: the rules go to the database; there is no .htaccess to write.
 		flush_rewrite_rules( false );
+		update_option( 'skyphusion_rewrite_rules_version', SKYPHUSION_REWRITE_RULES_VERSION, true );
 	}
 }
 add_action( 'wp_install', 'skyphusion_permalinks_on_install' );
+
+// #834: the one-time repair. A site installed since #773 outside wp-admin stored rules with no /category/ or /tag/
+// archive, and site update does not reinstall. On wp_loaded every taxonomy (core and plugins) is registered with the
+// site's structure, so a soft flush here stores complete rules. Once per version: the option is autoloaded, so the
+// check costs no query on later requests.
+if ( ! function_exists( 'skyphusion_permalinks_repair' ) ) {
+	function skyphusion_permalinks_repair() {
+		if ( (int) get_option( 'skyphusion_rewrite_rules_version', 0 ) >= SKYPHUSION_REWRITE_RULES_VERSION ) {
+			return;
+		}
+		flush_rewrite_rules( false );
+		update_option( 'skyphusion_rewrite_rules_version', SKYPHUSION_REWRITE_RULES_VERSION, true );
+	}
+}
+add_action( 'wp_loaded', 'skyphusion_permalinks_repair' );
 
 if ( ! function_exists( 'skyphusion_permalinks_rest_route' ) ) {
 	/**
