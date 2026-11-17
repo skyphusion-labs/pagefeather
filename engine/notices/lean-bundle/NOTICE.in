@@ -1,0 +1,40 @@
+The pagefeather engine
+
+The pagefeather engine is a WebAssembly build made by the pagefeather project
+(https://github.com/skyphusion-labs/pagefeather). This bundle ships its lean build:
+the prerelease @LEAN_TAG@ (pagefeather-engine-lean.wasm sha256 @LEAN_WASM_SHA256@,
+pagefeather-engine-lean.js sha256 @LEAN_JS_SHA256@), transformed for this bundle by
+spikes/b2-wordpress/prepare.sh at this release's tag.
+It is not PHP and is not endorsed by The PHP Group or Zend. It includes the
+software below. The licence texts are in engine/notices/LICENSES/ in this
+repository, and in LICENSES.tar.gz on each GitHub Release that ships the
+engine, one file per component.
+
+This product includes PHP software, freely available from
+<http://www.php.net/software/>.
+
+This product includes the Zend Engine, freely available at
+<http://www.zend.com>.
+
+Components linked into this build (every row of engine/licenses.tsv):
+- dlmalloc 2.8.6 (CC0-1.0): LICENSES/dlmalloc.txt
+- Emscripten (runtime JS and system libraries) 4.0.19 (MIT OR NCSA): LICENSES/emscripten.txt
+- GNU libiconv 1.17 (LGPL-2.1-or-later): LICENSES/libiconv.txt
+- libgd 2.3.3 (GD): LICENSES/libgd.txt
+- libjpeg-turbo 3.0.3 (IJG AND BSD-3-Clause AND Zlib): LICENSES/libjpeg-turbo.txt
+- libjpeg-turbo (IJG terms) 3.0.3 (IJG): LICENSES/libjpeg-turbo-README.ijg.txt
+- libpng 1.6.39 (libpng-2.0): LICENSES/libpng.txt
+- libwebp (and sharpyuv) 845d547 (BSD-3-Clause): LICENSES/libwebp.txt
+- libwebp patent grant 845d547 (see file): LICENSES/libwebp-PATENTS.txt
+- libxml2 2.9.10 (MIT): LICENSES/libxml2.txt
+- libzip 1.9.2 (BSD-3-Clause): LICENSES/libzip.txt
+- LLVM compiler-rt emscripten 4.0.19 (Apache-2.0 WITH LLVM-exception): LICENSES/compiler-rt.txt
+- musl libc emscripten 4.0.19 (MIT): LICENSES/musl.txt
+- OpenSSL 1.1.1t (OpenSSL): LICENSES/openssl.txt
+- pagefeather repo (GPL-2.0-or-later): LICENSES/pagefeather.txt
+- PHP 8.3.36 (PHP-3.01): LICENSES/php.txt
+- SQLite 3.51.0 (blessing): LICENSES/sqlite.txt
+- the third-party code bundled in PHP 8.3.36 (see file): LICENSES/php-README.REDIST.BINS.txt
+- WordPress Playground php-wasm dcd8e50 (GPL-2.0-or-later): LICENSES/wordpress-playground.txt
+- Zend Engine 8.3.36 (Zend-2.0): LICENSES/zend.txt
+- zlib 1.2.13 (Zlib): LICENSES/zlib.txt

@@ -12,7 +12,8 @@ Writes:
   build/opcache.zip                         the WARM files only (still a data module, resident)
   build/public/_pf/<build-id>/boot-<n>.zip  the same BOOT files in chunks under 16 MiB, as static
                                             assets (25 MiB per file limit), fetched at a boot
-  build/opcache-boot-index.js               export default { id, chunks, files, bytes }
+  build/opcache-boot-index.js               export default { id, chunks, chunkBytes, files, bytes }
+                                            (chunkBytes: each chunk's length, which the loader checks, #801)
 The warm set is every opcache file a NON-boot request read in build/file-trace.json (file-trace.sh on
 the primed build). A file that a real warm request needs and the trace did not see is a miss: OPcache
 compiles it from source, its normal path. Never silent: index.js logs the boot pack source.
@@ -88,7 +89,10 @@ def main():
     stale = os.path.join(os.path.dirname(zpath), 'opcache-boot.zip')
     if os.path.exists(stale):
         os.remove(stale)
-    idx = {'id': build_id, 'chunks': chunks, 'files': len(boot), 'bytes': len(boot_buf.getvalue())}
+    # #801: each chunk's length, so the loader can refuse a pack that is not the one written (a truncated or stale
+    # asset) instead of reporting 'assets' while OPcache quietly compiles everything from source.
+    idx = {'id': build_id, 'chunks': chunks, 'chunkBytes': [os.path.getsize(os.path.join(out_dir, c)) for c in chunks],
+           'files': len(boot), 'bytes': len(boot_buf.getvalue())}
     open(os.path.join(os.path.dirname(zpath), 'opcache-boot-index.js'), 'w').write('export default %s;\n' % json.dumps(idx))
     for c in chunks:
         if os.path.getsize(os.path.join(out_dir, c)) > 25 * 1048576:

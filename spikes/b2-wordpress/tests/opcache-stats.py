@@ -3,10 +3,15 @@
 # built with ENGINE_OPCACHE_STATS=1 (engine/opcache/opcache_module_stats.c) and a dev server with
 # PHP_RECYCLE off (a recycle would start a new runtime and lose the counts). After each screen it reads
 # /_mem, whose pagefeather_opcache_stats() reports the PREVIOUS request: the screen just loaded.
-#   B=http://localhost:8797 ADMIN_PASSWORD=... [STATS_SPIKE_TOKEN=...] python3 tests/opcache-stats.py [rounds] [out.jsonl]
+#   ADMIN_PASSWORD=... [STATS_SPIKE_TOKEN=...] python3 tests/opcache-stats.py [rounds] [out.jsonl]
+# The base URL is B if set, else http://localhost:$PORT, else the port in
+# .dev-port (dev_port.py). With none of those, this script exits.
 import json, os, sys
 sys.path.insert(0, os.path.dirname(__file__))
 import re
+from dev_port import base_url
+if not os.environ.get("B", "").strip():
+    os.environ["B"] = base_url()
 from break_lib import login, opener, req
 
 rounds = int(sys.argv[1]) if len(sys.argv) > 1 else 2

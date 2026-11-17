@@ -16,7 +16,7 @@ answer), then puts the old value back and reads again:
   cron           /wp-cron.php is served by the PHP object (x-php-object)
 Prints PASS or FAIL per check. Exits 1 on any FAIL.
 """
-import json, os, sys, uuid
+import json, os, sys, urllib.parse, uuid
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "spikes", "b2-wordpress", "tests"))
 import break_lib as L
 
@@ -93,12 +93,15 @@ check("post id", bool(pid), "posts %s" % code)
 if pid:
     code, cur = rest(admin, nonce, "/wp/v2/posts/%d&context=edit" % pid)
     old_post = (cur or {}).get("title", {}).get("raw")
+    # #760: the post's own link; /?p=<id> answers 301 to it under pretty permalinks (a fresh site's default).
+    plink = urllib.parse.urlsplit((cur or {}).get("link") or "")
+    ppath = (plink.path or "/?p=%d" % pid) + ("?" + plink.query if plink.query else "")
     ptitle = "Coherence post " + uuid.uuid4().hex[:8]
     code, _ = rest(admin, nonce, "/wp/v2/posts/%d" % pid, {"title": ptitle})
-    body = (fresh(anon, "/?p=%d" % pid)["body"] or b"").decode("utf-8", "replace")
+    body = (fresh(anon, ppath)["body"] or b"").decode("utf-8", "replace")
     check("post-title change shows", ptitle in body, "write %s" % code)
     code, _ = rest(admin, nonce, "/wp/v2/posts/%d" % pid, {"title": old_post})
-    body = (fresh(anon, "/?p=%d" % pid)["body"] or b"").decode("utf-8", "replace")
+    body = (fresh(anon, ppath)["body"] or b"").decode("utf-8", "replace")
     check("post-title restore shows", ptitle not in body, "write %s" % code)
 
 # /_activate (WooCommerce), then off through REST

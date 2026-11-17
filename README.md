@@ -74,6 +74,8 @@ it maps the jobs you already do onto this stack, so read it first. Every documen
 
 We would rather you hear these from us before you build on the project than find them later.
 
+The [support matrix](docs/support-matrix.md) lists each WordPress and WooCommerce feature per tier and deploy path: supported, limited (and why), not supported, or not measured yet.
+
 - **One Durable Object per site:** one writer, one region, and one request at a time for anything
   the cache cannot answer. That is about 5 uncached requests a second; past that the queue grows,
   and at about 100 clients the object refuses ([docs/perf-dosql.md](docs/perf-dosql.md)).
@@ -86,8 +88,9 @@ We would rather you hear these from us before you build on the project than find
   always reads the real stock, so it never sells more than you have. If your pages show exact stock
   numbers, see [Stock numbers on cached pages](docs/from-lamp-to-wfp.md#stock-numbers-on-cached-pages)
   for the WooCommerce setting that avoids this. Since #628, a store caches its product,
-  shop and category pages for 30 s by default (`PAGE_CACHE_PRODUCT_TTL`). There, the number is at
-  most about 30 s old.
+  shop and category pages for 30 s by default (`PAGE_CACHE_PRODUCT_TTL`). There, the number is
+  usually at most about 30 s old. After a quiet spell, the first visitor can get a copy up to 60 s
+  old. That is the 30 s, plus a 30 s stale-while-revalidate window (#699).
 - **On a WooCommerce store, bundle size is the first wall.** A Worker is limited to 64 MiB
   uncompressed, and the upload gate stops at 62 MiB. WooCommerce alone takes the bundle to 58.3
   MiB. Measured with WooCommerce (#279): Yoast SEO (67.9 MiB), All in One SEO (67.5) and Elementor
@@ -148,6 +151,7 @@ Full cost line items and the per-plan limit table that decides the matrix above:
 
 ## More
 
+- What works on each tier and deploy path, and what is limited: [docs/support-matrix.md](docs/support-matrix.md).
 - Prior art: [docs/prior-art.md](docs/prior-art.md). This project builds on others' work, and we credit it there.
 - **How a cell becomes measured:** put a deploy script and a test in `tests/<id>/`; deploy to an account on the plan named in the column; run the test and record the command, date, Wrangler version and result in [docs/results.md](docs/results.md); then change the mark and link the result.
 
@@ -159,3 +163,5 @@ have not tried is a useful result too. Start with [CONTRIBUTING.md](CONTRIBUTING
 ## License
 
 GPL-2.0-or-later: the terms of the GNU General Public License version 2, or (at your option) any later version. See [LICENSE](LICENSE) for the version 2 text.
+
+The pagefeather engine includes PHP and the Zend Engine. See [NOTICE](NOTICE) for the required acknowledgment lines and the list of linked components. The licence texts are in [engine/notices/LICENSES](engine/notices/LICENSES), and each GitHub Release that ships the engine carries `NOTICE`, `SOURCE` and `LICENSES.tar.gz`. A version tag ships the npm Playground engine. The custom engine (variant s1-lean) is a separate prerelease; its notices are `engine/notices/lean/`.

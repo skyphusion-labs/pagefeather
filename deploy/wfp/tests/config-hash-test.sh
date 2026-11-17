@@ -93,6 +93,8 @@ unset PHP_INI PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE MEM_LEDGER
 # #394: the remote packs are the default (lib.sh remote_pack_defaults). This test's fake app tree has no
 # file-trace.sh or pack scripts, so its site runs the opt-out: the config-hash cases do not depend on it.
 export OPCACHE_REMOTE=0
+# #771: the npm engine keeps this offline (the default, lean, is fetched; tests/engine-resolve-test.sh).
+export PHP_ENGINE=npm
 export WOO_ACTIVE=0 ALLOW_DIRTY=1 NO_SNAPSHOT=1 BUILD_WAIT=4 BUILD_POLL_S=0.2 BUILD_EVICT_AFTER=3
 export ACCOUNT_ID=test-account CLOUDFLARE_API_TOKEN=test NAMESPACE=wp-wfp
 export SALT=salt-value-aaa SPIKE=spike-value-bbb
@@ -490,12 +492,13 @@ PY2
 # measurement flags: never recorded, by design (site_settings.py MEASUREMENT): ON only for the run.
 # HTTP_ALLOW_HOSTS is a recorded setting (#564). The record stores presence, so empty stays empty.
 # TMPDIR: curl_cfg writes the mode-600 curl config there (#581). Not a site setting.
-measurement=" FAULT_INJECT HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV "
+measurement=" DISPATCH_PERF_LOG FAULT_INJECT HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV "
 # #628: page_cache_product_var reads the build inputs WOO_ACTIVE, IMPORT_PLUGINS and PLUGINS (woo_active_for_build:
 # a store renders PAGE_CACHE_PRODUCT_TTL 30). They are recorded BUILD INPUTS (_build/inputs.json, #379), restored
 # by use_recorded_inputs before the render, so an update keeps them without SITE_SETTINGS.
 buildinputs=" WOO_ACTIVE IMPORT_PLUGINS PLUGINS "
-notset=" API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN OBSERVABILITY TMPDIR THROWAWAY$measurement$buildinputs"
+# GONE_LAST, GONE_WAITED (#789): the outputs of the bounded gone check (deploy/lib/gone-wait.sh), set per call, never a setting.
+notset=" API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN OBSERVABILITY TMPDIR THROWAWAY GONE_LAST GONE_WAITED$measurement$buildinputs"
 settings=" $(bash -c '. "'"$LIB"'"; echo $SITE_SETTINGS') "
 miss=""; for n in $derived; do case "$settings$notset" in *" $n "*) ;; *) miss="$miss $n" ;; esac; done
 ok "#558 every env name render_user reads is a recorded setting or named with a reason (missing:${miss:- none})" "$([ -z "$miss" ] && [ -n "$derived" ] && printf '%s\n' $derived | grep -qx HEADROOM_PROBE && echo 1 || echo 0)"

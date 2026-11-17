@@ -18,6 +18,50 @@
 export const FAULT_HEADER = 'x-pf-fault';
 export const FAULT_AFTER_INSERT = 'after-insert';
 
+// #766: the SQL statement failure, a MEASUREMENT for throwaway and local sites only, under the same rule (the site var
+// FAULT_INJECT is "sql-fail", deploy/fault-inject.sh; the spike token; x-pf-fault: sql-fail). x-pf-fault-sql names a
+// piece of the statement to fail: the FIRST statement of the request containing it throws the platform's own message,
+// once. So everything after it (noteFailure, resetFailures, the write-loss answer, the ledger's sql-memory-fail) runs
+// as for a real failure at the memory ceiling, and the isolate is NOT killed: in #724 the object went on after such
+// a failure.
+export const FAULT_SQL_FAIL = 'sql-fail';
+export const FAULT_SQL_HEADER = 'x-pf-fault-sql';
+export const SQL_FAIL_MESSAGE = "Durable Object's isolate exceeded its memory limit and was reset.";
+// x-pf-fault-sql-kind: other throws a NON-reset error instead (#770 review: any other SQLite failure), which the
+// write-loss answer does not replace, so PHP answers with what it saw.
+export const FAULT_SQL_KIND_HEADER = 'x-pf-fault-sql-kind';
+export const SQL_FAIL_OTHER_MESSAGE = 'SQLITE_ERROR: injected statement failure (#766, a measurement)';
+// #795: busy is a platform failure that is not the reset (the database busy), the class that gets a retryable answer;
+// other is a deterministic statement error, which goes back to WordPress as MySQL's would.
+export const SQL_FAIL_BUSY_MESSAGE = 'SQLITE_BUSY: database is locked (injected, #795, a measurement)';
+/** The message the armed statement throws: the platform's reset (the default), busy, or a deterministic error. */
+export function sqlFailMessage(headers) {
+	const k = headers ? headers.get(FAULT_SQL_KIND_HEADER) : null;
+	return k === 'other' ? SQL_FAIL_OTHER_MESSAGE : k === 'busy' ? SQL_FAIL_BUSY_MESSAGE : SQL_FAIL_MESSAGE;
+}
+
+// #809: the UNDO failure, a MEASUREMENT for throwaway and local sites only, under the same rule as sql-fail (the site var
+// FAULT_INJECT is "sql-fail", the spike token, x-pf-fault: sql-fail). x-pf-fault-undo: on makes every frame rollback and
+// recovery undo (undo-log.mjs undoTo, inside its transaction, after its statements) throw the platform's reset, so a
+// frame strands as it would when its undo meets the same storage ceiling; off ends it. It holds across requests
+// (module state of the object), so a following request and the cron alarm meet the stranded frame. index.js reads it
+// BEFORE the request's recovery, so the request that turns it off is the one whose recovery succeeds.
+export const FAULT_UNDO_HEADER = 'x-pf-fault-undo';
+export const UNDO_FAIL_MESSAGE = "Durable Object's isolate exceeded its memory limit and was reset. (injected into the undo, #809, a measurement)";
+/** true (on), false (off), or null (no change): the site var, the spike token, x-pf-fault: sql-fail, and on or off. */
+export function undoFailSet(env, spikeOk, headers) {
+	if (!env || env.FAULT_INJECT !== FAULT_SQL_FAIL || spikeOk !== true || !headers || headers.get(FAULT_HEADER) !== FAULT_SQL_FAIL) return null;
+	const v = headers.get(FAULT_UNDO_HEADER);
+	return v === 'on' ? true : v === 'off' ? false : null;
+}
+
+/** The piece of SQL to fail in this request, or null: the site var, the spike token, the header, and 3 to 120 characters. */
+export function sqlFailNeedle(env, spikeOk, headers) {
+	if (!env || env.FAULT_INJECT !== FAULT_SQL_FAIL || spikeOk !== true || !headers || headers.get(FAULT_HEADER) !== FAULT_SQL_FAIL) return null;
+	const n = String(headers.get(FAULT_SQL_HEADER) || '');
+	return n.length >= 3 && n.length <= 120 ? n : null;
+}
+
 /** True only with the site var, the spike token (the boolean from the object's own check) and the header. */
 export function faultArmed(env, spikeOk, headers) {
 	return Boolean(env) && env.FAULT_INJECT === FAULT_AFTER_INSERT && spikeOk === true && Boolean(headers) && headers.get(FAULT_HEADER) === FAULT_AFTER_INSERT;

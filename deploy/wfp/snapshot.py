@@ -106,6 +106,32 @@ def s3(method, path, body=None):
     return (int(code) if code.strip().isdigit() else 0), out
 
 
+def s3_head(path):
+    """HEAD one key over R2's S3 API (the same signing as s3()). Returns (status, {lowercased header: value}).
+    #841: R2 returns an object's customMetadata as x-amz-meta-<key> headers."""
+    kid, sec = s3_creds()
+    ep = ENV.get("WFP_S3_ENDPOINT") or "https://%s.r2.cloudflarestorage.com" % ENV["CLOUDFLARE_ACCOUNT_ID"]
+    r = subprocess.run(["curl", "-s", "-m", "60", "-K", "-", "--aws-sigv4", "aws:amz:auto:s3", "-I", ep + path],
+                       input=('user = "%s:%s"\n' % (kid, sec)).encode(), capture_output=True)
+    lines = r.stdout.decode("latin-1").splitlines()
+    status = 0
+    if lines and lines[0].startswith("HTTP/"):
+        parts = lines[0].split()
+        status = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+    hdrs = {}
+    for l in lines[1:]:
+        if ":" in l:
+            k, v = l.split(":", 1)
+            hdrs[k.strip().lower()] = v.strip()
+    return status, hdrs
+
+
+def alarm_record(hdrs):
+    """#841: (state, at) from a snapshot's alarm record, or None for a snapshot from before #841 (no record)."""
+    st = hdrs.get("x-amz-meta-alarmstate")
+    return None if st is None else (st, hdrs.get("x-amz-meta-alarmat", ""))
+
+
 def bucket_listing(bucket):
     """Every key of the bucket with its ETag and size, over EVERY page (#525). R2 answers at most
     1000 keys a page; one page made a change past key 1000 invisible, so isolation.sh's diff read
@@ -205,7 +231,11 @@ def fresh(args):
       - the newest is older than FRESH_MAX_AGE_H hours (26);
       - there IS a previous one and the newest is under FRESH_MIN_RATIO (0.5) of its size (a cut
         dump). The FIRST snapshot of a site has nothing to compare against, so this rule does not
-        apply to it; the age and presence rules apply from the first day.
+        apply to it; the age and presence rules apply from the first day;
+      - #841: the newest snapshot's alarm record says the cron alarm was MISSING (none) or long past
+        (stale) when the snapshot came, so cron was dead until the snapshot's re-arm; or there was no
+        alarm even after it. A snapshot from before #841 has no record: said, not red. The record
+        cannot be read: red (unreadable is never fresh).
     Exit 0 all fresh, 1 any red, 2 a bad site name. No site to check is said, and exits 0."""
     sites = fresh_sites(args)
     if not sites:
@@ -233,7 +263,16 @@ def fresh(args):
             print("RED %s: the newest snapshot %s is %.1f h old (over %g h)" % (s, n["key"], age_h, max_h)); red += 1; continue
         if len(objs) >= 2 and n["size"] < ratio * objs[-2]["size"]:
             print("RED %s: the newest snapshot %s is %d bytes, under %g of the previous one (%d bytes, %s)" % (s, n["key"], n["size"], ratio, objs[-2]["size"], objs[-2]["key"])); red += 1; continue
-        print("OK %s: %s, %d bytes, %.1f h old%s" % (s, n["key"], n["size"], age_h, "" if len(objs) >= 2 else " (the first snapshot: no size comparison)"))
+        hc, hdrs = s3_head("/%s/%s" % (b, n["key"]))
+        if hc != 200:
+            print("RED %s: cannot read the alarm record of %s (HEAD %s)" % (s, n["key"], hc)); red += 1; continue
+        rec = alarm_record(hdrs)
+        if rec is not None and rec[0] in ("none", "stale"):
+            print("RED %s: the cron alarm was %s when %s was taken: cron was stopped until the snapshot re-armed it (#841)" % (s, rec[0], n["key"])); red += 1; continue
+        if rec is not None and rec[1] in ("", "none"):
+            print("RED %s: no cron alarm after %s re-armed it (#841)" % (s, n["key"])); red += 1; continue
+        alarm_note = " (no alarm record: a build from before #841)" if rec is None else ", alarm ok"
+        print("OK %s: %s, %d bytes, %.1f h old%s%s" % (s, n["key"], n["size"], age_h, "" if len(objs) >= 2 else " (the first snapshot: no size comparison)", alarm_note))
     print("fresh: %d of %d site(s) red" % (red, len(sites)))
     return 1 if red else 0
 

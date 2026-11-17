@@ -46,7 +46,7 @@ rm -rf "$wp/wp-content/themes/twentytwentythree" "$wp/wp-content/themes/twentytw
 # from that site. Rules in deploy/import/content.sh.
 [ -z "${IMPORT_CONTENT:-}" ] || ../../deploy/import/content.sh "$IMPORT_CONTENT" "$wp/wp-content"
 mkdir -p "$wp/wp-content/mu-plugins"
-cp php/r2-uploads.php php/edge-cache.php php/woo-edge.php php/woo-cron-schedules.php php/woo-extras.php php/woo-cart-page.php php/woo-hpos-cache.php php/rest-route-cache.php php/rest-list-memory.php php/theme-json-cache.php php/http-bridge.php php/real-transactions.php php/ast-cache-stats.php php/woo-bootstrap-trim.php php/media-write-trim.php php/wp-mail-queue.php php/ai-alt-text.php php/zone-cache-purge.php php/pdf-invoice.php php/turnstile-forms.php php/analytics-pageview.php php/action-scheduler-alarm-only.php php/code-lock-notice.php php/mem-trace.php "$wp/wp-content/mu-plugins/"
+cp php/r2-uploads.php php/edge-cache.php php/woo-edge.php php/woo-cron-schedules.php php/woo-extras.php php/woo-cart-page.php php/woo-hpos-cache.php php/rest-route-cache.php php/rest-list-memory.php php/theme-json-cache.php php/http-bridge.php php/real-transactions.php php/ast-cache-stats.php php/woo-bootstrap-trim.php php/media-write-trim.php php/wp-mail-queue.php php/ai-alt-text.php php/zone-cache-purge.php php/pdf-invoice.php php/turnstile-forms.php php/analytics-pageview.php php/action-scheduler-alarm-only.php php/code-lock-notice.php php/mem-trace.php php/permalinks.php php/plain-404.php "$wp/wp-content/mu-plugins/"
 # The block checkout Turnstile script (issue #308). It reaches public/ as a static file and
 # turnstile-forms.php prints a script tag for it. A subdirectory, because WordPress loads every
 # .php file at the top of mu-plugins.
@@ -72,7 +72,7 @@ if [ "${ENGINE:-d1}" = a ]; then
   cp php/hyperdrive-literals.php "$wp/wp-content/hyperdrive-literals.php"
   cp php/hyperdrive-qtrace.php "$wp/wp-content/hyperdrive-qtrace.php" # #296 step 3
 else
-cp php/db.php php/d1-pdo.php php/d1-dialect.php "$wp/wp-content/"
+cp php/db.php php/d1-pdo.php php/d1-dialect.php php/table-status-size.php "$wp/wp-content/"
 # The plugin's installer opens its own connection to DB_PATH. Make it use the
 # D1-backed connection that wp-content/db.php already made.
 python3 - "$wp/wp-content/plugins/sqlite-database-integration/wp-includes/sqlite/install-functions.php" <<'PY'
@@ -116,6 +116,16 @@ echo 'export default null;' > build/opcache-remote-index.js
 echo 'export default null;' > build/site-remote-index.js
 echo "public/ $(find build/public -type f | wc -l | tr -d ' ') files"
 # The build id (build-id.sh): the git sha, -dirty, the content id and -wooprimed (#377).
+# #771, #827: the id must name the engine vendor/ holds. A tree prepared with one engine (prepare.sh records its tag
+# in vendor/engine.mjs) and built with another would carry a false id, so it is refused here, before the id is
+# stamped. By TAG, not name: two custom engines, or two lean pins, share a name. build/engine-tag records the tag
+# this build was made for, which a deploy that skips the build checks (engine_build_check).
+(
+  . ./engine.sh
+  engine_resolve >/dev/null || exit 2
+  engine_vendor_check vendor/engine.mjs || exit 2
+  engine_tag > build/engine-tag
+) || exit 2
 BUILD_ID=$(./build-id.sh "$wp/wp-content")
 printf 'export default %s;\n' "\"$BUILD_ID\"" > build/build-id.js
 echo "build-id $BUILD_ID"

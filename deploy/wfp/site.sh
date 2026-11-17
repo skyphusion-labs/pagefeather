@@ -22,9 +22,11 @@ need_account
 cmd=${1:-}; s=${2:-}
 valid_site "$s" || { echo "usage: site.sh up|down <name> (lower case, digits, hyphens; 1 to 30; not probe, not auto)" >&2; exit 2; }
 # #639, #693: full on a live site is refused before Terraform, the API, or the user Worker upload.
-if [ "$cmd" = up ]; then obs_refuse_full "$s" || exit 2; fi
+if [ "$cmd" = up ]; then obs_refuse_full "$s" || exit 2; dispatch_perf_log_var "$s" > /dev/null || exit 2; fi
 # #736: FAULT_INJECT is refused before any step too (deploy/fault-inject.sh).
 if [ "$cmd" = up ]; then fault_inject_var "$s" >/dev/null || exit 2; fi
+# #764: conformance content is refused before any step too (deploy/conformance.sh).
+if [ "$cmd" = up ]; then conformance_var "$s" || exit 2; fi
 umask 077
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 mkdir -p "$GEN"
@@ -55,10 +57,6 @@ fi
 BUILD_ID=$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js" 2>/dev/null || true); BUILD_ID=${BUILD_ID:-unknown}
 out() { tfr site output -raw "$1"; }
 ws() { tfr site init -input=false >/dev/null && tfr site workspace select -or-create "$s" >/dev/null; }
-gone() { # gone <what> <API path>: 404 or stop
-  local c; c=$(api_code GET "$2")
-  case "$c" in 404) echo "  $1 is gone (API 404)" ;; *) echo "  $1 is NOT gone (API $c): stopping" >&2; exit 1 ;; esac
-}
 
 if [ "$cmd" = up ]; then
   log "site $s: data plane and site map entry (workspace $s)"
@@ -91,19 +89,26 @@ if [ "$cmd" = up ]; then
   if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ]; then
     log "site $s: phase B, routed by the shared $SHARED_DISPATCHER and this site's Custom Domain $HOST (attached by the workspace apply above)"
     log "site $s: its cron-only copy $D (no route, no workers.dev), for the scheduled snapshot (#533)"
-    render_site_dispatcher "$s" "$KV_ID" cron-only > "$GEN/$D.toml"
+    render_site_dispatcher "$s" "$KV_ID" cron-only > "$GEN/$D.toml" || exit 1
     tfr site output -json | dispatcher_secrets_json "$W/disp-secrets.json"
     wrangler_deploy "$GEN" "$W/disp.log" --config "$D.toml" --secrets-file "$W/disp-secrets.json" || { rm -f "$W/disp-secrets.json"; tail -20 "$W/disp.log"; exit 1; }
     rm -f "$W/disp-secrets.json"
+    # #783: a retried wrangler deploy is not proof the script exists. Do not wait without it.
+    dispatcher_script_present "$D" || exit 1
+    obs_redact_site - "$D" "$GEN/$D.toml" || { echo "site $s: the cron-only copy $D is DEPLOYED, but its query-string redaction did NOT read back, so its logs are now OFF (or could not be turned off: check). Run site schedule $s to retry." >&2; exit 1; }
     cron_copy_check "$D" || exit 1
     echo "  $D: workers.dev and previews off, no Custom Domain (read back)"
   else
     log "site $s: dispatcher $D, with the scheduled snapshot of this site (#533)"
-    render_site_dispatcher "$s" "$KV_ID" > "$GEN/$D.toml"
+    render_site_dispatcher "$s" "$KV_ID" > "$GEN/$D.toml" || exit 1
     tfr site output -json | dispatcher_secrets_json "$W/disp-secrets.json"
     wrangler_deploy "$GEN" "$W/disp.log" --config "$D.toml" --secrets-file "$W/disp-secrets.json" || { rm -f "$W/disp-secrets.json"; tail -20 "$W/disp.log"; exit 1; }
     rm -f "$W/disp-secrets.json"
+    # #783: a retried wrangler deploy is not proof the script exists. Do not wait without it.
+    dispatcher_script_present "$D" || exit 1
     grep -q "$ORIGIN" "$W/disp.log" || { echo "the dispatcher did not deploy to $ORIGIN:" >&2; tail -5 "$W/disp.log" >&2; exit 1; }
+    # #767: logs on (OBSERVABILITY 1 or full): the dispatcher's query strings are redacted too, or its logs go off.
+    obs_redact_site - "$D" "$GEN/$D.toml" || { echo "site $s: the dispatcher $D is DEPLOYED, but its query-string redaction did NOT read back, so its logs are now OFF (or could not be turned off: check). Run site schedule $s to retry." >&2; exit 1; }
   fi
 
   log "site $s: wait for $ORIGIN (the site itself, lib.sh wait_site), then install"
@@ -138,12 +143,8 @@ elif [ "$cmd" = down ]; then
 
   log "site $s: user Worker $U"
   api DELETE "/workers/dispatch/namespaces/$NAMESPACE/scripts/$U?force=true" > /dev/null || true
-  # Not by the single GET's status (a deleted script can read 200 there): lib.sh ns_script_state.
-  st=$(ns_script_state "$U")
-  case "$st" in
-    gone) echo "  user Worker $U is gone (not in the namespace list; the single GET is 404 or an empty record)" ;;
-    *) echo "  user Worker $U is NOT known to be gone ($st): stopping" >&2; exit 1 ;;
-  esac
+  # Not by the single GET's status (a deleted script can read 200 there): lib.sh ns_script_state, polled (#789).
+  ns_gone "user Worker $U" "$U"
 
   log "site $s: search index (after the user Worker that binds it)"
   remove_search_index "$s" || exit 1

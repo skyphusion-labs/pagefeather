@@ -64,6 +64,14 @@ jobs:
         run: |
           node deploy/release/tests/bundle-manifest-test.mjs
           node deploy/release/tests/vendor-sync-test.mjs
+      - name: Release notices, SOURCE and NOTICE (issue #584)
+        # A bundle that ships an engine must carry LICENSES.tar.gz, SOURCE and NOTICE.
+        # Offline: committed texts at the pins in engine/licenses.tsv, no fetch.
+        run: bash deploy/release/tests/release-notices-test.sh
+      - name: a product bundle ships the notices of the engine it built; approach A held on npm (#771, #788)
+        run: bash deploy/release/tests/bundle-notices-test.sh
+      - name: the lean engine prerelease is assembled only from the pinned bytes, with its notices (#771)
+        run: bash engine/tools/publish-lean-test.sh
       - name: Live-site code redeploys refuse a mismatch (fleet-chezmoi#2620)
         run: |
           bash deploy/tests/code-only-test.sh
@@ -75,6 +83,9 @@ jobs:
         run: |
           bash deploy/tests/a-settings-test.sh
           bash deploy/tests/fault-inject-test.sh
+          bash deploy/tests/page-cache-ttl-test.sh
+          bash deploy/tests/conformance-test.sh
+          bash deploy/tests/opcache-store-test.sh
           bash deploy/tests/pdf-invoice-wiring-test.sh
           bash deploy/tests/frames-default-test.sh
           bash deploy/tests/a-render-test.sh
@@ -94,6 +105,9 @@ jobs:
       - name: Deploy scripts keep the spike token and admin password out of curl's command line
         # -K <(printf 'header = ...') instead of -H: the value is not in the process list.
         run: bash deploy/tests/curl-argv-test.sh
+      - name: /_install retries until the site is installed (#811)
+        # A stub answers 403, then the install JSON. A stub that never installs fails the step.
+        run: bash deploy/tests/install-retry-test.sh
       - name: Dialect tests
         run: php spikes/b2-wordpress/tests/dialect-test.php
       - name: A new month upload returns JSON with no chmod warning (issue #594)
@@ -111,6 +125,10 @@ jobs:
           node --test spikes/b2-wordpress/tests/woo-hpos-cache.test.mjs
           php spikes/b2-wordpress/tests/woo-hpos-cache-test.php
           php spikes/b2-wordpress/tests/woo-cart-page-test.php
+          php spikes/b2-wordpress/tests/permalinks-test.php
+          bash spikes/b2-wordpress/tests/same-site-test.sh
+          php spikes/b2-wordpress/tests/table-status-size-test.php
+          php spikes/b2-wordpress/tests/plain-404-test.php
       - name: Approach A object cache isolated mode (issue #218)
         # spikes/b2-wordpress/php/object-cache-js.php: the allowlist + TTL + force-off
         # posture, with a stubbed bridge (no DB). WooCommerce groups never persist.
@@ -122,6 +140,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/oc-l2-writer.test.mjs
       - name: b-dosql the request frame answers "nothing saved" only on the /_frame proof (issue #352)
         run: node --test spikes/b2-wordpress/tests/frame-probe.test.mjs
+      - name: /_install keeps its runtime, so the first page does not boot beside it (issue #756)
+        run: node --test spikes/b2-wordpress/tests/install-keeps-runtime.test.mjs
       - name: b-dosql approach-A options never persist across isolates (issue #491)
         run: php spikes/b2-wordpress/tests/object-cache-491-test.php
       - name: approach A options persist across isolates under an exact version, never stale (#296)
@@ -163,6 +183,8 @@ jobs:
         run: |
           bash tests/conformance/prepare-content-test.sh
           python3 -I tests/conformance/runner_test.py
+          python3 -I tests/conformance/seed-test.py
+          python3 -I tests/conformance/routes-test.py
       - name: b-dosql mail From address
         run: node --test spikes/b2-wordpress/tests/mail-from.test.mjs
       - name: b-dosql demo site lock
@@ -202,10 +224,14 @@ jobs:
           # #704: a checkout asks no purge (an HPOS order id, its notes); real changes still purge
           php spikes/b2-wordpress/tests/edge-cache-704-test.php
           node --test spikes/b2-wordpress/tests/purge-why.test.mjs
+          # #699: a refused purge stays pending with a back-off, and expires only after TTL + stale-while-revalidate.
+          node --test spikes/b2-wordpress/tests/purge-state.test.mjs
           bash deploy/wfp/tests/page-cache-product-test.sh
       - name: b-dosql a memory reset is not an overload (issue #335)
         # object-error.mjs: an isolate memory reset answers x-isolate-reset, never x-overloaded.
-        run: node --test spikes/b2-wordpress/tests/object-error.test.mjs
+        run: |
+          node --test spikes/b2-wordpress/tests/object-error.test.mjs
+          node --test spikes/b2-wordpress/tests/opcache-size.test.mjs
       - name: b-dosql a PHP object that does not start answering fails fast (issue #605)
         # object-deadline.mjs: abort a stub.fetch that has not started answering within
         # OBJECT_CALL_DEADLINE_S and answer 503 x-object-deadline, or write-loss when the
@@ -256,7 +282,9 @@ jobs:
       - name: load test prints its run markers, so a count window never mixes the checkouts and the CLEANUP (#704)
         run: python3 -I tests/load/cleanup-marker-test.py
       - name: load test classes a plain post as post and a Woo product as product (#691)
-        run: python3 -I tests/load/page-class-test.py
+        run: |
+          python3 -I tests/load/page-class-test.py
+          python3 -I tests/load/plain-resolve-test.py
       - name: load test skips stock-managed products and keeps each non-2xx Store API code, never a body (#296)
         run: python3 tests/load/stock-codes-stub-test.py
       - name: load test 1102 counter counts 5xx only (issue #394)
@@ -270,7 +298,9 @@ jobs:
         # tests/load/reuse_run.py runs repro, a 2-window burst with guests and the quiet gap; reuse_score.py passes a
         # clean on arm and fails a bad one on bars 2, 4 and 5 (bar 1 could not measure without logs), and lists a
         # slow no-answer request in the #605 table.
-        run: python3 -I tests/load/reuse-run-stub-test.py
+        run: |
+          python3 -I tests/load/reuse-run-stub-test.py
+          python3 -I tests/load/hang-read-test.py
       - name: b-dosql the isolate memory ledger (issue #394)
         run: node --test spikes/b2-wordpress/tests/mem-ledger.test.mjs
       # The arena test inflates real deflate data with fflate, the Worker's own inflater (#508). The
@@ -379,6 +409,11 @@ jobs:
         run: python3 -I spikes/b2-wordpress/tests/content-id-test.py
       - name: b-dosql build id says whether the OPcache is primed (issue #377)
         run: spikes/b2-wordpress/tests/build-id-test.sh
+      - name: "the PHP engine resolver: lean by default, by hash; npm and explicit files (#771)"
+        run: bash spikes/b2-wordpress/tests/engine-resolve-test.sh
+      - name: engine tag (#827)
+        run: bash spikes/b2-wordpress/tests/engine-tag-test.sh
+
       - name: b-dosql operator endpoints (issue #35)
         # /_build and /_evict are gated and never cached (spikes/b2-wordpress).
         run: node spikes/b2-wordpress/tests/build-evict-test.mjs
@@ -387,6 +422,7 @@ jobs:
         run: |
           deploy/wfp/tests/dbsnap-test.sh
           python3 -I deploy/wfp/tests/fresh-test.py
+          python3 -I deploy/wfp/tests/options-diff-test.py
           python3 -I deploy/wfp/tests/tempdir-clean-test.py
           deploy/wfp/tests/wait-build-test.sh
           deploy/wfp/tests/curl-k-file-test.sh
@@ -440,6 +476,7 @@ jobs:
           deploy/wfp/tests/ns-state-test.sh
           deploy/wfp/tests/kv-ready-test.sh
           deploy/wfp/tests/wait-site-test.sh
+          deploy/wfp/tests/wait-site-edge-test.sh
           deploy/wfp/tests/recorded-host-test.sh
           deploy/wfp/tests/bundle-size-test.sh
           deploy/wfp/tests/search-index-test.sh
@@ -448,12 +485,15 @@ jobs:
           spikes/b2-wordpress/tests/opcache-check-test.sh
           spikes/b2-wordpress/tests/opcache-shm-test.sh
           spikes/b2-wordpress/tests/local-creds-test.sh
+          spikes/b2-wordpress/tests/inspector-port-test.sh
+          spikes/b2-wordpress/tests/free-port-test.sh
           spikes/b2-wordpress/tests/opcache-activate-test.sh
           spikes/b2-wordpress/tests/opcache-server-alive-test.sh
           spikes/b2-wordpress/tests/prune-php-tree-test.sh
           deploy/wfp/tests/snapshot-test.sh
           deploy/wfp/tests/site-cmd-test.sh
           deploy/wfp/tests/down-key-test.sh
+          deploy/wfp/tests/gone-wait-test.sh
           deploy/wfp/tests/r2-temp-test.sh
           deploy/wfp/tests/custom-domain-test.sh
           python3 deploy/wfp/tests/check-test.py
@@ -461,10 +501,12 @@ jobs:
           bash deploy/wfp/tests/obs-redact-site-test.sh
           bash deploy/wfp/tests/obs-full-live-test.sh
           bash deploy/wfp/tests/fault-early-test.sh
+          bash deploy/wfp/tests/conformance-early-test.sh
           bash deploy/wfp/tests/obs-wfp-live-test.sh
           node deploy/provision/tests/ops-test.mjs
           node deploy/provision/tests/vendor-sync-test.mjs
           node deploy/provision/tests/provision-test.mjs
+          node deploy/provision/tests/remove-site-test.mjs
           node deploy/provision/tests/cli-test.mjs
           node deploy/provision/tests/worker-test.mjs
           node deploy/provision/tests/server-config-test.mjs
@@ -560,7 +602,9 @@ jobs:
         # Imports the real module. Reuses the npm ci in the step above (@php-wasm/universal).
         # Does not boot the engine, so it does not need prepare.sh.
         working-directory: spikes/b2-wordpress
-        run: node --test tests/engine-contract-tmpdir.test.mjs
+        run: |
+          node --test tests/engine-contract-tmpdir.test.mjs
+          node --test tests/engine-expect-default.test.mjs
       - name: The pagefeather engine's runtime contract, and each check red on the unpatched upstream engine (issue #582)
         # Boots the prepared engine: loader, extensions, OPcache under SAPI wasm, initial memory, allocator,
         # clock, heap growth, heap views, the open and read hooks, promising exports. Each check must also

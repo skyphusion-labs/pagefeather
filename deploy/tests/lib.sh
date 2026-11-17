@@ -27,10 +27,12 @@ REFUSE_NAME=pf-refusal-test
 
 # refuse <expected text> <VAR=value...>: deploy.sh exits 2 with that text, before any step.
 # env -i and a fake token, behind the fence. Needs FENCE (a fence_dir) and ROOT; counts into fails.
+# PHP_ENGINE=npm (REFUSE_PHP_ENGINE overrides it): these runs test other refusals offline; the default engine is
+# fetched (#771, spikes/b2-wordpress/tests/engine-resolve-test.sh).
 refuse() {
   local want=$1; shift
   local out rc
-  out=$(env -i PATH="$FENCE:$PATH" HOME="$HOME" NAME="$REFUSE_NAME" ACCOUNT_ID=0123456789abcdef0123456789abcdef CLOUDFLARE_API_TOKEN=fake "$@" bash "$ROOT/deploy/deploy.sh" 2>&1); rc=$?
+  out=$(env -i PATH="$FENCE:$PATH" HOME="$HOME" PHP_ENGINE="${REFUSE_PHP_ENGINE:-npm}" NAME="$REFUSE_NAME" ACCOUNT_ID=0123456789abcdef0123456789abcdef CLOUDFLARE_API_TOKEN=fake "$@" bash "$ROOT/deploy/deploy.sh" 2>&1); rc=$?
   if [ "$rc" = 2 ] && grep -qF "$want" <<<"$out" && ! grep -qE '^== (terraform|build|deploy)' <<<"$out"; then echo "  ok   refuses: $want ($*)"
   else echo "  FAIL expected exit 2 with '$want' before any step ($*; rc=$rc): $(tail -1 <<<"$out")"; fails=$((fails+1)); fi
 }

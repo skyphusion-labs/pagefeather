@@ -5,7 +5,7 @@
 #   vps-run.sh install  <suite> <work-dir>             clone the suite at its pin, install it
 #   vps-run.sh baseline <suite> <work-dir> <run-dir>   run it on STOCK upstream (wp-env, Docker)
 #   vps-run.sh run      <suite> <work-dir> <run-dir>   run it on OUR throwaway (needs <run-dir>/env)
-#   suites: wp (wordpress-develop), wc (WooCommerce core profile), gb (Gutenberg)
+#   suites: wp (wordpress-develop), wc (WooCommerce core profile), wc-api (its api-tests, the same checkout), gb (Gutenberg)
 #
 # DRY=1 prints the commands and runs nothing. Before "run": build the throwaway with the line from
 # prepare-content.sh, deploy it, then "runner.py prepare" writes <run-dir>/env. After both runs:
@@ -17,15 +17,16 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/pins.env"
 act=${1:?usage: vps-run.sh install|baseline|run <suite> <work-dir> [run-dir]}
-suite=${2:?suite: wp wc gb}
+suite=${2:?suite: wp wc wc-api gb}
 work=${3:?work-dir}
 case "$suite" in
   wp) repo=$WP_DEVELOP_REPO sha=$WP_DEVELOP_SHA e2e=tests/e2e ;;
-  wc) repo=$WC_REPO sha=$WC_SHA e2e=plugins/woocommerce/tests/e2e ;;
+  wc|wc-api) repo=$WC_REPO sha=$WC_SHA e2e=plugins/woocommerce/tests/e2e ;;
   gb) repo=$GB_REPO sha=$GB_SHA e2e=test/e2e ;;
-  *) echo "vps-run: unknown suite '$suite' (wp wc gb)" >&2; exit 2 ;;
+  *) echo "vps-run: unknown suite '$suite' (wp wc wc-api gb)" >&2; exit 2 ;;
 esac
-src=$work/$suite-$sha
+# wc-api shares the wc checkout (one clone, one install).
+src=$work/${suite%-api}-$sha
 x() { echo "+ $*"; [ "${DRY:-0}" = 1 ] || "$@"; }
 in_dir() { local d=$1; shift; echo "+ (cd $d && $*)"; [ "${DRY:-0}" = 1 ] || (cd "$d" && "$@"); }
 need_run_dir() { run=${1:?run-dir}; x mkdir -p "$run"; }
@@ -33,13 +34,20 @@ playwright() { # dir config: run Playwright with OUR wrapper config (exclusions,
   local d=$1
   x python3 -I "$here/runner.py" config --suite "$suite" --suite-dir "$src/$e2e" --run-dir "$run"
   case "$suite" in
-    wc) # Two phases, so the login is asserted BEFORE any test (lead ruling): the setup projects
+    wc|wc-api) # Two phases, so the login is asserted BEFORE any test (lead ruling): the setup projects
         # (install wc, global authentication, site setup), then check-state on both saved logins,
         # then the tests alone. The WP and Gutenberg configs assert it in globalSetup instead.
-        local st=$src/$e2e/.state
-        in_dir "$src/plugins/woocommerce" pnpm exec playwright test --config=tests/e2e/pf-conformance.config.mjs --project="site setup"
-        x python3 -I "$here/runner.py" check-state --base-url "${BASE_URL:-http://localhost:${WP_ENV_PORT:-8086}}" --state "$st/admin.json" --state "$st/customer.json"
-        in_dir "$src/plugins/woocommerce" pnpm exec playwright test --config=tests/e2e/pf-conformance.config.mjs --project=e2e-pf --no-deps ;;
+        local st=$src/$e2e/.state rc=0
+        # The setup phase writes the same report.json as the tests. It must never survive as "the results":
+        # remove it after phase 1, whatever phase 1 did. A failed setup or login is a STOP (exit 3), not a result.
+        x rm -f "$run/report.json"
+        in_dir "$src/plugins/woocommerce" pnpm exec playwright test --config=tests/e2e/pf-conformance.config.mjs --project="site setup" || rc=$?
+        x rm -f "$run/report.json"
+        [ "$rc" = 0 ] || { echo "vps-run: STOP: the setup projects failed (rc $rc)" >&2; exit 3; }
+        x python3 -I "$here/runner.py" check-state --base-url "${BASE_URL:-http://localhost:${WP_ENV_PORT:-8086}}" --state "$st/admin.json" --state "$st/customer.json" \
+          || { echo "vps-run: STOP: check-state (the saved login is not real)" >&2; exit 3; }
+        local proj=e2e-pf; [ "$suite" = wc-api ] && proj=api-pf
+        in_dir "$src/plugins/woocommerce" pnpm exec playwright test --config=tests/e2e/pf-conformance.config.mjs --project="$proj" --no-deps ;;
     *) in_dir "$d" npx playwright test --config="$e2e/pf-conformance.config.mjs" ;;
   esac
 }
@@ -55,7 +63,7 @@ case "$act" in
     fi
     case "$suite" in
       wp) in_dir "$src" npm ci; in_dir "$src" npx playwright install --with-deps chromium ;;
-      wc) in_dir "$src" corepack enable
+      wc|wc-api) in_dir "$src" corepack enable
           in_dir "$src" pnpm install --frozen-lockfile --filter=@woocommerce/plugin-woocommerce...
           in_dir "$src/plugins/woocommerce" pnpm exec playwright install --with-deps chromium ;;
       gb) in_dir "$src" npm ci; in_dir "$src" npm run build:packages
@@ -66,9 +74,17 @@ case "$act" in
     need_run_dir "${4:-}"
     # Stock upstream at the same pins, in Docker (wp-env). WP_ENV_CORE pins core to 7.1.4 where the
     # suite's own env file names a branch. The default credentials are admin / password.
+    # The baseline must not see our throwaway: unset the names the suites read (a caller may export them).
+    unset BASE_URL WP_BASE_URL ADMIN_USER ADMIN_PASSWORD WP_USERNAME WP_PASSWORD CUSTOMER_USER CUSTOMER_USERNAME CUSTOMER_PASSWORD
+    # Stop this suite's env on exit: the wordpress-develop and Gutenberg envs both use port 8889.
+    case "$suite" in
+      wp) trap 'in_dir "$src" npm run env:stop || true' EXIT ;;
+      wc|wc-api) trap 'in_dir "$src/plugins/woocommerce" pnpm env:e2e:stop || true' EXIT ;;
+      gb) trap 'in_dir "$src" npm run wp-env-test -- stop || true' EXIT ;;
+    esac
     case "$suite" in
       wp) in_dir "$src" npm run build:dev; in_dir "$src" npm run env:start; in_dir "$src" npm run env:install ;;
-      wc) in_dir "$src/plugins/woocommerce" env WP_ENV_CORE=WordPress/WordPress#7.1.4 pnpm env:e2e ;;
+      wc|wc-api) in_dir "$src/plugins/woocommerce" env WP_ENV_CORE=WordPress/WordPress#7.1.4 pnpm env:e2e ;;
       gb) in_dir "$src" env WP_ENV_CORE=WordPress/WordPress#7.1.4 npm run wp-env-test -- start ;;
     esac
     playwright "$src"

@@ -26,6 +26,8 @@ for s in $SITES; do valid_site "$s" || { echo "bad site name: $s" >&2; exit 2; }
 for s in $SITES; do obs_refuse_full "$s" || exit 2; done
 # #736: FAULT_INJECT is refused before the build and every upload too (deploy/fault-inject.sh).
 for s in $SITES; do fault_inject_var "$s" >/dev/null || exit 2; done
+# #764: conformance content is refused before the build and every upload too (deploy/conformance.sh).
+for s in $SITES; do conformance_var "$s" || exit 2; done
 umask 077
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 mkdir -p "$GEN"
@@ -33,6 +35,9 @@ mkdir -p "$GEN"
 # #394: the remote packs by default (0 opts out), before the build and every render read them.
 remote_pack_defaults
 [ "${BUILD:-1}" = 0 ] || build_dosql
+# #827: with BUILD=0 the build came from elsewhere; it must be for the engine vendor/ holds now.
+# shellcheck source=../../spikes/b2-wordpress/engine.sh
+( . "$APP/engine.sh" && engine_build_check "$APP" ) || exit 2
 
 log "shared: namespace $NAMESPACE and the site map"
 tfr shared init -input=false >/dev/null

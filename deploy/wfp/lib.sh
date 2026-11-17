@@ -180,9 +180,25 @@ snapshot_timeout_ms() {
 # workers_dev = false (preview_urls is false in the template) and no route: it binds what a phase A
 # copy binds and passes the same audit, but no request ever reaches it, so it is never a front
 # door. Each per-site copy, either phase, is one cron of the account's limit (250 on Workers Paid).
+# obs_render <site> (#767): the [observability] block of OBSERVABILITY, for BOTH the site's user Worker
+# (render_user) and its dispatcher wp-<name> (render_site_dispatcher), under one rule: unset or 0 an explicit
+# off, 1 events only (no request metadata), full with THROWAWAY=1 and never for a live site (obs_refuse_full).
+# A dispatcher with logs on has its query strings redacted after its deploy too (obs_redact_site -).
+obs_render() {
+  local s=$1
+  case "${OBSERVABILITY:-0}" in
+    0) printf '\n[observability]\nenabled = false\n' ;;
+    1) printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = false\n' ;;
+    full) [ "${THROWAWAY:-}" = 1 ] || { echo "OBSERVABILITY=full needs THROWAWAY=1 (it logs every request's URL, client IP and user agent; say the site is a throwaway, or use 1, events only)" >&2; return 1; }
+          obs_refuse_full "$s" || return 2
+          printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = true\n' ;;
+    *) echo "OBSERVABILITY must be 0, 1 (events only) or full (a throwaway only), not ${OBSERVABILITY}" >&2; return 1 ;;
+  esac
+}
 render_site_dispatcher() { # render_site_dispatcher <site> <kv namespace id> [cron-only]
-  local cron t
+  local cron t pl
   case "${3:-}" in "" | cron-only) ;; *) echo "render_site_dispatcher: the mode is cron-only or nothing, not ${3}" >&2; return 1 ;; esac
+  pl=$(dispatch_perf_log_var "$1") || return 2
   cron=$(snapshot_cron) || return 1
   t=$(snapshot_timeout_ms) || return 1
   if [ "${3:-}" = cron-only ]; then
@@ -192,8 +208,11 @@ render_site_dispatcher() { # render_site_dispatcher <site> <kv namespace id> [cr
   else
     render_dispatcher "$1" "$2"
   fi
-  printf '\n# The scheduled snapshot of this one site (#533, lib.sh render_site_dispatcher).\n[vars]\nSNAPSHOT_SCRIPT = "%s"\nSNAPSHOT_TIMEOUT_MS = "%s"\n\n[triggers]\ncrons = [%s]\n' \
-    "$(user_script "$1")" "$t" "${cron:+\"$cron\"}"
+  printf '\n# The scheduled snapshot of this one site (#533, lib.sh render_site_dispatcher).\n[vars]\nSNAPSHOT_SCRIPT = "%s"\nSNAPSHOT_TIMEOUT_MS = "%s"\n%s\n[triggers]\ncrons = [%s]\n' \
+    "$(user_script "$1")" "$t" "${pl:+$pl$'\n'}" "${cron:+\"$cron\"}"
+  # #767: the dispatcher's Workers Logs follow the site's OBSERVABILITY (they were never rendered: #605's
+  # dispatcher side could not be read). The same rule as the user Worker.
+  obs_render "$1"
 }
 # The cron-only copy (phase B, #533) must stay unreachable: after a deploy its workers.dev and
 # preview URLs read back OFF, and no Custom Domain names it. Exit 1 on either, or when either read
@@ -367,14 +386,33 @@ lazy_arena_var() {
 # isolate until it dies (spikes/b2-wordpress/headroom.mjs). A measurement for THROWAWAY sites only: it ends
 # the isolate. Off or unset: /_headroom answers 404. Read from the run's environment only.
 # FAULT_INJECT (#730, #589 B): the operator-only post-INSERT fault injector. ONE rule with deploy/deploy.sh:
-# deploy/fault-inject.sh (after-insert only, b-dosql, THROWAWAY=1, never a live site by either marker). A
+# deploy/fault-inject.sh (after-insert or sql-fail only, b-dosql, THROWAWAY=1, never a live site by either marker). A
 # measurement flag (site_settings.py MEASUREMENT): never recorded, so the next update without it turns it off.
 # fault_inject_var <site>: the [vars] line, nothing when unset; exit 2 with the reason when refused.
+# engine_ensure (#771): resolve the PHP engine once, on first need (spikes/b2-wordpress/engine.sh), and export it, so
+# the #642 engine check, the build (prepare.sh in build_dosql's subshell) and the recorded inputs all see the same
+# pair. A resolution in a subshell is done again in the parent: the same answer, from the cache. Refusals before the
+# first need never fetch. The default is the pinned lean engine; PHP_ENGINE=npm or PF_ENGINE_JS/WASM choose another.
+engine_ensure() {
+  [ -z "${PHP_ENGINE_RESOLVED:-}" ] || return 0
+  # shellcheck source=../../spikes/b2-wordpress/engine.sh
+  . "$WFP/../../spikes/b2-wordpress/engine.sh"
+  engine_resolve || return 2
+  echo "  PHP engine for this run: $PHP_ENGINE_RESOLVED${PF_ENGINE_WASM:+ ($PF_ENGINE_WASM)}" >&2
+}
 fault_inject_var() {
   # shellcheck source=../fault-inject.sh
   . "$WFP/../fault-inject.sh"
   ROOT="$WFP/../.." fault_check b-dosql "${1:-}" || return 2
   fault_line
+}
+# #764: the conformance content gate (deploy/conformance.sh): a build that carries the upstream suites' content
+# (#759: it wipes the store) is for a throwaway that is not live. ONE rule with deploy/deploy.sh. Renders nothing.
+# conformance_var <site>: exit 2 with the reason when refused.
+conformance_var() {
+  # shellcheck source=../conformance.sh
+  . "$WFP/../conformance.sh"
+  ROOT="$WFP/../.." conformance_check "${1:-}" || return 2
 }
 headroom_var() {
   case "${HEADROOM_PROBE:-}" in
@@ -451,6 +489,23 @@ page_cache_product_var() {
     echo "PAGE_CACHE_PRODUCT_TTL must be an integer from 5 to 600, not ${v}" >&2; return 1
   fi
   echo "PAGE_CACHE_PRODUCT_TTL = \"$((10#$v))\""
+}
+# PAGE_CACHE_TTL (#759 pass 2; deploy/page-cache-ttl.sh, the same rule as deploy.sh): the edge page cache seconds
+# (0 = off). Rendered only when set; a RECORDED setting, so an update keeps it, and DROP_SETTINGS=PAGE_CACHE_TTL
+# returns the site to the default (120). Refused (the render fails) outside 0 to 86400.
+page_cache_ttl_var() {
+  # shellcheck source=../page-cache-ttl.sh
+  . "$WFP/../page-cache-ttl.sh"
+  page_cache_ttl_check || return 1
+  page_cache_ttl_line
+}
+# OPCACHE_MC (#610, spikes/b2-wordpress/opcache-size.mjs): a STORE renders "64", the runtime's OPcache shared memory;
+# every other site renders nothing and keeps 48. The store rule is woo_active_for_build, as page_cache_product_var. Not a
+# recorded setting: it follows the build. An explicit PHP_INI opcache.memory_consumption still wins in the runtime.
+opcache_mc_var() {
+  local woo; woo=$(woo_active_for_build) || return 1
+  [ "$woo" = 1 ] || return 0
+  echo 'OPCACHE_MC = "64"'
 }
 # MEM_LEDGER (#394, mem-ledger.mjs): "on" logs the isolate memory ledger on every request and at
 # every cron leg start; "off" or unset leaves it to operator requests (x-mem-ledger: 1). Read from
@@ -594,6 +649,10 @@ render_user() { # render_user <site> <origin>
   local page_cache_product; page_cache_product=$(page_cache_product_var) || return 1
   [ -z "$mem_ledger" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$mem_ledger
   [ -z "$page_cache_product" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$page_cache_product
+  local page_cache_ttl; page_cache_ttl=$(page_cache_ttl_var) || return 1
+  [ -z "$page_cache_ttl" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$page_cache_ttl
+  local opcache_mc; opcache_mc=$(opcache_mc_var) || return 1
+  [ -z "$opcache_mc" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$opcache_mc
   local cron_interval; cron_interval=$(cron_interval_var) || return 1
   [ -z "$cron_interval" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$cron_interval
   local oc_remote; oc_remote=$(opcache_remote_var) || return 1
@@ -610,6 +669,7 @@ render_user() { # render_user <site> <origin>
   [ -z "$woo_extras" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$woo_extras
   # FAULT_INJECT (#730): the throwaway-only post-INSERT fault, the same rule as deploy.sh (deploy/fault-inject.sh).
   local fault; fault=$(fault_inject_var "$s") || return 2
+  conformance_var "$s" || return 2  # #764: the last guard, on the inputs this render builds from
   [ -z "$fault" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$fault
   local otime; otime=$(object_time_vars) || return 1
   [ -z "$otime" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$otime
@@ -667,14 +727,7 @@ TOML
   #                       deploy/wfp/live-sites/<name> (Workers for Platforms, #693). Use 1, events only.
   #   unset or 0          an EXPLICIT enabled = false: without the block a re-upload left a site's
   #                       logging as it was, so "off" did not turn it off.
-  case "${OBSERVABILITY:-0}" in
-    0) printf '\n[observability]\nenabled = false\n' ;;
-    1) printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = false\n' ;;
-    full) [ "${THROWAWAY:-}" = 1 ] || { echo "OBSERVABILITY=full needs THROWAWAY=1 (it logs every request's URL, client IP and user agent; say the site is a throwaway, or use 1, events only)" >&2; return 1; }
-          obs_refuse_full "$s" || return 2
-          printf '\n[observability]\nenabled = true\nhead_sampling_rate = 1\n[observability.logs]\nenabled = true\ninvocation_logs = true\n' ;;
-    *) echo "OBSERVABILITY must be 0, 1 (events only) or full (a throwaway only), not ${OBSERVABILITY}" >&2; return 1 ;;
-  esac
+  obs_render "$s" || return $?
   # WP_VECTORIZE_SEARCH (default off, metered): the token-free AI and SEARCH_INDEX bindings the
   # skyphusion-ai plugin reaches through the index.js op bridge (#330, #332). The index must exist
   # before the deploy; site.sh up makes it (ensure_search_index).
@@ -698,6 +751,22 @@ obs_live_site() {
   [ -n "${1:-}" ] || return 1
   [ -e "$WFP/../live-sites/$1.env" ] && return 0
   wfp_live_site "$1"
+}
+# DISPATCH_PERF_LOG (#605): "on" makes the site's dispatcher log a shape-only line when a request carries the
+# operator's x-perf-id (the id, the path, the times), so a slow request joins the dispatcher exactly: query strings
+# are redacted in Workers Logs, so an id in the URL never arrives. A measurement for a THROWAWAY that is not live
+# (the OBSERVABILITY=full rule, obs_live_site); never recorded (site_settings.py MEASUREMENT).
+# dispatch_perf_log_var <site>: the [vars] line, nothing when unset; exit 2 with the reason when refused.
+dispatch_perf_log_var() {
+  case "${DISPATCH_PERF_LOG:-}" in
+    "") return 0 ;;
+    on) ;;
+    *) echo "DISPATCH_PERF_LOG must be on or unset, not ${DISPATCH_PERF_LOG}" >&2; return 2 ;;
+  esac
+  [ "${THROWAWAY:-}" = 1 ] || { echo "DISPATCH_PERF_LOG is a measurement: it needs THROWAWAY=1" >&2; return 2; }
+  [ -n "${1:-}" ] || { echo "DISPATCH_PERF_LOG needs the site's name, to check it is not a live site" >&2; return 2; }
+  if obs_live_site "$1"; then echo "DISPATCH_PERF_LOG is a measurement, and $1 is a live site" >&2; return 2; fi
+  echo 'DISPATCH_PERF_LOG = "on"'
 }
 # obs_refuse_full <name>: OBSERVABILITY=full is refused for a live site (#639, #693).
 # Invocation logs record each request's URL, and a store's query strings hold
@@ -835,11 +904,12 @@ use_recorded_inputs() {
   # #642: the engine, checked in BOTH branches below. It is a file, so the recorded inputs cannot
   # bring it back; an update that builds another engine (or none: npm) is refused unless
   # REPLACE_INPUTS=1. Before #642 an update without the pair silently rebuilt a lean site on npm.
+  engine_ensure || { echo "the PHP engine cannot be resolved; refused" >&2; return 2; }
   rc=0; python3 -I "$WFP/build_inputs.py" engine-check "$rec" > "$w/engine" 2>&1 || rc=$?
   case "$rc" in
     0) ;;
     4) if [ "${REPLACE_INPUTS:-0}" = 1 ]; then echo "  REPLACE_INPUTS=1: the engine changes:"; cat "$w/engine"
-       else echo "this run would build another engine than the site runs; refused. Set PF_ENGINE_JS and PF_ENGINE_WASM to the site's engine, or REPLACE_INPUTS=1 to change it on purpose:" >&2; cat "$w/engine" >&2; return 2; fi ;;
+       else echo "this run would build another engine than the site runs; refused. Build the site's engine (PHP_ENGINE=npm, or PF_ENGINE_JS and PF_ENGINE_WASM; the default is the pinned lean engine, #771), or REPLACE_INPUTS=1 to change it on purpose:" >&2; cat "$w/engine" >&2; return 2; fi ;;
     *) echo "cannot check the recorded engine; refused:" >&2; cat "$w/engine" >&2; return 2 ;;
   esac
   if [ "$(content_inputs_set)" = 0 ] && [ -z "${WOO_ACTIVE:-}" ]; then
@@ -870,7 +940,7 @@ use_recorded_inputs() {
 # unset is the default list, and set, including empty, is that exact list. site update
 # remembers which one this run is, in http_allow_mode, before local -x collapses unset
 # into empty. Empty denies every host, so a drop sets the mode to unset.
-SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED PDF_INVOICE"
+SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED PDF_INVOICE PAGE_CACHE_TTL"
 # The measurement flags (HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV, site_settings.py MEASUREMENT) are
 # never recorded: ON only for the run that exports them; the next update without one turns it off.
 # A setting render_user reads that is not in this list is DROPPED by an update that does not export
@@ -931,6 +1001,7 @@ record_build_inputs() {
       python3 -I "$WFP/build_inputs.py" tree-put "$b" "$key" "$w/tree.tar.gz" || return 1
     fi
   fi
+  engine_ensure || return 1
   python3 -I "$WFP/build_inputs.py" env-json "$cid" "$key" "$id" > "$w/record.json" || return 1
   python3 -I "$WFP/build_inputs.py" put "$b" "$w/record.json" || return 1
   echo "  build inputs recorded in $b/_build/inputs.json (content ${cid:-none}, tree ${key:-none})"
@@ -948,6 +1019,7 @@ build_dosql() {
     # old loader in a tree that had built before, so a new loader patch never reached a deploy
     # (measured on pf394a, 2026-11-13: the heap patch build showed the stock 111 and 133 MiB stairs).
     # No pipe: a pipe takes tail's status and would hide a failed patch assert, shipping the old loader.
+    engine_ensure || { echo "the PHP engine cannot be resolved"; exit 1; }
     ./prepare.sh || { echo "prepare.sh failed: the loader was not rebuilt"; exit 1; }
     # WOO_ACTIVE reaches build.sh too, so the build id says whether it is primed (#377).
     # WOO follows it (#451): WooCommerce is in the bundle only when the site runs it. A plain site
@@ -1130,6 +1202,21 @@ api() { # api <method> <path> [curl args...]: prints the body, then a line with 
   curl_cfg "$text" -s -m 60 -X "$m" -w '\n%{http_code}' "$API$p" "$@"
 }
 api_code() { api "$@" | tail -1; }
+# The bounded gone checks (#789, deploy/lib/gone-wait.sh): a just-deleted script can read back as present for 30 s
+# or more, so each check polls up to GONE_WAIT_S (90) and an unreadable read (000, 5xx, unknown) is never gone.
+# shellcheck source=../lib/gone-wait.sh
+. "$WFP/../lib/gone-wait.sh"
+gone_api_state() { gone_http_state "$(api_code GET "$1")"; }
+# gone <what> <API path>: 404 (polled), or stop with the last state. Used by site.sh down and down.sh.
+gone() {
+  if wait_gone gone_api_state "$2"; then echo "  $1 is gone (API 404)$(gone_waited_note)"; return 0; fi
+  echo "  $1 is NOT gone (API $GONE_LAST) after ${GONE_WAITED} s: stopping" >&2; exit 1
+}
+# ns_gone <what> <script>: gone from the namespace by ns_script_state (polled), or stop with the last state.
+ns_gone() {
+  if wait_gone ns_script_state "$2"; then echo "  $1 is gone (not in the namespace list; the single GET is 404 or an empty record)$(gone_waited_note)"; return 0; fi
+  echo "  $1 is NOT known to be gone ($GONE_LAST) after ${GONE_WAITED} s: stopping" >&2; exit 1
+}
 # A script in the namespace: present, gone or unknown. The HTTP status of the
 # single GET is NOT enough: after a DELETE it can answer 200 with success true
 # and a record whose script id is null (a ghost, seen live 2026-11-06 on
@@ -1195,15 +1282,34 @@ kv_wait_writable() { # kv_wait_writable <namespace id>
     sleep "${KV_READY_STEP:-5}"
   done
 }
+# The dispatcher script must exist before wait_site. wrangler_deploy retries, and a
+# retry in the log is not the script (#783, the pf756m2 add). Fail, and say so,
+# when the account does not have it. dispatcher_script_present <script name>
+dispatcher_script_present() {
+  local c
+  c=$(api_code GET "/workers/scripts/$1") || c=000
+  if [ "$c" = 200 ]; then
+    echo "  dispatcher $1 is on the account (API 200)"
+    return 0
+  fi
+  echo "dispatcher $1 is not on the account after deploy (API $c); not waiting for the site" >&2
+  return 1
+}
 # Wait for a new site to answer from its OWN user Worker, not from the
 # platform or the dispatcher (the #92 trap: any answer is not "ready").
 # Seen 2026-11-06 (the third day one): site two's first answer was a 404, and
 # one second later the dispatcher answered "not deployed" (x-wfp-error
 # not-deployed: the entry was read, but the namespace did not have the new
-# script yet). The probe is GET /_dbping with no spike token: b-dosql answers
-# it with its own 403 before and after the install.
-#   ready:    2xx, 3xx, 401 or 403, with no x-wfp-error
-#   retried:  no answer, 404, 5xx, x-wfp-error no-site or not-deployed
+# script yet). The probe is GET /_dbping with no spike token. The site's spike
+# gate (spikes/b2-wordpress/index.js, the Worker and the object) answers an
+# untokened /_* with status 403 and the body "forbidden", and nothing else:
+#   return new Response('forbidden', { status: 403 })
+# A 401 is accepted only when the body is those same bytes (#783). Cloudflare's
+# edge uses 403 and 401 too, with the body "error code: <n>" (1104 on the
+# pf756m2 add). That is not the site: keep waiting to the cap, then fail and
+# name the code.
+#   ready:    2xx or 3xx, with no x-wfp-error; or 401 or 403 whose body is exactly "forbidden"
+#   retried:  no answer, 404, 5xx, any other 401 or 403, x-wfp-error no-site or not-deployed
 #   fails at once: x-wfp-error bad-entry or dispatch (a configuration fault)
 # Bound SITE_WAIT (300) s, every SITE_WAIT_STEP (10) s; a timeout prints the last answer.
 # The time wait_site waits for a new site to answer. Phase B's FIRST deploy
@@ -1217,15 +1323,50 @@ site_wait_cap() { echo "${SITE_WAIT:-$([ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && echo
 # move a case across a bound. The defaults are the real ones: $SECONDS and sleep.
 wait_now() { echo "$SECONDS"; }
 wait_sleep() { sleep "$1"; }
+# The bytes of the site's spike gate. spikes/b2-wordpress/index.js, both copies:
+#   if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
+site_gate_body() { printf '%s' 'forbidden'; }
+# Print the integer when the whole body is "error code: <n>" (a Cloudflare edge
+# error). Surrounding whitespace is ignored. Anything else prints nothing.
+edge_error_code() {
+  local b="$1"
+  b=${b//$'\r'/}
+  while :; do
+    case $b in
+      [[:space:]]*) b=${b#?} ;;
+      *) break ;;
+    esac
+  done
+  while :; do
+    case $b in
+      *[[:space:]]) b=${b%?} ;;
+      *) break ;;
+    esac
+  done
+  case $b in
+    'error code: '[0-9]*)
+      b=${b#error code: }
+      case $b in
+        *[!0-9]*|'') return 0 ;;
+        *) printf '%s' "$b" ;;
+      esac
+      ;;
+  esac
+}
 wait_site() { # wait_site <origin>
-  local t0 t code err body cap said_tls=0 said_dispatch=0
+  local t0 t code err body body_raw edge cap said_tls=0 said_dispatch=0 last_edge="" site_up
   t0=$(wait_now)
   cap=$(site_wait_cap)
   t=$(mktemp -d)
   while :; do
     code=$(curl -s -o "$t/b" -D "$t/h" -w '%{http_code}' -m 60 "$1/_dbping?nocache=$RANDOM$RANDOM" 2>/dev/null) || code=000
     err=$(tr -d '\r' < "$t/h" 2>/dev/null | awk -F': ' 'tolower($1) == "x-wfp-error" { print $2 }')
-    body=$(head -c 80 "$t/b" 2>/dev/null | tr -s '\n\r\t' ' ')
+    # The sentinel keeps a trailing newline, which $(...) would strip. The gate
+    # match is exact ("forbidden"); the edge match allows surrounding whitespace.
+    body_raw=$(head -c 80 "$t/b" 2>/dev/null || true; printf x)
+    body_raw=${body_raw%x}
+    body=$(printf '%s' "$body_raw" | tr -s '\n\r\t' ' ')
+    edge=$(edge_error_code "$body_raw")
     # bad-entry is a malformed site map entry: a fault at once. dispatch is any error from
     # the namespace script, and a brand-new site's FIRST cold boot can give one before it
     # answers (#294: fdprobe1111c answered 502 dispatch once, then served). So a dispatch
@@ -1238,10 +1379,19 @@ wait_site() { # wait_site <origin>
         fi
         [ "${said_dispatch:-0}" = 1 ] || { echo "  the site script errored ($code $err); retrying for up to ${WFP_DISPATCH_GRACE:-120} s (a first cold boot)"; said_dispatch=1; } ;;
     esac
-    if [ -z "$err" ] && [[ "$code" =~ ^(2..|3..|401|403)$ ]]; then
+    site_up=0
+    if [ -z "$err" ]; then
+      if [[ "$code" =~ ^(2..|3..)$ ]]; then
+        site_up=1
+      elif [[ "$code" =~ ^(401|403)$ ]] && [ "$body_raw" = "$(site_gate_body)" ]; then
+        site_up=1
+      fi
+    fi
+    if [ "$site_up" = 1 ]; then
       echo "  the site answered HTTP $code after $(($(wait_now) - t0)) s"
       rm -rf "$t"; return 0
     fi
+    if [ -n "$edge" ]; then last_edge=$edge; fi
     # Phase B first deploy: a new Custom Domain's Advanced Certificate may still
     # be issuing, so TLS is not ready and curl reads 000 or a 52x edge code.
     # That is a delay, not a fault: say so once and keep waiting to the cap.
@@ -1250,7 +1400,11 @@ wait_site() { # wait_site <origin>
       said_tls=1
     fi
     if [ $(($(wait_now) - t0)) -ge "$cap" ]; then
-      echo "the site did not answer in ${cap} s; last: HTTP $code${err:+, x-wfp-error $err}, body: $body" >&2
+      if [ -n "$last_edge" ]; then
+        echo "the site did not answer in ${cap} s; last: HTTP $code${err:+, x-wfp-error $err}, Cloudflare edge error code: $last_edge, body: $body" >&2
+      else
+        echo "the site did not answer in ${cap} s; last: HTTP $code${err:+, x-wfp-error $err}, body: $body" >&2
+      fi
       [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && echo "  if the Advanced Certificate for $1 is still issuing, re-run up.sh once it is active: the data plane persists and the install completes on the re-run" >&2
       rm -rf "$t"; return 1
     fi

@@ -16,7 +16,8 @@ for f in index.php wp-includes/js/wp-emoji-loader.min.js wp-includes/js/wp-embed
          wp-content/plugins/woocommerce/assets/images/placeholder-attachment.webp \
          wp-content/plugins/woocommerce/assets/images/placeholder.webp wp-content/plugins/woocommerce/assets/images/icon.png \
          wp-content/plugins/woocommerce/assets/js/frontend.js wp-content/plugins/woocommerce/assets/images/card.svg \
-         wp-content/plugins/woocommerce/readme.txt wp-admin/css/common.css wp-admin/css/common.min.css; do mk "$f"; done
+         wp-content/plugins/woocommerce/readme.txt wp-admin/css/common.css wp-admin/css/common.min.css \
+         wp-includes/images/icon-library/arrow-down.svg wp-includes/images/wpicons.svg; do mk "$f"; done
 bash "$HERE/prune-php-tree.sh" "$W" > "$T/out" 2>&1; rc=$?
 ok "prune-php-tree.sh runs (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
 has() { [ -e "$W/$1" ] && echo 1 || echo 0; }
@@ -28,6 +29,8 @@ ok "  a theme screenshot still goes" "$(gone wp-content/themes/tt5/screenshot.we
 ok "  a core image still goes" "$(gone wp-includes/images/w-logo-blue.png)"
 ok "#578: the emoji loader and the embed script stay" "$([ "$(has wp-includes/js/wp-emoji-loader.min.js)$(has wp-includes/js/wp-embed.min.js)" = 11 ] && echo 1 || echo 0)"
 ok "  a core script still goes" "$(gone wp-includes/js/jquery.js)"
+ok "the icon library SVGs stay (WP_Icons_Registry reads them at runtime, /wp/v2/icons)" "$(has wp-includes/images/icon-library/arrow-down.svg)"
+ok "  another core svg still goes" "$(gone wp-includes/images/wpicons.svg)"
 ok "plugins keep their .js and .svg" "$([ "$(has wp-content/plugins/woocommerce/assets/js/frontend.js)$(has wp-content/plugins/woocommerce/assets/images/card.svg)" = 11 ] && echo 1 || echo 0)"
 ok "a theme's style.css stays, its other .css goes" "$([ "$(has wp-content/themes/tt5/style.css)$(gone wp-content/themes/tt5/other.css)" = 11 ] && echo 1 || echo 0)"
 ok ".min.css stays, an unminified .css goes" "$([ "$(has wp-admin/css/common.min.css)$(gone wp-admin/css/common.css)" = 11 ] && echo 1 || echo 0)"

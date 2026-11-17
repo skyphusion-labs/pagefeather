@@ -5,11 +5,12 @@
 //   SITE_ORIGIN=https://x [OBJECT_CACHE_VERSIONS=1] node a-vars-toml.mjs vars     the object cache and lazy-node [vars] lines
 //   node a-vars-toml.mjs kv <namespace id>              the OC_KV [[kv_namespaces]] block
 //   node a-vars-toml.mjs product-ttl                    PAGE_CACHE_PRODUCT_TTL for every variant (#706)
+//   node a-vars-toml.mjs opcache-mc                     OPCACHE_MC for b-dosql: a store renders 64 (#610)
 //
 // `vars` leaves out the lines deploy.sh already writes for every variant (PHP_ENV, SITE_ORIGIN, the mail
 // lines, HYPERDRIVE_SQL_MODE); any OTHER var aVars adds is printed, so a new setting reaches deploy.sh too.
 // product-ttl is that same module's pageCacheProductTtl, for b-do, b-dosql and a (not only approach A).
-import { aVars, aBindings, pageCacheInputs, pageCacheProductTtl } from './wp-site-config.mjs';
+import { aVars, aBindings, pageCacheInputs, pageCacheProductTtl, opcacheStoreMc } from './wp-site-config.mjs';
 
 const OWN = new Set(['PHP_ENV', 'SITE_ORIGIN', 'MAIL_FROM', 'MAIL_FROM_NAME', 'HYPERDRIVE_SQL_MODE']);
 const line = (k, v) => `${k} = ${JSON.stringify(String(v))}`;
@@ -28,6 +29,11 @@ if (cmd === 'vars') {
 	try { text = pageCacheProductTtl(pageCacheInputs(process.env)); }
 	catch (e) { console.error(e.message); process.exit(2); }
 	if (text !== null) console.log(`PAGE_CACHE_PRODUCT_TTL = ${JSON.stringify(text)}`);
+} else if (cmd === 'opcache-mc') {
+	let text;
+	try { text = opcacheStoreMc(pageCacheInputs(process.env)); }
+	catch (e) { console.error(e.message); process.exit(2); }
+	if (text !== null) console.log(`OPCACHE_MC = ${JSON.stringify(text)}`);
 } else {
-	console.error('usage: a-vars-toml.mjs vars | kv <namespace id> | product-ttl'); process.exit(2);
+	console.error('usage: a-vars-toml.mjs vars | kv <namespace id> | product-ttl | opcache-mc'); process.exit(2);
 }

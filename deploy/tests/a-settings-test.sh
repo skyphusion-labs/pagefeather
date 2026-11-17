@@ -35,10 +35,10 @@ refuse "A_CLIENT is for variant a only" VARIANT=b-dosql A_CLIENT=lean
 refuse "PHP_OVERFLOW is for variant a only" VARIANT=b-do PHP_OVERFLOW=1
 refuse "PHP_OVERFLOW_POOL is for variant a only" VARIANT=c1 PHP_OVERFLOW_POOL=32
 refuse "A_CLIENT must be lean or mysql2" VARIANT=a A_CLIENT=pg
-for bad in 2 on yes; do refuse "PHP_OVERFLOW must be 0 or 1" VARIANT=a PHP_OVERFLOW=$bad; done
-refuse "PHP_OVERFLOW_POOL needs PHP_OVERFLOW=1" VARIANT=a PHP_OVERFLOW_POOL=32
+for bad in 2 on yes Always; do refuse "PHP_OVERFLOW must be 0, 1 or always" VARIANT=a PHP_OVERFLOW=$bad; done
+refuse "PHP_OVERFLOW_POOL needs PHP_OVERFLOW=1 or always" VARIANT=a PHP_OVERFLOW_POOL=32
 # #714: the overflow cap (#717, default 16) has a deploy input and an off switch; MEM_LEDGER is a measurement input.
-refuse "PHP_OVERFLOW_MAX_HELD needs PHP_OVERFLOW=1" VARIANT=a PHP_OVERFLOW_MAX_HELD=16
+refuse "PHP_OVERFLOW_MAX_HELD needs PHP_OVERFLOW=1 or always" VARIANT=a PHP_OVERFLOW_MAX_HELD=16
 for bad in 0 1001 abc -1 on 16.5; do refuse "PHP_OVERFLOW_MAX_HELD must be off or an integer from 1 to 1000" VARIANT=a PHP_OVERFLOW=1 "PHP_OVERFLOW_MAX_HELD=$bad"; done
 refuse "PHP_OVERFLOW_MAX_HELD is for variant a only" VARIANT=b-dosql PHP_OVERFLOW_MAX_HELD=off
 for bad in off 1 yes ON; do refuse "MEM_LEDGER must be on or unset" VARIANT=a "MEM_LEDGER=$bad"; done
@@ -101,7 +101,7 @@ ok "done: ONE status read and NO install (a re-deploy never drops and re-makes t
 ok "notrig: rc 0, and a loud WARNING that the var is inert" "$([ "$(cat "$T/ocv-notrig.rc")" = 0 ] && grep -q 'WARNING: OBJECT_CACHE_VERSIONS is on but INERT' "$T/ocv-notrig.out" && echo 1 || echo 0)"
 ok "down: rc 1 (the deploy stops: the default's state is unknown)" "$([ "$(cat "$T/ocv-down.rc")" = 1 ] && echo 1 || echo 0)"
 ok "the output never prints the token" "$(cat "$T"/ocv-*.out | grep -q tok && echo 0 || echo 1)"
-ok "deploy.sh runs it after the install, for variant a unless OBJECT_CACHE_VERSIONS=0" "$(grep -q 'if \[ "\$VARIANT" = a \] && \[ "\${OBJECT_CACHE_VERSIONS:-1}" != 0 \]; then a_ocv_install "\$URL" "\$SPIKE_TOKEN" || exit 1; fi' "$ROOT/deploy/deploy.sh" && [ "$(grep -n 'a_ocv_install "\$URL"' "$ROOT/deploy/deploy.sh" | cut -d: -f1)" -gt "$(grep -n '"\$URL/_install"' "$ROOT/deploy/deploy.sh" | cut -d: -f1)" ] && echo 1 || echo 0)"
+ok "deploy.sh runs it after the install, for variant a unless OBJECT_CACHE_VERSIONS=0" "$(grep -q 'if \[ "\$VARIANT" = a \] && \[ "\${OBJECT_CACHE_VERSIONS:-1}" != 0 \]; then a_ocv_install "\$URL" "\$SPIKE_TOKEN" || exit 1; fi' "$ROOT/deploy/deploy.sh" && [ "$(grep -n 'a_ocv_install "\$URL"' "$ROOT/deploy/deploy.sh" | cut -d: -f1)" -gt "$(grep -n 'install_wordpress "\$URL"' "$ROOT/deploy/deploy.sh" | cut -d: -f1)" ] && echo 1 || echo 0)"
 
 echo "2. the rendered lines (deploy/a-settings.sh)"
 S="$ROOT/deploy/a-settings.sh"
@@ -124,6 +124,9 @@ ok "A_CLIENT=mysql2 is index-a.js" "$([ "$(m A_CLIENT=mysql2)" = index-a.js ] &&
 o() { env -i PATH="$PATH" "$@" bash -c ". '$S' && a_overflow_vars && echo --- && a_overflow_bindings" 2>&1; }
 ok "PHP_OVERFLOW unset renders nothing" "$([ "$(o)" = '---' ] && echo 1 || echo 0)"
 ok "PHP_OVERFLOW=1: pool 32, the PhpRuntime binding and its migration" "$([ "$(o PHP_OVERFLOW=1)" = "$(printf 'PHP_OVERFLOW = "on"\nPHP_OVERFLOW_POOL = "32"\n---\n[[durable_objects.bindings]]\nname = "PHP_RUNTIME"\nclass_name = "PhpRuntime"\n[[migrations]]\ntag = "v1"\nnew_sqlite_classes = ["PhpRuntime"]')" ] && echo 1 || echo 0)"
+# #714: always, the measurement arm: the same pool, PHP_OVERFLOW = "always", and it passes the check with a pool and a cap.
+ok "PHP_OVERFLOW=always: always, pool 32, the PhpRuntime binding and its migration" "$([ "$(o PHP_OVERFLOW=always)" = "$(printf 'PHP_OVERFLOW = "always"\nPHP_OVERFLOW_POOL = "32"\n---\n[[durable_objects.bindings]]\nname = "PHP_RUNTIME"\nclass_name = "PhpRuntime"\n[[migrations]]\ntag = "v1"\nnew_sqlite_classes = ["PhpRuntime"]')" ] && echo 1 || echo 0)"
+ok "PHP_OVERFLOW=always passes the check with PHP_OVERFLOW_POOL=16 and PHP_OVERFLOW_MAX_HELD=off" "$(env -i PATH="$PATH" bash -c ". '$S' && PHP_OVERFLOW=always PHP_OVERFLOW_POOL=16 PHP_OVERFLOW_MAX_HELD=off a_settings_check a" >/dev/null 2>&1 && echo 1 || echo 0)"
 ok "PHP_OVERFLOW_POOL=064 renders 64 (base 10)" "$(grep -qx 'PHP_OVERFLOW_POOL = "64"' <<<"$(o PHP_OVERFLOW=1 PHP_OVERFLOW_POOL=064)" && echo 1 || echo 0)"
 ok "the pool bounds 1 and 128 pass the check (the runtime range)" "$(env -i PATH="$PATH" bash -c ". '$S' && PHP_OVERFLOW=1 PHP_OVERFLOW_POOL=1 a_settings_check a && PHP_OVERFLOW=1 PHP_OVERFLOW_POOL=128 a_settings_check a" >/dev/null 2>&1 && echo 1 || echo 0)"
 ok "the cap bounds 1, 1000 and off pass the check" "$(env -i PATH="$PATH" bash -c ". '$S' && PHP_OVERFLOW=1 PHP_OVERFLOW_MAX_HELD=1 a_settings_check a && PHP_OVERFLOW=1 PHP_OVERFLOW_MAX_HELD=1000 a_settings_check a && PHP_OVERFLOW=1 PHP_OVERFLOW_MAX_HELD=off a_settings_check a" >/dev/null 2>&1 && echo 1 || echo 0)"

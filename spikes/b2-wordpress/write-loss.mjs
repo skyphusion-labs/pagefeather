@@ -38,6 +38,45 @@ export function rolledBackResponse(json = false, kind = 'memory', undone = 0) {
 	const body = json ? JSON.stringify({ code: WRITE_LOSS_CODE, message: ROLLED_BACK_MESSAGE, data: { status: 500, rolledBack: true } }) : ROLLED_BACK_MESSAGE + '\n';
 	return { status: 500, headers, body };
 }
+/**
+ * #795, the lead's ruling: a failure is classed by WHAT FAILED, not where. A PLATFORM failure is something our platform
+ * did TO the statement (the memory reset, which resetFailures counts and the write-loss path answers; the database busy
+ * or locked; out of memory; the disk or storage full; an I/O error; a timeout or a lost connection; no reply from the
+ * Worker): PHP saw an empty or unapplied result that was not the truth, so the request answers a visible, retryable
+ * failure. Anything else is a DETERMINISTIC statement error (no such table, a syntax or constraint error, the LIKE
+ * pattern cap, a dialect miss): the statement itself is wrong and fails again on a retry, so it goes back to WordPress
+ * through wpdb's error path (the SQLite integration's _do_query sets last_error), as MySQL's errors do. An unknown
+ * message is deterministic: a retry loop is worse than WordPress's own handling, and the log line names its class.
+ */
+export const PLATFORM_FAILURE = /exceeded its memory limit|SQLITE_BUSY|database is locked|SQLITE_NOMEM|out of memory|SQLITE_FULL|database or disk is full|SQLITE_IOERR|disk I\/O error|timed out|timeout|network connection lost|overloaded|no reply from the Worker|storage (?:reset|limit)/i;
+/** The statements of a run that failed by the platform's hand (the reset among them). */
+export function platformFailures(failures) {
+	let n = 0;
+	for (const f of failures || []) if (f && PLATFORM_FAILURE.test(String(f.error || ''))) n++;
+	return n;
+}
+/**
+ * #795: the answer to a request in which a SQL statement failed by the PLATFORM's hand, other than the isolate memory reset
+ * (resetFailures counts those). Never a plausible wrong answer: PHP saw a failed read as an empty result, so its own
+ * 200 or 404 would look like the truth. saved says whether the request may have kept a write:
+ *   false (it wrote nothing, or its frame is proven rolled back): 503 with Retry-After, "Nothing was saved. You can try
+ *         again." A retry is safe, and it gets the truth.
+ *   true  (a write may have been kept): 500 with no Retry-After, as writeLossResponse: "check before you try again".
+ * Both are no-store, carry x-sql-failure (the count), and claim no isolate reset (there was none).
+ */
+export function statementFailureResponse(n, json = false, saved = false) {
+	const headers = {
+		'content-type': json ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8',
+		'cache-control': 'no-store',
+		'x-sql-failure': String(n),
+		'x-write-loss': saved ? 'unknown' : 'none',
+	};
+	if (!saved) headers['retry-after'] = '5';
+	const message = saved ? WRITE_LOSS_MESSAGE : ROLLED_BACK_MESSAGE;
+	const status = saved ? 500 : 503;
+	const body = json ? JSON.stringify({ code: WRITE_LOSS_CODE, message, data: { status, statementFailure: true } }) : message + '\n';
+	return { status, headers, body };
+}
 /** Whether a /_frame answer PROVES the request kept nothing: rolled back, and no commit point passed. */
 export function frameProvesRollback(frame) {
 	return !!(frame && frame.state === 'rolled-back' && Number(frame.points) === 0);

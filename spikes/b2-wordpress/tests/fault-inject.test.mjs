@@ -5,7 +5,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { faultArmed, isFaultTarget, exhaustMemory, FAULT_HEADER, FAULT_AFTER_INSERT } from '../fault-inject.mjs';
+import { faultArmed, isFaultTarget, exhaustMemory, FAULT_HEADER, FAULT_AFTER_INSERT, sqlFailNeedle, FAULT_SQL_FAIL, FAULT_SQL_HEADER, SQL_FAIL_MESSAGE, sqlFailMessage, FAULT_SQL_KIND_HEADER, SQL_FAIL_BUSY_MESSAGE, SQL_FAIL_OTHER_MESSAGE, undoFailSet, FAULT_UNDO_HEADER, UNDO_FAIL_MESSAGE } from '../fault-inject.mjs';
+import { MEMORY_RESET } from '../object-error.mjs';
 
 const H = (o) => new Headers(o);
 test('armed only with the var, the spike token and the header, all three', () => {
@@ -52,4 +53,49 @@ test('index.js wiring: armed per object request, fired after the statement, one 
 	assert.match(sqlStmt, /m: 'fault-inject'/, 'logged before the kill');
 	assert.match(sqlStmt, /m: 'fault-not-killed'/, 'an isolate that survived is logged');
 	assert.match(src, /faultPending = false;\s*\/\/ #730: never carried to the next request/, 'cleared after the request');
+});
+
+test('#766 sql-fail: armed only with the var, the spike token and the header; the needle is 3 to 120 characters', () => {
+	const h = (o) => new Map(Object.entries(o));
+	const env = { FAULT_INJECT: FAULT_SQL_FAIL };
+	const ok = h({ [FAULT_HEADER]: FAULT_SQL_FAIL, [FAULT_SQL_HEADER]: 'false-404-mug' });
+	assert.equal(sqlFailNeedle(env, true, ok), 'false-404-mug');
+	assert.equal(sqlFailNeedle({}, true, ok), null, 'no site var');
+	assert.equal(sqlFailNeedle({ FAULT_INJECT: FAULT_AFTER_INSERT }, true, ok), null, 'the other mode does not arm it');
+	assert.equal(sqlFailNeedle(env, false, ok), null, 'no spike token');
+	assert.equal(sqlFailNeedle(env, true, h({ [FAULT_SQL_HEADER]: 'false-404-mug' })), null, 'no x-pf-fault');
+	assert.equal(sqlFailNeedle(env, true, h({ [FAULT_HEADER]: FAULT_AFTER_INSERT, [FAULT_SQL_HEADER]: 'abc' })), null, 'x-pf-fault of the other mode');
+	assert.equal(sqlFailNeedle(env, true, h({ [FAULT_HEADER]: FAULT_SQL_FAIL, [FAULT_SQL_HEADER]: 'ab' })), null, 'too short');
+	assert.equal(sqlFailNeedle(env, true, h({ [FAULT_HEADER]: FAULT_SQL_FAIL, [FAULT_SQL_HEADER]: 'x'.repeat(121) })), null, 'too long');
+	assert.equal(faultArmed(env, true, ok), false, 'sql-fail never arms the after-insert kill');
+	assert.ok(MEMORY_RESET.test(SQL_FAIL_MESSAGE), 'the message is one resetFailures counts, as the platform reset is');
+	const kind = (k) => sqlFailMessage(h(k ? { [FAULT_SQL_KIND_HEADER]: k } : {}));
+	assert.equal(kind(''), SQL_FAIL_MESSAGE, 'the default is the reset');
+	assert.equal(kind('busy'), SQL_FAIL_BUSY_MESSAGE, 'busy: a platform failure that is not the reset');
+	assert.equal(kind('other'), SQL_FAIL_OTHER_MESSAGE, 'other: a deterministic statement error');
+	assert.ok(!MEMORY_RESET.test(SQL_FAIL_BUSY_MESSAGE) && /SQLITE_BUSY/.test(SQL_FAIL_BUSY_MESSAGE));
+});
+test('#766 index.js wiring: a request with a reset-class failure drops the object-cache keys it wrote, and its held L2 sets', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.ok(src.includes('sqlFailAt = sqlFailNeedle(env, spikeOk, req.headers)'), 'armed per object request');
+	assert.ok(src.includes('sqlFailAt = null; // #766: nor this'), 'never carried to the next request');
+	assert.ok(/if \(sqlFailAt && String\(m\.sql\)\.includes\(sqlFailAt\)\) \{\s*sqlFailAt = null;/.test(src), 'one shot, before the statement runs');
+	assert.ok(src.includes('ocReqBegin(); // #766'), 'each request starts its own record of cache writes');
+	assert.ok(src.includes('const ocForgot = ocReqForget();'), 'the write-loss answer forgets them');
+	assert.ok(src.includes('if (req0 && req0.poisoned) return;'), 'a held L2 set of a poisoned request never runs');
+});
+
+test('#809 the undo-failure seam: only with the sql-fail site var, the spike token and x-pf-fault: sql-fail; on, off or no change', () => {
+	const env = { FAULT_INJECT: FAULT_SQL_FAIL };
+	const hh = (o) => new Headers(o);
+	const on = { [FAULT_HEADER]: FAULT_SQL_FAIL, [FAULT_UNDO_HEADER]: 'on' };
+	assert.equal(undoFailSet(env, true, hh(on)), true);
+	assert.equal(undoFailSet(env, true, hh({ ...on, [FAULT_UNDO_HEADER]: 'off' })), false);
+	assert.equal(undoFailSet(env, true, hh({ [FAULT_HEADER]: FAULT_SQL_FAIL })), null, 'no undo header: no change');
+	assert.equal(undoFailSet(env, true, hh({ ...on, [FAULT_UNDO_HEADER]: 'yes' })), null, 'only on or off');
+	assert.equal(undoFailSet({}, true, hh(on)), null, 'no site var (a live site never has it)');
+	assert.equal(undoFailSet({ FAULT_INJECT: FAULT_AFTER_INSERT }, true, hh(on)), null, 'another kind');
+	assert.equal(undoFailSet(env, false, hh(on)), null, 'no spike token');
+	assert.equal(undoFailSet(env, true, hh({ [FAULT_UNDO_HEADER]: 'on' })), null, 'no x-pf-fault: sql-fail');
+	assert.ok(MEMORY_RESET.test(UNDO_FAIL_MESSAGE), 'it throws the platform reset, as the real ceiling would');
 });

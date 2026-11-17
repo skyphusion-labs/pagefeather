@@ -6,7 +6,7 @@ import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { installPhpBasicAuth } from './php-auth.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
-import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY } from './alarm-arm.mjs';
+import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm } from './alarm-arm.mjs';
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
 import { callPhpObject, isObjectCallDeadline, objectCallDeadlineMs, objectCallExempt } from './object-deadline.mjs';
 import { startByMs, objectShedPlan, startByResponse, shedAnswer, startByExempt, tagCallId, recheckStartBy, disconnectAnswer, disconnectSignal, tickFetch, tickResponse, TICK_PATH, START_BY_HEADER, CALL_HEADER } from './start-by.mjs';
@@ -23,13 +23,15 @@ import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, lockDefines } from './site-lock.mjs';
 import { exportRequest } from './mysql-export.mjs';
 import { perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore, serverTimingPhp } from './perf-headers.mjs';
+import { opcacheMemoryMib } from './opcache-size.mjs';
 import { createTrace as createQueryTrace } from './qtrace.mjs';
 import { hposCacheDefine } from './woo-hpos-cache.mjs';
-import { resetFailures, writeLossResponse, rolledBackResponse, frameProvesRollback, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
+import { resetFailures, platformFailures, writeLossResponse, rolledBackResponse, frameProvesRollback, statementFailureResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
 import { MEMORY_RESET } from './object-error.mjs';
 import { createL2Writer } from './oc-l2-writer.mjs';
 import { createLedger, memfsBytes, createSqlMeter, ledgerOn, LEDGER_MIB, currentSerial } from './mem-ledger.mjs';
 import { recycleLine, recycleDecision } from './recycle-line.mjs';
+import { PHP_ENGINE, ENGINE_RECYCLE_MIB } from './vendor/engine.mjs'; // #771: written by prepare.sh
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import { routeClass, createTrace } from './file-trace.mjs';
 import { refuseSocketsDecorator, parseMessage } from './runtime-guards.mjs';
@@ -39,7 +41,7 @@ import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__do
 import { inflateSync } from 'fflate';
 import { createArena } from './inflate-arena.mjs';
 import { headroomStream } from './headroom.mjs';
-import { faultArmed, isFaultTarget, exhaustMemory } from './fault-inject.mjs';
+import { faultArmed, isFaultTarget, exhaustMemory, sqlFailNeedle, sqlFailMessage, undoFailSet, UNDO_FAIL_MESSAGE } from './fault-inject.mjs';
 import { failuresSince } from './activate-report.mjs';
 import { createUndoLog } from './undo-log.mjs';
 import { createRetirer } from './runtime-drop.mjs';
@@ -50,6 +52,7 @@ import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse } from './overflow.mjs';
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
+import { PURGE_GAP_MS, NO_CACHE_API, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
@@ -108,6 +111,8 @@ let sqlStorage = null;
 // token and x-pf-fault, all three). One shot: sqlStatement clears it when it fires; the run clears it at the end.
 let faultPending = false;
 let faultReq = null; // its x-pf-req, for the log line
+let sqlFailAt = null; // #766: the piece of SQL whose first statement this request fails (fault-inject.mjs sqlFailNeedle)
+let sqlFailMsg = ''; // #766: and the message it throws (sqlFailMessage)
 const faultHeld = []; // the memory the kill holds, so nothing can be collected before the platform resets
 
 // Object cache across requests (php/object-cache.php, docs/perf-dosql.md), in
@@ -120,6 +125,28 @@ let objectCacheBytes = 0;
 function objectCacheClear() {
 	objectCache.clear();
 	objectCacheBytes = 0;
+}
+// #766: the object-cache keys this request wrote (set or del), so a request that met a reset-class SQL failure can
+// take them back. Such a request saw failed statements as empty results (a product query that found nothing), and the
+// cache would otherwise hand that to every later request: a 404 for a product that exists. poisoned also stops the
+// request's L2 sets that the undo log still holds (#352 defer), which run after the response.
+let ocReq = null;
+// #766: a failed READ statement (SELECT, WITH): PHP saw an empty result, whatever the error's class.
+function readFailed(failures) { return (failures || []).some((f) => f && /^\s*(SELECT|WITH)\b/i.test(String(f.sql || ''))); }
+function ocReqBegin() { ocReq = { writes: new Set(), poisoned: false }; }
+function ocReqForget() {
+	const r = ocReq;
+	if (!r) return { n: 0, groups: {} };
+	r.poisoned = true;
+	const l2 = ocL2On();
+	const groups = {};
+	for (const k of r.writes) {
+		objectCacheDrop(k);
+		const g = ocGroupOf(k).slice(-40);
+		groups[g] = (groups[g] || 0) + 1;
+		if (l2 && ocCtx) { try { ocCtx.waitUntil(ocL2Writer().del(ocKvKey(k))); } catch {} }
+	}
+	return { n: r.writes.size, groups };
 }
 function objectCacheDrop(k) {
 	const e = objectCache.get(k);
@@ -203,14 +230,17 @@ async function objectCacheOp(op) {
 	if (op.op === 'set') {
 		ocCount(op.k, "set");
 		if (undoLog) undoLog.touch(op.k);
+		const req0 = ocReq; // #766
+		if (req0) req0.writes.add(op.k);
 		const n = op.k.length + op.v.length;
 		if (n > OBJECT_CACHE_BYTES / 4) return { ok: false };
 		ocStore(op.k, op.v, op.ttl > 0 ? now + op.ttl * 1000 : 0);
-		if (l2 && ocCtx) { const ttl = Math.max(60, op.ttl > 0 ? op.ttl : 60); const k2 = ocKvKey(op.k), v2 = op.v, c2 = ocCtx; const doSet = () => { try { const w = ocL2Writer().set(k2, v2, ttl); if (w) c2.waitUntil(w); } catch {} }; if (!(undoLog && undoLog.defer(doSet))) doSet(); } // #352: held until the frame is kept
+		if (l2 && ocCtx) { const ttl = Math.max(60, op.ttl > 0 ? op.ttl : 60); const k2 = ocKvKey(op.k), v2 = op.v, c2 = ocCtx; const doSet = () => { if (req0 && req0.poisoned) return; try { const w = ocL2Writer().set(k2, v2, ttl); if (w) c2.waitUntil(w); } catch {} }; if (!(undoLog && undoLog.defer(doSet))) doSet(); } // #352: held until the frame is kept
 		return { ok: true };
 	}
 	if (op.op === 'del') {
 		if (undoLog) for (const k of op.k) undoLog.touch(k);
+		if (ocReq) for (const k of op.k) ocReq.writes.add(k); // #766
 		let n = 0;
 		for (const k of op.k) { ocCount(k, "del"); if (objectCacheDrop(k)) n++; if (l2 && ocCtx) { try { ocCtx.waitUntil(ocL2Writer().del(ocKvKey(k))); } catch {} } }
 		return { n };
@@ -676,6 +706,11 @@ async function loadBootPacks() {
 					return new Uint8Array(await r.arrayBuffer());
 				}),
 			);
+			// #801: a pack that is not the length the split wrote (truncated, or another build's) is refused, loudly,
+			// rather than reported as 'assets' while OPcache compiles the boot from source. An older index has no
+			// chunkBytes and is not checked.
+			const want = Array.isArray(OPCACHE_BOOT.chunkBytes) ? OPCACHE_BOOT.chunkBytes : null;
+			if (want) packs.forEach((p, i) => { if (p.length !== want[i]) throw new Error(OPCACHE_BOOT.chunks[i] + ' is ' + p.length + ' bytes, the index says ' + want[i]); });
 			const kib = Math.round(packs.reduce((n, p) => n + p.length, 0) / 1024);
 			console.log(JSON.stringify({ m: 'l1', source: 'assets', chunks: packs.length, kib, ms: Date.now() - t }));
 			l1State = `assets ${kib}KiB ${Date.now() - t}ms`;
@@ -1424,6 +1459,9 @@ async function handleMessage(raw) {
 	const m = parsed.m;
 	if (m.http) return JSON.stringify(await httpOp(m.http));
 	if (m.txn) return JSON.stringify(sqlDb ? txnOp(sqlDb, sqlStorage, m.txn) : { ok: false, error: 'no database in the object' });
+	// #780: the whole database's size for SHOW TABLE STATUS (php/table-status-size.php). A Durable Object's SQLite
+	// reports only that (no dbstat, no PRAGMA page_count). Without the object's database: no size.
+	if (m.dbSize) return JSON.stringify(sqlDb ? { ok: true, bytes: sqlDb.databaseSize } : { ok: false, error: 'no database in the object' });
 	if (m.oc) return JSON.stringify(await objectCacheOp(m.oc));
 	if (m.probeMem) return JSON.stringify({ wasm: lastBootedPhp ? lastBootedPhp[__private__dont__use].HEAPU8.length : null });
 	if (m.memTrace) { lastMemTrace = m.memTrace; return '1'; }
@@ -1687,7 +1725,9 @@ async function boot(origin) {
 		'opcache.file_update_protection': '0',
 		'opcache.validate_timestamps': '0',
 		'opcache.file_cache_only': '0',
-		'opcache.memory_consumption': '48',
+		// #610: 64 MB for a store (OPCACHE_MC = "64", rendered by the deploy paths), 48 for every other site
+		// (opcache-size.mjs). PHP_INI is spread last, so an explicit opcache.memory_consumption still wins.
+		'opcache.memory_consumption': opcacheMemoryMib(ENV),
 		'opcache.interned_strings_buffer': '4',
 		'opcache.max_accelerated_files': '4000',
 	};
@@ -2012,10 +2052,9 @@ let purgeRequested = false;
 let pendingEmails = [];
 let lastOrigin = null;
 // Workers Cache purges always have Free-tier limits: 5 a minute, bursts of 25,
-// per account. Purge at most once per PURGE_GAP_MS per isolate; the short TTL
-// with stale-while-revalidate limits staleness when a purge is refused.
-const PURGE_GAP_MS = 15000;
-// The object's purge state (issue #78): {pending, lastSent, retried}, in its storage.
+// per account (#699). The gateway purges at most once per PURGE_GAP_MS per isolate
+// (purge-state.mjs). The object keeps a refused purge pending and retries it (#699).
+// The object's purge state (issue #78, #699): purge-state.mjs, in its storage.
 const PURGE_STATE_KEY = 'skyphusion-purge';
 const ORIGIN_KEY = 'skyphusion-origin';
 const CRON_SKIP_KEY = 'cron-skip';
@@ -2080,11 +2119,12 @@ function pageCacheRoute(req, url, env) {
 		!isOperatorRequest(req)
 	);
 }
-function pageCacheHeaders(req, url, r, out, env) {
+function pageCacheHeaders(req, url, r, out, env, failed = 0) {
 	const ttl = Number(env.PAGE_CACHE_TTL || 120);
 	const wpCc = String([].concat(r.headers['cache-control'] || []).join(','));
 	const cacheable =
 		ttl > 0 &&
+		failed === 0 && // #766: an answer made while a statement failed (a read that came back empty) is never stored
 		(req.method === 'GET' || req.method === 'HEAD') &&
 		[200, 301, 404].includes(r.httpStatusCode) &&
 		!WP_COOKIE.test(req.headers.get('cookie') || '') &&
@@ -2468,10 +2508,11 @@ async function httpOp(op) {
 // (tests/undo-log.test.mjs). One instance per isolate: recover() runs once, in the PhpRuntime
 // constructor, before anything reads the database.
 let undoLog = null;
+let undoFailOn = false; // #809's seam (fault-inject.mjs undoFailSet): throwaway and local sites only
 function undo(env = ENV) {
 	// frames is asked at each arm, from the env of the call or ENV: the first undo() of a deployed object is
 	// the constructor's recovery, before any fetch has set ENV (pf352f, 2026-11-14: no frame ever armed).
-	if (!undoLog) undoLog = createUndoLog({ stats, objectCacheDrop, log: (o) => console.log(JSON.stringify(o)), frames: () => !!((env || ENV) && (env || ENV).REQUEST_FRAMES === 'on') });
+	if (!undoLog) undoLog = createUndoLog({ stats, objectCacheDrop, log: (o) => console.log(JSON.stringify(o)), frames: () => !!((env || ENV) && (env || ENV).REQUEST_FRAMES === 'on'), undoFault: () => (undoFailOn ? UNDO_FAIL_MESSAGE : null) });
 	return undoLog;
 }
 function txnOp(db, storage, op) {
@@ -2560,6 +2601,13 @@ function sqlStatement(db, m) {
 	const t = Date.now();
 	stats.calls++;
 	try {
+		// #766: the injected statement failure (a measurement; fault-inject.mjs). It throws before the statement runs,
+		// so nothing of it reaches the storage, and the catch below records it as the platform's reset would be.
+		if (sqlFailAt && String(m.sql).includes(sqlFailAt)) {
+			sqlFailAt = null;
+			console.log(JSON.stringify({ m: 'fault-inject', at: 'sql-fail', sql: String(m.sql).slice(0, 160) }));
+			throw new Error(sqlFailMsg);
+		}
 		const params = sqlParams(m.params);
 		// #352: the statement runs through the undo log. The request frame opens with the first statement that
 		// changes a row, in one storage transaction with it; a statement that changes nothing takes the open
@@ -2763,23 +2811,17 @@ export class PhpRuntime extends DurableObject {
 	// 32 s). Here one alarm sends one purge for everything asked since the last
 	// purge, at most one per PURGE_GAP_MS, as c1 does in its Store object. The
 	// state is stored, so a purge asked for survives an evicted object. A
-	// refused purge is tried once more one interval later. With a pool of more
-	// than one object, each object coalesces on its own.
+	// refused purge stays pending and is retried with a back-off until no cached
+	// copy can still be served (#699, purge-state.mjs). With a pool of more than
+	// one object, each object coalesces on its own.
 	async requestPurge() {
 		const now = Date.now();
-		const st = (await this.ctx.storage.get(PURGE_STATE_KEY)) || { lastSent: 0 };
-		const coalesced = !!st.pending;
-		let waitMs = 0;
-		st.lastAsked = now; // so a test can check the last change is covered by a later purge
-		st.pending = true;
-		await this.ctx.storage.put(PURGE_STATE_KEY, st);
-		if (!coalesced) {
-			const at = Math.max(now, (st.lastSent || 0) + PURGE_GAP_MS);
-			waitMs = at - now;
-			await this.ctx.storage.setAlarm(at);
-		}
-		console.log(JSON.stringify({ m: 'purge', asked: 1, t: now, coalesced: coalesced ? 1 : 0, waitMs, where: 'object' }));
-		return coalesced ? 'coalesced' : 'scheduled';
+		// #699: the rules are purge-state.mjs onAsk. A purge already pending (or waiting out a refusal) covers this change.
+		const a = onAsk(await this.ctx.storage.get(PURGE_STATE_KEY), now);
+		await this.ctx.storage.put(PURGE_STATE_KEY, a.st);
+		if (a.alarmAt != null) await this.ctx.storage.setAlarm(a.alarmAt);
+		console.log(JSON.stringify({ m: 'purge', asked: 1, t: now, coalesced: a.coalesced ? 1 : 0, waitMs: a.alarmAt != null ? a.alarmAt - now : 0, where: 'object' }));
+		return a.coalesced ? 'coalesced' : 'scheduled';
 	}
 
 	async alarm() {
@@ -2868,7 +2910,12 @@ export class PhpRuntime extends DurableObject {
 					const cleanDue = cronCleanDue(await this.ctx.storage.get(CRON_CLEAN_KEY), Date.now());
 					mail = tickMailFor(this.env, this.ctx.storage);
 					try {
-						cr = await runCron(() => (bootPromise ??= boot(cronOrigin)), cleanDue, mail);
+						// #809: no cron write under a stranded frame (it would be erased at the recovery). The leg is
+						// deferred, as a refused boot is; the next tick is already armed (armBeforeRun) and recovers first.
+						if (realTxn && undo().stranded()) {
+							console.log(JSON.stringify({ m: 'cron', deferred: 'frame-stranded' }));
+							cr = { deferred: 'frame-stranded' };
+						} else cr = await runCron(() => (bootPromise ??= boot(cronOrigin)), cleanDue, mail);
 					} catch (e) {
 						if (!(e && e.bootRefused)) throw e;
 						// #598 part 2: the leg is deferred, not a death: it ran nothing, the run record closes as done
@@ -2943,38 +2990,35 @@ export class PhpRuntime extends DurableObject {
 			cst.cron = { t: Date.now(), error: detail.error, errMsg: detail.errMsg, errFile: detail.errFile, errLine: detail.errLine, stderrHead: detail.stderrHead, stack: detail.stack };
 			await this.ctx.storage.put(PURGE_STATE_KEY, cst);
 		}
-		const st = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
-		if (st.pending) {
-		// Cleared before the purge: a change during the purge asks for the next one.
-		st.pending = false;
-		st.lastSent = Date.now();
-		await this.ctx.storage.put(PURGE_STATE_KEY, st);
-		let r;
-		try {
-			r = await this.ctx.exports.Pages.purge(['wp-pages']);
-		} catch (e) {
-			r = { ok: false, errors: [String((e && e.message) || e).slice(0, 200)] };
-		}
-		const ok = !!(r && r.ok);
-		const sent = { t: st.lastSent, ok, errors: (r && r.errors) || [], error: (r && r.error) || null };
-		disposeRpc(r); // #510: its fields are copied into sent
-		console.log(JSON.stringify({ m: 'purge', sent: 1, ...sent, where: 'object' }));
-		// The last 20 sends, for /_purgestate: wrangler tail does not show alarm runs.
-		const logged = (await this.ctx.storage.get(PURGE_STATE_KEY)) || st;
-		logged.sends = [...(logged.sends || []), sent].slice(-20);
-		await this.ctx.storage.put(PURGE_STATE_KEY, logged);
-		// Locally there is no cache API (r.error): nothing to retry. A refused purge is retried once.
-		if (!ok && !(r && r.error) && !st.retried) {
-			const again = (await this.ctx.storage.get(PURGE_STATE_KEY)) || st;
-			again.retried = true;
-			again.pending = true;
-			await this.ctx.storage.put(PURGE_STATE_KEY, again);
-			await this.ctx.storage.setAlarm(Date.now() + PURGE_GAP_MS);
-		} else if (st.retried) {
-			const done = (await this.ctx.storage.get(PURGE_STATE_KEY)) || st;
-			done.retried = false;
-			await this.ctx.storage.put(PURGE_STATE_KEY, done);
-		}
+		// #699: purge-state.mjs. A refused purge stays pending and is retried with a back-off (12, 24, 48 s) until no
+		// cached copy can still be served (PAGE_CACHE_TTL + stale-while-revalidate, purgeWindowMs); then it expires.
+		const due = onDue(await this.ctx.storage.get(PURGE_STATE_KEY), Date.now(), purgeWindowMs(this.env));
+		if (due.action === 'expire') {
+			await this.ctx.storage.put(PURGE_STATE_KEY, due.st);
+			// Not an m: purge line: doctor's guard counts every m: purge line as asked or sent (#688).
+			console.log(JSON.stringify({ m: 'purge-expired', expired: due.st.expired, where: 'object' }));
+		} else if (due.action === 'send') {
+			// Cleared before the purge: a change during the purge asks for the next one.
+			await this.ctx.storage.put(PURGE_STATE_KEY, due.st);
+			let r;
+			try {
+				r = await this.ctx.exports.Pages.purge(['wp-pages']);
+			} catch (e) {
+				r = { ok: false, errors: [String((e && e.message) || e).slice(0, 200)] };
+			}
+			const ok = !!(r && r.ok);
+			const errors = (r && r.errors) || [];
+			const error = (r && r.error) || null;
+			disposeRpc(r); // #510: its fields are copied above
+			const now = Date.now();
+			// A change during the purge may have asked again: onResult reads the current state.
+			const res = onResult(await this.ctx.storage.get(PURGE_STATE_KEY), now, { ok, errors, error }, due.covered);
+			const sent = { t: due.st.lastSent, ok, errors, error, attempt: due.covered.attempts + 1, ageMs: due.st.lastSent - due.covered.firstAsked, outcome: res.outcome, retryMs: res.alarmAt != null ? res.alarmAt - now : 0 };
+			console.log(JSON.stringify({ m: 'purge', sent: 1, ...sent, where: 'object' }));
+			// The last 20 sends, for /_purgestate: wrangler tail does not show alarm runs.
+			res.st.sends = [...(res.st.sends || []), sent].slice(-20);
+			await this.ctx.storage.put(PURGE_STATE_KEY, res.st);
+			if (res.alarmAt != null) await this.ctx.storage.setAlarm(res.alarmAt);
 		}
 		// Keep the cron cadence unless the purge logic set a sooner retry alarm.
 		await rearm(this.ctx.storage, Date.now(), Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
@@ -3036,10 +3080,14 @@ export class PhpRuntime extends DurableObject {
 		if (url.pathname === SNAPSHOT_PATH) {
 			const gate = snapshotGate(req, env);
 			if (gate !== 'ok') return gateResponse(gate);
+			// #841: re-arm the cron alarm FIRST (only a re-arm; no cron runs here). This call reaches every object daily,
+			// even a fully edge-cached site's, where no request re-arms a deleted alarm. Its state goes in the snapshot.
+			const snapAlarm = await snapshotRearm(this.ctx.storage, Date.now(), Number(env.CRON_INTERVAL_MS || 60000));
+			if (snapAlarm.state !== 'ok') console.log(JSON.stringify({ m: 'alarm', rearmedBy: 'snapshot', was: snapAlarm.state }));
 			const sql = env.DB_IN_DO === 'on' ? this.ctx.storage.sql : null;
 			if (!sql || !env.MEDIA) return Response.json({ ok: false, error: 'no-db-or-bucket' }, { status: 409 });
 			const held = cronHeld(await this.ctx.storage.get(IMPORT_HOLD_KEY), Date.now());
-			const r = await takeSnapshot({ dump: (w) => withPhp(() => ((sqlDb = sql), dumpTo(w, env, 'object'))), media: env.MEDIA, build: BUILD_ID, held });
+			const r = await takeSnapshot({ dump: (w) => withPhp(() => ((sqlDb = sql), dumpTo(w, env, 'object'))), media: env.MEDIA, build: BUILD_ID, held, alarm: snapAlarm });
 			console.log('@event snapshot ' + JSON.stringify(r.body));
 			return Response.json(r.body, { status: r.status, headers: { 'cache-control': 'private, no-store' } });
 		}
@@ -3057,7 +3105,7 @@ export class PhpRuntime extends DurableObject {
 		// The build this OBJECT is running (issue #35 slice 5). After a re-upload a
 		// warm object keeps the old code until it is evicted, so this reports the
 		// object's version, which can lag the Worker's until /_evict or a sleep.
-		if (url.pathname === '/_build') return Response.json({ build: BUILD_ID });
+		if (url.pathname === '/_build') return Response.json({ build: BUILD_ID, engine: PHP_ENGINE, recycleMiB: recycleLine(env, ENGINE_RECYCLE_MIB).mib }); // #771: engine and line
 		// #394 headroom probe (HEADROOM_PROBE=on, off by default; a MEASUREMENT that ends this isolate, so
 		// only on a throwaway). After a real request, this same isolate allocates held 1 MiB ArrayBuffers
 		// until it dies, streaming the count (headroom.mjs). The first line is the ledger at that moment, so
@@ -3180,15 +3228,28 @@ export class PhpRuntime extends DurableObject {
 			sqlDb = sql;
 			sqlStorage = sql ? this.ctx.storage : null;
 			const realTxn = sql && env.REAL_TRANSACTIONS !== 'off';
+			// #809's seam, read BEFORE the recovery: the request that turns it off is the one whose recovery succeeds.
+			const uf = undoFailSet(env, spikeOk, req.headers);
+			if (uf !== null) { undoFailOn = uf; console.log(JSON.stringify({ m: 'fault-undo', on: uf })); }
 			if (realTxn) txnRecover(sql, this.ctx.storage);
 			// #352: arm the request frame (REQUEST_FRAMES=on); it opens at the first write. The Worker sends the id.
 			if (realTxn) undo(env).arm(sql, req.headers.get('x-pf-req') || 'obj-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
 			// #730: the post-INSERT fault, a measurement for throwaway sites only (fault-inject.mjs).
 			faultPending = faultArmed(env, spikeOk, req.headers);
 			faultReq = faultPending ? req.headers.get('x-pf-req') : null;
+			sqlFailAt = sqlFailNeedle(env, spikeOk, req.headers); // #766
+			sqlFailMsg = sqlFailMessage(req.headers);
 			// One PHP run at a time (withPhp), so one slot holds this run's answer.
 			turnstileSlot.set(turnstileHeader);
 			try {
+				// #809: a stranded frame (its rollback and the recovery above both failed) is still stored open. Nothing
+				// may write under it, so no PHP runs: the answer is the retryable platform failure, until a recovery
+				// succeeds (txnRecover above, on the next request). undo-log.mjs refuses its writes as well.
+				if (realTxn && undo(env).stranded()) {
+					const sf = statementFailureResponse(1, wantsJson(url.pathname, url.search, req.headers.get('accept')), false);
+					console.log(JSON.stringify({ '@event': 'frame-stranded-refused', m: 'frame-stranded-refused', method: req.method, path: url.pathname, answered: sf.status }));
+					return new Response(sf.body, { status: sf.status, headers: sf.headers });
+				}
 				const res = await handle(req, env, url, spikeOk, maxBody, ctx);
 				if (realTxn) txnEnd(sql, this.ctx.storage);
 				try {
@@ -3201,6 +3262,7 @@ export class PhpRuntime extends DurableObject {
 			} finally {
 				turnstileSlot.clear();
 				faultPending = false; // #730: never carried to the next request
+				sqlFailAt = null; // #766: nor this
 				// A request that threw also ends its transaction (rolled back), and keeps its frame. Idempotent.
 				if (realTxn) txnEnd(sql, this.ctx.storage);
 				phpPending--;
@@ -3789,7 +3851,7 @@ export class Pages extends WorkerEntrypoint {
 	// An RPC method, so not cached. A purge reaches only the cache of the
 	// entrypoint that calls it, so the purge of the page cache runs here.
 	async purge(tags) {
-		if (!this.ctx.cache) return { ok: false, error: 'no cache API' };
+		if (!this.ctx.cache) return { ok: false, error: NO_CACHE_API }; // purge-state.mjs drops only this (#699)
 		const r = await this.ctx.cache.purge({ tags });
 		return { ok: !!(r && r.success !== false), errors: (r && r.errors) || [] };
 	}
@@ -4050,7 +4112,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			try { phpSide = JSON.parse(r.text.slice(marker + 5)); } catch { phpSide = { parse_error: true, raw: r.text.slice(Math.max(0, marker), marker + 500) }; }
 			return Response.json({
 				wasmMemoryBytes: php[__private__dont__use].HEAPU8.length,
-				recycleThresholdBytes: recycleLine(env).bytes,
+				recycleThresholdBytes: recycleLine(env, ENGINE_RECYCLE_MIB).bytes,
 				objectCache: { entries: objectCache.size, bytes: objectCacheBytes, capBytes: OBJECT_CACHE_BYTES },
 				php: phpSide,
 			});
@@ -4073,6 +4135,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			const { php, handler, bootMs } = await bootPromise;
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
+			ocReqBegin(); // #766
 			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, reinflates: stats.reinflates, lazyWrites: stats.lazyWrites, rfN: stats.rfN, rfBytes: stats.rfBytes, rfMs: stats.rfMs, rfFail: stats.rfFail, rfCapped: stats.rfCapped, rsN: stats.rsN, rsBytes: stats.rsBytes, rsMs: stats.rsMs, rsFail: stats.rsFail, rsCapped: stats.rsCapped, rsRetry: stats.rsRetry, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
@@ -4103,8 +4166,13 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 					out = String((e && e.message) || e);
 					errors = 'PHP exited non-zero';
 				}
-				// The runtime is not usable for requests after this script exits. Boot a fresh one next time.
-				dropRuntime();
+				// #756: the runtime is KEPT, so the first page reuses it. Dropping it here (a claim from the first D1
+				// spike, never measured) made the first page boot a second runtime beside this one's WebAssembly
+				// memory, which V8 had not yet collected, and the isolate died of exceededMemory: 6 of 6
+				// install-then-page deploys; with it kept, 0 of 3 (#756, lean, wfp). #185's reuse hazard (a reused
+				// runtime ran the previous php.run's code) was
+				// internal/eval.php in OPcache, fixed by its blacklist (#294). A runtime over the recycle line
+				// is still recycled by the next request's run, as any other one is.
 				objectCacheClear(); // the database changed outside WordPress's cache
 				const tail = out.length > 6000 ? out.slice(-6000) : out;
 				return Response.json({ bootMs, ms: Date.now() - t0, out: tail, errors: String(errors).slice(0, 4000), d1: delta() });
@@ -4168,16 +4236,55 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			}
 			if (lost) {
 				if (ledgerActive) ledgerLog('write-loss', { lost });
-				const wl = writeLossResponse(lost, wantsJson(url.pathname, url.search, req.headers.get('accept')));
+				const ocForgot = ocReqForget(); // #766: what this request cached after its failed statements is not kept
+				// #794: and what it WROTE is not kept either. A value it derived from a failed read (an add_option of a
+				// default over a real value whose read failed) would outlive every cache and deploy. The storage failure
+				// is the platform's, so the frame is rolled back now, as the next isolate's recover() would (undo-log.mjs).
+				let rb = null;
+				try { rb = undoLog && sqlDb ? undoLog.rollbackFrame(sqlDb, sqlStorage) : null; } catch (e) { console.log(JSON.stringify({ m: 'frame-rollback-failed', error: String((e && e.message) || e).slice(0, 160) })); }
+				if (rb) console.log(JSON.stringify({ m: 'frame-rolled-back', at: 'reset-failure', req: rb.req, undone: rb.undone, points: rb.points, path: url.pathname, ...memIdOf(req, env) }));
+				const json = wantsJson(url.pathname, url.search, req.headers.get('accept'));
+				// "Nothing was saved" only on the proof, the frame's own row as /_frame reads it (#352).
+				const fr = rb && undoLog ? undoLog.status(sqlDb, rb.req) : null;
+				const rolled = frameProvesRollback(fr) ? rolledBackResponse(json, 'memory', fr.undone) : null;
+				const wl = writeLossResponse(lost, json);
+				const answer = rolled || wl;
 				// phpStatus is PHP's status before this replacement. answered is the status returned below (#596).
-				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, phpStatus: r.httpStatusCode, firstSql: sqlShape(d.failures[0].sql), ...memIdOf(req, env), answered: wl.status }));
+				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, rolledBack: !!rolled, ocDropped: ocForgot.n, ocDroppedGroups: ocForgot.groups, phpStatus: r.httpStatusCode, firstSql: sqlShape(d.failures[0].sql), ...memIdOf(req, env), answered: wl.status }));
 				dropRuntime(); // the runtime saw the reset; the next request boots a new one
-				return new Response(wl.body, { status: wl.status, headers: wl.headers });
+				return new Response(answer.body, { status: answer.status, headers: answer.headers });
+			}
+			// #795, by FAILURE CLASS (write-loss.mjs PLATFORM_FAILURE). A PLATFORM failure other than the reset (busy, out of
+			// memory, disk full, a timeout...) is never answered as a success: PHP saw an empty or unapplied result that was
+			// not the truth. What the request cached is not kept (#766); a failed READ rolls the frame back (#794's
+			// boundary); the answer is the visible failure, retryable when nothing was saved. A DETERMINISTIC error (the
+			// statement itself is wrong: no such table, syntax, the LIKE cap) goes back to WordPress through wpdb's error
+			// path, as MySQL's does: no 5xx (a retry would fail forever), its cache writes from a failed read dropped, and
+			// the answer never edge-cached (pageCacheHeaders below). Every failed statement is logged, its shape only.
+			if (d.failures.length) {
+				const platform = platformFailures(d.failures) > 0;
+				const shapes = [...new Set(d.failures.map((x) => sqlShape(x.sql)))].slice(0, 8);
+				const errShape = String(d.failures[0].error || '').replace(/'[^']*'|"[^"]*"|[0-9]+/g, '?').slice(0, 100);
+				if (platform) {
+					const f = ocReqForget();
+					const wrote = d.log.some((l) => /^ok\s+\(?\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(l));
+					let rb = null;
+					if (readFailed(d.failures)) {
+						try { rb = undoLog && sqlDb ? undoLog.rollbackFrame(sqlDb, sqlStorage) : null; } catch (e) { console.log(JSON.stringify({ m: 'frame-rollback-failed', error: String((e && e.message) || e).slice(0, 160) })); }
+					}
+					const fr = rb && undoLog ? undoLog.status(sqlDb, rb.req) : null;
+					const saved = rb ? !frameProvesRollback(fr) : wrote;
+					const sf = statementFailureResponse(d.failures.length, wantsJson(url.pathname, url.search, req.headers.get('accept')), saved);
+					console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', class: 'platform', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, wrote, rolledBack: !!(rb && !saved), answered: sf.status, phpStatus: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env) }));
+					return new Response(sf.body, { status: sf.status, headers: sf.headers });
+				}
+				const f = readFailed(d.failures) ? ocReqForget() : { n: 0 };
+				console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', class: 'deterministic', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, answered: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env) }));
 			}
 			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
 			const ocTables = diffCounts(stats.dbTables, start.dbTables);
 			const ocGroupStats = diffCounts(stats.ocGroups, start.ocGroups);
-			pageCacheHeaders(req, url, r, out, env);
+			pageCacheHeaders(req, url, r, out, env, d.failures.length);
 			// A filled cart means a checkout may follow: start the container now.
 			if (env.WOO_CHECKOUT && env.CHECKOUT_CONTAINER === 'on' && r.httpStatusCode === 201 && ADD_TO_CART_ROUTE.test(restRoute(url))) {
 				ctx.waitUntil(checkoutContainer(env).startAndWaitForPorts().catch((e) => console.log('checkout warm-up failed', String(e))));
@@ -4224,7 +4331,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			const forceRecycle = spikeOk && req.headers.get('x-runtime-recycle') === 'force';
 			// #598: the line is RECYCLE_WASM_MIB (default 100 MiB, today's). A bad value keeps the default and is
 			// logged once per isolate (recycle-line.mjs).
-			const line = recycleLine(env);
+			const line = recycleLine(env, ENGINE_RECYCLE_MIB);
 			if (line.refused && !recycleRefusedLogged) {
 				recycleRefusedLogged = true;
 				console.log(JSON.stringify({ m: 'recycle-line-refused', refused: line.refused }));

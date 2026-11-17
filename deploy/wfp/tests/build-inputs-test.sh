@@ -97,6 +97,9 @@ run_update() { # run_update <record|norecord> <env assignments...>: one update's
   # local -x keeps an inherited value, so a parent PLUGINS or REPLACE_INPUTS=1
   # used to decide the "no input" case and the refusal cases (#601).
   printf '%q\n' "$@" > "$T/last-args"
+  # #771: the npm engine keeps a case offline (the default, lean, is fetched: tests/engine-resolve-test.sh), unless the
+  # case passes an explicit engine pair (npm and a pair together are refused).
+  local pe=npm; case " ${*:2} " in *PF_ENGINE_JS=*|*PF_ENGINE_WASM=*) pe= ;; esac
   ( local_test() {
       : > "$T/use.out"; : > "$T/vars"; : > "$T/content.path"; : > "$T/rec.out"
       local -x PLUGINS="${PLUGINS:-}" THEMES="${THEMES:-}" SUITE="${SUITE:-}" THEME_SUITE="${THEME_SUITE:-}" IMPORT_THEMES="${IMPORT_THEMES:-}" IMPORT_PLUGINS="${IMPORT_PLUGINS:-}" IMPORT_MU_PLUGINS="${IMPORT_MU_PLUGINS:-}" WOO_ACTIVE="${WOO_ACTIVE:-}" IMPORT_CONTENT="${IMPORT_CONTENT:-}"
@@ -106,7 +109,7 @@ run_update() { # run_update <record|norecord> <env assignments...>: one update's
       echo "$IMPORT_CONTENT" > "$T/content.path"
       [ "${1:-}" = record ] && { record_build_inputs "$B" build-1 "$W" > "$T/rec.out" 2>&1 || return 1; }
       return 0
-    }; env -u PLUGINS -u THEMES -u SUITE -u THEME_SUITE -u IMPORT_CONTENT -u IMPORT_THEMES -u IMPORT_PLUGINS -u IMPORT_MU_PLUGINS -u WOO_ACTIVE -u WOO -u REPLACE_INPUTS -u PF_ENGINE_JS -u PF_ENGINE_WASM "${@:2}" bash -c "$(declare -f local_test use_recorded_inputs record_build_inputs content_inputs_set); WFP='$HERE/..' APP='$APP' T='$T' B='$B'; local_test $1" )
+    }; env -u PLUGINS -u THEMES -u SUITE -u THEME_SUITE -u IMPORT_CONTENT -u IMPORT_THEMES -u IMPORT_PLUGINS -u IMPORT_MU_PLUGINS -u WOO_ACTIVE -u WOO -u REPLACE_INPUTS -u PF_ENGINE_JS -u PF_ENGINE_WASM -u PHP_ENGINE_RESOLVED PHP_ENGINE="$pe" "${@:2}" bash -c "$(declare -f local_test use_recorded_inputs record_build_inputs content_inputs_set engine_ensure); WFP='$HERE/..' APP='$APP' T='$T' B='$B'; local_test $1" )
 }
 # Poison from outside the case. A parent shell, or a batch that exported these,
 # must not count as the update's own inputs. The cases below fail if run_update leaks them.

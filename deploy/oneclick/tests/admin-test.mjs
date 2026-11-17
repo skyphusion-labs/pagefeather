@@ -99,6 +99,10 @@ function fakeCloudflare({ foreignScripts = [], hyperdrive = {}, hyperdriveStatus
       }
     }
     if ((m = r.match(/^\/workers\/scripts\/([^/]+)\/subdomain$/)) && method === 'POST') return ok({ enabled: true });
+    // #782: the one removal (removeNamespaceSite) also clears the email queues and the search index. This account
+    // never makes either (the stub has no create route), so the list is empty and the index is absent.
+    if (method === 'GET' && r === '/queues') return ok([]);
+    if ((m = r.match(/^\/vectorize\/v2\/indexes\/([^/]+)$/)) && method === 'DELETE') return err(404, 3000, 'index not found');
     call.unknown = true;
     return err(599, 0, `stub has no route ${method} ${r}`);
   }

@@ -23,6 +23,8 @@
 #   manifest.json          each module's name, size, sha256 and type, plus the version, git sha,
 #                          build id, and the Wrangler, WordPress and WooCommerce versions
 #   wordpress-static.tar.gz  build/public (the static files). Nothing reads it yet (#328 item 2).
+#   NOTICE, SOURCE, LICENSES.tar.gz  engine notices (#584): acknowledgments, source
+#                          pointers, and the licence texts of each linked component
 #   SHA256SUMS             sha256 of every other file in release/
 #
 # Env:
@@ -53,6 +55,9 @@ OUT=$(cd "$OUT" && pwd)
 # shellcheck source=../wfp/lib.sh
 source "$ROOT/deploy/wfp/lib.sh"
 export WOO_ACTIVE=1
+# #788: approach A stays on the npm engine until lean is measured there (the lead's ruling, #771). An explicit
+# PHP_ENGINE, or PF_ENGINE_JS and PF_ENGINE_WASM, still wins (that is how #788 measures lean).
+if [ "$engine" = a ] && [ -z "${PHP_ENGINE:-}" ] && [ -z "${PF_ENGINE_JS:-}${PF_ENGINE_WASM:-}" ]; then export PHP_ENGINE=npm; fi
 if [ "$engine" = a ]; then
   # The approach-A build. prepare.sh first, as build_dosql does (#446: an old loader otherwise
   # survives in a tree that built before). opcache-a.sh builds D1, primes the OPcache there,
@@ -119,5 +124,13 @@ node "$REL/bundle-cli.mjs" verify "$OUT/modules" "$OUT/release/manifest.json"
 for f in "$OUT/modules"/*; do cp "$f" "$OUT/release/${prefix}$(basename "$f")"; done
 if [ -n "$prefix" ]; then mv "$OUT/release/manifest.json" "$OUT/release/${prefix}manifest.json"; fi
 tar -czf "$OUT/release/${prefix}wordpress-static.tar.gz" -C "$APP/build" public
+# #584: notices, SOURCE and LICENSES.tar.gz sit next to the wasm. SHA256SUMS
+# hashes every other file in release/, so these cannot be omitted once they are here.
+# #771: the notice set follows the engine the build vendored (bundle-notice-set.sh: npm ships the Playground set,
+# lean the lean-bundle set, which names the engine prerelease and prepare.sh's transform). The lean prerelease itself
+# is packaged by engine/tools/publish-lean.sh, not here.
+notice_set=$("$REL/bundle-notice-set.sh" "$APP/vendor/engine.mjs") || exit 1
+notice_arg=""; [ "$notice_set" = playground ] || notice_arg=$notice_set
+"$REL/package-notices.sh" "$OUT/release" "$prefix" ${notice_arg:+"$notice_arg"}
 ( cd "$OUT/release" && shasum -a 256 $(ls | grep -v "^${prefix}SHA256SUMS\$" | sort) > "${prefix}SHA256SUMS" )
 echo "build-bundle: $engine v$version, build $build_id, main $main, $(ls "$OUT/release" | wc -l | tr -d ' ') assets in $OUT/release"

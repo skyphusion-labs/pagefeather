@@ -189,5 +189,39 @@ await cron('scheduled: a SNAPSHOT_SCRIPT that is not a site-<name>: throws, no c
 	if (bad.length === 1 && bad[0] === JSON.stringify({ m: 'wfp-moving-bad', host: 'wp-movebad.sub.workers.dev' }) && seen.length === 1) console.log('PASS a bad moving flag logs wfp-moving-bad with its host, and nothing else logs');
 	else { fails++; console.log('FAIL the wfp-moving-bad log line: ' + JSON.stringify(seen)); }
 }
+// #605: DISPATCH_PERF_LOG=on logs the operator's x-perf-id, shape only (the id, the path, never the query; the times),
+// at the start and at the end. Off, no header, or an id of another shape: nothing.
+{
+	const run = async (vars, headers, host = 'wp-one') => {
+		const seen = [];
+		const orig = console.log;
+		console.log = (...a) => { seen.push(a.join(' ')); };
+		let status;
+		try {
+			const e = { ...env(MAP, DEPLOYED), ...vars };
+			const r = await worker.fetch(new Request(`https://${host}.sub.workers.dev/wp-admin/edit.php?order_key=SECRETKEY&pfid=x`, { headers }), e);
+			status = r.status;
+		} finally {
+			console.log = orig;
+		}
+		return { status, lines: seen.filter((l) => l.includes('"m":"disp-req"')).map((l) => JSON.parse(l)), all: seen };
+	};
+	const want = (name, ok, got) => { if (ok) console.log('PASS ' + name); else { fails++; console.log('FAIL ' + name + ': ' + JSON.stringify(got)); } };
+	let g = await run({ DISPATCH_PERF_LOG: 'on' }, { 'x-perf-id': 'pf605-a1b2c3-17' });
+	want('#605 on, with an id: a start and an end line, the id and the path', g.lines.length === 2 && g.lines[0].at === 'start' && g.lines[1].at === 'end' &&
+		g.lines.every((l) => l.id === 'pf605-a1b2c3-17' && l.path === '/wp-admin/edit.php') && g.lines[1].status === 200 && Number.isInteger(g.lines[1].ms), g);
+	want('#605 the query string is never logged (path only)', !g.all.some((l) => l.includes('SECRETKEY') || l.includes('order_key') || l.includes('pfid')), g.all);
+	want('#605 the line carries only m, at, id, path, ms, status', g.lines.every((l) => Object.keys(l).every((k) => ['m', 'at', 'id', 'path', 'ms', 'status'].includes(k))), g.lines);
+	g = await run({ DISPATCH_PERF_LOG: 'on' }, { 'x-perf-id': 'pf605-b' }, 'wp-broken');
+	want('#605 a dispatch that fails still ends with its status (502)', g.lines.length === 2 && g.lines[1].status === 502, g);
+	g = await run({}, { 'x-perf-id': 'pf605-c' });
+	want('#605 off (no DISPATCH_PERF_LOG): nothing is logged', g.lines.length === 0 && g.status === 200, g);
+	g = await run({ DISPATCH_PERF_LOG: 'on' }, {});
+	want('#605 on, without an id: nothing is logged', g.lines.length === 0, g);
+	for (const bad of ['has space', 'x'.repeat(81), '<script>', 'a"b']) {
+		g = await run({ DISPATCH_PERF_LOG: 'on' }, { 'x-perf-id': bad });
+		want('#605 on, an id of another shape is not logged: ' + JSON.stringify(bad.slice(0, 12)), g.lines.length === 0 && g.status === 200, g);
+	}
+}
 console.log(fails + ' failing case(s)');
 process.exit(fails ? 1 : 0);

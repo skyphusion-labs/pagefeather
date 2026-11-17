@@ -11,7 +11,7 @@
 export const PRODUCT_PAGE_HEADER = 'x-pf-page';
 const MIN_S = 5;
 const MAX_S = 600;
-const STALE_S = 600;
+export const STALE_S = 600;
 
 /** PAGE_CACHE_PRODUCT_TTL as seconds, or null when unset or not an integer from 5 to 600. */
 export function productTtl(env) {

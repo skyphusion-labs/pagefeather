@@ -155,6 +155,26 @@ try:
         rc, out = audit(user, disp)
         check("%s: the rendered site and dispatcher pass the audit" % vname, rc == 0, " ".join(json.loads(out).get("failed", []))[:400] if out.strip().startswith("{") else out[-300:])
         check("%s: the audit prints no binding value (the SITE_ORIGIN text is not in its output)" % vname, "https://wp-%s.sub.workers.dev" % SITE not in out, "a value is in the output")
+    # #605: DISPATCH_PERF_LOG=on (a throwaway's measurement, lib.sh dispatch_perf_log_var) renders one more plain_text
+    # var into the dispatcher; the real render must pass the audit (TAG 11162213 stopped at site add on this), and only
+    # that exact binding: a near-miss name, a secret of that name, or another value is still refused.
+    pl_conf = tomllib.loads(lib('render_site_dispatcher %s %s' % (SITE, KV), {"DISPATCH_PERF_LOG": "on", "THROWAWAY": "1"}))
+    disp_pl, unk_pl = to_api(pl_conf, secret_names("dispatcher_secrets_json"))
+    check("#605 DISPATCH_PERF_LOG=on: the dispatcher render has no binding key this test does not know", not unk_pl, unk_pl)
+    check("#605 DISPATCH_PERF_LOG=on: the dispatcher binds plain_text DISPATCH_PERF_LOG = on",
+          any(b.get("type") == "plain_text" and b.get("name") == "DISPATCH_PERF_LOG" and b.get("text") == "on" for b in disp_pl), sorted(b["name"] for b in disp_pl))
+    user0, _ = to_api(tomllib.loads(lib('render_user %s https://wp-%s.sub.workers.dev' % (SITE, SITE))), secret_names("site_secrets_json"))
+    rc, out = audit(user0, disp_pl)
+    check("#605 DISPATCH_PERF_LOG=on: the rendered dispatcher passes the audit", rc == 0, out[-300:])
+    for name, d in [
+        ("a near-miss name (DISPATCH_PERF_LOGS)", [dict(b, name="DISPATCH_PERF_LOGS") if b.get("name") == "DISPATCH_PERF_LOG" else b for b in disp_pl]),
+        ("a near-miss name (dispatch_perf_log)", [dict(b, name="dispatch_perf_log") if b.get("name") == "DISPATCH_PERF_LOG" else b for b in disp_pl]),
+        ("DISPATCH_PERF_LOG as a secret", [{"type": "secret_text", "name": "DISPATCH_PERF_LOG"} if b.get("name") == "DISPATCH_PERF_LOG" else b for b in disp_pl]),
+        ("DISPATCH_PERF_LOG = off", [dict(b, text="off") if b.get("name") == "DISPATCH_PERF_LOG" else b for b in disp_pl]),
+        ("DISPATCH_PERF_LOG = 1", [dict(b, text="1") if b.get("name") == "DISPATCH_PERF_LOG" else b for b in disp_pl]),
+    ]:
+        rc, out = audit(user0, d)
+        check("#605 control, refused: %s on the dispatcher" % name, rc == 1 and "DISPATCH_PERF_LOG" in out.upper(), out[-200:])
     # Phase B (#533, option A): the cron-only copy binds exactly what the phase A copy binds, and passes.
     cron_conf = tomllib.loads(lib('render_site_dispatcher %s %s cron-only' % (SITE, KV)))
     cron, unk_c = to_api(cron_conf, secret_names("dispatcher_secrets_json"))

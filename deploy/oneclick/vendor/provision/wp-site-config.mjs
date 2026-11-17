@@ -58,6 +58,13 @@ export function pageCacheProductTtl(opts = {}) {
   if (n < 5 || n > 600) throw new Error(`PAGE_CACHE_PRODUCT_TTL must be an integer from 5 to 600, not ${s}`);
   return String(n);
 }
+// OPCACHE_MC (#610): a STORE renders "64" (the runtime's OPcache shared memory, spikes/b2-wordpress/opcache-size.mjs);
+// every other site renders nothing and keeps 48. The same store rule as PAGE_CACHE_PRODUCT_TTL (wooActiveValue). Measured on
+// #610: the sample store's peak heap 113 to 110 MiB and its file-cache fallbacks 810 to 196 at 64; plain WordPress would
+// pay +14 MiB of peak at 64 for nothing. b-dosql only (approach A's PHP runs in the Worker; not measured).
+export function opcacheStoreMc(opts = {}) {
+  return wooActiveValue(opts) === 1 ? '64' : null;
+}
 function assignPageCacheProduct(vars, opts) {
   const text = pageCacheProductTtl(opts);
   if (text !== null) vars.PAGE_CACHE_PRODUCT_TTL = text;
@@ -194,6 +201,8 @@ function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mail
   else if (codeLock === true) vars.CODE_LOCK = 'on';
   // #706: after the always-on six, so a non-store stays byte-identical.
   assignPageCacheProduct(vars, { wooActive, importPlugins, plugins, pageCacheProductTtl, store });
+  const opcacheMc = opcacheStoreMc({ wooActive, importPlugins, plugins, store }); // #610: b-dosql only
+  if (opcacheMc) vars.OPCACHE_MC = opcacheMc;
   assignObjectTime(vars, { objectCallDeadlineS, objectStartByS, objectDisconnectShed });
   return vars;
 }

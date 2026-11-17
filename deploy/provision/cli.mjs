@@ -19,10 +19,10 @@
 // configured (zone skyphusionwp.dev, fallback.skyphusionwp.dev).
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { provisionSite } from './provision.mjs';
+import { provisionSite, removeNamespaceSite } from './provision.mjs';
 import { SITE_NAME_RE, isCallerReservedName, genSecret } from './shared.mjs';
 import { bDosqlBindings, bDosqlSecrets, bDosqlResourceCreateOps, aBindings, mediaBucketName, ocKvNamespaceName, analyticsDatasetName, pageCacheInputs, pageCacheProductTtl, objectTimeInputs, aCacheInputs } from './wp-site-config.mjs';
-import { addCustomHostname, getCustomHostnameStatus } from './ops.mjs';
+import { addCustomHostname, getCustomHostnameStatus, scriptExists } from './ops.mjs';
 import { updateSite, readSite } from './registry.mjs';
 
 // genSecret lives in shared.mjs (the Worker uses it too); re-export so the CLI
@@ -66,14 +66,16 @@ export function parseArgs(argv) {
   const [cmd, ...rest] = argv;
   if (cmd === 'hostname') return parseHostnameArgs(rest);
   if (!['add', 'remove', 'list'].includes(cmd)) {
-    throw new Error('usage: site add|remove|list --kind wp|a <name> [--hyperdrive <id>] [--hyperdrive-sql-mode <mode>] | site hostname add <name> --domain <d> --mode delegated|managed [--dcv-delegation] [--cust-zone <id>] | site hostname status <name>');
+    throw new Error('usage: site add|list --kind wp|a <name> ... | site remove <name> [--delete-data] [--no-entry] [--hyperdrive <id>] [--hyperdrive-sql-mode <mode>] | site hostname add <name> --domain <d> --mode delegated|managed [--dcv-delegation] [--cust-zone <id>] | site hostname status <name>');
   }
-  let kind, name, hyperdrive, hyperdriveSqlMode;
+  let kind, name, hyperdrive, hyperdriveSqlMode, deleteData = false, noEntry = false;
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (a === '--kind') kind = rest[++i];
     else if (a === '--hyperdrive') hyperdrive = rest[++i];
     else if (a === '--hyperdrive-sql-mode') hyperdriveSqlMode = rest[++i];
+    else if (cmd === 'remove' && a === '--delete-data') deleteData = true;
+    else if (cmd === 'remove' && a === '--no-entry') noEntry = true;
     else if (!a.startsWith('--')) name = a;
     else throw new Error(`unknown flag ${a}`);
   }
@@ -89,6 +91,10 @@ export function parseArgs(argv) {
     // HYPERDRIVE_SQL_MODE, when given, must be the charset index.js will emit
     // (a per-statement sql_mode relax for strict backends; fail early on a typo).
     if (hyperdriveSqlMode !== undefined && !/^[A-Za-z_,]*$/.test(hyperdriveSqlMode)) throw new Error('--hyperdrive-sql-mode must match [A-Za-z_,]* (e.g. ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION)');
+  }
+  if (cmd === 'remove') {
+    if (!name || !SITE_NAME_RE.test(name)) throw new Error('remove needs a valid <name> (lower case, digits, hyphens, 1 to 30)');
+    return { cmd, name, deleteData, noEntry };
   }
   return { cmd, kind, name, hyperdrive, hyperdriveSqlMode };
 }
@@ -374,6 +380,31 @@ export async function hostnameCommand(ctx, parsed, env, { out = console.log, err
   return result;
 }
 
+// site remove <name> [--delete-data] [--no-entry] (#782): a SaaS-zone site, through the one removal
+// (provision.mjs removeNamespaceSite) that the demo reaper and the one-click undo also use. A dry run unless
+// --delete-data. After a real removal it reads back the entry and the script, and fails if either is still there.
+export async function removeCommand(ctx, parsed, env, { out = console.log } = {}) {
+  if (!env.WFP_KV_ID || !env.WFP_NAMESPACE) throw new Error('site remove: set WFP_KV_ID and WFP_NAMESPACE');
+  const hostname = siteHostname(parsed.name, env);
+  const kvId = env.WFP_KV_ID, ns = env.WFP_NAMESPACE;
+  const entry = await readSite(ctx, { kvId, hostname });
+  if (!entry && !parsed.noEntry) {
+    throw new Error(`site remove: ${hostname} has no registry entry. For a half-made site, rerun with --delete-data --no-entry to remove its parts by their derived names. Nothing was changed.`);
+  }
+  const r = await removeNamespaceSite(ctx, { ns, kvId, hostname, name: parsed.name, entry, saasZoneId: env.WFP_SAAS_ZONE_ID, deleteData: parsed.deleteData, withEntry: !!entry });
+  out(`site remove ${parsed.name} (${hostname}):`);
+  for (const x of r.plan) out(`  ${r.dryRun ? 'would delete' : 'deleted or absent'}: ${x.part} (${x.what})`);
+  out(`  ${r.dataLoss}`);
+  if (r.dryRun) { out('  dry run: nothing was changed. Rerun with --delete-data to remove the site.'); return r; }
+  const script = (entry && typeof entry.script === 'string') ? entry.script : `site-${parsed.name}`;
+  const still = [];
+  if (await readSite(ctx, { kvId, hostname })) still.push('the registry entry');
+  if (await scriptExists(ctx, { name: script, ns })) still.push(`the site code ${script}`);
+  if (still.length) throw new Error(`site remove: ${still.join(' and ')} is still present after its delete; rerun site remove ${parsed.name} --delete-data`);
+  out('  checked: the registry entry and the site code are gone');
+  return { ...r, checked: true };
+}
+
 async function main() {
   const parsed = parseArgs(process.argv.slice(2));
   const env = process.env;
@@ -383,7 +414,8 @@ async function main() {
   // Before any API call: a reference-deployment site belongs to deploy/wfp/site (#294).
   const refusal = operatorSiteRefusal(parsed.cmd, parsed.name, env);
   if (refusal) throw new Error(refusal);
-  if (parsed.cmd !== 'add') throw new Error(`${parsed.cmd}: not implemented in this CLI; list, update and remove a site with deploy/wfp/site (docs/operator.md)`);
+  if (parsed.cmd === 'remove') { await removeCommand(ctx, parsed, env); return; }
+  if (parsed.cmd !== 'add') throw new Error(`${parsed.cmd}: not implemented in this CLI; list and update a site with deploy/wfp/site (docs/operator.md)`);
   const cfg = await buildCfg(parsed, env);
   const r = await provisionSite(ctx, cfg);
   console.log(JSON.stringify({ provisioned: r.kind, name: r.name, script: r.script, hostname: r.hostname }, null, 2));

@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { resetFailures, writeLossResponse, WRITE_LOSS_BODY } from '../write-loss.mjs';
+import { resetFailures, writeLossResponse, WRITE_LOSS_BODY, statementFailureResponse, PLATFORM_FAILURE, platformFailures } from '../write-loss.mjs';
 
 const RESET = "Durable Object's isolate exceeded its memory limit and was reset.";
 test('THE FDPROBE1112H CASE: the session_tokens UPDATE failed in a reset, so the run has lost writes', () => {
@@ -176,6 +176,8 @@ test('#596: the write-loss lines carry id for a valid x-perf-id, no id without o
 		memIdOf,
 		kind: 'memory',
 		wl: writeLossResponse(lost, wantsJson('/wp-admin/post.php', '', 'text/html')),
+		ocForgot: { n: 3, groups: { 'post-queries': 3 } }, // #766
+		rolled: null, // #794: no proven rollback in this case
 	};
 	const withId = logged(phpLine, base);
 	assert.equal(withId.id, PERF_ID, 'a valid x-perf-id is on the line, got ' + JSON.stringify(withId));
@@ -183,6 +185,9 @@ test('#596: the write-loss lines carry id for a valid x-perf-id, no id without o
 	assert.equal(withId.answered, 500);
 	assert.equal(withId.phpStatus, 200, 'phpStatus stays PHP own status, before the guard');
 	assert.equal(withId.failed, lost);
+	assert.equal(withId.ocDropped, 3, '#766: the line says how many of the request object-cache writes were dropped');
+	assert.deepEqual(withId.ocDroppedGroups, { 'post-queries': 3 }, '#766: and in which groups');
+	assert.equal(withId.rolledBack, false, '#794: the line says whether the frame was proven rolled back');
 	assert.equal(withId.firstSql, 'UPDATE wp_postmeta');
 	assert.equal(withId['@event'], 'write-loss');
 	// 321 is not a real status: it proves the field is wl.status, not a hardcoded 500 and not phpStatus.
@@ -227,4 +232,79 @@ test('#596: the write-loss lines carry id for a valid x-perf-id, no id without o
 	const doc = readFileSync(new URL('../write-loss.mjs', import.meta.url), 'utf8');
 	assert.match(doc, /phpStatus is PHP's own status/);
 	assert.match(doc, /not the status the client got/);
+});
+
+test('#795 statementFailureResponse: never a plausible wrong answer; retryable only when nothing was saved', () => {
+	const a = statementFailureResponse(1, false, false);
+	assert.equal(a.status, 503, 'nothing saved: a retryable 503');
+	assert.equal(a.headers['retry-after'], '5');
+	assert.equal(a.headers['cache-control'], 'no-store');
+	assert.equal(a.headers['x-sql-failure'], '1');
+	assert.equal(a.headers['x-write-loss'], 'none');
+	assert.ok(!('x-isolate-reset' in a.headers), 'it claims no isolate reset: there was none');
+	assert.match(a.body, /Nothing was saved/);
+	const b = statementFailureResponse(2, true, true);
+	assert.equal(b.status, 500, 'a write may have been kept: a 500');
+	assert.ok(!('retry-after' in b.headers), 'and no Retry-After: a blind retry could apply a kept write twice');
+	assert.equal(b.headers['x-write-loss'], 'unknown');
+	const j = JSON.parse(b.body);
+	assert.equal(j.data.statementFailure, true);
+	assert.equal(j.data.status, 500);
+});
+
+test('#795 the failure class: platform failures (retryable) against deterministic statement errors (WordPress handles them)', () => {
+	const platform = [
+		"Durable Object's isolate exceeded its memory limit and was reset.",
+		'SQLITE_BUSY: database is locked',
+		'SQLITE_NOMEM: out of memory',
+		'SQLITE_FULL: database or disk is full',
+		'SQLITE_IOERR: disk I/O error',
+		'Network connection lost.',
+		'the operation timed out',
+		'no reply from the Worker',
+	];
+	const deterministic = [
+		'no such table: wp_options: SQLITE_ERROR',
+		'near "SELEC": syntax error: SQLITE_ERROR',
+		'LIKE or GLOB pattern too complex: SQLITE_ERROR',
+		'UNIQUE constraint failed: wp_options.option_name: SQLITE_CONSTRAINT',
+		'dialect: unsupported statement',
+		'SQLITE_ERROR: injected statement failure (#766, a measurement)',
+	];
+	for (const e of platform) assert.ok(PLATFORM_FAILURE.test(e), 'platform: ' + e);
+	for (const e of deterministic) assert.ok(!PLATFORM_FAILURE.test(e), 'deterministic: ' + e);
+	assert.equal(platformFailures([{ error: platform[1] }, { error: deterministic[0] }, { error: platform[0] }]), 2);
+});
+
+test('#795 index.js: a PLATFORM failure is answered as a failure (after the reset branch); a deterministic one goes back to WordPress', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const lost = src.indexOf('const lost = resetFailures(d.failures);');
+	const any = src.indexOf('const platform = platformFailures(d.failures) > 0;');
+	const copy = src.indexOf('for (const [k, v] of Object.entries(r.headers))', lost);
+	assert.ok(lost > 0 && any > lost && copy > any, 'after the reset branch, before PHP headers are copied');
+	const blk = src.slice(any, copy);
+	assert.ok(!/SETUP_PATHS/.test(src), 'no path exclusion: the class decides');
+	assert.match(blk, /if \(platform\) \{[\s\S]*readFailed\(d\.failures\)\) \{\s*try \{ rb = undoLog && sqlDb \? undoLog\.rollbackFrame/, 'a platform failure with a failed read rolls the frame back');
+	assert.match(blk, /const saved = rb \? !frameProvesRollback\(fr\) : wrote;/, '"nothing saved" only on the proof, or when nothing was written');
+	assert.match(blk, /class: 'deterministic'/, 'a deterministic failure is logged and falls through to PHP own answer');
+	assert.match(src, /pageCacheHeaders\(req, url, r, out, env, d\.failures\.length\);/, 'and is still never edge-cached (#766)');
+});
+
+test('#809 index.js: a stranded frame answers the retryable 503 before PHP runs, and the cron leg is deferred', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const rec = src.indexOf("if (realTxn) txnRecover(sql, this.ctx.storage);\n\t\t\t// #352: arm the request frame");
+	const gate = src.indexOf('if (realTxn && undo(env).stranded()) {');
+	const php = src.indexOf('const res = await handle(req, env, url, spikeOk, maxBody, ctx);');
+	assert.ok(rec > 0 && gate > rec && php > gate, 'the fetch path: recover, then the gate, then PHP');
+	assert.match(src.slice(gate, php), /statementFailureResponse\(1, wantsJson\(url\.pathname, url\.search, req\.headers\.get\('accept'\)\), false\)/, 'nothing saved: the 503 with Retry-After');
+	const cgate = src.indexOf('if (realTxn && undo().stranded()) {');
+	const cron = src.indexOf('cr = await runCron(', cgate);
+	assert.ok(cgate > 0 && cron > cgate && src.slice(cgate, cron).includes("cr = { deferred: 'frame-stranded' };"), 'the alarm: the cron leg deferred, not run');
+	assert.ok(src.lastIndexOf('txnRecover(sql, this.ctx.storage);', cgate) > src.lastIndexOf('async alarmRun', cgate), 'the alarm recovers first');
+});
+
+test('#809 the stranded refusal is a PLATFORM failure, not the reset: #795 answers it retryable, never write-loss', async () => {
+	const { STRANDED_ERROR } = await import('../undo-log.mjs');
+	assert.equal(platformFailures([{ error: STRANDED_ERROR }]), 1);
+	assert.equal(resetFailures([{ error: STRANDED_ERROR }]), 0);
 });

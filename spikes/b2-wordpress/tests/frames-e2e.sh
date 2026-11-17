@@ -9,8 +9,9 @@
 # Prints one MEASURE line per mode and exits 1 on any failure.
 set -u
 cd "$(dirname "$0")/.." || exit 1
-export PORT=${PORT:-8797} DEV_ENV=${DEV_ENV:-dosql-local}
-B=http://localhost:$PORT
+export DEV_ENV=${DEV_ENV:-dosql-local}
+# shellcheck source=port.sh
+. ./port.sh
 ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}")
 PW=local-spike-password
 bad=0
@@ -21,6 +22,8 @@ for mode in off on; do
   ./run.sh --stop >/dev/null 2>&1; [ -n "$STATE" ] && rm -rf "$STATE"
   STATE=$(mktemp -d "${TMPDIR:-/tmp}/frames-e2e.XXXXXX"); export PERSIST_TO=$STATE
   DEV_LOCAL=1 DEV_VARS="REQUEST_FRAMES:$mode" ./run.sh _ping > /dev/null || { echo "FAIL $mode: wrangler dev did not start"; bad=1; continue; }
+  server_port || { echo "FAIL $mode: no port"; bad=1; continue; }
+  B=http://localhost:$PORT
   curl -s "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null
   curl -s "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_activate?plugin=woocommerce/woocommerce.php" > /dev/null
   ./e2e.sh "$B" > "build/frames-e2e-$mode.log" 2>&1; e=$?
@@ -33,11 +36,15 @@ for mode in off on; do
   curl -s -c "$J" -b "$J" -o "$T/pn" "$B/wp-admin/post-new.php"
   N=$(grep -o 'createNonceMiddleware( "[a-f0-9]*' "$T/pn" | grep -o '[a-f0-9]*$')
   id=$(curl -s -c "$J" -b "$J" -H "X-WP-Nonce: $N" -H 'Content-Type: application/json' -d '{"title":"frame cost","content":"<p>v0</p>","status":"publish"}' "$B/?rest_route=/wp/v2/posts" | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
+  # #760: the post's own link: /?p=<id> answers 301 to it under pretty permalinks (a fresh site's default),
+  # and the x-perf of a redirect is not the cost of a render.
+  pl=$(curl -s "$B/?rest_route=/wp/v2/posts/$id" | python3 -c "import json,sys,urllib.parse; u=urllib.parse.urlsplit(json.load(sys.stdin).get('link','')); print((u.path or '/?p=$id') + ('?'+u.query if u.query else ''))")
+  case "$pl" in *\?*) sep='&' ;; *) sep='?' ;; esac
   : > "$T/perf"
   for i in $(seq 1 10); do
     curl -s -c "$J" -b "$J" "${ST[@]}" -D - -o /dev/null -H "X-WP-Nonce: $N" -H 'Content-Type: application/json' -d "{\"content\":\"<p>v$i $(head -c 2000 /dev/zero | tr '\0' x)</p>\"}" "$B/?rest_route=/wp/v2/posts/$id" | tr -d '\r' | grep -i -E '^(x-perf|x-db-rows):' | sed "s/^/save /" >> "$T/perf"
     curl -s -c "$J" -b "$J" "${ST[@]}" -D - -o /dev/null "$B/wp-admin/post-new.php" | tr -d '\r' | grep -i -E '^(x-perf|x-db-rows):' | sed "s/^/postnew /" >> "$T/perf"
-    curl -s "${ST[@]}" -D - -o /dev/null "$B/?p=$id&nocache=$RANDOM" | tr -d '\r' | grep -i -E '^(x-perf|x-db-rows):' | sed "s/^/public /" >> "$T/perf"
+    curl -s "${ST[@]}" -D - -o /dev/null "$B$pl${sep}nocache=$RANDOM" | tr -d '\r' | grep -i -E '^(x-perf|x-db-rows):' | sed "s/^/public /" >> "$T/perf"
   done
   python3 - "$T/perf" "$mode" <<'PY' > "$T/out"
 import json, re, statistics, sys

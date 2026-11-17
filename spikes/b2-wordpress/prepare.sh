@@ -1,14 +1,21 @@
 #!/bin/bash
-# Build vendor/php_8_3.js from the pinned @php-wasm/web-8-3 JSPI loader.
-# PF_ENGINE_JS and PF_ENGINE_WASM point it at another engine's loader and wasm instead (the
-# pagefeather engine, #582); the same patches apply, each one asserting it matched once.
+# Build vendor/php_8_3.js and vendor/php_8_3.wasm from the PHP engine engine.sh resolves (#771): by default the
+# lean pagefeather engine pinned in engine.lock (#582, #592), fetched by hash; PHP_ENGINE=npm for the pinned
+# @php-wasm/web-8-3 JSPI loader; or PF_ENGINE_JS and PF_ENGINE_WASM, another engine's files as given. The same
+# patches apply to each, each one asserting it matched once. vendor/engine.mjs says which engine was built and its
+# default recycle line (140 lean, 100 npm), for index.js.
 # workerd has no import.meta.url, so the first statement (two lines) that
 # builds the wasm URL from it is replaced. The Worker passes the wasm module
 # itself through instantiateWasm, so the file name is never fetched.
 set -euo pipefail
 cd "$(dirname "$0")"
+# shellcheck source=engine.sh
+. ./engine.sh
+engine_resolve || exit 2
 src=${PF_ENGINE_JS:-node_modules/@php-wasm/web-8-3/jspi/php_8_3.js}
 mkdir -p vendor
+engine_mjs > vendor/engine.mjs  # #827: the name, the recycle line and the engine tag
+echo "engine: $PHP_ENGINE_RESOLVED (${PF_ENGINE_WASM:-the npm package}), recycle line $(engine_recycle_mib) MiB by default" >&2
 { echo "const dependencyFilename = 'php_8_3.wasm';"; tail -n +3 "$src"; } > vendor/php_8_3.js
 head -1 vendor/php_8_3.js
 

@@ -11,12 +11,24 @@ on:
       - 'engine/**'
       - '.github/workflows/pagefeather-engine.yml'
   workflow_dispatch:
+    inputs:
+      # #771: publish the lean engine prerelease (the publish job below). Main only. With publish on, the build
+      # matrix does not run: the release is made from the named run's s1-lean artifact, the exact bytes measured.
+      publish:
+        description: "Publish the lean engine prerelease from a run's s1-lean artifact (main only)"
+        type: boolean
+        default: false
+      from_run:
+        description: "The pagefeather-engine run whose pagefeather-engine-s1-lean artifact to publish (for engine-lean-187d5fa1: 43826507687)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
 jobs:
   licence-archives:
+    if: ${{ !inputs.publish }}
     # One fetch of each tar row in engine/licenses.tsv, shared by the build legs (#604). The legs
     # used to download the same tarballs from upstream at the same moment, and a host sometimes
     # answered 200 with an HTML page. The cache key is the sha256 of engine/licenses.tsv, so a run
@@ -203,7 +215,7 @@ jobs:
           npm ci --silent --no-audit --no-fund
           for arm in lean-nogd lean; do
             d="$RUNNER_TEMP/e/pagefeather-engine-s1-$arm"
-            PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+            PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
             echo "== $arm"
             ENGINE_EXPECT="../../engine/expect/$arm.json" node --test tests/engine-contract.test.mjs
           done
@@ -227,6 +239,9 @@ jobs:
           # vendor/ must hold the LEAN engine here, or this step would test the npm one.
           st=$(node ../../engine/tools/wasm-stats.mjs vendor/php_8_3.wasm vendor-under-e2e); echo "$st"
           case "$st" in *'"dylink":false'*) ;; *) echo "::error::vendor/ is not the lean engine"; exit 1 ;; esac
+          # #771: build.sh checks vendor/ against the engine this run resolves; name the arm the step above vendored.
+          d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean"
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM
           ./build.sh | tail -1
           s=$(date +%s)
           if DEV_ENV=dosql-local WOO_ACTIVE=1 ./opcache.sh > build/opcache.log 2>&1; then
@@ -278,7 +293,7 @@ jobs:
           set -euo pipefail
           npm ci --silent --no-audit --no-fund
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-trim"
-          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
           node ../../engine/tools/wasm-stats.mjs vendor/php_8_3.wasm lean-trim-under-test
           ENGINE_EXPECT=../../engine/expect/lean.json node --test tests/engine-contract.test.mjs
           node --test tests/fileinfo-sniff.test.mjs
@@ -301,15 +316,26 @@ jobs:
           set -euo pipefail
           npm ci --silent --no-audit --no-fund
           python3 -I ../../engine/fileinfo/fixtures.py "$RUNNER_TEMP/fx"
+          # #771: build.sh checks vendor/ against the engine this run resolves; vendor/ holds lean-trim (the step above).
+          d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-trim"
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM
           ./build.sh | tail -1
-          B=http://localhost:8797; PW=local-spike-password
+          PW=local-spike-password
           ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}")  # the local test token, as frames-e2e.sh passes it
           for arm in lean lean-trim lean-nofileinfo; do
             d="$RUNNER_TEMP/e/pagefeather-engine-s1-$arm"
-            PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+            PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
             ./run.sh --stop > /dev/null 2>&1 || true
             export PERSIST_TO=$(mktemp -d)
             DEV_LOCAL=1 ./run.sh _ping > /dev/null || { echo "::error::wrangler dev did not start ($arm)"; tail -40 dev.log; exit 1; }
+            # #839: the port this step's run.sh chose. One build per runner.
+            # shellcheck source=port.sh
+            . ./port.sh
+            server_port || { echo "::error::run.sh did not record a port"; exit 1; }
+            if [ "${port_from:-}" = recorded ]; then
+              echo "port $PORT"
+            fi
+            B=http://localhost:$PORT
             curl -s "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null
             echo "== $arm"
             B=$B ADMIN_PASSWORD=$PW python3 tests/upload-sniff.py "$RUNNER_TEMP/fx" "$RUNNER_TEMP/up-$arm.json"
@@ -329,9 +355,10 @@ jobs:
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-trim"
-          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
           if ! tests/frames-e2e.sh; then echo "::error::frames-e2e.sh failed on lean-trim"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
   lazy-native:
+    if: ${{ !inputs.publish }}
     # #582 S4 M2b: the lazy-body contract suite on a NATIVE php-cli, in minutes and with no engine build: php-src
     # from the php.net tarball (sha256 in engine/UPSTREAM), pf-lazy-bodies.patch (git apply --check first), a
     # minimal CLI with OPcache and debug assertions. run-native.sh runs every case of engine/opcache/lazy/probe.php
@@ -390,7 +417,7 @@ jobs:
           npm ci --silent --no-audit --no-fund
           for arm in lean-trim lean-lazy; do
             d="$RUNNER_TEMP/e/pagefeather-engine-s1-$arm"
-            PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+            PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
             ./build.sh | tail -1
             # lean-lazy primes at 128 MiB (PRIME_OPCACHE_MB): every script fits, so the zip is split as it would ship
             mb=""; [ "$arm" = lean-lazy ] && mb=128
@@ -410,7 +437,7 @@ jobs:
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-lazy"
-          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
           ENGINE_EXPECT=../../engine/expect/lean.json node --test tests/engine-contract.test.mjs
           node --test tests/lazy-bodies.test.mjs
           if ! tests/frames-e2e.sh; then echo "::error::frames-e2e.sh failed on lean-lazy"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
@@ -429,7 +456,7 @@ jobs:
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-stats-lazy"
-          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
           node --test tests/lazy-bodies.test.mjs 2>&1 | tee "$RUNNER_TEMP/stats-lazy.txt"
           if grep -q 'not a stats build' "$RUNNER_TEMP/stats-lazy.txt"; then echo "::error::test 16 skipped on lean-stats-lazy"; exit 1; fi
       - name: Test 16's red control on lean-stats-lazy-mutant (the observer keys bodies by the opcodes pointer)
@@ -438,7 +465,7 @@ jobs:
           set -uo pipefail
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-stats-lazy-mutant"
           grep -q 'ENGINE_STATS_MUTANT=opcodes-key' "$d/build-args.txt" || { echo "::error::the mutant arm was not built as the mutant"; exit 1; }
-          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
           rc=0; node --test --test-name-pattern 'test 16' tests/lazy-bodies.test.mjs > "$RUNNER_TEMP/stats-mutant.txt" 2>&1 || rc=$?
           grep -E '^(✖|✔|﹣)|AssertionError|counted other bodies' "$RUNNER_TEMP/stats-mutant.txt" | head -8
           [ "$rc" != 0 ] || { echo "::error::test 16 PASSED on the mutant observer: it cannot see the stub read as the body"; exit 1; }
@@ -450,13 +477,13 @@ jobs:
           set -euo pipefail
           # red control: lean-trim has no pagefeather_lazy_bodies counters, so the gate must fail on it
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-trim"
-          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
           ./build.sh | tail -1
           rc=0; tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate-red.json" || rc=$?
           [ "$rc" != 0 ] || { echo "::error::the body-region gate PASSED on lean-trim, which has no counters: it cannot see a mismatch"; exit 1; }
           echo "red control: the gate fails on lean-trim (rc=$rc), as it must"
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-lazy"
-          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
           ./build.sh | tail -1
           # at the runtime default (48): part of the scripts take the file-cache fallback; mismatch must be 0
           tests/lazy-bodies-e2e.sh "$RUNNER_TEMP/gate.json"
@@ -513,16 +540,24 @@ jobs:
           set -euo pipefail
           npm ci --silent --no-audit --no-fund
           d="$RUNNER_TEMP/e"
-          PF_ENGINE_JS="$d/php_8_3.js" PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)" ./prepare.sh | tail -1
+          PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM; ./prepare.sh | tail -1
           ./build.sh | tail -1
           DEV_ENV=dosql-local WOO_ACTIVE=1 ./opcache.sh > build/opcache.log 2>&1 || { tail -30 build/opcache.log; exit 1; }
           tail -1 build/opcache.log
           ./run.sh --stop > /dev/null 2>&1 || true
           export PERSIST_TO=$(mktemp -d)
-          B=http://localhost:8797; PW=local-spike-password
+          PW=local-spike-password
           ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}")
           # As frames-e2e.sh runs it after the same opcache.sh priming (the default env), with recycling off.
           DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off" ./run.sh _ping > /dev/null || { echo "::error::wrangler dev did not start"; tail -40 dev.log; exit 1; }
+          # #839: the port this step's run.sh chose. One build per runner.
+          # shellcheck source=port.sh
+          . ./port.sh
+          server_port || { echo "::error::run.sh did not record a port"; exit 1; }
+          if [ "${port_from:-}" = recorded ]; then
+            echo "port $PORT"
+          fi
+          B=http://localhost:$PORT
           echo "install: $(curl -s -o /dev/null -w '%{http_code}' "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install")"
           echo "activate woocommerce: $(curl -s -o /dev/null -w '%{http_code}' "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_activate?plugin=woocommerce/woocommerce.php")"
           B=$B ADMIN_PASSWORD=$PW python3 tests/opcache-stats.py 2 "$RUNNER_TEMP/opcache-stats.jsonl"
@@ -533,3 +568,48 @@ jobs:
           name: opcache-stats
           path: ${{ runner.temp }}/opcache-stats.jsonl
           retention-days: 14
+
+  publish:
+    # #771: the lean engine prerelease, from the named run's s1-lean artifact. engine/tools/publish-lean.sh refuses
+    # unless both files are exactly the pins in spikes/b2-wordpress/engine.lock, renames them (no published name says
+    # PHP), writes SHA256SUMS and the notices from #742's packager (NOTICE, SOURCE, LICENSES.tar.gz). Then the
+    # prerelease is created at this commit, never Latest, and refused if the tag already exists. Main only.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: The named run, and the tag not taken
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FROM_RUN: ${{ inputs.from_run }}
+        run: |
+          set -euo pipefail
+          [[ "$FROM_RUN" =~ ^[0-9]+$ ]] || { echo "::error::from_run must be a run id"; exit 1; }
+          tag=$(sed -n 's/^LEAN_TAG=//p' spikes/b2-wordpress/engine.lock)
+          [ -n "$tag" ] || { echo "::error::engine.lock has no LEAN_TAG"; exit 1; }
+          if gh release view "$tag" > /dev/null 2>&1; then echo "::error::the release $tag exists already"; exit 1; fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pagefeather-engine-s1-lean
+          path: ${{ runner.temp }}/art
+          run-id: ${{ inputs.from_run }}
+          github-token: ${{ github.token }}
+      - name: Assemble (refuses unless the files are the pins)
+        env:
+          FROM_RUN: ${{ inputs.from_run }}
+        run: engine/tools/publish-lean.sh "$RUNNER_TEMP/art" "$RUNNER_TEMP/rel"
+      - name: Create the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          r="$RUNNER_TEMP/rel"
+          gh release create "$TAG" --prerelease --latest=false --target "$GITHUB_SHA" --title "pagefeather engine, lean ($TAG)" \
+            --notes-file "$r/release-body.md" \
+            "$r/pagefeather-engine-lean.wasm" "$r/pagefeather-engine-lean.js" "$r/SHA256SUMS" "$r/NOTICE" "$r/SOURCE" "$r/LICENSES.tar.gz"
+          gh release view "$TAG" --json isPrerelease,assets -q '"prerelease \(.isPrerelease); assets: \([.assets[].name] | join(" "))"'

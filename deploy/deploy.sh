@@ -37,13 +37,19 @@
 # BENCH=0 (skip the measurements), N (runs per page, default 10), PORT (local
 # wrangler dev port for the OPcache step, default 8798), DEPLOY_STATE=r2 (keep
 # Terraform state in an R2 bucket; see README.md).
+# INSTALL_WAIT_S (default 120, at most 600; #811): how long to retry /_install while
+# the answer is 403, 5xx, no answer, or not JSON. INSTALL_INTERVAL_S (default 5) is
+# the pause. A JSON answer that is not installed fails the deploy.
 # Variant a renders the measured site by default (#666, deploy/README.md): the lean client (A_CLIENT), the
-# object cache with its L2 KV and lazy nodes; PHP_OVERFLOW=1 adds the overflow pool (PHP_OVERFLOW_POOL, default 32).
+# object cache with its L2 KV and lazy nodes; PHP_OVERFLOW=1 adds the overflow pool (PHP_OVERFLOW_POOL, default 32);
+# PHP_OVERFLOW=always (#714, a measurement arm) moves every eligible request to it.
 # Variant a, the #394 admin fixes (deploy/a-settings.sh; all off unless set): OPCACHE_A=1 primes
 # OPcache on the D1 build with no Docker (opcache-a.sh; an empty cache fails), OPCACHE_REMOTE=1 and
 # SITE_REMOTE=1 move the bundle's zips to packs under /_pf/ (#563, #569; they need OPCACHE_A=1), RECYCLE_WASM_MIB sets the
-# runtime recycle line (#602; 140 with the lean engine, #598). Every variant: PF_ENGINE_JS and
-# PF_ENGINE_WASM build with another engine (#592, the lean-trim artifact), both or neither.
+# runtime recycle line (#602; the engine's own default when unset: 140 lean, 100 npm, #771). Every variant: the PHP
+# engine is the pinned LEAN engine by default (#771, spikes/b2-wordpress/engine.lock, fetched by hash);
+# PHP_ENGINE=npm builds the @php-wasm/web-8-3 package engine; PF_ENGINE_JS and PF_ENGINE_WASM build with other
+# engine files (both or neither).
 # OBSERVABILITY (variants b-do, b-dosql and a; deploy/observability.sh): Workers Logs, off unless set.
 # 0 an explicit off, 1 events only, full the invocation logs too (a throwaway only). With 1 or full the
 # query strings are redacted right after the upload and read back; if not, the logs go off and the
@@ -119,10 +125,21 @@ esac
 # shellcheck source=SCRIPTDIR/fault-inject.sh
 . "$ROOT/deploy/fault-inject.sh"
 fault_check "$VARIANT" "${NAME:-}" || exit 2
+# PAGE_CACHE_TTL (#759): the edge page cache seconds on b-dosql (0 = off); checked before any step.
+# shellcheck source=SCRIPTDIR/page-cache-ttl.sh
+. "$ROOT/deploy/page-cache-ttl.sh"
+page_cache_ttl_check "$VARIANT" || exit 2
+# #764: the conformance content (#759: it wipes the store) is for a throwaway only. One rule with deploy/wfp.
+# shellcheck source=SCRIPTDIR/conformance.sh
+. "$ROOT/deploy/conformance.sh"
+conformance_check "${NAME:-}" || exit 2
 # PDF_INVOICE (#765): PDF order invoices, b-dosql only, the same switch as deploy/wfp and one-click.
 # shellcheck source=SCRIPTDIR/pdf-invoice.sh
 . "$ROOT/deploy/pdf-invoice.sh"
 pdf_invoice_check "$VARIANT" || exit 2
+# #811: /_install retries while the PHP object is still on the previous version.
+# shellcheck source=SCRIPTDIR/install.sh
+. "$ROOT/deploy/install.sh"
 object_time_vars >/dev/null || exit 2
 # WOO_ACTIVE is 0 or 1 (#706). Unset was set to 0 above. Anything else is refused
 # before any step, the same as deploy/wfp woo_active_for_build.
@@ -145,6 +162,16 @@ fi
 # shellcheck source=SCRIPTDIR/observability.sh
 . "$ROOT/deploy/observability.sh"
 obs_check "$VARIANT" || exit 2
+# #788: approach A stays on the npm engine until lean is measured there (the lead's ruling, #771). An explicit
+# PHP_ENGINE, or PF_ENGINE_JS and PF_ENGINE_WASM, still wins.
+if [ "$VARIANT" = a ] && [ -z "${PHP_ENGINE:-}" ] && [ -z "${PF_ENGINE_JS:-}${PF_ENGINE_WASM:-}" ]; then export PHP_ENGINE=npm; fi
+# #771: the PHP engine, resolved ONCE here and exported (spikes/b2-wordpress/engine.sh): prepare.sh, build.sh and
+# everything after see the same pair. The default is the pinned lean engine; PHP_ENGINE=npm, or PF_ENGINE_JS and
+# PF_ENGINE_WASM, choose another. After every other check (each refuses first, as
+# its tests pin), and before any Terraform, build or deploy step: a fetch that fails leaves nothing half-applied.
+# shellcheck source=../spikes/b2-wordpress/engine.sh
+. "$ROOT/spikes/b2-wordpress/engine.sh"
+engine_resolve || exit 2
 
 # Terraform state: local by default; DEPLOY_STATE=r2 writes a backend override
 # for the root in $1 (deploy/terraform or deploy/mysql). backend() is in tf-backend.sh.
@@ -227,7 +254,7 @@ cd "$APP"
 # Every build regenerates the loader (#394, #446): a stale vendor/ never picks up a new patch.
 # No pipe: a pipe would hide a failed patch assert and ship the old loader.
 ./prepare.sh || { echo "prepare.sh failed: the loader was not rebuilt"; exit 1; }
-echo "engine: ${PF_ENGINE_WASM:-the pinned @php-wasm/web-8-3 (npm)}"
+echo "engine: $PHP_ENGINE_RESOLVED (${PF_ENGINE_WASM:-the pinned @php-wasm/web-8-3}), recycle line $(engine_recycle_mib) MiB unless RECYCLE_WASM_MIB"
 if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
   ./build.sh | tail -1
   DEV_ENV=$([ "$VARIANT" = b-dosql ] && echo dosql-local || echo do-local) opcache
@@ -294,6 +321,10 @@ if [ "$VARIANT" = a ]; then
   python3 -I "$ROOT/deploy/wfp/remote_assets_check.py" "$CONF" "$APP" || { echo "the remote assets check refused $CONF" >&2; exit 2; }
 fi
 
+# #827: the build is for the engine vendor/ holds (build/engine-tag against vendor/engine.mjs), so the upload cannot
+# ship an engine its build id does not name.
+engine_build_check "$APP" || exit 2
+
 if [ "$DRY_RUN" = 1 ]; then
   log "dry run: $CONF"
   "$ROOT/deploy/wr" deploy --dry-run --outdir "${DRY_OUT:-$(mktemp -d)}" --config "$CONF" 2>&1 | grep -E 'Total Upload|dry-run|Your Worker has access'
@@ -325,16 +356,14 @@ rm -f "$SECRETS"
 origin_check "$URL" "$SITE_ORIGIN" || exit 1
 SPIKE_TOKEN=$(out spike_token); ADMIN_PASSWORD=$(out admin_password)
 
-# 5. Install WordPress (once). b-do: in the PHP object (on Workers Free too:
+# 5. Install WordPress. b-do: in the PHP object (on Workers Free too:
 # 901 D1 queries, 57 s measured). a: in the Worker (Workers Paid).
+# #811: the object can still be on the previous version and answer 403. Retry
+# until it is installed, and fail the deploy if it never is (deploy/install.sh).
+# The failure prints the last status and the body's first bytes. When the retries
+# run out it also names the current deployment, read with the deploy token.
 log "install"
-sleep 5
-curl -s -m 300 -X POST -K <(printf 'header = "x-spike-token: %s"\nheader = "x-admin-password: %s"\n' "$SPIKE_TOKEN" "$ADMIN_PASSWORD") "$URL/_install" \
-  | python3 -c 'import json, sys
-try:
-    d = json.load(sys.stdin); print(d.get("out", "")[-80:], d.get("ms"), "ms")
-except ValueError:
-    print("install did not answer JSON (on Workers Free, variant a stops at the CPU limit)")'
+install_wordpress "$URL" || exit 1
 
 if [ "${WOO_ACTIVE:-0}" = 1 ]; then
   log "activate WooCommerce"

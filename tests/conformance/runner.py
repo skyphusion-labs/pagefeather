@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The conformance runner of #759: the upstream browser suites against a THROWAWAY site.
 
-    runner.py prepare --suite wp|wc|gb --base-url https://<site> --cache on|off --run-dir <dir>
-    runner.py config  --suite wp|wc|gb --suite-dir <upstream e2e dir> --run-dir <dir>
+    runner.py prepare --suite wp|wc|wc-api|gb --base-url https://<site> --cache on|off --run-dir <dir>
+    runner.py config  --suite wp|wc|wc-api|gb --suite-dir <upstream e2e dir> --run-dir <dir>
     runner.py check-state --base-url https://<site> --state <storage state json> [--state ...]
     runner.py summarize --report <playwright json> --out <results.json>
     runner.py compare --baseline <results.json> --ours <results.json>
@@ -22,7 +22,9 @@ site: Rollins' seed owns all setup (lead ruling on #759), and prepare verifies i
     ADMIN_PASSWORD for both, unmodified;
   - wc only: the seed's setup is missing: the customer (role, form login with CUSTOMER_PASSWORD),
     blogname, pretty permalinks (/wp-json/ must answer the REST index, #760) or the 3 test images.
-    woocommerce_allow_tracking has no read route at the pin and is reported NOT VERIFIED.
+    the active theme must be twentytwentythree (as upstream's external setup leaves it);
+    woocommerce_allow_tracking must be "yes" (the WooCommerce settings API; WOO_EXTRAS=off forces it off).
+    The customer is CUSTOMER_USERNAME (default "customer"); the images match by stem (image-01 is a JPEG).
 The passwords come from WP_PASSWORD and CUSTOMER_PASSWORD and are never printed.
 
 config writes pf-conformance.config.mjs beside the upstream config: one worker, no retries, no
@@ -36,7 +38,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DENY = {"ggc.sh", "www.ggc.sh"}
 REQUIRE_HTTPS = True  # runner_test.py turns it off for its local http stub; no flag or env reaches it.
 CACHED = {"HIT", "EXPIRED", "STALE", "REVALIDATED", "UPDATING"}
-UPSTREAM_CONFIG = {"wp": "playwright.config.js", "wc": "playwright.config.ts", "gb": "playwright.config.ts"}
+# wc-api: the WooCommerce suite's api-tests (the API half), the same checkout and config as wc.
+UPSTREAM_CONFIG = {"wp": "playwright.config.js", "wc": "playwright.config.ts", "wc-api": "playwright.config.ts", "gb": "playwright.config.ts"}
 # The tags the upstream external envs drop (envs/default-pressable/playwright.config.ts).
 WC_GREP_INVERT = "@skip-on-external-env|@skip-on-pressable|@could-be-lower-level-test|@non-critical|@to-be-removed"
 TIMEOUT = 60
@@ -155,6 +158,7 @@ def check_cache(site, want):
 
 
 WC_BLOGNAME = "WooCommerce Core E2E Test Suite"
+WC_THEME = "twentytwentythree"
 
 
 def wc_verify(site, user, password):
@@ -171,14 +175,18 @@ def wc_verify(site, user, password):
     cust = os.environ.get("CUSTOMER_PASSWORD")
     if not cust:
         raise Stop("CUSTOMER_PASSWORD is not set (the seed's customer password)")
-    st, users = site.json("GET", "/wp-json/wp/v2/users?search=customer&context=edit")
-    u = next((x for x in users or [] if isinstance(x, dict) and x.get("username") == "customer"), None) if st == 200 else None
+    # The seed's creds.env names the customer (CUSTOMER_USERNAME); upstream's default is "customer".
+    cuser = os.environ.get("CUSTOMER_USERNAME") or "customer"
+    if not re.fullmatch(r"[A-Za-z0-9_.@-]{1,60}", cuser):
+        raise Stop("CUSTOMER_USERNAME %r is not a plain user name" % cuser)
+    st, users = site.json("GET", "/wp-json/wp/v2/users?search=%s&context=edit" % urllib.parse.quote(cuser))
+    u = next((x for x in users or [] if isinstance(x, dict) and x.get("username") == cuser), None) if st == 200 else None
     if not u or "customer" not in (u.get("roles") or []):
-        raise Stop("no user 'customer' with the role customer (HTTP %d): the seed did not run" % st)
+        raise Stop("no user %r with the role customer (HTTP %d): the seed did not run" % (cuser, st))
     try:
-        Site(site.base).login("customer", cust)
+        Site(site.base).login(cuser, cust)
     except Stop:
-        raise Stop("the customer cannot log in through the form with CUSTOMER_PASSWORD")
+        raise Stop("the customer %r cannot log in through the form with CUSTOMER_PASSWORD" % cuser)
     st, j = site.json("GET", "/wp-json/wp/v2/settings")
     if st != 200 or not isinstance(j, dict) or j.get("title") != WC_BLOGNAME:
         raise Stop("blogname is %r, not %r" % ((j or {}).get("title") if isinstance(j, dict) else None, WC_BLOGNAME))
@@ -190,14 +198,28 @@ def wc_verify(site, user, password):
         ns = None
     if st != 200 or not ns:
         raise Stop("/wp-json/ does not answer the REST index (HTTP %d): pretty permalinks are not active (#760)" % st)
+    # Matched by STEM: upstream image-01.png is a JPEG, and WordPress names a file by its content,
+    # so it is stored as image-01.jpg, on stock WordPress too (Rollins, measured on the seed).
     for i in (1, 2, 3):
         name = "image-0%d" % i
         st, items = site.json("GET", "/wp-json/wp/v2/media?search=%s&per_page=100" % name)
         if st != 200 or not any(name in (m.get("source_url") or "") for m in items or [] if isinstance(m, dict)):
-            raise Stop("no media %s.png (HTTP %d): the seed did not upload the test images" % (name, st))
-    say("woocommerce setup verified: customer (role and login), blogname, pretty permalinks, 3 images")
-    say("woocommerce_allow_tracking: NOT VERIFIED (no read route at the pin; the seed owns it)")
-    return cust
+            raise Stop("no media %s.* (HTTP %d): the seed did not upload the test images" % (name, st))
+    # Tracking: readable through the WooCommerce settings API at the pin (Rollins, measured).
+    # WOO_EXTRAS=off forces it off, so a throwaway deployed with that setting stops here.
+    st, j = site.json("GET", "/wp-json/wc/v3/settings/advanced/woocommerce_allow_tracking")
+    val = j.get("value") if isinstance(j, dict) else None
+    if st != 200 or val != "yes":
+        raise Stop("woocommerce_allow_tracking is %r (HTTP %d), not 'yes'. The seed sets it; WOO_EXTRAS=off forces it off" % (val, st))
+    # The theme: WooCommerce's external setup activates twentytwentythree (bin/test-env-setup-external.sh),
+    # and its site.setup.ts never sets one. The wp and gb global setups switch to twentytwentyone, so the
+    # reseed before a wc or wc-api pass must put twentytwentythree back.
+    st, themes = site.json("GET", "/wp-json/wp/v2/themes?status=active")
+    active = [t.get("stylesheet") for t in themes or [] if isinstance(t, dict)] if st == 200 else []
+    if active != [WC_THEME]:
+        raise Stop("the active theme is %r (HTTP %d), not %r: the seed sets it before a wc or wc-api pass" % (active, st, WC_THEME))
+    say("woocommerce setup verified: customer (role and login), blogname, pretty permalinks, 3 images, tracking, theme")
+    return cuser, cust
 
 
 def write_env(run_dir, pairs):
@@ -221,10 +243,10 @@ def cmd_prepare(a):
     say("admin: form login and REST nonce ok")
     cache = check_cache(site, a.cache)
     pairs = [("WP_BASE_URL", site.base), ("WP_USERNAME", user)]
-    if a.suite == "wc":
-        cust = wc_verify(site, user, password)
+    if a.suite in ("wc", "wc-api"):
+        cuser, cust = wc_verify(site, user, password)
         pairs += [("WP_PASSWORD", password), ("BASE_URL", site.base), ("ADMIN_USER", user), ("ADMIN_PASSWORD", password),
-                  ("CUSTOMER_USER", "customer"), ("CUSTOMER_PASSWORD", cust)]
+                  ("CUSTOMER_USER", cuser), ("CUSTOMER_PASSWORD", cust)]
     else:
         pairs += [("WP_PASSWORD", password)]
     pairs += [("PF_CONFORMANCE_SUITE", a.suite), ("PF_CONFORMANCE_CACHE", a.cache),
@@ -279,7 +301,7 @@ def config_text(suite, run_dir):
     rep = os.path.join(os.path.abspath(run_dir), "report.json")
     lines = ["// Written by tests/conformance/runner.py config (#759). Do not edit; re-run it.",
              "import base from './%s';" % UPSTREAM_CONFIG[suite]]
-    if suite == "wc":
+    if suite in ("wc", "wc-api"):
         lines.append("import { coreSetupProjects } from './%s';" % UPSTREAM_CONFIG[suite])
     lines += ["const ignore = %s;" % json.dumps(ign),
               "const config = { ...base, workers: 1, retries: 0, fullyParallel: false, webServer: undefined,",
@@ -291,6 +313,12 @@ def config_text(suite, run_dir):
         lines += ["config.testIgnore = undefined;",
                   "config.projects = [ ...coreSetupProjects,",
                   "  { name: 'e2e-pf', testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % json.dumps(WC_GREP_INVERT)]
+    elif suite == "wc-api":
+        # The API half: the same setup projects and the same tag filter, and only the api-tests (which the wc
+        # config ignores). No reset project either: the seed owns setup and the reseed between the halves.
+        lines += ["config.testIgnore = undefined;",
+                  "config.projects = [ ...coreSetupProjects,",
+                  "  { name: 'api-pf', testMatch: [ '**/api-tests/**' ], testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % json.dumps(WC_GREP_INVERT)]
     else:
         assert_login = os.path.join(HERE, "assert-login.mjs")
         lines += ["config.globalSetup = [ base.globalSetup, %s ].filter( Boolean );" % json.dumps(assert_login),
@@ -321,9 +349,17 @@ def walk(suite, path=()):
 
 
 def cmd_summarize(a):
+    """A STOP is never a result: a report whose global setup failed (top-level errors, such as the login
+    assert in assert-login.mjs) or that ran no test at all is refused with exit 3, so the run stops."""
     with open(a.report) as f:
         rep = json.load(f)
+    errors = rep.get("errors") or []
+    if errors:
+        first = errors[0].get("message", "") if isinstance(errors[0], dict) else str(errors[0])
+        raise Stop("the report has %d top-level error(s), so the run did not reach its tests: %s" % (len(errors), first.splitlines()[0][:200] if first else "?"))
     rows = [r for s in rep.get("suites", []) for r in walk(s, (s.get("title") or "",))]
+    if not rows:
+        raise Stop("the report holds no test: the run did not reach its tests")
     with open(a.out, "w") as f:
         json.dump(rows, f, indent=1)
     c = {}
@@ -366,12 +402,12 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("prepare")
-    p.add_argument("--suite", choices=("wp", "wc", "gb"), required=True)
+    p.add_argument("--suite", choices=("wp", "wc", "wc-api", "gb"), required=True)
     p.add_argument("--base-url", required=True)
     p.add_argument("--cache", choices=("on", "off"), required=True)
     p.add_argument("--run-dir", required=True)
     p = sub.add_parser("config")
-    p.add_argument("--suite", choices=("wp", "wc", "gb"), required=True)
+    p.add_argument("--suite", choices=("wp", "wc", "wc-api", "gb"), required=True)
     p.add_argument("--suite-dir", required=True)
     p.add_argument("--run-dir", required=True)
     p = sub.add_parser("check-state")

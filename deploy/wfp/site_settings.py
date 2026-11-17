@@ -52,7 +52,7 @@ SETTINGS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PHP_RECY
             "TURNSTILE_SITEKEY", "TURNSTILE_WOO", "TURNSTILE_LOGIN", "TURNSTILE_COMMENTS",
             "MAIL_FROM", "MAIL_FROM_NAME", "PHP_LOCATION", "WP_VECTORIZE_SEARCH", "OPCACHE_SPLIT", "OPCACHE_REMOTE", "SITE_REMOTE",
             "REMOTE_FETCH_CAP", "REMOTE_HOLD_KIB", "SITE_FETCH_CAP", "SITE_HOLD_KIB", "SITE_RETRY_MS", "REQUEST_FRAMES", "PAGE_CACHE_PRODUCT_TTL", "WOO_EXTRAS",
-            "OBJECT_CALL_DEADLINE_S", "OBJECT_START_BY_S", "OBJECT_DISCONNECT_SHED", "HTTP_ALLOW_HOSTS", "PDF_INVOICE")
+            "OBJECT_CALL_DEADLINE_S", "OBJECT_START_BY_S", "OBJECT_DISCONNECT_SHED", "HTTP_ALLOW_HOSTS", "PDF_INVOICE", "PAGE_CACHE_TTL")
 # Three states (#564): absent from the environment means the default list; present, including
 # empty, means that exact list. The record holds {"set": true, "value": "..."} only when present.
 # A bare string cannot say "empty" and "unset" apart, and empty denies every host.
@@ -64,8 +64,10 @@ PRESENCE = ("HTTP_ALLOW_HOSTS",)
 #   MEM_LEDGER      "on" logs the isolate memory ledger on every request and cron leg: a steady
 #                   log and CPU cost, for a diagnosis only.
 #   WFP_PHP_ENV     a measurement build's PHP env (USE_ZEND_ALLOC=1 swaps PHP's allocator, #434).
-#   FAULT_INJECT    "after-insert" kills the object after a request's INSERT on purpose (#730): throwaway only.
-MEASUREMENT = ("HEADROOM_PROBE", "MEM_LEDGER", "WFP_PHP_ENV", "FAULT_INJECT")
+#   FAULT_INJECT    "after-insert" kills the object after a request's INSERT on purpose (#730); "sql-fail" fails a
+#                   request's chosen SQL statement as the memory ceiling does (#766). Throwaway only.
+#   DISPATCH_PERF_LOG "on": the dispatcher logs each request's operator x-perf-id with its times (#605). Throwaway only.
+MEASUREMENT = ("HEADROOM_PROBE", "MEM_LEDGER", "WFP_PHP_ENV", "FAULT_INJECT", "DISPATCH_PERF_LOG")
 SECRETS = ("TURNSTILE_SECRET",)
 # No log line carries data from SECRETS: a message about a secret is one fixed text, and which
 # secret, and what happened, is in the exit code (5 a recorded secret is missing, 6 a live one would
@@ -77,7 +79,7 @@ DROPPABLE_VARS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PH
                   "TURNSTILE_SITEKEY", "TURNSTILE_WOO", "TURNSTILE_LOGIN", "TURNSTILE_COMMENTS",
                   "MAIL_FROM_NAME", "OPCACHE_REMOTE", "SITE_REMOTE",
                   "REMOTE_FETCH_CAP", "REMOTE_HOLD_KIB", "SITE_FETCH_CAP", "SITE_HOLD_KIB", "SITE_RETRY_MS", "REQUEST_FRAMES", "PAGE_CACHE_PRODUCT_TTL", "WOO_EXTRAS",
-                  "OBJECT_CALL_DEADLINE_S", "OBJECT_START_BY_S", "OBJECT_DISCONNECT_SHED")  # each renders its var only when on (#563, #569, #667)
+                  "OBJECT_CALL_DEADLINE_S", "OBJECT_START_BY_S", "OBJECT_DISCONNECT_SHED", "PAGE_CACHE_TTL")  # each renders its var only when on (#563, #569, #667, #759)
 # HTTP_ALLOW_HOSTS is not droppable here: render_user always writes the var (the default list
 # when unset), so the live bindings cannot show that a custom list became the default (#564).
 

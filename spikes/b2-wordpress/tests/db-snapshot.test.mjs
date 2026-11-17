@@ -128,3 +128,22 @@ test('a readback that does not match the bytes sent: 500 readback', async () => 
 	assert.equal(r.status, 500);
 	assert.equal(r.body.error, 'readback');
 });
+
+// #841: the snapshot carries the cron alarm's state from BEFORE the snapshot re-armed it, so the freshness check
+// (deploy/wfp/snapshot.py fresh) can see a dead cron. Only when given: a call with no alarm stores exactly as before.
+test('#841: an alarm record is stored as customMetadata alarmState and alarmAt, and in the body', async () => {
+	const b = bucket();
+	const r = await takeSnapshot({ dump: dumpOf(LINES), media: b, now: NOW, build: 'b1', alarm: { state: 'none', at: NOW + 60000 } });
+	assert.equal(r.status, 200, JSON.stringify(r.body));
+	const m = b.store.get(r.body.key).opts.customMetadata;
+	assert.equal(m.alarmState, 'none');
+	assert.equal(m.alarmAt, String(NOW + 60000));
+	assert.deepEqual(r.body.alarm, { state: 'none', at: NOW + 60000 });
+});
+test('#841: no alarm after the re-arm is stored as alarmAt "none"', async () => {
+	const b = bucket();
+	const r = await takeSnapshot({ dump: dumpOf(LINES), media: b, now: NOW, alarm: { state: 'stale', at: null } });
+	const m = b.store.get(r.body.key).opts.customMetadata;
+	assert.equal(m.alarmState, 'stale');
+	assert.equal(m.alarmAt, 'none');
+});

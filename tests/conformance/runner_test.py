@@ -10,6 +10,7 @@ password may reach stdout or stderr.
 import base64, http.server, io, json, os, re, shutil, subprocess, sys, tempfile, threading, contextlib, stat
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+PINS_WC_SHA = next(l.split("=", 1)[1].strip() for l in open(os.path.join(HERE, "pins.env")) if l.startswith("WC_SHA="))
 sys.path.insert(0, HERE)
 import runner  # noqa: E402
 
@@ -33,6 +34,9 @@ class Stub:
         self.blogname = "WooCommerce Core E2E Test Suite"
         self.images = ["image-01", "image-02", "image-03"]
         self.customer_role = "customer"
+        self.cuser = "customer"
+        self.tracking = "yes"        # None: the route answers 404
+        self.theme = "twentytwentythree"
         self.basic_ok_pw = None          # None: Basic accepts self.password
         self.marker = "self"     # self | none | other
         self.basic = "ok"        # ok | always401 | ignores
@@ -65,7 +69,7 @@ class Stub:
                 self.wfile.write(body)
 
             def logged_in(self):
-                return re.search(r"wordpress_logged_in_x=(admin|customer)", self.headers.get("Cookie") or "") is not None
+                return re.search(r"wordpress_logged_in_x=\w+", self.headers.get("Cookie") or "") is not None
 
             def rest_ok(self):
                 return "wordpress_logged_in_x=admin" in (self.headers.get("Cookie") or "") and self.headers.get("X-WP-Nonce") == stub.nonce
@@ -116,20 +120,33 @@ class Stub:
                         return self.send(200, '<form name="loginform" id="loginform">', ctype="text/html")
                     if "wordpress_logged_in_x=admin" in c:
                         return self.send(200, "<html>Dashboard</html>", ctype="text/html")
-                    if "wordpress_logged_in_x=customer" in c:
+                    if "wordpress_logged_in_x=%s" % stub.cuser in c:
                         return self.send(302, "", [("Location", "/my-account/")])
                     return self.send(302, "", [("Location", "/wp-login.php?redirect_to=%2Fwp-admin%2F&reauth=1")])
                 if self.path == "/wp-json/":
                     return self.send(200, {"namespaces": ["wp/v2", "wc/v3"]})
-                if self.path.startswith("/wp-json/wp/v2/users?search=customer"):
+                if self.path.startswith("/wp-json/wp/v2/users?search="):
                     if not self.rest_ok():
                         return self.send(401, {})
-                    return self.send(200, [{"id": 7, "username": "customer", "roles": [stub.customer_role]}] if stub.customer_role else [])
+                    q = self.path.split("search=")[1].split("&")[0]
+                    hit = q == stub.cuser and stub.customer_role
+                    return self.send(200, [{"id": 7, "username": stub.cuser, "roles": [stub.customer_role]}] if hit else [])
+                if self.path == "/wp-json/wp/v2/themes?status=active":
+                    if not self.rest_ok():
+                        return self.send(401, {})
+                    return self.send(200, [{"stylesheet": stub.theme, "status": "active"}])
+                if self.path == "/wp-json/wc/v3/settings/advanced/woocommerce_allow_tracking":
+                    if not self.rest_ok():
+                        return self.send(401, {})
+                    if stub.tracking is None:
+                        return self.send(404, {"code": "rest_setting_setting_invalid"})
+                    return self.send(200, {"id": "woocommerce_allow_tracking", "value": stub.tracking})
                 if self.path == "/wp-json/wp/v2/settings":
                     return self.send(200, {"title": stub.blogname}) if self.rest_ok() else self.send(401, {})
                 if self.path.startswith("/wp-json/wp/v2/media?search="):
                     q = self.path.split("search=")[1].split("&")[0]
-                    return self.send(200, [{"source_url": "https://x/wp-content/uploads/%s.png" % q}] if q in stub.images else [])
+                    ext = "jpg" if q == "image-01" else "png"
+                    return self.send(200, [{"source_url": "https://x/wp-content/uploads/%s.%s" % (q, ext)}] if q in stub.images else [])
                 if self.path == "/":
                     n = sum(1 for c in stub.calls if c == ("GET", "/"))
                     return self.send(200, "<html>", [("cf-cache-status", "MISS" if n == 1 else stub.cache)], "text/html")
@@ -144,7 +161,7 @@ class Stub:
                     f = dict(x.split("=", 1) for x in b.decode().split("&"))
                     from urllib.parse import unquote_plus
                     log, pwd = unquote_plus(f.get("log", "")), unquote_plus(f.get("pwd", ""))
-                    if (log, pwd) in (("admin", stub.password), ("customer", stub.customer_pw)):
+                    if (log, pwd) in (("admin", stub.password), (stub.cuser, stub.customer_pw)):
                         return self.send(302, "", [("Set-Cookie", "wordpress_logged_in_x=%s; Path=/" % log), ("Location", "/wp-admin/")])
                     return self.send(200, "<form>ERROR</form>", ctype="text/html")
                 if not self.rest_ok():
@@ -254,10 +271,18 @@ def main():
         case("no customer user", r"no user 'customer'", setup=lambda s: setattr(s, "customer_role", None))
         case("customer without the customer role", r"no user 'customer' with the role", setup=lambda s: setattr(s, "customer_role", "subscriber"))
         case("no CUSTOMER_PASSWORD", r"CUSTOMER_PASSWORD is not set", env_extra={"CUSTOMER_PASSWORD": ""})
-        case("a wrong CUSTOMER_PASSWORD", r"customer cannot log in", env_extra={"CUSTOMER_PASSWORD": "nope"})
+        case("a wrong CUSTOMER_PASSWORD", r"the customer 'customer' cannot log in", env_extra={"CUSTOMER_PASSWORD": "nope"})
         case("the wrong blogname", r"blogname is 'My Site'", setup=lambda s: setattr(s, "blogname", "My Site"))
         case("plain permalinks (#760)", r"pretty permalinks are not active", setup=lambda s: setattr(s, "plain", True))
-        case("a missing test image", r"no media image-02.png", setup=lambda s: setattr(s, "images", ["image-01", "image-03"]))
+        case("a missing test image", r"no media image-02\.\* ", setup=lambda s: setattr(s, "images", ["image-01", "image-03"]))
+        case("the wrong theme (after a wp or gb pass)", r"active theme is \['twentytwentyone'\].*not 'twentytwentythree'", setup=lambda s: setattr(s, "theme", "twentytwentyone"))
+        case("tracking is no", r"woocommerce_allow_tracking is 'no'.*WOO_EXTRAS=off", setup=lambda s: setattr(s, "tracking", "no"))
+        case("no tracking route", r"woocommerce_allow_tracking is None \(HTTP 404\)", setup=lambda s: setattr(s, "tracking", None))
+        case("a malformed CUSTOMER_USERNAME", r"is not a plain user name", env_extra={"CUSTOMER_USERNAME": "x y;z"})
+        s2, rd2 = case("a seed customer named jane (CUSTOMER_USERNAME)", None, setup=lambda s: setattr(s, "cuser", "jane"),
+                       env_extra={"CUSTOMER_USERNAME": "jane"}, expect_rc=0)
+        ok("CUSTOMER_USER in env is the seed's name") if "export CUSTOMER_USER=jane\n" in open(os.path.join(rd2, "env")).read() else bad("CUSTOMER_USER is not jane")
+        case("the seed's customer is jane but CUSTOMER_USERNAME is unset", r"no user 'customer' with the role", setup=lambda s: setattr(s, "cuser", "jane"))
         # The happy paths.
         s, rd = case("wc happy path (a seeded site)", None, expect_rc=0)
         envf = os.path.join(rd, "env")
@@ -271,9 +296,6 @@ def main():
             has = ("export %s=%s\n" % (key, val)) in env_text
             ok("env has " + key) if has else bad("env lacks " + key)
         ok("no application password was created") if s.app is None else bad("the runner created an application password")
-        rc, o, e = run(["prepare", "--suite", "wc", "--base-url", Stub().url, "--cache", "on", "--run-dir", os.path.join(t, "x")],
-                       {"WP_PASSWORD": "SeedAppPass24CharsAbCdEf", "CUSTOMER_PASSWORD": "Cust-Pass-9"})
-        ok("tracking is reported NOT VERIFIED, never as checked") if "woocommerce_allow_tracking: NOT VERIFIED" in o else bad("tracking line missing")
         s, rd = case("wp happy path (cache off, plain permalinks, no WooCommerce checks)", None, suite_name="wp", cache="off",
                      setup=lambda s: (setattr(s, "cache", "DYNAMIC"), setattr(s, "plain", True), setattr(s, "customer_role", None)), expect_rc=0)
         env_text = open(os.path.join(rd, "env")).read()
@@ -349,6 +371,21 @@ def main():
         ok("wc config drops blocks/**") if '"blocks/**"' in wct else bad("wc config lacks blocks/**")
         ok("wc config has NO reset project (it would wipe the seed)") if "reset" not in wct else bad("wc config still runs reset")
         ok("wc e2e-pf depends on site setup only") if "dependencies: [ 'site setup' ]" in wct else bad("wc e2e-pf dependencies wrong")
+        # wc-api (the API half): no reset project, api-pf depends on 'site setup' only, runs ONLY the api-tests,
+        # and does not carry the wc exclusion of api-tests/**.
+        wat = open(os.path.join(t, "cfg-wc-api", "pf-conformance.config.mjs")).read()
+        ok("wc-api config has NO reset project") if "reset" not in wat else bad("wc-api config runs reset")
+        ok("wc-api api-pf depends on site setup only") if wat.count("dependencies:") == 1 and "dependencies: [ 'site setup' ]" in wat else bad("wc-api dependencies wrong")
+        ok("wc-api runs only the api-tests") if "name: 'api-pf', testMatch: [ '**/api-tests/**' ]" in wat and "e2e-pf" not in wat else bad("wc-api project wrong")
+        ok("wc-api does not ignore the api-tests") if '"api-tests/**"' not in wat else bad("wc-api ignores api-tests/**")
+        # vps-run.sh run wc-api (DRY): the wc checkout, site setup, then check-state, then api-pf alone.
+        vr = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "run", "wc-api", os.path.join(t, "w"), os.path.join(t, "rr")],
+                            env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
+        lines = vr.stdout.splitlines()
+        idx = lambda pat: next((i for i, l in enumerate(lines) if pat in l), -1)
+        s_, c_, a_ = idx('--project="site setup"') if idx('--project="site setup"') >= 0 else idx("--project=site setup"), idx("runner.py check-state"), idx("--project=api-pf --no-deps")
+        ok("vps-run run wc-api: site setup, then check-state, then api-pf --no-deps") if vr.returncode == 0 and 0 <= s_ < c_ < a_ else bad("vps-run wc-api order (rc %d, %d %d %d): %s" % (vr.returncode, s_, c_, a_, vr.stderr[-200:]))
+        ok("vps-run wc-api uses the wc checkout") if any("/wc-" in l and "wc-api-" not in l for l in lines) else bad("vps-run wc-api checkout: %s" % lines[:3])
         for sn in ("wp", "gb"):
             txt = open(os.path.join(t, "cfg-" + sn, "pf-conformance.config.mjs")).read()
             want = "config.globalSetup = [ base.globalSetup, %s ]" % json.dumps(os.path.join(HERE, "assert-login.mjs"))
@@ -356,6 +393,46 @@ def main():
         if node:
             r = subprocess.run([node, "--check", os.path.join(HERE, "assert-login.mjs")], capture_output=True, text=True)
             ok("assert-login.mjs: node --check") if r.returncode == 0 else bad("assert-login.mjs: %s" % r.stderr.strip()[:120])
+
+        # A STOP is never a result (1): summarize refuses a report whose global setup failed, or with no test.
+        for label, rep, why in (("a report with a global-setup error", {"errors": [{"message": "Error: assert-login: STOP"}], "suites": []}, r"top-level error"),
+                                ("a report with no test", {"suites": []}, r"holds no test")):
+            rp = os.path.join(t, "stop-%d.json" % len(label))
+            json.dump(rep, open(rp, "w"))
+            rc, o, e = run(["summarize", "--report", rp, "--out", os.path.join(t, "stop-out.json")], {})
+            ok("summarize refuses %s (exit 3)" % label) if rc == 3 and re.search(why, e) else bad("summarize on %s: rc %d %s" % (label, rc, e.strip()[:120]))
+
+        # A STOP is never a result (2): vps-run.sh run wc, for real, with a stub pnpm on PATH. The setup phase writes
+        # report.json, as Playwright does. A failed setup, or a login check-state refuses, must exit 3 and leave NO report.
+        vw = os.path.join(t, "vw")
+        sd = os.path.join(vw, "wc-" + PINS_WC_SHA, "plugins", "woocommerce", "tests", "e2e")
+        os.makedirs(sd)
+        open(os.path.join(sd, "playwright.config.ts"), "w").write("export default {};\n")
+        bindir = os.path.join(t, "bin")
+        os.makedirs(bindir)
+        open(os.path.join(bindir, "pnpm"), "w").write("#!/bin/bash\n# stub: writes the report, as Playwright does, then exits PNPM_RC\n"
+            "for a in \"$@\"; do case \"$a\" in --project=*) ;; esac; done\n"
+            "echo '{\"suites\":[]}' > \"$RUN_DIR/report.json\"\nexit ${PNPM_RC:-0}\n")
+        os.chmod(os.path.join(bindir, "pnpm"), 0o755)
+        for label, pnpm_rc, want in (("the setup phase fails", "1", "the setup projects failed"),
+                                     ("the saved login is missing (check-state)", "0", "check-state")):
+            rd = os.path.join(t, "vr-" + pnpm_rc)
+            os.makedirs(rd, exist_ok=True)
+            open(os.path.join(rd, "env"), "w").write("export BASE_URL=http://127.0.0.1:9\nexport PF_CONFORMANCE_SUITE=wc\n")
+            vr = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "run", "wc", vw, rd],
+                                env={"PATH": bindir + ":" + os.environ.get("PATH", ""), "RUN_DIR": rd, "PNPM_RC": pnpm_rc},
+                                capture_output=True, text=True)
+            left = os.path.exists(os.path.join(rd, "report.json"))
+            if vr.returncode == 3 and want in vr.stderr and not left:
+                ok("vps-run run wc: %s: exit 3, no report.json left" % label)
+            else:
+                bad("vps-run run wc: %s: rc %d, report left %s: %s" % (label, vr.returncode, left, vr.stderr.strip()[-200:]))
+        # The baseline never sees our throwaway: exported BASE_URL and ADMIN_PASSWORD are unset, and the env stops on exit.
+        vb = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "baseline", "wc", vw, os.path.join(t, "vb")],
+                            env={"PATH": os.environ.get("PATH", ""), "DRY": "1", "BASE_URL": "https://cf759a.example", "ADMIN_PASSWORD": "x"},
+                            capture_output=True, text=True)
+        ok("baseline wc: check-state targets the local wp-env, not an exported BASE_URL") if "check-state --base-url http://localhost:8086" in vb.stdout and "cf759a" not in vb.stdout else bad("baseline wc target: %s" % vb.stdout[-300:])
+        ok("baseline wc: its env stops on exit") if "pnpm env:e2e:stop" in vb.stdout else bad("baseline wc: no env stop")
 
         # summarize and compare.
         def report(statuses):

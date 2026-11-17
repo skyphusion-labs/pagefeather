@@ -9,12 +9,16 @@
 # ledger must show ONE live memory and ONE boot for the two of them.
 set -u
 cd "$(dirname "$0")/.." || exit 1
-export PORT=${PORT:-8797} DEV_ENV=${DEV_ENV:-dosql-local}
-B=http://localhost:$PORT; ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}"); PW=${ADMIN_PASSWORD:-local-spike-password}
+export DEV_ENV=${DEV_ENV:-dosql-local}
+# shellcheck source=port.sh
+. ./port.sh
+ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}"); PW=${ADMIN_PASSWORD:-local-spike-password}
 STATE=$(mktemp -d "${TMPDIR:-/tmp}/boot-race.XXXXXX"); export PERSIST_TO=$STATE
 H=$(mktemp "${TMPDIR:-/tmp}/boot-race-h.XXXXXX"); HA=$(mktemp "${TMPDIR:-/tmp}/boot-race-ha.XXXXXX")
 trap './run.sh --stop > /dev/null 2>&1; rm -rf "$STATE" "$H" "$HA"' EXIT
 DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off PHP_MEMORY_REUSE:on BOOT_GATE:on BOOT_TEST_DELAY_MS:1500${AT:+ BOOT_TEST_DELAY_AT:$AT}" ./run.sh _ping > /dev/null || { echo "boot-race: wrangler dev did not start"; tail -20 dev.log; exit 1; }
+server_port || exit 1
+B=http://localhost:$PORT
 curl -sf "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null || { echo "boot-race: /_install failed"; exit 1; }
 # ledger [curl args]: "booted memLive" from the ledger in x-perf of one wp-login.php request
 ledger() {

@@ -52,7 +52,7 @@ if STEP not in ("check", "repro", "burst", "quiet", "all"):
     sys.exit("reuse-run: the step is check, repro, burst, quiet or all")
 RUN = ARM + "-" + uuid.uuid4().hex[:6]
 KEEP = ("x-runtime-recycled", "x-runtime-wait", "x-runtime-wait-decision", "x-runtime-wait-mib", "x-isolate-reset",
-        "x-write-loss", "x-object-deadline", "x-wasm-mib", "x-boot", "retry-after")
+        "x-write-loss", "x-object-deadline", "x-wasm-mib", "x-boot", "retry-after", "server-timing")
 out_lock, n_lock = threading.Lock(), threading.Lock()
 OUT = open(os.environ["OUT"], "a")
 N = [0]
