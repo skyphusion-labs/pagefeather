@@ -467,8 +467,12 @@ jobs:
           set -euo pipefail
           STATE=$(mktemp -d); export PERSIST_TO=$STATE
           # dosql-local: PHP in the object, as on a deployed site (x-perf, the forced recycle)
-          DEV_ENV=dosql-local DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off" ./run.sh _ping > /dev/null
-          ST=(-H "x-spike-token: local-spike-token"); B=http://localhost:${PORT:-8797}
+          DEV_ENV=dosql-local DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off" ./run.sh _ping > /dev/null || { echo "::error::wrangler dev did not start (m2c smoke)"; tail -40 dev.log; exit 1; }
+          # #839: run.sh picks a free port; read it back (same as the other wrangler steps).
+          # shellcheck source=port.sh
+          . ./port.sh
+          server_port || { echo "::error::run.sh did not record a port"; exit 1; }
+          ST=(-H "x-spike-token: local-spike-token"); B=http://localhost:$PORT
           curl -sf "${ST[@]}" -X POST -H "x-admin-password: local-spike-password" "$B/_install" > /dev/null
           printf 'B=%s\nSPIKE_TOKEN=local-spike-token\nADMIN_PASSWORD=local-spike-password\n' "$B" > "$RUNNER_TEMP/run.env"
           rc=0; RUN_ENV="$RUNNER_TEMP/run.env" OUT="$RUNNER_TEMP/m2c-smoke" ARMS=body BOOTS=2 WARM=1 tests/m2c/vps-run.sh || rc=$?
