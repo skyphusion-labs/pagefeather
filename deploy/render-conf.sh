@@ -53,6 +53,7 @@ render_conf() {
   # #598: b-dosql's two pack vars, from the ONE rule deploy/wfp renders them with (the config hash follows the flags).
   if [ "$VARIANT" = b-dosql ]; then opcache_remote_var || return 1; site_remote_var || return 1; fi
   [ "$VARIANT" != a ] || a_overflow_vars
+  [ "$VARIANT" != a ] || a_cron_vars
   # WOO_EXTRAS (#667): off only. Checked above, before any step. Unset writes nothing.
   [ -z "${WOO_EXTRAS:-}" ] || echo 'WOO_EXTRAS = "off"'
   # FAULT_INJECT (#730): checked before any step (deploy/fault-inject.sh, fault_check). Unset writes nothing.
@@ -101,5 +102,7 @@ render_conf() {
     # #666: the L2 object cache's own KV namespace (Terraform), and the overflow pool when PHP_OVERFLOW=1 or always.
     node "$ROOT/deploy/provision/a-vars-toml.mjs" kv "$(out oc_kv_id)" || return 1
     a_overflow_bindings
+    a_cron_bindings
+    a_cron_triggers
   fi
 }

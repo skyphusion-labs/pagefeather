@@ -15,6 +15,7 @@ import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
 import { cronBounds, cronCleanDue, cronLegDue } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronRunDeferred, cronMarkOf, cronFatalOf } from './cron-health.mjs';
+import { approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER } from './a-cron.mjs';
 import { cronFailureLine } from './cron-error.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION, setResultHeader, takeResultHeader, turnstileRoute, readRouteFields, readGatedToken, encodeResult, TurnstileSlot, turnstileTimeoutMs, retryAfterFor } from './turnstile.mjs';
@@ -3057,6 +3058,18 @@ export class PhpRuntime extends DurableObject {
 			txnRecover(db, this.ctx.storage);
 			return Response.json({ frame: undo(env).status(db, objectUrl.searchParams.get('id') || '') });
 		}
+		// #855: the Workers Cron tick from the site Worker (POST + x-pf-cron-tick). Runs alarm(), not a page view.
+		if (objectUrl.pathname === CRON_TICK_PATH) {
+			if (raw.method !== 'POST' || raw.headers.get(CRON_TICK_HEADER) !== '1' || !approachACronEnabled(env)) {
+				return new Response('forbidden', { status: 403 });
+			}
+			const tickOrigin = raw.headers.get(ORIGIN_HEADER);
+			if (!tickOrigin) return new Response('missing ' + ORIGIN_HEADER, { status: 500 });
+			lastOrigin = tickOrigin;
+			await this.ctx.storage.put(ORIGIN_KEY, tickOrigin);
+			await this.alarm();
+			return Response.json({ ok: true, tick: 'cron' }, { headers: { 'cache-control': 'no-store' } });
+		}
 		const origin = raw.headers.get(ORIGIN_HEADER);
 		// Without it, the object does not guess an origin: a wrong one redirects every page.
 		if (!origin) return new Response('missing ' + ORIGIN_HEADER, { status: 500 });
@@ -3085,6 +3098,7 @@ export class PhpRuntime extends DurableObject {
 		req.headers.delete(START_BY_HEADER);
 		req.headers.delete(CALL_HEADER);
 		req.headers.delete(OVERFLOW_HEADER);
+		req.headers.delete(CRON_TICK_HEADER);
 		req.headers.delete(ORIGIN_HEADER);
 		req.headers.delete(SENT_HEADER);
 		// The front Worker's Turnstile answer (#351): kept for this request's PHP run, never shown to PHP.
@@ -3909,6 +3923,8 @@ export class Pages extends WorkerEntrypoint {
 export default {
 	async fetch(req, env, ctx) {
 		const url = new URL(req.url);
+		// #855: the cron tick is Worker to PhpRuntime only, never a public URL.
+		if (url.pathname === CRON_TICK_PATH) return new Response('Not Found', { status: 404 });
 		// #752: the PHP object's start-by tick lands here, FIRST: a cheap 204, before the page cache and any object call.
 		if (url.pathname === TICK_PATH) return tickResponse();
 		let pcvMissed = false;
@@ -3931,6 +3947,9 @@ export default {
 	},
 	async queue(batch, env, ctx) {
 		return consumeEmailQueue(batch, env);
+	},
+	async scheduled(event, env, ctx) {
+		return approachACronScheduled(event, env, ctx, siteOrigin);
 	},
 };
 
