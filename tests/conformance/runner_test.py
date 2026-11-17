@@ -49,6 +49,7 @@ class Stub:
         self.nonce = "0a1b2c3d4e"
         self.plain = False       # True: plain permalinks (#760), /wp-json/ answers the home page
         self.admin_form = False  # True: /wp-admin/ answers 200 with the login form (no redirect)
+        self.editor_prefs = {"core/edit-post": {"welcomeGuide": False}}  # seed dismiss (#759)
         stub = self
 
         class H(http.server.BaseHTTPRequestHandler):
@@ -111,8 +112,10 @@ class Stub:
                         if stub.basic == "always401":
                             return self.send(401, {"code": "rest_not_logged_in"})
                         if stub.basic == "ignores" or (u == "admin" and p == stub.password):
-                            return self.send(200, {"id": 1})
+                            return self.send(200, {"id": 1, "meta": {"persisted_preferences": stub.editor_prefs}})
                         return self.send(401, {"code": "incorrect_password"})
+                    if self.rest_ok():
+                        return self.send(200, {"id": 1, "meta": {"persisted_preferences": stub.editor_prefs}})
                     return self.send(401, {"code": "rest_not_logged_in"})
                 if self.path == "/wp-admin/":
                     c = self.headers.get("Cookie") or ""
@@ -296,11 +299,13 @@ def main():
             has = ("export %s=%s\n" % (key, val)) in env_text
             ok("env has " + key) if has else bad("env lacks " + key)
         ok("no application password was created") if s.app is None else bad("the runner created an application password")
+        case("the welcome guide is not dismissed (#759)", r"welcome guide is not dismissed", suite_name="wp", setup=lambda s: setattr(s, "editor_prefs", {"core/edit-post": {"welcomeGuide": True}}))
         s, rd = case("wp happy path (cache off, plain permalinks, no WooCommerce checks)", None, suite_name="wp", cache="off",
                      setup=lambda s: (setattr(s, "cache", "DYNAMIC"), setattr(s, "plain", True), setattr(s, "customer_role", None)), expect_rc=0)
         env_text = open(os.path.join(rd, "env")).read()
         ok("wp: WP_PASSWORD is the operator's own") if "export WP_PASSWORD=SeedAppPass24CharsAbCdEf" in env_text else bad("wp: WP_PASSWORD wrong")
-        ok("wp: no customer or Basic checks") if not any(c[1].startswith("/wp-json/wp/v2/users") for c in s.calls) else bad("wp: it ran WooCommerce checks")
+        wc_only = [c for c in s.calls if c[1].startswith("/wp-json/wp/v2/users?") or c[1].startswith("/wp-json/wc/")]
+        ok("wp: no WooCommerce setup checks") if not wc_only else bad("wp: it ran WooCommerce checks: %s" % wc_only[:2])
         wp_art, wp_st = runner.conformance_artifact_paths(rd)
         ok("wp prepare exports STORAGE_STATE_PATH") if ("export STORAGE_STATE_PATH=%s\n" % wp_st) in env_text else bad("wp: env lacks STORAGE_STATE_PATH")
         ok("wp prepare exports WP_ARTIFACTS_PATH") if ("export WP_ARTIFACTS_PATH=%s\n" % wp_art) in env_text else bad("wp: env lacks WP_ARTIFACTS_PATH")

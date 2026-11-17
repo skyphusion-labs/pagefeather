@@ -4,6 +4,15 @@ These tools run the Playwright suites of WordPress, WooCommerce and Gutenberg ag
 
 **Never point them at a real site.** The suites delete all posts, pages and blocks. The WooCommerce cleanup plugin resets the whole store. The runner refuses a site without the throwaway marker.
 
+
+## Gutenberg install on the VPS (`vps-run.sh install gb`)
+
+Gutenberg 23.6 at the pin uses `npm run build`, not `build:packages`. On a small VPS the first build can fail on TypeScript or a stale `wp-build` tree (conf759 STOP 2026-11-17). The install step runs `npm ci`, then `clean:packages` and `clean:package-types`, rebuilds esbuild, then `NODE_OPTIONS=--max-old-space-size=6144 npm run build`. It retries once on failure. A passing install has `packages/*/build-module` under the checkout.
+
+## Block editor welcome guide (#759, #605)
+
+The seed dismisses the "Welcome to the editor" guide through REST (`persisted_preferences`). `runner.py prepare` checks it for `wp` and `gb`. Admin navigation to `post-new.php` can still take tens of seconds on WfP (#605); use `editor-probe.mjs` to see whether the canvas appears within the Playwright budget after the welcome guide is gone.
+
 ## The pins (`pins.env`)
 
 Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.sh`), by full commit sha:
@@ -30,6 +39,7 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
 | `assert-login.mjs` | The WordPress and Gutenberg `globalSetup` step that calls `runner.py check-state`. |
 | `runner.py` | `prepare`: CHECKS the site and the seed setup (it never writes), then writes `<run-dir>/env` (mode 600). `check-state`: asserts a saved login is real. `config`: writes the Playwright wrapper config. `summarize` and `compare`: the matrix rows. |
 | `vps-run.sh` | Installs a suite at its pin, runs the stock baseline, and runs it on our throwaway. Run it on a Vultr VPS only. |
+| `editor-probe.mjs` | Optional: after seed, times post-new.php until the block editor canvas appears (#759, #605). Default budget 30 s. |
 | `prepare-content-test.sh`, `runner_test.py` | The tests, against stub repos and a stub WordPress. No network. |
 
 ## One run, step by step

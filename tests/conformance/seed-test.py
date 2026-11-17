@@ -75,5 +75,13 @@ page = ('"actions":{"activate":"' + q.format(a="\\u0026", s="twentytwentyone") +
 check("activation_nonce: a theme not on the page gives None", _seed.activation_nonce(page, "twentytwentythree") is None)
 check("activation_nonce: a prefix slug does not match", _seed.activation_nonce(page, "twentytwenty") is None)
 check("activation_nonce: an empty page gives None", _seed.activation_nonce(b"", "twentytwentythree") is None)
+
+for label, prefs, want in (
+    ("dismissed dict", {"core/edit-post": {"welcomeGuide": False}}, True),
+    ("still shown", {"core/edit-post": {"welcomeGuide": True}}, False),
+    ("JSON string", '{"core/edit-post":{"welcomeGuide":false}}', True),
+    ("bad JSON", "not-json", False),
+):
+    check("welcome_guide_dismissed: " + label, _seed.welcome_guide_dismissed(prefs) is want, prefs)
 print("%d failing" % len(fails))
 sys.exit(1 if fails else 0)
