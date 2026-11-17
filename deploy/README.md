@@ -173,6 +173,8 @@ The same Worker and PHP object as `b-do`, with `DB_IN_DO=on`: each statement run
 
 To import an existing WordPress site from a mysqldump, use `deploy/import.sh`: see [deploy/import/README.md](import/README.md).
 
+**The remote packs are on by default (#598), as on every deploy/wfp site.** OPcache and `site.zip` leave the bundle as packs under `/_pf/` (#563, #569), and the config gets `run_worker_first = ["/_pf/*"]`. `OPCACHE_REMOTE=0` turns both off; `OPCACHE_REMOTE=1 SITE_REMOTE=0` keeps the OPcache packs only. The rule is one file, `deploy/lib/remote-packs.sh`, which deploy/wfp sources too. #598's live run (issuecomment-6934185301, a WooCommerce store on Paid): without the packs, 14 of 40 `post-new.php` requests answered 500 with an isolate memory reset, and the object's isolate turned over on about every request; with them, 0 of 40 on one isolate. Before the upload, `deploy/wfp/remote_assets_check.py` refuses a packed build whose config lacks `/_pf/` first.
+
 On Workers Free the object's SQLite has daily limits: 5 million rows read and 100,000 rows written (a public page reads about 160 to 220 rows; an admin page writes about 30 to 40). A page cache hit costs neither.
 
 ## Variant `a`: PHP in the Worker, MySQL through Hyperdrive (Workers Paid)
@@ -204,7 +206,7 @@ A plain `VARIANT=a` deploy is the approach-A site that every #296 run measured. 
 
 ### Variant `a` admin settings (#394)
 
-The admin memory fixes built on the b-dosql path, for approach A. All of them are off unless set, so a deploy without them is the deploy of before. The rules are in `deploy/a-settings.sh` and are checked before any step:
+The admin memory fixes built on the b-dosql path, for approach A (b-dosql has the two pack settings on by default, above). All of them are off unless set, so a deploy without them is the deploy of before. The rules are in `deploy/a-settings.sh` and are checked before any step:
 
 | setting | what it does | needs |
 |---|---|---|
