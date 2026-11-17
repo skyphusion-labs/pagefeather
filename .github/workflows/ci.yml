@@ -405,6 +405,8 @@ jobs:
         run: spikes/b2-wordpress/tests/build-id-test.sh
       - name: "the PHP engine resolver: lean by default, by hash; npm and explicit files (#771)"
         run: bash spikes/b2-wordpress/tests/engine-resolve-test.sh
+      - name: engine tag (#827)
+        run: bash spikes/b2-wordpress/tests/engine-tag-test.sh
 
       - name: b-dosql operator endpoints (issue #35)
         # /_build and /_evict are gated and never cached (spikes/b2-wordpress).

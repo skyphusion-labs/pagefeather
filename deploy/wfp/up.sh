@@ -35,6 +35,9 @@ mkdir -p "$GEN"
 # #394: the remote packs by default (0 opts out), before the build and every render read them.
 remote_pack_defaults
 [ "${BUILD:-1}" = 0 ] || build_dosql
+# #827: with BUILD=0 the build came from elsewhere; it must be for the engine vendor/ holds now.
+# shellcheck source=../../spikes/b2-wordpress/engine.sh
+( . "$APP/engine.sh" && engine_build_check "$APP" ) || exit 2
 
 log "shared: namespace $NAMESPACE and the site map"
 tfr shared init -input=false >/dev/null

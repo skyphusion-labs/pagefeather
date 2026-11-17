@@ -406,6 +406,9 @@ if [ "$cmd" = add ]; then
   echo "site $s: remote packs OPCACHE_REMOTE=$OPCACHE_REMOTE SITE_REMOTE=$SITE_REMOTE"
   [ "${BUILD:-0}" = 0 ] || build_dosql
   [ -f "$APP/build/opcache.log" ] || { echo "b-dosql is not built (run up.sh, or BUILD=1)" >&2; exit 2; }
+  # #827: without BUILD=1 the build came from elsewhere; it must be for the engine vendor/ holds now.
+  # shellcheck source=../../spikes/b2-wordpress/engine.sh
+  ( . "$APP/engine.sh" && engine_build_check "$APP" ) || exit 2
   "$WFP/site.sh" up "$s"
   fp=$(site_footprint "$s")
   footprint_present "$fp" || { echo "site $s: not every part is there after the add:" >&2; printf '%s\n' "$fp" | sed 's/^/  /' >&2; exit 1; }

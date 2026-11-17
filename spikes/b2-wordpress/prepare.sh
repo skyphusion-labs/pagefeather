@@ -14,7 +14,7 @@ cd "$(dirname "$0")"
 engine_resolve || exit 2
 src=${PF_ENGINE_JS:-node_modules/@php-wasm/web-8-3/jspi/php_8_3.js}
 mkdir -p vendor
-printf "// Written by prepare.sh (#771): the engine this build vendored, and its default recycle line in MiB.\nexport const PHP_ENGINE = '%s';\nexport const ENGINE_RECYCLE_MIB = %s;\n" "$PHP_ENGINE_RESOLVED" "$(engine_recycle_mib)" > vendor/engine.mjs
+engine_mjs > vendor/engine.mjs  # #827: the name, the recycle line and the engine tag
 echo "engine: $PHP_ENGINE_RESOLVED (${PF_ENGINE_WASM:-the npm package}), recycle line $(engine_recycle_mib) MiB by default" >&2
 { echo "const dependencyFilename = 'php_8_3.wasm';"; tail -n +3 "$src"; } > vendor/php_8_3.js
 head -1 vendor/php_8_3.js
