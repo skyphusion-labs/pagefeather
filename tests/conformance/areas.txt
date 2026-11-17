@@ -1,0 +1,62 @@
+# The map from an upstream spec file to a row of docs/support-matrix.md (#759), read by matrix.py.
+# One line: <suite> <glob> <section> | <feature>
+#   suite    wp, wc, wc-api or gb (as runner.py names them)
+#   glob     the spec file as the Playwright report names it, the same form as exclude/<suite>.txt;
+#            * matches across directories
+#   section  WordPress or WooCommerce (a heading of the matrix)
+#   feature  the row's first cell. A feature not yet in the matrix is added as a new row by --apply.
+# The FIRST matching line wins, so a specific file goes above its directory. A spec no line maps is
+# listed as unmapped in matrix.py's report, so a gap in this map is visible, never silent.
+# Built from the step-1 browser inventory (#759 issuecomment, joan-sb1114h, 2026-11-16).
+
+# ---- wordpress-develop tests/e2e ----
+wp  specs/dashboard.test.js                      WordPress | Install, pages, login, dashboard
+wp  specs/hello.test.js                          WordPress | Install, pages, login, dashboard
+wp  specs/edit-posts.test.js                     WordPress | Posts and pages
+wp  specs/empty-trash-restore-trashed-posts.test.js  WordPress | Posts and pages
+wp  specs/media-upload.test.js                   WordPress | Media uploads
+wp  specs/general-settings-invalid-timezone.test.js  WordPress | Settings
+wp  specs/profile/applications-passwords.test.js WordPress | Application passwords and HTTP Basic
+wp  specs/cache-control-headers-directives.test.js  WordPress | HTTP cache headers
+
+# ---- Gutenberg test/e2e ----
+gb  specs/editor/*                               WordPress | The block editor
+gb  specs/preload/*                              WordPress | The block editor
+gb  specs/site-editor/*                          WordPress | The site editor
+gb  specs/widgets/*                              WordPress | Widgets
+gb  specs/admin/*                                WordPress | Font Library and editor admin screens
+gb  specs/interactivity/*                        WordPress | The Interactivity API
+
+# ---- WooCommerce plugins/woocommerce/tests/e2e (the core profile) ----
+wc  wp-core/create-post.spec.ts                  WordPress | Posts and pages
+wc  wp-core/create-page.spec.ts                  WordPress | Posts and pages
+wc  wp-core/post-comments.spec.ts                WordPress | Comments
+wc  user/*                                       WordPress | Users and roles
+wc  shop/*                                       WooCommerce | Catalog: shop and product pages
+wc  product/product-grouped-stock-status.spec.ts WooCommerce | Stock
+wc  back-in-stock-notifications/*                WooCommerce | Stock
+wc  product/*                                    WooCommerce | Store admin: products
+wc  brands/*                                     WooCommerce | Store admin: products
+wc  cart/*                                       WooCommerce | Cart and checkout
+wc  checkout/*                                   WooCommerce | Cart and checkout
+wc  order/order-coupon.spec.ts                   WooCommerce | Coupons
+wc  coupons/*                                    WooCommerce | Coupons
+wc  order/*                                      WooCommerce | Orders and HPOS
+wc  settings/settings-tax.spec.ts                WooCommerce | Tax
+wc  settings/webhooks.spec.ts                    WooCommerce | Webhooks
+wc  settings/consumer-token.spec.ts              WooCommerce | REST API keys in the Basic header
+wc  settings/*                                   WooCommerce | Store settings
+wc  shipping/*                                   WooCommerce | Shipping
+wc  email/*                                      WooCommerce | Emails
+wc  email-editor/*                               WooCommerce | Emails
+wc  paypal/*                                     WooCommerce | Payments
+wc  analytics/*                                  WooCommerce | Analytics
+wc  my-account/*                                 WooCommerce | Customer accounts
+wc  customer/*                                   WooCommerce | Customer accounts
+wc  onboarding/*                                 WooCommerce | Onboarding and marketing
+wc  marketing/*                                  WooCommerce | Onboarding and marketing
+wc  basic/*                                     WooCommerce | Editing the store in wp-admin
+wc  editor/*                                    WooCommerce | Editing the store in wp-admin
+
+# ---- WooCommerce api-tests (the wc-api half) ----
+wc-api  *                                        WooCommerce | WooCommerce REST API

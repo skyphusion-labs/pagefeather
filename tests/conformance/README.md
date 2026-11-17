@@ -23,6 +23,8 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
 | `themes.txt`, `plugins.txt` | The wordpress.org themes and plugins for the throwaway, checked by SHA-256 (`tests/plugins/fetch.sh`). They are separate from the product lists. |
 | `php/pf-conformance-throwaway.php` | The marker mu-plugin. Its REST route says "throwaway" and names the host. |
 | `exclude/<suite>.txt` | The specs NOT run, each with its reason. Each one becomes a "not run" row of the matrix. |
+| `areas.txt` | The map from each spec file to a row of `docs/support-matrix.md`. The first matching line wins; a spec no line maps is reported as unmapped. |
+| `matrix.py` | `cells`: turns a run's `results.json` files (ours and the stock baseline, per suite) and the route runner's result into matrix cells, each with its citation. `--apply` writes them into the matrix. |
 | `assert-login.mjs` | The WordPress and Gutenberg `globalSetup` step that calls `runner.py check-state`. |
 | `runner.py` | `prepare`: CHECKS the site and the seed setup (it never writes), then writes `<run-dir>/env` (mode 600). `check-state`: asserts a saved login is real. `config`: writes the Playwright wrapper config. `summarize` and `compare`: the matrix rows. |
 | `vps-run.sh` | Installs a suite at its pin, runs the stock baseline, and runs it on our throwaway. Run it on a Vultr VPS only. |
@@ -56,6 +58,26 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
    - Run `runner.py summarize` on each `report.json`.
    - Then run `runner.py compare --baseline <base-run>/results.json --ours <our-run>/results.json`.
    - A test that fails on the baseline too is marked `upstream`. One that fails only on ours is marked `OURS`, and compare exits 1.
+8. **The matrix:** for each tier and cache pass, run `matrix.py cells`. It takes the run's identity as arguments and never reads a run's `env`.
+
+       python3 -I tests/conformance/matrix.py cells --tier "Paid DO" --run-tag <tag> --date <YYYY-MM-DD> \
+           --build <the site's /_build> --cache on \
+           --suite wp=<our-run>/results.json:<base-run>/results.json --suite wc=... --suite gb=... --suite wc-api=... \
+           --routes <routes.json> --apply docs/support-matrix.md --strict
+
+   - Each cell cites the run tag, date, build and cache mode. A cell is `yes` only when a test passed and none failed only here. One that fails only here makes it `limited` (or `no`, if every test that ran did). A result that needs a look stays `not measured`.
+   - A cell that already holds measured text (a citation, or a known limit such as #768's memory ceiling) is KEPT. A run never UPGRADES a cell: a passing run is appended after it as `; conformance run: ...`, so it never erases a limit it does not test.
+   - A run MUST DOWNGRADE a cell. If it finds tests that fail only here (`OURS`) where the cell leads with `yes`, its `limited` (or `no`, if nothing passed) leads, naming the failing specs, and the old text follows `; before this run: `. An old `yes` never hides a regression. A later run replaces its own part, so a fixed regression lifts the downgrade.
+   - The excluded specs are written as a "not run" block. `--strict` exits 1 on an unmapped spec or an `OURS` test, so a run that needs a look is never quiet.
+   - **For the first shared run** (`conf759-run.md`): its exports are `results-<suite>-<on|off>.json`, `baseline-<suite>.json` and `routes-<on|off>.json`, and its throwaway `cf759a` is a `deploy/wfp` site, so the tier is `WfP`. One call per cache pass, from the pulled `conf759/<RUN_ID>/` directory:
+
+         python3 -I tests/conformance/matrix.py cells --tier WfP --run-tag <RUN_ID> --date <the run's date> \
+             --build <cf759a's /_build> --cache on \
+             --suite wp=results-wp-on.json:baseline-wp.json --suite wc=results-wc-on.json:baseline-wc.json \
+             --suite gb=results-gb-on.json:baseline-gb.json --suite wc-api=results-wc-api-on.json:baseline-wc-api.json \
+             --routes routes-on.json --apply docs/support-matrix.md --strict
+
+   - Arm B's files (`*-on-b.json`, `armb-verdict.json`) do NOT go into the matrix. They are #791's acceptance check against the main arm, not a measurement of a tier.
 
 Run each suite twice on our site, once with the cache on and once with it off. A failure that happens only with the cache on is a cache effect, not a WordPress defect.
 
@@ -79,5 +101,6 @@ Basic auth on b2 needs #761 (`PHP_AUTH_USER` was never set). Until that fix merg
 
     tests/conformance/prepare-content-test.sh
     python3 -I tests/conformance/runner_test.py
+    python3 -I tests/conformance/matrix_test.py
 
 Each guard was checked by a mutation: with the guard removed, its own test case fails.
