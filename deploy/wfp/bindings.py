@@ -24,7 +24,8 @@ For each site <s>:
   (dispatch_namespace, namespace NAMESPACE, outbound only to
   wp-wfp-outbound). A site's copy also binds its scheduled snapshot (#533, lib.sh
   render_site_dispatcher), and only that: plain_text SNAPSHOT_SCRIPT naming its OWN user
-  Worker (site-<s>), plain_text SNAPSHOT_TIMEOUT_MS (digits), and the secret SNAPSHOT_TOKEN.
+  Worker (site-<s>), plain_text SNAPSHOT_TIMEOUT_MS (digits), and the secret SNAPSHOT_TOKEN. A throwaway's
+  dispatcher may also bind plain_text DISPATCH_PERF_LOG = "on" (#605, lib.sh dispatch_perf_log_var), and only "on".
 A script whose bindings cannot be read fails: an unread script is not a pass.
 
 Environment: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, NAMESPACE, KV_ID;
@@ -105,6 +106,10 @@ def check_dispatcher(s, bs):
                 bad.append("wp-%s binds SNAPSHOT_TIMEOUT_MS to a value that is not a number" % s)
         elif t == "secret_text" and n == "SNAPSHOT_TOKEN":
             pass
+        # #605: the throwaway-only measurement flag (lib.sh dispatch_perf_log_var renders it, refused for a live site).
+        elif t == "plain_text" and n == "DISPATCH_PERF_LOG":
+            if b.get("text") != "on":
+                bad.append("wp-%s binds DISPATCH_PERF_LOG to a value that is not on" % s)
         else:
             bad.append("wp-%s binds %s %s: not allowed for a dispatcher" % (s, t, n))
     return bad
