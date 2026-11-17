@@ -3989,12 +3989,35 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 					// settings page and calls die AFTER the activation is saved, and /_activate answered an
 					// empty out for an activation that had worked (sample store, 2026-11-12). exited is true
 					// when the run did not reach the end of this script.
-					$GLOBALS['skyphusion_act'] = array( 'r' => null, 'done' => false );
+					$GLOBALS['skyphusion_act'] = array( 'r' => null, 'done' => false, 'lock_cleared' => 0 );
+					// #661: did WooCommerce really INSTALL? Activation alone is not proof. WC_Install::install() takes the
+					// wc_installing lock first and, while a lock under 10 minutes old exists, returns WITHOUT installing; and
+					// WordPress saves the plugin as active AFTER the activation hook. So a first attempt that died mid-install
+					// (#198's cold-isolate reset) left the lock, the retry skipped the install, and deploy.sh passed on
+					// "active": every request then failed the lock INSERT, and with create_roles never run, every WooCommerce
+					// REST write answered 403 (#661, #791's control, 2026-11-17). Read from the table, not the cache.
+					function skyphusion_wc_installed() {
+						global $wpdb;
+						$ver = $wpdb->get_var( "SELECT option_value FROM {$wpdb->options} WHERE option_name = 'woocommerce_version'" );
+						$lock = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name = 'wc_installing'" );
+						$roles = maybe_unserialize( $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", $wpdb->prefix . 'user_roles' ) ) );
+						$caps = ( is_array( $roles ) && isset( $roles['administrator']['capabilities'] ) ) ? $roles['administrator']['capabilities'] : array();
+						$code = defined( 'WC_VERSION' ) ? WC_VERSION : null;
+						$ok = null !== $code && $ver === $code && 0 === $lock && ! empty( $caps['edit_products'] ) && ! empty( $caps['manage_woocommerce'] );
+						return array( 'ok' => $ok, 'detail' => array( 'version' => $ver, 'code' => $code, 'lock' => $lock, 'edit_products' => ! empty( $caps['edit_products'] ), 'manage_woocommerce' => ! empty( $caps['manage_woocommerce'] ), 'lock_cleared' => $GLOBALS['skyphusion_act']['lock_cleared'] ) );
+					}
 					register_shutdown_function( function () {
 						global $wpdb;
 						$a = $GLOBALS['skyphusion_act']; $r = $a['r'];
-						echo json_encode( array( 'active' => is_plugin_active( '${plugin}' ), 'error' => is_wp_error( $r ) ? $r->get_error_message() : null, 'exited' => ! $a['done'], 'db_error' => $wpdb->last_error ? $wpdb->last_error : null, 'queue_runs' => did_action( 'action_scheduler_run_queue' ) ) );
+						echo json_encode( array( 'active' => is_plugin_active( '${plugin}' ), 'error' => is_wp_error( $r ) ? $r->get_error_message() : null, 'exited' => ! $a['done'], 'db_error' => $wpdb->last_error ? $wpdb->last_error : null, 'queue_runs' => did_action( 'action_scheduler_run_queue' ), 'installed' => '${plugin}' === 'woocommerce/woocommerce.php' ? ( $w = skyphusion_wc_installed() ) && $w['ok'] : null, 'install' => '${plugin}' === 'woocommerce/woocommerce.php' ? $w['detail'] : null ) );
 					} );
+					// #661: a retry clears the lock its own dead attempt left. Safe because WooCommerce is NOT active yet: no
+					// request loads WooCommerce, so none runs check_version or holds this lock; only an earlier /_activate can
+					// have written it. With WooCommerce already active the lock is left alone (a live takeover may own it).
+					if ( '${plugin}' === 'woocommerce/woocommerce.php' && ! is_plugin_active( '${plugin}' ) ) {
+						$GLOBALS['skyphusion_act']['lock_cleared'] = (int) $wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name = 'wc_installing'" );
+						delete_transient( 'wc_installing' );
+					}
 					$r = activate_plugin( '${plugin}' );
 					$GLOBALS['skyphusion_act']['r'] = $r;
 					// WooCommerce sends the first admin visit to its setup wizard (a 302 on /wp-admin/). A deploy has no use for it.
