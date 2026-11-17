@@ -16,8 +16,8 @@ trap 'rm -rf "$T"' EXIT
 FENCE="$T/fence"; fence_dir "$FENCE"
 echo "1. refusals through deploy.sh"
 refuse "OPCACHE_A is for variant a only" VARIANT=b-dosql OPCACHE_A=1
-refuse "OPCACHE_REMOTE is for variant a only" VARIANT=b-dosql OPCACHE_REMOTE=1
-refuse "SITE_REMOTE is for variant a only" VARIANT=b-do SITE_REMOTE=1
+refuse "OPCACHE_REMOTE is for variant a or b-dosql only" VARIANT=b-do OPCACHE_REMOTE=1  # #598: b-dosql takes it (deploy/tests/dosql-remote-test.sh)
+refuse "SITE_REMOTE is for variant a or b-dosql only" VARIANT=b-do SITE_REMOTE=1
 refuse "RECYCLE_WASM_MIB is for variant a only" VARIANT=b-dosql RECYCLE_WASM_MIB=140
 refuse "OBJECT_CACHE_VERSIONS is for variant a only" VARIANT=b-dosql OBJECT_CACHE_VERSIONS=1
 refuse "PHP_MEMORY_REUSE is for variant a only" VARIANT=b-dosql PHP_MEMORY_REUSE=on
