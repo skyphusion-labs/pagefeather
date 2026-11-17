@@ -7,8 +7,8 @@
 # comes at once, as the 16:54Z login came after the fixture load. Twice. Each time that request must answer 200
 # with ONE live WebAssembly.Memory in the isolate (the ledger in its x-perf: runtimes.memLive 1, retiredMem 0)
 # and a memory taken for reuse (memReuse.taken grew). A 503 fails too: with a spare the size check must not refuse.
-# Before the recycles, the deploy flow: /_install, a page, then /_activate (WooCommerce), which drops the runtime and
-# boots a fresh one INSIDE its own request (#705 review, findings 1 and 2). /_activate must answer 200 (the gate must
+# Before the recycles, the deploy flow: /_install, a page, then /_activate (WooCommerce). It used to drop the runtime and
+# boot a fresh one inside its own request (#705 review, findings 1 and 2); since #798 it runs on the current one. /_activate must answer 200 (the gate must
 # not refuse it), and the next request must see ONE live memory (the old one must not be kept beside the new one).
 # Caveat: wrangler dev does not enforce the 128 MiB isolate limit, so this checks the invariant, not the death.
 set -u
@@ -25,7 +25,7 @@ server_port || exit 1
 B=http://localhost:$PORT
 curl -sf "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null || { echo "recycle-stack: /_install failed"; exit 1; }
 req() { curl -s -c "$J" -b "$J" -o /dev/null -D "$H" -w '%{http_code}' "$@"; }
-# a page first, so a runtime is CURRENT when /_activate drops and reboots inside its own request
+# a page first, so a runtime is CURRENT when /_activate runs (before #798 it dropped and rebooted here)
 c=$(req "$B/wp-login.php"); [ "$c" = 200 ] || { echo "recycle-stack: deploy flow: wp-login.php answered $c"; exit 1; }
 c=$(req "${ST[@]}" -X POST "$B/_activate?plugin=woocommerce/woocommerce.php")
 [ "$c" = 200 ] || { echo "recycle-stack: deploy flow: /_activate after /_install answered $c ($(grep -i '^x-runtime-wait' "$H" | tr -d '\r' | tr '\n' ' '))"; exit 1; }
@@ -48,7 +48,7 @@ req --data-urlencode "pwd=$PW" -d 'log=admin&wp-submit=Log+In&redirect_to=%2Fwp-
 # The check of one round (prints the new memReuse.taken on stdout)
 read -r -d '' CHECK <<'PY'
 import json, sys
-h, code, rnd, taken0 = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+h, code, rnd, taken0 = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4])  # sys.argv[5]: REUSE
 hdr = {}
 for line in open(h, errors="replace"):
     if ":" in line:
@@ -68,7 +68,9 @@ if code != 200:
 if rt.get("retiredMem", 0) > 0 or rt.get("memLive", 0) != 1:
     sys.exit("%s VIOLATION: the request booted beside %s MiB of a retired runtime still resident (memLive %s)" % (tag, rt.get("retiredMemMiB"), rt.get("memLive")))
 taken = int(mr.get("taken", 0))
-if taken <= taken0:
+# #798 (the lead's ruling): with REUSE=off nothing can be taken for reuse, so that check would make the red control
+# fail for a TAUTOLOGY. The red must fail on its own reason, the stacking VIOLATION above; opcache-build greps for it.
+if sys.argv[5] != "off" and taken <= taken0:
     sys.exit("%s no memory was taken for reuse (taken %d, before %d)" % (tag, taken, taken0))
 print("%s ok: ONE memory, reused (taken %d)" % (tag, taken), file=sys.stderr)
 print(taken)
@@ -80,6 +82,6 @@ for round in 1 2; do
   grep -qi '^x-runtime-recycled:' "$H" || { echo "recycle-stack: round $round: the forced recycle was not done (status $code)"; exit 1; }
   # the next admin request, at once
   code=$(req "${ST[@]}" -H 'x-mem-ledger: 1' "$B/wp-admin/edit.php")
-  taken0=$(python3 -I -c "$CHECK" "$H" "$code" "$round" "$taken0") || exit 1
+  taken0=$(python3 -I -c "$CHECK" "$H" "$code" "$round" "$taken0" "${REUSE:-on}") || exit 1
 done
 echo "recycle-stack: ok: two recycles, one memory each time, no retired memory resident"

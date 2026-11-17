@@ -63,11 +63,12 @@ for path in /wp-admin/ /wp-admin/profile.php '/wp-admin/post-new.php?post_type=p
   echo "$code $path" >> build/file-trace-admin.log
 done
 # #569 (#394 Gate 2): the GET screens of the 7-screen round (docs/admin-memory-matrix.md,
-# admin-round.py), each COLD (POST /_install drops the runtime, so the next request boots one) then
+# admin-round.py), each COLD (a forced recycle drops the runtime, so the next request boots one; #798: /_install no
+# longer drops it) then
 # warm. Post 1 and page 2 are the ones a WordPress install makes. The profile SAVE (a POST with a
 # nonce) is not traced.
 for path in /wp-admin/ /wp-admin/post-new.php '/wp-admin/post-new.php?post_type=page' '/wp-admin/post.php?post=1&action=edit' '/wp-admin/post.php?post=2&action=edit' /wp-admin/profile.php; do
-  curl "${ST[@]}" -s -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null
+  curl "${ST[@]}" -s -o /dev/null -H 'x-runtime-recycle: force' "$B/?nocache=ft$RANDOM"
   for pass in cold warm; do
     code=$(curl -s -c "$J" -b "$J" -o /dev/null -w '%{http_code}' "$B$path")
     echo "$code $pass $path" >> build/file-trace-admin.log
