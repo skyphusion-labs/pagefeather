@@ -51,6 +51,7 @@ import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse } from './overflow.mjs';
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
+import { PURGE_GAP_MS, NO_CACHE_API, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
@@ -2048,10 +2049,9 @@ let purgeRequested = false;
 let pendingEmails = [];
 let lastOrigin = null;
 // Workers Cache purges always have Free-tier limits: 5 a minute, bursts of 25,
-// per account. Purge at most once per PURGE_GAP_MS per isolate; the short TTL
-// with stale-while-revalidate limits staleness when a purge is refused.
-const PURGE_GAP_MS = 15000;
-// The object's purge state (issue #78): {pending, lastSent, retried}, in its storage.
+// per account (#699). The gateway purges at most once per PURGE_GAP_MS per isolate
+// (purge-state.mjs). The object keeps a refused purge pending and retries it (#699).
+// The object's purge state (issue #78, #699): purge-state.mjs, in its storage.
 const PURGE_STATE_KEY = 'skyphusion-purge';
 const ORIGIN_KEY = 'skyphusion-origin';
 const CRON_SKIP_KEY = 'cron-skip';
@@ -2807,23 +2807,17 @@ export class PhpRuntime extends DurableObject {
 	// 32 s). Here one alarm sends one purge for everything asked since the last
 	// purge, at most one per PURGE_GAP_MS, as c1 does in its Store object. The
 	// state is stored, so a purge asked for survives an evicted object. A
-	// refused purge is tried once more one interval later. With a pool of more
-	// than one object, each object coalesces on its own.
+	// refused purge stays pending and is retried with a back-off until no cached
+	// copy can still be served (#699, purge-state.mjs). With a pool of more than
+	// one object, each object coalesces on its own.
 	async requestPurge() {
 		const now = Date.now();
-		const st = (await this.ctx.storage.get(PURGE_STATE_KEY)) || { lastSent: 0 };
-		const coalesced = !!st.pending;
-		let waitMs = 0;
-		st.lastAsked = now; // so a test can check the last change is covered by a later purge
-		st.pending = true;
-		await this.ctx.storage.put(PURGE_STATE_KEY, st);
-		if (!coalesced) {
-			const at = Math.max(now, (st.lastSent || 0) + PURGE_GAP_MS);
-			waitMs = at - now;
-			await this.ctx.storage.setAlarm(at);
-		}
-		console.log(JSON.stringify({ m: 'purge', asked: 1, t: now, coalesced: coalesced ? 1 : 0, waitMs, where: 'object' }));
-		return coalesced ? 'coalesced' : 'scheduled';
+		// #699: the rules are purge-state.mjs onAsk. A purge already pending (or waiting out a refusal) covers this change.
+		const a = onAsk(await this.ctx.storage.get(PURGE_STATE_KEY), now);
+		await this.ctx.storage.put(PURGE_STATE_KEY, a.st);
+		if (a.alarmAt != null) await this.ctx.storage.setAlarm(a.alarmAt);
+		console.log(JSON.stringify({ m: 'purge', asked: 1, t: now, coalesced: a.coalesced ? 1 : 0, waitMs: a.alarmAt != null ? a.alarmAt - now : 0, where: 'object' }));
+		return a.coalesced ? 'coalesced' : 'scheduled';
 	}
 
 	async alarm() {
@@ -2987,38 +2981,35 @@ export class PhpRuntime extends DurableObject {
 			cst.cron = { t: Date.now(), error: detail.error, errMsg: detail.errMsg, errFile: detail.errFile, errLine: detail.errLine, stderrHead: detail.stderrHead, stack: detail.stack };
 			await this.ctx.storage.put(PURGE_STATE_KEY, cst);
 		}
-		const st = (await this.ctx.storage.get(PURGE_STATE_KEY)) || {};
-		if (st.pending) {
-		// Cleared before the purge: a change during the purge asks for the next one.
-		st.pending = false;
-		st.lastSent = Date.now();
-		await this.ctx.storage.put(PURGE_STATE_KEY, st);
-		let r;
-		try {
-			r = await this.ctx.exports.Pages.purge(['wp-pages']);
-		} catch (e) {
-			r = { ok: false, errors: [String((e && e.message) || e).slice(0, 200)] };
-		}
-		const ok = !!(r && r.ok);
-		const sent = { t: st.lastSent, ok, errors: (r && r.errors) || [], error: (r && r.error) || null };
-		disposeRpc(r); // #510: its fields are copied into sent
-		console.log(JSON.stringify({ m: 'purge', sent: 1, ...sent, where: 'object' }));
-		// The last 20 sends, for /_purgestate: wrangler tail does not show alarm runs.
-		const logged = (await this.ctx.storage.get(PURGE_STATE_KEY)) || st;
-		logged.sends = [...(logged.sends || []), sent].slice(-20);
-		await this.ctx.storage.put(PURGE_STATE_KEY, logged);
-		// Locally there is no cache API (r.error): nothing to retry. A refused purge is retried once.
-		if (!ok && !(r && r.error) && !st.retried) {
-			const again = (await this.ctx.storage.get(PURGE_STATE_KEY)) || st;
-			again.retried = true;
-			again.pending = true;
-			await this.ctx.storage.put(PURGE_STATE_KEY, again);
-			await this.ctx.storage.setAlarm(Date.now() + PURGE_GAP_MS);
-		} else if (st.retried) {
-			const done = (await this.ctx.storage.get(PURGE_STATE_KEY)) || st;
-			done.retried = false;
-			await this.ctx.storage.put(PURGE_STATE_KEY, done);
-		}
+		// #699: purge-state.mjs. A refused purge stays pending and is retried with a back-off (12, 24, 48 s) until no
+		// cached copy can still be served (PAGE_CACHE_TTL + stale-while-revalidate, purgeWindowMs); then it expires.
+		const due = onDue(await this.ctx.storage.get(PURGE_STATE_KEY), Date.now(), purgeWindowMs(this.env));
+		if (due.action === 'expire') {
+			await this.ctx.storage.put(PURGE_STATE_KEY, due.st);
+			// Not an m: purge line: doctor's guard counts every m: purge line as asked or sent (#688).
+			console.log(JSON.stringify({ m: 'purge-expired', expired: due.st.expired, where: 'object' }));
+		} else if (due.action === 'send') {
+			// Cleared before the purge: a change during the purge asks for the next one.
+			await this.ctx.storage.put(PURGE_STATE_KEY, due.st);
+			let r;
+			try {
+				r = await this.ctx.exports.Pages.purge(['wp-pages']);
+			} catch (e) {
+				r = { ok: false, errors: [String((e && e.message) || e).slice(0, 200)] };
+			}
+			const ok = !!(r && r.ok);
+			const errors = (r && r.errors) || [];
+			const error = (r && r.error) || null;
+			disposeRpc(r); // #510: its fields are copied above
+			const now = Date.now();
+			// A change during the purge may have asked again: onResult reads the current state.
+			const res = onResult(await this.ctx.storage.get(PURGE_STATE_KEY), now, { ok, errors, error }, due.covered);
+			const sent = { t: due.st.lastSent, ok, errors, error, attempt: due.covered.attempts + 1, ageMs: due.st.lastSent - due.covered.firstAsked, outcome: res.outcome, retryMs: res.alarmAt != null ? res.alarmAt - now : 0 };
+			console.log(JSON.stringify({ m: 'purge', sent: 1, ...sent, where: 'object' }));
+			// The last 20 sends, for /_purgestate: wrangler tail does not show alarm runs.
+			res.st.sends = [...(res.st.sends || []), sent].slice(-20);
+			await this.ctx.storage.put(PURGE_STATE_KEY, res.st);
+			if (res.alarmAt != null) await this.ctx.storage.setAlarm(res.alarmAt);
 		}
 		// Keep the cron cadence unless the purge logic set a sooner retry alarm.
 		await rearm(this.ctx.storage, Date.now(), Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
@@ -3836,7 +3827,7 @@ export class Pages extends WorkerEntrypoint {
 	// An RPC method, so not cached. A purge reaches only the cache of the
 	// entrypoint that calls it, so the purge of the page cache runs here.
 	async purge(tags) {
-		if (!this.ctx.cache) return { ok: false, error: 'no cache API' };
+		if (!this.ctx.cache) return { ok: false, error: NO_CACHE_API }; // purge-state.mjs drops only this (#699)
 		const r = await this.ctx.cache.purge({ tags });
 		return { ok: !!(r && r.success !== false), errors: (r && r.errors) || [] };
 	}

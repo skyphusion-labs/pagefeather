@@ -28,13 +28,16 @@ test('both purge call sites dispose the result AFTER reading its fields', () => 
 	const wLog = wBlock.indexOf("m: 'purge', sent: 1, ok: !!(r && r.ok)");
 	const wDisp = wBlock.indexOf('disposeRpc(r);');
 	assert.ok(wLog > 0 && wDisp > wLog, 'schedulePurge reads r, then disposes it');
-	// The PHP object's alarm path: copy the fields into sent, then dispose.
+	// The PHP object's alarm path: copy every field it reads (ok, errors, error), then dispose (#699: purge-state.mjs
+	// gets the copies, never r).
 	const o = src.indexOf("r = await this.ctx.exports.Pages.purge(['wp-pages']);");
 	assert.ok(o > 0);
 	const oBlock = src.slice(o, o + 800);
-	const oSent = oBlock.indexOf('const sent = { t: st.lastSent, ok, errors: (r && r.errors) || [], error: (r && r.error) || null };');
+	const oCopied = oBlock.indexOf('const error = (r && r.error) || null;');
 	const oDisp = oBlock.indexOf('disposeRpc(r);');
-	assert.ok(oSent > 0 && oDisp > oSent, 'the alarm copies r into sent, then disposes it');
+	assert.ok(oCopied > 0 && oBlock.indexOf('const ok = !!(r && r.ok);') > 0 && oBlock.indexOf('const errors = (r && r.errors) || [];') > 0, 'the alarm copies ok, errors and error');
+	assert.ok(oDisp > oCopied, 'the alarm copies r, then disposes it');
+	assert.ok(!/\br\b(?!\.)[^;]*onResult|onResult\([^)]*\br\b/.test(oBlock.slice(oDisp)), 'onResult never gets r after the dispose');
 	// No purge result is left undisposed: as many disposeRpc(r) calls as purge calls.
 	assert.equal((src.match(/exports\.Pages\.purge\(/g) || []).length, 2);
 	assert.equal((src.match(/disposeRpc\(r\);/g) || []).length, 2);

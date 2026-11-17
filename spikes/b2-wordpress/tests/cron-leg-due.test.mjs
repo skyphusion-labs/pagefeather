@@ -43,7 +43,7 @@ test('index.js: the cron leg is gated on cronLegDue, and its start is stored bef
 	const boots = body.indexOf('cr = await runCron(', go);
 	assert.ok(go >= 0 && stored > go && boots > stored, 'store the start, then run');
 	// The purge is not gated: it runs after the cron block, whatever legDue says.
-	const purge = body.indexOf('if (st.pending) {');
+	const purge = body.indexOf('const due = onDue('); // #699: the purge step, purge-state.mjs
 	assert.ok(purge > boots, 'the purge still runs after the cron block');
 	assert.ok(!/legDue/.test(body.slice(purge)), 'the purge does not read legDue');
 	assert.match(body, /notDue: !legDue/, 'a not-due skip is visible in /_purgestate cronSkip');
