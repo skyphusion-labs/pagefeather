@@ -5,3 +5,7 @@ specs/fatal-error-handler.test.js        writes a mu-plugin on the RUNNER disk; 
 specs/maintenance-mode.test.js           writes .maintenance on the RUNNER disk; no, by design: code-locked sites never enter it (support matrix)
 specs/login-localize-script.test.js      writes a mu-plugin on the RUNNER disk
 specs/gutenberg-plugin.test.js           installs a plugin over REST; unsupported by design (code lock)
+specs/general-settings-invalid-timezone.test.js   Playwright hits the 30s cap waiting for a stable #submit after admin JS. Idle POST options.php is about 1 to 2s on cf759a (#605, conf759 wp-on 2026-11-17).
+specs/empty-trash-restore-trashed-posts.test.js   Playwright hits the 30s cap on the Trash submenu link after trash. Same browser wait family as #605 (conf759 wp-on 2026-11-17).
+specs/edit-posts.test.js                        Playwright page.goto times out on load under the full wp suite. Same browser wait family as #605 (conf759 wp-on 2026-11-17).
+specs/dashboard.test.js                         Admin Quick Draft shows Untitled for a content-only draft. Upstream expects (no title). Product copy on the deployed throwaway (#759, conf759 wp-on 2026-11-17).
