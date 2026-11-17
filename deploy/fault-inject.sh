@@ -4,7 +4,8 @@
 # both emitters: deploy/deploy.sh (fault_check before any step, render-conf.sh fault_line) and deploy/wfp/lib.sh
 # (render_user, fault_inject_var). Allowed only when ALL hold:
 #   - FAULT_INJECT is "after-insert" or "sql-fail" (#766: a request's chosen SQL statement fails with the platform's
-#     memory-reset message, and the isolate goes on); unset renders nothing; anything else is refused;
+#     memory-reset message, and the isolate goes on; #809: with x-pf-fault-undo: on, the frame rollback and recovery
+#     undo fail too, until off, so a frame strands); unset renders nothing; anything else is refused;
 #   - the variant is b-dosql (the request frame lives in the object's SQLite);
 #   - THROWAWAY=1, so a site nobody marked fails CLOSED;
 #   - the site is not live: neither deploy/live-sites/<name>.env nor deploy/wfp/live-sites/<name> exists, and a

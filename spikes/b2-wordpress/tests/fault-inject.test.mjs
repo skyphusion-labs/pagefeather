@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { faultArmed, isFaultTarget, exhaustMemory, FAULT_HEADER, FAULT_AFTER_INSERT, sqlFailNeedle, FAULT_SQL_FAIL, FAULT_SQL_HEADER, SQL_FAIL_MESSAGE, sqlFailMessage, FAULT_SQL_KIND_HEADER, SQL_FAIL_BUSY_MESSAGE, SQL_FAIL_OTHER_MESSAGE } from '../fault-inject.mjs';
+import { faultArmed, isFaultTarget, exhaustMemory, FAULT_HEADER, FAULT_AFTER_INSERT, sqlFailNeedle, FAULT_SQL_FAIL, FAULT_SQL_HEADER, SQL_FAIL_MESSAGE, sqlFailMessage, FAULT_SQL_KIND_HEADER, SQL_FAIL_BUSY_MESSAGE, SQL_FAIL_OTHER_MESSAGE, undoFailSet, FAULT_UNDO_HEADER, UNDO_FAIL_MESSAGE } from '../fault-inject.mjs';
 import { MEMORY_RESET } from '../object-error.mjs';
 
 const H = (o) => new Headers(o);
@@ -83,4 +83,19 @@ test('#766 index.js wiring: a request with a reset-class failure drops the objec
 	assert.ok(src.includes('ocReqBegin(); // #766'), 'each request starts its own record of cache writes');
 	assert.ok(src.includes('const ocForgot = ocReqForget();'), 'the write-loss answer forgets them');
 	assert.ok(src.includes('if (req0 && req0.poisoned) return;'), 'a held L2 set of a poisoned request never runs');
+});
+
+test('#809 the undo-failure seam: only with the sql-fail site var, the spike token and x-pf-fault: sql-fail; on, off or no change', () => {
+	const env = { FAULT_INJECT: FAULT_SQL_FAIL };
+	const hh = (o) => new Headers(o);
+	const on = { [FAULT_HEADER]: FAULT_SQL_FAIL, [FAULT_UNDO_HEADER]: 'on' };
+	assert.equal(undoFailSet(env, true, hh(on)), true);
+	assert.equal(undoFailSet(env, true, hh({ ...on, [FAULT_UNDO_HEADER]: 'off' })), false);
+	assert.equal(undoFailSet(env, true, hh({ [FAULT_HEADER]: FAULT_SQL_FAIL })), null, 'no undo header: no change');
+	assert.equal(undoFailSet(env, true, hh({ ...on, [FAULT_UNDO_HEADER]: 'yes' })), null, 'only on or off');
+	assert.equal(undoFailSet({}, true, hh(on)), null, 'no site var (a live site never has it)');
+	assert.equal(undoFailSet({ FAULT_INJECT: FAULT_AFTER_INSERT }, true, hh(on)), null, 'another kind');
+	assert.equal(undoFailSet(env, false, hh(on)), null, 'no spike token');
+	assert.equal(undoFailSet(env, true, hh({ [FAULT_UNDO_HEADER]: 'on' })), null, 'no x-pf-fault: sql-fail');
+	assert.ok(MEMORY_RESET.test(UNDO_FAIL_MESSAGE), 'it throws the platform reset, as the real ceiling would');
 });

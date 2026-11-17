@@ -40,6 +40,21 @@ export function sqlFailMessage(headers) {
 	return k === 'other' ? SQL_FAIL_OTHER_MESSAGE : k === 'busy' ? SQL_FAIL_BUSY_MESSAGE : SQL_FAIL_MESSAGE;
 }
 
+// #809: the UNDO failure, a MEASUREMENT for throwaway and local sites only, under the same rule as sql-fail (the site var
+// FAULT_INJECT is "sql-fail", the spike token, x-pf-fault: sql-fail). x-pf-fault-undo: on makes every frame rollback and
+// recovery undo (undo-log.mjs undoTo, inside its transaction, after its statements) throw the platform's reset, so a
+// frame strands as it would when its undo meets the same storage ceiling; off ends it. It holds across requests
+// (module state of the object), so a following request and the cron alarm meet the stranded frame. index.js reads it
+// BEFORE the request's recovery, so the request that turns it off is the one whose recovery succeeds.
+export const FAULT_UNDO_HEADER = 'x-pf-fault-undo';
+export const UNDO_FAIL_MESSAGE = "Durable Object's isolate exceeded its memory limit and was reset. (injected into the undo, #809, a measurement)";
+/** true (on), false (off), or null (no change): the site var, the spike token, x-pf-fault: sql-fail, and on or off. */
+export function undoFailSet(env, spikeOk, headers) {
+	if (!env || env.FAULT_INJECT !== FAULT_SQL_FAIL || spikeOk !== true || !headers || headers.get(FAULT_HEADER) !== FAULT_SQL_FAIL) return null;
+	const v = headers.get(FAULT_UNDO_HEADER);
+	return v === 'on' ? true : v === 'off' ? false : null;
+}
+
 /** The piece of SQL to fail in this request, or null: the site var, the spike token, the header, and 3 to 120 characters. */
 export function sqlFailNeedle(env, spikeOk, headers) {
 	if (!env || env.FAULT_INJECT !== FAULT_SQL_FAIL || spikeOk !== true || !headers || headers.get(FAULT_HEADER) !== FAULT_SQL_FAIL) return null;

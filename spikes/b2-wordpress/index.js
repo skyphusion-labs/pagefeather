@@ -40,7 +40,7 @@ import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__do
 import { inflateSync } from 'fflate';
 import { createArena } from './inflate-arena.mjs';
 import { headroomStream } from './headroom.mjs';
-import { faultArmed, isFaultTarget, exhaustMemory, sqlFailNeedle, sqlFailMessage } from './fault-inject.mjs';
+import { faultArmed, isFaultTarget, exhaustMemory, sqlFailNeedle, sqlFailMessage, undoFailSet, UNDO_FAIL_MESSAGE } from './fault-inject.mjs';
 import { failuresSince } from './activate-report.mjs';
 import { createUndoLog } from './undo-log.mjs';
 import { createRetirer } from './runtime-drop.mjs';
@@ -2505,10 +2505,11 @@ async function httpOp(op) {
 // (tests/undo-log.test.mjs). One instance per isolate: recover() runs once, in the PhpRuntime
 // constructor, before anything reads the database.
 let undoLog = null;
+let undoFailOn = false; // #809's seam (fault-inject.mjs undoFailSet): throwaway and local sites only
 function undo(env = ENV) {
 	// frames is asked at each arm, from the env of the call or ENV: the first undo() of a deployed object is
 	// the constructor's recovery, before any fetch has set ENV (pf352f, 2026-11-14: no frame ever armed).
-	if (!undoLog) undoLog = createUndoLog({ stats, objectCacheDrop, log: (o) => console.log(JSON.stringify(o)), frames: () => !!((env || ENV) && (env || ENV).REQUEST_FRAMES === 'on') });
+	if (!undoLog) undoLog = createUndoLog({ stats, objectCacheDrop, log: (o) => console.log(JSON.stringify(o)), frames: () => !!((env || ENV) && (env || ENV).REQUEST_FRAMES === 'on'), undoFault: () => (undoFailOn ? UNDO_FAIL_MESSAGE : null) });
 	return undoLog;
 }
 function txnOp(db, storage, op) {
@@ -2906,7 +2907,12 @@ export class PhpRuntime extends DurableObject {
 					const cleanDue = cronCleanDue(await this.ctx.storage.get(CRON_CLEAN_KEY), Date.now());
 					mail = tickMailFor(this.env, this.ctx.storage);
 					try {
-						cr = await runCron(() => (bootPromise ??= boot(cronOrigin)), cleanDue, mail);
+						// #809: no cron write under a stranded frame (it would be erased at the recovery). The leg is
+						// deferred, as a refused boot is; the next tick is already armed (armBeforeRun) and recovers first.
+						if (realTxn && undo().stranded()) {
+							console.log(JSON.stringify({ m: 'cron', deferred: 'frame-stranded' }));
+							cr = { deferred: 'frame-stranded' };
+						} else cr = await runCron(() => (bootPromise ??= boot(cronOrigin)), cleanDue, mail);
 					} catch (e) {
 						if (!(e && e.bootRefused)) throw e;
 						// #598 part 2: the leg is deferred, not a death: it ran nothing, the run record closes as done
@@ -3215,6 +3221,9 @@ export class PhpRuntime extends DurableObject {
 			sqlDb = sql;
 			sqlStorage = sql ? this.ctx.storage : null;
 			const realTxn = sql && env.REAL_TRANSACTIONS !== 'off';
+			// #809's seam, read BEFORE the recovery: the request that turns it off is the one whose recovery succeeds.
+			const uf = undoFailSet(env, spikeOk, req.headers);
+			if (uf !== null) { undoFailOn = uf; console.log(JSON.stringify({ m: 'fault-undo', on: uf })); }
 			if (realTxn) txnRecover(sql, this.ctx.storage);
 			// #352: arm the request frame (REQUEST_FRAMES=on); it opens at the first write. The Worker sends the id.
 			if (realTxn) undo(env).arm(sql, req.headers.get('x-pf-req') || 'obj-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
@@ -3226,6 +3235,14 @@ export class PhpRuntime extends DurableObject {
 			// One PHP run at a time (withPhp), so one slot holds this run's answer.
 			turnstileSlot.set(turnstileHeader);
 			try {
+				// #809: a stranded frame (its rollback and the recovery above both failed) is still stored open. Nothing
+				// may write under it, so no PHP runs: the answer is the retryable platform failure, until a recovery
+				// succeeds (txnRecover above, on the next request). undo-log.mjs refuses its writes as well.
+				if (realTxn && undo(env).stranded()) {
+					const sf = statementFailureResponse(1, wantsJson(url.pathname, url.search, req.headers.get('accept')), false);
+					console.log(JSON.stringify({ '@event': 'frame-stranded-refused', m: 'frame-stranded-refused', method: req.method, path: url.pathname, answered: sf.status }));
+					return new Response(sf.body, { status: sf.status, headers: sf.headers });
+				}
 				const res = await handle(req, env, url, spikeOk, maxBody, ctx);
 				if (realTxn) txnEnd(sql, this.ctx.storage);
 				try {
