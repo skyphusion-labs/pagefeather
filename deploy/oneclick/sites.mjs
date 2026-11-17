@@ -4,11 +4,10 @@
 // workers.dev subdomain, the site map namespace, and each site's front door (a
 // small plain Worker, wp-<name>, that runs deploy/wfp/dispatcher/worker.js).
 import { cfFetch, opError } from './vendor/provision/cf.mjs';
-import { ensureKVNamespace, scriptExists, enableWorkersDevSubdomain, deleteNamespaceScript, deleteR2Bucket, deleteKVNamespaceByTitle } from './vendor/provision/ops.mjs';
-import { provisionSite } from './vendor/provision/provision.mjs';
+import { ensureKVNamespace, scriptExists, enableWorkersDevSubdomain } from './vendor/provision/ops.mjs';
+import { provisionSite, removeNamespaceSite } from './vendor/provision/provision.mjs';
 import { readSite, listSites, upsertSite, removeSite, updateSite } from './vendor/provision/registry.mjs';
 import { validateRequest, buildServerCfg, BadRequest, HYPERDRIVE_ID_RE, TABLE_PREFIX_RE } from './vendor/provision/server-config.mjs';
-import { mediaBucketName, ocKvNamespaceName } from './vendor/provision/wp-site-config.mjs';
 import { shown, logged } from './errors.mjs';
 
 export const SITE_MAP_TITLE_DEFAULT = 'pagefeather-sites';
@@ -156,8 +155,8 @@ function provisionEnv(env, { kvId, subdomain }) {
   };
 }
 
-// Undo a Hyperdrive store that failed part way (#431): newest first, each step on
-// its own, so one failure does not stop the rest. It never touches the database or
+// Undo a Hyperdrive store that failed part way (#431): the front door first, then the
+// site's parts through removeNamespaceSite (#782), each step on its own, so one failure does not stop the rest. It never touches the database or
 // the Hyperdrive configuration (the owner made both). Only called for a site that
 // did not exist before this request (the anti-clobber check above it proved the
 // front door was not someone else's Worker). Returns what could not be removed.
@@ -168,10 +167,10 @@ async function undoStore(ctx, { name, kvId, namespace, hostname }) {
     const r = await cfFetch(ctx.token, 'DELETE', `/accounts/${ctx.acct}/workers/scripts/${frontDoorName(name)}`, { fetchImpl: ctx.fetchImpl });
     if (!r.ok && r.status !== 404) throw opError('undo frontDoor', name, r);
   });
-  await step('the site entry', () => removeSite(ctx, { kvId, hostname }));
-  await step('the site code', () => deleteNamespaceScript(ctx, { ns: namespace, name: `site-${name}` }));
-  await step('the object cache', () => deleteKVNamespaceByTitle(ctx, ocKvNamespaceName(name)));
-  await step('the media bucket', () => deleteR2Bucket(ctx, mediaBucketName(name)));
+  // The site's own parts: the one removal every core-path site uses (#782), every step tried (keepGoing), the
+  // site entry last. A workers.dev site has no SaaS zone, so there is no hostname or DNS step.
+  const r = await removeNamespaceSite(ctx, { ns: namespace, kvId, hostname, name, deleteData: true, keepGoing: true });
+  for (const l of r.left) left.push(`the ${l.part} (reference ${logged(`undo ${l.part}`, l.error)})`);
   return left;
 }
 
