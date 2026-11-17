@@ -9,7 +9,7 @@ import {
   installWordPress, freshKVNamespace,
   ensureCacheVersions,
   deleteNamespaceScript, deleteR2Bucket, deleteProxiedHostname, deleteCustomHostname,
-  deleteKVNamespaceByTitle, deleteQueueByName, deleteVectorizeIndex,
+  deleteKVNamespaceByTitle, deleteQueueByName, deleteVectorizeIndex, getNamespaceScriptSettings,
 } from './ops.mjs';
 import { upsertSite, readSite, removeSite } from './registry.mjs';
 import { mediaBucketName, ocKvNamespaceName, emailQueueName, emailDlqName, searchIndexName } from './wp-site-config.mjs';
@@ -240,4 +240,28 @@ export async function removeNamespaceSite(ctx, { ns, kvId, hostname, name, entry
     catch (err) { if (!keepGoing) throw err; left.push({ part: st.part, what: st.what, error: (err && err.message) || String(err) }); }
   }
   return { dryRun: false, plan, done, left, dataLoss: REMOVE_DATA_LOSS };
+}
+
+// #782: update a core-path site's code to a new bundle. The update probe (2026-11-17) measured that a re-upload with
+// NO migrations keeps the Durable Object's data (so the site database), and that re-sending the applied migration
+// tag is refused (412, 10079). The core stores a site's secrets nowhere, so they cannot be re-sent: keep_bindings
+// keeps the secret types. Every other binding is re-sent exactly as the live script has it, so an update cannot
+// drop or change one. After the upload the settings are read again, and a binding that is gone is a failure.
+const SECRET_TYPES = ['secret_text', 'secret_key'];
+export async function updateNamespaceSite(ctx, { ns, name, script, mainModule, modules, compatibilityDate, compatibilityFlags = [] }) {
+  assertValidName(name);
+  const s = script || `site-${name}`;
+  const before = await getNamespaceScriptSettings(ctx, { ns, name: s });
+  if (!before) throw new Error(`updateNamespaceSite: no live script ${s} in ${ns}; there is nothing to update (site add makes it). Nothing was changed.`);
+  const live = Array.isArray(before.bindings) ? before.bindings : [];
+  const secrets = live.filter((b) => SECRET_TYPES.includes(b.type));
+  const keep = live.filter((b) => !SECRET_TYPES.includes(b.type));
+  const keepTypes = [...new Set(['secret_text', ...secrets.map((b) => b.type)])];
+  await deployNamespaceScript(ctx, { ns, name: s, mainModule, modules, bindings: keep, compatibilityDate, compatibilityFlags, keepBindings: keepTypes });
+  const after = await getNamespaceScriptSettings(ctx, { ns, name: s });
+  const key = (b) => `${b.type}:${b.name}`;
+  const have = new Set(((after && after.bindings) || []).map(key));
+  const gone = live.filter((b) => !have.has(key(b))).map((b) => b.name);
+  if (gone.length) throw new Error(`updateNamespaceSite: ${s} lost ${gone.join(', ')} in the upload. The new code is live without them; restore them before the site serves.`);
+  return { script: s, kept: keep.map((b) => b.name), secrets: secrets.map((b) => b.name) };
 }

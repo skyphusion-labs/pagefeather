@@ -91,7 +91,8 @@ all reject it. Design: issue #154. Worker hardening: issue #182 and `HARDENING.m
   is NOT installed here; the site owner enables it inside the site.
 - `cli.mjs`: `add --kind wp <name>` or
   `add --kind a <name> --hyperdrive <HYPERDRIVE_ID> [--hyperdrive-sql-mode <mode>]`
-  (node), and `remove <name> [--delete-data] [--no-entry]` (#782). Implements `add`, `hostname` and `remove`,
+  (node), `remove <name> [--delete-data] [--no-entry]` and `update <name>` (#782). Implements `add`, `hostname`,
+  `remove` and `update`,
   for a SaaS-zone site only: with no
   `WFP_SAAS_ZONE_ID` it refuses before any API call and names `deploy/wfp/site`,
   the one operator surface of the reference deployment (#294; #328 makes the two
@@ -104,6 +105,11 @@ all reject it. Design: issue #154. Worker hardening: issue #182 and `HARDENING.m
   custom hostname, then the DNS record), then the code and its resources, and the registry entry last, so a
   failed run can be retried. After a real removal it reads back the entry and the code. `--no-entry` removes a
   half-made site by its derived names. The Analytics Engine dataset has no delete, so it stays.
+  `update` puts the site's code on the bundle in `BDOSQL_BUNDLE_DIR` (or `A_BUNDLE_DIR`) and keeps the rest
+  (`provision.mjs` `updateNamespaceSite`). It re-sends the live script's non-secret bindings exactly, keeps the
+  secrets with `keep_bindings` (the core stores no secret, so none can be re-sent), and sends **no migrations**.
+  The update probe (2026-11-17) measured that this keeps the Durable Object's data, and that re-sending the applied
+  tag is refused (412, 10079). After the upload it reads the settings back and fails if any binding is gone.
 - `provision.mjs`: `removeNamespaceSite(ctx, opts)` is the ONE removal (#782). The CLI's `remove`, the demo
   reaper (`demo.mjs` `teardownDemoSite`) and the one-click undo (`deploy/oneclick/sites.mjs` `undoStore`, with
   `keepGoing`) all call it, so they cannot drift on what a site is made of.

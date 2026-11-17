@@ -19,7 +19,7 @@
 // configured (zone skyphusionwp.dev, fallback.skyphusionwp.dev).
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { provisionSite, removeNamespaceSite } from './provision.mjs';
+import { provisionSite, removeNamespaceSite, updateNamespaceSite } from './provision.mjs';
 import { SITE_NAME_RE, isCallerReservedName, genSecret } from './shared.mjs';
 import { bDosqlBindings, bDosqlSecrets, bDosqlResourceCreateOps, aBindings, mediaBucketName, ocKvNamespaceName, analyticsDatasetName, pageCacheInputs, pageCacheProductTtl, objectTimeInputs, aCacheInputs } from './wp-site-config.mjs';
 import { addCustomHostname, getCustomHostnameStatus, scriptExists } from './ops.mjs';
@@ -65,7 +65,7 @@ export function operatorSiteRefusal(cmd, name, env) {
 export function parseArgs(argv) {
   const [cmd, ...rest] = argv;
   if (cmd === 'hostname') return parseHostnameArgs(rest);
-  if (!['add', 'remove', 'list'].includes(cmd)) {
+  if (!['add', 'remove', 'update', 'list'].includes(cmd)) {
     throw new Error('usage: site add|list --kind wp|a <name> ... | site remove <name> [--delete-data] [--no-entry] [--hyperdrive <id>] [--hyperdrive-sql-mode <mode>] | site hostname add <name> --domain <d> --mode delegated|managed [--dcv-delegation] [--cust-zone <id>] | site hostname status <name>');
   }
   let kind, name, hyperdrive, hyperdriveSqlMode, deleteData = false, noEntry = false;
@@ -91,6 +91,11 @@ export function parseArgs(argv) {
     // HYPERDRIVE_SQL_MODE, when given, must be the charset index.js will emit
     // (a per-statement sql_mode relax for strict backends; fail early on a typo).
     if (hyperdriveSqlMode !== undefined && !/^[A-Za-z_,]*$/.test(hyperdriveSqlMode)) throw new Error('--hyperdrive-sql-mode must match [A-Za-z_,]* (e.g. ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION)');
+  }
+  if (cmd === 'update') {
+    if (deleteData || noEntry || kind || hyperdrive || hyperdriveSqlMode !== undefined) throw new Error('update takes only <name>; the bundle comes from BDOSQL_BUNDLE_DIR or A_BUNDLE_DIR');
+    if (!name || !SITE_NAME_RE.test(name)) throw new Error('update needs a valid <name> (lower case, digits, hyphens, 1 to 30)');
+    return { cmd, name };
   }
   if (cmd === 'remove') {
     if (!name || !SITE_NAME_RE.test(name)) throw new Error('remove needs a valid <name> (lower case, digits, hyphens, 1 to 30)');
@@ -405,6 +410,26 @@ export async function removeCommand(ctx, parsed, env, { out = console.log } = {}
   return { ...r, checked: true };
 }
 
+// site update <name> (#782): the site's code to the bundle in BDOSQL_BUNDLE_DIR (kind wp) or A_BUNDLE_DIR (kind a),
+// keeping its bindings, secrets and database (provision.mjs updateNamespaceSite). A SaaS-zone site only.
+export async function updateCommand(ctx, parsed, env, { out = console.log, modules } = {}) {
+  if (!env.WFP_KV_ID || !env.WFP_NAMESPACE) throw new Error('site update: set WFP_KV_ID and WFP_NAMESPACE');
+  const hostname = siteHostname(parsed.name, env);
+  const entry = await readSite(ctx, { kvId: env.WFP_KV_ID, hostname });
+  if (!entry) throw new Error(`site update: ${hostname} has no registry entry; there is no site to update. Nothing was changed.`);
+  const kind = entry.kind === 'a' ? 'a' : 'wp';
+  const mods = modules || await loadModules(kind === 'a' ? env.A_BUNDLE_DIR : env.BDOSQL_BUNDLE_DIR);
+  const mainModule = kind === 'a' ? (env.A_MAIN || 'index-a-lean.js') : (env.WP_MAIN || 'index.js');
+  const r = await updateNamespaceSite(ctx, {
+    ns: env.WFP_NAMESPACE, name: parsed.name, script: typeof entry.script === 'string' ? entry.script : undefined,
+    mainModule, modules: mods, compatibilityDate: env.WFP_COMPAT || '2026-07-01', compatibilityFlags: ['nodejs_compat', 'enable_request_signal'],
+  });
+  out(`site update ${parsed.name} (${hostname}): ${r.script} is on the new code`);
+  out(`  kept: ${r.kept.join(', ') || 'no bindings'}; secrets kept by name: ${r.secrets.join(', ') || 'none'}`);
+  out('  checked: every binding the live site had is still there');
+  return r;
+}
+
 async function main() {
   const parsed = parseArgs(process.argv.slice(2));
   const env = process.env;
@@ -415,7 +440,8 @@ async function main() {
   const refusal = operatorSiteRefusal(parsed.cmd, parsed.name, env);
   if (refusal) throw new Error(refusal);
   if (parsed.cmd === 'remove') { await removeCommand(ctx, parsed, env); return; }
-  if (parsed.cmd !== 'add') throw new Error(`${parsed.cmd}: not implemented in this CLI; list and update a site with deploy/wfp/site (docs/operator.md)`);
+  if (parsed.cmd === 'update') { await updateCommand(ctx, parsed, env); return; }
+  if (parsed.cmd !== 'add') throw new Error(`${parsed.cmd}: not implemented in this CLI; list a site with deploy/wfp/site (docs/operator.md)`);
   const cfg = await buildCfg(parsed, env);
   const r = await provisionSite(ctx, cfg);
   console.log(JSON.stringify({ provisioned: r.kind, name: r.name, script: r.script, hostname: r.hostname }, null, 2));

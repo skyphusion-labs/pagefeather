@@ -109,12 +109,21 @@ export async function writeKVMapEntry(ctx, { kvId, key, value }) {
   return { key };
 }
 
+// #782: a namespace script's live settings (its bindings: secret ones by name only, never a value). null when the
+// script does not exist.
+export async function getNamespaceScriptSettings(ctx, { ns, name }) {
+  const r = await cfFetch(ctx.token, 'GET', `/accounts/${ctx.acct}/workers/dispatch/namespaces/${ns}/scripts/${name}/settings`, { fetchImpl: ctx.fetchImpl });
+  if (r.status === 404) return null;
+  if (!r.ok) throw opError('getNamespaceScriptSettings', name, r);
+  return r.result || {};
+}
+
 // 5. wp / b-dosql: upload the user Worker into the dispatch namespace. The
 // b-dosql code is in the uploaded bundle (modules), so there is NO build. PUT
 // replaces the script, so it is idempotent.
 export async function deployNamespaceScript(ctx, {
   ns, name, mainModule, modules, bindings = [], compatibilityDate, compatibilityFlags = [],
-  migrations,
+  migrations, keepBindings,
 }) {
   const metadata = {
     main_module: mainModule,
@@ -122,6 +131,9 @@ export async function deployNamespaceScript(ctx, {
     compatibility_flags: compatibilityFlags,
     bindings,
   };
+  // #782: an update keeps the binding TYPES named here from the live script (the secrets, which the core stores
+  // nowhere and so cannot re-send). Only set when given, so an add uploads unchanged.
+  if (Array.isArray(keepBindings) && keepBindings.length) metadata.keep_bindings = keepBindings;
   // A SQLite Durable Object class binding is REJECTED (API 10061) unless a
   // migration declares the class. The b-dosql wp site binds PhpRuntime, so the
   // migration is not optional: without it the deploy throws and no site exists
