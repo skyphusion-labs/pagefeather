@@ -130,7 +130,8 @@ function dispatcherStub() {
         const u = new URL(req.url);
         seen.push({ script, path: u.pathname, search: u.search, token: req.headers.get('x-spike-token') });
         if (u.pathname === '/_install') return new Response(JSON.stringify({ out: '{"installed":true,"user_id":1}' }));
-        if (u.pathname === '/_activate') return new Response(JSON.stringify({ out: JSON.stringify({ active: true, error: null, exited: false }) }));
+        // #661: /_activate answers installed beside active (a WooCommerce install that really completed).
+        if (u.pathname === '/_activate') return new Response(JSON.stringify({ out: JSON.stringify({ active: true, error: null, exited: false, installed: true }) }));
         return new Response('no', { status: 404 });
       },
     }),
@@ -305,6 +306,30 @@ await ok('a store whose activation does not report active: the result says so (c
   const inner = d.get;
   d.get = (script) => ({ fetch: async (req) => (new URL(req.url).pathname === '/_activate'
     ? new Response(JSON.stringify({ out: JSON.stringify({ active: false, error: 'x' }) }))
+    : inner(script).fetch(req)) });
+  const r = await (await call(post('/api/sites', { name: 'myshop', store: true }), makeEnv({ DISPATCHER: d }), access(), cf)).json();
+  assert(r.ok && r.woo && r.woo.activated === false, JSON.stringify(r.woo));
+});
+
+await ok('a store whose activation answers active but NOT installed (#661: a skipped install) is not activated', async () => {
+  // A first attempt that died mid-install leaves WooCommerce's install lock; the next activation then skips the
+  // install while WordPress still saves the plugin as active. /_activate answers installed false; that is a failure.
+  const cf = fakeCloudflare();
+  const d = dispatcherStub();
+  const inner = d.get;
+  d.get = (script) => ({ fetch: async (req) => (new URL(req.url).pathname === '/_activate'
+    ? new Response(JSON.stringify({ out: JSON.stringify({ active: true, error: null, exited: false, installed: false, install: { version: null, lock: 1 } }) }))
+    : inner(script).fetch(req)) });
+  const r = await (await call(post('/api/sites', { name: 'myshop', store: true }), makeEnv({ DISPATCHER: d }), access(), cf)).json();
+  assert(r.ok && r.woo && r.woo.activated === false, JSON.stringify(r.woo));
+});
+
+await ok('a store whose activation answers active with no installed field (a site from before #661) is not activated', async () => {
+  const cf = fakeCloudflare();
+  const d = dispatcherStub();
+  const inner = d.get;
+  d.get = (script) => ({ fetch: async (req) => (new URL(req.url).pathname === '/_activate'
+    ? new Response(JSON.stringify({ out: JSON.stringify({ active: true, error: null, exited: false }) }))
     : inner(script).fetch(req)) });
   const r = await (await call(post('/api/sites', { name: 'myshop', store: true }), makeEnv({ DISPATCHER: d }), access(), cf)).json();
   assert(r.ok && r.woo && r.woo.activated === false, JSON.stringify(r.woo));

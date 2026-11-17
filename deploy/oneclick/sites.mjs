@@ -206,10 +206,13 @@ export async function activateWoo(ctx, { script, spikeToken }) {
       method: 'POST', headers: { 'x-spike-token': spikeToken },
     }));
     // /_activate answers { out: <PHP output> }, and the PHP output ends with
-    // json_encode(['active' => is_plugin_active(...), ...]) (spikes/b2-wordpress/index.js).
+    // json_encode(['active' => is_plugin_active(...), ..., 'installed' => ...]) (spikes/b2-wordpress/index.js).
+    // #661: active alone is not enough, the same rule deploy.sh follows. An earlier attempt that died mid-install
+    // leaves WooCommerce's install lock; the next activation then skips the install while WordPress still saves the
+    // plugin as active (no version, no roles, every REST write 403). installed is true only for a real install.
     let out = '';
     try { const body = await res.json(); out = typeof body.out === 'string' ? body.out : ''; } catch { out = ''; }
-    const activated = res.ok && /"active":true/.test(out);
+    const activated = res.ok && /"active":true/.test(out) && /"installed":true/.test(out);
     if (activated) return { activated: true };
     return { activated: false, ref: logged('WooCommerce activation', `HTTP ${res.status}: ${out.slice(-500)}`) };
   } catch (e) { return { activated: false, ref: logged('WooCommerce activation', (e && e.stack) || e) }; }
