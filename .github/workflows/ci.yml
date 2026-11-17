@@ -606,7 +606,7 @@ jobs:
       - name: Secret scan
         run: |
           if git grep -nE 'AKIA[0-9A-Z]{16}|cfut_[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|BEGIN [A-Z ]*PRIVATE KEY|xox[bap]-[A-Za-z0-9-]{10,}'; then echo 'possible secret'; exit 1; fi
-      # Node 24 runs the JSPI loader (Node 22 cannot). The Python 3.9 floor at the
+      # Node 24 runs the JSPI loader (Node 22 cannot). The Python floor at the
       # end of this job does not use Node.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -680,52 +680,18 @@ jobs:
       - name: /_activate names the database failures of its own run (#744)
         working-directory: spikes/b2-wordpress
         run: node --test tests/activate-report.test.mjs
-      # Python 3.9 floor (#644), last so it does not change python3 for the steps
-      # above. ubuntu-latest is 26.04 (resolute) and its apt index is amd64v3.
-      # Two installs do not work here, both measured. actions/setup-python has
-      # no 3.9 build past Ubuntu 24.04 (run 43721961122). deadsnakes publishes
-      # python3.9 for resolute only as amd64, so apt reports no candidate (run
-      # 43723242573). The four amd64 debs are that build, checksummed. dpkg
-      # installs them; apt-get -f fills Ubuntu deps if dpkg stops for one.
-      # The shell tests call python3, so a shim puts that binary first on PATH.
-      - name: deploy/wfp temp tests on Python 3.9 (issue #644)
+      # Python floor for deploy/wfp temp tests (#644). Was 3.9 via pinned
+      # deadsnakes .debs on ubuntu-latest (26.04); Launchpad 503s failed the
+      # whole ci job (2026-11-17). The operator Mac is on Homebrew 3.12+ now.
+      # setup-python 3.12 works on ubuntu-latest. Last step so it does not
+      # change python3 for the steps above. The shell tests call python3.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: deploy/wfp temp tests on Python 3.12 (issue #644)
         run: |
           set -euo pipefail
-          export DEBIAN_FRONTEND=noninteractive
-          base=https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu/pool/main/p/python3.9
-          d=$(mktemp -d)
-          # Launchpad returns 503 in bursts (2026-11-17). Retry the GET; the
-          # sha256 check still rejects a bad body.
-          fetch() {
-            local i
-            for i in 1 2 3 4 5 6; do
-              if curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 \
-                -o "$d/$1" "$base/$1"; then
-                echo "$2  $d/$1" | sha256sum -c -
-                return 0
-              fi
-              echo "deadsnakes fetch attempt $i failed for $1; sleep and retry" >&2
-              sleep $((i * 10))
-            done
-            echo "deadsnakes fetch gave up on $1" >&2
-            return 1
-          }
-          fetch libpython3.9-minimal_3.9.25-1+resolute2_amd64.deb 40cf71213c57772f996188e64d557cde402d9b69b44de66374f44497947588e7
-          fetch python3.9-minimal_3.9.25-1+resolute2_amd64.deb 8f7bdbdd6b0766c54be4c91e47f3db47a9f235a773ba3f8891a97541eedf7594
-          fetch libpython3.9-stdlib_3.9.25-1+resolute2_amd64.deb 198e48d36d19dc8fb5d62d85df0d9581104d1eb16165b390ad58553abc7edfe7
-          fetch python3.9_3.9.25-1+resolute2_amd64.deb ba5d7d72a9dcc4982dc5926b6c65b917c99a70284764b7842953812100f09e7b
-          sudo apt-get update -q
-          sudo dpkg -i \
-            "$d/libpython3.9-minimal_3.9.25-1+resolute2_amd64.deb" \
-            "$d/python3.9-minimal_3.9.25-1+resolute2_amd64.deb" \
-            "$d/libpython3.9-stdlib_3.9.25-1+resolute2_amd64.deb" \
-            "$d/python3.9_3.9.25-1+resolute2_amd64.deb" \
-            || sudo apt-get install -y -q -f
-          shim=$(mktemp -d)
-          ln -s "$(command -v python3.9)" "$shim/python3"
-          ln -s "$(command -v python3.9)" "$shim/python"
-          export PATH="$shim:$PATH"
-          python3 -c 'import sys; v = sys.version_info[:2]; assert v == (3, 9), sys.version'
+          python3 -c 'import sys; v = sys.version_info[:2]; assert v == (3, 12), sys.version'
           python3 -I deploy/wfp/tests/fresh-test.py
           python3 -I deploy/wfp/tests/tempdir-clean-test.py
           deploy/wfp/tests/r2-temp-test.sh
