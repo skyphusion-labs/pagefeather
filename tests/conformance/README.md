@@ -111,6 +111,10 @@ Basic auth on b2 needs #761 (`PHP_AUTH_USER` was never set). Until that fix merg
 - Gutenberg's collaboration specs. They need a WebSocket provider.
 - The specs in `exclude/`.
 
+## Gutenberg install on a VPS
+
+Gutenberg 23.6 runs `npm run build`. Its `build.mjs` runs parallel `tsc --build` when `CI` is unset. On a vc2-4c-8gb box, after `install wp` and `install wc`, that step can run out of memory and print only `TypeScript compilation failed`. `vps-run.sh install gb` sets `CI=true` so upstream builds types one project at a time, cleans packages, retries up to three times, and tails the build log on failure.
+
 ## Tests
 
     tests/conformance/prepare-content-test.sh
