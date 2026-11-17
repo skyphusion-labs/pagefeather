@@ -9,6 +9,8 @@
 . "$(dirname "${BASH_SOURCE[0]}")/fault-inject.sh"
 # shellcheck source=SCRIPTDIR/page-cache-ttl.sh
 . "$(dirname "${BASH_SOURCE[0]}")/page-cache-ttl.sh"
+# shellcheck source=SCRIPTDIR/purge-budget/budget.sh
+. "$(dirname "${BASH_SOURCE[0]}")/purge-budget/budget.sh"
 # shellcheck source=SCRIPTDIR/pdf-invoice.sh
 . "$(dirname "${BASH_SOURCE[0]}")/pdf-invoice.sh"
 render_conf() {
@@ -87,6 +89,8 @@ render_conf() {
   if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
     [ "$VARIANT" != b-do ] || { echo '[[d1_databases]]'; echo 'binding = "DB"'; echo "database_name = \"$(out d1_name)\""; echo "database_id = \"$(out d1_id)\""; }
     echo '[[durable_objects.bindings]]'; echo 'name = "PHP_RUNTIME"'; echo 'class_name = "PhpRuntime"'
+    # #699 part B: the account's purge budget, when deploy.sh found it present (purge_budget_decide). Unset: nothing.
+    purge_budget_toml_lines
     echo '[[migrations]]'; echo 'tag = "v1"'; echo 'new_sqlite_classes = ["PhpRuntime"]'
   else
     echo '[[hyperdrive]]'; echo 'binding = "HYPERDRIVE"'; echo "id = \"$(out hyperdrive_id)\""

@@ -231,6 +231,14 @@ jobs:
           node --test spikes/b2-wordpress/tests/purge-why.test.mjs
           # #699: a refused purge stays pending with a back-off, and expires only after TTL + stale-while-revalidate.
           node --test spikes/b2-wordpress/tests/purge-state.test.mjs
+          # #699 part B: the account purge budget. Its rules, the site's fail-open client, the alarm's shape, the deploy
+          # side (presence, the binding, who still binds it), and the load-test driver against a stub.
+          node --test deploy/purge-budget/tests/budget-state.test.mjs
+          node --test spikes/b2-wordpress/tests/purge-budget-client.test.mjs
+          node --test spikes/b2-wordpress/tests/purge-budget-wiring.test.mjs
+          bash deploy/purge-budget/tests/budget-sh-test.sh
+          python3 -I deploy/purge-budget/tests/binders-test.py
+          python3 -I tests/load/purge-pressure-test.py
           bash deploy/wfp/tests/page-cache-product-test.sh
       - name: b-dosql a memory reset is not an overload (issue #335)
         # object-error.mjs: an isolate memory reset answers x-isolate-reset, never x-overloaded.

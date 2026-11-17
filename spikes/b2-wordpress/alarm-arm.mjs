@@ -28,7 +28,7 @@ export function shouldArmAlarm(at, now, staleMs = STALE_MS) {
 // only when it is due. Every alarm this object sets goes through setAlarmRecorded, which also stores
 // {at, setAt, by} under ALARM_SET_KEY (/_purgestate reports it; deploy/wfp/alarm-record.py prints it).
 // by: tick (the alarm run arms the next), request, request-stale (a request armed a missing or stale one),
-// purge-request, purge-retry.
+// purge-request, purge-retry, purge-budget (a purge waits on the account budget).
 export const ALARM_SET_KEY = 'alarm-set';
 export async function setAlarmRecorded(storage, at, now, by) {
 	await storage.setAlarm(at);
