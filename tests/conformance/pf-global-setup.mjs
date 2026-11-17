@@ -10,10 +10,17 @@ export default async function pfGlobalSetup( config ) {
 	if ( ! rel ) {
 		throw new Error( 'pf-global-setup: PF_CONFORMANCE_UPSTREAM_GLOBAL_SETUP is not set' );
 	}
-	const mod = await import( pathToFileURL( path.resolve( rel ) ).href );
-	const upstream = mod.default;
+	const target = path.isAbsolute( rel ) ? rel : path.resolve( rel );
+	const mod = await import( pathToFileURL( target ).href );
+	const upstream = ( typeof mod.default === 'function' && mod.default ) || ( typeof mod.default?.default === 'function' && mod.default.default ) || mod;
 	if ( typeof upstream !== 'function' ) {
-		throw new Error( 'pf-global-setup: upstream default export is not a function: ' + rel );
+		throw new Error(
+			'pf-global-setup: upstream default export is not a function: ' +
+				rel +
+				' (typeof default ' +
+				typeof mod.default +
+				')'
+		);
 	}
 	await upstream( config );
 }

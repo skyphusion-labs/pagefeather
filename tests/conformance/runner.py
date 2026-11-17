@@ -299,7 +299,7 @@ def read_excludes(suite):
     return out
 
 
-def config_text(suite, run_dir):
+def config_text(suite, run_dir, suite_dir):
     ign = [p for p, _ in read_excludes(suite)]
     rep = os.path.join(os.path.abspath(run_dir), "report.json")
     lines = ["// Written by tests/conformance/runner.py config (#759). Do not edit; re-run it.",
@@ -343,13 +343,17 @@ def config_text(suite, run_dir):
     else:
         pf_setup = os.path.join(HERE, "pf-global-setup.mjs")
         assert_login = os.path.join(HERE, "assert-login.mjs")
-        upstream_setup = "./config/global-setup.js" if suite == "wp" else "./config/global-setup.ts"
-        # Playwright accepts only string paths in globalSetup. pf-global-setup.mjs applies storageState
-        # (upstream reads projects[0].use only) then dynamic-imports the upstream module (#759).
-        lines += ["process.env.PF_CONFORMANCE_UPSTREAM_GLOBAL_SETUP = %s;" % json.dumps(upstream_setup),
-                  "config.globalSetup = [ %s, %s ];" % (json.dumps(pf_setup), json.dumps(assert_login)),
-                  "config.testIgnore = ignore;",
-                  "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: ignore } ) );"]
+        upstream_name = "global-setup.js" if suite == "wp" else "global-setup.ts"
+        upstream_abs = os.path.join(os.path.abspath(suite_dir), "config", upstream_name)
+        # Upstream global-setup.js reads projects[0].use, not config.use (#759). Force baseURL on every project.
+        lines += [
+            "const url = (process.env.BASE_URL || process.env.WP_BASE_URL || '').replace(/\\/+$/, '') + '/';",
+            "config.use = { ...(config.use || {}), baseURL: url };",
+            "process.env.PF_CONFORMANCE_UPSTREAM_GLOBAL_SETUP = %s;" % json.dumps(upstream_abs),
+            "config.globalSetup = [ %s, %s ];" % (json.dumps(pf_setup), json.dumps(assert_login)),
+            "config.testIgnore = ignore;",
+            "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: ignore, use: { ...p.use, baseURL: url } } ) );",
+        ]
     lines.append("export default config;")
     return "\n".join(lines) + "\n"
 
@@ -360,7 +364,7 @@ def cmd_config(a):
         raise Stop("no upstream config %s" % up)
     p = os.path.join(a.suite_dir, "pf-conformance.config.mjs")
     with open(p, "w") as f:
-        f.write(config_text(a.suite, a.run_dir))
+        f.write(config_text(a.suite, a.run_dir, a.suite_dir))
     print(p)
 
 

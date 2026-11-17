@@ -412,7 +412,7 @@ def main():
         for sn in ("wp", "gb"):
             txt = open(os.path.join(t, "cfg-" + sn, "pf-conformance.config.mjs")).read()
             want_assert = json.dumps(os.path.join(HERE, "assert-login.mjs"))
-            want_upstream = json.dumps("./config/global-setup.js" if sn == "wp" else "./config/global-setup.ts")
+            want_upstream_suffix = os.path.join("config", "global-setup.js" if sn == "wp" else "global-setup.ts")
             gs = re.search(r"config\.globalSetup = (\[[^\]]+\])", txt)
             if gs:
                 try:
@@ -424,7 +424,8 @@ def main():
             ok("config %s: globalSetup is string paths only" % sn) if paths and all(isinstance(p, str) for p in paths) else bad("config %s: globalSetup is not string-only" % sn)
             ok("config %s: pf-global-setup then assert-login" % sn) if paths == [os.path.join(HERE, "pf-global-setup.mjs"), os.path.join(HERE, "assert-login.mjs")] else bad("config %s: globalSetup order wrong: %r" % (sn, paths))
             ok("config %s: no inline setup function in config" % sn) if "async function pfGlobalSetup" not in txt and "pfGlobalSetup" not in txt.replace(pf_setup, "") else bad("config %s: inline globalSetup function" % sn)
-            ok("config %s: upstream global-setup env" % sn) if ("PF_CONFORMANCE_UPSTREAM_GLOBAL_SETUP = %s" % want_upstream) in txt else bad("config %s: upstream env missing" % sn)
+            m = re.search(r'PF_CONFORMANCE_UPSTREAM_GLOBAL_SETUP = "([^"]+)"', txt)
+            ok("config %s: upstream global-setup is an absolute suite path" % sn) if m and m.group(1).endswith(want_upstream_suffix) and os.path.isabs(m.group(1)) else bad("config %s: upstream env missing or relative" % sn)
         if node:
             r = subprocess.run([node, "--check", os.path.join(HERE, "assert-login.mjs")], capture_output=True, text=True)
             ok("assert-login.mjs: node --check") if r.returncode == 0 else bad("assert-login.mjs: %s" % r.stderr.strip()[:120])

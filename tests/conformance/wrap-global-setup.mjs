@@ -5,11 +5,16 @@ export function applyStorageStatePath( config ) {
 		typeof config.use?.storageState === 'string'
 			? config.use.storageState
 			: process.env.STORAGE_STATE_PATH;
-	if ( ! statePath ) {
+	const baseURL = config.use?.baseURL || process.env.WP_BASE_URL || process.env.BASE_URL;
+	const usePatch = {
+		...( statePath ? { storageState: statePath } : {} ),
+		...( baseURL ? { baseURL } : {} ),
+	};
+	if ( ! Object.keys( usePatch ).length ) {
 		return;
 	}
-	config.use = { ...config.use, storageState: statePath };
+	config.use = { ...config.use, ...usePatch };
 	if ( config.projects?.[ 0 ] ) {
-		config.projects[ 0 ].use = { ...config.projects[ 0 ].use, storageState: statePath };
+		config.projects[ 0 ].use = { ...config.projects[ 0 ].use, ...usePatch };
 	}
 }
