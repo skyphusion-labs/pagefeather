@@ -225,6 +225,14 @@ def wc_verify(site, user, password):
     return cuser, cust
 
 
+def conformance_artifact_paths(run_dir):
+    """Absolute paths under <run-dir>/artifacts, not upstream cwd (conf759: leftover /root)."""
+    run_abs = os.path.abspath(run_dir)
+    artifacts = os.path.join(run_abs, "artifacts")
+    storage = os.path.join(artifacts, "storage-states", "admin.json")
+    return artifacts, storage
+
+
 def write_env(run_dir, pairs):
     os.makedirs(run_dir, exist_ok=True)
     p = os.path.join(run_dir, "env")
@@ -254,6 +262,10 @@ def cmd_prepare(a):
         pairs += [("WP_PASSWORD", password)]
     pairs += [("PF_CONFORMANCE_SUITE", a.suite), ("PF_CONFORMANCE_CACHE", a.cache),
               ("PF_CONFORMANCE_CACHE_SEEN", ",".join(cache))]
+    if a.suite in ("wp", "gb"):
+        artifacts, storage = conformance_artifact_paths(a.run_dir)
+        os.makedirs(os.path.dirname(storage), exist_ok=True)
+        pairs += [("WP_ARTIFACTS_PATH", artifacts), ("STORAGE_STATE_PATH", storage)]
     p = write_env(a.run_dir, pairs)
     say("wrote %s (mode 600; it holds the passwords, never print it)" % p)
 
@@ -299,11 +311,17 @@ def read_excludes(suite):
     return out
 
 
-def config_text(suite, run_dir):
+def config_text(suite, run_dir, suite_dir):
     ign = [p for p, _ in read_excludes(suite)]
     rep = os.path.join(os.path.abspath(run_dir), "report.json")
-    lines = ["// Written by tests/conformance/runner.py config (#759). Do not edit; re-run it.",
-             "import base from './%s';" % UPSTREAM_CONFIG[suite]]
+    artifacts, storage = conformance_artifact_paths(run_dir)
+    lines = ["// Written by tests/conformance/runner.py config (#759). Do not edit; re-run it."]
+    if suite in ("wp", "gb"):
+        lines += [
+            "process.env.WP_ARTIFACTS_PATH = %s;" % json.dumps(artifacts),
+            "process.env.STORAGE_STATE_PATH = %s;" % json.dumps(storage),
+        ]
+    lines.append("import base from './%s';" % UPSTREAM_CONFIG[suite])
     if suite in ("wc", "wc-api", "wc-cpt"):
         lines.append("import { coreSetupProjects } from './%s';" % UPSTREAM_CONFIG[suite])
     lines += ["const ignore = %s;" % json.dumps(ign),
@@ -343,13 +361,18 @@ def config_text(suite, run_dir):
     else:
         pf_setup = os.path.join(HERE, "pf-global-setup.mjs")
         assert_login = os.path.join(HERE, "assert-login.mjs")
-        upstream_setup = "./config/global-setup.js" if suite == "wp" else "./config/global-setup.ts"
-        # Playwright accepts only string paths in globalSetup. pf-global-setup.mjs applies storageState
-        # (upstream reads projects[0].use only) then dynamic-imports the upstream module (#759).
-        lines += ["process.env.PF_CONFORMANCE_UPSTREAM_GLOBAL_SETUP = %s;" % json.dumps(upstream_setup),
-                  "config.globalSetup = [ %s, %s ];" % (json.dumps(pf_setup), json.dumps(assert_login)),
-                  "config.testIgnore = ignore;",
-                  "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: ignore } ) );"]
+        upstream_name = "global-setup.js" if suite == "wp" else "global-setup.ts"
+        upstream_abs = os.path.join(os.path.abspath(suite_dir), "config", upstream_name)
+        # Upstream global-setup.js reads projects[0].use, not config.use (#759). Force baseURL on every project.
+        lines += [
+            "const url = (process.env.BASE_URL || process.env.WP_BASE_URL || '').replace(/\\/+$/, '') + '/';",
+            "const state = process.env.STORAGE_STATE_PATH;",
+            "config.use = { ...(config.use || {}), baseURL: url, storageState: state };",
+            "process.env.PF_CONFORMANCE_UPSTREAM_GLOBAL_SETUP = %s;" % json.dumps(upstream_abs),
+            "config.globalSetup = [ %s, %s ];" % (json.dumps(pf_setup), json.dumps(assert_login)),
+            "config.testIgnore = ignore;",
+            "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: ignore, use: { ...p.use, baseURL: url, storageState: state } } ) );",
+        ]
     lines.append("export default config;")
     return "\n".join(lines) + "\n"
 
@@ -360,7 +383,7 @@ def cmd_config(a):
         raise Stop("no upstream config %s" % up)
     p = os.path.join(a.suite_dir, "pf-conformance.config.mjs")
     with open(p, "w") as f:
-        f.write(config_text(a.suite, a.run_dir))
+        f.write(config_text(a.suite, a.run_dir, a.suite_dir))
     print(p)
 
 
