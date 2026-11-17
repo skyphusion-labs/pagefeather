@@ -408,10 +408,23 @@ def main():
         s_, c_, a_ = max(idx('--project="site setup"'), idx("--project=site setup")), idx("runner.py check-state"), idx("--project=e2e-cpt --no-deps")
         ok("vps-run run wc-cpt: site setup, then check-state, then e2e-cpt --no-deps") if vr.returncode == 0 and 0 <= s_ < c_ < a_ else bad("vps-run wc-cpt order (rc %d, %d %d %d): %s" % (vr.returncode, s_, c_, a_, (vr.stderr or "")[:120]))
         ok("vps-run wc-cpt uses the wc checkout") if lines and any("/wc-" in l for l in lines) and not any("/wc-cpt-" in l for l in lines) else bad("vps-run wc-cpt checkout: %s" % lines[:3])
+        pf_setup = json.dumps(os.path.join(HERE, "pf-global-setup.mjs"))
         for sn in ("wp", "gb"):
             txt = open(os.path.join(t, "cfg-" + sn, "pf-conformance.config.mjs")).read()
-            want = "config.globalSetup = [ base.globalSetup, %s ]" % json.dumps(os.path.join(HERE, "assert-login.mjs"))
-            ok("config %s: the login assert runs after the upstream globalSetup" % sn) if want in txt else bad("config %s: no login assert" % sn)
+            want_assert = json.dumps(os.path.join(HERE, "assert-login.mjs"))
+            want_upstream = json.dumps("./config/global-setup.js" if sn == "wp" else "./config/global-setup.ts")
+            gs = re.search(r"config\.globalSetup = (\[[^\]]+\])", txt)
+            if gs:
+                try:
+                    paths = json.loads(gs.group(1).replace("'", '"'))
+                except json.JSONDecodeError:
+                    paths = None
+            else:
+                paths = None
+            ok("config %s: globalSetup is string paths only" % sn) if paths and all(isinstance(p, str) for p in paths) else bad("config %s: globalSetup is not string-only" % sn)
+            ok("config %s: pf-global-setup then assert-login" % sn) if paths == [os.path.join(HERE, "pf-global-setup.mjs"), os.path.join(HERE, "assert-login.mjs")] else bad("config %s: globalSetup order wrong: %r" % (sn, paths))
+            ok("config %s: no inline setup function in config" % sn) if "async function pfGlobalSetup" not in txt and "pfGlobalSetup" not in txt.replace(pf_setup, "") else bad("config %s: inline globalSetup function" % sn)
+            ok("config %s: upstream global-setup env" % sn) if ("PF_CONFORMANCE_UPSTREAM_GLOBAL_SETUP = %s" % want_upstream) in txt else bad("config %s: upstream env missing" % sn)
         if node:
             r = subprocess.run([node, "--check", os.path.join(HERE, "assert-login.mjs")], capture_output=True, text=True)
             ok("assert-login.mjs: node --check") if r.returncode == 0 else bad("assert-login.mjs: %s" % r.stderr.strip()[:120])

@@ -341,8 +341,13 @@ def config_text(suite, run_dir):
         lines += ["config.projects = [ ...setup,",
                   "  { name: 'api-pf', testMatch: [ '**/api-tests/**' ], testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % json.dumps(WC_GREP_INVERT)]
     else:
+        pf_setup = os.path.join(HERE, "pf-global-setup.mjs")
         assert_login = os.path.join(HERE, "assert-login.mjs")
-        lines += ["config.globalSetup = [ base.globalSetup, %s ].filter( Boolean );" % json.dumps(assert_login),
+        upstream_setup = "./config/global-setup.js" if suite == "wp" else "./config/global-setup.ts"
+        # Playwright accepts only string paths in globalSetup. pf-global-setup.mjs applies storageState
+        # (upstream reads projects[0].use only) then dynamic-imports the upstream module (#759).
+        lines += ["process.env.PF_CONFORMANCE_UPSTREAM_GLOBAL_SETUP = %s;" % json.dumps(upstream_setup),
+                  "config.globalSetup = [ %s, %s ];" % (json.dumps(pf_setup), json.dumps(assert_login)),
                   "config.testIgnore = ignore;",
                   "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: ignore } ) );"]
     lines.append("export default config;")
