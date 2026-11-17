@@ -301,18 +301,24 @@ def read_excludes(suite):
 
 
 def global_setup_mjs_text(suite):
-    upstream_setup = "./config/global-setup.js" if suite == "wp" else "./config/global-setup.ts"
     wrap = os.path.join(HERE, "wrap-global-setup.mjs")
+    if suite == "wp":
+        header = "import { createRequire } from 'node:module';\nconst require = createRequire( import.meta.url );\n"
+        call = "const upstreamMod = require( './config/global-setup.js' );\n  const upstreamGlobalSetup = upstreamMod.default ?? upstreamMod;"
+    else:
+        header = ""
+        call = "const upstreamMod = await import( './config/global-setup.ts' );\n  const upstreamGlobalSetup = upstreamMod.default;"
     return (
         "// Written by tests/conformance/runner.py config (#759). Do not edit; re-run it.\n"
-        "import upstreamGlobalSetup from %s;\n"
         "import { applyStorageStatePath } from %s;\n"
+        "%s"
         "\n"
         "export default async function globalSetup( config ) {\n"
         "  applyStorageStatePath( config );\n"
+        "  %s\n"
         "  await upstreamGlobalSetup( config );\n"
         "}\n"
-    ) % (json.dumps(upstream_setup), json.dumps(wrap))
+    ) % (json.dumps(wrap), header, call)
 
 
 def config_text(suite, run_dir):
