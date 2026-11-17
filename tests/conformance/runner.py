@@ -299,6 +299,22 @@ def read_excludes(suite):
     return out
 
 
+
+def global_setup_mjs_text(suite):
+    upstream_setup = "./config/global-setup.js" if suite == "wp" else "./config/global-setup.ts"
+    wrap = os.path.join(HERE, "wrap-global-setup.mjs")
+    return (
+        "// Written by tests/conformance/runner.py config (#759). Do not edit; re-run it.\n"
+        "import upstreamGlobalSetup from %s;\n"
+        "import { applyStorageStatePath } from %s;\n"
+        "\n"
+        "export default async function globalSetup( config ) {\n"
+        "  applyStorageStatePath( config );\n"
+        "  await upstreamGlobalSetup( config );\n"
+        "}\n"
+    ) % (json.dumps(upstream_setup), json.dumps(wrap))
+
+
 def config_text(suite, run_dir):
     ign = [p for p, _ in read_excludes(suite)]
     rep = os.path.join(os.path.abspath(run_dir), "report.json")
@@ -342,7 +358,8 @@ def config_text(suite, run_dir):
                   "  { name: 'api-pf', testMatch: [ '**/api-tests/**' ], testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % json.dumps(WC_GREP_INVERT)]
     else:
         assert_login = os.path.join(HERE, "assert-login.mjs")
-        lines += ["config.globalSetup = [ base.globalSetup, %s ].filter( Boolean );" % json.dumps(assert_login),
+        # Playwright globalSetup accepts string module paths only, not base.globalSetup (a function).
+        lines += ["config.globalSetup = [ %s, %s ].filter( Boolean );" % (json.dumps("./pf-global-setup.mjs"), json.dumps(assert_login)),
                   "config.testIgnore = ignore;",
                   "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: ignore } ) );"]
     lines.append("export default config;")
@@ -357,6 +374,11 @@ def cmd_config(a):
     with open(p, "w") as f:
         f.write(config_text(a.suite, a.run_dir))
     print(p)
+    if a.suite in ("wp", "gb"):
+        gs = os.path.join(a.suite_dir, "pf-global-setup.mjs")
+        with open(gs, "w") as f:
+            f.write(global_setup_mjs_text(a.suite))
+        print(gs)
 
 
 def walk(suite, path=()):

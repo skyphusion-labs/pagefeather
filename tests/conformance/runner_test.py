@@ -410,8 +410,13 @@ def main():
         ok("vps-run wc-cpt uses the wc checkout") if lines and any("/wc-" in l for l in lines) and not any("/wc-cpt-" in l for l in lines) else bad("vps-run wc-cpt checkout: %s" % lines[:3])
         for sn in ("wp", "gb"):
             txt = open(os.path.join(t, "cfg-" + sn, "pf-conformance.config.mjs")).read()
-            want = "config.globalSetup = [ base.globalSetup, %s ]" % json.dumps(os.path.join(HERE, "assert-login.mjs"))
-            ok("config %s: the login assert runs after the upstream globalSetup" % sn) if want in txt else bad("config %s: no login assert" % sn)
+            gs = open(os.path.join(t, "cfg-" + sn, "pf-global-setup.mjs")).read()
+            want_assert = json.dumps(os.path.join(HERE, "assert-login.mjs"))
+            ok("config %s: login assert after pf-global-setup.mjs" % sn) if json.dumps("./pf-global-setup.mjs") in txt and want_assert in txt else bad("config %s: no login assert" % sn)
+            ok("config %s: pf-global-setup applies storageState before upstream auth" % sn) if "applyStorageStatePath" in gs and "upstreamGlobalSetup" in gs else bad("config %s: global-setup wrap missing" % sn)
+            if node:
+                r = subprocess.run([node, "--check", os.path.join(t, "cfg-" + sn, "pf-global-setup.mjs")], capture_output=True, text=True)
+                ok("config %s: pf-global-setup.mjs node --check" % sn) if r.returncode == 0 else bad("config %s: pf-global-setup.mjs: %s" % (sn, r.stderr.strip()[:120]))
         if node:
             r = subprocess.run([node, "--check", os.path.join(HERE, "assert-login.mjs")], capture_output=True, text=True)
             ok("assert-login.mjs: node --check") if r.returncode == 0 else bad("assert-login.mjs: %s" % r.stderr.strip()[:120])
