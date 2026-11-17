@@ -53,6 +53,7 @@ import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBus
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
 import { PURGE_GAP_MS, NO_CACHE_API, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
+import { budgetAcquire, budgetRefused } from './purge-budget-client.mjs';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
@@ -2999,7 +3000,16 @@ export class PhpRuntime extends DurableObject {
 		// #699: purge-state.mjs. A refused purge stays pending and is retried with a back-off (12, 24, 48 s) until no
 		// cached copy can still be served (PAGE_CACHE_TTL + stale-while-revalidate, purgeWindowMs); then it expires.
 		const due = onDue(await this.ctx.storage.get(PURGE_STATE_KEY), Date.now(), purgeWindowMs(this.env));
-		if (due.action === 'expire') {
+		// #699 part B: before a send, ask the account's purge budget (pf-purge-budget) for a token. Fail-open: with no
+		// binding, or a budget that cannot answer, the send goes ahead as part A (purge-budget-client.mjs).
+		const budgetSite = due.action === 'send' ? siteHost(this.env.SITE_ORIGIN) : '';
+		const gate = due.action === 'send' ? await budgetAcquire(this.env, budgetSite) : null;
+		if (gate && gate.via === 'budget' && !gate.grant) {
+			// Not now: the stored state is untouched (still pending, no attempt counted); come back when the budget says.
+			const now = Date.now();
+			await setAlarmRecorded(this.ctx.storage, gate.retryAt, now, 'purge-budget');
+			console.log(JSON.stringify({ m: 'purge-budget', grant: false, waitMs: gate.retryAt - now, where: 'object' }));
+		} else if (due.action === 'expire') {
 			await this.ctx.storage.put(PURGE_STATE_KEY, due.st);
 			// Not an m: purge line: doctor's guard counts every m: purge line as asked or sent (#688).
 			console.log(JSON.stringify({ m: 'purge-expired', expired: due.st.expired, where: 'object' }));
@@ -3019,12 +3029,14 @@ export class PhpRuntime extends DurableObject {
 			const now = Date.now();
 			// A change during the purge may have asked again: onResult reads the current state.
 			const res = onResult(await this.ctx.storage.get(PURGE_STATE_KEY), now, { ok, errors, error }, due.covered);
-			const sent = { t: due.st.lastSent, ok, errors, error, attempt: due.covered.attempts + 1, ageMs: due.st.lastSent - due.covered.firstAsked, outcome: res.outcome, retryMs: res.alarmAt != null ? res.alarmAt - now : 0 };
+			const sent = { t: due.st.lastSent, ok, errors, error, attempt: due.covered.attempts + 1, ageMs: due.st.lastSent - due.covered.firstAsked, outcome: res.outcome, retryMs: res.alarmAt != null ? res.alarmAt - now : 0, budget: gate ? gate.via : null };
 			console.log(JSON.stringify({ m: 'purge', sent: 1, ...sent, where: 'object' }));
 			// The last 20 sends, for /_purgestate: wrangler tail does not show alarm runs.
 			res.st.sends = [...(res.st.sends || []), sent].slice(-20);
 			await this.ctx.storage.put(PURGE_STATE_KEY, res.st);
 			if (res.alarmAt != null) await setAlarmRecorded(this.ctx.storage, res.alarmAt, now, 'purge-retry');
+			// Refused although the budget granted it: another user spent the account bucket. The budget empties itself.
+			if (res.outcome === 'refused' && gate && gate.via === 'budget') await budgetRefused(this.env, budgetSite);
 		}
 		// Keep the cron cadence unless the purge logic set a sooner retry alarm.
 		await rearm(this.ctx.storage, Date.now(), Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
@@ -4219,6 +4231,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			if (!spikeOk) delete headers['x-oc-off'];
 			// The memory trace and its switches (#434) reach PHP only with a valid spike token.
 			if (!spikeOk) { delete headers['x-mem-trace']; delete headers['x-mem-off']; }
+			if (!spikeOk) delete headers['x-pf-wc-defer']; // #768: the deferral's operator A/B switch (php/wc-route-defer.php)
 			let body;
 			if (env.MEDIA && isMediaUpload(req, url) && Number(req.headers.get('content-length') || 0) > STAGE_MIN_BYTES) {
 				const staged = await stageUpload(req, env);

@@ -8,7 +8,9 @@ For each site <s>:
 - the user Worker site-<s> (GET .../dispatch/namespaces/<ns>/scripts/site-<s>/bindings)
   may bind only: its own bucket (r2_bucket wp-wfp-<s>-media), its own
   Durable Object class (durable_object_namespace PhpRuntime, with no
-  script_name or script_name site-<s>), images, assets (named ASSETS, and
+  script_name or script_name site-<s>), the account purge budget and ONLY it
+  (durable_object_namespace named PURGE_BUDGET, class PurgeBudget, script_name
+  pf-purge-budget, #699 part B), images, assets (named ASSETS, and
   only on an OPCACHE_SPLIT=1 or OPCACHE_REMOTE=1 build, #412, #563), plain_text vars, and
   the secrets WP_SALT and SPIKE_TOKEN (secret_text), TURNSTILE_SECRET when Turnstile is
   wired (#340), and SNAPSHOT_TOKEN, the key of its scheduled snapshot (#533). It may ALSO bind the
@@ -35,6 +37,7 @@ types only, never a value) and exits 1 on any violation.
 import json, os, sys, urllib.error, urllib.request
 
 ENV = os.environ
+PURGE_BUDGET_SCRIPT = "pf-purge-budget"  # #699 part B: deploy/purge-budget, one per account
 USER_OK = {"r2_bucket", "durable_object_namespace", "images", "assets", "send_email", "plain_text", "secret_text", "browser", "ai", "kv_namespace", "queue", "analytics_engine", "vectorize"}
 # TURNSTILE_SECRET: the site's own Turnstile secret, set only when the run has it (#340).
 SECRETS_OK = {"WP_SALT", "SPIKE_TOKEN", "TURNSTILE_SECRET", "SNAPSHOT_TOKEN", "INVOICE_TOKEN"}  # SNAPSHOT_TOKEN: #533; INVOICE_TOKEN: #765 (PDF_INVOICE=on)
@@ -69,7 +72,10 @@ def check_user(s, bs):
             bad.append("site-%s binds assets as %s, not ASSETS" % (s, n))
         elif t == "r2_bucket" and b.get("bucket_name") != "wp-wfp-%s-media" % s:
             bad.append("site-%s binds the bucket %s, not its own" % (s, b.get("bucket_name")))
-        elif t == "durable_object_namespace" and (b.get("class_name") != "PhpRuntime" or b.get("script_name") not in (None, "", "site-" + s)):
+        elif t == "durable_object_namespace" and not (
+            (b.get("class_name") == "PhpRuntime" and b.get("script_name") in (None, "", "site-" + s))
+            # #699 part B: the account's purge budget, exactly this binding and no other class of that script.
+            or (n == "PURGE_BUDGET" and b.get("class_name") == "PurgeBudget" and b.get("script_name") == PURGE_BUDGET_SCRIPT)):
             bad.append("site-%s binds the object class %s of script %s, not its own" % (s, b.get("class_name"), b.get("script_name")))
         elif t == "secret_text" and n not in SECRETS_OK:
             bad.append("site-%s has an unexpected secret %s" % (s, n))

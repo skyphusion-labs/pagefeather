@@ -9,6 +9,8 @@
 . "$(dirname "${BASH_SOURCE[0]}")/fault-inject.sh"
 # shellcheck source=SCRIPTDIR/page-cache-ttl.sh
 . "$(dirname "${BASH_SOURCE[0]}")/page-cache-ttl.sh"
+# shellcheck source=SCRIPTDIR/purge-budget/budget.sh
+. "$(dirname "${BASH_SOURCE[0]}")/purge-budget/budget.sh"
 # shellcheck source=SCRIPTDIR/pdf-invoice.sh
 . "$(dirname "${BASH_SOURCE[0]}")/pdf-invoice.sh"
 render_conf() {
@@ -24,8 +26,9 @@ render_conf() {
   # (spikes/b2-wordpress/mail-from.mjs). A workers.dev host sends nothing.
   SITE_ORIGIN="$SITE_ORIGIN" MAIL_FROM="${MAIL_FROM:-}" node "$APP/mail-from.mjs" --binding
   echo '[assets]'; echo 'directory = "build/public"'; echo 'binding = "ASSETS"'; echo 'not_found_handling = "none"'
-  # #563: a remote build serves its packs from the Worker only (a-settings.sh, #412).
-  [ "$VARIANT" != a ] || a_assets_first
+  # #563: a remote build serves its packs from the Worker only (a-settings.sh, #412). #598: b-dosql too (on by default,
+  # deploy/lib/remote-packs.sh; deploy.sh applies remote_pack_defaults before this render).
+  [ "$VARIANT" != a ] && [ "$VARIANT" != b-dosql ] || a_assets_first
   echo '[cache]'; echo 'enabled = true'
   # Only the Pages entrypoint is cached; the default one is the gateway (issue #63).
   echo '[exports.default]'; echo 'type = "worker"'; echo '[exports.default.cache]'; echo 'enabled = false'
@@ -47,6 +50,8 @@ render_conf() {
   if [ "$VARIANT" = a ]; then SITE_ORIGIN="$SITE_ORIGIN" OBJECT_CACHE_VERSIONS="${OBJECT_CACHE_VERSIONS:-1}" WOO_HPOS_CACHE="${WOO_HPOS_CACHE:-on}" node "$ROOT/deploy/provision/a-vars-toml.mjs" vars || return 1; fi
   # #394: OPCACHE_REMOTE, SITE_REMOTE, RECYCLE_WASM_MIB (a-settings.sh). Nothing when unset. #646: PHP_OVERFLOW.
   [ "$VARIANT" != a ] || a_vars
+  # #598: b-dosql's two pack vars, from the ONE rule deploy/wfp renders them with (the config hash follows the flags).
+  if [ "$VARIANT" = b-dosql ]; then opcache_remote_var || return 1; site_remote_var || return 1; fi
   [ "$VARIANT" != a ] || a_overflow_vars
   # WOO_EXTRAS (#667): off only. Checked above, before any step. Unset writes nothing.
   [ -z "${WOO_EXTRAS:-}" ] || echo 'WOO_EXTRAS = "off"'
@@ -84,6 +89,8 @@ render_conf() {
   if [ "$VARIANT" = b-do ] || [ "$VARIANT" = b-dosql ]; then
     [ "$VARIANT" != b-do ] || { echo '[[d1_databases]]'; echo 'binding = "DB"'; echo "database_name = \"$(out d1_name)\""; echo "database_id = \"$(out d1_id)\""; }
     echo '[[durable_objects.bindings]]'; echo 'name = "PHP_RUNTIME"'; echo 'class_name = "PhpRuntime"'
+    # #699 part B: the account's purge budget, when deploy.sh found it present (purge_budget_decide). Unset: nothing.
+    purge_budget_toml_lines
     echo '[[migrations]]'; echo 'tag = "v1"'; echo 'new_sqlite_classes = ["PhpRuntime"]'
   else
     echo '[[hyperdrive]]'; echo 'binding = "HYPERDRIVE"'; echo "id = \"$(out hyperdrive_id)\""

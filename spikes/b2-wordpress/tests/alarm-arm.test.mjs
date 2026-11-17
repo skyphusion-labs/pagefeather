@@ -92,7 +92,7 @@ test('rearm: a future or just-due alarm is untouched', async () => {
 test('index.js: every alarm it sets is recorded (no bare storage.setAlarm), and /_purgestate reports the record', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.equal(/\.storage\.setAlarm\(/.test(src), false, 'no bare this.ctx.storage.setAlarm( in index.js');
-	assert.equal((src.match(/await setAlarmRecorded\(this\.ctx\.storage/g) || []).length, 2, 'the purge request and the purge retry');
+	assert.equal((src.match(/await setAlarmRecorded\(this\.ctx\.storage/g) || []).length, 3, 'the purge request, the purge retry, and the budget wait');
 	const ps = src.slice(src.indexOf("url.pathname === '/_purgestate'"), src.indexOf("url.pathname === '/_purgestate'") + 600);
 	assert.ok(/alarmSet: \(await this\.ctx\.storage\.get\(ALARM_SET_KEY\)\) \|\| null/.test(ps), '/_purgestate reports alarmSet');
 });

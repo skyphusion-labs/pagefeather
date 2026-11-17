@@ -71,7 +71,8 @@ try:
             elif k == "r2_buckets":
                 out += [{"type": "r2_bucket", "name": b["binding"], "bucket_name": b["bucket_name"]} for b in v]
             elif k == "durable_objects":
-                out += [{"type": "durable_object_namespace", "name": b["name"], "class_name": b["class_name"]} for b in v["bindings"]]
+                # script_name too, as the API reads it back (#699 part B binds a class of pf-purge-budget).
+                out += [dict({"type": "durable_object_namespace", "name": b["name"], "class_name": b["class_name"]}, **({"script_name": b["script_name"]} if "script_name" in b else {})) for b in v["bindings"]]
             elif k == "images":
                 out.append({"type": "images", "name": v["binding"]})
             elif k == "assets":
@@ -138,6 +139,7 @@ try:
         ("OPCACHE_SPLIT=1 (the ASSETS binding, #412)", {"OPCACHE_SPLIT": "1"}),
         ("WP_VECTORIZE_SEARCH=1 (AI and the search index, #330)", {"WP_VECTORIZE_SEARCH": "1"}),
         ("Turnstile on (#340)", {"TURNSTILE_SITEKEY": "0x4AAAAAAAtestkey", "TURNSTILE_SECRET": "x"}),
+        ("the account purge budget bound (PURGE_BUDGET_BIND=1, #699 part B)", {"PURGE_BUDGET_BIND": "1"}),
     ]
     disp_conf = tomllib.loads(lib('render_site_dispatcher %s %s' % (SITE, KV)))
     disp, unk_d = to_api(disp_conf, secret_names("dispatcher_secrets_json"))
@@ -175,6 +177,16 @@ try:
     ]:
         rc, out = audit(user0, d)
         check("#605 control, refused: %s on the dispatcher" % name, rc == 1 and "DISPATCH_PERF_LOG" in out.upper(), out[-200:])
+    # #699 part B: the bound render REALLY carries the budget binding (so its pass above is not vacuous), the default
+    # render does not, and a budget class of another script still fails the audit (the control).
+    bound, _ = to_api(tomllib.loads(lib('render_user %s https://wp-%s.sub.workers.dev' % (SITE, SITE), {"PURGE_BUDGET_BIND": "1"})), secret_names("site_secrets_json"))
+    plain, _ = to_api(tomllib.loads(lib('render_user %s https://wp-%s.sub.workers.dev' % (SITE, SITE))), secret_names("site_secrets_json"))
+    want = {"type": "durable_object_namespace", "name": "PURGE_BUDGET", "class_name": "PurgeBudget", "script_name": "pf-purge-budget"}
+    check("PURGE_BUDGET_BIND=1: the render carries exactly the budget binding", want in bound, [b for b in bound if b.get("type") == "durable_object_namespace"])
+    check("the default render carries no budget binding", not any(b.get("name") == "PURGE_BUDGET" for b in plain), "a budget binding in the default render")
+    forged = [dict(b, script_name="site-two") if b.get("name") == "PURGE_BUDGET" else b for b in bound]
+    rc, out = audit(forged, disp)
+    check("control: the budget class of ANOTHER script fails the audit", rc != 0 and "not its own" in out, out[-200:])
     # Phase B (#533, option A): the cron-only copy binds exactly what the phase A copy binds, and passes.
     cron_conf = tomllib.loads(lib('render_site_dispatcher %s %s cron-only' % (SITE, KV)))
     cron, unk_c = to_api(cron_conf, secret_names("dispatcher_secrets_json"))

@@ -53,5 +53,20 @@ log "shared: the site map and namespace $NAMESPACE"
 tfr shared destroy -input=false -auto-approve -var "namespace=$NAMESPACE" >/dev/null
 gone "namespace $NAMESPACE" "/workers/dispatch/namespaces/$NAMESPACE"
 gone "site map $KV_ID" "/storage/kv/namespaces/$KV_ID"
+# #699 part B: the account's purge budget goes only when NOTHING binds it: no site in any namespace, no deploy.sh site.
+# Checked by reading every script's bindings (binders.py), never assumed. Kept otherwise, and the reason is printed.
+log "purge budget $PURGE_BUDGET_SCRIPT (one per account, #699)"
+if [ "$(purge_budget_present)" = no ]; then
+  echo "  not there"
+else
+  set +e; binders=$(python3 -I "$ROOT/deploy/purge-budget/binders.py"); brc=$?; set -e
+  case "$brc" in
+    0)
+      (cd "$ROOT/deploy" && "$ROOT/deploy/wr" delete --name "$PURGE_BUDGET_SCRIPT" --force) > /dev/null 2>&1 || true
+      gone "purge budget $PURGE_BUDGET_SCRIPT" "/workers/scripts/$PURGE_BUDGET_SCRIPT" ;;
+    1) echo "  KEPT: still bound: $binders" ;;
+    *) echo "  KEPT: who binds it could not be read, so it is not removed: $binders" >&2 ;;
+  esac
+fi
 rm -f "$GEN"/*.toml
-echo "down: every name above is gone"
+echo "down: every name above is gone (the purge budget only when nothing binds it)"

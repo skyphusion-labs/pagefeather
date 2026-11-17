@@ -68,6 +68,7 @@ if [ "$cmd" = up ]; then
 
   log "site $s: user Worker $U in $NAMESPACE"
   CONF="$APP/wrangler.deploy.wfp-$s.toml"
+  purge_budget_decide "site $s" # #699 part B
   render_user "$s" "$ORIGIN" > "$CONF"
   tfr site output -json | site_secrets_json "$W/secrets.json"
   # WP_VECTORIZE_SEARCH (#330): the binding needs its index to exist at deploy.

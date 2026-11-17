@@ -10,7 +10,7 @@ New to this? The day-one walkthrough for an operator is [docs/operator.md](../..
 
 | | Per site `<name>` | Shared |
 | --- | --- | --- |
-| Workers | the user Worker `site-<name>` in the namespace; its dispatcher `wp-<name>` on `workers.dev` (phase A), or the one dispatcher `wp-dispatch` with a Custom Domain per site (phase B, #138) | the outbound Worker `wp-wfp-outbound` |
+| Workers | the user Worker `site-<name>` in the namespace; its dispatcher `wp-<name>` on `workers.dev` (phase A), or the one dispatcher `wp-dispatch` with a Custom Domain per site (phase B, #138) | the outbound Worker `wp-wfp-outbound`; the account's purge budget `pf-purge-budget` (#699) |
 | Data | its Durable Object and SQLite (made with the script); the media bucket `wp-wfp-<name>-media` | the site map, KV `wp-wfp-sites` |
 | Secrets | `WP_SALT`, `SPIKE_TOKEN` (script secrets), `ADMIN_PASSWORD` (Terraform output) | the operator's API token |
 | Limits | `cpuMs` and `subRequests` in its site map entry | |
@@ -35,9 +35,10 @@ export ACCOUNT_ID=...             # your Cloudflare account id. No default: ever
 1. builds `b-dosql` once (`spikes/b2-wordpress`);
 2. applies `terraform/shared` (the namespace and the site map);
 3. deploys the outbound Worker;
-4. runs `site.sh up <name>` for each site;
-5. makes the stale-entry probe `wp-probe`;
-6. runs `check.py`, which writes `results/day1-<time>.json`.
+4. deploys the account's purge budget `pf-purge-budget` when it is absent (see below);
+5. runs `site.sh up <name>` for each site;
+6. makes the stale-entry probe `wp-probe`;
+7. runs `check.py`, which writes `results/day1-<time>.json`.
 
 `site.sh up <name>` keeps the order that the site map's caching needs (KV can take 60 s or more, and it caches "absent"):
 1. the site's Terraform workspace (its bucket, its secrets, its map entry);
@@ -103,7 +104,37 @@ Two steps need a key that reaches only one site's media bucket: `site down` and 
 
 `site remove` runs `site.sh down`, then checks that every part is gone and that the workspace is deleted.
 
-`down.sh` removes every site that `site list` shows.
+`down.sh` removes every site that `site list` shows. It removes the purge budget only when nothing still binds it (below).
+
+### The account's purge budget: pf-purge-budget (#699)
+
+Workers Cache purges have Free limits per ACCOUNT: 5 a minute and a bucket of 25. Past that, Cloudflare refuses a purge (code 1134). Every site on the account shares that one bucket, across every namespace and every `deploy.sh` site. A Worker can purge only its own cache, so purges cannot be merged. They can only be scheduled.
+
+`pf-purge-budget` schedules them. It is ONE Worker per account, with one Durable Object.
+- **What a site does:** before its object sends a purge, it asks the budget for a token. The budget hands out 4 a minute, with a burst of 20, which stays under the bucket. With no token, the purge stays pending, and the site comes back when the budget says.
+- **Fair order:** sites wait first in, first out. A site gets a token once there are tokens for every site ahead of it.
+- **A refusal anyway:** another user of the account spent the bucket. The budget empties, and no site sends until it has refilled.
+- **Fail-open:** sometimes the budget cannot answer: it is absent, it errs, or it is silent for 2 s. Then the site purges by its own rules. Those keep a refused purge and retry it (#699 part A). A site never waits on the budget for more than 60 s at a time.
+- **The binding:** `PURGE_BUDGET`, class `PurgeBudget`, `script_name = "pf-purge-budget"`. `bindings.py` allows exactly that, and no other class of that script.
+
+Each deploy says which way a site went, for example:
+
+    site one: purge budget: bound to pf-purge-budget (the account's, #699)
+    site one: purge budget: none on this account; the site keeps part A's own rules (#699)
+    site one: purge budget: its presence could NOT be read; deploying WITHOUT it, part A's rules (fail-open, #699)
+
+The binding is read on every `site add`, `site update` and `deploy.sh` run. It is not a recorded setting. `PURGE_BUDGET_BIND=0` deploys a site without it.
+
+- **`up.sh`** deploys `pf-purge-budget` when it is absent, then reads it back. A present one is left as it is: its state is the account's.
+- **`down.sh`** removes it only when nothing binds it. `deploy/purge-budget/binders.py` reads every script's bindings, in every namespace and among the account's scripts, to check. A site that binds it, or a script that cannot be read, keeps it, and the output says why.
+- **A `deploy.sh` site** (b-dosql) binds it when it is present, the same way.
+
+The code is in `deploy/purge-budget/`. Its tests run in CI:
+- the rules: `budget-state.test.mjs`;
+- the presence and the binding: `budget-sh-test.sh`;
+- who still binds it: `binders-test.py`;
+- the site's side: `spikes/b2-wordpress/tests/purge-budget-client.test.mjs`.
+ The live proof is #699's two-site load test (`tests/load/purge_pressure.py`).
 
 **Isolation proof (live):** `isolation.sh`, after `up.sh` with the sites `one` and `two`:
 1. it seeds a known object in both buckets, then snapshots both sites (`snapshot.py`);

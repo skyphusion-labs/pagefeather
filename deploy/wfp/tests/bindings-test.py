@@ -81,6 +81,13 @@ cases = [
     ("the site binds assets under another name", mod(GOOD_USER, None, type="assets", name="STATIC"), GOOD_DISP, 1, "not ASSETS"),
     ("the site binds another site's bucket", mod(GOOD_USER, 0, bucket_name="wp-wfp-two-media"), GOOD_DISP, 1, "not its own"),
     ("the site binds another script's object class", mod(GOOD_USER, 1, script_name="site-two"), GOOD_DISP, 1, "not its own"),
+    # #699 part B: the account purge budget, EXACTLY: PURGE_BUDGET, class PurgeBudget, script pf-purge-budget.
+    ("the site binds the account purge budget (PURGE_BUDGET, PurgeBudget, pf-purge-budget) is allowed", mod(GOOD_USER, None, type="durable_object_namespace", name="PURGE_BUDGET", class_name="PurgeBudget", script_name="pf-purge-budget"), GOOD_DISP, 0, None),
+    ("the purge budget under another name", mod(GOOD_USER, None, type="durable_object_namespace", name="BUDGET", class_name="PurgeBudget", script_name="pf-purge-budget"), GOOD_DISP, 1, "not its own"),
+    ("the purge budget class of another script", mod(GOOD_USER, None, type="durable_object_namespace", name="PURGE_BUDGET", class_name="PurgeBudget", script_name="site-two"), GOOD_DISP, 1, "not its own"),
+    ("the purge budget with no script_name (a class of its own)", mod(GOOD_USER, None, type="durable_object_namespace", name="PURGE_BUDGET", class_name="PurgeBudget"), GOOD_DISP, 1, "not its own"),
+    ("another class of pf-purge-budget", mod(GOOD_USER, None, type="durable_object_namespace", name="PURGE_BUDGET", class_name="Other", script_name="pf-purge-budget"), GOOD_DISP, 1, "not its own"),
+    ("PhpRuntime of pf-purge-budget", mod(GOOD_USER, None, type="durable_object_namespace", name="PHP_RUNTIME2", class_name="PhpRuntime", script_name="pf-purge-budget"), GOOD_DISP, 1, "not its own"),
     ("the site binds a FOREIGN KV namespace (SITES, not its own OC_KV)", mod(GOOD_USER, None, type="kv_namespace", name="SITES", namespace_id="kv1"), GOOD_DISP, 1, "not its own OC_KV L2"),
     ("the site binds its OWN object-cache L2 (kv_namespace OC_KV) is allowed", mod(GOOD_USER, None, type="kv_namespace", name="OC_KV", namespace_id="ockv1"), GOOD_DISP, 0, None),
     ("the site binds its OWN durable-email queue (wp-wfp-one-email) is allowed", mod(GOOD_USER, None, type="queue", name="EMAIL_QUEUE", queue_name="wp-wfp-one-email"), GOOD_DISP, 0, None),
