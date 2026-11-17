@@ -45,7 +45,8 @@
 # PHP_OVERFLOW=always (#714, a measurement arm) moves every eligible request to it.
 # Variant a, the #394 admin fixes (deploy/a-settings.sh; all off unless set): OPCACHE_A=1 primes
 # OPcache on the D1 build with no Docker (opcache-a.sh; an empty cache fails), OPCACHE_REMOTE=1 and
-# SITE_REMOTE=1 move the bundle's zips to packs under /_pf/ (#563, #569; they need OPCACHE_A=1), RECYCLE_WASM_MIB sets the
+# SITE_REMOTE=1 move the bundle's zips to packs under /_pf/ (#563, #569; on variant a they need OPCACHE_A=1; on b-dosql both
+# are ON by default and OPCACHE_REMOTE=0 opts out, #598, deploy/lib/remote-packs.sh), RECYCLE_WASM_MIB sets the
 # runtime recycle line (#602; the engine's own default when unset: 140 lean, 100 npm, #771). Every variant: the PHP
 # engine is the pinned LEAN engine by default (#771, spikes/b2-wordpress/engine.lock, fetched by hash);
 # PHP_ENGINE=npm builds the @php-wasm/web-8-3 package engine; PF_ENGINE_JS and PF_ENGINE_WASM build with other
