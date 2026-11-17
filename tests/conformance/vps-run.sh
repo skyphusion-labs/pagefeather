@@ -32,6 +32,22 @@ src=$work/$co-$sha
 x() { echo "+ $*"; [ "${DRY:-0}" = 1 ] || "$@"; }
 in_dir() { local d=$1; shift; echo "+ (cd $d && $*)"; [ "${DRY:-0}" = 1 ] || (cd "$d" && "$@"); }
 need_run_dir() { run=${1:?run-dir}; x mkdir -p "$run"; }
+# Gutenberg build.mjs runs one tsc project at a time when CI is set (conf759 2120z: parallel tsc OOM on vc2-4c-8gb after wp+wc).
+gb_run_build() {
+  local try=$1
+  local log="$work/.gb-build-try-${try}.log"
+  if [ "${DRY:-0}" = 1 ]; then
+    echo "+ (cd $src && env CI=true NODE_OPTIONS=--max-old-space-size=6144 npm run build)  # attempt $try"
+    return 0
+  fi
+  echo "+ (cd $src && env CI=true NODE_OPTIONS=--max-old-space-size=6144 npm run build)  # attempt $try, log $log"
+  if (cd "$src" && env CI=true NODE_OPTIONS=--max-old-space-size=6144 npm run build) >"$log" 2>&1; then
+    return 0
+  fi
+  echo "vps-run: gb install attempt $try failed; last lines:" >&2
+  tail -n 30 "$log" >&2 2>/dev/null || true
+  return 1
+}
 playwright() { # dir config: run Playwright with OUR wrapper config (exclusions, one worker, JSON report)
   local d=$1
   x python3 -I "$here/runner.py" config --suite "$suite" --suite-dir "$src/$e2e" --run-dir "$run"
@@ -76,14 +92,15 @@ case "$act" in
           in_dir "$src" npm run clean:package-types
           in_dir "$src" npm rebuild esbuild 2>/dev/null || in_dir "$src" node ./node_modules/esbuild/install.js 2>/dev/null || true
           gb_build=0
-          for gb_try in 1 2; do
-            if in_dir "$src" env NODE_OPTIONS=--max-old-space-size=6144 npm run build; then gb_build=1; break; fi
+          for gb_try in 1 2 3; do
+            if gb_run_build "$gb_try"; then gb_build=1; break; fi
             echo "vps-run: gb install attempt $gb_try failed; retrying after clean" >&2
             in_dir "$src" npm run clean:packages
             in_dir "$src" npm run clean:package-types
             in_dir "$src" npm rebuild esbuild 2>/dev/null || true
+            [ "$gb_try" = 2 ] && in_dir "$src" rm -rf node_modules/.cache
           done
-          [ "$gb_build" = 1 ] || { echo "vps-run: STOP: gb build failed after 2 attempts" >&2; exit 3; }
+          [ "$gb_build" = 1 ] || { echo "vps-run: STOP: gb build failed after 3 attempts (Gutenberg tsc; see install log tail)" >&2; exit 3; }
           in_dir "$src" npx playwright install --with-deps chromium ;;
     esac
     ;;
