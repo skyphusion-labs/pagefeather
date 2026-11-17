@@ -221,7 +221,7 @@ test('index.js: the object answers busy only for an overflowed, retry-safe reque
 	assert.match(src, /const OVERFLOW_BUSY_OK_HEADER = 'x-pf-busy-ok';/);
 	assert.match(src, /if \(overflowed && raw\.headers\.get\(OVERFLOW_BUSY_OK_HEADER\) === '1' && objectBusy\(\{ running: phpLock\.running, waiting: phpLock\.waiting \}\)\) \{/, 'the object checks its own lock');
 	assert.match(src, /fwd\.headers\.delete\(OVERFLOW_BUSY_OK_HEADER\);\n\t+if \(target && target\.busyOk\) fwd\.headers\.set\(OVERFLOW_BUSY_OK_HEADER, '1'\);/, 'only the Worker sets it; a client copy is dropped');
-	assert.match(src, /const busyOk = ovs\.busy && !turnstileRoute\(env, req\.method, url\);/, 'busy only with its flag; a Turnstile-gated request is verified once: it is never retried, so it never asks for busy');
+	assert.match(src, /const busyOk = ovs\.busy && !turnstileRoute\(env, req\.method, url, busyFields\);/, 'busy only with its flag; a Turnstile-gated request is verified once: it is never retried, so it never asks for busy');
 	assert.match(src, /event: 'overflow-busy'/);
 	assert.match(src, /event: 'overflow-local'/);
 });

@@ -17,7 +17,7 @@ import { cronBounds, cronCleanDue, cronLegDue } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronRunDeferred, cronMarkOf, cronFatalOf } from './cron-health.mjs';
 import { cronFailureLine } from './cron-error.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
-import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION, setResultHeader, takeResultHeader, turnstileRoute, readGatedToken, encodeResult, TurnstileSlot, turnstileTimeoutMs, retryAfterFor } from './turnstile.mjs';
+import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION, setResultHeader, takeResultHeader, turnstileRoute, readRouteFields, readGatedToken, encodeResult, TurnstileSlot, turnstileTimeoutMs, retryAfterFor } from './turnstile.mjs';
 import { analyticsEnabled, recordPageview } from './analytics.mjs';
 import { cfBridgeEnabled, aiEmbedOp, vectorizeOp } from './cf-bridge.mjs';
 import { demoLocked, lockDefines } from './site-lock.mjs';
@@ -1962,19 +1962,25 @@ async function boot(origin) {
 	// only; PDF_INVOICE=off turns it off. The signing secret stays in the Worker, as the
 	// AI binding does for alt text.
 	if (pdfInvoiceEnabled(ENV)) lines.push(`define('SKYPHUSION_PDF_INVOICE', true);`);
-	// Turnstile bot challenge on wp-login, comments and WooCommerce checkout
-	// (php/turnstile-forms.php, issue #250). Binding based, so it needs no zone and
-	// works on a workers.dev host. The site key is public (it ships in the page); the
-	// secret (TURNSTILE_SECRET) stays in the Worker and PHP never sees it, as the AI
-	// binding does for alt text. On only when both the secret and a valid public site
-	// key are set; TURNSTILE=off is the master off switch, and TURNSTILE_LOGIN /
-	// TURNSTILE_COMMENTS / TURNSTILE_WOO=off turn a single form off. The site key is
-	// sanitized to a safe charset before it becomes a define.
+	// Turnstile bot challenge on wp-login, My Account login, registration, lost
+	// password, comments and WooCommerce checkout (php/turnstile-forms.php, issue
+	// #250, account forms #857). Binding based, so it needs no zone and works on a
+	// workers.dev host. The site key is public (it ships in the page); the secret
+	// (TURNSTILE_SECRET) stays in the Worker and PHP never sees it, as the AI binding
+	// does for alt text. On only when both the secret and a valid public site key are
+	// set; TURNSTILE=off is the master off switch, and TURNSTILE_LOGIN /
+	// TURNSTILE_REGISTER / TURNSTILE_WOO_REGISTER / TURNSTILE_LOSTPASSWORD /
+	// TURNSTILE_COMMENTS / TURNSTILE_WOO=off turn a single form off. TURNSTILE_LOGIN
+	// covers both logins. The site key is sanitized to a safe charset before it
+	// becomes a define.
 	if (turnstileEnabled(ENV)) {
 		const tsForms = turnstileForms(ENV);
 		lines.push(`define('SKYPHUSION_TURNSTILE', true);`);
 		lines.push(`define('SKYPHUSION_TURNSTILE_SITEKEY', ${JSON.stringify(sanitizeSiteKey(ENV.TURNSTILE_SITEKEY))});`);
 		lines.push(`define('SKYPHUSION_TURNSTILE_LOGIN', ${tsForms.login ? 'true' : 'false'});`);
+		lines.push(`define('SKYPHUSION_TURNSTILE_REGISTER', ${tsForms.register ? 'true' : 'false'});`);
+		lines.push(`define('SKYPHUSION_TURNSTILE_WOO_REGISTER', ${tsForms.wooRegister ? 'true' : 'false'});`);
+		lines.push(`define('SKYPHUSION_TURNSTILE_LOSTPASSWORD', ${tsForms.lostpassword ? 'true' : 'false'});`);
 		lines.push(`define('SKYPHUSION_TURNSTILE_COMMENTS', ${tsForms.comments ? 'true' : 'false'});`);
 		lines.push(`define('SKYPHUSION_TURNSTILE_WOO', ${tsForms.woo ? 'true' : 'false'});`);
 	}
@@ -3449,7 +3455,8 @@ async function runCron(getBooted, cleanDue = false, mail = null, { held = false 
 // returns the header value for the object, or null when the request is not a gated form or carries
 // no token (its PHP gate then fails closed on its own). The token and the secret are never logged.
 async function preverifyTurnstile(req, env, url) {
-	const route = turnstileRoute(env, req.method, url);
+	const fields = turnstileEnabled(env) ? await readRouteFields(req) : null;
+	const route = turnstileRoute(env, req.method, url, fields);
 	if (!route) return null;
 	const token = await readGatedToken(route, req.clone());
 	if (!token) return { route, value: null, res: null };
@@ -3800,7 +3807,8 @@ const site = {
 			// #296 (3)(c), PHP_OVERFLOW_BUSY=on (default off): a retry-safe request asks the object to answer busy instead
 			// of queueing; it then tries the second choice, then runs here. A Turnstile-gated request is verified once at
 			// the front, so it is sent once. With busy off, each request goes to one choice and may queue in the object.
-			const busyOk = ovs.busy && !turnstileRoute(env, req.method, url);
+			const busyFields = turnstileEnabled(env) ? await readRouteFields(req) : null;
+			const busyOk = ovs.busy && !turnstileRoute(env, req.method, url, busyFields);
 			const choices = busyOk ? picker.pickTwo() : [picker.pick()];
 			for (const i of choices) {
 				picker.start(i);

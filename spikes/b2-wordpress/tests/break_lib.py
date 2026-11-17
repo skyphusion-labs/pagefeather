@@ -42,13 +42,18 @@ def req(o, path, data=None, headers=None, method=None, timeout=120):
             "firstFail": hd.get("x-d1-first-failure") if os.environ.get("D1_FIRST_FAILURE") == "1" else None}
 def short(r):
     return {k: r.get(k) for k in ("code", "s", "calls", "fail", "firstFail", "mib", "recycled", "err") if r.get(k) is not None}
+def with_turnstile(form):
+    # cf-turnstile-response when TURNSTILE_TEST_TOKEN is set. Unset, the form is unchanged (#718, #857).
+    out = dict(form)
+    tok = os.environ.get("TURNSTILE_TEST_TOKEN")
+    if tok:
+        out["cf-turnstile-response"] = tok
+    return out
 def login():
     o = opener(); pw = os.environ["ADMIN_PASSWORD"]
     req(o, "/wp-login.php")
     # The login gate reads $_POST['cf-turnstile-response'] (measure394.py). Unset, the form is unchanged.
-    form = {"log": "admin", "pwd": pw, "wp-submit": "Log In", "redirect_to": "/wp-admin/", "testcookie": "1"}
-    if os.environ.get("TURNSTILE_TEST_TOKEN"):
-        form["cf-turnstile-response"] = os.environ["TURNSTILE_TEST_TOKEN"]
+    form = with_turnstile({"log": "admin", "pwd": pw, "wp-submit": "Log In", "redirect_to": "/wp-admin/", "testcookie": "1"})
     r = req(o, "/wp-login.php", form)
     assert r["code"] == 302, short(r)
     # A REST nonce for the logged-in user. admin-ajax "rest-nonce" works with any plugin set.
@@ -56,6 +61,21 @@ def login():
     o.nonce = n["body"].decode().strip()
     assert re.fullmatch(r"[a-f0-9]{10}", o.nonce), n["body"][:200]
     return o
+def post_account_login(o, username, password, nonce="n"):
+    form = with_turnstile({"username": username, "password": password, "woocommerce-login-nonce": nonce, "login": "Log in", "_wp_http_referer": "/my-account/"})
+    return req(o, "/my-account/", form)
+def post_account_register(o, email, nonce="n"):
+    form = with_turnstile({"email": email, "woocommerce-register-nonce": nonce, "register": "Register", "_wp_http_referer": "/my-account/"})
+    return req(o, "/my-account/", form)
+def post_account_lost_password(o, user_login, nonce="n"):
+    form = with_turnstile({"user_login": user_login, "woocommerce-lost-password-nonce": nonce, "wc_reset_password": "Reset password", "_wp_http_referer": "/my-account/lost-password/"})
+    return req(o, "/my-account/lost-password/", form)
+def post_wp_register(o, user_login, user_email):
+    form = with_turnstile({"user_login": user_login, "user_email": user_email, "wp-submit": "Register", "redirect_to": ""})
+    return req(o, "/wp-login.php?action=register", form)
+def post_wp_lost_password(o, user_login):
+    form = with_turnstile({"user_login": user_login, "wp-submit": "Get New Password", "redirect_to": ""})
+    return req(o, "/wp-login.php?action=lostpassword", form)
 def rest(o, route, payload=None, method=None, raw=None, headers=None):
     h = {"X-WP-Nonce": o.nonce}; h.update(headers or {})
     data = raw

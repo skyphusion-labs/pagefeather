@@ -43,6 +43,7 @@ class H(http.server.BaseHTTPRequestHandler):
     login_code = None
     checkout_token = None
     checkout_code = None
+    account = {}
     unknown = []
 
     def log_message(self, *a):
@@ -78,7 +79,16 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send(200, b"ok")
             return
         if method == "POST" and path.startswith("/wp-login.php"):
+            if "action=register" in path:
+                self._form_gate(body, "wp-register")
+                return
+            if "action=lostpassword" in path:
+                self._form_gate(body, "wp-lost")
+                return
             self._login(body)
+            return
+        if method == "POST" and path.startswith("/my-account"):
+            self._account(body)
             return
         if method == "POST" and "rest_route=/wc/store/v1/checkout" in path:
             self._checkout(body)
@@ -135,6 +145,35 @@ class H(http.server.BaseHTTPRequestHandler):
             return got == H.token and got != ""
         return got == ""
 
+    def _form_token(self, body):
+        form = urllib.parse.parse_qs(body.decode("utf-8", "replace"))
+        vals = form.get("cf-turnstile-response")
+        return vals[0] if vals else "", form
+
+    def _form_gate(self, body, kind):
+        got, _form = self._form_token(body)
+        H.account[kind] = got
+        if self._accepts(got):
+            self.send(200, b"ok")
+        else:
+            self.send(403, b"challenge")
+
+    def _account(self, body):
+        got, form = self._form_token(body)
+        if "woocommerce-login-nonce" in form:
+            kind = "woo-login"
+        elif "woocommerce-register-nonce" in form:
+            kind = "woo-register"
+        elif "woocommerce-lost-password-nonce" in form:
+            kind = "woo-lost"
+        else:
+            kind = "woo-other"
+        H.account[kind] = got
+        if self._accepts(got):
+            self.send(200, b"ok")
+        else:
+            self.send(403, b"challenge")
+
     def _login(self, body):
         got = self._posted_login_token(body)
         H.login_token = got
@@ -161,7 +200,31 @@ def reset_seen():
     H.login_code = None
     H.checkout_token = None
     H.checkout_code = None
+    H.account = {}
     H.unknown = []
+
+
+ACCOUNT_POSTS = (
+    "post_account_login",
+    "post_account_register",
+    "post_account_lost_password",
+    "post_wp_register",
+    "post_wp_lost_password",
+)
+
+
+def post_account_forms(break_lib):
+    """Post the five #857 forms. Missing helpers are a failure, not a crash."""
+    missing = [n for n in ACCOUNT_POSTS if not hasattr(break_lib, n)]
+    if missing:
+        return missing, {}
+    o = break_lib.opener()
+    break_lib.post_account_login(o, "ada", "secret")
+    break_lib.post_account_register(o, "ada@example.com")
+    break_lib.post_account_lost_password(o, "ada")
+    break_lib.post_wp_register(o, "ada", "ada@example.com")
+    break_lib.post_wp_lost_password(o, "ada")
+    return [], dict(H.account)
 
 
 def run_woo(break_lib, patch_login):
@@ -268,6 +331,41 @@ def main():
               "exit %s code %s token %r" % (code, H.checkout_code, H.checkout_token))
         if not ok:
             show_woo(text)
+
+        # #857: the same tools send the test token on the account forms (#718).
+        reset_seen()
+        H.mode = "require"
+        os.environ["TURNSTILE_TEST_TOKEN"] = TOKEN
+        missing, seen = post_account_forms(break_lib)
+        want = {"woo-login": TOKEN, "woo-register": TOKEN, "woo-lost": TOKEN, "wp-register": TOKEN, "wp-lost": TOKEN}
+        ok = not missing and seen == want
+        check("token set: break_lib sends cf-turnstile-response on the account forms", ok,
+              ("missing " + ", ".join(missing)) if missing else "seen %r" % (seen,))
+
+        reset_seen()
+        H.mode = "absent"
+        os.environ.pop("TURNSTILE_TEST_TOKEN", None)
+        missing, seen = post_account_forms(break_lib)
+        want_absent = {"woo-login": "", "woo-register": "", "woo-lost": "", "wp-register": "", "wp-lost": ""}
+        ok = not missing and seen == want_absent
+        check("unset: break_lib account forms stay unchanged (no Turnstile field)", ok,
+              ("missing " + ", ".join(missing)) if missing else "seen %r" % (seen,))
+
+        woo_src = open(WOO).read()
+        woo_posts = "ACCOUNT_FORMS" in woo_src and "post_account_login" in woo_src and "post_account_register" in woo_src and "post_account_lost_password" in woo_src
+        check("woo.py posts the My Account forms when ACCOUNT_FORMS=1", woo_posts, "woo.py does not post them")
+        if woo_posts:
+            reset_seen()
+            H.mode = "require"
+            os.environ["TURNSTILE_TEST_TOKEN"] = TOKEN
+            os.environ["ACCOUNT_FORMS"] = "1"
+            code, text = run_woo(break_lib, patch_login=True)
+            got = {k: H.account.get(k) for k in ("woo-login", "woo-register", "woo-lost")}
+            ok = code == 0 and got == {"woo-login": TOKEN, "woo-register": TOKEN, "woo-lost": TOKEN}
+            check("token set: woo.py My Account forms carry the test token", ok, "exit %s seen %r" % (code, got))
+            if not ok:
+                show_woo(text)
+            os.environ.pop("ACCOUNT_FORMS", None)
     finally:
         srv.shutdown()
         srv.server_close()

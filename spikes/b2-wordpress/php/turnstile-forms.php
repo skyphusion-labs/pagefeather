@@ -1,9 +1,11 @@
 <?php
 /**
  * Plugin Name: Turnstile forms (b-dosql)
- * Description: A Cloudflare Turnstile bot challenge on the three WordPress forms
- *   that get abused: wp-login.php (credential stuffing), the comment form (spam),
- *   and WooCommerce checkout (card testing and fake orders). The widget ships in
+ * Description: A Cloudflare Turnstile bot challenge on the WordPress forms that
+ *   get abused: wp-login.php and WooCommerce My Account login (credential stuffing),
+ *   registration and lost password (fake accounts and reset-mail floods), the
+ *   comment form (spam), and WooCommerce checkout (card testing and fake orders).
+ *   The widget ships in
  *   the page with the PUBLIC site key; the token is verified server side before the
  *   action proceeds. Verification runs in the Worker: PHP reads cf-turnstile-response
  *   from the form POST and sends it through the skyphusion_worker_call op bridge
@@ -18,9 +20,12 @@
  *   Switches (written by index.js from the bindings):
  *   - SKYPHUSION_TURNSTILE          master on (TURNSTILE=off is the master off switch).
  *   - SKYPHUSION_TURNSTILE_SITEKEY  the public site key for the widget.
- *   - SKYPHUSION_TURNSTILE_LOGIN    the login form gate   (TURNSTILE_LOGIN=off).
- *   - SKYPHUSION_TURNSTILE_COMMENTS the comment form gate (TURNSTILE_COMMENTS=off).
- *   - SKYPHUSION_TURNSTILE_WOO      the checkout gate     (TURNSTILE_WOO=off).
+ *   - SKYPHUSION_TURNSTILE_LOGIN         both logins (TURNSTILE_LOGIN=off).
+ *   - SKYPHUSION_TURNSTILE_REGISTER      wp-login.php registration (TURNSTILE_REGISTER=off).
+ *   - SKYPHUSION_TURNSTILE_WOO_REGISTER  WooCommerce registration (TURNSTILE_WOO_REGISTER=off).
+ *   - SKYPHUSION_TURNSTILE_LOSTPASSWORD  both lost-password forms (TURNSTILE_LOSTPASSWORD=off).
+ *   - SKYPHUSION_TURNSTILE_COMMENTS      the comment form gate (TURNSTILE_COMMENTS=off).
+ *   - SKYPHUSION_TURNSTILE_WOO           the checkout gate (TURNSTILE_WOO=off).
  *   Each form is independent: one off leaves the others on, and the master off
  *   switch restores every form to its unprotected state.
  *
@@ -153,7 +158,32 @@ if ( ! function_exists( 'skyphusion_turnstile_unavailable_message' ) ) {
 	}
 }
 
-// ---- wp-login.php ----
+/**
+ * Refuse a form POST by adding an error to $errors. A passed token adds nothing.
+ * An outage gets its own code. The fail-open filter is not consulted: these forms
+ * fail closed, as login does (#351, #857). A request that is not a POST is left
+ * alone, so a programmatic call is not a challenge.
+ */
+if ( ! function_exists( 'skyphusion_turnstile_gate_error' ) ) {
+	function skyphusion_turnstile_gate_error( $errors, $failed_message ) {
+		if ( ! is_wp_error( $errors ) ) {
+			$errors = new WP_Error();
+		}
+		$method = isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( (string) $_SERVER['REQUEST_METHOD'] ) : '';
+		if ( 'POST' !== $method ) {
+			return $errors;
+		}
+		$result = skyphusion_turnstile_result( skyphusion_turnstile_token() );
+		if ( 'unavailable' === $result ) {
+			$errors->add( 'turnstile_unavailable', skyphusion_turnstile_unavailable_message() );
+		} elseif ( 'ok' !== $result ) {
+			$errors->add( 'turnstile_failed', $failed_message );
+		}
+		return $errors;
+	}
+}
+
+// ---- wp-login.php and WooCommerce My Account login (TURNSTILE_LOGIN covers both) ----
 if ( ! defined( 'SKYPHUSION_TURNSTILE_LOGIN' ) || SKYPHUSION_TURNSTILE_LOGIN ) {
 	// The widget, below the password field on the login form.
 	add_action( 'login_form', 'skyphusion_turnstile_widget' );
@@ -181,6 +211,53 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_LOGIN' ) || SKYPHUSION_TURNSTILE_LOGIN ) {
 		}
 	}
 	add_filter( 'authenticate', 'skyphusion_turnstile_login_check', 30, 3 );
+
+	// WooCommerce My Account login posts username and password, not log. The
+	// authenticate filter above leaves that request alone, so this filter, which
+	// process_login runs before wp_signon, is the gate. A WP_Error stops the sign-in.
+	add_action( 'woocommerce_login_form', 'skyphusion_turnstile_widget' );
+	if ( ! function_exists( 'skyphusion_turnstile_woo_login_check' ) ) {
+		function skyphusion_turnstile_woo_login_check( $errors, $username, $password ) {
+			return skyphusion_turnstile_gate_error( $errors, __( 'Please complete the challenge to sign in.' ) );
+		}
+	}
+	add_filter( 'woocommerce_process_login_errors', 'skyphusion_turnstile_woo_login_check', 10, 3 );
+}
+
+// ---- WordPress registration (wp-login.php?action=register) ----
+if ( ! defined( 'SKYPHUSION_TURNSTILE_REGISTER' ) || SKYPHUSION_TURNSTILE_REGISTER ) {
+	add_action( 'register_form', 'skyphusion_turnstile_widget' );
+	if ( ! function_exists( 'skyphusion_turnstile_register_check' ) ) {
+		function skyphusion_turnstile_register_check( $errors, $sanitized_user_login, $user_email ) {
+			return skyphusion_turnstile_gate_error( $errors, __( 'Please complete the challenge to register.' ) );
+		}
+	}
+	add_filter( 'registration_errors', 'skyphusion_turnstile_register_check', 10, 3 );
+}
+
+// ---- WooCommerce registration ----
+if ( ! defined( 'SKYPHUSION_TURNSTILE_WOO_REGISTER' ) || SKYPHUSION_TURNSTILE_WOO_REGISTER ) {
+	add_action( 'woocommerce_register_form', 'skyphusion_turnstile_widget' );
+	if ( ! function_exists( 'skyphusion_turnstile_woo_register_check' ) ) {
+		function skyphusion_turnstile_woo_register_check( $errors, $username, $password, $email ) {
+			return skyphusion_turnstile_gate_error( $errors, __( 'Please complete the challenge to register.' ) );
+		}
+	}
+	add_filter( 'woocommerce_process_registration_errors', 'skyphusion_turnstile_woo_register_check', 10, 4 );
+}
+
+// ---- Lost password: wp-login.php and WooCommerce My Account, one gate ----
+// Both call retrieve_password, which fires lostpassword_post with a WP_Error.
+// Adding an error there stops the reset mail.
+if ( ! defined( 'SKYPHUSION_TURNSTILE_LOSTPASSWORD' ) || SKYPHUSION_TURNSTILE_LOSTPASSWORD ) {
+	add_action( 'lostpassword_form', 'skyphusion_turnstile_widget' );
+	add_action( 'woocommerce_lostpassword_form', 'skyphusion_turnstile_widget' );
+	if ( ! function_exists( 'skyphusion_turnstile_lostpassword_check' ) ) {
+		function skyphusion_turnstile_lostpassword_check( $errors ) {
+			skyphusion_turnstile_gate_error( $errors, __( 'Please complete the challenge to reset your password.' ) );
+		}
+	}
+	add_action( 'lostpassword_post', 'skyphusion_turnstile_lostpassword_check' );
 }
 
 // ---- Comment form ----
