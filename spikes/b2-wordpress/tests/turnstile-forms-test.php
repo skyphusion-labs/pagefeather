@@ -9,7 +9,7 @@
 $scenario = getenv( 'TS_SCENARIO' );
 if ( false === $scenario || '' === $scenario ) {
 	$fail = 0;
-	foreach ( array( 'all', 'master-off', 'login-off', 'woo-off', 'route-exception' ) as $sc ) {
+	foreach ( array( 'all', 'master-off', 'login-off', 'woo-off', 'register-off', 'woo-register-off', 'lostpassword-off', 'route-exception' ) as $sc ) {
 		echo "== scenario: $sc ==\n";
 		$cmd = 'TS_SCENARIO=' . $sc . ' ' . escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __FILE__ );
 		passthru( $cmd, $code );
@@ -121,6 +121,18 @@ switch ( $scenario ) {
 		define( 'SKYPHUSION_TURNSTILE', true );
 		define( 'SKYPHUSION_TURNSTILE_WOO', false );
 		break;
+	case 'register-off':
+		define( 'SKYPHUSION_TURNSTILE', true );
+		define( 'SKYPHUSION_TURNSTILE_REGISTER', false );
+		break;
+	case 'woo-register-off':
+		define( 'SKYPHUSION_TURNSTILE', true );
+		define( 'SKYPHUSION_TURNSTILE_WOO_REGISTER', false );
+		break;
+	case 'lostpassword-off':
+		define( 'SKYPHUSION_TURNSTILE', true );
+		define( 'SKYPHUSION_TURNSTILE_LOSTPASSWORD', false );
+		break;
 	case 'route-exception':
 		define( 'SKYPHUSION_TURNSTILE', true );
 		eval( 'namespace Automattic\WooCommerce\StoreApi\Exceptions; class RouteException extends \Exception { public $error_code; public function __construct( $c, $m, $s = 400 ) { parent::__construct( $m, $s ); $this->error_code = $c; } }' );
@@ -145,9 +157,14 @@ if ( 'master-off' === $scenario ) {
 if ( 'login-off' === $scenario ) {
 	check( 'login off: authenticate not hooked', has_hook( 'authenticate' ), false );
 	check( 'login off: login_form not hooked', has_hook( 'login_form' ), false );
+	check( 'login off: My Account login form not hooked', has_hook( 'woocommerce_login_form' ), false );
+	check( 'login off: My Account login gate not hooked', has_hook( 'woocommerce_process_login_errors' ), false );
 	check( 'login off: comments still hooked', has_hook( 'preprocess_comment' ), true );
 	check( 'login off: checkout still hooked', has_hook( 'woocommerce_checkout_process' ), true );
 	check( 'login off: block checkout gate still hooked', has_hook( 'woocommerce_store_api_checkout_update_order_from_request' ), true );
+	check( 'login off: WordPress registration still hooked', has_hook( 'registration_errors' ), true );
+	check( 'login off: WooCommerce registration still hooked', has_hook( 'woocommerce_process_registration_errors' ), true );
+	check( 'login off: lost password still hooked', has_hook( 'lostpassword_post' ), true );
 	echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
 	exit( $fail ? 1 : 0 );
 }
@@ -160,6 +177,61 @@ if ( 'woo-off' === $scenario ) {
 	check( 'woo off: store api gate not hooked', has_hook( 'woocommerce_store_api_checkout_update_order_from_request' ), false );
 	check( 'woo off: extension data not registered', has_hook( 'woocommerce_blocks_loaded' ), false );
 	check( 'woo off: login still hooked', has_hook( 'authenticate' ), true );
+	check( 'woo off: My Account login still hooked', has_hook( 'woocommerce_login_form' ), true );
+	check( 'woo off: WooCommerce registration still hooked', has_hook( 'woocommerce_register_form' ), true );
+	check( 'woo off: lost password still hooked', has_hook( 'lostpassword_form' ), true );
+	echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
+	exit( $fail ? 1 : 0 );
+}
+
+if ( 'register-off' === $scenario ) {
+	check( 'register off: register_form not hooked', has_hook( 'register_form' ), false );
+	check( 'register off: registration_errors not hooked', has_hook( 'registration_errors' ), false );
+	check( 'register off: login still hooked', has_hook( 'authenticate' ), true );
+	check( 'register off: My Account login still hooked', has_hook( 'woocommerce_login_form' ), true );
+	check( 'register off: WooCommerce registration still hooked', has_hook( 'woocommerce_process_registration_errors' ), true );
+	check( 'register off: lost password still hooked', has_hook( 'lostpassword_post' ), true );
+	$_SERVER['REQUEST_METHOD'] = 'POST';
+	$_POST['user_login'] = 'ada';
+	$_POST['user_email'] = 'ada@example.com';
+	unset( $_POST['cf-turnstile-response'] );
+	$out = apply_filters( 'registration_errors', new WP_Error(), 'ada', 'ada@example.com' );
+	check( 'register off: a missing token is not a registration error', $out->get_error_code(), '' );
+	$_POST['log'] = 'admin';
+	$r = apply_filters( 'authenticate', null, 'admin', 'pw' );
+	check( 'register off: wp-login missing token still rejected', $r instanceof WP_Error, true );
+	echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
+	exit( $fail ? 1 : 0 );
+}
+
+if ( 'woo-register-off' === $scenario ) {
+	check( 'woo register off: WooCommerce registration form not hooked', has_hook( 'woocommerce_register_form' ), false );
+	check( 'woo register off: WooCommerce registration gate not hooked', has_hook( 'woocommerce_process_registration_errors' ), false );
+	check( 'woo register off: WordPress registration still hooked', has_hook( 'register_form' ), true );
+	check( 'woo register off: login still hooked', has_hook( 'woocommerce_login_form' ), true );
+	check( 'woo register off: checkout still hooked', has_hook( 'woocommerce_checkout_process' ), true );
+	$_SERVER['REQUEST_METHOD'] = 'POST';
+	$_POST['email'] = 'ada@example.com';
+	$_POST['woocommerce-register-nonce'] = 'n';
+	unset( $_POST['cf-turnstile-response'] );
+	$out = apply_filters( 'woocommerce_process_registration_errors', new WP_Error(), '', '', 'ada@example.com' );
+	check( 'woo register off: a missing token is not a registration error', $out->get_error_code(), '' );
+	echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
+	exit( $fail ? 1 : 0 );
+}
+
+if ( 'lostpassword-off' === $scenario ) {
+	check( 'lost password off: WordPress form not hooked', has_hook( 'lostpassword_form' ), false );
+	check( 'lost password off: WooCommerce form not hooked', has_hook( 'woocommerce_lostpassword_form' ), false );
+	check( 'lost password off: lostpassword_post not hooked', has_hook( 'lostpassword_post' ), false );
+	check( 'lost password off: login still hooked', has_hook( 'authenticate' ), true );
+	check( 'lost password off: WordPress registration still hooked', has_hook( 'registration_errors' ), true );
+	$_SERVER['REQUEST_METHOD'] = 'POST';
+	$_POST['user_login'] = 'ada';
+	unset( $_POST['cf-turnstile-response'] );
+	$lost = new WP_Error();
+	do_action( 'lostpassword_post', $lost );
+	check( 'lost password off: a missing token is not an error', $lost->get_error_code(), '' );
 	echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
 	exit( $fail ? 1 : 0 );
 }

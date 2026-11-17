@@ -683,10 +683,11 @@ not enforce the 128 MiB isolate cap, so the exit-2-to-exit-0 transition of
 
 ### 8n. Turnstile bot challenge on the abused forms (issue #250). Built and box-tested locally; not yet deployed.
 
-Three WordPress forms get abused: `wp-login.php` (credential stuffing), the comment form
-(spam), and WooCommerce checkout (card testing and fake orders). `php/turnstile-forms.php`, a
-mu-plugin, adds a Cloudflare Turnstile widget to each and verifies the token server side before
-the action proceeds. Turnstile is binding based, so it needs no zone and works on a
+The forms that get abused are `wp-login.php` and WooCommerce My Account login (credential
+stuffing), registration and lost password (fake accounts and reset-mail floods, #857), the
+comment form (spam), and WooCommerce checkout (card testing and fake orders).
+`php/turnstile-forms.php`, a mu-plugin, adds a Cloudflare Turnstile widget to each and verifies
+the token server side before the action proceeds. Turnstile is binding based, so it needs no zone and works on a
 `workers.dev` host today, unlike the WAF and Access tracks (#245, #246).
 
 The widget ships in the page with the PUBLIC site key. The token (`cf-turnstile-response`) is
@@ -704,21 +705,28 @@ Switches, written into `wp-runtime.php` by `index.js` from the bindings:
   every form to its unprotected state.
 - `SKYPHUSION_TURNSTILE_SITEKEY`: the public site key, sanitized to `[A-Za-z0-9_-]` before it
   becomes a define.
-- `SKYPHUSION_TURNSTILE_LOGIN`, `SKYPHUSION_TURNSTILE_COMMENTS`, `SKYPHUSION_TURNSTILE_WOO`: each
-  form is independently switchable (`TURNSTILE_LOGIN=off` and so on); one off leaves the others on.
+- `SKYPHUSION_TURNSTILE_LOGIN` (wp-login.php and My Account login), `SKYPHUSION_TURNSTILE_REGISTER`,
+  `SKYPHUSION_TURNSTILE_WOO_REGISTER`, `SKYPHUSION_TURNSTILE_LOSTPASSWORD` (both lost-password forms),
+  `SKYPHUSION_TURNSTILE_COMMENTS`, `SKYPHUSION_TURNSTILE_WOO`: each form is independently switchable
+  (`TURNSTILE_LOGIN=off` and so on); one off leaves the others on. `TURNSTILE_LOGIN` covers both logins.
 
 The gate is login via the `authenticate` filter (a `WP_Error` stops the sign-in, only on a real
 credential POST so cookie and application-password auth are untouched), comments via
 `preprocess_comment` (a 403 `wp_die`, skipping pingbacks and the admin screens), and checkout via
 `woocommerce_checkout_process` (a `wc_add_notice` error, which fails order placement on the
-classic shortcode checkout). The posture is fail closed: a missing or failed token always rejects
-the action. A verifier that is unreachable (a timeout or a network failure, told apart from a bad
-token by an error field the op sets) is also rejected, with its own message: "We could not check
-the challenge just now. Please try again in a moment." (a `WP_Error` `turnstile_unavailable` on
-the login, a `wc_add_notice` error on the classic checkout, a 503 `skyphusion_turnstile_unavailable`
-with `Retry-After: 5` on the Store API checkout). The login and both checkouts ALWAYS fail closed
-(issue #351). Only the comment form may let an outage through, when the site opts in with the
-`skyphusion_turnstile_failopen` filter.
+classic shortcode checkout). My Account login uses `woocommerce_process_login_errors` (the same
+`TURNSTILE_LOGIN` switch; that POST has no `log` field, so `authenticate` does not see it).
+WordPress registration uses `registration_errors`, WooCommerce registration uses
+`woocommerce_process_registration_errors`, and both lost-password forms use `lostpassword_post`.
+Each of those adds a `WP_Error` and fails closed, including when the verifier is unreachable
+(#857). The posture is fail closed: a missing or failed token always rejects the action. A
+verifier that is unreachable (a timeout or a network failure, told apart from a bad token by an
+error field the op sets) is also rejected, with its own message: "We could not check the challenge
+just now. Please try again in a moment." (a `WP_Error` `turnstile_unavailable` on the login, the
+account forms and registration, a `wc_add_notice` error on the classic checkout, a 503
+`skyphusion_turnstile_unavailable` with `Retry-After: 5` on the Store API checkout). The login,
+the account forms and both checkouts ALWAYS fail closed (issue #351, #857). Only the comment form
+may let an outage through, when the site opts in with the `skyphusion_turnstile_failopen` filter.
 
 A token passes only if siteverify says it was solved on this site's own host (the hostname of
 `SITE_ORIGIN`) by this site's widget (the action `turnstile-spin-v1`). A token for another host or
@@ -736,9 +744,11 @@ is written, and it was not affected. The measurements are on #351.
 
 So the stateless front Worker now verifies a gated POST before it forwards it
 (`preverifyTurnstile` in `index.js`; `turnstileRoute` and `readGatedToken` in `turnstile.mjs`). The
-gated POSTs are `/wp-login.php`, `/wp-comments-post.php`, the classic checkout (`?wc-ajax=checkout`)
-and the Store API checkout (`/wp-json/wc/store[/v1]/checkout` or the `rest_route` form), each
-under its own switch. The front Worker reads the token from a clone of the body (at most 1 MiB, and
+gated POSTs are `/wp-login.php` (login, `action=register` and `action=lostpassword`), a My Account
+POST that carries `woocommerce-login-nonce`, `woocommerce-register-nonce` or
+`woocommerce-lost-password-nonce` (including a plain permalink), `/wp-comments-post.php`, the classic
+checkout (`?wc-ajax=checkout`) and the Store API checkout (`/wp-json/wc/store[/v1]/checkout` or the
+`rest_route` form), each under its own switch. The front Worker reads the token from a clone of the body (at most 1 MiB, and
 only with a `content-length`), calls siteverify, and sends the answer to the object in the
 `x-pf-turnstile-result` header, bound to the token by its SHA-256. It always drops a header of that
 name that came from the client. The object takes the header off before PHP sees the request and

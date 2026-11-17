@@ -20,6 +20,7 @@ import {
 	TURNSTILE_BLOCK_NS,
 	TURNSTILE_MAX_BODY,
 	turnstileRoute,
+	readRouteFields,
 	readGatedToken,
 	tokenHash,
 	encodeResult,
@@ -56,11 +57,12 @@ test('the gate is on only with the secret and a valid site key, off switch wins'
 });
 
 test('each form is independently switchable and defaults on', () => {
-	assert.deepEqual(turnstileForms({}), { login: true, comments: true, woo: true });
-	assert.deepEqual(turnstileForms({ TURNSTILE_LOGIN: 'off' }), { login: false, comments: true, woo: true });
-	assert.deepEqual(turnstileForms({ TURNSTILE_COMMENTS: 'off' }), { login: true, comments: false, woo: true });
-	assert.deepEqual(turnstileForms({ TURNSTILE_WOO: 'off' }), { login: true, comments: true, woo: false });
-	assert.deepEqual(turnstileForms(undefined), { login: true, comments: true, woo: true });
+	const on = { login: true, comments: true, woo: true, register: true, wooRegister: true, lostpassword: true };
+	assert.deepEqual(turnstileForms({}), on);
+	assert.deepEqual(turnstileForms({ TURNSTILE_LOGIN: 'off' }), { ...on, login: false });
+	assert.deepEqual(turnstileForms({ TURNSTILE_COMMENTS: 'off' }), { ...on, comments: false });
+	assert.deepEqual(turnstileForms({ TURNSTILE_WOO: 'off' }), { ...on, woo: false });
+	assert.deepEqual(turnstileForms(undefined), on);
 });
 
 test('siteverifyForm carries secret and response, remoteip optional', () => {
@@ -278,6 +280,24 @@ test('turnstileRoute names each gated POST, honours each switch, and nothing els
 
 const formReq = (body, ct = 'application/x-www-form-urlencoded') => new Request('https://shop.example.co/wp-login.php', { method: 'POST', headers: { 'content-type': ct, 'content-length': String(new TextEncoder().encode(body).length) }, body });
 
+test('readRouteFields reads a urlencoded POST and nothing that is not one', async () => {
+	const body = 'username=ada&password=secret&woocommerce-login-nonce=n';
+	const req = new Request('https://shop.example.co/my-account/', {
+		method: 'POST',
+		headers: { 'content-type': 'application/x-www-form-urlencoded', 'content-length': String(body.length) },
+		body,
+	});
+	const fields = await readRouteFields(req);
+	assert.equal(fields.get('woocommerce-login-nonce'), 'n');
+	const second = await readRouteFields(req);
+	assert.equal(second && second.get('username'), 'ada', 'the helper clones, so the original body can be read again');
+	const again = new Request(req.url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', 'content-length': String(body.length) }, body });
+	assert.equal((await readRouteFields(again)).get('username'), 'ada');
+	assert.equal(await readRouteFields(new Request('https://shop.example.co/my-account/')), null);
+	const json = '{"a":1}';
+	assert.equal(await readRouteFields(new Request('https://shop.example.co/wp-json/wc/store/v1/checkout', { method: 'POST', headers: { 'content-type': 'application/json', 'content-length': String(json.length) }, body: json })), null);
+});
+
 test('readGatedToken reads the form field, the multipart field and the Store API extension', async () => {
 	assert.equal(await readGatedToken('login', formReq('log=a&pwd=b&cf-turnstile-response=TOK.1')), 'TOK.1');
 	assert.equal(await readGatedToken('login', formReq('log=a&pwd=b')), '');
@@ -435,6 +455,7 @@ test('WooCommerce registration POST is its own challenge', () => {
 test('WordPress registration POST is its own challenge', () => {
 	assert.equal(turnstileRoute(ON, 'POST', U('/wp-login.php?action=register')), 'register', 'wp-login.php?action=register with no token is not challenged');
 	assert.equal(turnstileRoute(ON, 'POST', U('/wp-login.php?action=register'), 'action=register&user_login=ada&user_email=ada@example.com'), 'register');
+	assert.equal(turnstileRoute(ON, 'POST', U('/wp-login.php'), 'action=register&user_login=ada&user_email=ada@example.com'), 'register');
 	assert.equal(turnstileRoute({ ...ON, TURNSTILE_REGISTER: 'off' }, 'POST', U('/wp-login.php?action=register')), '');
 	assert.equal(turnstileRoute({ ...ON, TURNSTILE_REGISTER: 'off' }, 'POST', U('/wp-login.php')), 'login');
 	assert.equal(turnstileRoute({ ...ON, TURNSTILE_LOGIN: 'off' }, 'POST', U('/wp-login.php?action=register')), 'register', 'TURNSTILE_LOGIN does not cover registration');

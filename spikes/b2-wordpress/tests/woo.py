@@ -4,7 +4,7 @@
 # Prints PASS or FAIL per step with D1 calls and time. Exits 1 on any FAIL.
 import json, os, re, sys, time, urllib.parse
 sys.path.insert(0, os.path.dirname(__file__))
-from break_lib import opener, req, short, login, rest
+from break_lib import opener, req, short, login, rest, post_account_login, post_account_register, post_account_lost_password
 
 results = []
 def check(name, ok, r=None, extra=""):
@@ -63,5 +63,16 @@ if order.get("order_id"):
     if r["code"] in (301, 302):
         r = req(o, "/wp-admin/edit.php?post_type=shop_order")
     check("admin: orders screen", r["code"] == 200 and str(order["order_id"]).encode() in r["body"], r)
+if os.environ.get("ACCOUNT_FORMS") == "1":
+    # My Account login, registration and lost password (#857). break_lib adds the test
+    # token when TURNSTILE_TEST_TOKEN is set. Off unless a caller asks, so a store
+    # checkout run does not post these forms.
+    acct = opener()
+    for name, resp in (
+        ("account login", post_account_login(acct, "ada", "secret")),
+        ("account register", post_account_register(acct, "ada@example.com")),
+        ("account lost password", post_account_lost_password(acct, "ada")),
+    ):
+        check(name, resp["code"] in (200, 302), resp)
 print(f"{results.count(True)} pass, {results.count(False)} fail")
 sys.exit(0 if all(results) else 1)

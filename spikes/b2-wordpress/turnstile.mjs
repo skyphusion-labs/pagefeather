@@ -30,15 +30,20 @@ export function turnstileEnabled(env) {
 	);
 }
 
-// Which of the three forms get the challenge, each independently switchable. Every
-// form defaults on when the feature is on; TURNSTILE_LOGIN, TURNSTILE_COMMENTS or
-// TURNSTILE_WOO set to off turns that one form off while the others stay on.
+// Which forms get the challenge, each independently switchable. Every form defaults
+// on when the feature is on. TURNSTILE_LOGIN covers wp-login.php and WooCommerce My
+// Account login. TURNSTILE_REGISTER, TURNSTILE_WOO_REGISTER, TURNSTILE_LOSTPASSWORD
+// (both lost-password forms), TURNSTILE_COMMENTS or TURNSTILE_WOO set to off turns
+// that one form off while the others stay on.
 export function turnstileForms(env) {
 	const e = env || {};
 	return {
 		login: e.TURNSTILE_LOGIN !== 'off',
 		comments: e.TURNSTILE_COMMENTS !== 'off',
 		woo: e.TURNSTILE_WOO !== 'off',
+		register: e.TURNSTILE_REGISTER !== 'off',
+		wooRegister: e.TURNSTILE_WOO_REGISTER !== 'off',
+		lostpassword: e.TURNSTILE_LOSTPASSWORD !== 'off',
 	};
 }
 
@@ -220,22 +225,80 @@ export function turnstileTimeoutMs(env) {
 }
 
 // Which gated form a request is, or '' when it is none, or its form is switched off:
-//   'login'    POST /wp-login.php                       (TURNSTILE_LOGIN)
-//   'comments' POST /wp-comments-post.php               (TURNSTILE_COMMENTS)
-//   'woo'      POST /?wc-ajax=checkout, classic checkout (TURNSTILE_WOO)
-//   'store'    POST Store API checkout, /wp-json/wc/store[/v1]/checkout or ?rest_route= (TURNSTILE_WOO)
+//   'login'         POST /wp-login.php (no action, or action=login)     (TURNSTILE_LOGIN)
+//                   POST with woocommerce-login-nonce (My Account login) (TURNSTILE_LOGIN)
+//   'register'      POST /wp-login.php?action=register                   (TURNSTILE_REGISTER)
+//   'woo-register'  POST with woocommerce-register-nonce                  (TURNSTILE_WOO_REGISTER)
+//   'lostpassword'  POST /wp-login.php?action=lostpassword, or
+//                   POST with woocommerce-lost-password-nonce             (TURNSTILE_LOSTPASSWORD)
+//   'comments'      POST /wp-comments-post.php                            (TURNSTILE_COMMENTS)
+//   'woo'           POST /?wc-ajax=checkout, classic checkout             (TURNSTILE_WOO)
+//   'store'         POST Store API checkout, /wp-json/wc/store[/v1]/checkout or ?rest_route= (TURNSTILE_WOO)
+// body is the urlencoded POST (a string or URLSearchParams), or null. My Account posts
+// are told apart by their nonce fields, including under plain permalinks (?page_id=).
 // A request that matches none gets no answer; if its PHP gate still runs, it fails closed.
-export function turnstileRoute(env, method, url) {
+function routeParams(body) {
+	if (body == null || body === '') return null;
+	if (typeof body === 'string') return new URLSearchParams(body);
+	if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) return body;
+	return null;
+}
+
+function hasField(params, name) {
+	if (!params) return false;
+	const v = params.get(name);
+	return typeof v === 'string' && v !== '';
+}
+
+export function turnstileRoute(env, method, url, body) {
 	if (String(method || '').toUpperCase() !== 'POST' || !turnstileEnabled(env)) return '';
 	const forms = turnstileForms(env);
 	const path = url.pathname;
-	if (path === '/wp-login.php') return forms.login ? 'login' : '';
+	const params = routeParams(body);
+	if (path === '/wp-login.php') {
+		const fromBody = params ? params.get('action') : '';
+		const action = String(url.searchParams.get('action') || fromBody || 'login').toLowerCase();
+		if (action === 'register') return forms.register ? 'register' : '';
+		if (action === 'lostpassword') return forms.lostpassword ? 'lostpassword' : '';
+		return forms.login ? 'login' : '';
+	}
 	if (path === '/wp-comments-post.php') return forms.comments ? 'comments' : '';
+	// Before the checkout switch: TURNSTILE_WOO=off must not drop an account form.
+	if (hasField(params, 'woocommerce-login-nonce')) return forms.login ? 'login' : '';
+	if (hasField(params, 'woocommerce-register-nonce')) return forms.wooRegister ? 'woo-register' : '';
+	if (hasField(params, 'woocommerce-lost-password-nonce')) return forms.lostpassword ? 'lostpassword' : '';
 	if (!forms.woo) return '';
 	if (url.searchParams.get('wc-ajax') === 'checkout') return 'woo';
 	const rest = url.searchParams.get('rest_route') || (path.startsWith('/wp-json/') ? path.slice(8) : '');
 	if (STORE_CHECKOUT.test(rest)) return 'store';
 	return '';
+}
+
+// The form fields a route decision needs, from a CLONE of the request, or null when
+// there is nothing to read. The caller forwards the original. A body over the cap,
+// or with no content-length, is null, so an account POST then has no route and its
+// PHP gate fails closed.
+export async function readRouteFields(req) {
+	try {
+		if (!req || String(req.method || '').toUpperCase() !== 'POST') return null;
+		const len = Number(req.headers.get('content-length'));
+		if (!len || len > TURNSTILE_MAX_BODY) return null;
+		const ct = String(req.headers.get('content-type') || '').toLowerCase();
+		if (ct.includes('application/x-www-form-urlencoded')) {
+			return new URLSearchParams(await req.clone().text());
+		}
+		if (ct.includes('multipart/form-data')) {
+			const fd = await req.clone().formData();
+			const params = new URLSearchParams();
+			for (const [k, v] of fd.entries()) {
+				if (typeof v === 'string') params.append(k, v);
+			}
+			return params;
+		}
+		return null;
+	} catch (_) {
+		return null;
+	}
 }
 
 // The token of a gated request, read from a CLONE of it (the caller forwards the original). ''
