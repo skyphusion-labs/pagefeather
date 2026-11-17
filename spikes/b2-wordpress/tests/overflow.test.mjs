@@ -301,8 +301,16 @@ test('#714 held-block: a fast, retry-safe 503 that never ran', async () => {
 	assert.equal(r.status, 503);
 	assert.equal(r.headers.get('x-php-overflow'), 'held-block');
 	assert.equal(r.headers.get('x-write-loss'), 'none');
+	assert.equal(r.headers.get('x-overloaded'), '1');
 	assert.equal(r.headers.get('retry-after'), '5');
+	assert.match(r.headers.get('cache-control') || '', /no-store/);
 	assert.match(await r.text(), /try again/i);
+});
+test('the held-block answer is never stored, at the edge either (as #715\'s shed answers)', async () => {
+	const { overflowHeldBlockResponse } = await import('../overflow.mjs');
+	const r = overflowHeldBlockResponse();
+	assert.equal(r.headers.get('cloudflare-cdn-cache-control'), 'no-store');
+	assert.equal(r.headers.get('x-php-overflow'), 'held-block');
 });
 test('#714 index.js: blocks local PHP while ovHeld > 0, before withPhp and on overflow-local', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
@@ -317,4 +325,9 @@ test('#714 index.js: blocks local PHP while ovHeld > 0, before withPhp and on ov
 	const localCtx = src.slice(ov - 500, ov + 80);
 	assert.match(localCtx, /overflowHeldBlocksLocal\(ovs, ovHeld\)/);
 	assert.ok(localCtx.indexOf('overflowHeldBlockResponse') < ov, 'overflow-local is guarded before the log');
+});
+test('#714 index.js: spike and upload paths may still boot PHP while ovHeld > 0', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const guard = src.match(/if \(overflowHeldBlocksLocal\(ovs, ovHeld\) && !url\.pathname\.startsWith\('\/_'\) && !ovUpload\) \{[\s\S]{0,200}?return overflowHeldBlockResponse\(\);/);
+	assert.ok(guard, 'the pre-withPhp held-block guard exempts spike paths and uploads');
 });
