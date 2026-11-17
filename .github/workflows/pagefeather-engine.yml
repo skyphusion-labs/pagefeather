@@ -320,7 +320,7 @@ jobs:
           d="$RUNNER_TEMP/e/pagefeather-engine-s1-lean-trim"
           PF_ENGINE_JS="$d/php_8_3.js"; PF_ENGINE_WASM="$(find "$d" -name php_8_3.wasm | head -1)"; export PF_ENGINE_JS PF_ENGINE_WASM
           ./build.sh | tail -1
-          B=http://localhost:8797; PW=local-spike-password
+          PW=local-spike-password
           ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}")  # the local test token, as frames-e2e.sh passes it
           for arm in lean lean-trim lean-nofileinfo; do
             d="$RUNNER_TEMP/e/pagefeather-engine-s1-$arm"
@@ -328,6 +328,14 @@ jobs:
             ./run.sh --stop > /dev/null 2>&1 || true
             export PERSIST_TO=$(mktemp -d)
             DEV_LOCAL=1 ./run.sh _ping > /dev/null || { echo "::error::wrangler dev did not start ($arm)"; tail -40 dev.log; exit 1; }
+            # #839: the port this step's run.sh chose. One build per runner.
+            # shellcheck source=port.sh
+            . ./port.sh
+            server_port || { echo "::error::run.sh did not record a port"; exit 1; }
+            if [ "${port_from:-}" = recorded ]; then
+              echo "port $PORT"
+            fi
+            B=http://localhost:$PORT
             curl -s "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null
             echo "== $arm"
             B=$B ADMIN_PASSWORD=$PW python3 tests/upload-sniff.py "$RUNNER_TEMP/fx" "$RUNNER_TEMP/up-$arm.json"
@@ -538,10 +546,18 @@ jobs:
           tail -1 build/opcache.log
           ./run.sh --stop > /dev/null 2>&1 || true
           export PERSIST_TO=$(mktemp -d)
-          B=http://localhost:8797; PW=local-spike-password
+          PW=local-spike-password
           ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}")
           # As frames-e2e.sh runs it after the same opcache.sh priming (the default env), with recycling off.
           DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off" ./run.sh _ping > /dev/null || { echo "::error::wrangler dev did not start"; tail -40 dev.log; exit 1; }
+          # #839: the port this step's run.sh chose. One build per runner.
+          # shellcheck source=port.sh
+          . ./port.sh
+          server_port || { echo "::error::run.sh did not record a port"; exit 1; }
+          if [ "${port_from:-}" = recorded ]; then
+            echo "port $PORT"
+          fi
+          B=http://localhost:$PORT
           echo "install: $(curl -s -o /dev/null -w '%{http_code}' "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_install")"
           echo "activate woocommerce: $(curl -s -o /dev/null -w '%{http_code}' "${ST[@]}" -X POST -H "x-admin-password: $PW" "$B/_activate?plugin=woocommerce/woocommerce.php")"
           B=$B ADMIN_PASSWORD=$PW python3 tests/opcache-stats.py 2 "$RUNNER_TEMP/opcache-stats.jsonl"

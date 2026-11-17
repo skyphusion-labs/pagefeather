@@ -14,11 +14,15 @@
 #   is the fix at work, not a cache that happened to miss.
 set -u
 cd "$(dirname "$0")/.." || exit 1
-export PORT=${PORT:-8797} DEV_ENV=${DEV_ENV:-dosql-local}
-B=http://localhost:$PORT; PW=${ADMIN_PASSWORD:-local-spike-password}; TOK=${SPIKE_TOKEN:-local-spike-token}
+export DEV_ENV=${DEV_ENV:-dosql-local}
+# shellcheck source=port.sh
+. ./port.sh
+PW=${ADMIN_PASSWORD:-local-spike-password}; TOK=${SPIKE_TOKEN:-local-spike-token}
 STATE=$(mktemp -d "${TMPDIR:-/tmp}/false-404.XXXXXX"); export PERSIST_TO=$STATE
 trap './run.sh --stop > /dev/null 2>&1; rm -rf "$STATE"' EXIT
 DEV_LOCAL=1 DEV_LOG_LEVEL=log DEV_VARS="PHP_RECYCLE:off FAULT_INJECT:sql-fail" ./run.sh _ping > /dev/null || { echo "false-404: wrangler dev did not start"; tail -20 dev.log; exit 1; }
+server_port || exit 1
+B=http://localhost:$PORT
 curl -sf -H "x-spike-token: $TOK" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null || { echo "false-404: /_install failed"; exit 1; }
 [ "$(curl -s -o /dev/null -w '%{http_code}' -H "x-spike-token: $TOK" -X POST "$B/_activate?plugin=woocommerce/woocommerce.php")" = 200 ] || { echo "false-404: activating WooCommerce failed"; exit 1; }
 B=$B SPIKE_TOKEN=$TOK ADMIN_PASSWORD=$PW python3 -I - <<'PY'

@@ -10,7 +10,7 @@ npm ci
 ./build.sh            # WordPress tree: build/site.zip and build/public/
 ./opcache.sh          # precompiled PHP: build/opcache.zip (runs e2e.sh on wrangler dev)
 ./run.sh _install     # installs WordPress into local D1
-./run.sh              # then open http://localhost:8797/
+./run.sh              # prints "port N"; open http://localhost:<that port>/
 ./e2e.sh              # pages, login, admin, editor, REST write
 php tests/dialect-test.php
 php tests/zone-cache-purge-test.php   # zone cache purge-on-publish (#205)

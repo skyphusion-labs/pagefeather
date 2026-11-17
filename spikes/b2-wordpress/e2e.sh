@@ -1,9 +1,22 @@
 #!/bin/bash
 # End-to-end check against a running spike: pages, login, admin, editor, REST write.
-# Usage: ./e2e.sh [base-url]   (default http://localhost:$PORT, PORT default 8797)
+# Usage: ./e2e.sh [base-url]
+#   A base url is used as given. PORT set: http://localhost:$PORT (the exported one).
+#   Nothing set: the port run.sh recorded in .dev-port, or a free port on
+#   127.0.0.1 when this script is run standalone (#839).
 # Prints one line per request. Exits 1 if any request fails or reports D1 failures.
 set -u
-B=${1:-http://localhost:${PORT:-8797}}
+if [ -n "${1:-}" ]; then
+  B=$1
+else
+  # shellcheck source=port.sh
+  . "$(dirname "$0")/port.sh"
+  take_port || { echo "could not pick a free port" >&2; exit 1; }
+  if [ "${port_from:-}" = picked ]; then
+    echo "port $PORT"
+  fi
+  B=http://localhost:$PORT
+fi
 PW=${ADMIN_PASSWORD:-local-spike-password}
 ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}")
 T=$(mktemp -d); J=$T/jar; H=$T/h; bad=0

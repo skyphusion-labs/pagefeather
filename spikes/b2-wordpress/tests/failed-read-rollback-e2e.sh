@@ -19,8 +19,10 @@
 #      answers exactly as it does without the probe. Red, by path: 503 with Retry-After on every retry (locked out).
 set -u
 cd "$(dirname "$0")/.." || exit 1
-export PORT=${PORT:-8797} DEV_ENV=${DEV_ENV:-dosql-local}
-B=http://localhost:$PORT; PW=${ADMIN_PASSWORD:-local-spike-password}; TOK=${SPIKE_TOKEN:-local-spike-token}
+export DEV_ENV=${DEV_ENV:-dosql-local}
+# shellcheck source=port.sh
+. ./port.sh
+PW=${ADMIN_PASSWORD:-local-spike-password}; TOK=${SPIKE_TOKEN:-local-spike-token}
 STATE=$(mktemp -d "${TMPDIR:-/tmp}/failed-read-rollback.XXXXXX"); export PERSIST_TO=$STATE/db
 # This test builds with its own mu-plugin (IMPORT_CONTENT). It saves the whole build/ tree first and puts it back
 # EXACTLY on exit: a later step (opcache-build's remote packs) works on the primed build an earlier step made
@@ -45,6 +47,8 @@ add_action( 'init', function () {
 PHP
 IMPORT_CONTENT="$STATE/content" IMPORT_MU_PLUGINS="pf-derived-test.php" ./build.sh > "$STATE/build.log" 2>&1 || { echo "failed-read-rollback: build.sh failed"; tail -5 "$STATE/build.log"; exit 1; }
 DEV_LOCAL=1 DEV_LOG_LEVEL=log DEV_VARS="PHP_RECYCLE:off FAULT_INJECT:sql-fail REQUEST_FRAMES:on" ./run.sh _ping > /dev/null || { echo "failed-read-rollback: wrangler dev did not start"; tail -20 dev.log; exit 1; }
+server_port || exit 1
+B=http://localhost:$PORT
 curl -sf -H "x-spike-token: $TOK" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null || { echo "failed-read-rollback: /_install failed"; exit 1; }
 B=$B TOK=$TOK PW=$PW python3 -I - <<'PY'
 import json, os, sys, urllib.request, urllib.error
