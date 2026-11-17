@@ -37,8 +37,8 @@ playwright() { # dir config: run Playwright with OUR wrapper config (exclusions,
   x python3 -I "$here/runner.py" config --suite "$suite" --suite-dir "$src/$e2e" --run-dir "$run"
   case "$suite" in
     wc|wc-api|wc-cpt) # Two phases, so the login is asserted BEFORE any test (lead ruling): the setup projects
-        # (install wc, global authentication, site setup), then check-state on both saved logins,
-        # then the tests alone. The WP and Gutenberg configs assert it in globalSetup instead.
+        # (global authentication, site setup; install wc is dropped in pf-conformance.config.mjs),
+        # then check-state on both saved logins, then the tests alone. WP and Gutenberg use globalSetup.
         local st=$src/$e2e/.state rc=0
         # The setup phase writes the same report.json as the tests. It must never survive as "the results":
         # remove it after phase 1, whatever phase 1 did. A failed setup or login is a STOP (exit 3), not a result.
@@ -67,8 +67,11 @@ case "$act" in
       wp) in_dir "$src" npm ci; in_dir "$src" npx playwright install --with-deps chromium ;;
       wc|wc-api|wc-cpt) in_dir "$src" corepack enable
           in_dir "$src" pnpm install --frozen-lockfile --filter=@woocommerce/plugin-woocommerce...
+          # External throwaway needs the built package (pnpm install leaves source only).
+          in_dir "$src" pnpm --filter=@woocommerce/e2e-utils-playwright run build
           in_dir "$src/plugins/woocommerce" pnpm exec playwright install --with-deps chromium ;;
-      gb) in_dir "$src" npm ci; in_dir "$src" npm run build:packages
+      # Gutenberg 23.6 dropped build:packages; the pin uses npm run build (conf759 STOP 2026-11-17).
+      gb) in_dir "$src" npm ci; in_dir "$src" npm run build
           in_dir "$src" npx playwright install --with-deps chromium ;;
     esac
     ;;

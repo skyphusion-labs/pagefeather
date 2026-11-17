@@ -285,3 +285,36 @@ test('the capped answer is never stored, at the edge either (as #715\'s shed ans
 	assert.equal(r.headers.get('x-write-loss'), 'none');
 	assert.equal(r.headers.get('x-php-overflow'), 'capped');
 });
+
+// #714: measured locally, the front runtime while holding overflowed requests is what exceeded memory; held
+// waiters alone are cheap. While ovHeld > 0, no shopper request may boot PHP in this Worker isolate.
+test('#714 held-block: overflowHeldBlocksLocal is true only when overflow is on and held > 0', async () => {
+	const { overflowHeldBlocksLocal } = await import('../overflow.mjs');
+	assert.equal(overflowHeldBlocksLocal(overflowSettings({ PHP_OVERFLOW: 'on' }), 1), true);
+	assert.equal(overflowHeldBlocksLocal(overflowSettings({ PHP_OVERFLOW: 'always' }), 3), true);
+	assert.equal(overflowHeldBlocksLocal(overflowSettings({ PHP_OVERFLOW: 'on' }), 0), false);
+	assert.equal(overflowHeldBlocksLocal(overflowSettings({}), 5), false);
+});
+test('#714 held-block: a fast, retry-safe 503 that never ran', async () => {
+	const { overflowHeldBlockResponse } = await import('../overflow.mjs');
+	const r = overflowHeldBlockResponse();
+	assert.equal(r.status, 503);
+	assert.equal(r.headers.get('x-php-overflow'), 'held-block');
+	assert.equal(r.headers.get('x-write-loss'), 'none');
+	assert.equal(r.headers.get('retry-after'), '5');
+	assert.match(await r.text(), /try again/i);
+});
+test('#714 index.js: blocks local PHP while ovHeld > 0, before withPhp and on overflow-local', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const wp = src.indexOf('const workerRun = await withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx)');
+	assert.ok(wp > 0);
+	const before = src.slice(wp - 1200, wp);
+	assert.match(before, /overflowHeldBlocksLocal\(ovs, ovHeld\)/);
+	assert.match(before, /return overflowHeldBlockResponse\(\)/);
+	assert.match(before, /event: 'overflow-held-block'/);
+	const ov = src.indexOf("event: 'overflow-local'");
+	assert.ok(ov > 0);
+	const localCtx = src.slice(ov - 500, ov + 80);
+	assert.match(localCtx, /overflowHeldBlocksLocal\(ovs, ovHeld\)/);
+	assert.ok(localCtx.indexOf('overflowHeldBlockResponse') < ov, 'overflow-local is guarded before the log');
+});

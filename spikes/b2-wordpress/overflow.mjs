@@ -67,6 +67,18 @@ export function overflowCapResponse() {
 	return new Response('The site is busy and did not start your request. Please try again in a few seconds.\n', { status: 503, headers });
 }
 
+// #714: while this isolate holds overflowed requests in flight, it must not boot PHP here (measured
+// locally: the front runtime is about 65 MiB; held waiters are cheap). Same retry-safe shape as the cap.
+export function overflowHeldBlocksLocal(s, held) {
+	return !!s && s.on && (Number(held) || 0) > 0;
+}
+
+export function overflowHeldBlockResponse() {
+	const headers = new Headers({ 'content-type': 'text/plain; charset=utf-8', 'retry-after': '5', 'x-php-overflow': 'held-block', 'x-write-loss': 'none', 'x-overloaded': '1' });
+	noStoreAnywhere(headers);
+	return new Response('The site is busy and did not start your request. Please try again in a few seconds.\n', { status: 503, headers });
+}
+
 // lock: { running, waiting } of this isolate's PHP lock, read just before the request would queue.
 export function shouldOverflow(s, lock, url, isUpload) {
 	if (!s || !s.on) return false;
