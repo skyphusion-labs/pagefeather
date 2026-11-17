@@ -24,6 +24,7 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
 | `php/pf-conformance-throwaway.php` | The marker mu-plugin. Its REST route says "throwaway" and names the host. |
 | `exclude/<suite>.txt` | The specs NOT run, each with its reason. Each one becomes a "not run" row of the matrix. |
 | `areas.txt` | The map from each spec file to a row of `docs/support-matrix.md`. The first matching line wins; a spec no line maps is reported as unmapped. |
+| `gaps.py`, `php/pf-conformance-gaps.php` | Our stand-ins for upstream specs that write on the runner's disk. Today: wordpress-develop's `fatal-error-handler` (upstream's own fatal line, on `?pf_conformance=fatal`, only beside the throwaway marker). Writes `results-gaps-<on\|off>.json`; `gaps.py baseline` writes the outcome the upstream spec asserts. |
 | `matrix.py` | `cells`: turns a run's `results.json` files (ours and the stock baseline, per suite) and the route runner's result into matrix cells, each with its citation. `--apply` writes them into the matrix. |
 | `assert-login.mjs` | The WordPress and Gutenberg `globalSetup` step that calls `runner.py check-state`. |
 | `runner.py` | `prepare`: CHECKS the site and the seed setup (it never writes), then writes `<run-dir>/env` (mode 600). `check-state`: asserts a saved login is real. `config`: writes the Playwright wrapper config. `summarize` and `compare`: the matrix rows. |
@@ -58,7 +59,8 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
    - Run `runner.py summarize` on each `report.json`.
    - Then run `runner.py compare --baseline <base-run>/results.json --ours <our-run>/results.json`.
    - A test that fails on the baseline too is marked `upstream`. One that fails only on ours is marked `OURS`, and compare exits 1.
-8. **The matrix:** for each tier and cache pass, run `matrix.py cells`. It takes the run's identity as arguments and never reads a run's `env`.
+8. **The gap tests:** in each cache pass, after the suites, run `gaps.py run --base-url <site> --out results-gaps-<on|off>.json`. Run `gaps.py baseline --out baseline-gaps.json` once. A failing gap check is a result; a site without the marker is a stop.
+9. **The matrix:** for each tier and cache pass, run `matrix.py cells`. It takes the run's identity as arguments and never reads a run's `env`.
 
        python3 -I tests/conformance/matrix.py cells --tier "Paid DO" --run-tag <tag> --date <YYYY-MM-DD> \
            --build <the site's /_build> --cache on \
@@ -75,6 +77,7 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
              --build <cf759a's /_build> --cache on \
              --suite wp=results-wp-on.json:baseline-wp.json --suite wc=results-wc-on.json:baseline-wc.json \
              --suite gb=results-gb-on.json:baseline-gb.json --suite wc-api=results-wc-api-on.json:baseline-wc-api.json \
+             --suite gaps=results-gaps-on.json:baseline-gaps.json \
              --routes routes-on.json --apply docs/support-matrix.md --strict
 
    - Arm B's files (`*-on-b.json`, `armb-verdict.json`) do NOT go into the matrix. They are #791's acceptance check against the main arm, not a measurement of a tier.
@@ -102,5 +105,7 @@ Basic auth on b2 needs #761 (`PHP_AUTH_USER` was never set). Until that fix merg
     tests/conformance/prepare-content-test.sh
     python3 -I tests/conformance/runner_test.py
     python3 -I tests/conformance/matrix_test.py
+    python3 -I tests/conformance/gaps_test.py
+    bash tests/conformance/gaps-php-test.sh
 
 Each guard was checked by a mutation: with the guard removed, its own test case fails.

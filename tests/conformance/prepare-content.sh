@@ -75,6 +75,10 @@ add() { local cur=${!1}; case " $cur " in *" $2 "*) return 0 ;; esac; printf -v 
 # site without it, because the suites delete all content.
 cp "$here/php/pf-conformance-throwaway.php" "$out/wp-content/mu-plugins/"
 add imp_mu pf-conformance-throwaway.php
+# The gap tests (php/pf-conformance-gaps.php, gaps.py), for every suite: our stand-in for upstream specs that
+# write files on the runner's disk. It acts only on its own trigger, and only beside the marker above.
+cp "$here/php/pf-conformance-gaps.php" "$out/wp-content/mu-plugins/"
+add imp_mu pf-conformance-gaps.php
 [ "$want_wp" = 0 ] || add themes twentytwentyone
 if [ "$want_wc" = 1 ]; then
   add themes twentytwentythree
