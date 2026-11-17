@@ -95,6 +95,15 @@ class H(BaseHTTPRequestHandler):
             self.answer(200, BAD, VERSION_OLD, "application/json")
         elif mode == "already":
             self.answer(200, ALREADY, VERSION_NEW, "application/json")
+        elif mode == "trunc" and i == 1:
+            # #605 (TAG 11162233, the npm arm): the envelope cut off mid-body. Its first bytes say installed true, but
+            # it is not one JSON value. Headers promise more bytes than arrive, then the connection closes.
+            self.send_response(200); self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(OK) + 500)); self.send_header("x-version", VERSION_NEW); self.end_headers()
+            self.wfile.write(OK[:90]); self.wfile.flush(); self.close_connection = True
+            return
+        elif mode == "trunc":
+            self.answer(200, ALREADY, VERSION_NEW, "application/json")
         elif mode == "secret-body":
             self.answer(200, SECRET_BODY, VERSION_OLD, "text/plain")
         else:
@@ -176,6 +185,8 @@ ok "installed false: exit 1 on the first post" "$(cat "$T/rc") $(posts)" "1 1"
 ok "installed false: names the status and does not claim success" "$(grep -c 'install failed: last status 200;' "$T/err") $(grep -c 'user_id' "$T/out")" "1 0"
 run_install already INSTALL_WAIT_S=30 INSTALL_INTERVAL_S=0
 ok "installed already: exit 0, one post" "$(cat "$T/rc") $(posts)" "0 1"
+run_install trunc INSTALL_WAIT_S=30 INSTALL_INTERVAL_S=0
+ok "#605 a cut-off answer (installed true in its first bytes), then already: exit 0, two posts" "$(cat "$T/rc") $(posts)" "0 2"
 ok "installed already: the success line" "$(grep -c '^{"installed": "already"} 4 ms$' "$T/out")" "1"
 
 echo "4. no answer, and a body that is the password"
@@ -203,6 +214,11 @@ ok "the headers still go through curl -K and a process substitution" \
 ok "a refused spike stays the plain 403, with no build id" \
   "$(grep -c "return new Response('forbidden', { status: 403 });" "$ROOT/spikes/b2-wordpress/index.js") $(grep -c 'spikeForbidden' "$ROOT/spikes/b2-wordpress/index.js" || true) $(grep -c 'x-worker-version' "$ROOT/spikes/b2-wordpress/index.js" || true)" "2 0 0"
 ok "install.sh does not read x-worker-version" "$(grep -c 'x-worker-version' "$ROOT/deploy/install.sh" || true)" "0"
+
+# #605: deploy/wfp's site add installs through the SAME helper (one check, no drift): its own one-read check took a
+# cut-off answer as a failure and an answer that said installed false as a pass.
+ok "#605 deploy/wfp/site.sh sources deploy/install.sh and installs with install_wordpress" "$(grep -q '\. "\$ROOT/deploy/install.sh"' "$ROOT/deploy/wfp/site.sh" && grep -q 'install_wordpress "\$ORIGIN"' "$ROOT/deploy/wfp/site.sh" && echo 1 || echo 0)" "1"
+ok "#605 deploy/wfp/site.sh has no install check of its own left" "$(grep -c 'install did not answer JSON' "$ROOT/deploy/wfp/site.sh" || true)" "0"
 
 echo "$fails failing case(s)"
 exit "$fails"

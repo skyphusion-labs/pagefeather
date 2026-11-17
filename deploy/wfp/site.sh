@@ -17,6 +17,8 @@
 #   3. the bucket emptied, then the workspace destroyed (bucket, secrets, entry)
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
+# shellcheck source=../install.sh
+. "$ROOT/deploy/install.sh"  # install_wordpress: the one install check, shared with deploy.sh (#605, #811)
 need_account
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
 cmd=${1:-}; s=${2:-}
@@ -113,13 +115,14 @@ if [ "$cmd" = up ]; then
 
   log "site $s: wait for $ORIGIN (the site itself, lib.sh wait_site), then install"
   wait_site "$ORIGIN"
-  hdr() { printf 'header = "x-spike-token: %s"\nheader = "x-admin-password: %s"\n' "$(out spike_token)" "$(out admin_password)"; }
-  curl_cfg "$(hdr)" -s -m 300 -X POST "$ORIGIN/_install" > "$W/install.json" || true
-  python3 -c 'import json, sys
-try:
-    d = json.load(open(sys.argv[1])); print("  install:", str(d.get("installed") or d.get("out", ""))[-80:])
-except ValueError:
-    print("  install did not answer JSON:", open(sys.argv[1]).read()[:200]); sys.exit(1)' "$W/install.json"
+  # #605: the SAME install check as deploy.sh (deploy/install.sh install_wordpress, #811), so the two cannot drift.
+  # The one-read check here stopped a site add whose install had worked (an answer cut off in transit, TAG
+  # 11162233) and passed an answer that said installed false. install_wordpress posts until the envelope's out
+  # says installed true or "already" (a repeated /_install on an installed site answers "already"), retries 403,
+  # 5xx, no answer and a body that is not one JSON value within INSTALL_WAIT_S, and fails at once on a JSON
+  # answer that did not install. The secrets reach curl through -K, never argv; its messages never print them.
+  ( SPIKE_TOKEN=$(out spike_token); ADMIN_PASSWORD=$(out admin_password); export SPIKE_TOKEN ADMIN_PASSWORD
+    install_wordpress "$ORIGIN" ) || { echo "site $s: WordPress did not install at $ORIGIN (deploy/install.sh); stopping" >&2; exit 1; }
   echo "site $s: up at $ORIGIN"
 elif [ "$cmd" = down ]; then
   if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ]; then
