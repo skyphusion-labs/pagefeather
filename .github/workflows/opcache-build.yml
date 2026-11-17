@@ -60,6 +60,14 @@ jobs:
           if ! tests/frames-e2e.sh; then
             echo "::error::frames-e2e.sh failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1
           fi
+      - name: No WooCommerce block registration on admin screens that render none, on against off (issue #504)
+        # On the primed bundled build: the profile GET, the profile save and options-general.php peak at least 4 MiB
+        # lower (measured 7); their HTML is identical once the per-load values are blanked; the editors are unchanged.
+        working-directory: spikes/b2-wordpress
+        run: |
+          if ! tests/woo-blocks-scope-e2e.sh; then
+            echo "::error::woo-blocks-scope-e2e.sh failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1
+          fi
       - name: The #598 reproducer flipped by #603, the recycle loop, the boot race, the bounded gate (issue #603)
         # recycle-stack-e2e.sh: the deploy flow and two forced recycles; with PHP_MEMORY_REUSE and BOOT_GATE on, ONE
         # live memory each time; with both off it must FAIL with the VIOLATION (the stacking is still reproduced).
