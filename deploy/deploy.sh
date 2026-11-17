@@ -373,14 +373,20 @@ if [ "${WOO_ACTIVE:-0}" = 1 ]; then
   # instead of relying on the first attempt's luck.
   ACT_TRIES=${ACT_TRIES:-4}
   act_ok=0
+  # #661: "active" is not enough. A first attempt that died mid-install left WooCommerce's install lock, the retry
+  # skipped the install, and WordPress still saved the plugin as active: every request then failed the lock INSERT,
+  # and without WooCommerce's roles every REST write answered 403. /_activate now clears its own dead attempt's lock
+  # and answers "installed" (the stored version matches, no lock, the administrator holds the caps); both are required.
   for act_n in $(seq 1 "$ACT_TRIES"); do
-    if curl -s -m 300 -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_activate?plugin=woocommerce/woocommerce.php" | tee /dev/stderr | grep -q '\\"active\\":true'; then
+    act_out=$(curl -s -m 300 -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$URL/_activate?plugin=woocommerce/woocommerce.php")
+    printf '%s\n' "$act_out" >&2
+    if grep -q '\\"active\\":true' <<<"$act_out" && grep -q '\\"installed\\":true' <<<"$act_out"; then
       act_ok=1; break
     fi
-    echo "WooCommerce activation attempt $act_n/$ACT_TRIES did not report active; retrying" >&2
+    echo "WooCommerce activation attempt $act_n/$ACT_TRIES did not report active AND installed; retrying" >&2
     sleep "$((act_n * 3))"
   done
-  [ "$act_ok" = 1 ] || { echo "WooCommerce did not activate after $ACT_TRIES attempts (a result: record it)"; exit 1; }
+  [ "$act_ok" = 1 ] || { echo "WooCommerce did not activate AND install after $ACT_TRIES attempts (a result: record it)"; exit 1; }
 fi
 
 # #734: OBJECT_CACHE_VERSIONS is on by default for variant a; its versions table is installed here and read back.
