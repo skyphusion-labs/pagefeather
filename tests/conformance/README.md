@@ -68,6 +68,15 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
    - Each cell cites the run tag, date, build and cache mode. A cell is `yes` only when a test passed and none failed only here. One that fails only here makes it `limited` (or `no`, if every test that ran did). A result that needs a look stays `not measured`.
    - A cell that already holds measured text (a citation, or a known limit such as #768's memory ceiling) is KEPT. The run is appended after it as `; conformance run: ...`. A passing suite never erases a limit it does not test.
    - The excluded specs are written as a "not run" block. `--strict` exits 1 on an unmapped spec or an `OURS` test, so a run that needs a look is never quiet.
+   - **For the first shared run** (`conf759-run.md`): its exports are `results-<suite>-<on|off>.json`, `baseline-<suite>.json` and `routes-<on|off>.json`, and its throwaway `cf759a` is a `deploy/wfp` site, so the tier is `WfP`. One call per cache pass, from the pulled `conf759/<RUN_ID>/` directory:
+
+         python3 -I tests/conformance/matrix.py cells --tier WfP --run-tag <RUN_ID> --date <the run's date> \\
+             --build <cf759a's /_build> --cache on \\
+             --suite wp=results-wp-on.json:baseline-wp.json --suite wc=results-wc-on.json:baseline-wc.json \\
+             --suite gb=results-gb-on.json:baseline-gb.json --suite wc-api=results-wc-api-on.json:baseline-wc-api.json \\
+             --routes routes-on.json --apply docs/support-matrix.md --strict
+
+   - Arm B's files (`*-on-b.json`, `armb-verdict.json`) do NOT go into the matrix. They are #791's acceptance check against the main arm, not a measurement of a tier.
 
 Run each suite twice on our site, once with the cache on and once with it off. A failure that happens only with the cache on is a cache effect, not a WordPress defect.
 
