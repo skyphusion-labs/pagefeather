@@ -71,7 +71,19 @@ case "$act" in
           in_dir "$src" pnpm --filter=@woocommerce/e2e-utils-playwright run build
           in_dir "$src/plugins/woocommerce" pnpm exec playwright install --with-deps chromium ;;
       # Gutenberg 23.6 dropped build:packages; the pin uses npm run build (conf759 STOP 2026-11-17).
-      gb) in_dir "$src" npm ci; in_dir "$src" npm run build
+      gb) in_dir "$src" npm ci
+          in_dir "$src" npm run clean:packages
+          in_dir "$src" npm run clean:package-types
+          in_dir "$src" npm rebuild esbuild 2>/dev/null || in_dir "$src" node ./node_modules/esbuild/install.js 2>/dev/null || true
+          gb_build=0
+          for gb_try in 1 2; do
+            if in_dir "$src" env NODE_OPTIONS=--max-old-space-size=6144 npm run build; then gb_build=1; break; fi
+            echo "vps-run: gb install attempt $gb_try failed; retrying after clean" >&2
+            in_dir "$src" npm run clean:packages
+            in_dir "$src" npm run clean:package-types
+            in_dir "$src" npm rebuild esbuild 2>/dev/null || true
+          done
+          [ "$gb_build" = 1 ] || { echo "vps-run: STOP: gb build failed after 2 attempts" >&2; exit 3; }
           in_dir "$src" npx playwright install --with-deps chromium ;;
     esac
     ;;
