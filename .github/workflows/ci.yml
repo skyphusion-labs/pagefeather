@@ -188,6 +188,8 @@ jobs:
           bash tests/conformance/prepare-content-test.sh
           python3 -I tests/conformance/runner_test.py
           python3 -I tests/conformance/matrix_test.py
+          python3 -I tests/conformance/gaps_test.py
+          bash tests/conformance/gaps-php-test.sh
           python3 -I tests/conformance/seed-test.py
           python3 -I tests/conformance/routes-test.py
       - name: b-dosql mail From address

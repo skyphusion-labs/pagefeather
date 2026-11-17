@@ -1,7 +1,7 @@
 # wordpress-develop tests/e2e at WP_DEVELOP_SHA: specs NOT run on a deployed site (#759).
 # Path relative to tests/e2e, then the reason. runner.py passes the paths as testIgnore.
 specs/install.test.js                    rewrites wp-config.php on the RUNNER disk (assumes runner = server)
-specs/fatal-error-handler.test.js        writes a mu-plugin on the RUNNER disk; our gap test instead
-specs/maintenance-mode.test.js           writes .maintenance on the RUNNER disk; our gap test instead
+specs/fatal-error-handler.test.js        writes a mu-plugin on the RUNNER disk; gaps.py tests it instead (pf/fatal-error-handler)
+specs/maintenance-mode.test.js           writes .maintenance on the RUNNER disk; no, by design: code-locked sites never enter it (support matrix)
 specs/login-localize-script.test.js      writes a mu-plugin on the RUNNER disk
 specs/gutenberg-plugin.test.js           installs a plugin over REST; unsupported by design (code lock)

@@ -43,6 +43,7 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 | Site Health | limited: directory sizes answer 500 (#780) | limited: directory sizes answer 500 (#780) | limited: directory sizes answer 500 (#780) | not measured |
 | Multisite | not measured | not measured | not measured | not measured |
 | Installing plugins and themes from wp-admin | no, by design ([why](#plugins-and-themes-are-not-installed-from-wp-admin-by-design)) | no, by design | no, by design | no, by design |
+| Maintenance mode during updates | no, by design: sites are code-locked; updates ship in the build and the deploy replaces the site ([why](#plugins-and-themes-are-not-installed-from-wp-admin-by-design); `deploy/wfp/README.md`, the code lock #458) | no, by design: sites are code-locked; updates ship in the build and the deploy replaces the site ([why](#plugins-and-themes-are-not-installed-from-wp-admin-by-design); `deploy/wfp/README.md`, the code lock #458) | no, by design: sites are code-locked; updates ship in the build and the deploy replaces the site ([why](#plugins-and-themes-are-not-installed-from-wp-admin-by-design); `deploy/wfp/README.md`, the code lock #458) | no, by design: sites are code-locked; updates ship in the build and the deploy replaces the site ([why](#plugins-and-themes-are-not-installed-from-wp-admin-by-design); `deploy/wfp/README.md`, the code lock #458) |
 
 ## WooCommerce
 

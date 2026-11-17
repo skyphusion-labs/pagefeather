@@ -55,7 +55,7 @@ c=$t/out/wp-content
 for f in plugins/woocommerce-e2e-test-helper/woocommerce-e2e-test-helper.php plugins/woocommerce-cleanup/woocommerce-cleanup.php \
   plugins/gutenberg-test-plugins/disables-the-css-animations.php plugins/gutenberg-test-plugins/assets/a.js \
   themes/emptytheme/style.css themes/gutenberg-test-themes/darktheme/style.css mu-plugins/nocache-headers.php mu-plugins/server-timing.php \
-  mu-plugins/pf-conformance-throwaway.php; do
+  mu-plugins/pf-conformance-throwaway.php mu-plugins/pf-conformance-gaps.php; do
   [ -f "$c/$f" ] && ok "laid out: $f" || bad "missing: $f"
 done
 [ ! -e "$c/plugins/blocks" ] && ok "a helper not asked for is not taken (blocks)" || bad "blocks was taken"
@@ -66,7 +66,7 @@ tree=$(git -C "$gb" rev-parse "$gb_sha:packages/e2e-tests/plugins")
 grep -q "plugins/gutenberg-test-plugins = gutenberg:packages/e2e-tests/plugins $tree" "$t/out/PINS" && ok "PINS records the upstream tree id" || bad "PINS lacks the tree id"
 for want in "IMPORT_CONTENT=$t/out/wp-content" "IMPORT_THEMES='emptytheme gutenberg-test-themes'" \
   "IMPORT_PLUGINS='woocommerce-e2e-test-helper woocommerce-cleanup gutenberg-test-plugins'" \
-  "IMPORT_MU_PLUGINS='pf-conformance-throwaway.php nocache-headers.php server-timing.php'" "THEMES='twentytwentythree twentytwentyone twentytwentyfour'" \
+  "IMPORT_MU_PLUGINS='pf-conformance-throwaway.php pf-conformance-gaps.php nocache-headers.php server-timing.php'" "THEMES='twentytwentythree twentytwentyone twentytwentyfour'" \
   "SUITE=$here/plugins.txt PLUGINS='wp-mail-logging'" "THEME_SUITE=$here/themes.txt"; do
   case "$line" in *"$want"*) ok "line has: $want" ;; *) bad "line lacks: $want (line: $line)" ;; esac
 done
@@ -83,7 +83,7 @@ else bad "content.sh refused the line: $(tail -2 "$t/o")"; fi
 
 # 3. wp only: no git at all, one theme.
 if line=$(WC_REPO=file:///nonexistent GB_REPO=file:///nonexistent "$P" "$t/wp" wp 2>"$t/e"); then
-  [ "$line" = "IMPORT_CONTENT=$t/wp/wp-content IMPORT_MU_PLUGINS='pf-conformance-throwaway.php' THEME_SUITE=$here/themes.txt THEMES='twentytwentyone'" ] && ok "wp only: the line is exact" || bad "wp only: line is '$line'"
+  [ "$line" = "IMPORT_CONTENT=$t/wp/wp-content IMPORT_MU_PLUGINS='pf-conformance-throwaway.php pf-conformance-gaps.php' THEME_SUITE=$here/themes.txt THEMES='twentytwentyone'" ] && ok "wp only: the line is exact" || bad "wp only: line is '$line'"
 else bad "wp only: exit non-zero ($(cat "$t/e"))"; fi
 
 # 4. Refusals.

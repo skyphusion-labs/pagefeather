@@ -19,6 +19,9 @@ wp  specs/general-settings-invalid-timezone.test.js  WordPress | Settings
 wp  specs/profile/applications-passwords.test.js WordPress | Application passwords and HTTP Basic
 wp  specs/cache-control-headers-directives.test.js  WordPress | HTTP cache headers
 
+# ---- our gap tests (gaps.py): stand-ins for upstream specs that cannot run on a deployed site ----
+gaps  pf/fatal-error-handler                   WordPress | Fatal error handling
+
 # ---- Gutenberg test/e2e ----
 gb  specs/editor/*                               WordPress | The block editor
 gb  specs/preload/*                              WordPress | The block editor
