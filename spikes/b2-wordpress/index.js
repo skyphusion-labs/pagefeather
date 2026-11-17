@@ -2158,7 +2158,11 @@ function pageCacheHeaders(req, url, r, out, env, failed = 0) {
 		// Not stored at the edge, also when WordPress sent its own no-cache (which the
 		// cache would store as stale).
 		out.set('cloudflare-cdn-cache-control', 'no-store');
-		if (!wpCc) out.set('cache-control', 'private, no-store');
+		// #759: WordPress sends no-cache, private on logged-in and 404 pages. The browser
+		// must not keep them without no-store (wordpress-develop cache-control-headers-directives).
+		const cc = String(out.get('cache-control') || wpCc || '');
+		if (!cc) out.set('cache-control', 'private, no-store');
+		else if (!/no-store/i.test(cc)) out.set('cache-control', cc + ', no-store');
 	}
 }
 
