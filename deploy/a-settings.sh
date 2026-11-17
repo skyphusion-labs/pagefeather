@@ -33,6 +33,9 @@
 #                     object (26 ms p50 against 8 ms from the placed Worker), so it is not a default.
 #   PHP_OVERFLOW_POOL 1 to 128 (default 32, the measured default, #646). Needs PHP_OVERFLOW=1. The runtime
 #                     (overflow.mjs) takes 1 to 128; it ran 129 to 256 as 32, so those are refused here (#714).
+#   A_CRON=1            #855: a Workers Cron Trigger and a named PhpRuntime id cron for WP-Cron and Action Scheduler on
+#                     Hyperdrive approach A. Unset leaves today's render (no trigger, no DO for cron). PHP_OVERFLOW=on
+#                     already renders PHP_RUNTIME; A_CRON=1 without overflow adds that binding and migration.
 #   PHP_OVERFLOW_MAX_HELD off, or 1 to 1000 (#714, #717): the most overflowed requests one Worker isolate holds in
 #                     flight. Unset renders nothing: the code default, NO cap (#714 measured a cap of 16 losing 479
 #                     requests to save 2). A number caps; off: no cap. Needs PHP_OVERFLOW=1.
@@ -64,10 +67,11 @@ a_settings_check() {
     done
   fi
   if [ "$variant" != a ]; then
-    for v in OPCACHE_A RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE A_CLIENT PHP_OVERFLOW PHP_OVERFLOW_POOL PHP_OVERFLOW_MAX_HELD MEM_LEDGER OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE; do
+    for v in OPCACHE_A RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE A_CLIENT A_CRON PHP_OVERFLOW PHP_OVERFLOW_POOL PHP_OVERFLOW_MAX_HELD MEM_LEDGER OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE; do
       [ -z "${!v:-}" ] || { echo "$v is for variant a only (deploy/wfp has its own settings for b-dosql)" >&2; return 2; }
     done
   fi
+  case "${A_CRON:-0}" in 0|1) ;; *) echo "A_CRON must be 0 or 1, not ${A_CRON}" >&2; return 2 ;; esac
   case "${OPCACHE_A:-0}" in 0|1) ;; *) echo "OPCACHE_A must be 0 or 1, not ${OPCACHE_A}" >&2; return 2 ;; esac
   case "${OPCACHE_REMOTE:-0}" in 0|1) ;; *) echo "OPCACHE_REMOTE must be 0 or 1, not ${OPCACHE_REMOTE}" >&2; return 2 ;; esac
   case "${SITE_REMOTE:-0}" in 0|1) ;; *) echo "SITE_REMOTE must be 0 or 1, not ${SITE_REMOTE}" >&2; return 2 ;; esac
@@ -187,6 +191,29 @@ a_overflow_vars() {
 }
 a_overflow_bindings() {
   a_overflow_on || return 0
+  echo '[[durable_objects.bindings]]'; echo 'name = "PHP_RUNTIME"'; echo 'class_name = "PhpRuntime"'
+  echo '[[migrations]]'; echo 'tag = "v1"'; echo 'new_sqlite_classes = ["PhpRuntime"]'
+}
+
+# a_cron_on: A_CRON=1 (#855), the deploy gate until live acceptance.
+a_cron_on() {
+  [ "${A_CRON:-0}" = 1 ]
+}
+# a_cron_vars, a_cron_triggers, a_cron_bindings: render the cron driver. Bindings are skipped when PHP_OVERFLOW
+# is on (the pool binding is the same PhpRuntime class).
+a_cron_vars() {
+  a_cron_on || return 0
+  echo 'A_CRON = "on"'
+}
+a_cron_triggers() {
+  a_cron_on || return 0
+  local sched="${A_CRON_CRON:-* * * * *}"
+  echo '[triggers]'
+  echo "crons = [\"$sched\"]"
+}
+a_cron_bindings() {
+  a_cron_on || return 0
+  a_overflow_on && return 0
   echo '[[durable_objects.bindings]]'; echo 'name = "PHP_RUNTIME"'; echo 'class_name = "PhpRuntime"'
   echo '[[migrations]]'; echo 'tag = "v1"'; echo 'new_sqlite_classes = ["PhpRuntime"]'
 }
