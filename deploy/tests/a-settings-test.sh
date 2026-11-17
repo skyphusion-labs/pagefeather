@@ -183,7 +183,7 @@ python3 -I "$ROOT/deploy/wfp/remote_assets_check.py" "$T/default-nobinding.toml"
 ok "a default config WITHOUT the ASSETS binding passes too: a plain build needs none (rc $rc)" "$([ $rc = 0 ] && ! grep -q ASSETS "$T/default-nobinding.toml" && echo 1 || echo 0)"
 python3 -I "$ROOT/deploy/wfp/remote_assets_check.py" "$T/default.toml" "$APP" 2>"$T/default-red.err"; rc=$?
 ok "the control: the same DEFAULT config over a REMOTE build is REFUSED (rc $rc)" "$([ $rc = 2 ] && grep -q 'disagree' "$T/default-red.err" && echo 1 || echo 0)"
-ok "deploy.sh runs the guard on variant a before the deploy" "$(awk '/remote_assets_check.py/ {g=NR} /^DEP=.*deploy --config/ {d=NR} END {print (g && d && g < d) ? 1 : 0}' "$ROOT/deploy/deploy.sh")"
+ok "deploy.sh runs the guard on variant a before the deploy" "$(awk '/remote_assets_check.py/ {g=NR} /deploy_code_and_secrets/ {d=NR} END {print (g && d && g < d) ? 1 : 0}' "$ROOT/deploy/deploy.sh")"
 # WOO_EXTRAS (#667) is every variant, so it is the render's own [vars] line, not a_vars (render-conf.sh since #666;
 # a-render-test.sh checks the rendered line itself).
 ok "the render writes WOO_EXTRAS = \"off\" into [vars]" "$(grep -c 'WOO_EXTRAS = "off"' "$ROOT/deploy/render-conf.sh" | grep -qx 1 && echo 1 || echo 0)"

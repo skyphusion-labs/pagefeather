@@ -28,7 +28,7 @@ Every variant passed `e2e.sh` 17 of 17 after a fresh install. `c1`: first start 
 | Part | Made by | Where |
 | --- | --- | --- |
 | D1 database (WordPress tables) | Terraform | `deploy/terraform/main.tf`. Primary in region `LOCATION`. |
-| Secrets (salt, spike token, admin password) | Terraform (`random_password`) | Terraform state. Sent to the Worker with `wrangler secret bulk`. |
+| Secrets (salt, spike token, admin password) | Terraform (`random_password`) | Terraform state. Sent with `wrangler deploy --secrets-file`, in the same version as the code. |
 | R2 bucket for the media library (`MEDIA=1`) | Terraform | `deploy/terraform/main.tf` |
 | Worker and the PHP Durable Object | Wrangler | `spikes/b2-wordpress`, config `wrangler.deploy.<name>.toml` (written by `deploy.sh`) |
 | WordPress install | `deploy.sh` (`/_install`) | Runs inside the PHP object |

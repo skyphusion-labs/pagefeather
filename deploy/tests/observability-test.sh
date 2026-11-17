@@ -4,7 +4,7 @@
 # unset first (nothing: today's render). 3. obs_redact against a stand-in settings API: a good
 # redaction passes, and a redaction that does not read back fails AND turns the logs off (fail
 # closed), as deploy-a-lean.sh does. 4. deploy.sh redacts right after the upload, before the
-# CODE_ONLY exit and before the secrets.
+# CODE_ONLY exit. Secrets go in at the upload (#751).
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 fails=0
@@ -91,7 +91,7 @@ D="$ROOT/deploy/deploy.sh"
 ok "deploy.sh checks OBSERVABILITY before any step (it sources observability.sh and calls obs_check)" "$(grep -q '^obs_check "\$VARIANT" || exit 2$' "$D" && echo 1 || echo 0)"
 # #666: the render moved to render-conf.sh (render_conf), which deploy.sh sources and runs.
 ok "the block is in the rendered config" "$(grep -q '^  obs_block$' "$ROOT/deploy/render-conf.sh" && grep -q '^render_conf > "\$CONF"$' "$D" && echo 1 || echo 0)"
-ok "deploy.sh redacts after the upload, before the CODE_ONLY exit and the secrets" "$(awk '/^DEP=.*deploy --config/ {d=NR} /obs_redact "\$NAME"/ {r=NR} /^if \[ "\$CODE_ONLY" = 1 \]; then$/ && d {c=NR} /secret bulk/ {s=NR} END {print (d && r && c && s && d < r && r < c && r < s) ? 1 : 0}' "$D")"
+ok "deploy.sh redacts after the upload, before the CODE_ONLY exit" "$(awk '/deploy_code_and_secrets/ {d=NR} /obs_redact "\$NAME"/ {r=NR} /^if \[ "\$CODE_ONLY" = 1 \]; then$/ && d {c=NR} END {print (d && r && c && d < r && r < c) ? 1 : 0}' "$D")"
 
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]

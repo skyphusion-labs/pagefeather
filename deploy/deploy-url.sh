@@ -13,8 +13,8 @@ deployed_workers_url() {
 }
 
 # origin_check <deployed url> <SITE_ORIGIN>: a workers.dev site must be at its configured origin, or every link points
-# elsewhere. A custom-domain origin is not checked here. deploy.sh runs this AFTER the redaction and the secrets
-# (#754), so a failed check never strands a site without them.
+# elsewhere. A custom-domain origin is not checked here. deploy.sh runs this AFTER the upload (secrets in that
+# version, #751) and the redaction (#754), so a failed check never strands a site without them.
 origin_check() {
   local url=$1 origin=$2
   case "$origin" in

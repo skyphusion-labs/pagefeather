@@ -59,7 +59,8 @@
 # the image-to-text model, AI_ALT_INPUT=prompt selects an llava/llama-style model).
 #
 # Steps: Terraform makes the data plane -> build -> Wrangler config from the
-# Terraform outputs -> deploy -> secrets -> install -> measure -> deploy/results/.
+# Terraform outputs -> deploy (secrets in that version) -> redact logs when they
+# are on -> read the serving version -> install -> measure -> deploy/results/.
 #
 # CODE_ONLY=1 (fleet-chezmoi#2620): redeploy the code of a site that already exists, from any clone,
 # with no Terraform state. b-dosql only (its config needs one Terraform output, the media bucket,
@@ -140,6 +141,8 @@ pdf_invoice_check "$VARIANT" || exit 2
 # #811: /_install retries while the PHP object is still on the previous version.
 # shellcheck source=SCRIPTDIR/install.sh
 . "$ROOT/deploy/install.sh"
+# shellcheck source=SCRIPTDIR/deploy-upload.sh
+. "$ROOT/deploy/deploy-upload.sh"
 object_time_vars >/dev/null || exit 2
 # WOO_ACTIVE is 0 or 1 (#706). Unset was set to 0 above. Anything else is refused
 # before any step, the same as deploy/wfp woo_active_for_build.
@@ -331,27 +334,24 @@ if [ "$DRY_RUN" = 1 ]; then
   exit "${PIPESTATUS[0]}"
 fi
 
-# 4. Deploy and set the secrets.
+# 4. Deploy, with the secrets in the same version (#751).
 log "deploy"
-DEP=$("$ROOT/deploy/wr" deploy --config "$CONF" 2>&1) || { echo "$DEP" | tail -20; exit 1; }
 # #754: the URL on wrangler's trigger line, never the first workers.dev URL in the output (a var such as
-# a var holding a workers.dev URL prints one in the bindings). deploy/deploy-url.sh. The origin check runs below, after the secrets.
-URL=$(deployed_workers_url "$NAME" <<<"$DEP")
-echo "$DEP" | grep -E 'Total Upload|Current Version'
+# a var holding a workers.dev URL prints one in the bindings). deploy/deploy-url.sh. The origin check runs below, after the redaction.
+deploy_code_and_secrets || exit 1
 # Logs on: redact the query strings now, before anything else runs on the site, or turn the logs off.
+# That PATCH can publish a new Worker version. Nothing between here and the install publishes another.
 obs_redact "$NAME" || exit 1
+# The line is the deployments API's answer (newest deployment, version at 100 percent), not wrangler's
+# Current Version ID. CODE_ONLY runs obs_redact too, so it is printed here, before that exit. A failed read stops the deploy.
+pf_print_serving_version || exit 1
 if [ "$CODE_ONLY" = 1 ]; then
   log "code only: secrets, install and measurements skipped (they persist or ran once)"
   origin_check "$URL" "$SITE_ORIGIN" || exit 1
   echo "$URL"
   exit 0
 fi
-SECRETS=$(mktemp); chmod 600 "$SECRETS"
-# #765: one writer (deploy/pdf-invoice.sh): WP_SALT, SPIKE_TOKEN, and INVOICE_TOKEN when PDF_INVOICE=on.
-tf "$TF" output -json | deploy_secrets_json "$SECRETS" || { rm -f "$SECRETS"; exit 1; }
-"$ROOT/deploy/wr" secret bulk "$SECRETS" --config "$CONF" | tail -1
-rm -f "$SECRETS"
-# #754: AFTER the redaction and the secrets: a wrong origin fails the deploy, but it never strands a site without its
+# #754: AFTER the redaction (secrets are already in the uploaded version): a wrong origin fails the deploy, but it never strands a site without its
 # secrets or with its logs unredacted. (The URL is known only after the upload, so the check cannot move before it.)
 origin_check "$URL" "$SITE_ORIGIN" || exit 1
 SPIKE_TOKEN=$(out spike_token); ADMIN_PASSWORD=$(out admin_password)

@@ -20,7 +20,7 @@ pdf_invoice_binding() {
   [ "${PDF_INVOICE:-}" != on ] || { echo '[browser]'; echo 'binding = "BROWSER"'; }
 }
 
-# deploy_secrets_json <out file>: deploy.sh's `wrangler secret bulk` JSON from `terraform output -json` on stdin:
+# deploy_secrets_json <out file>: deploy.sh's `wrangler deploy --secrets-file` JSON from `terraform output -json` on stdin:
 # WP_SALT and SPIKE_TOKEN, plus INVOICE_TOKEN when PDF_INVOICE=on (refused if the workspace has none: a PDF with
 # no link is not a working invoice). Values go from stdin to the mode-600 file only, never to argv or stdout.
 deploy_secrets_json() {
