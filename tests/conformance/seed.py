@@ -18,7 +18,8 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
      (wp_check_filetype_and_ext names a file by its content; WP-CLI's media import goes through the same code). So
      an item is matched by its stem, and seed.json records the name WordPress gave it;
   6. the admin's ACCOUNT password = a new application password (one value passes both the wp-login.php form and
-     HTTP Basic on the unmodified suite). Older "conformance-" application passwords are revoked. Checked: the
+     HTTP Basic on the unmodified suite). Older "conformance-" application passwords are revoked. After the
+     password write, the first form login can get rest-nonce HTTP 500; the seed retries (#924). Checked: the
      form login; Basic on /wp/v2/users/me answers 200 (#761); a wrong password gets 401.
 
   7. the upstream test plugins prepare-content.sh copied into the build are ACTIVATED over REST (IMPORT_PLUGINS only
@@ -386,8 +387,15 @@ def main():
                 cc, _ = rest(a, n, "/wp/v2/users/%s/application-passwords/%s" % (uid, p["uuid"]), None, "DELETE")
                 revoked += 1 if cc == 200 else 0
         c, r = rest(a, n, "/wp/v2/users/%s" % uid, {"password": newpw}, "POST")
-        a2, why = login(ADMIN_USER, newpw)
-        check("admin: the account password IS the application password (form login)", c == 200 and a2 is not None, set_status=c, login=("ok" if a2 else why), revoked_old=revoked)
+        # After the password write, the first rest-nonce can answer 500 (measured on cf759a
+        # 2026-11-18). Basic already works. Retry the form login a few times.
+        a2, why = None, "not attempted"
+        for attempt in range(4):
+            a2, why = login(ADMIN_USER, newpw)
+            if a2 is not None:
+                break
+            time.sleep(2)
+        check("admin: the account password IS the application password (form login)", c == 200 and a2 is not None, set_status=c, login=("ok" if a2 else why), revoked_old=revoked, login_attempts=attempt + 1)
         st = basic(ADMIN_USER, newpw)
         check("admin: Basic with it on /wp/v2/users/me answers 200 (#761)", st == 200, status=st)
         wrong = basic(ADMIN_USER, newpw[:-1] + ("x" if newpw[-1] != "x" else "y"))
