@@ -133,6 +133,9 @@ jobs:
           bash spikes/b2-wordpress/tests/same-site-test.sh
           php spikes/b2-wordpress/tests/table-status-size-test.php
           php spikes/b2-wordpress/tests/plain-404-test.php
+      - name: Code assets use a one year browser cache (#605)
+        # Workers static assets default to max-age=0. The block editor then revalidates each script.
+        run: bash spikes/b2-wordpress/tests/asset-headers-test.sh
       - name: Approach A object cache isolated mode (issue #218)
         # spikes/b2-wordpress/php/object-cache-js.php: the allowlist + TTL + force-off
         # posture, with a stubbed bridge (no DB). WooCommerce groups never persist.
