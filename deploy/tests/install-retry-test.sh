@@ -219,6 +219,9 @@ ok "install.sh does not read x-worker-version" "$(grep -c 'x-worker-version' "$R
 # #605: deploy/wfp's site add installs through the SAME helper (one check, no drift): its own one-read check took a
 # cut-off answer as a failure and an answer that said installed false as a pass.
 ok "#605 deploy/wfp/site.sh sources deploy/install.sh and installs with install_wordpress" "$(grep -q '\. "\$ROOT/deploy/install.sh"' "$ROOT/deploy/wfp/site.sh" && grep -q 'install_wordpress "\$ORIGIN"' "$ROOT/deploy/wfp/site.sh" && echo 1 || echo 0)" "1"
+ok "deploy.sh calls activate_woocommerce when WOO_ACTIVE=1" "$(grep -q 'activate_woocommerce "\$URL"' "$ROOT/deploy/deploy.sh" && echo 1 || echo 0)" "1"
+ok "#759 conf759: site.sh calls activate_woocommerce when WOO_ACTIVE=1" "$(grep -q 'activate_woocommerce "\$ORIGIN"' "$ROOT/deploy/wfp/site.sh" && grep -q '\${WOO_ACTIVE:-0}" = 1' "$ROOT/deploy/wfp/site.sh" && echo 1 || echo 0)" "1"
+
 ok "#605 deploy/wfp/site.sh has no install check of its own left" "$(grep -c 'install did not answer JSON' "$ROOT/deploy/wfp/site.sh" || true)" "0"
 
 echo "$fails failing case(s)"

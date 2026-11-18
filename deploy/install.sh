@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# WordPress install for deploy/deploy.sh (#811).
+# WordPress install and WooCommerce activation for deploy/deploy.sh and deploy/wfp/site.sh (#811, #759).
 #
 # The new Worker version reaches the site before the PHP Durable Object. An object still on
 # the previous version refuses the spike token with 403 (measured 2026-11-16 on pf755e, about
@@ -286,4 +286,38 @@ PY
   python3 -I "$dir/check.py" "$dir/body" "$status" report-after "$elapsed" "$dir/token" "$dir/password" "$dir/note" "$dir/api-token" || true
   rm -rf "$dir"
   return 1
+}
+
+# activate_woocommerce <url>
+# POST <url>/_activate?plugin=woocommerce/woocommerce.php until the answer says active
+# AND installed (#661). Retry on a cold isolate memory reset (#198).
+# SPIKE_TOKEN must be set. Returns 0 when active and installed, 1 when not.
+activate_woocommerce() {
+  local url=$1
+  local act_n act_out act_ok act_tries curl_max
+  act_tries=${ACT_TRIES:-4}
+  curl_max=${ACTIVATE_CURL_MAX_S:-300}
+  [[ "$act_tries" =~ ^[0-9]+$ ]] || { echo "ACT_TRIES must be a number, not ${act_tries}" >&2; return 1; }
+  [[ "$curl_max" =~ ^[0-9]+$ ]] || { echo "ACTIVATE_CURL_MAX_S must be a number of seconds, not ${curl_max}" >&2; return 1; }
+  act_tries=$((10#act_tries))
+  curl_max=$((10#curl_max))
+  [ "$act_tries" -ge 1 ] && [ "$act_tries" -le 20 ] || { echo "ACT_TRIES must be from 1 to 20, not ${act_tries}" >&2; return 1; }
+  [ "$curl_max" -ge 1 ] && [ "$curl_max" -le 300 ] || { echo "ACTIVATE_CURL_MAX_S must be from 1 to 300 seconds, not ${curl_max}" >&2; return 1; }
+  [ -n "${SPIKE_TOKEN:-}" ] || { echo "activate: SPIKE_TOKEN is empty" >&2; return 1; }
+  act_ok=0
+  for act_n in $(seq 1 "$act_tries"); do
+    act_out=$(curl -s -m "$curl_max" -X POST -K <(printf 'header = "x-spike-token: %s"\n' "$SPIKE_TOKEN") "$url/_activate?plugin=woocommerce/woocommerce.php")
+    printf '%s\n' "$act_out" >&2
+    if grep -q '\\"active\\":true' <<<"$act_out" && grep -q '\\"installed\\":true' <<<"$act_out"; then
+      act_ok=1
+      break
+    fi
+    echo "WooCommerce activation attempt $act_n/$act_tries did not report active AND installed; retrying" >&2
+    sleep "$((act_n * 3))"
+  done
+  [ "$act_ok" = 1 ] || {
+    echo "WooCommerce did not activate AND install after $act_tries attempts (a result: record it)" >&2
+    return 1
+  }
+  return 0
 }

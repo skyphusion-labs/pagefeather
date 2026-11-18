@@ -1,13 +1,13 @@
 #!/bin/bash
-# #661: deploy.sh accepts a WooCommerce activation only when /_activate answers active AND installed.
-# A retry that found a dead attempt's install lock answered active while WooCommerce never installed (no version,
-# no roles, every REST write 403), and deploy.sh passed on "active" alone. This runs deploy.sh's OWN acceptance
-# condition (the `if grep ...; then` line of the activation loop, extracted) against the answers /_activate gives.
+# #661: activate_woocommerce accepts only when /_activate answers active AND installed.
+# A retry that found a dead attempt install lock answered active while WooCommerce never installed (no version,
+# no roles, every REST write 403), and deploy.sh passed on active alone. This runs activate_woocommerce acceptance
+# from install.sh against the answers /_activate gives.
 set -u
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 fails=0
 ok() { if [ "$2" = 1 ]; then echo "  ok   $1"; else echo "  FAIL $1"; fails=$((fails+1)); fi; }
-cond=$(awk '/for act_n in/ {f=1} f && /^    if .*act_out.*; then$/ {print; exit}' "$ROOT/deploy/deploy.sh" | sed 's/^    if //; s/; then$//')
+cond=$(awk '/for act_n in/ {f=1} f && /^    if grep -q .*act_out/ {print; exit}' "$ROOT/deploy/install.sh" | sed 's/^    if //; s/; then$//')
 ok "the activation loop's acceptance condition is found" "$([ -n "$cond" ] && echo 1 || echo 0)"
 accepts() { act_out=$1; eval "$cond" && echo 1 || echo 0; }
 # The answers, as /_activate prints them (the PHP JSON inside the out string, so its quotes are escaped).
