@@ -22,7 +22,7 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
      form login; Basic on /wp/v2/users/me answers 200 (#761); a wrong password gets 401.
 
   7. the upstream test plugins prepare-content.sh copied into the build are ACTIVATED over REST (IMPORT_PLUGINS only
-     copies them): woocommerce-e2e-test-helper and woocommerce-cleanup. gutenberg-test-plugins stays inactive (the
+     copies them): woocommerce-e2e-test-helper, woocommerce-cleanup, and wp-mail-logging. gutenberg-test-plugins stays inactive (the
      Gutenberg specs toggle each one). On a marked throwaway a missing one fails; on a local site without the
      content (SEED_ALLOW_LOCAL=1) it is reported and skipped.
 
@@ -63,7 +63,7 @@ IMAGES = ("image-01.png", "image-02.png", "image-03.png")
 IMG_PATH = "plugins/woocommerce/tests/e2e/test-data/images/"
 WC_TAG_SHA = "67e007c3c4cca5725e056ddaaa2ed2fb0e282045"  # woocommerce 11.2.1
 UA = {"User-Agent": "pagefeather-conformance-seed"}
-TEST_PLUGINS = ("woocommerce-e2e-test-helper/woocommerce-e2e-test-helper", "woocommerce-cleanup/woocommerce-cleanup")
+TEST_PLUGINS = ("woocommerce-e2e-test-helper/woocommerce-e2e-test-helper", "woocommerce-cleanup/woocommerce-cleanup", "wp-mail-logging/wp-mail-logging")
 report = {"site": B, "checks": {}}
 failed = []
 
