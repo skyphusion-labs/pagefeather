@@ -11,3 +11,4 @@ order/order-edit.spec.ts                                calls wpCLI
 order/review-order-page.spec.ts                         calls wpCLI (and is skip-on-external)
 settings/product-permalinks.spec.ts                     calls wpCLI
 settings/settings-ui-feature-flag.spec.ts               calls wpCLI
+editor/command-palette.spec.ts                          calls local wp-env, not the deployed site
