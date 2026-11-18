@@ -7,8 +7,7 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
   1. permalinks /%postname%/ (Settings > Permalinks, which rebuilds the rewrite rules), and checks that a raw
      GET /wp-json/ is the REST index, not the home page (#760).
      When no published post exists, the seed publishes "Permalink probe" so the link check can run.
-  2. blogname "WooCommerce Core E2E Test Suite" (/wp/v2/settings title), and timezone_string
-     America/Detroit (INSTALL sets this at /_install, #894; the seed sets it again on a remount);
+  2. blogname "WooCommerce Core E2E Test Suite" (/wp/v2/settings title), and timezone America/Detroit (settings key timezone, or timezone_string on older WordPress; INSTALL sets this at /_install, #894; the seed sets it again on a remount);
   3. woocommerce_allow_tracking = yes (/wc/v3/settings/advanced/woocommerce_allow_tracking; read back there and
      at /wc-admin/options). WOO_EXTRAS=off forces it off, so a throwaway must not set that;
   4. the user "customer": role customer, customer@woocommercecoree2etestsuite.com, Jane Smith, a new generated
@@ -188,6 +187,15 @@ def first_published_link(posts):
     return ""
 
 
+
+
+def settings_timezone(settings):
+    """Site timezone from /wp/v2/settings. Prefer timezone; accept timezone_string."""
+    if not isinstance(settings, dict):
+        return ""
+    return settings.get("timezone") or settings.get("timezone_string") or ""
+
+
 def activation_nonce(page, slug):
     """The _wpnonce of themes.php's activation link for slug, or None. The theme list is rendered from JSON on the
     page, so the link may be plain (&), HTML-escaped (&amp;) or JSON-escaped (\\u0026): match the query string itself.
@@ -262,10 +270,12 @@ def main():
     c, s = rest(a, n, "/wp/v2/settings")
     check("blogname", isinstance(s, dict) and s.get("title") == BLOGNAME, got=s.get("title") if isinstance(s, dict) else c)
 
-    rest(a, n, "/wp/v2/settings", {"timezone_string": SEED_TIMEZONE}, "POST")
+    # WP settings REST exposes timezone (measured on cf759a 2026-11-18). Older
+    # WordPress used timezone_string. POST either; read whichever is present.
+    rest(a, n, "/wp/v2/settings", {"timezone_string": SEED_TIMEZONE, "timezone": SEED_TIMEZONE}, "POST")
     c, s = rest(a, n, "/wp/v2/settings")
-    check("timezone", isinstance(s, dict) and s.get("timezone_string") == SEED_TIMEZONE,
-          got=(s.get("timezone_string") if isinstance(s, dict) else c))
+    got_tz = settings_timezone(s)
+    check("timezone", got_tz == SEED_TIMEZONE, got=got_tz or c)
 
     # 3. woocommerce_allow_tracking = yes
     rest(a, n, "/wc/v3/settings/advanced/woocommerce_allow_tracking", {"value": "yes"}, "PUT")
