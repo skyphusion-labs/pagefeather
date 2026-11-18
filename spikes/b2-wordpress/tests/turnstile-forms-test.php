@@ -9,7 +9,7 @@
 $scenario = getenv( 'TS_SCENARIO' );
 if ( false === $scenario || '' === $scenario ) {
 	$fail = 0;
-	foreach ( array( 'all', 'master-off', 'login-off', 'woo-off', 'register-off', 'woo-register-off', 'lostpassword-off', 'route-exception' ) as $sc ) {
+	foreach ( array( 'all', 'master-off', 'login-off', 'woo-off', 'register-off', 'woo-register-off', 'lostpassword-off', 'route-exception', 'sitekey-empty' ) as $sc ) {
 		echo "== scenario: $sc ==\n";
 		$cmd = 'TS_SCENARIO=' . $sc . ' ' . escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __FILE__ );
 		passthru( $cmd, $code );
@@ -108,7 +108,7 @@ $GLOBALS['ts_calls']  = 0;
 function skyphusion_worker_call( $json ) { $GLOBALS['ts_calls']++; return $GLOBALS['ts_reply']; }
 
 // ---- Scenario defines, then load the plugin once. ----
-define( 'SKYPHUSION_TURNSTILE_SITEKEY', '1x00000000000000000000AA' );
+define( 'SKYPHUSION_TURNSTILE_SITEKEY', 'sitekey-empty' === $scenario ? '' : '1x00000000000000000000AA' );
 switch ( $scenario ) {
 	case 'master-off':
 		define( 'SKYPHUSION_TURNSTILE', false );
@@ -153,6 +153,39 @@ if ( 'master-off' === $scenario ) {
 	echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
 	exit( $fail ? 1 : 0 );
 }
+
+if ( 'sitekey-empty' === $scenario ) {
+	$_SERVER['REQUEST_METHOD'] = 'POST';
+	$_POST['log'] = 'admin';
+	unset( $_POST['cf-turnstile-response'] );
+	$GLOBALS['ts_calls'] = 0;
+	$r = apply_filters( 'authenticate', 'the-user', 'admin', 'pw' );
+	check( 'empty site key: login returns the user', $r, 'the-user' );
+	check( 'empty site key: login does not call the verifier', $GLOBALS['ts_calls'], 0 );
+	$GLOBALS['wc_notices'] = array();
+	do_action( 'woocommerce_checkout_process' );
+	check( 'empty site key: checkout adds no notice', $GLOBALS['wc_notices'], array() );
+	check( 'empty site key: checkout does not call the verifier', $GLOBALS['ts_calls'], 0 );
+	$lost = new WP_Error();
+	do_action( 'lostpassword_post', $lost );
+	check( 'empty site key: lost password adds no error', $lost->get_error_code(), '' );
+	$cd = array( 'comment_content' => 'hi', 'comment_type' => 'comment' );
+	check( 'empty site key: comment passes', apply_filters( 'preprocess_comment', $cd ), $cd );
+	$store = 'passed';
+	try {
+		do_action( 'woocommerce_store_api_checkout_update_order_from_request', null, new Fake_REST_Request( 'POST', array() ) );
+	} catch ( Exception $e ) {
+		$store = 'threw';
+	}
+	check( 'empty site key: store api POST does not throw', $store, 'passed' );
+	check( 'empty site key: store api does not call the verifier', $GLOBALS['ts_calls'], 0 );
+	ob_start();
+	do_action( 'woocommerce_review_order_before_submit' );
+	check( 'empty site key: classic box is empty', ob_get_clean(), '' );
+	echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
+	exit( $fail ? 1 : 0 );
+}
+
 
 if ( 'login-off' === $scenario ) {
 	check( 'login off: authenticate not hooked', has_hook( 'authenticate' ), false );

@@ -51,6 +51,13 @@ if ( ! function_exists( 'skyphusion_turnstile_sitekey' ) ) {
 	}
 }
 
+/** True when a site key is set. No key means no widget, so the gates do not block (#915). */
+if ( ! function_exists( 'skyphusion_turnstile_has_sitekey' ) ) {
+	function skyphusion_turnstile_has_sitekey() {
+		return '' !== skyphusion_turnstile_sitekey();
+	}
+}
+
 /**
  * Render the Turnstile widget inside the current form. The api.js script is printed
  * once per page; the cf-turnstile div drops a hidden cf-turnstile-response input into
@@ -166,6 +173,9 @@ if ( ! function_exists( 'skyphusion_turnstile_unavailable_message' ) ) {
  */
 if ( ! function_exists( 'skyphusion_turnstile_gate_error' ) ) {
 	function skyphusion_turnstile_gate_error( $errors, $failed_message ) {
+		if ( ! skyphusion_turnstile_has_sitekey() ) {
+			return $errors;
+		}
 		if ( ! is_wp_error( $errors ) ) {
 			$errors = new WP_Error();
 		}
@@ -196,6 +206,9 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_LOGIN' ) || SKYPHUSION_TURNSTILE_LOGIN ) {
 	 */
 	if ( ! function_exists( 'skyphusion_turnstile_login_check' ) ) {
 		function skyphusion_turnstile_login_check( $user, $username, $password ) {
+			if ( ! skyphusion_turnstile_has_sitekey() ) {
+				return $user;
+			}
 			$method = isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( (string) $_SERVER['REQUEST_METHOD'] ) : '';
 			if ( 'POST' !== $method || ! isset( $_POST['log'] ) ) {
 				return $user;
@@ -273,6 +286,9 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_COMMENTS' ) || SKYPHUSION_TURNSTILE_COMMEN
 	 */
 	if ( ! function_exists( 'skyphusion_turnstile_comment_check' ) ) {
 		function skyphusion_turnstile_comment_check( $commentdata ) {
+			if ( ! skyphusion_turnstile_has_sitekey() ) {
+				return $commentdata;
+			}
 			if ( function_exists( 'is_admin' ) && is_admin() ) {
 				return $commentdata;
 			}
@@ -367,6 +383,9 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_WOO' ) || SKYPHUSION_TURNSTILE_WOO ) {
 	 */
 	if ( ! function_exists( 'skyphusion_turnstile_woo_check' ) ) {
 		function skyphusion_turnstile_woo_check() {
+			if ( ! skyphusion_turnstile_has_sitekey() ) {
+				return;
+			}
 			if ( ! function_exists( 'wc_add_notice' ) ) {
 				return;
 			}
@@ -489,6 +508,9 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_WOO' ) || SKYPHUSION_TURNSTILE_WOO ) {
 	 */
 	if ( ! function_exists( 'skyphusion_turnstile_store_api_check' ) ) {
 		function skyphusion_turnstile_store_api_check( $order, $request ) {
+			if ( ! skyphusion_turnstile_has_sitekey() ) {
+				return;
+			}
 			$method = is_object( $request ) && method_exists( $request, 'get_method' ) ? strtoupper( (string) $request->get_method() ) : '';
 			if ( 'POST' !== $method ) {
 				return;
