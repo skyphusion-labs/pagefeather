@@ -5,7 +5,8 @@ The lead's ruling: this seed owns every write to the shared throwaway, and rerun
 half and the browser half. runner.py (the browser half) only checks. It writes, in order:
 
   1. permalinks /%postname%/ (Settings > Permalinks, which rebuilds the rewrite rules), and checks that a raw
-     GET /wp-json/ is the REST index, not the home page (#760);
+     GET /wp-json/ is the REST index, not the home page (#760).
+     When no published post exists, the seed publishes "Permalink probe" so the link check can run.
   2. blogname "WooCommerce Core E2E Test Suite" (/wp/v2/settings title), and timezone_string
      America/Detroit (INSTALL sets this at /_install, #894; the seed sets it again on a remount);
   3. woocommerce_allow_tracking = yes (/wc/v3/settings/advanced/woocommerce_allow_tracking; read back there and
@@ -179,6 +180,14 @@ def basic(user, pw, route="/wp/v2/users/me"):
     return c
 
 
+
+def first_published_link(posts):
+    """The link of the first REST post, or empty when the list has no post."""
+    if isinstance(posts, list) and posts and isinstance(posts[0], dict):
+        return posts[0].get("link") or ""
+    return ""
+
+
 def activation_nonce(page, slug):
     """The _wpnonce of themes.php's activation link for slug, or None. The theme list is rendered from JSON on the
     page, so the link may be plain (&), HTML-escaped (&amp;) or JSON-escaped (\\u0026): match the query string itself.
@@ -233,8 +242,19 @@ def main():
     idx = js(b2)
     check("permalinks: a raw GET /wp-json/ is the REST index", c2 == 200 and isinstance(idx, dict) and "routes" in idx, status=c2)
     c3, posts = rest(a, n, "/wp/v2/posts?per_page=1&status=publish")
-    link = posts[0].get("link", "") if isinstance(posts, list) and posts else ""
-    check("permalinks: /%postname%/ (a post link has no ?p= and no date)", bool(wn) and bool(link) and "?p=" not in link and not re.search(r"/\d{4}/\d{2}/", link), link=link)
+    made = None
+    if not first_published_link(posts):
+        # Another suite can delete every post. This check needs one published post.
+        made, created = rest(a, n, "/wp/v2/posts", {"title": "Permalink probe", "status": "publish", "slug": "permalink-probe"}, "POST")
+        if isinstance(created, dict) and created.get("link"):
+            posts = [created]
+        else:
+            c3, posts = rest(a, n, "/wp/v2/posts?per_page=1&status=publish")
+    link = first_published_link(posts)
+    detail = {"link": link}
+    if made is not None:
+        detail["probe_status"] = made
+    check("permalinks: /%postname%/ (a post link has no ?p= and no date)", bool(wn) and bool(link) and "?p=" not in link and not re.search(r"/\d{4}/\d{2}/", link), **detail)
 
     # 2. blogname, then site timezone. INSTALL sets America/Detroit at /_install (#894).
     # The seed sets it again so a remount of an old site matches.
