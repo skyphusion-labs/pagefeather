@@ -122,8 +122,14 @@ if [ "$cmd" = up ]; then
   # says installed true or "already" (a repeated /_install on an installed site answers "already"), retries 403,
   # 5xx, no answer and a body that is not one JSON value within INSTALL_WAIT_S, and fails at once on a JSON
   # answer that did not install. The secrets reach curl through -K, never argv; its messages never print them.
+  if [ "${WOO_ACTIVE:-0}" = 1 ]; then
+    log "site $s: install WordPress, then activate WooCommerce (deploy/install.sh; same as deploy.sh #661)"
+  fi
   ( SPIKE_TOKEN=$(out spike_token); ADMIN_PASSWORD=$(out admin_password); export SPIKE_TOKEN ADMIN_PASSWORD
-    install_wordpress "$ORIGIN" ) || { echo "site $s: WordPress did not install at $ORIGIN (deploy/install.sh); stopping" >&2; exit 1; }
+    install_wordpress "$ORIGIN" || exit 1
+    if [ "${WOO_ACTIVE:-0}" = 1 ]; then
+      activate_woocommerce "$ORIGIN" || exit 1
+    fi ) || { echo "site $s: WordPress install or WooCommerce activation failed at $ORIGIN (deploy/install.sh); stopping" >&2; exit 1; }
   echo "site $s: up at $ORIGIN"
 elif [ "$cmd" = down ]; then
   if [ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ]; then
