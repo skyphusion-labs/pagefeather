@@ -3693,7 +3693,13 @@ $admin_email = trim( (string) @file_get_contents( '/tmp/admin-email' ) );
 // sets ADMIN_EMAIL / x-admin-email to a deliverable address.
 if ( $admin_email === '' || ! is_email( $admin_email ) ) { $admin_email = 'admin@example.com'; }
 $r = wp_install( 'WordPress on D1', 'admin', $admin_email, false, '', $pw );
-echo json_encode( array( 'installed' => true, 'user_id' => $r['user_id'] ) );
+$tz = trim( (string) @file_get_contents( '/tmp/site-timezone' ) );
+@unlink( '/tmp/site-timezone' );
+if ( $tz === '' || ! in_array( $tz, timezone_identifiers_list(), true ) ) {
+	$tz = 'America/Detroit';
+}
+update_option( 'timezone_string', $tz );
+echo json_encode( array( 'installed' => true, 'user_id' => $r['user_id'], 'timezone_string' => get_option( 'timezone_string' ) ) );
 `;
 
 const site = {
@@ -4279,6 +4285,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			if (url.pathname === '/_install') {
 				php.writeFile('/tmp/admin-password', req.headers.get('x-admin-password') || (env.SPIKE_TOKEN ? '' : 'local-spike-password'));
 				php.writeFile('/tmp/admin-email', req.headers.get('x-admin-email') || env.ADMIN_EMAIL || 'admin@example.com');
+				php.writeFile('/tmp/site-timezone', req.headers.get('x-site-timezone') || env.SITE_TIMEZONE || 'America/Detroit');
 				let out, errors;
 				try {
 					const r = await php.run({ code: INSTALL });
