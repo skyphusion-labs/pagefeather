@@ -7,7 +7,7 @@ These tools run the Playwright suites of WordPress, WooCommerce and Gutenberg ag
 
 ## Gutenberg install on the VPS (`vps-run.sh install gb`)
 
-Gutenberg 23.6 at the pin uses `npm run build`, not `build:packages`. On a small VPS the first build can fail on TypeScript or a stale `wp-build` tree (conf759 STOP 2026-11-17). The install step runs `npm ci`, then `clean:packages` and `clean:package-types`, rebuilds esbuild, then `NODE_OPTIONS=--max-old-space-size=6144 npm run build`. It retries once on failure. A passing install has `packages/*/build-module` under the checkout.
+Gutenberg 23.6 at the pin uses `npm run build`, not `build:packages`. On a small VPS the first build can fail on TypeScript or a stale `wp-build` tree. Earlier conf759 STOP rows are in `docs/results.md`. #888 sets `CI=true` for `install-gb`. conf759 RUN `20261117t2331z` at main `c6a7244` measured pass. The install step runs `npm ci`, then `clean:packages` and `clean:package-types`, rebuilds esbuild, then `NODE_OPTIONS=--max-old-space-size=6144 npm run build`. It retries once on failure. A passing install has `packages/*/build-module` under the checkout.
 
 ## Block editor welcome guide (#759, #605)
 
