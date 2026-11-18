@@ -1,6 +1,7 @@
 // Spike B2: WordPress in a Worker, database on D1.
 import { sqlImport } from './sql-import.js';
 import { sender, replyTo, deliverableRecipients } from './mail-from.mjs';
+import { collapsedSlashRedirect } from './slash-path.mjs';
 import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, handleQueuedEmail } from './email-queue.mjs';
 import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
@@ -3935,6 +3936,9 @@ export default {
 		if (url.pathname === CRON_TICK_PATH) return new Response('Not Found', { status: 404 });
 		// #752: the PHP object's start-by tick lands here, FIRST: a cheap 204, before the page cache and any object call.
 		if (url.pathname === TICK_PATH) return tickResponse();
+		// #912: //checkout-link is the home page. Merge the slash and redirect.
+		const merged = collapsedSlashRedirect(req.url);
+		if (merged) return Response.redirect(merged, 301);
 		let pcvMissed = false;
 		if (pageCacheRoute(req, url, env)) {
 			const h = new Headers(req.headers);
