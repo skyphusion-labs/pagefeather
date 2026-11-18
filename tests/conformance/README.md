@@ -58,6 +58,7 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
      - the customer (`CUSTOMER_USERNAME`, default `customer`) exists, with the role customer and a working form login;
      - blogname;
      - pretty permalinks: `/wp-json/` must answer the REST index (#760);
+     - the seed publishes one post when none are published, then checks that the post link has no `?p=` and no date;
      - the 3 test images, matched by stem: upstream `image-01.png` is a JPEG, so WordPress stores it as `image-01.jpg`, on stock WordPress too.
      - the active theme is `twentytwentythree`, as upstream's external setup leaves it. The wp and gb setups switch to `twentytwentyone`, so the seed resets it before each wc or wc-api pass;
      - `woocommerce_allow_tracking` is `yes` (the WooCommerce settings API). Do not deploy the throwaway with `WOO_EXTRAS=off`, which forces it off.
