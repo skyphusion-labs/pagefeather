@@ -43,6 +43,35 @@ if ( ! function_exists( 'wp_mail' ) ) {
 				'wp_cron'     => isset( $GLOBALS['skyphusion_mail_wp_cron'] ) ? (int) $GLOBALS['skyphusion_mail_wp_cron'] : 0,
 			),
 		);
+		// The same filter core runs. WP Mail Logging 1.17 records the message here (#913).
+		// A pre_wp_mail answer, including false, is the send. Do not hand it off again.
+		$atts = apply_filters( 'wp_mail', compact( 'to', 'subject', 'message', 'headers', 'attachments' ) );
+		$pre  = apply_filters( 'pre_wp_mail', null, $atts );
+		if ( null !== $pre ) {
+			return $pre;
+		}
+		if ( is_array( $atts ) ) {
+			if ( isset( $atts['to'] ) ) {
+				$to = $atts['to'];
+			}
+			if ( isset( $atts['subject'] ) ) {
+				$subject = $atts['subject'];
+			}
+			if ( isset( $atts['message'] ) ) {
+				$message = $atts['message'];
+			}
+			if ( isset( $atts['headers'] ) ) {
+				$headers = $atts['headers'];
+			}
+			if ( isset( $atts['attachments'] ) ) {
+				$attachments = $atts['attachments'];
+			}
+			$payload['email']['to']          = array_values( (array) $to );
+			$payload['email']['subject']     = (string) $subject;
+			$payload['email']['message']     = is_array( $message ) ? wp_json_encode( $message ) : (string) $message;
+			$payload['email']['headers']     = is_array( $headers ) ? array_values( $headers ) : (string) $headers;
+			$payload['email']['attachments'] = $attachments ? array_values( (array) $attachments ) : array();
+		}
 		// Hand off to the Worker and return success. On a request the Worker records the message
 		// and sends it after the response, so checkout does not wait. In a cron tick the Worker
 		// hands it to the durable path before this returns (#362, email-handoff.mjs).

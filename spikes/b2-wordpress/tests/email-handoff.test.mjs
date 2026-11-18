@@ -266,6 +266,7 @@ test('wp-mail-queue.php tags a mail with the running action, and with the WP-Cro
 		const php = `<?php
 			$hooks = array(); $sent = array();
 			function add_action( $h, $f, $p = 10, $n = 1 ) { global $hooks; $hooks[ $h ][] = $f; }
+			function apply_filters( $h, $v, ...$a ) { return $v; }
 			function do_action( $h, ...$a ) { global $hooks; foreach ( isset( $hooks[ $h ] ) ? $hooks[ $h ] : array() as $f ) { $f( ...$a ); } }
 			function wp_json_encode( $v ) { return json_encode( $v ); }
 			function post_message_to_js( $m ) { global $sent; $sent[] = json_decode( $m, true )['email']; return '{}'; }
