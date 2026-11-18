@@ -29,7 +29,8 @@ The passwords come from WP_PASSWORD and CUSTOMER_PASSWORD and are never printed.
 
 config writes pf-conformance.config.mjs beside the upstream config: one worker, no retries, no
 webServer (the site is deployed), the exclusions of exclude/<suite>.txt as testIgnore, and a JSON
-report. summarize and compare turn reports into the rows of the support matrix: compare marks a
+report. It unwraps a default export before the spread, so upstream timeout and use survive.
+summarize and compare turn reports into the rows of the support matrix: compare marks a
 test that fails on the stock baseline as "upstream", never as ours.
 """
 import argparse, base64, http.cookiejar, importlib.util, json, os, re, shlex, sys, urllib.error, urllib.parse, urllib.request
@@ -340,7 +341,9 @@ def config_text(suite, run_dir, suite_dir):
     if suite in ("wc", "wc-api", "wc-cpt"):
         lines.append("import { coreSetupProjects } from './%s';" % UPSTREAM_CONFIG[suite])
     lines += ["const ignore = %s;" % json.dumps(ign),
-              "const config = { ...base, workers: 1, retries: 0, fullyParallel: false, webServer: undefined,",
+              "// Playwright loads this file as { default: config }. Spread of base drops timeout and use.",
+              "const upstream = base.default || base;",
+              "const config = { ...upstream, workers: 1, retries: 0, fullyParallel: false, webServer: undefined,",
               "  reporter: [ [ 'list' ], [ 'json', { outputFile: %s } ] ] };" % json.dumps(rep)]
     if suite in ("wc", "wc-api", "wc-cpt"):
         # External throwaway (conf759 STOP 2026-11-17): upstream coreSetupProjects starts with
@@ -349,7 +352,7 @@ def config_text(suite, run_dir, suite_dir):
         # Drop 'install wc', clear that dependency, and force use.baseURL from the prepare env.
         lines += [
             "const url = (process.env.BASE_URL || process.env.WP_BASE_URL || '').replace(/\\/+$/, '') + '/';",
-            "config.use = { ...(base.use || {}), baseURL: url };",
+            "config.use = { ...(upstream.use || {}), baseURL: url };",
             "const setup = coreSetupProjects.filter((p) => p.name !== 'install wc')"
             ".map((p) => p.name === 'global authentication' ? { ...p, dependencies: [] } : p);",
             "config.testIgnore = undefined;",

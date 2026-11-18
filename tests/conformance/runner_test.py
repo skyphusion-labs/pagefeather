@@ -449,6 +449,51 @@ def main():
             r = subprocess.run([node, "--check", os.path.join(HERE, "assert-login.mjs")], capture_output=True, text=True)
             ok("assert-login.mjs: node --check") if r.returncode == 0 else bad("assert-login.mjs: %s" % r.stderr.strip()[:120])
 
+        # #605: Playwright loads the upstream file as { default: config }.
+        # A spread of that object drops timeout and use. Upstream sets 100000.
+        # The harness must keep that number. It must not raise it.
+        unwrap_js = (
+            "import cfg from %s;\n"
+            "if (cfg.timeout !== 100000) { console.error('timeout ' + cfg.timeout); process.exit(1); }\n"
+            "if (!cfg.use || cfg.use.channel !== 'chrome') { console.error('use ' + JSON.stringify(cfg.use)); process.exit(1); }\n"
+            "if (cfg.workers !== 1) { console.error('workers ' + cfg.workers); process.exit(1); }\n"
+            "if (!String(cfg.use.baseURL || '').includes('unwrap.example')) { console.error('baseURL ' + cfg.use.baseURL); process.exit(1); }\n"
+        )
+
+        def prove_unwrap(label, suite, filename, stub):
+            d = os.path.join(t, "cfg-unwrap-" + label)
+            os.makedirs(d)
+            open(os.path.join(d, filename), "w").write(stub)
+            rc, o, e = run(["config", "--suite", suite, "--suite-dir", d, "--run-dir", os.path.join(t, "r-unwrap-" + label)],
+                           {"PATH": os.environ.get("PATH", "")})
+            pth = os.path.join(d, "pf-conformance.config.mjs")
+            txt = open(pth).read() if os.path.exists(pth) else ""
+            if rc != 0 or "const upstream = base.default || base;" not in txt or "...upstream," not in txt:
+                bad("unwrap %s: config did not unwrap default (rc %d)" % (label, rc))
+                return
+            if not node:
+                bad("unwrap %s: no node to load the config (could not measure)" % label)
+                return
+            env = dict(os.environ)
+            env["BASE_URL"] = "https://unwrap.example"
+            env["WP_BASE_URL"] = "https://unwrap.example"
+            r = subprocess.run([node, "--input-type=module", "-e", unwrap_js % json.dumps(pth)],
+                               capture_output=True, text=True, env=env)
+            if r.returncode == 0:
+                ok("unwrap %s: timeout 100000 and use.channel survive" % label)
+            else:
+                bad("unwrap %s: %s" % (label, (r.stderr or r.stdout).strip()[:180]))
+
+        prove_unwrap("wp-default", "wp", "playwright.config.js",
+                     "exports.default = { timeout: 100000, use: { channel: 'chrome' } };\n")
+        prove_unwrap("wp-plain", "wp", "playwright.config.js",
+                     "module.exports = { timeout: 100000, use: { channel: 'chrome' } };\n")
+        prove_unwrap("wc-default", "wc", "playwright.config.ts",
+                     "export const coreSetupProjects = ["
+                     "{ name: 'install wc' },"
+                     "{ name: 'global authentication', dependencies: ['install wc'] }];\n"
+                     "export default { default: { timeout: 100000, use: { channel: 'chrome' } } };\n")
+
         # A STOP is never a result (1): summarize refuses a report whose global setup failed, or with no test.
         for label, rep, why in (("a report with a global-setup error", {"errors": [{"message": "Error: assert-login: STOP"}], "suites": []}, r"top-level error"),
                                 ("a report with no test", {"suites": []}, r"holds no test")):
