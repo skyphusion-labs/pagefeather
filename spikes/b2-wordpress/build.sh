@@ -95,6 +95,12 @@ cp php/wp-config.php "$wp/"
 mkdir -p build/public
 (cd "$wp" && find . -type f ! -name '*.php' -print0 | cpio -0pdm --quiet ../public)
 
+# #605: Workers static assets default to max-age=0, must-revalidate.
+# The block editor then revalidates each script. The canvas misses the 10s wait.
+# assets/_headers sets a one year browser cache. The version query is the cache key.
+# Uploads stay must-revalidate. This copy is after the public tree is cleared and filled.
+cp assets/_headers build/public/_headers
+
 # PHP's files: drop what PHP never reads (prune-php-tree.sh holds the rule and its reasons).
 ./prune-php-tree.sh "$wp"
 # Deflated: the Worker inflates each file on its first read only. The Worker

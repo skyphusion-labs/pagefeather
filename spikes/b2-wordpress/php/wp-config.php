@@ -79,6 +79,8 @@ define( 'AUTOMATIC_UPDATER_DISABLED', true );
 // no PHP request. Core turns concatenation off on every public page already, and with
 // SCRIPT_DEBUG.
 define( 'CONCATENATE_SCRIPTS', false );
+// #605: assets/_headers gives those static files a one year browser cache.
+// max-age=0 made the editor revalidate each script. The version query is the key.
 // Outbound HTTP goes through the Worker (wp-content/mu-plugins/http-bridge.php,
 // issue #26). With HTTP_BRIDGE=off the Worker defines WP_HTTP_BLOCK_EXTERNAL in
 // wp-runtime.php instead, as before: PHP has no sockets, so a request fails fast.
