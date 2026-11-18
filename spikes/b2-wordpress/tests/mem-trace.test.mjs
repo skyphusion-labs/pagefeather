@@ -43,11 +43,12 @@ test('build.sh copies the trace mu-plugin', () => {
 test('the reset lines carry the operator id, and only for an operator request with a safe id', () => {
 	// The two reset lines, named rather than counted: the write-loss lines spread memIdOf too (#596).
 	const lines = src.split('\n');
-	for (const needle of ["m: 'isolate-reset-retry'", "m: reset ? 'isolate-reset' : 'overloaded'"]) {
-		const line = lines.find((l) => l.includes(needle));
-		assert.ok(line, needle);
-		assert.match(line, /\.\.\.memIdOf\(req, env\)/, needle);
-	}
+	const retryLine = lines.find((l) => l.includes('object-deadline-retry') && l.includes('isolate-reset-retry'));
+	assert.ok(retryLine, 'object-deadline-retry | isolate-reset-retry');
+	assert.match(retryLine, /\.\.\.memIdOf\(req, env\)/, 'retry log');
+	const resetLine = lines.find((l) => l.includes("m: reset ? 'isolate-reset' : 'overloaded'"));
+	assert.ok(resetLine, "m: reset ? 'isolate-reset' : 'overloaded'");
+	assert.match(resetLine, /\.\.\.memIdOf\(req, env\)/, 'reset log');
 	assert.ok(src.includes("return id && MEM_ID_RE.test(id) && perfHeadersAllowed(req, env) ? { id } : {};"));
 	assert.ok(src.includes("const MEM_ID_RE = /^[A-Za-z0-9_.-]{1,64}$/;"));
 });

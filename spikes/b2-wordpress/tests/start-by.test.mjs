@@ -218,9 +218,11 @@ test('#721 audit: a caller gone mid-call gets a quiet 499 that is never stored a
 test('#721 audit wiring: an unclassified error on a disconnected caller is answered, not thrown; container forwards detach the signal', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	const fn = src.slice(src.indexOf('async function toPhpObjectCall('), src.indexOf('\n}\n', src.indexOf('async function toPhpObjectCall(')));
+	const catchStart = fn.indexOf('.catch((e) => {');
 	const gone = fn.indexOf('if (req.signal && req.signal.aborted) return { gone: true };');
-	const rethrow = fn.indexOf('if (!isObjectCallDeadline(e)) throw e;');
-	assert.ok(gone > 0 && rethrow > gone, 'checked before the rethrow');
+	const rethrow = fn.indexOf('throw e;');
+	assert.ok(catchStart > 0 && gone > catchStart && rethrow > gone, 'gone checked before plain rethrow');
+	assert.match(fn, /if \(res\.deadline\) \{/);
 	assert.ok(/if \(res\.gone\) \{[^}]*m: 'disconnect'/.test(fn), 'logged as a disconnect, not an exception');
 	// A disconnect must never abort a started write: a checkout in the container must not inherit the caller's signal.
 	assert.ok(/checkoutContainer\(env\)\.fetch\(new Request\(req, \{ signal: null \}\)\)/.test(src), 'the checkout container forward detaches it');
