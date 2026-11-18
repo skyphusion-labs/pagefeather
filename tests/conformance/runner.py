@@ -208,8 +208,11 @@ def wc_verify(site, user, password):
     st, j = site.json("GET", "/wp-json/wp/v2/settings")
     if st != 200 or not isinstance(j, dict) or j.get("title") != WC_BLOGNAME:
         raise Stop("blogname is %r, not %r" % ((j or {}).get("title") if isinstance(j, dict) else None, WC_BLOGNAME))
-    if j.get("timezone_string") != WC_TIMEZONE:
-        raise Stop("timezone_string is %r, not %r" % (j.get("timezone_string"), WC_TIMEZONE))
+    # WP settings REST exposes timezone (measured on cf759a 2026-11-18). Older
+    # WordPress used timezone_string. Accept either (#923 seed; prepare must match).
+    got_tz = j.get("timezone") or j.get("timezone_string") or ""
+    if got_tz != WC_TIMEZONE:
+        raise Stop("timezone is %r, not %r" % (got_tz, WC_TIMEZONE))
     # Pretty permalinks, measured: the suites call /wp-json/ directly, so it must answer the REST index.
     st, h, b = site.req("GET", "/wp-json/", cookies=False, keep_path=True)
     try:
