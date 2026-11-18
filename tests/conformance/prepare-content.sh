@@ -10,8 +10,9 @@
 #
 #   wp  the WordPress suite (wordpress-develop tests/e2e): the theme twentytwentyone.
 #   wc  the WooCommerce suite (plugins/woocommerce/tests/e2e): the theme twentytwentythree, the
-#       plugins woocommerce-e2e-test-helper and woocommerce-cleanup (from WC_SHA; the upstream
-#       external setup takes them from trunk, which is not pinned), and wp-mail-logging.
+#       plugins woocommerce-e2e-test-helper, woocommerce-cleanup, and
+#       wc-email-template-sync-test-helper (from WC_SHA; the upstream external setup takes them
+#       from trunk, which is not pinned), and wp-mail-logging.
 #   gb  the Gutenberg suite (test/e2e): twentytwentyone, twentytwentythree, twentytwentyfour, the
 #       test plugins (one plugin directory, gutenberg-test-plugins, as upstream mounts it), the
 #       test themes emptytheme and gutenberg-test-themes, and the e2e mu-plugins.
@@ -84,8 +85,8 @@ if [ "$want_wc" = 1 ]; then
   add themes twentytwentythree
   add plugins wp-mail-logging
   tp=plugins/woocommerce/tests/e2e/test-plugins
-  fetch woocommerce "$WC_REPO" "$WC_SHA" "/$tp/woocommerce-e2e-test-helper/" "/$tp/woocommerce-cleanup/"
-  for p in woocommerce-e2e-test-helper woocommerce-cleanup; do
+  fetch woocommerce "$WC_REPO" "$WC_SHA" "/$tp/woocommerce-e2e-test-helper/" "/$tp/woocommerce-cleanup/" "/$tp/wc-email-template-sync-test-helper/"
+  for p in woocommerce-e2e-test-helper woocommerce-cleanup wc-email-template-sync-test-helper; do
     take woocommerce "$tp/$p" plugins "$p"
     [ -f "$out/wp-content/plugins/$p/$p.php" ] || { echo "prepare: $p has no $p.php; refused" >&2; exit 1; }
     add imp_plugins "$p"
