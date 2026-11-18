@@ -79,6 +79,12 @@ check("first_published_link: empty list", _seed.first_published_link([]) == "")
 check("first_published_link: missing link", _seed.first_published_link([{}]) == "")
 check("first_published_link: first link", _seed.first_published_link([{"link": "https://ex/a"}]) == "https://ex/a")
 check("first_published_link: not a list", _seed.first_published_link(None) == "")
+check("settings_timezone: timezone key", _seed.settings_timezone({"timezone": "America/Detroit"}) == "America/Detroit")
+check("settings_timezone: timezone_string fallback", _seed.settings_timezone({"timezone_string": "America/Detroit"}) == "America/Detroit")
+check("settings_timezone: prefer timezone", _seed.settings_timezone({"timezone": "America/Detroit", "timezone_string": "UTC"}) == "America/Detroit")
+check("settings_timezone: empty", _seed.settings_timezone({}) == "")
+check("settings_timezone: not a dict", _seed.settings_timezone(None) == "")
+
 
 for label, prefs, want in (
     ("dismissed dict", {"core/edit-post": {"welcomeGuide": False}}, True),

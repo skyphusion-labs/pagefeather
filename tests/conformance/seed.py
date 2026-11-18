@@ -7,8 +7,7 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
   1. permalinks /%postname%/ (Settings > Permalinks, which rebuilds the rewrite rules), and checks that a raw
      GET /wp-json/ is the REST index, not the home page (#760).
      When no published post exists, the seed publishes "Permalink probe" so the link check can run.
-  2. blogname "WooCommerce Core E2E Test Suite" (/wp/v2/settings title), and timezone_string
-     America/Detroit (INSTALL sets this at /_install, #894; the seed sets it again on a remount);
+  2. blogname "WooCommerce Core E2E Test Suite" (/wp/v2/settings title), and timezone America/Detroit (settings key timezone, or timezone_string on older WordPress; INSTALL sets this at /_install, #894; the seed sets it again on a remount);
   3. woocommerce_allow_tracking = yes (/wc/v3/settings/advanced/woocommerce_allow_tracking; read back there and
      at /wc-admin/options). WOO_EXTRAS=off forces it off, so a throwaway must not set that;
   4. the user "customer": role customer, customer@woocommercecoree2etestsuite.com, Jane Smith, a new generated
@@ -19,7 +18,8 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
      (wp_check_filetype_and_ext names a file by its content; WP-CLI's media import goes through the same code). So
      an item is matched by its stem, and seed.json records the name WordPress gave it;
   6. the admin's ACCOUNT password = a new application password (one value passes both the wp-login.php form and
-     HTTP Basic on the unmodified suite). Older "conformance-" application passwords are revoked. Checked: the
+     HTTP Basic on the unmodified suite). Older "conformance-" application passwords are revoked. After the
+     password write, the first form login can get rest-nonce HTTP 500; the seed retries (#924). Checked: the
      form login; Basic on /wp/v2/users/me answers 200 (#761); a wrong password gets 401.
 
   7. the upstream test plugins prepare-content.sh copied into the build are ACTIVATED over REST (IMPORT_PLUGINS only
@@ -188,6 +188,15 @@ def first_published_link(posts):
     return ""
 
 
+
+
+def settings_timezone(settings):
+    """Site timezone from /wp/v2/settings. Prefer timezone; accept timezone_string."""
+    if not isinstance(settings, dict):
+        return ""
+    return settings.get("timezone") or settings.get("timezone_string") or ""
+
+
 def activation_nonce(page, slug):
     """The _wpnonce of themes.php's activation link for slug, or None. The theme list is rendered from JSON on the
     page, so the link may be plain (&), HTML-escaped (&amp;) or JSON-escaped (\\u0026): match the query string itself.
@@ -262,10 +271,12 @@ def main():
     c, s = rest(a, n, "/wp/v2/settings")
     check("blogname", isinstance(s, dict) and s.get("title") == BLOGNAME, got=s.get("title") if isinstance(s, dict) else c)
 
-    rest(a, n, "/wp/v2/settings", {"timezone_string": SEED_TIMEZONE}, "POST")
+    # WP settings REST exposes timezone (measured on cf759a 2026-11-18). Older
+    # WordPress used timezone_string. POST either; read whichever is present.
+    rest(a, n, "/wp/v2/settings", {"timezone_string": SEED_TIMEZONE, "timezone": SEED_TIMEZONE}, "POST")
     c, s = rest(a, n, "/wp/v2/settings")
-    check("timezone", isinstance(s, dict) and s.get("timezone_string") == SEED_TIMEZONE,
-          got=(s.get("timezone_string") if isinstance(s, dict) else c))
+    got_tz = settings_timezone(s)
+    check("timezone", got_tz == SEED_TIMEZONE, got=got_tz or c)
 
     # 3. woocommerce_allow_tracking = yes
     rest(a, n, "/wc/v3/settings/advanced/woocommerce_allow_tracking", {"value": "yes"}, "PUT")
@@ -376,8 +387,15 @@ def main():
                 cc, _ = rest(a, n, "/wp/v2/users/%s/application-passwords/%s" % (uid, p["uuid"]), None, "DELETE")
                 revoked += 1 if cc == 200 else 0
         c, r = rest(a, n, "/wp/v2/users/%s" % uid, {"password": newpw}, "POST")
-        a2, why = login(ADMIN_USER, newpw)
-        check("admin: the account password IS the application password (form login)", c == 200 and a2 is not None, set_status=c, login=("ok" if a2 else why), revoked_old=revoked)
+        # After the password write, the first rest-nonce can answer 500 (measured on cf759a
+        # 2026-11-18). Basic already works. Retry the form login a few times.
+        a2, why = None, "not attempted"
+        for attempt in range(4):
+            a2, why = login(ADMIN_USER, newpw)
+            if a2 is not None:
+                break
+            time.sleep(2)
+        check("admin: the account password IS the application password (form login)", c == 200 and a2 is not None, set_status=c, login=("ok" if a2 else why), revoked_old=revoked, login_attempts=attempt + 1)
         st = basic(ADMIN_USER, newpw)
         check("admin: Basic with it on /wp/v2/users/me answers 200 (#761)", st == 200, status=st)
         wrong = basic(ADMIN_USER, newpw[:-1] + ("x" if newpw[-1] != "x" else "y"))
