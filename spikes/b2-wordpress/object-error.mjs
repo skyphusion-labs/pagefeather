@@ -64,6 +64,17 @@ export function objectErrorOutcome(kind, method) {
 	return isResetKind(kind) && mayHaveWritten(method) ? 'write-loss' : '503';
 }
 
+
+/** True for a callPhpObject deadline (#605): the object did not start answering in time. */
+export function isObjectCallDeadlineError(e) {
+	return !!(e && e.deadline === true && e.response);
+}
+
+/** Retry once on #605 no-answer for safe methods, same rule as a memory reset. */
+export function shouldRetryObjectDeadline(method, attempt) {
+	return attempt === 0 && RETRY_METHODS.has(String(method || '').toUpperCase());
+}
+
 /** Retry this failure? Only a reset (memory or storage, #398), only a GET, HEAD or OPTIONS, only the first attempt. */
 export function shouldRetryObjectError(kind, method, attempt) {
 	return isResetKind(kind) && RETRY_METHODS.has(String(method || '').toUpperCase()) && attempt === 0;
@@ -71,7 +82,7 @@ export function shouldRetryObjectError(kind, method, attempt) {
 
 /**
  * Call send(attempt) and retry it once by shouldRetryObjectError. Returns { r, attempts } on an
- * answer, or { error, kind, attempts } for a classified failure that is not retried (again).
+ * answer, { deadline, attempts, deadlineMs } when the object call deadline fired (#605), or { error, kind, attempts } for a classified failure that is not retried (again).
  * An error classifyObjectError does not know is thrown, as before. send makes its own stub and
  * request each time: a stub that saw the reset is not reused.
  */
@@ -81,12 +92,21 @@ export async function fetchWithMemoryRetry(send, method, onRetry) {
 			return { r: await send(attempt), attempts: attempt + 1 };
 		} catch (e) {
 			const kind = classifyObjectError(e);
-			if (!kind) throw e;
-			if (shouldRetryObjectError(kind, method, attempt)) {
-				if (onRetry) onRetry(e, attempt);
-				continue;
+			if (kind) {
+				if (shouldRetryObjectError(kind, method, attempt)) {
+					if (onRetry) onRetry(e, attempt);
+					continue;
+				}
+				return { error: e, kind, attempts: attempt + 1 };
 			}
-			return { error: e, kind, attempts: attempt + 1 };
+			if (isObjectCallDeadlineError(e)) {
+				if (shouldRetryObjectDeadline(method, attempt)) {
+					if (onRetry) onRetry(e, attempt);
+					continue;
+				}
+				return { deadline: e.response, attempts: attempt + 1, deadlineMs: e.deadlineMs };
+			}
+			throw e;
 		}
 	}
 }

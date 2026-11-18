@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { classifyObjectError, objectErrorHeaders, shouldRetryObjectError, fetchWithMemoryRetry } from '../object-error.mjs';
+import { classifyObjectError, objectErrorHeaders, shouldRetryObjectError, shouldRetryObjectDeadline, isObjectCallDeadlineError, fetchWithMemoryRetry } from '../object-error.mjs';
 
 const reset = Object.assign(new Error("Durable Object's isolate exceeded its memory limit and was reset."), { overloaded: true });
 const queue = Object.assign(new Error('Durable Object is overloaded. Too many requests queued.'), { overloaded: true });
@@ -133,6 +133,36 @@ test('a full queue is not retried, and an unknown error is thrown as before', as
 test('an answer on the first attempt is one send', async () => {
 	const f = fake('page');
 	assert.deepEqual(await fetchWithMemoryRetry(f.send, 'GET'), { r: 'page', attempts: 1 });
+});
+
+
+function deadlineErr() {
+	const e = new Error('PHP object did not start answering within 90 ms');
+	e.deadline = true;
+	e.deadlineMs = 90;
+	e.response = new Response('no', { status: 503, headers: { 'x-object-deadline': 'no-answer' } });
+	return e;
+}
+
+test('#605: a GET that hits the object-call deadline is retried once, then answered', async () => {
+	const f = fake(deadlineErr(), 'page');
+	const res = await fetchWithMemoryRetry(f.send, 'GET');
+	assert.equal(res.r, 'page');
+	assert.equal(res.attempts, 2);
+	assert.deepEqual(f.calls, [0, 1]);
+});
+
+test('#605: a POST deadline is not retried', async () => {
+	const res = await fetchWithMemoryRetry(fake(deadlineErr()).send, 'POST');
+	assert.equal(res.deadline.status, 503);
+	assert.equal(res.attempts, 1);
+});
+
+test('#605: shouldRetryObjectDeadline matches safe methods only', () => {
+	assert.equal(shouldRetryObjectDeadline('GET', 0), true);
+	assert.equal(shouldRetryObjectDeadline('POST', 0), false);
+	assert.equal(shouldRetryObjectDeadline('GET', 1), false);
+	assert.ok(isObjectCallDeadlineError(deadlineErr()));
 });
 
 // #398: a Durable Object storage reset. The message is the platform's own, from Workers Logs for
