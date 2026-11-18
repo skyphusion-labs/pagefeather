@@ -146,7 +146,7 @@ class Stub:
                         return self.send(404, {"code": "rest_setting_setting_invalid"})
                     return self.send(200, {"id": "woocommerce_allow_tracking", "value": stub.tracking})
                 if self.path == "/wp-json/wp/v2/settings":
-                    return self.send(200, {"title": stub.blogname, "timezone_string": stub.timezone}) if self.rest_ok() else self.send(401, {})
+                    return self.send(200, {"title": stub.blogname, "timezone": stub.timezone}) if self.rest_ok() else self.send(401, {})
                 if self.path.startswith("/wp-json/wp/v2/media?search="):
                     q = self.path.split("search=")[1].split("&")[0]
                     ext = "jpg" if q == "image-01" else "png"
@@ -277,7 +277,7 @@ def main():
         case("no CUSTOMER_PASSWORD", r"CUSTOMER_PASSWORD is not set", env_extra={"CUSTOMER_PASSWORD": ""})
         case("a wrong CUSTOMER_PASSWORD", r"the customer 'customer' cannot log in", env_extra={"CUSTOMER_PASSWORD": "nope"})
         case("the wrong blogname", r"blogname is 'My Site'", setup=lambda s: setattr(s, "blogname", "My Site"))
-        case("the wrong timezone", r"timezone_string is 'UTC'.*America/Detroit", setup=lambda s: setattr(s, "timezone", "UTC"))
+        case("the wrong timezone", r"timezone is 'UTC'.*America/Detroit", setup=lambda s: setattr(s, "timezone", "UTC"))
         case("plain permalinks (#760)", r"pretty permalinks are not active", setup=lambda s: setattr(s, "plain", True))
         case("a missing test image", r"no media image-02\.\* ", setup=lambda s: setattr(s, "images", ["image-01", "image-03"]))
         case("the wrong theme (after a wp or gb pass)", r"active theme is \['twentytwentyone'\].*not 'twentytwentythree'", setup=lambda s: setattr(s, "theme", "twentytwentyone"))
