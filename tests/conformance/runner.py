@@ -161,6 +161,7 @@ def check_cache(site, want):
 
 
 WC_BLOGNAME = "WooCommerce Core E2E Test Suite"
+WC_TIMEZONE = "America/Detroit"
 WC_THEME = "twentytwentythree"
 
 def editor_welcome_verify(site):
@@ -206,6 +207,8 @@ def wc_verify(site, user, password):
     st, j = site.json("GET", "/wp-json/wp/v2/settings")
     if st != 200 or not isinstance(j, dict) or j.get("title") != WC_BLOGNAME:
         raise Stop("blogname is %r, not %r" % ((j or {}).get("title") if isinstance(j, dict) else None, WC_BLOGNAME))
+    if j.get("timezone_string") != WC_TIMEZONE:
+        raise Stop("timezone_string is %r, not %r: the seed sets site day grouping for reports API tests" % (j.get("timezone_string"), WC_TIMEZONE))
     # Pretty permalinks, measured: the suites call /wp-json/ directly, so it must answer the REST index.
     st, h, b = site.req("GET", "/wp-json/", cookies=False, keep_path=True)
     try:

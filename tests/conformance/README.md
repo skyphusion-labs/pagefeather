@@ -103,6 +103,10 @@ The WordPress and Gutenberg suites log in through the `wp-login.php` form and a 
 
 The WooCommerce suite uses one `ADMIN_PASSWORD` for the form AND for HTTP Basic. So the seed creates an application password and sets the admin ACCOUNT password to that same string. The unmodified suite then passes both. No Basic-Auth plugin is used (lead ruling on #759). `prepare` checks it: the form login works, and Basic answers 200 with that value and 401 with a wrong one. No password is printed.
 
+## Site timezone
+
+The seed sets `timezone_string` to `America/Detroit`. The wc-api sales report test builds today's bucket from the runner's local clock. The WooCommerce report groups by site day. conf759 pass1 showed a UTC site against a US Eastern runner.
+
 Basic auth on b2 needs #761 (`PHP_AUTH_USER` was never set). Until that fix merges, `prepare --suite wc` stops at the Basic check.
 
 ## What is not run yet
