@@ -29,7 +29,7 @@ commit() { git_q -C "$1" add -A && git_q -C "$1" commit -qm stub && git -C "$1" 
 # A stub WooCommerce repo.
 wc=$t/wc; stub_repo "$wc"
 tp=$wc/plugins/woocommerce/tests/e2e/test-plugins
-for p in woocommerce-e2e-test-helper woocommerce-cleanup; do mkdir -p "$tp/$p"; echo "<?php /* Plugin Name: $p */" > "$tp/$p/$p.php"; done
+for p in woocommerce-e2e-test-helper woocommerce-cleanup wc-email-template-sync-test-helper; do mkdir -p "$tp/$p"; echo "<?php /* Plugin Name: $p */" > "$tp/$p/$p.php"; done
 mkdir -p "$tp/blocks"; echo "<?php // not taken" > "$tp/blocks/x.php"
 echo outside > "$wc/README.md"
 wc_sha=$(commit "$wc")
@@ -53,6 +53,7 @@ export WC_REPO=file://$wc WC_SHA=$wc_sha GB_REPO=file://$gb GB_SHA=$gb_sha
 if line=$("$P" "$t/out" wc gb 2>"$t/e"); then ok "wc gb: exit 0"; else bad "wc gb: exit non-zero ($(cat "$t/e"))"; fi
 c=$t/out/wp-content
 for f in plugins/woocommerce-e2e-test-helper/woocommerce-e2e-test-helper.php plugins/woocommerce-cleanup/woocommerce-cleanup.php \
+  plugins/wc-email-template-sync-test-helper/wc-email-template-sync-test-helper.php \
   plugins/gutenberg-test-plugins/disables-the-css-animations.php plugins/gutenberg-test-plugins/assets/a.js \
   themes/emptytheme/style.css themes/gutenberg-test-themes/darktheme/style.css mu-plugins/nocache-headers.php mu-plugins/server-timing.php \
   mu-plugins/pf-conformance-throwaway.php mu-plugins/pf-conformance-gaps.php; do
@@ -65,7 +66,7 @@ grep -q "^gutenberg file://$gb $gb_sha$" "$t/out/PINS" && ok "PINS records the g
 tree=$(git -C "$gb" rev-parse "$gb_sha:packages/e2e-tests/plugins")
 grep -q "plugins/gutenberg-test-plugins = gutenberg:packages/e2e-tests/plugins $tree" "$t/out/PINS" && ok "PINS records the upstream tree id" || bad "PINS lacks the tree id"
 for want in "IMPORT_CONTENT=$t/out/wp-content" "IMPORT_THEMES='emptytheme gutenberg-test-themes'" \
-  "IMPORT_PLUGINS='woocommerce-e2e-test-helper woocommerce-cleanup gutenberg-test-plugins'" \
+  "IMPORT_PLUGINS='woocommerce-e2e-test-helper woocommerce-cleanup wc-email-template-sync-test-helper gutenberg-test-plugins'" \
   "IMPORT_MU_PLUGINS='pf-conformance-throwaway.php pf-conformance-gaps.php nocache-headers.php server-timing.php'" "THEMES='twentytwentythree twentytwentyone twentytwentyfour'" \
   "SUITE=$here/plugins.txt PLUGINS='wp-mail-logging'" "THEME_SUITE=$here/themes.txt"; do
   case "$line" in *"$want"*) ok "line has: $want" ;; *) bad "line lacks: $want (line: $line)" ;; esac
