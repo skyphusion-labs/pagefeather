@@ -75,6 +75,10 @@ page = ('"actions":{"activate":"' + q.format(a="\\u0026", s="twentytwentyone") +
 check("activation_nonce: a theme not on the page gives None", _seed.activation_nonce(page, "twentytwentythree") is None)
 check("activation_nonce: a prefix slug does not match", _seed.activation_nonce(page, "twentytwenty") is None)
 check("activation_nonce: an empty page gives None", _seed.activation_nonce(b"", "twentytwentythree") is None)
+check("first_published_link: empty list", _seed.first_published_link([]) == "")
+check("first_published_link: missing link", _seed.first_published_link([{}]) == "")
+check("first_published_link: first link", _seed.first_published_link([{"link": "https://ex/a"}]) == "https://ex/a")
+check("first_published_link: not a list", _seed.first_published_link(None) == "")
 
 for label, prefs, want in (
     ("dismissed dict", {"core/edit-post": {"welcomeGuide": False}}, True),
