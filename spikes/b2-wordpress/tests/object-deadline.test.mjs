@@ -259,12 +259,13 @@ test('index.js applies the deadline inside toPhpObject and returns it before any
 	const fn = src.slice(fnStart, src.indexOf('\n}\n', fnStart));
 	assert.match(fn, /const objectDeadlineMs = objectCallExempt\(url\.pathname\) \? 0 : objectCallDeadlineMs\(env\);/);
 	assert.match(fn, /return callPhpObject\(stub, sent,/);
-	assert.match(fn, /if \(!isObjectCallDeadline\(e\)\) throw e;/);
+	assert.match(fn, /object-deadline-retry/);
+	assert.match(fn, /if \(res\.deadline\) \{/);
 	assert.match(fn, /m: 'object-deadline'/);
 	assert.match(fn, /\.\.\.memIdOf\(req, env\)/);
 	// /_frame probes before the PHP call. The write-loss probe is the one that
 	// must not run after a deadline: it is another stub.fetch to the same object.
-	const back = fn.indexOf('if (res.deadline) return res.deadline;');
+	const back = fn.indexOf('if (res.deadline) {');
 	const probe = fn.indexOf('frameProbe(', back);
 	assert.ok(back > 0 && probe > back, 'the deadline answer returns before the write-loss frame probe');
 	// The Turnstile header is still set on the forwarded request, then the deadline wraps it.

@@ -3545,7 +3545,7 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 	// Chicago area; "enam" is Eastern North America.
 	let t0 = Date.now();
 	// A GET or HEAD that dies in an object reset (memory #335, or storage #398) is sent once more
-	// (object-error.mjs fetchWithMemoryRetry); each attempt makes its own stub and request.
+	// (object-error.mjs fetchWithMemoryRetry); each attempt makes its own stub and request. A #605 no-answer on GET/HEAD/OPTIONS is retried once.
 	// #605: if this attempt has not started answering within the deadline, abort it. Exempt
 	// paths (install, import, sqlimport, cron) pass 0 and are not cut. 0 also means the
 	// operator set OBJECT_CALL_DEADLINE_S=off.
@@ -3587,21 +3587,19 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 			});
 		},
 		req.method,
-		(e) => console.log(JSON.stringify({ m: 'isolate-reset-retry', kind: classifyObjectError(e), path: url.pathname, ...memIdOf(req, env), error: String(e.message).slice(0, 200) })),
+		(e, a) => console.log(JSON.stringify({ m: isObjectCallDeadline(e) ? 'object-deadline-retry' : 'isolate-reset-retry', attempt: a, kind: classifyObjectError(e) || (isObjectCallDeadline(e) ? 'no-answer' : null), path: url.pathname, deadlineMs: e.deadlineMs || null, ...memIdOf(req, env), error: String(e.message).slice(0, 200) })),
 	).catch((e) => {
 		if (req.signal && req.signal.aborted) return { gone: true }; // #721: the caller disconnected (not an object error)
-		if (!isObjectCallDeadline(e)) throw e;
-		// No frame probe. The probe is another stub.fetch to this same object, which just
-		// failed to start answering, so a probe can hang the same way. Without a frame that
-		// proves rollback, a method that may have written stays x-write-loss: unknown.
-		console.log(JSON.stringify({ m: 'object-deadline', path: url.pathname, method: req.method, deadlineMs: e.deadlineMs, writeLoss: e.response.headers.get('x-write-loss'), call: callId, ...memIdOf(req, env), answered: e.response.status }));
-		return { deadline: e.response };
+		throw e;
 	});
 	if (res.gone) {
 		console.log(JSON.stringify({ m: 'disconnect', path: url.pathname, method: req.method, call: callId, writeLoss: disconnectAnswer(req.method).headers.get('x-write-loss') }));
 		return disconnectAnswer(req.method);
 	}
-	if (res.deadline) return res.deadline;
+	if (res.deadline) {
+		console.log(JSON.stringify({ m: 'object-deadline', path: url.pathname, method: req.method, deadlineMs: res.deadlineMs, attempts: res.attempts, call: callId, ...memIdOf(req, env), answered: res.deadline.status }));
+		return res.deadline;
+	}
 	const retried = res.attempts > 1;
 	if (res.error) {
 		const e = res.error;
