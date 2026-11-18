@@ -105,6 +105,17 @@ The WooCommerce suite uses one `ADMIN_PASSWORD` for the form AND for HTTP Basic.
 
 Basic auth on b2 needs #761 (`PHP_AUTH_USER` was never set). Until that fix merges, `prepare --suite wc` stops at the Basic check.
 
+## Site timezone
+
+INSTALL sets `timezone_string` to `America/Detroit` at `/_install` (#894).
+The seed sets the same value again.
+A remount of an old site does not run `/_install`.
+`prepare` stops when `timezone_string` is not `America/Detroit`.
+The WooCommerce sales report groups orders by the site day.
+The 2026-11-18 remount passed sales reports with `timezone_string` `Europe/Lisbon`.
+That calendar day was 18 Nov in `America/Detroit` too.
+The pass does not prove the site timezone.
+
 ## What is not run yet
 
 - The WooCommerce blocks profile (102 specs). It restores the database per test (lead ruling on #759).

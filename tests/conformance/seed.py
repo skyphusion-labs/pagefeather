@@ -6,7 +6,8 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
 
   1. permalinks /%postname%/ (Settings > Permalinks, which rebuilds the rewrite rules), and checks that a raw
      GET /wp-json/ is the REST index, not the home page (#760);
-  2. blogname "WooCommerce Core E2E Test Suite" (/wp/v2/settings title);
+  2. blogname "WooCommerce Core E2E Test Suite" (/wp/v2/settings title), and timezone_string
+     America/Detroit (INSTALL sets this at /_install, #894; the seed sets it again on a remount);
   3. woocommerce_allow_tracking = yes (/wc/v3/settings/advanced/woocommerce_allow_tracking; read back there and
      at /wc-admin/options). WOO_EXTRAS=off forces it off, so a throwaway must not set that;
   4. the user "customer": role customer, customer@woocommercecoree2etestsuite.com, Jane Smith, a new generated
@@ -56,6 +57,7 @@ OUT = sys.argv[1] if len(sys.argv) > 1 else ""
 THEME = sys.argv[sys.argv.index("--theme") + 1] if "--theme" in sys.argv[2:] and sys.argv.index("--theme") + 1 < len(sys.argv) else ""
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 BLOGNAME = "WooCommerce Core E2E Test Suite"
+SEED_TIMEZONE = "America/Detroit"
 CUSTOMER = {"username": "customer", "email": "customer@woocommercecoree2etestsuite.com", "first_name": "Jane", "last_name": "Smith"}
 IMAGES = ("image-01.png", "image-02.png", "image-03.png")
 IMG_PATH = "plugins/woocommerce/tests/e2e/test-data/images/"
@@ -234,10 +236,16 @@ def main():
     link = posts[0].get("link", "") if isinstance(posts, list) and posts else ""
     check("permalinks: /%postname%/ (a post link has no ?p= and no date)", bool(wn) and bool(link) and "?p=" not in link and not re.search(r"/\d{4}/\d{2}/", link), link=link)
 
-    # 2. blogname
+    # 2. blogname, then site timezone. INSTALL sets America/Detroit at /_install (#894).
+    # The seed sets it again so a remount of an old site matches.
     rest(a, n, "/wp/v2/settings", {"title": BLOGNAME}, "POST")
     c, s = rest(a, n, "/wp/v2/settings")
     check("blogname", isinstance(s, dict) and s.get("title") == BLOGNAME, got=s.get("title") if isinstance(s, dict) else c)
+
+    rest(a, n, "/wp/v2/settings", {"timezone_string": SEED_TIMEZONE}, "POST")
+    c, s = rest(a, n, "/wp/v2/settings")
+    check("timezone", isinstance(s, dict) and s.get("timezone_string") == SEED_TIMEZONE,
+          got=(s.get("timezone_string") if isinstance(s, dict) else c))
 
     # 3. woocommerce_allow_tracking = yes
     rest(a, n, "/wc/v3/settings/advanced/woocommerce_allow_tracking", {"value": "yes"}, "PUT")
