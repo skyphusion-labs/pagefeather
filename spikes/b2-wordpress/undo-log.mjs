@@ -22,6 +22,8 @@
 //   next write opens a new frame. A plugin status row is the exception (#938): the frame saves the old
 //   active_plugins or active_sitewide_plugins value and writes it back on write-loss or on recovery.
 //   A request that finishes keeps the new value.
+//   An options-cache set taken while that hold is open waits for the request end (#954). A commit point
+//   does not publish it. A restore drops the options cache. The next read uses the restored row.
 // - defer(fn) holds work that must not outlive a rollback (the KV L2 cache sets) until the frame is kept.
 // _wp_frame keeps the outcome per request id (a short history) for the Worker's /_frame probe, so a
 // client is only told "nothing was saved" when it is proven.
@@ -187,13 +189,15 @@ const RECOVER_ROWS_MAX = 64;
 // #809: the refusal's message. It names a storage failure, so #795 classes it a PLATFORM failure (a retryable answer).
 export const STRANDED_ERROR = 'storage reset pending: a request frame is stranded until its recovery succeeds (#809)';
 
-export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {}, frames = false, undoFault = () => null } = {}) {
+export function createUndoLog({ stats, objectCacheDrop = () => {}, dropOptionsCache = () => {}, log = () => {}, frames = false, undoFault = () => null } = {}) {
 	const framesOn = () => !!(typeof frames === 'function' ? frames() : frames);
 	let undoSchemaSig = null;
 	let setupDone = false;
 	let txnFrames = null; // PHP's transaction and its savepoints: [{ name, seq }]
 	const txnTouched = new Set();
 	let armedReq = null; // the request id a frame may open for
+	let pluginHeld = false; // #954: a plugin-status hold is open, so options-cache sets wait for the request end
+	const cacheDrops = []; // promises from dropOptionsCache, awaited by the caller before the next PHP read
 	// #809: a frame is STRANDED when its rollback failed and no recovery has succeeded since. It is still stored open
 	// (active 1, its undo rows), and no write may land under it: an unarmed write would be logged into it and erased at
 	// the recovery, and a later frame kept, a commit point or a PHP transaction would wipe its undo and keep the
@@ -366,23 +370,34 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 		}
 	}
 	// Close the frame KEPT: its rows stay, the log goes, deferred work runs.
+	// runHeld false: a commit point. An options-cache set taken during a plugin hold stays deferred (#954).
+	function flushDeferred(runHeld) {
+		const work = deferred;
+		deferred = [];
+		const again = [];
+		for (const item of work) {
+			const fn = typeof item === 'function' ? item : item.fn;
+			const hold = typeof item === 'function' ? false : !!item.hold;
+			if (!runHeld && hold) { again.push(item); continue; }
+			try { fn(); } catch (e) { log({ m: 'frame-deferred-failed', error: String((e && e.message) || e).slice(0, 160) }); }
+		}
+		deferred = again.concat(deferred);
+	}
 	function frameKeep(db, state) {
 		if (txnFrames) txnFrames = txnFrames.map((f) => ({ ...f, seq: 0 })); // a PHP txn spanning a commit point keeps what came before it
 		setIdle(db);
 		own(db.exec('DELETE FROM _wp_undo'));
 		frameOpen = false;
 		frameRow(db, armedReq, state);
-		const work = deferred;
-		deferred = [];
-		for (const fn of work) {
-			try { fn(); } catch (e) { log({ m: 'frame-deferred-failed', error: String((e && e.message) || e).slice(0, 160) }); }
-		}
+		flushDeferred(state === 'kept');
 	}
 
 
 	// #938: the old plugin-status value. A commit point keeps every other row. It must not keep
 	// active_plugins. The hold survives the commit point. Write-loss and recovery put the old value
 	// back. end() drops the hold after the frame is kept, so a finished request stays active.
+	// #954: an options-cache set taken while the hold is open is not published at a commit point.
+	// The request end publishes it. A restore drops that cache so the next read uses the row.
 	function capturePluginStatus(db, sql, params) {
 		if (!armedReq || !framesOn()) return;
 		const w = pluginStatusWrite(sql, params);
@@ -393,7 +408,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 		} catch {
 			return; // the hold table is created with the frame
 		}
-		if (already.length) return;
+		if (already.length) { pluginHeld = true; return; }
 		let rows = [];
 		try {
 			rows = [...db.exec(`SELECT option_value, autoload FROM ${sqlId(w.table)} WHERE option_name = ?`, w.key).raw()];
@@ -404,6 +419,23 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 		const value = existed ? rows[0][0] : null;
 		const autoload = existed ? rows[0][1] : null;
 		own(db.exec('INSERT INTO _wp_plugin_hold (req, option_key, tbl, existed, option_value, autoload) VALUES (?, ?, ?, ?, ?, ?)', armedReq, w.key, w.table, existed, value, autoload));
+		pluginHeld = true;
+	}
+	function syncPluginHeld(db) {
+		if (!armedReq) { pluginHeld = false; return; }
+		try {
+			pluginHeld = db.exec('SELECT COUNT(*) AS n FROM _wp_plugin_hold WHERE req = ?', armedReq).one().n > 0;
+		} catch {
+			pluginHeld = false;
+		}
+	}
+	function noteOptionsDrop() {
+		try {
+			const p = dropOptionsCache();
+			if (p && typeof p.then === 'function') cacheDrops.push(p);
+		} catch (e) {
+			log({ m: 'options-cache-drop-failed', error: String((e && e.message) || e).slice(0, 160) });
+		}
 	}
 	function frameKept(db, req) {
 		try {
@@ -438,6 +470,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			}
 		}
 		discardPluginHolds(db, req);
+		noteOptionsDrop();
 		log({ m: 'plugin-status-restored', req, n: rows.length });
 		return rows.length;
 	}
@@ -455,11 +488,13 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 	function discardPluginHolds(db, req) {
 		if (!req) return;
 		try { own(db.exec('DELETE FROM _wp_plugin_hold WHERE req = ?', req)); } catch { /* no hold table yet */ }
+		pluginHeld = false;
 	}
 
 	return {
 		/** Arm a frame for this request (frames on). It opens at the first write. */
 		arm(db, req) {
+			pluginHeld = false;
 			if (!framesOn() || stranded) return; // #809: no frame opens over a stranded one
 			armedReq = String(req || 'req-' + Date.now());
 			points = 0;
@@ -520,6 +555,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 				undoSchemaSig = null;
 				setupDone = false;
 				counts.own = own0; // the rolled-back transaction wrote nothing
+				syncPluginHeld(db); // a hold insert inside the open rolled back with it
 				if (e !== NOOP) throw e;
 				counts.noop++;
 				return result;
@@ -543,10 +579,17 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			frameKeep(db, 'open');
 		},
 		/** Run fn when the frame is kept; returns false (fn not taken) when no frame is open. */
-		defer(fn) {
+		defer(fn, hold = false) {
 			if (!frameOpen) return false;
-			deferred.push(fn);
+			deferred.push(hold ? { fn, hold: true } : fn);
 			return true;
+		},
+		/** #954: true after this request saved a plugin-status hold that end() has not dropped. */
+		pluginStatusHeld: () => pluginHeld,
+		/** Promises from dropOptionsCache. The caller awaits them before the next PHP read. */
+		finishCacheDrops() {
+			const p = cacheDrops.splice(0, cacheDrops.length);
+			return Promise.all(p);
 		},
 		/** The request ended (PHP finished, a fatal included): a PHP transaction still open is rolled back, the frame kept. */
 		/**
@@ -560,6 +603,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 		rollbackFrame(db, storage) {
 			// No open segment: a commit point already kept the earlier rows. Plugin status is still put back (#938).
 			if (!frameOpen) {
+				deferred = []; // a held options-cache set must not run from a later end()
 				if (!stranded) restorePluginHolds(db, armedReq);
 				return null;
 			}
@@ -576,6 +620,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 				txnFrames = null;
 				txnTouched.clear();
 				deferred = [];
+				pluginHeld = false;
 				armedReq = null;
 				stateReq = null;
 				recovered = false;
@@ -608,8 +653,9 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			if (frameOpen) {
 				counts.kept++;
 				frameKeep(db, 'kept');
-			} else if (armedReq && points > 0) {
-				frameRow(db, armedReq, 'kept');
+			} else {
+				if (armedReq && points > 0) frameRow(db, armedReq, 'kept');
+				flushDeferred(true); // the segment already closed: a finished request still publishes a held set
 			}
 			// The frame is kept, or this request never opened one. Drop the snapshot so recovery does not undo a finish.
 			discardPluginHolds(db, armedReq);

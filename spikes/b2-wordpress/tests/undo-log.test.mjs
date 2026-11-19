@@ -58,9 +58,10 @@ function objectSql(onExec) {
 function isolate(frames = true) {
 	const dropped = [];
 	const logs = [];
+	const optionsDrops = [];
 	const stats = { txnOps: 0, undoRows: 0 };
-	const u = createUndoLog({ stats, objectCacheDrop: (k) => dropped.push(k), log: (o) => logs.push(o), frames });
-	return { u, stats, dropped, logs };
+	const u = createUndoLog({ stats, objectCacheDrop: (k) => dropped.push(k), dropOptionsCache: () => { optionsDrops.push('options'); return Promise.resolve('gone'); }, log: (o) => logs.push(o), frames });
+	return { u, stats, dropped, logs, optionsDrops };
 }
 // What PHP's statements do through index.js sqlStatement: the statement runs inside u.statement(), which
 // opens the frame just before it when it may write, and takes the open back if it changed nothing.
@@ -1071,4 +1072,68 @@ test('#938 an inserted active_plugins row does not survive write-loss', () => {
 test('#938 index.js passes statement params so a plugin status write can be held', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.match(src, /undoLog\.statement\(db, sqlStorage, m\.sql, run, params\)/);
+});
+
+test('#954 a commit point must not publish an options-cache set taken during a plugin hold', async () => {
+	const { db, storage } = optionsDb();
+	const a = isolate();
+	const ran = [];
+	a.u.arm(db, 'r954');
+	run(a.u, db, ACT, PLUGIN, 'active_plugins');
+	assert.equal(a.u.defer(() => ran.push('plain')), true);
+	assert.equal(a.u.defer(() => ran.push('options'), true), true, 'the options set is held');
+	a.u.commitPoint(db, 'http');
+	assert.deepEqual(ran, ['plain'], 'a commit point publishes an ordinary cache set only');
+	assert.equal(opt(db, 'active_plugins'), PLUGIN, 'the row stays new until restore');
+	const rb = a.u.rollbackFrame(db, storage);
+	assert.equal(rb, null, 'the commit point already closed the segment');
+	assert.equal(opt(db, 'active_plugins'), 'inactive', 'write-loss puts the old plugin status back');
+	assert.deepEqual(ran, ['plain'], 'write-loss does not publish the held set');
+	assert.equal(a.optionsDrops.length, 1, 'restore drops the options cache');
+	assert.deepEqual(await a.u.finishCacheDrops(), ['gone']);
+	a.u.end(db, storage);
+	assert.deepEqual(ran, ['plain'], 'end() after restore does not publish the held set');
+	assert.equal(opt(db, 'active_plugins'), 'inactive');
+});
+
+test('#954 a finished activate publishes the held options cache and keeps the plugin', () => {
+	const { db, storage } = optionsDb();
+	const a = isolate();
+	const ran = [];
+	a.u.arm(db, 'r954ok');
+	run(a.u, db, ACT, PLUGIN, 'active_plugins');
+	a.u.defer(() => ran.push('options'), true);
+	a.u.commitPoint(db, 'http');
+	assert.deepEqual(ran, []);
+	a.u.end(db, storage);
+	assert.deepEqual(ran, ['options'], 'the request end publishes the held set');
+	assert.equal(opt(db, 'active_plugins'), PLUGIN);
+	assert.equal(a.optionsDrops.length, 0, 'a finish does not drop the cache');
+});
+
+test('#954 recovery after a commit point restores the plugin and drops the options cache', async () => {
+	const { db, storage } = optionsDb();
+	const a = isolate();
+	a.u.arm(db, 'r954k');
+	run(a.u, db, ACT, PLUGIN, 'active_plugins');
+	a.u.defer(() => {}, true);
+	a.u.commitPoint(db, 'http');
+	const b = isolate();
+	b.u.recover(db, storage);
+	assert.equal(opt(db, 'active_plugins'), 'inactive');
+	assert.equal(b.optionsDrops.length, 1, 'the next isolate drops the options cache');
+	assert.deepEqual(await b.u.finishCacheDrops(), ['gone']);
+});
+
+test('#954 index.js holds options cache sets and rolls a thrown activate back', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /pluginStatusHeld\(\)/);
+	assert.match(src, /defer\(doSet, holdOptions\)/);
+	assert.match(src, /function dropOptionsGroup\(/);
+	assert.match(src, /await txnRecover\(/);
+	const c = src.indexOf('if (e && e.bootRefused) throw e;');
+	const ret = src.indexOf("return new Response('internal error'", c);
+	assert.ok(c > 0 && ret > c, 'the thrown-request catch is present');
+	assert.match(src.slice(c, ret), /rollbackFrame/, 'a thrown activate rolls the hold back before end() keeps the frame');
+	assert.match(src.slice(c, ret), /finishCacheDrops/, 'the catch waits for the options-cache drop');
 });
