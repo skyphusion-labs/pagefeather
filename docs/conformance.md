@@ -28,8 +28,11 @@ content, and `render_user` checks as the last guard.
 ## A run
 
 1. **Build and deploy:** the throwaway with `prepare-content.sh`'s line, `CONFORMANCE=on THROWAWAY=1`, and these settings:
-   - `TURNSTILE_LOGIN=off`: the suites' login posts carry no Turnstile token. The checkout and comment gates stay on,
-     with Turnstile's always-pass test keys.
+   - `TURNSTILE_LOGIN` must be `off`. The suite login post has no token.
+   - `TURNSTILE_SITEKEY` must be `1x00000000000000000000AA`. That is the always-pass test site key.
+   - `TURNSTILE_SECRET` must be `1x0000000000000000000000000000000AA`. That is the always-pass test secret.
+   - Do not set `TURNSTILE_WOO` or `TURNSTILE_COMMENTS` to `off`. Those gates stay on.
+   - The deploy refuses any other site key or secret. A real site key stops classic checkout (#940).
    - `WOO_EXTRAS` must NOT be `off`: it forces `woocommerce_allow_tracking` off, which the WooCommerce suite needs on.
 2. **Seed** (it also activates the two WooCommerce test plugins the line copied in; Gutenberg's stay inactive): `B=<site> ADMIN_PASSWORD=<the workspace's> python3 -I tests/conformance/seed.py <out>` (#775). It owns all
    setup and checks each item. `<out>/creds.env` (mode 600, `export` lines) holds the admin's account password, which
