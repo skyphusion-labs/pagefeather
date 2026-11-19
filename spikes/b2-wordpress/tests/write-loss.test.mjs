@@ -292,7 +292,7 @@ test('#795 index.js: a PLATFORM failure is answered as a failure (after the rese
 
 test('#809 index.js: a stranded frame answers the retryable 503 before PHP runs, and the cron leg is deferred', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	const rec = src.indexOf("if (realTxn) txnRecover(sql, this.ctx.storage);\n\t\t\t// #352: arm the request frame");
+	const rec = src.indexOf("if (realTxn) await txnRecover(sql, this.ctx.storage);\n\t\t\t// #352: arm the request frame");
 	const gate = src.indexOf('if (realTxn && undo(env).stranded()) {');
 	const php = src.indexOf('const res = await handle(req, env, url, spikeOk, maxBody, ctx);');
 	assert.ok(rec > 0 && gate > rec && php > gate, 'the fetch path: recover, then the gate, then PHP');
