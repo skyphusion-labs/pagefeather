@@ -1,5 +1,11 @@
 # WooCommerce plugins/woocommerce/tests/e2e at WC_SHA: specs NOT run on a deployed site (#759).
-# Path (a glob) relative to tests/e2e/tests, then the reason. runner.py passes them as testIgnore.
+# A file row is a glob relative to tests/e2e/tests, then the reason.
+# runner.py passes a file row to Playwright as testIgnore.
+# A title row skips one test. Sibling tests in that file still run.
+# Write the file, then :: , then the full title, then the reason.
+# The title joins describe blocks with > , as results.json does.
+# Two or more spaces separate the title from the reason.
+# runner.py adds a title row to grepInvert.
 # Tags are dropped separately, as upstream envs/default-pressable does: @skip-on-external-env,
 # @skip-on-pressable, @could-be-lower-level-test, @non-critical, @to-be-removed.
 blocks/**                                               the blocks profile: needs a per-test DB restore (lead ruling, #759)
@@ -9,6 +15,8 @@ analytics/analytics.spec.ts                             calls wpCLI
 checkout/checkout-shortcode-custom-place-order-button.spec.ts   calls wpCLI
 order/order-edit.spec.ts                                calls wpCLI
 order/review-order-page.spec.ts                         calls wpCLI (and is skip-on-external)
+paypal/paypal.spec.ts                                   calls wpCLI / needs wp-env (not the deployed site)
+email/settings-email.spec.ts :: WooCommerce Email Settings > Send email preview  suite asserts a PHP mail() failure. wp-mail-queue.php returns true and hands the message to Cloudflare Email Service.
 settings/product-permalinks.spec.ts                     calls wpCLI
 settings/settings-ui-feature-flag.spec.ts               calls wpCLI
 editor/command-palette.spec.ts                          calls local wp-env, not the deployed site
