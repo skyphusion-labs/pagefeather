@@ -2626,9 +2626,9 @@ function sqlStatement(db, m) {
 		const params = sqlParams(m.params);
 		// #352: the statement runs through the undo log. The request frame opens with the first statement that
 		// changes a row, in one storage transaction with it; a statement that changes nothing takes the open
-		// back (a DDL is a commit point).
+		// back (a DDL is a commit point). The bound params go too, so a plugin status write can be held (#938).
 		const run = () => sqlRun(db, m, params);
-		const { reply } = undoLog ? undoLog.statement(db, sqlStorage, m.sql, run) : run();
+		const { reply } = undoLog ? undoLog.statement(db, sqlStorage, m.sql, run, params) : run();
 		// #730: the statement, and the frame's opening transaction with it, has returned. The request's INSERT into
 		// wp_posts is the point to kill, so every injected kill is post-write. The kill is a memory reset by the platform.
 		if (faultPending && isFaultTarget(m.sql, reply)) {

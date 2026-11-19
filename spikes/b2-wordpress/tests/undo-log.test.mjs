@@ -6,7 +6,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { createUndoLog, mayWrite, isDdl } from '../undo-log.mjs';
+import { readFileSync } from 'node:fs';
+import { createUndoLog, mayWrite, isDdl, pluginStatusWrite } from '../undo-log.mjs';
 
 function objectSql(onExec) {
 	const d = new DatabaseSync(':memory:');
@@ -76,7 +77,7 @@ function run(u, db, sql, ...p) {
 		cur.changes = after === before ? 0 : db.exec('SELECT changes() AS c').one().c;
 		u.afterStatement(db, sql, cur.rowsWritten);
 		return cur;
-	});
+	}, p);
 }
 const ids = (db) => [...db.exec('SELECT v FROM t ORDER BY id').raw()].map((r) => r[0]);
 function site() {
@@ -971,4 +972,103 @@ test('#794 rollbackFrame stops at a commit point: what was kept at the point sta
 	assert.equal(db.exec('SELECT COUNT(*) AS c FROM n2').one().c, 0, 'after it: undone');
 	assert.equal(a.u.status(db, 'r794p').state, 'rolled-back');
 	assert.equal(a.u.status(db, 'r794p').points, 1, 'a point passed, so frameProvesRollback is false and the answer stays "may have been saved"');
+});
+
+const ACT = 'UPDATE `wp_options` SET `option_value` = ? WHERE `option_name` = ?';
+const PLUGIN = 'active:gutenberg-test-plugins/default-post-content.php';
+
+function optionsDb() {
+	const s = site();
+	s.db.exec('CREATE TABLE wp_options (option_id INTEGER PRIMARY KEY, option_name TEXT UNIQUE, option_value TEXT, autoload TEXT)');
+	s.db.exec("INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('active_plugins', 'inactive', 'yes')");
+	s.db.exec("INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('blogname', 'Demo', 'yes')");
+	return s;
+}
+function opt(db, name) {
+	const rows = [...db.exec('SELECT option_value FROM wp_options WHERE option_name = ?', name).raw()];
+	return rows.length ? rows[0][0] : null;
+}
+
+test('#938 pluginStatusWrite reads option_name, not a value that equals the same string', () => {
+	const upd = 'UPDATE `wp_options` SET `option_value` = ? WHERE `option_name` = ?';
+	assert.deepEqual(pluginStatusWrite(upd, [PLUGIN, 'active_plugins']), { table: 'wp_options', key: 'active_plugins' });
+	assert.equal(pluginStatusWrite(upd, ['active_plugins', 'blogname']), null, 'the value is not the option name');
+	assert.deepEqual(
+		pluginStatusWrite('UPDATE `wp_options` SET `option_value` = ?, `autoload` = ? WHERE `option_name` = ?', [PLUGIN, 'yes', 'active_sitewide_plugins']),
+		{ table: 'wp_options', key: 'active_sitewide_plugins' },
+	);
+	assert.deepEqual(
+		pluginStatusWrite("UPDATE wp_options SET option_value = 'x' WHERE option_name = 'active_plugins'", []),
+		{ table: 'wp_options', key: 'active_plugins' },
+	);
+	assert.deepEqual(
+		pluginStatusWrite('INSERT INTO `wp_options` (`option_name`, `option_value`, `autoload`) VALUES (?, ?, ?)', ['active_plugins', PLUGIN, 'yes']),
+		{ table: 'wp_options', key: 'active_plugins' },
+	);
+	assert.equal(pluginStatusWrite('UPDATE wp_posts SET post_title = ? WHERE ID = ?', [PLUGIN, '1']), null);
+	assert.equal(pluginStatusWrite('SELECT option_value FROM wp_options WHERE option_name = ?', ['active_plugins']), null);
+});
+
+test('#938 activate then write-loss: the plugin is inactive, and a commit point still keeps every other row', () => {
+	const { db, storage } = optionsDb();
+	const a = isolate();
+	a.u.arm(db, 'r938');
+	run(a.u, db, ACT, PLUGIN, 'active_plugins');
+	run(a.u, db, ACT, 'Dirty', 'blogname');
+	run(a.u, db, ACT, 'active_plugins', 'blogname'); // a value equal to the key must not be treated as plugin status
+	a.u.commitPoint(db, 'http');
+	run(a.u, db, "INSERT INTO t (v) VALUES ('after')");
+	const rb = a.u.rollbackFrame(db, storage);
+	assert.equal(rb.points, 1, 'the commit point still counts');
+	assert.equal(opt(db, 'active_plugins'), 'inactive', 'the activate did not stick');
+	assert.equal(opt(db, 'blogname'), 'active_plugins', 'the other option stayed kept');
+	assert.deepEqual(ids(db), ['seed'], 'the write after the commit point is undone');
+	assert.equal(a.u.status(db, 'r938').state, 'rolled-back');
+	assert.equal(a.u.status(db, 'r938').points, 1, 'not proof that nothing was saved');
+	a.u.end(db, storage);
+	assert.equal(opt(db, 'active_plugins'), 'inactive', 'end() does not put the plugin back');
+});
+
+test('#938 a killed activate is inactive after recover, including after a commit point', () => {
+	const { db, storage } = optionsDb();
+	const a = isolate();
+	a.u.arm(db, 'r938k');
+	run(a.u, db, ACT, PLUGIN, 'active_plugins');
+	run(a.u, db, ACT, 'Dirty', 'blogname');
+	a.u.commitPoint(db, 'http');
+	// The isolate dies. end() never runs. The next isolate recovers first.
+	const b = isolate();
+	b.u.recover(db, storage);
+	assert.equal(opt(db, 'active_plugins'), 'inactive');
+	assert.equal(opt(db, 'blogname'), 'Dirty');
+});
+
+test('#938 a finished activate stays active, and a later recovery does not undo it', () => {
+	const { db, storage } = optionsDb();
+	const a = isolate();
+	a.u.arm(db, 'r938ok');
+	run(a.u, db, ACT, PLUGIN, 'active_plugins');
+	a.u.commitPoint(db, 'http');
+	a.u.end(db, storage);
+	assert.equal(opt(db, 'active_plugins'), PLUGIN);
+	assert.equal(a.u.status(db, 'r938ok').state, 'kept');
+	const b = isolate();
+	b.u.recover(db, storage);
+	assert.equal(opt(db, 'active_plugins'), PLUGIN, 'recovery must not deactivate a finished request');
+});
+
+test('#938 an inserted active_plugins row does not survive write-loss', () => {
+	const { db, storage } = site();
+	db.exec('CREATE TABLE wp_options (option_id INTEGER PRIMARY KEY, option_name TEXT UNIQUE, option_value TEXT, autoload TEXT)');
+	const a = isolate();
+	a.u.arm(db, 'r938i');
+	run(a.u, db, 'INSERT INTO `wp_options` (`option_name`, `option_value`, `autoload`) VALUES (?, ?, ?)', 'active_plugins', PLUGIN, 'yes');
+	a.u.commitPoint(db, 'http');
+	a.u.rollbackFrame(db, storage);
+	assert.equal(opt(db, 'active_plugins'), null, 'the insert is removed');
+});
+
+test('#938 index.js passes statement params so a plugin status write can be held', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /undoLog\.statement\(db, sqlStorage, m\.sql, run, params\)/);
 });
