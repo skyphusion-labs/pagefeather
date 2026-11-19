@@ -18,7 +18,10 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
      Install stores that default with add_option, so a stored yes stays.
      The email editor spec checks the box and saves.
      A box that is already on leaves Save disabled (#916).
-     The seed writes no and reads it back on wc/v3 and wc-admin/options;
+     The seed writes no and reads it back on wc/v3 settings.
+     Woo 11.2.1 does not list this option on wc-admin/options.
+     That route answers 403 woocommerce_rest_cannot_view.
+     The seed skips that 403 only after wc/v3 returns no.
   4. the user "customer": role customer, customer@woocommercecoree2etestsuite.com, Jane Smith, a new generated
      password; checked by a form login;
   5. the media items image-01, image-02 and image-03 from WooCommerce's test-data/images at WC_SHA (the files
@@ -266,6 +269,30 @@ def settings_timezone(settings):
     return settings.get("timezone") or settings.get("timezone_string") or ""
 
 
+EMAIL_EDITOR_OPT = "woocommerce_feature_block_email_editor_enabled"
+WC_ADMIN_CANNOT_VIEW = "woocommerce_rest_cannot_view"
+
+
+def email_editor_option_ok(wcv3, wcadmin_status, wcadmin_body):
+    """True when wc/v3 settings advanced is no.
+
+    Woo 11.2.1 does not list this option on wc-admin/options.
+    That route answers 403 woocommerce_rest_cannot_view.
+    Skip that 403 only after wc/v3 is no.
+    Any other wc-admin answer must also be no.
+    """
+    if not (isinstance(wcv3, dict) and wcv3.get("value") == "no"):
+        return False
+    hidden = (
+        wcadmin_status == 403
+        and isinstance(wcadmin_body, dict)
+        and wcadmin_body.get("code") == WC_ADMIN_CANNOT_VIEW
+    )
+    if hidden:
+        return True
+    return isinstance(wcadmin_body, dict) and wcadmin_body.get(EMAIL_EDITOR_OPT) == "no"
+
+
 def activation_nonce(page, slug):
     """The _wpnonce of themes.php's activation link for slug, or None. The theme list is rendered from JSON on the
     page, so the link may be plain (&), HTML-escaped (&amp;) or JSON-escaped (\\u0026): match the query string itself.
@@ -380,17 +407,25 @@ def main():
           isinstance(t, dict) and t.get("value") == "yes" and isinstance(o2, dict) and o2.get("woocommerce_allow_tracking") == "yes",
           wcv3=t.get("value") if isinstance(t, dict) else c, wcadmin=o2.get("woocommerce_allow_tracking") if isinstance(o2, dict) else c2)
 
-    # 3b. Block email editor stays at Woo's default, no (#916).
+    # 3b. Block email editor stays at Woo default, no (#916).
     # WC 11.2.1 registers block_email_editor with enabled_by_default false.
     # WC_Install::create_options uses add_option, so a stored yes is kept.
     # The enable spec checks the box. An already checked box leaves Save disabled.
-    email_opt = "woocommerce_feature_block_email_editor_enabled"
+    # Proof is wc/v3 settings advanced value no.
+    # wc-admin/options does not list this option on Woo 11.2.1.
+    # A 403 woocommerce_rest_cannot_view is skipped only after wc/v3 is no.
+    email_opt = EMAIL_EDITOR_OPT
     rest(a, n, "/wc/v3/settings/advanced/" + email_opt, {"value": "no"}, "PUT")
     c, t = rest(a, n, "/wc/v3/settings/advanced/" + email_opt)
     c2, o2 = rest(a, n, "/wc-admin/options?options=" + email_opt)
-    check(email_opt + " = no (wc/v3 settings and wc-admin/options)",
-          isinstance(t, dict) and t.get("value") == "no" and isinstance(o2, dict) and o2.get(email_opt) == "no",
-          wcv3=t.get("value") if isinstance(t, dict) else c, wcadmin=o2.get(email_opt) if isinstance(o2, dict) else c2)
+    wcadmin_detail = c2
+    if isinstance(o2, dict) and email_opt in o2:
+        wcadmin_detail = o2.get(email_opt)
+    elif isinstance(o2, dict) and o2.get("code"):
+        wcadmin_detail = o2.get("code")
+    check(email_opt + " = no (wc/v3 settings)",
+          email_editor_option_ok(t, c2, o2),
+          wcv3=t.get("value") if isinstance(t, dict) else c, wcadmin=wcadmin_detail, wcadmin_status=c2)
 
     # 4. the customer
     cpw = secrets.token_urlsafe(18)
