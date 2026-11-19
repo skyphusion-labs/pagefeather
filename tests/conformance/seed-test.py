@@ -9,6 +9,8 @@
      that is not on the page or a slug that only shares a prefix.
 The full seed (every item set and checked, and a reseed) is verified against a real local site; see the PR.
   7. the block email editor option starts at yes. The seed writes no. The read-back is no (#916).
+     A wc-admin 403 on that option still passes when wc/v3 is no.
+     The same 403 still fails when wc/v3 stays yes.
 Run: python3 -I tests/conformance/seed-test.py
 """
 import json, os, subprocess, sys, threading
@@ -98,6 +100,15 @@ for label, prefs, want in (
 # 7. #916: a stored yes must not survive the seed. Woo's default is no.
 import base64, urllib.parse
 EMAIL_OPT = "woocommerce_feature_block_email_editor_enabled"
+check("email option name matches the seed", EMAIL_OPT == _seed.EMAIL_EDITOR_OPT)
+
+hidden = {"code": "woocommerce_rest_cannot_view", "data": {"status": 403}}
+check("email_editor_option_ok: wc/v3 no and wc-admin no", _seed.email_editor_option_ok({"value": "no"}, 200, {EMAIL_OPT: "no"}) is True)
+check("email_editor_option_ok: wc/v3 no and wc-admin 403", _seed.email_editor_option_ok({"value": "no"}, 403, hidden) is True)
+check("email_editor_option_ok: wc/v3 yes and wc-admin 403", _seed.email_editor_option_ok({"value": "yes"}, 403, hidden) is False)
+check("email_editor_option_ok: wc/v3 no and wc-admin yes", _seed.email_editor_option_ok({"value": "no"}, 200, {EMAIL_OPT: "yes"}) is False)
+check("email_editor_option_ok: other 403 is not a skip", _seed.email_editor_option_ok({"value": "no"}, 403, {"code": "rest_forbidden"}) is False)
+
 PLUGINS = (
     "woocommerce-e2e-test-helper/woocommerce-e2e-test-helper",
     "woocommerce-cleanup/woocommerce-cleanup",
@@ -178,13 +189,21 @@ class Site(BaseHTTPRequestHandler):
         opt = self._opt_name(route)
         if opt:
             if method == "PUT" and isinstance(body, dict) and "value" in body:
-                st["options"][opt] = body["value"]
+                if not (opt == EMAIL_OPT and st.get("freeze_email")):
+                    st["options"][opt] = body["value"]
                 st["puts"].append((opt, body["value"]))
             val = st["options"].get(opt, "")
             st["reads"].append((opt, val))
             return self._json(200, {"id": opt, "value": val})
         if route == "/wc-admin/options":
             name = (q.get("options") or [""])[0]
+            if name == EMAIL_OPT and st.get("wcadmin_forbid"):
+                st["reads"].append((name, 403))
+                return self._json(403, {
+                    "code": "woocommerce_rest_cannot_view",
+                    "message": "Sorry, you cannot view this resource.",
+                    "data": {"status": 403},
+                })
             val = st["options"].get(name, "")
             st["reads"].append((name, val))
             return self._json(200, {name: val})
@@ -240,7 +259,7 @@ class Site(BaseHTTPRequestHandler):
         st["odd"].append((method, route))
         return self._json(200, {})
 
-def run_email_editor_seed():
+def run_email_editor_seed(**flags):
     state = {
         "options": {
             "woocommerce_allow_tracking": "no",
@@ -256,6 +275,7 @@ def run_email_editor_seed():
         "app_uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         "password_set": False,
     }
+    state.update(flags)
     Site.state = state
     srv = ThreadingHTTPServer(("127.0.0.1", 0), Site)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -279,13 +299,35 @@ def run_email_editor_seed():
         pass
     return p, state, report
 
+def email_chk(report):
+    checks = (report or {}).get("checks", {})
+    for name, chk in checks.items():
+        if name.startswith(EMAIL_OPT + " = no"):
+            return chk
+    return None
+
 p, state, report = run_email_editor_seed()
-chk_name = EMAIL_OPT + " = no (wc/v3 settings and wc-admin/options)"
-chk = (report or {}).get("checks", {}).get(chk_name)
+chk = email_chk(report)
 check(
     "email editor option: seed writes no and the read-back is no",
     isinstance(chk, dict) and chk.get("ok") is True and state["options"].get(EMAIL_OPT) == "no" and (EMAIL_OPT, "no") in state["puts"] and (EMAIL_OPT, "no") in state["reads"] and state["started"][EMAIL_OPT] == "yes",
     (p.returncode, state["options"].get(EMAIL_OPT), state["puts"], state["reads"], chk, state["odd"][:8], (p.stdout or "")[-400:], (p.stderr or "")[-200:]),
+)
+
+p, state, report = run_email_editor_seed(wcadmin_forbid=True)
+chk = email_chk(report)
+check(
+    "email editor option: wc-admin 403 passes when wc/v3 is no",
+    isinstance(chk, dict) and chk.get("ok") is True and chk.get("wcv3") == "no" and chk.get("wcadmin_status") == 403 and chk.get("wcadmin") == "woocommerce_rest_cannot_view" and state["options"].get(EMAIL_OPT) == "no" and (EMAIL_OPT, "no") in state["puts"] and (EMAIL_OPT, 403) in state["reads"],
+    (p.returncode, state["options"].get(EMAIL_OPT), state["puts"], state["reads"], chk),
+)
+
+p, state, report = run_email_editor_seed(wcadmin_forbid=True, freeze_email=True)
+chk = email_chk(report)
+check(
+    "email editor option: wc-admin 403 fails when wc/v3 is yes",
+    isinstance(chk, dict) and chk.get("ok") is False and chk.get("wcv3") == "yes" and chk.get("wcadmin_status") == 403 and state["options"].get(EMAIL_OPT) == "yes" and (EMAIL_OPT, 403) in state["reads"] and p.returncode == 1,
+    (p.returncode, state["options"].get(EMAIL_OPT), state["puts"], state["reads"], chk),
 )
 
 page = {"id": 7, "status": "publish", "slug": "cart", "link": "https://ex/cart/"}

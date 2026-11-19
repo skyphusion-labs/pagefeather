@@ -284,13 +284,37 @@ class R2_Uploads_Stream {
 	}
 
 	public function unlink( $uri ) {
-		return null !== self::call( array( 'op' => 'delete', 'key' => self::key( $uri ) ) );
+		$key = self::key( $uri );
+		$ok  = null !== self::call( array( 'op' => 'delete', 'key' => $key ) );
+		if ( $ok ) {
+			self::release_fallback( $key );
+		}
+		return $ok;
 	}
 
 	public function rename( $from, $to ) {
 		// The Worker copies inside R2. The bytes do not pass through PHP.
-		$r = self::call( array( 'op' => 'copy', 'from' => self::key( $from ), 'to' => self::key( $to ), 'type' => self::content_type( $to ), 'move' => true ) );
-		return $r && $r['found'];
+		$from_key = self::key( $from );
+		$r        = self::call( array( 'op' => 'copy', 'from' => $from_key, 'to' => self::key( $to ), 'type' => self::content_type( $to ), 'move' => true ) );
+		if ( $r && $r['found'] ) {
+			self::release_fallback( $from_key );
+			return true;
+		}
+		return false;
+	}
+
+	/** The C1 fallback row. The worker table _r2_reserved is separate. */
+	public static function reserved_option( $key ) {
+		return '_r2_reserved_' . md5( (string) $key );
+	}
+
+	/** Drop the fallback row when the file is gone. Issue #946. */
+	private static function release_fallback( $key ) {
+		global $wpdb;
+		if ( ! is_object( $wpdb ) || empty( $wpdb->options ) || ! method_exists( $wpdb, 'query' ) ) {
+			return;
+		}
+		$wpdb->query( $wpdb->prepare( 'DELETE FROM `' . $wpdb->options . '` WHERE option_name = %s', self::reserved_option( $key ) ) );
 	}
 
 	public function mkdir( $uri, $mode, $options ) {
@@ -403,6 +427,7 @@ add_filter(
 // isolates can both pass the check, and the second overwrites the first
 // (measured 2026-11-04: 8 parallel uploads, 3 distinct files). The Worker
 // reserves each name with one atomic D1 insert, so only one upload gets it.
+// Delete and rename release that name (issue #946). The next upload can use it.
 add_filter(
 	'wp_unique_filename',
 	function ( $filename, $ext, $dir ) {
@@ -428,7 +453,7 @@ add_filter(
 				$h = R2_Uploads_Stream::call( array( 'op' => 'head', 'key' => $key ) );
 				$r = array(
 					'reserved' => ( ! $h || empty( $h['found'] ) )
-						&& 1 === $wpdb->query( $wpdb->prepare( "INSERT IGNORE INTO `$wpdb->options` (`option_name`, `option_value`, `autoload`) VALUES (%s, %s, 'off')", '_r2_reserved_' . md5( $key ), (string) time() ) ),
+						&& 1 === $wpdb->query( $wpdb->prepare( "INSERT IGNORE INTO `$wpdb->options` (`option_name`, `option_value`, `autoload`) VALUES (%s, %s, 'off')", R2_Uploads_Stream::reserved_option( $key ), (string) time() ) ),
 				);
 			}
 			if ( $r['reserved'] ) {
