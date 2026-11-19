@@ -314,12 +314,14 @@ check( 'widget carries the public site key', (bool) strpos( $widget, 'data-sitek
 check( 'widget carries the cf-turnstile class', (bool) strpos( $widget, 'class="cf-turnstile"' ), true );
 check( 'widget carries the Spin telemetry marker', (bool) strpos( $widget, 'data-action="turnstile-spin-v1"' ), true );
 check( 'widget loads the api.js script', (bool) strpos( $widget, 'challenges.cloudflare.com/turnstile/v0/api.js' ), true );
+check( 'widget holds submit until the token is set', (bool) strpos( $widget, 'data-pf-held' ), true );
 
 // The script prints once per page; a second widget prints only the div.
 ob_start();
 do_action( 'comment_form_after_fields' );
 $widget2 = ob_get_clean();
 check( 'second widget does not reprint the script', (bool) strpos( $widget2, 'api.js' ), false );
+check( 'second widget does not reprint the hold script', (bool) strpos( $widget2, 'data-pf-held' ), false );
 check( 'second widget still prints the div', (bool) strpos( $widget2, 'class="cf-turnstile"' ), true );
 
 // 2) Login: a good token passes, a bad token and a missing token are rejected.

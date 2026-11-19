@@ -73,9 +73,68 @@ if ( ! function_exists( 'skyphusion_turnstile_widget' ) ) {
 		static $script_printed = false;
 		if ( ! $script_printed ) {
 			echo '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' . "\n";
+			echo '<script>' . skyphusion_turnstile_hold_script() . '</script>' . "\n";
 			$script_printed = true;
 		}
 		echo '<div class="cf-turnstile" data-sitekey="' . esc_attr( $key ) . '" data-action="turnstile-spin-v1"></div>' . "\n";
+	}
+}
+
+
+/**
+ * The hold script, once per page. It disables each submit control in a form that
+ * has a Turnstile box until cf-turnstile-response has a value. A click before the
+ * widget finishes must not post an empty token (#964). After 15 seconds the
+ * control is released so a missing widget can still show the server error.
+ */
+if ( ! function_exists( 'skyphusion_turnstile_hold_script' ) ) {
+	function skyphusion_turnstile_hold_script() {
+		return <<<'JS'
+(function () {
+  function arm() {
+    var boxes = document.querySelectorAll(".cf-turnstile");
+    for (var i = 0; i < boxes.length; i++) {
+      var form = boxes[i].closest("form");
+      if (!form || form.getAttribute("data-pf-turnstile-hold") === "1") continue;
+      form.setAttribute("data-pf-turnstile-hold", "1");
+      (function (form) {
+        var ticks = 0;
+        var timer = setInterval(function () {
+          ticks += 1;
+          var field = form.querySelector("[name=cf-turnstile-response]");
+          var ok = !!(field && field.value);
+          var buttons = form.querySelectorAll("button[type=submit], input[type=submit]");
+          for (var j = 0; j < buttons.length; j++) {
+            var b = buttons[j];
+            if (ok) {
+              if (b.getAttribute("data-pf-held") === "1") {
+                b.disabled = false;
+                b.removeAttribute("data-pf-held");
+              }
+            } else if (ticks <= 150 && !b.disabled) {
+              b.disabled = true;
+              b.setAttribute("data-pf-held", "1");
+            }
+          }
+          if (ok || ticks > 150) {
+            if (!ok) {
+              for (var k = 0; k < buttons.length; k++) {
+                if (buttons[k].getAttribute("data-pf-held") === "1") {
+                  buttons[k].disabled = false;
+                  buttons[k].removeAttribute("data-pf-held");
+                }
+              }
+            }
+            clearInterval(timer);
+          }
+        }, 100);
+      })(form);
+    }
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", arm);
+  else arm();
+})();
+JS;
 	}
 }
 
