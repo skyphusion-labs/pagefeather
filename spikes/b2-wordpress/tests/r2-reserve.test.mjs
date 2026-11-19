@@ -79,20 +79,30 @@ function reserve(db, key, exists) {
 	return tryReserveName(db, key, exists, 1, sqlChanges);
 }
 
-test('a free name is reserved once, and a second caller does not get it', () => {
+test('a row whose object is gone is free, and a different name stays reserved', () => {
 	const db = memorySql();
 	assert.equal(reserve(db, KEY, false), true);
-	assert.equal(reserve(db, KEY, false), false);
+	assert.equal(reserve(db, OTHER, false), true);
+	assert.equal(reserve(db, KEY, false), true);
+	assert.equal(reserve(db, OTHER, true), false);
 });
 
-test('delete releases that name and leaves a different name reserved', () => {
+test('a second caller does not get a name while its object is still in R2', () => {
+	const db = memorySql();
+	assert.equal(reserve(db, KEY, false), true);
+	assert.equal(reserve(db, KEY, true), false);
+});
+
+test('delete releases that name and leaves a different row in place', () => {
 	const db = memorySql();
 	assert.equal(reserve(db, KEY, false), true);
 	assert.equal(reserve(db, OTHER, false), true);
 	releaseReservedName(db, KEY);
 	assert.ok(db.seen.includes(RESERVE_DELETE), 'release did not delete the row');
 	assert.equal(reserve(db, KEY, false), true);
-	assert.equal(reserve(db, OTHER, false), false);
+	const deletes = db.seen.filter((s) => s === RESERVE_DELETE).length;
+	assert.equal(reserve(db, OTHER, false), true);
+	assert.equal(db.seen.filter((s) => s === RESERVE_DELETE).length, deletes + 1);
 });
 
 test('an object that is still in R2 is not reserved, and a later upload can take the name', () => {
@@ -145,6 +155,9 @@ test('the worker frees the name before it deletes the object, on delete and on m
 	assert.match(fn, /releaseReservedD1\(ENV\.DB, key\)/);
 	const reserve = between("if (op.op === 'reserve' && sqlDb)", "if (op.op === 'reserve')");
 	assert.match(reserve, /tryReserveName\(sqlDb/);
+	const php = readFileSync(new URL('../php/r2-uploads.php', import.meta.url), 'utf8');
+	const hook = php.match(/add_filter\(\s*'wp_unique_filename',[\s\S]*?(\d+),\s*3\s*\);/);
+	assert.equal(hook && hook[1], '100', 'the reserve filter must run after the WordPress 7.1 sub-size filter');
 });
 
 // The same cases on node:sqlite when this Node has the builtin. The memory driver above is the gate.
@@ -170,13 +183,12 @@ function nodeSqlite() {
 	};
 }
 
-test('node:sqlite: delete releases the name', { skip: DatabaseSync ? false : 'this Node has no node:sqlite' }, () => {
+test('node:sqlite: a missing object frees the name, and a present object does not', { skip: DatabaseSync ? false : 'this Node has no node:sqlite' }, () => {
 	const db = nodeSqlite();
 	assert.equal(reserve(db, KEY, false), true);
-	assert.equal(reserve(db, KEY, false), false);
-	releaseReservedName(db, KEY);
 	assert.equal(reserve(db, KEY, false), true);
+	assert.equal(reserve(db, KEY, true), false);
 	assert.equal(reserve(db, OTHER, false), true);
 	releaseReservedName(db, KEY);
-	assert.equal(reserve(db, OTHER, false), false);
+	assert.equal(reserve(db, OTHER, true), false);
 });
