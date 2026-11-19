@@ -220,10 +220,13 @@ class Site(BaseHTTPRequestHandler):
                 return self._json(200, [{"id": 5, "email": "customer@woocommercecoree2etestsuite.com"}])
             return self._json(200, {"id": 5})
         if route == "/wp/v2/users/5":
+            if method in ("POST", "PUT") and isinstance(body, dict) and body.get("name"):
+                st["customer_name"] = body["name"]
             return self._json(200, {
                 "id": 5, "username": "customer", "roles": ["customer"],
                 "email": "customer@woocommercecoree2etestsuite.com",
                 "first_name": "Jane", "last_name": "Smith",
+                "name": st.get("customer_name") or "customer",
             })
         if route in ("/wp/v2/users/me", "/wp/v2/users/1"):
             basic = self._basic()
@@ -312,6 +315,20 @@ check(
     "email editor option: seed writes no and the read-back is no",
     isinstance(chk, dict) and chk.get("ok") is True and state["options"].get(EMAIL_OPT) == "no" and (EMAIL_OPT, "no") in state["puts"] and (EMAIL_OPT, "no") in state["reads"] and state["started"][EMAIL_OPT] == "yes",
     (p.returncode, state["options"].get(EMAIL_OPT), state["puts"], state["reads"], chk, state["odd"][:8], (p.stdout or "")[-400:], (p.stderr or "")[-200:]),
+)
+
+def customer_chk(report):
+    checks = (report or {}).get("checks", {})
+    for name, chk in checks.items():
+        if name.startswith("customer:"):
+            return chk
+    return None
+
+chk_c = customer_chk(report)
+check(
+    "customer display name is Jane Smith",
+    isinstance(chk_c, dict) and chk_c.get("ok") is True and state.get("customer_name") == "Jane Smith" and chk_c.get("display") == "Jane Smith",
+    (chk_c, state.get("customer_name")),
 )
 
 p, state, report = run_email_editor_seed(wcadmin_forbid=True)
