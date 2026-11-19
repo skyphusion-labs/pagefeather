@@ -1,5 +1,5 @@
 /*
- * Turnstile on the WooCommerce block checkout (issue #308). php/turnstile-forms.php prints
+ * Turnstile on the WooCommerce block checkout (issue #308, #958). php/turnstile-forms.php prints
  * a script tag for this file after the checkout block, with window.skyphusionTurnstileBlock set
  * first:
  *   { sitekey, namespace, action }
@@ -13,16 +13,20 @@
  * The widget box is printed by PHP OUTSIDE the React root, so React never removes or moves it.
  * Turnstile renders into it in explicit mode (api.js?render=explicit&onload=...).
  *
- * A token is single use: siteverify accepts it once. So after every checkout POST that does not
- * end the checkout (an error, a declined card, a failed challenge), the widget is reset and the
- * stored token is cleared. An expired or errored widget also clears the token. A stale token is
- * never sent.
+ * Place order stays disabled until the callback has stored a token. The checkout POST closes
+ * over the extension data from the last React render, so the button is enabled on a later turn
+ * (a 50 ms timer), after that render. A click before the token is stopped.
+ *
+ * A token is single use. After every checkout POST that does not end the checkout, the widget
+ * is reset and the stored token is cleared. An expired or errored widget also clears the token.
  */
 (function () {
 	'use strict';
 	var cfg = window.skyphusionTurnstileBlock || {};
 	var STORE = 'wc/store/checkout';
+	var BUTTON = '.wc-block-components-checkout-place-order-button';
 	var widgetId = null;
+	var solved = '';
 
 	function data() {
 		var wp = window.wp;
@@ -34,7 +38,6 @@
 		}
 	}
 
-	// setExtensionData since WooCommerce 9.9; __internalSetExtensionData before it (now deprecated).
 	function setToken(token) {
 		var d = data();
 		if (!d) return false;
@@ -45,15 +48,34 @@
 		return true;
 	}
 
+	function placeButton() {
+		if (typeof document.querySelector !== 'function') return null;
+		return document.querySelector(BUTTON);
+	}
+
+	function holdButton() {
+		if (solved) return;
+		var btn = placeButton();
+		if (btn) btn.disabled = true;
+	}
+
+	function releaseButton() {
+		setTimeout(function () {
+			if (!solved) return;
+			var btn = placeButton();
+			if (btn) btn.disabled = false;
+		}, 50);
+	}
+
 	function reset() {
+		solved = '';
 		setToken('');
+		holdButton();
 		if (widgetId !== null && window.turnstile && typeof window.turnstile.reset === 'function') {
 			window.turnstile.reset(widgetId);
 		}
 	}
 
-	// Reset after a checkout POST that left the shopper on the page. isProcessing goes true for the
-	// POST; when it goes false again and the checkout is not complete, the token was spent.
 	function watch() {
 		var d = data();
 		if (!d || typeof d.subscribe !== 'function') return;
@@ -75,14 +97,29 @@
 		widgetId = window.turnstile.render(box, {
 			sitekey: cfg.sitekey,
 			action: cfg.action,
-			callback: function (token) { setToken(token); },
-			'expired-callback': function () { setToken(''); },
-			'error-callback': function () { setToken(''); },
+			callback: function (token) {
+				solved = token || '';
+				setToken(solved);
+				if (solved) releaseButton();
+				else holdButton();
+			},
+			'expired-callback': function () { solved = ''; setToken(''); holdButton(); },
+			'error-callback': function () { solved = ''; setToken(''); holdButton(); },
 		});
+		holdButton();
 	}
 
-	// The checkout store registers when WooCommerce's scripts run. They load in the footer, the
-	// same place as this script, so wait for the store before wiring anything to it.
+	if (typeof document.addEventListener === 'function') {
+		document.addEventListener('click', function (e) {
+			if (solved) return;
+			var t = e.target;
+			var btn = t && typeof t.closest === 'function' ? t.closest(BUTTON) : null;
+			if (!btn) return;
+			e.preventDefault();
+			e.stopImmediatePropagation();
+		}, true);
+	}
+
 	var tries = 0;
 	var started = false;
 	function start() {
@@ -97,10 +134,8 @@
 		render();
 	}
 
-	// api.js calls this when it is ready (onload=). If it was ready first, start now.
 	window.skyphusionTurnstileBlockReady = function () { start(); };
 	if (window.turnstile) start();
 
-	// For tests: the internal steps, so a stubbed store and widget can drive them.
 	window.skyphusionTurnstileBlockInternals = { setToken: setToken, reset: reset, render: render, start: start };
 })();

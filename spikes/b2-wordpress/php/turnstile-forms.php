@@ -375,26 +375,24 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_COMMENTS' ) || SKYPHUSION_TURNSTILE_COMMEN
 if ( ! defined( 'SKYPHUSION_TURNSTILE_WOO' ) || SKYPHUSION_TURNSTILE_WOO ) {
 	// ---- WooCommerce classic (shortcode) checkout (issue #400) ----
 	//
-	// The widget box goes before the place-order button. That hook prints inside #order_review,
-	// which the Woo checkout script replaces on every update_order_review (on load, and on each
-	// address or shipping change). So the box carries no script and is never rendered implicitly:
-	// php/turnstile-classic-checkout.js renders it explicitly, and again after every refresh (the
-	// updated_checkout event). The scripts print once, AFTER the checkout form, outside the replaced
-	// fragment, so a fragment never loads api.js a second time. The block checkout has its own widget
-	// and gate below.
+	// The widget box is inside the checkout form and outside #order_review (#958).
+	// update_order_review replaces #order_review on load and on each address change.
+	// A box inside that div loses its token before Place order. woocommerce_checkout_after_order_review
+	// stays put, so the token posts with the form. The box carries no script and is never rendered
+	// implicitly: php/turnstile-classic-checkout.js renders it explicitly. The scripts print once,
+	// AFTER the checkout form. The block checkout has its own widget and gate below.
 
 	/** The classic checkout script URL. build.sh ships it as a static file, beside block-checkout.js. */
 	if ( ! function_exists( 'skyphusion_turnstile_classic_script_url' ) ) {
 		function skyphusion_turnstile_classic_script_url() {
 			$base = defined( 'WPMU_PLUGIN_URL' ) ? WPMU_PLUGIN_URL : content_url( 'mu-plugins' );
-			return rtrim( (string) $base, '/' ) . '/turnstile-forms/classic-checkout.js?ver=400.1';
+			return rtrim( (string) $base, '/' ) . '/turnstile-forms/classic-checkout.js?ver=400.2';
 		}
 	}
 
 	/**
-	 * The widget box, inside the payment fragment. It is printed on the page and again in every
-	 * update_order_review fragment, so it carries its own site key and Spin marker for the script.
-	 * No cf-turnstile class: the implicit api.js must never render it.
+	 * The widget box, once, outside the payment fragment (#958). It carries its own site key and
+	 * Spin marker. No cf-turnstile class: the implicit api.js must never render it.
 	 */
 	if ( ! function_exists( 'skyphusion_turnstile_classic_box' ) ) {
 		function skyphusion_turnstile_classic_box() {
@@ -405,7 +403,7 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_WOO' ) || SKYPHUSION_TURNSTILE_WOO ) {
 			echo '<div class="skyphusion-turnstile-classic" data-sitekey="' . esc_attr( $key ) . '" data-action="turnstile-spin-v1" style="margin:1em 0"></div>' . "\n";
 		}
 	}
-	add_action( 'woocommerce_review_order_before_submit', 'skyphusion_turnstile_classic_box' );
+	add_action( 'woocommerce_checkout_after_order_review', 'skyphusion_turnstile_classic_box' );
 
 	/**
 	 * The scripts, once, after the classic checkout form. The order matters: the config, then
@@ -477,7 +475,7 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_WOO' ) || SKYPHUSION_TURNSTILE_WOO ) {
 	if ( ! function_exists( 'skyphusion_turnstile_block_script_url' ) ) {
 		function skyphusion_turnstile_block_script_url() {
 			$base = defined( 'WPMU_PLUGIN_URL' ) ? WPMU_PLUGIN_URL : content_url( 'mu-plugins' );
-			return rtrim( (string) $base, '/' ) . '/turnstile-forms/block-checkout.js?ver=308.1';
+			return rtrim( (string) $base, '/' ) . '/turnstile-forms/block-checkout.js?ver=308.2';
 		}
 	}
 
