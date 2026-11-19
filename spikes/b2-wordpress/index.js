@@ -4349,7 +4349,21 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			const out = new Headers();
 			// In the PHP object, the object itself coalesces the purges of the whole site (issue #78).
 			// x-cache-purge (scheduled or coalesced) is for tests.
-			if (ctx && ctx.requestPurge && purgeRequested) out.set('x-cache-purge', await ctx.requestPurge());
+			// #935: PHP has already answered. The page-cache purge is a storage call after that.
+			// A platform reset there threw into the bare internal error catch. A finished
+			// force-delete then came back as text, and a REST client could not parse it.
+			// The lost-write return below still replaces this answer. A purge miss does not.
+			let purgeReset = null;
+			if (ctx && ctx.requestPurge && purgeRequested) {
+				try {
+					out.set('x-cache-purge', await ctx.requestPurge());
+				} catch (e) {
+					const kind = classifyObjectError(e);
+					console.error(String((e && e.stack) || e));
+					console.log(JSON.stringify({ m: 'purge', failed: String((e && e.message) || e).slice(0, 200), kind, path: url.pathname }));
+					if (isResetKind(kind)) purgeReset = kind;
+				}
+			}
 			const d = delta();
 			// A write lost to an isolate memory reset (#350, write-loss.mjs): PHP's answer is replaced,
 			// whatever its status, before any of its headers (a Set-Cookie for a session that was not
@@ -4414,6 +4428,18 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				}
 				const f = readFailed(d.failures) ? ocReqForget() : { n: 0 };
 				console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', class: 'deterministic', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, answered: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env) }));
+			}
+			if (purgeReset) {
+				if (bootPromise) runtimeDrops++;
+				dropRuntime();
+				for (const [k, v] of Object.entries(r.headers || {})) {
+					for (const one of [].concat(v)) {
+						try { out.append(String(k), String(one)); } catch { /* a header value the Headers API refuses stays off the answer */ }
+					}
+				}
+				out.set('cloudflare-cdn-cache-control', 'no-store');
+				if (!out.has('cache-control')) out.set('cache-control', 'private, no-store');
+				return new Response(r.bytes, { status: r.httpStatusCode, headers: out });
 			}
 			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
 			const ocTables = diffCounts(stats.dbTables, start.dbTables);
