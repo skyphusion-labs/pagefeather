@@ -8,6 +8,7 @@
   6. --theme: activation_nonce finds the link's nonce in each escaping (&, &amp;, \\u0026), and none for a theme
      that is not on the page or a slug that only shares a prefix.
 The full seed (every item set and checked, and a reseed) is verified against a real local site; see the PR.
+  7. the block email editor option starts at yes. The seed writes no. The read-back is no (#916).
 Run: python3 -I tests/conformance/seed-test.py
 """
 import json, os, subprocess, sys, threading
@@ -93,5 +94,199 @@ for label, prefs, want in (
     ("bad JSON", "not-json", False),
 ):
     check("welcome_guide_dismissed: " + label, _seed.welcome_guide_dismissed(prefs) is want, prefs)
+
+# 7. #916: a stored yes must not survive the seed. Woo's default is no.
+import base64, urllib.parse
+EMAIL_OPT = "woocommerce_feature_block_email_editor_enabled"
+PLUGINS = (
+    "woocommerce-e2e-test-helper/woocommerce-e2e-test-helper",
+    "woocommerce-cleanup/woocommerce-cleanup",
+    "wp-mail-logging/wp-mail-logging",
+    "wc-email-template-sync-test-helper/wc-email-template-sync-test-helper",
+)
+
+class Site(BaseHTTPRequestHandler):
+    state = None
+    def log_message(self, *a):
+        pass
+    def reply(self, code, body=b"", ctype="application/json"):
+        if isinstance(body, str):
+            body = body.encode()
+        self.send_response(code)
+        self.send_header("content-type", ctype)
+        self.send_header("content-length", str(len(body)))
+        if code in (302, 303):
+            self.send_header("location", "/wp-admin/")
+        self.end_headers()
+        self.wfile.write(body)
+    def _json(self, code, obj):
+        self.reply(code, json.dumps(obj).encode())
+    def _body(self):
+        n = int(self.headers.get("content-length") or 0)
+        raw = self.rfile.read(n) if n else b""
+        try:
+            return json.loads(raw.decode() or "null")
+        except ValueError:
+            return None
+    def _route(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, keep_blank_values=True)
+        return (q.get("rest_route") or [""])[0], q
+    def _basic(self):
+        auth = self.headers.get("Authorization") or ""
+        if not auth.startswith("Basic "):
+            return None
+        try:
+            raw = base64.b64decode(auth.split(" ", 1)[1]).decode()
+            user, pw = raw.split(":", 1)
+        except Exception:
+            return False
+        return pw == self.state["app_pw"] and user == "admin"
+    def do_GET(self):
+        self._dispatch("GET", None)
+    def do_POST(self):
+        self._dispatch("POST", self._body())
+    def do_PUT(self):
+        self._dispatch("PUT", self._body())
+    def do_DELETE(self):
+        self._dispatch("DELETE", None)
+    def _opt_name(self, route):
+        prefix = "/wc/v3/settings/advanced/"
+        if route.startswith(prefix):
+            return route[len(prefix):]
+        return ""
+    def _dispatch(self, method, body):
+        st = self.state
+        path = urllib.parse.urlparse(self.path).path
+        if "pf-conformance/v1/throwaway" in self.path and method == "GET":
+            return self._json(200, {"throwaway": True, "host": "127.0.0.1"})
+        if path == "/wp-login.php" and method == "GET":
+            return self.reply(200, b"<html>login</html>", "text/html")
+        if path == "/wp-login.php" and method == "POST":
+            return self.reply(302, b"", "text/html")
+        if path.startswith("/wp-admin/admin-ajax.php") and "rest-nonce" in self.path:
+            return self.reply(200, b"0123456789", "text/plain")
+        if path in ("/wp-json", "/wp-json/"):
+            return self._json(200, {"routes": {"/": {}}})
+        if path == "/wp-admin/options-permalink.php" and method == "GET":
+            return self.reply(200, b'<input name="_wpnonce" value="0123456789">', "text/html")
+        if path == "/wp-admin/options-permalink.php" and method == "POST":
+            return self.reply(200, b"ok", "text/html")
+        route, q = self._route()
+        if not route:
+            st["odd"].append((method, self.path))
+            return self.reply(404, b"odd")
+        opt = self._opt_name(route)
+        if opt:
+            if method == "PUT" and isinstance(body, dict) and "value" in body:
+                st["options"][opt] = body["value"]
+                st["puts"].append((opt, body["value"]))
+            val = st["options"].get(opt, "")
+            st["reads"].append((opt, val))
+            return self._json(200, {"id": opt, "value": val})
+        if route == "/wc-admin/options":
+            name = (q.get("options") or [""])[0]
+            val = st["options"].get(name, "")
+            st["reads"].append((name, val))
+            return self._json(200, {name: val})
+        if route == "/wp/v2/settings":
+            if method == "POST" and isinstance(body, dict):
+                for k in ("title", "timezone", "timezone_string"):
+                    if k in body:
+                        st["settings"][k] = body[k]
+            return self._json(200, dict(st["settings"]))
+        if route == "/wp/v2/posts":
+            return self._json(200, [{"id": 1, "link": "http://127.0.0.1/permalink-probe"}])
+        if route.startswith("/wc/v3/customers"):
+            if method == "GET":
+                return self._json(200, [{"id": 5, "email": "customer@woocommercecoree2etestsuite.com"}])
+            return self._json(200, {"id": 5})
+        if route == "/wp/v2/users/5":
+            return self._json(200, {
+                "id": 5, "username": "customer", "roles": ["customer"],
+                "email": "customer@woocommercecoree2etestsuite.com",
+                "first_name": "Jane", "last_name": "Smith",
+            })
+        if route in ("/wp/v2/users/me", "/wp/v2/users/1"):
+            basic = self._basic()
+            if basic is False:
+                return self.reply(401, b"")
+            if basic is True:
+                return self._json(200, {"id": 1, "username": "admin"})
+            if method == "POST" and isinstance(body, dict):
+                meta = (body.get("meta") or {}).get("persisted_preferences")
+                if isinstance(meta, dict):
+                    st["prefs"] = meta
+                if "password" in body:
+                    st["password_set"] = True
+            prefs = st["prefs"] or {"core/edit-post": {"welcomeGuide": False}}
+            return self._json(200, {"id": 1, "meta": {"persisted_preferences": prefs}})
+        if route == "/wp/v2/users/1/application-passwords" and method == "POST":
+            return self._json(200, {"password": st["app_pw"], "uuid": st["app_uuid"]})
+        if route == "/wp/v2/users/1/application-passwords" and method == "GET":
+            return self._json(200, [
+                {"name": "conformance-old", "uuid": "old-uuid"},
+                {"name": "conformance-new", "uuid": st["app_uuid"]},
+            ])
+        if route.startswith("/wp/v2/users/1/application-passwords/") and method == "DELETE":
+            return self._json(200, {"deleted": True})
+        if route == "/wp/v2/media":
+            stem = (q.get("search") or ["image"])[0]
+            return self._json(200, [{"source_url": "http://127.0.0.1/wp-content/uploads/%s.png" % stem}])
+        if route == "/wp/v2/plugins":
+            return self._json(200, [{"plugin": pid, "status": "active"} for pid in PLUGINS])
+        if route.startswith("/wp/v2/plugins/"):
+            pid = route[len("/wp/v2/plugins/"):]
+            return self._json(200, {"plugin": pid, "status": "active"})
+        st["odd"].append((method, route))
+        return self._json(200, {})
+
+def run_email_editor_seed():
+    state = {
+        "options": {
+            "woocommerce_allow_tracking": "no",
+            EMAIL_OPT: "yes",
+        },
+        "started": {EMAIL_OPT: "yes"},
+        "settings": {"title": "", "timezone": "", "timezone_string": ""},
+        "prefs": None,
+        "puts": [],
+        "reads": [],
+        "odd": [],
+        "app_pw": "abcdefghij123456",
+        "app_uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "password_set": False,
+    }
+    Site.state = state
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Site)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    out = os.path.join(os.environ.get("TMPDIR", "/tmp"), "seed-email-%d" % os.getpid())
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "B": "http://127.0.0.1:%d" % srv.server_address[1], "ADMIN_PASSWORD": "x"}
+    p = subprocess.run([sys.executable, "-I", SEED, out], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=60)
+    srv.shutdown()
+    report = None
+    try:
+        report = json.load(open(os.path.join(out, "seed.json")))
+    except OSError:
+        report = None
+    for f in ("creds.env", "seed.json"):
+        try:
+            os.remove(os.path.join(out, f))
+        except OSError:
+            pass
+    try:
+        os.rmdir(out)
+    except OSError:
+        pass
+    return p, state, report
+
+p, state, report = run_email_editor_seed()
+chk_name = EMAIL_OPT + " = no (wc/v3 settings and wc-admin/options)"
+chk = (report or {}).get("checks", {}).get(chk_name)
+check(
+    "email editor option: seed writes no and the read-back is no",
+    isinstance(chk, dict) and chk.get("ok") is True and state["options"].get(EMAIL_OPT) == "no" and (EMAIL_OPT, "no") in state["puts"] and (EMAIL_OPT, "no") in state["reads"] and state["started"][EMAIL_OPT] == "yes",
+    (p.returncode, state["options"].get(EMAIL_OPT), state["puts"], state["reads"], chk, state["odd"][:8], (p.stdout or "")[-400:], (p.stderr or "")[-200:]),
+)
+
 print("%d failing" % len(fails))
 sys.exit(1 if fails else 0)

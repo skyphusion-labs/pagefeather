@@ -10,6 +10,12 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
   2. blogname "WooCommerce Core E2E Test Suite" (/wp/v2/settings title), and timezone America/Detroit (settings key timezone, or timezone_string on older WordPress; INSTALL sets this at /_install, #894; the seed sets it again on a remount);
   3. woocommerce_allow_tracking = yes (/wc/v3/settings/advanced/woocommerce_allow_tracking; read back there and
      at /wc-admin/options). WOO_EXTRAS=off forces it off, so a throwaway must not set that;
+  3b. woocommerce_feature_block_email_editor_enabled = no.
+     WooCommerce 11.2.1 defaults this feature to no.
+     Install stores that default with add_option, so a stored yes stays.
+     The email editor spec checks the box and saves.
+     A box that is already on leaves Save disabled (#916).
+     The seed writes no and reads it back on wc/v3 and wc-admin/options;
   4. the user "customer": role customer, customer@woocommercecoree2etestsuite.com, Jane Smith, a new generated
      password; checked by a form login;
   5. the media items image-01, image-02 and image-03 from WooCommerce's test-data/images at WC_SHA (the files
@@ -285,6 +291,18 @@ def main():
     check("woocommerce_allow_tracking = yes (wc/v3 settings and wc-admin/options)",
           isinstance(t, dict) and t.get("value") == "yes" and isinstance(o2, dict) and o2.get("woocommerce_allow_tracking") == "yes",
           wcv3=t.get("value") if isinstance(t, dict) else c, wcadmin=o2.get("woocommerce_allow_tracking") if isinstance(o2, dict) else c2)
+
+    # 3b. Block email editor stays at Woo's default, no (#916).
+    # WC 11.2.1 registers block_email_editor with enabled_by_default false.
+    # WC_Install::create_options uses add_option, so a stored yes is kept.
+    # The enable spec checks the box. An already checked box leaves Save disabled.
+    email_opt = "woocommerce_feature_block_email_editor_enabled"
+    rest(a, n, "/wc/v3/settings/advanced/" + email_opt, {"value": "no"}, "PUT")
+    c, t = rest(a, n, "/wc/v3/settings/advanced/" + email_opt)
+    c2, o2 = rest(a, n, "/wc-admin/options?options=" + email_opt)
+    check(email_opt + " = no (wc/v3 settings and wc-admin/options)",
+          isinstance(t, dict) and t.get("value") == "no" and isinstance(o2, dict) and o2.get(email_opt) == "no",
+          wcv3=t.get("value") if isinstance(t, dict) else c, wcadmin=o2.get(email_opt) if isinstance(o2, dict) else c2)
 
     # 4. the customer
     cpw = secrets.token_urlsafe(18)
