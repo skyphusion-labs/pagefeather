@@ -258,6 +258,8 @@ test('turnstileRoute names each gated POST, honours each switch, and nothing els
 	assert.equal(turnstileRoute(ON, 'POST', U('/?wc-ajax=checkout')), 'woo');
 	assert.equal(turnstileRoute(ON, 'POST', U('/checkout/?wc-ajax=checkout')), 'woo');
 	assert.equal(turnstileRoute(ON, 'POST', U('/wp-json/wc/store/v1/checkout')), 'store');
+	assert.equal(turnstileRoute(ON, 'POST', U('/index.php/wp-json/wc/store/v1/checkout')), 'store');
+	assert.equal(turnstileRoute(ON, 'POST', U('/index.php/wp-json/wc/store/v1/checkout?_locale=site')), 'store');
 	assert.equal(turnstileRoute(ON, 'POST', U('/wp-json/wc/store/checkout')), 'store');
 	assert.equal(turnstileRoute(ON, 'POST', U('/?rest_route=/wc/store/v1/checkout')), 'store');
 	assert.equal(turnstileRoute(ON, 'post', U('/wp-login.php')), 'login');
