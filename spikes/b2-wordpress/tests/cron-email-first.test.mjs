@@ -31,7 +31,7 @@ function withoutEmailPass(code, actions) {
 	const m = code.indexOf(PASS_END_MARK, a);
 	const b = code.indexOf('}', code.indexOf('stake_claim(', m)) + 1;
 	assert.ok(a > 0 && m > a && b > m, 'the email pass is in the rendered script');
-	return code.slice(0, a) + '$claim = $as_store->stake_claim( ' + actions + ' );' + code.slice(b);
+	return code.slice(0, a) + '$claim = $as_store->stake_claim( ' + actions + ' ); $as_ids = $claim->get_actions();' + code.slice(b);
 }
 
 const STUBS = `<?php
@@ -45,7 +45,24 @@ function apply_filters( $h, $v ) { foreach ( isset( $GLOBALS['stub_filters'][ $h
 function do_action_ref_array( $h, $args ) {}
 function wp_cache_flush_runtime() {}
 function _get_cron_array() { return array(); }
-class Stub_DB { public $prefix = 'wp_'; function query( $q ) { return 0; } function get_var( $q ) { return 0; } }
+class Stub_DB {
+	public $prefix = 'wp_';
+	function query( $q ) { return 0; }
+	function get_var( $q ) { return 0; }
+	function prepare( $q ) { $a = func_get_args(); array_shift( $a ); $GLOBALS['spy']['limit'] = (int) end( $a ); return $q; }
+	function get_col( $q ) {
+		$GLOBALS['spy']['direct'] = 1;
+		if ( '1' !== getenv( 'STUB_CLAIM_MISS' ) ) return array();
+		$now = gmdate( 'Y-m-d H:i:s' );
+		$rows = array();
+		foreach ( $GLOBALS['stub_actions'] as $a ) { if ( 'woocommerce-emails' === $a['group'] && $a['date'] <= $now ) $rows[] = $a; }
+		usort( $rows, function ( $x, $y ) { $c = strcmp( $y['date'], $x['date'] ); return 0 !== $c ? $c : ( $y['id'] - $x['id'] ); } );
+		$n = isset( $GLOBALS['spy']['limit'] ) ? (int) $GLOBALS['spy']['limit'] : count( $rows );
+		$out = array();
+		foreach ( array_slice( $rows, 0, $n ) as $a ) $out[] = $a['id'];
+		return $out;
+	}
+}
 $GLOBALS['wpdb'] = new Stub_DB();
 $GLOBALS['stub_actions'] = json_decode( getenv( 'STUB_ACTIONS' ), true );
 class Stub_Date { public $d; function __construct( $d ) { $this->d = $d; } function format( $f ) { return $this->d; } }
@@ -58,6 +75,10 @@ class Stub_Store {
 	public $claim_filters = array( 'group' => '', 'hooks' => '', 'exclude-groups' => '' );
 	function set_claim_filter( $k, $v ) { if ( isset( $this->claim_filters[ $k ] ) ) { $this->claim_filters[ $k ] = $v; } }
 	function stake_claim( $n = 10, $before = null, $hooks = array(), $group = '' ) {
+		if ( '1' === getenv( 'STUB_CLAIM_MISS' ) && 'woocommerce-emails' === $group ) {
+			$GLOBALS['spy']['claims'][] = array( 'group' => $group, 'order' => '', 'ids' => array() );
+			return new Stub_Claim( array() );
+		}
 		if ( '' !== $group ) { $this->set_claim_filter( 'group', $group ); } else { $group = $this->claim_filters['group']; }
 		$now = gmdate( 'Y-m-d H:i:s' );
 		$all = $GLOBALS['stub_actions'];
@@ -83,12 +104,12 @@ class ActionScheduler_QueueCleaner { function __construct( $s ) {} function rese
 register_shutdown_function( function () { $GLOBALS['spy']['filters_left'] = count( isset( $GLOBALS['stub_filters']['action_scheduler_claim_actions_order_by'] ) ? $GLOBALS['stub_filters']['action_scheduler_claim_actions_order_by'] : array() ); fwrite( STDERR, json_encode( $GLOBALS['spy'] ) ); } );
 `;
 
-function run(code, actions) {
+function run(code, actions, extraEnv = {}) {
 	const d = mkdtempSync(join(tmpdir(), 'cron-email-first-'));
 	try {
 		writeFileSync(join(d, 'stubs.php'), STUBS);
 		writeFileSync(join(d, 'cron.php'), code.replace("require '/wordpress/wp-load.php';", "require '" + join(d, 'stubs.php') + "';"));
-		const r = spawnSync('php', ['-n', join(d, 'cron.php')], { env: { ...process.env, STUB_ACTIONS: JSON.stringify(actions) }, encoding: 'utf8' });
+		const r = spawnSync('php', ['-n', join(d, 'cron.php')], { env: { ...process.env, STUB_ACTIONS: JSON.stringify(actions), ...extraEnv }, encoding: 'utf8' });
 		assert.equal(r.status, 0, r.stderr + r.stdout);
 		return { out: JSON.parse(r.stdout.slice(r.stdout.lastIndexOf('{'))), spy: JSON.parse(r.stderr) };
 	} finally {
@@ -157,4 +178,12 @@ test('fixed: CRON_AS_ACTIONS 2 with one due email claims that email only; pass 2
 	const { out, spy } = run(render(2), [act(1, LOOKUP, 'woocommerce-db-updates', 5000), NEW_EMAIL]);
 	assert.deepEqual(spy.processed, [900]);
 	assert.equal(out.as_actions, 1);
+});
+
+test('fixed: when the group claim returns nothing, a direct read still runs the newest due email (#969)', () => {
+	const { out, spy } = run(render(1), [...BACKLOG, NEW_EMAIL, FUTURE_EMAIL], { STUB_CLAIM_MISS: '1' });
+	assert.deepEqual(spy.processed, [900]);
+	assert.equal(out.as_pass, 'emails-direct');
+	assert.equal(spy.claims.length, 1, 'pass 2 did not run');
+	assert.equal(spy.direct, 1);
 });

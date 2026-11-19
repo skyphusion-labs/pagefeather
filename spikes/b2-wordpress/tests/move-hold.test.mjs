@@ -47,7 +47,7 @@ test('index.js: /_hold sits behind the spike-token gate in the object, and the a
 	assert.ok(route > 0 && gate > 0 && gate < route, 'the route exists after the gate');
 	const a = src.indexOf('async alarm() {');
 	const held = src.indexOf('const moveHeld = cronHeld(await this.ctx.storage.get(MOVE_HOLD_KEY), Date.now());', a);
-	const gateCron = src.indexOf('const cronGo = legDue && !bo.waitMs && !importHeld && !moveHeld && phpPending === 0', a);
+	const gateCron = src.indexOf('const cronGo = (legDue || emailRush) && !bo.waitMs && !importHeld && !moveHeld && phpPending === 0', a);
 	const run = src.indexOf('runCron(', a);
 	assert.ok(held > a && gateCron > held && run > gateCron, 'the hold is read, then gates the cron leg, before runCron');
 });
