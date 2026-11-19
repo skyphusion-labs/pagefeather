@@ -2254,6 +2254,7 @@ async function r2opInner(op) {
 		}
 		if (op.op === 'reserve' && sqlDb) {
 			// #946: one insert owns the name. releaseReservedKey drops that row when the file goes.
+			// #952: a row whose object is already gone is taken again. One PHP request runs at a time.
 			return { ok: true, reserved: tryReserveName(sqlDb, op.key, !!(await B.head(op.key)), Date.now(), sqlChanges) };
 		}
 		if (op.op === 'reserve') {
@@ -2265,6 +2266,7 @@ async function r2opInner(op) {
 				reserveTableReady = true;
 			}
 			if (await B.head(op.key)) return { ok: true, reserved: false };
+			// Do not drop a leftover row here. Two isolates can reserve one name at once.
 			const r = await ENV.DB.prepare(RESERVE_INSERT).bind(op.key, Date.now()).run();
 			return { ok: true, reserved: r.meta.changes === 1 };
 		}
