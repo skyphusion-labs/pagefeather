@@ -8,7 +8,7 @@ import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { installPhpBasicAuth } from './php-auth.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
-import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm, setAlarmRecorded, ALARM_SET_KEY } from './alarm-arm.mjs';
+import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm, setAlarmRecorded, ALARM_SET_KEY, emailRushDue, emailAlarmAt, EMAIL_DUE_KEY, EMAIL_RETRY_MS } from './alarm-arm.mjs';
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
 import { callPhpObject, isObjectCallDeadline, objectCallDeadlineMs, objectCallExempt } from './object-deadline.mjs';
 import { startByMs, objectShedPlan, startByResponse, shedAnswer, startByExempt, tagCallId, recheckStartBy, disconnectAnswer, disconnectSignal, tickFetch, tickResponse, TICK_PATH, START_BY_HEADER, CALL_HEADER } from './start-by.mjs';
@@ -1499,6 +1499,7 @@ async function handleMessage(raw) {
 	if (m.memMark) { console.log(JSON.stringify({ m: 'mem-mark', ...(typeof m.id === 'string' && MEM_ID_RE.test(m.id) ? { id: m.id } : {}), k: m.memMark })); return '1'; }
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
 	if (m.email) return JSON.stringify(await emailOp(m.email));
+	if (m.emailDue) { emailDueRequest = true; return '1'; }
 	if (m.aiAlt) return JSON.stringify(await aiAltOp(m.aiAlt));
 	if (m.aiEmbed) return JSON.stringify(await aiEmbedOp(ENV && ENV.AI, m.aiEmbed));
 	if (m.vectorize) return JSON.stringify(await vectorizeOp(ENV && ENV.SEARCH_INDEX, m.vectorize));
@@ -2078,6 +2079,7 @@ async function imageJob(B, job) {
 // Set by the Edge Cache mu-plugin when content changes. Read after the request.
 let purgeRequested = false;
 let pendingEmails = [];
+let emailDueRequest = false;
 let lastOrigin = null;
 // Workers Cache purges always have Free-tier limits: 5 a minute, bursts of 25,
 // per account (#699). The gateway purges at most once per PURGE_GAP_MS per isolate
@@ -2935,15 +2937,24 @@ export class PhpRuntime extends DurableObject {
 			// started at least CRON_INTERVAL_MS ago (#470): the purge still goes out below either way.
 			const lastCron = await this.ctx.storage.get(CRON_LAST_KEY);
 			const legDue = cronLegDue(lastCron, Date.now(), Number(this.env.CRON_INTERVAL_MS || 60000));
+			// #969: a request that just queued a Woo email pulls this leg forward. The conformance
+			// poll is 30s. The default interval is 60s, and a busy poll used to skip the leg.
+			const emailDueAt = Number(await this.ctx.storage.get(EMAIL_DUE_KEY) || 0);
+			const emailRush = emailRushDue(emailDueAt, Date.now());
 			// A leg that keeps dying waits before it tries again (#471, cron-health.mjs): 2, 4, 8 ... min.
 			const prevRun = await this.ctx.storage.get(CRON_RUN_KEY);
 			const bo = cronBackoff(prevRun, Date.now());
-			const cronGo = legDue && !bo.waitMs && !importHeld && !moveHeld && phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env;
+			const cronGo = (legDue || emailRush) && !bo.waitMs && !importHeld && !moveHeld && phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env;
 			// Why a tick skipped the cron, for /_purgestate cronSkip (#291: a skip was invisible).
 			if (!cronGo) await this.ctx.storage.put(CRON_SKIP_KEY, { t: Date.now(), notDue: !legDue, sinceLastMs: lastCron ? Date.now() - Number(lastCron) : null, backoff: bo.waitMs ? { deaths: bo.deaths, waitMs: bo.waitMs } : null, importHeld, moveHeld, phpPending, sinceSpikeMs: Date.now() - lastSpikeEndAt, origin: !!cronOrigin });
-			if (!legDue) console.log(JSON.stringify({ m: 'cron', skipped: 'not-due', sinceLastMs: Date.now() - Number(lastCron) }));
+			if (!legDue && !emailRush) console.log(JSON.stringify({ m: 'cron', skipped: 'not-due', sinceLastMs: Date.now() - Number(lastCron) }));
 			else if (bo.waitMs) console.log(JSON.stringify({ m: 'cron', skipped: 'backoff', deaths: bo.deaths, waitMs: bo.waitMs, lastMark: (prevRun && prevRun.lastMark) || null, lastFatal: (prevRun && prevRun.lastFatal) || null }));
+			// The poll holds the PHP lock. Try again in a moment instead of waiting out the full interval (#969).
+			if (!cronGo && emailRush && phpPending > 0 && !importHeld && !moveHeld && !bo.waitMs) {
+				await setAlarmRecorded(this.ctx.storage, Date.now() + EMAIL_RETRY_MS, Date.now(), 'email-due');
+			}
 			if (cronGo) {
+				if (emailRush) await this.ctx.storage.delete(EMAIL_DUE_KEY);
 				// Stored BEFORE the run (#470): a run an isolate reset kills still counts as the last one.
 				await this.ctx.storage.put(CRON_LAST_KEY, Date.now());
 				// The run record (#471), synced before PHP runs, so a leg the isolate kills is counted.
@@ -3233,7 +3244,7 @@ export class PhpRuntime extends DurableObject {
 		// An overflowed request (#296 (3)) hands its purge back to the front Worker: the object's purge alarm is
 		// also its cron driver (a pool object must never run cron), and an object cannot purge the Worker's page
 		// cache anyway (measured locally: "no cache API").
-		const ctx = { inObject: true, waitUntil: (p) => this.ctx.waitUntil(p), requestPurge: overflowed ? async () => 'front' : () => this.requestPurge() };
+		const ctx = { inObject: true, storage: this.ctx.storage, waitUntil: (p) => this.ctx.waitUntil(p), requestPurge: overflowed ? async () => 'front' : () => this.requestPurge() };
 		ctx.callId = callId; // #708 review 2: per request, so overlapping runs (after a stale takeover) keep their own id
 		if (url.pathname === '/_d1ping') return d1ping(req, env, url, ctx);
 		// DB_IN_DO=on: WordPress's database is this object's SQLite (8j).
@@ -3455,21 +3466,34 @@ async function runCron(getBooted, cleanDue = false, mail = null, { held = false 
 				// this one claim only. stake_claim throws when the group does not exist yet (no email ever
 				// queued): that is an empty pass 1.
 				$as_pass = 'emails'; $claim = null;
-				$as_newest = function () { return 'ORDER BY priority ASC, scheduled_date_gmt DESC, action_id DESC'; };
-				add_filter( 'action_scheduler_claim_actions_order_by', $as_newest );
+				$as_ids = array();
+				$as_newest = function ( $order_by ) { return 'ORDER BY priority ASC, scheduled_date_gmt DESC, action_id DESC'; };
+				add_filter( 'action_scheduler_claim_actions_order_by', $as_newest, 10, 1 );
 				try { $claim = $as_store->stake_claim( ${actions}, null, array(), 'woocommerce-emails' ); } catch ( Throwable $as_e ) { $claim = null; }
-				remove_filter( 'action_scheduler_claim_actions_order_by', $as_newest );
+				remove_filter( 'action_scheduler_claim_actions_order_by', $as_newest, 10 );
 				// stake_claim STORES the group it was given (ActionScheduler_DBStore::claim_actions,
 				// set_claim_filter) and a later claim with no group reuses it: pass 2 then claimed only
 				// emails, so a tick with no email due ran nothing (fdprobe1112j, 19:43:57Z, 2613 due).
 				if ( method_exists( $as_store, 'set_claim_filter' ) ) { $as_store->set_claim_filter( 'group', '' ); }
-				// Pass 2, only when pass 1 claimed nothing: everything else, oldest first, as before.
-				if ( ! $claim || ! count( $claim->get_actions() ) ) {
-					if ( $claim ) { $as_store->release_claim( $claim ); }
+				// #969: on cf759a (measured 2026-11-19) stake_claim of woocommerce-emails took nothing
+				// while 59 due email actions sat pending, and the tick drained older lookups instead.
+				// A direct read is the same rows the list table shows. It runs those before pass 2.
+				if ( $claim && count( $claim->get_actions() ) ) {
+					$as_ids = $claim->get_actions();
+				} else {
+					if ( $claim ) { $as_store->release_claim( $claim ); $claim = null; }
+					$as_g = ( isset( $wpdb->actionscheduler_groups ) && $wpdb->actionscheduler_groups ) ? $wpdb->actionscheduler_groups : $wpdb->prefix . 'actionscheduler_groups';
+					$as_sql = $wpdb->prepare( "SELECT a.action_id FROM {$as_t} a INNER JOIN {$as_g} g ON a.group_id = g.group_id WHERE g.slug = %s AND a.status = %s AND a.scheduled_date_gmt <= %s ORDER BY a.scheduled_date_gmt DESC, a.action_id DESC LIMIT %d", 'woocommerce-emails', 'pending', gmdate( 'Y-m-d H:i:s' ), (int) ${actions} );
+					$as_direct = array_values( array_filter( array_map( 'intval', (array) $wpdb->get_col( $as_sql ) ) ) );
+					if ( count( $as_direct ) ) { $as_ids = $as_direct; $as_pass = 'emails-direct'; }
+				}
+				// Pass 2, only when no due email was found: everything else, oldest first, as before.
+				if ( ! count( $as_ids ) ) {
 					$as_pass = 'all';
 					$claim = $as_store->stake_claim( ${actions} );
+					$as_ids = $claim->get_actions();
 				}
-				foreach ( $claim->get_actions() as $as_id ) {
+				foreach ( $as_ids as $as_id ) {
 					$as_a = $as_store->fetch_action( $as_id ); $as_h = $as_a ? $as_a->get_hook() : '?';
 					$as_hooks[ $as_h ] = ( isset( $as_hooks[ $as_h ] ) ? $as_hooks[ $as_h ] : 0 ) + 1;
 					// The claimed action's scheduled date (#357), so a tick shows WHICH email it sent: a new one or the backlog.
@@ -3480,7 +3504,7 @@ async function runCron(getBooted, cleanDue = false, mail = null, { held = false 
 					// runner did per batch: without it memory grows with every action (#291).
 					if ( function_exists( 'wp_cache_flush_runtime' ) ) { wp_cache_flush_runtime(); }
 				}
-				$as_store->release_claim( $claim );
+				if ( $claim ) { $as_store->release_claim( $claim ); }
 				// The cleaner (timeouts, failures) on a tick with nothing to do, and at least every
 				// CRON_CLEAN_MS on a busy store (cronCleanDue), so a long backlog cannot starve it.
 				$cleaned = 0;
@@ -4384,6 +4408,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			if (body && body.length > maxBody) return new Response('request body too large', { status: 413 });
 			purgeRequested = false;
 			pendingEmails = [];
+			emailDueRequest = false;
 			const r2before = JSON.stringify(stats.r2);
 			const r2start = JSON.parse(r2before);
 			// OPcache counters before and after, only when a spike-token holder asks (two extra php.run calls).
@@ -4455,6 +4480,19 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, rolledBack: !!rolled, ocDropped: ocForgot.n, ocDroppedGroups: ocForgot.groups, phpStatus: r.httpStatusCode, firstSql: sqlShape(d.failures[0].sql), ...memIdOf(req, env), answered: wl.status }));
 				dropRuntime(); // the runtime saw the reset; the next request boots a new one
 				return new Response(answer.body, { status: answer.status, headers: answer.headers });
+			}
+			// #969: the order request queued a deferred email. Wake the alarm soon. A lost write
+			// rolled the queue row back, so that path returns above and does not arm this.
+			if (emailDueRequest && ctx && ctx.storage) {
+				emailDueRequest = false;
+				try {
+					const nowDue = Date.now();
+					await ctx.storage.put(EMAIL_DUE_KEY, nowDue);
+					const dueAt = emailAlarmAt(await ctx.storage.getAlarm(), nowDue);
+					if (dueAt !== null) await setAlarmRecorded(ctx.storage, dueAt, nowDue, 'email-due');
+				} catch (e) {
+					console.log(JSON.stringify({ m: 'email-due', error: String((e && e.message) || e).slice(0, 160) }));
+				}
 			}
 			// #795, by FAILURE CLASS (write-loss.mjs PLATFORM_FAILURE). A PLATFORM failure other than the reset (busy, out of
 			// memory, disk full, a timeout...) is never answered as a success: PHP saw an empty or unapplied result that was

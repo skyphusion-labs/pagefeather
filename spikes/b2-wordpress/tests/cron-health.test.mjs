@@ -71,7 +71,7 @@ test('index.js: the record is written and synced BEFORE the run, and marked done
 	const run = src.indexOf('async alarmRun() {');
 	const body = src.slice(run, src.indexOf('\n\tasync fetch(raw) {', run));
 	assert.match(body, /const bo = cronBackoff\(prevRun, Date\.now\(\)\);/);
-	assert.match(body, /const cronGo = legDue && !bo\.waitMs && !importHeld/);
+	assert.match(body, /const cronGo = \(legDue \|\| emailRush\) && !bo\.waitMs && !importHeld/);
 	const put = body.indexOf('await this.ctx.storage.put(CRON_RUN_KEY, runStart.rec);');
 	const sync = body.indexOf('await this.ctx.storage.sync();', put);
 	const runs = body.indexOf('cr = await runCron(', put);

@@ -84,3 +84,26 @@ export async function recordAlarmFatal(storage, e, now) {
 	await storage.put(ALARM_FATAL_KEY, rec);
 	return rec;
 }
+
+// #969: a request that stored a deferred Woo email. The alarm runs that leg
+// before the normal interval, so the mail log row can land inside a 30s poll.
+export const EMAIL_DUE_KEY = 'email-due';
+export const EMAIL_RUSH_MS = 1500;
+export const EMAIL_RETRY_MS = 2000;
+export const EMAIL_DUE_MAX_MS = 3 * 60 * 1000;
+
+/** True when a stored email-due time is still inside the rush window. */
+export function emailRushDue(at, now, maxMs = EMAIL_DUE_MAX_MS) {
+	const n = Number(at);
+	return n > 0 && now >= n && now - n < maxMs;
+}
+
+/**
+ * When to set the alarm so a queued email does not wait out the full interval.
+ * Returns null when an alarm is already due sooner than soonMs.
+ */
+export function emailAlarmAt(current, now, soonMs = EMAIL_RUSH_MS) {
+	if (current === null || current === undefined) return now + soonMs;
+	if (Number(current) > now + soonMs) return now + soonMs;
+	return null;
+}
