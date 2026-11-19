@@ -4,6 +4,7 @@ import json, os, sys, tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import matrix as M
+import runner
 
 fails = 0
 def ok(label, cond, detail=""):
@@ -151,6 +152,9 @@ ok("apply: a pipe in a cell is escaped, so the table keeps its shape", "a \\| b"
 # 6. The not-run block: every excluded spec, with its reason, from exclude/<suite>.txt.
 b = M.notrun_block({"wp": [("specs/install.test.js", "rewrites wp-config.php")]}, "c1")
 ok("not run: each excluded spec and its reason", "`specs/install.test.js`" in b and "rewrites wp-config.php" in b and "c1" in b, b)
+bt = M.notrun_block({"wc": runner.read_excludes("wc")}, "c1")
+ok("not run: paypal stays a file row", "`paypal/paypal.spec.ts`" in bt and "needs wp-env" in bt, bt)
+ok("not run: the email title names the file and the test", "`email/settings-email.spec.ts :: WooCommerce Email Settings > Send email preview`" in bt and "wp-mail-queue.php returns true" in bt, bt)
 
 # 7. The CLI end to end, on files, and it never reads <run-dir>/env.
 with tempfile.TemporaryDirectory() as d:
