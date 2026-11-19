@@ -43,3 +43,107 @@ add_filter(
 	10,
 	3
 );
+
+/**
+ * A stored shop, cart, checkout, or my-account id can point at a deleted post (#936).
+ * WooCommerce then sends /checkout/ and /cart/ to the home page.
+ * This asks WooCommerce to create the missing page.
+ * A healthy store compares an autoloaded stamp and does not read the posts.
+ * A failed create waits one minute, then tries again.
+ * Trashing or deleting one of the four pages clears the stamp.
+ */
+
+if ( ! function_exists( 'skyphusion_wc_page_is_live' ) ) {
+	/** True when the row is a published page. */
+	function skyphusion_wc_page_is_live( $post ) {
+		if ( ! is_object( $post ) ) {
+			return false;
+		}
+		$type   = isset( $post->post_type ) ? (string) $post->post_type : '';
+		$status = isset( $post->post_status ) ? (string) $post->post_status : '';
+		return 'page' === $type && 'publish' === $status;
+	}
+}
+
+if ( ! function_exists( 'skyphusion_wc_pages_stamp_matches' ) ) {
+	/** True when the stored stamp is the same four page ids, in shop, cart, checkout, my-account order. */
+	function skyphusion_wc_pages_stamp_matches( $stamp, $ids ) {
+		$parts = array();
+		foreach ( $ids as $id ) {
+			$parts[] = (string) (int) $id;
+		}
+		return (string) $stamp === implode( ',', $parts );
+	}
+}
+
+if ( ! function_exists( 'skyphusion_wc_store_page_ids' ) ) {
+	/** The four WooCommerce page ids. A missing option is -1. */
+	function skyphusion_wc_store_page_ids() {
+		$ids = array();
+		foreach ( array( 'shop', 'cart', 'checkout', 'myaccount' ) as $key ) {
+			$ids[] = (int) wc_get_page_id( $key );
+		}
+		return $ids;
+	}
+}
+
+if ( ! function_exists( 'skyphusion_wc_store_pages_missing' ) ) {
+	/** True when any of the four ids is not a published page. */
+	function skyphusion_wc_store_pages_missing( $ids ) {
+		foreach ( $ids as $id ) {
+			$post = (int) $id > 0 ? get_post( (int) $id ) : null;
+			if ( ! skyphusion_wc_page_is_live( $post ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+}
+
+if ( ! function_exists( 'skyphusion_wc_pages_repair' ) ) {
+	/** Create missing WooCommerce pages, then remember the ids. */
+	function skyphusion_wc_pages_repair() {
+		if ( ! class_exists( 'WC_Install' ) || ! function_exists( 'wc_get_page_id' ) ) {
+			return;
+		}
+		$ids = skyphusion_wc_store_page_ids();
+		if ( skyphusion_wc_pages_stamp_matches( get_option( 'skyphusion_wc_pages_stamp' ), $ids ) ) {
+			return;
+		}
+		if ( get_transient( 'skyphusion_wc_pages_retry' ) ) {
+			return;
+		}
+		if ( skyphusion_wc_store_pages_missing( $ids ) ) {
+			WC_Install::create_pages();
+			$ids = skyphusion_wc_store_page_ids();
+			if ( skyphusion_wc_store_pages_missing( $ids ) ) {
+				set_transient( 'skyphusion_wc_pages_retry', '1', MINUTE_IN_SECONDS );
+				return;
+			}
+		}
+		delete_transient( 'skyphusion_wc_pages_retry' );
+		update_option( 'skyphusion_wc_pages_stamp', implode( ',', array_map( 'strval', array_map( 'intval', $ids ) ) ), true );
+	}
+}
+
+if ( ! function_exists( 'skyphusion_wc_pages_forget' ) ) {
+	/** Drop the stamp when one of the four pages is trashed or deleted. */
+	function skyphusion_wc_pages_forget( $post_id ) {
+		$stamp = (string) get_option( 'skyphusion_wc_pages_stamp' );
+		if ( '' === $stamp ) {
+			return;
+		}
+		$ids = array_map( 'intval', explode( ',', $stamp ) );
+		if ( ! in_array( (int) $post_id, $ids, true ) ) {
+			return;
+		}
+		delete_option( 'skyphusion_wc_pages_stamp' );
+		delete_transient( 'skyphusion_wc_pages_retry' );
+	}
+}
+
+if ( function_exists( 'add_action' ) ) {
+	add_action( 'init', 'skyphusion_wc_pages_repair', 20 );
+	add_action( 'before_delete_post', 'skyphusion_wc_pages_forget' );
+	add_action( 'wp_trash_post', 'skyphusion_wc_pages_forget' );
+}

@@ -288,5 +288,33 @@ check(
     (p.returncode, state["options"].get(EMAIL_OPT), state["puts"], state["reads"], chk, state["odd"][:8], (p.stdout or "")[-400:], (p.stderr or "")[-200:]),
 )
 
+page = {"id": 7, "status": "publish", "slug": "cart", "link": "https://ex/cart/"}
+check("wc_store_page_ok: published cart", _seed.wc_store_page_ok(7, page, "cart") is True)
+check("wc_store_page_ok: string id", _seed.wc_store_page_ok("7", page, "cart") is True)
+check("wc_store_page_ok: no trailing slash", _seed.wc_store_page_ok(7, dict(page, link="https://ex/cart"), "cart") is True)
+check("wc_store_page_ok: home link is not the cart", _seed.wc_store_page_ok(7, dict(page, link="https://ex/?page_id=7"), "cart") is False)
+check("wc_store_page_ok: missing page", _seed.wc_store_page_ok(7, None, "cart") is False)
+check("wc_store_page_ok: other id", _seed.wc_store_page_ok(7, dict(page, id=8), "cart") is False)
+check("wc_store_page_ok: draft", _seed.wc_store_page_ok(7, dict(page, status="draft"), "cart") is False)
+check("wc_store_page_ok: zero option", _seed.wc_store_page_ok(0, page, "cart") is False)
+rows = [(7, page, "cart"), (None, None, "checkout")]
+check("wc_store_pages_missing: names the dead slug", _seed.wc_store_pages_missing(rows) == ["checkout"])
+
+def fake_rest(route):
+    if route.endswith("woocommerce_cart_page_id"):
+        return 200, {"value": 7}
+    if route.endswith("/pages/7"):
+        return 200, page
+    return 404, {"code": "rest_post_invalid_id"}
+
+got = _seed.fetch_wc_store_pages(fake_rest)
+check("fetch_wc_store_pages: four rows", len(got) == 4 and got[1][2] == "cart" and got[1][1]["id"] == 7, got)
+check("fetch_wc_store_pages: a dead id is missing", _seed.wc_store_pages_missing(got) == ["shop", "checkout", "my-account"])
+
+check("wc_public_page_ok: cart 200", _seed.wc_public_page_ok("cart", 200, "") is True)
+check("wc_public_page_ok: cart 404", _seed.wc_public_page_ok("cart", 404, "") is False)
+check("wc_public_page_ok: empty checkout redirects to cart", _seed.wc_public_page_ok("checkout", 302, "https://ex/cart/") is True)
+check("wc_public_page_ok: checkout redirect home is not the store", _seed.wc_public_page_ok("checkout", 302, "https://ex/") is False)
+check("wc_public_page_ok: checkout 200", _seed.wc_public_page_ok("checkout", 200, "") is True)
 print("%d failing" % len(fails))
 sys.exit(1 if fails else 0)
