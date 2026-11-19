@@ -3653,9 +3653,12 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 		// An isolate memory reset also comes with e.overloaded set; it gets its own
 		// header, x-isolate-reset: memory, not x-overloaded (#335, object-error.mjs).
 		// A storage reset (#398) is a reset too: x-isolate-reset: storage, the same retry and the same
-		// write-loss answer. Other errors are thrown as before (fetchWithMemoryRetry rethrows them).
+		// write-loss answer. A platform internal error (#976) is not a reset: the call did not enter
+		// PHP on the measured case, so the client gets 503 and may retry. Other errors are thrown
+		// as before (fetchWithMemoryRetry rethrows them).
 		const reset = isResetKind(kind);
-		console.log(JSON.stringify({ m: reset ? 'isolate-reset' : 'overloaded', kind, path: url.pathname, retried, ...memIdOf(req, env), error: String(e.message).slice(0, 200) }));
+		const tag = reset ? 'isolate-reset' : kind === 'internal' ? 'platform-internal' : 'overloaded';
+		console.log(JSON.stringify({ m: tag, kind, path: url.pathname, retried, ...memIdOf(req, env), error: String(e.message).slice(0, 200) }));
 		// A method that may have written (anything but GET or HEAD) and died in a reset: its earlier
 		// writes may be saved (#350; #398 saw a page create and a delete saved), so no 503 "try
 		// again" and never the dispatcher 502 (write-loss.mjs).
@@ -3672,7 +3675,12 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 		}
 		const headers = objectErrorHeaders(kind, name, OVERLOAD_RETRY_AFTER_S);
 		if (retried) headers['x-isolate-retry'] = '1';
-		return new Response(reset ? 'The site restarted. Please try again in a few seconds.\n' : 'The site is busy. Please try again in a few seconds.\n', {
+		const bodyText = reset
+			? 'The site restarted. Please try again in a few seconds.\n'
+			: kind === 'internal'
+				? 'The site had an internal error. Please try again in a few seconds.\n'
+				: 'The site is busy. Please try again in a few seconds.\n';
+		return new Response(bodyText, {
 			status: 503,
 			headers,
 		});
