@@ -19,7 +19,9 @@
 // - a PHP BEGIN is a savepoint of the frame, its COMMIT a release, its ROLLBACK undoes only its part;
 // - a COMMIT POINT (DDL, an outbound non-GET HTTP call, an R2 delete or copy) closes the frame KEPT
 //   just before the effect: a rollback never erases a row an outside party may already know about. The
-//   next write opens a new frame;
+//   next write opens a new frame. A plugin status row is the exception (#938): the frame saves the old
+//   active_plugins or active_sitewide_plugins value and writes it back on write-loss or on recovery.
+//   A request that finishes keeps the new value.
 // - defer(fn) holds work that must not outlive a rollback (the KV L2 cache sets) until the frame is kept.
 // _wp_frame keeps the outcome per request id (a short history) for the Worker's /_frame probe, so a
 // client is only told "nothing was saved" when it is proven.
@@ -36,7 +38,7 @@
 // storage.transactionSync, so it commits whole or not at all. The trigger bodies insert into
 // _wp_undo by name, so they do not change.
 
-const UNDO_TABLES = new Set(['_wp_undo', '_wp_undo_state', '_wp_frame']);
+const UNDO_TABLES = new Set(['_wp_undo', '_wp_undo_state', '_wp_frame', '_wp_plugin_hold']);
 const FRAME_HISTORY = 32;
 
 /**
@@ -64,6 +66,83 @@ export function shapeOf(sql) {
 export function isDdl(sql) {
 	return /^\s*(CREATE|ALTER|DROP|RENAME|TRUNCATE)\b/i.test(String(sql || ''));
 }
+
+const PLUGIN_STATUS_KEYS = new Set(['active_plugins', 'active_sitewide_plugins']);
+
+function isOptionsTable(name) {
+	return /(^|_)options$/i.test(String(name || ''));
+}
+
+// Split a SQL list on commas that are not inside quotes. A doubled quote stays inside the string.
+function splitSqlList(list) {
+	const out = [];
+	let cur = '';
+	let q = null;
+	for (let i = 0; i < list.length; i++) {
+		const c = list[i];
+		if (q) {
+			cur += c;
+			if (c === q) {
+				if (list[i + 1] === q) { cur += list[++i]; continue; }
+				q = null;
+			}
+			continue;
+		}
+		if (c === "'" || c === '"') { q = c; cur += c; continue; }
+		if (c === ',') { out.push(cur); cur = ''; continue; }
+		cur += c;
+	}
+	out.push(cur);
+	return out;
+}
+
+/**
+ * A write of plugin status in the options table (#938).
+ * The name is the option_name argument, never a value that happens to equal that string.
+ * Returns { table, key } or null.
+ */
+export function pluginStatusWrite(sql, params) {
+	const s = String(sql || '');
+	if (!/^\s*(INSERT|REPLACE|UPDATE|DELETE)\b/i.test(s)) return null;
+	const tm = s.match(/\b(?:INTO|UPDATE|FROM)\s+[`"]?([A-Za-z0-9_]+)/i);
+	if (!tm || !isOptionsTable(tm[1])) return null;
+	const key = optionNameArg(s, params);
+	if (!key || !PLUGIN_STATUS_KEYS.has(key)) return null;
+	return { table: tm[1], key };
+}
+
+function optionNameArg(sql, params) {
+	const re = /[`"]?\boption_name\b[`"]?\s*=\s*(\?|'([^']*)')/gi;
+	let m;
+	let last = null;
+	while ((m = re.exec(sql))) last = m;
+	if (last) {
+		if (last[2] !== undefined) return last[2];
+		const qpos = last.index + last[0].lastIndexOf('?');
+		const idx = (sql.slice(0, qpos).match(/\?/g) || []).length;
+		const v = params && params[idx];
+		return typeof v === 'string' ? v : null;
+	}
+	const cols = /(?:insert|replace)\s+(?:or\s+\w+\s+)?into\s+[`"]?[A-Za-z0-9_]+[`"]?\s*\(([^)]*)\)/i.exec(sql);
+	const vals = /values\s*\(([^)]*)\)/i.exec(sql);
+	if (!cols || !vals) return null;
+	const names = cols[1].split(',').map((c) => c.replace(/[`"\s]/g, '').toLowerCase());
+	const i = names.indexOf('option_name');
+	if (i < 0) return null;
+	const parts = splitSqlList(vals[1]);
+	if (!parts[i]) return null;
+	const part = parts[i].trim();
+	const lit = part.match(/^'([^']*)'$/);
+	if (lit) return lit[1];
+	if (part === '?') {
+		let q = (sql.slice(0, vals.index).match(/\?/g) || []).length;
+		for (let j = 0; j < i; j++) q += (parts[j].match(/\?/g) || []).length;
+		const v = params && params[q];
+		return typeof v === 'string' ? v : null;
+	}
+	return null;
+}
+
 
 function sqlId(name) {
 	return '"' + String(name).replace(/"/g, '""') + '"';
@@ -188,7 +267,10 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 		db.exec('CREATE TABLE IF NOT EXISTS _wp_undo_state (id INTEGER PRIMARY KEY CHECK (id = 1), active INTEGER NOT NULL, req TEXT)');
 		ensureReqCols(db);
 		own(db.exec('INSERT OR IGNORE INTO _wp_undo_state (id, active) VALUES (1, 0)'));
-		if (framesOn()) db.exec('CREATE TABLE IF NOT EXISTS _wp_frame (req TEXT PRIMARY KEY, state TEXT NOT NULL, points INTEGER NOT NULL, kinds TEXT NOT NULL, undone INTEGER NOT NULL, t INTEGER NOT NULL)');
+		if (framesOn()) {
+			db.exec('CREATE TABLE IF NOT EXISTS _wp_frame (req TEXT PRIMARY KEY, state TEXT NOT NULL, points INTEGER NOT NULL, kinds TEXT NOT NULL, undone INTEGER NOT NULL, t INTEGER NOT NULL)');
+			db.exec('CREATE TABLE IF NOT EXISTS _wp_plugin_hold (req TEXT NOT NULL, option_key TEXT NOT NULL, tbl TEXT NOT NULL, existed INTEGER NOT NULL, option_value TEXT, autoload TEXT, PRIMARY KEY (req, option_key))');
+		}
 		setupDone = true;
 	}
 	function undoTriggers(db) {
@@ -297,6 +379,84 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 		}
 	}
 
+
+	// #938: the old plugin-status value. A commit point keeps every other row. It must not keep
+	// active_plugins. The hold survives the commit point. Write-loss and recovery put the old value
+	// back. end() drops the hold after the frame is kept, so a finished request stays active.
+	function capturePluginStatus(db, sql, params) {
+		if (!armedReq || !framesOn()) return;
+		const w = pluginStatusWrite(sql, params);
+		if (!w) return;
+		let already = [];
+		try {
+			already = [...db.exec('SELECT 1 AS n FROM _wp_plugin_hold WHERE req = ? AND option_key = ?', armedReq, w.key).raw()];
+		} catch {
+			return; // the hold table is created with the frame
+		}
+		if (already.length) return;
+		let rows = [];
+		try {
+			rows = [...db.exec(`SELECT option_value, autoload FROM ${sqlId(w.table)} WHERE option_name = ?`, w.key).raw()];
+		} catch {
+			return;
+		}
+		const existed = rows.length ? 1 : 0;
+		const value = existed ? rows[0][0] : null;
+		const autoload = existed ? rows[0][1] : null;
+		own(db.exec('INSERT INTO _wp_plugin_hold (req, option_key, tbl, existed, option_value, autoload) VALUES (?, ?, ?, ?, ?, ?)', armedReq, w.key, w.table, existed, value, autoload));
+	}
+	function frameKept(db, req) {
+		try {
+			const r = [...db.exec('SELECT state FROM _wp_frame WHERE req = ?', req).raw()];
+			return r.length > 0 && r[0][0] === 'kept';
+		} catch {
+			return false;
+		}
+	}
+	function restorePluginHolds(db, req) {
+		if (!req) return 0;
+		let rows;
+		try {
+			rows = [...db.exec('SELECT option_key, tbl, existed, option_value, autoload FROM _wp_plugin_hold WHERE req = ?', req).raw()];
+		} catch {
+			return 0;
+		}
+		if (!rows.length) return 0;
+		if (frameKept(db, req)) {
+			discardPluginHolds(db, req);
+			return 0;
+		}
+		for (const [key, tbl, existed, value, autoload] of rows) {
+			if (!isOptionsTable(tbl)) continue;
+			const t = sqlId(tbl);
+			const have = [...db.exec(`SELECT 1 AS n FROM ${t} WHERE option_name = ?`, key).raw()];
+			if (existed) {
+				if (have.length) own(db.exec(`UPDATE ${t} SET option_value = ?, autoload = ? WHERE option_name = ?`, value, autoload, key));
+				else own(db.exec(`INSERT INTO ${t} (option_name, option_value, autoload) VALUES (?, ?, ?)`, key, value, autoload));
+			} else if (have.length) {
+				own(db.exec(`DELETE FROM ${t} WHERE option_name = ?`, key));
+			}
+		}
+		discardPluginHolds(db, req);
+		log({ m: 'plugin-status-restored', req, n: rows.length });
+		return rows.length;
+	}
+	function restoreAllPluginHolds(db) {
+		let reqs;
+		try {
+			reqs = [...db.exec('SELECT DISTINCT req FROM _wp_plugin_hold').raw()];
+		} catch {
+			return 0;
+		}
+		let n = 0;
+		for (const [req] of reqs) n += restorePluginHolds(db, req);
+		return n;
+	}
+	function discardPluginHolds(db, req) {
+		if (!req) return;
+		try { own(db.exec('DELETE FROM _wp_plugin_hold WHERE req = ?', req)); } catch { /* no hold table yet */ }
+	}
+
 	return {
 		/** Arm a frame for this request (frames on). It opens at the first write. */
 		arm(db, req) {
@@ -328,12 +488,13 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 		 * The statement itself changed nothing, so rolling it back loses nothing: fn's result is returned as
 		 * is (changes 0). An undo row decides, not the reported count alone (a counter may under-report).
 		 */
-		statement(db, storage, sql, fn) {
+		statement(db, storage, sql, fn, params) {
 			if (stranded && mayWrite(sql)) throw new Error(STRANDED_ERROR);
 			const opens = armedReq && !frameOpen && mayWrite(sql) && !isDdl(sql) && storage && typeof storage.transactionSync === 'function';
 			if (!opens) {
 				const was = frameOpen;
 				this.beforeStatement(db, sql, storage);
+				capturePluginStatus(db, sql, params);
 				if (was && frameOpen && mayWrite(sql) && !isDdl(sql)) tagWriter(db);
 				if (!was && frameOpen) log({ m: 'frame-open', req: armedReq, by: openedBy, tx: false });
 				return fn();
@@ -344,6 +505,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			try {
 				storage.transactionSync(() => {
 					frameOpenNow(db, sql, storage);
+					capturePluginStatus(db, sql, params);
 					const seq = undoSeq(db);
 					result = fn();
 					const logged = db.exec('SELECT COUNT(*) AS n FROM _wp_undo WHERE seq > ?', seq).one().n;
@@ -396,7 +558,11 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 		 * deferred work (L2 sets) dropped, never run. Returns { undone, points } or null when no frame is open.
 		 */
 		rollbackFrame(db, storage) {
-			if (!frameOpen) return null;
+			// No open segment: a commit point already kept the earlier rows. Plugin status is still put back (#938).
+			if (!frameOpen) {
+				if (!stranded) restorePluginHolds(db, armedReq);
+				return null;
+			}
 			let n;
 			try {
 				n = undoTo(db, storage, 0, false, true);
@@ -424,6 +590,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			own(db.exec('DELETE FROM _wp_undo'));
 			frameOpen = false;
 			counts.rolledBack = (counts.rolledBack || 0) + 1;
+			restorePluginHolds(db, armedReq); // active is 0, so the undo triggers do not log this write
 			frameRow(db, armedReq, 'rolled-back');
 			own(db.exec('UPDATE _wp_frame SET undone = ? WHERE req = ?', n, armedReq));
 			deferred = [];
@@ -444,6 +611,8 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			} else if (armedReq && points > 0) {
 				frameRow(db, armedReq, 'kept');
 			}
+			// The frame is kept, or this request never opened one. Drop the snapshot so recovery does not undo a finish.
+			discardPluginHolds(db, armedReq);
 			armedReq = null;
 		},
 		/** PHP's transaction ops (php/real-transactions.php). */
@@ -516,6 +685,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 				const relabeled = relabelEnded(db);
 				const rebuilt = migrateUndo(db, storage);
 				log({ m: 'frame-recover', active: 0, tables: true, frames: framesOn(), relabeled, rebuilt });
+				restoreAllPluginHolds(db); // a commit point then a dead isolate: active is 0, the plugin status hold remains
 				stranded = false;
 				return null;
 			}
@@ -550,6 +720,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, log = () => {
 			for (const r of shapes) byReq[r.req ?? 'null'] = (byReq[r.req ?? 'null'] || 0) + 1;
 			log({ m: 'frame-recover-rows', frameReq: req, undone: n, rows: shapes.slice(0, RECOVER_ROWS_MAX), truncated: shapes.length > RECOVER_ROWS_MAX, byReq, cross: shapes.filter((r) => r.req !== req).length });
 			log({ m: 'frame-recover', active: 1, tables: true, frames: framesOn(), undone: n, req, relabeled, rebuilt });
+			restoreAllPluginHolds(db);
 			stranded = false;
 			return { undone: n, req };
 		},

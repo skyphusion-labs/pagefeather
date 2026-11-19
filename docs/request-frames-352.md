@@ -67,6 +67,15 @@ opens a new frame. **A rollback never erases a row an outside party may already 
 | mail | already held to the end of the request (#368): a reset sends nothing |
 | object cache, in-isolate | dies with the isolate |
 | object cache, KV L2 (`OBJECT_CACHE_L2=on`) | sets are DEFERRED until the frame is kept, so a rolled-back request leaves no KV value built from vanished rows; deletes go at once |
+| plugin status options | the old value is saved; write-loss puts it back (#938) |
+
+Plugin status is the exception.
+The options are `active_plugins` and `active_sitewide_plugins`.
+The frame saves the old value before the write.
+A commit point still keeps every other row.
+Write-loss writes the old plugin status back.
+So does recovery after an isolate reset.
+A request that finishes keeps the new value.
 
 **Row ids** (tested in `tests/undo-log.test.mjs`): WordPress tables use `INTEGER PRIMARY KEY` without
 AUTOINCREMENT, so a ROLLED-BACK insert's id IS reused by the next insert.
