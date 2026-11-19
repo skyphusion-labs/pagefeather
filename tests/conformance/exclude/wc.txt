@@ -12,3 +12,4 @@ order/review-order-page.spec.ts                         calls wpCLI (and is skip
 settings/product-permalinks.spec.ts                     calls wpCLI
 settings/settings-ui-feature-flag.spec.ts               calls wpCLI
 editor/command-palette.spec.ts                          calls local wp-env, not the deployed site
+marketing/overview.spec.ts                              code lock denies install_plugins, so recommendations returns 403
