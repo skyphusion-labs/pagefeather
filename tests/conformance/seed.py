@@ -437,13 +437,18 @@ def main():
     else:
         c, r = rest(a, n, "/wc/v3/customers", dict(fields, email=CUSTOMER["email"], username=CUSTOMER["username"]), "POST")
         cid = r.get("id") if isinstance(r, dict) else None
+    # My Account greets by display name. wp user create sets that from the first
+    # and last name. The WooCommerce customer route leaves it as the login (#965).
+    display = "%s %s" % (CUSTOMER["first_name"], CUSTOMER["last_name"])
+    if cid:
+        rest(a, n, "/wp/v2/users/%s" % cid, {"name": display}, "POST")
     c, u = rest(a, n, "/wp/v2/users/%s?context=edit" % cid) if cid else (0, None)
     u = u if isinstance(u, dict) else {}
     co, cwhy = login(CUSTOMER["username"], cpw)
     check("customer: role customer, the email, Jane Smith, and a form login",
           u.get("username") == CUSTOMER["username"] and u.get("roles") == ["customer"] and u.get("email") == CUSTOMER["email"]
-          and u.get("first_name") == "Jane" and u.get("last_name") == "Smith" and co is not None,
-          id=cid, roles=u.get("roles"), login=("ok" if co else cwhy))
+          and u.get("first_name") == "Jane" and u.get("last_name") == "Smith" and u.get("name") == display and co is not None,
+          id=cid, roles=u.get("roles"), display=u.get("name"), login=("ok" if co else cwhy))
 
     # 5. the three test images, pinned
     sha = wc_sha()
