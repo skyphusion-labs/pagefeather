@@ -72,12 +72,22 @@ define( 'R2_UPLOADS', true );
 define( 'WP_CONTENT_DIR', '/wordpress/wp-content' );
 $GLOBALS['filters'] = array();
 function add_filter( $hook, $cb, $prio = 10, $args = 1 ) {
-	$GLOBALS['filters'][ $hook ][] = array( $cb, $args );
+	$GLOBALS['filters'][ $hook ][] = array( $cb, $args, $prio, count( $GLOBALS['filters'][ $hook ] ?? array() ) );
 }
 function add_action( $hook, $cb, $prio = 10, $args = 1 ) {
 }
 function apply_filters( $hook, $value, ...$extra ) {
-	foreach ( $GLOBALS['filters'][ $hook ] ?? array() as $f ) {
+	$filters = $GLOBALS['filters'][ $hook ] ?? array();
+	usort(
+		$filters,
+		function ( $a, $b ) {
+			if ( $a[2] === $b[2] ) {
+				return $a[3] <=> $b[3];
+			}
+			return $a[2] <=> $b[2];
+		}
+	);
+	foreach ( $filters as $f ) {
 		$args  = array_merge( array( $value ), array_slice( $extra, 0, max( 0, $f[1] - 1 ) ) );
 		$value = call_user_func_array( $f[0], $args );
 	}
@@ -108,6 +118,28 @@ check( 'image-02.png stays reserved', unique_name( 'image-02.png', '.png' ), 'im
 check( 'a moved file keeps its old name reserved until the move', unique_name( 'old.jpg', '.jpg' ), 'old.jpg' );
 check( 'rename of that file returns true', $stream->rename( $dir . '/old.jpg', $dir . '/new.jpg' ), true );
 check( 'the old name is free after the move', unique_name( 'old.jpg', '.jpg' ), 'old.jpg' );
+
+$ours = $GLOBALS['filters']['wp_unique_filename'][0];
+check( 'the reserve filter runs after the WordPress 7.1 sub-size filter', $ours[2], 100 );
+
+add_filter(
+	'wp_unique_filename',
+	function ( $filename ) {
+		if ( 'shot-150x150-1.jpg' === $filename ) {
+			return 'shot-150x150.jpg';
+		}
+		return $filename;
+	},
+	10,
+	1
+);
+$before = array_keys( $GLOBALS['wpdb']->rows );
+check( 'a sub-size name is the name WordPress keeps', unique_name( 'shot-150x150-1.jpg', '.jpg' ), 'shot-150x150.jpg' );
+$added = array_values( array_diff( array_keys( $GLOBALS['wpdb']->rows ), $before ) );
+$want  = R2_Uploads_Stream::reserved_option( 'uploads/2026/11/shot-150x150.jpg' );
+$wrong = R2_Uploads_Stream::reserved_option( 'uploads/2026/11/shot-150x150-1.jpg' );
+check( 'the reserved row is that kept name', $added, array( $want ) );
+check( 'the rewritten -1 name is not reserved', in_array( $wrong, $added, true ), false );
 
 echo $fail ? "\n$fail CASE(S) FAILED\n" : "\nALL CASES PASS\n";
 exit( $fail ? 1 : 0 );
