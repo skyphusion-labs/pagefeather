@@ -1,22 +1,23 @@
 /*
- * Turnstile on the WooCommerce CLASSIC (shortcode) checkout (issue #400). php/turnstile-forms.php
- * prints the widget box inside the payment fragment (woocommerce_review_order_before_submit), so it
- * stays beside the Place order button, and prints a script tag for this file after the checkout
- * form, with window.skyphusionTurnstileClassic set first:
+ * Turnstile on the WooCommerce CLASSIC (shortcode) checkout (issue #400, #958).
+ * php/turnstile-forms.php prints the widget box on woocommerce_checkout_after_order_review.
+ * That hook is inside form.checkout and outside #order_review. update_order_review replaces
+ * #order_review only, so the box and its token survive an address change. The script tag is
+ * printed once after the form, with window.skyphusionTurnstileClassic set first:
  *   { sitekey, action }
  * It is a classic script, not a module. No build step.
  *
- * Why explicit render: the Woo checkout script fires update_order_review on load and on every
- * address or shipping change, and replaces #order_review (which holds the box) with fresh HTML.
- * With implicit render, nothing renders the new, empty box, and the shopper sees no challenge. So
- * this script renders the widget into the box in explicit mode (api.js?render=explicit&onload=...),
- * and renders it again after every fragment refresh (the updated_checkout event), when the box on
- * the page is not the one that holds the widget. The widget writes the cf-turnstile-response input
- * into the box, inside form.checkout, so the token posts with the rest of the form, as before.
+ * Render is explicit (api.js?render=explicit&onload=...). The widget writes the
+ * cf-turnstile-response input into the box, inside the checkout form, so the token posts
+ * with the rest of the form.
  *
- * A token is single use: siteverify accepts it once. After a failed Place order (the
- * checkout_error event: a failed challenge, a declined card, a missing field), the widget is reset,
- * so the next try gets a fresh token. A stale token is never sent.
+ * Place order stays disabled until that input has a token. A click during the first solve
+ * waits. Playwright waits for an enabled button, so the upstream checkout specs do too.
+ * If a submit still arrives with an empty token (the Enter key), checkout_place_order
+ * returns false and the button is clicked again when the token arrives.
+ *
+ * A token is single use. After a failed Place order (checkout_error), the widget is reset
+ * so the next try gets a fresh token.
  */
 (function () {
 	'use strict';
@@ -24,26 +25,52 @@
 	var BOX = '.skyphusion-turnstile-classic';
 	var widgetId = null;
 	var widgetBox = null;
+	var held = false;
 
 	function api() {
 		var t = window.turnstile;
 		return t && typeof t.render === 'function' ? t : null;
 	}
 
-	// The box is on the page when the document still contains it. A replaced fragment detaches
-	// the old box, so its widget is gone with it.
 	function attached(el) {
 		return !!el && (typeof el.isConnected === 'boolean' ? el.isConnected : document.documentElement.contains(el));
 	}
 
-	// Render into the current box unless the widget is already in it. A widget whose box was
-	// replaced is removed first, so Turnstile does not keep a dead instance.
+	function tokenValue() {
+		var box = document.querySelector(BOX);
+		if (!box || typeof box.querySelector !== 'function') return '';
+		var input = box.querySelector('input[name="cf-turnstile-response"]');
+		return input && input.value ? String(input.value) : '';
+	}
+
+	function placeButton() {
+		if (typeof document.getElementById !== 'function') return null;
+		return document.getElementById('place_order');
+	}
+
+	function syncButton() {
+		var btn = placeButton();
+		if (!btn) return;
+		btn.disabled = !tokenValue();
+	}
+
+	function onToken() {
+		syncButton();
+		if (!held || !tokenValue()) return;
+		held = false;
+		var btn = placeButton();
+		if (btn) btn.click();
+	}
+
 	function ensure() {
 		var t = api();
 		if (!t) return;
 		var box = document.querySelector(BOX);
 		if (!box) return;
-		if (widgetId !== null && box === widgetBox && attached(widgetBox)) return;
+		if (widgetId !== null && box === widgetBox && attached(widgetBox)) {
+			syncButton();
+			return;
+		}
 		if (widgetId !== null && typeof t.remove === 'function') {
 			try { t.remove(widgetId); } catch (e) { /* the old box is gone already */ }
 		}
@@ -52,24 +79,23 @@
 		widgetId = t.render(box, {
 			sitekey: box.getAttribute('data-sitekey') || cfg.sitekey,
 			action: box.getAttribute('data-action') || cfg.action,
+			callback: onToken,
 		});
 		widgetBox = box;
+		syncButton();
 	}
 
-	// After a failed Place order: the token was spent (or never valid), so get a fresh one. If the
-	// box was replaced in the meantime, render a new widget instead.
 	function reset() {
 		var t = api();
 		if (!t) return;
 		if (widgetId !== null && attached(widgetBox) && typeof t.reset === 'function') {
 			t.reset(widgetId);
+			syncButton();
 			return;
 		}
 		ensure();
 	}
 
-	// The Woo checkout events are jQuery events on document.body. jQuery loads before the Woo
-	// checkout script, but wait for it rather than assume the order.
 	var bound = false;
 	var tries = 0;
 	function bind() {
@@ -82,13 +108,16 @@
 		bound = true;
 		$(document.body).on('updated_checkout', ensure);
 		$(document.body).on('checkout_error', reset);
+		$(document.body).on('checkout_place_order', function () {
+			if (tokenValue()) return;
+			held = true;
+			return false;
+		});
 	}
 
-	// api.js calls this when it is ready (onload=). If it was ready first, render now.
 	window.skyphusionTurnstileClassicReady = function () { ensure(); };
 	bind();
 	if (api()) ensure();
 
-	// For tests: the internal steps, so a stubbed page and widget can drive them.
 	window.skyphusionTurnstileClassicInternals = { ensure: ensure, reset: reset, bind: bind };
 })();
