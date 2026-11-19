@@ -1932,6 +1932,10 @@ async function boot(origin) {
 	// Woo-warmed isolate otherwise spends re-initialising each request, headroom approach A needs
 	// because its DB client sits in the same isolate as PHP (#218). BOOTSTRAP_TRIM=off turns it off.
 	if (((ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on') || dbHandler) && ENV.BOOTSTRAP_TRIM !== 'off') lines.push(`define('SKYPHUSION_BOOTSTRAP_TRIM', true);`);
+	// Core application-password REST calls do not load WooCommerce (php/app-password-headroom.php).
+	// A warmed isolate is already near the 128 MiB cap. WooCommerce's route table on that write
+	// resets the isolate (cf759a, 2026-11-19, x-write-loss: 1). APP_PASSWORD_HEADROOM=off keeps WooCommerce.
+	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.APP_PASSWORD_HEADROOM !== 'off') lines.push(`define('SKYPHUSION_APP_PASSWORD_HEADROOM', true);`);
 	// WOO_EXTRAS=off (#667): php/woo-extras.php forces order attribution, usage tracking,
 	// marketplace suggestions and remote logging off. Unset defines nothing, so WooCommerce's
 	// own defaults stay. Analytics is not one of the four options.
