@@ -241,7 +241,7 @@ async function objectCacheOp(op) {
 		const n = op.k.length + op.v.length;
 		if (n > OBJECT_CACHE_BYTES / 4) return { ok: false };
 		ocStore(op.k, op.v, op.ttl > 0 ? now + op.ttl * 1000 : 0);
-		if (l2 && ocCtx) { const ttl = Math.max(60, op.ttl > 0 ? op.ttl : 60); const k2 = ocKvKey(op.k), v2 = op.v, c2 = ocCtx; const doSet = () => { if (req0 && req0.poisoned) return; try { const w = ocL2Writer().set(k2, v2, ttl); if (w) c2.waitUntil(w); } catch {} }; if (!(undoLog && undoLog.defer(doSet))) doSet(); } // #352: held until the frame is kept
+		if (l2 && ocCtx) { const ttl = Math.max(60, op.ttl > 0 ? op.ttl : 60); const k2 = ocKvKey(op.k), v2 = op.v, c2 = ocCtx; const doSet = () => { if (req0 && req0.poisoned) return; try { const w = ocL2Writer().set(k2, v2, ttl); if (w) c2.waitUntil(w); } catch {} }; const holdOptions = !!(undoLog && undoLog.pluginStatusHeld() && ocGroupOf(op.k) === 'options'); if (!(undoLog && undoLog.defer(doSet, holdOptions))) doSet(); } // #352: held until the frame is kept; #954: an options set during a plugin hold waits for the request end
 		return { ok: true };
 	}
 	if (op.op === 'del') {
@@ -2537,19 +2537,41 @@ async function httpOp(op) {
 // constructor, before anything reads the database.
 let undoLog = null;
 let undoFailOn = false; // #809's seam (fault-inject.mjs undoFailSet): throwaway and local sites only
+async function dropOptionsGroup() {
+	// #954: the options group holds alloptions, which carries active_plugins. Drop the Map now.
+	// Drop L2 too, so a new isolate does not read a list a commit point already published.
+	for (const k of [...objectCache.keys()]) if (ocGroupOf(k) === 'options') objectCacheDrop(k);
+	if (!ocL2On()) return;
+	const prefix = 'oc:' + encodeURIComponent('options\u0000');
+	let cursor;
+	try {
+		do {
+			const page = await ENV.OC_KV.list({ prefix, cursor });
+			for (const k of page.keys || []) {
+				try { await ocL2Writer().del(k.name); } catch { /* the next restore lists again */ }
+			}
+			cursor = page.list_complete ? undefined : page.cursor;
+		} while (cursor);
+	} catch (e) {
+		console.log(JSON.stringify({ m: 'options-cache-drop-failed', error: String((e && e.message) || e).slice(0, 160) }));
+	}
+}
 function undo(env = ENV) {
 	// frames is asked at each arm, from the env of the call or ENV: the first undo() of a deployed object is
 	// the constructor's recovery, before any fetch has set ENV (pf352f, 2026-11-14: no frame ever armed).
-	if (!undoLog) undoLog = createUndoLog({ stats, objectCacheDrop, log: (o) => console.log(JSON.stringify(o)), frames: () => !!((env || ENV) && (env || ENV).REQUEST_FRAMES === 'on'), undoFault: () => (undoFailOn ? UNDO_FAIL_MESSAGE : null) });
+	if (!undoLog) undoLog = createUndoLog({ stats, objectCacheDrop, log: (o) => console.log(JSON.stringify(o)), frames: () => !!((env || ENV) && (env || ENV).REQUEST_FRAMES === 'on'), undoFault: () => (undoFailOn ? UNDO_FAIL_MESSAGE : null), dropOptionsCache: () => dropOptionsGroup() });
 	return undoLog;
 }
 function txnOp(db, storage, op) {
 	return undo().txnOp(db, storage, op);
 }
-function txnRecover(db, storage) {
+async function txnRecover(db, storage) {
 	try {
-		return undo().recover(db, storage);
+		const r = undo().recover(db, storage);
+		await undo().finishCacheDrops();
+		return r;
 	} catch (e) {
+		try { await undo().finishCacheDrops(); } catch { /* the row is already back; a cache miss reads it */ }
 		console.error(JSON.stringify({ m: 'txn', recoverFailed: String((e && e.message) || e).slice(0, 200) }));
 		return null;
 	}
@@ -2830,7 +2852,7 @@ export class PhpRuntime extends DurableObject {
 	constructor(ctx, env) {
 		super(ctx, env);
 		ENV = env;
-		if (env.DB_IN_DO === 'on' && env.REAL_TRANSACTIONS !== 'off') ctx.blockConcurrencyWhile(async () => { txnRecover(ctx.storage.sql, ctx.storage); });
+		if (env.DB_IN_DO === 'on' && env.REAL_TRANSACTIONS !== 'off') ctx.blockConcurrencyWhile(async () => { await txnRecover(ctx.storage.sql, ctx.storage); });
 	}
 	// Page cache purges for the whole site (issue #78). PHP runs in this one
 	// object (PHP_DO_POOL=1), so every change of content passes here. The
@@ -2931,7 +2953,7 @@ export class PhpRuntime extends DurableObject {
 				sqlDb = sql;
 				sqlStorage = sql ? this.ctx.storage : null;
 				const realTxn = sql && this.env.REAL_TRANSACTIONS !== 'off';
-				if (realTxn) txnRecover(sql, this.ctx.storage);
+				if (realTxn) await txnRecover(sql, this.ctx.storage);
 				let cr;
 				let mail = null;
 				try {
@@ -3073,7 +3095,7 @@ export class PhpRuntime extends DurableObject {
 		if (objectUrl.pathname === '/_frame') {
 			const db = env.DB_IN_DO === 'on' ? this.ctx.storage.sql : null;
 			if (!db || env.REAL_TRANSACTIONS === 'off') return Response.json({ frame: null, reason: 'no undo log' });
-			txnRecover(db, this.ctx.storage);
+			await txnRecover(db, this.ctx.storage);
 			return Response.json({ frame: undo(env).status(db, objectUrl.searchParams.get('id') || '') });
 		}
 		// #855: the Workers Cron tick from the site Worker (POST + x-pf-cron-tick). Runs alarm(), not a page view.
@@ -3283,7 +3305,7 @@ export class PhpRuntime extends DurableObject {
 			// #809's seam, read BEFORE the recovery: the request that turns it off is the one whose recovery succeeds.
 			const uf = undoFailSet(env, spikeOk, req.headers);
 			if (uf !== null) { undoFailOn = uf; console.log(JSON.stringify({ m: 'fault-undo', on: uf })); }
-			if (realTxn) txnRecover(sql, this.ctx.storage);
+			if (realTxn) await txnRecover(sql, this.ctx.storage);
 			// #352: arm the request frame (REQUEST_FRAMES=on); it opens at the first write. The Worker sends the id.
 			if (realTxn) undo(env).arm(sql, req.headers.get('x-pf-req') || 'obj-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
 			// #730: the post-INSERT fault, a measurement for throwaway sites only (fault-inject.mjs).
@@ -4403,6 +4425,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				// is the platform's, so the frame is rolled back now, as the next isolate's recover() would (undo-log.mjs).
 				let rb = null;
 				try { rb = undoLog && sqlDb ? undoLog.rollbackFrame(sqlDb, sqlStorage) : null; } catch (e) { console.log(JSON.stringify({ m: 'frame-rollback-failed', error: String((e && e.message) || e).slice(0, 160) })); }
+				try { if (undoLog) await undoLog.finishCacheDrops(); } catch (e) { console.log(JSON.stringify({ m: 'options-cache-drop-failed', error: String((e && e.message) || e).slice(0, 160) })); }
 				if (rb) console.log(JSON.stringify({ m: 'frame-rolled-back', at: 'reset-failure', req: rb.req, undone: rb.undone, points: rb.points, path: url.pathname, ...memIdOf(req, env) }));
 				const json = wantsJson(url.pathname, url.search, req.headers.get('accept'));
 				// "Nothing was saved" only on the proof, the frame's own row as /_frame reads it (#352).
@@ -4432,6 +4455,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 					let rb = null;
 					if (readFailed(d.failures)) {
 						try { rb = undoLog && sqlDb ? undoLog.rollbackFrame(sqlDb, sqlStorage) : null; } catch (e) { console.log(JSON.stringify({ m: 'frame-rollback-failed', error: String((e && e.message) || e).slice(0, 160) })); }
+						try { if (undoLog) await undoLog.finishCacheDrops(); } catch (e) { console.log(JSON.stringify({ m: 'options-cache-drop-failed', error: String((e && e.message) || e).slice(0, 160) })); }
 					}
 					const fr = rb && undoLog ? undoLog.status(sqlDb, rb.req) : null;
 					const saved = rb ? !frameProvesRollback(fr) : wrote;
@@ -4579,6 +4603,9 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			// #598: a refused boot ran nothing: not a runtime drop. It is converted once, at handle() (boot() has
 			// already dropped the refused promise).
 			if (e && e.bootRefused) throw e;
+			// #954: a thrown activate is not a finished request. Roll the plugin hold back before end() keeps the frame.
+			try { if (undoLog && sqlDb) undoLog.rollbackFrame(sqlDb, sqlStorage); } catch (err) { console.log(JSON.stringify({ m: 'frame-rollback-failed', error: String((err && err.message) || err).slice(0, 160) })); }
+			try { if (undoLog) await undoLog.finishCacheDrops(); } catch (err) { console.log(JSON.stringify({ m: 'options-cache-drop-failed', error: String((err && err.message) || err).slice(0, 160) })); }
 			if (bootPromise) runtimeDrops++;
 			dropRuntime(); // a failed runtime is not reused
 			// The stack names internal paths. It goes to the tail log for every caller, never to the body,

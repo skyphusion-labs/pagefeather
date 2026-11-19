@@ -76,6 +76,11 @@ A commit point still keeps every other row.
 Write-loss writes the old plugin status back.
 So does recovery after an isolate reset.
 A request that finishes keeps the new value.
+A commit point does not publish the options cache while that hold is open.
+The request end publishes it.
+A restore drops the options cache.
+The next read uses the restored row.
+A thrown request rolls the hold back before the frame is kept.
 
 **Row ids** (tested in `tests/undo-log.test.mjs`): WordPress tables use `INTEGER PRIMARY KEY` without
 AUTOINCREMENT, so a ROLLED-BACK insert's id IS reused by the next insert.
