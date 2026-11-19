@@ -15,10 +15,16 @@
 # statement only, never rendered or recorded, so not a runtime switch), THROWAWAY=1, and the site is named and not
 # live (neither
 # deploy/live-sites/<name>.env nor deploy/wfp/live-sites/<name>; ggc and ggc-test are refused).
+# #940: that throwaway also needs Cloudflare's always-pass Turnstile test pair, and TURNSTILE_LOGIN=off.
+# The checkout and comment gates stay on. A real site key is refused. The test secret is public.
 # Test: deploy/tests/conformance-test.sh, deploy/wfp/tests/conformance-early-test.sh.
 
 CONFORMANCE_PLUGINS="woocommerce-cleanup woocommerce-e2e-test-helper gutenberg-test-plugins"
 CONFORMANCE_MARKER=pf-conformance-throwaway.php
+# Cloudflare documents this pair. The site key widget passes with no challenge.
+# The secret makes siteverify return success. Both values are public.
+CONFORMANCE_TURNSTILE_SITEKEY=1x00000000000000000000AA
+CONFORMANCE_TURNSTILE_SECRET=1x0000000000000000000000000000000AA
 
 # conformance_content: prints the first trigger found, nothing when the inputs carry no conformance content.
 conformance_content() {
@@ -34,6 +40,20 @@ conformance_content() {
   return 0
 }
 
+# conformance_turnstile: the checkout gate stays on, with the always-pass test pair.
+# Login is off because the suite login post carries no token. A missing pair is refused
+# so an empty site key cannot skip the gate. The secret value is never printed.
+conformance_turnstile() {
+  [ "${TURNSTILE:-}" != off ] || { echo "conformance refuses TURNSTILE=off. The checkout gate stays on." >&2; return 2; }
+  [ "${TURNSTILE_LOGIN:-}" = off ] || { echo "conformance needs TURNSTILE_LOGIN=off. The suite login post has no token." >&2; return 2; }
+  [ "${TURNSTILE_WOO:-}" != off ] || { echo "conformance refuses TURNSTILE_WOO=off. The checkout gate stays on." >&2; return 2; }
+  [ "${TURNSTILE_COMMENTS:-}" != off ] || { echo "conformance refuses TURNSTILE_COMMENTS=off. The comment gate stays on." >&2; return 2; }
+  [ "${TURNSTILE_SITEKEY:-}" = "$CONFORMANCE_TURNSTILE_SITEKEY" ] || { echo "conformance needs TURNSTILE_SITEKEY=${CONFORMANCE_TURNSTILE_SITEKEY}. A real site key stops classic checkout." >&2; return 2; }
+  # Compare only. Do not echo TURNSTILE_SECRET.
+  [ "${TURNSTILE_SECRET:-}" = "$CONFORMANCE_TURNSTILE_SECRET" ] || { echo "conformance needs the always-pass TURNSTILE_SECRET. A real secret rejects the test token." >&2; return 2; }
+  return 0
+}
+
 # conformance_check <name>: exit status 2 and the reason on stderr when refused; 0 when allowed or no content.
 conformance_check() {
   local n=${1:-} why root
@@ -46,5 +66,6 @@ conformance_check() {
   root=${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
   if [ -e "$root/deploy/live-sites/$n.env" ]; then echo "conformance content wipes the store, and $n is a live site (deploy/live-sites/$n.env; $why)" >&2; return 2; fi
   if [ -e "$root/deploy/wfp/live-sites/$n" ]; then echo "conformance content wipes the store, and $n is a live site (deploy/wfp/live-sites/$n; $why)" >&2; return 2; fi
+  conformance_turnstile || return 2
   return 0
 }
