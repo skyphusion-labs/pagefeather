@@ -136,6 +136,7 @@ jobs:
           php spikes/b2-wordpress/tests/woo-cart-page-test.php
           php spikes/b2-wordpress/tests/permalinks-test.php
           php spikes/b2-wordpress/tests/woo-blocks-scope-test.php
+          php spikes/b2-wordpress/tests/app-password-headroom-test.php
           bash spikes/b2-wordpress/tests/same-site-test.sh
           php spikes/b2-wordpress/tests/table-status-size-test.php
           php spikes/b2-wordpress/tests/plain-404-test.php
