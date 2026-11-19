@@ -13,8 +13,10 @@
  *     - a route that matches no registered route (the fail-safe: a namespace the map missed is never a false 404).
  *   Settings and REST fields stay eager (their callbacks are not in the map), so the editor's preloaded settings are
  *   unchanged.
- *   SCOPE (the lead's ruling): ONLY the block editor screens measured to need it, wp-admin post-new.php and post.php
- *   (not AJAX, not REST). Every other request (the front end, REST, cron, AJAX, every other admin page) is exactly as
+ *   SCOPE: post-new.php, post.php, and admin-ajax.php (#963). A product suite save posts those
+ *   paths on a runtime already near 117 MiB. admin-ajax used to register all 366 routes on that heap.
+ *   REST stays eager, so a quiet /wc/v3 product create still registers its routes up front.
+ *   Every other request (the front end, cron, every other admin page) is exactly as
  *   without this plugin: nothing deferred, no header. The map is of WooCommerce MAPPED_WOO: on any other version nothing is deferred (and
  *   tests/wc-route-defer-test.sh fails until the map is checked again).
  *   Operator only (index.js passes it to PHP only with the spike token): x-pf-wc-defer: off turns it off on an editor
@@ -64,13 +66,19 @@ class Skyphusion_WC_Route_Defer {
 		return is_string( $f ) ? $f : '';
 	}
 
-	/** The editor screens (post-new.php, post.php), or an operator's force. */
+	/** Editor screens, admin-ajax (#963), or an operator force. REST stays eager. */
 	public static function in_scope() {
 		if ( isset( $_SERVER['HTTP_X_PF_WC_DEFER'] ) && 'force' === $_SERVER['HTTP_X_PF_WC_DEFER'] ) {
 			return true;
 		}
-		if ( ! is_admin() || wp_doing_ajax() || ( defined( 'REST_REQUEST' ) && REST_REQUEST ) ) {
+		if ( defined( 'REST_REQUEST' ) && REST_REQUEST ) {
 			return false;
+		}
+		if ( ! is_admin() ) {
+			return false;
+		}
+		if ( wp_doing_ajax() ) {
+			return true;
 		}
 		global $pagenow;
 		return in_array( $pagenow, array( 'post-new.php', 'post.php' ), true );

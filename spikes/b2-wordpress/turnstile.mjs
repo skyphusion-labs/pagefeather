@@ -218,6 +218,18 @@ export const TURNSTILE_MAX_BODY = 1024 * 1024;
 
 const STORE_CHECKOUT = /^\/wc\/store(\/v1)?\/checkout\/?$/;
 
+// The Store API path after /wp-json, or the rest_route query. Plain permalinks put the
+// same API at /index.php/wp-json/wc/store/v1/checkout (#959). A path that only starts
+// with /wp-json/ misses that request, so the front Worker never preverifies it.
+function storeRestPath(url) {
+	const named = url.searchParams.get('rest_route');
+	if (named) return named;
+	const path = String(url.pathname || '');
+	const at = path.indexOf('/wp-json/');
+	if (at < 0) return '';
+	return path.slice(at + '/wp-json'.length);
+}
+
 // The budget for one front verify, both tries together: TURNSTILE_TIMEOUT_MS (default 10 s,
 // clamped 1 s to 30 s).
 export function turnstileTimeoutMs(env) {
@@ -233,7 +245,7 @@ export function turnstileTimeoutMs(env) {
 //                   POST with woocommerce-lost-password-nonce             (TURNSTILE_LOSTPASSWORD)
 //   'comments'      POST /wp-comments-post.php                            (TURNSTILE_COMMENTS)
 //   'woo'           POST /?wc-ajax=checkout, classic checkout             (TURNSTILE_WOO)
-//   'store'         POST Store API checkout, /wp-json/wc/store[/v1]/checkout or ?rest_route= (TURNSTILE_WOO)
+//   'store'         POST Store API checkout, /wp-json/... or /index.php/wp-json/... or ?rest_route= (TURNSTILE_WOO)
 // body is the urlencoded POST (a string or URLSearchParams), or null. My Account posts
 // are told apart by their nonce fields, including under plain permalinks (?page_id=).
 // A request that matches none gets no answer; if its PHP gate still runs, it fails closed.
@@ -269,8 +281,7 @@ export function turnstileRoute(env, method, url, body) {
 	if (hasField(params, 'woocommerce-lost-password-nonce')) return forms.lostpassword ? 'lostpassword' : '';
 	if (!forms.woo) return '';
 	if (url.searchParams.get('wc-ajax') === 'checkout') return 'woo';
-	const rest = url.searchParams.get('rest_route') || (path.startsWith('/wp-json/') ? path.slice(8) : '');
-	if (STORE_CHECKOUT.test(rest)) return 'store';
+	if (STORE_CHECKOUT.test(storeRestPath(url))) return 'store';
 	return '';
 }
 
