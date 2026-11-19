@@ -32,7 +32,7 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
 | `prepare-content.sh` | Builds the extra content of a throwaway (test plugins, test themes, the marker) from the pinned repos. It prints one line of variables for `build.sh`. |
 | `themes.txt`, `plugins.txt` | The wordpress.org themes and plugins for the throwaway, checked by SHA-256 (`tests/plugins/fetch.sh`). They are separate from the product lists. |
 | `php/pf-conformance-throwaway.php` | The marker mu-plugin. Its REST route says "throwaway" and names the host. |
-| `exclude/<suite>.txt` | The specs NOT run, each with its reason. Each one becomes a "not run" row of the matrix. |
+| `exclude/<suite>.txt` | Specs this run skips, each with its reason. See Exclude rows for the line format. |
 | `areas.txt` | The map from each spec file to a row of `docs/support-matrix.md`. The first matching line wins; a spec no line maps is reported as unmapped. |
 | `gaps.py`, `php/pf-conformance-gaps.php` | Our stand-ins for upstream specs that write on the runner's disk. Today: wordpress-develop's `fatal-error-handler` (upstream's own fatal line, on `?pf_conformance=fatal`, only beside the throwaway marker). Writes `results-gaps-<on\|off>.json`; `gaps.py baseline` writes the outcome the upstream spec asserts. |
 | `matrix.py` | `cells`: turns a run's `results.json` files (ours and the stock baseline, per suite) and the route runner's result into matrix cells, each with its citation. `--apply` writes them into the matrix. |
@@ -116,6 +116,25 @@ The WooCommerce sales report groups orders by the site day.
 The 2026-11-18 remount passed sales reports with `timezone_string` `Europe/Lisbon`.
 That calendar day was 18 Nov in `America/Detroit` too.
 The pass does not prove the site timezone.
+
+## Exclude rows
+
+A file row is one glob, then the reason.
+The glob is relative to that suite test directory.
+runner.py passes the glob to Playwright as testIgnore.
+The whole file does not run.
+
+A title row names one test.
+Write the file, then ` :: `, then the full title, then the reason.
+The title joins each describe block with ` > `.
+results.json uses that same join.
+Two or more spaces separate the title from the reason.
+runner.py adds the test to grepInvert.
+Tests beside it in the file still run.
+matrix.py writes each row into the not run block.
+
+A title row with one space before the reason is a stop.
+That stop keeps a bad row from hiding the whole file.
 
 ## What is not run yet
 
