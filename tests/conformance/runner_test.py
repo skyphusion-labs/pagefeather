@@ -364,6 +364,16 @@ def main():
                           (runner.rest_path("/wp-login.php"), "/wp-login.php")):
             ok("rest_path %s" % want) if got == want else bad("rest_path gave %s, want %s" % (got, want))
 
+        try:
+            runner.parse_exclude_line("email/settings-email.spec.ts :: Send email preview only-one-space")
+            bad("a title row with one space before the reason was accepted")
+        except runner.Stop:
+            ok("a title row with one space before the reason is refused")
+        kept = runner.parse_exclude_line("paypal/paypal.spec.ts  calls wpCLI")
+        ok("a file row stays a file exclude") if kept.kind == "file" and kept.path == "paypal/paypal.spec.ts" else bad("file row parsed as %s" % (kept,))
+        parsed = runner.parse_exclude_line("email/settings-email.spec.ts :: WooCommerce Email Settings > Send email preview  suite asserts a PHP mail() failure.")
+        ok("a title row parses the file, the title, and the reason") if parsed.kind == "title" and parsed.path == "email/settings-email.spec.ts" and parsed.title == "WooCommerce Email Settings > Send email preview" and parsed.reason == "suite asserts a PHP mail() failure." else bad("title parse: %s" % (parsed,))
+
         # config: one file per suite, it parses, and it carries the exclusions.
         node = shutil.which("node")
         for sn, up in runner.UPSTREAM_CONFIG.items():
@@ -373,9 +383,9 @@ def main():
             rc, o, e = run(["config", "--suite", sn, "--suite-dir", d, "--run-dir", os.path.join(t, "r")], {"PATH": os.environ.get("PATH", "")})
             p = os.path.join(d, "pf-conformance.config.mjs")
             txt = open(p).read() if os.path.exists(p) else ""
-            excl = [x for x, _ in runner.read_excludes(sn)]
-            if rc == 0 and all(json.dumps(x) in txt for x in excl) and "webServer: undefined" in txt and "workers: 1" in txt:
-                ok("config %s: %d exclusions, webServer off, one worker" % (sn, len(excl)))
+            files = [r.path for r in runner.read_excludes(sn) if r.kind == "file"]
+            if rc == 0 and all(json.dumps(x) in txt for x in files) and "webServer: undefined" in txt and "workers: 1" in txt:
+                ok("config %s: %d file exclusions, webServer off, one worker" % (sn, len(files)))
             else:
                 bad("config %s: rc %d or content wrong" % (sn, rc))
             if node:
@@ -416,6 +426,47 @@ def main():
             ok("wc-cpt runs only the @hpos tests, as e2e-cpt") if "name: 'e2e-cpt', grep: new RegExp( \"@hpos\" )" in wcc and "e2e-pf" not in wcc and "api-pf" not in wcc else bad("wc-cpt project wrong")
             ok("wc-cpt has NO reset project and depends on site setup") if "reset" not in wcc and "dependencies: [ 'site setup' ]" in wcc else bad("wc-cpt reset or dependencies wrong")
             ok("wc-cpt carries the wc exclusions") if '"blocks/**"' in wcc and '"api-tests/**"' in wcc else bad("wc-cpt lacks the wc exclusions")
+            want_title = "WooCommerce Email Settings > Send email preview"
+            wc_rows = runner.read_excludes("wc")
+            paypal = [r for r in wc_rows if r.path == "paypal/paypal.spec.ts"]
+            ok("paypal is a file exclude for wpCLI") if len(paypal) == 1 and paypal[0].kind == "file" and paypal[0].reason == "calls wpCLI / needs wp-env (not the deployed site)" else bad("paypal row: %s" % (paypal,))
+            title_rows = [r for r in wc_rows if r.kind == "title"]
+            ok("send email preview is the only title exclude") if len(title_rows) == 1 and title_rows[0].path == "email/settings-email.spec.ts" and title_rows[0].title == want_title else bad("title rows: %s" % (title_rows,))
+            try:
+                ign = json.loads(wct.split("const ignore = ", 1)[1].split(";", 1)[0])
+            except (ValueError, IndexError) as e:
+                ign = None
+                bad("wc ignore list did not parse: %s" % e)
+            if ign is not None:
+                ok("wc testIgnore lists paypal/paypal.spec.ts") if "paypal/paypal.spec.ts" in ign else bad("paypal missing from testIgnore: %s" % ign)
+                ok("wc testIgnore does not drop the email settings file") if not any("settings-email" in x for x in ign) else bad("email file was file-ignored: %s" % ign)
+            full = runner.grep_invert_source([("email/settings-email.spec.ts", want_title)])
+            ok("wc grepInvert is the tag filter plus the title") if json.dumps(full) in wct else bad("title grep missing from wc config")
+            ok("wc-cpt grepInvert carries the same title") if json.dumps(full) in wcc else bad("title grep missing from wc-cpt config")
+            ok("wc-api grepInvert does not carry the email title") if json.dumps(runner.title_grep_source("email/settings-email.spec.ts", want_title)) not in wat else bad("wc-api carries the email title")
+            if node:
+                js = "\n".join([
+                    "const re = new RegExp(process.argv[1]);",
+                    "function g(file, parts) { return [\"\", \"e2e-pf\", file].concat(parts).join(\" \"); }",
+                    "const file = \"tests/email/settings-email.spec.ts\";",
+                    "const send = g(file, [\"WooCommerce Email Settings\", \"Send email preview\"]);",
+                    "const see = g(file, [\"WooCommerce Email Settings\", \"See email preview\"]);",
+                    "const reset = g(file, [\"WooCommerce Email Settings\", \"Reset color palette with a feature flag\"]);",
+                    "const tagged = g(file, [\"WooCommerce Email Settings\", \"@suite\", \"Send email preview\"]);",
+                    "const other = g(\"tests/paypal/paypal.spec.ts\", [\"PayPal\", \"Send email preview\"]);",
+                    "const checks = [[send, true], [see, false], [reset, false], [tagged, true], [other, false]];",
+                    "if (!re.test(\"plain @skip-on-external-env\")) { console.error(\"tag filter missed\"); process.exit(1); }",
+                    "for (const pair of checks) {",
+                    "  if (re.test(pair[0]) !== pair[1]) {",
+                    "    console.error((pair[1] ? \"missed\" : \"hit\") + \": \" + JSON.stringify(pair[0]));",
+                    "    process.exit(1);",
+                    "  }",
+                    "}",
+                ])
+                nr = subprocess.run([node, "-e", js, full], capture_output=True, text=True)
+                ok("grepInvert skips Send email preview and keeps its siblings") if nr.returncode == 0 else bad("grepInvert match: %s" % (nr.stderr or nr.stdout).strip()[:200])
+            else:
+                bad("no node to prove the title grep (could not measure)")
         else:
             bad("wc-cpt is not a suite")
         ok("wc-cpt reads the wc exclusion list itself") if runner.read_excludes("wc-cpt") == runner.read_excludes("wc") else bad("wc-cpt excludes differ from wc")
@@ -444,6 +495,7 @@ def main():
             ok("config %s: no inline setup function in config" % sn) if "async function pfGlobalSetup" not in txt and "pfGlobalSetup" not in txt.replace(pf_setup, "") else bad("config %s: inline globalSetup function" % sn)
             m = re.search(r'PF_CONFORMANCE_UPSTREAM_GLOBAL_SETUP = "([^"]+)"', txt)
             ok("config %s: upstream global-setup is an absolute suite path" % sn) if m and m.group(1).endswith(want_upstream_suffix) and os.path.isabs(m.group(1)) else bad("config %s: upstream env missing or relative" % sn)
+            ok("config %s has no title grepInvert" % sn) if "grepInvert" not in txt else bad("config %s gained a title grepInvert" % sn)
         wpt = open(os.path.join(t, "cfg-wp", "pf-conformance.config.mjs")).read()
         ok("wp config sets STORAGE_STATE_PATH before import") if wpt.index("process.env.STORAGE_STATE_PATH") < wpt.index("import base") else bad("wp config: env after import")
         ok("wp config forces storageState on projects") if "storageState: state" in wpt and "const state = process.env.STORAGE_STATE_PATH" in wpt else bad("wp config: storageState missing")

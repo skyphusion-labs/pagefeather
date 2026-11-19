@@ -131,11 +131,22 @@ def routes_cells(res, cite):
     return out
 
 
+def exclude_label(item):
+    kind = getattr(item, "kind", None)
+    if kind == "title":
+        return "%s :: %s" % (item.path, item.title), item.reason
+    if kind == "file":
+        return item.path, item.reason
+    pat, reason = item
+    return pat, reason
+
+
 def notrun_block(excludes, tag):
     lines = ["### Not run in conformance `%s`, and why" % tag, "",
              "These specs are excluded in `tests/conformance/exclude/` and are not a result either way.", ""]
     for suite in sorted(excludes):
-        for pat, reason in excludes[suite]:
+        for item in excludes[suite]:
+            pat, reason = exclude_label(item)
             lines.append("- %s `%s`: %s" % (suite, pat, reason or "no reason given"))
     return "\n".join(lines) + "\n"
 

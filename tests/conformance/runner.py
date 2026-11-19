@@ -28,12 +28,16 @@ site: Rollins' seed owns all setup (lead ruling on #759), and prepare verifies i
 The passwords come from WP_PASSWORD and CUSTOMER_PASSWORD and are never printed.
 
 config writes pf-conformance.config.mjs beside the upstream config: one worker, no retries, no
-webServer (the site is deployed), the exclusions of exclude/<suite>.txt as testIgnore, and a JSON
+webServer (the site is deployed), the exclusions of exclude/<suite>.txt, and a JSON
 report. It unwraps a default export before the spread, so upstream timeout and use survive.
+A file row in that list is testIgnore.
+A title row is grepInvert.
+One test is skipped.
+Its siblings still run.
 summarize and compare turn reports into the rows of the support matrix: compare marks a
 test that fails on the stock baseline as "upstream", never as ours.
 """
-import argparse, base64, http.cookiejar, importlib.util, json, os, re, shlex, sys, urllib.error, urllib.parse, urllib.request
+import argparse, base64, collections, http.cookiejar, importlib.util, json, os, re, shlex, sys, urllib.error, urllib.parse, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DENY = {"ggc.sh", "www.ggc.sh"}
@@ -322,19 +326,56 @@ def cmd_check_state(a):
         print("check-state: %s is logged in (/wp-admin/ HTTP %d)" % (os.path.basename(path), st), flush=True)
 
 
+Exclude = collections.namedtuple("Exclude", "kind path title reason")
+# A title row: <file> :: <title>, then two or more spaces, then the reason.
+# The title may contain single spaces. Two spaces end it.
+_TITLE_ROW = re.compile(r"^(\S+) :: (.+?)(?:  +|\t+)(\S.*?)\s*$")
+
+
+def parse_exclude_line(line):
+    if " :: " in line:
+        m = _TITLE_ROW.match(line)
+        if not m:
+            raise Stop("a title row needs the file, :: , the title, then two spaces, then the reason")
+        return Exclude("title", m.group(1), m.group(2).strip(), m.group(3).strip())
+    path, _, why = line.partition(" ")
+    return Exclude("file", path, "", why.strip())
+
+
 def read_excludes(suite):
     out = []
     with open(os.path.join(HERE, "exclude", EXCLUDE_AS.get(suite, suite) + ".txt")) as f:
         for line in f:
             line = line.strip()
             if line and not line.startswith("#"):
-                path, _, why = line.partition(" ")
-                out.append((path, why.strip()))
+                out.append(parse_exclude_line(line))
     return out
 
 
+def title_grep_source(path, title):
+    # Playwright joins the file path, each describe, and the test title with spaces.
+    # A tag on a block sits between those parts.
+    # The row uses " > ", as results.json does.
+    # The match ends at the test title, or at a tag after it.
+    parts = [p.strip() for p in title.split(" > ") if p.strip()]
+    if not parts:
+        raise Stop("a title row needs a title")
+    gap = r"(?: @[^\s]+)* "
+    return re.escape(path) + "".join(gap + re.escape(p) for p in parts) + r"(?: @|$)"
+
+
+def grep_invert_source(titles):
+    extra = [title_grep_source(path, title) for path, title in titles]
+    if not extra:
+        return WC_GREP_INVERT
+    return WC_GREP_INVERT + "|" + "|".join(extra)
+
+
 def config_text(suite, run_dir, suite_dir):
-    ign = [p for p, _ in read_excludes(suite)]
+    rows = read_excludes(suite)
+    ign = [r.path for r in rows if r.kind == "file"]
+    titles = [(r.path, r.title) for r in rows if r.kind == "title"]
+    grep_src = grep_invert_source(titles)
     rep = os.path.join(os.path.abspath(run_dir), "report.json")
     artifacts, storage = conformance_artifact_paths(run_dir)
     lines = ["// Written by tests/conformance/runner.py config (#759). Do not edit; re-run it."]
@@ -368,7 +409,7 @@ def config_text(suite, run_dir, suite_dir):
         # TRUNCATEs the store, which would wipe the seed (Rollins' seed owns setup AND the reset between
         # runs). vps-run.sh runs 'site setup' first, then check-state, then e2e-pf with --no-deps.
         lines += ["config.projects = [ ...setup,",
-                  "  { name: 'e2e-pf', testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % json.dumps(WC_GREP_INVERT)]
+                  "  { name: 'e2e-pf', testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % json.dumps(grep_src)]
     elif suite == "wc-cpt":
         # As upstream envs/default-hpos-disabled: DISABLE_HPOS=1, read by fixtures/site.setup.ts, turns HPOS OFF in the
         # 'site setup' project; then only the @hpos-tagged tests (upstream's e2e-hpos-disabled project), with the same
@@ -376,18 +417,25 @@ def config_text(suite, run_dir, suite_dir):
         # side's to add.
         lines += ["process.env.DISABLE_HPOS = '1';",
                   "config.projects = [ ...setup,",
-                  "  { name: 'e2e-cpt', grep: new RegExp( %s ), testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % (json.dumps("@hpos"), json.dumps(WC_GREP_INVERT))]
+                  "  { name: 'e2e-cpt', grep: new RegExp( %s ), testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % (json.dumps("@hpos"), json.dumps(grep_src))]
     elif suite == "wc-api":
         # The API half: the same setup projects and the same tag filter, and only the api-tests (which the wc
         # config ignores). No reset project either: the seed owns setup and the reseed between the halves.
         lines += ["config.projects = [ ...setup,",
-                  "  { name: 'api-pf', testMatch: [ '**/api-tests/**' ], testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % json.dumps(WC_GREP_INVERT)]
+                  "  { name: 'api-pf', testMatch: [ '**/api-tests/**' ], testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % json.dumps(grep_src)]
     else:
         pf_setup = os.path.join(HERE, "pf-global-setup.mjs")
         assert_login = os.path.join(HERE, "assert-login.mjs")
         upstream_name = "global-setup.js" if suite == "wp" else "global-setup.ts"
         upstream_abs = os.path.join(os.path.abspath(suite_dir), "config", upstream_name)
         # Upstream global-setup.js reads projects[0].use, not config.use (#759). Force baseURL on every project.
+        # A title row on wp or gb is grepInvert. With no title row, the project line stays the file ignore only.
+        if titles:
+            title_src = "|".join(title_grep_source(p, t) for p, t in titles)
+            lines.append("config.grepInvert = new RegExp( %s );" % json.dumps(title_src))
+            map_line = "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: ignore, grepInvert: new RegExp( %s ), use: { ...p.use, baseURL: url, storageState: state } } ) );" % json.dumps(title_src)
+        else:
+            map_line = "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: ignore, use: { ...p.use, baseURL: url, storageState: state } } ) );"
         lines += [
             "const url = (process.env.BASE_URL || process.env.WP_BASE_URL || '').replace(/\\/+$/, '') + '/';",
             "const state = process.env.STORAGE_STATE_PATH;",
@@ -395,7 +443,7 @@ def config_text(suite, run_dir, suite_dir):
             "process.env.PF_CONFORMANCE_UPSTREAM_GLOBAL_SETUP = %s;" % json.dumps(upstream_abs),
             "config.globalSetup = [ %s, %s ];" % (json.dumps(pf_setup), json.dumps(assert_login)),
             "config.testIgnore = ignore;",
-            "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: ignore, use: { ...p.use, baseURL: url, storageState: state } } ) );",
+            map_line,
         ]
     lines.append("export default config;")
     return "\n".join(lines) + "\n"
