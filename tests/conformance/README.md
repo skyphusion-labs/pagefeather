@@ -45,7 +45,7 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
 ## One run, step by step
 
 1. **The content.** Run `tests/conformance/prepare-content.sh <new dir> wp wc gb`. Keep the last line it prints.
-2. **The site.** Build and deploy a throwaway with the lean engine. Put that line in front of the build. Deploy it with `TURNSTILE_LOGIN=off`. WooCommerce `auth.setup.ts` logs in with an API POST to `wp-login.php`, which carries no Turnstile token. Our login gate fails closed without one. The checkout and comment gates stay ON with Turnstile's always-pass test keys. Our own test in the matrix covers Turnstile on login.
+2. **The site.** Build and deploy a throwaway with the lean engine. Put that line in front of the build. Set `TURNSTILE_LOGIN=off`. WooCommerce `auth.setup.ts` posts the login with no token. The login gate fails closed without one. Set `TURNSTILE_SITEKEY` to `1x00000000000000000000AA`. Set `TURNSTILE_SECRET` to `1x0000000000000000000000000000000AA`. Those are the always-pass test keys. The checkout gate and the comment gate stay on. The deploy refuses any other pair. A real site key stops classic checkout (#940). Our own test in the matrix covers Turnstile on login.
    - For the cache-on run, keep the default page cache.
    - For the cache-off run, the site needs `PAGE_CACHE_TTL=0`. Only the c1 variant renders that setting today, and it refuses 0. Rollins is adding it to `deploy/wfp` as a recorded setting. Until then, `prepare --cache off` STOPs on a cached answer, so the pass cannot run mislabelled.
 3. **Install the suite on the VPS:** `vps-run.sh install <suite> <work-dir>`.
