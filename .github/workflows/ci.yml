@@ -117,6 +117,12 @@ jobs:
         # php/r2-uploads.php: the uploads root is a directory when the bucket is empty,
         # so wp_mkdir_p chmod()s the r2 stream and not a plain path that does not exist.
         run: php spikes/b2-wordpress/tests/upload-month-json-test.php
+      - name: A deleted upload frees its reserved file name (#946)
+        # The reserve row outlives the file. The next upload then gets a -1 suffix.
+        # Delete and move release the row. The options fallback does too.
+        run: |
+          node --test spikes/b2-wordpress/tests/r2-reserve.test.mjs
+          php spikes/b2-wordpress/tests/r2-reserve-release-test.php
       - name: Approach A literal tests (issue #79)
         run: php tests/a/literals-test.php
       - name: The query trace, operator only and measure only (#296 step 3)

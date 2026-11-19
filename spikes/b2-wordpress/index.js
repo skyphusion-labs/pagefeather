@@ -1,5 +1,6 @@
 // Spike B2: WordPress in a Worker, database on D1.
 import { sqlImport } from './sql-import.js';
+import { releaseReservedName, releaseReservedD1, tryReserveName, RESERVE_DDL, RESERVE_INSERT } from './r2-reserve.mjs';
 import { sender, replyTo, deliverableRecipients } from './mail-from.mjs';
 import { collapsedSlashRedirect } from './slash-path.mjs';
 import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, handleQueuedEmail } from './email-queue.mjs';
@@ -2207,11 +2208,15 @@ async function r2opInner(op) {
 			const o = await B.get(op.from);
 			if (!o) return { ok: true, found: false };
 			await B.put(op.to, o.body, { httpMetadata: { contentType: op.type || o.httpMetadata?.contentType || 'application/octet-stream' } });
-			if (op.move) await B.delete(op.from);
+			if (op.move) {
+				await releaseReservedKey(op.from);
+				await B.delete(op.from);
+			}
 			return { ok: true, found: true };
 		}
 		if (op.op === 'delete') {
 			if (undoLog && undoLog.frameOpen() && sqlDb) undoLog.commitPoint(sqlDb, 'r2-delete'); // #352: the bytes are gone
+			await releaseReservedKey(op.key);
 			await B.delete(op.key);
 			return { ok: true };
 		}
@@ -2232,20 +2237,19 @@ async function r2opInner(op) {
 			return { ok: true, failed };
 		}
 		if (op.op === 'reserve' && sqlDb) {
-			sqlDb.exec('CREATE TABLE IF NOT EXISTS _r2_reserved (key TEXT PRIMARY KEY, at INTEGER NOT NULL)');
-			if (await B.head(op.key)) return { ok: true, reserved: false };
-			return { ok: true, reserved: sqlChanges(sqlDb, () => sqlDb.exec('INSERT OR IGNORE INTO _r2_reserved (key, at) VALUES (?, ?)', op.key, Date.now())) === 1 };
+			// #946: one insert owns the name. releaseReservedKey drops that row when the file goes.
+			return { ok: true, reserved: tryReserveName(sqlDb, op.key, !!(await B.head(op.key)), Date.now(), sqlChanges) };
 		}
 		if (op.op === 'reserve') {
 			// Approach A has no D1: r2-uploads.php falls back to core's unique names.
 			if (!ENV.DB) return { ok: false, error: 'unknown r2 op reserve' };
 			// One atomic insert decides who gets a file name.
 			if (!reserveTableReady) {
-				await ENV.DB.prepare('CREATE TABLE IF NOT EXISTS _r2_reserved (key TEXT PRIMARY KEY, at INTEGER NOT NULL)').run();
+				await ENV.DB.prepare(RESERVE_DDL).run();
 				reserveTableReady = true;
 			}
 			if (await B.head(op.key)) return { ok: true, reserved: false };
-			const r = await ENV.DB.prepare('INSERT OR IGNORE INTO _r2_reserved (key, at) VALUES (?, ?)').bind(op.key, Date.now()).run();
+			const r = await ENV.DB.prepare(RESERVE_INSERT).bind(op.key, Date.now()).run();
 			return { ok: true, reserved: r.meta.changes === 1 };
 		}
 		if (op.op === 'list') {
@@ -2256,6 +2260,15 @@ async function r2opInner(op) {
 	} catch (e) {
 		return { ok: false, error: String((e && e.message) || e) };
 	}
+}
+
+async function releaseReservedKey(key) {
+	// #946: free the name before the object goes. A concurrent upload still sees the object and refuses the name.
+	if (sqlDb) {
+		releaseReservedName(sqlDb, key);
+		return;
+	}
+	if (ENV && ENV.DB) await releaseReservedD1(ENV.DB, key);
 }
 
 function b64encode(bytes) {
