@@ -180,7 +180,7 @@ if ( 'sitekey-empty' === $scenario ) {
 	check( 'empty site key: store api POST does not throw', $store, 'passed' );
 	check( 'empty site key: store api does not call the verifier', $GLOBALS['ts_calls'], 0 );
 	ob_start();
-	do_action( 'woocommerce_review_order_before_submit' );
+	do_action( 'woocommerce_checkout_after_order_review' );
 	check( 'empty site key: classic box is empty', ob_get_clean(), '' );
 	echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
 	exit( $fail ? 1 : 0 );
@@ -205,7 +205,7 @@ if ( 'login-off' === $scenario ) {
 if ( 'woo-off' === $scenario ) {
 	check( 'woo off: classic checkout not hooked', has_hook( 'woocommerce_checkout_process' ), false );
 	check( 'woo off: block widget not hooked', has_hook( 'render_block' ), false );
-	check( 'woo off: classic widget box not hooked', has_hook( 'woocommerce_review_order_before_submit' ), false );
+	check( 'woo off: classic widget box not hooked', has_hook( 'woocommerce_checkout_after_order_review' ), false );
 	check( 'woo off: classic scripts not hooked', has_hook( 'woocommerce_after_checkout_form' ), false );
 	check( 'woo off: store api gate not hooked', has_hook( 'woocommerce_store_api_checkout_update_order_from_request' ), false );
 	check( 'woo off: extension data not registered', has_hook( 'woocommerce_blocks_loaded' ), false );
@@ -430,7 +430,7 @@ check( 'block widget: prints the box the script looks for', (bool) strpos( $html
 check( 'block widget: config carries the public site key', (bool) strpos( $html, '"sitekey":"1x00000000000000000000AA"' ), true );
 check( 'block widget: config carries the extension namespace', (bool) strpos( $html, '"namespace":"skyphusion-turnstile"' ), true );
 check( 'block widget: config carries the Spin marker', (bool) strpos( $html, '"action":"turnstile-spin-v1"' ), true );
-check( 'block widget: loads the static block script', (bool) strpos( $html, 'src="https://shop.example/wp-content/mu-plugins/turnstile-forms/block-checkout.js?ver=308.1"' ), true );
+check( 'block widget: loads the static block script', (bool) strpos( $html, 'src="https://shop.example/wp-content/mu-plugins/turnstile-forms/block-checkout.js?ver=308.2"' ), true );
 check( 'block widget: loads api.js in explicit mode with the onload callback', (bool) strpos( $html, 'api.js?render=explicit&amp;onload=skyphusionTurnstileBlockReady' ), true );
 $p_cfg = strpos( $html, 'window.skyphusionTurnstileBlock =' );
 $p_js  = strpos( $html, 'block-checkout.js' );
@@ -478,26 +478,26 @@ $GLOBALS['hooks']['skyphusion_turnstile_failopen'][] = function ( $v, $reply ) {
 check( 'store api verifier outage + fail-open filter: still stopped (#351)', ts_gate( ts_store( 'POST', $good ) ), 'Exception:We could not check the challenge just now. Please try again in a moment.' );
 unset( $GLOBALS['hooks']['skyphusion_turnstile_failopen'] );
 
-// ---- Classic checkout widget (issue #400). ----
-// The box prints inside the payment fragment that update_order_review replaces, so it must carry
-// no script and no cf-turnstile class (implicit render), and the scripts print once, after the form.
+// ---- Classic checkout widget (issue #400, #958). ----
+// The box prints outside #order_review, so update_order_review does not replace it. It carries
+// no script and no cf-turnstile class, and the scripts print once, after the form.
 ob_start();
-do_action( 'woocommerce_review_order_before_submit' );
+do_action( 'woocommerce_checkout_after_order_review' );
 $box = ob_get_clean();
 check( 'classic box: printed with its class', (bool) strpos( $box, 'class="skyphusion-turnstile-classic"' ), true );
 check( 'classic box: carries the public site key', (bool) strpos( $box, 'data-sitekey="1x00000000000000000000AA"' ), true );
 check( 'classic box: carries the Spin marker', (bool) strpos( $box, 'data-action="turnstile-spin-v1"' ), true );
-check( 'classic box: no script in the replaced fragment', strpos( $box, '<script' ), false );
+check( 'classic box: no script in the box', strpos( $box, '<script' ), false );
 check( 'classic box: not the implicit cf-turnstile class', strpos( $box, 'cf-turnstile' ), false );
 ob_start();
-do_action( 'woocommerce_review_order_before_submit' );
+do_action( 'woocommerce_checkout_after_order_review' );
 $box2 = ob_get_clean();
-check( 'classic box: printed again in every fragment', $box2, $box );
+check( 'classic box: printed again on a second full render', $box2, $box );
 ob_start();
 do_action( 'woocommerce_after_checkout_form' );
 $cs = ob_get_clean();
 check( 'classic scripts: config with the site key', (bool) strpos( $cs, 'window.skyphusionTurnstileClassic = {"sitekey":"1x00000000000000000000AA","action":"turnstile-spin-v1"}' ), true );
-check( 'classic scripts: loads the static classic script', (bool) strpos( $cs, 'src="https://shop.example/wp-content/mu-plugins/turnstile-forms/classic-checkout.js?ver=400.1"' ), true );
+check( 'classic scripts: loads the static classic script', (bool) strpos( $cs, 'src="https://shop.example/wp-content/mu-plugins/turnstile-forms/classic-checkout.js?ver=400.2"' ), true );
 check( 'classic scripts: api.js in explicit mode with the classic onload', (bool) strpos( $cs, 'api.js?render=explicit&amp;onload=skyphusionTurnstileClassicReady' ), true );
 $c_cfg = strpos( $cs, 'skyphusionTurnstileClassic =' );
 $c_js  = strpos( $cs, 'classic-checkout.js' );
