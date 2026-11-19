@@ -36,6 +36,7 @@ import { MEMORY_RESET } from './object-error.mjs';
 import { createL2Writer } from './oc-l2-writer.mjs';
 import { createLedger, memfsBytes, createSqlMeter, ledgerOn, LEDGER_MIB, currentSerial } from './mem-ledger.mjs';
 import { recycleLine, recycleDecision } from './recycle-line.mjs';
+import { OBJECT_CACHE_MAX_BYTES, nextObjectCacheCap } from './object-cache-cap.mjs';
 import { PHP_ENGINE, ENGINE_RECYCLE_MIB } from './vendor/engine.mjs'; // #771: written by prepare.sh
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
 import { routeClass, createTrace } from './file-trace.mjs';
@@ -125,9 +126,10 @@ const faultHeld = []; // the memory the kill holds, so nothing can be collected 
 // the PHP object with DB_IN_DO only: one object is the only writer, so
 // WordPress's own deletes keep it exact. Least recently used goes first past
 // OBJECT_CACHE_BYTES (values are base64 strings; their length is counted).
-const OBJECT_CACHE_BYTES = 8 * 1024 * 1024;
+const OBJECT_CACHE_BYTES = OBJECT_CACHE_MAX_BYTES;
 const objectCache = new Map(); // key -> { v, exp, n }
 let objectCacheBytes = 0;
+let objectCacheCap = OBJECT_CACHE_BYTES; // #963: a product admin request may lower this for one request
 function objectCacheClear() {
 	objectCache.clear();
 	objectCacheBytes = 0;
@@ -139,7 +141,7 @@ function objectCacheClear() {
 let ocReq = null;
 // #766: a failed READ statement (SELECT, WITH): PHP saw an empty result, whatever the error's class.
 function readFailed(failures) { return (failures || []).some((f) => f && /^\s*(SELECT|WITH)\b/i.test(String(f.sql || ''))); }
-function ocReqBegin() { ocReq = { writes: new Set(), poisoned: false }; }
+function ocReqBegin() { ocReq = { writes: new Set(), poisoned: false }; objectCacheCap = OBJECT_CACHE_BYTES; }
 function ocReqForget() {
 	const r = ocReq;
 	if (!r) return { n: 0, groups: {} };
@@ -188,11 +190,11 @@ function ocTtlMs() { const t = Math.max(0, Math.min(3600, parseInt(ENV && ENV.OB
 function ocKvKey(k) { return 'oc:' + encodeURIComponent(k); } // NUL-safe KV key from the pkey
 function ocStore(k, v, exp) {
 	const n = k.length + v.length;
-	if (n > OBJECT_CACHE_BYTES / 4) return false;
+	if (n > objectCacheCap / 4) return false;
 	objectCacheDrop(k);
 	objectCache.set(k, { v, exp, n });
 	objectCacheBytes += n;
-	for (const kk of objectCache.keys()) { if (objectCacheBytes <= OBJECT_CACHE_BYTES) break; objectCacheDrop(kk); }
+	for (const kk of objectCache.keys()) { if (objectCacheBytes <= objectCacheCap) break; objectCacheDrop(kk); }
 	return true;
 }
 // #734: a missing versions table is logged once per isolate (m: ocv), so deploy/doctor can warn.
@@ -239,7 +241,7 @@ async function objectCacheOp(op) {
 		const req0 = ocReq; // #766
 		if (req0) req0.writes.add(op.k);
 		const n = op.k.length + op.v.length;
-		if (n > OBJECT_CACHE_BYTES / 4) return { ok: false };
+		if (n > objectCacheCap / 4) return { ok: false };
 		ocStore(op.k, op.v, op.ttl > 0 ? now + op.ttl * 1000 : 0);
 		if (l2 && ocCtx) { const ttl = Math.max(60, op.ttl > 0 ? op.ttl : 60); const k2 = ocKvKey(op.k), v2 = op.v, c2 = ocCtx; const doSet = () => { if (req0 && req0.poisoned) return; try { const w = ocL2Writer().set(k2, v2, ttl); if (w) c2.waitUntil(w); } catch {} }; if (!(undoLog && undoLog.defer(doSet))) doSet(); } // #352: held until the frame is kept
 		return { ok: true };
@@ -250,6 +252,11 @@ async function objectCacheOp(op) {
 		let n = 0;
 		for (const k of op.k) { ocCount(k, "del"); if (objectCacheDrop(k)) n++; if (l2 && ocCtx) { try { ocCtx.waitUntil(ocL2Writer().del(ocKvKey(k))); } catch {} } }
 		return { n };
+	}
+	if (op.op === 'cap') {
+		objectCacheCap = nextObjectCacheCap(op, objectCacheCap);
+		for (const kk of objectCache.keys()) { if (objectCacheBytes <= objectCacheCap) break; objectCacheDrop(kk); }
+		return { ok: true, n: objectCacheCap };
 	}
 	if (op.op === 'flush') {
 		objectCacheClear();
@@ -1936,6 +1943,11 @@ async function boot(origin) {
 	// A warmed isolate is already near the 128 MiB cap. WooCommerce's route table on that write
 	// resets the isolate (cf759a, 2026-11-19, x-write-loss: 1). APP_PASSWORD_HEADROOM=off keeps WooCommerce.
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.APP_PASSWORD_HEADROOM !== 'off') lines.push(`define('SKYPHUSION_APP_PASSWORD_HEADROOM', true);`);
+	// Product admin writes return allocator caches and cap the object cache
+	// (php/product-save-headroom.php, #963). A suite-hot runtime is already
+	// near 117 MiB. post.php and admin-ajax.php then reset the isolate.
+	// PRODUCT_HEADROOM=off does not define the gate.
+	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.PRODUCT_HEADROOM !== 'off') lines.push(`define('SKYPHUSION_PRODUCT_HEADROOM', true);`);
 	// WOO_EXTRAS=off (#667): php/woo-extras.php forces order attribution, usage tracking,
 	// marketplace suggestions and remote logging off. Unset defines nothing, so WooCommerce's
 	// own defaults stay. Analytics is not one of the four options.
