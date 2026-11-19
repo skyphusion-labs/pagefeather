@@ -7,6 +7,9 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
   1. permalinks /%postname%/ (Settings > Permalinks, which rebuilds the rewrite rules), and checks that a raw
      GET /wp-json/ is the REST index, not the home page (#760).
      When no published post exists, the seed publishes "Permalink probe" so the link check can run.
+  1b. the four WooCommerce pages (shop, cart, checkout, my-account). A dead page id
+     makes /cart/ and /checkout/ a 404, and a checkout link lands on the home page (#936).
+     The seed runs the WooCommerce install_pages tool when a page is missing, then checks the link.
   2. blogname "WooCommerce Core E2E Test Suite" (/wp/v2/settings title), and timezone America/Detroit (settings key timezone, or timezone_string on older WordPress; INSTALL sets this at /_install, #894; the seed sets it again on a remount);
   3. woocommerce_allow_tracking = yes (/wc/v3/settings/advanced/woocommerce_allow_tracking; read back there and
      at /wc-admin/options). WOO_EXTRAS=off forces it off, so a throwaway must not set that;
@@ -93,6 +96,66 @@ def welcome_guide_dismissed(prefs):
     ep = prefs.get("core/edit-post") or {}
     return ep.get("welcomeGuide") is False
 
+
+
+
+WC_STORE_PAGES = (
+    ("products", "woocommerce_shop_page_id", "shop"),
+    ("advanced", "woocommerce_cart_page_id", "cart"),
+    ("advanced", "woocommerce_checkout_page_id", "checkout"),
+    ("advanced", "woocommerce_myaccount_page_id", "my-account"),
+)
+
+
+def wc_store_page_ok(option_value, page, slug):
+    """True when the option names this published page and the link path ends in the slug."""
+    try:
+        oid = int(option_value)
+    except (TypeError, ValueError):
+        return False
+    if oid <= 0 or not isinstance(page, dict):
+        return False
+    if page.get("id") != oid or page.get("status") != "publish" or page.get("slug") != slug:
+        return False
+    path = urllib.parse.urlparse(page.get("link") or "").path
+    return path.rstrip("/").rsplit("/", 1)[-1] == slug
+
+
+def wc_store_pages_missing(rows):
+    """Slugs whose option does not name a live page. rows are (option value, page, slug)."""
+    return [slug for val, page, slug in rows if not wc_store_page_ok(val, page, slug)]
+
+
+def fetch_wc_store_pages(rest_call):
+    """Read the four WooCommerce page options and the page each id names."""
+    rows = []
+    for group, opt, slug in WC_STORE_PAGES:
+        _c, setting = rest_call("/wc/v3/settings/%s/%s" % (group, opt))
+        val = setting.get("value") if isinstance(setting, dict) else None
+        page = None
+        try:
+            pid = int(val)
+        except (TypeError, ValueError):
+            pid = 0
+        if pid > 0:
+            _c2, got = rest_call("/wp/v2/pages/%d" % pid)
+            if isinstance(got, dict) and got.get("id") == pid:
+                page = got
+        rows.append((val, page, slug))
+    return rows
+
+
+
+def wc_public_page_ok(slug, status, location):
+    """True when the public URL is the page. An empty cart makes /checkout/ redirect to /cart/."""
+    if slug != "checkout":
+        return status == 200
+    if status == 200:
+        return True
+    if status not in (301, 302, 303, 307, 308):
+        return False
+    path = urllib.parse.urlparse(location or "").path.rstrip("/")
+    return path in ("/cart", "/checkout")
 
 
 def event(kind, **kw):
@@ -270,6 +333,31 @@ def main():
     if made is not None:
         detail["probe_status"] = made
     check("permalinks: /%postname%/ (a post link has no ?p= and no date)", bool(wn) and bool(link) and "?p=" not in link and not re.search(r"/\d{4}/\d{2}/", link), **detail)
+
+    # 1b. Shop, cart, checkout, and my account. A dead page id sends those links to the home page (#936).
+    def rest_get(route):
+        return rest(a, n, route)
+
+    page_rows = fetch_wc_store_pages(rest_get)
+    missing = wc_store_pages_missing(page_rows)
+    tool_status = None
+    if missing:
+        tool_status, _tool = rest(a, n, "/wc/v3/system_status/tools/install_pages", {}, "PUT")
+        page_rows = fetch_wc_store_pages(rest_get)
+        missing = wc_store_pages_missing(page_rows)
+    check("woocommerce pages: shop, cart, checkout, and my-account name a published page", not missing, missing=missing, tool=tool_status)
+    public = {}
+    public_ok = True
+    for slug in ("shop", "cart", "checkout", "my-account"):
+        status, _body, headers = req(jar(), "/%s/" % slug)
+        loc = ""
+        if headers:
+            loc = headers.get("Location") or headers.get("location") or ""
+        public[slug] = status
+        if not wc_public_page_ok(slug, status, loc):
+            public_ok = False
+    check("woocommerce pages: /shop/ /cart/ /my-account/ answer 200, and /checkout/ is the store", public_ok, status=public)
+
 
     # 2. blogname, then site timezone. INSTALL sets America/Detroit at /_install (#894).
     # The seed sets it again so a remount of an old site matches.

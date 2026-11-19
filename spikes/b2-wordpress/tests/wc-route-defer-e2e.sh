@@ -3,8 +3,8 @@
 # site with a product; every comparison is the same build with the deferral on and off (x-pf-wc-defer: off, an
 # operator switch):
 #   1. post-new.php's wasm high-water, a fresh runtime per request, 3 each: on is at least 8 MiB under off.
-#   2. the block editor's preload is identical, on against off (apart from the auto-draft's own id and the
-#      diagnostic headers).
+#   2. the block editor's preload is identical, on against off (apart from the auto-draft's own id, the
+#      calendar date in permalink_template, and the diagnostic headers).
 #   3. (x-pf-wc-defer: force, the deferral on a REST request) /wc/v3/products answers the same body as untouched,
 #      and the routes were registered on demand.
 #   4. (force) the full REST index lists the same namespaces and routes as untouched.
@@ -59,7 +59,10 @@ def strip(x):
     return x
 def norm(x):
     # The auto-draft is new on each request: its own id (and the dates) differ, and nothing else may.
+    # permalink_template embeds the calendar date (/YYYY/MM/DD/). Blank that date before the id
+    # pass. An id of 11 or 19 would otherwise rewrite the month or the day (measured 2026-11-19).
     s = json.dumps(strip(x), sort_keys=True)
+    s = re.sub(r"/20\d{2}/\d{2}/\d{2}/", "/Y/M/D/", s)
     body = x.get("body") if isinstance(x, dict) else None
     if isinstance(body, dict) and isinstance(body.get("id"), int):
         s = re.sub(r"(?<![0-9])%d(?![0-9])" % body["id"], "N", s)
