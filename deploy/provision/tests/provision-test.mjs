@@ -46,7 +46,7 @@ function recorder(opts = {}) {
     let body = '{"success":true,"result":{}}';
     if (init.method === 'POST' && url.endsWith('/tokens')) body = '{"success":true,"result":{"id":"TKID","value":"TKVAL"}}';
     else if (url.endsWith('/tokens/OLDID/value')) body = '{"success":true,"result":{"value":"ROLLED"}}';
-    else if (url.endsWith('/deployments')) body = '{"success":true,"result":{"deployments":[{"versions":[{"version_id":"VID","percentage":100}]}]}}'; // #1063
+    else if (url.endsWith('/deployments')) body = '{"success":true,"result":{"deployments":[{"created_on":"2026-11-20T19:56:59Z","versions":[{"version_id":"VID","percentage":100}]}]}}'; // #1063
     else if (url.endsWith('/versions/VID')) body = '{"success":true,"result":{"id":"VID","resources":{"bindings":[{"type":"durable_object_namespace","class_name":"Store","name":"STORE","namespace_id":"NSID"}]}}}';
     else if (url.endsWith('/containers/applications')) body = '{"success":true,"result":[]}';
     return { ok: true, status: 200, text: async () => body };

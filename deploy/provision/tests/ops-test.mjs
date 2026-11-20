@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { sha256Hex, r2BucketResource } from '../cf.mjs';
 import {
   createR2Bucket, mintScopedR2Token, putSecret, writeKVMapEntry,
-  deployNamespaceScript, deployContainerWorkerFromDigest, scriptExists, installWordPress, ensureKVNamespace,
+  deployNamespaceScript, deployContainerWorkerFromDigest, activeVersionBindings, scriptExists, installWordPress, ensureKVNamespace,
   createKvNamespace, createQueue, createVectorizeIndex, placeNamespaceScript,
 } from '../ops.mjs';
 import { upsertSite, readSite, listSites, removeSite } from '../registry.mjs';
@@ -150,7 +150,7 @@ const ctxOf = (s) => ({ acct: ACCT, token: 'T', fetchImpl: s.fetchImpl });
   const NSID = 'ns0123456789abcdef0123456789abcd';
   const s = stub([
     { status: 200, body: '{"success":true,"result":{}}' },
-    { status: 200, body: JSON.stringify({ success: true, result: { deployments: [{ versions: [{ version_id: 'VID2', percentage: 100 }] }] } }) }, // #1063 GET deployments
+    { status: 200, body: JSON.stringify({ success: true, result: { deployments: [{ created_on: '2026-11-20T19:56:59Z', versions: [{ version_id: 'VID2', percentage: 100 }] }] } }) }, // #1063 GET deployments
     { status: 200, body: JSON.stringify({ success: true, result: { id: 'VID2', resources: { bindings: [{ type: 'durable_object_namespace', class_name: 'Store', namespace_id: NSID }] } } }) }, // #1063 GET versions/VID2
     { status: 200, body: '{"success":true,"result":[{"id":"app-existing","name":"c1-shop-store"}]}' }, // app exists
     { status: 200, body: '{"success":true,"result":{"id":"app-existing"}}' }, // PATCH
@@ -162,6 +162,26 @@ const ctxOf = (s) => ({ acct: ACCT, token: 'T', fetchImpl: s.fetchImpl });
   });
   const patch = s.calls.find((c) => c.method === 'PATCH' && /\/containers\/applications\/app-existing$/.test(c.url));
   ok('an existing application is PATCHed to roll the image, not recreated', !!patch && JSON.parse(patch.body).configuration.image === ref);
+}
+
+// 6c. #1063 (the lead's review): the ACTIVE version is the deployment with the greatest created_on, never the list's
+// first. The API is not trusted to sort: this fixture answers OLDEST first, so taking [0] reads the stale version.
+{
+  const s = stub([
+    { status: 200, body: JSON.stringify({ success: true, result: { deployments: [
+      { created_on: '2026-11-20T19:44:07.92125Z', versions: [{ version_id: 'VID-OLD', percentage: 100 }] },
+      { created_on: '2026-11-20T19:56:59.786013Z', versions: [{ version_id: 'VID-NEW', percentage: 100 }] },
+      { created_on: '2026-11-20T19:56:54.683323Z', versions: [{ version_id: 'VID-MID', percentage: 100 }] },
+    ] } }) },
+    { status: 200, body: JSON.stringify({ success: true, result: { id: 'VID-NEW', resources: { bindings: [{ name: 'X', type: 'plain_text', text: 'new' }] } } }) },
+  ]);
+  const b = await activeVersionBindings(ctxOf(s), 'c1-shop');
+  ok('#1063 activeVersionBindings reads the NEWEST deployment by created_on, not the first listed', s.calls[1].url.endsWith('/workers/scripts/c1-shop/versions/VID-NEW') && b[0].text === 'new');
+  const s2 = stub([{ status: 200, body: JSON.stringify({ success: true, result: { deployments: [
+    { created_on: '2026-11-20T19:56:59Z', versions: [{ version_id: 'A', percentage: 60 }, { version_id: 'B', percentage: 40 }] },
+  ] } }) }]);
+  let threw = false; try { await activeVersionBindings(ctxOf(s2), 'c1-shop'); } catch { threw = true; }
+  ok('#1063 a split rollout (no version at 100%) is refused, not guessed', threw && s2.calls.length === 1);
 }
 
 // 7. deployNamespaceScript: dispatch-namespace path + metadata main_module.

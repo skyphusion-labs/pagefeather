@@ -43,8 +43,18 @@ class H(http.server.BaseHTTPRequestHandler):
         code, body = 404, {"success": False}
         if p == "/workers/dispatch/namespaces/wp-wfp/scripts/site-one/bindings" and state.get("user") is not None:
             code, body = 200, {"success": True, "result": state["user"]}
-        elif p == "/workers/scripts/wp-one/settings" and state.get("disp") is not None:
-            code, body = 200, {"success": True, "result": {"bindings": state["disp"]}}
+        # #1063: the dispatcher's bindings come from its ACTIVE version, never /settings. The deployments answer lists the
+        # OLDEST first (state "old" holds an older version's bindings), so a reader that takes [0] reads the stale ones.
+        elif p == "/workers/scripts/wp-one/deployments" and state.get("disp") is not None:
+            code, body = 200, {"success": True, "result": {"deployments": state.get("deps") or [
+                {"created_on": "2026-11-20T19:44:07.92125Z", "versions": [{"version_id": "OLD", "percentage": 100}]},
+                {"created_on": "2026-11-20T19:56:59.786013Z", "versions": [{"version_id": "NEW", "percentage": 100}]}]}}
+        elif p == "/workers/scripts/wp-one/versions/NEW" and state.get("disp") is not None:
+            code, body = 200, {"success": True, "result": {"resources": {"bindings": state["disp"]}}}
+        elif p == "/workers/scripts/wp-one/versions/OLD" and state.get("disp") is not None:
+            code, body = 200, {"success": True, "result": {"resources": {"bindings": []}}}
+        elif p == "/workers/scripts/wp-one/settings":
+            code, body = 200, {"success": True, "result": {"bindings": []}}  # stale on purpose: the reader must never use it
         b = json.dumps(body).encode()
         self.send_response(code)
         self.send_header("content-type", "application/json")
@@ -113,5 +123,12 @@ for name, u, d, want_rc, want_text in cases:
     ok = rc == want_rc and (want_text is None or want_text in out) and "plain-value-not-to-print" not in out
     print(("PASS " if ok else "FAIL ") + name + ("" if ok else " (exit %s; output %s)" % (rc, out[-300:].replace("\n", " "))))
     fails += 0 if ok else 1
+# #1063: a split rollout (no version at 100%) is not guessed: the dispatcher's bindings "cannot be read".
+state["deps"] = [{"created_on": "2026-11-20T19:56:59Z", "versions": [{"version_id": "NEW", "percentage": 60}, {"version_id": "OLD", "percentage": 40}]}]
+rc, out = run(GOOD_USER, GOOD_DISP); state["deps"] = None
+if rc == 1 and "cannot be read" in out:
+    print("PASS #1063 a split rollout of the dispatcher reads as cannot be read")
+else:
+    print("FAIL #1063 a split rollout of the dispatcher reads as cannot be read (exit %s)" % rc); fails += 1
 print("%d failing case(s)" % fails)
 sys.exit(1 if fails else 0)

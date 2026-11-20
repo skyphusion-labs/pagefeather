@@ -12,6 +12,7 @@ the API read in tests/live-sites-check-test.py. It never prints a secret: secret
 import json
 import os
 import re
+import datetime
 import sys
 import urllib.request
 
@@ -34,7 +35,16 @@ def live_bindings():
     if os.environ.get("SETTINGS"):
         return {b["name"]: b for b in json.load(open(os.environ["SETTINGS"]))["result"]["bindings"]}
     deps = (_get("/deployments").get("result") or {}).get("deployments") or []
-    v = next((x for x in (deps[0].get("versions") or []) if float(x.get("percentage") or 0) == 100), None) if deps else None
+    # The newest deployment by created_on, compared as times: the API's list order is not trusted (the lead's review).
+    def when(d):
+        try:
+            # The API's fraction has 1 to 9 digits (19:44:07.92125Z, measured); fromisoformat before 3.11 takes 3 or 6 only.
+            t = re.sub(r"\.(\d+)", lambda m: "." + (m.group(1) + "000000")[:6], str(d.get("created_on")).replace("Z", "+00:00"))
+            return datetime.datetime.fromisoformat(t)
+        except ValueError:
+            raise SystemExit("check_live: a deployment of %s has no readable created_on" % os.environ["WORKER"])
+    latest = max(deps, key=when) if deps else None
+    v = next((x for x in (latest.get("versions") or []) if float(x.get("percentage") or 0) == 100), None) if latest else None
     if not v or not v.get("version_id"):
         raise SystemExit("check_live: %s has no active version at 100%% in its newest deployment" % os.environ["WORKER"])
     ver = _get("/versions/%s" % v["version_id"]).get("result") or {}

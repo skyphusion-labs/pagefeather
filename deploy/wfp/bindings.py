@@ -34,7 +34,7 @@ Environment: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, NAMESPACE, KV_ID;
 WFP_API overrides the API base (tests). Prints JSON (binding names and
 types only, never a value) and exits 1 on any violation.
 """
-import json, os, sys, urllib.error, urllib.request
+import datetime, json, os, re, sys, urllib.error, urllib.request
 
 ENV = os.environ
 PURGE_BUDGET_SCRIPT = "pf-purge-budget"  # #699 part B: deploy/purge-budget, one per account
@@ -53,6 +53,31 @@ def api(path):
         return e.code, None
     except (OSError, ValueError):
         return 0, None
+
+
+def active_bindings(script):
+    """#1063: (status, bindings) of an account script's ACTIVE version: the deployment with the greatest created_on (the
+    API's order is not trusted), then its version at 100%. GET .../settings can answer an older version's bindings for a
+    while after a deploy, so a check never reads it. bindings is None when any step can not be read, or no version is at
+    100% (a split rollout is not guessed)."""
+    st, d = api("/workers/scripts/%s/deployments" % script)
+    deps = ((d or {}).get("result") or {}).get("deployments") if st == 200 else None
+    if not isinstance(deps, list) or not deps:
+        return st, None
+    def when(x):
+        t = re.sub(r"\.(\d+)", lambda m: "." + (m.group(1) + "000000")[:6], str(x.get("created_on")).replace("Z", "+00:00"))
+        return datetime.datetime.fromisoformat(t)
+    try:
+        latest = max(deps, key=when)
+    except ValueError:
+        return st, None
+    v = next((x for x in latest.get("versions") or [] if float(x.get("percentage") or 0) == 100), None)
+    if not v or not v.get("version_id"):
+        return st, None
+    st, d = api("/workers/scripts/%s/versions/%s" % (script, v["version_id"]))
+    r = ((d or {}).get("result") or {}).get("resources") if st == 200 else None
+    b = (r or {}).get("bindings") if isinstance(r, dict) else None
+    return st, b if isinstance(b, list) else None
 
 
 def listed(d, key=None):
@@ -132,8 +157,7 @@ def main(sites):
         else:
             rec["user"] = sorted("%s %s" % (b.get("type"), b.get("name")) for b in ub)
             bad += check_user(s, ub)
-        st, d = api("/workers/scripts/wp-%s/settings" % s)
-        db = listed(d, "bindings")
+        st, db = active_bindings("wp-%s" % s)
         if st != 200 or db is None:
             bad.append("wp-%s: its bindings cannot be read (HTTP %s)" % (s, st))
         else:

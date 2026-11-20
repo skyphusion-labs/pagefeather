@@ -164,7 +164,10 @@ export async function activeVersionBindings(ctx, name, op = 'activeVersionBindin
   const base = `/accounts/${ctx.acct}/workers/scripts/${name}`;
   const dep = await cfFetch(ctx.token, 'GET', `${base}/deployments`, { fetchImpl: ctx.fetchImpl });
   if (!dep.ok) throw opError(`${op} deployments`, name, dep);
-  const latest = ((dep.result && dep.result.deployments) || [])[0];
+  // The newest deployment by created_on, compared as times: the API's list order is not trusted (the lead's review).
+  const deps = (dep.result && dep.result.deployments) || [];
+  if (deps.some((d) => !Number.isFinite(Date.parse(d && d.created_on)))) throw new Error(`${op}(${name}): a deployment has no readable created_on`);
+  const latest = deps.reduce((a, d) => (!a || Date.parse(d.created_on) > Date.parse(a.created_on) ? d : a), null);
   const v = latest && (latest.versions || []).find((x) => Number(x.percentage) === 100);
   if (!v || !v.version_id) throw new Error(`${op}(${name}): no active version at 100% in the newest deployment`);
   const ver = await cfFetch(ctx.token, 'GET', `${base}/versions/${v.version_id}`, { fetchImpl: ctx.fetchImpl });

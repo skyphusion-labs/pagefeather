@@ -14,7 +14,7 @@ Prints one JSON line {"binders": [...], "unread": [...]} and exits:
 Environment: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID (or ACCOUNT_ID); WFP_API overrides the account base (tests).
 Prints names only: never a value, never the token.
 """
-import json, os, sys, urllib.error, urllib.parse, urllib.request
+import datetime, json, os, re, sys, urllib.error, urllib.parse, urllib.request
 
 BUDGET = "pf-purge-budget"
 ENV = os.environ
@@ -31,6 +31,31 @@ def api(path):
         return e.code, None
     except (OSError, ValueError):
         return 0, None
+
+
+def active_bindings(script):
+    """#1063: the bindings of an account script's ACTIVE version, or None when unreadable: the deployment with the
+    greatest created_on (the API's order is not trusted), then its version at 100% (a split rollout is not guessed).
+    GET .../settings can answer an older version's bindings after a deploy, so a binder could be missed through it."""
+    enc = lambda x: urllib.parse.quote(str(x), safe="")
+    code, d = api("/workers/scripts/%s/deployments" % enc(script))
+    deps = ((d or {}).get("result") or {}).get("deployments") if code == 200 and isinstance(d, dict) else None
+    if not isinstance(deps, list) or not deps:
+        return None
+    def when(x):
+        t = re.sub(r"\.(\d+)", lambda m: "." + (m.group(1) + "000000")[:6], str(x.get("created_on")).replace("Z", "+00:00"))
+        return datetime.datetime.fromisoformat(t)
+    try:
+        latest = max(deps, key=when)
+    except ValueError:
+        return None
+    v = next((x for x in latest.get("versions") or [] if float(x.get("percentage") or 0) == 100), None)
+    if not v or not v.get("version_id"):
+        return None
+    code, d = api("/workers/scripts/%s/versions/%s" % (enc(script), enc(v["version_id"])))
+    r = ((d or {}).get("result") or {}).get("resources") if code == 200 and isinstance(d, dict) else None
+    b = r.get("bindings") if isinstance(r, dict) else None
+    return b if isinstance(b, list) else None
 
 
 def result(path, key=None):
@@ -84,7 +109,7 @@ def main():
             continue
         if s == BUDGET:
             continue
-        bs = result("/workers/scripts/%s/settings" % q(s), "bindings")
+        bs = active_bindings(s)
         if bs is None:
             unread.append(s)
         elif binds(bs):
