@@ -41,7 +41,9 @@ function wp_reschedule_event( $ts, $s, $h, $a, $i = 0 ) { $GLOBALS['spy']['resch
 function _get_cron_array() { return json_decode( getenv( 'STUB_CRON' ), true ); }
 class Stub_DB {
 	public $prefix = 'wp_';
-	function query( $q ) { return 0; }
+	// #1143 review: the oldest-email slot claims its action first (one atomic UPDATE); STUB_OLDEST_TAKEN=1 says another
+	// runner already holds it (0 rows), so the leg must not run it.
+	function query( $q ) { if ( false !== strpos( $q, 'SET claim_id = ' ) && false !== strpos( $q, 'AND claim_id = 0' ) ) { $GLOBALS['spy']['claimed_oldest'] = true; return getenv( 'STUB_OLDEST_TAKEN' ) ? 0 : 1; } return 0; }
 	function prepare( $q, ...$a ) { return vsprintf( str_replace( array( '%s', '%d' ), array( "'%s'", '%d' ), $q ), $a ); }
 	function get_var( $q ) { return false !== strpos( $q, 'scheduled_date_gmt' ) ? (int) getenv( 'STUB_DUE' ) : (int) getenv( 'STUB_PENDING' ); }
 	// #1143: an id-list read ordered by scheduled date, newest first. In this store a larger id is a later schedule.
@@ -56,7 +58,7 @@ class Stub_DB {
 }
 $GLOBALS['wpdb'] = new Stub_DB();
 class Stub_Action { public $h; function __construct( $h ) { $this->h = $h; } function get_hook() { return $this->h; } }
-class Stub_Claim { public $ids; function __construct( $ids ) { $this->ids = $ids; } function get_actions() { return $this->ids; } }
+class Stub_Claim { public $ids; function __construct( $ids ) { $this->ids = $ids; } function get_actions() { return $this->ids; } function get_id() { return 77; } }
 class Stub_Store {
 	// As Action Scheduler does (find_actions_by_claim_id): the claimed ids come back OLDEST first (11 is the oldest).
 	function stake_claim( $n ) { return new Stub_Claim( array_slice( array( 11, 12, 13 ), 0, $n ) ); }
@@ -90,12 +92,12 @@ function cron(...hooks) {
 	return c;
 }
 
-function run({ code, crons, pending = 7, due = 3, more = '', noBridge = false, moreSeq = '', oldest = '' }) {
+function run({ code, crons, pending = 7, due = 3, more = '', noBridge = false, moreSeq = '', oldest = '', oldestTaken = false }) {
 	const d = mkdtempSync(join(tmpdir(), 'cron-run-queue-'));
 	try {
 		writeFileSync(join(d, 'stubs.php'), STUBS);
 		writeFileSync(join(d, 'cron.php'), code.replace("require '/wordpress/wp-load.php';", "require '" + join(d, 'stubs.php') + "';"));
-		const r = spawnSync('php', ['-n', join(d, 'cron.php')], { env: { ...process.env, STUB_CRON: JSON.stringify(crons), STUB_PENDING: String(pending), STUB_DUE: String(due), STUB_MORE: more, STUB_NO_BRIDGE: noBridge ? '1' : '', STUB_MORE_SEQ: moreSeq, STUB_OLDEST: String(oldest) }, encoding: 'utf8' });
+		const r = spawnSync('php', ['-n', join(d, 'cron.php')], { env: { ...process.env, STUB_CRON: JSON.stringify(crons), STUB_PENDING: String(pending), STUB_DUE: String(due), STUB_MORE: more, STUB_NO_BRIDGE: noBridge ? '1' : '', STUB_MORE_SEQ: moreSeq, STUB_OLDEST: String(oldest), STUB_OLDEST_TAKEN: oldestTaken ? '1' : '' }, encoding: 'utf8' });
 		assert.equal(r.status, 0, r.stderr + r.stdout);
 		const out = JSON.parse(r.stdout.slice(r.stdout.lastIndexOf('{')));
 		return { out, spy: JSON.parse(r.stderr) };
@@ -172,6 +174,9 @@ test('#1143 review: newest first alone is LIFO, so the oldest due email gets a s
 	assert.equal(out.as_stop, 'budget');
 	const all = run({ code: render(3, 1), crons: cron('action_scheduler_run_queue'), pending: 900, due: 850, oldest: 5 });
 	assert.deepEqual(all.spy.processed, [13, 5, 12, 11], 'with room for all: the oldest second, then the rest newest first');
+	assert.equal(all.spy.claimed_oldest, true, 'the oldest is CLAIMED for this leg before it runs (atomic, claim_id = 0)');
+	const taken = run({ code: render(3, 1), crons: cron('action_scheduler_run_queue'), pending: 900, due: 850, oldest: 5, oldestTaken: true });
+	assert.deepEqual(taken.spy.processed, [13, 12, 11], 'another runner (an operator /_runcron) holds it: this leg does not run it');
 	const none = run({ code: render(3, 1), crons: cron('action_scheduler_run_queue'), pending: 900, due: 850 });
 	assert.deepEqual(none.spy.processed, [13, 12, 11], 'no older due email outside the claim: unchanged');
 });
