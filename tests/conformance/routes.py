@@ -25,12 +25,19 @@ The admin: Basic with WP_PASSWORD (the seed's application password, #775), else 
 and the REST nonce. Prints one @event line per failure and a summary; writes every result to <out.json>.
 Exit 0: nothing failed. 1: a failure. 2: the index could not be read or the admin could not authenticate.
 A GET is safe by the REST contract, but some routes do work (reports, remote fetches): run it on a throwaway.
+The conformance test plugins' own namespaces (TEST_PLUGIN_NAMESPACES) are never called: they are not the product,
+and two of their GETs are destructive by design. GET /wc-cleanup/v1/reset deletes the whole store and the test
+images' sub-size files, and GET /e2e-feature-flags/reset resets WooCommerce's feature flags. A run that called
+them reset the site before the suites (sb1120: cf759a, cf759p, cf759hl). They are listed in "skipped".
 """
 import base64, http.cookiejar, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
 
 B = os.environ.get("B", "").rstrip("/")
 TIMEOUT = float(os.environ.get("TIMEOUT", "60"))
 UA = {"User-Agent": "pagefeather-conformance-routes"}
+# woocommerce-cleanup, woocommerce-e2e-test-helper, wc-email-template-sync-test-helper, the throwaway marker.
+TEST_PLUGIN_NAMESPACES = ("wc-cleanup/v1", "e2e-environment", "e2e-feature-flags", "e2e-options", "e2e-theme",
+                          "wc-email-test-helper/v1", "pf-conformance/v1")
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -137,10 +144,13 @@ def main(argv):
             event("refused", why="the REST index could not be read (%s)" % c); sys.exit(2)
     a, ah, mode = admin_auth()
     routes = idx.get("routes") or {}
-    res = {"site": B, "index_via": via, "admin_auth": mode, "routes": {}, "param_routes": [], "missing_core": [], "failures": []}
+    res = {"site": B, "index_via": via, "admin_auth": mode, "routes": {}, "param_routes": [], "missing_core": [], "failures": [], "skipped": []}
     for route, d in sorted(routes.items()):
         ns = d.get("namespace") or "(root)"
         if nss and ns not in nss:
+            continue
+        if ns in TEST_PLUGIN_NAMESPACES:
+            res["skipped"].append({"route": route, "namespace": ns, "why": "conformance test plugin, not the product"})
             continue
         methods = sorted(set(m for e in d.get("endpoints", []) for m in e.get("methods", [])))
         if "(?P<" in route:

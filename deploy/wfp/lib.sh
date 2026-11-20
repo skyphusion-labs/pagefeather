@@ -912,7 +912,7 @@ use_recorded_inputs() {
 # unset is the default list, and set, including empty, is that exact list. site update
 # remembers which one this run is, in http_allow_mode, before local -x collapses unset
 # into empty. Empty denies every host, so a drop sets the mode to unset.
-SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS TURNSTILE_REGISTER TURNSTILE_WOO_REGISTER TURNSTILE_LOSTPASSWORD MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED PDF_INVOICE PAGE_CACHE_TTL"
+SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS TURNSTILE_REGISTER TURNSTILE_WOO_REGISTER TURNSTILE_LOSTPASSWORD MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED PDF_INVOICE PAGE_CACHE_TTL OBSERVABILITY"
 # The measurement flags (HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV, site_settings.py MEASUREMENT) are
 # never recorded: ON only for the run that exports them; the next update without one turns it off.
 # A setting render_user reads that is not in this list is DROPPED by an update that does not export
@@ -963,9 +963,18 @@ record_settings() {
 # The content tree is packed from IMPORT_CONTENT and stored under its content id, unless this run
 # used that same recorded tree (REC_TREE).
 record_build_inputs() {
-  local b=$1 id=$2 w=$3 cid key=""
-  # The same two trees build-id.sh hashes, so the recorded content id equals the build id's.
-  cid=$(cd "$APP" && python3 -I content-id.py build/wordpress/wp-content build/public/wp-content) || return 1
+  local b=$1 id=$2 w=$3 cid key="" woo want
+  # The same two trees build-id.sh hashes, AND the same WOO: build_dosql runs build.sh with
+  # WOO=$(woo_active_for_build), and content-id.py hashes WOO. Without it the record named another
+  # content id than the live build (cf759a, 2026-11-20: c7a1d63b0 live, cceae63d2 recorded, #1003).
+  woo=$(woo_active_for_build) || return 1
+  cid=$(cd "$APP" && WOO=$woo python3 -I content-id.py build/wordpress/wp-content build/public/wp-content) || return 1
+  # A build id that carries a content id must carry THIS one, or the record would describe other
+  # content than the site runs: refused, so the update reports its inputs as not recorded.
+  if [[ "$id" =~ -(c[0-9a-f]{8})(-wooprimed)?$ ]]; then
+    want=${BASH_REMATCH[1]}
+    [ "$cid" = "$want" ] || { echo "  record: the tree's content id ${cid:-none} is not the content id of the build id $id ($want); the inputs are NOT recorded (#1003)" >&2; return 1; }
+  fi
   if [ -n "${IMPORT_CONTENT:-}" ] && [ -n "$cid" ]; then
     key="_build/$cid.tar.gz"
     if [ "${REC_TREE:-}" != "$key" ]; then

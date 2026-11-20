@@ -23,6 +23,10 @@ export const OVERLOADED = /Durable Object is overloaded/i;
 // This is not the #398 storage reset. That sentence names storage and a reset.
 // The match is the whole message. The reference id is not part of the match.
 // A bare "internal error" is not this.
+// #1004: this stays 'internal' (not a reset, and not retried). A method that may
+// have written still takes the write-loss path. The measured call did not enter
+// PHP. A checkout may already have written rows, so "try again" can duplicate it.
+// GET, HEAD and OPTIONS keep the 503.
 export const PLATFORM_INTERNAL = /^internal error; reference = [a-z0-9]+$/i;
 
 /**
@@ -65,11 +69,14 @@ export function mayHaveWritten(method) {
 
 /**
  * What the front Worker answers for a classified failure that was not (or no longer) retried:
- * 'write-loss' (write-loss.mjs, the 500 "may have been saved") for a reset on a method that may
- * have written, else '503' (objectErrorHeaders). An unclassified error never gets here: it is thrown.
+ * 'write-loss' (write-loss.mjs: frame probe, then rolled back only when the frame proves it,
+ * otherwise the 500 "may have been saved") for a reset, or for a platform internal error
+ * (#1004), on a method that may have written. Otherwise '503' (objectErrorHeaders).
+ * GET, HEAD and OPTIONS stay 503. A full queue stays 503: the request never ran.
+ * An unclassified error never gets here: it is thrown.
  */
 export function objectErrorOutcome(kind, method) {
-	return isResetKind(kind) && mayHaveWritten(method) ? 'write-loss' : '503';
+	return (isResetKind(kind) || kind === 'internal') && mayHaveWritten(method) ? 'write-loss' : '503';
 }
 
 

@@ -135,6 +135,31 @@ test('writeLossResponse: x-isolate-reset names the kind, memory by default', () 
 // The line must also carry the operator perf id (memIdOf) and answered, the status the client got.
 import { perfHeadersAllowed } from '../perf-headers.mjs';
 import { rolledBackResponse } from '../write-loss.mjs';
+import { objectErrorHeaders } from '../object-error.mjs';
+
+// #1004 review: kind internal is a platform fault, not an isolate reset.
+// objectErrorHeaders already marks that fault x-platform-error: internal.
+// Counting it as x-isolate-reset: memory would corrupt the memory measurements.
+// Memory and storage keep their x-isolate-reset values.
+test('#1004: internal write-loss carries x-platform-error and no x-isolate-reset', () => {
+	const marker = objectErrorHeaders('internal', 'php-0', '5');
+	assert.equal(marker['x-platform-error'], 'internal');
+	for (const r of [
+		writeLossResponse('unknown', false, 'internal'),
+		rolledBackResponse(false, 'internal', 0),
+	]) {
+		assert.equal(r.headers['x-platform-error'], marker['x-platform-error']);
+		assert.ok(!Object.hasOwn(r.headers, 'x-isolate-reset'), JSON.stringify(r.headers));
+	}
+	assert.equal(writeLossResponse('unknown', false, 'memory').headers['x-isolate-reset'], 'memory');
+	assert.equal(writeLossResponse('unknown', false, 'storage').headers['x-isolate-reset'], 'storage');
+	assert.equal(rolledBackResponse(false, 'memory', 0).headers['x-isolate-reset'], 'memory');
+	assert.equal(rolledBackResponse(false, 'storage', 0).headers['x-isolate-reset'], 'storage');
+	assert.ok(!Object.hasOwn(writeLossResponse('unknown', false, 'memory').headers, 'x-platform-error'));
+	assert.ok(!Object.hasOwn(writeLossResponse('unknown', false, 'storage').headers, 'x-platform-error'));
+	assert.ok(!Object.hasOwn(rolledBackResponse(false, 'memory', 0).headers, 'x-platform-error'));
+	assert.ok(!Object.hasOwn(rolledBackResponse(false, 'storage', 0).headers, 'x-platform-error'));
+});
 
 const indexSrc = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const memAt = indexSrc.indexOf('function memIdOf(req, env) {');
@@ -314,4 +339,59 @@ test('#809 the stranded refusal is a PLATFORM failure, not the reset: #795 answe
 	const { STRANDED_ERROR } = await import('../undo-log.mjs');
 	assert.equal(platformFailures([{ error: STRANDED_ERROR }]), 1);
 	assert.equal(resetFailures([{ error: STRANDED_ERROR }]), 0);
+});
+
+import { sqlRefusal, readRefusal, refusedReadResponse, SQL_REFUSED_CODE, SQL_REFUSED_MESSAGE } from '../write-loss.mjs';
+test('#836 sqlRefusal names only the SQLite limits MySQL does not have; MySQL-shared errors are not refusals', () => {
+	assert.equal(sqlRefusal('LIKE or GLOB pattern too complex: SQLITE_ERROR'), 'like-pattern');
+	assert.equal(sqlRefusal('too many SQL variables: SQLITE_ERROR'), 'too-many-variables');
+	assert.equal(sqlRefusal('Expression tree is too large (maximum depth 1000): SQLITE_ERROR'), 'expression-depth');
+	assert.equal(sqlRefusal('parser stack overflow'), 'expression-depth');
+	assert.equal(sqlRefusal('string or blob too big: SQLITE_TOOBIG'), 'too-big');
+	// MySQL raises these too, and WordPress relies on them (no such table is how it finds a site that is not installed)
+	for (const e of ['no such table: wp_options: SQLITE_ERROR', 'no such column: foo: SQLITE_ERROR', 'near "SELEC": syntax error: SQLITE_ERROR',
+		'UNIQUE constraint failed: wp_options.option_name: SQLITE_CONSTRAINT', 'dialect: unsupported statement', '', undefined, null]) {
+		assert.equal(sqlRefusal(e), null, String(e));
+	}
+});
+
+test('#836 readRefusal: a refusal on a READ (SELECT or WITH) only; a refused write stays on wpdb', () => {
+	const like = 'LIKE or GLOB pattern too complex: SQLITE_ERROR';
+	assert.equal(readRefusal([{ sql: "SELECT ID FROM wp_users WHERE user_login LIKE '...'", error: like }]), 'like-pattern');
+	assert.equal(readRefusal([{ sql: '  with x as (select 1) select * from x', error: 'too many SQL variables' }]), 'too-many-variables');
+	assert.equal(readRefusal([{ sql: "DELETE FROM wp_posts WHERE post_content LIKE '...'", error: like }]), null, 'a write');
+	assert.equal(readRefusal([{ sql: 'SELECT * FROM wp_nope', error: 'no such table: wp_nope' }]), null, 'not a refusal');
+	assert.equal(readRefusal([]), null);
+	assert.equal(readRefusal(undefined), null);
+	assert.equal(readRefusal([{ sql: 'UPDATE t SET a = 1', error: like }, { sql: 'SELECT 1', error: like }]), 'like-pattern', 'any read in the run');
+});
+
+test('#836 refusedReadResponse: a non-retryable 500 naming the refusal; never cached; says whether a write may have been kept', () => {
+	const r = refusedReadResponse('like-pattern', false, false);
+	assert.equal(r.status, 500);
+	assert.equal(r.headers['x-sql-refused'], 'like-pattern');
+	assert.equal(r.headers['cache-control'], 'no-store');
+	assert.equal(r.headers['retry-after'], undefined, 'not retryable: the same query is refused again');
+	assert.equal(r.headers['x-write-loss'], 'none');
+	assert.equal(r.body, SQL_REFUSED_MESSAGE + '\n');
+	assert.doesNotMatch(SQL_REFUSED_MESSAGE, /try again/i, 'never invites a retry that cannot work');
+	const w = refusedReadResponse('like-pattern', true, true);
+	assert.equal(w.headers['x-write-loss'], 'unknown', 'it also wrote: the client must check');
+	assert.match(w.headers['content-type'], /application\/json/);
+	const j = JSON.parse(w.body);
+	assert.equal(j.code, SQL_REFUSED_CODE);
+	assert.equal(j.data.status, 500);
+	assert.equal(j.data.refused, 'like-pattern');
+	assert.equal(j.message, WRITE_LOSS_MESSAGE);
+});
+
+test('#836 index.js: a deterministic READ refusal answers refusedReadResponse with a structured event; other deterministic errors keep PHP answer', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const any = src.indexOf('const platform = platformFailures(d.failures) > 0;');
+	const copy = src.indexOf('for (const [k, v] of Object.entries(r.headers))', any);
+	const blk = src.slice(any, copy);
+	const refused = blk.indexOf('const refusal = readRefusal(d.failures);');
+	const det = blk.indexOf("class: 'deterministic'");
+	assert.ok(refused > blk.indexOf('if (platform) {') && refused < det, 'after the platform branch, before the deterministic fall-through');
+	assert.match(blk, /if \(refusal\) \{[\s\S]*refusedReadResponse\(refusal, wantsJson\(url\.pathname, url\.search, req\.headers\.get\('accept'\)\), wrote\)[\s\S]*'@event': 'sql-refused'[\s\S]*return new Response\(sr\.body, \{ status: sr\.status, headers: sr\.headers \}\);/);
 });

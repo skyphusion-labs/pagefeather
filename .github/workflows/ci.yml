@@ -119,6 +119,19 @@ jobs:
         run: bash deploy/tests/install-retry-test.sh
       - name: Dialect tests
         run: php spikes/b2-wordpress/tests/dialect-test.php
+      - name: Engine tests that ran in no workflow (#1010)
+        # Each was checked by a mutation: with its code under test broken, the test exits non-zero.
+        run: |
+          php spikes/b2-wordpress/tests/comment-rest-headroom-test.php
+          php spikes/b2-wordpress/tests/wp-mail-queue-test.php
+          node --test spikes/b2-wordpress/tests/slash-path.test.mjs
+          node --test spikes/b2-wordpress/tests/purge-after-php.test.mjs
+          node --test spikes/b2-wordpress/tests/template-boot.test.mjs
+          node --test spikes/b2-wordpress/tests/ocv-missing.test.mjs
+          node --test spikes/b2-wordpress/tests/remote-perf-boot.test.mjs
+      - name: Every engine test is named in a workflow (#1010)
+        # A *-test.php or *.test.mjs under spikes/b2-wordpress/tests/ that no workflow names fails this step.
+        run: bash tests/ci/engine-tests-wired-test.sh
       - name: A new month upload returns JSON with no chmod warning (issue #594)
         # php/r2-uploads.php: the uploads root is a directory when the bucket is empty,
         # so wp_mkdir_p chmod()s the r2 stream and not a plain path that does not exist.
@@ -192,6 +205,10 @@ jobs:
       - name: Import media refusal tests
         # deploy/import/media.sh (issue #124): a refused or failed HEAD is retried, then fails; it never counts as missing.
         run: deploy/import/tests/media-refuse-test.sh
+      - name: Import media uses a temporary R2 credential, not an account token (issue #1031)
+        # deploy/import.sh media_step: one mint for the media bucket (deploy/wfp/r2_temp.py), no Terraform apply,
+        # and a refused mint sends nothing. Against deploy/wfp/tests/fake-r2-temp.py; no account.
+        run: deploy/import/tests/media-mint-test.sh
       - name: plugin-memory.py never counts a page-cache copy as a fresh runtime (issue #344)
         # A fake site on localhost replays cached x-boot 1, as the page cache does. The case that
         # reproduces the old probe needs git history and skips in a shallow checkout.
@@ -272,6 +289,9 @@ jobs:
         run: |
           node --test spikes/b2-wordpress/tests/object-error.test.mjs
           node --test spikes/b2-wordpress/tests/opcache-size.test.mjs
+      - name: a doubled slash redirects only GET, HEAD and OPTIONS (issue #1005)
+        # A 301 on POST //wp-json/wc/v3/orders is followed as GET, so the body is lost.
+        run: node --test spikes/b2-wordpress/tests/slash-path.test.mjs
       - name: b-dosql a PHP object that does not start answering fails fast (issue #605)
         # object-deadline.mjs: abort a stub.fetch that has not started answering within
         # OBJECT_CALL_DEADLINE_S and answer 503 x-object-deadline, or write-loss when the
@@ -398,6 +418,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/turnstile.test.mjs
       - name: turnstile forms mu-plugin (issue #250)
         run: php spikes/b2-wordpress/tests/turnstile-forms-test.php
+      - name: turnstile submit hold survives a texturized block template and holds until the token (#1032)
+        run: node --test spikes/b2-wordpress/tests/turnstile-hold.test.mjs
       - name: b-dosql safe outbound URLs without DNS (issue #430)
         run: php spikes/b2-wordpress/tests/http-safe-url-test.php
       - name: turnstile block checkout script (issue #308)
@@ -551,6 +573,7 @@ jobs:
           deploy/wfp/tests/custom-domain-test.sh
           python3 deploy/wfp/tests/check-test.py
           python3 -I deploy/wfp/tests/obs-settings-test.py
+          python3 -I deploy/wfp/tests/obs-record-test.py
           bash deploy/wfp/tests/obs-redact-site-test.sh
           bash deploy/wfp/tests/obs-full-live-test.sh
           bash deploy/wfp/tests/fault-early-test.sh

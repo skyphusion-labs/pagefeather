@@ -431,7 +431,8 @@ def main():
             paypal = [r for r in wc_rows if r.path == "paypal/paypal.spec.ts"]
             ok("paypal is a file exclude for wpCLI") if len(paypal) == 1 and paypal[0].kind == "file" and paypal[0].reason == "calls wpCLI / needs wp-env (not the deployed site)" else bad("paypal row: %s" % (paypal,))
             title_rows = [r for r in wc_rows if r.kind == "title"]
-            ok("send email preview is the only title exclude") if len(title_rows) == 1 and title_rows[0].path == "email/settings-email.spec.ts" and title_rows[0].title == want_title else bad("title rows: %s" % (title_rows,))
+            mk_title = "can load Marketing > Overview page"
+            ok("the title excludes are send email preview and Marketing Overview") if [(r.path, r.title) for r in title_rows] == [("email/settings-email.spec.ts", want_title), ("basic/page-loads.spec.ts", mk_title)] else bad("title rows: %s" % (title_rows,))
             try:
                 ign = json.loads(wct.split("const ignore = ", 1)[1].split(";", 1)[0])
             except (ValueError, IndexError) as e:
@@ -440,7 +441,12 @@ def main():
             if ign is not None:
                 ok("wc testIgnore lists paypal/paypal.spec.ts") if "paypal/paypal.spec.ts" in ign else bad("paypal missing from testIgnore: %s" % ign)
                 ok("wc testIgnore does not drop the email settings file") if not any("settings-email" in x for x in ign) else bad("email file was file-ignored: %s" % ign)
-            full = runner.grep_invert_source([("email/settings-email.spec.ts", want_title)])
+            full = runner.grep_invert_source([("email/settings-email.spec.ts", want_title), ("basic/page-loads.spec.ts", mk_title)])
+            # A title that holds " > " itself matches as one part (the Marketing row), and the describe split still works.
+            mk_rx = re.compile(runner.title_grep_source("basic/page-loads.spec.ts", mk_title))
+            ok("a title holding ' > ' matches the Playwright title line") if mk_rx.search("e2e-pf basic/page-loads.spec.ts can load Marketing > Overview page") and not mk_rx.search("e2e-pf basic/page-loads.spec.ts can load Marketing > Coupons page") else bad("Marketing title regex")
+            em_rx = re.compile(runner.title_grep_source("email/settings-email.spec.ts", want_title))
+            ok("a describe > title row still matches as before") if em_rx.search("e2e-pf email/settings-email.spec.ts WooCommerce Email Settings Send email preview") else bad("email title regex")
             ok("wc grepInvert is the tag filter plus the title") if json.dumps(full) in wct else bad("title grep missing from wc config")
             ok("wc-cpt grepInvert carries the same title") if json.dumps(full) in wcc else bad("title grep missing from wc-cpt config")
             ok("wc-api grepInvert does not carry the email title") if json.dumps(runner.title_grep_source("email/settings-email.spec.ts", want_title)) not in wat else bad("wc-api carries the email title")
@@ -636,6 +642,19 @@ def main():
         vg_out = vg.stdout + vg.stderr
         ok("vps-run install gb: clean, esbuild rebuild, NODE_OPTIONS") if vg.returncode == 0 and "clean:packages" in vg_out and "clean:package-types" in vg_out and "npm rebuild esbuild" in vg_out and "max-old-space-size=6144" in vg_out else bad("vps-run install gb dry: %s" % vg_out[-400:])
         ok("vps-run install gb: CI=true (Gutenberg sequential tsc)") if "CI=true" in vg_out else bad("vps-run install gb: no CI=true in dry output")
+        # PF_SPECS: a subset run passes its file filters to the test phase only, and says it is a subset. Run under
+        # /bin/bash too: macOS bash 3.2 with set -u fails on an empty "${a[@]}".
+        rgb = os.path.join(t, "rgb"); os.makedirs(rgb, exist_ok=True); open(os.path.join(rgb, "env"), "w").close()
+        for sh in ("/bin/bash", "bash"):
+            if sh.startswith("/") and not os.path.exists(sh):
+                continue
+            base_env = {"PATH": os.environ.get("PATH", ""), "DRY": "1"}
+            v0 = subprocess.run([sh, os.path.join(HERE, "vps-run.sh"), "run", "gb", os.path.join(t, "w"), rgb], env=base_env, capture_output=True, text=True)
+            v1 = subprocess.run([sh, os.path.join(HERE, "vps-run.sh"), "run", "gb", os.path.join(t, "w"), rgb], env=dict(base_env, PF_SPECS="specs/editor/blocks/navigation specs/x.spec.js"), capture_output=True, text=True)
+            line0 = [l for l in v0.stdout.splitlines() if "playwright test" in l]
+            line1 = [l for l in v1.stdout.splitlines() if "playwright test" in l]
+            ok("vps-run PF_SPECS (%s): no filter runs the whole suite" % sh) if v0.returncode == 0 and line0 and line0[0].rstrip().endswith("--config=pf-conformance.config.mjs)") and "SUBSET" not in v0.stdout else bad("PF_SPECS none %s: rc %d %s %s" % (sh, v0.returncode, line0, v0.stderr[-200:]))
+            ok("vps-run PF_SPECS (%s): the filters reach the test phase and the run says SUBSET" % sh) if v1.returncode == 0 and line1 and line1[0].rstrip().endswith("specs/editor/blocks/navigation specs/x.spec.js)") and "SUBSET run" in v1.stdout else bad("PF_SPECS %s: rc %d %s %s" % (sh, v1.returncode, line1, v1.stderr[-200:]))
         vps_txt = open(os.path.join(HERE, "vps-run.sh")).read()
         ok("vps-run.sh gb: three build attempts on failure") if "for gb_try in 1 2 3" in vps_txt and "gb build failed after 3 attempts" in vps_txt else bad("vps-run.sh gb retry count")
         ok("vps-run.sh gb: clears node_modules/.cache before attempt 3") if "node_modules/.cache" in vps_txt and '[ "$gb_try" = 2 ]' in vps_txt else bad("vps-run.sh gb cache clear")

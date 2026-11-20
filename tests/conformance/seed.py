@@ -79,7 +79,9 @@ IMG_PATH = "plugins/woocommerce/tests/e2e/test-data/images/"
 WC_TAG_SHA = "67e007c3c4cca5725e056ddaaa2ed2fb0e282045"  # woocommerce 11.2.1
 UA = {"User-Agent": "pagefeather-conformance-seed"}
 TEST_PLUGINS = ("woocommerce-e2e-test-helper/woocommerce-e2e-test-helper", "woocommerce-cleanup/woocommerce-cleanup", "wp-mail-logging/wp-mail-logging", "wc-email-template-sync-test-helper/wc-email-template-sync-test-helper")
-report = {"site": B, "checks": {}}
+NO_WOO = os.environ.get("SEED_NO_WOO") == "1"
+WOO = True
+report = {"site": B, "checks": {}, "no_woo": NO_WOO}
 failed = []
 
 
@@ -87,6 +89,11 @@ EDITOR_WELCOME_PREFS = {
     "core/edit-post": {"welcomeGuide": False},
     "core/edit-site": {"welcomeGuide": False},
 }
+
+
+def skip_woo(name):
+    report["checks"][name] = {"ok": None, "skipped": "SEED_NO_WOO=1: this site carries no WooCommerce"}
+    event("skip", name=name, why="SEED_NO_WOO=1")
 
 
 def welcome_guide_dismissed(prefs):
@@ -222,6 +229,7 @@ def record_network_error(method, url, e):
     event("network-error", **row)
 
 
+
 def js(body):
     try:
         return json.loads(body or b"null")
@@ -283,7 +291,6 @@ def record_nonce_failure(user, pw, status, body, headers):
 
 def stem(url):
     return (url or "").rsplit("/", 1)[-1].rsplit(".", 1)[0]
-
 
 def image_files_missing(item, get=None):
     """The file names of a media item (the full file and each sub-size) that do not answer 200 to a guest GET."""
@@ -398,6 +405,14 @@ def main():
     c2, b2, _ = req(jar(), "/wp-json/")
     idx = js(b2)
     check("permalinks: a raw GET /wp-json/ is the REST index", c2 == 200 and isinstance(idx, dict) and "routes" in idx, status=c2)
+    # SEED_NO_WOO=1 states that this site carries no WooCommerce (a WordPress-only tier, e.g. Workers Free). Then the
+    # WooCommerce items are reported as skipped, never as passed. The statement must match the site: wc/v3 absent.
+    # Without it, a site with no wc/v3 fails the WooCommerce items as before.
+    woo_here = isinstance(idx, dict) and "wc/v3" in (idx.get("namespaces") or [])
+    global WOO
+    WOO = not NO_WOO
+    if NO_WOO:
+        check("SEED_NO_WOO=1: the site has no WooCommerce (no wc/v3 namespace)", not woo_here, wc_v3=woo_here)
     c3, posts = rest(a, n, "/wp/v2/posts?per_page=1&status=publish")
     made = None
     if not first_published_link(posts):
@@ -413,30 +428,32 @@ def main():
         detail["probe_status"] = made
     check("permalinks: /%postname%/ (a post link has no ?p= and no date)", bool(wn) and bool(link) and "?p=" not in link and not re.search(r"/\d{4}/\d{2}/", link), **detail)
 
-    # 1b. Shop, cart, checkout, and my account. A dead page id sends those links to the home page (#936).
-    def rest_get(route):
-        return rest(a, n, route)
+    if WOO:
+        # 1b. Shop, cart, checkout, and my account. A dead page id sends those links to the home page (#936).
+        def rest_get(route):
+            return rest(a, n, route)
 
-    page_rows = fetch_wc_store_pages(rest_get)
-    missing = wc_store_pages_missing(page_rows)
-    tool_status = None
-    if missing:
-        tool_status, _tool = rest(a, n, "/wc/v3/system_status/tools/install_pages", {}, "PUT")
         page_rows = fetch_wc_store_pages(rest_get)
         missing = wc_store_pages_missing(page_rows)
-    check("woocommerce pages: shop, cart, checkout, and my-account name a published page", not missing, missing=missing, tool=tool_status)
-    public = {}
-    public_ok = True
-    for slug in ("shop", "cart", "checkout", "my-account"):
-        status, _body, headers = req(jar(), "/%s/" % slug)
-        loc = ""
-        if headers:
-            loc = headers.get("Location") or headers.get("location") or ""
-        public[slug] = status
-        if not wc_public_page_ok(slug, status, loc):
-            public_ok = False
-    check("woocommerce pages: /shop/ /cart/ /my-account/ answer 200, and /checkout/ is the store", public_ok, status=public)
-
+        tool_status = None
+        if missing:
+            tool_status, _tool = rest(a, n, "/wc/v3/system_status/tools/install_pages", {}, "PUT")
+            page_rows = fetch_wc_store_pages(rest_get)
+            missing = wc_store_pages_missing(page_rows)
+        check("woocommerce pages: shop, cart, checkout, and my-account name a published page", not missing, missing=missing, tool=tool_status)
+        public = {}
+        public_ok = True
+        for slug in ("shop", "cart", "checkout", "my-account"):
+            status, _body, headers = req(jar(), "/%s/" % slug)
+            loc = ""
+            if headers:
+                loc = headers.get("Location") or headers.get("location") or ""
+            public[slug] = status
+            if not wc_public_page_ok(slug, status, loc):
+                public_ok = False
+        check("woocommerce pages: /shop/ /cart/ /my-account/ answer 200, and /checkout/ is the store", public_ok, status=public)
+    else:
+        skip_woo('1b. the WooCommerce store pages')
 
     # 2. blogname, then site timezone. INSTALL sets America/Detroit at /_install (#894).
     # The seed sets it again so a remount of an old site matches.
@@ -451,90 +468,96 @@ def main():
     got_tz = settings_timezone(s)
     check("timezone", got_tz == SEED_TIMEZONE, got=got_tz or c)
 
-    # 3. woocommerce_allow_tracking = yes
-    rest(a, n, "/wc/v3/settings/advanced/woocommerce_allow_tracking", {"value": "yes"}, "PUT")
-    c, t = rest(a, n, "/wc/v3/settings/advanced/woocommerce_allow_tracking")
-    c2, o2 = rest(a, n, "/wc-admin/options?options=woocommerce_allow_tracking")
-    check("woocommerce_allow_tracking = yes (wc/v3 settings and wc-admin/options)",
-          isinstance(t, dict) and t.get("value") == "yes" and isinstance(o2, dict) and o2.get("woocommerce_allow_tracking") == "yes",
-          wcv3=t.get("value") if isinstance(t, dict) else c, wcadmin=o2.get("woocommerce_allow_tracking") if isinstance(o2, dict) else c2)
+    if WOO:
+        # 3. woocommerce_allow_tracking = yes
+        rest(a, n, "/wc/v3/settings/advanced/woocommerce_allow_tracking", {"value": "yes"}, "PUT")
+        c, t = rest(a, n, "/wc/v3/settings/advanced/woocommerce_allow_tracking")
+        c2, o2 = rest(a, n, "/wc-admin/options?options=woocommerce_allow_tracking")
+        check("woocommerce_allow_tracking = yes (wc/v3 settings and wc-admin/options)",
+              isinstance(t, dict) and t.get("value") == "yes" and isinstance(o2, dict) and o2.get("woocommerce_allow_tracking") == "yes",
+              wcv3=t.get("value") if isinstance(t, dict) else c, wcadmin=o2.get("woocommerce_allow_tracking") if isinstance(o2, dict) else c2)
 
-    # 3b. Block email editor stays at Woo default, no (#916).
-    # WC 11.2.1 registers block_email_editor with enabled_by_default false.
-    # WC_Install::create_options uses add_option, so a stored yes is kept.
-    # The enable spec checks the box. An already checked box leaves Save disabled.
-    # Proof is wc/v3 settings advanced value no.
-    # wc-admin/options does not list this option on Woo 11.2.1.
-    # A 403 woocommerce_rest_cannot_view is skipped only after wc/v3 is no.
-    email_opt = EMAIL_EDITOR_OPT
-    rest(a, n, "/wc/v3/settings/advanced/" + email_opt, {"value": "no"}, "PUT")
-    c, t = rest(a, n, "/wc/v3/settings/advanced/" + email_opt)
-    c2, o2 = rest(a, n, "/wc-admin/options?options=" + email_opt)
-    wcadmin_detail = c2
-    if isinstance(o2, dict) and email_opt in o2:
-        wcadmin_detail = o2.get(email_opt)
-    elif isinstance(o2, dict) and o2.get("code"):
-        wcadmin_detail = o2.get("code")
-    check(email_opt + " = no (wc/v3 settings)",
-          email_editor_option_ok(t, c2, o2),
-          wcv3=t.get("value") if isinstance(t, dict) else c, wcadmin=wcadmin_detail, wcadmin_status=c2)
+        # 3b. Block email editor stays at Woo default, no (#916).
+        # WC 11.2.1 registers block_email_editor with enabled_by_default false.
+        # WC_Install::create_options uses add_option, so a stored yes is kept.
+        # The enable spec checks the box. An already checked box leaves Save disabled.
+        # Proof is wc/v3 settings advanced value no.
+        # wc-admin/options does not list this option on Woo 11.2.1.
+        # A 403 woocommerce_rest_cannot_view is skipped only after wc/v3 is no.
+        email_opt = EMAIL_EDITOR_OPT
+        rest(a, n, "/wc/v3/settings/advanced/" + email_opt, {"value": "no"}, "PUT")
+        c, t = rest(a, n, "/wc/v3/settings/advanced/" + email_opt)
+        c2, o2 = rest(a, n, "/wc-admin/options?options=" + email_opt)
+        wcadmin_detail = c2
+        if isinstance(o2, dict) and email_opt in o2:
+            wcadmin_detail = o2.get(email_opt)
+        elif isinstance(o2, dict) and o2.get("code"):
+            wcadmin_detail = o2.get("code")
+        check(email_opt + " = no (wc/v3 settings)",
+              email_editor_option_ok(t, c2, o2),
+              wcv3=t.get("value") if isinstance(t, dict) else c, wcadmin=wcadmin_detail, wcadmin_status=c2)
 
-    # 4. the customer
-    cpw = secrets.token_urlsafe(18)
-    c, found = rest(a, n, "/wc/v3/customers?email=" + urllib.parse.quote(CUSTOMER["email"]) + "&role=all")
-    fields = {"first_name": CUSTOMER["first_name"], "last_name": CUSTOMER["last_name"], "password": cpw}
-    if isinstance(found, list) and found:
-        cid = found[0].get("id")
-        rest(a, n, "/wc/v3/customers/%s" % cid, fields, "PUT")
-    else:
-        c, r = rest(a, n, "/wc/v3/customers", dict(fields, email=CUSTOMER["email"], username=CUSTOMER["username"]), "POST")
-        cid = r.get("id") if isinstance(r, dict) else None
-    # My Account greets by display name. wp user create sets that from the first
-    # and last name. The WooCommerce customer route leaves it as the login (#965).
-    display = "%s %s" % (CUSTOMER["first_name"], CUSTOMER["last_name"])
-    if cid:
-        rest(a, n, "/wp/v2/users/%s" % cid, {"name": display}, "POST")
-    c, u = rest(a, n, "/wp/v2/users/%s?context=edit" % cid) if cid else (0, None)
-    u = u if isinstance(u, dict) else {}
-    co, cwhy = login(CUSTOMER["username"], cpw)
-    check("customer: role customer, the email, Jane Smith, and a form login",
-          u.get("username") == CUSTOMER["username"] and u.get("roles") == ["customer"] and u.get("email") == CUSTOMER["email"]
-          and u.get("first_name") == "Jane" and u.get("last_name") == "Smith" and u.get("name") == display and co is not None,
-          id=cid, roles=u.get("roles"), display=u.get("name"), login=("ok" if co else cwhy))
-
-    # 5. the three test images, pinned
-    sha = wc_sha()
-    have, stored = [], {}
-    for name in IMAGES:
-        st_ = name.rsplit(".", 1)[0]
-        c, hits = rest(a, n, "/wp/v2/media?search=%s&per_page=20" % urllib.parse.quote(st_))
-        match = [h for h in hits if stem(h.get("source_url")) == st_] if isinstance(hits, list) else []
-        if match:
-            # A found item is kept only if its files load: woocommerce-cleanup's reset deletes every sub-size file and
-            # keeps the attachment, so a product thumbnail then answers 404 (sb1120, cf759a). Such an item is deleted
-            # (force) and uploaded again below, which makes the sizes again.
-            broken = image_files_missing(match[0])
-            if not broken:
-                have.append(name); stored[st_] = match[0]["source_url"].rsplit("/", 1)[-1]
-                continue
-            cd, _ = rest(a, n, "/wp/v2/media/%s?force=true" % match[0].get("id"), None, "DELETE")
-            event("reupload", name=name, missing=broken[:4], deleted=cd)
-        c, meta, _ = req(jar(), "https://api.github.com/repos/woocommerce/woocommerce/contents/%s%s?ref=%s" % (IMG_PATH, name, sha), headers={"Accept": "application/vnd.github+json"})
-        want = (js(meta) or {}).get("sha") if c == 200 else None
-        c, data, _ = req(jar(), "https://raw.githubusercontent.com/woocommerce/woocommerce/%s/%s%s" % (sha, IMG_PATH, name))
-        blob = hashlib.sha1(b"blob %d\0" % len(data or b"") + (data or b"")).hexdigest() if c == 200 else None
-        if not (want and blob == want):
-            check("image %s matches the pin" % name, False, wc_sha=sha, upstream_blob=want, got_blob=blob)
-            continue
-        c, b, uh = req(a, "/?rest_route=/wp/v2/media", data, {"X-WP-Nonce": n, "Content-Type": "image/png", "Content-Disposition": 'attachment; filename="%s"' % name}, "POST")
-        r = js(b)
-        if c == 201 and isinstance(r, dict) and stem(r.get("source_url")) == st_:
-            have.append(name); stored[st_] = r["source_url"].rsplit("/", 1)[-1]
+        # 4. the customer
+        cpw = secrets.token_urlsafe(18)
+        c, found = rest(a, n, "/wc/v3/customers?email=" + urllib.parse.quote(CUSTOMER["email"]) + "&role=all")
+        fields = {"first_name": CUSTOMER["first_name"], "last_name": CUSTOMER["last_name"], "password": cpw}
+        if isinstance(found, list) and found:
+            cid = found[0].get("id")
+            rest(a, n, "/wc/v3/customers/%s" % cid, fields, "PUT")
         else:
-            # The engine's headers name the request for its logs (sb1120: a 500 upload left its files behind).
-            pf = {k: uh.get(k) for k in ("x-pf-call", "x-write-loss", "x-isolate-reset", "x-wasm-mib", "x-sql-failure") if uh and uh.get(k)}
-            check("image %s uploads under its own stem" % name, False, status=c, source=r.get("source_url") if isinstance(r, dict) else None, **pf)
-    check("the three test images, found by search under their own stems", sorted(have) == sorted(IMAGES), stored=stored, wc_sha=sha)
+            c, r = rest(a, n, "/wc/v3/customers", dict(fields, email=CUSTOMER["email"], username=CUSTOMER["username"]), "POST")
+            cid = r.get("id") if isinstance(r, dict) else None
+        # My Account greets by display name. wp user create sets that from the first
+        # and last name. The WooCommerce customer route leaves it as the login (#965).
+        display = "%s %s" % (CUSTOMER["first_name"], CUSTOMER["last_name"])
+        if cid:
+            rest(a, n, "/wp/v2/users/%s" % cid, {"name": display}, "POST")
+        c, u = rest(a, n, "/wp/v2/users/%s?context=edit" % cid) if cid else (0, None)
+        u = u if isinstance(u, dict) else {}
+        co, cwhy = login(CUSTOMER["username"], cpw)
+        check("customer: role customer, the email, Jane Smith, and a form login",
+              u.get("username") == CUSTOMER["username"] and u.get("roles") == ["customer"] and u.get("email") == CUSTOMER["email"]
+              and u.get("first_name") == "Jane" and u.get("last_name") == "Smith" and u.get("name") == display and co is not None,
+              id=cid, roles=u.get("roles"), display=u.get("name"), login=("ok" if co else cwhy))
+    else:
+        skip_woo('3, 3b, 4. woocommerce_allow_tracking, the block email editor option, the customer')
+
+    if WOO:
+        # 5. the three test images, pinned
+        sha = wc_sha()
+        have, stored = [], {}
+        for name in IMAGES:
+            st_ = name.rsplit(".", 1)[0]
+            c, hits = rest(a, n, "/wp/v2/media?search=%s&per_page=20" % urllib.parse.quote(st_))
+            match = [h for h in hits if stem(h.get("source_url")) == st_] if isinstance(hits, list) else []
+            if match:
+                # A found item is kept only if its files load: woocommerce-cleanup's reset deletes every sub-size file and
+                # keeps the attachment, so a product thumbnail then answers 404 (sb1120, cf759a). Such an item is deleted
+                # (force) and uploaded again below, which makes the sizes again.
+                broken = image_files_missing(match[0])
+                if not broken:
+                    have.append(name); stored[st_] = match[0]["source_url"].rsplit("/", 1)[-1]
+                    continue
+                cd, _ = rest(a, n, "/wp/v2/media/%s?force=true" % match[0].get("id"), None, "DELETE")
+                event("reupload", name=name, missing=broken[:4], deleted=cd)
+            c, meta, _ = req(jar(), "https://api.github.com/repos/woocommerce/woocommerce/contents/%s%s?ref=%s" % (IMG_PATH, name, sha), headers={"Accept": "application/vnd.github+json"})
+            want = (js(meta) or {}).get("sha") if c == 200 else None
+            c, data, _ = req(jar(), "https://raw.githubusercontent.com/woocommerce/woocommerce/%s/%s%s" % (sha, IMG_PATH, name))
+            blob = hashlib.sha1(b"blob %d\0" % len(data or b"") + (data or b"")).hexdigest() if c == 200 else None
+            if not (want and blob == want):
+                check("image %s matches the pin" % name, False, wc_sha=sha, upstream_blob=want, got_blob=blob)
+                continue
+            c, b, uh = req(a, "/?rest_route=/wp/v2/media", data, {"X-WP-Nonce": n, "Content-Type": "image/png", "Content-Disposition": 'attachment; filename="%s"' % name}, "POST")
+            r = js(b)
+            if c == 201 and isinstance(r, dict) and stem(r.get("source_url")) == st_:
+                have.append(name); stored[st_] = r["source_url"].rsplit("/", 1)[-1]
+            else:
+                # The engine's headers name the request for its logs (sb1120: a 500 upload left its files behind).
+                pf = {k: uh.get(k) for k in ("x-pf-call", "x-write-loss", "x-isolate-reset", "x-wasm-mib", "x-sql-failure") if uh and uh.get(k)}
+                check("image %s uploads under its own stem" % name, False, status=c, source=r.get("source_url") if isinstance(r, dict) else None, **pf)
+        check("the three test images, found by search under their own stems", sorted(have) == sorted(IMAGES), stored=stored, wc_sha=sha)
+    else:
+        skip_woo('5. the three WooCommerce test images')
 
     # 6b. dismiss the block editor welcome guide (#759 conf759: it blocks the canvas until closed)
     c, me = rest(a, n, "/wp/v2/users/me?context=edit")
@@ -551,10 +574,10 @@ def main():
     have = {p.get("plugin"): p.get("status") for p in plist} if isinstance(plist, list) else {}
     for pid in TEST_PLUGINS:
         if pid not in have:
-            if marked:
+            if marked and WOO:
                 check("test plugin %s is in the build" % pid, False, listed=c)
             else:
-                report["checks"]["test plugin %s" % pid] = {"ok": None, "skipped": "not in this build (a local site without the content)"}
+                report["checks"]["test plugin %s" % pid] = {"ok": None, "skipped": "not in this build (%s)" % ("SEED_NO_WOO=1" if marked else "a local site without the content")}
                 event("skip", name="test plugin %s" % pid, why="not in this build")
             continue
         if have[pid] != "active":
@@ -613,14 +636,16 @@ def main():
         check("admin: Basic with it on /wp/v2/users/me answers 200 (#761)", st == 200, status=st)
         wrong = basic(ADMIN_USER, newpw[:-1] + ("x" if newpw[-1] != "x" else "y"))
         check("admin: a wrong password over Basic gets 401", wrong == 401, status=wrong)
-        if a2 is not None and not all(re.fullmatch(r"[A-Za-z0-9_-]+", v) for v in (ADMIN_USER, newpw, CUSTOMER["username"], cpw)):
+        if a2 is not None and not all(re.fullmatch(r"[A-Za-z0-9_-]+", v) for v in ((ADMIN_USER, newpw, CUSTOMER["username"], cpw) if WOO else (ADMIN_USER, newpw))):
             check("creds.env values are shell-safe ([A-Za-z0-9_-])", False)
         elif a2 is not None:
             fd = os.open(credsf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w") as f:
                 # export lines: after `. creds.env` the values reach a child process (runner.py prepare reads os.environ).
                 # Every value is [A-Za-z0-9_-] (an application password, a token_urlsafe, a user name): no quoting needed.
-                f.write("export WP_USERNAME=%s\nexport WP_PASSWORD=%s\nexport CUSTOMER_USERNAME=%s\nexport CUSTOMER_PASSWORD=%s\n" % (ADMIN_USER, newpw, CUSTOMER["username"], cpw))
+                f.write("export WP_USERNAME=%s\nexport WP_PASSWORD=%s\n" % (ADMIN_USER, newpw))
+                if WOO:
+                    f.write("export CUSTOMER_USERNAME=%s\nexport CUSTOMER_PASSWORD=%s\n" % (CUSTOMER["username"], cpw))
             report["creds"] = credsf
     report["failed"] = failed
     with open(os.path.join(OUT, "seed.json"), "w") as f:

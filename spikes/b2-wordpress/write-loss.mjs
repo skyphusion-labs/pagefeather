@@ -26,12 +26,19 @@ export const WRITE_LOSS_CODE = 'skyphusion_write_loss';
 // #352: the request frame was rolled back, PROVEN by the object's /_frame probe (state rolled-back, no
 // commit point passed): nothing of the request was kept, so a retry is safe. Never sent without the proof.
 export const ROLLED_BACK_MESSAGE = 'The request did not complete. Nothing was saved. You can try again.';
+// kind 'memory' and 'storage' are isolate resets (#398). kind 'internal' is a platform
+// fault (#976, #1004): the same marker objectErrorHeaders uses, and no x-isolate-reset.
+// A false x-isolate-reset: memory would be counted with the real memory resets.
+function lossKindHeaders(kind) {
+	if (kind === 'internal') return { 'x-platform-error': 'internal' };
+	return { 'x-isolate-reset': kind === 'storage' ? 'storage' : 'memory' };
+}
 /** The #352 answer when the frame is proven rolled back: still a 500, never a 302 with half a save. */
 export function rolledBackResponse(json = false, kind = 'memory', undone = 0) {
 	const headers = {
 		'content-type': json ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8',
 		'cache-control': 'no-store',
-		'x-isolate-reset': kind === 'storage' ? 'storage' : 'memory',
+		...lossKindHeaders(kind),
 		'x-write-loss': 'rolled-back',
 		'x-write-undone': String(Number(undone) || 0),
 	};
@@ -77,6 +84,55 @@ export function statementFailureResponse(n, json = false, saved = false) {
 	const body = json ? JSON.stringify({ code: WRITE_LOSS_CODE, message, data: { status, statementFailure: true } }) : message + '\n';
 	return { status, headers, body };
 }
+/**
+ * #836, the lead's ruling (option 2, 2026-11-20): a DETERMINISTIC refusal on a READ answers a non-retryable 500 that
+ * names the refusal, for every request, visitors included. A plausible wrong 200 (an empty result that looks like
+ * "nothing matched") is the worse error. A refusal is a limit of the platform's SQLite that MySQL does not have, so the
+ * same query worked on the site's old host: the LIKE pattern cap, the bound-variable cap, the expression depth, the
+ * statement or value size. An error MySQL raises too (no such table or column, syntax, a constraint) is NOT a refusal and
+ * stays on wpdb's error path: WordPress relies on it (no such table is how it finds a site that is not installed yet).
+ * Keep shrinking this class at the root (d1-dialect rewrites, #805 and #836 (a)), so this 500 stays rare.
+ */
+export const SQL_REFUSALS = [
+	[/LIKE or GLOB pattern too complex/i, 'like-pattern'],
+	[/too many SQL variables/i, 'too-many-variables'],
+	[/Expression tree is too large|parser stack overflow/i, 'expression-depth'],
+	[/string or blob too big|SQLITE_TOOBIG/i, 'too-big'],
+];
+export const SQL_REFUSED_CODE = 'skyphusion_sql_refused';
+export const SQL_REFUSED_MESSAGE = 'The database refused a query this page needs. Nothing was changed. The same request will be refused again.';
+/** The refusal a statement error names, or null when it is not one. */
+export function sqlRefusal(error) {
+	const e = String(error || '');
+	if (!e) return null;
+	for (const [re, kind] of SQL_REFUSALS) if (re.test(e)) return kind;
+	return null;
+}
+/** The first refusal among the run's failed READS (SELECT or WITH), or null. A refused write stays on wpdb's path. */
+export function readRefusal(failures) {
+	for (const f of failures || []) {
+		if (!f || !/^\s*(SELECT|WITH)\b/i.test(String(f.sql || ''))) continue;
+		const kind = sqlRefusal(f.error);
+		if (kind) return kind;
+	}
+	return null;
+}
+/**
+ * The #836 answer: 500, no Retry-After (the same query is refused again), never cached, x-sql-refused names the
+ * refusal. wrote says a write in the same request may have been kept: then the message is write-loss's "check before
+ * you try again" and x-write-loss is unknown.
+ */
+export function refusedReadResponse(kind, json = false, wrote = false) {
+	const headers = {
+		'content-type': json ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8',
+		'cache-control': 'no-store',
+		'x-sql-refused': String(kind),
+		'x-write-loss': wrote ? 'unknown' : 'none',
+	};
+	const message = wrote ? WRITE_LOSS_MESSAGE : SQL_REFUSED_MESSAGE;
+	const body = json ? JSON.stringify({ code: SQL_REFUSED_CODE, message, data: { status: 500, refused: String(kind) } }) : message + '\n';
+	return { status: 500, headers, body };
+}
 /** Whether a /_frame answer PROVES the request kept nothing: rolled back, and no commit point passed. */
 export function frameProvesRollback(frame) {
 	return !!(frame && frame.state === 'rolled-back' && Number(frame.points) === 0);
@@ -106,7 +162,8 @@ export function wantsJson(pathname, search, accept) {
  * The answer for a request whose writes may be partly saved: status, headers, body. n is the
  * number of statements that failed in the reset, or 'unknown' when the reset killed the whole
  * request (the object answered nothing). kind is the reset (object-error.mjs): 'memory', or
- * 'storage' for a storage reset (#398). No Retry-After, no Set-Cookie, never cached.
+ * 'storage' for a storage reset (#398). 'internal' is a platform fault (#1004): x-platform-error,
+ * and no x-isolate-reset. No Retry-After, no Set-Cookie, never cached.
  *
  * phpStatus is PHP's own status on the write-loss log line (index.js), read before this
  * guard replaces the answer. It is not the status the client got: that is `answered`
@@ -116,7 +173,7 @@ export function writeLossResponse(n, json = false, kind = 'memory') {
 	const headers = {
 		'content-type': json ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8',
 		'cache-control': 'no-store',
-		'x-isolate-reset': kind === 'storage' ? 'storage' : 'memory',
+		...lossKindHeaders(kind),
 		'x-write-loss': String(n),
 	};
 	const body = json ? JSON.stringify({ code: WRITE_LOSS_CODE, message: WRITE_LOSS_MESSAGE, data: { status: 500 } }) : WRITE_LOSS_BODY;

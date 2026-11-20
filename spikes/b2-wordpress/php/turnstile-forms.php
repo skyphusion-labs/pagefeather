@@ -51,12 +51,10 @@ if ( ! function_exists( 'skyphusion_turnstile_sitekey' ) ) {
 	}
 }
 
-/** True when a site key is set. No key means no widget, so the gates do not block (#915). */
-if ( ! function_exists( 'skyphusion_turnstile_has_sitekey' ) ) {
-	function skyphusion_turnstile_has_sitekey() {
-		return '' !== skyphusion_turnstile_sitekey();
-	}
-}
+/* #1010: no has_sitekey bypass. An empty site key once made every gate pass (#915's fix, 47d66df2),
+ * so the gates failed OPEN. index.js defines the key only from a valid one (turnstileEnabled), so the
+ * gates now run whatever the key: an empty key prints no widget, so no token comes, and the post
+ * fails CLOSED. */
 
 /**
  * Render the Turnstile widget inside the current form. The api.js script is printed
@@ -86,6 +84,9 @@ if ( ! function_exists( 'skyphusion_turnstile_widget' ) ) {
  * has a Turnstile box until cf-turnstile-response has a value. A click before the
  * widget finishes must not post an empty token (#964). After 15 seconds the
  * control is released so a missing widget can still show the server error.
+ * The script has no "&" and no "<" (#1032): on a block theme the comment form is
+ * inside the template HTML, which WordPress texturizes, and "&&" arrived as
+ * "&#038;&#038;", a syntax error that stopped the whole hold.
  */
 if ( ! function_exists( 'skyphusion_turnstile_hold_script' ) ) {
 	function skyphusion_turnstile_hold_script() {
@@ -93,7 +94,7 @@ if ( ! function_exists( 'skyphusion_turnstile_hold_script' ) ) {
 (function () {
   function arm() {
     var boxes = document.querySelectorAll(".cf-turnstile");
-    for (var i = 0; i < boxes.length; i++) {
+    for (var i = 0; boxes.length > i; i++) {
       var form = boxes[i].closest("form");
       if (!form || form.getAttribute("data-pf-turnstile-hold") === "1") continue;
       form.setAttribute("data-pf-turnstile-hold", "1");
@@ -102,23 +103,25 @@ if ( ! function_exists( 'skyphusion_turnstile_hold_script' ) ) {
         var timer = setInterval(function () {
           ticks += 1;
           var field = form.querySelector("[name=cf-turnstile-response]");
-          var ok = !!(field && field.value);
+          var ok = field ? field.value !== "" : false;
           var buttons = form.querySelectorAll("button[type=submit], input[type=submit]");
-          for (var j = 0; j < buttons.length; j++) {
+          for (var j = 0; buttons.length > j; j++) {
             var b = buttons[j];
             if (ok) {
               if (b.getAttribute("data-pf-held") === "1") {
                 b.disabled = false;
                 b.removeAttribute("data-pf-held");
               }
-            } else if (ticks <= 150 && !b.disabled) {
-              b.disabled = true;
-              b.setAttribute("data-pf-held", "1");
+            } else if (150 >= ticks) {
+              if (!b.disabled) {
+                b.disabled = true;
+                b.setAttribute("data-pf-held", "1");
+              }
             }
           }
           if (ok || ticks > 150) {
             if (!ok) {
-              for (var k = 0; k < buttons.length; k++) {
+              for (var k = 0; buttons.length > k; k++) {
                 if (buttons[k].getAttribute("data-pf-held") === "1") {
                   buttons[k].disabled = false;
                   buttons[k].removeAttribute("data-pf-held");
@@ -232,9 +235,6 @@ if ( ! function_exists( 'skyphusion_turnstile_unavailable_message' ) ) {
  */
 if ( ! function_exists( 'skyphusion_turnstile_gate_error' ) ) {
 	function skyphusion_turnstile_gate_error( $errors, $failed_message ) {
-		if ( ! skyphusion_turnstile_has_sitekey() ) {
-			return $errors;
-		}
 		if ( ! is_wp_error( $errors ) ) {
 			$errors = new WP_Error();
 		}
@@ -265,9 +265,6 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_LOGIN' ) || SKYPHUSION_TURNSTILE_LOGIN ) {
 	 */
 	if ( ! function_exists( 'skyphusion_turnstile_login_check' ) ) {
 		function skyphusion_turnstile_login_check( $user, $username, $password ) {
-			if ( ! skyphusion_turnstile_has_sitekey() ) {
-				return $user;
-			}
 			$method = isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( (string) $_SERVER['REQUEST_METHOD'] ) : '';
 			if ( 'POST' !== $method || ! isset( $_POST['log'] ) ) {
 				return $user;
@@ -345,9 +342,6 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_COMMENTS' ) || SKYPHUSION_TURNSTILE_COMMEN
 	 */
 	if ( ! function_exists( 'skyphusion_turnstile_comment_check' ) ) {
 		function skyphusion_turnstile_comment_check( $commentdata ) {
-			if ( ! skyphusion_turnstile_has_sitekey() ) {
-				return $commentdata;
-			}
 			if ( function_exists( 'is_admin' ) && is_admin() ) {
 				return $commentdata;
 			}
@@ -440,9 +434,6 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_WOO' ) || SKYPHUSION_TURNSTILE_WOO ) {
 	 */
 	if ( ! function_exists( 'skyphusion_turnstile_woo_check' ) ) {
 		function skyphusion_turnstile_woo_check() {
-			if ( ! skyphusion_turnstile_has_sitekey() ) {
-				return;
-			}
 			if ( ! function_exists( 'wc_add_notice' ) ) {
 				return;
 			}
@@ -565,9 +556,6 @@ if ( ! defined( 'SKYPHUSION_TURNSTILE_WOO' ) || SKYPHUSION_TURNSTILE_WOO ) {
 	 */
 	if ( ! function_exists( 'skyphusion_turnstile_store_api_check' ) ) {
 		function skyphusion_turnstile_store_api_check( $order, $request ) {
-			if ( ! skyphusion_turnstile_has_sitekey() ) {
-				return;
-			}
 			$method = is_object( $request ) && method_exists( $request, 'get_method' ) ? strtoupper( (string) $request->get_method() ) : '';
 			if ( 'POST' !== $method ) {
 				return;

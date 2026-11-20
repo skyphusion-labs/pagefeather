@@ -155,29 +155,39 @@ if ( 'master-off' === $scenario ) {
 }
 
 if ( 'sitekey-empty' === $scenario ) {
+	// #1010: an empty site key FAILS CLOSED. Every gate stops the post (no widget, no token, so the
+	// challenge fails); none calls the verifier. index.js defines the key only from a valid one
+	// (turnstileEnabled), so this state is not reachable from the Worker; if a future path makes
+	// it, the forms are blocked, never left open. Before #1010 every gate here let the post through.
 	$_SERVER['REQUEST_METHOD'] = 'POST';
 	$_POST['log'] = 'admin';
 	unset( $_POST['cf-turnstile-response'] );
 	$GLOBALS['ts_calls'] = 0;
 	$r = apply_filters( 'authenticate', 'the-user', 'admin', 'pw' );
-	check( 'empty site key: login returns the user', $r, 'the-user' );
+	check( 'empty site key: login is stopped (fail closed)', is_wp_error( $r ), true );
 	check( 'empty site key: login does not call the verifier', $GLOBALS['ts_calls'], 0 );
 	$GLOBALS['wc_notices'] = array();
 	do_action( 'woocommerce_checkout_process' );
-	check( 'empty site key: checkout adds no notice', $GLOBALS['wc_notices'], array() );
+	check( 'empty site key: checkout adds an error notice (fail closed)', count( $GLOBALS['wc_notices'] ) > 0 && 'error' === $GLOBALS['wc_notices'][0][1], true );
 	check( 'empty site key: checkout does not call the verifier', $GLOBALS['ts_calls'], 0 );
 	$lost = new WP_Error();
 	do_action( 'lostpassword_post', $lost );
-	check( 'empty site key: lost password adds no error', $lost->get_error_code(), '' );
+	check( 'empty site key: lost password gets an error (fail closed)', '' !== $lost->get_error_code(), true );
 	$cd = array( 'comment_content' => 'hi', 'comment_type' => 'comment' );
-	check( 'empty site key: comment passes', apply_filters( 'preprocess_comment', $cd ), $cd );
+	$comment = 'passed';
+	try {
+		apply_filters( 'preprocess_comment', $cd );
+	} catch ( WpDieException $e ) {
+		$comment = 'stopped';
+	}
+	check( 'empty site key: comment is stopped (fail closed)', $comment, 'stopped' );
 	$store = 'passed';
 	try {
 		do_action( 'woocommerce_store_api_checkout_update_order_from_request', null, new Fake_REST_Request( 'POST', array() ) );
 	} catch ( Exception $e ) {
 		$store = 'threw';
 	}
-	check( 'empty site key: store api POST does not throw', $store, 'passed' );
+	check( 'empty site key: store api POST is stopped (fail closed)', $store, 'threw' );
 	check( 'empty site key: store api does not call the verifier', $GLOBALS['ts_calls'], 0 );
 	ob_start();
 	do_action( 'woocommerce_checkout_after_order_review' );

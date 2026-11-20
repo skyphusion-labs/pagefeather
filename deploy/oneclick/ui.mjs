@@ -102,12 +102,15 @@ export function addScreen({ subdomain, databases = [] }) {
 // configuration in Cloudflare, where Cloudflare takes the database password, and
 // pastes only its ID here. This page never asks for a password.
 export function databasesScreen(databases) {
-  const rows = databases.length ? databases.map((d) => `<tr><td><b>${esc(d.name || d.id)}</b><div class="row-actions"><a href="#" class="db-remove" data-id="${esc(d.id)}">Disconnect</a></div></td><td>${esc(d.host)}${d.database ? ` / ${esc(d.database)}` : ''}</td><td class="hide-sm">${esc(d.provider === 'azure' ? 'Azure Database for MySQL' : 'Another MySQL 8')}</td></tr>`).join('')
-    : '<tr><td colspan="3">No databases yet.</td></tr>';
+  // #1063: a database with no region gets a notice and the field: its stores keep serving where they run now.
+  const regionCell = (d) => d.region ? esc(d.region)
+    : `<div class="notice notice-warning inline db-region-notice"><p>Set your database region for faster pages.</p><p><label class="screen-reader-text" for="region-${esc(d.id)}">Database region</label><input id="region-${esc(d.id)}" class="db-region-input" type="text" placeholder="azure:westus2" autocomplete="off" spellcheck="false" maxlength="48"> <button class="button db-region-set" type="button" data-id="${esc(d.id)}">Set region</button></p></div>`;
+  const rows = databases.length ? databases.map((d) => `<tr><td><b>${esc(d.name || d.id)}</b><div class="row-actions"><a href="#" class="db-remove" data-id="${esc(d.id)}">Disconnect</a></div></td><td>${esc(d.host)}${d.database ? ` / ${esc(d.database)}` : ''}</td><td class="hide-sm">${esc(d.provider === 'azure' ? 'Azure Database for MySQL' : 'Another MySQL 8')}</td><td>${regionCell(d)}</td></tr>`).join('')
+    : '<tr><td colspan="4">No databases yet.</td></tr>';
   return `<h1>Databases</h1>
 <p>A Hyperdrive store keeps its data in your own MySQL database. Connect the database here once. Then choose it when you add a store.</p>
 <div id="db-error" class="notice notice-error" hidden><p></p></div>
-<table class="list"><thead><tr><th>Name</th><th>Server</th><th class="hide-sm">Where it runs</th></tr></thead><tbody>${rows}</tbody></table>
+<table class="list"><thead><tr><th>Name</th><th>Server</th><th class="hide-sm">Where it runs</th><th>Region</th></tr></thead><tbody>${rows}</tbody></table>
 <div class="card"><h2>Connect a database</h2>
 <ol>
 <li>Make a MySQL 8 database. We recommend <b>Azure Database for MySQL</b> (Flexible Server), with <b>a separate database for each store</b> (one server can hold many databases). On Azure, set the server parameter <code>sql_mode</code> to <code>ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION</code>, and keep SSL on.</li>
@@ -120,6 +123,7 @@ export function databasesScreen(databases) {
 <tr><th>Where the database runs</th><td><fieldset><legend class="screen-reader-text">Where the database runs</legend>
 <label><input type="radio" name="provider" value="azure" checked> Azure Database for MySQL (recommended)</label><br>
 <label><input type="radio" name="provider" value="mysql"> Another MySQL 8</label></fieldset></td></tr>
+<tr><th><label for="db-region">Database region</label></th><td><input id="db-region" name="region" type="text" autocomplete="off" spellcheck="false" maxlength="48" placeholder="azure:westus2"><p class="description">The cloud and the region where the database server runs, for example <code>azure:westus2</code> (Azure West US 2) or <code>aws:us-east-1</code>. The store's code then runs next to its database. A new store needs it.</p></td></tr>
 </table>
 <p><button id="db-submit" class="button button-primary" type="submit">Connect database</button></p></form></div>`;
 }
@@ -303,12 +307,26 @@ export const JS = `(function () {
       if (!/^[0-9a-f]{32}$/.test(id)) { dbFail('That is not a Hyperdrive configuration ID. Copy the ID (32 letters and numbers) from Cloudflare.'); return; }
       dbErr.hidden = true;
       var btn = document.getElementById('db-submit'); btn.disabled = true;
-      post('/api/databases', { hyperdriveId: id, provider: prov ? prov.value : 'azure' }).then(function (r) {
+      var region = (document.getElementById('db-region') || { value: '' }).value.trim().toLowerCase();
+      if (region && !/^(aws|gcp|azure):[a-z0-9-]{2,40}$/.test(region)) { btn.disabled = false; dbFail('The database region must be the cloud and the region, for example azure:westus2.'); return; }
+      post('/api/databases', { hyperdriveId: id, provider: prov ? prov.value : 'azure', region: region }).then(function (r) {
         if (r && r.ok) { window.location.reload(); return; }
         btn.disabled = false; dbFail((r && r.error) || 'The database was not connected.');
       }, function () { btn.disabled = false; dbFail('The site manager did not answer.'); });
     });
   }
+  if (document.querySelectorAll) Array.prototype.forEach.call(document.querySelectorAll('.db-region-set'), function (b) {
+    b.addEventListener('click', function () {
+      var input = document.getElementById('region-' + b.getAttribute('data-id'));
+      var region = input ? input.value.trim().toLowerCase() : '';
+      if (!/^(aws|gcp|azure):[a-z0-9-]{2,40}$/.test(region)) { dbFail('The database region must be the cloud and the region, for example azure:westus2.'); return; }
+      b.disabled = true;
+      post('/api/databases/region', { id: b.getAttribute('data-id'), region: region }).then(function (r) {
+        if (r && r.ok) { window.location.reload(); return; }
+        b.disabled = false; dbFail((r && r.error) || ('The region was saved, but these stores could not be moved yet: ' + ((r && r.failed) || []).map(function (f) { return f.site + ' (reference ' + f.reference + ')'; }).join(', ') + '. Select Set region again.'));
+      }, function () { b.disabled = false; dbFail('The site manager did not answer.'); });
+    });
+  });
   if (document.querySelectorAll) Array.prototype.forEach.call(document.querySelectorAll('.db-remove'), function (a) {
     a.addEventListener('click', function (ev) {
       ev.preventDefault();

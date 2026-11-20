@@ -21,3 +21,4 @@ settings/product-permalinks.spec.ts                     calls wpCLI
 settings/settings-ui-feature-flag.spec.ts               calls wpCLI
 editor/command-palette.spec.ts                          calls local wp-env, not the deployed site
 marketing/overview.spec.ts                              code lock denies install_plugins, so recommendations returns 403
+basic/page-loads.spec.ts :: can load Marketing > Overview page  code lock: no user has install_plugins (by design), so wc-admin/marketing/recommendations answers 403 (MarketingRecommendations.php:76 at WC_SHA) and the Channels card the spec waits for never renders (measured cf759a c35c43e, x-pf-call 0ceaedd3-90df-4d62-ac27-9e05a1c4166e)

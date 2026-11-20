@@ -361,7 +361,12 @@ def title_grep_source(path, title):
     if not parts:
         raise Stop("a title row needs a title")
     gap = r"(?: @[^\s]+)* "
-    return re.escape(path) + "".join(gap + re.escape(p) for p in parts) + r"(?: @|$)"
+    split = "".join(gap + re.escape(p) for p in parts)
+    # A test title can itself hold " > " (page-loads.spec.ts: "can load Marketing > Overview page"), so the row also
+    # matches the whole title as one part.
+    whole = gap + re.escape(title.strip())
+    body = split if whole == split else "(?:%s|%s)" % (split, whole)
+    return re.escape(path) + body + r"(?: @|$)"
 
 
 def grep_invert_source(titles):
