@@ -1,6 +1,6 @@
 #!/bin/bash
 # Offline tests of deploy/destroy.sh's checks (local state, no Cloudflare).
-#   deploy/tests/destroy-test.sh
+#   deploy/tests/destroy-test.sh [another destroy.sh]
 # A copy of deploy/ in a temp dir; the cloudflare provider from this clone's
 # deploy/terraform/.terraform (run terraform init there once); npx is a stub
 # that logs. The states are pushed with outputs only (no resources), so
@@ -11,9 +11,12 @@ SRC=$(cd "$HERE/.." && pwd)
 [ -d "$SRC/terraform/.terraform/providers" ] || { echo "run terraform init in deploy/terraform first (the provider)" >&2; exit 2; }
 T=$(mktemp -d "${TMPDIR:-/tmp}/destroy-test.XXXXXX")
 APIPID=""
-trap '[ -z "$APIPID" ] || kill "$APIPID" 2>/dev/null; rm -rf "${T:?}"' EXIT
+R2PID=""
+trap '[ -z "$APIPID" ] || kill "$APIPID" 2>/dev/null; [ -z "$R2PID" ] || kill "$R2PID" 2>/dev/null; rm -rf "${T:?}"' EXIT
 mkdir -p "$T/deploy/terraform/.terraform" "$T/deploy/mysql/.terraform" "$T/spikes/b2-wordpress" "$T/bin"
-cp "$SRC/destroy.sh" "$SRC/tf-backend.sh" "$T/deploy/"
+cp "${1:-$SRC/destroy.sh}" "$T/deploy/destroy.sh"; chmod +x "$T/deploy/destroy.sh"; cp "$SRC/tf-backend.sh" "$T/deploy/"
+# #1031: the media bucket is emptied with a temporary R2 credential (the deploy/wfp minter).
+mkdir -p "$T/deploy/wfp" && cp "$SRC/wfp/r2_temp.py" "$T/deploy/wfp/"
 mkdir -p "$T/deploy/lib" && cp "$SRC/lib/gone-wait.sh" "$T/deploy/lib/"  # #789: the bounded gone check
 cp -R "$SRC/variants" "$T/deploy/"
 cp "$SRC"/terraform/*.tf "$SRC/terraform/.terraform.lock.hcl" "$T/deploy/terraform/"
@@ -47,6 +50,11 @@ PY
 python3 "$T/fake-api.py" "$T/api.port" "$T/api" & APIPID=$!
 for _ in $(seq 1 50); do [ -s "$T/api.port" ] && break; sleep 0.1; done
 CF_API="http://127.0.0.1:$(cat "$T/api.port")"
+# #1031: the R2 temporary credential API and R2's S3 API (deploy/wfp/tests/fake-r2-temp.py).
+python3 -I "$SRC/wfp/tests/fake-r2-temp.py" "$T/r2.port" & R2PID=$!
+for _ in $(seq 1 50); do [ -s "$T/r2.port" ] && break; sleep 0.1; done
+R2="http://127.0.0.1:$(cat "$T/r2.port")"
+export WFP_API="$R2/api" R2_RETRY_S=2 R2_RETRY_STEP=0.2
 export CF_API
 export WR="$T/bin/wr" PATH="$T/bin:$PATH" CLOUDFLARE_API_TOKEN=test ACCOUNT_ID=00000000000000000000000000000000
 # #789: the gone check polls up to GONE_WAIT_S; short here, so a Worker that never goes fails in seconds.
@@ -57,12 +65,12 @@ check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got [$2],
 TFD="$T/deploy/terraform"
 (cd "$TFD" && terraform init -input=false -backend=false > /dev/null && terraform init -input=false -reconfigure > /dev/null)
 TV=$(terraform version -json | python3 -c 'import json,sys; print(json.load(sys.stdin)["terraform_version"])')
-push() { # workspace name-output variant
+push() { # workspace name-output variant [media bucket]
   (cd "$TFD" && terraform workspace new "$1" > /dev/null && python3 -c '
 import json, sys, uuid
-o = {"name": sys.argv[2], "variant": sys.argv[3], "account_id": "0" * 32, "location": "enam", "media_bucket": ""}
+o = {"name": sys.argv[2], "variant": sys.argv[3], "account_id": "0" * 32, "location": "enam", "media_bucket": sys.argv[4], "r2_endpoint": sys.argv[5]}
 print(json.dumps({"version": 4, "terraform_version": sys.argv[1], "serial": 1, "lineage": str(uuid.uuid4()),
-  "outputs": {k: {"value": v, "type": "string"} for k, v in o.items()}, "resources": []}))' "$TV" "$2" "$3" > "$T/state.json" && terraform state push "$T/state.json" > /dev/null && terraform workspace select default > /dev/null)
+  "outputs": {k: {"value": v, "type": "string"} for k, v in o.items()}, "resources": []}))' "$TV" "$2" "$3" "${4:-}" "$R2" > "$T/state.json" && terraform state push "$T/state.json" > /dev/null && terraform workspace select default > /dev/null)
 }
 push site-x site-x b-do
 push site-y site-z b-do
@@ -72,6 +80,8 @@ push site-g2 site-g2 b-do
 push site-g3 site-g3 b-do
 push site-g4 site-g4 b-do
 push site-g5 site-g5 b-do
+push site-m1 site-m1 b-do site-m1-media
+push site-m2 site-m2 b-do site-m2-media
 run() { : > "$T/npx.log"; set +e; NAME=$1 "$T/deploy/destroy.sh" > "$T/out" 2>&1; rc=$?; set -e; }
 ws() { (cd "$TFD" && terraform workspace list | tr -d ' *' | grep -cx "$1" || true); }
 
@@ -134,6 +144,21 @@ check "#789 the Worker reads 200 twice, then 404: the check waits, and the destr
 echo 503,404 > "$T/api/site-g5"
 run site-g5
 check "#789 a 503, then 404: retried, never taken as gone, then gone" "$rc:$(grep -c 'is gone (API: 404)' "$T/out"):$(ws site-g5)" "0:1:0"
+
+# 11. (#1031) A site with a media bucket: emptied with a temporary R2 credential minted from the deploy
+#     token, never an account token (API Tokens Write). Measured before #1031 on cf759h (2026-11-20):
+#     the Worker was deleted, then the token mint answered 403 9109, and the run stopped half done.
+for k in uploads/a.jpg uploads/b.jpg; do curl -s -o /dev/null -X PUT --data x "$R2/_seed/site-m1-media/$k"; done
+check "#1031   control: the bucket holds 2 objects before the run" "$(python3 -I -c 'import json, sys, urllib.request; d = json.load(urllib.request.urlopen(sys.argv[1] + "/_state")); print(len([o for o in d["objects"] if o.lstrip("/").startswith("site-m1-media/")]))' "$R2")" "2"
+run site-m1
+check "#1031 media bucket: destroyed" "$rc" "0"
+check "#1031   one temporary credential, for that bucket only" "$(python3 -I -c 'import json, sys, urllib.request; d = json.load(urllib.request.urlopen(sys.argv[1] + "/_state")); print(len(d["mints"]), sorted({m["bucket"] for m in d["mints"]}))' "$R2")" "1 ['site-m1-media']"
+check "#1031   the bucket is empty" "$(python3 -I -c 'import json, sys, urllib.request; d = json.load(urllib.request.urlopen(sys.argv[1] + "/_state")); print(len([o for o in d["objects"] if o.lstrip("/").startswith("site-m1-media/")]))' "$R2")" "0"
+check "#1031   the Worker deleted, the workspace gone" "$(cat "$T/npx.log"):$(ws site-m1)" "delete --name site-m1 --force:0"
+# 12. (#1031) The deploy token cannot mint the credential: refused BEFORE anything is deleted.
+curl -s -o /dev/null -X POST "$R2/_refuse_mint"
+run site-m2
+check "#1031 mint refused: stopped, nothing deleted" "$rc:$(grep -c 'Nothing was deleted' "$T/out"):$(wc -l < "$T/npx.log" | tr -d ' '):$(ws site-m2)" "1:1:0:1"
 
 [ "$fails" = 0 ] || { echo "$fails failed"; cat "$T/out"; exit 1; }
 echo "all passed"
