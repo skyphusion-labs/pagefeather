@@ -109,7 +109,11 @@ export async function setDatabaseRegion(env, { body, fetchImpl }) {
   for (const hostname of await sitesUsing(ctx, kvId, id)) {
     const e = await readSite(ctx, { kvId, hostname });
     if (!e || typeof e.script !== 'string') continue;
-    try { await placeNamespaceScript(ctx, { ns: namespace, name: e.script, placement: { mode: 'targeted', region } }); placed.push(hostname); }
+    try {
+      await placeNamespaceScript(ctx, { ns: namespace, name: e.script, placement: { mode: 'targeted', region } });
+      await updateSite(ctx, { kvId, hostname, patch: { placementRegion: region } }); // #1063: a later upload reads it
+      placed.push(hostname);
+    }
     catch (err) { failed.push({ site: hostname, reference: logged('place store', (err && err.stack) || err) }); }
   }
   return { ok: !failed.length, id, region, placed, failed };
@@ -326,7 +330,8 @@ export async function addSite(env, { body, fetchImpl, dispatcherSource }) {
     if (!r.existing && r.alreadyInstalled) { taken = true; throw new Error(`table prefix ${aOpts.tablePrefix} already holds WordPress`); }
     if (!r.existing && !r.installed) throw new Error(`install: ${r.installNote || 'not installed'}`);
     await deployFrontDoor(ctx, { name: req.name, kvId, namespace, source: dispatcherSource, compatibilityDate: cfg.compatibilityDate });
-    await updateSite(ctx, { kvId, hostname, patch: { database: db.id, tablePrefix: aOpts.tablePrefix } });
+    // #1063: the entry records the store's placement, so any later upload of it (an update) carries the same one.
+    await updateSite(ctx, { kvId, hostname, patch: { database: db.id, tablePrefix: aOpts.tablePrefix, ...(aOpts.placementRegion ? { placementRegion: aOpts.placementRegion } : {}) } });
   } catch (e) {
     if (ours) throw e;
     const ref = logged('add Hyperdrive store', (e && e.stack) || e);

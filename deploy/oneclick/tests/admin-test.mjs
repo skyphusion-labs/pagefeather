@@ -616,6 +616,8 @@ await ok('#1063 a new store on a database with a region uploads placement {mode:
   assert(res.status === 200, `answered ${res.status} ${await res.text()}`);
   const site = cf.calls.find((c) => c.method === 'PUT' && c.path.endsWith('/scripts/site-bigshop'));
   assert(site && JSON.stringify(site.metadata.placement) === JSON.stringify({ mode: 'targeted', region: 'azure:westus2' }), `placement ${JSON.stringify(site && site.metadata.placement)}`);
+  const entry = JSON.parse([...cf.kv].find(([k]) => k.endsWith('/wp-bigshop.acme.workers.dev'))[1]);
+  assert(entry.placementRegion === 'azure:westus2', `the entry does not record the placement: ${JSON.stringify(entry)}`);
 });
 
 await ok('#1063 control: a STANDARD site uploads no placement', async () => {
@@ -655,6 +657,11 @@ await ok('#1063 setting a database region re-places every store on it in place (
   assert(patches.length === 2 && patches.every((c) => c.path.includes('/dispatch/namespaces/pagefeather/scripts/site-shop-') && c.settings.placement.region === 'azure:westus2' && c.settings.placement.mode === 'targeted'), JSON.stringify(patches));
   const stored = JSON.parse([...cf.kv].find(([k]) => k.endsWith(`/_db/${HD}`))[1]);
   assert(stored.region === 'azure:westus2', `stored ${JSON.stringify(stored)}`);
+  // #1063 (the lead): a later upload must not un-place a store, so each store's entry records its placement.
+  for (const n of ['shop-one', 'shop-two']) {
+    const e = JSON.parse([...cf.kv].find(([k]) => k.endsWith(`/wp-${n}.acme.workers.dev`))[1]);
+    assert(e.placementRegion === 'azure:westus2', `${n} entry ${JSON.stringify(e)}`);
+  }
   const page = await (await call(get('/databases'), env, access(), cf)).text();
   assert(!page.includes('Set your database region for faster pages') && page.includes('azure:westus2'), 'the notice is still shown');
 });
