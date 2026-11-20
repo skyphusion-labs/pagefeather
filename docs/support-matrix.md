@@ -60,6 +60,7 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 | Emails | not measured | not measured | not measured | not measured |
 | PDF invoices | every deploy path: fixed in #769 (merged 2026-11-16); not yet measured live | the same | the same | not measured |
 | REST API keys in the Basic header | yes in code (#762); live run pending | yes in code (#762); live run pending | yes in code (#762); live run pending | not measured |
+| REST product batch (`/wc/v3/products/batch` create) | not measured | not measured | not measured | limited: about 1.9 s per product (130 queries at about 14 ms), so the suite's 14-product batch took 27.2 s ([why](#a-rest-product-batch-is-about-19-s-per-product-on-hyperdrive-1119)) |
 
 ## The deploy paths
 
@@ -151,6 +152,14 @@ The Durable Object's SQLite caps a `LIKE` pattern at **50 bytes**, not SQLite's 
   NOT LIKE is rewritten too. A pattern at or under 50 bytes is left to SQLite as before.
 - **Still a limit:** a pattern over 50 bytes with a wildcard INSIDE it (`_` anywhere, or `%` between literals), or a suffix match (`'%term'`). SQLite refuses it. **No WordPress core path builds one from user input** (measured on #805). Plugin code that writes such a `LIKE` by hand can. WooCommerce's cart-page check is the one known case, and `php/woo-cart-page.php` handles it (#744).
 - **What the visitor sees in that case:** an empty result with HTTP 200, a plausible wrong answer. Whether a deterministic refusal should answer a visible error instead is #836.
+
+### A REST product batch is about 1.9 s per product on Hyperdrive (#1119)
+
+WooCommerce creates each product in a batch with about 130 database queries, one after another. On Hyperdrive each query is one round trip to the database, about 14 ms, so a batch costs about 1.9 s per product. That is WooCommerce's own write path, not an engine bug.
+
+- **Live (cf759hl, 2026-11-20, build `7acbc3c`, westus2, `PLACEMENT=azure:westus2`):** the wc-api suite's product-list sample data, `POST /wp-json/wc/v3/products/batch` with 14 simple products, made 1,829 queries in one PHP run of 27.2 s (19:09:30.8Z to 19:09:58.0Z, Workers Observability). The suite's client gives up at 10 s.
+- **The same batch locally (method):** the suite's exact payload (WooCommerce pin `67e007c3`, `product-list.test.ts`), with `SAVEQUERIES` on, made 1,805 queries in 2.0 s on dosql-local, so the count is the same on both engines and only the round trip differs. Of the 1,805, about 470 are writes, and about 1,060 more are reads caused by those writes in the same request: an existence check before each meta insert, the post meta cache reloading after each write, and the term caches cleared by each term count update. A cache across requests (#1090) cannot remove them, and placement is already set (#1054).
+- **What a client sees:** a batch of more than about 5 products takes longer than 10 s. A short request on the same isolate waits behind it (the suite's term GET waited 11.3 s, then ran in 0.5 s); that wait is the overflow pool's job (`PHP_OVERFLOW`, #296), off by default.
 
 ### Semantic search: the plugin side is closed upstream, not measured here
 
