@@ -221,7 +221,7 @@ const mutating = (calls) => calls.filter((c) => c.method !== 'GET');
   const name = 'alean';
   const mediaBucket = mediaBucketName(name);
   const r = await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl }, {
-    kind: 'a', name, namespace: 'wp-wfp', kvId: 'KV', hostname: 'alean.skyphusionwp.dev', saasZoneId: 'ZONE',
+    kind: 'a', name, namespace: 'wp-wfp', kvId: 'KV', hostname: 'alean.skyphusionwp.dev', saasZoneId: 'ZONE', placement: { mode: 'targeted', region: 'azure:westus2' },
     compatibilityDate: '2026-07-01', mainModule: 'index-a-lean.js',
     modules: [{ name: 'index-a-lean.js', content: 'export default {}' }],
     resourceBindings: aBindings({ mediaBucket, hyperdriveId: 'HDID', siteOrigin: 'https://alean.skyphusionwp.dev', hyperdriveSqlMode: 'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION' }),
@@ -239,6 +239,7 @@ const mutating = (calls) => calls.filter((c) => c.method !== 'GET');
   const byType = (t) => meta.bindings.filter((b) => b.type === t);
   const varOf = (n) => byType('plain_text').find((b) => b.name === n);
   ok('a: NO SQLite migration (PHP runs in the Worker, not a DO)', !('migrations' in meta));
+  ok('#1063 a: the upload carries the placement', JSON.stringify(meta.placement) === JSON.stringify({ mode: 'targeted', region: 'azure:westus2' }));
   ok('a: binds HYPERDRIVE to the given config id', byType('hyperdrive').some((b) => b.name === 'HYPERDRIVE' && b.id === 'HDID'));
   ok('a: binds OC_KV with the CREATED namespace id injected', byType('kv_namespace').some((b) => b.name === 'OC_KV' && b.namespace_id === 'OCKVID'));
   ok('a: binds the site MEDIA bucket + IMAGES + EMAIL',
@@ -258,12 +259,33 @@ const mutating = (calls) => calls.filter((c) => c.method !== 'GET');
     rec.calls.some((c) => c.method === 'POST' && /\/_install$/.test(c.url)));
 }
 
+// #1063 (the lead's guard): an approach A upload with NO placement field is refused before anything is made, so
+// a future update path (#782) cannot silently un-place a store. placement: null places none, on purpose.
+{
+  const base = (over) => ({
+    kind: 'a', name: 'aguard', namespace: 'wp-wfp', kvId: 'KV', hostname: 'aguard.skyphusionwp.dev',
+    compatibilityDate: '2026-07-01', mainModule: 'index-a-lean.js', modules: [{ name: 'index-a-lean.js', content: 'export default {}' }],
+    resourceBindings: aBindings({ mediaBucket: mediaBucketName('aguard'), hyperdriveId: 'HDID', siteOrigin: 'https://aguard.skyphusionwp.dev' }),
+    sqliteClasses: [], kvNamespaces: [{ title: ocKvNamespaceName('aguard'), binding: 'OC_KV' }],
+    secrets: { WP_SALT: 's', SPIKE_TOKEN: 't' }, buckets: { media: mediaBucketName('aguard') }, ...over,
+  });
+  const rec = recorder();
+  let msg = '';
+  try { await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl }, base({})); } catch (e) { msg = e.message; }
+  ok('#1063 a: an upload with no placement field is refused, naming it', /needs placement/.test(msg) && /placement: null/.test(msg));
+  ok('#1063 a:   and nothing was made', !mutating(rec.calls).length);
+  const rec2 = recorder();
+  await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec2.fetchImpl }, base({ placement: null }));
+  const up = rec2.calls.find((c) => c.method === 'PUT' && /\/scripts\/site-aguard$/.test(c.url));
+  ok('#1063 a: placement: null uploads with no placement (on purpose)', up && (await metaOf(up)).placement === undefined);
+}
+
 // #241: approach A OMITS HYPERDRIVE_SQL_MODE for a non-strict backend (the common
 // case, e.g. Azure MySQL): the var is absent unless the caller sets it.
 {
   const rec = recorder();
   await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl }, {
-    kind: 'a', name: 'anostrict', namespace: 'wp-wfp', kvId: 'KV', hostname: 'anostrict.skyphusionwp.dev',
+    kind: 'a', name: 'anostrict', placement: null, namespace: 'wp-wfp', kvId: 'KV', hostname: 'anostrict.skyphusionwp.dev',
     compatibilityDate: '2026-07-01', mainModule: 'index-a-lean.js',
     modules: [{ name: 'index-a-lean.js', content: 'export default {}' }],
     resourceBindings: aBindings({ mediaBucket: mediaBucketName('anostrict'), hyperdriveId: 'HDID', siteOrigin: 'https://anostrict.skyphusionwp.dev' }),
@@ -378,7 +400,7 @@ const mutating = (calls) => calls.filter((c) => c.method !== 'GET');
   };
   const mediaBucket = mediaBucketName(name);
   const r = await provisionSite({ acct: ACCT, token: 'T', fetchImpl }, {
-    kind: 'a', name, namespace: 'wp-wfp', kvId: 'KV', hostname: 'aleftover.skyphusionwp.dev',
+    kind: 'a', name, namespace: 'wp-wfp', kvId: 'KV', hostname: 'aleftover.skyphusionwp.dev', placement: null,
     compatibilityDate: '2026-07-01', mainModule: 'index-a-lean.js',
     modules: [{ name: 'index-a-lean.js', content: 'export default {}' }],
     resourceBindings: aBindings({ mediaBucket, hyperdriveId: 'HDID', siteOrigin: 'https://aleftover.skyphusionwp.dev', hyperdriveSqlMode: '' }),
@@ -401,7 +423,7 @@ async function provisionAOcv(opts, objectCacheVersions) {
   const rec = recorder(opts);
   const name = 'aocv';
   const r = await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl }, {
-    kind: 'a', name, namespace: 'wp-wfp', kvId: 'KV', hostname: 'aocv.skyphusionwp.dev',
+    kind: 'a', name, namespace: 'wp-wfp', kvId: 'KV', hostname: 'aocv.skyphusionwp.dev', placement: null,
     compatibilityDate: '2026-07-01', mainModule: 'index-a-lean.js', modules: [{ name: 'index-a-lean.js', content: 'export default {}' }],
     resourceBindings: aBindings({ mediaBucket: mediaBucketName(name), hyperdriveId: 'HDID', siteOrigin: 'https://aocv.skyphusionwp.dev', ...(objectCacheVersions === undefined ? {} : { objectCacheVersions }) }),
     sqliteClasses: [], kvNamespaces: [{ title: ocKvNamespaceName(name), binding: 'OC_KV' }],

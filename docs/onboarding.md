@@ -69,10 +69,10 @@ Source the file from step 2 and add the site. Pass the Hyperdrive id, and the SQ
 source onboard.env   # HYPERDRIVE_ID, SQL_MODE
 export WFP_SAAS_ZONE_ID=<the SaaS zone id> WP_HOSTNAME=myshop.<your SaaS zone>
 node deploy/provision/cli.mjs add --kind a myshop \
-  --hyperdrive "$HYPERDRIVE_ID" --hyperdrive-sql-mode "$SQL_MODE"
+  --hyperdrive "$HYPERDRIVE_ID" --hyperdrive-sql-mode "$SQL_MODE" --placement azure:westus2
 ```
 
-`--hyperdrive` is required for `--kind a` (it is the config id from onboarding). `--hyperdrive-sql-mode` is only needed for a strict provider; leave it off when `SQL_MODE` is empty. There is no SQLite migration step: the database lives in your provider, not in a Durable Object. See [deploy/provision/cli.mjs](../deploy/provision/cli.mjs) (PR #243).
+`--hyperdrive` is required for `--kind a` (it is the config id from onboarding). `--placement` is required too (#1063): the database's region as `<aws|gcp|azure>:<region>`, for example `azure:westus2`, so the Worker runs next to its database. Measured on #1054, a Worker across the country from its database was 2 to 5 times slower. `--placement none` places none, on purpose. `--hyperdrive-sql-mode` is only needed for a strict provider; leave it off when `SQL_MODE` is empty. There is no SQLite migration step: the database lives in your provider, not in a Durable Object. See [deploy/provision/cli.mjs](../deploy/provision/cli.mjs) (PR #243).
 
 Compare with the b-dosql kind, which is `site add --kind wp` in [framework.md](framework.md).
 
