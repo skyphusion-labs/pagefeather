@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # #1070, corrected by #1083. The merge-queue gate in .github/workflows/approval-at-head.yml
 # reads the PR number from github.event.merge_group.head_ref, then reads the PR head from
-# the API and checks it is in the merge group. This test cuts the REAL blocks out of the
+# the API. The compare of that head with the merge group is a DIAGNOSTIC only (lead ruling,
+# #1083: with squash the PR head is not an ancestor of the group commit). This test cuts the REAL blocks out of the
 # workflow (between "# parse-begin"/"# parse-end" and "# verify-begin"/"# verify-end") and
 # runs them, so the shipped code is what is tested, not a copy. The verify block runs with a
 # stub `gh` that answers from environment variables. It also checks the three workflows
@@ -127,6 +128,7 @@ verify "open $HEAD" "ahead"
 check "an open PR whose head is in the group passes" "$RC" "0"
 check "the output sha is the PR head from the API" "$SHA_OUT" "$HEAD"
 check "the compare asks about the PR head and the group commit" "$CALLS" "repos/skyphusion-labs/pagefeather/pulls/1067 repos/skyphusion-labs/pagefeather/compare/$HEAD...$GROUP "
+check "the log shows the compare status as a diagnostic" "$(grep -c "compare says 'ahead' (diagnostic, not a gate)" "$T/log")" "1"
 check "the output sha is not the sha in the queue ref" "$([ "$SHA_OUT" = "$MAIN" ] && echo same || echo different)" "different"
 
 # The whole path on the live shape: parse the ref (sha = main), then verify with the API head.
@@ -141,16 +143,28 @@ refuse_verify() {
 }
 refuse_verify "a closed PR" "closed $HEAD" "ahead"
 refuse_verify "a merged PR" "merged $HEAD" "ahead"
-refuse_verify "a PR head that is behind the group" "open $HEAD" "behind"
-refuse_verify "a PR head that diverged from the group" "open $HEAD" "diverged"
-refuse_verify "an unknown compare status" "open $HEAD" ""
 refuse_verify "a malformed PR head from the API" "open zzzz" "ahead"
 refuse_verify "an empty PR head from the API" "open " "ahead"
 refuse_verify "a short PR head from the API" "open ${HEAD%?}" "ahead"
 refuse_verify "the pulls API failing" "open $HEAD" "ahead" STUB_PULL_FAIL=1
-refuse_verify "the compare API failing" "open $HEAD" "ahead" STUB_CMP_FAIL=1
-refuse_verify "a malformed merge group sha" "open $HEAD" "ahead" MG_SHA=nope
-refuse_verify "an empty merge group sha" "open $HEAD" "ahead" MG_SHA=
+
+# The compare is a diagnostic, never a gate. With squash the PR head is not an ancestor of
+# the group commit, so none of these may refuse: the approval is judged at the API head.
+pass_verify() {
+    verify "$2" "$3" "${@:4}"
+    check "$1: passes" "$RC" "0"
+    check "$1: outputs the PR head" "$SHA_OUT" "$HEAD"
+}
+pass_verify "a squash group (compare diverged)" "open $HEAD" "diverged"
+pass_verify "a group the PR head is behind" "open $HEAD" "behind"
+pass_verify "an empty compare status" "open $HEAD" ""
+pass_verify "the compare API failing" "open $HEAD" "ahead" STUB_CMP_FAIL=1
+pass_verify "a malformed merge group sha" "open $HEAD" "ahead" MG_SHA=nope
+pass_verify "an empty merge group sha" "open $HEAD" "ahead" MG_SHA=
+verify "open $HEAD" "diverged"
+check "a diverged group is logged as such" "$(grep -c "compare says 'diverged' (diagnostic, not a gate)" "$T/log")" "1"
+verify "open $HEAD" "ahead" STUB_CMP_FAIL=1
+check "a failed compare is logged as unavailable" "$(grep -c "compare says 'unavailable'" "$T/log")" "1"
 
 # The workflows answer merge_group, and the queue job uses the same judge as the PR job.
 check "ci.yml answers merge_group" "$(grep -c '^  merge_group:' "$ROOT/.github/workflows/ci.yml")" "1"

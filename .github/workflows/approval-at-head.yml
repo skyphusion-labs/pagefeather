@@ -63,12 +63,21 @@ jobs:
   #   https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#merge_group
   #   https://docs.github.com/en/webhooks/webhook-events-and-payloads#merge_group
   #
+  # NOT A GATE: the ancestor relation. With the squash merge method the group commit is a
+  # squash commit, so the PR head is not its ancestor and a gate on it would refuse
+  # every entry (lead ruling, #1083). The safety comes from three things instead:
+  #   1. GitHub enqueues a PR only when its review rules are met;
+  #   2. any push to a queued PR removes it from the queue;
+  #   3. this gate re-judges the approval at the PR's CURRENT head, read from the API
+  #      here, in the same run that gates the merge.
+  # The compare status is logged so a run shows how the group relates to the PR head.
+  #
   # The queue-ref job:
   #   1. reads N from github.event.merge_group.head_ref (never from a PR-controlled
   #      field) and refuses a ref that does not parse;
   #   2. reads the PR head sha from the API and refuses a PR that is not open;
-  #   3. refuses unless that head is an ancestor of github.event.merge_group.head_sha
-  #      (the group commit), so the approval judged is for the code being merged;
+  #   3. logs how the PR head relates to github.event.merge_group.head_sha (a diagnostic
+  #      only, see below);
   #   4. outputs the PR head sha from the API, not from the ref.
   # approval-at-head-queue then runs the SAME judge, at the same pinned sha, on that PR
   # and head: an APPROVED review at exactly that sha. If queue-ref fails, the judge never
@@ -106,7 +115,7 @@ jobs:
           fi
           echo "pr=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
           # parse-end
-      - name: the PR is open and its head is in the merge group
+      - name: the PR is open; read its head
         id: verify
         env:
           GH_TOKEN: ${{ github.token }}
@@ -117,10 +126,6 @@ jobs:
           # verify-begin (tests/ci/merge-group-ref-test.sh runs this block with a stub gh)
           set -euo pipefail
           sha40='^[0-9a-f]{40}$'
-          if [[ ! "$MG_SHA" =~ $sha40 ]]; then
-            echo "::error::merge_group head_sha '$MG_SHA' is not a 40 hex sha; refusing"
-            exit 1
-          fi
           pull=$(gh api "repos/$REPO/pulls/$PR" --jq '.state + " " + .head.sha')
           state="${pull%% *}"
           head="${pull#* }"
@@ -132,15 +137,12 @@ jobs:
             echo "::error::PR #$PR head '$head' is not a 40 hex sha; refusing"
             exit 1
           fi
-          # compare <PR head>...<group commit>: "ahead" or "identical" means the PR head
-          # is an ancestor of the group commit. Anything else, or an API error, refuses.
-          rel=$(gh api "repos/$REPO/compare/$head...$MG_SHA" --jq '.status')
-          if [ "$rel" != "ahead" ] && [ "$rel" != "identical" ]; then
-            echo "::error::PR #$PR head $head is not an ancestor of the merge group $MG_SHA (compare says '$rel'); refusing"
-            exit 1
-          fi
           echo "sha=$head" >> "$GITHUB_OUTPUT"
-          echo "PR #$PR is open at $head, and $head is in the merge group $MG_SHA ($rel)"
+          echo "PR #$PR is open at $head; the approval is judged at that head"
+          # Diagnostic only, never a gate: how the group commit relates to the PR head. A
+          # failure here is logged and does not refuse.
+          rel=$(gh api "repos/$REPO/compare/$head...$MG_SHA" --jq '.status' 2>/dev/null) || rel="unavailable"
+          echo "merge group $MG_SHA vs PR head $head: compare says '${rel:-empty}' (diagnostic, not a gate)"
           # verify-end
 
   approval-at-head-queue:
