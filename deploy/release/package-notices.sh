@@ -7,8 +7,9 @@
 # SOURCE are filled from engine/notices/lean-bundle/*.in with the prerelease tag and the two sha256 values in
 # spikes/b2-wordpress/engine.lock, and name prepare.sh's transform; the bundle's own SHA256SUMS hashes its wasm).
 # prefix is empty for the b-dosql bundle and "a." for the approach-A bundle.
-# Both of those product bundles ship the npm Playground engine, so they omit
-# engine. The lean engine prerelease is unprefixed:
+# Both product bundles default to the pinned lean engine (#771, #1027), so
+# build-bundle.sh passes lean-bundle. PHP_ENGINE=npm passes playground, which is
+# also the default when engine is omitted. The lean engine prerelease is unprefixed:
 #
 #   package-notices.sh <release-dir> "" lean
 #

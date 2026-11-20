@@ -9,7 +9,9 @@
 # all posts.
 #
 #   wp  the WordPress suite (wordpress-develop tests/e2e): the theme twentytwentyone.
-#   wc  the WooCommerce suite (plugins/woocommerce/tests/e2e): the theme twentytwentythree, the
+#   wc  the WooCommerce suite (plugins/woocommerce/tests/e2e): the themes twentytwentythree, storefront, twentytwenty,
+#       twentytwentytwo, twentytwentyfour and the test themes of tests/e2e/themes/blocks (as .wp-env.e2e.json mounts
+#       them, #937; with gb, Gutenberg's emptytheme is kept), the
 #       plugins woocommerce-e2e-test-helper, woocommerce-cleanup, and
 #       wc-email-template-sync-test-helper (from WC_SHA; the upstream external setup takes them
 #       from trunk, which is not pinned), and wp-mail-logging.
@@ -85,11 +87,29 @@ if [ "$want_wc" = 1 ]; then
   add themes twentytwentythree
   add plugins wp-mail-logging
   tp=plugins/woocommerce/tests/e2e/test-plugins
-  fetch woocommerce "$WC_REPO" "$WC_SHA" "/$tp/woocommerce-e2e-test-helper/" "/$tp/woocommerce-cleanup/" "/$tp/wc-email-template-sync-test-helper/"
+  # The themes the WooCommerce e2e environment mounts (.wp-env.e2e.json at WC_SHA, #937): three from wordpress.org
+  # (themes.txt) plus twentytwentyfour, and the test themes from tests/e2e/themes/blocks.
+  add themes storefront; add themes twentytwenty; add themes twentytwentytwo; add themes twentytwentyfour
+  tt=plugins/woocommerce/tests/e2e/themes/blocks
+  fetch woocommerce "$WC_REPO" "$WC_SHA" "/$tp/woocommerce-e2e-test-helper/" "/$tp/woocommerce-cleanup/" "/$tp/wc-email-template-sync-test-helper/" "/$tt/"
   for p in woocommerce-e2e-test-helper woocommerce-cleanup wc-email-template-sync-test-helper; do
     take woocommerce "$tp/$p" plugins "$p"
     [ -f "$out/wp-content/plugins/$p/$p.php" ] || { echo "prepare: $p has no $p.php; refused" >&2; exit 1; }
     add imp_plugins "$p"
+  done
+  for th in emptytheme theme-with-woo-templates \
+      storefront-child__block-notices-filter storefront-child__block-notices-template storefront-child__classic-notices-template \
+      storefront-child__with-block-template-part storefront-child__with-block-template-part-support \
+      twentytwentyfour-child__block-notices-filter twentytwentyfour-child__block-notices-template twentytwentyfour-child__classic-notices-template; do
+    # Gutenberg's suite has its own, different emptytheme under the same name. With gb in the build, Gutenberg's wins:
+    # no WooCommerce spec at WC_SHA names emptytheme (measured 2026-11-20), and Gutenberg's specs do.
+    if [ "$th" = emptytheme ] && [ "$want_gb" = 1 ]; then
+      echo "  themes/emptytheme: woocommerce's not taken (gb is in this build and ships its own emptytheme)" >> "$out/PINS"
+      continue
+    fi
+    take woocommerce "$tt/$th" themes "$th"
+    [ -f "$out/wp-content/themes/$th/style.css" ] || { echo "prepare: theme $th has no style.css; refused" >&2; exit 1; }
+    add imp_themes "$th"
   done
 fi
 if [ "$want_gb" = 1 ]; then

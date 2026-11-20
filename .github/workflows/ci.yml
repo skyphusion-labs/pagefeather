@@ -1,6 +1,7 @@
 name: ci
 on:
   pull_request:
+  merge_group:
   push:
     branches: [main]
 permissions:
@@ -59,6 +60,10 @@ jobs:
           if [ -n "$hits" ]; then echo "process substitution found:"; echo "$hits"; exit 1; fi
           echo "no process substitution in the macOS-run scripts"
           tests/ci/no-process-sub-test.sh
+      - name: Merge queue gate (#1070)
+        # approval-at-head.yml reads the PR and head sha from the queue branch name. This runs the
+        # REAL parse block on good and bad refs, and checks the three workflows answer merge_group.
+        run: tests/ci/merge-group-ref-test.sh
       - name: Release bundle manifest (issue #405)
         # deploy/release: the manifest the one-click admin checks a downloaded bundle against. Offline.
         run: |
@@ -68,7 +73,7 @@ jobs:
         # A bundle that ships an engine must carry LICENSES.tar.gz, SOURCE and NOTICE.
         # Offline: committed texts at the pins in engine/licenses.tsv, no fetch.
         run: bash deploy/release/tests/release-notices-test.sh
-      - name: a product bundle ships the notices of the engine it built; approach A held on npm (#771, #788)
+      - name: a product bundle ships the notices of the engine it built; approach A defaults to the lean engine (#771, #1027)
         run: bash deploy/release/tests/bundle-notices-test.sh
       - name: the lean engine prerelease is assembled only from the pinned bytes, with its notices (#771)
         run: bash engine/tools/publish-lean-test.sh
@@ -85,6 +90,7 @@ jobs:
           bash deploy/tests/a-settings-test.sh
           bash deploy/tests/activate-installed-test.sh
           bash deploy/tests/dosql-remote-test.sh
+          bash deploy/tests/a-remote-test.sh
           bash deploy/tests/fault-inject-test.sh
           bash deploy/tests/page-cache-ttl-test.sh
           bash deploy/tests/conformance-test.sh
@@ -156,6 +162,8 @@ jobs:
         run: php tests/a/found-rows-test.php
       - name: Page cache versions, exact invalidation on approach A (#296)
         run: node --test spikes/b2-wordpress/tests/page-versions.test.mjs
+      - name: A page-cache purge that fails after PHP answers is retried, never swallowed (#1007, #935)
+        run: node --test spikes/b2-wordpress/tests/purge-after-php.test.mjs
       - name: approach A object-cache KV writes are coalesced and 429s counted (issue #500)
         # #711: oc-l2-writer.test.mjs also asserts `last` stays within 1024 entries and 2 MiB.
         run: node --test spikes/b2-wordpress/tests/oc-l2-writer.test.mjs
@@ -319,6 +327,9 @@ jobs:
           python3 -I tests/load/plain-resolve-test.py
       - name: load test skips stock-managed products and keeps each non-2xx Store API code, never a body (#296)
         run: python3 tests/load/stock-codes-stub-test.py
+      - name: load.py ERRLOG keeps every failed request's headers, session values redacted
+        # A stub answers every checkout 503 with diagnostic and session headers; ERRLOG must keep the first, never the second.
+        run: python3 -I tests/load/errlog-stub-test.py
       - name: load test 1102 counter counts 5xx only (issue #394)
         run: python3 tests/load/is1102-test.py
       - name: page-stale probe measures old stock on a cached page, with its controls (#628)
@@ -544,6 +555,7 @@ jobs:
           bash deploy/wfp/tests/obs-full-live-test.sh
           bash deploy/wfp/tests/fault-early-test.sh
           bash deploy/wfp/tests/conformance-early-test.sh
+          bash deploy/wfp/tests/conformance-recorded-test.sh
           bash deploy/wfp/tests/obs-wfp-live-test.sh
           node deploy/provision/tests/ops-test.mjs
           node deploy/provision/tests/vendor-sync-test.mjs

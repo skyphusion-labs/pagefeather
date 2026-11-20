@@ -96,9 +96,6 @@ update_one_inner() {
   local REC_TREE=""
   echo "site $s: the recorded build inputs"
   use_recorded_inputs "$bucket" "$WDIR" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
-  # #764: the RECORDED inputs can carry conformance content too: checked again on them, before the snapshot,
-  # the build and the upload.
-  conformance_var "$s" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
   # The site's recorded settings (#558): kept unless this run sets one or DROP_SETTINGS names it.
   # local -x keeps them inside this one update (update --all runs many).
   # #564: HTTP_ALLOW_HOSTS is unset, empty, or a list. The local -x line turns unset into
@@ -109,6 +106,10 @@ update_one_inner() {
   local SETTINGS_RECORDED=0
   echo "site $s: the recorded settings"
   keep_settings "$bucket" "$WDIR" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
+  # #764: the RECORDED inputs can carry conformance content too: checked again on them, before the snapshot,
+  # the build and the upload. #1002: after keep_settings, so the gate reads the settings this upload renders
+  # (the recorded Turnstile values merged with this run's), not this run's environment alone.
+  conformance_var "$s" || { echo "site $s: update refused; nothing was changed" >&2; return 2; }
   # #394: the remote packs by default, after the record (a recorded 0 opts out) and before the build.
   remote_pack_defaults
   echo "site $s: remote packs OPCACHE_REMOTE=$OPCACHE_REMOTE SITE_REMOTE=$SITE_REMOTE"

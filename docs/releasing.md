@@ -40,7 +40,7 @@ The one-click admin checks each module against `manifest.json`, and it may pin t
 
 ## Which engine a release ships
 
-A version tag `vX.Y.Z` ships the npm Playground engine (the binary pinned in `engine/UPSTREAM`), after `spikes/b2-wordpress/prepare.sh`, in both the b-dosql bundle and the approach-A bundle. `build-bundle.sh` packages that engine's notices (the default of `package-notices.sh`).
+A version tag `vX.Y.Z` ships the pinned lean engine (`spikes/b2-wordpress/engine.lock`) in both the b-dosql bundle and the approach-A bundle (#771, #1027). `build-bundle.sh` packages that engine's notices (`lean-bundle`). `PHP_ENGINE=npm` ships the npm Playground engine (the binary pinned in `engine/UPSTREAM`, after `spikes/b2-wordpress/prepare.sh`) and the playground notices instead.
 
 The custom engine (variant s1-lean) is a separate prerelease. Its assets are `pagefeather-engine-lean.js` and `pagefeather-engine-lean.wasm`. It carries notices by running `package-notices.sh <release dir> "" lean` before `SHA256SUMS`. That SOURCE names `engine/` at the tag, the pins and licences in `engine/licenses.tsv`, and `.github/workflows/pagefeather-engine.yml` (variant s1-lean). `release-bundle.yml` does not publish that prerelease.
 

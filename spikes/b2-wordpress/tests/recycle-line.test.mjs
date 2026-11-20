@@ -77,3 +77,29 @@ test('#771: the engine passes its own default line (140 lean, 100 npm); an expli
 	assert.equal(recycleLine({}, 'x').mib, RECYCLE_DEFAULT_MIB, 'a malformed default falls back to the constant');
 	assert.equal(recycleLine({}, 500).mib, RECYCLE_DEFAULT_MIB, 'an out-of-range default too');
 });
+
+test('#1008: the decision counts the JS object cache with the wasm heap (both sit under the one isolate cap)', () => {
+	const line = 140 * MiB;
+	// wasm alone is under the line; with the object cache the isolate is over it: recycle
+	assert.equal(recycleDecision({ wasmBytes: 134 * MiB, ocBytes: 8 * MiB, lineBytes: line }), 'memory');
+	// the same wasm heap with a small cache stays under: kept
+	assert.equal(recycleDecision({ wasmBytes: 134 * MiB, ocBytes: 1 * MiB, lineBytes: line }), null);
+	// AT the line is kept, over it is recycled, as before
+	assert.equal(recycleDecision({ wasmBytes: 132 * MiB, ocBytes: 8 * MiB, lineBytes: line }), null);
+	assert.equal(recycleDecision({ wasmBytes: 132 * MiB, ocBytes: 8 * MiB + 1, lineBytes: line }), 'memory');
+	// no ocBytes is today's rule
+	assert.equal(recycleDecision({ wasmBytes: 139 * MiB, lineBytes: line }), null);
+	// a bad ocBytes counts as 0, never NaN (NaN would make every comparison false: no recycle at all)
+	for (const ocBytes of [undefined, null, NaN, -5, 'x']) {
+		assert.equal(recycleDecision({ wasmBytes: 141 * MiB, ocBytes, lineBytes: line }), 'memory', String(ocBytes));
+		assert.equal(recycleDecision({ wasmBytes: 139 * MiB, ocBytes, lineBytes: line }), null, String(ocBytes));
+	}
+});
+
+test('#1008: the object cache never recycles a runtime that did not grow its own heap (#603 bootBytes still holds)', () => {
+	const line = 100 * MiB;
+	// a reused 96 MiB memory that grew nothing, plus 8 MiB of cache: over the line, but no growth: kept
+	assert.equal(recycleDecision({ wasmBytes: 96 * MiB, ocBytes: 8 * MiB, lineBytes: line, bootBytes: 96 * MiB }), null);
+	// it grew: recycled
+	assert.equal(recycleDecision({ wasmBytes: 97 * MiB, ocBytes: 8 * MiB, lineBytes: line, bootBytes: 96 * MiB }), 'memory');
+});

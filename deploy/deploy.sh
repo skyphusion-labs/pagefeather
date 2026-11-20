@@ -43,10 +43,10 @@
 # Variant a renders the measured site by default (#666, deploy/README.md): the lean client (A_CLIENT), the
 # object cache with its L2 KV and lazy nodes; PHP_OVERFLOW=1 adds the overflow pool (PHP_OVERFLOW_POOL, default 32);
 # PHP_OVERFLOW=always (#714, a measurement arm) moves every eligible request to it.
-# Variant a, the #394 admin fixes (deploy/a-settings.sh; all off unless set): OPCACHE_A=1 primes
+# Variant a, the #394 admin fixes (deploy/a-settings.sh): OPCACHE_A=1 primes
 # OPcache on the D1 build with no Docker (opcache-a.sh; an empty cache fails), OPCACHE_REMOTE=1 and
-# SITE_REMOTE=1 move the bundle's zips to packs under /_pf/ (#563, #569; on variant a they need OPCACHE_A=1; on b-dosql both
-# are ON by default and OPCACHE_REMOTE=0 opts out, #598, deploy/lib/remote-packs.sh), RECYCLE_WASM_MIB sets the
+# SITE_REMOTE=1 move the bundle's zips to packs under /_pf/ (#563, #569; on variant a they need OPCACHE_A=1). All three
+# are ON by default on variant a (#1020) and both packs on b-dosql (#598); 0 opts out (deploy/lib/remote-packs.sh). RECYCLE_WASM_MIB sets the
 # runtime recycle line (#602; the engine's own default when unset: 140 lean, 100 npm, #771). Every variant: the PHP
 # engine is the pinned LEAN engine by default (#771, spikes/b2-wordpress/engine.lock, fetched by hash);
 # PHP_ENGINE=npm builds the @php-wasm/web-8-3 package engine; PF_ENGINE_JS and PF_ENGINE_WASM build with other
@@ -108,6 +108,9 @@ a_settings_check "$VARIANT" || exit 2
 # OPCACHE_REMOTE=0 opts out. Here, before the build and the render, so both read the same values (the guard below
 # refuses a disagreement). #598's live run: 14 of 40 post-new.php lost to memory resets without them, 0 of 40 with.
 [ "$VARIANT" != b-dosql ] || remote_pack_defaults
+# #1020: variant a too (a_remote_pack_defaults: the packs and the OPCACHE_A priming they follow). cf759hl: 9 of 10
+# /wp-json/ exceededMemory and a fresh runtime per request without them; 10 of 10 at 105 MiB, isolates reused, with.
+[ "$VARIANT" != a ] || a_remote_pack_defaults
 # REQUEST_FRAMES (#352, #589 part 1): on by default for b-dosql (render-conf.sh), off the escape hatch. Only
 # b-dosql has the object-SQLite undo log, so the var on another variant is refused, before any step.
 case "${REQUEST_FRAMES:-}" in
@@ -170,11 +173,9 @@ fi
 # shellcheck source=SCRIPTDIR/observability.sh
 . "$ROOT/deploy/observability.sh"
 obs_check "$VARIANT" || exit 2
-# #788: approach A stays on the npm engine until lean is measured there (the lead's ruling, #771). An explicit
-# PHP_ENGINE, or PF_ENGINE_JS and PF_ENGINE_WASM, still wins.
-if [ "$VARIANT" = a ] && [ -z "${PHP_ENGINE:-}" ] && [ -z "${PF_ENGINE_JS:-}${PF_ENGINE_WASM:-}" ]; then export PHP_ENGINE=npm; fi
 # #771: the PHP engine, resolved ONCE here and exported (spikes/b2-wordpress/engine.sh): prepare.sh, build.sh and
-# everything after see the same pair. The default is the pinned lean engine; PHP_ENGINE=npm, or PF_ENGINE_JS and
+# everything after see the same pair. The default is the pinned lean engine for every variant, including a
+# (#1027 lifted the #788 hold that forced npm here). PHP_ENGINE=npm, or PF_ENGINE_JS and
 # PF_ENGINE_WASM, choose another. After every other check (each refuses first, as
 # its tests pin), and before any Terraform, build or deploy step: a fetch that fails leaves nothing half-applied.
 # shellcheck source=../spikes/b2-wordpress/engine.sh

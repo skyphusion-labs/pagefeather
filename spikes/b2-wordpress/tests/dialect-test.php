@@ -55,8 +55,75 @@ check( 'a long LIKE becomes instr', $s, "SELECT 1 FROM `wp_posts` WHERE ( instr(
 list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE '%a\\%b$long%' ESCAPE '\\'", array(), $none );
 check( 'an escaped % in a long LIKE is a literal', $s, "SELECT 1 FROM t WHERE instr(lower(c), lower('a%b$long')) > 0" );
 
-list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE '%a_b$long%'", array(), $none );
-check( 'a long LIKE with a wildcard inside is left alone', $s, "SELECT 1 FROM t WHERE c LIKE '%a_b$long%'" );
+list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE '%a%b$long%'", array(), $none );
+check( 'a long LIKE with a % inside is left alone', $s, "SELECT 1 FROM t WHERE c LIKE '%a%b$long%'" );
+
+// #836 (a): a long '%...%' whose only inner wildcards are '_' (WooCommerce's cart-page probe: block JSON with
+// __woocommerceNamespace, never escaped) becomes an exact match with no LIKE. Proven by DIFFERENCE against SQLite's own
+// LIKE, which this local SQLite runs without the platform's 50-byte cap: same rows, same NULLs, LIKE and NOT LIKE.
+if ( ! class_exists( 'SQLite3' ) ) {
+	$fail++;
+	echo "FAIL #836 the differential check needs the sqlite3 extension (not skipped: a skip would read as a pass)\n";
+} else {
+	$db = new SQLite3( ':memory:' );
+	$db->exec( 'CREATE TABLE t ( id INTEGER PRIMARY KEY, c TEXT )' );
+	$seg  = str_repeat( 'wp:block ', 7 ); // 63 bytes: each test pattern is over the cap
+	$pats = array(
+		'%' . $seg . '_x_%',
+		'%a_' . $seg . '%',
+		'%' . $seg . '__ns' . $seg . '%',
+		'%_' . $seg . '_%',
+		'%' . $seg . 'Q_Q' . $seg . 'z%',
+		'%' . str_replace( "'", "''", file_get_contents( __DIR__ . '/fixtures/wc-11.2.1-cart-content.txt' ) ) . '%',
+	);
+	$rows = array( null, '', 'x', $seg, $seg . 'AxB', $seg . 'AXB', 'pre ' . $seg . 'axb post', 'a ' . $seg, 'ab' . $seg, 'aZ' . $seg . 'tail',
+		$seg . '..ns' . $seg, $seg . '.ns' . $seg, $seg . 'ééns' . $seg, 'X' . $seg . 'Y', $seg . $seg,
+		strtoupper( $seg ) . 'qXq' . $seg . 'Z', $seg . 'q' . $seg . 'QzQ' . $seg . 'z', $seg . 'Q_Q' . $seg,
+		file_get_contents( __DIR__ . '/fixtures/wc-11.2.1-cart-content.txt' ), 'x' . file_get_contents( __DIR__ . '/fixtures/wc-11.2.1-cart-content.txt' ) . 'x' );
+	$ins = $db->prepare( 'INSERT INTO t ( c ) VALUES ( :c )' );
+	foreach ( $rows as $r ) { $ins->bindValue( ':c', $r, null === $r ? SQLITE3_NULL : SQLITE3_TEXT ); $ins->execute(); $ins->reset(); }
+	$read = function ( $sql ) use ( $db ) { $o = array(); $q = $db->query( $sql ); if ( ! $q ) { return 'error: ' . $db->lastErrorMsg(); } while ( $row = $q->fetchArray( SQLITE3_NUM ) ) { $o[] = $row; } return $o; };
+	foreach ( $pats as $n => $pat ) {
+		foreach ( array( 'LIKE', 'NOT LIKE' ) as $op ) {
+			$orig = "SELECT id, c $op '$pat' FROM t ORDER BY id";
+			list( $s ) = D1_Dialect::rewrite( $orig, array(), $none );
+			check( "#836 pattern $n $op: no LIKE is left", false === stripos( $s, ' LIKE ' ), true );
+			check( "#836 pattern $n $op: the same answer as SQLite LIKE, row by row (NULL kept)", $read( $s ), $read( $orig ) );
+		}
+	}
+	// The lead's corpus (#836 review): a seeded fuzz over '_' at segment edges, adjacent '_', and case. A short alphabet
+	// (a, A, b, B, _) makes near misses common, so a wrong offset or a lost occurrence shows up as a mismatch.
+	mt_srand( 836 );
+	$pick  = function ( $alpha, $n ) { $o = ''; for ( $k = 0; $k < $n; $k++ ) { $o .= $alpha[ mt_rand( 0, strlen( $alpha ) - 1 ) ]; } return $o; };
+	$fz    = new SQLite3( ':memory:' );
+	$fz->exec( 'CREATE TABLE t ( id INTEGER PRIMARY KEY, c TEXT )' );
+	$fins  = $fz->prepare( 'INSERT INTO t ( c ) VALUES ( :c )' );
+	for ( $k = 0; $k < 120; $k++ ) {
+		$v = $pick( 'aAbB', mt_rand( 0, 4 ) ) . ( mt_rand( 0, 3 ) ? $seg : '' ) . $pick( 'aAbB', mt_rand( 0, 5 ) ) . ( mt_rand( 0, 2 ) ? $seg : '' ) . $pick( 'aAbB', mt_rand( 0, 4 ) );
+		$fins->bindValue( ':c', $v, SQLITE3_TEXT ); $fins->execute(); $fins->reset();
+	}
+	$fread = function ( $sql ) use ( $fz ) { $o = array(); $q = $fz->query( $sql ); if ( ! $q ) { return 'error: ' . $fz->lastErrorMsg(); } while ( $row = $q->fetchArray( SQLITE3_NUM ) ) { $o[] = $row; } return $o; };
+	$fz_bad = 0; $fz_n = 0; $fz_hits = 0;
+	for ( $k = 0; $k < 300; $k++ ) {
+		$inner = $pick( 'aAb_', mt_rand( 0, 3 ) ) . $seg . $pick( 'aAb__', mt_rand( 0, 4 ) ) . ( mt_rand( 0, 1 ) ? $seg : '' ) . $pick( 'aAb_', mt_rand( 0, 3 ) );
+		if ( false === strpos( $inner, '_' ) ) {
+			$inner .= '_';
+		}
+		$orig = "SELECT id FROM t WHERE c LIKE '%$inner%' ORDER BY id";
+		list( $s ) = D1_Dialect::rewrite( $orig, array(), $none );
+		$want = $fread( $orig );
+		$fz_n++;
+		$fz_hits += count( $want );
+		if ( false !== stripos( $s, ' LIKE ' ) || $fread( $s ) !== $want ) {
+			$fz_bad++;
+			if ( $fz_bad <= 3 ) { echo "  fuzz mismatch: %$inner%\n"; }
+		}
+	}
+	check( '#836 fuzz: 300 seeded patterns (_ at edges, adjacent _, case) give LIKE\'s rows', $fz_bad, 0 );
+	check( '#836 fuzz: the oracle matched rows (the corpus is not all misses)', $fz_hits > 0, true );
+	$hit = $read( "SELECT count(*) FROM t WHERE c LIKE '" . $pats[5] . "'" );
+	check( '#836 the WooCommerce cart probe matches the two rows that hold the cart content (the oracle is not empty)', $hit, array( array( 2 ) ) );
+}
 
 list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE '%short%'", array(), $none );
 check( 'a short LIKE is left alone', $s, "SELECT 1 FROM t WHERE c LIKE '%short%'" );

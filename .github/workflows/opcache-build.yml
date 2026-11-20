@@ -86,11 +86,13 @@ jobs:
         # and defers the cron leg; the recovery then undoes only its own write, and later writes stay.
         # failed-read-rollback-e2e.sh (#794): a value derived from a failed read (an add_option default over a real value)
         # does not persist: the frame is rolled back on a reset-class failure, and the answer says rolled-back.
+        # a-cron-e2e.sh (#855): on approach A's shape (PHP in the Worker, D1 as the outside database) a scheduled post
+        # stays future with no trigger, and publishes after the Cron Trigger ticks the "cron" object; a second tick is a watchdog.
         # wc-route-defer-e2e.sh (#768): WooCommerce's REST routes deferred, never removed: post-new.php's peak at least
         # 8 MiB lower, the editor preload, /wc/v3, the full index and a wc-admin page identical, deferred 13/13.
         working-directory: spikes/b2-wordpress
         run: |
-          for t in tests/recycle-stack-e2e.sh tests/recycle-loop-e2e.sh tests/boot-race-e2e.sh tests/boot-gate-e2e.sh tests/spare-persist-e2e.sh tests/runcron-boot-e2e.sh tests/rest-list-memory-e2e.sh tests/false-404-e2e.sh tests/failed-read-rollback-e2e.sh tests/stranded-frame-e2e.sh tests/deploy-flow-e2e.sh tests/wc-route-defer-e2e.sh; do
+          for t in tests/recycle-stack-e2e.sh tests/recycle-loop-e2e.sh tests/boot-race-e2e.sh tests/boot-gate-e2e.sh tests/spare-persist-e2e.sh tests/runcron-boot-e2e.sh tests/rest-list-memory-e2e.sh tests/false-404-e2e.sh tests/failed-read-rollback-e2e.sh tests/stranded-frame-e2e.sh tests/a-cron-e2e.sh tests/deploy-flow-e2e.sh tests/wc-route-defer-e2e.sh; do
             if ! "$t"; then echo "::error::$t failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
           done
           # #724 review, finding 4: the drop lands inside instantiation, after the boot took the spare
