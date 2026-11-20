@@ -431,7 +431,8 @@ def main():
             paypal = [r for r in wc_rows if r.path == "paypal/paypal.spec.ts"]
             ok("paypal is a file exclude for wpCLI") if len(paypal) == 1 and paypal[0].kind == "file" and paypal[0].reason == "calls wpCLI / needs wp-env (not the deployed site)" else bad("paypal row: %s" % (paypal,))
             title_rows = [r for r in wc_rows if r.kind == "title"]
-            ok("send email preview is the only title exclude") if len(title_rows) == 1 and title_rows[0].path == "email/settings-email.spec.ts" and title_rows[0].title == want_title else bad("title rows: %s" % (title_rows,))
+            mk_title = "can load Marketing > Overview page"
+            ok("the title excludes are send email preview and Marketing Overview") if [(r.path, r.title) for r in title_rows] == [("email/settings-email.spec.ts", want_title), ("basic/page-loads.spec.ts", mk_title)] else bad("title rows: %s" % (title_rows,))
             try:
                 ign = json.loads(wct.split("const ignore = ", 1)[1].split(";", 1)[0])
             except (ValueError, IndexError) as e:
@@ -440,7 +441,12 @@ def main():
             if ign is not None:
                 ok("wc testIgnore lists paypal/paypal.spec.ts") if "paypal/paypal.spec.ts" in ign else bad("paypal missing from testIgnore: %s" % ign)
                 ok("wc testIgnore does not drop the email settings file") if not any("settings-email" in x for x in ign) else bad("email file was file-ignored: %s" % ign)
-            full = runner.grep_invert_source([("email/settings-email.spec.ts", want_title)])
+            full = runner.grep_invert_source([("email/settings-email.spec.ts", want_title), ("basic/page-loads.spec.ts", mk_title)])
+            # A title that holds " > " itself matches as one part (the Marketing row), and the describe split still works.
+            mk_rx = re.compile(runner.title_grep_source("basic/page-loads.spec.ts", mk_title))
+            ok("a title holding ' > ' matches the Playwright title line") if mk_rx.search("e2e-pf basic/page-loads.spec.ts can load Marketing > Overview page") and not mk_rx.search("e2e-pf basic/page-loads.spec.ts can load Marketing > Coupons page") else bad("Marketing title regex")
+            em_rx = re.compile(runner.title_grep_source("email/settings-email.spec.ts", want_title))
+            ok("a describe > title row still matches as before") if em_rx.search("e2e-pf email/settings-email.spec.ts WooCommerce Email Settings Send email preview") else bad("email title regex")
             ok("wc grepInvert is the tag filter plus the title") if json.dumps(full) in wct else bad("title grep missing from wc config")
             ok("wc-cpt grepInvert carries the same title") if json.dumps(full) in wcc else bad("title grep missing from wc-cpt config")
             ok("wc-api grepInvert does not carry the email title") if json.dumps(runner.title_grep_source("email/settings-email.spec.ts", want_title)) not in wat else bad("wc-api carries the email title")
