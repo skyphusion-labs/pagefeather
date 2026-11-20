@@ -485,3 +485,24 @@ test('#1101 released: a run that throws logs outcome threw; a run of 1 s or more
 	assert.equal(rel.length, 1);
 	assert.equal(rel[0].outcome, 'threw');
 });
+
+// #1101 arm 3 (strummer, cf759hx, Workers Observability): two runs on one isolate were GRANTED 1 ms apart and OVERLAPPED
+// (bdf210e0 granted .294, released .565; bf5e7653 granted .295, released .299), and the second was cancelled as hung while
+// the first logged workerd's "promise resolved from a different request context". pump() granted a waiter by resolving its
+// promise, but the waiter took the slot (blocking++) only when its continuation ran. In that gap blocking is 0 and the queue
+// is not empty, so a new arrival's pump (run: if (blocking === 0) pump()) granted a SECOND waiter. On workerd a continuation
+// resolved from another request's context runs later, through its own context, so the gap is real time. The grant must take
+// the slot synchronously, inside pump.
+test('#1101 DOUBLE GRANT: an arrival between a grant and the granted waiter continuation never starts a second run', async () => {
+	const h = harness();
+	const a = h.run(h.job(100, 'a'));
+	const b = h.run(h.job(100, 'b'));
+	const c = h.run(h.job(100, 'c'));
+	let d = null;
+	// The arrival lands right after a's release (its promise settles after the lock's finally pumped b), before b's
+	// continuation has taken the slot.
+	a.then(() => { d = h.run(h.job(100, 'd')); });
+	await h.c.advance(1000);
+	assert.equal(h.maxLive, 1, 'never two runs at once (maxLive ' + h.maxLive + ')');
+	assert.deepEqual([await a, await b, await c, await d], ['a', 'b', 'c', 'd']);
+});

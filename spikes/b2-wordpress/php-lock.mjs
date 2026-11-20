@@ -59,6 +59,11 @@ export function createPhpLock({ staleMs = 60000, stallMs = null, staleAction: de
 	function pump() {
 		if (blocking > 0 || waiters.length === 0) return;
 		const item = waiters.splice(bestIndex(), 1)[0];
+		// #1101: the grant takes the slot HERE, synchronously. The waiter's continuation runs later (on workerd, through its
+		// own request context when the grant came from another), and before this an arrival in that gap saw blocking 0 and a
+		// non-empty queue and pumped a SECOND waiter: two runs at once (cf759hx arm 3, granted 1 ms apart, one hung).
+		item.reserved = true;
+		blocking++;
 		item.go();
 	}
 	function drop(item) {
@@ -149,9 +154,11 @@ export function createPhpLock({ staleMs = 60000, stallMs = null, staleAction: de
 					return PHP_SHED;
 				}
 				if (waiters.includes(item)) drop(item);
-				// Own the slot before any await, so a new arrival cannot start beside this grant.
+				// Own the slot before any await, so a new arrival cannot start beside this grant. A grant from pump() already
+				// took it (#1101); a waiter that goes on without a grant (a stale takeover) takes it now.
 				const prevHead = headState;
-				blocking++;
+				if (!item.reserved) blocking++;
+				item.reserved = false;
 				headState = state;
 				// The grant-time check: a run that does not yield lets no waiter timer fire, and when it ends
 				// this turn (a microtask) beats the overdue timer. Measured on local workerd (b-do): without
