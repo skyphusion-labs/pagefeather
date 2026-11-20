@@ -517,6 +517,21 @@ opcache_mc_var() {
   [ "$woo" = 1 ] || return 0
   echo 'OPCACHE_MC = "64"'
 }
+# The four per-route headroom gates (#1008 step 2): index.js defines each one unless its var is "off"
+# (APP_PASSWORD_HEADROOM, PRODUCT_HEADROOM, COMMENT_HEADROOM, NAV_HEADROOM; index.js, the b-dosql defines). Before
+# this, nothing rendered them, so an arm that sets one off ran with it on. Only "off" renders; unset renders nothing
+# (the gate stays on, byte for byte as before). A measurement flag (site_settings.py MEASUREMENT): never recorded.
+HEADROOM_GATES="APP_PASSWORD_HEADROOM PRODUCT_HEADROOM COMMENT_HEADROOM NAV_HEADROOM"
+headroom_off_vars() {
+  local v
+  for v in $HEADROOM_GATES; do
+    case "${!v:-}" in
+      "") ;;
+      off) echo "$v = \"off\"" ;;
+      *) echo "$v must be off or unset, not ${!v}" >&2; return 1 ;;
+    esac
+  done
+}
 # MEM_LEDGER (#394, mem-ledger.mjs): "on" logs the isolate memory ledger on every request and at
 # every cron leg start; "off" or unset leaves it to operator requests (x-mem-ledger: 1). Read from
 # the run's environment only, like PHP_INI. Unset renders nothing (byte for byte as before).
@@ -618,6 +633,8 @@ render_user() { # render_user <site> <origin>
   local mem_reuse; mem_reuse=$(memory_reuse_vars) || return 1
   [ -z "$mem_reuse" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$mem_reuse
   local mem_ledger; mem_ledger=$(mem_ledger_var) || return 1
+  local hr_off; hr_off=$(headroom_off_vars) || return 1  # #1008
+  [ -z "$hr_off" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$hr_off
   local page_cache_product; page_cache_product=$(page_cache_product_var) || return 1
   [ -z "$mem_ledger" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$mem_ledger
   [ -z "$page_cache_product" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$page_cache_product

@@ -446,6 +446,11 @@ ok "#558 the live site has HEADROOM_PROBE and the run does not: NOT refused, upl
 set_entry bld-other "$(last_hash)"
 HEADROOM_PROBE=on MEM_LEDGER=on run_update
 ok "#558 a run with HEADROOM_PROBE=on MEM_LEDGER=on renders them, and the record holds NEITHER" "$([ "$RC" = 0 ] && [ "$(conf_has HEADROOM_PROBE)" = 1 ] && [ "$(conf_has MEM_LEDGER)" = 1 ] && srec_get | python3 -I -c 'import json, sys; d = json.load(sys.stdin); sys.exit(0 if not {"HEADROOM_PROBE", "MEM_LEDGER", "WFP_PHP_ENV"} & set(d["settings"]) else 1)' && echo 1 || echo 0)"
+# #1008 step 2: the four per-route headroom gates, "off" for a measurement arm: rendered, never recorded.
+APP_PASSWORD_HEADROOM=off PRODUCT_HEADROOM=off COMMENT_HEADROOM=off NAV_HEADROOM=off run_update
+ok "#1008 a run with the four headroom gates off renders all four, and the record holds none" "$([ "$RC" = 0 ] && [ "$(conf_has APP_PASSWORD_HEADROOM)" = 1 ] && [ "$(conf_has PRODUCT_HEADROOM)" = 1 ] && [ "$(conf_has COMMENT_HEADROOM)" = 1 ] && [ "$(conf_has NAV_HEADROOM)" = 1 ] && srec_get | python3 -I -c 'import json, sys; d = json.load(sys.stdin); sys.exit(0 if not {"APP_PASSWORD_HEADROOM", "PRODUCT_HEADROOM", "COMMENT_HEADROOM", "NAV_HEADROOM"} & set(d["settings"]) else 1)' && echo 1 || echo 0)"
+PRODUCT_HEADROOM=on run_update
+ok "#1008 a headroom gate set to anything but off is refused" "$([ "$RC" != 0 ] && printf '%s' "$OUT" | grep -Fq 'PRODUCT_HEADROOM must be off or unset' && echo 1 || echo 0)"
 # #628 (the lead's ruling): PAGE_CACHE_PRODUCT_TTL is a RECORDED setting. An override is kept by the next
 # update that does not pass it, DROP_SETTINGS drops it, and a bad value is refused before any upload.
 PAGE_CACHE_PRODUCT_TTL=60 run_update
@@ -492,13 +497,14 @@ PY2
 # measurement flags: never recorded, by design (site_settings.py MEASUREMENT): ON only for the run.
 # HTTP_ALLOW_HOSTS is a recorded setting (#564). The record stores presence, so empty stays empty.
 # TMPDIR: curl_cfg writes the mode-600 curl config there (#581). Not a site setting.
-measurement=" DISPATCH_PERF_LOG FAULT_INJECT HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV "
+measurement=" APP_PASSWORD_HEADROOM COMMENT_HEADROOM DISPATCH_PERF_LOG FAULT_INJECT HEADROOM_PROBE MEM_LEDGER NAV_HEADROOM PRODUCT_HEADROOM WFP_PHP_ENV "
 # #628: page_cache_product_var reads the build inputs WOO_ACTIVE, IMPORT_PLUGINS and PLUGINS (woo_active_for_build:
 # a store renders PAGE_CACHE_PRODUCT_TTL 30). They are recorded BUILD INPUTS (_build/inputs.json, #379), restored
 # by use_recorded_inputs before the render, so an update keeps them without SITE_SETTINGS.
 buildinputs=" WOO_ACTIVE IMPORT_PLUGINS PLUGINS "
 # GONE_LAST, GONE_WAITED (#789): the outputs of the bounded gone check (deploy/lib/gone-wait.sh), set per call, never a setting.
-notset=" API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN TMPDIR THROWAWAY GONE_LAST GONE_WAITED$measurement$buildinputs"
+# HEADROOM_GATES (#1008): lib.sh's constant list of the four gate names headroom_off_vars reads, not a setting.
+notset=" HEADROOM_GATES API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN TMPDIR THROWAWAY GONE_LAST GONE_WAITED$measurement$buildinputs"
 settings=" $(bash -c '. "'"$LIB"'"; echo $SITE_SETTINGS') "
 miss=""; for n in $derived; do case "$settings$notset" in *" $n "*) ;; *) miss="$miss $n" ;; esac; done
 ok "#558 every env name render_user reads is a recorded setting or named with a reason (missing:${miss:- none})" "$([ -z "$miss" ] && [ -n "$derived" ] && printf '%s\n' $derived | grep -qx HEADROOM_PROBE && echo 1 || echo 0)"
