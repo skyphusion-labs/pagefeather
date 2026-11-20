@@ -27,7 +27,7 @@ const OWNER = 'owner@example.com';
 const DISPATCHER_SRC = await readFile(join(HERE, '..', 'vendor/wfp-dispatcher/worker.js'), 'utf8');
 
 // ---- a small in-memory Cloudflare API -----------------------------------------
-function fakeCloudflare({ foreignScripts = [], hyperdrive = {}, hyperdriveStatus = 0, failDispatchPut = false } = {}) {
+function fakeCloudflare({ foreignScripts = [], hyperdrive = {}, hyperdriveStatus = 0, failDispatchPut = false, failPlace = [] } = {}) {
   const calls = [];
   const kvNs = new Map();            // title -> id
   const kv = new Map();              // `${id}/${key}` -> string
@@ -87,6 +87,13 @@ function fakeCloudflare({ foreignScripts = [], hyperdrive = {}, hyperdriveStatus
         nsScripts.set(m[2], call.metadata); return ok({ id: m[2] });
       }
       if (method === 'DELETE') { nsScripts.delete(m[2]); return ok(null); }
+    }
+    // #1063: re-place a live namespace script (settings PATCH): echoes the placement, as Cloudflare answered live.
+    if ((m = r.match(/^\/workers\/dispatch\/namespaces\/([^/]+)\/scripts\/([^/]+)\/settings$/)) && method === 'PATCH') {
+      call.settings = JSON.parse(await init.body.get('settings').text());
+      if (failPlace.includes(m[2])) return err(500, 10000, `settings refused ${SECRET_HD}`);
+      if (!nsScripts.has(m[2])) return err(404, 10007, 'not found');
+      return ok({ placement: call.settings.placement, bindings: [] });
     }
     if ((m = r.match(/^\/workers\/dispatch\/namespaces\/([^/]+)$/)) && method === 'GET') return ok({ namespace_name: m[1] });
     if ((m = r.match(/^\/workers\/scripts\/([^/]+)$/))) {
@@ -521,10 +528,10 @@ await ok('control: a MySQL config with caching off connects; only id, name, host
   assert(sites.includes('No sites yet'), 'the database shows as a site');
 });
 
-async function connectedEnv(over = {}) {
+async function connectedEnv(over = {}, { region = 'azure:westus2' } = {}) {
   const cf = fakeCloudflare({ hyperdrive: { [HD]: hdConfig() }, ...over });
   const env = makeEnv({ BUNDLES: bucket(aBundle()) });
-  const c = await (await connect(env, cf, { hyperdriveId: HD, provider: 'azure' })).json();
+  const c = await (await connect(env, cf, { hyperdriveId: HD, provider: 'azure', ...(region ? { region } : {}) })).json();
   assert(c.ok, `connect: ${JSON.stringify(c)}`);
   return { cf, env };
 }
@@ -575,6 +582,95 @@ await ok('a Hyperdrive store is refused (400, nothing made) for no database, an 
     const writes = cf.calls.slice(before).filter((c) => c.method !== 'GET' && !(c.method === 'POST' && c.path.endsWith('/storage/kv/namespaces')));
     assert(!writes.length, `${label}: something was made ${JSON.stringify(writes.map((c) => c.method + c.path))}`);
   }
+});
+
+// ---- #1063: a Hyperdrive store runs next to its database -------------------------------------------------
+// Measured 2026-11-20 (#1054): with the Worker across the country from its database, pages were 2 to 5 times
+// slower; a dispatched namespace user Worker with placement runs in that region (#1063, live probe).
+await ok('#1063 connect: a region is stored lower case; a bad region is refused and nothing is stored', async () => {
+  const cf = fakeCloudflare({ hyperdrive: { [HD]: hdConfig() } });
+  const env = makeEnv();
+  for (const bad of ['westus2', 'azure:', 'oracle:us-1', 'azure:west us 2']) {
+    const res = await connect(env, cf, { hyperdriveId: HD, provider: 'azure', region: bad });
+    const t = await res.text();
+    assert(res.status === 400 && /for example azure:westus2/.test(t), `${bad} answered ${res.status} ${t}`);
+    assert(![...cf.kv.keys()].some((k) => k.includes('/_db/')), `${bad}: a database was stored`);
+  }
+  const r = await (await connect(env, cf, { hyperdriveId: HD, provider: 'azure', region: 'Azure:WestUS2' })).json();
+  assert(r.ok && r.database.region === 'azure:westus2', JSON.stringify(r));
+});
+
+await ok('#1063 a NEW Hyperdrive store on a database with no region is refused, naming the region; nothing is made', async () => {
+  const { cf, env } = await connectedEnv({}, { region: '' });
+  const before = cf.calls.length;
+  const res = await call(post('/api/sites', { name: 'bigshop', tier: 'a', database: HD }), env, access(), cf);
+  const t = await res.text();
+  assert(res.status === 400 && /Set this database's region first/.test(t) && /azure:westus2/.test(t), `answered ${res.status} ${t}`);
+  const writes = cf.calls.slice(before).filter((c) => c.method !== 'GET' && !(c.method === 'POST' && c.path.endsWith('/storage/kv/namespaces')));
+  assert(!writes.length, `something was made ${JSON.stringify(writes.map((c) => c.method + c.path))}`);
+});
+
+await ok('#1063 a new store on a database with a region uploads placement {mode: targeted, region}', async () => {
+  const { cf, env } = await connectedEnv();
+  const res = await call(post('/api/sites', { name: 'bigshop', tier: 'a', database: HD }), env, access(), cf);
+  assert(res.status === 200, `answered ${res.status} ${await res.text()}`);
+  const site = cf.calls.find((c) => c.method === 'PUT' && c.path.endsWith('/scripts/site-bigshop'));
+  assert(site && JSON.stringify(site.metadata.placement) === JSON.stringify({ mode: 'targeted', region: 'azure:westus2' }), `placement ${JSON.stringify(site && site.metadata.placement)}`);
+});
+
+await ok('#1063 control: a STANDARD site uploads no placement', async () => {
+  const cf = fakeCloudflare();
+  await call(post('/api/sites', { name: 'blog' }), makeEnv(), access(), cf);
+  const site = cf.calls.find((c) => c.method === 'PUT' && c.path.endsWith('/scripts/site-blog'));
+  assert(site && site.metadata.placement === undefined, `placement ${JSON.stringify(site && site.metadata.placement)}`);
+});
+
+await ok('#1063 an EXISTING store on a database with no region is not refused: adding it again returns it as it is', async () => {
+  const { cf, env } = await connectedEnv({}, { region: '' });
+  // A store made before #1063: its database has no region. Make it the way it was made then (a region, then drop it).
+  const kvKey = [...cf.kv.keys()].find((k) => k.endsWith(`/_db/${HD}`));
+  const rec = JSON.parse(cf.kv.get(kvKey));
+  cf.kv.set(kvKey, JSON.stringify({ ...rec, region: 'azure:westus2' }));
+  assert((await call(post('/api/sites', { name: 'bigshop', tier: 'a', database: HD }), env, access(), cf)).status === 200, 'setup store not made');
+  cf.kv.set(kvKey, JSON.stringify(rec));
+  const puts = cf.calls.filter((c) => c.method === 'PUT' && c.path.includes('/dispatch/')).length;
+  const res = await call(post('/api/sites', { name: 'bigshop', tier: 'a', database: HD }), env, access(), cf);
+  const r = await res.json();
+  assert(res.status === 200 && r.ok && r.existing === true, `existing store refused: ${res.status} ${JSON.stringify(r)}`);
+  assert(cf.calls.filter((c) => c.method === 'PUT' && c.path.includes('/dispatch/')).length === puts, 'the existing store was uploaded again');
+  const page = await (await call(get('/databases'), env, access(), cf)).text();
+  assert(page.includes('Set your database region for faster pages') && page.includes('db-region-set'), 'no notice for the database with no region');
+});
+
+await ok('#1063 setting a database region re-places every store on it in place (settings PATCH), and the notice goes', async () => {
+  const { cf, env } = await connectedEnv({}, { region: 'azure:eastus' });
+  assert((await call(post('/api/sites', { name: 'shop-one', tier: 'a', database: HD }), env, access(), cf)).status === 200, 'shop-one');
+  assert((await call(post('/api/sites', { name: 'shop-two', tier: 'a', database: HD }), env, access(), cf)).status === 200, 'shop-two');
+  const uploadsBefore = cf.calls.filter((c) => c.method === 'PUT' && c.path.includes('/dispatch/')).length;
+  const res = await call(post('/api/databases/region', { id: HD, region: 'azure:westus2' }), env, access(), cf);
+  const r = await res.json();
+  assert(res.status === 200 && r.ok && r.region === 'azure:westus2' && r.placed.length === 2 && !r.failed.length, JSON.stringify(r));
+  assert(cf.calls.filter((c) => c.method === 'PUT' && c.path.includes('/dispatch/')).length === uploadsBefore, 'a store was uploaded again: re-placing must be in place');
+  const patches = cf.calls.filter((c) => c.method === 'PATCH');
+  assert(patches.length === 2 && patches.every((c) => c.path.includes('/dispatch/namespaces/pagefeather/scripts/site-shop-') && c.settings.placement.region === 'azure:westus2' && c.settings.placement.mode === 'targeted'), JSON.stringify(patches));
+  const stored = JSON.parse([...cf.kv].find(([k]) => k.endsWith(`/_db/${HD}`))[1]);
+  assert(stored.region === 'azure:westus2', `stored ${JSON.stringify(stored)}`);
+  const page = await (await call(get('/databases'), env, access(), cf)).text();
+  assert(!page.includes('Set your database region for faster pages') && page.includes('azure:westus2'), 'the notice is still shown');
+});
+
+await ok('#1063 setting a region: a bad region and an unknown database are refused; a store that fails to re-place is named, the rest go on', async () => {
+  const { cf, env } = await connectedEnv({ failPlace: ['site-shop-one'] }, { region: 'azure:eastus' });
+  assert((await call(post('/api/sites', { name: 'shop-one', tier: 'a', database: HD }), env, access(), cf)).status === 200, 'shop-one');
+  assert((await call(post('/api/sites', { name: 'shop-two', tier: 'a', database: HD }), env, access(), cf)).status === 200, 'shop-two');
+  for (const [body, re] of [[{ id: HD, region: 'westus2' }, /for example azure:westus2/], [{ id: HD, region: '' }, /Enter the database region/], [{ id: HD2, region: 'azure:westus2' }, /not a connected database/]]) {
+    const res = await call(post('/api/databases/region', body), env, access(), cf);
+    assert(res.status === 400 && re.test(await res.text()), `${JSON.stringify(body)} answered ${res.status}`);
+  }
+  const { value: res } = await capture(() => call(post('/api/databases/region', { id: HD, region: 'azure:westus2' }), env, access(), cf));
+  const r = await res.json();
+  assert(r.ok === false && r.placed.length === 1 && r.placed[0].includes('shop-two') && r.failed.length === 1 && r.failed[0].site.includes('shop-one') && /^[0-9a-f]{12}$/.test(r.failed[0].reference), JSON.stringify(r));
+  assert(!JSON.stringify(r).includes(SECRET_HD), 'upstream text shown');
 });
 
 await ok('a Hyperdrive store that fails part way is undone: front door, entry, code, cache, bucket gone; the database record stays', async () => {

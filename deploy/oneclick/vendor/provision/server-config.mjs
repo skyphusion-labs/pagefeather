@@ -58,6 +58,10 @@ export function callerKey(request) {
 // Worker's gate is unchanged. The one-click site manager also allows 'a' (#431): a
 // Hyperdrive store, whose Hyperdrive config id the manager supplies from its own
 // checked list, never from the request.
+// #1063: a Worker placement region, the format Cloudflare documents ({provider}:{region}; AWS, GCP and Azure).
+// The same rule as deploy.sh PLACEMENT (deploy/render-conf.sh placement_check).
+export const PLACEMENT_REGION_RE = /^(aws|gcp|azure):[a-z0-9-]{2,40}$/;
+
 export function validateRequest(body, { kinds = ['wp'] } = {}) {
   if (!body || typeof body !== 'object') throw new BadRequest('body must be a JSON object');
   const { kind, name, domain } = body;
@@ -176,7 +180,7 @@ export const HYPERDRIVE_ID_RE = /^[0-9a-f]{32}$/;
 // ending in an underscore, at most 40 characters (several stores share a database).
 export const TABLE_PREFIX_RE = /^[A-Za-z0-9_]{1,39}_$/;
 
-export async function buildServerCfg(env, { kind, name, domain, demo = false, expiresAt, codeLock = false, hyperdriveId, tablePrefix, hyperdriveSqlMode, store = false }) {
+export async function buildServerCfg(env, { kind, name, domain, demo = false, expiresAt, codeLock = false, hyperdriveId, tablePrefix, hyperdriveSqlMode, store = false, placementRegion }) {
   // #706: refuse a bad TTL or a bad WOO_ACTIVE before the bundle is read.
   try { pageCacheProductTtl(pageCacheInputs(env, { store })); objectTimeInputs(env); aCacheInputs(env); }
   catch (e) { throw new BadRequest(e.message); }
@@ -185,6 +189,9 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
     if (typeof hyperdriveId !== 'string' || !HYPERDRIVE_ID_RE.test(hyperdriveId)) throw new Error('buildServerCfg: kind a needs a Hyperdrive config id (32 lower-case hex)');
     if (typeof tablePrefix !== 'string' || !TABLE_PREFIX_RE.test(tablePrefix)) throw new Error('buildServerCfg: kind a needs a table prefix (letters, digits, underscores, ending in _, at most 40)');
     if (demo) throw new Error('buildServerCfg: a demo site is kind wp only');
+    // #1063: the database's region, so the Worker runs next to it. Optional here: the caller decides when it is
+    // required (the site manager requires it for a NEW store).
+    if (placementRegion !== undefined && !PLACEMENT_REGION_RE.test(String(placementRegion))) throw new BadRequest(`buildServerCfg: the placement region must be <aws|gcp|azure>:<region>, for example azure:westus2`);
   }
   const target = deriveTarget(env, { kind, name, domain });
   const compatibilityDate = env.WFP_COMPAT || '2026-07-01';
@@ -239,6 +246,7 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
         ...aCacheInputs(env), // #296: the escape hatch for the two cache defaults
       }),
       sqliteClasses: [],
+      ...(placementRegion ? { placement: { mode: 'targeted', region: placementRegion } } : {}),
       kvNamespaces: [{ title: ocKvNamespaceName(name), binding: 'OC_KV' }],
       saasZoneId: target.saasZoneId,
       secrets: { WP_SALT: genSecret(), SPIKE_TOKEN: genSecret(24) },

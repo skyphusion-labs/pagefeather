@@ -9,7 +9,7 @@ import { sha256Hex, r2BucketResource } from '../cf.mjs';
 import {
   createR2Bucket, mintScopedR2Token, putSecret, writeKVMapEntry,
   deployNamespaceScript, deployContainerWorkerFromDigest, scriptExists, installWordPress, ensureKVNamespace,
-  createKvNamespace, createQueue, createVectorizeIndex,
+  createKvNamespace, createQueue, createVectorizeIndex, placeNamespaceScript,
 } from '../ops.mjs';
 import { upsertSite, readSite, listSites, removeSite } from '../registry.mjs';
 
@@ -298,6 +298,26 @@ const ctxOf = (s) => ({ acct: ACCT, token: 'T', fetchImpl: s.fetchImpl });
   const s3 = stub([{ status: 403, body: '{"success":false,"errors":[{"code":9109,"message":"forbidden"}]}' }]);
   let threw = false; try { await createVectorizeIndex(ctxOf(s3), 'wp-wfp-blog-search', { preset: '@cf/baai/bge-large-en-v1.5' }); } catch { threw = true; }
   ok('createVectorizeIndex throws on a non-conflict error', threw);
+}
+
+// #1063: placement. deployNamespaceScript sends it in the metadata only when given; placeNamespaceScript PATCHes
+// the settings and trusts the ANSWER (a GET of the settings read {} while traffic was placed, live 2026-11-20).
+{
+  const s = stub();
+  await deployNamespaceScript(ctxOf(s), { ns: 'n', name: 'site-x', mainModule: 'index.js', modules: [], compatibilityDate: '2026-07-01', placement: { mode: 'targeted', region: 'azure:westus2' } });
+  const md = JSON.parse(await s.calls[0].body.get('metadata').text());
+  ok('#1063 deployNamespaceScript sends placement in the metadata', JSON.stringify(md.placement) === JSON.stringify({ mode: 'targeted', region: 'azure:westus2' }));
+  const s2 = stub();
+  await deployNamespaceScript(ctxOf(s2), { ns: 'n', name: 'site-y', mainModule: 'index.js', modules: [], compatibilityDate: '2026-07-01' });
+  ok('#1063 control: no placement given, none sent', JSON.parse(await s2.calls[0].body.get('metadata').text()).placement === undefined);
+  const s3 = stub([{ status: 200, body: '{"success":true,"result":{"placement":{"mode":"targeted","region":"azure:westus2"}}}' }]);
+  const r = await placeNamespaceScript(ctxOf(s3), { ns: 'n', name: 'site-x', placement: { mode: 'targeted', region: 'azure:westus2' } });
+  const c = s3.calls[0];
+  ok('#1063 placeNamespaceScript PATCHes the namespace script settings', c.method === 'PATCH' && c.url.endsWith('/workers/dispatch/namespaces/n/scripts/site-x/settings') && JSON.parse(await c.body.get('settings').text()).placement.region === 'azure:westus2' && r.placement.region === 'azure:westus2');
+  const s4 = stub([{ status: 200, body: '{"success":true,"result":{"placement":{}}}' }]);
+  let threw = false;
+  try { await placeNamespaceScript(ctxOf(s4), { ns: 'n', name: 'site-x', placement: { mode: 'targeted', region: 'azure:westus2' } }); } catch (e) { threw = /did not echo the placement/.test(e.message); }
+  ok('#1063 placeNamespaceScript fails when the answer does not echo the placement', threw);
 }
 
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
