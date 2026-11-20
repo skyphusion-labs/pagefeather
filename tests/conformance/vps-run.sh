@@ -12,6 +12,9 @@
 # A/B: PF_SPECS="tests/product/"). The setup phase and check-state always run in full. A subset is recorded as one.
 # Filters are relative to Playwright's working directory: plugins/woocommerce for wc, test/e2e for gb, the repo for wp.
 #
+# PF_BROWSER=browser-run (run only) puts the browsers on Cloudflare Browser Run, Chromium only; PF_WORKERS sets the
+# worker count there (default 4). A Browser Run row is never mixed with a local-browser row: the Chromium differs.
+#
 # DRY=1 prints the commands and runs nothing. Before "run": build the throwaway with the line from
 # prepare-content.sh, deploy it, then "runner.py prepare" writes <run-dir>/env. After both runs:
 #   runner.py summarize --report <run-dir>/report.json --out <run-dir>/results.json   (each run)
@@ -58,6 +61,15 @@ playwright() { # dir config: run Playwright with OUR wrapper config (exclusions,
   # PF_SPECS: word-split on spaces on purpose (each word is one Playwright file filter).
   [ -z "${PF_SPECS:-}" ] || read -r -a specs <<< "$PF_SPECS"
   [ "${#specs[@]}" = 0 ] || echo "vps-run: SUBSET run, file filters: ${specs[*]}"
+  # PF_BROWSER=browser-run: the browsers are Cloudflare Browser Run (hosted Chromium over CDP), not local ones.
+  # pf-browser-run.cjs is preloaded into the runner and each worker; it needs PF_BROWSER_RUN_ACCOUNT and
+  # PF_BROWSER_RUN_TOKEN_FILE (never the token itself). Each worker logs "@event browser-run" with the remote version.
+  if [ "${PF_BROWSER:-}" = browser-run ]; then
+    [ -n "${PF_BROWSER_RUN_ACCOUNT:-}" ] && [ -s "${PF_BROWSER_RUN_TOKEN_FILE:-/nonexistent}" ] \
+      || { echo "vps-run: STOP: PF_BROWSER=browser-run needs PF_BROWSER_RUN_ACCOUNT and a non-empty PF_BROWSER_RUN_TOKEN_FILE" >&2; exit 3; }
+    export NODE_OPTIONS="--require $here/pf-browser-run.cjs${NODE_OPTIONS:+ $NODE_OPTIONS}"
+    echo "vps-run: BROWSER RUN (Cloudflare, hosted Chromium over CDP), workers ${PF_WORKERS:-4}"
+  fi
   x python3 -I "$here/runner.py" config --suite "$suite" --suite-dir "$src/$e2e" --run-dir "$run"
   case "$suite" in
     wc|wc-api|wc-cpt) # Two phases, so the login is asserted BEFORE any test (lead ruling): the setup projects

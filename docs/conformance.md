@@ -43,6 +43,19 @@ content, and `render_user` checks as the last guard.
 4. **The REST routes:** `tests/conformance/routes.py` (#779) over the site's own index, with `WP_PASSWORD`.
 5. **Reseed** between the API half and the browser half: `seed.py <out>` again, with `ADMIN_PASSWORD` unset.
 
+## Browsers on Cloudflare Browser Run
+
+`PF_BROWSER=browser-run` runs a suite's browsers on Cloudflare Browser Run (hosted Chromium over CDP) instead of on the
+runner machine. `vps-run.sh` preloads `tests/conformance/pf-browser-run.cjs`, which turns `chromium.launch` into
+`connectOverCDP`. Set `PF_BROWSER_RUN_ACCOUNT` (the account id) and `PF_BROWSER_RUN_TOKEN_FILE` (a mode 600 file with a
+Browser Run token; the token is never printed). `PF_WORKERS` sets the worker count there (default 4); locally it is 1.
+
+- Chromium only: firefox and webkit are refused.
+- The remote Chromium is a different build from the pinned local one. Each worker logs `@event browser-run` with its
+  version. A row says which browser ran, and a Browser Run row is never mixed with a local one.
+- A remote browser reaches public URLs only: a workers.dev throwaway, yes; a local wp-env baseline, no.
+- More than one worker shares one site. Before a parallel run counts, a known-green subset must agree with a local run.
+
 ## Upstream notes for the matrix
 
 - **WooCommerce Cleanup's reset prints a database error on every database:** it runs

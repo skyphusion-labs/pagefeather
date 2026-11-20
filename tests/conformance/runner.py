@@ -376,6 +376,16 @@ def grep_invert_source(titles):
     return WC_GREP_INVERT + "|" + "|".join(extra)
 
 
+def pf_workers():
+    """1 locally (one browser on the laptop). On Cloudflare Browser Run (PF_BROWSER=browser-run): PF_WORKERS, default 4."""
+    if os.environ.get("PF_BROWSER") != "browser-run":
+        return 1
+    n = os.environ.get("PF_WORKERS", "4")
+    if not re.fullmatch(r"[1-9][0-9]?", n):
+        raise Stop("PF_WORKERS must be 1 to 99, got %r" % n)
+    return int(n)
+
+
 def config_text(suite, run_dir, suite_dir):
     rows = read_excludes(suite)
     ign = [r.path for r in rows if r.kind == "file"]
@@ -395,7 +405,7 @@ def config_text(suite, run_dir, suite_dir):
     lines += ["const ignore = %s;" % json.dumps(ign),
               "// Playwright loads this file as { default: config }. Spread of base drops timeout and use.",
               "const upstream = base.default || base;",
-              "const config = { ...upstream, workers: 1, retries: 0, fullyParallel: false, webServer: undefined,",
+              "const config = { ...upstream, workers: %d, retries: 0, fullyParallel: false, webServer: undefined," % pf_workers(),
               "  reporter: [ [ 'list' ], [ 'json', { outputFile: %s } ] ] };" % json.dumps(rep)]
     if suite in ("wc", "wc-api", "wc-cpt"):
         # External throwaway (conf759 STOP 2026-11-17): upstream coreSetupProjects starts with
