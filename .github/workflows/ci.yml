@@ -332,6 +332,10 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/release-runtime.test.mjs
       - name: b-dosql the recycle line, RECYCLE_WASM_MIB, and the ledger's current runtime (issue #598)
         run: node --test spikes/b2-wordpress/tests/recycle-line.test.mjs
+      - name: "A rejected email is retried with backoff, then dead-lettered; Site Health shows the dead (#1057)"
+        run: |
+          node --test spikes/b2-wordpress/tests/email-retry.test.mjs
+          php spikes/b2-wordpress/tests/mail-retry-health-test.php
       - name: b-dosql the scheduled snapshot route (issue #533)
         # db-snapshot.mjs: SNAPSHOT_TOKEN only, gzip into the site's own bucket, read back; held, cut, too big and failed dumps store nothing.
         run: node --test spikes/b2-wordpress/tests/db-snapshot.test.mjs

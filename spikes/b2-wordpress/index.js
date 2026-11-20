@@ -18,7 +18,7 @@ import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
 import { cronBounds, cronCleanDue, cronLegDue } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronRunDeferred, cronMarkOf, cronFatalOf } from './cron-health.mjs';
-import { approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER } from './a-cron.mjs';
+import { approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME } from './a-cron.mjs';
 import { cronFailureLine } from './cron-error.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION, setResultHeader, takeResultHeader, turnstileRoute, readRouteFields, readGatedToken, encodeResult, TurnstileSlot, turnstileTimeoutMs, retryAfterFor } from './turnstile.mjs';
@@ -40,6 +40,7 @@ import { recycleLine, recycleDecision } from './recycle-line.mjs';
 import { OBJECT_CACHE_MAX_BYTES, nextObjectCacheCap } from './object-cache-cap.mjs';
 import { PHP_ENGINE, ENGINE_RECYCLE_MIB } from './vendor/engine.mjs'; // #771: written by prepare.sh
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
+import { failureRecords, drainRetries, DEAD_PREFIX } from './email-retry.mjs';
 import { routeClass, createTrace } from './file-trace.mjs';
 import { refuseSocketsDecorator, parseMessage } from './runtime-guards.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
@@ -48,7 +49,7 @@ import { loadPHPRuntime, PHP, PHPRequestHandler, setPhpIniEntries, __private__do
 import { inflateSync } from 'fflate';
 import { createArena } from './inflate-arena.mjs';
 import { headroomStream } from './headroom.mjs';
-import { faultArmed, isFaultTarget, exhaustMemory, sqlFailNeedle, sqlFailMessage, undoFailSet, UNDO_FAIL_MESSAGE } from './fault-inject.mjs';
+import { faultArmed, isFaultTarget, exhaustMemory, sqlFailNeedle, sqlFailMessage, undoFailSet, UNDO_FAIL_MESSAGE, emailFaultRejects } from './fault-inject.mjs';
 import { failuresSince } from './activate-report.mjs';
 import { createUndoLog } from './undo-log.mjs';
 import { createRetirer } from './runtime-drop.mjs';
@@ -1107,8 +1108,89 @@ function sendEmail(env, email) {
 	const subject = String(email.subject || '(no subject)');
 	const msg = { to: null, from: bindingAddress(from), subject, html, text }; // #1096: the shape the binding accepts
 	const rt = replyTo(from.email, email.headers);
-	if (rt) msg.replyTo = bindingAddress(rt);
-	return deliverable.map((to) => env.EMAIL.send({ ...msg, to }).then((r) => ((stats.emailSent = (stats.emailSent || 0) + 1), r)));
+	if (rt) msg.replyTo = bindingAddress(rt); // #1096
+	// Each promise carries its recipient (#1057): a rejected one is retried for that recipient only.
+	return deliverable.map((to) => Object.assign((emailFaultRejects(env) ? Promise.reject(new Error('EMAIL_FAULT: injected rejection (#1057, a measurement)')) : env.EMAIL.send({ ...msg, to })).then((r) => ((stats.emailSent = (stats.emailSent || 0) + 1), console.log(JSON.stringify({ m: 'email-sent', n: stats.emailSent })), r)), { to }));
+}
+
+// #1057 (email-retry.mjs, the lead's ruling): the durable store for rejected sends. The PHP object whose alarm drains it:
+// the site object (PHP in a Durable Object: b-dosql, b-do), or approach A's "cron" object during its own leg. Set by
+// the object's fetch and alarm. Anywhere else (the approach A Worker, an overflow pool object) a failure is handed to
+// the cron object (MAIL_RETRY_PATH), whose alarm drains it; with no cron object it is logged as before (unavailable).
+let objStorage = null;
+let inCronLeg = false;
+const MAIL_RETRY_PATH = '/_mail-retry';
+const MAIL_RETRY_HEADER = 'x-pf-mail-retry';
+function mailStoreFor(env) {
+	if (!objStorage) return null;
+	if (env && env.PHP_IN_DO === 'on') return objStorage;
+	return inCronLeg ? objStorage : null;
+}
+async function mailRetryArm(storage, next) {
+	if (next === null || next === undefined) return;
+	const now = Date.now();
+	const at = Math.max(Number(next), now + 1000);
+	const cur = await storage.getAlarm();
+	if (cur === null || cur === undefined || Number(cur) > at) await setAlarmRecorded(storage, at, now, 'email-retry');
+}
+async function mailRetryStore(storage, records) {
+	let next = null;
+	for (const [k, rec] of records) {
+		const had = await storage.get(k);
+		if (had) continue; // already queued (one record per message and recipient)
+		await storage.put(k, rec);
+		if (next === null || rec.next < next) next = rec.next;
+	}
+	await mailRetryArm(storage, next);
+}
+async function mailRetryPut(env, failures) {
+	const records = failureRecords(failures, Date.now());
+	if (!records.length) return;
+	try {
+		const st = mailStoreFor(env);
+		if (st) return await mailRetryStore(st, records);
+		if (approachACronEnabled(env) && env.PHP_RUNTIME) {
+			const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(CRON_OBJECT_NAME));
+			const res = await stub.fetch(new Request('https://do.internal' + MAIL_RETRY_PATH, { method: 'POST', headers: { [MAIL_RETRY_HEADER]: '1', 'content-type': 'application/json' }, body: JSON.stringify(records) }));
+			if (res.ok) return;
+			throw new Error('cron object answered ' + res.status);
+		}
+		console.log(JSON.stringify({ m: 'email-retry', unavailable: records.length, why: 'no durable store here (approach A needs A_CRON)' }));
+	} catch (e) {
+		console.log(JSON.stringify({ m: 'email-retry', unstored: records.length, error: String((e && e.message) || e).slice(0, 160) }));
+	}
+}
+// The drain, from the object's alarm: no PHP. A retry is one message to its one recipient through sendEmail.
+async function mailRetryDrain(env, storage) {
+	const out = await drainRetries({
+		storage,
+		now: Date.now(),
+		send: async (email) => {
+			const ps = sendEmail(env, email);
+			if (!ps.length) throw new Error('not sendable (no sender, no binding, or no deliverable recipient)');
+			await ps[0];
+		},
+		log: (o) => console.log(JSON.stringify(o)),
+	});
+	await mailRetryArm(storage, out.next);
+	return out;
+}
+async function mailDeadForHealth(env) {
+	try {
+		const st = env && env.PHP_IN_DO === 'on' ? objStorage : null;
+		if (st) return { ok: true, dead: await mailDeadCount(st) };
+		if (approachACronEnabled(env) && env.PHP_RUNTIME) {
+			const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(CRON_OBJECT_NAME));
+			const r = await stub.fetch(new Request('https://do.internal' + MAIL_RETRY_PATH + '?count=1', { headers: { [MAIL_RETRY_HEADER]: '1' } }));
+			if (r.ok) return { ok: true, dead: Number((await r.json()).dead) || 0 };
+		}
+		return { ok: false, why: 'no durable mail store' };
+	} catch (e) {
+		return { ok: false, why: String((e && e.message) || e).slice(0, 120) };
+	}
+}
+async function mailDeadCount(storage) {
+	return (await storage.list({ prefix: DEAD_PREFIX, limit: 1000 })).size;
 }
 
 // Drain the queued wp_mail messages (emailOp) and send them through the send_email binding.
@@ -1134,10 +1216,17 @@ function sendList(env, toSend) {
 	}
 	// Durable path (#190): hand the drain to the queue; the consumer delivers with retry.
 	if (emailQueueEnabled(env)) return enqueueEmails(env, toSend);
-	return Promise.allSettled(toSend.flatMap((e) => sendEmail(env, e))).then((rs) => {
-		const failed = rs.filter((x) => x.status === 'rejected').length;
-		if (failed) console.log('email send: ' + failed + ' of ' + rs.length + ' failed');
-		return rs.length - failed;
+	const items = toSend.flatMap((e) => sendEmail(env, e).map((p) => ({ e, p })));
+	return Promise.allSettled(items.map((x) => x.p)).then(async (rs) => {
+		const failures = [];
+		rs.forEach((x, i) => {
+			if (x.status === 'rejected') failures.push({ email: items[i].e, to: items[i].p.to, error: String((x.reason && x.reason.message) || x.reason) });
+		});
+		if (failures.length) {
+			console.log('email send: ' + failures.length + ' of ' + rs.length + ' failed');
+			await mailRetryPut(env, failures); // #1057: retried with backoff, never dropped
+		}
+		return rs.length - failures.length;
 	});
 }
 
@@ -1488,6 +1577,7 @@ async function handleMessage(raw) {
 	// reports only that (no dbstat, no PRAGMA page_count). Without the object's database: no size.
 	if (m.dbSize) return JSON.stringify(sqlDb ? { ok: true, bytes: sqlDb.databaseSize } : { ok: false, error: 'no database in the object' });
 	if (m.oc) return JSON.stringify(await objectCacheOp(m.oc));
+	if (m.mailDead) return JSON.stringify(await mailDeadForHealth(ENV)); // #1057: Site Health
 	if (m.probeMem) return JSON.stringify({ wasm: lastBootedPhp ? lastBootedPhp[__private__dont__use].HEAPU8.length : null });
 	if (m.memTrace) { lastMemTrace = m.memTrace; return '1'; }
 	// #471: the job a cron leg is about to run (sent BEFORE it runs), and PHP's own fatal error. Logged
@@ -2960,10 +3050,17 @@ export class PhpRuntime extends DurableObject {
 		// No error leaves alarm() (#291): a throw spends the platform retry budget, and an object that
 		// used it up got no alarm at all afterwards. The error is stored for /_purgestate instead.
 		try {
+			// #1057: this object's durable mail store (email-retry.mjs): its due retries go first, with no PHP, bounded
+			// like the cron drain; a cron leg below that fails a send stores it here too (inCronLeg).
+			objStorage = this.ctx.storage;
+			inCronLeg = true;
+			await boundedWait(mailRetryDrain(this.env, this.ctx.storage).catch((e) => console.log(JSON.stringify({ m: 'email-retry', drainError: String((e && e.message) || e).slice(0, 160) }))), SEND_TIMEOUT_MS);
 			await this.alarmRun();
 		} catch (e) {
 			const rec = await recordAlarmFatal(this.ctx.storage, e, Date.now());
 			console.log(JSON.stringify({ m: 'alarm', fatal: rec.error, count: rec.count }));
+		} finally {
+			inCronLeg = false;
 		}
 	}
 
@@ -3174,6 +3271,7 @@ export class PhpRuntime extends DurableObject {
 	}
 
 	async fetch(raw) {
+		objStorage = this.ctx.storage; // #1057: this object's durable mail store (mailStoreFor decides whether it is the one)
 		const env = this.env;
 		ENV = env;
 		const objectUrl = new URL(raw.url);
@@ -3185,6 +3283,18 @@ export class PhpRuntime extends DurableObject {
 			if (!db || env.REAL_TRANSACTIONS === 'off') return Response.json({ frame: null, reason: 'no undo log' });
 			await txnRecover(db, this.ctx.storage);
 			return Response.json({ frame: undo(env).status(db, objectUrl.searchParams.get('id') || '') });
+		}
+		// #1057: a rejected send handed over by the approach A Worker (mailRetryPut). Stored here; this object's alarm
+		// drains it. GET ?count=1 is the dead-letter count for Site Health. Internal only (the Worker 404s the path).
+		if (objectUrl.pathname === MAIL_RETRY_PATH) {
+			if (raw.headers.get(MAIL_RETRY_HEADER) !== '1' || !approachACronEnabled(env)) return new Response('forbidden', { status: 403 });
+			if (raw.method === 'GET') return Response.json({ dead: await mailDeadCount(this.ctx.storage) });
+			if (raw.method !== 'POST') return new Response('method', { status: 405 });
+			let records = [];
+			try { records = await raw.json(); } catch { return new Response('bad json', { status: 400 }); }
+			if (!Array.isArray(records)) return new Response('bad records', { status: 400 });
+			await mailRetryStore(this.ctx.storage, records.filter((r) => Array.isArray(r) && typeof r[0] === 'string' && r[0].startsWith('email-retry:') && r[1]));
+			return Response.json({ ok: true, stored: records.length });
 		}
 		// #855: the Workers Cron tick from the site Worker (POST + x-pf-cron-tick). A WATCHDOG for this object's cron alarm:
 		// the alarm runs the leg (alarm(), armBeforeRun keeps the chain, the b-dosql hardened path); the tick only re-arms
@@ -4094,6 +4204,7 @@ export default {
 		const url = new URL(req.url);
 		// #855: the cron tick is Worker to PhpRuntime only, never a public URL.
 		if (url.pathname === CRON_TICK_PATH) return new Response('Not Found', { status: 404 });
+		if (url.pathname === MAIL_RETRY_PATH) return new Response('Not Found', { status: 404 }); // #1057: internal only
 		// #752: the PHP object's start-by tick lands here, FIRST: a cheap 204, before the page cache and any object call.
 		if (url.pathname === TICK_PATH) return tickResponse();
 		// #912: //checkout-link is the home page. Merge the slash and redirect.
