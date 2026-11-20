@@ -4623,7 +4623,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				recycleRefusedLogged = true;
 				console.log(JSON.stringify({ m: 'recycle-line-refused', refused: line.refused }));
 			}
-			const recycleWhy = recycleDecision({ crashed, forced: forceRecycle, wasmBytes, lineBytes: line.bytes, bootBytes: reuseActive() ? runtimeBootBytes : 0, recycleOff: env.PHP_RECYCLE === 'off' });
+			const recycleWhy = recycleDecision({ crashed, forced: forceRecycle, wasmBytes, ocBytes: objectCacheBytes, lineBytes: line.bytes, bootBytes: reuseActive() ? runtimeBootBytes : 0, recycleOff: env.PHP_RECYCLE === 'off' });
 			if (recycleWhy) {
 				runtimeDrops++;
 				dropRuntime(); // #566: queued (this run is executing); released when the run ends, after the response below is built
