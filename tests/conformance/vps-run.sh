@@ -132,6 +132,12 @@ case "$act" in
     # suite's own env file names a branch. The default credentials are admin / password.
     # The baseline must not see our throwaway: unset the names the suites read (a caller may export them).
     unset BASE_URL WP_BASE_URL ADMIN_USER ADMIN_PASSWORD WP_USERNAME WP_PASSWORD CUSTOMER_USER CUSTOMER_USERNAME CUSTOMER_PASSWORD
+    # The wp and gb wrapper configs (runner.py config) force baseURL from WP_BASE_URL onto every project; with it unset the
+    # baseline got "/" and global setup failed with Invalid URL (gbbase-gb2, 2026-11-20). Point it at the stock wp-env, the
+    # port both suites' test envs use. The login is wp-env's default admin; the config's STORAGE_STATE_PATH is under the run dir.
+    case "$suite" in
+      wp|gb) export WP_BASE_URL=http://localhost:8889; echo "vps-run: baseline target WP_BASE_URL=$WP_BASE_URL (stock wp-env)" ;;
+    esac
     # Stop this suite's env on exit: the wordpress-develop and Gutenberg envs both use port 8889.
     case "$suite" in
       wp) trap 'in_dir "$src" npm run env:stop || true' EXIT ;;

@@ -637,6 +637,11 @@ def main():
                             capture_output=True, text=True)
         ok("baseline wc: check-state targets the local wp-env, not an exported BASE_URL") if "check-state --base-url http://localhost:8086" in vb.stdout and "cf759a" not in vb.stdout else bad("baseline wc target: %s" % vb.stdout[-300:])
         ok("baseline wc: its env stops on exit") if "pnpm env:e2e:stop" in vb.stdout else bad("baseline wc: no env stop")
+        # The wp and gb baselines target the stock wp-env (gbbase-gb2: an unset WP_BASE_URL made baseURL "/", Invalid URL).
+        for sb in ("gb", "wp"):
+            vbs = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "baseline", sb, vw, os.path.join(t, "vb" + sb)],
+                                 env={"PATH": os.environ.get("PATH", ""), "DRY": "1", "WP_BASE_URL": "https://cf759hw.example"}, capture_output=True, text=True)
+            ok("baseline %s: targets the stock wp-env at localhost:8889, never an exported throwaway" % sb) if vbs.returncode == 0 and "baseline target WP_BASE_URL=http://localhost:8889" in vbs.stdout and "cf759hw" not in vbs.stdout else bad("baseline %s target: rc %d %s" % (sb, vbs.returncode, (vbs.stdout + vbs.stderr)[-300:]))
         vg = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "install", "gb", os.path.join(t, "vg")],
                             env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
         vg_out = vg.stdout + vg.stderr
