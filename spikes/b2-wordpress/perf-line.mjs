@@ -53,6 +53,12 @@ export function aPerfLine(f) {
 		l2Misses: num(f.l2Misses),
 		l2Ms: num(f.l2Ms),
 		l2Neg: num(f.l2Neg), // #1078: misses answered by the negative L1, no KV read
+		// #1078 round 2: single-key get() reads (one bridge call each, sequential) against get_multiple batches (parallel).
+		l2SingleN: num(f.l2SingleN),
+		l2SingleMs: num(f.l2SingleMs),
+		l2BatchN: num(f.l2BatchN),
+		l2BatchMs: num(f.l2BatchMs),
+		l2Batches: num(f.l2Batches),
 	};
 	for (const k of Object.keys(line)) if (line[k] === undefined) delete line[k];
 	return line;

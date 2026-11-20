@@ -14,9 +14,22 @@
 //   - A KV ERROR is a miss but is NOT remembered: a transient fault must not hide a key.
 const VERSIONED_KEY = /^[^\0]*\0v\d+\0/;
 
+/** True for a version-salted key (the drop-in pkey "group NUL v<N> NUL key"). */
+export function isVersionedKey(key) {
+	return VERSIONED_KEY.test(String(key));
+}
+
 /** The negative entry's life for a key: the versioned bound for a version-salted key, else the short TTL. */
 export function negTtlMs(key, shortMs, versionedMs) {
-	return VERSIONED_KEY.test(String(key)) ? versionedMs : shortMs;
+	return isVersionedKey(key) ? versionedMs : shortMs;
+}
+
+/**
+ * A POSITIVE L1 entry's expiry (#1078 round 2): a versioned key cannot go stale (a write anywhere renames it), so it has
+ * no time bound (0) and only the isolate's L1 memory cap evicts it; any other key keeps the short TTL.
+ */
+export function l1ExpFor(key, now, shortMs) {
+	return isVersionedKey(key) ? 0 : now + shortMs;
 }
 
 /** An isolate's remembered KV misses: key -> expiry, insertion-ordered, at most max entries (oldest go first). */

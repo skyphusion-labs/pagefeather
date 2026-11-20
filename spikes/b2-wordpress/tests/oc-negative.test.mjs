@@ -97,9 +97,33 @@ test('negTtlMs: a version-salted key gets the versioned bound, any other the sho
 });
 test('index.js: objectCacheOp reads L2 through readL2 with the negative cache, and set and del clear it', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	assert.match(src, /import \{ createNegCache, negTtlMs, readL2 \} from '\.\/oc-negative\.mjs';/);
+	assert.match(src, /import \{ createNegCache, negTtlMs, readL2[^}]*\} from '\.\/oc-negative\.mjs';/);
 	assert.match(src, /await readL2\(/);
 	assert.match(src, /ocNeg\.clear\(op\.k\)/);
 	assert.match(src, /for \(const k of op\.k\) \{ ocNeg\.clear\(k\);/);
 	assert.doesNotMatch(src, /for \(const k of op\.k\) \{\n\t\t\tocCount\(k, "get"\);/, 'the old sequential per-key loop is gone');
+});
+
+// #1078 round 2 (the lead): a KV HIT is a round trip too (about 125 ms on cf759hl), and a versioned key cannot go stale
+// (a write anywhere renames it), so its POSITIVE L1 entry is bounded by memory, not by the 10 s OBJECT_CACHE_TTL. Any
+// other key keeps the short TTL. And the perf line splits the L2 reads into batched and single-key calls, so run 4
+// says whether the after-write misses come through get_multiple (the parallel reads cure them) or get().
+import { l1ExpFor } from '../oc-negative.mjs';
+test('l1ExpFor: a versioned key never expires by time (memory bounds it); any other key the short TTL', () => {
+	assert.equal(l1ExpFor(vkey(7, 'alloptions'), 1000, SHORT), 0);
+	assert.equal(l1ExpFor(ukey('x'), 1000, SHORT), 1000 + SHORT);
+	assert.equal(l1ExpFor('options\0x', 1000, SHORT), 1000 + SHORT, 'options with no version read: short');
+});
+test('CROSS-ISOLATE (positive, versioned): a long-lived L1 value is never served for a newer version', async () => {
+	// Isolate 1 holds alloptions under v7 with no time bound. Isolate 2 writes an option (v7 -> v8). Isolate 1's next
+	// request reads version 8 at its start and asks for the v8 key, which its L1 has never held: the v7 value is unreachable.
+	const l1 = new Map([[vkey(7, 'alloptions'), { v: 'OLD', exp: l1ExpFor(vkey(7, 'alloptions'), 0, SHORT) }]]);
+	assert.equal(l1.get(vkey(8, 'alloptions')), undefined);
+	assert.equal(l1.get(vkey(7, 'alloptions')).exp, 0);
+});
+test('index.js: an L2 hit and a set store versioned keys with l1ExpFor; the L2 reads are split batched vs single', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /ocStore\(k, kv, l1ExpFor\(k, now, ocTtlMs\(\)\)\)/);
+	assert.match(src, /ocStore\(op\.k, op\.v, isVersionedKey\(op\.k\) \? 0 : op\.ttl > 0 \? now \+ op\.ttl \* 1000 : 0\)/);
+	assert.match(src, /if \(op\.k\.length === 1\) \{ stats\.l2SingleN \+= r\.kvReads; stats\.l2SingleMs \+= r\.kvMs; \} else \{ stats\.l2BatchN \+= r\.kvReads; stats\.l2BatchMs \+= r\.kvMs; stats\.l2Batches\+\+; \}/);
 });

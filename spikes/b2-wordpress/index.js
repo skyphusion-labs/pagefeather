@@ -56,7 +56,7 @@ import { gateSettings, decide, BootRefused, bootRefusedResponse, createGateClock
 import { reuseOn, createSpare, bootTestDelayMs, bootTestDelayAt, moduleImportsMemory, offerWhenDrained } from './memory-reuse.mjs'; // #598 / #603
 import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
 import { aPerfLine } from './perf-line.mjs';
-import { createNegCache, negTtlMs, readL2 } from './oc-negative.mjs';
+import { createNegCache, negTtlMs, readL2, l1ExpFor, isVersionedKey } from './oc-negative.mjs';
 import { templateQueuePriority, templateLookupYield, templateLookupForwardYield } from './template-boot.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse } from './overflow.mjs';
@@ -241,10 +241,12 @@ async function objectCacheOp(op) {
 			stats.l2N += r.kvReads;
 			stats.l2Ms += r.kvMs;
 			stats.l2Neg += r.negHits;
+			// #1078 round 2: batched (get_multiple, read in parallel) against single-key (get(), one call per key) reads.
+			if (op.k.length === 1) { stats.l2SingleN += r.kvReads; stats.l2SingleMs += r.kvMs; } else { stats.l2BatchN += r.kvReads; stats.l2BatchMs += r.kvMs; stats.l2Batches++; }
 			keys.forEach((k, j) => {
 				const kv = r.values[j];
 				if (kv != null) {
-					ocStore(k, kv, now + ocTtlMs()); // the shared value is now warm in this isolate
+					ocStore(k, kv, l1ExpFor(k, now, ocTtlMs())); // warm in this isolate; a versioned key has no time bound (#1078)
 					ocL2Writer().noteRead(ocKvKey(k), kv); // #500: a set of the same value needs no PUT
 					stats.ocHits++; stats.l2Hits++; ocCount(k, "l2hit"); out[need[j]] = kv;
 				} else ocCount(k, "l2miss");
@@ -260,7 +262,7 @@ async function objectCacheOp(op) {
 		if (req0) req0.writes.add(op.k);
 		const n = op.k.length + op.v.length;
 		if (n > objectCacheCap / 4) return { ok: false };
-		ocStore(op.k, op.v, op.ttl > 0 ? now + op.ttl * 1000 : 0);
+		ocStore(op.k, op.v, isVersionedKey(op.k) ? 0 : op.ttl > 0 ? now + op.ttl * 1000 : 0); // #1078: a versioned key cannot go stale
 		if (l2 && ocCtx) { const ttl = Math.max(60, op.ttl > 0 ? op.ttl : 60); const k2 = ocKvKey(op.k), v2 = op.v, c2 = ocCtx; const doSet = () => { if (req0 && req0.poisoned) return; try { const w = ocL2Writer().set(k2, v2, ttl); if (w) c2.waitUntil(w); } catch {} }; const holdOptions = !!(undoLog && undoLog.pluginStatusHeld() && ocGroupOf(op.k) === 'options'); if (!(undoLog && undoLog.defer(doSet, holdOptions))) doSet(); } // #352: held until the frame is kept; #954: an options set during a plugin hold waits for the request end
 		return { ok: true };
 	}
@@ -573,7 +575,7 @@ async function stageUpload(req, env) {
 }
 
 function newStats() {
-	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, reinflates: 0, lazyWrites: 0, rfN: 0, rfBytes: 0, rfMs: 0, rfFail: 0, rfCapped: 0, rfRetry: 0, rsN: 0, rsBytes: 0, rsMs: 0, rsFail: 0, rsCapped: 0, rsRetry: 0, dbTables: {}, ocGroups: {}, ocCalls: 0, ocHits: 0, l2N: 0, l2Ms: 0, l2Hits: 0, l2Neg: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
+	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, reinflates: 0, lazyWrites: 0, rfN: 0, rfBytes: 0, rfMs: 0, rfFail: 0, rfCapped: 0, rfRetry: 0, rsN: 0, rsBytes: 0, rsMs: 0, rsFail: 0, rsCapped: 0, rsRetry: 0, dbTables: {}, ocGroups: {}, ocCalls: 0, ocHits: 0, l2N: 0, l2Ms: 0, l2Hits: 0, l2Neg: 0, l2SingleN: 0, l2SingleMs: 0, l2BatchN: 0, l2BatchMs: 0, l2Batches: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
 }
 
 // Every statement failure goes through here. resetFailTotal counts the isolate memory resets among
@@ -4396,7 +4398,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
 			ocReqBegin(); // #766
-			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, reinflates: stats.reinflates, lazyWrites: stats.lazyWrites, rfN: stats.rfN, rfBytes: stats.rfBytes, rfMs: stats.rfMs, rfFail: stats.rfFail, rfCapped: stats.rfCapped, rsN: stats.rsN, rsBytes: stats.rsBytes, rsMs: stats.rsMs, rsFail: stats.rsFail, rsCapped: stats.rsCapped, rsRetry: stats.rsRetry, ocCalls: stats.ocCalls, ocHits: stats.ocHits, l2N: stats.l2N, l2Ms: stats.l2Ms, l2Hits: stats.l2Hits, l2Neg: stats.l2Neg, httpCalls: stats.httpCalls, httpMs: stats.httpMs, txnOps: stats.txnOps, undoRows: stats.undoRows };
+			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, reinflates: stats.reinflates, lazyWrites: stats.lazyWrites, rfN: stats.rfN, rfBytes: stats.rfBytes, rfMs: stats.rfMs, rfFail: stats.rfFail, rfCapped: stats.rfCapped, rsN: stats.rsN, rsBytes: stats.rsBytes, rsMs: stats.rsMs, rsFail: stats.rsFail, rsCapped: stats.rsCapped, rsRetry: stats.rsRetry, ocCalls: stats.ocCalls, ocHits: stats.ocHits, l2N: stats.l2N, l2Ms: stats.l2Ms, l2Hits: stats.l2Hits, l2Neg: stats.l2Neg, l2SingleN: stats.l2SingleN, l2SingleMs: stats.l2SingleMs, l2BatchN: stats.l2BatchN, l2BatchMs: stats.l2BatchMs, l2Batches: stats.l2Batches, httpCalls: stats.httpCalls, httpMs: stats.httpMs, txnOps: stats.txnOps, undoRows: stats.undoRows };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
 			// #352 the forced-reset proof (a MEASUREMENT that KILLS the isolate; spike token and HEADROOM_PROBE=on,
@@ -4706,7 +4708,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			} else {
 				// #1078: approach A (PHP in the Worker, index-a.js) logs the same timing line, so a tail can time a real suite
 				// request: wall, boot, PHP time, and the query count and round-trip total (one bridge call per MySQL query).
-				console.log(JSON.stringify(aPerfLine({ id: memIdOf(req, env).id, method: req.method, path: url.pathname, status: r.httpStatusCode, iso: ISOLATE_ID, isoAgeS: Math.round((Date.now() - isolateStart) / 1000), rt: runtimeSerial, rtAgeS: Math.round((Date.now() - runtimeBootAt) / 1000), boot: booted, bootWaitMs, phpMs: phpOnlyMs, dbN: d.calls, dbMs: d.ms, wallMs: Date.now() - tBoot, wasm1MiB: Math.round(wasmBytes / 1048576), recycled: recycleWhy || null, rfN: stats.rfN - remote0.rfN, rfKiB: Math.round((stats.rfBytes - remote0.rfBytes) / 1024), rfMs: stats.rfMs - remote0.rfMs, rfFail: stats.rfFail - remote0.rfFail, rsN: stats.rsN - remote0.rsN, rsKiB: Math.round((stats.rsBytes - remote0.rsBytes) / 1024), rsMs: stats.rsMs - remote0.rsMs, rsFail: stats.rsFail - remote0.rsFail, httpN: stats.httpCalls - start.httpCalls, httpMs: stats.httpMs - (start.httpMs || 0), inflates: stats.inflates - start.inflates, inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024), ocCalls: stats.ocCalls - start.ocCalls, ocHits: stats.ocHits - start.ocHits, l2N: stats.l2N - start.l2N, l2Hits: stats.l2Hits - start.l2Hits, l2Misses: (stats.l2N - start.l2N) - (stats.l2Hits - start.l2Hits), l2Ms: stats.l2Ms - start.l2Ms, l2Neg: stats.l2Neg - start.l2Neg, ...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full } : {}) })));
+				console.log(JSON.stringify(aPerfLine({ id: memIdOf(req, env).id, method: req.method, path: url.pathname, status: r.httpStatusCode, iso: ISOLATE_ID, isoAgeS: Math.round((Date.now() - isolateStart) / 1000), rt: runtimeSerial, rtAgeS: Math.round((Date.now() - runtimeBootAt) / 1000), boot: booted, bootWaitMs, phpMs: phpOnlyMs, dbN: d.calls, dbMs: d.ms, wallMs: Date.now() - tBoot, wasm1MiB: Math.round(wasmBytes / 1048576), recycled: recycleWhy || null, rfN: stats.rfN - remote0.rfN, rfKiB: Math.round((stats.rfBytes - remote0.rfBytes) / 1024), rfMs: stats.rfMs - remote0.rfMs, rfFail: stats.rfFail - remote0.rfFail, rsN: stats.rsN - remote0.rsN, rsKiB: Math.round((stats.rsBytes - remote0.rsBytes) / 1024), rsMs: stats.rsMs - remote0.rsMs, rsFail: stats.rsFail - remote0.rsFail, httpN: stats.httpCalls - start.httpCalls, httpMs: stats.httpMs - (start.httpMs || 0), inflates: stats.inflates - start.inflates, inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024), ocCalls: stats.ocCalls - start.ocCalls, ocHits: stats.ocHits - start.ocHits, l2N: stats.l2N - start.l2N, l2Hits: stats.l2Hits - start.l2Hits, l2Misses: (stats.l2N - start.l2N) - (stats.l2Hits - start.l2Hits), l2Ms: stats.l2Ms - start.l2Ms, l2Neg: stats.l2Neg - start.l2Neg, l2SingleN: stats.l2SingleN - start.l2SingleN, l2SingleMs: stats.l2SingleMs - start.l2SingleMs, l2BatchN: stats.l2BatchN - start.l2BatchN, l2BatchMs: stats.l2BatchMs - start.l2BatchMs, l2Batches: stats.l2Batches - start.l2Batches, ...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full } : {}) })));
 			}
 			const response = new Response(r.bytes, { status: r.httpStatusCode, headers: out });
 			// #394 (b): a recycled runtime is RELEASED, not only forgotten. bootPromise = null alone left
