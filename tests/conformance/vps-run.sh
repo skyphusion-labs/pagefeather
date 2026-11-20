@@ -8,6 +8,10 @@
 #   suites: wp (wordpress-develop), wc (WooCommerce core profile), wc-api (its api-tests, the same checkout),
 #           wc-cpt (the wc @hpos tests with HPOS OFF, upstream envs/default-hpos-disabled; the same checkout), gb (Gutenberg)
 #
+# PF_SPECS="<filter> ..." (run only): passed to the TEST phase as Playwright file filters (a subset run, e.g. the #1008
+# A/B: PF_SPECS="tests/product/"). The setup phase and check-state always run in full. A subset is recorded as one.
+# Filters are relative to Playwright's working directory: plugins/woocommerce for wc, test/e2e for gb, the repo for wp.
+#
 # DRY=1 prints the commands and runs nothing. Before "run": build the throwaway with the line from
 # prepare-content.sh, deploy it, then "runner.py prepare" writes <run-dir>/env. After both runs:
 #   runner.py summarize --report <run-dir>/report.json --out <run-dir>/results.json   (each run)
@@ -50,6 +54,10 @@ gb_run_build() {
 }
 playwright() { # dir config: run Playwright with OUR wrapper config (exclusions, one worker, JSON report)
   local d=$1
+  local -a specs=()
+  # PF_SPECS: word-split on spaces on purpose (each word is one Playwright file filter).
+  [ -z "${PF_SPECS:-}" ] || read -r -a specs <<< "$PF_SPECS"
+  [ "${#specs[@]}" = 0 ] || echo "vps-run: SUBSET run, file filters: ${specs[*]}"
   x python3 -I "$here/runner.py" config --suite "$suite" --suite-dir "$src/$e2e" --run-dir "$run"
   case "$suite" in
     wc|wc-api|wc-cpt) # Two phases, so the login is asserted BEFORE any test (lead ruling): the setup projects
@@ -65,10 +73,10 @@ playwright() { # dir config: run Playwright with OUR wrapper config (exclusions,
         x python3 -I "$here/runner.py" check-state --base-url "${BASE_URL:-http://localhost:${WP_ENV_PORT:-8086}}" --state "$st/admin.json" --state "$st/customer.json" \
           || { echo "vps-run: STOP: check-state (the saved login is not real)" >&2; exit 3; }
         local proj=e2e-pf; [ "$suite" = wc-api ] && proj=api-pf; [ "$suite" = wc-cpt ] && proj=e2e-cpt
-        in_dir "$src/plugins/woocommerce" pnpm exec playwright test --config=tests/e2e/pf-conformance.config.mjs --project="$proj" --no-deps ;;
+        in_dir "$src/plugins/woocommerce" pnpm exec playwright test --config=tests/e2e/pf-conformance.config.mjs --project="$proj" --no-deps ${specs[@]+"${specs[@]}"} ;;
     # Media specs copy ./assets/ from the process directory. Upstream cwd is test/e2e (#980).
-    gb) in_dir "$src/$e2e" npx playwright test --config=pf-conformance.config.mjs ;;
-    *) in_dir "$d" npx playwright test --config="$e2e/pf-conformance.config.mjs" ;;
+    gb) in_dir "$src/$e2e" npx playwright test --config=pf-conformance.config.mjs ${specs[@]+"${specs[@]}"} ;;
+    *) in_dir "$d" npx playwright test --config="$e2e/pf-conformance.config.mjs" ${specs[@]+"${specs[@]}"} ;;
   esac
 }
 
