@@ -134,3 +134,36 @@ test('#1096 GREEN: through bindingAddress the binding accepts the name unset, em
 	assert.equal(b.sent[0].from, 'a@shop.example.co', 'no name: the bare address');
 	assert.deepEqual(b.sent[11].replyTo, { email: 'b@b.example.co', name: 'Bea' });
 });
+
+// #1056: MAIL_ALLOWED_TO, a destination allowlist on the send_email binding, as c1 has (c1-config.sh). A test
+// site with a real MAIL_FROM could otherwise send to any address it is handed (a load run's buyers, a suite's).
+test('#1056 MAIL_ALLOWED_TO renders allowed_destination_addresses', async () => {
+	const m = await import('../mail-from.mjs');
+	assert.equal(
+		m.sendEmailBinding({ MAIL_FROM: 'wp-test@skyphusion.org', MAIL_ALLOWED_TO: 'mackaye@skyphusion.org' }),
+		'send_email = [{ name = "EMAIL", allowed_sender_addresses = ["wp-test@skyphusion.org"], allowed_destination_addresses = ["mackaye@skyphusion.org"] }]',
+	);
+	assert.equal(
+		m.sendEmailBinding({ MAIL_FROM: 'wp-test@skyphusion.org', MAIL_ALLOWED_TO: 'a@skyphusion.org, b@example.org' }),
+		'send_email = [{ name = "EMAIL", allowed_sender_addresses = ["wp-test@skyphusion.org"], allowed_destination_addresses = ["a@skyphusion.org", "b@example.org"] }]',
+	);
+});
+
+test('#1056 unset MAIL_ALLOWED_TO leaves the binding as it was', async () => {
+	const m = await import('../mail-from.mjs');
+	assert.equal(m.sendEmailBinding({ MAIL_FROM: 'wp-test@skyphusion.org' }), 'send_email = [{ name = "EMAIL", allowed_sender_addresses = ["wp-test@skyphusion.org"] }]');
+	assert.equal(m.sendEmailBinding({ MAIL_FROM: 'wp-test@skyphusion.org', MAIL_ALLOWED_TO: '' }), 'send_email = [{ name = "EMAIL", allowed_sender_addresses = ["wp-test@skyphusion.org"] }]');
+});
+
+test('#1056 a bad MAIL_ALLOWED_TO is refused, as c1 refuses it', async () => {
+	const m = await import('../mail-from.mjs');
+	assert.throws(() => m.sendEmailBinding({ MAIL_FROM: 'wp-test@skyphusion.org', MAIL_ALLOWED_TO: 'not-an-address' }), /MAIL_ALLOWED_TO/);
+	assert.throws(() => m.sendEmailBinding({ MAIL_FROM: 'wp-test@skyphusion.org', MAIL_ALLOWED_TO: 'a"b@skyphusion.org' }), /MAIL_ALLOWED_TO/);
+	const eleven = Array.from({ length: 11 }, (_, i) => `t${i}@skyphusion.org`).join(',');
+	assert.throws(() => m.sendEmailBinding({ MAIL_FROM: 'wp-test@skyphusion.org', MAIL_ALLOWED_TO: eleven }), /MAIL_ALLOWED_TO/);
+});
+
+test('#1056 MAIL_ALLOWED_TO with no sender is refused (it would allow nothing to be sent, silently)', async () => {
+	const m = await import('../mail-from.mjs');
+	assert.throws(() => m.sendEmailBinding({ SITE_ORIGIN: 'https://wp.workers.dev', MAIL_ALLOWED_TO: 'mackaye@skyphusion.org' }), /MAIL_ALLOWED_TO needs MAIL_FROM/);
+});

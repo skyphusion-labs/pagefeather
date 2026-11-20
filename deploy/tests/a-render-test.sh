@@ -145,5 +145,12 @@ ok "#1054 PLACEMENT=smart renders mode = smart" "$([ "$(pl "$T/p5.toml")" = 'mod
 render "$T/p6.toml" PLACEMENT=chicago MYSQL=external MYSQL_HOST=db.example.org; rc=$?
 ok "#1054 an unknown PLACEMENT is refused (rc $rc)" "$([ "$rc" != 0 ] && grep -q 'PLACEMENT must be' "$T/render.err" && echo 1 || echo 0)"
 ok "#1054 deploy.sh checks PLACEMENT before any step" "$(grep -q 'placement_check ) || exit 2' "$ROOT/deploy/deploy.sh" && echo 1 || echo 0)"
+
+# #1056: MAIL_ALLOWED_TO renders the destination allowlist on the send_email binding (c1 had it; a and b-* did not).
+render "$T/m1.toml" PLACEMENT=azure:westus2 MAIL_FROM=wp-test@skyphusion.org MAIL_ALLOWED_TO=mackaye@skyphusion.org
+ok "#1056 MAIL_ALLOWED_TO renders allowed_destination_addresses" "$(grep -qx 'send_email = \[{ name = "EMAIL", allowed_sender_addresses = \["wp-test@skyphusion.org"\], allowed_destination_addresses = \["mackaye@skyphusion.org"\] }\]' "$T/m1.toml" && echo 1 || echo 0)"
+render "$T/m2.toml" PLACEMENT=azure:westus2 MAIL_ALLOWED_TO=mackaye@skyphusion.org; rc=$?
+ok "#1056 MAIL_ALLOWED_TO with no sender is refused (rc $rc)" "$([ "$rc" != 0 ] && grep -q 'MAIL_ALLOWED_TO needs MAIL_FROM' "$T/render.err" && echo 1 || echo 0)"
+ok "#1056 deploy.sh checks MAIL_ALLOWED_TO before any step" "$(grep -q 'MAIL_ALLOWED_TO="$MAIL_ALLOWED_TO" node "$APP/mail-from.mjs" --binding > /dev/null || exit 2' "$ROOT/deploy/deploy.sh" && echo 1 || echo 0)"
 [ "$fails" = 0 ] && echo "a-render: all checks pass" || echo "a-render: $fails failing check(s)"
 exit $((fails > 0))

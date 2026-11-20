@@ -118,6 +118,11 @@ case "${REQUEST_FRAMES:-}" in
   *) echo "REQUEST_FRAMES must be on, off or unset, not ${REQUEST_FRAMES}" >&2; exit 2 ;;
 esac
 if [ -n "${REQUEST_FRAMES:-}" ] && [ "${VARIANT:-}" != b-dosql ]; then echo "REQUEST_FRAMES is for variant b-dosql (the object-SQLite undo log), not ${VARIANT:-unset}" >&2; exit 2; fi
+# MAIL_ALLOWED_TO (#1056): the send_email destination allowlist; a bad list, or one with no sender, is refused
+# before any step (spikes/b2-wordpress/mail-from.mjs). c1 checks its own (variants/c1-config.sh).
+if [ -n "${MAIL_ALLOWED_TO:-}" ] && [ "$VARIANT" != c1 ]; then
+  SITE_ORIGIN="${SITE_ORIGIN:-}" MAIL_FROM="${MAIL_FROM:-}" MAIL_ALLOWED_TO="$MAIL_ALLOWED_TO" node "$APP/mail-from.mjs" --binding > /dev/null || exit 2
+fi
 # WOO_EXTRAS (#667): off or unset, every variant, before any Terraform or build step.
 # The same rule as deploy/wfp/lib.sh woo_extras_var. Unset writes no [vars] line.
 case "${WOO_EXTRAS:-}" in

@@ -63,7 +63,8 @@ render_conf() {
   echo 'rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]'
   # From address: MAIL_FROM, else wordpress@<site host> when that host can send
   # (spikes/b2-wordpress/mail-from.mjs). A workers.dev host sends nothing.
-  SITE_ORIGIN="$SITE_ORIGIN" MAIL_FROM="${MAIL_FROM:-}" node "$APP/mail-from.mjs" --binding
+  # #1056: MAIL_ALLOWED_TO, the destination allowlist (allowed_destination_addresses), as c1 has.
+  SITE_ORIGIN="$SITE_ORIGIN" MAIL_FROM="${MAIL_FROM:-}" MAIL_ALLOWED_TO="${MAIL_ALLOWED_TO:-}" node "$APP/mail-from.mjs" --binding
   echo '[assets]'; echo 'directory = "build/public"'; echo 'binding = "ASSETS"'; echo 'not_found_handling = "none"'
   # #563: a remote build serves its packs from the Worker only (a-settings.sh, #412). #598: b-dosql too (on by default,
   # deploy/lib/remote-packs.sh; deploy.sh applies remote_pack_defaults before this render).

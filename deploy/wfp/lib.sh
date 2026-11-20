@@ -604,7 +604,8 @@ render_user() { # render_user <site> <origin>
   # Zend's own numbers. JSON only, no single quote (it sits in a TOML literal string).
   php_env=${WFP_PHP_ENV:-'{"USE_ZEND_ALLOC":"0"}'}
   case $php_env in *"'"*|*$'\n'*) echo "WFP_PHP_ENV must not hold a single quote or a newline" >&2; return 1 ;; esac
-  mail_binding=$(SITE_ORIGIN="$origin" MAIL_FROM="${MAIL_FROM:-}" node "$APP/mail-from.mjs" --binding) || return 1
+  # #1056: MAIL_ALLOWED_TO (a recorded setting) becomes the binding's allowed_destination_addresses.
+  mail_binding=$(SITE_ORIGIN="$origin" MAIL_FROM="${MAIL_FROM:-}" MAIL_ALLOWED_TO="${MAIL_ALLOWED_TO:-}" node "$APP/mail-from.mjs" --binding) || return 1
   mail_vars=$(SITE_ORIGIN="$origin" MAIL_FROM="${MAIL_FROM:-}" MAIL_FROM_NAME="${MAIL_FROM_NAME:-}" node "$APP/mail-from.mjs" --vars) || return 1
   # #564: http_allow_mode=unset means this run and the record left the list unset.
   # site update's local -x turns that into an empty value, and empty denies every host,
@@ -929,7 +930,7 @@ use_recorded_inputs() {
 # unset is the default list, and set, including empty, is that exact list. site update
 # remembers which one this run is, in http_allow_mode, before local -x collapses unset
 # into empty. Empty denies every host, so a drop sets the mode to unset.
-SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS TURNSTILE_REGISTER TURNSTILE_WOO_REGISTER TURNSTILE_LOSTPASSWORD MAIL_FROM MAIL_FROM_NAME PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED PDF_INVOICE PAGE_CACHE_TTL OBSERVABILITY"
+SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS TURNSTILE_REGISTER TURNSTILE_WOO_REGISTER TURNSTILE_LOSTPASSWORD MAIL_FROM MAIL_FROM_NAME MAIL_ALLOWED_TO PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED PDF_INVOICE PAGE_CACHE_TTL OBSERVABILITY"
 # The measurement flags (HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV, site_settings.py MEASUREMENT) are
 # never recorded: ON only for the run that exports them; the next update without one turns it off.
 # A setting render_user reads that is not in this list is DROPPED by an update that does not export
