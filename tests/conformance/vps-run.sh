@@ -66,6 +66,8 @@ playwright() { # dir config: run Playwright with OUR wrapper config (exclusions,
           || { echo "vps-run: STOP: check-state (the saved login is not real)" >&2; exit 3; }
         local proj=e2e-pf; [ "$suite" = wc-api ] && proj=api-pf; [ "$suite" = wc-cpt ] && proj=e2e-cpt
         in_dir "$src/plugins/woocommerce" pnpm exec playwright test --config=tests/e2e/pf-conformance.config.mjs --project="$proj" --no-deps ;;
+    # Media specs copy ./assets/ from the process directory. Upstream cwd is test/e2e (#980).
+    gb) in_dir "$src/$e2e" npx playwright test --config=pf-conformance.config.mjs ;;
     *) in_dir "$d" npx playwright test --config="$e2e/pf-conformance.config.mjs" ;;
   esac
 }
