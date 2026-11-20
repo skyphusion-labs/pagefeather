@@ -5,3 +5,6 @@ specs/editor/various/adding-inline-tokens.spec.js       writes files on the RUNN
 specs/interactivity/router-regions.spec.ts              writes files on the RUNNER disk
 specs/interactivity/router-script-modules.spec.ts       writes files on the RUNNER disk
 specs/admin/connectors.spec.js                          code lock denies install_plugins, so connector install stays off
+specs/admin/user-post-types.spec.js                     Gutenberg plugin not shipped; /wp/v2/user-post-types stays 404
+specs/admin/user-taxonomies.spec.js                     Gutenberg plugin not shipped; /wp/v2/user-taxonomies stays 404
+specs/admin/guidelines.spec.js                          Gutenberg plugin not shipped; /wp/v2/knowledge stays 404

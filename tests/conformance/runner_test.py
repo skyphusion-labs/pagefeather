@@ -501,6 +501,14 @@ def main():
         ok("gb excludes connectors.spec.js for the code lock") if len(conn) == 1 and conn[0].kind == "file" and conn[0].reason == want_why else bad("connectors row: %s" % (conn,))
         gbt = open(os.path.join(t, "cfg-gb", "pf-conformance.config.mjs")).read()
         ok("gb testIgnore lists connectors.spec.js") if json.dumps("specs/admin/connectors.spec.js") in gbt else bad("gb config lacks connectors.spec.js")
+        for path, why in (
+            ("specs/admin/user-post-types.spec.js", "Gutenberg plugin not shipped; /wp/v2/user-post-types stays 404"),
+            ("specs/admin/user-taxonomies.spec.js", "Gutenberg plugin not shipped; /wp/v2/user-taxonomies stays 404"),
+            ("specs/admin/guidelines.spec.js", "Gutenberg plugin not shipped; /wp/v2/knowledge stays 404"),
+        ):
+            rows = [r for r in runner.read_excludes("gb") if r.path == path]
+            ok("gb excludes %s" % path) if len(rows) == 1 and rows[0].kind == "file" and rows[0].reason == why else bad("%s row: %s" % (path, rows))
+            ok("gb testIgnore lists %s" % path) if json.dumps(path) in gbt else bad("gb config lacks %s" % path)
         wpt = open(os.path.join(t, "cfg-wp", "pf-conformance.config.mjs")).read()
         ok("wp config sets STORAGE_STATE_PATH before import") if wpt.index("process.env.STORAGE_STATE_PATH") < wpt.index("import base") else bad("wp config: env after import")
         ok("wp config forces storageState on projects") if "storageState: state" in wpt and "const state = process.env.STORAGE_STATE_PATH" in wpt else bad("wp config: storageState missing")
