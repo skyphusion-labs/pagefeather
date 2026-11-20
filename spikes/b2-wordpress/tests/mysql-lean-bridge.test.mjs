@@ -62,3 +62,27 @@ test('mysqlOneShot: a connect that never settles answers ok:false within the con
 	assert.match(r.error, /connect timed out/);
 	assert.ok(Date.now() - t0 < 8000, 'two bounded attempts: ' + (Date.now() - t0) + ' ms');
 });
+
+// The lead's guard against #1101's miss (#1102 fixed the mysql2 bridge, which the default deploy does not load). The DEFAULT
+// approach A path is pinned end to end, so a fix in the unused bridge, or a switch of the default, goes red here:
+// deploy/a-settings.sh a_main -> index-a-lean.js (unless A_CLIENT=mysql2) -> mysql-lean-bridge.js -> connector.mjs.
+import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+test('DEFAULT PATH: a_main renders index-a-lean.js unless A_CLIENT=mysql2', () => {
+	const root = new URL('../../../', import.meta.url).pathname;
+	const run = (env) => execFileSync('bash', ['-c', '. deploy/a-settings.sh && a_main'], { cwd: root, env: { PATH: process.env.PATH, ...env } }).toString().trim();
+	assert.equal(run({}), 'index-a-lean.js', 'the default');
+	assert.equal(run({ A_CLIENT: 'lean' }), 'index-a-lean.js');
+	assert.equal(run({ A_CLIENT: 'mysql2' }), 'index-a.js', 'mysql2 only when asked');
+});
+test('DEFAULT PATH: index-a-lean.js registers mysql-lean-bridge.js, which uses connector.mjs (the #1101 fix is on the loaded bridge)', () => {
+	const entry = readFileSync(new URL('../index-a-lean.js', import.meta.url), 'utf8');
+	assert.match(entry, /from '\.\/mysql-lean-bridge\.js';/);
+	assert.match(entry, /setDbHandler\(\{ query: mysqlQuery, end: mysqlEnd, reset: mysqlReset, oneShot: mysqlOneShot \}\);/);
+	assert.doesNotMatch(entry, /mysql-bridge\.js/, 'not the mysql2 bridge');
+	const bridge = readFileSync(new URL('../mysql-lean-bridge.js', import.meta.url), 'utf8');
+	assert.match(bridge, /import \{ createConnector \} from '\.\/connector\.mjs';/);
+	assert.match(bridge, /const connector = createConnector\(/);
+	assert.match(bridge, /const one = createConnector\(openLean\(env\), \{ log \}\);/, 'oneShot is bounded too');
+	assert.match(bridge, /export async function mysqlEnd\(\) \{\n\tawait connector\.end\(\);\n\}/);
+});
