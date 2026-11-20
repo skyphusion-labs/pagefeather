@@ -4,10 +4,10 @@
 // workers.dev subdomain, the site map namespace, and each site's front door (a
 // small plain Worker, wp-<name>, that runs deploy/wfp/dispatcher/worker.js).
 import { cfFetch, opError } from './vendor/provision/cf.mjs';
-import { ensureKVNamespace, scriptExists, enableWorkersDevSubdomain } from './vendor/provision/ops.mjs';
+import { ensureKVNamespace, scriptExists, enableWorkersDevSubdomain, placeNamespaceScript } from './vendor/provision/ops.mjs';
 import { provisionSite, removeNamespaceSite } from './vendor/provision/provision.mjs';
 import { readSite, listSites, upsertSite, removeSite, updateSite } from './vendor/provision/registry.mjs';
-import { validateRequest, buildServerCfg, BadRequest, HYPERDRIVE_ID_RE, TABLE_PREFIX_RE } from './vendor/provision/server-config.mjs';
+import { validateRequest, buildServerCfg, BadRequest, HYPERDRIVE_ID_RE, TABLE_PREFIX_RE, PLACEMENT_REGION_RE } from './vendor/provision/server-config.mjs';
 import { shown, logged } from './errors.mjs';
 
 export const SITE_MAP_TITLE_DEFAULT = 'pagefeather-sites';
@@ -44,14 +44,25 @@ export async function readHyperdrive(ctx, id) {
   return { id, name: String(c.name || ''), host: String(o.host || ''), database: String(o.database || '') };
 }
 
-// Connect a database: body { hyperdriveId, provider }.
+// #1063: the database's region, where its store's Worker runs. Measured 2026-11-20 (#1054): a store whose Worker
+// ran across the country from its database was 2 to 5 times slower. "" or missing means not set yet.
+export const REGION_EXAMPLE = 'azure:westus2';
+export function databaseRegion(raw) {
+  const r = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (!r) return '';
+  if (!PLACEMENT_REGION_RE.test(r)) throw new BadRequest(`The database region must be the cloud and the region, for example ${REGION_EXAMPLE} (Azure West US 2) or aws:us-east-1.`);
+  return r;
+}
+
+// Connect a database: body { hyperdriveId, provider, region? }.
 export async function connectDatabase(env, { body, fetchImpl }) {
   if (!body || typeof body !== 'object') throw new BadRequest('body must be a JSON object');
   if (!Object.hasOwn(PROVIDERS, body.provider)) throw new BadRequest('Choose where the database runs.');
+  const region = databaseRegion(body.region);
   const ctx = await context(env, fetchImpl);
   const kvId = await siteMap(ctx, env);
   const hd = await readHyperdrive(ctx, typeof body.hyperdriveId === 'string' ? body.hyperdriveId.trim().toLowerCase() : '');
-  const entry = { ...hd, provider: body.provider, connectedAt: new Date().toISOString() };
+  const entry = { ...hd, provider: body.provider, ...(region ? { region } : {}), connectedAt: new Date().toISOString() };
   await upsertSite(ctx, { kvId, hostname: DB_KEY_PREFIX + hd.id, entry });
   return { ok: true, database: entry };
 }
@@ -65,7 +76,7 @@ export async function databaseList(env, { fetchImpl, max = 50 }) {
   for (const k of keys) {
     const e = await readSite(ctx, { kvId, hostname: k });
     if (!e || typeof e.id !== 'string' || !HYPERDRIVE_ID_RE.test(e.id)) continue;
-    out.push({ id: e.id, name: e.name || '', host: e.host || '', database: e.database || '', provider: Object.hasOwn(PROVIDERS, e.provider) ? e.provider : 'mysql' });
+    out.push({ id: e.id, name: e.name || '', host: e.host || '', database: e.database || '', provider: Object.hasOwn(PROVIDERS, e.provider) ? e.provider : 'mysql', region: typeof e.region === 'string' && PLACEMENT_REGION_RE.test(e.region) ? e.region : '' });
   }
   return out;
 }
@@ -78,6 +89,34 @@ async function sitesUsing(ctx, kvId, id) {
     if (e && e.database === id) users.push(k);
   }
   return users;
+}
+
+// Set a connected database's region (#1063): body { id, region }. Every store on that database is then re-placed
+// next to it, in place: a settings PATCH, no re-upload (measured live, #1063). The record is written first, so a
+// store that fails to re-place keeps serving where it was and is named in the answer, to try again.
+export async function setDatabaseRegion(env, { body, fetchImpl }) {
+  const id = body && typeof body.id === 'string' ? body.id : '';
+  if (!HYPERDRIVE_ID_RE.test(id)) throw new BadRequest('That is not a connected database.');
+  const region = databaseRegion(body && body.region);
+  if (!region) throw new BadRequest(`Enter the database region, for example ${REGION_EXAMPLE}.`);
+  const ctx = await context(env, fetchImpl);
+  const kvId = await siteMap(ctx, env);
+  const db = await readSite(ctx, { kvId, hostname: DB_KEY_PREFIX + id });
+  if (!db || db.id !== id) throw new BadRequest('That is not a connected database.');
+  await upsertSite(ctx, { kvId, hostname: DB_KEY_PREFIX + id, entry: { ...db, region } });
+  const namespace = provisionEnv(env, { kvId, subdomain: await workersSubdomain(ctx) }).WFP_NAMESPACE;
+  const placed = []; const failed = [];
+  for (const hostname of await sitesUsing(ctx, kvId, id)) {
+    const e = await readSite(ctx, { kvId, hostname });
+    if (!e || typeof e.script !== 'string') continue;
+    try {
+      await placeNamespaceScript(ctx, { ns: namespace, name: e.script, placement: { mode: 'targeted', region } });
+      await updateSite(ctx, { kvId, hostname, patch: { placementRegion: region } }); // #1063: a later upload reads it
+      placed.push(hostname);
+    }
+    catch (err) { failed.push({ site: hostname, reference: logged('place store', (err && err.stack) || err) }); }
+  }
+  return { ok: !failed.length, id, region, placed, failed };
 }
 
 // Disconnect a database: refused while any site uses it. The configuration itself
@@ -250,9 +289,13 @@ export async function addSite(env, { body, fetchImpl, dispatcherSource }) {
     const id = typeof body.database === 'string' ? body.database : '';
     db = HYPERDRIVE_ID_RE.test(id) ? await readSite(ctx, { kvId, hostname: DB_KEY_PREFIX + id }) : null;
     if (!db || db.id !== id) throw new BadRequest('Choose a connected database. Connect one in Databases first.');
+    // #1063: a NEW store needs its database's region, so its Worker runs next to the database. An existing store
+    // (ours) is never refused for it: it keeps serving as it is, and Databases offers the region.
+    const region = typeof db.region === 'string' && PLACEMENT_REGION_RE.test(db.region) ? db.region : '';
+    if (!region && !ours) throw new BadRequest(`Set this database's region first: in Databases, enter where it runs (for example ${REGION_EXAMPLE}). The store then runs next to its database; without it, pages were 2 to 5 times slower.`);
     // Read it again now: the configuration may have changed since it was connected.
     await readHyperdrive(ctx, db.id);
-    aOpts = { hyperdriveId: db.id, tablePrefix: tablePrefixFor(req.name) };
+    aOpts = { hyperdriveId: db.id, tablePrefix: tablePrefixFor(req.name), ...(region ? { placementRegion: region } : {}) };
   }
   const cfg = await buildServerCfg(penv, { kind, name: req.name, domain: 'workers.dev', codeLock: true, ...aOpts, store });
   cfg.outbound = false;
@@ -287,7 +330,8 @@ export async function addSite(env, { body, fetchImpl, dispatcherSource }) {
     if (!r.existing && r.alreadyInstalled) { taken = true; throw new Error(`table prefix ${aOpts.tablePrefix} already holds WordPress`); }
     if (!r.existing && !r.installed) throw new Error(`install: ${r.installNote || 'not installed'}`);
     await deployFrontDoor(ctx, { name: req.name, kvId, namespace, source: dispatcherSource, compatibilityDate: cfg.compatibilityDate });
-    await updateSite(ctx, { kvId, hostname, patch: { database: db.id, tablePrefix: aOpts.tablePrefix } });
+    // #1063: the entry records the store's placement, so any later upload of it (an update) carries the same one.
+    await updateSite(ctx, { kvId, hostname, patch: { database: db.id, tablePrefix: aOpts.tablePrefix, ...(aOpts.placementRegion ? { placementRegion: aOpts.placementRegion } : {}) } });
   } catch (e) {
     if (ours) throw e;
     const ref = logged('add Hyperdrive store', (e && e.stack) || e);

@@ -135,6 +135,7 @@ async function provisionNamespaceSite(ctx, cfg) {
     compatibilityDate: cfg.compatibilityDate,
     compatibilityFlags: cfg.compatibilityFlags || [],
     migrations: { new_tag: cfg.migrationTag || 'v1', new_sqlite_classes: sqliteClasses },
+    placement: cfg.placement, // #1063: approach A only, next to its database
   });
   steps.push({ deployed: script, ns: cfg.namespace, sqliteClasses });
   const entry = {

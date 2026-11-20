@@ -114,7 +114,7 @@ export async function writeKVMapEntry(ctx, { kvId, key, value }) {
 // replaces the script, so it is idempotent.
 export async function deployNamespaceScript(ctx, {
   ns, name, mainModule, modules, bindings = [], compatibilityDate, compatibilityFlags = [],
-  migrations,
+  migrations, placement,
 }) {
   const metadata = {
     main_module: mainModule,
@@ -122,6 +122,10 @@ export async function deployNamespaceScript(ctx, {
     compatibility_flags: compatibilityFlags,
     bindings,
   };
+  // #1063: where the Worker runs, next to its database ({mode: 'targeted', region}, the shape wrangler sends).
+  // Measured live 2026-11-20: a dispatched namespace user Worker with it runs in that region (SEA for
+  // azure:westus2), and without it next to the visitor.
+  if (placement) metadata.placement = placement;
   // A SQLite Durable Object class binding is REJECTED (API 10061) unless a
   // migration declares the class. The b-dosql wp site binds PhpRuntime, so the
   // migration is not optional: without it the deploy throws and no site exists
@@ -244,6 +248,22 @@ export async function ensureProxiedHostname(ctx, { zoneId, hostname }) {
     { body: { type: 'AAAA', name: hostname, content: '100::', proxied: true }, fetchImpl: ctx.fetchImpl });
   if (!r.ok && !r.errors.some((e) => e.code === 81053 || e.code === 81057)) throw opError('ensureProxiedHostname', hostname, r);
   return { routed: hostname, zone: zoneId };
+}
+
+// #1063: re-place a LIVE namespace user Worker, with no re-upload: PATCH its settings with placement. Measured
+// live 2026-11-20 (#1063): the calls after it ran in the region (SEA for azure:westus2) and a var binding was
+// kept. A GET of the settings afterwards read placement {} while traffic was placed, so the PATCH ANSWER is
+// the check: it must echo the placement.
+export async function placeNamespaceScript(ctx, { ns, name, placement }) {
+  const form = new FormData();
+  form.append('settings', new Blob([JSON.stringify({ placement })], { type: 'application/json' }));
+  const r = await cfFetch(ctx.token, 'PATCH',
+    `/accounts/${ctx.acct}/workers/dispatch/namespaces/${ns}/scripts/${name}/settings`,
+    { body: form, fetchImpl: ctx.fetchImpl });
+  if (!r.ok) throw opError('placeNamespaceScript', name, r);
+  const got = (r.result && r.result.placement) || {};
+  if (got.region !== placement.region) throw opError('placeNamespaceScript', name, { status: 200, errors: [{ code: 0, message: 'the answer did not echo the placement' }] });
+  return { name, ns, placement: got };
 }
 
 // A modules-format script upload body: one JSON metadata part plus each module

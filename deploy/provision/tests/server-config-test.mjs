@@ -88,6 +88,11 @@ ok('selectToken: an unknown kind THROWS, never falls through to the elevated tok
   ok('buildServerCfg a: refuses a bad Hyperdrive id', await throwsWith(() => buildServerCfg(env, { kind: 'a', name: 'mystore', domain: 'workers.dev', hyperdriveId: 'not-an-id', tablePrefix: 'wp_mystore_' }), /Hyperdrive config id/));
   ok('buildServerCfg a: refuses a missing Hyperdrive id', await throwsWith(() => buildServerCfg(env, { kind: 'a', name: 'mystore', domain: 'workers.dev', tablePrefix: 'wp_mystore_' }), /Hyperdrive config id/));
   ok('buildServerCfg a: refuses a table prefix that does not end in _', await throwsWith(() => buildServerCfg(env, { kind: 'a', name: 'mystore', domain: 'workers.dev', hyperdriveId: HD, tablePrefix: 'wp_mystore' }), /table prefix/));
+  // #1063: the placement region, next to the database.
+  const placed = await buildServerCfg(env, { kind: 'a', name: 'mystore', domain: 'workers.dev', hyperdriveId: HD, tablePrefix: 'wp_mystore_', placementRegion: 'azure:westus2' });
+  ok('#1063 buildServerCfg a: a placement region becomes placement {mode: targeted, region}', JSON.stringify(placed.placement) === JSON.stringify({ mode: 'targeted', region: 'azure:westus2' }));
+  ok('#1063 buildServerCfg a: no region, no placement (the caller decides when it is required)', cfg.placement === undefined);
+  ok('#1063 buildServerCfg a: refuses a bad placement region', await throwsWith(() => buildServerCfg(env, { kind: 'a', name: 'mystore', domain: 'workers.dev', hyperdriveId: HD, tablePrefix: 'wp_mystore_', placementRegion: 'westus2' }), /placement region/));
   ok('buildServerCfg a: refuses a table prefix with a quote', await throwsWith(() => buildServerCfg(env, { kind: 'a', name: 'mystore', domain: 'workers.dev', hyperdriveId: HD, tablePrefix: "wp_'x_" }), /table prefix/));
   ok('buildServerCfg a: refuses a demo', await throwsWith(() => buildServerCfg(env, { kind: 'a', name: 'mystore', domain: 'workers.dev', hyperdriveId: HD, tablePrefix: 'wp_mystore_', demo: true }), /demo/));
   const wp = await buildServerCfg(env, { kind: 'wp', name: 'blog', domain: 'workers.dev' });
