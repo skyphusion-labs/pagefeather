@@ -495,7 +495,8 @@ def main():
             ok("config %s: no inline setup function in config" % sn) if "async function pfGlobalSetup" not in txt and "pfGlobalSetup" not in txt.replace(pf_setup, "") else bad("config %s: inline globalSetup function" % sn)
             m = re.search(r'PF_CONFORMANCE_UPSTREAM_GLOBAL_SETUP = "([^"]+)"', txt)
             ok("config %s: upstream global-setup is an absolute suite path" % sn) if m and m.group(1).endswith(want_upstream_suffix) and os.path.isabs(m.group(1)) else bad("config %s: upstream env missing or relative" % sn)
-            ok("config %s has no title grepInvert" % sn) if "grepInvert" not in txt else bad("config %s gained a title grepInvert" % sn)
+            if sn == "wp":
+                ok("config %s has no title grepInvert" % sn) if "grepInvert" not in txt else bad("config %s gained a title grepInvert" % sn)
         conn = [r for r in runner.read_excludes("gb") if r.path == "specs/admin/connectors.spec.js"]
         want_why = "code lock denies install_plugins, so connector install stays off"
         ok("gb excludes connectors.spec.js for the code lock") if len(conn) == 1 and conn[0].kind == "file" and conn[0].reason == want_why else bad("connectors row: %s" % (conn,))
@@ -505,10 +506,40 @@ def main():
             ("specs/admin/user-post-types.spec.js", "Gutenberg plugin not shipped; /wp/v2/user-post-types stays 404"),
             ("specs/admin/user-taxonomies.spec.js", "Gutenberg plugin not shipped; /wp/v2/user-taxonomies stays 404"),
             ("specs/admin/guidelines.spec.js", "Gutenberg plugin not shipped; /wp/v2/knowledge stays 404"),
+            ("specs/admin/font-library.spec.js", "needs the Gutenberg plugin: delete-installed-fonts calls WP_Theme_JSON_Resolver_Gutenberg, core 7.1.4 lacks it (#998); stock core not measured"),
         ):
             rows = [r for r in runner.read_excludes("gb") if r.path == path]
             ok("gb excludes %s" % path) if len(rows) == 1 and rows[0].kind == "file" and rows[0].reason == why else bad("%s row: %s" % (path, rows))
             ok("gb testIgnore lists %s" % path) if json.dumps(path) in gbt else bad("gb config lacks %s" % path)
+        # #992: the directive-context fixture at GB_SHA binds children; the runtime at GB_SHA refuses it.
+        dc = "specs/interactivity/directive-context.spec.ts"
+        dc_why = "fixture at GB_SHA uses data-wp-bind--children, which the runtime at GB_SHA refuses; upstream fixed the fixture in the next wp/7.1 commit d1533ce (#992)"
+        dc_out = (
+            "is correctly initialized",
+            "is correctly extended (shallow)",
+            "changes in inherited properties are reflected and don't leak down (child)",
+            "changes in inherited properties are reflected and don't leak up (parent)",
+            "changes in shadowed properties do not leak (child)",
+            "changes in shadowed properties do not leak (parent)",
+            "new inherited properties update child contexts",
+            "Array properties are shadowed",
+            "overwritten objects don't inherit values (shallow)",
+            "overwritten objects do not inherit values",
+            "objects referenced from the context inherit properties where they are originally defined",
+        )
+        dc_rows = [r for r in runner.read_excludes("gb") if r.path == dc]
+        ok("gb directive-context rows are 11 title rows") if len(dc_rows) == 11 and all(r.kind == "title" and r.reason == dc_why for r in dc_rows) else bad("directive-context rows: %s" % (dc_rows,))
+        ok("gb directive-context row titles are the pre readers") if sorted(r.title for r in dc_rows) == sorted("data-wp-context > " + x for x in dc_out) else bad("directive-context titles: %s" % ([r.title for r in dc_rows],))
+        gm = re.search(r"^config\.grepInvert = new RegExp\( (.*) \);$", gbt, re.M)
+        gsrc = json.loads(gm.group(1)) if gm else None
+        ok("gb config has a title grepInvert") if gsrc else bad("gb config lacks a title grepInvert")
+        if gsrc:
+            for x in dc_out:
+                full = "%s data-wp-context %s" % (dc, x)
+                ok("gb grepInvert skips: %s" % x) if re.search(gsrc, full) else bad("gb grepInvert misses %r" % full)
+            for x in ("can be accessed in other directives on the same element", "should not subscribe to parent context props if those also exist in child", "properties from other namespaces defined in a parent context are inherited"):
+                full = "%s data-wp-context %s" % (dc, x)
+                ok("gb grepInvert keeps: %s" % x) if not re.search(gsrc, full) else bad("gb grepInvert hides %r" % full)
         wpt = open(os.path.join(t, "cfg-wp", "pf-conformance.config.mjs")).read()
         ok("wp config sets STORAGE_STATE_PATH before import") if wpt.index("process.env.STORAGE_STATE_PATH") < wpt.index("import base") else bad("wp config: env after import")
         ok("wp config forces storageState on projects") if "storageState: state" in wpt and "const state = process.env.STORAGE_STATE_PATH" in wpt else bad("wp config: storageState missing")

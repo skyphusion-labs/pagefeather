@@ -11,7 +11,9 @@ The full seed (every item set and checked, and a reseed) is verified against a r
   7. the block email editor option starts at yes. The seed writes no. The read-back is no (#916).
      A wc-admin 403 on that option still passes when wc/v3 is no.
      The same 403 still fails when wc/v3 stays yes.
-  8. SEED_NO_WOO=1 on a WordPress-only site: no WooCommerce request, no customer, the items named as skipped; the
+  8. a gutenberg-test-plugins plugin left active (a spec that stopped mid-run) is deactivated and read back; a
+     deactivation that does not stick fails the seed.
+  9. SEED_NO_WOO=1 on a WordPress-only site: no WooCommerce request, no customer, the items named as skipped; the
      same statement on a site that has wc/v3 fails.
 Run: python3 -I tests/conformance/seed-test.py
 """
@@ -259,9 +261,17 @@ class Site(BaseHTTPRequestHandler):
             stem = (q.get("search") or ["image"])[0]
             return self._json(200, [{"source_url": "http://127.0.0.1/wp-content/uploads/%s.png" % stem}])
         if route == "/wp/v2/plugins":
-            return self._json(200, [{"plugin": pid, "status": "active"} for pid in PLUGINS])
+            gb = st.get("gb", {})
+            return self._json(200, [{"plugin": pid, "status": "active"} for pid in PLUGINS] + [{"plugin": k, "status": v} for k, v in gb.items()])
         if route.startswith("/wp/v2/plugins/"):
             pid = route[len("/wp/v2/plugins/"):]
+            gb = st.get("gb", {})
+            if pid in gb:
+                if method == "POST" and isinstance(body, dict) and "status" in body:
+                    st.setdefault("gb_posts", []).append((pid, body["status"]))
+                    if not st.get("freeze_gb"):
+                        gb[pid] = body["status"]
+                return self._json(200, {"plugin": pid, "status": gb[pid]})
             return self._json(200, {"plugin": pid, "status": "active"})
         st["odd"].append((method, route))
         return self._json(200, {})
@@ -354,6 +364,33 @@ check(
     "email editor option: wc-admin 403 fails when wc/v3 is yes",
     isinstance(chk, dict) and chk.get("ok") is False and chk.get("wcv3") == "yes" and chk.get("wcadmin_status") == 403 and state["options"].get(EMAIL_OPT) == "yes" and (EMAIL_OPT, 403) in state["reads"] and p.returncode == 1,
     (p.returncode, state["options"].get(EMAIL_OPT), state["puts"], state["reads"], chk),
+)
+
+GB_LEFT = "gutenberg-test-plugins/default-post-content"
+def gb_chk(report):
+    return ((report or {}).get("checks", {})).get("gutenberg-test-plugins stay inactive (the specs toggle them)")
+
+p, state, report = run_email_editor_seed(gb={GB_LEFT: "active", "gutenberg-test-plugins/other": "inactive"})
+chk = gb_chk(report)
+check(
+    "gutenberg-test-plugins: a leftover active one is deactivated and read back inactive",
+    isinstance(chk, dict) and chk.get("ok") is True and state["gb"][GB_LEFT] == "inactive" and state.get("gb_posts") == [(GB_LEFT, "inactive")] and chk.get("deactivated") == [GB_LEFT],
+    (p.returncode, state.get("gb"), state.get("gb_posts"), chk),
+)
+
+p, state, report = run_email_editor_seed(gb={GB_LEFT: "active"}, freeze_gb=True)
+chk = gb_chk(report)
+check(
+    "gutenberg-test-plugins: a deactivation that does not stick fails the seed",
+    isinstance(chk, dict) and chk.get("ok") is False and chk.get("still_active") == [GB_LEFT] and p.returncode == 1,
+    (p.returncode, state.get("gb"), chk),
+)
+
+p, state, report = run_email_editor_seed(gb={"gutenberg-test-plugins/other": "inactive"})
+check(
+    "gutenberg-test-plugins: none active means no write and no check row",
+    gb_chk(report) is None and not state.get("gb_posts"),
+    (state.get("gb_posts"), gb_chk(report)),
 )
 
 def woo_routes(state):
