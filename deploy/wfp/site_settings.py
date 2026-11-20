@@ -17,8 +17,11 @@ exports it only when it was set. A drop sets it back to unset, not to empty.
 An update KEEPS a recorded setting the run does not set, uses the run's value when it sets one,
 and drops one only when DROP_SETTINGS names it. A secret's VALUE is never recorded, only that the
 site has it (TURNSTILE_SECRET): an update without it is refused unless DROP_SETTINGS names it.
-OBSERVABILITY is not recorded on purpose: its logs record client IPs, so they stay on only when a
-run asks again (lib.sh render_user).
+OBSERVABILITY (#1050) is recorded for 0 and 1 only. 1 is events only (our own structured lines
+and uncaught exceptions, no request metadata), so an update keeps a site's logs as they were; before
+#1050 a remount that did not pass it turned the user Worker's logs off (cf759a, 2026-11-20). full
+(the invocation logs: every request's URL, client IP and user agent; a throwaway only, #639) is
+NEVER recorded: it stays on only when a run asks again, and a record that holds it is not kept.
 
     site_settings.py env-json                         this run's settings (stdout)
     site_settings.py get <bucket> <out.json>          exit 0 with the record, 3 when none
@@ -53,7 +56,10 @@ SETTINGS = ("PHP_INI", "LAZY_CACHE_MB", "LAZY_ARENA", "LAZY_ARENA_MB", "PHP_RECY
             "TURNSTILE_REGISTER", "TURNSTILE_WOO_REGISTER", "TURNSTILE_LOSTPASSWORD",
             "MAIL_FROM", "MAIL_FROM_NAME", "PHP_LOCATION", "WP_VECTORIZE_SEARCH", "OPCACHE_SPLIT", "OPCACHE_REMOTE", "SITE_REMOTE",
             "REMOTE_FETCH_CAP", "REMOTE_HOLD_KIB", "SITE_FETCH_CAP", "SITE_HOLD_KIB", "SITE_RETRY_MS", "REQUEST_FRAMES", "PAGE_CACHE_PRODUCT_TTL", "WOO_EXTRAS",
-            "OBJECT_CALL_DEADLINE_S", "OBJECT_START_BY_S", "OBJECT_DISCONNECT_SHED", "HTTP_ALLOW_HOSTS", "PDF_INVOICE", "PAGE_CACHE_TTL")
+            "OBJECT_CALL_DEADLINE_S", "OBJECT_START_BY_S", "OBJECT_DISCONNECT_SHED", "HTTP_ALLOW_HOSTS", "PDF_INVOICE", "PAGE_CACHE_TTL",
+            "OBSERVABILITY")
+# #1050: the OBSERVABILITY values a record may hold. full carries client IPs: per run only.
+RECORDABLE = {"OBSERVABILITY": ("0", "1")}
 # Three states (#564): absent from the environment means the default list; present, including
 # empty, means that exact list. The record holds {"set": true, "value": "..."} only when present.
 # A bare string cannot say "empty" and "unset" apart, and empty denies every host.
@@ -129,6 +135,8 @@ def env_json(env=os.environ):
                 settings[k] = {"set": True, "value": env[k]}
             continue
         if env.get(k):
+            if k in RECORDABLE and env[k] not in RECORDABLE[k]:
+                continue
             settings[k] = env[k]
     return {"v": 1, "settings": settings, "secrets": [k for k in SECRETS if env.get(k)]}
 
@@ -157,6 +165,9 @@ def merge(record, env=os.environ):
             elif is_set:
                 lines.extend(presence_lines(k, "set", val))
                 print("  settings: %s kept from the record" % k, file=sys.stderr)
+            continue
+        if k in RECORDABLE and str(v) not in RECORDABLE[k]:
+            print("  settings: the record has %s=%s, which is never kept (#1050): ignored" % (k, v), file=sys.stderr)
             continue
         if k in drop:
             lines.append("export %s=''" % k)
