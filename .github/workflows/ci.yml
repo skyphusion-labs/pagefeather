@@ -496,6 +496,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/email-send-timing.test.mjs
       - name: "Approach A cron: a leg runs due actions to a time budget and a heap stop, not one a leg (#1120)"
         run: node --test spikes/b2-wordpress/tests/cron-as-budget.test.mjs
+      - name: "Approach A cron: a leg that made progress with work still due brings the next one in 5 s, not 60 (#1120)"
+        run: node --test spikes/b2-wordpress/tests/cron-backlog.test.mjs
       - name: b-dosql a purge alarm runs the cron leg only when due (issue #470)
         run: node --test spikes/b2-wordpress/tests/cron-leg-due.test.mjs
       - name: b-dosql a cron leg that keeps dying backs off and says why (issue #471)

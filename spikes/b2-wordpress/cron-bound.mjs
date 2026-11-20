@@ -60,6 +60,45 @@ export function cronAsBudgetMs(env) {
 	return /^[0-9]{4,5}$/.test(String(v ?? '')) ? int(v, 1000, 60000, AS_BUDGET_MS) : AS_BUDGET_MS;
 }
 
+// #1120: the gap before the next leg when a leg on A's cron object was cut short with Action Scheduler work still due
+// (CRON_BACKLOG_GAP_MS, 1 to 60 s). The full CRON_INTERVAL_MS (60 s) between budget-stopped legs left a burst draining
+// at one leg a minute.
+export const BACKLOG_GAP_MS = 5000;
+// #1120 review: the most soon legs in a row WITHOUT progress against the backlog. An action that runs but stays due (a
+// plugin that schedules a fresh action due now each time it runs) keeps as_due flat or rising, and would otherwise keep a
+// leg every 5 s for good. Action Scheduler's own failure path does not (a failed action is marked failed, not pending).
+// A real backlog shrinks, so a leg where as_due fell resets the count (backlogStreak): cf759hx's 2,500 due emails never
+// cap. Past the cap the legs keep the interval until as_due falls, or a leg ends with nothing due or no progress.
+export const BACKLOG_MAX_LEGS = 60;
+/** #1120: the backlog gap from env (CRON_BACKLOG_GAP_MS 1000..60000); a bad value is the default. */
+export function cronBacklogGapMs(env) {
+	const v = env && env.CRON_BACKLOG_GAP_MS;
+	return /^[0-9]{4,5}$/.test(String(v ?? '')) ? int(v, 1000, 60000, BACKLOG_GAP_MS) : BACKLOG_GAP_MS;
+}
+/** #1120: ms until the next leg when this one made progress and work is still due, or null (the usual interval). Only on
+ * A's cron object (b-dosql keeps the interval, #470). Progress: the leg ran at least one action (stopped for budget or
+ * heap, ran its cap, or its email pass ran out with other work due: a leg runs the other actions only when no email is
+ * due). A leg that ran nothing (a stuck claim) or had no bridge ('stop') keeps the interval, so it can never spin.
+ * streak = the soon legs in a row without progress (backlogStreak); at BACKLOG_MAX_LEGS the interval applies. */
+export function cronBacklogNext({ approachA, asDue, asStop, asActions, gapMs, streak = 0 }) {
+	if (!approachA || !(Number(asDue) > 0) || !(Number(asActions) > 0) || asStop === 'stop') return null;
+	if (Number(streak) >= BACKLOG_MAX_LEGS) return null; // capped: no progress for BACKLOG_MAX_LEGS legs
+	return gapMs;
+}
+/** #1120 review: the next streak record from the last one ({ n, due }, or none) and this leg's as_due. n counts the soon
+ * legs in a row whose as_due did not fall; a fall resets it to 0. */
+export function backlogStreak(prev, asDue) {
+	const due = Number(asDue);
+	if (!prev || typeof prev !== 'object') return { n: 0, due };
+	const n = Number.isInteger(prev.n) && prev.n >= 0 ? prev.n : 0;
+	if (Number.isFinite(Number(prev.due)) && due < Number(prev.due)) return { n: 0, due };
+	return { n: n + 1, due };
+}
+/** #1120: is a backlog leg due? `at` is the stored backlog mark (the end of the cut-short leg, ms), or undefined. */
+export function cronBacklogDue(at, now, gapMs, slackMs = CRON_SLACK_MS) {
+	return Number(at) > 0 && now - Number(at) >= gapMs - slackMs;
+}
+
 /** #1120: may the leg run another action? null = yes; 'budget' or 'heap' = stop, and why. n = actions already run (the
  * first always runs, as before #1120); heapMib = the PHP heap now; startHeapMib = the heap when the leg began; lineMib =
  * the engine's recycle line. WebAssembly memory never shrinks and the cron runtime is not recycled (#598), so the heap
