@@ -77,6 +77,55 @@ export function statementFailureResponse(n, json = false, saved = false) {
 	const body = json ? JSON.stringify({ code: WRITE_LOSS_CODE, message, data: { status, statementFailure: true } }) : message + '\n';
 	return { status, headers, body };
 }
+/**
+ * #836, the lead's ruling (option 2, 2026-11-20): a DETERMINISTIC refusal on a READ answers a non-retryable 500 that
+ * names the refusal, for every request, visitors included. A plausible wrong 200 (an empty result that looks like
+ * "nothing matched") is the worse error. A refusal is a limit of the platform's SQLite that MySQL does not have, so the
+ * same query worked on the site's old host: the LIKE pattern cap, the bound-variable cap, the expression depth, the
+ * statement or value size. An error MySQL raises too (no such table or column, syntax, a constraint) is NOT a refusal and
+ * stays on wpdb's error path: WordPress relies on it (no such table is how it finds a site that is not installed yet).
+ * Keep shrinking this class at the root (d1-dialect rewrites, #805 and #836 (a)), so this 500 stays rare.
+ */
+export const SQL_REFUSALS = [
+	[/LIKE or GLOB pattern too complex/i, 'like-pattern'],
+	[/too many SQL variables/i, 'too-many-variables'],
+	[/Expression tree is too large|parser stack overflow/i, 'expression-depth'],
+	[/string or blob too big|SQLITE_TOOBIG/i, 'too-big'],
+];
+export const SQL_REFUSED_CODE = 'skyphusion_sql_refused';
+export const SQL_REFUSED_MESSAGE = 'The database refused a query this page needs. Nothing was changed. The same request will be refused again.';
+/** The refusal a statement error names, or null when it is not one. */
+export function sqlRefusal(error) {
+	const e = String(error || '');
+	if (!e) return null;
+	for (const [re, kind] of SQL_REFUSALS) if (re.test(e)) return kind;
+	return null;
+}
+/** The first refusal among the run's failed READS (SELECT or WITH), or null. A refused write stays on wpdb's path. */
+export function readRefusal(failures) {
+	for (const f of failures || []) {
+		if (!f || !/^\s*(SELECT|WITH)\b/i.test(String(f.sql || ''))) continue;
+		const kind = sqlRefusal(f.error);
+		if (kind) return kind;
+	}
+	return null;
+}
+/**
+ * The #836 answer: 500, no Retry-After (the same query is refused again), never cached, x-sql-refused names the
+ * refusal. wrote says a write in the same request may have been kept: then the message is write-loss's "check before
+ * you try again" and x-write-loss is unknown.
+ */
+export function refusedReadResponse(kind, json = false, wrote = false) {
+	const headers = {
+		'content-type': json ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8',
+		'cache-control': 'no-store',
+		'x-sql-refused': String(kind),
+		'x-write-loss': wrote ? 'unknown' : 'none',
+	};
+	const message = wrote ? WRITE_LOSS_MESSAGE : SQL_REFUSED_MESSAGE;
+	const body = json ? JSON.stringify({ code: SQL_REFUSED_CODE, message, data: { status: 500, refused: String(kind) } }) : message + '\n';
+	return { status: 500, headers, body };
+}
 /** Whether a /_frame answer PROVES the request kept nothing: rolled back, and no commit point passed. */
 export function frameProvesRollback(frame) {
 	return !!(frame && frame.state === 'rolled-back' && Number(frame.points) === 0);

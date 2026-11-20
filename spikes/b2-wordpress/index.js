@@ -32,7 +32,7 @@ import { opcacheMemoryMib } from './opcache-size.mjs';
 import { createTrace as createQueryTrace } from './qtrace.mjs';
 import { asyncEmailDefine } from './async-email-wiring.mjs';
 import { hposCacheDefine } from './woo-hpos-cache.mjs';
-import { resetFailures, platformFailures, writeLossResponse, rolledBackResponse, frameProvesRollback, statementFailureResponse, wantsJson, heldRequestMail, sqlShape } from './write-loss.mjs';
+import { resetFailures, platformFailures, writeLossResponse, rolledBackResponse, frameProvesRollback, statementFailureResponse, wantsJson, heldRequestMail, sqlShape, readRefusal, refusedReadResponse } from './write-loss.mjs';
 import { MEMORY_RESET } from './object-error.mjs';
 import { createL2Writer } from './oc-l2-writer.mjs';
 import { createLedger, memfsBytes, createSqlMeter, ledgerOn, LEDGER_MIB, currentSerial } from './mem-ledger.mjs';
@@ -4558,6 +4558,17 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 					console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', class: 'platform', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, wrote, rolledBack: !!(rb && !saved), answered: sf.status, phpStatus: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env) }));
 					if (purgeRetry && saved) purgeRetry(); // #1007: a saved write changed pages, so their purge is asked again
 					return new Response(sf.body, { status: sf.status, headers: sf.headers });
+				}
+				// #836 (the lead's ruling, option 2): a deterministic REFUSAL on a read (a platform SQLite limit MySQL does not
+				// have) answers a non-retryable 500 naming it, never PHP's plausible empty answer. Other deterministic errors
+				// (MySQL raises them too) keep wpdb's path below.
+				const refusal = readRefusal(d.failures);
+				if (refusal) {
+					const f = ocReqForget();
+					const wrote = d.log.some((l) => /^ok\s+\(?\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(l));
+					const sr = refusedReadResponse(refusal, wantsJson(url.pathname, url.search, req.headers.get('accept')), wrote);
+					console.log(JSON.stringify({ '@event': 'sql-refused', m: 'sql-refused', refused: refusal, method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, wrote, answered: sr.status, phpStatus: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env) }));
+					return new Response(sr.body, { status: sr.status, headers: sr.headers });
 				}
 				const f = readFailed(d.failures) ? ocReqForget() : { n: 0 };
 				console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', class: 'deterministic', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, answered: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env) }));
