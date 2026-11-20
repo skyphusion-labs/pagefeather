@@ -4048,7 +4048,8 @@ export default {
 		// #752: the PHP object's start-by tick lands here, FIRST: a cheap 204, before the page cache and any object call.
 		if (url.pathname === TICK_PATH) return tickResponse();
 		// #912: //checkout-link is the home page. Merge the slash and redirect.
-		const merged = collapsedSlashRedirect(req.url);
+		// #1005: GET, HEAD and OPTIONS only. A 301 on any other method is followed as GET and the body is lost.
+		const merged = collapsedSlashRedirect(req.url, req.method);
 		if (merged) return Response.redirect(merged, 301);
 		let pcvMissed = false;
 		if (pageCacheRoute(req, url, env)) {
