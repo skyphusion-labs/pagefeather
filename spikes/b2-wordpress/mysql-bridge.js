@@ -11,27 +11,27 @@
 import { createConnection } from 'mysql2/promise';
 import { Buffer } from 'node:buffer';
 
-let conn = null;
-let connecting = null;
+import { createConnector } from './connector.mjs';
 
-async function connection(env) {
-	if (conn) return conn;
-	if (!connecting) {
-		connecting = createConnection({
-			host: env.HYPERDRIVE.host,
-			user: env.HYPERDRIVE.user,
-			password: env.HYPERDRIVE.password,
-			database: env.HYPERDRIVE.database,
-			port: env.HYPERDRIVE.port,
-			disableEval: true, // Workers do not allow eval()
-			multipleStatements: false,
-			charset: 'utf8mb4',
-		}).then((c) => {
-			conn = c;
-			return c;
-		});
-	}
-	return connecting;
+// #1101: one connection per PHP run (#1087), opened on first use; a rejected connect is retried once, never cached.
+let ENV_FOR_CONNECT = null;
+// connect-timeout and db-end-timeout lines go to the Worker log (bounded awaits under the PHP lock, #1101).
+const connector = createConnector(() =>
+	createConnection({
+		host: ENV_FOR_CONNECT.HYPERDRIVE.host,
+		user: ENV_FOR_CONNECT.HYPERDRIVE.user,
+		password: ENV_FOR_CONNECT.HYPERDRIVE.password,
+		database: ENV_FOR_CONNECT.HYPERDRIVE.database,
+		port: ENV_FOR_CONNECT.HYPERDRIVE.port,
+		disableEval: true, // Workers do not allow eval()
+		multipleStatements: false,
+		charset: 'utf8mb4',
+	}),
+	{ log: (o) => console.log(JSON.stringify(o)) },
+);
+function connection(env) {
+	ENV_FOR_CONNECT = env;
+	return connector.get();
 }
 
 export async function mysqlQuery(env, m) {
@@ -53,21 +53,14 @@ export async function mysqlQuery(env, m) {
 	}
 }
 
-// At the start of a request: forget a connection another request opened. It is
-// not closed or awaited here: a Worker request cannot touch another request's
-// I/O, and awaiting it hangs (measured 2026-11-05 after /_install).
+// At the start of a PHP run (db-lifecycle.mjs withDbRun): forget a connection another context opened. It is not closed
+// or awaited here: a Worker request cannot touch another request's I/O, and awaiting it hangs (measured 2026-11-05).
 export function mysqlReset() {
-	conn = null;
-	connecting = null;
+	connector.reset();
 }
 
-// Call at the end of each Worker request. The references are cleared first,
-// so the next request opens its own connection even while this one closes.
+// At the end of each PHP run: the references are cleared first, so the next run opens its own connection even while this
+// one closes.
 export async function mysqlEnd() {
-	const c = conn;
-	const pending = connecting;
-	conn = null;
-	connecting = null;
-	const done = c || (pending && (await pending.catch(() => null)));
-	if (done) await done.end().catch(() => {});
+	await connector.end();
 }

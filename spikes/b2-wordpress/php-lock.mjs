@@ -18,9 +18,10 @@
 //          on (at: wait, by its timer), or when its turn comes past the bound (at: grant: a PHP run that
 //          does not yield lets no timer fire): the caller sends a fast 503 with Retry-After. Its place in the order passes on: the
 //          waiter behind it still waits for the run ahead, so two runs never overlap.
-//   log    { event: queued | granted | shed | stale, depth, waitMs, headMs }: queued when a run arrives
+//   log    { event: queued | granted | shed | stale | released, depth, waitMs, headMs }: queued when a run arrives
 //          behind another, granted when it waited 1 s or more, and every shed and stale. An
-//          uncontended run logs nothing.
+//          uncontended run logs nothing. released (#1101: ranMs, outcome ok or threw) ends every contended run, and
+//          any run that ran GRANT_LOG_MS or more, so a load run can show that every grant ended.
 //   #1060  (measured on cf759hl, 2026-11-20: a head ran 60 s, the stale waiter booted a second runtime beside the live
 //          one, and the isolate died of memory with every queued request). With stallMs, a head is stale only when it
 //          has ALSO made no progress (progress(): index.js calls it on every PHP bridge message) for stallMs: a slow run
@@ -205,9 +206,16 @@ export function createPhpLock({ staleMs = 60000, stallMs = null, staleAction: de
 				running++;
 				headSince = now();
 				lastProgress = headSince;
+				const ranFrom = headSince;
+				let outcome = 'threw';
 				try {
-					return await fn();
+					const out = await fn();
+					outcome = 'ok';
+					return out;
 				} finally {
+					// #1101: every contended (or long) run logs its end, so each queued or granted line has a matching released.
+					const ranMs = now() - ranFrom;
+					if (contended || ranMs >= GRANT_LOG_MS) lg({ event: 'released', ranMs, outcome, depth: waiting + running - 1 });
 					running--;
 					if (!state.superseded) blocking--;
 					if (headState === state) headState = null;
