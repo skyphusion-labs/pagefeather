@@ -1951,6 +1951,12 @@ async function boot(origin) {
 	// near 117 MiB. post.php and admin-ajax.php then reset the isolate.
 	// PRODUCT_HEADROOM=off does not define the gate.
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.PRODUCT_HEADROOM !== 'off') lines.push(`define('SKYPHUSION_PRODUCT_HEADROOM', true);`);
+	// Comment REST calls return allocator caches and cap the object cache
+	// (php/comment-rest-headroom.php, #989). post-new.php ends near 112 MiB.
+	// The recycle line keeps that runtime. The next note save then resets
+	// the isolate (cf759a, 2026-11-19, x-write-loss: 1).
+	// COMMENT_HEADROOM=off does not define the gate.
+	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.COMMENT_HEADROOM !== 'off') lines.push(`define('SKYPHUSION_COMMENT_HEADROOM', true);`);
 	// Navigation REST writes free allocator caches and cap the object cache
 	// (php/navigation-rest-headroom.php, #993).
 	// A suite-hot runtime already sits near 101 to 114 MiB.
