@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { cronBacklogNext, cronBacklogDue, cronBacklogGapMs, BACKLOG_GAP_MS, BACKLOG_MAX_LEGS, CRON_SLACK_MS } from '../cron-bound.mjs';
+import { cronBacklogNext, cronBacklogDue, cronBacklogGapMs, backlogStreak, BACKLOG_GAP_MS, BACKLOG_MAX_LEGS, CRON_SLACK_MS } from '../cron-bound.mjs';
 const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 
 test('#1120 the backlog gap knob: 1 to 60 s, default 5 s, a bad value is the default', () => {
@@ -37,6 +37,26 @@ test('#1120 the soon legs are capped: an action that stays due (reschedules itse
 	assert.equal(cronBacklogNext({ ...base, streak: BACKLOG_MAX_LEGS + 5 }), null, 'and it stays capped while work stays due');
 	assert.equal(cronBacklogNext({ ...base }), 5000, 'no streak given: 0');
 });
+test('#1120 review: the streak counts only legs where as_due did NOT fall; a falling as_due resets it', () => {
+	assert.deepEqual(backlogStreak(null, 2500), { n: 0, due: 2500 }, 'the first soon leg');
+	assert.deepEqual(backlogStreak({ n: 7, due: 2500 }, 2490), { n: 0, due: 2490 }, 'the backlog shrank: reset');
+	assert.deepEqual(backlogStreak({ n: 7, due: 2500 }, 2500), { n: 8, due: 2500 }, 'flat: counts');
+	assert.deepEqual(backlogStreak({ n: 7, due: 2500 }, 2600), { n: 8, due: 2600 }, 'rising: counts');
+	assert.deepEqual(backlogStreak({ n: 'x' }, 10), { n: 1, due: 10 }, 'a bad record counts from 0');
+});
+test('#1120 review: a shrinking backlog of 2,500 never caps; a flat as_due caps at 60', () => {
+	const base = { approachA: true, asStop: 'budget', asActions: 9, gapMs: 5000 };
+	let st = null, due = 2500, legs = 0;
+	while (due > 0) {
+		st = backlogStreak(st, due);
+		assert.equal(cronBacklogNext({ ...base, asDue: due, streak: st.n }), 5000, 'leg ' + legs + ' at ' + due + ' due');
+		due -= 9; legs++;
+	}
+	assert.ok(legs > 250, 'about 278 soon legs, none capped: ' + legs);
+	st = null; let soon = 0;
+	for (let i = 0; i < 100; i++) { st = backlogStreak(st, 40); if (cronBacklogNext({ ...base, asDue: 40, streak: st.n })) soon++; }
+	assert.equal(soon, BACKLOG_MAX_LEGS, 'a self-rescheduler (as_due flat at 40) gets exactly 60 soon legs');
+});
 test('#1120 cronBacklogDue: the leg is due once the gap has passed since the mark', () => {
 	assert.equal(cronBacklogDue(undefined, 10000, 5000), false);
 	assert.equal(cronBacklogDue(1000, 1000 + 5000 - CRON_SLACK_MS - 1, 5000), false);
@@ -44,11 +64,11 @@ test('#1120 cronBacklogDue: the leg is due once the gap has passed since the mar
 });
 test('#1120 the alarm: the leg is due by the interval OR the backlog mark, and a leg that made progress arms the soon alarm', () => {
 	assert.match(src, /const legDue = cronLegDue\(lastCron, Date\.now\(\), Number\(this\.env\.CRON_INTERVAL_MS \|\| 60000\)\) \|\| cronBacklogDue\(await this\.ctx\.storage\.get\(CRON_BACKLOG_KEY\), Date\.now\(\), cronBacklogGapMs\(this\.env\)\);/);
-	assert.match(src, /const backlogArgs = \{ approachA: approachACronEnabled\(this\.env\), asDue: cr\.as_due, asStop: cr\.as_stop, asActions: cr\.as_actions, gapMs: cronBacklogGapMs\(this\.env\) \};\n\t+const backlogIn = cronBacklogNext\(\{ \.\.\.backlogArgs, streak: backlogStreak \}\);/);
+	assert.match(src, /const backlogArgs = \{ approachA: approachACronEnabled\(this\.env\), asDue: cr\.as_due, asStop: cr\.as_stop, asActions: cr\.as_actions, gapMs: cronBacklogGapMs\(this\.env\) \};\n\t+const backlogIn = cronBacklogNext\(\{ \.\.\.backlogArgs, streak: streak\.n \}\);/);
 	assert.match(src, /if \(cur === null \|\| cur === undefined \|\| Number\(cur\) > at\) await setAlarmRecorded\(this\.ctx\.storage, at, Date\.now\(\), 'as-backlog'\);/);
-	assert.match(src, /const backlogStreak = Number\(await this\.ctx\.storage\.get\(CRON_BACKLOG_STREAK_KEY\)\) \|\| 0;/);
-	assert.match(src, /await this\.ctx\.storage\.put\(CRON_BACKLOG_STREAK_KEY, backlogStreak \+ 1\);/, 'each soon leg counts');
-	assert.match(src, /if \(cronBacklogNext\(\{ \.\.\.backlogArgs, streak: 0 \}\)\) console\.log\(JSON\.stringify\(\{ m: 'cron', backlogCapped: backlogStreak/, 'a capped streak is logged and kept');
-	assert.match(src, /else await this\.ctx\.storage\.delete\(CRON_BACKLOG_STREAK_KEY\);/, 'the streak resets only when nothing is due or no progress');
+	assert.match(src, /const streak = backlogStreak\(await this\.ctx\.storage\.get\(CRON_BACKLOG_STREAK_KEY\), cr\.as_due\);/);
+	assert.match(src, /await this\.ctx\.storage\.put\(CRON_BACKLOG_STREAK_KEY, streak\);/, 'the streak and the due count are kept');
+	assert.match(src, /if \(cronBacklogNext\(\{ \.\.\.backlogArgs, streak: 0 \}\)\) \{ await this\.ctx\.storage\.put\(CRON_BACKLOG_STREAK_KEY, streak\); console\.log\(JSON\.stringify\(\{ m: 'cron', backlogCapped: streak\.n/, 'a capped streak is logged and kept');
+	assert.match(src, /\}\n\t+else await this\.ctx\.storage\.delete\(CRON_BACKLOG_STREAK_KEY\);/, 'the streak resets when nothing is due or no progress');
 	assert.match(src, /await this\.ctx\.storage\.put\(CRON_LAST_KEY, Date\.now\(\)\);\n\t+await this\.ctx\.storage\.delete\(CRON_BACKLOG_KEY\);/, 'the mark is consumed when a leg starts');
 });

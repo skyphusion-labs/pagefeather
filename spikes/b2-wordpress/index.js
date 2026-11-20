@@ -17,7 +17,7 @@ import { startByMs, objectShedPlan, startByResponse, shedAnswer, startByExempt, 
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
-import { cronBounds, cronCleanDue, cronLegDue, cronAsBudgetMs, cronMore, cronBacklogNext, cronBacklogDue, cronBacklogGapMs } from './cron-bound.mjs';
+import { cronBounds, cronCleanDue, cronLegDue, cronAsBudgetMs, cronMore, cronBacklogNext, cronBacklogDue, cronBacklogGapMs, backlogStreak } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronRunDeferred, cronMarkOf, cronFatalOf } from './cron-health.mjs';
 import { approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME } from './a-cron.mjs';
 import { isMediaUploadRequest, markerKey, sweepUploadOrphans, dropMarkersOn } from './upload-intent.mjs';
@@ -2254,7 +2254,7 @@ const CRON_CLEAN_KEY = 'cron-cleaned-at';
 const CRON_LAST_KEY = 'cron-last-start';
 // #1120: the end of a leg that made progress with Action Scheduler work still due (cron-bound.mjs cronBacklogNext); the next leg is due by it.
 const CRON_BACKLOG_KEY = 'cron-backlog';
-// #1120 review: the soon legs in a row (cron-bound.mjs BACKLOG_MAX_LEGS caps them).
+// #1120 review: { n, due }, the soon legs in a row without progress against as_due (cron-bound.mjs backlogStreak).
 const CRON_BACKLOG_STREAK_KEY = 'cron-backlog-streak';
 let lastPurge = 0;
 // #510: dispose a JS RPC result once its fields are read. An RPC result can carry a disposer (and,
@@ -3315,20 +3315,21 @@ export class PhpRuntime extends DurableObject {
 				console.log(JSON.stringify({ m: 'cron', done: 1, as_actions: cr.as_actions, as_stop: cr.as_stop, as_pass: cr.as_pass, as_dates: cr.as_dates, as_hooks: cr.as_hooks, as_pending: cr.as_pending, as_due: cr.as_due, legMs: cr.legMs, wasmMib: cr.wasmMib, wp_cron_hooks: cr.wp_cron_hooks, wp_cron_skipped: cr.wp_cron_skipped, wp_cron_due: cr.wp_cron_due, mail: mail.counts, lostWrites: mail.lostWritesSeen() }));
 				// #1120: a leg that made progress with work still due brings the next one in CRON_BACKLOG_GAP_MS, not the interval. The soon
 				// alarm only moves an alarm EARLIER (a sooner purge or mail alarm keeps its time); every gate above still applies.
-				const backlogStreak = Number(await this.ctx.storage.get(CRON_BACKLOG_STREAK_KEY)) || 0;
+				const streak = backlogStreak(await this.ctx.storage.get(CRON_BACKLOG_STREAK_KEY), cr.as_due);
 				const backlogArgs = { approachA: approachACronEnabled(this.env), asDue: cr.as_due, asStop: cr.as_stop, asActions: cr.as_actions, gapMs: cronBacklogGapMs(this.env) };
-				const backlogIn = cronBacklogNext({ ...backlogArgs, streak: backlogStreak });
+				const backlogIn = cronBacklogNext({ ...backlogArgs, streak: streak.n });
 				if (backlogIn) {
 					await this.ctx.storage.put(CRON_BACKLOG_KEY, Date.now());
-					await this.ctx.storage.put(CRON_BACKLOG_STREAK_KEY, backlogStreak + 1);
+					await this.ctx.storage.put(CRON_BACKLOG_STREAK_KEY, streak);
 					const at = Date.now() + backlogIn;
 					const cur = await this.ctx.storage.getAlarm();
 					if (cur === null || cur === undefined || Number(cur) > at) await setAlarmRecorded(this.ctx.storage, at, Date.now(), 'as-backlog');
-					console.log(JSON.stringify({ m: 'cron', backlog: cr.as_due, nextInMs: backlogIn, stop: cr.as_stop || 'none', streak: backlogStreak + 1 }));
+					console.log(JSON.stringify({ m: 'cron', backlog: cr.as_due, nextInMs: backlogIn, stop: cr.as_stop || 'none', noProgress: streak.n }));
 				} else {
 					await this.ctx.storage.delete(CRON_BACKLOG_KEY);
-					// Capped (work still due and progress made, past BACKLOG_MAX_LEGS): keep the streak, so the interval holds.
-					if (cronBacklogNext({ ...backlogArgs, streak: 0 })) console.log(JSON.stringify({ m: 'cron', backlogCapped: backlogStreak, backlog: cr.as_due }));
+					// Capped (work due and actions ran, but as_due has not fallen for BACKLOG_MAX_LEGS legs): keep the record, so the
+					// interval holds until as_due falls (which resets it).
+					if (cronBacklogNext({ ...backlogArgs, streak: 0 })) { await this.ctx.storage.put(CRON_BACKLOG_STREAK_KEY, streak); console.log(JSON.stringify({ m: 'cron', backlogCapped: streak.n, backlog: cr.as_due })); }
 					else await this.ctx.storage.delete(CRON_BACKLOG_STREAK_KEY);
 				}
 				}
