@@ -160,12 +160,11 @@ resource bindings end to end.
 
 ### Two deltas for the lead (not silently closed)
 
-1. **`render_user` omits `send_email`.** The WFP generator does not emit an EMAIL
-   binding, so a WFP site deployed by `lib.sh` today has NO email, although
-   `index.js` uses `env.EMAIL` and `deploy.sh` (standalone) emits it. Our config
-   ADDS EMAIL (it is in `bindings.py` USER_OK). `lib.sh render_user` should gain
-   it too, or the two paths stay inconsistent. A bare `send_email` may need a
-   sender domain onboarded at deploy time (issue #104); that is a box-gate step.
+1. **`render_user` and `send_email`: CLOSED.** This note said the WFP generator emits no
+   EMAIL binding. That is out of date: `lib.sh` `render_user` renders it through
+   `mail-from.mjs --binding` (lib.sh, `mail_binding`), and the live WFP sites carry it
+   (bindings API, 2026-11-20: site-ggc, site-ggc-test, site-cf759a; #1056). Since #1056
+   it also takes `MAIL_ALLOWED_TO`, the destination allowlist.
 
 2. **`[assets]` and the page cache are not bindings.** `render_user` also sets
    `[assets] directory = build/public` (static files, uploaded via the assets

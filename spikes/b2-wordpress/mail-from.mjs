@@ -91,11 +91,31 @@ function tomlString(value, label) {
 	return value;
 }
 
-// One send_email binding. Restricted to the resolved address when there is one.
+// #1056: MAIL_ALLOWED_TO, a test site's destination allowlist (comma-separated, at most 10), the same rule as c1
+// (deploy/variants/c1-config.sh). The binding then sends to those addresses only. It needs a sender: without one
+// the site sends nothing, so an allowlist would be a setting that silently does nothing.
+const ALLOWED_RE = /^[A-Za-z0-9._%+-]+@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+export function allowedTo(env) {
+	const raw = String((env && env.MAIL_ALLOWED_TO) || '').trim();
+	if (!raw) return [];
+	const list = raw.split(',').map((x) => x.trim()).filter(Boolean);
+	if (!list.length || list.length > 10 || !list.every((a) => ALLOWED_RE.test(a))) {
+		throw new Error('MAIL_ALLOWED_TO must be 1 to 10 comma-separated email addresses');
+	}
+	return list;
+}
+
+// One send_email binding. Restricted to the resolved address when there is one, and to MAIL_ALLOWED_TO's
+// destinations when it is set (#1056).
 export function sendEmailBinding(env) {
 	const email = resolveMailFrom(env);
-	if (!email) return 'send_email = [{ name = "EMAIL" }]';
-	return 'send_email = [{ name = "EMAIL", allowed_sender_addresses = ["' + tomlString(email, 'MAIL_FROM') + '"] }]';
+	const to = allowedTo(env);
+	if (!email) {
+		if (to.length) throw new Error('MAIL_ALLOWED_TO needs MAIL_FROM (or a site host that can send): with no sender the site sends nothing');
+		return 'send_email = [{ name = "EMAIL" }]';
+	}
+	const dest = to.length ? ', allowed_destination_addresses = [' + to.map((a) => '"' + tomlString(a, 'MAIL_ALLOWED_TO') + '"').join(', ') + ']' : '';
+	return 'send_email = [{ name = "EMAIL", allowed_sender_addresses = ["' + tomlString(email, 'MAIL_FROM') + '"]' + dest + ' }]';
 }
 
 // Var lines for the generated wrangler config. Empty when there is no address.
