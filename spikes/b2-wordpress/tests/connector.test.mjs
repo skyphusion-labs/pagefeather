@@ -64,3 +64,43 @@ test('end of a connect still in flight closes it once it lands; a failed one is 
 	f.get().catch(() => {});
 	await f.end();
 });
+
+// #1101 review (the lead): end() and the connect ran with NO time bound, and #1088 calls end() INSIDE the PHP lock. An
+// await that never settles while holding the lock leaves every request queued behind it hanging. Both are bounded now:
+// on expiry a named '@event' is logged and the reference dropped, so the lock always releases.
+import { withDbRun } from '../db-lifecycle.mjs';
+const never = () => new Promise(() => {});
+test('RED-then-GREEN: a connection whose end() never settles still lets withDbRun return within the bound', async () => {
+	const lines = [];
+	const c = createConnector(async () => ({ end: never }), { endMs: 50, log: (o) => lines.push(o) });
+	const t0 = Date.now();
+	await withDbRun({ reset: () => c.reset(), end: () => c.end() }, async () => { await c.get(); });
+	assert.ok(Date.now() - t0 < 1000, 'returned within the bound, not hung');
+	assert.equal(lines[0]['@event'], 'db-end-timeout');
+	assert.equal(lines[0].after, 'end');
+});
+test('an in-flight connect that never lands: end() still returns within the bound, and logs it', async () => {
+	const lines = [];
+	const c = createConnector(never, { endMs: 50, connectMs: 10_000, log: (o) => lines.push(o) });
+	c.get().catch(() => {});
+	const t0 = Date.now();
+	await c.end();
+	assert.ok(Date.now() - t0 < 1000);
+	assert.equal(lines[0]['@event'], 'db-end-timeout');
+	assert.equal(lines[0].after, 'pending-connect');
+});
+test('a connect that never settles is bounded too: the attempt times out (connect-timeout), is retried once, then the error stands', async () => {
+	const lines = [];
+	let calls = 0;
+	const c = createConnector(() => { calls++; return never(); }, { connectMs: 30, log: (o) => lines.push(o) });
+	const t0 = Date.now();
+	await assert.rejects(c.get(), /connect timed out/);
+	assert.ok(Date.now() - t0 < 1000);
+	assert.equal(calls, 2, 'retried once');
+	assert.deepEqual(lines.map((o) => o['@event']), ['connect-timeout', 'connect-timeout']);
+});
+test('the defaults are measured-sized bounds (connect 3 s, end 2 s)', async () => {
+	const { CONNECT_MS, END_MS } = await import('../connector.mjs');
+	assert.equal(CONNECT_MS, 3000);
+	assert.equal(END_MS, 2000);
+});

@@ -15,6 +15,7 @@ import { createConnector } from './connector.mjs';
 
 // #1101: one connection per PHP run (#1087), opened on first use; a rejected connect is retried once, never cached.
 let ENV_FOR_CONNECT = null;
+// connect-timeout and db-end-timeout lines go to the Worker log (bounded awaits under the PHP lock, #1101).
 const connector = createConnector(() =>
 	createConnection({
 		host: ENV_FOR_CONNECT.HYPERDRIVE.host,
@@ -26,6 +27,7 @@ const connector = createConnector(() =>
 		multipleStatements: false,
 		charset: 'utf8mb4',
 	}),
+	{ log: (o) => console.log(JSON.stringify(o)) },
 );
 function connection(env) {
 	ENV_FOR_CONNECT = env;
