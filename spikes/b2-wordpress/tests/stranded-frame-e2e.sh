@@ -64,12 +64,22 @@ def logs(event):
             except ValueError: pass
     return out
 def cron_deferred(): return [x for x in logs('"m":"cron"') if x.get("deferred") == "frame-stranded"]
+# #1074: a check that calls a live reader twice can see the file grow between the calls.
+# Wait until the value is ready, or the deadline, then judge that one value.
+def until(read, ready, seconds):
+    t0 = time.time()
+    v = read()
+    while not ready(v) and time.time() - t0 < seconds:
+        time.sleep(0.05)
+        v = read()
+    return v
 fails = []
 def check(name, cond, detail=""):
     print(("  ok   " if cond else "  FAIL ") + name + (("  (" + detail + ")") if detail else "")); cond or fails.append(name)
 SEAM = {"x-pf-fault": "sql-fail"}
 get("/?sf=1", {"x-pf-derived": "set"})
-check("1. the real value is stored", option() == "the-real-value", repr(option()))
+v = option()
+check("1. the real value is stored", v == "the-real-value", repr(v))
 st, h, _ = get("/?sf=2", {**SEAM, "x-pf-derived": "check", "x-oc-off": "1", "x-pf-fault-sql": "pf_derived_test", "x-pf-fault-undo": "on"})
 stranded = logs('"frame-stranded"')
 print("  2. A: %s, x-write-loss %s; frame-stranded logged %d" % (st, h.get("x-write-loss"), len(stranded)))
@@ -79,7 +89,9 @@ for i in (1, 2):
     st, h, _ = get("/?sf=3%d" % i, {})
     print("  3. B%d: %s, retry-after %s, x-sql-failure %s, cache-control %s" % (i, st, h.get("retry-after"), h.get("x-sql-failure"), h.get("cache-control")))
     check("3. B%d: while recovery fails, the retryable 503 before PHP runs (Retry-After, no-store, x-sql-failure)" % i, st == 503 and h.get("retry-after") and "no-store" in (h.get("cache-control") or "") and h.get("x-sql-failure") == "1", str(st))
-check("3. and it is logged as the stranded refusal", len(logs('"frame-stranded-refused"')) >= 2, str(len(logs('"frame-stranded-refused"'))))
+# The two 503s have returned. The refusal line is logged before the response; dev.log may still be flushing.
+refused = until(lambda: logs('"frame-stranded-refused"'), lambda xs: len(xs) >= 2, 10)
+check("3. and it is logged as the stranded refusal", len(refused) >= 2, str(len(refused)))
 t0 = time.time()
 while not cron_deferred() and time.time() - t0 < 40: time.sleep(1)
 d0 = len(cron_deferred())
@@ -97,7 +109,9 @@ time.sleep(12)  # at least two cron ticks
 get("/?sf=8", {})
 v = option()
 check("7. D: a write after the recovery lands and stays (no later recovery erases it)", st == 200 and v == "after-recovery", "%s %r" % (st, v))
-check("7. and the cron no longer defers", len(cron_deferred()) == d0, "%d then %d" % (d0, len(cron_deferred())))
+# One snapshot: this count must not grow, so waiting cannot turn a miss into a hit, and the detail is that same count.
+d1 = len(cron_deferred())
+check("7. and the cron no longer defers", d1 == d0, "%d then %d" % (d0, d1))
 print("stranded-frame: %d failing" % len(fails))
 sys.exit(1 if fails else 0)
 PY

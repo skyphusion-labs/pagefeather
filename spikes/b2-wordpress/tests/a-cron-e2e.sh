@@ -57,7 +57,18 @@ while time.time() < deadline and status() != "publish":
     time.sleep(3)
 s = status()
 check("within 150 s, with no visitor, the post is publish (got %s)" % s, s == "publish")
-check("the object ran a cron leg (a cron line in dev.log after the trigger)", len(re.findall(r'"m":"cron"', log())) > n0 or "cron-start" in log())
+# #1074: one read of dev.log. Two log() calls can disagree as the file grows. The line is
+# written when the leg runs; the file may still be flushing, so wait until it holds the
+# line or 10 s pass, then judge that one text.
+def until(read, ready, seconds):
+    t0 = time.time()
+    v = read()
+    while not ready(v) and time.time() - t0 < seconds:
+        time.sleep(0.05)
+        v = read()
+    return v
+text = until(log, lambda t: len(re.findall(r'"m":"cron"', t)) > n0 or "cron-start" in t, 10)
+check("the object ran a cron leg (a cron line in dev.log after the trigger)", len(re.findall(r'"m":"cron"', text)) > n0 or "cron-start" in text)
 # 5. A second trigger while the alarm is set runs nothing: the trigger is a watchdog, never a second runner.
 urllib.request.urlopen(B + "/__scheduled?cron=*+*+*+*+*", timeout=30).read()
 time.sleep(1)
