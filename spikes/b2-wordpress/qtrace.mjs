@@ -75,7 +75,7 @@ export function createTrace() {
 			bump(byVerb, sqlVerb(sql), t);
 			bump(byTable, tableOf(sql), t);
 			bump(byArea, areaOf(caller), t);
-			bump(byCaller, typeof caller === 'string' && caller ? caller.slice(0, 160) : '?', t);
+			bump(byCaller, typeof caller === 'string' && caller ? caller.slice(0, 240) : '?', t); // #1090: room for "<- the asker"
 			bump(byShape, shape, t);
 			seen.add(String(sql));
 			if (shape === last) runLen++;

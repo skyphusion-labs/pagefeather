@@ -59,3 +59,16 @@ test('createTrace caps what it keeps: top lists, and shapes cut at 200 character
 	assert.ok(s.topShapes.every((x) => x.shape.length <= 200));
 	assert.ok(Object.keys(s.byTable).length <= 61);
 });
+
+// #1090: back-to-back renders made the same 47 option reads, and the trace could not say whether they shared an isolate
+// (no iso) or which code asked (the caller stopped at option.php; hyperdrive-qtrace.php now appends "<- the asker").
+test('#1090 the qtrace line carries the isolate, and a caller with its asker (up to 240 chars) is kept whole', async () => {
+	const { readFileSync } = await import('node:fs');
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /console\.log\(JSON\.stringify\(\{ m: 'qtrace', \.\.\.memIdOf\(req, env\), iso: ISOLATE_ID, method: req\.method/);
+	const t = createTrace();
+	const c = 'core:option.php::get_option <- plugin:woocommerce:Features.php::' + 'X'.repeat(150);
+	t.add('SELECT 1', 1, c);
+	assert.equal(t.summary().topCallers[0].c, c.slice(0, 240));
+	assert.ok(t.summary().topCallers[0].c.length > 160, 'not cut at the old 160');
+});

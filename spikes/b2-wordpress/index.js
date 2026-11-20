@@ -4943,7 +4943,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			if (ctx && ctx.inObject) out.set('x-boot-origin', bootOrigin);
 			// The path only, never the query string: a store's URLs carry order keys and logins there.
 			console.log(JSON.stringify({ m: 'req', path: url.pathname, boot: booted, d1: d.calls, ...callTag(ctx) }));
-			if (qtrace) { console.log(JSON.stringify({ m: 'qtrace', ...memIdOf(req, env), method: req.method, status: r.httpStatusCode, ...qtrace.summary() })); qtrace = null; }
+			if (qtrace) { console.log(JSON.stringify({ m: 'qtrace', ...memIdOf(req, env), iso: ISOLATE_ID, method: req.method, status: r.httpStatusCode, ...qtrace.summary() })); qtrace = null; }
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
 			if (tracing()) fileTrace.end({ status: r.httpStatusCode });
 			// #1039: PHP answered 2xx, so this upload's files stay; drop its markers off the answer's path. Any other answer
