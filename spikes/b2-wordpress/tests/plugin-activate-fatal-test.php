@@ -1,6 +1,7 @@
 <?php
 /**
- * #998: a REST plugin activate either aliases the core resolver or returns the fatal JSON.
+ * #998: a REST plugin activate that fatals returns the fatal JSON, not an empty 500.
+ * No fixture shim: stock core 7.1.4 does not define WP_Theme_JSON_Resolver_Gutenberg, so neither do we.
  * Run: php spikes/b2-wordpress/tests/plugin-activate-fatal-test.php
  */
 $fails = 0;
@@ -35,12 +36,8 @@ function add_action( $hook, $cb, $priority = 10 ) {
 }
 require $php;
 
-$hooks = array();
-foreach ( $GLOBALS['actions'] as $row ) {
-	$hooks[ $row[0] ] = $row;
-}
-ok( 'activate_plugin aliases at priority 0', isset( $hooks['activate_plugin'] ) && 0 === $hooks['activate_plugin'][2] && 'skyphusion_alias_gutenberg_theme_json_resolver' === $hooks['activate_plugin'][1] );
-ok( 'deactivate_plugin aliases at priority 0', isset( $hooks['deactivate_plugin'] ) && 0 === $hooks['deactivate_plugin'][2] );
+ok( 'no plugin hook is registered', array() === $GLOBALS['actions'] );
+ok( 'no Gutenberg resolver shim is defined', ! function_exists( 'skyphusion_alias_gutenberg_theme_json_resolver' ) && ! class_exists( 'WP_Theme_JSON_Resolver_Gutenberg', false ) );
 
 $fatal = array( 'type' => E_ERROR, 'message' => "Uncaught Error: Class \"Nope\" not found in plugin.php:59\nStack trace:\n#0 {main}", 'file' => '/wordpress/wp-content/plugins/gutenberg-test-plugins/delete-installed-fonts.php', 'line' => 59 );
 ok( 'sandbox REST fatal is reported', skyphusion_plugin_activate_should_report( $fatal, true, true ) );
@@ -52,12 +49,6 @@ $payload = skyphusion_plugin_activate_fatal_payload( $fatal );
 ok( 'payload keeps the first line, file, and line', 'rest_plugin_activate_fatal' === $payload['code'] && false === strpos( $payload['message'], "\n" ) && false !== strpos( $payload['message'], 'Class "Nope" not found' ) && 59 === $payload['data']['line'] && false !== strpos( $payload['data']['file'], 'delete-installed-fonts.php' ) && 500 === $payload['data']['status'] );
 
 $req = var_export( $php, true );
-ok( 'another plugin is not aliased', false === skyphusion_alias_gutenberg_theme_json_resolver( 'akismet/akismet.php' ) && ! class_exists( 'WP_Theme_JSON_Resolver_Gutenberg', false ) );
-$missing = run_php( 'require ' . $req . '; echo skyphusion_alias_gutenberg_theme_json_resolver("gutenberg-test-plugins/delete-installed-fonts.php") ? "yes" : "no"; echo class_exists("WP_Theme_JSON_Resolver_Gutenberg", false) ? " exists" : " absent";' );
-ok( 'missing core class is not aliased', 0 === $missing[0] && 'no absent' === $missing[1] );
-$aliased = run_php( 'require ' . $req . '; class WP_Theme_JSON_Resolver { public static function get_user_global_styles_post_id() { return 42; } } echo skyphusion_alias_gutenberg_theme_json_resolver("gutenberg-test-plugins/delete-installed-fonts.php") ? "yes" : "no"; echo " "; echo skyphusion_alias_gutenberg_theme_json_resolver("gutenberg-test-plugins/delete-installed-fonts.php") ? "yes" : "no"; echo " "; echo WP_Theme_JSON_Resolver_Gutenberg::get_user_global_styles_post_id();' );
-ok( 'the font plugin aliases the core resolver once', 0 === $aliased[0] && 'yes no 42' === $aliased[1] );
-
 $bare = run_php( 'define("WP_SANDBOX_SCRAPING", true); define("REST_REQUEST", true); ob_start(); echo "hidden"; NoSuchActivate998::missing();' );
 ok( 'without the mu-plugin the buffer is the body and the class name is absent', 255 === $bare[0] && 'hidden' === $bare[1] && false === strpos( $bare[1], 'NoSuchActivate998' ) );
 $fixed = run_php( 'require ' . $req . '; define("WP_SANDBOX_SCRAPING", true); define("REST_REQUEST", true); ob_start(); echo "hidden"; NoSuchActivate998::missing();' );

@@ -4,9 +4,7 @@
  * Description: activate_plugin loads the plugin inside ob_start and defines WP_SANDBOX_SCRAPING.
  *   The fatal handler returns at once when that constant is set. A fatal in the hook then
  *   leaves a REST client an empty 500. On that path this prints a JSON error.
- *   gutenberg-test-plugins/delete-installed-fonts calls WP_Theme_JSON_Resolver_Gutenberg.
- *   WordPress 7.1 names that class WP_Theme_JSON_Resolver. Alias it for this plugin so the
- *   fixture can activate.
+ *   It does not make a failing plugin work. Stock core fails the same plugin the same way.
  */
 
 if ( ! function_exists( 'skyphusion_plugin_activate_fatal_types' ) ) {
@@ -78,37 +76,10 @@ if ( ! function_exists( 'skyphusion_plugin_activate_fatal_shutdown' ) ) {
 	}
 }
 
-if ( ! function_exists( 'skyphusion_alias_gutenberg_theme_json_resolver' ) ) {
-	/**
-	 * Point the Gutenberg font fixture at the core resolver.
-	 *
-	 * @param string $plugin Plugin basename.
-	 * @return bool True when this call created the alias.
-	 */
-	function skyphusion_alias_gutenberg_theme_json_resolver( $plugin ) {
-		if ( 'gutenberg-test-plugins/delete-installed-fonts.php' !== (string) $plugin ) {
-			return false;
-		}
-		if ( class_exists( 'WP_Theme_JSON_Resolver_Gutenberg', false ) ) {
-			return false;
-		}
-		if ( ! class_exists( 'WP_Theme_JSON_Resolver', false ) ) {
-			return false;
-		}
-		class_alias( 'WP_Theme_JSON_Resolver', 'WP_Theme_JSON_Resolver_Gutenberg' );
-		return true;
-	}
-}
-
 if ( ! function_exists( 'skyphusion_plugin_activate_fatal_boot' ) ) {
-	/** Register the alias and the shutdown once. */
+	/** Register the shutdown once. */
 	function skyphusion_plugin_activate_fatal_boot() {
-		if ( function_exists( 'add_action' ) ) {
-			add_action( 'activate_plugin', 'skyphusion_alias_gutenberg_theme_json_resolver', 0 );
-			add_action( 'deactivate_plugin', 'skyphusion_alias_gutenberg_theme_json_resolver', 0 );
-		}
 		register_shutdown_function( 'skyphusion_plugin_activate_fatal_shutdown' );
 	}
 	skyphusion_plugin_activate_fatal_boot();
 }
-
