@@ -282,13 +282,8 @@ elif [ "${OPCACHE_A:-0}" = 1 ]; then
   grep -E 'approach-A opcache.zip|trace-filter:' "$ALOG" || true
   rm -f "$ALOG"
   a_opcache_count build/opcache.zip || exit 1
-  # #563, #569: after the last build.sh (it clears build/public), as deploy/wfp's build_dosql does.
-  if [ "${OPCACHE_REMOTE:-0}" = 1 ]; then
-    python3 -I opcache-remote.py build/opcache.zip build/file-trace.json build/build-id.js || exit 1
-  fi
-  if [ "${SITE_REMOTE:-0}" = 1 ]; then
-    python3 -I site-remote.py build/site.zip build/file-trace.json build/build-id.js || exit 1
-  fi
+  # #563, #569: after the last build.sh (it clears build/public), the same scripts as b-dosql.
+  remote_pack_scripts || exit 1
 else
   ENGINE=a ./build.sh | tail -1
   # OPcache is primed against a temporary local MariaDB (env a-local); without

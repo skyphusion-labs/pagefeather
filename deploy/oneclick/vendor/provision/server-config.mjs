@@ -144,19 +144,25 @@ function moduleType(f) {
   if (f.endsWith('.wasm')) return 'application/wasm';
   return 'application/octet-stream';
 }
+function bundlePrefixFor(env, kind) {
+  if (kind === 'wp') return env.WP_BUNDLE_PREFIX || 'bundles/b-dosql/current/';
+  if (kind === 'a') return env.A_BUNDLE_PREFIX || 'bundles/a/current/';
+  return env.C1_BUNDLE_PREFIX || 'bundles/c1/current/';
+}
+async function sha256HexBytes(bytes) {
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  return Array.from(d, (b) => b.toString(16).padStart(2, '0')).join('');
+}
 async function loadBundle(env, kind) {
   if (!env.BUNDLES) throw new Error('the Worker is missing the BUNDLES R2 binding');
-  const prefix = kind === 'wp'
-    ? (env.WP_BUNDLE_PREFIX || 'bundles/b-dosql/current/')
-    : kind === 'a'
-      ? (env.A_BUNDLE_PREFIX || 'bundles/a/current/')
-      : (env.C1_BUNDLE_PREFIX || 'bundles/c1/current/');
+  const prefix = bundlePrefixFor(env, kind);
   const listed = await env.BUNDLES.list({ prefix });
   const objects = (listed && listed.objects) || [];
   const mods = [];
   for (const o of objects) {
     const f = o.key.slice(prefix.length);
-    if (!f || f.endsWith('.map') || f === 'README.md' || !/\.(m?js|wasm|zip|bin|dat|data)$/.test(f)) continue;
+    // A slash is a pack under assets/_pf/, not a Worker module. A pack zip is too big for the script.
+    if (!f || f.includes('/') || f === 'remote-packs-index.json' || f.endsWith('.map') || f === 'README.md' || !/\.(m?js|wasm|zip|bin|dat|data)$/.test(f)) continue;
     const obj = await env.BUNDLES.get(o.key);
     if (!obj) continue;
     const type = moduleType(f);
@@ -165,6 +171,45 @@ async function loadBundle(env, kind) {
   }
   if (!mods.length) throw new Error(`no bundle modules under ${prefix} in the BUNDLES bucket`);
   return mods;
+}
+
+// The remote packs next to the modules (#1036). Null when this bundle has no index (an older
+// release, or one built with OPCACHE_REMOTE=0). A present index that does not match its files throws,
+// so a site is never deployed with half of its packs.
+async function loadPackAssets(env, kind) {
+  if (!env.BUNDLES) return null;
+  const prefix = bundlePrefixFor(env, kind);
+  const obj = await env.BUNDLES.get(prefix + 'remote-packs-index.json');
+  if (!obj) return null;
+  let index;
+  try { index = JSON.parse(await obj.text()); } catch { throw new Error('remote-packs-index.json is not JSON'); }
+  if (!index || index.schema !== 1 || !Array.isArray(index.files) || !index.files.length) {
+    throw new Error('remote-packs-index.json is not a pack index');
+  }
+  const files = [];
+  for (const f of index.files) {
+    if (!f || typeof f.path !== 'string' || !f.path.startsWith('/_pf/') || f.path.includes('..')) {
+      throw new Error('remote-packs-index.json has a bad path');
+    }
+    const got = await env.BUNDLES.get(prefix + 'assets' + f.path);
+    if (!got) throw new Error(`missing pack ${f.path}`);
+    const bytes = new Uint8Array(await got.arrayBuffer());
+    if (bytes.byteLength !== f.size) throw new Error(`${f.path}: size ${bytes.byteLength}, index says ${f.size}`);
+    const h = await sha256HexBytes(bytes);
+    if (h !== f.sha256) throw new Error(`${f.path}: sha256 does not match the pack index`);
+    files.push({ path: f.path, bytes, hash: f.hash, kind: f.kind });
+  }
+  return { buildId: index.buildId, opcache: index.opcache || null, site: index.site || null, files };
+}
+
+// Unset is on when the bundle carries packs. OPCACHE_REMOTE=0 opts out of both. SITE_REMOTE=0 keeps
+// the OPcache packs. A bundle with no index renders nothing, the same as every site before #1036.
+function remotePackConfig(env, packs) {
+  if (!packs || env.OPCACHE_REMOTE === '0') return { opcacheRemote: false, siteRemote: false, assets: null };
+  const siteRemote = env.SITE_REMOTE !== '0' && packs.site != null;
+  const files = siteRemote ? packs.files : packs.files.filter((f) => f.kind !== 'site');
+  if (!files.length) return { opcacheRemote: false, siteRemote: false, assets: null };
+  return { opcacheRemote: true, siteRemote, assets: { files, runWorkerFirst: ['/_pf/*'] } };
 }
 
 // ---- 8. Build the full server-side cfg --------------------------------------
@@ -188,10 +233,13 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
   }
   const target = deriveTarget(env, { kind, name, domain });
   const compatibilityDate = env.WFP_COMPAT || '2026-07-01';
+  const modules = await loadBundle(env, kind);
+  const remote = remotePackConfig(env, await loadPackAssets(env, kind));
   const common = {
     name, namespace: target.namespace, kvId: target.kvId,
     compatibilityDate, compatibilityFlags: ['nodejs_compat', 'enable_request_signal'], // #721
-    modules: await loadBundle(env, kind),
+    modules,
+    ...(remote.assets ? { assets: remote.assets } : {}),
   };
   if (kind === 'wp') {
     const mediaBucket = mediaBucketName(name);
@@ -200,7 +248,7 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
     // async-email-queue descriptors provision their per-site backing resource on the
     // HOSTED provisioning path too. Without resourceCreateOps here, the OC_KV /
     // EMAIL_QUEUE bindings would deploy with no namespace / queue behind them.
-    const bdosqlOpts = { mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS, mailFrom: target.workersDev ? undefined : `wordpress@${domain}`, mailFromName: name, demo: demo === true, codeLock: codeLock === true, ...pageCacheInputs(env, { store }), ...objectTimeInputs(env) };
+    const bdosqlOpts = { mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS, mailFrom: target.workersDev ? undefined : `wordpress@${domain}`, mailFromName: name, demo: demo === true, codeLock: codeLock === true, ...pageCacheInputs(env, { store }), ...objectTimeInputs(env), opcacheRemote: remote.opcacheRemote, siteRemote: remote.siteRemote };
     return {
       ...common, kind: 'wp', mainModule: env.WP_MAIN || 'index.js',
       hostname: target.hostname,
@@ -237,6 +285,7 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
         ...pageCacheInputs(env, { store }),
         ...objectTimeInputs(env),
         ...aCacheInputs(env), // #296: the escape hatch for the two cache defaults
+        opcacheRemote: remote.opcacheRemote, siteRemote: remote.siteRemote, // #1036: OPCACHE_A's packs
       }),
       sqliteClasses: [],
       kvNamespaces: [{ title: ocKvNamespaceName(name), binding: 'OC_KV' }],
