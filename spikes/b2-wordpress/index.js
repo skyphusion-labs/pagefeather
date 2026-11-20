@@ -57,6 +57,7 @@ import { reuseOn, createSpare, bootTestDelayMs, bootTestDelayAt, moduleImportsMe
 import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
 import { withDbRun } from './db-lifecycle.mjs';
 import { isVersionedKey, l1ExpFor } from './oc-l1.mjs';
+import { aPerfLine } from './perf-line.mjs';
 import { templateQueuePriority, templateLookupYield, templateLookupForwardYield } from './template-boot.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse } from './overflow.mjs';
@@ -4750,6 +4751,10 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				};
 				out.set('x-perf', JSON.stringify(perf));
 				console.log(JSON.stringify({ m: 'perf', id: req.headers.get('x-perf-id'), path: url.pathname, ...perf }));
+			} else {
+				// #1078: approach A (PHP in the Worker, index-a.js) logs the same timing line, so a tail can time a real suite
+				// request: wall, boot, PHP time, and the query count and round-trip total (one bridge call per MySQL query).
+				console.log(JSON.stringify(aPerfLine({ id: memIdOf(req, env).id, method: req.method, path: url.pathname, status: r.httpStatusCode, iso: ISOLATE_ID, isoAgeS: Math.round((Date.now() - isolateStart) / 1000), rt: runtimeSerial, rtAgeS: Math.round((Date.now() - runtimeBootAt) / 1000), boot: booted, bootWaitMs, phpMs: phpOnlyMs, dbN: d.calls, dbMs: d.ms, wallMs: Date.now() - tBoot, wasm1MiB: Math.round(wasmBytes / 1048576), recycled: recycleWhy || null })));
 			}
 			const response = new Response(r.bytes, { status: r.httpStatusCode, headers: out });
 			// #394 (b): a recycled runtime is RELEASED, not only forgotten. bootPromise = null alone left

@@ -1,0 +1,34 @@
+// The per-request perf line for approach A (#1078). b-dosql logs m: perf from inside the object (index.js, ctx.inObject);
+// approach A runs PHP in the Worker, so it logged no per-request timing and a tail could not time a real suite request.
+// This is the same line for A: the wall time, the boot (and its wait), PHP time, the query count and their total
+// round trip (on A every MySQL query through Hyperdrive is one bridge call), the per-query average, the isolate and
+// the runtime. Numbers, ids and the PATH only: never the query string, which on a store carries order keys and logins.
+const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+export function aPerfLine(f) {
+	const path = typeof f.path === 'string' ? f.path.split('?')[0] : undefined;
+	const dbN = num(f.dbN);
+	const dbMs = num(f.dbMs);
+	const line = {
+		m: 'perf',
+		tier: 'a',
+		id: f.id || undefined,
+		method: f.method || undefined,
+		path,
+		status: num(f.status),
+		iso: f.iso || undefined,
+		isoAgeS: num(f.isoAgeS),
+		rt: num(f.rt),
+		rtAgeS: num(f.rtAgeS),
+		boot: f.boot ? 1 : 0,
+		bootWaitMs: num(f.bootWaitMs),
+		phpMs: num(f.phpMs),
+		dbN,
+		dbMs,
+		dbAvgMs: dbN > 0 && dbMs !== undefined ? Math.round((dbMs / dbN) * 10) / 10 : undefined,
+		wallMs: num(f.wallMs),
+		wasm1MiB: num(f.wasm1MiB),
+		recycled: f.recycled || undefined,
+	};
+	for (const k of Object.keys(line)) if (line[k] === undefined) delete line[k];
+	return line;
+}
