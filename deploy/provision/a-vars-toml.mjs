@@ -2,7 +2,7 @@
 // (#666): aVars and aBindings in wp-site-config.mjs, which a-site-config-test.mjs holds to the measured
 // [env.a-paid-lean]. deploy.sh used to render none of them, so every #296 run used a hand-made config.
 //
-//   SITE_ORIGIN=https://x [OBJECT_CACHE_VERSIONS=1] node a-vars-toml.mjs vars     the object cache and lazy-node [vars] lines
+//   SITE_ORIGIN=https://x [OBJECT_CACHE_VERSIONS=1] [OBJECT_CACHE_L2=1] node a-vars-toml.mjs vars     the object cache and lazy-node [vars] lines
 //   node a-vars-toml.mjs kv <namespace id>              the OC_KV [[kv_namespaces]] block
 //   node a-vars-toml.mjs product-ttl                    PAGE_CACHE_PRODUCT_TTL for every variant (#706)
 //   node a-vars-toml.mjs opcache-mc                     OPCACHE_MC for b-dosql: a store renders 64 (#610)
@@ -18,7 +18,8 @@ const [cmd, arg] = process.argv.slice(2);
 if (cmd === 'vars') {
 	// #686: OBJECT_CACHE_VERSIONS=1 (checked by a-settings.sh) is aVars' objectCacheVersions, as on the provisioning path.
 	// #296: both are on unless set off (OBJECT_CACHE_VERSIONS=0, WOO_HPOS_CACHE=off; a-settings.sh checked the values).
-	const vars = aVars({ siteOrigin: process.env.SITE_ORIGIN, objectCacheVersions: process.env.OBJECT_CACHE_VERSIONS !== '0', wooHposCache: process.env.WOO_HPOS_CACHE !== 'off' }); // #697
+	// #1078: OBJECT_CACHE_L2=1 turns the KV L2 on (off by default; a-settings.sh checked the value).
+	const vars = aVars({ siteOrigin: process.env.SITE_ORIGIN, objectCacheVersions: process.env.OBJECT_CACHE_VERSIONS !== '0', wooHposCache: process.env.WOO_HPOS_CACHE !== 'off', objectCacheL2: process.env.OBJECT_CACHE_L2 === '1' }); // #697
 	for (const v of vars) if (!OWN.has(v.name)) console.log(line(v.name, v.text));
 } else if (cmd === 'kv') {
 	if (!/^[A-Za-z0-9_-]{1,64}$/.test(arg || '')) { console.error('a-vars-toml: kv needs the namespace id (Terraform output oc_kv_id)'); process.exit(2); }

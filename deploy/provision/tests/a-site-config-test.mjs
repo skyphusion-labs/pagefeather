@@ -36,7 +36,11 @@ ok('PHP_ENV carries USE_ZEND_ALLOC off AND the WP table prefix, matching a-paid-
 ok('OBJECT_CACHE = on matches a-paid-lean', varOf('OBJECT_CACHE').text === 'on' && aLean.includes('OBJECT_CACHE = "on"'));
 ok('OBJECT_CACHE_GROUPS matches a-paid-lean, without options (#491) or terms (#494)', varOf('OBJECT_CACHE_GROUPS').text === 'theme_json' && aLean.includes('OBJECT_CACHE_GROUPS = "theme_json"'));
 ok('OBJECT_CACHE_TTL matches a-paid-lean', varOf('OBJECT_CACHE_TTL').text === '10' && aLean.includes('OBJECT_CACHE_TTL = "10"'));
-ok('OBJECT_CACHE_L2 = on matches a-paid-lean', varOf('OBJECT_CACHE_L2').text === 'on' && aLean.includes('OBJECT_CACHE_L2 = "on"'));
+// #1078: the KV L2 is OFF by default on approach A. Measured on cf759hl (Hyperdrive, westus2): a KV miss about 95 to 125 ms
+// (a cold or absent key at the central store), a hit about 6 to 8 ms, a Hyperdrive query about 12 ms; any options write renames
+// every options key, so after a write each isolate pays a cold KV read per key. A list page took 14 to 17 s with L2 on and
+// 3.9 to 4.9 s with it off.
+ok('OBJECT_CACHE_L2 = off by default (#1078), matching a-paid-lean', varOf('OBJECT_CACHE_L2').text === 'off' && aLean.includes('OBJECT_CACHE_L2 = "off"'));
 ok('LAZY_NODES = on matches a-paid-lean', varOf('LAZY_NODES').text === 'on' && aLean.includes('LAZY_NODES = "on"'));
 ok('LAZY_CACHE_MB matches a-paid-lean', varOf('LAZY_CACHE_MB').text === '4' && aLean.includes('LAZY_CACHE_MB = "4"'));
 ok('SITE_ORIGIN is emitted (WP_HOME correctness, issue #33)', !!varOf('SITE_ORIGIN'));
@@ -105,6 +109,20 @@ ok('negative control: a-paid-lean does not set OBJECT_CACHE = off', !aLean.inclu
   const on = aVars({ siteOrigin: 'https://x', wooHposCache: true });
   ok('aVars: wooHposCache true renders WOO_HPOS_CACHE=on', on.some((b) => b.type === 'plain_text' && b.name === 'WOO_HPOS_CACHE' && b.text === 'on'));
   ok('aVars: a value that is not a boolean is refused', (() => { try { aVars({ siteOrigin: 'https://x', wooHposCache: 'yes' }); return false; } catch { return true; } })());
+}
+
+// #1078: OBJECT_CACHE_L2 is a real knob on approach A (it was hard-coded on): objectCacheL2 true turns the KV L2 on, anything
+// but a boolean throws, and deploy.sh's OBJECT_CACHE_L2=1 reaches it through a-vars-toml.mjs.
+{
+  const on = aVars({ siteOrigin: 'https://x', objectCacheL2: true }).find((v) => v.name === 'OBJECT_CACHE_L2');
+  ok('#1078: objectCacheL2 true renders OBJECT_CACHE_L2 = on', on && on.text === 'on');
+  let threw = false;
+  try { aVars({ siteOrigin: 'https://x', objectCacheL2: 'on' }); } catch { threw = true; }
+  ok('#1078: a non-boolean objectCacheL2 throws', threw);
+  const { execFileSync } = await import('node:child_process');
+  const toml = (env) => execFileSync(process.execPath, [new URL('../a-vars-toml.mjs', import.meta.url).pathname, 'vars'], { env: { ...process.env, SITE_ORIGIN: 'https://x', ...env } }).toString();
+  ok('#1078: deploy.sh default (OBJECT_CACHE_L2 unset) renders off', /^OBJECT_CACHE_L2 = "off"$/m.test(toml({ OBJECT_CACHE_L2: '' })));
+  ok('#1078: deploy.sh OBJECT_CACHE_L2=1 renders on', /^OBJECT_CACHE_L2 = "on"$/m.test(toml({ OBJECT_CACHE_L2: '1' })));
 }
 
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);

@@ -46,14 +46,15 @@ render "$T/a.toml"; rc=$?
 ok "render_conf ran (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"; [ $rc = 0 ] || cat "$T/render.err"
 # #296: the step 3 series measured arm C (both on) against the bench; the lead ruled them approach A's defaults.
 python3 -I "$HERE/canon.py" "$T/a.toml" | benchflags | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS) = ' > "$T/d.canon"
-{ python3 -I "$HERE/canon.py" "$HERE/bench.toml"; echo 'vars OBJECT_CACHE_VERSIONS = "on"'; echo 'vars WOO_HPOS_CACHE = "on"'; } | sort > "$T/bd.canon"
+# #1078: the KV L2 is off by default on approach A (the benches ran with it on, and stay the record): mapped here.
+{ python3 -I "$HERE/canon.py" "$HERE/bench.toml" | sed 's/^vars OBJECT_CACHE_L2 = "on"$/vars OBJECT_CACHE_L2 = "off"/'; echo 'vars OBJECT_CACHE_VERSIONS = "on"'; echo 'vars WOO_HPOS_CACHE = "on"'; } | sort > "$T/bd.canon"
 if diff -u "$T/bd.canon" <(sort "$T/d.canon") > "$T/d1"; then ok "deploy.sh variant a equals the bench plus the two defaults" 1; else sed 's/^/        /' "$T/d1"; ok "deploy.sh variant a equals the bench plus the two defaults" 0; fi
-render "$T/a0.toml" OBJECT_CACHE_VERSIONS=0 WOO_HPOS_CACHE=off; rc=$?
+render "$T/a0.toml" OBJECT_CACHE_VERSIONS=0 WOO_HPOS_CACHE=off OBJECT_CACHE_L2=1; rc=$? # #1078: the bench ran with L2 on
 compare "$T/a0.toml" "$HERE/bench.toml" "with both set off, deploy.sh variant a equals the #666 bench config exactly"
 
 echo "2. PHP_OVERFLOW=1 renders the overflow run (pool 32, the PhpRuntime binding and its migration)"
 # The overflow bench predates the #296 defaults: compared with both off (test 1 covers the defaults).
-render "$T/o.toml" PHP_OVERFLOW=1 OBJECT_CACHE_VERSIONS=0 WOO_HPOS_CACHE=off; rc=$?
+render "$T/o.toml" PHP_OVERFLOW=1 OBJECT_CACHE_VERSIONS=0 WOO_HPOS_CACHE=off OBJECT_CACHE_L2=1; rc=$? # #1078: the bench ran with L2 on
 ok "render_conf ran (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"; [ $rc = 0 ] || cat "$T/render.err"
 compare "$T/o.toml" "$HERE/bench-overflow.toml" "deploy.sh variant a with PHP_OVERFLOW=1 equals the overflow bench"
 
@@ -75,6 +76,10 @@ render "$T/w.toml" WOO_EXTRAS=off; rc=$?
 ok "WOO_EXTRAS=off renders vars WOO_EXTRAS = \"off\" (rc $rc)" "$([ $rc = 0 ] && python3 -I "$HERE/canon.py" "$T/w.toml" | grep -qx 'vars WOO_EXTRAS = "off"' && echo 1 || echo 0)"
 ok "unset renders no WOO_EXTRAS line" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -q WOO_EXTRAS && echo 0 || echo 1)"
 
+echo "4b. OBJECT_CACHE_L2 (#1078): unset renders off (the approach A default), 1 renders on, anything else is refused"
+render "$T/l0.toml"; ok "OBJECT_CACHE_L2 unset renders off" "$(grep -c '^OBJECT_CACHE_L2 = "off"$' "$T/l0.toml")"
+render "$T/l1.toml" OBJECT_CACHE_L2=1; ok "OBJECT_CACHE_L2=1 renders on" "$(grep -c '^OBJECT_CACHE_L2 = "on"$' "$T/l1.toml")"
+if render "$T/lx.toml" OBJECT_CACHE_L2=on; then ok "OBJECT_CACHE_L2=on (not 0 or 1) is refused" 0; else ok "OBJECT_CACHE_L2=on (not 0 or 1) is refused" "$(grep -c 'OBJECT_CACHE_L2 must be 0 or 1' "$T/render.err")"; fi
 echo "5. OBJECT_CACHE_VERSIONS (#668, #686): unset or 1 renders it on (the #296 default); an explicit 0 renders nothing"
 render "$T/v.toml" OBJECT_CACHE_VERSIONS=1; rc=$?
 ok "OBJECT_CACHE_VERSIONS=1 renders vars OBJECT_CACHE_VERSIONS = \"on\" (rc $rc)" "$([ $rc = 0 ] && python3 -I "$HERE/canon.py" "$T/v.toml" | grep -qx 'vars OBJECT_CACHE_VERSIONS = "on"' && echo 1 || echo 0)"

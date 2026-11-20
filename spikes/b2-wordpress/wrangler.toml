@@ -229,10 +229,12 @@ OBJECT_CACHE = "on"
 OBJECT_CACHE_GROUPS = "theme_json"  # #491: options never persist on A; #494: terms out
 OBJECT_CACHE_TTL = "10"
 # Approach-A object cache L2 (#218): a KV store shared across isolates, behind the
-# in-isolate Map, so a COLD isolate can hit KV instead of MySQL. Only the groups
-# PHP already persists reach it (Woo correctness groups never do). OBJECT_CACHE_L2=on
-# turns it on; the OC_KV binding below is the store. Measured against the Hyperdrive hop.
-OBJECT_CACHE_L2 = "on"
+# in-isolate Map. OFF since #1078: measured on cf759hl (Hyperdrive, westus2), a KV miss
+# is about 95 to 125 ms (a cold key at KV's central store), a hit about 6 to 8 ms, and a
+# Hyperdrive query about 12 ms; any options write renames every options key, so the next
+# render pays a cold KV read per key (a WooCommerce list: 14 to 17 s on, 3.9 to 4.9 s off).
+# OBJECT_CACHE_L2=on turns it back on; the OC_KV binding below stays bound.
+OBJECT_CACHE_L2 = "off"
 [env.a-paid.assets]
 directory = "build/public"
 binding = "ASSETS"
@@ -278,7 +280,7 @@ PHP_ENV = '{"USE_ZEND_ALLOC":"0","WP_TABLE_PREFIX":"wp_"}'
 OBJECT_CACHE = "on"
 OBJECT_CACHE_GROUPS = "theme_json"  # #491: options never persist on A; #494: terms out
 OBJECT_CACHE_TTL = "10"
-OBJECT_CACHE_L2 = "on"
+OBJECT_CACHE_L2 = "off" # #1078 (see [env.a-paid.vars])
 LAZY_NODES = "on"
 LAZY_CACHE_MB = "4"
 [env.a-paid-lean.assets]
@@ -335,7 +337,7 @@ LAZY_CACHE_MB = "4"
 OBJECT_CACHE = "on"
 OBJECT_CACHE_GROUPS = "theme_json"  # #491: options never persist on A; #494: terms out
 OBJECT_CACHE_TTL = "10"
-OBJECT_CACHE_L2 = "on"
+OBJECT_CACHE_L2 = "off" # #1078 (see [env.a-paid.vars])
 [env.a-paid-do-lean.assets]
 directory = "build/public"
 binding = "ASSETS"
