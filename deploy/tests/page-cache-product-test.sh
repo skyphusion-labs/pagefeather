@@ -17,12 +17,14 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' "$APP/wrangler.toml" | h
 . "$ROOT/deploy/tests/lib.sh"
 FENCE="$T/fence"; fence_dir "$FENCE"
 
-# render <variant> <out> [VAR=value ...]: deploy.sh's config, no Terraform.
+# render <variant> <out> [VAR=value ...]: deploy.sh's config, no Terraform. PLACEMENT is set because #1054 requires it
+# for variant a with an external MySQL; this test is about the page cache TTL, not placement.
 render() {
   local variant=$1 dst=$2; shift 2
   # shellcheck disable=SC2016
   env -i PATH="$PATH" HOME="$T" ROOT="$ROOT" APP="$APP" COMPAT="$COMPAT" NAME=pf706 VARIANT="$variant" LOCATION=enam \
     SITE_ORIGIN=https://pf706.example.workers.dev BUCKET= AI=0 \
+    PLACEMENT=aws:us-east-2 \
     "$@" bash -c '
       set -e
       . "$ROOT/deploy/a-settings.sh"; . "$ROOT/deploy/observability.sh"; . "$ROOT/deploy/render-conf.sh"
