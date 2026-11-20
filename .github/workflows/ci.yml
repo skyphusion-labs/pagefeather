@@ -156,6 +156,8 @@ jobs:
         run: php tests/a/found-rows-test.php
       - name: Page cache versions, exact invalidation on approach A (#296)
         run: node --test spikes/b2-wordpress/tests/page-versions.test.mjs
+      - name: A page-cache purge that fails after PHP answers is retried, never swallowed (#1007, #935)
+        run: node --test spikes/b2-wordpress/tests/purge-after-php.test.mjs
       - name: approach A object-cache KV writes are coalesced and 429s counted (issue #500)
         # #711: oc-l2-writer.test.mjs also asserts `last` stays within 1024 entries and 2 MiB.
         run: node --test spikes/b2-wordpress/tests/oc-l2-writer.test.mjs
