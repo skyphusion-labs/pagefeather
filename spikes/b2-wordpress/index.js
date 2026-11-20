@@ -3142,7 +3142,10 @@ export class PhpRuntime extends DurableObject {
 			await txnRecover(db, this.ctx.storage);
 			return Response.json({ frame: undo(env).status(db, objectUrl.searchParams.get('id') || '') });
 		}
-		// #855: the Workers Cron tick from the site Worker (POST + x-pf-cron-tick). Runs alarm(), not a page view.
+		// #855: the Workers Cron tick from the site Worker (POST + x-pf-cron-tick). A WATCHDOG for this object's cron alarm:
+		// the alarm runs the leg (alarm(), armBeforeRun keeps the chain, the b-dosql hardened path); the tick only re-arms
+		// an alarm that is missing or stale (snapshotRearm, as #841's daily re-arm). Running alarm() here too ran the cron
+		// leg about twice a minute (each tick, plus the alarm it had just re-armed).
 		if (objectUrl.pathname === CRON_TICK_PATH) {
 			if (raw.method !== 'POST' || raw.headers.get(CRON_TICK_HEADER) !== '1' || !approachACronEnabled(env)) {
 				return new Response('forbidden', { status: 403 });
@@ -3151,8 +3154,9 @@ export class PhpRuntime extends DurableObject {
 			if (!tickOrigin) return new Response('missing ' + ORIGIN_HEADER, { status: 500 });
 			lastOrigin = tickOrigin;
 			await this.ctx.storage.put(ORIGIN_KEY, tickOrigin);
-			await this.alarm();
-			return Response.json({ ok: true, tick: 'cron' }, { headers: { 'cache-control': 'no-store' } });
+			const watch = await snapshotRearm(this.ctx.storage, Date.now(), Number(env.CRON_INTERVAL_MS || 60000));
+			if (watch.state !== 'ok') console.log(JSON.stringify({ m: 'alarm', rearmedBy: 'a-cron-tick', was: watch.state }));
+			return Response.json({ ok: true, tick: 'cron', alarm: watch.state, at: watch.at }, { headers: { 'cache-control': 'no-store' } });
 		}
 		const origin = raw.headers.get(ORIGIN_HEADER);
 		// Without it, the object does not guess an origin: a wrong one redirects every page.
