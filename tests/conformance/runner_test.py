@@ -682,6 +682,18 @@ def main():
         vbr = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "run", "gb", os.path.join(t, "w"), rgb],
                              env={"PATH": os.environ.get("PATH", ""), "DRY": "1", "PF_BROWSER": "browser-run", "PF_BROWSER_RUN_ACCOUNT": "0" * 32, "PF_BROWSER_RUN_TOKEN_FILE": tokf}, capture_output=True, text=True)
         ok("vps-run PF_BROWSER=browser-run with account/token: says BROWSER RUN, workers 1") if vbr.returncode == 0 and "BROWSER RUN" in vbr.stdout and "workers 1" in vbr.stdout else bad("browser-run go: rc %d %s" % (vbr.returncode, (vbr.stdout + vbr.stderr)[-300:]))
+        # pw / redact_auth (sb1120 cf759hl): Playwright's call log printed "Authorization: Basic <app password>". The real
+        # functions from vps-run.sh mask every form, keep other lines, and keep the command's own exit status.
+        vtxt = open(os.path.join(HERE, "vps-run.sh")).read()
+        funcs = "\n".join(l for l in vtxt.splitlines() if l.startswith("redact_auth() ") or l.startswith("pw() "))
+        fake = ("printf '%s\\n' '  - Authorization: Basic YWRtaW46c0I2NDRIajJp' 'authorization=basic QUJD' "
+                "'\"Authorization\": \"Bearer abc.def-ghi\"' 'user-agent: Mozilla/5.0' 'Basic idea, no header'; exit 7")
+        pr = subprocess.run(["bash", "-c", "set -euo pipefail\n" + funcs + "\npw bash -c \"$0\" || echo rc=$?", fake], capture_output=True, text=True)
+        out = pr.stdout
+        ok("pw masks every Authorization value") if "YWRtaW46c0I2NDRIajJp" not in out and "QUJD" not in out and "abc.def-ghi" not in out and out.count("<redacted>") == 3 else bad("redact: %r" % out)
+        ok("pw keeps other lines, and a bare 'Basic' word") if "user-agent: Mozilla/5.0" in out and "Basic idea, no header" in out else bad("redact kept: %r" % out)
+        ok("pw returns the command's exit status (7)") if "rc=7" in out else bad("pw rc: %r %r" % (out, pr.stderr[-200:]))
+        ok("every Playwright command in vps-run.sh runs through pw") if vtxt.count(" pw npx playwright test") == 2 and vtxt.count(" pw pnpm exec playwright test") == 2 and " npx playwright test --config" not in vtxt.replace(" pw npx playwright test", "") else bad("an unwrapped playwright command")
         vps_txt = open(os.path.join(HERE, "vps-run.sh")).read()
         ok("vps-run.sh gb: three build attempts on failure") if "for gb_try in 1 2 3" in vps_txt and "gb build failed after 3 attempts" in vps_txt else bad("vps-run.sh gb retry count")
         ok("vps-run.sh gb: clears node_modules/.cache before attempt 3") if "node_modules/.cache" in vps_txt and '[ "$gb_try" = 2 ]' in vps_txt else bad("vps-run.sh gb cache clear")
@@ -707,14 +719,14 @@ def main():
             ok("copyFile ./assets from test/e2e succeeds") if e2e_cp.returncode == 0 else bad("e2e copyFile rc %s %s" % (e2e_cp.returncode, (e2e_cp.stderr or e2e_cp.stdout or "")[-160:]))
         else:
             bad("no node to prove the asset copy (could not measure)")
-        want_cd = "(cd %s && npx playwright test --config=pf-conformance.config.mjs)" % gb_e2e
+        want_cd = "(cd %s && pw npx playwright test --config=pf-conformance.config.mjs)" % gb_e2e
         for act, rd in (("run", "rg"), ("baseline", "bg")):
             vr = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), act, "gb", os.path.join(t, "w"), os.path.join(t, rd)],
                                 env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
             gb_lines = [l for l in vr.stdout.splitlines() if "playwright test" in l]
             ok("vps-run %s gb: Playwright cwd is test/e2e" % act) if vr.returncode == 0 and any(want_cd in l for l in gb_lines) else bad("gb %s playwright cwd: %s" % (act, gb_lines))
         wp_root = os.path.join(t, "w", "wp-" + wp_sha)
-        want_wp = "(cd %s && npx playwright test --config=tests/e2e/pf-conformance.config.mjs)" % wp_root
+        want_wp = "(cd %s && pw npx playwright test --config=tests/e2e/pf-conformance.config.mjs)" % wp_root
         vr = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "run", "wp", os.path.join(t, "w"), os.path.join(t, "rw")],
                             env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
         wp_lines = [l for l in vr.stdout.splitlines() if "playwright test" in l]
