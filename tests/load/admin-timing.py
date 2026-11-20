@@ -11,9 +11,11 @@ own split, from the spike-gated timing headers: x-boot (1 = this request booted 
 x-d1-ms (on approach A every MySQL query through Hyperdrive is one bridge call, so these are the query count and
 their total round trip), x-runtime-recycled and the isolate. Then the medians per step. Run it on a WooCommerce site
 and on its WordPress-only twin to split WooCommerce's cost from placement's. It makes one product and REPS posts,
-all deleted at the end. Needs the spike token: it never runs on a visitor's terms. Exit 1 on a non-2xx/3xx step.
+all deleted at the end. On a site without WooCommerce (/wc/v3 answers 404) the product steps are skipped and said
+so, so the WordPress-only twin gives its post numbers. Needs the spike token: it never runs on a visitor's terms.
+Exit 1 on a step that answers outside 2xx/3xx.
 """
-import html, json, os, re, statistics, sys, time
+import json, os, re, statistics, sys, time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "spikes", "b2-wordpress", "tests"))
 for k in ("B", "ADMIN_PASSWORD", "SPIKE_TOKEN"):
     if not os.environ.get(k):
@@ -44,15 +46,54 @@ def step(name, path, data=None, ok=(200, 302)):
     return x
 
 
+def text(x):
+    return (x["body"] or b"").decode("utf-8", "replace")
+
+
 def field(body, name):
     m = re.search(r'name="%s"\s+value="([^"]+)"' % re.escape(name), body) or re.search(r'id="%s"\s+name="[^"]*"\s+value="([^"]+)"' % re.escape(name), body)
     return m.group(1) if m else None
 
 
+def product_steps(rep, prod):
+    """The product list, a product's editor, and product Quick Edit."""
+    b = text(step("list products", "/wp-admin/edit.php?post_type=product"))
+    step("edit product", "/wp-admin/post.php?post=%d&action=edit" % prod)
+    qe = {"action": "inline-save", "_inline_edit": field(b, "_inline_edit") or "", "post_ID": prod, "post_type": "product", "screen": "edit-product",
+          "post_title": "admin timing product %d" % rep, "post_name": "", "_status": "publish", "edit_date": "", "comment_status": "", "ping_status": ""}
+    wq = field(b, "woocommerce_quick_edit_nonce")
+    if wq:
+        qe.update({"woocommerce_quick_edit": "1", "woocommerce_quick_edit_nonce": wq, "_regular_price": "9.99"})
+    step("quick edit product", "/wp-admin/admin-ajax.php", qe)
+
+
+def post_steps(rep, post):
+    """The post list, a post's editor, its Quick Edit, then Trash and Empty Trash. True when the post was emptied."""
+    b = text(step("list posts", "/wp-admin/edit.php"))
+    step("edit post", "/wp-admin/post.php?post=%d&action=edit" % post)
+    step("quick edit post", "/wp-admin/admin-ajax.php", {"action": "inline-save", "_inline_edit": field(b, "_inline_edit") or "", "post_ID": post, "post_type": "post",
+                                                          "screen": "edit-post", "post_title": "admin timing post %d" % rep, "post_name": "", "_status": "publish", "edit_date": ""})
+    m = re.search(r'post\.php\?post=%d&(?:amp;)?action=trash&(?:amp;)?_wpnonce=([0-9a-f]+)' % post, b)
+    if m:
+        step("trash post", "/wp-admin/post.php?post=%d&action=trash&_wpnonce=%s" % (post, m.group(1)))
+    else:
+        print(json.dumps({"step": "trash post", "skipped": "no trash link for the post on the list page"}), flush=True)
+    b = text(step("list trash", "/wp-admin/edit.php?post_status=trash&post_type=post"))
+    n = field(b, "_wpnonce")
+    if n:
+        step("empty trash", "/wp-admin/edit.php?post_status=trash&post_type=post&_wpnonce=%s&delete_all=%s" % (n, "Empty+Trash"))
+        return True
+    return False
+
+
 r = BL.rest(o, "/wc/v3/products", {"name": "admin timing %d" % time.time(), "type": "simple", "regular_price": "9.99"}, "POST")
-if r["code"] != 201:
-    sys.exit("admin-timing: making a product answered %s (is WooCommerce active?)" % r["code"])
-prod = json.loads(r["body"])["id"]
+prod = None
+if r["code"] == 201:
+    prod = json.loads(r["body"])["id"]
+elif r["code"] == 404:
+    print(json.dumps({"skipped": "the product steps: /wc/v3 answered 404, so WooCommerce is not active on this site"}), flush=True)
+else:
+    sys.exit("admin-timing: making a product answered %s" % r["code"])
 made_posts = []
 try:
     for rep in range(REPS):
@@ -61,37 +102,15 @@ try:
             sys.exit("admin-timing: making a post answered %s" % r["code"])
         post = json.loads(r["body"])["id"]
         made_posts.append(post)
-        # The product list and its Quick Edit.
-        x = step("list products", "/wp-admin/edit.php?post_type=product")
-        b = (x["body"] or b"").decode("utf-8", "replace")
-        step("edit product", "/wp-admin/post.php?post=%d&action=edit" % prod)
-        qe = {"action": "inline-save", "_inline_edit": field(b, "_inline_edit") or "", "post_ID": prod, "post_type": "product", "screen": "edit-product",
-              "post_title": "admin timing product %d" % rep, "post_name": "", "_status": "publish", "edit_date": "", "comment_status": "", "ping_status": ""}
-        wq = field(b, "woocommerce_quick_edit_nonce")
-        if wq:
-            qe.update({"woocommerce_quick_edit": "1", "woocommerce_quick_edit_nonce": wq, "_regular_price": "9.99"})
-        step("quick edit product", "/wp-admin/admin-ajax.php", qe)
-        # The post list, a post's editor, its Quick Edit, then Trash and Empty Trash.
-        x = step("list posts", "/wp-admin/edit.php")
-        b = (x["body"] or b"").decode("utf-8", "replace")
-        step("edit post", "/wp-admin/post.php?post=%d&action=edit" % post)
-        step("quick edit post", "/wp-admin/admin-ajax.php", {"action": "inline-save", "_inline_edit": field(b, "_inline_edit") or "", "post_ID": post, "post_type": "post",
-                                                              "screen": "edit-post", "post_title": "admin timing post %d" % rep, "post_name": "", "_status": "publish", "edit_date": ""})
-        m = re.search(r'post\.php\?post=%d&(?:amp;)?action=trash&(?:amp;)?_wpnonce=([0-9a-f]+)' % post, b)
-        if m:
-            step("trash post", "/wp-admin/post.php?post=%d&action=trash&_wpnonce=%s" % (post, m.group(1)))
-        else:
-            print(json.dumps({"step": "trash post", "skipped": "no trash link for the post on the list page"}))
-        x = step("list trash", "/wp-admin/edit.php?post_status=trash&post_type=post")
-        b = (x["body"] or b"").decode("utf-8", "replace")
-        n = field(b, "_wpnonce")
-        if n:
-            step("empty trash", "/wp-admin/edit.php?post_status=trash&post_type=post&_wpnonce=%s&delete_all=%s" % (n, "Empty+Trash"))
+        if prod is not None:
+            product_steps(rep, prod)
+        if post_steps(rep, post):
             made_posts.remove(post)
 finally:
     for p in made_posts:
         BL.rest(o, "/wp/v2/posts/%d?force=true" % p, None, "DELETE")
-    BL.rest(o, "/wc/v3/products/%d?force=true" % prod, None, "DELETE")
+    if prod is not None:
+        BL.rest(o, "/wc/v3/products/%d?force=true" % prod, None, "DELETE")
 
 
 def med(vals):
