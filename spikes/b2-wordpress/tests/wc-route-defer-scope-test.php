@@ -39,6 +39,8 @@ $GLOBALS['pagenow']    = 'post.php';
 ok( 'post.php is in scope', Skyphusion_WC_Route_Defer::in_scope() );
 $GLOBALS['pagenow'] = 'post-new.php';
 ok( 'post-new.php is in scope', Skyphusion_WC_Route_Defer::in_scope() );
+$GLOBALS['pagenow'] = 'admin.php';
+ok( 'admin.php is in scope', Skyphusion_WC_Route_Defer::in_scope() );
 $GLOBALS['pagenow'] = 'index.php';
 ok( 'the dashboard is out of scope', ! Skyphusion_WC_Route_Defer::in_scope() );
 $GLOBALS['is_admin'] = false;
