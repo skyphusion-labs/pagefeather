@@ -12,15 +12,14 @@ Each pinned suite states its own engine floor in its `package.json` (`engines`).
 | suite | pin | node | npm |
 |---|---|---|---|
 | wordpress-develop | `0afb74de` | `>=20.10.0` | `>=10.2.3` |
-| WooCommerce | `67e007c3` | `^24.15.0` (24.x only) | not stated |
+| WooCommerce | `67e007c3` | `^24.15.0`, but pnpm runs it on its own Node 24.15.0 (`useNodeVersion: 24.15.0` in the pin's `pnpm-workspace.yaml`), whatever the system Node is | not stated |
 | Gutenberg | `8daba429` | `>=24.18.0` | `>=11.16.0` |
 
-So a box that runs all three needs **Node 24.18 or later, but below 25**, and **npm 11.16 or later**:
+So the box's SYSTEM Node must meet only Gutenberg's floor and wordpress-develop's: **Node 24.18 or later**, and **npm 11.16 or later**. WooCommerce (wc, wc-api, wc-cpt) runs on pnpm's own Node 24.15.0, downloaded by pnpm, so the system Node does not need to be in WooCommerce's `^24` range (measured by joan: `ps` shows pnpm's 24.15.0 on her wc runs, on a Node 26 laptop).
 - Node 22 fails the Gutenberg install. The conf759 boxes used Node 22, which held for the earlier Gutenberg pin only. The sb1120 gb baseline box `gbbase-gb1` failed `npm ci` 14 s after it started.
-- Node 26 is outside WooCommerce's `^24` range.
-- On Ubuntu, install with NodeSource `setup_24.x`, then `npm install -g npm@11`.
+- On Ubuntu, install with NodeSource `setup_24.x` (or later), then `npm install -g npm@11`.
 
-When a pin moves, read the floors again: `curl -fsS https://raw.githubusercontent.com/<repo>/<sha>/package.json`, then the `engines` key.
+When a pin moves, read the floors again: `curl -fsS https://raw.githubusercontent.com/<repo>/<sha>/package.json`, then the `engines` key, and for WooCommerce also `pnpm-workspace.yaml`'s `useNodeVersion`.
 
 ## Gutenberg install on the VPS (`vps-run.sh install gb`)
 
