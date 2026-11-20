@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # The #394 admin fixes for approach A (VARIANT=a: PHP in the Worker, MySQL through Hyperdrive),
-# sourced by deploy/deploy.sh. Every setting is off unless it is set, so a deploy without them is
-# the deploy of before. The runtime half is already in spikes/b2-wordpress/index.js, which
+# sourced by deploy/deploy.sh. Every setting is off unless it is set, EXCEPT OPCACHE_A, OPCACHE_REMOTE and
+# SITE_REMOTE: deploy.sh turns those on by default (#1020, a_remote_pack_defaults in deploy/lib/remote-packs.sh); 0
+# opts out of each. The runtime half is already in spikes/b2-wordpress/index.js, which
 # index-a.js wraps: only the build and the Wrangler config were missing. Test:
 # deploy/tests/a-settings-test.sh.
 #

@@ -85,6 +85,7 @@ jobs:
           bash deploy/tests/a-settings-test.sh
           bash deploy/tests/activate-installed-test.sh
           bash deploy/tests/dosql-remote-test.sh
+          bash deploy/tests/a-remote-test.sh
           bash deploy/tests/fault-inject-test.sh
           bash deploy/tests/page-cache-ttl-test.sh
           bash deploy/tests/conformance-test.sh
