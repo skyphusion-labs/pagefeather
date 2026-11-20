@@ -26,6 +26,27 @@ export async function sha256Hex(s) {
   return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+// Base64 of the raw bytes. btoa of a binary string, in chunks, so a pack of about 1 MiB does not
+// blow the argument limit. The same encoding Buffer#toString('base64') produces.
+export function bytesToBase64(bytes) {
+  const u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let s = '';
+  const n = 0x8000;
+  for (let i = 0; i < u.length; i += n) s += String.fromCharCode(...u.subarray(i, i + n));
+  return btoa(s);
+}
+
+// The static-asset content hash. The direct-upload example hashes base64(file bytes) plus the
+// file extension, then keeps the first 32 hex characters of SHA-256.
+// https://developers.cloudflare.com/workers/static-assets/direct-upload/ (read 2026-11-20).
+export async function assetContentHash(bytes, name) {
+  const base = String(name).split('/').pop();
+  const dot = base.lastIndexOf('.');
+  const ext = dot >= 0 ? base.slice(dot + 1).toLowerCase() : '';
+  const hex = await sha256Hex(bytesToBase64(bytes) + ext);
+  return hex.slice(0, 32);
+}
+
 // One Cloudflare API call. Returns { status, ok, result, errors, json, raw }.
 // fetchImpl is injected so tests stub it; it defaults to the global fetch, which
 // exists in a Worker and in node 22+. A string body is sent verbatim (the caller

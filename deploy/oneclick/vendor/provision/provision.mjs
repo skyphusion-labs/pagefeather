@@ -5,7 +5,7 @@
 // secret_text bindings in the script upload (matching deploy/variants/c1.sh's
 // --secrets-file), so a site never runs a request without its secrets.
 import {
-  createR2Bucket, deployNamespaceScript, ensureProxiedHostname, scriptExists,
+  createR2Bucket, deployNamespaceScript, uploadDispatchAssets, ensureProxiedHostname, scriptExists,
   installWordPress, freshKVNamespace,
   ensureCacheVersions,
   deleteNamespaceScript, deleteR2Bucket, deleteProxiedHostname, deleteCustomHostname,
@@ -126,6 +126,13 @@ async function provisionNamespaceSite(ctx, cfg) {
   // WORKER (no DO), so it declares NO classes and NO migration. Default by kind
   // when the caller leaves it unset.
   const sqliteClasses = cfg.sqliteClasses !== undefined ? cfg.sqliteClasses : (cfg.kind === 'wp' ? ['PhpRuntime'] : []);
+  // #1036: upload the /_pf/ packs before the script, and attach the completion token to that version.
+  let assets;
+  if (cfg.assets && cfg.assets.files && cfg.assets.files.length) {
+    assets = await uploadDispatchAssets(ctx, {
+      ns: cfg.namespace, name: script, files: cfg.assets.files, runWorkerFirst: cfg.assets.runWorkerFirst,
+    });
+  }
   await deployNamespaceScript(ctx, {
     ns: cfg.namespace,
     name: script,
@@ -135,6 +142,7 @@ async function provisionNamespaceSite(ctx, cfg) {
     compatibilityDate: cfg.compatibilityDate,
     compatibilityFlags: cfg.compatibilityFlags || [],
     migrations: { new_tag: cfg.migrationTag || 'v1', new_sqlite_classes: sqliteClasses },
+    assets,
   });
   steps.push({ deployed: script, ns: cfg.namespace, sqliteClasses });
   const entry = {

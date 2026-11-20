@@ -1,12 +1,14 @@
 // The command-line side of bundle-manifest.mjs (issue #405).
 //   node bundle-cli.mjs make <modules dir> <manifest.json> key=value...
 //   node bundle-cli.mjs verify <modules dir> <manifest.json>
+//   node bundle-cli.mjs packs <build dir> <release dir> <prefix> [manifest.json]
 // make: reads every file in the dir (the dry-run outdir with README.md and *.map
 // already removed), writes the manifest. verify: exit 0 only when the dir matches.
 import { readdir, readFile, writeFile, open } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join } from 'node:path';
 import { buildManifest, verifyBundle } from './bundle-manifest.mjs';
+import { packagePacks } from './pack-assets.mjs';
 
 async function readDir(dir) {
   const files = [];
@@ -40,8 +42,24 @@ try {
     const r = await verifyBundle(await readDir(dir), JSON.parse(await readFile(manifestPath, 'utf8')));
     if (!r.ok) { for (const e of r.errors) console.error(`verify: ${e}`); process.exit(1); }
     console.log('verify: the bundle matches its manifest');
+  } else if (cmd === 'packs') {
+    const buildDir = process.argv[3];
+    const releaseDir = process.argv[4];
+    const prefix = process.argv[5];
+    const manPath = process.argv[6];
+    if (!buildDir || !releaseDir || prefix === undefined) {
+      console.error('usage: bundle-cli.mjs packs <build dir> <release dir> <prefix> [manifest.json]');
+      process.exit(2);
+    }
+    const r = await packagePacks({ buildDir, releaseDir, prefix });
+    if (manPath && r.wrote) {
+      const man = JSON.parse(await readFile(manPath, 'utf8'));
+      man.assetsIndexSha256 = r.indexSha256;
+      await writeFile(manPath, JSON.stringify(man, null, 2) + '\n');
+    }
+    console.log(r.wrote ? `packs: ${r.files} file(s) under ${prefix || '(no prefix)'}` : 'packs: none (remote packs are off)');
   } else {
-    console.error('usage: bundle-cli.mjs make <dir> <manifest.json> key=value... | verify <dir> <manifest.json>');
+    console.error('usage: bundle-cli.mjs make <dir> <manifest.json> key=value... | verify <dir> <manifest.json> | packs <build dir> <release dir> <prefix> [manifest.json]');
     process.exit(2);
   }
 } catch (e) {
