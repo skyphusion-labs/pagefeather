@@ -486,7 +486,7 @@ print(" ".join(sorted(names)))
 PY2
 )
 # Not settings: the deploy's own names (API, APP, the credential, the namespace, the phase B names, a
-# constant). OBSERVABILITY: not recorded on purpose (client IPs). THROWAWAY (#639): the run's own
+# constant). OBSERVABILITY is a recorded setting since #1050 (0 and 1; full is never recorded). THROWAWAY (#639): the run's own
 # statement that this site is a throwaway, the gate for OBSERVABILITY=full; it must never stick to a
 # site across updates, so it is not recorded either (and it renders nothing).
 # measurement flags: never recorded, by design (site_settings.py MEASUREMENT): ON only for the run.
@@ -498,7 +498,7 @@ measurement=" DISPATCH_PERF_LOG FAULT_INJECT HEADROOM_PROBE MEM_LEDGER WFP_PHP_E
 # by use_recorded_inputs before the render, so an update keeps them without SITE_SETTINGS.
 buildinputs=" WOO_ACTIVE IMPORT_PLUGINS PLUGINS "
 # GONE_LAST, GONE_WAITED (#789): the outputs of the bounded gone check (deploy/lib/gone-wait.sh), set per call, never a setting.
-notset=" API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN OBSERVABILITY TMPDIR THROWAWAY GONE_LAST GONE_WAITED$measurement$buildinputs"
+notset=" API APP CLOUDFLARE_API_TOKEN NAMESPACE SEARCH_EMBED_PRESET SHARED_DISPATCHER WFP WFP_CUSTOM_DOMAIN WFP_SUBDOMAIN TMPDIR THROWAWAY GONE_LAST GONE_WAITED$measurement$buildinputs"
 settings=" $(bash -c '. "'"$LIB"'"; echo $SITE_SETTINGS') "
 miss=""; for n in $derived; do case "$settings$notset" in *" $n "*) ;; *) miss="$miss $n" ;; esac; done
 ok "#558 every env name render_user reads is a recorded setting or named with a reason (missing:${miss:- none})" "$([ -z "$miss" ] && [ -n "$derived" ] && printf '%s\n' $derived | grep -qx HEADROOM_PROBE && echo 1 || echo 0)"
