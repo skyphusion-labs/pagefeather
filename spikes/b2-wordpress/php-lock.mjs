@@ -33,8 +33,12 @@
 export const PHP_SHED = Symbol('php-shed');
 const TICK_MS = 1000;
 const GRANT_LOG_MS = 1000;
+// #1116: a grant whose continuation has not started within this is abandoned (the slot freed, the next waiter pumped).
+// The cross-context hop that runs a granted continuation on workerd measures milliseconds.
+export const GRANT_START_MS = 5000;
 
-export function createPhpLock({ staleMs = 60000, stallMs = null, staleAction: defaultStaleAction = 'take', now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, log = () => {} } = {}) {
+// deliverGrant (tests): how a grant reaches its waiter; a test drops one to model a continuation that never runs.
+export function createPhpLock({ staleMs = 60000, stallMs = null, staleAction: defaultStaleAction = 'take', now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, log = () => {}, deliverGrant = (go) => go() } = {}) {
 	let lastProgress = null; // #1060: the head's last bridge message (or its start)
 	let waiting = 0;
 	let running = 0;
@@ -43,6 +47,8 @@ export function createPhpLock({ staleMs = 60000, stallMs = null, staleAction: de
 	let headState = null;
 	let seq = 0;
 	const waiters = []; // { seq, priority, go, state }
+	let reservedFor = null; // #1116: the waiter granted by pump() whose continuation has not started yet
+	let reservedAt = 0;
 	const headMs = () => (headSince === null ? 0 : now() - headSince);
 	// #1060: the head counts as stale only past staleMs AND, with stallMs, with no progress for stallMs.
 	const headStale = () => headSince !== null && headMs() >= staleMs && (stallMs === null || lastProgress === null || now() - lastProgress >= stallMs);
@@ -64,7 +70,21 @@ export function createPhpLock({ staleMs = 60000, stallMs = null, staleAction: de
 		// non-empty queue and pumped a SECOND waiter: two runs at once (cf759hx arm 3, granted 1 ms apart, one hung).
 		item.reserved = true;
 		blocking++;
-		item.go();
+		reservedFor = item;
+		reservedAt = now();
+		deliverGrant(item.go);
+	}
+	// #1116 review: a reserved grant whose continuation never started (dropped cross-context, or its request cancelled) is
+	// abandoned past GRANT_START_MS, so a ghost never keeps the slot. Called from every waiter's tick and every arrival.
+	function reap() {
+		if (!reservedFor || now() - reservedAt < GRANT_START_MS) return;
+		const g = reservedFor;
+		reservedFor = null;
+		g.reserved = false;
+		g.abandoned = true;
+		blocking = Math.max(0, blocking - 1);
+		log({ event: 'grant-abandoned', waitMs: now() - reservedAt, depth: waiting + running });
+		pump();
 	}
 	function drop(item) {
 		const i = waiters.indexOf(item);
@@ -90,6 +110,7 @@ export function createPhpLock({ staleMs = 60000, stallMs = null, staleAction: de
 			const check = () => {
 				timer = null;
 				if (done) return;
+				reap(); // #1116
 				// #708 review 1: SHED first. A waiter past its bound never runs, even if the head has also run past the stale
 				// time: with the default start-by (60 s) equal to LOCK_STALE_MS, both can fall due at the one check.
 				if (shedMs > 0 && now() - t0 >= shedMs) return finish('shed');
@@ -127,6 +148,7 @@ export function createPhpLock({ staleMs = 60000, stallMs = null, staleAction: de
 			}
 			const t0 = now();
 			const state = { superseded: false };
+			reap(); // #1116: an arrival frees a ghost grant first
 			const contended = blocking > 0 || waiters.length > 0;
 			if (contended) lg({ event: 'queued', depth: waiting + running, headMs: headMs() });
 			waiting++;
@@ -139,6 +161,12 @@ export function createPhpLock({ staleMs = 60000, stallMs = null, staleAction: de
 			return (async () => {
 				let why = took ? 'turn' : await waitTurn(granted, t0, shedMs, signal, staleAction);
 				waiting--;
+				if (reservedFor === item) reservedFor = null; // #1116: this grant started in time
+				// #1116: this grant was abandoned before the continuation ran; the slot is gone (someone else may hold it).
+				if (item.abandoned) {
+					lg({ event: 'shed', at: 'grant', waitMs: now() - t0, depth: waiting + running, headMs: headMs(), why: 'grant-lost' });
+					return PHP_SHED;
+				}
 				const waitMs = now() - t0;
 				// #1060: a stale head on a shed path: answer at once, never take over (a second runtime beside a live one).
 				if (why === 'stale' && staleAction === 'shed' && waiters.includes(item)) {
