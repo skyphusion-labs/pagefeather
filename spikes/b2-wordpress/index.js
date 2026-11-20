@@ -479,6 +479,22 @@ const SEND_TIMEOUT_MS = 5000;
 // #720: held reuses the lock the caller already holds. A second phpLock.run waits out staleMs, then
 // onStale drops the runtime. The lock is not reentrant. Only /_runcron passes held, because that
 // route is already inside the request withPhp. The alarm does not, so it always takes the lock.
+// #1101: the call id of the PHP run executing now. PHP runs are serialized per isolate (the PHP lock), so it is exact for
+// the run's length. Approach A's local run sets it (withRunCall); in the object it stays null and ctx.callId is used.
+let runCallId = null;
+async function withRunCall(callId, fn) {
+	runCallId = callId;
+	try {
+		return await fn();
+	} finally {
+		if (runCallId === callId) runCallId = null;
+	}
+}
+// The call id for a log line (#708, #1101): the object's ctx.callId, or approach A's run id.
+function callTag(ctx) {
+	const call = (ctx && ctx.callId) || runCallId;
+	return call ? { call } : {};
+}
 function withPhp(fn, { shedMs = 0, tag = null, shedWhy = null, recheck = null, held = false, signal = null, priority = 0, staleAction = 'wait' } = {}) {
 	if (held) return fn();
 	return phpLock.run(
@@ -3896,7 +3912,7 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 		// are thrown as before (fetchWithMemoryRetry rethrows them).
 		const reset = isResetKind(kind);
 		const tag = reset ? 'isolate-reset' : kind === 'internal' ? 'platform-internal' : 'overloaded';
-		console.log(JSON.stringify({ m: tag, kind, path: url.pathname, retried, ...memIdOf(req, env), error: String(e.message).slice(0, 200) }));
+		console.log(JSON.stringify({ m: tag, kind, path: url.pathname, retried, ...memIdOf(req, env), call: callId, error: String(e.message).slice(0, 200) }));
 		// A method that may have written (anything but GET, HEAD or OPTIONS) and died in a reset,
 		// or in a platform internal error (#1004): its earlier writes may be saved (#350; #398 saw
 		// a page create and a delete saved), so no 503 "try again" and never the dispatcher 502
@@ -3907,7 +3923,7 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 			console.log(JSON.stringify({ m: 'frame-probe', phase: 'request-killed', state: fr ? fr.state : null, points: fr ? fr.points : null }));
 			const wl = frameProvesRollback(fr) ? rolledBackResponse(wantsJson(url.pathname, url.search, req.headers.get('accept')), kind, fr.undone) : writeLossResponse('unknown', wantsJson(url.pathname, url.search, req.headers.get('accept')), kind);
 			// #596: id is the operator perf id. answered is this response's status. PHP never answered here, so there is no phpStatus.
-			console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', kind, method: req.method, path: url.pathname, failed: 'unknown', phase: 'request-killed', ...memIdOf(req, env), answered: wl.status }));
+			console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', kind, method: req.method, path: url.pathname, failed: 'unknown', phase: 'request-killed', ...memIdOf(req, env), call: callId, answered: wl.status }));
 			wl.headers['x-php-object'] = name;
 			if (pfReq) wl.headers['x-pf-req'] = pfReq; // the request id, for a spike-token /_frame read (#352)
 			return new Response(wl.body, { status: wl.status, headers: wl.headers });
@@ -4128,6 +4144,7 @@ const site = {
 		// object instead, before it has run. Wherever PHP runs in this Worker with the database outside the
 		// object (approach A; also a D1 Worker, which is how it is tested locally), with the binding.
 		const ovs = overflowSettings(env);
+		let ovCall = null; // #1101: the overflow call id, when this request was offered to the pool first
 		// Uploads never move: media uploads, and any request whose declared body is over 1 MiB (the Font Library, #591).
 		const ovUpload = isMediaUpload(req, url) || Number(req.headers.get('content-length') || 0) > OVERFLOW_MAX_BODY;
 		if (ovs.on && env.PHP_RUNTIME && env.PHP_IN_DO !== 'on' && env.DB_IN_DO !== 'on' && shouldOverflow(ovs, { running: phpLock.running, waiting: phpLock.waiting }, url, ovUpload)) {
@@ -4138,6 +4155,7 @@ const site = {
 			}
 			const picker = ovPickerFor(ovs.pool);
 			const callId = crypto.randomUUID(); // #708: one id for this request across its choices
+			ovCall = callId; // #1101: kept if the request falls through to run here
 			ovHeld++;
 			// #714 measurement: with MEM_LEDGER=on, what this isolate holds while it forwards (the ledger is otherwise taken
 			// only in handle(), which a forwarded request never calls here).
@@ -4186,8 +4204,10 @@ const site = {
 		// #962: same beat as the object, for a Worker that runs PHP itself.
 		const workerLookupYield = templateLookupYield(req.method, url, phpLock);
 		if (workerLookupYield) await new Promise((resolve) => setTimeout(resolve, workerLookupYield));
-		const workerRun = await withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx), { shedMs: phpShedMs(env, false), priority: templateQueuePriority(req.method, url), staleAction: 'shed' }); // #1060
-		return workerRun === PHP_SHED ? phpShedResponse() : workerRun;
+		// #1101: approach A's local run has a call id too, on the lock lines, the error lines and the answer (x-pf-call).
+		const callId = ovCall || crypto.randomUUID(); // #1101
+		const workerRun = await withPhp(() => withRunCall(callId, () => handle(req, env, url, spikeOk, maxBody, ctx)), { shedMs: phpShedMs(env, false), priority: templateQueuePriority(req.method, url), staleAction: 'shed', tag: { call: callId } }); // #1060
+		return tagCallId(workerRun === PHP_SHED ? phpShedResponse() : workerRun, callId);
 	},
 };
 
@@ -4694,7 +4714,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				const wl = writeLossResponse(lost, json);
 				const answer = rolled || wl;
 				// phpStatus is PHP's status before this replacement. answered is the status returned below (#596).
-				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, rolledBack: !!rolled, ocDropped: ocForgot.n, ocDroppedGroups: ocForgot.groups, phpStatus: r.httpStatusCode, firstSql: sqlShape(d.failures[0].sql), ...memIdOf(req, env), answered: wl.status }));
+				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, rolledBack: !!rolled, ocDropped: ocForgot.n, ocDroppedGroups: ocForgot.groups, phpStatus: r.httpStatusCode, firstSql: sqlShape(d.failures[0].sql), ...memIdOf(req, env), ...callTag(ctx), answered: wl.status }));
 				dropRuntime(); // the runtime saw the reset; the next request boots a new one
 				if (purgeRetry) purgeRetry(); // #1007: the statements before the reset may be saved, so their pages too
 				return new Response(answer.body, { status: answer.status, headers: answer.headers });
@@ -4735,7 +4755,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 					const filesGone = rb ? await deleteFrameR2(rb.req, rb.r2) : true; // #1039
 					const saved = rb ? !(filesGone && frameProvesRollback(fr)) : wrote;
 					const sf = statementFailureResponse(d.failures.length, wantsJson(url.pathname, url.search, req.headers.get('accept')), saved);
-					console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', class: 'platform', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, wrote, rolledBack: !!(rb && !saved), answered: sf.status, phpStatus: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env) }));
+					console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', class: 'platform', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, wrote, rolledBack: !!(rb && !saved), answered: sf.status, phpStatus: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env), ...callTag(ctx) }));
 					if (purgeRetry && saved) purgeRetry(); // #1007: a saved write changed pages, so their purge is asked again
 					return new Response(sf.body, { status: sf.status, headers: sf.headers });
 				}
@@ -4751,7 +4771,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 					return new Response(sr.body, { status: sr.status, headers: sr.headers });
 				}
 				const f = readFailed(d.failures) ? ocReqForget() : { n: 0 };
-				console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', class: 'deterministic', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, answered: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env) }));
+				console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', class: 'deterministic', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, answered: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env), ...callTag(ctx) }));
 			}
 			if (purgeReset) {
 				if (bootPromise) runtimeDrops++;
@@ -4795,7 +4815,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			lastMemTrace = null;
 			if (ctx && ctx.inObject) out.set('x-boot-origin', bootOrigin);
 			// The path only, never the query string: a store's URLs carry order keys and logins there.
-			console.log(JSON.stringify({ m: 'req', path: url.pathname, boot: booted, d1: d.calls }));
+			console.log(JSON.stringify({ m: 'req', path: url.pathname, boot: booted, d1: d.calls, ...callTag(ctx) }));
 			if (qtrace) { console.log(JSON.stringify({ m: 'qtrace', ...memIdOf(req, env), method: req.method, status: r.httpStatusCode, ...qtrace.summary() })); qtrace = null; }
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
 			if (tracing()) fileTrace.end({ status: r.httpStatusCode });
