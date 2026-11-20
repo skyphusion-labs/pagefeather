@@ -28,6 +28,23 @@ export function aPerfLine(f) {
 		wallMs: num(f.wallMs),
 		wasm1MiB: num(f.wasm1MiB),
 		recycled: f.recycled || undefined,
+		// #1078 round 2: what PHP waited on besides MySQL, and whether OPcache served (spike token + x-perf-opcache: 1).
+		opHits: num(f.opHits),
+		opMisses: num(f.opMisses),
+		opCached: num(f.opCached),
+		opFull: typeof f.opFull === 'boolean' ? f.opFull : undefined,
+		rfN: num(f.rfN),
+		rfKiB: num(f.rfKiB),
+		rfMs: num(f.rfMs),
+		rfFail: num(f.rfFail),
+		rsN: num(f.rsN),
+		rsKiB: num(f.rsKiB),
+		rsMs: num(f.rsMs),
+		rsFail: num(f.rsFail),
+		httpN: num(f.httpN),
+		httpMs: num(f.httpMs),
+		inflates: num(f.inflates),
+		inflateKiB: num(f.inflateKiB),
 	};
 	for (const k of Object.keys(line)) if (line[k] === undefined) delete line[k];
 	return line;

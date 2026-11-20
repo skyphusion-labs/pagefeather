@@ -4430,7 +4430,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
 			ocReqBegin(); // #766
-			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, reinflates: stats.reinflates, lazyWrites: stats.lazyWrites, rfN: stats.rfN, rfBytes: stats.rfBytes, rfMs: stats.rfMs, rfFail: stats.rfFail, rfCapped: stats.rfCapped, rsN: stats.rsN, rsBytes: stats.rsBytes, rsMs: stats.rsMs, rsFail: stats.rsFail, rsCapped: stats.rsCapped, rsRetry: stats.rsRetry, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
+			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, reinflates: stats.reinflates, lazyWrites: stats.lazyWrites, rfN: stats.rfN, rfBytes: stats.rfBytes, rfMs: stats.rfMs, rfFail: stats.rfFail, rfCapped: stats.rfCapped, rsN: stats.rsN, rsBytes: stats.rsBytes, rsMs: stats.rsMs, rsFail: stats.rsFail, rsCapped: stats.rsCapped, rsRetry: stats.rsRetry, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, httpMs: stats.httpMs, txnOps: stats.txnOps, undoRows: stats.undoRows };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
 			// #352 the forced-reset proof (a MEASUREMENT that KILLS the isolate; spike token and HEADROOM_PROBE=on,
@@ -4497,7 +4497,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			const r2before = JSON.stringify(stats.r2);
 			const r2start = JSON.parse(r2before);
 			// OPcache counters before and after, only when a spike-token holder asks (two extra php.run calls).
-			const wantOpcache = ctx && ctx.inObject && spikeOk && req.headers.get('x-perf-opcache') === '1';
+			const wantOpcache = spikeOk && req.headers.get('x-perf-opcache') === '1'; // #1078: on approach A too
 			const op0 = wantOpcache ? await opcacheStats(php) : null;
 			const tPhp = Date.now();
 			lastMemTrace = null;
@@ -4754,7 +4754,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			} else {
 				// #1078: approach A (PHP in the Worker, index-a.js) logs the same timing line, so a tail can time a real suite
 				// request: wall, boot, PHP time, and the query count and round-trip total (one bridge call per MySQL query).
-				console.log(JSON.stringify(aPerfLine({ id: memIdOf(req, env).id, method: req.method, path: url.pathname, status: r.httpStatusCode, iso: ISOLATE_ID, isoAgeS: Math.round((Date.now() - isolateStart) / 1000), rt: runtimeSerial, rtAgeS: Math.round((Date.now() - runtimeBootAt) / 1000), boot: booted, bootWaitMs, phpMs: phpOnlyMs, dbN: d.calls, dbMs: d.ms, wallMs: Date.now() - tBoot, wasm1MiB: Math.round(wasmBytes / 1048576), recycled: recycleWhy || null })));
+				console.log(JSON.stringify(aPerfLine({ id: memIdOf(req, env).id, method: req.method, path: url.pathname, status: r.httpStatusCode, iso: ISOLATE_ID, isoAgeS: Math.round((Date.now() - isolateStart) / 1000), rt: runtimeSerial, rtAgeS: Math.round((Date.now() - runtimeBootAt) / 1000), boot: booted, bootWaitMs, phpMs: phpOnlyMs, dbN: d.calls, dbMs: d.ms, wallMs: Date.now() - tBoot, wasm1MiB: Math.round(wasmBytes / 1048576), recycled: recycleWhy || null, rfN: stats.rfN - remote0.rfN, rfKiB: Math.round((stats.rfBytes - remote0.rfBytes) / 1024), rfMs: stats.rfMs - remote0.rfMs, rfFail: stats.rfFail - remote0.rfFail, rsN: stats.rsN - remote0.rsN, rsKiB: Math.round((stats.rsBytes - remote0.rsBytes) / 1024), rsMs: stats.rsMs - remote0.rsMs, rsFail: stats.rsFail - remote0.rsFail, httpN: stats.httpCalls - start.httpCalls, httpMs: stats.httpMs - (start.httpMs || 0), inflates: stats.inflates - start.inflates, inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024), ...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full } : {}) })));
 			}
 			const response = new Response(r.bytes, { status: r.httpStatusCode, headers: out });
 			// #394 (b): a recycled runtime is RELEASED, not only forgotten. bootPromise = null alone left
