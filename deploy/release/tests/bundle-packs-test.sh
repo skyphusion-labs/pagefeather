@@ -104,13 +104,46 @@ out=$(node "$CLI" packs "$T/bad" "$T/bad-rel" "" 2>&1); rc=$?
 check "packs on disk with a null index: exits 1" "$rc" 1
 check "  and names the index" "$(printf '%s\n' "$out" | grep -c 'opcache-remote-index')" 1
 
-echo "3. build-bundle.sh uses that packager for both engines, and deploy.sh's pack rule"
-check "approach A applies a_remote_pack_defaults" "$(grep -c 'a_remote_pack_defaults' "$BB")" 1
-check "b-dosql applies remote_pack_defaults" "$(grep -c 'remote_pack_defaults' "$BB")" 1
-check "both engines call the packager with the asset prefix" "$(grep -c 'bundle-cli.mjs" packs' "$BB")" 1
-check "approach A primes with TRACE so the packs follow OPCACHE_A" "$(grep -c 'TRACE=\${OPCACHE_REMOTE:-0}' "$BB")" 1
-check "the pack scripts are remote_pack_scripts, not a second copy" "$(grep -c 'remote_pack_scripts' "$BB")" 1
-check "bundle-cli stamps assetsIndexSha256" "$(grep -c 'assetsIndexSha256' "$ROOT/deploy/release/bundle-cli.mjs")" 1
+echo "3. build-bundle.sh runs the pack rule for both engines (the branch, not a grep)"
+# A grep for remote_pack_defaults also matches a_remote_pack_defaults, so deleting
+# the b-dosql call used to stay green. This runs the script. APP is a stub, so a
+# missing probe fails in the stub instead of building WordPress. The packager
+# prefix and the assetsIndexSha256 stamp are section 1 (the real bundle-cli).
+mkdir -p "$T/app/node_modules" "$T/app/build"
+cat > "$T/app/prepare.sh" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+cat > "$T/app/opcache-a.sh" <<'EOF'
+#!/bin/sh
+printf '%s\n' "${TRACE-unset}" > "$PROBE_TRACE_FILE"
+exit 0
+EOF
+printf 'raise SystemExit(0)\n' > "$T/app/opcache-check.py"
+chmod +x "$T/app/prepare.sh" "$T/app/opcache-a.sh"
+run_probe() {
+  local eng=$1 label=$2
+  shift 2
+  local rc
+  env -u OPCACHE_REMOTE -u SITE_REMOTE -u OPCACHE_A -u OPCACHE_SPLIT \
+    BUNDLE_PACK_PROBE=1 BUNDLE_ENGINE="$eng" APP="$T/app" PROBE_TRACE_FILE="$T/trace-$label" \
+    "$@" bash "$BB" "$T/probe-$label" >"$T/out-$label" 2>&1
+  rc=$?
+  check "$label exits 0" "$rc" 0
+}
+lines() { grep -c "$2" "$T/out-$1" || true; }
+run_probe dosql dosql-on
+check "b-dosql default applies remote_pack_defaults (1 1)" "$(lines dosql-on 'called build_dosql 1 1')" 1
+check "b-dosql default prefix is empty" "$(lines dosql-on 'probe engine=dosql prefix=$')" 1
+run_probe a a-on
+check "approach A default applies a_remote_pack_defaults (1 1, OPCACHE_A=1)" "$(lines a-on 'called remote_pack_scripts 1 1 1')" 1
+check "approach A default prefix is a." "$(lines a-on 'probe engine=a prefix=a\.$')" 1
+check "approach A primes with TRACE so the packs follow OPCACHE_A" "$(cat "$T/trace-a-on" 2>/dev/null || echo missing)" 1
+run_probe dosql dosql-off OPCACHE_REMOTE=0
+check "b-dosql OPCACHE_REMOTE=0 is kept (the build opt-out)" "$(lines dosql-off 'called build_dosql 0 0')" 1
+run_probe a a-off OPCACHE_REMOTE=0
+check "approach A OPCACHE_REMOTE=0 is kept" "$(lines a-off 'called remote_pack_scripts 0 0')" 1
+check "approach A OPCACHE_REMOTE=0 primes with TRACE=0" "$(cat "$T/trace-a-off" 2>/dev/null || echo missing)" 0
 
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]

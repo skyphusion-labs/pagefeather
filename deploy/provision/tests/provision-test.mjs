@@ -451,5 +451,32 @@ async function provisionAOcv(opts, objectCacheVersions) {
   ok('#734 a: a provider without triggers is recorded INERT and surfaced, never hidden', r.steps.some((st) => st.ocVersions && st.ocVersions.complete === false) && /inert/i.test(r.ocVersionsNote || ''));
 }
 
+// #1036: pack bytes are loaded after the existing-site return. A re-add must not
+// hash them, and a new site must load them before any create.
+{
+  const rec = recorder();
+  let when = '';
+  const r = await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl }, {
+    kind: 'wp', name: 'packblog', namespace: 'wp-wfp', kvId: 'KV', hostname: 'wp-packblog.sub.workers.dev',
+    compatibilityDate: '2026-07-01', mainModule: 'index.js',
+    modules: [{ name: 'index.js', content: 'x' }],
+    secrets: { WP_SALT: 's1', SPIKE_TOKEN: 's2' },
+    buckets: { media: 'wp-wfp-packblog-media' },
+    attachRemotePacks: async () => { when = mutating(rec.calls).length === 0 ? 'before-write' : 'after-write'; },
+  });
+  ok('a new site loads packs after the existing-site check and before any create', when === 'before-write' && r.script === 'site-packblog');
+}
+{
+  const rec = recorder({ existing: { script: 'site-packblog', kind: 'wp' } });
+  let n = 0;
+  const r = await provisionSite({ acct: ACCT, token: 'T', fetchImpl: rec.fetchImpl }, {
+    kind: 'wp', name: 'packblog', namespace: 'wp-wfp', kvId: 'KV', hostname: 'wp-packblog.sub.workers.dev',
+    compatibilityDate: '2026-07-01', modules: [{ name: 'index.js', content: 'x' }],
+    secrets: { WP_SALT: 's1' }, buckets: { media: 'm' },
+    attachRemotePacks: async () => { n += 1; },
+  });
+  ok('an existing site returns before the packs are loaded', r.existing === true && n === 0 && mutating(rec.calls).length === 0);
+}
+
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

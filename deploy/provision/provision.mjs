@@ -93,6 +93,9 @@ async function provisionNamespaceSite(ctx, cfg) {
   if (cfg.kind === 'a' && !Object.hasOwn(cfg, 'placement')) {
     throw new Error(`provisionNamespaceSite: an approach A upload needs placement ({mode: 'targeted', region: '<aws|gcp|azure>:<region>'}, next to its database), or placement: null to place none on purpose (#1063)`);
   }
+  // #1036: the pack index and the pack bytes. After the return above, so a re-add does not hash
+  // them and a bad index does not fail a site that is already registered.
+  if (typeof cfg.attachRemotePacks === 'function') await cfg.attachRemotePacks();
   // Anti-clobber (#182, grok residual 2): the hostname is not ours (idempotency
   // returned above if it were), so a script already named site-<name> in the
   // namespace is a foreign or orphaned site. Refuse rather than overwrite it.

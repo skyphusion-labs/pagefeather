@@ -73,6 +73,17 @@ Implemented as `loadBundle(env, kind)` reading `env.BUNDLES` under
 wired into any `wrangler.toml` (the lead owns deploy): the binding, the bucket,
 and the bake-lane upload step are the lead's to stand up.
 
+Copy `manifest.json` into the same prefix. When it names `assetsIndexSha256`,
+the prefix must also hold `remote-packs-index.json` and the packs at
+`assets/_pf/<build-id>/`. `loadPackAssets` refuses the site when that hash is
+named and the index is missing (#1036). The built Worker imports the pack
+indexes and leaves `opcache.zip` and `site.zip` empty, so a site with no
+ASSETS binding answers 503 on every request. `OPCACHE_REMOTE=0` and
+`SITE_REMOTE=0` on the add request are refused for that bundle. The packs are
+fixed when the bundle is built. A bundle whose manifest does not name
+`assetsIndexSha256` is unchanged. The bytes are read after the existing-site
+return, so a re-add does not hash them.
+
 ## Decision 2: ONE token policy (the lead mints; never minted here)
 
 The c1 'shop' container store path was retired (#214): a store is a b-dosql site

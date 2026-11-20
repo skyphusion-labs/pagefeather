@@ -62,6 +62,14 @@ export WOO_ACTIVE=1
 # PHP_ENGINE, or PF_ENGINE_JS and PF_ENGINE_WASM, still wins.
 # #1036: the remote packs, the same rule as deploy.sh. Unset is on. OPCACHE_REMOTE=0 leaves the zips in the module.
 if [ "$engine" = a ]; then a_remote_pack_defaults; else remote_pack_defaults; fi
+# BUNDLE_PACK_PROBE=1 is the offline test (deploy/release/tests/bundle-packs-test.sh). It runs this
+# branch with the WordPress build replaced, then stops. A release never sets it.
+if [ "${BUNDLE_PACK_PROBE:-}" = 1 ]; then
+  printf 'probe engine=%s prefix=%s\n' "$engine" "$prefix"
+  build_dosql() { printf 'called build_dosql %s %s\n' "${OPCACHE_REMOTE-unset}" "${SITE_REMOTE-unset}"; }
+  remote_pack_scripts() { printf 'called remote_pack_scripts %s %s %s\n' "${OPCACHE_REMOTE-unset}" "${SITE_REMOTE-unset}" "${OPCACHE_A-unset}"; return 0; }
+  bundle_size_check() { printf 'called bundle_size_check\n'; }
+fi
 if [ "$engine" = a ]; then
   # The approach-A build. prepare.sh first, as build_dosql does (#446: an old loader otherwise
   # survives in a tree that built before). opcache-a.sh builds D1, primes the OPcache there,
@@ -81,6 +89,7 @@ else
   build_dosql
   # build_dosql already ran bundle_size_check; its status is checked by set -e.
 fi
+if [ "${BUNDLE_PACK_PROBE:-}" = 1 ]; then exit 0; fi
 
 build_id=$(sed -n 's/^export default "\(.*\)";$/\1/p' "$APP/build/build-id.js")
 [ -n "$build_id" ] || { echo "build-bundle: no build id in $APP/build/build-id.js" >&2; exit 1; }

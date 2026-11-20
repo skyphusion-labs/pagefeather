@@ -3,9 +3,12 @@
 // A bundle that carries the packs (the release default) makes a site whose Worker
 // config has OPCACHE_REMOTE=on, SITE_REMOTE=on and run_worker_first ["/_pf/*"],
 // and the packs are uploaded as that Worker's assets. Approach A is the primed
-// index (OPCACHE_A's trace). OPCACHE_REMOTE=0 opts out: no vars, no asset upload.
+// index (OPCACHE_A's trace). The fixture Worker uses the real pack imports from
+// spikes/b2-wordpress/index.js. A bundle that carries the pack index refuses
+// OPCACHE_REMOTE=0 and SITE_REMOTE=0: those knobs are the build's, and a
+// site-add that turned them off would answer 503 (empty zips, no ASSETS).
 // A release with no pack index (a bundle built opted out, or any older release)
-// is the same: the site is unchanged.
+// is unchanged, knobs included.
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -170,8 +173,20 @@ function seeded(prefix, mainName, mainBody, set) {
 }
 const dosql = packSet('bid-dosql-wooprimed');
 const approach = packSet('bid-a-wooprimed');
-const dosqlFiles = seeded('bundles/b-dosql/v0.1.0/', 'index.js', 'export default { fetch(){} }', dosql);
-const aFiles = seeded('bundles/a/v0.1.0/', 'index-a-lean.js', 'export default { fetch(){} }', approach);
+// The lines the built Worker actually ships (index.js). A stub `export default`
+// hides the 503: the real module imports the pack indexes, and the zips are empty.
+const REAL_IMPORTS = [
+  "import OPCACHE_REMOTE from './build/opcache-remote-index.js';",
+  "import SITE_REMOTE from './build/site-remote-index.js';",
+];
+const indexSrc = await readFile(join(HERE, '..', '..', '..', 'spikes', 'b2-wordpress', 'index.js'), 'utf8');
+if (!REAL_IMPORTS.every((line) => indexSrc.includes(line))) {
+  console.log('FAIL spikes/b2-wordpress/index.js no longer has the pack import shape');
+  process.exit(1);
+}
+const realMain = REAL_IMPORTS.join('\n') + '\nexport default { fetch() {} }\n';
+const dosqlFiles = seeded('bundles/b-dosql/v0.1.0/', 'index.js', realMain, dosql);
+const aFiles = seeded('bundles/a/v0.1.0/', 'index-a-lean.js', realMain, approach);
 
 function varsOf(meta) {
   return Object.fromEntries((meta.bindings || []).filter((b) => b.type === 'plain_text').map((b) => [b.name, b.text]));
@@ -200,27 +215,67 @@ await ok('a b-dosql one-click site renders the packs: OPCACHE_REMOTE, SITE_REMOT
   assert(!site.parts.some((n) => n.includes('_pf') || n.endsWith('oc-0.zip')), `a pack was uploaded as a Worker module: ${site.parts}`);
 });
 
-await ok('OPCACHE_REMOTE=0 opts out: no pack vars, no /_pf/* and no asset upload', async () => {
+await ok('OPCACHE_REMOTE=0 on a bundle that carries the pack index is refused (real import shape, nothing deployed)', async () => {
+  assert(dosqlFiles['bundles/b-dosql/v0.1.0/index.js'].includes(REAL_IMPORTS[0]) && dosqlFiles['bundles/b-dosql/v0.1.0/index.js'].includes(REAL_IMPORTS[1]), 'the fixture Worker is not the real import shape');
   const cf = fakeCloudflare();
-  const r = await addSite(envWith(dosqlFiles, { OPCACHE_REMOTE: '0' }), { body: { name: 'blog' }, fetchImpl: cf.fetchImpl, dispatcherSource: DISPATCHER_SRC });
-  assert(r.ok, JSON.stringify(r));
-  const site = sitePut(cf, 'site-blog');
-  const vars = varsOf(site.metadata);
-  assert(!('OPCACHE_REMOTE' in vars) && !('SITE_REMOTE' in vars), `vars ${JSON.stringify(vars)}`);
-  assert(!site.metadata.assets, 'assets were attached');
+  let msg = '';
+  try {
+    await addSite(envWith(dosqlFiles, { OPCACHE_REMOTE: '0' }), { body: { name: 'blog' }, fetchImpl: cf.fetchImpl, dispatcherSource: DISPATCHER_SRC });
+  } catch (e) { msg = e.message; }
+  assert(/cannot be turned off/.test(msg), `not refused: ${msg}`);
+  assert(!cf.calls.some((c) => c.method === 'PUT' && /\/scripts\/site-blog$/.test(c.path)), 'the site script was uploaded');
   assert(!cf.calls.some((c) => c.path.includes('assets-upload')), 'an asset upload was made');
 });
 
-await ok('SITE_REMOTE=0 keeps the OPcache packs and /_pf/* and drops the site var', async () => {
+await ok('SITE_REMOTE=0 on a bundle that carries the pack index is refused the same way', async () => {
   const cf = fakeCloudflare();
-  const r = await addSite(envWith(dosqlFiles, { SITE_REMOTE: '0' }), { body: { name: 'blog' }, fetchImpl: cf.fetchImpl, dispatcherSource: DISPATCHER_SRC });
+  let msg = '';
+  try {
+    await addSite(envWith(dosqlFiles, { SITE_REMOTE: '0' }), { body: { name: 'blog' }, fetchImpl: cf.fetchImpl, dispatcherSource: DISPATCHER_SRC });
+  } catch (e) { msg = e.message; }
+  assert(/cannot be turned off/.test(msg), `not refused: ${msg}`);
+  assert(!cf.calls.some((c) => c.method === 'PUT' && /\/scripts\/site-blog$/.test(c.path)), 'the site script was uploaded');
+  assert(!cf.calls.some((c) => c.path.includes('assets-upload')), 'an asset upload was made');
+});
+
+await ok('OPCACHE_REMOTE=0 on a bundle with no pack index (the build opt-out) still adds the site', async () => {
+  const cf = fakeCloudflare();
+  const files = { 'bundles/b-dosql/v0.1.0/index.js': realMain };
+  const r = await addSite(envWith(files, { OPCACHE_REMOTE: '0', SITE_REMOTE: '0' }), { body: { name: 'plain' }, fetchImpl: cf.fetchImpl, dispatcherSource: DISPATCHER_SRC });
   assert(r.ok, JSON.stringify(r));
-  const site = sitePut(cf, 'site-blog');
+  const site = sitePut(cf, 'site-plain');
   const vars = varsOf(site.metadata);
-  assert(vars.OPCACHE_REMOTE === 'on' && !('SITE_REMOTE' in vars), JSON.stringify(vars));
-  assert(JSON.stringify(site.metadata.assets.config.run_worker_first) === JSON.stringify(['/_pf/*']), 'no /_pf/*');
-  const session = cf.calls.find((c) => c.path.endsWith('/assets-upload-session'));
-  assert(session.manifest[dosql.files[0].path] && !session.manifest[dosql.files[1].path], 'site pack was uploaded');
+  assert(!('OPCACHE_REMOTE' in vars) && !('SITE_REMOTE' in vars) && !site.metadata.assets, 'packs were rendered');
+});
+
+await ok('manifest.json names assetsIndexSha256 but the pack index is missing: refused, nothing deployed', async () => {
+  const cf = fakeCloudflare();
+  const files = { ...seeded('bundles/b-dosql/v0.1.0/', 'index.js', realMain, dosql) };
+  delete files['bundles/b-dosql/v0.1.0/remote-packs-index.json'];
+  files['bundles/b-dosql/v0.1.0/manifest.json'] = new TextEncoder().encode(JSON.stringify({ assetsIndexSha256: 'a'.repeat(64) }));
+  let msg = '';
+  try {
+    await addSite(envWith(files), { body: { name: 'blog' }, fetchImpl: cf.fetchImpl, dispatcherSource: DISPATCHER_SRC });
+  } catch (e) { msg = e.message; }
+  assert(/remote-packs-index.json is missing/.test(msg), `not refused: ${msg}`);
+  assert(!cf.calls.some((c) => c.method === 'PUT' && /\/scripts\/site-blog$/.test(c.path)), 'the site script was uploaded');
+});
+
+await ok('a re-add does not read the packs, so a bad index does not fail it', async () => {
+  const cf = fakeCloudflare();
+  const reads = [];
+  const b = bucket(dosqlFiles);
+  const orig = b.get;
+  b.get = async (key) => { reads.push(key); return orig(key); };
+  const env = envWith(dosqlFiles, { BUNDLES: b });
+  const first = await addSite(env, { body: { name: 'blog' }, fetchImpl: cf.fetchImpl, dispatcherSource: DISPATCHER_SRC });
+  assert(first.ok && !first.existing, JSON.stringify(first));
+  b.store.set('bundles/b-dosql/v0.1.0/remote-packs-index.json', new TextEncoder().encode('not-json'));
+  reads.length = 0;
+  const second = await addSite(env, { body: { name: 'blog' }, fetchImpl: cf.fetchImpl, dispatcherSource: DISPATCHER_SRC });
+  assert(second.ok && second.existing === true && !second.password, JSON.stringify(second));
+  const packReads = reads.filter((k) => k.endsWith('remote-packs-index.json') || k.includes('/assets/_pf/'));
+  assert(packReads.length === 0, `packs were read on re-add: ${packReads.join(', ')}`);
 });
 
 await ok('a bundle with no pack index (the opt-out build, and every older release) renders no packs', async () => {
