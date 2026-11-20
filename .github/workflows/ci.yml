@@ -138,6 +138,7 @@ jobs:
           php spikes/b2-wordpress/tests/woo-blocks-scope-test.php
           php spikes/b2-wordpress/tests/app-password-headroom-test.php
           php spikes/b2-wordpress/tests/product-save-headroom-test.php
+          php spikes/b2-wordpress/tests/navigation-rest-headroom-test.php
           php spikes/b2-wordpress/tests/wc-route-defer-scope-test.php
           node --test spikes/b2-wordpress/tests/object-cache-cap.test.mjs
           bash spikes/b2-wordpress/tests/same-site-test.sh

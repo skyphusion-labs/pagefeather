@@ -1951,6 +1951,12 @@ async function boot(origin) {
 	// near 117 MiB. post.php and admin-ajax.php then reset the isolate.
 	// PRODUCT_HEADROOM=off does not define the gate.
 	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.PRODUCT_HEADROOM !== 'off') lines.push(`define('SKYPHUSION_PRODUCT_HEADROOM', true);`);
+	// Navigation REST writes free allocator caches and cap the object cache
+	// (php/navigation-rest-headroom.php, #993).
+	// A suite-hot runtime already sits near 101 to 114 MiB.
+	// POST /wp/v2/navigation, a force delete, and /batch/v1 then fail.
+	// NAV_HEADROOM=off does not define the gate.
+	if (ENV.PHP_IN_DO === 'on' && ENV.DB_IN_DO === 'on' && ENV.NAV_HEADROOM !== 'off') lines.push(`define('SKYPHUSION_NAV_HEADROOM', true);`);
 	// WOO_EXTRAS=off (#667): php/woo-extras.php forces order attribution, usage tracking,
 	// marketplace suggestions and remote logging off. Unset defines nothing, so WooCommerce's
 	// own defaults stay. Analytics is not one of the four options.
