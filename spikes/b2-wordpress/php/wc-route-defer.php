@@ -13,12 +13,13 @@
  *     - a route that matches no registered route (the fail-safe: a namespace the map missed is never a false 404).
  *   Settings and REST fields stay eager (their callbacks are not in the map), so the editor's preloaded settings are
  *   unchanged.
- *   SCOPE: post-new.php, post.php, and admin-ajax.php (#963). A product suite save posts those
- *   paths on a runtime already near 117 MiB. admin-ajax used to register all 366 routes on that heap.
- *   REST stays eager, so a quiet /wc/v3 product create still registers its routes up front.
- *   Every other request (the front end, cron, every other admin page) is exactly as
- *   without this plugin: nothing deferred, no header. The map is of WooCommerce MAPPED_WOO: on any other version nothing is deferred (and
- *   tests/wc-route-defer-test.sh fails until the map is checked again).
+ *   SCOPE: post-new.php, post.php, and admin-ajax.php (#963).
+ *   A non-wc REST path defers too (#987).
+ *   /wc, /jetpack, and the REST index stay eager.
+ *   The front end, cron, and every other admin page stay eager.
+ *   The map is of WooCommerce MAPPED_WOO.
+ *   On any other version nothing is deferred.
+ *   tests/wc-route-defer-test.sh fails until the map is checked again.
  *   Operator only (index.js passes it to PHP only with the spike token): x-pf-wc-defer: off turns it off on an editor
  *   screen (an A/B on one build); x-pf-wc-defer: force turns it on for any one request (the tests of on demand).
  *   A REST answer says what happened in X-PF-WC-Routes: deferred N/13 or registered N/13 (N: the map's callbacks
@@ -66,13 +67,14 @@ class Skyphusion_WC_Route_Defer {
 		return is_string( $f ) ? $f : '';
 	}
 
-	/** Editor screens, admin-ajax (#963), or an operator force. REST stays eager. */
+	/** Editor screens, admin-ajax (#963), a non-wc REST path (#987), or an operator force. */
 	public static function in_scope() {
 		if ( isset( $_SERVER['HTTP_X_PF_WC_DEFER'] ) && 'force' === $_SERVER['HTTP_X_PF_WC_DEFER'] ) {
 			return true;
 		}
 		if ( defined( 'REST_REQUEST' ) && REST_REQUEST ) {
-			return false;
+			$uri = isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '';
+			return self::rest_defers_uri( $uri );
 		}
 		if ( ! is_admin() ) {
 			return false;
@@ -82,6 +84,37 @@ class Skyphusion_WC_Route_Defer {
 		}
 		global $pagenow;
 		return in_array( $pagenow, array( 'post-new.php', 'post.php' ), true );
+	}
+
+	/**
+	 * A REST URI defers when the call does not need WooCommerce routes (#987).
+	 * /wc and /jetpack stay eager. The index stays eager.
+	 * Any other REST path defers. A path that is not REST stays eager.
+	 */
+	public static function rest_defers_uri( $uri ) {
+		$uri   = (string) $uri;
+		$query = parse_url( $uri, PHP_URL_QUERY );
+		if ( is_string( $query ) && preg_match( '/(?:^|&)rest_route=([^&]*)/', $query, $match ) ) {
+			return self::rest_defers_route( rawurldecode( $match[1] ) );
+		}
+		$path = (string) parse_url( $uri, PHP_URL_PATH );
+		if ( preg_match( '#/wp-json(/.*)?$#', $path, $match ) ) {
+			$route = ( isset( $match[1] ) && '' !== $match[1] && '/' !== $match[1] ) ? $match[1] : '/';
+			return self::rest_defers_route( $route );
+		}
+		return false;
+	}
+
+	/** True when this REST route can skip the WooCommerce route table. */
+	public static function rest_defers_route( $route ) {
+		$route = '/' . ltrim( (string) $route, '/' );
+		if ( '/' === $route ) {
+			return false;
+		}
+		if ( preg_match( '#^/(wc|jetpack)#', $route ) ) {
+			return false;
+		}
+		return true;
 	}
 
 	public static function defer() {

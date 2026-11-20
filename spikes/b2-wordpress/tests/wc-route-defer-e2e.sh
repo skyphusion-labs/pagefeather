@@ -12,7 +12,7 @@
 #   6. (force) a route that matches nothing is still a 404 (the fail-safe registers first, then matches).
 #   7. on the editor screen, every mapped callback is found on the running WooCommerce: its preloaded answers say
 #      deferred 13/13 (bar c, live).
-#   8. SCOPE: a REST request and the front end are untouched (no deferral, no header).
+#   8. SCOPE: a non-wc REST path defers. /wc and the front end do not (#987).
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export PORT=${PORT:-8797} DEV_ENV=${DEV_ENV:-dosql-local}
@@ -84,8 +84,9 @@ u = BL.rest(o, "/wp/v2/no-such-route", headers=FORCE)
 check("6. a route that matches nothing is still a 404 (registered first)", u["code"] == 404 and ((u["h"] or {}).get("X-PF-WC-Routes") or "").startswith("registered "), "%s %s" % (u["code"], (u["h"] or {}).get("X-PF-WC-Routes")))
 s7 = sorted({(v.get("headers") or {}).get("X-PF-WC-Routes") for v in (a or {}).values() if isinstance(v, dict)} - {None})
 check("7. on the editor screen, every mapped callback is found: its preloaded answers say deferred 13/13", s7 == ["deferred 13/13"], str(s7))
-t = BL.rest(o, "/wp/v2/types"); f = BL.req(BL.opener(), "/")
-check("8. scope: a REST request and the front end are untouched (no deferral header)", "X-PF-WC-Routes" not in (t["h"] or {}) and "X-PF-WC-Routes" not in (f["h"] or {}), "%s / %s" % ((t["h"] or {}).get("X-PF-WC-Routes"), (f["h"] or {}).get("X-PF-WC-Routes")))
+t = BL.rest(o, "/wp/v2/types"); wc = BL.rest(o, "/wc/v3/products?per_page=1"); f = BL.req(BL.opener(), "/")
+th = (t["h"] or {}).get("X-PF-WC-Routes") or ""
+check("8. a non-wc REST path defers; /wc and the front end do not", th.startswith("deferred ") and "X-PF-WC-Routes" not in (wc["h"] or {}) and "X-PF-WC-Routes" not in (f["h"] or {}), "%s / %s / %s" % (th, (wc["h"] or {}).get("X-PF-WC-Routes"), (f["h"] or {}).get("X-PF-WC-Routes")))
 print("wc-route-defer: %d failing" % len(fails))
 sys.exit(1 if fails else 0)
 PY
