@@ -54,6 +54,12 @@ always 1.
 - Chromium only: firefox and webkit are refused.
 - The remote Chromium is a different build from the pinned local one. Each worker logs `@event browser-run` with its
   version. A row says which browser ran, and a Browser Run row is never mixed with a local one.
+- Launch options cannot reach a remote browser (`connectOverCDP` attaches to one that is already running). Each worker's
+  `@event browser-run` line names the options the suite passed (`dropped_launch_options`, and `dropped_args` for flags).
+  At the pins: the wp and gb suites pass only `headless` (and gb's webkit project, refused here); wc passes
+  `channel: 'chromium'`, so locally wc runs Chrome for Testing in new headless mode, while on Browser Run it is
+  Cloudflare's Chromium. No suite passes `args` (no `--disable-web-security` or similar). Context options (viewport,
+  locale, `ignoreHTTPSErrors`, `reducedMotion`, `strictSelectors`) are per context and still apply.
 - A remote browser reaches public URLs only: a workers.dev throwaway, yes; a local wp-env baseline, no.
 - One worker per site. The wp and gb specs share the site's state: `requestUtils.deleteAllPosts()` runs before each test,
   and the posts have fixed titles. Measured on `cf759p`, 2026-11-20: 4 workers gave 15 of 18 (two posts with one title, a

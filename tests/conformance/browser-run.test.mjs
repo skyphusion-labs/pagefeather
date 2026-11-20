@@ -24,7 +24,7 @@ module.exports = { chromium: new BrowserType('chromium'), firefox: new BrowserTy
 	writeFileSync(join(d, 'probe.cjs'), `
 const pw = require('playwright-core');
 (async () => {
-  const b = await pw.chromium.launch({ headless: true });
+  const b = await pw.chromium.launch({ headless: true, channel: 'chromium', args: ['--disable-web-security'], env: { SECRET_ENV: 'do-not-print' }, timeout: 30000 });
   const c = globalThis.__calls || [];
   let ff = 'launched';
   try { await pw.firefox.launch(); } catch (e) { ff = e.message; }
@@ -47,6 +47,9 @@ test('browser-run: chromium.launch is connectOverCDP to the account endpoint, wi
 	assert.equal(out.calls[0].bearer, true);
 	assert.match(p.stderr, /@event browser-run .*"version":"152\.0\.0\.0"/);
 	assert.match(p.stderr, /accounts\/<account>/);
+	assert.match(p.stderr, /"dropped_launch_options":\["args","channel","env","headless"\]/, 'every launch option the suite passed is named (not timeout)');
+	assert.match(p.stderr, /"dropped_args":\["--disable-web-security"\]/);
+	assert.ok(!p.stderr.includes('do-not-print'), 'env values are never printed');
 	assert.ok(!p.stdout.includes(TOKEN) && !p.stderr.includes(TOKEN), 'the token is never printed');
 	assert.match(out.ff, /Chromium only; firefox refused/);
 	rmSync(d, { recursive: true });

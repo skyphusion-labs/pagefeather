@@ -35,7 +35,12 @@ if (process.env.PF_BROWSER === 'browser-run') {
 		proto.launch = async function (options) {
 			if (this.name() !== 'chromium') throw new Error('pf-browser-run: Browser Run is Chromium only; ' + this.name() + ' refused');
 			const browser = await this.connectOverCDP(ws, { headers: { Authorization: 'Bearer ' + token }, timeout: (options && options.timeout) || 60000 });
-			process.stderr.write('@event browser-run ' + JSON.stringify({ pid: process.pid, version: browser.version(), endpoint: ws.replace(/accounts\/[0-9a-f]+/, 'accounts/<account>') }) + '\n');
+			// connectOverCDP cannot apply launch options (headless, channel, args, env, ...): the remote browser is already
+			// running. Name each one the suite passed, so a spec that depends on a launch flag leaves a trace. Keys only,
+			// plus the args values (flags, never secrets); env values are never printed.
+			const dropped = Object.keys(options || {}).filter((k) => k !== 'timeout' && options[k] !== undefined).sort();
+			const args = Array.isArray(options && options.args) ? options.args.map(String) : [];
+			process.stderr.write('@event browser-run ' + JSON.stringify({ pid: process.pid, version: browser.version(), endpoint: ws.replace(/accounts\/[0-9a-f]+/, 'accounts/<account>'), dropped_launch_options: dropped, dropped_args: args }) + '\n');
 			return browser;
 		};
 		proto.launch.pfOriginal = launch;
