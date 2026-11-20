@@ -87,6 +87,12 @@ async function provisionNamespaceSite(ctx, cfg) {
     const admin = found.adminUrl ? { url: found.adminUrl, user: found.adminUser || 'admin' } : undefined;
     return { kind: found.kind || cfg.kind, name: cfg.name, script: found.script, hostname: cfg.hostname, entry: found, existing: true, installed: !!found.installed, admin, steps };
   }
+  // #1063: an approach A UPLOAD must say where it runs. A config with no placement field is refused before anything
+  // is made, so a caller (a future update path, #782) cannot silently un-place a store. placement: null places
+  // none, on purpose. An existing site returned above is never uploaded, so it is never refused here.
+  if (cfg.kind === 'a' && !Object.hasOwn(cfg, 'placement')) {
+    throw new Error(`provisionNamespaceSite: an approach A upload needs placement ({mode: 'targeted', region: '<aws|gcp|azure>:<region>'}, next to its database), or placement: null to place none on purpose (#1063)`);
+  }
   // Anti-clobber (#182, grok residual 2): the hostname is not ours (idempotency
   // returned above if it were), so a script already named site-<name> in the
   // namespace is a foreign or orphaned site. Refuse rather than overwrite it.
@@ -135,7 +141,7 @@ async function provisionNamespaceSite(ctx, cfg) {
     compatibilityDate: cfg.compatibilityDate,
     compatibilityFlags: cfg.compatibilityFlags || [],
     migrations: { new_tag: cfg.migrationTag || 'v1', new_sqlite_classes: sqliteClasses },
-    placement: cfg.placement, // #1063: approach A only, next to its database
+    placement: cfg.placement || undefined, // #1063: approach A only, next to its database (null: none, on purpose)
   });
   steps.push({ deployed: script, ns: cfg.namespace, sqliteClasses });
   const entry = {

@@ -90,7 +90,8 @@ all reject it. Design: issue #154. Worker hardening: issue #182 and `HARDENING.m
   (not stuck at install.php), and returns the admin credential once. WooCommerce
   is NOT installed here; the site owner enables it inside the site.
 - `cli.mjs`: `add --kind wp <name>` or
-  `add --kind a <name> --hyperdrive <HYPERDRIVE_ID> [--hyperdrive-sql-mode <mode>]`
+  `add --kind a <name> --hyperdrive <HYPERDRIVE_ID> --placement <aws|gcp|azure>:<region>|none [--hyperdrive-sql-mode <mode>]`
+  (#1063: the core refuses an approach A upload with no placement field; `none` is an explicit null)
   (node), and `remove <name> [--delete-data] [--no-entry]` (#782). Implements `add`, `hostname` and `remove`,
   for a SaaS-zone site only: with no
   `WFP_SAAS_ZONE_ID` it refuses before any API call and names `deploy/wfp/site`,

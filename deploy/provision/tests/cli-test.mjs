@@ -17,9 +17,15 @@ ok('list and remove are recognized commands', parseArgs(['list']).cmd === 'list'
 ok('genSecret is hex of the requested length', /^[0-9a-f]{64}$/.test(genSecret(32)) && /^[0-9a-f]{48}$/.test(genSecret(24)));
 ok('two genSecret calls differ', genSecret() !== genSecret());
 
-ok('add --kind a <name> --hyperdrive <id> parses (approach A)', (() => { const a = parseArgs(['add', '--kind', 'a', 'astore', '--hyperdrive', 'abc123']); return a.kind === 'a' && a.name === 'astore' && a.hyperdrive === 'abc123'; })());
+ok('add --kind a <name> --hyperdrive <id> parses (approach A)', (() => { const a = parseArgs(['add', '--kind', 'a', 'astore', '--hyperdrive', 'abc123', '--placement', 'azure:westus2']); return a.kind === 'a' && a.name === 'astore' && a.hyperdrive === 'abc123'; })());
 ok('add --kind a REQUIRES --hyperdrive (the onboarding config id)', throws(() => parseArgs(['add', '--kind', 'a', 'astore'])));
-ok('add --kind a accepts and parses --hyperdrive-sql-mode', (() => { const a = parseArgs(['add', '--kind', 'a', 'astore', '--hyperdrive', 'id', '--hyperdrive-sql-mode', 'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION']); return a.hyperdriveSqlMode === 'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'; })());
+// #1063: --placement for kind a: required, a region or none.
+ok('#1063 add --kind a REQUIRES --placement', throws(() => parseArgs(['add', '--kind', 'a', 'astore', '--hyperdrive', 'abc123'])));
+ok('#1063 add --kind a --placement azure:westus2 parses', parseArgs(['add', '--kind', 'a', 'astore', '--hyperdrive', 'abc123', '--placement', 'azure:westus2']).placement === 'azure:westus2');
+ok('#1063 add --kind a --placement none parses (none on purpose)', parseArgs(['add', '--kind', 'a', 'astore', '--hyperdrive', 'abc123', '--placement', 'none']).placement === 'none');
+ok('#1063 a bad --placement is refused', throws(() => parseArgs(['add', '--kind', 'a', 'astore', '--hyperdrive', 'abc123', '--placement', 'westus2'])));
+ok('#1063 --placement on --kind wp is refused', throws(() => parseArgs(['add', '--kind', 'wp', 'blog', '--placement', 'azure:westus2'])));
+ok('add --kind a accepts and parses --hyperdrive-sql-mode', (() => { const a = parseArgs(['add', '--kind', 'a', 'astore', '--hyperdrive', 'id', '--placement', 'none', '--hyperdrive-sql-mode', 'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION']); return a.hyperdriveSqlMode === 'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'; })());
 ok('add --kind a rejects a bad --hyperdrive-sql-mode (charset guard against injection)', throws(() => parseArgs(['add', '--kind', 'a', 'astore', '--hyperdrive', 'id', '--hyperdrive-sql-mode', 'DROP TABLE x; --'])));
 ok('add rejects an unknown flag (a typo must fail loudly, not drop the value)', throws(() => parseArgs(['add', '--kind', 'wp', 'blog', '--bogus', 'x'])));
 // One operator surface (#294): a workers.dev site with no SaaS zone is deploy/wfp/site's.

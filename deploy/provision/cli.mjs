@@ -24,6 +24,7 @@ import { SITE_NAME_RE, isCallerReservedName, genSecret } from './shared.mjs';
 import { bDosqlBindings, bDosqlSecrets, bDosqlResourceCreateOps, aBindings, mediaBucketName, ocKvNamespaceName, analyticsDatasetName, pageCacheInputs, pageCacheProductTtl, objectTimeInputs, aCacheInputs } from './wp-site-config.mjs';
 import { addCustomHostname, getCustomHostnameStatus, scriptExists } from './ops.mjs';
 import { updateSite, readSite } from './registry.mjs';
+import { PLACEMENT_REGION_RE } from './server-config.mjs';
 
 // genSecret lives in shared.mjs (the Worker uses it too); re-export so the CLI
 // surface and cli-test are unchanged.
@@ -66,14 +67,15 @@ export function parseArgs(argv) {
   const [cmd, ...rest] = argv;
   if (cmd === 'hostname') return parseHostnameArgs(rest);
   if (!['add', 'remove', 'list'].includes(cmd)) {
-    throw new Error('usage: site add|list --kind wp|a <name> ... | site remove <name> [--delete-data] [--no-entry] [--hyperdrive <id>] [--hyperdrive-sql-mode <mode>] | site hostname add <name> --domain <d> --mode delegated|managed [--dcv-delegation] [--cust-zone <id>] | site hostname status <name>');
+    throw new Error('usage: site add|list --kind wp|a <name> ... | site remove <name> [--delete-data] [--no-entry] [--hyperdrive <id>] [--hyperdrive-sql-mode <mode>] [--placement <aws|gcp|azure>:<region>|none] | site hostname add <name> --domain <d> --mode delegated|managed [--dcv-delegation] [--cust-zone <id>] | site hostname status <name>');
   }
-  let kind, name, hyperdrive, hyperdriveSqlMode, deleteData = false, noEntry = false;
+  let kind, name, hyperdrive, hyperdriveSqlMode, placement, deleteData = false, noEntry = false;
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (a === '--kind') kind = rest[++i];
     else if (a === '--hyperdrive') hyperdrive = rest[++i];
     else if (a === '--hyperdrive-sql-mode') hyperdriveSqlMode = rest[++i];
+    else if (a === '--placement') placement = rest[++i];
     else if (cmd === 'remove' && a === '--delete-data') deleteData = true;
     else if (cmd === 'remove' && a === '--no-entry') noEntry = true;
     else if (!a.startsWith('--')) name = a;
@@ -91,12 +93,16 @@ export function parseArgs(argv) {
     // HYPERDRIVE_SQL_MODE, when given, must be the charset index.js will emit
     // (a per-statement sql_mode relax for strict backends; fail early on a typo).
     if (hyperdriveSqlMode !== undefined && !/^[A-Za-z_,]*$/.test(hyperdriveSqlMode)) throw new Error('--hyperdrive-sql-mode must match [A-Za-z_,]* (e.g. ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION)');
+    // #1063: where an approach A Worker runs, next to its database. REQUIRED for kind a; "none" places none on purpose.
+    if (kind === 'a' && placement === undefined) throw new Error('add --kind a needs --placement <aws|gcp|azure>:<region> (the database\'s region, for example azure:westus2), or --placement none to place none on purpose (#1063)');
+    if (placement !== undefined && placement !== 'none' && !PLACEMENT_REGION_RE.test(placement)) throw new Error('--placement must be <aws|gcp|azure>:<region> (for example azure:westus2) or none');
+    if (kind !== 'a' && placement !== undefined) throw new Error('--placement is for --kind a only');
   }
   if (cmd === 'remove') {
     if (!name || !SITE_NAME_RE.test(name)) throw new Error('remove needs a valid <name> (lower case, digits, hyphens, 1 to 30)');
     return { cmd, name, deleteData, noEntry };
   }
-  return { cmd, kind, name, hyperdrive, hyperdriveSqlMode };
+  return { cmd, kind, name, hyperdrive, hyperdriveSqlMode, placement };
 }
 
 // site hostname add|status (#248). Pure arg parse; the ops call is in
@@ -296,6 +302,8 @@ async function buildCfg(parsed, env) {
       // Approach A runs PHP in the WORKER: NO Durable Object, so NO SQLite
       // migration (an empty class list leaves the migration unset in ops).
       sqliteClasses: [],
+      // #1063: next to the database; --placement none is an explicit null (the core refuses a missing one).
+      placement: parsed.placement === 'none' ? null : { mode: 'targeted', region: parsed.placement },
       // The core CREATES this per-site OC_KV namespace (the object-cache L2) and
       // injects its id into the OC_KV binding by name.
       kvNamespaces: [{ title: ocKvNamespaceName(name), binding: 'OC_KV' }],
