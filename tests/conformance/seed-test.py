@@ -19,9 +19,10 @@ The full seed (every item set and checked, and a reseed) is verified against a r
        same statement on a site that has wc/v3 fails.
 Run: python3 -I tests/conformance/seed-test.py
 """
-import json, os, re, subprocess, sys, threading
+import hashlib, json, os, re, subprocess, sys, threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 SEED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seed.py")
+FAKE_IMAGE = b"\x89PNG\r\n\x1a\n stub image for seed-test"
 fails = []
 def check(name, ok, detail=""):
     print(("PASS " if ok else "FAIL ") + name + ("" if ok else "  " + str(detail)[:300]))
@@ -191,6 +192,14 @@ class Site(BaseHTTPRequestHandler):
                 self.send_header("content-length", str(len(body))); self.end_headers(); self.wfile.write(body)
                 return
             return self.reply(200, b"0123456789", "text/plain")
+        # The pinned upstream test images (SEED_GH_API and SEED_GH_RAW point here): the contents API answers the git
+        # blob sha, raw answers the bytes. No network.
+        if path.startswith("/gh-api/repos/woocommerce/woocommerce/contents/") and method == "GET":
+            st.setdefault("gh", []).append("api")
+            return self._json(200, {"sha": hashlib.sha1(b"blob %d\0" % len(FAKE_IMAGE) + FAKE_IMAGE).hexdigest()})
+        if path.startswith("/gh-raw/woocommerce/woocommerce/") and method == "GET":
+            st.setdefault("gh", []).append("raw")
+            return self.reply(200, FAKE_IMAGE, "image/png")
         if path.startswith("/wp-content/uploads/") and method == "GET":
             name = path.rsplit("/", 1)[-1]
             return self.reply(404 if name in st.get("missing_files", ()) else 200, b"x", "image/png")
@@ -328,7 +337,9 @@ def run_email_editor_seed(extra_env=None, **flags):
     srv = ThreadingHTTPServer(("127.0.0.1", 0), Site)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     out = os.path.join(os.environ.get("TMPDIR", "/tmp"), "seed-email-%d" % os.getpid())
-    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "B": "http://127.0.0.1:%d" % srv.server_address[1], "ADMIN_PASSWORD": "x"}
+    stub = "http://127.0.0.1:%d" % srv.server_address[1]
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "B": stub, "ADMIN_PASSWORD": "x",
+           "SEED_GH_API": stub + "/gh-api", "SEED_GH_RAW": stub + "/gh-raw"}
     env.update(extra_env or {})
     p = subprocess.run([sys.executable, "-I", SEED, out], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=60)
     srv.shutdown()
@@ -433,9 +444,10 @@ p, state, report = run_email_editor_seed()
 check("images whose files load: no delete, no upload", not state.get("media_deleted") and not state.get("media_posted"),
       (state.get("media_deleted"), state.get("media_posted")))
 p, state, report = run_email_editor_seed(missing_files=["image-02-150x150.png"])
-check("an image whose thumbnail answers 404 is deleted (force) and uploaded again",
-      any(r.startswith("/wp/v2/media/") for r in state.get("media_deleted", [])) and any("image-02.png" in d for d in state.get("media_posted", [])),
-      (state.get("media_deleted"), state.get("media_posted")))
+check("an image whose thumbnail answers 404 is deleted (force) and uploaded again, from the stub (no network)",
+      any(r.startswith("/wp/v2/media/") for r in state.get("media_deleted", [])) and any("image-02.png" in d for d in state.get("media_posted", []))
+      and state.get("gh") == ["api", "raw"],
+      (state.get("media_deleted"), state.get("media_posted"), state.get("gh")))
 
 def woo_routes(state):
     return [r for _m, r in state.get("routes", []) if r.startswith("/wc/") or r.startswith("/wc-admin/")]

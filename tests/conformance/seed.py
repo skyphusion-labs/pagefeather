@@ -76,6 +76,10 @@ SEED_TIMEZONE = "America/Detroit"
 CUSTOMER = {"username": "customer", "email": "customer@woocommercecoree2etestsuite.com", "first_name": "Jane", "last_name": "Smith"}
 IMAGES = ("image-01.png", "image-02.png", "image-03.png")
 IMG_PATH = "plugins/woocommerce/tests/e2e/test-data/images/"
+# Where the pinned test images come from. The defaults are GitHub; seed-test.py points both at its stub, so the test
+# never depends on the network (an unauthenticated API call is rate limited on a shared CI runner: a flaky gate).
+GH_API = os.environ.get("SEED_GH_API", "https://api.github.com").rstrip("/")
+GH_RAW = os.environ.get("SEED_GH_RAW", "https://raw.githubusercontent.com").rstrip("/")
 WC_TAG_SHA = "67e007c3c4cca5725e056ddaaa2ed2fb0e282045"  # woocommerce 11.2.1
 UA = {"User-Agent": "pagefeather-conformance-seed"}
 TEST_PLUGINS = ("woocommerce-e2e-test-helper/woocommerce-e2e-test-helper", "woocommerce-cleanup/woocommerce-cleanup", "wp-mail-logging/wp-mail-logging", "wc-email-template-sync-test-helper/wc-email-template-sync-test-helper")
@@ -540,9 +544,9 @@ def main():
                     continue
                 cd, _ = rest(a, n, "/wp/v2/media/%s?force=true" % match[0].get("id"), None, "DELETE")
                 event("reupload", name=name, missing=broken[:4], deleted=cd)
-            c, meta, _ = req(jar(), "https://api.github.com/repos/woocommerce/woocommerce/contents/%s%s?ref=%s" % (IMG_PATH, name, sha), headers={"Accept": "application/vnd.github+json"})
+            c, meta, _ = req(jar(), "%s/repos/woocommerce/woocommerce/contents/%s%s?ref=%s" % (GH_API, IMG_PATH, name, sha), headers={"Accept": "application/vnd.github+json"})
             want = (js(meta) or {}).get("sha") if c == 200 else None
-            c, data, _ = req(jar(), "https://raw.githubusercontent.com/woocommerce/woocommerce/%s/%s%s" % (sha, IMG_PATH, name))
+            c, data, _ = req(jar(), "%s/woocommerce/woocommerce/%s/%s%s" % (GH_RAW, sha, IMG_PATH, name))
             blob = hashlib.sha1(b"blob %d\0" % len(data or b"") + (data or b"")).hexdigest() if c == 200 else None
             if not (want and blob == want):
                 check("image %s matches the pin" % name, False, wc_sha=sha, upstream_blob=want, got_blob=blob)
