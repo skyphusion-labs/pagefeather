@@ -45,6 +45,29 @@ content, and `render_user` checks as the last guard.
 6. **A WordPress-only site** (no WooCommerce, e.g. a Workers Free tier): seed with `SEED_NO_WOO=1`. The seed then skips the
    WooCommerce items and names each one as skipped in `seed.json`; it fails if the site does have `wc/v3`. Run wp and gb only.
 
+## Browsers on Cloudflare Browser Run
+
+`PF_BROWSER=browser-run` runs a suite's browsers on Cloudflare Browser Run (hosted Chromium over CDP) instead of on the
+runner machine. `vps-run.sh` preloads `tests/conformance/pf-browser-run.cjs`, which turns `chromium.launch` into
+`connectOverCDP`. Set `PF_BROWSER_RUN_ACCOUNT` (the account id) and `PF_BROWSER_RUN_TOKEN_FILE` (a mode 600 file with a
+Browser Run token; the token is never printed). `PF_WORKERS` sets the worker count there; the default is 1, and locally it is
+always 1.
+
+- Chromium only: firefox and webkit are refused.
+- The remote Chromium is a different build from the pinned local one. Each worker logs `@event browser-run` with its
+  version. A row says which browser ran, and a Browser Run row is never mixed with a local one.
+- Launch options cannot reach a remote browser (`connectOverCDP` attaches to one that is already running). Each worker's
+  `@event browser-run` line names the options the suite passed (`dropped_launch_options`, and `dropped_args` for flags).
+  At the pins: the wp and gb suites pass only `headless` (and gb's webkit project, refused here); wc passes
+  `channel: 'chromium'`, so locally wc runs Chrome for Testing in new headless mode, while on Browser Run it is
+  Cloudflare's Chromium. No suite passes `args` (no `--disable-web-security` or similar). Context options (viewport,
+  locale, `ignoreHTTPSErrors`, `reducedMotion`, `strictSelectors`) are per context and still apply.
+- A remote browser reaches public URLs only: a workers.dev throwaway, yes; a local wp-env baseline, no.
+- One worker per site. The wp and gb specs share the site's state: `requestUtils.deleteAllPosts()` runs before each test,
+  and the posts have fixed titles. Measured on `cf759p`, 2026-11-20: 4 workers gave 15 of 18 (two posts with one title, a
+  post already trashed by another worker) against 18 of 18 with 1. Run more suites on more sites at once for speed, never
+  more workers on one site.
+
 ## Upstream notes for the matrix
 
 - **WooCommerce Cleanup's reset prints a database error on every database:** it runs
