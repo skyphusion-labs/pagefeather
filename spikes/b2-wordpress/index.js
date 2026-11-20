@@ -2254,6 +2254,8 @@ const CRON_CLEAN_KEY = 'cron-cleaned-at';
 const CRON_LAST_KEY = 'cron-last-start';
 // #1120: the end of a leg that made progress with Action Scheduler work still due (cron-bound.mjs cronBacklogNext); the next leg is due by it.
 const CRON_BACKLOG_KEY = 'cron-backlog';
+// #1120 review: the soon legs in a row (cron-bound.mjs BACKLOG_MAX_LEGS caps them).
+const CRON_BACKLOG_STREAK_KEY = 'cron-backlog-streak';
 let lastPurge = 0;
 // #510: dispose a JS RPC result once its fields are read. An RPC result can carry a disposer (and,
 // over Cap'n Web, every object result does); left to the garbage collector it logs "An RPC result
@@ -3313,14 +3315,22 @@ export class PhpRuntime extends DurableObject {
 				console.log(JSON.stringify({ m: 'cron', done: 1, as_actions: cr.as_actions, as_stop: cr.as_stop, as_pass: cr.as_pass, as_dates: cr.as_dates, as_hooks: cr.as_hooks, as_pending: cr.as_pending, as_due: cr.as_due, legMs: cr.legMs, wasmMib: cr.wasmMib, wp_cron_hooks: cr.wp_cron_hooks, wp_cron_skipped: cr.wp_cron_skipped, wp_cron_due: cr.wp_cron_due, mail: mail.counts, lostWrites: mail.lostWritesSeen() }));
 				// #1120: a leg that made progress with work still due brings the next one in CRON_BACKLOG_GAP_MS, not the interval. The soon
 				// alarm only moves an alarm EARLIER (a sooner purge or mail alarm keeps its time); every gate above still applies.
-				const backlogIn = cronBacklogNext({ approachA: approachACronEnabled(this.env), asDue: cr.as_due, asStop: cr.as_stop, asActions: cr.as_actions, gapMs: cronBacklogGapMs(this.env) });
+				const backlogStreak = Number(await this.ctx.storage.get(CRON_BACKLOG_STREAK_KEY)) || 0;
+				const backlogArgs = { approachA: approachACronEnabled(this.env), asDue: cr.as_due, asStop: cr.as_stop, asActions: cr.as_actions, gapMs: cronBacklogGapMs(this.env) };
+				const backlogIn = cronBacklogNext({ ...backlogArgs, streak: backlogStreak });
 				if (backlogIn) {
 					await this.ctx.storage.put(CRON_BACKLOG_KEY, Date.now());
+					await this.ctx.storage.put(CRON_BACKLOG_STREAK_KEY, backlogStreak + 1);
 					const at = Date.now() + backlogIn;
 					const cur = await this.ctx.storage.getAlarm();
 					if (cur === null || cur === undefined || Number(cur) > at) await setAlarmRecorded(this.ctx.storage, at, Date.now(), 'as-backlog');
-					console.log(JSON.stringify({ m: 'cron', backlog: cr.as_due, nextInMs: backlogIn, stop: cr.as_stop || 'none' }));
-				} else await this.ctx.storage.delete(CRON_BACKLOG_KEY);
+					console.log(JSON.stringify({ m: 'cron', backlog: cr.as_due, nextInMs: backlogIn, stop: cr.as_stop || 'none', streak: backlogStreak + 1 }));
+				} else {
+					await this.ctx.storage.delete(CRON_BACKLOG_KEY);
+					// Capped (work still due and progress made, past BACKLOG_MAX_LEGS): keep the streak, so the interval holds.
+					if (cronBacklogNext({ ...backlogArgs, streak: 0 })) console.log(JSON.stringify({ m: 'cron', backlogCapped: backlogStreak, backlog: cr.as_due }));
+					else await this.ctx.storage.delete(CRON_BACKLOG_STREAK_KEY);
+				}
 				}
 				await this.ctx.storage.put(PURGE_STATE_KEY, cst);
 				// The #370 dedupe markers expire after DEDUPE_TTL_MS (14 days by default: past any Action
