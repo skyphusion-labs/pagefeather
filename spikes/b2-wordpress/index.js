@@ -2374,9 +2374,9 @@ async function r2opInner(op) {
 		if (op.op === 'put') {
 			// #352: a put may become an orphan if the request rolls back (its attachment rows go). Logged for the sweep.
 			if (undoLog && undoLog.frameOpen()) console.log(JSON.stringify({ m: 'frame-r2-put', key: String(op.key).slice(0, 200) }));
-			await uploadIntentMark(B, op.key); // #1039, approach A: an upload's created file is marked first
 			// #1039: a key this request CREATES is recorded before the put, so a proven rollback deletes it. An overwrite is
 			// never recorded: the old bytes are gone either way, and a kept row may point at the key.
+			await uploadIntentMark(B, op.key); // #1039, approach A: an upload's created file is marked first
 			await r2RecordIfNew(B, op.key);
 			await B.put(op.key, b64decode(op.body), { httpMetadata: { contentType: op.type || 'application/octet-stream' } });
 			return { ok: true };
