@@ -94,13 +94,14 @@ export function parseGmt(s) {
  * The gate. wp: wpCronState (or null), as: { known, next (ms or null) }, emailRush, streak (idle ticks so far).
  * Returns { idle, alarmAt } (alarmAt only when idle).
  */
-export function idleDecision({ now, intervalMs, streak = 0, emailRush = false, wp, as }) {
+// mailNext (#1059, after #1062): the next mail retry this object's alarm must run; the back-off stops there too.
+export function idleDecision({ now, intervalMs, streak = 0, emailRush = false, wp, as, mailNext = null }) {
 	if (emailRush || !wp || !as || !as.known) return { idle: false };
 	if (wp.due) return { idle: false };
 	if (as.next !== null && as.next !== undefined && as.next <= now) return { idle: false };
 	const back = Math.min(IDLE_MAX_MS, intervalMs * 2 ** (Math.max(0, streak) + 1));
 	let at = now + back;
-	const nexts = [wp.next !== null && wp.next !== undefined ? wp.next * 1000 : null, as.next].filter((x) => x !== null && x !== undefined);
+	const nexts = [wp.next !== null && wp.next !== undefined ? wp.next * 1000 : null, as.next, mailNext].filter((x) => x !== null && x !== undefined);
 	for (const n of nexts) if (n < at) at = n;
 	if (at < now + intervalMs) at = now + intervalMs;
 	return { idle: true, alarmAt: at };

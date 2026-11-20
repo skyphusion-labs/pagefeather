@@ -58,10 +58,10 @@ export async function extendIfOurs(storage, ourAt, newAt, now, by) {
 // #390: a request pulls an alarm that the idle back-off pushed past the normal interval (cron-idle.mjs) back to it,
 // so work the request scheduled (a post, an order email) is not left behind the back-off. No alarm, or one within the
 // interval: untouched (rearm handles none and stale).
-export async function pullIn(storage, now, intervalMs) {
+export async function pullIn(storage, now, intervalMs, by = 'request-pull') {
 	const at = await storage.getAlarm();
 	if (at === null || at === undefined || Number(at) <= now + intervalMs) return { pulled: false };
-	await setAlarmRecorded(storage, now + intervalMs, now, 'request-pull');
+	await setAlarmRecorded(storage, now + intervalMs, now, by); // #1059: the approach A cron tick passes a-cron-tick
 	return { pulled: true, was: Number(at) };
 }
 

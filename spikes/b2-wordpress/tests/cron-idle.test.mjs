@@ -123,3 +123,46 @@ test('#1059 review: index.js extends only its own tick, from alarm() to the idle
 	assert.match(src, /await extendIfOurs\(this\.ctx\.storage, this\.tickAt, idle\.alarmAt, Date\.now\(\), 'idle'\)/);
 	assert.ok(!/await setAlarmRecorded\(this\.ctx\.storage, idle\.alarmAt/.test(src), 'no unconditional set');
 });
+
+// #1059, after #1062 merged (agreed on #1059): the idle back-off must not pass the next MAIL RETRY. mailRetryArm only pulls
+// the alarm sooner, so a retry later than this tick left the tick in place, and the back-off then extended it by up to
+// 5 minutes past the retry. The next retry (drainRetries next) is now one more next-due event: the back-off stops there.
+test('#1059: the back-off never passes the next mail retry, and a retry already due runs the leg', () => {
+	const now = 1_000_000_000_000;
+	const base = { now, intervalMs: 60_000, streak: 3, wp: { due: false, next: null }, as: { known: true, next: null } };
+	const off = idleDecision(base);
+	assert.equal(off.alarmAt, now + 5 * 60_000, 'no retry: the full back-off');
+	const r = idleDecision({ ...base, mailNext: now + 120_000 });
+	assert.equal(r.alarmAt, now + 120_000, 'stops at the retry');
+	const soon = idleDecision({ ...base, mailNext: now + 10_000 });
+	assert.equal(soon.alarmAt, now + 60_000, 'never sooner than one interval (the drain already armed a sooner retry)');
+	const late = idleDecision({ ...base, mailNext: now + 30 * 60_000 });
+	assert.equal(late.alarmAt, now + 5 * 60_000, 'a retry past the back-off does not shorten it');
+});
+test('#1059 index.js: the alarm keeps the drain next retry and the gate passes it to idleDecision', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /this\.mailNext = drained && drained !== TIMED_OUT \? drained\.next : null;/);
+	assert.match(src, /idleDecision\(\{ now, intervalMs: Number\(env\.CRON_INTERVAL_MS \|\| 60000\), streak: Number\(st\.n\) \|\| 0, emailRush: false, wp, as, mailNext: this\.mailNext \}\)/);
+});
+
+// #1059 at its rebase onto #1055 (agreed): on approach A a page request runs in the WORKER, so the object's request-path
+// pullIn never sees a post it schedules. The Cron Trigger tick (every minute) now pulls a backed-off alarm back in, so A
+// keeps the gate's saving (no PHP boot when nothing is due) and a schedule from a request is picked up within an interval.
+test('#1059 pullIn records who pulled (by), default request-pull', async () => {
+	const { pullIn, ALARM_SET_KEY } = await import('../alarm-arm.mjs');
+	const mk = (alarm) => { const m = new Map(); return { getAlarm: async () => alarm, setAlarm: async (t) => { alarm = t; }, get: async (k) => m.get(k), put: async (k, v) => { m.set(k, v); }, m }; };
+	const now = 1_000_000;
+	let s = mk(now + 300_000);
+	assert.deepEqual(await pullIn(s, now, 60_000, 'a-cron-tick'), { pulled: true, was: now + 300_000 });
+	assert.equal(await s.getAlarm(), now + 60_000);
+	assert.equal(s.m.get(ALARM_SET_KEY).by, 'a-cron-tick');
+	s = mk(now + 300_000);
+	await pullIn(s, now, 60_000);
+	assert.equal(s.m.get(ALARM_SET_KEY).by, 'request-pull');
+	s = mk(now + 30_000);
+	assert.deepEqual(await pullIn(s, now, 60_000, 'a-cron-tick'), { pulled: false }, 'a sooner alarm is never moved');
+});
+test('#1059 index.js: the approach A cron tick pulls a backed-off alarm in, after its watchdog re-arm', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /const watch = await snapshotRearm\(this\.ctx\.storage, Date\.now\(\), Number\(env\.CRON_INTERVAL_MS \|\| 60000\)\);\n[^\n]*\n\t\t\tconst pulled = await pullIn\(this\.ctx\.storage, Date\.now\(\), Number\(env\.CRON_INTERVAL_MS \|\| 60000\), 'a-cron-tick'\);/);
+});

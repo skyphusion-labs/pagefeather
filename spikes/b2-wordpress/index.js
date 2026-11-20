@@ -3076,7 +3076,9 @@ export class PhpRuntime extends DurableObject {
 			// like the cron drain; a cron leg below that fails a send stores it here too (inCronLeg).
 			objStorage = this.ctx.storage;
 			inCronLeg = true;
-			await boundedWait(mailRetryDrain(this.env, this.ctx.storage).catch((e) => console.log(JSON.stringify({ m: 'email-retry', drainError: String((e && e.message) || e).slice(0, 160) }))), SEND_TIMEOUT_MS);
+			const drained = await boundedWait(mailRetryDrain(this.env, this.ctx.storage).catch((e) => console.log(JSON.stringify({ m: 'email-retry', drainError: String((e && e.message) || e).slice(0, 160) }))), SEND_TIMEOUT_MS);
+			// #1059: the next mail retry, so the idle back-off below never passes it (mailRetryArm only pulls sooner).
+			this.mailNext = drained && drained !== TIMED_OUT ? drained.next : null;
 			await this.alarmRun();
 		} catch (e) {
 			const rec = await recordAlarmFatal(this.ctx.storage, e, Date.now());
@@ -3333,7 +3335,7 @@ export class PhpRuntime extends DurableObject {
 			// No Action Scheduler table (no WooCommerce): nothing pending. Any other error: unknown, so the leg runs.
 			as = /no such table|doesn't exist|1146/i.test(String((e && e.message) || e)) ? { known: true, next: null } : { known: false };
 		}
-		const d = idleDecision({ now, intervalMs: Number(env.CRON_INTERVAL_MS || 60000), streak: Number(st.n) || 0, emailRush: false, wp, as });
+		const d = idleDecision({ now, intervalMs: Number(env.CRON_INTERVAL_MS || 60000), streak: Number(st.n) || 0, emailRush: false, wp, as, mailNext: this.mailNext });
 		return { ...d, streak: Number(st.n) || 0, wp, as };
 	}
 
@@ -3377,7 +3379,10 @@ export class PhpRuntime extends DurableObject {
 			await this.ctx.storage.put(ORIGIN_KEY, tickOrigin);
 			const watch = await snapshotRearm(this.ctx.storage, Date.now(), Number(env.CRON_INTERVAL_MS || 60000));
 			if (watch.state !== 'ok') console.log(JSON.stringify({ m: 'alarm', rearmedBy: 'a-cron-tick', was: watch.state }));
-			return Response.json({ ok: true, tick: 'cron', alarm: watch.state, at: watch.at }, { headers: { 'cache-control': 'no-store' } });
+			const pulled = await pullIn(this.ctx.storage, Date.now(), Number(env.CRON_INTERVAL_MS || 60000), 'a-cron-tick');
+			// #1059: on A a page request runs in the Worker, so this tick is what pulls a backed-off (#390) alarm back in.
+			if (pulled.pulled) console.log(JSON.stringify({ m: 'alarm', pulledBy: 'a-cron-tick', wasInMs: pulled.was - Date.now() }));
+			return Response.json({ ok: true, tick: 'cron', alarm: watch.state, at: watch.at, ...(pulled.pulled ? { pulled: true } : {}) }, { headers: { 'cache-control': 'no-store' } });
 		}
 		const origin = raw.headers.get(ORIGIN_HEADER);
 		// Without it, the object does not guess an origin: a wrong one redirects every page.
