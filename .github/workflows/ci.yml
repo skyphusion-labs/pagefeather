@@ -385,6 +385,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/db-lifecycle.test.mjs
       - name: The PHP lock never boots a second runtime beside a live one, and sheds past its bound (#296)
         run: node --test spikes/b2-wordpress/tests/php-lock.test.mjs
+      - name: A versioned object cache key stays in the isolate L1 until memory evicts it (#1078)
+        run: node --test spikes/b2-wordpress/tests/oc-l1.test.mjs
       - name: A manual /_runcron takes the PHP lock once (#720)
         run: node --test spikes/b2-wordpress/tests/runcron-lock.test.mjs
       - name: A queued request never runs after its caller gave up; the start-by and the call id (#708)
