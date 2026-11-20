@@ -191,6 +191,18 @@ class Site(BaseHTTPRequestHandler):
                 self.send_header("content-length", str(len(body))); self.end_headers(); self.wfile.write(body)
                 return
             return self.reply(200, b"0123456789", "text/plain")
+        if path.startswith("/wp-content/uploads/") and method == "GET":
+            name = path.rsplit("/", 1)[-1]
+            return self.reply(404 if name in st.get("missing_files", ()) else 200, b"x", "image/png")
+        if path in st.get("drop_paths", ()) and not st.setdefault("dropped", []):
+            # a request that gets no HTTP answer at all (the status-0 case): close the socket without a reply
+            st["dropped"].append(path)
+            self.close_connection = True
+            try:
+                self.connection.shutdown(2)
+            except OSError:
+                pass
+            return
         if path in ("/wp-json", "/wp-json/"):
             return self._json(200, {"routes": {"/": {}}, "namespaces": list(st.get("namespaces", ["wp/v2", "wc/v3"]))})
         if path == "/wp-admin/options-permalink.php" and method == "GET":
@@ -268,9 +280,17 @@ class Site(BaseHTTPRequestHandler):
             ])
         if route.startswith("/wp/v2/users/1/application-passwords/") and method == "DELETE":
             return self._json(200, {"deleted": True})
-        if route == "/wp/v2/media":
+        if route == "/wp/v2/media" and method == "GET":
             stem = (q.get("search") or ["image"])[0]
-            return self._json(200, [{"source_url": "http://127.0.0.1/wp-content/uploads/%s.png" % stem}])
+            base = "http://127.0.0.1:%d/wp-content/uploads/" % self.server.server_address[1]
+            return self._json(200, [{"id": 40 + len(stem), "source_url": base + "%s.png" % stem,
+                                     "media_details": {"sizes": {"thumbnail": {"file": "%s-150x150.png" % stem}}}}])
+        if route.startswith("/wp/v2/media/") and method == "DELETE":
+            st.setdefault("media_deleted", []).append(route)
+            return self._json(200, {"deleted": True})
+        if route == "/wp/v2/media" and method == "POST":
+            st.setdefault("media_posted", []).append(self.headers.get("Content-Disposition") or "")
+            return self._json(201, {"id": 99, "source_url": "http://127.0.0.1/wp-content/uploads/x.png"})
         if route == "/wp/v2/plugins":
             gb = st.get("gb", {})
             return self._json(200, [{"plugin": pid, "status": "active"} for pid in PLUGINS] + [{"plugin": k, "status": v} for k, v in gb.items()])
@@ -404,6 +424,19 @@ check(
     (state.get("gb_posts"), gb_chk(report)),
 )
 
+files = {"https://ex/u/image-01.jpg": 200, "https://ex/u/image-01-150x150.jpg": 404, "https://ex/u/image-01-300x300.jpg": 200}
+item = {"source_url": "https://ex/u/image-01.jpg", "media_details": {"sizes": {"thumbnail": {"file": "image-01-150x150.jpg"}, "woocommerce_thumbnail": {"file": "image-01-300x300.jpg"}, "full": {"file": "image-01.jpg"}}}}
+check("image_files_missing: names the sub-size that answers 404", _seed.image_files_missing(item, get=lambda u: files.get(u, 0)) == ["image-01-150x150.jpg"])
+check("image_files_missing: none when every file answers 200", _seed.image_files_missing(item, get=lambda u: 200) == [])
+
+p, state, report = run_email_editor_seed()
+check("images whose files load: no delete, no upload", not state.get("media_deleted") and not state.get("media_posted"),
+      (state.get("media_deleted"), state.get("media_posted")))
+p, state, report = run_email_editor_seed(missing_files=["image-02-150x150.png"])
+check("an image whose thumbnail answers 404 is deleted (force) and uploaded again",
+      any(r.startswith("/wp/v2/media/") for r in state.get("media_deleted", [])) and any("image-02.png" in d for d in state.get("media_posted", [])),
+      (state.get("media_deleted"), state.get("media_posted")))
+
 def woo_routes(state):
     return [r for _m, r in state.get("routes", []) if r.startswith("/wc/") or r.startswith("/wc-admin/")]
 
@@ -446,6 +479,15 @@ rows = (report or {}).get("rest_nonce_failures") or []
 check("#924: a customer login 500 is recorded too", len(rows) == 1 and rows[0].get("who") == "customer" and rows[0].get("status") == 500, rows)
 p, state, report = run_email_editor_seed()
 check("#924: no failure, no rows", not (report or {}).get("rest_nonce_failures"), (report or {}).get("rest_nonce_failures"))
+
+p, state, report = run_email_editor_seed(drop_paths=["/wp-json/"])
+ne = (report or {}).get("network_errors") or []
+idx_chk = ((report or {}).get("checks") or {}).get("permalinks: a raw GET /wp-json/ is the REST index") or {}
+check("a status-0 request keeps its exception text in seed.json network_errors",
+      state.get("dropped") == ["/wp-json/"] and idx_chk.get("status") == 0 and len(ne) == 1 and ne[0].get("path") == "/wp-json/"
+      and ne[0].get("method") == "GET" and "RemoteDisconnected" in (ne[0].get("error") or ""), (ne, idx_chk))
+p, state, report = run_email_editor_seed()
+check("no network failure, no network_errors", not (report or {}).get("network_errors"), (report or {}).get("network_errors"))
 
 page = {"id": 7, "status": "publish", "slug": "cart", "link": "https://ex/cart/"}
 check("wc_store_page_ok: published cart", _seed.wc_store_page_ok(7, page, "cart") is True)
