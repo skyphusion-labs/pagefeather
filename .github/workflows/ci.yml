@@ -319,6 +319,9 @@ jobs:
           python3 -I tests/load/plain-resolve-test.py
       - name: load test skips stock-managed products and keeps each non-2xx Store API code, never a body (#296)
         run: python3 tests/load/stock-codes-stub-test.py
+      - name: load.py ERRLOG keeps every failed request's headers, session values redacted
+        # A stub answers every checkout 503 with diagnostic and session headers; ERRLOG must keep the first, never the second.
+        run: python3 -I tests/load/errlog-stub-test.py
       - name: load test 1102 counter counts 5xx only (issue #394)
         run: python3 tests/load/is1102-test.py
       - name: page-stale probe measures old stock on a cached page, with its controls (#628)

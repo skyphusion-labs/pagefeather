@@ -41,6 +41,14 @@ A 503 with Retry-After (the c1 bounded queue) makes that user wait Retry-After
 seconds before its next loop; the loop is counted aborted (cart, add) and the
 503 is counted in "shed" per kind.
 
+ERRLOG=<file> (optional): one JSON line per failed request (not ok), appended: the step's users,
+the kind, the status, the Store API error code, the time, and EVERY response header by name. A
+header's VALUE is kept only for the diagnostic headers in ERRLOG_KEEP (the Worker's own x-* lines,
+cf-ray, cf-cache-status, retry-after, content-type, content-length, cache-control, server, date);
+every other value is "<redacted>", because a header such as set-cookie, Cart-Token or Nonce
+carries a session. x-spike-token and the nonce headers are redacted even though they start with x-.
+The body is never written. For a run whose deliverable is the errors (Hyperdrive under checkout, #759).
+
 Prints one JSON line per step, then one line with all steps. Exit 0: a failed
 request is a result.
 """
@@ -347,6 +355,20 @@ def pct(xs, q):
     return round(xs[min(len(xs) - 1, max(0, int(-(-q * len(xs) // 1)) - 1))], 3)
 
 
+ERRLOG = os.environ.get("ERRLOG", "")
+ERRLOG_KEEP = re.compile(r"^(x-[a-z0-9-]+|cf-ray|cf-cache-status|retry-after|content-type|content-length|cache-control|server|date)$")
+ERRLOG_SECRET = re.compile(r"^(x-spike-token|x-wp-nonce|x-wc-store-api-nonce)$")  # never kept, even as x-*
+
+
+def errlog_headers(h):
+    """Every header by name; the value only for a diagnostic header (ERRLOG_KEEP), else "<redacted>"."""
+    out = {}
+    for k, v in (h.items() if h else []):
+        n = k.lower()
+        out[n] = v if ERRLOG_KEEP.match(n) and not ERRLOG_SECRET.match(n) else "<redacted>"
+    return out
+
+
 def step(n, prods):
     rows = []
 
@@ -360,6 +382,12 @@ def step(n, prods):
                            "ttfb": round(r["ttfb"], 3) if r.get("ttfb") is not None else None, "ray": h.get("cf-ray")}
         with lock:
             rows.append(row)
+            if ERRLOG and not row["ok"]:
+                with open(ERRLOG, "a") as fh:
+                    fh.write(json.dumps({"users": n, "k": kind, "c": r["code"], "ec": row["ec"], "e1102": row["e1102"],
+                                         "t0": round(r.get("t0") or 0, 3), "s": round(r["s"], 3),
+                                         "ttfb": round(r["ttfb"], 3) if r.get("ttfb") is not None else None,
+                                         "h": errlog_headers(h)}) + "\n")
 
     aborted = [0]
 
