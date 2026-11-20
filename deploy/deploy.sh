@@ -228,6 +228,8 @@ if [ "$VARIANT" = a ]; then
 fi
 
 # 1b. Data plane.
+# shellcheck source=lib/recorded-inputs.sh
+. "$ROOT/deploy/lib/recorded-inputs.sh"
 log "terraform: $VARIANT data plane for $NAME ($LOCATION)"
 backend "$TF"; mkdir -p "$TF/sites"
 {
@@ -236,6 +238,8 @@ backend "$TF"; mkdir -p "$TF/sites"
   echo "variant    = \"$VARIANT\""
   echo "location   = \"$LOCATION\""
   echo "media      = $([ "$MEDIA" = 1 ] && echo true || echo false)"
+  # #1108: this run's inputs, recorded in the site's state (deploy/lib/recorded-inputs.sh).
+  echo "deploy_inputs  = \"$(deploy_inputs_value)\""
   if [ "$VARIANT" = a ]; then
     echo "mysql_host     = \"$MYSQL_HOST\""
     echo "mysql_user     = \"$MYSQL_USER\""
@@ -244,6 +248,8 @@ backend "$TF"; mkdir -p "$TF/sites"
 } > "$TF/sites/$NAME.tfvars"
 (cd "$TF" && terraform init -input=false -reconfigure >/dev/null)
 # #1108: never delete an existing media bucket by default (deploy/lib/media-guard.sh). DESTROY_MEDIA=1 does it on purpose.
+# #1108: a rebuild whose inputs differ from the recorded ones is refused (REPLACE_INPUTS=1 replaces them on purpose).
+inputs_check "$TF" "$NAME" || exit 2
 # shellcheck source=lib/media-guard.sh
 . "$ROOT/deploy/lib/media-guard.sh"
 media_guard "$TF" "$NAME" "sites/$NAME.tfvars" || exit 2
