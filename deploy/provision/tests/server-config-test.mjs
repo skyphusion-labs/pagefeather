@@ -2,6 +2,7 @@
 // server-config.mjs, isolated from fetch. Proves each guard can go BOTH ways
 // (reject AND accept), so none is a check that only ever fails or only ever
 // passes.
+import { createHash } from 'node:crypto';
 import {
   authorize, validateRequest, resolveBase, selectToken, deriveTarget, buildServerCfg, BadRequest,
 } from '../server-config.mjs';
@@ -92,6 +93,51 @@ ok('selectToken: an unknown kind THROWS, never falls through to the elevated tok
   ok('buildServerCfg a: refuses a demo', await throwsWith(() => buildServerCfg(env, { kind: 'a', name: 'mystore', domain: 'workers.dev', hyperdriveId: HD, tablePrefix: 'wp_mystore_', demo: true }), /demo/));
   const wp = await buildServerCfg(env, { kind: 'wp', name: 'blog', domain: 'workers.dev' });
   ok('control: a wp site still builds from the b-dosql bundle with its Durable Object', wp.kind === 'wp' && wp.mainModule === 'index.js' && wp.sqliteClasses.includes('PhpRuntime') && !wp.resourceBindings.some((x) => x.type === 'hyperdrive'));
+}
+
+// #1036: a manifest that names assetsIndexSha256 with no pack index must be refused.
+// Copying only the modules (deploy/release/README.md) used to deploy empty zips and no ASSETS.
+{
+  const enc = new TextEncoder();
+  const sha = (s) => createHash('sha256').update(s).digest('hex');
+  const oc = enc.encode('oc');
+  const index = JSON.stringify({
+    schema: 1, buildId: 'bid', opcache: { id: 'bid' }, site: null,
+    files: [{ asset: 'oc-0.zip', path: '/_pf/bid/oc-0.zip', size: oc.byteLength, sha256: sha(oc), hash: 'a'.repeat(32), kind: 'opcache' }],
+  });
+  const prefix = 'bundles/b-dosql/v1/';
+  function bundles(entries) {
+    const files = new Map(Object.entries(entries));
+    return {
+      list: async ({ prefix: p }) => ({ objects: [...files.keys()].filter((k) => k.startsWith(p)).map((key) => ({ key })) }),
+      get: async (key) => (files.has(key) ? { text: async () => files.get(key), arrayBuffer: async () => enc.encode(files.get(key)).buffer } : null),
+    };
+  }
+  const base = {
+    WFP_BASES: JSON.stringify({ 'workers.dev': { workersDev: true, subdomain: 'acme' } }),
+    WFP_KV_ID: 'KV', WFP_NAMESPACE: 'pagefeather', WP_BUNDLE_PREFIX: prefix,
+  };
+  const module = { [prefix + 'index.js']: 'export default {}' };
+  async function built(entries) {
+    const cfg = await buildServerCfg({ ...base, BUNDLES: bundles({ ...module, ...entries }) }, { kind: 'wp', name: 'blog', domain: 'workers.dev' });
+    if (typeof cfg.attachRemotePacks === 'function') await cfg.attachRemotePacks();
+    return cfg;
+  }
+  const plainVar = (cfg, name) => (cfg.resourceBindings || []).find((b) => b.type === 'plain_text' && b.name === name);
+  let missing = '';
+  try { await built({ [prefix + 'manifest.json']: JSON.stringify({ assetsIndexSha256: 'b'.repeat(64) }) }); }
+  catch (e) { missing = e.message; }
+  ok('manifest.json names assetsIndexSha256 and the index is missing: refused', /remote-packs-index.json is missing/.test(missing));
+  const older = await built({ [prefix + 'manifest.json']: JSON.stringify({ schema: 1, modules: [] }) });
+  ok('control: a manifest with no assetsIndexSha256 and no index still builds, with no packs', !older.assets && !plainVar(older, 'OPCACHE_REMOTE'));
+  const full = await built({
+    [prefix + 'manifest.json']: JSON.stringify({ assetsIndexSha256: 'c'.repeat(64) }),
+    [prefix + 'remote-packs-index.json']: index,
+    [prefix + 'assets/_pf/bid/oc-0.zip']: new TextDecoder().decode(oc),
+  });
+  ok('control: a manifest, the index and the pack attaches OPCACHE_REMOTE and the asset',
+    full.assets && full.assets.files.length === 1 && full.assets.files[0].path === '/_pf/bid/oc-0.zip'
+    && plainVar(full, 'OPCACHE_REMOTE') && plainVar(full, 'OPCACHE_REMOTE').text === 'on' && !plainVar(full, 'SITE_REMOTE'));
 }
 
 console.log(fail === 0 ? `all passed (${pass})` : `${fail} failed`);

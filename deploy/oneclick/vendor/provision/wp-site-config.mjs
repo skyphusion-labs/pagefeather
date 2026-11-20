@@ -209,7 +209,8 @@ function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mail
 }
 
 // #1036: the remote packs, the same vars deploy.sh renders. Off unless the caller says the bundle
-// carries them (an older bundle, or OPCACHE_REMOTE=0, passes false and the site stays as before).
+// carries them (an older bundle, or one built with OPCACHE_REMOTE=0, passes false and the site
+// stays as before). Site-add cannot turn the knobs off once the bundle carries the index.
 function assignRemotePacks(vars, { opcacheRemote, siteRemote }) {
   if (siteRemote === true && opcacheRemote !== true) throw new Error('SITE_REMOTE needs OPCACHE_REMOTE');
   if (opcacheRemote === true) vars.OPCACHE_REMOTE = 'on';
