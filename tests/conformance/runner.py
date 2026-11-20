@@ -326,13 +326,28 @@ def cmd_check_state(a):
         print("check-state: %s is logged in (/wp-admin/ HTTP %d)" % (os.path.basename(path), st), flush=True)
 
 
-Exclude = collections.namedtuple("Exclude", "kind path title reason")
+Exclude = collections.namedtuple("Exclude", "kind path title reason tier", defaults=(None,))
+# The tiers a row can be scoped to (matrix.py TIERS). "[Hyperdrive] <path>  <reason>" skips the spec on that tier only:
+# a limit of one tier must not hide the test on the others (#1119: the wc-api product-list batch).
+TIERS = ("Free DO", "Paid DO", "WfP", "Hyperdrive")
+_TIER_ROW = re.compile(r"^\[([^\]]+)\]\s+(.*)$")
 # A title row: <file> :: <title>, then two or more spaces, then the reason.
 # The title may contain single spaces. Two spaces end it.
 _TITLE_ROW = re.compile(r"^(\S+) :: (.+?)(?:  +|\t+)(\S.*?)\s*$")
 
 
 def parse_exclude_line(line):
+    tier = None
+    m = _TIER_ROW.match(line)
+    if m:
+        tier, line = m.group(1), m.group(2)
+        if tier not in TIERS:
+            raise Stop("an exclude row's tier %r is not one of %s" % (tier, ", ".join(TIERS)))
+    row = _parse_exclude_body(line)
+    return row._replace(tier=tier)
+
+
+def _parse_exclude_body(line):
     if " :: " in line:
         m = _TITLE_ROW.match(line)
         if not m:
@@ -342,13 +357,17 @@ def parse_exclude_line(line):
     return Exclude("file", path, "", why.strip())
 
 
-def read_excludes(suite):
+def read_excludes(suite, tier=None):
+    """The exclude rows that apply to a run on `tier`: every untiered row, and the rows scoped to that tier. With no
+    tier, only the untiered rows (a tier-scoped skip never applies to a run that does not name its tier)."""
     out = []
     with open(os.path.join(HERE, "exclude", EXCLUDE_AS.get(suite, suite) + ".txt")) as f:
         for line in f:
             line = line.strip()
             if line and not line.startswith("#"):
-                out.append(parse_exclude_line(line))
+                row = parse_exclude_line(line)
+                if row.tier is None or row.tier == tier:
+                    out.append(row)
     return out
 
 
@@ -389,8 +408,8 @@ def pf_workers():
     return int(n)
 
 
-def config_text(suite, run_dir, suite_dir, stock=False):
-    rows = read_excludes(suite)
+def config_text(suite, run_dir, suite_dir, stock=False, tier=None):
+    rows = read_excludes(suite, tier)
     ign = [r.path for r in rows if r.kind == "file"]
     titles = [(r.path, r.title) for r in rows if r.kind == "title"]
     grep_src = grep_invert_source(titles)
@@ -485,7 +504,7 @@ def cmd_config(a):
         raise Stop("no upstream config %s" % up)
     p = os.path.join(a.suite_dir, "pf-conformance.config.mjs")
     with open(p, "w") as f:
-        f.write(config_text(a.suite, a.run_dir, a.suite_dir, stock=getattr(a, "stock", False)))
+        f.write(config_text(a.suite, a.run_dir, a.suite_dir, stock=getattr(a, "stock", False), tier=getattr(a, "tier", None)))
     print(p)
 
 
@@ -562,6 +581,7 @@ def main(argv=None):
     p.add_argument("--suite-dir", required=True)
     p.add_argument("--run-dir", required=True)
     p.add_argument("--stock", action="store_true", help="a stock baseline: leave upstream baseURL, storageState and globalSetup alone (wp, gb)")
+    p.add_argument("--tier", choices=TIERS, help="the tier this run is on: applies its tier-scoped exclude rows")
     p = sub.add_parser("check-state")
     p.add_argument("--base-url", required=True)
     p.add_argument("--state", action="append", required=True)

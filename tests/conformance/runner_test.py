@@ -369,6 +369,21 @@ def main():
             bad("a title row with one space before the reason was accepted")
         except runner.Stop:
             ok("a title row with one space before the reason is refused")
+        # Tier-scoped rows (#1119): "[Hyperdrive] <path>  <reason>" skips only on that tier.
+        tr = runner.parse_exclude_line("[Hyperdrive] api-tests/products/product-list.test.ts  LIMIT, not a pass")
+        ok("a tier-scoped row parses: kind file, its path, its tier") if (tr.kind, tr.path, tr.tier) == ("file", "api-tests/products/product-list.test.ts", "Hyperdrive") else bad("tier row: %s" % (tr,))
+        ttr = runner.parse_exclude_line("[Paid DO] a.spec.ts :: Group > a title  reason")
+        ok("a tier-scoped title row parses") if (ttr.kind, ttr.path, ttr.title, ttr.tier) == ("title", "a.spec.ts", "Group > a title", "Paid DO") else bad("tier title row: %s" % (ttr,))
+        try:
+            runner.parse_exclude_line("[Moon] x.spec.ts  reason"); bad("an unknown tier was accepted")
+        except runner.Stop:
+            ok("an unknown tier stops")
+        pl = "api-tests/products/product-list.test.ts"
+        on = {t: [r.path for r in runner.read_excludes("wc-api", t)] for t in (None,) + runner.TIERS}
+        ok("the Hyperdrive product-list row is skipped on Hyperdrive only") if pl in on["Hyperdrive"] and all(pl not in on[t] for t in (None, "Free DO", "Paid DO", "WfP")) else bad("tier filter: %s" % on)
+        cfg_h = runner.config_text("wc-api", os.path.join(t, "th"), os.path.join(t, "sh"), tier="Hyperdrive")
+        cfg_p = runner.config_text("wc-api", os.path.join(t, "tp"), os.path.join(t, "sp"), tier="Paid DO")
+        ok("wc-api config: Hyperdrive ignores product-list, Paid DO runs it") if pl in cfg_h and pl not in cfg_p else bad("tier config")
         kept = runner.parse_exclude_line("paypal/paypal.spec.ts  calls wpCLI")
         ok("a file row stays a file exclude") if kept.kind == "file" and kept.path == "paypal/paypal.spec.ts" else bad("file row parsed as %s" % (kept,))
         parsed = runner.parse_exclude_line("email/settings-email.spec.ts :: WooCommerce Email Settings > Send email preview  suite asserts a PHP mail() failure.")
