@@ -42,6 +42,9 @@ content, and `render_user` checks as the last guard.
    (`tests/conformance/vps-run.sh`). Each run asserts that the auth setup really logged in (`runner.py check-state`).
 4. **The REST routes:** `tests/conformance/routes.py` (#779) over the site's own index, with `WP_PASSWORD`.
 5. **Reseed** between the API half and the browser half: `seed.py <out>` again, with `ADMIN_PASSWORD` unset.
+   **Reseed after every wp run, too.** The wp suite's "revoke all the application passwords" spec revokes the seed's
+   application password, so Basic auth answers 401 until the next seed (measured 2026-11-20 on `cf759p`: a REST upload
+   got 401 right after a wp run). The account password still matches it, so the next seed logs in through the form.
 6. **A WordPress-only site** (no WooCommerce, e.g. a Workers Free tier): seed with `SEED_NO_WOO=1`. The seed then skips the
    WooCommerce items and names each one as skipped in `seed.json`; it fails if the site does have `wc/v3`. Run wp and gb only.
 
@@ -62,6 +65,10 @@ always 1.
   `channel: 'chromium'`, so locally wc runs Chrome for Testing in new headless mode, while on Browser Run it is
   Cloudflare's Chromium. No suite passes `args` (no `--disable-web-security` or similar). Context options (viewport,
   locale, `ignoreHTTPSErrors`, `reducedMotion`, `strictSelectors`) are per context and still apply.
+- The baseline of this instrument (`cf759p`, the wp suite, 2026-11-20; [results.md](results.md) row "Browser Run
+  baseline"): Browser Run at 1 worker 18 of 18, local at 1 worker 17 of 18 (the one difference a #1022 memory reset on
+  the site, not the browser), Browser Run at 4 workers 15 of 18 (interference). Browser Run is the default at one worker
+  per site.
 - A remote browser reaches public URLs only: a workers.dev throwaway, yes; a local wp-env baseline, no.
 - One worker per site. The wp and gb specs share the site's state: `requestUtils.deleteAllPosts()` runs before each test,
   and the posts have fixed titles. Measured on `cf759p`, 2026-11-20: 4 workers gave 15 of 18 (two posts with one title, a
