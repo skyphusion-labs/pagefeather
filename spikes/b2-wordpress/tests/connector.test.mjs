@@ -104,3 +104,22 @@ test('the defaults are measured-sized bounds (connect 3 s, end 2 s)', async () =
 	assert.equal(CONNECT_MS, 3000);
 	assert.equal(END_MS, 2000);
 });
+
+// #1101 rays (strummer, Workers Observability): both hung requests logged their req line (PHP done, response built) and were
+// declared hung 4 to 6 ms later. The await left was ctx.waitUntil(dbHandler.end()) on a connection whose socket had died, so
+// mysql2's end() waited for a QUIT reply that never comes, with nothing pending. On db-end-timeout the socket is now
+// destroyed (mysql2 destroy(): no reply needed), so the dead connection is torn down, not abandoned.
+test('#1101: an end() that never settles is bounded AND the connection is destroyed', async () => {
+	let destroyed = 0;
+	const c = createConnector(async () => ({ end: never, destroy: () => { destroyed++; } }), { endMs: 30 });
+	await c.get();
+	await c.end();
+	assert.equal(destroyed, 1);
+});
+test('#1101: a normal end() does not destroy', async () => {
+	let destroyed = 0;
+	const c = createConnector(async () => ({ end: async () => {}, destroy: () => { destroyed++; } }), { endMs: 30 });
+	await c.get();
+	await c.end();
+	assert.equal(destroyed, 0);
+});

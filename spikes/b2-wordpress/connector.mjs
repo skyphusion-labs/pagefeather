@@ -7,7 +7,9 @@
 // BOUNDED (the lead's review of #1102): withDbRun (#1088) awaits end() INSIDE the PHP lock, so an await that never settles
 // would hold the lock and hang every request queued behind it. Each connect attempt is bounded by connectMs (3 s; a
 // Hyperdrive connect measures tens of ms), and end() by endMs (2 s; a COM_QUIT and a socket close). On expiry a named
-// '@event' is logged (connect-timeout, db-end-timeout) and the reference is dropped, so the lock always releases.
+// '@event' is logged (connect-timeout, db-end-timeout) and the reference is dropped, so the lock always releases; a
+// connection whose end() timed out is destroyed. Measured on cf759hx (#1101): both hung add-to-carts were this, a
+// ctx.waitUntil(end()) on a dead socket after the response, with nothing pending.
 // reset() forgets the connection without touching it (it may belong to another I/O context); end() clears the references
 // FIRST, then closes. A connect still in flight is closed once it lands, and never becomes the cached connection after a
 // reset or an end.
@@ -88,7 +90,16 @@ export function createConnector(factory, { attempts = 2, connectMs = CONNECT_MS,
 			}
 			if (!done) return;
 			const r = await within(Promise.resolve().then(() => done.end()).catch(() => {}), endMs);
-			if (r === TIMED_OUT) log({ '@event': 'db-end-timeout', m: 'db-end-timeout', after: 'end', ms: endMs });
+			if (r === TIMED_OUT) {
+				log({ '@event': 'db-end-timeout', m: 'db-end-timeout', after: 'end', ms: endMs });
+				// #1101: the socket is dead (a QUIT reply never came). destroy() closes it with no reply needed, so it is torn
+				// down, not left pending.
+				try {
+					if (typeof done.destroy === 'function') done.destroy();
+				} catch {
+					// nothing more to release
+				}
+			}
 		},
 	};
 }

@@ -451,3 +451,37 @@ test('#1060 index.js: progress on every bridge message, stallMs on the lock, she
 	assert.equal((src.match(/staleAction: 'shed'/g) || []).length, 2, 'the object run and the Worker run');
 	assert.match(src, /function withPhp\(fn, \{[^}]*staleAction = 'wait' \} = \{\}\)/, 'every other run waits');
 });
+
+// #1101 (the lead): the lock logged only queued and granted, so a run that never finished was invisible in a load run. It
+// now logs released (ranMs, outcome ok or threw) for every run that was contended or ran 1 s or more, so each
+// queued or granted line has its end. An uncontended short run still logs nothing.
+test('#1101 released: a contended run logs released with ranMs and outcome; an uncontended short run logs nothing', async () => {
+	const h = harness();
+	const a = h.run(h.job(200, 'a'));
+	const b = h.run(h.job(300, 'b'));
+	await h.c.advance(1000);
+	assert.equal(await a, 'a');
+	assert.equal(await b, 'b');
+	const rel = h.events.filter((e) => e.event === 'released');
+	assert.equal(rel.length, 1, 'only the contended run (b queued behind a); a ran alone for 200 ms');
+	assert.equal(rel[0].outcome, 'ok');
+	assert.equal(rel[0].ranMs, 300);
+});
+test('#1101 released: a run that throws logs outcome threw; a run of 1 s or more logs even uncontended', async () => {
+	const h = harness();
+	const long = h.run(h.job(1500, 'x'));
+	await h.c.advance(2000);
+	await long;
+	let rel = h.events.filter((e) => e.event === 'released');
+	assert.equal(rel.length, 1);
+	assert.equal(rel[0].ranMs, 1500);
+	const h2 = harness();
+	const first = h2.run(h2.job(100, 1));
+	const bad = h2.run(() => Promise.reject(new Error('php fatal')));
+	await h2.c.advance(500);
+	await first;
+	await assert.rejects(bad, /php fatal/);
+	rel = h2.events.filter((e) => e.event === 'released');
+	assert.equal(rel.length, 1);
+	assert.equal(rel[0].outcome, 'threw');
+});
