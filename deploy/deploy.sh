@@ -243,6 +243,10 @@ backend "$TF"; mkdir -p "$TF/sites"
   fi
 } > "$TF/sites/$NAME.tfvars"
 (cd "$TF" && terraform init -input=false -reconfigure >/dev/null)
+# #1108: never delete an existing media bucket by default (deploy/lib/media-guard.sh). DESTROY_MEDIA=1 does it on purpose.
+# shellcheck source=lib/media-guard.sh
+. "$ROOT/deploy/lib/media-guard.sh"
+media_guard "$TF" "$NAME" "sites/$NAME.tfvars" || exit 2
 # Hyperdrive checks the database when it makes its config, and a new MySQL box
 # needs a few minutes (packages, MariaDB, SSL): retry for up to 10 minutes.
 for try in $(seq 1 20); do
