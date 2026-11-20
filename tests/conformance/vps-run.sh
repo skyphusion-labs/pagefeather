@@ -75,7 +75,7 @@ playwright() { # dir config: run Playwright with OUR wrapper config (exclusions,
     export NODE_OPTIONS="--require $here/pf-browser-run.cjs${NODE_OPTIONS:+ $NODE_OPTIONS}"
     echo "vps-run: BROWSER RUN (Cloudflare, hosted Chromium over CDP), workers ${PF_WORKERS:-1}"
   fi
-  x python3 -I "$here/runner.py" config --suite "$suite" --suite-dir "$src/$e2e" --run-dir "$run"
+  x python3 -I "$here/runner.py" config --suite "$suite" --suite-dir "$src/$e2e" --run-dir "$run" ${pf_stock:+--stock}
   case "$suite" in
     wc|wc-api|wc-cpt) # Two phases, so the login is asserted BEFORE any test (lead ruling): the setup projects
         # (global authentication, site setup; install wc is dropped in pf-conformance.config.mjs),
@@ -142,6 +142,9 @@ case "$act" in
     # suite's own env file names a branch. The default credentials are admin / password.
     # The baseline must not see our throwaway: unset the names the suites read (a caller may export them).
     unset BASE_URL WP_BASE_URL ADMIN_USER ADMIN_PASSWORD WP_USERNAME WP_PASSWORD CUSTOMER_USER CUSTOMER_USERNAME CUSTOMER_PASSWORD
+    # The baseline's wrapper config is --stock (#1112): upstream's own baseURL, storageState and globalSetup, so the
+    # stock run targets wp-env the way upstream does. Only the exclusions, one worker and the JSON report are ours.
+    pf_stock=1
     # Stop this suite's env on exit: the wordpress-develop and Gutenberg envs both use port 8889.
     case "$suite" in
       wp) trap 'in_dir "$src" npm run env:stop || true' EXIT ;;

@@ -637,6 +637,22 @@ def main():
                             capture_output=True, text=True)
         ok("baseline wc: check-state targets the local wp-env, not an exported BASE_URL") if "check-state --base-url http://localhost:8086" in vb.stdout and "cf759a" not in vb.stdout else bad("baseline wc target: %s" % vb.stdout[-300:])
         ok("baseline wc: its env stops on exit") if "pnpm env:e2e:stop" in vb.stdout else bad("baseline wc: no env stop")
+        # #1112: the wp and gb baseline config is --stock: upstream's own baseURL, storageState and globalSetup. Forced
+        # ones gave baseURL "/" (Invalid URL in global setup) because the baseline unsets the names (gbbase-gb2).
+        for sb in ("gb", "wp"):
+            vbs = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "baseline", sb, vw, os.path.join(t, "vb" + sb)],
+                                 env={"PATH": os.environ.get("PATH", ""), "DRY": "1", "WP_BASE_URL": "https://cf759hw.example"}, capture_output=True, text=True)
+            cfg_line = [l for l in vbs.stdout.splitlines() if "runner.py config" in l]
+            ok("baseline %s: the config step is --stock, and the throwaway URL is never named" % sb) if vbs.returncode == 0 and cfg_line and cfg_line[0].rstrip().endswith("--stock") and "cf759hw" not in vbs.stdout else bad("baseline %s stock: rc %d %s" % (sb, vbs.returncode, (vbs.stdout + vbs.stderr)[-300:]))
+            vrn = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "run", sb, vw, os.path.join(t, "vr" + sb)],
+                                 env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
+            rl = [l for l in vrn.stdout.splitlines() if "runner.py config" in l]
+            ok("run %s: the config step is NOT --stock" % sb) if rl and not rl[0].rstrip().endswith("--stock") else bad("run %s config line: %s" % (sb, rl))
+            stock_txt = runner.config_text(sb, os.path.join(t, "st" + sb), os.path.join(t, "suite" + sb), stock=True)
+            ours_txt = runner.config_text(sb, os.path.join(t, "st" + sb), os.path.join(t, "suite" + sb))
+            ok("stock %s config: no forced baseURL, no assert-login, no STORAGE_STATE_PATH, no globalSetup" % sb) if all(x not in stock_txt for x in ("baseURL", "assert-login", "STORAGE_STATE_PATH", "globalSetup")) else bad("stock %s config: %s" % (sb, stock_txt[-400:]))
+            ok("stock %s config: keeps the exclusions, workers 1, retries 0 and the JSON report" % sb) if all(x in stock_txt for x in ("testIgnore = ignore", "workers: 1", "retries: 0", "report.json")) else bad("stock %s keeps: %s" % (sb, stock_txt[-400:]))
+            ok("our %s config still forces baseURL, the login assert and STORAGE_STATE_PATH" % sb) if all(x in ours_txt for x in ("baseURL: url", "assert-login", "STORAGE_STATE_PATH")) else bad("our %s config lost a guard" % sb)
         vg = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "install", "gb", os.path.join(t, "vg")],
                             env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
         vg_out = vg.stdout + vg.stderr
