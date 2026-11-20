@@ -48,15 +48,32 @@ permissions:
   actions: read
 
 jobs:
-  # MERGE QUEUE (#1070). On a merge_group event the PR in the queue entry is named
-  # by the branch the queue makes: refs/heads/gh-readonly-queue/<base>/pr-<N>-<sha>,
-  # where <sha> is the PR head. The queue-ref job reads N and <sha> from
-  # github.event.merge_group.head_ref (never from a PR-controlled field), refuses a
-  # ref that does not parse, and refuses a PR that is no longer open at exactly that
-  # head. approval-at-head-queue then runs the SAME judge, at the same pinned sha, on
-  # that PR and head. If queue-ref fails, the judge never runs, no
-  # `approval-at-head / gate` is reported, and the queue cannot merge the entry. A
-  # missing required check is not a pass.
+  # MERGE QUEUE (#1070, corrected by #1083). On a merge_group event the queue makes a
+  # branch named refs/heads/gh-readonly-queue/<base>/pr-<N>-<sha>. The <sha> in that
+  # name is NOT the PR head. Measured on the first live queue run (2026-11-20): for
+  # #1067 the ref sha was 47521d4c..., the PR head was c0ed21d9...; for #1052 the ref
+  # sha was 956687f..., which is main. It is the commit the entry is built on, main or
+  # the entry ahead of it. So only N is read from the ref.
+  #
+  # GitHub's docs (events that trigger workflows, merge_group; webhook events and
+  # payloads, merge_group) say a merge group is "a group of pull requests that the merge
+  # queue has grouped together", that the event fires "when a merge group is created or
+  # added to", and that GITHUB_SHA is the SHA of the merge group. They do not say what
+  # the sha in the ref name is, which is why the measurement above is the reference:
+  #   https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#merge_group
+  #   https://docs.github.com/en/webhooks/webhook-events-and-payloads#merge_group
+  #
+  # The queue-ref job:
+  #   1. reads N from github.event.merge_group.head_ref (never from a PR-controlled
+  #      field) and refuses a ref that does not parse;
+  #   2. reads the PR head sha from the API and refuses a PR that is not open;
+  #   3. refuses unless that head is an ancestor of github.event.merge_group.head_sha
+  #      (the group commit), so the approval judged is for the code being merged;
+  #   4. outputs the PR head sha from the API, not from the ref.
+  # approval-at-head-queue then runs the SAME judge, at the same pinned sha, on that PR
+  # and head: an APPROVED review at exactly that sha. If queue-ref fails, the judge never
+  # runs, no `approval-at-head / gate` is reported, and the queue cannot merge the
+  # entry. A missing required check is not a pass.
   #
   # NAMES. The required context is `approval-at-head / gate`. On a merge_group run
   # the queue job is named `approval-at-head`, so its called job `gate` reports that
@@ -73,37 +90,58 @@ jobs:
       pull-requests: read
     outputs:
       pr: ${{ steps.parse.outputs.pr }}
-      sha: ${{ steps.parse.outputs.sha }}
+      sha: ${{ steps.verify.outputs.sha }}
     steps:
-      - name: read the PR number and head sha from the queue branch
+      - name: read the PR number from the queue branch
         id: parse
         env:
           HEAD_REF: ${{ github.event.merge_group.head_ref }}
         run: |
           # parse-begin (tests/ci/merge-group-ref-test.sh runs this block)
           set -euo pipefail
-          re='^refs/heads/gh-readonly-queue/.+/pr-([1-9][0-9]*)-([0-9a-f]{40})$'
+          re='^refs/heads/gh-readonly-queue/.+/pr-([1-9][0-9]*)-[0-9a-f]{40}$'
           if [[ ! "$HEAD_REF" =~ $re ]]; then
             echo "::error::merge_group head_ref '$HEAD_REF' is not refs/heads/gh-readonly-queue/<base>/pr-<N>-<40 hex>; refusing"
             exit 1
           fi
           echo "pr=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
-          echo "sha=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
           # parse-end
-      - name: the PR is open and still at that head
+      - name: the PR is open and its head is in the merge group
+        id: verify
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.parse.outputs.pr }}
-          SHA: ${{ steps.parse.outputs.sha }}
+          MG_SHA: ${{ github.event.merge_group.head_sha }}
         run: |
+          # verify-begin (tests/ci/merge-group-ref-test.sh runs this block with a stub gh)
           set -euo pipefail
-          state=$(gh api "repos/$REPO/pulls/$PR" --jq '.state + " " + .head.sha')
-          if [ "$state" != "open $SHA" ]; then
-            echo "::error::PR #$PR is '$state', not 'open $SHA'; refusing"
+          sha40='^[0-9a-f]{40}$'
+          if [[ ! "$MG_SHA" =~ $sha40 ]]; then
+            echo "::error::merge_group head_sha '$MG_SHA' is not a 40 hex sha; refusing"
             exit 1
           fi
-          echo "PR #$PR is open at $SHA"
+          pull=$(gh api "repos/$REPO/pulls/$PR" --jq '.state + " " + .head.sha')
+          state="${pull%% *}"
+          head="${pull#* }"
+          if [ "$state" != "open" ]; then
+            echo "::error::PR #$PR is '$state', not open; refusing"
+            exit 1
+          fi
+          if [[ ! "$head" =~ $sha40 ]]; then
+            echo "::error::PR #$PR head '$head' is not a 40 hex sha; refusing"
+            exit 1
+          fi
+          # compare <PR head>...<group commit>: "ahead" or "identical" means the PR head
+          # is an ancestor of the group commit. Anything else, or an API error, refuses.
+          rel=$(gh api "repos/$REPO/compare/$head...$MG_SHA" --jq '.status')
+          if [ "$rel" != "ahead" ] && [ "$rel" != "identical" ]; then
+            echo "::error::PR #$PR head $head is not an ancestor of the merge group $MG_SHA (compare says '$rel'); refusing"
+            exit 1
+          fi
+          echo "sha=$head" >> "$GITHUB_OUTPUT"
+          echo "PR #$PR is open at $head, and $head is in the merge group $MG_SHA ($rel)"
+          # verify-end
 
   approval-at-head-queue:
     name: ${{ github.event_name == 'merge_group' && 'approval-at-head' || 'approval-at-head-queue' }}
