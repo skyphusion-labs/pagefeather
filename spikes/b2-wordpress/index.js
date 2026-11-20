@@ -20,7 +20,7 @@ import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-sn
 import { cronBounds, cronCleanDue, cronLegDue } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronRunDeferred, cronMarkOf, cronFatalOf } from './cron-health.mjs';
 import { approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME } from './a-cron.mjs';
-import { isMediaUploadRequest, markerKey, sweepUploadOrphans } from './upload-intent.mjs';
+import { isMediaUploadRequest, markerKey, sweepUploadOrphans, dropMarkersOn } from './upload-intent.mjs';
 import { cronFailureLine } from './cron-error.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION, setResultHeader, takeResultHeader, turnstileRoute, readRouteFields, readGatedToken, encodeResult, TurnstileSlot, turnstileTimeoutMs, retryAfterFor } from './turnstile.mjs';
@@ -2484,7 +2484,7 @@ async function uploadIntentMark(B, key) {
 		console.log(JSON.stringify({ m: 'upload-intent-mark-failed', error: String((e && e.message) || e).slice(0, 160) }));
 	}
 }
-// PHP answered: this upload's files are its own, whatever its rows say. Its markers go (off the answer's path).
+// PHP answered 2xx: this upload's files are its own. Its markers go (off the answer's path).
 async function uploadIntentClear(keys) {
 	for (const k of keys) {
 		try { await ENV.MEDIA.delete(markerKey(k)); } catch { /* a stale marker is swept by its reference check */ }
@@ -4930,8 +4930,9 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			if (qtrace) { console.log(JSON.stringify({ m: 'qtrace', ...memIdOf(req, env), method: req.method, status: r.httpStatusCode, ...qtrace.summary() })); qtrace = null; }
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
 			if (tracing()) fileTrace.end({ status: r.httpStatusCode });
-			// #1039: PHP answered, so this upload's files stay; drop its markers off the answer's path.
-			if (uploadRun && uploadRun.length) {
+			// #1039: PHP answered 2xx, so this upload's files stay; drop its markers off the answer's path. Any other answer
+			// (a 500 after the files were stored is the same orphan as a kill) leaves them for the sweep.
+			if (uploadRun && uploadRun.length && dropMarkersOn(r.httpStatusCode)) {
 				const p = uploadIntentClear(uploadRun);
 				if (ctx && ctx.waitUntil) ctx.waitUntil(p);
 				else await p;

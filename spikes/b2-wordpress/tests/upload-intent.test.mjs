@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { isMediaUploadRequest, markerKey, MARKER_PREFIX, STALE_MS, sweepUploadOrphans, metadataNames, referenceQueries } from '../upload-intent.mjs';
+import { isMediaUploadRequest, markerKey, MARKER_PREFIX, STALE_MS, sweepUploadOrphans, metadataNames, referenceQueries, dropMarkersOn } from '../upload-intent.mjs';
 
 test('markers only on the media upload paths that create an attachment', () => {
 	for (const [m, p, s] of [
@@ -132,5 +132,10 @@ test('index.js wires it on approach A only: marker BEFORE the put on an upload r
 	assert.match(src, /await uploadIntentMark\(B, op\.key\);[^\n]*\s*(?:await r2RecordIfNew\(B, op\.key\);[^\n]*\s*)?await B\.put\(op\.key/);
 	assert.match(src, /uploadRun = dbHandler && isMediaUploadRequest\(req\.method, url\.pathname, url\.search\) \? \[\] : null;/);
 	assert.match(src, /if \(uploadRun\) await uploadSweepThrottled\(env\);/);
-	assert.match(src, /if \(uploadRun && uploadRun\.length\) \{[\s\S]{0,200}uploadIntentClear/);
+	assert.match(src, /if \(uploadRun && uploadRun\.length && dropMarkersOn\(r\.httpStatusCode\)\) \{[\s\S]{0,200}uploadIntentClear/, 'markers drop only on a 2xx answer');
+});
+
+test('the lead review: markers drop only on a 2xx answer; a 500 after the files were stored keeps them for the sweep', () => {
+	for (const st of [200, 201, 204, 299]) assert.equal(dropMarkersOn(st), true, String(st));
+	for (const st of [500, 503, 502, 413, 400, 403, 404, 302, 301, 199, 300, 0, undefined, null, '201']) assert.equal(dropMarkersOn(st), false, String(st));
 });

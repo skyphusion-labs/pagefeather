@@ -3,7 +3,7 @@
 // undone at the failure. Instead (the lead's ruling, 2026-11-20):
 //   - on a MEDIA UPLOAD request only (isMediaUploadRequest: the paths that create an attachment), every R2 key the
 //     request CREATES gets a marker object first (MARKER_PREFIX + key, customMetadata kind=upload);
-//   - when PHP answers, the request drops its own markers: a finished upload keeps its files, whatever its rows say;
+//   - when PHP answers 2xx, the request drops its own markers (dropMarkersOn); any other answer leaves them for the sweep;
 //   - the sweep (the throttled start of a media upload) looks only at UPLOAD markers older than STALE_MS: a file whose
 //     attachment exists (_wp_attached_file, every metadata size, original_image) keeps its file and loses the marker;
 //     one that no attachment names is deleted with its marker and its name reservation (an upload-orphan-swept event).
@@ -35,6 +35,15 @@ export function isMediaUploadRequest(method, pathname, search) {
 	if (/\/wp-admin\/(?:async-upload|media-new|media-upload)\.php$/.test(String(pathname || ''))) return true;
 	const r = restRoute(pathname, search);
 	return r !== null && /^\/wp\/v2\/media\/?$/.test(r);
+}
+
+/**
+ * Whether a request's markers drop when PHP answers: only a 2xx (the lead's review on #1051). A 500 after the files
+ * were stored is the same orphan as a kill, so its markers stay and the sweep decides by the attachment rows. A 3xx
+ * (media-new.php redirects after a save) keeps them too; the sweep then finds the attachment and drops only the marker.
+ */
+export function dropMarkersOn(status) {
+	return Number.isInteger(status) && status >= 200 && status <= 299;
 }
 
 export function markerKey(key) {
