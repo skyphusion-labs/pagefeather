@@ -28,7 +28,9 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
      image-0N.png), each checked against the upstream git blob sha before upload, found by search after. Upstream's
      image-01.png is a JPEG (its first bytes are FF D8 FF E0), so WordPress stores it as image-01.jpg, on stock too
      (wp_check_filetype_and_ext names a file by its content; WP-CLI's media import goes through the same code). So
-     an item is matched by its stem, and seed.json records the name WordPress gave it;
+     an item is matched by its stem, and seed.json records the name WordPress gave it. A found item whose full file
+     or any sub-size file does not answer 200 is deleted and uploaded again (woocommerce-cleanup's reset deletes the
+     sub-size files);
   6. the admin's ACCOUNT password = a new application password (one value passes both the wp-login.php form and
      HTTP Basic on the unmodified suite). Older "conformance-" application passwords are revoked. After the
      password write, the first form login can get rest-nonce HTTP 500; the seed retries (#924). Checked: the
@@ -246,6 +248,19 @@ def stem(url):
     return (url or "").rsplit("/", 1)[-1].rsplit(".", 1)[0]
 
 
+def image_files_missing(item, get=None):
+    """The file names of a media item (the full file and each sub-size) that do not answer 200 to a guest GET."""
+    get = get or (lambda url: req(jar(), url)[0])
+    src = (item or {}).get("source_url") or ""
+    base = src.rsplit("/", 1)[0]
+    names = [src.rsplit("/", 1)[-1]] if src else []
+    for v in (((item or {}).get("media_details") or {}).get("sizes") or {}).values():
+        f = (v or {}).get("file")
+        if f and f not in names:
+            names.append(f)
+    return [f for f in names if get(base + "/" + f) != 200]
+
+
 def basic(user, pw, route="/wp/v2/users/me"):
     tok = base64.b64encode(("%s:%s" % (user, pw)).encode()).decode()
     c, _, _ = req(jar(), "/?rest_route=" + route, headers={"Authorization": "Basic " + tok})
@@ -458,8 +473,15 @@ def main():
         c, hits = rest(a, n, "/wp/v2/media?search=%s&per_page=20" % urllib.parse.quote(st_))
         match = [h for h in hits if stem(h.get("source_url")) == st_] if isinstance(hits, list) else []
         if match:
-            have.append(name); stored[st_] = match[0]["source_url"].rsplit("/", 1)[-1]
-            continue
+            # A found item is kept only if its files load: woocommerce-cleanup's reset deletes every sub-size file and
+            # keeps the attachment, so a product thumbnail then answers 404 (sb1120, cf759a). Such an item is deleted
+            # (force) and uploaded again below, which makes the sizes again.
+            broken = image_files_missing(match[0])
+            if not broken:
+                have.append(name); stored[st_] = match[0]["source_url"].rsplit("/", 1)[-1]
+                continue
+            cd, _ = rest(a, n, "/wp/v2/media/%s?force=true" % match[0].get("id"), None, "DELETE")
+            event("reupload", name=name, missing=broken[:4], deleted=cd)
         c, meta, _ = req(jar(), "https://api.github.com/repos/woocommerce/woocommerce/contents/%s%s?ref=%s" % (IMG_PATH, name, sha), headers={"Accept": "application/vnd.github+json"})
         want = (js(meta) or {}).get("sha") if c == 200 else None
         c, data, _ = req(jar(), "https://raw.githubusercontent.com/woocommerce/woocommerce/%s/%s%s" % (sha, IMG_PATH, name))
@@ -467,12 +489,14 @@ def main():
         if not (want and blob == want):
             check("image %s matches the pin" % name, False, wc_sha=sha, upstream_blob=want, got_blob=blob)
             continue
-        c, b, _ = req(a, "/?rest_route=/wp/v2/media", data, {"X-WP-Nonce": n, "Content-Type": "image/png", "Content-Disposition": 'attachment; filename="%s"' % name}, "POST")
+        c, b, uh = req(a, "/?rest_route=/wp/v2/media", data, {"X-WP-Nonce": n, "Content-Type": "image/png", "Content-Disposition": 'attachment; filename="%s"' % name}, "POST")
         r = js(b)
         if c == 201 and isinstance(r, dict) and stem(r.get("source_url")) == st_:
             have.append(name); stored[st_] = r["source_url"].rsplit("/", 1)[-1]
         else:
-            check("image %s uploads under its own stem" % name, False, status=c, source=r.get("source_url") if isinstance(r, dict) else None)
+            # The engine's headers name the request for its logs (sb1120: a 500 upload left its files behind).
+            pf = {k: uh.get(k) for k in ("x-pf-call", "x-write-loss", "x-isolate-reset", "x-wasm-mib", "x-sql-failure") if uh and uh.get(k)}
+            check("image %s uploads under its own stem" % name, False, status=c, source=r.get("source_url") if isinstance(r, dict) else None, **pf)
     check("the three test images, found by search under their own stems", sorted(have) == sorted(IMAGES), stored=stored, wc_sha=sha)
 
     # 6b. dismiss the block editor welcome guide (#759 conf759: it blocks the canvas until closed)

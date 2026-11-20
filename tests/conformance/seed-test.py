@@ -178,6 +178,9 @@ class Site(BaseHTTPRequestHandler):
             return self.reply(302, b"", "text/html")
         if path.startswith("/wp-admin/admin-ajax.php") and "rest-nonce" in self.path:
             return self.reply(200, b"0123456789", "text/plain")
+        if path.startswith("/wp-content/uploads/") and method == "GET":
+            name = path.rsplit("/", 1)[-1]
+            return self.reply(404 if name in st.get("missing_files", ()) else 200, b"x", "image/png")
         if path in ("/wp-json", "/wp-json/"):
             return self._json(200, {"routes": {"/": {}}})
         if path == "/wp-admin/options-permalink.php" and method == "GET":
@@ -253,9 +256,17 @@ class Site(BaseHTTPRequestHandler):
             ])
         if route.startswith("/wp/v2/users/1/application-passwords/") and method == "DELETE":
             return self._json(200, {"deleted": True})
-        if route == "/wp/v2/media":
+        if route == "/wp/v2/media" and method == "GET":
             stem = (q.get("search") or ["image"])[0]
-            return self._json(200, [{"source_url": "http://127.0.0.1/wp-content/uploads/%s.png" % stem}])
+            base = "http://127.0.0.1:%d/wp-content/uploads/" % self.server.server_address[1]
+            return self._json(200, [{"id": 40 + len(stem), "source_url": base + "%s.png" % stem,
+                                     "media_details": {"sizes": {"thumbnail": {"file": "%s-150x150.png" % stem}}}}])
+        if route.startswith("/wp/v2/media/") and method == "DELETE":
+            st.setdefault("media_deleted", []).append(route)
+            return self._json(200, {"deleted": True})
+        if route == "/wp/v2/media" and method == "POST":
+            st.setdefault("media_posted", []).append(self.headers.get("Content-Disposition") or "")
+            return self._json(201, {"id": 99, "source_url": "http://127.0.0.1/wp-content/uploads/x.png"})
         if route == "/wp/v2/plugins":
             gb = st.get("gb", {})
             return self._json(200, [{"plugin": pid, "status": "active"} for pid in PLUGINS] + [{"plugin": k, "status": v} for k, v in gb.items()])
@@ -383,6 +394,19 @@ check(
     gb_chk(report) is None and not state.get("gb_posts"),
     (state.get("gb_posts"), gb_chk(report)),
 )
+
+files = {"https://ex/u/image-01.jpg": 200, "https://ex/u/image-01-150x150.jpg": 404, "https://ex/u/image-01-300x300.jpg": 200}
+item = {"source_url": "https://ex/u/image-01.jpg", "media_details": {"sizes": {"thumbnail": {"file": "image-01-150x150.jpg"}, "woocommerce_thumbnail": {"file": "image-01-300x300.jpg"}, "full": {"file": "image-01.jpg"}}}}
+check("image_files_missing: names the sub-size that answers 404", _seed.image_files_missing(item, get=lambda u: files.get(u, 0)) == ["image-01-150x150.jpg"])
+check("image_files_missing: none when every file answers 200", _seed.image_files_missing(item, get=lambda u: 200) == [])
+
+p, state, report = run_email_editor_seed()
+check("images whose files load: no delete, no upload", not state.get("media_deleted") and not state.get("media_posted"),
+      (state.get("media_deleted"), state.get("media_posted")))
+p, state, report = run_email_editor_seed(missing_files=["image-02-150x150.png"])
+check("an image whose thumbnail answers 404 is deleted (force) and uploaded again",
+      any(r.startswith("/wp/v2/media/") for r in state.get("media_deleted", [])) and any("image-02.png" in d for d in state.get("media_posted", [])),
+      (state.get("media_deleted"), state.get("media_posted")))
 
 page = {"id": 7, "status": "publish", "slug": "cart", "link": "https://ex/cart/"}
 check("wc_store_page_ok: published cart", _seed.wc_store_page_ok(7, page, "cart") is True)
