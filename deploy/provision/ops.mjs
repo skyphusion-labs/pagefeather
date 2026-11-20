@@ -3,9 +3,11 @@
 // callable identically from a node CLI or from inside a provisioning Worker.
 // A ctx is { acct, token, fetchImpl? }.
 import {
-  cfFetch, sha256Hex, opError,
+  cfFetch, sha256Hex, opError, assetContentHash, bytesToBase64,
   R2_ITEM_READ, R2_ITEM_WRITE, r2BucketResource,
 } from './cf.mjs';
+
+export { assetContentHash };
 
 // 1. R2 bucket. Create one; an already-existing bucket is success (idempotent).
 export async function createR2Bucket(ctx, name) {
@@ -109,23 +111,72 @@ export async function writeKVMapEntry(ctx, { kvId, key, value }) {
   return { key };
 }
 
+// The remote packs (#1036), on a dispatch-namespace script. Session, then one POST per bucket,
+// then the completion jwt for the script upload. files: [{ path, bytes, hash? }]. path is /_pf/...
+// An empty bucket list means Cloudflare already has every file: the session jwt is the completion token.
+// https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/static-assets/
+// (read 2026-11-20).
+export async function uploadDispatchAssets(ctx, { ns, name, files, runWorkerFirst = ['/_pf/*'] }) {
+  if (!files || !files.length) throw new Error('uploadDispatchAssets: no files');
+  const manifest = {};
+  const ready = [];
+  for (const f of files) {
+    if (!f || typeof f.path !== 'string' || !f.path.startsWith('/_pf/') || f.path.includes('..')) {
+      throw new Error(`uploadDispatchAssets: bad path ${f && f.path}`);
+    }
+    const hash = await assetContentHash(f.bytes, f.path);
+    if (f.hash && f.hash !== hash) throw new Error(`uploadDispatchAssets: ${f.path} hash does not match its bytes`);
+    manifest[f.path] = { hash, size: f.bytes.byteLength };
+    ready.push({ path: f.path, bytes: f.bytes, hash });
+  }
+  const session = await cfFetch(ctx.token, 'POST',
+    `/accounts/${ctx.acct}/workers/dispatch/namespaces/${ns}/scripts/${name}/assets-upload-session`,
+    { body: { manifest }, fetchImpl: ctx.fetchImpl });
+  if (!session.ok || !session.result || !session.result.jwt) throw opError('uploadDispatchAssets session', name, session);
+  let jwt = session.result.jwt;
+  const byHash = new Map(ready.map((f) => [f.hash, f]));
+  for (const bucket of session.result.buckets || []) {
+    const form = new FormData();
+    for (const hash of bucket) {
+      const f = byHash.get(hash);
+      if (!f) throw new Error(`uploadDispatchAssets: bucket hash ${hash} is not in the manifest`);
+      form.append(hash, new Blob([bytesToBase64(f.bytes)], { type: 'application/octet-stream' }));
+    }
+    const up = await cfFetch(jwt, 'POST', `/accounts/${ctx.acct}/workers/assets/upload?base64=true`,
+      { body: form, fetchImpl: ctx.fetchImpl });
+    if (!up.ok) throw opError('uploadDispatchAssets upload', name, up);
+    if (up.result && up.result.jwt) jwt = up.result.jwt;
+  }
+  return { jwt, runWorkerFirst };
+}
+
 // 5. wp / b-dosql: upload the user Worker into the dispatch namespace. The
 // b-dosql code is in the uploaded bundle (modules), so there is NO build. PUT
 // replaces the script, so it is idempotent.
 export async function deployNamespaceScript(ctx, {
   ns, name, mainModule, modules, bindings = [], compatibilityDate, compatibilityFlags = [],
-  migrations, placement,
+  migrations, placement, assets,
 }) {
+  let bound = bindings;
   const metadata = {
     main_module: mainModule,
     compatibility_date: compatibilityDate,
     compatibility_flags: compatibilityFlags,
-    bindings,
   };
   // #1063: where the Worker runs, next to its database ({mode: 'targeted', region}, the shape wrangler sends).
   // Measured live 2026-11-20: a dispatched namespace user Worker with it runs in that region (SEA for
   // azure:westus2), and without it next to the visitor.
   if (placement) metadata.placement = placement;
+  // #1036: packs under /_pf/ are static assets. The completion jwt comes from uploadDispatchAssets.
+  // run_worker_first keeps the asset router from serving the packs (PHP source and compiled PHP).
+  if (assets && assets.jwt) {
+    metadata.assets = {
+      jwt: assets.jwt,
+      config: { not_found_handling: 'none', run_worker_first: assets.runWorkerFirst || ['/_pf/*'] },
+    };
+    bound = [...bindings, { type: 'assets', name: 'ASSETS' }];
+  }
+  metadata.bindings = bound;
   // A SQLite Durable Object class binding is REJECTED (API 10061) unless a
   // migration declares the class. The b-dosql wp site binds PhpRuntime, so the
   // migration is not optional: without it the deploy throws and no site exists

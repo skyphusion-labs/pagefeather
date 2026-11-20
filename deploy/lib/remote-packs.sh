@@ -59,6 +59,20 @@ a_remote_pack_defaults() {
   export OPCACHE_REMOTE SITE_REMOTE
   if [ -n "${OPCACHE_A:-}" ]; then export OPCACHE_A; fi
 }
+# The pack scripts themselves, from the app directory (spikes/b2-wordpress), after the trace exists.
+# b-dosql's trace is file-trace.sh (remote_pack_build). Approach A's trace is opcache-a.sh with TRACE=1.
+# Nothing runs with both flags off. Each step's status is checked; no pipe.
+remote_pack_scripts() {
+  opcache_remote_var > /dev/null || return 1
+  site_remote_var > /dev/null || return 1
+  if [ "${OPCACHE_REMOTE:-0}" = 1 ]; then
+    python3 -I opcache-remote.py build/opcache.zip build/file-trace.json build/build-id.js || return 1
+  fi
+  if [ "${SITE_REMOTE:-0}" = 1 ]; then
+    python3 -I site-remote.py build/site.zip build/file-trace.json build/build-id.js || return 1
+  fi
+  return 0
+}
 # remote_pack_build <woo active 0|1>: the pack step of a primed b-dosql build, run from the app directory
 # (spikes/b2-wordpress) right after opcache.sh. #394 L1 (OPCACHE_SPLIT=1, deploy/wfp only): trace which OPcache files
 # a WARM request reads, then keep only those as the module. #563 (OPCACHE_REMOTE=1): the same trace, then EVERY
@@ -74,11 +88,6 @@ remote_pack_build() {
   if [ "${OPCACHE_SPLIT:-0}" = 1 ]; then
     python3 -I opcache-split.py build/opcache.zip build/file-trace.json build/build-id.js || return 1
   fi
-  if [ "${OPCACHE_REMOTE:-0}" = 1 ]; then
-    python3 -I opcache-remote.py build/opcache.zip build/file-trace.json build/build-id.js || return 1
-  fi
-  if [ "${SITE_REMOTE:-0}" = 1 ]; then
-    python3 -I site-remote.py build/site.zip build/file-trace.json build/build-id.js || return 1
-  fi
+  remote_pack_scripts || return 1
   return 0
 }

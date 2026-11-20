@@ -25,12 +25,14 @@ The release procedure is [docs/releasing.md](../../docs/releasing.md).
 | `<hash>-<name>.wasm`, `<hash>-<name>.zip` | The PHP WebAssembly, `site.zip` (WordPress, WooCommerce, the mu-plugins) and `opcache.zip`. Wrangler names them; `index.js` imports them by these names. |
 | `manifest.json` | The name, size, SHA-256 and upload type of each module, and the version, git sha, build id, and the Wrangler, WordPress and WooCommerce versions. |
 | `wordpress-static.tar.gz` | `build/public`, the static files. Nothing reads it yet (#328, item 2). |
+| `remote-packs-index.json` | The opcache index, the site index, and each pack's path, size and hashes (#1036). Absent when the bundle was built with `OPCACHE_REMOTE=0`. `manifest.json` carries `assetsIndexSha256` of this file when it is present. |
+| `oc-*.zip`, `st-*.zip`, `site-hot.zip` | The packs. The one-click admin uploads them as the site's assets under `/_pf/`. |
 | `NOTICE` | PHP and Zend acknowledgment lines, and the list of linked components (#584). |
 | `SOURCE` | For the pinned lean engine: the engine prerelease, both pinned hashes, and `prepare.sh`'s transform. For the npm Playground engine (`PHP_ENGINE=npm`): the pinned binary, `spikes/b2-wordpress/prepare.sh`, the php-src commit, the Emscripten version, and the URL of each library source. The shipped wasm sha256 is the `SHA256SUMS` line, and SOURCE says whether that line differs from the pin (#584). |
 | `LICENSES.tar.gz` | The notices directory: the licence text of each linked component, fetched at the pinned version (#584). |
 | `SHA256SUMS` | The SHA-256 of every other asset. |
 
-The approach-A assets are the same table with every name prefixed `a.`: `a.index-a-lean.js`, `a.<hash>-<name>.wasm` and `.zip`, `a.manifest.json`, `a.wordpress-static.tar.gz`, `a.NOTICE`, `a.SOURCE`, `a.LICENSES.tar.gz`, `a.SHA256SUMS`. Inside `a.manifest.json` the module names are the real ones (no prefix), because they are the names `index-a-lean.js` imports. A loader reads asset `a.<name>` for module `<name>`. CI checks that no `a.` asset name equals a b-dosql one.
+The approach-A assets are the same table with every name prefixed `a.`: `a.index-a-lean.js`, `a.<hash>-<name>.wasm` and `.zip`, `a.manifest.json`, `a.wordpress-static.tar.gz`, `a.NOTICE`, `a.SOURCE`, `a.LICENSES.tar.gz`, `a.SHA256SUMS`. Inside `a.manifest.json` the module names are the real ones (no prefix), because they are the names `index-a-lean.js` imports. A loader reads asset `a.<name>` for module `<name>`. The pack index works the same way: `asset` is `oc-0.zip`, and the file in the release is `a.oc-0.zip`. CI checks that no `a.` asset name equals a b-dosql one.
 
 ## Which engine
 
