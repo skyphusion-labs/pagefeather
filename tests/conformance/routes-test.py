@@ -2,6 +2,7 @@
 """#759: routes.py's rules against a stub site (no WordPress). Each kind is produced once and named:
 json (pass), a declared zip (pass), json_contaminated, rest_error_5xx, fatal, no_schema on OPTIONS, a route with a
 path parameter (listed, not called), a core route missing from the index, and a 400 (a valid REST answer).
+The conformance test plugins' namespaces (the store reset, the feature-flag reset) are never called, only listed.
 Also: a clean index exits 0; a bad admin password exits 2 before any route is called.
 Run: python3 -I tests/conformance/routes-test.py
 """
@@ -20,7 +21,11 @@ def mk_index(bad):
         r.update({"/zip": "GET", "/contam": "GET", "/rest500": "GET", "/fatal": "GET", "/noschema": "POST"})
     else:
         r["/zip"] = "GET"
-    return {"namespaces": ["t"], "routes": {k: {"namespace": "t", "endpoints": [{"methods": [m]}]} for k, m in r.items()}}
+    idx = {"namespaces": ["t"], "routes": {k: {"namespace": "t", "endpoints": [{"methods": [m]}]} for k, m in r.items()}}
+    # sb1120: the test plugins' destructive GETs. routes.py must never call them.
+    idx["routes"]["/wc-cleanup/v1/reset"] = {"namespace": "wc-cleanup/v1", "endpoints": [{"methods": ["GET"]}]}
+    idx["routes"]["/e2e-feature-flags/reset"] = {"namespace": "e2e-feature-flags", "endpoints": [{"methods": ["GET"]}]}
+    return idx
 class H(BaseHTTPRequestHandler):
     index = None; calls = None
     def log_message(self, *a): pass
@@ -78,6 +83,10 @@ check("a core route missing from the index fails", (res or {}).get("missing_core
 check("a declared zip is a valid answer", ("/zip", "admin") not in kinds and (res or {})["routes"]["/zip"]["admin"]["kind"] == "non_json:application/zip", (res or {}).get("routes", {}).get("/zip"))
 check("a 400 is a valid REST answer", ("/needsarg", "guest") not in kinds, kinds)
 check("a path-parameter route is listed, never called", any(x["route"].startswith("/wp/v2/thing/") for x in (res or {}).get("param_routes", [])) and not any("thing" in c[1] for c in calls), [c for c in calls if "thing" in c[1]])
+check("the test plugins' reset routes are never called (no GET, no OPTIONS), and are listed as skipped",
+      not any(("/wc-cleanup/v1/reset" in c[1] or "/e2e-feature-flags/reset" in c[1]) for c in calls)
+      and sorted(x["route"] for x in (res or {}).get("skipped", [])) == ["/e2e-feature-flags/reset", "/wc-cleanup/v1/reset"],
+      ([c for c in calls if "reset" in c[1]], (res or {}).get("skipped")))
 p, res, _ = run(False)
 check("a clean index exits 0", p.returncode == 0 and res and res["failures"] == [], (p.returncode, (res or {}).get("failures")))
 p, res, calls = run(False, pw="wrong")
