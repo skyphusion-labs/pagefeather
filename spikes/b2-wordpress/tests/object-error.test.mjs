@@ -275,10 +275,37 @@ test('THE CF759A CASE: a platform internal error is internal, whatever its refer
 	assert.equal(isResetKind('internal'), false, 'this message does not say the object was reset');
 });
 
-test('a platform internal error is a 503 the client can retry, never a write-loss and never a second send', async () => {
-	assert.equal(objectErrorOutcome('internal', 'POST'), '503');
-	assert.equal(objectErrorOutcome('internal', 'GET'), '503');
+// #1004: #976 classified this message and answered 503 for every method. That is
+// safe for a read. A checkout POST may already have written rows, and "try again"
+// can place a second order. The front Worker sends write-loss through the frame
+// probe (index.js): rolled back only when the frame proves it, otherwise the 500
+// "may have been saved". GET, HEAD and OPTIONS keep the 503. Nothing is retried.
+test('#1004: internal on a method that may have written is write-loss; GET, HEAD and OPTIONS stay 503', () => {
+	for (const m of ['POST', 'PUT', 'PATCH', 'DELETE', 'post']) {
+		assert.equal(mayHaveWritten(m), true, m);
+		assert.equal(objectErrorOutcome('internal', m), 'write-loss', m);
+	}
+	for (const m of ['GET', 'HEAD', 'OPTIONS']) {
+		assert.equal(mayHaveWritten(m), false, m);
+		assert.equal(objectErrorOutcome('internal', m), '503', m);
+	}
+	assert.equal(objectErrorOutcome('overloaded', 'POST'), '503', 'a full queue still never ran the request');
+	assert.equal(objectErrorOutcome('memory', 'GET'), '503', 'a safe method after a reset stays the 503');
+	// The write-loss answer is the existing path: probe, then rolled back only on proof.
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const branch = src.indexOf("if (objectErrorOutcome(kind, req.method) === 'write-loss') {");
+	const h503 = src.indexOf('const headers = objectErrorHeaders(kind, name, OVERLOAD_RETRY_AFTER_S);', branch);
+	const block = src.slice(branch, h503);
+	assert.ok(branch > 0 && h503 > branch, 'the 503 is built only after the write-loss decision');
+	assert.match(block, /const fr = await frameProbe\(env, name, pfReq\);/);
+	assert.match(block, /frameProvesRollback\(fr\) \? rolledBackResponse\(/);
+	assert.match(block, /writeLossResponse\('unknown'/);
+});
+
+test('a platform internal error is never sent twice, and its 503 names the platform fault', async () => {
 	assert.equal(shouldRetryObjectError('internal', 'GET', 0), false, 'a retry adds load to a platform fault');
+	assert.equal(shouldRetryObjectError('internal', 'HEAD', 0), false);
+	assert.equal(shouldRetryObjectError('internal', 'OPTIONS', 0), false);
 	assert.equal(shouldRetryObjectError('internal', 'POST', 0), false);
 	const h = objectErrorHeaders('internal', 'php-0', '5');
 	assert.equal(h['x-platform-error'], 'internal');
