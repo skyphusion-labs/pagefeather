@@ -497,7 +497,7 @@ PY2
 # measurement flags: never recorded, by design (site_settings.py MEASUREMENT): ON only for the run.
 # HTTP_ALLOW_HOSTS is a recorded setting (#564). The record stores presence, so empty stays empty.
 # TMPDIR: curl_cfg writes the mode-600 curl config there (#581). Not a site setting.
-measurement=" APP_PASSWORD_HEADROOM COMMENT_HEADROOM DISPATCH_PERF_LOG FAULT_INJECT HEADROOM_PROBE MEM_LEDGER NAV_HEADROOM PRODUCT_HEADROOM WFP_PHP_ENV "
+measurement=" APP_PASSWORD_HEADROOM COMMENT_HEADROOM DISPATCH_PERF_LOG EMAIL_FAULT FAULT_INJECT HEADROOM_PROBE MEM_LEDGER NAV_HEADROOM PRODUCT_HEADROOM WFP_PHP_ENV "
 # #628: page_cache_product_var reads the build inputs WOO_ACTIVE, IMPORT_PLUGINS and PLUGINS (woo_active_for_build:
 # a store renders PAGE_CACHE_PRODUCT_TTL 30). They are recorded BUILD INPUTS (_build/inputs.json, #379), restored
 # by use_recorded_inputs before the render, so an update keeps them without SITE_SETTINGS.

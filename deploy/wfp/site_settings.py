@@ -75,7 +75,7 @@ PRESENCE = ("HTTP_ALLOW_HOSTS",)
 #                   request's chosen SQL statement as the memory ceiling does (#766). Throwaway only.
 #   DISPATCH_PERF_LOG "on": the dispatcher logs each request's operator x-perf-id with its times (#605). Throwaway only.
 # #1008: the four per-route headroom gates, "off" for a measurement arm only.
-MEASUREMENT = ("HEADROOM_PROBE", "MEM_LEDGER", "WFP_PHP_ENV", "FAULT_INJECT", "DISPATCH_PERF_LOG",
+MEASUREMENT = ("HEADROOM_PROBE", "MEM_LEDGER", "WFP_PHP_ENV", "FAULT_INJECT", "EMAIL_FAULT", "DISPATCH_PERF_LOG",
                "APP_PASSWORD_HEADROOM", "PRODUCT_HEADROOM", "COMMENT_HEADROOM", "NAV_HEADROOM")
 SECRETS = ("TURNSTILE_SECRET",)
 # No log line carries data from SECRETS: a message about a secret is one fixed text, and which
