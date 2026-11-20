@@ -40,7 +40,7 @@ import { recycleLine, recycleDecision } from './recycle-line.mjs';
 import { OBJECT_CACHE_MAX_BYTES, nextObjectCacheCap } from './object-cache-cap.mjs';
 import { PHP_ENGINE, ENGINE_RECYCLE_MIB } from './vendor/engine.mjs'; // #771: written by prepare.sh
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
-import { failureRecords, drainRetries, DEAD_PREFIX } from './email-retry.mjs';
+import { failureRecords, drainRetries, DEAD_PREFIX, scrub } from './email-retry.mjs';
 import { routeClass, createTrace } from './file-trace.mjs';
 import { refuseSocketsDecorator, parseMessage } from './runtime-guards.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
@@ -1074,10 +1074,13 @@ function tickMailFor(env, storage) {
 		seen: st ? async (key) => (await st.get(key)) !== undefined : null,
 		mark: st ? (key) => st.put(key, Date.now()) : null,
 		handoff: async (email) => {
-			const sp = sendList(env, [email]);
+			// #1088 B: the outcome, so a send that failed into the retry store is counted (sendFailed), not just handed off.
+			const sp = sendListOutcome(env, [email]);
 			if (!sp) return 0;
 			const r = await boundedWait(sp, SEND_TIMEOUT_MS);
-			return r === TIMED_OUT ? 'bounded' : r;
+			if (r === TIMED_OUT) return 'bounded';
+			const o = r;
+			return { sent: o.sent, sendFailed: o.failed };
 		},
 		lostWrites: () => resetFailTotal - base,
 		log: (o) => console.log(JSON.stringify(o)),
@@ -1210,16 +1213,22 @@ function sendPending(env) {
 	return sendList(env, toSend);
 }
 
+// The domain of a recipient address, for a log line (never the whole address: #1062's privacy rule).
+function domainOfAddress(to) {
+	const s = String(to || '');
+	const at = s.lastIndexOf('@');
+	return at > 0 ? s.slice(at + 1).replace(/[>\s].*$/, '').toLowerCase().slice(0, 100) : null;
+}
 // Send a list of wp_mail messages: to the durable queue when it is on (#190), else straight
-// through the send_email binding. Returns a promise of the count, or null for an empty list.
-function sendList(env, toSend) {
+// through the send_email binding. Returns a promise of { sent, failed }, or null for an empty list.
+function sendListOutcome(env, toSend) {
 	if (!toSend.length) return null;
 	if (!env || !env.EMAIL || !sender(env)) {
 		console.log('email send: ' + toSend.length + ' dropped, MAIL_FROM or the send_email binding is not set');
-		return Promise.resolve(0);
+		return Promise.resolve({ sent: 0, failed: 0 });
 	}
 	// Durable path (#190): hand the drain to the queue; the consumer delivers with retry.
-	if (emailQueueEnabled(env)) return enqueueEmails(env, toSend);
+	if (emailQueueEnabled(env)) return enqueueEmails(env, toSend).then((n) => ({ sent: n, failed: 0 }));
 	const items = toSend.flatMap((e) => sendEmail(env, e).map((p) => ({ e, p })));
 	return Promise.allSettled(items.map((x) => x.p)).then(async (rs) => {
 		const failures = [];
@@ -1228,10 +1237,18 @@ function sendList(env, toSend) {
 		});
 		if (failures.length) {
 			console.log('email send: ' + failures.length + ' of ' + rs.length + ' failed');
+			// #1088 B (#104, #856): each refused send is logged loudly WITH its reason (addresses and URLs scrubbed) and the
+			// recipient's domain only.
+			for (const f of failures) console.log(JSON.stringify({ '@event': 'email-send-failed', m: 'email-send-failed', reason: scrub(f.error), domain: domainOfAddress(f.to), retry: 'queued' }));
 			await mailRetryPut(env, failures); // #1057: retried with backoff, never dropped
 		}
-		return rs.length - failures.length;
+		return { sent: rs.length - failures.length, failed: failures.length };
 	});
+}
+// The sent count only (the request path's flush).
+function sendList(env, toSend) {
+	const p = sendListOutcome(env, toSend);
+	return p ? p.then((o) => o.sent) : null;
 }
 
 // Producer: hand the drained wp_mail messages to the durable queue (#190). The

@@ -87,7 +87,7 @@ export function tickEmailDecision(email, lostWrites) {
  * tick record.
  */
 export function createTickMail({ handoff, lostWrites, log = () => {}, seen = null, mark = null }) {
-	const counts = { handedOff: 0, held: 0, failed: 0, bounded: 0, deduped: 0 };
+	const counts = { handedOff: 0, held: 0, failed: 0, bounded: 0, deduped: 0, sendFailed: 0 };
 	return {
 		counts,
 		lostWritesSeen: () => Number(lostWrites()) || 0,
@@ -116,6 +116,9 @@ export function createTickMail({ handoff, lostWrites, log = () => {}, seen = nul
 			try {
 				const r = await handoff(email);
 				if (r === 'bounded') counts.bounded++;
+				// #1088 B: the send failed for n recipients, who went to the #1057 retry store (durable, so still handed off).
+				const sendFailed = r && typeof r === 'object' && Number.isInteger(r.sendFailed) && r.sendFailed > 0 ? r.sendFailed : 0;
+				counts.sendFailed += sendFailed;
 				counts.handedOff++;
 				if (key && mark) {
 					try {
@@ -124,7 +127,7 @@ export function createTickMail({ handoff, lostWrites, log = () => {}, seen = nul
 						log({ '@event': 'email-dedupe', m: 'email-dedupe', as_action, error: 'mark: ' + String((e && e.message) || e).slice(0, 120) });
 					}
 				}
-				log({ '@event': 'email-handoff', m: 'email-handoff', as_action, lostWrites: lost, ...(r === 'bounded' ? { bounded: true } : {}) });
+				log({ '@event': 'email-handoff', m: 'email-handoff', as_action, lostWrites: lost, ...(r === 'bounded' ? { bounded: true } : {}), ...(sendFailed ? { sendFailed } : {}) });
 				return { ok: true, queued: true };
 			} catch (e) {
 				counts.failed++;
