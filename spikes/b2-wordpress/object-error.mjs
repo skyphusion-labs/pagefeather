@@ -17,16 +17,24 @@
 export const MEMORY_RESET = /exceeded its memory limit/i;
 export const STORAGE_RESET = /Durable Object storage caused object to be reset/i;
 export const OVERLOADED = /Durable Object is overloaded/i;
+// #976, measured 2026-11-19 14:19:16Z on cf759a (build 83056b7). stub.fetch threw
+// "internal error; reference = <id>". The stack was raceFetch. The object did not
+// log the path. The worker rethrew it, and the dispatcher answered 502.
+// This is not the #398 storage reset. That sentence names storage and a reset.
+// The match is the whole message. The reference id is not part of the match.
+// A bare "internal error" is not this.
+export const PLATFORM_INTERNAL = /^internal error; reference = [a-z0-9]+$/i;
 
 /**
- * 'memory' for an isolate memory reset, 'storage' for a storage reset, 'overloaded' for a full
- * queue, null for anything else. A reset is checked before the overloaded flag: the platform sets
- * e.overloaded on a memory reset too.
+ * 'memory' for an isolate memory reset, 'storage' for a storage reset, 'internal' for the
+ * #976 platform error, 'overloaded' for a full queue, null for anything else. A reset is
+ * checked before the overloaded flag: the platform sets e.overloaded on a memory reset too.
  */
 export function classifyObjectError(e) {
 	const msg = String((e && e.message) || e || '');
 	if (MEMORY_RESET.test(msg)) return 'memory';
 	if (STORAGE_RESET.test(msg)) return 'storage';
+	if (PLATFORM_INTERNAL.test(msg)) return 'internal';
 	if ((e && e.overloaded === true) || OVERLOADED.test(msg)) return 'overloaded';
 	return null;
 }
@@ -115,6 +123,7 @@ export async function fetchWithMemoryRetry(send, method, onRetry) {
 export function objectErrorHeaders(kind, objectName, retryAfterS) {
 	const h = { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'retry-after': retryAfterS, 'x-php-object': objectName };
 	if (isResetKind(kind)) h['x-isolate-reset'] = kind;
+	else if (kind === 'internal') h['x-platform-error'] = 'internal';
 	else h['x-overloaded'] = '1';
 	return h;
 }

@@ -46,8 +46,10 @@ test('the reset lines carry the operator id, and only for an operator request wi
 	const retryLine = lines.find((l) => l.includes('object-deadline-retry') && l.includes('isolate-reset-retry'));
 	assert.ok(retryLine, 'object-deadline-retry | isolate-reset-retry');
 	assert.match(retryLine, /\.\.\.memIdOf\(req, env\)/, 'retry log');
-	const resetLine = lines.find((l) => l.includes("m: reset ? 'isolate-reset' : 'overloaded'"));
-	assert.ok(resetLine, "m: reset ? 'isolate-reset' : 'overloaded'");
+	const tagLine = lines.find((l) => l.includes("const tag = reset ? 'isolate-reset' : kind === 'internal' ? 'platform-internal' : 'overloaded'"));
+	assert.ok(tagLine, "platform-internal");
+	const resetLine = lines.find((l) => l.includes("{ m: tag,") && l.includes("memIdOf(req, env)"));
+	assert.ok(resetLine, "m: tag");
 	assert.match(resetLine, /\.\.\.memIdOf\(req, env\)/, 'reset log');
 	assert.ok(src.includes("return id && MEM_ID_RE.test(id) && perfHeadersAllowed(req, env) ? { id } : {};"));
 	assert.ok(src.includes("const MEM_ID_RE = /^[A-Za-z0-9_.-]{1,64}$/;"));

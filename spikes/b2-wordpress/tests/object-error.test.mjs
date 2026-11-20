@@ -250,8 +250,49 @@ test('index.js toPhpObject: the storage kind reaches the log line and the write-
 	const i = src.indexOf('async function toPhpObjectCall(') /* #708: the body behind the toPhpObject wrapper */;
 	const body = src.slice(i, src.indexOf('\n}\n', i));
 	assert.match(body, /const reset = isResetKind\(kind\);/);
-	assert.match(body, /m: reset \? 'isolate-reset' : 'overloaded', kind,/, 'logged as isolate-reset with its kind, so it is counted');
+	assert.match(body, /const tag = reset \? 'isolate-reset' : kind === 'internal' \? 'platform-internal' : 'overloaded';/);
+	assert.match(body, /m: tag, kind,/, 'logged with its kind, so it is counted');
 	assert.match(body, /if \(objectErrorOutcome\(kind, req\.method\) === 'write-loss'\) \{/);
 	assert.match(body, /writeLossResponse\('unknown', wantsJson\(url\.pathname, url\.search, req\.headers\.get\('accept'\)\), kind\);/, 'the 500 names the reset kind');
-	assert.match(body, /new Response\(reset \? 'The site restarted\./);
+	assert.match(body, /The site had an internal error\./);
+	assert.match(body, /The site restarted\./);
+});
+
+// #976: the platform message, from Workers Logs for site-cf759a (2026-11-19, 14:19:16.887Z).
+// The reference id changes on every throw. The storage-reset sentence stays storage.
+import { PLATFORM_INTERNAL } from '../object-error.mjs';
+const platformInternal = new Error('internal error; reference = 90uegpepiv0mtmldgmi75dvu');
+const platformInternalOther = new Error('internal error; reference = q107v5lm1joquvq82v55uv8p');
+
+test('THE CF759A CASE: a platform internal error is internal, whatever its reference id', () => {
+	assert.equal(classifyObjectError(platformInternal), 'internal');
+	assert.equal(classifyObjectError(platformInternalOther), 'internal');
+	assert.equal(classifyObjectError(new Error('Internal error; reference = abc')), 'internal');
+	assert.equal(classifyObjectError(storage), 'storage', 'the storage reset sentence stays storage');
+	assert.equal(classifyObjectError(new Error('internal error')), null, 'a bare internal error is not this');
+	assert.equal(classifyObjectError(new Error('internal error; reference = has space')), null);
+	assert.doesNotMatch(PLATFORM_INTERNAL.source, /90uegpe|q107v5/, 'the match is on the stable text, never the id');
+	assert.equal(isResetKind('internal'), false, 'this message does not say the object was reset');
+});
+
+test('a platform internal error is a 503 the client can retry, never a write-loss and never a second send', async () => {
+	assert.equal(objectErrorOutcome('internal', 'POST'), '503');
+	assert.equal(objectErrorOutcome('internal', 'GET'), '503');
+	assert.equal(shouldRetryObjectError('internal', 'GET', 0), false, 'a retry adds load to a platform fault');
+	assert.equal(shouldRetryObjectError('internal', 'POST', 0), false);
+	const h = objectErrorHeaders('internal', 'php-0', '5');
+	assert.equal(h['x-platform-error'], 'internal');
+	assert.equal(h['x-overloaded'], undefined);
+	assert.equal(h['x-isolate-reset'], undefined);
+	assert.equal(h['cache-control'], 'no-store');
+	assert.equal(h['retry-after'], '5');
+	const p = fake(platformInternal, 'page');
+	const res = await fetchWithMemoryRetry(p.send, 'POST');
+	assert.equal(res.kind, 'internal');
+	assert.equal(res.attempts, 1);
+	assert.deepEqual(p.calls, [0], 'a POST is never sent twice');
+	const g = fake(platformInternal, 'page');
+	const res2 = await fetchWithMemoryRetry(g.send, 'GET');
+	assert.equal(res2.kind, 'internal');
+	assert.deepEqual(g.calls, [0], 'a GET is not retried into a platform fault');
 });
