@@ -72,6 +72,19 @@ VARIANT=$(tfs output -raw variant)
 STATE_ACCOUNT=$(tfs output -raw account_id)
 [ "$STATE_ACCOUNT" = "$ACCOUNT_ID" ] || { echo "destroy: ACCOUNT_ID is not the account of $NAME in its state ($STATE_ACCOUNT): refusing. Use that account's id and token." >&2; exit 1; }
 echo "destroy: $NAME (variant $VARIANT, account $ACCOUNT_ID), variables from $VARS"
+# The media bucket (MEDIA=1) is emptied with a temporary R2 credential that reaches only that bucket
+# (#1031, the deploy/wfp path, #273: deploy/wfp/r2_temp.py). It is minted HERE, before anything is
+# deleted, so a deploy token that cannot mint it stops the run with the site whole. Before #1031,
+# step 3 made an account token (media-import.tf), which needs API Tokens Write, and the run stopped
+# after the Worker was gone (cf759h, 2026-11-20). R2 Storage Write is enough for the mint.
+BUCKET=$(tfs output -raw media_bucket)
+R2_TTL=${R2_TEMP_TTL:-3600}
+R2_CF="$W/r2-temp.cred"
+# c1 empties its buckets with its own teardown key (variants/c1-destroy.sh): no mint there.
+if [ -n "$BUCKET" ] && [ "$VARIANT" != c1 ]; then
+  python3 -I "$ROOT/deploy/wfp/r2_temp.py" mint "$BUCKET" "$R2_TTL" "$R2_CF" || {
+    echo "destroy: no temporary R2 credential for the media bucket $BUCKET (the deploy token needs Workers R2 Storage Write). Nothing was deleted." >&2; exit 1; }
+fi
 # Variant a with MYSQL=vultr: its box has its own Terraform root. Check it now
 # too, so the run does not stop halfway.
 M="$ROOT/deploy/mysql"
@@ -108,13 +121,11 @@ wr_delete() { (cd "$ROOT/deploy" && "$WR" delete --name "$NAME" --force); }
 delete_worker wr_delete
 
 # 3. The media bucket (MEDIA=1): R2 refuses to delete a bucket that has
-# objects, so it is emptied first, with the short-lived import key
-# (media-import.tf: object read and write on this bucket only; the destroy
-# below deletes the key with the rest).
-BUCKET=$(tfs output -raw media_bucket)
+# objects, so it is emptied first, with the temporary credential minted in step 1
+# (object read and write on this bucket only). r2-empty.sh mints a fresh one on
+# a refusal (it expires after R2_TEMP_TTL, default 3600 s, and cannot be revoked alone).
 if [ -n "$BUCKET" ]; then
-  tfs apply -input=false -auto-approve -var-file="$VARS" -var media_import=true -target=cloudflare_account_token.media_import >/dev/null
-  R2_KEY_ID=$(tfs output -raw media_import_access_key_id) R2_SECRET=$(tfs output -raw media_import_secret_access_key) \
+  R2_CRED_FILE=$R2_CF R2_CRED_REFRESH=$(printf 'python3 -I %q mint %q %q %q' "$ROOT/deploy/wfp/r2_temp.py" "$BUCKET" "$R2_TTL" "$R2_CF") \
     "$ROOT/deploy/variants/r2-empty.sh" "$(tfs output -raw r2_endpoint)" "$BUCKET"
 fi
 

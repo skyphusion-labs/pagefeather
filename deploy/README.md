@@ -303,6 +303,7 @@ Every answer of the object path that the edge never keeps carries `x-pf-call`: a
 - The Worker is deleted by its name (`NAME`), so the clone's Wrangler config is not needed.
 - For variant `a` with `MYSQL=vultr`, the box's root (`deploy/mysql`) needs its `sites/<name>.tfvars`, or `MYSQL_ZONE_ID` and `MYSQL_HOST` as for `deploy.sh`: its zone is no output. If no box state is found, the script says that a box, if there is one, is NOT removed.
 - For `c1`, the teardown apply targets the Litestream key only.
+- A site with a media bucket (`MEDIA=1`): a temporary R2 credential for that one bucket is minted first, from the deploy token (`deploy/wfp/r2_temp.py`, #1031). It needs Workers R2 Storage Write, not API Tokens Write. If the mint is refused, the script stops and nothing is deleted. The credential empties the bucket in step 3 and expires after `R2_TEMP_TTL` (3600 s).
 
 Tests: `deploy/tests/destroy-test.sh` (offline, local state, an `npx` stub).
 
