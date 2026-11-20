@@ -78,7 +78,8 @@ render_conf() {
   echo '[vars]'
   echo "PHP_ENV = '{\"USE_ZEND_ALLOC\":\"0\"}'"
   echo "SITE_ORIGIN = \"$SITE_ORIGIN\""
-  SITE_ORIGIN="$SITE_ORIGIN" MAIL_FROM="${MAIL_FROM:-}" MAIL_FROM_NAME="${MAIL_FROM_NAME:-}" node "$APP/mail-from.mjs" --vars
+  # #1135: MAIL_ALLOWED_TO too, so the runtime pre-check gets the binding's own allowlist (one list, mail-from.mjs).
+  SITE_ORIGIN="$SITE_ORIGIN" MAIL_FROM="${MAIL_FROM:-}" MAIL_FROM_NAME="${MAIL_FROM_NAME:-}" MAIL_ALLOWED_TO="${MAIL_ALLOWED_TO:-}" node "$APP/mail-from.mjs" --vars
   # Hosts PHP may call. Unset writes the default. Empty denies. See http-allow.mjs.
   HTTP_ALLOW=$(node "$APP/http-allow.mjs")
   echo "HTTP_ALLOW_HOSTS = \"$HTTP_ALLOW\""

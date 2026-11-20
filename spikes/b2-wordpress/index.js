@@ -1,7 +1,7 @@
 // Spike B2: WordPress in a Worker, database on D1.
 import { sqlImport } from './sql-import.js';
 import { releaseReservedName, releaseReservedD1, tryReserveName, RESERVE_DDL, RESERVE_INSERT } from './r2-reserve.mjs';
-import { sender, replyTo, deliverableRecipients, bindingAddress } from './mail-from.mjs';
+import { sender, replyTo, deliverableRecipients, bindingAddress, precheckRecipients } from './mail-from.mjs';
 import { collapsedSlashRedirect } from './slash-path.mjs';
 import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, handleQueuedEmail } from './email-queue.mjs';
 import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
@@ -1076,9 +1076,30 @@ function mountLazyZip(FS, mountPath, zip) {
 // request still collects the messages and sends them after the response.
 function emailOp(email) {
 	stats.email = (stats.email || 0) + 1;
-	if (tickMail) return tickMail.op(email);
-	pendingEmails.push(email);
-	return { ok: true, queued: true };
+	// #1135 (the lead's ruling (a)), #198 folded in: the recipients the platform can never deliver to are refused here, in
+	// 0 ms, before anything is queued, so #368's HOLD still decides the rest at the request end. Never sent, never retried.
+	const pc = precheckRecipients(ENV, email && email.to);
+	const total = pc.send.length + pc.refused.length;
+	let refusal = null;
+	if (pc.refused.length) {
+		const nUndeliverable = pc.refused.filter((x) => x.why === 'undeliverable').length;
+		const nNotAllowed = pc.refused.length - nUndeliverable;
+		stats.emailRefused = (stats.emailRefused || 0) + pc.refused.length;
+		if (tickMail) { tickMail.counts.droppedUndeliverable += nUndeliverable; tickMail.counts.refusedAllowlist += nNotAllowed; }
+		console.log(JSON.stringify({ '@event': 'email-refused', m: 'email-refused', at: 'precheck', undeliverable: nUndeliverable, notAllowed: nNotAllowed, of: total }));
+		refusal = { refused: pc.refused.length, of: total, reason: pc.reason, retry: false };
+	}
+	if (!pc.send.length) return { ok: true, queued: false, ...refusal };
+	const toSend = refusal ? { ...email, to: pc.send } : email;
+	if (tickMail) {
+		return Promise.resolve(tickMail.op(toSend)).then((r) => {
+			if (!refusal || !r || r.ok === false) return r;
+			const rr = Number(r.refused) || 0;
+			return { ...r, refused: rr + refusal.refused, of: total, reason: r.reason || refusal.reason, retry: Boolean(r.retry) };
+		});
+	}
+	pendingEmails.push(toSend);
+	return { ok: true, queued: true, ...refusal };
 }
 
 // The mail side of the cron tick that is running PHP now, or null. Set and cleared by runCron
@@ -1104,7 +1125,7 @@ function tickMailFor(env, storage) {
 			const r = await boundedWait(sp, SEND_TIMEOUT_MS);
 			if (r === TIMED_OUT) return 'bounded';
 			const o = r;
-			return { sent: o.sent, sendFailed: o.failed, dropped: o.dropped || 0, of: o.sent + o.failed + (o.dropped || 0), reason: o.reason }; // #1135, #198: the outcome reaches PHP
+			return { sent: o.sent, sendFailed: o.failed, of: o.sent + o.failed, reason: o.reason }; // #1135: the reason reaches PHP
 		},
 		lostWrites: () => resetFailTotal - base,
 		log: (o) => console.log(JSON.stringify(o)),
@@ -1267,9 +1288,6 @@ function sendListOutcome(env, toSend) {
 	}
 	// Durable path (#190): hand the drain to the queue; the consumer delivers with retry.
 	if (emailQueueEnabled(env)) return enqueueEmails(env, toSend).then((n) => ({ sent: n, failed: 0 }));
-	// #198: the recipients sendEmail drops as undeliverable (never sent, never retried), counted so the tick and PHP hear it.
-	const dropped = toSend.reduce((n, e) => n + deliverableRecipients(e.to).dropped, 0);
-	if (dropped) console.log(JSON.stringify({ '@event': 'email-dropped', m: 'email-dropped', why: 'undeliverable', n: dropped }));
 	const items = toSend.flatMap((e) => sendEmail(env, e).map((p) => ({ e, p })));
 	return Promise.allSettled(items.map((x) => x.p)).then(async (rs) => {
 		const failures = [];
@@ -1283,7 +1301,7 @@ function sendListOutcome(env, toSend) {
 			for (const f of failures) console.log(JSON.stringify({ '@event': 'email-send-failed', m: 'email-send-failed', reason: scrub(f.error), domain: domainOfAddress(f.to), ms: f.ms, retry: 'queued' }));
 			await mailRetryPut(env, failures); // #1057: retried with backoff, never dropped
 		}
-		return { sent: rs.length - failures.length, failed: failures.length, dropped, reason: failures.length ? scrub(failures[0].error) : null };
+		return { sent: rs.length - failures.length, failed: failures.length, reason: failures.length ? scrub(failures[0].error) : null };
 	});
 }
 // The sent count only (the request path's flush).

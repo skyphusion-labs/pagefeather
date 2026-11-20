@@ -119,13 +119,38 @@ export function sendEmailBinding(env) {
 }
 
 // Var lines for the generated wrangler config. Empty when there is no address.
+// #1135: MAIL_ALLOWED_TO is rendered from allowedTo(env), the SAME list sendEmailBinding renders as
+// allowed_destination_addresses, so the runtime pre-check and the binding cannot drift (tests/mail-from.test.mjs).
 export function mailVarLines(env) {
 	const email = resolveMailFrom(env);
 	if (!email) return '';
 	const lines = ['MAIL_FROM = "' + tomlString(email, 'MAIL_FROM') + '"'];
 	const name = String((env && env.MAIL_FROM_NAME) || '').trim();
 	if (name) lines.push('MAIL_FROM_NAME = "' + tomlString(name, 'MAIL_FROM_NAME') + '"');
+	const to = allowedTo(env);
+	if (to.length) lines.push('MAIL_ALLOWED_TO = "' + tomlString(to.join(','), 'MAIL_ALLOWED_TO') + '"');
 	return lines.join('\n');
+}
+
+// #1135 (the lead's ruling (a)): which recipients can be sent at all, decided inside wp_mail in 0 ms, before anything
+// is queued (so #368's HOLD still decides at the request end). Refused: #198's undeliverable domains, and, when the
+// MAIL_ALLOWED_TO var is set (rendered with the binding, mailVarLines), an address outside it: the binding would refuse
+// it ("email to ... not allowed", measured on cf759hx). A malformed runtime list fails OPEN (the binding still guards).
+export const REASON_UNDELIVERABLE = 'undeliverable recipient domain (#198)';
+export const REASON_NOT_ALLOWED = 'email to [address] not allowed';
+export function precheckRecipients(env, list) {
+	const all = (Array.isArray(list) ? list : [list]).map((x) => String(x || '').trim()).filter(Boolean);
+	let allow = null;
+	try { const l = allowedTo(env); if (l.length) allow = new Set(l.map((a) => a.toLowerCase())); } catch { allow = null; }
+	const send = [], refused = [];
+	for (const to of all) {
+		const addr = (to.match(/<([^>]+)>/) || [null, to])[1].trim();
+		if (undeliverable(addr)) refused.push({ to, why: 'undeliverable' });
+		else if (allow && !allow.has(addr.toLowerCase())) refused.push({ to, why: 'not-allowed' });
+		else send.push(to);
+	}
+	const reason = refused.some((r) => r.why === 'not-allowed') ? REASON_NOT_ALLOWED : refused.length ? REASON_UNDELIVERABLE : null;
+	return { send, refused, reason };
 }
 
 const invoked = process.argv[1] && process.argv[1].endsWith('mail-from.mjs');

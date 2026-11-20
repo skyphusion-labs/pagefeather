@@ -167,3 +167,30 @@ test('#1056 MAIL_ALLOWED_TO with no sender is refused (it would allow nothing to
 	const m = await import('../mail-from.mjs');
 	assert.throws(() => m.sendEmailBinding({ SITE_ORIGIN: 'https://wp.workers.dev', MAIL_ALLOWED_TO: 'mackaye@skyphusion.org' }), /MAIL_ALLOWED_TO needs MAIL_FROM/);
 });
+
+// #1135 (the lead's ruling (a)): the refusal pre-check. A recipient the platform can never deliver to is refused inside
+// wp_mail, in 0 ms, before anything is queued, so #368's HOLD (a request with a lost write sends no mail) still decides
+// at the request end. Two classes, one path: #198's undeliverable domains, and the MAIL_ALLOWED_TO allowlist, which the
+// send_email binding enforces as allowed_destination_addresses. Both are rendered from ONE list (allowedTo).
+import { precheckRecipients, allowedTo as allowedTo1135, sendEmailBinding as binding1135, mailVarLines as vars1135 } from '../mail-from.mjs';
+test('#1135 precheck: undeliverable domains and addresses outside MAIL_ALLOWED_TO are refused, with the reason', () => {
+	const env = { MAIL_ALLOWED_TO: 'mackaye@skyphusion.org,b@skyphusion.org' };
+	const r = precheckRecipients(env, ['mackaye@skyphusion.org', 'load@example.com', 'customer@skyphusion.org']);
+	assert.deepEqual(r.send, ['mackaye@skyphusion.org']);
+	assert.deepEqual(r.refused.map((x) => x.why), ['undeliverable', 'not-allowed']);
+	assert.equal(r.reason, 'email to [address] not allowed', "the binding's own text for an allowlist refusal (strummer's #1135 run)");
+	assert.equal(precheckRecipients({}, ['load@example.com']).reason, 'undeliverable recipient domain (#198)');
+	assert.deepEqual(precheckRecipients({}, ['a@skyphusion.org', 'B@SkyPhusion.org']).send, ['a@skyphusion.org', 'B@SkyPhusion.org'], 'no allowlist: only #198 applies');
+	assert.deepEqual(precheckRecipients({ MAIL_ALLOWED_TO: 'Mackaye@Skyphusion.org' }, ['mackaye@skyphusion.org']).send, ['mackaye@skyphusion.org'], 'the allowlist compares addresses case-insensitively');
+	assert.equal(precheckRecipients({ MAIL_ALLOWED_TO: 'not an address' }, ['x@skyphusion.org']).send.length, 1, 'a malformed runtime list (deploy refuses one) fails OPEN to the binding, never refusing a deliverable send');
+});
+test('#1135 ONE source: the binding allowlist and the MAIL_ALLOWED_TO var are rendered from the same list, and are equal', () => {
+	const env = { MAIL_FROM: 'wp@skyphusion.org', MAIL_ALLOWED_TO: ' mackaye@skyphusion.org , b@skyphusion.org ' };
+	const b = binding1135(env);
+	const fromBinding = JSON.parse(b.match(/allowed_destination_addresses = (\[[^\]]*\])/)[1]);
+	const v = vars1135(env);
+	const fromVar = JSON.parse(v.match(/^MAIL_ALLOWED_TO = (".*")$/m)[1]).split(',');
+	assert.deepEqual(fromBinding, allowedTo1135(env));
+	assert.deepEqual(fromVar, fromBinding, 'the var is the binding list, exactly');
+	assert.equal(/MAIL_ALLOWED_TO/.test(vars1135({ MAIL_FROM: 'wp@skyphusion.org' })), false, 'no allowlist, no var');
+});
