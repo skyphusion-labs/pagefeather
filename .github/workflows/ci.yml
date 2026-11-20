@@ -101,6 +101,7 @@ jobs:
           bash deploy/tests/page-cache-product-test.sh
           bash deploy/tests/observability-test.sh
           bash deploy/tests/media-guard-test.sh
+          bash deploy/tests/recorded-inputs-test.sh
           bash spikes/b2-wordpress/tests/trace-filter-test.sh
       - name: doctor reads Workers Logs and never reports zero rows or console-only logs as healthy (#652)
         # deploy/doctor against a fake telemetry API that fails any call it does not expect: no rows, a

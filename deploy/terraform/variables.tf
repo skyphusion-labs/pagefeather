@@ -101,3 +101,8 @@ variable "teardown" {
   default     = false
 }
 
+# #1108: this deploy's inputs, recorded in the site's own state (deploy/lib/recorded-inputs.sh). base64 of JSON; never a secret.
+variable "deploy_inputs" {
+  type    = string
+  default = ""
+}
