@@ -17,7 +17,7 @@ import { startByMs, objectShedPlan, startByResponse, shedAnswer, startByExempt, 
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
-import { cronBounds, cronCleanDue, cronLegDue } from './cron-bound.mjs';
+import { cronBounds, cronCleanDue, cronLegDue, cronAsBudgetMs, cronMore } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronRunDeferred, cronMarkOf, cronFatalOf } from './cron-health.mjs';
 import { approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME } from './a-cron.mjs';
 import { cronFailureLine } from './cron-error.mjs';
@@ -374,6 +374,8 @@ function memIdOf(req, env) {
 const ledger = createLedger();
 const sqlMeter = createSqlMeter();
 let ledgerActive = false;
+// #1120: the running cron leg's gate (cronMore with its clock, budget and heap), or null outside a leg.
+let cronMoreGate = null;
 // #296 step 3: the query trace of THIS request (qtrace.mjs), or null. Spike token AND x-pf-qtrace: 1 only.
 let qtrace = null;
 let ledgerId = null;
@@ -1639,6 +1641,8 @@ async function handleMessage(raw) {
 	// One trace checkpoint as it happens (#434), so a request killed by an isolate reset still
 	// leaves its marks in Workers Logs. Names and numbers only; mem-trace.php runs only for an
 	// operator request.
+	// #1120: the cron leg asks before each further Action Scheduler action: '1' runs it, 'budget' or 'heap' stops the leg.
+	if (m.cronMore !== undefined) { const why = cronMoreGate ? cronMoreGate() : 'stop'; return why || '1'; }
 	if (m.qtraceOn) return qtrace ? '1' : '0'; // #296 step 3: PHP asks once per request whether to send callers
 	if (m.memMark) { console.log(JSON.stringify({ m: 'mem-mark', ...(typeof m.id === 'string' && MEM_ID_RE.test(m.id) ? { id: m.id } : {}), k: m.memMark })); return '1'; }
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
@@ -3256,7 +3260,7 @@ export class PhpRuntime extends DurableObject {
 				// One line per completed tick (#335): the backlog it left and the WP-Cron event it ran, so
 				// the drain rate and WP-Cron starvation can be read from Workers Logs (/_purgestate keeps
 				// only the last tick).
-				console.log(JSON.stringify({ m: 'cron', done: 1, as_actions: cr.as_actions, as_pass: cr.as_pass, as_dates: cr.as_dates, as_hooks: cr.as_hooks, as_pending: cr.as_pending, as_due: cr.as_due, wp_cron_hooks: cr.wp_cron_hooks, wp_cron_skipped: cr.wp_cron_skipped, wp_cron_due: cr.wp_cron_due, mail: mail.counts, lostWrites: mail.lostWritesSeen() }));
+				console.log(JSON.stringify({ m: 'cron', done: 1, as_actions: cr.as_actions, as_stop: cr.as_stop, as_pass: cr.as_pass, as_dates: cr.as_dates, as_hooks: cr.as_hooks, as_pending: cr.as_pending, as_due: cr.as_due, legMs: cr.legMs, wasmMib: cr.wasmMib, wp_cron_hooks: cr.wp_cron_hooks, wp_cron_skipped: cr.wp_cron_skipped, wp_cron_due: cr.wp_cron_due, mail: mail.counts, lostWrites: mail.lostWritesSeen() }));
 				}
 				await this.ctx.storage.put(PURGE_STATE_KEY, cst);
 				// The #370 dedupe markers expire after DEDUPE_TTL_MS (14 days by default: past any Action
@@ -3698,11 +3702,19 @@ async function pruneDedupe(storage, now, ttlMs, limit = 128) {
 async function runCron(getBooted, cleanDue = false, mail = null, { held = false } = {}) {
 		// A bounded tick (cron-bound.mjs, #291): our own claim/process loop, not the queue runner,
 		// which grew the runtime past the 128 MiB isolate on a big store even for one action.
-		const { actions, wpEvents } = cronBounds(ENV);
+		const { actions, wpEvents } = cronBounds(ENV, { approachA: approachACronEnabled(ENV) });
+		const asBudgetMs = cronAsBudgetMs(ENV);
 		return withPhp(async () => {
+		const legT0 = Date.now(); // #1120: the leg's wall time and its PHP heap, on the cron line
 		const { php } = await getBooted();
 		// The tick's mail handoff (#362) is live only for this PHP run.
 		tickMail = mail;
+		let asN = 0;
+		const lineMib = recycleLine(ENV, ENGINE_RECYCLE_MIB).mib;
+		cronMoreGate = () => {
+			let heapMib; try { heapMib = php[__private__dont__use].HEAPU8.length / 1048576; } catch { heapMib = undefined; }
+			return cronMore({ n: ++asN, startedAt: legT0, now: Date.now(), budgetMs: asBudgetMs, heapMib, lineMib });
+		};
 		let r;
 		try {
 		r = await php.run({ code: `<?php
@@ -3718,7 +3730,7 @@ async function runCron(getBooted, cleanDue = false, mail = null, { held = false 
 				if ( function_exists( 'post_message_to_js' ) ) { post_message_to_js( json_encode( array( 'cronMark' => array( 'k' => $k, 'hook' => substr( (string) $hook, 0, 120 ), 'id' => (int) $id ) ) ) ); }
 			};
 			require '/wordpress/wp-load.php';
-			$ran = array(); $released = 0; $as_n = 0; $as_hooks = array(); $as_dates = array(); $cleaned = 0;
+			$ran = array(); $released = 0; $as_n = 0; $as_hooks = array(); $as_dates = array(); $cleaned = 0; $as_stop = null;
 			if ( class_exists( 'ActionScheduler' ) || function_exists( 'as_next_scheduled_action' ) ) {
 				// Stale-claim recovery (the DO memory-recycle class). This alarm is the only Action
 				// Scheduler runner and runs serialized (withPhp + the phpPending gate), so any claim on
@@ -3769,6 +3781,8 @@ async function runCron(getBooted, cleanDue = false, mail = null, { held = false 
 					$as_ids = $claim->get_actions();
 				}
 				foreach ( $as_ids as $as_id ) {
+					// #1120: before each further action, the Worker says whether the leg's time budget and heap allow it.
+					if ( $as_n > 0 ) { $as_more = function_exists( 'post_message_to_js' ) ? post_message_to_js( json_encode( array( 'cronMore' => $as_n ) ) ) : 'stop'; if ( '1' !== $as_more ) { $as_stop = $as_more; break; } }
 					$as_a = $as_store->fetch_action( $as_id ); $as_h = $as_a ? $as_a->get_hook() : '?';
 					$as_hooks[ $as_h ] = ( isset( $as_hooks[ $as_h ] ) ? $as_hooks[ $as_h ] : 0 ) + 1;
 					// The claimed action's scheduled date (#357), so a tick shows WHICH email it sent: a new one or the backlog.
@@ -3821,9 +3835,10 @@ async function runCron(getBooted, cleanDue = false, mail = null, { held = false 
 				$as_pending = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$as_t} WHERE status = 'pending'" );
 				$as_due = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$as_t} WHERE status = 'pending' AND scheduled_date_gmt <= '" . gmdate( 'Y-m-d H:i:s' ) . "'" );
 			}
-			echo json_encode( array( 'ran' => $ran, 'wp_cron_events' => $events, 'wp_cron_hooks' => implode( ',', $wp_hooks ), 'wp_cron_skipped' => implode( ',', array_keys( $skipped ) ), 'wp_cron_due' => implode( ',', array_keys( $wp_due ) ), 'released' => $released, 'as_actions' => $as_n, 'as_pass' => isset( $as_pass ) ? $as_pass : null, 'as_dates' => implode( ',', $as_dates ), 'as_hooks' => implode( ',', $as_list ), 'as_pending' => $as_pending, 'as_due' => $as_due, 'cleaned' => $cleaned ) );` });
+			echo json_encode( array( 'ran' => $ran, 'wp_cron_events' => $events, 'wp_cron_hooks' => implode( ',', $wp_hooks ), 'wp_cron_skipped' => implode( ',', array_keys( $skipped ) ), 'wp_cron_due' => implode( ',', array_keys( $wp_due ) ), 'released' => $released, 'as_actions' => $as_n, 'as_stop' => $as_stop, 'as_pass' => isset( $as_pass ) ? $as_pass : null, 'as_dates' => implode( ',', $as_dates ), 'as_hooks' => implode( ',', $as_list ), 'as_pending' => $as_pending, 'as_due' => $as_due, 'cleaned' => $cleaned ) );` });
 		} finally {
 			tickMail = null;
+			cronMoreGate = null;
 			evictLazy();
 			if (remotePacks) remotePacks.endRequest(); // #563: held packs live for one request
 			if (sitePacks) sitePacks.endRequest(); // #569: the site packs too (not the hot pack)
@@ -3832,6 +3847,8 @@ async function runCron(getBooted, cleanDue = false, mail = null, { held = false 
 		}
 		let out = {};
 		try { out = JSON.parse(String(r.text).slice(String(r.text).lastIndexOf('{'))); } catch (e) { out = { parse: String(r.text).slice(-200) }; }
+		out.legMs = Date.now() - legT0;
+		try { out.wasmMib = Math.round(php[__private__dont__use].HEAPU8.length / 1048576); } catch { /* no heap to read */ }
 		return out;
 		}, { held });
 	}

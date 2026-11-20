@@ -19,6 +19,17 @@
 // on this rule ran an order email that had waited 25 minutes, then the backlog's emails newest first.
 // The batch stays 1: at CRON_AS_ACTIONS 4, 12 of 13 ticks reset the isolate.
 export const DEFAULT_ACTIONS = 1;
+// #1120: approach A's cron object (A_CRON) runs up to this many per leg, inside a time budget and a heap stop (cronMore).
+// One a leg, at one leg a minute, left an order burst's 1,897 due emails about 31 h to drain (cf759hx, arm 3). Measured
+// locally on a-shape-local with WooCommerce (2026-11-20), the PHP heap after a leg of order emails: 107 MiB at 1 and 5,
+// 116 at 20, 121 at 40; 0.1 to 0.3 s an action. b-dosql keeps DEFAULT_ACTIONS: #323's resets were measured there.
+export const DEFAULT_ACTIONS_A = 50;
+// #1120: the wall time a leg spends on Action Scheduler before it stops claiming (CRON_AS_BUDGET_MS, 1 to 60 s). Well
+// inside the PHP lock's 60 s stall bound (#1060) and the alarm's 5 min stale bound (alarm-arm.mjs).
+export const AS_BUDGET_MS = 20000;
+// #1120: a leg stops before the next action once the PHP heap is this close to the engine's recycle line
+// (recycle-line.mjs): one email action grew the heap by up to 9 MiB in the measurements above.
+export const AS_HEAP_MARGIN_MIB = 8;
 // WP-Cron events per tick (the fixed 50 before). 0 skips WP-Cron in that tick.
 export const DEFAULT_WP_EVENTS = 1;
 
@@ -27,12 +38,29 @@ const int = (v, lo, hi, dflt) => {
 	return Number.isFinite(n) && n >= lo && n <= hi ? n : dflt;
 };
 
-/** The per-tick bound from env (CRON_AS_ACTIONS 1..100, CRON_WP_EVENTS 0..50); a bad value is the default. */
-export function cronBounds(env) {
+/** The per-tick bound from env (CRON_AS_ACTIONS 1..100, CRON_WP_EVENTS 0..50); a bad value is the default.
+ * approachA (#1120): A's cron object, whose default is DEFAULT_ACTIONS_A. */
+export function cronBounds(env, { approachA = false } = {}) {
 	return {
-		actions: int(env && env.CRON_AS_ACTIONS, 1, 100, DEFAULT_ACTIONS),
+		actions: int(env && env.CRON_AS_ACTIONS, 1, 100, approachA ? DEFAULT_ACTIONS_A : DEFAULT_ACTIONS),
 		wpEvents: int(env && env.CRON_WP_EVENTS, 0, 50, DEFAULT_WP_EVENTS),
 	};
+}
+
+/** #1120: the leg's Action Scheduler budget from env (CRON_AS_BUDGET_MS 1000..60000); a bad value is the default. */
+export function cronAsBudgetMs(env) {
+	const v = env && env.CRON_AS_BUDGET_MS;
+	return /^[0-9]{4,5}$/.test(String(v ?? '')) ? int(v, 1000, 60000, AS_BUDGET_MS) : AS_BUDGET_MS;
+}
+
+/** #1120: may the leg run another action? null = yes; 'budget' or 'heap' = stop, and why. n = actions already run (the
+ * first always runs, as before #1120); heapMib = the PHP heap now; lineMib = the engine's recycle line. An unreadable
+ * heap stops (fails closed). */
+export function cronMore({ n, startedAt, now, budgetMs, heapMib, lineMib }) {
+	if (!(n > 0)) return null;
+	if (now - startedAt >= budgetMs) return 'budget';
+	if (!Number.isFinite(heapMib) || heapMib >= lineMib - AS_HEAP_MARGIN_MIB) return 'heap';
+	return null;
 }
 
 // The cleaner runs at least this often even when every tick has work (the lead's condition: a
