@@ -128,6 +128,8 @@ export function createTickMail({ handoff, lostWrites, log = () => {}, seen = nul
 					}
 				}
 				log({ '@event': 'email-handoff', m: 'email-handoff', as_action, lostWrites: lost, ...(r === 'bounded' ? { bounded: true } : {}), ...(sendFailed ? { sendFailed } : {}) });
+				// #1135: PHP hears the refusal (wp_mail returns false and fires wp_mail_failed); the message is still retried.
+				if (sendFailed) return { ok: true, queued: true, refused: sendFailed, of: Number.isInteger(r.of) && r.of > 0 ? r.of : sendFailed, reason: typeof r.reason === 'string' ? r.reason : null };
 				return { ok: true, queued: true };
 			} catch (e) {
 				counts.failed++;

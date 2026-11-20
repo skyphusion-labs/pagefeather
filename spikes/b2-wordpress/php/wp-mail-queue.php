@@ -72,10 +72,26 @@ if ( ! function_exists( 'wp_mail' ) ) {
 			$payload['email']['headers']     = is_array( $headers ) ? array_values( $headers ) : (string) $headers;
 			$payload['email']['attachments'] = $attachments ? array_values( (array) $attachments ) : array();
 		}
-		// Hand off to the Worker and return success. On a request the Worker records the message
-		// and sends it after the response, so checkout does not wait. In a cron tick the Worker
-		// hands it to the durable path before this returns (#362, email-handoff.mjs).
-		post_message_to_js( wp_json_encode( $payload ) );
+		// Hand off to the Worker. On a request the Worker records the message and sends it after the
+		// response, so checkout does not wait. In a cron tick the Worker hands it to the durable path
+		// before this returns (#362, email-handoff.mjs), so it knows the outcome: #1135, a send the
+		// platform refused (or a handoff that failed) returns false and fires wp_mail_failed with the
+		// reason, as core does when PHPMailer fails, so WP Mail Logging and any wp_mail_failed listener
+		// see it. A refused send is still retried (#1057). An unreadable reply stays true, as before.
+		$reply = json_decode( (string) post_message_to_js( wp_json_encode( $payload ) ), true );
+		if ( is_array( $reply ) && ( ( isset( $reply['ok'] ) && false === $reply['ok'] ) || ( isset( $reply['refused'] ) && (int) $reply['refused'] > 0 ) ) ) {
+			if ( isset( $reply['ok'] ) && false === $reply['ok'] ) {
+				$why = 'The email could not be handed to the email service: ' . ( isset( $reply['error'] ) ? (string) $reply['error'] : 'unknown error' ) . '.';
+			} else {
+				$of  = isset( $reply['of'] ) ? (int) $reply['of'] : 0;
+				$who = $of > 1 ? sprintf( ' for %d of %d recipients', (int) $reply['refused'], $of ) : '';
+				$why = 'The email service refused this email' . $who . ( isset( $reply['reason'] ) && '' !== (string) $reply['reason'] ? ': ' . (string) $reply['reason'] : '' ) . '. It is queued for retry; Site Health counts it if every retry fails.';
+			}
+			$mail_data = compact( 'to', 'subject', 'message', 'headers', 'attachments' );
+			$mail_data['phpmailer_exception_code'] = 0;
+			do_action( 'wp_mail_failed', new WP_Error( 'wp_mail_failed', $why, $mail_data ) );
+			return false;
+		}
 		return true;
 	}
 }

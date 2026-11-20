@@ -99,11 +99,13 @@ jobs:
         # leg; then each guard is watched firing (a leg stops for budget, then for heap) and the burst still drains.
         # Its backlog arm: at the real 60 s interval, legs cut short by a 1 s budget come 5 s apart, so 50 emails drain within
         # 90 s of the first leg (about 6 min without the backlog alarm).
+        # mail-truth-e2e.sh (#1135): a cron-tick wp_mail the platform refuses (the EMAIL_FAULT seam) returns false and fires
+        # wp_mail_failed with its reason, so WordPress and its mail logs see it; a delivered one stays true.
         # wc-route-defer-e2e.sh (#768): WooCommerce's REST routes deferred, never removed: post-new.php's peak at least
         # 8 MiB lower, the editor preload, /wc/v3, the full index and a wc-admin page identical, deferred 13/13.
         working-directory: spikes/b2-wordpress
         run: |
-          for t in tests/recycle-stack-e2e.sh tests/recycle-loop-e2e.sh tests/boot-race-e2e.sh tests/boot-gate-e2e.sh tests/spare-persist-e2e.sh tests/runcron-boot-e2e.sh tests/rest-list-memory-e2e.sh tests/false-404-e2e.sh tests/failed-read-rollback-e2e.sh tests/stranded-frame-e2e.sh tests/a-cron-e2e.sh tests/stale-lock-e2e.sh tests/frame-r2-orphan-e2e.sh tests/email-retry-e2e.sh tests/cron-idle-e2e.sh tests/deploy-flow-e2e.sh tests/wc-route-defer-e2e.sh tests/a-as-drain-e2e.sh; do
+          for t in tests/recycle-stack-e2e.sh tests/recycle-loop-e2e.sh tests/boot-race-e2e.sh tests/boot-gate-e2e.sh tests/spare-persist-e2e.sh tests/runcron-boot-e2e.sh tests/rest-list-memory-e2e.sh tests/false-404-e2e.sh tests/failed-read-rollback-e2e.sh tests/stranded-frame-e2e.sh tests/a-cron-e2e.sh tests/stale-lock-e2e.sh tests/frame-r2-orphan-e2e.sh tests/email-retry-e2e.sh tests/cron-idle-e2e.sh tests/deploy-flow-e2e.sh tests/wc-route-defer-e2e.sh tests/a-as-drain-e2e.sh tests/mail-truth-e2e.sh; do
             if ! "$t"; then echo "::error::$t failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
           done
           if ! EXPECT_STOP=budget STOP_VARS="CRON_AS_BUDGET_MS:1000" MAX_LEGS=20 tests/a-as-drain-e2e.sh; then echo "::error::a-as-drain-e2e.sh (budget arm) failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1; fi

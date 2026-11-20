@@ -1104,7 +1104,7 @@ function tickMailFor(env, storage) {
 			const r = await boundedWait(sp, SEND_TIMEOUT_MS);
 			if (r === TIMED_OUT) return 'bounded';
 			const o = r;
-			return { sent: o.sent, sendFailed: o.failed };
+			return { sent: o.sent, sendFailed: o.failed, of: o.sent + o.failed, reason: o.reason }; // #1135: the reason reaches PHP
 		},
 		lostWrites: () => resetFailTotal - base,
 		log: (o) => console.log(JSON.stringify(o)),
@@ -1280,7 +1280,7 @@ function sendListOutcome(env, toSend) {
 			for (const f of failures) console.log(JSON.stringify({ '@event': 'email-send-failed', m: 'email-send-failed', reason: scrub(f.error), domain: domainOfAddress(f.to), ms: f.ms, retry: 'queued' }));
 			await mailRetryPut(env, failures); // #1057: retried with backoff, never dropped
 		}
-		return { sent: rs.length - failures.length, failed: failures.length };
+		return { sent: rs.length - failures.length, failed: failures.length, reason: failures.length ? scrub(failures[0].error) : null };
 	});
 }
 // The sent count only (the request path's flush).

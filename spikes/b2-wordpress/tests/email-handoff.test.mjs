@@ -444,5 +444,23 @@ test('#1088 B index.js: each failed recipient is logged with its reason (scrubbe
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.match(src, /'@event': 'email-send-failed', m: 'email-send-failed', reason: scrub\(f\.error\), domain: domainOfAddress\(f\.to\),(?: ms: f\.ms,)? retry: 'queued'/);
 	assert.match(src, /const sp = sendListOutcome\(env, \[email\]\);/);
-	assert.match(src, /return \{ sent: o\.sent, sendFailed: o\.failed \};/);
+	assert.match(src, /return \{ sent: o\.sent, sendFailed: o\.failed[,}]/);
+});
+
+// #1135: a refused send must reach WordPress (wp_mail returns false and fires wp_mail_failed, php/wp-mail-queue.php), so
+// the op's reply to PHP carries the refusal: how many recipients were refused, of how many, and the scrubbed reason.
+test('#1135 a refused send: the reply to PHP says refused, of how many, and why; a clean send says nothing extra', async () => {
+	const tm = createTickMail({ handoff: async () => ({ sent: 1, sendFailed: 1, of: 2, reason: 'destination address is not allowed' }), lostWrites: () => 0 });
+	const r = await tm.op({ to: ['a@example.com', 'b@example.com'], subject: 's', message: 'm' });
+	assert.deepEqual(r, { ok: true, queued: true, refused: 1, of: 2, reason: 'destination address is not allowed' });
+	const ok = createTickMail({ handoff: async () => ({ sent: 1, sendFailed: 0, of: 1, reason: null }), lostWrites: () => 0 });
+	assert.deepEqual(await ok.op({ to: ['a@example.com'], subject: 's', message: 'm' }), { ok: true, queued: true });
+	const bounded = createTickMail({ handoff: async () => 'bounded', lostWrites: () => 0 });
+	assert.deepEqual(await bounded.op({ to: ['a@example.com'], subject: 's', message: 'm' }), { ok: true, queued: true }, 'in flight at the bound: not known refused');
+});
+test('#1135 the tick handoff passes the outcome on: index.js tickMailFor returns of and reason, and sendListOutcome scrubs the reason', async () => {
+	const { readFileSync } = await import('node:fs');
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /return \{ sent: o\.sent, sendFailed: o\.failed, of: o\.sent \+ o\.failed, reason: o\.reason \};/);
+	assert.match(src, /return \{ sent: rs\.length - failures\.length, failed: failures\.length, reason: failures\.length \? scrub\(failures\[0\]\.error\) : null \};/);
 });
