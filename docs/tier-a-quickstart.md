@@ -132,11 +132,12 @@ Every check runs before anything is made, and each one names the setting:
 - `MYSQL_ACCESS_CLIENT_ID` and `MYSQL_ACCESS_CLIENT_SECRET`: reach a server behind a Cloudflare Tunnel and Access, with no public port and no SSL needed (CR #141).
 - `SITE_ORIGIN=https://<your domain>`: the site's own address, for a custom domain.
 - `OBSERVABILITY=1`: Workers Logs with our own events (no request metadata).
+- `PHP_OVERFLOW=0`: turns off the overflow pool. The pool is on by default (#1119): a request that would wait behind a long PHP run in its isolate runs on a Durable Object pool instead. It costs about 38 USD per million moved requests, and only a busy store moves any.
 - Everything else is in [deploy/README.md](../deploy/README.md). The defaults there are the measured ones.
 
 ## Known limits (pre-alpha)
 
-- **Mail:** a workers.dev site has no sender, so WordPress sends no mail. Order confirmations and password resets need `MAIL_FROM` on a domain onboarded for Cloudflare Email Sending (`deploy/email-sending.sh`). A failed send is logged, but it is not retried yet (#1057).
+- **Mail:** a workers.dev site has no sender, so WordPress sends no mail. Order confirmations and password resets need `MAIL_FROM` on a domain onboarded for Cloudflare Email Sending (`deploy/email-sending.sh`). A failed send is logged and queued for a retry (#1062).
 - **Background jobs:** WP-Cron and WooCommerce's Action Scheduler run with `A_CRON=1` (#855). Its live proof is the open part of #1077.
 - **WooCommerce admin** pages can be slow on this tier (#1078).
 - The open checks for this release are listed on #1077. Report what you find as a GitHub issue on `skyphusion-labs/pagefeather`. Include:
