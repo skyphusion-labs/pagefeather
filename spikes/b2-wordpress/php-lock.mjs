@@ -21,13 +21,20 @@
 //   log    { event: queued | granted | shed | stale, depth, waitMs, headMs }: queued when a run arrives
 //          behind another, granted when it waited 1 s or more, and every shed and stale. An
 //          uncontended run logs nothing.
+//   #1060  (measured on cf759hl, 2026-11-20: a head ran 60 s, the stale waiter booted a second runtime beside the live
+//          one, and the isolate died of memory with every queued request). With stallMs, a head is stale only when it
+//          has ALSO made no progress (progress(): index.js calls it on every PHP bridge message) for stallMs: a slow run
+//          that is still working is never stale. staleAction per run: take (the old takeover, onStale), shed (the
+//          request paths: the waiter answers PHP_SHED, why stuck, a retryable 503), or wait (background runs: keep
+//          waiting for the head). index.js never takes over: a second runtime beside a live one is a certain reset.
 // Pure and clock-injected, so tests/php-lock.test.mjs drives it on a fake clock.
 
 export const PHP_SHED = Symbol('php-shed');
 const TICK_MS = 1000;
 const GRANT_LOG_MS = 1000;
 
-export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, log = () => {} } = {}) {
+export function createPhpLock({ staleMs = 60000, stallMs = null, staleAction: defaultStaleAction = 'take', now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, log = () => {} } = {}) {
+	let lastProgress = null; // #1060: the head's last bridge message (or its start)
 	let waiting = 0;
 	let running = 0;
 	let blocking = 0; // runs that still own the queue. A stale takeover clears the stuck run.
@@ -36,6 +43,8 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 	let seq = 0;
 	const waiters = []; // { seq, priority, go, state }
 	const headMs = () => (headSince === null ? 0 : now() - headSince);
+	// #1060: the head counts as stale only past staleMs AND, with stallMs, with no progress for stallMs.
+	const headStale = () => headSince !== null && headMs() >= staleMs && (stallMs === null || lastProgress === null || now() - lastProgress >= stallMs);
 
 	function bestIndex() {
 		let best = 0;
@@ -58,7 +67,7 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 
 	// Resolves 'turn' when prev settles, 'stale' when the run ahead has executed staleMs, 'shed' at shedMs, and 'gone'
 	// when signal aborts (#721: the caller disconnected; it needs enable_request_signal).
-	function waitTurn(prev, t0, shedMs, signal) {
+	function waitTurn(prev, t0, shedMs, signal, staleAction) {
 		return new Promise((resolve) => {
 			let timer = null;
 			let done = false;
@@ -78,10 +87,10 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 				// #708 review 1: SHED first. A waiter past its bound never runs, even if the head has also run past the stale
 				// time: with the default start-by (60 s) equal to LOCK_STALE_MS, both can fall due at the one check.
 				if (shedMs > 0 && now() - t0 >= shedMs) return finish('shed');
-				if (headSince !== null && headMs() >= staleMs) return finish('stale');
+				if (staleAction !== 'wait' && headStale()) return finish('stale');
 				let next = TICK_MS;
 				if (shedMs > 0) next = Math.min(next, Math.max(1, t0 + shedMs - now()));
-				if (headSince !== null) next = Math.min(next, Math.max(1, headSince + staleMs - now()));
+				if (headSince !== null && staleAction !== 'wait') next = Math.min(next, Math.max(1, headSince + staleMs - now()));
 				timer = setTimer(check, next);
 			};
 			// The first check after the promise settles in the same tick would be wasted: wait one tick.
@@ -92,6 +101,8 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 	return {
 		get waiting() { return waiting; },
 		get running() { return running; },
+		/** #1060: the running PHP run made progress (a bridge message): it is slow, not stuck. */
+		progress() { if (headSince !== null) lastProgress = now(); },
 		// run(fn, { shedMs, onStale, tag, priority }): fn's result, or PHP_SHED. onStale runs before fn when the lock was
 		// taken as stale (index.js drops the runtime there). tag (#708) is added to this run's log lines (the
 		// correlation id of the forwarded request), so a queued, granted or shed line names its request.
@@ -101,7 +112,7 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 		// signal (#721): the caller's request.signal. A waiter whose caller disconnected sheds (why: disconnect) and never
 		// runs: on arrival, while it waits, or at its grant. A run that has started is never stopped by it.
 		// priority (#962): higher runs before an earlier lower waiter. Default 0 is arrival order.
-		run(fn, { shedMs = 0, onStale = () => {}, tag = null, shedWhy = null, recheck = null, signal = null, priority = 0 } = {}) {
+		run(fn, { shedMs = 0, onStale = () => {}, tag = null, shedWhy = null, recheck = null, signal = null, priority = 0, staleAction = defaultStaleAction } = {}) {
 			const lg = tag ? (e) => log({ ...e, ...tag }) : log;
 			if (signal && signal.aborted) {
 				// Gone before it queued: it takes no place in the order.
@@ -120,9 +131,15 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 			if (blocking === 0) pump();
 			const took = !waiters.includes(item);
 			return (async () => {
-				let why = took ? 'turn' : await waitTurn(granted, t0, shedMs, signal);
+				let why = took ? 'turn' : await waitTurn(granted, t0, shedMs, signal, staleAction);
 				waiting--;
 				const waitMs = now() - t0;
+				// #1060: a stale head on a shed path: answer at once, never take over (a second runtime beside a live one).
+				if (why === 'stale' && staleAction === 'shed' && waiters.includes(item)) {
+					drop(item);
+					lg({ event: 'shed', at: 'stale', waitMs, depth: waiting + running, headMs: headMs(), why: 'stuck', sinceProgressMs: lastProgress === null ? null : now() - lastProgress });
+					return PHP_SHED;
+				}
 				// Still in the queue: the timer shed, or the caller left, before a grant.
 				if ((why === 'shed' || why === 'gone') && waiters.includes(item)) {
 					drop(item);
@@ -187,6 +204,7 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 				}
 				running++;
 				headSince = now();
+				lastProgress = headSince;
 				try {
 					return await fn();
 				} finally {
