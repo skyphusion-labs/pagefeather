@@ -56,6 +56,7 @@ import { gateSettings, decide, BootRefused, bootRefusedResponse, createGateClock
 import { reuseOn, createSpare, bootTestDelayMs, bootTestDelayAt, moduleImportsMemory, offerWhenDrained } from './memory-reuse.mjs'; // #598 / #603
 import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
 import { withDbRun } from './db-lifecycle.mjs';
+import { isVersionedKey, l1ExpFor } from './oc-l1.mjs';
 import { templateQueuePriority, templateLookupYield, templateLookupForwardYield } from './template-boot.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse } from './overflow.mjs';
@@ -228,7 +229,7 @@ async function objectCacheOp(op) {
 				let kv = null;
 				try { kv = await ENV.OC_KV.get(ocKvKey(k)); } catch { kv = null; }
 				if (kv != null) {
-					ocStore(k, kv, now + ocTtlMs()); // the shared value is now warm in this isolate
+					ocStore(k, kv, l1ExpFor(k, now, ocTtlMs())); // warm in this isolate; a versioned key has no time bound (#1078)
 					ocL2Writer().noteRead(ocKvKey(k), kv); // #500: a set of the same value needs no PUT
 					stats.ocHits++; ocCount(k, "l2hit"); out.push(kv); continue;
 				}
@@ -245,7 +246,7 @@ async function objectCacheOp(op) {
 		if (req0) req0.writes.add(op.k);
 		const n = op.k.length + op.v.length;
 		if (n > objectCacheCap / 4) return { ok: false };
-		ocStore(op.k, op.v, op.ttl > 0 ? now + op.ttl * 1000 : 0);
+		ocStore(op.k, op.v, isVersionedKey(op.k) ? 0 : op.ttl > 0 ? now + op.ttl * 1000 : 0); // #1078: a versioned key cannot go stale
 		if (l2 && ocCtx) { const ttl = Math.max(60, op.ttl > 0 ? op.ttl : 60); const k2 = ocKvKey(op.k), v2 = op.v, c2 = ocCtx; const doSet = () => { if (req0 && req0.poisoned) return; try { const w = ocL2Writer().set(k2, v2, ttl); if (w) c2.waitUntil(w); } catch {} }; const holdOptions = !!(undoLog && undoLog.pluginStatusHeld() && ocGroupOf(op.k) === 'options'); if (!(undoLog && undoLog.defer(doSet, holdOptions))) doSet(); } // #352: held until the frame is kept; #954: an options set during a plugin hold waits for the request end
 		return { ok: true };
 	}
