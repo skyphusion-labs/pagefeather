@@ -45,6 +45,13 @@ export function aPerfLine(f) {
 		httpMs: num(f.httpMs),
 		inflates: num(f.inflates),
 		inflateKiB: num(f.inflateKiB),
+		// #1078 round 3: the object cache bridge, and its KV L2 reads on A (one OC_KV.get per key missing the isolate Map).
+		ocCalls: num(f.ocCalls),
+		ocHits: num(f.ocHits),
+		l2N: num(f.l2N),
+		l2Hits: num(f.l2Hits),
+		l2Misses: num(f.l2Misses),
+		l2Ms: num(f.l2Ms),
 	};
 	for (const k of Object.keys(line)) if (line[k] === undefined) delete line[k];
 	return line;

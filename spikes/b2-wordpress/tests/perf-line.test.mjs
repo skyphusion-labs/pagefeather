@@ -52,3 +52,16 @@ test('#1078: index.js passes the per-request deltas, and OPcache counters are no
 	assert.match(src, /const wantOpcache = spikeOk && req\.headers\.get\('x-perf-opcache'\) === '1';/);
 	assert.match(src, /aPerfLine\(\{[^\n]*rfN: stats\.rfN - remote0\.rfN[^\n]*rsN: stats\.rsN - remote0\.rsN[^\n]*httpN: stats\.httpCalls - start\.httpCalls[^\n]*opHits: op1\.hits - op0\.hits - 1/);
 });
+
+// #1078 round 3: strummer's tail on cf759hl puts the slow list pages at 1.1 to 1.5 s CPU against 14 to 17 s wall, so
+// 11 to 13 s is waiting, beyond MySQL's 2 s. On A every object-cache key that misses the isolate Map is an OC_KV.get,
+// one after another (objectCacheOp), and nothing timed them. The line now carries the L2 reads: count, hits, misses, ms.
+test('#1078: the A line carries the object cache bridge calls and the KV L2 reads (n, hits, misses, ms)', () => {
+	const l = aPerfLine({ path: '/wp-admin/edit.php', status: 200, ocCalls: 300, ocHits: 120, l2N: 180, l2Hits: 3, l2Misses: 177, l2Ms: 11400 });
+	assert.deepEqual([l.ocCalls, l.ocHits, l.l2N, l.l2Hits, l.l2Misses, l.l2Ms], [300, 120, 180, 3, 177, 11400]);
+});
+test('#1078: objectCacheOp counts and times every OC_KV.get, and the A line passes the deltas', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /const tl2 = Date\.now\(\);\n\t\t\t\ttry \{ kv = await ENV\.OC_KV\.get\(ocKvKey\(k\)\); \} catch \{ kv = null; \}\n\t\t\t\tstats\.l2N\+\+;\n\t\t\t\tstats\.l2Ms \+= Date\.now\(\) - tl2;/);
+	assert.match(src, /aPerfLine\(\{[^\n]*ocCalls: stats\.ocCalls - start\.ocCalls[^\n]*l2N: stats\.l2N - start\.l2N[^\n]*l2Ms: stats\.l2Ms - start\.l2Ms/);
+});
