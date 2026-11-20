@@ -27,7 +27,8 @@ Edge security works at the zone level: a WAF with rate limits on login, the zone
 
 ## Use the product
 
-1. [framework.md](framework.md): the quickstart for the b-dosql kind and the one provisioning surface: default integrations, edge security, provisioning from a Worker.
+1. [tier-a-quickstart.md](tier-a-quickstart.md): **pre-alpha testers start here (#1077).** Tier A (approach A, Hyperdrive) from one `deploy.sh` command: prerequisites, the database region (`PLACEMENT`), the Terraform state, update, remove, and every refusal.
+2. [framework.md](framework.md): the quickstart for the b-dosql kind and the one provisioning surface: default integrations, edge security, provisioning from a Worker.
 2. [onboarding.md](onboarding.md): the flow for approach A: choose a MySQL provider, set up its Hyperdrive configuration, then add type-a sites.
 3. [from-lamp-to-wfp.md](from-lamp-to-wfp.md): if you come from a traditional LAMP WordPress host, this maps your stack one to one onto this one. A good first read.
 4. [operator.md](operator.md): the day-one walkthrough for running a couple of sites: scripts, Terraform, update and rollback, custom hostnames, teardown.
