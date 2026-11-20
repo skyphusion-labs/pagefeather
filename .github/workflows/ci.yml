@@ -396,6 +396,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/connector.test.mjs
       - name: Approach A error answers and their log lines carry the call id, x-pf-call (#1101)
         run: node --test spikes/b2-wordpress/tests/call-id-a.test.mjs
+      - name: "Approach A's default lean bridge: connect retried once, connect and end bounded, a dead socket destroyed (#1101)"
+        run: node --import ./spikes/b2-wordpress/tests/fixtures/lean/register.mjs --test spikes/b2-wordpress/tests/mysql-lean-bridge.test.mjs
       - name: The PHP lock never boots a second runtime beside a live one, and sheds past its bound (#296)
         run: node --test spikes/b2-wordpress/tests/php-lock.test.mjs
       - name: A versioned object cache key stays in the isolate L1 until memory evicts it (#1078)

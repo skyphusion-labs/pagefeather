@@ -10,24 +10,25 @@
 import { LeanMysql } from './mysql-lean.js';
 import { Buffer } from 'node:buffer';
 
-let conn = null;
-let connecting = null;
+import { createConnector } from './connector.mjs';
 
-async function connection(env) {
-	if (conn) return conn;
-	if (!connecting) {
-		connecting = LeanMysql.connect({
-			host: env.HYPERDRIVE.host,
-			user: env.HYPERDRIVE.user,
-			password: env.HYPERDRIVE.password,
-			database: env.HYPERDRIVE.database,
-			port: env.HYPERDRIVE.port,
-		}).then((c) => {
-			conn = c;
-			return c;
-		});
-	}
-	return connecting;
+// #1101: approach A's DEFAULT bridge (index-a-lean.js). One connection per PHP run (#1087), opened on first use. A rejected
+// connect is retried once and never cached; the connect is bounded (3 s) and end() too (2 s, then destroy()), so a dead
+// socket can neither poison a run's statements nor hang the post-response waitUntil (cf759hx, #1101).
+const log = (o) => console.log(JSON.stringify(o));
+const openLean = (env) => () =>
+	LeanMysql.connect({
+		host: env.HYPERDRIVE.host,
+		user: env.HYPERDRIVE.user,
+		password: env.HYPERDRIVE.password,
+		database: env.HYPERDRIVE.database,
+		port: env.HYPERDRIVE.port,
+	});
+let ENV_FOR_CONNECT = null;
+const connector = createConnector(() => openLean(ENV_FOR_CONNECT)(), { log });
+function connection(env) {
+	ENV_FOR_CONNECT = env;
+	return connector.get();
 }
 
 export async function mysqlQuery(env, m) {
@@ -50,9 +51,11 @@ export async function mysqlQuery(env, m) {
 // version before it calls the cached Pages entrypoint, and must share no connection with it). The
 // same reply shape as mysqlQuery.
 export async function mysqlOneShot(env, sql) {
-	let c = null;
+	// #1101: its own connector, so its connect and its end are bounded too (the page-version read, the idle cron gate and
+	// the upload sweep call this).
+	const one = createConnector(openLean(env), { log });
 	try {
-		c = await LeanMysql.connect({ host: env.HYPERDRIVE.host, user: env.HYPERDRIVE.user, password: env.HYPERDRIVE.password, database: env.HYPERDRIVE.database, port: env.HYPERDRIVE.port });
+		const c = await one.get();
 		const res = await c.query(sql);
 		if (res.kind === 'ok') return { ok: true, affected: res.affectedRows || 0, insert_id: res.insertId || 0 };
 		const binary = res.columns.map((f) => f.characterSet === 63);
@@ -61,22 +64,16 @@ export async function mysqlOneShot(env, sql) {
 	} catch (e) {
 		return { ok: false, error: String((e && e.message) || e), errno: e && e.errno };
 	} finally {
-		if (c) await c.end().catch(() => {});
+		await one.end();
 	}
 }
 
-// Forget a connection another request opened (a Worker request cannot touch
-// another request's I/O). Not closed here: awaiting it hangs.
+// Forget a connection another request opened (a Worker request cannot touch another request's I/O). Not closed here.
 export function mysqlReset() {
-	conn = null;
-	connecting = null;
+	connector.reset();
 }
 
+// The end of a PHP run: references cleared first, then a bounded close (destroy() past the bound).
 export async function mysqlEnd() {
-	const c = conn;
-	const pending = connecting;
-	conn = null;
-	connecting = null;
-	const done = c || (pending && (await pending.catch(() => null)));
-	if (done) await done.end().catch(() => {});
+	await connector.end();
 }

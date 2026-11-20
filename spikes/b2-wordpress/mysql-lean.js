@@ -325,6 +325,19 @@ export class LeanMysql {
 		return { kind: 'ok', affectedRows: affectedRows || 0, insertId: insertId || 0 };
 	}
 
+	// #1101: close the socket at once, awaiting nothing (end() awaits a COM_QUIT write and socket.close(), which never
+	// settle on a dead socket; connector.mjs calls this when end() runs past its bound).
+	destroy() {
+		if (this.closed) return;
+		this.closed = true;
+		try {
+			const p = this.socket.close();
+			if (p && typeof p.catch === 'function') p.catch(() => {});
+		} catch {
+			// already closed
+		}
+	}
+
 	async end() {
 		if (this.closed) return;
 		this.closed = true;
