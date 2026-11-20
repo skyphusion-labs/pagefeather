@@ -3860,6 +3860,12 @@ async function runCron(getBooted, cleanDue = false, mail = null, { held = false 
 						$as_sorted = array_values( array_filter( array_map( 'intval', (array) $wpdb->get_col( "SELECT action_id FROM {$as_t} WHERE action_id IN ({$as_in}) ORDER BY scheduled_date_gmt DESC, action_id DESC" ) ) ) );
 						if ( count( $as_sorted ) === count( $as_ids ) ) { $as_ids = $as_sorted; }
 					}
+					// #1143 review: newest first alone is LIFO, so under a steady arrival the oldest due email could wait
+					// forever. It gets the second slot of every leg (it is not in the claim, which holds the newest), so a
+					// leg that runs two actions moves both ends of the queue. Unclaimed, as the direct read's ids are (#969).
+					$as_g_old  = ( isset( $wpdb->actionscheduler_groups ) && $wpdb->actionscheduler_groups ) ? $wpdb->actionscheduler_groups : $wpdb->prefix . 'actionscheduler_groups';
+					$as_oldest = array_values( array_filter( array_map( 'intval', (array) $wpdb->get_col( $wpdb->prepare( "SELECT a.action_id FROM {$as_t} a INNER JOIN {$as_g_old} g ON a.group_id = g.group_id WHERE g.slug = %s AND a.status = %s AND a.claim_id = 0 AND a.scheduled_date_gmt <= %s ORDER BY a.scheduled_date_gmt ASC, a.action_id ASC LIMIT 1", 'woocommerce-emails', 'pending', gmdate( 'Y-m-d H:i:s' ) ) ) ) ) );
+					if ( $as_oldest && ! in_array( $as_oldest[0], $as_ids, true ) ) { array_splice( $as_ids, 1, 0, array( $as_oldest[0] ) ); }
 				} else {
 					if ( $claim ) { $as_store->release_claim( $claim ); $claim = null; }
 					$as_g = ( isset( $wpdb->actionscheduler_groups ) && $wpdb->actionscheduler_groups ) ? $wpdb->actionscheduler_groups : $wpdb->prefix . 'actionscheduler_groups';

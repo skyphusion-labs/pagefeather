@@ -42,9 +42,12 @@ function _get_cron_array() { return json_decode( getenv( 'STUB_CRON' ), true ); 
 class Stub_DB {
 	public $prefix = 'wp_';
 	function query( $q ) { return 0; }
+	function prepare( $q, ...$a ) { return vsprintf( str_replace( array( '%s', '%d' ), array( "'%s'", '%d' ), $q ), $a ); }
 	function get_var( $q ) { return false !== strpos( $q, 'scheduled_date_gmt' ) ? (int) getenv( 'STUB_DUE' ) : (int) getenv( 'STUB_PENDING' ); }
 	// #1143: an id-list read ordered by scheduled date, newest first. In this store a larger id is a later schedule.
 	function get_col( $q ) {
+		// #1143 review: the oldest due, unclaimed email (STUB_OLDEST; none when unset).
+		if ( false !== strpos( $q, 'ORDER BY a.scheduled_date_gmt ASC' ) ) { return getenv( 'STUB_OLDEST' ) ? array( (int) getenv( 'STUB_OLDEST' ) ) : array(); }
 		if ( ! preg_match( '/action_id IN \\(([0-9, ]+)\\)/', $q, $m ) ) { return array(); }
 		$ids = array_map( 'intval', explode( ',', $m[1] ) );
 		rsort( $ids );
@@ -69,7 +72,13 @@ register_shutdown_function( function () { fwrite( STDERR, json_encode( $GLOBALS[
 // The runtime's bridge to the Worker (#1120: the leg asks cronMore before each further action). STUB_MORE is the
 // Worker's answer ('1' runs it); STUB_NO_BRIDGE leaves the function out, as a runtime without the bridge.
 if ( ! getenv( 'STUB_NO_BRIDGE' ) ) {
-	function post_message_to_js( $m ) { $d = json_decode( $m, true ); return isset( $d['cronMore'] ) ? ( getenv( 'STUB_MORE' ) ?: '1' ) : '1'; }
+	function post_message_to_js( $m ) {
+		$d = json_decode( $m, true );
+		if ( ! isset( $d['cronMore'] ) ) { return '1'; }
+		// STUB_MORE_SEQ: the Worker's answers in turn (for the 2nd action, the 3rd, ...), then 'budget'.
+		if ( getenv( 'STUB_MORE_SEQ' ) ) { static $i = 0; $seq = explode( ',', getenv( 'STUB_MORE_SEQ' ) ); return isset( $seq[ $i ] ) ? $seq[ $i++ ] : 'budget'; }
+		return getenv( 'STUB_MORE' ) ?: '1';
+	}
 }
 `;
 
@@ -81,12 +90,12 @@ function cron(...hooks) {
 	return c;
 }
 
-function run({ code, crons, pending = 7, due = 3, more = '', noBridge = false }) {
+function run({ code, crons, pending = 7, due = 3, more = '', noBridge = false, moreSeq = '', oldest = '' }) {
 	const d = mkdtempSync(join(tmpdir(), 'cron-run-queue-'));
 	try {
 		writeFileSync(join(d, 'stubs.php'), STUBS);
 		writeFileSync(join(d, 'cron.php'), code.replace("require '/wordpress/wp-load.php';", "require '" + join(d, 'stubs.php') + "';"));
-		const r = spawnSync('php', ['-n', join(d, 'cron.php')], { env: { ...process.env, STUB_CRON: JSON.stringify(crons), STUB_PENDING: String(pending), STUB_DUE: String(due), STUB_MORE: more, STUB_NO_BRIDGE: noBridge ? '1' : '' }, encoding: 'utf8' });
+		const r = spawnSync('php', ['-n', join(d, 'cron.php')], { env: { ...process.env, STUB_CRON: JSON.stringify(crons), STUB_PENDING: String(pending), STUB_DUE: String(due), STUB_MORE: more, STUB_NO_BRIDGE: noBridge ? '1' : '', STUB_MORE_SEQ: moreSeq, STUB_OLDEST: String(oldest) }, encoding: 'utf8' });
 		assert.equal(r.status, 0, r.stderr + r.stdout);
 		const out = JSON.parse(r.stdout.slice(r.stdout.lastIndexOf('{')));
 		return { out, spy: JSON.parse(r.stderr) };
@@ -151,6 +160,20 @@ test('#1143: the email claim is run NEWEST first, so a budget-stopped leg runs t
 	assert.equal(out.as_pass, 'emails', 'the claim pass (stake_claim), the path the backlog took on MySQL');
 	assert.deepEqual(spy.processed, [13], 'the newest claimed email ran first');
 	assert.equal(out.as_stop, 'budget');
+});
+
+test('#1143 review: newest first alone is LIFO, so the oldest due email gets a slot each leg (second): both ends move', () => {
+	// A backlog whose oldest due email (5) is not in the claim (the claim holds the newest), and a budget that allows two
+	// actions: the leg sends the newest (13) and the oldest (5). Without the slot, the oldest could wait forever under a
+	// steady arrival of new orders.
+	const { out, spy } = run({ code: render(3, 1), crons: cron('action_scheduler_run_queue'), pending: 900, due: 850, moreSeq: '1', oldest: 5 });
+	assert.equal(out.as_pass, 'emails');
+	assert.deepEqual(spy.processed, [13, 5], 'the newest, then the oldest due');
+	assert.equal(out.as_stop, 'budget');
+	const all = run({ code: render(3, 1), crons: cron('action_scheduler_run_queue'), pending: 900, due: 850, oldest: 5 });
+	assert.deepEqual(all.spy.processed, [13, 5, 12, 11], 'with room for all: the oldest second, then the rest newest first');
+	const none = run({ code: render(3, 1), crons: cron('action_scheduler_run_queue'), pending: 900, due: 850 });
+	assert.deepEqual(none.spy.processed, [13, 12, 11], 'no older due email outside the claim: unchanged');
 });
 
 test('#1120: when the Worker allows it, the leg runs every claimed action and reports no stop', () => {
