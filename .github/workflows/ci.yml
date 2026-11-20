@@ -119,6 +119,19 @@ jobs:
         run: bash deploy/tests/install-retry-test.sh
       - name: Dialect tests
         run: php spikes/b2-wordpress/tests/dialect-test.php
+      - name: Engine tests that ran in no workflow (#1010)
+        # Each was checked by a mutation: with its code under test broken, the test exits non-zero.
+        run: |
+          php spikes/b2-wordpress/tests/comment-rest-headroom-test.php
+          php spikes/b2-wordpress/tests/wp-mail-queue-test.php
+          node --test spikes/b2-wordpress/tests/slash-path.test.mjs
+          node --test spikes/b2-wordpress/tests/purge-after-php.test.mjs
+          node --test spikes/b2-wordpress/tests/template-boot.test.mjs
+          node --test spikes/b2-wordpress/tests/ocv-missing.test.mjs
+          node --test spikes/b2-wordpress/tests/remote-perf-boot.test.mjs
+      - name: Every engine test is named in a workflow (#1010)
+        # A *-test.php or *.test.mjs under spikes/b2-wordpress/tests/ that no workflow names fails this step.
+        run: bash tests/ci/engine-tests-wired-test.sh
       - name: A new month upload returns JSON with no chmod warning (issue #594)
         # php/r2-uploads.php: the uploads root is a directory when the bucket is empty,
         # so wp_mkdir_p chmod()s the r2 stream and not a plain path that does not exist.
