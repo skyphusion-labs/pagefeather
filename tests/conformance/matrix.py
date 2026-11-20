@@ -133,10 +133,11 @@ def routes_cells(res, cite):
 
 def exclude_label(item):
     kind = getattr(item, "kind", None)
+    pre = ("[%s] " % item.tier) if getattr(item, "tier", None) else ""
     if kind == "title":
-        return "%s :: %s" % (item.path, item.title), item.reason
+        return "%s%s :: %s" % (pre, item.path, item.title), item.reason
     if kind == "file":
-        return item.path, item.reason
+        return pre + item.path, item.reason
     pat, reason = item
     return pat, reason
 
@@ -281,7 +282,8 @@ def main(argv=None):
     if a.routes:
         for k, v in routes_cells(_load(a.routes), cite).items():
             cells.setdefault(k, v)
-    excludes = {s: runner.read_excludes(s) for s in suites if os.path.exists(os.path.join(HERE, "exclude", s + ".txt"))}
+    # This tier's not-run block: the untiered rows, and the rows scoped to this tier only.
+    excludes = {s: runner.read_excludes(s, a.tier) for s in suites if os.path.exists(os.path.join(HERE, "exclude", s + ".txt"))}
     for (sec, feat), (w, t) in sorted(cells.items()):
         print("%-12s %-11s %s: %s" % (sec, w, feat, t))
     for s, f in unmapped:

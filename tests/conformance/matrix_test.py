@@ -153,6 +153,12 @@ ok("apply: a pipe in a cell is escaped, so the table keeps its shape", "a \\| b"
 b = M.notrun_block({"wp": [("specs/install.test.js", "rewrites wp-config.php")]}, "c1")
 ok("not run: each excluded spec and its reason", "`specs/install.test.js`" in b and "rewrites wp-config.php" in b and "c1" in b, b)
 bt = M.notrun_block({"wc": runner.read_excludes("wc")}, "c1")
+# A tier-scoped row (#1119) is in that tier's not-run block only, with its tier shown.
+pl = "api-tests/products/product-list.test.ts"
+bh = M.notrun_block({"wc-api": runner.read_excludes("wc-api", "Hyperdrive")}, "h1")
+bp = M.notrun_block({"wc-api": runner.read_excludes("wc-api", "Paid DO")}, "p1")
+ok("tier row in the Hyperdrive not-run block, marked [Hyperdrive]", ("[Hyperdrive] " + pl) in bh, bh[-300:])
+ok("tier row NOT in the Paid DO not-run block", pl not in bp, bp[-300:])
 ok("not run: paypal stays a file row", "`paypal/paypal.spec.ts`" in bt and "needs wp-env" in bt, bt)
 ok("not run: the email title names the file and the test", "`email/settings-email.spec.ts :: WooCommerce Email Settings > Send email preview`" in bt and "wp-mail-queue.php returns true" in bt, bt)
 

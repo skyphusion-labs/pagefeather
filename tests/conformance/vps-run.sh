@@ -15,6 +15,9 @@
 # PF_BROWSER=browser-run (run only) puts the browsers on Cloudflare Browser Run, Chromium only; PF_WORKERS sets the
 # worker count there (default 1: the specs share one site's state). A Browser Run row is never mixed with a local-browser row: the Chromium differs.
 #
+# PF_TIER (run and baseline) names the tier ("Free DO", "Paid DO", "WfP", "Hyperdrive"): an exclude row that starts with
+# "[<tier>]" skips its spec on that tier only. Without PF_TIER no tier-scoped row applies, so the spec runs.
+#
 # DRY=1 prints the commands and runs nothing. Before "run": build the throwaway with the line from
 # prepare-content.sh, deploy it, then "runner.py prepare" writes <run-dir>/env. After both runs:
 #   runner.py summarize --report <run-dir>/report.json --out <run-dir>/results.json   (each run)
@@ -75,7 +78,7 @@ playwright() { # dir config: run Playwright with OUR wrapper config (exclusions,
     export NODE_OPTIONS="--require $here/pf-browser-run.cjs${NODE_OPTIONS:+ $NODE_OPTIONS}"
     echo "vps-run: BROWSER RUN (Cloudflare, hosted Chromium over CDP), workers ${PF_WORKERS:-1}"
   fi
-  x python3 -I "$here/runner.py" config --suite "$suite" --suite-dir "$src/$e2e" --run-dir "$run"
+  x python3 -I "$here/runner.py" config --suite "$suite" --suite-dir "$src/$e2e" --run-dir "$run" ${PF_TIER:+--tier "$PF_TIER"}
   case "$suite" in
     wc|wc-api|wc-cpt) # Two phases, so the login is asserted BEFORE any test (lead ruling): the setup projects
         # (global authentication, site setup; install wc is dropped in pf-conformance.config.mjs),
