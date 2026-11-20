@@ -68,6 +68,7 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 |---|---|---|---|
 | PDF invoices | fixed in #769 (merged 2026-11-16); not yet measured live | fixed in #769 (merged 2026-11-16); not yet measured live | yes (#765) |
 | Update a site | yes: `CODE_ONLY=1` in `.github/workflows/deploy-workers.yml` (the live sites `woocap`, `zarapo`) | yes: `deploy/wfp/site update` (#642; the #724 throwaways, 2026-11-16; ggc.sh) | no: add only (#765; an issue for it is being filed) |
+| PHP overflow pool (approach A) | on by default since #1119: a queued request runs on a Durable Object pool instead of waiting behind a long run in its isolate; about 38 USD per million moved requests, busy stores only ([cost](approach-a-overflow.md#cost)); `PHP_OVERFLOW=0` opts out | not applicable (b-dosql) | not built: a one-click approach A site has no `PhpRuntime` binding |
 | Remove a site | not measured (`deploy/destroy.sh`) | yes: `deploy/wfp/site remove` (`pf704`, #704; the #724 throwaways) | built, not measured live: add, and remove (#782); update not built |
 
 ## Limited, and why
@@ -159,7 +160,7 @@ WooCommerce creates each product in a batch with about 130 database queries, one
 
 - **Live (cf759hl, 2026-11-20, build `7acbc3c`, westus2, `PLACEMENT=azure:westus2`):** the wc-api suite's product-list sample data, `POST /wp-json/wc/v3/products/batch` with 14 simple products, made 1,829 queries in one PHP run of 27.2 s (19:09:30.8Z to 19:09:58.0Z, Workers Observability). The suite's client gives up at 10 s.
 - **The same batch locally (method):** the suite's exact payload (WooCommerce pin `67e007c3`, `product-list.test.ts`), with `SAVEQUERIES` on, made 1,805 queries in 2.0 s on dosql-local, so the count is the same on both engines and only the round trip differs. Of the 1,805, about 470 are writes, and about 1,060 more are reads caused by those writes in the same request: an existence check before each meta insert, the post meta cache reloading after each write, and the term caches cleared by each term count update. A cache across requests (#1090) cannot remove them, and placement is already set (#1054).
-- **What a client sees:** a batch of more than about 5 products takes longer than 10 s. A short request on the same isolate waits behind it (the suite's term GET waited 11.3 s, then ran in 0.5 s); that wait is the overflow pool's job (`PHP_OVERFLOW`, #296), off by default.
+- **What a client sees:** a batch of more than about 5 products takes longer than 10 s. A short request on the same isolate waits behind it (the suite's term GET waited 11.3 s, then ran in 0.5 s); that wait is the overflow pool's job (`PHP_OVERFLOW`, #296), on by default on `deploy/deploy.sh` since #1119 (not yet measured live on this case).
 
 ### Semantic search: the plugin side is closed upstream, not measured here
 
