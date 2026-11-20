@@ -20,6 +20,7 @@ import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-sn
 import { cronBounds, cronCleanDue, cronLegDue } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronRunDeferred, cronMarkOf, cronFatalOf } from './cron-health.mjs';
 import { approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME } from './a-cron.mjs';
+import { isMediaUploadRequest, markerKey, sweepUploadOrphans, dropMarkersOn } from './upload-intent.mjs';
 import { cronFailureLine } from './cron-error.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
 import { turnstileEnabled, turnstileForms, sanitizeSiteKey, verifyToken, siteHost, TURNSTILE_ACTION, setResultHeader, takeResultHeader, turnstileRoute, readRouteFields, readGatedToken, encodeResult, TurnstileSlot, turnstileTimeoutMs, retryAfterFor } from './turnstile.mjs';
@@ -2375,6 +2376,7 @@ async function r2opInner(op) {
 			if (undoLog && undoLog.frameOpen()) console.log(JSON.stringify({ m: 'frame-r2-put', key: String(op.key).slice(0, 200) }));
 			// #1039: a key this request CREATES is recorded before the put, so a proven rollback deletes it. An overwrite is
 			// never recorded: the old bytes are gone either way, and a kept row may point at the key.
+			await uploadIntentMark(B, op.key); // #1039, approach A: an upload's created file is marked first
 			await r2RecordIfNew(B, op.key);
 			await B.put(op.key, b64decode(op.body), { httpMetadata: { contentType: op.type || 'application/octet-stream' } });
 			return { ok: true };
@@ -2384,6 +2386,7 @@ async function r2opInner(op) {
 			if (undoLog && undoLog.frameOpen() && sqlDb) undoLog.commitPoint(sqlDb, 'r2-copy'); // #352: may replace bytes
 			const o = await B.get(op.from);
 			if (!o) return { ok: true, found: false };
+			await uploadIntentMark(B, op.to); // #1039: as a put
 			await r2RecordIfNew(B, op.to); // #1039: as a put
 			await B.put(op.to, o.body, { httpMetadata: { contentType: op.type || o.httpMetadata?.contentType || 'application/octet-stream' } });
 			if (op.move) {
@@ -2467,6 +2470,50 @@ async function deleteFrameR2(req, keys) {
 	console.log(JSON.stringify({ m: 'frame-r2-deleted', req, n: keys.length - failed, failed }));
 	if (!failed && undoLog && sqlDb) undoLog.r2Forget(sqlDb, req);
 	return failed === 0;
+}
+// #1039, approach A (upload-intent.mjs, the lead's ruling): the media upload PHP run now running, or null. One PHP run
+// at a time (withPhp), so one slot. Holds the R2 keys this upload CREATED, each marked before its put.
+let uploadRun = null;
+async function uploadIntentMark(B, key) {
+	if (!uploadRun) return;
+	try {
+		if (await B.head(key)) return; // an overwrite is never marked, so never swept
+		await B.put(markerKey(key), JSON.stringify({ kind: 'upload', t: Date.now() }), { customMetadata: { kind: 'upload' } });
+		uploadRun.push(String(key));
+	} catch (e) {
+		console.log(JSON.stringify({ m: 'upload-intent-mark-failed', error: String((e && e.message) || e).slice(0, 160) }));
+	}
+}
+// PHP answered 2xx: this upload's files are its own. Its markers go (off the answer's path).
+async function uploadIntentClear(keys) {
+	for (const k of keys) {
+		try { await ENV.MEDIA.delete(markerKey(k)); } catch { /* a stale marker is swept by its reference check */ }
+	}
+}
+// The sweep at the start of a media upload, at most once per 10 minutes per site (OC_KV when bound; else per isolate).
+let uploadSweepAt = 0;
+async function uploadSweepThrottled(env) {
+	if (!env.MEDIA || !dbHandler || typeof dbHandler.oneShot !== 'function') return;
+	const KEY = 'pf:upload-sweep';
+	try {
+		if (env.OC_KV) {
+			if (await env.OC_KV.get(KEY)) return;
+			await env.OC_KV.put(KEY, '1', { expirationTtl: 600 });
+		} else {
+			if (Date.now() - uploadSweepAt < 600000) return;
+			uploadSweepAt = Date.now();
+		}
+		const r = await sweepUploadOrphans({
+			bucket: env.MEDIA,
+			query: (sql) => dbHandler.oneShot(env, sql),
+			prefix: tablePrefix(env),
+			log: (e) => console.log(JSON.stringify(e)),
+			release: (k) => releaseReservedKey(k),
+		});
+		if (r.markers) console.log(JSON.stringify({ m: 'upload-sweep', ...r }));
+	} catch (e) {
+		console.log(JSON.stringify({ m: 'upload-sweep-failed', error: String((e && e.message) || e).slice(0, 160) }));
+	}
 }
 
 async function releaseReservedKey(key) {
@@ -4641,6 +4688,10 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
 			ocReqBegin(); // #766
+			// #1039, approach A: a media upload marks the files it creates; the throttled sweep runs first, so an orphan's
+			// name is free again before this upload picks one.
+			uploadRun = dbHandler && isMediaUploadRequest(req.method, url.pathname, url.search) ? [] : null;
+			if (uploadRun) await uploadSweepThrottled(env);
 			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, reinflates: stats.reinflates, lazyWrites: stats.lazyWrites, rfN: stats.rfN, rfBytes: stats.rfBytes, rfMs: stats.rfMs, rfFail: stats.rfFail, rfCapped: stats.rfCapped, rsN: stats.rsN, rsBytes: stats.rsBytes, rsMs: stats.rsMs, rsFail: stats.rsFail, rsCapped: stats.rsCapped, rsRetry: stats.rsRetry, ocCalls: stats.ocCalls, ocHits: stats.ocHits, l2N: stats.l2N, l2Ms: stats.l2Ms, l2Hits: stats.l2Hits, httpCalls: stats.httpCalls, httpMs: stats.httpMs, txnOps: stats.txnOps, undoRows: stats.undoRows };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
@@ -4879,6 +4930,14 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			if (qtrace) { console.log(JSON.stringify({ m: 'qtrace', ...memIdOf(req, env), method: req.method, status: r.httpStatusCode, ...qtrace.summary() })); qtrace = null; }
 			globalThis.__lastRequest = { url: url.pathname, status: r.httpStatusCode, ...d };
 			if (tracing()) fileTrace.end({ status: r.httpStatusCode });
+			// #1039: PHP answered 2xx, so this upload's files stay; drop its markers off the answer's path. Any other answer
+			// (a 500 after the files were stored is the same orphan as a kill) leaves them for the sweep.
+			if (uploadRun && uploadRun.length && dropMarkersOn(r.httpStatusCode)) {
+				const p = uploadIntentClear(uploadRun);
+				if (ctx && ctx.waitUntil) ctx.waitUntil(p);
+				else await p;
+			}
+			uploadRun = null;
 			evictLazy();
 			if (remotePacks) remotePacks.endRequest(); // #563: held packs live for one request
 			if (sitePacks) sitePacks.endRequest(); // #569: the site packs too (not the hot pack)
