@@ -8,7 +8,8 @@ name: approval-at-head
 #     approval-at-head / gate
 # (caller job id / called job name). Renaming the job id orphans the ruleset entry.
 #
-# TRIGGERS. pull_request opened/reopened/synchronize ONLY. It judges every new
+# TRIGGERS. pull_request opened/reopened/synchronize, plus merge_group checks_requested
+# (#1070, the merge queue; see the queue-ref job). On pull_request it judges every new
 # head, including the merge commit update-branch creates, and that run also gives
 # the head the workflow run the arrival instrument reads.
 #
@@ -38,6 +39,8 @@ name: approval-at-head
 on:
   pull_request:
     types: [opened, reopened, synchronize]
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -45,7 +48,74 @@ permissions:
   actions: read
 
 jobs:
+  # MERGE QUEUE (#1070). On a merge_group event the PR in the queue entry is named
+  # by the branch the queue makes: refs/heads/gh-readonly-queue/<base>/pr-<N>-<sha>,
+  # where <sha> is the PR head. The queue-ref job reads N and <sha> from
+  # github.event.merge_group.head_ref (never from a PR-controlled field), refuses a
+  # ref that does not parse, and refuses a PR that is no longer open at exactly that
+  # head. approval-at-head-queue then runs the SAME judge, at the same pinned sha, on
+  # that PR and head. If queue-ref fails, the judge never runs, no
+  # `approval-at-head / gate` is reported, and the queue cannot merge the entry. A
+  # missing required check is not a pass.
+  #
+  # NAMES. The required context is `approval-at-head / gate`. On a merge_group run
+  # the queue job is named `approval-at-head`, so its called job `gate` reports that
+  # exact context. On a pull_request run it carries another name, and it is skipped,
+  # so no second `approval-at-head / gate` can appear in that suite (a skipped
+  # required check would count as a pass).
+  queue-ref:
+    name: approval-at-head-queue-ref
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      pr: ${{ steps.parse.outputs.pr }}
+      sha: ${{ steps.parse.outputs.sha }}
+    steps:
+      - name: read the PR number and head sha from the queue branch
+        id: parse
+        env:
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          # parse-begin (tests/ci/merge-group-ref-test.sh runs this block)
+          set -euo pipefail
+          re='^refs/heads/gh-readonly-queue/.+/pr-([1-9][0-9]*)-([0-9a-f]{40})$'
+          if [[ ! "$HEAD_REF" =~ $re ]]; then
+            echo "::error::merge_group head_ref '$HEAD_REF' is not refs/heads/gh-readonly-queue/<base>/pr-<N>-<40 hex>; refusing"
+            exit 1
+          fi
+          echo "pr=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          echo "sha=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+          # parse-end
+      - name: the PR is open and still at that head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.parse.outputs.pr }}
+          SHA: ${{ steps.parse.outputs.sha }}
+        run: |
+          set -euo pipefail
+          state=$(gh api "repos/$REPO/pulls/$PR" --jq '.state + " " + .head.sha')
+          if [ "$state" != "open $SHA" ]; then
+            echo "::error::PR #$PR is '$state', not 'open $SHA'; refusing"
+            exit 1
+          fi
+          echo "PR #$PR is open at $SHA"
+
+  approval-at-head-queue:
+    name: ${{ github.event_name == 'merge_group' && 'approval-at-head' || 'approval-at-head-queue' }}
+    if: github.event_name == 'merge_group'
+    needs: queue-ref
+    uses: skyphusion-labs/.github/.github/workflows/approval-at-head-reusable.yml@a3412f45b3355b72651fe39e45923921609f93b7
+    with:
+      pr_number: ${{ fromJSON(needs.queue-ref.outputs.pr) }}
+      head_sha: ${{ needs.queue-ref.outputs.sha }}
+
   approval-at-head:
+    if: github.event_name == 'pull_request'
     uses: skyphusion-labs/.github/.github/workflows/approval-at-head-reusable.yml@a3412f45b3355b72651fe39e45923921609f93b7
     with:
       pr_number: ${{ github.event.pull_request.number }}

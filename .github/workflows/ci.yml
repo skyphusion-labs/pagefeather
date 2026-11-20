@@ -1,6 +1,7 @@
 name: ci
 on:
   pull_request:
+  merge_group:
   push:
     branches: [main]
 permissions:
@@ -59,6 +60,10 @@ jobs:
           if [ -n "$hits" ]; then echo "process substitution found:"; echo "$hits"; exit 1; fi
           echo "no process substitution in the macOS-run scripts"
           tests/ci/no-process-sub-test.sh
+      - name: Merge queue gate (#1070)
+        # approval-at-head.yml reads the PR and head sha from the queue branch name. This runs the
+        # REAL parse block on good and bad refs, and checks the three workflows answer merge_group.
+        run: tests/ci/merge-group-ref-test.sh
       - name: Release bundle manifest (issue #405)
         # deploy/release: the manifest the one-click admin checks a downloaded bundle against. Offline.
         run: |
