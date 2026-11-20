@@ -289,6 +289,9 @@ jobs:
         run: |
           node --test spikes/b2-wordpress/tests/object-error.test.mjs
           node --test spikes/b2-wordpress/tests/opcache-size.test.mjs
+      - name: a doubled slash redirects only GET, HEAD and OPTIONS (issue #1005)
+        # A 301 on POST //wp-json/wc/v3/orders is followed as GET, so the body is lost.
+        run: node --test spikes/b2-wordpress/tests/slash-path.test.mjs
       - name: b-dosql a PHP object that does not start answering fails fast (issue #605)
         # object-deadline.mjs: abort a stub.fetch that has not started answering within
         # OBJECT_CALL_DEADLINE_S and answer 503 x-object-deadline, or write-loss when the
