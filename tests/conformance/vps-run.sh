@@ -38,6 +38,11 @@ case "$suite" in wc-api|wc-cpt) co=wc ;; *) co=$suite ;; esac
 src=$work/$co-$sha
 x() { echo "+ $*"; [ "${DRY:-0}" = 1 ] || "$@"; }
 in_dir() { local d=$1; shift; echo "+ (cd $d && $*)"; [ "${DRY:-0}" = 1 ] || (cd "$d" && "$@"); }
+# Playwright's call log for a failed request prints the request headers, Authorization included (the seed's
+# application password, sb1120 cf759hl). Each Playwright command runs through pw: its output passes a filter that masks
+# Authorization values before any log file sees them, synchronously, and pw returns Playwright's own exit status.
+redact_auth() { perl -pe 'BEGIN { $| = 1 } s/(authorization["'"'"']?\s*[:=]\s*["'"'"']?)(basic|bearer)\s+[A-Za-z0-9+\/=._~-]+/$1$2 <redacted>/gi'; }
+pw() { "$@" 2>&1 | redact_auth; return "${PIPESTATUS[0]}"; }
 need_run_dir() { run=${1:?run-dir}; x mkdir -p "$run"; }
 # Gutenberg build.mjs runs one tsc project at a time when CI is set (conf759 2120z: parallel tsc OOM on vc2-4c-8gb after wp+wc).
 gb_run_build() {
@@ -79,16 +84,21 @@ playwright() { # dir config: run Playwright with OUR wrapper config (exclusions,
         # The setup phase writes the same report.json as the tests. It must never survive as "the results":
         # remove it after phase 1, whatever phase 1 did. A failed setup or login is a STOP (exit 3), not a result.
         x rm -f "$run/report.json"
-        in_dir "$src/plugins/woocommerce" pnpm exec playwright test --config=tests/e2e/pf-conformance.config.mjs --project="site setup" || rc=$?
+        in_dir "$src/plugins/woocommerce" pw pnpm exec playwright test --config=tests/e2e/pf-conformance.config.mjs --project="site setup" || rc=$?
         x rm -f "$run/report.json"
         [ "$rc" = 0 ] || { echo "vps-run: STOP: the setup projects failed (rc $rc)" >&2; exit 3; }
         x python3 -I "$here/runner.py" check-state --base-url "${BASE_URL:-http://localhost:${WP_ENV_PORT:-8086}}" --state "$st/admin.json" --state "$st/customer.json" \
           || { echo "vps-run: STOP: check-state (the saved login is not real)" >&2; exit 3; }
         local proj=e2e-pf; [ "$suite" = wc-api ] && proj=api-pf; [ "$suite" = wc-cpt ] && proj=e2e-cpt
-        in_dir "$src/plugins/woocommerce" pnpm exec playwright test --config=tests/e2e/pf-conformance.config.mjs --project="$proj" --no-deps ${specs[@]+"${specs[@]}"} ;;
+        rc=0
+        in_dir "$src/plugins/woocommerce" pw pnpm exec playwright test --config=tests/e2e/pf-conformance.config.mjs --project="$proj" --no-deps ${specs[@]+"${specs[@]}"} || rc=$?
+        # The wc checkout keeps one test-results folder for every run: copy this run's traces into the run dir, so the
+        # next run cannot overwrite the evidence (sb1120: the wc-api traces were gone after the next wc run).
+        if [ "${DRY:-0}" != 1 ] && [ -d "$src/$e2e/test-results" ]; then rm -rf "$run/test-results"; cp -R "$src/$e2e/test-results" "$run/test-results"; fi
+        return "$rc" ;;
     # Media specs copy ./assets/ from the process directory. Upstream cwd is test/e2e (#980).
-    gb) in_dir "$src/$e2e" npx playwright test --config=pf-conformance.config.mjs ${specs[@]+"${specs[@]}"} ;;
-    *) in_dir "$d" npx playwright test --config="$e2e/pf-conformance.config.mjs" ${specs[@]+"${specs[@]}"} ;;
+    gb) in_dir "$src/$e2e" pw npx playwright test --config=pf-conformance.config.mjs ${specs[@]+"${specs[@]}"} ;;
+    *) in_dir "$d" pw npx playwright test --config="$e2e/pf-conformance.config.mjs" ${specs[@]+"${specs[@]}"} ;;
   esac
 }
 
