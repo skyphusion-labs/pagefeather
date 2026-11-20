@@ -35,3 +35,20 @@ test('index.js: approach A (not in the object) logs aPerfLine with this request 
 	assert.match(src, /import \{ aPerfLine \} from '\.\/perf-line\.mjs';/);
 	assert.match(src, /\} else \{\n\t\t\t\t\/\/ #1078[^\n]*\n(?:\t\t\t\t\/\/[^\n]*\n)*\t\t\t\tconsole\.log\(JSON\.stringify\(aPerfLine\(\{[^\n]*dbN: d\.calls, dbMs: d\.ms/);
 });
+
+// #1078 round 2: strummer's cf759hl probe put 13 to 15 s of a list page in PHP, not MySQL. On Cloudflare Date.now()
+// moves only at I/O, so phpMs cannot split compute from waiting. The A line also carries what PHP waited on besides
+// MySQL (remote OPcache and site pack fetches, outbound HTTP), the inflates, and OPcache hits and misses (spike token
+// plus x-perf-opcache: 1, as on b-dosql), so one tail names where the time goes.
+test('#1078: the A line carries OPcache, remote pack fetches, outbound HTTP and inflates', () => {
+	const l = aPerfLine({ path: '/wp-admin/edit.php', status: 200, dbN: 130, dbMs: 1700, phpMs: 13900, opHits: 2100, opMisses: 4, opCached: 2600, opFull: false, rfN: 41, rfKiB: 9100, rfMs: 11200, rfFail: 0, rsN: 3, rsKiB: 210, rsMs: 120, rsFail: 0, httpN: 1, httpMs: 300, inflates: 12, inflateKiB: 4000 });
+	assert.deepEqual(
+		[l.opHits, l.opMisses, l.opCached, l.opFull, l.rfN, l.rfKiB, l.rfMs, l.rfFail, l.rsN, l.rsKiB, l.rsMs, l.rsFail, l.httpN, l.httpMs, l.inflates, l.inflateKiB],
+		[2100, 4, 2600, false, 41, 9100, 11200, 0, 3, 210, 120, 0, 1, 300, 12, 4000],
+	);
+});
+test('#1078: index.js passes the per-request deltas, and OPcache counters are not object-only any more', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /const wantOpcache = spikeOk && req\.headers\.get\('x-perf-opcache'\) === '1';/);
+	assert.match(src, /aPerfLine\(\{[^\n]*rfN: stats\.rfN - remote0\.rfN[^\n]*rsN: stats\.rsN - remote0\.rsN[^\n]*httpN: stats\.httpCalls - start\.httpCalls[^\n]*opHits: op1\.hits - op0\.hits - 1/);
+});
