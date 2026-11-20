@@ -3851,6 +3851,15 @@ async function runCron(getBooted, cleanDue = false, mail = null, { held = false 
 				// A direct read is the same rows the list table shows. It runs those before pass 2.
 				if ( $claim && count( $claim->get_actions() ) ) {
 					$as_ids = $claim->get_actions();
+					// #1143: the claim TOOK the newest emails (the order_by above), but Action Scheduler hands the claimed
+					// ids back oldest first (find_actions_by_claim_id), and a leg stops at its time budget (#1126). So a
+					// leg ran the oldest of the newest batch and walked backwards through a backlog, never reaching a new
+					// customer's email (strummer, cf759hx: 75 min). Run them newest first: one query, ids only.
+					if ( count( $as_ids ) > 1 ) {
+						$as_in     = implode( ',', array_map( 'intval', $as_ids ) );
+						$as_sorted = array_values( array_filter( array_map( 'intval', (array) $wpdb->get_col( "SELECT action_id FROM {$as_t} WHERE action_id IN ({$as_in}) ORDER BY scheduled_date_gmt DESC, action_id DESC" ) ) ) );
+						if ( count( $as_sorted ) === count( $as_ids ) ) { $as_ids = $as_sorted; }
+					}
 				} else {
 					if ( $claim ) { $as_store->release_claim( $claim ); $claim = null; }
 					$as_g = ( isset( $wpdb->actionscheduler_groups ) && $wpdb->actionscheduler_groups ) ? $wpdb->actionscheduler_groups : $wpdb->prefix . 'actionscheduler_groups';

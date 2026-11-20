@@ -43,11 +43,19 @@ class Stub_DB {
 	public $prefix = 'wp_';
 	function query( $q ) { return 0; }
 	function get_var( $q ) { return false !== strpos( $q, 'scheduled_date_gmt' ) ? (int) getenv( 'STUB_DUE' ) : (int) getenv( 'STUB_PENDING' ); }
+	// #1143: an id-list read ordered by scheduled date, newest first. In this store a larger id is a later schedule.
+	function get_col( $q ) {
+		if ( ! preg_match( '/action_id IN \\(([0-9, ]+)\\)/', $q, $m ) ) { return array(); }
+		$ids = array_map( 'intval', explode( ',', $m[1] ) );
+		rsort( $ids );
+		return $ids;
+	}
 }
 $GLOBALS['wpdb'] = new Stub_DB();
 class Stub_Action { public $h; function __construct( $h ) { $this->h = $h; } function get_hook() { return $this->h; } }
 class Stub_Claim { public $ids; function __construct( $ids ) { $this->ids = $ids; } function get_actions() { return $this->ids; } }
 class Stub_Store {
+	// As Action Scheduler does (find_actions_by_claim_id): the claimed ids come back OLDEST first (11 is the oldest).
 	function stake_claim( $n ) { return new Stub_Claim( array_slice( array( 11, 12, 13 ), 0, $n ) ); }
 	function fetch_action( $id ) { return new Stub_Action( 'woocommerce_send_queued_transactional_email' ); }
 	function release_claim( $c ) {}
@@ -116,7 +124,7 @@ test('fixed: the runner never runs, and the slot goes to the next due event', ()
 
 test('fixed: the bounded Action Scheduler loop still runs its actions, and the backlog is reported', () => {
 	const { out, spy } = run({ code: render(2, 1), crons: cron('action_scheduler_run_queue'), pending: 900, due: 850 });
-	assert.deepEqual(spy.processed, [11, 12], 'CRON_AS_ACTIONS actions processed by the bounded loop');
+	assert.deepEqual(spy.processed, [12, 11], 'CRON_AS_ACTIONS actions processed by the bounded loop, newest first (#1143)');
 	assert.equal(out.as_actions, 2);
 	assert.equal(out.as_pending, 900);
 	assert.equal(out.as_due, 850);
@@ -125,20 +133,29 @@ test('fixed: the bounded Action Scheduler loop still runs its actions, and the b
 
 test('#1120: the Worker stops the leg after the first action (budget), and the leg says why', () => {
 	const { out, spy } = run({ code: render(3, 1), crons: cron('action_scheduler_run_queue'), pending: 900, due: 850, more: 'budget' });
-	assert.deepEqual(spy.processed, [11], 'the first action always runs; the second asked and was told to stop');
+	assert.deepEqual(spy.processed, [13], 'the first action (the newest, #1143) always runs; the second asked and was told to stop');
 	assert.equal(out.as_actions, 1);
 	assert.equal(out.as_stop, 'budget');
 });
 
 test('#1120: with no bridge to the Worker, the leg runs one action (fails closed to the bound before #1120)', () => {
 	const { out, spy } = run({ code: render(3, 1), crons: cron('action_scheduler_run_queue'), pending: 900, due: 850, noBridge: true });
-	assert.deepEqual(spy.processed, [11]);
+	assert.deepEqual(spy.processed, [13], 'one action, the newest (#1143)');
 	assert.equal(out.as_stop, 'stop');
+});
+
+test('#1143: the email claim is run NEWEST first, so a budget-stopped leg runs the newest email, not the oldest of the claim', () => {
+	// AS returns the claimed ids oldest first; the leg's budget stops after one (STUB_MORE budget). strummer on cf759hx:
+	// each leg ran the oldest of the newest 50 and walked backwards through a load backlog, never reaching a new order.
+	const { out, spy } = run({ code: render(3, 1), crons: cron('action_scheduler_run_queue'), pending: 900, due: 850, more: 'budget' });
+	assert.equal(out.as_pass, 'emails', 'the claim pass (stake_claim), the path the backlog took on MySQL');
+	assert.deepEqual(spy.processed, [13], 'the newest claimed email ran first');
+	assert.equal(out.as_stop, 'budget');
 });
 
 test('#1120: when the Worker allows it, the leg runs every claimed action and reports no stop', () => {
 	const { out, spy } = run({ code: render(3, 1), crons: cron('action_scheduler_run_queue'), pending: 900, due: 850 });
-	assert.deepEqual(spy.processed, [11, 12, 13]);
+	assert.deepEqual(spy.processed, [13, 12, 11], 'newest first (#1143)');
 	assert.equal(out.as_stop, null);
 });
 
