@@ -60,7 +60,29 @@ $frames = array(
 check( 'a WooCommerce data store query: plugin:woocommerce, its file, the function the line is in', 'plugin:woocommerce:class-wc-product-data-store-cpt.php::WC_Product_Data_Store_CPT->read_attributes' === skyphusion_hd_caller( $frames ) );
 check( 'no argument ever reaches the caller', false === strpos( skyphusion_hd_caller( $frames ), 'example.com' ) );
 $core = array( $f( "$W/wp-content/db.php", 'skyphusion_hd_call' ), $f( "$W/wp-includes/class-wpdb.php", 'query', 'Hyperdrive_WPDB' ), $f( "$W/wp-includes/option.php", 'get_row', 'wpdb' ), $f( "$W/wp-settings.php", 'get_option' ) );
-check( 'core: core:option.php::get_option', 'core:option.php::get_option' === skyphusion_hd_caller( $core ) );
+check( 'core: core:option.php::get_option, then its caller (#1090): wp-settings.php, no enclosing function', 'core:option.php::get_option <- core:wp-settings.php::main' === skyphusion_hd_caller( $core ) );
+// #1090: 47 single get_option reads per posts list, all named core:option.php::get_option. The trace names the code that
+// asked, past option.php and the hook layer (plugin.php, class-wp-hook.php).
+$opt = array(
+	$f( "$W/wp-content/db.php", 'skyphusion_hd_call' ),
+	$f( "$W/wp-includes/class-wpdb.php", 'query', 'Hyperdrive_WPDB' ),
+	$f( "$W/wp-includes/option.php", 'get_var', 'wpdb' ),
+	$f( "$W/wp-content/plugins/woocommerce/src/Admin/Features/Features.php", 'get_option' ),
+	$f( "$W/wp-includes/class-wp-hook.php", 'is_enabled', 'Automattic\\WooCommerce\\Admin\\Features\\Features' ),
+	$f( "$W/wp-includes/plugin.php", 'apply_filters', 'WP_Hook' ),
+);
+check( '#1090 get_option from WooCommerce: the option.php frame, then the plugin caller', 'core:option.php::get_option <- plugin:woocommerce:Features.php::Automattic\\WooCommerce\\Admin\\Features\\Features->is_enabled' === skyphusion_hd_caller( $opt ) );
+$hook = array(
+	$f( "$W/wp-content/db.php", 'x' ),
+	$f( "$W/wp-includes/option.php", 'get_var', 'wpdb' ),
+	$f( "$W/wp-includes/option.php", 'get_option' ),
+	$f( "$W/wp-includes/class-wp-hook.php", 'get_site_option' ),
+	$f( "$W/wp-includes/plugin.php", 'apply_filters', 'WP_Hook' ),
+	$f( "$W/wp-content/themes/storefront/functions.php", 'apply_filters' ),
+	$f( "$W/wp-settings.php", 'storefront_setup' ),
+);
+check( '#1090 the hook layer and option.php are skipped: the theme function that asked', 'core:option.php::get_option <- theme:storefront:functions.php::storefront_setup' === skyphusion_hd_caller( $hook ) );
+check( '#1090 a caller other than option.php is unchanged (no arrow)', false === strpos( skyphusion_hd_caller( $frames ), '<-' ) );
 $theme = array( $f( "$W/wp-content/db.php", 'x' ), $f( "$W/wp-content/themes/storefront/inc/x.php", 'get_var', 'wpdb' ) );
 check( 'theme: theme:storefront:x.php::main (no enclosing function)', 'theme:storefront:x.php::main' === skyphusion_hd_caller( $theme ) );
 $mu = array( $f( "$W/wp-content/db.php", 'x' ), $f( "$W/wp-content/mu-plugins/r2-uploads.php", 'query', 'wpdb' ), $f( "$W/wp-includes/plugin.php", 'r2_fn' ) );

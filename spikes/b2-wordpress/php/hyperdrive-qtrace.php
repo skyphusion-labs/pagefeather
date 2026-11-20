@@ -21,6 +21,26 @@ function skyphusion_hd_qtrace_on() {
  * The query's caller: the first frame outside the database layer (the drop-in, its helpers and class-wpdb.php),
  * named by area, file and the function that line is in (the next frame's function). $frames is for the tests.
  */
+/** One frame's name, "<area>:<file>::<function>": the function is the one its line is in (the next frame's). */
+function skyphusion_hd_frame_name( $frames, $k ) {
+	$file = str_replace( '\\', '/', $frames[ $k ]['file'] );
+	$base = basename( $file );
+	if ( preg_match( '#/wp-content/plugins/([^/]+)/#', $file, $m ) ) {
+		$area = 'plugin:' . $m[1];
+	} elseif ( preg_match( '#/wp-content/themes/([^/]+)/#', $file, $m ) ) {
+		$area = 'theme:' . $m[1];
+	} elseif ( false !== strpos( $file, '/wp-content/mu-plugins/' ) ) {
+		$area = 'mu';
+	} elseif ( false !== strpos( $file, '/wp-content/' ) ) {
+		$area = 'dropin';
+	} else {
+		$area = 'core';
+	}
+	$next = isset( $frames[ $k + 1 ] ) ? $frames[ $k + 1 ] : null;
+	$fn   = $next && ! empty( $next['function'] ) ? ( ! empty( $next['class'] ) ? $next['class'] . '->' : '' ) . $next['function'] : 'main';
+	return $area . ':' . $base . '::' . $fn;
+}
+
 function skyphusion_hd_caller( $frames = null ) {
 	if ( null === $frames ) {
 		$frames = debug_backtrace( DEBUG_BACKTRACE_IGNORE_ARGS, 40 );
@@ -36,20 +56,20 @@ function skyphusion_hd_caller( $frames = null ) {
 		if ( in_array( $base, $skip, true ) && ( 'class-wpdb.php' === $base || 'wp-db.php' === $base || false !== strpos( $file, '/wp-content/' ) ) ) {
 			continue;
 		}
-		if ( preg_match( '#/wp-content/plugins/([^/]+)/#', $file, $m ) ) {
-			$area = 'plugin:' . $m[1];
-		} elseif ( preg_match( '#/wp-content/themes/([^/]+)/#', $file, $m ) ) {
-			$area = 'theme:' . $m[1];
-		} elseif ( false !== strpos( $file, '/wp-content/mu-plugins/' ) ) {
-			$area = 'mu';
-		} elseif ( false !== strpos( $file, '/wp-content/' ) ) {
-			$area = 'dropin';
-		} else {
-			$area = 'core';
+		$name = skyphusion_hd_frame_name( $frames, $k );
+		// #1090: a get_option round trip is named by the code that asked for the option, past option.php and the
+		// hook layer, so 47 "core:option.php::get_option" reads split by their real caller.
+		if ( 'option.php' === $base && 0 === strpos( $name, 'core:' ) ) {
+			$pass = array( 'option.php', 'plugin.php', 'class-wp-hook.php' );
+			for ( $j = $k + 1; $j < count( $frames ); $j++ ) {
+				if ( empty( $frames[ $j ]['file'] ) || in_array( basename( str_replace( '\\', '/', $frames[ $j ]['file'] ) ), $pass, true ) ) {
+					continue;
+				}
+				$name .= ' <- ' . skyphusion_hd_frame_name( $frames, $j );
+				break;
+			}
 		}
-		$next = isset( $frames[ $k + 1 ] ) ? $frames[ $k + 1 ] : null;
-		$fn   = $next && ! empty( $next['function'] ) ? ( ! empty( $next['class'] ) ? $next['class'] . '->' : '' ) . $next['function'] : 'main';
-		return substr( $area . ':' . $base . '::' . $fn, 0, 160 );
+		return substr( $name, 0, 240 );
 	}
 	return '?';
 }
