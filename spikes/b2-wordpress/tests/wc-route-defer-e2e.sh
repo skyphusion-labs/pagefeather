@@ -12,7 +12,7 @@
 #   6. (force) a route that matches nothing is still a 404 (the fail-safe registers first, then matches).
 #   7. on the editor screen, every mapped callback is found on the running WooCommerce: its preloaded answers say
 #      deferred 13/13 (bar c, live).
-#   8. SCOPE: a non-wc REST path defers. /wc and the front end do not (#987).
+#   8. SCOPE: a non-wc REST path defers. /wc registers its own namespace. The front end does not (#987, #994).
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export PORT=${PORT:-8797} DEV_ENV=${DEV_ENV:-dosql-local}
@@ -79,14 +79,18 @@ j1, j2 = json.loads(i1["body"]), json.loads(i2["body"])
 check("4. the full index: the same namespaces and routes", sorted(j1["namespaces"]) == sorted(j2["namespaces"]) and sorted(j1["routes"]) == sorted(j2["routes"]), "%d vs %d routes" % (len(j1["routes"]), len(j2["routes"])))
 w1 = BL.req(o, "/wp-admin/admin.php?page=wc-admin&path=%2Fanalytics%2Foverview", timeout=300)
 w2 = BL.req(o, "/wp-admin/admin.php?page=wc-admin&path=%2Fanalytics%2Foverview", headers=OFF, timeout=300)
-check("5. a wc-admin page answers the same", w1["code"] == w2["code"] == 200 and len(w1["body"]) == len(w2["body"]), "%s %s, %d vs %d bytes" % (w1["code"], w2["code"], len(w1["body"]), len(w2["body"])))
+def drop_route_hdr(b):
+    return re.sub(br'"X-PF-WC-Routes":"[^"]*"', b"", b)
+b1, b2 = drop_route_hdr(w1["body"]), drop_route_hdr(w2["body"])
+check("5. a wc-admin page answers the same", w1["code"] == w2["code"] == 200 and len(b1) == len(b2), "%s %s, %d vs %d bytes" % (w1["code"], w2["code"], len(b1), len(b2)))
 u = BL.rest(o, "/wp/v2/no-such-route", headers=FORCE)
 check("6. a route that matches nothing is still a 404 (registered first)", u["code"] == 404 and ((u["h"] or {}).get("X-PF-WC-Routes") or "").startswith("registered "), "%s %s" % (u["code"], (u["h"] or {}).get("X-PF-WC-Routes")))
 s7 = sorted({(v.get("headers") or {}).get("X-PF-WC-Routes") for v in (a or {}).values() if isinstance(v, dict)} - {None})
 check("7. on the editor screen, every mapped callback is found: its preloaded answers say deferred 13/13", s7 == ["deferred 13/13"], str(s7))
 t = BL.rest(o, "/wp/v2/types"); wc = BL.rest(o, "/wc/v3/products?per_page=1"); f = BL.req(BL.opener(), "/")
 th = (t["h"] or {}).get("X-PF-WC-Routes") or ""
-check("8. a non-wc REST path defers; /wc and the front end do not", th.startswith("deferred ") and "X-PF-WC-Routes" not in (wc["h"] or {}) and "X-PF-WC-Routes" not in (f["h"] or {}), "%s / %s / %s" % (th, (wc["h"] or {}).get("X-PF-WC-Routes"), (f["h"] or {}).get("X-PF-WC-Routes")))
+wch = (wc["h"] or {}).get("X-PF-WC-Routes") or ""
+check("8. a non-wc REST path defers; /wc registers its namespace; the front end does not", th.startswith("deferred ") and wch.startswith("registered ") and "X-PF-WC-Routes" not in (f["h"] or {}), "%s / %s / %s" % (th, wch, (f["h"] or {}).get("X-PF-WC-Routes")))
 print("wc-route-defer: %d failing" % len(fails))
 sys.exit(1 if fails else 0)
 PY
