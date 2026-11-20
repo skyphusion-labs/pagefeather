@@ -22,10 +22,36 @@ print(base64.b64encode(json.dumps(d, sort_keys=False).encode()).decode(), end=""
 # #1108; it records now) or the record matches this run; 2, with each difference on stderr, otherwise. An unreadable
 # record is a refusal, never a pass.
 inputs_check() {
-  local dir=$1 name=$2 rec cur
-  rec=$(cd "$dir" && terraform workspace select "$name" >/dev/null 2>&1 && terraform output -raw deploy_inputs 2>/dev/null) || rec=""
+  local dir=$1 name=$2 rec cur err rc
+  # No workspace: a new site, nothing recorded. Fail closed otherwise (the lead's review): only Terraform's "not found"
+  # for the output (a site deployed before #1108) means no record; any other failure (a backend credential or state
+  # error) refuses, so a broken read never passes as "nothing to compare".
+  local wsl
+  err=$(mktemp "${TMPDIR:-/tmp}/inputs-check.XXXXXX")
+  # workspace list fails when the backend can not be reached (credentials, network): that is a refusal. Only a list
+  # that succeeds and lacks the site's name means a new site.
+  if ! wsl=$(cd "$dir" && terraform workspace list -no-color 2> "$err"); then
+    echo "refused: site $name's recorded inputs could not be read (terraform workspace list failed: $(tr '\n' ' ' < "$err" | cut -c1-200)). Nothing was changed. (#1108)" >&2
+    rm -f "$err"; return 2
+  fi
+  if ! printf '%s\n' "$wsl" | sed 's/^[* ]*//' | grep -qx "$name"; then
+    rm -f "$err"; echo "site $name: no recorded inputs (a new site); this run records them" >&2; return 0
+  fi
+  if ! (cd "$dir" && terraform workspace select "$name" >/dev/null 2> "$err"); then
+    echo "refused: site $name's workspace could not be selected ($(tr '\n' ' ' < "$err" | cut -c1-200)). Nothing was changed. (#1108)" >&2
+    rm -f "$err"; return 2
+  fi
+  rec=$(cd "$dir" && terraform output -no-color -raw deploy_inputs 2> "$err"); rc=$?
+  if [ "$rc" != 0 ]; then
+    if grep -qE 'Output "deploy_inputs" not found|No outputs found' "$err"; then
+      rm -f "$err"; echo "site $name: no recorded inputs (deployed before #1108); this run records them" >&2; return 0
+    fi
+    echo "refused: site $name's recorded inputs could not be read (terraform output failed: $(tr '\n' ' ' < "$err" | cut -c1-200)). Nothing was changed. (#1108)" >&2
+    rm -f "$err"; return 2
+  fi
+  rm -f "$err"
   if [ -z "$rec" ]; then
-    echo "site $name: no recorded inputs (a new site, or one deployed before #1108); this run records them" >&2
+    echo "site $name: no recorded inputs (an empty record); this run records them" >&2
     return 0
   fi
   cur=$(deploy_inputs_value)

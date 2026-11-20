@@ -12,8 +12,11 @@ mkdir -p "$T/bin" "$T/tf"
 cat > "$T/bin/terraform" <<STUB
 #!/bin/bash
 case "\$1" in
-  workspace) [ -e "$T/ws" ] && exit 0; exit 1 ;;
-  output) [ -f "$T/rec" ] && { cat "$T/rec"; exit 0; }; echo "Warning: No outputs found" >&2; exit 1 ;;
+  workspace) [ -f "$T/wsfail" ] && { cat "$T/wsfail" >&2; exit 1; }
+             if [ "\$2" = list ]; then echo "* default"; [ -e "$T/ws" ] && echo "  site1"; exit 0; fi
+             [ -e "$T/ws" ] && exit 0; exit 1 ;;
+  output) [ -f "$T/outfail" ] && { cat "$T/outfail" >&2; exit 1; }
+          [ -f "$T/rec" ] && { cat "$T/rec"; exit 0; }; echo "Error: Output \"deploy_inputs\" not found" >&2; exit 1 ;;
 esac
 exit 0
 STUB
@@ -22,8 +25,9 @@ chmod +x "$T/bin/terraform"
 . "$ROOT/deploy/lib/recorded-inputs.sh"
 # record <env assignments...>: what a deploy with those settings records (the base64 value).
 record() { env -i PATH="$PATH" "$@" bash -c '. "'"$ROOT"'/deploy/lib/recorded-inputs.sh"; deploy_inputs_value'; }
-check() { # check <recorded value or ""> <env assignments...>
-  local rec=$1; shift; rm -f "$T/rec" "$T/ws"; touch "$T/ws"; [ -n "$rec" ] && printf '%s' "$rec" > "$T/rec"
+check() { # check <recorded value or ""> <env assignments...>; OUTFAIL=<stderr> makes `terraform output` fail with it
+  local rec=$1; shift; rm -f "$T/rec" "$T/ws" "$T/outfail"; touch "$T/ws"; [ -n "$rec" ] && printf '%s' "$rec" > "$T/rec"
+  [ -z "${OUTFAIL:-}" ] || printf '%s\n' "$OUTFAIL" > "$T/outfail"
   env -i PATH="$T/bin:$PATH" "$@" bash -c '. "'"$ROOT"'/deploy/lib/recorded-inputs.sh"; inputs_check "'"$T/tf"'" site1' > "$T/out" 2> "$T/err"
 }
 R=$(record VARIANT=b-dosql LOCATION=enam MEDIA=1 WOO_ACTIVE=0 MAIL_FROM=wp-test@example.co)
@@ -44,6 +48,17 @@ check "$R" VARIANT=b-dosql LOCATION=enam MEDIA=0 WOO_ACTIVE=0 REPLACE_INPUTS=1; 
 ok "REPLACE_INPUTS=1 accepts the differences on purpose, and says so (rc $rc)" "$([ $rc = 0 ] && grep -q 'REPLACE_INPUTS=1: the recorded inputs are replaced' "$T/err" && echo 1 || echo 0)"
 check "" VARIANT=b-dosql MEDIA=1; rc=$?
 ok "a site with no record (new, or deployed before #1108) passes and says it records now (rc $rc)" "$([ $rc = 0 ] && grep -q 'no recorded inputs' "$T/err" && echo 1 || echo 0)"
+# A backend that can not be reached fails `workspace list` too: that is a refusal, never "a new site".
+echo 'Error: No valid credential sources found' > "$T/wsfail"; touch "$T/ws"
+env -i PATH="$T/bin:$PATH" VARIANT=b-dosql bash -c '. "'"$ROOT"'/deploy/lib/recorded-inputs.sh"; inputs_check "'"$T/tf"'" site1' > "$T/out" 2> "$T/err"; rc=$?
+rm -f "$T/wsfail"
+ok "an unreachable backend (workspace list fails) is a refusal, not a new site (rc $rc)" "$([ $rc = 2 ] && grep -q 'could not be read' "$T/err" && echo 1 || echo 0)"
+# Fail closed (the lead's review): a FAILED `terraform output` is not "no record". Only "not found" (a site deployed
+# before #1108) and a missing workspace (a new site) mean no record; a backend or state error refuses.
+OUTFAIL='Error: No valid credential sources found' check "" VARIANT=b-dosql; rc=$?
+ok "a terraform output that FAILS (a backend credential error) is a refusal, not 'no record' (rc $rc)" "$([ $rc = 2 ] && grep -q 'could not be read' "$T/err" && echo 1 || echo 0)"
+rm -f "$T/ws"; env -i PATH="$T/bin:$PATH" VARIANT=b-dosql bash -c '. "'"$ROOT"'/deploy/lib/recorded-inputs.sh"; inputs_check "'"$T/tf"'" site1' > "$T/out" 2> "$T/err"; rc=$?
+ok "a NEW site (no workspace) is no record, and passes (rc $rc)" "$([ $rc = 0 ] && grep -q 'no recorded inputs' "$T/err" && echo 1 || echo 0)"
 check "!!not-base64!!" VARIANT=b-dosql; rc=$?
 ok "an unreadable record is a refusal, never a pass (rc $rc)" "$([ $rc = 2 ] && echo 1 || echo 0)"
 # Wiring: deploy.sh renders the record into the var file, checks before media_guard, and Terraform carries the output.
