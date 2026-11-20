@@ -234,6 +234,8 @@ jobs:
           bash tests/conformance/gaps-php-test.sh
           python3 -I tests/conformance/seed-test.py
           python3 -I tests/conformance/routes-test.py
+      - name: conformance upload persistence probe against a stub (#759)
+        run: python3 -I tests/conformance/media_probe_test.py
       - name: conformance on Cloudflare Browser Run, the CDP preload against a stub (#759)
         run: node --test tests/conformance/browser-run.test.mjs
       - name: b-dosql mail From address

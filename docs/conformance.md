@@ -68,6 +68,18 @@ always 1.
   post already trashed by another worker) against 18 of 18 with 1. Run more suites on more sites at once for speed, never
   more workers on one site.
 
+## Does a site keep its uploads? (media_probe.py)
+
+The wp suite's only media spec tests a FAILED upload, so it passes with or without durable media (measured on `cf759f`,
+2026-11-20: 18 of 18 with no R2 binding). `tests/conformance/media_probe.py` is the instrument for "uploads persist":
+
+    B=<site> WP_USERNAME=... WP_PASSWORD=... python3 -I tests/conformance/media_probe.py <out.json> [--wait 90] [--keep]
+
+It uploads a PNG it makes itself over REST (201). It GETs the full file (the same bytes) and each generated size (200,
+an image type) on fresh connections. It waits, GETs a page, reads every file again, then deletes the attachment and
+expects the full file to answer 404. An isolate's identity cannot be seen from outside: the wait and fresh connections
+are the instrument, and the report says so. A row that says media works names this probe as its instrument.
+
 ## Upstream notes for the matrix
 
 - **WooCommerce Cleanup's reset prints a database error on every database:** it runs
