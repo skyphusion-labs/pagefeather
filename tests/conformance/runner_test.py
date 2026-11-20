@@ -642,6 +642,19 @@ def main():
         vg_out = vg.stdout + vg.stderr
         ok("vps-run install gb: clean, esbuild rebuild, NODE_OPTIONS") if vg.returncode == 0 and "clean:packages" in vg_out and "clean:package-types" in vg_out and "npm rebuild esbuild" in vg_out and "max-old-space-size=6144" in vg_out else bad("vps-run install gb dry: %s" % vg_out[-400:])
         ok("vps-run install gb: CI=true (Gutenberg sequential tsc)") if "CI=true" in vg_out else bad("vps-run install gb: no CI=true in dry output")
+        # PF_SPECS: a subset run passes its file filters to the test phase only, and says it is a subset. Run under
+        # /bin/bash too: macOS bash 3.2 with set -u fails on an empty "${a[@]}".
+        rgb = os.path.join(t, "rgb"); os.makedirs(rgb, exist_ok=True); open(os.path.join(rgb, "env"), "w").close()
+        for sh in ("/bin/bash", "bash"):
+            if sh.startswith("/") and not os.path.exists(sh):
+                continue
+            base_env = {"PATH": os.environ.get("PATH", ""), "DRY": "1"}
+            v0 = subprocess.run([sh, os.path.join(HERE, "vps-run.sh"), "run", "gb", os.path.join(t, "w"), rgb], env=base_env, capture_output=True, text=True)
+            v1 = subprocess.run([sh, os.path.join(HERE, "vps-run.sh"), "run", "gb", os.path.join(t, "w"), rgb], env=dict(base_env, PF_SPECS="specs/editor/blocks/navigation specs/x.spec.js"), capture_output=True, text=True)
+            line0 = [l for l in v0.stdout.splitlines() if "playwright test" in l]
+            line1 = [l for l in v1.stdout.splitlines() if "playwright test" in l]
+            ok("vps-run PF_SPECS (%s): no filter runs the whole suite" % sh) if v0.returncode == 0 and line0 and line0[0].rstrip().endswith("--config=pf-conformance.config.mjs)") and "SUBSET" not in v0.stdout else bad("PF_SPECS none %s: rc %d %s %s" % (sh, v0.returncode, line0, v0.stderr[-200:]))
+            ok("vps-run PF_SPECS (%s): the filters reach the test phase and the run says SUBSET" % sh) if v1.returncode == 0 and line1 and line1[0].rstrip().endswith("specs/editor/blocks/navigation specs/x.spec.js)") and "SUBSET run" in v1.stdout else bad("PF_SPECS %s: rc %d %s %s" % (sh, v1.returncode, line1, v1.stderr[-200:]))
         vps_txt = open(os.path.join(HERE, "vps-run.sh")).read()
         ok("vps-run.sh gb: three build attempts on failure") if "for gb_try in 1 2 3" in vps_txt and "gb build failed after 3 attempts" in vps_txt else bad("vps-run.sh gb retry count")
         ok("vps-run.sh gb: clears node_modules/.cache before attempt 3") if "node_modules/.cache" in vps_txt and '[ "$gb_try" = 2 ]' in vps_txt else bad("vps-run.sh gb cache clear")
