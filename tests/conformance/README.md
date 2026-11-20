@@ -5,6 +5,23 @@ These tools run the Playwright suites of WordPress, WooCommerce and Gutenberg ag
 **Never point them at a real site.** The suites delete all posts, pages and blocks. The WooCommerce cleanup plugin resets the whole store. The runner refuses a site without the throwaway marker.
 
 
+## The box's Node and npm (read them from the pins)
+
+Each pinned suite states its own engine floor in its `package.json` (`engines`). `npm ci` refuses a box below it (`EBADENGINE`) in the first seconds of `vps-run.sh install`. Measured at the current pins (2026-11-20):
+
+| suite | pin | node | npm |
+|---|---|---|---|
+| wordpress-develop | `0afb74de` | `>=20.10.0` | `>=10.2.3` |
+| WooCommerce | `67e007c3` | `^24.15.0` (24.x only) | not stated |
+| Gutenberg | `8daba429` | `>=24.18.0` | `>=11.16.0` |
+
+So a box that runs all three needs **Node 24.18 or later, but below 25**, and **npm 11.16 or later**:
+- Node 22 fails the Gutenberg install. The conf759 boxes used Node 22, which held for the earlier Gutenberg pin only. The sb1120 gb baseline box `gbbase-gb1` failed `npm ci` 14 s after it started.
+- Node 26 is outside WooCommerce's `^24` range.
+- On Ubuntu, install with NodeSource `setup_24.x`, then `npm install -g npm@11`.
+
+When a pin moves, read the floors again: `curl -fsS https://raw.githubusercontent.com/<repo>/<sha>/package.json`, then the `engines` key.
+
 ## Gutenberg install on the VPS (`vps-run.sh install gb`)
 
 Gutenberg 23.6 at the pin uses `npm run build`, not `build:packages`. On a small VPS the first build can fail on TypeScript or a stale `wp-build` tree. Earlier conf759 STOP rows are in `docs/results.md`. #888 sets `CI=true` for `install-gb`. conf759 RUN `20261117t2331z` at main `c6a7244` measured pass. The install step runs `npm ci`, then `clean:packages` and `clean:package-types`, rebuilds esbuild, then `NODE_OPTIONS=--max-old-space-size=6144 npm run build`. It retries once on failure. A passing install has `packages/*/build-module` under the checkout.
