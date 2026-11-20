@@ -2240,6 +2240,9 @@ async function r2opInner(op) {
 		if (op.op === 'put') {
 			// #352: a put may become an orphan if the request rolls back (its attachment rows go). Logged for the sweep.
 			if (undoLog && undoLog.frameOpen()) console.log(JSON.stringify({ m: 'frame-r2-put', key: String(op.key).slice(0, 200) }));
+			// #1039: a key this request CREATES is recorded before the put, so a proven rollback deletes it. An overwrite is
+			// never recorded: the old bytes are gone either way, and a kept row may point at the key.
+			await r2RecordIfNew(B, op.key);
 			await B.put(op.key, b64decode(op.body), { httpMetadata: { contentType: op.type || 'application/octet-stream' } });
 			return { ok: true };
 		}
@@ -2248,6 +2251,7 @@ async function r2opInner(op) {
 			if (undoLog && undoLog.frameOpen() && sqlDb) undoLog.commitPoint(sqlDb, 'r2-copy'); // #352: may replace bytes
 			const o = await B.get(op.from);
 			if (!o) return { ok: true, found: false };
+			await r2RecordIfNew(B, op.to); // #1039: as a put
 			await B.put(op.to, o.body, { httpMetadata: { contentType: op.type || o.httpMetadata?.contentType || 'application/octet-stream' } });
 			if (op.move) {
 				await releaseReservedKey(op.from);
@@ -2303,6 +2307,33 @@ async function r2opInner(op) {
 	} catch (e) {
 		return { ok: false, error: String((e && e.message) || e) };
 	}
+}
+
+// #1039: record an R2 key the armed request is about to CREATE (undo-log.mjs r2Created). head() only when recording is on.
+async function r2RecordIfNew(B, key) {
+	if (!undoLog || !sqlDb || !undoLog.r2Tracking()) return;
+	try {
+		if (!(await B.head(key))) undoLog.r2Created(sqlDb, key);
+	} catch (e) {
+		console.log(JSON.stringify({ m: 'frame-r2-record-failed', error: String((e && e.message) || e).slice(0, 160) }));
+	}
+}
+// #1039: delete the R2 keys a rolled-back request created, and their name reservations (#946). True when every key went
+// (then the record is forgotten); false keeps the record, and the caller must not claim that nothing was saved.
+async function deleteFrameR2(req, keys) {
+	if (!keys || !keys.length) return true;
+	let failed = 0;
+	for (const k of keys) {
+		try {
+			await releaseReservedKey(k);
+			await ENV.MEDIA.delete(k);
+		} catch {
+			failed++;
+		}
+	}
+	console.log(JSON.stringify({ m: 'frame-r2-deleted', req, n: keys.length - failed, failed }));
+	if (!failed && undoLog && sqlDb) undoLog.r2Forget(sqlDb, req);
+	return failed === 0;
 }
 
 async function releaseReservedKey(key) {
@@ -2615,6 +2646,7 @@ async function txnRecover(db, storage) {
 	try {
 		const r = undo().recover(db, storage);
 		await undo().finishCacheDrops();
+		if (r && r.r2 && r.r2.length) await deleteFrameR2(r.req, r.r2); // #1039: the dead request's files go with its rows
 		return r;
 	} catch (e) {
 		try { await undo().finishCacheDrops(); } catch { /* the row is already back; a cache miss reads it */ }
@@ -4523,7 +4555,9 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				const json = wantsJson(url.pathname, url.search, req.headers.get('accept'));
 				// "Nothing was saved" only on the proof, the frame's own row as /_frame reads it (#352).
 				const fr = rb && undoLog ? undoLog.status(sqlDb, rb.req) : null;
-				const rolled = frameProvesRollback(fr) ? rolledBackResponse(json, 'memory', fr.undone) : null;
+				// #1039: and the files it created are gone too, or "nothing was saved" is not claimed.
+				const filesGone = rb ? await deleteFrameR2(rb.req, rb.r2) : true;
+				const rolled = filesGone && frameProvesRollback(fr) ? rolledBackResponse(json, 'memory', fr.undone) : null;
 				const wl = writeLossResponse(lost, json);
 				const answer = rolled || wl;
 				// phpStatus is PHP's status before this replacement. answered is the status returned below (#596).
@@ -4565,7 +4599,8 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 						try { if (undoLog) await undoLog.finishCacheDrops(); } catch (e) { console.log(JSON.stringify({ m: 'options-cache-drop-failed', error: String((e && e.message) || e).slice(0, 160) })); }
 					}
 					const fr = rb && undoLog ? undoLog.status(sqlDb, rb.req) : null;
-					const saved = rb ? !frameProvesRollback(fr) : wrote;
+					const filesGone = rb ? await deleteFrameR2(rb.req, rb.r2) : true; // #1039
+					const saved = rb ? !(filesGone && frameProvesRollback(fr)) : wrote;
 					const sf = statementFailureResponse(d.failures.length, wantsJson(url.pathname, url.search, req.headers.get('accept')), saved);
 					console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', class: 'platform', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, wrote, rolledBack: !!(rb && !saved), answered: sf.status, phpStatus: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env) }));
 					if (purgeRetry && saved) purgeRetry(); // #1007: a saved write changed pages, so their purge is asked again
