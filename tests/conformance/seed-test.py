@@ -11,9 +11,11 @@ The full seed (every item set and checked, and a reseed) is verified against a r
   7. the block email editor option starts at yes. The seed writes no. The read-back is no (#916).
      A wc-admin 403 on that option still passes when wc/v3 is no.
      The same 403 still fails when wc/v3 stays yes.
+  8. SEED_NO_WOO=1 on a WordPress-only site: no WooCommerce request, no customer, the items named as skipped; the
+     same statement on a site that has wc/v3 fails.
 Run: python3 -I tests/conformance/seed-test.py
 """
-import json, os, subprocess, sys, threading
+import json, os, re, subprocess, sys, threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 SEED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seed.py")
 fails = []
@@ -177,12 +179,14 @@ class Site(BaseHTTPRequestHandler):
         if path.startswith("/wp-admin/admin-ajax.php") and "rest-nonce" in self.path:
             return self.reply(200, b"0123456789", "text/plain")
         if path in ("/wp-json", "/wp-json/"):
-            return self._json(200, {"routes": {"/": {}}})
+            return self._json(200, {"routes": {"/": {}}, "namespaces": list(st.get("namespaces", ["wp/v2", "wc/v3"]))})
         if path == "/wp-admin/options-permalink.php" and method == "GET":
             return self.reply(200, b'<input name="_wpnonce" value="0123456789">', "text/html")
         if path == "/wp-admin/options-permalink.php" and method == "POST":
             return self.reply(200, b"ok", "text/html")
         route, q = self._route()
+        if route:
+            st.setdefault("routes", []).append((method, route))
         if not route:
             st["odd"].append((method, self.path))
             return self.reply(404, b"odd")
@@ -262,7 +266,7 @@ class Site(BaseHTTPRequestHandler):
         st["odd"].append((method, route))
         return self._json(200, {})
 
-def run_email_editor_seed(**flags):
+def run_email_editor_seed(extra_env=None, **flags):
     state = {
         "options": {
             "woocommerce_allow_tracking": "no",
@@ -284,8 +288,13 @@ def run_email_editor_seed(**flags):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     out = os.path.join(os.environ.get("TMPDIR", "/tmp"), "seed-email-%d" % os.getpid())
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "B": "http://127.0.0.1:%d" % srv.server_address[1], "ADMIN_PASSWORD": "x"}
+    env.update(extra_env or {})
     p = subprocess.run([sys.executable, "-I", SEED, out], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=60)
     srv.shutdown()
+    try:
+        state["creds_keys"] = sorted(re.findall(r"^export ([A-Z_]+)=", open(os.path.join(out, "creds.env")).read(), re.M))
+    except OSError:
+        state["creds_keys"] = None
     report = None
     try:
         report = json.load(open(os.path.join(out, "seed.json")))
@@ -345,6 +354,33 @@ check(
     "email editor option: wc-admin 403 fails when wc/v3 is yes",
     isinstance(chk, dict) and chk.get("ok") is False and chk.get("wcv3") == "yes" and chk.get("wcadmin_status") == 403 and state["options"].get(EMAIL_OPT) == "yes" and (EMAIL_OPT, 403) in state["reads"] and p.returncode == 1,
     (p.returncode, state["options"].get(EMAIL_OPT), state["puts"], state["reads"], chk),
+)
+
+def woo_routes(state):
+    return [r for _m, r in state.get("routes", []) if r.startswith("/wc/") or r.startswith("/wc-admin/")]
+
+p, state, report = run_email_editor_seed({"SEED_NO_WOO": "1"}, namespaces=["wp/v2"])
+checks = (report or {}).get("checks", {})
+skipped = sorted(k for k, v in checks.items() if isinstance(v, dict) and v.get("ok") is None and "SEED_NO_WOO" in str(v.get("skipped")))
+check(
+    "SEED_NO_WOO=1 on a site with no wc/v3: exit 0, no WooCommerce request, no customer in creds.env, the items named as skipped",
+    p.returncode == 0 and woo_routes(state) == [] and state["creds_keys"] == ["WP_PASSWORD", "WP_USERNAME"] and len(skipped) >= 3
+    and (checks.get("SEED_NO_WOO=1: the site has no WooCommerce (no wc/v3 namespace)") or {}).get("ok") is True,
+    (p.returncode, woo_routes(state)[:6], state["creds_keys"], skipped, (report or {}).get("failed")),
+)
+
+p, state, report = run_email_editor_seed({"SEED_NO_WOO": "1"})
+check(
+    "SEED_NO_WOO=1 on a site that HAS wc/v3: the seed fails",
+    p.returncode == 1 and "SEED_NO_WOO=1: the site has no WooCommerce (no wc/v3 namespace)" in ((report or {}).get("failed") or []),
+    (p.returncode, (report or {}).get("failed")),
+)
+
+p, state, report = run_email_editor_seed(namespaces=["wp/v2"])
+check(
+    "no SEED_NO_WOO: the WooCommerce items run as before (wc/v3 is asked, the customer is in creds.env)",
+    any(r.startswith("/wc/v3/") for r in woo_routes(state)) and state["creds_keys"] == ["CUSTOMER_PASSWORD", "CUSTOMER_USERNAME", "WP_PASSWORD", "WP_USERNAME"],
+    (woo_routes(state)[:4], state["creds_keys"]),
 )
 
 page = {"id": 7, "status": "publish", "slug": "cart", "link": "https://ex/cart/"}
