@@ -58,6 +58,7 @@ import { reuseOn, createSpare, bootTestDelayMs, bootTestDelayAt, moduleImportsMe
 import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
 import { withDbRun } from './db-lifecycle.mjs';
 import { isVersionedKey, l1ExpFor } from './oc-l1.mjs';
+import { aPerfLine } from './perf-line.mjs';
 import { templateQueuePriority, templateLookupYield, templateLookupForwardYield } from './template-boot.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse } from './overflow.mjs';
@@ -228,11 +229,14 @@ async function objectCacheOp(op) {
 			ocCount(k, "miss");
 			if (l2) {
 				let kv = null;
+				const tl2 = Date.now();
 				try { kv = await ENV.OC_KV.get(ocKvKey(k)); } catch { kv = null; }
+				stats.l2N++;
+				stats.l2Ms += Date.now() - tl2;
 				if (kv != null) {
 					ocStore(k, kv, l1ExpFor(k, now, ocTtlMs())); // warm in this isolate; a versioned key has no time bound (#1078)
 					ocL2Writer().noteRead(ocKvKey(k), kv); // #500: a set of the same value needs no PUT
-					stats.ocHits++; ocCount(k, "l2hit"); out.push(kv); continue;
+					stats.ocHits++; stats.l2Hits++; ocCount(k, "l2hit"); out.push(kv); continue;
 				}
 				ocCount(k, "l2miss");
 			}
@@ -582,7 +586,7 @@ async function stageUpload(req, env) {
 }
 
 function newStats() {
-	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, reinflates: 0, lazyWrites: 0, rfN: 0, rfBytes: 0, rfMs: 0, rfFail: 0, rfCapped: 0, rfRetry: 0, rsN: 0, rsBytes: 0, rsMs: 0, rsFail: 0, rsCapped: 0, rsRetry: 0, dbTables: {}, ocGroups: {}, ocCalls: 0, ocHits: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
+	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, reinflates: 0, lazyWrites: 0, rfN: 0, rfBytes: 0, rfMs: 0, rfFail: 0, rfCapped: 0, rfRetry: 0, rsN: 0, rsBytes: 0, rsMs: 0, rsFail: 0, rsCapped: 0, rsRetry: 0, dbTables: {}, ocGroups: {}, ocCalls: 0, ocHits: 0, l2N: 0, l2Ms: 0, l2Hits: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
 }
 
 // Every statement failure goes through here. resetFailTotal counts the isolate memory resets among
@@ -4581,7 +4585,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			const bootWaitMs = Date.now() - tBoot;
 			const wasm0 = php[__private__dont__use].HEAPU8.length;
 			ocReqBegin(); // #766
-			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, reinflates: stats.reinflates, lazyWrites: stats.lazyWrites, rfN: stats.rfN, rfBytes: stats.rfBytes, rfMs: stats.rfMs, rfFail: stats.rfFail, rfCapped: stats.rfCapped, rsN: stats.rsN, rsBytes: stats.rsBytes, rsMs: stats.rsMs, rsFail: stats.rsFail, rsCapped: stats.rsCapped, rsRetry: stats.rsRetry, ocCalls: stats.ocCalls, ocHits: stats.ocHits, httpCalls: stats.httpCalls, txnOps: stats.txnOps, undoRows: stats.undoRows };
+			const start = { dbTables: { ...stats.dbTables }, ocGroups: { ...stats.ocGroups }, calls: stats.calls, ms: stats.ms, fail: stats.failures.length, log: stats.log.length, rowsRead: stats.rowsRead, rowsWritten: stats.rowsWritten, inflates: stats.inflates, inflateBytes: stats.inflateBytes, reinflates: stats.reinflates, lazyWrites: stats.lazyWrites, rfN: stats.rfN, rfBytes: stats.rfBytes, rfMs: stats.rfMs, rfFail: stats.rfFail, rfCapped: stats.rfCapped, rsN: stats.rsN, rsBytes: stats.rsBytes, rsMs: stats.rsMs, rsFail: stats.rsFail, rsCapped: stats.rsCapped, rsRetry: stats.rsRetry, ocCalls: stats.ocCalls, ocHits: stats.ocHits, l2N: stats.l2N, l2Ms: stats.l2Ms, l2Hits: stats.l2Hits, httpCalls: stats.httpCalls, httpMs: stats.httpMs, txnOps: stats.txnOps, undoRows: stats.undoRows };
 			const delta = () => ({ calls: stats.calls - start.calls, ms: stats.ms - start.ms, failures: stats.failures.slice(start.fail), log: stats.log.slice(start.log) });
 			const t0 = Date.now();
 			// #352 the forced-reset proof (a MEASUREMENT that KILLS the isolate; spike token and HEADROOM_PROBE=on,
@@ -4648,7 +4652,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			const r2before = JSON.stringify(stats.r2);
 			const r2start = JSON.parse(r2before);
 			// OPcache counters before and after, only when a spike-token holder asks (two extra php.run calls).
-			const wantOpcache = ctx && ctx.inObject && spikeOk && req.headers.get('x-perf-opcache') === '1';
+			const wantOpcache = spikeOk && req.headers.get('x-perf-opcache') === '1'; // #1078: on approach A too
 			const op0 = wantOpcache ? await opcacheStats(php) : null;
 			const tPhp = Date.now();
 			lastMemTrace = null;
@@ -4902,6 +4906,10 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				};
 				out.set('x-perf', JSON.stringify(perf));
 				console.log(JSON.stringify({ m: 'perf', id: req.headers.get('x-perf-id'), path: url.pathname, ...perf }));
+			} else {
+				// #1078: approach A (PHP in the Worker, index-a.js) logs the same timing line, so a tail can time a real suite
+				// request: wall, boot, PHP time, and the query count and round-trip total (one bridge call per MySQL query).
+				console.log(JSON.stringify(aPerfLine({ id: memIdOf(req, env).id, method: req.method, path: url.pathname, status: r.httpStatusCode, iso: ISOLATE_ID, isoAgeS: Math.round((Date.now() - isolateStart) / 1000), rt: runtimeSerial, rtAgeS: Math.round((Date.now() - runtimeBootAt) / 1000), boot: booted, bootWaitMs, phpMs: phpOnlyMs, dbN: d.calls, dbMs: d.ms, wallMs: Date.now() - tBoot, wasm1MiB: Math.round(wasmBytes / 1048576), recycled: recycleWhy || null, rfN: stats.rfN - remote0.rfN, rfKiB: Math.round((stats.rfBytes - remote0.rfBytes) / 1024), rfMs: stats.rfMs - remote0.rfMs, rfFail: stats.rfFail - remote0.rfFail, rsN: stats.rsN - remote0.rsN, rsKiB: Math.round((stats.rsBytes - remote0.rsBytes) / 1024), rsMs: stats.rsMs - remote0.rsMs, rsFail: stats.rsFail - remote0.rsFail, httpN: stats.httpCalls - start.httpCalls, httpMs: stats.httpMs - (start.httpMs || 0), inflates: stats.inflates - start.inflates, inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024), ocCalls: stats.ocCalls - start.ocCalls, ocHits: stats.ocHits - start.ocHits, l2N: stats.l2N - start.l2N, l2Hits: stats.l2Hits - start.l2Hits, l2Misses: (stats.l2N - start.l2N) - (stats.l2Hits - start.l2Hits), l2Ms: stats.l2Ms - start.l2Ms, ...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full } : {}) })));
 			}
 			const response = new Response(r.bytes, { status: r.httpStatusCode, headers: out });
 			// #394 (b): a recycled runtime is RELEASED, not only forgotten. bootPromise = null alone left
