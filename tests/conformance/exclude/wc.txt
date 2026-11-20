@@ -20,3 +20,4 @@ email/settings-email.spec.ts :: WooCommerce Email Settings > Send email preview 
 settings/product-permalinks.spec.ts                     calls wpCLI
 settings/settings-ui-feature-flag.spec.ts               calls wpCLI
 editor/command-palette.spec.ts                          calls local wp-env, not the deployed site
+marketing/overview.spec.ts                              code lock denies install_plugins, so recommendations returns 403
