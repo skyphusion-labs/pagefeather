@@ -505,6 +505,7 @@ def main():
             ("specs/admin/user-post-types.spec.js", "Gutenberg plugin not shipped; /wp/v2/user-post-types stays 404"),
             ("specs/admin/user-taxonomies.spec.js", "Gutenberg plugin not shipped; /wp/v2/user-taxonomies stays 404"),
             ("specs/admin/guidelines.spec.js", "Gutenberg plugin not shipped; /wp/v2/knowledge stays 404"),
+            ("specs/admin/font-library.spec.js", "needs the Gutenberg plugin: delete-installed-fonts calls WP_Theme_JSON_Resolver_Gutenberg, core 7.1.4 lacks it (#998); stock core not measured"),
         ):
             rows = [r for r in runner.read_excludes("gb") if r.path == path]
             ok("gb excludes %s" % path) if len(rows) == 1 and rows[0].kind == "file" and rows[0].reason == why else bad("%s row: %s" % (path, rows))
