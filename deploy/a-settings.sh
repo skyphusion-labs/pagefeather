@@ -45,6 +45,8 @@
 #   OBJECT_CACHE_VERSIONS 1 (default since #296 step 3) or 0: options in the cross-isolate cache under an exact version (#668, #686),
 #                     through aVars. Exact only on a Hyperdrive config that does not cache queries (#650): deploy.sh's
 #                     Terraform makes it with caching disabled, and a-render-test.sh holds that line.
+#   OBJECT_CACHE_L2   0 (default, #1078) or 1: the object cache's KV L2. Off: on Hyperdrive a cold KV read (95 to 125 ms) costs
+#                     more than the query it saves (about 12 ms), and an options write makes every options key cold.
 #   WOO_HPOS_CACHE    on (default since #296 step 3; unset is on) or off: WooCommerce's HPOS Data Caching (#697), through
 #                     aVars. On approach A its cache (group orders_data) lives for one request only. off leaves WooCommerce's
 #                     own setting.
@@ -68,7 +70,7 @@ a_settings_check() {
     done
   fi
   if [ "$variant" != a ]; then
-    for v in OPCACHE_A RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE A_CLIENT A_CRON PHP_OVERFLOW PHP_OVERFLOW_POOL PHP_OVERFLOW_MAX_HELD MEM_LEDGER OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE; do
+    for v in OPCACHE_A RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE A_CLIENT A_CRON PHP_OVERFLOW PHP_OVERFLOW_POOL PHP_OVERFLOW_MAX_HELD MEM_LEDGER OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE OBJECT_CACHE_L2; do
       [ -z "${!v:-}" ] || { echo "$v is for variant a only (deploy/wfp has its own settings for b-dosql)" >&2; return 2; }
     done
   fi
@@ -96,6 +98,7 @@ a_settings_check() {
   case "${PHP_OVERFLOW:-0}" in 0|1|always) ;; *) echo "PHP_OVERFLOW must be 0, 1 or always, not ${PHP_OVERFLOW}" >&2; return 2 ;; esac
   case "${OBJECT_CACHE_VERSIONS:-0}" in 0|1) ;; *) echo "OBJECT_CACHE_VERSIONS must be 0 or 1, not ${OBJECT_CACHE_VERSIONS}" >&2; return 2 ;; esac
   case "${WOO_HPOS_CACHE:-}" in ''|on|off) ;; *) echo "WOO_HPOS_CACHE must be on, off or unset, not ${WOO_HPOS_CACHE}" >&2; return 2 ;; esac
+  case "${OBJECT_CACHE_L2:-0}" in 0|1) ;; *) echo "OBJECT_CACHE_L2 must be 0 or 1, not ${OBJECT_CACHE_L2}" >&2; return 2 ;; esac
   v=${PHP_OVERFLOW_POOL:-}
   if [ -n "$v" ] && ! a_overflow_on; then
     echo "PHP_OVERFLOW_POOL needs PHP_OVERFLOW=1 or always" >&2; return 2

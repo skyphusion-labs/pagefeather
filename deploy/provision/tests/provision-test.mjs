@@ -247,7 +247,7 @@ const mutating = (calls) => calls.filter((c) => c.method !== 'GET');
   ok('a: NO PHP_RUNTIME durable object (approach A has no DO)', !byType('durable_object_namespace').length);
   ok('a: PHP_ENV carries the WP table prefix', /"WP_TABLE_PREFIX":"wp_"/.test(varOf('PHP_ENV').text) && /"USE_ZEND_ALLOC":"0"/.test(varOf('PHP_ENV').text));
   ok('a: the approach-A object cache + lazy-node vars are set',
-    varOf('OBJECT_CACHE').text === 'on' && varOf('OBJECT_CACHE_L2').text === 'on' && varOf('LAZY_NODES').text === 'on');
+    varOf('OBJECT_CACHE').text === 'on' && varOf('OBJECT_CACHE_L2').text === 'off' && varOf('LAZY_NODES').text === 'on'); // #1078: L2 off on A
   ok('a: HYPERDRIVE_SQL_MODE is carried for a strict backend', varOf('HYPERDRIVE_SQL_MODE').text === 'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION');
   ok('a: SITE_ORIGIN is set (WP_HOME correctness)', varOf('SITE_ORIGIN').text === 'https://alean.skyphusionwp.dev');
   ok('a: secrets are secret_text bindings in the deploy (atomic)',

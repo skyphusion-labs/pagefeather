@@ -559,6 +559,11 @@ export function aVars({
   objectCacheVersions = true,
   // #697: WooCommerce HPOS Data Caching (per request on A). Off by default; only a real true turns it on.
   wooHposCache = true,
+  // #1078: the object cache's KV L2 on approach A. OFF by default. Measured on cf759hl (Hyperdrive, westus2): a KV miss is
+  // about 95 to 125 ms (a cold or absent key at KV's central store), a hit about 6 to 8 ms, a Hyperdrive query about 12 ms.
+  // Any options write renames every options key, so after a write each isolate pays a cold KV read per key: a WooCommerce
+  // list page took 14 to 17 s with L2 on and 3.9 to 4.9 s with it off. true turns it on; anything but a boolean throws.
+  objectCacheL2 = false,
   // #706: the same store rule as b-dosql. Unset on a non-store adds no var.
   wooActive, importPlugins, plugins, pageCacheProductTtl, store,
   // #715 review3 6: the PHP-object time bounds (the overflow pool), objectTimeInputs.
@@ -573,11 +578,11 @@ export function aVars({
     OBJECT_CACHE: 'on',
     OBJECT_CACHE_GROUPS: objectCacheGroups,
     OBJECT_CACHE_TTL: String(objectCacheTtl),
-    OBJECT_CACHE_L2: 'on',
+    OBJECT_CACHE_L2: objectCacheL2 ? 'on' : 'off', // #1078 (checked below)
     LAZY_NODES: 'on',
     LAZY_CACHE_MB: String(lazyCacheMb),
   };
-  for (const [k, v] of [['objectCacheVersions', objectCacheVersions], ['wooHposCache', wooHposCache]]) {
+  for (const [k, v] of [['objectCacheVersions', objectCacheVersions], ['wooHposCache', wooHposCache], ['objectCacheL2', objectCacheL2]]) {
     if (typeof v !== 'boolean') throw new Error(`aVars: ${k} must be true or false (got ${JSON.stringify(v)})`);
   }
   if (objectCacheVersions) vars.OBJECT_CACHE_VERSIONS = 'on';
