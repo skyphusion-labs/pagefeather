@@ -105,7 +105,7 @@ jobs:
             if ! "$t"; then echo "::error::$t failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
           done
           if ! EXPECT_STOP=budget STOP_VARS="CRON_AS_BUDGET_MS:1000" MAX_LEGS=20 tests/a-as-drain-e2e.sh; then echo "::error::a-as-drain-e2e.sh (budget arm) failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
-          if ! EXPECT_STOP=heap STOP_VARS="RECYCLE_WASM_MIB:120" ORDERS=20 MAX_LEGS=10 tests/a-as-drain-e2e.sh; then echo "::error::a-as-drain-e2e.sh (heap arm) failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
+          if ! EXPECT_STOP=heap STOP_VARS="RECYCLE_WASM_MIB:100" ORDERS=20 MAX_LEGS=10 tests/a-as-drain-e2e.sh; then echo "::error::a-as-drain-e2e.sh (heap arm) failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
           # #724 review, finding 4: the drop lands inside instantiation, after the boot took the spare
           if ! AT=instantiate tests/boot-race-e2e.sh; then echo "::error::boot-race-e2e.sh (AT=instantiate) failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
           if REUSE=off GATE=off tests/recycle-stack-e2e.sh > build/recycle-red.log 2>&1; then

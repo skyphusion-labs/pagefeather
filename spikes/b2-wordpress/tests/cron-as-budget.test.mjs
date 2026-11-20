@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { cronBounds, cronAsBudgetMs, cronMore, DEFAULT_ACTIONS, DEFAULT_ACTIONS_A, AS_BUDGET_MS, AS_HEAP_MARGIN_MIB } from '../cron-bound.mjs';
+import { cronBounds, cronAsBudgetMs, cronMore, heapStopMib, DEFAULT_ACTIONS, DEFAULT_ACTIONS_A, AS_BUDGET_MS, AS_HEAP_STOP_MIB } from '../cron-bound.mjs';
 const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 
 test('#1120 the A cron leg may run many actions; b-dosql keeps one (#323)', () => {
@@ -23,14 +23,23 @@ test('#1120 the budget knob: 1 to 60 s, a bad value is the default', () => {
 	assert.equal(cronAsBudgetMs({ CRON_AS_BUDGET_MS: '5000' }), 5000);
 	for (const v of ['0', '999', '60001', 'x', '5000; x']) assert.equal(cronAsBudgetMs({ CRON_AS_BUDGET_MS: v }), AS_BUDGET_MS, v);
 });
-test('#1120 cronMore: the first action always runs; later ones stop at the budget or near the recycle line', () => {
-	const base = { startedAt: 1000, budgetMs: 20000, lineMib: 140 };
+test('#1120 the heap stop is under the 128 MiB isolate wall whatever the recycle line (lean is 140, #1008)', () => {
+	for (let line = 64; line <= 240; line++) assert.ok(heapStopMib(line) < 128 && heapStopMib(line) <= AS_HEAP_STOP_MIB, 'line ' + line + ': ' + heapStopMib(line));
+	assert.equal(heapStopMib(140), 112, 'lean');
+	assert.equal(heapStopMib(100), 92, 'npm: 8 under its line');
+	assert.equal(heapStopMib(undefined), AS_HEAP_STOP_MIB);
+	assert.ok(AS_HEAP_STOP_MIB < 128);
+});
+test('#1120 cronMore: the first action always runs; later ones stop at the budget, or when THIS leg grew the heap past the stop', () => {
+	const base = { startedAt: 1000, budgetMs: 20000, lineMib: 140, startHeapMib: 107 };
 	assert.equal(cronMore({ ...base, n: 0, now: 999999, heapMib: 200 }), null, 'the first action runs whatever the clock or heap (as before)');
-	assert.equal(cronMore({ ...base, n: 5, now: 1000 + 19999, heapMib: 120 }), null);
-	assert.equal(cronMore({ ...base, n: 5, now: 1000 + 20000, heapMib: 120 }), 'budget');
-	assert.equal(cronMore({ ...base, n: 5, now: 2000, heapMib: 140 - AS_HEAP_MARGIN_MIB }), 'heap');
-	assert.equal(cronMore({ ...base, n: 5, now: 2000, heapMib: 140 - AS_HEAP_MARGIN_MIB - 1 }), null);
+	assert.equal(cronMore({ ...base, n: 5, now: 1000 + 19999, heapMib: 111 }), null);
+	assert.equal(cronMore({ ...base, n: 5, now: 1000 + 20000, heapMib: 111 }), 'budget');
+	assert.equal(cronMore({ ...base, n: 5, now: 2000, heapMib: 112 }), 'heap', 'grew from 107 to the stop');
+	assert.equal(cronMore({ ...base, n: 5, now: 2000, heapMib: 120, startHeapMib: 120 }), null, 'past the stop but no growth this leg: memory reused, go on');
+	assert.equal(cronMore({ ...base, n: 5, now: 2000, heapMib: 121, startHeapMib: 120 }), 'heap', 'past the stop and grew: stop');
 	assert.equal(cronMore({ ...base, n: 5, now: 2000, heapMib: undefined }), 'heap', 'an unreadable heap stops (fails closed)');
+	assert.equal(cronMore({ ...base, n: 5, now: 2000, heapMib: 108, startHeapMib: undefined }), 'heap', 'an unreadable start stops too');
 });
 test('#1120 the PHP loop asks cronMore before each further action, and the leg reports why it stopped', () => {
 	assert.match(src, /if \( \$as_n > 0 \) \{ \$as_more = function_exists\( 'post_message_to_js' \) \? post_message_to_js\( json_encode\( array\( 'cronMore' => \$as_n \) \) \) : 'stop'; if \( '1' !== \$as_more \) \{ \$as_stop = \$as_more; break; \} \}/);

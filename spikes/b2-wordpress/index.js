@@ -3711,10 +3711,9 @@ async function runCron(getBooted, cleanDue = false, mail = null, { held = false 
 		tickMail = mail;
 		let asN = 0;
 		const lineMib = recycleLine(ENV, ENGINE_RECYCLE_MIB).mib;
-		cronMoreGate = () => {
-			let heapMib; try { heapMib = php[__private__dont__use].HEAPU8.length / 1048576; } catch { heapMib = undefined; }
-			return cronMore({ n: ++asN, startedAt: legT0, now: Date.now(), budgetMs: asBudgetMs, heapMib, lineMib });
-		};
+		const heapNow = () => { try { return php[__private__dont__use].HEAPU8.length / 1048576; } catch { return undefined; } };
+		const startHeapMib = heapNow(); // #1120: the stop fires only on growth in THIS leg (the heap is a high-water mark)
+		cronMoreGate = () => cronMore({ n: ++asN, startedAt: legT0, now: Date.now(), budgetMs: asBudgetMs, heapMib: heapNow(), startHeapMib, lineMib });
 		let r;
 		try {
 		r = await php.run({ code: `<?php

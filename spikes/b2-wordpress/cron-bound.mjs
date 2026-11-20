@@ -27,9 +27,16 @@ export const DEFAULT_ACTIONS_A = 50;
 // #1120: the wall time a leg spends on Action Scheduler before it stops claiming (CRON_AS_BUDGET_MS, 1 to 60 s). Well
 // inside the PHP lock's 60 s stall bound (#1060) and the alarm's 5 min stale bound (alarm-arm.mjs).
 export const AS_BUDGET_MS = 20000;
-// #1120: a leg stops before the next action once the PHP heap is this close to the engine's recycle line
-// (recycle-line.mjs): one email action grew the heap by up to 9 MiB in the measurements above.
+// #1120: the heap stop is ABSOLUTE, under the 128 MiB isolate (and Durable Object) wall: the engine's recycle line is
+// 140 on lean (#1008: above the wall), so a stop derived from it alone would fire after exceededMemory. The stop is
+// AS_HEAP_STOP_MIB, or AS_HEAP_MARGIN_MIB under the recycle line when that is lower.
+export const AS_HEAP_STOP_MIB = 112;
 export const AS_HEAP_MARGIN_MIB = 8;
+/** #1120: the leg's heap stop in MiB, always under 128 whatever the recycle line. */
+export function heapStopMib(lineMib) {
+	const l = Number.isFinite(lineMib) ? lineMib - AS_HEAP_MARGIN_MIB : AS_HEAP_STOP_MIB;
+	return Math.min(AS_HEAP_STOP_MIB, l);
+}
 // WP-Cron events per tick (the fixed 50 before). 0 skips WP-Cron in that tick.
 export const DEFAULT_WP_EVENTS = 1;
 
@@ -54,12 +61,16 @@ export function cronAsBudgetMs(env) {
 }
 
 /** #1120: may the leg run another action? null = yes; 'budget' or 'heap' = stop, and why. n = actions already run (the
- * first always runs, as before #1120); heapMib = the PHP heap now; lineMib = the engine's recycle line. An unreadable
- * heap stops (fails closed). */
-export function cronMore({ n, startedAt, now, budgetMs, heapMib, lineMib }) {
+ * first always runs, as before #1120); heapMib = the PHP heap now; startHeapMib = the heap when the leg began; lineMib =
+ * the engine's recycle line. WebAssembly memory never shrinks and the cron runtime is not recycled (#598), so the heap
+ * is a high-water mark: a leg stops when THIS leg grew it to or past the stop. A runtime already past the stop that
+ * reuses its memory grows nothing and goes on; the heap is then bounded by the stop plus one action's growth. An
+ * unreadable heap stops (fails closed). */
+export function cronMore({ n, startedAt, now, budgetMs, heapMib, startHeapMib, lineMib }) {
 	if (!(n > 0)) return null;
 	if (now - startedAt >= budgetMs) return 'budget';
-	if (!Number.isFinite(heapMib) || heapMib >= lineMib - AS_HEAP_MARGIN_MIB) return 'heap';
+	if (!Number.isFinite(heapMib) || !Number.isFinite(startHeapMib)) return 'heap';
+	if (heapMib >= heapStopMib(lineMib) && heapMib > startHeapMib) return 'heap';
 	return null;
 }
 

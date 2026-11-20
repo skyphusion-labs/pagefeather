@@ -6,14 +6,15 @@
 # and no leg reset or died. Red on main: one action a leg (#323's bound) needs about 100 legs.
 # The guards, each watched firing (a leg must stop with that as_stop, and the burst still drains):
 #   EXPECT_STOP=budget STOP_VARS="CRON_AS_BUDGET_MS:1000" MAX_LEGS=20
-#   EXPECT_STOP=heap STOP_VARS="RECYCLE_WASM_MIB:120" ORDERS=20 MAX_LEGS=10: a heap stop at 112 MiB, between the 107 a
-#     leg starts at and the 116 a 20-email leg reaches. WebAssembly memory never shrinks and the cron leg does not
-#     recycle its runtime (a late-collected heap plus a fresh boot stacks two, recycle-line.mjs), so once the heap is
-#     past the stop every later leg runs ONE action, the bound before #1120: never worse than it.
+#   EXPECT_STOP=heap STOP_VARS="RECYCLE_WASM_MIB:100" ORDERS=20 MAX_LEGS=10: the stop then comes from the recycle line
+#     (8 under it, 92 MiB). The default run stops for heap too, at the absolute 112 MiB (under the 128 MiB wall).
+#     WebAssembly memory never shrinks and the cron leg does not recycle its runtime (a late-collected heap plus a fresh
+#     boot stacks two, recycle-line.mjs), so the stop fires only when THIS leg grew the heap past it; a runtime that
+#     reuses its memory goes on. Measured locally: 50 emails in legs of 13, 16 and 21, heap 114 to 119 MiB.
 #   tests/a-as-drain-e2e.sh   (in spikes/b2-wordpress, after prepare.sh and build.sh)
 set -u
 cd "$(dirname "$0")/.." || exit 1
-export PORT=${PORT:-8798} DEV_ENV=a-shape-local
+export PORT=${PORT:-8799} DEV_ENV=a-shape-local  # not 8798: opcache-a.sh holds that one
 B=http://localhost:$PORT; PW=${ADMIN_PASSWORD:-local-spike-password}; TOK=${SPIKE_TOKEN:-local-spike-token}
 STATE=$(mktemp -d "${TMPDIR:-/tmp}/a-as-drain.XXXXXX"); export PERSIST_TO=$STATE
 trap './run.sh --stop > /dev/null 2>&1; rm -rf "$STATE"' EXIT
