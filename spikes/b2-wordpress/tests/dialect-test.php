@@ -55,8 +55,45 @@ check( 'a long LIKE becomes instr', $s, "SELECT 1 FROM `wp_posts` WHERE ( instr(
 list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE '%a\\%b$long%' ESCAPE '\\'", array(), $none );
 check( 'an escaped % in a long LIKE is a literal', $s, "SELECT 1 FROM t WHERE instr(lower(c), lower('a%b$long')) > 0" );
 
-list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE '%a_b$long%'", array(), $none );
-check( 'a long LIKE with a wildcard inside is left alone', $s, "SELECT 1 FROM t WHERE c LIKE '%a_b$long%'" );
+list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE '%a%b$long%'", array(), $none );
+check( 'a long LIKE with a % inside is left alone', $s, "SELECT 1 FROM t WHERE c LIKE '%a%b$long%'" );
+
+// #836 (a): a long '%...%' whose only inner wildcards are '_' (WooCommerce's cart-page probe: block JSON with
+// __woocommerceNamespace, never escaped) becomes an exact match with no LIKE. Proven by DIFFERENCE against SQLite's own
+// LIKE, which this local SQLite runs without the platform's 50-byte cap: same rows, same NULLs, LIKE and NOT LIKE.
+if ( ! class_exists( 'SQLite3' ) ) {
+	$fail++;
+	echo "FAIL #836 the differential check needs the sqlite3 extension (not skipped: a skip would read as a pass)\n";
+} else {
+	$db = new SQLite3( ':memory:' );
+	$db->exec( 'CREATE TABLE t ( id INTEGER PRIMARY KEY, c TEXT )' );
+	$seg  = str_repeat( 'wp:block ', 7 ); // 63 bytes: each test pattern is over the cap
+	$pats = array(
+		'%' . $seg . '_x_%',
+		'%a_' . $seg . '%',
+		'%' . $seg . '__ns' . $seg . '%',
+		'%_' . $seg . '_%',
+		'%' . $seg . 'Q_Q' . $seg . 'z%',
+		'%' . str_replace( "'", "''", file_get_contents( __DIR__ . '/fixtures/wc-11.2.1-cart-content.txt' ) ) . '%',
+	);
+	$rows = array( null, '', 'x', $seg, $seg . 'AxB', $seg . 'AXB', 'pre ' . $seg . 'axb post', 'a ' . $seg, 'ab' . $seg, 'aZ' . $seg . 'tail',
+		$seg . '..ns' . $seg, $seg . '.ns' . $seg, $seg . 'ééns' . $seg, 'X' . $seg . 'Y', $seg . $seg,
+		strtoupper( $seg ) . 'qXq' . $seg . 'Z', $seg . 'q' . $seg . 'QzQ' . $seg . 'z', $seg . 'Q_Q' . $seg,
+		file_get_contents( __DIR__ . '/fixtures/wc-11.2.1-cart-content.txt' ), 'x' . file_get_contents( __DIR__ . '/fixtures/wc-11.2.1-cart-content.txt' ) . 'x' );
+	$ins = $db->prepare( 'INSERT INTO t ( c ) VALUES ( :c )' );
+	foreach ( $rows as $r ) { $ins->bindValue( ':c', $r, null === $r ? SQLITE3_NULL : SQLITE3_TEXT ); $ins->execute(); $ins->reset(); }
+	$read = function ( $sql ) use ( $db ) { $o = array(); $q = $db->query( $sql ); if ( ! $q ) { return 'error: ' . $db->lastErrorMsg(); } while ( $row = $q->fetchArray( SQLITE3_NUM ) ) { $o[] = $row; } return $o; };
+	foreach ( $pats as $n => $pat ) {
+		foreach ( array( 'LIKE', 'NOT LIKE' ) as $op ) {
+			$orig = "SELECT id, c $op '$pat' FROM t ORDER BY id";
+			list( $s ) = D1_Dialect::rewrite( $orig, array(), $none );
+			check( "#836 pattern $n $op: no LIKE is left", false === stripos( $s, ' LIKE ' ), true );
+			check( "#836 pattern $n $op: the same answer as SQLite LIKE, row by row (NULL kept)", $read( $s ), $read( $orig ) );
+		}
+	}
+	$hit = $read( "SELECT count(*) FROM t WHERE c LIKE '" . $pats[5] . "'" );
+	check( '#836 the WooCommerce cart probe matches the two rows that hold the cart content (the oracle is not empty)', $hit, array( array( 2 ) ) );
+}
 
 list( $s ) = D1_Dialect::rewrite( "SELECT 1 FROM t WHERE c LIKE '%short%'", array(), $none );
 check( 'a short LIKE is left alone', $s, "SELECT 1 FROM t WHERE c LIKE '%short%'" );
