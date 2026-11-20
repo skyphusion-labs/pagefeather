@@ -62,6 +62,10 @@ class JS_Object_Cache {
 		// Options are then read from MySQL once per request (alloptions is one query).
 		if ( null !== $this->persist_allow ) {
 			unset( $this->persist_allow['options'] );
+			// #1020: the stored REST index persists across isolates on approach A. Cross-isolate safe by its key:
+			// php/rest-index-cache.php keys each copy on the build, versions, plugins, theme and every option the
+			// index prints, so a changed site reads a different key; the 600 s expiry bounds the rest.
+			$this->persist_allow['skyphusion_rest_index'] = true;
 		}
 		$this->default_ttl = defined( 'JS_OBJECT_CACHE_TTL' ) ? (int) JS_OBJECT_CACHE_TTL : 0;
 		$this->force_off   = ! empty( $_SERVER['HTTP_X_OC_OFF'] );

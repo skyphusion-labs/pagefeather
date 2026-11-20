@@ -1878,6 +1878,8 @@ async function boot(origin) {
 
 	// Keys from the WP_SALT secret, so a deployed site never uses the local ones.
 	const lines = ['<?php'];
+	// #1020: the deployed build id, for php/rest-index-cache.php's key (a code-locked site changes code only on deploy).
+	lines.push(`define('SKYPHUSION_BUILD_ID', ${JSON.stringify(String(BUILD_ID))});`);
 	if (ENV.WP_SALT) {
 		for (const k of ['AUTH_KEY', 'SECURE_AUTH_KEY', 'LOGGED_IN_KEY', 'NONCE_KEY', 'AUTH_SALT', 'SECURE_AUTH_SALT', 'LOGGED_IN_SALT', 'NONCE_SALT']) {
 			const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ENV.WP_SALT + ':' + k));

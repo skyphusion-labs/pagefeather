@@ -14,7 +14,7 @@
  *   Settings and REST fields stay eager (their callbacks are not in the map), so the editor's preloaded settings are
  *   unchanged.
  *   SCOPE: post-new.php, post.php, admin.php, and admin-ajax.php (#963, #994).
- *   A REST path defers too, except the REST index (#987, #994).
+ *   A REST path defers too, except the REST index (#987, #994), unless rest-index-cache.php answers it (#1020).
  *   /wc and /jetpack defer, then register only the namespace the call needs.
  *   The REST index stays eager.
  *   The front end, cron, and every admin screen that is not admin.php stay eager.
@@ -108,11 +108,14 @@ class Skyphusion_WC_Route_Defer {
 		return false;
 	}
 
-	/** True when this REST route skips the eager route table. The index cannot. */
+	/**
+	 * True when this REST route skips the eager route table. The index defers only with rest-index-cache.php usable
+	 * (#1020): a hit needs no route, and a miss registers the whole map on demand (needs_routes is true for "/").
+	 */
 	public static function rest_defers_route( $route ) {
 		$route = '/' . ltrim( (string) $route, '/' );
 		if ( '/' === $route ) {
-			return false;
+			return class_exists( 'Skyphusion_Rest_Index_Cache', false ) && Skyphusion_Rest_Index_Cache::defers_index();
 		}
 		return true;
 	}
@@ -249,6 +252,9 @@ class Skyphusion_WC_Route_Defer {
 	}
 
 	public static function on_demand( $result, $server, $request ) {
+		if ( ! empty( $result ) ) {
+			return $result; // an earlier rest_pre_dispatch answered it (#1020): no route is matched, none is needed
+		}
 		if ( self::$kept && self::needs_routes( $server, $request ) ) {
 			$want = self::owners_for_route( (string) $request->get_route() );
 			if ( is_array( $want ) ) {
