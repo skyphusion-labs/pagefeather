@@ -196,7 +196,7 @@ function lockShape(code) {
 	const fetchBody = code.slice(code.indexOf('\tasync fetch(raw) {'), code.indexOf('function phpObjectName('));
 	const objectWith = fetchBody.indexOf('const objectRun = await withPhp(');
 	const objectNests = objectWith >= 0 && fetchBody.indexOf('await handle(', objectWith) > objectWith;
-	const workerNests = code.includes('const workerRun = await withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx)');
+	const workerNests = code.includes('const workerRun = await withPhp(() => withRunCall(callId, () => handle(req, env, url, spikeOk, maxBody, ctx))');
 
 	const alarmStart = code.indexOf('async alarmRun()');
 	const alarm = code.slice(alarmStart, code.indexOf('\tasync fetch(raw) {', alarmStart));

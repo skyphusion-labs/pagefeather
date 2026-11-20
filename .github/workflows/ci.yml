@@ -389,6 +389,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/db-lifecycle.test.mjs
       - name: A transient Hyperdrive connect failure is retried once, never cached for the run (#1101)
         run: node --test spikes/b2-wordpress/tests/connector.test.mjs
+      - name: Approach A error answers and their log lines carry the call id, x-pf-call (#1101)
+        run: node --test spikes/b2-wordpress/tests/call-id-a.test.mjs
       - name: The PHP lock never boots a second runtime beside a live one, and sheds past its bound (#296)
         run: node --test spikes/b2-wordpress/tests/php-lock.test.mjs
       - name: A versioned object cache key stays in the isolate L1 until memory evicts it (#1078)

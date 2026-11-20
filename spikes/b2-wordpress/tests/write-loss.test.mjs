@@ -210,6 +210,9 @@ test('#596: the write-loss lines carry id for a valid x-perf-id, no id without o
 		wl: writeLossResponse(lost, wantsJson('/wp-admin/post.php', '', 'text/html')),
 		ocForgot: { n: 3, groups: { 'post-queries': 3 } }, // #766
 		rolled: null, // #794: no proven rollback in this case
+		ctx: null, // #1101: the call id (callTag: ctx.callId, or approach A's run id)
+		callTag: () => ({}),
+		callId: undefined,
 	};
 	const withId = logged(phpLine, base);
 	assert.equal(withId.id, PERF_ID, 'a valid x-perf-id is on the line, got ' + JSON.stringify(withId));
@@ -401,4 +404,18 @@ test('#1039 index.js: the write-loss answer says "rolled back" only when the fra
 	assert.match(src, /const filesGone = rb \? await deleteFrameR2\(rb\.req, rb\.r2\) : true;\s*const rolled = filesGone && frameProvesRollback\(fr\) \? rolledBackResponse\(/);
 	assert.match(src, /if \(r && r\.r2 && r\.r2\.length\) await deleteFrameR2\(r\.req, r\.r2\);/, 'the next isolate recovery deletes the dead request files too');
 	assert.match(src, /await r2RecordIfNew\(B, op\.key\);\s*await B\.put\(op\.key/, 'a created key is recorded BEFORE its put');
+});
+
+test('#1101: both write-loss lines carry the call id when the request has one', () => {
+	const lines = indexSrc.split('\n').filter((l) => l.includes("m: 'write-loss'"));
+	const phpLine = lines.find((l) => l.includes('phpStatus'));
+	const killedLine = lines.find((l) => l.includes("phase: 'request-killed'"));
+	const scope = {
+		req: post({}), env: {}, url: { pathname: '/wp-admin/post.php' }, lost: 1, r: { httpStatusCode: 200 },
+		d: { failures: [{ sql: 'UPDATE wp_posts SET a = 1' }] }, sqlShape, memIdOf, kind: 'memory',
+		wl: writeLossResponse(1, false), ocForgot: { n: 0, groups: {} }, rolled: null,
+		ctx: null, callTag: () => ({ call: 'c-1101' }), callId: 'c-1101',
+	};
+	assert.equal(logged(phpLine, scope).call, 'c-1101');
+	assert.equal(logged(killedLine, scope).call, 'c-1101');
 });
