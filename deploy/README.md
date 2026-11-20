@@ -234,6 +234,7 @@ The hint is not a promise. An `enam` object landed in EWR two times in three and
 | --- | --- | --- |
 | `NAME` | (required) | Site name: the Worker, the D1 database and the bucket |
 | `LOCATION` | `enam` | Region hint for D1 and the PHP object |
+| `PLACEMENT` | required for an external MySQL | Variant `a`: where the Worker runs, next to its database (#1054). `<aws\|gcp\|azure>:<region>` (for example `azure:westus2`), `host` (Cloudflare probes `MYSQL_HOST`:`MYSQL_PORT`), or `smart`. `MYSQL=vultr` defaults to `aws:us-east-2` (deploy/mysql's box is in ord). Measured on cf759hw: `aws:us-east-2` against an Azure westus2 database ran 2 to 5 times slower than `azure:westus2`; `host` placed in ORD, not next to the database. |
 | `MEDIA` | `0` | `1` makes an R2 bucket for uploads. Without it, uploads do not persist. R2 must be turned on for the account first. |
 | `BENCH` | `1` | `0` skips the measurements |
 | `N` | `10` | Runs per page in the page benchmark |

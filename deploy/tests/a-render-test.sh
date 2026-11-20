@@ -120,5 +120,25 @@ ok "PHP_OVERFLOW_MAX_HELD=08 renders 8 (base 10) (rc $rc)" "$([ $rc = 0 ] && pyt
 render "$T/m0.toml" PHP_OVERFLOW=1; rc=$?
 ok "PHP_OVERFLOW=1 alone renders neither (rc $rc)" "$([ $rc = 0 ] && ! python3 -I "$HERE/canon.py" "$T/m0.toml" | grep -qE 'PHP_OVERFLOW_MAX_HELD|MEM_LEDGER' && echo 1 || echo 0)"
 
+
+# #1054: the Worker's [placement]. Measured on cf759hw (2026-11-20, same build c78301d, 10 runs each, p50): region
+# aws:us-east-2 (ORD) 4.04 / 2.56 / 2.03 s on /, edit.php and the posts list; azure:westus2 (SEA, next to the
+# wpref-mysql database) 0.83 / 1.36 / 0.56 s. host = <db>:3306 placed in ORD, not next to the database. So the
+# default is never a silent aws:us-east-2 for an external MySQL: PLACEMENT is required there.
+pl() { grep -A1 '^\[placement\]' "$1" | tail -1; }
+render "$T/p1.toml" PLACEMENT= MYSQL=external MYSQL_HOST=wpref-mysql.mysql.database.azure.com; rc=$?
+ok "#1054 an external MySQL with no PLACEMENT is refused, naming PLACEMENT (rc $rc)" "$([ "$rc" != 0 ] && grep -q 'PLACEMENT' "$T/render.err" && ! grep -q 'aws:us-east-2' "$T/p1.toml" 2>/dev/null && echo 1 || echo 0)"
+ok "#1054   and an Azure host is told its form (azure:<the server's region>)" "$(grep -q 'azure:<' "$T/render.err" && echo 1 || echo 0)"
+render "$T/p2.toml" PLACEMENT= MYSQL=vultr MYSQL_HOST=mysql-x.skyphusion.org; rc=$?
+ok "#1054 MYSQL=vultr (deploy/mysql's ord box) with no PLACEMENT: region aws:us-east-2 (rc $rc)" "$([ "$rc" = 0 ] && [ "$(pl "$T/p2.toml")" = 'region = "aws:us-east-2"' ] && echo 1 || echo 0)"
+render "$T/p3.toml" PLACEMENT=azure:westus2 MYSQL=external MYSQL_HOST=wpref-mysql.mysql.database.azure.com
+ok "#1054 PLACEMENT=azure:westus2 renders that region" "$([ "$(pl "$T/p3.toml")" = 'region = "azure:westus2"' ] && echo 1 || echo 0)"
+render "$T/p4.toml" PLACEMENT=host MYSQL=external MYSQL_HOST=db.example.org MYSQL_PORT=3307
+ok "#1054 PLACEMENT=host renders host = <MYSQL_HOST>:<MYSQL_PORT>" "$([ "$(pl "$T/p4.toml")" = 'host = "db.example.org:3307"' ] && echo 1 || echo 0)"
+render "$T/p5.toml" PLACEMENT=smart MYSQL=external MYSQL_HOST=db.example.org
+ok "#1054 PLACEMENT=smart renders mode = smart" "$([ "$(pl "$T/p5.toml")" = 'mode = "smart"' ] && echo 1 || echo 0)"
+render "$T/p6.toml" PLACEMENT=chicago MYSQL=external MYSQL_HOST=db.example.org; rc=$?
+ok "#1054 an unknown PLACEMENT is refused (rc $rc)" "$([ "$rc" != 0 ] && grep -q 'PLACEMENT must be' "$T/render.err" && echo 1 || echo 0)"
+ok "#1054 deploy.sh checks PLACEMENT before any step" "$(grep -q 'placement_check ) || exit 2' "$ROOT/deploy/deploy.sh" && echo 1 || echo 0)"
 [ "$fails" = 0 ] && echo "a-render: all checks pass" || echo "a-render: $fails failing check(s)"
 exit $((fails > 0))
