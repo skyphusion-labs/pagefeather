@@ -72,9 +72,12 @@ fails = []
 def check(name, cond, detail=""):
     print(("  ok   " if cond else "  FAIL ") + name + (("  (" + detail + ")") if detail else "")); cond or fails.append(name)
 get("/?pf=1", {"x-pf-derived": "set"})
-check("1. the real value is stored", option() == "the-real-value", repr(option()))
+# #1074: one read for the condition and the detail. Two option() calls can disagree.
+v = option()
+check("1. the real value is stored", v == "the-real-value", repr(v))
 st, _, _ = get("/?pf=2", {"x-pf-derived": "check", "x-oc-off": "1"})
-check("2. control: the pattern with no failure keeps the real value", st == 200 and option() == "the-real-value", "%s %r" % (st, option()))
+v = option()
+check("2. control: the pattern with no failure keeps the real value", st == 200 and v == "the-real-value", "%s %r" % (st, v))
 st, h, _ = get("/?pf=3", {"x-pf-derived": "check", "x-oc-off": "1", "x-pf-fault": "sql-fail", "x-pf-fault-sql": "pf_derived_test"})
 wl = {k.lower(): v for k, v in h.items()}.get("x-write-loss")
 v = option()

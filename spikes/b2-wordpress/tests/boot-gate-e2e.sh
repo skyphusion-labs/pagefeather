@@ -14,7 +14,8 @@ export DEV_ENV=${DEV_ENV:-dosql-local}
 ST=(-H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}"); PW=${ADMIN_PASSWORD:-local-spike-password}
 STATE=$(mktemp -d "${TMPDIR:-/tmp}/boot-gate-e2e.XXXXXX"); export PERSIST_TO=$STATE
 H=$(mktemp "${TMPDIR:-/tmp}/boot-gate-e2e-h.XXXXXX")
-trap './run.sh --stop > /dev/null 2>&1; rm -rf "$STATE" "$H"' EXIT
+BODY=$(mktemp "${TMPDIR:-/tmp}/boot-gate-e2e-b.XXXXXX")
+trap './run.sh --stop > /dev/null 2>&1; rm -rf "$STATE" "$H" "$BODY"' EXIT
 DEV_LOCAL=1 DEV_VARS="PHP_RECYCLE:off PHP_MEMORY_REUSE:off BOOT_GATE:on BOOT_GATE_MAX_REFUSE_S:3" ./run.sh _ping > /dev/null || { echo "boot-gate-e2e: wrangler dev did not start"; tail -20 dev.log; exit 1; }
 server_port || exit 1
 B=http://localhost:$PORT
@@ -26,11 +27,29 @@ rc=$(curl -s -o /dev/null -D "$H" -w '%{http_code}' "${ST[@]}" -H "x-runtime-rec
 rr=$(grep -i '^x-runtime-recycled:' "$H" | tr -d '\r' | awk '{print $2}')
 echo "boot-gate-e2e: the forced recycle: / $rc, x-runtime-recycled ${rr:-none}"
 [ "$rc" = 200 ] && [ "$rr" = forced ] || { echo "boot-gate-e2e: FAIL: the page was not force-recycled"; exit 1; }
+# #1074, run 44745007218: /_peak 2 was HTTP 200 with no x-runtime-wait, about 0.5 s after
+# /_peak 1 had been 503 retired-resident decision 2. Status and headers came from that one
+# curl and agreed, so it was not two reads of one response. The 3 s bound had not expired
+# (the streak starts at the first refusal; decision 1 is the install boot, which clears it).
+# decide() allows a boot when retired memory fits. A 200 whose body contains PEAK ran PHP:
+# the runtime is current, and a later /_peak reuses it and stays 200. Judge that response
+# at once. Any other answer is not the settled refusal yet: read again until it is the
+# known 503, or 1 s passes (inside the bound), then judge that one response.
+read_peak() {
+  local stop=$((SECONDS + 1))
+  while :; do
+    c=$(curl -s -o "$BODY" -D "$H" -w '%{http_code}' "${ST[@]}" "$B/_peak")
+    w=$(grep -i '^x-runtime-wait:' "$H" | tr -d '\r' | awk '{print $2}')
+    dn=$(grep -i '^x-runtime-wait-decision:' "$H" | tr -d '\r' | awk '{print $2}')
+    [ "$c" = 503 ] && [ "$w" = retired-resident ] && return 0
+    [ "$c" = 200 ] && grep -q 'PEAK' "$BODY" && return 0
+    [ "$SECONDS" -ge "$stop" ] && return 0
+    sleep 0.05
+  done
+}
 seen=""
 for i in 1 2; do
-  c=$(curl -s -o /dev/null -D "$H" -w '%{http_code}' "${ST[@]}" "$B/_peak")
-  w=$(grep -i '^x-runtime-wait:' "$H" | tr -d '\r' | awk '{print $2}')
-  dn=$(grep -i '^x-runtime-wait-decision:' "$H" | tr -d '\r' | awk '{print $2}')
+  read_peak
   echo "boot-gate-e2e: /_peak $i: $c ${w:-no x-runtime-wait} decision ${dn:-none}"
   [ "$c" = 503 ] && [ "$w" = retired-resident ] || { echo "boot-gate-e2e: FAIL: /_peak $i was not the known 503"; exit 1; }
   # not cached: a cached rejected boot answers the same refusal again, with the same decision serial
