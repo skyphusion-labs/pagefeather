@@ -8,7 +8,8 @@ import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { installPhpBasicAuth } from './php-auth.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
-import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm, setAlarmRecorded, ALARM_SET_KEY, emailRushDue, emailAlarmAt, EMAIL_DUE_KEY, EMAIL_RETRY_MS } from './alarm-arm.mjs';
+import { wpCronState, idleDecision, parseGmt, IDLE_KEY } from './cron-idle.mjs';
+import { armBeforeRun, rearm, pullIn, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm, setAlarmRecorded, ALARM_SET_KEY, emailRushDue, emailAlarmAt, EMAIL_DUE_KEY, EMAIL_RETRY_MS } from './alarm-arm.mjs';
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
 import { askPurgeAfterAnswer } from './purge-after-php.mjs';
 import { callPhpObject, isObjectCallDeadline, objectCallDeadlineMs, objectCallExempt } from './object-deadline.mjs';
@@ -3121,7 +3122,15 @@ export class PhpRuntime extends DurableObject {
 			// A leg that keeps dying waits before it tries again (#471, cron-health.mjs): 2, 4, 8 ... min.
 			const prevRun = await this.ctx.storage.get(CRON_RUN_KEY);
 			const bo = cronBackoff(prevRun, Date.now());
-			const cronGo = (legDue || emailRush) && !bo.waitMs && !importHeld && !moveHeld && phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env;
+			// #390: the idle gate, from the site's own state and BEFORE any PHP boot (cron-idle.mjs). Nothing due in WP-Cron
+			// or Action Scheduler: no leg, and the alarm backs off. Unreadable state runs the leg. CRON_IDLE_GATE=off: as before.
+			const idle = legDue && !emailRush && this.env.CRON_IDLE_GATE !== 'off' ? await this.cronIdle(Date.now()) : null;
+			if (idle && idle.idle) {
+				await setAlarmRecorded(this.ctx.storage, idle.alarmAt, Date.now(), 'idle');
+				await this.ctx.storage.put(IDLE_KEY, { n: idle.streak + 1, t: Date.now() });
+				console.log(JSON.stringify({ m: 'cron', skipped: 'idle', streak: idle.streak + 1, nextInMs: idle.alarmAt - Date.now(), wpNext: idle.wp && idle.wp.next, asNext: idle.as && idle.as.next }));
+			}
+			const cronGo = (legDue || emailRush) && !bo.waitMs && !importHeld && !moveHeld && phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env && !(idle && idle.idle);
 			// Why a tick skipped the cron, for /_purgestate cronSkip (#291: a skip was invisible).
 			if (!cronGo) await this.ctx.storage.put(CRON_SKIP_KEY, { t: Date.now(), notDue: !legDue, sinceLastMs: lastCron ? Date.now() - Number(lastCron) : null, backoff: bo.waitMs ? { deaths: bo.deaths, waitMs: bo.waitMs } : null, importHeld, moveHeld, phpPending, sinceSpikeMs: Date.now() - lastSpikeEndAt, origin: !!cronOrigin });
 			if (!legDue && !emailRush) console.log(JSON.stringify({ m: 'cron', skipped: 'not-due', sinceLastMs: Date.now() - Number(lastCron) }));
@@ -3132,6 +3141,7 @@ export class PhpRuntime extends DurableObject {
 			}
 			if (cronGo) {
 				if (emailRush) await this.ctx.storage.delete(EMAIL_DUE_KEY);
+				if (idle && idle.streak) await this.ctx.storage.delete(IDLE_KEY); // #390: work again, the back-off starts over
 				// Stored BEFORE the run (#470): a run an isolate reset kills still counts as the last one.
 				await this.ctx.storage.put(CRON_LAST_KEY, Date.now());
 				// The run record (#471), synced before PHP runs, so a leg the isolate kills is counted.
@@ -3289,6 +3299,41 @@ export class PhpRuntime extends DurableObject {
 		}
 		// Keep the cron cadence unless the purge logic set a sooner retry alarm.
 		await rearm(this.ctx.storage, Date.now(), Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
+	}
+
+	// #390: is the cron leg idle? Reads the cron option and Action Scheduler's next pending action from this object's
+	// database (the object's SQLite, Hyperdrive MySQL, or D1), with no PHP. Returns idleDecision plus what it read.
+	async cronIdle(now) {
+		const env = this.env;
+		const st = (await this.ctx.storage.get(IDLE_KEY)) || { n: 0 };
+		const p = tablePrefix(env);
+		const q = async (sql) => {
+			if (env.DB_IN_DO === 'on') return [...this.ctx.storage.sql.exec(sql).raw()];
+			if (dbHandler && typeof dbHandler.oneShot === 'function') {
+				const r = await dbHandler.oneShot(env, sql);
+				if (!r || !r.ok) throw new Error(String((r && r.error) || 'no answer'));
+				return r.rows || [];
+			}
+			if (env.DB) return (await env.DB.prepare(sql).raw()) || [];
+			throw new Error('no database');
+		};
+		let wp = null;
+		let as = { known: false };
+		try {
+			const r = await q(`SELECT option_value FROM ${p}options WHERE option_name = 'cron'`);
+			wp = r.length ? wpCronState(String(r[0][0]), Math.floor(now / 1000)) : { due: false, next: null };
+		} catch {
+			wp = null;
+		}
+		try {
+			const r = await q(`SELECT MIN(scheduled_date_gmt) FROM ${p}actionscheduler_actions WHERE status = 'pending'`);
+			as = { known: true, next: r.length ? parseGmt(r[0][0]) : null };
+		} catch (e) {
+			// No Action Scheduler table (no WooCommerce): nothing pending. Any other error: unknown, so the leg runs.
+			as = /no such table|doesn't exist|1146/i.test(String((e && e.message) || e)) ? { known: true, next: null } : { known: false };
+		}
+		const d = idleDecision({ now, intervalMs: Number(env.CRON_INTERVAL_MS || 60000), streak: Number(st.n) || 0, emailRush: false, wp, as });
+		return { ...d, streak: Number(st.n) || 0, wp, as };
 	}
 
 	async fetch(raw) {
@@ -3512,6 +3557,11 @@ export class PhpRuntime extends DurableObject {
 			// A stale one is deleted, then set (rearm): a re-set alone was not delivered on ggc-test.
 			const ra = await rearm(this.ctx.storage, Date.now(), Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
 			if (ra.stale) console.log(JSON.stringify({ m: 'alarm', unstuck: true, was: ra.was }));
+			// #390: a request pulls an idle-backed-off alarm back to the normal interval (its work may be due soon).
+			if (!ra.armed) {
+				const pl = await pullIn(this.ctx.storage, Date.now(), Number((ENV && ENV.CRON_INTERVAL_MS) || 60000));
+				if (pl.pulled) await this.ctx.storage.delete(IDLE_KEY);
+			}
 		}
 		const ahead = phpPending;
 		const isSpikeLongOp = url.pathname === '/_install' || url.pathname === '/_activate';

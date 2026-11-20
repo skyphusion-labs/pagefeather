@@ -43,6 +43,16 @@ export async function armBeforeRun(storage, now, intervalMs) {
 	return at;
 }
 
+// #390: a request pulls an alarm that the idle back-off pushed past the normal interval (cron-idle.mjs) back to it,
+// so work the request scheduled (a post, an order email) is not left behind the back-off. No alarm, or one within the
+// interval: untouched (rearm handles none and stale).
+export async function pullIn(storage, now, intervalMs) {
+	const at = await storage.getAlarm();
+	if (at === null || at === undefined || Number(at) <= now + intervalMs) return { pulled: false };
+	await setAlarmRecorded(storage, now + intervalMs, now, 'request-pull');
+	return { pulled: true, was: Number(at) };
+}
+
 // Unstick an object whose alarm is stale (issue #291). On ggc-test a fresh setAlarm over a stale
 // alarm was not delivered (set 03:19:21Z by a fetch, no alarm invocation after it, 2026-11-12).
 // So a stale alarm is DELETED first, then set again: the platform gets a new alarm, not an edit
