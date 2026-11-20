@@ -79,5 +79,28 @@ for site in ("zarapo", "woocap"):
     kv = dict(l.split("=", 1) for l in text.splitlines() if l and not l.startswith("#"))
     check("%s.env names its own bucket" % site, kv.get("MEDIA_BUCKET"), "%s-media" % site)
     check("%s.env is b-dosql" % site, kv.get("VARIANT"), "b-dosql")
+# #1063: live_bindings reads the ACTIVE version: the deployment with the greatest created_on (the API's order is not
+# trusted), then its version at 100%. In process, with the API read replaced; this fixture lists the OLDEST first.
+import importlib.util
+spec = importlib.util.spec_from_file_location("check_live_mod", str(SCRIPT)); cl = importlib.util.module_from_spec(spec); spec.loader.exec_module(cl)
+answers = {
+    "/deployments": {"result": {"deployments": [
+        {"created_on": "2026-11-20T19:44:07.92125Z", "versions": [{"version_id": "VID-OLD", "percentage": 100}]},
+        {"created_on": "2026-11-20T19:56:59.786013Z", "versions": [{"version_id": "VID-NEW", "percentage": 100}]},
+        {"created_on": "2026-11-20T19:56:54.683323Z", "versions": [{"version_id": "VID-MID", "percentage": 100}]}]}},
+    "/versions/VID-NEW": {"result": {"resources": {"bindings": [{"name": "SITE_ORIGIN", "type": "plain_text", "text": "new"}]}}},
+    "/versions/VID-OLD": {"result": {"resources": {"bindings": [{"name": "SITE_ORIGIN", "type": "plain_text", "text": "old"}]}}},
+}
+asked = []
+cl._get = lambda path: (asked.append(path), answers[path])[1]
+os.environ.pop("SETTINGS", None); os.environ.setdefault("WORKER", "w")
+check("#1063 live_bindings reads the NEWEST deployment by created_on, not the first listed", (cl.live_bindings().get("SITE_ORIGIN") or {}).get("text"), "new")
+check("#1063 and it asks deployments, then that version, never /settings", asked, ["/deployments", "/versions/VID-NEW"])
+answers["/deployments"] = {"result": {"deployments": [{"created_on": "2026-11-20T19:56:59Z", "versions": [{"version_id": "A", "percentage": 60}, {"version_id": "B", "percentage": 40}]}]}}
+try:
+    cl.live_bindings(); got = "passed"
+except SystemExit:
+    got = "refused"
+check("#1063 a split rollout (no version at 100%) is refused", got, "refused")
 print("%d failing case(s)" % fails)
 sys.exit(1 if fails else 0)

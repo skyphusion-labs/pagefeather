@@ -49,8 +49,16 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.send(200, [{"script": {"id": s}} for s in st["ns_scripts"].get(parts[3], [])])
         if len(parts) == 7 and parts[:3] == ["workers", "dispatch", "namespaces"] and parts[6] == "bindings":
             return self.send(200, st["ns_bindings"].get((parts[3], parts[5]), []))
+        # #1063: an account script's bindings come from its ACTIVE version. Deployments are listed OLDEST first; the old
+        # version binds nothing, and /settings answers stale (nothing), so only the right read finds a binder.
+        if len(parts) == 4 and parts[:2] == ["workers", "scripts"] and parts[3] == "deployments":
+            return self.send(200, {"deployments": st.get("deps") or [
+                {"created_on": "2026-11-20T19:44:07.92125Z", "versions": [{"version_id": "OLD", "percentage": 100}]},
+                {"created_on": "2026-11-20T19:56:59.786013Z", "versions": [{"version_id": "NEW", "percentage": 100}]}]})
+        if len(parts) == 5 and parts[:2] == ["workers", "scripts"] and parts[3] == "versions":
+            return self.send(200, {"resources": {"bindings": st["acct_bindings"].get(parts[2], []) if parts[4] == "NEW" else []}})
         if len(parts) == 4 and parts[:2] == ["workers", "scripts"] and parts[3] == "settings":
-            return self.send(200, {"bindings": st["acct_bindings"].get(parts[2], [])})
+            return self.send(200, {"bindings": []})
         self.send(404)
 
 
@@ -91,8 +99,9 @@ cases = [
     ("the namespace list cannot be read: unknown (exit 2)", {"fail": {"/workers/dispatch/namespaces"}}, 2, "/workers/dispatch/namespaces"),
     ("one namespace's script list cannot be read: unknown", {"fail": {"/workers/dispatch/namespaces/pf699-ns-b/scripts"}}, 2, "pf699-ns-b"),
     ("one script's bindings cannot be read: unknown, even with no binder seen", {"fail": {"/workers/dispatch/namespaces/wp-wfp/scripts/site-one/bindings"}}, 2, "site-one"),
-    ("an account script's settings cannot be read: unknown", {"fail": {"/workers/scripts/woocap/settings"}}, 2, "woocap"),
-    ("a binder AND an unread script: still exit 1 (a binder is enough to keep it)", {"ns_bindings": nsb({("wp-wfp", "site-two"): [BUDGET]}), "fail": {"/workers/scripts/woocap/settings"}}, 1, "wp-wfp/site-two"),
+    ("an account script's active version cannot be read: unknown", {"fail": {"/workers/scripts/woocap/deployments"}}, 2, "woocap"),
+    ("#1063 a split rollout of an account script is unknown, not guessed", {"deps": [{"created_on": "2026-11-20T19:56:59Z", "versions": [{"version_id": "NEW", "percentage": 60}, {"version_id": "OLD", "percentage": 40}]}]}, 2, "woocap"),
+    ("a binder AND an unread script: still exit 1 (a binder is enough to keep it)", {"ns_bindings": nsb({("wp-wfp", "site-two"): [BUDGET]}), "fail": {"/workers/scripts/woocap/deployments"}}, 1, "wp-wfp/site-two"),
 ]
 for name, over, want_rc, want_text in cases:
     rc, out = run(**over)

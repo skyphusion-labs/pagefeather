@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { sha256Hex, r2BucketResource } from '../cf.mjs';
 import {
   createR2Bucket, mintScopedR2Token, putSecret, writeKVMapEntry,
-  deployNamespaceScript, deployContainerWorkerFromDigest, scriptExists, installWordPress, ensureKVNamespace,
+  deployNamespaceScript, deployContainerWorkerFromDigest, activeVersionBindings, scriptExists, installWordPress, ensureKVNamespace,
   createKvNamespace, createQueue, createVectorizeIndex, placeNamespaceScript,
 } from '../ops.mjs';
 import { upsertSite, readSite, listSites, removeSite } from '../registry.mjs';
@@ -118,7 +118,9 @@ const ctxOf = (s) => ({ acct: ACCT, token: 'T', fetchImpl: s.fetchImpl });
   const NSID = 'ns0123456789abcdef0123456789abcd';
   const s = stub([
     { status: 200, body: '{"success":true,"result":{}}' }, // PUT script
-    { status: 200, body: JSON.stringify({ success: true, result: { bindings: [{ type: 'durable_object_namespace', class_name: 'Store', name: 'STORE', namespace_id: NSID }] } }) }, // GET settings
+    // #1063: the ACTIVE version's bindings, never /settings (it can answer an older version's bindings after a deploy).
+    { status: 200, body: JSON.stringify({ success: true, result: { deployments: [{ created_on: '2026-11-20T19:56:59Z', versions: [{ version_id: 'VID-NEW', percentage: 100 }] }] } }) }, // GET deployments
+    { status: 200, body: JSON.stringify({ success: true, result: { id: 'VID-NEW', resources: { bindings: [{ type: 'durable_object_namespace', class_name: 'Store', name: 'STORE', namespace_id: NSID }] } } }) }, // GET versions/VID-NEW
     { status: 200, body: '{"success":true,"result":[]}' }, // GET apps (none -> create)
     { status: 200, body: '{"success":true,"result":{"id":"app-123"}}' }, // POST app
   ]);
@@ -131,7 +133,8 @@ const ctxOf = (s) => ({ acct: ACCT, token: 'T', fetchImpl: s.fetchImpl });
   ok('shop deploy PUTs a standalone worker', s.calls[0].method === 'PUT' && s.calls[0].url.endsWith(`/accounts/${ACCT}/workers/scripts/c1-shop`));
   ok('migration declares the SQLite DO class', meta.migrations.new_sqlite_classes[0] === 'Store');
   ok('script metadata CONTAINER-ENABLES the DO class (avoids 1607)', meta.containers && meta.containers[0].class_name === 'Store' && meta.containers[0].image === ref);
-  ok('reads the script settings to resolve the DO namespace', s.calls[1].method === 'GET' && s.calls[1].url.endsWith('/workers/scripts/c1-shop/settings'));
+  ok('#1063 resolves the DO namespace from the ACTIVE deployment (GET deployments)', s.calls[1].method === 'GET' && s.calls[1].url.endsWith('/workers/scripts/c1-shop/deployments'));
+  ok('#1063 then from that version (GET versions/<id>), never from /settings', s.calls[2].method === 'GET' && s.calls[2].url.endsWith('/workers/scripts/c1-shop/versions/VID-NEW') && !s.calls.some((c) => c.url.endsWith('/settings')));
   const appCall = s.calls.find((c) => c.method === 'POST' && c.url.endsWith('/containers/applications'));
   ok('CREATES the container application (the step a raw PUT omits, #158)', !!appCall);
   const appBody = JSON.parse(appCall.body);
@@ -147,7 +150,8 @@ const ctxOf = (s) => ({ acct: ACCT, token: 'T', fetchImpl: s.fetchImpl });
   const NSID = 'ns0123456789abcdef0123456789abcd';
   const s = stub([
     { status: 200, body: '{"success":true,"result":{}}' },
-    { status: 200, body: JSON.stringify({ success: true, result: { bindings: [{ type: 'durable_object_namespace', class_name: 'Store', namespace_id: NSID }] } }) },
+    { status: 200, body: JSON.stringify({ success: true, result: { deployments: [{ created_on: '2026-11-20T19:56:59Z', versions: [{ version_id: 'VID2', percentage: 100 }] }] } }) }, // #1063 GET deployments
+    { status: 200, body: JSON.stringify({ success: true, result: { id: 'VID2', resources: { bindings: [{ type: 'durable_object_namespace', class_name: 'Store', namespace_id: NSID }] } } }) }, // #1063 GET versions/VID2
     { status: 200, body: '{"success":true,"result":[{"id":"app-existing","name":"c1-shop-store"}]}' }, // app exists
     { status: 200, body: '{"success":true,"result":{"id":"app-existing"}}' }, // PATCH
   ]);
@@ -158,6 +162,26 @@ const ctxOf = (s) => ({ acct: ACCT, token: 'T', fetchImpl: s.fetchImpl });
   });
   const patch = s.calls.find((c) => c.method === 'PATCH' && /\/containers\/applications\/app-existing$/.test(c.url));
   ok('an existing application is PATCHed to roll the image, not recreated', !!patch && JSON.parse(patch.body).configuration.image === ref);
+}
+
+// 6c. #1063 (the lead's review): the ACTIVE version is the deployment with the greatest created_on, never the list's
+// first. The API is not trusted to sort: this fixture answers OLDEST first, so taking [0] reads the stale version.
+{
+  const s = stub([
+    { status: 200, body: JSON.stringify({ success: true, result: { deployments: [
+      { created_on: '2026-11-20T19:44:07.92125Z', versions: [{ version_id: 'VID-OLD', percentage: 100 }] },
+      { created_on: '2026-11-20T19:56:59.786013Z', versions: [{ version_id: 'VID-NEW', percentage: 100 }] },
+      { created_on: '2026-11-20T19:56:54.683323Z', versions: [{ version_id: 'VID-MID', percentage: 100 }] },
+    ] } }) },
+    { status: 200, body: JSON.stringify({ success: true, result: { id: 'VID-NEW', resources: { bindings: [{ name: 'X', type: 'plain_text', text: 'new' }] } } }) },
+  ]);
+  const b = await activeVersionBindings(ctxOf(s), 'c1-shop');
+  ok('#1063 activeVersionBindings reads the NEWEST deployment by created_on, not the first listed', s.calls[1].url.endsWith('/workers/scripts/c1-shop/versions/VID-NEW') && b[0].text === 'new');
+  const s2 = stub([{ status: 200, body: JSON.stringify({ success: true, result: { deployments: [
+    { created_on: '2026-11-20T19:56:59Z', versions: [{ version_id: 'A', percentage: 60 }, { version_id: 'B', percentage: 40 }] },
+  ] } }) }]);
+  let threw = false; try { await activeVersionBindings(ctxOf(s2), 'c1-shop'); } catch { threw = true; }
+  ok('#1063 a split rollout (no version at 100%) is refused, not guessed', threw && s2.calls.length === 1);
 }
 
 // 7. deployNamespaceScript: dispatch-namespace path + metadata main_module.

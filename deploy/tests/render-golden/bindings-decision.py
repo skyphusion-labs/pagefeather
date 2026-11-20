@@ -32,8 +32,10 @@ class H(http.server.BaseHTTPRequestHandler):
         code, body = 404, {"success": False}
         if self.path == "/workers/dispatch/namespaces/wp-wfp/scripts/site-%s/bindings" % site:
             code, body = 200, {"success": True, "result": USER}
-        elif self.path == "/workers/scripts/wp-%s/settings" % site:
-            code, body = 200, {"success": True, "result": {"bindings": DISP}}
+        elif self.path == "/workers/scripts/wp-%s/deployments" % site:  # #1063: the active version, never /settings
+            code, body = 200, {"success": True, "result": {"deployments": [{"created_on": "2026-11-20T19:56:59.786013Z", "versions": [{"version_id": "V1", "percentage": 100}]}]}}
+        elif self.path == "/workers/scripts/wp-%s/versions/V1" % site:
+            code, body = 200, {"success": True, "result": {"resources": {"bindings": DISP}}}
         b = json.dumps(body).encode()
         self.send_response(code)
         self.send_header("content-type", "application/json")

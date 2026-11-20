@@ -157,6 +157,24 @@ export const INSTANCE_RESOURCES = {
 // Enable the <name>.<subdomain>.workers.dev route for a standalone script. A
 // raw script PUT does NOT enable it (unlike `wrangler deploy`), so a shop is
 // otherwise deployed but unreachable (#158). Idempotent: already-enabled is ok.
+// #1063: the bindings of a script's ACTIVE version: the newest deployment's version at 100%, then that version's
+// resources. GET .../settings can answer an older version's bindings for a while after a deploy, so a deploy is never
+// verified through it.
+export async function activeVersionBindings(ctx, name, op = 'activeVersionBindings') {
+  const base = `/accounts/${ctx.acct}/workers/scripts/${name}`;
+  const dep = await cfFetch(ctx.token, 'GET', `${base}/deployments`, { fetchImpl: ctx.fetchImpl });
+  if (!dep.ok) throw opError(`${op} deployments`, name, dep);
+  // The newest deployment by created_on, compared as times: the API's list order is not trusted (the lead's review).
+  const deps = (dep.result && dep.result.deployments) || [];
+  if (deps.some((d) => !Number.isFinite(Date.parse(d && d.created_on)))) throw new Error(`${op}(${name}): a deployment has no readable created_on`);
+  const latest = deps.reduce((a, d) => (!a || Date.parse(d.created_on) > Date.parse(a.created_on) ? d : a), null);
+  const v = latest && (latest.versions || []).find((x) => Number(x.percentage) === 100);
+  if (!v || !v.version_id) throw new Error(`${op}(${name}): no active version at 100% in the newest deployment`);
+  const ver = await cfFetch(ctx.token, 'GET', `${base}/versions/${v.version_id}`, { fetchImpl: ctx.fetchImpl });
+  if (!ver.ok) throw opError(`${op} versions`, name, ver);
+  return (ver.result && ver.result.resources && ver.result.resources.bindings) || [];
+}
+
 export async function enableWorkersDevSubdomain(ctx, name) {
   const r = await cfFetch(ctx.token, 'POST', `/accounts/${ctx.acct}/workers/scripts/${name}/subdomain`,
     { body: { enabled: true }, fetchImpl: ctx.fetchImpl });
@@ -205,10 +223,10 @@ export async function deployContainerWorkerFromDigest(ctx, {
     { body: form, fetchImpl: ctx.fetchImpl });
   if (!put.ok) throw opError('deployContainerWorkerFromDigest', name, put);
 
-  // Resolve the container class's DO namespace id from the deployed script.
-  const settings = await cfFetch(ctx.token, 'GET', `/accounts/${ctx.acct}/workers/scripts/${name}/settings`, { fetchImpl: ctx.fetchImpl });
-  if (!settings.ok) throw opError('deployContainerWorkerFromDigest settings', name, settings);
-  const doBinding = (settings.result.bindings || []).find((b) => b.type === 'durable_object_namespace' && b.class_name === containerClass);
+  // Resolve the container class's DO namespace id from the deployed script: from its ACTIVE version, never from
+  // /settings, which can answer an older version's bindings right after a deploy (#1063, measured on cf759hx).
+  const live = await activeVersionBindings(ctx, name, 'deployContainerWorkerFromDigest');
+  const doBinding = live.find((b) => b.type === 'durable_object_namespace' && b.class_name === containerClass);
   const namespaceId = doBinding && doBinding.namespace_id;
   if (!namespaceId) throw new Error(`deployContainerWorkerFromDigest(${name}): no DO namespace for class ${containerClass} after deploy (migration did not create it)`);
 
