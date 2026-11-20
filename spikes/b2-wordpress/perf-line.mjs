@@ -52,6 +52,7 @@ export function aPerfLine(f) {
 		l2Hits: num(f.l2Hits),
 		l2Misses: num(f.l2Misses),
 		l2Ms: num(f.l2Ms),
+		l2Neg: num(f.l2Neg), // #1078: misses answered by the negative L1, no KV read
 	};
 	for (const k of Object.keys(line)) if (line[k] === undefined) delete line[k];
 	return line;

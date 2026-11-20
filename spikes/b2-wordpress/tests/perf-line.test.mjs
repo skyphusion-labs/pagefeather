@@ -62,6 +62,7 @@ test('#1078: the A line carries the object cache bridge calls and the KV L2 read
 });
 test('#1078: objectCacheOp counts and times every OC_KV.get, and the A line passes the deltas', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	assert.match(src, /const tl2 = Date\.now\(\);\n\t\t\t\ttry \{ kv = await ENV\.OC_KV\.get\(ocKvKey\(k\)\); \} catch \{ kv = null; \}\n\t\t\t\tstats\.l2N\+\+;\n\t\t\t\tstats\.l2Ms \+= Date\.now\(\) - tl2;/);
+	// #1078 fix: the KV reads go through readL2 (oc-negative.mjs), which counts and times them; objectCacheOp adds them up.
+	assert.match(src, /stats\.l2N \+= r\.kvReads;\n\t\t\tstats\.l2Ms \+= r\.kvMs;/);
 	assert.match(src, /aPerfLine\(\{[^\n]*ocCalls: stats\.ocCalls - start\.ocCalls[^\n]*l2N: stats\.l2N - start\.l2N[^\n]*l2Ms: stats\.l2Ms - start\.l2Ms/);
 });
