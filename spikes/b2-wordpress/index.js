@@ -10,6 +10,7 @@ import { installPhpBasicAuth } from './php-auth.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
 import { armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm, setAlarmRecorded, ALARM_SET_KEY, emailRushDue, emailAlarmAt, EMAIL_DUE_KEY, EMAIL_RETRY_MS } from './alarm-arm.mjs';
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
+import { askPurgeAfterAnswer } from './purge-after-php.mjs';
 import { callPhpObject, isObjectCallDeadline, objectCallDeadlineMs, objectCallExempt } from './object-deadline.mjs';
 import { startByMs, objectShedPlan, startByResponse, shedAnswer, startByExempt, tagCallId, recheckStartBy, disconnectAnswer, disconnectSignal, tickFetch, tickResponse, TICK_PATH, START_BY_HEADER, CALL_HEADER } from './start-by.mjs';
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
@@ -4465,16 +4466,15 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			// A platform reset there threw into the bare internal error catch. A finished
 			// force-delete then came back as text, and a REST client could not parse it.
 			// The lost-write return below still replaces this answer. A purge miss does not.
+			// #1007: a failed purge is never swallowed. purge-after-php.mjs logs it and hands back one retry, which is
+			// called below once the runtime is dropped (a reset) or once the answer is built (any other failure).
 			let purgeReset = null;
+			let purgeRetry = null;
 			if (ctx && ctx.requestPurge && purgeRequested) {
-				try {
-					out.set('x-cache-purge', await ctx.requestPurge());
-				} catch (e) {
-					const kind = classifyObjectError(e);
-					console.error(String((e && e.stack) || e));
-					console.log(JSON.stringify({ m: 'purge', failed: String((e && e.message) || e).slice(0, 200), kind, path: url.pathname }));
-					if (isResetKind(kind)) purgeReset = kind;
-				}
+				const pa = await askPurgeAfterAnswer(ctx, url.pathname);
+				if (pa.header != null) out.set('x-cache-purge', pa.header);
+				purgeReset = pa.resetKind;
+				purgeRetry = pa.retry;
 			}
 			const d = delta();
 			// A write lost to an isolate memory reset (#350, write-loss.mjs): PHP's answer is replaced,
@@ -4513,6 +4513,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				// phpStatus is PHP's status before this replacement. answered is the status returned below (#596).
 				console.log(JSON.stringify({ '@event': 'write-loss', m: 'write-loss', method: req.method, path: url.pathname, failed: lost, rolledBack: !!rolled, ocDropped: ocForgot.n, ocDroppedGroups: ocForgot.groups, phpStatus: r.httpStatusCode, firstSql: sqlShape(d.failures[0].sql), ...memIdOf(req, env), answered: wl.status }));
 				dropRuntime(); // the runtime saw the reset; the next request boots a new one
+				if (purgeRetry) purgeRetry(); // #1007: the statements before the reset may be saved, so their pages too
 				return new Response(answer.body, { status: answer.status, headers: answer.headers });
 			}
 			// #969: the order request queued a deferred email. Wake the alarm soon. A lost write
@@ -4551,6 +4552,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 					const saved = rb ? !frameProvesRollback(fr) : wrote;
 					const sf = statementFailureResponse(d.failures.length, wantsJson(url.pathname, url.search, req.headers.get('accept')), saved);
 					console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', class: 'platform', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, wrote, rolledBack: !!(rb && !saved), answered: sf.status, phpStatus: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env) }));
+					if (purgeRetry && saved) purgeRetry(); // #1007: a saved write changed pages, so their purge is asked again
 					return new Response(sf.body, { status: sf.status, headers: sf.headers });
 				}
 				const f = readFailed(d.failures) ? ocReqForget() : { n: 0 };
@@ -4559,6 +4561,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			if (purgeReset) {
 				if (bootPromise) runtimeDrops++;
 				dropRuntime();
+				if (purgeRetry) purgeRetry();
 				for (const [k, v] of Object.entries(r.headers || {})) {
 					for (const one of [].concat(v)) {
 						try { out.append(String(k), String(one)); } catch { /* a header value the Headers API refuses stays off the answer */ }
@@ -4568,6 +4571,8 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				if (!out.has('cache-control')) out.set('cache-control', 'private, no-store');
 				return new Response(r.bytes, { status: r.httpStatusCode, headers: out });
 			}
+			// #1007: a purge that failed without a reset is asked once more, off the response path.
+			if (purgeRetry) purgeRetry();
 			for (const [k, v] of Object.entries(r.headers)) for (const one of [].concat(v)) out.append(k, one);
 			const ocTables = diffCounts(stats.dbTables, start.dbTables);
 			const ocGroupStats = diffCounts(stats.ocGroups, start.ocGroups);
