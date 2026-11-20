@@ -44,6 +44,15 @@ export function sender(env) {
 	return name ? { email, name } : { email };
 }
 
+// #1096: the address shape the send_email binding accepts. An EmailAddress object needs a STRING name, so { email } with
+// no name was refused for every message ("Incorrect type for the 'name' field on 'EmailAddress'", measured on cf759hx):
+// with a name it is { email, name }, without one the bare address string. sender() and replyTo() keep their { email }
+// shape for the code that reads .email; this is applied where the message is built (index.js sendEmail).
+export function bindingAddress(a) {
+	if (!a || !a.email) return null;
+	const name = typeof a.name === 'string' ? a.name.trim() : '';
+	return name ? { email: a.email, name } : a.email;
+}
 // "Name <addr>" or a bare address, from one header value.
 export function parseAddress(raw) {
 	const s = String(raw || '').trim();

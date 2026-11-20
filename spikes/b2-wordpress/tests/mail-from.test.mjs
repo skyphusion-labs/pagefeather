@@ -67,3 +67,70 @@ test('the .example TLD is undeliverable; example.co is not', () => {
 	assert.equal(sender({ SITE_ORIGIN: 'https://shop.wordpress.example' }), null);
 	assert.deepEqual(deliverableRecipients(['a@wordpress.example', 'b@shop.example.co']), { deliverable: ['b@shop.example.co'], dropped: 1 });
 });
+
+// #1096: the send_email binding refused EVERY message when MAIL_FROM_NAME was unset. Measured on cf759hx: "Incorrect type
+// for the 'name' field on 'EmailAddress': the provided value is not of type 'string'." sender() and replyTo() return
+// { email } with no name key, and that object went in as msg.from / msg.replyTo. bindingAddress hands the binding the
+// shape it accepts: { email, name } with a string name, else the bare address string.
+import { bindingAddress } from '../mail-from.mjs';
+test('#1096 bindingAddress: no name is the bare address string; a name is { email, name } with a string name', () => {
+	assert.equal(bindingAddress({ email: 'a@shop.example.co' }), 'a@shop.example.co');
+	assert.equal(bindingAddress({ email: 'a@shop.example.co', name: '' }), 'a@shop.example.co');
+	assert.deepEqual(bindingAddress({ email: 'a@shop.example.co', name: 'North Shop' }), { email: 'a@shop.example.co', name: 'North Shop' });
+	assert.equal(bindingAddress(null), null);
+});
+test('#1096 every address the binding can receive has a string name or none at all', () => {
+	for (const a of [sender({ MAIL_FROM: 'a@shop.example.co' }), sender({ MAIL_FROM: 'a@shop.example.co', MAIL_FROM_NAME: 'N' }),
+		replyTo('a@shop.example.co', 'Reply-To: b@b.example.co\r\n'), replyTo('a@shop.example.co', 'From: Ada <ada@ada.example.co>\r\n')]) {
+		const b = bindingAddress(a);
+		assert.ok(typeof b === 'string' || (b && typeof b.name === 'string' && b.name !== '' && typeof b.email === 'string'), JSON.stringify(b));
+	}
+});
+test('#1096 index.js: sendEmail passes from and replyTo through bindingAddress', async () => {
+	const { readFileSync } = await import('node:fs');
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /const msg = \{ to: null, from: bindingAddress\(from\), subject, html, text \};/);
+	assert.match(src, /if \(rt\) msg\.replyTo = bindingAddress\(rt\);/);
+});
+
+// #1096 (the lead's bar): a FAKE send_email binding that enforces the address type the way workerd does. An address is a
+// string, or an object with a string email AND a string name; anything else throws workerd's own message (measured on
+// cf759hx). It is red on the old shape and green on bindingAddress, with the name empty, unset or set.
+function fakeBinding() {
+	const sent = [];
+	const check = (field, a) => {
+		if (typeof a === 'string') return;
+		if (!a || typeof a !== 'object' || typeof a.email !== 'string') throw new TypeError("Incorrect type for the 'email' field on 'EmailAddress': the provided value is not of type 'string'.");
+		if (typeof a.name !== 'string') throw new TypeError("Incorrect type for the 'name' field on 'EmailAddress': the provided value is not of type 'string'.");
+	};
+	return {
+		sent,
+		async send(msg) {
+			check('from', msg.from);
+			if (msg.replyTo !== undefined) check('replyTo', msg.replyTo);
+			sent.push(msg);
+			return { messageId: 'm' + sent.length };
+		},
+	};
+}
+test('#1096 RED: the old shape ({ email } with no name, MAIL_FROM_NAME unset) is refused by a workerd-typed binding', async () => {
+	const b = fakeBinding();
+	await assert.rejects(b.send({ from: sender({ MAIL_FROM: 'a@shop.example.co' }), to: 'c@c.example.co', subject: 's', text: 't' }), /Incorrect type for the 'name' field on 'EmailAddress'/);
+	await assert.rejects(b.send({ from: 'a@shop.example.co', replyTo: replyTo('a@shop.example.co', 'Reply-To: b@b.example.co\r\n'), to: 'c@c.example.co', subject: 's', text: 't' }), /'name' field/);
+});
+test('#1096 GREEN: through bindingAddress the binding accepts the name unset, empty and set, for from and replyTo', async () => {
+	const b = fakeBinding();
+	for (const env of [{ MAIL_FROM: 'a@shop.example.co' }, { MAIL_FROM: 'a@shop.example.co', MAIL_FROM_NAME: '' }, { MAIL_FROM: 'a@shop.example.co', MAIL_FROM_NAME: '  ' }, { MAIL_FROM: 'a@shop.example.co', MAIL_FROM_NAME: 'North Shop' }]) {
+		const from = sender(env);
+		for (const hdr of ['', 'Reply-To: b@b.example.co\r\n', 'Reply-To: Bea <b@b.example.co>\r\n']) {
+			const rt = replyTo(from.email, hdr);
+			const msg = { from: bindingAddress(from), to: 'c@c.example.co', subject: 's', text: 't' };
+			if (rt) msg.replyTo = bindingAddress(rt);
+			await b.send(msg);
+		}
+	}
+	assert.equal(b.sent.length, 12);
+	assert.deepEqual(b.sent[9].from, { email: 'a@shop.example.co', name: 'North Shop' }, 'a set name is kept');
+	assert.equal(b.sent[0].from, 'a@shop.example.co', 'no name: the bare address');
+	assert.deepEqual(b.sent[11].replyTo, { email: 'b@b.example.co', name: 'Bea' });
+});

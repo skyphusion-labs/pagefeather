@@ -1,7 +1,7 @@
 // Spike B2: WordPress in a Worker, database on D1.
 import { sqlImport } from './sql-import.js';
 import { releaseReservedName, releaseReservedD1, tryReserveName, RESERVE_DDL, RESERVE_INSERT } from './r2-reserve.mjs';
-import { sender, replyTo, deliverableRecipients } from './mail-from.mjs';
+import { sender, replyTo, deliverableRecipients, bindingAddress } from './mail-from.mjs';
 import { collapsedSlashRedirect } from './slash-path.mjs';
 import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, handleQueuedEmail } from './email-queue.mjs';
 import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
@@ -1104,9 +1104,9 @@ function sendEmail(env, email) {
 	const html = looksHtml ? body : '<pre>' + esc(body) + '</pre>';
 	const text = looksHtml ? body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : body;
 	const subject = String(email.subject || '(no subject)');
-	const msg = { to: null, from, subject, html, text };
+	const msg = { to: null, from: bindingAddress(from), subject, html, text }; // #1096: the shape the binding accepts
 	const rt = replyTo(from.email, email.headers);
-	if (rt) msg.replyTo = rt;
+	if (rt) msg.replyTo = bindingAddress(rt);
 	return deliverable.map((to) => env.EMAIL.send({ ...msg, to }).then((r) => ((stats.emailSent = (stats.emailSent || 0) + 1), r)));
 }
 
