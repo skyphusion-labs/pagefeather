@@ -59,8 +59,8 @@ refused "site update, a live site" "$LIVE" env IMPORT_PLUGINS=woocommerce-cleanu
 refused "site.sh up, no THROWAWAY" "$NO_TA" env IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on "$SITESH" up pf9x
 refused "site.sh up, a live site" "$LIVE" env IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 "$SITESH" up ggc-test
 refused "up.sh, no THROWAWAY" "$NO_TA" env IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on BUILD=0 SITES=pf9x "$UPSH"
-refused "up.sh 'one ggc-test' refuses before either" "$LIVE" env IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 BUILD=0 TURNSTILE_SITEKEY=1x00000000000000000000AA TURNSTILE_SECRET=1x0000000000000000000000000000000AA TURNSTILE_LOGIN=off SITES="one ggc-test" "$UPSH"
-refused "site add, a real Turnstile site key" "A real site key stops classic checkout" env IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 TURNSTILE_SITEKEY=0x4AAAAAAAtestkey TURNSTILE_LOGIN=off "$SITE" add pf9x
+refused "up.sh 'one ggc-test' refuses before either" "$LIVE" env IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 BUILD=0 TURNSTILE_SITEKEY=1x00000000000000000000AA TURNSTILE_SECRET=1x0000000000000000000000000000000AA TURNSTILE_LOGIN=off TURNSTILE_LOSTPASSWORD=off SITES="one ggc-test" "$UPSH"
+refused "site add, a real Turnstile site key" "A real site key stops classic checkout" env IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 TURNSTILE_SITEKEY=0x4AAAAAAAtestkey TURNSTILE_LOGIN=off TURNSTILE_LOSTPASSWORD=off "$SITE" add pf9x
 ok "update_one (update --all) checks each site before the snapshot and build" "$(awk '/^update_one_inner\(\)/,/^}/' "$SITE" | grep -q 'conformance_var "\$s" || { echo' && echo 1 || echo 0)"
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]

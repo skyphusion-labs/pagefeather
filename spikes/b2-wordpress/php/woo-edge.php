@@ -45,3 +45,31 @@ register_shutdown_function(
 		}
 	}
 );
+
+/*
+ * #969: tell the Worker that this request stored a deferred Woo email.
+ * The Worker wakes the alarm soon. The mail log row can land inside the
+ * conformance poll. The filter runs when the action is stored. The shutdown
+ * hook is after Action Scheduler's dispatch (priority 100).
+ */
+add_filter(
+	'action_scheduler_stored_action_instance',
+	function ( $action, $hook ) {
+		if ( 'woocommerce_send_queued_transactional_email' === $hook ) {
+			$GLOBALS['skyphusion_email_action_stored'] = 1;
+		}
+		return $action;
+	},
+	10,
+	2
+);
+add_action(
+	'shutdown',
+	function () {
+		if ( empty( $GLOBALS['skyphusion_email_action_stored'] ) || ! function_exists( 'post_message_to_js' ) ) {
+			return;
+		}
+		post_message_to_js( wp_json_encode( array( 'emailDue' => 1 ) ) );
+	},
+	120
+);

@@ -428,6 +428,10 @@ add_filter(
 // (measured 2026-11-04: 8 parallel uploads, 3 distinct files). The Worker
 // reserves each name with one atomic D1 insert, so only one upload gets it.
 // Delete and rename release that name (issue #946). The next upload can use it.
+// WordPress 7.1 adds its own filter at priority 10 during a sub-size
+// sideload, after this file loads. That filter drops the extra -1 that
+// wp_unique_filename() added. This filter runs later, so the reserved
+// name is the name WordPress saves (issue #952).
 add_filter(
 	'wp_unique_filename',
 	function ( $filename, $ext, $dir ) {
@@ -463,7 +467,7 @@ add_filter(
 		}
 		return $filename;
 	},
-	10,
+	100,
 	3
 );
 

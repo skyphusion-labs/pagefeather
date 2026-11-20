@@ -1,7 +1,7 @@
 // alarm-arm.mjs (issue #291): a stale alarm no longer blocks the cron for good.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { shouldArmAlarm, STALE_MS, armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm, setAlarmRecorded, ALARM_SET_KEY } from '../alarm-arm.mjs';
+import { shouldArmAlarm, STALE_MS, armBeforeRun, rearm, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm, setAlarmRecorded, ALARM_SET_KEY, emailRushDue, emailAlarmAt, EMAIL_RUSH_MS, EMAIL_DUE_MAX_MS } from '../alarm-arm.mjs';
 import { readFileSync } from 'node:fs';
 
 const now = Date.parse('2026-11-11T21:15:00Z');
@@ -92,7 +92,7 @@ test('rearm: a future or just-due alarm is untouched', async () => {
 test('index.js: every alarm it sets is recorded (no bare storage.setAlarm), and /_purgestate reports the record', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.equal(/\.storage\.setAlarm\(/.test(src), false, 'no bare this.ctx.storage.setAlarm( in index.js');
-	assert.equal((src.match(/await setAlarmRecorded\(this\.ctx\.storage/g) || []).length, 3, 'the purge request, the purge retry, and the budget wait');
+	assert.equal((src.match(/await setAlarmRecorded\(this\.ctx\.storage/g) || []).length, 4, 'the purge request, the purge retry, the budget wait, and the email-due retry');
 	const ps = src.slice(src.indexOf("url.pathname === '/_purgestate'"), src.indexOf("url.pathname === '/_purgestate'") + 600);
 	assert.ok(/alarmSet: \(await this\.ctx\.storage\.get\(ALARM_SET_KEY\)\) \|\| null/.test(ps), '/_purgestate reports alarmSet');
 });
@@ -185,4 +185,18 @@ test('index.js #846: an alarm during an import boots no PHP (cronGo needs !impor
 		assert.ok(at > open, call + ' only after if (cronGo) opens');
 	}
 	assert.equal(body.slice(0, open).search(/\bboot\(|runCron\(|withPhp\(/), -1, 'no PHP before the gate');
+});
+
+test('#969: a fresh email-due time is a rush; a missing or old one is not', () => {
+	assert.equal(emailRushDue(now, now), true);
+	assert.equal(emailRushDue(now - 1000, now), true);
+	assert.equal(emailRushDue(0, now), false);
+	assert.equal(emailRushDue(null, now), false);
+	assert.equal(emailRushDue(now - EMAIL_DUE_MAX_MS, now), false);
+});
+
+test('#969: pull a far alarm in; leave one that is already sooner', () => {
+	assert.equal(emailAlarmAt(null, now), now + EMAIL_RUSH_MS);
+	assert.equal(emailAlarmAt(now + 60_000, now), now + EMAIL_RUSH_MS);
+	assert.equal(emailAlarmAt(now + 500, now), null);
 });

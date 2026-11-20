@@ -4,6 +4,7 @@
 # is planted once: the marker in IMPORT_MU_PLUGINS, each test plugin in IMPORT_PLUGINS, SUITE and THEME_SUITE into
 # tests/conformance/, and the marker FILE in an IMPORT_CONTENT tree (whatever IMPORT_* says).
 # #940: a conformance throwaway also needs Cloudflare's always-pass Turnstile test pair and TURNSTILE_LOGIN=off.
+# #973: it also needs TURNSTILE_LOSTPASSWORD=off. Remove that check and the lost-password cases go green.
 # The checkout gate stays on. A real site key is refused. Remove that check and section 6 goes red.
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -24,7 +25,7 @@ mkdir -p "$T/wc-marked/mu-plugins" "$T/wc-plain/mu-plugins"
 # Cloudflare's published always-pass pair. The secret is public. A real key is not this pair.
 TS_KEY=1x00000000000000000000AA
 TS_SEC=1x0000000000000000000000000000000AA
-TS_OK="TURNSTILE_SITEKEY=$TS_KEY TURNSTILE_SECRET=$TS_SEC TURNSTILE_LOGIN=off"
+TS_OK="TURNSTILE_SITEKEY=$TS_KEY TURNSTILE_SECRET=$TS_SEC TURNSTILE_LOGIN=off TURNSTILE_LOSTPASSWORD=off"
 
 echo "1. the triggers (each planted; without CONFORMANCE=on: refused, named; with it but no THROWAWAY: refused)"
 for t in "IMPORT_MU_PLUGINS=pf-conformance-throwaway.php|IMPORT_MU_PLUGINS names" \
@@ -72,13 +73,15 @@ ok "render_user calls conformance_var and fails on its refusal" "$(grep -qE '^  
 ok "site update checks the RECORDED inputs (after use_recorded_inputs)" "$(awk '/^update_one_inner\(\)/,/^}/' "$ROOT/deploy/wfp/site" | awk '/use_recorded_inputs/{f=1} f && /conformance_var/{n++} END{print (n ? "after" : "none")}' | grep -qx after && echo 1 || echo 0)"
 echo "6. Turnstile on a conformance throwaway (#940)"
 # shellcheck disable=SC2086
-chk pf9x IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 $TS_OK; ok "always-pass keys and login off: allowed" "$([ $? = 0 ] && echo 1 || echo 0)"
-chk pf9x IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 TURNSTILE_LOGIN=off; ok "no site key: refused" "$([ $? = 2 ] && grep -q 'A real site key stops classic checkout' "$T/chk.err" && echo 1 || echo 0)"
-chk pf9x IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 TURNSTILE_SITEKEY=0x4AAAAAAAtestkey TURNSTILE_SECRET=$TS_SEC TURNSTILE_LOGIN=off; ok "a real site key: refused" "$([ $? = 2 ] && grep -q 'A real site key stops classic checkout' "$T/chk.err" && echo 1 || echo 0)"
-chk pf9x IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 TURNSTILE_SITEKEY=$TS_KEY TURNSTILE_SECRET=2x0000000000000000000000000000000AA TURNSTILE_LOGIN=off; ok "the always-fail test secret: refused" "$([ $? = 2 ] && grep -q 'always-pass TURNSTILE_SECRET' "$T/chk.err" && ! grep -q '2x0000000000000000000000000000000AA' "$T/chk.err" && echo 1 || echo 0)"
-chk pf9x IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 TURNSTILE_SITEKEY=$TS_KEY TURNSTILE_SECRET=SECRETMARKER940 TURNSTILE_LOGIN=off; ok "a wrong secret is refused and not printed" "$([ $? = 2 ] && grep -q 'always-pass TURNSTILE_SECRET' "$T/chk.err" && ! grep -q SECRETMARKER940 "$T/chk.err" && echo 1 || echo 0)"
+chk pf9x IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 $TS_OK; ok "always-pass keys, login off and lost password off: allowed" "$([ $? = 0 ] && echo 1 || echo 0)"
+chk pf9x IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 TURNSTILE_LOGIN=off TURNSTILE_LOSTPASSWORD=off; ok "no site key: refused" "$([ $? = 2 ] && grep -q 'A real site key stops classic checkout' "$T/chk.err" && echo 1 || echo 0)"
+chk pf9x IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 TURNSTILE_SITEKEY=0x4AAAAAAAtestkey TURNSTILE_SECRET=$TS_SEC TURNSTILE_LOGIN=off TURNSTILE_LOSTPASSWORD=off; ok "a real site key: refused" "$([ $? = 2 ] && grep -q 'A real site key stops classic checkout' "$T/chk.err" && echo 1 || echo 0)"
+chk pf9x IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 TURNSTILE_SITEKEY=$TS_KEY TURNSTILE_SECRET=2x0000000000000000000000000000000AA TURNSTILE_LOGIN=off TURNSTILE_LOSTPASSWORD=off; ok "the always-fail test secret: refused" "$([ $? = 2 ] && grep -q 'always-pass TURNSTILE_SECRET' "$T/chk.err" && ! grep -q '2x0000000000000000000000000000000AA' "$T/chk.err" && echo 1 || echo 0)"
+chk pf9x IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 TURNSTILE_SITEKEY=$TS_KEY TURNSTILE_SECRET=SECRETMARKER940 TURNSTILE_LOGIN=off TURNSTILE_LOSTPASSWORD=off; ok "a wrong secret is refused and not printed" "$([ $? = 2 ] && grep -q 'always-pass TURNSTILE_SECRET' "$T/chk.err" && ! grep -q SECRETMARKER940 "$T/chk.err" && echo 1 || echo 0)"
 chk pf9x IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 TURNSTILE_SITEKEY=$TS_KEY TURNSTILE_SECRET=$TS_SEC; ok "TURNSTILE_LOGIN unset: refused" "$([ $? = 2 ] && grep -q 'needs TURNSTILE_LOGIN=off' "$T/chk.err" && echo 1 || echo 0)"
 chk pf9x IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 TURNSTILE_SITEKEY=$TS_KEY TURNSTILE_SECRET=$TS_SEC TURNSTILE_LOGIN=on; ok "TURNSTILE_LOGIN=on: refused" "$([ $? = 2 ] && grep -q 'needs TURNSTILE_LOGIN=off' "$T/chk.err" && echo 1 || echo 0)"
+chk pf9x IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 TURNSTILE_SITEKEY=$TS_KEY TURNSTILE_SECRET=$TS_SEC TURNSTILE_LOGIN=off; ok "TURNSTILE_LOSTPASSWORD unset: refused" "$([ $? = 2 ] && grep -q 'needs TURNSTILE_LOSTPASSWORD=off' "$T/chk.err" && echo 1 || echo 0)"
+chk pf9x IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 TURNSTILE_SITEKEY=$TS_KEY TURNSTILE_SECRET=$TS_SEC TURNSTILE_LOGIN=off TURNSTILE_LOSTPASSWORD=on; ok "TURNSTILE_LOSTPASSWORD=on: refused" "$([ $? = 2 ] && grep -q 'needs TURNSTILE_LOSTPASSWORD=off' "$T/chk.err" && echo 1 || echo 0)"
 # shellcheck disable=SC2086
 chk pf9x IMPORT_PLUGINS=woocommerce-cleanup CONFORMANCE=on THROWAWAY=1 $TS_OK TURNSTILE_WOO=off; ok "TURNSTILE_WOO=off: refused" "$([ $? = 2 ] && grep -q 'refuses TURNSTILE_WOO=off' "$T/chk.err" && echo 1 || echo 0)"
 # shellcheck disable=SC2086
