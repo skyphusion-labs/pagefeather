@@ -8,22 +8,24 @@
  *   never removed: the route-only rest_api_init callbacks of the map below are taken off the hook and kept, and they
  *   run, once, in their order, the first time the request needs them, in rest_pre_dispatch (before route matching,
  *   so rest_do_request, rest_preload_api_request and a real REST call alike):
- *     - a route under /wc or /jetpack;
- *     - the full index "/" (the editor's site-settings-only _fields does not need the route table);
- *     - a route that matches no registered route (the fail-safe: a namespace the map missed is never a false 404).
+ *     - a route under /wc or /jetpack registers the namespace that route needs;
+ *     - the full index "/" registers the whole map (a site-settings-only _fields list does not);
+ *     - a route that still matches nothing registers the rest (a missed namespace is never a false 404).
  *   Settings and REST fields stay eager (their callbacks are not in the map), so the editor's preloaded settings are
  *   unchanged.
- *   SCOPE: post-new.php, post.php, and admin-ajax.php (#963).
- *   A non-wc REST path defers too (#987).
- *   /wc, /jetpack, and the REST index stay eager.
- *   The front end, cron, and every other admin page stay eager.
+ *   SCOPE: post-new.php, post.php, admin.php, and admin-ajax.php (#963, #994).
+ *   A REST path defers too, except the REST index (#987, #994).
+ *   /wc and /jetpack defer, then register only the namespace the call needs.
+ *   The REST index stays eager.
+ *   The front end, cron, and every admin screen that is not admin.php stay eager.
  *   The map is of WooCommerce MAPPED_WOO.
  *   On any other version nothing is deferred.
  *   tests/wc-route-defer-test.sh fails until the map is checked again.
  *   Operator only (index.js passes it to PHP only with the spike token): x-pf-wc-defer: off turns it off on an editor
  *   screen (an A/B on one build); x-pf-wc-defer: force turns it on for any one request (the tests of on demand).
- *   A REST answer says what happened in X-PF-WC-Routes: deferred N/13 or registered N/13 (N: the map's callbacks
- *   found live; tests/wc-route-defer-e2e.sh fails unless all are), off, or unmapped <version>.
+ *   A REST answer says what happened in X-PF-WC-Routes: deferred N/13 or registered M/13.
+ *   N is how many mapped callbacks were found. M is how many ran.
+ *   The editor preload still says deferred 13/13. off and unmapped <version> stay.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -50,9 +52,10 @@ class Skyphusion_WC_Route_Defer {
 	);
 
 	/** @var array<int, array{p:int, cb:array}> The kept callbacks, in the hook's order. */
-	private static $kept  = array();
-	private static $state = '';
-	public static $found  = array();
+	private static $kept    = array();
+	private static $invoked = 0;
+	private static $state   = '';
+	public static $found    = array();
 
 	public static function init() {
 		add_action( 'rest_api_init', array( __CLASS__, 'defer' ), PHP_INT_MIN );
@@ -67,7 +70,7 @@ class Skyphusion_WC_Route_Defer {
 		return is_string( $f ) ? $f : '';
 	}
 
-	/** Editor screens, admin-ajax (#963), a non-wc REST path (#987), or an operator force. */
+	/** Editor screens, admin.php (#994), admin-ajax (#963), a REST path except the index (#987, #994), or an operator force. */
 	public static function in_scope() {
 		if ( isset( $_SERVER['HTTP_X_PF_WC_DEFER'] ) && 'force' === $_SERVER['HTTP_X_PF_WC_DEFER'] ) {
 			return true;
@@ -83,13 +86,13 @@ class Skyphusion_WC_Route_Defer {
 			return true;
 		}
 		global $pagenow;
-		return in_array( $pagenow, array( 'post-new.php', 'post.php' ), true );
+		return in_array( $pagenow, array( 'post-new.php', 'post.php', 'admin.php' ), true );
 	}
 
 	/**
-	 * A REST URI defers when the call does not need WooCommerce routes (#987).
-	 * /wc and /jetpack stay eager. The index stays eager.
-	 * Any other REST path defers. A path that is not REST stays eager.
+	 * A REST URI defers except the index (#987, #994).
+	 * /wc and /jetpack defer. on_demand registers the namespace the call needs.
+	 * The index stays eager. A path that is not REST stays eager.
 	 */
 	public static function rest_defers_uri( $uri ) {
 		$uri   = (string) $uri;
@@ -105,16 +108,42 @@ class Skyphusion_WC_Route_Defer {
 		return false;
 	}
 
-	/** True when this REST route can skip the WooCommerce route table. */
+	/** True when this REST route skips the eager route table. The index cannot. */
 	public static function rest_defers_route( $route ) {
 		$route = '/' . ltrim( (string) $route, '/' );
 		if ( '/' === $route ) {
 			return false;
 		}
-		if ( preg_match( '#^/(wc|jetpack)#', $route ) ) {
-			return false;
-		}
 		return true;
+	}
+
+	/**
+	 * Callbacks one REST route needs. Null means the whole map.
+	 * wc-admin and wc-analytics share one callback. /wc/* is the REST server.
+	 * /jetpack is the bundled Jetpack callbacks. Anything else uses the whole map.
+	 *
+	 * @return array<int, string>|null
+	 */
+	public static function owners_for_route( $route ) {
+		$route = '/' . ltrim( (string) $route, '/' );
+		if ( preg_match( '#^/wc-admin(?:/|$)#', $route ) || preg_match( '#^/wc-analytics(?:/|$)#', $route ) ) {
+			return array(
+				'Automattic\\WooCommerce\\Admin\\API\\Init::rest_api_init',
+			);
+		}
+		if ( preg_match( '#^/wc(?:/|$)#', $route ) ) {
+			return array(
+				'Automattic\\WooCommerce\\RestApi\\Server::register_rest_routes',
+			);
+		}
+		if ( preg_match( '#^/jetpack(?:/|$)#', $route ) ) {
+			return array(
+				'Automattic\\Jetpack\\Connection\\Manager::initialize_rest_api_registration_connector',
+				'Automattic\\Jetpack\\Connection\\Error_Handler::register_verify_error_endpoint',
+				'Automattic\\Jetpack\\Heartbeat::initialize_rest_api',
+			);
+		}
+		return null;
 	}
 
 	public static function defer() {
@@ -154,24 +183,54 @@ class Skyphusion_WC_Route_Defer {
 
 	/** Run the kept callbacks once, in their order, with the server. */
 	public static function register_now() {
-		if ( ! self::$kept ) {
+		self::register_owners( array_map( array( __CLASS__, 'kept_owner' ), self::$kept ) );
+	}
+
+	/** Owner string for one kept callback row. */
+	public static function kept_owner( $k ) {
+		return self::owner( $k['cb']['function'] );
+	}
+
+	/** Run these kept callbacks once, in their order, and leave the others kept. */
+	public static function register_owners( $owners ) {
+		if ( ! self::$kept || ! $owners ) {
 			return;
 		}
-		$kept       = self::$kept;
-		self::$kept = array();
-		$server     = rest_get_server();
-		foreach ( $kept as $k ) {
+		$want = array_flip( (array) $owners );
+		$run  = array();
+		$left = array();
+		foreach ( self::$kept as $k ) {
+			$o = self::owner( $k['cb']['function'] );
+			if ( isset( $want[ $o ] ) ) {
+				$run[] = $k;
+			} else {
+				$left[] = $k;
+			}
+		}
+		self::$kept = $left;
+		if ( ! $run ) {
+			return;
+		}
+		$server = rest_get_server();
+		foreach ( $run as $k ) {
 			$n = max( 1, (int) $k['cb']['accepted_args'] );
 			call_user_func_array( $k['cb']['function'], array_slice( array( $server ), 0, $n ) );
+			self::$invoked++;
 		}
-		self::$state = 'registered ' . count( self::$found ) . '/' . count( self::DEFER );
+		self::$state = 'registered ' . self::$invoked . '/' . count( self::DEFER );
+	}
+
+	public static function route_matches( $server, $route ) {
+		foreach ( array_keys( $server->get_routes() ) as $r ) {
+			if ( preg_match( '@^' . $r . '$@i', (string) $route ) ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	public static function needs_routes( $server, $request ) {
 		$route = (string) $request->get_route();
-		if ( preg_match( '#^/(wc|jetpack)#', $route ) ) {
-			return true;
-		}
 		if ( '/' === $route || '' === $route ) {
 			if ( ! isset( $request['_fields'] ) ) {
 				return true;
@@ -183,16 +242,21 @@ class Skyphusion_WC_Route_Defer {
 			}
 			return false;
 		}
-		foreach ( array_keys( $server->get_routes() ) as $r ) {
-			if ( preg_match( '@^' . $r . '$@i', $route ) ) {
-				return false;
-			}
+		if ( self::route_matches( $server, $route ) ) {
+			return false;
 		}
 		return true; // matches nothing registered: the fail-safe
 	}
 
 	public static function on_demand( $result, $server, $request ) {
 		if ( self::$kept && self::needs_routes( $server, $request ) ) {
+			$want = self::owners_for_route( (string) $request->get_route() );
+			if ( is_array( $want ) ) {
+				self::register_owners( $want );
+				if ( ! self::needs_routes( $server, $request ) ) {
+					return $result;
+				}
+			}
 			self::register_now();
 		}
 		return $result;
