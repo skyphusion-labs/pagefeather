@@ -176,6 +176,8 @@ class Site(BaseHTTPRequestHandler):
         st = self.state
         path = urllib.parse.urlparse(self.path).path
         if "pf-conformance/v1/throwaway" in self.path and method == "GET":
+            if st.get("no_marker"):
+                return self._json(404, {"code": "rest_no_route"})
             return self._json(200, {"throwaway": True, "host": "127.0.0.1"})
         if path == "/wp-login.php" and method == "GET":
             return self.reply(200, b"<html>login</html>", "text/html")
@@ -219,6 +221,12 @@ class Site(BaseHTTPRequestHandler):
         if path == "/wp-admin/options-permalink.php" and method == "POST":
             return self.reply(200, b"ok", "text/html")
         route, q = self._route()
+        if route == "/wc-cleanup/v1/reset":
+            # as the real route: it reads the Basic header itself; a cookie session is refused
+            st.setdefault("routes", []).append((method, route))
+            auth = self.headers.get("Authorization") or ""
+            st["reset_auth"] = auth.split(" ", 1)[0] if auth else None
+            return self._json(200 if auth.startswith("Basic ") else 403, {"ok": True})
         if route:
             st.setdefault("routes", []).append((method, route))
         if not route:
@@ -500,6 +508,19 @@ check("a status-0 request keeps its exception text in seed.json network_errors",
       and ne[0].get("method") == "GET" and "RemoteDisconnected" in (ne[0].get("error") or ""), (ne, idx_chk))
 p, state, report = run_email_editor_seed()
 check("no network failure, no network_errors", not (report or {}).get("network_errors"), (report or {}).get("network_errors"))
+
+# SEED_RESET_STORE=1: the store reset is the FIRST REST call after the login, and its row is recorded; without the
+# variable there is no reset at all.
+p, state, report = run_email_editor_seed({"SEED_RESET_STORE": "1"})
+rts = [r for _m, r in state.get("routes", [])]
+chk = ((report or {}).get("checks") or {}).get("store reset first (SEED_RESET_STORE, wc-cleanup/v1/reset)") or {}
+check("SEED_RESET_STORE: wc-cleanup/v1/reset is the first REST call, and it is recorded",
+      rts[:1] == ["/wc-cleanup/v1/reset"] and chk.get("ok") is True and state.get("reset_auth") == "Basic" and (report or {}).get("store_reset", {}).get("status") == 200, (rts[:3], chk, state.get("reset_auth")))
+p, state, report = run_email_editor_seed({"SEED_RESET_STORE": "1", "SEED_ALLOW_LOCAL": "1"}, no_marker=True)
+check("SEED_RESET_STORE on a local site without the marker: refused (2), no reset",
+      p.returncode == 2 and "/wc-cleanup/v1/reset" not in [r for _m, r in state.get("routes", [])] and "needs the throwaway marker" in (p.stdout + p.stderr), (p.returncode, (p.stdout + p.stderr)[-200:]))
+p, state, report = run_email_editor_seed()
+check("no SEED_RESET_STORE: the store is never reset", "/wc-cleanup/v1/reset" not in [r for _m, r in state.get("routes", [])], [r for _m, r in state.get("routes", [])][:3])
 
 page = {"id": 7, "status": "publish", "slug": "cart", "link": "https://ex/cart/"}
 check("wc_store_page_ok: published cart", _seed.wc_store_page_ok(7, page, "cart") is True)
