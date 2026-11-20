@@ -381,6 +381,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/headroom.test.mjs
       - name: b-dosql a dropped runtime is released once nothing uses it (issue #566)
         run: node --expose-gc --test spikes/b2-wordpress/tests/drop-runtime.test.mjs
+      - name: Approach A's MySQL connection lives exactly one PHP run, never shared across contexts (#1087)
+        run: node --test spikes/b2-wordpress/tests/db-lifecycle.test.mjs
       - name: The PHP lock never boots a second runtime beside a live one, and sheds past its bound (#296)
         run: node --test spikes/b2-wordpress/tests/php-lock.test.mjs
       - name: A manual /_runcron takes the PHP lock once (#720)

@@ -55,6 +55,7 @@ import { createRetirer } from './runtime-drop.mjs';
 import { gateSettings, decide, BootRefused, bootRefusedResponse, createGateClock, withBootRefusal } from './boot-gate.mjs'; // #598
 import { reuseOn, createSpare, bootTestDelayMs, bootTestDelayAt, moduleImportsMemory, offerWhenDrained } from './memory-reuse.mjs'; // #598 / #603
 import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
+import { withDbRun } from './db-lifecycle.mjs';
 import { templateQueuePriority, templateLookupYield, templateLookupForwardYield } from './template-boot.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse } from './overflow.mjs';
@@ -482,7 +483,7 @@ function withPhp(fn, { shedMs = 0, tag = null, shedWhy = null, recheck = null, h
 		async () => {
 			retirer.runStart();
 			try {
-				return await fn();
+				return await withDbRun(dbHandler, fn); // #1087: approach A's MySQL connection lives exactly this run
 			} finally {
 				retirer.runEnd();
 			}
@@ -2443,6 +2444,10 @@ function checkoutContainer(env) {
 
 // Spike: time N sequential D1 statements from where this code runs.
 async function d1ping(req, env, url, ctx) {
+	// #1087: on approach A the reads run under the PHP lock, on a connection of their own (withPhp's withDbRun).
+	return dbHandler ? withPhp(() => d1pingRun(req, env, url, ctx)) : d1pingRun(req, env, url, ctx);
+}
+async function d1pingRun(req, env, url, ctx) {
 	const n = Math.min(50, Number(url.searchParams.get('n') || 20));
 	const ms = [];
 	// Approach A: the same 20 reads through Hyperdrive (the first one opens the connection).
@@ -2456,7 +2461,6 @@ async function d1ping(req, env, url, ctx) {
 		if (i === 0 && dbHandler) connectMs = Date.now() - t;
 		else ms.push(Date.now() - t);
 	}
-	if (dbHandler) ctx.waitUntil(dbHandler.end());
 	const n2 = ms.length;
 	ms.sort((a, b) => a - b);
 	return Response.json({ n: n2, first: connectMs, min: ms[0], median: ms[n2 >> 1], max: ms[n2 - 1], colo: req.cf && req.cf.colo });
@@ -3198,7 +3202,7 @@ export class PhpRuntime extends DurableObject {
 		req.headers.delete(SENT_HEADER);
 		// The front Worker's Turnstile answer (#351): kept for this request's PHP run, never shown to PHP.
 		const turnstileHeader = takeResultHeader(req.headers);
-		if (dbHandler) dbHandler.reset();
+		// #1087: no connection reset here (outside the PHP lock); withPhp's withDbRun owns the connection's life.
 		// The Worker checked the spike token already. Checked again: the object
 		// trusts nothing it did not check itself.
 		// #394 L1: the OPcache boot packs live under /_pf/ in the static assets. They hold compiled PHP of
@@ -3839,9 +3843,8 @@ const site = {
 		}
 		const url = new URL(req.url);
 		if (url.pathname === '/_ping') return new Response('ok');
-		// Approach A: a Worker request cannot use a connection another request opened.
-		// Drop any left over (an /_install run, or a request that failed early).
-		if (dbHandler) dbHandler.reset();
+		// Approach A's MySQL connection lives one PHP run, inside the PHP lock (#1087, db-lifecycle.mjs withDbRun). A reset
+		// here, outside the lock, nulled the socket of a run still executing in another context.
 		// Spike endpoints need the SPIKE_TOKEN secret when it is set (always on a deploy).
 		// #394 L1: the OPcache boot packs live under /_pf/ in the static assets. They hold compiled PHP of
 		// the site's code, so no request may read them; only the object fetches them, through the binding.
@@ -3902,8 +3905,7 @@ const site = {
 			if (!['status', 'install', 'remove'].includes(op)) return new Response('op is status, install or remove', { status: 400 });
 			if (op !== 'status' && req.method !== 'POST') return new Response('install and remove need POST', { status: 405 });
 			const q = (sql) => dbHandler.query(env, { mysql: sql });
-			const out = await cacheVersions[op](q, tablePrefix(env));
-			ctx.waitUntil(dbHandler.end());
+			const out = await withPhp(() => cacheVersions[op](q, tablePrefix(env))); // #1087: under the lock, its own connection
 			return Response.json(out, { status: out.ok ? 200 : 500 });
 		}
 		// The page version counter and its triggers (#296 step 1, page-versions.mjs): approach A only.
@@ -3916,8 +3918,7 @@ const site = {
 			if (!['status', 'install', 'remove'].includes(op)) return new Response('op is status, install or remove', { status: 400 });
 			if (op !== 'status' && req.method !== 'POST') return new Response('install and remove need POST', { status: 405 });
 			const q = (sql) => dbHandler.query(env, { mysql: sql });
-			const out = await pageVersions[op](q, tablePrefix(env));
-			ctx.waitUntil(dbHandler.end());
+			const out = await withPhp(() => pageVersions[op](q, tablePrefix(env))); // #1087: under the lock, its own connection
 			return Response.json(out, { status: out.ok ? 200 : 500 });
 		}
 		// PHP in a Durable Object (PHP_IN_DO=on, issue #28): every request that
