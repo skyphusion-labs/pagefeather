@@ -48,20 +48,23 @@ add_filter(
  * A stored shop, cart, checkout, or my-account id can point at a deleted post (#936).
  * WooCommerce then sends /checkout/ and /cart/ to the home page.
  * This asks WooCommerce to create the missing page.
+ * Missing uses the rule of WooCommerce 11.2.1 wc_create_page (#1006): an id above 0 whose post is gone, is not a
+ * page, or is pending, trash, future or auto-draft. 0 or unset is the merchant's "none" and is left alone.
+ * A private or draft page is valid, as WooCommerce keeps it.
  * A healthy store compares an autoloaded stamp and does not read the posts.
  * A failed create waits one minute, then tries again.
  * Trashing or deleting one of the four pages clears the stamp.
  */
 
-if ( ! function_exists( 'skyphusion_wc_page_is_live' ) ) {
-	/** True when the row is a published page. */
-	function skyphusion_wc_page_is_live( $post ) {
+if ( ! function_exists( 'skyphusion_wc_page_is_valid' ) ) {
+	/** True when WooCommerce wc_create_page keeps the row as the store page. */
+	function skyphusion_wc_page_is_valid( $post ) {
 		if ( ! is_object( $post ) ) {
 			return false;
 		}
 		$type   = isset( $post->post_type ) ? (string) $post->post_type : '';
 		$status = isset( $post->post_status ) ? (string) $post->post_status : '';
-		return 'page' === $type && 'publish' === $status;
+		return 'page' === $type && ! in_array( $status, array( 'pending', 'trash', 'future', 'auto-draft' ), true );
 	}
 }
 
@@ -88,15 +91,36 @@ if ( ! function_exists( 'skyphusion_wc_store_page_ids' ) ) {
 }
 
 if ( ! function_exists( 'skyphusion_wc_store_pages_missing' ) ) {
-	/** True when any of the four ids is not a published page. */
+	/** True when any id above 0 is not a valid store page. An id of 0 or -1 is "none". */
 	function skyphusion_wc_store_pages_missing( $ids ) {
-		foreach ( $ids as $id ) {
-			$post = (int) $id > 0 ? get_post( (int) $id ) : null;
-			if ( ! skyphusion_wc_page_is_live( $post ) ) {
-				return true;
+		return array() !== skyphusion_wc_store_pages_missing_keys( $ids );
+	}
+}
+
+if ( ! function_exists( 'skyphusion_wc_store_pages_missing_keys' ) ) {
+	/** The create_pages keys (shop, cart, checkout, myaccount) whose id is above 0 and not a valid page. */
+	function skyphusion_wc_store_pages_missing_keys( $ids ) {
+		$keys = array( 'shop', 'cart', 'checkout', 'myaccount' );
+		$out  = array();
+		foreach ( array_values( $ids ) as $i => $id ) {
+			if ( ! isset( $keys[ $i ] ) || (int) $id <= 0 ) {
+				continue;
+			}
+			if ( ! skyphusion_wc_page_is_valid( get_post( (int) $id ) ) ) {
+				$out[] = $keys[ $i ];
 			}
 		}
-		return false;
+		return $out;
+	}
+}
+
+if ( ! function_exists( 'skyphusion_wc_pages_keep_only' ) ) {
+	/** The woocommerce_create_pages list cut to the given keys. Anything else passes through. */
+	function skyphusion_wc_pages_keep_only( $pages, $keys ) {
+		if ( ! is_array( $pages ) ) {
+			return $pages;
+		}
+		return array_intersect_key( $pages, array_flip( $keys ) );
 	}
 }
 
@@ -113,8 +137,15 @@ if ( ! function_exists( 'skyphusion_wc_pages_repair' ) ) {
 		if ( get_transient( 'skyphusion_wc_pages_retry' ) ) {
 			return;
 		}
-		if ( skyphusion_wc_store_pages_missing( $ids ) ) {
+		$missing = skyphusion_wc_store_pages_missing_keys( $ids );
+		if ( $missing ) {
+			// Only the dead pages: a page the merchant set to none, and the refund page, stay as they are.
+			$only = static function ( $pages ) use ( $missing ) {
+				return skyphusion_wc_pages_keep_only( $pages, $missing );
+			};
+			add_filter( 'woocommerce_create_pages', $only, PHP_INT_MAX );
 			WC_Install::create_pages();
+			remove_filter( 'woocommerce_create_pages', $only, PHP_INT_MAX );
 			$ids = skyphusion_wc_store_page_ids();
 			if ( skyphusion_wc_store_pages_missing( $ids ) ) {
 				set_transient( 'skyphusion_wc_pages_retry', '1', MINUTE_IN_SECONDS );

@@ -53,19 +53,32 @@ $reset( array() );
 check( 'a translated slug still counts as the cart (the content decides)', null === $f( null, 'panier', '' ) && 0 === count( $w->queries ) );
 $reset( array( '6' ) );
 check( '  and a cart page with a translated slug is found by its content', 6 === $f( null, 'panier', $CART ) );
-$live = new stdClass();
-$live->post_type = 'page';
-$live->post_status = 'publish';
-check( 'a published page is a live store page', skyphusion_wc_page_is_live( $live ) );
-$draft = new stdClass();
-$draft->post_type = 'page';
-$draft->post_status = 'draft';
-check( 'a draft page is not a live store page', ! skyphusion_wc_page_is_live( $draft ) );
-check( 'a missing post is not a live store page', ! skyphusion_wc_page_is_live( null ) );
-$plain = new stdClass();
-$plain->post_type = 'post';
-$plain->post_status = 'publish';
-check( 'a published post is not a live store page', ! skyphusion_wc_page_is_live( $plain ) );
+// #1006: a store page counts as missing only as WooCommerce 11.2.1 wc_create_page counts it: an id above 0
+// whose post is gone, not a page, or pending, trash, future or auto-draft. 0 and -1 are the merchant's "none".
+$GLOBALS['posts'] = array();
+function get_post( $id ) { return isset( $GLOBALS['posts'][ (int) $id ] ) ? $GLOBALS['posts'][ (int) $id ] : null; }
+$page = function ( $type, $status ) { $p = new stdClass(); $p->post_type = $type; $p->post_status = $status; return $p; };
+check( 'a published page is a valid store page', skyphusion_wc_page_is_valid( $page( 'page', 'publish' ) ) );
+check( 'a private page is a valid store page (WooCommerce keeps it)', skyphusion_wc_page_is_valid( $page( 'page', 'private' ) ) );
+check( 'a draft page is a valid store page (WooCommerce keeps it)', skyphusion_wc_page_is_valid( $page( 'page', 'draft' ) ) );
+foreach ( array( 'pending', 'trash', 'future', 'auto-draft' ) as $st ) {
+	check( "a $st page is not a valid store page", ! skyphusion_wc_page_is_valid( $page( 'page', $st ) ) );
+}
+check( 'a missing post is not a valid store page', ! skyphusion_wc_page_is_valid( null ) );
+check( 'a published post is not a valid store page', ! skyphusion_wc_page_is_valid( $page( 'post', 'publish' ) ) );
+$GLOBALS['posts'] = array( 6 => $page( 'page', 'publish' ), 7 => $page( 'page', 'private' ), 8 => $page( 'page', 'publish' ), 9 => $page( 'page', 'publish' ), 10 => $page( 'page', 'trash' ) );
+check( 'four valid pages, one private: nothing is missing', ! skyphusion_wc_store_pages_missing( array( 6, 7, 8, 9 ) ) );
+check( 'shop set to none (-1): nothing is missing', ! skyphusion_wc_store_pages_missing( array( -1, 7, 8, 9 ) ) );
+check( 'shop set to 0: nothing is missing', ! skyphusion_wc_store_pages_missing( array( 0, 7, 8, 9 ) ) );
+check( 'an id whose post is gone is missing (#936)', skyphusion_wc_store_pages_missing( array( 6, 7, 8, 404 ) ) );
+check( 'an id whose page is trashed is missing', skyphusion_wc_store_pages_missing( array( 6, 7, 8, 10 ) ) );
+// #1006: the repair hands create_pages only the pages that are missing, so "none" and the refund page stay as set.
+check( 'missing keys: only the dead cart', array( 'cart' ) === skyphusion_wc_store_pages_missing_keys( array( -1, 404, 8, 9 ) ) );
+check( 'missing keys: none when shop is none and the rest valid', array() === skyphusion_wc_store_pages_missing_keys( array( 0, 7, 8, 9 ) ) );
+$all = array( 'shop' => array( 'name' => 'shop' ), 'cart' => array( 'name' => 'cart' ), 'checkout' => array( 'name' => 'checkout' ), 'myaccount' => array( 'name' => 'my-account' ), 'refund_returns' => array( 'name' => 'refund_returns' ) );
+check( 'create_pages list keeps only the missing cart (not shop=none, not refund_returns)', array( 'cart' ) === array_keys( skyphusion_wc_pages_keep_only( $all, array( 'cart' ) ) ) );
+check( 'create_pages list is empty when nothing is missing', array() === skyphusion_wc_pages_keep_only( $all, array() ) );
+check( 'a non-array list passes through', 'x' === skyphusion_wc_pages_keep_only( 'x', array( 'cart' ) ) );
 check( 'stamp matches the same ids', skyphusion_wc_pages_stamp_matches( '6,7,8,9', array( 6, 7, 8, 9 ) ) );
 check( 'stamp does not match a changed id', ! skyphusion_wc_pages_stamp_matches( '6,7,8,9', array( 6, 7, 8, 10 ) ) );
 check( 'an empty stamp does not match', ! skyphusion_wc_pages_stamp_matches( '', array( 6, 7, 8, 9 ) ) );
