@@ -6,4 +6,4 @@
 # A row that starts with [Free DO], [Paid DO], [WfP] or [Hyperdrive] applies on that tier only (vps-run.sh PF_TIER,
 # runner.py config --tier); every other tier runs the spec.
 api-tests/orders/orders.test.ts  2026-11-18 remount on wp-cf759a, runner main ef79cd5, results #899. can create an order timed out in beforeAll. Comment on #893 says beforeAll exceeded 30 seconds. On-hold create returned ECONNRESET from POST /wc/v3/orders. Write ceiling under sustained API load (#768).
-[Hyperdrive] api-tests/products/product-list.test.ts  LIMIT, not a pass: its beforeAll creates 14 sample products in one batch, 1,829 sequential queries of WooCommerce's own write path, 27.2 s on Hyperdrive (cf759hl, 2026-11-20) against the suite's 10 s request timeout; the DO tiers run it (#1119, support-matrix)
+[Hyperdrive] api-tests/products/product-list.test.ts  LIMIT, not a pass: the beforeAll's 14-product products/batch is 1,829 sequential queries, 27.2 s on Hyperdrive (cf759hl 7acbc3c, 2026-11-20), against the suite's 10 s; about 130 queries a product at about 14 ms (#1119, docs/support-matrix.md, PR #1129)
