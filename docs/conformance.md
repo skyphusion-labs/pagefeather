@@ -38,6 +38,9 @@ content, and `render_user` checks as the last guard.
 2. **Seed** (it also activates the two WooCommerce test plugins the line copied in; Gutenberg's stay inactive): `B=<site> ADMIN_PASSWORD=<the workspace's> python3 -I tests/conformance/seed.py <out>` (#775). It owns all
    setup and checks each item. `<out>/creds.env` (mode 600, `export` lines) holds the admin's account password, which
    is an application password (one value passes both the login form and Basic, #762), and the customer's.
+   For the wc and wc-api suites, seed with `SEED_RESET_STORE=1`: the seed first resets the store (`GET
+   wc-cleanup/v1/reset`, with Basic auth, as upstream's "reset" project does), only on a marked throwaway, and records it in
+   `seed.json`. Without it the store keeps every product of earlier runs, and the shop page differs from stock.
 3. **Run:** `. <out>/creds.env`, then `runner.py prepare` (it checks the seed and never writes), then the suite
    (`tests/conformance/vps-run.sh`). Each run asserts that the auth setup really logged in (`runner.py check-state`).
 4. **The REST routes:** `tests/conformance/routes.py` (#779) over the site's own index, with `WP_PASSWORD`.

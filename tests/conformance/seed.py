@@ -43,6 +43,8 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
 
   8. the block editor welcome guide is dismissed (wp_persisted_preferences / REST meta persisted_preferences), so post-new.php opens an interactable canvas (#759, #605).
 
+  0. SEED_RESET_STORE=1 (the wc and wc-api seeds): before item 1, reset the store with GET wc-cleanup/v1/reset (Basic
+     auth, as upstream's reset project does), on a marked throwaway only; recorded as store_reset in seed.json.
   9. --theme <slug> (optional): activates that installed theme (the admin's own activation link on themes.php) and
      checks it is the active stylesheet. joan's runner asks twentytwentythree before wc and wc-api: WooCommerce's
      external setup activates it, and the wp and gb global setups switch to twentytwentyone before.
@@ -73,6 +75,7 @@ THEME = sys.argv[sys.argv.index("--theme") + 1] if "--theme" in sys.argv[2:] and
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 BLOGNAME = "WooCommerce Core E2E Test Suite"
 SEED_TIMEZONE = "America/Detroit"
+RESET_STORE = os.environ.get("SEED_RESET_STORE") == "1"
 CUSTOMER = {"username": "customer", "email": "customer@woocommercecoree2etestsuite.com", "first_name": "Jane", "last_name": "Smith"}
 IMAGES = ("image-01.png", "image-02.png", "image-03.png")
 IMG_PATH = "plugins/woocommerce/tests/e2e/test-data/images/"
@@ -398,6 +401,21 @@ def main():
     a, n = login(ADMIN_USER, pw)
     if not a:
         refuse("the admin cannot log in through the form: %s" % n)
+
+    # 0. SEED_RESET_STORE=1 (the wc and wc-api seeds): reset the store FIRST, as upstream's "reset" project does before
+    # its setup (fixtures/reset.setup.ts: GET wc-cleanup/v1/reset). Without it the store grows run after run (cf759hl,
+    # 2026-11-20: 26 leftover products made WooCommerce's result count a second role=alert, 6 strict-mode failures).
+    # Only on a marked throwaway: the reset deletes every order, product, coupon, term and media file.
+    if RESET_STORE:
+        if not marked:
+            refuse("SEED_RESET_STORE=1 needs the throwaway marker (a local site without it is never reset)")
+        # The route checks the Authorization: Basic header itself (wp_authenticate, then manage_woocommerce), so a cookie
+        # session gets 403 (measured on cf759p): send Basic with the admin's current password.
+        t0 = time.time()
+        tok = base64.b64encode(("%s:%s" % (ADMIN_USER, pw)).encode()).decode()
+        c, _b, _h = req(jar(), "/?rest_route=/wc-cleanup/v1/reset", headers={"Authorization": "Basic " + tok})
+        check("store reset first (SEED_RESET_STORE, wc-cleanup/v1/reset)", c == 200, status=c, s=round(time.time() - t0, 1))
+        report["store_reset"] = {"status": c, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     # 1. permalinks /%postname%/
     c, b, _ = req(a, "/wp-admin/options-permalink.php")
