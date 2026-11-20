@@ -54,6 +54,7 @@ import { createRetirer } from './runtime-drop.mjs';
 import { gateSettings, decide, BootRefused, bootRefusedResponse, createGateClock, withBootRefusal } from './boot-gate.mjs'; // #598
 import { reuseOn, createSpare, bootTestDelayMs, bootTestDelayAt, moduleImportsMemory, offerWhenDrained } from './memory-reuse.mjs'; // #598 / #603
 import { createPhpLock, PHP_SHED, shedMsFor } from './php-lock.mjs';
+import { templateQueuePriority, templateLookupYield, templateLookupForwardYield } from './template-boot.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse } from './overflow.mjs';
 import { stampRendered } from './page-stamp.mjs';
@@ -433,7 +434,7 @@ function siteOrigin(env, url) {
 }
 // One PHP runtime per isolate, and PHP is not re-entrant. Measured 2026-11-04:
 // with 30 parallel requests on one isolate, about half crashed. So requests
-// that use PHP run one at a time, in arrival order (php-lock.mjs).
+// that use PHP run one at a time (php-lock.mjs). A templates list GET goes ahead of other queued boot calls (#962).
 // If the request ahead never finishes, a waiter would wait forever. On Free a
 // request stopped for CPU can leave the isolate alive with the lock held
 // (measured 2026-11-04: 524 timeouts). Once the run AHEAD has executed
@@ -469,7 +470,7 @@ const SEND_TIMEOUT_MS = 5000;
 // #720: held reuses the lock the caller already holds. A second phpLock.run waits out staleMs, then
 // onStale drops the runtime. The lock is not reentrant. Only /_runcron passes held, because that
 // route is already inside the request withPhp. The alarm does not, so it always takes the lock.
-function withPhp(fn, { shedMs = 0, tag = null, shedWhy = null, recheck = null, held = false, signal = null } = {}) {
+function withPhp(fn, { shedMs = 0, tag = null, shedWhy = null, recheck = null, held = false, signal = null, priority = 0 } = {}) {
 	if (held) return fn();
 	return phpLock.run(
 		async () => {
@@ -486,6 +487,7 @@ function withPhp(fn, { shedMs = 0, tag = null, shedWhy = null, recheck = null, h
 			shedWhy,
 			recheck,
 			signal, // #721: the caller's request.signal (a disconnect sheds a waiter)
+			priority, // #962: a templates list GET runs before other queued boot calls
 			onStale: () => {
 				if (bootPromise) runtimeDrops++;
 				dropRuntime(); // the old runtime's state is unknown; the stale run still counts as running, so it is released when that run ends too
@@ -3324,6 +3326,9 @@ export class PhpRuntime extends DurableObject {
 		// #603 (B) test seam (BOOT_TEST_DELAY_MS set, a spike request only): drop the runtime OUTSIDE the PHP lock,
 		// as /_evict and a stale lock do, so the drop can land in the middle of another request's boot.
 		if (bootTestDelayMs(env) && spikeOk && req.headers.get('x-pf-test-drop') === '1') dropRuntime();
+		// #962: an idle lookup waits one beat so the templates list can take the lock first.
+		const lookupYield = templateLookupYield(req.method, url, phpLock);
+		if (lookupYield) await new Promise((resolve) => setTimeout(resolve, lookupYield));
 		phpPending++;
 		// #296: shed only with PHP_QUEUE_SHED_MS set (the default is never, on every path).
 		const objectRun = await withPhp(async () => {
@@ -3381,6 +3386,7 @@ export class PhpRuntime extends DurableObject {
 			signal: callerSignal, // #721: a queued waiter sheds when its caller disconnects (why: disconnect), unless off
 			// #752, #754: the tick is a real subrequest to this site's own TICK_PATH, never to this object.
 			recheck: plan.startBy > 0 ? async () => { const rc = await recheckStartBy(plan.startBy, { tick: () => tickFetch(origin), signal: callerSignal }); lateByClock = rc.late; return rc; } : null,
+			priority: templateQueuePriority(req.method, url), // #962
 		});
 		if (objectRun !== PHP_SHED) return objectRun;
 		phpPending--; // a shed run never ran its finally
@@ -3893,7 +3899,12 @@ const site = {
 		if (env.DB_IN_DO === 'on' && env.PHP_IN_DO !== 'on') return new Response('DB_IN_DO=on needs PHP_IN_DO=on', { status: 500 });
 		// Without the binding, fail: a silent fallback would run PHP in the Worker.
 		if (env.PHP_IN_DO === 'on') {
-			return env.PHP_RUNTIME ? toPhpObject(req, env, url, ctx) : new Response('PHP_IN_DO=on needs the PHP_RUNTIME Durable Object binding', { status: 500 });
+			if (!env.PHP_RUNTIME) return new Response('PHP_IN_DO=on needs the PHP_RUNTIME Durable Object binding', { status: 500 });
+			// #962: forward a lookup after a short beat so the templates list
+			// sent with it reaches the object first.
+			const forwardYield = templateLookupForwardYield(req.method, url);
+			if (forwardYield) await new Promise((resolve) => setTimeout(resolve, forwardYield));
+			return toPhpObject(req, env, url, ctx);
 		}
 		// Spike: time N sequential D1 statements from where this Worker runs.
 		if (url.pathname === '/_d1ping') return d1ping(req, env, url, ctx);
@@ -3980,7 +3991,10 @@ const site = {
 			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-held-block', held: ovHeld }));
 			return overflowHeldBlockResponse();
 		}
-		const workerRun = await withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx), { shedMs: phpShedMs(env, false) });
+		// #962: same beat as the object, for a Worker that runs PHP itself.
+		const workerLookupYield = templateLookupYield(req.method, url, phpLock);
+		if (workerLookupYield) await new Promise((resolve) => setTimeout(resolve, workerLookupYield));
+		const workerRun = await withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx), { shedMs: phpShedMs(env, false), priority: templateQueuePriority(req.method, url) });
 		return workerRun === PHP_SHED ? phpShedResponse() : workerRun;
 	},
 };

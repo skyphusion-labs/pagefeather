@@ -1,6 +1,8 @@
 // The one-at-a-time PHP lock of an isolate (#296 step 1.1). index.js withPhp runs every PHP run through it.
 //
-// One PHP runtime per isolate, and PHP is not re-entrant, so runs go one at a time in arrival order.
+// One PHP runtime per isolate, and PHP is not re-entrant, so runs go one at a time.
+// Equal priority stays arrival order. A higher priority is granted before an earlier
+// lower one that is still waiting (#962). A run that has started is never stopped.
 // Before this, a waiter that had WAITED LOCK_STALE_MS (60 s) took the lock as stale, dropped the runtime
 // and booted a new one, while the run ahead was still executing and holding its heap. Under concurrent
 // checkout on approach A that is the normal case, not a stuck one: Cloudflare keeps sending requests to
@@ -26,11 +28,33 @@ const TICK_MS = 1000;
 const GRANT_LOG_MS = 1000;
 
 export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, log = () => {} } = {}) {
-	let tail = Promise.resolve();
 	let waiting = 0;
 	let running = 0;
+	let blocking = 0; // runs that still own the queue. A stale takeover clears the stuck run.
 	let headSince = null; // when the newest executing run started; null when none executes
+	let headState = null;
+	let seq = 0;
+	const waiters = []; // { seq, priority, go, state }
 	const headMs = () => (headSince === null ? 0 : now() - headSince);
+
+	function bestIndex() {
+		let best = 0;
+		for (let i = 1; i < waiters.length; i++) {
+			const a = waiters[i];
+			const b = waiters[best];
+			if (a.priority > b.priority || (a.priority === b.priority && a.seq < b.seq)) best = i;
+		}
+		return best;
+	}
+	function pump() {
+		if (blocking > 0 || waiters.length === 0) return;
+		const item = waiters.splice(bestIndex(), 1)[0];
+		item.go();
+	}
+	function drop(item) {
+		const i = waiters.indexOf(item);
+		if (i >= 0) waiters.splice(i, 1);
+	}
 
 	// Resolves 'turn' when prev settles, 'stale' when the run ahead has executed staleMs, 'shed' at shedMs, and 'gone'
 	// when signal aborts (#721: the caller disconnected; it needs enable_request_signal).
@@ -68,7 +92,7 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 	return {
 		get waiting() { return waiting; },
 		get running() { return running; },
-		// run(fn, { shedMs, onStale, tag }): fn's result, or PHP_SHED. onStale runs before fn when the lock was
+		// run(fn, { shedMs, onStale, tag, priority }): fn's result, or PHP_SHED. onStale runs before fn when the lock was
 		// taken as stale (index.js drops the runtime there). tag (#708) is added to this run's log lines (the
 		// correlation id of the forwarded request), so a queued, granted or shed line names its request.
 		// shedWhy (#715 review2 8) names the bound on a shed line: start-by, or the operator's queue-shed.
@@ -76,25 +100,41 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 		// start-by.mjs recheckStartBy). { late: true } sheds before any grant line: at: clock, why: start-by.
 		// signal (#721): the caller's request.signal. A waiter whose caller disconnected sheds (why: disconnect) and never
 		// runs: on arrival, while it waits, or at its grant. A run that has started is never stopped by it.
-		run(fn, { shedMs = 0, onStale = () => {}, tag = null, shedWhy = null, recheck = null, signal = null } = {}) {
+		// priority (#962): higher runs before an earlier lower waiter. Default 0 is arrival order.
+		run(fn, { shedMs = 0, onStale = () => {}, tag = null, shedWhy = null, recheck = null, signal = null, priority = 0 } = {}) {
 			const lg = tag ? (e) => log({ ...e, ...tag }) : log;
 			if (signal && signal.aborted) {
 				// Gone before it queued: it takes no place in the order.
 				lg({ event: 'shed', at: 'arrive', waitMs: 0, depth: waiting + running, headMs: headMs(), why: 'disconnect' });
 				return Promise.resolve(PHP_SHED);
 			}
-			const prev = tail;
-			let release;
-			const mine = new Promise((r) => (release = r));
-			tail = mine;
 			const t0 = now();
-			const contended = waiting + running > 0;
+			const state = { superseded: false };
+			const contended = blocking > 0 || waiters.length > 0;
 			if (contended) lg({ event: 'queued', depth: waiting + running, headMs: headMs() });
 			waiting++;
+			let go;
+			const granted = new Promise((r) => { go = r; });
+			const item = { seq: seq++, priority, go, state };
+			waiters.push(item);
+			if (blocking === 0) pump();
+			const took = !waiters.includes(item);
 			return (async () => {
-				let why = contended ? await waitTurn(prev, t0, shedMs, signal) : 'turn';
+				let why = took ? 'turn' : await waitTurn(granted, t0, shedMs, signal);
 				waiting--;
 				const waitMs = now() - t0;
+				// Still in the queue: the timer shed, or the caller left, before a grant.
+				if ((why === 'shed' || why === 'gone') && waiters.includes(item)) {
+					drop(item);
+					const whyShed = why === 'gone' ? 'disconnect' : shedWhy;
+					lg({ event: 'shed', at: 'wait', waitMs, depth: waiting + running, headMs: headMs(), ...(whyShed ? { why: whyShed } : {}) });
+					return PHP_SHED;
+				}
+				if (waiters.includes(item)) drop(item);
+				// Own the slot before any await, so a new arrival cannot start beside this grant.
+				const prevHead = headState;
+				blocking++;
+				headState = state;
 				// The grant-time check: a run that does not yield lets no waiter timer fire, and when it ends
 				// this turn (a microtask) beats the overdue timer. Measured on local workerd (b-do): without
 				// this, waits of 2.7 s were granted against a 1 s bound. A waiter over its bound sheds here.
@@ -128,13 +168,20 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 				if (why === 'shed') {
 					const whyShed = disconnect ? 'disconnect' : at === 'clock' ? (clock.why || 'start-by') : shedWhy; // #752: tick-failed, disconnect
 					lg({ event: 'shed', at, waitMs, depth: waiting + running, headMs: headMs(), ...(whyShed ? { why: whyShed } : {}), ...(at === 'clock' ? { clockMs: clock.clockMs } : {}) });
-					// This waiter never runs: the one behind it waits for the run ahead instead.
-					prev.then(release, release);
+					blocking--;
+					if (headState === state) headState = null;
+					if (blocking === 0) headSince = null;
+					pump();
 					return PHP_SHED;
 				}
 				if (why === 'stale') {
 					lg({ event: 'stale', waitMs, depth: waiting + running, headMs: headMs() });
 					onStale();
+					// The stuck run no longer owns the queue. Its end must not decrement again.
+					if (prevHead && !prevHead.superseded) {
+						prevHead.superseded = true;
+						blocking = Math.max(0, blocking - 1);
+					}
 				} else if (waitMs >= GRANT_LOG_MS) {
 					lg({ event: 'granted', waitMs, depth: waiting + running });
 				}
@@ -144,8 +191,10 @@ export function createPhpLock({ staleMs = 60000, now = Date.now, setTimer = setT
 					return await fn();
 				} finally {
 					running--;
-					if (running === 0) headSince = null;
-					release();
+					if (!state.superseded) blocking--;
+					if (headState === state) headState = null;
+					if (blocking === 0) headSince = null;
+					pump();
 				}
 			})();
 		},
