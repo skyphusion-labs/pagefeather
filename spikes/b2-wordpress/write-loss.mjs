@@ -83,12 +83,21 @@ export function frameProvesRollback(frame) {
 }
 
 /**
- * An API call gets JSON (the lead's ruling): a REST route (/wp-json/ or ?rest_route=) or a client
- * that asks for JSON. The Store API checkout client then shows the message instead of failing to
- * parse a text body.
+ * An API call gets JSON (the lead's ruling): a REST route or a client that asks for JSON.
+ * The Store API checkout client then shows the message instead of failing to parse a text body.
+ * Pretty permalinks use /wp-json/. Plain permalinks use /index.php/wp-json/ (#959).
+ * A check that only starts with /wp-json/ misses that root.
+ * Gutenberg's REST helper does not ask for JSON. The path has to match.
  */
+function isRestPathname(pathname) {
+	const path = String(pathname || '');
+	const at = path.indexOf('/wp-json');
+	if (at < 0) return false;
+	const rest = path.slice(at + '/wp-json'.length);
+	return rest === '' || rest.startsWith('/');
+}
 export function wantsJson(pathname, search, accept) {
-	if (String(pathname || '').startsWith('/wp-json/')) return true;
+	if (isRestPathname(pathname)) return true;
 	if (/(^|[?&])rest_route=/.test(String(search || ''))) return true;
 	return /application\/json/i.test(String(accept || ''));
 }

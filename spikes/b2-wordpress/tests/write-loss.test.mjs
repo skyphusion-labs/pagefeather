@@ -53,6 +53,13 @@ test('wantsJson: a REST route or a JSON client gets JSON, a page gets text', () 
 	assert.equal(wantsJson('/wp-login.php', '', 'application/json, text/plain'), true);
 	assert.equal(wantsJson('/wp-login.php', '', 'text/html'), false);
 	assert.equal(wantsJson('/checkout/', '?a=b', undefined), false);
+	assert.equal(wantsJson('/wp-admin/post.php', '', '*/*'), false);
+	assert.equal(wantsJson('/index.php/wp-json/wp/v2/settings', '', '*/*'), true);
+	assert.equal(wantsJson('/index.php/wp-json/', '', ''), true);
+	assert.equal(wantsJson('/index.php/wp-json-backup', '', '*/*'), false);
+	const loss = writeLossResponse('unknown', wantsJson('/index.php/wp-json/wp/v2/settings', '', '*/*'));
+	assert.match(loss.headers['content-type'], /application\/json/);
+	assert.equal(JSON.parse(loss.body).message, WRITE_LOSS_MESSAGE);
 });
 test('the JSON answer: code and message, parseable, same status and headers', () => {
 	const r = writeLossResponse(2, true);
