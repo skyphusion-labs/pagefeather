@@ -4,7 +4,8 @@
 # the isolate's FIRST send. The fixture pf1135-mail.php (tests/fixtures/mail-truth) sends from a WP-Cron event, run by
 # /_runcron (the cron tick's handoff, tickMailFor), and records what wp_mail returned and any wp_mail_failed message.
 #   1. send 1 is refused: wp_mail returned false, and wp_mail_failed fired once, naming the refusal and the reason;
-#   2. send 2 (the seam has spent its one rejection) is delivered: true, and nothing fired.
+#   2. send 2 (the seam has spent its one rejection) is delivered: true, and nothing fired;
+#   3. send 3, to an example.com recipient, is dropped by #198's filter (never sent): false, and wp_mail_failed names it.
 # Red before #1135: send 1 returned true and nothing fired (the refusal never reached WordPress).
 #   tests/mail-truth-e2e.sh   (in spikes/b2-wordpress, after prepare.sh and build.sh; saves and restores build/)
 set -u
@@ -44,6 +45,10 @@ check("send 1: the message names the refusal and the reason", bool(f1) and "refu
 r2 = run_until(2)
 print("  send 2:", json.dumps(r2))
 check("send 2 (delivered): wp_mail returned true, nothing fired", bool(r2) and r2.get("returned") is True and not r2.get("failed"))
+r3 = run_until(3)
+print("  send 3:", json.dumps(r3))
+f3 = (r3 or {}).get("failed") or []
+check("send 3 (an example.com recipient, #198's filter): wp_mail returned false, and wp_mail_failed names it", bool(r3) and r3.get("returned") is False and len(f3) == 1 and "undeliverable" in f3[0] and "will not be retried" in f3[0])
 if fails: print("mail-truth: FAIL"); sys.exit(1)
 print("mail-truth: ok: a refused cron-tick send returned false and fired wp_mail_failed with its reason; a delivered one stayed true")
 PY

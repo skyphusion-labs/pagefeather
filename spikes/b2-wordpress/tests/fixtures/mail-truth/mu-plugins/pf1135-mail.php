@@ -9,7 +9,8 @@ add_action(
 	'pf1135_send',
 	static function ( $n ) {
 		$GLOBALS['pf1135_failed'] = array();
-		$r   = wp_mail( 'pf1135-test@skyphusion.org', 'pf1135 send ' . (int) $n, 'body' );
+		// Send 3 goes to an undeliverable domain (#198's filter drops it before the binding).
+		$r   = wp_mail( 3 === (int) $n ? 'pf1135-test@example.com' : 'pf1135-test@skyphusion.org', 'pf1135 send ' . (int) $n, 'body' );
 		$all = get_option( 'pf1135_results', array() );
 		$all[ (int) $n ] = array( 'returned' => $r, 'failed' => $GLOBALS['pf1135_failed'] );
 		update_option( 'pf1135_results', $all, false );

@@ -1104,7 +1104,7 @@ function tickMailFor(env, storage) {
 			const r = await boundedWait(sp, SEND_TIMEOUT_MS);
 			if (r === TIMED_OUT) return 'bounded';
 			const o = r;
-			return { sent: o.sent, sendFailed: o.failed, of: o.sent + o.failed, reason: o.reason }; // #1135: the reason reaches PHP
+			return { sent: o.sent, sendFailed: o.failed, dropped: o.dropped || 0, of: o.sent + o.failed + (o.dropped || 0), reason: o.reason }; // #1135, #198: the outcome reaches PHP
 		},
 		lostWrites: () => resetFailTotal - base,
 		log: (o) => console.log(JSON.stringify(o)),
@@ -1267,6 +1267,9 @@ function sendListOutcome(env, toSend) {
 	}
 	// Durable path (#190): hand the drain to the queue; the consumer delivers with retry.
 	if (emailQueueEnabled(env)) return enqueueEmails(env, toSend).then((n) => ({ sent: n, failed: 0 }));
+	// #198: the recipients sendEmail drops as undeliverable (never sent, never retried), counted so the tick and PHP hear it.
+	const dropped = toSend.reduce((n, e) => n + deliverableRecipients(e.to).dropped, 0);
+	if (dropped) console.log(JSON.stringify({ '@event': 'email-dropped', m: 'email-dropped', why: 'undeliverable', n: dropped }));
 	const items = toSend.flatMap((e) => sendEmail(env, e).map((p) => ({ e, p })));
 	return Promise.allSettled(items.map((x) => x.p)).then(async (rs) => {
 		const failures = [];
@@ -1280,7 +1283,7 @@ function sendListOutcome(env, toSend) {
 			for (const f of failures) console.log(JSON.stringify({ '@event': 'email-send-failed', m: 'email-send-failed', reason: scrub(f.error), domain: domainOfAddress(f.to), ms: f.ms, retry: 'queued' }));
 			await mailRetryPut(env, failures); // #1057: retried with backoff, never dropped
 		}
-		return { sent: rs.length - failures.length, failed: failures.length, reason: failures.length ? scrub(failures[0].error) : null };
+		return { sent: rs.length - failures.length, failed: failures.length, dropped, reason: failures.length ? scrub(failures[0].error) : null };
 	});
 }
 // The sent count only (the request path's flush).

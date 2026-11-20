@@ -83,5 +83,12 @@ $GLOBALS['reply'] = '';
 ok( '#1135 no readable reply (an older Worker) stays true, as before', true === wp_mail( 'mackaye@example.com', 'Order', 'Body' ) && 0 === count( $GLOBALS['failed'] ) );
 unset( $GLOBALS['reply'] );
 
+$GLOBALS['failed'] = array();
+$GLOBALS['reply'] = '{"ok":true,"queued":true,"refused":1,"of":1,"reason":"undeliverable recipient domain (#198)","retry":false}';
+ok( '#198 a dropped (undeliverable) send returns false', false === wp_mail( 'load@example.com', 'Order', 'Body' ) );
+$m = $GLOBALS['failed'] ? $GLOBALS['failed'][0]->message : '';
+ok( '#198 its message says it was not sent and will not be retried (not queued for retry)', false !== strpos( $m, 'not sent' ) && false !== strpos( $m, 'will not be retried' ) && false === strpos( $m, 'queued for retry' ) );
+unset( $GLOBALS['reply'] );
+
 echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
 exit( $fail ? 1 : 0 );

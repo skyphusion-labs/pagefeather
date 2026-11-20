@@ -87,7 +87,7 @@ export function tickEmailDecision(email, lostWrites) {
  * tick record.
  */
 export function createTickMail({ handoff, lostWrites, log = () => {}, seen = null, mark = null }) {
-	const counts = { handedOff: 0, held: 0, failed: 0, bounded: 0, deduped: 0, sendFailed: 0 };
+	const counts = { handedOff: 0, held: 0, failed: 0, bounded: 0, deduped: 0, sendFailed: 0, droppedUndeliverable: 0 };
 	return {
 		counts,
 		lostWritesSeen: () => Number(lostWrites()) || 0,
@@ -128,8 +128,17 @@ export function createTickMail({ handoff, lostWrites, log = () => {}, seen = nul
 					}
 				}
 				log({ '@event': 'email-handoff', m: 'email-handoff', as_action, lostWrites: lost, ...(r === 'bounded' ? { bounded: true } : {}), ...(sendFailed ? { sendFailed } : {}) });
-				// #1135: PHP hears the refusal (wp_mail returns false and fires wp_mail_failed); the message is still retried.
-				if (sendFailed) return { ok: true, queued: true, refused: sendFailed, of: Number.isInteger(r.of) && r.of > 0 ? r.of : sendFailed, reason: typeof r.reason === 'string' ? r.reason : null };
+				// #198: recipients the undeliverable filter dropped (never sent, never retried) are a refusal too.
+				const dropped = r && typeof r === 'object' && Number.isInteger(r.dropped) && r.dropped > 0 ? r.dropped : 0;
+				counts.droppedUndeliverable += dropped;
+				// #1135: PHP hears the refusal (wp_mail returns false and fires wp_mail_failed); a send the binding refused is
+				// still retried.
+				const refused = sendFailed + dropped;
+				if (refused) {
+					const why = typeof r.reason === 'string' && r.reason ? r.reason : 'undeliverable recipient domain (#198)';
+					// retry: a recipient the binding refused is in the #1057 retry store; a dropped one is not.
+					return { ok: true, queued: true, refused, of: Number.isInteger(r.of) && r.of > 0 ? r.of : refused, reason: why, retry: sendFailed > 0 };
+				}
 				return { ok: true, queued: true };
 			} catch (e) {
 				counts.failed++;

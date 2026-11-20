@@ -224,7 +224,7 @@ test('createTickMail counts and logs each decision; a handoff that throws is rep
 	assert.deepEqual(await m.op({ subject: 'b' }), { ok: true, queued: false, held: true });
 	const f = await m.op({ subject: 'boom', as_action: 6 });
 	assert.equal(f.ok, false);
-	assert.deepEqual(m.counts, { handedOff: 2, held: 1, failed: 1, bounded: 1, deduped: 0, sendFailed: 0 });
+	assert.deepEqual(m.counts, { handedOff: 2, held: 1, failed: 1, bounded: 1, deduped: 0, sendFailed: 0, droppedUndeliverable: 0 });
 	assert.equal(m.lostWritesSeen(), 2);
 	assert.deepEqual(sent.map((e) => e.subject), ['a', 'slow']);
 	assert.deepEqual(lines.map((l) => l['@event']), ['email-handoff', 'email-handoff', 'email-held', 'email-handoff']);
@@ -452,7 +452,7 @@ test('#1088 B index.js: each failed recipient is logged with its reason (scrubbe
 test('#1135 a refused send: the reply to PHP says refused, of how many, and why; a clean send says nothing extra', async () => {
 	const tm = createTickMail({ handoff: async () => ({ sent: 1, sendFailed: 1, of: 2, reason: 'destination address is not allowed' }), lostWrites: () => 0 });
 	const r = await tm.op({ to: ['a@example.com', 'b@example.com'], subject: 's', message: 'm' });
-	assert.deepEqual(r, { ok: true, queued: true, refused: 1, of: 2, reason: 'destination address is not allowed' });
+	assert.deepEqual(r, { ok: true, queued: true, refused: 1, of: 2, reason: 'destination address is not allowed', retry: true });
 	const ok = createTickMail({ handoff: async () => ({ sent: 1, sendFailed: 0, of: 1, reason: null }), lostWrites: () => 0 });
 	assert.deepEqual(await ok.op({ to: ['a@example.com'], subject: 's', message: 'm' }), { ok: true, queued: true });
 	const bounded = createTickMail({ handoff: async () => 'bounded', lostWrites: () => 0 });
@@ -461,6 +461,26 @@ test('#1135 a refused send: the reply to PHP says refused, of how many, and why;
 test('#1135 the tick handoff passes the outcome on: index.js tickMailFor returns of and reason, and sendListOutcome scrubs the reason', async () => {
 	const { readFileSync } = await import('node:fs');
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	assert.match(src, /return \{ sent: o\.sent, sendFailed: o\.failed, of: o\.sent \+ o\.failed, reason: o\.reason \};/);
-	assert.match(src, /return \{ sent: rs\.length - failures\.length, failed: failures\.length, reason: failures\.length \? scrub\(failures\[0\]\.error\) : null \};/);
+	assert.match(src, /return \{ sent: o\.sent, sendFailed: o\.failed, dropped: o\.dropped \|\| 0, of: o\.sent \+ o\.failed \+ \(o\.dropped \|\| 0\), reason: o\.reason \};/);
+	assert.match(src, /return \{ sent: rs\.length - failures\.length, failed: failures\.length, dropped, reason: failures\.length \? scrub\(failures\[0\]\.error\) : null \};/);
+});
+
+// #198 follow-up (the lead, from strummer's #1135 run): a recipient #198's filter drops (example.com, .invalid, .test,
+// workers.dev, localhost) is never sent and never retried. That is a refusal too: the leg counts it
+// (droppedUndeliverable) and PHP hears it (wp_mail false and wp_mail_failed), as for a binding refusal (#1135).
+test('#198 a dropped undeliverable recipient: the leg counts it, and the reply to PHP says refused with the reason', async () => {
+	const tm = createTickMail({ handoff: async () => ({ sent: 0, sendFailed: 0, dropped: 2, of: 2, reason: null }), lostWrites: () => 0 });
+	const r = await tm.op({ to: ['load@example.com', 'admin@example.com'], subject: 's', message: 'm' });
+	assert.deepEqual(r, { ok: true, queued: true, refused: 2, of: 2, reason: 'undeliverable recipient domain (#198)', retry: false });
+	assert.equal(tm.counts.droppedUndeliverable, 2);
+	assert.equal(tm.counts.handedOff, 1, 'still handed off (to nothing): the counter it always was');
+	const mixed = createTickMail({ handoff: async () => ({ sent: 1, sendFailed: 1, dropped: 1, of: 3, reason: 'email to [address] not allowed' }), lostWrites: () => 0 });
+	assert.deepEqual(await mixed.op({ to: ['a', 'b', 'c'], subject: 's', message: 'm' }), { ok: true, queued: true, refused: 2, of: 3, reason: 'email to [address] not allowed', retry: true });
+});
+test('#198 index.js: sendListOutcome counts the dropped recipients, logs one structured line, and the handoff passes it on', async () => {
+	const { readFileSync } = await import('node:fs');
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /const dropped = toSend\.reduce\(\(n, e\) => n \+ deliverableRecipients\(e\.to\)\.dropped, 0\);/);
+	assert.match(src, /console\.log\(JSON\.stringify\(\{ '@event': 'email-dropped', m: 'email-dropped', why: 'undeliverable', n: dropped \}\)\)/);
+	assert.match(src, /return \{ sent: o\.sent, sendFailed: o\.failed, dropped: o\.dropped \|\| 0, of: o\.sent \+ o\.failed \+ \(o\.dropped \|\| 0\), reason: o\.reason \};/);
 });
