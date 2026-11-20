@@ -173,6 +173,13 @@ fi
 # shellcheck source=SCRIPTDIR/observability.sh
 . "$ROOT/deploy/observability.sh"
 obs_check "$VARIANT" || exit 2
+# #1054: PLACEMENT (variant a's [placement]): checked after the other checks (each refuses first, as its tests pin) and before any step (render-conf.sh placement_check).
+if [ "$VARIANT" = a ]; then
+  # shellcheck source=SCRIPTDIR/render-conf.sh
+  ( . "$ROOT/deploy/render-conf.sh"; placement_check ) || exit 2
+elif [ -n "${PLACEMENT:-}" ]; then
+  echo "PLACEMENT is for variant a only" >&2; exit 2
+fi
 # #771: the PHP engine, resolved ONCE here and exported (spikes/b2-wordpress/engine.sh): prepare.sh, build.sh and
 # everything after see the same pair. The default is the pinned lean engine for every variant, including a
 # (#1027 lifted the #788 hold that forced npm here). PHP_ENGINE=npm, or PF_ENGINE_JS and

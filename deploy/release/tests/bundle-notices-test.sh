@@ -71,9 +71,9 @@ run_bundle() { # run_bundle <logfile> <env...>
   env -i PATH="$fence:$PATH" HOME="$T" PF_ENGINE_CACHE="$T/empty-cache" CURL_LOG="$log.curl" APP="$T/app" \
     "$@" bash "$ROOT/deploy/release/build-bundle.sh" "$log.dir" >"$log" 2>&1 || true
 }
-run_deploy "$T/dep-a" VARIANT=a
+run_deploy "$T/dep-a" VARIANT=a PLACEMENT=aws:us-east-2 # #1054: variant a needs a placement to reach engine resolve
 run_deploy "$T/dep-b" VARIANT=b-dosql
-run_deploy "$T/dep-npm" VARIANT=a PHP_ENGINE=npm
+run_deploy "$T/dep-npm" VARIANT=a PHP_ENGINE=npm PLACEMENT=aws:us-east-2
 run_bundle "$T/bun-a" BUNDLE_ENGINE=a
 run_bundle "$T/bun-b" BUNDLE_ENGINE=dosql
 run_bundle "$T/bun-npm" BUNDLE_ENGINE=a PHP_ENGINE=npm
