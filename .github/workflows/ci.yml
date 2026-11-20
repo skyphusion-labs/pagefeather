@@ -192,6 +192,10 @@ jobs:
       - name: Import media refusal tests
         # deploy/import/media.sh (issue #124): a refused or failed HEAD is retried, then fails; it never counts as missing.
         run: deploy/import/tests/media-refuse-test.sh
+      - name: Import media uses a temporary R2 credential, not an account token (issue #1031)
+        # deploy/import.sh media_step: one mint for the media bucket (deploy/wfp/r2_temp.py), no Terraform apply,
+        # and a refused mint sends nothing. Against deploy/wfp/tests/fake-r2-temp.py; no account.
+        run: deploy/import/tests/media-mint-test.sh
       - name: plugin-memory.py never counts a page-cache copy as a fresh runtime (issue #344)
         # A fake site on localhost replays cached x-boot 1, as the page cache does. The case that
         # reproduces the old probe needs git history and skips in a shallow checkout.

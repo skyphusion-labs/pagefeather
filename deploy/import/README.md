@@ -208,7 +208,7 @@ So the hint keeps id 0 on both servers, and without it both renumber.
 
 `media.sh` puts each file `wp-content/uploads/<path>` at the key `uploads/<path>` of the media bucket. That is the key the Worker serves at `/wp-content/uploads/<path>`, and the key `php/r2-uploads.php` writes, so the URLs of the site do not change. The content type comes from the file name.
 
-- It uses R2's S3 API (`curl --aws-sigv4`, as `deploy/variants/r2-empty.sh` does) with a key that exists only for this step: `import.sh` applies Terraform with `media_import = true` (`deploy/terraform/media-import.tf`: object read and write on this site's media bucket only), sends the files, and applies with `false` again, which deletes the key. A trap deletes it when a step fails too.
+- It uses R2's S3 API (`curl --aws-sigv4`, as `deploy/variants/r2-empty.sh` does) with a temporary R2 credential for this site's media bucket only (object read and write), minted from the deploy token by `deploy/wfp/r2_temp.py` (#1031, the deploy/wfp path, #273). It needs Workers R2 Storage Write, not API Tokens Write. Terraform makes no key, so nothing is left to delete. The credential cannot be revoked alone: it expires after `R2_TEMP_TTL` (21600 s), and `media.sh` mints a fresh one on a refusal. Its file is mode 600 in the work directory, and it is removed after the step.
 - Not sent: PHP files and dot files (for example `.htaccess`), which the Worker never runs or serves, and paths whose key is longer than 1,024 bytes.
 - Resumable: a key that exists with the same size is not sent again. `import.sh` runs `media.sh` twice, and the second run must send nothing. That is the check.
 - Only a HEAD of 404, or a 200 with another size, means "send it" (issue #124). A HEAD that is refused or fails (401, 403, a curl error, a 5xx) is tried again for `R2_RETRY_S` (90) s, and then the file fails with the code (`fail head 403 <key>`). It never counts as missing: on 2026-11-06 (`wp-c1-w92b`) the check run sent a file again right after the first run, which is what a refused HEAD did then. A PUT of 401 or 403 is tried again in the same way. `tests/media-refuse-test.sh` covers it.
@@ -229,11 +229,11 @@ So the hint keeps id 0 on both servers, and without it both renumber.
 
 ## Terraform state
 
-`import.sh` reads the site's spike token (with `NAME`) and makes the media key from the site's Terraform state. It initialises Terraform as `deploy.sh` does (`deploy/tf-backend.sh`). It never makes a workspace: a site it cannot find is an error that says what to do.
+`import.sh` reads the site's spike token, media bucket and R2 endpoint (with `NAME`) from the site's Terraform state. It initialises Terraform as `deploy.sh` does (`deploy/tf-backend.sh`). It never makes a workspace: a site it cannot find is an error that says what to do.
 
 - **Local state (the default)** is only in the clone that ran `deploy.sh` (`deploy/terraform/terraform.tfstate.d/`). Run `import.sh` in that clone.
 - **`DEPLOY_STATE=r2`** (with `STATE_BUCKET`, `STATE_ENDPOINT` and the R2 key) works from any clone. If that clone has no `sites/<name>.tfvars`, the script takes the same values from the state's outputs.
-- The media key applies use `-target=cloudflare_account_token.media_import`, so they cannot change any other resource of the site.
+- The import applies no Terraform: it only reads outputs, so it cannot change any resource of the site.
 
 A fresh clone failed before this with `Required plugins are not installed` (2026-11-06): the script read outputs without `terraform init`.
 

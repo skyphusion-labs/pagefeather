@@ -165,7 +165,7 @@ if [ "$VARIANT" != a ]; then
 fi
 
 # Uploads, with CONTENT: into the media bucket through the S3 API, with a
-# key that Terraform makes for this step and deletes after it (media-import.tf).
+# temporary R2 credential for that bucket only (#1031, deploy/wfp/r2_temp.py).
 # Used by step 6b, and by deploy/import/c1.sh in the c1 seed phase.
 media_step() {
   if [ -n "$SRC_CONTENT" ] && [ -d "$SRC_CONTENT/uploads" ] && [ -n "${SKIP_MEDIA:-}" ]; then
@@ -193,31 +193,22 @@ media_step() {
     tf_ready || exit 1
     BUCKET=$(tfi output -raw media_bucket)
     [ -n "$BUCKET" ] || { echo "$NAME has no media bucket: deploy it with MEDIA=1" >&2; exit 1; }
-    # The variables of the site: deploy.sh's file in the clone that deployed it,
-    # or else the same values read from the state's outputs (a clone with
-    # DEPLOY_STATE=r2). The applies target the import key only, so no other
-    # resource of the site can change here.
-    VARS="$TF/sites/$NAME.tfvars"
-    if [ ! -f "$VARS" ]; then
-      VARS="$WORK/site.tfvars"
-      printf 'account_id = "%s"\nname = "%s"\nvariant = "%s"\nlocation = "%s"\nmedia = true\n' \
-        "$(tfi output -raw account_id)" "$(tfi output -raw name)" "$(tfi output -raw variant)" "$(tfi output -raw location)" > "$VARS"
-      echo "media: no sites/$NAME.tfvars in this clone; using the values in the state"
-    fi
-    key_apply() { tfi apply -input=false -auto-approve -var-file="$VARS" -target=cloudflare_account_token.media_import -var "media_import=$1" >/dev/null; }
-    key_off() { key_apply false && echo "media: import key deleted"; }
-    trap 'key_off || echo "media: DELETE THE KEY: cd deploy/terraform && terraform apply -var-file=$VARS -target=cloudflare_account_token.media_import -var media_import=false" >&2' EXIT
-    key_apply true
-    R2_KEY_ID=$(tfi output -raw media_import_access_key_id)
-    R2_SECRET=$(tfi output -raw media_import_secret_access_key)
-    export R2_KEY_ID R2_SECRET
+    # The key (#1031): a temporary R2 credential for this one bucket, minted from the deploy token
+    # (deploy/wfp/r2_temp.py, #273, as deploy/wfp "site import" does). It needs R2 Storage Write,
+    # not API Tokens Write (the account token of media-import.tf, removed). It cannot be revoked
+    # alone, so it expires after R2_TEMP_TTL (21600 s, the deploy/wfp import value); media.sh mints
+    # a fresh one on a refusal. The file is mode 600 in WORK (mode 700) and removed after the step.
+    local cf="$WORK/r2-temp.cred" ttl=${R2_TEMP_TTL:-21600}
+    python3 -I "$ROOT/deploy/wfp/r2_temp.py" mint "$BUCKET" "$ttl" "$cf" || { echo "media: no temporary R2 credential for $BUCKET (the deploy token needs Workers R2 Storage Write); nothing was sent" >&2; exit 1; }
+    export R2_CRED_FILE=$cf R2_CRED_REFRESH
+    R2_CRED_REFRESH=$(printf 'python3 -I %q mint %q %q %q' "$ROOT/deploy/wfp/r2_temp.py" "$BUCKET" "$ttl" "$cf")
     EP=$(tfi output -raw r2_endpoint)
     "$IMP/media.sh" "$EP" "$BUCKET" "$SRC_CONTENT"
     # The second run is the check: every file is there with its size.
     "$IMP/media.sh" "$EP" "$BUCKET" "$SRC_CONTENT" | tee "$WORK/media-check.txt"
     grep -q '^media: 0 sent, [0-9]* already there, 0 failed$' "$WORK/media-check.txt" || { echo "media: the check run sent files again" >&2; exit 1; }
-    unset R2_KEY_ID R2_SECRET
-    key_off; trap - EXIT
+    rm -f "$cf" "$cf.flock" "$cf.minted"; unset R2_CRED_FILE R2_CRED_REFRESH
+    echo "media: the temporary credential file is removed; the credential expires within $ttl s"
   fi
 }
 
