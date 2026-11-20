@@ -31,6 +31,9 @@ wc=$t/wc; stub_repo "$wc"
 tp=$wc/plugins/woocommerce/tests/e2e/test-plugins
 for p in woocommerce-e2e-test-helper woocommerce-cleanup wc-email-template-sync-test-helper; do mkdir -p "$tp/$p"; echo "<?php /* Plugin Name: $p */" > "$tp/$p/$p.php"; done
 mkdir -p "$tp/blocks"; echo "<?php // not taken" > "$tp/blocks/x.php"
+tt=$wc/plugins/woocommerce/tests/e2e/themes/blocks
+wc_themes="emptytheme theme-with-woo-templates storefront-child__block-notices-filter storefront-child__block-notices-template storefront-child__classic-notices-template storefront-child__with-block-template-part storefront-child__with-block-template-part-support twentytwentyfour-child__block-notices-filter twentytwentyfour-child__block-notices-template twentytwentyfour-child__classic-notices-template"
+for th in $wc_themes; do mkdir -p "$tt/$th"; echo "/* Theme Name: wc $th */" > "$tt/$th/style.css"; done
 echo outside > "$wc/README.md"
 wc_sha=$(commit "$wc")
 # A second commit, so the pin is not simply the tip.
@@ -60,14 +63,21 @@ for f in plugins/woocommerce-e2e-test-helper/woocommerce-e2e-test-helper.php plu
   [ -f "$c/$f" ] && ok "laid out: $f" || bad "missing: $f"
 done
 [ ! -e "$c/plugins/blocks" ] && ok "a helper not asked for is not taken (blocks)" || bad "blocks was taken"
+for th in $wc_themes; do
+  [ "$th" = emptytheme ] && continue
+  [ -f "$c/themes/$th/style.css" ] && ok "wc test theme laid out: $th" || bad "wc test theme missing: $th"
+done
+grep -q "Theme Name: Empty" "$c/themes/emptytheme/style.css" && [ ! -e "$c/themes/emptytheme/emptytheme" ] \
+  && ok "wc gb: emptytheme is Gutenberg's, not nested" || bad "wc gb: emptytheme is not Gutenberg's alone"
+grep -q "themes/emptytheme: woocommerce's not taken" "$t/out/PINS" && ok "PINS records the emptytheme choice" || bad "PINS lacks the emptytheme choice"
 [ ! -e "$t/out/src" ] && ok "the checkouts are removed" || bad "out/src is left behind"
 grep -q "^woocommerce file://$wc $wc_sha$" "$t/out/PINS" && ok "PINS records the woocommerce pin" || bad "PINS lacks the woocommerce pin"
 grep -q "^gutenberg file://$gb $gb_sha$" "$t/out/PINS" && ok "PINS records the gutenberg pin" || bad "PINS lacks the gutenberg pin"
 tree=$(git -C "$gb" rev-parse "$gb_sha:packages/e2e-tests/plugins")
 grep -q "plugins/gutenberg-test-plugins = gutenberg:packages/e2e-tests/plugins $tree" "$t/out/PINS" && ok "PINS records the upstream tree id" || bad "PINS lacks the tree id"
-for want in "IMPORT_CONTENT=$t/out/wp-content" "IMPORT_THEMES='emptytheme gutenberg-test-themes'" \
+for want in "IMPORT_CONTENT=$t/out/wp-content" "IMPORT_THEMES='theme-with-woo-templates storefront-child__block-notices-filter storefront-child__block-notices-template storefront-child__classic-notices-template storefront-child__with-block-template-part storefront-child__with-block-template-part-support twentytwentyfour-child__block-notices-filter twentytwentyfour-child__block-notices-template twentytwentyfour-child__classic-notices-template emptytheme gutenberg-test-themes'" \
   "IMPORT_PLUGINS='woocommerce-e2e-test-helper woocommerce-cleanup wc-email-template-sync-test-helper gutenberg-test-plugins'" \
-  "IMPORT_MU_PLUGINS='pf-conformance-throwaway.php pf-conformance-gaps.php nocache-headers.php server-timing.php'" "THEMES='twentytwentythree twentytwentyone twentytwentyfour'" \
+  "IMPORT_MU_PLUGINS='pf-conformance-throwaway.php pf-conformance-gaps.php nocache-headers.php server-timing.php'" "THEMES='twentytwentythree storefront twentytwenty twentytwentytwo twentytwentyfour twentytwentyone'" \
   "SUITE=$here/plugins.txt PLUGINS='wp-mail-logging'" "THEME_SUITE=$here/themes.txt"; do
   case "$line" in *"$want"*) ok "line has: $want" ;; *) bad "line lacks: $want (line: $line)" ;; esac
 done
@@ -86,6 +96,12 @@ else bad "content.sh refused the line: $(tail -2 "$t/o")"; fi
 if line=$(WC_REPO=file:///nonexistent GB_REPO=file:///nonexistent "$P" "$t/wp" wp 2>"$t/e"); then
   [ "$line" = "IMPORT_CONTENT=$t/wp/wp-content IMPORT_MU_PLUGINS='pf-conformance-throwaway.php pf-conformance-gaps.php' THEME_SUITE=$here/themes.txt THEMES='twentytwentyone'" ] && ok "wp only: the line is exact" || bad "wp only: line is '$line'"
 else bad "wp only: exit non-zero ($(cat "$t/e"))"; fi
+
+# 3b. wc only: WooCommerce's emptytheme is taken.
+if line=$(GB_REPO=file:///nonexistent "$P" "$t/wconly" wc 2>"$t/e"); then
+  grep -q "Theme Name: wc emptytheme" "$t/wconly/wp-content/themes/emptytheme/style.css" && ok "wc only: emptytheme is WooCommerce's" || bad "wc only: emptytheme is not WooCommerce's"
+  case "$line" in *"IMPORT_THEMES='emptytheme theme-with-woo-templates "*) ok "wc only: IMPORT_THEMES starts with emptytheme" ;; *) bad "wc only: line is '$line'" ;; esac
+else bad "wc only: exit non-zero ($(cat "$t/e"))"; fi
 
 # 4. Refusals.
 expect_refused "an existing out dir" "exists; refused" "$P" "$t/out" wc
