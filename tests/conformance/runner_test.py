@@ -656,7 +656,7 @@ def main():
             ok("vps-run PF_SPECS (%s): no filter runs the whole suite" % sh) if v0.returncode == 0 and line0 and line0[0].rstrip().endswith("--config=pf-conformance.config.mjs)") and "SUBSET" not in v0.stdout else bad("PF_SPECS none %s: rc %d %s %s" % (sh, v0.returncode, line0, v0.stderr[-200:]))
             ok("vps-run PF_SPECS (%s): the filters reach the test phase and the run says SUBSET" % sh) if v1.returncode == 0 and line1 and line1[0].rstrip().endswith("specs/editor/blocks/navigation specs/x.spec.js)") and "SUBSET run" in v1.stdout else bad("PF_SPECS %s: rc %d %s %s" % (sh, v1.returncode, line1, v1.stderr[-200:]))
         # PF_BROWSER=browser-run: workers 4 by default there, PF_WORKERS sets it, a bad value stops; locally always 1.
-        for env_set, want in (({}, 1), ({"PF_WORKERS": "6"}, 1), ({"PF_BROWSER": "browser-run"}, 4), ({"PF_BROWSER": "browser-run", "PF_WORKERS": "2"}, 2)):
+        for env_set, want in (({}, 1), ({"PF_WORKERS": "6"}, 1), ({"PF_BROWSER": "browser-run"}, 1), ({"PF_BROWSER": "browser-run", "PF_WORKERS": "2"}, 2)):
             old_env = {k: os.environ.get(k) for k in ("PF_BROWSER", "PF_WORKERS")}
             for k in old_env: os.environ.pop(k, None)
             os.environ.update(env_set)
@@ -681,7 +681,7 @@ def main():
         tokf = os.path.join(t, "tok"); open(tokf, "w").write("x\n")
         vbr = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "run", "gb", os.path.join(t, "w"), rgb],
                              env={"PATH": os.environ.get("PATH", ""), "DRY": "1", "PF_BROWSER": "browser-run", "PF_BROWSER_RUN_ACCOUNT": "0" * 32, "PF_BROWSER_RUN_TOKEN_FILE": tokf}, capture_output=True, text=True)
-        ok("vps-run PF_BROWSER=browser-run with account/token: says BROWSER RUN, workers 4") if vbr.returncode == 0 and "BROWSER RUN" in vbr.stdout and "workers 4" in vbr.stdout else bad("browser-run go: rc %d %s" % (vbr.returncode, (vbr.stdout + vbr.stderr)[-300:]))
+        ok("vps-run PF_BROWSER=browser-run with account/token: says BROWSER RUN, workers 1") if vbr.returncode == 0 and "BROWSER RUN" in vbr.stdout and "workers 1" in vbr.stdout else bad("browser-run go: rc %d %s" % (vbr.returncode, (vbr.stdout + vbr.stderr)[-300:]))
         vps_txt = open(os.path.join(HERE, "vps-run.sh")).read()
         ok("vps-run.sh gb: three build attempts on failure") if "for gb_try in 1 2 3" in vps_txt and "gb build failed after 3 attempts" in vps_txt else bad("vps-run.sh gb retry count")
         ok("vps-run.sh gb: clears node_modules/.cache before attempt 3") if "node_modules/.cache" in vps_txt and '[ "$gb_try" = 2 ]' in vps_txt else bad("vps-run.sh gb cache clear")

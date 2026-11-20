@@ -48,13 +48,17 @@ content, and `render_user` checks as the last guard.
 `PF_BROWSER=browser-run` runs a suite's browsers on Cloudflare Browser Run (hosted Chromium over CDP) instead of on the
 runner machine. `vps-run.sh` preloads `tests/conformance/pf-browser-run.cjs`, which turns `chromium.launch` into
 `connectOverCDP`. Set `PF_BROWSER_RUN_ACCOUNT` (the account id) and `PF_BROWSER_RUN_TOKEN_FILE` (a mode 600 file with a
-Browser Run token; the token is never printed). `PF_WORKERS` sets the worker count there (default 4); locally it is 1.
+Browser Run token; the token is never printed). `PF_WORKERS` sets the worker count there; the default is 1, and locally it is
+always 1.
 
 - Chromium only: firefox and webkit are refused.
 - The remote Chromium is a different build from the pinned local one. Each worker logs `@event browser-run` with its
   version. A row says which browser ran, and a Browser Run row is never mixed with a local one.
 - A remote browser reaches public URLs only: a workers.dev throwaway, yes; a local wp-env baseline, no.
-- More than one worker shares one site. Before a parallel run counts, a known-green subset must agree with a local run.
+- One worker per site. The wp and gb specs share the site's state: `requestUtils.deleteAllPosts()` runs before each test,
+  and the posts have fixed titles. Measured on `cf759p`, 2026-11-20: 4 workers gave 15 of 18 (two posts with one title, a
+  post already trashed by another worker) against 18 of 18 with 1. Run more suites on more sites at once for speed, never
+  more workers on one site.
 
 ## Upstream notes for the matrix
 

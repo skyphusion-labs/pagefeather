@@ -377,10 +377,13 @@ def grep_invert_source(titles):
 
 
 def pf_workers():
-    """1 locally (one browser on the laptop). On Cloudflare Browser Run (PF_BROWSER=browser-run): PF_WORKERS, default 4."""
+    """1 locally. On Cloudflare Browser Run (PF_BROWSER=browser-run): PF_WORKERS, default 1. The wp and gb specs share one
+    site's state (requestUtils.deleteAllPosts in beforeEach, fixed post titles), so more workers on ONE site interfere
+    (measured on cf759p, 2026-11-20: 4 workers gave 15 of 18 against 18 of 18 with 1). Parallel runs mean different
+    suites on different sites, not more workers on one."""
     if os.environ.get("PF_BROWSER") != "browser-run":
         return 1
-    n = os.environ.get("PF_WORKERS", "4")
+    n = os.environ.get("PF_WORKERS", "1")
     if not re.fullmatch(r"[1-9][0-9]?", n):
         raise Stop("PF_WORKERS must be 1 to 99, got %r" % n)
     return int(n)

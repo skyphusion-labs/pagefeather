@@ -13,7 +13,7 @@
 # Filters are relative to Playwright's working directory: plugins/woocommerce for wc, test/e2e for gb, the repo for wp.
 #
 # PF_BROWSER=browser-run (run only) puts the browsers on Cloudflare Browser Run, Chromium only; PF_WORKERS sets the
-# worker count there (default 4). A Browser Run row is never mixed with a local-browser row: the Chromium differs.
+# worker count there (default 1: the specs share one site's state). A Browser Run row is never mixed with a local-browser row: the Chromium differs.
 #
 # DRY=1 prints the commands and runs nothing. Before "run": build the throwaway with the line from
 # prepare-content.sh, deploy it, then "runner.py prepare" writes <run-dir>/env. After both runs:
@@ -68,7 +68,7 @@ playwright() { # dir config: run Playwright with OUR wrapper config (exclusions,
     [ -n "${PF_BROWSER_RUN_ACCOUNT:-}" ] && [ -s "${PF_BROWSER_RUN_TOKEN_FILE:-/nonexistent}" ] \
       || { echo "vps-run: STOP: PF_BROWSER=browser-run needs PF_BROWSER_RUN_ACCOUNT and a non-empty PF_BROWSER_RUN_TOKEN_FILE" >&2; exit 3; }
     export NODE_OPTIONS="--require $here/pf-browser-run.cjs${NODE_OPTIONS:+ $NODE_OPTIONS}"
-    echo "vps-run: BROWSER RUN (Cloudflare, hosted Chromium over CDP), workers ${PF_WORKERS:-4}"
+    echo "vps-run: BROWSER RUN (Cloudflare, hosted Chromium over CDP), workers ${PF_WORKERS:-1}"
   fi
   x python3 -I "$here/runner.py" config --suite "$suite" --suite-dir "$src/$e2e" --run-dir "$run"
   case "$suite" in
