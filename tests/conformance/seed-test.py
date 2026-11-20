@@ -192,6 +192,15 @@ class Site(BaseHTTPRequestHandler):
         if path.startswith("/wp-content/uploads/") and method == "GET":
             name = path.rsplit("/", 1)[-1]
             return self.reply(404 if name in st.get("missing_files", ()) else 200, b"x", "image/png")
+        if path in st.get("drop_paths", ()) and not st.setdefault("dropped", []):
+            # a request that gets no HTTP answer at all (the status-0 case): close the socket without a reply
+            st["dropped"].append(path)
+            self.close_connection = True
+            try:
+                self.connection.shutdown(2)
+            except OSError:
+                pass
+            return
         if path in ("/wp-json", "/wp-json/"):
             return self._json(200, {"routes": {"/": {}}})
         if path == "/wp-admin/options-permalink.php" and method == "GET":
@@ -434,6 +443,15 @@ rows = (report or {}).get("rest_nonce_failures") or []
 check("#924: a customer login 500 is recorded too", len(rows) == 1 and rows[0].get("who") == "customer" and rows[0].get("status") == 500, rows)
 p, state, report = run_email_editor_seed()
 check("#924: no failure, no rows", not (report or {}).get("rest_nonce_failures"), (report or {}).get("rest_nonce_failures"))
+
+p, state, report = run_email_editor_seed(drop_paths=["/wp-json/"])
+ne = (report or {}).get("network_errors") or []
+idx_chk = ((report or {}).get("checks") or {}).get("permalinks: a raw GET /wp-json/ is the REST index") or {}
+check("a status-0 request keeps its exception text in seed.json network_errors",
+      state.get("dropped") == ["/wp-json/"] and idx_chk.get("status") == 0 and len(ne) == 1 and ne[0].get("path") == "/wp-json/"
+      and ne[0].get("method") == "GET" and "RemoteDisconnected" in (ne[0].get("error") or ""), (ne, idx_chk))
+p, state, report = run_email_editor_seed()
+check("no network failure, no network_errors", not (report or {}).get("network_errors"), (report or {}).get("network_errors"))
 
 page = {"id": 7, "status": "publish", "slug": "cart", "link": "https://ex/cart/"}
 check("wc_store_page_ok: published cart", _seed.wc_store_page_ok(7, page, "cart") is True)

@@ -206,7 +206,20 @@ def req(o, path, data=None, headers=None, method=None, timeout=120):
     except urllib.error.HTTPError as e:
         return e.code, e.read(), e.headers
     except Exception as e:  # a network failure is a result, never a pass
+        record_network_error(method or ("POST" if data is not None else "GET"), url, e)
         return 0, repr(e).encode(), {}
+
+
+def record_network_error(method, url, e):
+    """A request that got no HTTP answer (status 0) is evidence: seed.json network_errors keeps its exception text,
+    so a transient platform fault can be classified (sb1120: a raw GET /wp-json/ with status 0 on cf759a). No response
+    exists, so there is no x-pf-call; the time and the path let Workers Logs find it. Query values are scrubbed."""
+    path = url[len(B):] if url.startswith(B) else url
+    path = re.sub(r"=([^&]*)", "=_", path)
+    row = {"t": time.strftime("%H:%M:%SZ", time.gmtime()), "method": method, "path": path[:160],
+           "error": scrub(repr(e)[:300])}
+    report.setdefault("network_errors", []).append(row)
+    event("network-error", **row)
 
 
 def js(body):
