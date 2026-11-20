@@ -601,6 +601,39 @@ def main():
         ok("vps-run.sh gb: three build attempts on failure") if "for gb_try in 1 2 3" in vps_txt and "gb build failed after 3 attempts" in vps_txt else bad("vps-run.sh gb retry count")
         ok("vps-run.sh gb: clears node_modules/.cache before attempt 3") if "node_modules/.cache" in vps_txt and '[ "$gb_try" = 2 ]' in vps_txt else bad("vps-run.sh gb cache clear")
         ok("vps-run.sh gb: captures build log tail on failure") if "gb_run_build" in vps_txt and "tail -n 30" in vps_txt else bad("vps-run.sh gb log tail")
+        # Gutenberg media specs copy ./assets/<name> from the process directory (#980).
+        # Upstream cwd is test/e2e. The repository root has no such file.
+        gb_sha = next(l.split("=", 1)[1].strip() for l in open(os.path.join(HERE, "pins.env")) if l.startswith("GB_SHA="))
+        wp_sha = next(l.split("=", 1)[1].strip() for l in open(os.path.join(HERE, "pins.env")) if l.startswith("WP_DEVELOP_SHA="))
+        gb_root = os.path.join(t, "w", "gb-" + gb_sha)
+        gb_e2e = os.path.join(gb_root, "test", "e2e")
+        asset_name = "10x10_e2e_test_image_z9T8jK.png"
+        os.makedirs(os.path.join(gb_e2e, "assets"))
+        open(os.path.join(gb_e2e, "assets", asset_name), "wb").write(b"png")
+        root_asset = os.path.join(gb_root, "assets", asset_name)
+        e2e_asset = os.path.join(gb_e2e, "assets", asset_name)
+        ok("gb ./assets image is absent at the repository root") if not os.path.isfile(root_asset) else bad("asset is at the repository root")
+        ok("gb ./assets image is present in test/e2e") if os.path.isfile(e2e_asset) else bad("asset missing from test/e2e")
+        if node:
+            js = "const fs=require(\"fs\"); const os=require(\"os\"); const path=require(\"path\"); const dst=path.join(os.tmpdir(),\"pf-gb-asset-copy\"); try { fs.copyFileSync(\"./assets/\"+process.argv[1], dst); fs.unlinkSync(dst); } catch (e) { if (e.code===\"ENOENT\") process.exit(2); throw e; }"
+            root_cp = subprocess.run([node, "-e", js, asset_name], cwd=gb_root, capture_output=True, text=True)
+            ok("copyFile ./assets from the repository root is ENOENT") if root_cp.returncode == 2 else bad("root copyFile rc %s %s" % (root_cp.returncode, (root_cp.stderr or "")[-160:]))
+            e2e_cp = subprocess.run([node, "-e", js, asset_name], cwd=gb_e2e, capture_output=True, text=True)
+            ok("copyFile ./assets from test/e2e succeeds") if e2e_cp.returncode == 0 else bad("e2e copyFile rc %s %s" % (e2e_cp.returncode, (e2e_cp.stderr or e2e_cp.stdout or "")[-160:]))
+        else:
+            bad("no node to prove the asset copy (could not measure)")
+        want_cd = "(cd %s && npx playwright test --config=pf-conformance.config.mjs)" % gb_e2e
+        for act, rd in (("run", "rg"), ("baseline", "bg")):
+            vr = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), act, "gb", os.path.join(t, "w"), os.path.join(t, rd)],
+                                env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
+            gb_lines = [l for l in vr.stdout.splitlines() if "playwright test" in l]
+            ok("vps-run %s gb: Playwright cwd is test/e2e" % act) if vr.returncode == 0 and any(want_cd in l for l in gb_lines) else bad("gb %s playwright cwd: %s" % (act, gb_lines))
+        wp_root = os.path.join(t, "w", "wp-" + wp_sha)
+        want_wp = "(cd %s && npx playwright test --config=tests/e2e/pf-conformance.config.mjs)" % wp_root
+        vr = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "run", "wp", os.path.join(t, "w"), os.path.join(t, "rw")],
+                            env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
+        wp_lines = [l for l in vr.stdout.splitlines() if "playwright test" in l]
+        ok("vps-run run wp: Playwright cwd stays the repository root") if vr.returncode == 0 and any(want_wp in l for l in wp_lines) else bad("wp playwright cwd: %s" % wp_lines)
 
 
         # summarize and compare.
