@@ -36,9 +36,9 @@ refuse "PHP_OVERFLOW is for variant a only" VARIANT=b-do PHP_OVERFLOW=1
 refuse "PHP_OVERFLOW_POOL is for variant a only" VARIANT=c1 PHP_OVERFLOW_POOL=32
 refuse "A_CLIENT must be lean or mysql2" VARIANT=a A_CLIENT=pg
 for bad in 2 on yes Always; do refuse "PHP_OVERFLOW must be 0, 1 or always" VARIANT=a PHP_OVERFLOW=$bad; done
-refuse "PHP_OVERFLOW_POOL needs PHP_OVERFLOW=1 or always" VARIANT=a PHP_OVERFLOW_POOL=32
+refuse "PHP_OVERFLOW_POOL needs PHP_OVERFLOW=1 or always" VARIANT=a PHP_OVERFLOW=0 PHP_OVERFLOW_POOL=32 # #1119: on by default; the opt-out refuses a pool
 # #714: the overflow cap (#717, default 16) has a deploy input and an off switch; MEM_LEDGER is a measurement input.
-refuse "PHP_OVERFLOW_MAX_HELD needs PHP_OVERFLOW=1 or always" VARIANT=a PHP_OVERFLOW_MAX_HELD=16
+refuse "PHP_OVERFLOW_MAX_HELD needs PHP_OVERFLOW=1 or always" VARIANT=a PHP_OVERFLOW=0 PHP_OVERFLOW_MAX_HELD=16
 for bad in 0 1001 abc -1 on 16.5; do refuse "PHP_OVERFLOW_MAX_HELD must be off or an integer from 1 to 1000" VARIANT=a PHP_OVERFLOW=1 "PHP_OVERFLOW_MAX_HELD=$bad"; done
 refuse "PHP_OVERFLOW_MAX_HELD is for variant a only" VARIANT=b-dosql PHP_OVERFLOW_MAX_HELD=off
 for bad in off 1 yes ON; do refuse "MEM_LEDGER must be on or unset" VARIANT=a "MEM_LEDGER=$bad"; done
@@ -124,14 +124,21 @@ m() { env -i PATH="$PATH" "$@" bash -c ". '$S' && a_main" 2>&1; }
 ok "the default client is lean (index-a-lean.js)" "$([ "$(m)" = index-a-lean.js ] && echo 1 || echo 0)"
 ok "A_CLIENT=mysql2 is index-a.js" "$([ "$(m A_CLIENT=mysql2)" = index-a.js ] && echo 1 || echo 0)"
 o() { env -i PATH="$PATH" "$@" bash -c ". '$S' && a_overflow_vars && echo --- && a_overflow_bindings" 2>&1; }
-ok "PHP_OVERFLOW unset renders nothing" "$([ "$(o)" = '---' ] && echo 1 || echo 0)"
+# #1119: Conrad ruled the overflow pool ON by default for approach A; PHP_OVERFLOW=0 is the explicit opt-out.
+POOL_RENDER="$(printf 'PHP_OVERFLOW = "on"\nPHP_OVERFLOW_POOL = "32"\n---\n[[durable_objects.bindings]]\nname = "PHP_RUNTIME"\nclass_name = "PhpRuntime"\n[[migrations]]\ntag = "v1"\nnew_sqlite_classes = ["PhpRuntime"]')"
+ok "#1119 PHP_OVERFLOW unset renders the pool (on by default for approach A)" "$([ "$(o)" = "$POOL_RENDER" ] && echo 1 || echo 0)"
+ok "#1119 PHP_OVERFLOW empty renders the pool too (empty is unset)" "$([ "$(o PHP_OVERFLOW=)" = "$POOL_RENDER" ] && echo 1 || echo 0)"
+ok "#1119 PHP_OVERFLOW=0 (the opt-out) renders nothing" "$([ "$(o PHP_OVERFLOW=0)" = '---' ] && echo 1 || echo 0)"
+ok "#1119 unset passes the check with a pool and a cap (on by default)" "$(env -i PATH="$PATH" bash -c ". '$S' && PHP_OVERFLOW_POOL=16 PHP_OVERFLOW_MAX_HELD=off a_settings_check a" >/dev/null 2>&1 && echo 1 || echo 0)"
+ok "#1119 the DO tiers are unchanged: unset passes the check on b-do, b-dosql and c1" "$(env -i PATH="$PATH" bash -c ". '$S' && for v in b-do b-dosql c1; do a_settings_check \$v || exit 1; done" >/dev/null 2>&1 && echo 1 || echo 0)"
 ok "PHP_OVERFLOW=1: pool 32, the PhpRuntime binding and its migration" "$([ "$(o PHP_OVERFLOW=1)" = "$(printf 'PHP_OVERFLOW = "on"\nPHP_OVERFLOW_POOL = "32"\n---\n[[durable_objects.bindings]]\nname = "PHP_RUNTIME"\nclass_name = "PhpRuntime"\n[[migrations]]\ntag = "v1"\nnew_sqlite_classes = ["PhpRuntime"]')" ] && echo 1 || echo 0)"
 # #714: always, the measurement arm: the same pool, PHP_OVERFLOW = "always", and it passes the check with a pool and a cap.
 ok "PHP_OVERFLOW=always: always, pool 32, the PhpRuntime binding and its migration" "$([ "$(o PHP_OVERFLOW=always)" = "$(printf 'PHP_OVERFLOW = "always"\nPHP_OVERFLOW_POOL = "32"\n---\n[[durable_objects.bindings]]\nname = "PHP_RUNTIME"\nclass_name = "PhpRuntime"\n[[migrations]]\ntag = "v1"\nnew_sqlite_classes = ["PhpRuntime"]')" ] && echo 1 || echo 0)"
-echo "2d. #855: A_CRON=1 renders triggers, A_CRON var, and PhpRuntime when overflow is off"
+echo "2d. #855: A_CRON=1 renders triggers, A_CRON var, and PhpRuntime when overflow is off (PHP_OVERFLOW=0 since #1119)"
+ok "#1119 A_CRON=1 with overflow on by default: a_cron_bindings renders nothing (the pool already binds PhpRuntime)" "$([ -z "$(env -i PATH="$PATH" bash -c ". '$S' && A_CRON=1 a_cron_bindings")" ] && echo 1 || echo 0)"
 ct() { env -i PATH="$PATH" "$@" bash -c ". '$S' && a_cron_vars && echo --- && a_cron_triggers && echo --- && a_cron_bindings" 2>&1; }
 ok "A_CRON unset renders nothing" "$([ "$(ct)" = $'---\n---' ] && echo 1 || echo 0)"
-ok "A_CRON=1: the var, minute cron, PhpRuntime binding" "$([ "$(ct A_CRON=1)" = "$(printf 'A_CRON = "on"\n---\n[triggers]\ncrons = ["* * * * *"]\n---\n[[durable_objects.bindings]]\nname = "PHP_RUNTIME"\nclass_name = "PhpRuntime"\n[[migrations]]\ntag = "v1"\nnew_sqlite_classes = ["PhpRuntime"]')" ] && echo 1 || echo 0)"
+ok "A_CRON=1 PHP_OVERFLOW=0: the var, minute cron, PhpRuntime binding" "$([ "$(ct A_CRON=1 PHP_OVERFLOW=0)" = "$(printf 'A_CRON = "on"\n---\n[triggers]\ncrons = ["* * * * *"]\n---\n[[durable_objects.bindings]]\nname = "PHP_RUNTIME"\nclass_name = "PhpRuntime"\n[[migrations]]\ntag = "v1"\nnew_sqlite_classes = ["PhpRuntime"]')" ] && echo 1 || echo 0)"
 ok "A_CRON=1 with PHP_OVERFLOW=1: a_cron_bindings alone renders nothing" "$([ -z "$(env -i PATH="$PATH" bash -c ". '$S' && A_CRON=1 PHP_OVERFLOW=1 a_cron_bindings")" ] && echo 1 || echo 0)"
 ok "A_CRON_CRON overrides the schedule" "$(out=$(ct A_CRON=1 A_CRON_CRON='5 4 * * *'); case "$out" in *'5 4 * * *'*) echo 1 ;; *) echo 0 ;; esac)"
 ok "PHP_OVERFLOW=always passes the check with PHP_OVERFLOW_POOL=16 and PHP_OVERFLOW_MAX_HELD=off" "$(env -i PATH="$PATH" bash -c ". '$S' && PHP_OVERFLOW=always PHP_OVERFLOW_POOL=16 PHP_OVERFLOW_MAX_HELD=off a_settings_check a" >/dev/null 2>&1 && echo 1 || echo 0)"

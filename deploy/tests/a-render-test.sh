@@ -41,16 +41,17 @@ compare() {
   if diff -u "$T/b.canon" "$T/r.canon" > "$T/d"; then ok "$3" 1; else sed 's/^/        /' "$T/d"; ok "$3 (above: - the bench, + deploy.sh)" 0; fi
 }
 
-echo "1. the defaults render the measured site: the #666 bench plus the two #296 step 3 defaults (OCV and HPOS cache on)"
+echo "1. the defaults render the measured site: the overflow bench (#1119: the pool is on by default) plus the two #296 step 3 defaults (OCV and HPOS cache on)"
 render "$T/a.toml"; rc=$?
 ok "render_conf ran (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"; [ $rc = 0 ] || cat "$T/render.err"
 # #296: the step 3 series measured arm C (both on) against the bench; the lead ruled them approach A's defaults.
 python3 -I "$HERE/canon.py" "$T/a.toml" | benchflags | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS) = ' > "$T/d.canon"
 # #1078: the KV L2 is off by default on approach A (the benches ran with it on, and stay the record): mapped here.
-{ python3 -I "$HERE/canon.py" "$HERE/bench.toml" | sed 's/^vars OBJECT_CACHE_L2 = "on"$/vars OBJECT_CACHE_L2 = "off"/'; echo 'vars OBJECT_CACHE_VERSIONS = "on"'; echo 'vars WOO_HPOS_CACHE = "on"'; } | sort > "$T/bd.canon"
+# #1119: Conrad ruled PHP_OVERFLOW on by default for approach A, so the default render is the OVERFLOW bench.
+{ python3 -I "$HERE/canon.py" "$HERE/bench-overflow.toml" | sed 's/^vars OBJECT_CACHE_L2 = "on"$/vars OBJECT_CACHE_L2 = "off"/'; echo 'vars OBJECT_CACHE_VERSIONS = "on"'; echo 'vars WOO_HPOS_CACHE = "on"'; } | sort > "$T/bd.canon"
 if diff -u "$T/bd.canon" <(sort "$T/d.canon") > "$T/d1"; then ok "deploy.sh variant a equals the bench plus the two defaults" 1; else sed 's/^/        /' "$T/d1"; ok "deploy.sh variant a equals the bench plus the two defaults" 0; fi
-render "$T/a0.toml" OBJECT_CACHE_VERSIONS=0 WOO_HPOS_CACHE=off OBJECT_CACHE_L2=1; rc=$? # #1078: the bench ran with L2 on
-compare "$T/a0.toml" "$HERE/bench.toml" "with both set off, deploy.sh variant a equals the #666 bench config exactly"
+render "$T/a0.toml" PHP_OVERFLOW=0 OBJECT_CACHE_VERSIONS=0 WOO_HPOS_CACHE=off OBJECT_CACHE_L2=1; rc=$? # #1078: the bench ran with L2 on
+compare "$T/a0.toml" "$HERE/bench.toml" "with the overflow opt-out (PHP_OVERFLOW=0, #1119) and both set off, deploy.sh variant a equals the #666 bench config exactly"
 
 echo "2. PHP_OVERFLOW=1 renders the overflow run (pool 32, the PhpRuntime binding and its migration)"
 # The overflow bench predates the #296 defaults: compared with both off (test 1 covers the defaults).
