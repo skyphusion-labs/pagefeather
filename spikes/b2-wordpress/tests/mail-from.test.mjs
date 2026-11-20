@@ -67,3 +67,28 @@ test('the .example TLD is undeliverable; example.co is not', () => {
 	assert.equal(sender({ SITE_ORIGIN: 'https://shop.wordpress.example' }), null);
 	assert.deepEqual(deliverableRecipients(['a@wordpress.example', 'b@shop.example.co']), { deliverable: ['b@shop.example.co'], dropped: 1 });
 });
+
+// #1096: the send_email binding refused EVERY message when MAIL_FROM_NAME was unset. Measured on cf759hx: "Incorrect type
+// for the 'name' field on 'EmailAddress': the provided value is not of type 'string'." sender() and replyTo() return
+// { email } with no name key, and that object went in as msg.from / msg.replyTo. bindingAddress hands the binding the
+// shape it accepts: { email, name } with a string name, else the bare address string.
+import { bindingAddress } from '../mail-from.mjs';
+test('#1096 bindingAddress: no name is the bare address string; a name is { email, name } with a string name', () => {
+	assert.equal(bindingAddress({ email: 'a@shop.example.co' }), 'a@shop.example.co');
+	assert.equal(bindingAddress({ email: 'a@shop.example.co', name: '' }), 'a@shop.example.co');
+	assert.deepEqual(bindingAddress({ email: 'a@shop.example.co', name: 'North Shop' }), { email: 'a@shop.example.co', name: 'North Shop' });
+	assert.equal(bindingAddress(null), null);
+});
+test('#1096 every address the binding can receive has a string name or none at all', () => {
+	for (const a of [sender({ MAIL_FROM: 'a@shop.example.co' }), sender({ MAIL_FROM: 'a@shop.example.co', MAIL_FROM_NAME: 'N' }),
+		replyTo('a@shop.example.co', 'Reply-To: b@b.example.co\r\n'), replyTo('a@shop.example.co', 'From: Ada <ada@ada.example.co>\r\n')]) {
+		const b = bindingAddress(a);
+		assert.ok(typeof b === 'string' || (b && typeof b.name === 'string' && b.name !== '' && typeof b.email === 'string'), JSON.stringify(b));
+	}
+});
+test('#1096 index.js: sendEmail passes from and replyTo through bindingAddress', async () => {
+	const { readFileSync } = await import('node:fs');
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /const msg = \{ to: null, from: bindingAddress\(from\), subject, html, text \};/);
+	assert.match(src, /if \(rt\) msg\.replyTo = bindingAddress\(rt\);/);
+});
