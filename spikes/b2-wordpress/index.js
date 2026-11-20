@@ -1190,7 +1190,11 @@ async function mailDeadForHealth(env) {
 	}
 }
 async function mailDeadCount(storage) {
-	return (await storage.list({ prefix: DEAD_PREFIX, limit: 1000 })).size;
+	// #1062 review: only dead letters inside their expiry count (the drain prunes the rest).
+	const now = Date.now();
+	let n = 0;
+	for (const [, d] of await storage.list({ prefix: DEAD_PREFIX, limit: 1000 })) if (!(d && Number.isFinite(d.expiresAt)) || d.expiresAt > now) n++;
+	return n;
 }
 
 // Drain the queued wp_mail messages (emailOp) and send them through the send_email binding.

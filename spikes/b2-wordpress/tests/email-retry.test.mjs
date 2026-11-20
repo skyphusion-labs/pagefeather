@@ -105,3 +105,58 @@ test('one bad record does not stop the others; a malformed record is dead-letter
 	assert.ok(s.m.has(DEAD_PREFIX + 'junk'));
 	assert.ok(events.some((e) => e.m === 'email-dead' && e.reason === 'malformed'));
 });
+
+// The lead's review on #1062 (privacy is the primary goal): a dead letter must not keep the message. Only metadata:
+// deadAt, attempts, the last error (capped, addresses and URLs scrubbed), a hash of the subject, the recipient's
+// domain. No body, no address, no reset link. Dead records expire after 30 days. A live retry keeps the message only
+// within the retry window.
+import { DEAD_TTL_MS, RETRY_WINDOW_MS, scrub } from '../email-retry.mjs';
+const RESET = { to: ['alice@shop.example.org'], subject: 'Password Reset for alice', message: 'Reset: https://shop.example.org/wp-login.php?action=rp&key=SECRETKEY123&login=alice', headers: '' };
+async function deadAfterCap(email) {
+	let now = 1_000_000;
+	const [[k, r]] = failureRecords([{ email, to: email.to[0], error: 'rejected for alice@shop.example.org at https://x.test/?key=SECRETKEY123' }], now);
+	const s = store([[k, r]]);
+	const events = [];
+	for (let i = 0; i < 20; i++) {
+		const rec = s.m.get(k);
+		if (!rec) break;
+		now = rec.next;
+		await drainRetries({ storage: s, now, send: async () => { throw new Error('refused for alice@shop.example.org https://shop.example.org/?key=SECRETKEY123'); }, log: (e) => events.push(e) });
+	}
+	return { s, events, now };
+}
+test('#1062 review: a dead-lettered reset email leaves NO body, address or reset key in storage or in the event', async () => {
+	const { s, events } = await deadAfterCap(RESET);
+	const dump = JSON.stringify([...s.m.entries()]) + JSON.stringify(events);
+	for (const secret of ['SECRETKEY123', 'alice@shop.example.org', 'wp-login.php', 'Reset:', 'Password Reset for alice']) {
+		assert.ok(!dump.includes(secret), 'not kept: ' + secret);
+	}
+	const [, dead] = [...s.m.entries()].find(([x]) => x.startsWith(DEAD_PREFIX));
+	assert.deepEqual(Object.keys(dead).sort(), ['attempts', 'deadAt', 'domain', 'expiresAt', 'firstAt', 'lastError', 'reason', 'subjectHash'].sort());
+	assert.equal(dead.domain, 'shop.example.org', 'the recipient domain at most');
+	assert.match(dead.subjectHash, /^[0-9a-f]{16}$/);
+	assert.equal(dead.expiresAt, dead.deadAt + DEAD_TTL_MS);
+});
+test('#1062 review: dead records expire after 30 days (the drain prunes them); the count sees only live dead letters', async () => {
+	assert.equal(DEAD_TTL_MS, 30 * 24 * 60 * 60 * 1000);
+	const { s, now } = await deadAfterCap(RESET);
+	assert.equal([...s.m.keys()].filter((x) => x.startsWith(DEAD_PREFIX)).length, 1);
+	await drainRetries({ storage: s, now: now + DEAD_TTL_MS - 1000, send: async () => {}, log: () => {} });
+	assert.equal([...s.m.keys()].filter((x) => x.startsWith(DEAD_PREFIX)).length, 1, 'kept until its expiry');
+	const out = await drainRetries({ storage: s, now: now + DEAD_TTL_MS + 1000, send: async () => {}, log: () => {} });
+	assert.equal([...s.m.keys()].filter((x) => x.startsWith(DEAD_PREFIX)).length, 0, 'gone after it');
+	assert.equal(out.expired, 1);
+});
+test('#1062 review: a LIVE retry keeps the message only within the retry window; past it, it is dead-lettered (metadata only)', async () => {
+	const now = 1_000_000;
+	const [[k, r]] = failureRecords([{ email: RESET, to: RESET.to[0], error: 'e' }], now);
+	const s = store([[k, { ...r, next: now + RETRY_WINDOW_MS + 5000 }]]); // the drain did not run in time
+	await drainRetries({ storage: s, now: now + RETRY_WINDOW_MS + 1000, send: async () => {}, log: () => {} });
+	assert.ok(!s.m.has(k), 'the live record with the message is gone');
+	assert.ok(!JSON.stringify([...s.m.entries()]).includes('SECRETKEY123'));
+	assert.equal([...s.m.values()][0].reason, 'window');
+	assert.ok(RETRY_WINDOW_MS >= 216 * 60_000, 'at least the whole backoff (1+5+30+60+60+60 minutes)');
+});
+test('#1062 review: scrub removes addresses and URLs from an error', () => {
+	assert.equal(scrub('to a.b@c.org via https://x.y/z?key=1 failed'), 'to [address] via [url] failed');
+});
