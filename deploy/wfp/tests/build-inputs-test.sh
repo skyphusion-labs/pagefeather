@@ -107,9 +107,9 @@ run_update() { # run_update <record|norecord> <env assignments...>: one update's
       use_recorded_inputs "$B" "$W" > "$T/use.out" 2>&1 || return $?
       printf '%s\n' "PLUGINS=$PLUGINS" "THEMES=$THEMES" "SUITE=$SUITE" "THEME_SUITE=$THEME_SUITE" "IMPORT_THEMES=$IMPORT_THEMES" "IMPORT_PLUGINS=$IMPORT_PLUGINS" "IMPORT_MU_PLUGINS=$IMPORT_MU_PLUGINS" "WOO_ACTIVE=$WOO_ACTIVE" "REC_TREE=$REC_TREE" > "$T/vars"
       echo "$IMPORT_CONTENT" > "$T/content.path"
-      [ "${1:-}" = record ] && { record_build_inputs "$B" build-1 "$W" > "$T/rec.out" 2>&1 || return 1; }
+      [ "${1:-}" = record ] && { record_build_inputs "$B" "${REC_ID:-build-1}" "$W" > "$T/rec.out" 2>&1 || return 1; }
       return 0
-    }; env -u PLUGINS -u THEMES -u SUITE -u THEME_SUITE -u IMPORT_CONTENT -u IMPORT_THEMES -u IMPORT_PLUGINS -u IMPORT_MU_PLUGINS -u WOO_ACTIVE -u WOO -u REPLACE_INPUTS -u PF_ENGINE_JS -u PF_ENGINE_WASM -u PHP_ENGINE_RESOLVED PHP_ENGINE="$pe" "${@:2}" bash -c "$(declare -f local_test use_recorded_inputs record_build_inputs content_inputs_set engine_ensure); WFP='$HERE/..' APP='$APP' T='$T' B='$B'; local_test $1" )
+    }; env -u PLUGINS -u THEMES -u SUITE -u THEME_SUITE -u IMPORT_CONTENT -u IMPORT_THEMES -u IMPORT_PLUGINS -u IMPORT_MU_PLUGINS -u WOO_ACTIVE -u WOO -u REPLACE_INPUTS -u PF_ENGINE_JS -u PF_ENGINE_WASM -u PHP_ENGINE_RESOLVED PHP_ENGINE="$pe" "${@:2}" bash -c "$(declare -f local_test use_recorded_inputs record_build_inputs content_inputs_set engine_ensure woo_active_for_build); WFP='$HERE/..' APP='$APP' T='$T' B='$B'; local_test $1" )
 }
 # Poison from outside the case. A parent shell, or a batch that exported these,
 # must not count as the update's own inputs. The cases below fail if run_update leaks them.
@@ -124,6 +124,15 @@ tree=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["tree"
 check "  the tree key is _build/c<8 hex>.tar.gz" "$(echo "$tree" | grep -cE '^_build/c[0-9a-f]{8}\.tar\.gz$')" 1
 check "  the record holds the input values, no path" "$(grep -c "$T" "$T/rec.json")" 0
 
+# 2b. (#1003) The recorded content id is the one in the build id. build_dosql runs build.sh with WOO set from
+#     woo_active_for_build, and content-id.py hashes WOO, so the record must hash it the same way. Measured
+#     on cf759a (2026-11-20): the build id said c7a1d63b0, the record said cceae63d2 (WOO unset).
+EXP=$(cd "$APP" && env -u PLUGINS -u THEMES -u SUITE -u THEME_SUITE "${IN[@]}" WOO=1 python3 -I content-id.py build/wordpress/wp-content build/public/wp-content)
+run_update record "${IN[@]}" REC_ID="abcdef012345-e187d5fa1-$EXP-wooprimed"; check "#1003: a store's update records" "$?" 0
+python3 -I "$HERE/../build_inputs.py" get "$B" "$T/rec1003.json"
+check "#1003:   the recorded content id is the build id's" "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("content_id"))' "$T/rec1003.json")" "$EXP"
+run_update record "${IN[@]}" REC_ID="abcdef012345-e187d5fa1-c00000000-wooprimed"; check "#1003: a build id whose content id is not this tree's: not recorded" "$?" 1
+check "#1003:   and it says so" "$(grep -c 'is not the content id of the build id' "$T/rec.out")" 1
 # 3. THE GGC CASE: an update that passes NO input builds with the recorded ones and the stored tree.
 run_update norecord; check "THE GGC CASE: an update with no input is allowed" "$?" 0
 check "  it says it uses the recorded inputs" "$(grep -c 'using the recorded build inputs' "$T/use.out")" 1
