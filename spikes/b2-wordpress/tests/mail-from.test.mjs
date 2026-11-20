@@ -194,3 +194,13 @@ test('#1135 ONE source: the binding allowlist and the MAIL_ALLOWED_TO var are re
 	assert.deepEqual(fromVar, fromBinding, 'the var is the binding list, exactly');
 	assert.equal(/MAIL_ALLOWED_TO/.test(vars1135({ MAIL_FROM: 'wp@skyphusion.org' })), false, 'no allowlist, no var');
 });
+test('#1135 PRODUCTION: an unset, empty or blank MAIL_ALLOWED_TO is NO allowlist pre-check: every deliverable recipient passes', () => {
+	const list = ['customer@gmail.com', 'Owner <owner@shop.co.uk>', 'b@skyphusion.org'];
+	for (const env of [{}, { MAIL_ALLOWED_TO: '' }, { MAIL_ALLOWED_TO: '   ' }, { MAIL_ALLOWED_TO: undefined }, null, undefined]) {
+		const r = precheckRecipients(env, list);
+		assert.deepEqual(r.send, list, 'all sent with env ' + JSON.stringify(env));
+		assert.equal(r.refused.length, 0);
+		assert.equal(r.reason, null);
+	}
+	assert.deepEqual(precheckRecipients({}, ['customer@gmail.com', 'load@example.com']).send, ['customer@gmail.com'], 'only #198 still applies');
+});
