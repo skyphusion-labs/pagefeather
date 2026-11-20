@@ -496,6 +496,11 @@ def main():
             m = re.search(r'PF_CONFORMANCE_UPSTREAM_GLOBAL_SETUP = "([^"]+)"', txt)
             ok("config %s: upstream global-setup is an absolute suite path" % sn) if m and m.group(1).endswith(want_upstream_suffix) and os.path.isabs(m.group(1)) else bad("config %s: upstream env missing or relative" % sn)
             ok("config %s has no title grepInvert" % sn) if "grepInvert" not in txt else bad("config %s gained a title grepInvert" % sn)
+        conn = [r for r in runner.read_excludes("gb") if r.path == "specs/admin/connectors.spec.js"]
+        want_why = "code lock denies install_plugins, so connector install stays off"
+        ok("gb excludes connectors.spec.js for the code lock") if len(conn) == 1 and conn[0].kind == "file" and conn[0].reason == want_why else bad("connectors row: %s" % (conn,))
+        gbt = open(os.path.join(t, "cfg-gb", "pf-conformance.config.mjs")).read()
+        ok("gb testIgnore lists connectors.spec.js") if json.dumps("specs/admin/connectors.spec.js") in gbt else bad("gb config lacks connectors.spec.js")
         wpt = open(os.path.join(t, "cfg-wp", "pf-conformance.config.mjs")).read()
         ok("wp config sets STORAGE_STATE_PATH before import") if wpt.index("process.env.STORAGE_STATE_PATH") < wpt.index("import base") else bad("wp config: env after import")
         ok("wp config forces storageState on projects") if "storageState: state" in wpt and "const state = process.env.STORAGE_STATE_PATH" in wpt else bad("wp config: storageState missing")
