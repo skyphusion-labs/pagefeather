@@ -13,7 +13,7 @@ The release procedure is [docs/releasing.md](../../docs/releasing.md).
 - `BUNDLE_ENGINE=a build-bundle.sh <out dir>`: the approach-A bundle. It runs `prepare.sh` (the loader patches), then `spikes/b2-wordpress/opcache-a.sh`: build the D1 engine, prime the OPcache there with WooCommerce, build `ENGINE=a`, and bundle the cache minus the one colliding `wp-content/db.php` entry. Then `opcache-check.py` (the same floor as a primed b-dosql store) and `bundle_size_check`. The main module is `index-a-lean.js` (the lean MySQL client); the build id carries `-a` and must end `-wooprimed`. This is the stack that ran WooCommerce 12 of 12 (docs/results.md, 2026-11-09).
 - `bundle-manifest.mjs`: makes `manifest.json` and checks a bundle against it. It uses only Web Crypto, so the admin Worker can run the same check.
 - `bundle-cli.mjs`: `make` and `verify` from the command line.
-- `package-notices.sh <release dir> [prefix] [engine]`: copies notices into the release as `NOTICE`, `SOURCE` and `LICENSES.tar.gz` (#584). `engine` is `playground` (the default) or `lean`. `build-bundle.sh` runs it with no engine argument, before it writes `SHA256SUMS`. The lean prerelease is unprefixed: `package-notices.sh <release dir> "" lean`.
+- `package-notices.sh <release dir> [prefix] [engine]`: copies notices into the release as `NOTICE`, `SOURCE` and `LICENSES.tar.gz` (#584). `engine` is `playground` (the default), `lean`, or `lean-bundle`. `build-bundle.sh` asks `bundle-notice-set.sh` which set the vendored engine needs (`lean-bundle` for the pinned lean engine, `playground` for `PHP_ENGINE=npm`) and passes that, before it writes `SHA256SUMS`. The lean prerelease is unprefixed: `package-notices.sh <release dir> "" lean`.
 - `tests/bundle-manifest-test.mjs`: offline tests, with a passing control beside each refusal.
 - `tests/release-notices-test.sh`: a fake release dir must contain the notices directory, SOURCE and NOTICE; every `engine/licenses.tsv` row must be present with its pinned sha256.
 
@@ -26,7 +26,7 @@ The release procedure is [docs/releasing.md](../../docs/releasing.md).
 | `manifest.json` | The name, size, SHA-256 and upload type of each module, and the version, git sha, build id, and the Wrangler, WordPress and WooCommerce versions. |
 | `wordpress-static.tar.gz` | `build/public`, the static files. Nothing reads it yet (#328, item 2). |
 | `NOTICE` | PHP and Zend acknowledgment lines, and the list of linked components (#584). |
-| `SOURCE` | For the npm Playground engine: the pinned binary, `spikes/b2-wordpress/prepare.sh`, the php-src commit, the Emscripten version, and the URL of each library source. The shipped wasm sha256 is the `SHA256SUMS` line, and SOURCE says whether that line differs from the pin (#584). |
+| `SOURCE` | For the pinned lean engine: the engine prerelease, both pinned hashes, and `prepare.sh`'s transform. For the npm Playground engine (`PHP_ENGINE=npm`): the pinned binary, `spikes/b2-wordpress/prepare.sh`, the php-src commit, the Emscripten version, and the URL of each library source. The shipped wasm sha256 is the `SHA256SUMS` line, and SOURCE says whether that line differs from the pin (#584). |
 | `LICENSES.tar.gz` | The notices directory: the licence text of each linked component, fetched at the pinned version (#584). |
 | `SHA256SUMS` | The SHA-256 of every other asset. |
 
@@ -34,7 +34,7 @@ The approach-A assets are the same table with every name prefixed `a.`: `a.index
 
 ## Which engine
 
-A `vX.Y.Z` product release ships the npm Playground engine in both bundles (b-dosql and approach-A). `prepare.sh` rewrites that binary (the memory-import transform and the loader patch) before the bundle is built. `build-bundle.sh` packages the playground notices.
+A `vX.Y.Z` product release ships the pinned lean engine in both bundles (b-dosql and approach-A), from `spikes/b2-wordpress/engine.lock` (#771, #1027). `prepare.sh` applies the loader patches. `build-bundle.sh` packages the lean-bundle notices. `PHP_ENGINE=npm` builds the npm Playground engine and packages the playground notices instead.
 
 The custom engine (variant s1-lean, built by `.github/workflows/pagefeather-engine.yml` from `engine/` at the tag) is a separate prerelease. Its assets are `pagefeather-engine-lean.js` and `pagefeather-engine-lean.wasm`. Notices for that release come from `package-notices.sh <release dir> "" lean`: `lean/SOURCE` names `engine/` at the tag, `engine/licenses.tsv` and the workflow. `release-bundle.yml` does not publish that prerelease.
 

@@ -201,9 +201,9 @@ if [ -x "$pack" ]; then
   check "the prefix does not also write unprefixed NOTICE" "$([ -f "$T/release-a/NOTICE" ] && echo yes || echo no)" no
 fi
 
-# 7. The lean engine (variant s1-lean, #582). Product bundles (b-dosql and
-#    approach-A) keep the npm Playground notices: build-bundle.sh passes no
-#    engine, and a prefixed lean release is refused. The lean prerelease
+# 7. The lean engine prerelease (variant s1-lean, #582). A product bundle's notices
+#    follow the engine it vendored (#771, #1027): lean-bundle for the pinned lean
+#    engine, playground when PHP_ENGINE=npm. A prefixed lean release is refused. The lean prerelease
 #    (pagefeather-engine-lean.wasm, unprefixed) passes engine lean. Its SOURCE
 #    names the build inputs. The differs/equals sentence is checked against
 #    SHA256SUMS of that asset, and the shipped digest is not written into SOURCE.

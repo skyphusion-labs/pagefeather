@@ -170,11 +170,9 @@ fi
 # shellcheck source=SCRIPTDIR/observability.sh
 . "$ROOT/deploy/observability.sh"
 obs_check "$VARIANT" || exit 2
-# #788: approach A stays on the npm engine until lean is measured there (the lead's ruling, #771). An explicit
-# PHP_ENGINE, or PF_ENGINE_JS and PF_ENGINE_WASM, still wins.
-if [ "$VARIANT" = a ] && [ -z "${PHP_ENGINE:-}" ] && [ -z "${PF_ENGINE_JS:-}${PF_ENGINE_WASM:-}" ]; then export PHP_ENGINE=npm; fi
 # #771: the PHP engine, resolved ONCE here and exported (spikes/b2-wordpress/engine.sh): prepare.sh, build.sh and
-# everything after see the same pair. The default is the pinned lean engine; PHP_ENGINE=npm, or PF_ENGINE_JS and
+# everything after see the same pair. The default is the pinned lean engine for every variant, including a
+# (#1027 lifted the #788 hold that forced npm here). PHP_ENGINE=npm, or PF_ENGINE_JS and
 # PF_ENGINE_WASM, choose another. After every other check (each refuses first, as
 # its tests pin), and before any Terraform, build or deploy step: a fetch that fails leaves nothing half-applied.
 # shellcheck source=../spikes/b2-wordpress/engine.sh
