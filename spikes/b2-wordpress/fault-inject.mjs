@@ -97,7 +97,9 @@ export function exhaustMemory({ alloc = (n) => new ArrayBuffer(n), held = [], ca
 
 // #1057: the EMAIL rejection, a MEASUREMENT for throwaway and local sites only, under the same rule (the site var
 // FAULT_INJECT is set, which deploys render only for a throwaway, deploy/fault-inject.sh). EMAIL_FAULT=reject-N makes the
-// next N env.EMAIL.send calls of this isolate reject, so the retry path (email-retry.mjs) runs as for a real refusal.
+// first N env.EMAIL.send calls of THIS ISOLATE reject, so the retry path (email-retry.mjs) runs as for a real refusal.
+// The count lives in this module, so it is per isolate, not per site: the cron object and any fresh isolate each
+// reject their own first N (measured on cf759hx, 2026-11-20).
 let emailRejectsLeft = null;
 /** True when this send must reject (and counts it): the site var FAULT_INJECT, and EMAIL_FAULT=reject-N. */
 export function emailFaultRejects(env) {

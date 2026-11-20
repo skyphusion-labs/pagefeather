@@ -2,7 +2,7 @@
 """The conformance runner of #759: the upstream browser suites against a THROWAWAY site.
 
     runner.py prepare --suite wp|wc|wc-api|gb --base-url https://<site> --cache on|off --run-dir <dir>
-    runner.py config  --suite wp|wc|wc-api|gb --suite-dir <upstream e2e dir> --run-dir <dir>
+    runner.py config  --suite wp|wc|wc-api|gb --suite-dir <upstream e2e dir> --run-dir <dir> [--stock]
     runner.py check-state --base-url https://<site> --state <storage state json> [--state ...]
     runner.py summarize --report <playwright json> --out <results.json>
     runner.py compare --baseline <results.json> --ours <results.json>
@@ -408,7 +408,7 @@ def pf_workers():
     return int(n)
 
 
-def config_text(suite, run_dir, suite_dir, tier=None):
+def config_text(suite, run_dir, suite_dir, stock=False, tier=None):
     rows = read_excludes(suite, tier)
     ign = [r.path for r in rows if r.kind == "file"]
     titles = [(r.path, r.title) for r in rows if r.kind == "title"]
@@ -417,10 +417,11 @@ def config_text(suite, run_dir, suite_dir, tier=None):
     artifacts, storage = conformance_artifact_paths(run_dir)
     lines = ["// Written by tests/conformance/runner.py config (#759). Do not edit; re-run it."]
     if suite in ("wp", "gb"):
-        lines += [
-            "process.env.WP_ARTIFACTS_PATH = %s;" % json.dumps(artifacts),
-            "process.env.STORAGE_STATE_PATH = %s;" % json.dumps(storage),
-        ]
+        # The artifacts (traces, results) go under the run dir either way. A stock baseline (--stock) leaves the login
+        # state to upstream: no STORAGE_STATE_PATH here (#1112).
+        lines.append("process.env.WP_ARTIFACTS_PATH = %s;" % json.dumps(artifacts))
+        if not stock:
+            lines.append("process.env.STORAGE_STATE_PATH = %s;" % json.dumps(storage))
     lines.append("import base from './%s';" % UPSTREAM_CONFIG[suite])
     if suite in ("wc", "wc-api", "wc-cpt"):
         lines.append("import { coreSetupProjects } from './%s';" % UPSTREAM_CONFIG[suite])
@@ -460,6 +461,17 @@ def config_text(suite, run_dir, suite_dir, tier=None):
         # config ignores). No reset project either: the seed owns setup and the reseed between the halves.
         lines += ["config.projects = [ ...setup,",
                   "  { name: 'api-pf', testMatch: [ '**/api-tests/**' ], testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % json.dumps(grep_src)]
+    elif stock:
+        # #1112: the stock baseline is upstream's own config plus only our exclusions, one worker, no retries and the
+        # JSON report: upstream's baseURL (its default, wp-env at localhost:8889), storageState and globalSetup are left
+        # alone. Forcing them gave baseURL "/" and Invalid URL in global setup, because the baseline unsets the names.
+        if titles:
+            title_src = "|".join(title_grep_source(p, t) for p, t in titles)
+            lines.append("config.grepInvert = new RegExp( %s );" % json.dumps(title_src))
+            map_line = "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: ignore, grepInvert: new RegExp( %s ) } ) );" % json.dumps(title_src)
+        else:
+            map_line = "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: ignore } ) );"
+        lines += ["config.testIgnore = ignore;", map_line]
     else:
         pf_setup = os.path.join(HERE, "pf-global-setup.mjs")
         assert_login = os.path.join(HERE, "assert-login.mjs")
@@ -492,7 +504,7 @@ def cmd_config(a):
         raise Stop("no upstream config %s" % up)
     p = os.path.join(a.suite_dir, "pf-conformance.config.mjs")
     with open(p, "w") as f:
-        f.write(config_text(a.suite, a.run_dir, a.suite_dir, tier=getattr(a, "tier", None)))
+        f.write(config_text(a.suite, a.run_dir, a.suite_dir, stock=getattr(a, "stock", False), tier=getattr(a, "tier", None)))
     print(p)
 
 
@@ -568,6 +580,7 @@ def main(argv=None):
     p.add_argument("--suite", choices=("wp", "wc", "wc-api", "wc-cpt", "gb"), required=True)
     p.add_argument("--suite-dir", required=True)
     p.add_argument("--run-dir", required=True)
+    p.add_argument("--stock", action="store_true", help="a stock baseline: leave upstream baseURL, storageState and globalSetup alone (wp, gb)")
     p.add_argument("--tier", choices=TIERS, help="the tier this run is on: applies its tier-scoped exclude rows")
     p = sub.add_parser("check-state")
     p.add_argument("--base-url", required=True)

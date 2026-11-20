@@ -10,8 +10,10 @@
 #   - THROWAWAY=1, so a site nobody marked fails CLOSED;
 #   - the site is not live: neither deploy/live-sites/<name>.env nor deploy/wfp/live-sites/<name> exists, and a
 #     run with no name is refused (it cannot be checked).
-#   FAULT_INJECT=email (#1062) is the email rejection seam instead: EMAIL_FAULT=reject-N (N 1 to 999) makes the next N
-#   env.EMAIL.send calls of an isolate reject, so the retry path runs as for a real refusal. It kills no isolate, so it is
+#   FAULT_INJECT=email (#1062) is the email rejection seam instead: EMAIL_FAULT=reject-N (N 1 to 999) makes the first N
+#   env.EMAIL.send calls of EACH isolate reject, so the retry path runs as for a real refusal. The count is per isolate,
+#   not per site: every isolate that sends (the site Worker, the cron object, a fresh one after a reset) rejects its own
+#   first N (measured on cf759hx, 2026-11-20: the cron object rejected its first retry too). It kills no isolate, so it is
 #   allowed on variant a AND b-dosql (the two tiers with this mail path), under the same THROWAWAY=1 and live-site rule.
 #   EMAIL_FAULT without FAULT_INJECT=email is refused (a half-armed seam).
 # Neither is ever recorded (deploy/wfp/site_settings.py MEASUREMENT), so the next update without them turns them off.
@@ -25,7 +27,7 @@ fault_check() {
   case "$FAULT_INJECT" in after-insert|sql-fail|email) ;; *) echo "FAULT_INJECT must be after-insert, sql-fail, email or unset, not ${FAULT_INJECT}" >&2; return 2 ;; esac
   if [ "$FAULT_INJECT" = email ]; then
     case "$v" in a|b-dosql) ;; *) echo "FAULT_INJECT=email is for variant a or b-dosql (the wp_mail path with the #1057 retry), not ${v:-unset}" >&2; return 2 ;; esac
-    [ -n "${EMAIL_FAULT:-}" ] || { echo "FAULT_INJECT=email needs EMAIL_FAULT=reject-N (how many sends reject)" >&2; return 2; }
+    [ -n "${EMAIL_FAULT:-}" ] || { echo "FAULT_INJECT=email needs EMAIL_FAULT=reject-N (how many sends each isolate rejects)" >&2; return 2; }
     [[ "$EMAIL_FAULT" =~ ^reject-([1-9][0-9]{0,2})$ ]] || { echo "EMAIL_FAULT must be reject-N with N from 1 to 999, not ${EMAIL_FAULT}" >&2; return 2; }
   else
     [ "$v" = b-dosql ] || { echo "FAULT_INJECT is for variant b-dosql (the request frame is in the object's SQLite), not ${v:-unset}" >&2; return 2; }

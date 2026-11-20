@@ -58,6 +58,11 @@ class ActionScheduler_QueueCleaner { function __construct( $s ) {} function rese
 // Action Scheduler's init registers its queue runner on this hook during wp-load: the spy stands in.
 add_action( 'action_scheduler_run_queue', function () { $GLOBALS['spy']['runner']++; } );
 register_shutdown_function( function () { fwrite( STDERR, json_encode( $GLOBALS['spy'] ) ); } );
+// The runtime's bridge to the Worker (#1120: the leg asks cronMore before each further action). STUB_MORE is the
+// Worker's answer ('1' runs it); STUB_NO_BRIDGE leaves the function out, as a runtime without the bridge.
+if ( ! getenv( 'STUB_NO_BRIDGE' ) ) {
+	function post_message_to_js( $m ) { $d = json_decode( $m, true ); return isset( $d['cronMore'] ) ? ( getenv( 'STUB_MORE' ) ?: '1' ) : '1'; }
+}
 `;
 
 // A due WP-Cron array: run_queue first (the earliest, as it nearly always is), then other hooks.
@@ -68,12 +73,12 @@ function cron(...hooks) {
 	return c;
 }
 
-function run({ code, crons, pending = 7, due = 3 }) {
+function run({ code, crons, pending = 7, due = 3, more = '', noBridge = false }) {
 	const d = mkdtempSync(join(tmpdir(), 'cron-run-queue-'));
 	try {
 		writeFileSync(join(d, 'stubs.php'), STUBS);
 		writeFileSync(join(d, 'cron.php'), code.replace("require '/wordpress/wp-load.php';", "require '" + join(d, 'stubs.php') + "';"));
-		const r = spawnSync('php', ['-n', join(d, 'cron.php')], { env: { ...process.env, STUB_CRON: JSON.stringify(crons), STUB_PENDING: String(pending), STUB_DUE: String(due) }, encoding: 'utf8' });
+		const r = spawnSync('php', ['-n', join(d, 'cron.php')], { env: { ...process.env, STUB_CRON: JSON.stringify(crons), STUB_PENDING: String(pending), STUB_DUE: String(due), STUB_MORE: more, STUB_NO_BRIDGE: noBridge ? '1' : '' }, encoding: 'utf8' });
 		assert.equal(r.status, 0, r.stderr + r.stdout);
 		const out = JSON.parse(r.stdout.slice(r.stdout.lastIndexOf('{')));
 		return { out, spy: JSON.parse(r.stderr) };
@@ -116,6 +121,25 @@ test('fixed: the bounded Action Scheduler loop still runs its actions, and the b
 	assert.equal(out.as_pending, 900);
 	assert.equal(out.as_due, 850);
 	assert.equal(spy.runner, 0);
+});
+
+test('#1120: the Worker stops the leg after the first action (budget), and the leg says why', () => {
+	const { out, spy } = run({ code: render(3, 1), crons: cron('action_scheduler_run_queue'), pending: 900, due: 850, more: 'budget' });
+	assert.deepEqual(spy.processed, [11], 'the first action always runs; the second asked and was told to stop');
+	assert.equal(out.as_actions, 1);
+	assert.equal(out.as_stop, 'budget');
+});
+
+test('#1120: with no bridge to the Worker, the leg runs one action (fails closed to the bound before #1120)', () => {
+	const { out, spy } = run({ code: render(3, 1), crons: cron('action_scheduler_run_queue'), pending: 900, due: 850, noBridge: true });
+	assert.deepEqual(spy.processed, [11]);
+	assert.equal(out.as_stop, 'stop');
+});
+
+test('#1120: when the Worker allows it, the leg runs every claimed action and reports no stop', () => {
+	const { out, spy } = run({ code: render(3, 1), crons: cron('action_scheduler_run_queue'), pending: 900, due: 850 });
+	assert.deepEqual(spy.processed, [11, 12, 13]);
+	assert.equal(out.as_stop, null);
 });
 
 test('fixed: with only run_queue due, the tick runs no WP-Cron event and no runner', () => {

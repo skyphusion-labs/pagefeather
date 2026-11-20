@@ -86,3 +86,55 @@ test('DEFAULT PATH: index-a-lean.js registers mysql-lean-bridge.js, which uses c
 	assert.match(bridge, /const one = createConnector\(openLean\(env\), \{ log \}\);/, 'oneShot is bounded too');
 	assert.match(bridge, /export async function mysqlEnd\(\) \{\n\tawait connector\.end\(\);\n\}/);
 });
+
+// #1101 arm 4 instruments (strummer, the lead): the counts of connect-timeout and db-end-timeout mean something only if a
+// bounded connect or end() through THIS bridge is logged. Positive controls: each bound, hit through the lean bridge,
+// prints its event line on console.log (the Workers Logs channel); a healthy run prints none.
+async function eventsDuring(fn) {
+	const lines = [];
+	const orig = console.log;
+	console.log = (...a) => { lines.push(a.join(' ')); };
+	try { await fn(); } finally { console.log = orig; }
+	return lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((o) => o && o.m);
+}
+const named = (ev, m) => ev.filter((o) => o.m === m && o['@event'] === m);
+test('EVENT: a run connect that never settles logs connect-timeout for each of its two attempts', async () => {
+	lean.connect = never;
+	bridge.mysqlReset();
+	const ev = await eventsDuring(async () => { assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'SELECT 1' })).ok, false); });
+	assert.deepEqual(named(ev, 'connect-timeout').map((o) => o.attempt), [1, 2], JSON.stringify(ev));
+	await bridge.mysqlEnd();
+});
+test('EVENT: a run end() that never settles logs db-end-timeout after end', async () => {
+	lean.connect = async () => okConn({ end: never });
+	bridge.mysqlReset();
+	assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'SELECT 1' })).ok, true);
+	const ev = await eventsDuring(() => bridge.mysqlEnd());
+	assert.deepEqual(named(ev, 'db-end-timeout').map((o) => o.after), ['end'], JSON.stringify(ev));
+});
+test('EVENT: an end() while the connect is still pending logs db-end-timeout after pending-connect', async () => {
+	lean.connect = never;
+	bridge.mysqlReset();
+	const ev = await eventsDuring(async () => {
+		const q = bridge.mysqlQuery(ENV, { mysql: 'SELECT 1' });
+		await new Promise((r) => setTimeout(r, 50));
+		await bridge.mysqlEnd();
+		await q;
+	});
+	assert.ok(named(ev, 'db-end-timeout').some((o) => o.after === 'pending-connect'), JSON.stringify(ev));
+});
+test('EVENT: mysqlOneShot logs connect-timeout through its own connector too', async () => {
+	lean.connect = never;
+	const ev = await eventsDuring(async () => { assert.equal((await bridge.mysqlOneShot(ENV, 'SELECT 1')).ok, false); });
+	assert.deepEqual(named(ev, 'connect-timeout').map((o) => o.attempt), [1, 2], JSON.stringify(ev));
+});
+test('EVENT: a healthy run logs neither event (so a zero count is a real zero)', async () => {
+	lean.connect = async () => okConn();
+	bridge.mysqlReset();
+	const ev = await eventsDuring(async () => {
+		for (let i = 0; i < 3; i++) assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'SELECT 1' })).ok, true);
+		await bridge.mysqlEnd();
+		assert.equal((await bridge.mysqlOneShot(ENV, 'SELECT 1')).ok, true);
+	});
+	assert.equal(named(ev, 'connect-timeout').length + named(ev, 'db-end-timeout').length, 0, JSON.stringify(ev));
+});
