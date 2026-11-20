@@ -5,9 +5,11 @@ The licence texts, NOTICE and SOURCE of the pagefeather engine (#584).
 an engine.
 
 `NOTICE` and `SOURCE` here describe the npm Playground engine (the binary
-pinned in `engine/UPSTREAM`, then `spikes/b2-wordpress/prepare.sh`). A product
-release (`vX.Y.Z`, the b-dosql bundle and the approach-A bundle) ships that
-engine. `package-notices.sh` with no engine argument copies these files.
+pinned in `engine/UPSTREAM`, then `spikes/b2-wordpress/prepare.sh`).
+`package-notices.sh` with no engine argument copies these files. A product
+release (`vX.Y.Z`, the b-dosql bundle and the approach-A bundle) ships the
+pinned lean engine by default (#771, #1027) and uses `engine/notices/lean-bundle/`
+for that. `PHP_ENGINE=npm` is this Playground engine, and it uses these files.
 
 `lean/NOTICE` and `lean/SOURCE` describe the custom build, variant s1-lean.
 The lean prerelease calls `package-notices.sh <release-dir> "" lean`. That

@@ -55,9 +55,8 @@ OUT=$(cd "$OUT" && pwd)
 # shellcheck source=../wfp/lib.sh
 source "$ROOT/deploy/wfp/lib.sh"
 export WOO_ACTIVE=1
-# #788: approach A stays on the npm engine until lean is measured there (the lead's ruling, #771). An explicit
-# PHP_ENGINE, or PF_ENGINE_JS and PF_ENGINE_WASM, still wins (that is how #788 measures lean).
-if [ "$engine" = a ] && [ -z "${PHP_ENGINE:-}" ] && [ -z "${PF_ENGINE_JS:-}${PF_ENGINE_WASM:-}" ]; then export PHP_ENGINE=npm; fi
+# #1027: approach A uses the same default as b-dosql (the #788 npm hold is lifted). An explicit
+# PHP_ENGINE, or PF_ENGINE_JS and PF_ENGINE_WASM, still wins.
 if [ "$engine" = a ]; then
   # The approach-A build. prepare.sh first, as build_dosql does (#446: an old loader otherwise
   # survives in a tree that built before). opcache-a.sh builds D1, primes the OPcache there,
