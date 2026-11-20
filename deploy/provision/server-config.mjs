@@ -144,19 +144,25 @@ function moduleType(f) {
   if (f.endsWith('.wasm')) return 'application/wasm';
   return 'application/octet-stream';
 }
+function bundlePrefixFor(env, kind) {
+  if (kind === 'wp') return env.WP_BUNDLE_PREFIX || 'bundles/b-dosql/current/';
+  if (kind === 'a') return env.A_BUNDLE_PREFIX || 'bundles/a/current/';
+  return env.C1_BUNDLE_PREFIX || 'bundles/c1/current/';
+}
+async function sha256HexBytes(bytes) {
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  return Array.from(d, (b) => b.toString(16).padStart(2, '0')).join('');
+}
 async function loadBundle(env, kind) {
   if (!env.BUNDLES) throw new Error('the Worker is missing the BUNDLES R2 binding');
-  const prefix = kind === 'wp'
-    ? (env.WP_BUNDLE_PREFIX || 'bundles/b-dosql/current/')
-    : kind === 'a'
-      ? (env.A_BUNDLE_PREFIX || 'bundles/a/current/')
-      : (env.C1_BUNDLE_PREFIX || 'bundles/c1/current/');
+  const prefix = bundlePrefixFor(env, kind);
   const listed = await env.BUNDLES.list({ prefix });
   const objects = (listed && listed.objects) || [];
   const mods = [];
   for (const o of objects) {
     const f = o.key.slice(prefix.length);
-    if (!f || f.endsWith('.map') || f === 'README.md' || !/\.(m?js|wasm|zip|bin|dat|data)$/.test(f)) continue;
+    // A slash is a pack under assets/_pf/, not a Worker module. A pack zip is too big for the script.
+    if (!f || f.includes('/') || f === 'remote-packs-index.json' || f.endsWith('.map') || f === 'README.md' || !/\.(m?js|wasm|zip|bin|dat|data)$/.test(f)) continue;
     const obj = await env.BUNDLES.get(o.key);
     if (!obj) continue;
     const type = moduleType(f);
@@ -165,6 +171,84 @@ async function loadBundle(env, kind) {
   }
   if (!mods.length) throw new Error(`no bundle modules under ${prefix} in the BUNDLES bucket`);
   return mods;
+}
+
+// The SHA-256 manifest.json names for the pack index, or null when this prefix has no manifest
+// or the manifest does not name one (an older release, or a build with OPCACHE_REMOTE=0).
+async function manifestAssetsPin(env, prefix) {
+  const obj = await env.BUNDLES.get(prefix + 'manifest.json');
+  if (!obj) return null;
+  let manifest;
+  try { manifest = JSON.parse(await obj.text()); }
+  catch { throw new BadRequest('manifest.json is not JSON'); }
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) throw new BadRequest('manifest.json is not a manifest');
+  if (!Object.hasOwn(manifest, 'assetsIndexSha256')) return null;
+  const want = manifest.assetsIndexSha256;
+  if (typeof want !== 'string' || !/^[0-9a-f]{64}$/.test(want)) {
+    throw new BadRequest('manifest.json names assetsIndexSha256 but it is not a SHA-256');
+  }
+  return want;
+}
+
+// The remote packs next to the modules (#1036). Null when this bundle has no index (an older
+// release, or one built with OPCACHE_REMOTE=0). A manifest that names assetsIndexSha256 with no
+// index is refused: the built Worker imports the pack indexes and the zips are empty, so a site
+// with no packs answers 503. A present index that does not match its files throws, so a site is
+// never deployed with half of its packs.
+async function loadPackAssets(env, kind) {
+  if (!env.BUNDLES) return null;
+  const prefix = bundlePrefixFor(env, kind);
+  const pin = await manifestAssetsPin(env, prefix);
+  const obj = await env.BUNDLES.get(prefix + 'remote-packs-index.json');
+  if (!obj) {
+    if (pin) throw new BadRequest('manifest.json names assetsIndexSha256 but remote-packs-index.json is missing');
+    return null;
+  }
+  let index;
+  try { index = JSON.parse(await obj.text()); } catch { throw new Error('remote-packs-index.json is not JSON'); }
+  if (!index || index.schema !== 1 || !Array.isArray(index.files) || !index.files.length) {
+    throw new Error('remote-packs-index.json is not a pack index');
+  }
+  const files = [];
+  for (const f of index.files) {
+    if (!f || typeof f.path !== 'string' || !f.path.startsWith('/_pf/') || f.path.includes('..')) {
+      throw new Error('remote-packs-index.json has a bad path');
+    }
+    const got = await env.BUNDLES.get(prefix + 'assets' + f.path);
+    if (!got) throw new Error(`missing pack ${f.path}`);
+    const bytes = new Uint8Array(await got.arrayBuffer());
+    if (bytes.byteLength !== f.size) throw new Error(`${f.path}: size ${bytes.byteLength}, index says ${f.size}`);
+    const h = await sha256HexBytes(bytes);
+    if (h !== f.sha256) throw new Error(`${f.path}: sha256 does not match the pack index`);
+    files.push({ path: f.path, bytes, hash: f.hash, kind: f.kind });
+  }
+  return { buildId: index.buildId, opcache: index.opcache || null, site: index.site || null, files };
+}
+
+// Unset is on when the bundle carries packs. OPCACHE_REMOTE=0 and SITE_REMOTE=0 are the build's
+// knobs: a bundle that carries the index already imported it, and the zips are empty, so turning
+// either knob off here would answer 503. A bundle with no index renders nothing, the same as every
+// site before #1036, and the knobs do nothing.
+function remotePackConfig(env, packs) {
+  if (!packs) return { opcacheRemote: false, siteRemote: false, assets: null };
+  if (env.OPCACHE_REMOTE === '0' || env.SITE_REMOTE === '0') {
+    throw new BadRequest('this bundle carries remote packs, so OPCACHE_REMOTE and SITE_REMOTE cannot be turned off when the site is added. Only the build can opt out (OPCACHE_REMOTE=0 while the bundle is built).');
+  }
+  const siteRemote = packs.site != null;
+  const files = siteRemote ? packs.files : packs.files.filter((f) => f.kind !== 'site');
+  if (!files.length) return { opcacheRemote: false, siteRemote: false, assets: null };
+  return { opcacheRemote: true, siteRemote, assets: { files, runWorkerFirst: ['/_pf/*'] } };
+}
+
+function applyRemotePackBindings(bindings, remote) {
+  const next = [];
+  for (const b of bindings || []) {
+    if (b && b.type === 'plain_text' && (b.name === 'OPCACHE_REMOTE' || b.name === 'SITE_REMOTE')) continue;
+    next.push(b);
+  }
+  if (remote.opcacheRemote) next.push({ type: 'plain_text', name: 'OPCACHE_REMOTE', text: 'on' });
+  if (remote.siteRemote) next.push({ type: 'plain_text', name: 'SITE_REMOTE', text: 'on' });
+  return next;
 }
 
 // ---- 8. Build the full server-side cfg --------------------------------------
@@ -188,10 +272,21 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
   }
   const target = deriveTarget(env, { kind, name, domain });
   const compatibilityDate = env.WFP_COMPAT || '2026-07-01';
+  const modules = await loadBundle(env, kind);
+  // Packs are attached by provisionSite after the existing-site return (#1036). Building them
+  // here hashed about 41 MB before a re-add that does not deploy.
   const common = {
     name, namespace: target.namespace, kvId: target.kvId,
     compatibilityDate, compatibilityFlags: ['nodejs_compat', 'enable_request_signal'], // #721
-    modules: await loadBundle(env, kind),
+    modules,
+  };
+  const finish = (cfg) => {
+    cfg.attachRemotePacks = async () => {
+      const got = remotePackConfig(env, await loadPackAssets(env, kind));
+      if (got.assets) cfg.assets = got.assets;
+      cfg.resourceBindings = applyRemotePackBindings(cfg.resourceBindings, got);
+    };
+    return cfg;
   };
   if (kind === 'wp') {
     const mediaBucket = mediaBucketName(name);
@@ -200,8 +295,8 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
     // async-email-queue descriptors provision their per-site backing resource on the
     // HOSTED provisioning path too. Without resourceCreateOps here, the OC_KV /
     // EMAIL_QUEUE bindings would deploy with no namespace / queue behind them.
-    const bdosqlOpts = { mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS, mailFrom: target.workersDev ? undefined : `wordpress@${domain}`, mailFromName: name, demo: demo === true, codeLock: codeLock === true, ...pageCacheInputs(env, { store }), ...objectTimeInputs(env) };
-    return {
+    const bdosqlOpts = { mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS, mailFrom: target.workersDev ? undefined : `wordpress@${domain}`, mailFromName: name, demo: demo === true, codeLock: codeLock === true, ...pageCacheInputs(env, { store }), ...objectTimeInputs(env), opcacheRemote: false, siteRemote: false };
+    return finish({
       ...common, kind: 'wp', mainModule: env.WP_MAIN || 'index.js',
       hostname: target.hostname,
       // The FULL b-dosql binding + var set (deploy/wfp lib.sh render_user), from
@@ -216,7 +311,7 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
       // Demo lane (#182 Path B): the entry is stamped ephemeral so the reaper can
       // find and fully tear it down. saasZoneId is carried for the DNS teardown.
       ...(demo ? { demo: true, expiresAt } : {}),
-    };
+    });
   }
   if (kind === 'a') {
     // Approach A (#431, #218): PHP in the Worker, managed MySQL through Hyperdrive.
@@ -227,7 +322,7 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
     // (the site manager's own checked database list), never from a request body.
     // The code lock is on by default in the runtime (site-lock.mjs, #461).
     const mediaBucket = mediaBucketName(name);
-    return {
+    return finish({
       ...common, kind: 'a', mainModule: env.A_MAIN || 'index-a-lean.js',
       hostname: target.hostname,
       resourceBindings: aBindings({
@@ -237,13 +332,14 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
         ...pageCacheInputs(env, { store }),
         ...objectTimeInputs(env),
         ...aCacheInputs(env), // #296: the escape hatch for the two cache defaults
+        opcacheRemote: false, siteRemote: false, // #1036: attachRemotePacks turns these on when the bundle carries packs
       }),
       sqliteClasses: [],
       kvNamespaces: [{ title: ocKvNamespaceName(name), binding: 'OC_KV' }],
       saasZoneId: target.saasZoneId,
       secrets: { WP_SALT: genSecret(), SPIKE_TOKEN: genSecret(24) },
       buckets: { media: mediaBucket },
-    };
+    });
   }
   // Only 'wp' (b-dosql) and 'a' (approach A) are built; the c1 'shop' store path was retired (#214).
   throw new Error(`buildServerCfg: only kinds 'wp' and 'a' are supported (c1 'shop' retired #214), got ${JSON.stringify(kind)}`);

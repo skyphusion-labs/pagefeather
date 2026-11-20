@@ -23,6 +23,9 @@
 #   manifest.json          each module's name, size, sha256 and type, plus the version, git sha,
 #                          build id, and the Wrangler, WordPress and WooCommerce versions
 #   wordpress-static.tar.gz  build/public (the static files). Nothing reads it yet (#328 item 2).
+#   remote-packs-index.json  the opcache and site indexes, and each pack's path, size and hashes (#1036)
+#   oc-*.zip, st-*.zip, site-hot.zip  the packs under /_pf/, named in that index. Omitted when
+#                          OPCACHE_REMOTE=0 (the zips stay Worker modules). Approach A prefixes a.
 #   NOTICE, SOURCE, LICENSES.tar.gz  engine notices (#584): acknowledgments, source
 #                          pointers, and the licence texts of each linked component
 #   SHA256SUMS             sha256 of every other file in release/
@@ -58,6 +61,16 @@ export WOO_ACTIVE=1
 # #788: approach A stays on the npm engine until lean is measured there (the lead's ruling, #771). An explicit
 # PHP_ENGINE, or PF_ENGINE_JS and PF_ENGINE_WASM, still wins (that is how #788 measures lean).
 if [ "$engine" = a ] && [ -z "${PHP_ENGINE:-}" ] && [ -z "${PF_ENGINE_JS:-}${PF_ENGINE_WASM:-}" ]; then export PHP_ENGINE=npm; fi
+# #1036: the remote packs, the same rule as deploy.sh. Unset is on. OPCACHE_REMOTE=0 leaves the zips in the module.
+if [ "$engine" = a ]; then a_remote_pack_defaults; else remote_pack_defaults; fi
+# BUNDLE_PACK_PROBE=1 is the offline test (deploy/release/tests/bundle-packs-test.sh). It runs this
+# branch with the WordPress build replaced, then stops. A release never sets it.
+if [ "${BUNDLE_PACK_PROBE:-}" = 1 ]; then
+  printf 'probe engine=%s prefix=%s\n' "$engine" "$prefix"
+  build_dosql() { printf 'called build_dosql %s %s\n' "${OPCACHE_REMOTE-unset}" "${SITE_REMOTE-unset}"; }
+  remote_pack_scripts() { printf 'called remote_pack_scripts %s %s %s\n' "${OPCACHE_REMOTE-unset}" "${SITE_REMOTE-unset}" "${OPCACHE_A-unset}"; return 0; }
+  bundle_size_check() { printf 'called bundle_size_check\n'; }
+fi
 if [ "$engine" = a ]; then
   # The approach-A build. prepare.sh first, as build_dosql does (#446: an old loader otherwise
   # survives in a tree that built before). opcache-a.sh builds D1, primes the OPcache there,
@@ -66,15 +79,18 @@ if [ "$engine" = a ]; then
   ( cd "$APP"
     [ -d node_modules ] || npm ci --silent
     ./prepare.sh || { echo "prepare.sh failed: the loader was not rebuilt"; exit 1; }
-    ./opcache-a.sh > build/opcache-a.log 2>&1 || { echo "opcache-a.sh failed:"; tail -25 build/opcache-a.log; exit 1; }
+    # TRACE follows the pack flag, so the packs are cut from OPCACHE_A's file trace.
+    TRACE=${OPCACHE_REMOTE:-0} ./opcache-a.sh > build/opcache-a.log 2>&1 || { echo "opcache-a.sh failed:"; tail -25 build/opcache-a.log; exit 1; }
     tail -2 build/opcache-a.log
     python3 -I opcache-check.py build/opcache.zip 1 || { echo "the approach-A OPcache is not primed"; exit 1; }
+    remote_pack_scripts || exit 1
   ) || exit 1
   bundle_size_check
 else
   build_dosql
   # build_dosql already ran bundle_size_check; its status is checked by set -e.
 fi
+if [ "${BUNDLE_PACK_PROBE:-}" = 1 ]; then exit 0; fi
 
 build_id=$(sed -n 's/^export default "\(.*\)";$/\1/p' "$APP/build/build-id.js")
 [ -n "$build_id" ] || { echo "build-bundle: no build id in $APP/build/build-id.js" >&2; exit 1; }
@@ -118,6 +134,8 @@ git_sha=$(git -C "$ROOT" rev-parse HEAD)
 node "$REL/bundle-cli.mjs" make "$OUT/modules" "$OUT/release/manifest.json" \
   "version=$version" "gitSha=$git_sha" "buildId=$build_id" "wrangler=$wr_version" \
   "wordpress=$wp_version" "woocommerce=$woo_version" "compatibilityDate=$(compat_date)" "mainModule=$main"
+# #1036: the packs and their index, as release assets. Stamps the manifest when there are packs.
+node "$REL/bundle-cli.mjs" packs "$APP/build" "$OUT/release" "$prefix" "$OUT/release/manifest.json" || exit 1
 # Check what was just described before anything is published (the same check the admin runs).
 node "$REL/bundle-cli.mjs" verify "$OUT/modules" "$OUT/release/manifest.json"
 

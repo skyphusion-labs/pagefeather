@@ -37,12 +37,51 @@ async function fetchBundle(env, fetchImpl, { base, version, pin, asset, prefix, 
   }
   const v = await verifyBundle(files, manifest);
   if (!v.ok) throw new BadRequest(`the bundle does not match its manifest: ${v.errors.join('; ')}`);
-  return { files, manifestBytes, prefix };
+  return { files, manifestBytes, prefix, manifest };
 }
 
-async function writeBundle(env, { files, manifestBytes, prefix }) {
+// The pack index is optional on an older release (no assetsIndexSha256). When the manifest names
+// one, the index and every pack must match before anything is written (#1036).
+async function fetchPacks(fetchImpl, { base, asset, manifest }) {
+  const want = manifest.assetsIndexSha256;
+  if (want === undefined) return null;
+  if (typeof want !== 'string' || !/^[0-9a-f]{64}$/.test(want)) throw new BadRequest('manifest assetsIndexSha256 is not a SHA-256');
+  const indexUrl = `${base}/${asset}remote-packs-index.json`;
+  const res = await fetchImpl(indexUrl, { redirect: 'follow', headers: { 'user-agent': 'pagefeather-site-manager' } });
+  if (res.status === 404) throw new BadRequest('the manifest names remote packs but the release has no remote-packs-index.json');
+  if (!res.ok) throw new BadRequest(`download ${indexUrl}: HTTP ${res.status}`);
+  const indexBytes = new Uint8Array(await res.arrayBuffer());
+  const got = await sha256Hex(indexBytes);
+  if (got !== want) throw new BadRequest(`remote-packs-index.json sha256 ${got} is not the manifest's ${want}`);
+  let index;
+  try { index = JSON.parse(new TextDecoder().decode(indexBytes)); }
+  catch { throw new BadRequest('remote-packs-index.json is not JSON'); }
+  if (!index || index.schema !== 1 || !Array.isArray(index.files) || !index.files.length) {
+    throw new BadRequest('remote-packs-index.json is not a pack index');
+  }
+  const files = [];
+  for (const f of index.files) {
+    if (!f || typeof f.asset !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(f.asset)) {
+      throw new BadRequest('remote-packs-index.json has a bad asset name');
+    }
+    if (typeof f.path !== 'string' || !f.path.startsWith('/_pf/') || f.path.includes('..')) {
+      throw new BadRequest('remote-packs-index.json has a bad path');
+    }
+    const bytes = await get(fetchImpl, `${base}/${asset}${f.asset}`);
+    if (bytes.byteLength !== f.size) throw new BadRequest(`${f.asset}: size ${bytes.byteLength}, index says ${f.size}`);
+    const h = await sha256Hex(bytes);
+    if (h !== f.sha256) throw new BadRequest(`${f.asset}: sha256 does not match the pack index`);
+    files.push({ path: f.path, bytes });
+  }
+  return { indexBytes, files };
+}
+
+async function writeBundle(env, { files, manifestBytes, prefix, packs }) {
   for (const f of files) await env.BUNDLES.put(prefix + f.name, f.bytes);
   await env.BUNDLES.put(prefix + 'manifest.json', manifestBytes);
+  if (!packs) return;
+  await env.BUNDLES.put(prefix + 'remote-packs-index.json', packs.indexBytes);
+  for (const f of packs.files) await env.BUNDLES.put(prefix + 'assets' + f.path, f.bytes);
 }
 
 export async function installBundle(env, { fetchImpl = fetch } = {}) {
@@ -60,6 +99,8 @@ export async function installBundle(env, { fetchImpl = fetch } = {}) {
 
   const b = await fetchBundle(env, fetchImpl, { base, version, pin, asset: '', prefix: bundlePrefix(env), pinName: 'BUNDLE_MANIFEST_SHA256' });
   const a = wantA ? await fetchBundle(env, fetchImpl, { base, version, pin: pinA, asset: 'a.', prefix: aBundlePrefix(env), pinName: 'A_BUNDLE_MANIFEST_SHA256' }) : null;
+  b.packs = await fetchPacks(fetchImpl, { base, asset: '', manifest: b.manifest });
+  if (a) a.packs = await fetchPacks(fetchImpl, { base, asset: 'a.', manifest: a.manifest });
   // Only now, with every module of every bundle checked, write to the bucket.
   await writeBundle(env, b);
   if (a) await writeBundle(env, a);
