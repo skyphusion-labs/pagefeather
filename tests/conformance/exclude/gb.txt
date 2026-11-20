@@ -4,3 +4,4 @@ specs/editor/collaboration/**                           needs the RTC WebSocket 
 specs/editor/various/adding-inline-tokens.spec.js       writes files on the RUNNER disk
 specs/interactivity/router-regions.spec.ts              writes files on the RUNNER disk
 specs/interactivity/router-script-modules.spec.ts       writes files on the RUNNER disk
+specs/admin/connectors.spec.js                          code lock denies install_plugins, so connector install stays off
