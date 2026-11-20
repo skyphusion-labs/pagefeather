@@ -21,6 +21,51 @@ add_action(
 	},
 	1
 );
+// #1143: WooCommerce's DeferredEmailQueue restores each queued object by id (wc_get_order and the like) and returns
+// SILENTLY when one cannot be restored. Per queued-email action: each reference (type and id only), what its fetch
+// returns, the HPOS state, the order data store, and whether the order's row is in the orders table and in posts.
+add_action(
+	'action_scheduler_begin_execute',
+	static function ( $id ) {
+		if ( ! class_exists( 'ActionScheduler' ) ) {
+			return;
+		}
+		$a = ActionScheduler::store()->fetch_action( $id );
+		if ( ! $a || 'woocommerce_send_queued_transactional_email' !== $a->get_hook() ) {
+			return;
+		}
+		$args = (array) $a->get_args();
+		pf1120_mark( 'args ' . (int) $id . ' n=' . count( $args ) . ' filter=' . ( isset( $args[0] ) && is_string( $args[0] ) ? substr( $args[0], 0, 80 ) : gettype( isset( $args[0] ) ? $args[0] : null ) ) . ' second=' . gettype( isset( $args[1] ) ? $args[1] : null ) );
+		$hpos = class_exists( '\\Automattic\\WooCommerce\\Utilities\\OrderUtil' ) ? ( \Automattic\WooCommerce\Utilities\OrderUtil::custom_orders_table_usage_is_enabled() ? 1 : 0 ) : -1;
+		$walk = static function ( $v ) use ( &$walk, $id, $hpos ) {
+			if ( ! is_array( $v ) ) {
+				return;
+			}
+			if ( isset( $v['__woocommerce_deferred_email_object'] ) && is_array( $v['__woocommerce_deferred_email_object'] ) ) {
+				$r   = $v['__woocommerce_deferred_email_object'];
+				$t   = isset( $r['type'] ) ? (string) $r['type'] : '?';
+				$oid = isset( $r['id'] ) ? $r['id'] : '?';
+				$got = 'n/a';
+				$rows = '';
+				if ( 'order' === $t && function_exists( 'wc_get_order' ) ) {
+					$o   = wc_get_order( $oid );
+					$got = is_object( $o ) ? get_class( $o ) : var_export( $o, true );
+					global $wpdb;
+					$in_orders = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->prefix}wc_orders WHERE id = %d", (int) $oid ) );
+					$in_posts  = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->posts} WHERE ID = %d", (int) $oid ) );
+					$rows = ' in_wc_orders=' . $in_orders . ' in_posts=' . $in_posts . ' store=' . ( class_exists( 'WC_Data_Store' ) ? WC_Data_Store::load( 'order' )->get_current_class_name() : '?' );
+				}
+				pf1120_mark( 'ref ' . (int) $id . ' type=' . $t . ' id=' . $oid . ' fetched=' . $got . ' hpos=' . $hpos . $rows );
+				return;
+			}
+			foreach ( $v as $x ) {
+				$walk( $x );
+			}
+		};
+		$walk( $args );
+	},
+	2
+);
 add_action(
 	'action_scheduler_after_execute',
 	static function ( $id ) {
