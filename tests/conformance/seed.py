@@ -500,9 +500,15 @@ def main():
             rest(a, n, "/wp/v2/plugins/%s" % pid, {"status": "active"}, "POST")
         c, st = rest(a, n, "/wp/v2/plugins/%s?context=edit" % pid)
         check("test plugin %s is active" % pid, isinstance(st, dict) and st.get("status") == "active", status=st.get("status") if isinstance(st, dict) else c)
+    # A spec that stopped mid-run can leave one active (sb1120: default-post-content). The seed owns setup, so it
+    # deactivates each one, then reads the list back.
     gb = [k for k, v in have.items() if (k or "").startswith("gutenberg-test-plugins/") and v == "active"]
+    for pid in gb:
+        rest(a, n, "/wp/v2/plugins/%s" % pid, {"status": "inactive"}, "POST")
     if gb:
-        check("gutenberg-test-plugins stay inactive (the specs toggle them)", False, active=gb)
+        c, plist = rest(a, n, "/wp/v2/plugins?context=edit")
+        still = [p.get("plugin") for p in plist if (p.get("plugin") or "").startswith("gutenberg-test-plugins/") and p.get("status") == "active"] if isinstance(plist, list) else None
+        check("gutenberg-test-plugins stay inactive (the specs toggle them)", still == [], deactivated=gb, still_active=still, listed=c)
     # 8. --theme: activate an installed theme through its own link (the nonce is on themes.php), then read it back
     if THEME:
         if not re.fullmatch(r"[a-z0-9-]{1,64}", THEME):
