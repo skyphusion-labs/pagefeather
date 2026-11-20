@@ -135,6 +135,31 @@ test('writeLossResponse: x-isolate-reset names the kind, memory by default', () 
 // The line must also carry the operator perf id (memIdOf) and answered, the status the client got.
 import { perfHeadersAllowed } from '../perf-headers.mjs';
 import { rolledBackResponse } from '../write-loss.mjs';
+import { objectErrorHeaders } from '../object-error.mjs';
+
+// #1004 review: kind internal is a platform fault, not an isolate reset.
+// objectErrorHeaders already marks that fault x-platform-error: internal.
+// Counting it as x-isolate-reset: memory would corrupt the memory measurements.
+// Memory and storage keep their x-isolate-reset values.
+test('#1004: internal write-loss carries x-platform-error and no x-isolate-reset', () => {
+	const marker = objectErrorHeaders('internal', 'php-0', '5');
+	assert.equal(marker['x-platform-error'], 'internal');
+	for (const r of [
+		writeLossResponse('unknown', false, 'internal'),
+		rolledBackResponse(false, 'internal', 0),
+	]) {
+		assert.equal(r.headers['x-platform-error'], marker['x-platform-error']);
+		assert.ok(!Object.hasOwn(r.headers, 'x-isolate-reset'), JSON.stringify(r.headers));
+	}
+	assert.equal(writeLossResponse('unknown', false, 'memory').headers['x-isolate-reset'], 'memory');
+	assert.equal(writeLossResponse('unknown', false, 'storage').headers['x-isolate-reset'], 'storage');
+	assert.equal(rolledBackResponse(false, 'memory', 0).headers['x-isolate-reset'], 'memory');
+	assert.equal(rolledBackResponse(false, 'storage', 0).headers['x-isolate-reset'], 'storage');
+	assert.ok(!Object.hasOwn(writeLossResponse('unknown', false, 'memory').headers, 'x-platform-error'));
+	assert.ok(!Object.hasOwn(writeLossResponse('unknown', false, 'storage').headers, 'x-platform-error'));
+	assert.ok(!Object.hasOwn(rolledBackResponse(false, 'memory', 0).headers, 'x-platform-error'));
+	assert.ok(!Object.hasOwn(rolledBackResponse(false, 'storage', 0).headers, 'x-platform-error'));
+});
 
 const indexSrc = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const memAt = indexSrc.indexOf('function memIdOf(req, env) {');

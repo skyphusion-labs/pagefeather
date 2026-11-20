@@ -26,12 +26,19 @@ export const WRITE_LOSS_CODE = 'skyphusion_write_loss';
 // #352: the request frame was rolled back, PROVEN by the object's /_frame probe (state rolled-back, no
 // commit point passed): nothing of the request was kept, so a retry is safe. Never sent without the proof.
 export const ROLLED_BACK_MESSAGE = 'The request did not complete. Nothing was saved. You can try again.';
+// kind 'memory' and 'storage' are isolate resets (#398). kind 'internal' is a platform
+// fault (#976, #1004): the same marker objectErrorHeaders uses, and no x-isolate-reset.
+// A false x-isolate-reset: memory would be counted with the real memory resets.
+function lossKindHeaders(kind) {
+	if (kind === 'internal') return { 'x-platform-error': 'internal' };
+	return { 'x-isolate-reset': kind === 'storage' ? 'storage' : 'memory' };
+}
 /** The #352 answer when the frame is proven rolled back: still a 500, never a 302 with half a save. */
 export function rolledBackResponse(json = false, kind = 'memory', undone = 0) {
 	const headers = {
 		'content-type': json ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8',
 		'cache-control': 'no-store',
-		'x-isolate-reset': kind === 'storage' ? 'storage' : 'memory',
+		...lossKindHeaders(kind),
 		'x-write-loss': 'rolled-back',
 		'x-write-undone': String(Number(undone) || 0),
 	};
@@ -155,7 +162,8 @@ export function wantsJson(pathname, search, accept) {
  * The answer for a request whose writes may be partly saved: status, headers, body. n is the
  * number of statements that failed in the reset, or 'unknown' when the reset killed the whole
  * request (the object answered nothing). kind is the reset (object-error.mjs): 'memory', or
- * 'storage' for a storage reset (#398). No Retry-After, no Set-Cookie, never cached.
+ * 'storage' for a storage reset (#398). 'internal' is a platform fault (#1004): x-platform-error,
+ * and no x-isolate-reset. No Retry-After, no Set-Cookie, never cached.
  *
  * phpStatus is PHP's own status on the write-loss log line (index.js), read before this
  * guard replaces the answer. It is not the status the client got: that is `answered`
@@ -165,7 +173,7 @@ export function writeLossResponse(n, json = false, kind = 'memory') {
 	const headers = {
 		'content-type': json ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8',
 		'cache-control': 'no-store',
-		'x-isolate-reset': kind === 'storage' ? 'storage' : 'memory',
+		...lossKindHeaders(kind),
 		'x-write-loss': String(n),
 	};
 	const body = json ? JSON.stringify({ code: WRITE_LOSS_CODE, message: WRITE_LOSS_MESSAGE, data: { status: 500 } }) : WRITE_LOSS_BODY;

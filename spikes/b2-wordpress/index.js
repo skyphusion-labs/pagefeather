@@ -3714,15 +3714,17 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 		// An isolate memory reset also comes with e.overloaded set; it gets its own
 		// header, x-isolate-reset: memory, not x-overloaded (#335, object-error.mjs).
 		// A storage reset (#398) is a reset too: x-isolate-reset: storage, the same retry and the same
-		// write-loss answer. A platform internal error (#976) is not a reset: the call did not enter
-		// PHP on the measured case, so the client gets 503 and may retry. Other errors are thrown
-		// as before (fetchWithMemoryRetry rethrows them).
+		// write-loss answer. A platform internal error (#976) is not a reset. On a method that may
+		// have written it still takes the write-loss path (#1004): rows may already be saved, so
+		// the client is not told to try again. GET, HEAD and OPTIONS keep the 503. Other errors
+		// are thrown as before (fetchWithMemoryRetry rethrows them).
 		const reset = isResetKind(kind);
 		const tag = reset ? 'isolate-reset' : kind === 'internal' ? 'platform-internal' : 'overloaded';
 		console.log(JSON.stringify({ m: tag, kind, path: url.pathname, retried, ...memIdOf(req, env), error: String(e.message).slice(0, 200) }));
-		// A method that may have written (anything but GET or HEAD) and died in a reset: its earlier
-		// writes may be saved (#350; #398 saw a page create and a delete saved), so no 503 "try
-		// again" and never the dispatcher 502 (write-loss.mjs).
+		// A method that may have written (anything but GET, HEAD or OPTIONS) and died in a reset,
+		// or in a platform internal error (#1004): its earlier writes may be saved (#350; #398 saw
+		// a page create and a delete saved), so no 503 "try again" and never the dispatcher 502
+		// (write-loss.mjs). The frame probe answers rolled back only when it proves rollback.
 		if (objectErrorOutcome(kind, req.method) === 'write-loss') {
 			// #352: "nothing was saved" only when the object PROVES the frame rolled back.
 			const fr = await frameProbe(env, name, pfReq);
