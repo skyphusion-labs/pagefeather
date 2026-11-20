@@ -29,6 +29,7 @@ content, and `render_user` checks as the last guard.
 
 1. **Build and deploy:** the throwaway with `prepare-content.sh`'s line, `CONFORMANCE=on THROWAWAY=1`, and these settings:
    - `TURNSTILE_LOGIN` must be `off`. The suite login post has no token.
+   - `TURNSTILE_LOSTPASSWORD` must be `off`. The suite lost-password posts cannot complete the challenge.
    - `TURNSTILE_SITEKEY` must be `1x00000000000000000000AA`. That is the always-pass test site key.
    - `TURNSTILE_SECRET` must be `1x0000000000000000000000000000000AA`. That is the always-pass test secret.
    - Do not set `TURNSTILE_WOO` or `TURNSTILE_COMMENTS` to `off`. Those gates stay on.

@@ -16,6 +16,7 @@
 # live (neither
 # deploy/live-sites/<name>.env nor deploy/wfp/live-sites/<name>; ggc and ggc-test are refused).
 # #940: that throwaway also needs Cloudflare's always-pass Turnstile test pair, and TURNSTILE_LOGIN=off.
+# #973: it also needs TURNSTILE_LOSTPASSWORD=off. The lost-password posts cannot complete the challenge.
 # The checkout and comment gates stay on. A real site key is refused. The test secret is public.
 # Test: deploy/tests/conformance-test.sh, deploy/wfp/tests/conformance-early-test.sh.
 
@@ -41,11 +42,14 @@ conformance_content() {
 }
 
 # conformance_turnstile: the checkout gate stays on, with the always-pass test pair.
-# Login is off because the suite login post carries no token. A missing pair is refused
-# so an empty site key cannot skip the gate. The secret value is never printed.
+# Login is off because the suite login post carries no token.
+# Lost password is off because those posts cannot complete the challenge (#973).
+# A missing pair is refused so an empty site key cannot skip the gate.
+# The secret value is never printed.
 conformance_turnstile() {
   [ "${TURNSTILE:-}" != off ] || { echo "conformance refuses TURNSTILE=off. The checkout gate stays on." >&2; return 2; }
   [ "${TURNSTILE_LOGIN:-}" = off ] || { echo "conformance needs TURNSTILE_LOGIN=off. The suite login post has no token." >&2; return 2; }
+  [ "${TURNSTILE_LOSTPASSWORD:-}" = off ] || { echo "conformance needs TURNSTILE_LOSTPASSWORD=off. The suite lost-password posts cannot complete the challenge." >&2; return 2; }
   [ "${TURNSTILE_WOO:-}" != off ] || { echo "conformance refuses TURNSTILE_WOO=off. The checkout gate stays on." >&2; return 2; }
   [ "${TURNSTILE_COMMENTS:-}" != off ] || { echo "conformance refuses TURNSTILE_COMMENTS=off. The comment gate stays on." >&2; return 2; }
   [ "${TURNSTILE_SITEKEY:-}" = "$CONFORMANCE_TURNSTILE_SITEKEY" ] || { echo "conformance needs TURNSTILE_SITEKEY=${CONFORMANCE_TURNSTILE_SITEKEY}. A real site key stops classic checkout." >&2; return 2; }
