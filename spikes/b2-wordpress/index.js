@@ -9,7 +9,7 @@ import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { installPhpBasicAuth } from './php-auth.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
 import { wpCronState, idleDecision, parseGmt, IDLE_KEY } from './cron-idle.mjs';
-import { armBeforeRun, rearm, pullIn, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm, setAlarmRecorded, ALARM_SET_KEY, emailRushDue, emailAlarmAt, EMAIL_DUE_KEY, EMAIL_RETRY_MS } from './alarm-arm.mjs';
+import { armBeforeRun, rearm, pullIn, extendIfOurs, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm, setAlarmRecorded, ALARM_SET_KEY, emailRushDue, emailAlarmAt, EMAIL_DUE_KEY, EMAIL_RETRY_MS } from './alarm-arm.mjs';
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
 import { askPurgeAfterAnswer } from './purge-after-php.mjs';
 import { callPhpObject, isObjectCallDeadline, objectCallDeadlineMs, objectCallExempt } from './object-deadline.mjs';
@@ -3068,7 +3068,7 @@ export class PhpRuntime extends DurableObject {
 	async alarm() {
 		// The next tick is armed FIRST (#291, alarm-arm.mjs armBeforeRun): a run killed below (an
 		// isolate reset) still leaves a future alarm. A purge retry sets a sooner one, which replaces it.
-		await armBeforeRun(this.ctx.storage, Date.now(), Number((this.env && this.env.CRON_INTERVAL_MS) || 60000));
+		this.tickAt = await armBeforeRun(this.ctx.storage, Date.now(), Number((this.env && this.env.CRON_INTERVAL_MS) || 60000));
 		// No error leaves alarm() (#291): a throw spends the platform retry budget, and an object that
 		// used it up got no alarm at all afterwards. The error is stored for /_purgestate instead.
 		try {
@@ -3126,9 +3126,10 @@ export class PhpRuntime extends DurableObject {
 			// or Action Scheduler: no leg, and the alarm backs off. Unreadable state runs the leg. CRON_IDLE_GATE=off: as before.
 			const idle = legDue && !emailRush && this.env.CRON_IDLE_GATE !== 'off' ? await this.cronIdle(Date.now()) : null;
 			if (idle && idle.idle) {
-				await setAlarmRecorded(this.ctx.storage, idle.alarmAt, Date.now(), 'idle');
+				// #1059 review: only the tick this alarm armed is extended; a purge retry, a budget wait or deferred mail keeps its time.
+				const backedOff = await extendIfOurs(this.ctx.storage, this.tickAt, idle.alarmAt, Date.now(), 'idle');
 				await this.ctx.storage.put(IDLE_KEY, { n: idle.streak + 1, t: Date.now() });
-				console.log(JSON.stringify({ m: 'cron', skipped: 'idle', streak: idle.streak + 1, nextInMs: idle.alarmAt - Date.now(), wpNext: idle.wp && idle.wp.next, asNext: idle.as && idle.as.next }));
+				console.log(JSON.stringify({ m: 'cron', skipped: 'idle', streak: idle.streak + 1, nextInMs: idle.alarmAt - Date.now(), backedOff, wpNext: idle.wp && idle.wp.next, asNext: idle.as && idle.as.next }));
 			}
 			const cronGo = (legDue || emailRush) && !bo.waitMs && !importHeld && !moveHeld && phpPending === 0 && Date.now() - lastSpikeEndAt > SPIKE_CRON_GRACE_MS && cronOrigin && this.env && !(idle && idle.idle);
 			// Why a tick skipped the cron, for /_purgestate cronSkip (#291: a skip was invisible).

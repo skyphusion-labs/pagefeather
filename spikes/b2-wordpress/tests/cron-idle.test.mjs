@@ -78,3 +78,48 @@ test('index.js: the gate runs before any PHP boot, a request pulls a backed-off 
 	assert.match(run, /m: 'cron', skipped: 'idle'/);
 	assert.match(src, /const ra = await rearm\(this\.ctx\.storage[^\n]*\n[\s\S]{0,400}await pullIn\(this\.ctx\.storage, Date\.now\(\), Number\(\(ENV && ENV\.CRON_INTERVAL_MS\) \|\| 60000\)\)/, 'a request pulls a backed-off alarm back in');
 });
+
+import { extendIfOurs } from '../alarm-arm.mjs';
+// The lead's review on #1059: the DO has ONE alarm and five setters. The idle back-off must never move a sooner alarm
+// later. It extends only the tick this alarm armed itself; any other setter's time (a purge retry, a purge-budget
+// wait, deferred mail, a request) is kept, even one set while the idle gate was reading the database.
+function alarmStore(at) {
+	let cur = at;
+	const sets = [];
+	return { sets, get cur() { return cur; }, async getAlarm() { return cur; }, async setAlarm(t) { cur = t; sets.push(t); }, async put() {}, async get() {} };
+}
+test('#1059 review: the back-off extends the alarm when it is still the tick this alarm armed', async () => {
+	const s = alarmStore(1000 + 60000);
+	assert.equal(await extendIfOurs(s, 1000 + 60000, 1000 + 120000, 1000, 'idle'), true);
+	assert.equal(s.cur, 1000 + 120000);
+});
+test('#1059 review: a PURGE RETRY set while the gate read the database keeps its sooner time', async () => {
+	const tick = 1000 + 60000;
+	const s = alarmStore(tick);
+	await s.setAlarm(1000 + 12000); // purge-retry: 12 s
+	assert.equal(await extendIfOurs(s, tick, 1000 + 120000, 1000, 'idle'), false);
+	assert.equal(s.cur, 1000 + 12000, 'the purge retry still fires at 12 s');
+});
+test('#1059 review: a PURGE-BUDGET wait keeps its time, sooner or later than the tick', async () => {
+	const tick = 1000 + 60000;
+	for (const budgetAt of [1000 + 30000, 1000 + 90000]) {
+		const s = alarmStore(tick);
+		await s.setAlarm(budgetAt);
+		assert.equal(await extendIfOurs(s, tick, 1000 + 300000, 1000, 'idle'), false);
+		assert.equal(s.cur, budgetAt, 'the budget wait is never moved by the back-off');
+	}
+});
+test('#1059 review: no alarm at all (deleted meanwhile) is armed at the back-off time; a back-off never moves an alarm SOONER', async () => {
+	const s = alarmStore(null);
+	assert.equal(await extendIfOurs(s, 1000 + 60000, 1000 + 120000, 1000, 'idle'), true);
+	assert.equal(s.cur, 1000 + 120000);
+	const t = alarmStore(1000 + 60000);
+	assert.equal(await extendIfOurs(t, 1000 + 60000, 1000 + 30000, 1000, 'idle'), false, 'not sooner: the tick stands');
+	assert.equal(t.cur, 1000 + 60000);
+});
+test('#1059 review: index.js extends only its own tick, from alarm() to the idle path', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /this\.tickAt = await armBeforeRun\(this\.ctx\.storage/);
+	assert.match(src, /await extendIfOurs\(this\.ctx\.storage, this\.tickAt, idle\.alarmAt, Date\.now\(\), 'idle'\)/);
+	assert.ok(!/await setAlarmRecorded\(this\.ctx\.storage, idle\.alarmAt/.test(src), 'no unconditional set');
+});

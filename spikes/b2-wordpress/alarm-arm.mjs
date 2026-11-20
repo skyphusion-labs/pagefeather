@@ -43,6 +43,18 @@ export async function armBeforeRun(storage, now, intervalMs) {
 	return at;
 }
 
+// #1059 review: the object has ONE alarm and several setters (the tick, a purge request or retry, the purge-budget
+// wait, deferred mail, a request). The idle back-off (cron-idle.mjs) may move the alarm LATER only while it is still
+// the tick this alarm armed (ourAt, from armBeforeRun): any other setter's time is kept, including one set while the
+// idle gate awaited its database reads. With no alarm at all it arms the back-off. It never moves an alarm sooner.
+export async function extendIfOurs(storage, ourAt, newAt, now, by) {
+	const cur = await storage.getAlarm();
+	if (cur !== null && cur !== undefined && Number(cur) !== Number(ourAt)) return false;
+	if (cur !== null && cur !== undefined && Number(newAt) <= Number(cur)) return false;
+	await setAlarmRecorded(storage, newAt, now, by);
+	return true;
+}
+
 // #390: a request pulls an alarm that the idle back-off pushed past the normal interval (cron-idle.mjs) back to it,
 // so work the request scheduled (a post, an order email) is not left behind the back-off. No alarm, or one within the
 // interval: untouched (rearm handles none and stale).
