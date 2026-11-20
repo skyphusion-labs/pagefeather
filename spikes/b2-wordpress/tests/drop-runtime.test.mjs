@@ -84,7 +84,8 @@ test('index.js: every drop retires synchronously, and every PHP run reaps in its
 	assert.ok(drop.length > 0, 'dropRuntime() takes no argument');
 	assert.match(drop, /retirer\.retire\(held\)/);
 	assert.doesNotMatch(drop, /\bawait\b|\.then\(|waitUntil|\bPromise\./, 'no continuation in the drop');
-	assert.match(code, /retirer\.runStart\(\);\n\t+try \{\n\t+return await fn\(\);\n\t+\} finally \{\n\t+retirer\.runEnd\(\);/, 'withPhp brackets every run');
+	// #1087: the run is withDbRun(dbHandler, fn) (approach A's MySQL connection lives the run); the bracket is unchanged.
+	assert.match(code, /retirer\.runStart\(\);\n\t+try \{\n\t+return await (?:fn\(\)|withDbRun\(dbHandler, fn\));[^\n]*\n\t+\} finally \{\n\t+retirer\.runEnd\(\);/, 'withPhp brackets every run');
 	// A boot that finished after a drop: with reuse off it is queued, never released on the spot (a caller may still use
 	// it). With reuse on (#724 review, finding 4) its callers are handed the current runtime instead, so nothing runs
 	// on it, and it is released at once (its memory comes back as the offer).
