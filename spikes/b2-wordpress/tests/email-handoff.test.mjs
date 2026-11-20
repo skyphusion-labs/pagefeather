@@ -224,7 +224,7 @@ test('createTickMail counts and logs each decision; a handoff that throws is rep
 	assert.deepEqual(await m.op({ subject: 'b' }), { ok: true, queued: false, held: true });
 	const f = await m.op({ subject: 'boom', as_action: 6 });
 	assert.equal(f.ok, false);
-	assert.deepEqual(m.counts, { handedOff: 2, held: 1, failed: 1, bounded: 1, deduped: 0 });
+	assert.deepEqual(m.counts, { handedOff: 2, held: 1, failed: 1, bounded: 1, deduped: 0, sendFailed: 0 });
 	assert.equal(m.lostWritesSeen(), 2);
 	assert.deepEqual(sent.map((e) => e.subject), ['a', 'slow']);
 	assert.deepEqual(lines.map((l) => l['@event']), ['email-handoff', 'email-handoff', 'email-held', 'email-handoff']);
@@ -416,4 +416,33 @@ test('the residual, stated for #367: when a soft reset fails the mark write, a l
 	const retry = createTickMail({ handoff: async (e) => { sent.push(e); return 1; }, lostWrites: () => 0, seen: st.seen, mark: st.mark });
 	await retry.op(order('Your order'));
 	assert.equal(sent.length, 2, 'the known window: a duplicate, never a loss');
+});
+
+// strummer on cf759hx (#1088 B, A_CRON=1): the order email's leg logged "email send: 1 of 1 failed", while the tick's mail
+// summary said handedOff 1, failed 0. The handoff resolved (the failed recipient went to the #1057 retry store, durably),
+// so createTickMail counted it as handed off and never said the send failed. The reason was not logged at all (#104: a
+// loud failure, with its reason; #856: a refused send is logged and counted). A handoff that resolves { sendFailed: n }
+// now counts it separately and says so on its line; the message is still handed off (it is in the retry store).
+test('#1088 B: a handoff whose send failed (into the retry store) counts sendFailed and says so; handedOff stays true', async () => {
+	const lines = [];
+	const tm = createTickMail({ handoff: async () => ({ sent: 0, sendFailed: 1 }), lostWrites: () => 0, log: (o) => lines.push(o) });
+	const r = await tm.op({ to: ['a@example.org'], subject: 's', message: 'm', wp_cron: 1 });
+	assert.equal(r.ok, true, 'the mail is durable (retry store): PHP is not told it failed');
+	assert.equal(tm.counts.handedOff, 1);
+	assert.equal(tm.counts.sendFailed, 1);
+	assert.equal(tm.counts.failed, 0, 'failed stays the count of handoffs that threw');
+	const h = lines.find((o) => o.m === 'email-handoff');
+	assert.equal(h.sendFailed, 1);
+});
+test('#1088 B: a plain numeric handoff result (the old shape) still counts as before', async () => {
+	const tm = createTickMail({ handoff: async () => 1, lostWrites: () => 0 });
+	await tm.op({ to: ['a@example.org'], subject: 's', message: 'm', wp_cron: 1 });
+	assert.equal(tm.counts.handedOff, 1);
+	assert.equal(tm.counts.sendFailed, 0);
+});
+test('#1088 B index.js: each failed recipient is logged with its reason (scrubbed) and domain; the tick handoff passes sendFailed', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /'@event': 'email-send-failed', m: 'email-send-failed', reason: scrub\(f\.error\), domain: domainOfAddress\(f\.to\), retry: 'queued'/);
+	assert.match(src, /const sp = sendListOutcome\(env, \[email\]\);/);
+	assert.match(src, /return \{ sent: o\.sent, sendFailed: o\.failed \};/);
 });

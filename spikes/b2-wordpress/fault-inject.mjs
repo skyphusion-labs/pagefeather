@@ -94,3 +94,18 @@ export function exhaustMemory({ alloc = (n) => new ArrayBuffer(n), held = [], ca
 	}
 	return { killed: false, mib, throws };
 }
+
+// #1057: the EMAIL rejection, a MEASUREMENT for throwaway and local sites only, under the same rule (the site var
+// FAULT_INJECT is set, which deploys render only for a throwaway, deploy/fault-inject.sh). EMAIL_FAULT=reject-N makes the
+// next N env.EMAIL.send calls of this isolate reject, so the retry path (email-retry.mjs) runs as for a real refusal.
+let emailRejectsLeft = null;
+/** True when this send must reject (and counts it): the site var FAULT_INJECT, and EMAIL_FAULT=reject-N. */
+export function emailFaultRejects(env) {
+	if (!env || !env.FAULT_INJECT || typeof env.EMAIL_FAULT !== 'string') return false;
+	const m = /^reject-(\d{1,3})$/.exec(env.EMAIL_FAULT);
+	if (!m) return false;
+	if (emailRejectsLeft === null) emailRejectsLeft = Number(m[1]);
+	if (emailRejectsLeft <= 0) return false;
+	emailRejectsLeft--;
+	return true;
+}
