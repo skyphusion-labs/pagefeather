@@ -963,9 +963,18 @@ record_settings() {
 # The content tree is packed from IMPORT_CONTENT and stored under its content id, unless this run
 # used that same recorded tree (REC_TREE).
 record_build_inputs() {
-  local b=$1 id=$2 w=$3 cid key=""
-  # The same two trees build-id.sh hashes, so the recorded content id equals the build id's.
-  cid=$(cd "$APP" && python3 -I content-id.py build/wordpress/wp-content build/public/wp-content) || return 1
+  local b=$1 id=$2 w=$3 cid key="" woo want
+  # The same two trees build-id.sh hashes, AND the same WOO: build_dosql runs build.sh with
+  # WOO=$(woo_active_for_build), and content-id.py hashes WOO. Without it the record named another
+  # content id than the live build (cf759a, 2026-11-20: c7a1d63b0 live, cceae63d2 recorded, #1003).
+  woo=$(woo_active_for_build) || return 1
+  cid=$(cd "$APP" && WOO=$woo python3 -I content-id.py build/wordpress/wp-content build/public/wp-content) || return 1
+  # A build id that carries a content id must carry THIS one, or the record would describe other
+  # content than the site runs: refused, so the update reports its inputs as not recorded.
+  if [[ "$id" =~ -(c[0-9a-f]{8})(-wooprimed)?$ ]]; then
+    want=${BASH_REMATCH[1]}
+    [ "$cid" = "$want" ] || { echo "  record: the tree's content id ${cid:-none} is not the content id of the build id $id ($want); the inputs are NOT recorded (#1003)" >&2; return 1; }
+  fi
   if [ -n "${IMPORT_CONTENT:-}" ] && [ -n "$cid" ]; then
     key="_build/$cid.tar.gz"
     if [ "${REC_TREE:-}" != "$key" ]; then
