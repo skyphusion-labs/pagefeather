@@ -33,9 +33,13 @@ export function recycleLine(env, def = RECYCLE_DEFAULT_MIB) {
 // its old size (wasm memory never shrinks), so a recycle for memory needs this runtime to have GROWN it past the
 // line; an inherited size alone would recycle every request, forever. Without reuse a runtime boots at the 24 MiB
 // start, so the rule is today's.
-export function recycleDecision({ crashed = false, forced = false, wasmBytes, lineBytes, bootBytes = 0, recycleOff = false }) {
+// ocBytes (#1008): the JS object cache's bytes. It and the wasm heap sit under the one isolate cap, so the line is
+// compared with their sum. A missing or bad value counts as 0 (today's rule), never NaN, which would stop every
+// recycle. The growth test stays on the wasm heap alone: a cache never recycles a runtime that grew nothing.
+export function recycleDecision({ crashed = false, forced = false, wasmBytes, ocBytes = 0, lineBytes, bootBytes = 0, recycleOff = false }) {
 	if (crashed) return 'crashed';
 	if (forced) return 'forced';
-	if (!recycleOff && wasmBytes > lineBytes && wasmBytes > bootBytes) return 'memory';
+	const oc = Number.isFinite(ocBytes) && ocBytes > 0 ? ocBytes : 0;
+	if (!recycleOff && wasmBytes + oc > lineBytes && wasmBytes > bootBytes) return 'memory';
 	return null;
 }

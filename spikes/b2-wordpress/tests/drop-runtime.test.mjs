@@ -96,7 +96,7 @@ test('index.js: every drop retires synchronously, and every PHP run reaps in its
 	assert.match(code, /const forceRecycle = spikeOk && req\.headers\.get\('x-runtime-recycle'\) === 'force';/, 'the forced recycle is spike-gated');
 	// #598: the decision is recycle-line.mjs's (tests/recycle-line.test.mjs); it still takes crashed, the forced
 	// recycle and PHP_RECYCLE, and the line is RECYCLE_WASM_MIB's.
-	assert.match(code, /const recycleWhy = recycleDecision\(\{ crashed, forced: forceRecycle, wasmBytes, lineBytes: line\.bytes, bootBytes: reuseActive\(\) \? runtimeBootBytes : 0, recycleOff: env\.PHP_RECYCLE === 'off' \}\);/);
+	assert.match(code, /const recycleWhy = recycleDecision\(\{ crashed, forced: forceRecycle, wasmBytes, ocBytes: objectCacheBytes, lineBytes: line\.bytes, bootBytes: reuseActive\(\) \? runtimeBootBytes : 0, recycleOff: env\.PHP_RECYCLE === 'off' \}\);/);
 	assert.match(code, /const line = recycleLine\(env, ENGINE_RECYCLE_MIB\);/); // #771: the engine's own default line
 	assert.match(code, /if \(recycleWhy\) \{/);
 });
