@@ -450,6 +450,8 @@ jobs:
 
       - name: "WooCommerce route deferral: its map is of the pinned WooCommerce (#768)"
         run: bash spikes/b2-wordpress/tests/wc-route-defer-test.sh
+      - name: "WooCommerce route deferral: a non-wc REST path defers (#987)"
+        run: php spikes/b2-wordpress/tests/wc-route-defer-rest-test.php
       - name: b-dosql operator endpoints (issue #35)
         # /_build and /_evict are gated and never cached (spikes/b2-wordpress).
         run: node spikes/b2-wordpress/tests/build-evict-test.mjs
