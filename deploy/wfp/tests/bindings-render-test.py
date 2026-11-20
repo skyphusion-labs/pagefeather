@@ -117,8 +117,11 @@ try:
             code, body = 404, {"success": False}
             if self.path == "/workers/dispatch/namespaces/%s/scripts/site-%s/bindings" % (NS, SITE):
                 code, body = 200, {"success": True, "result": state["user"]}
-            elif self.path == "/workers/scripts/wp-%s/settings" % SITE:
-                code, body = 200, {"success": True, "result": {"bindings": state["disp"]}}
+            # #1063: bindings.py reads the dispatcher's ACTIVE version (deployments, then versions/<id>), never /settings.
+            elif self.path == "/workers/scripts/wp-%s/deployments" % SITE:
+                code, body = 200, {"success": True, "result": {"deployments": [{"created_on": "2026-11-20T19:56:59.786013Z", "versions": [{"version_id": "V1", "percentage": 100}]}]}}
+            elif self.path == "/workers/scripts/wp-%s/versions/V1" % SITE:
+                code, body = 200, {"success": True, "result": {"resources": {"bindings": state["disp"]}}}
             b = json.dumps(body).encode()
             self.send_response(code); self.send_header("content-type", "application/json"); self.send_header("content-length", str(len(b))); self.end_headers(); self.wfile.write(b)
 
