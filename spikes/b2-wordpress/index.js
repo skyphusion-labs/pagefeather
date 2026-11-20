@@ -3851,6 +3851,29 @@ async function runCron(getBooted, cleanDue = false, mail = null, { held = false 
 				// A direct read is the same rows the list table shows. It runs those before pass 2.
 				if ( $claim && count( $claim->get_actions() ) ) {
 					$as_ids = $claim->get_actions();
+					// #1143: the claim TOOK the newest emails (the order_by above), but Action Scheduler hands the claimed
+					// ids back oldest first (find_actions_by_claim_id), and a leg stops at its time budget (#1126). So a
+					// leg ran the oldest of the newest batch and walked backwards through a backlog, never reaching a new
+					// customer's email (strummer, cf759hx: 75 min). Run them newest first: one query, ids only.
+					if ( count( $as_ids ) > 1 ) {
+						$as_in     = implode( ',', array_map( 'intval', $as_ids ) );
+						$as_sorted = array_values( array_filter( array_map( 'intval', (array) $wpdb->get_col( "SELECT action_id FROM {$as_t} WHERE action_id IN ({$as_in}) ORDER BY scheduled_date_gmt DESC, action_id DESC" ) ) ) );
+						if ( count( $as_sorted ) === count( $as_ids ) ) { $as_ids = $as_sorted; }
+					}
+					// #1143 review: newest first alone is LIFO, so under a steady arrival the oldest due email could wait
+					// forever. It gets the second slot of every leg (it is not in the claim, which holds the newest), so a
+					// leg that runs two actions moves both ends of the queue. It is CLAIMED first, into this leg's claim, by
+					// one atomic UPDATE (claim_id = 0): the alarm is the only regular runner (DISABLE_WP_CRON in
+					// php/wp-config.php; php/action-scheduler-alarm-only.php turns off the async request runner and
+					// action_scheduler_run_queue in every build; pool objects never run cron), but an operator's /_runcron
+					// (spike token) runs this same leg in another isolate. A row another runner holds is skipped.
+					$as_g_old  = ( isset( $wpdb->actionscheduler_groups ) && $wpdb->actionscheduler_groups ) ? $wpdb->actionscheduler_groups : $wpdb->prefix . 'actionscheduler_groups';
+					$as_oldest = array_values( array_filter( array_map( 'intval', (array) $wpdb->get_col( $wpdb->prepare( "SELECT a.action_id FROM {$as_t} a INNER JOIN {$as_g_old} g ON a.group_id = g.group_id WHERE g.slug = %s AND a.status = %s AND a.claim_id = 0 AND a.scheduled_date_gmt <= %s ORDER BY a.scheduled_date_gmt ASC, a.action_id ASC LIMIT 1", 'woocommerce-emails', 'pending', gmdate( 'Y-m-d H:i:s' ) ) ) ) ) );
+					$as_cid = method_exists( $claim, 'get_id' ) ? (int) $claim->get_id() : 0;
+					if ( $as_oldest && $as_cid > 0 && ! in_array( $as_oldest[0], $as_ids, true )
+						&& 1 === (int) $wpdb->query( $wpdb->prepare( "UPDATE {$as_t} SET claim_id = %d WHERE action_id = %d AND claim_id = 0 AND status = %s", $as_cid, $as_oldest[0], 'pending' ) ) ) {
+						array_splice( $as_ids, 1, 0, array( $as_oldest[0] ) );
+					}
 				} else {
 					if ( $claim ) { $as_store->release_claim( $claim ); $claim = null; }
 					$as_g = ( isset( $wpdb->actionscheduler_groups ) && $wpdb->actionscheduler_groups ) ? $wpdb->actionscheduler_groups : $wpdb->prefix . 'actionscheduler_groups';
