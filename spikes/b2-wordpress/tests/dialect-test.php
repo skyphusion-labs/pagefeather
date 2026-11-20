@@ -91,6 +91,36 @@ if ( ! class_exists( 'SQLite3' ) ) {
 			check( "#836 pattern $n $op: the same answer as SQLite LIKE, row by row (NULL kept)", $read( $s ), $read( $orig ) );
 		}
 	}
+	// The lead's corpus (#836 review): a seeded fuzz over '_' at segment edges, adjacent '_', and case. A short alphabet
+	// (a, A, b, B, _) makes near misses common, so a wrong offset or a lost occurrence shows up as a mismatch.
+	mt_srand( 836 );
+	$pick  = function ( $alpha, $n ) { $o = ''; for ( $k = 0; $k < $n; $k++ ) { $o .= $alpha[ mt_rand( 0, strlen( $alpha ) - 1 ) ]; } return $o; };
+	$fz    = new SQLite3( ':memory:' );
+	$fz->exec( 'CREATE TABLE t ( id INTEGER PRIMARY KEY, c TEXT )' );
+	$fins  = $fz->prepare( 'INSERT INTO t ( c ) VALUES ( :c )' );
+	for ( $k = 0; $k < 120; $k++ ) {
+		$v = $pick( 'aAbB', mt_rand( 0, 4 ) ) . ( mt_rand( 0, 3 ) ? $seg : '' ) . $pick( 'aAbB', mt_rand( 0, 5 ) ) . ( mt_rand( 0, 2 ) ? $seg : '' ) . $pick( 'aAbB', mt_rand( 0, 4 ) );
+		$fins->bindValue( ':c', $v, SQLITE3_TEXT ); $fins->execute(); $fins->reset();
+	}
+	$fread = function ( $sql ) use ( $fz ) { $o = array(); $q = $fz->query( $sql ); if ( ! $q ) { return 'error: ' . $fz->lastErrorMsg(); } while ( $row = $q->fetchArray( SQLITE3_NUM ) ) { $o[] = $row; } return $o; };
+	$fz_bad = 0; $fz_n = 0; $fz_hits = 0;
+	for ( $k = 0; $k < 300; $k++ ) {
+		$inner = $pick( 'aAb_', mt_rand( 0, 3 ) ) . $seg . $pick( 'aAb__', mt_rand( 0, 4 ) ) . ( mt_rand( 0, 1 ) ? $seg : '' ) . $pick( 'aAb_', mt_rand( 0, 3 ) );
+		if ( false === strpos( $inner, '_' ) ) {
+			$inner .= '_';
+		}
+		$orig = "SELECT id FROM t WHERE c LIKE '%$inner%' ORDER BY id";
+		list( $s ) = D1_Dialect::rewrite( $orig, array(), $none );
+		$want = $fread( $orig );
+		$fz_n++;
+		$fz_hits += count( $want );
+		if ( false !== stripos( $s, ' LIKE ' ) || $fread( $s ) !== $want ) {
+			$fz_bad++;
+			if ( $fz_bad <= 3 ) { echo "  fuzz mismatch: %$inner%\n"; }
+		}
+	}
+	check( '#836 fuzz: 300 seeded patterns (_ at edges, adjacent _, case) give LIKE\'s rows', $fz_bad, 0 );
+	check( '#836 fuzz: the oracle matched rows (the corpus is not all misses)', $fz_hits > 0, true );
 	$hit = $read( "SELECT count(*) FROM t WHERE c LIKE '" . $pats[5] . "'" );
 	check( '#836 the WooCommerce cart probe matches the two rows that hold the cart content (the oracle is not empty)', $hit, array( array( 2 ) ) );
 }
