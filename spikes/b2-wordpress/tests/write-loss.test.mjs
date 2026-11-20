@@ -317,7 +317,7 @@ test('#795 index.js: a PLATFORM failure is answered as a failure (after the rese
 	const blk = src.slice(any, copy);
 	assert.ok(!/SETUP_PATHS/.test(src), 'no path exclusion: the class decides');
 	assert.match(blk, /if \(platform\) \{[\s\S]*readFailed\(d\.failures\)\) \{\s*try \{ rb = undoLog && sqlDb \? undoLog\.rollbackFrame/, 'a platform failure with a failed read rolls the frame back');
-	assert.match(blk, /const saved = rb \? !frameProvesRollback\(fr\) : wrote;/, '"nothing saved" only on the proof, or when nothing was written');
+	assert.match(blk, /const filesGone = rb \? await deleteFrameR2\(rb\.req, rb\.r2\) : true;[\s\S]*const saved = rb \? !\(filesGone && frameProvesRollback\(fr\)\) : wrote;/, '"nothing saved" only on the proof AND with its files gone (#1039), or when nothing was written');
 	assert.match(blk, /class: 'deterministic'/, 'a deterministic failure is logged and falls through to PHP own answer');
 	assert.match(src, /pageCacheHeaders\(req, url, r, out, env, d\.failures\.length\);/, 'and is still never edge-cached (#766)');
 });
@@ -394,4 +394,11 @@ test('#836 index.js: a deterministic READ refusal answers refusedReadResponse wi
 	const det = blk.indexOf("class: 'deterministic'");
 	assert.ok(refused > blk.indexOf('if (platform) {') && refused < det, 'after the platform branch, before the deterministic fall-through');
 	assert.match(blk, /if \(refusal\) \{[\s\S]*refusedReadResponse\(refusal, wantsJson\(url\.pathname, url\.search, req\.headers\.get\('accept'\)\), wrote\)[\s\S]*'@event': 'sql-refused'[\s\S]*return new Response\(sr\.body, \{ status: sr\.status, headers: sr\.headers \}\);/);
+});
+
+test('#1039 index.js: the write-loss answer says "rolled back" only when the frame proof holds AND its files were deleted', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /const filesGone = rb \? await deleteFrameR2\(rb\.req, rb\.r2\) : true;\s*const rolled = filesGone && frameProvesRollback\(fr\) \? rolledBackResponse\(/);
+	assert.match(src, /if \(r && r\.r2 && r\.r2\.length\) await deleteFrameR2\(r\.req, r\.r2\);/, 'the next isolate recovery deletes the dead request files too');
+	assert.match(src, /await r2RecordIfNew\(B, op\.key\);\s*await B\.put\(op\.key/, 'a created key is recorded BEFORE its put');
 });

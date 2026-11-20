@@ -1137,3 +1137,74 @@ test('#954 index.js holds options cache sets and rolls a thrown activate back', 
 	assert.match(src.slice(c, ret), /rollbackFrame/, 'a thrown activate rolls the hold back before end() keeps the frame');
 	assert.match(src.slice(c, ret), /finishCacheDrops/, 'the catch waits for the options-cache drop');
 });
+
+// #1039: a media upload rolled back by its frame kept its R2 files (the file outlived its attachment row, and held its
+// name: the next upload became name-1). The undo log now records the R2 keys an armed request CREATES (index.js asks
+// r2Created only for a key that did not exist), so a proven rollback can delete them; a kept request forgets them.
+test('#1039 rollbackFrame returns the R2 keys its request created; r2Forget clears them', () => {
+	const { db, storage } = site();
+	const a = isolate();
+	a.u.arm(db, 'u1');
+	assert.equal(a.u.r2Created(db, 'uploads/2026/11/x.png'), true);
+	run(a.u, db, "INSERT INTO t (v) VALUES ('attachment')");
+	assert.equal(a.u.r2Created(db, 'uploads/2026/11/x-150x150.png'), true);
+	const rb = a.u.rollbackFrame(db, storage);
+	assert.deepEqual(ids(db), ['seed'], 'the row is undone');
+	assert.deepEqual([...rb.r2].sort(), ['uploads/2026/11/x-150x150.png', 'uploads/2026/11/x.png'], 'and the files it made are named for deletion');
+	a.u.r2Forget(db, 'u1');
+	assert.deepEqual(a.u.r2Keys(db, 'u1'), []);
+});
+
+test('#1039 a key recorded before the first write still belongs to the frame (the file is put before its row)', () => {
+	const { db, storage } = site();
+	const a = isolate();
+	a.u.arm(db, 'u2');
+	a.u.r2Created(db, 'uploads/f.png'); // no frame open yet
+	assert.equal(a.u.frameOpen(), false);
+	run(a.u, db, "INSERT INTO t (v) VALUES ('attachment')");
+	const b = isolate();
+	const r = b.u.recover(db, storage); // the isolate died: the next one recovers
+	assert.deepEqual(ids(db), ['seed']);
+	assert.deepEqual(r.r2, ['uploads/f.png'], 'recover names the dead request files too');
+});
+
+test('#1039 a request that FINISHES keeps its files: end() forgets the keys, and a later recovery names none', () => {
+	const { db, storage } = site();
+	const a = isolate();
+	a.u.arm(db, 'u3');
+	a.u.r2Created(db, 'uploads/kept.png');
+	run(a.u, db, "INSERT INTO t (v) VALUES ('attachment')");
+	a.u.end(db);
+	assert.deepEqual(a.u.r2Keys(db, 'u3'), []);
+	const b = isolate();
+	assert.equal(b.u.recover(db, storage), null, 'nothing to recover');
+	assert.deepEqual(ids(db), ['seed', 'attachment']);
+});
+
+test('#1039 a commit point forgets the keys before it (a kept row may point at them; a row without its file is worse)', () => {
+	const { db, storage } = site();
+	const a = isolate();
+	a.u.arm(db, 'u4');
+	a.u.r2Created(db, 'uploads/before.png');
+	run(a.u, db, "INSERT INTO t (v) VALUES ('A')");
+	a.u.commitPoint(db, 'r2-copy');
+	a.u.r2Created(db, 'uploads/after.png');
+	run(a.u, db, "INSERT INTO t (v) VALUES ('B')");
+	const rb = a.u.rollbackFrame(db, storage);
+	assert.deepEqual(ids(db), ['seed', 'A'], 'only the segment after the point is undone');
+	assert.deepEqual(rb.r2, ['uploads/after.png'], 'and only the file made after the point is named');
+});
+
+test('#1039 nothing is recorded unarmed or with frames off; the record table has no undo trigger', () => {
+	const { db } = site();
+	const off = isolate(false);
+	off.u.arm(db, 'u5');
+	assert.equal(off.u.r2Created(db, 'uploads/off.png'), false, 'frames off');
+	const a = isolate();
+	assert.equal(a.u.r2Created(db, 'uploads/unarmed.png'), false, 'not armed');
+	a.u.arm(db, 'u6');
+	a.u.r2Created(db, 'uploads/t.png');
+	run(a.u, db, "INSERT INTO t (v) VALUES ('A')");
+	const trig = [...db.exec("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = '_wp_frame_r2'").raw()];
+	assert.deepEqual(trig, [], 'a rollback never erases its own record');
+});

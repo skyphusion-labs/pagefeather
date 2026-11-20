@@ -40,7 +40,10 @@
 // storage.transactionSync, so it commits whole or not at all. The trigger bodies insert into
 // _wp_undo by name, so they do not change.
 
-const UNDO_TABLES = new Set(['_wp_undo', '_wp_undo_state', '_wp_frame', '_wp_plugin_hold']);
+const UNDO_TABLES = new Set(['_wp_undo', '_wp_undo_state', '_wp_frame', '_wp_plugin_hold', '_wp_frame_r2']);
+// #1039: the R2 keys an armed request CREATED (a put of a key that did not exist), so a proven rollback of its frame can
+// delete them. Outside the undo triggers (UNDO_TABLES): a rollback must not erase its own record.
+const R2_DDL = 'CREATE TABLE IF NOT EXISTS _wp_frame_r2 (req TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY (req, key))';
 const FRAME_HISTORY = 32;
 
 /**
@@ -214,6 +217,23 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, dropOptionsCa
 	// The rows the undo log and the frame write THEMSELVES (state, frame rows, the log cleared or replayed),
 	// which x-db-rows never sees: it counts PHP's statements, their undo-trigger rows included.
 	const own = (cur) => { counts.own += (cur && cur.rowsWritten) || 0; return cur; };
+	// #1039: the R2 keys a request created, read and forgotten by request id. A missing table is an empty list.
+	const r2KeysOf = (db, req) => {
+		if (!req) return [];
+		try {
+			return [...db.exec('SELECT key FROM _wp_frame_r2 WHERE req = ? ORDER BY key', req).raw()].map((r) => r[0]);
+		} catch {
+			return [];
+		}
+	};
+	const r2ForgetOf = (db, req) => {
+		if (!req) return;
+		try {
+			own(db.exec('DELETE FROM _wp_frame_r2 WHERE req = ?', req));
+		} catch {
+			// no table yet: nothing was recorded
+		}
+	};
 	let openedBy = null; // the shape (verb and table, never values) of the statement that opened the last frame
 
 	// One-time rebuild of a _wp_undo left by a build that used AUTOINCREMENT (#577). Only when the log
@@ -577,6 +597,30 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, dropOptionsCa
 			counts.points++;
 			kinds.push(kind);
 			frameKeep(db, 'open');
+			r2ForgetOf(db, armedReq); // #1039: what is kept at a point keeps its files (a kept row may point at them)
+		},
+		/**
+		 * #1039: an armed request created this R2 key (index.js asks only for a key that did not exist, BEFORE the put).
+		 * A proven rollback of its frame then names it for deletion; end() and a commit point forget it. True when
+		 * recorded. Frames off, unarmed, or stranded: not recorded (and no frame will roll it back).
+		 */
+		r2Created(db, key) {
+			if (!framesOn() || !armedReq || stranded) return false;
+			own(db.exec(R2_DDL));
+			own(db.exec('INSERT OR IGNORE INTO _wp_frame_r2 (req, key) VALUES (?, ?)', armedReq, String(key)));
+			return true;
+		},
+		/** #1039: whether an R2 key created now would be recorded (so index.js pays its head() only then). */
+		r2Tracking() {
+			return framesOn() && !!armedReq && !stranded;
+		},
+		/** #1039: the R2 keys recorded for a request. */
+		r2Keys(db, req) {
+			return r2KeysOf(db, req);
+		},
+		/** #1039: forget a request's R2 keys (after index.js deleted them). */
+		r2Forget(db, req) {
+			r2ForgetOf(db, req);
 		},
 		/** Run fn when the frame is kept; returns false (fn not taken) when no frame is open. */
 		defer(fn, hold = false) {
@@ -639,7 +683,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, dropOptionsCa
 			frameRow(db, armedReq, 'rolled-back');
 			own(db.exec('UPDATE _wp_frame SET undone = ? WHERE req = ?', n, armedReq));
 			deferred = [];
-			const out = { undone: n, points, req: armedReq };
+			const out = { undone: n, points, req: armedReq, r2: r2KeysOf(db, armedReq) };
 			armedReq = null; // end() must not mark it again
 			return out;
 		},
@@ -659,6 +703,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, dropOptionsCa
 			}
 			// The frame is kept, or this request never opened one. Drop the snapshot so recovery does not undo a finish.
 			discardPluginHolds(db, armedReq);
+			r2ForgetOf(db, armedReq); // #1039: a finished request keeps its files
 			armedReq = null;
 		},
 		/** PHP's transaction ops (php/real-transactions.php). */
@@ -768,7 +813,7 @@ export function createUndoLog({ stats, objectCacheDrop = () => {}, dropOptionsCa
 			log({ m: 'frame-recover', active: 1, tables: true, frames: framesOn(), undone: n, req, relabeled, rebuilt });
 			restoreAllPluginHolds(db);
 			stranded = false;
-			return { undone: n, req };
+			return { undone: n, req, r2: r2KeysOf(db, req) };
 		},
 		/** The outcome of a request, for the Worker's /_frame probe: null when unknown. */
 		status(db, req) {
