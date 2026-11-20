@@ -442,7 +442,7 @@ test('#1088 B: a plain numeric handoff result (the old shape) still counts as be
 });
 test('#1088 B index.js: each failed recipient is logged with its reason (scrubbed) and domain; the tick handoff passes sendFailed', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	assert.match(src, /'@event': 'email-send-failed', m: 'email-send-failed', reason: scrub\(f\.error\), domain: domainOfAddress\(f\.to\), retry: 'queued'/);
+	assert.match(src, /'@event': 'email-send-failed', m: 'email-send-failed', reason: scrub\(f\.error\), domain: domainOfAddress\(f\.to\),(?: ms: f\.ms,)? retry: 'queued'/);
 	assert.match(src, /const sp = sendListOutcome\(env, \[email\]\);/);
 	assert.match(src, /return \{ sent: o\.sent, sendFailed: o\.failed \};/);
 });

@@ -1137,7 +1137,21 @@ function sendEmail(env, email) {
 	const rt = replyTo(from.email, email.headers);
 	if (rt) msg.replyTo = bindingAddress(rt); // #1096
 	// Each promise carries its recipient (#1057): a rejected one is retried for that recipient only.
-	return deliverable.map((to) => Object.assign((emailFaultRejects(env) ? Promise.reject(new Error('EMAIL_FAULT: injected rejection (#1057, a measurement)')) : env.EMAIL.send({ ...msg, to })).then((r) => ((stats.emailSent = (stats.emailSent || 0) + 1), console.log(JSON.stringify({ m: 'email-sent', n: stats.emailSent })), r)), { to }));
+	return deliverable.map((to) => Object.assign(sendTimed(() => (emailFaultRejects(env) ? Promise.reject(new Error('EMAIL_FAULT: injected rejection (#1057, a measurement)')) : env.EMAIL.send({ ...msg, to }))), { to }));
+}
+// #1135: every env.EMAIL.send is timed (the lead's condition for a synchronous request-path send: its live p95). A
+// success logs email-sent with ms; a refusal carries pfSendMs on the rejection, which email-send-failed logs.
+function sendTimed(p) {
+	const t0 = Date.now();
+	let pr;
+	try { pr = Promise.resolve(p()); } catch (e) { pr = Promise.reject(e); }
+	return pr.then(
+		(r) => ((stats.emailSent = (stats.emailSent || 0) + 1), console.log(JSON.stringify({ m: 'email-sent', n: stats.emailSent, ms: Date.now() - t0 })), r),
+		(e) => {
+			if (e && typeof e === 'object') e.pfSendMs = Date.now() - t0;
+			throw e;
+		},
+	);
 }
 
 // #1057 (email-retry.mjs, the lead's ruling): the durable store for rejected sends. The PHP object whose alarm drains it:
@@ -1257,13 +1271,13 @@ function sendListOutcome(env, toSend) {
 	return Promise.allSettled(items.map((x) => x.p)).then(async (rs) => {
 		const failures = [];
 		rs.forEach((x, i) => {
-			if (x.status === 'rejected') failures.push({ email: items[i].e, to: items[i].p.to, error: String((x.reason && x.reason.message) || x.reason) });
+			if (x.status === 'rejected') failures.push({ email: items[i].e, to: items[i].p.to, error: String((x.reason && x.reason.message) || x.reason), ms: x.reason && Number.isFinite(x.reason.pfSendMs) ? x.reason.pfSendMs : null });
 		});
 		if (failures.length) {
 			console.log('email send: ' + failures.length + ' of ' + rs.length + ' failed');
 			// #1088 B (#104, #856): each refused send is logged loudly WITH its reason (addresses and URLs scrubbed) and the
 			// recipient's domain only.
-			for (const f of failures) console.log(JSON.stringify({ '@event': 'email-send-failed', m: 'email-send-failed', reason: scrub(f.error), domain: domainOfAddress(f.to), retry: 'queued' }));
+			for (const f of failures) console.log(JSON.stringify({ '@event': 'email-send-failed', m: 'email-send-failed', reason: scrub(f.error), domain: domainOfAddress(f.to), ms: f.ms, retry: 'queued' }));
 			await mailRetryPut(env, failures); // #1057: retried with backoff, never dropped
 		}
 		return { sent: rs.length - failures.length, failed: failures.length };
