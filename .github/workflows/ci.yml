@@ -492,6 +492,8 @@ jobs:
       - name: b-dosql bounded cron tick
         # cron-bound.mjs: the cron runs its own claim loop, bounded, and the cleaner cannot starve (#291).
         run: node --test spikes/b2-wordpress/tests/cron-bound.test.mjs
+      - name: "Every email send is timed: email-sent and email-send-failed carry ms (#1135)"
+        run: node --test spikes/b2-wordpress/tests/email-send-timing.test.mjs
       - name: "Approach A cron: a leg runs due actions to a time budget and a heap stop, not one a leg (#1120)"
         run: node --test spikes/b2-wordpress/tests/cron-as-budget.test.mjs
       - name: b-dosql a purge alarm runs the cron leg only when due (issue #470)
