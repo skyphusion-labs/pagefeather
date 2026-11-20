@@ -13,7 +13,8 @@ their total round trip), x-runtime-recycled and the isolate. Then the medians pe
 and on its WordPress-only twin to split WooCommerce's cost from placement's. It makes one product and REPS posts,
 all deleted at the end. On a site without WooCommerce (/wc/v3 answers 404) the product steps are skipped and said
 so, so the WordPress-only twin gives its post numbers. Needs the spike token: it never runs on a visitor's terms.
-Exit 1 on a step that answers outside 2xx/3xx.
+Exit 1 on a step that answers outside 2xx/3xx. PERF_OPCACHE=1 also asks each step for its OPcache hits and misses
+(x-perf-opcache: 1, two extra PHP runs per request; the Worker logs them on its perf line, #1085).
 """
 import json, os, re, statistics, sys, time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "spikes", "b2-wordpress", "tests"))
@@ -35,7 +36,7 @@ def iso_of(h):
 
 
 def step(name, path, data=None, ok=(200, 302)):
-    x = BL.req(o, path, data, timeout=300)
+    x = BL.req(o, path, data, headers={"x-perf-opcache": "1"} if os.environ.get("PERF_OPCACHE") == "1" else None, timeout=300)
     h = x["h"] or {}
     row = {"step": name, "code": x["code"], "s": x["s"], "boot": h.get("x-boot"), "phpMs": h.get("x-php-ms"), "dbN": h.get("x-d1-calls"),
            "dbMs": h.get("x-d1-ms"), "recycled": h.get("x-runtime-recycled"), "iso": iso_of(h) or h.get("x-isolate"), "id": BL.LAST_ID[0]}
