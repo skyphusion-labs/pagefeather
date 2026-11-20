@@ -443,8 +443,13 @@ function siteOrigin(env, url) {
 // about 32 s on Paid. #296: a long WAIT behind healthy runs is never stale any more:
 // it booted a second runtime beside a live one and reset the isolate's whole queue.
 const LOCK_STALE_MS = 60000;
+// #1060: a head is stale only when it has ALSO made no progress (a PHP bridge message: a query, a cache or R2 op) for
+// this long. A slow run that is working (cross-region MySQL, #1054) is never stale. And no run takes a stale lock over:
+// request runs shed (a retryable 503), background runs wait (withPhp staleAction). Measured on cf759hl, 2026-11-20:
+// the takeover booted a second runtime beside the live one and the isolate died with every queued request.
+const LOCK_STALL_MS = 30000;
 // One line per contended event (php-lock.mjs: queued, granted, shed, stale), with this isolate's id.
-const phpLock = createPhpLock({ staleMs: LOCK_STALE_MS, log: (e) => console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, ...e })) });
+const phpLock = createPhpLock({ staleMs: LOCK_STALE_MS, stallMs: LOCK_STALL_MS, staleAction: 'wait', log: (e) => console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, ...e })) });
 let phpShedRefusedLogged = false;
 // #714: the overflowed requests this Worker isolate holds in flight now (PHP_OVERFLOW_MAX_HELD caps it).
 let ovHeld = 0;
@@ -471,7 +476,7 @@ const SEND_TIMEOUT_MS = 5000;
 // #720: held reuses the lock the caller already holds. A second phpLock.run waits out staleMs, then
 // onStale drops the runtime. The lock is not reentrant. Only /_runcron passes held, because that
 // route is already inside the request withPhp. The alarm does not, so it always takes the lock.
-function withPhp(fn, { shedMs = 0, tag = null, shedWhy = null, recheck = null, held = false, signal = null, priority = 0 } = {}) {
+function withPhp(fn, { shedMs = 0, tag = null, shedWhy = null, recheck = null, held = false, signal = null, priority = 0, staleAction = 'wait' } = {}) {
 	if (held) return fn();
 	return phpLock.run(
 		async () => {
@@ -489,6 +494,7 @@ function withPhp(fn, { shedMs = 0, tag = null, shedWhy = null, recheck = null, h
 			recheck,
 			signal, // #721: the caller's request.signal (a disconnect sheds a waiter)
 			priority, // #962: a templates list GET runs before other queued boot calls
+			staleAction, // #1060: shed (request paths) or wait (everything else); never take over a live runtime
 			onStale: () => {
 				if (bootPromise) runtimeDrops++;
 				dropRuntime(); // the old runtime's state is unknown; the stale run still counts as running, so it is released when that run ends too
@@ -1465,6 +1471,7 @@ function analyticsOp(op) {
 }
 
 async function handleMessage(raw) {
+	phpLock.progress(); // #1060: the running PHP run is working (slow is not stuck)
 	// #452: a message that is not a JSON object is refused with an error PHP can read, never a throw.
 	// Only its length is logged: the content may be anything PHP sent.
 	const parsed = parseMessage(raw);
@@ -3404,6 +3411,7 @@ export class PhpRuntime extends DurableObject {
 			// #752, #754: the tick is a real subrequest to this site's own TICK_PATH, never to this object.
 			recheck: plan.startBy > 0 ? async () => { const rc = await recheckStartBy(plan.startBy, { tick: () => tickFetch(origin), signal: callerSignal }); lateByClock = rc.late; return rc; } : null,
 			priority: templateQueuePriority(req.method, url), // #962
+			staleAction: 'shed', // #1060: a stuck head sheds this waiter (503), never a second runtime beside it
 		});
 		if (objectRun !== PHP_SHED) return objectRun;
 		phpPending--; // a shed run never ran its finally
@@ -4011,7 +4019,7 @@ const site = {
 		// #962: same beat as the object, for a Worker that runs PHP itself.
 		const workerLookupYield = templateLookupYield(req.method, url, phpLock);
 		if (workerLookupYield) await new Promise((resolve) => setTimeout(resolve, workerLookupYield));
-		const workerRun = await withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx), { shedMs: phpShedMs(env, false), priority: templateQueuePriority(req.method, url) });
+		const workerRun = await withPhp(() => handle(req, env, url, spikeOk, maxBody, ctx), { shedMs: phpShedMs(env, false), priority: templateQueuePriority(req.method, url), staleAction: 'shed' }); // #1060
 		return workerRun === PHP_SHED ? phpShedResponse() : workerRun;
 	},
 };

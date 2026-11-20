@@ -384,3 +384,70 @@ test('#754: EVERY recheck logs its outcome (event recheck: late, clockMs, tick, 
 	const rc = log.find((e) => e.event === 'recheck' && e.call === 'h1');
 	assert.ok(rc && rc.late === false && rc.clockMs === 15000 && rc.tick === 'error' && rc.err === 'refused 1042', JSON.stringify(rc));
 });
+
+// #1060 (measured on cf759hl, 2026-11-20): a head that ran 60 s took the lock as STALE, the waiter booted a SECOND
+// runtime beside the live one, and the isolate died of memory with every queued request. Now: a head that is still
+// making PROGRESS (progress(): each PHP bridge message) is never stale; and a stale head is never taken over on the
+// request paths (staleAction shed: the waiter answers PHP_SHED, a retryable 503) nor by background runs (wait).
+test('#1060: a SLOW head that keeps making progress past 60 s is never stale: the waiter waits, and never two runs at once', async () => {
+	const h = harness({ stallMs: 30000 });
+	const slow = () => new Promise((res) => {
+		// a 70 s run with a bridge message (a query) every 5 s
+		let n = 0;
+		const tick = () => { n++; h.lock.progress(); if (n >= 14) res('slow'); else h.c.setTimer(tick, 5000); };
+		h.c.setTimer(tick, 5000);
+	});
+	const a = h.run(slow, { staleAction: 'shed' });
+	const b = h.run(h.job(1000, 'next'), { staleAction: 'shed' });
+	await h.c.advance(80000);
+	assert.equal(await a, 'slow');
+	assert.equal(await b, 'next', 'the waiter ran after the slow head, not beside it');
+	assert.equal(h.stales, 0);
+	assert.ok(!h.events.some((e) => e.event === 'stale'), 'no stale event');
+});
+
+test('#1060: a STALLED head (no progress 30 s, executing 60 s) sheds the request waiter; it never boots beside it', async () => {
+	const h = harness({ stallMs: 30000 });
+	h.run(h.stuck(), { staleAction: 'shed' });
+	const p = h.run(h.job(1000, 'next'), { staleAction: 'shed' });
+	await h.c.advance(62000);
+	assert.equal(await p, PHP_SHED, 'shed with a retryable answer');
+	assert.equal(h.stales, 0, 'onStale (drop and boot) never ran');
+	assert.equal(h.maxLive, 1, 'never a second run beside the stuck one');
+	const ev = h.events.find((e) => e.event === 'shed' && e.why === 'stuck');
+	assert.ok(ev, 'the shed line says stuck');
+	// a new arrival behind the stuck head sheds quickly too, not after another 60 s
+	const q = h.run(h.job(1000, 'later'), { staleAction: 'shed' });
+	await h.c.advance(2000);
+	assert.equal(await q, PHP_SHED);
+});
+
+test('#1060: a background run (staleAction wait) behind a stalled head keeps waiting, never runs beside it, and runs when it ends', async () => {
+	const h = harness({ stallMs: 30000 });
+	let end;
+	h.run(() => new Promise((res) => { end = res; }), { staleAction: 'shed' });
+	const p = h.run(h.job(1000, 'cron'), { staleAction: 'wait' });
+	await h.c.advance(120000);
+	assert.equal(h.stales, 0);
+	end('done');
+	await h.c.advance(2000);
+	assert.equal(await p, 'cron');
+});
+
+test('#1060: without stallMs and staleAction the old takeover still works (the control the earlier tests pin)', async () => {
+	const h = harness();
+	h.run(h.stuck());
+	const p = h.run(h.job(1000, 'next'));
+	await h.c.advance(64000);
+	assert.equal(await p, 'next');
+	assert.equal(h.stales, 1);
+});
+
+import { readFileSync } from 'node:fs';
+test('#1060 index.js: progress on every bridge message, stallMs on the lock, shed on both request paths, nothing takes over', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /async function handleMessage\(raw\) \{\n\tphpLock\.progress\(\);/);
+	assert.match(src, /createPhpLock\(\{ staleMs: LOCK_STALE_MS, stallMs: LOCK_STALL_MS, staleAction: 'wait',/);
+	assert.equal((src.match(/staleAction: 'shed'/g) || []).length, 2, 'the object run and the Worker run');
+	assert.match(src, /function withPhp\(fn, \{[^}]*staleAction = 'wait' \} = \{\}\)/, 'every other run waits');
+});
