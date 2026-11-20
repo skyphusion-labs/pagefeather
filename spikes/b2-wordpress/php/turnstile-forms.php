@@ -86,6 +86,9 @@ if ( ! function_exists( 'skyphusion_turnstile_widget' ) ) {
  * has a Turnstile box until cf-turnstile-response has a value. A click before the
  * widget finishes must not post an empty token (#964). After 15 seconds the
  * control is released so a missing widget can still show the server error.
+ * The script has no "&" and no "<" (#1032): on a block theme the comment form is
+ * inside the template HTML, which WordPress texturizes, and "&&" arrived as
+ * "&#038;&#038;", a syntax error that stopped the whole hold.
  */
 if ( ! function_exists( 'skyphusion_turnstile_hold_script' ) ) {
 	function skyphusion_turnstile_hold_script() {
@@ -93,7 +96,7 @@ if ( ! function_exists( 'skyphusion_turnstile_hold_script' ) ) {
 (function () {
   function arm() {
     var boxes = document.querySelectorAll(".cf-turnstile");
-    for (var i = 0; i < boxes.length; i++) {
+    for (var i = 0; boxes.length > i; i++) {
       var form = boxes[i].closest("form");
       if (!form || form.getAttribute("data-pf-turnstile-hold") === "1") continue;
       form.setAttribute("data-pf-turnstile-hold", "1");
@@ -102,23 +105,25 @@ if ( ! function_exists( 'skyphusion_turnstile_hold_script' ) ) {
         var timer = setInterval(function () {
           ticks += 1;
           var field = form.querySelector("[name=cf-turnstile-response]");
-          var ok = !!(field && field.value);
+          var ok = field ? field.value !== "" : false;
           var buttons = form.querySelectorAll("button[type=submit], input[type=submit]");
-          for (var j = 0; j < buttons.length; j++) {
+          for (var j = 0; buttons.length > j; j++) {
             var b = buttons[j];
             if (ok) {
               if (b.getAttribute("data-pf-held") === "1") {
                 b.disabled = false;
                 b.removeAttribute("data-pf-held");
               }
-            } else if (ticks <= 150 && !b.disabled) {
-              b.disabled = true;
-              b.setAttribute("data-pf-held", "1");
+            } else if (150 >= ticks) {
+              if (!b.disabled) {
+                b.disabled = true;
+                b.setAttribute("data-pf-held", "1");
+              }
             }
           }
           if (ok || ticks > 150) {
             if (!ok) {
-              for (var k = 0; k < buttons.length; k++) {
+              for (var k = 0; buttons.length > k; k++) {
                 if (buttons[k].getAttribute("data-pf-held") === "1") {
                   buttons[k].disabled = false;
                   buttons[k].removeAttribute("data-pf-held");
