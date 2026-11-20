@@ -13,8 +13,10 @@ The full seed (every item set and checked, and a reseed) is verified against a r
      The same 403 still fails when wc/v3 stays yes.
   8. a gutenberg-test-plugins plugin left active (a spec that stopped mid-run) is deactivated and read back; a
      deactivation that does not stick fails the seed.
-  9. SEED_NO_WOO=1 on a WordPress-only site: no WooCommerce request, no customer, the items named as skipped; the
-     same statement on a site that has wc/v3 fails.
+  9. #924: every failed rest-nonce after a form login (admin retries and the customer) is recorded in seed.json
+     with the status and the engine headers, and its body is scrubbed.
+  10. SEED_NO_WOO=1 on a WordPress-only site: no WooCommerce request, no customer, the items named as skipped; the
+       same statement on a site that has wc/v3 fails.
 Run: python3 -I tests/conformance/seed-test.py
 """
 import json, os, re, subprocess, sys, threading
@@ -179,6 +181,15 @@ class Site(BaseHTTPRequestHandler):
         if path == "/wp-login.php" and method == "POST":
             return self.reply(302, b"", "text/html")
         if path.startswith("/wp-admin/admin-ajax.php") and "rest-nonce" in self.path:
+            st["nonce_calls"] = st.get("nonce_calls", 0) + 1
+            if st["nonce_calls"] in st.get("nonce_fail_on", ()):
+                # #924: a 500 whose body echoes a secret and a nonce, with the engine headers
+                body = ("internal error pw=%s nonce=abcdef0123 tok=QUJDREVGR0hJSktMTU5PUFFSU1RVVg== end" % st["app_pw"]).encode()
+                self.send_response(500); self.send_header("content-type", "text/plain")
+                for k, v in (("x-pf-call", "11111111-2222-3333-4444-555555555555"), ("x-isolate-reset", "memory"), ("x-write-loss", "1"), ("x-wasm-mib", "121")):
+                    self.send_header(k, v)
+                self.send_header("content-length", str(len(body))); self.end_headers(); self.wfile.write(body)
+                return
             return self.reply(200, b"0123456789", "text/plain")
         if path in ("/wp-json", "/wp-json/"):
             return self._json(200, {"routes": {"/": {}}, "namespaces": list(st.get("namespaces", ["wp/v2", "wc/v3"]))})
@@ -419,6 +430,22 @@ check(
     any(r.startswith("/wc/v3/") for r in woo_routes(state)) and state["creds_keys"] == ["CUSTOMER_PASSWORD", "CUSTOMER_USERNAME", "WP_PASSWORD", "WP_USERNAME"],
     (woo_routes(state)[:4], state["creds_keys"]),
 )
+
+# #924: login order in a full seed: the first admin login (1), the customer (2), the admin after its password write (3).
+p, state, report = run_email_editor_seed(nonce_fail_on={3})
+rows = (report or {}).get("rest_nonce_failures") or []
+admin_chk = ((report or {}).get("checks") or {}).get("admin: the account password IS the application password (form login)") or {}
+blob = json.dumps(rows)
+check("#924: a hidden admin retry 500 is recorded, with the engine headers",
+      len(rows) == 1 and rows[0].get("who") == "admin" and rows[0].get("status") == 500 and rows[0].get("x-pf-call") == "11111111-2222-3333-4444-555555555555"
+      and rows[0].get("x-isolate-reset") == "memory" and rows[0].get("x-write-loss") == "1" and rows[0].get("x-wasm-mib") == "121"
+      and admin_chk.get("login_attempts") == 2 and admin_chk.get("ok") is True, (rows, admin_chk))
+check("#924: the recorded body has no password, nonce or token", state["app_pw"] not in blob and "abcdef0123" not in blob and "QUJDREVG" not in blob and "internal error" in blob, blob)
+p, state, report = run_email_editor_seed(nonce_fail_on={2})
+rows = (report or {}).get("rest_nonce_failures") or []
+check("#924: a customer login 500 is recorded too", len(rows) == 1 and rows[0].get("who") == "customer" and rows[0].get("status") == 500, rows)
+p, state, report = run_email_editor_seed()
+check("#924: no failure, no rows", not (report or {}).get("rest_nonce_failures"), (report or {}).get("rest_nonce_failures"))
 
 page = {"id": 7, "status": "publish", "slug": "cart", "link": "https://ex/cart/"}
 check("wc_store_page_ok: published cart", _seed.wc_store_page_ok(7, page, "cart") is True)

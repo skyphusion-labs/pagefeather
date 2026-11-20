@@ -325,6 +325,7 @@ rm -f out.json; : > dev.log
 # without it wrangler dev starts a remote proxy session, which needs a Cloudflare login.
 # DEV_LOG_LEVEL: wrangler's --log-level (default warn); log keeps the Worker's console lines in dev.log (#766).
 # DEV_VARS: more vars, "NAME:value" separated by spaces (opcache.sh sets PHP_RECYCLE:off).
+# DEV_TEST_SCHEDULED=1: --test-scheduled, so GET /__scheduled runs the Worker's scheduled() handler (#855).
 # PERSIST_TO: the local state directory (default .wrangler/state). opcache.sh passes a fresh,
 # empty one, so what it primes depends on the build, not on what an earlier run left (#313).
 vars=()
@@ -332,7 +333,7 @@ for v in ${DEV_VARS:-}; do vars+=(--var "$v"); done
 # Own session: the process group is this server alone, so a group signal
 # cannot reach the shell that started it. The pid is the process group id.
 python3 -I -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
-	"$WR" dev --port "$PORT" --inspector-port "$INSPECTOR_PORT" --log-level "${DEV_LOG_LEVEL:-warn}" ${DEV_LOCAL:+--local} ${DEV_ENV:+--env $DEV_ENV} ${PERSIST_TO:+--persist-to "$PERSIST_TO"} --var "SITE_ORIGIN:http://localhost:$PORT" --var "SPIKE_TOKEN:${SPIKE_TOKEN:-local-spike-token}" "${vars[@]}" > dev.log 2>&1 &
+	"$WR" dev --port "$PORT" --inspector-port "$INSPECTOR_PORT" --log-level "${DEV_LOG_LEVEL:-warn}" ${DEV_LOCAL:+--local} ${DEV_ENV:+--env $DEV_ENV} ${PERSIST_TO:+--persist-to "$PERSIST_TO"} ${DEV_TEST_SCHEDULED:+--test-scheduled} --var "SITE_ORIGIN:http://localhost:$PORT" --var "SPIKE_TOKEN:${SPIKE_TOKEN:-local-spike-token}" "${vars[@]}" > dev.log 2>&1 &
 started=$!
 record_server "$started" "$PORT"
 up=0

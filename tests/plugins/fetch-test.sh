@@ -34,13 +34,19 @@ Theme Name: Child
 Template: base-theme
 */")
 T3=$(mkzip theme orphan-child 1.0 "/* Template: not-here */")
+# twentytwenty 3.3's shape (#937): a header with no Template, and "/* TEMPLATE: COVER */" in the CSS past 8 KiB.
+T4=$(mkzip theme deep-css-theme 1.0 "/*
+Theme Name: Deep
+*/
+$(/opt/homebrew/bin/python3 -c 'print("a{}\n" * 3000)' 2>/dev/null || python3 -c 'print("a{}\n" * 3000)')
+	/* TEMPLATE: COVER */")
 {
   echo "# plugins"; echo "good-plugin 1.0 $P1 10"; echo "other-plugin 2.0 $P2 10"
   echo "bad-sha 1.0 0000000000000000000000000000000000000000000000000000000000000000 10"
   echo "linked-plugin 1.0 $L1 10"
 } > "$T/plugins.txt"
 cp "$FETCH_CACHE/plugins/good-plugin-1.0.zip" "$FETCH_CACHE/plugins/bad-sha-1.0.zip"
-{ echo "base-theme 1.0 $T1"; echo "child-theme 1.0 $T2"; echo "orphan-child 1.0 $T3"; } > "$T/themes.txt"
+{ echo "base-theme 1.0 $T1"; echo "child-theme 1.0 $T2"; echo "orphan-child 1.0 $T3"; echo "deep-css-theme 1.0 $T4"; } > "$T/themes.txt"
 export SUITE="$T/plugins.txt" THEME_SUITE="$T/themes.txt"
 run() { local d=$1; shift; mkdir -p "$d"; bash "$HERE/fetch.sh" "$@" > "$T/out" 2>&1; echo $?; }
 
@@ -60,6 +66,7 @@ check "  the refusal names the parent" "$(grep -c 'child of base-theme' "$T/out"
 D=$T/t4; check "a child theme with its parent in THEMES installs" "$(run "$D" --themes "$D" child-theme base-theme)" 0
 D=$T/t5; mkdir -p "$D/base-theme"; check "a child theme whose parent is already in the build installs" "$(run "$D" --themes "$D" child-theme)" 0
 D=$T/t6; check "a parent that is nowhere is refused" "$(run "$D" --themes "$D" orphan-child)" 1
+D=$T/t9; check "a Template: line past the first 8 KiB is CSS, not a header (twentytwenty, #937)" "$(run "$D" --themes "$D" deep-css-theme)" 0
 D=$T/t7; check "a plugin slug is not a theme pin (the lists are separate)" "$(run "$D" --themes "$D" good-plugin)" 1
 D=$T/t8; check "a missing list is refused" "$(THEME_SUITE=$T/none.txt run "$D" --themes "$D" base-theme)" 2
 

@@ -93,5 +93,10 @@ test('index.js wires scheduled, the tick path, and PhpRuntime alarm on tick', ()
 	assert.match(indexSrc, /approachACronScheduled/);
 	assert.match(indexSrc, /objectUrl\.pathname === CRON_TICK_PATH/);
 	assert.match(indexSrc, /url\.pathname === CRON_TICK_PATH/);
-	assert.ok(indexSrc.includes('await this.alarm();'), 'PhpRuntime tick runs alarm()');
+	// #855 acceptance: the tick is a WATCHDOG for the cron alarm (the alarm runs the leg; armBeforeRun keeps its chain).
+	// Running alarm() inline on every tick as well ran the cron leg about twice a minute on a live site.
+	const tick = indexSrc.slice(indexSrc.indexOf('objectUrl.pathname === CRON_TICK_PATH'), indexSrc.indexOf('const origin = raw.headers.get(ORIGIN_HEADER);'));
+	assert.match(tick, /const watch = await snapshotRearm\(this\.ctx\.storage, Date\.now\(\), Number\(env\.CRON_INTERVAL_MS \|\| 60000\)\);/, 'the tick re-arms a missing or stale alarm only');
+	assert.ok(!tick.includes('this.alarm()'), 'the tick never runs a cron leg inline');
+	assert.match(tick, /alarm: watch\.state/, 'the answer says what the watchdog found');
 });

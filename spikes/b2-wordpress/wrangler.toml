@@ -443,6 +443,41 @@ tag = "v1"
 new_sqlite_classes = ["PhpRuntime"]
 
 # ---------------------------------------------------------------------------
+# #855: approach A's SHAPE, locally: PHP in the Worker and the database OUTSIDE the object (D1 here, as #646's overflow
+# is tested locally; MySQL through Hyperdrive on a real A site), plus the PhpRuntime binding and the Cron Trigger whose
+# scheduled() arms the ONE "cron" object's alarm (a-cron.mjs). tests/a-cron-e2e.sh runs it with
+# DEV_ENV=a-shape-local DEV_TEST_SCHEDULED=1 (GET /__scheduled runs the trigger).
+[env.a-shape-local]
+send_email = [{ name = "EMAIL" }]
+rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]
+[env.a-shape-local.vars]
+PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
+A_CRON = "on"
+[env.a-shape-local.triggers]
+crons = ["* * * * *"]
+[env.a-shape-local.assets]
+directory = "build/public"
+binding = "ASSETS"
+not_found_handling = "none"
+run_worker_first = ["/_pf/*"]
+[env.a-shape-local.cache]
+enabled = true
+[[env.a-shape-local.d1_databases]]
+binding = "DB"
+database_name = "b2-local"
+database_id = "00000000-0000-0000-0000-000000000002"
+[[env.a-shape-local.r2_buckets]]
+binding = "MEDIA"
+bucket_name = "b2-local-media"
+[[env.a-shape-local.durable_objects.bindings]]
+name = "PHP_RUNTIME"
+class_name = "PhpRuntime"
+[[env.a-shape-local.migrations]]
+tag = "v1"
+new_sqlite_classes = ["PhpRuntime"]
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # The database inside the PHP object (issue #2, docs/approach-b.md 8j).
 # DB_IN_DO=on (only with PHP_IN_DO=on): WordPress's database is the PhpRuntime
 # object's own SQLite (ctx.storage.sql), not D1. No network per query. One

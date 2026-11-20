@@ -8,7 +8,8 @@ name: approval-at-head
 #     approval-at-head / gate
 # (caller job id / called job name). Renaming the job id orphans the ruleset entry.
 #
-# TRIGGERS. pull_request opened/reopened/synchronize ONLY. It judges every new
+# TRIGGERS. pull_request opened/reopened/synchronize, plus merge_group checks_requested
+# (#1070, the merge queue; see the queue-ref job). On pull_request it judges every new
 # head, including the merge commit update-branch creates, and that run also gives
 # the head the workflow run the arrival instrument reads.
 #
@@ -38,6 +39,8 @@ name: approval-at-head
 on:
   pull_request:
     types: [opened, reopened, synchronize]
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -45,7 +48,114 @@ permissions:
   actions: read
 
 jobs:
+  # MERGE QUEUE (#1070, corrected by #1083). On a merge_group event the queue makes a
+  # branch named refs/heads/gh-readonly-queue/<base>/pr-<N>-<sha>. The <sha> in that
+  # name is NOT the PR head. Measured on the first live queue run (2026-11-20): for
+  # #1067 the ref sha was 47521d4c..., the PR head was c0ed21d9...; for #1052 the ref
+  # sha was 956687f..., which is main. It is the commit the entry is built on, main or
+  # the entry ahead of it. So only N is read from the ref.
+  #
+  # GitHub's docs (events that trigger workflows, merge_group; webhook events and
+  # payloads, merge_group) say a merge group is "a group of pull requests that the merge
+  # queue has grouped together", that the event fires "when a merge group is created or
+  # added to", and that GITHUB_SHA is the SHA of the merge group. They do not say what
+  # the sha in the ref name is, which is why the measurement above is the reference:
+  #   https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#merge_group
+  #   https://docs.github.com/en/webhooks/webhook-events-and-payloads#merge_group
+  #
+  # NOT A GATE: the ancestor relation. With the squash merge method the group commit is a
+  # squash commit, so the PR head is not its ancestor and a gate on it would refuse
+  # every entry (lead ruling, #1083). The safety comes from three things instead:
+  #   1. GitHub enqueues a PR only when its review rules are met;
+  #   2. any push to a queued PR removes it from the queue;
+  #   3. this gate re-judges the approval at the PR's CURRENT head, read from the API
+  #      here, in the same run that gates the merge.
+  # The compare status is logged so a run shows how the group relates to the PR head.
+  #
+  # The queue-ref job:
+  #   1. reads N from github.event.merge_group.head_ref (never from a PR-controlled
+  #      field) and refuses a ref that does not parse;
+  #   2. reads the PR head sha from the API and refuses a PR that is not open;
+  #   3. logs how the PR head relates to github.event.merge_group.head_sha (a diagnostic
+  #      only, see below);
+  #   4. outputs the PR head sha from the API, not from the ref.
+  # approval-at-head-queue then runs the SAME judge, at the same pinned sha, on that PR
+  # and head: an APPROVED review at exactly that sha. If queue-ref fails, the judge never
+  # runs, no `approval-at-head / gate` is reported, and the queue cannot merge the
+  # entry. A missing required check is not a pass.
+  #
+  # NAMES. The required context is `approval-at-head / gate`. On a merge_group run
+  # the queue job is named `approval-at-head`, so its called job `gate` reports that
+  # exact context. On a pull_request run it carries another name, and it is skipped,
+  # so no second `approval-at-head / gate` can appear in that suite (a skipped
+  # required check would count as a pass).
+  queue-ref:
+    name: approval-at-head-queue-ref
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      pr: ${{ steps.parse.outputs.pr }}
+      sha: ${{ steps.verify.outputs.sha }}
+    steps:
+      - name: read the PR number from the queue branch
+        id: parse
+        env:
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          # parse-begin (tests/ci/merge-group-ref-test.sh runs this block)
+          set -euo pipefail
+          re='^refs/heads/gh-readonly-queue/.+/pr-([1-9][0-9]*)-[0-9a-f]{40}$'
+          if [[ ! "$HEAD_REF" =~ $re ]]; then
+            echo "::error::merge_group head_ref '$HEAD_REF' is not refs/heads/gh-readonly-queue/<base>/pr-<N>-<40 hex>; refusing"
+            exit 1
+          fi
+          echo "pr=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          # parse-end
+      - name: the PR is open; read its head
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.parse.outputs.pr }}
+          MG_SHA: ${{ github.event.merge_group.head_sha }}
+        run: |
+          # verify-begin (tests/ci/merge-group-ref-test.sh runs this block with a stub gh)
+          set -euo pipefail
+          sha40='^[0-9a-f]{40}$'
+          pull=$(gh api "repos/$REPO/pulls/$PR" --jq '.state + " " + .head.sha')
+          state="${pull%% *}"
+          head="${pull#* }"
+          if [ "$state" != "open" ]; then
+            echo "::error::PR #$PR is '$state', not open; refusing"
+            exit 1
+          fi
+          if [[ ! "$head" =~ $sha40 ]]; then
+            echo "::error::PR #$PR head '$head' is not a 40 hex sha; refusing"
+            exit 1
+          fi
+          echo "sha=$head" >> "$GITHUB_OUTPUT"
+          echo "PR #$PR is open at $head; the approval is judged at that head"
+          # Diagnostic only, never a gate: how the group commit relates to the PR head. A
+          # failure here is logged and does not refuse.
+          rel=$(gh api "repos/$REPO/compare/$head...$MG_SHA" --jq '.status' 2>/dev/null) || rel="unavailable"
+          echo "merge group $MG_SHA vs PR head $head: compare says '${rel:-empty}' (diagnostic, not a gate)"
+          # verify-end
+
+  approval-at-head-queue:
+    name: ${{ github.event_name == 'merge_group' && 'approval-at-head' || 'approval-at-head-queue' }}
+    if: github.event_name == 'merge_group'
+    needs: queue-ref
+    uses: skyphusion-labs/.github/.github/workflows/approval-at-head-reusable.yml@a3412f45b3355b72651fe39e45923921609f93b7
+    with:
+      pr_number: ${{ fromJSON(needs.queue-ref.outputs.pr) }}
+      head_sha: ${{ needs.queue-ref.outputs.sha }}
+
   approval-at-head:
+    if: github.event_name == 'pull_request'
     uses: skyphusion-labs/.github/.github/workflows/approval-at-head-reusable.yml@a3412f45b3355b72651fe39e45923921609f93b7
     with:
       pr_number: ${{ github.event.pull_request.number }}

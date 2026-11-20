@@ -53,7 +53,9 @@ if [ "$kind" = theme ]; then
   for s in $found; do
     # As WordPress reads a header (get_file_data): any of " \t/*#@" before the key, any case,
     # and a closing "*/" is not part of the value.
-    parent=$(grep -iE '^[[:space:]/*#@]*Template:' "$dest/$s/style.css" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*(\*\/.*)?$//' | tr -d '\r' || true)
+    # WordPress reads theme headers from the first 8 KiB only (get_file_data). twentytwenty 3.3 has "/* TEMPLATE: COVER */"
+    # far below that, in its CSS, and is no child theme (#937).
+    parent=$(head -c 8192 "$dest/$s/style.css" 2>/dev/null | grep -iE '^[[:space:]/*#@]*Template:' | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*(\*\/.*)?$//' | tr -d '\r' || true)
     [ -z "$parent" ] || [ -d "$dest/$parent" ] || { echo "fetch: theme $s is a child of $parent, which is not in this build; refused (add $parent to THEMES)" >&2; exit 1; }
   done
 fi

@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # The remote packs (#563, #569, #394, #598): the ONE rule, sourced by both b-dosql deploy paths: deploy/wfp/lib.sh
 # (site add, site update, up.sh, build_dosql) and deploy/deploy.sh (VARIANT=b-dosql, through deploy/a-settings.sh and
-# deploy/render-conf.sh). Sourced, not run. Variant a keeps its own off-unless-set rule (deploy/a-settings.sh, a_vars).
+# deploy/render-conf.sh). Sourced, not run. Variant a has its own default, a_remote_pack_defaults (#1020): the same
+# packs, plus the D1 priming (OPCACHE_A) whose file trace they follow.
 #
 # OPCACHE_REMOTE=1: ALL OPcache files leave the bundle, as packs under /_pf/ that PHP fetches while it pauses in open()
 # (opcache-remote.py, remote-packs.mjs). SITE_REMOTE=1: site.zip leaves the bundle too (site-remote.py). Both need the
@@ -42,6 +43,21 @@ remote_pack_defaults() {
   fi
   [ -n "${SITE_REMOTE:-}" ] || SITE_REMOTE=$OPCACHE_REMOTE
   export OPCACHE_REMOTE SITE_REMOTE
+}
+# #1020: the remote packs are the DEFAULT for variant a (approach A, Hyperdrive) too. The reading (strummer-sb1120 on
+# cf759hl, 2026-11-20, lean, WooCommerce 11.2.1): without them, 9 of 10 GET /wp-json/ ended exceededMemory and EVERY
+# request booted a fresh PHP runtime; with OPCACHE_A=1 OPCACHE_REMOTE=1 SITE_REMOTE=1, 10 of 10 answered 200 at 105 MiB
+# and the isolates were reused. On variant a the packs follow OPCACHE_A's file trace (a_settings_check refuses
+# OPCACHE_REMOTE=1 without it), so: an unset OPCACHE_REMOTE becomes 1, unless OPCACHE_A=0 (no priming, no packs); an
+# unset OPCACHE_A then becomes 1 when the packs are on; an unset SITE_REMOTE follows OPCACHE_REMOTE. 0 opts out of each.
+a_remote_pack_defaults() {
+  if [ -z "${OPCACHE_REMOTE:-}" ]; then
+    if [ "${OPCACHE_A:-}" = 0 ]; then OPCACHE_REMOTE=0; else OPCACHE_REMOTE=1; fi
+  fi
+  if [ -z "${OPCACHE_A:-}" ] && [ "$OPCACHE_REMOTE" = 1 ]; then OPCACHE_A=1; fi
+  [ -n "${SITE_REMOTE:-}" ] || SITE_REMOTE=$OPCACHE_REMOTE
+  export OPCACHE_REMOTE SITE_REMOTE
+  if [ -n "${OPCACHE_A:-}" ]; then export OPCACHE_A; fi
 }
 # remote_pack_build <woo active 0|1>: the pack step of a primed b-dosql build, run from the app directory
 # (spikes/b2-wordpress) right after opcache.sh. #394 L1 (OPCACHE_SPLIT=1, deploy/wfp only): trace which OPcache files

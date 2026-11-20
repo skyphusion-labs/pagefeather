@@ -242,11 +242,35 @@ def login(user, pw):
     c, b, h = req(o, "/wp-login.php", urllib.parse.urlencode(form).encode(), {"Content-Type": "application/x-www-form-urlencoded"})
     if c not in (302, 303):
         return None, "wp-login.php answered %s, not a redirect" % c
-    c, b, _ = req(o, "/wp-admin/admin-ajax.php?action=rest-nonce")
+    c, b, h = req(o, "/wp-admin/admin-ajax.php?action=rest-nonce")
     n = (b or b"").decode("utf-8", "replace").strip()
     if c != 200 or not re.fullmatch(r"[0-9a-f]{10}", n):
+        record_nonce_failure(user, pw, c, b, h)
         return None, "no REST nonce after the login (%s)" % c
     return o, n
+
+
+NONCE_HEADERS = ("x-pf-call", "x-wasm-mib", "x-isolate-reset", "x-write-loss", "x-sql-failure")
+
+
+def scrub(text, secrets_=()):
+    """text with each given secret, and anything shaped like a nonce or a token (10+ hex, 20+ base64-ish), removed."""
+    for sec in secrets_:
+        if sec:
+            text = text.replace(sec, "[secret]")
+    text = re.sub(r"\b[0-9a-f]{10,}\b", "[hex]", text)
+    return re.sub(r"[A-Za-z0-9+/_-]{20,}={0,2}", "[token]", text)
+
+
+def record_nonce_failure(user, pw, status, body, headers):
+    """#924: every failed rest-nonce after a form login, admin retries included, becomes evidence in seed.json."""
+    row = {"who": user, "status": status, "body": scrub((body or b"")[:200].decode("utf-8", "replace"), (pw,))}
+    for k in NONCE_HEADERS:
+        v = headers.get(k) if headers else None
+        if v:
+            row[k] = v
+    report.setdefault("rest_nonce_failures", []).append(row)
+    event("rest-nonce-failed", **row)
 
 
 def stem(url):

@@ -131,7 +131,11 @@ class D1_Dialect {
 	 *   'lit'    lower(col) = lower('lit')               (#805: an exact match, e.g. get_users() with no '*')
 	 * SQLite LIKE and lower() both fold ASCII case only, and each form is NULL where LIKE is, so the result is the same.
 	 * Only patterns OVER the cap are touched, so a short LIKE (and SQLite's index range for a prefix) is unchanged.
-	 * Other patterns ('_' anywhere, or '%' inside) are left alone, and SQLite refuses them as before.
+	 * #836 (a): '%t%' where t has '_' wildcards and no '%' (WooCommerce's cart-page probe: block JSON with
+	 * __woocommerceNamespace, never escaped) becomes an exact search with no LIKE: every start of t's longest literal
+	 * run (a recursive CTE over instr), then each other run compared at its offset, and the length checked. Every
+	 * occurrence is tried, so the answer is LIKE's, not a first-occurrence guess. NULL stays NULL (CASE).
+	 * Other patterns ('%' inside, '_' in a prefix or exact pattern) are left alone, and SQLite refuses them as before.
 	 */
 	private static function rewrite_long_like( array $tokens ) {
 		for ( $i = count( $tokens ) - 1; $i >= 0; $i-- ) {
@@ -159,10 +163,11 @@ class D1_Dialect {
 				$end    = $ci;
 			}
 			$shape = self::like_literal( $pattern, $escape );
-			if ( null === $shape ) {
+			$tpl   = null === $shape ? self::like_template( $pattern, $escape ) : null;
+			if ( null === $shape && null === $tpl ) {
 				continue;
 			}
-			list( $kind, $needle ) = $shape;
+			list( $kind, $needle ) = null !== $shape ? $shape : array( 'template', null );
 			// Left side: a column reference such as `t`.`c` or t.c.
 			$start = $i;
 			$not   = false;
@@ -186,7 +191,9 @@ class D1_Dialect {
 				continue;
 			}
 			$col  = array_slice( $tokens, $col_start, $col_end - $col_start + 1 );
-			if ( 'exact' === $kind ) {
+			if ( 'template' === $kind ) {
+				$repl = self::template_search( $col, $tpl, $not );
+			} elseif ( 'exact' === $kind ) {
 				$repl = array_merge(
 					array( array( 'type' => 'word', 'text' => 'lower(' ) ),
 					$col,
@@ -308,6 +315,95 @@ class D1_Dialect {
 			}
 		}
 		return $kind;
+	}
+
+	/** @var int Names each #836 template CTE apart inside one statement. */
+	private static $like_cte = 0;
+
+	/**
+	 * #836 (a): a '%t%' pattern whose inner t has at least one unescaped '_' and no unescaped '%':
+	 * array( 'len' => t's length in characters, 'runs' => array( array( offset, literal ), ... ) ), offsets in
+	 * characters from t's start. Null for anything else. Characters, as SQLite counts them for TEXT: '_' is one
+	 * character, and substr, instr and length count characters.
+	 */
+	private static function like_template( $pattern, $escape ) {
+		$chars = preg_split( '//u', $pattern, -1, PREG_SPLIT_NO_EMPTY );
+		if ( false === $chars ) {
+			return null; // not UTF-8: left alone
+		}
+		$units = array();
+		$n     = count( $chars );
+		for ( $j = 0; $j < $n; $j++ ) {
+			$c = $chars[ $j ];
+			if ( null !== $escape && '' !== $escape && $c === $escape ) {
+				if ( $j + 1 >= $n ) {
+					return null;
+				}
+				$units[] = array( false, $chars[ ++$j ] );
+				continue;
+			}
+			$units[] = array( '%' === $c || '_' === $c, $c );
+		}
+		if ( count( $units ) < 3 || ! ( $units[0][0] && '%' === $units[0][1] ) || ! ( end( $units )[0] && '%' === end( $units )[1] ) ) {
+			return null;
+		}
+		$inner = array_slice( $units, 1, -1 );
+		$runs  = array();
+		$cur   = '';
+		$start = 0;
+		$wild  = 0;
+		foreach ( $inner as $k => $u ) {
+			if ( $u[0] && '%' === $u[1] ) {
+				return null;
+			}
+			if ( $u[0] ) {
+				++$wild;
+				if ( '' !== $cur ) {
+					$runs[] = array( $start, $cur );
+					$cur    = '';
+				}
+				continue;
+			}
+			if ( '' === $cur ) {
+				$start = $k;
+			}
+			$cur .= $u[1];
+		}
+		if ( '' !== $cur ) {
+			$runs[] = array( $start, $cur );
+		}
+		if ( 0 === $wild || ! $runs ) {
+			return null;
+		}
+		return array( 'len' => count( $inner ), 'runs' => $runs );
+	}
+
+	/** Character length, as SQLite length() counts TEXT. */
+	private static function char_len( $s ) {
+		return count( preg_split( '//u', $s, -1, PREG_SPLIT_NO_EMPTY ) );
+	}
+
+	/** The #836 (a) exact search for a template, as tokens. NOT takes the negation; NULL stays NULL. */
+	private static function template_search( array $col, array $tpl, $not ) {
+		$anchor = 0;
+		foreach ( $tpl['runs'] as $k => $r ) {
+			if ( self::char_len( $r[1] ) > self::char_len( $tpl['runs'][ $anchor ][1] ) ) {
+				$anchor = $k;
+			}
+		}
+		list( $ao, $alit ) = $tpl['runs'][ $anchor ];
+		$name = 'pf_like_' . ( ++self::$like_cte );
+		$w    = function ( $t ) { return array( 'type' => 'word', 'text' => $t ); };
+		$out  = array_merge( array( $w( 'CASE WHEN ' ) ), $col, array( $w( ' IS NULL THEN NULL ELSE ' . ( $not ? 'NOT ' : '' ) . 'EXISTS (WITH RECURSIVE ' . $name . '(pos) AS (SELECT instr(lower(' ) ), $col, array( $w( '), lower(' ), self::literal( $alit ), $w( ')) UNION ALL SELECT pos + instr(substr(lower(' ) ), $col, array( $w( '), pos + 1), lower(' ), self::literal( $alit ), $w( ')) FROM ' . $name . ' WHERE instr(substr(lower(' ) ), $col, array( $w( '), pos + 1), lower(' ), self::literal( $alit ), $w( ')) > 0) SELECT 1 FROM ' . $name . ' WHERE pos > ' . $ao . ' AND length(' ) ), $col, array( $w( ') >= pos - ' . $ao . ' + ' . ( $tpl['len'] - 1 ) ) ) );
+		foreach ( $tpl['runs'] as $k => $r ) {
+			if ( $k === $anchor ) {
+				continue;
+			}
+			$out = array_merge( $out, array( $w( ' AND lower(substr(' ) ), $col, array( $w( ', pos - ' . $ao . ' + ' . $r[0] . ', ' . self::char_len( $r[1] ) . ')) = lower(' ), self::literal( $r[1] ), $w( ')' ) ) );
+		}
+		$out[] = $w( ') END' );
+		self::count_rewrite( 'long_like_template' );
+		return $out;
 	}
 
 	/**
