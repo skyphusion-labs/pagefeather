@@ -11,6 +11,9 @@
 #     WebAssembly memory never shrinks and the cron leg does not recycle its runtime (a late-collected heap plus a fresh
 #     boot stacks two, recycle-line.mjs), so the stop fires only when THIS leg grew the heap past it; a runtime that
 #     reuses its memory goes on. Measured locally: 50 emails in legs of 13, 16 and 21, heap 114 to 119 MiB.
+#   The backlog alarm (#1120): INTERVAL_MS=60000 STOP_VARS="CRON_AS_BUDGET_MS:1000" EXPECT_STOP=budget MAX_LEGS=20
+#     DRAIN_WITHIN_S=90: from the first leg, legs cut short by the budget come CRON_BACKLOG_GAP_MS (5 s) apart, not a
+#     minute apart (about 7 legs, so about 6 min without it). The first leg waits for the alarm already armed (#855).
 #   tests/a-as-drain-e2e.sh   (in spikes/b2-wordpress, after prepare.sh and build.sh)
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -18,10 +21,10 @@ export PORT=${PORT:-8799} DEV_ENV=a-shape-local  # not 8798: opcache-a.sh holds 
 B=http://localhost:$PORT; PW=${ADMIN_PASSWORD:-local-spike-password}; TOK=${SPIKE_TOKEN:-local-spike-token}
 STATE=$(mktemp -d "${TMPDIR:-/tmp}/a-as-drain.XXXXXX"); export PERSIST_TO=$STATE
 trap './run.sh --stop > /dev/null 2>&1; rm -rf "$STATE"' EXIT
-DEV_LOCAL=1 DEV_LOG_LEVEL=log DEV_TEST_SCHEDULED=1 DEV_VARS="CRON_INTERVAL_MS:10000 ${STOP_VARS:-}" ./run.sh _ping > /dev/null || { echo "a-as-drain: wrangler dev did not start"; tail -20 dev.log; exit 1; }
+DEV_LOCAL=1 DEV_LOG_LEVEL=log DEV_TEST_SCHEDULED=1 DEV_VARS="CRON_INTERVAL_MS:${INTERVAL_MS:-10000} ${STOP_VARS:-}" ./run.sh _ping > /dev/null || { echo "a-as-drain: wrangler dev did not start"; tail -20 dev.log; exit 1; }
 curl -sf -m 300 -H "x-spike-token: $TOK" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null || { echo "a-as-drain: /_install failed"; exit 1; }
 curl -sf -m 300 -H "x-spike-token: $TOK" "$B/_activate?plugin=woocommerce/woocommerce.php" > /dev/null || { echo "a-as-drain: WooCommerce did not activate"; exit 1; }
-B=$B SPIKE_TOKEN=$TOK ADMIN_PASSWORD=$PW ORDERS=${ORDERS:-50} MAX_LEGS=${MAX_LEGS:-6} EXPECT_STOP=${EXPECT_STOP:-} python3 -I - <<'PY'
+B=$B SPIKE_TOKEN=$TOK ADMIN_PASSWORD=$PW ORDERS=${ORDERS:-50} MAX_LEGS=${MAX_LEGS:-6} EXPECT_STOP=${EXPECT_STOP:-} DRAIN_WITHIN_S=${DRAIN_WITHIN_S:-} python3 -I - <<'PY'
 import json, os, re, sys, time, urllib.request
 sys.path.insert(0, os.path.join(os.getcwd(), "tests"))
 import break_lib as BL
@@ -43,6 +46,7 @@ def legs():
         if '"m":"cron","done":1' in l: out.append(json.loads(l[l.index("{"):]))
     return out
 urllib.request.urlopen(B + "/__scheduled?cron=*+*+*+*+*", timeout=60).read()
+t_trigger = time.time(); t_first = None
 fails = []
 def check(name, cond):
     print("  %-4s %s" % ("ok" if cond else "FAIL", name)); cond or fails.append(name)
@@ -52,9 +56,10 @@ deadline = time.time() + 20 + 12 * MAX_LEGS
 first_due = None
 while time.time() < deadline:
     L = legs()
-    if L and first_due is None: first_due = (L[0].get("as_due") or 0) + (L[0].get("as_actions") or 0)
+    if L and first_due is None: first_due = (L[0].get("as_due") or 0) + (L[0].get("as_actions") or 0); t_first = time.time()
     if L and not any(emails(d) for d in L[-1:]) and sum(emails(d) for d in L) > 0: break
     time.sleep(3)
+drain_s = time.time() - (t_first or t_trigger)  # from the first leg: the first waits for the alarm already armed (#855)
 L = legs()
 for i, d in enumerate(L):
     print("  leg %d: as_actions %s (emails %d) stop %s pass %s due_after %s legMs %s wasmMib %s" % (i + 1, d.get("as_actions"), emails(d), d.get("as_stop"), d.get("as_pass"), d.get("as_due"), d.get("legMs"), d.get("wasmMib")))
@@ -63,6 +68,9 @@ eleg = [d for d in L if emails(d)]
 check("the burst queued at least %d due emails (first leg saw %s due)" % (ORDERS, first_due), (first_due or 0) >= ORDERS)
 check("every due email ran (%d) within %d legs (%d legs ran emails)" % (ran, MAX_LEGS, len(eleg)), ran >= ORDERS and len(eleg) <= MAX_LEGS and eleg and not emails(L[-1]))
 check("each email leg ran more than one action, or stopped for a stated reason", all(emails(d) > 1 or d.get("as_stop") in ("budget", "heap") or d is eleg[-1] for d in eleg))
+within = os.environ.get("DRAIN_WITHIN_S") or ""
+if within:
+    check("the burst drained within %s s of its first leg (took %.0f s; first leg %.0f s after the trigger)" % (within, drain_s, (t_first or t_trigger) - t_trigger), drain_s <= float(within) and ran >= ORDERS)
 want = os.environ.get("EXPECT_STOP") or ""
 if want:
     check("a leg stopped for %s (the guard fired)" % want, any(d.get("as_stop") == want for d in eleg))

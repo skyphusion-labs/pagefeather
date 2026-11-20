@@ -17,7 +17,7 @@ import { startByMs, objectShedPlan, startByResponse, shedAnswer, startByExempt, 
 import { IMPORT_HOLD_KEY, IMPORT_HOLD_MS, cronHeld } from './import-hold.mjs';
 import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
-import { cronBounds, cronCleanDue, cronLegDue, cronAsBudgetMs, cronMore } from './cron-bound.mjs';
+import { cronBounds, cronCleanDue, cronLegDue, cronAsBudgetMs, cronMore, cronBacklogNext, cronBacklogDue, cronBacklogGapMs } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronRunDeferred, cronMarkOf, cronFatalOf } from './cron-health.mjs';
 import { approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME } from './a-cron.mjs';
 import { isMediaUploadRequest, markerKey, sweepUploadOrphans, dropMarkersOn } from './upload-intent.mjs';
@@ -2252,6 +2252,8 @@ const CRON_SKIP_KEY = 'cron-skip';
 const CRON_CLEAN_KEY = 'cron-cleaned-at';
 // The start of the last cron leg (#470, cron-bound.mjs cronLegDue).
 const CRON_LAST_KEY = 'cron-last-start';
+// #1120: the end of a leg that made progress with Action Scheduler work still due (cron-bound.mjs cronBacklogNext); the next leg is due by it.
+const CRON_BACKLOG_KEY = 'cron-backlog';
 let lastPurge = 0;
 // #510: dispose a JS RPC result once its fields are read. An RPC result can carry a disposer (and,
 // over Cap'n Web, every object result does); left to the garbage collector it logs "An RPC result
@@ -3187,7 +3189,7 @@ export class PhpRuntime extends DurableObject {
 			// A purge alarm (every PURGE_GAP_MS under writes) runs the cron leg only when the last one
 			// started at least CRON_INTERVAL_MS ago (#470): the purge still goes out below either way.
 			const lastCron = await this.ctx.storage.get(CRON_LAST_KEY);
-			const legDue = cronLegDue(lastCron, Date.now(), Number(this.env.CRON_INTERVAL_MS || 60000));
+			const legDue = cronLegDue(lastCron, Date.now(), Number(this.env.CRON_INTERVAL_MS || 60000)) || cronBacklogDue(await this.ctx.storage.get(CRON_BACKLOG_KEY), Date.now(), cronBacklogGapMs(this.env));
 			// #969: a request that just queued a Woo email pulls this leg forward. The conformance
 			// poll is 30s. The default interval is 60s, and a busy poll used to skip the leg.
 			const emailDueAt = Number(await this.ctx.storage.get(EMAIL_DUE_KEY) || 0);
@@ -3218,6 +3220,7 @@ export class PhpRuntime extends DurableObject {
 				if (idle && idle.streak) await this.ctx.storage.delete(IDLE_KEY); // #390: work again, the back-off starts over
 				// Stored BEFORE the run (#470): a run an isolate reset kills still counts as the last one.
 				await this.ctx.storage.put(CRON_LAST_KEY, Date.now());
+				await this.ctx.storage.delete(CRON_BACKLOG_KEY); // #1120: consumed by this leg; a leg that dies leaves no mark behind
 				// The run record (#471), synced before PHP runs, so a leg the isolate kills is counted.
 				const runStart = cronRunStart(prevRun, Date.now());
 				if (runStart.died) console.log(JSON.stringify({ m: 'cron', died: runStart.rec.deaths, lastMark: runStart.rec.prevMark, lastFatal: runStart.rec.prevFatal }));
@@ -3308,6 +3311,16 @@ export class PhpRuntime extends DurableObject {
 				// the drain rate and WP-Cron starvation can be read from Workers Logs (/_purgestate keeps
 				// only the last tick).
 				console.log(JSON.stringify({ m: 'cron', done: 1, as_actions: cr.as_actions, as_stop: cr.as_stop, as_pass: cr.as_pass, as_dates: cr.as_dates, as_hooks: cr.as_hooks, as_pending: cr.as_pending, as_due: cr.as_due, legMs: cr.legMs, wasmMib: cr.wasmMib, wp_cron_hooks: cr.wp_cron_hooks, wp_cron_skipped: cr.wp_cron_skipped, wp_cron_due: cr.wp_cron_due, mail: mail.counts, lostWrites: mail.lostWritesSeen() }));
+				// #1120: a leg that made progress with work still due brings the next one in CRON_BACKLOG_GAP_MS, not the interval. The soon
+				// alarm only moves an alarm EARLIER (a sooner purge or mail alarm keeps its time); every gate above still applies.
+				const backlogIn = cronBacklogNext({ approachA: approachACronEnabled(this.env), asDue: cr.as_due, asStop: cr.as_stop, asActions: cr.as_actions, gapMs: cronBacklogGapMs(this.env) });
+				if (backlogIn) {
+					await this.ctx.storage.put(CRON_BACKLOG_KEY, Date.now());
+					const at = Date.now() + backlogIn;
+					const cur = await this.ctx.storage.getAlarm();
+					if (cur === null || cur === undefined || Number(cur) > at) await setAlarmRecorded(this.ctx.storage, at, Date.now(), 'as-backlog');
+					console.log(JSON.stringify({ m: 'cron', backlog: cr.as_due, nextInMs: backlogIn, stop: cr.as_stop || 'none' }));
+				} else await this.ctx.storage.delete(CRON_BACKLOG_KEY);
 				}
 				await this.ctx.storage.put(PURGE_STATE_KEY, cst);
 				// The #370 dedupe markers expire after DEDUPE_TTL_MS (14 days by default: past any Action
