@@ -76,8 +76,11 @@ import { budgetAcquire, budgetRefused } from './purge-budget-client.mjs';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
+import { memfsHeld } from './memfs-held.mjs';
 // Compiled PHP (OPcache file cache) made by opcache.sh with this same PHP build.
 import opcacheZip from './build/opcache.zip';
+// #1022: the bundle's own zips, a fixed cost (#394 floor probes): memfs-held.mjs leaves views of them out.
+const BUNDLE_BUFFERS = [siteZip, opcacheZip];
 // #394 L1 (opcache-split.py): the BOOT part of the OPcache file cache is not a static module. It is
 // fetched from the Assets binding when a runtime boots and dropped after that request. null when
 // the build was not split (build.sh writes the default).
@@ -869,6 +872,9 @@ function attachLazyContents(node, size, dataFn, tag) {
 			written = true; // PHP wrote this file. Keep it.
 		},
 	});
+	// #1022: what this node holds now (the inflated, pinned or written copy, or null), for memfs-held.mjs.
+	// It never inflates: the perf line's fsKiB must not change what it measures.
+	Object.defineProperty(node, 'pfHeld', { configurable: true, value: () => contents });
 	Object.defineProperty(node, 'usedBytes', {
 		configurable: true,
 		get() {
@@ -5310,6 +5316,15 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			if (ctx && ctx.inObject) {
 				runtimeServed++;
 				const now = Date.now();
+				// #1022: the MEMFS bytes the runtime holds on the JS side (the bundle zips left out). A reading only:
+				// a failed walk drops the fields, never the request.
+				let fsHeld = null;
+				try {
+					const FS = php[__private__dont__use].FS;
+					fsHeld = memfsHeld(FS.root, BUNDLE_BUFFERS);
+				} catch {
+					fsHeld = null;
+				}
 				const perf = {
 					iso: ISOLATE_ID,
 					...(ctx && ctx.callId ? { call: ctx.callId } : {}), // #708: per request (review 2)
@@ -5328,6 +5343,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 					lazyWrites: stats.lazyWrites - start.lazyWrites, // #530: bundle files PHP wrote this request (kept, not dropped)
 					wasm0MiB: Math.round(wasm0 / 1048576),
 					wasm1MiB: Math.round(wasmBytes / 1048576),
+					...(fsHeld ? { fsKiB: Math.round(fsHeld.bytes / 1024), fsFiles: fsHeld.files } : {}), // #1022
 					...(booted ? { l1: l1State } : {}), // #394 L1: where this boot's OPcache boot pack came from
 					...(booted && OPCACHE_REMOTE ? { remote: remoteState } : {}), // #563: the remote OPcache packs at this boot
 					...(booted && SITE_REMOTE ? { siteRemote: siteState } : {}), // #569: the remote site packs at this boot
