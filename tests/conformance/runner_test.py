@@ -724,6 +724,36 @@ def main():
                     ok("%s: our title rows still skip their tests" % lab) if ch.get("gi") and re.search(ch["gi"], full) else bad("%s: our title row lost: %s" % (lab, ch.get("gi")))
         else:
             bad("eval of the generated configs: no node (could not measure)")
+        # The core-only gb stock arm (BASELINE_WITHOUT_GUTENBERG_PLUGIN): upstream's env file (GB_SHA 8daba429, verbatim
+        # shape) with the Gutenberg plugin not mounted. Our sites ship core alone, so this is the baseline that matches them.
+        gb_env = json.loads('{"$schema": "./schemas/json/wp-env.json", "testsEnvironment": false, "port": 8889, "core": "WordPress/WordPress#7.1-branch", "mariadbVersion": "12.3", "plugins": ["."], "themes": ["./test/emptytheme"], "config": {"WP_DEBUG": false, "SCRIPT_DEBUG": false}, "mappings": {"wp-content/plugins/gutenberg": ".", "wp-content/mu-plugins": "./packages/e2e-tests/mu-plugins", "wp-content/plugins/gutenberg-test-plugins": "./packages/e2e-tests/plugins", "wp-content/themes/gutenberg-test-themes": "./test/gutenberg-test-themes", "wp-content/themes/gutenberg-test-themes/twentytwentyone": "https://downloads.wordpress.org/theme/twentytwentyone.2.1.zip", "wp-content/themes/gutenberg-test-themes/twentytwentythree": "https://downloads.wordpress.org/theme/twentytwentythree.1.3.zip", "wp-content/themes/gutenberg-test-themes/twentytwentyfour": "https://downloads.wordpress.org/theme/twentytwentyfour.1.0.zip"}}')
+        cut = runner.wp_env_without_gutenberg_plugin(gb_env)
+        ok("core-only env: plugins drops the checkout") if cut["plugins"] == [] else bad("core-only plugins: %s" % cut["plugins"])
+        ok("core-only env: the wp-content/plugins/gutenberg mapping is gone") if "wp-content/plugins/gutenberg" not in cut["mappings"] else bad("core-only: gutenberg mapping kept")
+        ok("core-only env: every other mapping and key is kept") if all(cut["mappings"].get(k) == v for k, v in gb_env["mappings"].items() if k != "wp-content/plugins/gutenberg") and all(cut[k] == gb_env[k] for k in gb_env if k not in ("plugins", "mappings")) else bad("core-only: lost a key")
+        ok("core-only env: the input is not changed") if gb_env["plugins"] == [ "." ] else bad("core-only: edited the input")
+        for lab, bent in (("no plugins entry", dict(gb_env, plugins=[])),
+                          ("no gutenberg mapping", dict(gb_env, mappings={k: v for k, v in gb_env["mappings"].items() if k != "wp-content/plugins/gutenberg"})),
+                          ("the checkout mounted under a second name", dict(gb_env, mappings=dict(gb_env["mappings"], **{"wp-content/plugins/gb2": "."})))):
+            try:
+                runner.wp_env_without_gutenberg_plugin(bent)
+                bad("core-only env: %s: no refusal" % lab)
+            except runner.Stop:
+                ok("core-only env: %s is refused" % lab)
+        ce = os.path.join(t, "coreonly"); os.makedirs(ce)
+        json.dump(gb_env, open(os.path.join(ce, ".wp-env.test.json"), "w"))
+        rc, o, e = run(["wp-env-without-gutenberg-plugin", "--suite-dir", ce], {"PATH": os.environ.get("PATH", "")})
+        wrote = os.path.join(ce, runner.CORE_ONLY_WP_ENV)
+        ok("wp-env-without-gutenberg-plugin writes the env file beside upstream's") if rc == 0 and os.path.exists(wrote) and json.load(open(wrote)) == cut else bad("wp-env-without-gutenberg-plugin: rc %d" % rc)
+        for flag in ("1", "0"):
+            vbg = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "baseline", "gb", vw, os.path.join(t, "vbg" + flag)],
+                                 env={"PATH": os.environ.get("PATH", ""), "DRY": "1", "BASELINE_WITHOUT_GUTENBERG_PLUGIN": flag}, capture_output=True, text=True)
+            out = vbg.stdout
+            if flag == "1":
+                ok("baseline gb without the plugin: writes the core-only env, starts AND stops wp-env with it") if vbg.returncode == 0 and "wp-env-without-gutenberg-plugin --suite-dir" in out and "wp-env --config .wp-env.test-without-gutenberg-plugin.json start" in out and "WITHOUT THE GUTENBERG PLUGIN" in out and "wp-env-test -- start" not in out else bad("baseline gb core-only: rc %d %s" % (vbg.returncode, out[-400:]))
+                ok("baseline gb without the plugin: the stop uses the same env file") if "wp-env --config .wp-env.test-without-gutenberg-plugin.json stop" in out else bad("baseline gb core-only stop: %s" % out[-300:])
+            else:
+                ok("baseline gb by default: upstream's env, plugin mounted, as before") if vbg.returncode == 0 and "wp-env-test -- start" in out and "without-gutenberg-plugin" not in out else bad("baseline gb default: %s" % out[-300:])
         vg = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "install", "gb", os.path.join(t, "vg")],
                             env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
         vg_out = vg.stdout + vg.stderr

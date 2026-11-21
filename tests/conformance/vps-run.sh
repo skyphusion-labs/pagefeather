@@ -15,6 +15,9 @@
 # PF_BROWSER=browser-run (run only) puts the browsers on Cloudflare Browser Run, Chromium only; PF_WORKERS sets the
 # worker count there (default 1: the specs share one site's state). A Browser Run row is never mixed with a local-browser row: the Chromium differs.
 #
+# BASELINE_WITHOUT_GUTENBERG_PLUGIN=1 (gb baseline only): the stock arm is core 7.1.4 alone, with the Gutenberg plugin NOT
+# mounted (upstream's .wp-env.test.json mounts it; our sites do not ship it). Its failures that are also ours are
+# "needs the Gutenberg plugin", not ours.
 # PF_TIER (run and baseline) names the tier ("Free DO", "Paid DO", "WfP", "Hyperdrive"): an exclude row that starts with
 # "[<tier>]" skips its spec on that tier only. Without PF_TIER no tier-scoped row applies, so the spec runs.
 #
@@ -152,12 +155,24 @@ case "$act" in
     case "$suite" in
       wp) trap 'in_dir "$src" npm run env:stop || true' EXIT ;;
       wc|wc-api|wc-cpt) trap 'in_dir "$src/plugins/woocommerce" pnpm env:e2e:stop || true' EXIT ;;
-      gb) trap 'in_dir "$src" npm run wp-env-test -- stop || true' EXIT ;;
+      gb) if [ "${BASELINE_WITHOUT_GUTENBERG_PLUGIN:-0}" = 1 ]; then
+            trap 'in_dir "$src" npx wp-env --config .wp-env.test-without-gutenberg-plugin.json stop || true' EXIT
+          else
+            trap 'in_dir "$src" npm run wp-env-test -- stop || true' EXIT
+          fi ;;
     esac
     case "$suite" in
       wp) in_dir "$src" npm run build:dev; in_dir "$src" npm run env:start; in_dir "$src" npm run env:install ;;
       wc|wc-api|wc-cpt) in_dir "$src/plugins/woocommerce" env WP_ENV_CORE=WordPress/WordPress#7.1.4 pnpm env:e2e ;;
-      gb) in_dir "$src" env WP_ENV_CORE=WordPress/WordPress#7.1.4 npm run wp-env-test -- start ;;
+      # BASELINE_WITHOUT_GUTENBERG_PLUGIN=1: the stock arm is core 7.1.4 ALONE, as our sites are (none ships the
+      # Gutenberg plugin; upstream's env mounts it). runner.py writes the env file without the two plugin mounts.
+      gb) if [ "${BASELINE_WITHOUT_GUTENBERG_PLUGIN:-0}" = 1 ]; then
+            echo "vps-run: BASELINE WITHOUT THE GUTENBERG PLUGIN (core 7.1.4 alone)"
+            x python3 -I "$here/runner.py" wp-env-without-gutenberg-plugin --suite-dir "$src" || exit 3
+            in_dir "$src" env WP_ENV_CORE=WordPress/WordPress#7.1.4 npx wp-env --config .wp-env.test-without-gutenberg-plugin.json start
+          else
+            in_dir "$src" env WP_ENV_CORE=WordPress/WordPress#7.1.4 npm run wp-env-test -- start
+          fi ;;
     esac
     playwright "$src"
     ;;
