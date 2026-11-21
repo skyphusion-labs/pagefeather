@@ -115,6 +115,7 @@ Our HTTP bridge refuses the installer's loopback probe, so a fresh install keeps
 - **The fix:** #773 merged on 2026-11-16. A fresh install now gets the day-and-name structure, as stock does. It is not yet measured live.
 - **`/wp-json/` under plain:** with #773, `/wp-json/` reaches the REST API even under a plain structure. That goes beyond stock: under plain, stock has no rewrite rule for it.
 - **Owner-chosen plain, unknown paths (#772, fixed):** under a plain structure, an unknown path used to answer 200 and not 404. Stock WordPress on Apache answers 404. #804 fixes that path on b-dosql. It merged on 2026-11-16. It is not yet measured live in the conformance run.
+- **Pretty structures, unknown paths (#1195, fixed):** under `/%postname%/`, a path no rule matches (`/cart/x/y/z`) answered 301 to a trailing slash and then the home page with 200. Stock answers 404. The cause was `$_SERVER['PHP_SELF']`: php-wasm set it to the requested path on its internal redirect to `/index.php`, and core's `WP::parse_request` clears its 404 when the path equals `PHP_SELF`. `php-self.mjs` now sets `PHP_SELF` to `SCRIPT_NAME . PATH_INFO`, as Apache and nginx front controllers do. Under the day-and-name structure, a missing path whose last segment names a page (`/x/y/cart`) still answers 301 to that page: that is core's own 404 guess (`redirect_guess_404_permalink`), which stock runs too.
 
 ### HTTP Basic auth was broken, now fixed in code (#761, #762)
 

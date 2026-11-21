@@ -7,6 +7,7 @@ import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, ha
 import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { installPhpBasicAuth } from './php-auth.mjs';
+import { installPhpSelf } from './php-self.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
 import { wpCronState, idleDecision, parseGmt, IDLE_KEY } from './cron-idle.mjs';
 import { armBeforeRun, rearm, pullIn, extendIfOurs, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm, setAlarmRecorded, ALARM_SET_KEY, emailRushDue, emailAlarmAt, EMAIL_DUE_KEY, EMAIL_RETRY_MS } from './alarm-arm.mjs';
@@ -1899,6 +1900,8 @@ async function boot(origin) {
 	// mod_php also sets PHP_AUTH_USER and PHP_AUTH_PW. One install covers the object
 	// and approach A's Worker: both run this runtime.
 	installPhpBasicAuth(php);
+	// #1195: PHP_SELF as stock front controllers set it (SCRIPT_NAME . PATH_INFO), so an unknown path stays a 404.
+	installPhpSelf(php);
 	lastBootedPhp = php;
 	runtimeBootBytes = php[__private__dont__use].HEAPU8.length; // #603 (A): what this runtime starts from
 	if (instMemory) memOf.set(php, instMemory); // #598: the memory the spare keeps at release
