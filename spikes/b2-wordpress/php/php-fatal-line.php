@@ -6,6 +6,7 @@
  *   500, this sends the Worker the type, the message with addresses and URLs scrubbed (at most 300 characters), the file
  *   below /wordpress, the line, and the request method and path (no query: a nonce or a key never leaves). The Worker
  *   logs it as php-fatal. A wp_die whose response is null or 200 is a normal exit (wp_send_json), not a fatal (#1220).
+ *   A wp_die with no response key uses the HTTP status the request already has. Only a 5xx status is a fatal.
  *   It changes no answer. Always on: it costs nothing unless a request dies.
  */
 
@@ -52,26 +53,62 @@ function skyphusion_php_fatal_report( $err ) {
 	post_message_to_js( json_encode( array( 'phpFatal' => $line ) ) );
 }
 
+/**
+ * Log one wp_die when $status is a 5xx code. Null and every other status are normal exits (#1220).
+ */
+function skyphusion_php_fatal_die_report( $message, $status ) {
+	if ( null === $status ) {
+		return;
+	}
+	$code = (int) $status;
+	if ( $code < 500 || $code > 599 ) {
+		return;
+	}
+	$text = is_object( $message ) && method_exists( $message, 'get_error_message' ) ? $message->get_error_message() : ( is_string( $message ) ? $message : '' );
+	skyphusion_php_fatal_report( array( 'type' => 'wp_die', 'message' => skyphusion_php_fatal_strip( $text ), 'status' => $code ) );
+}
+
+/**
+ * A wp_die with no response key waits until the handler has set the HTTP status.
+ * http_response_code() is false when nothing has set one. That answer is 200, not 500.
+ * The real handler sets the status, then it calls die(), so shutdown runs this too.
+ */
+function skyphusion_php_fatal_die_pending_flush() {
+	if ( ! isset( $GLOBALS['skyphusion_php_fatal_die_pending'] ) || ! is_array( $GLOBALS['skyphusion_php_fatal_die_pending'] ) ) {
+		return;
+	}
+	$pending = $GLOBALS['skyphusion_php_fatal_die_pending'];
+	$GLOBALS['skyphusion_php_fatal_die_pending'] = null;
+	$code = function_exists( 'http_response_code' ) ? http_response_code() : false;
+	$status = ( false === $code ) ? 200 : $code;
+	skyphusion_php_fatal_die_report( $pending['message'], $status );
+}
+
 register_shutdown_function(
 	static function () {
+		skyphusion_php_fatal_die_pending_flush();
 		skyphusion_php_fatal_report( error_get_last() );
 	}
 );
 
-// A wp_die that answers 500 (WordPress can fail a request without a PHP fatal). The original handler still runs.
-// #1220: wp_send_json() ends with wp_die( '', '', array( 'response' => null ) ). isset() is false for null, so that
-// normal exit was read as a missing status and logged as 500. null and 200 are normal exits. A missing status stays 500.
+// A wp_die that answers 5xx (WordPress can fail a request without a PHP fatal). The original handler still runs.
+// #1220: wp_send_json() ends with wp_die( '', '', array( 'response' => null ) ). null and 200 are normal exits.
+// No response key is not a 500. Read the status the handler set (Ajax sets 200, the default handler sets 500).
 foreach ( array( 'wp_die_handler', 'wp_die_ajax_handler', 'wp_die_json_handler' ) as $skyphusion_die_filter ) {
 	add_filter(
 		$skyphusion_die_filter,
 		static function ( $handler ) {
 			return static function ( $message, $title = '', $args = array() ) use ( $handler ) {
-				$status = is_array( $args ) && array_key_exists( 'response', $args ) ? $args['response'] : 500;
-				if ( null !== $status && 500 === (int) $status ) {
-					$text = is_object( $message ) && method_exists( $message, 'get_error_message' ) ? $message->get_error_message() : ( is_string( $message ) ? $message : '' );
-					skyphusion_php_fatal_report( array( 'type' => 'wp_die', 'message' => skyphusion_php_fatal_strip( $text ), 'status' => 500 ) );
+				if ( is_array( $args ) && array_key_exists( 'response', $args ) ) {
+					if ( null !== $args['response'] ) {
+						skyphusion_php_fatal_die_report( $message, $args['response'] );
+					}
+				} else {
+					$GLOBALS['skyphusion_php_fatal_die_pending'] = array( 'message' => $message );
 				}
-				return call_user_func( $handler, $message, $title, $args );
+				$result = call_user_func( $handler, $message, $title, $args );
+				skyphusion_php_fatal_die_pending_flush();
+				return $result;
 			};
 		},
 		PHP_INT_MAX
