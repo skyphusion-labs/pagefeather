@@ -282,9 +282,11 @@ class Site(BaseHTTPRequestHandler):
             return self._json(200, {name: val})
         if route == "/wp/v2/settings":
             if method == "POST" and isinstance(body, dict):
-                for k in ("title", "timezone", "timezone_string"):
+                for k in ("title", "timezone", "timezone_string", "email"):
                     if k in body:
                         st["settings"][k] = body[k]
+                if "email" in body:
+                    st.setdefault("seq", []).append(("email", route))
             return self._json(200, dict(st["settings"]))
         if route == "/wp/v2/posts":
             return self._json(200, [{"id": 1, "link": "http://127.0.0.1/permalink-probe"}])
@@ -298,6 +300,8 @@ class Site(BaseHTTPRequestHandler):
                 return self._json(404, {"code": "rest_post_invalid_id"})
             return self._json(200, {"id": pid, "status": "publish", "slug": slug, "link": "http://127.0.0.1/%s/" % slug})
         if route.startswith("/wc/v3/customers"):
+            if method in ("POST", "PUT") and isinstance(body, dict) and "password" in body:
+                st.setdefault("seq", []).append(("password", route))
             if method == "GET":
                 return self._json(200, [{"id": 5, "email": "customer@woocommercecoree2etestsuite.com"}])
             return self._json(200, {"id": 5})
@@ -322,8 +326,15 @@ class Site(BaseHTTPRequestHandler):
                     st["prefs"] = meta
                 if "password" in body:
                     st["password_set"] = True
+                    st.setdefault("seq", []).append(("password", route))
+                if "email" in body:
+                    st["admin_user_email"] = body["email"]
+                    st.setdefault("seq", []).append(("email", route))
             prefs = st["prefs"] or {"core/edit-post": {"welcomeGuide": False}}
-            return self._json(200, {"id": 1, "meta": {"persisted_preferences": prefs}})
+            out = {"id": 1, "meta": {"persisted_preferences": prefs}}
+            if st.get("admin_user_email"):
+                out["email"] = st["admin_user_email"]
+            return self._json(200, out)
         if route == "/wp/v2/users/1/application-passwords" and method == "POST":
             # The password WordPress returns. Spaces are not part of the Basic value.
             # The uuid is the one the seed must revoke after the store reset (#1151).
@@ -558,6 +569,31 @@ check("a status-0 request keeps its exception text in seed.json network_errors",
       and ne[0].get("method") == "GET" and "RemoteDisconnected" in (ne[0].get("error") or ""), (ne, idx_chk))
 p, state, report = run_email_editor_seed()
 check("no network failure, no network_errors", not (report or {}).get("network_errors"), (report or {}).get("network_errors"))
+
+# SEED_ADMIN_EMAIL (#1065, #1285): both admin addresses are written and read back, BEFORE any password write. WordPress
+# sends "password changed" to the user's own email, so the order is the safety property. Checked on the plain path (a
+# password-only reseed) and on the store reset path.
+ADM = "inbox@example.org"
+ADM_ROW = "admin email (SEED_ADMIN_EMAIL): the site admin_email and the admin user's email"
+def email_before_passwords(state):
+    seq = state.get("seq") or []
+    em = [i for i, (k, _r) in enumerate(seq) if k == "email"]
+    pw = [i for i, (k, _r) in enumerate(seq) if k == "password"]
+    return bool(em) and bool(pw) and max(em) < min(pw)
+for label, extra in (("a password-only reseed", {}), ("the store reset path", {"SEED_RESET_STORE": "1"})):
+    env_ = dict(extra, SEED_ADMIN_EMAIL=ADM)
+    p, state, report = run_email_editor_seed(env_, store_pages=True)
+    chk = ((report or {}).get("checks") or {}).get(ADM_ROW) or {}
+    check("SEED_ADMIN_EMAIL on %s: admin_email and the admin user's email are set and read back" % label,
+          chk.get("ok") is True and state["settings"].get("email") == ADM and state.get("admin_user_email") == ADM,
+          (chk, state["settings"].get("email"), state.get("admin_user_email")))
+    check("SEED_ADMIN_EMAIL on %s: every email write lands before every password write" % label,
+          email_before_passwords(state), state.get("seq"))
+p, state, report = run_email_editor_seed(store_pages=True)
+check("no SEED_ADMIN_EMAIL: neither admin address is touched, and there is no row",
+      ADM_ROW not in ((report or {}).get("checks") or {}) and "email" not in state["settings"]
+      and not state.get("admin_user_email") and not [k for k, _r in state.get("seq") or [] if k == "email"],
+      (state["settings"], state.get("admin_user_email"), state.get("seq")))
 
 def auth_restore_route(route):
     """User and application-password routes. They restore Basic. They are not content."""

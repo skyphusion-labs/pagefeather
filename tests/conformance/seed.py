@@ -11,6 +11,8 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
      makes /cart/ and /checkout/ a 404, and a checkout link lands on the home page (#936).
      The seed runs the WooCommerce install_pages tool when a page is missing, then checks the link.
   2. blogname "WooCommerce Core E2E Test Suite" (/wp/v2/settings title), and timezone America/Detroit (settings key timezone, or timezone_string on older WordPress; INSTALL sets this at /_install, #894; the seed sets it again on a remount);
+     SEED_ADMIN_EMAIL=<address> (optional) also sets the site admin_email AND the admin user's email, before any
+     password write, so a "password changed" notice reaches that inbox (#1065, #1285).
   3. woocommerce_allow_tracking = yes (/wc/v3/settings/advanced/woocommerce_allow_tracking; read back there and
      at /wc-admin/options). WOO_EXTRAS=off forces it off, so a throwaway must not set that;
   3b. woocommerce_feature_block_email_editor_enabled = no.
@@ -81,6 +83,11 @@ THEME = sys.argv[sys.argv.index("--theme") + 1] if "--theme" in sys.argv[2:] and
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 BLOGNAME = "WooCommerce Core E2E Test Suite"
 SEED_TIMEZONE = "America/Detroit"
+# SEED_ADMIN_EMAIL (optional, #1065, #1285): the throwaway's admin addresses, the site's admin_email AND the admin
+# user's own email, set before the seed writes any password. WordPress sends "password changed" to the USER's email,
+# not to admin_email, so both are needed for that notice to reach the allowed inbox (the second line behind
+# MAIL_ALLOWED_TO).
+ADMIN_EMAIL = os.environ.get("SEED_ADMIN_EMAIL", "").strip()
 RESET_STORE = os.environ.get("SEED_RESET_STORE") == "1"
 CUSTOMER = {"username": "customer", "email": "customer@woocommercecoree2etestsuite.com", "first_name": "Jane", "last_name": "Smith"}
 IMAGES = ("image-01.png", "image-02.png", "image-03.png")
@@ -553,6 +560,19 @@ def main():
     c, s = rest(a, n, "/wp/v2/settings")
     got_tz = settings_timezone(s)
     check("timezone", got_tz == SEED_TIMEZONE, got=got_tz or c)
+
+    # 2b. SEED_ADMIN_EMAIL: both admin addresses, written and read back, BEFORE any password write (the customer in
+    # step 4, the admin's own below). On every path, the store reset or not, so a password-only reseed has it too.
+    if ADMIN_EMAIL:
+        rest(a, n, "/wp/v2/settings", {"email": ADMIN_EMAIL}, "POST")
+        rest(a, n, "/wp/v2/users/me", {"email": ADMIN_EMAIL}, "POST")
+        c, s = rest(a, n, "/wp/v2/settings")
+        site_email = s.get("email") if isinstance(s, dict) else None
+        c2, me = rest(a, n, "/wp/v2/users/me?context=edit")
+        user_email = me.get("email") if isinstance(me, dict) else None
+        check("admin email (SEED_ADMIN_EMAIL): the site admin_email and the admin user's email",
+              site_email == ADMIN_EMAIL and user_email == ADMIN_EMAIL,
+              site=site_email if site_email else c, user=user_email if user_email else c2)
 
     if WOO:
         # 3. woocommerce_allow_tracking = yes
