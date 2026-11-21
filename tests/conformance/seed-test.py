@@ -17,6 +17,10 @@ The full seed (every item set and checked, and a reseed) is verified against a r
      with the status and the engine headers, and its body is scrubbed.
   10. SEED_NO_WOO=1 on a WordPress-only site: no WooCommerce request, no customer, the items named as skipped; the
        same statement on a site that has wc/v3 fails.
+  11. #1151: after a wp run, revoke-all has killed Basic. The form login still works. The creds password
+      on wc-cleanup/v1/reset is 401. The seed mints a new application password first, then resets with
+      that password, still before any content step. As soon as the reset answers, the seed revokes that
+      password (DELETE of its uuid). Nothing named conformance-reset-* remains. A failed revoke stops the seed.
 Run: python3 -I tests/conformance/seed-test.py
 """
 import hashlib, json, os, re, subprocess, sys, threading
@@ -116,6 +120,12 @@ check("email_editor_option_ok: wc/v3 yes and wc-admin 403", _seed.email_editor_o
 check("email_editor_option_ok: wc/v3 no and wc-admin yes", _seed.email_editor_option_ok({"value": "no"}, 200, {EMAIL_OPT: "yes"}) is False)
 check("email_editor_option_ok: other 403 is not a skip", _seed.email_editor_option_ok({"value": "no"}, 403, {"code": "rest_forbidden"}) is False)
 
+STORE_PAGE_IDS = (
+    ("woocommerce_shop_page_id", 11, "shop"),
+    ("woocommerce_cart_page_id", 12, "cart"),
+    ("woocommerce_checkout_page_id", 13, "checkout"),
+    ("woocommerce_myaccount_page_id", 14, "my-account"),
+)
 PLUGINS = (
     "woocommerce-e2e-test-helper/woocommerce-e2e-test-helper",
     "woocommerce-cleanup/woocommerce-cleanup",
@@ -226,13 +236,30 @@ class Site(BaseHTTPRequestHandler):
             st.setdefault("routes", []).append((method, route))
             auth = self.headers.get("Authorization") or ""
             st["reset_auth"] = auth.split(" ", 1)[0] if auth else None
+            pw = None
+            if auth.startswith("Basic "):
+                try:
+                    raw = base64.b64decode(auth.split(" ", 1)[1]).decode()
+                    _user, pw = raw.split(":", 1)
+                except Exception:
+                    pw = None
+            st.setdefault("reset_basic_pws", []).append(pw)
+            # #1151: revoke-all left no application password. Basic with the creds password is 401.
+            # Basic with a password this stub just minted is 200. A cookie session stays 403.
+            if st.get("revoked_basic"):
+                ok = pw is not None and pw in st.get("live_app_pws", ())
+                return self._json(200 if ok else 401, {"ok": ok})
             return self._json(200 if auth.startswith("Basic ") else 403, {"ok": True})
         if route:
             st.setdefault("routes", []).append((method, route))
+        if st.get("store_pages") and method == "GET" and path in ("/shop/", "/cart/", "/checkout/", "/my-account/"):
+            return self.reply(200, b"page", "text/html")
         if not route:
             st["odd"].append((method, self.path))
             return self.reply(404, b"odd")
         opt = self._opt_name(route)
+        if not opt and st.get("store_pages") and route.startswith("/wc/v3/settings/products/"):
+            opt = route.rsplit("/", 1)[-1]
         if opt:
             if method == "PUT" and isinstance(body, dict) and "value" in body:
                 if not (opt == EMAIL_OPT and st.get("freeze_email")):
@@ -261,6 +288,15 @@ class Site(BaseHTTPRequestHandler):
             return self._json(200, dict(st["settings"]))
         if route == "/wp/v2/posts":
             return self._json(200, [{"id": 1, "link": "http://127.0.0.1/permalink-probe"}])
+        if st.get("store_pages") and route.startswith("/wp/v2/pages/"):
+            try:
+                pid = int(route.rsplit("/", 1)[-1])
+            except ValueError:
+                pid = 0
+            slug = next((s for _opt, i, s in STORE_PAGE_IDS if i == pid), "")
+            if not slug:
+                return self._json(404, {"code": "rest_post_invalid_id"})
+            return self._json(200, {"id": pid, "status": "publish", "slug": slug, "link": "http://127.0.0.1/%s/" % slug})
         if route.startswith("/wc/v3/customers"):
             if method == "GET":
                 return self._json(200, [{"id": 5, "email": "customer@woocommercecoree2etestsuite.com"}])
@@ -289,6 +325,12 @@ class Site(BaseHTTPRequestHandler):
             prefs = st["prefs"] or {"core/edit-post": {"welcomeGuide": False}}
             return self._json(200, {"id": 1, "meta": {"persisted_preferences": prefs}})
         if route == "/wp/v2/users/1/application-passwords" and method == "POST":
+            # The password WordPress returns. Spaces are not part of the Basic value.
+            # The uuid is the one the seed must revoke after the store reset (#1151).
+            minted = st["app_pw"].replace(" ", "")
+            st.setdefault("live_app_pws", []).append(minted)
+            name = body.get("name") if isinstance(body, dict) else ""
+            st.setdefault("app_passwords", []).append({"name": name or "", "uuid": st["app_uuid"]})
             return self._json(200, {"password": st["app_pw"], "uuid": st["app_uuid"]})
         if route == "/wp/v2/users/1/application-passwords" and method == "GET":
             return self._json(200, [
@@ -296,6 +338,10 @@ class Site(BaseHTTPRequestHandler):
                 {"name": "conformance-new", "uuid": st["app_uuid"]},
             ])
         if route.startswith("/wp/v2/users/1/application-passwords/") and method == "DELETE":
+            uuid = route.rsplit("/", 1)[-1]
+            if st.get("fail_app_delete"):
+                return self._json(500, {"code": "rest_cannot_delete"})
+            st["app_passwords"] = [p for p in st.get("app_passwords") or [] if p.get("uuid") != uuid]
             return self._json(200, {"deleted": True})
         if route == "/wp/v2/media" and method == "GET":
             stem = (q.get("search") or ["image"])[0]
@@ -338,9 +384,13 @@ def run_email_editor_seed(extra_env=None, **flags):
         "odd": [],
         "app_pw": "abcdefghij123456",
         "app_uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "app_passwords": [],
         "password_set": False,
     }
     state.update(flags)
+    if state.get("store_pages"):
+        for opt, pid, _slug in STORE_PAGE_IDS:
+            state["options"][opt] = str(pid)
     Site.state = state
     srv = ThreadingHTTPServer(("127.0.0.1", 0), Site)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -509,13 +559,69 @@ check("a status-0 request keeps its exception text in seed.json network_errors",
 p, state, report = run_email_editor_seed()
 check("no network failure, no network_errors", not (report or {}).get("network_errors"), (report or {}).get("network_errors"))
 
-# SEED_RESET_STORE=1: the store reset is the FIRST REST call after the login, and its row is recorded; without the
-# variable there is no reset at all.
+def auth_restore_route(route):
+    """User and application-password routes. They restore Basic. They are not content."""
+    if route in ("/wp/v2/users/me", "/wp/v2/users/1"):
+        return True
+    return route.startswith("/wp/v2/users/1/application-passwords")
+
+def content_before_reset(pairs):
+    """REST routes before the store reset that are not the Basic restore."""
+    routes = [r for _m, r in pairs]
+    if "/wc-cleanup/v1/reset" not in routes:
+        return routes
+    before = pairs[:routes.index("/wc-cleanup/v1/reset")]
+    return [r for _m, r in before if not auth_restore_route(r)]
+
+def conformance_reset_left(state):
+    """Names of conformance-reset-* application passwords the stub still holds."""
+    return [p.get("name") for p in state.get("app_passwords") or [] if (p.get("name") or "").startswith("conformance-reset-")]
+
+# SEED_RESET_STORE=1: restore Basic, then reset the store, still before any content step.
+# Without the variable there is no reset at all.
 p, state, report = run_email_editor_seed({"SEED_RESET_STORE": "1"})
-rts = [r for _m, r in state.get("routes", [])]
+pairs = state.get("routes") or []
+rts = [r for _m, r in pairs]
 chk = ((report or {}).get("checks") or {}).get("store reset first (SEED_RESET_STORE, wc-cleanup/v1/reset)") or {}
-check("SEED_RESET_STORE: wc-cleanup/v1/reset is the first REST call, and it is recorded",
-      rts[:1] == ["/wc-cleanup/v1/reset"] and chk.get("ok") is True and state.get("reset_auth") == "Basic" and (report or {}).get("store_reset", {}).get("status") == 200, (rts[:3], chk, state.get("reset_auth")))
+reset_at = rts.index("/wc-cleanup/v1/reset") if "/wc-cleanup/v1/reset" in rts else -1
+before = pairs[:reset_at] if reset_at >= 0 else pairs
+check("SEED_RESET_STORE: Basic is restored, then the reset, before any content step, and it is recorded",
+      reset_at >= 0 and content_before_reset(pairs) == []
+      and ("POST", "/wp/v2/users/1/application-passwords") in before
+      and chk.get("ok") is True and state.get("reset_auth") == "Basic"
+      and (report or {}).get("store_reset", {}).get("status") == 200
+      and state.get("reset_basic_pws") == [state["app_pw"]],
+      (rts[:4], state.get("reset_basic_pws"), chk, state.get("reset_auth")))
+reset_uuid = state.get("app_uuid") or ""
+delete_route = "/wp/v2/users/1/application-passwords/" + reset_uuid
+after = pairs[reset_at + 1:] if reset_at >= 0 else []
+check("#1151: after the reset, the stub saw DELETE for that uuid, and no conformance-reset-* password remains",
+      reset_at >= 0 and after[:1] == [("DELETE", delete_route)] and conformance_reset_left(state) == [],
+      (after[:4], conformance_reset_left(state)))
+
+# #1151: the creds password is not an application password anymore. Form login still works.
+# store_pages lets the rest of the seed finish, so a reset 401 is the failure that stops it.
+p, state, report = run_email_editor_seed({"SEED_RESET_STORE": "1"}, revoked_basic=True, store_pages=True)
+pairs = state.get("routes") or []
+rts = [r for _m, r in pairs]
+chk = ((report or {}).get("checks") or {}).get("store reset first (SEED_RESET_STORE, wc-cleanup/v1/reset)") or {}
+reset_at = rts.index("/wc-cleanup/v1/reset") if "/wc-cleanup/v1/reset" in rts else -1
+before = pairs[:reset_at] if reset_at >= 0 else pairs
+check("#1151: a revoked Basic auth is restored, then the store resets, before any content step",
+      p.returncode == 0 and chk.get("ok") is True and state.get("reset_auth") == "Basic"
+      and (report or {}).get("store_reset", {}).get("status") == 200
+      and state.get("reset_basic_pws") == [state["app_pw"]]
+      and ("POST", "/wp/v2/users/1/application-passwords") in before
+      and content_before_reset(pairs) == []
+      and reset_at >= 0 and "/wp/v2/settings" in rts[reset_at + 1:],
+      (p.returncode, rts[:6], state.get("reset_basic_pws"), content_before_reset(pairs), chk, (report or {}).get("failed")))
+p, state, report = run_email_editor_seed({"SEED_RESET_STORE": "1"}, fail_app_delete=True)
+left = conformance_reset_left(state)
+err = p.stderr or ""
+check("#1151: a failed revoke stops the seed and says the application password is still on the site",
+      p.returncode == 1 and left != [] and "still on the site" in err and "The seed is stopping." in err
+      and state["app_pw"] not in err,
+      (p.returncode, left, err[-240:]))
 p, state, report = run_email_editor_seed({"SEED_RESET_STORE": "1", "SEED_ALLOW_LOCAL": "1"}, no_marker=True)
 check("SEED_RESET_STORE on a local site without the marker: refused (2), no reset",
       p.returncode == 2 and "/wc-cleanup/v1/reset" not in [r for _m, r in state.get("routes", [])] and "needs the throwaway marker" in (p.stdout + p.stderr), (p.returncode, (p.stdout + p.stderr)[-200:]))
