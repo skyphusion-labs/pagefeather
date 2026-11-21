@@ -32,6 +32,9 @@ def usage_error(msg):
 MAX_REFUSE_S = float(os.environ.get("BOOT_GATE_MAX_REFUSE_S", "60"))
 SLOW_S = float(os.environ.get("SLOW_S", "30"))  # the #605 reading: admin requests slower than this
 NAMED = ("in-flight", "newer-runtime", "no-drain", "no-guards")
+# #1022 issuecomment-7067599082 (the lead's ruling, set before the lean-on data): a Workers for Platforms user script
+# exposes no invocation rows, so bar 2 counts the platform's own memory-death line instead, for BOTH arms.
+PLATFORM_DEATH = "Durable Object's isolate exceeded its memory limit and was reset."
 
 
 def load(p):
@@ -99,6 +102,9 @@ def arm(rows, lg):
         for i in lg["inv"]:
             A["outcomes"][i.get("outcome")] = A["outcomes"].get(i.get("outcome"), 0) + 1
         A["exceededMemory"] = A["outcomes"].get("exceededMemory", 0)
+        A["invRows"] = len(lg["inv"])
+        A["lineRows"] = len(lg["lines"])
+        A["platformDeaths"] = sum(1 for o in lg["lines"] if PLATFORM_DEATH in str(o.get("message", "")))
         A["logResets"] = sum(1 for o in lg["lines"] if o.get("m") == "isolate-reset")
         A["logWriteLoss"] = sum(1 for o in lg["lines"] if o.get("m") == "write-loss")
         offers = [o.get("offer") for o in lg["lines"] if o.get("m") == "mem-reuse" and o.get("offer")]
@@ -207,6 +213,16 @@ def main(argv):
     # save absent on read-back), which log no write-loss line. Without both arms' logs, the client stands in: saves
     # answered with an x-write-loss header (1, 2, unknown; not rolled-back), plus silent losses.
     logs2 = "exceededMemory" in on and "exceededMemory" in off
+    # #1022: which death source both arms use. Invocation rows on both arms: the invocation outcome, as before. Otherwise
+    # the platform's own death line in lines.jsonl (one source for both arms). With no lines either, the logs measure
+    # nothing: lost writes fall back to the client, and deaths are could not measure (never a 0 read as a pass).
+    if logs2 and on["invRows"] and off["invRows"]:
+        dsrc = "invocations"
+    elif logs2 and on["lineRows"] and off["lineRows"]:
+        dsrc = "platform"
+    else:
+        dsrc = None
+    logs2 = dsrc is not None
     def lost(A):
         if logs2:
             return A["logWriteLoss"] + A["lostWrites"]
@@ -215,9 +231,12 @@ def main(argv):
     detail = "lost writes (%s) on %d, off %d (silent on %d, off %d); client resets+no-answer on %d, off %d" % (
         "write-loss logs + silent" if logs2 else "client x-write-loss + silent", lw_on, lw_off, on["lostWrites"], off["lostWrites"], d_on, d_off)
     worse_lw = lw_on > lw_off or (lw_off == 0 and lw_on > 0)
-    if logs2:
+    if dsrc == "invocations":
         detail += "; exceededMemory on %d, off %d" % (on["exceededMemory"], off["exceededMemory"])
         v = "pass" if (d_on <= d_off and on["exceededMemory"] <= off["exceededMemory"] and not worse_lw) else "FAIL"
+    elif dsrc == "platform":
+        detail += "; platform memory-death lines on %d, off %d (no invocation rows on an arm: the platform's own death line stands in, #1022)" % (on["platformDeaths"], off["platformDeaths"])
+        v = "pass" if (d_on <= d_off and on["platformDeaths"] <= off["platformDeaths"] and not worse_lw) else "FAIL"
     else:
         v = "FAIL" if (d_on > d_off or worse_lw) else "could not measure"
         detail += "; exceededMemory needs both arms' logs"
