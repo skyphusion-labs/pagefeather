@@ -10,19 +10,19 @@ This page says what works on each tier and each deploy path, what is limited, an
 
 WordPress only, `cf759hw`, with `PLACEMENT` set to the database region (#1054). The wp suite is 18 of 18. routes.py called 61 routes and had 0 failures. This is the first fully clean tier in the sprint ([results.md](results.md), the `cf759hw` wp and routes rows, 2026-11-20). Before #1054, Hyperdrive with WooCommerce was 6 of 18 on wp.
 
-On a Hyperdrive store (`cf759hl`, WooCommerce on) the latest wp row is 17 of 18 (2026-11-21, ended 00:01:36Z). The one failure is edit-posts "Trash button", 29.9 s, and every response was 200. That row is from before #1167 merged. No later wp row re-measures it.
+On a Hyperdrive store (`cf759hl`, WooCommerce on) the wp suite is 17 of 18 on two browsers (Browser Run at 00:01Z, and strummer's VPS Chrome rerun on main `9c8f407`). The one failure is edit-posts "Trash button" both times. A traced rerun from Mac Chromium on `9c8f407` passed 5 of 5, that test included: every request answered in 3.0 s or less, where the failing runs had about 5 s. So it passes or fails on our admin latency (#1078; row "sb1120, wp trace").
 
 ### Hyperdrive WooCommerce
 
-The latest full wc suite is Browser Run on `cf759hl`, build `b27cd3c`, 2026-11-21: 169 expected, 57 unexpected, 3 skipped ([results.md](results.md) row "sb1120, wc"). That run has 14 held-block 503s (#1177). The #1180 proof reran the 8 files that hit them: 0 held-block refusals and 0 5xx (row "sb1120, #1180 proof").
+The latest full wc suite is local Chrome on `cf759hl`, main `9c8f407` (WordPress 7.1.5), 2026-11-21: **207 passed, 22 failed of 229** ([results.md](results.md) row "sb1120, wc rerun", Hyperdrive). The last full row before it was Browser Run on `b27cd3c`: 169 expected, 57 unexpected, 3 skipped. Against it: FIXED 41, STILL 16, NEW 6. All 6 NEW are ours and all are latency: 3 guest product pages on a page-cache MISS rendered in an unplaced `Pages` isolate at about 100 ms per query (#1277), and 3 admin and editor waits (#1078). About 1 request in 7 boots a fresh runtime, at about 3.2 s more at the median (#1169). The older `b27cd3c` run had 14 held-block 503s (#1177). The #1180 proof reran the 8 files that hit them: 0 held-block refusals and 0 5xx (row "sb1120, #1180 proof").
 
 A local Linux Chrome arm on main `79e6709` (row "wc arm B") took 48 failures that pass on stock, from an earlier 174 expected run. 24 of those 48 still fail on the site. The other 24 were Browser Run, or they have since been fixed. The five "two role=alert" failures passed on this arm. That class was Browser Run.
 
-Blocks checkout is slow. On `cf759hl` at main `822ab24` (row "wc arm B 2", before #1209), 6 of 10 blocks checkout tests fail. `POST store/v1/checkout` takes 9.3 to 11.8 s, so the thank-you page misses the suite's 10 s wait (#1210). The order is placed. The page then answers 200. The cause is per-order transient deletes: one guest order made 404 DELETE statements and 4.8 s of database time (#1218). #1206 added that cost. PR #1219 is open. The results row says that, locally, 364 transient DELETE statements per order become 1. The fix is in progress, not fixed.
+Blocks checkout passes since #1219. On `cf759hl` at #1219's head, `checkout.spec.ts` was 10 of 10 (row "wc arm B 3, the #1219 AFTER"; before it, 4 of 10 at `822ab24`). The blocks order `POST store/v1/checkout` went from 9.3 to 11.8 s down to 4.8 to 6.8 s. The counted probe shows the same 342 transient delete calls now sent as 1 statement (row "#1219 counted probe"). The 5 to 7 s left is database time (#1210, closed).
 
-Order emails on a default deploy are sent, and they can be late (#1215, open). On the same `822ab24` run the cron alarm started the queued email 12 to 122 s after it was queued. The suite polls the mail log for 30 s (row "wc email wait"). A second miss is the harness: two specs wait for an admin address the seed does not use (#1216). PR #1217 is open, so that part is in progress too. Older rows that say no email was sent are the sites with `A_CRON` unset. A default approach A deploy turns the cron object on (#1166, #1165).
+Order emails on a default deploy are sent within the suite's wait since #1224. On `cf759hl` at #1224's head, every queued email action started 2 to 11 s after it was queued (it was 12 to 122 s at `822ab24`), and `order-emails` was 6 of 6 (row "wc arm B 4, #1224"). The harness half, the admin address the seed did not export (#1216), is fixed by #1217. Older rows that say no email was sent are the sites with `A_CRON` unset. A default approach A deploy turns the cron object on (#1166, #1165).
 
-Every WooCommerce admin page on `cf759hl` shows a "development version" notice (#1221, open). The issue records a live read on 2026-11-21. PHP does not see a built file that the static path does serve. There is no results.md row for it yet.
+The WooCommerce "development version" notice on every admin page (#1221) is gone since #1227 (row "#1227 live": 1 to 0 on three admin pages).
 
 The socket-close 401 in the `b27cd3c` wc run is #1178. PR #1179 merged the code fix. No later full wc row re-measures it.
 
@@ -38,7 +38,7 @@ routes.py on Paid DO and on WfP: 429 routes, `missing_core` 0, and the same 3 st
 
 ### DO WooCommerce on Paid
 
-These wc rows are 2026-11-20. No later wc suite has re-run them.
+The 2026-11-21 wc reruns (rows "sb1120, wc rerun"): **Paid DO `cf759p` is blocked by #1022**, because WooCommerce's own setup never completed in three tries; the smallest seed leaves a fresh runtime at 113 MiB, about 4 below the write ceiling. **WfP `cf759a` is 116 passed, 93 failed, 20 skipped** (main `9c8f407`, VPS Chrome 149), with NEW 62 and the instrument not separated, over memory-reset churn at volume (about 230 boots and 85 write-losses in the hour; #1022). The 2026-11-20 rows below are the last ones before them.
 
 Paid DO `cf759p`: 176 expected, 51 unexpected, 3 skipped. The open engine classes in that row are a memory reset in 23 tests (#1022) and 503 `x-sql-failure` on email-editor reads in 2 tests (#1042, open). The row also counts image 404s after a store reset (#1071), a missing storefront (#1018), and Marketing (#1044, code lock).
 
