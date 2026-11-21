@@ -68,6 +68,9 @@ class JS_Object_Cache {
 		// #1199: learn this request's transient names at shutdown (one autoloaded list, read with alloptions).
 		if ( function_exists( 'add_action' ) ) {
 			add_action( 'shutdown', array( $this, 'transient_learn' ), 1 );
+			// #1210 lever 2: every statement passes the query filter (wpdb, Hyperdrive_WPDB, the SQLite driver); a write to a
+			// shadowed table clears its shadows (shadow_guard).
+			add_filter( 'query', array( $this, 'shadow_guard' ), PHP_INT_MAX );
 			// #1210: the request's transient deletes land in one statement at its end (transient_flush).
 			add_action( 'shutdown', array( $this, 'transient_flush' ), PHP_INT_MAX );
 		}
@@ -191,6 +194,16 @@ class JS_Object_Cache {
 	// round trip each, 4,845 of 9,321 ms of database time. A set in ANOTHER request between this delete and the flush
 	// is deleted by the flush; that only removes a cached value, which its owner rebuilds.
 	private $tdelete = array();
+	// #1210 lever 2: WooCommerce's order-item data store drops an item's meta cache on EVERY item save (clear_cache(),
+	// abstract-wc-order-item-type-data-store.php:222), changed or not, so core reloaded the item's meta from the database:
+	// a local guest order 25 loads for 9 writes, the last 16 with no write between; live (cf759hl) 44 loads, 605 ms. The
+	// request keeps the last value it set in these groups as a SHADOW and serves it on a later miss while no write
+	// statement has touched the group's table since. Any statement naming the table (any prefix) that is not plainly a
+	// read clears every shadow of the group: INSERT, UPDATE, DELETE, REPLACE, a multi-table DELETE, or one that cannot
+	// be parsed. WooCommerce writes woocommerce_order_itemmeta directly with $wpdb on item and order deletes, so the
+	// guard is on statements, not on meta actions. Request-local only: a new request has no shadow.
+	const SHADOW_TABLES = array( 'order_item_meta' => 'order_itemmeta' );
+	private $shadow = array(); // group => key => the last value this request set
 	const TRANSIENT_DELETE_CHUNK = 400;
 	// #1210 follow-up (the lead's ruling): WooCommerce's cache-version counters, written ONCE per request. They are
 	// WC_Cache_Helper::get_transient_version( $group, true ): "{group}-transient-version", set with no expiry, a new value
@@ -335,6 +348,28 @@ class JS_Object_Cache {
 		return $had;
 	}
 
+	/**
+	 * #1210 lever 2: the query filter. A statement that names a shadowed group's table and is not plainly a read clears
+	 * that group's shadows. Plainly a read: after leading space, comments and parentheses, it starts with SELECT, SHOW,
+	 * DESCRIBE, DESC or EXPLAIN. Anything else, or anything this cannot parse, clears (the next read reloads). The
+	 * statement is returned untouched.
+	 */
+	public function shadow_guard( $query ) {
+		if ( ! $this->shadow || ! is_string( $query ) ) {
+			return $query;
+		}
+		foreach ( self::SHADOW_TABLES as $group => $table ) {
+			if ( empty( $this->shadow[ $group ] ) || false === stripos( $query, $table ) ) {
+				continue;
+			}
+			$head = preg_replace( '#^(?:\s+|\(|/\*.*?\*/|--[^\n]*(?:\n|$)|\#[^\n]*(?:\n|$))+#s', '', $query );
+			if ( ! is_string( $head ) || ! preg_match( '/^(SELECT|SHOW|DESCRIBE|DESC|EXPLAIN)\b/i', $head ) ) {
+				unset( $this->shadow[ $group ] );
+			}
+		}
+		return $query;
+	}
+
 	/** #1210: delete this request's pending transient rows, in one statement per chunk. Idempotent. */
 	public function transient_flush() {
 		// #1210 follow-up: the deferred version counters first, each once, the newest value.
@@ -446,6 +481,14 @@ class JS_Object_Cache {
 			++$this->cache_hits;
 			return self::copy( $this->cache[ $group ][ $key ] );
 		}
+		if ( ! $force && isset( $this->shadow[ $group ] ) && array_key_exists( $key, $this->shadow[ $group ] ) ) {
+			// #1210 lever 2: no write to the table since this request set it.
+			$this->cache[ $group ][ $key ] = self::copy( $this->shadow[ $group ][ $key ] );
+			unset( $this->missing[ $group ][ $key ] );
+			$found = true;
+			++$this->cache_hits;
+			return self::copy( $this->shadow[ $group ][ $key ] );
+		}
 		if ( $this->persistent( $group ) && empty( $this->missing[ $group ][ $key ] ) && ! $this->options_known_miss( $key, $group ) ) {
 			$r = $this->call( array( 'op' => 'get', 'k' => array( $this->pkey( $key, $group ) ) ) );
 			if ( isset( $r['v'][0] ) && null !== $r['v'][0] ) {
@@ -476,6 +519,11 @@ class JS_Object_Cache {
 		foreach ( $keys as $key ) {
 			if ( $this->has_local( $key, $group ) && ! $force ) {
 				$out[ $key ] = self::copy( $this->cache[ $group ][ $key ] );
+				++$this->cache_hits;
+			} elseif ( ! $force && isset( $this->shadow[ $group ] ) && array_key_exists( $key, $this->shadow[ $group ] ) ) {
+				$this->cache[ $group ][ $key ] = self::copy( $this->shadow[ $group ][ $key ] );
+				unset( $this->missing[ $group ][ $key ] );
+				$out[ $key ] = self::copy( $this->shadow[ $group ][ $key ] );
 				++$this->cache_hits;
 			} elseif ( $this->persistent( $group ) && empty( $this->missing[ $group ][ $key ] ) && ! $this->options_known_miss( $key, $group ) ) {
 				$need[] = $key;
@@ -513,6 +561,9 @@ class JS_Object_Cache {
 		$this->version_gate( $group );
 		$this->cache[ $group ][ $key ] = self::copy( $data );
 		unset( $this->missing[ $group ][ $key ] );
+		if ( isset( self::SHADOW_TABLES[ $group ] ) ) {
+			$this->shadow[ $group ][ $key ] = self::copy( $data );
+		}
 		if ( $this->persistent( $group ) ) {
 			if ( 0 === (int) $expire && $this->default_ttl > 0 ) {
 				$expire = $this->default_ttl;
@@ -603,6 +654,7 @@ class JS_Object_Cache {
 	public function flush() {
 		$this->cache   = array();
 		$this->missing = array();
+		$this->shadow  = array();
 		$this->call( array( 'op' => 'flush' ) );
 		return true;
 	}
@@ -610,11 +662,12 @@ class JS_Object_Cache {
 	public function flush_runtime() {
 		$this->cache   = array();
 		$this->missing = array();
+		$this->shadow  = array();
 		return true;
 	}
 
 	public function flush_group( $group ) {
-		unset( $this->cache[ $group ], $this->missing[ $group ] );
+		unset( $this->cache[ $group ], $this->missing[ $group ], $this->shadow[ $group ] );
 		$this->call( array( 'op' => 'flush_group', 'g' => $group . "\0" ) );
 		return true;
 	}
