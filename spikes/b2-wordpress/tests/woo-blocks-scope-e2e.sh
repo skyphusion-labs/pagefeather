@@ -62,10 +62,13 @@ for name, fn in (("profile GET", lambda h: get_peak("/wp-admin/profile.php", h))
     check("1. %s: the peak is at least %g MiB lower" % (name, MIN), ok, "on %s, off %s" % (on, off))
 def body(path, h):
     r = BL.req(o, path, headers=h, timeout=300); return r["code"], r["body"]
-# Three values change on EVERY load, plugin or not: the suggested new password on profile.php (data-pw, from
+# These values change on EVERY load (or every minute), plugin or not: the suggested new password on profile.php (data-pw, from
 # wp_generate_password), the userSettings timestamp, and the settings page's clock (<code>Y-m-d H:i:s</code>). Only those are blanked; anything else must match.
 VOLATILE = [(rb'data-pw="[^"]*"', b'data-pw=""'), (rb'"time":"\d+"', b'"time":""'),
-            (rb'<code>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d</code>', b'<code>CLOCK</code>')]
+            (rb'<code>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d</code>', b'<code>CLOCK</code>'),
+            # #1120 review: the settings page also prints NOW in each date and time format choice and in the custom
+            # format's preview, so two loads across a minute differ (opcache-build run 44891720946: "4:55 am").
+            (rb'(<span class="date-time-text[^"]*">)[^<]*(</span>)', rb'\1NOW\2'), (rb'(<span class="example">)[^<]*(</span>)', rb'\1NOW\2')]
 def norm(b):
     for pat, rep in VOLATILE: b = re.sub(pat, rep, b)
     return b
