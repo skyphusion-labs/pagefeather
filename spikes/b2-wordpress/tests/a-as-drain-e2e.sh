@@ -12,8 +12,13 @@
 #     boot stacks two, recycle-line.mjs), so the stop fires only when THIS leg grew the heap past it; a runtime that
 #     reuses its memory goes on. Measured locally: 50 emails in legs of 13, 16 and 21, heap 114 to 119 MiB.
 #   The backlog alarm (#1120): INTERVAL_MS=60000 STOP_VARS="CRON_AS_BUDGET_MS:1000" EXPECT_STOP=budget MAX_LEGS=20
-#     DRAIN_WITHIN_S=90: from the first leg, legs cut short by the budget come CRON_BACKLOG_GAP_MS (5 s) apart, not a
-#     minute apart (about 7 legs, so about 6 min without it). The first leg waits for the alarm already armed (#855).
+#     MAX_GAP_S=20 DRAIN_WITHIN_S=300: legs cut short by the budget come CRON_BACKLOG_GAP_MS (5 s) apart, not a minute
+#     apart. MAX_GAP_S checks THAT: every gap between consecutive email legs (when each leg's line first appears, polled
+#     every 3 s, so it includes the leg and up to 3 s) is at most MAX_GAP_S. The total (DRAIN_WITHIN_S) is a loose
+#     backstop only: how many legs a burst needs depends on the runner (CI runs about 3 emails in a 1 s budget, locally
+#     about 8), so a fixed total failed on slow runners while the 5 s gap held (#1120: 6 CI runs, 108 to 114 s against
+#     90). The red arm: STOP_VARS="CRON_AS_BUDGET_MS:1000 CRON_BACKLOG_GAP_MS:60000" (the gap becomes the interval, as
+#     with no backlog alarm) must FAIL the gap check. The first leg waits for the alarm already armed (#855).
 #   tests/a-as-drain-e2e.sh   (in spikes/b2-wordpress, after prepare.sh and build.sh)
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -54,8 +59,10 @@ def emails(d):
     m = re.search(re.escape(HOOK) + r":(\d+)", d.get("as_hooks") or ""); return int(m.group(1)) if m else 0
 deadline = time.time() + 20 + 12 * MAX_LEGS
 first_due = None
+seen_at = []  # #1120: when each leg's line first appeared (the poll's time)
 while time.time() < deadline:
     L = legs()
+    while len(seen_at) < len(L): seen_at.append(time.time())
     if L and first_due is None: first_due = (L[0].get("as_due") or 0) + (L[0].get("as_actions") or 0); t_first = time.time()
     if L and not any(emails(d) for d in L[-1:]) and sum(emails(d) for d in L) > 0: break
     time.sleep(3)
@@ -71,6 +78,11 @@ check("each email leg ran more than one action, or stopped for a stated reason",
 within = os.environ.get("DRAIN_WITHIN_S") or ""
 if within:
     check("the burst drained within %s s of its first leg (took %.0f s; first leg %.0f s after the trigger)" % (within, drain_s, (t_first or t_trigger) - t_trigger), drain_s <= float(within) and ran >= ORDERS)
+max_gap = os.environ.get("MAX_GAP_S") or ""
+if max_gap:
+    ei = [i for i, d in enumerate(L) if emails(d)]
+    gaps = [round(seen_at[b] - seen_at[a], 1) for a, b in zip(ei, ei[1:]) if b < len(seen_at)]
+    check("#1120: every gap between email legs is at most %s s (the backlog alarm, not the interval): gaps %s" % (max_gap, gaps), bool(gaps) and max(gaps) <= float(max_gap))
 want = os.environ.get("EXPECT_STOP") or ""
 if want:
     check("a leg stopped for %s (the guard fired)" % want, any(d.get("as_stop") == want for d in eleg))
