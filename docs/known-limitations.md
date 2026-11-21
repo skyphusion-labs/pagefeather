@@ -87,3 +87,28 @@ Measured on a real store imported for skyphusion-labs/ggc#101. It runs WooCommer
 
 So the 128 MiB isolate cap, not the code, decides whether a store this heavy runs on b-dosql. The bundle has a limit too: the Worker limit is 64 MiB uncompressed. `deploy/wfp/lib.sh bundle_size_check` stops an upload above `BUNDLE_MAX_MIB` (default 62), and `build_dosql`, `site.sh up` and `site update` all run it. If your store needs Rank Math, or a plugin set this heavy, approach A (MySQL through Hyperdrive) is the better fit, rather than b-dosql.
 
+## How many plugins fit
+
+The limit is memory per request. It shows up on the heaviest admin pages. It is not a count of installed plugins.
+
+The isolate cap is 128 MiB. On the Durable Object tiers, writes fail at about 117 to 119 MiB of WebAssembly heap. That range is an estimate (#598, #1022).
+
+PHP's heap tracks the compiled scripts a request loads. The cost is about 38 KiB per compiled script. That cost is an estimate (#1022's mem-trace, #1253).
+
+`post-new.php` with WooCommerce is the heavy page. From a fresh runtime, local runs peak at 107 to 115 MiB (#1022). On an older live build, the median is 118 MiB (#598, #724 r3). That median sits where writes fail.
+
+WooCommerce accounts for about 28 MiB of that page. That share is an estimate (#1022's bisect). Its block registration accounts for about 11 MiB of the page. That share is an estimate (the same bisect). Without WooCommerce, the same page is about 81 MiB. That figure is an estimate (the same bisect).
+
+A WooCommerce store has little room for more plugins on `post-new.php` today. The local peak is already near the band where writes fail. The older live median is inside that band.
+
+A WordPress-only site has room for several typical plugins. That room is an estimate. It is the gap from about 81 MiB up to the write failure band.
+
+What does not fit:
+
+- All 18 suite plugins at once. Each of the 18 passes on its own. With all 18 active, the login request answered 1102 (the Worker exceeded its resource limits) at 118 MB of WebAssembly memory ([approach-a.md](approach-a.md)).
+- Rank Math on a WooCommerce store. Requests reach 119 MiB, and every other request answers 503 (#279). The measured store is in the table above.
+- Yoast SEO (67.94 MiB), All in One SEO (67.53 MiB) and Elementor (83.84 MiB). Each is over the 64 MiB Worker bundle limit (#279). SEOPress (63.05 MiB) is over the 62 MiB upload gate (#279).
+- A page builder in the editor. Elementor's editor memory is not measured yet (#758). The block editor already reaches this ceiling (#598).
+
+#1022 and #1253 are open. #1022 is the memory reset when `post-new.php` runs on a hot isolate. #1253 is the compiled-script set a cold boot opens.
+
