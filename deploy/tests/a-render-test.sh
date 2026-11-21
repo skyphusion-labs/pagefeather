@@ -118,6 +118,14 @@ ok "unset renders none" "$(python3 -I "$HERE/canon.py" "$T/a.toml" | grep -q OBJ
 render "$T/dsb.toml" OBJECT_DISCONNECT_SHED=0; rc=$?
 ok "OBJECT_DISCONNECT_SHED=0 fails the render (rc $rc)" "$([ $rc != 0 ] && echo 1 || echo 0)"
 
+echo "9b. #1169: REMOTE_READAHEAD (0 to 3) reaches [vars] through deploy.sh; unset renders none (the engine default, 1)"
+render "$T/ra0.toml" REMOTE_READAHEAD=0; rc=$?
+ok "REMOTE_READAHEAD=0 renders it, the A/B arm off (rc $rc)" "$([ $rc = 0 ] && python3 -I "$HERE/canon.py" "$T/ra0.toml" | grep -qx 'vars REMOTE_READAHEAD = "0"' && echo 1 || echo 0)"
+render "$T/ra-unset.toml"; rc=$?
+ok "unset renders no REMOTE_READAHEAD (rc $rc)" "$([ $rc = 0 ] && ! python3 -I "$HERE/canon.py" "$T/ra-unset.toml" | grep -q 'REMOTE_READAHEAD' && echo 1 || echo 0)"
+render "$T/ra9.toml" REMOTE_READAHEAD=9 > /dev/null 2>&1; rc=$?
+ok "REMOTE_READAHEAD=9 fails the render (rc $rc)" "$([ $rc != 0 ] && echo 1 || echo 0)"
+
 echo "10. #714: PHP_OVERFLOW_MAX_HELD (off or 1 to 1000) and MEM_LEDGER=on reach [vars]; unset renders neither (the code default is no cap, #714)"
 render "$T/mh.toml" PHP_OVERFLOW=1 PHP_OVERFLOW_MAX_HELD=off MEM_LEDGER=on; rc=$?
 ok "off and the ledger render (rc $rc)" "$([ $rc = 0 ] && python3 -I "$HERE/canon.py" "$T/mh.toml" | grep -qx 'vars PHP_OVERFLOW_MAX_HELD = "off"' && python3 -I "$HERE/canon.py" "$T/mh.toml" | grep -qx 'vars MEM_LEDGER = "on"' && echo 1 || echo 0)"
