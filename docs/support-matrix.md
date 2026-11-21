@@ -41,6 +41,7 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 | Search | yes for a long term: a search builds `%term%`, which is rewritten over SQLite's 50-byte LIKE cap (#805, measured locally); semantic search limited (opt-in; the plugin side closed upstream, not measured here); limited: a LIKE with a wildcard INSIDE it, over 50 bytes, fails (#805, plugin-built only) | the same | the same | not measured; not affected by #805 (MySQL) |
 | Comments | not measured | not measured | not measured | not measured |
 | Site Health | directory sizes: fixed in code (#780, #799, #826); not yet measured live | the same | the same | not measured |
+| Server-side requests to the site's own URL (url-details, Site Health's loopback check) | no: a Cloudflare platform limit ([why](#a-site-cannot-fetch-its-own-url-on-the-do-tiers-a-cloudflare-limit-1157)) | the same | the same | fixed in code (#1157): the request runs on an overflow pool object; not yet measured live. With the pool off (`PHP_OVERFLOW=0`): no, the same limit |
 | Multisite | not measured | not measured | not measured | not measured |
 | Installing plugins and themes from wp-admin | no, by design ([why](#plugins-and-themes-are-not-installed-from-wp-admin-by-design)) | no, by design | no, by design | no, by design |
 | Maintenance mode during updates | no, by design: sites are code-locked; updates ship in the build and the deploy replaces the site ([why](#plugins-and-themes-are-not-installed-from-wp-admin-by-design); `deploy/wfp/README.md`, the code lock #458) | no, by design: sites are code-locked; updates ship in the build and the deploy replaces the site ([why](#plugins-and-themes-are-not-installed-from-wp-admin-by-design); `deploy/wfp/README.md`, the code lock #458) | no, by design: sites are code-locked; updates ship in the build and the deploy replaces the site ([why](#plugins-and-themes-are-not-installed-from-wp-admin-by-design); `deploy/wfp/README.md`, the code lock #458) | no, by design: sites are code-locked; updates ship in the build and the deploy replaces the site ([why](#plugins-and-themes-are-not-installed-from-wp-admin-by-design); `deploy/wfp/README.md`, the code lock #458) |
@@ -89,6 +90,18 @@ A b-dosql site has one PHP object, and that object has a memory ceiling. `post-n
 Rollins bisected the peak on 2026-11-16 (#768). WooCommerce costs about 37 MiB. The wc blocks package costs about 8 MiB. The REST preload costs about 6 MiB. The REST route registration step costs about 10 MiB in the hook trace. Shipped mitigations include `wc-route-defer.php`, `woo-blocks-scope.php`, and `rest-route-cache.php`. None of them alone is measured to clear the write ceiling. The next step is a measured cut at the root, with a red test.
 
 On Workers Free, a WooCommerce store's editor does not fit the memory limit (#638). Use Workers Paid to edit a store.
+
+### A site cannot fetch its own URL on the DO tiers, a Cloudflare limit (#1157)
+
+When WordPress fetches its own URL from the server (`wp_remote_get( home_url() )`), the request cannot go out through the Worker's `fetch()`. Cloudflare's docs say:
+
+- Routes: "Routes cannot be the target of a same-zone `fetch()` call."
+- Limits: "Using global `fetch()` to call another Worker on the same zone without service bindings fails." Error 1042 is also returned "for a `workers.dev` URL with no Worker serving it".
+
+It cannot run in place either, because the request that asks holds the one PHP runtime. So the engine refuses it at once, and WordPress treats that like any failed request. The block editor's link preview (`url-details`) answers 404 `no_response` for the site's own pages, and Site Health's loopback check reports a failure. Pages, REST and checkout don't depend on it.
+
+- **Hyperdrive (approach A):** fixed in code by #1157. The request runs on another PHP runtime, one of the overflow pool's objects, called through its binding and never through a public URL. A request a pool object runs never calls the pool again, so a self-request is at most one hop deep.
+- **The DO tiers (Free DO, Paid DO, WfP):** they have no second runtime, so this is a platform limit.
 
 ### The icon library had no icons (#777, fixed)
 

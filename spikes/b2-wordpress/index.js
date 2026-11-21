@@ -65,6 +65,7 @@ import { aPerfLine } from './perf-line.mjs';
 import { templateQueuePriority, templateLookupYield, templateLookupForwardYield } from './template-boot.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse, overflowHeldToPool } from './overflow.mjs';
+import { selfFetchRoute, selfFetchPoolAvailable, selfFetchCalls, selfFetchSameIsolate, SELF_SAME_ISOLATE_HEADER, SELF_REFUSAL_SAME_ISOLATE } from './self-fetch.mjs';
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
 import { PURGE_GAP_MS, NO_CACHE_API, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
@@ -2751,14 +2752,45 @@ async function d1pingRun(req, env, url, ctx) {
 // - HTTP_ALLOW_HOSTS (comma list; a host or ".suffix"): unset uses the default
 //   (.wordpress.org, .woocommerce.com, .gravatar.com). Empty denies every host.
 //   "*" allows every http(s) host.
-// - A request to the site's own host is refused at once. The PHP object runs one
-//   request at a time, so a request to itself waits behind itself (a timeout, or
-//   "Durable Object is overloaded"). WordPress treats the error like any failed
-//   request (Site Health's loopback check, the plugin editor's fatal check).
+// - A request to the site's own host (#1157, self-fetch.mjs) never goes out through fetch(): Cloudflare does not
+//   route a same-zone fetch() to a Worker (error 1042), and this isolate's one PHP runtime is the one asking. On
+//   approach A with the overflow pool it runs on a pool object instead (stub.fetch through the binding); a request a
+//   pool object runs never calls the pool again (the recursion guard). Anywhere else it is refused at once, and
+//   WordPress treats the error like any failed request (Site Health's loopback check, the plugin editor's check).
 const HTTP_MAX_BYTES = 8 * 1024 * 1024;
+function isSelfHost(url) {
+	return Boolean(bootOrigin) && url.hostname === new URL(bootOrigin).hostname;
+}
+// #1157: one same-host hop on a pool object. It counts toward this isolate's held overflow requests (#714), as a
+// forwarded client request does, and a content change's purge handed back is scheduled by this Worker.
+async function selfFetchOnPool(url, method, headers, body, signal) {
+	const ovs = overflowSettings(ENV);
+	const picker = ovPickerFor(ovs.pool);
+	const i = picker.pick();
+	const callId = crypto.randomUUID();
+	const t0 = Date.now();
+	picker.start(i);
+	ovHeld++;
+	selfFetchCalls.add(callId);
+	let r;
+	try {
+		r = await toPhpObject(new Request(url, { method, headers, body, signal }), ENV, url, null, { name: overflowName(i), hint: ovs.hint, overflow: true, callId });
+	} finally {
+		selfFetchCalls.delete(callId);
+		ovHeld--;
+		picker.end(i);
+	}
+	if (signal.aborted) throw signal.reason || new Error('timeout');
+	if (r.status === 503 && r.headers.get(SELF_SAME_ISOLATE_HEADER) === '1') {
+		console.log(JSON.stringify({ m: 'self-fetch', iso: ISOLATE_ID, obj: overflowName(i), refused: 'same-isolate', call: callId, parent: runCallId }));
+		throw new Error(SELF_REFUSAL_SAME_ISOLATE);
+	}
+	console.log(JSON.stringify({ m: 'self-fetch', iso: ISOLATE_ID, obj: overflowName(i), method, path: url.pathname, status: r.status, ms: Date.now() - t0, call: callId, parent: runCallId }));
+	if (r.headers.get('x-cache-purge') === 'front' && ocCtx) schedulePurge(ocCtx);
+	return r;
+}
 function httpRefusal(url) {
 	if (url.protocol !== 'http:' && url.protocol !== 'https:') return 'only http and https';
-	if (bootOrigin && url.hostname === new URL(bootOrigin).hostname) return 'a request to this site itself is refused: the PHP object runs one request at a time, so it would wait on itself';
 	const raw = ENV && ENV.HTTP_ALLOW_HOSTS !== undefined ? ENV.HTTP_ALLOW_HOSTS : undefined;
 	if (!httpHostAllowed(url.hostname, resolveHttpAllowHosts(raw))) return 'host not in HTTP_ALLOW_HOSTS: ' + url.hostname;
 	return null;
@@ -2781,13 +2813,16 @@ async function httpOp(op) {
 		const headers = new Headers(op.headers || {});
 		let redirects = 0;
 		let res;
+		const ovs = overflowSettings(ENV);
 		for (;;) {
-			const why = httpRefusal(url);
+			// #1157: each hop (a redirect included) is checked again: the site's own host runs on a pool object or is refused.
+			const self = selfFetchRoute({ sameHost: isSelfHost(url), inObject: Boolean(ocCtx && ocCtx.inObject), overflowed: Boolean(ocCtx && ocCtx.overflowed), poolAvailable: selfFetchPoolAvailable(ENV, ovs), capped: overHeld(ovs, ovHeld) });
+			const why = self.route === 'refuse' ? self.why : self.route === 'out' ? httpRefusal(url) : (url.protocol === 'http:' || url.protocol === 'https:' ? null : 'only http and https');
 			if (why) {
 				out = { error: why };
 				return out;
 			}
-			res = await fetch(url, { method, headers, body, redirect: 'manual', signal });
+			res = self.route === 'pool' ? await selfFetchOnPool(url, method, headers, body, signal) : await fetch(url, { method, headers, body, redirect: 'manual', signal });
 			const loc = res.headers.get('location');
 			if ([301, 302, 303, 307, 308].includes(res.status) && loc && (op.redirection || 0) > 0) {
 				// As Requests does: redirection 0 returns the redirect itself; past the count is an error.
@@ -3569,6 +3604,10 @@ export class PhpRuntime extends DurableObject {
 		// arms it instead, which is when the deferred work actually needs to run.
 		// An overflowed request (#296 (3)) never arms the cron alarm: the pool objects only absorb a queue.
 		const overflowed = raw.headers.get(OVERFLOW_HEADER) === '1';
+		// #1157: a same-host hop from a request in THIS isolate would queue behind its own asker: answer at once.
+		if (selfFetchSameIsolate(overflowed, raw.headers.get(CALL_HEADER))) {
+			return new Response(null, { status: 503, headers: { [SELF_SAME_ISOLATE_HEADER]: '1', 'cache-control': 'no-store' } });
+		}
 		// #296 (3)(c): this object already runs or holds PHP, and the Worker can send the request elsewhere: answer busy
 		// now, before anything runs (no cron arm, no PHP, no write), so the queue never moves into the pool.
 		if (overflowed && raw.headers.get(OVERFLOW_BUSY_OK_HEADER) === '1' && objectBusy({ running: phpLock.running, waiting: phpLock.waiting })) {
@@ -3663,7 +3702,7 @@ export class PhpRuntime extends DurableObject {
 		// An overflowed request (#296 (3)) hands its purge back to the front Worker: the object's purge alarm is
 		// also its cron driver (a pool object must never run cron), and an object cannot purge the Worker's page
 		// cache anyway (measured locally: "no cache API").
-		const ctx = { inObject: true, storage: this.ctx.storage, waitUntil: (p) => this.ctx.waitUntil(p), requestPurge: overflowed ? async () => 'front' : () => this.requestPurge() };
+		const ctx = { inObject: true, overflowed, storage: this.ctx.storage, waitUntil: (p) => this.ctx.waitUntil(p), requestPurge: overflowed ? async () => 'front' : () => this.requestPurge() };
 		ctx.callId = callId; // #708 review 2: per request, so overlapping runs (after a stale takeover) keep their own id
 		if (url.pathname === '/_d1ping') return d1ping(req, env, url, ctx);
 		// DB_IN_DO=on: WordPress's database is this object's SQLite (8j).

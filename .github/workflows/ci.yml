@@ -426,6 +426,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/build-mu-list.test.mjs
       - name: On a cron-off approach A build the cron object's alarm deletes itself, and nothing arms it (#1186)
         run: node --test spikes/b2-wordpress/tests/a-cron-off.test.mjs
+      - name: A request to the site own URL runs on a pool object, one hop deep, never in its own isolate (#1157)
+        run: node --test spikes/b2-wordpress/tests/self-fetch.test.mjs
       - name: Approach A Workers Cron scaffold (#855)
         run: node --test spikes/b2-wordpress/tests/a-cron-wiring.test.mjs
       - name: b-dosql the lazy inflate cache defaults to 2 MiB (issue #394)
