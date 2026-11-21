@@ -422,6 +422,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/start-by.test.mjs
       - name: A queued PHP request overflows to a pool object before it runs, and runs once (#296)
         run: node --test spikes/b2-wordpress/tests/overflow.test.mjs
+      - name: The build's mu-plugin list is one file per line (MU_PLUGINS), so plugin PRs never conflict on it
+        run: node --test spikes/b2-wordpress/tests/build-mu-list.test.mjs
       - name: Approach A Workers Cron scaffold (#855)
         run: node --test spikes/b2-wordpress/tests/a-cron-wiring.test.mjs
       - name: b-dosql the lazy inflate cache defaults to 2 MiB (issue #394)

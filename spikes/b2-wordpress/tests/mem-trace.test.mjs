@@ -37,7 +37,8 @@ test('the mu-plugin returns at once without the trace header, and only knows the
 
 test('build.sh copies the trace mu-plugin', () => {
 	const build = readFileSync(new URL('../build.sh', import.meta.url), 'utf8');
-	assert.match(build, /cp [^\n]*php\/mem-trace\.php[^\n]*"\$wp\/wp-content\/mu-plugins\/"/);
+	// The mu-plugin list is one entry per line (MU_PLUGINS, build.sh), copied into mu-plugins in one cp.
+	assert.match(build, /MU_PLUGINS=\(\n(\t[^\n]+\n)*\tphp\/mem-trace\.php\n(\t[^\n]+\n)*\)\ncp "\$\{MU_PLUGINS\[@\]\}" "\$wp\/wp-content\/mu-plugins\/"/);
 });
 
 test('the reset lines carry the operator id, and only for an operator request with a safe id', () => {
