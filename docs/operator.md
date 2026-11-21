@@ -4,7 +4,7 @@ This is the day-one walkthrough for one operator who runs a couple of WordPress 
 
 ## What you need
 
-- A Cloudflare account on the **Workers for Platforms Paid** plan. Workers for Platforms Paid is $25 a month for two or more sites. The price includes 20 million requests, then $0.30 per million. It includes 60 million CPU ms, then $0.02 per million. It includes 1,000 namespace scripts, then $0.02 each. Another site at rest costs about $0, up to the 1,000 included scripts. The full table is in [plan-limits.md](plan-limits.md).
+- A Cloudflare account on the **Workers for Platforms Paid** plan and the **Workers Paid** plan. A pagefeather Workers for Platforms account costs $30 a month for two or more sites. That is the Workers for Platforms Paid plan ($25) plus the Workers Paid plan ($5). The reference account runs both. The Workers for Platforms price includes 20 million requests, then $0.30 per million. It includes 60 million CPU ms, then $0.02 per million. It includes 1,000 namespace scripts, then $0.02 each. Another site at rest costs about $0, up to the 1,000 included scripts. Cloudflare's WfP pricing page does not say whether Workers Paid is strictly required, so plan for both. The full table is in [plan-limits.md](plan-limits.md).
 - Your Cloudflare **account id**, exported as `ACCOUNT_ID`. Every command below uses it.
 - Node and Wrangler (4.107.0 or later), and this repository.
 - Terraform (1.5 or later).
