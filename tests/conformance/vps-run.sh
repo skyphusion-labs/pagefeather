@@ -5,6 +5,7 @@
 #   vps-run.sh install  <suite> <work-dir>             clone the suite at its pin, install it
 #   vps-run.sh baseline <suite> <work-dir> <run-dir>   run it on STOCK upstream (wp-env, Docker)
 #   vps-run.sh run      <suite> <work-dir> <run-dir>   run it on OUR throwaway (needs <run-dir>/env)
+#   box toolchain: git, Node (each suite pins its own), Docker for the baselines, and for wc also php-cli and composer
 #   suites: wp (wordpress-develop), wc (WooCommerce core profile), wc-api (its api-tests, the same checkout),
 #           wc-cpt (the wc @hpos tests with HPOS OFF, upstream envs/default-hpos-disabled; the same checkout), gb (Gutenberg)
 #
@@ -107,6 +108,11 @@ playwright() { # dir config: run Playwright with OUR wrapper config (exclusions,
 
 case "$act" in
   install)
+    # WooCommerce's postinstall runs "composer install", so the box needs php-cli and composer (wcbase-wc1 died there).
+    case "$suite" in wc|wc-api|wc-cpt)
+      [ "${DRY:-0}" = 1 ] || command -v composer >/dev/null 2>&1 \
+        || { echo "vps-run: STOP: the wc install needs composer and php-cli on the box (WooCommerce's postinstall runs composer install)" >&2; exit 3; } ;;
+    esac
     x mkdir -p "$work"
     [ -d "$src/.git" ] || { x git init -q "$src"; x git -C "$src" remote add origin "$repo"; }
     x git -C "$src" fetch -q --depth 1 origin "$sha"
@@ -156,7 +162,13 @@ case "$act" in
     esac
     case "$suite" in
       wp) in_dir "$src" npm run build:dev; in_dir "$src" npm run env:start; in_dir "$src" npm run env:install ;;
-      wc|wc-api|wc-cpt) in_dir "$src/plugins/woocommerce" env WP_ENV_CORE=WordPress/WordPress#7.1.4 pnpm env:e2e ;;
+      # The stock arm mounts WooCommerce from SOURCE, so it must be BUILT first, as the e2e README at the pin says
+      # ("pnpm --filter='@woocommerce/plugin-woocommerce' build", then env:e2e). Unbuilt, WooCommerce's first boot is a
+      # fatal on includes/react-admin/feature-config.php (wcbase-wc2). Our run arm serves a built WooCommerce and skips it.
+      wc|wc-api|wc-cpt) in_dir "$src" env NODE_OPTIONS=--max-old-space-size=6144 pnpm --filter=@woocommerce/plugin-woocommerce build
+          [ "${DRY:-0}" = 1 ] || [ -f "$src/plugins/woocommerce/includes/react-admin/feature-config.php" ] \
+            || { echo "vps-run: STOP: the WooCommerce build left no includes/react-admin/feature-config.php" >&2; exit 3; }
+          in_dir "$src/plugins/woocommerce" env WP_ENV_CORE=WordPress/WordPress#7.1.4 pnpm env:e2e ;;
       gb) in_dir "$src" env WP_ENV_CORE=WordPress/WordPress#7.1.4 npm run wp-env-test -- start ;;
     esac
     playwright "$src"

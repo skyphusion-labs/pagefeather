@@ -680,6 +680,24 @@ def main():
             bad("stock wc-cpt: no refusal")
         except runner.Stop as ex:
             ok("stock wc-cpt is refused (its stock arm needs upstream's HPOS-off env)") if "wc-cpt" in str(ex) else bad("stock wc-cpt: %s" % ex)
+        # The wc stock arm builds WooCommerce from source BEFORE env:e2e (its e2e README); the run arm does not.
+        vbb = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "baseline", "wc", vw, os.path.join(t, "vbwcb")],
+                             env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
+        bo = vbb.stdout
+        ib, ie = bo.find("--filter=@woocommerce/plugin-woocommerce build"), bo.find("pnpm env:e2e")
+        ok("baseline wc: builds the WooCommerce plugin, then starts env:e2e") if vbb.returncode == 0 and 0 <= ib < ie else bad("baseline wc build order: build %d env %d: %s" % (ib, ie, bo[-400:]))
+        vrw = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "run", "wc", vw, os.path.join(t, "vrwcb")],
+                             env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
+        ok("run wc: no plugin build (our site serves a built WooCommerce)") if "plugin-woocommerce build" not in vrw.stdout else bad("run wc builds the plugin")
+        nocomp = os.path.join(t, "nocomposer"); os.makedirs(nocomp)
+        # Every tool of /bin and /usr/bin EXCEPT composer (CI's ubuntu image has /usr/bin/composer).
+        for bd in ("/bin", "/usr/bin"):
+            for n in os.listdir(bd):
+                if n != "composer" and not os.path.exists(os.path.join(nocomp, n)):
+                    os.symlink(os.path.join(bd, n), os.path.join(nocomp, n))
+        vic = subprocess.run(["/bin/bash", os.path.join(HERE, "vps-run.sh"), "install", "wc", os.path.join(t, "vic")],
+                             env={"PATH": nocomp}, capture_output=True, text=True)
+        ok("install wc without composer: STOP (exit 3) before any clone") if vic.returncode == 3 and "needs composer" in vic.stderr and not os.path.exists(os.path.join(t, "vic")) else bad("install wc no composer: rc %d %s" % (vic.returncode, vic.stderr[-200:]))
         vbw = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "baseline", "wc", vw, os.path.join(t, "vbwc")],
                              env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
         cl = [l for l in vbw.stdout.splitlines() if "runner.py config" in l]
