@@ -22,7 +22,7 @@ With `PHP_OVERFLOW=on`, a request that finds its isolate busy (a run in flight A
 | `PHP_OVERFLOW_POOL` | 32 | the number of pool objects (1 to 128). The default is the measured best: pools 8 and 16 were worse than no overflow. A bad value falls back to 32 at runtime; deploy.sh refuses one (#714) |
 | `PHP_OVERFLOW_MAX_HELD` | none (no cap) | the most overflowed requests one Worker isolate holds in flight (#714, #717). Measured on #714: a cap of 16 lost 479 requests to capped 503s to save 2, and cut completion at 250 by 6 to 19 points, so there is no cap by default. 1 to 1000 caps; `off` is no cap; deploy.sh takes `off` or 1 to 1000 |
 | (runtime) | on when `PHP_OVERFLOW` is on | while this isolate holds overflowed requests, it does not boot PHP for shopper paths (#714 held-block). A fast 503 with `x-php-overflow: held-block` |
-| `PHP_OVERFLOW_DEPTH` | 1 | move when this many are already waiting (0 to 50) |
+| `PHP_OVERFLOW_DEPTH` | 1 | move when this many are already waiting (0 to 50). At 1 the first request behind a long run waits: on cf759hx (2026-11-20) a term GET behind a 14-product batch waited 13.5 and 15.7 s with 0 overflow events (#1119). **0 is not a fix: it trades waits for refusals.** On cf759hx (2026-11-21) depth 0 moved the first waiter but it still took 16.65 s, and 10 concurrent checkouts completed 4 and 3 of 10 (depth 1: 10 of 10); the rest got `held-block` 503s (14 in the window), because a request that would run beside a held overflow is refused (#714). A measurement knob only. |
 | `PHP_OVERFLOW_HINT` | `wnam` | the objects' location hint (measured best) |
 | `PHP_OVERFLOW_BUSY` | off | `on`: a busy object answers busy, and the Worker tries elsewhere (see below) |
 

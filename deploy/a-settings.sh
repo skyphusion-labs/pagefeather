@@ -42,6 +42,10 @@
 #   PHP_OVERFLOW_MAX_HELD off, or 1 to 1000 (#714, #717): the most overflowed requests one Worker isolate holds in
 #                     flight. Unset renders nothing: the code default, NO cap (#714 measured a cap of 16 losing 479
 #                     requests to save 2). A number caps; off: no cap. Needs PHP_OVERFLOW=1.
+#   PHP_OVERFLOW_DEPTH 0 to 50 (#1119): how many requests must already WAIT on a busy isolate before the next one
+#                     moves to the pool. Unset renders nothing: the code default 1, under which the first request
+#                     behind a long run waits (measured on cf759hx, 2026-11-20). 0 moves that first waiter too. Needs
+#                     PHP_OVERFLOW=1 or always.
 #   MEM_LEDGER        on or unset: a MEASUREMENT flag (the isolate memory ledger on every request, and the
 #                     overflow-held line, #714). Never a default; a deploy without it turns it off.
 #   OBJECT_CACHE_VERSIONS 1 (default since #296 step 3) or 0: options in the cross-isolate cache under an exact version (#668, #686),
@@ -72,7 +76,7 @@ a_settings_check() {
     done
   fi
   if [ "$variant" != a ]; then
-    for v in OPCACHE_A RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE A_CLIENT A_CRON PHP_OVERFLOW PHP_OVERFLOW_POOL PHP_OVERFLOW_MAX_HELD MEM_LEDGER OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE OBJECT_CACHE_L2; do
+    for v in OPCACHE_A RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE A_CLIENT A_CRON PHP_OVERFLOW PHP_OVERFLOW_POOL PHP_OVERFLOW_MAX_HELD PHP_OVERFLOW_DEPTH MEM_LEDGER OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE OBJECT_CACHE_L2; do
       [ -z "${!v:-}" ] || { echo "$v is for variant a only (deploy/wfp has its own settings for b-dosql)" >&2; return 2; }
     done
   fi
@@ -114,6 +118,13 @@ a_settings_check() {
   fi
   if [ -n "$v" ] && [ "$v" != off ] && { ! [[ "$v" =~ ^[0-9]{1,4}$ ]] || [ "$((10#$v))" -lt 1 ] || [ "$((10#$v))" -gt 1000 ]; }; then
     echo "PHP_OVERFLOW_MAX_HELD must be off or an integer from 1 to 1000, not ${v}" >&2; return 2
+  fi
+  v=${PHP_OVERFLOW_DEPTH:-}
+  if [ -n "$v" ] && ! a_overflow_on; then
+    echo "PHP_OVERFLOW_DEPTH needs PHP_OVERFLOW=1 or always" >&2; return 2
+  fi
+  if [ -n "$v" ] && { ! [[ "$v" =~ ^[0-9]{1,2}$ ]] || [ "$((10#$v))" -gt 50 ]; }; then
+    echo "PHP_OVERFLOW_DEPTH must be an integer from 0 to 50, not ${v}" >&2; return 2
   fi
   case "${MEM_LEDGER:-}" in ''|on) ;; *) echo "MEM_LEDGER must be on or unset, not ${MEM_LEDGER}" >&2; return 2 ;; esac
   if [ -n "${PF_ENGINE_JS:-}" ] || [ -n "${PF_ENGINE_WASM:-}" ]; then
@@ -195,6 +206,8 @@ a_overflow_vars() {
   echo "PHP_OVERFLOW_POOL = \"$((10#${PHP_OVERFLOW_POOL:-32}))\""
   # #714: unset renders nothing (the code default, no cap); off or a number renders it.
   case "${PHP_OVERFLOW_MAX_HELD:-}" in '') ;; off) echo 'PHP_OVERFLOW_MAX_HELD = "off"' ;; *) echo "PHP_OVERFLOW_MAX_HELD = \"$((10#$PHP_OVERFLOW_MAX_HELD))\"" ;; esac
+  # #1119: unset renders nothing (the code default, depth 1); a number renders it.
+  [ -z "${PHP_OVERFLOW_DEPTH:-}" ] || echo "PHP_OVERFLOW_DEPTH = \"$((10#$PHP_OVERFLOW_DEPTH))\""
 }
 a_overflow_bindings() {
   a_overflow_on || return 0
