@@ -234,10 +234,18 @@ a_cron_vars() {
   echo 'A_CRON = "on"'
 }
 a_cron_triggers() {
-  a_cron_on || return 0
+  # #1186: with the cron OFF, an explicit EMPTY list. Wrangler keeps an existing schedule when the config has no [triggers]
+  # block, so a cron-off deploy used to leave the minute trigger, and the cron object kept running (cf759hl, 2026-11-21).
+  a_cron_on || { cron_triggers_none; return 0; }
   local sched="${A_CRON_CRON:-* * * * *}"
   echo '[triggers]'
   echo "crons = [\"$sched\"]"
+}
+# cron_triggers_none: the [triggers] block that clears every Cron Trigger (#1186). The DO tiers render it too: they never
+# use one, and a site moved off approach A must not keep its schedule.
+cron_triggers_none() {
+  echo '[triggers]'
+  echo 'crons = []'
 }
 a_cron_bindings() {
   a_cron_on || return 0

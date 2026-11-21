@@ -254,6 +254,7 @@ backend "$TF"; mkdir -p "$TF/sites"
 inputs_check "$TF" "$NAME" || exit 2
 # shellcheck source=lib/media-guard.sh
 . "$ROOT/deploy/lib/media-guard.sh"
+. "$ROOT/deploy/lib/cron-schedules.sh"
 media_guard "$TF" "$NAME" "sites/$NAME.tfvars" || exit 2
 # Hyperdrive checks the database when it makes its config, and a new MySQL box
 # needs a few minutes (packages, MariaDB, SSL): retry for up to 10 minutes.
@@ -382,6 +383,10 @@ obs_redact "$NAME" || exit 1
 # The line is the deployments API's answer (newest deployment, version at 100 percent), not wrangler's
 # Current Version ID. CODE_ONLY runs obs_redact too, so it is printed here, before that exit. A failed read stops the deploy.
 pf_print_serving_version || exit 1
+# #1186: the Cron Triggers read back from the API must match the render: the approach A cron on (its schedule), or none at all.
+# Before CODE_ONLY's exit, so a code-only redeploy is checked too. A mismatch or a failed read stops the deploy loudly.
+if [ "$VARIANT" = a ] && a_cron_on; then cron_schedules_readback "$NAME" on "${A_CRON_CRON:-* * * * *}" || exit 1
+else cron_schedules_readback "$NAME" off || exit 1; fi
 if [ "$CODE_ONLY" = 1 ]; then
   log "code only: secrets, install and measurements skipped (they persist or ran once)"
   origin_check "$URL" "$SITE_ORIGIN" || exit 1

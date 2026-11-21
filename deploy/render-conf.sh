@@ -134,6 +134,7 @@ render_conf() {
     # #699 part B: the account's purge budget, when deploy.sh found it present (purge_budget_decide). Unset: nothing.
     purge_budget_toml_lines
     echo '[[migrations]]'; echo 'tag = "v1"'; echo 'new_sqlite_classes = ["PhpRuntime"]'
+    cron_triggers_none   # #1186: no Cron Trigger on a DO tier; clears one left by an earlier approach A deploy
   else
     echo '[[hyperdrive]]'; echo 'binding = "HYPERDRIVE"'; echo "id = \"$(out hyperdrive_id)\""
     # Workers Paid: 30 s of CPU per request, and the Worker runs near the database (#1054).
