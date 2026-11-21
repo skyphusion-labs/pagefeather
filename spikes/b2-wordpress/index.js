@@ -2849,13 +2849,18 @@ function httpFirstHopRefusal(op) {
 	}
 	return httpHop(url, overflowSettings(ENV)).why;
 }
-// #1215: blocking false is fire-and-forget, as in core (http-nonblocking.mjs): PHP gets its answer at once, and the
-// request runs on in the request's waitUntil under its own cap.
+// #1225: blocking false is fire-and-forget, as in core (http-nonblocking.mjs), ONLY in the Worker: PHP gets its answer
+// at once, and the request runs on in the Worker's waitUntil under its own cap, its body read and dropped (nothing reads
+// it). Inside a Durable Object (a pool object, A_CRON, b-do, b-dosql) waitUntil does not keep the object alive at our
+// compatibility date (2026-07-01, no durable_object_io_tasks_prevent_eviction; #185 measured sends abandoned), so there
+// the request is awaited as a blocking one is (the caller's timeout, the 1 s floor), and PHP still returns core's empty
+// non-blocking response. The lead's ruling on #1225: option 1.
 async function httpOp(op) {
 	if (!httpBlocking(op)) {
+		if (ocCtx && ocCtx.inObject) return httpOpRun({ ...op, blocking: true });
 		const why = httpFirstHopRefusal(op);
 		if (why) return { error: why };
-		const run = httpOpRun(op).catch(() => {});
+		const run = httpOpRun({ ...op, discard: true }).catch(() => {});
 		if (ocCtx && typeof ocCtx.waitUntil === 'function') ocCtx.waitUntil(run);
 		return { queued: true };
 	}
@@ -2921,6 +2926,7 @@ async function httpOpRun(op) {
 			for (;;) {
 				const { done, value } = await reader.read();
 				if (done) break;
+				if (op.discard) continue; // #1225: a queued request's body: read to the end (its far end completes), never held
 				const room = limit - size;
 				if (value.length > room) {
 					chunks.push(value.subarray(0, room));

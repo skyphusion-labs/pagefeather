@@ -32,5 +32,13 @@ test('#1215 index.js: a non-blocking op is checked, then queued in waitUntil, an
 	assert.match(body, /httpFirstHopRefusal\(op\)/, 'a refusal is still answered as an error');
 	assert.match(body, /ocCtx\.waitUntil\(/, 'the request runs on after PHP has its answer');
 	assert.match(body, /return \{ queued: true \};/);
+	// #1225 (the lead's ruling, option 1): queued ONLY outside an object; in one it is awaited as a blocking request.
+	assert.match(body, /if \(ocCtx && ocCtx\.inObject\) return httpOpRun\(\{ \.\.\.op, blocking: true \}\);/);
+	assert.ok(body.indexOf('ocCtx.inObject') < body.indexOf('ocCtx.waitUntil('), 'the object check comes before any queueing');
+	assert.match(body, /httpOpRun\(\{ \.\.\.op, discard: true \}\)/, 'a queued request holds no body');
+	assert.match(src, /if \(op\.discard\) continue;/);
+	// #1226 kept: the hop's route is selfFetchRoute's, so only a refused SELF-fetch is logged as one.
+	assert.match(src, /const self = httpHop\(url, ovs\);\n\t\t\tconst why = self\.why;/);
+	assert.match(src, /return \{ route: self\.route, why \};/);
 	assert.match(src, /const timeoutMs = httpTimeoutMs\(op\);/, 'one timeout rule');
 });
