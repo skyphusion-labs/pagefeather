@@ -52,6 +52,8 @@ page tells you which is which.
   ([#1221](https://github.com/skyphusion-labs/pagefeather/issues/1221),
   [PR #1227](https://github.com/skyphusion-labs/pagefeather/pull/1227) merged). No later suite row
   re-measures that notice.
+- **How many plugins fit** is a per-request limit on the heaviest admin pages
+  ([How many plugins fit](docs/known-limitations.md#how-many-plugins-fit)).
 
 ## A live example
 
