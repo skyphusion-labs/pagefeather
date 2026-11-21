@@ -131,8 +131,11 @@ Measured live on `posterntesting.com` (dedicated mode):
   for an anonymous cached page view.
 - Warm latency is about the same (around 0.15 s, both served from the colo).
 
-The win is cost, capacity, and less exposure to the 128 MiB write ceiling, not
-latency. `browser_ttl` is 0, so the browser does not cache the HTML; only the
+The win is cost, capacity, and less exposure to the measured write ceiling of
+117 to 119 MiB of wasm (#598), not latency. Cloudflare's documented figure is
+128 MB per isolate (the Workers limits page, as read in
+[../../docs/design-394-bundle-out-of-memory.md](../../docs/design-394-bundle-out-of-memory.md),
+2026-11-13). `browser_ttl` is 0, so the browser does not cache the HTML; only the
 edge does. (The reorder above does not change this result: an anonymous page
 still matches only the cache rule.)
 

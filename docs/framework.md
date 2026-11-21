@@ -13,11 +13,11 @@ This page is about `wp` (called b-dosql), the kind with zero outside infrastruct
 A `wp` site is WordPress with PHP and its SQLite database inside one Durable Object. It runs as a user Worker in the dispatch namespace. A site can be:
 
 - a content site (a blog or a brochure site); or
-- a WooCommerce store. WooCommerce runs on b-dosql **including checkout**. This is measured on Workers Paid: an order places under the 128 MiB isolate limit, and `tests/woo.py` is green (see the README matrix and `docs/results.md`).
+- a WooCommerce store. WooCommerce runs on b-dosql **including checkout**. This is measured on Workers Paid: an order places under the measured write ceiling of 117 to 119 MiB of wasm (#598), and `tests/woo.py` is green (see the README matrix and `docs/results.md`). Cloudflare's documented figure is 128 MB per isolate (the Workers limits page, as read in [design-394-bundle-out-of-memory.md](design-394-bundle-out-of-memory.md), 2026-11-13).
 
 There is no container store. The older "c1" store path (WordPress in a Cloudflare Container) was retired in #214, because b-dosql now does checkout directly. Its notes stay as a record in [approach-c1.md](approach-c1.md). The CLI and the provisioning Worker refuse `kind: shop`.
 
-**The limit to know:** a b-dosql site is one Durable Object, so it has 128 MiB of memory, one writer, and one region. A blog or a light-to-moderate store fits well. For a store with real concurrent traffic, use approach `a` ([onboarding.md](onboarding.md)), which scales sideways. A store that outgrows b-dosql can also go to a VPS (the normal LAMP stack). See [from-lamp-to-wfp.md](from-lamp-to-wfp.md) and [known-limitations.md](known-limitations.md).
+**The limit to know:** a b-dosql site is one Durable Object. It has one writer and one region. Cloudflare documents 128 MB per isolate, including the JavaScript heap (the Workers limits page, as read in [design-394-bundle-out-of-memory.md](design-394-bundle-out-of-memory.md), 2026-11-13). #394 measured about 255 MiB reachable in an empty isolate ([admin-memory-matrix.md](admin-memory-matrix.md), 2026-11-14). The limit that binds the site is the measured write ceiling of 117 to 119 MiB of wasm (#598). A blog or a light-to-moderate store fits under that write ceiling. For a store with real concurrent traffic, use approach `a` ([onboarding.md](onboarding.md)), which scales sideways. A store that outgrows b-dosql can also go to a VPS (the normal LAMP stack). See [from-lamp-to-wfp.md](from-lamp-to-wfp.md) and [known-limitations.md](known-limitations.md).
 
 ## Default integrations
 
@@ -157,7 +157,7 @@ The operator path is one command per side: `site hostname add <name> --domain <d
 
 ## Honest limits
 
-- A site is ONE Durable Object: 128 MiB of isolate memory, one writer, one region. Throughput is about 1 divided by the CPU time of one request (about 4 public pages a second at 230 ms; see `docs/perf-dosql.md`). A store with sustained, heavy concurrent load belongs on a VPS.
+- A site is ONE Durable Object: one writer, one region. Cloudflare documents 128 MB per isolate, including the JavaScript heap (the Workers limits page, as read in [design-394-bundle-out-of-memory.md](design-394-bundle-out-of-memory.md), 2026-11-13). #394 measured about 255 MiB reachable in an empty isolate ([admin-memory-matrix.md](admin-memory-matrix.md), 2026-11-14). The limit that binds the site is the measured write ceiling of 117 to 119 MiB of wasm (#598). Throughput is about 1 divided by the CPU time of one request (about 4 public pages a second at 230 ms; see `docs/perf-dosql.md`). A store with sustained, heavy concurrent load belongs on a VPS.
 - There is no container store. The c1 path was retired (#214); see [approach-c1.md](approach-c1.md) for the record. A store that outgrows b-dosql uses approach A or a VPS, not a container.
 - Open items are listed in [known-limitations.md](known-limitations.md).
 - Custom hostnames bill per hostname beyond the Cloudflare for SaaS free allowance.
