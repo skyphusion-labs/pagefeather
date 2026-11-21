@@ -135,8 +135,14 @@ jobs:
           node --test spikes/b2-wordpress/tests/ocv-missing.test.mjs
           node --test spikes/b2-wordpress/tests/remote-perf-boot.test.mjs
       - name: WP-CLI allowlist under the code lock (issue #1258)
-        # wp-cli-allow.mjs decides. No route calls it. WP-CLI does not read DISALLOW_FILE_MODS.
+        # wp-cli-allow.mjs decides. WP-CLI does not read DISALLOW_FILE_MODS.
+        # user list and user get refuse user_pass and user_activation_key.
         run: node --test spikes/b2-wordpress/tests/wp-cli-allow.test.mjs
+      - name: WP-CLI operator endpoint (issue #1258)
+        # Off unless WP_CLI_ENDPOINT=on. Access JWT plus the spike token. 404 on a miss.
+        run: |
+          node --test spikes/b2-wordpress/tests/wp-cli-endpoint.test.mjs
+          bash deploy/tests/wp-cli-endpoint-test.sh
       - name: Every engine test is named in a workflow (#1010)
         # A *-test.php or *.test.mjs under spikes/b2-wordpress/tests/ that no workflow names fails this step.
         run: bash tests/ci/engine-tests-wired-test.sh

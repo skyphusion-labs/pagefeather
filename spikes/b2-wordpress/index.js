@@ -375,6 +375,21 @@ function dropRuntimeIdle() {
 	dropRuntime();
 	if (held && reuseActive()) retirer.releaseNow(held); // #724 review, finding 3: with reuse off, queued as main
 }
+// One WP-CLI command in this isolate (issue #1258). php.cli exits the runtime, so the
+// page runtime is dropped, a fresh boot runs the command, and that runtime is dropped too.
+// The import runs only when a caller on the WP_CLI_ENDPOINT=on path reaches here.
+async function runSiteWpCli(argv, ctl, origin) {
+	const { runWpCli } = await import('./wp-cli-run.mjs');
+	return withPhp(async () => {
+		dropRuntimeIdle();
+		const booted = await boot(origin);
+		try {
+			return await runWpCli(booted.php, argv, ctl || {});
+		} finally {
+			dropRuntime();
+		}
+	});
+}
 // The admin memory trace of the request now running (#434, php/mem-trace.php): set by the
 // memTrace message at PHP shutdown, read once into the operator-only x-mem-trace header.
 let lastMemTrace = null;
@@ -3755,6 +3770,14 @@ export class PhpRuntime extends DurableObject {
 		// #1087: no connection reset here (outside the PHP lock); withPhp's withDbRun owns the connection's life.
 		// The Worker checked the spike token already. Checked again: the object
 		// trusts nothing it did not check itself.
+		// #1258: POST /_pf/wp-cli runs in this object (the one writer) when WP_CLI_ENDPOINT=on.
+		// Unset: the /_pf/ answer below, and the module is not loaded.
+		if (url.pathname === '/_pf/wp-cli' && env.WP_CLI_ENDPOINT === 'on') {
+			const { handleWpCli } = await import('./wp-cli-endpoint.mjs');
+			return handleWpCli(req, env, {
+				runCli: (argv, ctl) => runSiteWpCli(argv, ctl, siteOrigin(env, url)),
+			});
+		}
 		// #394 L1: the OPcache boot packs live under /_pf/ in the static assets. They hold compiled PHP of
 		// the site's code, so no request may read them; only the object fetches them, through the binding.
 		if (url.pathname.startsWith('/_pf/')) return new Response('Not Found', { status: 404 });
@@ -4442,6 +4465,14 @@ const site = {
 		// Approach A's MySQL connection lives one PHP run, inside the PHP lock (#1087, db-lifecycle.mjs withDbRun). A reset
 		// here, outside the lock, nulled the socket of a run still executing in another context.
 		// Spike endpoints need the SPIKE_TOKEN secret when it is set (always on a deploy).
+		// #1258: b-dosql and b-do forward to the object. Approach A runs here. Unset stays the 404 below.
+		if (url.pathname === '/_pf/wp-cli' && env.WP_CLI_ENDPOINT === 'on') {
+			const { serveWpCli } = await import('./wp-cli-endpoint.mjs');
+			return serveWpCli(req, env, {
+				forward: (r) => toPhpObject(r, env, url, ctx),
+				runCli: (argv, ctl) => runSiteWpCli(argv, ctl, siteOrigin(env, url)),
+			});
+		}
 		// #394 L1: the OPcache boot packs live under /_pf/ in the static assets. They hold compiled PHP of
 		// the site's code, so no request may read them; only the object fetches them, through the binding.
 		if (url.pathname.startsWith('/_pf/')) return new Response('Not Found', { status: 404 });

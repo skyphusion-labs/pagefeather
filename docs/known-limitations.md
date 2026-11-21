@@ -24,6 +24,10 @@ On `cf759hl` at main `822ab24`, 6 of 10 blocks checkout tests miss the suite's 1
 
 #1042 is open. Parallel REST reads answer 503 with `x-sql-failure`. The same wc rows count that class: 2 tests on Paid DO, about 6 on WfP. No later wc row has re-run those tiers.
 
+## WP-CLI operator route (#1258)
+
+`POST /_pf/wp-cli` is off unless `WP_CLI_ENDPOINT=on`. It needs Cloudflare Access and a custom domain (#1264, #1260). The wall cap is 25 s, and one run at a time. Long jobs (search-replace, import) are refused until step 5. The allowlist is the code lock: WP-CLI ignores `DISALLOW_FILE_MODS`. `user_pass` and `user_activation_key` are never printed. The full limits are in [spikes/wp-cli-1258.md](spikes/wp-cli-1258.md).
+
 ## b-dosql
 
 ### Cold-start write can return 1101 under a test seam (#213)

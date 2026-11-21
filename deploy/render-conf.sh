@@ -13,6 +13,8 @@
 . "$(dirname "${BASH_SOURCE[0]}")/purge-budget/budget.sh"
 # shellcheck source=SCRIPTDIR/pdf-invoice.sh
 . "$(dirname "${BASH_SOURCE[0]}")/pdf-invoice.sh"
+# shellcheck source=SCRIPTDIR/lib/wp-cli-endpoint.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/wp-cli-endpoint.sh"
 # a_placement_lines (#1054): the [placement] block of a variant a Worker. PLACEMENT is
 #   host                    host = "<MYSQL_HOST>:<MYSQL_PORT or 3306>": Cloudflare probes the database
 #                           host and runs the Worker next to it (docs: layer 4 host hint, experimental);
@@ -135,6 +137,8 @@ render_conf() {
     # hatch. deploy.sh refuses a bad value, and the var on another variant, before any step.
     [ "$VARIANT" != b-dosql ] || echo "REQUEST_FRAMES = \"${REQUEST_FRAMES:-on}\""
   fi
+  # #1258: WP_CLI_ENDPOINT, ACCESS_AUD, ACCESS_TEAM. Unset prints nothing.
+  wp_cli_endpoint_vars
   echo '[images]'; echo 'binding = "IMAGES"'
   # Workers AI binding for auto alt text (AI=1). Unified Billing (Cloudflare credit).
   [ "$AI" != 1 ] || { echo '[ai]'; echo 'binding = "AI"'; }

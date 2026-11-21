@@ -152,7 +152,7 @@ Step 4, `pagefeather wp`. Stream stdout from `php.cli()`. On this small local si
 
 WP-CLI 2.12.0 does not read `DISALLOW_FILE_MODS`. The phar does not contain that name, and the inner probe installed Hello Dolly. This allowlist is the lock.
 
-The module is `spikes/b2-wordpress/wp-cli-allow.mjs`. No route calls it. There is no operator endpoint yet. Step 3 designs that endpoint.
+The module is `spikes/b2-wordpress/wp-cli-allow.mjs`. Step 3 calls it from `POST /_pf/wp-cli`.
 
 The input is an array of strings, one argument per element. A shell string is refused. The check does not read the process environment.
 
@@ -178,3 +178,27 @@ The refusal names the command. It says that the site's code is locked, or that t
 Command words are case-sensitive. `option get` is allowed. `Option get` is refused.
 
 Test: `node --test spikes/b2-wordpress/tests/wp-cli-allow.test.mjs`. CI runs that file.
+
+## Step 3: the operator endpoint
+
+`POST /_pf/wp-cli` runs one allowed command. It exists only when the deploy sets `WP_CLI_ENDPOINT=on`. That value is a recorded input. When it is unset, the path answers 404, the same as any other `/_pf/` path, and the Worker does not load the WP-CLI modules.
+
+Both checks run on every request. The request needs a `Cf-Access-Jwt-Assertion` that verifies against the team certs (`https://<team>.cloudflareaccess.com/cdn-cgi/access/certs`, cached), with `aud` equal to `ACCESS_AUD`, a future `exp`, and `iss` of `https://<team>.cloudflareaccess.com`. It also needs `x-spike-token`, compared in constant time with `SPIKE_TOKEN`. A leaked JWT alone does not get in. A leaked token alone does not get in. If either check fails, the answer is 404. It is not 401 or 403.
+
+The body is JSON, `{"argv": ["option","get","siteurl"]}`, at most 4 KiB. The array goes only through `decideWpCli`. A shell string is refused. A refusal is 422 with the module message, and `php.cli` is not called. An allowed command is 200, `{"exit": n, "stdout": "...", "stderr": "...", "ms": n, "truncated": bool}`, and the answer is no-store (`noStoreAnywhere`).
+
+The run is `php.cli()` in the same runtime the site uses. On b-dosql and b-do that is the site object, the one writer. On approach A it is the Worker. `WP_CLI_CONFIG_PATH` is an empty file the runner writes. The working directory is `/internal/wp-cli-run`, which has no `wp-cli.yml`. `WP_CLI_PACKAGES_DIR` is an empty directory. `WP_CLI_DISABLE_AUTO_CHECK_UPDATE=1`. STDIN is not passed. The wall limit is 25 s (exit 124, `truncated` true). Stdout stops at 1 MiB and stderr at 64 KiB (`truncated` true). One run at a time per isolate. A second run is 429.
+
+Every allowed or refused call logs one line: `{"@event":"wp-cli", "who": <Access email or service-token client id>, "cmd": <the command name only>, "allowed": bool, "exit": n, "ms": n, "bytes": n}`. The line does not contain the arguments, stdout, stderr, the JWT, or the token.
+
+Limits, until step 5 and step 6 expand this:
+
+- No long jobs. Search-replace and import stay refused. Step 5 is the chunked run.
+- The wall cap is 25 s. One run at a time.
+- Access and a custom domain are required. `WP_CLI_ENDPOINT=on` needs `CUSTOM_DOMAIN` (#1264) plus `ACCESS_AUD` and `ACCESS_TEAM`. Those are the wp-admin Access application (#1260). #1260 does not write the AUD into the Worker yet, so the operator sets the same AUD and the team name.
+- This allowlist is the code lock. WP-CLI 2.12.0 ignores `DISALLOW_FILE_MODS`.
+- `user list` and `user get` refuse `user_pass` and `user_activation_key` in `--field`, `--fields`, or a `--format` template. `option get` stays allowed. The answer goes to the operator and is not logged.
+
+The phar path the runner calls is `/wordpress/wp-cli.phar`. `build.sh` does not put that file in `site.zip`. See the step 3 PR for why.
+
+Tests: `node --test spikes/b2-wordpress/tests/wp-cli-endpoint.test.mjs` and `bash deploy/tests/wp-cli-endpoint-test.sh`. CI runs both.
