@@ -65,3 +65,15 @@ test('#1078: objectCacheOp counts and times every OC_KV.get, and the A line pass
 	assert.match(src, /const tl2 = Date\.now\(\);\n\t\t\t\ttry \{ kv = await ENV\.OC_KV\.get\(ocKvKey\(k\)\); \} catch \{ kv = null; \}\n\t\t\t\tstats\.l2N\+\+;\n\t\t\t\tstats\.l2Ms \+= Date\.now\(\) - tl2;/);
 	assert.match(src, /aPerfLine\(\{[^\n]*ocCalls: stats\.ocCalls - start\.ocCalls[^\n]*l2N: stats\.l2N - start\.l2N[^\n]*l2Ms: stats\.l2Ms - start\.l2Ms/);
 });
+
+// #1119 (strummer's overflow check): the perf line's wallMs starts after the PHP lock wait, so a term GET that waited
+// 13.5 s behind a product batch read 262 ms. The line now carries lockWaitMs: from arrival at the lock to its grant.
+test('#1119 aPerfLine carries lockWaitMs', () => {
+	assert.equal(aPerfLine({ path: '/', status: 200, lockWaitMs: 13540, wallMs: 262 }).lockWaitMs, 13540);
+	assert.equal(aPerfLine({ path: '/', status: 200 }).lockWaitMs, undefined, 'absent stays absent');
+});
+test('#1119 index.js: the worker run measures its lock wait at the grant and the A perf line logs it', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /const lockT0 = Date\.now\(\);\n\t+const workerRun = await withPhp\(\(\) => withRunCall\(callId, \(\) => handle\(req, env, url, spikeOk, maxBody, ctx\), Date\.now\(\) - lockT0\)/);
+	assert.match(src, /lockWaitMs: runLockWaitMs, /);
+});

@@ -12,7 +12,7 @@ const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 
 test('#1101 A: the local run has a call id (the overflow one when it fell through), on the lock tag and on the answer', () => {
 	assert.match(src, /const callId = ovCall \|\| crypto\.randomUUID\(\); \/\/ #1101/);
-	assert.match(src, /const workerRun = await withPhp\(\(\) => withRunCall\(callId, \(\) => handle\(req, env, url, spikeOk, maxBody, ctx\)\), \{ shedMs: phpShedMs\(env, false\), priority: templateQueuePriority\(req\.method, url\), staleAction: 'shed', tag: \{ call: callId \} \}\);/);
+	assert.match(src, /const workerRun = await withPhp\(\(\) => withRunCall\(callId, \(\) => handle\(req, env, url, spikeOk, maxBody, ctx\), Date\.now\(\) - lockT0\), \{ shedMs: phpShedMs\(env, false\), priority: templateQueuePriority\(req\.method, url\), staleAction: 'shed', tag: \{ call: callId \} \}\);/);
 	assert.match(src, /return tagCallId\(workerRun === PHP_SHED \? phpShedResponse\(\) : workerRun, callId\);/);
 });
 test('#1101: the error lines and the req line carry the call id (A: the run id; b-dosql: ctx.callId)', () => {
