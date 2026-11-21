@@ -25,6 +25,22 @@ bj wp/wp-content/plugins/up/block.json '{ "name": "up/x", "style": "file:./missi
 bj public/wp-content/plugins/up/block.json '{ "name": "up/x", "style": "file:./missing.css" }'
 python3 -I "$HERE/block-css-keep.py" --check "$T/wp" "$T/public" > "$T/out" 2>&1; rc=$?
 ok "a stylesheet missing from BOTH (the plugin's own defect) does not fail the build (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
+# #1208: the guard covers every theme stylesheet too (add_editor_style reads them from disk).
+mk public/wp-content/themes/tt1/assets/css/style-editor.css
+python3 -I "$HERE/block-css-keep.py" --check "$T/wp" "$T/public" > "$T/out" 2>&1; rc=$?
+ok "#1208: a theme stylesheet shipped in public/ but missing from the PHP tree fails the check (rc $rc)" "$([ $rc = 1 ] && grep -q 'wp-content/themes/tt1/assets/css/style-editor.css' "$T/out" && echo 1 || echo 0)"
+mk wp/wp-content/themes/tt1/assets/css/style-editor.css
+python3 -I "$HERE/block-css-keep.py" --check "$T/wp" "$T/public" > "$T/out" 2>&1; rc=$?
+ok "#1208: with it in the PHP tree, the check passes (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
+# #1208: a stylesheet a plugin READS from disk by a static path is covered by the guard too.
+mkdir -p "$T/wp/wp-content/plugins/rd" "$T/public/wp-content/plugins/rd"
+printf '%s\n' '<?php' "echo file_get_contents( __DIR__ . '/inline.css' );" > "$T/wp/wp-content/plugins/rd/r.php"
+mk public/wp-content/plugins/rd/inline.css
+python3 -I "$HERE/block-css-keep.py" --check "$T/wp" "$T/public" > "$T/out" 2>&1; rc=$?
+ok "#1208: a plugin stylesheet read from disk, missing from the PHP tree, fails the check (rc $rc)" "$([ $rc = 1 ] && grep -q 'wp-content/plugins/rd/inline.css' "$T/out" && echo 1 || echo 0)"
+mk wp/wp-content/plugins/rd/inline.css
+python3 -I "$HERE/block-css-keep.py" --check "$T/wp" "$T/public" > "$T/out" 2>&1; rc=$?
+ok "#1208: present in the PHP tree, it passes (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
 ok "build.sh runs the check right after the prune, and stops on it" "$(grep -A1 -E '^\./prune-php-tree\.sh "\$wp"' "$HERE/build.sh" | grep -qE 'python3 -I block-css-keep\.py --check "\$wp" build/public \|\| exit 1' && echo 1 || echo 0)"
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]

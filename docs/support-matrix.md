@@ -103,6 +103,17 @@ It cannot run in place either, because the request that asks holds the one PHP r
 - **Hyperdrive (approach A):** limited, by #1157. A page already in the front page cache answers from it in milliseconds (measured live on cf759hx). Any other page runs on an overflow pool object, and **a page not yet cached in that colo pays a cold render, which can pass WordPress's 5 s timeout** (measured 8.5 s cold, 4.9 s warm), pending #1169's cold-boot work. The uncached request runs on another PHP runtime, one of the overflow pool's objects, called through its binding and never through a public URL. A request a pool object runs never calls the pool again, so a self-request is at most one hop deep.
 - **The DO tiers (Free DO, Paid DO, WfP):** they have no second runtime, so this is a platform limit.
 
+### Stylesheets PHP reads from disk (#1205, #1208, fixed; one case limited)
+
+The build drops from the PHP tree (`site.zip`) the files PHP never reads, every unminified `.css` among them; the static copy keeps everything. But PHP DOES read some stylesheets from disk, and a pruned one was silently missing:
+- **Block styles** named in a plugin or theme `block.json` (`"file:./x.css"`): core registered them with an empty `src`, so no WooCommerce block style printed (#1205).
+- **Theme stylesheets:** `add_editor_style` files are read and inlined into the editor, so every theme's editor styles were missing, the default twentytwentyfive's included (#1208).
+- **Stylesheets a plugin reads itself,** such as WooCommerce's email editor: `content.css` and `content-shared.css` when it renders an email (#1208).
+
+All of these now stay in the PHP tree. The build FAILS if one is in the static copy but missing from the PHP tree (`block-css-keep.py --check`).
+
+- **The limit:** a plugin that reads a `.css` file by a path the build can't work out (a variable, a computed name) isn't covered. The build prints a `block-css-keep: note:` line naming the file and line. WooCommerce 11.2.1 has none. Keeping every unminified `.css` would cover it, at 2.25 MB more `site.zip` (+10%), which the Free and b-do tiers hold in isolate memory, so it's not the default.
+
 ### The icon library had no icons (#777, fixed)
 
 WordPress 7.0 added an icon library, which the editor's Icon block reads from `/wp/v2/icons`. Our build dropped every core `.svg` from the PHP tree, so PHP could not read the 88 icon files. The route answered 200 with no icon content. #778 keeps those files (352 KB). It merged on 2026-11-16. It is not yet measured live.
