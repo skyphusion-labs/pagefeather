@@ -503,6 +503,10 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/turnstile-hold.test.mjs
       - name: b-dosql safe outbound URLs without DNS (issue #430)
         run: php spikes/b2-wordpress/tests/http-safe-url-test.php
+      - name: order-item meta is not reloaded after WooCommerce drops its cache with no write since (issue #1210)
+        # object-cache-js.php: a shadow served on a miss, cleared by ANY non-read statement naming
+        # woocommerce_order_itemmeta (any prefix, multi-table, unparseable), request-local only.
+        run: php spikes/b2-wordpress/tests/object-cache-shadow-test.php
       - name: a queued WooCommerce email is marked at enqueue, so the Worker wakes the cron (issue #1215)
         run: php spikes/b2-wordpress/tests/woo-edge-email-due-test.php
       - name: the email-due wake reaches the object that owns the cron (issue #1215)
