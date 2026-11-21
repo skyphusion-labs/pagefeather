@@ -52,6 +52,12 @@ $GLOBALS['wpdb'] = new Fake_WPDB();
 define( 'JS_OBJECT_CACHE_PERSIST_GROUPS', 'theme_json' ); // today's approach A (env.a-paid-lean)
 define( 'JS_OBJECT_CACHE_TTL', 10 );
 define( 'JS_OBJECT_CACHE_VERSIONED', 'options' );
+// #1199: transients are rows in wp_options now (the drop-in's skyphusion_transient_* functions; these replace its $wpdb
+// ones with an in-memory table, as tests/object-cache-transients-test.php does).
+$GLOBALS['transient_rows'] = array();
+function skyphusion_transient_rows( array $names ) { $o = array(); foreach ( $names as $n ) { if ( array_key_exists( $n, $GLOBALS['transient_rows'] ) ) { $o[ $n ] = $GLOBALS['transient_rows'][ $n ]; } } return $o; }
+function skyphusion_transient_put( $n, $v ) { $GLOBALS['transient_rows'][ $n ] = $v; return true; }
+function skyphusion_transient_delete( array $names ) { $k = 0; foreach ( $names as $n ) { if ( array_key_exists( $n, $GLOBALS['transient_rows'] ) ) { unset( $GLOBALS['transient_rows'][ $n ] ); ++$k; } } return $k; }
 require isset( $argv[1] ) ? $argv[1] : __DIR__ . '/../php/object-cache-js.php';
 
 $fail = 0;
@@ -120,12 +126,14 @@ $zg = $z->get( 'alloptions', 'options', false, $found );
 $z->set( 'alloptions', array( 'blogdescription' => 'C' ), 'options' );
 check( 'no table: options send nothing to the shared store (#491 holds)', 0 === opts_ops() && false === $zg );
 
-// Control: transients are NOT versioned here and stay per request on approach A (unchanged).
+// Control: transients are NOT versioned and never go to the shared store. #1199: they are durable rows in wp_options
+// (before #1199 they stayed per request on approach A, which lost them).
 $wpdb->table    = true;
 $GLOBALS['ops'] = array();
 $t = new JS_Object_Cache();
 $t->set( 'wc_attribute_taxonomies', array( 1 ), 'transient' );
-check( 'control: a transient still stays per request (no shared-store op)', 0 === count( $GLOBALS['ops'] ) );
+check( 'control: a transient makes no shared-store op', 0 === count( $GLOBALS['ops'] ) );
+check( '#1199: and it is a row in wp_options (_transient_wc_attribute_taxonomies)', array( 1 ) === ( isset( $GLOBALS['transient_rows']['_transient_wc_attribute_taxonomies'] ) ? $GLOBALS['transient_rows']['_transient_wc_attribute_taxonomies'] : null ) );
 
 // ---- The options misses (#643 live check, 2026-11-15): 49 options gets per request, 0 L1 hits, 39 KV misses, but
 // only 0.84 options sets per request. WordPress core's wp_prime_option_caches() asks the cache for every listed option
