@@ -206,6 +206,27 @@ class Stub:
         self.srv.shutdown()
 
 
+def path_shim(d, dirs, leave_out=(), stubs=()):
+    """A PATH dir holding every tool of dirs except leave_out, plus a stub (exit 0) per name in stubs. The FIRST dir that
+    holds a name wins, as PATH lookup does. lexists, not exists: a dangling link counts as taken (CI's ubuntu has
+    /bin -> /usr/bin, so every name comes twice, and some are dangling links such as grub-ntldr-img)."""
+    os.makedirs(d, exist_ok=True)
+    for bd in dirs:
+        if not os.path.isdir(bd):
+            continue
+        for n in os.listdir(bd):
+            if n in leave_out or n in stubs or os.path.lexists(os.path.join(d, n)):
+                continue
+            os.symlink(os.path.join(bd, n), os.path.join(d, n))
+    for n in stubs:
+        p = os.path.join(d, n)
+        if os.path.lexists(p):
+            os.remove(p)
+        open(p, "w").write("#!/bin/sh\nexit 0\n")
+        os.chmod(p, 0o755)
+    return d
+
+
 def run(argv, env):
     out, err = io.StringIO(), io.StringIO()
     old = dict(os.environ)
@@ -689,26 +710,25 @@ def main():
         vrw = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "run", "wc", vw, os.path.join(t, "vrwcb")],
                              env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
         ok("run wc: no plugin build (our site serves a built WooCommerce)") if "plugin-woocommerce build" not in vrw.stdout else bad("run wc builds the plugin")
-        nocomp = os.path.join(t, "nocomposer"); os.makedirs(nocomp)
-        # Every tool of /bin and /usr/bin EXCEPT composer (CI's ubuntu image has /usr/bin/composer).
-        for bd in ("/bin", "/usr/bin"):
-            for n in os.listdir(bd):
-                if n != "composer" and not os.path.exists(os.path.join(nocomp, n)):
-                    os.symlink(os.path.join(bd, n), os.path.join(nocomp, n))
-        # A stub php, so this case tests composer alone (macOS has no /usr/bin/php; CI's ubuntu has one).
-        if os.path.lexists(os.path.join(nocomp, "php")):
-            os.remove(os.path.join(nocomp, "php"))
-        open(os.path.join(nocomp, "php"), "w").write("#!/bin/sh\nexit 0\n"); os.chmod(os.path.join(nocomp, "php"), 0o755)
+        # path_shim against two PATH dirs that share names, one a DANGLING link (the CI ubuntu shape): first wins, no crash.
+        da, db = os.path.join(t, "pa"), os.path.join(t, "pb")
+        os.makedirs(da); os.makedirs(db)
+        for dd in (da, db):
+            os.symlink(os.path.join(dd, "missing-target"), os.path.join(dd, "dangling"))
+            open(os.path.join(dd, "both"), "w").write(dd)
+        try:
+            sh = path_shim(os.path.join(t, "shimdup"), (da, db))
+            ok("path_shim: a name in two PATH dirs (one a dangling link) links once, the first dir wins") if os.readlink(os.path.join(sh, "both")) == os.path.join(da, "both") and os.readlink(os.path.join(sh, "dangling")) == os.path.join(da, "dangling") else bad("path_shim: wrong winner")
+        except OSError as ex:
+            bad("path_shim: duplicate names crash: %s" % ex)
+        # Every tool of /bin and /usr/bin EXCEPT composer (CI's ubuntu has /usr/bin/composer), with a stub php so the
+        # case tests composer alone (macOS has no /usr/bin/php).
+        nocomp = path_shim(os.path.join(t, "nocomposer"), ("/bin", "/usr/bin"), leave_out=("composer",), stubs=("php",))
         vic = subprocess.run(["/bin/bash", os.path.join(HERE, "vps-run.sh"), "install", "wc", os.path.join(t, "vic")],
                              env={"PATH": nocomp}, capture_output=True, text=True)
         ok("install wc without composer: STOP (exit 3) before any clone, naming composer") if vic.returncode == 3 and "needs composer" in vic.stderr and not os.path.exists(os.path.join(t, "vic")) else bad("install wc no composer: rc %d %s" % (vic.returncode, vic.stderr[-200:]))
         # And without php: a shim with every tool except php and composer, plus a stub composer, names php.
-        nophp = os.path.join(t, "nophp"); os.makedirs(nophp)
-        for bd in ("/bin", "/usr/bin"):
-            for n in os.listdir(bd):
-                if n not in ("php", "composer") and not n.startswith("php") and not os.path.exists(os.path.join(nophp, n)):
-                    os.symlink(os.path.join(bd, n), os.path.join(nophp, n))
-        open(os.path.join(nophp, "composer"), "w").write("#!/bin/sh\nexit 0\n"); os.chmod(os.path.join(nophp, "composer"), 0o755)
+        nophp = path_shim(os.path.join(t, "nophp"), ("/bin", "/usr/bin"), leave_out=("php",), stubs=("composer",))
         vip = subprocess.run(["/bin/bash", os.path.join(HERE, "vps-run.sh"), "install", "wc", os.path.join(t, "vip")],
                              env={"PATH": nophp}, capture_output=True, text=True)
         ok("install wc without php: STOP (exit 3) before any clone, naming php") if vip.returncode == 3 and "needs php" in vip.stderr and not os.path.exists(os.path.join(t, "vip")) else bad("install wc no php: rc %d %s" % (vip.returncode, vip.stderr[-200:]))
