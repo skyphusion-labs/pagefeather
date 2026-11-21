@@ -1,6 +1,8 @@
 #!/bin/bash
 # #1108: deploy.sh never deletes an existing media bucket by default. A stub terraform answers `state list` and
 # `show -json` from files, so the guard (deploy/lib/media-guard.sh) is tested with no Cloudflare and no provider.
+# #1168: the stub can fail `plan` a set number of times, then succeed. A failed plan is retried once after
+# 10 seconds. A second failure refuses. A plan that deletes a bucket is refused at once, with no retry.
 #   deploy/tests/media-guard-test.sh
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); ROOT=$(cd "$HERE/../.." && pwd)
@@ -16,7 +18,17 @@ echo "\$*" >> "$T/tf.log"
 case "\$1" in
   workspace) [ "\$2" = select ] && [ -e "$T/ws/\$3" ] && exit 0; [ "\$2" = select ] && [ "\$3" = -or-create ] && exit 0; exit 1 ;;
   state) [ -f "$T/state" ] && cat "$T/state"; exit 0 ;;
-  plan) for a in "\$@"; do case "\$a" in -out=*) cp "$T/plan.json" "\${a#-out=}" ;; esac; done; exit 0 ;;
+  plan)
+    if [ -f "$T/plan.fail_remaining" ]; then
+      n=\$(cat "$T/plan.fail_remaining")
+      if [ "\$n" -gt 0 ] 2>/dev/null; then
+        echo \$((n - 1)) > "$T/plan.fail_remaining"
+        echo "plan failed (stub)" >&2
+        exit 1
+      fi
+    fi
+    for a in "\$@"; do case "\$a" in -out=*) cp "$T/plan.json" "\${a#-out=}" ;; esac; done
+    exit 0 ;;
   show) cat "\${@: -1}"; exit 0 ;;
 esac
 exit 0
@@ -25,11 +37,13 @@ chmod +x "$T/bin/terraform"
 PLAN_KEEP='{"resource_changes":[{"address":"cloudflare_r2_bucket.media[0]","type":"cloudflare_r2_bucket","change":{"actions":["no-op"]}}]}'
 PLAN_DEL='{"resource_changes":[{"address":"cloudflare_r2_bucket.media[0]","type":"cloudflare_r2_bucket","change":{"actions":["delete"]}}]}'
 PLAN_NONE='{"resource_changes":[]}'
-run() { # run <MEDIA> <DESTROY_MEDIA> <has-workspace 0|1> <state file content> <plan json>
+run() { # run <MEDIA> <DESTROY_MEDIA> <has-workspace 0|1> <state file content> <plan json> [plan failures before success]
   rm -rf "$T/ws" "$T/state"; mkdir -p "$T/ws"; : > "$T/tf.log"
+  rm -f "$T/plan.fail_remaining" "$T/tf/sites/site1.media-guard.plan" "$T/tf/sites/site1.media-guard.log"
   [ "$3" = 1 ] && touch "$T/ws/site1"
   [ -n "$4" ] && printf '%s\n' "$4" > "$T/state"
   printf '%s\n' "$5" > "$T/plan.json"
+  [ -n "${6:-}" ] && printf '%s\n' "$6" > "$T/plan.fail_remaining"
   ( export PATH="$T/bin:$PATH" MEDIA="$1" DESTROY_MEDIA="$2"; . "$ROOT/deploy/lib/media-guard.sh"
     media_guard "$T/tf" site1 "sites/site1.tfvars" ) > "$T/out" 2> "$T/err"
 }
@@ -54,6 +68,28 @@ ok "DESTROY_MEDIA=1 allows the delete, on purpose (rc $rc)" "$([ $rc = 0 ] && gr
 # The plan backstop: the state check passes (MEDIA=1), but the plan still deletes a bucket (a rename, a variant change).
 run 1 "" 1 "$STATE_BUCKET" "$PLAN_DEL"; rc=$?
 ok "the plan backstop refuses any r2 bucket delete even when MEDIA=1 (rc $rc)" "$([ $rc = 2 ] && grep -q 'cloudflare_r2_bucket.media\[0\]' "$T/err" && echo 1 || echo 0)"
+# #1168: a failed plan is retried once, after about 10 seconds, and both tries are logged.
+# A plan that deletes a bucket is a real refusal: no second try.
+t0=$SECONDS
+run 1 "" 1 "$STATE_BUCKET" "$PLAN_KEEP" 1; rc=$?
+el=$((SECONDS - t0))
+p=$(grep -c '^plan ' "$T/tf.log" || true)
+a=$(grep -c 'media-guard plan attempt' "$T/tf/sites/site1.media-guard.log" || true)
+f=$(grep -c 'plan failed (stub)' "$T/tf/sites/site1.media-guard.log" || true)
+ok "a plan that fails once then succeeds passes after one retry (rc $rc, plans $p, attempts $a, failures $f, ${el}s)" "$([ $rc = 0 ] && [ "$p" = 2 ] && [ "$a" = 2 ] && [ "$f" = 1 ] && [ "$el" -ge 9 ] && grep -q 'plan attempt 1' "$T/tf/sites/site1.media-guard.log" && grep -q 'plan attempt 2' "$T/tf/sites/site1.media-guard.log" && echo 1 || echo 0)"
+t0=$SECONDS
+run 1 "" 1 "$STATE_BUCKET" "$PLAN_KEEP" 2; rc=$?
+el=$((SECONDS - t0))
+p=$(grep -c '^plan ' "$T/tf.log" || true)
+a=$(grep -c 'media-guard plan attempt' "$T/tf/sites/site1.media-guard.log" || true)
+f=$(grep -c 'plan failed (stub)' "$T/tf/sites/site1.media-guard.log" || true)
+ok "a plan that fails twice is refused after one retry (rc $rc, plans $p, attempts $a, failures $f, ${el}s)" "$([ $rc = 2 ] && grep -q 'could not be made' "$T/err" && [ "$p" = 2 ] && [ "$a" = 2 ] && [ "$f" = 2 ] && [ "$el" -ge 9 ] && grep -q 'plan attempt 1' "$T/tf/sites/site1.media-guard.log" && grep -q 'plan attempt 2' "$T/tf/sites/site1.media-guard.log" && echo 1 || echo 0)"
+t0=$SECONDS
+run 1 "" 1 "$STATE_BUCKET" "$PLAN_DEL"; rc=$?
+el=$((SECONDS - t0))
+p=$(grep -c '^plan ' "$T/tf.log" || true)
+a=$(grep -c 'media-guard plan attempt' "$T/tf/sites/site1.media-guard.log" || true)
+ok "a plan with a bucket delete is refused at once, with no retry (rc $rc, plans $p, attempts $a, ${el}s)" "$([ $rc = 2 ] && [ "$p" = 1 ] && [ "$a" = 1 ] && [ "$el" -le 4 ] && grep -q 'cloudflare_r2_bucket.media\[0\]' "$T/err" && ! grep -q 'plan attempt 2' "$T/tf/sites/site1.media-guard.log" && echo 1 || echo 0)"
 # Wiring: deploy.sh runs the guard on the data plane, before its first apply.
 g=$(grep -n 'media_guard "\$TF"' "$ROOT/deploy/deploy.sh" | head -1 | cut -d: -f1)
 a=$(grep -n 'tf "\$TF" apply' "$ROOT/deploy/deploy.sh" | head -1 | cut -d: -f1)
