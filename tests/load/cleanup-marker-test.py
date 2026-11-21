@@ -53,6 +53,10 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, [])
         if p.startswith("/product/") or p == "/" or p.startswith("/?post_type"):
             return self.send(200, "page", "text/html")
+        # #1145: CLEANUP reads the Scheduled Actions screen after it deletes orders.
+        # This run queues no emails, so the screen is empty.
+        if p.startswith("/wp-admin/admin.php") and "action-scheduler" in p:
+            return self.send(200, '<h1>Scheduled Actions</h1><form id="action-scheduler-filter"><table></table></form>', "text/html")
         S["bad"].append("GET " + p)
         self.send(404, {})
 

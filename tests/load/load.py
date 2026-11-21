@@ -7,8 +7,9 @@ SECONDS (per step, default 60), BUYERS (fraction of loops that buy, default 0.2)
 SETUP=0 (skip the admin setup: payment method, store launch, products),
 ADMINS (fraction of loops that are an ADMIN loop, default 0: logged in once per user as ADMIN_USER,
 default "admin", each loop one of the dashboard, post-new.php, or a REST draft page create, #394),
-CLEANUP=1 (after the run: delete the orders the run's checkouts made, put the stock of the products
-it read back as it was, and delete its REST draft pages; prints counts only),
+CLEANUP=1 (after the run: delete the orders the run's checkouts made, cancel their queued
+order emails, put the stock of the products it read back as it was, and delete its REST
+draft pages; prints counts only),
 WOO=0 or 1 (default: 1 when the site's Store API answers). WOO=0 is plain
 WordPress: browse only, over home, a post, a page, search, a
 category and the feed; no setup and no buyers. Those paths are class post.
@@ -52,7 +53,7 @@ The body is never written. For a run whose deliverable is the errors (Hyperdrive
 Prints one JSON line per step, then one line with all steps. Exit 0: a failed
 request is a result.
 """
-import concurrent.futures as cf, http.cookiejar, json, os, random, re, sys, threading, time, urllib.error, urllib.parse, urllib.request
+import concurrent.futures as cf, html, http.cookiejar, json, os, random, re, sys, threading, time, urllib.error, urllib.parse, urllib.request
 
 B = os.environ["B"].rstrip("/")
 LEVELS = [int(x) for x in os.environ.get("LEVELS", "1,5,10,25,50,100").split(",")]
@@ -197,10 +198,167 @@ def stock_of(a, ids):
     return out
 
 
+# WooCommerce defers each order email to this Action Scheduler hook (#1145).
+EMAIL_HOOK = "woocommerce_send_queued_transactional_email"
+# The Scheduled Actions screen pages. Stop rather than report a short read as zero pending.
+AS_LIST_CAP = 500
+
+
+def href_to_path(href):
+    """A Scheduled Actions link, as a path on this site. None when it points elsewhere."""
+    u = urllib.parse.urlsplit(href)
+    if u.scheme and u.scheme not in ("http", "https"):
+        return None
+    if u.netloc and u.netloc != urllib.parse.urlsplit(B).netloc:
+        return None
+    if u.scheme or u.netloc:
+        return u.path + (("?" + u.query) if u.query else "")
+    if href.startswith("?"):
+        return "/wp-admin/admin.php" + href
+    if href.startswith("/"):
+        return href
+    return "/wp-admin/" + href.lstrip("./")
+
+
+def plain_html(fragment):
+    return html.unescape(re.sub(r"<[^>]+>", " ", fragment))
+
+
+def column_cell(row_html, column):
+    m = re.search(r'<td\b[^>]*class="[^"]*\bcolumn-%s\b[^"]*"[^>]*>(.*?)</td>' % re.escape(column), row_html, re.I | re.S)
+    return m.group(1) if m else ""
+
+
+def args_name_order(args_text, order_id):
+    """True when the arguments name this order id as a whole number.
+
+    Order 500 must not match order 500000. The caller passes the arguments
+    cell only, so an action id that equals an order id does not match.
+    """
+    return re.search(r"(?<!\d)%d(?!\d)" % order_id, args_text) is not None
+
+
+def parse_email_rows(html_text):
+    """Pending Scheduled Actions rows: hook, arguments text, and the cancel path.
+
+    None when this is not the Scheduled Actions screen (a login page, for example).
+    """
+    if "action-scheduler" not in html_text:
+        return None
+    rows = []
+    for row_html in re.findall(r"<tr\b[^>]*>(.*?)</tr>", html_text, re.I | re.S):
+        hook_cell = column_cell(row_html, "hook")
+        if not hook_cell:
+            continue
+        tokens = plain_html(hook_cell).strip().split()
+        hook = tokens[0] if tokens else ""
+        cancel = None
+        for href in re.findall(r'href="([^"]+)"', hook_cell):
+            url = html.unescape(href)
+            if "row_action=cancel" in url and "row_id=" in url:
+                cancel = href_to_path(url)
+                break
+        if not cancel:
+            continue
+        rows.append({"hook": hook, "args": plain_html(column_cell(row_html, "args")), "cancel": cancel})
+    return rows
+
+
+def next_scheduled_page(html_text):
+    patterns = (
+        r'<a\b[^>]*class="[^"]*\bnext-page\b[^"]*"[^>]*href="([^"]+)"',
+        r'<a\b[^>]*href="([^"]+)"[^>]*class="[^"]*\bnext-page\b[^"]*"',
+    )
+    for pat in patterns:
+        m = re.search(pat, html_text, re.I)
+        if m:
+            return href_to_path(html.unescape(m.group(1)))
+    return None
+
+
+def scheduled_email_rows(a):
+    """Every pending row the Scheduled Actions screen returns for the email hook.
+
+    None when a page does not answer, or when the screen still has a next page
+    at the page cap. The screen pages. Follow next until it ends.
+    """
+    path = "/wp-admin/admin.php?" + urllib.parse.urlencode((
+        ("page", "wc-status"),
+        ("tab", "action-scheduler"),
+        ("status", "pending"),
+        ("s", EMAIL_HOOK),
+    ))
+    seen = set()
+    rows = []
+    while path and path not in seen:
+        if len(seen) >= AS_LIST_CAP:
+            return None
+        seen.add(path)
+        r = req(a, path)
+        if r["code"] != 200:
+            return None
+        html_text = r["body"].decode("utf-8", "replace")
+        parsed = parse_email_rows(html_text)
+        if parsed is None:
+            return None
+        rows.extend(parsed)
+        path = next_scheduled_page(html_text)
+    return rows
+
+
+def cancel_scheduled_action(a, path):
+    """The Scheduled Actions row link. The admin screen answers 302."""
+    return req(a, path)["code"] in (200, 302)
+
+
+def cancel_queued_order_emails(a, order_ids):
+    """Cancel pending order-email actions whose arguments name a deleted order.
+
+    Then read the list again. emails_still_pending is that later read (#1145).
+    """
+    wanted = []
+    for oid in order_ids:
+        try:
+            wanted.append(int(oid))
+        except (TypeError, ValueError):
+            continue
+    rows = scheduled_email_rows(a)
+    if rows is None:
+        return {"emails_canceled": 0, "emails_still_pending": None, "emails_error": "scheduled actions list did not answer"}
+    canceled = 0
+    seen_paths = set()
+    for row in rows:
+        if row["hook"] != EMAIL_HOOK or row["cancel"] in seen_paths:
+            continue
+        if not any(args_name_order(row["args"], oid) for oid in wanted):
+            continue
+        seen_paths.add(row["cancel"])
+        if cancel_scheduled_action(a, row["cancel"]):
+            canceled += 1
+    again = scheduled_email_rows(a)
+    if again is None:
+        return {"emails_canceled": canceled, "emails_still_pending": None, "emails_error": "scheduled actions re-read did not answer"}
+    still = 0
+    for row in again:
+        if row["hook"] == EMAIL_HOOK and any(args_name_order(row["args"], oid) for oid in wanted):
+            still += 1
+    return {"emails_canceled": canceled, "emails_still_pending": still}
+
+
 def cleanup(a, before):
-    """Delete the run's orders and draft pages; put back the stock read before the run. Counts only."""
+    """Delete the run's orders and draft pages; put the stock back. Counts only.
+
+    Also cancel pending order-email actions for the orders just deleted, then
+    read that list again (#1145). A deleted order leaves those actions pending,
+    and each one costs a cron leg before WooCommerce skips it.
+    """
     H = {"X-WP-Nonce": a.nonce}
-    deleted = sum(1 for oid in ORDERS if req(a, "/?rest_route=/wc/v3/orders/%d&force=true" % oid, None, H, "DELETE")["code"] == 200)
+    deleted_ids = []
+    for oid in ORDERS:
+        if req(a, "/?rest_route=/wc/v3/orders/%d&force=true" % oid, None, H, "DELETE")["code"] == 200:
+            deleted_ids.append(oid)
+    deleted = len(deleted_ids)
+    emails = cancel_queued_order_emails(a, deleted_ids) if deleted_ids else {}
     restored = 0
     for i, (managed, qty) in before.items():
         if managed and qty is not None:
@@ -213,7 +371,9 @@ def cleanup(a, before):
             break
         for pg in found:
             pages += req(a, "/?rest_route=/wp/v2/pages/%d&force=true" % pg["id"], None, H, "DELETE")["code"] == 200
-    return {"orders_made": len(ORDERS), "orders_deleted": deleted, "stock_restored": restored, "stock_products": len(before), "draft_pages_deleted": pages}
+    out = {"orders_made": len(ORDERS), "orders_deleted": deleted, "stock_restored": restored, "stock_products": len(before), "draft_pages_deleted": pages}
+    out.update(emails)
+    return out
 
 
 def products():
