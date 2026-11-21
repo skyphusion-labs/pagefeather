@@ -144,6 +144,7 @@ cp assets/_headers build/public/_headers
 
 # PHP's files: drop what PHP never reads (prune-php-tree.sh holds the rule and its reasons).
 ./prune-php-tree.sh "$wp"
+python3 -I block-css-keep.py --check "$wp" build/public || exit 1 # #1205: every block.json stylesheet PHP needs is in the PHP tree
 # Deflated: the Worker inflates each file on its first read only. The Worker
 # size limit is 64 MiB uncompressed, so both zips are deflated.
 (cd build && zip -qr -9 site.zip wordpress)
