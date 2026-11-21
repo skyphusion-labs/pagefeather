@@ -43,6 +43,14 @@ echo "== 1/4 build the D1 engine (no external database needed) =="
 WOO=1 ./build.sh >/dev/null
 
 echo "== 2/4 generate the OPcache cache on D1 (installs WP, activates Woo, runs e2e + woo.py locally) =="
+# #1124: a fixed 8798 collides with another seat's wrangler dev. Pick a free
+# port, or the one OPCACHE_A_PORT (else PORT) names. Log it before the server
+# starts. A taken pin stops here and names the holder.
+# shellcheck source=port.sh
+. ./port.sh
+PORT=$(opcache_a_port) || exit 1
+export PORT
+echo "port $PORT"
 WOO_ACTIVE=$W ./opcache.sh
 
 cp build/opcache.zip "$SRC"

@@ -85,6 +85,52 @@ take_port() {
 # point at the wrong place if the caller cds before server_port runs.
 port_sh_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
+# The local wrangler port for opcache-a.sh (#1124). Prints one port.
+#   OPCACHE_A_PORT set: that port. It wins over PORT.
+#   else PORT set: that port. The operator pinned it.
+#   neither: a free port (bind port 0). A taken 8798 is left alone.
+# A pinned port that a process already holds is a failure. The line names
+# the pid and the command. Nothing is killed. Status 1, and no port printed.
+# A value that is not a port from 1 to 65535 is the same failure.
+opcache_a_port() {
+	local pin="" pin_name="" p n held
+	if [ -n "${OPCACHE_A_PORT:-}" ]; then
+		pin=$OPCACHE_A_PORT
+		pin_name=OPCACHE_A_PORT
+	elif [ -n "${PORT:-}" ]; then
+		pin=$PORT
+		pin_name=PORT
+	fi
+	if [ -z "$pin" ]; then
+		p=$(pick_free_port) || return 1
+		printf '%s\n' "$p"
+		return 0
+	fi
+	case "$pin" in
+		''|*[!0-9]*)
+			echo "$pin_name must be a port from 1 to 65535, got: $pin" >&2
+			return 1
+			;;
+	esac
+	if [ "${#pin}" -gt 5 ]; then
+		echo "$pin_name must be a port from 1 to 65535, got: $pin" >&2
+		return 1
+	fi
+	n=$((10#$pin))
+	if [ "$n" -lt 1 ] || [ "$n" -gt 65535 ]; then
+		echo "$pin_name must be a port from 1 to 65535, got: $pin" >&2
+		return 1
+	fi
+	# lsof exits 1 when nothing listens. The || true keeps set -e from
+	# treating a free port as a failed command.
+	held=$(lsof -t -nP -iTCP:"$n" -sTCP:LISTEN 2>/dev/null | sort -u | head -1 || true)
+	if [ -n "$held" ]; then
+		echo "port $n is in use by pid $held ($(ps -o user= -o command= -p "$held" | cut -c1-120)): set OPCACHE_A_PORT to a free port" >&2
+		return 1
+	fi
+	printf '%s\n' "$n"
+}
+
 # The port of the server run.sh already started. Exports PORT.
 #   PORT set: that value, unchanged. port_from=given.
 #   .dev-port beside this file: the port run.sh recorded. port_from=recorded.

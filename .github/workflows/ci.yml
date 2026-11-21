@@ -621,6 +621,7 @@ jobs:
           spikes/b2-wordpress/tests/local-creds-test.sh
           spikes/b2-wordpress/tests/inspector-port-test.sh
           spikes/b2-wordpress/tests/free-port-test.sh
+          spikes/b2-wordpress/tests/opcache-a-port-test.sh
           spikes/b2-wordpress/tests/stop-tree-test.sh
           spikes/b2-wordpress/tests/opcache-activate-test.sh
           spikes/b2-wordpress/tests/opcache-server-alive-test.sh
