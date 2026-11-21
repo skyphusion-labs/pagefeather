@@ -301,9 +301,12 @@ class JS_Object_Cache {
 
 	private function durable_delete( $key, $group ) {
 		list( $o, $t ) = self::durable_names( $key, $group );
-		// Core's answer is whether the value existed. This request knows it when it has read the row (the prime of the
-		// learned names covers most); a row it never read answers false, without a query.
-		$had                 = isset( $this->tmemo[ $o ] ) && $this->tmemo[ $o ][0];
+		// Core's answer is whether the value existed, and on true delete_transient() fires deleted_transient, which
+		// WooCommerce listens to (ProductFilterAttribute cascades wc_attribute_taxonomies to its default-attribute
+		// transient). This request knows the answer when it has read the row (the prime of the learned names covers
+		// most). A row it never read answers TRUE, without a query: a delete of a missing row then fires one extra
+		// hook, which only deletes more cache; false would skip a cascade for a row that did exist.
+		$had                 = isset( $this->tmemo[ $o ] ) ? $this->tmemo[ $o ][0] : true;
 		$this->tmemo[ $o ]   = array( false, null );
 		$this->tmemo[ $t ]   = array( false, null );
 		$this->tdelete[ $o ] = true;

@@ -205,7 +205,9 @@ $r = new JS_Object_Cache();
 $r->get( 'known', 'transient' );
 $q = $GLOBALS['row_queries'];
 check( '#1210 delete of a value this request read: true', true === $r->delete( 'known', 'transient' ) );
-check( '#1210 delete of a row it never read: false, without a query', false === $r->delete( 'never_read', 'transient' ) && $q === $GLOBALS['row_queries'] );
+check( '#1210 delete of a row it never read: true (deleted_transient fires, so a listener cascade runs), without a query', true === $r->delete( 'never_read', 'transient' ) && $q === $GLOBALS['row_queries'] );
+$r->get( 'read_missing', 'transient' );
+check( '#1210 delete of a row it read and found missing: false', false === $r->delete( 'read_missing', 'transient' ) );
 $r->transient_flush();
 // the hooks: the shutdown action at PHP_INT_MAX, and a PHP shutdown function for every other way a request ends
 $src = file_get_contents( isset( $argv[1] ) ? $argv[1] : __DIR__ . '/../php/object-cache-js.php' );
