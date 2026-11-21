@@ -77,7 +77,7 @@ import { Container, ContainerProxy, getContainer } from '@cloudflare/containers'
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
 import { memfsHeld, fsSampleWhy } from './memfs-held.mjs';
-import { probeArm, traceColo, renderRequest } from './placement-probe.mjs';
+import { probeArm, traceColo, renderRequest, probeObjectName, PROBE_TRACED_HEADER } from './placement-probe.mjs';
 // Compiled PHP (OPcache file cache) made by opcache.sh with this same PHP build.
 import opcacheZip from './build/opcache.zip';
 // #1022: the bundle's own zips, a fixed cost (#394 floor probes): memfs-held.mjs leaves views of them out.
@@ -2399,7 +2399,7 @@ function pageCacheRoute(req, url, env) {
 		// An operator request never goes to the cached entrypoint (perf-headers.mjs).
 		!isOperatorRequest(req) &&
 		// #1277 probe: its direct and render arms render in the gateway's own (placed) fetch handler.
-		!['direct', 'render'].includes(probeArm(req, env))
+		!['direct', 'render', 'object', 'object-new'].includes(probeArm(req, env))
 	);
 }
 function pageCacheHeaders(req, url, r, out, env, failed = 0) {
@@ -3649,6 +3649,21 @@ export class PhpRuntime extends DurableObject {
 		objStorage = this.ctx.storage; // #1057: this object's durable mail store (mailStoreFor decides whether it is the one)
 		const env = this.env;
 		ENV = env;
+		// #1277 probe (off unless PLACEMENT_PROBE_KEY): an object arm traces where THIS object runs, once, then serves the
+		// request as usual through its own fetch. The answer is never stored.
+		const objProbe = probeArm(raw, env);
+		if ((objProbe === 'object' || objProbe === 'object-new') && !raw.headers.has(PROBE_TRACED_HEADER)) {
+			const colo = await traceColo(fetch);
+			const ih = new Headers(raw.headers);
+			ih.set(PROBE_TRACED_HEADER, colo);
+			const or = await this.fetch(new Request(raw, { headers: ih }));
+			const oout = new Response(or.body, or);
+			oout.headers.set('x-pf-probe-arm', objProbe);
+			oout.headers.set('x-pf-probe-colo-object', colo);
+			noStoreAnywhere(oout.headers);
+			console.log(JSON.stringify({ m: 'placement-probe', at: 'object', arm: objProbe, colo, iso: ISOLATE_ID, id: raw.headers.get('x-perf-id') || undefined }));
+			return oout;
+		}
 		const objectUrl = new URL(raw.url);
 		// #352: the outcome of a request's frame, for the front Worker's write-loss answer (never a client: the
 		// Worker answers a client's /_frame itself). It needs no public origin, so it is answered before the
@@ -4580,6 +4595,11 @@ const site = {
 		// object instead, before it has run. Wherever PHP runs in this Worker with the database outside the
 		// object (approach A; also a D1 Worker, which is how it is tested locally), with the binding.
 		const ovs = overflowSettings(env);
+		// #1277 probe (off unless PLACEMENT_PROBE_KEY): the object arms render on a pool object, with the pool's hint.
+		const objProbe = probeArm(req, env);
+		if ((objProbe === 'object' || objProbe === 'object-new') && env.PHP_RUNTIME && env.PHP_IN_DO !== 'on' && env.DB_IN_DO !== 'on') {
+			return toPhpObject(req, env, url, ctx, { name: objProbe === 'object' ? overflowName(0) : probeObjectName(env), hint: ovs.hint, overflow: true, callId: crypto.randomUUID() });
+		}
 		let ovCall = null; // #1101: the overflow call id, when this request was offered to the pool first
 		// Uploads never move: media uploads, and any request whose declared body is over 1 MiB (the Font Library, #591).
 		const ovUpload = isMediaUpload(req, url) || Number(req.headers.get('content-length') || 0) > OVERFLOW_MAX_BODY;

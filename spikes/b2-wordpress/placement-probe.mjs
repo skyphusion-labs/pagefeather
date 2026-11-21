@@ -7,9 +7,14 @@
 //   pages   Pages renders itself (today's MISS path)
 //   loop    Pages hands the render to ctx.exports.default.fetch (option 1); the gateway sees arm render
 //   direct  the gateway's fetch handler renders, never through Pages (the control)
+//   object      the render runs on the existing pool object ovf-0 (a Durable Object runs where it was first made)
+//   object-new  the render runs on a fresh probe-only object, made with the pool's location hint
+//               (pfprobe-<PLACEMENT_PROBE_OBJECT>; a new value makes a new object; #1277 issuecomment-7064796127)
 // Each rendering side reports where its code ran from a cdn-cgi/trace subrequest. Every probe answer is no-store.
 export const PROBE_HEADER = 'x-pf-placement-probe';
-const ARMS = new Set(['pages', 'loop', 'direct', 'render']);
+const ARMS = new Set(['pages', 'loop', 'direct', 'render', 'object', 'object-new']);
+// Set by an object on its own inner call, so it traces its colo once (no recursion).
+export const PROBE_TRACED_HEADER = 'x-pf-probe-traced';
 const TRACE_URL = 'https://www.cloudflare.com/cdn-cgi/trace';
 
 function sameString(a, b) {
@@ -56,4 +61,10 @@ export function renderRequest(req, key) {
 	const h = new Headers(req.headers);
 	h.set(PROBE_HEADER, 'render:' + key);
 	return new Request(req, { headers: h });
+}
+
+// The object-new arm's object name: never a pool name (ovf-*), [a-z0-9-]{1,16} or the default 'a'.
+export function probeObjectName(env) {
+	const v = env && typeof env.PLACEMENT_PROBE_OBJECT === 'string' ? env.PLACEMENT_PROBE_OBJECT : '';
+	return 'pfprobe-' + (/^[a-z0-9-]{1,16}$/.test(v) ? v : 'a');
 }
