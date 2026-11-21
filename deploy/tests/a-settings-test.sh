@@ -41,6 +41,9 @@ refuse "PHP_OVERFLOW_POOL needs PHP_OVERFLOW=1 or always" VARIANT=a PHP_OVERFLOW
 refuse "PHP_OVERFLOW_MAX_HELD needs PHP_OVERFLOW=1 or always" VARIANT=a PHP_OVERFLOW=0 PHP_OVERFLOW_MAX_HELD=16
 for bad in 0 1001 abc -1 on 16.5; do refuse "PHP_OVERFLOW_MAX_HELD must be off or an integer from 1 to 1000" VARIANT=a PHP_OVERFLOW=1 "PHP_OVERFLOW_MAX_HELD=$bad"; done
 refuse "PHP_OVERFLOW_MAX_HELD is for variant a only" VARIANT=b-dosql PHP_OVERFLOW_MAX_HELD=off
+refuse "PHP_OVERFLOW_DEPTH needs PHP_OVERFLOW=1 or always" VARIANT=a PHP_OVERFLOW=0 PHP_OVERFLOW_DEPTH=0 # #1119
+for bad in 51 100 abc -1 on 1.5 001; do refuse "PHP_OVERFLOW_DEPTH must be an integer from 0 to 50" VARIANT=a PHP_OVERFLOW=1 "PHP_OVERFLOW_DEPTH=$bad"; done
+refuse "PHP_OVERFLOW_DEPTH is for variant a only" VARIANT=b-dosql PHP_OVERFLOW_DEPTH=0
 for bad in off 1 yes ON; do refuse "MEM_LEDGER must be on or unset" VARIANT=a "MEM_LEDGER=$bad"; done
 refuse "MEM_LEDGER is for variant a only" VARIANT=b-dosql MEM_LEDGER=on
 # #714: the runtime takes 1 to 128 (overflow.mjs) and silently ran 129 to 256 as 32; the deploy bound is now the same.
@@ -142,6 +145,8 @@ ok "A_CRON=1 PHP_OVERFLOW=0: the var, minute cron, PhpRuntime binding" "$([ "$(c
 ok "A_CRON=1 with PHP_OVERFLOW=1: a_cron_bindings alone renders nothing" "$([ -z "$(env -i PATH="$PATH" bash -c ". '$S' && A_CRON=1 PHP_OVERFLOW=1 a_cron_bindings")" ] && echo 1 || echo 0)"
 ok "A_CRON_CRON overrides the schedule" "$(out=$(ct A_CRON=1 A_CRON_CRON='5 4 * * *'); case "$out" in *'5 4 * * *'*) echo 1 ;; *) echo 0 ;; esac)"
 ok "PHP_OVERFLOW=always passes the check with PHP_OVERFLOW_POOL=16 and PHP_OVERFLOW_MAX_HELD=off" "$(env -i PATH="$PATH" bash -c ". '$S' && PHP_OVERFLOW=always PHP_OVERFLOW_POOL=16 PHP_OVERFLOW_MAX_HELD=off a_settings_check a" >/dev/null 2>&1 && echo 1 || echo 0)"
+ok "#1119 PHP_OVERFLOW_DEPTH=0 renders 0, and unset renders no depth" "$(grep -qx 'PHP_OVERFLOW_DEPTH = "0"' <<<"$(o PHP_OVERFLOW=1 PHP_OVERFLOW_DEPTH=0)" && ! grep -q PHP_OVERFLOW_DEPTH <<<"$(o PHP_OVERFLOW=1)" && echo 1 || echo 0)"
+ok "#1119 PHP_OVERFLOW_DEPTH=08 renders 8 (base 10), and the bounds 0 and 50 pass the check" "$(grep -qx 'PHP_OVERFLOW_DEPTH = "8"' <<<"$(o PHP_OVERFLOW=1 PHP_OVERFLOW_DEPTH=08)" && env -i PATH="$PATH" bash -c ". '$S' && PHP_OVERFLOW=1 PHP_OVERFLOW_DEPTH=0 a_settings_check a && PHP_OVERFLOW=1 PHP_OVERFLOW_DEPTH=50 a_settings_check a" >/dev/null 2>&1 && echo 1 || echo 0)"
 ok "PHP_OVERFLOW_POOL=064 renders 64 (base 10)" "$(grep -qx 'PHP_OVERFLOW_POOL = "64"' <<<"$(o PHP_OVERFLOW=1 PHP_OVERFLOW_POOL=064)" && echo 1 || echo 0)"
 ok "the pool bounds 1 and 128 pass the check (the runtime range)" "$(env -i PATH="$PATH" bash -c ". '$S' && PHP_OVERFLOW=1 PHP_OVERFLOW_POOL=1 a_settings_check a && PHP_OVERFLOW=1 PHP_OVERFLOW_POOL=128 a_settings_check a" >/dev/null 2>&1 && echo 1 || echo 0)"
 ok "the cap bounds 1, 1000 and off pass the check" "$(env -i PATH="$PATH" bash -c ". '$S' && PHP_OVERFLOW=1 PHP_OVERFLOW_MAX_HELD=1 a_settings_check a && PHP_OVERFLOW=1 PHP_OVERFLOW_MAX_HELD=1000 a_settings_check a && PHP_OVERFLOW=1 PHP_OVERFLOW_MAX_HELD=off a_settings_check a" >/dev/null 2>&1 && echo 1 || echo 0)"
