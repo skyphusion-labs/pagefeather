@@ -95,3 +95,14 @@ test('#1090 index.js logs a cold option prime as option-prime, numbers only', ()
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.match(src, /if \(m\.optionPrime\) \{[^\n]*console\.log\(JSON\.stringify\(\{ m: 'option-prime', iso: ISOLATE_ID, n: n\(o\.n\), bytes: n\(o\.bytes\), listed: n\(o\.listed\) \}\)\); return '1'; \}/);
 });
+
+// #1169: the boot split. The A line carries the run's MySQL connects (dbConnN, dbConnMs), so a boot's extra time splits
+// into PHP boot (bootWaitMs), remote packs (rfMs), first connections (dbConnMs) and the rest of the run.
+test('#1169 aPerfLine carries dbConnN and dbConnMs, and index.js passes the per-request delta', () => {
+	const l = aPerfLine({ path: '/', status: 200, dbConnN: 1, dbConnMs: 412 });
+	assert.deepEqual([l.dbConnN, l.dbConnMs], [1, 412]);
+	assert.equal(aPerfLine({ path: '/', status: 200 }).dbConnN, undefined, 'absent stays absent (the D1 tiers)');
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /const conn0 = dbConnStats\(\);/);
+	assert.match(src, /dbConnN: conn1 \? conn1\.n - conn0\.n : undefined, dbConnMs: conn1 \? conn1\.ms - conn0\.ms : undefined/);
+});

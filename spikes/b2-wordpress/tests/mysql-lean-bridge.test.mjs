@@ -78,7 +78,7 @@ test('DEFAULT PATH: a_main renders index-a-lean.js unless A_CLIENT=mysql2', () =
 test('DEFAULT PATH: index-a-lean.js registers mysql-lean-bridge.js, which uses connector.mjs (the #1101 fix is on the loaded bridge)', () => {
 	const entry = readFileSync(new URL('../index-a-lean.js', import.meta.url), 'utf8');
 	assert.match(entry, /from '\.\/mysql-lean-bridge\.js';/);
-	assert.match(entry, /setDbHandler\(\{ query: mysqlQuery, end: mysqlEnd, reset: mysqlReset, oneShot: mysqlOneShot \}\);/);
+	assert.match(entry, /setDbHandler\(\{ query: mysqlQuery, end: mysqlEnd, reset: mysqlReset, oneShot: mysqlOneShot(, connStats: mysqlConnStats)? \}\);/); // #1169: plus the connect counts
 	assert.doesNotMatch(entry, /mysql-bridge\.js/, 'not the mysql2 bridge');
 	const bridge = readFileSync(new URL('../mysql-lean-bridge.js', import.meta.url), 'utf8');
 	assert.match(bridge, /import \{ createConnector \} from '\.\/connector\.mjs';/);
@@ -272,4 +272,17 @@ test('#1179 a backtick-quoted temp table with metacharacters is tracked, and its
 	assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'SELECT id FROM `pf.t+1`' })).ok, false);
 	assert.equal(st.connects, 1);
 	await bridge.mysqlEnd();
+});
+
+test('#1169 the lean bridge counts its connects (n and ms) for the perf line; index-a-lean.js registers them', async () => {
+	const s0 = bridge.mysqlConnStats();
+	scripted([[rows]]);
+	assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'SELECT 1' })).ok, true);
+	assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'SELECT 2' })).ok, true);
+	const s1 = bridge.mysqlConnStats();
+	assert.equal(s1.n - s0.n, 1, 'one connect for the run');
+	assert.ok(s1.ms - s0.ms >= 0);
+	await bridge.mysqlEnd();
+	const entry = readFileSync(new URL('../index-a-lean.js', import.meta.url), 'utf8');
+	assert.match(entry, /setDbHandler\(\{ query: mysqlQuery, end: mysqlEnd, reset: mysqlReset, oneShot: mysqlOneShot, connStats: mysqlConnStats \}\);/);
 });
