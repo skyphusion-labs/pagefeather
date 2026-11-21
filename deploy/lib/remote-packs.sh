@@ -29,6 +29,15 @@ site_remote_var() {
     *) echo "SITE_REMOTE must be 0 or 1, not ${SITE_REMOTE}" >&2; return 1 ;;
   esac
 }
+# #1169: REMOTE_READAHEAD, how many OPcache packs the engine fetches AHEAD of an open (remote-packs.mjs readAhead;
+# 0 off, at most 3). Unset renders nothing: the engine default, 1. A recorded deploy setting (#1108), so an A/B runs on
+# one head with var-only redeploys (strummer's #1193 A/B). Variant a and b-dosql (both have the packs).
+remote_readahead_var() {
+  local v=${REMOTE_READAHEAD:-}
+  [ -n "$v" ] || return 0
+  [[ "$v" =~ ^[0-3]$ ]] || { echo "REMOTE_READAHEAD must be an integer from 0 to 3, not ${v}" >&2; return 1; }
+  echo "REMOTE_READAHEAD = \"$v\""
+}
 # #394 (the D/R round of 2026-11-14, issuecomment-6886246890): the remote packs are the DEFAULT for every b-dosql
 # site. On the pf394a store, the 7-screen admin round lost 5 of 210 requests with OPCACHE_REMOTE=1 and SITE_REMOTE=1
 # against 95 of 210 without them; #598's live run (issuecomment-6934185301) lost 14 of 40 post-new.php on a deploy.sh

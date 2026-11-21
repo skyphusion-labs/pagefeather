@@ -14,6 +14,8 @@
 #                     fetches when it opens a file (opcache-remote.py). Needs OPCACHE_A=1, which
 #                     records the file trace the packs are ordered by (trace-filter.py).
 #   SITE_REMOTE=1     #569: site.zip leaves the bundle too (site-remote.py). Needs OPCACHE_REMOTE=1.
+#   REMOTE_READAHEAD  0 to 3 (#1169): OPcache packs fetched ahead of an open (deploy/lib/remote-packs.sh). Unset: the
+#                     engine default, 1. Recorded (#1108), so an A/B is var-only redeploys of one head.
 #   RECYCLE_WASM_MIB  #602: the PHP runtime recycle line, an integer from 64 to 240 (MiB). Unset
 #                     keeps index.js's 100. With the lean engine use 140: at 100 its editor pages
 #                     end between the line and the isolate replacement point and stack a second
@@ -79,7 +81,7 @@ a_settings_check() {
   local variant=$1 v
   if [ "$variant" != a ] && [ "$variant" != b-dosql ]; then
     # #598: the packs are b-dosql's too (on by default there, deploy/lib/remote-packs.sh); b-do and c1 have none.
-    for v in OPCACHE_REMOTE SITE_REMOTE; do
+    for v in OPCACHE_REMOTE SITE_REMOTE REMOTE_READAHEAD; do
       [ -z "${!v:-}" ] || { echo "$v is for variant a or b-dosql only" >&2; return 2; }
     done
   fi
@@ -92,6 +94,7 @@ a_settings_check() {
   case "${OPCACHE_A:-0}" in 0|1) ;; *) echo "OPCACHE_A must be 0 or 1, not ${OPCACHE_A}" >&2; return 2 ;; esac
   case "${OPCACHE_REMOTE:-0}" in 0|1) ;; *) echo "OPCACHE_REMOTE must be 0 or 1, not ${OPCACHE_REMOTE}" >&2; return 2 ;; esac
   case "${SITE_REMOTE:-0}" in 0|1) ;; *) echo "SITE_REMOTE must be 0 or 1, not ${SITE_REMOTE}" >&2; return 2 ;; esac
+  remote_readahead_var > /dev/null || return 2 # #1169
   if [ "${SITE_REMOTE:-0}" = 1 ] && [ "${OPCACHE_REMOTE:-0}" != 1 ]; then
     echo "SITE_REMOTE=1 needs OPCACHE_REMOTE=1 (the same open hook and fetch budget; OPcache off cannot fit it)" >&2; return 2
   fi
@@ -157,6 +160,7 @@ a_opcache_count() {
 a_vars() {
   [ "${OPCACHE_REMOTE:-0}" != 1 ] || echo 'OPCACHE_REMOTE = "on"'
   [ "${SITE_REMOTE:-0}" != 1 ] || echo 'SITE_REMOTE = "on"'
+  remote_readahead_var # #1169: unset renders nothing (the engine default, 1)
   [ -z "${RECYCLE_WASM_MIB:-}" ] || echo "RECYCLE_WASM_MIB = \"$((10#$RECYCLE_WASM_MIB))\""
   [ "${MEM_LEDGER:-}" != on ] || echo 'MEM_LEDGER = "on"' # #714: a measurement flag, only when set
   memory_reuse_lines

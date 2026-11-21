@@ -18,6 +18,10 @@ echo "1. refusals through deploy.sh"
 refuse "OPCACHE_A is for variant a only" VARIANT=b-dosql OPCACHE_A=1
 refuse "OPCACHE_REMOTE is for variant a or b-dosql only" VARIANT=b-do OPCACHE_REMOTE=1  # #598: b-dosql takes it (deploy/tests/dosql-remote-test.sh)
 refuse "SITE_REMOTE is for variant a or b-dosql only" VARIANT=b-do SITE_REMOTE=1
+# #1169 (strummer's A/B): REMOTE_READAHEAD, the OPcache pack read-ahead (remote-packs.mjs readAhead), a recorded deploy
+# setting so the A/B runs on one head with var-only redeploys. Unset renders nothing (the engine default, 1).
+refuse "REMOTE_READAHEAD is for variant a or b-dosql only" VARIANT=b-do REMOTE_READAHEAD=0
+for bad in 4 -1 abc 1.5 01 on; do refuse "REMOTE_READAHEAD must be an integer from 0 to 3" VARIANT=a "REMOTE_READAHEAD=$bad"; done
 refuse "RECYCLE_WASM_MIB is for variant a only" VARIANT=b-dosql RECYCLE_WASM_MIB=140
 refuse "OBJECT_CACHE_VERSIONS is for variant a only" VARIANT=b-dosql OBJECT_CACHE_VERSIONS=1
 refuse "PHP_MEMORY_REUSE is for variant a only" VARIANT=b-dosql PHP_MEMORY_REUSE=on
@@ -115,6 +119,10 @@ ok "no setting renders nothing" "$([ "$(r)" = '---' ] && echo 1 || echo 0)"
 ok "OPCACHE_REMOTE=0 SITE_REMOTE=0 renders nothing" "$([ "$(r OPCACHE_REMOTE=0 SITE_REMOTE=0)" = '---' ] && echo 1 || echo 0)"
 ok "OPCACHE_REMOTE=1: the var, and /_pf/ first" "$([ "$(r OPCACHE_REMOTE=1)" = "$(printf 'OPCACHE_REMOTE = "on"\n---\nrun_worker_first = ["/_pf/*"]')" ] && echo 1 || echo 0)"
 ok "OPCACHE_REMOTE=1 SITE_REMOTE=1: both vars, and /_pf/ first" "$([ "$(r OPCACHE_REMOTE=1 SITE_REMOTE=1)" = "$(printf 'OPCACHE_REMOTE = "on"\nSITE_REMOTE = "on"\n---\nrun_worker_first = ["/_pf/*"]')" ] && echo 1 || echo 0)"
+ok "#1169 REMOTE_READAHEAD=0 renders it (the A/B arm off)" "$([ "$(r REMOTE_READAHEAD=0)" = "$(printf 'REMOTE_READAHEAD = "0"\n---')" ] && echo 1 || echo 0)"
+ok "#1169 REMOTE_READAHEAD=3 renders it; unset renders nothing (the engine default 1)" "$([ "$(r REMOTE_READAHEAD=3)" = "$(printf 'REMOTE_READAHEAD = "3"\n---')" ] && [ "$(r)" = '---' ] && echo 1 || echo 0)"
+ok "#1169 REMOTE_READAHEAD is a recorded input (#1108: a rebuild keeps it unless REPLACE_INPUTS=1)" "$(grep -qE '^RECORDED_INPUTS="[^"]*\bREMOTE_READAHEAD\b' "$ROOT/deploy/lib/recorded-inputs.sh" && echo 1 || echo 0)"
+ok "#1169 b-dosql renders it too, through render-conf.sh's pack line" "$(grep -q 'remote_readahead_var || return 1' "$ROOT/deploy/render-conf.sh" && echo 1 || echo 0)"
 ok "RECYCLE_WASM_MIB=140 renders it as a string" "$([ "$(r RECYCLE_WASM_MIB=140)" = "$(printf 'RECYCLE_WASM_MIB = "140"\n---')" ] && echo 1 || echo 0)"
 ok "variant a refuses the reuse pair at the check (#724 review, finding 7)" "$(env -i PATH="$PATH" bash -c ". '$S' && PHP_MEMORY_REUSE=on BOOT_GATE=on a_settings_check a" >/dev/null 2>&1 && echo 0 || echo 1)"
 ok "RECYCLE_WASM_MIB=064 renders 64 (base 10, not octal)" "$([ "$(r RECYCLE_WASM_MIB=064)" = "$(printf 'RECYCLE_WASM_MIB = "64"\n---')" ] && echo 1 || echo 0)"

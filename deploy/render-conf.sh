@@ -92,7 +92,7 @@ render_conf() {
   # #394: OPCACHE_REMOTE, SITE_REMOTE, RECYCLE_WASM_MIB (a-settings.sh). Nothing when unset. #646: PHP_OVERFLOW.
   [ "$VARIANT" != a ] || a_vars
   # #598: b-dosql's two pack vars, from the ONE rule deploy/wfp renders them with (the config hash follows the flags).
-  if [ "$VARIANT" = b-dosql ]; then opcache_remote_var || return 1; site_remote_var || return 1; fi
+  if [ "$VARIANT" = b-dosql ]; then opcache_remote_var || return 1; site_remote_var || return 1; remote_readahead_var || return 1; fi
   [ "$VARIANT" != a ] || a_overflow_vars
   [ "$VARIANT" != a ] || a_cron_vars
   # WOO_EXTRAS (#667): off only. Checked above, before any step. Unset writes nothing.
