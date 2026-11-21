@@ -82,6 +82,11 @@ TF="$ROOT/deploy/terraform"
 APP="$ROOT/spikes/b2-wordpress"
 : "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}" "${ACCOUNT_ID:?set ACCOUNT_ID}" "${NAME:?set NAME}"
 export CLOUDFLARE_ACCOUNT_ID=$ACCOUNT_ID
+# #1262: CUSTOM_DOMAIN (opt-in) is checked here, before any step: a hostname in a zone on this account, never
+# *.workers.dev. It sets SITE_ORIGIN to https://<host> for every later step; a different explicit SITE_ORIGIN is refused.
+# shellcheck source=lib/custom-domain.sh
+. "$ROOT/deploy/lib/custom-domain.sh"
+custom_domain_prepare || exit 2
 VARIANT=${VARIANT:-b-do}
 LOCATION=${LOCATION:-enam}
 MEDIA=${MEDIA:-0}

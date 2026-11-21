@@ -18,6 +18,7 @@ cp "${1:-$SRC/destroy.sh}" "$T/deploy/destroy.sh"; chmod +x "$T/deploy/destroy.s
 # #1031: the media bucket is emptied with a temporary R2 credential (the deploy/wfp minter).
 mkdir -p "$T/deploy/wfp" && cp "$SRC/wfp/r2_temp.py" "$T/deploy/wfp/"
 mkdir -p "$T/deploy/lib" && cp "$SRC/lib/gone-wait.sh" "$T/deploy/lib/"  # #789: the bounded gone check
+cp "$SRC/lib/custom-domain.sh" "$T/deploy/lib/"  # #1262: the custom-domain detach before the Worker delete
 cp -R "$SRC/variants" "$T/deploy/"
 # #1196: copy the Terraform files WITHOUT any *_override.tf. A real deploy with DEPLOY_STATE=r2 leaves a gitignored
 # deploy/terraform/backend_override.tf (the R2 state backend); copied in, it made this test init an S3 backend with no
@@ -49,6 +50,9 @@ root = sys.argv[2]
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
+        if "/workers/domains" in self.path:  # #1262: no custom domain on a test site
+            body = b'{"success":true,"result":[]}'
+            self.send_response(200); self.send_header("content-length", str(len(body))); self.end_headers(); self.wfile.write(body); return
         name = self.path.rstrip("/").rsplit("/", 1)[-1]
         f = os.path.join(root, name)
         code = 404

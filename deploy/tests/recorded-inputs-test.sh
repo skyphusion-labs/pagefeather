@@ -66,5 +66,21 @@ ok "deploy.sh writes deploy_inputs into the site's var file" "$(grep -q 'deploy_
 c=$(grep -n 'inputs_check "\$TF"' "$ROOT/deploy/deploy.sh" | head -1 | cut -d: -f1); g=$(grep -n 'media_guard "\$TF"' "$ROOT/deploy/deploy.sh" | head -1 | cut -d: -f1)
 ok "deploy.sh runs inputs_check before media_guard (lines ${c:-none} and ${g:-none})" "$([ -n "$c" ] && [ -n "$g" ] && [ "$c" -lt "$g" ] && echo 1 || echo 0)"
 ok "Terraform declares the deploy_inputs variable and output" "$(grep -q 'variable "deploy_inputs"' "$ROOT/deploy/terraform/variables.tf" && grep -q 'output "deploy_inputs"' "$ROOT/deploy/terraform/outputs.tf" && echo 1 || echo 0)"
+# #1262: the site ORIGIN never changes by REPLACE_INPUTS alone. WordPress keeps siteurl and absolute URLs at the old one.
+W=$(record VARIANT=a LOCATION=wnam)
+check "$W" VARIANT=a LOCATION=wnam CUSTOM_DOMAIN=gate-test.pagefeather.dev REPLACE_INPUTS=1; rc=$?
+ok "#1262: workers.dev to a custom domain is refused even with REPLACE_INPUTS=1 (rc $rc)" "$([ $rc = 2 ] && grep -q 'would move from the workers.dev default to https://gate-test.pagefeather.dev' "$T/err" && grep -q 'search-replace' "$T/err" && echo 1 || echo 0)"
+check "$W" VARIANT=a LOCATION=wnam CUSTOM_DOMAIN=gate-test.pagefeather.dev REPLACE_INPUTS=1 ORIGIN_MOVE=1; rc=$?
+ok "#1262: ORIGIN_MOVE=1 with REPLACE_INPUTS=1 passes, and says what the move takes (rc $rc)" "$([ $rc = 0 ] && grep -q 'ORIGIN_MOVE=1: site site1 moves' "$T/err" && echo 1 || echo 0)"
+check "$W" VARIANT=a LOCATION=wnam CUSTOM_DOMAIN=gate-test.pagefeather.dev ORIGIN_MOVE=1; rc=$?
+ok "#1262: ORIGIN_MOVE=1 alone does not replace inputs (REPLACE_INPUTS is still needed) (rc $rc)" "$([ $rc = 2 ] && echo 1 || echo 0)"
+C=$(record VARIANT=a LOCATION=wnam CUSTOM_DOMAIN=gate-test.pagefeather.dev SITE_ORIGIN=https://gate-test.pagefeather.dev)
+check "$C" VARIANT=a LOCATION=wnam CUSTOM_DOMAIN=gate-test.pagefeather.dev SITE_ORIGIN=https://gate-test.pagefeather.dev; rc=$?
+ok "#1262: the same custom domain passes (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
+check "$C" VARIANT=a LOCATION=wnam CUSTOM_DOMAIN=gate-test.pagefeather.dev SITE_ORIGIN=https://gate-test.pagefeather.dev MEDIA=1 REPLACE_INPUTS=1; rc=$?
+ok "#1262: another input changed with REPLACE_INPUTS=1 and the same origin passes (rc $rc)" "$([ $rc = 0 ] && ! grep -q 'would move' "$T/err" && echo 1 || echo 0)"
+O=$(record VARIANT=a LOCATION=wnam SITE_ORIGIN=https://a.example.com)
+check "$O" VARIANT=a LOCATION=wnam SITE_ORIGIN=https://b.example.com REPLACE_INPUTS=1; rc=$?
+ok "#1262: a changed explicit SITE_ORIGIN is refused even with REPLACE_INPUTS=1 (rc $rc)" "$([ $rc = 2 ] && grep -q 'would move from https://a.example.com to https://b.example.com' "$T/err" && echo 1 || echo 0)"
 [ "$fails" = 0 ] && echo "recorded-inputs: all checks pass" || echo "recorded-inputs: $fails failing check(s)"
 exit $((fails > 0))
