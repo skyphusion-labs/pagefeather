@@ -9,6 +9,7 @@ import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { installPhpBasicAuth } from './php-auth.mjs';
 import { installSiteTitle, hostFromOrigin } from './install-title.mjs';
 import { installPhpSelf } from './php-self.mjs';
+import { httpBlocking, httpTimeoutMs } from './http-nonblocking.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
 import { wpCronState, idleDecision, parseGmt, IDLE_KEY } from './cron-idle.mjs';
 import { tickAlarmPlan, armBeforeRun, rearm, pullIn, extendIfOurs, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm, setAlarmRecorded, ALARM_SET_KEY, emailRushDue, emailAlarmAt, EMAIL_DUE_KEY, EMAIL_RETRY_MS } from './alarm-arm.mjs';
@@ -21,7 +22,7 @@ import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
 import { cronBounds, cronCleanDue, cronLegDue, cronAsBudgetMs, cronMore, cronBacklogNext, cronBacklogDue, cronBacklogGapMs, backlogStreak } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronRunDeferred, cronMarkOf, cronFatalOf } from './cron-health.mjs';
-import { aCronObjectOff, approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME, CRON_BUILD_HEADER, CRON_BUILD_PATH, cronVersionAbort, cronBuildState } from './a-cron.mjs';
+import { emailDueRoute, EMAIL_DUE_PATH, EMAIL_DUE_HEADER, aCronObjectOff, approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME, CRON_BUILD_HEADER, CRON_BUILD_PATH, cronVersionAbort, cronBuildState } from './a-cron.mjs';
 import { isMediaUploadRequest, markerKey, sweepUploadOrphans, dropMarkersOn } from './upload-intent.mjs';
 import { cronFailureLine } from './cron-error.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
@@ -1220,6 +1221,21 @@ async function mailRetryStore(storage, records) {
 		if (next === null || rec.next < next) next = rec.next;
 	}
 	await mailRetryArm(storage, next);
+}
+// #1215: hand the #969 email-due wake to the cron object. AWAITED by the request that queued the email, not left to
+// waitUntil: that request may run on a pool object, which does not keep waitUntil work alive as a Worker does. Bounded,
+// so the order's answer waits at most EMAIL_DUE_SEND_MS on it; a failure is logged, and the minute tick remains.
+const EMAIL_DUE_SEND_MS = 2000;
+async function emailDueToCron(env) {
+	const t0 = Date.now();
+	try {
+		const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(CRON_OBJECT_NAME));
+		const res = await stub.fetch(new Request('https://do.internal' + EMAIL_DUE_PATH, { method: 'POST', headers: { [EMAIL_DUE_HEADER]: '1' }, signal: AbortSignal.timeout(EMAIL_DUE_SEND_MS) }));
+		const j = res.ok ? await res.json().catch(() => null) : null;
+		console.log(JSON.stringify({ m: 'email-due', routed: 'a-cron', status: res.status, armed: j ? j.armed : null, inMs: j ? j.inMs : null, ms: Date.now() - t0 }));
+	} catch (e) {
+		console.log(JSON.stringify({ m: 'email-due', routed: 'a-cron', error: String((e && e.message) || e).slice(0, 160), ms: Date.now() - t0 }));
+	}
 }
 async function mailRetryPut(env, failures) {
 	const records = failureRecords(failures, Date.now());
@@ -2832,7 +2848,41 @@ function httpRefusal(url) {
 	if (!httpHostAllowed(url.hostname, resolveHttpAllowHosts(raw))) return 'host not in HTTP_ALLOW_HOSTS: ' + url.hostname;
 	return null;
 }
+// #1157: one hop's route ('pool', 'out' or 'refuse', selfFetchRoute's) and its refusal, or why null to send it: the
+// site's own host runs on a pool object or is refused. #1226 logs only a 'refuse' route as a refused self-fetch.
+function httpHop(url, ovs) {
+	const self = selfFetchRoute({ sameHost: isSelfHost(url), inObject: Boolean(ocCtx && ocCtx.inObject), overflowed: Boolean(ocCtx && ocCtx.overflowed), poolAvailable: selfFetchPoolAvailable(ENV, ovs), capped: overHeld(ovs, ovHeld) });
+	const why = self.route === 'refuse' ? self.why : self.route === 'out' ? httpRefusal(url) : (url.protocol === 'http:' || url.protocol === 'https:' ? null : 'only http and https');
+	return { route: self.route, why };
+}
+// #1215: a non-blocking request is refused, as a blocking one is, before anything is queued.
+function httpFirstHopRefusal(op) {
+	let url;
+	try {
+		url = new URL(op.url);
+	} catch {
+		return 'A valid URL was not provided.';
+	}
+	return httpHop(url, overflowSettings(ENV)).why;
+}
+// #1225: blocking false is fire-and-forget, as in core (http-nonblocking.mjs), ONLY in the Worker: PHP gets its answer
+// at once, and the request runs on in the Worker's waitUntil under its own cap, its body read and dropped (nothing reads
+// it). Inside a Durable Object (a pool object, A_CRON, b-do, b-dosql) waitUntil does not keep the object alive at our
+// compatibility date (2026-07-01, no durable_object_io_tasks_prevent_eviction; #185 measured sends abandoned), so there
+// the request is awaited as a blocking one is (the caller's timeout, the 1 s floor), and PHP still returns core's empty
+// non-blocking response. The lead's ruling on #1225: option 1.
 async function httpOp(op) {
+	if (!httpBlocking(op)) {
+		if (ocCtx && ocCtx.inObject) return httpOpRun({ ...op, blocking: true });
+		const why = httpFirstHopRefusal(op);
+		if (why) return { error: why };
+		const run = httpOpRun({ ...op, discard: true }).catch(() => {});
+		if (ocCtx && typeof ocCtx.waitUntil === 'function') ocCtx.waitUntil(run);
+		return { queued: true };
+	}
+	return httpOpRun(op);
+}
+async function httpOpRun(op) {
 	stats.httpCalls++;
 	// #352: an outbound call that is not a read is seen by others: a commit point (keep what came before).
 	if (undoLog && undoLog.frameOpen() && sqlDb && !/^(GET|HEAD|OPTIONS)$/i.test(String(op.method || 'GET'))) undoLog.commitPoint(sqlDb, 'http');
@@ -2843,7 +2893,7 @@ async function httpOp(op) {
 		url = new URL(op.url);
 		const max = Number(ENV.HTTP_MAX_BYTES || HTTP_MAX_BYTES);
 		const limit = op.limit > 0 ? Math.min(op.limit, max) : max;
-		const timeoutMs = Math.max(1, Number(op.timeout) || 5) * 1000;
+		const timeoutMs = httpTimeoutMs(op);
 		const signal = AbortSignal.timeout(timeoutMs);
 		let method = op.method || 'GET';
 		let body = op.body ? b64decode(op.body) : undefined;
@@ -2853,8 +2903,8 @@ async function httpOp(op) {
 		const ovs = overflowSettings(ENV);
 		for (;;) {
 			// #1157: each hop (a redirect included) is checked again: the site's own host runs on a pool object or is refused.
-			const self = selfFetchRoute({ sameHost: isSelfHost(url), inObject: Boolean(ocCtx && ocCtx.inObject), overflowed: Boolean(ocCtx && ocCtx.overflowed), poolAvailable: selfFetchPoolAvailable(ENV, ovs), capped: overHeld(ovs, ovHeld) });
-			const why = self.route === 'refuse' ? self.why : self.route === 'out' ? httpRefusal(url) : (url.protocol === 'http:' || url.protocol === 'https:' ? null : 'only http and https');
+			const self = httpHop(url, ovs);
+			const why = self.why;
 			if (why) {
 				// #1226: a refused self-fetch returns here, before selfFetchOnPool.
 				// Log one line, or 0 self-fetch lines cannot tell a refusal from a hop never sent.
@@ -2892,6 +2942,7 @@ async function httpOp(op) {
 			for (;;) {
 				const { done, value } = await reader.read();
 				if (done) break;
+				if (op.discard) continue; // #1225: a queued request's body: read to the end (its far end completes), never held
 				const room = limit - size;
 				if (value.length > room) {
 					chunks.push(value.subarray(0, room));
@@ -2921,7 +2972,8 @@ async function httpOp(op) {
 		return out;
 	} finally {
 		stats.httpMs += Date.now() - t0;
-		console.log(JSON.stringify({ m: 'http', host: url ? url.hostname : null, status: out && out.status, error: out && out.error ? String(out.error).slice(0, 120) : undefined, ms: Date.now() - t0 }));
+		// #1225: a queued (non-blocking) request's line also names that it was queued and the isolate it ran to its end in.
+		console.log(JSON.stringify({ m: 'http', host: url ? url.hostname : null, status: out && out.status, error: out && out.error ? String(out.error).slice(0, 120) : undefined, ms: Date.now() - t0, ...(op.discard ? { queued: true, iso: ISOLATE_ID } : {}) }));
 	}
 }
 
@@ -3597,6 +3649,16 @@ export class PhpRuntime extends DurableObject {
 			if (!db || env.REAL_TRANSACTIONS === 'off') return Response.json({ frame: null, reason: 'no undo log' });
 			await txnRecover(db, this.ctx.storage);
 			return Response.json({ frame: undo(env).status(db, objectUrl.searchParams.get('id') || '') });
+		}
+		// #1215: the #969 email-due wake from an approach A request that does not own the cron (emailDueToCron): what #969
+		// does in place. emailAlarmAt only ever moves the alarm sooner, so #1176's idle backoff resumes after the rush.
+		if (objectUrl.pathname === EMAIL_DUE_PATH) {
+			if (raw.headers.get(EMAIL_DUE_HEADER) !== '1' || raw.method !== 'POST' || !approachACronEnabled(env)) return new Response('forbidden', { status: 403 });
+			const nowDue = Date.now();
+			await this.ctx.storage.put(EMAIL_DUE_KEY, nowDue);
+			const dueAt = emailAlarmAt(await this.ctx.storage.getAlarm(), nowDue);
+			if (dueAt !== null) await setAlarmRecorded(this.ctx.storage, dueAt, nowDue, 'email-due');
+			return Response.json({ ok: true, armed: dueAt !== null, inMs: dueAt !== null ? dueAt - nowDue : null });
 		}
 		// #1057: a rejected send handed over by the approach A Worker (mailRetryPut). Stored here; this object's alarm
 		// drains it. GET ?count=1 is the dead-letter count for Site Health. Internal only (the Worker 404s the path).
@@ -4615,6 +4677,7 @@ export default {
 		// #855: the cron tick is Worker to PhpRuntime only, never a public URL.
 		if (url.pathname === CRON_TICK_PATH) return new Response('Not Found', { status: 404 });
 		if (url.pathname === MAIL_RETRY_PATH) return new Response('Not Found', { status: 404 }); // #1057: internal only
+		if (url.pathname === EMAIL_DUE_PATH) return new Response('Not Found', { status: 404 }); // #1215: internal only
 		// #752: the PHP object's start-by tick lands here, FIRST: a cheap 204, before the page cache and any object call.
 		if (url.pathname === TICK_PATH) return tickResponse();
 		// #912: //checkout-link is the home page. Merge the slash and redirect.
@@ -5103,8 +5166,11 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			}
 			// #969: the order request queued a deferred email. Wake the alarm soon. A lost write
 			// rolled the queue row back, so that path returns above and does not arm this.
-			if (emailDueRequest && ctx && ctx.storage && !ctx.overflowed && !aCronObjectOff(ENV)) { // #1186: only the object that owns the cron
+			if (emailDueRequest) {
 				emailDueRequest = false;
+				// #1186: only the object that owns the cron arms its own alarm; #1215: approach A hands it to the cron object.
+				const route = emailDueRoute({ storage: ctx && ctx.storage, overflowed: Boolean(ctx && ctx.overflowed), env: ENV });
+				if (route === 'local') {
 				try {
 					const nowDue = Date.now();
 					await ctx.storage.put(EMAIL_DUE_KEY, nowDue);
@@ -5113,6 +5179,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				} catch (e) {
 					console.log(JSON.stringify({ m: 'email-due', error: String((e && e.message) || e).slice(0, 160) }));
 				}
+				} else if (route === 'a-cron') await emailDueToCron(ENV);
 			}
 			// #795, by FAILURE CLASS (write-loss.mjs PLATFORM_FAILURE). A PLATFORM failure other than the reset (busy, out of
 			// memory, disk full, a timeout...) is never answered as a success: PHP saw an empty or unapplied result that was

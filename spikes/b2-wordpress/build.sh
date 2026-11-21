@@ -4,7 +4,11 @@
 #   build/public/   static files (no .php) served by Workers static assets
 set -euo pipefail
 cd "$(dirname "$0")"
-WP_VERSION=7.1.4
+WP_VERSION=7.1.5
+# The sha1 wordpress.org publishes for wordpress-$WP_VERSION.zip, pinned here so the check does not trust a
+# checksum fetched beside the zip. 7.1.5: cross-checked against the per-file md5s of api.wordpress.org's
+# checksum API (3,783 files) and the WordPress/WordPress 7.1.5 tag.
+WP_SHA1=d7d004a092a4e8f2b28dc8f4089a11fea9a38807
 SQLITE_DI_REF=f05c1f9
 # WooCommerce. wordpress.org publishes no checksum for plugin zips, so the
 # SHA-256 of the 2026-11-04 download is pinned here.
@@ -17,7 +21,8 @@ if [ ! -f "$cache/wordpress-$WP_VERSION.zip" ]; then
   curl -sfL "https://wordpress.org/wordpress-$WP_VERSION.zip" -o "$cache/wordpress-$WP_VERSION.zip"
   curl -sfL "https://wordpress.org/wordpress-$WP_VERSION.zip.sha1" -o "$cache/wordpress-$WP_VERSION.zip.sha1"
 fi
-echo "$(cat "$cache/wordpress-$WP_VERSION.zip.sha1")  $cache/wordpress-$WP_VERSION.zip" | shasum -a 1 -c - >/dev/null
+[ "$(cat "$cache/wordpress-$WP_VERSION.zip.sha1")" = "$WP_SHA1" ] || { echo "build.sh: wordpress.org's sha1 for $WP_VERSION is not WP_SHA1" >&2; exit 1; }
+echo "$WP_SHA1  $cache/wordpress-$WP_VERSION.zip" | shasum -a 1 -c - >/dev/null
 if [ ! -d "$cache/sqlite-database-integration" ]; then
   git clone -q https://github.com/WordPress/sqlite-database-integration "$cache/sqlite-database-integration"
 fi

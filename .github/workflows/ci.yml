@@ -263,7 +263,7 @@ jobs:
           python3 -I tests/wfp/admin-mem-test.py
       - name: Memory trace hooks mode against WordPress's own hook code (#504)
         # The three wp-includes files of the pinned WordPress (spikes/b2-wordpress/build.sh
-        # WP_VERSION=7.1.4), each checked against its sha256 (equal to the copies in the
+        # WP_VERSION=7.1.5; the three files are unchanged from 7.1.4), each checked against its sha256 (equal to the copies in the
         # sha1-verified release zip) before the test reads them.
         run: |
           set -euo pipefail
@@ -273,7 +273,7 @@ jobs:
                    class-wp-hook.php:b839c0e5672246bca8db1ab781ec8835f7732f253c375a237cbf6ec536e8d12e \
                    class-wp-filter-sentinel.php:68c9c675d3805a343835728d98a0efedf0df9833cb904bebf909c7e0fda5c61c; do
             name="${f%%:*}"; sum="${f##*:}"
-            curl -fsSL -o "$d/$name" "https://raw.githubusercontent.com/WordPress/WordPress/7.1.4/wp-includes/$name"
+            curl -fsSL -o "$d/$name" "https://raw.githubusercontent.com/WordPress/WordPress/7.1.5/wp-includes/$name"
             echo "$sum  $d/$name" | sha256sum -c - || { echo "::error::$name sha256 mismatch"; exit 1; }
           done
           php spikes/b2-wordpress/tests/mem-trace-hooks-test.php "$d"
@@ -368,6 +368,10 @@ jobs:
         run: python3 -I tests/load/cache-by-page-test.py
       - name: load test prints its run markers, so a count window never mixes the checkouts and the CLEANUP (#704)
         run: python3 -I tests/load/cleanup-marker-test.py
+      - name: load test CLEANUP cancels queued order emails for the orders it deletes (#1145)
+        # A stub queues woocommerce_send_queued_transactional_email per checkout.
+        # CLEANUP must cancel those. An email for another order stays pending.
+        run: python3 -I tests/load/cleanup-emails-test.py
       - name: load test classes a plain post as post and a Woo product as product (#691)
         run: |
           python3 -I tests/load/page-class-test.py
@@ -442,6 +446,12 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/iso-age.test.mjs
       - name: b-dosql outbound host allowlist
         run: node --test spikes/b2-wordpress/tests/http-allow.test.mjs
+      - name: a non-blocking request is fire-and-forget, as in core (issue #1215)
+        # http-nonblocking.mjs and index.js httpOp: blocking false is answered at once and runs in
+        # waitUntil under its own cap, never the caller's 0.01 s timeout (Action Scheduler's async runner).
+        run: node --test spikes/b2-wordpress/tests/http-nonblocking.test.mjs
+      - name: the PHP bridge sends blocking and returns core's non-blocking response (issue #1215)
+        run: php spikes/b2-wordpress/tests/http-bridge-nonblocking-test.php
       - name: b-dosql Basic auth sets PHP_AUTH_USER and PHP_AUTH_PW (issue #761)
         # php-auth.mjs: Authorization Basic becomes the two $_SERVER entries Apache
         # sets. A Bearer header, bad base64, or no colon sets nothing. No log line
@@ -474,6 +484,10 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/turnstile-hold.test.mjs
       - name: b-dosql safe outbound URLs without DNS (issue #430)
         run: php spikes/b2-wordpress/tests/http-safe-url-test.php
+      - name: a queued WooCommerce email is marked at enqueue, so the Worker wakes the cron (issue #1215)
+        run: php spikes/b2-wordpress/tests/woo-edge-email-due-test.php
+      - name: the email-due wake reaches the object that owns the cron (issue #1215)
+        run: node --test spikes/b2-wordpress/tests/email-due-route.test.mjs
       - name: turnstile block checkout script (issue #308)
         # A classic browser script, not a module: syntax, then the stubbed store and widget.
         run: |

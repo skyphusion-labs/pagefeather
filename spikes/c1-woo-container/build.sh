@@ -4,7 +4,8 @@
 # files served by the Worker).
 set -euo pipefail
 cd "$(dirname "$0")"
-WP_VERSION=7.1.4
+WP_VERSION=7.1.5
+WP_SHA1=d7d004a092a4e8f2b28dc8f4089a11fea9a38807   # as spikes/b2-wordpress/build.sh
 SQLITE_DI_REF=f05c1f9
 WOO_VERSION=11.2.1
 WOO_SHA256=5317434cb381b5fdc7c1dd6ee258324f08c390976aaf8d1199f2a0e9a3ab8586
@@ -16,7 +17,8 @@ cache=../b2-wordpress/build/cache   # shared download cache with spike B2
 mkdir -p "$cache"
 [ -f "$cache/wordpress-$WP_VERSION.zip" ] || curl -sfL "https://wordpress.org/wordpress-$WP_VERSION.zip" -o "$cache/wordpress-$WP_VERSION.zip"
 [ -f "$cache/wordpress-$WP_VERSION.zip.sha1" ] || curl -sfL "https://wordpress.org/wordpress-$WP_VERSION.zip.sha1" -o "$cache/wordpress-$WP_VERSION.zip.sha1"
-echo "$(cat "$cache/wordpress-$WP_VERSION.zip.sha1")  $cache/wordpress-$WP_VERSION.zip" | shasum -a 1 -c - >/dev/null
+[ "$(cat "$cache/wordpress-$WP_VERSION.zip.sha1")" = "$WP_SHA1" ] || { echo "build.sh: wordpress.org's sha1 for $WP_VERSION is not WP_SHA1" >&2; exit 1; }
+echo "$WP_SHA1  $cache/wordpress-$WP_VERSION.zip" | shasum -a 1 -c - >/dev/null
 [ -d "$cache/sqlite-database-integration" ] || git clone -q https://github.com/WordPress/sqlite-database-integration "$cache/sqlite-database-integration"
 git -C "$cache/sqlite-database-integration" checkout -q "$SQLITE_DI_REF"
 [ -f "$cache/woocommerce-$WOO_VERSION.zip" ] || curl -sfL "https://downloads.wordpress.org/plugin/woocommerce.$WOO_VERSION.zip" -o "$cache/woocommerce-$WOO_VERSION.zip"

@@ -72,3 +72,31 @@ test('#1090 the qtrace line carries the isolate, and a caller with its asker (up
 	assert.equal(t.summary().topCallers[0].c, c.slice(0, 240));
 	assert.ok(t.summary().topCallers[0].c.length > 160, 'not cut at the old 160');
 });
+
+// #1233: the top-30 lists drop the long tail. A count-1 statement (the one coalesced transient DELETE that #1219 made of
+// 342) ranked below 30 and vanished, so "not in topShapes" read as "never ran". byTableVerb is complete, and the cut
+// says how much each list left out.
+test('a count-1 statement past the top 30 stays visible in byTableVerb, and the cut counts what the lists dropped', () => {
+	const t = createTrace();
+	for (let i = 0; i < 30; i++) for (let k = 0; k < 2; k++) t.add(`SELECT * FROM wp_posts WHERE c${i} = ${k}`, 1, `core:f.php::f${i}`);
+	t.add("DELETE FROM wp_options WHERE option_name IN ('_transient_a', '_transient_timeout_a')", 16, 'dropin:object-cache-js.php::skyphusion_transient_delete');
+	const s = t.summary();
+	assert.equal(s.n, 61);
+	assert.equal(s.topShapes.length, 30);
+	assert.ok(!s.topShapes.some((x) => x.shape.startsWith('DELETE')), 'the 31st shape is cut from topShapes (the failure #1233 is about)');
+	assert.ok(!s.topCallers.some((x) => x.c.includes('skyphusion_transient_delete')), 'and its caller from topCallers');
+	assert.deepEqual(s.byTableVerb['wp_options DELETE'], { n: 1, ms: 16 }, 'byTableVerb keeps it');
+	assert.deepEqual(s.byTableVerb['wp_posts SELECT'], { n: 60, ms: 60 });
+	assert.deepEqual(s.shapesCut, { distinct: 31, cutN: 1, cutMs: 16 });
+	assert.deepEqual(s.callersCut, { distinct: 31, cutN: 1, cutMs: 16 });
+});
+
+test('with 30 or fewer distinct entries nothing is cut', () => {
+	const t = createTrace();
+	t.add('SELECT 1 FROM wp_options', 2, 'core:a.php::a');
+	t.add('SELECT 1 FROM wp_options', 3, 'core:a.php::a');
+	const s = t.summary();
+	assert.deepEqual(s.shapesCut, { distinct: 1, cutN: 0, cutMs: 0 });
+	assert.deepEqual(s.callersCut, { distinct: 1, cutN: 0, cutMs: 0 });
+	assert.deepEqual(s.byTableVerb, { 'wp_options SELECT': { n: 2, ms: 5 } });
+});

@@ -17,7 +17,7 @@
 # PF_BROWSER=browser-run (run only) puts the browsers on Cloudflare Browser Run, Chromium only; PF_WORKERS sets the
 # worker count there (default 1: the specs share one site's state). A Browser Run row is never mixed with a local-browser row: the Chromium differs.
 #
-# BASELINE_WITHOUT_GUTENBERG_PLUGIN=1 (gb baseline only): the stock arm is core 7.1.4 alone, with the Gutenberg plugin NOT
+# BASELINE_WITHOUT_GUTENBERG_PLUGIN=1 (gb baseline only): the stock arm is core 7.1.5 alone, with the Gutenberg plugin NOT
 # mounted (upstream's .wp-env.test.json mounts it; our sites do not ship it). Its failures that are also ours are
 # "needs the Gutenberg plugin", not ours.
 # PF_TIER (run and baseline) names the tier ("Free DO", "Paid DO", "WfP", "Hyperdrive"): an exclude row that starts with
@@ -190,7 +190,7 @@ case "$act" in
   baseline)
     need_run_dir "${4:-}"
     need_pinned_head
-    # Stock upstream at the same pins, in Docker (wp-env). WP_ENV_CORE pins core to 7.1.4 where the
+    # Stock upstream at the same pins, in Docker (wp-env). WP_ENV_CORE pins core to 7.1.5 where the
     # suite's own env file names a branch. The default credentials are admin / password.
     # The baseline must not see our throwaway: unset the names the suites read (a caller may export them).
     unset BASE_URL WP_BASE_URL ADMIN_USER ADMIN_PASSWORD WP_USERNAME WP_PASSWORD CUSTOMER_USER CUSTOMER_USERNAME CUSTOMER_PASSWORD
@@ -215,15 +215,15 @@ case "$act" in
       wc|wc-api|wc-cpt) in_dir "$src" env NODE_OPTIONS=--max-old-space-size=6144 pnpm --filter=@woocommerce/plugin-woocommerce build
           [ "${DRY:-0}" = 1 ] || [ -f "$src/plugins/woocommerce/includes/react-admin/feature-config.php" ] \
             || { echo "vps-run: STOP: the WooCommerce build left no includes/react-admin/feature-config.php" >&2; exit 3; }
-          in_dir "$src/plugins/woocommerce" env WP_ENV_CORE=WordPress/WordPress#7.1.4 pnpm env:e2e ;;
-      # BASELINE_WITHOUT_GUTENBERG_PLUGIN=1: the stock arm is core 7.1.4 ALONE, as our sites are (none ships the
+          in_dir "$src/plugins/woocommerce" env WP_ENV_CORE=WordPress/WordPress#$WP_VERSION pnpm env:e2e ;;
+      # BASELINE_WITHOUT_GUTENBERG_PLUGIN=1: the stock arm is core 7.1.5 ALONE, as our sites are (none ships the
       # Gutenberg plugin; upstream's env mounts it). runner.py writes the env file without the two plugin mounts.
       gb) if [ "${BASELINE_WITHOUT_GUTENBERG_PLUGIN:-0}" = 1 ]; then
-            echo "vps-run: BASELINE WITHOUT THE GUTENBERG PLUGIN (core 7.1.4 alone)"
+            echo "vps-run: BASELINE WITHOUT THE GUTENBERG PLUGIN (core 7.1.5 alone)"
             x python3 -I "$here/runner.py" wp-env-without-gutenberg-plugin --suite-dir "$src" || exit 3
-            in_dir "$src" env WP_ENV_CORE=WordPress/WordPress#7.1.4 npx wp-env --config .wp-env.test-without-gutenberg-plugin.json start
+            in_dir "$src" env WP_ENV_CORE=WordPress/WordPress#$WP_VERSION npx wp-env --config .wp-env.test-without-gutenberg-plugin.json start
           else
-            in_dir "$src" env WP_ENV_CORE=WordPress/WordPress#7.1.4 npm run wp-env-test -- start
+            in_dir "$src" env WP_ENV_CORE=WordPress/WordPress#$WP_VERSION npm run wp-env-test -- start
           fi ;;
     esac
     playwright "$src"

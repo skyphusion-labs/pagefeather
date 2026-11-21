@@ -213,8 +213,9 @@ ok "the headers still go through curl -K and a process substitution" \
   "$(grep -q -- '-K <(printf' "$ROOT/deploy/install.sh" && ! grep -E -- '-H[[:space:]]+["'"'"']x-(spike-token|admin-password)' "$ROOT/deploy/install.sh" && echo yes || echo no)" "yes"
 # #855: PhpRuntime /_cron-tick adds one more plain 403 (not spike; no build id).
 # #1057: PhpRuntime /_mail-retry (internal, the approach A Worker hands over a rejected send) adds one more (not spike; no build id).
+# #1215: PhpRuntime /_email-due (internal, an approach A request hands the email-due wake to the cron object) adds one more (not spike; no build id).
 ok "a refused spike stays the plain 403, with no build id" \
-  "$(grep -c "return new Response('forbidden', { status: 403 });" "$ROOT/spikes/b2-wordpress/index.js") $(grep -c 'spikeForbidden' "$ROOT/spikes/b2-wordpress/index.js" || true) $(grep -c 'x-worker-version' "$ROOT/spikes/b2-wordpress/index.js" || true)" "4 0 0"
+  "$(grep -c "return new Response('forbidden', { status: 403 });" "$ROOT/spikes/b2-wordpress/index.js") $(grep -c 'spikeForbidden' "$ROOT/spikes/b2-wordpress/index.js" || true) $(grep -c 'x-worker-version' "$ROOT/spikes/b2-wordpress/index.js" || true)" "5 0 0"
 ok "install.sh does not read x-worker-version" "$(grep -c 'x-worker-version' "$ROOT/deploy/install.sh" || true)" "0"
 
 # #605: deploy/wfp's site add installs through the SAME helper (one check, no drift): its own one-read check took a

@@ -59,10 +59,18 @@ function bump(map, k, ms) {
 	e.ms += ms;
 }
 
-const top = (map, key, n = TOP) => Object.entries(map).sort((a, b) => b[1].n - a[1].n || b[1].ms - a[1].ms).slice(0, n).map(([k, v]) => ({ [key]: k, n: v.n, ms: v.ms }));
+const ranked = (map) => Object.entries(map).sort((a, b) => b[1].n - a[1].n || b[1].ms - a[1].ms);
+const top = (map, key, n = TOP) => ranked(map).slice(0, n).map(([k, v]) => ({ [key]: k, n: v.n, ms: v.ms }));
+// #1233: what top() left out. A count-1 statement ranks last, so a fix that folds 342 deletes into ONE statement made that
+// statement vanish from topShapes and topCallers (sb1120, #1219), and "not listed" read as "never ran". The cut says how
+// many distinct entries exist and what the lists dropped, so a reader knows a list is partial.
+function cut(map, n = TOP) {
+	const all = ranked(map), rest = all.slice(n);
+	return { distinct: all.length, cutN: rest.reduce((a, [, v]) => a + v.n, 0), cutMs: rest.reduce((a, [, v]) => a + v.ms, 0) };
+}
 
 export function createTrace() {
-	const byVerb = {}, byTable = {}, byArea = {}, byCaller = {}, byShape = {};
+	const byVerb = {}, byTable = {}, byTableVerb = {}, byArea = {}, byCaller = {}, byShape = {};
 	const seen = new Set();
 	const runs = [];
 	let n = 0, ms = 0, last = null, runLen = 0;
@@ -74,6 +82,7 @@ export function createTrace() {
 			n++; ms += t;
 			bump(byVerb, sqlVerb(sql), t);
 			bump(byTable, tableOf(sql), t);
+			bump(byTableVerb, tableOf(sql) + ' ' + sqlVerb(sql), t); // #1233: complete, never cut (tables x verbs is small)
 			bump(byArea, areaOf(caller), t);
 			bump(byCaller, typeof caller === 'string' && caller ? caller.slice(0, 240) : '?', t); // #1090: room for "<- the asker"
 			bump(byShape, shape, t);
@@ -85,9 +94,11 @@ export function createTrace() {
 			closeRun(); runLen = 0; // idempotent enough for one call per request
 			const r = runs.slice().sort((a, b) => b.len - a.len);
 			return {
-				n, ms, byVerb, byTable, byArea,
+				n, ms, byVerb, byTable, byTableVerb, byArea,
 				topCallers: top(byCaller, 'c'),
 				topShapes: top(byShape, 'shape'),
+				callersCut: cut(byCaller),
+				shapesCut: cut(byShape),
 				runs: { count: runs.length, saved: runs.reduce((a, x) => a + x.len - 1, 0), top: r.slice(0, 10) },
 				dupes: { distinct: seen.size, extra: n - seen.size },
 			};

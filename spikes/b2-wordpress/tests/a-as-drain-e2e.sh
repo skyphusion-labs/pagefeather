@@ -19,6 +19,10 @@
 #     about 8), so a fixed total failed on slow runners while the 5 s gap held (#1120: 6 CI runs, 108 to 114 s against
 #     90). The red arm: STOP_VARS="CRON_AS_BUDGET_MS:1000 CRON_BACKLOG_GAP_MS:60000" (the gap becomes the interval, as
 #     with no backlog alarm) must FAIL the gap check. The first leg waits for the alarm already armed (#855).
+# #1215: the burst is placed with the cron object OFF (A_CRON:off, so the email-due wake routes to 'none', #1186), then
+#   wrangler dev restarts on the same state with the cron object on. Since #1215 each order's email wakes the cron
+#   object at once, so with it on during the burst the emails drained as they were queued and no backlog formed; this
+#   test measures how legs drain a backlog, so it builds one first.
 #   tests/a-as-drain-e2e.sh   (in spikes/b2-wordpress, after prepare.sh and build.sh)
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -26,7 +30,7 @@ export PORT=${PORT:-8799} DEV_ENV=a-shape-local  # not 8798: opcache-a.sh holds 
 B=http://localhost:$PORT; PW=${ADMIN_PASSWORD:-local-spike-password}; TOK=${SPIKE_TOKEN:-local-spike-token}
 STATE=$(mktemp -d "${TMPDIR:-/tmp}/a-as-drain.XXXXXX"); export PERSIST_TO=$STATE
 trap './run.sh --stop > /dev/null 2>&1; rm -rf "$STATE"' EXIT
-DEV_LOCAL=1 DEV_LOG_LEVEL=log DEV_TEST_SCHEDULED=1 DEV_VARS="CRON_INTERVAL_MS:${INTERVAL_MS:-10000} ${STOP_VARS:-}" ./run.sh _ping > /dev/null || { echo "a-as-drain: wrangler dev did not start"; tail -20 dev.log; exit 1; }
+DEV_LOCAL=1 DEV_LOG_LEVEL=log DEV_TEST_SCHEDULED=1 DEV_VARS="CRON_INTERVAL_MS:${INTERVAL_MS:-10000} ${STOP_VARS:-} A_CRON:off" ./run.sh _ping > /dev/null || { echo "a-as-drain: wrangler dev did not start"; tail -20 dev.log; exit 1; }
 curl -sf -m 300 -H "x-spike-token: $TOK" -X POST -H "x-admin-password: $PW" "$B/_install" > /dev/null || { echo "a-as-drain: /_install failed"; exit 1; }
 curl -sf -m 300 -H "x-spike-token: $TOK" "$B/_activate?plugin=woocommerce/woocommerce.php" > /dev/null || { echo "a-as-drain: WooCommerce did not activate"; exit 1; }
 B=$B SPIKE_TOKEN=$TOK ADMIN_PASSWORD=$PW ORDERS=${ORDERS:-50} MAX_LEGS=${MAX_LEGS:-6} EXPECT_STOP=${EXPECT_STOP:-} DRAIN_WITHIN_S=${DRAIN_WITHIN_S:-} python3 -I - <<'PY'
@@ -42,6 +46,16 @@ pid = json.loads(r["body"])["id"]
 for i in range(ORDERS):
     r = BL.rest(o, "/wc/v3/orders", {"status": "processing", "set_paid": True, "billing": {"email": "buyer%d@example.invalid" % i, "first_name": "B"}, "line_items": [{"product_id": pid, "quantity": 1}]}, "POST")
     if r["code"] != 201: sys.exit("a-as-drain: order %d answered %s %s" % (i, r["code"], r["body"][:200]))
+PY
+[ $? = 0 ] || exit 1
+# #1215: the backlog is queued; now the cron object on, on the same state.
+cp dev.log "$STATE/burst.log"
+./run.sh --stop > /dev/null 2>&1
+DEV_LOCAL=1 DEV_LOG_LEVEL=log DEV_TEST_SCHEDULED=1 DEV_VARS="CRON_INTERVAL_MS:${INTERVAL_MS:-10000} ${STOP_VARS:-}" ./run.sh _ping > /dev/null || { echo "a-as-drain: wrangler dev did not restart"; tail -20 dev.log; exit 1; }
+BURST_LOG="$STATE/burst.log" ORDERS=${ORDERS:-50} MAX_LEGS=${MAX_LEGS:-6} EXPECT_STOP=${EXPECT_STOP:-} DRAIN_WITHIN_S=${DRAIN_WITHIN_S:-} B=$B python3 -I - <<'PY'
+import json, os, re, sys, time, urllib.request
+B = os.environ["B"]; ORDERS = int(os.environ["ORDERS"]); MAX_LEGS = int(os.environ["MAX_LEGS"])
+HOOK = "woocommerce_send_queued_transactional_email"
 def log():
     try: return open("dev.log", errors="replace").read()
     except Exception: return ""
@@ -86,7 +100,7 @@ if max_gap:
 want = os.environ.get("EXPECT_STOP") or ""
 if want:
     check("a leg stopped for %s (the guard fired)" % want, any(d.get("as_stop") == want for d in eleg))
-lg = log()
+lg = log() + open(os.environ["BURST_LOG"], errors="replace").read()
 check("no leg died: no cron fatal, no isolate reset", '"fatal"' not in lg and not re.search(r'"m":"(?:isolate-reset|runtime-recycled)"', lg))
 if fails: print("a-as-drain: FAIL"); sys.exit(1)
 print("a-as-drain: ok: %d due emails ran in %d legs, not one a leg" % (ran, len(eleg)))
