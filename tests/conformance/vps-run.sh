@@ -184,7 +184,9 @@ case "$act" in
             [ "$gb_try" = 2 ] && in_dir "$src" rm -rf node_modules/.cache
           done
           [ "$gb_build" = 1 ] || { echo "vps-run: STOP: gb build failed after 3 attempts (Gutenberg tsc; see install log tail)" >&2; exit 3; }
-          in_dir "$src" npx playwright install --with-deps chromium ;;
+          # The pin's test/e2e/playwright.config.ts starts chromium, webkit (grep @webkit) and firefox
+          # (grep @firefox). Chromium alone makes the other projects fail at launch (#1000).
+          in_dir "$src" npx playwright install --with-deps chromium firefox webkit ;;
     esac
     ;;
   baseline)

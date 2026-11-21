@@ -240,9 +240,11 @@ jobs:
         # prepare-content.sh against stub git repos, into the real deploy/import/content.sh; runner.py
         # against a stub WordPress: the throwaway marker, the deny list, the #761 Basic stop, the cache
         # label, no password in the output, the wrapper configs (node --check) and the baseline compare.
+        # vps-gb-browsers-test.sh (#1000): install gb fetches chromium, firefox and webkit. DRY, no download.
         run: |
           bash tests/conformance/prepare-content-test.sh
           bash tests/conformance/vps-collect-test.sh
+          bash tests/conformance/vps-gb-browsers-test.sh
           python3 -I tests/conformance/runner_test.py
           python3 -I tests/conformance/matrix_test.py
           python3 -I tests/conformance/gaps_test.py
