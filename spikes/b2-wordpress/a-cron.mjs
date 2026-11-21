@@ -26,6 +26,17 @@ export function approachACronEnabled(env) {
 	return true;
 }
 
+/**
+ * #1186: an approach A object on a cron-off build. On approach A a PhpRuntime is only the cron object or a pool object
+ * (a pool request never arms the alarm), so with the cron off an alarm there has no work. Every DO tier renders
+ * PHP_IN_DO=on (render-conf.sh, deploy/wfp, provision), where the alarm runs the site's cron and purges: never this.
+ */
+export function aCronObjectOff(env) {
+	if (!env) return false;
+	if (env.PHP_IN_DO === 'on' || env.DB_IN_DO === 'on') return false;
+	return env.A_CRON !== 'on';
+}
+
 /** A POST the site Worker sends to the cron object (never a public route). */
 export function cronTickRequest(origin, { PhpRuntime, objectName = CRON_OBJECT_NAME, build = null } = {}) {
 	if (!PhpRuntime || typeof PhpRuntime.idFromName !== 'function') throw new Error('cron: no PHP_RUNTIME binding');

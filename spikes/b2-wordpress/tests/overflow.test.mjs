@@ -135,7 +135,7 @@ test('control: overflow off keeps all 40 in the two isolates (and they still run
 const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 test('an overflowed request never arms the object alarm: neither the cron rearm nor a purge alarm', () => {
 	// #715 review2 5: the guard is named armsCron, and the rearm happens inside the run.
-	assert.match(src, /const armsCron = !url\.pathname\.startsWith\('\/_'\) && !overflowed;/, 'the cron rearm is skipped');
+	assert.match(src, /const armsCron = !url\.pathname\.startsWith\('\/_'\) && !overflowed( && !aCronObjectOff\(env\))?;/, 'the cron rearm is skipped'); // #1186: and on a cron-off A build
 	assert.match(src, /if \(armsCron\) \{\n\t+lastOrigin = origin;/, 'and only armsCron arms it');
 	assert.match(src, /requestPurge: overflowed \? async \(\) => 'front' : \(\) => this\.requestPurge\(\)/, 'the purge goes back to the front, not to an object alarm');
 	assert.match(src, /if \(r\.headers\.get\('x-cache-purge'\) === 'front'\) schedulePurge\(ctx\);/, 'and the front Worker purges its own page cache');
