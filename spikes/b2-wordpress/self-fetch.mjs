@@ -58,3 +58,12 @@ export function selfFetchOutcome({ status, aborted, error, sameIsolate }) {
 	if (sameIsolate) return 'same-isolate';
 	return status === null || status === undefined ? 'error' : 'ok';
 }
+
+// #1170 lever: a guest self-GET is answered from the front page cache when cached. The hop carries this header; the
+// Pages entrypoint, which a cache hit never reaches, answers a marked request at once with this miss (never stored),
+// so a miss never renders through Pages in the asking isolate. The gateway strips a client copy.
+export const SELF_CACHE_ONLY_HEADER = 'x-pf-self-cache-only';
+export const SELF_CACHE_MISS_HEADER = 'x-pf-self-cache-miss';
+export function selfCacheMissResponse() {
+	return new Response(null, { status: 504, headers: { [SELF_CACHE_MISS_HEADER]: '1', 'cache-control': 'no-store, private' } });
+}

@@ -33,7 +33,7 @@ test('#1157 the pool is available on the same condition as the overflow dispatch
 test('#1157 index.js: every bridge hop asks selfFetchRoute, sends pool hops through toPhpObject, and logs self-fetch', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.match(src, /const self = selfFetchRoute\(\{ sameHost: isSelfHost\(url\), inObject: Boolean\(ocCtx && ocCtx\.inObject\), overflowed: Boolean\(ocCtx && ocCtx\.overflowed\), poolAvailable: selfFetchPoolAvailable\(ENV, ovs\), capped: overHeld\(ovs, ovHeld\) \}\);/);
-	assert.match(src, /res = self\.route === 'pool' \? await selfFetchOnPool\(url, method, headers, body, signal\) : await fetch\(url, \{ method, headers, body, redirect: 'manual', signal \}\);/);
+	assert.match(src, /res = self\.route === 'pool' \? \(await selfFetchFromCache\(url, method, headers, signal\)\) \|\| \(await selfFetchOnPool\(url, method, headers, body, signal\)\) : await fetch\(url, \{ method, headers, body, redirect: 'manual', signal \}\);/); // #1170 lever: the cache first
 	assert.match(src, /toPhpObject\(new Request\(url, \{ method, headers, body, signal, redirect: 'manual' \}\), ENV, url, null, \{ name: SELF_FETCH_OBJECT, hint: ovs\.hint, overflow: true, callId \}\)/);
 	assert.match(src, /m: 'self-fetch'/);
 	assert.doesNotMatch(src, /function httpRefusal\(url\) \{\n[^\n]*\n\tif \(bootOrigin && url\.hostname === new URL\(bootOrigin\)\.hostname\)/, 'the old blanket refusal is gone');
@@ -79,4 +79,29 @@ test('#1170 index.js: the self-fetch line is logged on EVERY path (before any th
 	for (const t of ['throw signal.reason', 'throw err', 'throw new Error(SELF_REFUSAL_SAME_ISOLATE)']) assert.ok(f.indexOf(t) > log, t + ' comes after the line');
 	assert.match(f, /outcome, status: r \? r\.status : null, ms: Date\.now\(\) - t0/);
 	assert.doesNotMatch(f, /picker\.pick\(\)/, 'no random pool pick');
+});
+
+// #1170 lever (the lead's ruling): a guest self-GET (no WordPress cookie, no auth: url-details sends none) is served from
+// the front page cache when the page is cached there. A cache MISS must not render through Pages: Pages would run PHP in
+// this isolate, behind the request that asked. The hop carries SELF_CACHE_ONLY_HEADER; Pages answers it at once with a
+// no-store miss before any PHP, and the hop goes to ovf-self as before. A hit never reaches code.
+test('#1170 lever: the cache-only miss answer is fast, never stored, and marked', async () => {
+	const { selfCacheMissResponse, SELF_CACHE_MISS_HEADER } = await import('../self-fetch.mjs');
+	const r = selfCacheMissResponse();
+	assert.equal(r.status, 504);
+	assert.equal(r.headers.get(SELF_CACHE_MISS_HEADER), '1');
+	assert.match(r.headers.get('cache-control') || '', /no-store/);
+});
+test('#1170 lever index.js: Pages answers a cache-only request before site.fetch; the gateway strips a client copy; the hop tries the cache first', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const pages = src.slice(src.indexOf('export class Pages extends WorkerEntrypoint {'), src.indexOf('export class Pages extends WorkerEntrypoint {') + 800);
+	const only = pages.indexOf('if (req.headers.get(SELF_CACHE_ONLY_HEADER) === \'1\') return selfCacheMissResponse();');
+	assert.ok(only > 0 && only < pages.indexOf('await site.fetch(req, this.env, this.ctx)'), 'before any PHP');
+	assert.match(src, /if \(pageCacheRoute\(req, url, env\)\) \{\n\t+const h = new Headers\(req\.headers\);\n\t+h\.delete\('cookie'\);\n\t+h\.delete\('authorization'\);\n\t+h\.delete\(SELF_CACHE_ONLY_HEADER\);/, 'the gateway never forwards a client marker');
+	assert.match(src, /res = self\.route === 'pool' \? \(await selfFetchFromCache\(url, method, headers, signal\)\) \|\| \(await selfFetchOnPool\(url, method, headers, body, signal\)\) :/);
+	const f = src.slice(src.indexOf('async function selfFetchFromCache('), src.indexOf('async function selfFetchOnPool('));
+	assert.match(f, /if \(!pageCacheRoute\(req, url, ENV\)\) return null;/, 'the gateway rule decides eligibility');
+	assert.match(f, /h\.set\(SELF_CACHE_ONLY_HEADER, '1'\);/);
+	assert.match(f, /pageVersions\.pageVersionsOn\(ENV, dbHandler\) \? await versionedPagesRequest\(req, h, ENV\)/, 'the same versioned cache key as the gateway');
+	assert.match(f, /outcome: 'cache-hit'/);
 });

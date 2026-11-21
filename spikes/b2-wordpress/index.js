@@ -65,7 +65,7 @@ import { aPerfLine } from './perf-line.mjs';
 import { templateQueuePriority, templateLookupYield, templateLookupForwardYield } from './template-boot.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse, overflowHeldToPool } from './overflow.mjs';
-import { selfFetchRoute, selfFetchPoolAvailable, selfFetchCalls, selfFetchSameIsolate, selfFetchOutcome, SELF_FETCH_OBJECT, SELF_SAME_ISOLATE_HEADER, SELF_REFUSAL_SAME_ISOLATE } from './self-fetch.mjs';
+import { selfFetchRoute, selfFetchPoolAvailable, selfFetchCalls, selfFetchSameIsolate, selfFetchOutcome, SELF_FETCH_OBJECT, SELF_SAME_ISOLATE_HEADER, SELF_REFUSAL_SAME_ISOLATE, SELF_CACHE_ONLY_HEADER, SELF_CACHE_MISS_HEADER, selfCacheMissResponse } from './self-fetch.mjs';
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
 import { PURGE_GAP_MS, NO_CACHE_API, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
@@ -2765,6 +2765,34 @@ function isSelfHost(url) {
 // forwarded client request does, and a content change's purge handed back is scheduled by this Worker.
 // #1170: always the one named object SELF_FETCH_OBJECT (kept warm by its own use), redirect: 'manual' (the bridge loop
 // checks and sends each next hop), and one self-fetch line on every outcome, before any throw.
+// #1170 lever: a guest self-GET from the front page cache (the gateway's own rule and cache key). A hit is answered here;
+// a miss (Pages answers the cache-only marker before any PHP) or anything not cacheable returns null: ovf-self runs it.
+async function selfFetchFromCache(url, method, headers, signal) {
+	if (!ocCtx || !ocCtx.exports || !ocCtx.exports.Pages) return null;
+	const req = new Request(url, { method, headers, signal, redirect: 'manual' });
+	if (!pageCacheRoute(req, url, ENV)) return null;
+	const h = new Headers(req.headers);
+	h.delete('cookie');
+	h.delete('authorization');
+	h.set(SELF_CACHE_ONLY_HEADER, '1');
+	const t0 = Date.now();
+	let r = null;
+	try {
+		const pages = pageVersions.pageVersionsOn(ENV, dbHandler) ? await versionedPagesRequest(req, h, ENV) : new Request(req, { headers: h });
+		if (!pages) return null;
+		r = await ocCtx.exports.Pages.fetch(pages);
+	} catch (e) {
+		console.log(JSON.stringify({ m: 'self-fetch', iso: ISOLATE_ID, method, path: url.pathname, outcome: 'cache-error', ms: Date.now() - t0, parent: runCallId, error: String((e && e.message) || e).slice(0, 160) }));
+		return null;
+	}
+	if (r.headers.get(SELF_CACHE_MISS_HEADER) === '1') {
+		await r.body?.cancel().catch(() => {});
+		console.log(JSON.stringify({ m: 'self-fetch', iso: ISOLATE_ID, method, path: url.pathname, outcome: 'cache-miss', ms: Date.now() - t0, parent: runCallId }));
+		return null;
+	}
+	console.log(JSON.stringify({ m: 'self-fetch', iso: ISOLATE_ID, method, path: url.pathname, outcome: 'cache-hit', status: r.status, ms: Date.now() - t0, parent: runCallId }));
+	return r;
+}
 async function selfFetchOnPool(url, method, headers, body, signal) {
 	const ovs = overflowSettings(ENV);
 	const callId = crypto.randomUUID();
@@ -2823,7 +2851,7 @@ async function httpOp(op) {
 				out = { error: why };
 				return out;
 			}
-			res = self.route === 'pool' ? await selfFetchOnPool(url, method, headers, body, signal) : await fetch(url, { method, headers, body, redirect: 'manual', signal });
+			res = self.route === 'pool' ? (await selfFetchFromCache(url, method, headers, signal)) || (await selfFetchOnPool(url, method, headers, body, signal)) : await fetch(url, { method, headers, body, redirect: 'manual', signal });
 			const loc = res.headers.get('location');
 			if ([301, 302, 303, 307, 308].includes(res.status) && loc && (op.redirection || 0) > 0) {
 				// As Requests does: redirection 0 returns the redirect itself; past the count is an error.
@@ -4522,6 +4550,9 @@ const site = {
 // pageCacheRoute() lets through, with no Cookie header.
 export class Pages extends WorkerEntrypoint {
 	async fetch(req) {
+		// #1170 lever: an engine self-hop asked for the cached copy ONLY. Reaching code means a miss: answer it now, never
+		// render here (this isolate's PHP is held by the request that asked). A hit never reaches this line.
+		if (req.headers.get(SELF_CACHE_ONLY_HEADER) === '1') return selfCacheMissResponse();
 		// #296 step 1: the page version is part of the cache key only; WordPress never sees it.
 		if (pageVersions.pageVersionsOn(this.env, dbHandler)) req = pageVersions.stripPcv(req);
 		const r = await site.fetch(req, this.env, this.ctx);
@@ -4564,6 +4595,7 @@ export default {
 			const h = new Headers(req.headers);
 			h.delete('cookie');
 			h.delete('authorization');
+			h.delete(SELF_CACHE_ONLY_HEADER); // #1170: only the engine's own self-hop sends it
 			// #296 step 1: with PAGE_CACHE_VERSIONS=on the version is SET on the URL (the cache key); a
 			// failed read gives null, and the request is served below, uncached.
 			const pages = pageVersions.pageVersionsOn(env, dbHandler) ? await versionedPagesRequest(req, h, env) : new Request(req, { headers: h });
