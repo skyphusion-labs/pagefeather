@@ -5,7 +5,7 @@
 // route. The argv array goes only through decideWpCli. There is no shell string.
 
 import { decideWpCli } from './wp-cli-allow.mjs';
-import { devKeysFromEnv, timingSafeEqualString, verifyAccessJwt } from './wp-cli-access.mjs';
+import { devKeysFromEnv, localDevGate, timingSafeEqualString, verifyAccessJwt } from './wp-cli-access.mjs';
 import { noStoreAnywhere } from './perf-headers.mjs';
 
 const BODY_CAP = 4096;
@@ -17,11 +17,11 @@ export function wpCliEnabled(env) {
 	return !!(env && env.WP_CLI_ENDPOINT === 'on');
 }
 
-// A short wall and a slow hook exist only for the local engine check. The
-// local spike token is the gate. A deploy refuses both vars. Anything else
-// keeps the 25 s cap and does not write the slow file.
+// A short wall and a slow hook exist only for the local engine check. Both
+// gates must hold: the local spike token, and DEV_LOCAL=1 from run.sh. A deploy
+// refuses both vars. Anything else keeps the 25 s cap and does not write the slow file.
 export function wpCliTestCtl(env) {
-	if (!env || env.SPIKE_TOKEN !== 'local-spike-token') return {};
+	if (!localDevGate(env)) return {};
 	const ctl = {};
 	const wall = Number(env.WP_CLI_WALL_MS);
 	if (Number.isFinite(wall) && wall >= 50 && wall < 25000) ctl.wallMs = wall;

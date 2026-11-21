@@ -375,13 +375,15 @@ test('the team certs are fetched once and then cached', async () => {
 	assert.equal(fetched, 1);
 });
 
-test('a dev key is ignored unless the spike token is the local one', () => {
+test('a dev key is ignored unless the local runner gate and the local token both hold', () => {
 	const keys = [{ kid: 'test-kid', kty: 'RSA', n: 'aa', e: 'AQAB' }];
 	const b64 = btoa(JSON.stringify(keys));
-	assert.equal(devKeysFromEnv({ SPIKE_TOKEN: TOKEN, WP_CLI_DEV_KEYS_B64: b64 }), null);
-	assert.equal(devKeysFromEnv({ SPIKE_TOKEN: 'local-spike-token' }), null);
-	assert.deepEqual(devKeysFromEnv({ SPIKE_TOKEN: 'local-spike-token', WP_CLI_DEV_KEYS_B64: b64 }), keys);
-	assert.equal(devKeysFromEnv({ SPIKE_TOKEN: 'local-spike-token', WP_CLI_DEV_KEYS_B64: '%%%' }), null);
+	assert.equal(devKeysFromEnv({ SPIKE_TOKEN: TOKEN, DEV_LOCAL: '1', WP_CLI_DEV_KEYS_B64: b64 }), null);
+	assert.equal(devKeysFromEnv({ SPIKE_TOKEN: 'local-spike-token', DEV_LOCAL: '1' }), null);
+	assert.equal(devKeysFromEnv({ SPIKE_TOKEN: 'local-spike-token', WP_CLI_DEV_KEYS_B64: b64 }), null);
+	assert.equal(devKeysFromEnv({ SPIKE_TOKEN: 'local-spike-token', DEV_LOCAL: 'yes', WP_CLI_DEV_KEYS_B64: b64 }), null);
+	assert.deepEqual(devKeysFromEnv({ SPIKE_TOKEN: 'local-spike-token', DEV_LOCAL: '1', WP_CLI_DEV_KEYS_B64: b64 }), keys);
+	assert.equal(devKeysFromEnv({ SPIKE_TOKEN: 'local-spike-token', DEV_LOCAL: '1', WP_CLI_DEV_KEYS_B64: '%%%' }), null);
 });
 
 test('the local token accepts the test JWT without fetching certs', async () => {
@@ -392,7 +394,7 @@ test('the local token accepts the test JWT without fetching certs', async () => 
 	let ran = 0;
 	const res = await handleWpCli(
 		post(jwt, 'local-spike-token', '{"argv":["option","get","siteurl"]}'),
-		env({ SPIKE_TOKEN: 'local-spike-token', WP_CLI_DEV_KEYS_B64: b64 }),
+		env({ SPIKE_TOKEN: 'local-spike-token', DEV_LOCAL: '1', WP_CLI_DEV_KEYS_B64: b64 }),
 		{
 			now: () => NOW,
 			lock: { running: false },
@@ -420,11 +422,32 @@ test('the local token accepts the test JWT without fetching certs', async () => 
 	assert.equal(fetched, 1);
 });
 
+test('the local token without DEV_LOCAL refuses a JWT signed by an injected dev key', async () => {
+	const keys = await testKeys();
+	const b64 = btoa(JSON.stringify([keys.pub]));
+	const jwt = await signJwt(keys.privateKey, payload());
+	let ran = 0;
+	const res = await handleWpCli(
+		post(jwt, 'local-spike-token', '{"argv":["option","get","siteurl"]}'),
+		env({ SPIKE_TOKEN: 'local-spike-token', WP_CLI_DEV_KEYS_B64: b64 }),
+		{
+			now: () => NOW,
+			lock: { running: false },
+			log: () => {},
+			fetch: async () => { throw new Error('fetch'); },
+			runCli: async () => { ran += 1; return { exit: 0, stdout: 'ran', stderr: '', truncated: false }; },
+		},
+	);
+	assert.equal(res.status, 404);
+	assert.equal(ran, 0);
+});
+
 test('a short wall and a slow hook are local only', async () => {
-	assert.deepEqual(wpCliTestCtl(env({ WP_CLI_WALL_MS: '200', WP_CLI_SLOW_MS: '3000' })), {});
-	assert.deepEqual(wpCliTestCtl({ SPIKE_TOKEN: 'local-spike-token', WP_CLI_WALL_MS: '25000', WP_CLI_SLOW_MS: '0' }), {});
+	assert.deepEqual(wpCliTestCtl(env({ WP_CLI_WALL_MS: '200', WP_CLI_SLOW_MS: '3000', DEV_LOCAL: '1' })), {});
+	assert.deepEqual(wpCliTestCtl({ SPIKE_TOKEN: 'local-spike-token', DEV_LOCAL: '1', WP_CLI_WALL_MS: '25000', WP_CLI_SLOW_MS: '0' }), {});
+	assert.deepEqual(wpCliTestCtl({ SPIKE_TOKEN: 'local-spike-token', WP_CLI_WALL_MS: '200', WP_CLI_SLOW_MS: '3000' }), {});
 	assert.deepEqual(
-		wpCliTestCtl({ SPIKE_TOKEN: 'local-spike-token', WP_CLI_WALL_MS: '200', WP_CLI_SLOW_MS: '3000' }),
+		wpCliTestCtl({ SPIKE_TOKEN: 'local-spike-token', DEV_LOCAL: '1', WP_CLI_WALL_MS: '200', WP_CLI_SLOW_MS: '3000' }),
 		{ wallMs: 200, slowMs: 3000 },
 	);
 	const keys = await testKeys();
@@ -432,7 +455,7 @@ test('a short wall and a slow hook are local only', async () => {
 	let seen = null;
 	await handleWpCli(
 		post(jwt, 'local-spike-token', '{"argv":["option","get","siteurl"]}'),
-		env({ SPIKE_TOKEN: 'local-spike-token', WP_CLI_WALL_MS: '200', WP_CLI_SLOW_MS: '3000' }),
+		env({ SPIKE_TOKEN: 'local-spike-token', DEV_LOCAL: '1', WP_CLI_WALL_MS: '200', WP_CLI_SLOW_MS: '3000' }),
 		{
 			keys: [keys.pub],
 			now: () => NOW,

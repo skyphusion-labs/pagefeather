@@ -5,12 +5,21 @@
 # #1260 does not write those values yet. The operator sets them to the wp-admin app.
 # Secrets are not recorded. Test: deploy/tests/wp-cli-endpoint-test.sh.
 
-wp_cli_endpoint_check() {
-  # Local engine-check seams (#1258). A deploy never sets them. The route
-  # honors them only when SPIKE_TOKEN is the local dev token.
+# Local engine-check seams (#1258). run.sh writes DEV_LOCAL=1. No deploy path
+# renders it. The route honors a seam only when that var is 1 and SPIKE_TOKEN
+# is the local dev token. Every deploy path calls this and refuses the var,
+# the local token, and the three seam vars.
+wp_cli_local_seam_check() {
+  [ -z "${DEV_LOCAL:-}" ] || { echo "DEV_LOCAL is set by the local runner only (#1258)" >&2; return 2; }
   [ -z "${WP_CLI_DEV_KEYS_B64:-}" ] || { echo "WP_CLI_DEV_KEYS_B64 is a local engine check only (#1258)" >&2; return 2; }
   [ -z "${WP_CLI_WALL_MS:-}" ] || { echo "WP_CLI_WALL_MS is a local engine check only (#1258)" >&2; return 2; }
   [ -z "${WP_CLI_SLOW_MS:-}" ] || { echo "WP_CLI_SLOW_MS is a local engine check only (#1258)" >&2; return 2; }
+  [ "${SPIKE_TOKEN:-}" = local-spike-token ] && { echo "SPIKE_TOKEN must not be the local dev token on a deploy (#1258)" >&2; return 2; }
+  return 0
+}
+
+wp_cli_endpoint_check() {
+  wp_cli_local_seam_check || return 2
   case "${WP_CLI_ENDPOINT:-}" in
     "") return 0 ;;
     on) ;;

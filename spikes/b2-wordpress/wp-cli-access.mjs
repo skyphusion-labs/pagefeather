@@ -38,12 +38,17 @@ export function createCertCache() {
 
 const certCache = createCertCache();
 
-// The local engine check injects its public JWK here. A deploy refuses the var.
-// Any other spike token ignores it, so a production secret never takes the test key.
+// The local engine check injects its public JWK here. Both gates must hold:
+// SPIKE_TOKEN is the local dev token, and DEV_LOCAL is 1. run.sh is the only
+// writer of DEV_LOCAL. A deploy refuses that var, this key, and the local token.
 const LOCAL_SPIKE_TOKEN = 'local-spike-token';
 
+export function localDevGate(env) {
+	return !!(env && env.SPIKE_TOKEN === LOCAL_SPIKE_TOKEN && env.DEV_LOCAL === '1');
+}
+
 export function devKeysFromEnv(env) {
-	if (!env || env.SPIKE_TOKEN !== LOCAL_SPIKE_TOKEN) return null;
+	if (!localDevGate(env)) return null;
 	const raw = env.WP_CLI_DEV_KEYS_B64;
 	if (typeof raw !== 'string' || raw.length === 0 || raw.length > 16384) return null;
 	try {

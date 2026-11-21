@@ -17,6 +17,8 @@ WFP=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 # object_time_vars (#703, #708): the same rule as deploy.sh.
 # shellcheck source=../object-time.sh
 . "$WFP/../object-time.sh"
+# shellcheck source=../lib/wp-cli-endpoint.sh
+. "$WFP/../lib/wp-cli-endpoint.sh" # #1258: refuse DEV_LOCAL, the local spike token, and the three seams
 # shellcheck source=../lib/memory-reuse.sh
 . "$WFP/../lib/memory-reuse.sh" # #603: PHP_MEMORY_REUSE and BOOT_GATE, one rule with deploy/a-settings.sh
 # shellcheck source=SCRIPTDIR/../lib/remote-packs.sh
@@ -608,6 +610,8 @@ woo_extras_var() {
   esac
 }
 render_user() { # render_user <site> <origin>
+  # #1258: the same refusal as deploy.sh and render-conf.sh. Nothing here renders DEV_LOCAL.
+  wp_cli_local_seam_check || return 2
   local s=$1 origin=$2 mail_binding mail_vars http_allow ts_vars php_env
   # WFP_PHP_ENV (#434): a measurement build may set USE_ZEND_ALLOC=1 so memory_get_usage reads
   # Zend's own numbers. JSON only, no single quote (it sits in a TOML literal string).
