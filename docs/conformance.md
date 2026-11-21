@@ -38,9 +38,12 @@ content, and `render_user` checks as the last guard.
 2. **Seed** (it also activates the two WooCommerce test plugins the line copied in; Gutenberg's stay inactive): `B=<site> ADMIN_PASSWORD=<the workspace's> python3 -I tests/conformance/seed.py <out>` (#775). It owns all
    setup and checks each item. `<out>/creds.env` (mode 600, `export` lines) holds the admin's account password, which
    is an application password (one value passes both the login form and Basic, #762), and the customer's.
-   For the wc and wc-api suites, seed with `SEED_RESET_STORE=1`: the seed first resets the store (`GET
-   wc-cleanup/v1/reset`, with Basic auth, as upstream's "reset" project does), only on a marked throwaway, and records it in
-   `seed.json`. Without it the store keeps every product of earlier runs, and the shop page differs from stock.
+   For the wc and wc-api suites, seed with `SEED_RESET_STORE=1`: the seed first restores Basic auth (a new
+   application password), then resets the store (`GET wc-cleanup/v1/reset` with that password, as upstream's
+   "reset" project does), only on a marked throwaway, before any content step, and records it in `seed.json`.
+   A wp run's revoke-all spec leaves the form login working and Basic dead (#1151). The reset does not send the
+   password from creds.env. Without the reset the store keeps every product of earlier runs, and the shop page
+   differs from stock.
 3. **Run:** `. <out>/creds.env`, then `runner.py prepare` (it checks the seed and never writes), then the suite
    (`tests/conformance/vps-run.sh`). Each run asserts that the auth setup really logged in (`runner.py check-state`).
 4. **The REST routes:** `tests/conformance/routes.py` (#779) over the site's own index, with `WP_PASSWORD`.
@@ -48,6 +51,7 @@ content, and `render_user` checks as the last guard.
    **Reseed after every wp run, too.** The wp suite's "revoke all the application passwords" spec revokes the seed's
    application password, so Basic auth answers 401 until the next seed (measured 2026-11-20 on `cf759p`: a REST upload
    got 401 right after a wp run). The account password still matches it, so the next seed logs in through the form.
+   That seed mints a new application password before the store reset (#1151).
 6. **A WordPress-only site** (no WooCommerce, e.g. a Workers Free tier): seed with `SEED_NO_WOO=1`. The seed then skips the
    WooCommerce items and names each one as skipped in `seed.json`; it fails if the site does have `wc/v3`. Run wp and gb only.
 

@@ -43,8 +43,11 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
 
   8. the block editor welcome guide is dismissed (wp_persisted_preferences / REST meta persisted_preferences), so post-new.php opens an interactable canvas (#759, #605).
 
-  0. SEED_RESET_STORE=1 (the wc and wc-api seeds): before item 1, reset the store with GET wc-cleanup/v1/reset (Basic
-     auth, as upstream's reset project does), on a marked throwaway only; recorded as store_reset in seed.json.
+  0. SEED_RESET_STORE=1 (the wc and wc-api seeds): before item 1, restore Basic with a new
+     application password, then reset the store with GET wc-cleanup/v1/reset. A wp run's
+     revoke-all spec deletes every application password. The form login still works. Basic
+     with the creds password is 401 (#1151). The reset uses the new password, on a marked
+     throwaway only, and is recorded as store_reset in seed.json.
   9. --theme <slug> (optional): activates that installed theme (the admin's own activation link on themes.php) and
      checks it is the active stylesheet. joan's runner asks twentytwentythree before wc and wc-api: WooCommerce's
      external setup activates it, and the wp and gb global setups switch to twentytwentyone before.
@@ -318,6 +321,24 @@ def basic(user, pw, route="/wp/v2/users/me"):
     return c
 
 
+def fresh_application_password(opener, nonce):
+    """A new application password for this logged-in admin, spaces removed, or None.
+
+    A wp suite revoke-all deletes every application password. The account password
+    still passes the form. Basic with it answers 401 until a new one exists (#1151).
+    """
+    _c, me = rest(opener, nonce, "/wp/v2/users/me?context=edit")
+    uid = me.get("id") if isinstance(me, dict) else None
+    if not uid:
+        return None
+    _c, made = rest(opener, nonce, "/wp/v2/users/%s/application-passwords" % uid,
+                    {"name": "conformance-reset-%d" % int(time.time())}, "POST")
+    app = made.get("password") if isinstance(made, dict) else None
+    if not isinstance(app, str) or not app:
+        return None
+    return app.replace(" ", "")
+
+
 
 def first_published_link(posts):
     """The link of the first REST post, or empty when the list has no post."""
@@ -402,18 +423,25 @@ def main():
     if not a:
         refuse("the admin cannot log in through the form: %s" % n)
 
-    # 0. SEED_RESET_STORE=1 (the wc and wc-api seeds): reset the store FIRST, as upstream's "reset" project does before
-    # its setup (fixtures/reset.setup.ts: GET wc-cleanup/v1/reset). Without it the store grows run after run (cf759hl,
-    # 2026-11-20: 26 leftover products made WooCommerce's result count a second role=alert, 6 strict-mode failures).
-    # Only on a marked throwaway: the reset deletes every order, product, coupon, term and media file.
+    # 0. SEED_RESET_STORE=1 (the wc and wc-api seeds): reset the store before any content step, as upstream's
+    # "reset" project does before its setup (fixtures/reset.setup.ts: GET wc-cleanup/v1/reset). Without it the
+    # store grows run after run (cf759hl, 2026-11-20: 26 leftover products made WooCommerce's result count a
+    # second role=alert, 6 strict-mode failures). Only on a marked throwaway: the reset deletes every order,
+    # product, coupon, term and media file.
+    # The route checks Authorization: Basic itself (wp_authenticate, then manage_woocommerce). A cookie session
+    # gets 403 (measured on cf759p). A wp run's revoke-all spec deletes every application password. The account
+    # password from creds.env still passes the form, and Basic with it answers 401 (#1151). Mint a new
+    # application password on this form session, then send that. Do not send the creds password.
     if RESET_STORE:
         if not marked:
             refuse("SEED_RESET_STORE=1 needs the throwaway marker (a local site without it is never reset)")
-        # The route checks the Authorization: Basic header itself (wp_authenticate, then manage_woocommerce), so a cookie
-        # session gets 403 (measured on cf759p): send Basic with the admin's current password.
+        fresh = fresh_application_password(a, n)
+        basic_pw = fresh
         t0 = time.time()
-        tok = base64.b64encode(("%s:%s" % (ADMIN_USER, pw)).encode()).decode()
-        c, _b, _h = req(jar(), "/?rest_route=/wc-cleanup/v1/reset", headers={"Authorization": "Basic " + tok})
+        c = 0
+        if basic_pw:
+            tok = base64.b64encode(("%s:%s" % (ADMIN_USER, basic_pw)).encode()).decode()
+            c, _b, _h = req(jar(), "/?rest_route=/wc-cleanup/v1/reset", headers={"Authorization": "Basic " + tok})
         check("store reset first (SEED_RESET_STORE, wc-cleanup/v1/reset)", c == 200, status=c, s=round(time.time() - t0, 1))
         report["store_reset"] = {"status": c, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
