@@ -77,6 +77,7 @@ import { Container, ContainerProxy, getContainer } from '@cloudflare/containers'
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
 import { memfsHeld, fsSampleWhy } from './memfs-held.mjs';
+import { probeArm, traceColo, renderRequest } from './placement-probe.mjs';
 // Compiled PHP (OPcache file cache) made by opcache.sh with this same PHP build.
 import opcacheZip from './build/opcache.zip';
 // #1022: the bundle's own zips, a fixed cost (#394 floor probes): memfs-held.mjs leaves views of them out.
@@ -2396,7 +2397,9 @@ function pageCacheRoute(req, url, env) {
 		!PAGE_CACHE_NO_PARAM.some((k) => url.searchParams.has(k)) &&
 		!req.headers.has('authorization') &&
 		// An operator request never goes to the cached entrypoint (perf-headers.mjs).
-		!isOperatorRequest(req)
+		!isOperatorRequest(req) &&
+		// #1277 probe: its direct and render arms render in the gateway's own (placed) fetch handler.
+		!['direct', 'render'].includes(probeArm(req, env))
 	);
 }
 function pageCacheHeaders(req, url, r, out, env, failed = 0) {
@@ -4654,7 +4657,9 @@ export class Pages extends WorkerEntrypoint {
 		if (req.headers.get(SELF_CACHE_ONLY_HEADER) === '1') return selfCacheMissResponse();
 		// #296 step 1: the page version is part of the cache key only; WordPress never sees it.
 		if (pageVersions.pageVersionsOn(this.env, dbHandler)) req = pageVersions.stripPcv(req);
-		const r = await site.fetch(req, this.env, this.ctx);
+		const probe = probeArm(req, this.env); // #1277 probe, explained below
+		const probeColo = probe === 'pages' || probe === 'loop' ? await traceColo(fetch) : null;
+		const r = probe !== 'loop' ? await site.fetch(req, this.env, this.ctx) : await this.ctx.exports.default.fetch(renderRequest(req, this.env.PLACEMENT_PROBE_KEY));
 		// So a test can see which entrypoint answered (the gateway sets nothing).
 		const out = new Response(r.body, r);
 		out.headers.set('x-entrypoint', 'pages');
@@ -4664,6 +4669,14 @@ export class Pages extends WorkerEntrypoint {
 		// headers; never let the edge cache keep that copy for the next visitor. cache-control alone
 		// was not enough: the edge obeys cloudflare-cdn-cache-control over it (perf-headers.mjs).
 		if (isOperatorRequest(req)) noStoreAnywhere(out.headers);
+		// #1277 probe: pages rendered here as today, loop handed the render to the gateway's fetch handler (above). The
+		// answer says where each side ran, and is never stored.
+		if (probeColo) {
+			out.headers.set('x-pf-probe-arm', probe);
+			out.headers.set('x-pf-probe-colo-pages', probeColo);
+			noStoreAnywhere(out.headers);
+			console.log(JSON.stringify({ m: 'placement-probe', at: 'pages', arm: probe, colo: probeColo, id: req.headers.get('x-perf-id') || undefined }));
+		}
 		return out;
 	}
 	// An RPC method, so not cached. A purge reaches only the cache of the
@@ -4690,6 +4703,10 @@ export default {
 		// #1005: GET, HEAD and OPTIONS only. A 301 on any other method is followed as GET and the body is lost.
 		const merged = collapsedSlashRedirect(req.url, req.method);
 		if (merged) return Response.redirect(merged, 301);
+		// #1277 probe (off unless PLACEMENT_PROBE_KEY; placement-probe.mjs): direct (the control) and render (Pages' loop arm)
+		// skip the page cache (pageCacheRoute) and render below, in this placed fetch handler. Never stored.
+		const probe = probeArm(req, env);
+		const probeColo = probe === 'direct' || probe === 'render' ? await traceColo(fetch) : null;
 		let pcvMissed = false;
 		if (pageCacheRoute(req, url, env)) {
 			const h = new Headers(req.headers);
@@ -4703,6 +4720,14 @@ export default {
 			pcvMissed = true;
 		}
 		const r = await site.fetch(req, env, ctx);
+		if (probeColo) {
+			const pout = new Response(r.body, r);
+			pout.headers.set('x-pf-probe-arm', probe);
+			pout.headers.set('x-pf-probe-colo-render', probeColo);
+			noStoreAnywhere(pout.headers);
+			console.log(JSON.stringify({ m: 'placement-probe', at: 'gateway', arm: probe, colo: probeColo, id: req.headers.get('x-perf-id') || undefined }));
+			return pout;
+		}
 		if (!pcvMissed) return r;
 		// Served without a version: no cache in front (a zone cache on a custom domain) may keep it.
 		const out = new Response(r.body, r);
