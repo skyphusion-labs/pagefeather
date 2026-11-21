@@ -77,7 +77,9 @@ test('#1152 cronBuildState: ok only when the worker, the object and its last ala
 });
 test('#1152 index.js: the alarm records its OWN BUILD_ID first, /_build reports it, /_cron-build uses cronBuildState', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	assert.match(src, /\tasync alarm\(\) \{\n\t\t\/\/ #1152[^\n]*\n(\t\t\/\/[^\n]*\n)*\t\tawait this\.ctx\.storage\.put\(CRON_ALARM_BUILD_KEY, \{ build: BUILD_ID, at: Date\.now\(\) \}\);/);
+	// #1186: a cron-off approach A object returns first (no leg runs there, so no build to record); otherwise the build is
+	// the alarm's first write.
+	assert.match(src, /\tasync alarm\(\) \{\n(\t\t\/\/[^\n]*\n)*\t\tif \(aCronObjectOff\(this\.env\)\) \{\n(\t\t\t[^\n]*\n)+\t\t\}\n\t\t\/\/ #1152[^\n]*\n(\t\t\/\/[^\n]*\n)*\t\tawait this\.ctx\.storage\.put\(CRON_ALARM_BUILD_KEY, \{ build: BUILD_ID, at: Date\.now\(\) \}\);/);
 	assert.match(src, /if \(url\.pathname === '\/_build'\) \{ const ab = await this\.ctx\.storage\.get\(CRON_ALARM_BUILD_KEY\); return Response\.json\(\{ build: BUILD_ID, alarmBuild: \(ab && ab\.build\) \|\| null, alarmAt: \(ab && ab\.at\) \|\| null,/);
 	assert.match(src, /state: cronBuildState\(\{ worker: BUILD_ID, cron, alarm \}\), same: cronBuildState\(\{ worker: BUILD_ID, cron, alarm \}\) === 'ok'/);
 	assert.doesNotMatch(src, /CRON_ALARM_BUILD_KEY, \{ build: (tick|vp)/, 'never a value a tick wrote');
