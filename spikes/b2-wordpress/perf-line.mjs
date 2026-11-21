@@ -35,6 +35,9 @@ export function aPerfLine(f) {
 		opCached: num(f.opCached),
 		opFull: typeof f.opFull === 'boolean' ? f.opFull : undefined,
 		rfN: num(f.rfN),
+		rfAhead: num(f.rfAhead), // #1169: packs fetched ahead of their open, and how many an open then used
+		rfAheadHit: num(f.rfAheadHit),
+		rfWaitMs: num(f.rfWaitMs), // #1169: the time opens WAITED on packs (rfMs sums every fetch, read-aheads too)
 		rfKiB: num(f.rfKiB),
 		rfMs: num(f.rfMs),
 		rfFail: num(f.rfFail),

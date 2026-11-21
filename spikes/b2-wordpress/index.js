@@ -697,6 +697,13 @@ let fetchBudget = null;
 let siteState = 'none';
 let remoteState = 'none';
 const remoteOn = () => Boolean(OPCACHE_REMOTE && ENV && ENV.OPCACHE_REMOTE !== 'off');
+// #1169: how many OPcache packs to fetch AHEAD of an open (remote-packs.mjs readAhead). Default 1: a cold boot reads
+// the next pack in index order on half its steps (measured), and PHP works about 50 ms between demands, about one
+// live fetch. REMOTE_READAHEAD=0 turns it off; at most 3.
+function remoteReadAhead(env) {
+	const v = env && env.REMOTE_READAHEAD !== undefined && env.REMOTE_READAHEAD !== '' ? Number(env.REMOTE_READAHEAD) : 1;
+	return Number.isInteger(v) && v >= 0 ? Math.min(v, 3) : 1;
+}
 // The loader's open() asks this first (prepare.sh, #563). null: open now. A promise: PHP waits for the
 // pack; if it rejects, the open fails with EIO and OPcache compiles the script from source.
 function remoteOpenHook(path) {
@@ -712,7 +719,7 @@ function remoteOpenHook(path) {
 // the boot itself made (the site self-check). The post-boot start snapshot missed them (pf570m: rsN 13
 // against rsPacks 14 on a booting request).
 function remoteCounters() {
-	return { rfN: stats.rfN, rfBytes: stats.rfBytes, rfMs: stats.rfMs, rfFail: stats.rfFail, rfCapped: stats.rfCapped, rsN: stats.rsN, rsBytes: stats.rsBytes, rsMs: stats.rsMs, rsFail: stats.rsFail, rsCapped: stats.rsCapped, rsRetry: stats.rsRetry };
+	return { rfAhead: stats.rfAhead || 0, rfAheadHit: stats.rfAheadHit || 0, rfWaitMs: stats.rfWaitMs || 0, rfN: stats.rfN, rfBytes: stats.rfBytes, rfMs: stats.rfMs, rfFail: stats.rfFail, rfCapped: stats.rfCapped, rsN: stats.rsN, rsBytes: stats.rsBytes, rsMs: stats.rsMs, rsFail: stats.rsFail, rsCapped: stats.rsCapped, rsRetry: stats.rsRetry };
 }
 function remoteReadHook(stream, kind) {
 	return siteHooks ? siteHooks.read(stream, kind) : null;
@@ -2060,7 +2067,7 @@ async function boot(origin) {
 		const cap = softCap;
 		const holdBytes = intEnv(ENV.REMOTE_HOLD_KIB, 0, 65536, REMOTE_HOLD_BYTES / 1024) * 1024;
 		// #569: the shared budget; OPcache opens stop at the soft cap (a compile), site opens go on.
-		remotePacks = createRemotePacks({ index: OPCACHE_REMOTE, fetchPack: fetchRemotePack, parse: zipEntries, stats, budget: fetchBudget, limit: 'soft', holdBytes, log: (o) => console.error(JSON.stringify(o)) });
+		remotePacks = createRemotePacks({ index: OPCACHE_REMOTE, fetchPack: fetchRemotePack, parse: zipEntries, stats, budget: fetchBudget, limit: 'soft', holdBytes, readAhead: remoteReadAhead(ENV), log: (o) => console.error(JSON.stringify(o)) });
 		let n = 0;
 		for (const [name, [, size]] of Object.entries(OPCACHE_REMOTE.files)) {
 			const full = OPCACHE_DIR + '/' + name;
@@ -5165,7 +5172,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 					// the high-water of held packs (after LRU eviction; a dropped pack is garbage until V8
 					// collects it, which /_headroom measures, not this field), and the DISTINCT packs fetched:
 					// rfN minus rfPacks is the refetch count, the held budget thrashing.
-					...(OPCACHE_REMOTE ? { rfN: stats.rfN - remote0.rfN, rfKiB: Math.round((stats.rfBytes - remote0.rfBytes) / 1024), rfMs: stats.rfMs - remote0.rfMs, rfFail: stats.rfFail - remote0.rfFail, rfCapped: stats.rfCapped - remote0.rfCapped, rfHeldKiB: remotePacks ? Math.round(remotePacks.lastHeldMax() / 1024) : 0, rfPacks: remotePacks ? remotePacks.lastDistinct() : 0 } : {}),
+					...(OPCACHE_REMOTE ? { rfN: stats.rfN - remote0.rfN, rfAhead: stats.rfAhead - remote0.rfAhead, rfAheadHit: stats.rfAheadHit - remote0.rfAheadHit, rfWaitMs: stats.rfWaitMs - remote0.rfWaitMs, rfKiB: Math.round((stats.rfBytes - remote0.rfBytes) / 1024), rfMs: stats.rfMs - remote0.rfMs, rfFail: stats.rfFail - remote0.rfFail, rfCapped: stats.rfCapped - remote0.rfCapped, rfHeldKiB: remotePacks ? Math.round(remotePacks.lastHeldMax() / 1024) : 0, rfPacks: remotePacks ? remotePacks.lastDistinct() : 0 } : {}),
 					...(ledgerActive ? { mem: ledgerSnapshot('end') } : {}), // #394: the isolate memory ledger
 					bytes: r.bytes.length,
 					httpCalls: stats.httpCalls - start.httpCalls,
@@ -5184,7 +5191,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			} else {
 				// #1078: approach A (PHP in the Worker, index-a.js) logs the same timing line, so a tail can time a real suite
 				// request: wall, boot, PHP time, and the query count and round-trip total (one bridge call per MySQL query).
-				console.log(JSON.stringify(aPerfLine({ id: memIdOf(req, env).id, method: req.method, path: url.pathname, status: r.httpStatusCode, iso: ISOLATE_ID, lockWaitMs: runLockWaitMs, isoAgeS: Math.round((Date.now() - isolateStart) / 1000), rt: runtimeSerial, rtAgeS: Math.round((Date.now() - runtimeBootAt) / 1000), boot: booted, bootWaitMs, phpMs: phpOnlyMs, dbN: d.calls, dbMs: d.ms, wallMs: Date.now() - tBoot, wasm1MiB: Math.round(wasmBytes / 1048576), recycled: recycleWhy || null, rfN: stats.rfN - remote0.rfN, rfKiB: Math.round((stats.rfBytes - remote0.rfBytes) / 1024), rfMs: stats.rfMs - remote0.rfMs, rfFail: stats.rfFail - remote0.rfFail, rsN: stats.rsN - remote0.rsN, rsKiB: Math.round((stats.rsBytes - remote0.rsBytes) / 1024), rsMs: stats.rsMs - remote0.rsMs, rsFail: stats.rsFail - remote0.rsFail, httpN: stats.httpCalls - start.httpCalls, httpMs: stats.httpMs - (start.httpMs || 0), inflates: stats.inflates - start.inflates, inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024), ocCalls: stats.ocCalls - start.ocCalls, ocHits: stats.ocHits - start.ocHits, l2N: stats.l2N - start.l2N, l2Hits: stats.l2Hits - start.l2Hits, l2Misses: (stats.l2N - start.l2N) - (stats.l2Hits - start.l2Hits), l2Ms: stats.l2Ms - start.l2Ms, ...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full } : {}) })));
+				console.log(JSON.stringify(aPerfLine({ id: memIdOf(req, env).id, method: req.method, path: url.pathname, status: r.httpStatusCode, iso: ISOLATE_ID, lockWaitMs: runLockWaitMs, isoAgeS: Math.round((Date.now() - isolateStart) / 1000), rt: runtimeSerial, rtAgeS: Math.round((Date.now() - runtimeBootAt) / 1000), boot: booted, bootWaitMs, phpMs: phpOnlyMs, dbN: d.calls, dbMs: d.ms, wallMs: Date.now() - tBoot, wasm1MiB: Math.round(wasmBytes / 1048576), recycled: recycleWhy || null, rfN: stats.rfN - remote0.rfN, rfAhead: stats.rfAhead - remote0.rfAhead, rfAheadHit: stats.rfAheadHit - remote0.rfAheadHit, rfWaitMs: stats.rfWaitMs - remote0.rfWaitMs, rfKiB: Math.round((stats.rfBytes - remote0.rfBytes) / 1024), rfMs: stats.rfMs - remote0.rfMs, rfFail: stats.rfFail - remote0.rfFail, rsN: stats.rsN - remote0.rsN, rsKiB: Math.round((stats.rsBytes - remote0.rsBytes) / 1024), rsMs: stats.rsMs - remote0.rsMs, rsFail: stats.rsFail - remote0.rsFail, httpN: stats.httpCalls - start.httpCalls, httpMs: stats.httpMs - (start.httpMs || 0), inflates: stats.inflates - start.inflates, inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024), ocCalls: stats.ocCalls - start.ocCalls, ocHits: stats.ocHits - start.ocHits, l2N: stats.l2N - start.l2N, l2Hits: stats.l2Hits - start.l2Hits, l2Misses: (stats.l2N - start.l2N) - (stats.l2Hits - start.l2Hits), l2Ms: stats.l2Ms - start.l2Ms, ...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full } : {}) })));
 			}
 			const response = new Response(r.bytes, { status: r.httpStatusCode, headers: out });
 			// #394 (b): a recycled runtime is RELEASED, not only forgotten. bootPromise = null alone left

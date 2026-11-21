@@ -78,7 +78,7 @@ export function createFetchBudget({ soft = REMOTE_FETCH_CAP, hard = SITE_FETCH_C
 // retries/retryDelayMs/sleep: a failed fetch is tried again `retries` times after a fixed delay
 //   (site: 1, so one transient ASSETS hiccup is not a 500). Each retry is counted, and needs budget.
 const realSleep = (ms) => new Promise((r) => setTimeout(r, ms));
-export function createRemotePacks({ index, fetchPack, parse, stats, cap = REMOTE_FETCH_CAP, holdBytes = REMOTE_HOLD_BYTES, log = () => {}, prefix = 'rf', budget = null, limit = 'soft', retries = 0, retryDelayMs = 50, sleep = realSleep }) {
+export function createRemotePacks({ index, fetchPack, parse, stats, cap = REMOTE_FETCH_CAP, holdBytes = REMOTE_HOLD_BYTES, log = () => {}, prefix = 'rf', budget = null, limit = 'soft', retries = 0, retryDelayMs = 50, sleep = realSleep, readAhead = 0, aheadHeadroom = 8, aheadSlackBytes = null }) {
 	// packNo -> Map(name -> entry), this request only. A Map keeps insertion order: the first key is
 	// the least recently used pack (touch() moves a pack to the end).
 	const held = new Map();
@@ -89,6 +89,14 @@ export function createRemotePacks({ index, fetchPack, parse, stats, cap = REMOTE
 	const distinct = new Set(); // packs fetched in this request: N minus this is the refetch (thrash) count
 	let lastDistinct = 0;
 	const pending = new Map(); // packNo -> promise of the fetch in flight, THIS request only
+	// #1169 read-ahead: packs fetched AHEAD of an open (not yet opened), and the bytes of every fetch in flight (so a
+	// read-ahead starts only when it and everything already in flight fit the hold budget without an eviction).
+	const ahead = new Set();
+	const aheadWasted = new Set(); // #1169: read ahead and evicted or dropped unopened: not read ahead again this request
+	let pendingBytes = 0;
+	// #1169: a read-ahead may sit ONE pack above the held budget (never evicting anything); the next real open's hold
+	// trims back to the budget. Default: the largest pack.
+	const slack = aheadSlackBytes === null || aheadSlackBytes === undefined ? index.packs.reduce((m, pk) => Math.max(m, pk.bytes), 0) : aheadSlackBytes;
 	// #569 audit (the #568 class): every fetch is started by an open() of a live request and awaited
 	// by it, through the loader's Suspending import; nothing here runs in the background, so nothing
 	// needs waitUntil. But a request can END with a fetch in flight (an exception, a dropped isolate
@@ -102,7 +110,7 @@ export function createRemotePacks({ index, fetchPack, parse, stats, cap = REMOTE
 	const lim = budget ? limit : 'soft';
 	let cappedLogged = false;
 	const K = (s) => prefix + s;
-	for (const s of ['N', 'Bytes', 'Ms', 'Fail', 'Capped', 'Retry']) if (typeof stats[K(s)] !== 'number') stats[K(s)] = 0;
+	for (const s of ['N', 'Bytes', 'Ms', 'Fail', 'Capped', 'Retry', 'Ahead', 'AheadHit', 'AheadDrop', 'AheadFail', 'WaitMs']) if (typeof stats[K(s)] !== 'number') stats[K(s)] = 0;
 	const packAt = (packNo) => (packNo === -1 ? index.hot : index.packs[packNo]);
 
 	function touch(packNo) {
@@ -110,18 +118,31 @@ export function createRemotePacks({ index, fetchPack, parse, stats, cap = REMOTE
 		held.delete(packNo);
 		held.set(packNo, m);
 	}
-	function hold(packNo, m, size) {
+	function hold(packNo, m, size, evict = true) {
 		if (packNo === -1) {
 			hot = m;
 			return;
 		}
 		held.set(packNo, m);
 		heldBytes += size;
-		// Least recently used out first, but never the pack just fetched.
-		for (const k of held.keys()) {
-			if (heldBytes <= holdBytes || k === packNo) break;
-			held.delete(k);
-			heldBytes -= index.packs[k].bytes;
+		if (!evict) {
+			// #1169: a read-ahead evicts nothing (the pack in use may still be read lazily); it sits in the slack.
+			if (heldBytes > heldMax) heldMax = heldBytes;
+			return;
+		}
+		// Least recently used out first, but never the pack just fetched. #1169: OPENED packs go before an unopened
+		// read-ahead (it is the pack an open is about to need); a read-ahead evicted unopened is marked wasted.
+		for (const pass of [0, 1]) {
+			for (const k of [...held.keys()]) {
+				if (heldBytes <= holdBytes) break;
+				if (k === packNo || (pass === 0 && ahead.has(k))) continue;
+				held.delete(k);
+				heldBytes -= index.packs[k].bytes;
+				if (ahead.delete(k)) {
+					aheadWasted.add(k);
+					stats[K('AheadDrop')]++;
+				}
+			}
 		}
 		if (heldBytes > heldMax) heldMax = heldBytes;
 	}
@@ -138,15 +159,50 @@ export function createRemotePacks({ index, fetchPack, parse, stats, cap = REMOTE
 		if (h !== pk.sha256) throw new Error(pk.name + ': SHA-256 mismatch');
 		return bytes;
 	}
+	// A read-ahead pack, now opened for real: counted once as a hit.
+	function aheadUsed(packNo) {
+		if (ahead.delete(packNo)) stats[K('AheadHit')]++;
+	}
+	// #1169: fetch the packs after packNo ahead of their open, only when they fit the budget with no eviction and the
+	// fetch cap keeps aheadHeadroom for real opens. Its bytes are HELD only if they still fit when it lands.
+	function readAheadFrom(packNo) {
+		for (let k = 1; k <= readAhead; k++) {
+			const n = packNo + k;
+			if (n >= index.packs.length || held.has(n) || pending.has(n) || failed.has(n) || aheadWasted.has(n)) continue;
+			const pk = index.packs[n];
+			if (heldBytes + pendingBytes + pk.bytes > holdBytes + slack) return;
+			if (bud.n + aheadHeadroom >= (lim === 'hard' ? bud.hard : bud.soft)) return;
+			start(n, true).catch(() => {});
+		}
+	}
 	function load(packNo) {
 		if (packNo === -1 ? hot !== null : held.has(packNo)) {
-			if (packNo !== -1) touch(packNo);
+			if (packNo !== -1) {
+				touch(packNo);
+				aheadUsed(packNo);
+				if (readAhead > 0) readAheadFrom(packNo); // keep the chain going on a hit too
+			}
 			return null;
 		}
-		if (pending.has(packNo)) return pending.get(packNo);
+		if (pending.has(packNo)) {
+			aheadUsed(packNo);
+			if (packNo !== -1 && readAhead > 0) readAheadFrom(packNo);
+			return pending.get(packNo);
+		}
 		const pk = packAt(packNo);
 		if (failed.has(packNo)) return Promise.reject(new Error(pk.name + ' failed earlier in this request'));
+		const p = start(packNo, false);
+		if (packNo !== -1 && readAhead > 0) readAheadFrom(packNo);
+		return p;
+	}
+	function start(packNo, isAhead) {
+		const pk = packAt(packNo);
 		if (!bud.take(lim)) return Promise.reject(capped(pk));
+		if (isAhead) {
+			stats[K('Ahead')]++;
+			ahead.add(packNo);
+		}
+		if (packNo !== -1) pendingBytes += pk.bytes;
 		stats[K('N')]++;
 		distinct.add(packNo);
 		const t = Date.now();
@@ -167,9 +223,18 @@ export function createRemotePacks({ index, fetchPack, parse, stats, cap = REMOTE
 				}
 			}
 			if (mine !== epoch) throw new Error(pk.name + ': its request ended before the fetch did');
+			pendingBytes -= pk.bytes;
 			const m = new Map();
 			for (const e of parse(bytes)) m.set(e.name, e);
-			hold(packNo, m, bytes.length);
+			// #1169: a read-ahead not opened yet is held only if it fits with no eviction (never the pack in use).
+			if (isAhead && ahead.has(packNo) && heldBytes + bytes.length > holdBytes + slack) {
+				stats[K('AheadDrop')]++;
+				ahead.delete(packNo);
+				aheadWasted.add(packNo);
+				stats[K('Bytes')] += bytes.length;
+				return;
+			}
+			hold(packNo, m, bytes.length, !(isAhead && ahead.has(packNo))); // #1169: an unopened read-ahead evicts nothing
 			stats[K('Bytes')] += bytes.length;
 		})().then(
 			() => {
@@ -179,6 +244,15 @@ export function createRemotePacks({ index, fetchPack, parse, stats, cap = REMOTE
 			(e) => {
 				stats[K('Ms')] += Date.now() - t;
 				if (mine !== epoch) throw e; // an ended request's fetch: no count, no mark on the next request
+				if (packNo !== -1 && pending.get(packNo) !== undefined) pendingBytes = Math.max(0, pendingBytes - pk.bytes);
+				if (isAhead && ahead.has(packNo)) {
+					// #1169: a failed read-ahead nobody opened yet is no mark: a real open fetches again.
+					stats[K('AheadFail')]++;
+					ahead.delete(packNo);
+					pending.delete(packNo);
+					log({ m: 'remote', kind: prefix, aheadFail: String((e && e.message) || e).slice(0, 200) });
+					throw e;
+				}
 				stats[K('Fail')]++;
 				failed.add(packNo);
 				pending.delete(packNo);
@@ -198,7 +272,14 @@ export function createRemotePacks({ index, fetchPack, parse, stats, cap = REMOTE
 		// null: no wait (not a remote file, or its pack is held). A promise: wait for the pack.
 		open(name) {
 			const f = index.files[name];
-			return f === undefined ? null : load(f[0]);
+			const p = f === undefined ? null : load(f[0]);
+			if (p) {
+				// #1169: the time this open waits on its pack (rfWaitMs), whatever the outcome.
+				const t0 = Date.now();
+				const done = () => { stats[K('WaitMs')] += Date.now() - t0; };
+				p.then(done, done);
+			}
+			return p;
 		},
 		// The bytes of a remote file from its held pack, or null when the pack is not held.
 		data(name, out) {
@@ -210,6 +291,9 @@ export function createRemotePacks({ index, fetchPack, parse, stats, cap = REMOTE
 		endRequest() {
 			epoch++;
 			pending.clear();
+			pendingBytes = 0;
+			ahead.clear();
+			aheadWasted.clear();
 			held.clear();
 			heldBytes = 0;
 			lastHeldMax = heldMax;

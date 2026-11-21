@@ -6,6 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createRemotePacks, createFetchBudget, REMOTE_HOLD_BYTES, REMOTE_FETCH_CAP, SITE_FETCH_CAP, SITE_HOLD_BYTES } from '../remote-packs.mjs';
 
 // Three packs of 1000 bytes; file fN lives in pack N. parse() gives each pack one entry.
@@ -266,4 +267,126 @@ test('a stale fetch that rejects after its request ended is not an unhandled rej
 	} finally {
 		process.off('unhandledRejection', onUnhandled);
 	}
+});
+
+// #1169 (strummer, cf759hl, 45 boots): a booted request spent a median 1,697 ms on 32 SERIAL pack fetches, PHP paused on
+// each. Measured locally: a cold boot reads the NEXT pack in index order on half its steps, and PHP works about 50 ms
+// between demands (a live fetch is about 54 ms). readAhead: when a pack is fetched for an open, the next one(s) are
+// fetched alongside, hidden behind PHP's work. Never at the cost of correctness: a read-ahead is HELD only if it fits the
+// budget WITHOUT evicting anything (files are read lazily from held packs, so evicting the pack in use would fail reads),
+// it leaves headroom in the fetch cap for real opens, and a failed read-ahead is no mark on a later open.
+function makeAhead(holdBytes, { cap = 64, readAhead = 1, fail = new Set(), slow = 0, aheadSlackBytes } = {}) {
+	const fetched = [];
+	const stats = {};
+	const r = createRemotePacks({ index, parse, stats, cap, holdBytes, readAhead, aheadSlackBytes, fetchPack: async (name) => { fetched.push(name); if (slow) await new Promise((ok) => setTimeout(ok, slow)); if (fail.has(name)) throw new Error('boom'); return bytes[Number(name.slice(3, 4))].slice(); } });
+	return { r, fetched, stats };
+}
+test('#1169 read-ahead: opening pack 0 also fetches pack 1, and the open of f1 finds it (no wait, counted as a hit)', async () => {
+	const { r, fetched, stats } = makeAhead(3000);
+	await open(r, 'f0');
+	await new Promise((ok) => setTimeout(ok, 5));
+	assert.deepEqual(fetched, ['oc-0.zip', 'oc-1.zip'], 'the next pack was fetched alongside');
+	assert.equal(r.open('f1'), null, 'already held: f1 opens without a wait');
+	assert.equal(stats.rfAhead, 2, 'opening f1 read ahead pack 2 in turn');
+	assert.equal(stats.rfAheadHit, 1);
+	assert.equal(stats.rfN, 3, 'every fetch counted');
+});
+test('#1169 read-ahead: an open of a pack still in flight waits on that one fetch, never a second', async () => {
+	const { r, fetched } = makeAhead(3000, { slow: 20 });
+	const p0 = r.open('f0');
+	await p0;
+	const p1 = r.open('f1');
+	assert.ok(p1, 'still in flight: a promise');
+	await p1;
+	assert.equal(fetched.filter((n) => n === 'oc-1.zip').length, 1);
+	assert.ok(r.data('f1'));
+});
+// Measured (order1169b, the first rule): "fit with no eviction" almost never held while streaming (the held set sits at
+// the budget): 3 read-aheads, 1 hit in a cold boot. A read-ahead may use ONE pack of slack above the budget
+// (aheadSlackBytes, default the largest pack), still never evicting; the real open's hold trims back to the budget.
+test('#1169 read-ahead within the slack: fetched and held above the budget by one pack, the pack in use never evicted', async () => {
+	const { r, fetched, stats } = makeAhead(1000);
+	await open(r, 'f0');
+	await new Promise((ok) => setTimeout(ok, 5));
+	assert.ok(r.data('f0'), 'the pack in use stays');
+	assert.ok(r.data('f1'), 'the read-ahead is held, in the slack');
+	assert.equal(stats.rfAhead, 1);
+	await open(r, 'f1');
+	assert.equal(r.heldPacks() <= 2, true);
+	assert.equal(fetched.filter((n) => n === 'oc-1.zip').length, 1);
+});
+test('#1169 read-ahead never evicts: with no slack and no room, it is not fetched and the pack in use stays', async () => {
+	const { r, fetched, stats } = makeAhead(1000, { aheadSlackBytes: 0 });
+	await open(r, 'f0');
+	await new Promise((ok) => setTimeout(ok, 5));
+	assert.ok(r.data('f0'), 'the pack in use was not evicted');
+	assert.equal(r.data('f1'), null, 'no room: not held');
+	assert.equal(fetched.includes('oc-1.zip'), false, 'no room: not even fetched');
+	assert.equal(stats.rfAhead || 0, 0);
+});
+test('#1169 read-ahead leaves headroom in the fetch cap for real opens', async () => {
+	const { r, fetched } = makeAhead(3000, { cap: 1 });
+	await open(r, 'f0');
+	await new Promise((ok) => setTimeout(ok, 5));
+	assert.deepEqual(fetched, ['oc-0.zip'], 'the only fetch left went to the real open');
+});
+test('#1169 a failed read-ahead is no mark: the real open fetches again', async () => {
+	const { r, fetched, stats } = makeAhead(3000, { fail: new Set(['oc-1.zip']) });
+	await open(r, 'f0');
+	await new Promise((ok) => setTimeout(ok, 5));
+	assert.equal(stats.rfAheadFail, 1);
+	await assert.rejects(open(r, 'f1'), 'the real open fetches again (and here fails again: EIO, a compile)');
+	assert.equal(fetched.filter((n) => n === 'oc-1.zip').length, 2);
+});
+test('#1169 readAhead 0 (the default for any caller that does not ask) changes nothing', async () => {
+	const { r, fetched } = makeAhead(3000, { readAhead: 0 });
+	await open(r, 'f0');
+	await new Promise((ok) => setTimeout(ok, 5));
+	assert.deepEqual(fetched, ['oc-0.zip']);
+});
+test('#1169 index.js: the OPcache packs read one ahead (REMOTE_READAHEAD, default 1); the perf line counts it', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /remotePacks = createRemotePacks\(\{ index: OPCACHE_REMOTE, [^\n]*readAhead: remoteReadAhead\(ENV\)/);
+	assert.match(src, /rfAhead: stats\.rfAhead - remote0\.rfAhead, rfAheadHit: stats\.rfAheadHit - remote0\.rfAheadHit/);
+});
+
+// Measured (order1169b with the slack): 16 read-aheads, 7 used, but 26 fetches with 9 refetches. Opening a pack
+// reached out of order (17) read 18 ahead four times, never opened; and a read-ahead (1) was evicted unopened by the
+// next real open's hold. So: a read-ahead wasted once (evicted or dropped unopened) is not read ahead again in the
+// request, and a real open's eviction takes OPENED packs before an unopened read-ahead.
+const bytes5 = [0, 1, 2, 3, 4].map((n) => new Uint8Array(1000).fill(n + 1));
+const index5 = { id: 't5', packs: bytes5.map((b, n) => ({ name: 'oc-' + n + '.zip', bytes: b.length, sha256: createHash('sha256').update(b).digest('hex') })), files: Object.fromEntries([0, 1, 2, 3, 4].map((n) => ['f' + n, [n, 4]])) };
+function make5(holdBytes, readAhead = 1) {
+	const fetched = [];
+	const stats = {};
+	const r = createRemotePacks({ index: index5, parse, stats, cap: 64, holdBytes, readAhead, aheadSlackBytes: 1000, fetchPack: async (name) => { fetched.push(name); return bytes5[Number(name.slice(3, 4))].slice(); } });
+	return { r, fetched, stats };
+}
+const settle = () => new Promise((ok) => setTimeout(ok, 5));
+test('#1169 a real open evicts an OPENED pack before an unopened read-ahead', async () => {
+	const { r } = make5(2000);
+	await open(r, 'f0'); await settle(); // 0 open, 1 ahead
+	await open(r, 'f0'); // 0 used again: more recent than the unopened 1 in the LRU order
+	await open(r, 'f3'); await settle(); // 3 open (out of order): evicts 0 (opened), not the unopened 1
+	assert.ok(r.data('f1'), 'the unopened read-ahead survived');
+	assert.equal(r.data('f0'), null, 'the opened pack went first');
+});
+test('#1169 a read-ahead wasted once is not read ahead again in the request', async () => {
+	// The live pattern: an out-of-order pack (3) opened twice, its read-ahead (4) evicted unopened in between.
+	const { r, fetched } = make5(2000);
+	for (const f of ['f3', 'f0', 'f1', 'f2', 'f3', 'f0', 'f3']) { await open(r, f); await settle(); }
+	assert.equal(fetched.filter((n) => n === 'oc-4.zip').length, 1, 'pack 4 (never opened) read ahead once, not again: ' + fetched.join(','));
+});
+
+// #1169: with read-ahead, rfMs (the sum of every fetch's duration) counts fetches PHP never waited on. rfWaitMs is the
+// time OPENS waited on a pack: the number a boot's cost is, and the one the live before and after compares.
+test('#1169 rfWaitMs counts only the time opens waited (a held read-ahead is no wait)', async () => {
+	const { r, stats } = makeAhead(3000, { slow: 30 });
+	await open(r, 'f0');
+	const w0 = stats.rfWaitMs;
+	assert.ok(w0 >= 25, 'the first open waited its fetch: ' + w0);
+	await new Promise((ok) => setTimeout(ok, 60)); // the read-ahead of pack 1 lands while "PHP works"
+	await open(r, 'f1');
+	assert.ok(stats.rfWaitMs - w0 < 10, 'the read-ahead was held: no wait (' + (stats.rfWaitMs - w0) + ' ms)');
+	assert.ok(stats.rfMs >= 50, 'rfMs still sums both fetches');
 });
