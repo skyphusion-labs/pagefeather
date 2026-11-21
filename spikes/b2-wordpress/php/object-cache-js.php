@@ -65,6 +65,10 @@ class JS_Object_Cache {
 		}
 		$this->default_ttl = defined( 'JS_OBJECT_CACHE_TTL' ) ? (int) JS_OBJECT_CACHE_TTL : 0;
 		$this->force_off   = ! empty( $_SERVER['HTTP_X_OC_OFF'] );
+		// #1199: learn this request's transient names at shutdown (one autoloaded list, read with alloptions).
+		if ( function_exists( 'add_action' ) ) {
+			add_action( 'shutdown', array( $this, 'transient_learn' ), 1 );
+		}
 		if ( defined( 'JS_OBJECT_CACHE_VERSIONED' ) ) {
 			foreach ( explode( ',', (string) JS_OBJECT_CACHE_VERSIONED ) as $g ) {
 				$g = trim( $g );
@@ -133,8 +137,159 @@ class JS_Object_Cache {
 		return is_array( $reply ) ? $reply : array();
 	}
 
+	/**
+	 * #1199: transients are DURABLE. With this drop-in loaded, wp_using_ext_object_cache() is true, so core keeps
+	 * transients ONLY in the object cache (set_transient() -> wp_cache_set( ..., 'transient' )). Approach A persists
+	 * only an allowlist across requests, so a transient died with its request (a permalink save lost its notice); on
+	 * b-dosql it lived in the object's Map and died with the object. These groups are stored as core stores them with
+	 * no external cache: option rows _transient_<name> and _transient_timeout_<name> (_site_transient_* for the
+	 * site-transient group), through the option API, so the database is the one store, never the cross-request cache.
+	 * While WordPress installs (no tables yet) they stay per request, as before.
+	 */
+	private static function durable( $group ) {
+		return ( 'transient' === $group || 'site-transient' === $group ) && function_exists( 'skyphusion_transient_rows' ) && ! ( function_exists( 'wp_installing' ) && wp_installing() );
+	}
+
+	private static function now() {
+		return defined( 'SKYPHUSION_TRANSIENT_CLOCK' ) ? (int) call_user_func( SKYPHUSION_TRANSIENT_CLOCK ) : time();
+	}
+
+	/** @return array{0:string,1:string} the value row and the timeout row, core's names. */
+	private static function durable_names( $key, $group ) {
+		$p = 'site-transient' === $group ? '_site_transient_' : '_transient_';
+		return array( $p . $key, $p . 'timeout_' . $key );
+	}
+
+	// The rows are read and written DIRECTLY (skyphusion_transient_rows, _put, _delete), never through the options
+	// object cache: on approach A that group persists under the options version, and the wp_options version triggers
+	// skip transient rows on purpose (cache-versions.mjs), so a cached copy in another isolate could be stale. The rows
+	// are written with autoload off, so they never enter alloptions. Core's rule: expired rows go on read.
+	// #1199 cost (measured: 15 transient reads on a warm shop page, 14 on a product page, 36 on the dashboard, each a
+	// Hyperdrive query of about 14 ms): this request's rows in its OWN memory only (never across requests, so a write
+	// in another isolate is seen by the next request), the site's learned names read in ONE query at the first
+	// transient read, and the names this request read, learned at shutdown into one autoloaded option.
+	const HOT_TRANSIENTS_MAX = 300;
+	private $tmemo   = array(); // row name => array( found, value ), this request only
+	private $tprimed = false;
+	private $tread   = array(); // value-row names this request read
+
+	private static function hot_get() {
+		if ( defined( 'SKYPHUSION_TRANSIENT_HOT_GET' ) ) {
+			return call_user_func( SKYPHUSION_TRANSIENT_HOT_GET );
+		}
+		return get_option( 'skyphusion_hot_transients' );
+	}
+
+	private static function hot_set( $names ) {
+		if ( defined( 'SKYPHUSION_TRANSIENT_HOT_SET' ) ) {
+			return call_user_func( SKYPHUSION_TRANSIENT_HOT_SET, $names );
+		}
+		return update_option( 'skyphusion_hot_transients', $names, true );
+	}
+
+	private static function timeout_of( $o ) {
+		return 0 === strpos( $o, '_site_transient_' ) ? '_site_transient_timeout_' . substr( $o, 16 ) : '_transient_timeout_' . substr( $o, 11 );
+	}
+
+	/** Load the rows not in this request's memory, in one query. */
+	private function tload( array $names ) {
+		$need = array();
+		foreach ( $names as $n ) {
+			if ( ! isset( $this->tmemo[ $n ] ) ) {
+				$need[] = $n;
+			}
+		}
+		if ( ! $need ) {
+			return;
+		}
+		$rows = skyphusion_transient_rows( $need );
+		foreach ( $need as $n ) {
+			$this->tmemo[ $n ] = array_key_exists( $n, $rows ) ? array( true, $rows[ $n ] ) : array( false, null );
+		}
+	}
+
+	private function tprime() {
+		if ( $this->tprimed ) {
+			return;
+		}
+		$this->tprimed = true;
+		$hot           = self::hot_get();
+		if ( ! is_array( $hot ) || ! $hot ) {
+			return;
+		}
+		$names = array();
+		foreach ( $hot as $o ) {
+			if ( is_string( $o ) && '' !== $o ) {
+				$names[] = $o;
+				$names[] = self::timeout_of( $o );
+			}
+		}
+		$this->tload( $names );
+	}
+
+	/** At shutdown: add the names this request read to the learned list (only when it grows; capped). */
+	public function transient_learn() {
+		if ( ! $this->tread ) {
+			return;
+		}
+		$hot = self::hot_get();
+		$hot = is_array( $hot ) ? array_values( array_filter( $hot, 'is_string' ) ) : array();
+		$new = array_values( array_diff( array_keys( $this->tread ), $hot ) );
+		if ( ! $new || count( $hot ) >= self::HOT_TRANSIENTS_MAX ) {
+			return;
+		}
+		self::hot_set( array_slice( array_merge( $hot, $new ), 0, self::HOT_TRANSIENTS_MAX ) );
+	}
+
+	private function durable_get( $key, $group, &$found ) {
+		list( $o, $t ) = self::durable_names( $key, $group );
+		$this->tprime();
+		$this->tload( array( $o, $t ) );
+		$this->tread[ $o ] = true;
+		if ( $this->tmemo[ $t ][0] && (int) $this->tmemo[ $t ][1] < self::now() ) {
+			skyphusion_transient_delete( array( $o, $t ) );
+			$this->tmemo[ $o ] = array( false, null );
+			$this->tmemo[ $t ] = array( false, null );
+			$found             = false;
+			++$this->cache_misses;
+			return false;
+		}
+		$found = $this->tmemo[ $o ][0];
+		if ( $found ) {
+			++$this->cache_hits;
+			return $this->tmemo[ $o ][1];
+		}
+		++$this->cache_misses;
+		return false;
+	}
+
+	private function durable_set( $key, $data, $group, $expire ) {
+		list( $o, $t ) = self::durable_names( $key, $group );
+		$expire        = (int) $expire;
+		// As core: an expiry writes the timeout row; no expiry leaves an existing timeout row as it is.
+		if ( $expire > 0 ) {
+			skyphusion_transient_put( $t, self::now() + $expire );
+			$this->tmemo[ $t ] = array( true, self::now() + $expire );
+		}
+		$ok                = skyphusion_transient_put( $o, $data );
+		$this->tmemo[ $o ] = array( true, $data );
+		return $ok;
+	}
+
+	private function durable_delete( $key, $group ) {
+		list( $o, $t ) = self::durable_names( $key, $group );
+		$this->tmemo[ $o ] = array( false, null );
+		$this->tmemo[ $t ] = array( false, null );
+		return skyphusion_transient_delete( array( $o, $t ) ) > 0;
+	}
+
 	private function persistent( $group ) {
 		if ( $this->force_off ) {
+			return false;
+		}
+		// #1199: transients never go to the cross-request cache: the database holds them (durable(); per request while
+		// WordPress installs).
+		if ( 'transient' === $group || 'site-transient' === $group ) {
 			return false;
 		}
 		// #491: on approach A, options stay per request whatever else says, UNLESS this request read
@@ -210,6 +365,9 @@ class JS_Object_Cache {
 	}
 
 	public function get( $key, $group = 'default', $force = false, &$found = null ) {
+		if ( self::durable( $group ) ) {
+			return $this->durable_get( $key, $group, $found );
+		}
 		$this->version_gate( $group );
 		if ( $this->has_local( $key, $group ) && ! $force ) {
 			$found = true;
@@ -233,6 +391,13 @@ class JS_Object_Cache {
 	}
 
 	public function get_multiple( $keys, $group = 'default', $force = false ) {
+		if ( self::durable( $group ) ) {
+			$out = array();
+			foreach ( $keys as $key ) {
+				$out[ $key ] = $this->get( $key, $group, $force );
+			}
+			return $out;
+		}
 		$this->version_gate( $group );
 		$out  = array();
 		$need = array();
@@ -270,6 +435,9 @@ class JS_Object_Cache {
 	}
 
 	public function set( $key, $data, $group = 'default', $expire = 0 ) {
+		if ( self::durable( $group ) ) {
+			return $this->durable_set( $key, $data, $group, $expire );
+		}
 		$this->version_gate( $group );
 		$this->cache[ $group ][ $key ] = self::copy( $data );
 		unset( $this->missing[ $group ][ $key ] );
@@ -314,6 +482,9 @@ class JS_Object_Cache {
 	}
 
 	public function delete( $key, $group = 'default' ) {
+		if ( self::durable( $group ) ) {
+			return $this->durable_delete( $key, $group );
+		}
 		$this->version_gate( $group );
 		$had = $this->has_local( $key, $group );
 		unset( $this->cache[ $group ][ $key ] );
@@ -444,4 +615,49 @@ function wp_cache_switch_to_blog( $blog_id ) {
 function wp_cache_reset() {
 	_deprecated_function( __FUNCTION__, '3.5.0', 'wp_cache_switch_to_blog()' );
 	$GLOBALS['wp_object_cache']->flush_runtime();
+}
+
+/**
+ * #1199: the transient rows, read and written directly in wp_options (JS_Object_Cache::durable()): never through the
+ * options object cache, autoload off. A test may define its own before this file loads.
+ */
+if ( ! function_exists( 'skyphusion_transient_rows' ) ) {
+	/** @return array<string, mixed> name => unserialized value, for the names that exist. */
+	function skyphusion_transient_rows( array $names ) {
+		global $wpdb;
+		if ( ! $names || ! isset( $wpdb ) ) {
+			return array();
+		}
+		$in   = implode( ',', array_fill( 0, count( $names ), '%s' ) );
+		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT option_name, option_value FROM {$wpdb->options} WHERE option_name IN ($in)", $names ) );
+		$out  = array();
+		foreach ( (array) $rows as $r ) {
+			$out[ $r->option_name ] = maybe_unserialize( $r->option_value );
+		}
+		return $out;
+	}
+	function skyphusion_transient_put( $name, $value ) {
+		global $wpdb;
+		return false !== $wpdb->replace( $wpdb->options, array( 'option_name' => $name, 'option_value' => maybe_serialize( $value ), 'autoload' => 'off' ), array( '%s', '%s', '%s' ) );
+	}
+	function skyphusion_transient_delete( array $names ) {
+		global $wpdb;
+		if ( ! $names ) {
+			return 0;
+		}
+		$in = implode( ',', array_fill( 0, count( $names ), '%s' ) );
+		return (int) $wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name IN ($in)", $names ) );
+	}
+}
+
+/**
+ * #1199: transients live in wp_options (JS_Object_Cache::durable()). Core's daily delete_expired_transients cron
+ * returns early while an external cache is in use (delete_expired_transients( $force_db = false )), so the drop-in
+ * runs core's own cleanup on the database instead, after core's no-op.
+ */
+function skyphusion_delete_expired_transients_db() {
+	delete_expired_transients( true );
+}
+if ( function_exists( 'add_action' ) ) {
+	add_action( 'delete_expired_transients', 'skyphusion_delete_expired_transients_db', 11 );
 }
