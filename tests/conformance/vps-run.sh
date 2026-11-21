@@ -6,7 +6,7 @@
 #   vps-run.sh baseline <suite> <work-dir> <run-dir>   run it on STOCK upstream (wp-env, Docker)
 #   vps-run.sh run      <suite> <work-dir> <run-dir>   run it on OUR throwaway (needs <run-dir>/env)
 #   vps-run.sh collect  <suite> <work-dir> <run-dir> <tarball>   tar the run's Playwright outputDir copy (#1211)
-#   box toolchain: git, Node (each suite pins its own), Docker for the baselines, and for wc also php-cli and composer
+#   box toolchain: git, Node (each suite pins its own), Docker for the baselines, and for wc also php-cli and composer and corepack
 #   suites: wp (wordpress-develop), wc (WooCommerce core profile), wc-api (its api-tests, the same checkout),
 #           wc-cpt (the wc @hpos tests with HPOS OFF, upstream envs/default-hpos-disabled; the same checkout), gb (Gutenberg)
 #
@@ -153,6 +153,10 @@ case "$act" in
           command -v "$tool" >/dev/null 2>&1 \
             || { echo "vps-run: STOP: the wc install needs $tool on the box (php-cli and composer: WooCommerce's postinstall runs composer install)" >&2; exit 3; }
         done
+        # #1287: the install runs "corepack enable" for WooCommerce's pinned pnpm. Node 25 and later no longer bundle
+        # corepack, so a bare call fails with "command not found" (exit 127) and no reason.
+        command -v corepack >/dev/null 2>&1 \
+          || { echo "vps-run: STOP: the wc install needs corepack on the box (Node 25 and later no longer bundle it: use Node 24, or install it, e.g. npm install -g corepack) (#1287)" >&2; exit 3; }
       fi ;;
     esac
     x mkdir -p "$work"
