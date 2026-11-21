@@ -32,7 +32,7 @@ render() {
       set -e
       . "$ROOT/deploy/a-settings.sh"; . "$ROOT/deploy/observability.sh"; . "$ROOT/deploy/render-conf.sh"
       out() { case "$1" in hyperdrive_id) echo HYPERDRIVE_ID ;; oc_kv_id) echo OC_KV_ID ;; *) echo "out: no stub for $1" >&2; return 1 ;; esac; }
-      a_settings_check a
+      a_settings_check "$VARIANT"
       cd "$APP" && render_conf' > "$dst" 2> "$T/render.err"
 }
 # compare <render.toml> <bench.toml> <label>: equal settings, apart from the two render-only lines.
@@ -176,5 +176,12 @@ render "$T/c1.toml"; rc=$?
 ok "the default (cron on) renders the minute schedule, not an empty list (rc $rc)" "$([ $rc = 0 ] && grep -qx 'crons = \["\* \* \* \* \*"\]' "$T/c1.toml" && ! grep -qx 'crons = \[\]' "$T/c1.toml" && echo 1 || echo 0)"
 render "$T/cd.toml" VARIANT=b-dosql; rc=$?
 ok "a DO tier (b-dosql, no approach A cron) renders crons = [] too, so a site moved off approach A loses its schedule (rc $rc)" "$([ $rc = 0 ] && grep -qx 'crons = \[\]' "$T/cd.toml" && echo 1 || echo 0)"
+# #1022: the recycle line and memory reuse render on the DO tiers through render_conf itself; unset renders neither.
+for v in b-dosql b-do; do
+	render "$T/m-$v.toml" VARIANT=$v PHP_MEMORY_REUSE=on RECYCLE_WASM_MIB=96; rc=$?
+	ok "#1022 $v with PHP_MEMORY_REUSE=on RECYCLE_WASM_MIB=96 renders both [vars] lines (rc $rc)" "$([ $rc = 0 ] && python3 -I "$HERE/canon.py" "$T/m-$v.toml" | grep -qx 'vars RECYCLE_WASM_MIB = "96"' && python3 -I "$HERE/canon.py" "$T/m-$v.toml" | grep -qx 'vars PHP_MEMORY_REUSE = "on"' && echo 1 || echo 0)"
+	render "$T/m0-$v.toml" VARIANT=$v; rc=$?
+	ok "#1022 $v unset renders neither (the defaults unchanged) (rc $rc)" "$([ $rc = 0 ] && ! grep -qE '^(RECYCLE_WASM_MIB|PHP_MEMORY_REUSE|BOOT_GATE) = ' "$T/m0-$v.toml" && echo 1 || echo 0)"
+done
 [ "$fails" = 0 ] && echo "a-render: all checks pass" || echo "a-render: $fails failing check(s)"
 exit $((fails > 0))

@@ -213,7 +213,8 @@ The admin memory fixes built on the b-dosql path, for approach A (b-dosql has th
 | `OPCACHE_A=1` | primes OPcache on the D1 build, as `spikes/b2-wordpress/opcache-a.sh` does (#218): no Docker, no local MySQL. An empty cache fails the deploy. Unset keeps the Docker MariaDB path, and without Docker that path ships no primed OPcache | |
 | `OPCACHE_REMOTE=1` | every OPcache file leaves the bundle, as packs under `/_pf/` (#563). The config gets `run_worker_first = ["/_pf/*"]` | `OPCACHE_A=1` (it records the file trace, cut to A's zips by `trace-filter.py`) |
 | `SITE_REMOTE=1` | `site.zip` leaves the bundle too (#569) | `OPCACHE_REMOTE=1` |
-| `RECYCLE_WASM_MIB` | the runtime recycle line, 64 to 240 MiB (#602). Unset is 100. Use 140 with the lean engine (#598) | |
+| `RECYCLE_WASM_MIB` | the runtime recycle line, 64 to 240 MiB (#602). Unset is the engine's own default: 140 on the lean engine, 100 on npm (#771). Variants `a`, `b-dosql` and `b-do` (#1022) | |
+| `PHP_MEMORY_REUSE=on` | a recycled runtime hands its WebAssembly memory to the next boot (#598, #705), with `BOOT_GATE=on` optional. Off by default: it failed #724's bars on lean (#598). The rules are `deploy/lib/memory-reuse.sh`, the same as deploy/wfp. Variants `b-dosql` and `b-do` only (#1022); variant `a` refuses it (#724) | `BOOT_GATE=on` needs it |
 | `PF_ENGINE_JS`, `PF_ENGINE_WASM` | build with another engine, for example the lean-trim artifact of the `pagefeather-engine` workflow (#592). Every variant | both, or neither |
 
 Before the upload, `deploy/wfp/remote_assets_check.py` refuses a remote build whose config lacks the `ASSETS` binding or `/_pf/` first. It is the same guard that deploy/wfp runs.

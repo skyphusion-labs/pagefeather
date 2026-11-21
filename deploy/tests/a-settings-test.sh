@@ -18,10 +18,14 @@ echo "1. refusals through deploy.sh"
 refuse "OPCACHE_A is for variant a only" VARIANT=b-dosql OPCACHE_A=1
 refuse "OPCACHE_REMOTE is for variant a or b-dosql only" VARIANT=b-do OPCACHE_REMOTE=1  # #598: b-dosql takes it (deploy/tests/dosql-remote-test.sh)
 refuse "SITE_REMOTE is for variant a or b-dosql only" VARIANT=b-do SITE_REMOTE=1
-refuse "RECYCLE_WASM_MIB is for variant a only" VARIANT=b-dosql RECYCLE_WASM_MIB=140
+# #1022: RECYCLE_WASM_MIB, PHP_MEMORY_REUSE and BOOT_GATE are settable on b-dosql and b-do too (checked below); c1 has no PHP runtime.
+refuse "RECYCLE_WASM_MIB is for variant a, b-dosql or b-do only" VARIANT=c1 RECYCLE_WASM_MIB=96
 refuse "OBJECT_CACHE_VERSIONS is for variant a only" VARIANT=b-dosql OBJECT_CACHE_VERSIONS=1
-refuse "PHP_MEMORY_REUSE is for variant a only" VARIANT=b-dosql PHP_MEMORY_REUSE=on
-refuse "BOOT_GATE is for variant a only" VARIANT=b-dosql BOOT_GATE=on
+refuse "PHP_MEMORY_REUSE is for variant a, b-dosql or b-do only" VARIANT=c1 PHP_MEMORY_REUSE=on
+refuse "BOOT_GATE is for variant a, b-dosql or b-do only" VARIANT=c1 BOOT_GATE=on
+refuse "BOOT_GATE=on needs PHP_MEMORY_REUSE=on" VARIANT=b-dosql BOOT_GATE=on
+refuse "RECYCLE_WASM_MIB must be an integer from 64 to 240" VARIANT=b-dosql RECYCLE_WASM_MIB=300
+refuse "PHP_MEMORY_REUSE must be on or unset" VARIANT=b-do PHP_MEMORY_REUSE=yes
 refuse "BOOT_GATE=on needs PHP_MEMORY_REUSE=on" VARIANT=a BOOT_GATE=on
 refuse "PHP_MEMORY_REUSE is not supported on variant a yet" VARIANT=a PHP_MEMORY_REUSE=on
 refuse "PHP_MEMORY_REUSE is not supported on variant a yet" VARIANT=a PHP_MEMORY_REUSE=on BOOT_GATE=on
@@ -214,6 +218,24 @@ ok "deploy.sh runs the guard on variant a before the deploy" "$(awk '/remote_ass
 # a-render-test.sh checks the rendered line itself).
 ok "the render writes WOO_EXTRAS = \"off\" into [vars]" "$(grep -c 'WOO_EXTRAS = "off"' "$ROOT/deploy/render-conf.sh" | grep -qx 1 && echo 1 || echo 0)"
 ok "deploy.sh checks WOO_EXTRAS before its first terraform step" "$(awk '/WOO_EXTRAS must be off or unset/ {c=NR} /log "terraform:/ && !t {t=NR} END {print (c && t && c < t) ? 1 : 0}' "$ROOT/deploy/deploy.sh")"
+
+# #1022: b-dosql and b-do take RECYCLE_WASM_MIB and PHP_MEMORY_REUSE through the SAME rules as deploy/wfp
+# (lib/memory-reuse.sh), so the reuse fix can ship on deploy.sh sites (cf759p, cf759f). The defaults are unchanged:
+# unset renders nothing.
+accept() { # accept <variant> [VAR=value...]: a_settings_check passes, and dosql_mem_vars prints the lines
+	local v=$1; shift
+	env -i PATH="$PATH" ROOT="$ROOT" "$@" bash -c '. "$ROOT/deploy/a-settings.sh"; a_settings_check "$0" && dosql_mem_vars' "$v" 2>&1
+}
+for v in b-dosql b-do; do
+	out=$(accept $v PHP_MEMORY_REUSE=on RECYCLE_WASM_MIB=96); rc=$?
+	ok "#1022 $v takes PHP_MEMORY_REUSE=on and RECYCLE_WASM_MIB=96 and renders both (rc $rc)" "$([ $rc = 0 ] && grep -qx 'RECYCLE_WASM_MIB = "96"' <<<"$out" && grep -qx 'PHP_MEMORY_REUSE = "on"' <<<"$out" && echo 1 || echo 0)"
+	out=$(accept $v); rc=$?
+	ok "#1022 $v with neither set renders nothing (the defaults unchanged) (rc $rc)" "$([ $rc = 0 ] && [ -z "$out" ] && echo 1 || echo 0)"
+	out=$(accept $v PHP_MEMORY_REUSE=on BOOT_GATE=on); rc=$?
+	ok "#1022 $v takes reuse with the gate (the valid set) (rc $rc)" "$([ $rc = 0 ] && grep -qx 'BOOT_GATE = "on"' <<<"$out" && echo 1 || echo 0)"
+done
+ok "#1022 render-conf.sh writes dosql_mem_vars for b-dosql and b-do" "$(grep -qE '^ *case "\$VARIANT" in b-dosql\|b-do\) dosql_mem_vars' "$ROOT/deploy/render-conf.sh" && echo 1 || echo 0)"
+ok "#1022 RECORDED_INPUTS carries RECYCLE_WASM_MIB, PHP_MEMORY_REUSE and BOOT_GATE" "$(. "$ROOT/deploy/lib/recorded-inputs.sh"; for v in RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE; do grep -qw "$v" <<<"$RECORDED_INPUTS" || { echo 0; exit; }; done; echo 1)"
 
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]
