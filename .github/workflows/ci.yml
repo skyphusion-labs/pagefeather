@@ -146,6 +146,8 @@ jobs:
           php spikes/b2-wordpress/tests/r2-reserve-release-test.php
       - name: Approach A literal tests (issue #79)
         run: php tests/a/literals-test.php
+      - name: "A PHP fatal or a 500 wp_die reaches the Worker as one scrubbed line (#1153)"
+        run: php spikes/b2-wordpress/tests/php-fatal-line-test.php
       - name: The query trace, operator only and measure only (#296 step 3)
         run: |
           php spikes/b2-wordpress/tests/hyperdrive-qtrace-test.php
