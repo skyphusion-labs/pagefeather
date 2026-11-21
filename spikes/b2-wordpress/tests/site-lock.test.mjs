@@ -82,7 +82,8 @@ test('approach A (index-a-lean.js) boots through index.js, so its wp-config gets
 // The notice mu-plugin must be in the build, and it must be inert without the constant.
 test('build.sh copies the code lock notice into mu-plugins', () => {
 	const build = readFileSync(new URL('../build.sh', import.meta.url), 'utf8');
-	assert.match(build, /cp [^\n]*php\/code-lock-notice\.php[^\n]*"\$wp\/wp-content\/mu-plugins\/"/);
+	// The mu-plugin list is one entry per line (MU_PLUGINS, build.sh), copied into mu-plugins in one cp.
+	assert.match(build, /MU_PLUGINS=\(\n(\t[^\n]+\n)*\tphp\/code-lock-notice\.php\n(\t[^\n]+\n)*\)\ncp "\$\{MU_PLUGINS\[@\]\}" "\$wp\/wp-content\/mu-plugins\/"/);
 });
 
 test('the notice mu-plugin returns first unless SKYPHUSION_CODE_LOCK is true', () => {
