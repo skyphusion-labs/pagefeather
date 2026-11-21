@@ -9,8 +9,11 @@
 #   2. the plan for this run deletes ANY cloudflare_r2_bucket (a rename or a variant change, too).
 # DESTROY_MEDIA=1 is the one way to delete it on purpose; the run says so. A plan that can not be read is a refusal
 # (fail closed), never a pass. A new site (no workspace yet) has nothing to lose, so check 1 passes and the plan decides.
+# #1168: a failed plan is tried once more after 10 seconds. Both tries are written to the guard log. The second
+# failure refuses the same way. A plan that was made is not tried again, so a real cloudflare_r2_bucket delete
+# still refuses at once.
 media_guard() {
-  local dir=$1 name=$2 vars=$3 plan
+  local dir=$1 name=$2 vars=$3 plan plan_log made attempt
   if [ "${DESTROY_MEDIA:-0}" = 1 ]; then
     echo "DESTROY_MEDIA=1: this run may delete $name's media bucket and every upload in it" >&2
     return 0
@@ -21,7 +24,23 @@ media_guard() {
     return 2
   fi
   plan="sites/$name.media-guard.plan"
-  if ! (cd "$dir" && terraform workspace select -or-create "$name" >/dev/null && terraform plan -input=false -lock=false -var-file="$vars" -out="$plan" > "sites/$name.media-guard.log" 2>&1); then
+  plan_log="$dir/sites/$name.media-guard.log"
+  made=0
+  attempt=1
+  : > "$plan_log"
+  # Only a failed plan is retried, and only once. A made plan falls through to the delete check.
+  while [ "$attempt" -le 2 ]; do
+    if [ "$attempt" -eq 2 ]; then
+      sleep 10
+    fi
+    echo "--- media-guard plan attempt $attempt ---" >> "$plan_log"
+    if (cd "$dir" && terraform workspace select -or-create "$name" >/dev/null && terraform plan -input=false -lock=false -var-file="$vars" -out="$plan" >> "sites/$name.media-guard.log" 2>&1); then
+      made=1
+      break
+    fi
+    attempt=$((attempt + 1))
+  done
+  if [ "$made" != 1 ]; then
     echo "refused: the plan for $name could not be made, so a media bucket delete can not be ruled out (see $dir/sites/$name.media-guard.log). Nothing was changed. (#1108)" >&2
     return 2
   fi
