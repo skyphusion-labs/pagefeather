@@ -82,5 +82,28 @@ ok "#1262: another input changed with REPLACE_INPUTS=1 and the same origin passe
 O=$(record VARIANT=a LOCATION=wnam SITE_ORIGIN=https://a.example.com)
 check "$O" VARIANT=a LOCATION=wnam SITE_ORIGIN=https://b.example.com REPLACE_INPUTS=1; rc=$?
 ok "#1262: a changed explicit SITE_ORIGIN is refused even with REPLACE_INPUTS=1 (rc $rc)" "$([ $rc = 2 ] && grep -q 'would move from https://a.example.com to https://b.example.com' "$T/err" && echo 1 || echo 0)"
+# #1285: a key this build does not know stops the deploy and names the key. REPLACE_INPUTS=1 drops
+# it and names it. A known key stays a normal difference, the same as before this change.
+b64() { python3 -I -c 'import base64, json, sys; print(base64.b64encode(json.dumps(json.loads(sys.argv[1]), sort_keys=False).encode()).decode(), end="")' "$1"; }
+U=$(b64 '{"VARIANT":"b-dosql","LOCATION":"enam","FUTURE_SETTING":"keep-me","NEXT_SETTING":"also"}')
+check "$U" VARIANT=b-dosql LOCATION=enam; rc=$?
+ok "#1285 deploy.sh: an unknown key stops the deploy and names each key (rc $rc)" "$([ $rc = 2 ] && grep -q 'not a known setting' "$T/err" && grep -q 'FUTURE_SETTING' "$T/err" && grep -q 'NEXT_SETTING' "$T/err" && ! grep -q 'ignored' "$T/err" && ! grep -q "this run" "$T/err" && echo 1 || echo 0)"
+E=$(b64 '{"VARIANT":"b-dosql","FUTURE_SETTING":""}')
+check "$E" VARIANT=b-dosql; rc=$?
+ok "#1285 deploy.sh: an unknown key with an empty value still stops (rc $rc)" "$([ $rc = 2 ] && grep -q 'FUTURE_SETTING' "$T/err" && grep -q 'not a known setting' "$T/err" && echo 1 || echo 0)"
+check "$U" VARIANT=b-dosql LOCATION=enam REPLACE_INPUTS=1; rc=$?
+ok "#1285 deploy.sh: REPLACE_INPUTS=1 proceeds and names each dropped key (rc $rc)" "$([ $rc = 0 ] && grep -q 'dropped unknown setting FUTURE_SETTING' "$T/err" && grep -q 'dropped unknown setting NEXT_SETTING' "$T/err" && ! grep -q 'ignored' "$T/err" && ! grep -q "recorded 'keep-me'" "$T/err" && echo 1 || echo 0)"
+check "$U" VARIANT=b-dosql LOCATION=wnam REPLACE_INPUTS=1; rc=$?
+ok "#1285 deploy.sh: REPLACE_INPUTS=1 still reports a known key that changed (rc $rc)" "$([ $rc = 0 ] && grep -q 'dropped unknown setting FUTURE_SETTING' "$T/err" && grep -q "LOCATION: recorded 'enam', this run 'wnam'" "$T/err" && ! grep -q 'not a known setting' "$T/err" && echo 1 || echo 0)"
+K=$(b64 '{"VARIANT":"b-dosql","LOCATION":"enam","MAIL_FROM":"wp-test@example.co"}')
+check "$K" VARIANT=b-dosql LOCATION=enam MAIL_FROM=wp-test@example.co; rc=$?
+ok "#1285 deploy.sh: a known key is kept as today (rc $rc)" "$([ $rc = 0 ] && ! grep -q 'not a known setting' "$T/err" && ! grep -q 'dropped unknown' "$T/err" && echo 1 || echo 0)"
+check "$K" VARIANT=b-dosql LOCATION=enam MAIL_FROM=other@example.co; rc=$?
+ok "#1285 deploy.sh: a known key with a new value is still a difference (rc $rc)" "$([ $rc = 2 ] && grep -q "MAIL_FROM: recorded 'wp-test@example.co', this run 'other@example.co'" "$T/err" && ! grep -q 'not a known setting' "$T/err" && echo 1 || echo 0)"
+# An origin move is refused even with REPLACE_INPUTS=1 (#1262). That run does not write the record,
+# so it must not say the unknown key was dropped.
+M=$(b64 '{"VARIANT":"a","LOCATION":"wnam","FUTURE_SETTING":"keep-me"}')
+check "$M" VARIANT=a LOCATION=wnam CUSTOM_DOMAIN=gate-test.pagefeather.dev REPLACE_INPUTS=1; rc=$?
+ok "#1285 deploy.sh: an origin refusal does not claim the unknown key was dropped (rc $rc)" "$([ $rc = 2 ] && grep -q 'would move' "$T/err" && ! grep -q 'dropped unknown setting' "$T/err" && echo 1 || echo 0)"
 [ "$fails" = 0 ] && echo "recorded-inputs: all checks pass" || echo "recorded-inputs: $fails failing check(s)"
 exit $((fails > 0))

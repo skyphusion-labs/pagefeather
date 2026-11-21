@@ -5,7 +5,11 @@
 # each difference, unless REPLACE_INPUTS=1 (deploy/wfp's name for the same confirmation). A setting recorded last time
 # and unset now is a difference: a rebuild never drops one silently (the #1108 data loss was MEDIA dropped this way).
 # Secrets are never recorded: only the names below, none of which holds one. Test: deploy/tests/recorded-inputs-test.sh.
+# #1285: a key in the record that this build does not know stops the deploy and names the key, unless
+# REPLACE_INPUTS=1, which drops that key and names it. The check is deploy/lib/unknown_setting.py guard,
+# the same function deploy/wfp uses. A known key stays a normal difference.
 RECORDED_INPUTS="VARIANT LOCATION MEDIA WOO_ACTIVE SITE_ORIGIN PLACEMENT A_CLIENT A_CRON MYSQL MYSQL_HOST MYSQL_DATABASE MAIL_FROM MAIL_FROM_NAME MAIL_ALLOWED_TO OBSERVABILITY OPCACHE_A OPCACHE_REMOTE SITE_REMOTE RECYCLE_WASM_MIB PHP_OVERFLOW PHP_OVERFLOW_POOL PHP_OVERFLOW_DEPTH OBJECT_CACHE_L2 OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE HTTP_ALLOW_HOSTS PDF_INVOICE REQUEST_FRAMES WOO_EXTRAS TURNSTILE_SITEKEY TURNSTILE_LOGIN TURNSTILE_LOSTPASSWORD TURNSTILE_WOO TURNSTILE_COMMENTS PLUGINS THEMES IMPORT_PLUGINS IMPORT_THEMES IMPORT_MU_PLUGINS SITE_TITLE CUSTOM_DOMAIN PHP_MEMORY_REUSE BOOT_GATE WP_CLI_ENDPOINT ACCESS_AUD ACCESS_TEAM"
+RECORDED_INPUTS_LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # deploy_inputs_value: this run's record, base64 of a JSON object of the names above that are SET (an empty value is
 # set). Word lists (PLUGINS and the like) are kept as given.
@@ -55,8 +59,11 @@ inputs_check() {
     return 0
   fi
   cur=$(deploy_inputs_value)
-  REC="$rec" CUR="$cur" REPLACE="${REPLACE_INPUTS:-0}" ORIGIN_MOVE="${ORIGIN_MOVE:-0}" NAME="$name" python3 -I -c '
-import base64, json, os, sys
+  REC="$rec" CUR="$cur" REPLACE="${REPLACE_INPUTS:-0}" ORIGIN_MOVE="${ORIGIN_MOVE:-0}" NAME="$name" LIB="$RECORDED_INPUTS_LIB" KNOWN="$RECORDED_INPUTS" python3 -I -c '
+import base64, io, json, os, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.environ["LIB"])
+import unknown_setting
 try:
     rec = json.loads(base64.b64decode(os.environ["REC"], validate=True))
     assert isinstance(rec, dict)
@@ -64,10 +71,18 @@ except Exception:
     print("refused: site %s has a recorded deploy_inputs that can not be read; nothing was changed (#1108)" % os.environ["NAME"], file=sys.stderr)
     sys.exit(2)
 cur = json.loads(base64.b64decode(os.environ["CUR"]) or b"{}")
-diff = [(k, rec.get(k, ""), cur.get(k, "")) for k in list(dict.fromkeys(list(rec) + list(cur))) if rec.get(k) != cur.get(k)]
-if not diff:
-    sys.exit(0)
 replace = os.environ["REPLACE"] == "1"
+# #1285: hold the lines until this check exits 0. An origin refusal does not write
+# the record, so it must not say an unknown key was dropped. A known key stays in
+# rec for the difference check below.
+held = io.StringIO()
+code, unknown = unknown_setting.guard(list(rec), os.environ["KNOWN"].split(), replace, held)
+if code:
+    sys.stderr.write(held.getvalue())
+    sys.exit(code)
+for k in unknown:
+    del rec[k]
+diff = [(k, rec.get(k, ""), cur.get(k, "")) for k in list(dict.fromkeys(list(rec) + list(cur))) if rec.get(k) != cur.get(k)]
 # #1262: the site ORIGIN (an explicit SITE_ORIGIN, else https://CUSTOM_DOMAIN, else the workers.dev default) never changes
 # by REPLACE_INPUTS alone. WP_HOME follows SITE_ORIGIN at boot, but siteurl and every absolute URL in the content
 # (uploads, links, menus) stay at the old origin in the database, and nothing here rewrites them. A move is asked for on
@@ -85,6 +100,9 @@ if o_rec != o_cur and os.environ.get("ORIGIN_MOVE", "0") != "1":
           "then set siteurl to the new origin and search-replace the old origin in the database. Nothing was changed. (#1262)"
           % (os.environ["NAME"], o_rec, o_cur), file=sys.stderr)
     sys.exit(2)
+if not diff:
+    sys.stderr.write(held.getvalue())
+    sys.exit(0)
 if o_rec != o_cur:
     print("ORIGIN_MOVE=1: site %s moves from %s to %s. Set siteurl and search-replace the old origin after this deploy; "
           "the deploy does not. (#1262)" % (os.environ["NAME"], o_rec, o_cur), file=sys.stderr)
@@ -94,6 +112,8 @@ for k, a, b in diff:
     print("  %s: recorded %r, this run %r" % (k, a, b), file=sys.stderr)
 if not replace:
     print("  Nothing was changed. (#1108)", file=sys.stderr)
-sys.exit(0 if replace else 2)
+    sys.exit(2)
+sys.stderr.write(held.getvalue())
+sys.exit(0)
 '
 }

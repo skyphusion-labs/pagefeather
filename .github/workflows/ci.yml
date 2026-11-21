@@ -673,6 +673,7 @@ jobs:
           python3 deploy/wfp/tests/check-test.py
           python3 -I deploy/wfp/tests/obs-settings-test.py
           python3 -I deploy/wfp/tests/obs-record-test.py
+          bash deploy/wfp/tests/unknown-setting-test.sh
           bash deploy/wfp/tests/obs-redact-site-test.sh
           bash deploy/wfp/tests/obs-full-live-test.sh
           bash deploy/wfp/tests/fault-early-test.sh
