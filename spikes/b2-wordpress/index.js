@@ -2855,6 +2855,9 @@ async function httpOp(op) {
 			const self = selfFetchRoute({ sameHost: isSelfHost(url), inObject: Boolean(ocCtx && ocCtx.inObject), overflowed: Boolean(ocCtx && ocCtx.overflowed), poolAvailable: selfFetchPoolAvailable(ENV, ovs), capped: overHeld(ovs, ovHeld) });
 			const why = self.route === 'refuse' ? self.why : self.route === 'out' ? httpRefusal(url) : (url.protocol === 'http:' || url.protocol === 'https:' ? null : 'only http and https');
 			if (why) {
+				// #1226: a refused self-fetch returns here, before selfFetchOnPool.
+				// Log one line, or 0 self-fetch lines cannot tell a refusal from a hop never sent.
+				if (self.route === 'refuse') console.log(JSON.stringify({ m: 'self-fetch', outcome: 'refused', why, method, path: url.pathname, iso: ISOLATE_ID, parent: runCallId }));
 				out = { error: why };
 				return out;
 			}
