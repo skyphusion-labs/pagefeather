@@ -8,10 +8,18 @@
 # SAMPLE_STORE is the fixture file (from R2 wp-test-fixtures, key SAMPLE_STORE_KEY in
 # sample-store.env). Its sha256 must equal the pin, or nothing is loaded.
 # Steps: check the pin -> gunzip into a mode-700 work dir -> deploy/wfp/site import (dump to
-# SQLite, site address to this site, per-table count check) -> replace the admin password with
-# this site's own Terraform admin_password (WordPress's $wp bcrypt form; the password and the
-# token never go in argv) -> read back: a real admin login, the published products through the
-# Store API (?rest_route=, which works under any permalink structure), the orders and users through /_dbcounts. Exit 1 on any mismatch.
+# SQLite, site address to this site, per-table count check) -> clear this site's uploads
+# (the fixture is the dump only, so the bucket must not keep the previous store's files)
+# -> replace the admin password with this site's own Terraform admin_password (WordPress's
+# $wp bcrypt form; the password and the token never go in argv) -> read back: upload objects
+# are 0, a real admin login, the published products through the Store API (?rest_route=, which
+# works under any permalink structure), the orders and users through /_dbcounts. Exit 1 on any mismatch.
+# The clear lists uploads/ in this site's own bucket (wp-wfp-<site>-media), prints the count,
+# deletes each key, and reads the count back. It does not touch _snapshots/ or _build/, and it
+# does not run unless the pin matched and the import replaced the database.
+# An operator then uploads image-01.jpg (the WooCommerce conformance image, or any file of
+# that name). WordPress must store it as image-01.jpg. A stored name image-01-1.jpg means an
+# object of the original name was still in the bucket.
 # The site must be built with WooCommerce primed in its OPcache (WOO_ACTIVE=1, #313), or the
 # store exceeds the isolate memory on every request.
 set -euo pipefail
@@ -41,6 +49,20 @@ DUMP="$WORK/store.sql" WORK="$WORK/import" "$ROOT/deploy/wfp/site" import "$s"
 tfr site init -input=false >/dev/null; tfr site workspace select "$s" >/dev/null
 HOST=$(tfr site output -raw hostname); O="https://$HOST"
 tfr site output -raw spike_token > "$WORK/tok"; tfr site output -raw admin_password > "$WORK/pw"
+# The pin matched and the import replaced the database. The fixture ships no media
+# files, so drop uploads/ in this site's own bucket. A wrong prefix is refused
+# before any request (clear-uploads.sh).
+EP=$(tfr site output -raw r2_endpoint)
+B=$(media_bucket "$s")
+ttl=${R2_TEMP_TTL:-21600}
+cf=$WORK/r2.cred
+r2_temp_mint "$B" "$ttl" "$cf" || { rm -f "$cf"; echo "sample store: no temporary credential for $B; uploads were not cleared" >&2; exit 1; }
+R2_CRED_FILE=$cf R2_CRED_REFRESH="$(r2_temp_refresh_cmd "$B" "$ttl" "$cf")" \
+  "${CLEAR_UPLOADS:-$HERE/clear-uploads.sh}" "$s" "$EP" "$B" "uploads/" \
+  || { rm -f "$cf" "$cf.flock" "$cf.minted"; echo "sample store: uploads were not cleared on $s; the database was already replaced" >&2; exit 1; }
+rm -f "$cf" "$cf.flock" "$cf.minted"
+natt=$(python3 -I "$HERE/attachment-count.py" "$WORK/store.sql")
+echo "sample store: dump attachment rows: $natt; the fixture ships no media files, so the upload object count must be 0"
 tfr site workspace select default >/dev/null
 hdr() { printf 'header = "x-spike-token: %s"\n' "$(cat "$WORK/tok")"; }
 
