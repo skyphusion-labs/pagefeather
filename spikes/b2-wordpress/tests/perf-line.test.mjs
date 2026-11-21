@@ -88,3 +88,10 @@ test('#1153 index.js logs a PHP fatal as php-fatal, with its fields (bounded) an
 	for (const f of ['type: str(f.type, 10)', 'msg: str(f.msg, 300)', 'file: str(f.file, 160)', 'line: Number(f.line)', 'method: str(f.method, 10)', 'path: str(f.path, 160)']) assert.ok(line.includes(f), f);
 	assert.match(line, /return '1'; \}$/);
 });
+
+// #1090: php/option-prime.php reports a cold isolate's prime (count and bytes) through the bridge; the Worker logs it as
+// an option-prime line, numbers only (option names and values never leave PHP).
+test('#1090 index.js logs a cold option prime as option-prime, numbers only', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /if \(m\.optionPrime\) \{[^\n]*console\.log\(JSON\.stringify\(\{ m: 'option-prime', iso: ISOLATE_ID, n: n\(o\.n\), bytes: n\(o\.bytes\), listed: n\(o\.listed\) \}\)\); return '1'; \}/);
+});

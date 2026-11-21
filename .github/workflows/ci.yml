@@ -153,6 +153,8 @@ jobs:
         run: |
           node --test spikes/b2-wordpress/tests/dns-public.test.mjs
           php spikes/b2-wordpress/tests/http-external-dns-test.php
+      - name: "Approach A: a cold isolate primes the learned not-autoloaded options in one query (#1090)"
+        run: php spikes/b2-wordpress/tests/option-prime-test.php
       - name: The query trace, operator only and measure only (#296 step 3)
         run: |
           php spikes/b2-wordpress/tests/hyperdrive-qtrace-test.php
