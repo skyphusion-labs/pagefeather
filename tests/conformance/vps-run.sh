@@ -29,7 +29,21 @@
 # The install and baseline steps follow each upstream README at the pin. Their first real run is on
 # the VPS; check the printed commands against the README of that pin if a step fails.
 set -euo pipefail
-here=$(cd "$(dirname "$0")" && pwd)
+# Run from a private COPY of this script (sb1120: a branch switch in the clone rewrote vps-run.sh under two running
+# suites). The first start copies the script to a temp file and re-execs that copy once (PF_VPS_RUN_SELF guards the
+# loop). The copy unlinks itself at once; bash keeps reading the open file. "here" stays the real tests/conformance, so
+# pins.env, runner.py and the rest are found as before. Only this script is frozen: runner.py is read at each call.
+if [ -z "${PF_VPS_RUN_SELF:-}" ]; then
+  orig_here=$(cd "$(dirname "$0")" && pwd)
+  self=$(mktemp "${TMPDIR:-/tmp}/vps-run.XXXXXX")
+  cp "$orig_here/$(basename "$0")" "$self"
+  PF_VPS_RUN_SELF=$self PF_VPS_RUN_HERE=$orig_here exec bash "$self" "$@"
+fi
+# Remove only the copy this process is running, never a path the caller named.
+[ "$0" = "$PF_VPS_RUN_SELF" ] && rm -f "$0"
+echo "vps-run: running a private copy of itself (from ${PF_VPS_RUN_HERE:?})" >&2
+here=$PF_VPS_RUN_HERE
+unset PF_VPS_RUN_SELF PF_VPS_RUN_HERE
 . "$here/pins.env"
 act=${1:?usage: vps-run.sh install|baseline|run <suite> <work-dir> [run-dir]}
 suite=${2:?suite: wp wc wc-api wc-cpt gb}
