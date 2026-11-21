@@ -129,3 +129,21 @@ export function emailAlarmAt(current, now, soonMs = EMAIL_RUSH_MS) {
 	if (Number(current) > now + soonMs) return now + soonMs;
 	return null;
 }
+
+// #1164 lever: what the approach A Cron Trigger tick does with this object's alarm. Before, every tick pulled a far
+// alarm in (pullIn), which undid the idle gate's backoff (#390): an idle store's alarm ran every minute.
+// - keep: no alarm (snapshotRearm's job), or one already within one interval;
+// - pull: a far alarm the idle gate did not set (idleStreak 0, as before), or work is due now, or the due state could
+//   not be read (due null: the safe side);
+// - earlier: idle, but the next due work comes before the backed-off alarm: move it to that time (never sooner than
+//   one interval);
+// - keep: idle, and the backed-off alarm already comes first.
+// due is the alarm's own idle gate (cronIdle: { idle, alarmAt }), read only for an idle-backed-off far alarm.
+export function tickAlarmPlan({ alarmAt, now, intervalMs, idleStreak, due }) {
+	if (alarmAt === null || alarmAt === undefined || Number(alarmAt) <= now + intervalMs) return { action: 'keep' };
+	if (!(idleStreak > 0)) return { action: 'pull' };
+	if (!due || !due.idle) return { action: 'pull' };
+	const at = Math.max(Number(due.alarmAt) || 0, now + intervalMs);
+	if (at < Number(alarmAt)) return { action: 'earlier', at };
+	return { action: 'keep' };
+}
