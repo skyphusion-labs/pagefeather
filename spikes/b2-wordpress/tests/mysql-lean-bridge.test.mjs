@@ -253,3 +253,23 @@ test('#1179 review: reads of a TEMPORARY table this run created are never retrie
 	assert.equal(st.connects, 1);
 	await bridge.mysqlEnd();
 });
+
+// #1179 CodeQL (incomplete string escaping): the temp-table check built a RegExp from a table name, escaping only $.
+// Names are now compared as identifier TOKENS, never as a pattern, and a backtick-quoted name may hold any character.
+test('#1179 temp-table names with regex metacharacters are matched exactly, as tokens', async () => {
+	const { retryableRead, sqlIdentifiers } = await import('../mysql-fault.mjs');
+	const t = new Set(['pf.tmp+(1)[x]\\y']);
+	assert.equal(retryableRead('SELECT id FROM `pf.tmp+(1)[x]\\y`', t), false, 'the same name: not retried');
+	assert.equal(retryableRead('SELECT id FROM pfXtmp', t), true, 'a . in the name is not a wildcard');
+	assert.equal(retryableRead('SELECT id FROM `pf.tmp+(1)[x]\\yz`', t), true, 'a longer name is another table');
+	assert.equal(retryableRead('SELECT id FROM PF_TMP', new Set(['pf_tmp'])), false, 'case-insensitive, as MySQL on this server');
+	assert.equal(retryableRead('SELECT pf_tmp_count FROM wp_x', new Set(['pf_tmp'])), true, 'a token, not a substring');
+	assert.deepEqual(sqlIdentifiers("SELECT a.`b c` FROM `t` WHERE x = 'pf_tmp'"), ['select', 'a', 'b c', 'from', 't', 'where', 'x'], 'literals are not identifiers');
+});
+test('#1179 a backtick-quoted temp table with metacharacters is tracked, and its reads are not retried', async () => {
+	const st = scripted([[okw, new Error(MID)], [rows]]);
+	assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'CREATE TEMPORARY TABLE `pf.t+1` (id INT)' })).ok, true);
+	assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'SELECT id FROM `pf.t+1`' })).ok, false);
+	assert.equal(st.connects, 1);
+	await bridge.mysqlEnd();
+});

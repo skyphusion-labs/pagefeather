@@ -11,7 +11,7 @@ import { LeanMysql } from './mysql-lean.js';
 import { Buffer } from 'node:buffer';
 
 import { createConnector } from './connector.mjs';
-import { isConnectionFault, retryableRead } from './mysql-fault.mjs';
+import { isConnectionFault, retryableRead, tempTableName } from './mysql-fault.mjs';
 
 // #1101: approach A's DEFAULT bridge (index-a-lean.js). One connection per PHP run (#1087), opened on first use. A rejected
 // connect is retried once and never cached; the connect is bounded (3 s) and end() too (2 s, then destroy()), so a dead
@@ -74,8 +74,8 @@ export async function mysqlQuery(env, m) {
 	if (first.ok) {
 		if (/^\s*(START\s+TRANSACTION|BEGIN)\b/i.test(sql)) inTx = true;
 		else if (/^\s*(COMMIT|ROLLBACK)\b/i.test(sql) && !/^\s*ROLLBACK\s+TO\b/i.test(sql)) inTx = false;
-		const tmp = /^\s*CREATE\s+TEMPORARY\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?([\w$]+)`?/i.exec(sql);
-		if (tmp) tempTables.add(tmp[1]);
+		const tmp = tempTableName(sql);
+		if (tmp) tempTables.add(tmp);
 		return first;
 	}
 	const { conn, ...reply } = first;
