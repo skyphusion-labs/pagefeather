@@ -19,9 +19,23 @@ cp "${1:-$SRC/destroy.sh}" "$T/deploy/destroy.sh"; chmod +x "$T/deploy/destroy.s
 mkdir -p "$T/deploy/wfp" && cp "$SRC/wfp/r2_temp.py" "$T/deploy/wfp/"
 mkdir -p "$T/deploy/lib" && cp "$SRC/lib/gone-wait.sh" "$T/deploy/lib/"  # #789: the bounded gone check
 cp -R "$SRC/variants" "$T/deploy/"
-cp "$SRC"/terraform/*.tf "$SRC/terraform/.terraform.lock.hcl" "$T/deploy/terraform/"
-cp "$SRC"/mysql/*.tf "$SRC"/mysql/*.tftpl "$T/deploy/mysql/"
+# #1196: copy the Terraform files WITHOUT any *_override.tf. A real deploy with DEPLOY_STATE=r2 leaves a gitignored
+# deploy/terraform/backend_override.tf (the R2 state backend); copied in, it made this test init an S3 backend with no
+# credentials and fail in any clone that had deployed. A local deploy's state must never reach this test.
+copy_tf() { # copy_tf <src dir> <dst dir> <glob...>: every match except *_override.tf
+  local src=$1 dst=$2 f; shift 2
+  for f in "$@"; do for f in "$src"/$f; do case "$f" in *_override.tf) ;; *) [ -e "$f" ] && cp "$f" "$dst/" ;; esac; done; done
+}
+copy_tf "$SRC/terraform" "$T/deploy/terraform" '*.tf' .terraform.lock.hcl
+copy_tf "$SRC/mysql" "$T/deploy/mysql" '*.tf' '*.tftpl'
 ln -s "$SRC/terraform/.terraform/providers" "$T/deploy/terraform/.terraform/providers"
+# #1196 guard: copy_tf must leave out a planted backend_override.tf (and keep the real files).
+mkdir -p "$T/ct-src" "$T/ct-dst"; : > "$T/ct-src/main.tf"; : > "$T/ct-src/backend_override.tf"; : > "$T/ct-src/x_override.tf"
+copy_tf "$T/ct-src" "$T/ct-dst" '*.tf'
+[ -e "$T/ct-dst/main.tf" ] && [ ! -e "$T/ct-dst/backend_override.tf" ] && [ ! -e "$T/ct-dst/x_override.tf" ] \
+  || { echo "FAIL #1196: copy_tf copied an *_override.tf (or dropped a real .tf)"; exit 1; }
+echo "ok   #1196 copy_tf leaves out *_override.tf"
+[ ! -e "$T/deploy/terraform/backend_override.tf" ] || { echo "FAIL #1196: backend_override.tf reached the test's terraform dir"; exit 1; }
 # The pinned Wrangler (WR): logs, and exits NPX_RC (default 0), like a wrangler delete that fails.
 # shellcheck disable=SC2016 # the stub script, not shell to expand here
 printf '#!/bin/bash\necho "$*" >> %q\nexit "${NPX_RC:-0}"\n' "$T/npx.log" > "$T/bin/wr"; chmod +x "$T/bin/wr"
