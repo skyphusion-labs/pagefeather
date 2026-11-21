@@ -147,3 +147,34 @@ Step 2, the allowlist. Put the refusal in our operator code. Do not expect WP-CL
 Step 3, the operator endpoint. Call `php.cli()` (the `run_cli` export) on a runtime that already has the site files and the database bridge (`onMessage`). Or call `setSapiName('cli')` before `php_wasm_init` on that runtime. A normal page request cannot do either. `php.cli()` finishes by exiting the runtime, so one command consumes that runtime. Install a spawn handler that fails into PHP at once. The missing handler throws `SPAWN_UNSUPPORTED` and the request hangs: a-shape cancels it, dosql holds the PHP lock until the 90 s object deadline or the client gives up. Do not expose the route on a public host. This spike did not build that route.
 
 Step 4, `pagefeather wp`. Stream stdout from `php.cli()`. On this small local site, with an empty OPcache file cache, the commands that finished took 0.29 s to 1.57 s of client wall time. The wasm heap stayed at the site's existing size: 77 to 85 MiB on dosql-local, 79 to 85 MiB on a-shape-local. `memory_get_peak_usage` cannot be the meter while `USE_ZEND_ALLOC=0`. Use `x-wasm-mib` or the ledger. These numbers are not a production store. WooCommerce was not active, and scripts were compiled on the first requests. Table commands (`wp user list`, `wp cron event list`) do not finish until the spawn hang is fixed. Long jobs (search-replace, import) were not run.
+
+## Step 2: the command allowlist
+
+WP-CLI 2.12.0 does not read `DISALLOW_FILE_MODS`. The phar does not contain that name, and the inner probe installed Hello Dolly. This allowlist is the lock.
+
+The module is `spikes/b2-wordpress/wp-cli-allow.mjs`. No route calls it. There is no operator endpoint yet. Step 3 designs that endpoint.
+
+The input is an array of strings, one argument per element. A shell string is refused. The check does not read the process environment.
+
+Allowed:
+
+| Command | What it may do |
+| --- | --- |
+| `option get` | Read one option. One key may follow. |
+| `user list` | List users. |
+| `cache flush` | Flush the cache. |
+| `cron event list` | List cron events. |
+| `cron event run --due-now` | Run due events. The flag is the bare `--due-now`. A hook name or `--all` is refused. |
+| `transient delete --expired` | Delete expired transients. The flag is the bare `--expired`. A key or `--all` is refused. |
+| `post list` | List posts. |
+| `core version` | Read the core version. |
+
+Any other command is refused. That includes plugin and theme install, update, and delete; `core update`; `eval`, `eval-file`, and `shell`; `package`; `config`; `db import`, `db query`, and `db reset`. `search-replace` is refused here. Step 5 runs it as a chunked job. The message says the command needs a later step.
+
+These flags are refused in every argument, including after `--`: `--exec`, `--require`, `--path`, `--ssh`, and `--http`. WP-CLI 2.12.0 `Configurator::extract_assoc` does not stop at `--`. A `--no-exec` form is the same flag. The `--` token is not a command word. A flag value uses `=`. A short option (one dash) is refused.
+
+The refusal names the command. It says that the site's code is locked, or that the command needs a later step. It names issue #1258. It does not repeat the other arguments.
+
+Command words are case-sensitive. `option get` is allowed. `Option get` is refused.
+
+Test: `node --test spikes/b2-wordpress/tests/wp-cli-allow.test.mjs`. CI runs that file.
