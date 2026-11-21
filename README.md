@@ -171,8 +171,11 @@ The [support matrix](docs/support-matrix.md) lists each WordPress and WooCommerc
   ([#638](https://github.com/skyphusion-labs/pagefeather/issues/638); the plan table below).
   Approach A does not run on Workers Free. The installer is refused at the 10 ms CPU limit (the
   plan table).
-- **Cost, on b-dosql:** two idle sites cost about $25 a month, the Workers for Platforms Paid
-  subscription ([docs/plan-limits.md](docs/plan-limits.md)). Approach A is Workers Paid ($5 a month
+- **Cost, on b-dosql:** Workers for Platforms Paid is $25 a month for two or more sites
+  ([docs/plan-limits.md](docs/plan-limits.md)). The price includes 20 million requests, then
+  $0.30 per million. It includes 60 million CPU ms, then $0.02 per million. It includes 1,000
+  namespace scripts, then $0.02 each. Another site at rest costs about $0, up to the 1,000
+  included scripts. Approach A is Workers Paid ($5 a month
   on that page) plus the MySQL server you run.
 
 ## The research
@@ -223,7 +226,7 @@ Browser Run is the default suite browser for wp and wc. It is not valid for the 
 
 ## Cost
 
-Two idle `b-dosql` sites cost about **$25 a month**, the Workers for Platforms Paid subscription, with every per-site resource (Durable Object storage, R2 media, KV) inside a free or included tier at rest. Traffic is metered on top. One question is still open: whether the per-site dispatcher and the shared outbound Worker need a separate Workers Paid subscription ($5 a month), which would make it about $30. The WfP pricing page does not say, and we still need to confirm it with a billing check.
+Workers for Platforms Paid is $25 a month for two or more sites. The price includes 20 million requests, then $0.30 per million. It includes 60 million CPU ms, then $0.02 per million. It includes 1,000 namespace scripts, then $0.02 each. Another site at rest costs about $0, up to the 1,000 included scripts. Durable Object storage, R2 media, and KV stay inside a free or included tier at rest. Traffic is metered on top. One question is still open. The WfP pricing page does not say whether the per-site dispatcher and the shared outbound Worker need a separate Workers Paid subscription ($5 a month). If they do, the total is about $30 a month. We still need a billing check to confirm it.
 
 Approach A is a different bill. It runs on Workers Paid, which is $5 a month
 ([docs/plan-limits.md](docs/plan-limits.md), read 2026-11-06). You also pay for the MySQL server.
