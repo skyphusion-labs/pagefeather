@@ -67,10 +67,19 @@ export function overflowCapResponse() {
 	return new Response('The site is busy and did not start your request. Please try again in a few seconds.\n', { status: 503, headers });
 }
 
-// #714: while this isolate holds overflowed requests in flight, it must not boot PHP here (measured
+// #714: while this isolate holds overflowed requests in flight, it must not BOOT PHP here (measured
 // locally: the front runtime is about 65 MiB; held waiters are cheap). Same retry-safe shape as the cap.
-export function overflowHeldBlocksLocal(s, held) {
-	return !!s && s.on && (Number(held) || 0) > 0;
+// #1177: only a boot. runtimeLive (a runtime booted or booting in this isolate) means a local run adds no boot: it
+// queues on the local lock, as before the pool. Refusing those turned one admin's parallel reads into 503s.
+export function overflowHeldBlocksLocal(s, held, runtimeLive = false) {
+	return !!s && s.on && (Number(held) || 0) > 0 && !runtimeLive;
+}
+
+// #1177: a cold isolate (no runtime) that holds overflowed requests sends the next request to the pool instead of
+// booting here (the #714 case) or refusing it. Control paths and uploads never move (as shouldOverflow).
+export function overflowHeldToPool(s, held, runtimeLive, url, isUpload) {
+	if (!s || !s.on || runtimeLive || !((Number(held) || 0) > 0)) return false;
+	return !url.pathname.startsWith('/_') && !isUpload;
 }
 
 export function overflowHeldBlockResponse() {

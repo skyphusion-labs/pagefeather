@@ -64,7 +64,7 @@ import { isVersionedKey, l1ExpFor } from './oc-l1.mjs';
 import { aPerfLine } from './perf-line.mjs';
 import { templateQueuePriority, templateLookupYield, templateLookupForwardYield } from './template-boot.mjs';
 import * as cacheVersions from './cache-versions.mjs';
-import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse } from './overflow.mjs';
+import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse, overflowHeldToPool } from './overflow.mjs';
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
 import { PURGE_GAP_MS, NO_CACHE_API, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
@@ -284,6 +284,10 @@ async function objectCacheOp(op) {
 // (WordPress calling its own URL) cannot reset an outer one.
 const stats = newStats();
 let bootPromise;
+// #1177: a runtime is booted or booting in this isolate, so a local run adds no boot.
+function runtimeLive() {
+	return Boolean(bootPromise);
+}
 // The most recently booted PHP, so the /_memprobe bridge (handleMessage probeMem) can
 // read the live WASM heap size from JS. memory_get_usage() reports 0 under USE_ZEND_ALLOC=0.
 let lastBootedPhp = null;
@@ -4402,7 +4406,7 @@ const site = {
 		let ovCall = null; // #1101: the overflow call id, when this request was offered to the pool first
 		// Uploads never move: media uploads, and any request whose declared body is over 1 MiB (the Font Library, #591).
 		const ovUpload = isMediaUpload(req, url) || Number(req.headers.get('content-length') || 0) > OVERFLOW_MAX_BODY;
-		if (ovs.on && env.PHP_RUNTIME && env.PHP_IN_DO !== 'on' && env.DB_IN_DO !== 'on' && shouldOverflow(ovs, { running: phpLock.running, waiting: phpLock.waiting }, url, ovUpload)) {
+		if (ovs.on && env.PHP_RUNTIME && env.PHP_IN_DO !== 'on' && env.DB_IN_DO !== 'on' && (shouldOverflow(ovs, { running: phpLock.running, waiting: phpLock.waiting }, url, ovUpload) || overflowHeldToPool(ovs, ovHeld, runtimeLive(), url, ovUpload))) {
 			// #714: at the cap, refuse before anything is forwarded: a fast, retry-safe 503 that never ran.
 			if (overHeld(ovs, ovHeld)) {
 				console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-capped', held: ovHeld, max: ovs.maxHeld }));
@@ -4446,13 +4450,13 @@ const site = {
 			}
 			// Both choices were busy: run here, as without overflow (the request has not run anywhere), unless this
 			// isolate still holds other overflowed requests (#714: a booted runtime beside held waiters exceeded memory).
-			if (overflowHeldBlocksLocal(ovs, ovHeld)) {
+			if (overflowHeldBlocksLocal(ovs, ovHeld, runtimeLive())) {
 				console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-held-block', held: ovHeld, call: callId }));
 				return overflowHeldBlockResponse();
 			}
 			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-local', running: phpLock.running, waiting: phpLock.waiting, call: callId })); // review2 8 (callId is always set here)
 		}
-		if (overflowHeldBlocksLocal(ovs, ovHeld) && !url.pathname.startsWith('/_') && !ovUpload) {
+		if (overflowHeldBlocksLocal(ovs, ovHeld, runtimeLive()) && !url.pathname.startsWith('/_') && !ovUpload) {
 			console.log(JSON.stringify({ m: 'php-lock', iso: ISOLATE_ID, event: 'overflow-held-block', held: ovHeld }));
 			return overflowHeldBlockResponse();
 		}
