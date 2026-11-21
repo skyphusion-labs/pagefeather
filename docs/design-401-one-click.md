@@ -202,7 +202,7 @@ These break "feels like WordPress". The button does not cause them, and this des
 What Pagefeather cannot run, whichever way a site comes in (sources in the repo):
 
 - A plugin or theme that is not in the build (`docs/plugins.md`).
-- A plugin set over the 64 MiB Worker size or the 128 MiB memory cap: Elementor does not fit; Rank Math on a store goes over memory (#293, #279, `docs/known-limitations.md`).
+- A plugin set over the 64 MiB Worker size, or over the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](known-limitations.md#memory-limits-the-three-figures)). Elementor does not fit. Rank Math on a store goes over that write ceiling (#293, #279, `docs/known-limitations.md`).
 - A plugin that writes its own files at run time and expects them to stay (page-cache plugins that write to `wp-content/cache`, file-based logs). Same cause as item 1 of 2.6.
 - `curl_*`, PHP streams over HTTP and raw sockets: the bridge covers `wp_remote_*` only (`docs/prior-art.md`, HostlessWP section).
 - A plugin that needs MySQL itself on b-dosql (SQLite): for example one that calls `mysqli_*` on `$wpdb->dbh` (`docs/plugins.md`, the All-in-One WP Migration finding on approach A).

@@ -8,7 +8,7 @@ Measured 2026-11-04 on Workers Paid. Code: `spikes/c1-woo-container`. Conrad's d
 
 ## Why
 
-- In a Worker (approach B), WooCommerce checkout passes the 128 MB isolate limit. WooCommerce asks for 256 MB ([server recommendations](https://woocommerce.com/document/server-requirements/)).
+- In a Worker (approach B), WooCommerce checkout goes past the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](known-limitations.md#memory-limits-the-three-figures)). WooCommerce asks for 256 MB ([server recommendations](https://woocommerce.com/document/server-requirements/)).
 - With checkout in a container but the database still on D1 (`docs/approach-c-checkout.md`), every query is a network round trip, about 46 ms. A checkout makes about 390 of them: 42 s.
 - So the database goes into the container, next to PHP.
 

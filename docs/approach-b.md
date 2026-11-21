@@ -33,7 +33,7 @@ So `WebAssembly.Suspending` and `WebAssembly.promising` exist. Not yet checked o
 
 ### 2. The PHP engine fits.
 
-The JSPI `php_8_3.wasm` is 18,065,768 bytes, and 6,975,027 bytes after `gzip -9`. The Worker size limit is 64 MiB on both plans. Memory is 128 MB per isolate, so WordPress plus PHP must fit in that. Not yet measured.
+The JSPI `php_8_3.wasm` is 18,065,768 bytes, and 6,975,027 bytes after `gzip -9`. The Worker size limit is 64 MiB on both plans. WordPress plus PHP must fit in the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](known-limitations.md#memory-limits-the-three-figures)). Not yet measured.
 
 ### 3. The driver uses a small part of PDO.
 
@@ -637,12 +637,15 @@ Values are tail CPU in ms, p50 / p95 (joined n).
 
 ### 8m. Media-upload write ceiling, trimmed (issue #189). Built and verified locally; not yet measured on the box.
 
-On b-dosql (PHP plus SQLite in one Durable Object, 128 MiB isolate cap) an admin media
+On b-dosql (PHP plus SQLite in one Durable Object) an admin media
 upload (POST `/wp-admin/async-upload.php`, action `upload-attachment`) stores the attachment
 on an isolate with WooCommerce not loaded (about x-wasm-mib 58), but fails at the attachment
-DB insert on a WooCommerce-warmed isolate (about x-wasm-mib 99, about 29 MiB headroom):
+DB insert on a WooCommerce-warmed isolate (about x-wasm-mib 99):
 `{"success":false,"message":"Could not insert attachment into the database."}`, no isolate
-reset, identically for a 400x300 and a 3000x3000 image. The cost is the WooCommerce
+reset, identically for a 400x300 and a 3000x3000 image. At that heap, headroom against the
+measured write ceiling is about 18 to 20 MiB (117 to 119 MiB of wasm; see
+[memory limits](known-limitations.md#memory-limits-the-three-figures)). That write ceiling is
+the limit this upload hits. The cost is the WooCommerce
 per-request working set, not the image bytes; pixels never enter PHP (`php/cf-images-editor.php`
 resizes through the Images binding). See `docs/results.md` row 168.
 
@@ -678,8 +681,9 @@ operation (project goal). Verified locally (`DEV_ENV=dosql-local`), WooCommerce 
 (`MEDIA_TRIM=off`), while the request's PHP time halves (84 ms vs 165 ms on the same warm
 isolate), which shows WooCommerce's per-request init is skipped. `tests/woo.py` stays 12/12
 and `e2e.sh` is unchanged (the trim is inert outside the media write path). Local workerd does
-not enforce the 128 MiB isolate cap, so the exit-2-to-exit-0 transition of
-`tests/upload/upload_ceiling.py` is a box measurement.
+not enforce Cloudflare's documented 128 MB per isolate (see [memory limits](known-limitations.md#memory-limits-the-three-figures)). It also
+does not enforce the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](known-limitations.md#memory-limits-the-three-figures)). The
+exit-2-to-exit-0 transition of `tests/upload/upload_ceiling.py` is a box measurement.
 
 ### 8n. Turnstile bot challenge on the abused forms (issue #250). Built and box-tested locally; not yet deployed.
 
@@ -813,7 +817,9 @@ checkout is not yet proven on a live store: that run waits on a working throwawa
 the `TURNSTILE_SECRET` secret is set at deploy time (`wrangler secret put TURNSTILE_SECRET`), and
 `TURNSTILE_SITEKEY` is the public site key var.
 
-### 9. Memory: what it took to fit in 128 MB
+### 9. Memory: what it took to fit under the measured write ceiling
+
+The table is the local work that cut memory so WordPress could fit under the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](known-limitations.md#memory-limits-the-three-figures)).
 
 | Change | Effect, measured locally |
 | --- | --- |

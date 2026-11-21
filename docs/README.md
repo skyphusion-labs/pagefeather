@@ -10,7 +10,7 @@ Two paths are current. The right one for you depends on how much traffic you exp
 | --- | --- | --- |
 | What it is | WordPress as PHP-WASM with SQLite inside one Durable Object | WordPress as PHP-WASM in a Worker, database on managed MySQL through Hyperdrive |
 | Outside server | None | Yes: a MySQL you choose (PlanetScale, Azure, a VPS, or your own) |
-| WooCommerce | Full WooCommerce, checkout included, under the 128 MiB isolate cap | 12 of 12 on `tests/woo.py`, checkout included, under the 128 MiB isolate cap, no container. The upstream wc suite is a separate result: see the sb1120 summary in [support-matrix.md](support-matrix.md) |
+| WooCommerce | Full WooCommerce, checkout included, under the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](known-limitations.md#memory-limits-the-three-figures)). | 12 of 12 on `tests/woo.py`, checkout included, under the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](known-limitations.md#memory-limits-the-three-figures)), no container. The upstream wc suite is a separate result: see the sb1120 summary in [support-matrix.md](support-matrix.md) |
 | Under heavy load | One object per site: requests queue behind it | Scales sideways: more Worker isolates as load rises |
 | Consistency | Strong, single writer | Whatever your MySQL gives |
 | Best for | Blogs, and stores with light to moderate traffic | Stores and sites with real concurrent traffic |
@@ -38,7 +38,7 @@ Edge security works at the zone level: a WAF with rate limits on login, the zone
 
 ## Approach A (scale-out)
 
-- [approach-a-overview.md](approach-a-overview.md) **start here.** The story, why it fits in 128 MiB, and the database provider choice (Azure, PlanetScale, VPS, external) with the measured results.
+- [approach-a-overview.md](approach-a-overview.md) **start here.** The story, why it fits under the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](known-limitations.md#memory-limits-the-three-figures)), and the database provider choice (Azure, PlanetScale, VPS, external) with the measured results.
 - [approach-a.md](approach-a.md) the first measurements on a Vultr MariaDB box, and HostlessWP compared.
 - [approach-a2.md](approach-a2.md) the PlanetScale variant (A2).
 - [approach-a-objectcache.md](approach-a-objectcache.md) the write-aware object cache that cuts SQL round trips, including the L2 KV tier.

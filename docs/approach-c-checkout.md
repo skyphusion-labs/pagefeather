@@ -65,4 +65,4 @@ Leads to check next: what sends the page requests (WordPress loopback requests f
 
 - Fewer round trips: an object cache that persists across requests (WordPress options, post meta), or D1 read replicas through the Sessions API for reads.
 - Container cold start of 35 to 44 s is longer than a shopper's typing. Measure where it goes (image size, PHP start), and start the container earlier (product page view, or the cart page).
-- Admin in the container too (the dashboard and the editor need more than 128 MB with WooCommerce).
+- Admin in the container too. The dashboard and the editor need more than the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](known-limitations.md#memory-limits-the-three-figures)) with WooCommerce.

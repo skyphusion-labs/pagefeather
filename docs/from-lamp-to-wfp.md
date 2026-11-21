@@ -102,9 +102,9 @@ bundle ([site-remote-569.md](site-remote-569.md)). You do not need to do anythin
 
 ## WooCommerce, and the one real limit
 
-WooCommerce runs on `b-dosql`, **including checkout** (measured on Workers Paid: an order places at `x-wasm-mib` 99, under the 128 MiB isolate cap, with zero memory overflow, `tests/woo.py` green). Admin media upload works too. So a light-to-moderate store runs on the edge with no container and no external database.
+WooCommerce runs on `b-dosql`, **including checkout** (measured on Workers Paid: an order places at `x-wasm-mib` 99, with zero memory overflow, `tests/woo.py` green). That measurement is under the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](known-limitations.md#memory-limits-the-three-figures)). Admin media upload works too. A light-to-moderate store runs on the edge with no container and no external database.
 
-The one real limit is the Worker isolate: **128 MiB, one writer, one region.** A blog or a light-to-moderate store fits comfortably. A store with real concurrent traffic should use **approach A** (PHP in a Worker, a managed MySQL through Hyperdrive; see [onboarding.md](onboarding.md)), which scales sideways. A store that outgrows b-dosql can also go to a **VPS** (the standard LAMP stack you already know). The container store path that used to fill that role was retired (#214) because b-dosql proved capable; see the README matrix.
+The one real limit is the Worker isolate: one writer, one region. The limit that binds a site is the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](known-limitations.md#memory-limits-the-three-figures)). A blog or a light-to-moderate store fits under that write ceiling. A store with real concurrent traffic should use **approach A** (PHP in a Worker, a managed MySQL through Hyperdrive; see [onboarding.md](onboarding.md)), which scales sideways. A store that outgrows b-dosql can also go to a **VPS** (the standard LAMP stack you already know). The container store path that used to fill that role was retired (#214) because b-dosql proved capable; see the README matrix.
 
 ### Stock numbers on cached pages
 
@@ -147,7 +147,7 @@ Where it stands, plainly:
   Object path continues (#394, #582).
 - A leaner PHP engine is in progress (#582: #587, #592), measured in CI but not yet shipped to
   sites.
-- A heavy plugin set can pass the 128 MiB cap on any page; the measured case is in
+- A heavy plugin set can pass the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](known-limitations.md#memory-limits-the-three-figures)) on any page. The measured case is in
   [known-limitations.md](known-limitations.md).
 
 ## One account, many sites (the framework)
