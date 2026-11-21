@@ -46,14 +46,16 @@ passwords), or a path in the no-cache list (`/wp-admin`, `/wp-login.php`, `/wp-j
 For every other guest GET, the cache follows the response's own headers:
 
 - `Cache-Control: private`, `no-store` or `no-cache`: the page is not stored.
-- `Vary`: the cache honours it. A page that sends `Vary: X-Something` is not served to a request with a different
-  `X-Something`.
+- `Vary`: a page that sends `Vary: X-Something` is not served to a later request that has no `X-Something` header
+  (measured). A request with a different `X-Something` value was not measured, so do not rely on `Vary` alone for a
+  page that is different for each caller.
 - No `Vary` and none of those `Cache-Control` values: the page is stored by URL, and every later guest at that URL gets
   the same copy for the cache time (`PAGE_CACHE_TTL`, 120 s by default).
 
 So a theme or plugin that builds a different guest page from a request header (a custom header, a device or region
 header, an API key in a header) must send `Vary` naming that header, or `Cache-Control: no-cache` (WordPress's
-`nocache_headers()`) or `private`. Without one of them, the first answer at that URL is the one that guests get. This is how any
+`nocache_headers()`) or `private`. For a page that is different for each caller, send `private` or `no-cache`
+rather than rely on `Vary`. Without one of them, the first answer at that URL is the one that guests get. This is how any
 cache that keys by URL behaves; a site behind a CDN has the same rule.
 
 ## Provisioning
