@@ -4,12 +4,12 @@
 
 ## What it is
 
-WordPress runs as PHP compiled to WebAssembly inside a Cloudflare Worker. The database is an external, managed MySQL server. [Hyperdrive](https://developers.cloudflare.com/hyperdrive/) pools the connections and sits between the Worker and the database. There is no container and no Durable Object in the request path.
+WordPress runs as PHP compiled to WebAssembly inside a Cloudflare Worker. The database is an external, managed MySQL server. [Hyperdrive](https://developers.cloudflare.com/hyperdrive/) pools the connections and sits between the Worker and the database. There is no container. PHP runs in the Worker. A request that would wait behind a long run can move to the PHP overflow pool. That pool is on by default for approach A (#1140, #1119). `PHP_OVERFLOW=0` opts out.
 
 Why pick it:
 
 - **It scales sideways.** Cloudflare starts more Worker isolates as load rises. In the side-by-side load run, approach A went from 0.32 to 6.70 requests a second (1 to 50 users) while browse time stayed about flat; b-dosql stopped near 1 request a second. See the rows `A vs b-dosql (concurrency)` and `A vs b-dosql (fully loaded, 2608 products)` (both 2026-11-09) in [results.md](results.md).
-- **It runs full WooCommerce.** `tests/woo.py` passes 12 of 12, three runs in a row, including guest checkout, under the 128 MiB isolate cap. See the row `A (12/12, the full stack, #218)` (2026-11-09).
+- **It runs full WooCommerce.** `tests/woo.py` passes 12 of 12, three runs in a row, including guest checkout, under the 128 MiB isolate cap. See the row `A (12/12, the full stack, #218)` (2026-11-09). The upstream wc suite is a separate result. On `cf759hl` (2026-11-21, [results.md](results.md) row "sb1120, wc") the latest full run is 169 expected, 57 unexpected, 3 skipped. Blocks checkout is slow because of per-order transient deletes (#1218). PR #1219 is open, so that fix is in progress, not fixed. Order emails can be late (#1215, open). The counts and the open items are in [support-matrix.md](support-matrix.md).
 - **The cost** is a MySQL server that you run, pay for and scale. That is the whole trade against [b-dosql](approach-b.md), which needs no outside server.
 
 Pick b-dosql instead when you want zero outside infrastructure and have low to moderate traffic. See the choice table in [README.md](README.md).
@@ -63,6 +63,6 @@ Under heavy concurrent checkout, only approach A on a consistent managed MySQL c
 ## Limits to know
 
 - **Workers Free does not run our approach-A build.** It stops at the CPU limit (HostlessWP, a different design, does run on Free; see [approach-a.md](approach-a.md)). Use Workers Paid.
-- **Cold isolates do not get the in-isolate object cache.** The L2 KV tier closes most of that gap for options, terms and theme data.
+- **Cold isolates do not get the in-isolate object cache.** On approach A the KV L2 is off by default (#1089, #1078). On WooCommerce admin lists it added about 11 to 12 s of KV misses. Set `OBJECT_CACHE_L2=1` to turn it on.
 - **Admin pages with WooCommerce can recycle the PHP runtime** (#84, measured locally, not yet on Cloudflare).
 - **Plugins:** 17 of 18 in the standard suite passed on the first Paid run; All-in-One WP Migration passes since #29. All 18 active at once do not fit.

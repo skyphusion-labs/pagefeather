@@ -10,7 +10,7 @@ Two paths are current. The right one for you depends on how much traffic you exp
 | --- | --- | --- |
 | What it is | WordPress as PHP-WASM with SQLite inside one Durable Object | WordPress as PHP-WASM in a Worker, database on managed MySQL through Hyperdrive |
 | Outside server | None | Yes: a MySQL you choose (PlanetScale, Azure, a VPS, or your own) |
-| WooCommerce | Full WooCommerce, checkout included, under the 128 MiB isolate cap | 12 of 12, checkout included, under the 128 MiB isolate cap, no container |
+| WooCommerce | Full WooCommerce, checkout included, under the 128 MiB isolate cap | 12 of 12 on `tests/woo.py`, checkout included, under the 128 MiB isolate cap, no container. The upstream wc suite is a separate result: see the sb1120 summary in [support-matrix.md](support-matrix.md) |
 | Under heavy load | One object per site: requests queue behind it | Scales sideways: more Worker isolates as load rises |
 | Consistency | Strong, single writer | Whatever your MySQL gives |
 | Best for | Blogs, and stores with light to moderate traffic | Stores and sites with real concurrent traffic |
@@ -19,7 +19,7 @@ Approach A on PlanetScale through the Cloudflare integration (A2) gives one Clou
 
 ## How a site is made
 
-A descriptor table in `deploy/provision` wires Cloudflare integrations for each site, as defaults or as opt-ins. Default on: base object cache, WP-Cron on a Durable Object alarm, Images offload, and the L2 KV object cache. Opt-in: PDF invoices (Browser Rendering), durable email (Queues), AI alt-text (Workers AI), Analytics Engine, Vectorize semantic search, and zone cache purge. The table is in [framework.md](framework.md).
+A descriptor table in `deploy/provision` wires Cloudflare integrations for each site, as defaults or as opt-ins. Default on: base object cache, WP-Cron on a Durable Object alarm, and Images offload. The L2 KV object cache is on for b-dosql. On approach A it is off unless `OBJECT_CACHE_L2=1` (#1089, #1078). Opt-in: PDF invoices (Browser Rendering), durable email (Queues), AI alt-text (Workers AI), Analytics Engine, Vectorize semantic search, and zone cache purge. The table is in [framework.md](framework.md).
 
 For approach A, onboarding is two commands: `node deploy/onboard/onboard.mjs <provider> --name <cfg> --out onboard.env`, then `node deploy/provision/cli.mjs add --kind a <name> --hyperdrive $HYPERDRIVE_ID --placement <the database region>` on a SaaS zone (`WFP_SAAS_ZONE_ID`). See [onboarding.md](onboarding.md).
 
@@ -42,7 +42,7 @@ Edge security works at the zone level: a WAF with rate limits on login, the zone
 - [approach-a.md](approach-a.md) the first measurements on a Vultr MariaDB box, and HostlessWP compared.
 - [approach-a2.md](approach-a2.md) the PlanetScale variant (A2).
 - [approach-a-objectcache.md](approach-a-objectcache.md) the write-aware object cache that cuts SQL round trips, including the L2 KV tier.
-- [approach-a-overflow.md](approach-a-overflow.md) opt-in PHP overflow to a Durable Object pool for a busy store: the recommended setting, the measured table and the cost.
+- [approach-a-overflow.md](approach-a-overflow.md) the PHP overflow pool for approach A. It is on by default on `deploy/deploy.sh` since #1119 (PR #1140). `PHP_OVERFLOW=0` opts out. The measured table and the cost are on that page.
 - [admin-memory-matrix.md](admin-memory-matrix.md) **where WordPress admin dies on Cloudflare** (2026-11-14): approach A in a Worker and in a Durable Object, HostlessWP and b-dosql with and without the arena, with the raw data. Whether admin pages run on Workers or in a Container is still open; it is decided after the new engine is fully tested.
 
 ## b-dosql (store path)
