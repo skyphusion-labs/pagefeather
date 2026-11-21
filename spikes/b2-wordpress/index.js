@@ -3895,6 +3895,8 @@ async function runCron(getBooted, cleanDue = false, mail = null, { held = false 
 						&& 1 === (int) $wpdb->query( $wpdb->prepare( "UPDATE {$as_t} SET claim_id = %d WHERE action_id = %d AND claim_id = 0 AND status = %s", $as_cid, $as_oldest[0], 'pending' ) ) ) {
 						array_splice( $as_ids, 1, 0, array( $as_oldest[0] ) );
 					}
+					// DIAGNOSTIC (#1143 P0, throwaway only, never merged): what the email pass saw this leg.
+					$skyphusion_cron_mark( 'as1143', 'ids=' . count( $as_ids ) . ' sorted=' . ( isset( $as_sorted ) ? count( $as_sorted ) : -1 ) . ' cid=' . ( isset( $as_cid ) ? $as_cid : -1 ) . ' cidm=' . ( method_exists( $claim, 'get_id' ) ? 1 : 0 ) . ' oldest=' . ( ! empty( $as_oldest ) ? (int) $as_oldest[0] : 0 ) . ' first=' . ( $as_ids ? (int) $as_ids[0] : 0 ) . ' second=' . ( isset( $as_ids[1] ) ? (int) $as_ids[1] : 0 ) . ' err=' . substr( (string) $wpdb->last_error, 0, 60 ), 0 );
 				} else {
 					if ( $claim ) { $as_store->release_claim( $claim ); $claim = null; }
 					$as_g = ( isset( $wpdb->actionscheduler_groups ) && $wpdb->actionscheduler_groups ) ? $wpdb->actionscheduler_groups : $wpdb->prefix . 'actionscheduler_groups';
