@@ -1,0 +1,6 @@
+cache/
+out/
+state/
+*.phar
+*.sha512
+*.bak
