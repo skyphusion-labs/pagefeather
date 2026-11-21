@@ -19,6 +19,26 @@ export function cronVersionAbort({ own, tick, lastAbortAt, now }) {
 	return true;
 }
 
+// #1215: the #969 email-due wake, handed from a request that does not own the cron to the cron object. Worker to
+// PhpRuntime only (the Worker 404s the path); the header gates it inside the object.
+export const EMAIL_DUE_PATH = '/_email-due';
+export const EMAIL_DUE_HEADER = 'x-pf-email-due';
+
+/**
+ * #1215: where a request that queued a WooCommerce email sends the #969 wake (php/woo-edge.php, emailDue).
+ * - 'local': this context owns its alarm (a b-dosql or b-do object, or the A_CRON object running a leg): #969 as before.
+ * - 'a-cron': approach A, a request in the Worker (no storage) or on an overflow pool object: the cron object. Before,
+ *   this case was dropped, so a queued email waited for the minute tick (12 to 122 s on cf759hl).
+ * - 'none': a cron-off approach A build, or no cron object. An overflowed request is never 'local' (#1186: a pool
+ *   object never arms its own alarm).
+ */
+export function emailDueRoute({ storage, overflowed, env }) {
+	if (!env || aCronObjectOff(env)) return 'none';
+	if (storage && !overflowed) return 'local';
+	if (approachACronEnabled(env) && env.PHP_RUNTIME) return 'a-cron';
+	return 'none';
+}
+
 /** True when this Worker is configured for the cron DO tick (not b-dosql PHP_IN_DO). */
 export function approachACronEnabled(env) {
 	if (!env || env.A_CRON !== 'on') return false;

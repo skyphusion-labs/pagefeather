@@ -32,7 +32,8 @@ test('#1186 index.js: the alarm checks FIRST, deletes itself and returns, loggin
 // cron-off build that alarm would run until it fired; with the cron on, a pool object could run cron legs.
 test('#1186 the email-due wake never arms from an overflowed request or on a cron-off approach A build', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	assert.match(src, /if \(emailDueRequest && ctx && ctx\.storage && !ctx\.overflowed && !aCronObjectOff\(ENV\)\) \{/);
+	// #1215: the guard is emailDueRoute (a-cron.mjs, tests/email-due-route.test.mjs): an overflowed request is never 'local', and a cron-off build is 'none'.
+	assert.match(src, /const route = emailDueRoute\(\{ storage: ctx && ctx\.storage, overflowed: Boolean\(ctx && ctx\.overflowed\), env: ENV \}\);/);
 });
 // #1194 review (rollins): the email-due guard reads ctx.overflowed, but on main the object's ctx did not carry it (it
 // came with #1157's self-fetch work), so the pool half of the guard was always true. Pin both ends: the object puts the
@@ -40,5 +41,6 @@ test('#1186 the email-due wake never arms from an overflowed request or on a cro
 test('#1186 the object ctx carries overflowed, so the email-due guard can see a pool request', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.match(src, /const ctx = \{ inObject: true, overflowed, storage: this\.ctx\.storage,/);
-	assert.match(src, /if \(emailDueRequest && ctx && ctx\.storage && !ctx\.overflowed && !aCronObjectOff\(ENV\)\) \{/);
+	// #1215: the guard is emailDueRoute (a-cron.mjs, tests/email-due-route.test.mjs): an overflowed request is never 'local', and a cron-off build is 'none'.
+	assert.match(src, /const route = emailDueRoute\(\{ storage: ctx && ctx\.storage, overflowed: Boolean\(ctx && ctx\.overflowed\), env: ENV \}\);/);
 });
