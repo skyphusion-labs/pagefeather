@@ -52,15 +52,31 @@ register_shutdown_function(
  * conformance poll. The filter runs when the action is stored. The shutdown
  * hook is after Action Scheduler's dispatch (priority 100).
  */
+// #1215: at ENQUEUE. It listened on action_scheduler_stored_action_instance, which Action Scheduler applies when it
+// LOADS an action from the store (get_stored_action, from fetch_action), never when it stores one, so a checkout
+// never sent emailDue. WC()->queue()->add() is as_schedule_single_action( time(), ... ), whose pre_ filter runs at
+// enqueue with the hook; an async enqueue is covered too. The filters pass $pre through untouched, and mark only an
+// enqueue no other filter short-circuited, of an email due now (an action scheduled ahead is the tick's).
+function skyphusion_email_enqueue_mark( $pre, $hook, $timestamp = null ) {
+	if ( null === $pre && 'woocommerce_send_queued_transactional_email' === $hook && ( null === $timestamp || (int) $timestamp <= time() + 60 ) ) {
+		$GLOBALS['skyphusion_email_action_stored'] = 1;
+	}
+	return $pre;
+}
 add_filter(
-	'action_scheduler_stored_action_instance',
-	function ( $action, $hook ) {
-		if ( 'woocommerce_send_queued_transactional_email' === $hook ) {
-			$GLOBALS['skyphusion_email_action_stored'] = 1;
-		}
-		return $action;
+	'pre_as_schedule_single_action',
+	function ( $pre, $timestamp, $hook ) {
+		return skyphusion_email_enqueue_mark( $pre, $hook, $timestamp );
 	},
-	10,
+	PHP_INT_MAX,
+	3
+);
+add_filter(
+	'pre_as_enqueue_async_action',
+	function ( $pre, $hook ) {
+		return skyphusion_email_enqueue_mark( $pre, $hook );
+	},
+	PHP_INT_MAX,
 	2
 );
 add_action(

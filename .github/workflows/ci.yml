@@ -474,6 +474,10 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/turnstile-hold.test.mjs
       - name: b-dosql safe outbound URLs without DNS (issue #430)
         run: php spikes/b2-wordpress/tests/http-safe-url-test.php
+      - name: a queued WooCommerce email is marked at enqueue, so the Worker wakes the cron (issue #1215)
+        run: php spikes/b2-wordpress/tests/woo-edge-email-due-test.php
+      - name: the email-due wake reaches the object that owns the cron (issue #1215)
+        run: node --test spikes/b2-wordpress/tests/email-due-route.test.mjs
       - name: turnstile block checkout script (issue #308)
         # A classic browser script, not a module: syntax, then the stubbed store and widget.
         run: |
