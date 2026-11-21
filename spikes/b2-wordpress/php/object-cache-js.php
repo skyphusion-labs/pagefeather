@@ -68,7 +68,18 @@ class JS_Object_Cache {
 		// #1199: learn this request's transient names at shutdown (one autoloaded list, read with alloptions).
 		if ( function_exists( 'add_action' ) ) {
 			add_action( 'shutdown', array( $this, 'transient_learn' ), 1 );
+			// #1210: the request's transient deletes land in one statement at its end (transient_flush).
+			add_action( 'shutdown', array( $this, 'transient_flush' ), PHP_INT_MAX );
 		}
+		// #1210: and on every other way a request ends (a fatal error, an exit before WordPress's shutdown hook). This
+		// function runs with the other shutdown functions, in their order, and registers the flush again, so it runs
+		// after all of them, the shutdown action's handlers included. The flush is idempotent.
+		$self = $this;
+		register_shutdown_function(
+			static function () use ( $self ) {
+				register_shutdown_function( array( $self, 'transient_flush' ) );
+			}
+		);
 		if ( defined( 'JS_OBJECT_CACHE_VERSIONED' ) ) {
 			foreach ( explode( ',', (string) JS_OBJECT_CACHE_VERSIONED ) as $g ) {
 				$g = trim( $g );
@@ -172,6 +183,15 @@ class JS_Object_Cache {
 	private $tmemo   = array(); // row name => array( found, value ), this request only
 	private $tprimed = false;
 	private $tread   = array(); // value-row names this request read
+	// #1210: row names deleted in this request and not yet deleted in the database. A delete is cache invalidation,
+	// so it is never skipped on a belief that the row is absent (another request may have set it since this one
+	// read it). It is coalesced instead: the request's own reads see the delete at once (tmemo holds a tombstone),
+	// a later set in this request removes its rows from the list, and the list is deleted in ONE statement when the
+	// request ends (transient_flush). A strummer qtrace of one guest order on cf759hl: 404 delete statements, one
+	// round trip each, 4,845 of 9,321 ms of database time. A set in ANOTHER request between this delete and the flush
+	// is deleted by the flush; that only removes a cached value, which its owner rebuilds.
+	private $tdelete = array();
+	const TRANSIENT_DELETE_CHUNK = 400;
 
 	private static function hot_get() {
 		if ( defined( 'SKYPHUSION_TRANSIENT_HOT_GET' ) ) {
@@ -247,7 +267,8 @@ class JS_Object_Cache {
 		$this->tload( array( $o, $t ) );
 		$this->tread[ $o ] = true;
 		if ( $this->tmemo[ $t ][0] && (int) $this->tmemo[ $t ][1] < self::now() ) {
-			skyphusion_transient_delete( array( $o, $t ) );
+			$this->tdelete[ $o ] = true;
+			$this->tdelete[ $t ] = true;
 			$this->tmemo[ $o ] = array( false, null );
 			$this->tmemo[ $t ] = array( false, null );
 			$found             = false;
@@ -270,7 +291,9 @@ class JS_Object_Cache {
 		if ( $expire > 0 ) {
 			skyphusion_transient_put( $t, self::now() + $expire );
 			$this->tmemo[ $t ] = array( true, self::now() + $expire );
+			unset( $this->tdelete[ $t ] );
 		}
+		unset( $this->tdelete[ $o ] );
 		$ok                = skyphusion_transient_put( $o, $data );
 		$this->tmemo[ $o ] = array( true, $data );
 		return $ok;
@@ -278,9 +301,31 @@ class JS_Object_Cache {
 
 	private function durable_delete( $key, $group ) {
 		list( $o, $t ) = self::durable_names( $key, $group );
-		$this->tmemo[ $o ] = array( false, null );
-		$this->tmemo[ $t ] = array( false, null );
-		return skyphusion_transient_delete( array( $o, $t ) ) > 0;
+		// Core's answer is whether the value existed, and on true delete_transient() fires deleted_transient, which
+		// WooCommerce listens to (ProductFilterAttribute cascades wc_attribute_taxonomies to its default-attribute
+		// transient). This request knows the answer when it has read the row (the prime of the learned names covers
+		// most). A row it never read answers TRUE, without a query: a delete of a missing row then fires one extra
+		// hook, which only deletes more cache; false would skip a cascade for a row that did exist.
+		$had                 = isset( $this->tmemo[ $o ] ) ? $this->tmemo[ $o ][0] : true;
+		$this->tmemo[ $o ]   = array( false, null );
+		$this->tmemo[ $t ]   = array( false, null );
+		$this->tdelete[ $o ] = true;
+		$this->tdelete[ $t ] = true;
+		return $had;
+	}
+
+	/** #1210: delete this request's pending transient rows, in one statement per chunk. Idempotent. */
+	public function transient_flush() {
+		if ( ! $this->tdelete ) {
+			return 0;
+		}
+		$names         = array_keys( $this->tdelete );
+		$this->tdelete = array();
+		$n             = 0;
+		foreach ( array_chunk( $names, self::TRANSIENT_DELETE_CHUNK ) as $chunk ) {
+			$n += (int) skyphusion_transient_delete( $chunk );
+		}
+		return $n;
 	}
 
 	private function persistent( $group ) {

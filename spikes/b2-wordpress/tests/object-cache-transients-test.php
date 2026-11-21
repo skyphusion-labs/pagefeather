@@ -37,7 +37,8 @@ $GLOBALS['autoload'] = array();
 $GLOBALS['row_queries'] = 0;
 function skyphusion_transient_rows( array $names ) { ++$GLOBALS['row_queries']; $o = array(); foreach ( $names as $n ) { if ( array_key_exists( $n, $GLOBALS['db'] ) ) { $o[ $n ] = $GLOBALS['db'][ $n ]; } } return $o; }
 function skyphusion_transient_put( $n, $v ) { $GLOBALS['db'][ $n ] = $v; $GLOBALS['autoload'][ $n ] = 'off'; return true; }
-function skyphusion_transient_delete( array $names ) { $k = 0; foreach ( $names as $n ) { if ( array_key_exists( $n, $GLOBALS['db'] ) ) { unset( $GLOBALS['db'][ $n ] ); ++$k; } } return $k; }
+$GLOBALS['delete_stmts'] = 0;
+function skyphusion_transient_delete( array $names ) { ++$GLOBALS['delete_stmts']; $k = 0; foreach ( $names as $n ) { if ( array_key_exists( $n, $GLOBALS['db'] ) ) { unset( $GLOBALS['db'][ $n ] ); ++$k; } } return $k; }
 function skyphusion_test_time() { return $GLOBALS['now']; }
 define( 'SKYPHUSION_TRANSIENT_CLOCK', 'skyphusion_test_time' );
 define( 'JS_OBJECT_CACHE_PERSIST_GROUPS', 'theme_json' ); // approach A's default allowlist
@@ -66,7 +67,9 @@ $GLOBALS['now'] = 1000031;
 $r3 = new JS_Object_Cache();
 $found = null;
 $r3->get( 'settings_errors', 'transient', false, $found );
-check( 'an expired transient is a miss, and its rows are deleted', $found === false && ! isset( $GLOBALS['db']['_transient_settings_errors'] ) && ! isset( $GLOBALS['db']['_transient_timeout_settings_errors'] ) );
+check( 'an expired transient is a miss at once (its rows go when the request ends, #1210)', $found === false && isset( $GLOBALS['db']['_transient_settings_errors'] ) );
+$r3->transient_flush();
+check( '  and at the end of the request its rows are deleted', ! isset( $GLOBALS['db']['_transient_settings_errors'] ) && ! isset( $GLOBALS['db']['_transient_timeout_settings_errors'] ) );
 
 // 3. No expiry: kept with no timeout row; updated in place; deleted for real.
 $r4 = new JS_Object_Cache();
@@ -75,6 +78,7 @@ $r4->set( 'wc_count', 8, 'transient' );
 $r5 = new JS_Object_Cache();
 check( 'a transient with no expiry survives, updated in place', 8 === $r5->get( 'wc_count', 'transient' ) && ! isset( $GLOBALS['db']['_transient_timeout_wc_count'] ) );
 $r5->delete( 'wc_count', 'transient' );
+$r5->transient_flush(); // the request ends (#1210)
 $r6 = new JS_Object_Cache();
 $found = null;
 $r6->get( 'wc_count', 'transient', false, $found );
@@ -144,10 +148,13 @@ $r->set( 'b', 'mine', 'transient', 60 );
 check( 'a request reads back its own write', 'mine' === $r->get( 'b', 'transient' ) );
 $r->delete( 'c', 'transient' );
 $found = null; $r->get( 'c', 'transient', false, $found );
-check( 'a request sees its own delete', false === $found && ! isset( $GLOBALS['db']['_transient_c'] ) );
+check( 'a request sees its own delete', false === $found );
+$r->transient_flush();
+check( '  and its row is gone once the request ends', ! isset( $GLOBALS['db']['_transient_c'] ) );
 $GLOBALS['now'] += 10000;
 $e = new JS_Object_Cache();
 $found = null; $e->get( 'a', 'transient', false, $found );
+$e->transient_flush();
 check( 'an expired row from the prime is a miss and is deleted', false === $found && ! isset( $GLOBALS['db']['_transient_a'] ) );
 // Learning converges: a request that reads only listed names writes no list.
 $GLOBALS['hot'] = array( '_transient_a' );
@@ -156,6 +163,125 @@ $c->get( 'a', 'transient' );
 $before = $GLOBALS['hot'];
 $c->transient_learn();
 check( 'no new names: the list is not written again', $before === $GLOBALS['hot'] );
+
+// #1210: a request's transient deletes land in ONE statement at its end. strummer's qtrace of one guest order on
+// cf759hl: 404 DELETE FROM wp_options WHERE option_name IN (?+) statements, one round trip each, 4,845 of 9,321 ms.
+$GLOBALS['db'] = array(); $GLOBALS['hot'] = array(); $GLOBALS['delete_stmts'] = 0;
+$GLOBALS['db']['_transient_wc_product_children_3'] = 'x';
+$r = new JS_Object_Cache();
+$q = $GLOBALS['row_queries'];
+for ( $i = 0; $i < 404; $i++ ) {
+	$r->delete( 'wc_product_children_' . ( $i % 250 ), 'transient' ); // 250 names, some deleted twice, as an order does
+}
+check( '#1210 404 deletes make no statement while the request runs', 0 === $GLOBALS['delete_stmts'] );
+check( '#1210   and no read either (a delete is never a lookup)', $q === $GLOBALS['row_queries'] );
+check( '#1210   the rows are still in the database until the end', isset( $GLOBALS['db']['_transient_wc_product_children_3'] ) );
+$found = null; $r->get( 'wc_product_children_3', 'transient', false, $found );
+check( '#1210 a tombstone: the request reads its own delete as a miss', false === $found );
+$r->transient_flush();
+check( '#1210 at the end: one statement per 400 names (500 distinct rows, repeats deduped: 2)', 2 === $GLOBALS['delete_stmts'] && ! isset( $GLOBALS['db']['_transient_wc_product_children_3'] ) );
+check( '#1210 the flush is idempotent', 0 === $r->transient_flush() && 2 === $GLOBALS['delete_stmts'] );
+// a set after a delete in the same request wins
+$GLOBALS['db']['_transient_s'] = 'old'; $GLOBALS['db']['_transient_timeout_s'] = $GLOBALS['now'] + 50;
+$r = new JS_Object_Cache();
+$r->delete( 's', 'transient' );
+$r->set( 's', 'new', 'transient' ); // no expiry: core leaves no timeout row after a delete
+$r->delete( 't', 'transient' );
+$r->set( 't', 'tv', 'transient', 30 );
+check( '#1210 a set after a delete reads back in the request', 'new' === $r->get( 's', 'transient' ) );
+$r->transient_flush();
+check( '#1210 at the end the set row stands, and the deleted timeout row is gone', 'new' === $GLOBALS['db']['_transient_s'] && ! isset( $GLOBALS['db']['_transient_timeout_s'] ) );
+check( '#1210   a set with an expiry keeps both its rows', 'tv' === $GLOBALS['db']['_transient_t'] && isset( $GLOBALS['db']['_transient_timeout_t'] ) );
+// a set by ANOTHER request between this delete and the flush is deleted by the flush (accepted: it only removes cache)
+$r = new JS_Object_Cache();
+$r->delete( 'race', 'transient' );
+$other = new JS_Object_Cache();
+$other->set( 'race', 'theirs', 'transient' );
+$r->transient_flush();
+check( '#1210 a concurrent set before the flush is deleted (accepted: invalidation, rebuilt by its owner)', ! isset( $GLOBALS['db']['_transient_race'] ) );
+// the answer: whether the value existed, when the request knows it; a row it never read answers false, no query
+$GLOBALS['db']['_transient_known'] = 1;
+$r = new JS_Object_Cache();
+$r->get( 'known', 'transient' );
+$q = $GLOBALS['row_queries'];
+check( '#1210 delete of a value this request read: true', true === $r->delete( 'known', 'transient' ) );
+check( '#1210 delete of a row it never read: true (deleted_transient fires, so a listener cascade runs), without a query', true === $r->delete( 'never_read', 'transient' ) && $q === $GLOBALS['row_queries'] );
+$r->get( 'read_missing', 'transient' );
+check( '#1210 delete of a row it read and found missing: false', false === $r->delete( 'read_missing', 'transient' ) );
+$r->transient_flush();
+// the hooks: the shutdown action at PHP_INT_MAX, and a PHP shutdown function for every other way a request ends
+$src = file_get_contents( isset( $argv[1] ) ? $argv[1] : __DIR__ . '/../php/object-cache-js.php' );
+check( '#1210 the flush is on the shutdown action, last', 1 === preg_match( "/add_action\\( 'shutdown', array\\( \\\$this, 'transient_flush' \\), PHP_INT_MAX \\);/", $src ) );
+// a fatal error and an exit before WordPress's shutdown hook: a child PHP process, the real shutdown sequence
+foreach ( array( 'fatal' => 'skyphusion_no_such_function();', 'exit' => 'exit( 0 );' ) as $how => $end ) {
+	$log   = tempnam( sys_get_temp_dir(), 'oc1210' );
+	$child = tempnam( sys_get_temp_dir(), 'oc1210' );
+	file_put_contents( $child, '<?php
+function post_message_to_js( $j ) { return json_encode( array( "ok" => true, "v" => array() ) ); }
+function is_multisite() { return false; } function get_current_blog_id() { return 1; } function wp_installing() { return false; }
+function get_option( $n, $d = false ) { return $d; } function update_option( $n, $v, $a = null ) { return true; }
+function skyphusion_transient_rows( array $n ) { return array(); }
+function skyphusion_transient_put( $n, $v ) { return true; }
+function skyphusion_transient_delete( array $n ) { file_put_contents( ' . var_export( $log, true ) . ', implode( ",", $n ) . "\n", FILE_APPEND ); return count( $n ); }
+require ' . var_export( isset( $argv[1] ) ? realpath( $argv[1] ) : realpath( __DIR__ . '/../php/object-cache-js.php' ), true ) . ';
+$c = new JS_Object_Cache();
+$c->delete( "gone", "transient" );
+' . $end . "\n" );
+	exec( escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( $child ) . ' 2>/dev/null', $o, $rc );
+	$got = trim( (string) file_get_contents( $log ) );
+	check( "#1210 on $how, the pending deletes are flushed (rc $rc)", '_transient_gone,_transient_timeout_gone' === $got );
+	unlink( $log ); unlink( $child );
+}
+
+// #1219 review (the lead): the prime is a SNAPSHOT. Request 1 primes and sees X absent; request 2 sets X; request 1
+// then deletes X. The delete must still reach the table: a prime-absent name is queued like any other.
+$GLOBALS['db'] = array(); $GLOBALS['hot'] = array( '_transient_px' ); $GLOBALS['delete_stmts'] = 0;
+$r1 = new JS_Object_Cache();
+$found = null; $r1->get( 'px', 'transient', false, $found );
+check( '#1219 request 1 primes: X is absent', false === $found );
+$r2 = new JS_Object_Cache();
+$r2->set( 'px', 'set-by-request-2', 'transient', 300 );
+check( '#1219 request 2 sets X after the prime', 'set-by-request-2' === ( $GLOBALS['db']['_transient_px'] ?? null ) );
+check( '#1219 request 1 deletes X (its prime saw it absent: answers false, as core would have)', false === $r1->delete( 'px', 'transient' ) );
+$r1->transient_flush();
+check( '#1219 at request 1 end X is gone from the table (the delete was queued despite the prime)', ! isset( $GLOBALS['db']['_transient_px'] ) && ! isset( $GLOBALS['db']['_transient_timeout_px'] ) && 1 === $GLOBALS['delete_stmts'] );
+$GLOBALS['hot'] = array();
+
+// #1219 review (the lead): across REQUESTS. Request 1 sets X; request 2 deletes X WITHOUT reading it; request 3 reads X
+// and must get false, and the rows must be gone from the table. Three child PHP processes over one table file, each a
+// full PHP request with the real shutdown sequence, so nothing in this process can flush for them.
+$table = tempnam( sys_get_temp_dir(), 'oc1219t' );
+file_put_contents( $table, serialize( array() ) );
+$step  = function ( $code ) use ( $table ) {
+	$child = tempnam( sys_get_temp_dir(), 'oc1219c' );
+	file_put_contents( $child, '<?php
+$T = ' . var_export( $table, true ) . ';
+function db() { global $T; return unserialize( file_get_contents( $T ) ); }
+function db_put( $d ) { global $T; file_put_contents( $T, serialize( $d ) ); }
+function post_message_to_js( $j ) { return json_encode( array( "ok" => true, "v" => array() ) ); }
+function is_multisite() { return false; } function get_current_blog_id() { return 1; } function wp_installing() { return false; }
+function wp_suspend_cache_addition() { return false; }
+function get_option( $n, $d = false ) { return $d; } function update_option( $n, $v, $a = null ) { return true; }
+function skyphusion_transient_rows( array $n ) { $d = db(); $o = array(); foreach ( $n as $k ) { if ( array_key_exists( $k, $d ) ) { $o[ $k ] = $d[ $k ]; } } return $o; }
+function skyphusion_transient_put( $n, $v ) { $d = db(); $d[ $n ] = $v; db_put( $d ); return true; }
+function skyphusion_transient_delete( array $n ) { $d = db(); $k = 0; foreach ( $n as $x ) { if ( array_key_exists( $x, $d ) ) { unset( $d[ $x ] ); ++$k; } } db_put( $d ); return $k; }
+define( "JS_OBJECT_CACHE_PERSIST_GROUPS", "theme_json" );
+require ' . var_export( isset( $GLOBALS['argv'][1] ) ? realpath( $GLOBALS['argv'][1] ) : realpath( __DIR__ . '/../php/object-cache-js.php' ), true ) . ';
+$c = new JS_Object_Cache();
+' . $code . "\n" );
+	exec( escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( $child ) . ' 2>&1', $out, $rc );
+	unlink( $child );
+	return array( $rc, implode( "\n", $out ) );
+};
+$step( '$c->set( "x1219", "value", "transient", 300 );' );
+$d = unserialize( file_get_contents( $table ) );
+check( '#1219 request 1 set X: its rows are in the table', 'value' === ( $d['_transient_x1219'] ?? null ) && isset( $d['_transient_timeout_x1219'] ) );
+list( $rc2, $o2 ) = $step( 'echo var_export( $c->delete( "x1219", "transient" ), true );' );
+$d = unserialize( file_get_contents( $table ) );
+check( '#1219 request 2 deleted X without reading it (answer true): at its end both rows are gone', 'true' === trim( $o2 ) && ! isset( $d['_transient_x1219'] ) && ! isset( $d['_transient_timeout_x1219'] ) );
+list( $rc3, $o3 ) = $step( '$f = null; $v = $c->get( "x1219", "transient", false, $f ); echo var_export( array( $v, $f ), true );' );
+check( '#1219 request 3 reads X: false, not found', false !== strpos( $o3, "0 => false" ) && false !== strpos( $o3, "1 => false" ) );
+unlink( $table );
 
 echo $fail ? "$fail FAILED\n" : "ALL PASS\n";
 exit( $fail ? 1 : 0 );
