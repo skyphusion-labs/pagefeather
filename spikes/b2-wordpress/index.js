@@ -77,6 +77,7 @@ import { Container, ContainerProxy, getContainer } from '@cloudflare/containers'
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
 import { bootPhases } from './boot-phases.mjs';
+import { rendersInWorker, placedRenderRequest, isPlacedRender } from './pages-render.mjs';
 import { memfsHeld, fsSampleWhy } from './memfs-held.mjs';
 import { plainFileCount } from './opcache-compiled.mjs';
 // Compiled PHP (OPcache file cache) made by opcache.sh with this same PHP build.
@@ -2429,7 +2430,9 @@ function pageCacheRoute(req, url, env) {
 		!PAGE_CACHE_NO_PARAM.some((k) => url.searchParams.has(k)) &&
 		!req.headers.has('authorization') &&
 		// An operator request never goes to the cached entrypoint (perf-headers.mjs).
-		!isOperatorRequest(req)
+		!isOperatorRequest(req) &&
+		// #1277 option 1: Pages' own placed render request renders in the gateway, never back in Pages.
+		!isPlacedRender(req)
 	);
 }
 function pageCacheHeaders(req, url, r, out, env, failed = 0) {
@@ -4727,7 +4730,7 @@ export class Pages extends WorkerEntrypoint {
 		if (req.headers.get(SELF_CACHE_ONLY_HEADER) === '1') return selfCacheMissResponse();
 		// #296 step 1: the page version is part of the cache key only; WordPress never sees it.
 		if (pageVersions.pageVersionsOn(this.env, dbHandler)) req = pageVersions.stripPcv(req);
-		const r = await site.fetch(req, this.env, this.ctx);
+		const r = rendersInWorker(this.env) ? await this.ctx.exports.default.fetch(placedRenderRequest(req)) : await site.fetch(req, this.env, this.ctx); // #1277 option 1 (pages-render.mjs)
 		// So a test can see which entrypoint answered (the gateway sets nothing).
 		const out = new Response(r.body, r);
 		out.headers.set('x-entrypoint', 'pages');
