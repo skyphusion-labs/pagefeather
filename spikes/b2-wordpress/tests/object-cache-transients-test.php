@@ -233,6 +233,20 @@ $c->delete( "gone", "transient" );
 	unlink( $log ); unlink( $child );
 }
 
+// #1219 review (the lead): the prime is a SNAPSHOT. Request 1 primes and sees X absent; request 2 sets X; request 1
+// then deletes X. The delete must still reach the table: a prime-absent name is queued like any other.
+$GLOBALS['db'] = array(); $GLOBALS['hot'] = array( '_transient_px' ); $GLOBALS['delete_stmts'] = 0;
+$r1 = new JS_Object_Cache();
+$found = null; $r1->get( 'px', 'transient', false, $found );
+check( '#1219 request 1 primes: X is absent', false === $found );
+$r2 = new JS_Object_Cache();
+$r2->set( 'px', 'set-by-request-2', 'transient', 300 );
+check( '#1219 request 2 sets X after the prime', 'set-by-request-2' === ( $GLOBALS['db']['_transient_px'] ?? null ) );
+check( '#1219 request 1 deletes X (its prime saw it absent: answers false, as core would have)', false === $r1->delete( 'px', 'transient' ) );
+$r1->transient_flush();
+check( '#1219 at request 1 end X is gone from the table (the delete was queued despite the prime)', ! isset( $GLOBALS['db']['_transient_px'] ) && ! isset( $GLOBALS['db']['_transient_timeout_px'] ) && 1 === $GLOBALS['delete_stmts'] );
+$GLOBALS['hot'] = array();
+
 // #1219 review (the lead): across REQUESTS. Request 1 sets X; request 2 deletes X WITHOUT reading it; request 3 reads X
 // and must get false, and the rows must be gone from the table. Three child PHP processes over one table file, each a
 // full PHP request with the real shutdown sequence, so nothing in this process can flush for them.
