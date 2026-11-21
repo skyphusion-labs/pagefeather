@@ -5,7 +5,8 @@
  *   fatal (error_get_last at shutdown: E_ERROR and its kin, an uncaught exception among them) or a wp_die that answers
  *   500, this sends the Worker the type, the message with addresses and URLs scrubbed (at most 300 characters), the file
  *   below /wordpress, the line, and the request method and path (no query: a nonce or a key never leaves). The Worker
- *   logs it as php-fatal. It changes no answer. Always on: it costs nothing unless a request dies.
+ *   logs it as php-fatal. A wp_die whose response is null or 200 is a normal exit (wp_send_json), not a fatal (#1220).
+ *   It changes no answer. Always on: it costs nothing unless a request dies.
  */
 
 // A constant guard, not function_exists: PHP declares this file's functions before its first line runs.
@@ -58,13 +59,15 @@ register_shutdown_function(
 );
 
 // A wp_die that answers 500 (WordPress can fail a request without a PHP fatal). The original handler still runs.
+// #1220: wp_send_json() ends with wp_die( '', '', array( 'response' => null ) ). isset() is false for null, so that
+// normal exit was read as a missing status and logged as 500. null and 200 are normal exits. A missing status stays 500.
 foreach ( array( 'wp_die_handler', 'wp_die_ajax_handler', 'wp_die_json_handler' ) as $skyphusion_die_filter ) {
 	add_filter(
 		$skyphusion_die_filter,
 		static function ( $handler ) {
 			return static function ( $message, $title = '', $args = array() ) use ( $handler ) {
-				$status = is_array( $args ) && isset( $args['response'] ) ? (int) $args['response'] : 500;
-				if ( 500 === $status ) {
+				$status = is_array( $args ) && array_key_exists( 'response', $args ) ? $args['response'] : 500;
+				if ( null !== $status && 500 === (int) $status ) {
 					$text = is_object( $message ) && method_exists( $message, 'get_error_message' ) ? $message->get_error_message() : ( is_string( $message ) ? $message : '' );
 					skyphusion_php_fatal_report( array( 'type' => 'wp_die', 'message' => skyphusion_php_fatal_strip( $text ), 'status' => 500 ) );
 				}

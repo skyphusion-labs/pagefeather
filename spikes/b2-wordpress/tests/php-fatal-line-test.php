@@ -42,5 +42,20 @@ $GLOBALS['bridge'] = array();
 $h( 'Sorry, you are not allowed.', 'Error', array( 'response' => 403 ) );
 ok( 'a non-500 wp_die is not reported', array() === $GLOBALS['bridge'] );
 
+// #1220: wp_send_json() ends with wp_die( '', '', array( 'response' => null ) ). The client gets 200 and the JSON.
+// A response of null or 200 is that normal exit, not a fatal. A real 500, even with an empty message, still is.
+$GLOBALS['bridge'] = array();
+$died_before = $GLOBALS['died'];
+$h( '', '', array( 'response' => null ) );
+ok( 'a wp_die with response null (wp_send_json) is not a php-fatal', array() === $GLOBALS['bridge'] );
+ok( 'and the original handler still runs for that exit', $GLOBALS['died'] === $died_before + 1 );
+$GLOBALS['bridge'] = array();
+$h( '', '', array( 'response' => 200 ) );
+ok( 'a wp_die with response 200 is not a php-fatal', array() === $GLOBALS['bridge'] );
+$GLOBALS['bridge'] = array();
+$h( '', '', array( 'response' => 500 ) );
+$e = $GLOBALS['bridge'] ? $GLOBALS['bridge'][0]['phpFatal'] : null;
+ok( 'a 500 wp_die with an empty message is still a fatal', is_array( $e ) && 'wp_die' === $e['type'] && '' === $e['msg'] && 500 === $e['status'] );
+
 echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
 exit( $fail ? 1 : 0 );
