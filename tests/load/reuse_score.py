@@ -87,6 +87,28 @@ def dispatcher_row(D, r):
 ADMIN_KINDS = ("dashboard", "post-new", "edit", "save", "before-gap", "after-gap")
 
 
+def platform_deaths(lines):
+    """#1022 issuecomment-7067648245: one death logs one platform line per in-flight request, so the count is DISTINCT
+    isolates that end with one. The line carries no iso: it takes the iso of an engine line of the same request (rid),
+    else the isolate whose perf lines were live then (the last m: perf iso before it). A line with neither counts by
+    its own timestamp, so nothing is undercounted. Returns (lines, distinct timestamps, distinct isolates)."""
+    ls = sorted(lines, key=lambda o: o.get("t") or 0)
+    by_rid = {}
+    for o in ls:
+        if o.get("iso") and o.get("rid"):
+            by_rid.setdefault(o["rid"], o["iso"])
+    dead, stamps, units, live = 0, set(), set(), None
+    for o in ls:
+        if o.get("m") == "perf" and o.get("iso"):
+            live = o["iso"]
+        if PLATFORM_DEATH in str(o.get("message", "")):
+            dead += 1
+            stamps.add(o.get("t"))
+            iso = by_rid.get(o.get("rid")) or live
+            units.add(("iso", iso) if iso else ("t", o.get("t")))
+    return dead, len(stamps), len(units)
+
+
 def arm(rows, lg):
     a = [r for r in rows if r.get("kind") in ADMIN_KINDS]
     g = [r for r in rows if r.get("kind") == "guest"]
@@ -104,7 +126,7 @@ def arm(rows, lg):
         A["exceededMemory"] = A["outcomes"].get("exceededMemory", 0)
         A["invRows"] = len(lg["inv"])
         A["lineRows"] = len(lg["lines"])
-        A["platformDeaths"] = sum(1 for o in lg["lines"] if PLATFORM_DEATH in str(o.get("message", "")))
+        A["platformLines"], A["platformStamps"], A["platformDeaths"] = platform_deaths(lg["lines"])
         A["logResets"] = sum(1 for o in lg["lines"] if o.get("m") == "isolate-reset")
         A["logWriteLoss"] = sum(1 for o in lg["lines"] if o.get("m") == "write-loss")
         offers = [o.get("offer") for o in lg["lines"] if o.get("m") == "mem-reuse" and o.get("offer")]
@@ -235,7 +257,8 @@ def main(argv):
         detail += "; exceededMemory on %d, off %d" % (on["exceededMemory"], off["exceededMemory"])
         v = "pass" if (d_on <= d_off and on["exceededMemory"] <= off["exceededMemory"] and not worse_lw) else "FAIL"
     elif dsrc == "platform":
-        detail += "; platform memory-death lines on %d, off %d (no invocation rows on an arm: the platform's own death line stands in, #1022)" % (on["platformDeaths"], off["platformDeaths"])
+        detail += "; platform memory-death isolates on %d, off %d (lines on %d, off %d; timestamps on %d, off %d) (no invocation rows on an arm: the platform's own death line stands in, by distinct isolate, #1022)" % (
+            on["platformDeaths"], off["platformDeaths"], on["platformLines"], off["platformLines"], on["platformStamps"], off["platformStamps"])
         v = "pass" if (d_on <= d_off and on["platformDeaths"] <= off["platformDeaths"] and not worse_lw) else "FAIL"
     else:
         v = "FAIL" if (d_on > d_off or worse_lw) else "could not measure"
