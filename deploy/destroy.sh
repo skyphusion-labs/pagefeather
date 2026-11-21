@@ -115,6 +115,11 @@ if [ "$VARIANT" = c1 ]; then
   exit 0
 fi
 
+# 1b. #1262: any Workers Custom Domain on the Worker goes first (and its DNS record with it), read back as gone.
+# shellcheck source=lib/custom-domain.sh
+. "$ROOT/deploy/lib/custom-domain.sh"
+custom_domain_detach "$NAME" || exit 1
+
 # 2. The Worker (named NAME by deploy.sh) and its PHP object. Run in deploy/,
 # which has no Wrangler config, so no other config can be used by mistake.
 wr_delete() { (cd "$ROOT/deploy" && "$WR" delete --name "$NAME" --force); }

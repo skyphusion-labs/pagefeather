@@ -5,7 +5,7 @@
 # each difference, unless REPLACE_INPUTS=1 (deploy/wfp's name for the same confirmation). A setting recorded last time
 # and unset now is a difference: a rebuild never drops one silently (the #1108 data loss was MEDIA dropped this way).
 # Secrets are never recorded: only the names below, none of which holds one. Test: deploy/tests/recorded-inputs-test.sh.
-RECORDED_INPUTS="VARIANT LOCATION MEDIA WOO_ACTIVE SITE_ORIGIN PLACEMENT A_CLIENT A_CRON MYSQL MYSQL_HOST MYSQL_DATABASE MAIL_FROM MAIL_FROM_NAME MAIL_ALLOWED_TO OBSERVABILITY OPCACHE_A OPCACHE_REMOTE SITE_REMOTE RECYCLE_WASM_MIB PHP_OVERFLOW PHP_OVERFLOW_POOL PHP_OVERFLOW_DEPTH OBJECT_CACHE_L2 OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE HTTP_ALLOW_HOSTS PDF_INVOICE REQUEST_FRAMES WOO_EXTRAS TURNSTILE_SITEKEY TURNSTILE_LOGIN TURNSTILE_LOSTPASSWORD TURNSTILE_WOO TURNSTILE_COMMENTS PLUGINS THEMES IMPORT_PLUGINS IMPORT_THEMES IMPORT_MU_PLUGINS SITE_TITLE"
+RECORDED_INPUTS="VARIANT LOCATION MEDIA WOO_ACTIVE SITE_ORIGIN PLACEMENT A_CLIENT A_CRON MYSQL MYSQL_HOST MYSQL_DATABASE MAIL_FROM MAIL_FROM_NAME MAIL_ALLOWED_TO OBSERVABILITY OPCACHE_A OPCACHE_REMOTE SITE_REMOTE RECYCLE_WASM_MIB PHP_OVERFLOW PHP_OVERFLOW_POOL PHP_OVERFLOW_DEPTH OBJECT_CACHE_L2 OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE HTTP_ALLOW_HOSTS PDF_INVOICE REQUEST_FRAMES WOO_EXTRAS TURNSTILE_SITEKEY TURNSTILE_LOGIN TURNSTILE_LOSTPASSWORD TURNSTILE_WOO TURNSTILE_COMMENTS PLUGINS THEMES IMPORT_PLUGINS IMPORT_THEMES IMPORT_MU_PLUGINS SITE_TITLE CUSTOM_DOMAIN"
 
 # deploy_inputs_value: this run's record, base64 of a JSON object of the names above that are SET (an empty value is
 # set). Word lists (PLUGINS and the like) are kept as given.
@@ -55,7 +55,7 @@ inputs_check() {
     return 0
   fi
   cur=$(deploy_inputs_value)
-  REC="$rec" CUR="$cur" REPLACE="${REPLACE_INPUTS:-0}" NAME="$name" python3 -I -c '
+  REC="$rec" CUR="$cur" REPLACE="${REPLACE_INPUTS:-0}" ORIGIN_MOVE="${ORIGIN_MOVE:-0}" NAME="$name" python3 -I -c '
 import base64, json, os, sys
 try:
     rec = json.loads(base64.b64decode(os.environ["REC"], validate=True))
@@ -68,6 +68,26 @@ diff = [(k, rec.get(k, ""), cur.get(k, "")) for k in list(dict.fromkeys(list(rec
 if not diff:
     sys.exit(0)
 replace = os.environ["REPLACE"] == "1"
+# #1262: the site ORIGIN (an explicit SITE_ORIGIN, else https://CUSTOM_DOMAIN, else the workers.dev default) never changes
+# by REPLACE_INPUTS alone. WP_HOME follows SITE_ORIGIN at boot, but siteurl and every absolute URL in the content
+# (uploads, links, menus) stay at the old origin in the database, and nothing here rewrites them. A move is asked for on
+# purpose with ORIGIN_MOVE=1, and is then a job for the operator: siteurl, and a search-replace of the old origin.
+def origin(d):
+    if d.get("SITE_ORIGIN"):
+        return d["SITE_ORIGIN"].lower()
+    if d.get("CUSTOM_DOMAIN"):
+        return "https://" + d["CUSTOM_DOMAIN"].lower()
+    return "the workers.dev default"
+o_rec, o_cur = origin(rec), origin(cur)
+if o_rec != o_cur and os.environ.get("ORIGIN_MOVE", "0") != "1":
+    print("refused: site %s would move from %s to %s. WordPress keeps siteurl and the absolute URLs in its content at the "
+          "old origin, and the deploy never rewrites them. To move it on purpose, run with ORIGIN_MOVE=1 (and REPLACE_INPUTS=1), "
+          "then set siteurl to the new origin and search-replace the old origin in the database. Nothing was changed. (#1262)"
+          % (os.environ["NAME"], o_rec, o_cur), file=sys.stderr)
+    sys.exit(2)
+if o_rec != o_cur:
+    print("ORIGIN_MOVE=1: site %s moves from %s to %s. Set siteurl and search-replace the old origin after this deploy; "
+          "the deploy does not. (#1262)" % (os.environ["NAME"], o_rec, o_cur), file=sys.stderr)
 print(("REPLACE_INPUTS=1: the recorded inputs are replaced:" if replace else
        "refused: this run'"'"'s inputs differ from the ones site %s recorded (REPLACE_INPUTS=1 replaces them on purpose):" % os.environ["NAME"]), file=sys.stderr)
 for k, a, b in diff:

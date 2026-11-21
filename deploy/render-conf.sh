@@ -61,6 +61,10 @@ render_conf() {
   echo 'compatibility_flags = ["nodejs_compat", "enable_request_signal"]'
   echo 'workers_dev = true'
   echo 'rules = [{ type = "Data", globs = ["**/*.zip"], fallthrough = false }]'
+  # #1262: CUSTOM_DOMAIN puts the Worker on that hostname as a Workers Custom Domain. wrangler deploy creates it (its DNS
+  # record and certificate) with the version, so it exists only once the Worker does. deploy.sh checked the hostname
+  # and its zone (deploy/lib/custom-domain.sh) before any step. Unset: no route, workers.dev only, as before.
+  [ -z "${CUSTOM_DOMAIN:-}" ] || echo "routes = [{ pattern = \"$CUSTOM_DOMAIN\", custom_domain = true }]"
   # From address: MAIL_FROM, else wordpress@<site host> when that host can send
   # (spikes/b2-wordpress/mail-from.mjs). A workers.dev host sends nothing.
   # #1056: MAIL_ALLOWED_TO, the destination allowlist (allowed_destination_addresses), as c1 has.
