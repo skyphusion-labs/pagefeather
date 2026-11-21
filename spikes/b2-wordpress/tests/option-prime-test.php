@@ -12,8 +12,15 @@ function get_option( $k, $d = false ) { return array_key_exists( $k, $GLOBALS['o
 function update_option( $k, $v, $autoload = null ) { $GLOBALS['opts'][ $k ] = $v; $GLOBALS['updates']++; $GLOBALS['autoload'][ $k ] = $autoload; return true; }
 function add_filter( $h, $cb, $p = 10, $n = 1 ) { $GLOBALS['filters'][ $h ][] = $cb; return true; }
 function add_action( $h, $cb, $p = 10, $n = 1 ) { $GLOBALS['actions'][ $h ][] = $cb; return true; }
-function wp_prime_option_caches( $names ) { $GLOBALS['primed'][] = $names; }
-class Stub_DB { public $options = 'wp_options'; }
+// The prime: when PRIME_ROWS is set it ran one query (a cold isolate) that returned those rows.
+function wp_prime_option_caches( $names ) {
+	$GLOBALS['primed'][] = $names;
+	if ( ! empty( $GLOBALS['prime_rows'] ) ) { $GLOBALS['wpdb']->num_queries++; $GLOBALS['wpdb']->last_result = $GLOBALS['prime_rows']; }
+}
+function maybe_serialize( $v ) { return is_array( $v ) || is_object( $v ) ? serialize( $v ) : $v; }
+$GLOBALS['bridge'] = array();
+function post_message_to_js( $json ) { $GLOBALS['bridge'][] = json_decode( $json, true ); return '1'; }
+class Stub_DB { public $options = 'wp_options'; public $num_queries = 0; public $last_result = array(); }
 $GLOBALS['wpdb'] = new Stub_DB();
 function q( $sql ) { foreach ( $GLOBALS['filters']['query'] as $cb ) { $sql = $cb( $sql ); } return $sql; }
 function shutdown() { foreach ( $GLOBALS['actions']['shutdown'] as $cb ) { $cb(); } }
@@ -58,6 +65,32 @@ require __DIR__ . '/../php/option-prime.php';
 for ( $i = 0; $i < 600; $i++ ) { q( "SELECT option_value FROM wp_options WHERE option_name = 'opt_$i' LIMIT 1" ); }
 shutdown();
 ok( 'capped at SKYPHUSION_HOT_OPTIONS_MAX (' . SKYPHUSION_HOT_OPTIONS_MAX . ')', count( $GLOBALS['opts']['skyphusion_hot_options'] ) === SKYPHUSION_HOT_OPTIONS_MAX );
+
+// #1090 review: a name whose value is over SKYPHUSION_HOT_OPTION_MAX_BYTES is never learned (a cold prime loads values).
+$GLOBALS['opts'] = array( 'small_opt' => 'x', 'big_blob' => str_repeat( 'b', 70000 ) );
+$GLOBALS['filters'] = array(); $GLOBALS['actions'] = array(); $GLOBALS['updates'] = 0;
+$GLOBALS['skyphusion_option_prime_loaded'] = false;
+require __DIR__ . '/../php/option-prime.php';
+q( "SELECT option_value FROM wp_options WHERE option_name = 'small_opt' LIMIT 1" );
+q( "SELECT option_value FROM wp_options WHERE option_name = 'big_blob' LIMIT 1" );
+q( "SELECT option_value FROM wp_options WHERE option_name = 'gone_opt' LIMIT 1" );
+shutdown();
+$l = $GLOBALS['opts']['skyphusion_hot_options'];
+ok( '#1090 a small value is learned', in_array( 'small_opt', $l, true ) );
+ok( '#1090 a value over 64 KB is NOT learned', ! in_array( 'big_blob', $l, true ) && 65536 === SKYPHUSION_HOT_OPTION_MAX_BYTES );
+ok( '#1090 a missing option is learned (it primes into notoptions, no value to load)', in_array( 'gone_opt', $l, true ) );
+
+// #1090 review: a cold prime (it ran its query) reports how many values and bytes it loaded; a warm one says nothing.
+$GLOBALS['filters'] = array(); $GLOBALS['actions'] = array(); $GLOBALS['bridge'] = array();
+$GLOBALS['prime_rows'] = array( (object) array( 'option_name' => 'small_opt', 'option_value' => 'abc' ), (object) array( 'option_name' => 'gone_x', 'option_value' => str_repeat( 'z', 100 ) ) );
+$GLOBALS['skyphusion_option_prime_loaded'] = false;
+require __DIR__ . '/../php/option-prime.php';
+$msg = $GLOBALS['bridge'] ? $GLOBALS['bridge'][0] : null;
+ok( '#1090 a cold prime reports n and bytes to the Worker', is_array( $msg ) && isset( $msg['optionPrime'] ) && 2 === $msg['optionPrime']['n'] && 103 === $msg['optionPrime']['bytes'] && $msg['optionPrime']['listed'] === count( $GLOBALS['opts']['skyphusion_hot_options'] ) );
+$GLOBALS['filters'] = array(); $GLOBALS['actions'] = array(); $GLOBALS['bridge'] = array(); $GLOBALS['prime_rows'] = array();
+$GLOBALS['skyphusion_option_prime_loaded'] = false;
+require __DIR__ . '/../php/option-prime.php';
+ok( '#1090 a warm prime (no query) reports nothing', array() === $GLOBALS['bridge'] );
 
 echo $fail ? "\n$fail FAILED\n" : "\nALL PASS\n";
 exit( $fail ? 1 : 0 );

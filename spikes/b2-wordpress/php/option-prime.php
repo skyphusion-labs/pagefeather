@@ -11,6 +11,10 @@
  *   A name is learned from core's own single-row miss (get_option's "SELECT option_value ... WHERE option_name = ...
  *   LIMIT 1"); the list is written only when it grows, so it converges: each write bumps the options version once.
  *   Transients are never listed. Approach A only (JS_OBJECT_CACHE_VERSIONED).
+ * Bounds (#1090 review): a cold prime loads the VALUES, so a name whose value is over SKYPHUSION_HOT_OPTION_MAX_BYTES
+ *   (64 KB) is never learned, and each cold prime reports its count and bytes to the Worker (an option-prime line).
+ *   The list never shrinks: a deleted option is primed into notoptions (no value to load), and SKYPHUSION_HOT_OPTIONS_MAX
+ *   (400 names) bounds it.
  */
 
 if ( ! defined( 'JS_OBJECT_CACHE_VERSIONED' ) || ! empty( $GLOBALS['skyphusion_option_prime_loaded'] ) ) {
@@ -20,12 +24,26 @@ $GLOBALS['skyphusion_option_prime_loaded'] = true;
 if ( ! defined( 'SKYPHUSION_HOT_OPTIONS_MAX' ) ) {
 	define( 'SKYPHUSION_HOT_OPTIONS_MAX', 400 );
 }
+if ( ! defined( 'SKYPHUSION_HOT_OPTION_MAX_BYTES' ) ) {
+	define( 'SKYPHUSION_HOT_OPTION_MAX_BYTES', 65536 );
+}
 $GLOBALS['skyphusion_option_misses'] = array();
 
 $skyphusion_hot = get_option( 'skyphusion_hot_options' );
 $skyphusion_hot = is_array( $skyphusion_hot ) ? array_values( array_filter( $skyphusion_hot, 'is_string' ) ) : array();
 if ( $skyphusion_hot && function_exists( 'wp_prime_option_caches' ) ) {
+	global $wpdb;
+	$skyphusion_q0 = isset( $wpdb->num_queries ) ? (int) $wpdb->num_queries : 0;
 	wp_prime_option_caches( $skyphusion_hot );
+	// A cold prime ran its one IN query: report what it loaded (numbers only), so a read can see the memory it costs.
+	if ( isset( $wpdb->num_queries ) && (int) $wpdb->num_queries > $skyphusion_q0 && function_exists( 'post_message_to_js' ) ) {
+		$skyphusion_bytes = 0;
+		$skyphusion_rows  = is_array( $wpdb->last_result ) ? $wpdb->last_result : array();
+		foreach ( $skyphusion_rows as $skyphusion_row ) {
+			$skyphusion_bytes += isset( $skyphusion_row->option_value ) ? strlen( (string) $skyphusion_row->option_value ) : 0;
+		}
+		post_message_to_js( json_encode( array( 'optionPrime' => array( 'n' => count( $skyphusion_rows ), 'bytes' => $skyphusion_bytes, 'listed' => count( $skyphusion_hot ) ) ) ) );
+	}
 }
 
 add_filter(
@@ -50,7 +68,14 @@ add_action(
 		}
 		$have = get_option( 'skyphusion_hot_options' );
 		$have = is_array( $have ) ? array_values( array_filter( $have, 'is_string' ) ) : array();
-		$new  = array_values( array_diff( array_keys( $GLOBALS['skyphusion_option_misses'] ), $have ) );
+		$new  = array();
+		foreach ( array_diff( array_keys( $GLOBALS['skyphusion_option_misses'] ), $have ) as $name ) {
+			// The value is in this request's cache already (the miss just loaded it): a big one is never learned.
+			$v = get_option( $name, false );
+			if ( strlen( (string) maybe_serialize( $v ) ) <= SKYPHUSION_HOT_OPTION_MAX_BYTES ) {
+				$new[] = $name;
+			}
+		}
 		if ( ! $new || count( $have ) >= SKYPHUSION_HOT_OPTIONS_MAX ) {
 			return;
 		}
