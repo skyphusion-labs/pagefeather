@@ -22,7 +22,7 @@ import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
 import { cronBounds, cronCleanDue, cronLegDue, cronAsBudgetMs, cronMore, cronBacklogNext, cronBacklogDue, cronBacklogGapMs, backlogStreak } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronRunDeferred, cronMarkOf, cronFatalOf } from './cron-health.mjs';
-import { aCronObjectOff, approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME, CRON_BUILD_HEADER, CRON_BUILD_PATH, cronVersionAbort, cronBuildState } from './a-cron.mjs';
+import { emailDueRoute, EMAIL_DUE_PATH, EMAIL_DUE_HEADER, aCronObjectOff, approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME, CRON_BUILD_HEADER, CRON_BUILD_PATH, cronVersionAbort, cronBuildState } from './a-cron.mjs';
 import { isMediaUploadRequest, markerKey, sweepUploadOrphans, dropMarkersOn } from './upload-intent.mjs';
 import { cronFailureLine } from './cron-error.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
@@ -1221,6 +1221,21 @@ async function mailRetryStore(storage, records) {
 		if (next === null || rec.next < next) next = rec.next;
 	}
 	await mailRetryArm(storage, next);
+}
+// #1215: hand the #969 email-due wake to the cron object. AWAITED by the request that queued the email, not left to
+// waitUntil: that request may run on a pool object, which does not keep waitUntil work alive as a Worker does. Bounded,
+// so the order's answer waits at most EMAIL_DUE_SEND_MS on it; a failure is logged, and the minute tick remains.
+const EMAIL_DUE_SEND_MS = 2000;
+async function emailDueToCron(env) {
+	const t0 = Date.now();
+	try {
+		const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(CRON_OBJECT_NAME));
+		const res = await stub.fetch(new Request('https://do.internal' + EMAIL_DUE_PATH, { method: 'POST', headers: { [EMAIL_DUE_HEADER]: '1' }, signal: AbortSignal.timeout(EMAIL_DUE_SEND_MS) }));
+		const j = res.ok ? await res.json().catch(() => null) : null;
+		console.log(JSON.stringify({ m: 'email-due', routed: 'a-cron', status: res.status, armed: j ? j.armed : null, inMs: j ? j.inMs : null, ms: Date.now() - t0 }));
+	} catch (e) {
+		console.log(JSON.stringify({ m: 'email-due', routed: 'a-cron', error: String((e && e.message) || e).slice(0, 160), ms: Date.now() - t0 }));
+	}
 }
 async function mailRetryPut(env, failures) {
 	const records = failureRecords(failures, Date.now());
@@ -3635,6 +3650,16 @@ export class PhpRuntime extends DurableObject {
 			await txnRecover(db, this.ctx.storage);
 			return Response.json({ frame: undo(env).status(db, objectUrl.searchParams.get('id') || '') });
 		}
+		// #1215: the #969 email-due wake from an approach A request that does not own the cron (emailDueToCron): what #969
+		// does in place. emailAlarmAt only ever moves the alarm sooner, so #1176's idle backoff resumes after the rush.
+		if (objectUrl.pathname === EMAIL_DUE_PATH) {
+			if (raw.headers.get(EMAIL_DUE_HEADER) !== '1' || raw.method !== 'POST' || !approachACronEnabled(env)) return new Response('forbidden', { status: 403 });
+			const nowDue = Date.now();
+			await this.ctx.storage.put(EMAIL_DUE_KEY, nowDue);
+			const dueAt = emailAlarmAt(await this.ctx.storage.getAlarm(), nowDue);
+			if (dueAt !== null) await setAlarmRecorded(this.ctx.storage, dueAt, nowDue, 'email-due');
+			return Response.json({ ok: true, armed: dueAt !== null, inMs: dueAt !== null ? dueAt - nowDue : null });
+		}
 		// #1057: a rejected send handed over by the approach A Worker (mailRetryPut). Stored here; this object's alarm
 		// drains it. GET ?count=1 is the dead-letter count for Site Health. Internal only (the Worker 404s the path).
 		if (objectUrl.pathname === MAIL_RETRY_PATH) {
@@ -4652,6 +4677,7 @@ export default {
 		// #855: the cron tick is Worker to PhpRuntime only, never a public URL.
 		if (url.pathname === CRON_TICK_PATH) return new Response('Not Found', { status: 404 });
 		if (url.pathname === MAIL_RETRY_PATH) return new Response('Not Found', { status: 404 }); // #1057: internal only
+		if (url.pathname === EMAIL_DUE_PATH) return new Response('Not Found', { status: 404 }); // #1215: internal only
 		// #752: the PHP object's start-by tick lands here, FIRST: a cheap 204, before the page cache and any object call.
 		if (url.pathname === TICK_PATH) return tickResponse();
 		// #912: //checkout-link is the home page. Merge the slash and redirect.
@@ -5140,8 +5166,11 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			}
 			// #969: the order request queued a deferred email. Wake the alarm soon. A lost write
 			// rolled the queue row back, so that path returns above and does not arm this.
-			if (emailDueRequest && ctx && ctx.storage && !ctx.overflowed && !aCronObjectOff(ENV)) { // #1186: only the object that owns the cron
+			if (emailDueRequest) {
 				emailDueRequest = false;
+				// #1186: only the object that owns the cron arms its own alarm; #1215: approach A hands it to the cron object.
+				const route = emailDueRoute({ storage: ctx && ctx.storage, overflowed: Boolean(ctx && ctx.overflowed), env: ENV });
+				if (route === 'local') {
 				try {
 					const nowDue = Date.now();
 					await ctx.storage.put(EMAIL_DUE_KEY, nowDue);
@@ -5150,6 +5179,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				} catch (e) {
 					console.log(JSON.stringify({ m: 'email-due', error: String((e && e.message) || e).slice(0, 160) }));
 				}
+				} else if (route === 'a-cron') await emailDueToCron(ENV);
 			}
 			// #795, by FAILURE CLASS (write-loss.mjs PLATFORM_FAILURE). A PLATFORM failure other than the reset (busy, out of
 			// memory, disk full, a timeout...) is never answered as a success: PHP saw an empty or unapplied result that was
