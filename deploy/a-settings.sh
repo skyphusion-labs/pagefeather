@@ -36,9 +36,13 @@
 #                     object (26 ms p50 against 8 ms from the placed Worker), so it is not a default.
 #   PHP_OVERFLOW_POOL 1 to 128 (default 32, the measured default, #646). Needs overflow on (not 0). The runtime
 #                     (overflow.mjs) takes 1 to 128; it ran 129 to 256 as 32, so those are refused here (#714).
-#   A_CRON=1            #855: a Workers Cron Trigger and a named PhpRuntime id cron for WP-Cron and Action Scheduler on
+#   A_CRON            1 (the default since #1165) or 0 (the explicit opt-out). #855: a Workers Cron Trigger and a named PhpRuntime id cron for WP-Cron and Action Scheduler on
 #                     Hyperdrive approach A. Unset leaves today's render (no trigger, no DO for cron). PHP_OVERFLOW=on
 #                     already renders PHP_RUNTIME; A_CRON=1 without overflow adds that binding and migration.
+#                     #1165: on by default because nothing else runs Action Scheduler or WP-Cron on approach A
+#                     (DISABLE_WP_CRON; php/action-scheduler-alarm-only.php refuses the async runner; php/woo-edge.php
+#                     defers every WooCommerce order email to Action Scheduler): without it no order email was sent and no
+#                     scheduled post published. Unset or empty is the default. The DO tiers are unchanged.
 #                     #1152: after a deploy the cron object can keep the previous build for minutes. Each Cron Trigger
 #                     tick carries the Worker's build; a cron object on another build resets itself at the start of its
 #                     next leg (at most once per 10 min). deploy.sh then reads /_cron-build for CRON_VERSION_WAIT_S
@@ -84,7 +88,7 @@ a_settings_check() {
       [ -z "${!v:-}" ] || { echo "$v is for variant a only (deploy/wfp has its own settings for b-dosql)" >&2; return 2; }
     done
   fi
-  case "${A_CRON:-0}" in 0|1) ;; *) echo "A_CRON must be 0 or 1, not ${A_CRON}" >&2; return 2 ;; esac
+  case "${A_CRON:-1}" in 0|1) ;; *) echo "A_CRON must be 0 or 1, not ${A_CRON}" >&2; return 2 ;; esac
   case "${OPCACHE_A:-0}" in 0|1) ;; *) echo "OPCACHE_A must be 0 or 1, not ${OPCACHE_A}" >&2; return 2 ;; esac
   case "${OPCACHE_REMOTE:-0}" in 0|1) ;; *) echo "OPCACHE_REMOTE must be 0 or 1, not ${OPCACHE_REMOTE}" >&2; return 2 ;; esac
   case "${SITE_REMOTE:-0}" in 0|1) ;; *) echo "SITE_REMOTE must be 0 or 1, not ${SITE_REMOTE}" >&2; return 2 ;; esac
@@ -219,9 +223,9 @@ a_overflow_bindings() {
   echo '[[migrations]]'; echo 'tag = "v1"'; echo 'new_sqlite_classes = ["PhpRuntime"]'
 }
 
-# a_cron_on: A_CRON=1 (#855), the deploy gate until live acceptance.
+# a_cron_on: A_CRON (#855) is on unless it is 0 (#1165: the default; it passed live acceptance, #855 check C).
 a_cron_on() {
-  [ "${A_CRON:-0}" = 1 ]
+  [ "${A_CRON:-1}" = 1 ]
 }
 # a_cron_vars, a_cron_triggers, a_cron_bindings: render the cron driver. Bindings are skipped when PHP_OVERFLOW
 # is on (the pool binding is the same PhpRuntime class).

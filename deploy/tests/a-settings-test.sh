@@ -140,7 +140,13 @@ ok "PHP_OVERFLOW=always: always, pool 32, the PhpRuntime binding and its migrati
 echo "2d. #855: A_CRON=1 renders triggers, A_CRON var, and PhpRuntime when overflow is off (PHP_OVERFLOW=0 since #1119)"
 ok "#1119 A_CRON=1 with overflow on by default: a_cron_bindings renders nothing (the pool already binds PhpRuntime)" "$([ -z "$(env -i PATH="$PATH" bash -c ". '$S' && A_CRON=1 a_cron_bindings")" ] && echo 1 || echo 0)"
 ct() { env -i PATH="$PATH" "$@" bash -c ". '$S' && a_cron_vars && echo --- && a_cron_triggers && echo --- && a_cron_bindings" 2>&1; }
-ok "A_CRON unset renders nothing" "$([ "$(ct)" = $'---\n---' ] && echo 1 || echo 0)"
+# #1165: on a default approach A deploy NOTHING ran Action Scheduler or WP-Cron (DISABLE_WP_CRON, the async runner off,
+# woo-edge.php defers every order email), so no order email was ever sent. A_CRON is now on by default; 0 opts out.
+ok "#1165 A_CRON=0 (the opt-out) renders nothing" "$([ "$(ct A_CRON=0)" = $'---\n---' ] && echo 1 || echo 0)"
+ok "#1165 A_CRON unset renders the cron driver (the var and the minute trigger; the overflow pool binds PhpRuntime)" "$([ "$(ct)" = "$(printf 'A_CRON = "on"\n---\n[triggers]\ncrons = ["* * * * *"]\n---')" ] && echo 1 || echo 0)"
+ok "#1165 A_CRON empty is the default too" "$([ "$(ct A_CRON=)" = "$(ct)" ] && echo 1 || echo 0)"
+ok "#1165 A_CRON unset with the overflow opt-out still binds PhpRuntime for the cron object" "$(case "$(ct PHP_OVERFLOW=0)" in *'class_name = "PhpRuntime"'*'new_sqlite_classes = ["PhpRuntime"]'*) echo 1 ;; *) echo 0 ;; esac)"
+ok "#1165 the DO tiers are unchanged: A_CRON unset passes the check on b-do, b-dosql and c1" "$(env -i PATH="$PATH" bash -c ". '$S' && for v in b-do b-dosql c1; do a_settings_check \$v || exit 1; done" >/dev/null 2>&1 && echo 1 || echo 0)"
 ok "A_CRON=1 PHP_OVERFLOW=0: the var, minute cron, PhpRuntime binding" "$([ "$(ct A_CRON=1 PHP_OVERFLOW=0)" = "$(printf 'A_CRON = "on"\n---\n[triggers]\ncrons = ["* * * * *"]\n---\n[[durable_objects.bindings]]\nname = "PHP_RUNTIME"\nclass_name = "PhpRuntime"\n[[migrations]]\ntag = "v1"\nnew_sqlite_classes = ["PhpRuntime"]')" ] && echo 1 || echo 0)"
 ok "A_CRON=1 with PHP_OVERFLOW=1: a_cron_bindings alone renders nothing" "$([ -z "$(env -i PATH="$PATH" bash -c ". '$S' && A_CRON=1 PHP_OVERFLOW=1 a_cron_bindings")" ] && echo 1 || echo 0)"
 ok "A_CRON_CRON overrides the schedule" "$(out=$(ct A_CRON=1 A_CRON_CRON='5 4 * * *'); case "$out" in *'5 4 * * *'*) echo 1 ;; *) echo 0 ;; esac)"
