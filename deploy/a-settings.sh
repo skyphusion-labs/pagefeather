@@ -39,6 +39,10 @@
 #   A_CRON=1            #855: a Workers Cron Trigger and a named PhpRuntime id cron for WP-Cron and Action Scheduler on
 #                     Hyperdrive approach A. Unset leaves today's render (no trigger, no DO for cron). PHP_OVERFLOW=on
 #                     already renders PHP_RUNTIME; A_CRON=1 without overflow adds that binding and migration.
+#                     #1152: after a deploy the cron object can keep the previous build for minutes. Each Cron Trigger
+#                     tick carries the Worker's build; a cron object on another build resets itself at the start of its
+#                     next leg (at most once per 10 min). deploy.sh then reads /_cron-build for CRON_VERSION_WAIT_S
+#                     (default 120) and WARNS, naming both builds, if it has not moved (deploy/lib/cron-version.sh).
 #   PHP_OVERFLOW_MAX_HELD off, or 1 to 1000 (#714, #717): the most overflowed requests one Worker isolate holds in
 #                     flight. Unset renders nothing: the code default, NO cap (#714 measured a cap of 16 losing 479
 #                     requests to save 2). A number caps; off: no cap. Needs PHP_OVERFLOW=1.

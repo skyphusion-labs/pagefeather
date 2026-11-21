@@ -102,6 +102,7 @@ jobs:
           bash deploy/tests/observability-test.sh
           bash deploy/tests/media-guard-test.sh
           bash deploy/tests/recorded-inputs-test.sh
+          bash deploy/tests/cron-version-readback-test.sh
           bash spikes/b2-wordpress/tests/trace-filter-test.sh
       - name: doctor reads Workers Logs and never reports zero rows or console-only logs as healthy (#652)
         # deploy/doctor against a fake telemetry API that fails any call it does not expect: no rows, a
@@ -498,6 +499,8 @@ jobs:
       - name: b-dosql bounded cron tick
         # cron-bound.mjs: the cron runs its own claim loop, bounded, and the cleaner cannot starve (#291).
         run: node --test spikes/b2-wordpress/tests/cron-bound.test.mjs
+      - name: "Approach A cron: a cron object on another build than the tick's resets itself at a leg start, at most once per 10 min (#1152)"
+        run: node --test spikes/b2-wordpress/tests/cron-version.test.mjs
       - name: "Every email send is timed: email-sent and email-send-failed carry ms (#1135)"
         run: node --test spikes/b2-wordpress/tests/email-send-timing.test.mjs
       - name: "Approach A cron: a leg runs due actions to a time budget and a heap stop, not one a leg (#1120)"
