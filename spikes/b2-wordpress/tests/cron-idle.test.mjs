@@ -162,7 +162,12 @@ test('#1059 pullIn records who pulled (by), default request-pull', async () => {
 	s = mk(now + 30_000);
 	assert.deepEqual(await pullIn(s, now, 60_000, 'a-cron-tick'), { pulled: false }, 'a sooner alarm is never moved');
 });
-test('#1059 index.js: the approach A cron tick pulls a backed-off alarm in, after its watchdog re-arm', () => {
+// #1164 lever: the tick still pulls a backed-off alarm in after its watchdog re-arm, but only when tickAlarmPlan says so
+// (work due, an alarm the idle gate did not set, or an unreadable due state); tests/idle-tick.test.mjs pins the plan.
+test('#1059 index.js: the approach A cron tick pulls a backed-off alarm in, after its watchdog re-arm, when the plan says pull', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	assert.match(src, /const watch = await snapshotRearm\(this\.ctx\.storage, Date\.now\(\), Number\(env\.CRON_INTERVAL_MS \|\| 60000\)\);\n[^\n]*\n\t\t\tconst pulled = await pullIn\(this\.ctx\.storage, Date\.now\(\), Number\(env\.CRON_INTERVAL_MS \|\| 60000\), 'a-cron-tick'\);/);
+	const w = src.indexOf('const watch = await snapshotRearm(this.ctx.storage, Date.now(), Number(env.CRON_INTERVAL_MS || 60000));');
+	const plan = src.indexOf('const plan = tickAlarmPlan(', w);
+	const pull = src.indexOf("if (plan.action === 'pull') pulled = await pullIn(this.ctx.storage, tickNow, tickIv, 'a-cron-tick');", plan);
+	assert.ok(w > 0 && plan > w && pull > plan, 'watchdog, then the plan, then the pull');
 });

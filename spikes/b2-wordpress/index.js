@@ -9,7 +9,7 @@ import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { installPhpBasicAuth } from './php-auth.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
 import { wpCronState, idleDecision, parseGmt, IDLE_KEY } from './cron-idle.mjs';
-import { armBeforeRun, rearm, pullIn, extendIfOurs, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm, setAlarmRecorded, ALARM_SET_KEY, emailRushDue, emailAlarmAt, EMAIL_DUE_KEY, EMAIL_RETRY_MS } from './alarm-arm.mjs';
+import { tickAlarmPlan, armBeforeRun, rearm, pullIn, extendIfOurs, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm, setAlarmRecorded, ALARM_SET_KEY, emailRushDue, emailAlarmAt, EMAIL_DUE_KEY, EMAIL_RETRY_MS } from './alarm-arm.mjs';
 import { classifyObjectError, objectErrorHeaders, fetchWithMemoryRetry, isResetKind, objectErrorOutcome } from './object-error.mjs';
 import { askPurgeAfterAnswer } from './purge-after-php.mjs';
 import { callPhpObject, isObjectCallDeadline, objectCallDeadlineMs, objectCallExempt } from './object-deadline.mjs';
@@ -3617,9 +3617,23 @@ export class PhpRuntime extends DurableObject {
 			else if (tickBuild) await this.ctx.storage.delete(CRON_VERSION_PENDING_KEY);
 			const watch = await snapshotRearm(this.ctx.storage, Date.now(), Number(env.CRON_INTERVAL_MS || 60000));
 			if (watch.state !== 'ok') console.log(JSON.stringify({ m: 'alarm', rearmedBy: 'a-cron-tick', was: watch.state }));
-			const pulled = await pullIn(this.ctx.storage, Date.now(), Number(env.CRON_INTERVAL_MS || 60000), 'a-cron-tick');
 			// #1059: on A a page request runs in the Worker, so this tick is what pulls a backed-off (#390) alarm back in.
-			if (pulled.pulled) console.log(JSON.stringify({ m: 'alarm', pulledBy: 'a-cron-tick', wasInMs: pulled.was - Date.now() }));
+			// #1164 lever: only when work is due (tickAlarmPlan, the alarm's own idle gate: two SQL reads, no PHP). Before, every
+			// tick pulled it, so an idle store's alarm ran every minute and the backoff never grew.
+			const tickNow = Date.now();
+			const tickIv = Number(env.CRON_INTERVAL_MS || 60000);
+			const tickAlarm = await this.ctx.storage.getAlarm();
+			const idleStreak = Number(((await this.ctx.storage.get(IDLE_KEY)) || {}).n) || 0;
+			const due = idleStreak > 0 && tickAlarm !== null && tickAlarm !== undefined && Number(tickAlarm) > tickNow + tickIv ? await this.cronIdle(tickNow).catch(() => null) : null;
+			const plan = tickAlarmPlan({ alarmAt: tickAlarm, now: tickNow, intervalMs: tickIv, idleStreak, due });
+			let pulled = { pulled: false };
+			if (plan.action === 'pull') pulled = await pullIn(this.ctx.storage, tickNow, tickIv, 'a-cron-tick');
+			else if (plan.action === 'earlier') {
+				await setAlarmRecorded(this.ctx.storage, plan.at, tickNow, 'a-cron-tick-due');
+				pulled = { pulled: true, was: Number(tickAlarm) };
+			}
+			if (pulled.pulled) console.log(JSON.stringify({ m: 'alarm', pulledBy: 'a-cron-tick', plan: plan.action, wasInMs: pulled.was - tickNow }));
+			else if (due) console.log(JSON.stringify({ m: 'alarm', heldBy: 'a-cron-tick', idle: true, streak: idleStreak, inMs: Number(tickAlarm) - tickNow }));
 			return Response.json({ ok: true, tick: 'cron', alarm: watch.state, at: watch.at, ...(pulled.pulled ? { pulled: true } : {}) }, { headers: { 'cache-control': 'no-store' } });
 		}
 		const origin = raw.headers.get(ORIGIN_HEADER);
