@@ -474,7 +474,9 @@ def main():
             if fresh_uuid:
                 rc, _gone = rest(a, n, "/wp/v2/users/%s/application-passwords/%s" % (uid, fresh_uuid), None, "DELETE")
                 if rc != 200:
-                    halt("the application password minted for the store reset is still on the site (DELETE /wp/v2/users/%s/application-passwords/%s answered %s). The seed is stopping." % (uid, fresh_uuid, rc))
+                    # #1151: name no field of the application-password response here (CodeQL py/clear-text-logging-sensitive-data):
+                    # the uuid comes from the object that holds the password. The HTTP status is enough to act on.
+                    halt("the application password minted for the store reset is still on the site (its DELETE answered %s). Revoke it in Users > Profile > Application Passwords. The seed is stopping." % rc)
             elif fresh:
                 halt("the application password minted for the store reset came back with no uuid, so it was not revoked. The seed is stopping.")
 
