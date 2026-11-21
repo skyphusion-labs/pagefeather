@@ -769,6 +769,12 @@ def main():
         vip = subprocess.run(["/bin/bash", os.path.join(HERE, "vps-run.sh"), "install", "wc", os.path.join(t, "vip")],
                              env={"PATH": nophp}, capture_output=True, text=True)
         ok("install wc without php: STOP (exit 3) before any clone, naming php") if vip.returncode == 3 and "needs php" in vip.stderr and not os.path.exists(os.path.join(t, "vip")) else bad("install wc no php: rc %d %s" % (vip.returncode, vip.stderr[-200:]))
+        # #1287: and without corepack (Node 25 and later do not bundle it): stub php and composer, no corepack. /bin and
+        # /usr/bin hold none on macOS or on CI (its Node is in the toolcache), so the shim has none.
+        nocp = path_shim(os.path.join(t, "nocorepack"), ("/bin", "/usr/bin"), leave_out=("corepack",), stubs=("php", "composer"))
+        vicp = subprocess.run(["/bin/bash", os.path.join(HERE, "vps-run.sh"), "install", "wc", os.path.join(t, "vicp")],
+                              env={"PATH": nocp}, capture_output=True, text=True)
+        ok("install wc without corepack: STOP (exit 3) before any clone, naming corepack and why") if vicp.returncode == 3 and "needs corepack" in vicp.stderr and "Node 25" in vicp.stderr and not os.path.exists(os.path.join(t, "vicp")) else bad("install wc no corepack: rc %d %s" % (vicp.returncode, vicp.stderr[-200:]))
         vbw = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "baseline", "wc", vw, os.path.join(t, "vbwc")],
                              env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
         cl = [l for l in vbw.stdout.splitlines() if "runner.py config" in l]
