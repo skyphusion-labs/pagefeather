@@ -240,15 +240,24 @@ case "$act" in
     playwright "$src"
     ;;
   collect)
-    # #1211: the traces, screenshots and videos of a run are Playwright's outputDir, which the wc arm copies to
-    # <run-dir>/test-results after each run. A driver that tarred another folder (sb1120 wcb2: <run-dir>/artifacts) got an
-    # empty archive and lost every trace. So the collect step lives here, next to the copy, and an empty one is a STOP.
+    # #1211: the traces, screenshots and videos of a run are Playwright's outputDir. A driver that tarred another folder
+    # (sb1120 wcb2: <run-dir>/artifacts) got an empty archive and lost every trace, so the collect step lives here, and an
+    # empty one is a STOP. #1265: the folder depends on the suite. The wc arms copy their outputDir to <run-dir>/test-results
+    # after each run; the wp and gb configs (runner.py config, WP_ARTIFACTS_PATH) put it under <run-dir>/artifacts.
     run=${4:?run-dir}; out=${5:?tarball}
-    [ -d "$run/test-results" ] || { echo "vps-run: STOP: no $run/test-results to collect (did the run reach its test phase?)" >&2; exit 3; }
-    n_all=$(find "$run/test-results" -type f | wc -l | tr -d ' ')
-    [ "$n_all" -gt 0 ] || { echo "vps-run: STOP: $run/test-results has no files" >&2; exit 3; }
-    x tar -czf "$out" -C "$run" test-results
-    echo "vps-run: collected $n_all files from $run/test-results into $out: $(find "$run/test-results" -name trace.zip | wc -l | tr -d ' ') trace.zip, $(find "$run/test-results" -name '*.png' | wc -l | tr -d ' ') png, $(find "$run/test-results" -name '*.webm' | wc -l | tr -d ' ') webm"
+    # An unknown suite STOPS (the lead's review): with no folder named, an empty rel would tar the whole run directory,
+    # which holds <run>/env (the site passwords) until the driver removes it.
+    case "$suite" in
+      wc|wc-api|wc-cpt) rel=test-results ;;
+      wp|gb) rel=artifacts/test-results ;;
+      *) echo "vps-run: STOP: collect has no trace folder for suite '$suite' (wc wc-api wc-cpt wp gb)" >&2; exit 3 ;;
+    esac
+    [ -n "$rel" ] || { echo "vps-run: STOP: collect found no trace folder for suite '$suite'" >&2; exit 3; }
+    [ -d "$run/$rel" ] || { echo "vps-run: STOP: no $run/$rel to collect (did the $suite run reach its test phase?)" >&2; exit 3; }
+    n_all=$(find "$run/$rel" -type f | wc -l | tr -d ' ')
+    [ "$n_all" -gt 0 ] || { echo "vps-run: STOP: $run/$rel has no files" >&2; exit 3; }
+    x tar -czf "$out" -C "$run/$(dirname "$rel")" "$(basename "$rel")"
+    echo "vps-run: collected $n_all files from $run/$rel into $out: $(find "$run/$rel" -name trace.zip | wc -l | tr -d ' ') trace.zip, $(find "$run/$rel" -name '*.png' | wc -l | tr -d ' ') png, $(find "$run/$rel" -name '*.webm' | wc -l | tr -d ' ') webm"
     ;;
   *) echo "vps-run: unknown action '$act' (install baseline run collect)" >&2; exit 2 ;;
 esac
