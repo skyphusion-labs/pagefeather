@@ -476,7 +476,8 @@ def main():
                 if rc != 200:
                     # #1151: name no field of the application-password response here (CodeQL py/clear-text-logging-sensitive-data):
                     # the uuid comes from the object that holds the password. The HTTP status is enough to act on.
-                    halt("the application password minted for the store reset is still on the site (its DELETE answered %s). Revoke it in Users > Profile > Application Passwords. The seed is stopping." % rc)
+                    # The name prefix is our own (fresh_application_password), never a response field.
+                    halt("the application password minted for the store reset is still on the site (its DELETE answered %s). Revoke the one named conformance-reset-<time> in Users > Profile > Application Passwords. The seed is stopping." % rc)
             elif fresh:
                 halt("the application password minted for the store reset came back with no uuid, so it was not revoked. The seed is stopping.")
 
