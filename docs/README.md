@@ -42,7 +42,7 @@ Edge security works at the zone level: a WAF with rate limits on login, the zone
 - [approach-a.md](approach-a.md) the first measurements on a Vultr MariaDB box, and HostlessWP compared.
 - [approach-a2.md](approach-a2.md) the PlanetScale variant (A2).
 - [approach-a-objectcache.md](approach-a-objectcache.md) the write-aware object cache that cuts SQL round trips, including the L2 KV tier.
-- [approach-a-overflow.md](approach-a-overflow.md) the PHP overflow pool for approach A. It is on by default on `deploy/deploy.sh` since #1119 (PR #1140). `PHP_OVERFLOW=0` opts out. The measured table and the cost are on that page.
+- [approach-a-overflow.md](approach-a-overflow.md) the PHP overflow pool for approach A. It is on by default on `deploy/deploy.sh` since #1119 (PR #1140), and on a one-click approach A site since #1141. `PHP_OVERFLOW=0` opts out. The measured table and the cost are on that page. The one-click live check is still open.
 - [admin-memory-matrix.md](admin-memory-matrix.md) **where WordPress admin dies on Cloudflare** (2026-11-14): approach A in a Worker and in a Durable Object, HostlessWP and b-dosql with and without the arena, with the raw data. Whether admin pages run on Workers or in a Container is still open; it is decided after the new engine is fully tested.
 
 ## b-dosql (store path)

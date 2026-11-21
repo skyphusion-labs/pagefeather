@@ -56,10 +56,11 @@ ok('OC_KV kv_namespace is emitted (the object-cache L2 store)',
   byType('kv_namespace').some((x) => x.name === 'OC_KV') && aLean.includes('binding = "OC_KV"'));
 ok('EMAIL send_email is emitted', byType('send_email').some((x) => x.name === 'EMAIL') && aLean.includes('send_email'));
 
-// 3. The DEFINING difference from b-dosql: approach A runs PHP in the WORKER, so
-// there is NO Durable Object and NO SQLite database var. These negatives are the
-// whole reason kind 'a' needs its own binding set.
-ok('approach A binds NO PHP_RUNTIME durable object (PHP runs in the Worker)', byType('durable_object_namespace').length === 0);
+// 3. The DEFINING difference from b-dosql: approach A runs PHP in the WORKER.
+// This call passes no overflow opts, so there is NO Durable Object and NO SQLite
+// database var. That keeps this set equal to [env.a-paid-lean]. The provisioned
+// default is a separate input (#1141, aOverflowInputs): it adds the pool.
+ok('approach A binds NO PHP_RUNTIME durable object when overflow opts are unset', byType('durable_object_namespace').length === 0);
 ok('approach A sets NO PHP_IN_DO var (not the DO engine)', !varOf('PHP_IN_DO'));
 ok('approach A sets NO DB_IN_DO var (the database is external MySQL, not the object SQLite)', !varOf('DB_IN_DO'));
 ok('a-paid-lean itself declares no PHP_IN_DO / DB_IN_DO (so the negatives above are faithful to the source)',
