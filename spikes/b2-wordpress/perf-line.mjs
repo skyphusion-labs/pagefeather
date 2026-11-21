@@ -21,6 +21,7 @@ export function aPerfLine(f) {
 		rtAgeS: num(f.rtAgeS),
 		boot: f.boot ? 1 : 0,
 		bootWaitMs: num(f.bootWaitMs),
+		bootPh: f.bootPh && typeof f.bootPh === 'object' ? f.bootPh : undefined, // #1022 E2: the boot's phases (boot-phases.mjs)
 		phpMs: num(f.phpMs),
 		dbN,
 		dbMs,

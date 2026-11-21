@@ -421,6 +421,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/inflate-arena.test.mjs
       - name: b-dosql a PHP write to a lazy bundle file survives the evict, real MEMFS code (issue #530)
         run: node --test spikes/b2-wordpress/tests/lazy-write.test.mjs
+      - name: a boot request's perf line splits its boot wait into phases, bootPh (issue #1022)
+        run: node --test spikes/b2-wordpress/tests/boot-phases.test.mjs
       - name: b-dosql the perf line's fsKiB counts MEMFS bytes and never inflates a lazy file (issue #1022)
         run: node --test spikes/b2-wordpress/tests/memfs-held.test.mjs
       - name: the placement probe is off by default, key-gated, and never stored (issue #1277)
