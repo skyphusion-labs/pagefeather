@@ -9,7 +9,7 @@
 // bundle in the Worker's own R2 bucket. The caller chooses a type and a name,
 // and picks an OWNED base domain from an allowlist; it configures nothing.
 import { SITE_NAME_RE, assertValidName, isCallerReservedName, genSecret } from './shared.mjs';
-import { bDosqlBindings, bDosqlResourceCreateOps, bDosqlSecrets, mediaBucketName, aBindings, ocKvNamespaceName, pageCacheInputs, pageCacheProductTtl, objectTimeInputs, aCacheInputs } from './wp-site-config.mjs';
+import { bDosqlBindings, bDosqlResourceCreateOps, bDosqlSecrets, mediaBucketName, aBindings, ocKvNamespaceName, pageCacheInputs, pageCacheProductTtl, objectTimeInputs, aCacheInputs, aOverflowInputs } from './wp-site-config.mjs';
 
 // ---- 1. Caller auth (operator baseline) --------------------------------------
 // A shared operator secret in env.PROVISION_AUTH, sent as `Authorization:
@@ -182,7 +182,8 @@ export const TABLE_PREFIX_RE = /^[A-Za-z0-9_]{1,39}_$/;
 
 export async function buildServerCfg(env, { kind, name, domain, demo = false, expiresAt, codeLock = false, hyperdriveId, tablePrefix, hyperdriveSqlMode, store = false, placementRegion }) {
   // #706: refuse a bad TTL or a bad WOO_ACTIVE before the bundle is read.
-  try { pageCacheProductTtl(pageCacheInputs(env, { store })); objectTimeInputs(env); aCacheInputs(env); }
+  let overflow;
+  try { pageCacheProductTtl(pageCacheInputs(env, { store })); objectTimeInputs(env); aCacheInputs(env); overflow = aOverflowInputs(env); }
   catch (e) { throw new BadRequest(e.message); }
   // Kind 'a' (#431): checked before any IO, so a bad call loads no bundle.
   if (kind === 'a') {
@@ -228,8 +229,9 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
   if (kind === 'a') {
     // Approach A (#431, #218): PHP in the Worker, managed MySQL through Hyperdrive.
     // The same shape as deploy/provision/cli.mjs kind 'a' (#243): entry
-    // index-a-lean.js, the aBindings set, NO Durable Object (so no SQLite
-    // migration), and the per-site OC_KV namespace the core creates and binds.
+    // index-a-lean.js, the aBindings set, and the per-site OC_KV namespace the
+    // core creates and binds. #1141: the overflow pool is on by default, the same
+    // rule as deploy.sh. PHP_OVERFLOW=0 opts out (no PhpRuntime, no migration).
     // The Hyperdrive config id and the table prefix come from the trusted caller
     // (the site manager's own checked database list), never from a request body.
     // The code lock is on by default in the runtime (site-lock.mjs, #461).
@@ -245,8 +247,9 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
         ...pageCacheInputs(env, { store }),
         ...objectTimeInputs(env),
         ...aCacheInputs(env), // #296: the escape hatch for the two cache defaults
+        ...overflow, // #1141: the PHP overflow pool, on unless PHP_OVERFLOW=0
       }),
-      sqliteClasses: [],
+      sqliteClasses: overflow.phpOverflow === 'off' ? [] : ['PhpRuntime'],
       ...(placementRegion ? { placement: { mode: 'targeted', region: placementRegion } } : {}),
       kvNamespaces: [{ title: ocKvNamespaceName(name), binding: 'OC_KV' }],
       saasZoneId: target.saasZoneId,

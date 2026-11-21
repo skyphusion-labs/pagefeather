@@ -115,7 +115,7 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 |---|---|---|---|
 | PDF invoices | fixed in #769 (merged 2026-11-16); not yet measured live | fixed in #769 (merged 2026-11-16); not yet measured live | yes (#765) |
 | Update a site | yes: `CODE_ONLY=1` in `.github/workflows/deploy-workers.yml` (the live sites `woocap`, `zarapo`) | yes: `deploy/wfp/site update` (#642; the #724 throwaways, 2026-11-16; ggc.sh) | no: add only (#765; an issue for it is being filed) |
-| PHP overflow pool (approach A) | on by default since #1119: a queued request runs on a Durable Object pool instead of waiting behind a long run in its isolate; about 38 USD per million moved requests, busy stores only ([cost](approach-a-overflow.md#cost)); `PHP_OVERFLOW=0` opts out | not applicable (b-dosql) | not built: a one-click approach A site has no `PhpRuntime` binding |
+| PHP overflow pool (approach A) | on by default since #1119: a queued request runs on a Durable Object pool instead of waiting behind a long run in its isolate; about 38 USD per million moved requests, busy stores only ([cost](approach-a-overflow.md#cost)); `PHP_OVERFLOW=0` opts out | not applicable (b-dosql) | on by default in the rendered config (#1141): the site declares `PhpRuntime` and the overflow binding; `PHP_OVERFLOW=0` opts out. Not measured live |
 | Remove a site | not measured (`deploy/destroy.sh`) | yes: `deploy/wfp/site remove` (`pf704`, #704; the #724 throwaways) | built, not measured live: add, and remove (#782); update not built |
 
 ## Limited, and why

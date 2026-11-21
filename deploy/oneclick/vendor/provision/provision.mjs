@@ -128,9 +128,10 @@ async function provisionNamespaceSite(ctx, cfg) {
   }
   // sqliteClasses: the SQLite Durable Object classes the bundle defines. For
   // b-dosql that is ['PhpRuntime'], which MUST be declared in a migration or the
-  // DO binding is rejected (API 10061, measured #158). Approach A runs PHP in the
-  // WORKER (no DO), so it declares NO classes and NO migration. Default by kind
-  // when the caller leaves it unset.
+  // DO binding is rejected (API 10061, measured #158). A provisioned approach A
+  // site sets this itself (#1141): ['PhpRuntime'] when the overflow pool is on,
+  // [] when PHP_OVERFLOW=0. Default by kind when the caller leaves it unset:
+  // PhpRuntime for wp, none for a.
   const sqliteClasses = cfg.sqliteClasses !== undefined ? cfg.sqliteClasses : (cfg.kind === 'wp' ? ['PhpRuntime'] : []);
   await deployNamespaceScript(ctx, {
     ns: cfg.namespace,

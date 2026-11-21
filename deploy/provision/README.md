@@ -19,7 +19,7 @@ TWO kinds of namespace WordPress site, driven through ONE idempotent code path:
 namespace script, registry entry, routing record, WordPress install). The only
 differences are DATA, not a separate code path: the binding/var set the caller
 builds (`bDosqlBindings` vs `aBindings`), whether a SQLite migration is declared
-(`sqliteClasses`: `['PhpRuntime']` for `wp`, `[]` for `a`), and whether a KV
+(`sqliteClasses`: `['PhpRuntime']` for `wp`; for `a`, `['PhpRuntime']` when the overflow pool is on and `[]` when `PHP_OVERFLOW=0`, #1141), and whether a KV
 namespace is created (`kvNamespaces`: the OC_KV object-cache L2 store for `a`).
 
 The c1 container store (`kind: shop`) was retired in #214 and is gone from every

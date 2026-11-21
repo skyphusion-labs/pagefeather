@@ -92,6 +92,41 @@ export function aCacheInputs(env = {}) {
   return { objectCacheVersions: v !== '0', wooHposCache: h !== 'off' };
 }
 
+// #1141: the PHP overflow pool on a provisioned approach A site. The same values as
+// deploy/a-settings.sh. Unset, empty or 1 is on. always is the measurement arm. 0 opts
+// out (no PhpRuntime binding and no migration). A pool, max-held or depth set while the
+// pool is off is refused. A bad value throws, so the callers refuse it before a bundle
+// is read. A leading zero is decimal, as bash 10# is.
+function rangedInt(name, raw, min, max, digits, lead) {
+  const s = String(raw);
+  const okRe = new RegExp(`^[0-9]{1,${digits}}$`);
+  const n = okRe.test(s) ? Number(s) : NaN;
+  if (!okRe.test(s) || n < min || n > max) throw new Error(`${name} must be ${lead}an integer from ${min} to ${max}, not ${s}`);
+  return String(n);
+}
+function envSet(raw) {
+  return !(raw === undefined || raw === null || raw === '');
+}
+export function aOverflowInputs(env = {}) {
+  const raw = env.PHP_OVERFLOW;
+  if (!(raw === undefined || raw === null || raw === '' || raw === '0' || raw === '1' || raw === 'always')) {
+    throw new Error(`PHP_OVERFLOW must be 0, 1 or always, not ${raw}`);
+  }
+  const phpOverflow = raw === '0' ? 'off' : (raw === 'always' ? 'always' : 'on');
+  const on = phpOverflow !== 'off';
+  if (envSet(env.PHP_OVERFLOW_POOL) && !on) throw new Error('PHP_OVERFLOW_POOL needs PHP_OVERFLOW=1 or always');
+  if (envSet(env.PHP_OVERFLOW_MAX_HELD) && !on) throw new Error('PHP_OVERFLOW_MAX_HELD needs PHP_OVERFLOW=1 or always');
+  if (envSet(env.PHP_OVERFLOW_DEPTH) && !on) throw new Error('PHP_OVERFLOW_DEPTH needs PHP_OVERFLOW=1 or always');
+  const out = { phpOverflow };
+  if (!on) return out;
+  out.phpOverflowPool = envSet(env.PHP_OVERFLOW_POOL) ? rangedInt('PHP_OVERFLOW_POOL', env.PHP_OVERFLOW_POOL, 1, 128, 3, '') : '32';
+  if (envSet(env.PHP_OVERFLOW_MAX_HELD)) {
+    out.phpOverflowMaxHeld = env.PHP_OVERFLOW_MAX_HELD === 'off' ? 'off' : rangedInt('PHP_OVERFLOW_MAX_HELD', env.PHP_OVERFLOW_MAX_HELD, 1, 1000, 4, 'off or ');
+  }
+  if (envSet(env.PHP_OVERFLOW_DEPTH)) out.phpOverflowDepth = rangedInt('PHP_OVERFLOW_DEPTH', env.PHP_OVERFLOW_DEPTH, 0, 50, 2, '');
+  return out;
+}
+
 export function objectTimeInputs(env = {}) {
   const objectCallDeadlineS = objectTimeValue('OBJECT_CALL_DEADLINE_S', env.OBJECT_CALL_DEADLINE_S);
   const objectStartByS = objectTimeValue('OBJECT_START_BY_S', env.OBJECT_START_BY_S);
@@ -556,9 +591,13 @@ export function mediaBucketName(name) {
 // nodes + opcache); a-site-config-test.mjs asserts these emits against it.
 //
 // What makes approach A DIFFERENT from b-dosql, and why the binding set differs:
-//   - PHP runs in the WORKER isolate, NOT a Durable Object. So there is NO
-//     PHP_RUNTIME durable_object_namespace binding and NO SQLite migration
-//     (provisionSite declares none for kind 'a').
+//   - PHP runs in the WORKER isolate. The overflow pool (#1141) is the exception:
+//     when it is on, the site also binds PHP_RUNTIME (class PhpRuntime) and declares
+//     that class in a SQLite migration. aBindings emits the binding only when
+//     phpOverflow is on or always. Unset here emits nothing, so this set still
+//     matches [env.a-paid-lean], and deploy.sh does not render the pool twice
+//     (a-settings.sh renders it). The provision path passes aOverflowInputs, whose
+//     default is on. PHP_OVERFLOW=0 opts out.
 //   - The database is EXTERNAL managed MySQL reached through a HYPERDRIVE
 //     binding (the config id comes from onboarding). DB_IN_DO / PHP_IN_DO are
 //     NOT set (the object's SQLite is not the database here).
@@ -586,6 +625,8 @@ export function aVars({
   wooActive, importPlugins, plugins, pageCacheProductTtl, store,
   // #715 review3 6: the PHP-object time bounds (the overflow pool), objectTimeInputs.
   objectCallDeadlineS, objectStartByS, objectDisconnectShed,
+  // #1141: the overflow pool. Unset emits nothing (deploy.sh renders it itself).
+  phpOverflow, phpOverflowPool, phpOverflowMaxHeld, phpOverflowDepth,
 } = {}) {
   if (!siteOrigin) throw new Error('aVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
   const vars = {
@@ -629,14 +670,25 @@ export function aVars({
   }
   assignPageCacheProduct(vars, { wooActive, importPlugins, plugins, pageCacheProductTtl, store });
   assignObjectTime(vars, { objectCallDeadlineS, objectStartByS, objectDisconnectShed });
+  // #1141: on or always renders the pool. off or unset renders nothing.
+  if (phpOverflow === 'on' || phpOverflow === 'always') {
+    vars.PHP_OVERFLOW = phpOverflow;
+    vars.PHP_OVERFLOW_POOL = phpOverflowPool === undefined || phpOverflowPool === null || phpOverflowPool === '' ? '32' : String(phpOverflowPool);
+    if (phpOverflowMaxHeld !== undefined && phpOverflowMaxHeld !== null && phpOverflowMaxHeld !== '') vars.PHP_OVERFLOW_MAX_HELD = String(phpOverflowMaxHeld);
+    if (phpOverflowDepth !== undefined && phpOverflowDepth !== null && phpOverflowDepth !== '') vars.PHP_OVERFLOW_DEPTH = String(phpOverflowDepth);
+  } else if (phpOverflow !== undefined && phpOverflow !== 'off') {
+    throw new Error(`aVars: phpOverflow must be on, always or off (got ${JSON.stringify(phpOverflow)})`);
+  }
   return Object.entries(vars).map(([name, text]) => ({ type: 'plain_text', name, text }));
 }
 
 // The full binding set for an approach-A namespace site: the vars above plus
 // IMAGES, the site's own MEDIA bucket, the HYPERDRIVE binding to the given
 // config id, the OC_KV object-cache L2 namespace, and the EMAIL send_email
-// binding. NO PHP_RUNTIME durable object (PHP runs in the Worker), so NO SQLite
-// migration. Secrets (WP_SALT, SPIKE_TOKEN) are added by provisionSite.
+// binding. The PHP_RUNTIME binding is added only when phpOverflow is on or always
+// (#1141). Unset adds none, so the spike set stays the measured one. Secrets
+// (WP_SALT, SPIKE_TOKEN) are added by provisionSite. The migration is sqliteClasses
+// on the caller, not a binding.
 //
 // ocKvNamespaceId: the per-site OC_KV namespace is CREATED at provision time, so
 // its id is not known when the caller builds this set. provisionSite creates the
@@ -650,6 +702,7 @@ export function aBindings({
   mailFrom, mailFromName, extra = [],
   wooActive, importPlugins, plugins, pageCacheProductTtl, store,
   objectCallDeadlineS, objectStartByS, objectDisconnectShed,
+  phpOverflow, phpOverflowPool, phpOverflowMaxHeld, phpOverflowDepth,
   siteName, siteTitle,
 } = {}) {
   if (!mediaBucket) throw new Error('aBindings: mediaBucket is required');
@@ -659,15 +712,21 @@ export function aBindings({
   // The id is injected by provisionSite after the namespace is created; carry it
   // only if the caller already knows it (e.g. a re-provision passing the id).
   if (ocKvNamespaceId) ocKv.namespace_id = ocKvNamespaceId;
-  return [
-    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName, objectCacheVersions, wooHposCache, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed, siteName, siteTitle }),
+  const out = [
+    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName, objectCacheVersions, wooHposCache, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed, phpOverflow, phpOverflowPool, phpOverflowMaxHeld, phpOverflowDepth, siteName, siteTitle }),
     { type: 'images', name: 'IMAGES' },
     { type: 'r2_bucket', name: 'MEDIA', bucket_name: mediaBucket },
     { type: 'hyperdrive', name: 'HYPERDRIVE', id: hyperdriveId },
     ocKv,
     { type: 'send_email', name: 'EMAIL' },
-    ...extra,
   ];
+  // #1141: the overflow pool's Durable Object. The caller sets sqliteClasses to
+  // ['PhpRuntime'] in the same breath, or the deploy is rejected (API 10061).
+  if (phpOverflow === 'on' || phpOverflow === 'always') {
+    out.push({ type: 'durable_object_namespace', name: 'PHP_RUNTIME', class_name: 'PhpRuntime' });
+  }
+  out.push(...extra);
+  return out;
 }
 
 // The OC_KV object-cache L2 namespace title for a site, the one name both the

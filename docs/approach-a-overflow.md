@@ -1,6 +1,6 @@
 # Approach A: PHP overflow to a Durable Object pool (on by default)
 
-**Status:** ON by default for approach A on `deploy/deploy.sh` since #1119 (Conrad ruled it, 2026-11-20; the cost is below). `PHP_OVERFLOW=0` is the explicit opt-out. The DO tiers are unchanged. Issue #296 step (3), PR #646. Measured 2026-11-15 on a throwaway approach-A site and a copy of the bench database. The numbers are in #296.
+**Status:** ON by default for approach A on `deploy/deploy.sh` since #1119 (Conrad ruled it, 2026-11-20; the cost is below), and on a one-click (provisioned) approach A site since #1141. `PHP_OVERFLOW=0` is the explicit opt-out on both paths. The DO tiers are unchanged. Issue #296 step (3), PR #646. Measured 2026-11-15 on a throwaway approach-A site and a copy of the bench database. The numbers are in #296. The one-click path is rendered in code; a live check on a throwaway one-click site is still open.
 
 ## The problem it answers
 
@@ -18,8 +18,8 @@ With `PHP_OVERFLOW=on`, a request that finds its isolate busy (a run in flight A
 
 | setting | default | meaning |
 |---|---|---|
-| `PHP_OVERFLOW` | on (deploy.sh, since #1119) | `on`: overflow. `always`: every eligible request, so a Worker isolate never boots PHP for a shopper request. It is a measurement arm, not a default: every query runs from an object. deploy.sh: unset or `PHP_OVERFLOW=1` renders `on`, `PHP_OVERFLOW=always` renders `always` (#714), and `PHP_OVERFLOW=0` renders nothing (the opt-out: no pool, no `PhpRuntime` binding unless `A_CRON` adds it) |
-| `PHP_OVERFLOW_POOL` | 32 | the number of pool objects (1 to 128). The default is the measured best: pools 8 and 16 were worse than no overflow. A bad value falls back to 32 at runtime; deploy.sh refuses one (#714) |
+| `PHP_OVERFLOW` | on (deploy.sh since #1119, one-click since #1141) | `on`: overflow. `always`: every eligible request, so a Worker isolate never boots PHP for a shopper request. It is a measurement arm, not a default: every query runs from an object. Both paths: unset or `PHP_OVERFLOW=1` renders `on`, `PHP_OVERFLOW=always` renders `always` (#714), and `PHP_OVERFLOW=0` renders nothing (the opt-out: no pool, no `PhpRuntime` binding unless `A_CRON` adds it on deploy.sh) |
+| `PHP_OVERFLOW_POOL` | 32 | the number of pool objects (1 to 128). The default is the measured best: pools 8 and 16 were worse than no overflow. A bad value falls back to 32 at runtime; deploy.sh and the one-click path refuse one (#714, #1141) |
 | `PHP_OVERFLOW_MAX_HELD` | none (no cap) | the most overflowed requests one Worker isolate holds in flight (#714, #717). Measured on #714: a cap of 16 lost 479 requests to capped 503s to save 2, and cut completion at 250 by 6 to 19 points, so there is no cap by default. 1 to 1000 caps; `off` is no cap; deploy.sh takes `off` or 1 to 1000 |
 | (runtime) | on when `PHP_OVERFLOW` is on | while this isolate holds overflowed requests, it does not boot PHP for shopper paths (#714 held-block). A fast 503 with `x-php-overflow: held-block` |
 | `PHP_OVERFLOW_DEPTH` | 1 | move when this many are already waiting (0 to 50). At 1 the first request behind a long run waits: on cf759hx (2026-11-20) a term GET behind a 14-product batch waited 13.5 and 15.7 s with 0 overflow events (#1119). **0 is not a fix: it trades waits for refusals.** On cf759hx (2026-11-21) depth 0 moved the first waiter but it still took 16.65 s, and 10 concurrent checkouts completed 4 and 3 of 10 (depth 1: 10 of 10); the rest got `held-block` 503s (14 in the window), because a request that would run beside a held overflow is refused (#714). A measurement knob only. |
@@ -57,7 +57,7 @@ Durable Object duration bills 128 MB for each object's wall time while it handle
 - That is **about 38 USD per million moved requests** (duration 37.78, requests 0.15, at 12.50 USD per million GB-s).
 - A store moves requests only while its isolates are busy. At low load nothing moves and nothing is billed.
 - Conrad ruled default-on for approach A (#1119): the cost falls on busy stores only, and it buys the 0 memory deaths above and a short request that no longer waits behind a long one in its isolate (#1119: a term GET waited 11.3 s behind a 27 s product batch).
-- A one-click (provisioned) approach A site renders no `PhpRuntime` binding today, so it has no pool; that path is not built (`deploy/provision`, `sqliteClasses` `[]` for `a`).
+- A one-click (provisioned) approach A site renders the same pool by default (#1141): `PhpRuntime` and the `PHP_RUNTIME` binding, pool 32. `PHP_OVERFLOW=0` opts out. Not measured live. The live check on a throwaway one-click site is still open.
 
 ## Limits
 

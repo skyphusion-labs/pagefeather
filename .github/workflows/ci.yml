@@ -669,6 +669,7 @@ jobs:
           node deploy/provision/tests/page-cache-product-test.mjs
           node deploy/provision/tests/object-time-test.mjs
           node deploy/provision/tests/a-cache-inputs-test.mjs
+          node deploy/provision/tests/a-overflow-test.mjs
           node deploy/provision/tests/wp-site-config-test.mjs
           node deploy/provision/tests/descriptor-table-test.mjs
           node deploy/provision/tests/a-site-config-test.mjs
