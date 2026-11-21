@@ -192,6 +192,17 @@ class JS_Object_Cache {
 	// is deleted by the flush; that only removes a cached value, which its owner rebuilds.
 	private $tdelete = array();
 	const TRANSIENT_DELETE_CHUNK = 400;
+	// #1210 follow-up (the lead's ruling): WooCommerce's cache-version counters, written ONCE per request. They are
+	// WC_Cache_Helper::get_transient_version( $group, true ): "{group}-transient-version", set with no expiry, a new value
+	// on each bump. A traced guest order on cf759hl bumped orders-transient-version 31 times (31 REPLACEs, 674 ms).
+	// woo-edge.php measured and ruled this before #1206 (it defers the option write); durable transients bypass
+	// update_option, so that deferral no longer ran. A set of one of these names updates the request memo at once (this
+	// request reads the newest) and the newest value is written once, on transient_flush (the same guaranteed flush as the
+	// deletes). Other requests see the previous version until this one ends, as before #1206. These are the exact names
+	// WooCommerce 11.2.1 builds (the groups passed to get_transient_version, and Reports\Cache::VERSION_OPTION and
+	// ProductFilters\CacheController::CACHE_GROUP); every other set, doing_cron included, is written at once.
+	const VERSION_COUNTERS = array( 'orders-transient-version', 'product-transient-version', 'product_query-transient-version', 'shipping-transient-version', 'woocommerce_reports-transient-version', 'filter_data-transient-version' );
+	private $tdefer = array(); // value-row name => the newest value, written at the end of the request
 
 	private static function hot_get() {
 		if ( defined( 'SKYPHUSION_TRANSIENT_HOT_GET' ) ) {
@@ -287,6 +298,15 @@ class JS_Object_Cache {
 	private function durable_set( $key, $data, $group, $expire ) {
 		list( $o, $t ) = self::durable_names( $key, $group );
 		$expire        = (int) $expire;
+		if ( 'transient' === $group && $expire <= 0 && in_array( (string) $key, self::VERSION_COUNTERS, true ) ) {
+			// A version counter: the newest value now in this request, one write at its end. No expiry: an existing
+			// timeout row is left as it is, as core does.
+			unset( $this->tdelete[ $o ] );
+			$this->tdefer[ $o ] = $data;
+			$this->tmemo[ $o ]  = array( true, $data );
+			return true;
+		}
+		unset( $this->tdefer[ $o ] );
 		// As core: an expiry writes the timeout row; no expiry leaves an existing timeout row as it is.
 		if ( $expire > 0 ) {
 			skyphusion_transient_put( $t, self::now() + $expire );
@@ -307,6 +327,7 @@ class JS_Object_Cache {
 		// most). A row it never read answers TRUE, without a query: a delete of a missing row then fires one extra
 		// hook, which only deletes more cache; false would skip a cascade for a row that did exist.
 		$had                 = isset( $this->tmemo[ $o ] ) ? $this->tmemo[ $o ][0] : true;
+		unset( $this->tdefer[ $o ] ); // a deferred version set, then a delete: the delete wins
 		$this->tmemo[ $o ]   = array( false, null );
 		$this->tmemo[ $t ]   = array( false, null );
 		$this->tdelete[ $o ] = true;
@@ -316,6 +337,12 @@ class JS_Object_Cache {
 
 	/** #1210: delete this request's pending transient rows, in one statement per chunk. Idempotent. */
 	public function transient_flush() {
+		// #1210 follow-up: the deferred version counters first, each once, the newest value.
+		$defer        = $this->tdefer;
+		$this->tdefer = array();
+		foreach ( $defer as $name => $value ) {
+			skyphusion_transient_put( $name, $value );
+		}
 		if ( ! $this->tdelete ) {
 			return 0;
 		}
