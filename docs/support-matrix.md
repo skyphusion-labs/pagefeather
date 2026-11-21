@@ -2,7 +2,53 @@
 
 This page says what works on each tier and each deploy path, what is limited, and why. Conrad asked for it in #759: "document things that are limited and why".
 
-**State on 2026-11-17, main `fea3eb7`.** The conformance runs of #759 will fill in the cells that say "not measured". They run the upstream WordPress, WooCommerce and Gutenberg suites, plus a stock baseline (`tests/conformance/`).
+**State on 2026-11-21, from the sb1120 rows in [results.md](results.md) (#759).** Those runs are 2026-11-20 and 2026-11-21. The summary below uses the latest suite row for each tier. A cell that still says "not measured" has no row for that feature.
+
+## Latest suite results (sb1120)
+
+### Hyperdrive WordPress
+
+WordPress only, `cf759hw`, with `PLACEMENT` set to the database region (#1054). The wp suite is 18 of 18. routes.py called 61 routes and had 0 failures. This is the first fully clean tier in the sprint ([results.md](results.md), the `cf759hw` wp and routes rows, 2026-11-20). Before #1054, Hyperdrive with WooCommerce was 6 of 18 on wp.
+
+On a Hyperdrive store (`cf759hl`, WooCommerce on) the latest wp row is 17 of 18 (2026-11-21, ended 00:01:36Z). The one failure is edit-posts "Trash button", 29.9 s, and every response was 200. That row is from before #1167 merged. No later wp row re-measures it.
+
+### Hyperdrive WooCommerce
+
+The latest full wc suite is Browser Run on `cf759hl`, build `b27cd3c`, 2026-11-21: 169 expected, 57 unexpected, 3 skipped ([results.md](results.md) row "sb1120, wc"). That run has 14 held-block 503s (#1177). The #1180 proof reran the 8 files that hit them: 0 held-block refusals and 0 5xx (row "sb1120, #1180 proof").
+
+A local Linux Chrome arm on main `79e6709` (row "wc arm B") took 48 failures that pass on stock, from an earlier 174 expected run. 24 of those 48 still fail on the site. The other 24 were Browser Run, or they have since been fixed. The five "two role=alert" failures passed on this arm. That class was Browser Run.
+
+Blocks checkout is slow. On `cf759hl` at main `822ab24` (row "wc arm B 2", before #1209), 6 of 10 blocks checkout tests fail. `POST store/v1/checkout` takes 9.3 to 11.8 s, so the thank-you page misses the suite's 10 s wait (#1210). The order is placed. The page then answers 200. The cause is per-order transient deletes: one guest order made 404 DELETE statements and 4.8 s of database time (#1218). #1206 added that cost. PR #1219 is open. The results row says that, locally, 364 transient DELETE statements per order become 1. The fix is in progress, not fixed.
+
+Order emails on a default deploy are sent, and they can be late (#1215, open). On the same `822ab24` run the cron alarm started the queued email 12 to 122 s after it was queued. The suite polls the mail log for 30 s (row "wc email wait"). A second miss is the harness: two specs wait for an admin address the seed does not use (#1216). PR #1217 is open, so that part is in progress too. Older rows that say no email was sent are the sites with `A_CRON` unset. A default approach A deploy turns the cron object on (#1166, #1165).
+
+Every WooCommerce admin page on `cf759hl` shows a "development version" notice (#1221, open). The issue records a live read on 2026-11-21. PHP does not see a built file that the static path does serve. There is no results.md row for it yet.
+
+The socket-close 401 in the `b27cd3c` wc run is #1178. PR #1179 merged the code fix. No later full wc row re-measures it.
+
+Gutenberg on Hyperdrive has no valid full-suite row yet (#1201, open). The Mac run on `cf759hw` is runner-contaminated (row "gb baseline"). The core-only split says 43 of those failures pass on stock core and fail on the site (row "gb core-only baseline"). Browser Run fails Gutenberg keyboard and clipboard specs that a local browser passes (row "gb Browser Run"). It is not a valid Gutenberg runner.
+
+### DO WordPress on Paid
+
+Paid DO `cf759p` (WooCommerce active), Browser Run, 1 worker, 2026-11-20: wp 18 of 18 (row "Browser Run baseline"). The same build on a local browser was 17 of 18. The miss is a memory reset on trash (#1022, open). An earlier local wp row the same day was 16 of 18. Both misses are #1022.
+
+WfP `cf759a`: wp 17 of 18. The one failure is Quick Edit, a memory reset on `post-new.php` (#1022). No later wp row.
+
+routes.py on Paid DO and on WfP: 429 routes, `missing_core` 0, and the same 3 stock WooCommerce 500s. That routes row names no engine finding.
+
+### DO WooCommerce on Paid
+
+These wc rows are 2026-11-20. No later wc suite has re-run them.
+
+Paid DO `cf759p`: 176 expected, 51 unexpected, 3 skipped. The open engine classes in that row are a memory reset in 23 tests (#1022) and 503 `x-sql-failure` on email-editor reads in 2 tests (#1042, open). The row also counts image 404s after a store reset (#1071), a missing storefront (#1018), and Marketing (#1044, code lock).
+
+WfP `cf759a`: 178 expected, 50 unexpected, 2 skipped. The open engine classes are a memory reset in 16 tests (#1022) and 503 `x-sql-failure` on parallel REST reads in about 6 tests (#1042). The row also counts 2 Turnstile failures (#1032). PR #1035 merged after that run. No later WfP wc row re-measures them.
+
+The Hyperdrive rerun on main `f9c3434` says the storefront exists (#1018). The Paid DO and WfP wc rows above are older, and they still list it.
+
+### DO WordPress on Free
+
+`cf759f`, WordPress only, `MEDIA=1`, Browser Run, 2026-11-20. wp is 18 of 18. routes.py called 59 routes and had 0 failures. `media_probe.py` passed 14 checks: uploads persist. This is the row the Free DO cells cite. The site has no WooCommerce, so there is no wc suite row. The earlier `MEDIA=0` rows are history.
 
 ## How to read a cell
 
@@ -31,7 +77,7 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 | feature | Free DO | Paid DO | WfP | Hyperdrive |
 |---|---|---|---|---|
 | Install, pages, login, dashboard | yes (#638); on main, WordPress only, with media: the whole wp suite 18 of 18 ([results.md](results.md) 2026-11-20, `cf759f` MEDIA=1) | yes ([results.md](results.md) 2026-11-07, `cochk4`); the first page after a fresh install: fixed in #790 (merged 2026-11-16), measured on `deploy/wfp` only | yes: the first page after a fresh install is fixed in #790 (merged 2026-11-16; 0 of 3 died, [756b](https://github.com/skyphusion-labs/pagefeather/issues/756#issuecomment-6921835983)); code-only updates: yes (756a) | yes ([results.md](results.md) 2026-11-05, `e2e.sh` 17 of 17); WordPress only, the whole wp suite: yes, with PLACEMENT set to the database region (#1054) ([results.md](results.md) 2026-11-20, `cf759hw` wp 18 of 18 and routes 0 failures) |
-| The block editor | yes, plain WordPress (#638); limited on a store (#638); the icon library: fixed in #778 (merged 2026-11-16); not yet measured live | limited: memory ceiling (#768); the icon library: fixed in #778 (merged 2026-11-16); not yet measured live | limited: memory ceiling (#768); the icon library: fixed in #778 (merged 2026-11-16); not yet measured live | not measured |
+| The block editor | yes, plain WordPress (#638); limited on a store (#638); the icon library: fixed in #778 (merged 2026-11-16); not yet measured live | limited: memory ceiling (#768); the icon library: fixed in #778 (merged 2026-11-16); not yet measured live | limited: memory ceiling (#768); the icon library: fixed in #778 (merged 2026-11-16); not yet measured live. The Browser Run gb row on `cf759a` is unclassified: Browser Run is not a valid gb runner, and that runner predates #1161 (#1201) | no valid full-suite row yet (#1201). The Mac `cf759hw` run is runner-contaminated. The core-only split counts 43 failures that pass on stock core ([the summary](#latest-suite-results-sb1120)) |
 | REST API | yes on main, WordPress only: routes.py 59 routes, `missing_core` 0, 0 failures ([results.md](results.md) 2026-11-20, `cf759f` MEDIA=1) | `/wp-json/` on fresh installs: fixed in #773 (merged 2026-11-16); not yet measured live; `/wp/v2/icons`: fixed in #778 (merged 2026-11-16); not yet measured live; live: routes.py 429 routes, `missing_core` 0, only the 3 stock WooCommerce 500s ([results.md](results.md) 2026-11-20, `cf759p`) | `/wp-json/` on fresh installs: fixed in #773 (merged 2026-11-16); not yet measured live; `/wp/v2/icons`: fixed in #778 (merged 2026-11-16); not yet measured live; live: routes.py 429 routes, `missing_core` 0, only the 3 stock WooCommerce 500s ([results.md](results.md) 2026-11-20, `cf759a`) | WordPress only: yes, with PLACEMENT set to the database region (#1054) ([results.md](results.md) 2026-11-20, `cf759hw`: routes.py 61 called, 0 failures); with WooCommerce: only the 3 stock WooCommerce 500s ([results.md](results.md) 2026-11-20, `cf759hl`, before #1054) |
 | Application passwords and HTTP Basic | yes ([results.md](results.md) 2026-11-20, `cf759f` wp: the three applications-passwords specs pass) | yes ([results.md](results.md) 2026-11-20, `cf759p` wp: the three applications-passwords specs pass) | yes ([results.md](results.md) 2026-11-20, `cf759a` wp: the three applications-passwords specs pass) | yes, WordPress only, with PLACEMENT set to the database region (#1054) ([results.md](results.md) 2026-11-20, `cf759hw` wp 18 of 18: the three applications-passwords specs pass) |
 | Permalinks | fresh installs get pretty permalinks: fixed in #773 (merged 2026-11-16); not yet measured live; unknown paths under owner-chosen plain: fixed in #804 (merged 2026-11-16); not yet measured live | the same | the same | not measured |
@@ -51,14 +97,14 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 | feature | Free DO | Paid DO | WfP | Hyperdrive |
 |---|---|---|---|---|
 | Catalog: shop and product pages | yes (#638); the false 404 (#766): fixed in #770 (merged 2026-11-16); not yet measured live | yes ([results.md](results.md) 2026-11-07, `cochk4`); the false 404 (#766): fixed in #770 (merged 2026-11-16); not yet measured live | the false 404 (#766): fixed in #770 (merged 2026-11-16); not yet measured live | yes ([results.md](results.md) 2026-11-09, `wp-a-lean` 12 of 12) |
-| Cart and checkout | yes (#638) | yes ([results.md](results.md) 2026-11-08, `woocap`; the flaky failure fixed in #208) | yes (#704, `pf704`: `load.py` checkouts placed orders) | yes ([results.md](results.md) 2026-11-09, three runs of 12 of 12). Under concurrent checkout: every checkout completed at 10, 25, 50 and 100 concurrent users in four runs, 2,710 of 2,710 ([results.md](results.md) 2026-11-20, `cf759hx`, #1077). Before the #1101 fix (#1109, #1116), 3 hung-request cancels and 1 named 503 in about 6,600 requests; after it, 0 errors in 2,232 requests |
+| Cart and checkout | yes (#638) | yes ([results.md](results.md) 2026-11-08, `woocap`; the flaky failure fixed in #208) | yes (#704, `pf704`: `load.py` checkouts placed orders) | orders complete: yes ([results.md](results.md) 2026-11-09, three runs of 12 of 12). Under concurrent checkout: every checkout completed at 10, 25, 50 and 100 concurrent users in four runs, 2,710 of 2,710 ([results.md](results.md) 2026-11-20, `cf759hx`, #1077). Before the #1101 fix (#1109, #1116), 3 hung-request cancels and 1 named 503 in about 6,600 requests; after it, 0 errors in 2,232 requests. Speed limit on the blocks checkout: the order POST took 9.3 to 11.8 s on `cf759hl` at main `822ab24`, so 6 of 10 suite tests missed the 10 s thank-you wait (#1210, #1218). The fix is PR #1219, in progress, not fixed ([why](#woocommerce-checkout-on-hyperdrive-is-slow-1218)) |
 | Editing the store in wp-admin | no: memory (#638) | not measured | not measured | not measured |
 | Payments | not measured | cash on delivery: yes ([results.md](results.md) 2026-11-07, `cochk4`); other gateways not measured | not measured | not measured |
 | Orders and HPOS | not measured | orders placed: yes (checkout rows above); HPOS not measured | the same | orders screen: yes ([results.md](results.md) 2026-11-09); HPOS not measured |
 | Stock | not measured | yes: checkout lowers stock ([results.md](results.md) 2026-11-07); a cached page is usually at most about 30 s old by default, and up to 60 s after a quiet spell (PR #713; [why](#a-cached-product-page-can-show-stock-up-to-about-60-s-old-628-closed)); not measured live on this path | yes: a cached page is usually at most about 30 s old, and up to 60 s after a quiet spell ([C2 verdict](https://github.com/skyphusion-labs/pagefeather/issues/628#issuecomment-6902826012), PR #707; ggc.sh [read-back](https://github.com/skyphusion-labs/pagefeather/issues/628#issuecomment-6909672971)) | yes: checkout lowers stock ([results.md](results.md) 2026-11-09) |
 | Coupons | not measured | not measured | not measured | not measured |
 | Tax | not measured | not measured | not measured | not measured |
-| Emails | not measured | not measured | not measured | order emails: yes on `deploy/deploy.sh` since #1165, which turns the cron object on by default (`A_CRON=1`; `A_CRON=0` opts out). Without it nothing ran Action Scheduler, so no deferred order email was sent. Delivered live on cf759hx: orders 3071 and 3182 to a postern inbox (#1143). A one-click approach A site has no cron object: not built |
+| Emails | not measured | not measured | not measured | order emails: limited on `deploy/deploy.sh`. Since #1165 the cron object is on by default (`A_CRON=1`; `A_CRON=0` opts out), so the queue runs. Delivered live on cf759hx: orders 3071 and 3182 to a postern inbox (#1143). They can be late: on `cf759hl` at main `822ab24` the alarm ran them 12 to 122 s after they were queued, past the suite's 30 s poll (#1215, open; [why](#order-emails-on-hyperdrive-can-be-late-1215)). A one-click approach A site has no cron object: not built |
 | PDF invoices | every deploy path: fixed in #769 (merged 2026-11-16); not yet measured live | the same | the same | not measured |
 | REST API keys in the Basic header | yes in code (#762); live run pending | yes in code (#762); live run pending | yes in code (#762); live run pending | not measured |
 | REST product batch (`/wc/v3/products/batch` create) | not measured | not measured | not measured | limited: about 1.9 s per product (130 queries at about 14 ms), so the suite's 14-product batch took 27.2 s ([why](#a-rest-product-batch-is-about-19-s-per-product-on-hyperdrive-1119)) |
@@ -179,6 +225,26 @@ The Durable Object's SQLite caps a `LIKE` pattern at **50 bytes**, not SQLite's 
 - **Still a limit:** a pattern over 50 bytes with a wildcard INSIDE it (`_` anywhere, or `%` between literals), or a suffix match (`'%term'`). SQLite refuses it. **No WordPress core path builds one from user input** (measured on #805). Plugin code that writes such a `LIKE` by hand can. WooCommerce's cart-page check is the one known case, and `php/woo-cart-page.php` handles it (#744).
 - **What the visitor sees in that case:** an empty result with HTTP 200, a plausible wrong answer. Whether a deterministic refusal should answer a visible error instead is #836.
 
+### WooCommerce checkout on Hyperdrive is slow (#1218)
+
+Orders complete. On `cf759hl` at main `822ab24` (2026-11-21, row "wc arm B 2" in [results.md](results.md)), 6 of 10 blocks checkout tests still miss the suite's 10 s thank-you wait (#1210). In each one, `POST store/v1/checkout` takes 9.3 to 11.8 s. The thank-you page then answers 200 in 1.6 to 4.0 s.
+
+The cause is per-order transient deletes. A query trace of one guest order on that build shows 700 queries and 9.3 s of database time. 404 of the queries, 4.8 s, are `DELETE`s of per-order transients. #1206 made transients durable rows in `wp_options` and deleted each one on its own round trip. HPOS is on.
+
+PR #1219 coalesces those deletes into one statement at the end of the request. The results row says that, locally, 364 transient DELETE statements per order become 1. PR #1219 is open. The fix is in progress, not fixed. #1210 stays open for a live spec run.
+
+### Order emails on Hyperdrive can be late (#1215)
+
+WooCommerce defers each order email to Action Scheduler. On approach A the cron object runs that queue ("via Skyphusion DO alarm"). On `cf759hl` at main `822ab24` (row "wc email wait", 2026-11-21, before #1176 merged) the alarm started the action 12 to 122 s after it was queued. The suite polls the mail log for 30 s, then the fixture deletes the order. An action that runs later finds no order and completes without sending. #1215 is open.
+
+This is not the old "no cron" miss. Those rows are sites with `A_CRON` unset. A default `deploy/deploy.sh` approach A deploy turns the cron object on (#1166, #1165).
+
+A second miss on that run is the harness (#1216). Two "admin receives" specs wait for `admin@woocommercecoree2etestsuite.com`. WooCommerce sends to the site admin address, which the seed sets to something else. New order 1394 was sent in time, to the site address. PR #1217 is open.
+
+### The WooCommerce "development version" admin notice (#1221)
+
+#1221 is open. Every WooCommerce admin page on our sites shows "You have installed a development version of WooCommerce which requires files to be built." The plugin is built. PHP's `file_exists` check does not see `assets/css/admin.css` or `assets/js/admin/woocommerce_admin.min.js`, while an anonymous GET of both files on `cf759hl` answered 200 (2026-11-21, recorded on the issue). There is no results.md row for this yet.
+
 ### A REST product batch is about 1.9 s per product on Hyperdrive (#1119)
 
 WooCommerce creates each product in a batch with about 130 database queries, one after another. On Hyperdrive each query is one round trip to the database, about 14 ms, so a batch costs about 1.9 s per product. That is WooCommerce's own write path, not an engine bug.
@@ -201,4 +267,6 @@ No user has the `install_plugins` capability, so the WordPress and WooCommerce s
 
 ## Not measured, and what will measure it
 
-The conformance runs (#759) cover most of the "not measured" cells. They run the upstream WordPress and Gutenberg browser suites, WooCommerce's core browser profile, and the API half. Each runs on a throwaway, with and without the page cache. Each is compared with stock WordPress at the same versions. Where no upstream test covers a cell (multisite, cron, mail), it stays "not measured" until we write our own test.
+The conformance runs (#759) cover many of the "not measured" cells. They run the upstream WordPress and Gutenberg browser suites, WooCommerce's core browser profile, and the API half. Each runs on a throwaway, with and without the page cache. Each is compared with stock WordPress at the same versions. The sb1120 rows are the latest of those runs. See [Latest suite results](#latest-suite-results-sb1120).
+
+Some cells are still not measured. Multisite has no row on any tier. Cron and mail on the DO tiers have no suite row. On Hyperdrive, order mail and the cron alarm do have rows: the mail is sent, and it can be late (#1215). Gutenberg has no valid full-suite row yet (#1201).

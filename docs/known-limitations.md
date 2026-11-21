@@ -1,6 +1,28 @@
 # Known limitations
 
-This page lists what does not work yet, or works only with care, so you can plan around it before you build. Each item names its issue, where you can follow it or help. None of them blocks the current paths: b-dosql for a store, approach A to scale out. See the [docs map](README.md).
+This page lists what does not work yet, or works only with care, so you can plan around it before you build. Each item names its issue, where you can follow it or help. The current paths still run: b-dosql for a store, approach A to scale out. The sb1120 items below are open limits on those paths. See the [docs map](README.md).
+
+## Open from the sb1120 conformance runs (#759)
+
+The rows are in [results.md](results.md), 2026-11-20 and 2026-11-21. The support matrix summary has the per-tier counts.
+
+### WooCommerce checkout on Hyperdrive is slow (#1218)
+
+On `cf759hl` at main `822ab24`, 6 of 10 blocks checkout tests miss the suite's 10 s thank-you wait (#1210). The order POST takes 9.3 to 11.8 s. The order is placed, and the page then answers 200. A query trace of one guest order shows 404 per-order transient DELETEs, 4.8 s of database time. #1206 added that cost. PR #1219 is open. The results row says that, locally, 364 transient DELETE statements per order become 1. The fix is in progress, not fixed.
+
+### Order emails on Hyperdrive can be late (#1215)
+
+#1215 is open. WooCommerce queues each order email. The approach A cron alarm ran those actions 12 to 122 s later, on `cf759hl` at main `822ab24` (row "wc email wait"). The suite polls for 30 s. A default deploy runs the queue (#1166). On this row the send can miss that poll, because the fixture deletes the order first. This row is from before #1176 merged. A second miss on that run is the harness (#1216). PR #1217 is open.
+
+### The WooCommerce "development version" admin notice (#1221)
+
+#1221 is open. Every WooCommerce admin page says the plugin is a development version and that its files must be built. The plugin is built. PHP does not see a file the static path serves. The issue records the live read on `cf759hl`, 2026-11-21. There is no results.md row for it yet.
+
+### A hot b-dosql isolate can reset on an admin write (#1022, #1042)
+
+#1022 is open. On Paid DO and on WfP, `post-new.php` on a hot isolate answers 500 with `x-isolate-reset: memory` and `x-write-loss`. The latest WfP wp row is 17 of 18 for that reason. The Paid DO local wp row missed one test the same way. The Paid DO and WfP wc rows (2026-11-20) also count this reset, in 23 tests and 16 tests.
+
+#1042 is open. Parallel REST reads answer 503 with `x-sql-failure`. The same wc rows count that class: 2 tests on Paid DO, about 6 on WfP. No later wc row has re-run those tiers.
 
 ## b-dosql
 

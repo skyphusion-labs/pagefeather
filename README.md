@@ -138,6 +138,18 @@ These are short verdicts; the linked doc carries the numbers, dates and caveats.
 
 **Which to choose for a store:** **b-dosql** (zero outside infrastructure) for light-to-moderate traffic; **approach A** (external MySQL) to scale out to real concurrent traffic. The container store path is retired; a standard-LAMP VPS is the alternative for a store that outgrows b-dosql.
 
+## Conformance status (sprint sb1120, #759)
+
+These are the latest suite rows in [docs/results.md](docs/results.md), from 2026-11-20 and 2026-11-21. The same summary, with the open items, is in [docs/support-matrix.md](docs/support-matrix.md). The 12 of 12 figures in the table above are `tests/woo.py`. They are a different test from the upstream wc suite.
+
+- **Hyperdrive WordPress** (no WooCommerce, `cf759hw`): the wp suite is 18 of 18, and routes.py had 0 failures. The Worker is placed next to the database (#1054). On a Hyperdrive store (`cf759hl`) the latest wp row is 17 of 18. That row is from before #1167, and no later wp row re-measures it.
+- **Hyperdrive WooCommerce** (`cf759hl`): the latest full wc suite is 169 expected, 57 unexpected, 3 skipped (Browser Run, build `b27cd3c`). Held-block 503s in that run (#1177) are gone on the 8 files that hit them (#1180). Blocks checkout is slow: the order takes 9.3 to 11.8 s because of per-order transient deletes (#1218, #1210). PR #1219 is open, so that fix is in progress, not fixed. Order emails can wait 12 to 122 s (#1215, open). The WooCommerce "development version" admin notice is open (#1221).
+- **DO WordPress on Paid:** Browser Run wp on `cf759p` is 18 of 18. A local run on the same build was 17 of 18 because of a memory reset (#1022, open). WfP `cf759a` wp is 17 of 18, the same reset.
+- **DO WooCommerce on Paid** (2026-11-20, no later wc row): Paid DO `cf759p` is 176 expected and 51 unexpected. WfP `cf759a` is 178 expected and 50 unexpected. The open engine classes are the memory reset (#1022) and parallel REST 503s (#1042).
+- **DO WordPress on Free** (`cf759f`, no WooCommerce, media on): wp is 18 of 18, routes.py had 0 failures, and uploads persist (`media_probe.py`, 14 checks).
+
+Browser Run is the default suite browser for wp and wc. It is not valid for the Gutenberg keyboard and clipboard specs. See [docs/conformance.md](docs/conformance.md).
+
 ## Before you trust the speed numbers
 
 - **Transactions.** `b-do` (D1) has no cross-call `ROLLBACK`; `b-dosql`, `c1`, `a` and `a2` do. Code that relies on `ROLLBACK` (WooCommerce, some plugins, upgrades) must not run on `b-do`. See [approach-b.md](docs/approach-b.md).

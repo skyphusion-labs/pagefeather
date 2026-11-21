@@ -70,8 +70,11 @@ always 1.
   locale, `ignoreHTTPSErrors`, `reducedMotion`, `strictSelectors`) are per context and still apply.
 - The baseline of this instrument (`cf759p`, the wp suite, 2026-11-20; [results.md](results.md) row "Browser Run
   baseline"): Browser Run at 1 worker 18 of 18, local at 1 worker 17 of 18 (the one difference a #1022 memory reset on
-  the site, not the browser), Browser Run at 4 workers 15 of 18 (interference). Browser Run is the default at one worker
-  per site.
+  the site, not the browser), Browser Run at 4 workers 15 of 18 (interference). Browser Run is the default suite
+  browser for wp and wc, at one worker per site.
+- Browser Run is not valid for the Gutenberg keyboard and clipboard specs. On `cf759hw` (2026-11-21, [results.md](results.md)
+  row "gb Browser Run") those specs fail on Browser Run and pass on a local browser. The cause is not identified. Gutenberg
+  runs go on a Linux box with local Chrome. The full `cf759a` Browser Run gb row is unclassified for this reason (#1201).
 - A remote browser reaches public URLs only: a workers.dev throwaway, yes; a local wp-env baseline, no.
 - One worker per site. The wp and gb specs share the site's state: `requestUtils.deleteAllPosts()` runs before each test,
   and the posts have fixed titles. Measured on `cf759p`, 2026-11-20: 4 workers gave 15 of 18 (two posts with one title, a
