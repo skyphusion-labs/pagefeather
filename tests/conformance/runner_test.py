@@ -695,9 +695,23 @@ def main():
             for n in os.listdir(bd):
                 if n != "composer" and not os.path.exists(os.path.join(nocomp, n)):
                     os.symlink(os.path.join(bd, n), os.path.join(nocomp, n))
+        # A stub php, so this case tests composer alone (macOS has no /usr/bin/php; CI's ubuntu has one).
+        if os.path.lexists(os.path.join(nocomp, "php")):
+            os.remove(os.path.join(nocomp, "php"))
+        open(os.path.join(nocomp, "php"), "w").write("#!/bin/sh\nexit 0\n"); os.chmod(os.path.join(nocomp, "php"), 0o755)
         vic = subprocess.run(["/bin/bash", os.path.join(HERE, "vps-run.sh"), "install", "wc", os.path.join(t, "vic")],
                              env={"PATH": nocomp}, capture_output=True, text=True)
-        ok("install wc without composer: STOP (exit 3) before any clone") if vic.returncode == 3 and "needs composer" in vic.stderr and not os.path.exists(os.path.join(t, "vic")) else bad("install wc no composer: rc %d %s" % (vic.returncode, vic.stderr[-200:]))
+        ok("install wc without composer: STOP (exit 3) before any clone, naming composer") if vic.returncode == 3 and "needs composer" in vic.stderr and not os.path.exists(os.path.join(t, "vic")) else bad("install wc no composer: rc %d %s" % (vic.returncode, vic.stderr[-200:]))
+        # And without php: a shim with every tool except php and composer, plus a stub composer, names php.
+        nophp = os.path.join(t, "nophp"); os.makedirs(nophp)
+        for bd in ("/bin", "/usr/bin"):
+            for n in os.listdir(bd):
+                if n not in ("php", "composer") and not n.startswith("php") and not os.path.exists(os.path.join(nophp, n)):
+                    os.symlink(os.path.join(bd, n), os.path.join(nophp, n))
+        open(os.path.join(nophp, "composer"), "w").write("#!/bin/sh\nexit 0\n"); os.chmod(os.path.join(nophp, "composer"), 0o755)
+        vip = subprocess.run(["/bin/bash", os.path.join(HERE, "vps-run.sh"), "install", "wc", os.path.join(t, "vip")],
+                             env={"PATH": nophp}, capture_output=True, text=True)
+        ok("install wc without php: STOP (exit 3) before any clone, naming php") if vip.returncode == 3 and "needs php" in vip.stderr and not os.path.exists(os.path.join(t, "vip")) else bad("install wc no php: rc %d %s" % (vip.returncode, vip.stderr[-200:]))
         vbw = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "baseline", "wc", vw, os.path.join(t, "vbwc")],
                              env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
         cl = [l for l in vbw.stdout.splitlines() if "runner.py config" in l]

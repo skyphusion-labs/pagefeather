@@ -110,8 +110,12 @@ case "$act" in
   install)
     # WooCommerce's postinstall runs "composer install", so the box needs php-cli and composer (wcbase-wc1 died there).
     case "$suite" in wc|wc-api|wc-cpt)
-      [ "${DRY:-0}" = 1 ] || command -v composer >/dev/null 2>&1 \
-        || { echo "vps-run: STOP: the wc install needs composer and php-cli on the box (WooCommerce's postinstall runs composer install)" >&2; exit 3; } ;;
+      if [ "${DRY:-0}" != 1 ]; then
+        for tool in php composer; do
+          command -v "$tool" >/dev/null 2>&1 \
+            || { echo "vps-run: STOP: the wc install needs $tool on the box (php-cli and composer: WooCommerce's postinstall runs composer install)" >&2; exit 3; }
+        done
+      fi ;;
     esac
     x mkdir -p "$work"
     [ -d "$src/.git" ] || { x git init -q "$src"; x git -C "$src" remote add origin "$repo"; }
