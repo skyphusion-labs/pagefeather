@@ -953,7 +953,9 @@ SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCL
 # it: config-hash-test.sh derives the env names render_user's helpers read and fails on a new one.
 # keep_settings <bucket> <work dir>: merge the recorded settings into this run's environment. Sets
 # SETTINGS_RECORDED (1 or 0). Exit 0 merged or none recorded, 2 refused (unreadable, a missing
-# secret, a bad DROP_SETTINGS).
+# secret, a bad DROP_SETTINGS, or a key this build does not know, #1285). REPLACE_INPUTS=1
+# drops an unknown key and names it. A known key is kept. The record is not written again
+# without a key that this run did not name.
 keep_settings() {
   local b=$1 rec="$2/settings.json" rc=0 m
   SETTINGS_RECORDED=0

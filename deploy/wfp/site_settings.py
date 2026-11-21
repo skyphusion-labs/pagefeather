@@ -17,6 +17,9 @@ exports it only when it was set. A drop sets it back to unset, not to empty.
 An update KEEPS a recorded setting the run does not set, uses the run's value when it sets one,
 and drops one only when DROP_SETTINGS names it. A secret's VALUE is never recorded, only that the
 site has it (TURNSTILE_SECRET): an update without it is refused unless DROP_SETTINGS names it.
+A key this build does not know stops the update and names the key (#1285, deploy/lib/unknown_setting.py).
+The record is not written again without that key. REPLACE_INPUTS=1 drops those keys and names each one.
+A known key is kept as before.
 OBSERVABILITY (#1050) is recorded for 0 and 1 only. 1 is events only (our own structured lines
 and uncaught exceptions, no request metadata), so an update keeps a site's logs as they were; before
 #1050 a remount that did not pass it turned the user Worker's logs off (cf759a, 2026-11-20). full
@@ -39,6 +42,7 @@ NEVER recorded: it stays on only when a run asks again, and a record that holds 
                                                       with no record yet, and any miss of merge)
 DROP_SETTINGS: names separated by spaces or commas; each must be a known setting or exit 2.
 """
+import io
 import json
 import os
 import re
@@ -47,7 +51,9 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
 import snapshot  # noqa: E402
+import unknown_setting  # noqa: E402
 
 RECORD = "_build/settings.json"
 # The env-only settings render_user reads (lib.sh), each rendered as a [vars] name of its own.
@@ -145,10 +151,22 @@ def env_json(env=os.environ):
 
 def merge(record, env=os.environ):
     drop = drop_list(env)
+    settings = record.get("settings") or {}
+    secrets = list(record.get("secrets") or [])
+    # #1285: one function for both deploy paths. Hold its lines until this merge
+    # returns 0. A later refusal (a missing secret) must not say a key was dropped,
+    # because record_settings does not run and the record stays whole.
+    held = io.StringIO()
+    code, unknown = unknown_setting.guard(
+        list(settings) + secrets, SETTINGS + SECRETS, env.get("REPLACE_INPUTS") == "1", held)
+    if code != 0:
+        sys.stderr.write(held.getvalue())
+        return code
+    skip = set(unknown)
     lines, rc = [], 0
-    for k, v in sorted((record.get("settings") or {}).items()):
-        if k not in SETTINGS:
-            print("  settings: the record has %s, which is not a known setting: ignored" % k, file=sys.stderr)
+    for k, v in sorted(settings.items()):
+        if k in skip or k not in SETTINGS:
+            # guard named this key. It is not kept, and it is not logged again.
             continue
         if k in PRESENCE:
             if k in drop:
@@ -195,6 +213,8 @@ def merge(record, env=os.environ):
             lines.extend(presence_lines(k, "unset"))
         else:
             lines.append("export %s=''" % k)
+    if rc == 0:
+        sys.stderr.write(held.getvalue())
     print("\n".join(lines))
     return rc
 
