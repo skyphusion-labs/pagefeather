@@ -86,6 +86,26 @@ off_x = [{"t": 1, "rid": "q1", "m": "perf", "iso": "isoB"}, {"t": 5, "rid": "b1"
 b = bar2(logs("X-off", off_x), logs("X-on", on_x))
 ok("two isolates on the on arm (A by rid, D by the live isolate), one off: a FAIL", "| FAIL |" in b and "platform memory-death isolates on 2, off 1" in b, b)
 
+print("7. a death carried ONLY inside an engine line's field counts (#1022 issuecomment-7068680062): failed, error, endFailed")
+on_e = [{"t": 1, "rid": "q1", "m": "perf", "iso": "isoE"}, {"t": 5, "rid": "e1", "m": "frame-stranded", "iso": "isoE", "error": DEATH},
+        {"t": 30, "rid": "q2", "m": "perf", "iso": "isoF"}, {"t": 35, "rid": "f1", "m": "purge-retry", "failed": DEATH, "kind": "memory"},
+        {"t": 60, "rid": "q3", "m": "perf", "iso": "isoG"}, {"t": 65, "rid": "g1", "m": "txn", "level": "error", "endFailed": DEATH}]
+off_e = [{"t": 1, "rid": "q1", "m": "perf", "iso": "isoB"}, {"t": 5, "rid": "b1", "message": DEATH, "level": "error"}]
+b = bar2(logs("E2-off", off_e), logs("E2-on", on_e))
+ok("3 engine-carried deaths in 3 isolates against 1 standalone: a FAIL", "| FAIL |" in b and "platform memory-death isolates on 3, off 1" in b, b)
+b = bar2(logs("E3-off", on_e), logs("E3-on", off_e))
+ok("and reversed: a pass", "| pass |" in b and "platform memory-death isolates on 1, off 3" in b, b)
+on_d = [{"t": 1, "rid": "q1", "m": "perf", "iso": "isoH"}, {"t": 5, "rid": "h1", "message": DEATH, "level": "error"},
+        {"t": 5, "rid": "h1", "m": "frame-stranded", "iso": "isoH", "error": DEATH}, {"t": 5, "rid": "h2", "m": "purge", "failed": DEATH}]
+b = bar2(logs("E4-off", off_e), logs("E4-on", on_d))
+ok("one death reported by a platform line AND engine lines is ONE isolate", "platform memory-death isolates on 1, off 1" in b, b)
+
+print("7b. a line's OWN iso wins over the live isolate (an engine line of isolate A, with no rid, logged after isolate D's first perf line)")
+on_o = [{"t": 1, "rid": "q1", "m": "perf", "iso": "isoA"}, {"t": 9, "rid": "q9", "m": "perf", "iso": "isoD"},
+        {"t": 10, "m": "frame-stranded", "iso": "isoA", "error": DEATH}, {"t": 11, "rid": "x2", "message": DEATH, "level": "error"}]
+b = bar2(logs("E5-off", off_e), logs("E5-on", on_o))
+ok("two isolates (A by its own iso, D live), against 1: a FAIL", "| FAIL |" in b and "platform memory-death isolates on 2, off 1" in b, b)
+
 print("5. both arms with invocation rows: the invocation outcome, as before")
 inv_ok = [{"t": 1, "type": "fetch", "outcome": "ok", "status": 200, "path": "/", "wallMs": 9, "rid": "i1"}]
 b = bar2(logs("I-off", [req(1)], inv_ok), logs("I-on", [req(1)], inv_ok))

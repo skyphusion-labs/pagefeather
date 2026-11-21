@@ -101,10 +101,12 @@ def platform_deaths(lines):
     for o in ls:
         if o.get("m") == "perf" and o.get("iso"):
             live = o["iso"]
-        if PLATFORM_DEATH in str(o.get("message", "")):
+        # #1022 issuecomment-7068680062: the text in ANY field. Many deaths carry it only inside an engine line
+        # (failed, error, endFailed), with no standalone platform line.
+        if PLATFORM_DEATH in json.dumps(o):
             dead += 1
             stamps.add(o.get("t"))
-            iso = by_rid.get(o.get("rid")) or live
+            iso = o.get("iso") or by_rid.get(o.get("rid")) or live
             units.add(("iso", iso) if iso else ("t", o.get("t")))
     return dead, len(stamps), len(units)
 
@@ -257,7 +259,7 @@ def main(argv):
         detail += "; exceededMemory on %d, off %d" % (on["exceededMemory"], off["exceededMemory"])
         v = "pass" if (d_on <= d_off and on["exceededMemory"] <= off["exceededMemory"] and not worse_lw) else "FAIL"
     elif dsrc == "platform":
-        detail += "; platform memory-death isolates on %d, off %d (lines on %d, off %d; timestamps on %d, off %d) (no invocation rows on an arm: the platform's own death line stands in, by distinct isolate, #1022)" % (
+        detail += "; platform memory-death isolates on %d, off %d (lines on %d, off %d; timestamps on %d, off %d) (no invocation rows on an arm: the platform's death text in any field stands in, by distinct isolate, #1022)" % (
             on["platformDeaths"], off["platformDeaths"], on["platformLines"], off["platformLines"], on["platformStamps"], off["platformStamps"])
         v = "pass" if (d_on <= d_off and on["platformDeaths"] <= off["platformDeaths"] and not worse_lw) else "FAIL"
     else:
