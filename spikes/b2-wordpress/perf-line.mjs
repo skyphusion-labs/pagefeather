@@ -26,6 +26,7 @@ export function aPerfLine(f) {
 		dbMs,
 		dbAvgMs: dbN > 0 && dbMs !== undefined ? Math.round((dbMs / dbN) * 10) / 10 : undefined,
 		wallMs: num(f.wallMs),
+		lockWaitMs: num(f.lockWaitMs), // #1119: the PHP lock wait before this run (wallMs starts after it)
 		wasm1MiB: num(f.wasm1MiB),
 		recycled: f.recycled || undefined,
 		// #1078 round 2: what PHP waited on besides MySQL, and whether OPcache served (spike token + x-perf-opcache: 1).

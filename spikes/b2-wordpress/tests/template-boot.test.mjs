@@ -79,7 +79,7 @@ test('index.js yields an idle lookup and passes the list priority on both PHP pa
 	const between = obj.slice(yieldAt, run);
 	assert.ok(yieldAt > 0 && yieldAt < run && between.includes('phpPending++'), 'the beat is before this request counts as pending, and before the lock');
 	assert.ok(obj.includes('priority: templateQueuePriority(req.method, url)'), 'the object passes the priority');
-	assert.ok(src.includes("const workerRun = await withPhp(() => withRunCall(callId, () => handle(req, env, url, spikeOk, maxBody, ctx)), { shedMs: phpShedMs(env, false), priority: templateQueuePriority(req.method, url), staleAction: 'shed', tag: { call: callId } })"), 'the worker path too (with #1060 staleAction shed, #1101 the call id)');
+	assert.ok(src.includes("const workerRun = await withPhp(() => withRunCall(callId, () => handle(req, env, url, spikeOk, maxBody, ctx), Date.now() - lockT0), { shedMs: phpShedMs(env, false), priority: templateQueuePriority(req.method, url), staleAction: 'shed', tag: { call: callId } })"), 'the worker path too (with #1060 staleAction shed, #1101 the call id)');
 	assert.ok(src.includes('templateLookupYield(req.method, url, phpLock)'), 'the worker yields too');
 	const forward = src.indexOf('templateLookupForwardYield(req.method, url)');
 	const send = src.indexOf('return toPhpObject(req, env, url, ctx);', forward);

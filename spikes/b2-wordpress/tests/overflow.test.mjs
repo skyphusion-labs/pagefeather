@@ -306,7 +306,7 @@ test('#714 held-block: a fast, retry-safe 503 that never ran', async () => {
 });
 test('#714 index.js: blocks local PHP while ovHeld > 0, before withPhp and on overflow-local', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	const wp = src.indexOf('const workerRun = await withPhp(() => withRunCall(callId, () => handle(req, env, url, spikeOk, maxBody, ctx))');
+	const wp = src.indexOf('const workerRun = await withPhp(() => withRunCall(callId, () => handle(req, env, url, spikeOk, maxBody, ctx), Date.now() - lockT0)');
 	assert.ok(wp > 0);
 	const before = src.slice(wp - 1200, wp);
 	assert.match(before, /overflowHeldBlocksLocal\(ovs, ovHeld\)/);
