@@ -76,6 +76,18 @@ Isolation today is one user Worker, one Durable Object and one R2 bucket per sit
 
 `deploy/wfp/terraform/site` sets the variable `zone_id` to the `skyphusion.org` zone by default. A bring-your-own apex (a domain on its own zone) must set `TF_VAR_zone_id` to its own zone id, or the site resources go to the wrong zone. This is a real gap for bring-your-own-domain use. See [byo-domain.md](byo-domain.md).
 
+## Memory limits: the three figures
+
+Three memory figures appear in these docs. They are not the same limit.
+
+| Figure | What it is |
+|---|---|
+| 128 MB per isolate | Cloudflare's documented limit. The Workers limits page, as read in [design-394-bundle-out-of-memory.md](design-394-bundle-out-of-memory.md), 2026-11-13. That page includes the JavaScript heap. |
+| about 255 MiB | Measured reachable size in an empty isolate (#394, [admin-memory-matrix.md](admin-memory-matrix.md), 2026-11-14). |
+| 117 to 119 MiB of wasm | The measured write ceiling (#598). This is the figure that binds a site. |
+
+`x-wasm-mib` is the PHP WebAssembly heap only, so the JavaScript heap is not in that header.
+
 ## A heavy plugin set: memory and bundle size (b-dosql, measured 2026-11-11)
 
 Measured on a real store imported for skyphusion-labs/ggc#101. It runs WooCommerce 11.2.1, Rank Math 1.0.280, skyphusion-ai 0.6.2, MCP Adapter 0.7.1 and twentytwentyfive, on a site in `deploy/wfp`. The test was a guest probe: the home page, the Store API, the shop, a product, the cart and a cheque checkout.

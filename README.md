@@ -164,13 +164,8 @@ The [support matrix](docs/support-matrix.md) lists each WordPress and WooCommerc
   their memory yet, because activation failed on the test store (#289). We are designing a way to
   move plugin and theme source out of the bundle. That is work in progress, not a promise that
   these plugins will fit ([#279](https://github.com/skyphusion-labs/pagefeather/issues/279)).
-- **The measured write ceiling is 117 to 119 MiB of wasm (#598).** A heavy plugin
-  set can pass that ceiling. Cloudflare documents 128 MB per isolate, including
-  the JavaScript heap (the Workers limits page, as read in
-  [docs/design-394-bundle-out-of-memory.md](docs/design-394-bundle-out-of-memory.md),
-  2026-11-13). #394 measured about 255 MiB reachable in an empty isolate
-  ([docs/admin-memory-matrix.md](docs/admin-memory-matrix.md), 2026-11-14).
-  A store with Rank Math reaches 119 MiB a request, and every other request
+- **The measured write ceiling** (117 to 119 MiB of wasm; see [memory limits](docs/known-limitations.md#memory-limits-the-three-figures)). A heavy plugin
+  set can pass that ceiling. A store with Rank Math reaches 119 MiB a request, and every other request
   answers 503. Without Rank Math, the same store passes checkout
   ([docs/known-limitations.md](docs/known-limitations.md),
   [#279](https://github.com/skyphusion-labs/pagefeather/issues/279)).
