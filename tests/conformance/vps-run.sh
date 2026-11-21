@@ -245,7 +245,14 @@ case "$act" in
     # empty one is a STOP. #1265: the folder depends on the suite. The wc arms copy their outputDir to <run-dir>/test-results
     # after each run; the wp and gb configs (runner.py config, WP_ARTIFACTS_PATH) put it under <run-dir>/artifacts.
     run=${4:?run-dir}; out=${5:?tarball}
-    case "$suite" in wc|wc-api|wc-cpt) rel=test-results ;; wp|gb) rel=artifacts/test-results ;; esac
+    # An unknown suite STOPS (the lead's review): with no folder named, an empty rel would tar the whole run directory,
+    # which holds <run>/env (the site passwords) until the driver removes it.
+    case "$suite" in
+      wc|wc-api|wc-cpt) rel=test-results ;;
+      wp|gb) rel=artifacts/test-results ;;
+      *) echo "vps-run: STOP: collect has no trace folder for suite '$suite' (wc wc-api wc-cpt wp gb)" >&2; exit 3 ;;
+    esac
+    [ -n "$rel" ] || { echo "vps-run: STOP: collect found no trace folder for suite '$suite'" >&2; exit 3; }
     [ -d "$run/$rel" ] || { echo "vps-run: STOP: no $run/$rel to collect (did the $suite run reach its test phase?)" >&2; exit 3; }
     n_all=$(find "$run/$rel" -type f | wc -l | tr -d ' ')
     [ "$n_all" -gt 0 ] || { echo "vps-run: STOP: $run/$rel has no files" >&2; exit 3; }

@@ -41,6 +41,14 @@ bash "$here/vps-run.sh" collect wc "$t/work" "$t/run-wcx" "$t/run-wcx.tgz" > /de
 mkdir -p "$t/run-wpx/test-results/y"; echo z > "$t/run-wpx/test-results/y/trace.zip"
 bash "$here/vps-run.sh" collect wp "$t/work" "$t/run-wpx" "$t/run-wpx.tgz" > /dev/null 2>&1; rc=$?
 [ "$rc" = 3 ] && ok "wp: a run dir with only test-results is a STOP (exit 3)" || bad "wp on top-level-only: exit $rc, want 3"
+# 3d. an unknown suite is refused and writes no archive (the lead's review: an empty folder name would tar the whole run
+# directory, which holds <run>/env with the site passwords). Whichever layer refuses it, no tarball and a non-zero exit.
+mkdir -p "$t/run-unk/test-results/x"; echo z > "$t/run-unk/test-results/x/trace.zip"; echo "WP_PASSWORD=secret" > "$t/run-unk/env"
+bash "$here/vps-run.sh" collect nosuch "$t/work" "$t/run-unk" "$t/run-unk.tgz" > "$t/o-unk" 2>&1; rc=$?
+[ "$rc" != 0 ] && [ ! -e "$t/run-unk.tgz" ] && ok "an unknown suite is refused (exit $rc) and writes no archive" || bad "unknown suite: exit $rc, tarball $( [ -e "$t/run-unk.tgz" ] && echo WRITTEN || echo none)"
+# The collect step's own guard, reached directly: with the top-level suite list bypassed, collect still STOPS on a name
+# it has no folder for (exit 3), never an empty-folder tar.
+grep -q "\*) echo \"vps-run: STOP: collect has no trace folder for suite" "$here/vps-run.sh" && ok "collect has its own STOP for a suite with no trace folder" || bad "collect lacks its own unknown-suite STOP"
 # 4. missing arguments: a usage error, not a collect.
 $V > /dev/null 2>&1; rc=$?
 [ "$rc" != 0 ] && ok "no run-dir: refused (exit $rc)" || bad "no run-dir: exit 0"
