@@ -41,6 +41,8 @@ content, and `render_user` checks as the last guard.
    For the wc and wc-api suites, seed with `SEED_RESET_STORE=1`: the seed first restores Basic auth (a new
    application password), then resets the store (`GET wc-cleanup/v1/reset` with that password, as upstream's
    "reset" project does), only on a marked throwaway, before any content step, and records it in `seed.json`.
+   As soon as that reset answers, success or failure, the seed revokes the application password it just minted
+   (`DELETE /wp/v2/users/<id>/application-passwords/<uuid>`). If the revoke fails, the seed stops and says so.
    A wp run's revoke-all spec leaves the form login working and Basic dead (#1151). The reset does not send the
    password from creds.env. Without the reset the store keeps every product of earlier runs, and the shop page
    differs from stock.
@@ -51,7 +53,7 @@ content, and `render_user` checks as the last guard.
    **Reseed after every wp run, too.** The wp suite's "revoke all the application passwords" spec revokes the seed's
    application password, so Basic auth answers 401 until the next seed (measured 2026-11-20 on `cf759p`: a REST upload
    got 401 right after a wp run). The account password still matches it, so the next seed logs in through the form.
-   That seed mints a new application password before the store reset (#1151).
+   That seed mints a new application password before the store reset, and revokes it as soon as the reset answers (#1151).
 6. **A WordPress-only site** (no WooCommerce, e.g. a Workers Free tier): seed with `SEED_NO_WOO=1`. The seed then skips the
    WooCommerce items and names each one as skipped in `seed.json`; it fails if the site does have `wc/v3`. Run wp and gb only.
 

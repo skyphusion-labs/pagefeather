@@ -47,7 +47,10 @@ half and the browser half. runner.py (the browser half) only checks. It writes, 
      application password, then reset the store with GET wc-cleanup/v1/reset. A wp run's
      revoke-all spec deletes every application password. The form login still works. Basic
      with the creds password is 401 (#1151). The reset uses the new password, on a marked
-     throwaway only, and is recorded as store_reset in seed.json.
+     throwaway only, and is recorded as store_reset in seed.json. As soon as the reset
+     answers, success or failure, the seed revokes that password
+     (DELETE /wp/v2/users/<id>/application-passwords/<uuid>). If the revoke fails, the seed
+     stops and says so. The password is not left on the site.
   9. --theme <slug> (optional): activates that installed theme (the admin's own activation link on themes.php) and
      checks it is the active stylesheet. joan's runner asks twentytwentythree before wc and wc-api: WooCommerce's
      external setup activates it, and the wp and gb global setups switch to twentytwentyone before.
@@ -322,21 +325,31 @@ def basic(user, pw, route="/wp/v2/users/me"):
 
 
 def fresh_application_password(opener, nonce):
-    """A new application password for this logged-in admin, spaces removed, or None.
+    """A new application password for this logged-in admin.
+
+    Returns (user id, uuid, password). The password has its spaces removed. The
+    uuid is the one the POST response returned. A missing piece is None. The
+    caller revokes that uuid as soon as the store reset answers (#1151).
 
     A wp suite revoke-all deletes every application password. The account password
-    still passes the form. Basic with it answers 401 until a new one exists (#1151).
+    still passes the form. Basic with it answers 401 until a new one exists.
     """
     _c, me = rest(opener, nonce, "/wp/v2/users/me?context=edit")
     uid = me.get("id") if isinstance(me, dict) else None
     if not uid:
-        return None
+        return None, None, None
     _c, made = rest(opener, nonce, "/wp/v2/users/%s/application-passwords" % uid,
                     {"name": "conformance-reset-%d" % int(time.time())}, "POST")
-    app = made.get("password") if isinstance(made, dict) else None
+    if not isinstance(made, dict):
+        return None, None, None
+    app = made.get("password")
+    uuid = made.get("uuid")
     if not isinstance(app, str) or not app:
-        return None
-    return app.replace(" ", "")
+        return None, None, None
+    pw = app.replace(" ", "")
+    if not isinstance(uuid, str) or not uuid:
+        return uid, None, pw
+    return uid, uuid, pw
 
 
 
@@ -394,6 +407,17 @@ def refuse(why):
     sys.exit(2)
 
 
+def halt(why):
+    """Stop the seed after a write. Exit 1. why is the operator message, and it holds no secret."""
+    check("seed stopped", False, why=why)
+    sys.stderr.write("seed: %s\n" % why)
+    report["failed"] = failed
+    with open(os.path.join(OUT, "seed.json"), "w") as f:
+        json.dump(report, f, indent=1, sort_keys=True)
+    event("done", failed=failed, report=os.path.join(OUT, "seed.json"))
+    sys.exit(1)
+
+
 def main():
     if not B or not OUT:
         refuse("usage: B=<site> ADMIN_PASSWORD=... seed.py <out-dir>")
@@ -432,18 +456,27 @@ def main():
     # gets 403 (measured on cf759p). A wp run's revoke-all spec deletes every application password. The account
     # password from creds.env still passes the form, and Basic with it answers 401 (#1151). Mint a new
     # application password on this form session, then send that. Do not send the creds password.
+    # Keep the uuid from that POST. As soon as the reset answers, success or failure, revoke it.
+    # If the revoke fails, stop. A live credential must not be left in silence.
     if RESET_STORE:
         if not marked:
             refuse("SEED_RESET_STORE=1 needs the throwaway marker (a local site without it is never reset)")
-        fresh = fresh_application_password(a, n)
-        basic_pw = fresh
+        uid, fresh_uuid, fresh = fresh_application_password(a, n)
         t0 = time.time()
         c = 0
-        if basic_pw:
-            tok = base64.b64encode(("%s:%s" % (ADMIN_USER, basic_pw)).encode()).decode()
-            c, _b, _h = req(jar(), "/?rest_route=/wc-cleanup/v1/reset", headers={"Authorization": "Basic " + tok})
-        check("store reset first (SEED_RESET_STORE, wc-cleanup/v1/reset)", c == 200, status=c, s=round(time.time() - t0, 1))
-        report["store_reset"] = {"status": c, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        try:
+            if fresh and fresh_uuid:
+                tok = base64.b64encode(("%s:%s" % (ADMIN_USER, fresh)).encode()).decode()
+                c, _b, _h = req(jar(), "/?rest_route=/wc-cleanup/v1/reset", headers={"Authorization": "Basic " + tok})
+            check("store reset first (SEED_RESET_STORE, wc-cleanup/v1/reset)", c == 200, status=c, s=round(time.time() - t0, 1))
+            report["store_reset"] = {"status": c, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        finally:
+            if fresh_uuid:
+                rc, _gone = rest(a, n, "/wp/v2/users/%s/application-passwords/%s" % (uid, fresh_uuid), None, "DELETE")
+                if rc != 200:
+                    halt("the application password minted for the store reset is still on the site (DELETE /wp/v2/users/%s/application-passwords/%s answered %s). The seed is stopping." % (uid, fresh_uuid, rc))
+            elif fresh:
+                halt("the application password minted for the store reset came back with no uuid, so it was not revoked. The seed is stopping.")
 
     # 1. permalinks /%postname%/
     c, b, _ = req(a, "/wp-admin/options-permalink.php")
