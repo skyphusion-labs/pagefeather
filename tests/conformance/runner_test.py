@@ -32,6 +32,7 @@ class Stub:
         self.password = "SeedAppPass24CharsAbCdEf"  # the seed made the account password an app password
         self.customer_pw = "Cust-Pass-9"
         self.blogname = "WooCommerce Core E2E Test Suite"
+        self.admin_email = "owner@throwaway.example"
         self.timezone = "America/Detroit"
         self.images = ["image-01", "image-02", "image-03"]
         self.customer_role = "customer"
@@ -146,7 +147,10 @@ class Stub:
                         return self.send(404, {"code": "rest_setting_setting_invalid"})
                     return self.send(200, {"id": "woocommerce_allow_tracking", "value": stub.tracking})
                 if self.path == "/wp-json/wp/v2/settings":
-                    return self.send(200, {"title": stub.blogname, "timezone": stub.timezone}) if self.rest_ok() else self.send(401, {})
+                    body = {"title": stub.blogname, "timezone": stub.timezone}
+                    if stub.admin_email is not None:
+                        body["email"] = stub.admin_email
+                    return self.send(200, body) if self.rest_ok() else self.send(401, {})
                 if self.path.startswith("/wp-json/wp/v2/media?search="):
                     q = self.path.split("search=")[1].split("&")[0]
                     ext = "jpg" if q == "image-01" else "png"
@@ -299,6 +303,8 @@ def main():
         case("a wrong CUSTOMER_PASSWORD", r"the customer 'customer' cannot log in", env_extra={"CUSTOMER_PASSWORD": "nope"})
         case("the wrong blogname", r"blogname is 'My Site'", setup=lambda s: setattr(s, "blogname", "My Site"))
         case("the wrong timezone", r"timezone is 'UTC'.*America/Detroit", setup=lambda s: setattr(s, "timezone", "UTC"))
+        case("no admin email in the settings", r"site admin email .* is None", setup=lambda s: setattr(s, "admin_email", None))
+        case("a malformed admin email", r"site admin email .* is 'not-an-email'", setup=lambda s: setattr(s, "admin_email", "not-an-email"))
         case("plain permalinks (#760)", r"pretty permalinks are not active", setup=lambda s: setattr(s, "plain", True))
         case("a missing test image", r"no media image-02\.\* ", setup=lambda s: setattr(s, "images", ["image-01", "image-03"]))
         case("the wrong theme (after a wp or gb pass)", r"active theme is \['twentytwentyone'\].*not 'twentytwentythree'", setup=lambda s: setattr(s, "theme", "twentytwentyone"))
@@ -318,7 +324,7 @@ def main():
         # Checked by (key, value); only the literal KEY is ever printed, never a value.
         for key, val in (("ADMIN_PASSWORD", s.password), ("WP_PASSWORD", s.password), ("ADMIN_USER", "admin"),
                          ("BASE_URL", s.url), ("CUSTOMER_USER", "customer"), ("CUSTOMER_PASSWORD", s.customer_pw),
-                         ("PF_CONFORMANCE_CACHE", "on")):
+                         ("PF_CONFORMANCE_CACHE", "on"), ("ADMIN_USER_EMAIL", "owner@throwaway.example")):
             has = ("export %s=%s\n" % (key, val)) in env_text
             ok("env has " + key) if has else bad("env lacks " + key)
         ok("no application password was created") if s.app is None else bad("the runner created an application password")

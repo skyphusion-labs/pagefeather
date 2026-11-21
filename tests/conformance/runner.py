@@ -217,6 +217,13 @@ def wc_verify(site, user, password):
     got_tz = j.get("timezone") or j.get("timezone_string") or ""
     if got_tz != WC_TIMEZONE:
         raise Stop("timezone is %r, not %r" % (got_tz, WC_TIMEZONE))
+    # The site's admin email (the admin_email option; WP settings REST names it "email"). WooCommerce's admin
+    # emails (New order, Cancelled order) go there, and its test data reads ADMIN_USER_EMAIL, falling back to
+    # admin@woocommercecoree2etestsuite.com. Our seed sets another address, so without this the "admin receives"
+    # specs wait for a mail to the wrong recipient (wcb3, 2026-11-21: New order #1394 went to the site's address).
+    admin_email = j.get("email") if isinstance(j.get("email"), str) else ""
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", admin_email):
+        raise Stop("the site admin email (wp/v2/settings email) is %r: the admin-email specs need it" % (admin_email or None))
     # Pretty permalinks, measured: the suites call /wp-json/ directly, so it must answer the REST index.
     st, h, b = site.req("GET", "/wp-json/", cookies=False, keep_path=True)
     try:
@@ -245,8 +252,8 @@ def wc_verify(site, user, password):
     active = [t.get("stylesheet") for t in themes or [] if isinstance(t, dict)] if st == 200 else []
     if active != [WC_THEME]:
         raise Stop("the active theme is %r (HTTP %d), not %r: the seed sets it before a wc or wc-api pass" % (active, st, WC_THEME))
-    say("woocommerce setup verified: customer (role and login), blogname, pretty permalinks, 3 images, tracking, theme")
-    return cuser, cust
+    say("woocommerce setup verified: customer (role and login), blogname, admin email, pretty permalinks, 3 images, tracking, theme")
+    return cuser, cust, admin_email
 
 
 def conformance_artifact_paths(run_dir):
@@ -281,9 +288,9 @@ def cmd_prepare(a):
     cache = check_cache(site, a.cache)
     pairs = [("WP_BASE_URL", site.base), ("WP_USERNAME", user)]
     if a.suite in ("wc", "wc-api", "wc-cpt"):
-        cuser, cust = wc_verify(site, user, password)
+        cuser, cust, admin_email = wc_verify(site, user, password)
         pairs += [("WP_PASSWORD", password), ("BASE_URL", site.base), ("ADMIN_USER", user), ("ADMIN_PASSWORD", password),
-                  ("CUSTOMER_USER", cuser), ("CUSTOMER_PASSWORD", cust)]
+                  ("ADMIN_USER_EMAIL", admin_email), ("CUSTOMER_USER", cuser), ("CUSTOMER_PASSWORD", cust)]
     else:
         pairs += [("WP_PASSWORD", password)]
     pairs += [("PF_CONFORMANCE_SUITE", a.suite), ("PF_CONFORMANCE_CACHE", a.cache),
