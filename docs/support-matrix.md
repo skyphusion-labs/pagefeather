@@ -149,16 +149,17 @@ It cannot run in place either, because the request that asks holds the one PHP r
 - **Hyperdrive (approach A):** limited, by #1157. A page already in the front page cache answers from it in milliseconds (measured live on cf759hx). Any other page runs on an overflow pool object, and **a page not yet cached in that colo pays a cold render, which can pass WordPress's 5 s timeout** (measured 8.5 s cold, 4.9 s warm), pending #1169's cold-boot work. The uncached request runs on another PHP runtime, one of the overflow pool's objects, called through its binding and never through a public URL. A request a pool object runs never calls the pool again, so a self-request is at most one hop deep.
 - **The DO tiers (Free DO, Paid DO, WfP):** they have no second runtime, so this is a platform limit.
 
-### Stylesheets PHP reads from disk (#1205, #1208, fixed; one case limited)
+### Files PHP reads or probes from disk (#1205, #1208, #1221, fixed; one case limited)
 
 The build drops from the PHP tree (`site.zip`) the files PHP never reads, every unminified `.css` among them; the static copy keeps everything. But PHP DOES read some stylesheets from disk, and a pruned one was silently missing:
 - **Block styles** named in a plugin or theme `block.json` (`"file:./x.css"`): core registered them with an empty `src`, so no WooCommerce block style printed (#1205).
 - **Theme stylesheets:** `add_editor_style` files are read and inlined into the editor, so every theme's editor styles were missing, the default twentytwentyfive's included (#1208).
 - **Stylesheets a plugin reads itself,** such as WooCommerce's email editor: `content.css` and `content-shared.css` when it renders an email (#1208).
+- **Files a plugin or theme probes,** with `file_exists`, `is_file`, `is_readable`, `filesize` and the like, of any type the prune removes (#1221). WooCommerce 11.2.1 checks `file_exists( WC()->plugin_path() . '/assets/css/admin.css' )`, and when it is false shows "development version, files must be built" on every admin page. A probe whose base the build can't follow is matched by its literal path (`/assets/css/admin.css`) against the plugin's own files.
 
 All of these now stay in the PHP tree. The build FAILS if one is in the static copy but missing from the PHP tree (`block-css-keep.py --check`).
 
-- **The limit:** a plugin that reads a `.css` file by a path the build can't work out (a variable, a computed name) isn't covered. The build prints a `block-css-keep: note:` line naming the file and line. WooCommerce 11.2.1 has none. Keeping every unminified `.css` would cover it, at 2.25 MB more `site.zip` (+10%), which the Free and b-do tiers hold in isolate memory, so it's not the default.
+- **The limit:** a plugin that reads or probes a pruned file by a path the build can't work out (a variable, a computed name, or a bare file name after a variable) isn't covered. The build prints a `block-css-keep: note:` line naming the file and line. WooCommerce 11.2.1 has none. Keeping every unminified `.css` would cover it, at 2.25 MB more `site.zip` (+10%), which the Free and b-do tiers hold in isolate memory, so it's not the default.
 
 ### The icon library had no icons (#777, fixed)
 
