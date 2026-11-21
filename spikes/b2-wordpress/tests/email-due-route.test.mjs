@@ -37,7 +37,10 @@ test('#1215 index.js: the arm site routes; the cron object path is gated and doe
 	assert.equal(EMAIL_DUE_HEADER, 'x-pf-email-due');
 	assert.match(src, /const route = emailDueRoute\(\{ storage: ctx && ctx\.storage, overflowed: Boolean\(ctx && ctx\.overflowed\), env: ENV \}\);/);
 	assert.match(src, /if \(route === 'local'\) \{/);
-	assert.match(src, /else if \(route === 'a-cron'\) await emailDueToCron\(ENV\);/, 'awaited: a pool object may not keep waitUntil work');
+	// #1238 (the lead's ruling, the #1225 rule): in the Worker the hand-off goes to waitUntil (live it cost 215 to 441 ms
+	// awaited in every order); in an object (a pool object) it is still awaited, since waitUntil does not keep it alive.
+	assert.match(src, /else if \(route === 'a-cron'\) \{\n\t\t\t\t\tif \(ctx && !ctx\.inObject && typeof ctx\.waitUntil === 'function'\) ctx\.waitUntil\(emailDueToCron\(ENV\)\);\n\t\t\t\t\telse await emailDueToCron\(ENV\);\n\t\t\t\t\}/, 'waitUntil in the Worker, awaited in an object');
+	assert.equal(/else if \(route === 'a-cron'\) await emailDueToCron\(ENV\);/.test(src), false, 'no longer awaited in the Worker');
 	const at = src.indexOf('if (objectUrl.pathname === EMAIL_DUE_PATH) {');
 	assert.ok(at > 0, 'the cron object handles the path');
 	const h = src.slice(at, at + 900);

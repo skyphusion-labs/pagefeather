@@ -1246,9 +1246,10 @@ async function mailRetryStore(storage, records) {
 	}
 	await mailRetryArm(storage, next);
 }
-// #1215: hand the #969 email-due wake to the cron object. AWAITED by the request that queued the email, not left to
-// waitUntil: that request may run on a pool object, which does not keep waitUntil work alive as a Worker does. Bounded,
-// so the order's answer waits at most EMAIL_DUE_SEND_MS on it; a failure is logged, and the minute tick remains.
+// #1215: hand the #969 email-due wake to the cron object. #1238 (the #1225 rule): from the Worker it goes to the
+// request's waitUntil, so the order answers without it (live, awaited, it cost 215 to 441 ms per order); from an object
+// (an overflow pool object) it is AWAITED, since waitUntil does not keep an object alive at our compatibility date.
+// Bounded at EMAIL_DUE_SEND_MS either way; a failure is logged, and the minute tick remains.
 const EMAIL_DUE_SEND_MS = 2000;
 async function emailDueToCron(env) {
 	const t0 = Date.now();
@@ -5276,7 +5277,10 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				} catch (e) {
 					console.log(JSON.stringify({ m: 'email-due', error: String((e && e.message) || e).slice(0, 160) }));
 				}
-				} else if (route === 'a-cron') await emailDueToCron(ENV);
+				} else if (route === 'a-cron') {
+					if (ctx && !ctx.inObject && typeof ctx.waitUntil === 'function') ctx.waitUntil(emailDueToCron(ENV));
+					else await emailDueToCron(ENV);
+				}
 			}
 			// #795, by FAILURE CLASS (write-loss.mjs PLATFORM_FAILURE). A PLATFORM failure other than the reset (busy, out of
 			// memory, disk full, a timeout...) is never answered as a success: PHP saw an empty or unapplied result that was
