@@ -1,3 +1,4 @@
+import { isConnectionFault, isWriteSql } from './mysql-fault.mjs'; // #1178
 // A request whose writes were lost to an isolate memory reset must never answer success (#350).
 //
 // When the PHP object's isolate exceeds its memory and the platform resets it in the middle of a
@@ -55,7 +56,16 @@ export function rolledBackResponse(json = false, kind = 'memory', undone = 0) {
  * through wpdb's error path (the SQLite integration's _do_query sets last_error), as MySQL's errors do. An unknown
  * message is deterministic: a retry loop is worse than WordPress's own handling, and the log line names its class.
  */
-export const PLATFORM_FAILURE = /exceeded its memory limit|SQLITE_BUSY|database is locked|SQLITE_NOMEM|out of memory|SQLITE_FULL|database or disk is full|SQLITE_IOERR|disk I\/O error|timed out|timeout|network connection lost|overloaded|no reply from the Worker|storage (?:reset|limit)/i;
+// #1178: the lean bridge's connection faults (socket closed mid-packet, connection lost or reset) belong here too.
+export const PLATFORM_FAILURE = /socket closed|mid-packet|connection (?:lost|reset|closed|refused)|ECONNRESET|EPIPE|broken pipe|lost earlier in this run|exceeded its memory limit|SQLITE_BUSY|database is locked|SQLITE_NOMEM|out of memory|SQLITE_FULL|database or disk is full|SQLITE_IOERR|disk I\/O error|timed out|timeout|network connection lost|overloaded|no reply from the Worker|storage (?:reset|limit)/i;
+/**
+ * #1178: a write that failed on a CONNECTION fault may have been applied (the packet can reach MySQL before the socket
+ * dies), so the answer must say "check before you try again", never "nothing was saved". A write MySQL refused was not.
+ */
+export function writeOutcomeUnknown(failures) {
+	for (const f of failures || []) if (f && isWriteSql(f.sql) && isConnectionFault(f.error)) return true;
+	return false;
+}
 /** The statements of a run that failed by the platform's hand (the reset among them). */
 export function platformFailures(failures) {
 	let n = 0;
