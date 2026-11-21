@@ -442,6 +442,12 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/iso-age.test.mjs
       - name: b-dosql outbound host allowlist
         run: node --test spikes/b2-wordpress/tests/http-allow.test.mjs
+      - name: a non-blocking request is fire-and-forget, as in core (issue #1215)
+        # http-nonblocking.mjs and index.js httpOp: blocking false is answered at once and runs in
+        # waitUntil under its own cap, never the caller's 0.01 s timeout (Action Scheduler's async runner).
+        run: node --test spikes/b2-wordpress/tests/http-nonblocking.test.mjs
+      - name: the PHP bridge sends blocking and returns core's non-blocking response (issue #1215)
+        run: php spikes/b2-wordpress/tests/http-bridge-nonblocking-test.php
       - name: b-dosql Basic auth sets PHP_AUTH_USER and PHP_AUTH_PW (issue #761)
         # php-auth.mjs: Authorization Basic becomes the two $_SERVER entries Apache
         # sets. A Bearer header, bad base64, or no colon sets nothing. No log line
