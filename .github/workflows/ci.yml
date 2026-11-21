@@ -424,6 +424,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/overflow.test.mjs
       - name: The build's mu-plugin list is one file per line (MU_PLUGINS), so plugin PRs never conflict on it
         run: node --test spikes/b2-wordpress/tests/build-mu-list.test.mjs
+      - name: On a cron-off approach A build the cron object's alarm deletes itself, and nothing arms it (#1186)
+        run: node --test spikes/b2-wordpress/tests/a-cron-off.test.mjs
       - name: Approach A Workers Cron scaffold (#855)
         run: node --test spikes/b2-wordpress/tests/a-cron-wiring.test.mjs
       - name: b-dosql the lazy inflate cache defaults to 2 MiB (issue #394)

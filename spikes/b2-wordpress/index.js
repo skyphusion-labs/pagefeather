@@ -19,7 +19,7 @@ import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
 import { cronBounds, cronCleanDue, cronLegDue, cronAsBudgetMs, cronMore, cronBacklogNext, cronBacklogDue, cronBacklogGapMs, backlogStreak } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronRunDeferred, cronMarkOf, cronFatalOf } from './cron-health.mjs';
-import { approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME, CRON_BUILD_HEADER, CRON_BUILD_PATH, cronVersionAbort, cronBuildState } from './a-cron.mjs';
+import { aCronObjectOff, approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME, CRON_BUILD_HEADER, CRON_BUILD_PATH, cronVersionAbort, cronBuildState } from './a-cron.mjs';
 import { isMediaUploadRequest, markerKey, sweepUploadOrphans, dropMarkersOn } from './upload-intent.mjs';
 import { cronFailureLine } from './cron-error.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
@@ -3195,6 +3195,13 @@ export class PhpRuntime extends DurableObject {
 	}
 
 	async alarm() {
+		// #1186: on a cron-off approach A build this object has no alarm work (the Cron Trigger is cleared too, #1192):
+		// the alarm deletes itself and does not re-arm, so due work never runs a leg here. Logged, so the opt-out shows.
+		if (aCronObjectOff(this.env)) {
+			await this.ctx.storage.deleteAlarm();
+			console.log(JSON.stringify({ '@event': 'cron-off', m: 'cron-off', action: 'alarm-deleted' }));
+			return;
+		}
 		// #1152: the build this alarm runs on, from this code's own BUILD_ID, before anything else (an abort below included):
 		// /_cron-build reports it, so a readback is ok only once an alarm has run the deployed code.
 		await this.ctx.storage.put(CRON_ALARM_BUILD_KEY, { build: BUILD_ID, at: Date.now() });
@@ -3572,7 +3579,7 @@ export class PhpRuntime extends DurableObject {
 		const callId = raw.headers.get(CALL_HEADER);
 		// #715 review2 5: a real request writes its origin and arms cron INSIDE its PHP run (below), so a request refused
 		// or shed before it runs has written nothing, and x-write-loss: none is exact.
-		const armsCron = !url.pathname.startsWith('/_') && !overflowed;
+		const armsCron = !url.pathname.startsWith('/_') && !overflowed && !aCronObjectOff(env); // #1186: never on a cron-off A build
 		const inboxMs = raw.headers.get(SENT_HEADER) ? Date.now() - Number(raw.headers.get(SENT_HEADER)) : null;
 		// #708: PHP never sees the Worker's start-by or correlation id.
 		const req = new Request(raw);
@@ -4985,7 +4992,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			}
 			// #969: the order request queued a deferred email. Wake the alarm soon. A lost write
 			// rolled the queue row back, so that path returns above and does not arm this.
-			if (emailDueRequest && ctx && ctx.storage) {
+			if (emailDueRequest && ctx && ctx.storage && !ctx.overflowed && !aCronObjectOff(ENV)) { // #1186: only the object that owns the cron
 				emailDueRequest = false;
 				try {
 					const nowDue = Date.now();
