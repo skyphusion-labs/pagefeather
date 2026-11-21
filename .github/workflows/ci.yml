@@ -368,6 +368,10 @@ jobs:
         run: python3 -I tests/load/cache-by-page-test.py
       - name: load test prints its run markers, so a count window never mixes the checkouts and the CLEANUP (#704)
         run: python3 -I tests/load/cleanup-marker-test.py
+      - name: load test CLEANUP cancels queued order emails for the orders it deletes (#1145)
+        # A stub queues woocommerce_send_queued_transactional_email per checkout.
+        # CLEANUP must cancel those. An email for another order stays pending.
+        run: python3 -I tests/load/cleanup-emails-test.py
       - name: load test classes a plain post as post and a Woo product as product (#691)
         run: |
           python3 -I tests/load/page-class-test.py
