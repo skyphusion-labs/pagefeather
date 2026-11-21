@@ -47,3 +47,15 @@ export function memfsHeld(root, exclude = []) {
 	}
 	return { bytes, files, buffers: bufs.size };
 }
+
+// The walk visits every node: about 1 ms per request at about 10,300 nodes (a WooCommerce site, measured in node
+// on a tree of the dosql-local shape; PR #1276), too much for every request on Workers Free's 10 ms. So it runs on a
+// boot request (the isolate's first view), every FS_SAMPLE_EVERY-th request of a runtime, and any request whose wasm
+// heap is at or above the recycle line (where a death is near). fsWhy on the perf line names the reason.
+export const FS_SAMPLE_EVERY = 20;
+export function fsSampleWhy({ boot, served, wasmBytes, lineBytes } = {}) {
+	if (boot) return 'boot';
+	if (lineBytes > 0 && wasmBytes >= lineBytes) return 'line';
+	if (served > 0 && served % FS_SAMPLE_EVERY === 0) return 'nth';
+	return null;
+}

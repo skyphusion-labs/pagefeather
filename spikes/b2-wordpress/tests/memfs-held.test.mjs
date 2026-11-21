@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { memfsHeld } from '../memfs-held.mjs';
+import { memfsHeld, fsSampleWhy, FS_SAMPLE_EVERY } from '../memfs-held.mjs';
 
 const indexSrc = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 function cut(src, header, from = 0) {
@@ -83,8 +83,28 @@ test('#1022 a mounted subtree is walked; a symlink and a cycle are safe', () => 
 	root.contents.self = root;
 	assert.deepEqual(memfsHeld(root), { bytes: 500, files: 1, buffers: 1 });
 });
+// The walk costs about 1 ms per request at about 10,300 nodes (a WooCommerce site), so it is sampled (lead review):
+// a boot request, every FS_SAMPLE_EVERY-th request of a runtime, and any request at or above the recycle line.
+const MiB = 1048576;
+test('#1022 the sample rule: boot, every 20th, at or above the line; nothing between', () => {
+	assert.equal(FS_SAMPLE_EVERY, 20);
+	const line = 140 * MiB;
+	assert.equal(fsSampleWhy({ boot: true, served: 1, wasmBytes: 80 * MiB, lineBytes: line }), 'boot');
+	assert.equal(fsSampleWhy({ boot: false, served: 20, wasmBytes: 90 * MiB, lineBytes: line }), 'nth');
+	assert.equal(fsSampleWhy({ boot: false, served: 40, wasmBytes: 90 * MiB, lineBytes: line }), 'nth');
+	assert.equal(fsSampleWhy({ boot: false, served: 7, wasmBytes: 140 * MiB, lineBytes: line }), 'line');
+	assert.equal(fsSampleWhy({ boot: false, served: 7, wasmBytes: 150 * MiB, lineBytes: line }), 'line');
+	for (const served of [2, 3, 19, 21, 39]) {
+		assert.equal(fsSampleWhy({ boot: false, served, wasmBytes: 139 * MiB, lineBytes: line }), null, 'a request between samples: ' + served);
+	}
+	assert.equal(fsSampleWhy({ boot: false, served: 5, wasmBytes: 139 * MiB, lineBytes: 0 }), null, 'no line set: only boot and nth');
+	assert.equal(fsSampleWhy({ boot: false, served: 5, wasmBytes: 139 * MiB }), null);
+});
 test('#1022 index.js wires it: lazy nodes expose pfHeld, and the perf line carries fsKiB from memfsHeld', () => {
 	assert.match(cut(indexSrc, 'function attachLazyContents(node, size, dataFn, tag) {'), /pfHeld/);
 	assert.match(indexSrc, /fsKiB: Math\.round\(fsHeld\.bytes \/ 1024\)/);
 	assert.match(indexSrc, /memfsHeld\(FS\.root, BUNDLE_BUFFERS\)/);
+	assert.match(indexSrc, /fsWhy = fsSampleWhy\(\{ boot: booted, served: runtimeServed, wasmBytes, lineBytes: line\.bytes \}\)/);
+	assert.match(indexSrc, /if \(fsWhy\) \{/, 'the walk runs only when the rule says so');
+	assert.match(indexSrc, /fsWhy, fsKiB: Math\.round/, 'the perf line says why this request carries fsKiB');
 });

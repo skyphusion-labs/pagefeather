@@ -76,7 +76,7 @@ import { budgetAcquire, budgetRefused } from './purge-budget-client.mjs';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
-import { memfsHeld } from './memfs-held.mjs';
+import { memfsHeld, fsSampleWhy } from './memfs-held.mjs';
 // Compiled PHP (OPcache file cache) made by opcache.sh with this same PHP build.
 import opcacheZip from './build/opcache.zip';
 // #1022: the bundle's own zips, a fixed cost (#394 floor probes): memfs-held.mjs leaves views of them out.
@@ -5317,13 +5317,17 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				runtimeServed++;
 				const now = Date.now();
 				// #1022: the MEMFS bytes the runtime holds on the JS side (the bundle zips left out). A reading only:
-				// a failed walk drops the fields, never the request.
+				// a failed walk drops the fields, never the request. Sampled (memfs-held.mjs fsSampleWhy): the walk
+				// costs about 1 ms at a WooCommerce site's node count.
 				let fsHeld = null;
-				try {
-					const FS = php[__private__dont__use].FS;
-					fsHeld = memfsHeld(FS.root, BUNDLE_BUFFERS);
-				} catch {
-					fsHeld = null;
+				const fsWhy = fsSampleWhy({ boot: booted, served: runtimeServed, wasmBytes, lineBytes: line.bytes });
+				if (fsWhy) {
+					try {
+						const FS = php[__private__dont__use].FS;
+						fsHeld = memfsHeld(FS.root, BUNDLE_BUFFERS);
+					} catch {
+						fsHeld = null;
+					}
 				}
 				const perf = {
 					iso: ISOLATE_ID,
@@ -5343,7 +5347,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 					lazyWrites: stats.lazyWrites - start.lazyWrites, // #530: bundle files PHP wrote this request (kept, not dropped)
 					wasm0MiB: Math.round(wasm0 / 1048576),
 					wasm1MiB: Math.round(wasmBytes / 1048576),
-					...(fsHeld ? { fsKiB: Math.round(fsHeld.bytes / 1024), fsFiles: fsHeld.files } : {}), // #1022
+					...(fsHeld ? { fsWhy, fsKiB: Math.round(fsHeld.bytes / 1024), fsFiles: fsHeld.files } : {}), // #1022: sampled requests only
 					...(booted ? { l1: l1State } : {}), // #394 L1: where this boot's OPcache boot pack came from
 					...(booted && OPCACHE_REMOTE ? { remote: remoteState } : {}), // #563: the remote OPcache packs at this boot
 					...(booted && SITE_REMOTE ? { siteRemote: siteState } : {}), // #569: the remote site packs at this boot
