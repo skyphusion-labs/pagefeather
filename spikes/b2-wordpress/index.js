@@ -76,6 +76,7 @@ import { budgetAcquire, budgetRefused } from './purge-budget-client.mjs';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
+import { bootPhases } from './boot-phases.mjs';
 import { memfsHeld, fsSampleWhy } from './memfs-held.mjs';
 import { probeArm, traceColo, renderRequest, probeObjectName, PROBE_TRACED_HEADER } from './placement-probe.mjs';
 import { plainFileCount } from './opcache-compiled.mjs';
@@ -1869,6 +1870,7 @@ async function boot(origin) {
 	// #603 (B): this boot's generation and origin are captured SYNCHRONOUSLY, before any await: a request that
 	// arrives during the waits below sees this origin (no second runtime for a stale one), and a drop during them
 	// is seen by the check after them.
+	const tB0 = Date.now(); // #1022 E2: the boot's start, for bootPh (boot-phases.mjs)
 	const gen = bootGen; // #566: a drop during this boot makes it superseded (before instantiation) or an orphan (after)
 	bootOrigin = origin;
 	// #724 review, finding 3: the waits below exist only for reuse and the gate; with both off, boot() runs as main
@@ -1891,6 +1893,7 @@ async function boot(origin) {
 			return handOff(origin);
 		}
 	}
+	const tWaitDone = Date.now(); // #1022 E2: after the reuse and gate waits
 	// From the check above to here nothing awaits, so bootPromise is still THIS boot's promise: a refusal drops it.
 	try {
 		bootGate();
@@ -2320,7 +2323,7 @@ async function boot(origin) {
 		// it now, so it is only queued, and the end of the next PHP run releases it.
 		retirer.retire(php, true);
 	}
-	return { php, handler, bootMs: { wasm: tWasm, site: tSite, files: tFiles, fileCount: count, fileBytes, opcacheFiles, memAt } };
+	return { php, handler, bootMs: { wasm: tWasm, site: tSite, files: tFiles, fileCount: count, fileBytes, opcacheFiles, memAt, marks: { b0: tB0, waitDone: tWaitDone, t0, wasm: tWasm, site: tSite, files: tFiles, end: Date.now(), reused: !!reuse } } };
 }
 
 let reserveTableReady = false;
@@ -5440,6 +5443,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 					wasm1MiB: Math.round(wasmBytes / 1048576),
 					...(fsHeld ? { fsWhy, fsKiB: Math.round(fsHeld.bytes / 1024), fsFiles: fsHeld.files } : {}), // #1022: sampled requests only
 					...(booted ? { l1: l1State } : {}), // #394 L1: where this boot's OPcache boot pack came from
+					...(booted && bootMs ? { bootPh: bootPhases(bootMs.marks) } : {}), // #1022 E2: the boot's phases (wall between I/O points)
 					...(booted && OPCACHE_REMOTE ? { remote: remoteState } : {}), // #563: the remote OPcache packs at this boot
 					...(booted && SITE_REMOTE ? { siteRemote: siteState } : {}), // #569: the remote site packs at this boot
 					// #352: this request's frame: opened (the first write armed it), commit points, misses, and the
@@ -5473,7 +5477,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			} else {
 				// #1078: approach A (PHP in the Worker, index-a.js) logs the same timing line, so a tail can time a real suite
 				// request: wall, boot, PHP time, and the query count and round-trip total (one bridge call per MySQL query).
-				console.log(JSON.stringify(aPerfLine({ id: memIdOf(req, env).id, method: req.method, path: url.pathname, status: r.httpStatusCode, iso: ISOLATE_ID, lockWaitMs: runLockWaitMs, isoAgeS: Math.round((Date.now() - isolateStart) / 1000), rt: runtimeSerial, rtAgeS: Math.round((Date.now() - runtimeBootAt) / 1000), boot: booted, bootWaitMs, phpMs: phpOnlyMs, dbN: d.calls, dbMs: d.ms, ...(() => { const conn1 = dbConnStats(); return { dbConnN: conn1 ? conn1.n - conn0.n : undefined, dbConnMs: conn1 ? conn1.ms - conn0.ms : undefined }; })(), wallMs: Date.now() - tBoot, wasm1MiB: Math.round(wasmBytes / 1048576), recycled: recycleWhy || null, rfN: stats.rfN - remote0.rfN, rfKiB: Math.round((stats.rfBytes - remote0.rfBytes) / 1024), rfMs: stats.rfMs - remote0.rfMs, rfFail: stats.rfFail - remote0.rfFail, rsN: stats.rsN - remote0.rsN, rsKiB: Math.round((stats.rsBytes - remote0.rsBytes) / 1024), rsMs: stats.rsMs - remote0.rsMs, rsFail: stats.rsFail - remote0.rsFail, httpN: stats.httpCalls - start.httpCalls, httpMs: stats.httpMs - (start.httpMs || 0), inflates: stats.inflates - start.inflates, inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024), ocCalls: stats.ocCalls - start.ocCalls, ocHits: stats.ocHits - start.ocHits, l2N: stats.l2N - start.l2N, l2Hits: stats.l2Hits - start.l2Hits, l2Misses: (stats.l2N - start.l2N) - (stats.l2Hits - start.l2Hits), l2Ms: stats.l2Ms - start.l2Ms, ...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full, opCompiled: op0.plain === null || op1.plain === null ? undefined : op1.plain - op0.plain + (op1.rewrites - op0.rewrites) } : {}) })));
+				console.log(JSON.stringify(aPerfLine({ id: memIdOf(req, env).id, method: req.method, path: url.pathname, status: r.httpStatusCode, iso: ISOLATE_ID, lockWaitMs: runLockWaitMs, isoAgeS: Math.round((Date.now() - isolateStart) / 1000), rt: runtimeSerial, rtAgeS: Math.round((Date.now() - runtimeBootAt) / 1000), boot: booted, bootWaitMs, bootPh: booted && bootMs ? bootPhases(bootMs.marks) : undefined, phpMs: phpOnlyMs, dbN: d.calls, dbMs: d.ms, ...(() => { const conn1 = dbConnStats(); return { dbConnN: conn1 ? conn1.n - conn0.n : undefined, dbConnMs: conn1 ? conn1.ms - conn0.ms : undefined }; })(), wallMs: Date.now() - tBoot, wasm1MiB: Math.round(wasmBytes / 1048576), recycled: recycleWhy || null, rfN: stats.rfN - remote0.rfN, rfKiB: Math.round((stats.rfBytes - remote0.rfBytes) / 1024), rfMs: stats.rfMs - remote0.rfMs, rfFail: stats.rfFail - remote0.rfFail, rsN: stats.rsN - remote0.rsN, rsKiB: Math.round((stats.rsBytes - remote0.rsBytes) / 1024), rsMs: stats.rsMs - remote0.rsMs, rsFail: stats.rsFail - remote0.rsFail, httpN: stats.httpCalls - start.httpCalls, httpMs: stats.httpMs - (start.httpMs || 0), inflates: stats.inflates - start.inflates, inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024), ocCalls: stats.ocCalls - start.ocCalls, ocHits: stats.ocHits - start.ocHits, l2N: stats.l2N - start.l2N, l2Hits: stats.l2Hits - start.l2Hits, l2Misses: (stats.l2N - start.l2N) - (stats.l2Hits - start.l2Hits), l2Ms: stats.l2Ms - start.l2Ms, ...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full, opCompiled: op0.plain === null || op1.plain === null ? undefined : op1.plain - op0.plain + (op1.rewrites - op0.rewrites) } : {}) })));
 			}
 			const response = new Response(r.bytes, { status: r.httpStatusCode, headers: out });
 			// #394 (b): a recycled runtime is RELEASED, not only forgotten. bootPromise = null alone left
