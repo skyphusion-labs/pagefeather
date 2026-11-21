@@ -1,11 +1,13 @@
-// Which WP-CLI commands may run while the site code is locked (issue #1258, step 2).
+// Which WP-CLI commands may run while the site code is locked (issue #1258).
 //
 // WP-CLI 2.12.0 does not read DISALLOW_FILE_MODS. The step 1 probe installed a plugin
-// once the SAPI check was skipped. This list is the lock. No route calls this module.
-// The operator endpoint is a later step.
+// once the SAPI check was skipped. This list is the lock.
 //
 // Pass an argv array of strings, one element per argument. This module does not split
 // a shell string. A refusal repeats the command name only.
+//
+// user list and user get never print user_pass or user_activation_key. Those names
+// are refused in --field, in --fields, and in a --format template.
 
 const ISSUE = 'See issue #1258.';
 const INVALID = 'Refused: the command is not a list of arguments. This site\'s code is locked. ' + ISSUE;
@@ -112,15 +114,16 @@ function parseArgv(argv) {
 			const negated = eq === -1 && lower.startsWith('no-') && lower.length > 3;
 			const name = negated ? raw.slice(3) : raw;
 			const hasValue = eq !== -1 || negated;
+			const value = eq === -1 ? '' : body.slice(eq + 1);
 			if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name)) return { error: true };
-			flags.push({ name, hasValue, short: false });
+			flags.push({ name, hasValue, short: false, value });
 			if (!hasValue && DANGEROUS.has(asciiLower(name)) && i + 1 < argv.length && argv[i + 1] !== '--' && !argv[i + 1].startsWith('-')) {
 				i += 1;
 			}
 			continue;
 		}
 		if (token.startsWith('-') && token !== '-') {
-			flags.push({ name: token, hasValue: false, short: true });
+			flags.push({ name: token, hasValue: false, short: true, value: '' });
 			continue;
 		}
 		positionals.push(token);
@@ -145,6 +148,33 @@ function commandName(positionals) {
 function blocks(flag) {
 	if (flag.short) return true;
 	return DANGEROUS.has(asciiLower(flag.name));
+}
+
+const SECRET_FIELD = new Set(['user_pass', 'user_activation_key']);
+
+// user list and user get can print password hashes. Refuse those names in
+// --field, in a --fields list, and inside a --format template.
+function secretField(command, flags) {
+	if (command !== 'user list' && command !== 'user get') return false;
+	for (const flag of flags) {
+		if (flag.short || !flag.hasValue) continue;
+		const name = asciiLower(flag.name);
+		const value = asciiLower(flag.value || '');
+		if (name === 'field') {
+			if (SECRET_FIELD.has(value)) return true;
+		} else if (name === 'fields') {
+			for (const part of value.split(',')) {
+				if (SECRET_FIELD.has(part.trim())) return true;
+			}
+		} else if (name === 'format') {
+			if (value.includes('user_pass') || value.includes('user_activation_key')) return true;
+		}
+	}
+	return false;
+}
+
+function secretFields(command) {
+	return 'Refused `' + command + '`: the fields user_pass and user_activation_key are never printed. See issue #1258.';
 }
 
 function matchAllow(positionals, flags) {
@@ -189,6 +219,9 @@ export function decideWpCli(argv) {
 	if (parsed.flags.some(blocks)) return { allowed: false, command, message: locked(command) };
 	if (parsed.positionals[0] === 'search-replace') {
 		return { allowed: false, command: 'search-replace', message: later('search-replace') };
+	}
+	if (secretField(command, parsed.flags)) {
+		return { allowed: false, command, message: secretFields(command) };
 	}
 	const match = matchAllow(parsed.positionals, parsed.flags);
 	if (match) return { allowed: true, command: match.words.join(' ') };
