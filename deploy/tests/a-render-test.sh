@@ -6,8 +6,9 @@
 #
 # The inputs a site chooses are given to match the bench: PLACEMENT (the database region), OBSERVABILITY=full
 # (the bench logged every request), the media bucket. Nothing else is set: the measured settings must come
-# from the DEFAULTS. Two lines are allowed in the render only: SITE_ORIGIN and HTTP_ALLOW_HOSTS, which deploy.sh
-# always writes (the bench ran on the runtime defaults for both).
+# from the DEFAULTS. Lines allowed in the render only: SITE_ORIGIN and HTTP_ALLOW_HOSTS, which deploy.sh
+# always writes (the bench ran on the runtime defaults for both), and SITE_NAME (#1098, the deploy name).
+# SITE_TITLE is the same kind of line when a run sets it. The benches do not record a blog title.
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 HERE="$ROOT/deploy/tests/a-render"
@@ -36,7 +37,7 @@ render() {
 }
 # compare <render.toml> <bench.toml> <label>: equal settings, apart from the two render-only lines.
 compare() {
-  python3 -I "$HERE/canon.py" "$1" | benchflags | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS) = |^triggers crons = \[\]$' > "$T/r.canon"
+  python3 -I "$HERE/canon.py" "$1" | benchflags | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS|SITE_NAME|SITE_TITLE) = |^triggers crons = \[\]$' > "$T/r.canon"
   python3 -I "$HERE/canon.py" "$2" > "$T/b.canon"
   if diff -u "$T/b.canon" "$T/r.canon" > "$T/d"; then ok "$3" 1; else sed 's/^/        /' "$T/d"; ok "$3 (above: - the bench, + deploy.sh)" 0; fi
 }
@@ -44,8 +45,17 @@ compare() {
 echo "1. the defaults render the measured site: the overflow bench (#1119: the pool is on by default) plus the two #296 step 3 defaults (OCV and HPOS cache on) and the cron driver (#1165)"
 render "$T/a.toml"; rc=$?
 ok "render_conf ran (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"; [ $rc = 0 ] || cat "$T/render.err"
+# #1098: the deploy name is the title default. A chosen title is one more line. A bad one is refused.
+ok "#1098 variant a renders SITE_NAME (the deploy name) and no SITE_TITLE" "$(grep -qx 'SITE_NAME = "pfa-render"' "$T/a.toml" && ! grep -q '^SITE_TITLE = ' "$T/a.toml" && echo 1 || echo 0)"
+render "$T/title.toml" SITE_TITLE='North Shop'; rc=$?
+ok "#1098 SITE_TITLE=North Shop renders that line (rc $rc)" "$([ $rc = 0 ] && grep -qx 'SITE_TITLE = "North Shop"' "$T/title.toml" && echo 1 || echo 0)"
+render "$T/qtitle.toml" SITE_TITLE='North "Shop"'; rc=$?
+want=$(python3 -I -c 'print("SITE_TITLE = \"North \\\"Shop\\\"\"")')
+ok "#1098 a quote in SITE_TITLE is escaped (rc $rc)" "$([ $rc = 0 ] && grep -qxF "$want" "$T/qtitle.toml" && echo 1 || echo 0)"
+render "$T/badtitle.toml" SITE_TITLE=$'a\nb'; rc=$?
+ok "#1098 a SITE_TITLE with a newline is refused (rc $rc)" "$([ $rc != 0 ] && grep -q 'SITE_TITLE must be one line' "$T/render.err" && echo 1 || echo 0)"
 # #296: the step 3 series measured arm C (both on) against the bench; the lead ruled them approach A's defaults.
-python3 -I "$HERE/canon.py" "$T/a.toml" | benchflags | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS) = |^triggers crons = \[\]$' > "$T/d.canon"
+python3 -I "$HERE/canon.py" "$T/a.toml" | benchflags | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS|SITE_NAME|SITE_TITLE) = |^triggers crons = \[\]$' > "$T/d.canon"
 # #1078: the KV L2 is off by default on approach A (the benches ran with it on, and stay the record): mapped here.
 # #1119: Conrad ruled PHP_OVERFLOW on by default for approach A, so the default render is the OVERFLOW bench.
 { python3 -I "$HERE/canon.py" "$HERE/bench-overflow.toml" | sed 's/^vars OBJECT_CACHE_L2 = "on"$/vars OBJECT_CACHE_L2 = "off"/'; echo 'vars OBJECT_CACHE_VERSIONS = "on"'; echo 'vars WOO_HPOS_CACHE = "on"'; echo 'vars A_CRON = "on"'; echo 'triggers crons = ["* * * * *"]'; } | sort > "$T/bd.canon"  # #1165: the cron driver is on by default
@@ -65,7 +75,7 @@ python3 -I "$HERE/canon.py" "$HERE/bench-overflow.toml" > "$T/bo.canon"
 differs() { # differs <bench.canon> <label> [VAR=value ...]
   local b=$1 label=$2; shift 2
   render "$T/m.toml" "$@" || { ok "$label (the render ran)" 0; return; }
-  python3 -I "$HERE/canon.py" "$T/m.toml" | benchflags | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS) = |^triggers crons = \[\]$' > "$T/m.canon"
+  python3 -I "$HERE/canon.py" "$T/m.toml" | benchflags | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS|SITE_NAME|SITE_TITLE) = |^triggers crons = \[\]$' > "$T/m.canon"
   ok "$label" "$(diff -q "$b" "$T/m.canon" >/dev/null && echo 0 || echo 1)"
 }
 differs "$T/b.canon" "A_CLIENT=mysql2 (index-a.js) differs from the bench" A_CLIENT=mysql2

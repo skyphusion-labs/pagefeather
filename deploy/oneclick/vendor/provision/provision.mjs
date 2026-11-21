@@ -182,6 +182,7 @@ async function provisionNamespaceSite(ctx, cfg) {
       hostname: cfg.hostname, spikeToken: cfg.secrets && cfg.secrets.SPIKE_TOKEN,
       adminPassword, fetchImpl: ctx.fetchImpl,
       retries: cfg.installRetries, intervalMs: cfg.installIntervalMs,
+      siteName: cfg.name, title: cfg.siteTitle,
     });
   } catch (e) { installError = (e && e.message) || String(e); }
   const installed = Boolean(install && install.installed);

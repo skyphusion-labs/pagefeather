@@ -20,6 +20,7 @@ enabled = true
 [vars]
 PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
 SITE_ORIGIN = "https://ts.example.com"
+SITE_NAME = "ts"
 
 HTTP_ALLOW_HOSTS = ".wordpress.org,.woocommerce.com,.gravatar.com"
 TURNSTILE_SITEKEY = "1x00000000000000000000AA"

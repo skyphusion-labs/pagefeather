@@ -23,6 +23,7 @@
           "plain_text PHP_IN_DO",
           "plain_text PHP_LOCATION",
           "plain_text REQUEST_FRAMES",
+          "plain_text SITE_NAME",
           "plain_text SITE_ORIGIN",
           "r2_bucket MEDIA",
           "secret_text SPIKE_TOKEN",

@@ -20,6 +20,7 @@ enabled = true
 [vars]
 PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
 SITE_ORIGIN = "https://wp-one.sub.workers.dev"
+SITE_NAME = "one"
 
 HTTP_ALLOW_HOSTS = ".wordpress.org,.woocommerce.com,.gravatar.com"
 REQUEST_FRAMES = "on"

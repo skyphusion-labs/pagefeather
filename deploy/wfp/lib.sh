@@ -587,6 +587,15 @@ request_frames_var() {
     *) echo "REQUEST_FRAMES must be on, off or unset, not ${REQUEST_FRAMES}" >&2; return 1 ;;
   esac
 }
+# SITE_TITLE (#1098): the blog title a new install stores. Unset renders nothing,
+# and /_install then uses SITE_NAME (the site add name). Recorded (#558), so an
+# update keeps a title the run set. Applied only at install. An installed site
+# keeps the title its owner set in WordPress.
+site_title_var() {
+  local t=${SITE_TITLE:-}
+  [ -n "$t" ] || return 0
+  SITE_TITLE="$t" node "$APP/install-title.mjs" --toml
+}
 # WOO_EXTRAS (#667): off forces order attribution, usage tracking, marketplace suggestions
 # and remote logging off (php/woo-extras.php, pre_option_*). Unset renders nothing, so
 # WooCommerce's own defaults stay. Analytics is not this switch. Recorded (#558).
@@ -653,6 +662,8 @@ render_user() { # render_user <site> <origin>
   [ -z "$rtune" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$rtune
   local rqframes; rqframes=$(request_frames_var) || return 1
   [ -z "$rqframes" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$rqframes
+  local site_title; site_title=$(site_title_var) || return 1
+  [ -z "$site_title" ] || ts_vars=${ts_vars:+$ts_vars$'\n'}$site_title
   # #765: PDF_INVOICE is on, off or unset (deploy/pdf-invoice.sh); this site is b-dosql.
   ( . "$WFP/../pdf-invoice.sh"; pdf_invoice_check b-dosql ) || return 1
   local woo_extras; woo_extras=$(woo_extras_var) || return 1
@@ -686,6 +697,7 @@ enabled = true
 [vars]
 PHP_ENV = '$php_env'
 SITE_ORIGIN = "$origin"
+SITE_NAME = "$s"
 $mail_vars
 HTTP_ALLOW_HOSTS = "$http_allow"
 $ts_vars
@@ -930,7 +942,7 @@ use_recorded_inputs() {
 # unset is the default list, and set, including empty, is that exact list. site update
 # remembers which one this run is, in http_allow_mode, before local -x collapses unset
 # into empty. Empty denies every host, so a drop sets the mode to unset.
-SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS TURNSTILE_REGISTER TURNSTILE_WOO_REGISTER TURNSTILE_LOSTPASSWORD MAIL_FROM MAIL_FROM_NAME MAIL_ALLOWED_TO PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED PDF_INVOICE PAGE_CACHE_TTL OBSERVABILITY"
+SITE_SETTINGS="PHP_INI LAZY_CACHE_MB LAZY_ARENA LAZY_ARENA_MB PHP_RECYCLE RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE CRON_INTERVAL_MS TURNSTILE_SITEKEY TURNSTILE_WOO TURNSTILE_LOGIN TURNSTILE_COMMENTS TURNSTILE_REGISTER TURNSTILE_WOO_REGISTER TURNSTILE_LOSTPASSWORD MAIL_FROM MAIL_FROM_NAME MAIL_ALLOWED_TO PHP_LOCATION WP_VECTORIZE_SEARCH OPCACHE_SPLIT OPCACHE_REMOTE SITE_REMOTE REMOTE_FETCH_CAP REMOTE_HOLD_KIB SITE_FETCH_CAP SITE_HOLD_KIB SITE_RETRY_MS REQUEST_FRAMES WOO_EXTRAS PAGE_CACHE_PRODUCT_TTL HTTP_ALLOW_HOSTS OBJECT_CALL_DEADLINE_S OBJECT_START_BY_S OBJECT_DISCONNECT_SHED PDF_INVOICE PAGE_CACHE_TTL OBSERVABILITY SITE_TITLE"
 # The measurement flags (HEADROOM_PROBE MEM_LEDGER WFP_PHP_ENV, site_settings.py MEASUREMENT) are
 # never recorded: ON only for the run that exports them; the next update without one turns it off.
 # A setting render_user reads that is not in this list is DROPPED by an update that does not export

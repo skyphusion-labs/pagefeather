@@ -164,7 +164,19 @@ function assignObjectTime(vars, { objectCallDeadlineS, objectStartByS, objectDis
 // turn on the default-on gates in index.js (object cache, route cache, theme.json
 // cache, async email, bootstrap trim, media-write trim): index.js enables each
 // unless its var is "off", so the site gets them with no gate var set.
-function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, demo, codeLock, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed, requestFrames } = {}) {
+// #1098: a site name or an explicit title stored as a plain var. Empty is absent.
+// A control character or a value over 200 characters is refused.
+function plainTitle(label, value) {
+  if (value === undefined || value === null || value === '') return '';
+  if (typeof value !== 'string') throw new Error(`${label} must be a string`);
+  const t = value.trim();
+  if (!t || t.length > 200 || /[\u0000-\u001F\u007F]/.test(t)) {
+    throw new Error(`${label} must be one line of 1 to 200 characters`);
+  }
+  return t;
+}
+
+function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mailFrom, mailFromName, demo, codeLock, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed, requestFrames, siteName, siteTitle } = {}) {
   if (!siteOrigin) throw new Error('bDosqlVars: siteOrigin is required (the site WP_HOME origin, issue #33)');
   if (requestFrames !== undefined && requestFrames !== 'on' && requestFrames !== 'off') {
     throw new Error(`bDosqlVars: requestFrames must be 'on', 'off' or unset, not ${JSON.stringify(requestFrames)}`);
@@ -178,6 +190,12 @@ function bDosqlRuntimeVars({ siteOrigin, location = 'enam', cronIntervalMs, mail
     DB_IN_DO: 'on',
     REQUEST_FRAMES: requestFrames || 'on',
   };
+  // #1098: the site add name, and an optional title. Omitted on a caller that
+  // does not pass them, so the frozen default binding set stays as it was.
+  const nameLine = plainTitle('siteName', siteName);
+  if (nameLine) vars.SITE_NAME = nameLine;
+  const titleLine = plainTitle('siteTitle', siteTitle);
+  if (titleLine) vars.SITE_TITLE = titleLine;
   // Optional, matching deploy.sh's optional emit (the DO alarm cadence, #185);
   // omitted by default, exactly as render_user omits it (index.js defaults 60000).
   if (cronIntervalMs !== undefined && cronIntervalMs !== null && cronIntervalMs !== '') {
@@ -549,7 +567,7 @@ export function mediaBucketName(name) {
 // The lean MySQL client (mysql-lean.js) is in the uploaded bundle, set by the
 // index-a-lean.js entry; it is code, not a binding.
 export function aVars({
-  siteOrigin, tablePrefix = 'wp_', hyperdriveSqlMode,
+  siteOrigin, tablePrefix = 'wp_', hyperdriveSqlMode, siteName, siteTitle,
   // #491: options never persist across isolates on A (php/object-cache-js.php drops them even when named).
   objectCacheGroups = 'theme_json', objectCacheTtl = '10', lazyCacheMb = '4',
   mailFrom, mailFromName,
@@ -582,6 +600,11 @@ export function aVars({
     LAZY_NODES: 'on',
     LAZY_CACHE_MB: String(lazyCacheMb),
   };
+  // #1098: same rule as b-dosql. Absent when the caller does not pass them.
+  const nameLine = plainTitle('siteName', siteName);
+  if (nameLine) vars.SITE_NAME = nameLine;
+  const titleLine = plainTitle('siteTitle', siteTitle);
+  if (titleLine) vars.SITE_TITLE = titleLine;
   for (const [k, v] of [['objectCacheVersions', objectCacheVersions], ['wooHposCache', wooHposCache], ['objectCacheL2', objectCacheL2]]) {
     if (typeof v !== 'boolean') throw new Error(`aVars: ${k} must be true or false (got ${JSON.stringify(v)})`);
   }
@@ -627,6 +650,7 @@ export function aBindings({
   mailFrom, mailFromName, extra = [],
   wooActive, importPlugins, plugins, pageCacheProductTtl, store,
   objectCallDeadlineS, objectStartByS, objectDisconnectShed,
+  siteName, siteTitle,
 } = {}) {
   if (!mediaBucket) throw new Error('aBindings: mediaBucket is required');
   if (!hyperdriveId) throw new Error('aBindings: hyperdriveId is required (the Hyperdrive config id from onboarding)');
@@ -636,7 +660,7 @@ export function aBindings({
   // only if the caller already knows it (e.g. a re-provision passing the id).
   if (ocKvNamespaceId) ocKv.namespace_id = ocKvNamespaceId;
   return [
-    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName, objectCacheVersions, wooHposCache, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed }),
+    ...aVars({ siteOrigin, tablePrefix, hyperdriveSqlMode, objectCacheGroups, objectCacheTtl, lazyCacheMb, mailFrom, mailFromName, objectCacheVersions, wooHposCache, wooActive, importPlugins, plugins, pageCacheProductTtl, store, objectCallDeadlineS, objectStartByS, objectDisconnectShed, siteName, siteTitle }),
     { type: 'images', name: 'IMAGES' },
     { type: 'r2_bucket', name: 'MEDIA', bucket_name: mediaBucket },
     { type: 'hyperdrive', name: 'HYPERDRIVE', id: hyperdriveId },
