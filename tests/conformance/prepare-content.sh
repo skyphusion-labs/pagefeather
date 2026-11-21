@@ -15,7 +15,7 @@
 #       plugins woocommerce-e2e-test-helper, woocommerce-cleanup, and
 #       wc-email-template-sync-test-helper (from WC_SHA; the upstream external setup takes them
 #       from trunk, which is not pinned), and wp-mail-logging.
-#   gb  the Gutenberg suite (test/e2e): twentytwentyone, twentytwentythree, twentytwentyfour, the
+#   gb  the Gutenberg suite (test/e2e): twentytwentyone, twentytwentythree, twentytwentyfour, twentytwenty, the
 #       test plugins (one plugin directory, gutenberg-test-plugins, as upstream mounts it), the
 #       test themes emptytheme and gutenberg-test-themes, and the e2e mu-plugins.
 #
@@ -114,6 +114,9 @@ if [ "$want_wc" = 1 ]; then
 fi
 if [ "$want_gb" = 1 ]; then
   add themes twentytwentyone; add themes twentytwentythree; add themes twentytwentyfour
+  # twentytwenty: the widgets specs activate it. Gutenberg's wp-env mounts core from the WordPress git branch, which
+  # bundles every default theme; our build installs the release zip, which does not (cf759hw, 2026-11-21, #1154).
+  add themes twentytwenty
   fetch gutenberg "$GB_REPO" "$GB_SHA" /packages/e2e-tests/plugins/ /packages/e2e-tests/mu-plugins/ /test/emptytheme/ /test/gutenberg-test-themes/
   take gutenberg packages/e2e-tests/plugins plugins gutenberg-test-plugins
   add imp_plugins gutenberg-test-plugins

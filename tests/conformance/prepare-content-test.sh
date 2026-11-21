@@ -103,6 +103,11 @@ if line=$(GB_REPO=file:///nonexistent "$P" "$t/wconly" wc 2>"$t/e"); then
   case "$line" in *"IMPORT_THEMES='emptytheme theme-with-woo-templates "*) ok "wc only: IMPORT_THEMES starts with emptytheme" ;; *) bad "wc only: line is '$line'" ;; esac
 else bad "wc only: exit non-zero ($(cat "$t/e"))"; fi
 
+# 3c. gb only: the widgets specs activate twentytwenty, which the release zip lacks.
+if line=$(WC_REPO=file:///nonexistent "$P" "$t/gbonly" gb 2>"$t/e"); then
+  case "$line" in *"THEMES='twentytwentyone twentytwentythree twentytwentyfour twentytwenty'"*) ok "gb only: THEMES has twentytwenty" ;; *) bad "gb only: line is '$line'" ;; esac
+else bad "gb only: exit non-zero ($(cat "$t/e"))"; fi
+
 # 4. Refusals.
 expect_refused "an existing out dir" "exists; refused" "$P" "$t/out" wc
 expect_refused "no suite" "name at least one suite" "$P" "$t/n1"
