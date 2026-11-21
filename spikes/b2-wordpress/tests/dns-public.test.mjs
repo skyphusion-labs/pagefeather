@@ -5,7 +5,7 @@
 // by stock WordPress's ranges plus loopback, link-local and the IPv6 private ranges.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isPublicAddress, hostIsPublic, isSyntheticAddress } from '../dns-public.mjs';
+import { isPublicAddress, hostIsPublic, isSyntheticAddress, DOH_URL, DOH_TIMEOUT_MS } from '../dns-public.mjs';
 
 test('#1156 isPublicAddress: the private, loopback, link-local and special ranges are not public', () => {
 	for (const ip of ['10.0.0.1', '127.0.0.1', '172.16.0.1', '172.31.255.255', '192.168.1.1', '169.254.1.1', '0.0.0.0', '100.64.0.1', '::1', 'fc00::1', 'fd12::1', 'fe80::1', '::', '::ffff:10.0.0.1']) assert.equal(isPublicAddress(ip), false, ip);
@@ -48,4 +48,28 @@ test('#1156 index.js answers the dnsPublic bridge op with hostIsPublic', async (
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.match(src, /import \{ hostIsPublic \} from '\.\/dns-public\.mjs';/);
 	assert.match(src, /if \(m\.dnsPublic\) return \(await hostIsPublic\(m\.dnsPublic && m\.dnsPublic\.host\)\) \? '1' : '0';/);
+});
+// #1156 review (the lead): privacy first, so the resolver is Cloudflare's own DoH and nothing else; a short bound, so a
+// lookup that hangs is a refusal (as a failed lookup is on stock); no new SSRF surface (a name that resolves to a
+// private or loopback address is refused, pinned above and here).
+test('#1156 review: the resolver is cloudflare-dns.com, and only it', async () => {
+	const seen = [];
+	await hostIsPublic('cldup.com', { fetch: async (u) => { seen.push(new URL(u).host); return new Response(JSON.stringify({ Answer: [{ type: 1, data: '104.21.1.1', TTL: 60 }] })); }, cache: new Map(), now: 0 });
+	assert.ok(seen.length > 0 && seen.every((h) => h === 'cloudflare-dns.com'), JSON.stringify(seen));
+	assert.equal(DOH_URL, 'https://cloudflare-dns.com/dns-query');
+});
+test('#1156 review: a lookup that hangs is refused within the bound (DOH_TIMEOUT_MS 1.5 s)', async () => {
+	assert.equal(DOH_TIMEOUT_MS, 1500);
+	const t0 = Date.now();
+	const ok = await hostIsPublic('slow.example', { fetch: (u, init) => new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(new Error('aborted')))), cache: new Map(), now: 0, timeoutMs: 50 });
+	assert.equal(ok, false);
+	assert.ok(Date.now() - t0 < 1000, 'bounded: ' + (Date.now() - t0) + ' ms');
+});
+test('#1156 review: no new SSRF surface: names resolving to loopback or private addresses are refused', async () => {
+	for (const [name, addr] of [['localtest.me', '127.0.0.1'], ['lan.example', '192.168.0.10'], ['meta.example', '169.254.169.254'], ['v6.example', '::1'], ['ula.example', 'fd00::1']]) {
+		const v6 = addr.includes(':');
+		const f = async (u) => { const t = new URL(u).searchParams.get('type'); const ans = (t === 'AAAA') === v6 ? [{ type: v6 ? 28 : 1, data: addr, TTL: 60 }] : []; return new Response(JSON.stringify({ Answer: ans })); };
+		const fv6 = async (u) => { const t = new URL(u).searchParams.get('type'); if (t === 'A') return new Response(JSON.stringify({ Answer: [{ type: 1, data: '104.21.1.1', TTL: 60 }] })); return f(u); };
+		assert.equal(await hostIsPublic(name, { fetch: v6 ? fv6 : f, cache: new Map(), now: 0 }), false, name + ' -> ' + addr);
+	}
 });

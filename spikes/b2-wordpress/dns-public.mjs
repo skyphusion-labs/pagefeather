@@ -6,7 +6,12 @@
 // it really resolves to is public: stock WordPress's private ranges, plus loopback, link-local, CGNAT and the IPv6
 // private ranges. A failed lookup, no address, or one private address: not external (core keeps its refusal).
 
-const DOH = 'https://cloudflare-dns.com/dns-query';
+// #1156 review: privacy is the primary goal, so the ONLY resolver is Cloudflare's own DNS over HTTPS (the platform the
+// site already runs on), never a third party.
+export const DOH_URL = 'https://cloudflare-dns.com/dns-query';
+const DOH = DOH_URL;
+// #1156 review: a lookup that takes longer than this is a refusal, as a failed lookup is on stock.
+export const DOH_TIMEOUT_MS = 1500;
 const TTL_MAX_MS = 300_000;
 const NEG_MS = 60_000;
 const HOST_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i;
@@ -48,8 +53,8 @@ export function isPublicAddress(ip) {
 	return true;
 }
 
-async function lookup(fetchFn, host, type) {
-	const res = await fetchFn(DOH + '?name=' + encodeURIComponent(host) + '&type=' + type, { headers: { accept: 'application/dns-json' } });
+async function lookup(fetchFn, host, type, signal) {
+	const res = await fetchFn(DOH + '?name=' + encodeURIComponent(host) + '&type=' + type, { headers: { accept: 'application/dns-json' }, signal });
 	if (!res || !res.ok) throw new Error('doh status ' + (res && res.status));
 	const j = await res.json();
 	const want = type === 'A' ? 1 : 28;
@@ -58,14 +63,21 @@ async function lookup(fetchFn, host, type) {
 }
 
 /** Does `host` resolve, and only to public addresses? Cached per host (the record TTL, at most 5 min; a refusal 1 min). */
-export async function hostIsPublic(host, { fetch: fetchFn = globalThis.fetch, cache = DEFAULT_CACHE, now = Date.now() } = {}) {
+export async function hostIsPublic(host, { fetch: fetchFn = globalThis.fetch, cache = DEFAULT_CACHE, now = Date.now(), timeoutMs = DOH_TIMEOUT_MS } = {}) {
 	const h = String(host || '').toLowerCase().replace(/\.$/, '');
 	if (!HOST_RE.test(h)) return false;
 	const hit = cache.get(h);
 	if (hit && hit.exp > now) return hit.ok;
 	let ok = false, ttlMs = NEG_MS;
 	try {
-		const [a, aaaa] = await Promise.all([lookup(fetchFn, h, 'A'), lookup(fetchFn, h, 'AAAA').catch(() => ({ addrs: [], ttl: Infinity }))]);
+		const ac = new AbortController();
+		const timer = setTimeout(() => ac.abort(new Error('doh timeout')), timeoutMs);
+		let a, aaaa;
+		try {
+			[a, aaaa] = await Promise.all([lookup(fetchFn, h, 'A', ac.signal), lookup(fetchFn, h, 'AAAA', ac.signal).catch(() => ({ addrs: [], ttl: Infinity }))]);
+		} finally {
+			clearTimeout(timer);
+		}
 		const all = a.addrs.concat(aaaa.addrs);
 		ok = all.length > 0 && all.every(isPublicAddress);
 		const ttl = Math.min(a.ttl, aaaa.ttl);
