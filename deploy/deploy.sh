@@ -35,7 +35,8 @@
 # WOO_ACTIVE other than 0 or 1, is refused before any step. The line comes from
 # deploy/provision/wp-site-config.mjs, the same function the one-click paths use.
 # BENCH=0 (skip the measurements), N (runs per page, default 10), PORT (local
-# wrangler dev port for the OPcache step, default 8798), DEPLOY_STATE=r2 (keep
+# wrangler dev port for the OPcache step; unset picks a free port, #1124;
+# OPCACHE_A_PORT pins that port for opcache-a.sh and wins over PORT), DEPLOY_STATE=r2 (keep
 # Terraform state in an R2 bucket; see README.md).
 # INSTALL_WAIT_S (default 120, at most 600; #811): how long to retry /_install while
 # the answer is 403, 5xx, no answer, or not JSON. INSTALL_INTERVAL_S (default 5) is
@@ -80,7 +81,6 @@ VARIANT=${VARIANT:-b-do}
 LOCATION=${LOCATION:-enam}
 MEDIA=${MEDIA:-0}
 AI=${AI:-0}
-export PORT=${PORT:-8798}
 export WOO_ACTIVE=${WOO_ACTIVE:-0}
 log() { printf '\n== %s\n' "$*"; }
 case "$VARIANT" in b-do|b-dosql|a|c1) ;; *) echo "VARIANT must be b-do, b-dosql, a or c1"; exit 2 ;; esac
@@ -304,7 +304,7 @@ elif [ "${OPCACHE_A:-0}" = 1 ]; then
   # tail's status and ship a half-built tree.
   ALOG=$(mktemp)
   TRACE=${OPCACHE_REMOTE:-0} WOO_ACTIVE=$WOO_ACTIVE ./opcache-a.sh > "$ALOG" 2>&1 || { echo "opcache-a.sh failed:"; tail -25 "$ALOG"; rm -f "$ALOG"; exit 1; }
-  grep -E 'approach-A opcache.zip|trace-filter:' "$ALOG" || true
+  grep -E '^port [0-9]+$|approach-A opcache.zip|trace-filter:' "$ALOG" || true
   rm -f "$ALOG"
   a_opcache_count build/opcache.zip || exit 1
   # #563, #569: after the last build.sh (it clears build/public), as deploy/wfp's build_dosql does.
