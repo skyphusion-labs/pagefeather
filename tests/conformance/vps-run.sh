@@ -65,6 +65,14 @@ in_dir() { local d=$1; shift; echo "+ (cd $d && $*)"; [ "${DRY:-0}" = 1 ] || (cd
 redact_auth() { perl -pe 'BEGIN { $| = 1 } s/(authorization["'"'"']?\s*[:=]\s*["'"'"']?)(basic|bearer)\s+[A-Za-z0-9+\/=._~-]+/$1$2 <redacted>/gi'; }
 pw() { "$@" 2>&1 | redact_auth; return "${PIPESTATUS[0]}"; }
 need_run_dir() { run=${1:?run-dir}; x mkdir -p "$run"; }
+# run and baseline refuse a checkout whose HEAD is not the pin. install checks it once; this closes the drift after
+# install (a checkout moved by hand, or a stale clone): every arm must run the one pinned suite (#1158, #1201).
+need_pinned_head() {
+  [ "${DRY:-0}" = 1 ] && return 0
+  local head
+  head=$(git -C "$src" rev-parse HEAD 2>/dev/null) || { echo "vps-run: STOP: $src is not a git checkout (run install first)" >&2; exit 3; }
+  [ "$head" = "$sha" ] || { echo "vps-run: STOP: $src is at $head, not the pin $sha" >&2; exit 3; }
+}
 # Gutenberg build.mjs runs one tsc project at a time when CI is set (conf759 2120z: parallel tsc OOM on vc2-4c-8gb after wp+wc).
 gb_run_build() {
   local try=$1
@@ -180,6 +188,7 @@ case "$act" in
     ;;
   baseline)
     need_run_dir "${4:-}"
+    need_pinned_head
     # Stock upstream at the same pins, in Docker (wp-env). WP_ENV_CORE pins core to 7.1.4 where the
     # suite's own env file names a branch. The default credentials are admin / password.
     # The baseline must not see our throwaway: unset the names the suites read (a caller may export them).
@@ -220,6 +229,7 @@ case "$act" in
     ;;
   run)
     need_run_dir "${4:-}"
+    need_pinned_head
     [ "${DRY:-0}" = 1 ] || [ -f "$run/env" ] || { echo "vps-run: no $run/env; run runner.py prepare first" >&2; exit 2; }
     # The env file holds the passwords: it is sourced, never printed.
     if [ "${DRY:-0}" = 1 ]; then echo "+ . $run/env"; else . "$run/env"; fi

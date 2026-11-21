@@ -654,6 +654,11 @@ def main():
             "for a in \"$@\"; do case \"$a\" in --project=*) ;; esac; done\n"
             "echo '{\"suites\":[]}' > \"$RUN_DIR/report.json\"\nexit ${PNPM_RC:-0}\n")
         os.chmod(os.path.join(bindir, "pnpm"), 0o755)
+        # The fake wc checkout is not a git repo: a stub git answers "rev-parse HEAD" with the pin, so these cases reach the
+        # setup phase they test (the HEAD check itself is pinned by its own cases below). Any other git call fails loudly.
+        wc_pin = [l.split("=", 1)[1].strip() for l in open(os.path.join(HERE, "pins.env")) if l.startswith("WC_SHA=")][0]
+        open(os.path.join(bindir, "git"), "w").write('#!/bin/bash\n[ "$3" = rev-parse ] && [ "$4" = HEAD ] && { echo %s; exit 0; }\necho "stub git: unexpected $*" >&2; exit 97\n' % wc_pin)
+        os.chmod(os.path.join(bindir, "git"), 0o755)
         for label, pnpm_rc, want in (("the setup phase fails", "1", "the setup projects failed"),
                                      ("the saved login is missing (check-state)", "0", "check-state")):
             rd = os.path.join(t, "vr-" + pnpm_rc)
@@ -830,6 +835,21 @@ def main():
         vd = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "run", "wc", vw, os.path.join(t, "vdecoy")],
                             env={"PATH": os.environ.get("PATH", ""), "DRY": "1", "TMPDIR": stmp, "PF_VPS_RUN_SELF": decoy, "PF_VPS_RUN_HERE": HERE}, capture_output=True, text=True)
         ok("vps-run: a caller-named PF_VPS_RUN_SELF file is never removed") if os.path.exists(decoy) else bad("vps-run removed a caller-named file")
+        # run and baseline refuse a checkout whose HEAD is not the pin (not only install does).
+        pins = dict(l.strip().split("=", 1) for l in open(os.path.join(HERE, "pins.env")) if re.match(r"^[A-Z_]+=", l.strip()))
+        hw = os.path.join(t, "headwork")
+        gsrc = os.path.join(hw, "gb-" + pins["GB_SHA"])
+        os.makedirs(gsrc)
+        gq = lambda *a: subprocess.run(["git", "-C", gsrc, "-c", "user.name=t", "-c", "user.email=t@t", *a], capture_output=True, text=True)
+        gq("init", "-q"); open(os.path.join(gsrc, "f"), "w").write("x"); gq("add", "f"); gq("commit", "-q", "-m", "not the pin")
+        for act in ("run", "baseline"):
+            vh = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), act, "gb", hw, os.path.join(t, "vh" + act)],
+                                env={"PATH": os.environ.get("PATH", "")}, capture_output=True, text=True, timeout=60)
+            ok("%s gb: a checkout off the pin is a STOP (exit 3), naming both shas" % act) if vh.returncode == 3 and "not the pin " + pins["GB_SHA"] in vh.stderr else bad("%s gb off-pin: rc %d %s" % (act, vh.returncode, vh.stderr[-200:]))
+        nogit = os.path.join(t, "nogitwork", "gb-" + pins["GB_SHA"]); os.makedirs(nogit)
+        vn = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "run", "gb", os.path.dirname(nogit), os.path.join(t, "vhn")],
+                            env={"PATH": os.environ.get("PATH", "")}, capture_output=True, text=True, timeout=60)
+        ok("run gb: a suite dir that is not a git checkout is a STOP") if vn.returncode == 3 and "is not a git checkout" in vn.stderr else bad("run gb no-git: rc %d %s" % (vn.returncode, vn.stderr[-200:]))
         vg = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "install", "gb", os.path.join(t, "vg")],
                             env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
         vg_out = vg.stdout + vg.stderr
