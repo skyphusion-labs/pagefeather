@@ -11,7 +11,7 @@ ssh $SSHO root@"$IP" 'bash -s' >"$LOG" 2>&1 <<'REMOTE'
 set -uo pipefail
 DBPW=$(openssl rand -hex 16); APW=$(openssl rand -hex 16); echo "$APW" > /root/.benchpw; chmod 600 /root/.benchpw /root/.benchpw
 mysql -e "CREATE DATABASE IF NOT EXISTS wp_plain; CREATE DATABASE IF NOT EXISTS wp_woo; CREATE USER IF NOT EXISTS 'wp'@'localhost' IDENTIFIED BY '$DBPW'; GRANT ALL ON wp_plain.* TO 'wp'@'localhost'; GRANT ALL ON wp_woo.* TO 'wp'@'localhost'; FLUSH PRIVILEGES;"
-WPVER=7.1.4
+WPVER=7.1.5
 setup_wp(){ # dir db url
   mkdir -p "$1"; cd "$1"
   wp core download --version="$WPVER" --allow-root 2>/tmp/wpdl.log || { wp core download --allow-root; echo "NOTE: WP $WPVER unavailable, used latest $(wp core version --allow-root)"; }

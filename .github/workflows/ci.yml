@@ -263,7 +263,7 @@ jobs:
           python3 -I tests/wfp/admin-mem-test.py
       - name: Memory trace hooks mode against WordPress's own hook code (#504)
         # The three wp-includes files of the pinned WordPress (spikes/b2-wordpress/build.sh
-        # WP_VERSION=7.1.4), each checked against its sha256 (equal to the copies in the
+        # WP_VERSION=7.1.5; the three files are unchanged from 7.1.4), each checked against its sha256 (equal to the copies in the
         # sha1-verified release zip) before the test reads them.
         run: |
           set -euo pipefail
@@ -273,7 +273,7 @@ jobs:
                    class-wp-hook.php:b839c0e5672246bca8db1ab781ec8835f7732f253c375a237cbf6ec536e8d12e \
                    class-wp-filter-sentinel.php:68c9c675d3805a343835728d98a0efedf0df9833cb904bebf909c7e0fda5c61c; do
             name="${f%%:*}"; sum="${f##*:}"
-            curl -fsSL -o "$d/$name" "https://raw.githubusercontent.com/WordPress/WordPress/7.1.4/wp-includes/$name"
+            curl -fsSL -o "$d/$name" "https://raw.githubusercontent.com/WordPress/WordPress/7.1.5/wp-includes/$name"
             echo "$sum  $d/$name" | sha256sum -c - || { echo "::error::$name sha256 mismatch"; exit 1; }
           done
           php spikes/b2-wordpress/tests/mem-trace-hooks-test.php "$d"

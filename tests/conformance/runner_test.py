@@ -210,6 +210,26 @@ class Stub:
         self.srv.shutdown()
 
 
+def pins_agree(root=None):
+    """#1201: the suites follow the WordPress version the sites run. pins.env WP_VERSION must equal build.sh's, and
+    vps-run.sh names no core version of its own, so the site build and the test pins cannot disagree on main."""
+    root = root or os.path.dirname(os.path.dirname(HERE))
+    def first(path, key):
+        for l in open(path, encoding="utf8"):
+            if l.startswith(key + "="):
+                return l.split("=", 1)[1].strip()
+        return None
+    pv = first(os.path.join(HERE, "pins.env"), "WP_VERSION")
+    bv = first(os.path.join(root, "spikes", "b2-wordpress", "build.sh"), "WP_VERSION")
+    if pv and bv and pv == bv:
+        ok("pins.env WP_VERSION %s equals spikes/b2-wordpress/build.sh WP_VERSION" % pv)
+    else:
+        bad("pins.env WP_VERSION %r and spikes/b2-wordpress/build.sh WP_VERSION %r disagree (#1201)" % (pv, bv))
+    vps = open(os.path.join(HERE, "vps-run.sh"), encoding="utf8").read()
+    hard = re.findall(r"WordPress/WordPress#[0-9][^ \"]*", vps)
+    ok("vps-run.sh takes the stock core from pins.env WP_VERSION") if not hard and "WordPress/WordPress#$WP_VERSION" in vps else bad("vps-run.sh hardcodes a core version: %s" % hard)
+
+
 def path_shim(d, dirs, leave_out=(), stubs=()):
     """A PATH dir holding every tool of dirs except leave_out, plus a stub (exit 0) per name in stubs. The FIRST dir that
     holds a name wins, as PATH lookup does. lexists, not exists: a dangling link counts as taken (CI's ubuntu has
@@ -793,7 +813,7 @@ def main():
                     ok("%s: our title rows still skip their tests" % lab) if ch.get("gi") and re.search(ch["gi"], full) else bad("%s: our title row lost: %s" % (lab, ch.get("gi")))
         else:
             bad("eval of the generated configs: no node (could not measure)")
-        # The core-only gb stock arm (BASELINE_WITHOUT_GUTENBERG_PLUGIN): upstream's env file (GB_SHA 8daba429, verbatim
+        # The core-only gb stock arm (BASELINE_WITHOUT_GUTENBERG_PLUGIN): upstream's env file (8daba429; unchanged at 89408c2b, verbatim
         # shape) with the Gutenberg plugin not mounted. Our sites ship core alone, so this is the baseline that matches them.
         gb_env = json.loads('{"$schema": "./schemas/json/wp-env.json", "testsEnvironment": false, "port": 8889, "core": "WordPress/WordPress#7.1-branch", "mariadbVersion": "12.3", "plugins": ["."], "themes": ["./test/emptytheme"], "config": {"WP_DEBUG": false, "SCRIPT_DEBUG": false}, "mappings": {"wp-content/plugins/gutenberg": ".", "wp-content/mu-plugins": "./packages/e2e-tests/mu-plugins", "wp-content/plugins/gutenberg-test-plugins": "./packages/e2e-tests/plugins", "wp-content/themes/gutenberg-test-themes": "./test/gutenberg-test-themes", "wp-content/themes/gutenberg-test-themes/twentytwentyone": "https://downloads.wordpress.org/theme/twentytwentyone.2.1.zip", "wp-content/themes/gutenberg-test-themes/twentytwentythree": "https://downloads.wordpress.org/theme/twentytwentythree.1.3.zip", "wp-content/themes/gutenberg-test-themes/twentytwentyfour": "https://downloads.wordpress.org/theme/twentytwentyfour.1.0.zip"}}')
         cut = runner.wp_env_without_gutenberg_plugin(gb_env)
@@ -973,6 +993,7 @@ def main():
         ok("compare exits 0 when nothing is ours") if rc == 0 else bad("compare rc %d on identical runs" % rc)
     finally:
         shutil.rmtree(t, ignore_errors=True)
+    pins_agree()
     print()
     if FAILS:
         print("FAIL runner_test: %d" % len(FAILS))
