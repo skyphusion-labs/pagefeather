@@ -26,11 +26,13 @@ function within(p, ms) {
 	return Promise.race([p, timer]).finally(() => clearTimeout(t));
 }
 
-export function createConnector(factory, { attempts = 2, connectMs = CONNECT_MS, endMs = END_MS, log = () => {} } = {}) {
+// #1169: onOpen(ms, attempts) after each successful open (ms from the first attempt's start), for the perf line.
+export function createConnector(factory, { attempts = 2, connectMs = CONNECT_MS, endMs = END_MS, log = () => {}, onOpen = null } = {}) {
 	let conn = null;
 	let connecting = null;
 	async function open() {
 		let last;
+		const t0 = Date.now();
 		for (let i = 0; i < attempts; i++) {
 			try {
 				const attempt = Promise.resolve().then(factory);
@@ -40,6 +42,9 @@ export function createConnector(factory, { attempts = 2, connectMs = CONNECT_MS,
 					// A late connect is closed when it lands; it never becomes this run's connection.
 					attempt.then((late) => late && late.end && late.end().catch(() => {}), () => {});
 					throw new Error('connect timed out after ' + connectMs + ' ms');
+				}
+				if (onOpen) {
+					try { onOpen(Date.now() - t0, i + 1); } catch { /* a counter never fails the connect */ }
 				}
 				return c;
 			} catch (e) {

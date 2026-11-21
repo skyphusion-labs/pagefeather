@@ -123,3 +123,18 @@ test('#1101: a normal end() does not destroy', async () => {
 	await c.end();
 	assert.equal(destroyed, 0);
 });
+
+// #1169 (strummer, cf759hl): a request that boots an isolate costs 3 to 9 s more, and its per-query time doubles. The
+// first MySQL connect hid inside the first statement's dbMs. The connector now reports each successful open's time.
+test('#1169 onOpen reports each successful open, its time and the attempts it took', async () => {
+	const seen = [];
+	let n = 0;
+	const c = createConnector(async () => { n++; if (n === 1) throw new Error('refused'); await new Promise((r) => setTimeout(r, 30)); return { end: async () => {} }; }, { onOpen: (ms, attempts) => seen.push([ms, attempts]) });
+	await c.get();
+	assert.equal(seen.length, 1);
+	assert.ok(seen[0][0] >= 25, 'the open time: ' + seen[0][0]);
+	assert.equal(seen[0][1], 2, 'the retry counted');
+	await c.get();
+	assert.equal(seen.length, 1, 'a reused connection is not an open');
+	await c.end();
+});

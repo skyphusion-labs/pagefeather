@@ -26,7 +26,13 @@ const openLean = (env) => () =>
 		port: env.HYPERDRIVE.port,
 	});
 let ENV_FOR_CONNECT = null;
-const connector = createConnector(() => openLean(ENV_FOR_CONNECT)(), { log });
+// #1169: the run connections' opens, counted for the perf line (dbConnN, dbConnMs: the first MySQL connect of a booted
+// isolate hid inside its first statement's time).
+const connCount = { n: 0, ms: 0 };
+export function mysqlConnStats() {
+	return { n: connCount.n, ms: connCount.ms };
+}
+const connector = createConnector(() => openLean(ENV_FOR_CONNECT)(), { log, onOpen: (ms) => { connCount.n++; connCount.ms += ms; } });
 function connection(env) {
 	ENV_FOR_CONNECT = env;
 	return connector.get();

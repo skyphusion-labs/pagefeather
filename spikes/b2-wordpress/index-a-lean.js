@@ -5,10 +5,10 @@
 // an approach-A WooCommerce write fit under the 128 MiB isolate cap (#218).
 // mysql2 is never imported here, so it is absent from this bundle entirely.
 import worker, { setDbHandler } from './index.js';
-import { mysqlQuery, mysqlEnd, mysqlReset, mysqlOneShot } from './mysql-lean-bridge.js';
+import { mysqlQuery, mysqlEnd, mysqlReset, mysqlOneShot, mysqlConnStats } from './mysql-lean-bridge.js';
 
 // oneShot: one query on its own connection (the #296 page version read in the gateway).
-setDbHandler({ query: mysqlQuery, end: mysqlEnd, reset: mysqlReset, oneShot: mysqlOneShot });
+setDbHandler({ query: mysqlQuery, end: mysqlEnd, reset: mysqlReset, oneShot: mysqlOneShot, connStats: mysqlConnStats });
 
 export default worker;
 // The cached entrypoint of the page cache (issue #63).

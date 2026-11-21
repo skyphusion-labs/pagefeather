@@ -118,6 +118,10 @@ function tablePrefix(env) {
 export function setDbHandler(h) {
 	dbHandler = h;
 }
+// #1169: the lean bridge's connect counts ({ n, ms }), or null on a bridge without them.
+function dbConnStats() {
+	return dbHandler && typeof dbHandler.connStats === 'function' ? dbHandler.connStats() : null;
+}
 // DB_IN_DO=on (issue #2, docs/approach-b.md 8j): the PHP object's own SQLite
 // (ctx.storage.sql). The object sets it for each PHP run, under the PHP lock.
 // In the Worker it is always null and every statement goes to D1.
@@ -4928,6 +4932,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			const booted = !bootPromise;
 			if (tracing()) fileTrace.begin({ cls: routeClass(req.method, url.pathname, url.search), method: req.method, path: url.pathname, boot: booted ? 1 : 0 });
 			const remote0 = remoteCounters();
+			const conn0 = dbConnStats(); // #1169
 			const frame0 = undoLog ? undoLog.counts() : null; // #352: the frame counts, before this request
 			bootPromise ??= boot(origin);
 			const { php, handler, bootMs } = await bootPromise;
@@ -5270,7 +5275,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			} else {
 				// #1078: approach A (PHP in the Worker, index-a.js) logs the same timing line, so a tail can time a real suite
 				// request: wall, boot, PHP time, and the query count and round-trip total (one bridge call per MySQL query).
-				console.log(JSON.stringify(aPerfLine({ id: memIdOf(req, env).id, method: req.method, path: url.pathname, status: r.httpStatusCode, iso: ISOLATE_ID, lockWaitMs: runLockWaitMs, isoAgeS: Math.round((Date.now() - isolateStart) / 1000), rt: runtimeSerial, rtAgeS: Math.round((Date.now() - runtimeBootAt) / 1000), boot: booted, bootWaitMs, phpMs: phpOnlyMs, dbN: d.calls, dbMs: d.ms, wallMs: Date.now() - tBoot, wasm1MiB: Math.round(wasmBytes / 1048576), recycled: recycleWhy || null, rfN: stats.rfN - remote0.rfN, rfKiB: Math.round((stats.rfBytes - remote0.rfBytes) / 1024), rfMs: stats.rfMs - remote0.rfMs, rfFail: stats.rfFail - remote0.rfFail, rsN: stats.rsN - remote0.rsN, rsKiB: Math.round((stats.rsBytes - remote0.rsBytes) / 1024), rsMs: stats.rsMs - remote0.rsMs, rsFail: stats.rsFail - remote0.rsFail, httpN: stats.httpCalls - start.httpCalls, httpMs: stats.httpMs - (start.httpMs || 0), inflates: stats.inflates - start.inflates, inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024), ocCalls: stats.ocCalls - start.ocCalls, ocHits: stats.ocHits - start.ocHits, l2N: stats.l2N - start.l2N, l2Hits: stats.l2Hits - start.l2Hits, l2Misses: (stats.l2N - start.l2N) - (stats.l2Hits - start.l2Hits), l2Ms: stats.l2Ms - start.l2Ms, ...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full } : {}) })));
+				console.log(JSON.stringify(aPerfLine({ id: memIdOf(req, env).id, method: req.method, path: url.pathname, status: r.httpStatusCode, iso: ISOLATE_ID, lockWaitMs: runLockWaitMs, isoAgeS: Math.round((Date.now() - isolateStart) / 1000), rt: runtimeSerial, rtAgeS: Math.round((Date.now() - runtimeBootAt) / 1000), boot: booted, bootWaitMs, phpMs: phpOnlyMs, dbN: d.calls, dbMs: d.ms, ...(() => { const conn1 = dbConnStats(); return { dbConnN: conn1 ? conn1.n - conn0.n : undefined, dbConnMs: conn1 ? conn1.ms - conn0.ms : undefined }; })(), wallMs: Date.now() - tBoot, wasm1MiB: Math.round(wasmBytes / 1048576), recycled: recycleWhy || null, rfN: stats.rfN - remote0.rfN, rfKiB: Math.round((stats.rfBytes - remote0.rfBytes) / 1024), rfMs: stats.rfMs - remote0.rfMs, rfFail: stats.rfFail - remote0.rfFail, rsN: stats.rsN - remote0.rsN, rsKiB: Math.round((stats.rsBytes - remote0.rsBytes) / 1024), rsMs: stats.rsMs - remote0.rsMs, rsFail: stats.rsFail - remote0.rsFail, httpN: stats.httpCalls - start.httpCalls, httpMs: stats.httpMs - (start.httpMs || 0), inflates: stats.inflates - start.inflates, inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024), ocCalls: stats.ocCalls - start.ocCalls, ocHits: stats.ocHits - start.ocHits, l2N: stats.l2N - start.l2N, l2Hits: stats.l2Hits - start.l2Hits, l2Misses: (stats.l2N - start.l2N) - (stats.l2Hits - start.l2Hits), l2Ms: stats.l2Ms - start.l2Ms, ...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full } : {}) })));
 			}
 			const response = new Response(r.bytes, { status: r.httpStatusCode, headers: out });
 			// #394 (b): a recycled runtime is RELEASED, not only forgotten. bootPromise = null alone left
