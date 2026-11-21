@@ -309,12 +309,42 @@ test('#714 index.js: blocks local PHP while ovHeld > 0, before withPhp and on ov
 	const wp = src.indexOf('const workerRun = await withPhp(() => withRunCall(callId, () => handle(req, env, url, spikeOk, maxBody, ctx), Date.now() - lockT0)');
 	assert.ok(wp > 0);
 	const before = src.slice(wp - 1200, wp);
-	assert.match(before, /overflowHeldBlocksLocal\(ovs, ovHeld\)/);
+	assert.match(before, /overflowHeldBlocksLocal\(ovs, ovHeld, runtimeLive\(\)\)/); // #1177: a would-be boot only
 	assert.match(before, /return overflowHeldBlockResponse\(\)/);
 	assert.match(before, /event: 'overflow-held-block'/);
 	const ov = src.indexOf("event: 'overflow-local'");
 	assert.ok(ov > 0);
 	const localCtx = src.slice(ov - 500, ov + 80);
-	assert.match(localCtx, /overflowHeldBlocksLocal\(ovs, ovHeld\)/);
+	assert.match(localCtx, /overflowHeldBlocksLocal\(ovs, ovHeld, runtimeLive\(\)\)/);
 	assert.ok(localCtx.indexOf('overflowHeldBlockResponse') < ov, 'overflow-local is guarded before the log');
+});
+
+// #1177 (joan, cf759hl, the #1140 default): ONE admin browser's parallel wc-admin reads got 14 held-block 503s in one
+// run, 0 before the pool. #714's rule refused EVERY local run while the isolate held any overflowed request, but what it
+// protects against is a runtime BOOT beside held requests (memory). A request that queues on a runtime already booted
+// adds no boot: it waits on the local lock, as before the pool. A cold isolate holding requests sends it to the pool.
+test('#1177 held-block applies only to a would-be BOOT: a live runtime queues locally', async () => {
+	const { overflowHeldBlocksLocal } = await import('../overflow.mjs');
+	const on = overflowSettings({ PHP_OVERFLOW: 'on' });
+	assert.equal(overflowHeldBlocksLocal(on, 1, true), false, 'held, runtime booted: run here (queue on the lock)');
+	assert.equal(overflowHeldBlocksLocal(on, 1, false), true, 'held, no runtime: a boot here is the #714 case');
+	assert.equal(overflowHeldBlocksLocal(on, 0, false), false);
+});
+test('#1177 a cold isolate holding overflowed requests sends the next request to the pool, never refuses it', async () => {
+	const { overflowHeldToPool } = await import('../overflow.mjs');
+	const on = overflowSettings({ PHP_OVERFLOW: 'on' });
+	const u = new URL('https://s.example/wp-json/wc-admin/options');
+	assert.equal(overflowHeldToPool(on, 1, false, u, false), true);
+	assert.equal(overflowHeldToPool(on, 1, true, u, false), false, 'a live runtime: queue locally');
+	assert.equal(overflowHeldToPool(on, 0, false, u, false), false, 'nothing held: as before');
+	assert.equal(overflowHeldToPool(on, 1, false, new URL('https://s.example/_install'), false), false, 'control paths never move');
+	assert.equal(overflowHeldToPool(on, 1, false, u, true), false, 'uploads never move');
+	assert.equal(overflowHeldToPool(overflowSettings({}), 1, false, u, false), false);
+});
+test('#1177 index.js: the overflow branch also takes a cold held isolate, and both held-block checks pass the runtime state', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /\(shouldOverflow\(ovs, \{ running: phpLock\.running, waiting: phpLock\.waiting \}, url, ovUpload\) \|\| overflowHeldToPool\(ovs, ovHeld, runtimeLive\(\), url, ovUpload\)\)/);
+	assert.equal((src.match(/overflowHeldBlocksLocal\(ovs, ovHeld, runtimeLive\(\)\)/g) || []).length, 2);
+	assert.doesNotMatch(src, /overflowHeldBlocksLocal\(ovs, ovHeld\)/);
+	assert.match(src, /function runtimeLive\(\) \{\n\treturn Boolean\(bootPromise\);\n\}/);
 });
