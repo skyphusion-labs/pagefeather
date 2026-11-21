@@ -8,7 +8,7 @@
 # Off (CUSTOM_DOMAIN unset): nothing is checked or derived, and the deploy is as before.
 # CF_API_BASE points the zone read at a stub (deploy/tests/custom-domain-test.sh). The token never reaches argv.
 
-custom_domain_zone() { # custom_domain_zone <host>: prints the zone name that holds <host>, or nothing; 1 on a failed read
+custom_domain_zone() { # custom_domain_zone <host>: prints "<zone name> <zone id>" of the zone that holds <host>, or nothing; 1 on a failed read
   local host=$1 base=${CF_API_BASE:-https://api.cloudflare.com/client/v4} body
   body=$(curl -sS -m 60 -K <(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN") \
     "$base/zones?account.id=$ACCOUNT_ID&per_page=50&status=active") || return 1
@@ -21,9 +21,9 @@ except Exception:
 if d.get("success") is not True:
     sys.exit(1)
 h = os.environ["HOST"]
-names = [z.get("name", "") for z in d.get("result") or [] if isinstance(z, dict)]
-hits = sorted((n for n in names if n and (h == n or h.endswith("." + n))), key=len, reverse=True)
-print(hits[0] if hits else "", end="")
+zones = [(z.get("name", ""), z.get("id", "")) for z in d.get("result") or [] if isinstance(z, dict)]
+hits = sorted((z for z in zones if z[0] and z[1] and (h == z[0] or h.endswith("." + z[0]))), key=lambda z: len(z[0]), reverse=True)
+print("%s %s" % hits[0] if hits else "", end="")
 '
 }
 
@@ -46,24 +46,25 @@ print(own[0] if own else "", end="")
 '
 }
 
-# custom_domain_dns_records <host>: prints the A, AAAA and CNAME answers a public resolver gives for <host> (DNS over
-# HTTPS, JSON), one per line, or nothing; 1 on a failed lookup. A hostname that already resolves is somebody's record.
+# custom_domain_dns_records <zone id> <host>: prints the zone's DNS records for exactly <host> ("TYPE content", one per
+# line), or nothing; 1 on a failed read. The zone's own records, every type (a TXT- or MX-only name counts too). It needs
+# Zone DNS:Read on the zone: a 403 is a failed read, and the caller refuses (fail closed).
 custom_domain_dns_records() {
-  local host=$1 doh=${CF_DOH_BASE:-https://cloudflare-dns.com/dns-query} t body
-  for t in A AAAA CNAME; do
-    body=$(curl -sS -m 30 -H 'accept: application/dns-json' "$doh?name=$host&type=$t") || return 1
-    BODY="$body" python3 -I -c '
+  local zid=$1 host=$2 base=${CF_API_BASE:-https://api.cloudflare.com/client/v4} body
+  body=$(curl -sS -m 60 -K <(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN") \
+    "$base/zones/$zid/dns_records?name=$host&per_page=100") || return 1
+  HOST="$host" BODY="$body" python3 -I -c '
 import json, os, sys
 try:
     d = json.loads(os.environ["BODY"])
 except Exception:
     sys.exit(1)
-if d.get("Status") not in (0, 3):   # 0 NOERROR, 3 NXDOMAIN; anything else is not an answer
+if d.get("success") is not True:
     sys.exit(1)
-for a in d.get("Answer") or []:
-    if a.get("type") in (1, 28, 5): print("%s %s" % ({1: "A", 28: "AAAA", 5: "CNAME"}[a["type"]], a.get("data", "")))
-' || return 1
-  done
+for r in d.get("result") or []:
+    if isinstance(r, dict) and r.get("name") == os.environ["HOST"]:
+        print("%s %s" % (r.get("type", "?"), r.get("content", "")))
+'
 }
 
 custom_domain_prepare() {
@@ -77,15 +78,17 @@ custom_domain_prepare() {
   fi
   zone=$(custom_domain_zone "$host") || { echo "CUSTOM_DOMAIN: the account's zones could not be read; nothing was changed (#1262)" >&2; return 2; }
   [ -n "$zone" ] || { echo "CUSTOM_DOMAIN: $host is in no active zone on account $ACCOUNT_ID; a Workers Custom Domain needs one (#1262)" >&2; return 2; }
-  # Never take over a hostname that is already in use: another Worker's custom domain, or a DNS record (a lead ruling).
+  local zid=${zone#* }; zone=${zone%% *}
+  # Never take over a hostname that is already in use (a lead ruling): another Worker's custom domain, or any DNS record
+  # for that exact name in the zone.
   local owner recs
   owner=$(custom_domain_owner "$host") || { echo "CUSTOM_DOMAIN: the account's Worker custom domains could not be read; nothing was changed (#1262)" >&2; return 2; }
   if [ -n "$owner" ] && [ "$owner" != "$NAME" ]; then
     echo "CUSTOM_DOMAIN: $host is already the custom domain of Worker $owner; refused, never taken over (#1262)" >&2; return 2
   fi
   if [ "$owner" != "$NAME" ]; then
-    # Not yet this site's domain, so any record there belongs to something else.
-    recs=$(custom_domain_dns_records "$host") || { echo "CUSTOM_DOMAIN: the DNS lookup for $host failed; nothing was changed (#1262)" >&2; return 2; }
+    # Not yet this site's domain, so any record for the name belongs to something else.
+    recs=$(custom_domain_dns_records "$zid" "$host") || { echo "CUSTOM_DOMAIN: zone $zone's DNS records could not be read (the deploy token needs Zone DNS:Read on it); nothing was changed (#1262)" >&2; return 2; }
     [ -z "$recs" ] || { echo "CUSTOM_DOMAIN: $host already has DNS records ($(echo "$recs" | tr '\n' ' ')); refused, never taken over (#1262)" >&2; return 2; }
   fi
   SITE_ORIGIN="https://$host"

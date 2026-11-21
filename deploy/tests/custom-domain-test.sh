@@ -22,10 +22,8 @@ class H(http.server.BaseHTTPRequestHandler):
         b = body.encode(); self.send_response(code); self.send_header("content-length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def do_GET(self):
         open(os.path.join(root, "log"), "a").write("GET %s\n" % self.path)
+        if "/dns_records" in self.path: return self.send(int(rd("dnscode", "200")), rd("dnsrec", '{"success":true,"result":[]}'))
         if self.path.startswith("/zones"): return self.send(int(rd("zonescode", "200")), rd("zones", '{"success":true,"result":[]}'))
-        if self.path.startswith("/dns-query"):
-            t = self.path.split("type=")[-1]
-            return self.send(200, rd("dns-" + t, '{"Status":0}'))
         if "/workers/domains" in self.path: return self.send(200, rd("domains", '{"success":true,"result":[]}'))
         self.send(404, "{}")
     def do_DELETE(self):
@@ -41,10 +39,10 @@ PY
 mkdir -p "$T/api"; python3 -I "$T/stub.py" "$T/port" "$T/api" & PID=$!
 for _ in $(seq 1 50); do [ -s "$T/port" ] && break; sleep 0.1; done
 BASE="http://127.0.0.1:$(cat "$T/port")"
-ZONES='{"success":true,"result":[{"name":"example.com"},{"name":"pagefeather.dev"},{"name":"sub.example.com"}]}'
+ZONES='{"success":true,"result":[{"name":"example.com","id":"z1"},{"name":"pagefeather.dev","id":"z2"},{"name":"sub.example.com","id":"z3"}]}'
 printf '%s' "$ZONES" > "$T/api/zones"
 prep() { # prep <env assignments...>: runs custom_domain_prepare; prints SITE_ORIGIN after it; rc kept
-  env -i PATH="$PATH" CLOUDFLARE_API_TOKEN=tok ACCOUNT_ID=acct NAME=t1 CF_API_BASE="$BASE" CF_DOH_BASE="$BASE/dns-query" "$@" bash -c '. "'"$ROOT"'/deploy/lib/custom-domain.sh"; custom_domain_prepare; rc=$?; echo "ORIGIN=${SITE_ORIGIN:-}"; exit $rc' > "$T/out" 2> "$T/err"
+  env -i PATH="$PATH" CLOUDFLARE_API_TOKEN=tok ACCOUNT_ID=acct NAME=t1 CF_API_BASE="$BASE" "$@" bash -c '. "'"$ROOT"'/deploy/lib/custom-domain.sh"; custom_domain_prepare; rc=$?; echo "ORIGIN=${SITE_ORIGIN:-}"; exit $rc' > "$T/out" 2> "$T/err"
 }
 prep; rc=$?
 ok "off: CUSTOM_DOMAIN unset passes and derives nothing (rc $rc)" "$([ $rc = 0 ] && grep -qx 'ORIGIN=' "$T/out" && ! grep -q GET "$T/api/log" 2>/dev/null && echo 1 || echo 0)"
@@ -75,22 +73,23 @@ printf '{"success":true,"result":[{"id":"o1","hostname":"gate-test.pagefeather.d
 prep CUSTOM_DOMAIN=gate-test.pagefeather.dev; rc=$?
 ok "a hostname that is another Worker's custom domain is refused (rc $rc)" "$([ $rc = 2 ] && grep -q 'custom domain of Worker someone-else' "$T/err" && echo 1 || echo 0)"
 printf '{"success":true,"result":[{"id":"o1","hostname":"gate-test.pagefeather.dev","service":"t1"}]}' > "$T/api/domains"
-printf '{"Status":0,"Answer":[{"type":1,"data":"104.21.0.1"}]}' > "$T/api/dns-A"; rm -f "$T/api/log"
+printf '{"success":true,"result":[{"name":"gate-test.pagefeather.dev","type":"AAAA","content":"100::"}]}' > "$T/api/dnsrec"; rm -f "$T/api/log"
 prep CUSTOM_DOMAIN=gate-test.pagefeather.dev; rc=$?
-ok "this site's own custom domain (a redeploy) passes, and its DNS is not held against it (rc $rc)" "$([ $rc = 0 ] && ! grep -q dns-query "$T/api/log" && echo 1 || echo 0)"
+ok "a redeploy onto this site's own custom domain passes, and its DNS is not read or held against it (rc $rc)" "$([ $rc = 0 ] && ! grep -q dns_records "$T/api/log" && echo 1 || echo 0)"
 printf '{"success":true,"result":[]}' > "$T/api/domains"
+printf '{"success":true,"result":[{"name":"gate-test.pagefeather.dev","type":"A","content":"192.0.2.10"}]}' > "$T/api/dnsrec"; rm -f "$T/api/log"
 prep CUSTOM_DOMAIN=gate-test.pagefeather.dev; rc=$?
-ok "a hostname that already resolves (an A record) is refused (rc $rc)" "$([ $rc = 2 ] && grep -q 'already has DNS records (A 104.21.0.1' "$T/err" && echo 1 || echo 0)"
-rm -f "$T/api/dns-A"; printf '{"Status":0,"Answer":[{"type":5,"data":"other.example.net."}]}' > "$T/api/dns-CNAME"
+ok "a DNS record for the exact name in the zone is refused (rc $rc)" "$([ $rc = 2 ] && grep -q 'already has DNS records (A 192.0.2.10' "$T/err" && grep -q 'GET /zones/z2/dns_records?name=gate-test.pagefeather.dev' "$T/api/log" && echo 1 || echo 0)"
+printf '{"success":true,"result":[{"name":"gate-test.pagefeather.dev","type":"TXT","content":"v=spf1 -all"}]}' > "$T/api/dnsrec"
 prep CUSTOM_DOMAIN=gate-test.pagefeather.dev; rc=$?
-ok "a hostname with a CNAME is refused (rc $rc)" "$([ $rc = 2 ] && grep -q 'CNAME other.example.net' "$T/err" && echo 1 || echo 0)"
-rm -f "$T/api/dns-CNAME"; printf '{"Status":2}' > "$T/api/dns-AAAA"
+ok "a TXT-only name counts as in use, refused (rc $rc)" "$([ $rc = 2 ] && grep -q 'TXT v=spf1' "$T/err" && echo 1 || echo 0)"
+printf '{"success":true,"result":[{"name":"www.gate-test.pagefeather.dev","type":"A","content":"192.0.2.11"}]}' > "$T/api/dnsrec"
 prep CUSTOM_DOMAIN=gate-test.pagefeather.dev; rc=$?
-ok "a failed DNS lookup (SERVFAIL) is a refusal, never a pass (rc $rc)" "$([ $rc = 2 ] && grep -q 'DNS lookup' "$T/err" && echo 1 || echo 0)"
-rm -f "$T/api/dns-AAAA"; printf '{"Status":3}' > "$T/api/dns-A"
+ok "a record for ANOTHER name is not held against this one (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
+printf '{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}' > "$T/api/dnsrec"; echo 403 > "$T/api/dnscode"
 prep CUSTOM_DOMAIN=gate-test.pagefeather.dev; rc=$?
-ok "NXDOMAIN (no record at all) passes (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
-rm -f "$T/api/dns-A"
+ok "a 403 DNS read (no Zone DNS:Read) is a refusal that names the permission (rc $rc)" "$([ $rc = 2 ] && grep -q 'needs Zone DNS:Read' "$T/err" && echo 1 || echo 0)"
+rm -f "$T/api/dnsrec" "$T/api/dnscode"
 # The token never reaches argv: custom-domain.sh sends it through curl -K (a config on a file descriptor).
 ok "the token is passed with curl -K, never on the command line" "$(grep -c 'curl ' "$ROOT/deploy/lib/custom-domain.sh" | xargs -I{} sh -c '[ {} -ge 1 ]' && ! grep -nE 'curl [^|]*-H "Authorization' "$ROOT/deploy/lib/custom-domain.sh" && echo 1 || echo 0)"
 # The render: the route only with CUSTOM_DOMAIN.
