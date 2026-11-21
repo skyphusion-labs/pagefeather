@@ -272,7 +272,7 @@ test('#714 index.js: the held count wraps the forward (decremented in finally), 
 test('the call id is declared before the held-count try, so overflow-local can read it', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	const decl = src.indexOf('const callId = crypto.randomUUID(); // #708: one id for this request across its choices');
-	const tryAt = src.indexOf('\t\t\ttry {\n', src.indexOf('ovHeld++;'));
+	const tryAt = src.indexOf('\t\t\ttry {\n', src.indexOf('ovHeld++;', src.indexOf('if (overHeld(ovs, ovHeld)) {'))); // #1157: the dispatch, not selfFetchOnPool
 	const local = src.indexOf("event: 'overflow-local'");
 	assert.ok(decl > 0 && tryAt > 0 && local > tryAt, 'the shape is found');
 	assert.ok(decl < tryAt, 'declared before the try, in the scope overflow-local runs in');
