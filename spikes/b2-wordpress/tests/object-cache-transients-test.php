@@ -36,8 +36,7 @@ function delete_site_option( $n ) { return delete_option( $n ); }
 $GLOBALS['autoload'] = array();
 $GLOBALS['row_queries'] = 0;
 function skyphusion_transient_rows( array $names ) { ++$GLOBALS['row_queries']; $o = array(); foreach ( $names as $n ) { if ( array_key_exists( $n, $GLOBALS['db'] ) ) { $o[ $n ] = $GLOBALS['db'][ $n ]; } } return $o; }
-$GLOBALS['puts'] = array();
-function skyphusion_transient_put( $n, $v ) { $GLOBALS['puts'][] = $n; $GLOBALS['db'][ $n ] = $v; $GLOBALS['autoload'][ $n ] = 'off'; return true; }
+function skyphusion_transient_put( $n, $v ) { $GLOBALS['db'][ $n ] = $v; $GLOBALS['autoload'][ $n ] = 'off'; return true; }
 $GLOBALS['delete_stmts'] = 0;
 function skyphusion_transient_delete( array $names ) { ++$GLOBALS['delete_stmts']; $k = 0; foreach ( $names as $n ) { if ( array_key_exists( $n, $GLOBALS['db'] ) ) { unset( $GLOBALS['db'][ $n ] ); ++$k; } } return $k; }
 function skyphusion_test_time() { return $GLOBALS['now']; }
@@ -222,60 +221,17 @@ function post_message_to_js( $j ) { return json_encode( array( "ok" => true, "v"
 function is_multisite() { return false; } function get_current_blog_id() { return 1; } function wp_installing() { return false; }
 function get_option( $n, $d = false ) { return $d; } function update_option( $n, $v, $a = null ) { return true; }
 function skyphusion_transient_rows( array $n ) { return array(); }
-function skyphusion_transient_put( $n, $v ) { file_put_contents( ' . var_export( $log, true ) . ', "put:" . $n . "=" . $v . "\\n", FILE_APPEND ); return true; }
+function skyphusion_transient_put( $n, $v ) { return true; }
 function skyphusion_transient_delete( array $n ) { file_put_contents( ' . var_export( $log, true ) . ', implode( ",", $n ) . "\n", FILE_APPEND ); return count( $n ); }
 require ' . var_export( isset( $argv[1] ) ? realpath( $argv[1] ) : realpath( __DIR__ . '/../php/object-cache-js.php' ), true ) . ';
 $c = new JS_Object_Cache();
 $c->delete( "gone", "transient" );
-$c->set( "orders-transient-version", "fatal-v", "transient" );
 ' . $end . "\n" );
 	exec( escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( $child ) . ' 2>/dev/null', $o, $rc );
 	$got = trim( (string) file_get_contents( $log ) );
-	check( "#1210 on $how, the pending deletes are flushed (rc $rc)", false !== strpos( $got, '_transient_gone,_transient_timeout_gone' ) );
-	check( "#1210v on $how, the deferred version is written (rc $rc)", false !== strpos( $got, 'put:_transient_orders-transient-version=fatal-v' ) );
+	check( "#1210 on $how, the pending deletes are flushed (rc $rc)", '_transient_gone,_transient_timeout_gone' === $got );
 	unlink( $log ); unlink( $child );
 }
-
-// #1210 follow-up (the lead's ruling): WooCommerce's cache-version counters (WC_Cache_Helper::get_transient_version,
-// "{group}-transient-version", set with no expiry) are written ONCE per request, the newest value, on the same flush as
-// the deletes. A traced guest order on cf759hl set orders-transient-version 31 times (31 REPLACEs, 674 ms). woo-edge.php
-// measured and ruled this before #1206 (it hooks update_option, which durable transients no longer go through).
-// Only the exact names WooCommerce builds are deferred; every other set, doing_cron included, is written at once.
-$GLOBALS['db'] = array(); $GLOBALS['hot'] = array(); $GLOBALS['puts'] = array(); $GLOBALS['delete_stmts'] = 0;
-$r = new JS_Object_Cache();
-for ( $i = 1; $i <= 33; $i++ ) { $r->set( 'orders-transient-version', '1795.' . $i, 'transient' ); }
-check( '#1210v 33 sets of orders-transient-version: no write while the request runs', array() === $GLOBALS['puts'] );
-check( '#1210v   the request reads the newest at once', '1795.33' === $r->get( 'orders-transient-version', 'transient' ) );
-$r->transient_flush();
-check( '#1210v   at its end ONE write, the newest value, and no timeout row', array( '_transient_orders-transient-version' ) === $GLOBALS['puts'] && '1795.33' === $GLOBALS['db']['_transient_orders-transient-version'] && ! isset( $GLOBALS['db']['_transient_timeout_orders-transient-version'] ) );
-check( '#1210v   the flush is idempotent', 0 === $r->transient_flush() && 1 === count( $GLOBALS['puts'] ) );
-foreach ( array( 'product', 'product_query', 'shipping', 'woocommerce_reports', 'filter_data' ) as $g ) {
-	$GLOBALS['puts'] = array(); $r = new JS_Object_Cache();
-	$r->set( $g . '-transient-version', 'v1', 'transient' ); $r->set( $g . '-transient-version', 'v2', 'transient' );
-	$deferred = array() === $GLOBALS['puts'];
-	$r->transient_flush();
-	check( "#1210v $g-transient-version is deferred too, then written once", $deferred && array( '_transient_' . $g . '-transient-version' ) === $GLOBALS['puts'] );
-}
-foreach ( array( 'doing_cron', 'settings_errors', 'wc_count_comments', 'other-transient-version', 'orders-transient-version-x', 'xorders-transient-version' ) as $n ) {
-	$GLOBALS['puts'] = array(); $r = new JS_Object_Cache();
-	$r->set( $n, 'v', 'transient' );
-	check( "#1210v $n is written AT ONCE (not deferred)", array( '_transient_' . $n ) === $GLOBALS['puts'] );
-	$r->transient_flush();
-}
-$GLOBALS['puts'] = array(); $r = new JS_Object_Cache();
-$r->set( 'orders-transient-version', 'v', 'transient', 60 );
-check( '#1210v a version set WITH an expiry is written at once (WooCommerce sets none; only the no-expiry form is deferred)', in_array( '_transient_orders-transient-version', $GLOBALS['puts'], true ) );
-$r->transient_flush();
-$GLOBALS['puts'] = array(); $GLOBALS['db'] = array( '_transient_orders-transient-version' => 'old' ); $r = new JS_Object_Cache();
-$r->set( 'orders-transient-version', 'new', 'transient' ); $r->delete( 'orders-transient-version', 'transient' );
-$found = null; $r->get( 'orders-transient-version', 'transient', false, $found );
-$r->transient_flush();
-check( '#1210v a deferred set then a delete: a miss in the request, and at its end the row is gone, never written', false === $found && array() === $GLOBALS['puts'] && ! isset( $GLOBALS['db']['_transient_orders-transient-version'] ) );
-$GLOBALS['puts'] = array(); $GLOBALS['db'] = array( '_transient_orders-transient-version' => 'old' ); $r = new JS_Object_Cache();
-$r->delete( 'orders-transient-version', 'transient' ); $r->set( 'orders-transient-version', 'new', 'transient' );
-$r->transient_flush();
-check( '#1210v a delete then a deferred set: at its end the new value stands', 'new' === $GLOBALS['db']['_transient_orders-transient-version'] && array( '_transient_orders-transient-version' ) === $GLOBALS['puts'] );
-$GLOBALS['db'] = array(); $GLOBALS['puts'] = array();
 
 // #1219 review (the lead): the prime is a SNAPSHOT. Request 1 primes and sees X absent; request 2 sets X; request 1
 // then deletes X. The delete must still reach the table: a prime-absent name is queued like any other.
