@@ -91,24 +91,25 @@ So the 128 MiB isolate cap, not the code, decides whether a store this heavy run
 
 The limit is memory per request. It shows up on the heaviest admin pages. It is not a count of installed plugins.
 
-The isolate cap is 128 MiB. On the Durable Object tiers, writes fail at about 117 to 119 MiB of WebAssembly heap. That range is an estimate (#598, #1022).
+The isolate cap is 128 MiB. On the Durable Object tiers, writes fail at about 117 to 119 MiB of WebAssembly heap (an estimate from #598 and #1022).
 
-PHP's heap tracks the compiled scripts a request loads. The cost is about 38 KiB per compiled script. That cost is an estimate (#1022's mem-trace, #1253).
+PHP's heap tracks the compiled scripts a request loads. The cost is about 38 KiB per compiled script (an estimate from #1022's mem-trace and #1253).
 
 `post-new.php` with WooCommerce is the heavy page. From a fresh runtime, local runs peak at 107 to 115 MiB (#1022). On an older live build, the median is 118 MiB (#598, #724 r3). That median sits where writes fail.
 
-WooCommerce accounts for about 28 MiB of that page. That share is an estimate (#1022's bisect). Its block registration accounts for about 11 MiB of the page. That share is an estimate (the same bisect). Without WooCommerce, the same page is about 81 MiB. That figure is an estimate (the same bisect).
+WooCommerce accounts for about 28 MiB of that page (an estimate from #1022's bisect). Its block registration accounts for about 11 MiB of the page (an estimate from the same bisect). Without WooCommerce, the same page is about 81 MiB (an estimate from the same bisect).
 
 A WooCommerce store has little room for more plugins on `post-new.php` today. The local peak is already near the band where writes fail. The older live median is inside that band.
 
-A WordPress-only site has room for several typical plugins. That room is an estimate. It is the gap from about 81 MiB up to the write failure band.
+A WordPress-only site has room for several typical plugins (an estimate). That room is the gap from about 81 MiB up to the write failure band.
 
 What does not fit:
 
 - All 18 suite plugins at once. Each of the 18 passes on its own. With all 18 active, the login request answered 1102 (the Worker exceeded its resource limits) at 118 MB of WebAssembly memory ([approach-a.md](approach-a.md)).
-- Rank Math on a WooCommerce store. Requests reach 119 MiB, and every other request answers 503 (#279). The measured store is in the table above.
-- Yoast SEO (67.94 MiB), All in One SEO (67.53 MiB) and Elementor (83.84 MiB). Each is over the 64 MiB Worker bundle limit (#279). SEOPress (63.05 MiB) is over the 62 MiB upload gate (#279).
+- Rank Math on a WooCommerce store. Requests reach 119 MiB, and every other request answers 503 (#279). #279 measured that on ggc-test on 2026-11-11, with WooCommerce 11.2.1, Rank Math 1.0.280, skyphusion-ai 0.6.2, mcp-adapter 0.7.1 and twentytwentyfive.
 - A page builder in the editor. Elementor's editor memory is not measured yet (#758). The block editor already reaches this ceiling (#598).
+
+Yoast SEO (67.94 MiB), All in One SEO (67.53 MiB) and Elementor (83.84 MiB) were over the 64 MiB Worker bundle limit, and SEOPress (63.05 MiB) was over the 62 MiB upload gate. Those figures were measured before remote packs (#279); not re-measured under the default remote packs (#634). Remote packs (SITE_REMOTE) became the default in #595.
 
 #1022 and #1253 are open. #1022 is the memory reset when `post-new.php` runs on a hot isolate. #1253 is the compiled-script set a cold boot opens.
 
