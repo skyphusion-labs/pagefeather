@@ -162,7 +162,9 @@ add_filter(
 			$out[ (string) $name ] = is_array( $value ) ? implode( ', ', $value ) : (string) $value;
 		}
 
-		$reply = json_decode(
+		// #1215: blocking false is fire-and-forget, as in core; a streamed response must be written, so it blocks (core).
+		$blocking = ! empty( $args['stream'] ) || ! isset( $args['blocking'] ) || false !== (bool) $args['blocking'];
+		$reply    = json_decode(
 			post_message_to_js(
 				json_encode(
 					array(
@@ -174,6 +176,7 @@ add_filter(
 							'timeout'     => (float) $args['timeout'],
 							'redirection' => (int) $args['redirection'],
 							'limit'       => empty( $args['limit_response_size'] ) ? 0 : (int) $args['limit_response_size'],
+							'blocking'    => $blocking,
 						),
 					)
 				)
@@ -182,6 +185,21 @@ add_filter(
 		);
 		if ( ! is_array( $reply ) || isset( $reply['error'] ) ) {
 			return $fail( 'http_request_failed', is_array( $reply ) && isset( $reply['error'] ) ? $reply['error'] : 'No answer from the Worker.' );
+		}
+		if ( ! $blocking ) {
+			// Core's answer to a non-blocking request (WP_Http::request): http_api_debug, then an empty response.
+			$response = array(
+				'headers'       => array(),
+				'body'          => '',
+				'response'      => array(
+					'code'    => false,
+					'message' => false,
+				),
+				'cookies'       => array(),
+				'http_response' => null,
+			);
+			do_action( 'http_api_debug', $response, 'response', 'Skyphusion_Http_Bridge', $args, $url );
+			return $response;
 		}
 
 		$body = 'HEAD' === $method ? '' : base64_decode( $reply['body'] );

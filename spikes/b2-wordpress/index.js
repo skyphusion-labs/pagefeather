@@ -9,6 +9,7 @@ import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { installPhpBasicAuth } from './php-auth.mjs';
 import { installSiteTitle, hostFromOrigin } from './install-title.mjs';
 import { installPhpSelf } from './php-self.mjs';
+import { httpBlocking, httpTimeoutMs } from './http-nonblocking.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
 import { wpCronState, idleDecision, parseGmt, IDLE_KEY } from './cron-idle.mjs';
 import { tickAlarmPlan, armBeforeRun, rearm, pullIn, extendIfOurs, recordAlarmFatal, ALARM_FATAL_KEY, snapshotRearm, setAlarmRecorded, ALARM_SET_KEY, emailRushDue, emailAlarmAt, EMAIL_DUE_KEY, EMAIL_RETRY_MS } from './alarm-arm.mjs';
@@ -2832,7 +2833,41 @@ function httpRefusal(url) {
 	if (!httpHostAllowed(url.hostname, resolveHttpAllowHosts(raw))) return 'host not in HTTP_ALLOW_HOSTS: ' + url.hostname;
 	return null;
 }
+// #1157: one hop's route ('pool', 'out' or 'refuse', selfFetchRoute's) and its refusal, or why null to send it: the
+// site's own host runs on a pool object or is refused. #1226 logs only a 'refuse' route as a refused self-fetch.
+function httpHop(url, ovs) {
+	const self = selfFetchRoute({ sameHost: isSelfHost(url), inObject: Boolean(ocCtx && ocCtx.inObject), overflowed: Boolean(ocCtx && ocCtx.overflowed), poolAvailable: selfFetchPoolAvailable(ENV, ovs), capped: overHeld(ovs, ovHeld) });
+	const why = self.route === 'refuse' ? self.why : self.route === 'out' ? httpRefusal(url) : (url.protocol === 'http:' || url.protocol === 'https:' ? null : 'only http and https');
+	return { route: self.route, why };
+}
+// #1215: a non-blocking request is refused, as a blocking one is, before anything is queued.
+function httpFirstHopRefusal(op) {
+	let url;
+	try {
+		url = new URL(op.url);
+	} catch {
+		return 'A valid URL was not provided.';
+	}
+	return httpHop(url, overflowSettings(ENV)).why;
+}
+// #1225: blocking false is fire-and-forget, as in core (http-nonblocking.mjs), ONLY in the Worker: PHP gets its answer
+// at once, and the request runs on in the Worker's waitUntil under its own cap, its body read and dropped (nothing reads
+// it). Inside a Durable Object (a pool object, A_CRON, b-do, b-dosql) waitUntil does not keep the object alive at our
+// compatibility date (2026-07-01, no durable_object_io_tasks_prevent_eviction; #185 measured sends abandoned), so there
+// the request is awaited as a blocking one is (the caller's timeout, the 1 s floor), and PHP still returns core's empty
+// non-blocking response. The lead's ruling on #1225: option 1.
 async function httpOp(op) {
+	if (!httpBlocking(op)) {
+		if (ocCtx && ocCtx.inObject) return httpOpRun({ ...op, blocking: true });
+		const why = httpFirstHopRefusal(op);
+		if (why) return { error: why };
+		const run = httpOpRun({ ...op, discard: true }).catch(() => {});
+		if (ocCtx && typeof ocCtx.waitUntil === 'function') ocCtx.waitUntil(run);
+		return { queued: true };
+	}
+	return httpOpRun(op);
+}
+async function httpOpRun(op) {
 	stats.httpCalls++;
 	// #352: an outbound call that is not a read is seen by others: a commit point (keep what came before).
 	if (undoLog && undoLog.frameOpen() && sqlDb && !/^(GET|HEAD|OPTIONS)$/i.test(String(op.method || 'GET'))) undoLog.commitPoint(sqlDb, 'http');
@@ -2843,7 +2878,7 @@ async function httpOp(op) {
 		url = new URL(op.url);
 		const max = Number(ENV.HTTP_MAX_BYTES || HTTP_MAX_BYTES);
 		const limit = op.limit > 0 ? Math.min(op.limit, max) : max;
-		const timeoutMs = Math.max(1, Number(op.timeout) || 5) * 1000;
+		const timeoutMs = httpTimeoutMs(op);
 		const signal = AbortSignal.timeout(timeoutMs);
 		let method = op.method || 'GET';
 		let body = op.body ? b64decode(op.body) : undefined;
@@ -2853,8 +2888,8 @@ async function httpOp(op) {
 		const ovs = overflowSettings(ENV);
 		for (;;) {
 			// #1157: each hop (a redirect included) is checked again: the site's own host runs on a pool object or is refused.
-			const self = selfFetchRoute({ sameHost: isSelfHost(url), inObject: Boolean(ocCtx && ocCtx.inObject), overflowed: Boolean(ocCtx && ocCtx.overflowed), poolAvailable: selfFetchPoolAvailable(ENV, ovs), capped: overHeld(ovs, ovHeld) });
-			const why = self.route === 'refuse' ? self.why : self.route === 'out' ? httpRefusal(url) : (url.protocol === 'http:' || url.protocol === 'https:' ? null : 'only http and https');
+			const self = httpHop(url, ovs);
+			const why = self.why;
 			if (why) {
 				// #1226: a refused self-fetch returns here, before selfFetchOnPool.
 				// Log one line, or 0 self-fetch lines cannot tell a refusal from a hop never sent.
@@ -2892,6 +2927,7 @@ async function httpOp(op) {
 			for (;;) {
 				const { done, value } = await reader.read();
 				if (done) break;
+				if (op.discard) continue; // #1225: a queued request's body: read to the end (its far end completes), never held
 				const room = limit - size;
 				if (value.length > room) {
 					chunks.push(value.subarray(0, room));
@@ -2921,7 +2957,8 @@ async function httpOp(op) {
 		return out;
 	} finally {
 		stats.httpMs += Date.now() - t0;
-		console.log(JSON.stringify({ m: 'http', host: url ? url.hostname : null, status: out && out.status, error: out && out.error ? String(out.error).slice(0, 120) : undefined, ms: Date.now() - t0 }));
+		// #1225: a queued (non-blocking) request's line also names that it was queued and the isolate it ran to its end in.
+		console.log(JSON.stringify({ m: 'http', host: url ? url.hostname : null, status: out && out.status, error: out && out.error ? String(out.error).slice(0, 120) : undefined, ms: Date.now() - t0, ...(op.discard ? { queued: true, iso: ISOLATE_ID } : {}) }));
 	}
 }
 
