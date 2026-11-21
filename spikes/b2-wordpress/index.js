@@ -19,7 +19,7 @@ import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
 import { cronBounds, cronCleanDue, cronLegDue, cronAsBudgetMs, cronMore, cronBacklogNext, cronBacklogDue, cronBacklogGapMs, backlogStreak } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronRunDeferred, cronMarkOf, cronFatalOf } from './cron-health.mjs';
-import { approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME, CRON_BUILD_HEADER, CRON_BUILD_PATH, cronVersionAbort } from './a-cron.mjs';
+import { approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME, CRON_BUILD_HEADER, CRON_BUILD_PATH, cronVersionAbort, cronBuildState } from './a-cron.mjs';
 import { isMediaUploadRequest, markerKey, sweepUploadOrphans, dropMarkersOn } from './upload-intent.mjs';
 import { cronFailureLine } from './cron-error.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
@@ -2296,6 +2296,7 @@ const CRON_LAST_KEY = 'cron-last-start';
 // #1152: a tick's build that differs from this object's (stored by the tick), and when this object last reset onto it.
 const CRON_VERSION_PENDING_KEY = 'cron-version-pending';
 const CRON_VERSION_ABORT_KEY = 'cron-version-abort';
+const CRON_ALARM_BUILD_KEY = 'cron-alarm-build'; // #1152: the build this object's last alarm ran on (its own BUILD_ID)
 // #1120: the end of a leg that made progress with Action Scheduler work still due (cron-bound.mjs cronBacklogNext); the next leg is due by it.
 const CRON_BACKLOG_KEY = 'cron-backlog';
 // #1120 review: { n, due }, the soon legs in a row without progress against as_due (cron-bound.mjs backlogStreak).
@@ -3185,6 +3186,9 @@ export class PhpRuntime extends DurableObject {
 	}
 
 	async alarm() {
+		// #1152: the build this alarm runs on, from this code's own BUILD_ID, before anything else (an abort below included):
+		// /_cron-build reports it, so a readback is ok only once an alarm has run the deployed code.
+		await this.ctx.storage.put(CRON_ALARM_BUILD_KEY, { build: BUILD_ID, at: Date.now() });
 		// The next tick is armed FIRST (#291, alarm-arm.mjs armBeforeRun): a run killed below (an
 		// isolate reset) still leaves a future alarm. A purge retry sets a sooner one, which replaces it.
 		this.tickAt = await armBeforeRun(this.ctx.storage, Date.now(), Number((this.env && this.env.CRON_INTERVAL_MS) || 60000));
@@ -3607,7 +3611,7 @@ export class PhpRuntime extends DurableObject {
 		// The build this OBJECT is running (issue #35 slice 5). After a re-upload a
 		// warm object keeps the old code until it is evicted, so this reports the
 		// object's version, which can lag the Worker's until /_evict or a sleep.
-		if (url.pathname === '/_build') return Response.json({ build: BUILD_ID, engine: PHP_ENGINE, recycleMiB: recycleLine(env, ENGINE_RECYCLE_MIB).mib }); // #771: engine and line
+		if (url.pathname === '/_build') { const ab = await this.ctx.storage.get(CRON_ALARM_BUILD_KEY); return Response.json({ build: BUILD_ID, alarmBuild: (ab && ab.build) || null, alarmAt: (ab && ab.at) || null, engine: PHP_ENGINE, recycleMiB: recycleLine(env, ENGINE_RECYCLE_MIB).mib }); } // #771: engine and line; #1152: alarmBuild
 		// #394 headroom probe (HEADROOM_PROBE=on, off by default; a MEASUREMENT that ends this isolate, so
 		// only on a throwaway). After a real request, this same isolate allocates held 1 MiB ArrayBuffers
 		// until it dies, streaming the count (headroom.mjs). The first line is the ledger at that moment, so
@@ -4274,12 +4278,16 @@ const site = {
 			if (!approachACronEnabled(env) || !env.PHP_RUNTIME) return Response.json({ worker: BUILD_ID, cron: null, why: 'no A_CRON cron object' }, { headers: { 'cache-control': 'no-store' } });
 			const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(CRON_OBJECT_NAME));
 			let cron = null;
+			let alarm = null;
+			let alarmAt = null;
 			try {
 				const r = await stub.fetch(new Request('https://do.internal/_build', { headers: { 'x-spike-token': env.SPIKE_TOKEN, 'x-wp-public-origin': siteOrigin(env, url) } }));
 				const j = await r.json();
 				cron = j && typeof j.build === 'string' ? j.build : null;
+				alarm = j && typeof j.alarmBuild === 'string' ? j.alarmBuild : null;
+				alarmAt = j && Number.isFinite(j.alarmAt) ? j.alarmAt : null;
 			} catch { cron = null; }
-			return Response.json({ worker: BUILD_ID, cron, same: cron === BUILD_ID }, { headers: { 'cache-control': 'no-store' } });
+			return Response.json({ worker: BUILD_ID, cron, alarm, alarmAt, state: cronBuildState({ worker: BUILD_ID, cron, alarm }), same: cronBuildState({ worker: BUILD_ID, cron, alarm }) === 'ok' }, { headers: { 'cache-control': 'no-store' } });
 		}
 		if (env.MEDIA && (req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/wp-content/uploads/')) return serveUpload(req, env, url);
 		// Signed invoice PDF download (issue #227). The Worker verifies the HMAC the

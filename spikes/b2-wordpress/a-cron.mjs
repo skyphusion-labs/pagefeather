@@ -62,3 +62,13 @@ export async function approachACronScheduled(event, env, ctx, siteOrigin, build 
 	});
 	ctx.waitUntil(work);
 }
+// #1152 proof (strummer, cf759hx deploy 2): the readback said ok while the legs still ran the old build. The build of
+// the code that ANSWERS a request (cron) is not proof of the build that RUNS the legs. The object also reports alarm:
+// the build its last alarm ran on, written at the alarm's start from that code's own baked-in BUILD_ID (never a value a
+// tick sent). ok only when all three agree; no alarm on record yet is not ok.
+export function cronBuildState({ worker, cron, alarm }) {
+	if (!worker || !cron) return 'unknown';
+	if (cron !== worker) return 'object-stale';
+	if (alarm !== worker) return 'legs-stale';
+	return 'ok';
+}

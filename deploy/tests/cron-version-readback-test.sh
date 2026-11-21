@@ -31,20 +31,33 @@ for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:$PORT/" && break
 # run [wait s] [A_CRON] [VARIANT]
 run() { CRON_VERSION_WAIT_S=${1:-3} CRON_VERSION_EVERY_S=1 A_CRON=${2:-1} VARIANT=${3:-a} cron_version_readback "http://127.0.0.1:$PORT" tok > "$T/out" 2>&1; echo $? > "$T/rc"; }
 
-echo '{"worker":"new","cron":"new","same":true}' > "$T/answers"; run
+echo '{"worker":"new","cron":"new","alarm":"new","state":"ok","same":true}' > "$T/answers"; run
 ok "the same build: ok, rc 0 ($(cat "$T/out"))" "$(grep -q 'ok' "$T/out" && [ "$(cat "$T/rc")" = 0 ] && ! grep -q WARNING "$T/out" && echo 1 || echo 0)"
 
-printf '%s\n' '{"worker":"new","cron":"old","same":false}' > "$T/answers"; run
+printf '%s\n' '{"worker":"new","cron":"old","alarm":"old","state":"object-stale","same":false}' > "$T/answers"; run
 ok "still on the old build after the wait: a WARNING naming both builds, and rc 0 (never fails the deploy)" "$(grep -q 'WARNING' "$T/out" && grep -q 'old' "$T/out" && grep -q 'new' "$T/out" && grep -q '1152' "$T/out" && [ "$(cat "$T/rc")" = 0 ] && echo 1 || echo 0)"
 
-printf '%s\n' '{"worker":"new","cron":"old","same":false}' '{"worker":"new","cron":"new","same":true}' > "$T/answers"; run 5
+printf '%s\n' '{"worker":"new","cron":"old","alarm":"old","state":"object-stale","same":false}' '{"worker":"new","cron":"new","alarm":"new","state":"ok","same":true}' > "$T/answers"; run 5
 ok "it moves on the second read: ok, no warning" "$(grep -q 'ok' "$T/out" && ! grep -q WARNING "$T/out" && echo 1 || echo 0)"
 
-printf '%s\n' '{"worker":"new","cron":"new","same":true}' > "$T/answers"; rm -f "$T/calls"; run 3 0
+printf '%s\n' '{"worker":"new","cron":"new","alarm":"new","state":"ok","same":true}' > "$T/answers"; rm -f "$T/calls"; run 3 0
 ok "A_CRON off: no read at all" "$([ ! -f "$T/calls" ] && [ ! -s "$T/out" ] && echo 1 || echo 0)"
 rm -f "$T/calls"; run 3 1 b-dosql
 ok "not variant a: no read at all" "$([ ! -f "$T/calls" ] && [ ! -s "$T/out" ] && echo 1 || echo 0)"
 
+# #1152 proof (strummer, cf759hx deploy 2): the answering code was new while the legs still ran the old build. Not ok.
+printf '%s\n' '{"worker":"new","cron":"new","alarm":"old","state":"legs-stale","same":false}' > "$T/answers"; run
+ok "the object answers on the new build but its last alarm ran the old one: a WARNING naming the alarm, never ok" "$(grep -q 'WARNING' "$T/out" && grep -q 'alarm' "$T/out" && grep -q 'old' "$T/out" && ! grep -q 'cron object: ok' "$T/out" && echo 1 || echo 0)"
+printf '%s\n' '{"worker":"new","cron":"new","alarm":null,"state":"legs-stale","same":false}' > "$T/answers"; run
+ok "no alarm on record yet: a WARNING, never ok" "$(grep -q 'WARNING' "$T/out" && ! grep -q 'cron object: ok' "$T/out" && echo 1 || echo 0)"
+# The cron object exists exactly when a-settings.sh renders it: with a_cron_on loaded (deploy.sh sources a-settings.sh),
+# its answer decides, so A_CRON unset reads once the default is on (#1164), and a_cron_on false never reads.
+printf '%s\n' '{"worker":"new","cron":"new","alarm":"new","state":"ok","same":true}' > "$T/answers"; rm -f "$T/calls"
+(a_cron_on() { return 0; }; unset A_CRON; CRON_VERSION_WAIT_S=3 CRON_VERSION_EVERY_S=1 VARIANT=a cron_version_readback "http://127.0.0.1:$PORT" tok > "$T/out" 2>&1)
+ok "a_cron_on says on with A_CRON unset: it reads (ok)" "$([ -f "$T/calls" ] && grep -q 'cron object: ok' "$T/out" && echo 1 || echo 0)"
+rm -f "$T/calls"
+(a_cron_on() { return 1; }; A_CRON=1 CRON_VERSION_WAIT_S=3 CRON_VERSION_EVERY_S=1 VARIANT=a cron_version_readback "http://127.0.0.1:$PORT" tok > "$T/out" 2>&1)
+ok "a_cron_on says off: no read, whatever A_CRON says" "$([ ! -f "$T/calls" ] && [ ! -s "$T/out" ] && echo 1 || echo 0)"
 printf '%s\n' 'not json' > "$T/answers"; run 2
 ok "an unreadable answer is a WARNING (could not read), rc 0" "$(grep -q 'WARNING' "$T/out" && grep -qi 'could not' "$T/out" && [ "$(cat "$T/rc")" = 0 ] && echo 1 || echo 0)"
 

@@ -61,3 +61,24 @@ test('#1152 /_cron-build (spike token): the Worker reports its build and the cro
 	assert.match(body, /new Request\('https:\/\/do\.internal\/_build'/);
 	assert.match(body, /Response\.json\(\{ worker: BUILD_ID, cron: /);
 });
+
+// #1152 proof (strummer, cf759hx deploy 2): /_cron-build read "ok, on the deployed build" about 4 s BEFORE the abort,
+// while the cron legs still ran the old version. The code that answers a request is not the code that runs the legs.
+// The object now reports the build its last ALARM ran on (written by the alarm's own code from its baked-in BUILD_ID,
+// never from a tick), and the state is ok only when the Worker, the answering code and the last alarm all agree.
+test('#1152 cronBuildState: ok only when the worker, the object and its last alarm are one build', async () => {
+	const { cronBuildState } = await import('../a-cron.mjs');
+	assert.equal(cronBuildState({ worker: 'new', cron: 'new', alarm: 'new' }), 'ok');
+	assert.equal(cronBuildState({ worker: 'new', cron: 'new', alarm: 'old' }), 'legs-stale', 'the strummer case: answering code new, legs old');
+	assert.equal(cronBuildState({ worker: 'new', cron: 'new', alarm: null }), 'legs-stale', 'no alarm on record yet is not ok');
+	assert.equal(cronBuildState({ worker: 'new', cron: 'old', alarm: 'old' }), 'object-stale');
+	assert.equal(cronBuildState({ worker: null, cron: 'new', alarm: 'new' }), 'unknown');
+	assert.equal(cronBuildState({ worker: 'new', cron: null, alarm: null }), 'unknown');
+});
+test('#1152 index.js: the alarm records its OWN BUILD_ID first, /_build reports it, /_cron-build uses cronBuildState', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /\tasync alarm\(\) \{\n\t\t\/\/ #1152[^\n]*\n(\t\t\/\/[^\n]*\n)*\t\tawait this\.ctx\.storage\.put\(CRON_ALARM_BUILD_KEY, \{ build: BUILD_ID, at: Date\.now\(\) \}\);/);
+	assert.match(src, /if \(url\.pathname === '\/_build'\) \{ const ab = await this\.ctx\.storage\.get\(CRON_ALARM_BUILD_KEY\); return Response\.json\(\{ build: BUILD_ID, alarmBuild: \(ab && ab\.build\) \|\| null, alarmAt: \(ab && ab\.at\) \|\| null,/);
+	assert.match(src, /state: cronBuildState\(\{ worker: BUILD_ID, cron, alarm \}\), same: cronBuildState\(\{ worker: BUILD_ID, cron, alarm \}\) === 'ok'/);
+	assert.doesNotMatch(src, /CRON_ALARM_BUILD_KEY, \{ build: (tick|vp)/, 'never a value a tick wrote');
+});
