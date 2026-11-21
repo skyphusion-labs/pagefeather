@@ -57,6 +57,19 @@ content, and `render_user` checks as the last guard.
 6. **A WordPress-only site** (no WooCommerce, e.g. a Workers Free tier): seed with `SEED_NO_WOO=1`. The seed then skips the
    WooCommerce items and names each one as skipped in `seed.json`; it fails if the site does have `wc/v3`. Run wp and gb only.
 
+## Credentials in collected files (#1291)
+
+A failing request's dump prints the site's Basic credentials. The WooCommerce suite's Axios errors print the full URL, and Playwright's error context prints the request headers. Two shapes:
+- URL userinfo: `https://admin:<password>@<host>/...`
+- an `Authorization: Basic <token>` (or `Bearer`) header, in any quoting.
+
+They are throwaway admin application passwords. Even so, nothing that carries them may leave the box:
+- **`vps-run.sh collect` redacts** the collected text files and the run's `report.json` in place before it archives them (`tests/conformance/redact.py`). The password becomes `***` (`admin:***@`, `Basic ***`). If the redact fails, collect STOPs and archives nothing.
+- **A box or laptop script redacts its own run log** before uploading or sharing it: `tests/conformance/vps-run.sh redact <log>`.
+- **`trace.zip` files stay on the laptop.** A trace records request headers, `Authorization` among them, and a zip cannot be redacted without rewriting it. So `traces-*.tgz` and extracted traces never go into an artifact, an issue, a PR or a results row. Only their findings do: a status, a time, an x-pf-call, a ray.
+
+Check before you share a file: `grep -cE '://[^/ :@]+:[^@ /*]+@|[Aa]uthorization["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"']?[[:space:]]*(Basic|Bearer)[[:space:]]+[A-Za-z0-9+/=._~-]{4,}' <file>` must print 0. Never print the matches themselves.
+
 ## Browsers on Cloudflare Browser Run
 
 `PF_BROWSER=browser-run` runs a suite's browsers on Cloudflare Browser Run (hosted Chromium over CDP) instead of on the
