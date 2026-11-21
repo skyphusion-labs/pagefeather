@@ -16,6 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { B2, boot, engineUnderTest, upstreamRaw } from './engine-contract.mjs';
+import { REASON_MAGIC, applyGate } from './require-env.mjs';
 
 const ENG = join(B2, '../../engine/fileinfo');
 const fx = mkdtempSync(join(tmpdir(), 'fileinfo582-'));
@@ -54,7 +55,15 @@ for (const cls of ['accepted', 'wp-quirk', 'disguise']) {
 		assert.deepEqual(bad, [], bad.length + ' of ' + man.filter((m) => m.class === cls).length + ' differ');
 	});
 }
-test(label + ': the known differences are still different (the documented limit, #582)', () => {
+test(label + ': the known differences are still different (the documented limit, #582)', (t) => {
 	assert.ok(!got.error, got.error);
-	for (const m of man.filter((x) => x.class === 'known-diff')) assert.notEqual(got[m.file], full[m.file], m.file + ' now sniffs as the full database does: update the limit in #582');
+	assert.ok(!full.error, full.error);
+	const known = man.filter((x) => x.class === 'known-diff');
+	const same = known.filter((m) => got[m.file] === full[m.file]);
+	// No MAGIC_FILE, and every known-diff fixture matches the full database: this is
+	// not the trimmed database. The lean-trim engine and a set MAGIC_FILE still run.
+	if (!process.env.MAGIC_FILE && known.length > 0 && same.length === known.length) {
+		if (applyGate(t, { reason: REASON_MAGIC })) return;
+	}
+	for (const m of known) assert.notEqual(got[m.file], full[m.file], m.file + ' now sniffs as the full database does: update the limit in #582');
 });

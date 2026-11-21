@@ -13,6 +13,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { B2, boot, engineUnderTest } from './engine-contract.mjs';
+import { REASON_LAZY, ciIsSet, enforce } from './require-env.mjs';
 
 const require = createRequire(join(B2, 'package.json'));
 const { setPhpIniEntries } = require('@php-wasm/universal');
@@ -59,14 +60,35 @@ async function runtime(mode, opts = {}) {
 }
 
 let primed = null;
+let lazyBlocked = false;
+// The status key is compiled in only by pf-lazy-bodies.patch (ENGINE_LAZY_BODIES=1).
+function lazyMarkerPresent() {
+	const wasm = process.env.ENGINE_WASM || join(B2, 'vendor/php_8_3.wasm');
+	try { return readFileSync(wasm).includes(Buffer.from('pagefeather_lazy_bodies')); }
+	catch { return false; }
+}
+function lazyTest(name, fn) {
+	test(name, async (t) => {
+		try { await fn(t); }
+		catch (err) {
+			if (err && err.preconditionSkip) { t.skip(err.reason); return; }
+			throw err;
+		}
+	});
+}
 async function prime() {
+	if (lazyBlocked) enforce(false, REASON_LAZY);
 	if (primed) return primed;
+	// Outside CI, no marker means skip before a boot. In CI, boot anyway: a lazy
+	// engine whose wasm does not carry the marker must still run, and a non-lazy
+	// engine must fail.
+	if (!lazyMarkerPresent() && !ciIsSet()) { lazyBlocked = true; enforce(false, REASON_LAZY); }
 	const php = await runtime('lazy');
 	const got = await json(php, '<?php ' + PRE + LB + ` foreach (glob($P["dir"] . "/f_*.php") as $f) { if (!opcache_compile_file($f)) { echo json_encode(array("err" => $f)); exit; } }
 		$o = array(); $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($P["oc"], FilesystemIterator::SKIP_DOTS));
 		foreach ($it as $p) { $o[(string) $p] = base64_encode(file_get_contents((string) $p)); } echo json_encode(array("lb" => lbx(), "bins" => $o));`);
 	assert.ok(!got.err, 'prime: could not compile ' + got.err);
-	assert.ok(got.lb && got.lb.dir_entries > 0, 'prime: this engine has no lazy-body directory (not a lazy-body engine); dir_entries ' + String(got.lb && got.lb.dir_entries));
+	if (!(got.lb && got.lb.dir_entries > 0)) { lazyBlocked = true; enforce(false, REASON_LAZY); }
 	assert.ok(Object.keys(got.bins).length >= FIXTURES.length - 1, 'prime: only ' + Object.keys(got.bins).length + ' .bin files');
 	primed = got.bins;
 	return primed;
@@ -88,7 +110,7 @@ async function noFiber() {
 const PROBE = '<?php ' + PRE + '$pf_lb_nofiber = $P["nofiber"]; $pf_lb_case = $P["case"]; $pf_lb_mode = $P["mode"]; require $P["dir"] . "/probe.php";';
 const probe = async (php, c, mode) => json(php, PROBE, { nofiber: await noFiber(), case: c, mode });
 
-test('the probe cases answer the same lazy, eager and compiled, and pass their lazy checks (tests 1 to 11, 13)', async () => {
+lazyTest('the probe cases answer the same lazy, eager and compiled, and pass their lazy checks (tests 1 to 11, 13)', async () => {
 	const bins = await prime();
 	const rt = { lazy: await runtime('lazy', { bins }), script: await runtime('script', { bins }), eager: await runtime('eager', { bins }), compiled: await runtime('compiled', { bins }) };
 	for (const c of CASES) {
@@ -107,14 +129,14 @@ test('the probe cases answer the same lazy, eager and compiled, and pass their l
 	}
 });
 
-test('red control: the lazy checks fail on the eager runtime (they can see a missing lazy load)', async () => {
+lazyTest('red control: the lazy checks fail on the eager runtime (they can see a missing lazy load)', async () => {
 	const bins = await prime();
 	const php = await runtime('eager', { bins });
 	const got = await probe(php, 'plain', 'lazy');
 	assert.ok(got.fail.length > 0, 'the lazy checks passed on a runtime that loads every body at once');
 });
 
-test('test 12: a body read held back by pagefeatherRead still loads (Suspending inside the opcode handler)', async () => {
+lazyTest('test 12: a body read held back by pagefeatherRead still loads (Suspending inside the opcode handler)', async () => {
 	const bins = await prime();
 	const h = { on: false, hits: 0 };
 	const read = (stream) => (h.on && String(stream.path || '').endsWith('/f_delay.php.bin')) ? (h.hits++, ms(25)) : null;
@@ -129,7 +151,7 @@ test('test 12: a body read held back by pagefeatherRead still loads (Suspending 
 	assert.equal(b[1].body_fail, 0);
 });
 
-test('test 14: a remote read that fails once: the call throws, NOTHING is installed, the next call loads', async () => {
+lazyTest('test 14: a remote read that fails once: the call throws, NOTHING is installed, the next call loads', async () => {
 	const bins = await prime();
 	const h = { rejectOnce: false, rejected: 0 };
 	const read = (stream) => {
@@ -153,7 +175,7 @@ test('test 14: a remote read that fails once: the call throws, NOTHING is instal
 	assert.equal(b[1].body_fail, 0);
 });
 
-test('test 16: observers see each call of a lazy function once, and count the real body (stats build only)', async (t) => {
+lazyTest('test 16: observers see each call of a lazy function once, and count the real body (stats build only)', async (t) => {
 	const bins = await prime();
 	const php = await runtime('lazy', { bins });
 	if ((await text(php, '<?php echo function_exists("pagefeather_opcache_stats") ? "yes" : "no";')).trim() !== 'yes') {
