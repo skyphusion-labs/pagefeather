@@ -5,6 +5,7 @@
 #   vps-run.sh install  <suite> <work-dir>             clone the suite at its pin, install it
 #   vps-run.sh baseline <suite> <work-dir> <run-dir>   run it on STOCK upstream (wp-env, Docker)
 #   vps-run.sh run      <suite> <work-dir> <run-dir>   run it on OUR throwaway (needs <run-dir>/env)
+#   vps-run.sh collect  <suite> <work-dir> <run-dir> <tarball>   tar the run's Playwright outputDir copy (#1211)
 #   box toolchain: git, Node (each suite pins its own), Docker for the baselines, and for wc also php-cli and composer
 #   suites: wp (wordpress-develop), wc (WooCommerce core profile), wc-api (its api-tests, the same checkout),
 #           wc-cpt (the wc @hpos tests with HPOS OFF, upstream envs/default-hpos-disabled; the same checkout), gb (Gutenberg)
@@ -45,7 +46,7 @@ echo "vps-run: running a private copy of itself (from ${PF_VPS_RUN_HERE:?})" >&2
 here=$PF_VPS_RUN_HERE
 unset PF_VPS_RUN_SELF PF_VPS_RUN_HERE
 . "$here/pins.env"
-act=${1:?usage: vps-run.sh install|baseline|run <suite> <work-dir> [run-dir]}
+act=${1:?usage: vps-run.sh install|baseline|run|collect <suite> <work-dir> [run-dir] [tarball]}
 suite=${2:?suite: wp wc wc-api wc-cpt gb}
 work=${3:?work-dir}
 case "$suite" in
@@ -236,5 +237,16 @@ case "$act" in
     [ "${DRY:-0}" = 1 ] || [ "${PF_CONFORMANCE_SUITE:-}" = "$suite" ] || { echo "vps-run: $run/env is for suite '${PF_CONFORMANCE_SUITE:-}', not '$suite'" >&2; exit 2; }
     playwright "$src"
     ;;
-  *) echo "vps-run: unknown action '$act' (install baseline run)" >&2; exit 2 ;;
+  collect)
+    # #1211: the traces, screenshots and videos of a run are Playwright's outputDir, which the wc arm copies to
+    # <run-dir>/test-results after each run. A driver that tarred another folder (sb1120 wcb2: <run-dir>/artifacts) got an
+    # empty archive and lost every trace. So the collect step lives here, next to the copy, and an empty one is a STOP.
+    run=${4:?run-dir}; out=${5:?tarball}
+    [ -d "$run/test-results" ] || { echo "vps-run: STOP: no $run/test-results to collect (did the run reach its test phase?)" >&2; exit 3; }
+    n_all=$(find "$run/test-results" -type f | wc -l | tr -d ' ')
+    [ "$n_all" -gt 0 ] || { echo "vps-run: STOP: $run/test-results has no files" >&2; exit 3; }
+    x tar -czf "$out" -C "$run" test-results
+    echo "vps-run: collected $n_all files from $run/test-results into $out: $(find "$run/test-results" -name trace.zip | wc -l | tr -d ' ') trace.zip, $(find "$run/test-results" -name '*.png' | wc -l | tr -d ' ') png, $(find "$run/test-results" -name '*.webm' | wc -l | tr -d ' ') webm"
+    ;;
+  *) echo "vps-run: unknown action '$act' (install baseline run collect)" >&2; exit 2 ;;
 esac

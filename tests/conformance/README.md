@@ -83,6 +83,10 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
    - WooCommerce: the setup projects run first. Then `runner.py check-state` checks `.state/admin.json` and `.state/customer.json`. Then the tests run with `--no-deps`.
    - `check-state` sends each saved login to `/wp-admin/`. A redirect to `wp-login.php`, or the login form, STOPS the run.
    - WooCommerce's upstream `reset` project is NOT run: `woocommerce-cleanup` would wipe the seed. The seed is the reset.
+   - **The evidence (#1211):** take a run's traces, screenshots and videos with `vps-run.sh collect <suite> <work-dir> <run-dir> <tarball>`, before the box goes.
+     - Playwright writes them to its outputDir (for wc, the checkout's `tests/e2e/test-results`). After each wc run, vps-run.sh copies that folder to `<run-dir>/test-results`, and collect tars it from there.
+     - `<run-dir>/artifacts` holds the logins, not the traces: an archive of it has no traces (sb1120 wcb2 lost every trace this way).
+     - With no `test-results` folder, or an empty one, collect STOPS (exit 3) and writes no archive.
 7. **The rows:**
    - Run `runner.py summarize` on each `report.json`.
    - Then run `runner.py compare --baseline <base-run>/results.json --ours <our-run>/results.json`.
