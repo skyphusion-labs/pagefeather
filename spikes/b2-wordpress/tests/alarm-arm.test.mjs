@@ -92,7 +92,8 @@ test('rearm: a future or just-due alarm is untouched', async () => {
 test('index.js: every alarm it sets is recorded (no bare storage.setAlarm), and /_purgestate reports the record', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.equal(/\.storage\.setAlarm\(/.test(src), false, 'no bare this.ctx.storage.setAlarm( in index.js');
-	assert.equal((src.match(/await setAlarmRecorded\(this\.ctx\.storage/g) || []).length, 6, 'the purge request, the purge retry, the budget wait, the email-due retry, the Action Scheduler backlog (#1120), and the approach A tick moving an idle alarm earlier to due work (#1164)');
+	assert.equal((src.match(/await setAlarmRecorded\(this\.ctx\.storage/g) || []).length, 7, 'the purge request, the purge retry, the budget wait, the email-due retry, the Action Scheduler backlog (#1120), the approach A tick moving an idle alarm earlier to due work (#1164), and the cron object taking an approach A email-due wake (#1215)');
+	assert.match(src, /if \(dueAt !== null\) await setAlarmRecorded\(this\.ctx\.storage, dueAt, nowDue, 'email-due'\);/, 'the #1215 site is recorded as email-due');
 	assert.match(src, /await extendIfOurs\(this\.ctx\.storage, this\.tickAt, idle\.alarmAt/, 'the #390 idle back-off is recorded too, through extendIfOurs (alarm-arm.mjs)');
 	const ps = src.slice(src.indexOf("url.pathname === '/_purgestate'"), src.indexOf("url.pathname === '/_purgestate'") + 600);
 	assert.ok(/alarmSet: \(await this\.ctx\.storage\.get\(ALARM_SET_KEY\)\) \|\| null/.test(ps), '/_purgestate reports alarmSet');
