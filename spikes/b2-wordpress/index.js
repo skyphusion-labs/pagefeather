@@ -19,7 +19,7 @@ import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
 import { cronBounds, cronCleanDue, cronLegDue, cronAsBudgetMs, cronMore, cronBacklogNext, cronBacklogDue, cronBacklogGapMs, backlogStreak } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronRunDeferred, cronMarkOf, cronFatalOf } from './cron-health.mjs';
-import { approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME } from './a-cron.mjs';
+import { approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME, CRON_BUILD_HEADER, CRON_BUILD_PATH, cronVersionAbort } from './a-cron.mjs';
 import { isMediaUploadRequest, markerKey, sweepUploadOrphans, dropMarkersOn } from './upload-intent.mjs';
 import { cronFailureLine } from './cron-error.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
@@ -2293,6 +2293,9 @@ const CRON_SKIP_KEY = 'cron-skip';
 const CRON_CLEAN_KEY = 'cron-cleaned-at';
 // The start of the last cron leg (#470, cron-bound.mjs cronLegDue).
 const CRON_LAST_KEY = 'cron-last-start';
+// #1152: a tick's build that differs from this object's (stored by the tick), and when this object last reset onto it.
+const CRON_VERSION_PENDING_KEY = 'cron-version-pending';
+const CRON_VERSION_ABORT_KEY = 'cron-version-abort';
 // #1120: the end of a leg that made progress with Action Scheduler work still due (cron-bound.mjs cronBacklogNext); the next leg is due by it.
 const CRON_BACKLOG_KEY = 'cron-backlog';
 // #1120 review: { n, due }, the soon legs in a row without progress against as_due (cron-bound.mjs backlogStreak).
@@ -3185,6 +3188,17 @@ export class PhpRuntime extends DurableObject {
 		// The next tick is armed FIRST (#291, alarm-arm.mjs armBeforeRun): a run killed below (an
 		// isolate reset) still leaves a future alarm. A purge retry sets a sooner one, which replaces it.
 		this.tickAt = await armBeforeRun(this.ctx.storage, Date.now(), Number((this.env && this.env.CRON_INTERVAL_MS) || 60000));
+		// #1152: a tick from a newer (or other) Worker build. At the START of the leg (the next tick is armed above; nothing
+		// is claimed yet; no PHP run in flight in this isolate), reset onto the deployed version: the next event starts the
+		// new code. At most once per VERSION_ABORT_GAP_MS (a split deployment's ticks alternate builds: no flapping).
+		const vp = await this.ctx.storage.get(CRON_VERSION_PENDING_KEY);
+		if (vp && phpPending === 0 && cronVersionAbort({ own: BUILD_ID, tick: vp.build, lastAbortAt: await this.ctx.storage.get(CRON_VERSION_ABORT_KEY), now: Date.now() })) {
+			await this.ctx.storage.put(CRON_VERSION_ABORT_KEY, Date.now());
+			await this.ctx.storage.delete(CRON_VERSION_PENDING_KEY);
+			console.log(JSON.stringify({ '@event': 'cron-version-abort', m: 'cron-version-abort', own: BUILD_ID, tick: vp.build }));
+			this.ctx.abort('cron-version');
+			return;
+		}
 		// No error leaves alarm() (#291): a throw spends the platform retry budget, and an object that
 		// used it up got no alarm at all afterwards. The error is stored for /_purgestate instead.
 		try {
@@ -3513,6 +3527,10 @@ export class PhpRuntime extends DurableObject {
 			if (!tickOrigin) return new Response('missing ' + ORIGIN_HEADER, { status: 500 });
 			lastOrigin = tickOrigin;
 			await this.ctx.storage.put(ORIGIN_KEY, tickOrigin);
+			// #1152: the Worker's build. A differing one is recorded; the reset happens at the start of the next alarm leg.
+			const tickBuild = raw.headers.get(CRON_BUILD_HEADER);
+			if (tickBuild && tickBuild !== BUILD_ID) await this.ctx.storage.put(CRON_VERSION_PENDING_KEY, { build: tickBuild, at: Date.now() });
+			else if (tickBuild) await this.ctx.storage.delete(CRON_VERSION_PENDING_KEY);
 			const watch = await snapshotRearm(this.ctx.storage, Date.now(), Number(env.CRON_INTERVAL_MS || 60000));
 			if (watch.state !== 'ok') console.log(JSON.stringify({ m: 'alarm', rearmedBy: 'a-cron-tick', was: watch.state }));
 			const pulled = await pullIn(this.ctx.storage, Date.now(), Number(env.CRON_INTERVAL_MS || 60000), 'a-cron-tick');
@@ -4250,6 +4268,19 @@ const site = {
 		}
 		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
+		// #1152: the Worker's build and the cron object's (its /_build answers from the object's own code), so a deploy can
+		// tell whether the cron object moved to the new version. Spike token (the gate above).
+		if (url.pathname === CRON_BUILD_PATH) {
+			if (!approachACronEnabled(env) || !env.PHP_RUNTIME) return Response.json({ worker: BUILD_ID, cron: null, why: 'no A_CRON cron object' }, { headers: { 'cache-control': 'no-store' } });
+			const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(CRON_OBJECT_NAME));
+			let cron = null;
+			try {
+				const r = await stub.fetch(new Request('https://do.internal/_build', { headers: { 'x-spike-token': env.SPIKE_TOKEN, 'x-wp-public-origin': siteOrigin(env, url) } }));
+				const j = await r.json();
+				cron = j && typeof j.build === 'string' ? j.build : null;
+			} catch { cron = null; }
+			return Response.json({ worker: BUILD_ID, cron, same: cron === BUILD_ID }, { headers: { 'cache-control': 'no-store' } });
+		}
 		if (env.MEDIA && (req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/wp-content/uploads/')) return serveUpload(req, env, url);
 		// Signed invoice PDF download (issue #227). The Worker verifies the HMAC the
 		// browserRender op minted and streams the PDF from R2; PHP never holds the secret.
@@ -4486,7 +4517,7 @@ export default {
 		return consumeEmailQueue(batch, env);
 	},
 	async scheduled(event, env, ctx) {
-		return approachACronScheduled(event, env, ctx, siteOrigin);
+		return approachACronScheduled(event, env, ctx, siteOrigin, BUILD_ID);
 	},
 };
 

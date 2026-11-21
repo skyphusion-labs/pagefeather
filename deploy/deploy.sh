@@ -230,6 +230,8 @@ fi
 # 1b. Data plane.
 # shellcheck source=lib/recorded-inputs.sh
 . "$ROOT/deploy/lib/recorded-inputs.sh"
+# shellcheck source=lib/cron-version.sh
+. "$ROOT/deploy/lib/cron-version.sh"
 log "terraform: $VARIANT data plane for $NAME ($LOCATION)"
 backend "$TF"; mkdir -p "$TF/sites"
 {
@@ -407,6 +409,8 @@ fi
 
 # #734: OBJECT_CACHE_VERSIONS is on by default for variant a; its versions table is installed here and read back.
 if [ "$VARIANT" = a ] && [ "${OBJECT_CACHE_VERSIONS:-1}" != 0 ]; then a_ocv_install "$URL" "$SPIKE_TOKEN" || exit 1; fi
+# #1152: did the cron object (A_CRON=1) move to this build? A WARNING if not within CRON_VERSION_WAIT_S; never a failure.
+cron_version_readback "$URL" "$SPIKE_TOKEN"
 
 PW_HINT="(admin; password: cd deploy/terraform && terraform workspace select $NAME && terraform output -raw admin_password)"
 [ "${BENCH:-1}" = 0 ] && { echo "$URL $PW_HINT"; exit 0; }
