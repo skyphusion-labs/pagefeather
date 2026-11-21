@@ -6,6 +6,7 @@
 #   vps-run.sh baseline <suite> <work-dir> <run-dir>   run it on STOCK upstream (wp-env, Docker)
 #   vps-run.sh run      <suite> <work-dir> <run-dir>   run it on OUR throwaway (needs <run-dir>/env)
 #   vps-run.sh collect  <suite> <work-dir> <run-dir> <tarball>   tar the run's Playwright outputDir copy (#1211)
+#   vps-run.sh redact   <file or dir>...   redact site credentials in place (#1291); run it on any log before it leaves the box
 #   box toolchain: git, Node (each suite pins its own), Docker for the baselines, and for wc also php-cli and composer and corepack
 #   suites: wp (wordpress-develop), wc (WooCommerce core profile), wc-api (its api-tests, the same checkout),
 #           wc-cpt (the wc @hpos tests with HPOS OFF, upstream envs/default-hpos-disabled; the same checkout), gb (Gutenberg)
@@ -46,7 +47,9 @@ echo "vps-run: running a private copy of itself (from ${PF_VPS_RUN_HERE:?})" >&2
 here=$PF_VPS_RUN_HERE
 unset PF_VPS_RUN_SELF PF_VPS_RUN_HERE
 . "$here/pins.env"
-act=${1:?usage: vps-run.sh install|baseline|run|collect <suite> <work-dir> [run-dir] [tarball]}
+# #1291: a box script runs "vps-run.sh redact <its run log>" before uploading it. collect redacts its own files.
+if [ "${1:-}" = redact ]; then shift; exec python3 -I "$here/redact.py" "$@"; fi
+act=${1:?usage: vps-run.sh install|baseline|run|collect <suite> <work-dir> [run-dir] [tarball], or redact <path>...}
 suite=${2:?suite: wp wc wc-api wc-cpt gb}
 work=${3:?work-dir}
 case "$suite" in
@@ -260,6 +263,11 @@ case "$act" in
     [ -d "$run/$rel" ] || { echo "vps-run: STOP: no $run/$rel to collect (did the $suite run reach its test phase?)" >&2; exit 3; }
     n_all=$(find "$run/$rel" -type f | wc -l | tr -d ' ')
     [ "$n_all" -gt 0 ] || { echo "vps-run: STOP: $run/$rel has no files" >&2; exit 3; }
+    # #1291: a failing request's dump can carry the site's Basic credentials (URL userinfo, an Authorization header).
+    # Redact the collected text files and the run's report before anything is archived. A failed redact is a STOP:
+    # never tar what was not redacted. trace.zip is binary and stays as it is: traces stay laptop-only.
+    rfiles=("$run/$rel"); [ -f "$run/report.json" ] && rfiles+=("$run/report.json")
+    x python3 -I "$here/redact.py" "${rfiles[@]}" || { echo "vps-run: STOP: the credential redact failed; nothing archived (#1291)" >&2; exit 3; }
     x tar -czf "$out" -C "$run/$(dirname "$rel")" "$(basename "$rel")"
     echo "vps-run: collected $n_all files from $run/$rel into $out: $(find "$run/$rel" -name trace.zip | wc -l | tr -d ' ') trace.zip, $(find "$run/$rel" -name '*.png' | wc -l | tr -d ' ') png, $(find "$run/$rel" -name '*.webm' | wc -l | tr -d ' ') webm"
     ;;
