@@ -18,6 +18,23 @@ for f in index.php wp-includes/js/wp-emoji-loader.min.js wp-includes/js/wp-embed
          wp-content/plugins/woocommerce/assets/js/frontend.js wp-content/plugins/woocommerce/assets/images/card.svg \
          wp-content/plugins/woocommerce/readme.txt wp-admin/css/common.css wp-admin/css/common.min.css \
          wp-includes/images/icon-library/arrow-down.svg wp-includes/images/wpicons.svg; do mk "$f"; done
+# #1205: a plugin or theme block names its stylesheets in block.json ("file:./view.css"); core registers the handle
+# with realpath() of that file on the PHP side (register_block_style_handle), so a pruned file gave an EMPTY src: no
+# link, no inline copy (router-styles 9 of 9; 41 WooCommerce block stylesheets).
+for f in wp-content/plugins/blk/build/view.css wp-content/plugins/blk/build/view-rtl.css wp-content/plugins/blk/build/style-index.css \
+         wp-content/plugins/blk/build/style-index-rtl.css wp-content/plugins/blk/build/index.css wp-content/plugins/blk/build/unused.css \
+         wp-content/plugins/blk/shared/base.css wp-content/themes/tt5/blocks/hero/hero.css wp-content/plugins/bad/block.json; do mk "$f"; done
+cat > "$W/wp-content/plugins/blk/build/block.json" <<'JSON'
+{ "name": "blk/router", "style": "file:./style-index.css", "viewStyle": [ "file:./view.css", "blk-handle" ], "editorStyle": "file:./index.css", "viewScriptModule": "file:./view.js" }
+JSON
+cat > "$W/wp-content/plugins/blk/build/second/block.json" 2>/dev/null || { mkdir -p "$W/wp-content/plugins/blk/build/second"; }
+cat > "$W/wp-content/plugins/blk/build/second/block.json" <<'JSON'
+{ "name": "blk/second", "style": "file:../../shared/base.css" }
+JSON
+cat > "$W/wp-content/themes/tt5/blocks/hero/block.json" <<'JSON'
+{ "name": "tt5/hero", "style": "file:./hero.css" }
+JSON
+printf 'not json {' > "$W/wp-content/plugins/bad/block.json"
 bash "$HERE/prune-php-tree.sh" "$W" > "$T/out" 2>&1; rc=$?
 ok "prune-php-tree.sh runs (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
 has() { [ -e "$W/$1" ] && echo 1 || echo 0; }
@@ -33,6 +50,12 @@ ok "the icon library SVGs stay (WP_Icons_Registry reads them at runtime, /wp/v2/
 ok "  another core svg still goes" "$(gone wp-includes/images/wpicons.svg)"
 ok "plugins keep their .js and .svg" "$([ "$(has wp-content/plugins/woocommerce/assets/js/frontend.js)$(has wp-content/plugins/woocommerce/assets/images/card.svg)" = 11 ] && echo 1 || echo 0)"
 ok "a theme's style.css stays, its other .css goes" "$([ "$(has wp-content/themes/tt5/style.css)$(gone wp-content/themes/tt5/other.css)" = 11 ] && echo 1 || echo 0)"
+ok "#1205: a plugin block.json style, viewStyle (array form) and editorStyle stay" "$([ "$(has wp-content/plugins/blk/build/style-index.css)$(has wp-content/plugins/blk/build/view.css)$(has wp-content/plugins/blk/build/index.css)" = 111 ] && echo 1 || echo 0)"
+ok "#1205: and their -rtl siblings (core loads them on an RTL site)" "$([ "$(has wp-content/plugins/blk/build/view-rtl.css)$(has wp-content/plugins/blk/build/style-index-rtl.css)" = 11 ] && echo 1 || echo 0)"
+ok "#1205: a path that climbs out of the block's folder (file:../../shared/base.css) stays" "$(has wp-content/plugins/blk/shared/base.css)"
+ok "#1205: a theme block's stylesheet stays" "$(has wp-content/themes/tt5/blocks/hero/hero.css)"
+ok "#1205: a plugin .css no block.json names still goes" "$(gone wp-content/plugins/blk/build/unused.css)"
+ok "#1205: a block.json that is not JSON does not stop the prune" "$([ $rc = 0 ] && echo 1 || echo 0)"
 ok ".min.css stays, an unminified .css goes" "$([ "$(has wp-admin/css/common.min.css)$(gone wp-admin/css/common.css)" = 11 ] && echo 1 || echo 0)"
 ok "PHP and a plugin readme: the php stays, the .txt goes" "$([ "$(has index.php)$(has wp-content/plugins/woocommerce/woocommerce.php)$(gone wp-content/plugins/woocommerce/readme.txt)" = 111 ] && echo 1 || echo 0)"
 ok "build.sh prunes through prune-php-tree.sh (one rule, not two)" "$(grep -qE '^\./prune-php-tree\.sh "\$wp"' "$HERE/build.sh" && ! grep -q -- "-name '\*\.webp'.*-delete" "$HERE/build.sh" && echo 1 || echo 0)"
