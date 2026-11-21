@@ -105,3 +105,38 @@ test('#1170 lever index.js: Pages answers a cache-only request before site.fetch
 	assert.match(f, /pageVersions\.pageVersionsOn\(ENV, dbHandler\) \? await versionedPagesRequest\(req, h, ENV\)/, 'the same versioned cache key as the gateway');
 	assert.match(f, /outcome: 'cache-hit'/);
 });
+
+// #1226: a refused self-fetch returns in the hop check, before selfFetchOnPool, so it logged no
+// self-fetch line. A count of 0 lines could not tell a refusal from a hop never sent. Each same-host
+// refusal exit (guard, object, no pool, held cap) logs exactly one line, with the reason, and with
+// no body and no query string.
+test('#1226 index.js: every hop-check refusal for the site own host logs one self-fetch line', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const hopStart = src.indexOf('const self = selfFetchRoute({ sameHost: isSelfHost(url)');
+	const hopEnd = src.indexOf("res = self.route === 'pool'", hopStart);
+	assert.ok(hopStart > 0 && hopEnd > hopStart, 'the hop check');
+	const hop = src.slice(hopStart, hopEnd);
+	assert.equal((hop.match(/return out;/g) || []).length, 1, 'the four refusal reasons share one exit');
+	const ret = hop.indexOf('return out;');
+	const lines = hop.split('\n').filter((l) => l.includes("m: 'self-fetch'") && !l.trim().startsWith('//') && !l.trim().startsWith('*'));
+	assert.equal(lines.length, 1, 'exactly one self-fetch line on that exit');
+	const logAt = hop.indexOf(lines[0]);
+	assert.ok(logAt > 0 && logAt < ret, 'the line is logged before the return');
+	assert.match(lines[0], /self\.route === 'refuse'/);
+	assert.match(lines[0], /console\.log\(JSON\.stringify\(\{ m: 'self-fetch', outcome: 'refused', why, method, path: url\.pathname, iso: ISOLATE_ID, parent: runCallId \}\)\)/);
+	assert.doesNotMatch(lines[0], /search|\.href|\bbody\b|query/, 'no body and no query string');
+	// Each refusal reason is the why on that one line. An outbound host refusal is not a self-fetch.
+	const exits = [
+		[{ ...base, inObject: true, overflowed: true }, SELF_REFUSAL_GUARD],
+		[{ ...base, inObject: true }, SELF_REFUSAL_OBJECT],
+		[{ ...base, poolAvailable: false }, SELF_REFUSAL_NO_POOL],
+		[{ ...base, capped: true }, SELF_REFUSAL_CAPPED],
+	];
+	for (const [input, why] of exits) {
+		const r = selfFetchRoute(input);
+		assert.equal(r.route, 'refuse', why);
+		assert.equal(r.why, why);
+	}
+	assert.match(hop, /self\.route === 'refuse' \? self\.why/, 'the exit logs that why');
+	assert.match(hop, /self\.route === 'out' \? httpRefusal\(url\)/, 'an outbound refusal stays on the http line only');
+});
