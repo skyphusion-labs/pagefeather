@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { probeArm, coloFromTrace, traceColo, renderRequest, PROBE_HEADER } from '../placement-probe.mjs';
+import { probeArm, coloFromTrace, traceColo, renderRequest, probeObjectName, PROBE_HEADER, PROBE_TRACED_HEADER } from '../placement-probe.mjs';
 
 const KEY = 'k'.repeat(24);
 const req = (v) => new Request('https://x.example/product/a/?pfprobe=1', { headers: v === undefined ? {} : { [PROBE_HEADER]: v } });
@@ -45,11 +45,42 @@ test('#1277 index.js wires it: gateway renders direct/render arms before the pag
 	const gw = src.slice(src.indexOf('export default {'));
 	assert.ok(gw.indexOf('probeArm(req, env)') > 0 && gw.indexOf('probeArm(req, env)') < gw.indexOf('if (pageCacheRoute(req, url, env)) {'), 'the gateway checks the probe before the page cache');
 	const route = src.slice(src.indexOf('function pageCacheRoute(req, url, env) {'), src.indexOf('function pageCacheHeaders('));
-	assert.match(route, /!\['direct', 'render'\]\.includes\(probeArm\(req, env\)\)/, 'direct and render never go to the page cache');
+	assert.match(route, /!\['direct', 'render', 'object', 'object-new'\]\.includes\(probeArm\(req, env\)\)/, 'direct, render and the object arms never go to the page cache');
 	assert.match(gw, /if \(probeColo\) \{[\s\S]{0,200}noStoreAnywhere\(pout\.headers\)/, 'a gateway probe answer is never stored');
 	const pages = src.slice(src.indexOf('export class Pages extends WorkerEntrypoint {'), src.indexOf('export default {'));
 	assert.match(pages, /probeArm\(req, this\.env\)/);
 	assert.match(pages, /probe !== 'loop' \? await site\.fetch\(req, this\.env, this\.ctx\) : await this\.ctx\.exports\.default\.fetch\(renderRequest\(req, this\.env\.PLACEMENT_PROBE_KEY\)\)/);
 	assert.equal((src.match(/x-pf-probe-colo-(pages|render)/g) || []).length >= 2, true);
 	assert.ok((pages.match(/noStoreAnywhere\(/g) || []).length >= 2, 'a probe answer from Pages is never stored');
+});
+
+// The object arms (#1277 issuecomment-7064796127): a Durable Object runs where it was first created, so a pool object
+// is measured where it lives. object: the existing pool object ovf-0. object-new: a fresh probe-only object made with
+// the pool's location hint (PLACEMENT_PROBE_OBJECT names it; a new value is a new object).
+test('#1277 the object arms are arms, behind the same key', () => {
+	for (const a of ['object', 'object-new']) {
+		assert.equal(probeArm(req(a + ':' + KEY), { PLACEMENT_PROBE_KEY: KEY }), a);
+		assert.equal(probeArm(req(a + ':' + KEY), {}), null, a + ' is off without a key');
+	}
+});
+test('#1277 probeObjectName: a probe-only name, never a pool name, sanitised', () => {
+	assert.equal(probeObjectName({}), 'pfprobe-a');
+	assert.equal(probeObjectName({ PLACEMENT_PROBE_OBJECT: 'w1' }), 'pfprobe-w1');
+	assert.equal(probeObjectName({ PLACEMENT_PROBE_OBJECT: 'Bad Name!/..' }), 'pfprobe-a', 'not [a-z0-9-]{1,16}: the default');
+	assert.equal(probeObjectName({ PLACEMENT_PROBE_OBJECT: 'x'.repeat(17) }), 'pfprobe-a');
+	assert.doesNotMatch(probeObjectName({ PLACEMENT_PROBE_OBJECT: 'ovf-0' }), /^ovf-/);
+});
+test('#1277 index.js wires the object arms: forwarded with the pool hint before the overflow decision; the object traces once', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const route = src.slice(src.indexOf('function pageCacheRoute(req, url, env) {'), src.indexOf('function pageCacheHeaders('));
+	assert.match(route, /!\['direct', 'render', 'object', 'object-new'\]\.includes\(probeArm\(req, env\)\)/, 'object arms never go to the page cache');
+	const ovAt = src.indexOf('const ovs = overflowSettings(env);');
+	const fwd = src.indexOf("return toPhpObject(req, env, url, ctx, { name: objProbe === 'object' ? overflowName(0) : probeObjectName(env), hint: ovs.hint, overflow: true, callId: crypto.randomUUID() });");
+	assert.ok(fwd > ovAt && fwd < src.indexOf('if (ovs.on && env.PHP_RUNTIME', ovAt), 'forwarded with the pool hint, before the overflow decision');
+	const obj = src.slice(src.indexOf('export class PhpRuntime extends DurableObject {'));
+	const at = obj.indexOf('async fetch(raw) {');
+	const body = obj.slice(at, at + 2500);
+	assert.match(body, /!raw\.headers\.has\(PROBE_TRACED_HEADER\)/, 'the object traces once (no recursion)');
+	assert.match(body, /x-pf-probe-colo-object/);
+	assert.match(body, /noStoreAnywhere\(oout\.headers\)/, 'an object probe answer is never stored');
 });
