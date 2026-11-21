@@ -34,6 +34,30 @@ Under the `CRON_SIMULATE_COLD=1` test seam (a forced cold wake on every alarm), 
 
 Deactivating WooCommerce in wp-admin, on an isolate that WooCommerce already warmed, can return 500. The cause is the 128 MiB isolate cap. A skip of WooCommerce, as the media-upload path uses, cannot apply, because the request is about WooCommerce itself. The lever is memory headroom, mainly lazy MEMFS nodes (`LAZY_NODES=on`, #218). The store Container (approach C) was retired (#214), so it is not the fix here. That is separate from the open question of where wp-admin runs (Workers or a Container), which is decided after the new engine is fully tested.
 
+## The guest page cache
+
+### A page that depends on a request header must say so
+
+The guest page cache stores a page under its path and query string. It does not store a page for a request that has a
+WordPress cookie (a logged-in user, a cart, a comment author), an `Authorization` header (Basic auth, application
+passwords), or a path in the no-cache list (`/wp-admin`, `/wp-login.php`, `/wp-json`, `/cart`, `/checkout`,
+`/my-account` and the others in `PAGE_CACHE_NO_PATH` in `spikes/b2-wordpress/index.js`).
+
+For every other guest GET, the cache follows the response's own headers:
+
+- `Cache-Control: private`, `no-store` or `no-cache`: the page is not stored.
+- `Vary`: a page that sends `Vary: X-Something` is not served to a later request that has no `X-Something` header
+  (measured). A request with a different `X-Something` value was not measured, so do not rely on `Vary` alone for a
+  page that is different for each caller.
+- No `Vary` and none of those `Cache-Control` values: the page is stored by URL, and every later guest at that URL gets
+  the same copy for the cache time (`PAGE_CACHE_TTL`, 120 s by default).
+
+So a theme or plugin that builds a different guest page from a request header (a custom header, a device or region
+header, an API key in a header) must send `Vary` naming that header, or `Cache-Control: no-cache` (WordPress's
+`nocache_headers()`) or `private`. For a page that is different for each caller, send `private` or `no-cache`
+rather than rely on `Vary`. Without one of them, the first answer at that URL is the one that guests get. This is how any
+cache that keys by URL behaves; a site behind a CDN has the same rule.
+
 ## Provisioning
 
 ### Durable email through Queues is not yet a default
