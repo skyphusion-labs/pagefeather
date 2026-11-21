@@ -34,3 +34,11 @@ test('#1186 the email-due wake never arms from an overflowed request or on a cro
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.match(src, /if \(emailDueRequest && ctx && ctx\.storage && !ctx\.overflowed && !aCronObjectOff\(ENV\)\) \{/);
 });
+// #1194 review (rollins): the email-due guard reads ctx.overflowed, but on main the object's ctx did not carry it (it
+// came with #1157's self-fetch work), so the pool half of the guard was always true. Pin both ends: the object puts the
+// overflow mark on the ctx it hands to handle(), and the guard reads that field.
+test('#1186 the object ctx carries overflowed, so the email-due guard can see a pool request', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /const ctx = \{ inObject: true, overflowed, storage: this\.ctx\.storage,/);
+	assert.match(src, /if \(emailDueRequest && ctx && ctx\.storage && !ctx\.overflowed && !aCronObjectOff\(ENV\)\) \{/);
+});
