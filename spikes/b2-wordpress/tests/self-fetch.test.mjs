@@ -34,7 +34,7 @@ test('#1157 index.js: every bridge hop asks selfFetchRoute, sends pool hops thro
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.match(src, /const self = selfFetchRoute\(\{ sameHost: isSelfHost\(url\), inObject: Boolean\(ocCtx && ocCtx\.inObject\), overflowed: Boolean\(ocCtx && ocCtx\.overflowed\), poolAvailable: selfFetchPoolAvailable\(ENV, ovs\), capped: overHeld\(ovs, ovHeld\) \}\);/);
 	assert.match(src, /res = self\.route === 'pool' \? await selfFetchOnPool\(url, method, headers, body, signal\) : await fetch\(url, \{ method, headers, body, redirect: 'manual', signal \}\);/);
-	assert.match(src, /toPhpObject\(new Request\(url, \{ method, headers, body, signal \}\), ENV, url, null, \{ name: overflowName\(i\), hint: ovs\.hint, overflow: true, callId \}\)/);
+	assert.match(src, /toPhpObject\(new Request\(url, \{ method, headers, body, signal, redirect: 'manual' \}\), ENV, url, null, \{ name: SELF_FETCH_OBJECT, hint: ovs\.hint, overflow: true, callId \}\)/);
 	assert.match(src, /m: 'self-fetch'/);
 	assert.doesNotMatch(src, /function httpRefusal\(url\) \{\n[^\n]*\n\tif \(bootOrigin && url\.hostname === new URL\(bootOrigin\)\.hostname\)/, 'the old blanket refusal is gone');
 });
@@ -51,4 +51,32 @@ test('#1157 same-isolate guard: an object finds an in-flight hop of its own isol
 	assert.match(src, /if \(selfFetchSameIsolate\(overflowed, raw\.headers\.get\(CALL_HEADER\)\)\) \{\n\t+return new Response\(null, \{ status: 503, headers: \{ \[SELF_SAME_ISOLATE_HEADER\]: '1'/);
 	assert.match(src, /selfFetchCalls\.add\(callId\);/);
 	assert.match(src, /\} finally \{\n\t\tselfFetchCalls\.delete\(callId\);/);
+});
+
+// #1170 live (strummer, cf759hx at b234810): the routing worked, but each try picked a different COLD pool object (a boot
+// plus two PHP runs for the 301), 5.8 to 8.6 s, past WordPress's 5 s timeout; and a timed-out hop left no self-fetch line.
+test('#1170 self-fetches go to ONE named pool object, kept warm by its own use, outside the client picker', async () => {
+	const { SELF_FETCH_OBJECT } = await import('../self-fetch.mjs');
+	assert.equal(SELF_FETCH_OBJECT, 'ovf-self');
+	const { overflowName } = await import('../overflow.mjs');
+	for (let i = 0; i < 128; i++) assert.notEqual(overflowName(i), SELF_FETCH_OBJECT, 'never one the client overflow picks');
+});
+test('#1170 every self-fetch outcome is named for its log line', async () => {
+	const { selfFetchOutcome } = await import('../self-fetch.mjs');
+	assert.equal(selfFetchOutcome({ status: 200, aborted: false, error: null, sameIsolate: false }), 'ok');
+	assert.equal(selfFetchOutcome({ status: 301, aborted: false, error: null, sameIsolate: false }), 'ok', 'a redirect is an answer; the bridge loop checks the next hop');
+	assert.equal(selfFetchOutcome({ status: null, aborted: true, error: new Error('x'), sameIsolate: false }), 'timeout');
+	assert.equal(selfFetchOutcome({ status: 200, aborted: true, error: null, sameIsolate: false }), 'timeout', 'aborted wins');
+	assert.equal(selfFetchOutcome({ status: null, aborted: false, error: new Error('x'), sameIsolate: false }), 'error');
+	assert.equal(selfFetchOutcome({ status: 503, aborted: false, error: null, sameIsolate: true }), 'same-isolate');
+});
+test('#1170 index.js: the self-fetch line is logged on EVERY path (before any throw), with the outcome', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const f = src.slice(src.indexOf('async function selfFetchOnPool('), src.indexOf('function httpRefusal(url)'));
+	const log = f.indexOf("m: 'self-fetch'");
+	assert.ok(log > 0, 'logged');
+	assert.equal((f.match(/m: 'self-fetch'/g) || []).length, 1, 'one line for every outcome');
+	for (const t of ['throw signal.reason', 'throw err', 'throw new Error(SELF_REFUSAL_SAME_ISOLATE)']) assert.ok(f.indexOf(t) > log, t + ' comes after the line');
+	assert.match(f, /outcome, status: r \? r\.status : null, ms: Date\.now\(\) - t0/);
+	assert.doesNotMatch(f, /picker\.pick\(\)/, 'no random pool pick');
 });

@@ -65,7 +65,7 @@ import { aPerfLine } from './perf-line.mjs';
 import { templateQueuePriority, templateLookupYield, templateLookupForwardYield } from './template-boot.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse, overflowHeldToPool } from './overflow.mjs';
-import { selfFetchRoute, selfFetchPoolAvailable, selfFetchCalls, selfFetchSameIsolate, SELF_SAME_ISOLATE_HEADER, SELF_REFUSAL_SAME_ISOLATE } from './self-fetch.mjs';
+import { selfFetchRoute, selfFetchPoolAvailable, selfFetchCalls, selfFetchSameIsolate, selfFetchOutcome, SELF_FETCH_OBJECT, SELF_SAME_ISOLATE_HEADER, SELF_REFUSAL_SAME_ISOLATE } from './self-fetch.mjs';
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
 import { PURGE_GAP_MS, NO_CACHE_API, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
@@ -2763,29 +2763,30 @@ function isSelfHost(url) {
 }
 // #1157: one same-host hop on a pool object. It counts toward this isolate's held overflow requests (#714), as a
 // forwarded client request does, and a content change's purge handed back is scheduled by this Worker.
+// #1170: always the one named object SELF_FETCH_OBJECT (kept warm by its own use), redirect: 'manual' (the bridge loop
+// checks and sends each next hop), and one self-fetch line on every outcome, before any throw.
 async function selfFetchOnPool(url, method, headers, body, signal) {
 	const ovs = overflowSettings(ENV);
-	const picker = ovPickerFor(ovs.pool);
-	const i = picker.pick();
 	const callId = crypto.randomUUID();
 	const t0 = Date.now();
-	picker.start(i);
 	ovHeld++;
 	selfFetchCalls.add(callId);
-	let r;
+	let r = null;
+	let err = null;
 	try {
-		r = await toPhpObject(new Request(url, { method, headers, body, signal }), ENV, url, null, { name: overflowName(i), hint: ovs.hint, overflow: true, callId });
+		r = await toPhpObject(new Request(url, { method, headers, body, signal, redirect: 'manual' }), ENV, url, null, { name: SELF_FETCH_OBJECT, hint: ovs.hint, overflow: true, callId });
+	} catch (e) {
+		err = e;
 	} finally {
 		selfFetchCalls.delete(callId);
 		ovHeld--;
-		picker.end(i);
 	}
-	if (signal.aborted) throw signal.reason || new Error('timeout');
-	if (r.status === 503 && r.headers.get(SELF_SAME_ISOLATE_HEADER) === '1') {
-		console.log(JSON.stringify({ m: 'self-fetch', iso: ISOLATE_ID, obj: overflowName(i), refused: 'same-isolate', call: callId, parent: runCallId }));
-		throw new Error(SELF_REFUSAL_SAME_ISOLATE);
-	}
-	console.log(JSON.stringify({ m: 'self-fetch', iso: ISOLATE_ID, obj: overflowName(i), method, path: url.pathname, status: r.status, ms: Date.now() - t0, call: callId, parent: runCallId }));
+	const sameIsolate = Boolean(r && r.status === 503 && r.headers.get(SELF_SAME_ISOLATE_HEADER) === '1');
+	const outcome = selfFetchOutcome({ status: r ? r.status : null, aborted: signal.aborted, error: err, sameIsolate });
+	console.log(JSON.stringify({ m: 'self-fetch', iso: ISOLATE_ID, obj: SELF_FETCH_OBJECT, method, path: url.pathname, outcome, status: r ? r.status : null, ms: Date.now() - t0, call: callId, parent: runCallId, ...(err ? { error: String((err && err.message) || err).slice(0, 160) } : {}) }));
+	if (outcome === 'timeout') throw signal.reason || err || new Error('timeout');
+	if (err) throw err;
+	if (sameIsolate) throw new Error(SELF_REFUSAL_SAME_ISOLATE);
 	if (r.headers.get('x-cache-purge') === 'front' && ocCtx) schedulePurge(ocCtx);
 	return r;
 }

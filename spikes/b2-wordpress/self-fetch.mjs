@@ -44,3 +44,17 @@ export function selfFetchRoute({ sameHost, inObject, overflowed, poolAvailable, 
 export function selfFetchPoolAvailable(env, ovs) {
 	return Boolean(env && env.PHP_RUNTIME && ovs && ovs.on && env.PHP_IN_DO !== 'on' && env.DB_IN_DO !== 'on');
 }
+
+// #1170 live (strummer, cf759hx): each try picked a different COLD pool object, a boot plus two PHP runs (the 301), 5.8
+// to 8.6 s, past WordPress's 5 s timeout. Self-fetches now go to ONE named object, outside the client picker's names,
+// kept warm by its own use. Each hop is sent with redirect: 'manual', so a redirect comes back to the bridge loop, which
+// checks the next hop like the first and sends a same-host one to the same warm object.
+export const SELF_FETCH_OBJECT = 'ovf-self';
+
+// The outcome named on the self-fetch line, which is logged on every path (a timeout left no line before).
+export function selfFetchOutcome({ status, aborted, error, sameIsolate }) {
+	if (aborted) return 'timeout';
+	if (error) return 'error';
+	if (sameIsolate) return 'same-isolate';
+	return status === null || status === undefined ? 'error' : 'ok';
+}
