@@ -753,6 +753,11 @@ jobs:
           npm ci --silent --no-audit --no-fund
           ./prepare.sh
           node --test tests/heap-subarray.test.mjs
+      - name: A missing engine precondition skips outside CI and fails in CI (issue #1241)
+        # The six suites that need --expose-gc, the lean loader, a lazy-body engine, or
+        # MAGIC_FILE. This step runs them both ways. prepare.sh above vendors the pinned
+        # lean engine: full fileinfo database, no lazy bodies.
+        run: node --test spikes/b2-wordpress/tests/require-env.test.mjs
       - name: engine-contract.mjs removes its engine582 temp dir on exit (issue #612)
         # Imports the real module. Reuses the npm ci in the step above (@php-wasm/universal).
         # Does not boot the engine, so it does not need prepare.sh.

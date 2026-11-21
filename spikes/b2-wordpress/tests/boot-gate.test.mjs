@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GATE_DEFAULTS, gateSettings, expectedMiB, decide, BootRefused, bootRefusedResponse, createGateClock, withBootRefusal } from '../boot-gate.mjs';
 import * as gateModule from '../boot-gate.mjs';
+import { applyGate, needGc } from './require-env.mjs';
 
 const S = { ...GATE_DEFAULTS, on: true, refused: [] };
 
@@ -124,8 +125,8 @@ test('the refusal: a typed error, and a fast known 503 that no cache keeps', asy
 // #705 review, finding 6: the old form held the buffer strongly and could not fail. Here the test keeps only a
 // WeakRef. The gate reads what a released runtime leaves alive: it must be alive, at full size, beside the new
 // runtime BEFORE a collection, and gone after one, which proves the test holds nothing itself.
-test('the signal is real: a released runtime\'s memory stays alive at full size until V8 collects it, and the test holds none of it', async () => {
-	assert.equal(typeof globalThis.gc, 'function', 'run with node --expose-gc');
+test('the signal is real: a released runtime\'s memory stays alive at full size until V8 collects it, and the test holds none of it', async (t) => {
+	if (applyGate(t, needGc())) return;
 	const { boot, engineUnderTest, B2 } = await import('./engine-contract.mjs');
 	const { createRequire } = await import('node:module');
 	const { join } = await import('node:path');

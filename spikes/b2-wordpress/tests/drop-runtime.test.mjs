@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRetirer } from '../runtime-drop.mjs';
+import { applyGate, needGc } from './require-env.mjs';
 
 const fakePhp = (name) => ({ name });
 
@@ -60,8 +61,8 @@ test('null is ignored, a throwing release never escapes, and each runtime is rel
 	assert.equal(r.pending, 0);
 });
 
-test('after the release, the retirer keeps no reference: the runtime is collected', async () => {
-	assert.equal(typeof globalThis.gc, 'function', 'run with node --expose-gc');
+test('after the release, the retirer keeps no reference: the runtime is collected', async (t) => {
+	if (applyGate(t, needGc())) return;
 	const r = createRetirer(() => {});
 	let ref;
 	(() => {

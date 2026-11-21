@@ -9,15 +9,28 @@
 // destroy(): it closes the socket without awaiting anything.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { LeanMysql as RealLean } from '../mysql-lean.js';
+import { applyGate, needLeanLoader } from './require-env.mjs';
 
+const leanGate = await needLeanLoader();
 const lean = (globalThis.__lean ??= { connect: null });
-const bridge = await import('../mysql-lean-bridge.js?fake');
+let RealLean;
+let bridge;
+if (!leanGate) {
+	({ LeanMysql: RealLean } = await import('../mysql-lean.js'));
+	bridge = await import('../mysql-lean-bridge.js?fake');
+}
+// Tests that drive the loader. Source checks below stay on test() and run either way.
+function live(name, fn) {
+	test(name, async (t) => {
+		if (applyGate(t, leanGate)) return;
+		return fn(t);
+	});
+}
 const ENV = { HYPERDRIVE: { host: 'h', user: 'u', password: 'p', database: 'd', port: 3306 } };
 const never = () => new Promise(() => {});
 const okConn = (extra = {}) => ({ query: async () => ({ kind: 'ok', affectedRows: 1, insertId: 0 }), end: async () => {}, destroy: () => {}, ...extra });
 
-test('LeanMysql.destroy() closes the socket at once, even when a write would never settle', () => {
+live('LeanMysql.destroy() closes the socket at once, even when a write would never settle', () => {
 	let closed = 0;
 	const socket = { writable: { getWriter: () => ({ write: never, releaseLock: () => {} }) }, readable: { getReader: () => ({ read: never, releaseLock: () => {} }) }, close: () => { closed++; return never(); } };
 	const c = new RealLean(socket);
@@ -29,7 +42,7 @@ test('LeanMysql.destroy() closes the socket at once, even when a write would nev
 	c.destroy();
 	assert.equal(closed, 1, 'once');
 });
-test('RED-then-GREEN: mysqlEnd on a connection whose end() never settles returns within the bound and destroys it', async () => {
+live('RED-then-GREEN: mysqlEnd on a connection whose end() never settles returns within the bound and destroys it', async () => {
 	let destroyed = 0;
 	lean.connect = async () => okConn({ end: never, destroy: () => { destroyed++; } });
 	bridge.mysqlReset();
@@ -39,7 +52,7 @@ test('RED-then-GREEN: mysqlEnd on a connection whose end() never settles returns
 	assert.ok(Date.now() - t0 < 3500, 'bounded (END_MS 2 s), not hung: ' + (Date.now() - t0) + ' ms');
 	assert.equal(destroyed, 1);
 });
-test('a transient connect failure is retried once, and the run proceeds (not 17 failed statements)', async () => {
+live('a transient connect failure is retried once, and the run proceeds (not 17 failed statements)', async () => {
 	let calls = 0;
 	lean.connect = async () => { calls++; if (calls === 1) throw new Error('Network connection lost.'); return okConn(); };
 	bridge.mysqlReset();
@@ -47,14 +60,14 @@ test('a transient connect failure is retried once, and the run proceeds (not 17 
 	assert.equal(calls, 2);
 	await bridge.mysqlEnd();
 });
-test('mysqlOneShot is bounded: an end() that never settles still returns its answer within the bound', async () => {
+live('mysqlOneShot is bounded: an end() that never settles still returns its answer within the bound', async () => {
 	lean.connect = async () => okConn({ end: never });
 	const t0 = Date.now();
 	const r = await bridge.mysqlOneShot(ENV, 'SELECT 1');
 	assert.equal(r.ok, true);
 	assert.ok(Date.now() - t0 < 3500, 'bounded: ' + (Date.now() - t0) + ' ms');
 });
-test('mysqlOneShot: a connect that never settles answers ok:false within the connect bound (two attempts)', async () => {
+live('mysqlOneShot: a connect that never settles answers ok:false within the connect bound (two attempts)', async () => {
 	lean.connect = never;
 	const t0 = Date.now();
 	const r = await bridge.mysqlOneShot(ENV, 'SELECT 1');
@@ -98,21 +111,21 @@ async function eventsDuring(fn) {
 	return lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((o) => o && o.m);
 }
 const named = (ev, m) => ev.filter((o) => o.m === m && o['@event'] === m);
-test('EVENT: a run connect that never settles logs connect-timeout for each of its two attempts', async () => {
+live('EVENT: a run connect that never settles logs connect-timeout for each of its two attempts', async () => {
 	lean.connect = never;
 	bridge.mysqlReset();
 	const ev = await eventsDuring(async () => { assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'SELECT 1' })).ok, false); });
 	assert.deepEqual(named(ev, 'connect-timeout').map((o) => o.attempt), [1, 2], JSON.stringify(ev));
 	await bridge.mysqlEnd();
 });
-test('EVENT: a run end() that never settles logs db-end-timeout after end', async () => {
+live('EVENT: a run end() that never settles logs db-end-timeout after end', async () => {
 	lean.connect = async () => okConn({ end: never });
 	bridge.mysqlReset();
 	assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'SELECT 1' })).ok, true);
 	const ev = await eventsDuring(() => bridge.mysqlEnd());
 	assert.deepEqual(named(ev, 'db-end-timeout').map((o) => o.after), ['end'], JSON.stringify(ev));
 });
-test('EVENT: an end() while the connect is still pending logs db-end-timeout after pending-connect', async () => {
+live('EVENT: an end() while the connect is still pending logs db-end-timeout after pending-connect', async () => {
 	lean.connect = never;
 	bridge.mysqlReset();
 	const ev = await eventsDuring(async () => {
@@ -123,12 +136,12 @@ test('EVENT: an end() while the connect is still pending logs db-end-timeout aft
 	});
 	assert.ok(named(ev, 'db-end-timeout').some((o) => o.after === 'pending-connect'), JSON.stringify(ev));
 });
-test('EVENT: mysqlOneShot logs connect-timeout through its own connector too', async () => {
+live('EVENT: mysqlOneShot logs connect-timeout through its own connector too', async () => {
 	lean.connect = never;
 	const ev = await eventsDuring(async () => { assert.equal((await bridge.mysqlOneShot(ENV, 'SELECT 1')).ok, false); });
 	assert.deepEqual(named(ev, 'connect-timeout').map((o) => o.attempt), [1, 2], JSON.stringify(ev));
 });
-test('EVENT: a healthy run logs neither event (so a zero count is a real zero)', async () => {
+live('EVENT: a healthy run logs neither event (so a zero count is a real zero)', async () => {
 	lean.connect = async () => okConn();
 	bridge.mysqlReset();
 	const ev = await eventsDuring(async () => {
@@ -159,7 +172,7 @@ function scripted(answers) { // each connection answers from its own list; every
 }
 const rows = { kind: 'rows', columns: [{ name: 'ID', characterSet: 33 }], rows: [[Buffer.from('1')]] };
 const okw = { kind: 'ok', affectedRows: 1, insertId: 0 };
-test('#1178 a SELECT whose socket closes mid-packet is retried ONCE on a new connection, with the right answer', async () => {
+live('#1178 a SELECT whose socket closes mid-packet is retried ONCE on a new connection, with the right answer', async () => {
 	const st = scripted([[new Error(MID)], [rows]]);
 	const r = await bridge.mysqlQuery(ENV, { mysql: "SELECT ID FROM wp_users WHERE user_login = 'admin'" });
 	assert.equal(r.ok, true, JSON.stringify(r));
@@ -168,7 +181,7 @@ test('#1178 a SELECT whose socket closes mid-packet is retried ONCE on a new con
 	assert.ok(st.destroyed >= 1, 'the dead connection is torn down');
 	await bridge.mysqlEnd();
 });
-test('#1178 a write whose socket closes mid-packet is NOT retried, and the next statement gets a new connection', async () => {
+live('#1178 a write whose socket closes mid-packet is NOT retried, and the next statement gets a new connection', async () => {
 	const st = scripted([[new Error(MID)], [rows]]);
 	const w = await bridge.mysqlQuery(ENV, { mysql: "UPDATE wp_options SET option_value = 'x' WHERE option_name = 'y'" });
 	assert.equal(w.ok, false);
@@ -179,7 +192,7 @@ test('#1178 a write whose socket closes mid-packet is NOT retried, and the next 
 	assert.equal(st.connects, 2);
 	await bridge.mysqlEnd();
 });
-test('#1178 inside a transaction a connection fault is not retried, and the rest of the run fails until its end', async () => {
+live('#1178 inside a transaction a connection fault is not retried, and the rest of the run fails until its end', async () => {
 	const st = scripted([[okw, new Error(MID)], [okw]]);
 	assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'START TRANSACTION' })).ok, true);
 	const r = await bridge.mysqlQuery(ENV, { mysql: 'SELECT ID FROM wp_posts' });
@@ -191,7 +204,7 @@ test('#1178 inside a transaction a connection fault is not retried, and the rest
 	assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'SELECT 1' })).ok, true, 'the next run starts clean');
 	await bridge.mysqlEnd();
 });
-test('#1178 a statement error (the SQL itself) is never retried', async () => {
+live('#1178 a statement error (the SQL itself) is never retried', async () => {
 	const e = Object.assign(new Error("Table 'd.wp_x' doesn't exist"), { errno: 1146 });
 	const st = scripted([[e], [rows]]);
 	const r = await bridge.mysqlQuery(ENV, { mysql: 'SELECT * FROM wp_x' });
@@ -199,7 +212,7 @@ test('#1178 a statement error (the SQL itself) is never retried', async () => {
 	assert.equal(st.connects, 1);
 	await bridge.mysqlEnd();
 });
-test('#1178 session-state reads are never retried on a new connection (FOUND_ROWS, LAST_INSERT_ID, GET_LOCK, FOR UPDATE)', async () => {
+live('#1178 session-state reads are never retried on a new connection (FOUND_ROWS, LAST_INSERT_ID, GET_LOCK, FOR UPDATE)', async () => {
 	for (const q of ['SELECT FOUND_ROWS()', 'SELECT LAST_INSERT_ID()', "SELECT GET_LOCK('x', 0)", 'SELECT * FROM wp_posts WHERE ID = 1 FOR UPDATE']) {
 		const st = scripted([[new Error(MID)], [rows]]);
 		assert.equal((await bridge.mysqlQuery(ENV, { mysql: q })).ok, false, q);
@@ -217,7 +230,7 @@ test('#1178 session-state reads are never retried on a new connection (FOUND_ROW
 // - the only session SETs (the DDL path, the SQL import) run inside BEGIN ... COMMIT, where nothing reconnects;
 // - nothing sets time_zone.
 // User @variables and TEMPORARY tables are excluded from the retry anyway.
-test('#1179 review: the retry sends the byte-identical statement (a per-statement sql_mode hint comes along)', async () => {
+live('#1179 review: the retry sends the byte-identical statement (a per-statement sql_mode hint comes along)', async () => {
 	const st = scripted([[new Error(MID)], [rows]]);
 	const q = "SELECT /*+ SET_VAR(sql_mode = 'NO_ENGINE_SUBSTITUTION') */ ID FROM wp_users";
 	assert.equal((await bridge.mysqlQuery(ENV, { mysql: q })).ok, true);
@@ -235,7 +248,7 @@ test('#1179 review: the session setup is in the handshake, never a per-connectio
 	assert.match(db, /public function set_sql_mode\( \$modes = array\(\) \) \{\}/, 'nor sql_mode');
 	assert.match(db, /skyphusion_hd_call\( 'BEGIN' \);[\s\S]*SET SESSION sql_mode/, 'the DDL path SETs only inside a transaction (never retried)');
 });
-test('#1179 review: reads using @user variables are never retried', async () => {
+live('#1179 review: reads using @user variables are never retried', async () => {
 	for (const q of ['SELECT @pf_x', 'SELECT ID FROM wp_posts WHERE ID > @last']) {
 		const st = scripted([[new Error(MID)], [rows]]);
 		assert.equal((await bridge.mysqlQuery(ENV, { mysql: q })).ok, false, q);
@@ -246,7 +259,7 @@ test('#1179 review: reads using @user variables are never retried', async () => 
 	assert.equal((await bridge.mysqlQuery(ENV, { mysql: "SELECT ID FROM wp_users WHERE user_email = 'a@b.example'" })).ok, true, 'an @ inside a string literal is not a variable');
 	await bridge.mysqlEnd();
 });
-test('#1179 review: reads of a TEMPORARY table this run created are never retried', async () => {
+live('#1179 review: reads of a TEMPORARY table this run created are never retried', async () => {
 	const st = scripted([[okw, new Error(MID)], [rows]]);
 	assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'CREATE TEMPORARY TABLE IF NOT EXISTS `pf_tmp` (id INT)' })).ok, true);
 	assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'SELECT id FROM pf_tmp' })).ok, false);
@@ -266,7 +279,7 @@ test('#1179 temp-table names with regex metacharacters are matched exactly, as t
 	assert.equal(retryableRead('SELECT pf_tmp_count FROM wp_x', new Set(['pf_tmp'])), true, 'a token, not a substring');
 	assert.deepEqual(sqlIdentifiers("SELECT a.`b c` FROM `t` WHERE x = 'pf_tmp'"), ['select', 'a', 'b c', 'from', 't', 'where', 'x'], 'literals are not identifiers');
 });
-test('#1179 a backtick-quoted temp table with metacharacters is tracked, and its reads are not retried', async () => {
+live('#1179 a backtick-quoted temp table with metacharacters is tracked, and its reads are not retried', async () => {
 	const st = scripted([[okw, new Error(MID)], [rows]]);
 	assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'CREATE TEMPORARY TABLE `pf.t+1` (id INT)' })).ok, true);
 	assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'SELECT id FROM `pf.t+1`' })).ok, false);
@@ -274,7 +287,7 @@ test('#1179 a backtick-quoted temp table with metacharacters is tracked, and its
 	await bridge.mysqlEnd();
 });
 
-test('#1169 the lean bridge counts its connects (n and ms) for the perf line; index-a-lean.js registers them', async () => {
+live('#1169 the lean bridge counts its connects (n and ms) for the perf line; index-a-lean.js registers them', async () => {
 	const s0 = bridge.mysqlConnStats();
 	scripted([[rows]]);
 	assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'SELECT 1' })).ok, true);

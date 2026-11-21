@@ -3,9 +3,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createLedger } from '../mem-ledger.mjs';
+import { applyGate, needGc } from './require-env.mjs';
 
-test('one memory registered by two runtimes is one live memory, and collected once', async () => {
-	assert.equal(typeof globalThis.gc, 'function', 'run with node --expose-gc');
+test('one memory registered by two runtimes is one live memory, and collected once', async (t) => {
+	if (applyGate(t, needGc())) return;
 	const ledger = createLedger();
 	(() => {
 		const mem = new WebAssembly.Memory({ initial: 16 });
