@@ -447,6 +447,11 @@ jobs:
         # sets. A Bearer header, bad base64, or no colon sets nothing. No log line
         # carries the header or the decoded values.
         run: node --test spikes/b2-wordpress/tests/php-auth.test.mjs
+      - name: PHP_SELF is SCRIPT_NAME . PATH_INFO, so an unknown path answers 404 (issue #1195)
+        # php-self.mjs: php-wasm set PHP_SELF to the requested path on its internal redirect to
+        # /index.php, and core's parse_request then read an unknown path as the home page (a soft 404).
+        # The test drives the real PHPRequestHandler over a fake runtime.
+        run: node --test spikes/b2-wordpress/tests/php-self.test.mjs
       - name: email-queue unit tests
         run: node --test spikes/b2-wordpress/tests/email-queue.test.mjs
       - name: async email wiring (#856)
