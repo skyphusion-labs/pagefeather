@@ -423,6 +423,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/memfs-held.test.mjs
       - name: the placement probe is off by default, key-gated, and never stored (issue #1277)
         run: node --test spikes/b2-wordpress/tests/placement-probe.test.mjs
+      - name: approach A boots count the scripts compiled from source, opCompiled (issue #1253)
+        run: node --test spikes/b2-wordpress/tests/opcache-compiled.test.mjs
       - name: b-dosql the headroom probe streams its reach, off by default (issue #394)
         run: node --test spikes/b2-wordpress/tests/headroom.test.mjs
       - name: b-dosql a dropped runtime is released once nothing uses it (issue #566)

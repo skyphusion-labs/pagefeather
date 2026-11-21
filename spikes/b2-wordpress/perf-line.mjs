@@ -35,6 +35,7 @@ export function aPerfLine(f) {
 		opHits: num(f.opHits),
 		opMisses: num(f.opMisses),
 		opCached: num(f.opCached),
+		opCompiled: num(f.opCompiled), // #1253: .bin files written this request = scripts compiled from source
 		opFull: typeof f.opFull === 'boolean' ? f.opFull : undefined,
 		rfN: num(f.rfN),
 		rfKiB: num(f.rfKiB),

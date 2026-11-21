@@ -78,6 +78,7 @@ import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
 import siteZip from './build/site.zip';
 import { memfsHeld, fsSampleWhy } from './memfs-held.mjs';
 import { probeArm, traceColo, renderRequest, probeObjectName, PROBE_TRACED_HEADER } from './placement-probe.mjs';
+import { plainFileCount } from './opcache-compiled.mjs';
 // Compiled PHP (OPcache file cache) made by opcache.sh with this same PHP build.
 import opcacheZip from './build/opcache.zip';
 // #1022: the bundle's own zips, a fixed cost (#394 floor probes): memfs-held.mjs leaves views of them out.
@@ -626,7 +627,7 @@ async function stageUpload(req, env) {
 }
 
 function newStats() {
-	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, reinflates: 0, lazyWrites: 0, rfN: 0, rfBytes: 0, rfMs: 0, rfFail: 0, rfCapped: 0, rfRetry: 0, rsN: 0, rsBytes: 0, rsMs: 0, rsFail: 0, rsCapped: 0, rsRetry: 0, dbTables: {}, ocGroups: {}, ocCalls: 0, ocHits: 0, l2N: 0, l2Ms: 0, l2Hits: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
+	return { calls: 0, ms: 0, failures: [], log: [], r2: {}, rowsRead: 0, rowsWritten: 0, inflates: 0, inflateBytes: 0, reinflates: 0, lazyWrites: 0, opRewrites: 0, rfN: 0, rfBytes: 0, rfMs: 0, rfFail: 0, rfCapped: 0, rfRetry: 0, rsN: 0, rsBytes: 0, rsMs: 0, rsFail: 0, rsCapped: 0, rsRetry: 0, dbTables: {}, ocGroups: {}, ocCalls: 0, ocHits: 0, l2N: 0, l2Ms: 0, l2Hits: 0, httpCalls: 0, httpMs: 0, txnOps: 0, undoRows: 0 };
 }
 
 // Every statement failure goes through here. resetFailTotal counts the isolate memory resets among
@@ -964,6 +965,7 @@ function attachLazyContents(node, size, dataFn, tag) {
 			contents = c ? c.slice() : null;
 			written = true;
 			stats.lazyWrites++;
+			if (tag && tag.src === 'opcache') stats.opRewrites++; // #1253: a packed .bin rewritten = a packed script recompiled
 		};
 		node.stream_ops = Object.assign(Object.create(wbase), {
 			write(stream, buffer, offset, length, position, canOwn) {
@@ -3278,6 +3280,17 @@ function importInto(db, storage, text, replace, append) {
 	return { ok: true, statements: n, end };
 }
 
+// #1253: an opcacheStats result plus the file cache's plain-file count and the packed-rewrite counter (null-safe).
+function opcacheMark(st, php) {
+	if (!st) return st;
+	let plain = null;
+	try {
+		plain = plainFileCount(php[__private__dont__use].FS.lookupPath(OPCACHE_DIR).node);
+	} catch {
+		plain = null;
+	}
+	return { ...st, plain, rewrites: stats.opRewrites || 0 };
+}
 // OPcache statistics of the runtime (php.run, not a WordPress request).
 // opHits subtracts 1: this script's own compile counts as a hit or a miss.
 async function opcacheStats(php) {
@@ -5174,16 +5187,18 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			emailDueRequest = false;
 			const r2before = JSON.stringify(stats.r2);
 			const r2start = JSON.parse(r2before);
-			// OPcache counters before and after, only when a spike-token holder asks (two extra php.run calls).
-			const wantOpcache = spikeOk && req.headers.get('x-perf-opcache') === '1'; // #1078: on approach A too
-			const op0 = wantOpcache ? await opcacheStats(php) : null;
+			// OPcache counters before and after (two extra php.run calls): on a boot request, where a cold boot's CPU is
+			// (#1253, #1169 issuecomment-7065037907), and when a spike-token holder asks (#1078). opCompiled from the file
+			// cache: the .bin files written during the request (opcachePlain, stats.opRewrites).
+			const wantOpcache = booted || (spikeOk && req.headers.get('x-perf-opcache') === '1');
+			const op0 = wantOpcache ? opcacheMark(await opcacheStats(php), php) : null;
 			const tPhp = Date.now();
 			lastMemTrace = null;
 			const r = await handler.request({ url: url.pathname + url.search, method: req.method, headers, body });
 			// #716: NOT CPU. Date.now() moves only at I/O on Cloudflare, so this is PHP's wall time at I/O points; a CPU-bound
 			// render reads near 0. Cite the invocation's $workers.cpuTimeMs for CPU (docs/perf-dosql.md, "Citing CPU").
 			const phpOnlyMs = Date.now() - tPhp;
-			const op1 = wantOpcache ? await opcacheStats(php) : null;
+			const op1 = wantOpcache ? opcacheMark(await opcacheStats(php), php) : null;
 			// Approach A: close this request's MySQL connection after the response.
 			if (dbHandler) (ctx ? ctx.waitUntil(dbHandler.end()) : dbHandler.end());
 			if (ctx && ctx.exports && purgeRequested) schedulePurge(ctx);
@@ -5458,7 +5473,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 			} else {
 				// #1078: approach A (PHP in the Worker, index-a.js) logs the same timing line, so a tail can time a real suite
 				// request: wall, boot, PHP time, and the query count and round-trip total (one bridge call per MySQL query).
-				console.log(JSON.stringify(aPerfLine({ id: memIdOf(req, env).id, method: req.method, path: url.pathname, status: r.httpStatusCode, iso: ISOLATE_ID, lockWaitMs: runLockWaitMs, isoAgeS: Math.round((Date.now() - isolateStart) / 1000), rt: runtimeSerial, rtAgeS: Math.round((Date.now() - runtimeBootAt) / 1000), boot: booted, bootWaitMs, phpMs: phpOnlyMs, dbN: d.calls, dbMs: d.ms, ...(() => { const conn1 = dbConnStats(); return { dbConnN: conn1 ? conn1.n - conn0.n : undefined, dbConnMs: conn1 ? conn1.ms - conn0.ms : undefined }; })(), wallMs: Date.now() - tBoot, wasm1MiB: Math.round(wasmBytes / 1048576), recycled: recycleWhy || null, rfN: stats.rfN - remote0.rfN, rfKiB: Math.round((stats.rfBytes - remote0.rfBytes) / 1024), rfMs: stats.rfMs - remote0.rfMs, rfFail: stats.rfFail - remote0.rfFail, rsN: stats.rsN - remote0.rsN, rsKiB: Math.round((stats.rsBytes - remote0.rsBytes) / 1024), rsMs: stats.rsMs - remote0.rsMs, rsFail: stats.rsFail - remote0.rsFail, httpN: stats.httpCalls - start.httpCalls, httpMs: stats.httpMs - (start.httpMs || 0), inflates: stats.inflates - start.inflates, inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024), ocCalls: stats.ocCalls - start.ocCalls, ocHits: stats.ocHits - start.ocHits, l2N: stats.l2N - start.l2N, l2Hits: stats.l2Hits - start.l2Hits, l2Misses: (stats.l2N - start.l2N) - (stats.l2Hits - start.l2Hits), l2Ms: stats.l2Ms - start.l2Ms, ...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full } : {}) })));
+				console.log(JSON.stringify(aPerfLine({ id: memIdOf(req, env).id, method: req.method, path: url.pathname, status: r.httpStatusCode, iso: ISOLATE_ID, lockWaitMs: runLockWaitMs, isoAgeS: Math.round((Date.now() - isolateStart) / 1000), rt: runtimeSerial, rtAgeS: Math.round((Date.now() - runtimeBootAt) / 1000), boot: booted, bootWaitMs, phpMs: phpOnlyMs, dbN: d.calls, dbMs: d.ms, ...(() => { const conn1 = dbConnStats(); return { dbConnN: conn1 ? conn1.n - conn0.n : undefined, dbConnMs: conn1 ? conn1.ms - conn0.ms : undefined }; })(), wallMs: Date.now() - tBoot, wasm1MiB: Math.round(wasmBytes / 1048576), recycled: recycleWhy || null, rfN: stats.rfN - remote0.rfN, rfKiB: Math.round((stats.rfBytes - remote0.rfBytes) / 1024), rfMs: stats.rfMs - remote0.rfMs, rfFail: stats.rfFail - remote0.rfFail, rsN: stats.rsN - remote0.rsN, rsKiB: Math.round((stats.rsBytes - remote0.rsBytes) / 1024), rsMs: stats.rsMs - remote0.rsMs, rsFail: stats.rsFail - remote0.rsFail, httpN: stats.httpCalls - start.httpCalls, httpMs: stats.httpMs - (start.httpMs || 0), inflates: stats.inflates - start.inflates, inflateKiB: Math.round((stats.inflateBytes - start.inflateBytes) / 1024), ocCalls: stats.ocCalls - start.ocCalls, ocHits: stats.ocHits - start.ocHits, l2N: stats.l2N - start.l2N, l2Hits: stats.l2Hits - start.l2Hits, l2Misses: (stats.l2N - start.l2N) - (stats.l2Hits - start.l2Hits), l2Ms: stats.l2Ms - start.l2Ms, ...(op0 && op1 ? { opHits: op1.hits - op0.hits - 1, opMisses: op1.misses - op0.misses, opCached: op1.cached, opFull: op1.full, opCompiled: op0.plain === null || op1.plain === null ? undefined : op1.plain - op0.plain + (op1.rewrites - op0.rewrites) } : {}) })));
 			}
 			const response = new Response(r.bytes, { status: r.httpStatusCode, headers: out });
 			// #394 (b): a recycled runtime is RELEASED, not only forgotten. bootPromise = null alone left

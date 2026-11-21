@@ -49,7 +49,8 @@ test('#1078: the A line carries OPcache, remote pack fetches, outbound HTTP and 
 });
 test('#1078: index.js passes the per-request deltas, and OPcache counters are not object-only any more', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	assert.match(src, /const wantOpcache = spikeOk && req\.headers\.get\('x-perf-opcache'\) === '1';/);
+	// #1253: also on every boot request now (the lead's ruling); still never on a warm request without the operator header.
+	assert.match(src, /const wantOpcache = booted \|\| \(spikeOk && req\.headers\.get\('x-perf-opcache'\) === '1'\);/);
 	assert.match(src, /aPerfLine\(\{[^\n]*rfN: stats\.rfN - remote0\.rfN[^\n]*rsN: stats\.rsN - remote0\.rsN[^\n]*httpN: stats\.httpCalls - start\.httpCalls[^\n]*opHits: op1\.hits - op0\.hits - 1/);
 });
 
