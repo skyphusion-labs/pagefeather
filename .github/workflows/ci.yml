@@ -242,6 +242,7 @@ jobs:
         # label, no password in the output, the wrapper configs (node --check) and the baseline compare.
         run: |
           bash tests/conformance/prepare-content-test.sh
+          bash tests/conformance/vps-collect-test.sh
           python3 -I tests/conformance/runner_test.py
           python3 -I tests/conformance/matrix_test.py
           python3 -I tests/conformance/gaps_test.py
