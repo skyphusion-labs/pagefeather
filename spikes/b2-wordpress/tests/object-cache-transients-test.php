@@ -233,5 +233,41 @@ $c->delete( "gone", "transient" );
 	unlink( $log ); unlink( $child );
 }
 
+// #1219 review (the lead): across REQUESTS. Request 1 sets X; request 2 deletes X WITHOUT reading it; request 3 reads X
+// and must get false, and the rows must be gone from the table. Three child PHP processes over one table file, each a
+// full PHP request with the real shutdown sequence, so nothing in this process can flush for them.
+$table = tempnam( sys_get_temp_dir(), 'oc1219t' );
+file_put_contents( $table, serialize( array() ) );
+$step  = function ( $code ) use ( $table ) {
+	$child = tempnam( sys_get_temp_dir(), 'oc1219c' );
+	file_put_contents( $child, '<?php
+$T = ' . var_export( $table, true ) . ';
+function db() { global $T; return unserialize( file_get_contents( $T ) ); }
+function db_put( $d ) { global $T; file_put_contents( $T, serialize( $d ) ); }
+function post_message_to_js( $j ) { return json_encode( array( "ok" => true, "v" => array() ) ); }
+function is_multisite() { return false; } function get_current_blog_id() { return 1; } function wp_installing() { return false; }
+function wp_suspend_cache_addition() { return false; }
+function get_option( $n, $d = false ) { return $d; } function update_option( $n, $v, $a = null ) { return true; }
+function skyphusion_transient_rows( array $n ) { $d = db(); $o = array(); foreach ( $n as $k ) { if ( array_key_exists( $k, $d ) ) { $o[ $k ] = $d[ $k ]; } } return $o; }
+function skyphusion_transient_put( $n, $v ) { $d = db(); $d[ $n ] = $v; db_put( $d ); return true; }
+function skyphusion_transient_delete( array $n ) { $d = db(); $k = 0; foreach ( $n as $x ) { if ( array_key_exists( $x, $d ) ) { unset( $d[ $x ] ); ++$k; } } db_put( $d ); return $k; }
+define( "JS_OBJECT_CACHE_PERSIST_GROUPS", "theme_json" );
+require ' . var_export( isset( $GLOBALS['argv'][1] ) ? realpath( $GLOBALS['argv'][1] ) : realpath( __DIR__ . '/../php/object-cache-js.php' ), true ) . ';
+$c = new JS_Object_Cache();
+' . $code . "\n" );
+	exec( escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( $child ) . ' 2>&1', $out, $rc );
+	unlink( $child );
+	return array( $rc, implode( "\n", $out ) );
+};
+$step( '$c->set( "x1219", "value", "transient", 300 );' );
+$d = unserialize( file_get_contents( $table ) );
+check( '#1219 request 1 set X: its rows are in the table', 'value' === ( $d['_transient_x1219'] ?? null ) && isset( $d['_transient_timeout_x1219'] ) );
+list( $rc2, $o2 ) = $step( 'echo var_export( $c->delete( "x1219", "transient" ), true );' );
+$d = unserialize( file_get_contents( $table ) );
+check( '#1219 request 2 deleted X without reading it (answer true): at its end both rows are gone', 'true' === trim( $o2 ) && ! isset( $d['_transient_x1219'] ) && ! isset( $d['_transient_timeout_x1219'] ) );
+list( $rc3, $o3 ) = $step( '$f = null; $v = $c->get( "x1219", "transient", false, $f ); echo var_export( array( $v, $f ), true );' );
+check( '#1219 request 3 reads X: false, not found', false !== strpos( $o3, "0 => false" ) && false !== strpos( $o3, "1 => false" ) );
+unlink( $table );
+
 echo $fail ? "$fail FAILED\n" : "ALL PASS\n";
 exit( $fail ? 1 : 0 );
