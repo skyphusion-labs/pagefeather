@@ -77,3 +77,14 @@ test('#1119 index.js: the worker run measures its lock wait at the grant and the
 	assert.match(src, /const lockT0 = Date\.now\(\);\n\t+const workerRun = await withPhp\(\(\) => withRunCall\(callId, \(\) => handle\(req, env, url, spikeOk, maxBody, ctx\), Date\.now\(\) - lockT0\)/);
 	assert.match(src, /lockWaitMs: runLockWaitMs, /);
 });
+
+// #1153: php/php-fatal-line.php sends a PHP fatal (or a 500 wp_die) through the bridge; the Worker logs php-fatal.
+test('#1153 index.js logs a PHP fatal as php-fatal, with its fields (bounded) and the call id', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const at = src.indexOf('if (m.phpFatal) {');
+	assert.ok(at > 0);
+	const line = src.slice(at, src.indexOf('\n', at));
+	assert.match(line, /'@event': 'php-fatal', m: 'php-fatal', iso: ISOLATE_ID, \.\.\.\(runCallId \? \{ call: runCallId \} : \{\}\)/);
+	for (const f of ['type: str(f.type, 10)', 'msg: str(f.msg, 300)', 'file: str(f.file, 160)', 'line: Number(f.line)', 'method: str(f.method, 10)', 'path: str(f.path, 160)']) assert.ok(line.includes(f), f);
+	assert.match(line, /return '1'; \}$/);
+});
