@@ -96,9 +96,21 @@ playwright() { # dir config: run Playwright with OUR wrapper config (exclusions,
         [ "$rc" = 0 ] || { echo "vps-run: STOP: the setup projects failed (rc $rc)" >&2; exit 3; }
         x python3 -I "$here/runner.py" check-state --base-url "${BASE_URL:-http://localhost:${WP_ENV_PORT:-8086}}" --state "$st/admin.json" --state "$st/customer.json" \
           || { echo "vps-run: STOP: check-state (the saved login is not real)" >&2; exit 3; }
-        local proj=e2e-pf; [ "$suite" = wc-api ] && proj=api-pf; [ "$suite" = wc-cpt ] && proj=e2e-cpt
+        # The test projects. Ours (pf-conformance.config.mjs, run arm): e2e-pf, api-pf, e2e-cpt. The stock arm keeps
+        # upstream's own projects (#1161), which have no e2e-pf: there the same tests are core-serial plus core-parallel
+        # (e2e-pf is every spec under tests/ less our rows, and those rows drop blocks/**, api-tests/** and paypal), and the
+        # API half is upstream's "api" (wcbase-wc4: 'Project(s) "e2e-pf" not found').
+        local -a projs
+        if [ -n "${pf_stock:-}" ]; then
+          case "$suite" in wc) projs=(core-serial core-parallel) ;; wc-api) projs=(api) ;;
+            *) echo "vps-run: STOP: no stock test projects for $suite" >&2; exit 3 ;; esac
+        else
+          case "$suite" in wc) projs=(e2e-pf) ;; wc-api) projs=(api-pf) ;; wc-cpt) projs=(e2e-cpt) ;; esac
+        fi
+        local -a pargs=()
+        local pj; for pj in "${projs[@]}"; do pargs+=("--project=$pj"); done
         rc=0
-        in_dir "$src/plugins/woocommerce" pw pnpm exec playwright test --config=tests/e2e/pf-conformance.config.mjs --project="$proj" --no-deps ${specs[@]+"${specs[@]}"} || rc=$?
+        in_dir "$src/plugins/woocommerce" pw pnpm exec playwright test --config=tests/e2e/pf-conformance.config.mjs "${pargs[@]}" --no-deps ${specs[@]+"${specs[@]}"} || rc=$?
         # The wc checkout keeps one test-results folder for every run: copy this run's traces into the run dir, so the
         # next run cannot overwrite the evidence (sb1120: the wc-api traces were gone after the next wc run).
         if [ "${DRY:-0}" != 1 ] && [ -d "$src/$e2e/test-results" ]; then rm -rf "$run/test-results"; cp -R "$src/$e2e/test-results" "$run/test-results"; fi

@@ -707,9 +707,15 @@ def main():
         bo = vbb.stdout
         ib, ie = bo.find("--filter=@woocommerce/plugin-woocommerce build"), bo.find("pnpm env:e2e")
         ok("baseline wc: builds the WooCommerce plugin, then starts env:e2e") if vbb.returncode == 0 and 0 <= ib < ie else bad("baseline wc build order: build %d env %d: %s" % (ib, ie, bo[-400:]))
+        # The stock test phase runs upstream's projects (no e2e-pf there); the run arm keeps ours.
+        ok("baseline wc: the tests run upstream's core-serial and core-parallel, not e2e-pf") if "--project=core-serial --project=core-parallel --no-deps" in bo and "e2e-pf" not in bo else bad("baseline wc projects: %s" % [l for l in bo.splitlines() if "--no-deps" in l])
+        vba = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "baseline", "wc-api", vw, os.path.join(t, "vbwca")],
+                             env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
+        ok("baseline wc-api: the tests run upstream's api project") if "--project=api --no-deps" in vba.stdout and "api-pf" not in vba.stdout else bad("baseline wc-api projects: %s" % [l for l in vba.stdout.splitlines() if "--no-deps" in l])
         vrw = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "run", "wc", vw, os.path.join(t, "vrwcb")],
                              env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
         ok("run wc: no plugin build (our site serves a built WooCommerce)") if "plugin-woocommerce build" not in vrw.stdout else bad("run wc builds the plugin")
+        ok("run wc: the tests run our e2e-pf") if "--project=e2e-pf --no-deps" in vrw.stdout else bad("run wc projects: %s" % [l for l in vrw.stdout.splitlines() if "--no-deps" in l])
         # path_shim against two PATH dirs that share names, one a DANGLING link (the CI ubuntu shape): first wins, no crash.
         da, db = os.path.join(t, "pa"), os.path.join(t, "pb")
         os.makedirs(da); os.makedirs(db)
