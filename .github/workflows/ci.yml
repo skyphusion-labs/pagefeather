@@ -194,8 +194,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/oc-l2-writer.test.mjs
       - name: b-dosql the request frame answers "nothing saved" only on the /_frame proof (issue #352)
         run: node --test spikes/b2-wordpress/tests/frame-probe.test.mjs
-      - name: /_install keeps its runtime and sets site timezone (#756, #759)
-        run: node --test spikes/b2-wordpress/tests/install-keeps-runtime.test.mjs spikes/b2-wordpress/tests/install-timezone.test.mjs
+      - name: /_install keeps its runtime, sets site timezone, and titles the site (#756, #759, #1098)
+        run: node --test spikes/b2-wordpress/tests/install-keeps-runtime.test.mjs spikes/b2-wordpress/tests/install-timezone.test.mjs spikes/b2-wordpress/tests/install-title.test.mjs
       - name: b-dosql approach-A options never persist across isolates (issue #491)
         run: php spikes/b2-wordpress/tests/object-cache-491-test.php
       - name: "Transients are durable with the object cache on: a transient set in one runtime is read in a fresh one (#1199)"

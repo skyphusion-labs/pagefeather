@@ -139,7 +139,10 @@ function dispatcherStub() {
     get: (script) => ({
       fetch: async (req) => {
         const u = new URL(req.url);
-        seen.push({ script, path: u.pathname, search: u.search, token: req.headers.get('x-spike-token') });
+        seen.push({
+          script, path: u.pathname, search: u.search, token: req.headers.get('x-spike-token'),
+          siteName: req.headers.get('x-site-name'), siteTitle: req.headers.get('x-site-title'),
+        });
         if (u.pathname === '/_install') return new Response(JSON.stringify({ out: '{"installed":true,"user_id":1}' }));
         // #661: /_activate answers installed beside active (a WooCommerce install that really completed).
         if (u.pathname === '/_activate') return new Response(JSON.stringify({ out: JSON.stringify({ active: true, error: null, exited: false, installed: true }) }));
@@ -282,6 +285,8 @@ await ok('add a site: deploy/provision makes it locked, on workers.dev, with its
   assert(vars.CODE_LOCK === 'on', 'the site is not code-locked');
   assert(!('DEMO_LOCK' in vars), 'a one-click site is not a demo');
   assert(vars.SITE_ORIGIN === 'https://wp-blog.acme.workers.dev', `SITE_ORIGIN ${vars.SITE_ORIGIN}`);
+  assert(vars.SITE_NAME === 'blog', `SITE_NAME ${vars.SITE_NAME}`);
+  assert(!('SITE_TITLE' in vars), 'SITE_TITLE set when the form did not choose one');
   assert(!('MAIL_FROM' in vars), 'MAIL_FROM set on a workers.dev site');
   assert(!('PAGE_CACHE_PRODUCT_TTL' in vars), 'a non-store renders a product TTL');
   assert(!cf.calls.some((c) => c.path.includes('/zones/')), 'a DNS call was made');
@@ -293,7 +298,8 @@ await ok('add a site: deploy/provision makes it locked, on workers.dev, with its
   assert(cf.calls.some((c) => c.method === 'POST' && c.path.endsWith('/workers/scripts/wp-blog/subdomain')), 'workers.dev route not turned on');
   const entry = JSON.parse([...cf.kv].find(([k]) => k.endsWith('/wp-blog.acme.workers.dev'))[1]);
   assert(entry.script === 'site-blog' && entry.outbound === false && entry.installed === true, `entry ${JSON.stringify(entry)}`);
-  assert(env.DISPATCHER.seen.some((s) => s.path === '/_install'), 'install not run');
+  const inst = env.DISPATCHER.seen.find((s) => s.path === '/_install');
+  assert(inst && inst.siteName === 'blog' && !inst.siteTitle, `install headers ${JSON.stringify(inst)}`);
   assert(!env.DISPATCHER.seen.some((s) => s.path === '/_activate'), 'WooCommerce turned on for a non-store');
   assert(!JSON.stringify(r).includes('test-key'), 'the key is in the response');
 });

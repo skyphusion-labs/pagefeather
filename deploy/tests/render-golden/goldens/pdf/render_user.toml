@@ -20,6 +20,7 @@ enabled = true
 [vars]
 PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
 SITE_ORIGIN = "https://pdf.example.com"
+SITE_NAME = "pdf"
 
 HTTP_ALLOW_HOSTS = ".wordpress.org,.woocommerce.com,.gravatar.com"
 REQUEST_FRAMES = "on"

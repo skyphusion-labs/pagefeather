@@ -20,6 +20,7 @@ enabled = true
 [vars]
 PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
 SITE_ORIGIN = "https://store.example.com"
+SITE_NAME = "store"
 
 HTTP_ALLOW_HOSTS = ".wordpress.org,.woocommerce.com,.gravatar.com"
 PAGE_CACHE_PRODUCT_TTL = "30"

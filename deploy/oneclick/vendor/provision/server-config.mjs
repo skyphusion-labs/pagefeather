@@ -207,7 +207,7 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
     // async-email-queue descriptors provision their per-site backing resource on the
     // HOSTED provisioning path too. Without resourceCreateOps here, the OC_KV /
     // EMAIL_QUEUE bindings would deploy with no namespace / queue behind them.
-    const bdosqlOpts = { mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS, mailFrom: target.workersDev ? undefined : `wordpress@${domain}`, mailFromName: name, demo: demo === true, codeLock: codeLock === true, ...pageCacheInputs(env, { store }), ...objectTimeInputs(env) };
+    const bdosqlOpts = { mediaBucket, siteOrigin: `https://${target.hostname}`, location: env.WFP_LOCATION || 'enam', cronIntervalMs: env.WFP_CRON_INTERVAL_MS, mailFrom: target.workersDev ? undefined : `wordpress@${domain}`, mailFromName: name, demo: demo === true, codeLock: codeLock === true, siteName: name, ...pageCacheInputs(env, { store }), ...objectTimeInputs(env) };
     return {
       ...common, kind: 'wp', mainModule: env.WP_MAIN || 'index.js',
       hostname: target.hostname,
@@ -241,6 +241,7 @@ export async function buildServerCfg(env, { kind, name, domain, demo = false, ex
         mediaBucket, hyperdriveId, tablePrefix, hyperdriveSqlMode,
         siteOrigin: `https://${target.hostname}`,
         mailFrom: target.workersDev ? undefined : `wordpress@${domain}`, mailFromName: name,
+        siteName: name,
         ...pageCacheInputs(env, { store }),
         ...objectTimeInputs(env),
         ...aCacheInputs(env), // #296: the escape hatch for the two cache defaults

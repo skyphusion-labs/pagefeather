@@ -78,6 +78,13 @@ render_conf() {
   echo '[vars]'
   echo "PHP_ENV = '{\"USE_ZEND_ALLOC\":\"0\"}'"
   echo "SITE_ORIGIN = \"$SITE_ORIGIN\""
+  # #1098: SITE_NAME is the deploy name. /_install uses it when SITE_TITLE is unset.
+  # A quote or a backslash would break the line. SITE_TITLE, when set, is the title.
+  case "$NAME" in
+    ''|*'"'*|*'\'*|*$'\n'*|*$'\r'*) echo "NAME must be one line without a quote or a backslash" >&2; return 1 ;;
+  esac
+  echo "SITE_NAME = \"$NAME\""
+  if [ -n "${SITE_TITLE:-}" ]; then SITE_TITLE="$SITE_TITLE" node "$APP/install-title.mjs" --toml || return 1; fi
   # #1135: MAIL_ALLOWED_TO too, so the runtime pre-check gets the binding's own allowlist (one list, mail-from.mjs).
   SITE_ORIGIN="$SITE_ORIGIN" MAIL_FROM="${MAIL_FROM:-}" MAIL_FROM_NAME="${MAIL_FROM_NAME:-}" MAIL_ALLOWED_TO="${MAIL_ALLOWED_TO:-}" node "$APP/mail-from.mjs" --vars
   # Hosts PHP may call. Unset writes the default. Empty denies. See http-allow.mjs.

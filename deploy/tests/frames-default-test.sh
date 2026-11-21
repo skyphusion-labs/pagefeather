@@ -30,6 +30,11 @@ ok "b-dosql, REQUEST_FRAMES=off: rendered off (the escape hatch)" "$([ "$(render
 ok "b-dosql, REQUEST_FRAMES=on: rendered on" "$([ "$(render b-dosql REQUEST_FRAMES=on)" = 'REQUEST_FRAMES = "on"' ] && echo 1 || echo 0)"
 ok "it sits in [vars] (between [vars] and the next table, with DB_IN_DO)" "$(render b-dosql >/dev/null; awk '/^\[vars\]/{v=1; next} /^\[/{v=0} v && /^REQUEST_FRAMES = /{f=1} END{exit !f}' "$T/r.toml" && echo 1 || echo 0)"
 for v in b-do a; do ok "variant $v: no REQUEST_FRAMES line (no object-SQLite undo log)" "$([ "$(render $v)" = none ] && echo 1 || echo 0)"; done
+echo "1b. site title (#1098): b-dosql uses the deploy name, or SITE_TITLE when the run set one"
+ok "#1098 b-dosql renders SITE_NAME as the deploy name" "$(render b-dosql >/dev/null; grep -qx 'SITE_NAME = "pff-render"' "$T/r.toml" && echo 1 || echo 0)"
+ok "#1098 b-dosql renders no SITE_TITLE unless the run set one" "$(render b-dosql >/dev/null; grep -q '^SITE_TITLE = ' "$T/r.toml" && echo 0 || echo 1)"
+ok "#1098 b-dosql SITE_TITLE=North Shop renders that line" "$(render b-dosql SITE_TITLE='North Shop' >/dev/null; grep -qx 'SITE_TITLE = "North Shop"' "$T/r.toml" && echo 1 || echo 0)"
+ok "#1098 b-dosql a SITE_TITLE with a newline is refused" "$([ "$(render b-dosql SITE_TITLE=$'a\nb')" = render-failed ] && grep -q 'SITE_TITLE must be one line' "$T/r.err" && echo 1 || echo 0)"
 echo "2. deploy.sh refuses before any step"
 for bad in yes 1 ON true; do refuse "REQUEST_FRAMES must be on, off or unset" VARIANT=b-dosql "REQUEST_FRAMES=$bad"; done
 refuse "REQUEST_FRAMES is for variant b-dosql" VARIANT=a REQUEST_FRAMES=on

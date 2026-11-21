@@ -28,6 +28,11 @@
 # remote logging off. Unset leaves WooCommerce's defaults. Analytics stays on.
 # b-dosql through deploy/wfp records it (site_settings.py). A value other than
 # off is refused before any step.
+# SITE_TITLE (#1098): the blog title a new install stores. Unset means the site
+# name (SITE_NAME, this deploy's name), or the hostname when there is no name.
+# Never a product name. Empty, longer than 200 characters, or a control
+# character is refused before any step. An installed site keeps the title its
+# owner set in WordPress.
 # PAGE_CACHE_PRODUCT_TTL (b-do, b-dosql and a, #706): seconds a WooCommerce
 # product, shop or category page stays fresh. A store (WOO_ACTIVE=1) renders 30
 # when this is unset. A site that is not a store renders nothing, so those pages
@@ -122,6 +127,11 @@ if [ -n "${REQUEST_FRAMES:-}" ] && [ "${VARIANT:-}" != b-dosql ]; then echo "REQ
 # before any step (spikes/b2-wordpress/mail-from.mjs). c1 checks its own (variants/c1-config.sh).
 if [ -n "${MAIL_ALLOWED_TO:-}" ] && [ "$VARIANT" != c1 ]; then
   SITE_ORIGIN="${SITE_ORIGIN:-}" MAIL_FROM="${MAIL_FROM:-}" MAIL_ALLOWED_TO="$MAIL_ALLOWED_TO" node "$APP/mail-from.mjs" --binding > /dev/null || exit 2
+fi
+# SITE_TITLE (#1098): checked before Terraform records this run's inputs. The same
+# rule as render-conf.sh. Unset is the site name, written there as SITE_NAME.
+if [ -n "${SITE_TITLE:-}" ]; then
+  SITE_TITLE="$SITE_TITLE" node "$APP/install-title.mjs" --toml > /dev/null || exit 2
 fi
 # WOO_EXTRAS (#667): off or unset, every variant, before any Terraform or build step.
 # The same rule as deploy/wfp/lib.sh woo_extras_var. Unset writes no [vars] line.

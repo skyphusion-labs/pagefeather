@@ -20,6 +20,7 @@ enabled = true
 [vars]
 PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
 SITE_ORIGIN = "https://letters.example.com"
+SITE_NAME = "letters"
 MAIL_FROM = "shop@example.com"
 MAIL_FROM_NAME = "Test Shop"
 HTTP_ALLOW_HOSTS = ".wordpress.org,.woocommerce.com,.gravatar.com"

@@ -7,6 +7,7 @@ import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, ha
 import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
 import { httpHostAllowed, resolveHttpAllowHosts } from './http-allow.mjs';
 import { installPhpBasicAuth } from './php-auth.mjs';
+import { installSiteTitle, hostFromOrigin } from './install-title.mjs';
 import { installPhpSelf } from './php-self.mjs';
 import { purgeZoneBody, cfPurgeEndpoint, cachePurgeEnabled, ownPurgeHost } from './purge-zone.mjs';
 import { wpCronState, idleDecision, parseGmt, IDLE_KEY } from './cron-idle.mjs';
@@ -4336,14 +4337,20 @@ $admin_email = trim( (string) @file_get_contents( '/tmp/admin-email' ) );
 // drops as undeliverable so its New Order mail never bounces (#198); a real deploy
 // sets ADMIN_EMAIL / x-admin-email to a deliverable address.
 if ( $admin_email === '' || ! is_email( $admin_email ) ) { $admin_email = 'admin@example.com'; }
-$r = wp_install( 'WordPress on D1', 'admin', $admin_email, false, '', $pw );
+// #1098: the chosen title (SITE_TITLE, else the site name, else the hostname).
+// An empty file is a refused install, never a product name. An already
+// installed site returned above, so this does not change a title the owner set.
+$title = trim( (string) @file_get_contents( '/tmp/site-title' ) );
+@unlink( '/tmp/site-title' );
+if ( $title === '' ) { echo json_encode( array( 'installed' => false, 'error' => 'site title missing' ) ); exit; }
+$r = wp_install( $title, 'admin', $admin_email, false, '', $pw );
 $tz = trim( (string) @file_get_contents( '/tmp/site-timezone' ) );
 @unlink( '/tmp/site-timezone' );
 if ( $tz === '' || ! in_array( $tz, timezone_identifiers_list(), true ) ) {
 	$tz = 'America/Detroit';
 }
 update_option( 'timezone_string', $tz );
-echo json_encode( array( 'installed' => true, 'user_id' => $r['user_id'], 'timezone_string' => get_option( 'timezone_string' ) ) );
+echo json_encode( array( 'installed' => true, 'user_id' => $r['user_id'], 'title' => $title, 'timezone_string' => get_option( 'timezone_string' ) ) );
 `;
 
 const site = {
@@ -4971,6 +4978,13 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				php.writeFile('/tmp/admin-password', req.headers.get('x-admin-password') || (env.SPIKE_TOKEN ? '' : 'local-spike-password'));
 				php.writeFile('/tmp/admin-email', req.headers.get('x-admin-email') || env.ADMIN_EMAIL || 'admin@example.com');
 				php.writeFile('/tmp/site-timezone', req.headers.get('x-site-timezone') || env.SITE_TIMEZONE || 'America/Detroit');
+				// #1098: header, then the recorded SITE_TITLE, then the site name, then the
+				// site origin's host, then this request's host. "internal" is not a title.
+				php.writeFile('/tmp/site-title', installSiteTitle({
+					title: req.headers.get('x-site-title') || env.SITE_TITLE || '',
+					siteName: req.headers.get('x-site-name') || env.SITE_NAME || '',
+					host: hostFromOrigin(env.SITE_ORIGIN) || hostFromOrigin(url.origin),
+				}));
 				let out, errors;
 				try {
 					const r = await php.run({ code: INSTALL });

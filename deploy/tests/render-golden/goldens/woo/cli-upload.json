@@ -72,6 +72,11 @@
           },
           {
             "type": "plain_text",
+            "name": "SITE_NAME",
+            "text": "store"
+          },
+          {
+            "type": "plain_text",
             "name": "PAGE_CACHE_PRODUCT_TTL",
             "text": "30"
           },

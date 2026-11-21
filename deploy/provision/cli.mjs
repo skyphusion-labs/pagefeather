@@ -228,6 +228,8 @@ async function buildCfg(parsed, env) {
     const bdosqlOpts = {
       mediaBucket,
       siteOrigin: env.SITE_ORIGIN || `https://${hostname}`,
+      siteName: name,
+      siteTitle: env.SITE_TITLE || undefined,
       location: env.PHP_LOCATION || 'enam',
       cronIntervalMs: env.CRON_INTERVAL_MS,
       extra: JSON.parse(env.WP_BINDINGS || '[]'),
@@ -290,6 +292,8 @@ async function buildCfg(parsed, env) {
         mediaBucket,
         hyperdriveId: parsed.hyperdrive,
         siteOrigin: env.SITE_ORIGIN || `https://${hostname}`,
+        siteName: name,
+        siteTitle: env.SITE_TITLE || undefined,
         tablePrefix: env.WP_TABLE_PREFIX || 'wp_',
         hyperdriveSqlMode: parsed.hyperdriveSqlMode || env.HYPERDRIVE_SQL_MODE || undefined,
         mailFrom: env.WP_MAIL_FROM,

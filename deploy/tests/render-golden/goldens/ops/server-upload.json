@@ -72,6 +72,11 @@
           },
           {
             "type": "plain_text",
+            "name": "SITE_NAME",
+            "text": "ops"
+          },
+          {
+            "type": "plain_text",
             "name": "MAIL_FROM",
             "text": "wordpress@sites.example"
           },

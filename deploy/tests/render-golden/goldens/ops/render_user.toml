@@ -20,6 +20,7 @@ enabled = true
 [vars]
 PHP_ENV = '{"USE_ZEND_ALLOC":"0"}'
 SITE_ORIGIN = "https://wp-ops.sub.workers.dev"
+SITE_NAME = "ops"
 
 HTTP_ALLOW_HOSTS = ""
 REQUEST_FRAMES = "on"

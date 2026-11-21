@@ -72,6 +72,11 @@
           },
           {
             "type": "plain_text",
+            "name": "SITE_NAME",
+            "text": "ggc"
+          },
+          {
+            "type": "plain_text",
             "name": "OBJECT_CACHE_L2",
             "text": "on"
           },

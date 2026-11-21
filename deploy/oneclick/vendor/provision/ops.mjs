@@ -458,8 +458,18 @@ async function parseInstallResponse(res) {
   return { ok: false, error: (inner && inner.error) || (body && body.errors) || `HTTP ${res && res.status}` };
 }
 
+// One install header. Empty, too long, or a control character is omitted. The
+// worker then uses the site name, or the hostname. Never a product name.
+function installHeader(value) {
+  if (typeof value !== 'string') return '';
+  const t = value.trim();
+  if (!t || t.length > 200 || /[\u0000-\u001F\u007F]/.test(t)) return '';
+  return t;
+}
+
 export async function installWordPress({
   dispatcher, scriptName, hostname, spikeToken, adminPassword,
+  title, siteName,
   retries = 6, intervalMs = 2000, fetchImpl = fetch,
 }) {
   if (!spikeToken) throw new Error(`installWordPress(${scriptName || hostname}): no SPIKE_TOKEN to authorize the install`);
@@ -467,6 +477,13 @@ export async function installWordPress({
   const viaDispatch = Boolean(dispatcher && scriptName && typeof dispatcher.get === 'function');
   if (!viaDispatch && !hostname) throw new Error('installWordPress: need a dispatcher binding (+ scriptName) or a hostname');
   const headers = { 'x-spike-token': spikeToken, 'x-admin-password': adminPassword };
+  // #1098: the title, or the site name when no title was chosen. The worker
+  // also reads SITE_TITLE and SITE_NAME. A header wins for this install only.
+  // A control character is omitted here, so it cannot split the request headers.
+  const titleHeader = installHeader(title);
+  const nameHeader = installHeader(siteName);
+  if (titleHeader) headers['x-site-title'] = titleHeader;
+  if (nameHeader) headers['x-site-name'] = nameHeader;
   let last = 'no attempt';
   for (let i = 0; i < retries; i++) {
     try {
