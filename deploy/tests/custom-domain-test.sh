@@ -23,6 +23,9 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         open(os.path.join(root, "log"), "a").write("GET %s\n" % self.path)
         if self.path.startswith("/zones"): return self.send(int(rd("zonescode", "200")), rd("zones", '{"success":true,"result":[]}'))
+        if self.path.startswith("/dns-query"):
+            t = self.path.split("type=")[-1]
+            return self.send(200, rd("dns-" + t, '{"Status":0}'))
         if "/workers/domains" in self.path: return self.send(200, rd("domains", '{"success":true,"result":[]}'))
         self.send(404, "{}")
     def do_DELETE(self):
@@ -41,7 +44,7 @@ BASE="http://127.0.0.1:$(cat "$T/port")"
 ZONES='{"success":true,"result":[{"name":"example.com"},{"name":"pagefeather.dev"},{"name":"sub.example.com"}]}'
 printf '%s' "$ZONES" > "$T/api/zones"
 prep() { # prep <env assignments...>: runs custom_domain_prepare; prints SITE_ORIGIN after it; rc kept
-  env -i PATH="$PATH" CLOUDFLARE_API_TOKEN=tok ACCOUNT_ID=acct CF_API_BASE="$BASE" "$@" bash -c '. "'"$ROOT"'/deploy/lib/custom-domain.sh"; custom_domain_prepare; rc=$?; echo "ORIGIN=${SITE_ORIGIN:-}"; exit $rc' > "$T/out" 2> "$T/err"
+  env -i PATH="$PATH" CLOUDFLARE_API_TOKEN=tok ACCOUNT_ID=acct NAME=t1 CF_API_BASE="$BASE" CF_DOH_BASE="$BASE/dns-query" "$@" bash -c '. "'"$ROOT"'/deploy/lib/custom-domain.sh"; custom_domain_prepare; rc=$?; echo "ORIGIN=${SITE_ORIGIN:-}"; exit $rc' > "$T/out" 2> "$T/err"
 }
 prep; rc=$?
 ok "off: CUSTOM_DOMAIN unset passes and derives nothing (rc $rc)" "$([ $rc = 0 ] && grep -qx 'ORIGIN=' "$T/out" && ! grep -q GET "$T/api/log" 2>/dev/null && echo 1 || echo 0)"
@@ -67,6 +70,27 @@ printf '{"success":false,"errors":[{"code":9109}]}' > "$T/api/zones"
 prep CUSTOM_DOMAIN=gate-test.pagefeather.dev; rc=$?
 ok "a failed zone read is a refusal, never a pass (rc $rc)" "$([ $rc = 2 ] && grep -q 'could not be read' "$T/err" && echo 1 || echo 0)"
 printf '%s' "$ZONES" > "$T/api/zones"
+# Never take over a hostname in use (the lead): another Worker's custom domain, or a DNS record.
+printf '{"success":true,"result":[{"id":"o1","hostname":"gate-test.pagefeather.dev","service":"someone-else"}]}' > "$T/api/domains"
+prep CUSTOM_DOMAIN=gate-test.pagefeather.dev; rc=$?
+ok "a hostname that is another Worker's custom domain is refused (rc $rc)" "$([ $rc = 2 ] && grep -q 'custom domain of Worker someone-else' "$T/err" && echo 1 || echo 0)"
+printf '{"success":true,"result":[{"id":"o1","hostname":"gate-test.pagefeather.dev","service":"t1"}]}' > "$T/api/domains"
+printf '{"Status":0,"Answer":[{"type":1,"data":"104.21.0.1"}]}' > "$T/api/dns-A"; rm -f "$T/api/log"
+prep CUSTOM_DOMAIN=gate-test.pagefeather.dev; rc=$?
+ok "this site's own custom domain (a redeploy) passes, and its DNS is not held against it (rc $rc)" "$([ $rc = 0 ] && ! grep -q dns-query "$T/api/log" && echo 1 || echo 0)"
+printf '{"success":true,"result":[]}' > "$T/api/domains"
+prep CUSTOM_DOMAIN=gate-test.pagefeather.dev; rc=$?
+ok "a hostname that already resolves (an A record) is refused (rc $rc)" "$([ $rc = 2 ] && grep -q 'already has DNS records (A 104.21.0.1' "$T/err" && echo 1 || echo 0)"
+rm -f "$T/api/dns-A"; printf '{"Status":0,"Answer":[{"type":5,"data":"other.example.net."}]}' > "$T/api/dns-CNAME"
+prep CUSTOM_DOMAIN=gate-test.pagefeather.dev; rc=$?
+ok "a hostname with a CNAME is refused (rc $rc)" "$([ $rc = 2 ] && grep -q 'CNAME other.example.net' "$T/err" && echo 1 || echo 0)"
+rm -f "$T/api/dns-CNAME"; printf '{"Status":2}' > "$T/api/dns-AAAA"
+prep CUSTOM_DOMAIN=gate-test.pagefeather.dev; rc=$?
+ok "a failed DNS lookup (SERVFAIL) is a refusal, never a pass (rc $rc)" "$([ $rc = 2 ] && grep -q 'DNS lookup' "$T/err" && echo 1 || echo 0)"
+rm -f "$T/api/dns-AAAA"; printf '{"Status":3}' > "$T/api/dns-A"
+prep CUSTOM_DOMAIN=gate-test.pagefeather.dev; rc=$?
+ok "NXDOMAIN (no record at all) passes (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
+rm -f "$T/api/dns-A"
 # The token never reaches argv: custom-domain.sh sends it through curl -K (a config on a file descriptor).
 ok "the token is passed with curl -K, never on the command line" "$(grep -c 'curl ' "$ROOT/deploy/lib/custom-domain.sh" | xargs -I{} sh -c '[ {} -ge 1 ]' && ! grep -nE 'curl [^|]*-H "Authorization' "$ROOT/deploy/lib/custom-domain.sh" && echo 1 || echo 0)"
 # The render: the route only with CUSTOM_DOMAIN.

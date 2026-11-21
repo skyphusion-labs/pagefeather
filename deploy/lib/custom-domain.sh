@@ -27,6 +27,45 @@ print(hits[0] if hits else "", end="")
 '
 }
 
+# custom_domain_owner <host>: prints the Worker (service) that holds <host> as a Workers Custom Domain, or nothing; 1 on a
+# failed read. The account's custom domains, so another Worker's claim is seen before wrangler could take it over.
+custom_domain_owner() {
+  local host=$1 base=${CF_API_BASE:-https://api.cloudflare.com/client/v4} body
+  body=$(curl -sS -m 60 -K <(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN") \
+    "$base/accounts/$ACCOUNT_ID/workers/domains?hostname=$host") || return 1
+  HOST="$host" BODY="$body" python3 -I -c '
+import json, os, sys
+try:
+    d = json.loads(os.environ["BODY"])
+except Exception:
+    sys.exit(1)
+if d.get("success") is not True:
+    sys.exit(1)
+own = [x.get("service", "") for x in d.get("result") or [] if isinstance(x, dict) and x.get("hostname") == os.environ["HOST"]]
+print(own[0] if own else "", end="")
+'
+}
+
+# custom_domain_dns_records <host>: prints the A, AAAA and CNAME answers a public resolver gives for <host> (DNS over
+# HTTPS, JSON), one per line, or nothing; 1 on a failed lookup. A hostname that already resolves is somebody's record.
+custom_domain_dns_records() {
+  local host=$1 doh=${CF_DOH_BASE:-https://cloudflare-dns.com/dns-query} t body
+  for t in A AAAA CNAME; do
+    body=$(curl -sS -m 30 -H 'accept: application/dns-json' "$doh?name=$host&type=$t") || return 1
+    BODY="$body" python3 -I -c '
+import json, os, sys
+try:
+    d = json.loads(os.environ["BODY"])
+except Exception:
+    sys.exit(1)
+if d.get("Status") not in (0, 3):   # 0 NOERROR, 3 NXDOMAIN; anything else is not an answer
+    sys.exit(1)
+for a in d.get("Answer") or []:
+    if a.get("type") in (1, 28, 5): print("%s %s" % ({1: "A", 28: "AAAA", 5: "CNAME"}[a["type"]], a.get("data", "")))
+' || return 1
+  done
+}
+
 custom_domain_prepare() {
   [ -n "${CUSTOM_DOMAIN:-}" ] || return 0
   local host=$CUSTOM_DOMAIN zone
@@ -38,6 +77,17 @@ custom_domain_prepare() {
   fi
   zone=$(custom_domain_zone "$host") || { echo "CUSTOM_DOMAIN: the account's zones could not be read; nothing was changed (#1262)" >&2; return 2; }
   [ -n "$zone" ] || { echo "CUSTOM_DOMAIN: $host is in no active zone on account $ACCOUNT_ID; a Workers Custom Domain needs one (#1262)" >&2; return 2; }
+  # Never take over a hostname that is already in use: another Worker's custom domain, or a DNS record (a lead ruling).
+  local owner recs
+  owner=$(custom_domain_owner "$host") || { echo "CUSTOM_DOMAIN: the account's Worker custom domains could not be read; nothing was changed (#1262)" >&2; return 2; }
+  if [ -n "$owner" ] && [ "$owner" != "$NAME" ]; then
+    echo "CUSTOM_DOMAIN: $host is already the custom domain of Worker $owner; refused, never taken over (#1262)" >&2; return 2
+  fi
+  if [ "$owner" != "$NAME" ]; then
+    # Not yet this site's domain, so any record there belongs to something else.
+    recs=$(custom_domain_dns_records "$host") || { echo "CUSTOM_DOMAIN: the DNS lookup for $host failed; nothing was changed (#1262)" >&2; return 2; }
+    [ -z "$recs" ] || { echo "CUSTOM_DOMAIN: $host already has DNS records ($(echo "$recs" | tr '\n' ' ')); refused, never taken over (#1262)" >&2; return 2; }
+  fi
   SITE_ORIGIN="https://$host"
   echo "custom domain: $host (zone $zone); SITE_ORIGIN $SITE_ORIGIN"
 }
