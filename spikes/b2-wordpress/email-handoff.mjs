@@ -87,7 +87,7 @@ export function tickEmailDecision(email, lostWrites) {
  * tick record.
  */
 export function createTickMail({ handoff, lostWrites, log = () => {}, seen = null, mark = null }) {
-	const counts = { handedOff: 0, held: 0, failed: 0, bounded: 0, deduped: 0, sendFailed: 0 };
+	const counts = { handedOff: 0, held: 0, failed: 0, bounded: 0, deduped: 0, sendFailed: 0, droppedUndeliverable: 0, refusedAllowlist: 0 }; // the last two: index.js emailOp's pre-check (#1135)
 	return {
 		counts,
 		lostWritesSeen: () => Number(lostWrites()) || 0,
@@ -128,8 +128,9 @@ export function createTickMail({ handoff, lostWrites, log = () => {}, seen = nul
 					}
 				}
 				log({ '@event': 'email-handoff', m: 'email-handoff', as_action, lostWrites: lost, ...(r === 'bounded' ? { bounded: true } : {}), ...(sendFailed ? { sendFailed } : {}) });
-				// #1135: PHP hears the refusal (wp_mail returns false and fires wp_mail_failed); the message is still retried.
-				if (sendFailed) return { ok: true, queued: true, refused: sendFailed, of: Number.isInteger(r.of) && r.of > 0 ? r.of : sendFailed, reason: typeof r.reason === 'string' ? r.reason : null };
+				// #1135: PHP hears a binding refusal (wp_mail returns false and fires wp_mail_failed); it is still retried
+				// (#1057). A recipient the pre-check refuses never reaches here (index.js emailOp).
+				if (sendFailed) return { ok: true, queued: true, refused: sendFailed, of: Number.isInteger(r.of) && r.of > 0 ? r.of : sendFailed, reason: typeof r.reason === 'string' ? r.reason : null, retry: true };
 				return { ok: true, queued: true };
 			} catch (e) {
 				counts.failed++;

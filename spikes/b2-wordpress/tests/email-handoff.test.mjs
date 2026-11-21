@@ -224,7 +224,7 @@ test('createTickMail counts and logs each decision; a handoff that throws is rep
 	assert.deepEqual(await m.op({ subject: 'b' }), { ok: true, queued: false, held: true });
 	const f = await m.op({ subject: 'boom', as_action: 6 });
 	assert.equal(f.ok, false);
-	assert.deepEqual(m.counts, { handedOff: 2, held: 1, failed: 1, bounded: 1, deduped: 0, sendFailed: 0 });
+	assert.deepEqual(m.counts, { handedOff: 2, held: 1, failed: 1, bounded: 1, deduped: 0, sendFailed: 0, droppedUndeliverable: 0, refusedAllowlist: 0 });
 	assert.equal(m.lostWritesSeen(), 2);
 	assert.deepEqual(sent.map((e) => e.subject), ['a', 'slow']);
 	assert.deepEqual(lines.map((l) => l['@event']), ['email-handoff', 'email-handoff', 'email-held', 'email-handoff']);
@@ -240,8 +240,9 @@ const fnBody = (name) => {
 };
 test('index.js: in a tick the email op hands off before it would collect; a request still collects', () => {
 	const op = fnBody('emailOp');
-	assert.ok(op.indexOf('if (tickMail) return tickMail.op(email);') >= 0);
-	assert.ok(op.indexOf('if (tickMail)') < op.indexOf('pendingEmails.push(email)'));
+	// #1135: the recipients are pre-checked first; then a tick hands off (tickMail.op) before a request would collect.
+	assert.ok(op.indexOf('tickMail.op(toSend)') >= 0);
+	assert.ok(op.indexOf('tickMail.op(toSend)') < op.indexOf('pendingEmails.push(toSend)'));
 	assert.ok(src.includes('if (m.email) return JSON.stringify(await emailOp(m.email));'), 'PHP waits for the handoff');
 });
 test('index.js: runCron sets the tick mail inside its withPhp turn and always clears it; the alarm and /_runcron pass one', () => {
@@ -452,7 +453,7 @@ test('#1088 B index.js: each failed recipient is logged with its reason (scrubbe
 test('#1135 a refused send: the reply to PHP says refused, of how many, and why; a clean send says nothing extra', async () => {
 	const tm = createTickMail({ handoff: async () => ({ sent: 1, sendFailed: 1, of: 2, reason: 'destination address is not allowed' }), lostWrites: () => 0 });
 	const r = await tm.op({ to: ['a@example.com', 'b@example.com'], subject: 's', message: 'm' });
-	assert.deepEqual(r, { ok: true, queued: true, refused: 1, of: 2, reason: 'destination address is not allowed' });
+	assert.deepEqual(r, { ok: true, queued: true, refused: 1, of: 2, reason: 'destination address is not allowed', retry: true });
 	const ok = createTickMail({ handoff: async () => ({ sent: 1, sendFailed: 0, of: 1, reason: null }), lostWrites: () => 0 });
 	assert.deepEqual(await ok.op({ to: ['a@example.com'], subject: 's', message: 'm' }), { ok: true, queued: true });
 	const bounded = createTickMail({ handoff: async () => 'bounded', lostWrites: () => 0 });
@@ -463,4 +464,26 @@ test('#1135 the tick handoff passes the outcome on: index.js tickMailFor returns
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.match(src, /return \{ sent: o\.sent, sendFailed: o\.failed, of: o\.sent \+ o\.failed, reason: o\.reason \};/);
 	assert.match(src, /return \{ sent: rs\.length - failures\.length, failed: failures\.length, reason: failures\.length \? scrub\(failures\[0\]\.error\) : null \};/);
+});
+
+// #1135 (the lead's ruling (a)) with #198 folded in: ONE pre-check, in the email op, before anything is queued. A
+// recipient #198 calls undeliverable, or one outside MAIL_ALLOWED_TO (the binding's own allowlist), is refused there:
+// never queued, never sent, never retried. PHP hears it (wp_mail false, wp_mail_failed, retry false). The leg counts
+// each class. A binding refusal of a recipient that passed the pre-check is still the #1057 retry path (retry true).
+test('#1135 the tick op: a binding refusal says retry true; the counters for the pre-check classes exist', async () => {
+	const tm = createTickMail({ handoff: async () => ({ sent: 0, sendFailed: 1, of: 1, reason: 'quota' }), lostWrites: () => 0 });
+	assert.deepEqual(await tm.op({ to: ['a@skyphusion.org'], subject: 's', message: 'm' }), { ok: true, queued: true, refused: 1, of: 1, reason: 'quota', retry: true });
+	assert.equal(tm.counts.droppedUndeliverable, 0);
+	assert.equal(tm.counts.refusedAllowlist, 0);
+});
+test('#1135 index.js: emailOp pre-checks the recipients before the tick op or the request queue, one path for both classes', async () => {
+	const { readFileSync } = await import('node:fs');
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const at = src.indexOf('function emailOp(email) {');
+	const body = src.slice(at, src.indexOf('\n}\n', at));
+	assert.match(body, /const pc = precheckRecipients\(ENV, email && email\.to\);/);
+	assert.ok(body.indexOf('precheckRecipients') < body.indexOf('tickMail.op') && body.indexOf('precheckRecipients') < body.indexOf('pendingEmails.push'), 'before both');
+	assert.match(body, /if \(!pc\.send\.length\) return \{ ok: true, queued: false, \.\.\.refusal \};/, 'nothing left to send: nothing queued');
+	assert.match(body, /tickMail\.counts\.droppedUndeliverable \+= nUndeliverable; tickMail\.counts\.refusedAllowlist \+= nNotAllowed;/);
+	assert.doesNotMatch(src, /const dropped = toSend\.reduce/, 'the after-the-handoff count (#1142 draft) is gone: one path');
 });

@@ -1,7 +1,7 @@
 // Spike B2: WordPress in a Worker, database on D1.
 import { sqlImport } from './sql-import.js';
 import { releaseReservedName, releaseReservedD1, tryReserveName, RESERVE_DDL, RESERVE_INSERT } from './r2-reserve.mjs';
-import { sender, replyTo, deliverableRecipients, bindingAddress } from './mail-from.mjs';
+import { sender, replyTo, deliverableRecipients, bindingAddress, precheckRecipients } from './mail-from.mjs';
 import { collapsedSlashRedirect } from './slash-path.mjs';
 import { emailQueueEnabled, emailBackoffDelay, chunkBatch, isDeadLetterQueue, handleQueuedEmail } from './email-queue.mjs';
 import { boundedWait, TIMED_OUT } from './promise-bound.mjs';
@@ -1076,9 +1076,30 @@ function mountLazyZip(FS, mountPath, zip) {
 // request still collects the messages and sends them after the response.
 function emailOp(email) {
 	stats.email = (stats.email || 0) + 1;
-	if (tickMail) return tickMail.op(email);
-	pendingEmails.push(email);
-	return { ok: true, queued: true };
+	// #1135 (the lead's ruling (a)), #198 folded in: the recipients the platform can never deliver to are refused here, in
+	// 0 ms, before anything is queued, so #368's HOLD still decides the rest at the request end. Never sent, never retried.
+	const pc = precheckRecipients(ENV, email && email.to);
+	const total = pc.send.length + pc.refused.length;
+	let refusal = null;
+	if (pc.refused.length) {
+		const nUndeliverable = pc.refused.filter((x) => x.why === 'undeliverable').length;
+		const nNotAllowed = pc.refused.length - nUndeliverable;
+		stats.emailRefused = (stats.emailRefused || 0) + pc.refused.length;
+		if (tickMail) { tickMail.counts.droppedUndeliverable += nUndeliverable; tickMail.counts.refusedAllowlist += nNotAllowed; }
+		console.log(JSON.stringify({ '@event': 'email-refused', m: 'email-refused', at: 'precheck', undeliverable: nUndeliverable, notAllowed: nNotAllowed, of: total }));
+		refusal = { refused: pc.refused.length, of: total, reason: pc.reason, retry: false };
+	}
+	if (!pc.send.length) return { ok: true, queued: false, ...refusal };
+	const toSend = refusal ? { ...email, to: pc.send } : email;
+	if (tickMail) {
+		return Promise.resolve(tickMail.op(toSend)).then((r) => {
+			if (!refusal || !r || r.ok === false) return r;
+			const rr = Number(r.refused) || 0;
+			return { ...r, refused: rr + refusal.refused, of: total, reason: r.reason || refusal.reason, retry: Boolean(r.retry) };
+		});
+	}
+	pendingEmails.push(toSend);
+	return { ok: true, queued: true, ...refusal };
 }
 
 // The mail side of the cron tick that is running PHP now, or null. Set and cleared by runCron

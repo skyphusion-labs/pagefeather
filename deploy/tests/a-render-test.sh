@@ -150,6 +150,12 @@ ok "#1054 deploy.sh checks PLACEMENT before any step" "$(grep -q 'placement_chec
 # #1056: MAIL_ALLOWED_TO renders the destination allowlist on the send_email binding (c1 had it; a and b-* did not).
 render "$T/m1.toml" PLACEMENT=azure:westus2 MAIL_FROM=wp-test@skyphusion.org MAIL_ALLOWED_TO=mackaye@skyphusion.org
 ok "#1056 MAIL_ALLOWED_TO renders allowed_destination_addresses" "$(grep -qx 'send_email = \[{ name = "EMAIL", allowed_sender_addresses = \["wp-test@skyphusion.org"\], allowed_destination_addresses = \["mackaye@skyphusion.org"\] }\]' "$T/m1.toml" && echo 1 || echo 0)"
+# #1135: the runtime pre-check reads MAIL_ALLOWED_TO, rendered from the SAME list as the binding's allowlist: equal.
+render "$T/m3.toml" PLACEMENT=azure:westus2 MAIL_FROM=wp-test@skyphusion.org MAIL_ALLOWED_TO=' mackaye@skyphusion.org , b@skyphusion.org '
+b_list=$(grep -o 'allowed_destination_addresses = \[[^]]*\]' "$T/m3.toml" | sed 's/^allowed_destination_addresses = //' | python3 -I -c 'import json,sys; print(",".join(json.load(sys.stdin)))')
+v_list=$(grep -E '^MAIL_ALLOWED_TO = ' "$T/m3.toml" | sed 's/^MAIL_ALLOWED_TO = //' | python3 -I -c 'import json,sys; print(json.load(sys.stdin))')
+ok "#1135 the MAIL_ALLOWED_TO var equals the binding's allowed_destination_addresses ($v_list)" "$([ -n "$b_list" ] && [ "$b_list" = "$v_list" ] && [ "$b_list" = 'mackaye@skyphusion.org,b@skyphusion.org' ] && echo 1 || echo 0)"
+ok "#1135 no MAIL_ALLOWED_TO renders no var" "$(grep -qE '^MAIL_ALLOWED_TO = ' "$T/m1.toml.none" 2>/dev/null && echo 0 || { render "$T/m4.toml" PLACEMENT=azure:westus2 MAIL_FROM=wp-test@skyphusion.org; grep -qE '^MAIL_ALLOWED_TO = ' "$T/m4.toml" && echo 0 || echo 1; })"
 render "$T/m2.toml" PLACEMENT=azure:westus2 MAIL_ALLOWED_TO=mackaye@skyphusion.org; rc=$?
 ok "#1056 MAIL_ALLOWED_TO with no sender is refused (rc $rc)" "$([ "$rc" != 0 ] && grep -q 'MAIL_ALLOWED_TO needs MAIL_FROM' "$T/render.err" && echo 1 || echo 0)"
 ok "#1056 deploy.sh checks MAIL_ALLOWED_TO before any step" "$(grep -q 'MAIL_ALLOWED_TO="$MAIL_ALLOWED_TO" node "$APP/mail-from.mjs" --binding > /dev/null || exit 2' "$ROOT/deploy/deploy.sh" && echo 1 || echo 0)"

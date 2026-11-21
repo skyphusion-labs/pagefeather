@@ -85,7 +85,13 @@ if ( ! function_exists( 'wp_mail' ) ) {
 			} else {
 				$of  = isset( $reply['of'] ) ? (int) $reply['of'] : 0;
 				$who = $of > 1 ? sprintf( ' for %d of %d recipients', (int) $reply['refused'], $of ) : '';
-				$why = 'The email service refused this email' . $who . ( isset( $reply['reason'] ) && '' !== (string) $reply['reason'] ? ': ' . (string) $reply['reason'] : '' ) . '. It is queued for retry; Site Health counts it if every retry fails.';
+				$reason = isset( $reply['reason'] ) && '' !== (string) $reply['reason'] ? ': ' . (string) $reply['reason'] : '';
+				if ( isset( $reply['retry'] ) && false === $reply['retry'] ) {
+					// #198: a recipient the platform can never deliver to (example.com, .invalid, ...) is dropped, not retried.
+					$why = 'This email was not sent' . $who . $reason . '. It will not be retried.';
+				} else {
+					$why = 'The email service refused this email' . $who . $reason . '. It is queued for retry; Site Health counts it if every retry fails.';
+				}
 			}
 			$mail_data = compact( 'to', 'subject', 'message', 'headers', 'attachments' );
 			$mail_data['phpmailer_exception_code'] = 0;
