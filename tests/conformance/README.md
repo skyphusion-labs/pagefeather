@@ -84,7 +84,7 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
    - `check-state` sends each saved login to `/wp-admin/`. A redirect to `wp-login.php`, or the login form, STOPS the run.
    - WooCommerce's upstream `reset` project is NOT run: `woocommerce-cleanup` would wipe the seed. The seed is the reset.
    - **The evidence (#1211):** take a run's traces, screenshots and videos with `vps-run.sh collect <suite> <work-dir> <run-dir> <tarball>`, before the box goes.
-     - Playwright writes them to its outputDir (for wc, the checkout's `tests/e2e/test-results`). After each wc run, vps-run.sh copies that folder to `<run-dir>/test-results`, and collect tars it from there.
+     - Playwright writes them to its outputDir. For wc, wc-api and wc-cpt that is the checkout's `tests/e2e/test-results`, which vps-run.sh copies to `<run-dir>/test-results` after each run; for wp and gb the config puts it under `<run-dir>/artifacts/test-results` (#1265). collect tars the suite's own folder.
      - `<run-dir>/artifacts` holds the logins, not the traces: an archive of it has no traces (sb1120 wcb2 lost every trace this way).
      - With no `test-results` folder, or an empty one, collect STOPS (exit 3) and writes no archive.
 7. **The rows:**
