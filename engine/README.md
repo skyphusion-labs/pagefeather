@@ -64,7 +64,7 @@ this on 2026-11-14:
 The test `the known differences are still different` pins the two examples (a SQLite database as
 `.doc`, PostScript as `.pdf`), so a change to this limit is noticed.
 
-**WordPress quirks.** Some types are in WordPress's list but WordPress 7.1.4 itself refuses them on any host with
+**WordPress quirks.** Some types are in WordPress's list but WordPress 7.1.5 itself refuses them on any host with
 PHP's full libmagic 5.43 database, for a real file. libmagic's name for the format differs from WordPress's, and
 `wp_check_filetype_and_ext()` then refuses it. These are not accepted types in practice. The tests keep them
 apart (`wp-quirk` in `fileinfo/fixtures.py`, each with its reason) and require the trimmed engine to refuse them

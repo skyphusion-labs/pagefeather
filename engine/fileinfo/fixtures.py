@@ -205,7 +205,7 @@ put('r.exe', PE, R, 'exe (get_allowed_mime_types removes it)'); put('r.php', PHP
 put('r.swf', b'FWS\x0a' + struct.pack('<I', 21) + b'\x78\x00\x05\x5f\x00\x00\x0f\xa0\x00\x00\x18\x01\x00', R, 'swf (removed)')
 put('r.sh', SH, R, 'sh'); put('r.sqlite', b'SQLite format 3\x00' + b'\x00' * 84, R, 'sqlite')
 
-# wp-quirk: types WordPress lists, that WordPress 7.1.4 itself REFUSES on a host with the full libmagic
+# wp-quirk: types WordPress lists, that WordPress 7.1.5 itself REFUSES on a host with the full libmagic
 # 5.43 database, for a real file (measured: wp_check_filetype_and_ext on the npm 3.1.62 engine). The reason
 # is libmagic's name for the format against WordPress's, and the rule of wp_check_filetype_and_ext that
 # then refuses it. They are taken out of "accepted": the trimmed engine must refuse them the same way.

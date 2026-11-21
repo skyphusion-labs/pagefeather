@@ -1,6 +1,6 @@
 # Spike B2: WordPress on D1
 
-WordPress 7.1.4 runs in a Worker as PHP 8.3 in WebAssembly. The database is D1. Run in local workerd.
+WordPress 7.1.5 runs in a Worker as PHP 8.3 in WebAssembly. The database is D1. Run in local workerd.
 
 ## Run
 

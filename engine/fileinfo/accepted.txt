@@ -1,4 +1,4 @@
-# The types WordPress 7.1.4 accepts for upload (#582 S2b, Conrad's spec of 2026-11-14), the keep list of
+# The types WordPress 7.1.5 accepts (wp-includes/functions.php is unchanged from 7.1.4) for upload (#582 S2b, Conrad's spec of 2026-11-14), the keep list of
 # the trimmed magic database. EXT: the extensions of wp_get_mime_types() as get_allowed_mime_types()
 # leaves them (it removes swf and exe), plus the Font Library's otf, ttf, woff, woff2. MIME: their
 # types, plus the font types. check-accepted.py (job lean-gates) requires EXT and MIME to equal what the
