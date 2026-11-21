@@ -37,6 +37,7 @@ test('#1215 index.js: a non-blocking op is checked, then queued in waitUntil, an
 	assert.ok(body.indexOf('ocCtx.inObject') < body.indexOf('ocCtx.waitUntil('), 'the object check comes before any queueing');
 	assert.match(body, /httpOpRun\(\{ \.\.\.op, discard: true \}\)/, 'a queued request holds no body');
 	assert.match(src, /if \(op\.discard\) continue;/);
+	assert.match(src, /\.\.\.\(op\.discard \? \{ queued: true, iso: ISOLATE_ID \} : \{\}\)/, 'a queued request\'s http line says so, and where it ran');
 	// #1226 kept: the hop's route is selfFetchRoute's, so only a refused SELF-fetch is logged as one.
 	assert.match(src, /const self = httpHop\(url, ovs\);\n\t\t\tconst why = self\.why;/);
 	assert.match(src, /return \{ route: self\.route, why \};/);

@@ -2956,7 +2956,8 @@ async function httpOpRun(op) {
 		return out;
 	} finally {
 		stats.httpMs += Date.now() - t0;
-		console.log(JSON.stringify({ m: 'http', host: url ? url.hostname : null, status: out && out.status, error: out && out.error ? String(out.error).slice(0, 120) : undefined, ms: Date.now() - t0 }));
+		// #1225: a queued (non-blocking) request's line also names that it was queued and the isolate it ran to its end in.
+		console.log(JSON.stringify({ m: 'http', host: url ? url.hostname : null, status: out && out.status, error: out && out.error ? String(out.error).slice(0, 120) : undefined, ms: Date.now() - t0, ...(op.discard ? { queued: true, iso: ISOLATE_ID } : {}) }));
 	}
 }
 
