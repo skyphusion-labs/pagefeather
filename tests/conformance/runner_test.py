@@ -806,6 +806,24 @@ def main():
                 ok("baseline gb without the plugin: the stop uses the same env file") if "wp-env --config .wp-env.test-without-gutenberg-plugin.json stop" in out else bad("baseline gb core-only stop: %s" % out[-300:])
             else:
                 ok("baseline gb by default: upstream's env, plugin mounted, as before") if vbg.returncode == 0 and "wp-env-test -- start" in out and "without-gutenberg-plugin" not in out else bad("baseline gb default: %s" % out[-300:])
+        # vps-run.sh runs a private copy of itself: exactly one re-exec, the copy is gone afterwards, the original is
+        # unchanged, and the real tests/conformance is still where it reads pins.env and runner.py from.
+        stmp = os.path.join(t, "selftmp"); os.makedirs(stmp)
+        orig_sum = open(os.path.join(HERE, "vps-run.sh"), "rb").read()
+        try:
+            vs = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "run", "wc", vw, os.path.join(t, "vself")],
+                                env={"PATH": os.environ.get("PATH", ""), "DRY": "1", "TMPDIR": stmp}, capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            vs = subprocess.CompletedProcess([], 124, "", "TIMEOUT: the re-exec looped")
+        marks = [l for l in vs.stderr.splitlines() if "running a private copy of itself" in l]
+        ok("vps-run: re-execs a private copy exactly once") if vs.returncode == 0 and len(marks) == 1 else bad("vps-run self copy: rc %d marks %d %s" % (vs.returncode, len(marks), vs.stderr[-200:]))
+        ok("vps-run: the copy reads the real tests/conformance") if marks and marks[0].endswith("(from %s)" % HERE) and "runner.py config" in vs.stdout and os.path.join(HERE, "runner.py") in vs.stdout else bad("vps-run self copy: here is wrong: %s" % marks)
+        ok("vps-run: the copy is removed, the original is unchanged") if os.listdir(stmp) == [] and open(os.path.join(HERE, "vps-run.sh"), "rb").read() == orig_sum else bad("vps-run self copy: left %s" % os.listdir(stmp))
+        # A caller-set PF_VPS_RUN_SELF naming another file must not be removed (only the running copy is).
+        decoy = os.path.join(t, "decoy.txt"); open(decoy, "w").write("keep")
+        vd = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "run", "wc", vw, os.path.join(t, "vdecoy")],
+                            env={"PATH": os.environ.get("PATH", ""), "DRY": "1", "TMPDIR": stmp, "PF_VPS_RUN_SELF": decoy, "PF_VPS_RUN_HERE": HERE}, capture_output=True, text=True)
+        ok("vps-run: a caller-named PF_VPS_RUN_SELF file is never removed") if os.path.exists(decoy) else bad("vps-run removed a caller-named file")
         vg = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "install", "gb", os.path.join(t, "vg")],
                             env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
         vg_out = vg.stdout + vg.stderr
