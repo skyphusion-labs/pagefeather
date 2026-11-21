@@ -39,7 +39,7 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
 | `wc` | `woocommerce` `plugins/woocommerce/tests/e2e`, core profile | 11.2.1 (`67e007c3c4cc`) |
 | `wc-api` | the same checkout, its `tests/api-tests` (the API half, Rollins, #785) | 11.2.1 (`67e007c3c4cc`) |
 | `wc-cpt` | the same checkout, its `@hpos` tests with HPOS OFF, as upstream `envs/default-hpos-disabled` (#759) | 11.2.1 (`67e007c3c4cc`) |
-| `gb` | `gutenberg` `test/e2e` | `89408c2b9bd9`: the sha that wordpress-develop 7.1.5 names |
+| `gb` | `gutenberg` `test/e2e` | `89408c2b9bd9`: the sha that wordpress-develop 7.1.5 names; GB_SHA follows the WordPress version (#1201) |
 
 ## The files
 
