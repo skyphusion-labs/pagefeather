@@ -551,7 +551,7 @@ def main():
         dc_rows = [r for r in runner.read_excludes("gb") if r.path == dc]
         ok("gb directive-context rows are 11 title rows") if len(dc_rows) == 11 and all(r.kind == "title" and r.reason == dc_why for r in dc_rows) else bad("directive-context rows: %s" % (dc_rows,))
         ok("gb directive-context row titles are the pre readers") if sorted(r.title for r in dc_rows) == sorted("data-wp-context > " + x for x in dc_out) else bad("directive-context titles: %s" % ([r.title for r in dc_rows],))
-        gm = re.search(r"^config\.grepInvert = new RegExp\( (.*) \);$", gbt, re.M)
+        gm = re.search(r"^const oursInvert = (.*);$", gbt, re.M)
         gsrc = json.loads(gm.group(1)) if gm else None
         ok("gb config has a title grepInvert") if gsrc else bad("gb config lacks a title grepInvert")
         if gsrc:
@@ -666,8 +666,64 @@ def main():
             stock_txt = runner.config_text(sb, os.path.join(t, "st" + sb), os.path.join(t, "suite" + sb), stock=True)
             ours_txt = runner.config_text(sb, os.path.join(t, "st" + sb), os.path.join(t, "suite" + sb))
             ok("stock %s config: no forced baseURL, no assert-login, no STORAGE_STATE_PATH, no globalSetup" % sb) if all(x not in stock_txt for x in ("baseURL", "assert-login", "STORAGE_STATE_PATH", "globalSetup")) else bad("stock %s config: %s" % (sb, stock_txt[-400:]))
-            ok("stock %s config: keeps the exclusions, workers 1, retries 0 and the JSON report" % sb) if all(x in stock_txt for x in ("testIgnore = ignore", "workers: 1", "retries: 0", "report.json")) else bad("stock %s keeps: %s" % (sb, stock_txt[-400:]))
+            ok("stock %s config: keeps the exclusions, workers 1, retries 0 and the JSON report" % sb) if all(x in stock_txt for x in ("config.testIgnore = withIgnore( upstream.testIgnore )", "testIgnore: withIgnore( p.testIgnore )", "workers: 1", "retries: 0", "report.json")) else bad("stock %s keeps: %s" % (sb, stock_txt[-400:]))
             ok("our %s config still forces baseURL, the login assert and STORAGE_STATE_PATH" % sb) if all(x in ours_txt for x in ("baseURL: url", "assert-login", "STORAGE_STATE_PATH")) else bad("our %s config lost a guard" % sb)
+        # #1160: wc --stock is upstream's own config and projects, and every map ADDS our rows to upstream's
+        # testIgnore and grepInvert (upstream projects partition the specs with their own).
+        wcs = runner.config_text("wc", os.path.join(t, "stwc"), os.path.join(t, "suitewc"), stock=True)
+        wco = runner.config_text("wc", os.path.join(t, "stwc"), os.path.join(t, "suitewc"))
+        ok("stock wc config: no forced baseURL, no coreSetupProjects, no e2e-pf, no install wc filter") if all(x not in wcs for x in ("baseURL", "coreSetupProjects", "e2e-pf", "install wc")) else bad("stock wc config: %s" % wcs[-500:])
+        ok("stock wc config: USE_WP_ENV as upstream envs/default, the wc tag filter, workers 1, retries 0, the JSON report") if all(x in wcs for x in ("USE_WP_ENV = 'true'", "@skip-on-external-env", "workers: 1", "retries: 0", "report.json", "testIgnore: withIgnore( p.testIgnore )")) else bad("stock wc keeps: %s" % wcs[-500:])
+        ok("our wc config still forces baseURL and drops install wc") if "baseURL: url" in wco and "p.name !== 'install wc'" in wco and "e2e-pf" in wco else bad("our wc config lost a guard")
+        try:
+            runner.config_text("wc-cpt", t, t, stock=True)
+            bad("stock wc-cpt: no refusal")
+        except runner.Stop as ex:
+            ok("stock wc-cpt is refused (its stock arm needs upstream's HPOS-off env)") if "wc-cpt" in str(ex) else bad("stock wc-cpt: %s" % ex)
+        vbw = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "baseline", "wc", vw, os.path.join(t, "vbwc")],
+                             env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
+        cl = [l for l in vbw.stdout.splitlines() if "runner.py config" in l]
+        ok("baseline wc: the config step is --stock") if cl and cl[0].rstrip().endswith("--stock") else bad("baseline wc config line: %s" % cl)
+        if node:
+            # Load each generated config against a stub upstream whose projects carry their own testIgnore,
+            # grepInvert and grep, and read what Playwright would get.
+            stub = ("export const coreSetupProjects = [ { name: 'install wc' }, { name: 'global authentication' }, { name: 'site setup' } ];\n"
+                    "export default { testIgnore: [ '**/up-top/**' ], grepInvert: /-up-top/, projects: [\n"
+                    "  { name: 'site setup' },\n"
+                    "  { name: 'core-parallel', testIgnore: [ '**/api-tests/**', '**/tests/blocks/**' ] },\n"
+                    "  { name: 'chromium', grepInvert: /-chromium/ },\n"
+                    "  { name: 'webkit', grep: /@webkit/, grepInvert: /-webkit/ } ] };\n")
+            for sn, stk in (("wc", True), ("gb", True), ("gb", False), ("wp", True)):
+                d = os.path.join(t, "ev-%s-%s" % (sn, stk))
+                os.makedirs(d)
+                open(os.path.join(d, "upstream.mjs"), "w").write(stub)
+                txt = runner.config_text(sn, os.path.join(d, "r"), d, stock=stk).replace("./" + runner.UPSTREAM_CONFIG[sn], "./upstream.mjs")
+                open(os.path.join(d, "w.mjs"), "w").write(txt)
+                probe = ("import c from './w.mjs';\n"
+                         "const P = Object.fromEntries( c.projects.map( ( p ) => [ p.name, { ti: p.testIgnore, gi: p.grepInvert ? p.grepInvert.source : null, g: p.grep ? p.grep.source : null } ] ) );\n"
+                         "console.log( JSON.stringify( { ti: c.testIgnore, gi: c.grepInvert ? c.grepInvert.source : null, P } ) );\n")
+                open(os.path.join(d, "probe.mjs"), "w").write(probe)
+                r = subprocess.run([node, os.path.join(d, "probe.mjs")], capture_output=True, text=True, cwd=d)
+                try:
+                    got = json.loads(r.stdout.strip().splitlines()[-1])
+                except Exception:
+                    bad("eval %s stock=%s: %s" % (sn, stk, (r.stderr or r.stdout).strip()[-200:]))
+                    continue
+                ours = [x.path for x in runner.read_excludes(sn) if x.kind == "file"]
+                cp = (got.get("P") or {}).get("core-parallel", {})
+                ch = (got.get("P") or {}).get("chromium", {})
+                wk = (got.get("P") or {}).get("webkit", {})
+                lab = "eval %s %s" % (sn, "stock" if stk else "run")
+                top = got.get("ti") or []
+                ok("%s: upstream's top-level testIgnore kept, ours added" % lab) if "**/up-top/**" in top and all(x in top for x in ours) else bad("%s top testIgnore: %s" % (lab, top))
+                ok("%s: a project's own testIgnore kept, ours added" % lab) if all(x in (cp.get("ti") or []) for x in ["**/api-tests/**", "**/tests/blocks/**"] + ours) else bad("%s core-parallel testIgnore: %s" % (lab, cp.get("ti")))
+                ok("%s: a project's own grepInvert still skips its titles" % lab) if ch.get("gi") and re.search(ch["gi"], "should write over selection (-chromium, -firefox)") else bad("%s chromium grepInvert: %s" % (lab, ch.get("gi")))
+                ok("%s: a project's own grep is untouched" % lab) if wk.get("g") == "@webkit" else bad("%s webkit grep: %s" % (lab, wk.get("g")))
+                if sn == "gb":
+                    full = "specs/interactivity/directive-context.spec.ts data-wp-context overwritten objects do not inherit values"
+                    ok("%s: our title rows still skip their tests" % lab) if ch.get("gi") and re.search(ch["gi"], full) else bad("%s: our title row lost: %s" % (lab, ch.get("gi")))
+        else:
+            bad("eval of the generated configs: no node (could not measure)")
         vg = subprocess.run(["bash", os.path.join(HERE, "vps-run.sh"), "install", "gb", os.path.join(t, "vg")],
                             env={"PATH": os.environ.get("PATH", ""), "DRY": "1"}, capture_output=True, text=True)
         vg_out = vg.stdout + vg.stderr

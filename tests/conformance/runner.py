@@ -415,6 +415,9 @@ def config_text(suite, run_dir, suite_dir, stock=False, tier=None):
     grep_src = grep_invert_source(titles)
     rep = os.path.join(os.path.abspath(run_dir), "report.json")
     artifacts, storage = conformance_artifact_paths(run_dir)
+    is_wc = suite in ("wc", "wc-api", "wc-cpt")
+    if stock and suite == "wc-cpt":
+        raise Stop("--stock is not built for wc-cpt: its stock arm needs upstream's HPOS-off env (#1160)")
     lines = ["// Written by tests/conformance/runner.py config (#759). Do not edit; re-run it."]
     if suite in ("wp", "gb"):
         # The artifacts (traces, results) go under the run dir either way. A stock baseline (--stock) leaves the login
@@ -423,14 +426,20 @@ def config_text(suite, run_dir, suite_dir, stock=False, tier=None):
         if not stock:
             lines.append("process.env.STORAGE_STATE_PATH = %s;" % json.dumps(storage))
     lines.append("import base from './%s';" % UPSTREAM_CONFIG[suite])
-    if suite in ("wc", "wc-api", "wc-cpt"):
+    if is_wc and not stock:
         lines.append("import { coreSetupProjects } from './%s';" % UPSTREAM_CONFIG[suite])
     lines += ["const ignore = %s;" % json.dumps(ign),
               "// Playwright loads this file as { default: config }. Spread of base drops timeout and use.",
               "const upstream = base.default || base;",
               "const config = { ...upstream, workers: %d, retries: 0, fullyParallel: false, webServer: undefined," % pf_workers(),
-              "  reporter: [ [ 'list' ], [ 'json', { outputFile: %s } ] ] };" % json.dumps(rep)]
-    if suite in ("wc", "wc-api", "wc-cpt"):
+              "  reporter: [ [ 'list' ], [ 'json', { outputFile: %s } ] ] };" % json.dumps(rep),
+              # Our rows are ADDED to upstream's testIgnore and grepInvert, never put in their place (#1160): upstream
+              # projects partition the specs with their own (wc core-parallel keeps serial, api, paypal and blocks out;
+              # gb chromium skips -chromium titles).
+              "const asList = ( x ) => ( x === undefined || x === null ? [] : [].concat( x ) );",
+              "const withIgnore = ( x ) => [ ...asList( x ), ...ignore ];",
+              "const withInvert = ( g, ours ) => new RegExp( [ ...asList( g ).map( ( r ) => r.source ), ours ].map( ( x ) => '(?:' + x + ')' ).join( '|' ) );"]
+    if is_wc and not stock:
         # External throwaway (conf759 STOP 2026-11-17): upstream coreSetupProjects starts with
         # 'install wc' (WC Beta Tester). Its restApi fixture requires Playwright baseURL before
         # setup.skip(!INSTALL_WC) can run, so the project fails in milliseconds on a seeded site.
@@ -442,13 +451,13 @@ def config_text(suite, run_dir, suite_dir, stock=False, tier=None):
             ".map((p) => p.name === 'global authentication' ? { ...p, dependencies: [] } : p);",
             "config.testIgnore = undefined;",
         ]
-    if suite == "wc":
+    if suite == "wc" and not stock:
         # As upstream envs/default-pressable, but WITHOUT its 'reset' project: woocommerce-cleanup
         # TRUNCATEs the store, which would wipe the seed (Rollins' seed owns setup AND the reset between
         # runs). vps-run.sh runs 'site setup' first, then check-state, then e2e-pf with --no-deps.
         lines += ["config.projects = [ ...setup,",
                   "  { name: 'e2e-pf', testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % json.dumps(grep_src)]
-    elif suite == "wc-cpt":
+    elif suite == "wc-cpt" and not stock:
         # As upstream envs/default-hpos-disabled: DISABLE_HPOS=1, read by fixtures/site.setup.ts, turns HPOS OFF in the
         # 'site setup' project; then only the @hpos-tagged tests (upstream's e2e-hpos-disabled project), with the same
         # tag filter and exclusions as wc. No reset project (the seed owns setup and reset). Its API half is the wc-api
@@ -456,7 +465,7 @@ def config_text(suite, run_dir, suite_dir, stock=False, tier=None):
         lines += ["process.env.DISABLE_HPOS = '1';",
                   "config.projects = [ ...setup,",
                   "  { name: 'e2e-cpt', grep: new RegExp( %s ), testIgnore: ignore, grepInvert: new RegExp( %s ), dependencies: [ 'site setup' ] } ];" % (json.dumps("@hpos"), json.dumps(grep_src))]
-    elif suite == "wc-api":
+    elif suite == "wc-api" and not stock:
         # The API half: the same setup projects and the same tag filter, and only the api-tests (which the wc
         # config ignores). No reset project either: the seed owns setup and the reseed between the halves.
         lines += ["config.projects = [ ...setup,",
@@ -465,13 +474,21 @@ def config_text(suite, run_dir, suite_dir, stock=False, tier=None):
         # #1112: the stock baseline is upstream's own config plus only our exclusions, one worker, no retries and the
         # JSON report: upstream's baseURL (its default, wp-env at localhost:8889), storageState and globalSetup are left
         # alone. Forcing them gave baseURL "/" and Invalid URL in global setup, because the baseline unsets the names.
-        if titles:
-            title_src = "|".join(title_grep_source(p, t) for p, t in titles)
-            lines.append("config.grepInvert = new RegExp( %s );" % json.dumps(title_src))
-            map_line = "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: ignore, grepInvert: new RegExp( %s ) } ) );" % json.dumps(title_src)
+        # wc (#1160): upstream's own projects too (install wc skips itself without INSTALL_WC; site setup; core-serial,
+        # core-parallel and the rest), with USE_WP_ENV as upstream envs/default sets it. envs/default has no reset
+        # project: a fresh wp-env has nothing to reset. The wc tag filter is kept, so the same tests run as in ours.
+        if is_wc:
+            lines.append("process.env.USE_WP_ENV = 'true';")
+            ours_inv = grep_src
         else:
-            map_line = "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: ignore } ) );"
-        lines += ["config.testIgnore = ignore;", map_line]
+            ours_inv = "|".join(title_grep_source(p, t) for p, t in titles) if titles else ""
+        lines.append("config.testIgnore = withIgnore( upstream.testIgnore );")
+        if ours_inv:
+            lines.append("const oursInvert = %s;" % json.dumps(ours_inv))
+            lines.append("config.grepInvert = withInvert( upstream.grepInvert, oursInvert );")
+            lines.append("if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: withIgnore( p.testIgnore ), grepInvert: withInvert( p.grepInvert, oursInvert ) } ) );")
+        else:
+            lines.append("if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: withIgnore( p.testIgnore ) } ) );")
     else:
         pf_setup = os.path.join(HERE, "pf-global-setup.mjs")
         assert_login = os.path.join(HERE, "assert-login.mjs")
@@ -481,17 +498,18 @@ def config_text(suite, run_dir, suite_dir, stock=False, tier=None):
         # A title row on wp or gb is grepInvert. With no title row, the project line stays the file ignore only.
         if titles:
             title_src = "|".join(title_grep_source(p, t) for p, t in titles)
-            lines.append("config.grepInvert = new RegExp( %s );" % json.dumps(title_src))
-            map_line = "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: ignore, grepInvert: new RegExp( %s ), use: { ...p.use, baseURL: url, storageState: state } } ) );" % json.dumps(title_src)
+            lines.append("const oursInvert = %s;" % json.dumps(title_src))
+            lines.append("config.grepInvert = withInvert( upstream.grepInvert, oursInvert );")
+            map_line = "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: withIgnore( p.testIgnore ), grepInvert: withInvert( p.grepInvert, oursInvert ), use: { ...p.use, baseURL: url, storageState: state } } ) );"
         else:
-            map_line = "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: ignore, use: { ...p.use, baseURL: url, storageState: state } } ) );"
+            map_line = "if ( config.projects ) config.projects = config.projects.map( ( p ) => ( { ...p, testIgnore: withIgnore( p.testIgnore ), use: { ...p.use, baseURL: url, storageState: state } } ) );"
         lines += [
             "const url = (process.env.BASE_URL || process.env.WP_BASE_URL || '').replace(/\\/+$/, '') + '/';",
             "const state = process.env.STORAGE_STATE_PATH;",
             "config.use = { ...(config.use || {}), baseURL: url, storageState: state };",
             "process.env.PF_CONFORMANCE_UPSTREAM_GLOBAL_SETUP = %s;" % json.dumps(upstream_abs),
             "config.globalSetup = [ %s, %s ];" % (json.dumps(pf_setup), json.dumps(assert_login)),
-            "config.testIgnore = ignore;",
+            "config.testIgnore = withIgnore( upstream.testIgnore );",
             map_line,
         ]
     lines.append("export default config;")
@@ -580,7 +598,7 @@ def main(argv=None):
     p.add_argument("--suite", choices=("wp", "wc", "wc-api", "wc-cpt", "gb"), required=True)
     p.add_argument("--suite-dir", required=True)
     p.add_argument("--run-dir", required=True)
-    p.add_argument("--stock", action="store_true", help="a stock baseline: leave upstream baseURL, storageState and globalSetup alone (wp, gb)")
+    p.add_argument("--stock", action="store_true", help="a stock baseline: upstream's own config (baseURL, storageState, globalSetup; for wc its projects too) plus our exclusions (wp, gb, wc, wc-api)")
     p.add_argument("--tier", choices=TIERS, help="the tier this run is on: applies its tier-scoped exclude rows")
     p = sub.add_parser("check-state")
     p.add_argument("--base-url", required=True)
