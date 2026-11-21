@@ -586,6 +586,44 @@ def cmd_compare(a):
     return 1 if c.get("OURS") else 0
 
 
+CORE_ONLY_WP_ENV = ".wp-env.test-without-gutenberg-plugin.json"
+
+
+def wp_env_without_gutenberg_plugin(cfg):
+    """Gutenberg's .wp-env.test.json with the Gutenberg PLUGIN not mounted, so the stock arm is core alone, as our sites
+    are (none ships the plugin). Upstream mounts it twice: "plugins": ["."] and the mapping wp-content/plugins/gutenberg
+    -> ".". Both go; every other key and mapping (mu-plugins, test plugins, test themes, core, port) stays. Refused when
+    either is missing, or when "." is still mounted anywhere after: then upstream's shape changed, and a quiet copy could
+    keep the plugin."""
+    if not isinstance(cfg, dict):
+        raise Stop("the wp-env config is not an object")
+    plugins = cfg.get("plugins")
+    maps = cfg.get("mappings")
+    if not isinstance(plugins, list) or "." not in plugins:
+        raise Stop('the wp-env config has no "plugins": ["."]; upstream changed how it mounts Gutenberg')
+    if not isinstance(maps, dict) or maps.get("wp-content/plugins/gutenberg") != ".":
+        raise Stop('the wp-env config has no mapping wp-content/plugins/gutenberg -> "."; upstream changed')
+    out = dict(cfg)
+    out["plugins"] = [x for x in plugins if x != "."]
+    out["mappings"] = {k: v for k, v in maps.items() if k != "wp-content/plugins/gutenberg"}
+    left = [k for k, v in out["mappings"].items() if v == "."] + (["plugins"] if "." in out["plugins"] else [])
+    if left or any(str(k).endswith("/plugins/gutenberg") for k in out["mappings"]):
+        raise Stop("the Gutenberg checkout is still mounted after the edit: %s" % left)
+    return out
+
+
+def cmd_wp_env_without_gutenberg_plugin(a):
+    src = os.path.join(a.suite_dir, ".wp-env.test.json")
+    if not os.path.isfile(src):
+        raise Stop("no %s" % src)
+    cfg = wp_env_without_gutenberg_plugin(json.load(open(src)))
+    p = os.path.join(a.suite_dir, CORE_ONLY_WP_ENV)
+    with open(p, "w") as f:
+        json.dump(cfg, f, indent="\t")
+        f.write("\n")
+    print(p)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -600,6 +638,8 @@ def main(argv=None):
     p.add_argument("--run-dir", required=True)
     p.add_argument("--stock", action="store_true", help="a stock baseline: upstream's own config (baseURL, storageState, globalSetup; for wc its projects too) plus our exclusions (wp, gb, wc, wc-api)")
     p.add_argument("--tier", choices=TIERS, help="the tier this run is on: applies its tier-scoped exclude rows")
+    p = sub.add_parser("wp-env-without-gutenberg-plugin", help="write the gb wp-env config with the Gutenberg plugin not mounted (the core-only stock arm)")
+    p.add_argument("--suite-dir", required=True, help="the Gutenberg checkout (it holds .wp-env.test.json)")
     p = sub.add_parser("check-state")
     p.add_argument("--base-url", required=True)
     p.add_argument("--state", action="append", required=True)
@@ -611,7 +651,8 @@ def main(argv=None):
     p.add_argument("--ours", required=True)
     a = ap.parse_args(argv)
     try:
-        return {"prepare": cmd_prepare, "config": cmd_config, "check-state": cmd_check_state, "summarize": cmd_summarize, "compare": cmd_compare}[a.cmd](a) or 0
+        return {"prepare": cmd_prepare, "config": cmd_config, "check-state": cmd_check_state, "summarize": cmd_summarize, "compare": cmd_compare,
+                "wp-env-without-gutenberg-plugin": cmd_wp_env_without_gutenberg_plugin}[a.cmd](a) or 0
     except Stop as e:
         print("STOP: %s" % e, file=sys.stderr, flush=True)
         return 3
