@@ -33,6 +33,7 @@ import * as pageVersions from './page-versions.mjs';
 import { opcacheMemoryMib } from './opcache-size.mjs';
 import { createTrace as createQueryTrace } from './qtrace.mjs';
 import { asyncEmailDefine } from './async-email-wiring.mjs';
+import { hostIsPublic } from './dns-public.mjs';
 import { hposCacheDefine } from './woo-hpos-cache.mjs';
 import { resetFailures, platformFailures, writeLossResponse, rolledBackResponse, frameProvesRollback, statementFailureResponse, wantsJson, heldRequestMail, sqlShape, readRefusal, refusedReadResponse } from './write-loss.mjs';
 import { MEMORY_RESET } from './object-error.mjs';
@@ -1685,6 +1686,8 @@ async function handleMessage(raw) {
 	if (m.cronMore !== undefined) { const why = cronMoreGate ? cronMoreGate() : 'stop'; return why || '1'; }
 	// #1153: a PHP fatal or a 500 wp_die (php/php-fatal-line.php: the message is scrubbed there, the path has no query).
 	if (m.phpFatal) { const f = m.phpFatal || {}; const str = (v, n) => (typeof v === 'string' ? v.slice(0, n) : typeof v === 'number' ? v : null); console.log(JSON.stringify({ '@event': 'php-fatal', m: 'php-fatal', iso: ISOLATE_ID, ...(runCallId ? { call: runCallId } : {}), type: str(f.type, 10), msg: str(f.msg, 300), file: str(f.file, 160), line: Number(f.line) || 0, method: str(f.method, 10), path: str(f.path, 160), ...(f.status ? { status: Number(f.status) || null } : {}) })); return '1'; }
+	// #1156: a host WordPress's URL check must resolve for real (the engine's DNS is synthetic): '1' when every address is public.
+	if (m.dnsPublic) return (await hostIsPublic(m.dnsPublic && m.dnsPublic.host)) ? '1' : '0';
 	if (m.qtraceOn) return qtrace ? '1' : '0'; // #296 step 3: PHP asks once per request whether to send callers
 	if (m.memMark) { console.log(JSON.stringify({ m: 'mem-mark', ...(typeof m.id === 'string' && MEM_ID_RE.test(m.id) ? { id: m.id } : {}), k: m.memMark })); return '1'; }
 	if (m.r2) return JSON.stringify(await r2op(m.r2));
