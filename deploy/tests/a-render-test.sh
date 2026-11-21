@@ -36,7 +36,7 @@ render() {
 }
 # compare <render.toml> <bench.toml> <label>: equal settings, apart from the two render-only lines.
 compare() {
-  python3 -I "$HERE/canon.py" "$1" | benchflags | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS) = ' > "$T/r.canon"
+  python3 -I "$HERE/canon.py" "$1" | benchflags | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS) = |^triggers crons = \[\]$' > "$T/r.canon"
   python3 -I "$HERE/canon.py" "$2" > "$T/b.canon"
   if diff -u "$T/b.canon" "$T/r.canon" > "$T/d"; then ok "$3" 1; else sed 's/^/        /' "$T/d"; ok "$3 (above: - the bench, + deploy.sh)" 0; fi
 }
@@ -45,7 +45,7 @@ echo "1. the defaults render the measured site: the overflow bench (#1119: the p
 render "$T/a.toml"; rc=$?
 ok "render_conf ran (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"; [ $rc = 0 ] || cat "$T/render.err"
 # #296: the step 3 series measured arm C (both on) against the bench; the lead ruled them approach A's defaults.
-python3 -I "$HERE/canon.py" "$T/a.toml" | benchflags | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS) = ' > "$T/d.canon"
+python3 -I "$HERE/canon.py" "$T/a.toml" | benchflags | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS) = |^triggers crons = \[\]$' > "$T/d.canon"
 # #1078: the KV L2 is off by default on approach A (the benches ran with it on, and stay the record): mapped here.
 # #1119: Conrad ruled PHP_OVERFLOW on by default for approach A, so the default render is the OVERFLOW bench.
 { python3 -I "$HERE/canon.py" "$HERE/bench-overflow.toml" | sed 's/^vars OBJECT_CACHE_L2 = "on"$/vars OBJECT_CACHE_L2 = "off"/'; echo 'vars OBJECT_CACHE_VERSIONS = "on"'; echo 'vars WOO_HPOS_CACHE = "on"'; echo 'vars A_CRON = "on"'; echo 'triggers crons = ["* * * * *"]'; } | sort > "$T/bd.canon"  # #1165: the cron driver is on by default
@@ -65,7 +65,7 @@ python3 -I "$HERE/canon.py" "$HERE/bench-overflow.toml" > "$T/bo.canon"
 differs() { # differs <bench.canon> <label> [VAR=value ...]
   local b=$1 label=$2; shift 2
   render "$T/m.toml" "$@" || { ok "$label (the render ran)" 0; return; }
-  python3 -I "$HERE/canon.py" "$T/m.toml" | benchflags | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS) = ' > "$T/m.canon"
+  python3 -I "$HERE/canon.py" "$T/m.toml" | benchflags | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS) = |^triggers crons = \[\]$' > "$T/m.canon"
   ok "$label" "$(diff -q "$b" "$T/m.canon" >/dev/null && echo 0 || echo 1)"
 }
 differs "$T/b.canon" "A_CLIENT=mysql2 (index-a.js) differs from the bench" A_CLIENT=mysql2
@@ -159,5 +159,12 @@ ok "#1135 no MAIL_ALLOWED_TO renders no var" "$(grep -qE '^MAIL_ALLOWED_TO = ' "
 render "$T/m2.toml" PLACEMENT=azure:westus2 MAIL_ALLOWED_TO=mackaye@skyphusion.org; rc=$?
 ok "#1056 MAIL_ALLOWED_TO with no sender is refused (rc $rc)" "$([ "$rc" != 0 ] && grep -q 'MAIL_ALLOWED_TO needs MAIL_FROM' "$T/render.err" && echo 1 || echo 0)"
 ok "#1056 deploy.sh checks MAIL_ALLOWED_TO before any step" "$(grep -q 'MAIL_ALLOWED_TO="$MAIL_ALLOWED_TO" node "$APP/mail-from.mjs" --binding > /dev/null || exit 2' "$ROOT/deploy/deploy.sh" && echo 1 || echo 0)"
+echo "13. #1186: a deploy with the cron OFF clears the Cron Trigger: an explicit empty crons list (wrangler keeps old schedules when there is no [triggers] block)"
+render "$T/c0.toml" A_CRON=0; rc=$?
+ok "A_CRON=0 renders [triggers] crons = [] (rc $rc)" "$([ $rc = 0 ] && grep -qx 'crons = \[\]' "$T/c0.toml" && grep -qx '\[triggers\]' "$T/c0.toml" && ! grep -q '\* \* \* \* \*' "$T/c0.toml" && echo 1 || echo 0)"
+render "$T/c1.toml"; rc=$?
+ok "the default (cron on) renders the minute schedule, not an empty list (rc $rc)" "$([ $rc = 0 ] && grep -qx 'crons = \["\* \* \* \* \*"\]' "$T/c1.toml" && ! grep -qx 'crons = \[\]' "$T/c1.toml" && echo 1 || echo 0)"
+render "$T/cd.toml" VARIANT=b-dosql; rc=$?
+ok "a DO tier (b-dosql, no approach A cron) renders crons = [] too, so a site moved off approach A loses its schedule (rc $rc)" "$([ $rc = 0 ] && grep -qx 'crons = \[\]' "$T/cd.toml" && echo 1 || echo 0)"
 [ "$fails" = 0 ] && echo "a-render: all checks pass" || echo "a-render: $fails failing check(s)"
 exit $((fails > 0))

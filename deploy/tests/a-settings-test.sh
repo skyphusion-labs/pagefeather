@@ -142,7 +142,7 @@ ok "#1119 A_CRON=1 with overflow on by default: a_cron_bindings renders nothing 
 ct() { env -i PATH="$PATH" "$@" bash -c ". '$S' && a_cron_vars && echo --- && a_cron_triggers && echo --- && a_cron_bindings" 2>&1; }
 # #1165: on a default approach A deploy NOTHING ran Action Scheduler or WP-Cron (DISABLE_WP_CRON, the async runner off,
 # woo-edge.php defers every order email), so no order email was ever sent. A_CRON is now on by default; 0 opts out.
-ok "#1165 A_CRON=0 (the opt-out) renders nothing" "$([ "$(ct A_CRON=0)" = $'---\n---' ] && echo 1 || echo 0)"
+ok "#1186 A_CRON=0 (the opt-out) renders an EMPTY crons list, so wrangler clears a schedule left by an earlier deploy" "$([ "$(ct A_CRON=0)" = $'---\n[triggers]\ncrons = []\n---' ] && echo 1 || echo 0)"
 ok "#1165 A_CRON unset renders the cron driver (the var and the minute trigger; the overflow pool binds PhpRuntime)" "$([ "$(ct)" = "$(printf 'A_CRON = "on"\n---\n[triggers]\ncrons = ["* * * * *"]\n---')" ] && echo 1 || echo 0)"
 ok "#1165 A_CRON empty is the default too" "$([ "$(ct A_CRON=)" = "$(ct)" ] && echo 1 || echo 0)"
 ok "#1165 A_CRON unset with the overflow opt-out still binds PhpRuntime for the cron object" "$(case "$(ct PHP_OVERFLOW=0)" in *'class_name = "PhpRuntime"'*'new_sqlite_classes = ["PhpRuntime"]'*) echo 1 ;; *) echo 0 ;; esac)"

@@ -101,6 +101,7 @@ jobs:
           bash deploy/tests/page-cache-product-test.sh
           bash deploy/tests/observability-test.sh
           bash deploy/tests/media-guard-test.sh
+          bash deploy/tests/cron-schedules-test.sh
           bash deploy/tests/recorded-inputs-test.sh
           bash deploy/tests/cron-version-readback-test.sh
           bash spikes/b2-wordpress/tests/trace-filter-test.sh
