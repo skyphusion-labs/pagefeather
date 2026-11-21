@@ -35,7 +35,7 @@ import { createTrace as createQueryTrace } from './qtrace.mjs';
 import { asyncEmailDefine } from './async-email-wiring.mjs';
 import { hostIsPublic } from './dns-public.mjs';
 import { hposCacheDefine } from './woo-hpos-cache.mjs';
-import { resetFailures, platformFailures, writeLossResponse, rolledBackResponse, frameProvesRollback, statementFailureResponse, wantsJson, heldRequestMail, sqlShape, readRefusal, refusedReadResponse } from './write-loss.mjs';
+import { resetFailures, platformFailures, writeLossResponse, rolledBackResponse, frameProvesRollback, statementFailureResponse, wantsJson, heldRequestMail, sqlShape, readRefusal, refusedReadResponse, writeOutcomeUnknown } from './write-loss.mjs';
 import { MEMORY_RESET } from './object-error.mjs';
 import { createL2Writer } from './oc-l2-writer.mjs';
 import { createLedger, memfsBytes, createSqlMeter, ledgerOn, LEDGER_MIB, currentSerial } from './mem-ledger.mjs';
@@ -4972,7 +4972,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 					}
 					const fr = rb && undoLog ? undoLog.status(sqlDb, rb.req) : null;
 					const filesGone = rb ? await deleteFrameR2(rb.req, rb.r2) : true; // #1039
-					const saved = rb ? !(filesGone && frameProvesRollback(fr)) : wrote;
+					const saved = (rb ? !(filesGone && frameProvesRollback(fr)) : wrote) || writeOutcomeUnknown(d.failures); // #1178
 					const sf = statementFailureResponse(d.failures.length, wantsJson(url.pathname, url.search, req.headers.get('accept')), saved);
 					console.log(JSON.stringify({ '@event': 'statement-failure', m: 'statement-failure', class: 'platform', method: req.method, path: url.pathname, failed: d.failures.length, shapes, error: errShape, wrote, rolledBack: !!(rb && !saved), answered: sf.status, phpStatus: r.httpStatusCode, ocDropped: f.n, ...memIdOf(req, env), ...callTag(ctx) }));
 					if (purgeRetry && saved) purgeRetry(); // #1007: a saved write changed pages, so their purge is asked again

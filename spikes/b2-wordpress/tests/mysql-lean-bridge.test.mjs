@@ -84,7 +84,7 @@ test('DEFAULT PATH: index-a-lean.js registers mysql-lean-bridge.js, which uses c
 	assert.match(bridge, /import \{ createConnector \} from '\.\/connector\.mjs';/);
 	assert.match(bridge, /const connector = createConnector\(/);
 	assert.match(bridge, /const one = createConnector\(openLean\(env\), \{ log \}\);/, 'oneShot is bounded too');
-	assert.match(bridge, /export async function mysqlEnd\(\) \{\n\tawait connector\.end\(\);\n\}/);
+	assert.match(bridge, /export async function mysqlEnd\(\) \{\n(\t(inTx|lostInTx) = false;\n)*\tawait connector\.end\(\);\n\}/); // #1178: the run's transaction state is cleared first
 });
 
 // #1101 arm 4 instruments (strummer, the lead): the counts of connect-timeout and db-end-timeout mean something only if a
@@ -137,4 +137,73 @@ test('EVENT: a healthy run logs neither event (so a zero count is a real zero)',
 		assert.equal((await bridge.mysqlOneShot(ENV, 'SELECT 1')).ok, true);
 	});
 	assert.equal(named(ev, 'connect-timeout').length + named(ev, 'db-end-timeout').length, 0, JSON.stringify(ev));
+});
+
+// #1178 (joan, cf759hl): a warm isolate's lean socket closed MID-PACKET. The connector kept the dead connection, so 5
+// statements of the run failed (wp_users among them), all classed "deterministic", and the request answered a confident
+// 401 "Unknown username". A connection fault is not the statement's fault:
+// - a read that fails that way gets a NEW connection and ONE retry;
+// - a write is never retried blind (it may have been applied), but later statements get a new connection;
+// - inside a transaction nothing reconnects: the rest of the run fails, so no write lands outside its transaction.
+const MID = 'mysql: socket closed mid-packet';
+function scripted(answers) { // each connection answers from its own list; every connect is counted
+	const st = { connects: 0, destroyed: 0, queries: [] };
+	lean.connect = async () => {
+		const n = st.connects++;
+		const list = answers[n] || answers[answers.length - 1];
+		let i = 0;
+		return { query: async (sql) => { st.queries.push([n, sql]); const a = list[Math.min(i++, list.length - 1)]; if (a instanceof Error) throw a; return a; }, end: async () => {}, destroy: () => { st.destroyed++; } };
+	};
+	bridge.mysqlReset();
+	return st;
+}
+const rows = { kind: 'rows', columns: [{ name: 'ID', characterSet: 33 }], rows: [[Buffer.from('1')]] };
+const okw = { kind: 'ok', affectedRows: 1, insertId: 0 };
+test('#1178 a SELECT whose socket closes mid-packet is retried ONCE on a new connection, with the right answer', async () => {
+	const st = scripted([[new Error(MID)], [rows]]);
+	const r = await bridge.mysqlQuery(ENV, { mysql: "SELECT ID FROM wp_users WHERE user_login = 'admin'" });
+	assert.equal(r.ok, true, JSON.stringify(r));
+	assert.deepEqual(r.rows, [['1']]);
+	assert.equal(st.connects, 2);
+	assert.ok(st.destroyed >= 1, 'the dead connection is torn down');
+	await bridge.mysqlEnd();
+});
+test('#1178 a write whose socket closes mid-packet is NOT retried, and the next statement gets a new connection', async () => {
+	const st = scripted([[new Error(MID)], [rows]]);
+	const w = await bridge.mysqlQuery(ENV, { mysql: "UPDATE wp_options SET option_value = 'x' WHERE option_name = 'y'" });
+	assert.equal(w.ok, false);
+	assert.match(w.error, /mid-packet/);
+	assert.equal(st.queries.filter(([, q]) => /^UPDATE/.test(q)).length, 1, 'sent once, never twice');
+	const r = await bridge.mysqlQuery(ENV, { mysql: 'SELECT ID FROM wp_users' });
+	assert.equal(r.ok, true, 'no cascade: the dead connection is not reused');
+	assert.equal(st.connects, 2);
+	await bridge.mysqlEnd();
+});
+test('#1178 inside a transaction a connection fault is not retried, and the rest of the run fails until its end', async () => {
+	const st = scripted([[okw, new Error(MID)], [okw]]);
+	assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'START TRANSACTION' })).ok, true);
+	const r = await bridge.mysqlQuery(ENV, { mysql: 'SELECT ID FROM wp_posts' });
+	assert.equal(r.ok, false);
+	const w = await bridge.mysqlQuery(ENV, { mysql: "INSERT INTO wp_posts (post_title) VALUES ('x')" });
+	assert.equal(w.ok, false, 'never written outside the lost transaction');
+	assert.equal(st.connects, 1, 'no reconnect inside the run');
+	await bridge.mysqlEnd();
+	assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'SELECT 1' })).ok, true, 'the next run starts clean');
+	await bridge.mysqlEnd();
+});
+test('#1178 a statement error (the SQL itself) is never retried', async () => {
+	const e = Object.assign(new Error("Table 'd.wp_x' doesn't exist"), { errno: 1146 });
+	const st = scripted([[e], [rows]]);
+	const r = await bridge.mysqlQuery(ENV, { mysql: 'SELECT * FROM wp_x' });
+	assert.equal(r.ok, false);
+	assert.equal(st.connects, 1);
+	await bridge.mysqlEnd();
+});
+test('#1178 session-state reads are never retried on a new connection (FOUND_ROWS, LAST_INSERT_ID, GET_LOCK, FOR UPDATE)', async () => {
+	for (const q of ['SELECT FOUND_ROWS()', 'SELECT LAST_INSERT_ID()', "SELECT GET_LOCK('x', 0)", 'SELECT * FROM wp_posts WHERE ID = 1 FOR UPDATE']) {
+		const st = scripted([[new Error(MID)], [rows]]);
+		assert.equal((await bridge.mysqlQuery(ENV, { mysql: q })).ok, false, q);
+		assert.equal(st.queries.filter(([, s]) => s === q).length, 1, q + ' sent once');
+		await bridge.mysqlEnd();
+	}
 });

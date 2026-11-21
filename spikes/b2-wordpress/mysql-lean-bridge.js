@@ -11,6 +11,7 @@ import { LeanMysql } from './mysql-lean.js';
 import { Buffer } from 'node:buffer';
 
 import { createConnector } from './connector.mjs';
+import { isConnectionFault, retryableRead } from './mysql-fault.mjs';
 
 // #1101: approach A's DEFAULT bridge (index-a-lean.js). One connection per PHP run (#1087), opened on first use. A rejected
 // connect is retried once and never cached; the connect is bounded (3 s) and end() too (2 s, then destroy()), so a dead
@@ -31,11 +32,16 @@ function connection(env) {
 	return connector.get();
 }
 
-export async function mysqlQuery(env, m) {
-	if (m.mysql_b64 !== undefined) return { ok: false, error: 'mysql_b64 is not supported: send binary string literals as hex literals', errno: 2000 };
-	const sql = m.mysql;
+// #1178: this run's transaction state, and whether its connection died inside one (then nothing reconnects until the
+// run ends: a later write on a new connection would land outside the lost transaction).
+let inTx = false;
+let lostInTx = false;
+const LOST_IN_TX = 'mysql: connection lost earlier in this run (in a transaction): not reconnected';
+
+async function runOnce(env, sql) {
+	let c = null;
 	try {
-		const c = await connection(env);
+		c = await connection(env);
 		const res = await c.query(sql);
 		if (res.kind === 'ok') return { ok: true, affected: res.affectedRows || 0, insert_id: res.insertId || 0 };
 		const binary = res.columns.map((f) => f.characterSet === 63);
@@ -43,8 +49,49 @@ export async function mysqlQuery(env, m) {
 		return { ok: true, columns: res.columns.map((f) => f.name), rows };
 	} catch (e) {
 		const error = String((e && e.message) || e);
-		return { ok: false, error, errno: e && e.errno };
+		return { ok: false, error, errno: e && e.errno, conn: c };
 	}
+}
+
+// #1178: a connection fault drops the dead connection (destroyed, never reused by the run's later statements). A plain
+// read is then sent ONCE more on a new connection; a write is never retried blind; inside a transaction the run fails.
+function dropDead(conn) {
+	connector.reset();
+	try {
+		if (conn && typeof conn.destroy === 'function') conn.destroy();
+	} catch {
+		// already closed
+	}
+}
+
+export async function mysqlQuery(env, m) {
+	if (m.mysql_b64 !== undefined) return { ok: false, error: 'mysql_b64 is not supported: send binary string literals as hex literals', errno: 2000 };
+	const sql = m.mysql;
+	if (lostInTx) return { ok: false, error: LOST_IN_TX, errno: 2013 };
+	const first = await runOnce(env, sql);
+	if (first.ok) {
+		if (/^\s*(START\s+TRANSACTION|BEGIN)\b/i.test(sql)) inTx = true;
+		else if (/^\s*(COMMIT|ROLLBACK)\b/i.test(sql) && !/^\s*ROLLBACK\s+TO\b/i.test(sql)) inTx = false;
+		return first;
+	}
+	const { conn, ...reply } = first;
+	if (!isConnectionFault(reply.error)) return reply;
+	dropDead(conn);
+	if (inTx) {
+		lostInTx = true;
+		inTx = false;
+		log({ '@event': 'db-connection-fault', m: 'db-connection-fault', action: 'lost-in-transaction', error: reply.error.slice(0, 120) });
+		return reply;
+	}
+	if (!retryableRead(sql)) {
+		log({ '@event': 'db-connection-fault', m: 'db-connection-fault', action: 'not-retried', error: reply.error.slice(0, 120) });
+		return reply;
+	}
+	const second = await runOnce(env, sql);
+	const { conn: conn2, ...reply2 } = second;
+	if (!reply2.ok && isConnectionFault(reply2.error)) dropDead(conn2);
+	log({ '@event': 'db-connection-fault', m: 'db-connection-fault', action: 'retried', ok: reply2.ok, error: reply.error.slice(0, 120) });
+	return reply2;
 }
 
 // One query on its OWN connection, opened and closed here (#296 step 1: the gateway reads the page
@@ -71,9 +118,13 @@ export async function mysqlOneShot(env, sql) {
 // Forget a connection another request opened (a Worker request cannot touch another request's I/O). Not closed here.
 export function mysqlReset() {
 	connector.reset();
+	inTx = false;
+	lostInTx = false;
 }
 
 // The end of a PHP run: references cleared first, then a bounded close (destroy() past the bound).
 export async function mysqlEnd() {
+	inTx = false;
+	lostInTx = false;
 	await connector.end();
 }

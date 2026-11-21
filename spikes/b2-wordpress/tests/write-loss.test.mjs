@@ -320,7 +320,7 @@ test('#795 index.js: a PLATFORM failure is answered as a failure (after the rese
 	const blk = src.slice(any, copy);
 	assert.ok(!/SETUP_PATHS/.test(src), 'no path exclusion: the class decides');
 	assert.match(blk, /if \(platform\) \{[\s\S]*readFailed\(d\.failures\)\) \{\s*try \{ rb = undoLog && sqlDb \? undoLog\.rollbackFrame/, 'a platform failure with a failed read rolls the frame back');
-	assert.match(blk, /const filesGone = rb \? await deleteFrameR2\(rb\.req, rb\.r2\) : true;[\s\S]*const saved = rb \? !\(filesGone && frameProvesRollback\(fr\)\) : wrote;/, '"nothing saved" only on the proof AND with its files gone (#1039), or when nothing was written');
+	assert.match(blk, /const filesGone = rb \? await deleteFrameR2\(rb\.req, rb\.r2\) : true;[\s\S]*const saved = \(rb \? !\(filesGone && frameProvesRollback\(fr\)\) : wrote\) \|\| writeOutcomeUnknown\(d\.failures\);/, '"nothing saved" only on the proof AND with its files gone (#1039), or when nothing was written');
 	assert.match(blk, /class: 'deterministic'/, 'a deterministic failure is logged and falls through to PHP own answer');
 	assert.match(src, /pageCacheHeaders\(req, url, r, out, env, d\.failures\.length\);/, 'and is still never edge-cached (#766)');
 });
@@ -418,4 +418,19 @@ test('#1101: both write-loss lines carry the call id when the request has one', 
 	};
 	assert.equal(logged(phpLine, scope).call, 'c-1101');
 	assert.equal(logged(killedLine, scope).call, 'c-1101');
+});
+
+// #1178: the lean bridge's connection faults are PLATFORM failures (a 5xx with x-sql-failure), never deterministic.
+test('#1178 PLATFORM_FAILURE knows the lean bridge connection faults', async () => {
+	const { PLATFORM_FAILURE, writeOutcomeUnknown } = await import('../write-loss.mjs');
+	for (const m of ['mysql: socket closed mid-packet', 'mysql: connection lost earlier in this run (in a transaction): not reconnected', 'Network connection lost.', 'Socket closed', 'connection reset by peer']) assert.ok(PLATFORM_FAILURE.test(m), m);
+	assert.equal(PLATFORM_FAILURE.test("Table 'd.wp_x' doesn't exist"), false);
+	// A write that failed on a connection fault may have been applied: the answer must say check before retrying.
+	assert.equal(writeOutcomeUnknown([{ sql: "UPDATE wp_options SET a = 1", error: 'mysql: socket closed mid-packet' }]), true);
+	assert.equal(writeOutcomeUnknown([{ sql: "SELECT * FROM wp_users", error: 'mysql: socket closed mid-packet' }]), false);
+	assert.equal(writeOutcomeUnknown([{ sql: "INSERT INTO t VALUES (1)", error: "Duplicate entry '1'" }]), false, 'a refused write was not applied');
+});
+test('#1178 index.js: a platform failure counts a connection-fault write as maybe saved (500, check before retry)', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /const saved = \(rb \? !\(filesGone && frameProvesRollback\(fr\)\) : wrote\) \|\| writeOutcomeUnknown\(d\.failures\);/);
 });
