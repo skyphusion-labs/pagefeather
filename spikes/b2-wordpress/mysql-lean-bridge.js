@@ -36,6 +36,8 @@ function connection(env) {
 // run ends: a later write on a new connection would land outside the lost transaction).
 let inTx = false;
 let lostInTx = false;
+// #1179 review: the TEMPORARY tables this run created: a new connection does not have them, so their reads are not retried.
+const tempTables = new Set();
 const LOST_IN_TX = 'mysql: connection lost earlier in this run (in a transaction): not reconnected';
 
 async function runOnce(env, sql) {
@@ -72,6 +74,8 @@ export async function mysqlQuery(env, m) {
 	if (first.ok) {
 		if (/^\s*(START\s+TRANSACTION|BEGIN)\b/i.test(sql)) inTx = true;
 		else if (/^\s*(COMMIT|ROLLBACK)\b/i.test(sql) && !/^\s*ROLLBACK\s+TO\b/i.test(sql)) inTx = false;
+		const tmp = /^\s*CREATE\s+TEMPORARY\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?([\w$]+)`?/i.exec(sql);
+		if (tmp) tempTables.add(tmp[1]);
 		return first;
 	}
 	const { conn, ...reply } = first;
@@ -83,7 +87,7 @@ export async function mysqlQuery(env, m) {
 		log({ '@event': 'db-connection-fault', m: 'db-connection-fault', action: 'lost-in-transaction', error: reply.error.slice(0, 120) });
 		return reply;
 	}
-	if (!retryableRead(sql)) {
+	if (!retryableRead(sql, tempTables)) {
 		log({ '@event': 'db-connection-fault', m: 'db-connection-fault', action: 'not-retried', error: reply.error.slice(0, 120) });
 		return reply;
 	}
@@ -120,11 +124,13 @@ export function mysqlReset() {
 	connector.reset();
 	inTx = false;
 	lostInTx = false;
+	tempTables.clear();
 }
 
 // The end of a PHP run: references cleared first, then a bounded close (destroy() past the bound).
 export async function mysqlEnd() {
 	inTx = false;
 	lostInTx = false;
+	tempTables.clear();
 	await connector.end();
 }

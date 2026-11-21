@@ -84,7 +84,7 @@ test('DEFAULT PATH: index-a-lean.js registers mysql-lean-bridge.js, which uses c
 	assert.match(bridge, /import \{ createConnector \} from '\.\/connector\.mjs';/);
 	assert.match(bridge, /const connector = createConnector\(/);
 	assert.match(bridge, /const one = createConnector\(openLean\(env\), \{ log \}\);/, 'oneShot is bounded too');
-	assert.match(bridge, /export async function mysqlEnd\(\) \{\n(\t(inTx|lostInTx) = false;\n)*\tawait connector\.end\(\);\n\}/); // #1178: the run's transaction state is cleared first
+	assert.match(bridge, /export async function mysqlEnd\(\) \{\n(\t((inTx|lostInTx) = false|tempTables\.clear\(\));\n)*\tawait connector\.end\(\);\n\}/); // #1178: the run's transaction state is cleared first
 });
 
 // #1101 arm 4 instruments (strummer, the lead): the counts of connect-timeout and db-end-timeout mean something only if a
@@ -206,4 +206,50 @@ test('#1178 session-state reads are never retried on a new connection (FOUND_ROW
 		assert.equal(st.queries.filter(([, s]) => s === q).length, 1, q + ' sent once');
 		await bridge.mysqlEnd();
 	}
+});
+
+// #1179 review (the lead): a retried read runs on a NEW connection. Does it get the same session? On approach A:
+// - Hyperdrive resets the session after EVERY statement (measured, tests/a2 probe E1; php/hyperdrive-db.php), so no
+//   per-connection SET holds even on the old connection: set_charset() and set_sql_mode() are deliberate no-ops;
+// - the charset (utf8mb4, collation 45) is in the connect HANDSHAKE, so every connection has it;
+// - a strict server's sql_mode rides inside each statement (hyperdrive-sql-mode.php), so the retry, the same SQL
+//   text, carries it;
+// - the only session SETs (the DDL path, the SQL import) run inside BEGIN ... COMMIT, where nothing reconnects;
+// - nothing sets time_zone.
+// User @variables and TEMPORARY tables are excluded from the retry anyway.
+test('#1179 review: the retry sends the byte-identical statement (a per-statement sql_mode hint comes along)', async () => {
+	const st = scripted([[new Error(MID)], [rows]]);
+	const q = "SELECT /*+ SET_VAR(sql_mode = 'NO_ENGINE_SUBSTITUTION') */ ID FROM wp_users";
+	assert.equal((await bridge.mysqlQuery(ENV, { mysql: q })).ok, true);
+	assert.deepEqual(st.queries.map(([, s]) => s), [q, q]);
+	await bridge.mysqlEnd();
+});
+test('#1179 review: the session setup is in the handshake, never a per-connection SET a reconnect could miss', () => {
+	const lean = readFileSync(new URL('../mysql-lean.js', import.meta.url), 'utf8');
+	assert.match(lean, /const CHARSET_UTF8MB4 = 45;/);
+	assert.match(lean, /head\[8\] = CHARSET_UTF8MB4;/, 'every connect sends utf8mb4 in its handshake response');
+	const br = readFileSync(new URL('../mysql-lean-bridge.js', import.meta.url), 'utf8');
+	for (const s of [lean, br]) assert.doesNotMatch(s, /SET\s+(NAMES|SESSION|CHARACTER|time_zone|@)/i, 'no session SET on connect');
+	const db = readFileSync(new URL('../php/hyperdrive-db.php', import.meta.url), 'utf8');
+	assert.match(db, /public function set_charset\( \$dbh, \$charset = null, \$collate = null \) \{\}/, 'WordPress sets no charset per connection');
+	assert.match(db, /public function set_sql_mode\( \$modes = array\(\) \) \{\}/, 'nor sql_mode');
+	assert.match(db, /skyphusion_hd_call\( 'BEGIN' \);[\s\S]*SET SESSION sql_mode/, 'the DDL path SETs only inside a transaction (never retried)');
+});
+test('#1179 review: reads using @user variables are never retried', async () => {
+	for (const q of ['SELECT @pf_x', 'SELECT ID FROM wp_posts WHERE ID > @last']) {
+		const st = scripted([[new Error(MID)], [rows]]);
+		assert.equal((await bridge.mysqlQuery(ENV, { mysql: q })).ok, false, q);
+		assert.equal(st.queries.length, 1, q);
+		await bridge.mysqlEnd();
+	}
+	const st = scripted([[new Error(MID)], [rows]]);
+	assert.equal((await bridge.mysqlQuery(ENV, { mysql: "SELECT ID FROM wp_users WHERE user_email = 'a@b.example'" })).ok, true, 'an @ inside a string literal is not a variable');
+	await bridge.mysqlEnd();
+});
+test('#1179 review: reads of a TEMPORARY table this run created are never retried', async () => {
+	const st = scripted([[okw, new Error(MID)], [rows]]);
+	assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'CREATE TEMPORARY TABLE IF NOT EXISTS `pf_tmp` (id INT)' })).ok, true);
+	assert.equal((await bridge.mysqlQuery(ENV, { mysql: 'SELECT id FROM pf_tmp' })).ok, false);
+	assert.equal(st.connects, 1);
+	await bridge.mysqlEnd();
 });
