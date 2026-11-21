@@ -42,8 +42,8 @@ Measured as normal Workers, not as user Workers, except where the row says so.
 
 - `subRequests` set by the dispatcher was exact where measured, without an outbound Worker (not measured with one). `cpuMs` is enforced but loose: it does not bound a tenant below about 2 s (docs/wfp.md item 4). CPU fairness between tenants comes from the runtime choice and the plan, not from `cpuMs` alone.
 - No gradual deployments for user Workers, and the API allows 1200 calls per 5 minutes per token (docs/wfp.md, pricing and limits). A fleet rollout is batched.
-- Workers for Platforms is a Paid product: the Workers Free limits do not apply under it. Pricing (docs/wfp.md, read 2026-11-05): $25 a month, 20 million requests and 60 million CPU ms included, 1000 scripts included.
-- Cost of two idle sites: about $25 a month, the Workers for Platforms Paid subscription; every per-site resource (Durable Object storage, R2, KV) is inside the included or free tier at rest. The full table, with each rate's page and read date, is in the README ("Workers for Platforms reference deployment: cost of two idle sites"). Open: whether the ordinary Workers (the dispatchers, the outbound Worker) need a separate Workers Paid subscription ($5 a month) on top; not stated on the WfP pricing page. Per-tenant traffic cost (Durable Object duration and rows for `b-dosql`) is still per workload, not worked out here.
+- Workers for Platforms is a Paid product. The Workers Free limits do not apply under it.
+- A pagefeather Workers for Platforms account costs $30 a month for two or more sites ([plan-limits.md](plan-limits.md)). That is the Workers for Platforms Paid plan ($25) plus the Workers Paid plan ($5). The reference account runs both. The Workers for Platforms price includes 20 million requests, then $0.30 per million. It includes 60 million CPU ms, then $0.02 per million. It includes 1,000 namespace scripts, then $0.02 each. Another site at rest costs about $0, up to the 1,000 included scripts. Durable Object storage, R2, and KV sit inside an included or free tier at rest. Cloudflare's WfP pricing page does not say whether Workers Paid is strictly required, so plan for both. Per-tenant traffic cost (Durable Object duration and rows for `b-dosql`) is still per workload, not worked out here.
 
 ## Correctness the operator must know
 
@@ -61,6 +61,6 @@ Measured as normal Workers, not as user Workers, except where the row says so.
 4. Whether the Workers Cache works inside a namespace user Worker (docs/wfp.md marks it open). `b-dosql`'s page cache depends on it.
 5. The Durable Object namespace name collision (docs/wfp.md open item: namespaces are named `<script>_<class>`).
 6. #58 (the storefront cache, first built for the retired `c1`), #60 (b-dosql transactions), #63 (b cache key), #31 (import).
-7. Cost per tenant under traffic (the idle cost is in the README).
+7. Cost per tenant under traffic. The at-rest price and its limits are in [plan-limits.md](plan-limits.md).
 8. Metering of outbound HTTP from PHP in the object (#26 built the transport and an optional allowlist; the outbound Worker does not see these fetches).
 9. The dispatcher, the per-tenant Terraform and the upload pipeline are not built. This document is the design they follow.
