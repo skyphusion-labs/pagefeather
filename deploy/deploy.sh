@@ -87,6 +87,11 @@ export CLOUDFLARE_ACCOUNT_ID=$ACCOUNT_ID
 # shellcheck source=lib/custom-domain.sh
 . "$ROOT/deploy/lib/custom-domain.sh"
 custom_domain_prepare || exit 2
+# #1258: the WP-CLI operator route. Off unless WP_CLI_ENDPOINT=on, which needs the
+# custom domain above and the wp-admin Access AUD (#1260). Checked before any step.
+# shellcheck source=lib/wp-cli-endpoint.sh
+. "$ROOT/deploy/lib/wp-cli-endpoint.sh"
+wp_cli_endpoint_check || exit 2
 VARIANT=${VARIANT:-b-do}
 LOCATION=${LOCATION:-enam}
 MEDIA=${MEDIA:-0}

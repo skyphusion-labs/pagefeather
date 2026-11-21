@@ -150,6 +150,11 @@ cp assets/_headers build/public/_headers
 # PHP's files: drop what PHP never reads (prune-php-tree.sh holds the rule and its reasons).
 ./prune-php-tree.sh "$wp"
 python3 -I block-css-keep.py --check "$wp" build/public || exit 1 # #1205: every block.json stylesheet PHP needs is in the PHP tree
+# #1258: wp-cli.phar only when WP_CLI_ENDPOINT=on, after the static copy and the
+# prune, so it is not a public file and prune does not drop it. Unset writes
+# nothing: site.zip stays the tree above. The phar is about 7 MB against the
+# 64 MiB Worker limit. Test: tests/wp-cli-bundle-test.sh.
+./wp-cli-bundle.sh "$wp"
 # Deflated: the Worker inflates each file on its first read only. The Worker
 # size limit is 64 MiB uncompressed, so both zips are deflated.
 (cd build && zip -qr -9 site.zip wordpress)

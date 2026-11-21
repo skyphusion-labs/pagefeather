@@ -248,3 +248,39 @@ test('a short option and a broken flag are refused without echoing the token', (
 test('an option get with two keys is refused', () => {
 	refused(['option', 'get', 'siteurl', 'blogname'], 'option get', LOCKED('option get'), ['siteurl', 'blogname']);
 });
+
+const SECRET_FIELDS = (command) => 'Refused `' + command + '`: the fields user_pass and user_activation_key are never printed. See issue #1258.';
+
+test('user list and user get refuse user_pass and user_activation_key', () => {
+	const secret = 'user-secret-value';
+	const cases = [
+		['user', 'list', '--field=user_pass'],
+		['user', 'list', '--field=user_activation_key'],
+		['user', 'list', '--fields=user_pass'],
+		['user', 'list', '--fields=ID,user_pass,user_login'],
+		['user', 'list', '--fields=ID,user_activation_key'],
+		['user', 'list', '--fields=USER_PASS'],
+		['user', 'get', '1', '--field=user_pass'],
+		['user', 'get', '--fields=user_activation_key', secret],
+		['user', 'list', '--', '--field=user_pass'],
+		['user', 'list', '--format={{user_pass}}'],
+		['user', 'get', '--format=%user_activation_key%'],
+	];
+	for (const argv of cases) {
+		const command = argv[0] === 'user' && argv[1] === 'get' ? 'user get' : 'user list';
+		refused(argv, command, SECRET_FIELDS(command), argv.includes(secret) ? [secret] : []);
+	}
+});
+
+test('user list without those fields stays allowed, and option get stays allowed', () => {
+	assert.deepEqual(decideWpCli(['user', 'list', '--fields=ID,user_login']), { allowed: true, command: 'user list' });
+	assert.deepEqual(decideWpCli(['user', 'list', '--field=user_login']), { allowed: true, command: 'user list' });
+	assert.deepEqual(decideWpCli(['user', 'list', '--format=json']), { allowed: true, command: 'user list' });
+	assert.deepEqual(decideWpCli(['user', 'list', '--format=table']), { allowed: true, command: 'user list' });
+	assert.deepEqual(decideWpCli(['option', 'get', 'user_pass']), { allowed: true, command: 'option get' });
+	assert.deepEqual(decideWpCli(['option', 'get', 'siteurl', '--format=json']), { allowed: true, command: 'option get' });
+});
+
+test('user get without those fields stays refused as not on the list', () => {
+	refused(['user', 'get', 'user-id-99'], 'user get', LOCKED('user get'), ['user-id-99']);
+});
