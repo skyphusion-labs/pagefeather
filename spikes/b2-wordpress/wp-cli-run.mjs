@@ -54,14 +54,33 @@ function prepare(php) {
 	php.writeFile(WP_CLI_CONFIG, '');
 }
 
+// A local engine check asks an allowed command to take longer than a short
+// wall. The file is written into this runtime only. It is not in site.zip.
+// The next boot does not have it unless the check asks again.
+function writeSlowHook(php, slowMs) {
+	const ms = Math.floor(Number(slowMs));
+	if (!Number.isFinite(ms) || ms <= 0) return;
+	mkdirp(php, '/wordpress/wp-content/mu-plugins');
+	php.writeFile(
+		'/wordpress/wp-content/mu-plugins/wp-cli-slow-test.php',
+		'<?php\nif (defined(\'WP_CLI\') && WP_CLI) { usleep(' + String(ms * 1000) + '); }\n',
+	);
+}
+
 function readCapped(stream, cap, wallMs) {
 	return new Promise((resolve) => {
 		let text = '';
 		let settled = false;
+		let reader = null;
 		const finish = (out) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
+			// A wall timeout must drop the reader. Otherwise the wasm keeps
+			// writing into a stream nobody reads.
+			if (out.timedOut && reader) {
+				try { reader.cancel(); } catch { /* already closed */ }
+			}
 			resolve(out);
 		};
 		const timer = setTimeout(() => finish({ text, truncated: true, timedOut: true }), wallMs);
@@ -71,7 +90,7 @@ function readCapped(stream, cap, wallMs) {
 					finish({ text: '', truncated: false, timedOut: false });
 					return;
 				}
-				const reader = stream.getReader();
+				reader = stream.getReader();
 				const dec = new TextDecoder();
 				let n = 0;
 				let truncated = false;
@@ -129,6 +148,7 @@ export async function runWpCli(php, argv, ctl = {}) {
 	const now = typeof ctl.now === 'function' ? ctl.now : Date.now;
 	const started = now();
 	prepare(php);
+	writeSlowHook(php, ctl.slowMs);
 	if (typeof php.setSpawnHandler === 'function') {
 		php.setSpawnHandler(() => ({ exitCode: 127, stdout: '', stderr: 'spawn refused' }));
 	}
@@ -150,6 +170,12 @@ export async function runWpCli(php, argv, ctl = {}) {
 		exitBy(streamed.exitCode, wall),
 	]);
 	const timedOut = out.timedOut || err.timedOut || exit.timedOut;
+	// dropRuntime queues php.exit until this run's lock ends. Call it here too,
+	// so a command that is still inside php.cli is stopped when the wall hits.
+	// A second exit from the retirer is ignored.
+	if (timedOut && typeof php.exit === 'function') {
+		try { php.exit(124); } catch { /* the runtime is finished either way */ }
+	}
 	return {
 		exit: timedOut ? 124 : exit.code,
 		stdout: out.text,

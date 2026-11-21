@@ -14,6 +14,12 @@ vars() { env -i PATH="$PATH" "$@" bash -c '. "'"$ROOT"'/deploy/lib/wp-cli-endpoi
 
 run; rc=$?
 ok "unset passes and changes nothing (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
+run WP_CLI_DEV_KEYS_B64=abc >/tmp/wp-cli-1258.out 2>/tmp/wp-cli-1258.err; rc=$?
+ok "a dev key is refused on a deploy (rc $rc)" "$([ $rc = 2 ] && grep -q 'local engine check' /tmp/wp-cli-1258.err && echo 1 || echo 0)"
+run WP_CLI_WALL_MS=200 >/tmp/wp-cli-1258.out 2>/tmp/wp-cli-1258.err; rc=$?
+ok "a short wall is refused on a deploy (rc $rc)" "$([ $rc = 2 ] && grep -q 'WP_CLI_WALL_MS' /tmp/wp-cli-1258.err && echo 1 || echo 0)"
+run WP_CLI_SLOW_MS=3000 >/tmp/wp-cli-1258.out 2>/tmp/wp-cli-1258.err; rc=$?
+ok "a slow hook is refused on a deploy (rc $rc)" "$([ $rc = 2 ] && grep -q 'WP_CLI_SLOW_MS' /tmp/wp-cli-1258.err && echo 1 || echo 0)"
 ok "unset renders no WP-CLI vars" "$([ -z "$(vars)" ] && echo 1 || echo 0)"
 
 run WP_CLI_ENDPOINT=on >/tmp/wp-cli-1258.out 2>/tmp/wp-cli-1258.err; rc=$?

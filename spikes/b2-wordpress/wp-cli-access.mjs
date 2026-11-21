@@ -38,6 +38,24 @@ export function createCertCache() {
 
 const certCache = createCertCache();
 
+// The local engine check injects its public JWK here. A deploy refuses the var.
+// Any other spike token ignores it, so a production secret never takes the test key.
+const LOCAL_SPIKE_TOKEN = 'local-spike-token';
+
+export function devKeysFromEnv(env) {
+	if (!env || env.SPIKE_TOKEN !== LOCAL_SPIKE_TOKEN) return null;
+	const raw = env.WP_CLI_DEV_KEYS_B64;
+	if (typeof raw !== 'string' || raw.length === 0 || raw.length > 16384) return null;
+	try {
+		const json = atob(raw);
+		const keys = JSON.parse(json);
+		if (!Array.isArray(keys) || keys.length === 0 || keys.length > 4) return null;
+		return keys;
+	} catch {
+		return null;
+	}
+}
+
 // SHA-256 both strings, then compare the digests. The compare does not stop
 // at the first different byte. An empty secret never matches.
 export async function timingSafeEqualString(a, b) {

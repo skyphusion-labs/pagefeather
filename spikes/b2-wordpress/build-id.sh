@@ -10,6 +10,9 @@
 #               the two files, so a lean and an npm build of one sha never share an id and an update
 #               that would drop the engine is not skipped as "already at build" (#642). npm: nothing;
 #   -c<8 hex>   the content inputs (PLUGINS, IMPORT_*), content-id.py, when any is set;
+#   -wpcli      WP_CLI_ENDPOINT=on: site.zip holds wp-cli.phar (#1258). Without this, an update
+#               that only turns the endpoint on would skip the upload as "already at build".
+#               It sits before -c and -wooprimed, so those tails stay what deploy/wfp reads.
 #   -wooprimed  WOO_ACTIVE=1: the OPcache will be primed with WooCommerce (#377). Without this, a
 #               primed and an unprimed build of one sha had one id, and site update skipped the
 #               primed one as "already at build" (ggc-test, 2026-11-12).
@@ -27,6 +30,8 @@ engine_resolve || exit 2
 # #827: the tag comes from engine_tag, the one computation prepare.sh and build.sh also use.
 e=$(engine_tag) || exit 2
 [ "$e" = npm ] || id="$id-$e"
+# #1258: before -c and -wooprimed, so the content tail deploy/wfp matches is unchanged.
+[ "${WP_CLI_ENDPOINT:-}" != on ] || id="$id-wpcli"
 # The static files build.sh moved to build/public count too (a JS-only content change, #385 follow-up).
 c=$(python3 -I content-id.py "${1:?usage: build-id.sh <wp-content dir>}" build/public/wp-content)
 [ -z "$c" ] || id="$id-$c"

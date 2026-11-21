@@ -5,7 +5,7 @@
 // route. The argv array goes only through decideWpCli. There is no shell string.
 
 import { decideWpCli } from './wp-cli-allow.mjs';
-import { timingSafeEqualString, verifyAccessJwt } from './wp-cli-access.mjs';
+import { devKeysFromEnv, timingSafeEqualString, verifyAccessJwt } from './wp-cli-access.mjs';
 import { noStoreAnywhere } from './perf-headers.mjs';
 
 const BODY_CAP = 4096;
@@ -15,6 +15,28 @@ const siteLock = { running: false };
 
 export function wpCliEnabled(env) {
 	return !!(env && env.WP_CLI_ENDPOINT === 'on');
+}
+
+// A short wall and a slow hook exist only for the local engine check. The
+// local spike token is the gate. A deploy refuses both vars. Anything else
+// keeps the 25 s cap and does not write the slow file.
+export function wpCliTestCtl(env) {
+	if (!env || env.SPIKE_TOKEN !== 'local-spike-token') return {};
+	const ctl = {};
+	const wall = Number(env.WP_CLI_WALL_MS);
+	if (Number.isFinite(wall) && wall >= 50 && wall < 25000) ctl.wallMs = wall;
+	const slow = Number(env.WP_CLI_SLOW_MS);
+	if (Number.isFinite(slow) && slow >= 1 && slow <= 120000) ctl.slowMs = slow;
+	return ctl;
+}
+
+function depsWithLocalKeys(env, deps) {
+	const d = deps ? { ...deps } : {};
+	if (!d.keys) {
+		const keys = devKeysFromEnv(env);
+		if (keys) d.keys = keys;
+	}
+	return d;
 }
 
 function notFound() {
@@ -95,19 +117,20 @@ function tryLock(lock) {
 // On approach A it is this Worker. A failed check is 404.
 export async function serveWpCli(req, env, deps) {
 	if (!wpCliEnabled(env)) return notFound();
+	const d = depsWithLocalKeys(env, deps);
 	if (env && env.PHP_IN_DO === 'on') {
-		if (!env.PHP_RUNTIME || !deps || typeof deps.forward !== 'function') return notFound();
-		const who = await authorize(req, env, deps || {});
+		if (!env.PHP_RUNTIME || typeof d.forward !== 'function') return notFound();
+		const who = await authorize(req, env, d);
 		if (!who) return notFound();
-		return deps.forward(req);
+		return d.forward(req);
 	}
-	return handleWpCli(req, env, deps);
+	return handleWpCli(req, env, d);
 }
 
 // Auth, the allowlist, then one run. deps.runCli receives the argv array only.
 // deps.keys is the test JWT key. Callers in index.js do not pass it.
 export async function handleWpCli(req, env, deps) {
-	const d = deps || {};
+	const d = depsWithLocalKeys(env, deps);
 	if (!wpCliEnabled(env)) return notFound();
 	const who = await authorize(req, env, d);
 	if (!who) return notFound();
@@ -125,7 +148,7 @@ export async function handleWpCli(req, env, deps) {
 	if (!tryLock(lock)) return withNoStore(429, 'busy', 'text/plain; charset=utf-8');
 	const t0 = typeof d.now === 'function' ? d.now() : Date.now();
 	try {
-		const out = await d.runCli(argv, {});
+		const out = await d.runCli(argv, wpCliTestCtl(env));
 		const ms = Math.max(0, (typeof d.now === 'function' ? d.now() : Date.now()) - t0);
 		const stdout = out && typeof out.stdout === 'string' ? out.stdout : '';
 		const stderr = out && typeof out.stderr === 'string' ? out.stderr : '';

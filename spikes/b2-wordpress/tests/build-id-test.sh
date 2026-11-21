@@ -10,14 +10,19 @@ mkdir -p "$T/wp-content/plugins/woocommerce" "$T/wp-content/themes" "$T/wp-conte
 echo x > "$T/wp-content/plugins/woocommerce/woocommerce.php"
 # #771: PHP_ENGINE=npm keeps these cases offline (the default, lean, is fetched: tests/engine-resolve-test.sh);
 # a case with an explicit engine pair clears it (PHP_ENGINE=), since npm and a pair together are refused.
-id() { env -u BUILD_ID_OVERRIDE -u PLUGINS -u IMPORT_CONTENT -u WOO_ACTIVE -u ENGINE -u PF_ENGINE_JS -u PF_ENGINE_WASM PHP_ENGINE=npm "$@" "$HERE/build-id.sh" "$T/wp-content"; }
+id() { env -u BUILD_ID_OVERRIDE -u PLUGINS -u IMPORT_CONTENT -u WOO_ACTIVE -u ENGINE -u PF_ENGINE_JS -u PF_ENGINE_WASM -u WP_CLI_ENDPOINT PHP_ENGINE=npm "$@" "$HERE/build-id.sh" "$T/wp-content"; }
 base=$(id)
 check "a plain build: the sha (and -dirty in a dirty tree), no suffix" "$(echo "$base" | grep -cE '^[0-9a-f]{12}(-dirty)?$')" 1
 check "WOO_ACTIVE=1 adds -wooprimed" "$(id WOO_ACTIVE=1)" "$base-wooprimed"
+check "WP_CLI_ENDPOINT=on adds -wpcli" "$(id WP_CLI_ENDPOINT=on)" "$base-wpcli"
+check "WP_CLI_ENDPOINT=on and WOO_ACTIVE=1 still ends -wooprimed" "$(id WP_CLI_ENDPOINT=on WOO_ACTIVE=1)" "$base-wpcli-wooprimed"
+check "WP_CLI_ENDPOINT unset adds nothing" "$(id)" "$base"
 check "WOO_ACTIVE=0 adds nothing" "$(id WOO_ACTIVE=0)" "$base"
 check "THE GGC-TEST CASE: primed and unprimed builds of one sha differ" "$([ "$(id WOO_ACTIVE=1)" != "$(id)" ] && echo yes || echo no)" yes
 c=$(id IMPORT_CONTENT="$T/wp-content" IMPORT_PLUGINS=woocommerce WOO_ACTIVE=1)
 check "content inputs and WOO_ACTIVE=1: <sha>-c<8 hex>-wooprimed" "$(echo "$c" | grep -cE "^${base}-c[0-9a-f]{8}-wooprimed$")" 1
+cw=$(id WP_CLI_ENDPOINT=on IMPORT_CONTENT="$T/wp-content" IMPORT_PLUGINS=woocommerce WOO_ACTIVE=1)
+check "-wpcli sits before the -c<8 hex>-wooprimed tail" "$(echo "$cw" | grep -cE "^${base}-wpcli-c[0-9a-f]{8}-wooprimed$")" 1
 check "BUILD_ID_OVERRIDE wins whole" "$(id BUILD_ID_OVERRIDE=x-forced WOO_ACTIVE=1)" x-forced
 # #431: the approach-A build carries -a, right after the sha (and -dirty), so the b-dosql and the
 # approach-A build of one sha never share an id; the d1 engine and an unset ENGINE add nothing.

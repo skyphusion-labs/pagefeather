@@ -143,6 +143,7 @@ jobs:
         run: |
           node --test spikes/b2-wordpress/tests/wp-cli-endpoint.test.mjs
           bash deploy/tests/wp-cli-endpoint-test.sh
+          bash spikes/b2-wordpress/tests/wp-cli-bundle-test.sh
       - name: Every engine test is named in a workflow (#1010)
         # A *-test.php or *.test.mjs under spikes/b2-wordpress/tests/ that no workflow names fails this step.
         run: bash tests/ci/engine-tests-wired-test.sh

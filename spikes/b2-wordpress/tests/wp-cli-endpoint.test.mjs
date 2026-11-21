@@ -5,7 +5,8 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { decideWpCli } from '../wp-cli-allow.mjs';
 import { createCertCache, timingSafeEqualString } from '../wp-cli-access.mjs';
-import { handleWpCli, wpCliEnabled } from '../wp-cli-endpoint.mjs';
+import { handleWpCli, wpCliEnabled, wpCliTestCtl } from '../wp-cli-endpoint.mjs';
+import { devKeysFromEnv } from '../wp-cli-access.mjs';
 import { WP_CLI_CWD, WP_CLI_PHAR, WP_CLI_STDERR_CAP, WP_CLI_STDOUT_CAP, WP_CLI_WALL_MS, projectConfigPaths, runWpCli } from '../wp-cli-run.mjs';
 
 const AUD = 'a'.repeat(32);
@@ -86,6 +87,9 @@ test('index.js does not load WP-CLI code unless the flag is on, and /_pf/ stays 
 	assert.equal(parts[0].includes('wp-cli-allow'), false);
 	assert.match(parts[1], /await import\('\.\/wp-cli-endpoint\.mjs'\)/);
 	assert.match(parts[2], /await import\('\.\/wp-cli-endpoint\.mjs'\)/);
+	const runFn = src.slice(src.indexOf('async function runSiteWpCli'), src.indexOf('async function runSiteWpCli') + 700);
+	assert.match(runFn, /dropRuntimeIdle\(\)/);
+	assert.match(runFn, /finally \{\s*dropRuntime\(\);/);
 	const found = src.match(/pathname\.startsWith\('\/_pf\/'\)\) return new Response\('Not Found', \{ status: 404 \}\)/g) || [];
 	assert.equal(found.length, 2);
 	assert.equal(src.includes('PHP_IN_DO'), true);
@@ -369,6 +373,135 @@ test('the team certs are fetched once and then cached', async () => {
 	assert.equal(a.status, 200);
 	assert.equal(b.status, 200);
 	assert.equal(fetched, 1);
+});
+
+test('a dev key is ignored unless the spike token is the local one', () => {
+	const keys = [{ kid: 'test-kid', kty: 'RSA', n: 'aa', e: 'AQAB' }];
+	const b64 = btoa(JSON.stringify(keys));
+	assert.equal(devKeysFromEnv({ SPIKE_TOKEN: TOKEN, WP_CLI_DEV_KEYS_B64: b64 }), null);
+	assert.equal(devKeysFromEnv({ SPIKE_TOKEN: 'local-spike-token' }), null);
+	assert.deepEqual(devKeysFromEnv({ SPIKE_TOKEN: 'local-spike-token', WP_CLI_DEV_KEYS_B64: b64 }), keys);
+	assert.equal(devKeysFromEnv({ SPIKE_TOKEN: 'local-spike-token', WP_CLI_DEV_KEYS_B64: '%%%' }), null);
+});
+
+test('the local token accepts the test JWT without fetching certs', async () => {
+	const keys = await testKeys();
+	const b64 = btoa(JSON.stringify([keys.pub]));
+	const jwt = await signJwt(keys.privateKey, payload());
+	let fetched = 0;
+	let ran = 0;
+	const res = await handleWpCli(
+		post(jwt, 'local-spike-token', '{"argv":["option","get","siteurl"]}'),
+		env({ SPIKE_TOKEN: 'local-spike-token', WP_CLI_DEV_KEYS_B64: b64 }),
+		{
+			now: () => NOW,
+			lock: { running: false },
+			log: () => {},
+			fetch: async () => { fetched += 1; throw new Error('fetch'); },
+			runCli: async () => { ran += 1; return { exit: 0, stdout: 'http://localhost\n', stderr: '', truncated: false }; },
+		},
+	);
+	assert.equal(fetched, 0);
+	assert.equal(ran, 1);
+	assert.equal(res.status, 200);
+	const blocked = await handleWpCli(
+		post(jwt, TOKEN, '{"argv":["option","get","siteurl"]}'),
+		env({ WP_CLI_DEV_KEYS_B64: b64 }),
+		{
+			now: () => NOW,
+			lock: { running: false },
+			log: () => {},
+			fetch: async () => { fetched += 1; throw new Error('fetch'); },
+			runCli: async () => { ran += 1; return { exit: 0, stdout: '', stderr: '', truncated: false }; },
+		},
+	);
+	assert.equal(blocked.status, 404);
+	assert.equal(ran, 1);
+	assert.equal(fetched, 1);
+});
+
+test('a short wall and a slow hook are local only', async () => {
+	assert.deepEqual(wpCliTestCtl(env({ WP_CLI_WALL_MS: '200', WP_CLI_SLOW_MS: '3000' })), {});
+	assert.deepEqual(wpCliTestCtl({ SPIKE_TOKEN: 'local-spike-token', WP_CLI_WALL_MS: '25000', WP_CLI_SLOW_MS: '0' }), {});
+	assert.deepEqual(
+		wpCliTestCtl({ SPIKE_TOKEN: 'local-spike-token', WP_CLI_WALL_MS: '200', WP_CLI_SLOW_MS: '3000' }),
+		{ wallMs: 200, slowMs: 3000 },
+	);
+	const keys = await testKeys();
+	const jwt = await signJwt(keys.privateKey, payload());
+	let seen = null;
+	await handleWpCli(
+		post(jwt, 'local-spike-token', '{"argv":["option","get","siteurl"]}'),
+		env({ SPIKE_TOKEN: 'local-spike-token', WP_CLI_WALL_MS: '200', WP_CLI_SLOW_MS: '3000' }),
+		{
+			keys: [keys.pub],
+			now: () => NOW,
+			lock: { running: false },
+			log: () => {},
+			runCli: async (argv, ctl) => { seen = ctl; return { exit: 0, stdout: '', stderr: '', truncated: false }; },
+		},
+	);
+	assert.deepEqual(seen, { wallMs: 200, slowMs: 3000 });
+});
+
+test('a wall timeout stops the runtime and the next run is not blocked', async () => {
+	let exited = 0;
+	let cancelled = 0;
+	const php = fakePhp({}, () => ({
+		exitCode: new Promise(() => {}),
+		stdout: new ReadableStream({
+			start() {},
+			cancel() { cancelled += 1; },
+		}),
+		stderr: streamOf(''),
+	}));
+	php.exit = () => { exited += 1; };
+	const out = await runWpCli(php, ['option', 'get', 'siteurl'], { wallMs: 30 });
+	assert.equal(out.exit, 124);
+	assert.equal(out.truncated, true);
+	assert.equal(exited, 1);
+	assert.equal(cancelled, 1);
+	const keys = await testKeys();
+	const jwt = await signJwt(keys.privateKey, payload());
+	let n = 0;
+	const deps = {
+		keys: [keys.pub],
+		now: () => NOW,
+		lock: { running: false },
+		log: () => {},
+		runCli: async () => {
+			n += 1;
+			if (n === 1) return { exit: 124, stdout: '', stderr: '', truncated: true };
+			return { exit: 0, stdout: 'ok', stderr: '', truncated: false };
+		},
+	};
+	const body = '{"argv":["core","version"]}';
+	const first = await handleWpCli(post(jwt, TOKEN, body), env(), deps);
+	const second = await handleWpCli(post(jwt, TOKEN, body), env(), deps);
+	assert.equal(first.status, 200);
+	assert.equal((await first.json()).exit, 124);
+	assert.equal(second.status, 200);
+	assert.equal((await second.json()).exit, 0);
+	assert.equal(n, 2);
+});
+
+test('the slow hook is written only when a local check asks', async () => {
+	const php = fakePhp({}, () => ({
+		exitCode: Promise.resolve(0),
+		stdout: streamOf('ok'),
+		stderr: streamOf(''),
+	}));
+	await runWpCli(php, ['option', 'get', 'siteurl'], { slowMs: 2500 });
+	const hook = php.readFile('/wordpress/wp-content/mu-plugins/wp-cli-slow-test.php');
+	assert.match(hook, /usleep\(2500000\)/);
+	assert.match(hook, /WP_CLI/);
+	const plain = fakePhp({}, () => ({
+		exitCode: Promise.resolve(0),
+		stdout: streamOf(''),
+		stderr: streamOf(''),
+	}));
+	await runWpCli(plain, ['core', 'version']);
+	assert.equal(plain.readFile('/wordpress/wp-content/mu-plugins/wp-cli-slow-test.php'), '');
 });
 
 test('engine check: a test key injected for the test runs option get siteurl', async () => {

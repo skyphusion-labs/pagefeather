@@ -6,6 +6,11 @@
 # Secrets are not recorded. Test: deploy/tests/wp-cli-endpoint-test.sh.
 
 wp_cli_endpoint_check() {
+  # Local engine-check seams (#1258). A deploy never sets them. The route
+  # honors them only when SPIKE_TOKEN is the local dev token.
+  [ -z "${WP_CLI_DEV_KEYS_B64:-}" ] || { echo "WP_CLI_DEV_KEYS_B64 is a local engine check only (#1258)" >&2; return 2; }
+  [ -z "${WP_CLI_WALL_MS:-}" ] || { echo "WP_CLI_WALL_MS is a local engine check only (#1258)" >&2; return 2; }
+  [ -z "${WP_CLI_SLOW_MS:-}" ] || { echo "WP_CLI_SLOW_MS is a local engine check only (#1258)" >&2; return 2; }
   case "${WP_CLI_ENDPOINT:-}" in
     "") return 0 ;;
     on) ;;

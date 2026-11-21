@@ -194,11 +194,26 @@ Every allowed or refused call logs one line: `{"@event":"wp-cli", "who": <Access
 Limits, until step 5 and step 6 expand this:
 
 - No long jobs. Search-replace and import stay refused. Step 5 is the chunked run.
-- The wall cap is 25 s. One run at a time.
-- Access and a custom domain are required. `WP_CLI_ENDPOINT=on` needs `CUSTOM_DOMAIN` (#1264) plus `ACCESS_AUD` and `ACCESS_TEAM`. Those are the wp-admin Access application (#1260). #1260 does not write the AUD into the Worker yet, so the operator sets the same AUD and the team name.
+- The wall cap is 25 s. One run at a time holds per isolate, not per site. On approach A the Worker can run many isolates, so many commands can run at once. On b-dosql and b-do the site object is one isolate, so one run at a time is one run for that site.
+- A command drops that isolate's warm runtime (`dropRuntimeIdle` before the boot, `dropRuntime` after `php.cli`). The next page request boots cold.
+- After the wall the route answers 124. `runWpCli` then calls `php.exit`, which drops the JS heap handle. It does not stop the in-flight `php.cli`. Measured on the prepared lean engine (`vendor/php_8_3.wasm`, `php.cli` of `usleep(8000000)`): the 400 ms wall won while the command was still running, `php.exit` returned in 1 ms and the heap handle was gone, and the exit code still arrived at 8040 ms with code 0. The command kept running until it finished. A second runtime booted 1.9 s into that 8 s sleep (the first exit promise still unsettled) and printed `fresh` in 22 ms, exit 0. The next request is not held behind the old run. The old run keeps its wasm until the command ends, or until the isolate ends if the command never returns.
+- The same path through the route, on dosql-local, with the wall set to 600 ms and a test-only mu-plugin that calls `usleep(8000000)` only when that check asks: `option get siteurl` answered `{"exit":124,"stdout":"","stderr":"","ms":962,"truncated":true}` in 0.980 s. The next command, `option get blogname`, answered `{"exit":124,"stdout":"","stderr":"","ms":794,"truncated":true}` in 0.808 s. It was not held for the rest of the 8 s sleep. The short wall and the slow file are refused by a deploy, and the route honors them only when `SPIKE_TOKEN` is the local dev token.
+- Access and a custom domain are required. `WP_CLI_ENDPOINT=on` needs `CUSTOM_DOMAIN` (#1264) plus `ACCESS_AUD` and `ACCESS_TEAM`. Those are the wp-admin Access application (#1260). #1260 does not create that application in IaC yet, and it does not write the AUD into the Worker. The operator sets the same AUD and the team name.
 - This allowlist is the code lock. WP-CLI 2.12.0 ignores `DISALLOW_FILE_MODS`.
 - `user list` and `user get` refuse `user_pass` and `user_activation_key` in `--field`, `--fields`, or a `--format` template. `option get` stays allowed. The answer goes to the operator and is not logged.
 
-The phar path the runner calls is `/wordpress/wp-cli.phar`. `build.sh` does not put that file in `site.zip`. See the step 3 PR for why.
+The phar path the runner calls is `/wordpress/wp-cli.phar`. `build.sh` puts that file in `site.zip` only when `WP_CLI_ENDPOINT=on`. The build fetches WP-CLI 2.12.0 from `https://github.com/wp-cli/wp-cli/releases/download/v2.12.0/wp-cli-2.12.0.phar` and checks it against `spikes/b2-wordpress/wp-cli-2.12.0.sha512`. That digest is the published sha512 (the same value as `https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar.sha512` on 2026-11-21). A changed file fails the build. The file is 7,142,777 bytes, about 7 MB, and it counts against the 64 MiB Worker limit (the upload gate is 62 MiB). With the endpoint unset the step writes nothing, so the zip's file list and content hash match a tree the step never touched (`tests/wp-cli-bundle-test.sh`). The build id gains `-wpcli` when the endpoint is on, before the `-c` and `-wooprimed` tails, so an update that only turns the endpoint on is not skipped as already at that build.
 
-Tests: `node --test spikes/b2-wordpress/tests/wp-cli-endpoint.test.mjs` and `bash deploy/tests/wp-cli-endpoint-test.sh`. CI runs both.
+Tests: `node --test spikes/b2-wordpress/tests/wp-cli-endpoint.test.mjs`, `bash deploy/tests/wp-cli-endpoint-test.sh`, and `bash spikes/b2-wordpress/tests/wp-cli-bundle-test.sh`. CI runs them.
+
+## Engine check (dosql-local)
+
+`./prepare.sh`, then `WP_CLI_ENDPOINT=on WOO=0 ./build.sh` (the phar is in `site.zip`, sha512 matches the pin, 7,142,777 bytes). Then `DEV_ENV=dosql-local DEV_LOCAL=1 ./run.sh`. `POST /_install` was HTTP 200 in 1.125 s. The install body also printed a database error from the permalinks flush. The command after that still ran.
+
+`POST /_pf/wp-cli` with the test JWT (RS256, local dev key, not the team certs) and `x-spike-token: local-spike-token`, body `{"argv":["option","get","siteurl"]}`:
+
+```json
+{"exit":0,"stdout":"http://localhost:52257\n","stderr":"","ms":906,"truncated":false}
+```
+
+HTTP 200. Client time 0.915 s. The stdout is the dev server's own origin. This is `php.cli` on the site runtime, not a stubbed `runCli`.
