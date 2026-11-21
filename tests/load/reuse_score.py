@@ -32,6 +32,7 @@ def usage_error(msg):
 MAX_REFUSE_S = float(os.environ.get("BOOT_GATE_MAX_REFUSE_S", "60"))
 SLOW_S = float(os.environ.get("SLOW_S", "30"))  # the #605 reading: admin requests slower than this
 NAMED = ("in-flight", "newer-runtime", "no-drain", "no-guards")
+MIN_BOOTS = 5  # #1022: bar 6 needs at least this many boot rows on each arm
 # #1022 issuecomment-7067599082 (the lead's ruling, set before the lean-on data): a Workers for Platforms user script
 # exposes no invocation rows, so bar 2 counts the platform's own memory-death line instead, for BOTH arms.
 PLATFORM_DEATH = "Durable Object's isolate exceeded its memory limit and was reset."
@@ -146,7 +147,11 @@ def arm(rows, lg):
                       "zoneStatus": {str(k): sum(1 for o in pz if o.get("status") == k) for k in sorted({o.get("status") for o in pz}, key=str)}}
     led = [r for r in a if r.get("memLive") is not None]
     A["ledger"] = len(led)
-    A["stacked"] = [r for r in led if (r.get("memLive") or 0) >= 2 or (r.get("retiredMem") or 0) > 0]
+    A["ledgerRows"] = led
+    # #1022 issuecomment-7069498841 (set before E1's data): the end-of-request ledger is read AFTER dropRuntime, so on a
+    # recycling request the one memory left (the reuse spare) reads retiredMem 1, memLive 1. Stacking is two memories at
+    # once, or a retired memory on a request that did not itself recycle.
+    A["stacked"] = [r for r in led if (r.get("memLive") or 0) >= 2 or ((r.get("retiredMem") or 0) > 0 and not r.get("x-runtime-recycled"))]
     A["recycles"] = sum(1 for r in a if r.get("x-runtime-recycled"))
     per_iso = {}
     for r in a:
@@ -189,7 +194,9 @@ def arm(rows, lg):
     gt = sorted(r["s"] for r in gs if isinstance(r.get("s"), (int, float)))
     A["guestP50"] = round(statistics.median(gt), 3) if gt else None
     A["guestP95"] = round(gt[min(len(gt) - 1, int(0.95 * len(gt)))], 3) if gt else None
-    bw = [r["bootWaitMs"] for r in a if isinstance(r.get("bootWaitMs"), (int, float))]
+    # #1022 issuecomment-7069498841 (set before E1's data): the boot cost is the median over BOOT rows only (the old
+    # median ran over every admin row, most of them 0).
+    bw = [r["bootWaitMs"] for r in a if isinstance(r.get("bootWaitMs"), (int, float)) and r.get("boot")]
     A["bootMedianMs"] = statistics.median(bw) if bw else None
     A["boots"] = len(bw)
     A["slow"] = sorted([r for r in a if isinstance(r.get("s"), (int, float)) and r["s"] > SLOW_S], key=lambda r: r["t"])
@@ -224,7 +231,8 @@ def main(argv):
         st = on["stacked"]
         named = [x for x in (on.get("refusedOffers") or []) if x in NAMED]
         if not st:
-            bar(1, "no stacking (on)", "pass", "%d readings, memLive 1 and retiredMem 0 in all" % on["ledger"])
+            bar(1, "no stacking (on)", "pass", "%d readings: never two memories at once (max memLive %d), and a retired memory only on a recycling request (%d)" % (
+                on["ledger"], max([r.get("memLive") or 0 for r in on["ledgerRows"]] or [0]), sum(1 for r in on["ledgerRows"] if (r.get("retiredMem") or 0) > 0)))
         elif "refusedOffers" not in on:
             bar(1, "no stacking (on)", "could not measure", "%d stacked readings; the logs that could excuse them were not given" % len(st))
         elif len(named) >= len(st):
@@ -288,11 +296,11 @@ def main(argv):
         bar(5, "guests no worse", "pass" if ok else "FAIL", "non-2xx on %d, off %d; p95 on %.3f s, off %.3f s (p50 %.3f, %.3f)"
             % (on["guestNon2xx"], off["guestNon2xx"], on["guestP95"], off["guestP95"], on["guestP50"], off["guestP50"]))
     # 6
-    if on["bootMedianMs"] is None or off["bootMedianMs"] is None:
-        bar(6, "boot cost", "could not measure", "boots on %d, off %d" % (on["boots"], off["boots"]))
+    if on["bootMedianMs"] is None or off["bootMedianMs"] is None or on["boots"] < MIN_BOOTS or off["boots"] < MIN_BOOTS:
+        bar(6, "boot cost", "could not measure", "boot rows on %d, off %d (fewer than %d on an arm)" % (on["boots"], off["boots"], MIN_BOOTS))
     else:
         bar(6, "boot cost", "pass" if on["bootMedianMs"] <= off["bootMedianMs"] + 50 else "FAIL",
-            "median bootWaitMs on %s (%d boots), off %s (%d boots)" % (on["bootMedianMs"], on["boots"], off["bootMedianMs"], off["boots"]))
+            "median bootWaitMs over boot rows on %s (%d boots), off %s (%d boots)" % (on["bootMedianMs"], on["boots"], off["bootMedianMs"], off["boots"]))
     tb = [s["toBootS"] for s in on["streaks"] if s.get("toBootS") is not None]
     print("\nBOOT_GATE_MAX_REFUSE_S: %s" % ("stays 60 (no refusals)" if not on["streaks"] else
           "%g (the longest time to a successful boot after a refusal, %.1f s, plus 50%%, capped at 600)" % (min(600, round(1.5 * max(tb), 1)), max(tb)) if tb else "a streak never reached a successful boot: report it"))
