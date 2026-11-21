@@ -104,6 +104,8 @@ render_conf() {
   [ "$VARIANT" != a ] || a_vars
   # #598: b-dosql's two pack vars, from the ONE rule deploy/wfp renders them with (the config hash follows the flags).
   if [ "$VARIANT" = b-dosql ]; then opcache_remote_var || return 1; site_remote_var || return 1; fi
+  # #1022: the recycle line and memory reuse on the DO tiers (a-settings.sh). Nothing when unset.
+  case "$VARIANT" in b-dosql|b-do) dosql_mem_vars || return 1 ;; esac
   [ "$VARIANT" != a ] || a_overflow_vars
   [ "$VARIANT" != a ] || a_cron_vars
   # WOO_EXTRAS (#667): off only. Checked above, before any step. Unset writes nothing.

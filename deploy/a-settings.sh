@@ -84,8 +84,15 @@ a_settings_check() {
     done
   fi
   if [ "$variant" != a ]; then
-    for v in OPCACHE_A RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE A_CLIENT A_CRON PHP_OVERFLOW PHP_OVERFLOW_POOL PHP_OVERFLOW_MAX_HELD PHP_OVERFLOW_DEPTH MEM_LEDGER OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE OBJECT_CACHE_L2; do
+    for v in OPCACHE_A A_CLIENT A_CRON PHP_OVERFLOW PHP_OVERFLOW_POOL PHP_OVERFLOW_MAX_HELD PHP_OVERFLOW_DEPTH MEM_LEDGER OBJECT_CACHE_VERSIONS WOO_HPOS_CACHE OBJECT_CACHE_L2; do
       [ -z "${!v:-}" ] || { echo "$v is for variant a only (deploy/wfp has its own settings for b-dosql)" >&2; return 2; }
+    done
+  fi
+  # #1022: the recycle line and memory reuse are engine settings, so b-dosql and b-do take them too, through the
+  # same rules deploy/wfp uses (lib/memory-reuse.sh). c1 runs no PHP runtime, so it refuses them.
+  if [ "$variant" != a ] && [ "$variant" != b-dosql ] && [ "$variant" != b-do ]; then
+    for v in RECYCLE_WASM_MIB PHP_MEMORY_REUSE BOOT_GATE; do
+      [ -z "${!v:-}" ] || { echo "$v is for variant a, b-dosql or b-do only" >&2; return 2; }
     done
   fi
   case "${A_CRON:-1}" in 0|1) ;; *) echo "A_CRON must be 0 or 1, not ${A_CRON}" >&2; return 2 ;; esac
@@ -151,6 +158,14 @@ a_opcache_count() {
     || { echo "OPCACHE_A=1: $1 is not a readable zip" >&2; return 1; }
   [ "$n" -gt 0 ] || { echo "OPCACHE_A=1: $1 holds 0 compiled scripts" >&2; return 1; }
   echo "  OPcache primed for approach A: $n compiled scripts"
+}
+
+# dosql_mem_vars (#1022): the recycle line and memory reuse [vars] lines for b-dosql and b-do (nothing when
+# neither is set, so the defaults are unchanged). a_settings_check validated both first.
+dosql_mem_vars() {
+  [ -z "${RECYCLE_WASM_MIB:-}" ] || echo "RECYCLE_WASM_MIB = \"$((10#$RECYCLE_WASM_MIB))\""
+  memory_reuse_lines
+  return 0
 }
 
 # a_vars: the [vars] lines of these settings (nothing when none is set).
