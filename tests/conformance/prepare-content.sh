@@ -23,7 +23,8 @@
 #
 # Each repo is fetched at its full commit sha (pins.env) with a sparse checkout: git checks every
 # object, so the content is the pinned content. Refused (non-zero exit): an <out-dir> that exists,
-# an unknown suite, a checkout whose HEAD is not the pin, a missing upstream path, and a symbolic
+# an unknown suite, both wp and gb (different Twenty Twenty-One versions; before any install),
+# a checkout whose HEAD is not the pin, a missing upstream path, and a symbolic
 # link in any copied tree (content.sh refuses them too). WC_REPO, GB_REPO and the shas can be set
 # in the environment (the test points them at stub repos).
 set -euo pipefail
@@ -41,6 +42,12 @@ for s in "$@"; do
   case "$s" in wp) want_wp=1 ;; wc) want_wc=1 ;; gb) want_gb=1 ;;
     *) echo "prepare: unknown suite '$s' (wp wc gb)" >&2; exit 2 ;; esac
 done
+# One site holds one copy of twentytwentyone. wp needs 2.9 (wordpress-develop).
+# gb needs 2.1 (the zip its environment mounts). Stop before any install.
+if [ "$want_wp" = 1 ] && [ "$want_gb" = 1 ]; then
+  echo "wp and gb need different Twenty Twenty-One versions (2.9 and 2.1, #1335): prepare each suite on its own" >&2
+  exit 2
+fi
 mkdir -p "$out/wp-content/plugins" "$out/wp-content/themes" "$out/wp-content/mu-plugins" "$out/src"
 out=$(cd "$out" && pwd)
 : > "$out/PINS"
@@ -138,10 +145,9 @@ line="IMPORT_CONTENT=$out/wp-content"
 [ -z "$imp_mu" ] || line="$line IMPORT_MU_PLUGINS='$imp_mu'"
 # fetch.sh --themes reads one pin file (THEME_SUITE) and no other list.
 # The wp suite's stock Twenty Twenty-One is the version wordpress-develop bundles
-# (themes-wp.txt). The gb suite keeps 2.1 (themes.txt). One build installs one
-# copy of the slug. Naming wp selects the wp file, including when gb is named
-# too, so the copy the WordPress global setup activates is the stock one.
-# A build that names gb and not wp keeps themes.txt.
+# (themes-wp.txt). The gb suite keeps 2.1 (themes.txt). A build names one of
+# those two suites, never both (refused above, before any install). Naming wp
+# selects the wp file. A build that names gb and not wp keeps themes.txt.
 theme_suite=$here/themes.txt
 [ "$want_wp" = 0 ] || theme_suite=$here/themes-wp.txt
 [ -z "$themes" ] || line="$line THEME_SUITE=$theme_suite THEMES='$themes'"

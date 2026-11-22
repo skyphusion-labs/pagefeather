@@ -114,8 +114,9 @@ else bad "gb only: exit non-zero ($(cat "$t/e"))"; fi
 # 3d. Per-suite Twenty Twenty-One (#1335). fetch.sh --themes reads one file, THEME_SUITE.
 # prepare-content.sh picks it. The wp file pins the version wordpress-develop bundles at
 # WP_DEVELOP_SHA (style.css Version: 2.9). The gb file keeps 2.1, the zip Gutenberg mounts.
-# A build that names wp selects the wp file even when gb is also named (one slug, one copy).
-# A build that names gb and not wp keeps themes.txt. The other slugs match, so only this version moves.
+# A build that names wp and not gb selects the wp file. A build that names gb and not wp
+# keeps themes.txt. A build that names both stops before any install: one slug, one copy.
+# The other slugs match, so only this version moves.
 WP_TT1='twentytwentyone 2.9 51d4ac1dcaef18b0e35a1a313bce8115d3aa4ff315bb1143f95c223c38817d8b'
 GB_TT1='twentytwentyone 2.1 5b2e99b6e93a529fe4ae243752089ed1d26f6b70af8b289603b87ce1472a5f01'
 pin_line() { grep -E '^twentytwentyone ' "$1" 2>/dev/null || true; }
@@ -127,9 +128,11 @@ if [ -f "$here/themes-wp.txt" ] && diff -q <(other_pins "$here/themes.txt") <(ot
 else
   bad "themes-wp.txt drifted from themes.txt beyond twentytwentyone"
 fi
-if line=$(WC_REPO=file:///nonexistent "$P" "$t/wpgb" wp gb 2>"$t/e"); then
-  case "$line" in *"THEME_SUITE=$here/themes-wp.txt "*) ok "wp gb: THEME_SUITE is themes-wp.txt" ;; *) bad "wp gb: line is '$line'" ;; esac
-else bad "wp gb: exit non-zero ($(cat "$t/e"))"; fi
+# Both wp and gb: one site holds one copy of twentytwentyone, so the build stops
+# before anything is installed (#1335).
+expect_refused "wp and gb together" 'wp and gb need different Twenty Twenty-One versions \(2\.9 and 2\.1, #1335\): prepare each suite on its own' \
+  "$P" "$t/wpgb" wp gb
+[ ! -e "$t/wpgb" ] && ok "wp and gb: nothing was installed" || bad "wp and gb: $t/wpgb was created"
 if line=$(GB_REPO=file:///nonexistent "$P" "$t/wpwc" wp wc 2>"$t/e"); then
   case "$line" in *"THEME_SUITE=$here/themes-wp.txt "*) ok "wp wc: THEME_SUITE is themes-wp.txt" ;; *) bad "wp wc: line is '$line'" ;; esac
 else bad "wp wc: exit non-zero ($(cat "$t/e"))"; fi
