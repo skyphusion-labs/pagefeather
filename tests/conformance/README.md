@@ -69,6 +69,7 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
 5. **Check our site:** first, Rollins' seed sets the site up. It owns ALL setup, and it reruns before each suite. The seed writes `WP_USERNAME`, `WP_PASSWORD`, `CUSTOMER_USERNAME` and `CUSTOMER_PASSWORD` to `<seed out>/creds.env`, mode 600. Run `. <seed out>/creds.env`, then `runner.py prepare --suite <suite> --base-url https://<site> --cache on|off --run-dir <our-run>`.
    - It never writes to the site: one owner (the seed), one checker (the runner).
    - It STOPS if a check fails. The checks: https; the marker for this host; the deny list; the admin form login; the cache matches `--cache`.
+   - The cache check reads `x-pf-rendered`, not `cf-cache-status` (#1336). With `--cache on`, a later guest GET of `/` must carry an earlier GET's stamp, which means a stored body was served. An EXPIRED answer with a new stamp is a render. With no stamp at all, the check STOPs as could-not-measure. With `--cache off`, a repeated stamp or a HIT STOPs.
    - For `wc`, more checks:
      - Basic is 200 with `WP_PASSWORD` and 401 with a wrong one;
      - the customer (`CUSTOMER_USERNAME`, default `customer`) exists, with the role customer and a working form login;
