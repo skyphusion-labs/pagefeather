@@ -2,6 +2,9 @@
 """#1271: the tools that read x-wasm-mib send x-spike-token when SPIKE_TOKEN is set.
 When it is not set, a blank or a 0 is not a heap size. They print
 "x-wasm-mib: not readable without the token".
+load.py does not send the token (that would mark the shopper request no-store).
+When no row has the header, max_wasm_mib is null and the summary carries the
+same line, never 0.
 Offline, against 127.0.0.1. Run: python3 -I tests/conformance/wasm-mib-read-test.py
 """
 import contextlib, importlib.util, io, json, os, sys, threading
@@ -119,6 +122,26 @@ def run_media(wasm, token):
     if os.path.exists(out):
         os.remove(out)
     return p, rep, state
+
+
+def run_load(wasm):
+    """One short plain-WordPress step. SPIKE_TOKEN is set so a sent token would show.
+    load.py must not send it. wasm is the header value, or None for no header."""
+    srv, state = serve("plain", wasm)
+    base = "http://127.0.0.1:%d" % srv.server_address[1]
+    env = {"PATH": os.environ.get("PATH", ""), "B": base, "WOO": "0", "LEVELS": "1", "SECONDS": "1",
+           "BUYERS": "0", "ADMINS": "0", "SETUP": "0", "CLEANUP": "0", "SPIKE_TOKEN": "t-1271"}
+    script = os.path.join(ROOT, "tests", "load", "load.py")
+    import subprocess
+    p = subprocess.run([sys.executable, "-I", script], env=env, capture_output=True, text=True, timeout=30)
+    srv.shutdown()
+    lines = []
+    for line in p.stdout.splitlines():
+        if line.startswith("{"):
+            lines.append(json.loads(line))
+    steps = [row for row in lines if "users" in row and "steps" not in row]
+    summary = lines[-1] if lines else {}
+    return p, steps, summary, state
 
 
 def run_upload(wasm, token):
@@ -258,6 +281,17 @@ def main():
     srv.shutdown()
     check("break: no token and no header is the could-not-measure line, not a blank",
           r.get("mib") == PHRASE and PHRASE in buf.getvalue(), (r.get("mib"), buf.getvalue()[:160]))
+
+    p, steps, summary, state = run_load(None)
+    step0 = steps[0] if steps else {}
+    sum_step = (summary.get("steps") or [{}])[0]
+    check("load: no header on any row gives null, not 0",
+          p.returncode == 0 and step0.get("requests", 0) > 0
+          and "max_wasm_mib" in step0 and step0.get("max_wasm_mib") is None
+          and sum_step.get("max_wasm_mib") is None and PHRASE in json.dumps(summary)
+          and set(tokens(state)) == {None},
+          (p.returncode, step0.get("requests"), step0.get("max_wasm_mib"),
+           PHRASE in json.dumps(summary), tokens(state)[:4], p.stderr[-300:]))
 
     print("%d failing" % len(fails))
     return 1 if fails else 0
