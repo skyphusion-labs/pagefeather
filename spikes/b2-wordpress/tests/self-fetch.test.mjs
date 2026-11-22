@@ -94,7 +94,8 @@ test('#1170 lever: the cache-only miss answer is fast, never stored, and marked'
 });
 test('#1170 lever index.js: Pages answers a cache-only request before site.fetch; the gateway strips a client copy; the hop tries the cache first', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	const pages = src.slice(src.indexOf('export class Pages extends WorkerEntrypoint {'), src.indexOf('export class Pages extends WorkerEntrypoint {') + 800);
+	// The whole Pages class (#1328 added a first line; a fixed 800-char window cut site.fetch off and read the order as -1).
+	const pages = src.slice(src.indexOf('export class Pages extends WorkerEntrypoint {'), src.indexOf('export default {'));
 	const only = pages.indexOf('if (req.headers.get(SELF_CACHE_ONLY_HEADER) === \'1\') return selfCacheMissResponse();');
 	assert.ok(only > 0 && only < pages.indexOf('await site.fetch(req, this.env, this.ctx)'), 'before any PHP');
 	assert.match(src, /if \(pageCacheRoute\(req, url, env\)\) \{\n\t+const h = new Headers\(req\.headers\);\n\t+h\.delete\('cookie'\);\n\t+h\.delete\('authorization'\);\n\t+h\.delete\(SELF_CACHE_ONLY_HEADER\);/, 'the gateway never forwards a client marker');
