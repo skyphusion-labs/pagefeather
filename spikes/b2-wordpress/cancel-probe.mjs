@@ -18,9 +18,11 @@ export function probeMs(raw) {
 	return Math.min(20000, Math.max(1000, Math.round(n)));
 }
 
-export async function cancelProbe(url, ctx, { log = (o) => console.log(JSON.stringify(o)), dbOneShot = null } = {}) {
+export async function cancelProbe(url, ctx, { log = (o) => console.log(JSON.stringify(o)), dbOneShot = null, dbRun = null } = {}) {
 	const id = String(url.searchParams.get('id') || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) || 'none';
-	const kind = url.searchParams.get('kind') === 'db' ? 'db' : 'timer';
+	// rundb (the #1363 live check only): SELECT SLEEP through mysqlQuery, the run path PHP uses, on a run connection.
+	const k = url.searchParams.get('kind');
+	const kind = k === 'db' || k === 'rundb' ? k : 'timer';
 	const hold = url.searchParams.get('hold') === 'waituntil' ? 'waituntil' : 'request';
 	const ms = probeMs(url.searchParams.get('ms'));
 	const t0 = Date.now();
@@ -29,7 +31,11 @@ export async function cancelProbe(url, ctx, { log = (o) => console.log(JSON.stri
 	const work = (async () => {
 		let err = null;
 		try {
-			if (kind === 'db') {
+			if (kind === 'rundb') {
+				if (!dbRun) throw new Error('no database handler');
+				const r = await dbRun(`SELECT SLEEP(${Math.round(ms / 1000)})`);
+				if (r && r.ok === false) err = String(r.error || 'db error').slice(0, 160);
+			} else if (kind === 'db') {
 				if (!dbOneShot) throw new Error('no database handler');
 				const r = await dbOneShot(`SELECT SLEEP(${Math.round(ms / 1000)})`);
 				if (r && r.ok === false) err = String(r.error || 'db error').slice(0, 120);
