@@ -169,6 +169,16 @@ header, an API key in a header) must send `Vary` naming that header, or `Cache-C
 rather than rely on `Vary`. Without one of them, the first answer at that URL is the one that guests get. This is how any
 cache that keys by URL behaves; a site behind a CDN has the same rule.
 
+### On overload, a logged-in or cart visitor gets "site is busy" (HTTP 429), not a stale page (#1328)
+
+When the site is too busy to run a request (the PHP lock sheds it), Cloudflare serves the stored guest copy of that URL, marked STALE, in place of the engine's 503. It does this even for a request that never went to the cached entrypoint, for example one with a WordPress login or cart cookie. Measured on cf759hl, 2026-11-22, 3 of 3. That would show a guest's page to a shopper.
+
+So the engine answers that busy refusal with a **429** instead, with the same "site is busy" text and `Retry-After`, because a 429 reaches the client as is (3 of 3). This applies only to a page GET or HEAD whose URL can have a stored copy but which carries a WordPress cookie, authorization or an operator header (`page-copy.mjs`). Guests keep the stale copy on a shed. REST, ajax, the Store API, admin, cart, checkout and my-account keep their 503.
+
+What this does not cover:
+- **Other errors:** a PHP error (500), a write-loss answer, or a Worker that throws or runs out of memory on such a request can still be answered by the stale guest copy. Only the busy answers (`x-overloaded`) are changed.
+- **Not measured yet:** whether a cookie request's 429 replaces the stored guest copy, so that the next guest gets a MISS.
+
 ## Provisioning
 
 ### Durable email through Queues is not yet a default
