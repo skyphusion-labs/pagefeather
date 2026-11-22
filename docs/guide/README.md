@@ -1,5 +1,7 @@
 # Guide
 
+**New here? [Start here](start-here.md).** One page: how to install a site, how to log in, and what the limits are. The rest of this page compares the paths.
+
 It is fine to start small and move up a path later. This page is for you if you want to run a WordPress site, or a WooCommerce site, on Cloudflare.
 
 The short version comes first. Three paths are open. Each one names its cost and its main limit, and every figure links to the page it comes from. When you want the research behind a figure, follow that link. The whole research index is on the [engineering pages](../engineering/README.md). The full list of pages is the [docs map](../README.md).
@@ -38,7 +40,7 @@ The figure that binds a site is the write ceiling, 117 to 119 MiB of wasm ([Memo
 
 ## The manual for your path
 
-- One site, with `deploy/deploy.sh`: [Deploy a WordPress site on Cloudflare, then measure it](../../deploy/README.md).
+- One site, with `deploy/deploy.sh`: [Start here](start-here.md), step by step; every setting is in the [full reference](../../deploy/README.md).
 - Many sites, with `deploy/wfp`: [Run WordPress sites on your own Workers for Platforms account](operator.md).
 - A real store, approach A: [Onboarding: from "I want a site" to a running approach-A site](onboarding.md).
 - A customer's own domain: [Bring your own domain](byo-domain.md).
