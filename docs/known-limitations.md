@@ -38,6 +38,10 @@ The current text is [Parallel REST reads can fail on b-dosql (#1042)](guide/limi
 
 The current text is [Requests to the site's own URL (#1157)](guide/limits.md#requests-to-the-sites-own-url-1157).
 
+## Permalinks: a structure saved with /index.php stays until you re-save it (#1345)
+
+The current text is [Permalinks: a structure saved with /index.php stays until you re-save it (#1345)](guide/limits.md#permalinks-a-structure-saved-with-indexphp-stays-until-you-re-save-it-1345).
+
 ## WP-CLI operator route (#1258)
 
 The current text is [WP-CLI operator route (#1258)](guide/limits.md#wp-cli-operator-route-1258).
