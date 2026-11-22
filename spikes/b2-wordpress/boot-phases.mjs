@@ -16,5 +16,15 @@ export function bootPhases(m) {
 		init: m.end - m.t0 - m.wasm - m.files,
 		total: m.end - m.b0,
 		reused: m.reused ? 1 : 0,
+		// #1022 E2 follow-up: init at its own I/O points (salts' digests, the self-check php.run where a boot's first
+		// pack fetches happen, the rest), and the remote packs this boot fetched (remoteCounters at start and end).
+		...([m.salted, m.check0, m.check1].every(n)
+			? { initSplit: { salts: m.salted - m.t0 - m.wasm - m.files, check: m.check1 - m.check0, rest: m.end - m.salted - (m.check1 - m.check0) } }
+			: {}),
+		...(m.rc0 && m.rc1 ? { packs: packDelta(m.rc0, m.rc1) } : {}),
 	};
+}
+function packDelta(a, b) {
+	const d = (k) => (n(b[k]) && n(a[k]) ? b[k] - a[k] : 0);
+	return { rfN: d('rfN'), rfKiB: Math.round(d('rfBytes') / 1024), rsN: d('rsN'), rsKiB: Math.round(d('rsBytes') / 1024) };
 }
