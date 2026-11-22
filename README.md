@@ -15,7 +15,19 @@ MySQL server, reached through Hyperdrive. This path runs on the Workers Paid pla
 with `deploy/deploy.sh`.
 
 **b-dosql.** PHP and its SQLite database run inside one Durable Object (one Cloudflare object that
-keeps the site's state). This path runs on Workers for Platforms. You deploy it with `deploy/wfp`.
+keeps the site's state). You can run one site on a Workers Paid or Workers Free account. You deploy
+that site with `deploy/deploy.sh` (`VARIANT=b-dosql`). You can also run many sites on Workers for
+Platforms. You deploy those sites with `deploy/wfp`. Workers for Platforms adds many sites in one
+namespace, and the site manager (`deploy/wfp/site`). A Workers for Platforms account costs $30 a
+month for two or more sites ([docs/plan-limits.md](docs/plan-limits.md)). That is the Workers for
+Platforms Paid plan ($25) plus the Workers Paid plan ($5).
+
+On Workers Free, b-dosql runs plain WordPress and a light storefront only. Editing a WooCommerce store does not
+fit Free's memory
+([#638](https://github.com/skyphusion-labs/pagefeather/issues/638); the **B with WooCommerce** row
+below). One Durable Object per site means one writer, one region, and about 5 requests a second
+for work the cache cannot answer
+([docs/perf-dosql.md](docs/perf-dosql.md), "What sets b-dosql's limit").
 
 The repository also holds the research behind both designs (the matrix below), so you can see what
 we measured and what we did not.
@@ -65,7 +77,53 @@ Cart, checkout, account and logged-in pages are never cached, so they run PHP ev
 
 ## Quickstart
 
-### b-dosql, with deploy/wfp
+### b-dosql on Workers Paid or Free, with deploy/deploy.sh
+
+You need a Cloudflare account on **Workers Paid** or **Workers Free**. Workers Paid is $5 a month
+([docs/plan-limits.md](docs/plan-limits.md), read 2026-11-06). The commands below are the
+`VARIANT=b-dosql` flow in [deploy/README.md](deploy/README.md). One command makes the site,
+installs WordPress and measures it. b-dosql has no D1 database. The database is the Durable
+Object's own SQLite ([deploy/README.md](deploy/README.md), variant `b-dosql`).
+
+On Workers Free, b-dosql runs plain WordPress and a light storefront only. Shop, cart and checkout work.
+Editing a WooCommerce store does not fit Free's memory, so use Workers Paid to edit a store
+([#638](https://github.com/skyphusion-labs/pagefeather/issues/638); the **B with WooCommerce** row
+in [What runs on which plan](#what-runs-on-which-plan)).
+
+One Durable Object holds the site. That is one writer, one region, and about 5 requests a second
+for work the cache cannot answer
+([docs/perf-dosql.md](docs/perf-dosql.md), "What sets b-dosql's limit").
+
+DO WordPress on Paid (`cf759p`) and DO WordPress on Free (`cf759f`), in the results below, are
+`deploy/deploy.sh` sites ([docs/results.md](docs/results.md), the 2026-11-20 rows). `cf759a` is
+the Workers for Platforms site.
+
+```sh
+export CLOUDFLARE_API_TOKEN=...   # Workers Scripts (and R2 if MEDIA=1)
+export ACCOUNT_ID=...
+
+# One site. Set VARIANT=b-dosql. The default VARIANT is b-do.
+# MEDIA=1 makes an R2 bucket for uploads. Turn R2 on for the account first.
+# Without MEDIA=1, uploads do not persist.
+# Pass MEDIA=1 again on every later deploy of a site that has media.
+VARIANT=b-dosql MEDIA=1 NAME=my-site ./deploy/deploy.sh
+
+# Remove the site. Same token and account.
+NAME=my-site ./deploy/destroy.sh
+```
+
+The script prints the site address. The admin password is a Terraform output
+([deploy/README.md](deploy/README.md)):
+
+```sh
+cd deploy/terraform && terraform workspace select my-site && terraform output -raw admin_password
+```
+
+A later deploy that would delete the media bucket is refused. To delete that bucket and every
+upload in it on purpose, set `DESTROY_MEDIA=1`
+([deploy/README.md](deploy/README.md), `MEDIA` and `DESTROY_MEDIA`).
+
+### b-dosql on Workers for Platforms, with deploy/wfp
 
 > **We have not yet run this end to end from a fresh clone.** The commands below are the
 > `deploy/wfp` flow in [docs/operator.md](docs/operator.md), the same flow the isolation proofs
@@ -174,8 +232,9 @@ The [support matrix](docs/support-matrix.md) lists each WordPress and WooCommerc
   ([#638](https://github.com/skyphusion-labs/pagefeather/issues/638); the plan table below).
   Approach A does not run on Workers Free. The installer is refused at the 10 ms CPU limit (the
   plan table).
-- **Cost, on b-dosql:** A pagefeather Workers for Platforms account costs $30 a month for two
-  or more sites ([docs/plan-limits.md](docs/plan-limits.md)). That is the Workers for Platforms
+- **Cost, on b-dosql:** One site on Workers Paid is $5 a month
+  ([docs/plan-limits.md](docs/plan-limits.md)). A pagefeather Workers for Platforms account costs $30 a month for two
+  or more sites (same page). That is the Workers for Platforms
   Paid plan ($25) plus the Workers Paid plan ($5). The reference account runs both. The Workers
   for Platforms price includes 20 million requests, then $0.30 per million. It includes 60 million
   CPU ms, then $0.02 per million. It includes 1,000 namespace scripts, then $0.02 each. Another
@@ -229,6 +288,10 @@ Browser Run is the default suite browser for wp and wc. It is not valid for the 
 - **One run is not a number.** The same build moved up to 15% between runs, and `a` served 18.7 requests a second in one load matrix and 8.63 in another. So we bracket every comparison here (the same build with the change off, on, and off again) or repeat it across starts; we never quote a single run as the number for a variant.
 
 ## Cost
+
+One b-dosql site on Workers Paid is $5 a month
+([docs/plan-limits.md](docs/plan-limits.md), read 2026-11-06). You deploy that site with
+`deploy/deploy.sh`. The bill below is a Workers for Platforms account, for many sites.
 
 A pagefeather Workers for Platforms account costs $30 a month for two or more sites. That is the Workers for Platforms Paid plan ($25) plus the Workers Paid plan ($5). The reference account runs both. The Workers for Platforms price includes 20 million requests, then $0.30 per million. It includes 60 million CPU ms, then $0.02 per million. It includes 1,000 namespace scripts, then $0.02 each. Another site at rest costs about $0, up to the 1,000 included scripts. Durable Object storage, R2 media, and KV stay inside a free or included tier at rest. Traffic is metered on top. Cloudflare's WfP pricing page does not say whether Workers Paid is strictly required, so plan for both.
 
