@@ -36,7 +36,7 @@ This path runs on Workers Paid, at $5 a month ([Plan limits and cost](cost.md)).
 
 This path does not run on Workers Free. The installer stops at the 10 ms CPU limit ([Plan limits](cost.md#plan-limits)).
 
-The figure that binds a site is the write ceiling, 117 to 119 MiB of wasm ([Memory limits: the three figures](limits.md#memory-limits-the-three-figures)). On a blocks checkout, the order POST takes 9.3 to 11.8 s ([WooCommerce checkout on Hyperdrive is slow](limits.md#woocommerce-checkout-on-hyperdrive-is-slow-1218)).
+The figure that binds a site is the write ceiling, 117 to 119 MiB of wasm ([Memory limits: the three figures](limits.md#memory-limits-the-three-figures)). On a blocks checkout, the order POST takes 9.3 to 11.8 s ([WooCommerce checkout on Hyperdrive is slow](limits.md#woocommerce-checkout-on-hyperdrive-is-slow-1218-1210)).
 
 ## The manual for your path
 

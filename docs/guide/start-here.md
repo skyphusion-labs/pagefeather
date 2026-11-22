@@ -105,6 +105,18 @@ Keep this password safe. The folder `deploy/terraform/terraform.tfstate.d/` hold
 
 To use your own domain, deploy again with `CUSTOM_DOMAIN=www.example.com` ([full reference](../../deploy/README.md#options)).
 
+## Remove a site
+
+**This deletes the site and everything in it, and it cannot be undone.** It deletes the site's Worker and its database (every post, page, order and user), the bucket with your uploaded images and files, and the site's secrets. If you want to keep your content, make a copy first ([full reference](../../deploy/README.md#remove-a-site-safely)).
+
+From the `pagefeather` folder you cloned, with the same two `export` lines from step 4 in place:
+
+```sh
+NAME=my-site ./deploy/destroy.sh
+```
+
+Before it deletes anything, it checks that `my-site` is a site this folder made. After it, your site's address answers "not found".
+
 ## 3. What are my limits?
 
 Each line has its measured figure and a link to the evidence.
