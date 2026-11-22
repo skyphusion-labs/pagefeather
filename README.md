@@ -42,10 +42,12 @@ page tells you which is which.
   reads ran at about 26 to 30 requests a second per site with a p50 near 200 ms. That figure is a
   lower bound set by the test client ([docs/load-152.md](docs/load-152.md), 2026-11-08), and it is
   20 to 100 times the uncached rate.
-- **WooCommerce for low-to-moderate stores, on b-dosql.** Cart, checkout, the admin and logged-in
-  pages are never cached, so each of them runs PHP in the site's one Durable Object. That path
-  handles about 5 requests a second per site ([docs/perf-dosql.md](docs/perf-dosql.md), "What sets
-  b-dosql's limit"). If your store has real concurrent traffic, approach A is the better fit.
+- **WooCommerce on b-dosql is for a light storefront; real stores use approach A on Hyperdrive.**
+  Cart, checkout, the admin and logged-in pages are never cached, so each of them runs PHP in the
+  site's one Durable Object. Under load, that object's isolate runs out of memory and resets: 43
+  resets and 49 lost writes per 1000 requests on our load harness (`cf759a`, 2026-11-22). The levers tried so far
+  did not fix it, so it is a tracked limit
+  ([docs/known-limitations.md](docs/known-limitations.md), #1022).
 - **Approach A runs WordPress and WooCommerce on Workers Paid, and it scales out across isolates.**
   The WordPress wp suite is 18 of 18, and routes.py had 0 failures, on `cf759hw`
   ([docs/results.md](docs/results.md), the `cf759hw` wp and routes rows, 2026-11-20). WooCommerce
