@@ -128,9 +128,10 @@ export function createTickMail({ handoff, lostWrites, log = () => {}, seen = nul
 					}
 				}
 				log({ '@event': 'email-handoff', m: 'email-handoff', as_action, lostWrites: lost, ...(r === 'bounded' ? { bounded: true } : {}), ...(sendFailed ? { sendFailed } : {}) });
-				// #1135: PHP hears a binding refusal (wp_mail returns false and fires wp_mail_failed); it is still retried
-				// (#1057). A recipient the pre-check refuses never reaches here (index.js emailOp).
-				if (sendFailed) return { ok: true, queued: true, refused: sendFailed, of: Number.isInteger(r.of) && r.of > 0 ? r.of : sendFailed, reason: typeof r.reason === 'string' ? r.reason : null, retry: true };
+				// #1135: PHP hears a binding refusal (wp_mail returns false and fires wp_mail_failed). A transient one is
+				// retried (#1057). #1138: a permanent one is already dead-lettered, and the reply says retry false.
+				// A recipient the pre-check refuses never reaches here (index.js emailOp).
+				if (sendFailed) return { ok: true, queued: true, refused: sendFailed, of: Number.isInteger(r.of) && r.of > 0 ? r.of : sendFailed, reason: typeof r.reason === 'string' ? r.reason : null, retry: r.retry !== false };
 				return { ok: true, queued: true };
 			} catch (e) {
 				counts.failed++;

@@ -4,7 +4,8 @@
 // for Site Health). The alarm drain respects next-try, and a message is never sent twice.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RETRY_PREFIX, DEAD_PREFIX, BACKOFF_MS, MAX_ATTEMPTS, failureRecords, drainRetries, retryKey } from '../email-retry.mjs';
+import { readFileSync } from 'node:fs';
+import { RETRY_PREFIX, DEAD_PREFIX, BACKOFF_MS, MAX_ATTEMPTS, failureRecords, drainRetries, retryKey, permanentRefusal, storeFirstFailures } from '../email-retry.mjs';
 
 const MIN = 60_000;
 test('the backoff is 1, 5, 30 minutes, then hourly; the cap is 7 attempts in all (the first send and 6 retries)', () => {
@@ -32,6 +33,7 @@ function store(entries = []) {
 	return {
 		m,
 		async list({ prefix }) { return new Map([...m].filter(([k]) => k.startsWith(prefix))); },
+		async get(k) { return m.has(k) ? structuredClone(m.get(k)) : undefined; },
 		async put(k, v) { m.set(k, structuredClone(v)); },
 		async delete(k) { m.delete(k); },
 	};
@@ -159,4 +161,73 @@ test('#1062 review: a LIVE retry keeps the message only within the retry window;
 });
 test('#1062 review: scrub removes addresses and URLs from an error', () => {
 	assert.equal(scrub('to a.b@c.org via https://x.y/z?key=1 failed'), 'to [address] via [url] failed');
+});
+
+// #1138: a destination the send_email binding will not accept cannot succeed on retry. Dead-letter it on the first
+// failure (one email-dead, the #1062 metadata record). A transient refusal, and anything unknown, is still retried.
+test('#1138 a permanent refusal is dead-lettered on its first failure, and a transient one is still retried', async () => {
+	const now = 1_000_000;
+	const failures = [
+		{ email: { to: ['customer@shop.example'], subject: 'Password Reset', message: 'secret body', headers: '' }, to: 'customer@shop.example', error: 'email to customer@shop.example not allowed' },
+		{ email: { to: ['buyer@shop.example'], subject: 'Order', message: 'hi', headers: '' }, to: 'buyer@shop.example', error: 'rate limited' },
+		{ email: { to: ['other@shop.example'], subject: 'Hi', message: 'm', headers: '' }, to: 'other@shop.example', error: 'Recipient not allowed', code: 'E_RECIPIENT_NOT_ALLOWED' },
+		{ email: { to: ['z@shop.example'], subject: 'Z', message: 'm', headers: '' }, to: 'z@shop.example', error: 'something the classifier has not seen' },
+		{ email: { to: ['s@shop.example'], subject: 'S', message: 'm', headers: '' }, to: 's@shop.example', error: 'sender refused', code: 'E_SENDER_NOT_VERIFIED' },
+		{ email: { to: ['w@shop.example'], subject: 'W', message: 'm', headers: '' }, to: 'w@shop.example', error: 'setup in progress', code: 'E_EMAIL_SENDING_NOT_READY' },
+	];
+	const events = [];
+	const s = store();
+	const out = await storeFirstFailures({ storage: s, failures, now, log: (e) => events.push(e) });
+	assert.equal(out.dead, 3, 'allowlist text, E_RECIPIENT_NOT_ALLOWED and E_SENDER_NOT_VERIFIED are dead on the first failure');
+	assert.equal(events.length, 3, 'one email-dead event per permanent refusal');
+	assert.ok(events.every((e) => e['@event'] === 'email-dead' && e.m === 'email-dead' && e.reason === 'permanent' && e.attempts === 1));
+	const dead = [...s.m.entries()].filter(([k]) => k.startsWith(DEAD_PREFIX));
+	assert.equal(dead.length, 3);
+	const dump = JSON.stringify(dead) + JSON.stringify(events);
+	for (const secret of ['customer@shop.example', 'secret body', 'Password Reset']) {
+		assert.ok(!dump.includes(secret), 'not kept: ' + secret);
+	}
+	const [, meta] = dead.find(([, v]) => v.lastError && v.lastError.includes('[address]'));
+	assert.equal(meta.reason, 'permanent');
+	assert.equal(meta.attempts, 1);
+	assert.equal(meta.domain, 'shop.example');
+	assert.equal(meta.expiresAt, meta.deadAt + DEAD_TTL_MS);
+	assert.deepEqual(Object.keys(meta).sort(), ['attempts', 'deadAt', 'domain', 'expiresAt', 'firstAt', 'lastError', 'reason', 'subjectHash'].sort());
+	assert.equal([...s.m.keys()].filter((k) => k.startsWith(RETRY_PREFIX)).length, 3, 'rate limit, unknown, and E_EMAIL_SENDING_NOT_READY stay retries');
+	assert.equal(permanentRefusal('email to customer@shop.example not allowed'), true);
+	assert.equal(permanentRefusal('email to [address] not allowed'), true);
+	assert.equal(permanentRefusal({ code: 'E_RECIPIENT_NOT_ALLOWED', message: 'Recipient not allowed' }), true);
+	assert.equal(permanentRefusal({ code: 'E_SENDER_NOT_VERIFIED', message: 'sender refused' }), true);
+	assert.equal(permanentRefusal('not allowed'), false, 'a bare "not allowed" is unknown, so it stays transient');
+	assert.equal(permanentRefusal({ code: 'E_EMAIL_SENDING_NOT_READY', message: 'setup in progress' }), false);
+	assert.equal(permanentRefusal('something the classifier has not seen'), false);
+	assert.equal(permanentRefusal(''), false);
+	assert.equal(permanentRefusal(undefined), false);
+	const sent = [];
+	await drainRetries({ storage: s, now: now + MIN, send: async (e) => sent.push(e.to[0]), log: () => {} });
+	assert.deepEqual(sent.sort(), ['buyer@shop.example', 'w@shop.example', 'z@shop.example']);
+	assert.equal([...s.m.keys()].filter((k) => k.startsWith(DEAD_PREFIX)).length, 3, 'the dead letters were not sent');
+	const again = await storeFirstFailures({ storage: s, failures: [failures[0]], now: now + 10, log: (e) => events.push(e) });
+	assert.equal(again.dead, 0);
+	assert.equal(events.length, 3, 'a second report of the same refusal does not emit a second email-dead');
+	// A record already in the retry store (an earlier failure looked transient) stops at once if the binding then
+	// refuses it as permanent. It is not pushed to the next backoff.
+	const [[k, r]] = failureRecords([{ email: { to: ['a@x.test'], subject: 's', message: 'm' }, to: 'a@x.test', error: 'timeout' }], now);
+	const s2 = store([[k, r]]);
+	const ev2 = [];
+	await drainRetries({
+		storage: s2,
+		now: now + MIN,
+		send: async () => { const e = new Error('email to a@x.test not allowed'); e.code = 'E_RECIPIENT_NOT_ALLOWED'; throw e; },
+		log: (ev) => ev2.push(ev),
+	});
+	assert.equal([...s2.m.keys()].filter((x) => x.startsWith(RETRY_PREFIX)).length, 0);
+	assert.equal([...s2.m.keys()].filter((x) => x.startsWith(DEAD_PREFIX)).length, 1);
+	assert.equal(ev2.filter((e) => e.m === 'email-dead' && e.reason === 'permanent').length, 1);
+	assert.equal(ev2.filter((e) => e.m === 'email-retry').length, 0);
+	assert.ok(!JSON.stringify([...s2.m.values()]).includes('a@x.test'));
+});
+test('#1138 index.js stores a first failure through storeFirstFailures', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /storeFirstFailures\(/);
 });

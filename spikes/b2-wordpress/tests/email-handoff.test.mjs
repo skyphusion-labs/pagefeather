@@ -443,7 +443,7 @@ test('#1088 B: a plain numeric handoff result (the old shape) still counts as be
 });
 test('#1088 B index.js: each failed recipient is logged with its reason (scrubbed) and domain; the tick handoff passes sendFailed', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	assert.match(src, /'@event': 'email-send-failed', m: 'email-send-failed', reason: scrub\(f\.error\), domain: domainOfAddress\(f\.to\),(?: ms: f\.ms,)? retry: 'queued'/);
+	assert.match(src, /'@event': 'email-send-failed', m: 'email-send-failed', reason: scrub\(f\.error\), domain: domainOfAddress\(f\.to\),(?: ms: f\.ms,)? retry: permanentRefusal\(f\.code \? \{ code: f\.code, message: f\.error \} : f\.error\) \? 'dead' : 'queued'/);
 	assert.match(src, /const sp = sendListOutcome\(env, \[email\]\);/);
 	assert.match(src, /return \{ sent: o\.sent, sendFailed: o\.failed[,}]/);
 });
@@ -462,14 +462,18 @@ test('#1135 a refused send: the reply to PHP says refused, of how many, and why;
 test('#1135 the tick handoff passes the outcome on: index.js tickMailFor returns of and reason, and sendListOutcome scrubs the reason', async () => {
 	const { readFileSync } = await import('node:fs');
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	assert.match(src, /return \{ sent: o\.sent, sendFailed: o\.failed, of: o\.sent \+ o\.failed, reason: o\.reason \};/);
-	assert.match(src, /return \{ sent: rs\.length - failures\.length, failed: failures\.length, reason: failures\.length \? scrub\(failures\[0\]\.error\) : null \};/);
+	assert.match(src, /return \{ sent: o\.sent, sendFailed: o\.failed, of: o\.sent \+ o\.failed, reason: o\.reason, retry: o\.retry \};/);
+	assert.match(src, /return \{ sent: rs\.length - failures\.length, failed: failures\.length, reason: failures\.length \? scrub\(failures\[0\]\.error\) : null, retry: failures\.length \? retry : undefined \};/);
 });
 
 // #1135 (the lead's ruling (a)) with #198 folded in: ONE pre-check, in the email op, before anything is queued. A
 // recipient #198 calls undeliverable, or one outside MAIL_ALLOWED_TO (the binding's own allowlist), is refused there:
 // never queued, never sent, never retried. PHP hears it (wp_mail false, wp_mail_failed, retry false). The leg counts
 // each class. A binding refusal of a recipient that passed the pre-check is still the #1057 retry path (retry true).
+test('#1138 a handoff that dead-lettered the refusal tells PHP retry is false', async () => {
+	const tm = createTickMail({ handoff: async () => ({ sent: 0, sendFailed: 1, of: 1, reason: 'email to [address] not allowed', retry: false }), lostWrites: () => 0 });
+	assert.deepEqual(await tm.op({ to: ['customer@shop.example'], subject: 'Password Reset', message: 'm' }), { ok: true, queued: true, refused: 1, of: 1, reason: 'email to [address] not allowed', retry: false });
+});
 test('#1135 the tick op: a binding refusal says retry true; the counters for the pre-check classes exist', async () => {
 	const tm = createTickMail({ handoff: async () => ({ sent: 0, sendFailed: 1, of: 1, reason: 'quota' }), lostWrites: () => 0 });
 	assert.deepEqual(await tm.op({ to: ['a@skyphusion.org'], subject: 's', message: 'm' }), { ok: true, queued: true, refused: 1, of: 1, reason: 'quota', retry: true });
