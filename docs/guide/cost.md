@@ -30,6 +30,10 @@ The per-plan Cloudflare limits that decide the matrix in the root [README](../..
 | Container instance types | Not available | lite (1/16 vCPU, 256 MiB) to standard-4 (4 vCPU, 12 GiB) | [Containers limits](https://developers.cloudflare.com/containers/platform/limits/) |
 | Container snapshots | Not available | 20 GB maximum, kept 30 days from creation or last restore | [Containers limits](https://developers.cloudflare.com/containers/platform/limits/), [snapshots](https://developers.cloudflare.com/containers/guides/snapshots/) |
 
+## The MySQL option: the database server
+
+The MySQL option runs on Workers Paid ($5 a month) and needs a MySQL server, which you pay for separately. A database box made by `MYSQL=vultr` is $10 a month, billed by the hour: a Vultr `vc2-1c-2gb` box with 1 vCPU and 2 GB ([`deploy/mysql/variables.tf`](../../deploy/mysql/variables.tf), [full reference](../../deploy/README.md#variant-a-php-in-the-worker-mysql-through-hyperdrive-workers-paid)). Any other MySQL server is your own bill.
+
 ## Cost of a pagefeather Workers for Platforms account
 
 A pagefeather Workers for Platforms account costs $30 a month for two or more sites. That is the Workers for Platforms Paid plan ($25) plus the Workers Paid plan ($5). The reference account runs both. The Workers for Platforms price includes 20 million requests, then $0.30 per million. It includes 60 million CPU ms, then $0.02 per million. It includes 1,000 namespace scripts, then $0.02 each. Another site at rest costs about $0, up to the 1,000 included scripts.

@@ -1,48 +1,32 @@
 # Pagefeather
 
-**WordPress and WooCommerce on Cloudflare's edge.** Approach A uses your MySQL. b-dosql needs no database box.
+**WordPress and WooCommerce on Cloudflare, in your own Cloudflare account.**
 
-Before 2026-11-13, the name of this repository was `wordpress-on-cloudflare`.
+This is for you if you build WordPress sites, for yourself or for clients, and you are tired of looking after a WordPress server.
 
-Welcome. If you build WordPress sites, for yourself or for clients, and you are tired of looking
-after a WordPress VPS, this project is for you. It is also for edge and serverless developers who
-want to see how far WordPress can go on Cloudflare.
+**New here? [Start here](docs/guide/start-here.md):** how to install a site, how to log in, and what the limits are, on one page. Before you build, please read the [known limitations](docs/guide/limits.md).
 
-**New here? [Start here](docs/guide/start-here.md).** One page: how to install a site, how to log in, and what the limits are.
+## Two ways to run a site
 
-Pagefeather is a framework for WordPress on Cloudflare. There are two supported ways to run a site.
+| | Workers Free | Workers Paid ($5 a month) |
+| --- | --- | --- |
+| **The built-in database option.** The database lives inside Cloudflare, next to the site. You need no MySQL server. | WordPress, and a light shop. Editing a WooCommerce store does not fit Free's memory ([#638](https://github.com/skyphusion-labs/pagefeather/issues/638)). | WordPress, and a light shop. [Start here](docs/guide/start-here.md). |
+| **The MySQL option.** The site uses a MySQL server that you run somewhere else. It is for a real WooCommerce store. | No: the installer stops at Free's CPU limit. | WordPress and a real store. [Onboarding](docs/guide/onboarding.md). You also pay for the MySQL server. |
 
-**Approach A.** PHP-WASM (PHP compiled to WebAssembly) runs in a Worker. The database is an external
-MySQL server, reached through Hyperdrive. This path runs on the Workers Paid plan. You deploy it
-with `deploy/deploy.sh`.
+Many sites on one account use Workers for Platforms: $30 a month for two or more sites ([cost](docs/guide/cost.md#cost-of-a-pagefeather-workers-for-platforms-account)).
 
-**b-dosql.** PHP and its SQLite database run inside one Durable Object (one Cloudflare object that
-keeps the site's state). You can run one site on a Workers Paid or Workers Free account. You deploy
-that site with `deploy/deploy.sh` (`VARIANT=b-dosql`). You can also run many sites on Workers for
-Platforms. You deploy those sites with `deploy/wfp`. Workers for Platforms adds many sites in one
-namespace, and the site manager (`deploy/wfp/site`). A Workers for Platforms account costs $30 a
-month for two or more sites ([docs/guide/cost.md](docs/guide/cost.md)). That is the Workers for
-Platforms Paid plan ($25) plus the Workers Paid plan ($5).
+With the built-in database option, one site handles about 5 requests a second for work the cache cannot answer ([evidence](docs/perf-dosql.md#what-sets-b-dosqls-limit)). Pages from the cache do not count toward that.
 
-On Workers Free, b-dosql runs plain WordPress and a light storefront only. Editing a WooCommerce store does not
-fit Free's memory
-([#638](https://github.com/skyphusion-labs/pagefeather/issues/638); the **B with WooCommerce** row
-below). One Durable Object per site means one writer, one region, and about 5 requests a second
-for work the cache cannot answer
-([docs/perf-dosql.md](docs/perf-dosql.md), "What sets b-dosql's limit").
+**For engineers:** the built-in database option is `b-dosql` (PHP and its SQLite database in one Durable Object). The MySQL option is approach A (PHP-WASM in a Worker, MySQL through Hyperdrive). The rest of this page uses those names. The research behind both designs is below, so you can see what we measured and what we did not.
 
-The repository also holds the research behind both designs (the matrix below), so you can see what
-we measured and what we did not.
-
-This is a young project. Some parts are measured and solid, and some are still being built. This
-page tells you which is which.
+This is a young project. Some parts are measured and solid, and some are still being built. This page tells you which is which. Before 2026-11-13, the name of this repository was `wordpress-on-cloudflare`.
 
 ## What it does well today, and where it stops
 
 - **WordPress sites, including high-traffic ones, served from the edge.** When a visitor is logged
   out, the page comes from the edge page cache and never reaches PHP. In our load test, cached
   reads ran at about 26 to 30 requests a second per site with a p50 near 200 ms. That figure is a
-  lower bound set by the test client ([docs/load-152.md](docs/load-152.md), 2026-11-08), and it is
+  lower bound set by the test client ([evidence](docs/load-152.md), 2026-11-08), and it is
   20 to 100 times the uncached rate.
 - **WooCommerce on b-dosql is for a light storefront; real stores use approach A on Hyperdrive.**
   Cart, checkout, the admin and logged-in pages are never cached, so each of them runs PHP in the
@@ -52,7 +36,7 @@ page tells you which is which.
   ([docs/guide/limits.md](docs/guide/limits.md), #1022).
 - **Approach A runs WordPress and WooCommerce on Workers Paid, and it scales out across isolates.**
   The WordPress wp suite is 18 of 18, and routes.py had 0 failures, on `cf759hw`
-  ([docs/results.md](docs/results.md), the `cf759hw` wp and routes rows, 2026-11-20). WooCommerce
+  ([evidence](docs/results.md), the `cf759hw` wp and routes rows, 2026-11-20). WooCommerce
   `tests/woo.py` is 12 of 12, three runs in a row (row `A (12/12, the full stack, #218)`, 2026-11-09). At 50 concurrent
   users, Cloudflare started up to 118 isolates (row `A vs b-dosql (concurrency)`, 2026-11-09). You
   need an external MySQL server. A first request on a cold isolate is slow: it costs 3 to 9 s more
@@ -86,25 +70,26 @@ Cart, checkout, account and logged-in pages are never cached, so they run PHP ev
 
 If you come from cPanel or a LAMP server, follow [Start here](docs/guide/start-here.md): the same install, step by step. The commands below are the engineering version; every setting is in the [full reference](deploy/README.md).
 
-### b-dosql on Workers Paid or Free, with deploy/deploy.sh
+### The built-in database option: one site (`deploy/deploy.sh`)
 
 You need a Cloudflare account on **Workers Paid** or **Workers Free**. Workers Paid is $5 a month
-([docs/guide/cost.md](docs/guide/cost.md), read 2026-11-06). The commands below are the
-`VARIANT=b-dosql` flow in [deploy/README.md](deploy/README.md). One command makes the site,
-installs WordPress and measures it. b-dosql has no D1 database. The database is the Durable
-Object's own SQLite ([deploy/README.md](deploy/README.md), variant `b-dosql`).
+([docs/guide/cost.md](docs/guide/cost.md), read 2026-11-06). Step by step, with every command
+checked on a fresh machine: [Start here](docs/guide/start-here.md). The short version is below, and
+every setting is in the [full reference](deploy/README.md#variant-b-dosql-the-database-in-the-php-object).
+One command makes the site, installs WordPress and measures it. The database is the site object's
+own SQLite, so there is no separate database.
 
 On Workers Free, b-dosql runs plain WordPress and a light storefront only. Shop, cart and checkout work.
 Editing a WooCommerce store does not fit Free's memory, so use Workers Paid to edit a store
 ([#638](https://github.com/skyphusion-labs/pagefeather/issues/638); the **B with WooCommerce** row
-in [What runs on which plan](#what-runs-on-which-plan)).
+in [What runs on which plan](#what-runs-on-which-plan), in the engineering half).
 
 One Durable Object holds the site. That is one writer, one region, and about 5 requests a second
 for work the cache cannot answer
-([docs/perf-dosql.md](docs/perf-dosql.md), "What sets b-dosql's limit").
+([evidence](docs/perf-dosql.md#what-sets-b-dosqls-limit)).
 
 DO WordPress on Paid (`cf759p`) and DO WordPress on Free (`cf759f`), in the results below, are
-`deploy/deploy.sh` sites ([docs/results.md](docs/results.md), the 2026-11-20 rows). `cf759a` is
+`deploy/deploy.sh` sites ([evidence](docs/results.md), the 2026-11-20 rows). `cf759a` is
 the Workers for Platforms site.
 
 ```sh
@@ -122,7 +107,7 @@ NAME=my-site ./deploy/destroy.sh
 ```
 
 The script prints the site address. The admin password is a Terraform output
-([deploy/README.md](deploy/README.md)):
+([Start here, step 5](docs/guide/start-here.md#step-5-get-your-admin-password)):
 
 ```sh
 cd deploy/terraform && terraform workspace select my-site && terraform output -raw admin_password
@@ -130,9 +115,10 @@ cd deploy/terraform && terraform workspace select my-site && terraform output -r
 
 A later deploy that would delete the media bucket is refused. To delete that bucket and every
 upload in it on purpose, set `DESTROY_MEDIA=1`
-([deploy/README.md](deploy/README.md), `MEDIA` and `DESTROY_MEDIA`).
+([full reference](deploy/README.md#options), `MEDIA` and `DESTROY_MEDIA`). What removing a site
+deletes, and that it cannot be undone: [Remove a site](docs/guide/start-here.md#remove-a-site).
 
-### b-dosql on Workers for Platforms, with deploy/wfp
+### Many sites on one account (`deploy/wfp`)
 
 > **We have not yet run this end to end from a fresh clone.** The commands below are the
 > `deploy/wfp` flow in [docs/guide/operator.md](docs/guide/operator.md), the same flow the isolation proofs
@@ -162,17 +148,19 @@ first boot. The admin user is `admin`; its password is a Terraform output (docs/
 the command).
 
 Coming from a LAMP host? [docs/guide/from-lamp.md](docs/guide/from-lamp.md) is written for you:
-it maps the jobs you already do onto this stack, so read it first. Every document is indexed in
-[docs/](docs/README.md).
+it maps the jobs you already do onto this stack, so read it first. Every guide page is in the
+[guide index](docs/guide/README.md), and every document is in the [docs map](docs/README.md).
 
-### Approach A, with deploy/deploy.sh
+### The MySQL option: a real store (`deploy/deploy.sh`, variant `a`)
 
 You need a Cloudflare account on the **Workers Paid** plan, and an external MySQL server. On
-Workers Free this path stops at the CPU limit. The commands below are the variant `a` flow in
-[deploy/README.md](deploy/README.md). One command makes the site, installs WordPress and measures
-it. The Workers Paid plan is $5 a month
+Workers Free this path stops at the CPU limit. A step-by-step page for this option is not written
+yet (#1365); start with [Onboarding](docs/guide/onboarding.md). The commands below are the variant `a`
+flow, and every setting is in the
+[full reference](deploy/README.md#variant-a-php-in-the-worker-mysql-through-hyperdrive-workers-paid).
+One command makes the site, installs WordPress and measures it. The Workers Paid plan is $5 a month
 ([docs/guide/cost.md](docs/guide/cost.md), read 2026-11-06). You also pay for the MySQL server.
-A `MYSQL=vultr` box is $10 a month ([deploy/README.md](deploy/README.md)).
+A `MYSQL=vultr` box is $10 a month ([cost](docs/guide/cost.md#the-mysql-option-the-database-server)).
 
 ```sh
 export CLOUDFLARE_API_TOKEN=...   # Workers Scripts, D1 (and R2 if MEDIA=1)
@@ -196,7 +184,7 @@ NAME=my-site ./deploy/destroy.sh
 ```
 
 The script prints the site address. The admin password is a Terraform output
-([deploy/README.md](deploy/README.md)):
+([Start here, step 5](docs/guide/start-here.md#step-5-get-your-admin-password)):
 
 ```sh
 cd deploy/terraform && terraform workspace select my-site && terraform output -raw admin_password
@@ -210,7 +198,7 @@ The [support matrix](docs/support-matrix.md) lists each WordPress and WooCommerc
 
 - **On b-dosql, one Durable Object per site:** one writer, one region, and one request at a time for anything
   the cache cannot answer. That is about 5 uncached requests a second; past that the queue grows,
-  and at about 100 clients the object refuses ([docs/perf-dosql.md](docs/perf-dosql.md)).
+  and at about 100 clients the object refuses ([evidence](docs/perf-dosql.md#what-sets-b-dosqls-limit)).
 - **A cached product page can show an old stock number.** A logged-out product page is cached for
   120 s (`PAGE_CACHE_TTL`). A checkout that lowers the stock number does not clear that copy. We
   measured it on a b-dosql store ([#628](https://github.com/skyphusion-labs/pagefeather/issues/628),
@@ -249,6 +237,21 @@ The [support matrix](docs/support-matrix.md) lists each WordPress and WooCommerc
   CPU ms, then $0.02 per million. It includes 1,000 namespace scripts, then $0.02 each. Another
   site at rest costs about $0, up to the 1,000 included scripts. Approach A is Workers Paid ($5 a month
   on that page) plus the MySQL server you run.
+
+## Cost
+
+One b-dosql site on Workers Paid is $5 a month
+([docs/guide/cost.md](docs/guide/cost.md), read 2026-11-06). You deploy that site with
+`deploy/deploy.sh`. The bill below is a Workers for Platforms account, for many sites.
+
+A pagefeather Workers for Platforms account costs $30 a month for two or more sites. That is the Workers for Platforms Paid plan ($25) plus the Workers Paid plan ($5). The reference account runs both. The Workers for Platforms price includes 20 million requests, then $0.30 per million. It includes 60 million CPU ms, then $0.02 per million. It includes 1,000 namespace scripts, then $0.02 each. Another site at rest costs about $0, up to the 1,000 included scripts. Durable Object storage, R2 media, and KV stay inside a free or included tier at rest. Traffic is metered on top. Cloudflare's WfP pricing page does not say whether Workers Paid is strictly required, so plan for both.
+
+Approach A is a different bill. It runs on Workers Paid, which is $5 a month
+([docs/guide/cost.md](docs/guide/cost.md), read 2026-11-06). You also pay for the MySQL server.
+A `MYSQL=vultr` box is $10 a month ([cost](docs/guide/cost.md#the-mysql-option-the-database-server)). Any other MySQL server
+is your own bill.
+
+Full cost line items and the per-plan limit table that decides the matrix above: [docs/guide/cost.md](docs/guide/cost.md).
 
 ## The research
 
@@ -295,21 +298,6 @@ Browser Run is the default suite browser for wp and wc. It is not valid for the 
 
 - **Transactions.** `b-do` (D1) has no cross-call `ROLLBACK`; `b-dosql`, `c1`, `a` and `a2` do. Code that relies on `ROLLBACK` (WooCommerce, some plugins, upgrades) must not run on `b-do`. See [approach-b.md](docs/approach-b.md).
 - **One run is not a number.** The same build moved up to 15% between runs, and `a` served 18.7 requests a second in one load matrix and 8.63 in another. So we bracket every comparison here (the same build with the change off, on, and off again) or repeat it across starts; we never quote a single run as the number for a variant.
-
-## Cost
-
-One b-dosql site on Workers Paid is $5 a month
-([docs/guide/cost.md](docs/guide/cost.md), read 2026-11-06). You deploy that site with
-`deploy/deploy.sh`. The bill below is a Workers for Platforms account, for many sites.
-
-A pagefeather Workers for Platforms account costs $30 a month for two or more sites. That is the Workers for Platforms Paid plan ($25) plus the Workers Paid plan ($5). The reference account runs both. The Workers for Platforms price includes 20 million requests, then $0.30 per million. It includes 60 million CPU ms, then $0.02 per million. It includes 1,000 namespace scripts, then $0.02 each. Another site at rest costs about $0, up to the 1,000 included scripts. Durable Object storage, R2 media, and KV stay inside a free or included tier at rest. Traffic is metered on top. Cloudflare's WfP pricing page does not say whether Workers Paid is strictly required, so plan for both.
-
-Approach A is a different bill. It runs on Workers Paid, which is $5 a month
-([docs/guide/cost.md](docs/guide/cost.md), read 2026-11-06). You also pay for the MySQL server.
-A `MYSQL=vultr` box is $10 a month ([deploy/README.md](deploy/README.md)). Any other MySQL server
-is your own bill.
-
-Full cost line items and the per-plan limit table that decides the matrix above: [docs/guide/cost.md](docs/guide/cost.md).
 
 ## More
 
