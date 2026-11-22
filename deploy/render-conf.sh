@@ -126,7 +126,7 @@ render_conf() {
   case "$VARIANT" in b-dosql|b-do) dosql_mem_vars || return 1 ;; esac
   [ "$VARIANT" != a ] || a_overflow_vars
   [ "$VARIANT" != a ] || a_cron_vars
-  # #1310 route (b), rollins's engine half: on a namespace script no Cron Trigger fires, so each isolate kicks the cron
+  # #1310 route (b), rollins's engine half (#1325): on a namespace script no Cron Trigger fires, so each isolate kicks the cron
   # object on its first site request and the object re-arms itself by alarm. deploy.sh's site keeps its Cron Trigger
   # and never gets it.
   if [ "${RENDER_WFP:-0}" = 1 ] && a_cron_on; then echo 'CRON_SELF_TICK = "on"'; fi
