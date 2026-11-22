@@ -94,7 +94,7 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 
 ## WooCommerce
 
-**On b-dosql (Free DO, Paid DO, WfP), WooCommerce is for a light storefront.** Under load the site's Durable Object isolate runs out of memory and resets, and writes in flight can be lost. That is a tracked limit with measured counts in [known-limitations.md](known-limitations.md) (#1022). A real store uses approach A on Hyperdrive.
+**On b-dosql (Free DO, Paid DO, WfP), WooCommerce is for a light storefront.** Under load the site's Durable Object isolate runs out of memory and resets, and writes in flight can be lost. That is a tracked limit with measured counts in [guide/limits.md](guide/limits.md) (#1022). A real store uses approach A on Hyperdrive.
 
 | feature | Free DO | Paid DO | WfP | Hyperdrive |
 |---|---|---|---|---|
@@ -206,7 +206,7 @@ A logged-out product, shop or category page comes from the edge cache. A checkou
   - The 60 s worst case after a quiet spell comes from the headers (`max-age=30, stale-while-revalidate=30`, `page-cache-ttl.mjs`). It is not measured.
 - **What stays safe:** checkout always reads the real stock, so the store never sells more than it has. When a product sells out, its page is cleared.
 
-A store that shows exact stock numbers can use a lower `PAGE_CACHE_PRODUCT_TTL` (5 to 600 s). See [Stock numbers on cached pages](from-lamp-to-wfp.md#stock-numbers-on-cached-pages).
+A store that shows exact stock numbers can use a lower `PAGE_CACHE_PRODUCT_TTL` (5 to 600 s). See [Stock numbers on cached pages](guide/from-lamp.md#stock-numbers-on-cached-pages).
 
 ### PDF invoices worked on one-click only (#765, fixed)
 
@@ -258,13 +258,13 @@ WooCommerce creates each product in a batch with about 130 database queries, one
 
 ### Semantic search: the plugin side is closed upstream, not measured here
 
-The `vectorize-search` descriptor is opt-in. The search engine is the skyphusion-ai plugin. Its token-free bridge path is closed upstream (skyphusion-ai#193, completed 2026-11-12), but no Pagefeather run has measured a search through it, so the cell stays limited. See [known-limitations.md](known-limitations.md).
+The `vectorize-search` descriptor is opt-in. The search engine is the skyphusion-ai plugin. Its token-free bridge path is closed upstream (skyphusion-ai#193, completed 2026-11-12), but no Pagefeather run has measured a search through it, so the cell stays limited. See [guide/limits.md](guide/limits.md).
 
 ### Plugins and themes are not installed from wp-admin (by design)
 
 WordPress, its plugins and its themes run from the Worker's code bundle. The bundle is read-only at run time: a site has no writable disk to install into. So plugins and themes ship in the build, pinned by content hash, and a change is a code deploy (#458).
 
-To make that plain in wp-admin, every site is code-locked. `wp-config.php` sets `DISALLOW_FILE_MODS` and `DISALLOW_FILE_EDIT`, so the install, update and editor screens are off. See [from-lamp-to-wfp.md](from-lamp-to-wfp.md).
+To make that plain in wp-admin, every site is code-locked. `wp-config.php` sets `DISALLOW_FILE_MODS` and `DISALLOW_FILE_EDIT`, so the install, update and editor screens are off. See [guide/from-lamp.md](guide/from-lamp.md).
 
 No user has the `install_plugins` capability, so the WordPress and WooCommerce screens that recommend plugins to install stay empty. WooCommerce's Marketing > Overview shows no Channels card: `wc-admin/marketing/recommendations` needs `install_plugins` (`MarketingRecommendations.php:76`) and answers 403. Measured on `cf759a`, 2026-11-20; the conformance runs exclude that one test with this reason (#1044).
 

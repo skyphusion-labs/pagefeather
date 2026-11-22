@@ -12,7 +12,7 @@ TWO kinds of namespace WordPress site, driven through ONE idempotent code path:
 - `a` (approach A, #218/#241): PHP-WASM in the Cloudflare WORKER (not a Durable
   Object), with the database on EXTERNAL managed MySQL reached through a
   `HYPERDRIVE` binding. Proven to run full WooCommerce under the measured write
-  ceiling (117 to 119 MiB of wasm; see [memory limits](../../docs/known-limitations.md#memory-limits-the-three-figures)), with no container. The entry is `index-a-lean.js` (the lean MySQL client);
+  ceiling (117 to 119 MiB of wasm; see [memory limits](../../docs/guide/limits.md#memory-limits-the-three-figures)), with no container. The entry is `index-a-lean.js` (the lean MySQL client);
   the bundle is built with `ENGINE=a WOO=1 ./build.sh` plus a precompiled OPcache.
 
 `provisionSite` runs the SAME sequence for both (bucket, optional KV namespaces,

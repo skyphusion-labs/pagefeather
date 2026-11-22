@@ -29,7 +29,7 @@ The [guide](../guide/README.md) helps you pick a path and run a site. The [docs 
 
 ## Designs
 
-- [Reference deployment](../reference-wfp.md). A design draft from 2026-11-06 for a Workers for Platforms operator (issue #35). The day-one steps are in [Run WordPress sites on your own Workers for Platforms account](../operator.md).
+- [Reference deployment](../reference-wfp.md). A design draft from 2026-11-06 for a Workers for Platforms operator (issue #35). The day-one steps are in [Run WordPress sites on your own Workers for Platforms account](../guide/operator.md).
 - [Durable email retry](../async-email-durable-retry.md). Durable retry for outgoing email through Queues. It is opt-in.
 - [Vectorize search](../vectorize-search.md). Opt-in semantic search. It is not measured end to end.
 - [Admin lever](../design-394-admin-lever.md). Design for the admin lever (#394).

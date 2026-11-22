@@ -62,8 +62,8 @@ The repository has two kinds of text, and each has its own voice.
 ### Public texts
 
 These are the pages a WordPress developer or an agency meets first: `README.md`,
-`CONTRIBUTING.md`, `docs/README.md`, `docs/onboarding.md`, `docs/from-lamp-to-wfp.md`,
-`docs/known-limitations.md`, `docs/plugins.md`, and any issue or pull request template under
+`CONTRIBUTING.md`, `docs/README.md`, `docs/guide/onboarding.md`, `docs/guide/from-lamp.md`,
+`docs/guide/limits.md`, `docs/plugins.md`, and any issue or pull request template under
 `.github/`. Many readers arrive with no context and decide from these pages whether the project is
 for them. When you write one:
 
@@ -82,7 +82,7 @@ for them. When you write one:
 
 ### Texts that stay terse on purpose
 
-Runbooks and operator docs (for example `docs/operator.md` and `docs/releasing.md`), design notes
+Runbooks and operator docs (for example `docs/guide/operator.md` and `docs/releasing.md`), design notes
 (`docs/design-*`, `docs/approach-*`), the measurement record (`docs/results.md`,
 `docs/admin-memory-matrix.md` and the like), and issues and pull requests between maintainers stay
 short and direct. Their readers already have the context and need the facts fast, often while

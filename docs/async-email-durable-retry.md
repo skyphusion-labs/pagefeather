@@ -73,7 +73,7 @@ check before it tries again.
 
 ## Status: opt-in, not a default
 
-Provisioning has an `async-email-queue` descriptor (`deploy/provision/wp-site-config.mjs`). It is **opt-in** (`default: false`). It creates a per-site queue and dead-letter queue and adds the `EMAIL_QUEUE` binding. It does not yet subscribe the queue consumer to the site Worker; that is a step after deploy. Until that step is wired, turning the queue on by default would send order mail to a queue with no consumer, which is worse than the working direct path. See [known-limitations.md](known-limitations.md).
+Provisioning has an `async-email-queue` descriptor (`deploy/provision/wp-site-config.mjs`). It is **opt-in** (`default: false`). It creates a per-site queue and dead-letter queue and adds the `EMAIL_QUEUE` binding. It does not yet subscribe the queue consumer to the site Worker; that is a step after deploy. Until that step is wired, turning the queue on by default would send order mail to a queue with no consumer, which is worse than the working direct path. See [guide/limits.md](guide/limits.md).
 
 ## The feature gate
 
@@ -124,7 +124,7 @@ recipient and subject.
 Provisioning the queues and wiring the deploy environment is an infrastructure step. The
 code in this repository works with or without the binding. The provisioning descriptor
 makes the queues and the producer binding; the consumer subscription is still a manual
-step (see [known-limitations.md](known-limitations.md)).
+step (see [guide/limits.md](guide/limits.md)).
 
 ## Local development
 

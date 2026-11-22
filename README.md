@@ -19,7 +19,7 @@ keeps the site's state). You can run one site on a Workers Paid or Workers Free 
 that site with `deploy/deploy.sh` (`VARIANT=b-dosql`). You can also run many sites on Workers for
 Platforms. You deploy those sites with `deploy/wfp`. Workers for Platforms adds many sites in one
 namespace, and the site manager (`deploy/wfp/site`). A Workers for Platforms account costs $30 a
-month for two or more sites ([docs/plan-limits.md](docs/plan-limits.md)). That is the Workers for
+month for two or more sites ([docs/guide/cost.md](docs/guide/cost.md)). That is the Workers for
 Platforms Paid plan ($25) plus the Workers Paid plan ($5).
 
 On Workers Free, b-dosql runs plain WordPress and a light storefront only. Editing a WooCommerce store does not
@@ -47,7 +47,7 @@ page tells you which is which.
   site's one Durable Object. Under load, that object's isolate runs out of memory and resets: 43
   resets and 49 lost writes per 1000 server requests (perf lines) under our load harness (`cf759a`, 2026-11-22). The levers tried so far
   did not fix it, so it is a tracked limit
-  ([docs/known-limitations.md](docs/known-limitations.md), #1022).
+  ([docs/guide/limits.md](docs/guide/limits.md), #1022).
 - **Approach A runs WordPress and WooCommerce on Workers Paid, and it scales out across isolates.**
   The WordPress wp suite is 18 of 18, and routes.py had 0 failures, on `cf759hw`
   ([docs/results.md](docs/results.md), the `cf759hw` wp and routes rows, 2026-11-20). WooCommerce
@@ -70,7 +70,7 @@ page tells you which is which.
   after the merge found it on 0 of 3 admin pages (results.md row "#1227 live"). No conformance suite
   row tests the notice.
 - **How many plugins fit** is a per-request limit on the heaviest admin pages
-  ([How many plugins fit](docs/known-limitations.md#how-many-plugins-fit)).
+  ([How many plugins fit](docs/guide/limits.md#how-many-plugins-fit)).
 
 ## A live example
 
@@ -85,7 +85,7 @@ Cart, checkout, account and logged-in pages are never cached, so they run PHP ev
 ### b-dosql on Workers Paid or Free, with deploy/deploy.sh
 
 You need a Cloudflare account on **Workers Paid** or **Workers Free**. Workers Paid is $5 a month
-([docs/plan-limits.md](docs/plan-limits.md), read 2026-11-06). The commands below are the
+([docs/guide/cost.md](docs/guide/cost.md), read 2026-11-06). The commands below are the
 `VARIANT=b-dosql` flow in [deploy/README.md](deploy/README.md). One command makes the site,
 installs WordPress and measures it. b-dosql has no D1 database. The database is the Durable
 Object's own SQLite ([deploy/README.md](deploy/README.md), variant `b-dosql`).
@@ -131,7 +131,7 @@ upload in it on purpose, set `DESTROY_MEDIA=1`
 ### b-dosql on Workers for Platforms, with deploy/wfp
 
 > **We have not yet run this end to end from a fresh clone.** The commands below are the
-> `deploy/wfp` flow in [docs/operator.md](docs/operator.md), the same flow the isolation proofs
+> `deploy/wfp` flow in [docs/guide/operator.md](docs/guide/operator.md), the same flow the isolation proofs
 > use. A measured run of `site add` and `site remove` from a fresh clone is next. If you try it
 > first and something breaks, please open an issue; it helps us a lot. `deploy/wfp/site` is the
 > one operator surface of this deployment
@@ -140,7 +140,7 @@ upload in it on purpose, set `DESTROY_MEDIA=1`
 > `WFP_SAAS_ZONE_ID` it refuses before any API call and names `deploy/wfp/site`.
 
 You need a Cloudflare account on the **Workers for Platforms Paid** plan, an API token and the tools
-listed in [docs/operator.md](docs/operator.md) ("What you need": Node, Wrangler 4.107.0 or later,
+listed in [docs/guide/operator.md](docs/guide/operator.md) ("What you need": Node, Wrangler 4.107.0 or later,
 Terraform 1.5 or later). Then:
 
 ```sh
@@ -154,10 +154,10 @@ export SITES="blog"                              # your site names; a blog or a 
 ```
 
 Each site answers at `https://wp-<name>.<your-subdomain>.workers.dev` and installs WordPress on
-first boot. The admin user is `admin`; its password is a Terraform output (docs/operator.md shows
+first boot. The admin user is `admin`; its password is a Terraform output (docs/guide/operator.md shows
 the command).
 
-Coming from a LAMP host? [docs/from-lamp-to-wfp.md](docs/from-lamp-to-wfp.md) is written for you:
+Coming from a LAMP host? [docs/guide/from-lamp.md](docs/guide/from-lamp.md) is written for you:
 it maps the jobs you already do onto this stack, so read it first. Every document is indexed in
 [docs/](docs/README.md).
 
@@ -167,7 +167,7 @@ You need a Cloudflare account on the **Workers Paid** plan, and an external MySQ
 Workers Free this path stops at the CPU limit. The commands below are the variant `a` flow in
 [deploy/README.md](deploy/README.md). One command makes the site, installs WordPress and measures
 it. The Workers Paid plan is $5 a month
-([docs/plan-limits.md](docs/plan-limits.md), read 2026-11-06). You also pay for the MySQL server.
+([docs/guide/cost.md](docs/guide/cost.md), read 2026-11-06). You also pay for the MySQL server.
 A `MYSQL=vultr` box is $10 a month ([deploy/README.md](deploy/README.md)).
 
 ```sh
@@ -214,7 +214,7 @@ The [support matrix](docs/support-matrix.md) lists each WordPress and WooCommerc
   first visitor can get an older copy. It can be up to about 12 minutes old.
   When a product sells out, the page is cleared: it said "out of stock" within 23 s. The checkout
   always reads the real stock, so it never sells more than you have. If your pages show exact stock
-  numbers, see [Stock numbers on cached pages](docs/from-lamp-to-wfp.md#stock-numbers-on-cached-pages)
+  numbers, see [Stock numbers on cached pages](docs/guide/from-lamp.md#stock-numbers-on-cached-pages)
   for the WooCommerce setting that avoids this. Since #628, a store caches its product,
   shop and category pages for 30 s by default (`PAGE_CACHE_PRODUCT_TTL`). There, the number is
   usually at most about 30 s old. After a quiet spell, the first visitor can get a copy up to 60 s
@@ -227,10 +227,10 @@ The [support matrix](docs/support-matrix.md) lists each WordPress and WooCommerc
   their memory yet, because activation failed on the test store (#289). We are designing a way to
   move plugin and theme source out of the bundle. That is work in progress, not a promise that
   these plugins will fit ([#279](https://github.com/skyphusion-labs/pagefeather/issues/279)).
-- **The measured write ceiling** (117 to 119 MiB of wasm; see [memory limits](docs/known-limitations.md#memory-limits-the-three-figures)). A heavy plugin
+- **The measured write ceiling** (117 to 119 MiB of wasm; see [memory limits](docs/guide/limits.md#memory-limits-the-three-figures)). A heavy plugin
   set can pass that ceiling. A store with Rank Math reaches 119 MiB a request, and every other request
   answers 503. Without Rank Math, the same store passes checkout
-  ([docs/known-limitations.md](docs/known-limitations.md),
+  ([docs/guide/limits.md](docs/guide/limits.md),
   [#279](https://github.com/skyphusion-labs/pagefeather/issues/279)).
 - **On b-dosql, Workers Free runs plain WordPress and a light storefront.** Editing a WooCommerce
   store needs Workers Paid: on Free its editor hits the memory limit
@@ -238,7 +238,7 @@ The [support matrix](docs/support-matrix.md) lists each WordPress and WooCommerc
   Approach A does not run on Workers Free. The installer is refused at the 10 ms CPU limit (the
   plan table).
 - **Cost, on b-dosql:** One site on Workers Paid is $5 a month
-  ([docs/plan-limits.md](docs/plan-limits.md)). A pagefeather Workers for Platforms account costs $30 a month for two
+  ([docs/guide/cost.md](docs/guide/cost.md)). A pagefeather Workers for Platforms account costs $30 a month for two
   or more sites (same page). That is the Workers for Platforms
   Paid plan ($25) plus the Workers Paid plan ($5). The reference account runs both. The Workers
   for Platforms price includes 20 million requests, then $0.30 per million. It includes 60 million
@@ -295,17 +295,17 @@ Browser Run is the default suite browser for wp and wc. It is not valid for the 
 ## Cost
 
 One b-dosql site on Workers Paid is $5 a month
-([docs/plan-limits.md](docs/plan-limits.md), read 2026-11-06). You deploy that site with
+([docs/guide/cost.md](docs/guide/cost.md), read 2026-11-06). You deploy that site with
 `deploy/deploy.sh`. The bill below is a Workers for Platforms account, for many sites.
 
 A pagefeather Workers for Platforms account costs $30 a month for two or more sites. That is the Workers for Platforms Paid plan ($25) plus the Workers Paid plan ($5). The reference account runs both. The Workers for Platforms price includes 20 million requests, then $0.30 per million. It includes 60 million CPU ms, then $0.02 per million. It includes 1,000 namespace scripts, then $0.02 each. Another site at rest costs about $0, up to the 1,000 included scripts. Durable Object storage, R2 media, and KV stay inside a free or included tier at rest. Traffic is metered on top. Cloudflare's WfP pricing page does not say whether Workers Paid is strictly required, so plan for both.
 
 Approach A is a different bill. It runs on Workers Paid, which is $5 a month
-([docs/plan-limits.md](docs/plan-limits.md), read 2026-11-06). You also pay for the MySQL server.
+([docs/guide/cost.md](docs/guide/cost.md), read 2026-11-06). You also pay for the MySQL server.
 A `MYSQL=vultr` box is $10 a month ([deploy/README.md](deploy/README.md)). Any other MySQL server
 is your own bill.
 
-Full cost line items and the per-plan limit table that decides the matrix above: [docs/plan-limits.md](docs/plan-limits.md).
+Full cost line items and the per-plan limit table that decides the matrix above: [docs/guide/cost.md](docs/guide/cost.md).
 
 ## More
 

@@ -45,7 +45,7 @@ delete an index. `boot()` writes `SKYPHUSION_AI_CF_BRIDGE` only when both
 bindings are present. skyphusion-ai prefers this bridge when that constant is
 set. That plugin change is skyphusion-labs/skyphusion-ai#193 (the repos are not
 coupled here). It is closed upstream (completed 2026-11-12, skyphusion-ai PR #195),
-not measured here (see [known-limitations.md](known-limitations.md)). A plugin build
+not measured here (see [guide/limits.md](guide/limits.md)). A plugin build
 older than that change keeps the REST path. Index CREATE stays with
 Pagefeather's `resourceCreateOp` (a binding cannot create an index), so the plugin
 skips its own create when the Pagefeather index is present.

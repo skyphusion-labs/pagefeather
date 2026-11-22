@@ -9,13 +9,13 @@ This page is the map. The repository holds a framework you run on your own Cloud
 
 ## Run a site
 
-- [framework.md](framework.md). The quickstart, the default integrations, and edge security.
-- [onboarding.md](onboarding.md). Approach A, from a MySQL choice to a site.
-- [from-lamp-to-wfp.md](from-lamp-to-wfp.md). A LAMP WordPress host, mapped onto this stack.
-- [operator.md](operator.md). Day one on Workers for Platforms: scripts, updates, and teardown.
-- [byo-domain.md](byo-domain.md). A customer's own domain.
-- [plan-limits.md](plan-limits.md). Plan limits, and the monthly cost.
-- [known-limitations.md](known-limitations.md). What does not work yet. The three memory figures are in [Memory limits: the three figures](known-limitations.md#memory-limits-the-three-figures).
+- [guide/framework.md](guide/framework.md). The quickstart, the default integrations, and edge security.
+- [guide/onboarding.md](guide/onboarding.md). Approach A, from a MySQL choice to a site.
+- [guide/from-lamp.md](guide/from-lamp.md). A LAMP WordPress host, mapped onto this stack.
+- [guide/operator.md](guide/operator.md). Day one on Workers for Platforms: scripts, updates, and teardown.
+- [guide/byo-domain.md](guide/byo-domain.md). A customer's own domain.
+- [guide/cost.md](guide/cost.md). Plan limits, and the monthly cost.
+- [guide/limits.md](guide/limits.md). What does not work yet. The three memory figures are in [Memory limits: the three figures](guide/limits.md#memory-limits-the-three-figures).
 - [support-matrix.md](support-matrix.md). Each WordPress and WooCommerce feature, per tier and per deploy path.
 
 ## Current paths
