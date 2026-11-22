@@ -31,7 +31,7 @@ We use two names on this page:
 
 ### Step 2: install the tools (in your terminal)
 
-You need git, Node.js 22 or later, Terraform 1.5 or later, Python 3, curl and unzip.
+You need git, Node.js 22 or later, Terraform 1.5 or later, Python 3, curl, zip, unzip and lsof. macOS already has curl, zip, unzip and lsof.
 
 On **macOS**, with [Homebrew](https://brew.sh):
 
@@ -45,7 +45,7 @@ On **Ubuntu or Debian** (and on Windows in WSL):
 
 ```sh
 sudo apt-get update
-sudo apt-get install -y git curl unzip python3 gnupg
+sudo apt-get install -y git curl zip unzip lsof python3 gnupg
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
 sudo apt-get install -y nodejs
 curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp.gpg
