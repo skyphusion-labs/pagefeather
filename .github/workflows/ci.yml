@@ -470,6 +470,9 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/a-cron-off.test.mjs
       - name: A request to the site own URL runs on a pool object, or is refused with one self-fetch line (#1157, #1226)
         run: node --test spikes/b2-wordpress/tests/self-fetch.test.mjs
+      - name: x-pf-probe links one request's events at the gateway, Pages and PHP (issue #1328)
+        # probe-trace.mjs: one m: probe-trace line per entrypoint for a valid id; no line and one header read on normal traffic.
+        run: node --test spikes/b2-wordpress/tests/probe-trace.test.mjs
       - name: a REST GET's JSON body reaches PHP, as on stock (issue #1344)
         # request-body.mjs phpRequestBody and index.js handle(): a GET with a body sends it, an empty GET sends none,
         # HEAD never does, every other method is unchanged.

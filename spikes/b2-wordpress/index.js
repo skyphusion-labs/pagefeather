@@ -69,6 +69,7 @@ import { templateQueuePriority, templateLookupYield, templateLookupForwardYield 
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse, overflowHeldToPool } from './overflow.mjs';
 import { selfFetchRoute, selfFetchPoolAvailable, selfFetchCalls, selfFetchSameIsolate, selfFetchOutcome, SELF_FETCH_OBJECT, SELF_SAME_ISOLATE_HEADER, SELF_REFUSAL_SAME_ISOLATE, SELF_CACHE_ONLY_HEADER, SELF_CACHE_MISS_HEADER, selfCacheMissResponse, httpErrorReply } from './self-fetch.mjs';
+import { probeTrace } from './probe-trace.mjs';
 import { phpRequestBody } from './request-body.mjs';
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
@@ -4775,6 +4776,7 @@ const site = {
 // pageCacheRoute() lets through, with no Cookie header.
 export class Pages extends WorkerEntrypoint {
 	async fetch(req) {
+		probeTrace(req, 'pages');
 		// #1170 lever: an engine self-hop asked for the cached copy ONLY. Reaching code means a miss: answer it now, never
 		// render here (this isolate's PHP is held by the request that asked). A hit never reaches this line.
 		if (req.headers.get(SELF_CACHE_ONLY_HEADER) === '1') return selfCacheMissResponse();
@@ -4815,6 +4817,7 @@ export class Pages extends WorkerEntrypoint {
 // Pages without its Cookie header; every other request runs here.
 export default {
 	async fetch(req, env, ctx) {
+		probeTrace(req, 'gateway'); // #1328: link one request's events (probe-trace.mjs)
 		const url = new URL(req.url);
 		// #855: the cron tick is Worker to PhpRuntime only, never a public URL.
 		if (url.pathname === CRON_TICK_PATH) return new Response('Not Found', { status: 404 });
@@ -4898,6 +4901,7 @@ async function handle(req, env, url, spikeOk, maxBody, ctx) {
 	return withBootRefusal(() => handleInner(req, env, url, spikeOk, maxBody, ctx));
 }
 async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
+	probeTrace(req, 'php');
 	ocCtx = ctx; // for L2 (KV) object-cache write-through this request (#218)
 	if (ocL2W) ocL2W.beginRequest(); // #500: the per-request PUT cap starts again
 	{
