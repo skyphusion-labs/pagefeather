@@ -13,6 +13,9 @@ cd "$(dirname "$0")"
 # shellcheck source=local-creds.sh
 . ./local-creds.sh
 local_creds
+# #1316: every request below is bounded (bcurl): a local endpoint that never answers stops the build with a reason.
+# shellcheck source=fetch-bound.sh
+. ./fetch-bound.sh
 [ -s build/opcache.zip ] || { echo "build/opcache.zip is missing or empty: run ./opcache.sh first"; exit 1; }
 STATE=$(mktemp -d "${TMPDIR:-/tmp}/file-trace-state.XXXXXX")
 export PERSIST_TO=$STATE
@@ -50,16 +53,16 @@ if [ "${WOO_ACTIVE:-1}" = 1 ]; then
   woo_activate || exit 1
 fi
 # Drop what install and activation read: the trace is for page traffic.
-curl "${ST[@]}" -sf "$B/_trace" > /dev/null
+bcurl "${ST[@]}" -sf "$B/_trace" > /dev/null
 ./e2e.sh "$B" > build/file-trace-e2e.log 2>&1 || { echo "e2e failed, see build/file-trace-e2e.log"; exit 1; }
 if [ "${WOO_ACTIVE:-1}" = 1 ]; then
   B=$B ADMIN_PASSWORD=$PW python3 tests/woo.py > build/file-trace-woo.log 2>&1 || { echo "woo.py failed, see build/file-trace-woo.log"; exit 1; }
 fi
 # The #394 admin pages, logged in, each twice (the second is warm).
 J=$(mktemp "${TMPDIR:-/tmp}/file-trace-jar.XXXXXX")
-curl -s -c "$J" -b "$J" -o /dev/null --data-urlencode "pwd=$PW" -d 'log=admin&wp-submit=Log+In&redirect_to=%2Fwp-admin%2F&testcookie=1' "$B/wp-login.php"
+bcurl -s -c "$J" -b "$J" -o /dev/null --data-urlencode "pwd=$PW" -d 'log=admin&wp-submit=Log+In&redirect_to=%2Fwp-admin%2F&testcookie=1' "$B/wp-login.php"
 for path in /wp-admin/ /wp-admin/profile.php '/wp-admin/post-new.php?post_type=page' /wp-admin/ /wp-admin/profile.php '/wp-admin/post-new.php?post_type=page' '/?post_type=product' '/?post_type=product' /; do
-  code=$(curl -s -c "$J" -b "$J" -o /dev/null -w '%{http_code}' "$B$path")
+  code=$(bcurl -s -c "$J" -b "$J" -o /dev/null -w '%{http_code}' "$B$path")
   echo "$code $path" >> build/file-trace-admin.log
 done
 # #569 (#394 Gate 2): the GET screens of the 7-screen round (docs/admin-memory-matrix.md,
@@ -68,12 +71,12 @@ done
 # warm. Post 1 and page 2 are the ones a WordPress install makes. The profile SAVE (a POST with a
 # nonce) is not traced.
 for path in /wp-admin/ /wp-admin/post-new.php '/wp-admin/post-new.php?post_type=page' '/wp-admin/post.php?post=1&action=edit' '/wp-admin/post.php?post=2&action=edit' /wp-admin/profile.php; do
-  curl "${ST[@]}" -s -o /dev/null -H 'x-runtime-recycle: force' "$B/?nocache=ft$RANDOM"
+  bcurl "${ST[@]}" -s -o /dev/null -H 'x-runtime-recycle: force' "$B/?nocache=ft$RANDOM"
   for pass in cold warm; do
-    code=$(curl -s -c "$J" -b "$J" -o /dev/null -w '%{http_code}' "$B$path")
+    code=$(bcurl -s -c "$J" -b "$J" -o /dev/null -w '%{http_code}' "$B$path")
     echo "$code $pass $path" >> build/file-trace-admin.log
   done
 done
 rm -f "$J"
-curl "${ST[@]}" -sf "$B/_trace" > build/file-trace.json
+bcurl "${ST[@]}" -sf "$B/_trace" > build/file-trace.json
 python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert d['on'], 'FILE_TRACE was not on'; print('file-trace.json:', len(d['requests']), 'requests,', d['dropped'], 'dropped')" build/file-trace.json
