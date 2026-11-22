@@ -167,3 +167,13 @@ test('#1157 index.js: the hop passes cacheAvailable from the Pages export, and a
 	assert.match(f, /throw new Error\(missWhy\);/);
 	assert.ok(f.indexOf("outcome: 'refused'") < f.indexOf('throw new Error(missWhy);'), 'logged before the throw');
 });
+
+// #1157 (strummer's export, 2026-11-22): the two failing url-details calls each matched ONE req line and no hop line,
+// so a hop could not be tied to the request that asked. The self-fetch lines carry parent since #1170 and #1226; the
+// bridge's own http line did not. Every http line now names the request it ran for.
+test('#1157 index.js: the http bridge line names its parent request (parent: runCallId)', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const lines = src.split('\n').filter((l) => /console\.log\(JSON\.stringify\(\{ m: 'http',/.test(l));
+	assert.ok(lines.length >= 1, 'the http line exists');
+	for (const l of lines) assert.match(l, /parent: runCallId/, l.trim().slice(0, 120));
+});
