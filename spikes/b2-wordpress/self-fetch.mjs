@@ -70,3 +70,12 @@ export const SELF_CACHE_MISS_HEADER = 'x-pf-self-cache-miss';
 export function selfCacheMissResponse() {
 	return new Response(null, { status: 504, headers: { [SELF_CACHE_MISS_HEADER]: '1', 'cache-control': 'no-store, private' } });
 }
+
+// #1157 (d), Conrad's choice 2026-11-22: the reply PHP gets for a refused request. A refusal of a request to the site's
+// own host is marked self: true, so the bridge (php/http-bridge.php, skyphusion_http_self_refused) can answer the one
+// narrow case php/url-details-self.php covers, a url-details GET, in-process with no HTTP hop. Only these reasons are
+// marked; an outbound host refusal, a timeout or a fetch error stays a plain error.
+const SELF_REFUSALS = new Set([SELF_REFUSAL_OBJECT, SELF_REFUSAL_GUARD, SELF_REFUSAL_NO_POOL, SELF_REFUSAL_CAPPED, SELF_REFUSAL_SAME_ISOLATE]);
+export function httpErrorReply(why) {
+	return SELF_REFUSALS.has(why) ? { error: why, self: true } : { error: why };
+}

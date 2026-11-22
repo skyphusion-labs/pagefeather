@@ -68,6 +68,38 @@ E6 is the last lever on this path. After it, b-dosql keeps WooCommerce for a lig
 
 #1042 is open. Parallel REST reads answer 503 with `x-sql-failure`. The same wc rows count that class: 2 tests on Paid DO, about 6 on WfP. No later wc row has re-run those tiers.
 
+## Requests to the site's own URL (#1157)
+
+A Worker cannot fetch its own site. Cloudflare refuses a same-zone `fetch()` without a service binding (error 1042, `workers.dev` included). The PHP runtime that asks is also busy with the request that asks. So a `wp_remote_get()` of the site's own URL (a "self-fetch") is answered in one of these ways, in this order:
+
+1. **The overflow pool is on** (approach A, `PHP_OVERFLOW` on): the request runs on one named pool object (`ovf-self`), one hop deep (#1170).
+2. **The pool is off, and the page is in the front page cache:** a guest GET is answered from the cache (#1326).
+3. **Otherwise:** the request is refused. PHP gets a `WP_Error` ("a request to this site itself is refused ..."). A refused self-fetch logs one `self-fetch` line with `outcome: "refused"`.
+
+**One workaround for case 3: url-details** (`GET /wp-block-editor/v1/url-details`, the block editor's link preview; Conrad's choice, 2026-11-22). When the refused request is a GET that core's url-details controller sent (it is tagged through `rest_url_details_http_request_args`), `php/url-details-self.php` answers it in-process, with no HTTP hop. The answer is a 200 whose body is a minimal `<head>` built from WordPress's own data. Core's controller then parses it, caches it (its 1 h site transient) and applies `rest_prepare_url_details`, as it does for a fetched page. The response carries `x-pf-synthetic: url-details-self`. This is the site's own host only, GET only, and url-details only.
+
+**How it differs from stock WordPress:**
+- **`title`:** core's document title for the post that the URL names (`url_to_postid`), or for the front page. It uses the same parts and the `document_title_separator`, `document_title_parts` and `document_title` filters, but without the main query. A plugin that changes the title by reading the main query (`pre_get_document_title`, or a `document_title_parts` callback that checks `is_singular()`, as SEO plugins do) gets a different result. A paged URL (`/page/2`) has no "Page 2" part.
+- **`icon`:** what `wp_site_icon()` prints (core reads the first `rel=icon`). It is empty when the site has no site icon, as on stock.
+- **`description` and `image`:** always empty. Core prints no `meta description` and no `og:image`, so stock is empty too. A plugin or theme that adds them (SEO plugins do) is not reflected, because the page is not rendered.
+- **Still refused (404 `no_response`), never guessed:**
+  - a URL that names no post or page (an archive, a term, an author, search, a custom route);
+  - a post that an anonymous visitor cannot see (draft, private, trash). Stock's anonymous fetch gets a 404 for these too.
+  - a theme without `title-tag` support, which prints its own `<title>`.
+
+**Other self-fetches on an uncached URL with the pool off stay refused:**
+- Site Health's loopback and REST availability tests;
+- the theme and plugin file editor's loopback check after an edit;
+- HTTPS detection (`wp_update_https_detection_errors` fetches the home URL);
+- Action Scheduler's async queue runner (a POST to `admin-ajax.php`; due actions then wait for the cron alarm);
+- `spawn_cron()`. #1310's cron self-tick covers cron in another way.
+- any plugin that calls its own REST route or front end;
+- oEmbed discovery of an own URL that is not a post or page.
+
+oEmbed of the site's own posts and pages is NOT a self-fetch: core resolves it in-process (`wp_filter_pre_oembed_result` on `pre_oembed_result`, through `url_to_postid`). No HTTP request is made, so it is not refused.
+
+**Measured so far:** the decision path only, in `tests/url-details-self-test.php` (22 checks) and `tests/self-fetch.test.mjs`. 16 mutants of the guards each turn one of them red. The live proof on `cf759hw` (pool off) and the two gb navigation specs ("can update page link to a new page link" and "Focus management when using the navigation link appender") are on #1157.
+
 ## WP-CLI operator route (#1258)
 
 `POST /_pf/wp-cli` is off unless `WP_CLI_ENDPOINT=on`. It needs Cloudflare Access and a custom domain (#1264, #1260). The #1260 Access application is not created by IaC yet. The wall cap is 25 s. One run at a time holds per isolate, not per site: on approach A many isolates can run a command at once. A command drops that isolate's warm runtime, so the next page request boots cold. After the wall the route answers 124, and `php.exit` drops the JS heap handle, but the in-flight `php.cli` keeps running until the command finishes. The next request is not held behind that run. On dosql-local an allowed command slowed by 8 s answered 124 in 0.980 s (`ms` 962), and the next command answered 124 in 0.808 s (`ms` 794). Turning the endpoint on adds `wp-cli.phar` (7,142,777 bytes, about 7 MB) to `site.zip`, against the 64 MiB Worker limit (the upload gate is 62 MiB). With the endpoint unset, the bundle does not contain the phar. Long jobs (search-replace, import) are refused until step 5. The allowlist is the code lock: WP-CLI ignores `DISALLOW_FILE_MODS`. `user_pass` and `user_activation_key` are never printed. The full limits are in [../spikes/wp-cli-1258.md](../spikes/wp-cli-1258.md).
