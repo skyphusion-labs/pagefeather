@@ -24,7 +24,6 @@
 // longer than purgeWindowMs. With the bucket available, the purge goes out within PURGE_GAP_MS (15 s) of the ask, plus
 // one back-off step per refusal.
 import { PURGE_GAP_MS, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
-import { rendersInWorker } from './pages-render.mjs';
 
 // A Worker's waitUntil may run about 30 s after the response; the local retries stop short of that.
 export const WAITUNTIL_BUDGET_MS = 25000;
@@ -32,8 +31,13 @@ export const WAITUNTIL_BUDGET_MS = 25000;
 // The site's purge object (a PhpRuntime; never the cron object, a-cron.mjs CRON_OBJECT_NAME, nor a pool object).
 export const PURGE_OBJECT_NAME = 'purge';
 
+// Approach A: PHP runs in the Worker, the database outside an object. On b-dosql and b-do the PHP object purges itself.
+function approachA(env) {
+	return !!env && env.PHP_IN_DO !== 'on' && env.DB_IN_DO !== 'on';
+}
+
 export function aPurgeRoute(env) {
-	return env && env.PHP_RUNTIME && rendersInWorker(env) ? 'object' : 'local';
+	return env && env.PHP_RUNTIME && approachA(env) ? 'object' : 'local';
 }
 
 export function createGatewayPurger({ now = () => Date.now(), sleep = (ms) => new Promise((ok) => setTimeout(ok, ms)), log = (o) => console.log(JSON.stringify(o)), dispose = () => {}, env = null } = {}) {
