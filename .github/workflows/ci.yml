@@ -774,6 +774,7 @@ jobs:
         # moved to") with no link to a file that exists, or a docs/<name>.md path string that
         # exists nowhere fails. The test plants each one and its control first.
         run: |
+          python3 --version
           python3 -I tests/ci/doc_links_test.py
           python3 -I tests/ci/doc_links.py .
       - name: Secret scan

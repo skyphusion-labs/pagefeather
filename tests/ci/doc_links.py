@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""#1305: the docs link check. Python 3.9, standard library only.
+"""#1305: the docs link check. Standard library only. Checked on Python 3.9.6, 3.15.2 and CI's python3.
 
     python3 -I tests/ci/doc_links.py [repo root]
 

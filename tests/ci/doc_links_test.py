@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """#1305: tests for tests/ci/doc_links.py. Each case builds a small git repo, runs the check, and
 asserts the exit code and the failure lines. Every failure class has a control that passes, so a
-check that always fails, or always passes, is caught. Python 3.9, standard library only.
+check that always fails, or always passes, is caught. Standard library only.
 
     python3 -I tests/ci/doc_links_test.py
 """
