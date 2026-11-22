@@ -42,7 +42,6 @@ import argparse, base64, collections, http.cookiejar, importlib.util, json, os, 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DENY = {"ggc.sh", "www.ggc.sh"}
 REQUIRE_HTTPS = True  # runner_test.py turns it off for its local http stub; no flag or env reaches it.
-CACHED = {"HIT", "EXPIRED", "STALE", "REVALIDATED", "UPDATING"}
 # wc-api: the WooCommerce suite's api-tests (the API half), the same checkout and config as wc.
 UPSTREAM_CONFIG = {"wp": "playwright.config.js", "wc": "playwright.config.ts", "wc-api": "playwright.config.ts", "wc-cpt": "playwright.config.ts", "gb": "playwright.config.ts"}
 # wc-cpt (#759 gap 2, upstream envs/default-hpos-disabled) runs the wc suite with HPOS OFF, so it reads the wc exclusion
@@ -152,16 +151,29 @@ def check_target(site, args):
 
 
 def check_cache(site, want):
-    seen = []
+    # #1336: cf-cache-status cannot say whether a stored body was served. On approach A an EXPIRED answer was a fresh
+    # render each time, while on b-dosql it was the stored body (Rollins, #1334). x-pf-rendered can: Pages stamps the
+    # render time, and a cached copy keeps the stamp (page-stamp.mjs). So "served from cache" means a later guest GET
+    # carries an earlier GET's stamp. The status is logged as data only.
+    seen, stamps = [], []
     for _ in range(3):
         st, h, _ = site.req("GET", "/", cookies=False)
-        seen.append({k.lower(): v for k, v in h.items()}.get("cf-cache-status", "-").upper())
-    cached = any(s in CACHED for s in seen)
-    say("page cache: guest GET / x3 -> cf-cache-status %s" % ",".join(seen))
-    if want == "on" and not cached:
-        raise Stop("--cache on, but no cached answer in 3 guest fetches of / (%s)" % ",".join(seen))
-    if want == "off" and cached:
-        raise Stop("--cache off, but the page cache answered (%s): deploy with PAGE_CACHE_TTL=0" % ",".join(seen))
+        hl = {k.lower(): v for k, v in h.items()}
+        seen.append(hl.get("cf-cache-status", "-").upper())
+        stamps.append(hl.get("x-pf-rendered", "-"))
+    served = any(stamps[i] != "-" and stamps[i] in stamps[:i] for i in range(1, len(stamps)))
+    say("page cache: guest GET / x3 -> cf-cache-status %s; x-pf-rendered %s; a stored body served: %s"
+        % (",".join(seen), ",".join(stamps), "yes" if served else "no"))
+    if want == "on":
+        if all(x == "-" for x in stamps):
+            raise Stop("--cache on: could not measure, no x-pf-rendered on any of 3 guest fetches of / (%s); the "
+                       "stamp is how a served body is told from a render (#1336)" % ",".join(seen))
+        if not served:
+            raise Stop("--cache on, but no stored body was served in 3 guest fetches of /: every x-pf-rendered differs "
+                       "(%s; cf-cache-status %s) (#1336)" % (",".join(stamps), ",".join(seen)))
+    if want == "off" and (served or "HIT" in seen):
+        raise Stop("--cache off, but the page cache answered (%s; x-pf-rendered %s): deploy with PAGE_CACHE_TTL=0"
+                   % (",".join(seen), ",".join(stamps)))
     return seen
 
 

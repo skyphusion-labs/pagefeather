@@ -43,6 +43,9 @@ class Stub:
         self.marker = "self"     # self | none | other
         self.basic = "ok"        # ok | always401 | ignores
         self.cache = "HIT"       # what cf-cache-status says on the 2nd and 3rd guest GET
+        # x-pf-rendered on the guest GETs of / (#1336): "same" (a stored body, the stamp repeats), "new" (a render each
+        # time), "none" (no stamp). None: "same" when self.cache is a cached status, else "new", as a real site does.
+        self.stamp = None
         self.app = None
         self.calls = []
         self.options = {}
@@ -157,7 +160,11 @@ class Stub:
                     return self.send(200, [{"source_url": "https://x/wp-content/uploads/%s.%s" % (q, ext)}] if q in stub.images else [])
                 if self.path == "/":
                     n = sum(1 for c in stub.calls if c == ("GET", "/"))
-                    return self.send(200, "<html>", [("cf-cache-status", "MISS" if n == 1 else stub.cache)], "text/html")
+                    mode = stub.stamp or ("same" if stub.cache in ("HIT", "EXPIRED", "STALE", "REVALIDATED", "UPDATING") else "new")
+                    hs = [("cf-cache-status", "MISS" if n == 1 else stub.cache)]
+                    if mode != "none":
+                        hs.append(("x-pf-rendered", str(1795000000000 + (1 if mode == "same" else n))))
+                    return self.send(200, "<html>", hs, "text/html")
                 self.send(404, {})
 
             def do_POST(self):
@@ -311,8 +318,17 @@ def main():
         case("a marker for another host", r"names host 'other.example'", setup=lambda s: setattr(s, "marker", "other"))
         case("a wrong admin password", r"form did not log the admin in.*TURNSTILE_LOGIN=off", env_extra={"WP_PASSWORD": "wrong"})
         case("no WP_PASSWORD", r"WP_PASSWORD is not set", env_extra={"WP_PASSWORD": ""})
-        case("cache on, but nothing cached", r"--cache on, but no cached answer", setup=lambda s: setattr(s, "cache", "DYNAMIC"))
+        case("cache on, but nothing cached", r"--cache on, but no stored body was served", setup=lambda s: setattr(s, "cache", "DYNAMIC"))
         case("cache off, but HIT", r"--cache off, but the page cache answered", cache="off")
+        # #1336: the stamp, not cf-cache-status, says whether a stored body was served.
+        case("cache on, EXPIRED but a new render each time (#1336)", r"--cache on, but no stored body was served",
+             setup=lambda s: (setattr(s, "cache", "EXPIRED"), setattr(s, "stamp", "new")))
+        case("cache on, no x-pf-rendered at all (#1336)", r"could not measure.*x-pf-rendered",
+             setup=lambda s: setattr(s, "stamp", "none"))
+        case("cache off, DYNAMIC but the stamp repeats (#1336)", r"--cache off, but the page cache answered", cache="off",
+             setup=lambda s: (setattr(s, "cache", "DYNAMIC"), setattr(s, "stamp", "same")))
+        case("cache on, EXPIRED with the same stamp is served (#1336)", None,
+             setup=lambda s: (setattr(s, "cache", "EXPIRED"), setattr(s, "stamp", "same")), expect_rc=0)
         # Basic auth (#761).
         case("Basic always 401 (#761)", r"returned 401, not 200.*#761", setup=lambda s: setattr(s, "basic", "always401"))
         case("Basic ignores the password", r"WRONG password returned 200, not 401", setup=lambda s: setattr(s, "basic", "ignores"))
