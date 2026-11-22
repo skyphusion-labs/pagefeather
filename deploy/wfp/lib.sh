@@ -1621,3 +1621,4 @@ down_empty_bucket() {
   [ "$rc" = 0 ] || echo "  emptying $B failed (exit $rc); its temporary credential expires within $ttl s" >&2
   return "$rc"
 }
+# Planted for the #1305 red demo: docs/no-such-page.md

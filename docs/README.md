@@ -50,3 +50,5 @@ This page is the map. The repository holds a framework you run on your own Cloud
 - [approach-c-checkout.md](approach-c-checkout.md). Checkout in a Container. Retired (#214).
 
 The code sits next to the tool: `deploy/provision`, `deploy/onboard`, `deploy/wfp`, `deploy/zone`, and `spikes/` ([spikes/README.md](../spikes/README.md)).
+
+[A planted broken link for the #1305 red demo](guide/no-such-page.md)
