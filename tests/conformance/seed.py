@@ -277,6 +277,7 @@ def login(user, pw):
         form["cf-turnstile-response"] = os.environ["TURNSTILE_TEST_TOKEN"]
     c, b, h = req(o, "/wp-login.php", urllib.parse.urlencode(form).encode(), {"Content-Type": "application/x-www-form-urlencoded"})
     if c not in (302, 303):
+        record_nonce_failure(user, pw, c, b, h, step="wp-login")
         return None, "wp-login.php answered %s, not a redirect" % c
     c, b, h = req(o, "/wp-admin/admin-ajax.php?action=rest-nonce")
     n = (b or b"").decode("utf-8", "replace").strip()
@@ -298,9 +299,11 @@ def scrub(text, secrets_=()):
     return re.sub(r"[A-Za-z0-9+/_-]{20,}={0,2}", "[token]", text)
 
 
-def record_nonce_failure(user, pw, status, body, headers):
-    """#924: every failed rest-nonce after a form login, admin retries included, becomes evidence in seed.json."""
-    row = {"who": user, "status": status, "body": scrub((body or b"")[:200].decode("utf-8", "replace"), (pw,))}
+def record_nonce_failure(user, pw, status, body, headers, step="rest-nonce"):
+    """#924: every failed form login attempt, admin retries included, becomes evidence in seed.json: a POST
+    wp-login.php that is not a redirect (step wp-login) or a rest-nonce that is not a nonce (step rest-nonce). On
+    cf759a (2026-11-22) a retry left login_attempts 2 and no row, because only the rest-nonce step recorded."""
+    row = {"who": user, "step": step, "status": status, "body": scrub((body or b"")[:200].decode("utf-8", "replace"), (pw,))}
     for k in NONCE_HEADERS:
         v = headers.get(k) if headers else None
         if v:
@@ -732,12 +735,14 @@ def main():
         # After the password write, the first rest-nonce can answer 500 (measured on cf759a
         # 2026-11-18). Basic already works. Retry the form login a few times.
         a2, why = None, "not attempted"
+        whys = []  # #924: every attempt's reason, not only the last ("ok" for the one that logged in)
         for attempt in range(4):
             a2, why = login(ADMIN_USER, newpw)
+            whys.append("ok" if a2 is not None else why)
             if a2 is not None:
                 break
             time.sleep(2)
-        check("admin: the account password IS the application password (form login)", c == 200 and a2 is not None, set_status=c, login=("ok" if a2 else why), revoked_old=revoked, login_attempts=attempt + 1)
+        check("admin: the account password IS the application password (form login)", c == 200 and a2 is not None, set_status=c, login=("ok" if a2 else why), revoked_old=revoked, login_attempts=attempt + 1, login_whys=whys)
         st = basic(ADMIN_USER, newpw)
         check("admin: Basic with it on /wp/v2/users/me answers 200 (#761)", st == 200, status=st)
         wrong = basic(ADMIN_USER, newpw[:-1] + ("x" if newpw[-1] != "x" else "y"))

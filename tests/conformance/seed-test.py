@@ -13,8 +13,9 @@ The full seed (every item set and checked, and a reseed) is verified against a r
      The same 403 still fails when wc/v3 stays yes.
   8. a gutenberg-test-plugins plugin left active (a spec that stopped mid-run) is deactivated and read back; a
      deactivation that does not stick fails the seed.
-  9. #924: every failed rest-nonce after a form login (admin retries and the customer) is recorded in seed.json
-     with the status and the engine headers, and its body is scrubbed.
+  9. #924: every failed form login attempt (admin retries and the customer), at wp-login.php or at rest-nonce, is
+     recorded in seed.json with its step, the status and the engine headers, and its body is scrubbed. The admin
+     check keeps every attempt's reason (login_whys).
   10. SEED_NO_WOO=1 on a WordPress-only site: no WooCommerce request, no customer, the items named as skipped; the
        same statement on a site that has wc/v3 fails.
   11. #1151: after a wp run, revoke-all has killed Basic. The form login still works. The creds password
@@ -192,6 +193,15 @@ class Site(BaseHTTPRequestHandler):
         if path == "/wp-login.php" and method == "GET":
             return self.reply(200, b"<html>login</html>", "text/html")
         if path == "/wp-login.php" and method == "POST":
+            st["login_posts"] = st.get("login_posts", 0) + 1
+            if st["login_posts"] in st.get("login_fail_on", ()):
+                # #924 follow-up: a form login that answers 500 (no redirect), with the engine headers
+                body = b"login failed"
+                self.send_response(500); self.send_header("content-type", "text/html")
+                for k, v in (("x-pf-call", "99999999-8888-7777-6666-555555555555"), ("x-isolate-reset", "memory"), ("x-write-loss", "2")):
+                    self.send_header(k, v)
+                self.send_header("content-length", str(len(body))); self.end_headers(); self.wfile.write(body)
+                return
             return self.reply(302, b"", "text/html")
         if path.startswith("/wp-admin/admin-ajax.php") and "rest-nonce" in self.path:
             st["nonce_calls"] = st.get("nonce_calls", 0) + 1
@@ -554,12 +564,35 @@ check("#924: a hidden admin retry 500 is recorded, with the engine headers",
       len(rows) == 1 and rows[0].get("who") == "admin" and rows[0].get("status") == 500 and rows[0].get("x-pf-call") == "11111111-2222-3333-4444-555555555555"
       and rows[0].get("x-isolate-reset") == "memory" and rows[0].get("x-write-loss") == "1" and rows[0].get("x-wasm-mib") == "121"
       and admin_chk.get("login_attempts") == 2 and admin_chk.get("ok") is True, (rows, admin_chk))
+check("#924: the rest-nonce row names its step", rows[:1] and rows[0].get("step") == "rest-nonce", rows)
+whys = admin_chk.get("login_whys") or []
+check("#924: the check keeps every attempt's reason, the failed one first", len(whys) == 2 and "500" in whys[0] and whys[1] == "ok", whys)
 check("#924: the recorded body has no password, nonce or token", state["app_pw"] not in blob and "abcdef0123" not in blob and "QUJDREVG" not in blob and "internal error" in blob, blob)
 p, state, report = run_email_editor_seed(nonce_fail_on={2})
 rows = (report or {}).get("rest_nonce_failures") or []
 check("#924: a customer login 500 is recorded too", len(rows) == 1 and rows[0].get("who") == "customer" and rows[0].get("status") == 500, rows)
 p, state, report = run_email_editor_seed()
 check("#924: no failure, no rows", not (report or {}).get("rest_nonce_failures"), (report or {}).get("rest_nonce_failures"))
+admin_chk = ((report or {}).get("checks") or {}).get("admin: the account password IS the application password (form login)") or {}
+check("#924: a first-try login keeps one reason, ok", admin_chk.get("login_whys") == ["ok"], admin_chk)
+
+# #924 follow-up (cf759a 2026-11-22: login_attempts 2, nothing recorded): a failed attempt at wp-login.php is
+# recorded too. Form logins in a full seed: the first admin (1), the customer (2), the admin after its write (3).
+p, state, report = run_email_editor_seed(login_fail_on={3})
+rows = (report or {}).get("rest_nonce_failures") or []
+admin_chk = ((report or {}).get("checks") or {}).get("admin: the account password IS the application password (form login)") or {}
+check("#924: a wp-login.php 500 on the admin retry is recorded, with its step and the engine headers",
+      len(rows) == 1 and rows[0].get("step") == "wp-login" and rows[0].get("who") == "admin" and rows[0].get("status") == 500
+      and rows[0].get("x-isolate-reset") == "memory" and rows[0].get("x-write-loss") == "2" and rows[0].get("x-pf-call") == "99999999-8888-7777-6666-555555555555", rows)
+check("#924: that retry still logs in, on the second attempt", admin_chk.get("ok") is True and admin_chk.get("login_attempts") == 2, admin_chk)
+# Attempt 1 fails at wp-login.php (login POST 3), attempt 2 passes it and fails at rest-nonce (nonce call 3),
+# attempt 3 succeeds: two rows, in order, and three reasons.
+p, state, report = run_email_editor_seed(login_fail_on={3}, nonce_fail_on={3})
+rows = (report or {}).get("rest_nonce_failures") or []
+admin_chk = ((report or {}).get("checks") or {}).get("admin: the account password IS the application password (form login)") or {}
+whys = admin_chk.get("login_whys") or []
+check("#924: two failed attempts leave two rows, wp-login then rest-nonce", [r.get("step") for r in rows] == ["wp-login", "rest-nonce"], rows)
+check("#924: and three reasons, the last ok", len(whys) == 3 and whys[-1] == "ok" and "not a redirect" in whys[0] and "no REST nonce" in whys[1] and admin_chk.get("login_attempts") == 3, whys)
 
 p, state, report = run_email_editor_seed(drop_paths=["/wp-json/"])
 ne = (report or {}).get("network_errors") or []
