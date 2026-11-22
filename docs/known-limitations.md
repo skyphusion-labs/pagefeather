@@ -16,7 +16,7 @@ On `cf759hl` at main `822ab24`, 6 of 10 blocks checkout tests miss the suite's 1
 
 ### The WooCommerce "development version" admin notice (#1221)
 
-#1221 is open. Every WooCommerce admin page says the plugin is a development version and that its files must be built. The plugin is built. PHP does not see a file the static path serves. The issue records the live read on `cf759hl`, 2026-11-21. There is no results.md row for it yet.
+#1221 is closed. PR #1227 fixed it (merged 2026-11-21): the build now keeps the files that WooCommerce probes, so PHP sees them. A live check on `cf759p` after the merge found the notice on 0 of 3 WooCommerce admin pages, against 3 of 3 before (results.md row "#1227 live"). That is a live check, not a suite run: no conformance suite row tests the notice.
 
 ### WooCommerce on b-dosql: isolates reset under load, a tracked limit (#1022)
 
@@ -131,7 +131,7 @@ Measured on a real store imported for skyphusion-labs/ggc#101. It runs WooCommer
 | with Rank Math | 119 MiB, the runtime recycled on every request | every other request 503; no checkout completed | 61.46 MiB |
 | without Rank Math | 99 MiB (the shop page alone reaches 119 MiB and recycles, still 200) | 24 of 24 checks pass over 3 runs; checkout works | 58.40 MiB |
 
-So the 128 MiB isolate cap, not the code, decides whether a store this heavy runs on b-dosql. The bundle has a limit too: the Worker limit is 64 MiB uncompressed. `deploy/wfp/lib.sh bundle_size_check` stops an upload above `BUNDLE_MAX_MIB` (default 62), and `build_dosql`, `site.sh up` and `site update` all run it. If your store needs Rank Math, or a plugin set this heavy, approach A (MySQL through Hyperdrive) is the better fit, rather than b-dosql.
+So memory, not the code, decides whether a store this heavy runs on b-dosql. With Rank Math the requests reach 119 MiB of wasm: the top of the measured write ceiling (117 to 119 MiB, the figure that binds; see the three figures above). The isolate cap itself is 128 MB. The bundle has a limit too: the Worker limit is 64 MiB uncompressed. `deploy/wfp/lib.sh bundle_size_check` stops an upload above `BUNDLE_MAX_MIB` (default 62), and `build_dosql`, `site.sh up` and `site update` all run it. If your store needs Rank Math, or a plugin set this heavy, approach A (MySQL through Hyperdrive) is the better fit, rather than b-dosql.
 
 ## How many plugins fit
 

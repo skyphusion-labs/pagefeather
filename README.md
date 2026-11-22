@@ -64,8 +64,9 @@ page tells you which is which.
   [PR #1224](https://github.com/skyphusion-labs/pagefeather/pull/1224) is open. The WooCommerce
   "development version" admin notice is fixed
   ([#1221](https://github.com/skyphusion-labs/pagefeather/issues/1221),
-  [PR #1227](https://github.com/skyphusion-labs/pagefeather/pull/1227) merged). No later suite row
-  re-measures that notice.
+  [PR #1227](https://github.com/skyphusion-labs/pagefeather/pull/1227) merged). A live check on `cf759p`
+  after the merge found it on 0 of 3 admin pages (results.md row "#1227 live"). No conformance suite
+  row tests the notice.
 - **How many plugins fit** is a per-request limit on the heaviest admin pages
   ([How many plugins fit](docs/known-limitations.md#how-many-plugins-fit)).
 

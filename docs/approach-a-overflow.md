@@ -1,6 +1,6 @@
 # Approach A: PHP overflow to a Durable Object pool (off by default since #1277)
 
-**Status:** ON by default for approach A on `deploy/deploy.sh` since #1119 (Conrad ruled it, 2026-11-20; the cost is below). `PHP_OVERFLOW=0` is the explicit opt-out. The DO tiers are unchanged. Issue #296 step (3), PR #646. Measured 2026-11-15 on a throwaway approach-A site and a copy of the bench database. The numbers are in #296.
+**Status:** OFF by default for approach A on `deploy/deploy.sh` since PR #1298 (merged 2026-11-22; Conrad's ruling on #1277, 2026-11-21). The pool's objects run far from the database: on `cf759hl` a moved request pays about 3x the cost per query, a net loss of about 2 s per moved request at the median (#1277). `PHP_OVERFLOW=1` is the opt-in (the Worker then sees `PHP_OVERFLOW=on`). It was on by default from PR #1140 (#1119, 2026-11-20) until PR #1298. The DO tiers are unchanged. Issue #296 step (3), PR #646. Measured 2026-11-15 on a throwaway approach-A site and a copy of the bench database. The numbers are in #296.
 
 ## The problem it answers
 
@@ -30,7 +30,9 @@ The site needs the `PHP_RUNTIME` Durable Object binding (class `PhpRuntime`) and
 
 ## Recommended setting for a busy approach-A store
 
-**`PHP_OVERFLOW=on`, `PHP_OVERFLOW_POOL=32` (the default), `PHP_OVERFLOW_BUSY` off (the default).** So `PHP_OVERFLOW=on` alone gives it. It is the only measured setting with **0 memory deaths at 250 concurrent checkouts**: errors first.
+This is the opt-in, not the default (see the status above). It is the measured result of 2026-11-15, before #1277 measured the pool's cost per query on Hyperdrive.
+
+**`PHP_OVERFLOW=1` on `deploy/deploy.sh` (the Worker sees `PHP_OVERFLOW=on`), `PHP_OVERFLOW_POOL=32` (the default), `PHP_OVERFLOW_BUSY` off (the default).** So the opt-in alone gives it. It is the only measured setting with **0 memory deaths at 250 concurrent checkouts**: errors first.
 
 Measured at 250 concurrent (checkout ladder, copy of the bench DB, 2026-11-15):
 
@@ -56,7 +58,8 @@ Durable Object duration bills 128 MB for each object's wall time while it handle
 - **Measured at pool 32:** 763 moved requests, wall time mean 23.6 s (p50 13.8 s, p90 63.2 s), so **about 3.0 GB-s per moved request**.
 - That is **about 38 USD per million moved requests** (duration 37.78, requests 0.15, at 12.50 USD per million GB-s).
 - A store moves requests only while its isolates are busy. At low load nothing moves and nothing is billed.
-- Conrad ruled default-on for approach A (#1119): the cost falls on busy stores only, and it buys the 0 memory deaths above and a short request that no longer waits behind a long one in its isolate (#1119: a term GET waited 11.3 s behind a 27 s product batch).
+- Conrad first ruled default-on for approach A (#1119, PR #1140): the cost falls on busy stores only, and it buys the 0 memory deaths above and a short request that no longer waits behind a long one in its isolate (#1119: a term GET waited 11.3 s behind a 27 s product batch).
+- On 2026-11-21 he ruled it off by default (#1277, PR #1298), because the pool's objects run far from the database (the status above). The opt-in stays.
 - A one-click (provisioned) approach A site renders no `PhpRuntime` binding today, so it has no pool; that path is not built (`deploy/provision`, `sqliteClasses` `[]` for `a`).
 
 ## Limits

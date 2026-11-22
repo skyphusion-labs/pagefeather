@@ -1,5 +1,7 @@
 # Reference deployment for a Workers for Platforms user (issue #35)
 
+> **This is a design draft of 2026-11-06, not a how-to.** The deployment it led to is built: [deploy/wfp/README.md](../deploy/wfp/README.md) is its manual, and [operator.md](operator.md) the operator guide. The open items at the end are marked with what the code shows on 2026-11-22.
+
 Status: DESIGN DRAFT, 2026-11-06. Every claim names its source: a result file, a doc of this repo, or a vendor page. A claim with no measurement says so. Open items are listed at the end.
 
 ## Who this is for
@@ -8,7 +10,7 @@ An operator who runs WordPress sites for many customers on Cloudflare, with ever
 
 ## The shape
 
-1. **One dispatch Worker** for the platform. It maps a hostname to the customer's script in a dispatch namespace. Custom domains are data, not per-site configuration. **Not measured:** the spike's dispatcher routed by path (`/tenant-c/...`) and by a fixed SITE_SCRIPT; routing by hostname is not tested.
+1. **One dispatch Worker** for the platform. It maps a hostname to the customer's script in a dispatch namespace. Custom domains are data, not per-site configuration. The spike's dispatcher routed by path (`/tenant-c/...`) and by a fixed SITE_SCRIPT. The built dispatcher routes by hostname (open item 3).
 2. **One user Worker per site** in the namespace. Its runtime depends on the site (the routing rule below).
 3. **One outbound Worker** for fetches that user Workers make. It does not see fetches made from a Durable Object (docs/wfp.md item 4), so for `b-dosql` the control point is its HTTP transport (#26, PR #67). That transport allowlists hosts (`HTTP_ALLOW_HOSTS`). Unset uses `.wordpress.org`, `.woocommerce.com` and `.gravatar.com`. An empty list denies every host. `*` allows every http(s) host. There is no metering yet (an open item). **Risk:** the outbound Workers page says user Workers behind an outbound Worker "will no longer be able to use the connect() API". Variant `a` reaches MySQL through Hyperdrive with a TCP socket (mysql2), so `a` behind the platform's outbound Worker may not reach its database at all. Not tested.
 4. **One Terraform workspace per site** for its data plane, and the user script uploaded into the namespace.
@@ -24,7 +26,7 @@ Measured as normal Workers, not as user Workers, except where the row says so.
 
 | Site | Runtime | Source | Limit to state |
 | --- | --- | --- | --- |
-| WordPress without WooCommerce | `b-dosql`: PHP and its SQLite in one Durable Object | 0.36 s page at 1 user (load matrix, bench-runner-20261105T214231Z-230073.json); object cache -29 % CPU on home and -7 % on post-new (#44, docs/perf-dosql.md); editor routes cache -11 to -23 % on post-new (#56). Also measured as a user Worker (above). | One object per site: about 5 uncached requests a second (docs/perf-dosql.md). **Transactions do not roll back today (#60).** The page cache is keyed on the whole Cookie header today, so real browsers with analytics cookies miss (#63). Whether the Workers Cache works inside a namespace user Worker is not tested. |
+| WordPress without WooCommerce | `b-dosql`: PHP and its SQLite in one Durable Object | 0.36 s page at 1 user (load matrix, bench-runner-20261105T214231Z-230073.json); object cache -29 % CPU on home and -7 % on post-new (#44, docs/perf-dosql.md); editor routes cache -11 to -23 % on post-new (#56). Also measured as a user Worker (above). | One object per site: about 5 uncached requests a second (docs/perf-dosql.md). Transactions roll back: real SQL transactions through an undo log in the object (PR #75; #60 closed 2026-11-06), and a request frame rolls a writing request back on an isolate reset (PR #574). The page cache is keyed on the whole Cookie header today, so real browsers with analytics cookies miss (#63). The Workers Cache works inside a namespace user Worker (open item 4). |
 | WooCommerce store | `b-dosql`, the same runtime as a plain site, with WooCommerce active. It runs checkout directly (README matrix; `tests/woo.py` green on Paid). The `c1` container store was retired in #214. | See the README matrix and docs/results.md for the checkout runs; the object cache and page cache notes are in docs/perf-dosql.md. | The same limit as a plain site: one Durable Object, 128 MiB, one writer, one region. A light-to-moderate store fits. A store with sustained, heavy concurrent load belongs on a VPS. |
 | Very high concurrency on one site | `a`: PHP in Workers, MySQL through Hyperdrive | The only variant that spread across isolates (zero 1102 at 100 users; 128 MB is enough for WooCommerce). | **Not measured as a user Worker**, and see the connect() risk above. Every query crosses the network: browse p50 2.31 to 5.92 s across the steps of the three load runs (deploy/results/bench-runner-20261105T211919Z-cea397.json, bench-runner-20261105T214231Z-230073.json, bench-runner-20261106T010353Z-155691.json), not acceptable for a store (Conrad, 2026-11-06). Its rate at 100 users moved across three runs: 10.3, 18.73 and 8.63 rps. |
 
@@ -47,7 +49,7 @@ Measured as normal Workers, not as user Workers, except where the row says so.
 
 ## Correctness the operator must know
 
-- **Transactions:** see the README section "Read this before the speed numbers". `b-dosql` gets real transactions in #60.
+- **Transactions:** `b-dosql` has real SQL transactions, through an undo log in the object (PR #75; #60 closed). A request frame rolls a writing request back on an isolate reset (PR #574). See also the README section "Read this before the speed numbers".
 - **Page cache keys:** keying the cached page on the whole Cookie header gives about 0 hits for real browsers (measured on `c1` in #58 and on `b` in #63). Decide cacheability by cookie name and cache without the Cookie header.
 - **Purges:** the purge rate limit is per account (5 a minute, 25 at once), shared by every tenant, so order activity must not purge and bursts are coalesced (#58). Measured in the #58 gates (strummer, `tests/edge_check.py`, 2026-11-06; the build was the retired `c1` store, and no result file for it is in the repo): on the build that purged from the container's outbound path, a price, stock and tagline change were all still stale after 20 s; on the build that purges through the cached entrypoint, the same changes showed in 1.3 to 1.9 s.
 - **The site's origin:** the runtime takes its origin from configuration (`SITE_ORIGIN`), not from the request that boots it (#33, #55).
@@ -55,12 +57,12 @@ Measured as normal Workers, not as user Workers, except where the row says so.
 
 ## Open items
 
-1. The connect() risk for `a` behind an outbound Worker: test it.
+1. The connect() risk for `a` behind an outbound Worker: test it. **2026-11-22: still not tested.** `deploy/wfp` deploys `b-dosql` sites only (`site-<name>` user Workers). Approach `a` sites come from `deploy/provision` (`site add --kind a`), outside the namespace, so no `a` site runs behind the outbound Worker today.
 2. `a` as a user Worker: provisioned by `site add --kind a` (#241). Per-tenant limits and metering are a future direction (#247, see [known-limitations.md](known-limitations.md)). (`c1` was retired in #214.)
-3. Hostname routing in the dispatcher: not tested.
-4. Whether the Workers Cache works inside a namespace user Worker (docs/wfp.md marks it open). `b-dosql`'s page cache depends on it.
-5. The Durable Object namespace name collision (docs/wfp.md open item: namespaces are named `<script>_<class>`).
-6. #58 (the storefront cache, first built for the retired `c1`), #60 (b-dosql transactions), #63 (b cache key), #31 (import).
+3. Hostname routing in the dispatcher. **2026-11-22: built and tested.** The dispatcher keys its site map on the request's hostname (`deploy/wfp/dispatcher/worker.js`; test `deploy/wfp/tests/dispatcher-test.mjs`). Phase A runs one copy per site on its `wp-<name>` host. Phase B is one `wp-dispatch` with a Custom Domain per site (#138).
+4. Whether the Workers Cache works inside a namespace user Worker. `b-dosql`'s page cache depends on it. **Answered: yes** ([wfp.md](wfp.md), 2026-11-06, `deploy/wfp/results/day1-20261106T213116Z.json`).
+5. The Durable Object namespace name collision (namespaces are named `<script>_<class>`). **2026-11-22: not tested** ([wfp.md](wfp.md)). `deploy/wfp` avoids it by its names: user Workers are `site-<name>` in the namespace, and its normal Workers are `wp-*` (`deploy/wfp/lib.sh`).
+6. #58 (the storefront cache, first built for the retired `c1`), #60 (b-dosql transactions, closed: PR #75), #63 (b cache key), #31 (import).
 7. Cost per tenant under traffic. The at-rest price and its limits are in [plan-limits.md](plan-limits.md).
-8. Metering of outbound HTTP from PHP in the object (#26 built the transport and an optional allowlist; the outbound Worker does not see these fetches).
-9. The dispatcher, the per-tenant Terraform and the upload pipeline are not built. This document is the design they follow.
+8. Metering of outbound HTTP from PHP in the object (#26 built the transport and an optional allowlist; the outbound Worker does not see these fetches). **2026-11-22: not built.** The outbound Worker passes requests on unchanged (`deploy/wfp/outbound/worker.js`). The PHP transport has a host allowlist (`HTTP_ALLOW_HOSTS`) but no metering.
+9. The dispatcher, the per-tenant Terraform and the upload pipeline. **2026-11-22: built.** The dispatcher is `deploy/wfp/dispatcher`, the Terraform is `deploy/wfp/terraform/site` (per site) and `deploy/wfp/terraform/shared`, and the upload is `deploy/wfp/site.sh` and `up.sh`. This document is the design they followed.

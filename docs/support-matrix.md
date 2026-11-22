@@ -246,7 +246,7 @@ A second miss on that run is the harness (#1216). Two "admin receives" specs wai
 
 ### The WooCommerce "development version" admin notice (#1221)
 
-#1221 is open. Every WooCommerce admin page on our sites shows "You have installed a development version of WooCommerce which requires files to be built." The plugin is built. PHP's `file_exists` check does not see `assets/css/admin.css` or `assets/js/admin/woocommerce_admin.min.js`, while an anonymous GET of both files on `cf759hl` answered 200 (2026-11-21, recorded on the issue). There is no results.md row for this yet.
+#1221 is closed. PR #1227 fixed it (merged 2026-11-21): the build now keeps the files that WooCommerce probes, so PHP sees them. A live check on `cf759p` after the merge found the notice on 0 of 3 WooCommerce admin pages, against 3 of 3 before (results.md row "#1227 live"). That is a live check, not a suite run: no conformance suite row tests the notice. Before the fix, PHP's `file_exists` did not see `assets/css/admin.css` or `assets/js/admin/woocommerce_admin.min.js`, while an anonymous GET of both answered 200 (`cf759hl`, 2026-11-21, recorded on the issue).
 
 ### A REST product batch is about 1.9 s per product on Hyperdrive (#1119)
 
