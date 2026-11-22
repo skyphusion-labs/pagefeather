@@ -1478,11 +1478,13 @@ site_footprint() { # site_footprint <name>
   case "$c" in 200) echo "bucket yes" ;; 404) echo "bucket no" ;; *) echo "bucket unknown" ;; esac
   # The search index (#330): a part when WP_VECTORIZE_SEARCH is on, or whenever one exists.
   case "$(search_index_state "$s")" in present) echo "search yes" ;; gone) ! search_on || echo "search no" ;; *) echo "search unknown" ;; esac
-  # #1319: kind a's Hyperdrive config and object cache namespace. Listed when the run or the recorded site is kind a,
-  # and whenever one exists (a part left by a failed add is still a part).
-  local ka=0 st; { [ "${SITE_KIND:-b-dosql}" = a ] || { [ "${REC_SITE:-}" = "$s" ] && [ "${REC_KIND:-}" = a ]; }; } && ka=1
-  st=$(hd_state "$s"); { [ "$st" = no ] && [ "$ka" = 0 ]; } || echo "hyperdrive $st"
-  st=$(oc_kv_state "$s"); { [ "$st" = no ] && [ "$ka" = 0 ]; } || echo "ockv $st"
+  # #1319: kind a's Hyperdrive config and object cache namespace, on a kind a site only: the run's (site add, or
+  # KIND=a site remove for a failed add with no workspace yet) or the recorded one (site_vars, REC_KIND). A b-dosql
+  # site has neither, and its footprint makes no call for them.
+  if [ "${SITE_KIND:-b-dosql}" = a ] || { [ "${REC_SITE:-}" = "$s" ] && [ "${REC_KIND:-}" = a ]; }; then
+    echo "hyperdrive $(hd_state "$s")"
+    echo "ockv $(oc_kv_state "$s")"
+  fi
 }
 # Who wrote a site's map entry (#294): "core" when it is the provisioning core's (cli.mjs or the
 # provisioning Worker: its entry has a "kind" field, and this package's Terraform entry never

@@ -54,7 +54,7 @@ if [ "$cmd" = down ]; then
   tfr site init -input=false >/dev/null
   if tfr site workspace select "$s" >/dev/null 2>&1; then
     site_vars "$s" "$SUB" "$KV_ID" || exit 1
-    HOST=$REC_HOST; ORIGIN="https://$HOST"; CD=$REC_CD; VARS=("${REC_VARS[@]}"); SITE_KIND=$REC_KIND
+    HOST=$REC_HOST; ORIGIN="https://$HOST"; CD=$REC_CD; VARS=("${REC_VARS[@]}"); [ "$REC_KIND" != a ] || SITE_KIND=a
     [ "$CD" = true ] && WFP_CUSTOM_DOMAIN=1
     tfr site workspace select default >/dev/null
   fi
@@ -191,15 +191,16 @@ elif [ "$cmd" = down ]; then
   fi
   gone "site map entry $HOST" "/storage/kv/namespaces/$KV_ID/values/$HOST"
   gone "bucket $(media_bucket "$s")" "/r2/buckets/$(media_bucket "$s")"
-  # #1319: kind a's Hyperdrive config, after the user Worker that binds it and the workspace (by its name, so a config
-  # left by a failed add goes too). Its object cache namespace went with the workspace; read back by its title.
-  # Any site is checked: neither exists for a b-dosql site.
-  log "site $s: Hyperdrive config $(hd_name "$s") and object cache namespace $(oc_kv_title "$s")"
-  hd_delete "$s" || exit 1
-  case "$(oc_kv_state "$s")" in
-    no) echo "  object cache namespace $(oc_kv_title "$s"): none (read back)" ;;
-    *) echo "  object cache namespace $(oc_kv_title "$s") is NOT known to be gone: stopping" >&2; exit 1 ;;
-  esac
+  # #1319: a kind a site's Hyperdrive config, after the user Worker that binds it and the workspace (by its name, so a
+  # config left by a failed add goes too). Its object cache namespace went with the workspace; read back by its title.
+  if [ "$SITE_KIND" = a ]; then
+    log "site $s: Hyperdrive config $(hd_name "$s") and object cache namespace $(oc_kv_title "$s")"
+    hd_delete "$s" || exit 1
+    case "$(oc_kv_state "$s")" in
+      no) echo "  object cache namespace $(oc_kv_title "$s"): none (read back)" ;;
+      *) echo "  object cache namespace $(oc_kv_title "$s") is NOT known to be gone: stopping" >&2; exit 1 ;;
+    esac
+  fi
   rm -f "$APP/wrangler.deploy.wfp-$s.toml" "$GEN/$D.toml"
   echo "site $s: down"
 else

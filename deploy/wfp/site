@@ -439,7 +439,7 @@ if [ "$cmd" = add ]; then
     SITE_HD_ID=$(hd_create "$s") || { echo "site $s: nothing else was made" >&2; exit 1; }
     export SITE_HD_ID
   fi
-  "$WFP/site.sh" up "$s" || { rc=$?; [ "$SITE_KIND" != a ] || echo "site $s: the add failed after its Hyperdrive config was made; run deploy/wfp/site remove $s" >&2; exit "$rc"; }
+  "$WFP/site.sh" up "$s" || { rc=$?; [ "$SITE_KIND" != a ] || echo "site $s: the add failed after its Hyperdrive config was made; run KIND=a deploy/wfp/site remove $s" >&2; exit "$rc"; }
   fp=$(site_footprint "$s")
   footprint_present "$fp" || { echo "site $s: not every part is there after the add:" >&2; printf '%s\n' "$fp" | sed 's/^/  /' >&2; exit 1; }
   # Its scripts bind only its own resources (bindings.py, #35 slice 4).
@@ -458,6 +458,9 @@ if [ "$cmd" = add ]; then
   fi
   echo "site add $s: done, https://$(site_host "$s" "$SUB")"
 else
+  # #1319: KIND=a on a remove also checks a kind a site's own parts when it has no workspace yet (an add that failed
+  # right after its Hyperdrive config). A site with a workspace reads its kind from the state (site_vars).
+  SITE_KIND=$(kind_check) || exit 2; export SITE_KIND
   # An existing site's recorded hostname and domain decide what its parts are
   # (lib.sh site_vars), so the footprint checks the right entry and domain.
   if has_ws "$s"; then

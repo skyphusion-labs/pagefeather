@@ -129,7 +129,7 @@ KIND=a PLACEMENT=azure:westus2 MYSQL_HOST=<server> MYSQL_DATABASE=<db> MYSQL_USE
   - an input is missing or bad (`MYSQL_*`, `PLACEMENT`);
   - `WFP_CUSTOM_DOMAIN=1` is set (phase A only, for now);
   - the account has no Hyperdrive config left (`HYPERDRIVE_CONFIG_LIMIT`, 25 on Workers Paid).
-- **After a failure** past the Hyperdrive config, `site remove <name>` takes every part. The config is found by its name, so one left by a failed add goes too.
+- **After a failure** past the Hyperdrive config, `KIND=a ./deploy/wfp/site remove <name>` takes every part. The config is found by its name, so one left by a failed add goes too. `KIND=a` is needed only when the add stopped before the site workspace existed: a site with a workspace reads its kind from the state.
 - **`site update`, `import`, `restore` and `schedule` refuse a kind a site.** They snapshot, load or restore a `b-dosql` site's own database. `site update` for kind a (a rebuild and re-upload with no data step) is a follow-up.
 - **deploy/wfp never makes, changes or drops the database.** That is the owner's, as in one-click (#1049).
 - **Limits and cost:** 25 Hyperdrive configs per Workers Paid account (`docs/plan-limits.md`); Workers for Platforms $25 a month plus the $5 Workers Paid plan it needs; then the owner's MySQL.
