@@ -1872,6 +1872,7 @@ async function boot(origin) {
 	// arrives during the waits below sees this origin (no second runtime for a stale one), and a drop during them
 	// is seen by the check after them.
 	const tB0 = Date.now(); // #1022 E2: the boot's start, for bootPh (boot-phases.mjs)
+	const rc0 = remoteCounters(); // #1022 E2: the remote pack counters at the start, for bootPh.packs
 	const gen = bootGen; // #566: a drop during this boot makes it superseded (before instantiation) or an orphan (after)
 	bootOrigin = origin;
 	// #724 review, finding 3: the waits below exist only for reuse and the gate; with both off, boot() runs as main
@@ -2135,6 +2136,7 @@ async function boot(origin) {
 			lines.push(`define('${k}', '${hex}');`);
 		}
 	}
+	const tSalted = Date.now(); // #1022 E2: after the salts' digests (init's first I/O-like awaits)
 	lines.push(`define('WP_HOME', ${JSON.stringify(origin)});`);
 	// The R2 Uploads mu-plugin turns on when the MEDIA binding exists.
 	if (ENV.MEDIA) lines.push(`define('R2_UPLOADS', true);`);
@@ -2282,6 +2284,7 @@ async function boot(origin) {
 	if (analyticsEnabled(ENV)) lines.push(`define('SKYPHUSION_ANALYTICS', true);`);
 	php.writeFile(DOCROOT + '/wp-runtime.php', lines.join('\n') + '\n');
 
+	const tCheck0 = Date.now(); // #1022 E2: before the self-check php.run (a boot's first pack fetches happen in it)
 	// #569: the BOOT SELF-CHECK. Gate 0b's red control read files as EMPTY, with no error: a SITE_REMOTE
 	// build whose read path is broken would serve empty PHP. A known remote .php is read through PHP
 	// here and must match its recorded size and SHA-256, or the boot fails, loudly.
@@ -2298,6 +2301,7 @@ async function boot(origin) {
 		}
 	}
 
+	const tCheck1 = Date.now(); // #1022 E2: after the self-check
 	php.onMessage(handleMessage);
 
 	const handler = new PHPRequestHandler({
@@ -2324,7 +2328,7 @@ async function boot(origin) {
 		// it now, so it is only queued, and the end of the next PHP run releases it.
 		retirer.retire(php, true);
 	}
-	return { php, handler, bootMs: { wasm: tWasm, site: tSite, files: tFiles, fileCount: count, fileBytes, opcacheFiles, memAt, marks: { b0: tB0, waitDone: tWaitDone, t0, wasm: tWasm, site: tSite, files: tFiles, end: Date.now(), reused: !!reuse } } };
+	return { php, handler, bootMs: { wasm: tWasm, site: tSite, files: tFiles, fileCount: count, fileBytes, opcacheFiles, memAt, marks: { b0: tB0, waitDone: tWaitDone, t0, wasm: tWasm, site: tSite, files: tFiles, end: Date.now(), reused: !!reuse, salted: tSalted, check0: tCheck0, check1: tCheck1, rc0, rc1: remoteCounters() } } };
 }
 
 let reserveTableReady = false;
