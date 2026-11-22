@@ -44,18 +44,22 @@ test('index.js logs it at the gateway entry, the Pages entry and the PHP run sta
 });
 
 // The lead's question on #1366: what does this cost on normal traffic (no x-pf-probe)? It must be NO line and no work past
-// one header read. A request whose url getter throws proves the URL is never parsed; a counted get() proves one header read.
+// one header read. A counted url getter proves the URL is never read; a counted get() proves one header read.
 test('no x-pf-probe (normal traffic): no line, and nothing past ONE header read (the URL is never touched)', async () => {
 	const m = await import('../probe-trace.mjs');
 	const out = [];
 	const mk = (val) => {
+		// Counted, not thrown: probeTrace reads the URL inside try/catch, which would swallow a throw (a mutant that read the
+		// URL first survived the throwing version).
 		const reads = [];
-		return { reads, req: { method: 'GET', get url() { throw new Error('the URL was read'); }, headers: { get: (k) => { reads.push(k); return val; } } } };
+		const urlReads = { n: 0 };
+		return { reads, urlReads, req: { method: 'GET', get url() { urlReads.n++; return 'https://x.example/shop/'; }, headers: { get: (k) => { reads.push(k); return val; } } } };
 	};
 	for (const [label, val] of [['no header', null], ['an invalid id', 'bad id!']]) {
-		const { req, reads } = mk(val);
-		assert.doesNotThrow(() => m.probeTrace(req, 'gateway', { log: (o) => out.push(o) }), label);
+		const { req, reads, urlReads } = mk(val);
+		m.probeTrace(req, 'gateway', { log: (o) => out.push(o) });
 		assert.deepEqual(reads, ['x-pf-probe'], label + ': exactly one header read');
+		assert.equal(urlReads.n, 0, label + ': the URL is never read');
 	}
 	assert.equal(out.length, 0, 'no line at all');
 });
