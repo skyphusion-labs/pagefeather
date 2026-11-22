@@ -90,7 +90,7 @@ const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 
 test('every answer of the Worker passes through the scrub', () => {
 	assert.match(src, /import \{ perfHeadersAllowed, scrubPerfHeaders, isOperatorRequest, noStoreAnywhere, operatorNoStore, serverTimingPhp \} from '\.\/perf-headers\.mjs';/);
-	assert.match(src, /async fetch\(req, env, ctx\) \{\s*(\/\/[^\n]*\n\s*)?return operatorNoStore\(scrubPerfHeaders\(await this\.serve\(req, env, ctx\), perfHeadersAllowed\(req, env\)\), req\);/);
+	assert.match(src, /async fetch\(req, env, ctx\) \{\s*(\/\/[^\n]*\n\s*)*return operatorNoStore\(scrubPerfHeaders\(busyAnswerFor\(req, new URL\(req\.url\), env, await this\.serve\(req, env, ctx\)\), perfHeadersAllowed\(req, env\)\), req\);/);
 	assert.match(src, /async serve\(req, env, ctx\) \{\s*ENV = env;/);
 });
 
@@ -156,9 +156,9 @@ test('noStoreAnywhere works on a Headers in place', () => {
 
 test('index.js: an operator request never reaches the cached entrypoint, and both entrypoints mark its answer', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	const route = src.slice(src.indexOf('function pageCacheRoute('), src.indexOf('function pageCacheHeaders('));
+	const route = readFileSync(new URL('../page-copy.mjs', import.meta.url), 'utf8').replace(/^[\s\S]*?export function pageCacheRoute\(/, 'function pageCacheRoute(').replace(/export function storeRequestSide[\s\S]*$/, '');
 	assert.match(route, /!isOperatorRequest\(req\)/, 'pageCacheRoute refuses an operator request');
-	assert.match(src, /return operatorNoStore\(scrubPerfHeaders\(await this\.serve\(req, env, ctx\), perfHeadersAllowed\(req, env\)\), req\);/, 'the site answer is marked');
+	assert.match(src, /return operatorNoStore\(scrubPerfHeaders\(busyAnswerFor\(req, new URL\(req\.url\), env, await this\.serve\(req, env, ctx\)\), perfHeadersAllowed\(req, env\)\), req\);/, 'the site answer is marked');
 	const pages = src.slice(src.indexOf('export class Pages extends WorkerEntrypoint'), src.indexOf('async purge(tags)'));
 	assert.match(pages, /if \(isOperatorRequest\(req\)\) noStoreAnywhere\(out\.headers\);/, 'the cached entrypoint marks it too');
 	assert.ok(!/out\.headers\.set\('cache-control', 'private, no-store'\);\s*return out;\s*}\s*\/\/ An RPC/.test(pages), 'not cache-control alone');

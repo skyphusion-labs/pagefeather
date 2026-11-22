@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from '../page-cache-ttl.mjs';
+import { storeRequestSide } from '../page-copy.mjs';
 
 test('the flag: unset or bad is off (null); an integer from 5 to 600 is on', () => {
 	assert.equal(productTtl({}), null);
@@ -56,13 +57,9 @@ test('#766: an answer made while any SQL statement failed is never stored at the
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	const start = src.indexOf('function pageCacheHeaders(');
 	const fn = src.slice(start, src.indexOf('\n}\n', start) + 2);
-	const consts = ['WP_COOKIE', 'PAGE_CACHE_NO_PATH', 'PAGE_CACHE_NO_PARAM'].map((n) => {
-		const m = src.match(new RegExp('^const ' + n + ' = [^\\n]*;$', 'm'));
-		assert.ok(m, n + ' is defined in index.js');
-		return m[0];
-	}).join('\n');
-	const pageCacheHeaders = new Function('PRODUCT_PAGE_HEADER', 'productTtl', 'isProductPage', 'edgeCacheControl',
-		consts + '\n' + fn + '\nreturn pageCacheHeaders;')(PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl);
+	// #1328: the request conditions live in page-copy.mjs; the real storeRequestSide is passed in.
+	const pageCacheHeaders = new Function('PRODUCT_PAGE_HEADER', 'productTtl', 'isProductPage', 'edgeCacheControl', 'storeRequestSide',
+		fn + '\nreturn pageCacheHeaders;')(PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl, storeRequestSide);
 	const run = (failed) => {
 		const out = new Headers();
 		const req = new Request('https://shop.example/?product=mug');
@@ -79,13 +76,9 @@ test('#759: a WordPress no-cache private answer gets no-store on the browser hea
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	const start = src.indexOf('function pageCacheHeaders(');
 	const fn = src.slice(start, src.indexOf('\n}\n', start) + 2);
-	const consts = ['WP_COOKIE', 'PAGE_CACHE_NO_PATH', 'PAGE_CACHE_NO_PARAM'].map((n) => {
-		const m = src.match(new RegExp('^const ' + n + ' = [^\\n]*;$', 'm'));
-		assert.ok(m, n + ' is defined in index.js');
-		return m[0];
-	}).join('\n');
-	const pageCacheHeaders = new Function('PRODUCT_PAGE_HEADER', 'productTtl', 'isProductPage', 'edgeCacheControl',
-		consts + '\n' + fn + '\nreturn pageCacheHeaders;')(PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl);
+	// #1328: the request conditions live in page-copy.mjs; the real storeRequestSide is passed in.
+	const pageCacheHeaders = new Function('PRODUCT_PAGE_HEADER', 'productTtl', 'isProductPage', 'edgeCacheControl', 'storeRequestSide',
+		fn + '\nreturn pageCacheHeaders;')(PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl, storeRequestSide);
 	const wpCc = 'no-cache, must-revalidate, max-age=0, private';
 	const out = new Headers({ 'cache-control': wpCc });
 	const req = new Request('https://shop.example/wp-admin/', { headers: { cookie: 'wordpress_logged_in=1' } });
