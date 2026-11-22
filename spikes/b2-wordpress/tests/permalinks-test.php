@@ -24,6 +24,9 @@ $GLOBALS['home']    = 'https://example.com/';
 function get_option( $k, $d = false ) { return isset( $GLOBALS['opt'][ $k ] ) ? $GLOBALS['opt'][ $k ] : $d; }
 function update_option( $k, $v, $autoload = null ) { $GLOBALS['opt'][ $k ] = $v; $GLOBALS['events'][] = 'version:' . $v; return true; }
 function add_action( $h, $cb, $prio = 10 ) { $GLOBALS['actions'][ $h ] = array( $cb, $prio ); return true; }
+$GLOBALS['filters'] = array();
+function __return_true() { return true; } // core's, wp-includes/functions.php
+function add_filter( $h, $cb, $prio = 10, $n = 1 ) { $GLOBALS['filters'][ $h ][] = $cb; return true; }
 function flush_rewrite_rules( $hard = true ) { $GLOBALS['flushed'][] = $hard; $GLOBALS['events'][] = 'flush'; }
 function create_initial_taxonomies() { $GLOBALS['events'][] = 'taxonomies:' . $GLOBALS['opt']['permalink_structure']; }
 function wp_unslash( $v ) { return $v; }
@@ -88,5 +91,14 @@ ok( 'plain /wp-jsonx/ is left alone', null === route( '/wp-jsonx/' ) );
 ok( 'plain / is left alone', null === route( '/' ) );
 ok( 'pretty structure: left to the rewrite rule', null === route( '/wp-json/wp/v2', '/%postname%/' ) );
 ok( 'a rest_route already set (?rest_route=) wins', '/x' === route( '/wp-json/wp/v2', '', '/x' ) );
+// #1345: got_url_rewrite(). The Worker routes every path that is not a file to index.php (as nginx try_files does), so
+// pretty permalinks work with no index.php in them. Core decides from SERVER_SOFTWARE (Apache, nginx, Caddy, IIS),
+// which php-wasm does not set, so got_url_rewrite() was false and options-permalink.php's "Post name" radio saved
+// /index.php/%postname%/. There an all-digits slug misses the year-archive guard and answers 404 (gb navigation
+// "can bind to a page", cf759hw 2026-11-22). Stock Apache saves /%postname%/.
+$gur = $GLOBALS['filters']['got_url_rewrite'] ?? array();
+ok( 'got_url_rewrite is filtered (the Worker rewrites every non-file path to index.php)', 1 === count( $gur ) );
+ok( 'got_url_rewrite: true, whatever core computed from SERVER_SOFTWARE', 1 === count( $gur ) && true === call_user_func( $gur[0], false ) );
+ok( 'got_mod_rewrite is NOT filtered (no .htaccess is written here)', empty( $GLOBALS['filters']['got_mod_rewrite'] ) );
 echo $fails . " failing\n";
 exit( $fails ? 1 : 0 );
