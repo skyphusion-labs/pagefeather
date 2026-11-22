@@ -8,6 +8,8 @@ Welcome. If you build WordPress sites, for yourself or for clients, and you are 
 after a WordPress VPS, this project is for you. It is also for edge and serverless developers who
 want to see how far WordPress can go on Cloudflare.
 
+**New here? [Start here](docs/guide/start-here.md).** One page: how to install a site, how to log in, and what the limits are.
+
 Pagefeather is a framework for WordPress on Cloudflare. There are two supported ways to run a site.
 
 **Approach A.** PHP-WASM (PHP compiled to WebAssembly) runs in a Worker. The database is an external
@@ -81,6 +83,8 @@ stay fresh for 30 s (`PAGE_CACHE_PRODUCT_TTL`, #628). Its other guest pages stay
 Cart, checkout, account and logged-in pages are never cached, so they run PHP every time.
 
 ## Quickstart
+
+If you come from cPanel or a LAMP server, follow [Start here](docs/guide/start-here.md): the same install, step by step. The commands below are the engineering version; every setting is in the [full reference](deploy/README.md).
 
 ### b-dosql on Workers Paid or Free, with deploy/deploy.sh
 
