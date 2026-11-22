@@ -40,8 +40,6 @@ On a Hyperdrive store (approach A), WooCommerce admin screens and bulk product e
 - the per-request query trace (2026-11-22): [#1078, the trace](https://github.com/skyphusion-labs/pagefeather/issues/1078#issuecomment-7083253110);
 - why each candidate fix was rejected or held: [#1078, the levers](https://github.com/skyphusion-labs/pagefeather/issues/1078#issuecomment-7083327101).
 
-A smaller fix for the block editor's templates list (29 queries down to about 12) is in progress, behind a flag.
-
 ### Order emails on Hyperdrive were late (#1215, fixed)
 
 WooCommerce queues each order email. The approach A cron alarm ran those actions 12 to 122 s later, on `cf759hl` at main `822ab24` (row "wc email wait"). The suite polls for 30 s, so a send could miss that poll. A second miss on that run was the harness (#1216; PR #1217 fixed it, merged 2026-11-21).
