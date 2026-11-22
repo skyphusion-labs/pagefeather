@@ -68,7 +68,7 @@ import { aPerfLine } from './perf-line.mjs';
 import { templateQueuePriority, templateLookupYield, templateLookupForwardYield } from './template-boot.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse, overflowHeldToPool } from './overflow.mjs';
-import { selfFetchRoute, selfFetchPoolAvailable, selfFetchCalls, selfFetchSameIsolate, selfFetchOutcome, SELF_FETCH_OBJECT, SELF_SAME_ISOLATE_HEADER, SELF_REFUSAL_SAME_ISOLATE, SELF_CACHE_ONLY_HEADER, SELF_CACHE_MISS_HEADER, selfCacheMissResponse } from './self-fetch.mjs';
+import { selfFetchRoute, selfFetchPoolAvailable, selfFetchCalls, selfFetchSameIsolate, selfFetchOutcome, SELF_FETCH_OBJECT, SELF_SAME_ISOLATE_HEADER, SELF_REFUSAL_SAME_ISOLATE, SELF_CACHE_ONLY_HEADER, SELF_CACHE_MISS_HEADER, selfCacheMissResponse, httpErrorReply } from './self-fetch.mjs';
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
 import { PURGE_GAP_MS, NO_CACHE_API, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
@@ -2959,7 +2959,7 @@ async function httpOpRun(op) {
 				// #1226: a refused self-fetch returns here, before selfFetchOnPool.
 				// Log one line, or 0 self-fetch lines cannot tell a refusal from a hop never sent.
 				if (self.route === 'refuse') console.log(JSON.stringify({ m: 'self-fetch', outcome: 'refused', why, method, path: url.pathname, iso: ISOLATE_ID, parent: runCallId }));
-				out = { error: why };
+				out = httpErrorReply(why);
 				return out;
 			}
 			res = self.route === 'pool' ? (await selfFetchFromCache(url, method, headers, signal)) || (await selfFetchOnPool(url, method, headers, body, signal)) : self.route === 'cache' ? await selfFetchCacheOrRefuse(url, method, headers, signal, self.missWhy) : await fetch(url, { method, headers, body, redirect: 'manual', signal });
@@ -3018,7 +3018,7 @@ async function httpOpRun(op) {
 		return out;
 	} catch (e) {
 		const name = e && e.name;
-		out = { error: name === 'TimeoutError' || name === 'AbortError' ? `Operation timed out after ${Math.round(Number(op.timeout) * 1000) || 5000} milliseconds` : String((e && e.message) || e) };
+		out = httpErrorReply(name === 'TimeoutError' || name === 'AbortError' ? `Operation timed out after ${Math.round(Number(op.timeout) * 1000) || 5000} milliseconds` : String((e && e.message) || e));
 		return out;
 	} finally {
 		stats.httpMs += Date.now() - t0;

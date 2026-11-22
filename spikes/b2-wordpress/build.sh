@@ -66,6 +66,7 @@ MU_PLUGINS=(
 	php/rest-list-memory.php
 	php/theme-json-cache.php
 	php/http-bridge.php
+	php/url-details-self.php
 	php/real-transactions.php
 	php/ast-cache-stats.php
 	php/woo-bootstrap-trim.php

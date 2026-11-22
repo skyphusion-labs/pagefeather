@@ -177,3 +177,26 @@ test('#1157 index.js: the http bridge line names its parent request (parent: run
 	assert.ok(lines.length >= 1, 'the http line exists');
 	for (const l of lines) assert.match(l, /parent: runCallId/, l.trim().slice(0, 120));
 });
+
+// #1157 (d), Conrad's choice 2026-11-22: a refused request to the site's own host is marked "self" on the reply PHP
+// gets, so the bridge can answer a url-details GET in-process (php/url-details-self.php). Every self refusal reason is
+// marked; nothing else is (an outbound host refusal, a timeout, a fetch error stay plain errors).
+test('#1157 (d) httpErrorReply marks every self refusal, and only those', async () => {
+	const m = await import('../self-fetch.mjs');
+	assert.equal(typeof m.httpErrorReply, 'function', 'self-fetch.mjs exports httpErrorReply');
+	for (const why of [m.SELF_REFUSAL_OBJECT, m.SELF_REFUSAL_GUARD, m.SELF_REFUSAL_NO_POOL, m.SELF_REFUSAL_CAPPED, m.SELF_REFUSAL_SAME_ISOLATE]) {
+		assert.deepEqual(m.httpErrorReply(why), { error: why, self: true }, why);
+	}
+	for (const why of ['host not in HTTP_ALLOW_HOSTS: x', 'Operation timed out after 5000 milliseconds', 'only http and https', 'Too many redirects', '']) {
+		assert.deepEqual(m.httpErrorReply(why), { error: why }, 'not marked: ' + why);
+	}
+});
+test('#1157 (d) index.js: the hop-check exit and the catch both build the reply with httpErrorReply', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const hopStart = src.indexOf('const self = selfFetchRoute({ sameHost: isSelfHost(url)');
+	const hopEnd = src.indexOf("res = self.route === 'pool'", hopStart);
+	const hop = src.slice(hopStart, hopEnd);
+	assert.match(hop, /out = httpErrorReply\(why\);\n\s*return out;/, 'the one refusal exit');
+	assert.doesNotMatch(hop, /out = \{ error: why \}/);
+	assert.match(src, /out = httpErrorReply\(name === 'TimeoutError' \|\| name === 'AbortError' \? `Operation timed out after/, 'the catch (a cache-route miss and a same-isolate hop throw their reason)');
+});
