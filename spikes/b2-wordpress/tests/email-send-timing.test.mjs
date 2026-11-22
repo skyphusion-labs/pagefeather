@@ -14,6 +14,6 @@ test('#1135 each send is timed: email-sent carries ms', () => {
 });
 test('#1135 a refused send is timed too: the rejection carries pfSendMs, and email-send-failed logs it', () => {
 	assert.match(src, /if \(e && typeof e === 'object'\) e\.pfSendMs = Date\.now\(\) - t0;/);
-	assert.match(src, /failures\.push\(\{ email: items\[i\]\.e, to: items\[i\]\.p\.to, error: String\(\(x\.reason && x\.reason\.message\) \|\| x\.reason\), ms: x\.reason && Number\.isFinite\(x\.reason\.pfSendMs\) \? x\.reason\.pfSendMs : null \}\);/);
-	assert.match(src, /m: 'email-send-failed', reason: scrub\(f\.error\), domain: domainOfAddress\(f\.to\), ms: f\.ms, retry: 'queued'/);
+	assert.match(src, /failures\.push\(\{ email: items\[i\]\.e, to: items\[i\]\.p\.to, error: String\(\(x\.reason && x\.reason\.message\) \|\| x\.reason\), code: x\.reason && x\.reason\.code \? String\(x\.reason\.code\) : '', ms: x\.reason && Number\.isFinite\(x\.reason\.pfSendMs\) \? x\.reason\.pfSendMs : null \}\);/);
+	assert.match(src, /m: 'email-send-failed', reason: scrub\(f\.error\), domain: domainOfAddress\(f\.to\), ms: f\.ms, retry: permanentRefusal\(f\.code \? \{ code: f\.code, message: f\.error \} : f\.error\) \? 'dead' : 'queued'/);
 });

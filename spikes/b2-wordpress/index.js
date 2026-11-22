@@ -46,7 +46,7 @@ import { recycleLine, recycleDecision } from './recycle-line.mjs';
 import { OBJECT_CACHE_MAX_BYTES, nextObjectCacheCap } from './object-cache-cap.mjs';
 import { PHP_ENGINE, ENGINE_RECYCLE_MIB } from './vendor/engine.mjs'; // #771: written by prepare.sh
 import { createTickMail, DEDUPE_PREFIX } from './email-handoff.mjs';
-import { failureRecords, drainRetries, DEAD_PREFIX, scrub } from './email-retry.mjs';
+import { drainRetries, DEAD_PREFIX, RETRY_PREFIX, scrub, permanentRefusal, splitFailures, storeFirstFailures } from './email-retry.mjs';
 import { routeClass, createTrace } from './file-trace.mjs';
 import { refuseSocketsDecorator, parseMessage } from './runtime-guards.mjs';
 import wasmModule from './vendor/php_8_3.wasm';
@@ -1167,7 +1167,7 @@ function tickMailFor(env, storage) {
 			const r = await boundedWait(sp, SEND_TIMEOUT_MS);
 			if (r === TIMED_OUT) return 'bounded';
 			const o = r;
-			return { sent: o.sent, sendFailed: o.failed, of: o.sent + o.failed, reason: o.reason }; // #1135: the reason reaches PHP
+			return { sent: o.sent, sendFailed: o.failed, of: o.sent + o.failed, reason: o.reason, retry: o.retry }; // #1135, #1138: the reason and whether a retry was queued
 		},
 		lostWrites: () => resetFailTotal - base,
 		log: (o) => console.log(JSON.stringify(o)),
@@ -1264,20 +1264,27 @@ async function emailDueToCron(env) {
 	}
 }
 async function mailRetryPut(env, failures) {
-	const records = failureRecords(failures, Date.now());
-	if (!records.length) return;
+	const now = Date.now();
+	const split = splitFailures(failures, now);
+	const n = split.retry.length + split.dead.length;
+	if (!n) return;
+	const log = (o) => console.log(JSON.stringify(o));
 	try {
 		const st = mailStoreFor(env);
-		if (st) return await mailRetryStore(st, records);
+		if (st) {
+			const out = await storeFirstFailures({ storage: st, failures, now, log });
+			await mailRetryArm(st, out.next);
+			return;
+		}
 		if (approachACronEnabled(env) && env.PHP_RUNTIME) {
 			const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(CRON_OBJECT_NAME));
-			const res = await stub.fetch(new Request('https://do.internal' + MAIL_RETRY_PATH, { method: 'POST', headers: { [MAIL_RETRY_HEADER]: '1', 'content-type': 'application/json' }, body: JSON.stringify(records) }));
-			if (res.ok) return;
+			const res = await stub.fetch(new Request('https://do.internal' + MAIL_RETRY_PATH, { method: 'POST', headers: { [MAIL_RETRY_HEADER]: '1', 'content-type': 'application/json' }, body: JSON.stringify([...split.retry, ...split.dead]) }));
+			if (res.ok) return; // the cron object stores them and logs email-dead for a new permanent refusal
 			throw new Error('cron object answered ' + res.status);
 		}
-		console.log(JSON.stringify({ m: 'email-retry', unavailable: records.length, why: 'no durable store here (approach A needs A_CRON)' }));
+		console.log(JSON.stringify({ m: 'email-retry', unavailable: n, why: 'no durable store here (approach A needs A_CRON)' }));
 	} catch (e) {
-		console.log(JSON.stringify({ m: 'email-retry', unstored: records.length, error: String((e && e.message) || e).slice(0, 160) }));
+		console.log(JSON.stringify({ m: 'email-retry', unstored: n, error: String((e && e.message) || e).slice(0, 160) }));
 	}
 }
 // The drain, from the object's alarm: no PHP. A retry is one message to its one recipient through sendEmail.
@@ -1350,16 +1357,17 @@ function sendListOutcome(env, toSend) {
 	return Promise.allSettled(items.map((x) => x.p)).then(async (rs) => {
 		const failures = [];
 		rs.forEach((x, i) => {
-			if (x.status === 'rejected') failures.push({ email: items[i].e, to: items[i].p.to, error: String((x.reason && x.reason.message) || x.reason), ms: x.reason && Number.isFinite(x.reason.pfSendMs) ? x.reason.pfSendMs : null });
+			if (x.status === 'rejected') failures.push({ email: items[i].e, to: items[i].p.to, error: String((x.reason && x.reason.message) || x.reason), code: x.reason && x.reason.code ? String(x.reason.code) : '', ms: x.reason && Number.isFinite(x.reason.pfSendMs) ? x.reason.pfSendMs : null });
 		});
 		if (failures.length) {
 			console.log('email send: ' + failures.length + ' of ' + rs.length + ' failed');
 			// #1088 B (#104, #856): each refused send is logged loudly WITH its reason (addresses and URLs scrubbed) and the
-			// recipient's domain only.
-			for (const f of failures) console.log(JSON.stringify({ '@event': 'email-send-failed', m: 'email-send-failed', reason: scrub(f.error), domain: domainOfAddress(f.to), ms: f.ms, retry: 'queued' }));
-			await mailRetryPut(env, failures); // #1057: retried with backoff, never dropped
+			// recipient's domain only. #1138: a permanent refusal is dead-lettered, not queued for retry.
+			for (const f of failures) console.log(JSON.stringify({ '@event': 'email-send-failed', m: 'email-send-failed', reason: scrub(f.error), domain: domainOfAddress(f.to), ms: f.ms, retry: permanentRefusal(f.code ? { code: f.code, message: f.error } : f.error) ? 'dead' : 'queued' }));
+			await mailRetryPut(env, failures); // #1057 retries a transient refusal; #1138 dead-letters a permanent one
 		}
-		return { sent: rs.length - failures.length, failed: failures.length, reason: failures.length ? scrub(failures[0].error) : null };
+		const retry = failures.some((f) => !permanentRefusal(f.code ? { code: f.code, message: f.error } : f.error));
+		return { sent: rs.length - failures.length, failed: failures.length, reason: failures.length ? scrub(failures[0].error) : null, retry: failures.length ? retry : undefined };
 	});
 }
 // The sent count only (the request path's flush).
@@ -3729,8 +3737,21 @@ export class PhpRuntime extends DurableObject {
 			let records = [];
 			try { records = await raw.json(); } catch { return new Response('bad json', { status: 400 }); }
 			if (!Array.isArray(records)) return new Response('bad records', { status: 400 });
-			await mailRetryStore(this.ctx.storage, records.filter((r) => Array.isArray(r) && typeof r[0] === 'string' && r[0].startsWith('email-retry:') && r[1]));
-			return Response.json({ ok: true, stored: records.length });
+			const retry = [];
+			const dead = [];
+			for (const r of records) {
+				if (!Array.isArray(r) || typeof r[0] !== 'string' || !r[1] || typeof r[1] !== 'object') continue;
+				if (r[0].startsWith(RETRY_PREFIX)) retry.push(r);
+				// A dead letter is metadata only. A record that still carries the message is not stored.
+				else if (r[0].startsWith(DEAD_PREFIX) && !r[1].email && !r[1].message) dead.push(r);
+			}
+			await mailRetryStore(this.ctx.storage, retry);
+			for (const [k, meta] of dead) {
+				if (await this.ctx.storage.get(k)) continue;
+				await this.ctx.storage.put(k, meta);
+				console.log(JSON.stringify({ '@event': 'email-dead', m: 'email-dead', reason: 'permanent', attempts: meta.attempts, subjectHash: meta.subjectHash, error: meta.lastError }));
+			}
+			return Response.json({ ok: true, stored: retry.length + dead.length });
 		}
 		// #855: the Workers Cron tick from the site Worker (POST + x-pf-cron-tick). A WATCHDOG for this object's cron alarm:
 		// the alarm runs the leg (alarm(), armBeforeRun keeps the chain, the b-dosql hardened path); the tick only re-arms

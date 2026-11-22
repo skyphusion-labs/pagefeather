@@ -77,7 +77,8 @@ if ( ! function_exists( 'wp_mail' ) ) {
 		// before this returns (#362, email-handoff.mjs), so it knows the outcome: #1135, a send the
 		// platform refused (or a handoff that failed) returns false and fires wp_mail_failed with the
 		// reason, as core does when PHPMailer fails, so WP Mail Logging and any wp_mail_failed listener
-		// see it. A refused send is still retried (#1057). An unreadable reply stays true, as before.
+		// see it. A transient refusal is retried (#1057). A permanent one is dead-lettered at once and the reply
+		// says retry false (#1138). An unreadable reply stays true, as before.
 		$reply = json_decode( (string) post_message_to_js( wp_json_encode( $payload ) ), true );
 		if ( is_array( $reply ) && ( ( isset( $reply['ok'] ) && false === $reply['ok'] ) || ( isset( $reply['refused'] ) && (int) $reply['refused'] > 0 ) ) ) {
 			if ( isset( $reply['ok'] ) && false === $reply['ok'] ) {
