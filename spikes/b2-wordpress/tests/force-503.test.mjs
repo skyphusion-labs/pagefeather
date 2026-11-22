@@ -17,7 +17,22 @@ test('force503Allowed: only FORCE_503=on, a valid spike token, and x-pf-force-50
 test('index.js: serve() answers the engine own shed response for it, after the token is read', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	const s = src.slice(src.indexOf('async serve(req, env, ctx) {'), src.indexOf('async serve(req, env, ctx) {') + 6000);
-	const at = s.indexOf('if (force503Allowed(env, spikeOk, req)) {');
+	const at = s.indexOf('const forced = force503Mode(env, spikeOk, req);');
 	assert.ok(at > s.indexOf('const spikeOk ='), 'after the spike token is read');
-	assert.match(s, /if \(force503Allowed\(env, spikeOk, req\)\) \{\n\t\t\tconsole\.log\(JSON\.stringify\(\{ m: 'force-503', path: url\.pathname \}\)\);\n\t\t\treturn phpShedResponse\(\);/, 'the same 503 a real shed sends');
+	assert.match(s, /return forced === 429 \? busy429\(phpShedResponse\(\)\) : phpShedResponse\(\);/, 'the same answer a real shed sends, or its 429 twin');
+});
+test('force503Mode: 1 or 503 gives the shed 503; 429 gives the 429 variant; anything else nothing', async () => {
+	const m = await import('../force-503.mjs');
+	const on = { FORCE_503: 'on' };
+	assert.equal(m.force503Mode(on, true, r({ 'x-pf-force-503': '1' })), 503);
+	assert.equal(m.force503Mode(on, true, r({ 'x-pf-force-503': '503' })), 503);
+	assert.equal(m.force503Mode(on, true, r({ 'x-pf-force-503': '429' })), 429);
+	assert.equal(m.force503Mode(on, true, r({ 'x-pf-force-503': '500' })), null);
+	assert.equal(m.force503Mode({}, true, r({ 'x-pf-force-503': '429' })), null, 'off by default');
+	assert.equal(m.force503Mode(on, false, r({ 'x-pf-force-503': '429' })), null, 'no spike token');
+	const a = m.busy429(new Response('The site is busy. Please try again in a few seconds.\n', { status: 503, headers: { 'retry-after': '5', 'x-php-lock': 'shed' } }));
+	assert.equal(a.status, 429);
+	assert.equal(a.headers.get('retry-after'), '5');
+	assert.equal(a.headers.get('x-php-lock'), 'shed', 'the same headers as the shed');
+	assert.equal(await a.text(), 'The site is busy. Please try again in a few seconds.\n', 'the same body');
 });
