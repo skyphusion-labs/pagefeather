@@ -69,6 +69,7 @@ import { templateQueuePriority, templateLookupYield, templateLookupForwardYield 
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse, overflowHeldToPool } from './overflow.mjs';
 import { selfFetchRoute, selfFetchPoolAvailable, selfFetchCalls, selfFetchSameIsolate, selfFetchOutcome, SELF_FETCH_OBJECT, SELF_SAME_ISOLATE_HEADER, SELF_REFUSAL_SAME_ISOLATE, SELF_CACHE_ONLY_HEADER, SELF_CACHE_MISS_HEADER, selfCacheMissResponse, httpErrorReply } from './self-fetch.mjs';
+import { phpRequestBody } from './request-body.mjs';
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
 import { PURGE_GAP_MS, NO_CACHE_API, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
@@ -5227,7 +5228,7 @@ async function handleInner(req, env, url, spikeOk, maxBody, ctx) {
 				headers['content-type'] = staged.contentType;
 				headers['content-length'] = String(body.length);
 			} else {
-				body = ['GET', 'HEAD'].includes(req.method) ? undefined : new Uint8Array(await req.arrayBuffer());
+				body = await phpRequestBody(req); // #1344: a GET's JSON body reaches PHP, as on stock (request-body.mjs)
 			}
 			if (body && body.length > maxBody) return new Response('request body too large', { status: 413 });
 			purgeRequested = false;
