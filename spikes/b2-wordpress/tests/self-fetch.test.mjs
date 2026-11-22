@@ -200,3 +200,24 @@ test('#1157 (d) index.js: the hop-check exit and the catch both build the reply 
 	assert.doesNotMatch(hop, /out = \{ error: why \}/);
 	assert.match(src, /out = httpErrorReply\(name === 'TimeoutError' \|\| name === 'AbortError' \? `Operation timed out after/, 'the catch (a cache-route miss and a same-isolate hop throw their reason)');
 });
+
+// #1326 live round 1 (cf759hw, 2026-11-22): every no-pool cache-route miss logged a refused line with NO why, and the
+// http line's error was the bare "Error". httpHop returned { route, why } and dropped selfFetchRoute's missWhy, so
+// selfFetchCacheOrRefuse threw new Error(undefined). That reply was never marked self, so (d) never ran. This runs
+// the REAL httpHop source on stubs (the pins above match text, and one passed while the value was undefined).
+test('#1326 httpHop carries the cache route missWhy, so a miss is refused WITH its reason and marked self', async () => {
+	const m = await import('../self-fetch.mjs');
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const start = src.indexOf('function httpHop(url, ovs) {');
+	const fn = src.slice(start, src.indexOf('\n}\n', start) + 2);
+	assert.ok(start > 0 && fn.length > 0, 'httpHop exists');
+	const ocCtx = { inObject: false, overflowed: false, exports: { Pages: {} } };
+	const httpHop = new Function('selfFetchRoute', 'selfFetchPoolAvailable', 'isSelfHost', 'ocCtx', 'ENV', 'overHeld', 'ovHeld', 'httpRefusal',
+		fn + '\nreturn httpHop;')(m.selfFetchRoute, m.selfFetchPoolAvailable, () => true, ocCtx, {}, () => false, 0, () => null);
+	const hop = httpHop(new URL('https://shop.example/a-page'), { on: false });
+	assert.equal(hop.route, 'cache', 'no pool, the Pages export: the cache route');
+	assert.equal(hop.missWhy, m.SELF_REFUSAL_NO_POOL, 'the miss keeps its reason');
+	// what the catch then builds from the thrown Error
+	const e = new Error(hop.missWhy);
+	assert.deepEqual(m.httpErrorReply(String((e && e.message) || e)), { error: m.SELF_REFUSAL_NO_POOL, self: true }, 'marked self, so (d) can answer');
+});

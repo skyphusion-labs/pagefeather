@@ -2904,7 +2904,9 @@ function httpRefusal(url) {
 function httpHop(url, ovs) {
 	const self = selfFetchRoute({ sameHost: isSelfHost(url), inObject: Boolean(ocCtx && ocCtx.inObject), overflowed: Boolean(ocCtx && ocCtx.overflowed), poolAvailable: selfFetchPoolAvailable(ENV, ovs), capped: overHeld(ovs, ovHeld), cacheAvailable: Boolean(ocCtx && !ocCtx.inObject && ocCtx.exports && ocCtx.exports.Pages) });
 	const why = self.route === 'refuse' ? self.why : self.route === 'out' ? httpRefusal(url) : (url.protocol === 'http:' || url.protocol === 'https:' ? null : 'only http and https');
-	return { route: self.route, why };
+	// #1326 live round 1: missWhy must travel with the route. Without it a cache-route miss threw new Error(undefined),
+	// logged a refused line with no why, and the reply ("Error") was never marked self, so (d) never ran.
+	return { route: self.route, why, missWhy: self.missWhy };
 }
 // #1215: a non-blocking request is refused, as a blocking one is, before anything is queued.
 function httpFirstHopRefusal(op) {
