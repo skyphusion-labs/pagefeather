@@ -88,3 +88,13 @@ if ( ! function_exists( 'skyphusion_permalinks_rest_route' ) ) {
 	}
 }
 add_action( 'parse_request', 'skyphusion_permalinks_rest_route', 5 );
+
+// #1345: URL rewriting IS available. The engine's request handler sends every path that is not a file to index.php
+// (its file-not-found action; php-self.mjs), as nginx's try_files does, in the Worker and in the object alike. Core
+// decides got_url_rewrite() from SERVER_SOFTWARE (Apache with mod_rewrite, nginx, Caddy, IIS 7), which php-wasm does
+// not set, so it was false: options-permalink.php then offers every structure with an /index.php prefix, and its
+// "Post name" radio saved /index.php/%postname%/. Under that structure an all-digits slug misses
+// wp_unique_post_slug()'s year guard (%postname% is not first), so /index.php/<id>/ ran as a year archive and answered
+// 404 where stock (Apache, /%postname%/) gives the slug "<id>-2" and serves the post. got_mod_rewrite() stays false:
+// no .htaccess is written here.
+add_filter( 'got_url_rewrite', '__return_true' );

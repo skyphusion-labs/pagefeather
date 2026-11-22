@@ -121,6 +121,16 @@ oEmbed of the site's own posts and pages is NOT a self-fetch: core resolves it i
 
 **Measured so far:** the decision path only, in `tests/url-details-self-test.php` (23 checks) and `tests/self-fetch.test.mjs`. 16 mutants of the guards each turn one of them red. The live proof on `cf759hw` (pool off) and the two gb navigation specs ("can update page link to a new page link" and "Focus management when using the navigation link appender") are on #1157.
 
+## Permalinks: a structure saved with /index.php stays until you re-save it (#1345)
+
+Before #1345, WordPress on this engine believed that URL rewriting was not available. So Settings, Permalinks offered every structure with an `/index.php` prefix: choosing "Post name" saved `/index.php/%postname%/`, not `/%postname%/`. The engine has always sent every path that is not a file to `index.php`, so pretty permalinks without `/index.php` do work. Since #1345, the screen offers them, as on a stock Apache or nginx host.
+
+**What to do on a site set up before #1345:**
+- **If your permalink structure starts with `/index.php/`** and you want stock URLs, go to Settings, Permalinks, choose your structure, and save. That is the only change needed. WordPress keeps a stored structure until an admin re-saves this screen, so the engine update alone does not change it.
+- **Old links keep working:** WordPress redirects an `/index.php/...` URL to the new permalink.
+
+**Why it matters:** under `/index.php/%postname%/`, a post whose slug is all digits (an untitled post gets its id as the slug) can answer 404. Its URL is read as a year archive, because WordPress only renames such slugs when `%postname%` comes first in the structure. Under `/%postname%/` the slug becomes `<id>-2`, and the post is served.
+
 ## WP-CLI operator route (#1258)
 
 `POST /_pf/wp-cli` is off unless `WP_CLI_ENDPOINT=on`. It needs Cloudflare Access and a custom domain (#1264, #1260). The #1260 Access application is not created by IaC yet. The wall cap is 25 s. One run at a time holds per isolate, not per site: on approach A many isolates can run a command at once. A command drops that isolate's warm runtime, so the next page request boots cold. After the wall the route answers 124, and `php.exit` drops the JS heap handle, but the in-flight `php.cli` keeps running until the command finishes. The next request is not held behind that run. On dosql-local an allowed command slowed by 8 s answered 124 in 0.980 s (`ms` 962), and the next command answered 124 in 0.808 s (`ms` 794). Turning the endpoint on adds `wp-cli.phar` (7,142,777 bytes, about 7 MB) to `site.zip`, against the 64 MiB Worker limit (the upload gate is 62 MiB). With the endpoint unset, the bundle does not contain the phar. Long jobs (search-replace, import) are refused until step 5. The allowlist is the code lock: WP-CLI ignores `DISALLOW_FILE_MODS`. `user_pass` and `user_activation_key` are never printed. The full limits are in [../spikes/wp-cli-1258.md](../spikes/wp-cli-1258.md).
