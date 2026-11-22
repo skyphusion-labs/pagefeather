@@ -70,6 +70,7 @@ import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse, overflowHeldToPool } from './overflow.mjs';
 import { selfFetchRoute, selfFetchPoolAvailable, selfFetchCalls, selfFetchSameIsolate, selfFetchOutcome, SELF_FETCH_OBJECT, SELF_SAME_ISOLATE_HEADER, SELF_REFUSAL_SAME_ISOLATE, SELF_CACHE_ONLY_HEADER, SELF_CACHE_MISS_HEADER, selfCacheMissResponse, httpErrorReply } from './self-fetch.mjs';
 import { probeTrace } from './probe-trace.mjs';
+import { force503Allowed } from './force-503.mjs';
 import { phpRequestBody } from './request-body.mjs';
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
@@ -4576,6 +4577,11 @@ const site = {
 			return toPhpObject(req, env, url, ctx);
 		}
 		const spikeOk = Boolean(env.SPIKE_TOKEN) && req.headers.get('x-spike-token') === env.SPIKE_TOKEN;
+		// #1328 forced-503 test (force-503.mjs; FORCE_503=on, the spike token and x-pf-force-503: 1): the engine's own shed.
+		if (force503Allowed(env, spikeOk, req)) {
+			console.log(JSON.stringify({ m: 'force-503', path: url.pathname }));
+			return phpShedResponse();
+		}
 		if (url.pathname.startsWith('/_') && !spikeOk) return new Response('forbidden', { status: 403 });
 		// #1152: the Worker's build and the cron object's (its /_build answers from the object's own code), so a deploy can
 		// tell whether the cron object moved to the new version. Spike token (the gate above).
