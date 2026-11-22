@@ -42,9 +42,14 @@ test('index.js: the cron leg is gated on cronLegDue, and its start is stored bef
 	const stored = body.indexOf('await this.ctx.storage.put(CRON_LAST_KEY, Date.now());', go);
 	const boots = body.indexOf('cr = await runCron(', go);
 	assert.ok(go >= 0 && stored > go && boots > stored, 'store the start, then run');
-	// The purge is not gated: it runs after the cron block, whatever legDue says.
-	const purge = body.indexOf('const due = onDue('); // #699: the purge step, purge-state.mjs
+	// The purge is not gated: it runs after the cron block, whatever legDue says. #837 moved the #699 purge step into
+	// sendDuePurge() (shared with approach A's purge-only object); alarmRun calls it at the same place.
+	const purge = body.indexOf('await this.sendDuePurge()');
 	assert.ok(purge > boots, 'the purge still runs after the cron block');
 	assert.ok(!/legDue/.test(body.slice(purge)), 'the purge does not read legDue');
+	const m = src.indexOf('async sendDuePurge() {');
+	const method = src.slice(m, src.indexOf('\n\t}\n', m));
+	assert.ok(m >= 0 && method.includes('const due = onDue('), 'sendDuePurge is the #699 purge step');
+	assert.ok(!/legDue/.test(method), 'and it does not read legDue');
 	assert.match(body, /notDue: !legDue/, 'a not-due skip is visible in /_purgestate cronSkip');
 });
