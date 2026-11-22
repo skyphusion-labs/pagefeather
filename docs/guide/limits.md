@@ -85,7 +85,7 @@ A Worker cannot fetch its own site. Cloudflare refuses a same-zone `fetch()` wit
 - **Still refused (404 `no_response`), never guessed:**
   - a URL that names no post or page (an archive, a term, an author, search, a custom route);
   - a post that an anonymous visitor cannot see (draft, private, trash). Stock's anonymous fetch gets a 404 for these too.
-  - a theme without `title-tag` support, which prints its own `<title>`.
+  - a classic theme without `title-tag` support, which prints its own `<title>`. A block theme is answered: its template prints core's document title whether or not it declares `title-tag`.
 
 **Other self-fetches on an uncached URL with the pool off stay refused:**
 - Site Health's loopback and REST availability tests;
@@ -98,7 +98,7 @@ A Worker cannot fetch its own site. Cloudflare refuses a same-zone `fetch()` wit
 
 oEmbed of the site's own posts and pages is NOT a self-fetch: core resolves it in-process (`wp_filter_pre_oembed_result` on `pre_oembed_result`, through `url_to_postid`). No HTTP request is made, so it is not refused.
 
-**Measured so far:** the decision path only, in `tests/url-details-self-test.php` (22 checks) and `tests/self-fetch.test.mjs`. 16 mutants of the guards each turn one of them red. The live proof on `cf759hw` (pool off) and the two gb navigation specs ("can update page link to a new page link" and "Focus management when using the navigation link appender") are on #1157.
+**Measured so far:** the decision path only, in `tests/url-details-self-test.php` (23 checks) and `tests/self-fetch.test.mjs`. 16 mutants of the guards each turn one of them red. The live proof on `cf759hw` (pool off) and the two gb navigation specs ("can update page link to a new page link" and "Focus management when using the navigation link appender") are on #1157.
 
 ## WP-CLI operator route (#1258)
 
