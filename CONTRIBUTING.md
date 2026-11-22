@@ -161,6 +161,14 @@ Branch from `main`, and open the pull request against `main`. Please keep each p
 subject; that makes it easier to review. `main` is protected, so every change lands through a pull
 request.
 
+## Changing the base branch
+
+A retarget through the API does not trigger checks. GitHub does not send `pull_request` `opened`
+or `synchronize` when you change `base` with `PATCH /repos/{owner}/{repo}/pulls/{pull_number}`.
+CI, CodeQL and approval-at-head do not run on that head.
+
+Close the pull request and reopen it, or push a commit. That starts the checks.
+
 ## Conduct and security
 
 Be decent to each other. Read [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
