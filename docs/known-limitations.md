@@ -6,6 +6,14 @@ This page lists what does not work yet, or works only with care, so you can plan
 
 The rows are in [results.md](results.md), 2026-11-20 and 2026-11-21. The support matrix summary has the per-tier counts.
 
+### A guest product page on a page-cache MISS on Hyperdrive was slow (#1277, open until measured end to end)
+
+On `cf759hl`, 3 guest product pages on a page-cache MISS took 9 to 12 s at the browser, past the suite's 10 s wait. The render ran in the `Pages` isolate at the visitor's edge, far from the database: about 57 ms per query under load, against about 17 direct.
+
+#1296 renders a MISS in the placed gateway instead. On `cf759hl` at its merge head (f69b097e), 24 of 24 product misses that entered at DFW and LAX ran at SEA, next to the database, at about 15 ms per query (`cf-placement`). Under the wc suite's load, the warm render (`phpMs`) went from p50 1,530, p95 5,621 ms to p50 1,180, p95 1,483 ms. The measurements are on [#1277](https://github.com/skyphusion-labs/pagefeather/issues/1277).
+
+**Not yet measured:** the time at the browser on those 3 pages at the merge head. The next full wc suite on `cf759hl` measures it, against the 10 s wait. Until then this item stays open.
+
 ### WooCommerce checkout on Hyperdrive is slow (#1218, #1210)
 
 On `cf759hl` at main `822ab24`, 6 of 10 blocks checkout tests missed the suite's 10 s thank-you wait (#1210). The order POST took 9.3 to 11.8 s. The order was placed, and the page then answered 200. A query trace of one guest order showed 404 per-order transient DELETEs, 4.8 s of database time. #1206 added that cost.
