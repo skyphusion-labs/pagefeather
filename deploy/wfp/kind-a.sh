@@ -32,16 +32,25 @@ oc_kv_title() { echo "wp-wfp-$1-oc"; }
 # One per kind a site, so the account holds about that many approach A sites, minus the configs it has already.
 HYPERDRIVE_CONFIG_LIMIT=${HYPERDRIVE_CONFIG_LIMIT:-25}
 
-# hd_configs: the account's Hyperdrive configs, one "<id> <name>" line each. Exit 1 when the list cannot be read.
+# hd_configs: the account's Hyperdrive configs, one "<id> <name>" line each, from EVERY page (#1323: the list pages,
+# 20 by default; one page counted at most 20, under the 25 limit). Exit 1 when any page cannot be read: a page that
+# is not read is never counted as empty.
 hd_configs() {
-  local out code
-  out=$(api GET "/hyperdrive/configs") || return 1
-  code=${out##*$'\n'}
-  [ "$code" = 200 ] || { echo "the Hyperdrive config list cannot be read (HTTP $code)" >&2; return 1; }
-  printf '%s' "${out%$'\n'*}" | python3 -I -c 'import json, sys
-d = json.load(sys.stdin)
-if d.get("success") is not True or not isinstance(d.get("result"), list): sys.exit(1)
-for c in d["result"]: print(c.get("id", ""), c.get("name", ""))'
+  local page=1 pages=1 out code body
+  while [ "$page" -le "$pages" ]; do
+    out=$(api GET "/hyperdrive/configs?per_page=100&page=$page") || return 1
+    code=${out##*$'\n'}
+    [ "$code" = 200 ] || { echo "the Hyperdrive config list cannot be read (page $page, HTTP $code)" >&2; return 1; }
+    # "C <id> <name>" per config, then "P <total pages>". Anything else is an unread page.
+    body=$(printf '%s' "${out%$'\n'*}" | python3 -I -c 'import json, sys
+d = json.load(sys.stdin); r = d.get("result"); t = (d.get("result_info") or {}).get("total_pages", 1)
+if d.get("success") is not True or not isinstance(r, list) or not isinstance(t, int) or not 1 <= t <= 100: sys.exit(1)
+for c in r: print("C", c.get("id", ""), c.get("name", ""))
+print("P", t)') || { echo "the Hyperdrive config list cannot be read (page $page)" >&2; return 1; }
+    printf '%s\n' "$body" | sed -n 's/^C //p'
+    pages=$(printf '%s\n' "$body" | sed -n 's/^P //p')
+    page=$((page + 1))
+  done
 }
 # hd_find <site>: the id of the site's config (by its name), or nothing. Exit 1 when the list cannot be read.
 hd_find() {

@@ -90,11 +90,21 @@ def listed(d, key=None):
 
 
 def own_hyperdrive(s):
-    """#1319: the id of the Hyperdrive config named wp-wfp-<s>, or None when there is none or the list is unread."""
-    st, d = api("/hyperdrive/configs")
-    if st != 200 or not d or not isinstance(d.get("result"), list):
-        return None
-    return next((c.get("id") for c in d["result"] if isinstance(c, dict) and c.get("name") == "wp-wfp-%s" % s), None)
+    """#1319: the id of the Hyperdrive config named wp-wfp-<s>, or None when there is none or a page is unread.
+    #1323: every page (the list pages, 20 by default)."""
+    page, pages = 1, 1
+    while page <= pages:
+        st, d = api("/hyperdrive/configs?per_page=100&page=%d" % page)
+        if st != 200 or not d or not isinstance(d.get("result"), list):
+            return None
+        for c in d["result"]:
+            if isinstance(c, dict) and c.get("name") == "wp-wfp-%s" % s:
+                return c.get("id")
+        t = (d.get("result_info") or {}).get("total_pages", 1)
+        if not isinstance(t, int) or not 1 <= t <= 100:
+            return None
+        pages, page = t, page + 1
+    return None
 
 
 def own_oc_kv(s):
