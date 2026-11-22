@@ -474,6 +474,10 @@ jobs:
         # request-body.mjs phpRequestBody and index.js handle(): a GET with a body sends it, an empty GET sends none,
         # HEAD never does, every other method is unchanged.
         run: node --test spikes/b2-wordpress/tests/request-body.test.mjs
+      - name: a REST GET's JSON body reaches PHP on the object paths (issue #1352)
+        # request-body.mjs carry: a non-empty GET is forwarded as POST with x-pf-orig-method: GET, the object
+        # restores method GET with those bytes, an empty GET and HEAD do not, a client marker cannot, a retry resends.
+        run: node --test spikes/b2-wordpress/tests/object-get-body.test.mjs
       - name: An idle approach A cron alarm stays backed off; the Cron Trigger tick pulls it in only when work is due (#1164)
         run: node --test spikes/b2-wordpress/tests/idle-tick.test.mjs
       - name: Approach A Workers Cron scaffold (#855)

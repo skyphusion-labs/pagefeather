@@ -44,7 +44,7 @@ test('index.js answers through fetchWithMemoryRetry, and never tags a memory res
 	const i = src.indexOf('async function toPhpObjectCall(') /* #708: the body behind the toPhpObject wrapper */;
 	const body = src.slice(i, src.indexOf('\n}\n', i));
 	assert.match(body, /const res = await fetchWithMemoryRetry\(/);
-	assert.match(body, /req\.method,/, 'the retry decision gets the request method');
+	assert.match(body, /origMethod,/, 'the retry decision gets the original method (a carried GET stays a GET, #1352)');
 	// A stub per attempt: the stub is made inside the send function, not before it.
 	const send = body.indexOf('fetchWithMemoryRetry(');
 	assert.ok(body.indexOf('env.PHP_RUNTIME.get(', send) > send, 'the stub is made inside send');
@@ -252,7 +252,7 @@ test('index.js toPhpObject: the storage kind reaches the log line and the write-
 	assert.match(body, /const reset = isResetKind\(kind\);/);
 	assert.match(body, /const tag = reset \? 'isolate-reset' : kind === 'internal' \? 'platform-internal' : 'overloaded';/);
 	assert.match(body, /m: tag, kind,/, 'logged with its kind, so it is counted');
-	assert.match(body, /if \(objectErrorOutcome\(kind, req\.method\) === 'write-loss'\) \{/);
+	assert.match(body, /if \(objectErrorOutcome\(kind, origMethod\) === 'write-loss'\) \{/);
 	assert.match(body, /writeLossResponse\('unknown', wantsJson\(url\.pathname, url\.search, req\.headers\.get\('accept'\)\), kind\);/, 'the 500 names the reset kind');
 	assert.match(body, /The site had an internal error\./);
 	assert.match(body, /The site restarted\./);
@@ -293,7 +293,7 @@ test('#1004: internal on a method that may have written is write-loss; GET, HEAD
 	assert.equal(objectErrorOutcome('memory', 'GET'), '503', 'a safe method after a reset stays the 503');
 	// The write-loss answer is the existing path: probe, then rolled back only on proof.
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	const branch = src.indexOf("if (objectErrorOutcome(kind, req.method) === 'write-loss') {");
+	const branch = src.indexOf("if (objectErrorOutcome(kind, origMethod) === 'write-loss') {");
 	const h503 = src.indexOf('const headers = objectErrorHeaders(kind, name, OVERLOAD_RETRY_AFTER_S);', branch);
 	const block = src.slice(branch, h503);
 	assert.ok(branch > 0 && h503 > branch, 'the 503 is built only after the write-loss decision');

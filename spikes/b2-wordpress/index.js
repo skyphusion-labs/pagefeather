@@ -69,7 +69,7 @@ import { templateQueuePriority, templateLookupYield, templateLookupForwardYield 
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse, overflowHeldToPool } from './overflow.mjs';
 import { selfFetchRoute, selfFetchPoolAvailable, selfFetchCalls, selfFetchSameIsolate, selfFetchOutcome, SELF_FETCH_OBJECT, SELF_SAME_ISOLATE_HEADER, SELF_REFUSAL_SAME_ISOLATE, SELF_CACHE_ONLY_HEADER, SELF_CACHE_MISS_HEADER, selfCacheMissResponse, httpErrorReply } from './self-fetch.mjs';
-import { phpRequestBody } from './request-body.mjs';
+import { phpRequestBody, carryGetBody, requestForObjectAttempt, objectForwardRequest, restoreForwardedGet } from './request-body.mjs';
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
 import { NO_CACHE_API, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
@@ -2880,7 +2880,7 @@ async function selfFetchOnPool(url, method, headers, body, signal) {
 	let r = null;
 	let err = null;
 	try {
-		r = await toPhpObject(new Request(url, { method, headers, body, signal, redirect: 'manual' }), ENV, url, null, { name: SELF_FETCH_OBJECT, hint: ovs.hint, overflow: true, callId });
+		r = await toPhpObject(objectForwardRequest({ url, method, headers, body, signal, redirect: 'manual' }), ENV, url, null, { name: SELF_FETCH_OBJECT, hint: ovs.hint, overflow: true, callId });
 	} catch (e) {
 		err = e;
 	} finally {
@@ -3848,7 +3848,7 @@ export class PhpRuntime extends DurableObject {
 		const armsCron = !url.pathname.startsWith('/_') && !overflowed && !aCronObjectOff(env); // #1186: never on a cron-off A build
 		const inboxMs = raw.headers.get(SENT_HEADER) ? Date.now() - Number(raw.headers.get(SENT_HEADER)) : null;
 		// #708: PHP never sees the Worker's start-by or correlation id.
-		const req = new Request(raw);
+		let req = new Request(raw);
 		req.headers.delete(START_BY_HEADER);
 		req.headers.delete(CALL_HEADER);
 		req.headers.delete(OVERFLOW_HEADER);
@@ -3857,6 +3857,7 @@ export class PhpRuntime extends DurableObject {
 		req.headers.delete(SENT_HEADER);
 		// The front Worker's Turnstile answer (#351): kept for this request's PHP run, never shown to PHP.
 		const turnstileHeader = takeResultHeader(req.headers);
+		req = restoreForwardedGet(req); // #1352: a carried GET arrives as POST; PHP sees GET and the body
 		// #1087: no connection reset here (outside the PHP lock); withPhp's withDbRun owns the connection's life.
 		// The Worker checked the spike token already. Checked again: the object
 		// trusts nothing it did not check itself.
@@ -4369,11 +4370,15 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 	// #708: a start-by per attempt: the object never starts a request it has not granted by then, so the deadline
 	// above only ever catches a request that started. An exempt path never gets one (review 6).
 	const startByQ = startByMs(env, objectDeadlineMs, { exempt: startByExempt(url.pathname) }); // review2 6: control paths too
+	// #1352: a GET body cannot ride on new Request(req) (the Fetch spec throws). Read it once.
+	// Each attempt, including a memory retry, sends those same bytes. A carried GET is still a GET.
+	const carry = await carryGetBody(req);
+	const origMethod = carry.method;
 	const res = await fetchWithMemoryRetry(
 		() => {
 			const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(name), hint ? { locationHint: hint } : undefined);
 			const ac = objectDeadlineMs > 0 ? new AbortController() : null;
-			const fwd = new Request(req);
+			const fwd = requestForObjectAttempt(req, carry);
 			// Only this Worker sets the Turnstile answer: a copy from the client is always dropped.
 			setResultHeader(fwd.headers, pre && pre.value);
 			// The same for the overflow mark (#296 (3)).
@@ -4396,24 +4401,24 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 			return callPhpObject(stub, sent, {
 				deadlineMs: objectDeadlineMs,
 				controller: ac,
-				method: req.method,
+				method: origMethod,
 				objectName: name,
 				json: wantsJson(url.pathname, url.search, req.headers.get('accept')),
 				pfReq,
 			});
 		},
-		req.method,
+		origMethod,
 		(e, a) => console.log(JSON.stringify({ m: isObjectCallDeadline(e) ? 'object-deadline-retry' : 'isolate-reset-retry', attempt: a, kind: classifyObjectError(e) || (isObjectCallDeadline(e) ? 'no-answer' : null), path: url.pathname, deadlineMs: e.deadlineMs || null, ...memIdOf(req, env), error: String(e.message).slice(0, 200) })),
 	).catch((e) => {
 		if (req.signal && req.signal.aborted) return { gone: true }; // #721: the caller disconnected (not an object error)
 		throw e;
 	});
 	if (res.gone) {
-		console.log(JSON.stringify({ m: 'disconnect', path: url.pathname, method: req.method, call: callId, writeLoss: disconnectAnswer(req.method).headers.get('x-write-loss') }));
-		return disconnectAnswer(req.method);
+		console.log(JSON.stringify({ m: 'disconnect', path: url.pathname, method: origMethod, call: callId, writeLoss: disconnectAnswer(origMethod).headers.get('x-write-loss') }));
+		return disconnectAnswer(origMethod);
 	}
 	if (res.deadline) {
-		console.log(JSON.stringify({ m: 'object-deadline', path: url.pathname, method: req.method, deadlineMs: res.deadlineMs, attempts: res.attempts, call: callId, ...memIdOf(req, env), answered: res.deadline.status }));
+		console.log(JSON.stringify({ m: 'object-deadline', path: url.pathname, method: origMethod, deadlineMs: res.deadlineMs, attempts: res.attempts, call: callId, ...memIdOf(req, env), answered: res.deadline.status }));
 		return res.deadline;
 	}
 	const retried = res.attempts > 1;
@@ -4440,7 +4445,7 @@ async function toPhpObjectCall(req, env, url, ctx, target, callId) {
 		// or in a platform internal error (#1004): its earlier writes may be saved (#350; #398 saw
 		// a page create and a delete saved), so no 503 "try again" and never the dispatcher 502
 		// (write-loss.mjs). The frame probe answers rolled back only when it proves rollback.
-		if (objectErrorOutcome(kind, req.method) === 'write-loss') {
+		if (objectErrorOutcome(kind, origMethod) === 'write-loss') {
 			// #352: "nothing was saved" only when the object PROVES the frame rolled back.
 			const fr = await frameProbe(env, name, pfReq);
 			console.log(JSON.stringify({ m: 'frame-probe', phase: 'request-killed', state: fr ? fr.state : null, points: fr ? fr.points : null }));

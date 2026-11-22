@@ -519,7 +519,7 @@ test('index.js: the object never verifies, and the front Worker sets the answer 
 	const front = src.slice(src.indexOf('async function toPhpObject('), src.indexOf('const retried = res.attempts > 1;'));
 	assert.ok(front.indexOf('await preverifyTurnstile(req, env, url)') > 0);
 	assert.ok(front.indexOf('await preverifyTurnstile(req, env, url)') < front.indexOf('fetchWithMemoryRetry('));
-	assert.match(front, /const fwd = new Request\(req\);\s*\/\/[^\n]*\n\s*setResultHeader\(fwd\.headers, pre && pre\.value\);/);
+	assert.match(front, /const fwd = requestForObjectAttempt\(req, carry\);\s*\/\/[^\n]*\n\s*setResultHeader\(fwd\.headers, pre && pre\.value\);/);
 	// The object: take the header off before PHP, set the slot inside the PHP lock, clear it after.
 	assert.match(src, /req\.headers\.delete\(SENT_HEADER\);\s*\/\/[^\n]*\n\s*const turnstileHeader = takeResultHeader\(req\.headers\);/);
 	// The phpPending-- that ends THIS run: the first one after the slot is set (another holder, such as

@@ -80,7 +80,7 @@ test('mayHaveWritten: every method but GET and HEAD; those keep the #349 retry',
 });
 test('index.js toPhpObject: a writing method killed by a reset gets the 500 before the 503 is built', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	const branch = src.indexOf("if (objectErrorOutcome(kind, req.method) === 'write-loss') {");
+	const branch = src.indexOf("if (objectErrorOutcome(kind, origMethod) === 'write-loss') {");
 	const wl = src.indexOf("writeLossResponse('unknown'", branch);
 	const h503 = src.indexOf('const headers = objectErrorHeaders(kind, name, OVERLOAD_RETRY_AFTER_S);', branch);
 	assert.ok(branch > 0 && wl > branch && h503 > wl, 'the write-loss answer comes before the 503 headers');

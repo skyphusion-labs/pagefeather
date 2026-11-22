@@ -34,7 +34,7 @@ test('#1157 index.js: every bridge hop asks selfFetchRoute, sends pool hops thro
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.match(src, /const self = selfFetchRoute\(\{ sameHost: isSelfHost\(url\), inObject: Boolean\(ocCtx && ocCtx\.inObject\), overflowed: Boolean\(ocCtx && ocCtx\.overflowed\), poolAvailable: selfFetchPoolAvailable\(ENV, ovs\), capped: overHeld\(ovs, ovHeld\)(, cacheAvailable: Boolean\(ocCtx && !ocCtx\.inObject && ocCtx\.exports && ocCtx\.exports\.Pages\))? \}\);/); // #1157 after #1298: cacheAvailable is the one input added, last
 	assert.match(src, /res = self\.route === 'pool' \? \(await selfFetchFromCache\(url, method, headers, signal\)\) \|\| \(await selfFetchOnPool\(url, method, headers, body, signal\)\) : (self\.route === 'cache' \? await selfFetchCacheOrRefuse\(url, method, headers, signal, self\.missWhy\) : )?await fetch\(url, \{ method, headers, body, redirect: 'manual', signal \}\);/); // #1170 lever: the cache first; #1157 after #1298: the cache route between
-	assert.match(src, /toPhpObject\(new Request\(url, \{ method, headers, body, signal, redirect: 'manual' \}\), ENV, url, null, \{ name: SELF_FETCH_OBJECT, hint: ovs\.hint, overflow: true, callId \}\)/);
+	assert.match(src, /toPhpObject\(objectForwardRequest\(\{ url, method, headers, body, signal, redirect: 'manual' \}\), ENV, url, null, \{ name: SELF_FETCH_OBJECT, hint: ovs\.hint, overflow: true, callId \}\)/);
 	assert.match(src, /m: 'self-fetch'/);
 	assert.doesNotMatch(src, /function httpRefusal\(url\) \{\n[^\n]*\n\tif \(bootOrigin && url\.hostname === new URL\(bootOrigin\)\.hostname\)/, 'the old blanket refusal is gone');
 });
