@@ -3,11 +3,14 @@
 # running the PREVIOUS version for minutes (cf759hx, 2026-11-21: all its legs on the old build while the site ran the
 # new one at 100%). The engine corrects it on the next Cron Trigger tick (the tick carries the Worker's build; a cron
 # object on another build resets itself at the start of its next leg). This readback says whether it has: it asks the
-# site's /_cron-build (spike token) for up to CRON_VERSION_WAIT_S (default 120) and WARNS when the object is still on
-# another build. It never fails the deploy (the lead's ruling): a warning, with both builds named.
+# site's /_cron-build (spike token) for up to CRON_VERSION_WAIT_S (default 600) and WARNS when the object is still on
+# another build. 600 s, not 120 (lead, 2026-11-22): an idle cron object parks its next alarm up to IDLE_MAX_MS (5 min,
+# cron-idle.mjs) ahead, set by the OLD build, so the first tick on the new build can come 5 min after a deploy (cf759hw:
+# 3 min 29 s and 2 min 44 s, both at the parked time). A 120 s wait warned on both; a false alarm teaches people to
+# ignore the real one. It never fails the deploy (the lead's ruling): a warning, with both builds named.
 # Test: deploy/tests/cron-version-readback-test.sh.
 cron_version_readback() {
-  local url=$1 token=$2 wait=${CRON_VERSION_WAIT_S:-120} every=${CRON_VERSION_EVERY_S:-10} t0=$SECONDS body worker cron alarm
+  local url=$1 token=$2 wait=${CRON_VERSION_WAIT_S:-600} every=${CRON_VERSION_EVERY_S:-10} t0=$SECONDS body worker cron alarm
   [ "${VARIANT:-}" = a ] || return 0
   # The cron object exists exactly when a-settings.sh renders it: ask a_cron_on (its default can change, #1164).
   if declare -F a_cron_on > /dev/null; then a_cron_on || return 0; else [ "${A_CRON:-0}" = 1 ] || return 0; fi
@@ -21,7 +24,7 @@ try:
 except Exception:
     print("? ? ?")' 2>/dev/null)
     if [ -n "$worker" ] && [ "$worker" != "?" ] && [ "$worker" != "-" ] && [ "$worker" = "$cron" ] && [ "$worker" = "$alarm" ]; then
-      echo "cron object: ok, its last alarm ran the deployed build $worker ($((SECONDS - t0)) s)"
+      echo "cron object: ok, its last alarm ran the deployed build $worker (lag $((SECONDS - t0)) s after the upload)"
       return 0
     fi
     [ $((SECONDS - t0)) -ge "$wait" ] && break
