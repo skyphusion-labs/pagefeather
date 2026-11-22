@@ -531,6 +531,32 @@ def main():
             gb_line = "chromium interactivity/directive-context.spec.ts data-wp-context is correctly initialized"
             gb_sib = "chromium interactivity/directive-context.spec.ts data-wp-context is correctly extended (shallow)"
             ok("a gb row with specs/ matches Playwright's testDir-relative title line") if gb_rx.search(gb_line) and not gb_rx.search(gb_sib) else bad("gb title regex does not match %r (the specs/ prefix)" % gb_line)
+            # #1349 guard: a dead title row must not hide again. STATIC, not playwright --list: CI checks out no suite at
+            # GB_SHA, so it cannot list. For every title row of every exclude list, the line Playwright greps is built
+            # from the row itself (the project, the file path relative to that suite's testDir, the describes and the
+            # title) and the row's regex must match it. This catches a row written from a base other than the testDir
+            # (the #1349 bug: gb rows say specs/..., gb's testDir is specs/). It cannot catch a mistyped title; that
+            # needs --list on a box (measured 2026-11-22: all 28 gb title rows matched exactly one listed test).
+            TESTDIR_STRIP = {"gb": "specs/", "wc": "", "wp": "", "wc-api": ""}
+            PROJECT = {"gb": "chromium", "wc": "e2e-pf", "wp": "chromium", "wc-api": "api"}
+            dead = []
+            n_rows = 0
+            for sx in ("gb", "wc", "wp", "wc-api"):
+                with open(os.path.join(os.path.dirname(os.path.abspath(runner.__file__)), "exclude", sx + ".txt")) as fx:
+                    for raw in fx:
+                        raw = raw.strip()
+                        if not raw or raw.startswith("#"):
+                            continue
+                        rw = runner.parse_exclude_line(raw)
+                        if rw.kind != "title":
+                            continue
+                        n_rows += 1
+                        strip = TESTDIR_STRIP[sx]
+                        rel = rw.path[len(strip):] if strip and rw.path.startswith(strip) else rw.path
+                        pw_line = " ".join([PROJECT[sx], rel] + [x.strip() for x in rw.title.split(" > ") if x.strip()])
+                        if not re.search(runner.title_grep_source(rw.path, rw.title), pw_line):
+                            dead.append("%s: %s :: %s" % (sx, rw.path, rw.title[:60]))
+            ok("every title-row exclude matches the line Playwright greps (%d rows, static check)" % n_rows) if n_rows and not dead else bad("dead title-row excludes (they match no Playwright title line): %s" % dead[:5])
             ok("wc grepInvert is the tag filter plus the title") if json.dumps(full) in wct else bad("title grep missing from wc config")
             ok("wc-cpt grepInvert carries the same title") if json.dumps(full) in wcc else bad("title grep missing from wc-cpt config")
             ok("wc-api grepInvert does not carry the email title") if json.dumps(runner.title_grep_source("email/settings-email.spec.ts", want_title)) not in wat else bad("wc-api carries the email title")
