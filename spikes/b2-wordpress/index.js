@@ -22,7 +22,7 @@ import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
 import { cronBounds, cronCleanDue, cronLegDue, cronAsBudgetMs, cronMore, cronBacklogNext, cronBacklogDue, cronBacklogGapMs, backlogStreak } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronRunDeferred, cronMarkOf, cronFatalOf } from './cron-health.mjs';
-import { emailDueRoute, EMAIL_DUE_PATH, EMAIL_DUE_HEADER, aCronObjectOff, approachACronEnabled, approachACronScheduled, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME, CRON_BUILD_HEADER, CRON_BUILD_PATH, cronVersionAbort, cronBuildState } from './a-cron.mjs';
+import { emailDueRoute, EMAIL_DUE_PATH, EMAIL_DUE_HEADER, aCronObjectOff, approachACronEnabled, approachACronScheduled, cronSelfTickOn, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME, CRON_BUILD_HEADER, CRON_BUILD_PATH, cronVersionAbort, cronBuildState } from './a-cron.mjs';
 import { isMediaUploadRequest, markerKey, sweepUploadOrphans, dropMarkersOn } from './upload-intent.mjs';
 import { cronFailureLine } from './cron-error.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
@@ -2357,6 +2357,7 @@ let purgeRequested = false;
 let pendingEmails = [];
 let emailDueRequest = false;
 let lastOrigin = null;
+let selfTickKicked = false; // #1310: this isolate sent its one self-tick kick (CRON_SELF_TICK=on)
 // Workers Cache purges always have Free-tier limits: 5 a minute, bursts of 25,
 // per account (#699). The gateway purges at most once per PURGE_GAP_MS per isolate
 // (purge-state.mjs). The object keeps a refused purge pending and retries it (#699).
@@ -3685,7 +3686,7 @@ export class PhpRuntime extends DurableObject {
 			// No Action Scheduler table (no WooCommerce): nothing pending. Any other error: unknown, so the leg runs.
 			as = /no such table|doesn't exist|1146/i.test(String((e && e.message) || e)) ? { known: true, next: null } : { known: false };
 		}
-		const d = idleDecision({ now, intervalMs: Number(env.CRON_INTERVAL_MS || 60000), streak: Number(st.n) || 0, emailRush: false, wp, as, mailNext: this.mailNext });
+		const d = idleDecision({ now, intervalMs: Number(env.CRON_INTERVAL_MS || 60000), streak: Number(st.n) || 0, emailRush: false, wp, as, mailNext: this.mailNext, selfTick: cronSelfTickOn(env) });
 		return { ...d, streak: Number(st.n) || 0, wp, as };
 	}
 
@@ -4760,6 +4761,14 @@ export default {
 		if (url.pathname === CRON_TICK_PATH) return new Response('Not Found', { status: 404 });
 		if (url.pathname === MAIL_RETRY_PATH) return new Response('Not Found', { status: 404 }); // #1057: internal only
 		if (url.pathname === EMAIL_DUE_PATH) return new Response('Not Found', { status: 404 }); // #1215: internal only
+		// #1310 self-tick kick: no Cron Trigger fires here (CRON_SELF_TICK=on, a WfP user Worker), so this isolate's first
+		// site request sends the cron object the same tick scheduled() sends: the first arm, the origin, the build (#1152)
+		// and the watchdog re-arm. Once per isolate; the flag is set first, so a failed send is not retried per request.
+		// An engine path (/_ping, /_install) never kicks: a leg must not start against a half-installed database (#185).
+		if (cronSelfTickOn(env) && !selfTickKicked && !url.pathname.startsWith('/_')) {
+			selfTickKicked = true;
+			approachACronScheduled({ cron: 'self-tick', scheduledTime: Date.now() }, env, ctx, siteOrigin, BUILD_ID).catch((e) => console.log(JSON.stringify({ m: 'cron', selfTickError: String((e && e.message) || e).slice(0, 160) })));
+		}
 		// #752: the PHP object's start-by tick lands here, FIRST: a cheap 204, before the page cache and any object call.
 		if (url.pathname === TICK_PATH) return tickResponse();
 		// #912: //checkout-link is the home page. Merge the slash and redirect.

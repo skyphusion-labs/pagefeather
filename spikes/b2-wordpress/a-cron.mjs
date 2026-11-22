@@ -47,6 +47,18 @@ export function approachACronEnabled(env) {
 }
 
 /**
+ * #1310 route (b): CRON_SELF_TICK=on, for a site where no Cron Trigger fires (a Workers for Platforms user Worker:
+ * scheduled() never ran in 7 min, while a Durable Object alarm fired on time; strummer, #1310). The cron object's
+ * alarm already runs every leg; the tick gave only the first arm and the pull-in of a backed-off idle alarm. With this
+ * on, each Worker isolate sends ONE tick on its first site request (the same tick as scheduled()), and the idle
+ * back-off is capped at one interval (cron-idle.mjs idleDecision selfTick). deploy/wfp renders it for a kind a site;
+ * a deploy.sh site does not, and behaves as before (#1166). Exactly "on", and only where the cron object runs.
+ */
+export function cronSelfTickOn(env) {
+	return !!env && env.CRON_SELF_TICK === 'on' && approachACronEnabled(env);
+}
+
+/**
  * #1186: an approach A object on a cron-off build. On approach A a PhpRuntime is only the cron object or a pool object
  * (a pool request never arms the alarm), so with the cron off an alarm there has no work. Every DO tier renders
  * PHP_IN_DO=on (render-conf.sh, deploy/wfp, provision), where the alarm runs the site's cron and purges: never this.

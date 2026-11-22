@@ -142,7 +142,8 @@ test('#1059: the back-off never passes the next mail retry, and a retry already 
 test('#1059 index.js: the alarm keeps the drain next retry and the gate passes it to idleDecision', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 	assert.match(src, /this\.mailNext = drained && drained !== TIMED_OUT \? drained\.next : null;/);
-	assert.match(src, /idleDecision\(\{ now, intervalMs: Number\(env\.CRON_INTERVAL_MS \|\| 60000\), streak: Number\(st\.n\) \|\| 0, emailRush: false, wp, as, mailNext: this\.mailNext \}\)/);
+	// #1310 loosened the end anchor only: the call also passes selfTick after mailNext (cron-self-tick.test.mjs pins it).
+	assert.match(src, /idleDecision\(\{ now, intervalMs: Number\(env\.CRON_INTERVAL_MS \|\| 60000\), streak: Number\(st\.n\) \|\| 0, emailRush: false, wp, as, mailNext: this\.mailNext(, | \}\))/);
 });
 
 // #1059 at its rebase onto #1055 (agreed): on approach A a page request runs in the WORKER, so the object's request-path
