@@ -408,6 +408,7 @@ jobs:
         run: |
           python3 -I tests/load/reuse-run-stub-test.py
           python3 -I tests/load/reuse-score-platform-test.py
+          python3 -I tests/load/reuse-score-rid-test.py
           python3 -I tests/load/reuse-score-bars-test.py
           python3 -I tests/load/hang-read-test.py
       - name: b-dosql the isolate memory ledger (issue #394)

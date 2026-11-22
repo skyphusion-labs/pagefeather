@@ -51,6 +51,12 @@ def load(p):
     return rows
 
 
+def line_rid(o):
+    """#1022 issuecomment-7078186214: a line's request id. Its own rid, else $workers.requestId, else
+    $metadata.requestId (a Workers Logs export can carry it only there). None when the line has none."""
+    return o.get("rid") or (o.get("$workers") or {}).get("requestId") or (o.get("$metadata") or {}).get("requestId") or None
+
+
 def logs(d):
     """One wexport.py directory: lines.jsonl and invocations.jsonl. None when not given."""
     if not d:
@@ -59,7 +65,12 @@ def logs(d):
     if not (os.path.isfile(lp) and os.path.isfile(ip)):
         usage_error("reuse-score: %s must hold lines.jsonl and invocations.jsonl (a wexport.py directory)" % d)
     L, I = load(lp), load(ip)
-    X = {"lines": L, "inv": I, "rids_by_id": {}, "lines_by_rid": {}, "inv_by_rid": {}}
+    for o in L + I:
+        if not o.get("rid"):
+            o["rid"] = line_rid(o)
+    # No request id on any line: platform_deaths' same-request step cannot run, so its count is the live fallback
+    # alone. Bar 2 refuses that arm (could not measure), never a count read from it.
+    X = {"lines": L, "inv": I, "rids_by_id": {}, "lines_by_rid": {}, "inv_by_rid": {}, "ridless": bool(L) and not any(o.get("rid") for o in L)}
     for o in L:
         X["lines_by_rid"].setdefault(o.get("rid"), []).append(o)
         if o.get("id"):
@@ -96,8 +107,8 @@ def platform_deaths(lines):
     ls = sorted(lines, key=lambda o: o.get("t") or 0)
     by_rid = {}
     for o in ls:
-        if o.get("iso") and o.get("rid"):
-            by_rid.setdefault(o["rid"], o["iso"])
+        if o.get("iso") and line_rid(o):
+            by_rid.setdefault(line_rid(o), o["iso"])
     dead, stamps, units, live = 0, set(), set(), None
     for o in ls:
         if o.get("m") == "perf" and o.get("iso"):
@@ -107,7 +118,7 @@ def platform_deaths(lines):
         if PLATFORM_DEATH in json.dumps(o):
             dead += 1
             stamps.add(o.get("t"))
-            iso = o.get("iso") or by_rid.get(o.get("rid")) or live
+            iso = o.get("iso") or by_rid.get(line_rid(o)) or live
             units.add(("iso", iso) if iso else ("t", o.get("t")))
     return dead, len(stamps), len(units)
 
@@ -129,6 +140,7 @@ def arm(rows, lg):
         A["exceededMemory"] = A["outcomes"].get("exceededMemory", 0)
         A["invRows"] = len(lg["inv"])
         A["lineRows"] = len(lg["lines"])
+        A["ridless"] = lg.get("ridless", False)
         A["platformLines"], A["platformStamps"], A["platformDeaths"] = platform_deaths(lg["lines"])
         A["logResets"] = sum(1 for o in lg["lines"] if o.get("m") == "isolate-reset")
         A["logWriteLoss"] = sum(1 for o in lg["lines"] if o.get("m") == "write-loss")
@@ -266,6 +278,12 @@ def main(argv):
     if dsrc == "invocations":
         detail += "; exceededMemory on %d, off %d" % (on["exceededMemory"], off["exceededMemory"])
         v = "pass" if (d_on <= d_off and on["exceededMemory"] <= off["exceededMemory"] and not worse_lw) else "FAIL"
+    elif dsrc == "platform" and (on.get("ridless") or off.get("ridless")):
+        # The platform death counts are unreadable here, so they decide nothing. d_on and d_off are the CLIENT's
+        # counts (x-isolate-reset answers plus no-answers, from the run file, not the logs), measured separately.
+        v = "FAIL" if (d_on > d_off or worse_lw) else "could not measure"
+        detail += "; platform deaths: the request id is empty on every line of the %s arm (rid, $workers.requestId, $metadata.requestId), so a death cannot take its own request's isolate (#1022)" % (
+            " and ".join(n for n, A in (("on", on), ("off", off)) if A.get("ridless")))
     elif dsrc == "platform":
         detail += "; platform memory-death isolates on %d, off %d (lines on %d, off %d; timestamps on %d, off %d) (no invocation rows on an arm: the platform's death text in any field stands in, by distinct isolate, #1022)" % (
             on["platformDeaths"], off["platformDeaths"], on["platformLines"], off["platformLines"], on["platformStamps"], off["platformStamps"])
