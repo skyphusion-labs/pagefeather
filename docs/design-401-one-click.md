@@ -145,7 +145,7 @@ The domain field from the issue is on the Add New Site screen as a later step ("
 6. `installWordPress` (extended): today it sends only `x-admin-password` and the site makes the user `admin` with the title "WordPress on D1" (`spikes/b2-wordpress/index.js`, `wp_install( 'WordPress on D1', 'admin', ...)`). The form needs the site title, the username, the email and the search-engine choice to reach `wp_install`. That is a change to the site's `/_install` endpoint.
 7. **Store on:** after the install, the admin calls the site's existing `/_activate` to turn on WooCommerce. Today `provision.mjs` leaves this to the owner ("WooCommerce is NOT installed here"). **Unmeasured** on this path.
 
-Approach A (`kind: a`, MySQL through Hyperdrive) is not in the first cut. It needs a database the user chooses and pays for outside Cloudflare (`docs/onboarding.md`), which is not one click.
+Approach A (`kind: a`, MySQL through Hyperdrive) is not in the first cut. It needs a database the user chooses and pays for outside Cloudflare (`docs/guide/onboarding.md`), which is not one click.
 
 ### 2.3 Auth
 
@@ -169,14 +169,14 @@ The pasted key lives only as a Worker secret on the admin. It is never shown aga
 
 Repo rule: deploys go to `workers.dev` unless a CR issue routes a zone. The user's own account is not ours, but our measurement runs are, so the first cut is `workers.dev` only.
 
-`workers.dev` gives one hostname per Worker: `<worker>.<subdomain>.workers.dev` ([workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/), read 2026-11-13). One dispatcher cannot answer for many sites there. So each site gets its own small dispatcher Worker, `wp-<name>`, with the same code (`deploy/wfp/dispatcher/worker.js`, which already keys the site map by its own hostname). This is "phase A" of `deploy/wfp`, proven there (`docs/operator.md`).
+`workers.dev` gives one hostname per Worker: `<worker>.<subdomain>.workers.dev` ([workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/), read 2026-11-13). One dispatcher cannot answer for many sites there. So each site gets its own small dispatcher Worker, `wp-<name>`, with the same code (`deploy/wfp/dispatcher/worker.js`, which already keys the site map by its own hostname). This is "phase A" of `deploy/wfp`, proven there (`docs/guide/operator.md`).
 
 Costs and limits of that choice:
 
 - Two scripts per site: one plain Worker and one namespace script. The account limit is 500 Workers on Workers Paid ([Workers limits](https://developers.cloudflare.com/workers/platform/limits/), read 2026-11-13). Whether namespace scripts count against it is **unmeasured**.
 - The admin's token needs Workers Scripts edit for plain Workers. Today's hardened `wp-provision` deliberately has no plain script write (`HARDENING.md`). On the user's own account, for the user's own sites, this is a fair trade, but it changes the security boundary, so it is the lead's ruling (section 5).
 - `workers.dev` runs a Browser Integrity Check that cannot be turned off; some default library user agents get error 1010 (same page). Browsers are fine. A plugin that calls its own site with a bare library user agent may fail. **Unmeasured.**
-- "Use your own domain" comes later: a Workers Custom Domain on the site's dispatcher Worker, for a zone already in the same account. Phase A and phase B do not mix in one deployment today (`docs/operator.md`, "Known limit"), so this needs that limit lifted first. Parked, and it needs a CR before we route a zone in a test.
+- "Use your own domain" comes later: a Workers Custom Domain on the site's dispatcher Worker, for a zone already in the same account. Phase A and phase B do not mix in one deployment today (`docs/guide/operator.md`, "Known limit"), so this needs that limit lifted first. Parked, and it needs a CR before we route a zone in a test.
 
 ### 2.5 The hand-off to the site's own wp-admin
 
@@ -202,7 +202,7 @@ These break "feels like WordPress". The button does not cause them, and this des
 What Pagefeather cannot run, whichever way a site comes in (sources in the repo):
 
 - A plugin or theme that is not in the build (`docs/plugins.md`).
-- A plugin set over the 64 MiB Worker size, or over the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](known-limitations.md#memory-limits-the-three-figures)). Elementor does not fit. Rank Math on a store goes over that write ceiling (#293, #279, `docs/known-limitations.md`).
+- A plugin set over the 64 MiB Worker size, or over the measured write ceiling (117 to 119 MiB of wasm; see [memory limits](guide/limits.md#memory-limits-the-three-figures)). Elementor does not fit. Rank Math on a store goes over that write ceiling (#293, #279, `docs/guide/limits.md`).
 - A plugin that writes its own files at run time and expects them to stay (page-cache plugins that write to `wp-content/cache`, file-based logs). Same cause as item 1 of 2.6.
 - `curl_*`, PHP streams over HTTP and raw sockets: the bridge covers `wp_remote_*` only (`docs/prior-art.md`, HostlessWP section).
 - A plugin that needs MySQL itself on b-dosql (SQLite): for example one that calls `mysqli_*` on `$wpdb->dbh` (`docs/plugins.md`, the All-in-One WP Migration finding on approach A).

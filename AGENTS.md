@@ -35,11 +35,11 @@ A row with plan `local` ran in local workerd through `wrangler dev`. It is not a
 
 A failed deploy is a result. Keep the row. Do not delete a row because the deploy failed. A later row may correct an earlier row. The earlier row stays. Read the whole table.
 
-Every plan limit names its Cloudflare documentation page and the date that page was read. The table is [docs/plan-limits.md](docs/plan-limits.md).
+Every plan limit names its Cloudflare documentation page and the date that page was read. The table is [docs/guide/cost.md](docs/guide/cost.md).
 
 ## Docs
 
-State the limit next to every capability. Give the measured figure and its issue. [docs/known-limitations.md](docs/known-limitations.md) is the list of open limits.
+State the limit next to every capability. Give the measured figure and its issue. [docs/guide/limits.md](docs/guide/limits.md) is the list of open limits.
 
 Friendly never means selling. Say a limit in plain words. Do not turn a limit into a promise.
 

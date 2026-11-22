@@ -14,7 +14,7 @@ On a Hyperdrive store (`cf759hl`, WooCommerce on) the wp suite is 17 of 18 on tw
 
 ### Hyperdrive WooCommerce
 
-The latest full wc suite is local Chrome on `cf759hl`, main `9c8f407` (WordPress 7.1.5), 2026-11-21: **207 passed, 22 failed of 229** ([results.md](results.md) row "sb1120, wc rerun", Hyperdrive). The last full row before it was Browser Run on `b27cd3c`: 169 expected, 57 unexpected, 3 skipped. Against it: FIXED 41, STILL 16, NEW 6. All 6 NEW are ours and all are latency: 3 guest product pages on a page-cache MISS rendered in an unplaced `Pages` isolate at about 100 ms per query (#1277), and 3 admin and editor waits (#1078). About 1 request in 7 boots a fresh runtime, at about 3.2 s more at the median (#1169). The older `b27cd3c` run had 14 held-block 503s (#1177). The #1180 proof reran the 8 files that hit them: 0 held-block refusals and 0 5xx (row "sb1120, #1180 proof").
+The latest full wc suite is local Chrome on `cf759hl`, main `9c8f407` (WordPress 7.1.5), 2026-11-21: **207 passed, 22 failed of 229** ([results.md](results.md) row "sb1120, wc rerun", Hyperdrive). The last full row before it was Browser Run on `b27cd3c`: 169 expected, 57 unexpected, 3 skipped. Against it: FIXED 41, STILL 16, NEW 6. All 6 NEW are ours and all are latency: 3 guest product pages on a page-cache MISS rendered in an unplaced `Pages` isolate at about 100 ms per query (#1277), and 3 admin and editor waits (#1078). Since #1296, a page-cache MISS renders in the placed gateway, next to the database: on `cf759hl` at its merge head, 24 of 24 product misses from DFW and LAX ran at SEA (`cf-placement`) at about 15 ms per query, and under the suite's load the warm render's p95 fell from 5.6 s to 1.5 s ([#1277](https://github.com/skyphusion-labs/pagefeather/issues/1277), the re-read at f69b097e). The time a shopper sees on those 3 pages is not yet measured at that head; the next full wc suite on `cf759hl` measures it, and #1277 stays open until then. About 1 request in 7 boots a fresh runtime, at about 3.2 s more at the median (#1169). The older `b27cd3c` run had 14 held-block 503s (#1177). The #1180 proof reran the 8 files that hit them: 0 held-block refusals and 0 5xx (row "sb1120, #1180 proof").
 
 A local Linux Chrome arm on main `79e6709` (row "wc arm B") took 48 failures that pass on stock, from an earlier 174 expected run. 24 of those 48 still fail on the site. The other 24 were Browser Run, or they have since been fixed. The five "two role=alert" failures passed on this arm. That class was Browser Run.
 
@@ -94,7 +94,7 @@ The deploy paths are `deploy/deploy.sh`, `deploy/wfp`, and one-click (the Deploy
 
 ## WooCommerce
 
-**On b-dosql (Free DO, Paid DO, WfP), WooCommerce is for a light storefront.** Under load the site's Durable Object isolate runs out of memory and resets, and writes in flight can be lost. That is a tracked limit with measured counts in [known-limitations.md](known-limitations.md) (#1022). A real store uses approach A on Hyperdrive.
+**On b-dosql (Free DO, Paid DO, WfP), WooCommerce is for a light storefront.** Under load the site's Durable Object isolate runs out of memory and resets, and writes in flight can be lost. That is a tracked limit with measured counts in [guide/limits.md](guide/limits.md) (#1022). A real store uses approach A on Hyperdrive.
 
 | feature | Free DO | Paid DO | WfP | Hyperdrive |
 |---|---|---|---|---|
@@ -206,7 +206,7 @@ A logged-out product, shop or category page comes from the edge cache. A checkou
   - The 60 s worst case after a quiet spell comes from the headers (`max-age=30, stale-while-revalidate=30`, `page-cache-ttl.mjs`). It is not measured.
 - **What stays safe:** checkout always reads the real stock, so the store never sells more than it has. When a product sells out, its page is cleared.
 
-A store that shows exact stock numbers can use a lower `PAGE_CACHE_PRODUCT_TTL` (5 to 600 s). See [Stock numbers on cached pages](from-lamp-to-wfp.md#stock-numbers-on-cached-pages).
+A store that shows exact stock numbers can use a lower `PAGE_CACHE_PRODUCT_TTL` (5 to 600 s). See [Stock numbers on cached pages](guide/from-lamp.md#stock-numbers-on-cached-pages).
 
 ### PDF invoices worked on one-click only (#765, fixed)
 
@@ -258,13 +258,13 @@ WooCommerce creates each product in a batch with about 130 database queries, one
 
 ### Semantic search: the plugin side is closed upstream, not measured here
 
-The `vectorize-search` descriptor is opt-in. The search engine is the skyphusion-ai plugin. Its token-free bridge path is closed upstream (skyphusion-ai#193, completed 2026-11-12), but no Pagefeather run has measured a search through it, so the cell stays limited. See [known-limitations.md](known-limitations.md).
+The `vectorize-search` descriptor is opt-in. The search engine is the skyphusion-ai plugin. Its token-free bridge path is closed upstream (skyphusion-ai#193, completed 2026-11-12), but no Pagefeather run has measured a search through it, so the cell stays limited. See [guide/limits.md](guide/limits.md).
 
 ### Plugins and themes are not installed from wp-admin (by design)
 
 WordPress, its plugins and its themes run from the Worker's code bundle. The bundle is read-only at run time: a site has no writable disk to install into. So plugins and themes ship in the build, pinned by content hash, and a change is a code deploy (#458).
 
-To make that plain in wp-admin, every site is code-locked. `wp-config.php` sets `DISALLOW_FILE_MODS` and `DISALLOW_FILE_EDIT`, so the install, update and editor screens are off. See [from-lamp-to-wfp.md](from-lamp-to-wfp.md).
+To make that plain in wp-admin, every site is code-locked. `wp-config.php` sets `DISALLOW_FILE_MODS` and `DISALLOW_FILE_EDIT`, so the install, update and editor screens are off. See [guide/from-lamp.md](guide/from-lamp.md).
 
 No user has the `install_plugins` capability, so the WordPress and WooCommerce screens that recommend plugins to install stay empty. WooCommerce's Marketing > Overview shows no Channels card: `wc-admin/marketing/recommendations` needs `install_plugins` (`MarketingRecommendations.php:76`) and answers 403. Measured on `cf759a`, 2026-11-20; the conformance runs exclude that one test with this reason (#1044).
 

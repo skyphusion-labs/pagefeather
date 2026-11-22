@@ -13,7 +13,7 @@ Everything runs in your own Cloudflare account, and Cloudflare bills you directl
 You need these things:
 
 1. **A Cloudflare account** and **a GitHub or GitLab account.** The button copies this code into a new repository in your GitHub or GitLab account.
-2. **Workers for Platforms.** Your sites run on this Cloudflare plan. It costs $25 a month, and plan for the Workers Paid plan ($5) beside it: $30 a month for the account, for two or more sites ([plan-limits.md](../../docs/plan-limits.md)). [Open this page in Cloudflare](https://dash.cloudflare.com/?to=/:account/workers-for-platforms) and buy it. Do this first, or the button fails.
+2. **Workers for Platforms.** Your sites run on this Cloudflare plan. It costs $25 a month, and plan for the Workers Paid plan ($5) beside it: $30 a month for the account, for two or more sites ([cost.md](../../docs/guide/cost.md)). [Open this page in Cloudflare](https://dash.cloudflare.com/?to=/:account/workers-for-platforms) and buy it. Do this first, or the button fails.
 3. **A key for the site manager.** [Create the key in Cloudflare](https://dash.cloudflare.com/?to=/:account/api-tokens&permissionGroupKeys=%5B%7B%22key%22%3A%22workers_scripts%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22workers_kv_storage%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22workers_r2%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22account_settings%22%2C%22type%22%3A%22read%22%7D%5D&name=Pagefeather%20site%20manager). The page is filled in for you. Select **Continue to summary**, then **Create Token**. Copy the key. Cloudflare shows it only once.
 
 ## Click the button

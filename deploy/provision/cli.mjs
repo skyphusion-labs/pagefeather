@@ -59,7 +59,7 @@ export function operatorSiteRefusal(cmd, name, env) {
   const verb = cmd;
   return `site ${verb}: ${host} has no SaaS zone (WFP_SAAS_ZONE_ID unset). `
     + `On the reference deployment the one operator surface is deploy/wfp/site: run deploy/wfp/site ${verb}${name ? ' ' + name : ''} `
-    + `(docs/operator.md). This CLI makes SaaS-zone sites only (#294, #328). Nothing was changed.`;
+    + `(docs/guide/operator.md). This CLI makes SaaS-zone sites only (#294, #328). Nothing was changed.`;
 }
 
 // Pure, so it is unit-tested without IO.
@@ -427,7 +427,7 @@ async function main() {
   const refusal = operatorSiteRefusal(parsed.cmd, parsed.name, env);
   if (refusal) throw new Error(refusal);
   if (parsed.cmd === 'remove') { await removeCommand(ctx, parsed, env); return; }
-  if (parsed.cmd !== 'add') throw new Error(`${parsed.cmd}: not implemented in this CLI; list and update a site with deploy/wfp/site (docs/operator.md)`);
+  if (parsed.cmd !== 'add') throw new Error(`${parsed.cmd}: not implemented in this CLI; list and update a site with deploy/wfp/site (docs/guide/operator.md)`);
   const cfg = await buildCfg(parsed, env);
   const r = await provisionSite(ctx, cfg);
   console.log(JSON.stringify({ provisioned: r.kind, name: r.name, script: r.script, hostname: r.hostname }, null, 2));

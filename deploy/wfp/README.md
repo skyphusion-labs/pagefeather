@@ -4,7 +4,7 @@ A reference deployment for one operator with a couple of sites on their own Work
 
 The design is on issue #35 (the slice 1 comment): one origin per site, never a path prefix. The capability findings are in `docs/wfp.md`.
 
-New to this? The day-one walkthrough for an operator is [docs/operator.md](../../docs/operator.md).
+New to this? The day-one walkthrough for an operator is [docs/guide/operator.md](../../docs/guide/operator.md).
 
 ## What it makes
 
@@ -132,7 +132,7 @@ KIND=a PLACEMENT=azure:westus2 MYSQL_HOST=<server> MYSQL_DATABASE=<db> MYSQL_USE
 - **After a failure** past the Hyperdrive config, `./deploy/wfp/site remove <name>` takes every part. Every remove looks for the config `wp-wfp-<name>` and the namespace `wp-wfp-<name>-oc` by name, whatever the site's kind, so a config left by a failed add (even one that stopped before its workspace) is found and deleted, not left holding one of the account's 25.
 - **`site update`, `import`, `restore` and `schedule` refuse a kind a site.** They snapshot, load or restore a `b-dosql` site's own database. `site update` for kind a (a rebuild and re-upload with no data step) is a follow-up.
 - **deploy/wfp never makes, changes or drops the database.** That is the owner's, as in one-click (#1049).
-- **Limits and cost:** 25 Hyperdrive configs per Workers Paid account (`docs/plan-limits.md`); Workers for Platforms $25 a month plus the $5 Workers Paid plan it needs; then the owner's MySQL.
+- **Limits and cost:** 25 Hyperdrive configs per Workers Paid account ([Plan limits](../../docs/guide/cost.md#plan-limits)); Workers for Platforms $25 a month plus the $5 Workers Paid plan it needs; then the owner's MySQL.
 
 `down.sh` removes every site that `site list` shows. It removes the purge budget only when nothing still binds it (below).
 
@@ -378,7 +378,7 @@ It is off by default. `WFP_CUSTOM_DOMAIN=1` selects it; without the flag, `worke
 **The live attach routes a zone, so it is governed by CR #138** (the CR #113 pattern: a zone-record snapshot before the first attach, one exact hostname per site, the reversal compared against the snapshot, never a wildcard). The attach is run by the lead as the CR #138 apply step, serialized against the other live work on `skyphusion.org`. This directory ships the code and the offline tests; nothing here routes a zone, and the matrix does not claim custom domains as measured until phase B is proven live.
 ## Bundle size gate
 
-The Worker size limit is 64 MiB uncompressed. Nearly all of a b-dosql upload is four files: `build/site.zip`, `build/opcache.zip` and the PHP wasm with its loader. `lib.sh bundle_size_check` stops above `BUNDLE_MAX_MIB` (default 62 MiB) and names each file's size. `build_dosql` runs it after the OPcache build, and `site.sh up` and `site update` run it right before the upload, so an upload never starts without headroom. A missing file is an error. Measured sizes for a heavy store are in `docs/known-limitations.md`. Test: `tests/bundle-size-test.sh`.
+The Worker size limit is 64 MiB uncompressed. Nearly all of a b-dosql upload is four files: `build/site.zip`, `build/opcache.zip` and the PHP wasm with its loader. `lib.sh bundle_size_check` stops above `BUNDLE_MAX_MIB` (default 62 MiB) and names each file's size. `build_dosql` runs it after the OPcache build, and `site.sh up` and `site update` run it right before the upload, so an upload never starts without headroom. A missing file is an error. Measured sizes for a heavy store are in `docs/guide/limits.md`. Test: `tests/bundle-size-test.sh`.
 
 **The OPcache follows the build inputs, never the builder's machine (#313).** `opcache.sh` primes from a fresh, empty local state on every run (`run.sh PERSIST_TO`), so a leftover `.wrangler/state` no longer decides what ships. WooCommerce pages are primed when `WOO_ACTIVE=1`, which `build_dosql` derives: an explicit `WOO_ACTIVE` (0 or 1) wins, else 1 when `woocommerce` is in `IMPORT_PLUGINS` or `PLUGINS`. A store whose site has WooCommerce active needs it: without the Woo scripts in the cache, the store compiles them inside the 128 MiB isolate and exceeds memory on every request (measured on ggc-test, 2026-11-12). `opcache-check.py` refuses a dump under 400 files, or under 500 WooCommerce files when `WOO_ACTIVE=1` (a primed store holds about 1500); `OPCACHE_MIN_FILES` and `OPCACHE_WOO_MIN` set the floors. A failed `opcache.sh` stops `build_dosql`, also under `site update --all`. Local priming needs `CLOUDFLARE_API_TOKEN` in the environment (the `browser` binding starts a remote proxy). Tests: `tests/woo-active-test.sh`, `spikes/b2-wordpress/tests/opcache-check-test.sh`.
 

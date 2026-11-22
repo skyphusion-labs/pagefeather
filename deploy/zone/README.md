@@ -132,7 +132,7 @@ Measured live on `posterntesting.com` (dedicated mode):
 - Warm latency is about the same (around 0.15 s, both served from the colo).
 
 The win is cost, capacity, and less exposure to the measured write ceiling
-(117 to 119 MiB of wasm; see [memory limits](../../docs/known-limitations.md#memory-limits-the-three-figures)), not latency. `browser_ttl` is 0, so the browser does not cache the HTML; only the
+(117 to 119 MiB of wasm; see [memory limits](../../docs/guide/limits.md#memory-limits-the-three-figures)), not latency. `browser_ttl` is 0, so the browser does not cache the HTML; only the
 edge does. (The reorder above does not change this result: an anonymous page
 still matches only the cache rule.)
 

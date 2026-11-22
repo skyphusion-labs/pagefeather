@@ -1191,7 +1191,7 @@ write_rollback_artifact() {
   rm -rf "$w"
   return 0
 }
-# The Worker size limit is 64 MiB uncompressed (docs/plan-limits.md; measured:
+# The Worker size limit is 64 MiB uncompressed (docs/guide/cost.md; measured:
 # 72 MB refused). Four files make almost all of a b-dosql upload: build/site.zip
 # (WordPress and the site's plugins), build/opcache.zip, and the PHP wasm with
 # its loader. A store with WooCommerce and Rank Math measured 61.46 MiB of

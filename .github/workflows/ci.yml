@@ -337,6 +337,8 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/request-mail-hold.test.mjs
       - name: b-dosql bundle file trace, route classes (issue #394 M0)
         run: node --test spikes/b2-wordpress/tests/file-trace.test.mjs
+      - name: b-dosql file-trace.sh bounds every request and names a hung URL (issue #1316)
+        run: bash spikes/b2-wordpress/tests/file-trace-bound-test.sh
       - name: b-dosql OPcache split into warm and boot (issue #394 L1)
         run: python3 -I spikes/b2-wordpress/tests/opcache-split-test.py
       - name: b-dosql every OPcache file to packs in cold-boot read order, opcache.zip empty, no boot pack (issue #563)
@@ -770,6 +772,14 @@ jobs:
         run: |
           tests/ci/no-em-en-dash-test.sh
           if git grep -nIP '\x{2014}|\x{2013}' -- . ':!**/package-lock.json'; then echo 'em or en dash found'; exit 1; fi
+      - name: Docs links resolve (#1305)
+        # tests/ci/doc_links.py: a relative Markdown link to a missing file, a stub ("This page
+        # moved to") with no link to a file that exists, or a docs/<name>.md path string that
+        # exists nowhere fails. The test plants each one and its control first.
+        run: |
+          python3 --version
+          python3 -I tests/ci/doc_links_test.py
+          python3 -I tests/ci/doc_links.py .
       - name: Secret scan
         run: |
           if git grep -nE 'AKIA[0-9A-Z]{16}|cfut_[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|BEGIN [A-Z ]*PRIVATE KEY|xox[bap]-[A-Za-z0-9-]{10,}'; then echo 'possible secret'; exit 1; fi

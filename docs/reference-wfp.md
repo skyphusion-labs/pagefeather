@@ -1,6 +1,6 @@
 # Reference deployment for a Workers for Platforms user (issue #35)
 
-> **This is a design draft of 2026-11-06, not a how-to.** The deployment it led to is built: [deploy/wfp/README.md](../deploy/wfp/README.md) is its manual, and [operator.md](operator.md) the operator guide. The open items at the end are marked with what the code shows on 2026-11-22.
+> **This is a design draft of 2026-11-06, not a how-to.** The deployment it led to is built: [deploy/wfp/README.md](../deploy/wfp/README.md) is its manual, and [guide/operator.md](guide/operator.md) the operator guide. The open items at the end are marked with what the code shows on 2026-11-22.
 
 Status: DESIGN DRAFT, 2026-11-06. Every claim names its source: a result file, a doc of this repo, or a vendor page. A claim with no measurement says so. Open items are listed at the end.
 
@@ -45,7 +45,7 @@ Measured as normal Workers, not as user Workers, except where the row says so.
 - `subRequests` set by the dispatcher was exact where measured, without an outbound Worker (not measured with one). `cpuMs` is enforced but loose: it does not bound a tenant below about 2 s (docs/wfp.md item 4). CPU fairness between tenants comes from the runtime choice and the plan, not from `cpuMs` alone.
 - No gradual deployments for user Workers, and the API allows 1200 calls per 5 minutes per token (docs/wfp.md, pricing and limits). A fleet rollout is batched.
 - Workers for Platforms is a Paid product. The Workers Free limits do not apply under it.
-- A pagefeather Workers for Platforms account costs $30 a month for two or more sites ([plan-limits.md](plan-limits.md)). That is the Workers for Platforms Paid plan ($25) plus the Workers Paid plan ($5). The reference account runs both. The Workers for Platforms price includes 20 million requests, then $0.30 per million. It includes 60 million CPU ms, then $0.02 per million. It includes 1,000 namespace scripts, then $0.02 each. Another site at rest costs about $0, up to the 1,000 included scripts. Durable Object storage, R2, and KV sit inside an included or free tier at rest. Cloudflare's WfP pricing page does not say whether Workers Paid is strictly required, so plan for both. Per-tenant traffic cost (Durable Object duration and rows for `b-dosql`) is still per workload, not worked out here.
+- A pagefeather Workers for Platforms account costs $30 a month for two or more sites ([guide/cost.md](guide/cost.md)). That is the Workers for Platforms Paid plan ($25) plus the Workers Paid plan ($5). The reference account runs both. The Workers for Platforms price includes 20 million requests, then $0.30 per million. It includes 60 million CPU ms, then $0.02 per million. It includes 1,000 namespace scripts, then $0.02 each. Another site at rest costs about $0, up to the 1,000 included scripts. Durable Object storage, R2, and KV sit inside an included or free tier at rest. Cloudflare's WfP pricing page does not say whether Workers Paid is strictly required, so plan for both. Per-tenant traffic cost (Durable Object duration and rows for `b-dosql`) is still per workload, not worked out here.
 
 ## Correctness the operator must know
 
@@ -58,11 +58,11 @@ Measured as normal Workers, not as user Workers, except where the row says so.
 ## Open items
 
 1. The connect() risk for `a` behind an outbound Worker: test it. **2026-11-22: still not tested.** `deploy/wfp` deploys `b-dosql` sites only (`site-<name>` user Workers). Approach `a` sites come from `deploy/provision` (`site add --kind a`), outside the namespace, so no `a` site runs behind the outbound Worker today.
-2. `a` as a user Worker: provisioned by `site add --kind a` (#241). Per-tenant limits and metering are a future direction (#247, see [known-limitations.md](known-limitations.md)). (`c1` was retired in #214.)
+2. `a` as a user Worker: provisioned by `site add --kind a` (#241). Per-tenant limits and metering are a future direction (#247, see [guide/limits.md](guide/limits.md)). (`c1` was retired in #214.)
 3. Hostname routing in the dispatcher. **2026-11-22: built and tested.** The dispatcher keys its site map on the request's hostname (`deploy/wfp/dispatcher/worker.js`; test `deploy/wfp/tests/dispatcher-test.mjs`). Phase A runs one copy per site on its `wp-<name>` host. Phase B is one `wp-dispatch` with a Custom Domain per site (#138).
 4. Whether the Workers Cache works inside a namespace user Worker. `b-dosql`'s page cache depends on it. **Answered: yes** ([wfp.md](wfp.md), 2026-11-06, `deploy/wfp/results/day1-20261106T213116Z.json`).
 5. The Durable Object namespace name collision (namespaces are named `<script>_<class>`). **2026-11-22: not tested** ([wfp.md](wfp.md)). `deploy/wfp` avoids it by its names: user Workers are `site-<name>` in the namespace, and its normal Workers are `wp-*` (`deploy/wfp/lib.sh`).
 6. #58 (the storefront cache, first built for the retired `c1`), #60 (b-dosql transactions, closed: PR #75), #63 (b cache key), #31 (import).
-7. Cost per tenant under traffic. The at-rest price and its limits are in [plan-limits.md](plan-limits.md).
+7. Cost per tenant under traffic. The at-rest price and its limits are in [guide/cost.md](guide/cost.md).
 8. Metering of outbound HTTP from PHP in the object (#26 built the transport and an optional allowlist; the outbound Worker does not see these fetches). **2026-11-22: not built.** The outbound Worker passes requests on unchanged (`deploy/wfp/outbound/worker.js`). The PHP transport has a host allowlist (`HTTP_ALLOW_HOSTS`) but no metering.
 9. The dispatcher, the per-tenant Terraform and the upload pipeline. **2026-11-22: built.** The dispatcher is `deploy/wfp/dispatcher`, the Terraform is `deploy/wfp/terraform/site` (per site) and `deploy/wfp/terraform/shared`, and the upload is `deploy/wfp/site.sh` and `up.sh`. This document is the design they followed.
