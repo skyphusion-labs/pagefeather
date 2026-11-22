@@ -46,7 +46,7 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
 | file | what it does |
 |---|---|
 | `prepare-content.sh` | Builds the extra content of a throwaway (test plugins, test themes, the marker) from the pinned repos. It prints one line of variables for `build.sh`. |
-| `themes.txt`, `plugins.txt` | The wordpress.org themes and plugins for the throwaway, checked by SHA-256 (`tests/plugins/fetch.sh`). They are separate from the product lists. |
+| `themes.txt`, `themes-wp.txt`, `plugins.txt` | The wordpress.org themes and plugins for the throwaway, checked by SHA-256 (`tests/plugins/fetch.sh`). They are separate from the product lists. `themes.txt` is the gb pin (Twenty Twenty-One 2.1). A build that names wp, and not gb, uses `themes-wp.txt` (Twenty Twenty-One 2.9, the version wordpress-develop bundles). Prepare each of the two suites on its own. A build that names both wp and gb stops (#1335). |
 | `php/pf-conformance-throwaway.php` | The marker mu-plugin. Its REST route says "throwaway" and names the host. |
 | `exclude/<suite>.txt` | Specs this run skips, each with its reason. See Exclude rows for the line format. |
 | `areas.txt` | The map from each spec file to a row of `docs/support-matrix.md`. The first matching line wins; a spec no line maps is reported as unmapped. |
@@ -60,7 +60,7 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
 
 ## One run, step by step
 
-1. **The content.** Run `tests/conformance/prepare-content.sh <new dir> wp wc gb`. Keep the last line it prints.
+1. **The content.** Prepare each of the two suites on its own. Run `tests/conformance/prepare-content.sh <new dir> wp` for wp. Run it again, into a second directory, with `gb` for gb. wc may share either directory. A build that names both wp and gb stops. Keep the last line each run prints.
 2. **The site.** Build and deploy a throwaway with the lean engine. Put that line in front of the build. Set `TURNSTILE_LOGIN=off`. WooCommerce `auth.setup.ts` posts the login with no token. The login gate fails closed without one. Set `TURNSTILE_LOSTPASSWORD=off`. The suite lost-password posts cannot complete the challenge. Set `TURNSTILE_SITEKEY` to `1x00000000000000000000AA`. Set `TURNSTILE_SECRET` to `1x0000000000000000000000000000000AA`. Those are the always-pass test keys. The checkout gate and the comment gate stay on. The deploy refuses any other pair. A real site key stops classic checkout (#940). Our own test in the matrix covers Turnstile on login.
    - For the cache-on run, keep the default page cache.
    - For the cache-off run, the site needs `PAGE_CACHE_TTL=0`. Only the c1 variant renders that setting today, and it refuses 0. Rollins is adding it to `deploy/wfp` as a recorded setting. Until then, `prepare --cache off` STOPs on a cached answer, so the pass cannot run mislabelled.

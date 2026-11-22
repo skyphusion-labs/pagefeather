@@ -8,20 +8,23 @@
 # site: the WooCommerce cleanup plugin deletes the whole store, and both upstream suites delete
 # all posts.
 #
-#   wp  the WordPress suite (wordpress-develop tests/e2e): the theme twentytwentyone.
+#   wp  the WordPress suite (wordpress-develop tests/e2e): the theme twentytwentyone at the
+#       version that tree bundles (themes-wp.txt).
 #   wc  the WooCommerce suite (plugins/woocommerce/tests/e2e): the themes twentytwentythree, storefront, twentytwenty,
 #       twentytwentytwo, twentytwentyfour and the test themes of tests/e2e/themes/blocks (as .wp-env.e2e.json mounts
 #       them, #937; with gb, Gutenberg's emptytheme is kept), the
 #       plugins woocommerce-e2e-test-helper, woocommerce-cleanup, and
 #       wc-email-template-sync-test-helper (from WC_SHA; the upstream external setup takes them
 #       from trunk, which is not pinned), and wp-mail-logging.
-#   gb  the Gutenberg suite (test/e2e): twentytwentyone, twentytwentythree, twentytwentyfour, twentytwenty, the
+#   gb  the Gutenberg suite (test/e2e): twentytwentyone 2.1 (themes.txt, the zip Gutenberg mounts),
+#       twentytwentythree, twentytwentyfour, twentytwenty, the
 #       test plugins (one plugin directory, gutenberg-test-plugins, as upstream mounts it), the
 #       test themes emptytheme and gutenberg-test-themes, and the e2e mu-plugins.
 #
 # Each repo is fetched at its full commit sha (pins.env) with a sparse checkout: git checks every
 # object, so the content is the pinned content. Refused (non-zero exit): an <out-dir> that exists,
-# an unknown suite, a checkout whose HEAD is not the pin, a missing upstream path, and a symbolic
+# an unknown suite, both wp and gb (different Twenty Twenty-One versions; before any install),
+# a checkout whose HEAD is not the pin, a missing upstream path, and a symbolic
 # link in any copied tree (content.sh refuses them too). WC_REPO, GB_REPO and the shas can be set
 # in the environment (the test points them at stub repos).
 set -euo pipefail
@@ -39,6 +42,12 @@ for s in "$@"; do
   case "$s" in wp) want_wp=1 ;; wc) want_wc=1 ;; gb) want_gb=1 ;;
     *) echo "prepare: unknown suite '$s' (wp wc gb)" >&2; exit 2 ;; esac
 done
+# One site holds one copy of twentytwentyone. wp needs 2.9 (wordpress-develop).
+# gb needs 2.1 (the zip its environment mounts). Stop before any install.
+if [ "$want_wp" = 1 ] && [ "$want_gb" = 1 ]; then
+  echo "wp and gb need different Twenty Twenty-One versions (2.9 and 2.1, #1335): prepare each suite on its own" >&2
+  exit 2
+fi
 mkdir -p "$out/wp-content/plugins" "$out/wp-content/themes" "$out/wp-content/mu-plugins" "$out/src"
 out=$(cd "$out" && pwd)
 : > "$out/PINS"
@@ -88,7 +97,7 @@ if [ "$want_wc" = 1 ]; then
   add plugins wp-mail-logging
   tp=plugins/woocommerce/tests/e2e/test-plugins
   # The themes the WooCommerce e2e environment mounts (.wp-env.e2e.json at WC_SHA, #937): three from wordpress.org
-  # (themes.txt) plus twentytwentyfour, and the test themes from tests/e2e/themes/blocks.
+  # (the theme pin file) plus twentytwentyfour, and the test themes from tests/e2e/themes/blocks.
   add themes storefront; add themes twentytwenty; add themes twentytwentytwo; add themes twentytwentyfour
   tt=plugins/woocommerce/tests/e2e/themes/blocks
   fetch woocommerce "$WC_REPO" "$WC_SHA" "/$tp/woocommerce-e2e-test-helper/" "/$tp/woocommerce-cleanup/" "/$tp/wc-email-template-sync-test-helper/" "/$tt/"
@@ -134,6 +143,13 @@ line="IMPORT_CONTENT=$out/wp-content"
 [ -z "$imp_themes" ] || line="$line IMPORT_THEMES='$imp_themes'"
 [ -z "$imp_plugins" ] || line="$line IMPORT_PLUGINS='$imp_plugins'"
 [ -z "$imp_mu" ] || line="$line IMPORT_MU_PLUGINS='$imp_mu'"
-[ -z "$themes" ] || line="$line THEME_SUITE=$here/themes.txt THEMES='$themes'"
+# fetch.sh --themes reads one pin file (THEME_SUITE) and no other list.
+# The wp suite's stock Twenty Twenty-One is the version wordpress-develop bundles
+# (themes-wp.txt). The gb suite keeps 2.1 (themes.txt). A build names one of
+# those two suites, never both (refused above, before any install). Naming wp
+# selects the wp file. A build that names gb and not wp keeps themes.txt.
+theme_suite=$here/themes.txt
+[ "$want_wp" = 0 ] || theme_suite=$here/themes-wp.txt
+[ -z "$themes" ] || line="$line THEME_SUITE=$theme_suite THEMES='$themes'"
 [ -z "$plugins" ] || line="$line SUITE=$here/plugins.txt PLUGINS='$plugins'"
 echo "$line" | tee -a "$out/PINS"

@@ -1,0 +1,17 @@
+# Pinned wordpress.org themes for a conformance build that names the wp suite (#1335).
+# tests/plugins/fetch.sh --themes reads THEME_SUITE. prepare-content.sh points it
+# here when the build names wp. Never for a real site.
+# Twenty Twenty-One is the version wordpress-develop bundles at WP_DEVELOP_SHA
+# (984163c92ef66b6186538ecf01bacb97fc097541). That tree's
+# src/wp-content/themes/twentytwentyone/style.css says Version: 2.9.
+# The sha256 is of the wordpress.org zip twentytwentyone.2.9.zip.
+# Every other slug matches themes.txt. A build that names gb and not wp keeps
+# 2.1 in themes.txt, the zip Gutenberg's e2e environment mounts.
+# slug version sha256-of-zip
+twentytwentyone 2.9 51d4ac1dcaef18b0e35a1a313bce8115d3aa4ff315bb1143f95c223c38817d8b
+twentytwentythree 1.3 af0a28f93cb54f61e5a9c5a5ace8a46fdea7bb18349fede401194ff5f7daa5eb
+twentytwentyfour 1.6 9128150eff2682bf07ca7fdada2d2ed86a8f0d9210814d5369241e51e7a50baf
+# storefront, twentytwenty, twentytwentytwo: same pins as themes.txt.
+storefront 4.6.2 163b5bf217dad76a823432d8c01598ab3dc3f15cbdd69067b98f5a6ddf05c1c4
+twentytwenty 3.3 350812730ab66862150a744884b4aaeeaa0512a121e97d7e7b14c14b518de5bb
+twentytwentytwo 2.2 257f0f0c9102c4903075841fa0068088efb522214b53df48275f8776cb1b9454

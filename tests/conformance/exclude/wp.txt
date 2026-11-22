@@ -1,8 +1,9 @@
 # wordpress-develop tests/e2e at WP_DEVELOP_SHA: specs NOT run on a deployed site (#759).
-# Path relative to tests/e2e, then the reason. runner.py passes the paths as testIgnore.
+# A file row: path relative to tests/e2e, then the reason. runner.py passes the path as testIgnore.
+# A title row: file, " :: ", the title (describe blocks joined by " > "), then two spaces, then the reason.
+# runner.py passes a title row as grepInvert. The other tests in that file still run.
 specs/install.test.js                    rewrites wp-config.php on the RUNNER disk (assumes runner = server)
 specs/fatal-error-handler.test.js        writes a mu-plugin on the RUNNER disk; gaps.py tests it instead (pf/fatal-error-handler)
 specs/maintenance-mode.test.js           writes .maintenance on the RUNNER disk; no, by design: code-locked sites never enter it (support matrix)
 specs/login-localize-script.test.js      writes a mu-plugin on the RUNNER disk
 specs/gutenberg-plugin.test.js           installs a plugin over REST; unsupported by design (code lock)
-specs/dashboard.test.js                         Admin Quick Draft shows Untitled for a content-only draft. Upstream expects (no title). Product copy on the deployed throwaway (#759, conf759 wp-on 2026-11-17).
