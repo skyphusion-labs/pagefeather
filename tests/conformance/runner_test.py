@@ -525,6 +525,12 @@ def main():
             ok("a title holding ' > ' matches the Playwright title line") if mk_rx.search("e2e-pf basic/page-loads.spec.ts can load Marketing > Overview page") and not mk_rx.search("e2e-pf basic/page-loads.spec.ts can load Marketing > Coupons page") else bad("Marketing title regex")
             em_rx = re.compile(runner.title_grep_source("email/settings-email.spec.ts", want_title))
             ok("a describe > title row still matches as before") if em_rx.search("e2e-pf email/settings-email.spec.ts WooCommerce Email Settings Send email preview") else bad("email title regex")
+            # gb rows name the file from test/e2e (specs/...), but Playwright greps the path relative to the project testDir,
+            # which for gb is specs/: the line reads "chromium interactivity/...". A row with specs/ must still match it.
+            gb_rx = re.compile(runner.title_grep_source("specs/interactivity/directive-context.spec.ts", "data-wp-context > is correctly initialized"))
+            gb_line = "chromium interactivity/directive-context.spec.ts data-wp-context is correctly initialized"
+            gb_sib = "chromium interactivity/directive-context.spec.ts data-wp-context is correctly extended (shallow)"
+            ok("a gb row with specs/ matches Playwright's testDir-relative title line") if gb_rx.search(gb_line) and not gb_rx.search(gb_sib) else bad("gb title regex does not match %r (the specs/ prefix)" % gb_line)
             ok("wc grepInvert is the tag filter plus the title") if json.dumps(full) in wct else bad("title grep missing from wc config")
             ok("wc-cpt grepInvert carries the same title") if json.dumps(full) in wcc else bad("title grep missing from wc-cpt config")
             ok("wc-api grepInvert does not carry the email title") if json.dumps(runner.title_grep_source("email/settings-email.spec.ts", want_title)) not in wat else bad("wc-api carries the email title")
