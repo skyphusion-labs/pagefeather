@@ -97,19 +97,28 @@ all reject it. Design: issue #154. Worker hardening: issue #182 and `HARDENING.m
 - `cli.mjs`: `add --kind wp <name>` or
   `add --kind a <name> --hyperdrive <HYPERDRIVE_ID> --placement <aws|gcp|azure>:<region>|none [--hyperdrive-sql-mode <mode>]`
   (#1063: the core refuses an approach A upload with no placement field; `none` is an explicit null)
-  (node), and `remove <name> [--delete-data] [--no-entry]` (#782). Implements `add`, `hostname` and `remove`,
-  for a SaaS-zone site only: with no
+  (node), `remove <name> [--delete-data] [--no-entry]`, and `update <name> [--placement <region>]` (#782).
+  Implements `add`, `hostname`, `remove` and `update`, for a SaaS-zone site only: with no
   `WFP_SAAS_ZONE_ID` it refuses before any API call and names `deploy/wfp/site`,
   the one operator surface of the reference deployment (#294; #328 makes the two
   paths one site definition). Parses args, loads the PRE-BUILT bundle dir
   (`BDOSQL_BUNDLE_DIR` for `wp`, `A_BUNDLE_DIR` for `a`), generates per-site
   secrets, calls `provisionSite`. The Hyperdrive config id (and whether a strict
   backend needs `HYPERDRIVE_SQL_MODE`) comes from the Phase-1 onboarding step.
-  `remove` is a **dry run** unless `--delete-data`: it prints every part it would delete. Deleting the site code
-  deletes the site database, because it lives in the site's Durable Object. The order is traffic first (the
-  custom hostname, then the DNS record), then the code and its resources, and the registry entry last, so a
-  failed run can be retried. After a real removal it reads back the entry and the code. `--no-entry` removes a
-  half-made site by its derived names. The Analytics Engine dataset has no delete, so it stays.
+  `remove` deletes nothing unless `--delete-data`. Without the flag it prints every part, names the data it
+  kept (the site code, which holds the database, and the media bucket), and exits non-zero. With the flag the
+  order is traffic first (the custom hostname, then the DNS record), then the code and its resources, and the
+  registry entry last, so a failed run can be retried. After a real removal it reads back the entry and the
+  code. `--no-entry` removes a half-made site by its derived names. A name with no registry entry is refused
+  before any delete. The Analytics Engine dataset has no delete, so it stays.
+  `update` re-uploads the user Worker from the bundle directory. It reads the live script's bindings and sends
+  those non-secret bindings again, so it does not drop one and it does not change a plain text value. Secrets
+  are not sent again: the upload sets `keep_bindings` to `secret_text`, which keeps every secret of that type
+  by name. It sends no migrations block, so the Durable Object and its data stay. It refuses when the live
+  script is missing, or when the bindings cannot be read. It does not snapshot and it does not roll back (that
+  is `deploy/wfp/site update`). An approach A site needs `--placement <aws|gcp|azure>:<region>` (or a
+  `placementRegion` already on the registry entry) so the upload does not leave placement off.
+  `--placement none` is refused on update. This is not measured on a live site.
 - `provision.mjs`: `removeNamespaceSite(ctx, opts)` is the ONE removal (#782). The CLI's `remove`, the demo
   reaper (`demo.mjs` `teardownDemoSite`) and the one-click undo (`deploy/oneclick/sites.mjs` `undoStore`, with
   `keepGoing`) all call it, so they cannot drift on what a site is made of.

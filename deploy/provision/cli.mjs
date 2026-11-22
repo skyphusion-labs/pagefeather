@@ -19,10 +19,10 @@
 // configured (zone skyphusionwp.dev, fallback.skyphusionwp.dev).
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { provisionSite, removeNamespaceSite } from './provision.mjs';
+import { provisionSite, removeNamespaceSite, updateNamespaceSite } from './provision.mjs';
 import { SITE_NAME_RE, isCallerReservedName, genSecret } from './shared.mjs';
 import { bDosqlBindings, bDosqlSecrets, bDosqlResourceCreateOps, aBindings, mediaBucketName, ocKvNamespaceName, analyticsDatasetName, pageCacheInputs, pageCacheProductTtl, objectTimeInputs, aCacheInputs, dbQueryTimeoutInputs } from './wp-site-config.mjs';
-import { addCustomHostname, getCustomHostnameStatus, scriptExists } from './ops.mjs';
+import { addCustomHostname, getCustomHostnameStatus, scriptExists, namespaceScriptBindings } from './ops.mjs';
 import { updateSite, readSite } from './registry.mjs';
 import { PLACEMENT_REGION_RE } from './server-config.mjs';
 
@@ -66,8 +66,8 @@ export function operatorSiteRefusal(cmd, name, env) {
 export function parseArgs(argv) {
   const [cmd, ...rest] = argv;
   if (cmd === 'hostname') return parseHostnameArgs(rest);
-  if (!['add', 'remove', 'list'].includes(cmd)) {
-    throw new Error('usage: site add|list --kind wp|a <name> ... | site remove <name> [--delete-data] [--no-entry] [--hyperdrive <id>] [--hyperdrive-sql-mode <mode>] [--placement <aws|gcp|azure>:<region>|none] | site hostname add <name> --domain <d> --mode delegated|managed [--dcv-delegation] [--cust-zone <id>] | site hostname status <name>');
+  if (!['add', 'remove', 'list', 'update'].includes(cmd)) {
+    throw new Error('usage: site add --kind wp|a <name> ... | site list | site remove <name> [--delete-data] [--no-entry] | site update <name> [--placement <aws|gcp|azure>:<region>] | site hostname add <name> --domain <d> --mode delegated|managed [--dcv-delegation] [--cust-zone <id>] | site hostname status <name>');
   }
   let kind, name, hyperdrive, hyperdriveSqlMode, placement, deleteData = false, noEntry = false;
   for (let i = 0; i < rest.length; i++) {
@@ -101,6 +101,13 @@ export function parseArgs(argv) {
   if (cmd === 'remove') {
     if (!name || !SITE_NAME_RE.test(name)) throw new Error('remove needs a valid <name> (lower case, digits, hyphens, 1 to 30)');
     return { cmd, name, deleteData, noEntry };
+  }
+  if (cmd === 'update') {
+    if (!name || !SITE_NAME_RE.test(name)) throw new Error('update needs a valid <name> (lower case, digits, hyphens, 1 to 30)');
+    if (placement !== undefined && placement !== 'none' && !PLACEMENT_REGION_RE.test(placement)) {
+      throw new Error('--placement must be <aws|gcp|azure>:<region> (for example azure:westus2)');
+    }
+    return { cmd, name, placement };
   }
   return { cmd, kind, name, hyperdrive, hyperdriveSqlMode, placement };
 }
@@ -409,7 +416,16 @@ export async function removeCommand(ctx, parsed, env, { out = console.log } = {}
   out(`site remove ${parsed.name} (${hostname}):`);
   for (const x of r.plan) out(`  ${r.dryRun ? 'would delete' : 'deleted or absent'}: ${x.part} (${x.what})`);
   out(`  ${r.dataLoss}`);
-  if (r.dryRun) { out('  dry run: nothing was changed. Rerun with --delete-data to remove the site.'); return r; }
+  if (r.dryRun) {
+    // Stop before the first data-losing step. The dry run deletes nothing (the
+    // landed behavior): the site code holds the database, and the media bucket
+    // holds the uploads, so both stay. Exit non-zero and name them.
+    const kept = r.plan.filter((x) => x.part === 'site code and database' || x.part === 'media bucket');
+    for (const x of kept) out(`  kept: ${x.part} (${x.what})`);
+    out('  nothing was deleted. Rerun with --delete-data to remove the site and its data.');
+    const what = kept.map((x) => `${x.part} (${x.what})`).join('; ');
+    throw new Error(`site remove: stopped before deleting data. Kept: ${what}. Nothing was deleted. Rerun with --delete-data to remove the site and its data.`);
+  }
   const script = (entry && typeof entry.script === 'string') ? entry.script : `site-${parsed.name}`;
   const still = [];
   if (await readSite(ctx, { kvId, hostname })) still.push('the registry entry');
@@ -417,6 +433,66 @@ export async function removeCommand(ctx, parsed, env, { out = console.log } = {}
   if (still.length) throw new Error(`site remove: ${still.join(' and ')} is still present after its delete; rerun site remove ${parsed.name} --delete-data`);
   out('  checked: the registry entry and the site code are gone');
   return { ...r, checked: true };
+}
+
+// site update <name> [--placement <region>] (#782): re-upload the user Worker from
+// the bundle on disk. The live bindings are read back and re-sent. Secrets are not
+// re-sent; keep_bindings secret_text keeps them. No migrations block, so the
+// Durable Object data stays. The live script must already exist.
+export async function updateCommand(ctx, parsed, env, { out = console.log } = {}) {
+  if (!env.WFP_KV_ID || !env.WFP_NAMESPACE) throw new Error('site update: set WFP_KV_ID and WFP_NAMESPACE');
+  const hostname = siteHostname(parsed.name, env);
+  const kvId = env.WFP_KV_ID, ns = env.WFP_NAMESPACE;
+  const entry = await readSite(ctx, { kvId, hostname });
+  if (!entry || typeof entry.script !== 'string') {
+    throw new Error(`site update: ${hostname} has no registry entry, so there is no site to update. Nothing was uploaded.`);
+  }
+  const kind = entry.kind;
+  if (kind !== 'wp' && kind !== 'a') {
+    throw new Error(`site update: ${hostname} is kind ${JSON.stringify(kind)}, not wp or a. Nothing was uploaded.`);
+  }
+  const script = `site-${parsed.name}`;
+  if (entry.script !== script) {
+    throw new Error(`site update: the registry script is ${entry.script}, not ${script}. Nothing was uploaded.`);
+  }
+  if (!await scriptExists(ctx, { name: script, ns })) {
+    throw new Error(`site update: ${script} is not in the namespace ${ns}. Nothing was uploaded.`);
+  }
+  if (parsed.placement === 'none') {
+    throw new Error('site update: --placement none is refused. An update that omits placement can clear a live placement, and that was not measured. Nothing was uploaded.');
+  }
+  let placement;
+  if (kind === 'a') {
+    const region = parsed.placement || (typeof entry.placementRegion === 'string' ? entry.placementRegion : '');
+    if (!region || !PLACEMENT_REGION_RE.test(region)) {
+      throw new Error('site update: an approach A site needs --placement <aws|gcp|azure>:<region> (or a placementRegion on its registry entry) so the upload does not un-place the store (#1063). Nothing was uploaded.');
+    }
+    placement = { mode: 'targeted', region };
+  } else if (parsed.placement) {
+    throw new Error('site update: --placement is for an approach A site only. Nothing was uploaded.');
+  }
+  let live;
+  try { live = await namespaceScriptBindings(ctx, { ns, name: script }); }
+  catch (e) {
+    const status = e && e.status ? ` (HTTP ${e.status})` : '';
+    throw new Error(`site update: the bindings of ${script} could not be read${status}. Nothing was uploaded.`);
+  }
+  if (!live) {
+    throw new Error(`site update: the bindings of ${script} could not be read. Nothing was uploaded.`);
+  }
+  const dir = kind === 'wp' ? env.BDOSQL_BUNDLE_DIR : env.A_BUNDLE_DIR;
+  const mainModule = kind === 'wp' ? (env.WP_MAIN || 'index.js') : (env.A_MAIN || 'index-a-lean.js');
+  const modules = await loadModules(dir);
+  const r = await updateNamespaceSite(ctx, {
+    ns, name: parsed.name, mainModule, modules,
+    compatibilityDate: env.WFP_COMPAT || '2026-07-01',
+    compatibilityFlags: ['nodejs_compat', 'enable_request_signal'],
+    liveBindings: live, placement,
+  });
+  out(`site update ${parsed.name} (${hostname}): uploaded ${r.script}`);
+  out(`  kept bindings: ${r.bindings.map((b) => b.name).join(' ')}`);
+  out(`  kept secrets: ${r.secrets.join(' ')} (names only; the values were not sent)`);
+  return r;
 }
 
 async function main() {
@@ -429,7 +505,8 @@ async function main() {
   const refusal = operatorSiteRefusal(parsed.cmd, parsed.name, env);
   if (refusal) throw new Error(refusal);
   if (parsed.cmd === 'remove') { await removeCommand(ctx, parsed, env); return; }
-  if (parsed.cmd !== 'add') throw new Error(`${parsed.cmd}: not implemented in this CLI; list and update a site with deploy/wfp/site (docs/guide/operator.md)`);
+  if (parsed.cmd === 'update') { await updateCommand(ctx, parsed, env); return; }
+  if (parsed.cmd !== 'add') throw new Error(`${parsed.cmd}: not implemented in this CLI; list a site with deploy/wfp/site (docs/guide/operator.md)`);
   const cfg = await buildCfg(parsed, env);
   const r = await provisionSite(ctx, cfg);
   console.log(JSON.stringify({ provisioned: r.kind, name: r.name, script: r.script, hostname: r.hostname }, null, 2));
