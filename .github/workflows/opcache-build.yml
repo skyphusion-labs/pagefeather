@@ -88,6 +88,9 @@ jobs:
         # does not persist: the frame is rolled back on a reset-class failure, and the answer says rolled-back.
         # a-cron-e2e.sh (#855): on approach A's shape (PHP in the Worker, D1 as the outside database) a scheduled post
         # stays future with no trigger, and publishes after the Cron Trigger ticks the "cron" object; a second tick is a watchdog.
+        # a-cron-self-e2e.sh (#1310): with CRON_SELF_TICK=on and NO Cron Trigger (as under WfP), a scheduled post publishes:
+        # the Worker's first request kicks the cron object once and its alarm runs the legs. Its arms: the control
+        # (SELF_OFF=1) stays future, and dying legs (FATAL=1) keep their run record, the uncapped death back-off and the alarm.
         # stale-lock-e2e.sh (#1060): the requests queued behind a stalled PHP run shed with 503 at the stale line, and no
         # second runtime boots beside it; the site answers again when the run ends.
         # frame-r2-orphan-e2e.sh (#1039): a media upload rolled back by its frame leaves no R2 file and no taken name.
@@ -107,6 +110,9 @@ jobs:
         run: |
           for t in tests/recycle-stack-e2e.sh tests/recycle-loop-e2e.sh tests/boot-race-e2e.sh tests/boot-gate-e2e.sh tests/spare-persist-e2e.sh tests/runcron-boot-e2e.sh tests/rest-list-memory-e2e.sh tests/false-404-e2e.sh tests/failed-read-rollback-e2e.sh tests/stranded-frame-e2e.sh tests/a-cron-e2e.sh tests/stale-lock-e2e.sh tests/frame-r2-orphan-e2e.sh tests/email-retry-e2e.sh tests/cron-idle-e2e.sh tests/deploy-flow-e2e.sh tests/wc-route-defer-e2e.sh tests/a-as-drain-e2e.sh tests/mail-truth-e2e.sh; do
             if ! "$t"; then echo "::error::$t failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
+          done
+          for arm in "" "SELF_OFF=1" "FATAL=1"; do
+            if ! env $arm tests/a-cron-self-e2e.sh; then echo "::error::a-cron-self-e2e.sh ($arm) failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
           done
           if ! EXPECT_STOP=budget STOP_VARS="CRON_AS_BUDGET_MS:1000" MAX_LEGS=20 tests/a-as-drain-e2e.sh; then echo "::error::a-as-drain-e2e.sh (budget arm) failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1; fi
           if ! EXPECT_STOP=heap STOP_VARS="RECYCLE_WASM_MIB:100" ORDERS=20 MAX_LEGS=10 tests/a-as-drain-e2e.sh; then echo "::error::a-as-drain-e2e.sh (heap arm) failed; last lines of dev.log:"; tail -40 dev.log 2>/dev/null || true; exit 1; fi

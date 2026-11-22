@@ -95,11 +95,13 @@ export function parseGmt(s) {
  * Returns { idle, alarmAt } (alarmAt only when idle).
  */
 // mailNext (#1059, after #1062): the next mail retry this object's alarm must run; the back-off stops there too.
-export function idleDecision({ now, intervalMs, streak = 0, emailRush = false, wp, as, mailNext = null }) {
+export function idleDecision({ now, intervalMs, streak = 0, emailRush = false, wp, as, mailNext = null, selfTick = false }) {
 	if (emailRush || !wp || !as || !as.known) return { idle: false };
 	if (wp.due) return { idle: false };
 	if (as.next !== null && as.next !== undefined && as.next <= now) return { idle: false };
-	const back = Math.min(IDLE_MAX_MS, intervalMs * 2 ** (Math.max(0, streak) + 1));
+	// #1310: with no Cron Trigger to pull a backed-off alarm in when a page queues work (CRON_SELF_TICK=on), the alarm
+	// itself wakes each interval to run this gate. The death back-off (#471, cron-health.mjs) is separate and not capped.
+	const back = selfTick ? intervalMs : Math.min(IDLE_MAX_MS, intervalMs * 2 ** (Math.max(0, streak) + 1));
 	let at = now + back;
 	const nexts = [wp.next !== null && wp.next !== undefined ? wp.next * 1000 : null, as.next, mailNext].filter((x) => x !== null && x !== undefined);
 	for (const n of nexts) if (n < at) at = n;
