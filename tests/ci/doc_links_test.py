@@ -103,6 +103,9 @@ case("an untracked file is not read", dict(OK, **{"README.md": "[a](docs/a.md)\n
      untracked={"scratch.md": "[x](gone.md) docs/gone.md\n"}, has=["3 Markdown files"])
 
 # the instrument itself
+case("the test file is not read, its fixtures are planted", dict(OK, **{"tests/ci/doc_links_test.py": "# docs/gone.md\n"}), 0)
+case("the fixture skip is by exact path only", dict(OK, **{"tests/ci/other_test.py": "# docs/gone.md\n"}), 1,
+     has=["tests/ci/other_test.py:1: path string names a missing file: docs/gone.md"])
 case("a tree with no Markdown reads nothing and fails", {"x.txt": "hello\n"}, 1, has=["0 Markdown files"])
 case("every failure is printed, with the count", dict(OK, **{"README.md": "[x](g1.md) [y](g2.md)\n", "a.sh": "# docs/g3.md\n"}), 1,
      has=["link to a missing file: g1.md", "link to a missing file: g2.md", "names a missing file: docs/g3.md", "3 failures"])

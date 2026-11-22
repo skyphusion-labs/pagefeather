@@ -14,7 +14,8 @@ It reads every file git tracks under the root, and it fails (exit 1) on any of t
    rule 1 checks that each one exists.
 3. A repo path string docs/<name>.md, in ANY tracked text file (code comments included), that
    exists neither from the repo root nor from the file's own folder (spikes/b2-wordpress/README.md
-   names its own docs/pdf-invoice.md). A stub counts as existing, because it is a file.
+   names spikes/b2-wordpress/docs/pdf-invoice.md that way). A stub counts as existing, because it
+   is a file. tests/ci/doc_links_test.py is not read: its path strings are planted fixtures.
 
 It does not check that a #fragment names a heading: a stub's new page may reword a heading later
 (#1305, "Open questions").
@@ -35,6 +36,7 @@ CODESPAN = re.compile(r"(`+)(.+?)\1")
 STUB = re.compile(r"^This page moved to \[")
 DOCPATH = re.compile(r"(?<![A-Za-z0-9_./-])docs/[A-Za-z0-9_./-]*?[A-Za-z0-9_-]\.md(?![A-Za-z0-9_])")
 SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+FIXTURES = {"tests/ci/doc_links_test.py"}  # planted broken paths, by design
 
 
 def tracked(root):
@@ -94,7 +96,7 @@ def check(root):
     n_md = n_links = n_stubs = n_paths = 0
     for rel in files:
         full = os.path.join(root, rel)
-        if os.path.islink(full):
+        if os.path.islink(full) or rel in FIXTURES:
             continue
         text = text_of(full)
         if text is None:
