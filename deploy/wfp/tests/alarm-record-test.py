@@ -44,6 +44,14 @@ ok("classify_403: error code 1010 is the edge, before the token", "edge" in m.cl
 ok("classify_403: anything else is unknown, with the body", m.classify_403(b"nope").startswith("an unknown 403: nope"))
 ok("every request carries a User-Agent (the 1010 block)", m.UA.get("User-Agent") == "pagefeather-alarm-record" and "{**UA," in open(os.path.join(HERE, "..", "alarm-record.py")).read())
 ok("the CPU query filters by objectId_in, never scriptName (unknown there, live)", "objectId_in: $o" in m.GQL_CPU and "scriptName" not in m.GQL_CPU)
+# #1325 measurement (2026-11-22): a kind a site's Durable Object rows carry scriptName "__unknown__" (alarm and http
+# alike), so a scriptName filter finds none of them. The invocation query filters by the object's namespace id.
+ok("the invocation query filters by namespaceId, never scriptName (a kind a site's rows say __unknown__, live)", "namespaceId: $n" in m.GQL_INV and "scriptName" not in m.GQL_INV, m.GQL_INV)
+ns = [{"id": "aaa", "script": "site-other", "class": "PhpRuntime"}, {"id": "bbb", "script": "site-shop", "class": "PhpRuntime"},
+      {"id": "ccc", "script": "site-shop", "class": "Other"}]
+f = getattr(m, "do_namespace_id", None)
+ok("do_namespace_id: the PhpRuntime namespace of script site-<name>", f is not None and f(ns, "site-shop") == "bbb", f and f(ns, "site-shop"))
+ok("do_namespace_id: no namespace for the script is None (could not measure, never another site's)", f is not None and f(ns, "site-none") is None)
 src = open(os.path.join(HERE, "..", "alarm-record.py")).read()
 ok("read-only: no POST other than GraphQL, no PUT or DELETE", "method=" not in src and "PUT" not in src and "DELETE" not in src)
 print("%d failing" % len(fails))
