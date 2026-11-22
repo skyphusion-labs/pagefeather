@@ -35,6 +35,11 @@ content, and `render_user` checks as the last guard.
    - Do not set `TURNSTILE_WOO` or `TURNSTILE_COMMENTS` to `off`. Those gates stay on.
    - The deploy refuses any other site key or secret. A real site key stops classic checkout (#940).
    - `WOO_EXTRAS` must NOT be `off`: it forces `woocommerce_allow_tracking` off, which the WooCommerce suite needs on.
+   - `HTTP_ALLOW_HOSTS` must be `.wordpress.org,.woocommerce.com,.gravatar.com,cldup.com`: the default list plus `cldup.com`.
+     Gutenberg's `specs/editor/blocks/image.spec.js` "should upload external image to media library only when the toolbar
+     button is clicked" sideloads `https://cldup.com/...` on the server. The default list refuses it (`POST /wp/v2/media`
+     500, "host not in HTTP_ALLOW_HOSTS: cldup.com", cf759hw 2026-11-22). This is operator install config, as a real
+     operator who wants external image sideload sets it (the lead's ruling, #759). The default still refuses it.
 2. **Seed** (it also activates the two WooCommerce test plugins the line copied in; Gutenberg's stay inactive): `B=<site> ADMIN_PASSWORD=<the workspace's> python3 -I tests/conformance/seed.py <out>` (#775). It owns all
    setup and checks each item. `<out>/creds.env` (mode 600, `export` lines) holds the admin's account password, which
    is an application password (one value passes both the login form and Basic, #762), and the customer's.

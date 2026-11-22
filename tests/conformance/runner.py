@@ -404,7 +404,11 @@ def title_grep_source(path, title):
     # matches the whole title as one part.
     whole = gap + re.escape(title.strip())
     body = split if whole == split else "(?:%s|%s)" % (split, whole)
-    return re.escape(path) + body + r"(?: @|$)"
+    # Playwright greps the file path relative to the project testDir. gb rows name the file from test/e2e
+    # ("specs/..."), and gb's testDir is specs/, so the prefix is optional: without this, no gb title row ever matched
+    # (measured 2026-11-22 with playwright --list; the #992, #1171 and #1198 rows ran as if not there).
+    head = "(?:specs/)?" + re.escape(path[len("specs/"):]) if path.startswith("specs/") else re.escape(path)
+    return head + body + r"(?: @|$)"
 
 
 def grep_invert_source(titles):
