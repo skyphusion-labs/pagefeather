@@ -313,6 +313,8 @@ jobs:
           node --test spikes/b2-wordpress/tests/purge-why.test.mjs
           # #699: a refused purge stays pending with a back-off, and expires only after TTL + stale-while-revalidate.
           node --test spikes/b2-wordpress/tests/purge-state.test.mjs
+          # #837: approach A's gateway purge: a 1134 refusal is kept and retried (the site cron object, or this isolate).
+          node --test spikes/b2-wordpress/tests/a-purge.test.mjs
           # #699 part B: the account purge budget. Its rules, the site's fail-open client, the alarm's shape, the deploy
           # side (presence, the binding, who still binds it), and the load-test driver against a stub.
           node --test deploy/purge-budget/tests/budget-state.test.mjs

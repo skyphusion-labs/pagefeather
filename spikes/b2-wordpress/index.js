@@ -71,7 +71,8 @@ import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBus
 import { selfFetchRoute, selfFetchPoolAvailable, selfFetchCalls, selfFetchSameIsolate, selfFetchOutcome, SELF_FETCH_OBJECT, SELF_SAME_ISOLATE_HEADER, SELF_REFUSAL_SAME_ISOLATE, SELF_CACHE_ONLY_HEADER, SELF_CACHE_MISS_HEADER, selfCacheMissResponse, httpErrorReply } from './self-fetch.mjs';
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
-import { PURGE_GAP_MS, NO_CACHE_API, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
+import { NO_CACHE_API, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
+import { createGatewayPurger, aPurgeRoute } from './a-purge.mjs'; // #837
 import { budgetAcquire, budgetRefused } from './purge-budget-client.mjs';
 import { Container, ContainerProxy, getContainer } from '@cloudflare/containers';
 import { DurableObject, WorkerEntrypoint } from 'cloudflare:workers';
@@ -2359,8 +2360,8 @@ let emailDueRequest = false;
 let lastOrigin = null;
 let selfTickKicked = false; // #1310: this isolate sent its one self-tick kick (CRON_SELF_TICK=on)
 // Workers Cache purges always have Free-tier limits: 5 a minute, bursts of 25,
-// per account (#699). The gateway purges at most once per PURGE_GAP_MS per isolate
-// (purge-state.mjs). The object keeps a refused purge pending and retries it (#699).
+// per account (#699). The object keeps a refused purge pending and retries it (#699); approach A's gateway hands
+// its purges to the site cron object or retries them itself (a-purge.mjs, #837).
 // The object's purge state (issue #78, #699): purge-state.mjs, in its storage.
 const PURGE_STATE_KEY = 'skyphusion-purge';
 const ORIGIN_KEY = 'skyphusion-origin';
@@ -2376,7 +2377,6 @@ const CRON_ALARM_BUILD_KEY = 'cron-alarm-build'; // #1152: the build this object
 const CRON_BACKLOG_KEY = 'cron-backlog';
 // #1120 review: { n, due }, the soon legs in a row without progress against as_due (cron-bound.mjs backlogStreak).
 const CRON_BACKLOG_STREAK_KEY = 'cron-backlog-streak';
-let lastPurge = 0;
 // #510: dispose a JS RPC result once its fields are read. An RPC result can carry a disposer (and,
 // over Cap'n Web, every object result does); left to the garbage collector it logs "An RPC result
 // was not disposed properly" (wp-a-lean: 4 and 8 warns in the two load windows, 2026-11-14).
@@ -2388,25 +2388,25 @@ function disposeRpc(r) {
 		// a failed dispose never fails the purge
 	}
 }
+// #837: approach A's purge (a-purge.mjs). With the site cron object (A_CRON=on), each ask goes to its requestPurge(),
+// which coalesces, keeps a refused purge pending and retries it (#699). Without one, this isolate retries in waitUntil
+// and its next request sends a purge still pending. A refused purge (1134) is never dropped before purgeWindowMs.
+let gatewayPurger = null;
+function purgeCtx(ctx) {
+	const env = ENV || {};
+	return {
+		waitUntil: (p) => ctx.waitUntil(p),
+		purge: () => ctx.exports.Pages.purge(['wp-pages']),
+		handOff: aPurgeRoute(env) === 'object' ? () => env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(CRON_OBJECT_NAME)).requestPurge() : undefined,
+	};
+}
 function schedulePurge(ctx) {
-	// A purge already scheduled for later covers this change too.
-	const wait = Math.max(0, lastPurge + PURGE_GAP_MS - Date.now());
-	const send = lastPurge <= Date.now();
-	// One line per change and one per purge sent, so a run can count both (wrangler tail).
-	console.log(JSON.stringify({ m: 'purge', asked: 1, coalesced: send ? 0 : 1, waitMs: send ? wait : 0 }));
-	if (send) {
-		lastPurge = Date.now() + wait;
-		ctx.waitUntil(
-			new Promise((ok) => setTimeout(ok, wait))
-				.then(() => ctx.exports.Pages.purge(['wp-pages']))
-				// A refused purge (Free limits: 5 a minute per account) is reported, not dropped.
-				.then((r) => {
-					console.log(JSON.stringify({ m: 'purge', sent: 1, ok: !!(r && r.ok), errors: (r && r.errors) || [] }));
-					disposeRpc(r); // #510: after its fields are read
-				})
-				.catch((e) => console.log(JSON.stringify({ m: 'purge', sent: 1, ok: false, error: String(e).slice(0, 200) }))),
-		);
-	}
+	if (!gatewayPurger) gatewayPurger = createGatewayPurger({ env: ENV, dispose: disposeRpc });
+	gatewayPurger.ask(purgeCtx(ctx));
+}
+// The isolate's next request sends a local purge a refusal left pending (a no-op otherwise).
+function kickPurge(ctx) {
+	if (gatewayPurger && ctx && ctx.exports && gatewayPurger.state().pending) gatewayPurger.kick(purgeCtx(ctx));
 }
 
 // Page cache (Workers Cache, issue #63). Only the Pages entrypoint is cached.
@@ -4811,6 +4811,7 @@ export default {
 		}
 		// #752: the PHP object's start-by tick lands here, FIRST: a cheap 204, before the page cache and any object call.
 		if (url.pathname === TICK_PATH) return tickResponse();
+		kickPurge(ctx); // #837
 		// #912: //checkout-link is the home page. Merge the slash and redirect.
 		// #1005: GET, HEAD and OPTIONS only. A 301 on any other method is followed as GET and the body is lost.
 		const merged = collapsedSlashRedirect(req.url, req.method);
