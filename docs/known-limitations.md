@@ -14,6 +14,10 @@ The current text is [A guest product page on a page-cache MISS on Hyperdrive was
 
 The current text is [WooCommerce checkout on Hyperdrive is slow (#1218, #1210)](guide/limits.md#woocommerce-checkout-on-hyperdrive-is-slow-1218-1210).
 
+### WooCommerce admin screens and bulk product edits are slow on Hyperdrive (#1078)
+
+The current text is [WooCommerce admin screens and bulk product edits are slow on Hyperdrive (#1078)](guide/limits.md#woocommerce-admin-screens-and-bulk-product-edits-are-slow-on-hyperdrive-1078).
+
 ### Order emails on Hyperdrive were late (#1215, fixed)
 
 The current text is [Order emails on Hyperdrive were late (#1215, fixed)](guide/limits.md#order-emails-on-hyperdrive-were-late-1215-fixed).

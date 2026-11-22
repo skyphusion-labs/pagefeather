@@ -22,6 +22,26 @@ On `cf759hl` at main `822ab24`, 6 of 10 blocks checkout tests missed the suite's
 
 PR #1219 fixed that part (#1218, merged 2026-11-21): the engine sends a request's transient deletes as one statement at its end. On one counted order, 352 DELETE statements became 11 (row "#1219 counted probe"). On PR #1219's head, before the merge, 10 of 10 blocks checkout tests passed, and the order POST took 4.8 to 6.8 s (row "wc arm B 3"). The time that is left is database time, about 13 ms a query. That is still a slow checkout, and #1210 is closed. No full wc suite has run since the merge.
 
+### WooCommerce admin screens and bulk product edits are slow on Hyperdrive (#1078)
+
+On a Hyperdrive store (approach A), WooCommerce admin screens and bulk product edits take seconds, not a fraction of a second. Plan for it if your staff edit many products at once.
+
+**What you will see:**
+- **A product save** takes about 2 to 3 s. An unloaded save on `cf759hl` made 118 database queries and took 2.6 s on the server.
+- **A batch of 5 new products** took 6.5 s (445 queries). Under the WooCommerce test suite's load, larger product batches took up to 14 s (p95), past a 10 s client timeout.
+- **The product edit screen** took about 3 s (64 queries). The other admin and editor screens took 1 to 3 s each.
+
+**Why:** each database query to Hyperdrive costs about 16.6 ms (the median over requests with 20 or more queries; 24.7 ms at p90). The time is that cost times the number of queries. WooCommerce writes each product field on its own, and WordPress has no way to write several fields in one query. So a product save makes about three queries per field. We measured that and checked it in WooCommerce's and WordPress's code. We found no change on our side that cuts the count by enough without risking stale data.
+
+**What it does not affect the same way:** shoppers. Guest storefront pages are served from the page cache, and the checkout has its own item above.
+
+**The evidence:**
+- the query ranking from the full suite run: [#1078, the ranking](https://github.com/skyphusion-labs/pagefeather/issues/1078#issuecomment-7083030477);
+- the per-request query trace (2026-11-22): [#1078, the trace](https://github.com/skyphusion-labs/pagefeather/issues/1078#issuecomment-7083253110);
+- why each candidate fix was rejected or held: [#1078, the levers](https://github.com/skyphusion-labs/pagefeather/issues/1078#issuecomment-7083327101).
+
+A smaller fix for the block editor's templates list (29 queries down to about 12) is in progress, behind a flag.
+
 ### Order emails on Hyperdrive were late (#1215, fixed)
 
 WooCommerce queues each order email. The approach A cron alarm ran those actions 12 to 122 s later, on `cf759hl` at main `822ab24` (row "wc email wait"). The suite polls for 30 s, so a send could miss that poll. A second miss on that run was the harness (#1216; PR #1217 fixed it, merged 2026-11-21).
