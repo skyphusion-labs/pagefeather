@@ -61,5 +61,17 @@ ok "a_cron_on says off: no read, whatever A_CRON says" "$([ ! -f "$T/calls" ] &&
 printf '%s\n' 'not json' > "$T/answers"; run 2
 ok "an unreadable answer is a WARNING (could not read), rc 0" "$(grep -q 'WARNING' "$T/out" && grep -qi 'could not' "$T/out" && [ "$(cat "$T/rc")" = 0 ] && echo 1 || echo 0)"
 
+# #1152 (lead, 2026-11-22): the default wait covers approach A's idle backoff. An idle cron object parks its next alarm
+# up to IDLE_MAX_MS (5 min) ahead, set by the OLD build; measured on cf759hw: the first tick on the new build came
+# 3 min 29 s and 2 min 44 s after the deploy, both at the parked time. 120 s warned falsely on both.
+lib="$ROOT/deploy/lib/cron-version.sh"
+# shellcheck disable=SC2016  # the literal default line of the lib, not an expansion
+ok "#1152 the default wait is 600 s (10 min), above the 5 min idle cap" "$(grep -qF 'wait=${CRON_VERSION_WAIT_S:-600}' "$lib" && echo 1 || echo 0)"
+idle=$(grep -oE 'IDLE_MAX_MS = [0-9]+ \* 60 \* 1000' "$ROOT/spikes/b2-wordpress/cron-idle.mjs" | grep -oE '= [0-9]+' | tr -dc 0-9)
+dflt=$(grep -oE 'wait=\$\{CRON_VERSION_WAIT_S:-[0-9]+\}' "$lib" | grep -oE '[0-9]+' | tail -1)
+ok "#1152 the default wait (${dflt:-?} s) is at least 2x IDLE_MAX_MS (cron-idle.mjs: ${idle:-?} min)" "$([ -n "$idle" ] && [ -n "$dflt" ] && [ "$dflt" -ge $((idle * 60 * 2)) ] && echo 1 || echo 0)"
+printf '%s\n' '{"worker":"new","cron":"old","alarm":"old"}' '{"worker":"new","cron":"new","alarm":"new"}' > "$T/answers"; run 3
+ok "#1152 an ok after waiting prints the measured lag" "$(grep -qE 'cron object: ok.*lag [0-9]+ s' "$T/out" && echo 1 || echo 0)"
+
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]
