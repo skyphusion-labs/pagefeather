@@ -22,7 +22,9 @@
  *   before it leaves. The Worker allowlists hosts (HTTP_ALLOW_HOSTS): unset uses
  *   the WordPress, WooCommerce and Gravatar hosts; an empty list denies every host.
  * - A request to the site's own host is refused by index.js: the PHP object runs
- *   one request at a time, so a request to itself would wait on itself.
+ *   one request at a time, so a request to itself would wait on itself. index.js
+ *   marks that refusal "self"; skyphusion_http_self_refused (filter, default null)
+ *   may answer it in-process (url-details-self.php, #1157: url-details GETs only).
  * Not covered: curl_*(), fsockopen() and http:// streams (file_get_contents of a
  * URL). Plugins that use those directly still have no network.
  * sslverify cannot be turned off: fetch() always verifies TLS.
@@ -183,6 +185,18 @@ add_filter(
 			),
 			true
 		);
+		// #1157 (d): index.js marks a refusal of a request to the site's own host "self". url-details-self.php answers
+		// the narrow case it covers (a url-details GET) in-process, with no HTTP hop; anything else stays the error.
+		if ( is_array( $reply ) && isset( $reply['error'] ) && ! empty( $reply['self'] ) && $blocking ) {
+			$home_host = wp_parse_url( get_option( 'home' ), PHP_URL_HOST );
+			if ( $home_host && ! empty( $parsed['host'] ) && strtolower( $home_host ) === strtolower( $parsed['host'] ) ) {
+				$answer = apply_filters( 'skyphusion_http_self_refused', null, $url, $args, $method );
+				if ( is_array( $answer ) ) {
+					do_action( 'http_api_debug', $answer, 'response', 'Skyphusion_Http_Bridge', $args, $url );
+					return apply_filters( 'http_response', $answer, $args, $url );
+				}
+			}
+		}
 		if ( ! is_array( $reply ) || isset( $reply['error'] ) ) {
 			return $fail( 'http_request_failed', is_array( $reply ) && isset( $reply['error'] ) ? $reply['error'] : 'No answer from the Worker.' );
 		}

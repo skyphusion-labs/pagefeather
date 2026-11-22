@@ -30,6 +30,10 @@ The current text is [WooCommerce on b-dosql: isolates reset under load, a tracke
 
 The current text is [Parallel REST reads can fail on b-dosql (#1042)](guide/limits.md#parallel-rest-reads-can-fail-on-b-dosql-1042).
 
+## Requests to the site's own URL (#1157)
+
+The current text is [Requests to the site's own URL (#1157)](guide/limits.md#requests-to-the-sites-own-url-1157).
+
 ## WP-CLI operator route (#1258)
 
 The current text is [WP-CLI operator route (#1258)](guide/limits.md#wp-cli-operator-route-1258).

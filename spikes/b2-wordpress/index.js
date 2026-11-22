@@ -68,7 +68,7 @@ import { aPerfLine } from './perf-line.mjs';
 import { templateQueuePriority, templateLookupYield, templateLookupForwardYield } from './template-boot.mjs';
 import * as cacheVersions from './cache-versions.mjs';
 import { overflowSettings, shouldOverflow, createPicker, overflowName, objectBusy, overHeld, overflowCapResponse, overflowHeldBlocksLocal, overflowHeldBlockResponse, overflowHeldToPool } from './overflow.mjs';
-import { selfFetchRoute, selfFetchPoolAvailable, selfFetchCalls, selfFetchSameIsolate, selfFetchOutcome, SELF_FETCH_OBJECT, SELF_SAME_ISOLATE_HEADER, SELF_REFUSAL_SAME_ISOLATE, SELF_CACHE_ONLY_HEADER, SELF_CACHE_MISS_HEADER, selfCacheMissResponse } from './self-fetch.mjs';
+import { selfFetchRoute, selfFetchPoolAvailable, selfFetchCalls, selfFetchSameIsolate, selfFetchOutcome, SELF_FETCH_OBJECT, SELF_SAME_ISOLATE_HEADER, SELF_REFUSAL_SAME_ISOLATE, SELF_CACHE_ONLY_HEADER, SELF_CACHE_MISS_HEADER, selfCacheMissResponse, httpErrorReply } from './self-fetch.mjs';
 import { stampRendered } from './page-stamp.mjs';
 import { PRODUCT_PAGE_HEADER, productTtl, isProductPage, edgeCacheControl } from './page-cache-ttl.mjs';
 import { PURGE_GAP_MS, NO_CACHE_API, purgeWindowMs, onAsk, onDue, onResult } from './purge-state.mjs';
@@ -2860,6 +2860,14 @@ async function selfFetchFromCache(url, method, headers, signal) {
 	console.log(JSON.stringify({ m: 'self-fetch', iso: ISOLATE_ID, method, path: url.pathname, outcome: 'cache-hit', status: r.status, ms: Date.now() - t0, parent: runCallId }));
 	return r;
 }
+// #1157 after #1298: the 'cache' route (no pool, the Pages export): the cached copy, or the refusal a no-pool hop had
+// before, logged on the same self-fetch line and thrown, so PHP gets the same error as from the hop check.
+async function selfFetchCacheOrRefuse(url, method, headers, signal, missWhy) {
+	const r = await selfFetchFromCache(url, method, headers, signal);
+	if (r) return r;
+	console.log(JSON.stringify({ m: 'self-fetch', outcome: 'refused', why: missWhy, method, path: url.pathname, iso: ISOLATE_ID, parent: runCallId }));
+	throw new Error(missWhy);
+}
 async function selfFetchOnPool(url, method, headers, body, signal) {
 	const ovs = overflowSettings(ENV);
 	const callId = crypto.randomUUID();
@@ -2894,9 +2902,11 @@ function httpRefusal(url) {
 // #1157: one hop's route ('pool', 'out' or 'refuse', selfFetchRoute's) and its refusal, or why null to send it: the
 // site's own host runs on a pool object or is refused. #1226 logs only a 'refuse' route as a refused self-fetch.
 function httpHop(url, ovs) {
-	const self = selfFetchRoute({ sameHost: isSelfHost(url), inObject: Boolean(ocCtx && ocCtx.inObject), overflowed: Boolean(ocCtx && ocCtx.overflowed), poolAvailable: selfFetchPoolAvailable(ENV, ovs), capped: overHeld(ovs, ovHeld) });
+	const self = selfFetchRoute({ sameHost: isSelfHost(url), inObject: Boolean(ocCtx && ocCtx.inObject), overflowed: Boolean(ocCtx && ocCtx.overflowed), poolAvailable: selfFetchPoolAvailable(ENV, ovs), capped: overHeld(ovs, ovHeld), cacheAvailable: Boolean(ocCtx && !ocCtx.inObject && ocCtx.exports && ocCtx.exports.Pages) });
 	const why = self.route === 'refuse' ? self.why : self.route === 'out' ? httpRefusal(url) : (url.protocol === 'http:' || url.protocol === 'https:' ? null : 'only http and https');
-	return { route: self.route, why };
+	// #1326 live round 1: missWhy must travel with the route. Without it a cache-route miss threw new Error(undefined),
+	// logged a refused line with no why, and the reply ("Error") was never marked self, so (d) never ran.
+	return { route: self.route, why, missWhy: self.missWhy };
 }
 // #1215: a non-blocking request is refused, as a blocking one is, before anything is queued.
 function httpFirstHopRefusal(op) {
@@ -2952,10 +2962,10 @@ async function httpOpRun(op) {
 				// #1226: a refused self-fetch returns here, before selfFetchOnPool.
 				// Log one line, or 0 self-fetch lines cannot tell a refusal from a hop never sent.
 				if (self.route === 'refuse') console.log(JSON.stringify({ m: 'self-fetch', outcome: 'refused', why, method, path: url.pathname, iso: ISOLATE_ID, parent: runCallId }));
-				out = { error: why };
+				out = httpErrorReply(why);
 				return out;
 			}
-			res = self.route === 'pool' ? (await selfFetchFromCache(url, method, headers, signal)) || (await selfFetchOnPool(url, method, headers, body, signal)) : await fetch(url, { method, headers, body, redirect: 'manual', signal });
+			res = self.route === 'pool' ? (await selfFetchFromCache(url, method, headers, signal)) || (await selfFetchOnPool(url, method, headers, body, signal)) : self.route === 'cache' ? await selfFetchCacheOrRefuse(url, method, headers, signal, self.missWhy) : await fetch(url, { method, headers, body, redirect: 'manual', signal });
 			const loc = res.headers.get('location');
 			if ([301, 302, 303, 307, 308].includes(res.status) && loc && (op.redirection || 0) > 0) {
 				// As Requests does: redirection 0 returns the redirect itself; past the count is an error.
@@ -3011,12 +3021,12 @@ async function httpOpRun(op) {
 		return out;
 	} catch (e) {
 		const name = e && e.name;
-		out = { error: name === 'TimeoutError' || name === 'AbortError' ? `Operation timed out after ${Math.round(Number(op.timeout) * 1000) || 5000} milliseconds` : String((e && e.message) || e) };
+		out = httpErrorReply(name === 'TimeoutError' || name === 'AbortError' ? `Operation timed out after ${Math.round(Number(op.timeout) * 1000) || 5000} milliseconds` : String((e && e.message) || e));
 		return out;
 	} finally {
 		stats.httpMs += Date.now() - t0;
 		// #1225: a queued (non-blocking) request's line also names that it was queued and the isolate it ran to its end in.
-		console.log(JSON.stringify({ m: 'http', host: url ? url.hostname : null, status: out && out.status, error: out && out.error ? String(out.error).slice(0, 120) : undefined, ms: Date.now() - t0, ...(op.discard ? { queued: true, iso: ISOLATE_ID } : {}) }));
+		console.log(JSON.stringify({ m: 'http', parent: runCallId, host: url ? url.hostname : null, status: out && out.status, error: out && out.error ? String(out.error).slice(0, 120) : undefined, ms: Date.now() - t0, ...(op.discard ? { queued: true, iso: ISOLATE_ID } : {}) }));
 	}
 }
 

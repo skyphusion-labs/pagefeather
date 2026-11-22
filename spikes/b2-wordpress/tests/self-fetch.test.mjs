@@ -32,8 +32,8 @@ test('#1157 the pool is available on the same condition as the overflow dispatch
 });
 test('#1157 index.js: every bridge hop asks selfFetchRoute, sends pool hops through toPhpObject, and logs self-fetch', () => {
 	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-	assert.match(src, /const self = selfFetchRoute\(\{ sameHost: isSelfHost\(url\), inObject: Boolean\(ocCtx && ocCtx\.inObject\), overflowed: Boolean\(ocCtx && ocCtx\.overflowed\), poolAvailable: selfFetchPoolAvailable\(ENV, ovs\), capped: overHeld\(ovs, ovHeld\) \}\);/);
-	assert.match(src, /res = self\.route === 'pool' \? \(await selfFetchFromCache\(url, method, headers, signal\)\) \|\| \(await selfFetchOnPool\(url, method, headers, body, signal\)\) : await fetch\(url, \{ method, headers, body, redirect: 'manual', signal \}\);/); // #1170 lever: the cache first
+	assert.match(src, /const self = selfFetchRoute\(\{ sameHost: isSelfHost\(url\), inObject: Boolean\(ocCtx && ocCtx\.inObject\), overflowed: Boolean\(ocCtx && ocCtx\.overflowed\), poolAvailable: selfFetchPoolAvailable\(ENV, ovs\), capped: overHeld\(ovs, ovHeld\)(, cacheAvailable: Boolean\(ocCtx && !ocCtx\.inObject && ocCtx\.exports && ocCtx\.exports\.Pages\))? \}\);/); // #1157 after #1298: cacheAvailable is the one input added, last
+	assert.match(src, /res = self\.route === 'pool' \? \(await selfFetchFromCache\(url, method, headers, signal\)\) \|\| \(await selfFetchOnPool\(url, method, headers, body, signal\)\) : (self\.route === 'cache' \? await selfFetchCacheOrRefuse\(url, method, headers, signal, self\.missWhy\) : )?await fetch\(url, \{ method, headers, body, redirect: 'manual', signal \}\);/); // #1170 lever: the cache first; #1157 after #1298: the cache route between
 	assert.match(src, /toPhpObject\(new Request\(url, \{ method, headers, body, signal, redirect: 'manual' \}\), ENV, url, null, \{ name: SELF_FETCH_OBJECT, hint: ovs\.hint, overflow: true, callId \}\)/);
 	assert.match(src, /m: 'self-fetch'/);
 	assert.doesNotMatch(src, /function httpRefusal\(url\) \{\n[^\n]*\n\tif \(bootOrigin && url\.hostname === new URL\(bootOrigin\)\.hostname\)/, 'the old blanket refusal is gone');
@@ -139,4 +139,85 @@ test('#1226 index.js: every hop-check refusal for the site own host logs one sel
 	}
 	assert.match(hop, /self\.route === 'refuse' \? self\.why/, 'the exit logs that why');
 	assert.match(hop, /self\.route === 'out' \? httpRefusal\(url\)/, 'an outbound refusal stays on the http line only');
+});
+
+// #1157 after #1298 (the pool off by default): httpHop decided "refuse" before the cache was tried, so EVERY self-fetch
+// was refused, a page already in the front page cache included. The cache path needs no pool (#1170: url-details 200
+// in 1.3 to 1.6 s on cf759hx, every hop a cache hit, ovf-self never booted). With no pool but the Pages export, the hop
+// tries the cache; only a miss is refused, with the same reason.
+test('#1157 no pool but the Pages export: the cache route, and a miss keeps the no-pool reason', () => {
+	assert.deepEqual(selfFetchRoute({ ...base, poolAvailable: false, cacheAvailable: true }), { route: 'cache', missWhy: SELF_REFUSAL_NO_POOL });
+	assert.deepEqual(selfFetchRoute({ ...base, poolAvailable: false }), { route: 'refuse', why: SELF_REFUSAL_NO_POOL }, 'no Pages export: refused, as before');
+	assert.deepEqual(selfFetchRoute({ ...base, cacheAvailable: true }), { route: 'pool' }, 'with the pool: the pool route, which tries the cache first');
+});
+test('#1157 the guards come first: in an object, or on a pool request, the cache route is never taken', () => {
+	assert.deepEqual(selfFetchRoute({ ...base, poolAvailable: false, cacheAvailable: true, inObject: true }), { route: 'refuse', why: SELF_REFUSAL_OBJECT });
+	assert.deepEqual(selfFetchRoute({ ...base, poolAvailable: false, cacheAvailable: true, inObject: true, overflowed: true }), { route: 'refuse', why: SELF_REFUSAL_GUARD });
+	assert.equal(selfFetchRoute({ ...base, sameHost: false, cacheAvailable: true }).route, 'out');
+});
+test('#1157 index.js: the hop passes cacheAvailable from the Pages export, and a cache-route miss logs the refusal and throws it', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /selfFetchRoute\(\{ sameHost: isSelfHost\(url\),[^}]*cacheAvailable: Boolean\(ocCtx && !ocCtx\.inObject && ocCtx\.exports && ocCtx\.exports\.Pages\)/);
+	assert.match(src, /: self\.route === 'cache' \? await selfFetchCacheOrRefuse\(url, method, headers, signal, self\.missWhy\) :/);
+	const f = src.slice(src.indexOf('async function selfFetchCacheOrRefuse('), src.indexOf('async function selfFetchOnPool('));
+	assert.ok(f.length > 0, 'the helper exists, beside selfFetchFromCache');
+	assert.match(f, /const r = await selfFetchFromCache\(url, method, headers, signal\);/);
+	assert.match(f, /if \(r\) return r;/);
+	assert.match(f, /m: 'self-fetch', outcome: 'refused', why: missWhy, method, path: url\.pathname, iso: ISOLATE_ID, parent: runCallId/);
+	assert.match(f, /throw new Error\(missWhy\);/);
+	assert.ok(f.indexOf("outcome: 'refused'") < f.indexOf('throw new Error(missWhy);'), 'logged before the throw');
+});
+
+// #1157 (strummer's export, 2026-11-22): the two failing url-details calls each matched ONE req line and no hop line,
+// so a hop could not be tied to the request that asked. The self-fetch lines carry parent since #1170 and #1226; the
+// bridge's own http line did not. Every http line now names the request it ran for.
+test('#1157 index.js: the http bridge line names its parent request (parent: runCallId)', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const lines = src.split('\n').filter((l) => /console\.log\(JSON\.stringify\(\{ m: 'http',/.test(l));
+	assert.ok(lines.length >= 1, 'the http line exists');
+	for (const l of lines) assert.match(l, /parent: runCallId/, l.trim().slice(0, 120));
+});
+
+// #1157 (d), Conrad's choice 2026-11-22: a refused request to the site's own host is marked "self" on the reply PHP
+// gets, so the bridge can answer a url-details GET in-process (php/url-details-self.php). Every self refusal reason is
+// marked; nothing else is (an outbound host refusal, a timeout, a fetch error stay plain errors).
+test('#1157 (d) httpErrorReply marks every self refusal, and only those', async () => {
+	const m = await import('../self-fetch.mjs');
+	assert.equal(typeof m.httpErrorReply, 'function', 'self-fetch.mjs exports httpErrorReply');
+	for (const why of [m.SELF_REFUSAL_OBJECT, m.SELF_REFUSAL_GUARD, m.SELF_REFUSAL_NO_POOL, m.SELF_REFUSAL_CAPPED, m.SELF_REFUSAL_SAME_ISOLATE]) {
+		assert.deepEqual(m.httpErrorReply(why), { error: why, self: true }, why);
+	}
+	for (const why of ['host not in HTTP_ALLOW_HOSTS: x', 'Operation timed out after 5000 milliseconds', 'only http and https', 'Too many redirects', '']) {
+		assert.deepEqual(m.httpErrorReply(why), { error: why }, 'not marked: ' + why);
+	}
+});
+test('#1157 (d) index.js: the hop-check exit and the catch both build the reply with httpErrorReply', () => {
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const hopStart = src.indexOf('const self = selfFetchRoute({ sameHost: isSelfHost(url)');
+	const hopEnd = src.indexOf("res = self.route === 'pool'", hopStart);
+	const hop = src.slice(hopStart, hopEnd);
+	assert.match(hop, /out = httpErrorReply\(why\);\n\s*return out;/, 'the one refusal exit');
+	assert.doesNotMatch(hop, /out = \{ error: why \}/);
+	assert.match(src, /out = httpErrorReply\(name === 'TimeoutError' \|\| name === 'AbortError' \? `Operation timed out after/, 'the catch (a cache-route miss and a same-isolate hop throw their reason)');
+});
+
+// #1326 live round 1 (cf759hw, 2026-11-22): every no-pool cache-route miss logged a refused line with NO why, and the
+// http line's error was the bare "Error". httpHop returned { route, why } and dropped selfFetchRoute's missWhy, so
+// selfFetchCacheOrRefuse threw new Error(undefined). That reply was never marked self, so (d) never ran. This runs
+// the REAL httpHop source on stubs (the pins above match text, and one passed while the value was undefined).
+test('#1326 httpHop carries the cache route missWhy, so a miss is refused WITH its reason and marked self', async () => {
+	const m = await import('../self-fetch.mjs');
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	const start = src.indexOf('function httpHop(url, ovs) {');
+	const fn = src.slice(start, src.indexOf('\n}\n', start) + 2);
+	assert.ok(start > 0 && fn.length > 0, 'httpHop exists');
+	const ocCtx = { inObject: false, overflowed: false, exports: { Pages: {} } };
+	const httpHop = new Function('selfFetchRoute', 'selfFetchPoolAvailable', 'isSelfHost', 'ocCtx', 'ENV', 'overHeld', 'ovHeld', 'httpRefusal',
+		fn + '\nreturn httpHop;')(m.selfFetchRoute, m.selfFetchPoolAvailable, () => true, ocCtx, {}, () => false, 0, () => null);
+	const hop = httpHop(new URL('https://shop.example/a-page'), { on: false });
+	assert.equal(hop.route, 'cache', 'no pool, the Pages export: the cache route');
+	assert.equal(hop.missWhy, m.SELF_REFUSAL_NO_POOL, 'the miss keeps its reason');
+	// what the catch then builds from the thrown Error
+	const e = new Error(hop.missWhy);
+	assert.deepEqual(m.httpErrorReply(String((e && e.message) || e)), { error: m.SELF_REFUSAL_NO_POOL, self: true }, 'marked self, so (d) can answer');
 });

@@ -484,6 +484,10 @@ jobs:
         run: node --test spikes/b2-wordpress/tests/http-nonblocking.test.mjs
       - name: the PHP bridge sends blocking and returns core's non-blocking response (issue #1215)
         run: php spikes/b2-wordpress/tests/http-bridge-nonblocking-test.php
+      - name: url-details for the site's own URL is answered in-process on a self refusal (issue #1157, option d)
+        # url-details-self.php and http-bridge.php: a url-details GET the Worker refused as a self-fetch gets a <head>
+        # built from WordPress's own data; every other self-fetch, a POST, another host and a draft stay refused.
+        run: php spikes/b2-wordpress/tests/url-details-self-test.php
       - name: b-dosql Basic auth sets PHP_AUTH_USER and PHP_AUTH_PW (issue #761)
         # php-auth.mjs: Authorization Basic becomes the two $_SERVER entries Apache
         # sets. A Bearer header, bad base64, or no colon sets nothing. No log line

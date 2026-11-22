@@ -30,11 +30,14 @@ export function selfFetchSameIsolate(overflowed, callId) {
 }
 export const SELF_REFUSAL_CAPPED = 'a request to this site itself is refused: this isolate holds its most overflowed requests (PHP_OVERFLOW_MAX_HELD)';
 
-export function selfFetchRoute({ sameHost, inObject, overflowed, poolAvailable, capped }) {
+// - 'cache' (#1157 after #1298): the site's own host on the approach A Worker with NO pool but the Pages export: a
+//   guest GET can still be answered from the front page cache, which needs no other runtime (#1170 measured it); only
+//   a miss is refused, with missWhy.
+export function selfFetchRoute({ sameHost, inObject, overflowed, poolAvailable, capped, cacheAvailable = false }) {
 	if (!sameHost) return { route: 'out' };
 	if (overflowed) return { route: 'refuse', why: SELF_REFUSAL_GUARD };
 	if (inObject) return { route: 'refuse', why: SELF_REFUSAL_OBJECT };
-	if (!poolAvailable) return { route: 'refuse', why: SELF_REFUSAL_NO_POOL };
+	if (!poolAvailable) return cacheAvailable ? { route: 'cache', missWhy: SELF_REFUSAL_NO_POOL } : { route: 'refuse', why: SELF_REFUSAL_NO_POOL };
 	if (capped) return { route: 'refuse', why: SELF_REFUSAL_CAPPED };
 	return { route: 'pool' };
 }
@@ -66,4 +69,13 @@ export const SELF_CACHE_ONLY_HEADER = 'x-pf-self-cache-only';
 export const SELF_CACHE_MISS_HEADER = 'x-pf-self-cache-miss';
 export function selfCacheMissResponse() {
 	return new Response(null, { status: 504, headers: { [SELF_CACHE_MISS_HEADER]: '1', 'cache-control': 'no-store, private' } });
+}
+
+// #1157 (d), Conrad's choice 2026-11-22: the reply PHP gets for a refused request. A refusal of a request to the site's
+// own host is marked self: true, so the bridge (php/http-bridge.php, skyphusion_http_self_refused) can answer the one
+// narrow case php/url-details-self.php covers, a url-details GET, in-process with no HTTP hop. Only these reasons are
+// marked; an outbound host refusal, a timeout or a fetch error stays a plain error.
+const SELF_REFUSALS = new Set([SELF_REFUSAL_OBJECT, SELF_REFUSAL_GUARD, SELF_REFUSAL_NO_POOL, SELF_REFUSAL_CAPPED, SELF_REFUSAL_SAME_ISOLATE]);
+export function httpErrorReply(why) {
+	return SELF_REFUSALS.has(why) ? { error: why, self: true } : { error: why };
 }
