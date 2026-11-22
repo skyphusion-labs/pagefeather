@@ -1,4 +1,4 @@
-# Approach A: PHP overflow to a Durable Object pool (on by default)
+# Approach A: PHP overflow to a Durable Object pool (off by default since #1277)
 
 **Status:** ON by default for approach A on `deploy/deploy.sh` since #1119 (Conrad ruled it, 2026-11-20; the cost is below). `PHP_OVERFLOW=0` is the explicit opt-out. The DO tiers are unchanged. Issue #296 step (3), PR #646. Measured 2026-11-15 on a throwaway approach-A site and a copy of the bench database. The numbers are in #296.
 
@@ -18,7 +18,7 @@ With `PHP_OVERFLOW=on`, a request that finds its isolate busy (a run in flight A
 
 | setting | default | meaning |
 |---|---|---|
-| `PHP_OVERFLOW` | on (deploy.sh, since #1119) | `on`: overflow. `always`: every eligible request, so a Worker isolate never boots PHP for a shopper request. It is a measurement arm, not a default: every query runs from an object. deploy.sh: unset or `PHP_OVERFLOW=1` renders `on`, `PHP_OVERFLOW=always` renders `always` (#714), and `PHP_OVERFLOW=0` renders nothing (the opt-out: no pool, no `PhpRuntime` binding unless `A_CRON` adds it) |
+| `PHP_OVERFLOW` | **off** (deploy.sh, since #1277; it was on, #1119) | `on`: overflow. `always`: every eligible request, so a Worker isolate never boots PHP for a shopper request. It is a measurement arm, not a default: every query runs from an object. deploy.sh: `PHP_OVERFLOW=1` renders `on`, `PHP_OVERFLOW=always` renders `always` (#714), and unset, empty or `0` renders nothing (no pool; the cron driver binds `PhpRuntime` itself). Off because the pool's objects are far from the database: about 3x the cost per query and a net loss of about 2 s per moved request at the median on cf759hl (#1277) |
 | `PHP_OVERFLOW_POOL` | 32 | the number of pool objects (1 to 128). The default is the measured best: pools 8 and 16 were worse than no overflow. A bad value falls back to 32 at runtime; deploy.sh refuses one (#714) |
 | `PHP_OVERFLOW_MAX_HELD` | none (no cap) | the most overflowed requests one Worker isolate holds in flight (#714, #717). Measured on #714: a cap of 16 lost 479 requests to capped 503s to save 2, and cut completion at 250 by 6 to 19 points, so there is no cap by default. 1 to 1000 caps; `off` is no cap; deploy.sh takes `off` or 1 to 1000 |
 | (runtime) | on when `PHP_OVERFLOW` is on | while this isolate holds overflowed requests, it does not boot PHP for shopper paths (#714 held-block). A fast 503 with `x-php-overflow: held-block` |

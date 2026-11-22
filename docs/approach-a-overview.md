@@ -4,7 +4,7 @@
 
 ## What it is
 
-WordPress runs as PHP compiled to WebAssembly inside a Cloudflare Worker. The database is an external, managed MySQL server. [Hyperdrive](https://developers.cloudflare.com/hyperdrive/) pools the connections and sits between the Worker and the database. There is no container. PHP runs in the Worker. A request that would wait behind a long run can move to the PHP overflow pool. That pool is on by default for approach A (#1140, #1119). `PHP_OVERFLOW=0` opts out.
+WordPress runs as PHP compiled to WebAssembly inside a Cloudflare Worker. The database is an external, managed MySQL server. [Hyperdrive](https://developers.cloudflare.com/hyperdrive/) pools the connections and sits between the Worker and the database. There is no container. PHP runs in the Worker. A request that would wait behind a long run can move to the PHP overflow pool. That pool is OFF by default for approach A since #1277 (it was on, #1119): its objects run far from the database, about 3x the cost per query. `PHP_OVERFLOW=1` opts in.
 
 Why pick it:
 

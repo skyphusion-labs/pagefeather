@@ -26,10 +26,11 @@
 # deploy/provision/a-vars-toml.mjs); deploy/tests/a-render-test.sh diffs the render against the bench config.
 #   A_CLIENT          lean (default: index-a-lean.js, the hand-rolled MySQL client every #296 run and
 #                     wp-a-lean measured, #218) or mysql2 (index-a.js, what deploy.sh deployed before #666).
-#   PHP_OVERFLOW      1 (the default since #1119: Conrad ruled it on for approach A) or 0 (the explicit opt-out): a
-#                     queued PHP request moves to a Durable Object pool instead of waiting behind a long run in its
-#                     isolate (#646, docs/approach-a-overflow.md); renders the PhpRuntime binding and its migration.
-#                     Unset or empty is the default. The DO tiers are unchanged (variant a only).
+#   PHP_OVERFLOW      0 (the DEFAULT since #1277: Conrad, 2026-11-21; it was 1, #1119) or 1 (the opt-in): a queued
+#                     PHP request moves to a Durable Object pool instead of waiting behind a long run in its isolate
+#                     (#646, docs/approach-a-overflow.md); renders the PhpRuntime binding and its migration. Off
+#                     because the pool's objects run far from the database (#1277: about 3x per query, a net loss of
+#                     about 2 s per moved request at the median). Unset or empty is 0. The DO tiers are unchanged.
 #                     always (#714, a MEASUREMENT arm): EVERY eligible request moves, so a Worker isolate never
 #                     boots PHP for a shopper request (measured locally: about 65 MiB less per front isolate at
 #                     peak). Renders PHP_OVERFLOW = "always" and the same pool. Every query then runs from an
@@ -116,7 +117,7 @@ a_settings_check() {
     echo "PHP_MEMORY_REUSE is not supported on variant a yet (#724): render it for a b-dosql site with deploy/wfp" >&2; return 2
   fi
   case "${A_CLIENT:-lean}" in lean|mysql2) ;; *) echo "A_CLIENT must be lean or mysql2, not ${A_CLIENT}" >&2; return 2 ;; esac
-  case "${PHP_OVERFLOW:-1}" in 0|1|always) ;; *) echo "PHP_OVERFLOW must be 0, 1 or always, not ${PHP_OVERFLOW}" >&2; return 2 ;; esac
+  case "${PHP_OVERFLOW:-0}" in 0|1|always) ;; *) echo "PHP_OVERFLOW must be 0, 1 or always, not ${PHP_OVERFLOW}" >&2; return 2 ;; esac
   case "${OBJECT_CACHE_VERSIONS:-0}" in 0|1) ;; *) echo "OBJECT_CACHE_VERSIONS must be 0 or 1, not ${OBJECT_CACHE_VERSIONS}" >&2; return 2 ;; esac
   case "${WOO_HPOS_CACHE:-}" in ''|on|off) ;; *) echo "WOO_HPOS_CACHE must be on, off or unset, not ${WOO_HPOS_CACHE}" >&2; return 2 ;; esac
   case "${OBJECT_CACHE_L2:-0}" in 0|1) ;; *) echo "OBJECT_CACHE_L2 must be 0 or 1, not ${OBJECT_CACHE_L2}" >&2; return 2 ;; esac
@@ -215,17 +216,17 @@ a_main() {
   if [ "${A_CLIENT:-lean}" = mysql2 ]; then echo index-a.js; else echo index-a-lean.js; fi
 }
 
-# a_overflow_on: PHP_OVERFLOW is 1 or always (#714), the two settings that render the pool. Unset or empty is 1 (#1119:
-# on by default for approach A); 0 is the opt-out.
+# a_overflow_on: PHP_OVERFLOW is 1 or always (#714), the two settings that render the pool. Unset or empty is 0: OFF by
+# default for approach A since #1277 (Conrad, 2026-11-21; it was on, #1119). 1 is the opt-in.
 a_overflow_on() {
-  case "${PHP_OVERFLOW:-1}" in 1|always) return 0 ;; esac
+  case "${PHP_OVERFLOW:-0}" in 1|always) return 0 ;; esac
   return 1
 }
 # a_overflow_vars and a_overflow_bindings: PHP_OVERFLOW=1 (#646) or always (#714), the [vars] lines, then the
 # PhpRuntime pool with its migration. Nothing when it is off.
 a_overflow_vars() {
   a_overflow_on || return 0
-  if [ "${PHP_OVERFLOW:-1}" = always ]; then echo 'PHP_OVERFLOW = "always"'; else echo 'PHP_OVERFLOW = "on"'; fi
+  if [ "${PHP_OVERFLOW:-0}" = always ]; then echo 'PHP_OVERFLOW = "always"'; else echo 'PHP_OVERFLOW = "on"'; fi
   echo "PHP_OVERFLOW_POOL = \"$((10#${PHP_OVERFLOW_POOL:-32}))\""
   # #714: unset renders nothing (the code default, no cap); off or a number renders it.
   case "${PHP_OVERFLOW_MAX_HELD:-}" in '') ;; off) echo 'PHP_OVERFLOW_MAX_HELD = "off"' ;; *) echo "PHP_OVERFLOW_MAX_HELD = \"$((10#$PHP_OVERFLOW_MAX_HELD))\"" ;; esac
