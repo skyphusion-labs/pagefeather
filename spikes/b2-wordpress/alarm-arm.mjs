@@ -58,6 +58,7 @@ export async function extendIfOurs(storage, ourAt, newAt, now, by) {
 // #390: a request pulls an alarm that the idle back-off pushed past the normal interval (cron-idle.mjs) back to it,
 // so work the request scheduled (a post, an order email) is not left behind the back-off. No alarm, or one within the
 // interval: untouched (rearm handles none and stale).
+// #1360: the deploy wake passes interval 0 and by cron-wake, so a parked alarm becomes due now. Already due, or none: untouched.
 export async function pullIn(storage, now, intervalMs, by = 'request-pull') {
 	const at = await storage.getAlarm();
 	if (at === null || at === undefined || Number(at) <= now + intervalMs) return { pulled: false };

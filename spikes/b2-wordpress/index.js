@@ -22,7 +22,7 @@ import { MOVE_HOLD_KEY, moveHoldRequest } from './move-hold.mjs';
 import { SNAPSHOT_PATH, snapshotGate, gateResponse, takeSnapshot } from './db-snapshot.mjs';
 import { cronBounds, cronCleanDue, cronLegDue, cronAsBudgetMs, cronMore, cronBacklogNext, cronBacklogDue, cronBacklogGapMs, backlogStreak } from './cron-bound.mjs';
 import { CRON_RUN_KEY, cronBackoff, cronRunStart, cronRunDone, cronRunDeferred, cronMarkOf, cronFatalOf } from './cron-health.mjs';
-import { emailDueRoute, EMAIL_DUE_PATH, EMAIL_DUE_HEADER, aCronObjectOff, approachACronEnabled, approachACronScheduled, cronSelfTickOn, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME, CRON_BUILD_HEADER, CRON_BUILD_PATH, cronVersionAbort, cronBuildState } from './a-cron.mjs';
+import { emailDueRoute, EMAIL_DUE_PATH, EMAIL_DUE_HEADER, aCronObjectOff, approachACronEnabled, approachACronScheduled, cronSelfTickOn, CRON_TICK_PATH, CRON_TICK_HEADER, CRON_OBJECT_NAME, CRON_BUILD_HEADER, CRON_BUILD_PATH, cronVersionAbort, cronBuildState, CRON_WAKE_PATH, CRON_WAKE_HEADER, cronWakeRoute, cronObjectWake } from './a-cron.mjs';
 import { isMediaUploadRequest, sweepUploadOrphans, markNewKey, clearMarkers } from './upload-intent.mjs';
 import { cronFailureLine } from './cron-error.mjs';
 import { pdfInvoiceEnabled, renderOpPlan, invoiceKey, bytesToHex, signDownload, verifyDownload, invoiceDownloadPath, parseDownloadQuery } from './pdf-invoice.mjs';
@@ -3789,6 +3789,20 @@ export class PhpRuntime extends DurableObject {
 			}
 			return Response.json({ ok: true, stored: retry.length + dead.length });
 		}
+		// #1360: the gateway's wake. Pull the alarm in to now (alarm-arm.mjs pullIn). No cron leg: the object's own alarm runs the tick.
+		if (objectUrl.pathname === CRON_WAKE_PATH) {
+			const woke = await cronObjectWake({
+				env,
+				storage: this.ctx.storage,
+				now: Date.now(),
+				method: raw.method,
+				wakeHeader: raw.headers.get(CRON_WAKE_HEADER),
+				spikeOk: Boolean(env.SPIKE_TOKEN) && raw.headers.get('x-spike-token') === env.SPIKE_TOKEN,
+			});
+			if (woke.status !== 200) return new Response('forbidden', { status: woke.status });
+			if (woke.body && woke.body.pulled) console.log(JSON.stringify({ m: 'alarm', pulledBy: 'cron-wake', was: woke.body.was }));
+			return Response.json(woke.body, { headers: { 'cache-control': 'no-store' } });
+		}
 		// #855: the Workers Cron tick from the site Worker (POST + x-pf-cron-tick). A WATCHDOG for this object's cron alarm:
 		// the alarm runs the leg (alarm(), armBeforeRun keeps the chain, the b-dosql hardened path); the tick only re-arms
 		// an alarm that is missing or stale (snapshotRearm, as #841's daily re-arm). Running alarm() here too ran the cron
@@ -4600,6 +4614,20 @@ const site = {
 				alarmAt = j && Number.isFinite(j.alarmAt) ? j.alarmAt : null;
 			} catch { cron = null; }
 			return Response.json({ worker: BUILD_ID, cron, alarm, alarmAt, state: cronBuildState({ worker: BUILD_ID, cron, alarm }), same: cronBuildState({ worker: BUILD_ID, cron, alarm }) === 'ok' }, { headers: { 'cache-control': 'no-store' } });
+		}
+		// #1360: pull the cron object's alarm in to now. The route sets the alarm only; the object's own alarm runs the tick.
+		// Spike token: the /_ gate above. Cron off: answer that and do not call the object. A second call is a no-op (pullIn).
+		if (url.pathname === CRON_WAKE_PATH) {
+			if (req.method !== 'POST') return new Response('method', { status: 405 });
+			if (cronWakeRoute(env) !== 'wake') return Response.json({ ok: false, cron: 'off' }, { headers: { 'cache-control': 'no-store' } });
+			const stub = env.PHP_RUNTIME.get(env.PHP_RUNTIME.idFromName(CRON_OBJECT_NAME));
+			const r = await stub.fetch(new Request(`https://do.internal${CRON_WAKE_PATH}`, {
+				method: 'POST',
+				headers: { 'x-spike-token': env.SPIKE_TOKEN, [CRON_WAKE_HEADER]: '1', 'x-wp-public-origin': siteOrigin(env, url) },
+			}));
+			const out = new Response(r.body, r);
+			out.headers.set('cache-control', 'no-store');
+			return out;
 		}
 		if (env.MEDIA && (req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/wp-content/uploads/')) return serveUpload(req, env, url);
 		// Signed invoice PDF download (issue #227). The Worker verifies the HMAC the
