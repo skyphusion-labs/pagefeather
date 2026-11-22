@@ -10,9 +10,11 @@ The rows are in [../results.md](../results.md), 2026-11-20 and 2026-11-21. The s
 
 On `cf759hl`, 3 guest product pages on a page-cache MISS took 9 to 12 s at the browser, past the suite's 10 s wait. The render ran in the `Pages` isolate at the visitor's edge, far from the database: about 57 ms per query under load, against about 17 direct.
 
-#1296 renders a MISS in the placed gateway instead. On `cf759hl` at its merge head (f69b097e), 24 of 24 product misses that entered at DFW and LAX ran at SEA, next to the database, at about 15 ms per query (`cf-placement`). Under the wc suite's load, the warm render (`phpMs`) went from p50 1,530, p95 5,621 ms to p50 1,180, p95 1,483 ms. The measurements are on [#1277](https://github.com/skyphusion-labs/pagefeather/issues/1277).
+#1296 rendered a MISS in the placed gateway instead. It was **reverted** on 2026-11-22 (the lead's ruling), because the full wc suite on `cf759hl` (hlm029) found two regressions:
+- a cookieless guest copy was served to a request with the WooCommerce cart cookies, so the shopper saw an empty cart (#1328);
+- about a quarter of the `Pages` MISS calls stalled about 19 s before the placed render started, and after 15:50Z every guest MISS did. The guest-page timeouts went from 4 to 8 (#1277).
 
-**Not yet measured:** the time at the browser on those 3 pages at the merge head. The next full wc suite on `cf759hl` measures it, against the 10 s wait. Until then this item stays open.
+A MISS now renders in the `Pages` isolate again, as described above. A new hand-off must fix both before it merges. This item and #1328 stay open until then.
 
 ### WooCommerce checkout on Hyperdrive is slow (#1218, #1210)
 
