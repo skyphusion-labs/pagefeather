@@ -612,6 +612,8 @@ woo_extras_var() {
 render_user() { # render_user <site> <origin>
   # #1258: the same refusal as deploy.sh and render-conf.sh. Nothing here renders DEV_LOCAL.
   wp_cli_local_seam_check || return 2
+  # #1319: a kind a site is approach A: the SAME render deploy.sh uses for variant a (render-conf.sh, RENDER_WFP=1).
+  if [ "${SITE_KIND:-b-dosql}" = a ]; then render_user_a "$@"; return $?; fi
   local s=$1 origin=$2 mail_binding mail_vars http_allow ts_vars php_env
   # WFP_PHP_ENV (#434): a measurement build may set USE_ZEND_ALLOC=1 so memory_get_usage reads
   # Zend's own numbers. JSON only, no single quote (it sits in a TOML literal string).
@@ -741,6 +743,20 @@ TOML
   # PDF_INVOICE (#765): Browser Rendering for PDF order invoices, the same switch as deploy.sh (deploy/pdf-invoice.sh).
   # Metered, so opt-in. Its download key INVOICE_TOKEN goes in with the other secrets (the secrets JSON).
   [ "${PDF_INVOICE:-}" != on ] || printf '\n[browser]\nbinding = "BROWSER"\n'
+}
+# render_user_a <site> <origin> (#1319): the user Worker of a kind a site. render-conf.sh render_conf with
+# VARIANT=a and RENDER_WFP=1 (the namespace script site-<name>, no workers.dev, no [triggers]), so deploy.sh's
+# approach A and this one render the same lines from one source; deploy/tests/a-render-test.sh diffs the two.
+# Then deploy/wfp's own [observability] block (obs_render). out() is the site workspace's (site.sh): it gives
+# hyperdrive_id and oc_kv_id. A subshell, so render-conf.sh and a-settings.sh define nothing in this shell.
+render_user_a() {
+  local s=$1 origin=$2 conf rc=0
+  conf=$( . "$WFP/../a-settings.sh" && . "$WFP/../observability.sh" && . "$WFP/../render-conf.sh" &&
+    NAME=$s VARIANT=a LOCATION=${PHP_LOCATION:-enam} SITE_ORIGIN=$origin COMPAT=$(compat_date) BUCKET=$(media_bucket "$s") AI=0 \
+      RENDER_WFP=1 RENDER_SCRIPT=$(user_script "$s") && cd "$APP" && render_conf ) || rc=$?
+  [ "$rc" = 0 ] || return "$rc"
+  printf '%s\n' "$conf"
+  obs_render "$s"
 }
 # wfp_live_site <name>: a Workers for Platforms site marked live
 # (deploy/wfp/live-sites/<name>). Presence is the marker. No setting and no
@@ -1061,6 +1077,29 @@ build_dosql() {
   # build.sh starts, and that bundle was uploaded.
   bundle_size_check
 }
+# build_a (#1319): the approach A build of a kind a site, the same build deploy.sh runs for variant a with OPCACHE_A=1
+# (a-settings.sh a_build_primed): prepare.sh, then opcache-a.sh (the D1 engine primes the OPcache with WooCommerce,
+# then ENGINE=a), then the packs. The defaults are deploy.sh's (a_remote_pack_defaults: the packs on, primed). Only the
+# primed path: the Docker path (OPCACHE_A=0) is deploy.sh's. A subshell, so a-settings.sh defines nothing here.
+build_a() {
+  log "build approach A (spikes/b2-wordpress, ENGINE=a, primed)"
+  a_remote_pack_defaults
+  [ "${OPCACHE_A:-0}" = 1 ] || { echo "KIND=a builds primed only (OPCACHE_A=1, the default); OPCACHE_A=0 is deploy.sh's Docker path" >&2; return 2; }
+  ( . "$WFP/../a-settings.sh" && a_settings_check a ) || return 2
+  ( cd "$APP"
+    [ -d node_modules ] || npm ci --silent
+    engine_ensure || { echo "the PHP engine cannot be resolved"; exit 1; }
+    ./prepare.sh || { echo "prepare.sh failed: the loader was not rebuilt"; exit 1; }
+    # shellcheck source=../a-settings.sh
+    . "$WFP/../a-settings.sh"
+    WOO_ACTIVE=${WOO_ACTIVE:-0} a_build_primed || exit 1 ) || return 1
+  bundle_size_check
+}
+# a_build_check: the build in $APP is an approach A build (its id carries -a), before a kind a add uploads it.
+a_build_check() {
+  local id; id=$(sed -n 's/export default "\(.*\)";/\1/p' "$APP/build/build-id.js" 2>/dev/null || true)
+  case "$id" in *-a-*) echo "  build $id (approach A)" ;; *) echo "KIND=a: the build in $APP is not an approach A build (${id:-none}); run with BUILD=1" >&2; return 2 ;; esac
+}
 # The rollback artifact of one site update (#464). save_live_build <live build id> <dest dir> copies
 # $APP/build to <dest>/build only when build/ IS the live build of the site being updated: its
 # build-id.js equals the build id the site map records for that site. build/ is whatever this clone
@@ -1208,6 +1247,8 @@ api_code() { api "$@" | tail -1; }
 # or more, so each check polls up to GONE_WAIT_S (90) and an unreadable read (000, 5xx, unknown) is never gone.
 # shellcheck source=../lib/gone-wait.sh
 . "$WFP/../lib/gone-wait.sh"
+# shellcheck source=kind-a.sh
+. "$WFP/kind-a.sh" # #1319: kind a, approach A in the namespace
 gone_api_state() { gone_http_state "$(api_code GET "$1")"; }
 # gone <what> <API path>: 404 (polled), or stop with the last state. Used by site.sh down and down.sh.
 gone() {
@@ -1437,6 +1478,11 @@ site_footprint() { # site_footprint <name>
   case "$c" in 200) echo "bucket yes" ;; 404) echo "bucket no" ;; *) echo "bucket unknown" ;; esac
   # The search index (#330): a part when WP_VECTORIZE_SEARCH is on, or whenever one exists.
   case "$(search_index_state "$s")" in present) echo "search yes" ;; gone) ! search_on || echo "search no" ;; *) echo "search unknown" ;; esac
+  # #1319: kind a's Hyperdrive config and object cache namespace. Listed when the run or the recorded site is kind a,
+  # and whenever one exists (a part left by a failed add is still a part).
+  local ka=0 st; { [ "${SITE_KIND:-b-dosql}" = a ] || { [ "${REC_SITE:-}" = "$s" ] && [ "${REC_KIND:-}" = a ]; }; } && ka=1
+  st=$(hd_state "$s"); { [ "$st" = no ] && [ "$ka" = 0 ]; } || echo "hyperdrive $st"
+  st=$(oc_kv_state "$s"); { [ "$st" = no ] && [ "$ka" = 0 ]; } || echo "ockv $st"
 }
 # Who wrote a site's map entry (#294): "core" when it is the provisioning core's (cli.mjs or the
 # provisioning Worker: its entry has a "kind" field, and this package's Terraform entry never
@@ -1459,10 +1505,10 @@ except ValueError: print("unknown"); sys.exit(0)
 print("core" if isinstance(d, dict) and "kind" in d else "workspace")'
 }
 footprint_absent() { # footprint_absent <footprint text>: 0 when every part is absent
-  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher no|domain no|cron no|script gone|entry no|bucket no|search no)$'
+  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher no|domain no|cron no|script gone|entry no|bucket no|search no|hyperdrive no|ockv no)$'
 }
 footprint_present() { # footprint_present <footprint text>: 0 when every part is there
-  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher yes|domain yes|cron yes|script present|entry yes|bucket yes|search yes)$'
+  ! printf '%s\n' "$1" | grep -qvE '^(dispatcher yes|domain yes|cron yes|script present|entry yes|bucket yes|search yes|hyperdrive yes|ockv yes)$'
 }
 # What a site's workspace RECORDS: its hostname, whether it has a Custom
 # Domain, and that domain's zone. Prints "<hostname> <true|false> <zone_id|->",
@@ -1504,6 +1550,15 @@ site_vars() { # site_vars <site> <workers.dev subdomain> <kv id>
   local hold; hold=$(tfr site output -raw data_hold 2>/dev/null) || hold=""
   case "$hold" in *[!A-Za-z0-9._/-]*) hold="" ;; esac
   REC_VARS+=(-var "data_hold=$hold")
+  # #1319: the kind is the state's (its object cache namespace), never the run's, so an update or a remove cannot
+  # flip it; and the recorded Hyperdrive id goes to every apply, so no apply drops it.
+  REC_KIND=b-dosql
+  if tfr site state list 2>/dev/null | grep -qxF 'cloudflare_workers_kv_namespace.oc[0]'; then
+    REC_KIND=a
+    local hd; hd=$(tfr site output -raw hyperdrive_id 2>/dev/null) || hd=""
+    [[ "$hd" =~ ^[0-9a-f]{32}$ ]] || { echo "site_vars: a kind a site with no recorded Hyperdrive id; stopping" >&2; return 1; }
+    REC_VARS+=(-var "kind=a" -var "hyperdrive_id=$hd")
+  fi
 }
 # The sites: the Terraform workspaces of terraform/site, without "default".
 list_sites() {

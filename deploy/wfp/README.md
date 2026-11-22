@@ -104,6 +104,36 @@ Two steps need a key that reaches only one site's media bucket: `site down` and 
 
 `site remove` runs `site.sh down`, then checks that every part is gone and that the workspace is deleted.
 
+### Kind a: an approach A site in the namespace (#1319)
+
+A kind a site runs approach A: PHP in the site's user Worker, and the data in the owner's own MySQL 8 database, reached through Hyperdrive. The other sites in the namespace are `b-dosql` (the default kind).
+
+```sh
+KIND=a PLACEMENT=azure:westus2 MYSQL_HOST=<server> MYSQL_DATABASE=<db> MYSQL_USER=<user> MYSQL_PASSWORD=<password> \
+  BUILD=1 WOO_ACTIVE=1 ./deploy/wfp/site add shop
+./deploy/wfp/site remove shop
+```
+
+- **What it adds** to a `b-dosql` site's parts:
+  - the Hyperdrive config `wp-wfp-<name>`, with query caching off. `site add` makes it through the API, so the database password goes to Hyperdrive only and is in no Terraform state;
+  - the KV namespace `wp-wfp-<name>-oc` (the object cache), in the site workspace.
+- **The user Worker** is rendered by the same `deploy/render-conf.sh` that `deploy.sh` uses for variant a (`RENDER_WFP=1`), so the two cannot drift. `deploy/tests/a-render-test.sh` diffs the two renders. The differences are the script name `site-<name>`, no workers.dev, no Cron Trigger, and deploy/wfp's own `[observability]` block.
+- **`PLACEMENT` is required**: the database's region, so the Worker runs next to it (#1054).
+  - Cloudflare documents only `placement.mode = "smart"` for user Worker uploads (the WfP upload metadata page, read 2026-11-22).
+  - But `[placement] region` is accepted on a namespace upload, reads back as `{"mode": "targeted"}`, and runs in that region: measured on #1310, 2026-11-22, at 9 ms a query placed in SEA against a westus2 database, and 50 ms unplaced.
+  - This rests on undocumented behaviour. Re-check it after a Cloudflare change.
+- **The outbound Worker stays.** Hyperdrive passes it, and a raw `connect()` is refused under it (#1310). So a kind a site reaches MySQL only through its Hyperdrive binding.
+- **No Cron Trigger.** A Cron Trigger on a namespace script never fires (#1310). The render has no `[triggers]`, and WordPress cron runs from the cron object's own Durable Object alarms, which fire there.
+- **No scheduled snapshot.** `/_dbsnapshot` dumps a `b-dosql` site's own SQLite. A kind a site's data is the owner's MySQL, and the owner backs it up. The site's dispatcher has an empty cron list.
+- **`site add` refuses before any step** when:
+  - an input is missing or bad (`MYSQL_*`, `PLACEMENT`);
+  - `WFP_CUSTOM_DOMAIN=1` is set (phase A only, for now);
+  - the account has no Hyperdrive config left (`HYPERDRIVE_CONFIG_LIMIT`, 25 on Workers Paid).
+- **After a failure** past the Hyperdrive config, `site remove <name>` takes every part. The config is found by its name, so one left by a failed add goes too.
+- **`site update`, `import`, `restore` and `schedule` refuse a kind a site.** They snapshot, load or restore a `b-dosql` site's own database. `site update` for kind a (a rebuild and re-upload with no data step) is a follow-up.
+- **deploy/wfp never makes, changes or drops the database.** That is the owner's, as in one-click (#1049).
+- **Limits and cost:** 25 Hyperdrive configs per Workers Paid account (`docs/plan-limits.md`); Workers for Platforms $25 a month plus the $5 Workers Paid plan it needs; then the owner's MySQL.
+
 `down.sh` removes every site that `site list` shows. It removes the purge budget only when nothing still binds it (below).
 
 ### The account's purge budget: pf-purge-budget (#699)

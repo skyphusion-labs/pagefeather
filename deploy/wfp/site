@@ -1,6 +1,8 @@
 #!/bin/bash
 # Add or remove one site of the reference deployment (issue #35, slice 3).
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site add <name>
+#   CLOUDFLARE_API_TOKEN=... KIND=a PLACEMENT=<cloud:region> MYSQL_HOST=... MYSQL_DATABASE=... MYSQL_USER=... \
+#     MYSQL_PASSWORD=... [MYSQL_PORT=3306] deploy/wfp/site add <name>     (#1319: approach A, deploy/wfp/kind-a.sh)
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site remove <name>
 #   CLOUDFLARE_API_TOKEN=... deploy/wfp/site update <name>    (or: update --all)
 #     (DROP_SETTINGS=<names> drops recorded per-site settings on purpose, #558)
@@ -75,6 +77,7 @@ update_one_inner() {
   # computed ones (lib.sh site_vars): recomputing them would re-key the entry
   # or replace the Custom Domain, and take the site off its domain.
   site_vars "$s" "$SUB" "$KV_ID" || return 1
+  kind_a_refuse "$s" || return 2  # #1319
   local ORIGIN="https://$REC_HOST"
   echo "site $s: hostname $REC_HOST, custom domain $REC_CD (recorded or computed by lib.sh site_vars)"
   local TOK bucket EP rollback new ok=1 snap_key="" live_hash=""
@@ -282,6 +285,7 @@ restore_one() {
   has_ws "$s" || { echo "no site $s" >&2; return 2; }
   tfr site init -input=false >/dev/null; tfr site workspace select "$s" >/dev/null
   site_vars "$s" "$SUB" "$KV_ID" || return 1
+  kind_a_refuse "$s" || return 2  # #1319
   local ORIGIN="https://$REC_HOST" TOK bucket EP hold
   TOK=$(tfr site output -raw spike_token); bucket=$(media_bucket "$s"); EP=$(tfr site output -raw r2_endpoint)
   hold=$(entry_data_hold "$s")
@@ -314,6 +318,7 @@ schedule_one() {
   has_ws "$s" || { echo "no site $s" >&2; return 2; }
   tfr site init -input=false >/dev/null; tfr site workspace select "$s" >/dev/null
   site_vars "$s" "$SUB" "$KV_ID" || return 1
+  kind_a_refuse "$s" || return 2  # #1319
   local D U names want got W
   D=$(dispatcher_name "$s"); U=$(user_script "$s")
   tfr site output -raw snapshot_token >/dev/null 2>&1 || { echo "site $s: refused: its workspace has no snapshot token yet; run site update $s first (#533)" >&2; return 2; }
@@ -358,6 +363,7 @@ import_one() {
   # The hostname, Custom Domain and zone the workspace records (lib.sh site_vars):
   # the import's origin is the site's real one.
   site_vars "$s" "$SUB" "$KV_ID" || return 1
+  kind_a_refuse "$s" || return 2  # #1319
   local HOST=$REC_HOST
   local TOK; TOK=$(tfr site output -raw spike_token)
   local need_key=0
@@ -397,6 +403,12 @@ fi
 valid_site "$s" || { echo "bad site name '$s': lower case, digits, hyphens; 1 to 30; not a shared Worker name (probe, dispatch, cacheprobe, cacheprobe-direct, wfp-*), not auto" >&2; exit 2; }
 
 if [ "$cmd" = add ]; then
+  # #1319: the kind, and for kind a its inputs and the account's Hyperdrive room, before any step.
+  SITE_KIND=$(kind_check) || exit 2; export SITE_KIND
+  if [ "$SITE_KIND" = a ]; then
+    a_inputs_check || exit 2
+    [ -z "${SNAPSHOT_CRON:-}" ] || [ "$SNAPSHOT_CRON" = off ] || { echo "KIND=a has no scheduled snapshot (the data is the owner's MySQL): SNAPSHOT_CRON is refused" >&2; exit 2; }
+  fi
   fp=$(site_footprint "$s")
   if has_ws "$s" || ! footprint_absent "$fp"; then
     echo "site $s already exists, in part or in full; nothing was changed:" >&2
@@ -404,15 +416,30 @@ if [ "$cmd" = add ]; then
     printf '%s\n' "$fp" | sed 's/^/  /' >&2
     exit 2
   fi
+  if [ "$SITE_KIND" = a ]; then
+    hd_limit_check || exit 2
+    # #1020: approach A's packs and priming by default, as deploy.sh renders variant a (a_remote_pack_defaults).
+    a_remote_pack_defaults
+    echo "site $s: kind a, remote packs OPCACHE_REMOTE=$OPCACHE_REMOTE SITE_REMOTE=$SITE_REMOTE, placement $PLACEMENT"
+    [ "${BUILD:-0}" = 0 ] || build_a || exit 1
+    a_build_check || exit 2
+  else
   # #394: the remote packs by default (0 opts out), before the build and the render read them.
   remote_pack_defaults
   echo "site $s: remote packs OPCACHE_REMOTE=$OPCACHE_REMOTE SITE_REMOTE=$SITE_REMOTE"
   [ "${BUILD:-0}" = 0 ] || build_dosql
   [ -f "$APP/build/opcache.log" ] || { echo "b-dosql is not built (run up.sh, or BUILD=1)" >&2; exit 2; }
+  fi
   # #827: without BUILD=1 the build came from elsewhere; it must be for the engine vendor/ holds now.
   # shellcheck source=../../spikes/b2-wordpress/engine.sh
   ( . "$APP/engine.sh" && engine_build_check "$APP" ) || exit 2
-  "$WFP/site.sh" up "$s"
+  if [ "$SITE_KIND" = a ]; then
+    # #1319: the site's Hyperdrive config first (the workspace records its id). From here a failure leaves parts:
+    # "site remove <name>" takes every one, this config included (it is found by its name).
+    SITE_HD_ID=$(hd_create "$s") || { echo "site $s: nothing else was made" >&2; exit 1; }
+    export SITE_HD_ID
+  fi
+  "$WFP/site.sh" up "$s" || { rc=$?; [ "$SITE_KIND" != a ] || echo "site $s: the add failed after its Hyperdrive config was made; run deploy/wfp/site remove $s" >&2; exit "$rc"; }
   fp=$(site_footprint "$s")
   footprint_present "$fp" || { echo "site $s: not every part is there after the add:" >&2; printf '%s\n' "$fp" | sed 's/^/  /' >&2; exit 1; }
   # Its scripts bind only its own resources (bindings.py, #35 slice 4).

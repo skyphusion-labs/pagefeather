@@ -269,3 +269,24 @@ a_cron_bindings() {
   echo '[[durable_objects.bindings]]'; echo 'name = "PHP_RUNTIME"'; echo 'class_name = "PhpRuntime"'
   echo '[[migrations]]'; echo 'tag = "v1"'; echo 'new_sqlite_classes = ["PhpRuntime"]'
 }
+
+# a_build_primed (#1319): the primed approach A build, run from $APP after prepare.sh: deploy.sh OPCACHE_A=1 and
+# deploy/wfp kind a (lib.sh build_a). Moved out of deploy.sh unchanged, so the two cannot drift.
+a_build_primed() {
+  # #394: prime on the D1 build, the way opcache-a.sh does (#218): the same WordPress, WooCommerce
+  # and mu-plugins, no Docker and no local MySQL. TRACE=1 also records the file trace the remote
+  # packs follow, cut to the files A's zips hold (trace-filter.py). No pipe: a pipe would take
+  # tail's status and ship a half-built tree.
+  ALOG=$(mktemp)
+  TRACE=${OPCACHE_REMOTE:-0} WOO_ACTIVE=$WOO_ACTIVE ./opcache-a.sh > "$ALOG" 2>&1 || { echo "opcache-a.sh failed:"; tail -25 "$ALOG"; rm -f "$ALOG"; return 1; }
+  grep -E '^port [0-9]+$|approach-A opcache.zip|trace-filter:' "$ALOG" || true
+  rm -f "$ALOG"
+  a_opcache_count build/opcache.zip || return 1
+  # #563, #569: after the last build.sh (it clears build/public), as deploy/wfp's build_dosql does.
+  if [ "${OPCACHE_REMOTE:-0}" = 1 ]; then
+    python3 -I opcache-remote.py build/opcache.zip build/file-trace.json build/build-id.js || return 1
+  fi
+  if [ "${SITE_REMOTE:-0}" = 1 ]; then
+    python3 -I site-remote.py build/site.zip build/file-trace.json build/build-id.js || return 1
+  fi
+}

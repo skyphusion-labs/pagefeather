@@ -40,6 +40,13 @@ HOST="$(site_host "$s" "$SUB")"; ORIGIN="https://$HOST" # phase A workers.dev, p
 # (the default) is phase A, workers.dev only.
 CD=$([ "${WFP_CUSTOM_DOMAIN:-0}" = 1 ] && echo true || echo false)
 VARS=(-var "name=$s" -var "hostname=$HOST" -var "kv_namespace_id=$KV_ID" -var "custom_domain=$CD")
+# #1319: a NEW kind a site (site add made its Hyperdrive config first, SITE_HD_ID). An existing site's kind and
+# Hyperdrive id come from its state instead (lib.sh site_vars, REC_VARS), on up and on down.
+SITE_KIND=${SITE_KIND:-b-dosql}
+if [ "$cmd" = up ] && [ "$SITE_KIND" = a ]; then
+  [[ "${SITE_HD_ID:-}" =~ ^[0-9a-f]{32}$ ]] || { echo "site.sh up: a kind a site needs SITE_HD_ID (deploy/wfp/site add makes the config)" >&2; exit 2; }
+  VARS+=(-var "kind=a" -var "hyperdrive_id=$SITE_HD_ID")
+fi
 # down: an existing site's workspace records its hostname, Custom Domain and
 # zone (lib.sh site_vars); those win, so a remove of a site on its own apex
 # detaches and deletes exactly what it has.
@@ -47,7 +54,7 @@ if [ "$cmd" = down ]; then
   tfr site init -input=false >/dev/null
   if tfr site workspace select "$s" >/dev/null 2>&1; then
     site_vars "$s" "$SUB" "$KV_ID" || exit 1
-    HOST=$REC_HOST; ORIGIN="https://$HOST"; CD=$REC_CD; VARS=("${REC_VARS[@]}")
+    HOST=$REC_HOST; ORIGIN="https://$HOST"; CD=$REC_CD; VARS=("${REC_VARS[@]}"); SITE_KIND=$REC_KIND
     [ "$CD" = true ] && WFP_CUSTOM_DOMAIN=1
     tfr site workspace select default >/dev/null
   fi
@@ -102,8 +109,15 @@ if [ "$cmd" = up ]; then
     cron_copy_check "$D" || exit 1
     echo "  $D: workers.dev and previews off, no Custom Domain (read back)"
   else
+    if [ "$SITE_KIND" = a ]; then
+      # #1319: no scheduled snapshot: /_dbsnapshot dumps a b-dosql site's own SQLite, and a kind a site's data is the
+      # owner's MySQL (the owner backs it up). The empty list also clears a cron.
+      log "site $s: dispatcher $D (kind a: no scheduled snapshot)"
+      SNAPSHOT_CRON=off render_site_dispatcher "$s" "$KV_ID" > "$GEN/$D.toml" || exit 1
+    else
     log "site $s: dispatcher $D, with the scheduled snapshot of this site (#533)"
     render_site_dispatcher "$s" "$KV_ID" > "$GEN/$D.toml" || exit 1
+    fi
     tfr site output -json | dispatcher_secrets_json "$W/disp-secrets.json"
     wrangler_deploy "$GEN" "$W/disp.log" --config "$D.toml" --secrets-file "$W/disp-secrets.json" || { rm -f "$W/disp-secrets.json"; tail -20 "$W/disp.log"; exit 1; }
     rm -f "$W/disp-secrets.json"
@@ -129,6 +143,10 @@ if [ "$cmd" = up ]; then
     install_wordpress "$ORIGIN" || exit 1
     if [ "${WOO_ACTIVE:-0}" = 1 ]; then
       activate_woocommerce "$ORIGIN" || exit 1
+    fi
+    # #1319: kind a's options versions table (#734), as deploy.sh installs it for variant a.
+    if [ "$SITE_KIND" = a ] && [ "${OBJECT_CACHE_VERSIONS:-1}" != 0 ]; then
+      ( . "$ROOT/deploy/a-settings.sh" && a_ocv_install "$ORIGIN" "$SPIKE_TOKEN" ) || exit 1
     fi ) || { echo "site $s: WordPress install or WooCommerce activation failed at $ORIGIN (deploy/install.sh); stopping" >&2; exit 1; }
   echo "site $s: up at $ORIGIN"
 elif [ "$cmd" = down ]; then
@@ -173,6 +191,15 @@ elif [ "$cmd" = down ]; then
   fi
   gone "site map entry $HOST" "/storage/kv/namespaces/$KV_ID/values/$HOST"
   gone "bucket $(media_bucket "$s")" "/r2/buckets/$(media_bucket "$s")"
+  # #1319: kind a's Hyperdrive config, after the user Worker that binds it and the workspace (by its name, so a config
+  # left by a failed add goes too). Its object cache namespace went with the workspace; read back by its title.
+  # Any site is checked: neither exists for a b-dosql site.
+  log "site $s: Hyperdrive config $(hd_name "$s") and object cache namespace $(oc_kv_title "$s")"
+  hd_delete "$s" || exit 1
+  case "$(oc_kv_state "$s")" in
+    no) echo "  object cache namespace $(oc_kv_title "$s"): none (read back)" ;;
+    *) echo "  object cache namespace $(oc_kv_title "$s") is NOT known to be gone: stopping" >&2; exit 1 ;;
+  esac
   rm -f "$APP/wrangler.deploy.wfp-$s.toml" "$GEN/$D.toml"
   echo "site $s: down"
 else
