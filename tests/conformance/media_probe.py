@@ -4,6 +4,8 @@ upload, so it cannot tell durable media (R2) from none (sb1120, cf759f). This pr
 
   B=<site> WP_USERNAME=<admin> WP_PASSWORD=<application password> \
     python3 -I tests/conformance/media_probe.py <out.json> [--wait 90] [--keep]
+  SPIKE_TOKEN, when set, is sent as x-spike-token so the page read can see x-wasm-mib.
+  When it is not set, a blank or a 0 is reported as not readable without the token (#1271).
 
 1. Make a 600x400 PNG here (no download), and POST it to /wp/v2/media (Basic auth). It must answer 201.
 2. GET the full file and every generated size listed in media_details.sizes, each on a fresh connection, with a cache
@@ -20,6 +22,18 @@ import base64, json, os, struct, sys, time, urllib.error, urllib.request, zlib
 B = os.environ.get("B", "").rstrip("/")
 UA = {"User-Agent": "pagefeather-conformance-media-probe"}
 KEYS = ("x-pf-call", "x-wasm-mib", "x-write-loss", "x-isolate-reset", "cf-cache-status", "cf-ray")
+WASM_UNREADABLE = "x-wasm-mib: not readable without the token"
+
+
+def wasm_mib_reading(value):
+    """The heap header. Without SPIKE_TOKEN, a blank or a 0 is not a measurement (#1271)."""
+    if os.environ.get("SPIKE_TOKEN"):
+        if value is None or str(value).strip() == "":
+            return None
+        return str(value)
+    if value is None or str(value).strip() in ("", "0"):
+        return WASM_UNREADABLE
+    return str(value)
 
 
 def event(kind, **kw):
@@ -35,6 +49,9 @@ def png(w=600, h=400):
 
 def req(url, data=None, headers=None, method=None, timeout=60):
     h = dict(UA, **(headers or {}))
+    tok = os.environ.get("SPIKE_TOKEN")
+    if tok and not any(k.lower() == "x-spike-token" for k in h):
+        h["x-spike-token"] = tok
     try:
         r = urllib.request.urlopen(urllib.request.Request(url, data=data, headers=h, method=method), timeout=timeout)
         return r.status, r.read(), {k.lower(): v for k, v in r.headers.items()}
@@ -45,7 +62,15 @@ def req(url, data=None, headers=None, method=None, timeout=60):
 
 
 def pick(h):
-    return {k: h[k] for k in KEYS if k in h}
+    out = {}
+    for k in KEYS:
+        if k == "x-wasm-mib":
+            v = wasm_mib_reading(h.get(k) if h else None)
+            if v:
+                out[k] = v
+        elif h and k in h:
+            out[k] = h[k]
+    return out
 
 
 def main(argv):

@@ -70,6 +70,8 @@ B=https://localhost:<port> SSL_CERT_FILE=<that certificate> under a Python built
 python3. TLS stays verified. The macOS Command Line Tools python3 ignores SSL_CERT_FILE and refuses the certificate.
 
   B=<site> ADMIN_PASSWORD=<current admin password> python3 -I tests/conformance/seed.py <out-dir> [--theme <slug>]
+  SPIKE_TOKEN, when set, is sent as x-spike-token so a failure row can read x-wasm-mib.
+  When it is not set, a blank or a 0 is reported as not readable without the token (#1271).
 
   ADMIN_USER (default admin). ADMIN_PASSWORD is the admin's current password: the workspace's on a first seed,
   or the WP_PASSWORD of <out-dir>/creds.env on a reseed (read from there when ADMIN_PASSWORD is unset).
@@ -234,6 +236,11 @@ def jar():
 def req(o, path, data=None, headers=None, method=None, timeout=120):
     h = dict(UA, **(headers or {}))
     url = path if path.startswith("http") else B + path
+    # x-wasm-mib leaves the Worker only with this token (#1271). Never send it to any other host.
+    tok = os.environ.get("SPIKE_TOKEN")
+    if tok and (url == B or url.startswith(B + "/") or url.startswith(B + "?")):
+        if not any(k.lower() == "x-spike-token" for k in h):
+            h["x-spike-token"] = tok
     try:
         r = o.open(urllib.request.Request(url, data=data, headers=h, method=method), timeout=timeout)
         return r.status, r.read(), r.headers
@@ -295,6 +302,18 @@ def login(user, pw):
 
 
 NONCE_HEADERS = ("x-pf-call", "x-wasm-mib", "x-isolate-reset", "x-write-loss", "x-sql-failure")
+WASM_UNREADABLE = "x-wasm-mib: not readable without the token"
+
+
+def wasm_mib_reading(value):
+    """The heap header. Without SPIKE_TOKEN, a blank or a 0 is not a measurement (#1271)."""
+    if os.environ.get("SPIKE_TOKEN"):
+        if value is None or str(value).strip() == "":
+            return None
+        return str(value)
+    if value is None or str(value).strip() in ("", "0"):
+        return WASM_UNREADABLE
+    return str(value)
 
 
 def scrub(text, secrets_=()):
@@ -313,6 +332,8 @@ def record_nonce_failure(user, pw, status, body, headers, step="rest-nonce"):
     row = {"who": user, "step": step, "status": status, "body": scrub((body or b"")[:200].decode("utf-8", "replace"), (pw,))}
     for k in NONCE_HEADERS:
         v = headers.get(k) if headers else None
+        if k == "x-wasm-mib":
+            v = wasm_mib_reading(v)
         if v:
             row[k] = v
     report.setdefault("rest_nonce_failures", []).append(row)
@@ -669,7 +690,13 @@ def main():
                 have.append(name); stored[st_] = r["source_url"].rsplit("/", 1)[-1]
             else:
                 # The engine's headers name the request for its logs (sb1120: a 500 upload left its files behind).
-                pf = {k: uh.get(k) for k in ("x-pf-call", "x-write-loss", "x-isolate-reset", "x-wasm-mib", "x-sql-failure") if uh and uh.get(k)}
+                pf = {}
+                for k in ("x-pf-call", "x-write-loss", "x-isolate-reset", "x-wasm-mib", "x-sql-failure"):
+                    v = uh.get(k) if uh else None
+                    if k == "x-wasm-mib":
+                        v = wasm_mib_reading(v)
+                    if v:
+                        pf[k] = v
                 check("image %s uploads under its own stem" % name, False, status=c, source=r.get("source_url") if isinstance(r, dict) else None, **pf)
         check("the three test images, found by search under their own stems", sorted(have) == sorted(IMAGES), stored=stored, wc_sha=sha)
     else:

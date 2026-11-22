@@ -265,6 +265,11 @@ jobs:
           python3 -I tests/conformance/routes-test.py
       - name: conformance upload persistence probe against a stub (#759)
         run: python3 -I tests/conformance/media_probe_test.py
+      - name: x-wasm-mib leaves only with the spike token (#1271)
+        # The header gate itself is in perf-headers.test.mjs (the performance-header step).
+        # These readers send x-spike-token when SPIKE_TOKEN is set. Without it, a blank or a 0
+        # is not a heap size: they print that the header is not readable.
+        run: python3 -I tests/conformance/wasm-mib-read-test.py
       - name: conformance on Cloudflare Browser Run, the CDP preload against a stub (#759)
         run: node --test tests/conformance/browser-run.test.mjs
       - name: b-dosql mail From address

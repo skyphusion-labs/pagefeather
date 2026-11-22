@@ -53,6 +53,33 @@ test('PERF_HEADERS=on keeps them for every request, and only that exact value', 
 	assert.equal(perfHeadersAllowed(req(), { PERF_HEADERS: 'true' }), false);
 });
 
+// #1271: x-wasm-mib is the PHP WebAssembly heap in MiB. It leaves only with the
+// spike token, or when PERF_HEADERS=on. A guest request gets none.
+test('#1271: a request without the token gets no x-wasm-mib, and one with it does', () => {
+	assert.ok(PERF_HEADERS.includes('x-wasm-mib'), 'x-wasm-mib is an operator header');
+	const env = { SPIKE_TOKEN: TOKEN };
+	const page = (extra = {}) => new Response('ok', {
+		status: 200,
+		headers: { 'content-type': 'text/html', 'x-wasm-mib': '108', ...extra },
+	});
+	const alone = scrubPerfHeaders(page(), perfHeadersAllowed(req(), env));
+	assert.equal(alone.headers.get('x-wasm-mib'), null, 'no token: the heap header is removed');
+	assert.equal(alone.headers.get('content-type'), 'text/html');
+	const beside = scrubPerfHeaders(page({ 'x-php-ms': '12' }), perfHeadersAllowed(req(), env));
+	assert.equal(beside.headers.get('x-wasm-mib'), null, 'no token: still removed when other operator headers are present');
+	assert.equal(beside.headers.get('x-php-ms'), null);
+	const wrong = scrubPerfHeaders(page(), perfHeadersAllowed(req({ 'x-spike-token': 'nope' }), env));
+	assert.equal(wrong.headers.get('x-wasm-mib'), null, 'a wrong token is not the operator');
+	const unset = scrubPerfHeaders(page(), perfHeadersAllowed(req({ 'x-spike-token': TOKEN }), {}));
+	assert.equal(unset.headers.get('x-wasm-mib'), null, 'no SPIKE_TOKEN configured: the header does not match');
+	const withToken = scrubPerfHeaders(page(), perfHeadersAllowed(req({ 'x-spike-token': TOKEN }), env));
+	assert.equal(withToken.headers.get('x-wasm-mib'), '108', 'the valid token keeps the heap header');
+	const on = scrubPerfHeaders(page(), perfHeadersAllowed(req(), { PERF_HEADERS: 'on' }));
+	assert.equal(on.headers.get('x-wasm-mib'), '108', 'PERF_HEADERS=on keeps it');
+	const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+	assert.match(src, /out\.set\('x-wasm-mib', String\(Math\.round\(wasmBytes \/ 1048576\)\)\);/, 'the Worker still measures the heap');
+});
+
 test('a response that carries none of them is returned untouched', () => {
 	const res = new Response('x', { headers: { 'content-type': 'text/plain' } });
 	assert.equal(scrubPerfHeaders(res, false), res);

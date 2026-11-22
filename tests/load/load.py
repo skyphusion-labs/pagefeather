@@ -34,7 +34,10 @@ sent an incomplete request (issue #40). The step counts such a loop as
 "aborted"; the failed cart request itself is still recorded.
 
 Per request it records the status, the time, and the Worker's own headers:
-x-wasm-mib (WebAssembly memory), x-runtime-recycled, x-boot. A body that names
+x-wasm-mib (WebAssembly memory), x-runtime-recycled, x-boot. These requests do
+not send x-spike-token. That header marks the response no-store and would change
+what the load measures. When no row has x-wasm-mib, max_wasm_mib is null and the
+summary says "x-wasm-mib: not readable without the token", never 0. A body that names
 error 1102 (Worker exceeded resource limits) is counted on its own: that is the
 128 MB memory limit or the CPU limit.
 
@@ -562,11 +565,13 @@ def step(n, prods):
     wall = time.time() - t0
     # The client's own 1-minute load: at or above its CPU count, the client was
     # the limit, not the site.
+    # Shopper requests do not send the token. No header means null, never 0 (#1271).
+    mibs = [int(r["mib"]) for r in rows if r["mib"]]
     out = {"users": n, "seconds": round(wall, 1), "client_load1": round(os.getloadavg()[0], 2), "client_cpus": os.cpu_count(), "requests": len(rows), "rps": round(len(rows) / wall, 2),
            "errors": sum(1 for r in rows if not r["ok"]), "e1102": sum(1 for r in rows if r["e1102"]),
            "aborted": aborted[0],
            "status": {}, "recycled": {}, "boots": sum(1 for r in rows if r["boot"] == "1"),
-           "max_wasm_mib": max([int(r["mib"]) for r in rows if r["mib"]] or [0]), "kinds": {}}
+           "max_wasm_mib": max(mibs) if mibs else None, "kinds": {}}
     # 503 answers from the bounded queue (x-c1-shed), per kind (issue #39).
     out["slow"] = sorted((r["slow"] for r in rows if "slow" in r), key=lambda x: -x["s"])[:50]
     out["shed"] = {}
@@ -692,4 +697,6 @@ if __name__ == "__main__":
         ca = admin_login()
         summary["cleanup"] = cleanup(ca, before) if ca is not None else {"error": "admin login failed after the run: clean up by hand", "orders_made": len(ORDERS), "runtag": RUNTAG}
         summary["cleanup_window"] = [c0, mark("cleanup-end")]
+    if not any(s.get("max_wasm_mib") is not None for s in allsteps):
+        summary["x-wasm-mib"] = "x-wasm-mib: not readable without the token"
     print(json.dumps(summary))
