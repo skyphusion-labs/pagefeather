@@ -38,7 +38,10 @@ On a Hyperdrive store (approach A), WooCommerce admin screens and bulk product e
 **The evidence:**
 - the query ranking from the full suite run: [#1078, the ranking](https://github.com/skyphusion-labs/pagefeather/issues/1078#issuecomment-7083030477);
 - the per-request query trace (2026-11-22): [#1078, the trace](https://github.com/skyphusion-labs/pagefeather/issues/1078#issuecomment-7083253110);
-- why each candidate fix was rejected or held: [#1078, the levers](https://github.com/skyphusion-labs/pagefeather/issues/1078#issuecomment-7083327101).
+- why each candidate fix was rejected:
+  - the meta write-through: [#1078, the rejection](https://github.com/skyphusion-labs/pagefeather/issues/1078#issuecomment-7083310006);
+  - WooCommerce's write loop and the scoring against the bar: [#1078, the levers](https://github.com/skyphusion-labs/pagefeather/issues/1078#issuecomment-7083327101);
+  - the templates-list fix, stopped at its pre-check: [#1078, the templates check](https://github.com/skyphusion-labs/pagefeather/issues/1078#issuecomment-7083356454).
 
 ### Order emails on Hyperdrive were late (#1215, fixed)
 
