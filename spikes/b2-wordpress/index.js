@@ -2650,7 +2650,7 @@ async function runMediaSweep(env) {
 			release: (k) => releaseReservedKey(k),
 		});
 	} catch (e) {
-		console.log(JSON.stringify({ m: 'media-sweep', seen: 0, 'kept-attached': 0, deleted: 0, 'kept-error': 0, 'skipped-fresh': 0, error: String((e && e.message) || e).slice(0, 160) }));
+		console.log(JSON.stringify({ m: 'media-sweep', seen: 0, 'kept-attached': 0, deleted: 0, 'kept-error': 0, 'skipped-fresh': 0, 'kept-other': 0, 'kept-shape': 0, error: String((e && e.message) || e).slice(0, 160) }));
 	}
 }
 

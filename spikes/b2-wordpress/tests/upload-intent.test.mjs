@@ -64,8 +64,18 @@ test('referenceQuery: one statement, hex literals only, meta_key equality on bot
 	assert.match(q.sql, /WHERE meta_key = '_wp_attached_file' AND meta_value = /);
 	assert.match(q.sql, /WHERE meta_key = '_wp_attachment_metadata' AND /);
 	assert.equal(referenceQuery('wp_', 'invoices/x.pdf'), null, 'not under uploads/: never deleted');
-	assert.doesNotMatch(referenceQuery('bad-prefix', 'uploads/a.png').sql, /bad-prefix/, 'a hyphen in the prefix is not SQL');
-	assert.match(referenceQuery('bad-prefix', 'uploads/a.png').sql, /badprefixpostmeta/);
+	assert.equal(referenceQuery('wp_', 'uploads/fonts/x.woff2'), null, 'fonts/ is not the dated attachment shape');
+	assert.equal(referenceQuery('wp_', 'uploads/woocommerce_uploads/x.zip'), null, 'woocommerce_uploads/ is not the dated attachment shape');
+	assert.equal(referenceQuery('wp_', 'uploads/wc-logs/x.log'), null, 'wc-logs/ is not the dated attachment shape');
+	assert.equal(referenceQuery('wp_', 'uploads/2026/11/nested/x.jpg'), null, 'a further folder is not the dated attachment shape');
+	assert.equal(referenceQuery('wp_', 'uploads/2026/1/x.jpg'), null, 'a month must be two digits');
+	assert.equal(referenceQuery('wp_', 'uploads/2026/00/x.jpg'), null, '00 is not a month');
+	assert.equal(referenceQuery('wp_', 'uploads/2026/13/x.jpg'), null, '13 is not a month');
+	assert.ok(referenceQuery('wp_', 'uploads/2026/01/x.jpg'), 'month 01 is the dated attachment shape');
+	assert.ok(referenceQuery('wp_', 'uploads/2026/12/x.jpg'), 'month 12 is the dated attachment shape');
+	assert.ok(referenceQuery('wp_', 'uploads/2026/11/x.jpg'), 'uploads/YYYY/MM/<file> is asked of MySQL');
+	assert.doesNotMatch(referenceQuery('bad-prefix', 'uploads/2026/11/a.png').sql, /bad-prefix/, 'a hyphen in the prefix is not SQL');
+	assert.match(referenceQuery('bad-prefix', 'uploads/2026/11/a.png').sql, /badprefixpostmeta/);
 });
 
 // A fake bucket and database for the sweep decision. list() ignores limit, so a test can prove the cap.
@@ -212,8 +222,67 @@ test('a key that is not under uploads/ is never deleted; its stale marker is dro
 	assert.equal(w.objects.has(markerKey('invoices/42-abc.pdf')), false);
 	assert.equal(r.deleted, 0);
 	assert.equal(r.keptOther, 1);
+	assert.equal(r.keptShape, 0);
 	assert.equal(w.calls.length, 0, 'no SELECT for a key the attachment query cannot name');
 	assert.deepEqual(w.released, []);
+	assert.equal(line(w)['kept-other'], 1);
+	assert.equal(line(w)['kept-shape'], 0);
+});
+
+test('a stale marker on uploads/fonts/x.woff2 keeps the file and counts kept-shape', async () => {
+	const w = world({ files: { 'uploads/fonts/x.woff2': 'x' }, markers: { 'uploads/fonts/x.woff2': OLD } });
+	const r = await sweepUploadOrphans({ bucket: w.bucket, query: w.query, prefix: 'wp_', now: NOW, log: w.log, release: async (k) => w.released.push(k) });
+	assert.equal(w.objects.has('uploads/fonts/x.woff2'), true);
+	assert.equal(w.objects.has(markerKey('uploads/fonts/x.woff2')), false);
+	assert.equal(r.deleted, 0);
+	assert.equal(r.keptShape, 1);
+	assert.equal(r.keptOther, 0);
+	assert.equal(w.calls.length, 0, 'no SELECT: fonts are not the dated attachment shape');
+	assert.deepEqual(w.released, []);
+	assert.equal(line(w)['kept-shape'], 1);
+});
+
+test('a stale marker on uploads/woocommerce_uploads/x.zip keeps the file and counts kept-shape', async () => {
+	const w = world({ files: { 'uploads/woocommerce_uploads/x.zip': 'x' }, markers: { 'uploads/woocommerce_uploads/x.zip': OLD } });
+	const r = await sweepUploadOrphans({ bucket: w.bucket, query: w.query, prefix: 'wp_', now: NOW, log: w.log, release: async (k) => w.released.push(k) });
+	assert.equal(w.objects.has('uploads/woocommerce_uploads/x.zip'), true);
+	assert.equal(w.objects.has(markerKey('uploads/woocommerce_uploads/x.zip')), false);
+	assert.equal(r.deleted, 0);
+	assert.equal(r.keptShape, 1);
+	assert.equal(w.calls.length, 0, 'no SELECT: woocommerce_uploads is not the dated attachment shape');
+	assert.deepEqual(w.released, []);
+	assert.equal(line(w)['kept-shape'], 1);
+});
+
+test('a stale marker on any other uploads/ key that is not uploads/YYYY/MM/<file> keeps the file and counts kept-shape', async () => {
+	const keys = ['uploads/wc-logs/x.log', 'uploads/some-plugin/cache.bin', 'uploads/2026/11/nested/x.jpg', 'uploads/2026/1/x.jpg', 'uploads/2026/00/x.jpg', 'uploads/2026/13/x.jpg', 'uploads/file.png'];
+	const w = world({
+		files: Object.fromEntries(keys.map((k) => [k, 'x'])),
+		markers: Object.fromEntries(keys.map((k) => [k, OLD])),
+	});
+	const r = await sweepUploadOrphans({ bucket: w.bucket, query: w.query, prefix: 'wp_', now: NOW, log: w.log, release: async (k) => w.released.push(k) });
+	for (const k of keys) {
+		assert.equal(w.objects.has(k), true, `${k} is kept`);
+		assert.equal(w.objects.has(markerKey(k)), false, `${k} marker is dropped`);
+	}
+	assert.equal(r.deleted, 0);
+	assert.equal(r.keptShape, keys.length);
+	assert.equal(w.calls.length, 0, 'no SELECT outside the dated attachment shape');
+	assert.deepEqual(w.released, []);
+	assert.equal(line(w)['kept-shape'], keys.length);
+});
+
+test('a stale marker on uploads/2026/11/x.jpg with no attachment deletes it', async () => {
+	const w = world({ files: { 'uploads/2026/11/x.jpg': 'x' }, markers: { 'uploads/2026/11/x.jpg': OLD } });
+	const r = await sweepUploadOrphans({ bucket: w.bucket, query: w.query, prefix: 'wp_', now: NOW, log: w.log, release: async (k) => w.released.push(k) });
+	assert.equal(w.objects.has('uploads/2026/11/x.jpg'), false);
+	assert.equal(w.objects.has(markerKey('uploads/2026/11/x.jpg')), false);
+	assert.equal(r.deleted, 1);
+	assert.equal(r.keptShape, 0);
+	assert.equal(w.calls.length, 1, 'one SELECT for the dated attachment shape');
+	assert.deepEqual(w.released, ['uploads/2026/11/x.jpg']);
+	assert.equal(line(w).deleted, 1);
+	assert.equal(line(w)['kept-shape'], 0);
 });
 
 test('a new key gets a marker whose body is the request id and the time', async () => {

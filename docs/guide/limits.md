@@ -242,5 +242,5 @@ On approach A, an upload writes its files and then writes the attachment row. Th
 
 A killed upload can leave its files for up to one upload or one cron tick after 15 minutes. A partly saved attachment (a row without its sub-sizes) is kept, as WordPress keeps it.
 
-The next media upload, or the cron tick when cron is on, is what removes a file that no attachment names. A database error during that check keeps the file.
+The next media upload, or the cron tick when cron is on, removes a file only when its key is core's dated attachment path (`uploads/YYYY/MM/<file>`, a four-digit year, a month 01-12, and a file name with no further folder) and no attachment names it. A stale marker on any other key under `uploads/` (fonts, WooCommerce downloads and logs, a plugin folder) drops the marker and keeps the file. A database error during that check keeps the file.
 

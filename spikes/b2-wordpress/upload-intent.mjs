@@ -6,11 +6,15 @@
 //     does not fail the upload (that file then cannot be swept);
 //   - when PHP answers, any status, the request deletes the markers of its own keys in waitUntil;
 //   - the sweep judges markers older than 15 minutes, at most SWEEP_MAX per run. One indexed SELECT
-//     (meta_key equality, the postmeta index) asks whether an attachment names the file. Attached: drop
-//     the marker. Not attached: delete the file, its name reservation and the marker. Any SELECT error
-//     keeps both.
-// A key that is not under uploads/ is never deleted: the attachment SELECT cannot name it (an invoice,
-// an export). Its stale marker is dropped so it does not fill the cap, and the file stays.
+//     (meta_key equality, the postmeta index) asks whether an attachment names a dated
+//     uploads/YYYY/MM/<file> key. Attached: drop the marker. Not attached: delete the file, its name
+//     reservation and the marker. Any SELECT error keeps both.
+// A key is deleted only when its path is core's dated attachment shape, uploads/YYYY/MM/<file>
+// (a four-digit year, a month 01-12, then a file name with no further folder). Anything else keeps
+// the file and drops the stale marker so it does not fill the cap. A key outside uploads/ (an invoice,
+// an export) counts as kept-other. Any other key under uploads/ (fonts/, woocommerce_uploads/,
+// wc-logs/, a plugin folder) counts as kept-shape. The attachment SELECT runs only for the dated
+// shape. A SELECT error keeps both the file and the marker.
 export const MARKER_PREFIX = '_pf-intent/';
 export const STALE_MS = 15 * 60 * 1000;
 export const SWEEP_MAX = 200; // markers per run (the next run takes the rest)
@@ -69,15 +73,20 @@ function metadataDir(serialized) {
 
 const hex = (s) => "CONVERT(X'" + [...new TextEncoder().encode(String(s))].map((b) => b.toString(16).padStart(2, '0')).join('') + "' USING utf8mb4)";
 
+/** Core's dated attachment path: uploads/YYYY/MM/<file>. Year is four digits, month is 01-12, and the file name has no further folder. */
+function isDatedAttachmentKey(key) {
+	return /^uploads\/[0-9]{4}\/(?:0[1-9]|1[0-2])\/[^/]+$/.test(String(key));
+}
+
 /**
- * One indexed SELECT that says whether an attachment names an uploads/ key, or null for any other key.
- * Both branches lead with meta_key equality (KEY meta_key on postmeta). Only hex literals carry the
- * name, so a file name is never SQL text. The metadata branch is widened by LIKE and then checked
- * exactly (metadataNames plus the same directory).
+ * One indexed SELECT that says whether an attachment names a dated uploads/YYYY/MM/<file> key,
+ * or null for any other key. Both branches lead with meta_key equality (KEY meta_key on postmeta).
+ * Only hex literals carry the name, so a file name is never SQL text. The metadata branch is widened
+ * by LIKE and then checked exactly (metadataNames plus the same directory).
  */
 export function referenceQuery(prefix, key) {
 	const k = String(key);
-	if (!k.startsWith('uploads/')) return null;
+	if (!isDatedAttachmentKey(k)) return null;
 	const rel = k.slice('uploads/'.length);
 	const slash = rel.lastIndexOf('/');
 	const dir = slash < 0 ? '' : rel.slice(0, slash);
@@ -88,10 +97,13 @@ export function referenceQuery(prefix, key) {
 	return { rel, base, dir, sql: `${attached} UNION ALL ${meta}` };
 }
 
-/** true (an attachment names the key), false (none does), 'other' (not an uploads/ key), or null (could not tell). */
+/** true (an attachment names the key), false (none does), 'shape' (under uploads/ but not the dated attachment path), 'other' (not under uploads/), or null (could not tell). */
 async function referenced(query, prefix, key) {
+	const k = String(key);
+	if (!k.startsWith('uploads/')) return 'other';
+	if (!isDatedAttachmentKey(k)) return 'shape';
 	const q = referenceQuery(prefix, key);
-	if (!q) return 'other';
+	if (!q) return 'shape';
 	const a = await query(q.sql);
 	if (!a || !a.ok || !Array.isArray(a.rows)) return null;
 	let metaRows = 0;
@@ -145,6 +157,7 @@ function sweepLine(out, extra) {
 		'kept-error': out.keptError,
 		'skipped-fresh': out.skippedFresh,
 		'kept-other': out.keptOther,
+		'kept-shape': out.keptShape,
 		...(extra || {}),
 	};
 }
@@ -155,7 +168,7 @@ function sweepLine(out, extra) {
  */
 export async function sweepUploadOrphans({ bucket, query, prefix = 'wp_', now = Date.now(), log = () => {}, release = async () => {}, max = SWEEP_MAX } = {}) {
 	const cap = Math.max(0, Math.min(Number(max) || 0, SWEEP_MAX));
-	const out = { seen: 0, keptAttached: 0, deleted: 0, keptError: 0, skippedFresh: 0, keptOther: 0 };
+	const out = { seen: 0, keptAttached: 0, deleted: 0, keptError: 0, skippedFresh: 0, keptOther: 0, keptShape: 0 };
 	let listed;
 	try {
 		listed = await bucket.list({ prefix: MARKER_PREFIX, limit: cap });
@@ -186,10 +199,11 @@ export async function sweepUploadOrphans({ bucket, query, prefix = 'wp_', now = 
 			out.keptError++;
 			continue;
 		}
-		if (ref === true || ref === 'other') {
+		if (ref === true || ref === 'other' || ref === 'shape') {
 			try {
 				await bucket.delete(o.key);
 				if (ref === true) out.keptAttached++;
+				else if (ref === 'shape') out.keptShape++;
 				else out.keptOther++;
 			} catch {
 				out.keptError++;
