@@ -1,6 +1,6 @@
 # Start here: put a WordPress site on Cloudflare
 
-**The short version.** Pagefeather runs WordPress on your own Cloudflare account. Today you install it from a terminal: you copy and paste about 10 commands. There is no one-click installer for a single site yet ([#401](https://github.com/skyphusion-labs/pagefeather/issues/401)). If you have used cPanel and SSH, or a LAMP server, you can do this in about 30 minutes. This page has three parts: how to install, how to log in, and what the limits are.
+**The short version.** Pagefeather runs WordPress on your own Cloudflare account. Today you install it from a terminal: you copy and paste about 10 commands. There is no one-click installer for a single site yet ([#401](https://github.com/skyphusion-labs/pagefeather/issues/401)). If you have used cPanel and SSH, or a LAMP server, you can do this. On our test machine the commands took about 2 minutes. This page has three parts: how to install, how to log in, and what the limits are.
 
 We use two names on this page:
 
@@ -13,7 +13,7 @@ We use two names on this page:
 
 - A Cloudflare account on the **Workers Paid** plan. It costs $5 a month ([plan limits and cost](cost.md#plan-limits)).
 - A computer with macOS or Linux. On Windows, use WSL (Windows Subsystem for Linux) and follow the Linux steps.
-- About 30 minutes. Most of that is the build, which runs by itself.
+- A little time for the Cloudflare setup in your browser. The commands then run by themselves.
 
 ### Step 1: set up Cloudflare (in your browser)
 
@@ -70,7 +70,7 @@ export ACCOUNT_ID=...
 VARIANT=b-dosql MEDIA=1 BENCH=0 NAME=my-site ./deploy/deploy.sh
 ```
 
-This takes about 20 minutes the first time. It builds WordPress, makes the site in your account, and installs WordPress. At the end it prints your site's address.
+It builds WordPress, makes the site in your account, and installs WordPress. At the end it prints your site's address. On our test machine (Linux, 4 CPUs) this took 90 seconds. A slower computer takes longer.
 
 ### Step 5: get your admin password
 
