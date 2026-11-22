@@ -9,7 +9,7 @@
 // Cookie, keyed on the whole Cookie header: every visitor with any such cookie was a separate variant (measured on
 // wp-perf-dosql, docs/approach-b.md 8c).
 import { isOperatorRequest } from './perf-headers.mjs';
-import { probeArm } from './placement-probe.mjs';
+import { isPlacedRender } from './pages-render.mjs';
 
 export const WP_COOKIE = /(^|;\s*)(wordpress_logged_in_|wordpress_sec_|wp-postpass_|comment_author_|wp-settings-|woocommerce_|wp_woocommerce_session_)/;
 export const PAGE_CACHE_NO_PATH = /^\/(wp-admin|wp-login\.php|wp-json|wp-cron\.php|wp-comments-post\.php|cart|checkout|my-account|wc-api|skyphusion-invoice|_)/;
@@ -36,8 +36,8 @@ export function pageCacheRoute(req, url, env) {
 		!req.headers.has('authorization') &&
 		// An operator request never goes to the cached entrypoint (perf-headers.mjs).
 		!isOperatorRequest(req) &&
-		// #1277 probe: its direct and render arms render in the gateway's own (placed) fetch handler.
-		!['direct', 'render', 'object', 'object-new'].includes(probeArm(req, env))
+		// #1277 option 1: Pages' own placed render request renders in the gateway, never back in Pages.
+		!isPlacedRender(req)
 	);
 }
 
@@ -48,10 +48,12 @@ export function storeRequestSide(req, url, env) {
 
 /**
  * #1328: the request is for a URL that can have a stored copy, but it is NOT the request that copy was made for (a WP
- * cookie, authorization, an operator, an upgrade, a probe arm), so it is answered by the gateway.
+ * cookie, authorization, an operator, an upgrade), so it is answered by the gateway. Pages' placed render is not in it.
  */
 export function missesStoredCopy(req, url, env) {
-	return pageCopyShape(req, url, env) && !pageCacheRoute(req, url, env);
+	// #1277 option 1: Pages' placed render request IS the guest's request (Pages sent it without the Cookie header, to
+	// render a MISS): it stays out of this class, so its shed stays the 503 the cache may answer STALE for the guest.
+	return pageCopyShape(req, url, env) && !pageCacheRoute(req, url, env) && !isPlacedRender(req);
 }
 
 /**

@@ -27,6 +27,7 @@ const TABLE = [
 	['authorization page GET', mk('/shop/', { h: { authorization: 'Basic eDp5' } }), true, false, true],
 	['operator page GET', mk('/shop/', { h: { 'x-spike-token': 'anything' } }), true, false, true],
 	['upgrade page GET', mk('/shop/', { h: { upgrade: 'websocket' } }), true, false, true],
+	['Pages placed render (#1277 option 1)', mk('/shop/', { h: { 'x-pf-pages-render': '1' } }), true, false, false],
 	['cookie wp-json', mk('/wp-json/wc/store/v1/cart', { cookie: CART }), false, false, false],
 	['cookie cart page', mk('/cart/', { cookie: CART }), false, false, false],
 	['cookie checkout', mk('/checkout/', { cookie: CART }), false, false, false],
@@ -46,6 +47,14 @@ test('the shape table: shape, route and the miss class, per request', () => {
 		assert.equal(missesStoredCopy(req, url, ENV), miss, label + ': miss');
 	}
 });
+test('#1277 option 1: Pages placed render request is the guest request: shape, not route, NOT the miss class', async () => {
+	const { req, url } = mk('/shop/', { h: { 'x-pf-pages-render': '1' } });
+	assert.equal(pageCopyShape(req, url, ENV), true);
+	assert.equal(pageCacheRoute(req, url, ENV), false, 'it never loops back to Pages');
+	assert.equal(missesStoredCopy(req, url, ENV), false, 'it is the guest render');
+	const resp = shed();
+	assert.equal(busyAnswerFor(req, url, ENV, resp), resp, 'its shed stays the 503 (the cache may answer STALE for the guest)');
+});
 test('PAGE_CACHE_TTL=0: no copy can exist, so nothing is in the miss class', () => {
 	const { req, url } = mk('/shop/', { cookie: CART });
 	assert.equal(pageCopyShape(req, url, { PAGE_CACHE_TTL: '0' }), false);
@@ -56,7 +65,7 @@ test('drift guard: route implies shape, and route and miss never both hold', () 
 		const s = pageCopyShape(req, url, ENV), r = pageCacheRoute(req, url, ENV), m = missesStoredCopy(req, url, ENV);
 		assert.ok(!r || s, label + ': route without shape');
 		assert.ok(!(r && m), label + ': route and miss');
-		assert.equal(m, s && !r, label + ': miss is exactly shape and not route');
+		assert.equal(m, s && !r && req.headers.get('x-pf-pages-render') !== '1', label + ': miss is exactly shape, not route, not the placed render');
 	}
 });
 test('the store decision agrees with the shape (#1371 is the full move): store = shape, minus a WP cookie or authorization', () => {
