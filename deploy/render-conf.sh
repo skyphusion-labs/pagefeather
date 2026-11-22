@@ -181,6 +181,8 @@ render_conf() {
     node "$ROOT/deploy/provision/a-vars-toml.mjs" kv "$(out oc_kv_id)" || return 1
     a_overflow_bindings
     a_cron_bindings
+    # #1339 (#837): the account's purge budget, as for b-dosql; the cron object sends approach A's purges. Unset: nothing.
+    purge_budget_toml_lines
     [ "${RENDER_WFP:-0}" = 1 ] || a_cron_triggers
   fi
 }

@@ -358,7 +358,8 @@ COMPAT=$(sed -n 's/^compatibility_date = "\(.*\)"/\1/p' wrangler.toml | head -1)
 # shellcheck source=SCRIPTDIR/render-conf.sh
 . "$ROOT/deploy/render-conf.sh"
 # #699 part B: a b-dosql site binds the account's purge budget when it is present, and says which (budget.sh).
-if [ "$VARIANT" = b-dosql ]; then purge_budget_decide "deploy.sh $NAME"; else PURGE_BUDGET_BIND=0; fi
+# #1339 (#837): approach A too, so its purges share the account budget instead of failing open to its own rules.
+case "$VARIANT" in a|b-dosql) purge_budget_decide "deploy.sh $NAME" ;; *) PURGE_BUDGET_BIND=0 ;; esac
 render_conf > "$CONF"
 
 # #569, #563: a remote build is never uploaded without its ASSETS binding and /_pf/ first, and a
