@@ -184,6 +184,7 @@ jobs:
           php spikes/b2-wordpress/tests/wc-route-defer-scope-test.php
           node --test spikes/b2-wordpress/tests/object-cache-cap.test.mjs
           bash spikes/b2-wordpress/tests/same-site-test.sh
+          bash spikes/b2-wordpress/tests/local-https-test.sh
           php spikes/b2-wordpress/tests/table-status-size-test.php
           php spikes/b2-wordpress/tests/plain-404-test.php
           php spikes/b2-wordpress/tests/plugin-activate-fatal-test.php

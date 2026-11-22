@@ -62,6 +62,13 @@ GET ?rest_route=/pf-conformance/v1/throwaway does not answer {"throwaway": true,
 marker mu-plugin from prepare-content.sh). A local wrangler dev site (host localhost or 127.0.0.1) has no
 marker; it is accepted only with SEED_ALLOW_LOCAL=1, so the gate fails closed.
 
+A local site needs HTTPS for the password step (#924): WordPress allows application passwords only over HTTPS, so
+over http the seed gets 501 application_passwords_disabled and stops before the password write. Start it with
+LOCAL_HTTPS=1 spikes/b2-wordpress/run.sh (wrangler's self-signed localhost certificate), save the served
+certificate (openssl s_client -connect localhost:<port> -servername localhost), and run the seed with
+B=https://localhost:<port> SSL_CERT_FILE=<that certificate> under a Python built on OpenSSL, such as Homebrew's
+python3. TLS stays verified. The macOS Command Line Tools python3 ignores SSL_CERT_FILE and refuses the certificate.
+
   B=<site> ADMIN_PASSWORD=<current admin password> python3 -I tests/conformance/seed.py <out-dir> [--theme <slug>]
 
   ADMIN_USER (default admin). ADMIN_PASSWORD is the admin's current password: the workspace's on a first seed,

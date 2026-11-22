@@ -155,3 +155,17 @@ server_port() {
 	echo "no PORT and .dev-port in $port_sh_dir is not a port" >&2
 	return 1
 }
+
+# #924: LOCAL_HTTPS=1 serves the local server over HTTPS (wrangler dev --local-protocol https, a self-signed
+# certificate for localhost). WordPress allows application passwords only over HTTPS, so a local conformance seed
+# needs it to reach its password step. Sets LOCAL_SCHEME (http or https), LOCAL_CURL_K (curl -k for wrangler's own
+# certificate) and LOCAL_PROTO_ARGS (the wrangler flag). Unset or 0 is http; any other value is refused.
+# The three globals are read by run.sh, which sources this file.
+# shellcheck disable=SC2034
+local_scheme() {
+	case "${LOCAL_HTTPS:-}" in
+		'' | 0) LOCAL_SCHEME=http; LOCAL_CURL_K=(); LOCAL_PROTO_ARGS=() ;;
+		1) LOCAL_SCHEME=https; LOCAL_CURL_K=(-k); LOCAL_PROTO_ARGS=(--local-protocol https) ;;
+		*) echo "LOCAL_HTTPS must be 1, 0 or unset, not \"${LOCAL_HTTPS}\"" >&2; return 1 ;;
+	esac
+}

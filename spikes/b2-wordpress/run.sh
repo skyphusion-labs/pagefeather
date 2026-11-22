@@ -319,6 +319,10 @@ if [ "$inspector_chose" = 1 ]; then
 	echo "inspector port $INSPECTOR_PORT"
 fi
 rm -f out.json; : > dev.log
+# LOCAL_HTTPS=1 (#924, port.sh local_scheme): serve over HTTPS with wrangler's self-signed localhost certificate,
+# so a local seed reaches the application password step (WordPress allows those only over HTTPS). The seed then
+# runs under a Python that honours SSL_CERT_FILE (Homebrew's; tests/conformance/seed.py says how). The other local
+# scripts (e2e.sh, opcache.sh) still speak http to .dev-port.
 # SITE_ORIGIN (issue #33): the site's links are localhost:<port>, the address
 # e2e.sh and opcache.sh use, whatever request boots PHP first.
 # DEV_LOCAL=1: --local, no remote bindings (#371). The env's AI binding has no local mode, so
@@ -331,12 +335,13 @@ rm -f out.json; : > dev.log
 # DEV_TEST_SCHEDULED=1: --test-scheduled, so GET /__scheduled runs the Worker's scheduled() handler (#855).
 # PERSIST_TO: the local state directory (default .wrangler/state). opcache.sh passes a fresh,
 # empty one, so what it primes depends on the build, not on what an earlier run left (#313).
+local_scheme || exit 1
 vars=()
 for v in ${DEV_VARS:-}; do vars+=(--var "$v"); done
 # Own session: the process group is this server alone, so a group signal
 # cannot reach the shell that started it. The pid is the process group id.
 python3 -I -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
-	"$WR" dev --port "$PORT" --inspector-port "$INSPECTOR_PORT" --log-level "${DEV_LOG_LEVEL:-warn}" ${DEV_LOCAL:+--local} ${DEV_ENV:+--env $DEV_ENV} ${PERSIST_TO:+--persist-to "$PERSIST_TO"} ${DEV_TEST_SCHEDULED:+--test-scheduled} --var "SITE_ORIGIN:http://localhost:$PORT" --var "SPIKE_TOKEN:${SPIKE_TOKEN:-local-spike-token}" "${vars[@]}" --var "DEV_LOCAL:1" > dev.log 2>&1 &
+	"$WR" dev "${LOCAL_PROTO_ARGS[@]}" --port "$PORT" --inspector-port "$INSPECTOR_PORT" --log-level "${DEV_LOG_LEVEL:-warn}" ${DEV_LOCAL:+--local} ${DEV_ENV:+--env $DEV_ENV} ${PERSIST_TO:+--persist-to "$PERSIST_TO"} ${DEV_TEST_SCHEDULED:+--test-scheduled} --var "SITE_ORIGIN:$LOCAL_SCHEME://localhost:$PORT" --var "SPIKE_TOKEN:${SPIKE_TOKEN:-local-spike-token}" "${vars[@]}" --var "DEV_LOCAL:1" > dev.log 2>&1 &
 started=$!
 record_server "$started" "$PORT"
 up=0
@@ -348,12 +353,12 @@ for _ in $(seq 1 "$DEV_WAIT_S"); do
 	grep -q 'ERROR' dev.log && { devlog; stop_port "$PORT" || true; exit 1; }
 	# wrangler dev exited (a start failure that prints no ERROR): say so now, with its log.
 	kill -0 "$started" 2>/dev/null || { echo "wrangler dev exited before it answered on port $PORT; last lines of dev.log:" >&2; devlog; stop_port "$PORT" || true; exit 1; }
-	curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -m 2 -o /dev/null "localhost:$PORT/_ping" 2>/dev/null && { up=1; break; }
+	curl "${LOCAL_CURL_K[@]}" -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -m 2 -o /dev/null "$LOCAL_SCHEME://localhost:$PORT/_ping" 2>/dev/null && { up=1; break; }
 	sleep 1
 done
 [ "$up" = 1 ] || { echo "wrangler dev did not answer on port $PORT in $DEV_WAIT_S s; last lines of dev.log:" >&2; devlog; stop_port "$PORT" || true; exit 1; }
 # The port was free before the start. Record the listener and the whole tree.
 record_server "$started" "$PORT"
-curl -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -m 120 "localhost:$PORT/${1:-}" -o out.json; echo "http_exit=$?"
+curl "${LOCAL_CURL_K[@]}" -H "x-spike-token: ${SPIKE_TOKEN:-local-spike-token}" -s -m 120 "$LOCAL_SCHEME://localhost:$PORT/${1:-}" -o out.json; echo "http_exit=$?"
 head -c 2000 out.json; echo
 grep -v '^\s*$' dev.log | grep -v '🪵' | tail -8 | cut -c1-400
