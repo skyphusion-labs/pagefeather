@@ -185,6 +185,8 @@ VARIANT=a MYSQL=vultr VULTR_API_KEY=... MYSQL_ZONE_ID=<zone> MYSQL_HOST=mysql-my
 
 `MYSQL=vultr` makes the database box with `deploy/mysql` (MariaDB with SSL; port 3306 open to Cloudflare's IPv4 ranges only; no SSH; $10 a month). `MYSQL=external` uses your own server: `MYSQL_HOST`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`. A public server must have SSL. For a server behind a Cloudflare Tunnel and Access (CR #141, `tests/ssh-source`), set `MYSQL_ACCESS_CLIENT_ID` and `MYSQL_ACCESS_CLIENT_SECRET` instead: Hyperdrive reaches it with the service token, the box opens no inbound port, and no SSL is needed. Give Hyperdrive the host **name**: by IP address it measured about 44 ms per query, by name about 7 ms ([docs/approach-a.md](../docs/approach-a.md)). On Workers Free this variant stops at the CPU limit.
 
+After the upload, `deploy.sh` calls `/_cron-wake` once (spike token) to pull the cron object's alarm in to now, then reads `/_cron-build` for up to 10 minutes and warns if that alarm has not run the new build (#1354, #1152); a failed wake does not fail the deploy (#1360).
+
 ### Variant `a`: the measured site (#666)
 
 A plain `VARIANT=a` deploy is the approach-A site that every #296 run measured. Before #666, deploy.sh rendered none of these settings, so the measured site could only be deployed with a hand-made config. `deploy/tests/a-render-test.sh` diffs deploy.sh's render against that bench config (`deploy/tests/a-render/`), so the two cannot drift apart again.

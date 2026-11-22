@@ -16,20 +16,33 @@ import http.server, os, sys
 T = sys.argv[2]; calls = [0]
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
+    def _log(self):
+        open(os.path.join(T, "log"), "a").write("%s %s\n" % (self.command, self.path.split("?")[0]))
     def do_GET(self):
+        self._log()
         if self.headers.get("x-spike-token") != "tok":
             self.send_response(403); self.end_headers(); return
         lines = open(os.path.join(T, "answers")).read().splitlines()
         body = lines[min(calls[0], len(lines) - 1)].encode(); calls[0] += 1
         open(os.path.join(T, "calls"), "w").write(str(calls[0]))
         self.send_response(200); self.send_header("content-type", "application/json"); self.end_headers(); self.wfile.write(body)
+    def do_POST(self):
+        self._log()
+        if self.headers.get("x-spike-token") != "tok":
+            self.send_response(403); self.end_headers(); return
+        status = 200
+        marker = os.path.join(T, "wake-status")
+        if os.path.exists(marker):
+            status = int(open(marker).read().strip() or "200")
+        body = b'{"ok":true,"pulled":true}' if status == 200 else b'{"ok":false}'
+        self.send_response(status); self.send_header("content-type", "application/json"); self.end_headers(); self.wfile.write(body)
 http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 PY
 python3 -I "$T/stub.py" "$PORT" "$T" & SP=$!
 for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:$PORT/" && break; sleep 0.1; done
 . "$ROOT/deploy/lib/cron-version.sh"
 # run [wait s] [A_CRON] [VARIANT]
-run() { CRON_VERSION_WAIT_S=${1:-3} CRON_VERSION_EVERY_S=1 A_CRON=${2:-1} VARIANT=${3:-a} cron_version_readback "http://127.0.0.1:$PORT" tok > "$T/out" 2>&1; echo $? > "$T/rc"; }
+run() { rm -f "$T/log"; CRON_VERSION_WAIT_S=${1:-3} CRON_VERSION_EVERY_S=1 A_CRON=${2:-1} VARIANT=${3:-a} cron_version_readback "http://127.0.0.1:$PORT" tok > "$T/out" 2>&1; echo $? > "$T/rc"; }
 
 echo '{"worker":"new","cron":"new","alarm":"new","state":"ok","same":true}' > "$T/answers"; run
 ok "the same build: ok, rc 0 ($(cat "$T/out"))" "$(grep -q 'ok' "$T/out" && [ "$(cat "$T/rc")" = 0 ] && ! grep -q WARNING "$T/out" && echo 1 || echo 0)"
@@ -72,6 +85,29 @@ dflt=$(grep -oE 'wait=\$\{CRON_VERSION_WAIT_S:-[0-9]+\}' "$lib" | grep -oE '[0-9
 ok "#1152 the default wait (${dflt:-?} s) is at least 2x IDLE_MAX_MS (cron-idle.mjs: ${idle:-?} min)" "$([ -n "$idle" ] && [ -n "$dflt" ] && [ "$dflt" -ge $((idle * 60 * 2)) ] && echo 1 || echo 0)"
 printf '%s\n' '{"worker":"new","cron":"old","alarm":"old"}' '{"worker":"new","cron":"new","alarm":"new"}' > "$T/answers"; run 3
 ok "#1152 an ok after waiting prints the measured lag" "$(grep -qE 'cron object: ok.*lag [0-9]+ s' "$T/out" && echo 1 || echo 0)"
+
+# #1360: one wake right after the upload's readback starts, before the poll. A failed wake never fails the deploy.
+# shellcheck disable=SC2016  # the literal call in cron-version.sh, not an expansion
+pat='cron_version_wake "$url" "$token"'
+call=$(grep -nF "$pat" "$lib" | head -1 | cut -d: -f1)
+loop=$(grep -n 'while :; do' "$lib" | head -1 | cut -d: -f1)
+ok "#1360 cron_version_wake is called once, before the readback loop" "$([ -n "$call" ] && [ -n "$loop" ] && [ "$call" -lt "$loop" ] && [ "$(grep -cF "$pat" "$lib")" = 1 ] && echo 1 || echo 0)"
+rm -f "$T/wake-status"
+printf '%s\n' '{"worker":"new","cron":"new","alarm":"new","state":"ok","same":true}' > "$T/answers"
+run
+ok "#1360 the wake is one POST /_cron-wake before any /_cron-build poll ($(tr '\n' ' ' < "$T/log" 2>/dev/null))" "$( [ -f "$T/log" ] && head -1 "$T/log" | grep -qx 'POST /_cron-wake' && [ "$(grep -c 'POST /_cron-wake' "$T/log")" = 1 ] && grep -q 'GET /_cron-build' "$T/log" && echo 1 || echo 0)"
+ok "#1360 an accepted wake is printed" "$(grep -qx 'cron wake: accepted' "$T/out" && echo 1 || echo 0)"
+echo 500 > "$T/wake-status"
+printf '%s\n' '{"worker":"new","cron":"new","alarm":"new","state":"ok","same":true}' > "$T/answers"
+run 3
+ok "#1360 a failed wake is printed, the readback still runs, and the deploy is not failed" "$(grep -q 'cron wake: not accepted' "$T/out" && grep -q 'cron object: ok' "$T/out" && [ "$(cat "$T/rc")" = 0 ] && [ "$(grep -c 'POST /_cron-wake' "$T/log")" = 1 ] && echo 1 || echo 0)"
+rm -f "$T/wake-status" "$T/log"
+cron_version_wake "http://127.0.0.1:1" tok > "$T/down" 2>&1
+echo $? > "$T/downrc"
+ok "#1360 a wake that cannot connect prints not accepted and returns 0" "$(grep -q 'not accepted' "$T/down" && [ "$(cat "$T/downrc")" = 0 ] && echo 1 || echo 0)"
+rm -f "$T/log"
+(a_cron_on() { return 1; }; A_CRON=1 CRON_VERSION_WAIT_S=3 CRON_VERSION_EVERY_S=1 VARIANT=a cron_version_readback "http://127.0.0.1:$PORT" tok > "$T/out" 2>&1)
+ok "#1360 a_cron_on says off: no wake" "$( ! grep -q 'POST /_cron-wake' "$T/log" 2>/dev/null && echo 1 || echo 0)"
 
 echo "$fails failing case(s)"
 [ "$fails" = 0 ]
