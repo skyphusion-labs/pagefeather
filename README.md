@@ -45,7 +45,7 @@ page tells you which is which.
 - **WooCommerce on b-dosql is for a light storefront; real stores use approach A on Hyperdrive.**
   Cart, checkout, the admin and logged-in pages are never cached, so each of them runs PHP in the
   site's one Durable Object. Under load, that object's isolate runs out of memory and resets: 43
-  resets and 49 lost writes per 1000 requests on our load harness (`cf759a`, 2026-11-22). The levers tried so far
+  resets and 49 lost writes per 1000 server requests (perf lines) under our load harness (`cf759a`, 2026-11-22). The levers tried so far
   did not fix it, so it is a tracked limit
   ([docs/known-limitations.md](docs/known-limitations.md), #1022).
 - **Approach A runs WordPress and WooCommerce on Workers Paid, and it scales out across isolates.**

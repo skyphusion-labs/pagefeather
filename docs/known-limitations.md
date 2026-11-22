@@ -26,7 +26,7 @@ On `cf759hl` at main `822ab24`, 6 of 10 blocks checkout tests miss the suite's 1
 
 | window | requests or tests | isolates that died of memory | lost writes | other |
 |---|---|---|---|---|
-| `reuse_run.py` load, main 56f44937, 2026-11-22 (E3's control) | 328 requests | 14 (43 per 1000 requests) | 16 (49 per 1000) | 61 new isolates per 1000 requests |
+| `reuse_run.py` load, main 56f44937, 2026-11-22 (E3's control) | 328 server requests (perf lines) | 14 (43 per 1000 server requests) | 16 (49 per 1000 server requests) | 61 new isolates per 1000 server requests |
 | wc suite, the same build and session | 113 expected, 110 unexpected, 6 skipped | 110 | 88 | 18 "Network connection lost.", 24 php-fatal |
 | wc suite, main a85fe3db (E1's control) | | 55 | 47 | 17 "Network connection lost.", 15 php-fatal |
 
