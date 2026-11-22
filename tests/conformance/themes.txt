@@ -1,7 +1,9 @@
 # Pinned wordpress.org themes for the conformance throwaway (#759), read by
 # tests/plugins/fetch.sh --themes with THEME_SUITE=<this file>. Never for a real site.
+# A build that names the wp suite uses themes-wp.txt instead. This file is the
+# gb pin, and the pin for a build that does not name wp.
 # The first versions are the ones Gutenberg's e2e environment mounts (.wp-env.test.json at GB_SHA), except twentytwentyfour (see below).
-# twentytwentyone: the global setup of the WordPress and Gutenberg suites activates it.
+# twentytwentyone 2.1: the zip Gutenberg mounts. The WordPress suite's copy is themes-wp.txt.
 # twentytwentythree: the WooCommerce external setup activates it.
 # slug version sha256-of-zip
 twentytwentyone 2.1 5b2e99b6e93a529fe4ae243752089ed1d26f6b70af8b289603b87ce1472a5f01

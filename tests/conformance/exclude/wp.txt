@@ -7,12 +7,3 @@ specs/fatal-error-handler.test.js        writes a mu-plugin on the RUNNER disk; 
 specs/maintenance-mode.test.js           writes .maintenance on the RUNNER disk; no, by design: code-locked sites never enter it (support matrix)
 specs/login-localize-script.test.js      writes a mu-plugin on the RUNNER disk
 specs/gutenberg-plugin.test.js           installs a plugin over REST; unsupported by design (code lock)
-# #1335: one test, not the file. The throwaway installs Twenty Twenty-One 2.1 (themes.txt).
-# That theme's twenty_twenty_one_post_title filters the_title with no is_admin() check
-# (twentytwentyone 2.1, inc/template-functions.php:183). get_the_title() returns Untitled
-# (wordpress-develop src/wp-includes/post-template.php:174 at WP_DEVELOP_SHA), so
-# _draft_or_post_title never substitutes (no title) (src/wp-admin/includes/template.php:2097).
-# Stock bundles Twenty Twenty-One 2.9, which returns the title unchanged in wp-admin
-# (src/wp-content/themes/twentytwentyone/inc/template-functions.php:191). No mu-plugin,
-# engine, install, or seed in this repo writes Untitled.
-specs/dashboard.test.js :: Quick Draft > should allow Quick Draft to be created with only the Content  Twenty Twenty-One 2.1 filters the_title in wp-admin, so an empty draft title shows Untitled. Stock at WP_DEVELOP_SHA bundles 2.9, which skips that filter in wp-admin (#1335).

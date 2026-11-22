@@ -8,14 +8,16 @@
 # site: the WooCommerce cleanup plugin deletes the whole store, and both upstream suites delete
 # all posts.
 #
-#   wp  the WordPress suite (wordpress-develop tests/e2e): the theme twentytwentyone.
+#   wp  the WordPress suite (wordpress-develop tests/e2e): the theme twentytwentyone at the
+#       version that tree bundles (themes-wp.txt).
 #   wc  the WooCommerce suite (plugins/woocommerce/tests/e2e): the themes twentytwentythree, storefront, twentytwenty,
 #       twentytwentytwo, twentytwentyfour and the test themes of tests/e2e/themes/blocks (as .wp-env.e2e.json mounts
 #       them, #937; with gb, Gutenberg's emptytheme is kept), the
 #       plugins woocommerce-e2e-test-helper, woocommerce-cleanup, and
 #       wc-email-template-sync-test-helper (from WC_SHA; the upstream external setup takes them
 #       from trunk, which is not pinned), and wp-mail-logging.
-#   gb  the Gutenberg suite (test/e2e): twentytwentyone, twentytwentythree, twentytwentyfour, twentytwenty, the
+#   gb  the Gutenberg suite (test/e2e): twentytwentyone 2.1 (themes.txt, the zip Gutenberg mounts),
+#       twentytwentythree, twentytwentyfour, twentytwenty, the
 #       test plugins (one plugin directory, gutenberg-test-plugins, as upstream mounts it), the
 #       test themes emptytheme and gutenberg-test-themes, and the e2e mu-plugins.
 #
@@ -88,7 +90,7 @@ if [ "$want_wc" = 1 ]; then
   add plugins wp-mail-logging
   tp=plugins/woocommerce/tests/e2e/test-plugins
   # The themes the WooCommerce e2e environment mounts (.wp-env.e2e.json at WC_SHA, #937): three from wordpress.org
-  # (themes.txt) plus twentytwentyfour, and the test themes from tests/e2e/themes/blocks.
+  # (the theme pin file) plus twentytwentyfour, and the test themes from tests/e2e/themes/blocks.
   add themes storefront; add themes twentytwenty; add themes twentytwentytwo; add themes twentytwentyfour
   tt=plugins/woocommerce/tests/e2e/themes/blocks
   fetch woocommerce "$WC_REPO" "$WC_SHA" "/$tp/woocommerce-e2e-test-helper/" "/$tp/woocommerce-cleanup/" "/$tp/wc-email-template-sync-test-helper/" "/$tt/"
@@ -134,6 +136,14 @@ line="IMPORT_CONTENT=$out/wp-content"
 [ -z "$imp_themes" ] || line="$line IMPORT_THEMES='$imp_themes'"
 [ -z "$imp_plugins" ] || line="$line IMPORT_PLUGINS='$imp_plugins'"
 [ -z "$imp_mu" ] || line="$line IMPORT_MU_PLUGINS='$imp_mu'"
-[ -z "$themes" ] || line="$line THEME_SUITE=$here/themes.txt THEMES='$themes'"
+# fetch.sh --themes reads one pin file (THEME_SUITE) and no other list.
+# The wp suite's stock Twenty Twenty-One is the version wordpress-develop bundles
+# (themes-wp.txt). The gb suite keeps 2.1 (themes.txt). One build installs one
+# copy of the slug. Naming wp selects the wp file, including when gb is named
+# too, so the copy the WordPress global setup activates is the stock one.
+# A build that names gb and not wp keeps themes.txt.
+theme_suite=$here/themes.txt
+[ "$want_wp" = 0 ] || theme_suite=$here/themes-wp.txt
+[ -z "$themes" ] || line="$line THEME_SUITE=$theme_suite THEMES='$themes'"
 [ -z "$plugins" ] || line="$line SUITE=$here/plugins.txt PLUGINS='$plugins'"
 echo "$line" | tee -a "$out/PINS"

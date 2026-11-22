@@ -46,7 +46,7 @@ Each suite is pinned to the versions our sites run (`spikes/b2-wordpress/build.s
 | file | what it does |
 |---|---|
 | `prepare-content.sh` | Builds the extra content of a throwaway (test plugins, test themes, the marker) from the pinned repos. It prints one line of variables for `build.sh`. |
-| `themes.txt`, `plugins.txt` | The wordpress.org themes and plugins for the throwaway, checked by SHA-256 (`tests/plugins/fetch.sh`). They are separate from the product lists. |
+| `themes.txt`, `themes-wp.txt`, `plugins.txt` | The wordpress.org themes and plugins for the throwaway, checked by SHA-256 (`tests/plugins/fetch.sh`). They are separate from the product lists. `themes.txt` is the gb pin (Twenty Twenty-One 2.1). A build that names wp uses `themes-wp.txt` (the version wordpress-develop bundles). |
 | `php/pf-conformance-throwaway.php` | The marker mu-plugin. Its REST route says "throwaway" and names the host. |
 | `exclude/<suite>.txt` | Specs this run skips, each with its reason. See Exclude rows for the line format. |
 | `areas.txt` | The map from each spec file to a row of `docs/support-matrix.md`. The first matching line wins; a spec no line maps is reported as unmapped. |

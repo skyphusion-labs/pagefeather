@@ -7,6 +7,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 P=${PREPARE:-$here/prepare-content.sh}
 t=$(mktemp -d "${TMPDIR:-/tmp}/conf-prep.XXXXXX")
+# prepare-content.sh prints the path from pwd, which collapses a trailing slash on TMPDIR.
+t=$(cd "$t" && pwd)
 trap 'rm -rf "$t"' EXIT
 fails=0
 ok() { echo "ok   $*"; }
@@ -78,7 +80,7 @@ grep -q "plugins/gutenberg-test-plugins = gutenberg:packages/e2e-tests/plugins $
 for want in "IMPORT_CONTENT=$t/out/wp-content" "IMPORT_THEMES='theme-with-woo-templates storefront-child__block-notices-filter storefront-child__block-notices-template storefront-child__classic-notices-template storefront-child__with-block-template-part storefront-child__with-block-template-part-support twentytwentyfour-child__block-notices-filter twentytwentyfour-child__block-notices-template twentytwentyfour-child__classic-notices-template emptytheme gutenberg-test-themes'" \
   "IMPORT_PLUGINS='woocommerce-e2e-test-helper woocommerce-cleanup wc-email-template-sync-test-helper gutenberg-test-plugins'" \
   "IMPORT_MU_PLUGINS='pf-conformance-throwaway.php pf-conformance-gaps.php nocache-headers.php server-timing.php'" "THEMES='twentytwentythree storefront twentytwenty twentytwentytwo twentytwentyfour twentytwentyone'" \
-  "SUITE=$here/plugins.txt PLUGINS='wp-mail-logging'" "THEME_SUITE=$here/themes.txt"; do
+  "SUITE=$here/plugins.txt PLUGINS='wp-mail-logging'" "THEME_SUITE=$here/themes.txt "; do
   case "$line" in *"$want"*) ok "line has: $want" ;; *) bad "line lacks: $want (line: $line)" ;; esac
 done
 [ "$(printf '%s\n' "$line" | wc -l | tr -d ' ')" = 1 ] && ok "stdout is one line" || bad "stdout is not one line"
@@ -94,7 +96,7 @@ else bad "content.sh refused the line: $(tail -2 "$t/o")"; fi
 
 # 3. wp only: no git at all, one theme.
 if line=$(WC_REPO=file:///nonexistent GB_REPO=file:///nonexistent "$P" "$t/wp" wp 2>"$t/e"); then
-  [ "$line" = "IMPORT_CONTENT=$t/wp/wp-content IMPORT_MU_PLUGINS='pf-conformance-throwaway.php pf-conformance-gaps.php' THEME_SUITE=$here/themes.txt THEMES='twentytwentyone'" ] && ok "wp only: the line is exact" || bad "wp only: line is '$line'"
+  [ "$line" = "IMPORT_CONTENT=$t/wp/wp-content IMPORT_MU_PLUGINS='pf-conformance-throwaway.php pf-conformance-gaps.php' THEME_SUITE=$here/themes-wp.txt THEMES='twentytwentyone'" ] && ok "wp only: the line is exact" || bad "wp only: line is '$line'"
 else bad "wp only: exit non-zero ($(cat "$t/e"))"; fi
 
 # 3b. wc only: WooCommerce's emptytheme is taken.
@@ -106,7 +108,31 @@ else bad "wc only: exit non-zero ($(cat "$t/e"))"; fi
 # 3c. gb only: the widgets specs activate twentytwenty, which the release zip lacks.
 if line=$(WC_REPO=file:///nonexistent "$P" "$t/gbonly" gb 2>"$t/e"); then
   case "$line" in *"THEMES='twentytwentyone twentytwentythree twentytwentyfour twentytwenty'"*) ok "gb only: THEMES has twentytwenty" ;; *) bad "gb only: line is '$line'" ;; esac
+  case "$line" in *"THEME_SUITE=$here/themes.txt "*) ok "gb only: THEME_SUITE is themes.txt" ;; *) bad "gb only: THEME_SUITE is not themes.txt (line: $line)" ;; esac
 else bad "gb only: exit non-zero ($(cat "$t/e"))"; fi
+
+# 3d. Per-suite Twenty Twenty-One (#1335). fetch.sh --themes reads one file, THEME_SUITE.
+# prepare-content.sh picks it. The wp file pins the version wordpress-develop bundles at
+# WP_DEVELOP_SHA (style.css Version: 2.9). The gb file keeps 2.1, the zip Gutenberg mounts.
+# A build that names wp selects the wp file even when gb is also named (one slug, one copy).
+# A build that names gb and not wp keeps themes.txt. The other slugs match, so only this version moves.
+WP_TT1='twentytwentyone 2.9 51d4ac1dcaef18b0e35a1a313bce8115d3aa4ff315bb1143f95c223c38817d8b'
+GB_TT1='twentytwentyone 2.1 5b2e99b6e93a529fe4ae243752089ed1d26f6b70af8b289603b87ce1472a5f01'
+pin_line() { grep -E '^twentytwentyone ' "$1" 2>/dev/null || true; }
+other_pins() { grep -E '^[a-z0-9]' "$1" | grep -v '^twentytwentyone '; }
+[ "$(pin_line "$here/themes-wp.txt")" = "$WP_TT1" ] && ok "themes-wp.txt pins Twenty Twenty-One 2.9 and its zip sha256" || bad "themes-wp.txt pin is '$(pin_line "$here/themes-wp.txt")'"
+[ "$(pin_line "$here/themes.txt")" = "$GB_TT1" ] && ok "themes.txt pins Twenty Twenty-One 2.1" || bad "themes.txt pin is '$(pin_line "$here/themes.txt")'"
+if [ -f "$here/themes-wp.txt" ] && diff -q <(other_pins "$here/themes.txt") <(other_pins "$here/themes-wp.txt") >/dev/null; then
+  ok "themes-wp.txt matches themes.txt on every slug but twentytwentyone"
+else
+  bad "themes-wp.txt drifted from themes.txt beyond twentytwentyone"
+fi
+if line=$(WC_REPO=file:///nonexistent "$P" "$t/wpgb" wp gb 2>"$t/e"); then
+  case "$line" in *"THEME_SUITE=$here/themes-wp.txt "*) ok "wp gb: THEME_SUITE is themes-wp.txt" ;; *) bad "wp gb: line is '$line'" ;; esac
+else bad "wp gb: exit non-zero ($(cat "$t/e"))"; fi
+if line=$(GB_REPO=file:///nonexistent "$P" "$t/wpwc" wp wc 2>"$t/e"); then
+  case "$line" in *"THEME_SUITE=$here/themes-wp.txt "*) ok "wp wc: THEME_SUITE is themes-wp.txt" ;; *) bad "wp wc: line is '$line'" ;; esac
+else bad "wp wc: exit non-zero ($(cat "$t/e"))"; fi
 
 # 4. Refusals.
 expect_refused "an existing out dir" "exists; refused" "$P" "$t/out" wc
