@@ -42,7 +42,7 @@ compare() {
   if diff -u "$T/b.canon" "$T/r.canon" > "$T/d"; then ok "$3" 1; else sed 's/^/        /' "$T/d"; ok "$3 (above: - the bench, + deploy.sh)" 0; fi
 }
 
-echo "1. the defaults render the measured site: the overflow bench (#1119: the pool is on by default) plus the two #296 step 3 defaults (OCV and HPOS cache on) and the cron driver (#1165)"
+echo "1. the defaults render the measured site: the overflow bench without its overflow vars (#1277: the pool is off by default) plus the two #296 step 3 defaults (OCV and HPOS cache on) and the cron driver (#1165)"
 render "$T/a.toml"; rc=$?
 ok "render_conf ran (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"; [ $rc = 0 ] || cat "$T/render.err"
 # #1098: the deploy name is the title default. A chosen title is one more line. A bad one is refused.
@@ -57,8 +57,9 @@ ok "#1098 a SITE_TITLE with a newline is refused (rc $rc)" "$([ $rc != 0 ] && gr
 # #296: the step 3 series measured arm C (both on) against the bench; the lead ruled them approach A's defaults.
 python3 -I "$HERE/canon.py" "$T/a.toml" | benchflags | grep -vE '^vars (SITE_ORIGIN|HTTP_ALLOW_HOSTS|SITE_NAME|SITE_TITLE) = |^triggers crons = \[\]$' > "$T/d.canon"
 # #1078: the KV L2 is off by default on approach A (the benches ran with it on, and stay the record): mapped here.
-# #1119: Conrad ruled PHP_OVERFLOW on by default for approach A, so the default render is the OVERFLOW bench.
-{ python3 -I "$HERE/canon.py" "$HERE/bench-overflow.toml" | sed 's/^vars OBJECT_CACHE_L2 = "on"$/vars OBJECT_CACHE_L2 = "off"/'; echo 'vars OBJECT_CACHE_VERSIONS = "on"'; echo 'vars WOO_HPOS_CACHE = "on"'; echo 'vars A_CRON = "on"'; echo 'triggers crons = ["* * * * *"]'; } | sort > "$T/bd.canon"  # #1165: the cron driver is on by default
+# #1277 (Conrad, 2026-11-21): the overflow pool is OFF by default for approach A (it was on, #1119). The default render is
+# the overflow bench WITHOUT its two overflow vars: the cron driver (#1165) still binds PhpRuntime and its migration.
+{ python3 -I "$HERE/canon.py" "$HERE/bench-overflow.toml" | sed 's/^vars OBJECT_CACHE_L2 = "on"$/vars OBJECT_CACHE_L2 = "off"/' | grep -vE '^vars PHP_OVERFLOW(_POOL)? = '; echo 'vars OBJECT_CACHE_VERSIONS = "on"'; echo 'vars WOO_HPOS_CACHE = "on"'; echo 'vars A_CRON = "on"'; echo 'triggers crons = ["* * * * *"]'; } | sort > "$T/bd.canon"  # #1165: the cron driver is on by default
 if diff -u "$T/bd.canon" <(sort "$T/d.canon") > "$T/d1"; then ok "deploy.sh variant a equals the bench plus the two defaults" 1; else sed 's/^/        /' "$T/d1"; ok "deploy.sh variant a equals the bench plus the two defaults" 0; fi
 render "$T/a0.toml" PHP_OVERFLOW=0 A_CRON=0 OBJECT_CACHE_VERSIONS=0 WOO_HPOS_CACHE=off OBJECT_CACHE_L2=1; rc=$? # #1078: the bench ran with L2 on
 compare "$T/a0.toml" "$HERE/bench.toml" "with the overflow and cron opt-outs (PHP_OVERFLOW=0, A_CRON=0) and both set off, deploy.sh variant a equals the #666 bench config exactly"

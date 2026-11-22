@@ -31,6 +31,21 @@ check() { # check <recorded value or ""> <env assignments...>; OUTFAIL=<stderr> 
   env -i PATH="$T/bin:$PATH" "$@" bash -c '. "'"$ROOT"'/deploy/lib/recorded-inputs.sh"; inputs_check "'"$T/tf"'" site1' > "$T/out" 2> "$T/err"
 }
 R=$(record VARIANT=b-dosql LOCATION=enam MEDIA=1 WOO_ACTIVE=0 MAIL_FROM=wp-test@example.co)
+# #1277 (Conrad's ruling, 2026-11-21): the approach A overflow pool is now OFF by default (it was on, #1119). A site
+# whose record has no PHP_OVERFLOW ran the pool by the old default; a redeploy that also leaves it unset turns the
+# pool off. That is the ruling, so it proceeds, but it is said, never silent. A recorded PHP_OVERFLOW=1 is kept.
+AO=$(record VARIANT=a LOCATION=wnam)
+check "$AO" VARIANT=a LOCATION=wnam; rc=$?
+ok "#1277 an approach A record with no PHP_OVERFLOW passes (rc $rc)" "$([ $rc = 0 ] && echo 1 || echo 0)"
+ok "#1277   and the deploy SAYS the pool turns off, why, and how to keep it" "$(grep -q 'overflow pool is now OFF by default' "$T/err" && grep -q '#1277' "$T/err" && grep -q 'PHP_OVERFLOW=1' "$T/err" && grep -q 'REPLACE_INPUTS=1' "$T/err" && echo 1 || echo 0)"
+A1=$(record VARIANT=a LOCATION=wnam PHP_OVERFLOW=1)
+check "$A1" VARIANT=a LOCATION=wnam; rc=$?
+ok "#1277 a recorded PHP_OVERFLOW=1 redeployed without it is REFUSED, never silently turned off (rc $rc)" "$([ $rc = 2 ] && grep -q "PHP_OVERFLOW: recorded '1', this run ''" "$T/err" && echo 1 || echo 0)"
+check "$A1" VARIANT=a LOCATION=wnam PHP_OVERFLOW=1; rc=$?
+ok "#1277 a recorded PHP_OVERFLOW=1 kept on the redeploy passes, with no notice (rc $rc)" "$([ $rc = 0 ] && ! grep -q 'now OFF by default' "$T/err" && echo 1 || echo 0)"
+BO=$(record VARIANT=b-dosql LOCATION=wnam)
+check "$BO" VARIANT=b-dosql LOCATION=wnam; rc=$?
+ok "#1277 a b-dosql record gets no overflow notice (rc $rc)" "$([ $rc = 0 ] && ! grep -q 'overflow pool' "$T/err" && echo 1 || echo 0)"
 ok "the recorded value is base64 of JSON with the set names only" "$(printf '%s' "$R" | base64 -d 2>/dev/null | python3 -I -c 'import json,sys; d=json.load(sys.stdin); print(1 if d=={"VARIANT":"b-dosql","LOCATION":"enam","MEDIA":"1","WOO_ACTIVE":"0","MAIL_FROM":"wp-test@example.co"} else 0)')"
 S=$(record VARIANT=a MYSQL_PASSWORD=s3cret TURNSTILE_SECRET=t0p CLOUDFLARE_API_TOKEN=tok)
 ok "no secret is ever recorded (MYSQL_PASSWORD, TURNSTILE_SECRET, CLOUDFLARE_API_TOKEN), and the record is real (VARIANT a is in it)" "$(printf '%s' "$S" | base64 -d 2>/dev/null | grep -q '"VARIANT": "a"' && ! printf '%s' "$S" | base64 -d | grep -qE 's3cret|t0p|tok' && echo 1 || echo 0)"

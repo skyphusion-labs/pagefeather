@@ -94,6 +94,14 @@ def origin(d):
         return "https://" + d["CUSTOM_DOMAIN"].lower()
     return "the workers.dev default"
 o_rec, o_cur = origin(rec), origin(cur)
+# #1277 (Conrad, 2026-11-21): the approach A overflow pool is now OFF by default (it was on, #1119). A record with no
+# PHP_OVERFLOW ran the pool by the old default; a run that leaves it unset now turns it off. That is the ruling, so it
+# proceeds, but never silently. (A recorded PHP_OVERFLOW=1 is a normal difference when dropped: refused above.)
+if rec.get("VARIANT") == "a" and "PHP_OVERFLOW" not in rec and "PHP_OVERFLOW" not in cur:
+    print("site %s: the approach A overflow pool is now OFF by default (#1277: pool objects cost about 3x per query, a net "
+          "loss of about 2 s per moved request at the median). This site recorded no PHP_OVERFLOW, so it ran the pool by "
+          "the old default (#1119); this deploy turns it OFF. To keep it, run with PHP_OVERFLOW=1 and REPLACE_INPUTS=1."
+          % os.environ["NAME"], file=sys.stderr)
 if o_rec != o_cur and os.environ.get("ORIGIN_MOVE", "0") != "1":
     print("refused: site %s would move from %s to %s. WordPress keeps siteurl and the absolute URLs in its content at the "
           "old origin, and the deploy never rewrites them. To move it on purpose, run with ORIGIN_MOVE=1 (and REPLACE_INPUTS=1), "
